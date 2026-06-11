@@ -9,6 +9,7 @@ fi
 DW_DARLING_SRC="${DW_DARLING_SRC:-$(cd "$DW_ROOT/.." && pwd)/darling}"
 BEADS_DIR="$DW_ROOT/.beads"
 export BEADS_DIR
+REPO_ROOT="$(cd "$DW_DARLING_SRC/.." 2>/dev/null && pwd || true)"
 
 die() {
   printf 'dw: %s\n' "$*" >&2
@@ -20,18 +21,28 @@ require_source() {
     die "Darling checkout not found at $DW_DARLING_SRC"
 }
 
+require_repo() {
+  command -v repo >/dev/null || die "repo is not installed"
+  [[ -n "$REPO_ROOT" && -d "$REPO_ROOT/.repo" ]] ||
+    die "$DW_DARLING_SRC is not inside a repo-managed client"
+}
+
 status() {
   require_source
   printf 'control: %s\nsource:  %s\n\n' "$DW_ROOT" "$DW_DARLING_SRC"
-  git -C "$DW_DARLING_SRC" status --short --branch
-  git -C "$DW_DARLING_SRC" submodule foreach --recursive '
-    changes=$(git status --porcelain)
-    branch=$(git symbolic-ref --quiet --short HEAD || printf "DETACHED")
-    if test -n "$changes" || test "$branch" != "DETACHED"; then
-      printf "\n[%s] %s\n" "$displaypath" "$branch"
-      git status --short
-    fi
-  '
+  if [[ -d "$REPO_ROOT/.repo" ]]; then
+    (cd "$REPO_ROOT" && repo status)
+  else
+    git -C "$DW_DARLING_SRC" status --short --branch
+    git -C "$DW_DARLING_SRC" submodule foreach --recursive '
+      changes=$(git status --porcelain)
+      branch=$(git symbolic-ref --quiet --short HEAD || printf "DETACHED")
+      if test -n "$changes" || test "$branch" != "DETACHED"; then
+        printf "\n[%s] %s\n" "$displaypath" "$branch"
+        git status --short
+      fi
+    '
+  fi
 }
 
 snapshot() {
@@ -60,7 +71,11 @@ snapshot() {
       "$displaypath" "$head" "$branch" "$origin" "$worktree" >>"$DW_SNAPSHOT"
   '
   mv "$tmp" "$output"
+  "$DW_ROOT/scripts/generate_manifest.py" \
+    --source "$DW_DARLING_SRC" \
+    --output "$DW_ROOT/locked.xml"
   printf 'wrote %s\n' "$output"
+  printf 'wrote %s\n' "$DW_ROOT/locked.xml"
 }
 
 doctor() {
@@ -69,6 +84,65 @@ doctor() {
   printf 'control: %s\nsource:  %s\nbeads:   %s\n' \
     "$DW_ROOT" "$DW_DARLING_SRC" "$(br where)"
   br sync --status
+  if [[ -d "$REPO_ROOT/.repo" ]]; then
+    printf 'repo:    %s\n' "$REPO_ROOT"
+    (cd "$REPO_ROOT" && repo manifest -r -o /tmp/darling-workspace-manifest.xml)
+  else
+    printf 'repo:    legacy checkout (run dw bootstrap <directory>)\n'
+  fi
+}
+
+bootstrap() {
+  command -v repo >/dev/null || die "repo is not installed"
+  local destination manifest_url
+  destination="${1:-}"
+  manifest_url="${2:-$(git -C "$DW_ROOT" remote get-url origin 2>/dev/null || true)}"
+  [[ -n "$destination" ]] || die "usage: dw bootstrap <directory> [manifest-url]"
+  [[ -n "$manifest_url" ]] ||
+    die "manifest URL is required until this control repository has origin"
+  mkdir -p "$destination"
+  (
+    cd "$destination"
+    repo init -u "$manifest_url" -m locked.xml
+    repo sync -c --no-tags -j"${DW_SYNC_JOBS:-16}"
+  )
+  printf 'workspace ready at %s\n' "$destination"
+}
+
+dirty() {
+  require_source
+  if [[ -d "$REPO_ROOT/.repo" ]]; then
+    (
+      cd "$REPO_ROOT"
+      repo forall -p -c '
+        test -z "$(git status --porcelain)" || git status --short --branch
+      '
+    )
+  else
+    status
+  fi
+}
+
+topic() {
+  require_repo
+  local name
+  name="${1:-}"
+  [[ -n "$name" ]] || die "usage: dw topic <name> [project ...]"
+  shift
+  (cd "$REPO_ROOT" && repo start "$name" "$@")
+}
+
+source_sync() {
+  require_repo
+  (cd "$REPO_ROOT" && repo sync --no-tags -j"${DW_SYNC_JOBS:-16}" "$@")
+}
+
+forall() {
+  require_repo
+  [[ $# -gt 0 ]] || die "usage: dw forall <shell command>"
+  local command
+  command="$*"
+  (cd "$REPO_ROOT" && repo forall -p -c "$command")
 }
 
 setup_local() {
@@ -99,9 +173,16 @@ Usage: dw <command> [args]
 
 Commands:
   status            Show source and active submodule state
+  dirty             Show only repositories with worktree changes
+  bootstrap DIR [URL]
+                    Create a repo-managed client from locked.xml
+  source-sync [...] Run repo sync across source repositories
+  topic NAME [PROJECT...]
+                    Start the same topic branch in selected projects
+  forall COMMAND    Run a shell command in every project
   snapshot          Write state/repos.tsv
   beads [args...]   Run br against the control repository
-  sync              Export Beads and refresh state/repos.tsv
+  handoff           Export Beads and refresh locked manifest/state
   doctor            Validate paths and Beads state
   setup-local       Install local agent instructions and Git excludes
   env               Print resolved workspace paths
@@ -112,6 +193,25 @@ case "${1:-}" in
   status)
     status
     ;;
+  dirty)
+    dirty
+    ;;
+  bootstrap)
+    shift
+    bootstrap "$@"
+    ;;
+  source-sync)
+    shift
+    source_sync "$@"
+    ;;
+  topic)
+    shift
+    topic "$@"
+    ;;
+  forall)
+    shift
+    forall "$@"
+    ;;
   snapshot)
     snapshot
     ;;
@@ -119,7 +219,7 @@ case "${1:-}" in
     shift
     exec br "$@"
     ;;
-  sync)
+  handoff|sync)
     br sync --flush-only
     snapshot
     git -C "$DW_ROOT" status --short

@@ -1,27 +1,29 @@
 # Darling workspace control plane
 
-Private, portable state for development on Darling without adding personal
-metadata to Darling or its upstream submodules.
+Private `repo` manifest and portable coordination state for development on
+Darling without adding personal metadata to Darling or its upstream submodules.
 
 ## Ownership boundaries
 
-- `../darling`: source code, commits, branches, and upstream-ready tests only.
+- `locked.xml`: exact SHA of the superproject and every nested submodule.
 - `.beads/issues.jsonl`: shared task graph for humans and agents.
 - `pr-drafts/`: PR descriptions and review notes.
 - `state/repos.tsv`: reproducible snapshot of checked-out commits and branches.
 - `bin/dw`: workspace commands.
 
-Darling's `.gitmodules` remains the source of truth for repository layout and
-build pins. This repository does not replace submodules with Google `repo`.
+Darling's `.gitmodules` remains the upstream build contract. Google `repo`
+provides the developer control plane over the same repositories: bulk status,
+sync, topic branches, commands, and reproducible bootstrap.
 
 ## Setup on another machine
 
 ```bash
 git clone <private-control-repo> ~/work/darling-workspace
-git clone --recurse-submodules git@github.com:IlyaGulya/darling.git ~/work/darling
+~/work/darling-workspace/bin/dw bootstrap ~/work/darling-dev \
+  <private-control-repo>
+
 cd ~/work/darling-workspace
-bin/dw setup-local
-bin/dw doctor
+DW_DARLING_SRC=~/work/darling-dev/darling bin/dw setup-local
 bin/dw beads sync --import-only --rebuild
 ```
 
@@ -35,14 +37,18 @@ cp workspace.env.example workspace.env
 ## Daily use
 
 ```bash
-bin/dw status
+bin/dw status                  # repo status
+bin/dw dirty                   # only dirty projects
+bin/dw topic fix/foo darling/src/external/xnu
+bin/dw forall 'git log -1 --oneline'
+bin/dw source-sync
 bin/dw beads ready
-bin/dw snapshot
-bin/dw sync
+bin/dw handoff
 ```
 
-`dw sync` exports Beads to JSONL and refreshes `state/repos.tsv`. Review and
-commit this control repository separately from source commits.
+`dw handoff` exports Beads, refreshes `state/repos.tsv`, and regenerates
+`locked.xml` from every actual checkout HEAD. Commit and push the control
+repository to hand the exact workspace state to another machine or agent.
 
 `dw setup-local` writes only checkout-local files and `.git/info/exclude`; it
 does not edit Darling's tracked `.gitignore`.
@@ -61,5 +67,5 @@ Store the base commit and target repository in that topic's README. Avoid
 committing build products, SQLite databases, logs, or uncommitted source diffs
 to this repository.
 
-One control repository is intentional. Split Beads into a second repository
-only if it needs different access control or an independent lifecycle.
+One private manifest repository is intentional. Split Beads only if it needs
+different access control or an independent lifecycle.
