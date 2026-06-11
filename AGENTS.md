@@ -12,6 +12,10 @@ refs, PR drafts, and agent handoff.
 - Treat `integration/*` branches and profile `west.lock.yml` files as generated.
 - Never edit `integration/*`, open PRs from them, or edit generated locks.
 - Never edit a patch without refreshing its full source SHA and checksum.
+- Publish PRs only with `west pr`, one Bead at a time, from clean `fix/*`
+  branches. Never publish generated, backup, or historical mega-branches.
+- Fork-local draft PRs are staging review objects, not private artifacts.
+- Do not run `west pr upstream-draft` without explicit user approval.
 - Run `west dw handoff` before ending a session that changed Beads or private
   branches.
 - Never add workspace metadata, PR drafts, agent state, or Beads files to the

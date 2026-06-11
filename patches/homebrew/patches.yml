@@ -9,6 +9,15 @@ patches:
   source-commit: ce7ce5e7888eb5b3c20ec652db097519c9c2fbe5
   bead: dar-q95.1
   pr-draft: pr-drafts/darlingserver-psynch-cvwait-balanced.md
+  github:
+    fork:
+      repo: IlyaGulya/darlingserver
+      base: preupstream/main
+      state: local
+    upstream:
+      repo: darlinghq/darlingserver
+      base: main
+      state: local
 - path: darlingserver/microthread-resume-race.patch
   sha256sum: bc8697ec7c05659dd94e516925b9f6f582c08ccb11596872c30f4af941481afe
   module: darling/src/external/darlingserver
@@ -16,6 +25,15 @@ patches:
   source-commit: f62bc4ba6387e5e5ba50507ba840cacb8c6278a3
   bead: dar-q95.8
   pr-draft: pr-drafts/darlingserver-microthread-resume-race.md
+  github:
+    fork:
+      repo: IlyaGulya/darlingserver
+      base: preupstream/main
+      state: local
+    upstream:
+      repo: darlinghq/darlingserver
+      base: main
+      state: local
 - path: darlingserver/fork-checkin-bound.patch
   sha256sum: 2bc0e01797b747dff191e11677c0ef883b2defc43c0998caaabc5c7a1077e033
   module: darling/src/external/darlingserver
@@ -23,6 +41,15 @@ patches:
   source-commit: 8746148c12bda639054f15b0510e1578a11034df
   bead: dar-q95.13
   pr-draft: pr-drafts/darlingserver-fork-checkin-bound.md
+  github:
+    fork:
+      repo: IlyaGulya/darlingserver
+      base: preupstream/main
+      state: local
+    upstream:
+      repo: darlinghq/darlingserver
+      base: main
+      state: local
 - path: xnu/psynch-cvsignal-args.patch
   sha256sum: b75649b702368a694e7ee58e6b3e94034f4b03b189f5b80751cd5f72797d2d95
   module: darling/src/external/xnu
@@ -30,6 +57,15 @@ patches:
   source-commit: 8a7797fd85b1522a528551fc9601b245c083b8e8
   bead: dar-q95.2
   pr-draft: pr-drafts/xnu-psynch-cvsignal-args.md
+  github:
+    fork:
+      repo: IlyaGulya/darling-xnu
+      base: preupstream/main
+      state: local
+    upstream:
+      repo: darlinghq/darling-xnu
+      base: main
+      state: local
 - path: xnu/select-pselect-fdset.patch
   sha256sum: 62c2cdb90755e0910a9576662a10ff6f52ff9d8d36f13f7c20bf5c6ab658afc6
   module: darling/src/external/xnu
@@ -37,6 +73,15 @@ patches:
   source-commit: bb7e6dedc850abb2b0dfecfcb2437ccde1d66452
   bead: dar-q95.3
   pr-draft: pr-drafts/xnu-select-pselect-fdset.md
+  github:
+    fork:
+      repo: IlyaGulya/darling-xnu
+      base: preupstream/main
+      state: local
+    upstream:
+      repo: darlinghq/darling-xnu
+      base: main
+      state: local
 - path: xnu/darwin-priority.patch
   sha256sum: 8b08ec84b0084bca458829b114898291b56726b569dc43c51d53bff55c37b21c
   module: darling/src/external/xnu
@@ -44,6 +89,15 @@ patches:
   source-commit: ec55325e53dbf3b2593d73428a5d7a90ccb95fca
   bead: dar-q95.10
   pr-draft: pr-drafts/xnu-darwin-priority.md
+  github:
+    fork:
+      repo: IlyaGulya/darling-xnu
+      base: preupstream/main
+      state: local
+    upstream:
+      repo: darlinghq/darling-xnu
+      base: main
+      state: local
 - path: xnu/socket-siocgifconf.patch
   sha256sum: 9304dfc426333b574bd6d7a70a9829871f6e478c858de80ee173debc21a925a7
   module: darling/src/external/xnu
@@ -51,6 +105,15 @@ patches:
   source-commit: 2e5539a3c895596b5f4dab7ac3cb924f52a4375b
   bead: dar-q95.11
   pr-draft: pr-drafts/xnu-socket-siocgifconf.md
+  github:
+    fork:
+      repo: IlyaGulya/darling-xnu
+      base: preupstream/main
+      state: local
+    upstream:
+      repo: darlinghq/darling-xnu
+      base: main
+      state: local
 - path: xnu/fork-postfork-child.patch
   sha256sum: 574e9924e7c878a50d5c12bd5934c5715520b09a2dd412fd84dae31d422662f0
   module: darling/src/external/xnu
@@ -58,16 +121,51 @@ patches:
   source-commit: 86cb1cf68d174a5255e075528ec8679abebb4b20
   bead: dar-q95.12
   pr-draft: pr-drafts/xnu-fork-postfork-child.md
+  github:
+    fork:
+      repo: IlyaGulya/darling-xnu
+      base: preupstream/main
+      state: local
+    upstream:
+      repo: darlinghq/darling-xnu
+      base: main
+      state: local
 - path: libplatform/bzero-return-register.patch
   sha256sum: 14f83009c83b6dfddb9b6894d792a9557e2fd2c73c0c65ecb53df5ed06fa6dbe
   module: darling/src/external/libplatform
   source-branch: fix/bzero-return-register
   source-commit: a35ec396c8b3221dbf33a5693f234494e40737ec
   bead: dar-q95.4
+  pr-draft: pr-drafts/libplatform-bzero-return-register.md
   merge-pr: https://github.com/darlinghq/darling-libplatform/pull/5
+  github:
+    fork:
+      repo: IlyaGulya/darling-libplatform
+      base: preupstream/master
+      state: local
+    upstream:
+      repo: darlinghq/darling-libplatform
+      base: master
+      url: https://github.com/darlinghq/darling-libplatform/pull/5
+      state: draft
+      number: 5
+      head-commit: a35ec396c8b3221dbf33a5693f234494e40737ec
+      is-draft: true
+      review-decision: ''
+      merge-state: CLEAN
 - path: perl/disable-nsgetexecutablepath.patch
   sha256sum: af4e10eb46490ea5fec3ca6e6e1427656a8aeb99ee2963c56f4db3a624d113c8
   module: darling/src/external/perl
   source-branch: fix/disable-nsgetexecutablepath
   source-commit: b37ac3179fae9e090104d93a218c835452e17c21
   bead: dar-q95.5
+  pr-draft: pr-drafts/perl-disable-nsgetexecutablepath.md
+  github:
+    fork:
+      repo: IlyaGulya/darling-perl
+      base: preupstream/master
+      state: local
+    upstream:
+      repo: darlinghq/darling-perl
+      base: master
+      state: local
