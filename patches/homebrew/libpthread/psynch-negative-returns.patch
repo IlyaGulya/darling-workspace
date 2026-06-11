@@ -1,0 +1,107 @@
+From b007105f34a0f433016276cf05dff77f2217b89e Mon Sep 17 00:00:00 2001
+From: Ilya Gulya <ilya@gulya.me>
+Date: Wed, 10 Jun 2026 19:33:56 +0000
+Subject: [PATCH] pthread: decode negative BSD-error returns from emulated
+ psynch waits
+
+The emulated BSD psynch wait syscalls (cvwait/mutexwait/rw_rdlock/rw_wrlock)
+return their BSD error (EINTR/ETIMEDOUT, for condvars OR'd with the
+ECVCLEARED/ECVPREPOST status bits) as a *negative* value directly in the
+return register. Unlike a real macOS syscall, this path does NOT route the
+negative value through cerror -> errno, so libpthread's upstream
+'== (uint32_t)-1' / errno checks never matched: an interrupted or errored
+wait was misread as a successful updateval/acquisition.
+
+For condvars that left an orphaned prepost that stranded a later wakeup; for
+mutexes/rwlocks it skipped the EINTR retry, so the kernel's kw_intr
+interrupted-wakeup redirection was never consumed and a contended handoff
+deadlocked. Decode the negative return ((int32_t)x < 0 -> err = -x) in the
+cond wait, both mutex wait loops, and the rwlock wait loop so the EINTR /
+prepost recovery runs.
+
+Fixes the 'brew install' psynch deadlock (dar-gwn.2 layer 3). Validated:
+brew fetch wget 13/13 across two loops (was 100% stall on iter 1-2); brew
+install jq now runs past 'Fetching downloads' instead of hanging.
+---
+ src/pthread_cond.c   | 13 ++++++++++---
+ src/pthread_mutex.c  | 14 ++++++++++++--
+ src/pthread_rwlock.c |  6 ++++++
+ 3 files changed, 28 insertions(+), 5 deletions(-)
+
+diff --git a/src/pthread_cond.c b/src/pthread_cond.c
+index f7e532cbb76262f06cf1a66b81afb6f453c8b8ef..91621a35cfb0faeca4026a5a16acb0dcfd618690 100644
+--- a/src/pthread_cond.c
++++ b/src/pthread_cond.c
+@@ -633,8 +633,16 @@ _pthread_psynch_cond_wait(pthread_cond_t *cond,
+ 		updateval = __psynch_cvwait(cond, cvlsgen, ucntval, (pthread_mutex_t *)npmtx, mugen, flags, (int64_t)(then->tv_sec), (int32_t)(then->tv_nsec));
+ 	}
+ 
+-	if (updateval == (uint32_t)-1) {
+-		int err = errno;
++	// Darling: the emulated BSD psynch_cvwait syscall returns its BSD error
++	// (EINTR/ETIMEDOUT, possibly OR'd with the cvar ECVCLEARED/ECVPREPOST
++	// status bits) as a *negative* value directly in the return register, not
++	// as the -1 + errno that upstream macOS uses. Accept both: -1 means read
++	// errno; any other negative value carries the (augmented) error itself.
++	// Without this decode libpthread mistakes the error for a successful
++	// updateval, skips the EINTR/prepost recovery, and orphan preposts strand
++	// a later condvar wakeup.
++	if ((int32_t)updateval < 0) {
++		int err = updateval == (uint32_t)-1 ? errno : -(int32_t)updateval;
+ 		switch (err & 0xff) {
+ 		case ETIMEDOUT:
+ 			res = ETIMEDOUT;
+@@ -993,4 +1001,3 @@ pthread_cond_init(pthread_cond_t *cond, const pthread_condattr_t *attr)
+ 	_pthread_lock_init(&cond->lock);
+ 	return _pthread_cond_init(cond, attr, _PTHREAD_COND_SIG_pristine);
+ }
+-
+diff --git a/src/pthread_mutex.c b/src/pthread_mutex.c
+index e7b0155cc748825a308da3ff8f818d785cc1c375..e0358fe89464839a7cbde975548e1c6ebf54a138 100644
+--- a/src/pthread_mutex.c
++++ b/src/pthread_mutex.c
+@@ -770,7 +770,14 @@ _pthread_mutex_fairshare_lock_wait(pthread_mutex_t *mutex, mutex_seq newseq,
+ 			updateval = __psynch_mutexwait(mutex, newseq.lgenval,
+ 					newseq.ugenval, oldtid, mutex->mtxopts.value);
+ 			oldtid = os_atomic_load_wide(tidaddr, relaxed);
+-		} while (updateval == (uint32_t)-1);
++		// Darling: the emulated BSD syscall returns an interrupted/errored
++		// wait (e.g. EINTR) as a *negative* value directly in the return
++		// register, not as -1 + errno. Retry the kernel wait on any such
++		// negative return so the kw_intr interrupted-wakeup redirection is
++		// consumed; exiting here would mistake the error for a successful
++		// acquisition and strand a contended-mutex handoff. See
++		// libsystem_kernel psynch_cvwait.c / pthread_cond.c for the analysis.
++		} while ((int32_t)updateval < 0);
+ 
+ 		// returns 0 on succesful update; in firstfit it may fail with 1
+ 	} while (_pthread_mutex_fairshare_lock_updatebits(mutex, selfid) == 1);
+@@ -1411,7 +1418,10 @@ _pthread_mutex_firstfit_lock_wait(pthread_mutex_t *mutex, mutex_seq newseq,
+ 			PTHREAD_TRACE(psynch_ffmutex_wait | DBG_FUNC_END, mutex,
+ 					uval, 0, 0);
+ 			oldtid = os_atomic_load_wide(tidaddr, relaxed);
+-		} while (uval == (uint32_t)-1);
++		// Darling: retry on a negative BSD-error return (EINTR delivered
++		// directly in the return register, not -1 + errno). See the
++		// fairshare wait loop above for the full rationale.
++		} while ((int32_t)uval < 0);
+ 	} while (!_pthread_mutex_firstfit_lock_updatebits(mutex, selfid, &newseq));
+ 	PLOCKSTAT_MUTEX_BLOCKED((pthread_mutex_t *)mutex, BLOCK_SUCCESS_PLOCKSTAT);
+ 
+diff --git a/src/pthread_rwlock.c b/src/pthread_rwlock.c
+index 55834c925f9c5296a07d8648fd78008c3ac528c6..e64e932367083086e66892554f0ff7a96fc959c3 100644
+--- a/src/pthread_rwlock.c
++++ b/src/pthread_rwlock.c
+@@ -644,6 +644,12 @@ _pthread_rwlock_lock_wait(pthread_rwlock_t *rwlock, bool readlock,
+ 		}
+ 		if (updateval == (uint32_t)-1) {
+ 			res = errno;
++		} else if ((int32_t)updateval < 0) {
++			// Darling: the emulated BSD syscall returns an interrupted/errored
++			// wait as a negative value directly in the return register, not as
++			// -1 + errno. Decode it so an EINTR retries the kernel wait instead
++			// of being mistaken for a successful rwlock updateval.
++			res = -(int32_t)updateval;
+ 		} else {
+ 			res = 0;
+ 		}

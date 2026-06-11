@@ -1,0 +1,208 @@
+From 6ce1f739d63f0f3e7cbdb12a3dfdc3113577b53f Mon Sep 17 00:00:00 2001
+From: Ilya Gulya <ilya@gulya.me>
+Date: Wed, 10 Jun 2026 14:46:08 +0000
+Subject: [PATCH] libsystem_kernel: return psynch wait errors as negative errno
+
+The psynch wait syscall wrappers (cvwait, mutexwait, rw_wrlock, rw_rdlock)
+returned the BSD error code from the kernel continuation (psynch_cvcontinue
+et al.) as a POSITIVE value via 'return (ret) ? ret : retval'. For an
+interrupted/timed-out wait the kernel returns e.g. EINTR|ECVPREPOST (0x204)
+or EINTR|ECVCLEARED (0x104); returning it positively made the macOS syscall
+look successful with that value as the pthread updateval, so libpthread took
+the success path and never ran its EINTR/ETIMEDOUT + ECVCLEARED/ECVPREPOST
+recovery (which clears orphaned condvar preposts via psynch_cvclrprepost).
+
+An interrupted cvwait would thus strand a condvar prepost; these accumulated
+and desynced the kw_sword/kw_lword accounting until a legitimate waiter was
+never signalled, permanently hanging the process (intermittent 'brew fetch'
+hang, since cvwait only errors on the rare SIGCHLD-interrupt race).
+
+Return the error negatively ('return (ret) ? -ret : retval') so cerror sets
+errno (full augmented value, no truncation) and the syscall returns -1, which
+is the contract libpthread relies on. The result code is non-zero only on
+error (the real updateval travels via the separate retval), so negating it is
+always correct.
+
+Refs dar-gwn.2.
+---
+ .../src/xnu_syscall/bsd/impl/psynch/psynch_cvwait.c   | 11 ++++++++++-
+ .../xnu_syscall/bsd/impl/psynch/psynch_mutexwait.c    |  8 +++++++-
+ .../xnu_syscall/bsd/impl/psynch/psynch_rw_rdlock.c    |  6 +++++-
+ .../xnu_syscall/bsd/impl/psynch/psynch_rw_wrlock.c    |  6 +++++-
+ 4 files changed, 27 insertions(+), 4 deletions(-)
+
+diff --git a/darling/src/libsystem_kernel/emulation/src/xnu_syscall/bsd/impl/psynch/psynch_cvwait.c b/darling/src/libsystem_kernel/emulation/src/xnu_syscall/bsd/impl/psynch/psynch_cvwait.c
+index d093b7392fb179a60803a543adc311f4f476fe71..f4172b2f5cf6fc52d3a765ded4783e50a8dee5d3 100644
+--- a/darling/src/libsystem_kernel/emulation/src/xnu_syscall/bsd/impl/psynch/psynch_cvwait.c
++++ b/darling/src/libsystem_kernel/emulation/src/xnu_syscall/bsd/impl/psynch/psynch_cvwait.c
+@@ -21,5 +21,14 @@ long sys_psynch_cvwait(void* cv, uint64_t cvlsgen, uint32_t cvugen, void * mutex
+ 		__simple_abort();
+ 	}
+ 
+-	return (ret) ? ret : retval;
++	// A non-zero result code is the BSD error returned by psynch_cvcontinue
++	// (EINTR/ETIMEDOUT, possibly OR'd with the cvar ECVCLEARED/ECVPREPOST
++	// status bits). It must be propagated as a *negative* return so cerror
++	// sets errno and the syscall returns -1; libpthread then masks errno&0xff
++	// for EINTR/ETIMEDOUT and inspects the ECVCLEARED/ECVPREPOST bits to clear
++	// any orphaned prepost via psynch_cvclrprepost. Returning it positively
++	// (the previous behaviour) made libpthread treat the error code as a
++	// successful updateval, so the prepost was never cleared and an
++	// interrupted cvwait could permanently strand a condvar wakeup.
++	return (ret) ? -ret : retval;
+ }
+diff --git a/darling/src/libsystem_kernel/emulation/src/xnu_syscall/bsd/impl/psynch/psynch_mutexwait.c b/darling/src/libsystem_kernel/emulation/src/xnu_syscall/bsd/impl/psynch/psynch_mutexwait.c
+index 2a0525128238bf15e6546be74b00fddb564251d2..3290a6ce4873754e6e77db4fb6750dacb7ded688 100644
+--- a/darling/src/libsystem_kernel/emulation/src/xnu_syscall/bsd/impl/psynch/psynch_mutexwait.c
++++ b/darling/src/libsystem_kernel/emulation/src/xnu_syscall/bsd/impl/psynch/psynch_mutexwait.c
+@@ -21,5 +21,11 @@ long sys_psynch_mutexwait(void* mutex, uint32_t mgen, uint32_t ugen, uint64_t ti
+ 		__simple_abort();
+ 	}
+ 
+-	return (ret) ? ret : retval;
++	// Non-zero result code is a BSD error (EINTR/ETIMEDOUT) from
++	// psynch_mtxcontinue; propagate it as a negative return so cerror sets
++	// errno and the syscall returns -1. Returning it positively would make
++	// libpthread treat the error as a successful mutex updateval, defeating
++	// the EINTR retry / kw_intr interrupted-wakeup redirection and stranding
++	// a contended-mutex handoff. See psynch_cvwait.c for the full analysis.
++	return (ret) ? -ret : retval;
+ }
+diff --git a/darling/src/libsystem_kernel/emulation/src/xnu_syscall/bsd/impl/psynch/psynch_rw_rdlock.c b/darling/src/libsystem_kernel/emulation/src/xnu_syscall/bsd/impl/psynch/psynch_rw_rdlock.c
+index b002d68e81b76bc036a0b0014eb4375cae88908b..e76de9c3cd1c6edab529af918d1449ed460769b3 100644
+--- a/darling/src/libsystem_kernel/emulation/src/xnu_syscall/bsd/impl/psynch/psynch_rw_rdlock.c
++++ b/darling/src/libsystem_kernel/emulation/src/xnu_syscall/bsd/impl/psynch/psynch_rw_rdlock.c
+@@ -20,5 +20,9 @@ long sys_psynch_rw_rdlock(void* rwlock, uint32_t lgenval, uint32_t ugenval, uint
+ 		__simple_abort();
+ 	}
+ 
+-	return (ret) ? ret : retval;
++	// Non-zero result code is a BSD error (EINTR/ETIMEDOUT); propagate it as a
++	// negative return so cerror sets errno and the syscall returns -1, rather
++	// than letting libpthread mistake the error for a successful rwlock
++	// updateval. See psynch_cvwait.c for the full analysis.
++	return (ret) ? -ret : retval;
+ }
+diff --git a/darling/src/libsystem_kernel/emulation/src/xnu_syscall/bsd/impl/psynch/psynch_rw_wrlock.c b/darling/src/libsystem_kernel/emulation/src/xnu_syscall/bsd/impl/psynch/psynch_rw_wrlock.c
+index 38427a7260085ed73de9f4b2045546108c0a41c0..b6b90e7c53a1cfd13b8ef4500b36bfebe6ce0f04 100644
+--- a/darling/src/libsystem_kernel/emulation/src/xnu_syscall/bsd/impl/psynch/psynch_rw_wrlock.c
++++ b/darling/src/libsystem_kernel/emulation/src/xnu_syscall/bsd/impl/psynch/psynch_rw_wrlock.c
+@@ -20,5 +20,9 @@ long sys_psynch_rw_wrlock(void* rwlock, uint32_t lgenval, uint32_t ugenval, uint
+ 		__simple_abort();
+ 	}
+ 
+-	return (ret) ? ret : retval;
++	// Non-zero result code is a BSD error (EINTR/ETIMEDOUT); propagate it as a
++	// negative return so cerror sets errno and the syscall returns -1, rather
++	// than letting libpthread mistake the error for a successful rwlock
++	// updateval. See psynch_cvwait.c for the full analysis.
++	return (ret) ? -ret : retval;
+ }
+
+From 0d7844f548b9c04a259fcb00a9556cdf9b39d9ef Mon Sep 17 00:00:00 2001
+From: Ilya Gulya <ilya@gulya.me>
+Date: Wed, 10 Jun 2026 19:34:06 +0000
+Subject: [PATCH] libsystem_kernel: correct psynch wrapper comments (errno path
+ does not fire)
+
+Comment-only. The psynch wait wrappers already return the BSD error negated
+(f3c8d94), but the comments claimed cerror sets errno and the syscall returns
+-1. That is not what happens: this emulated BSD syscall path delivers the
+negative value directly in libpthread's return register without going through
+cerror/errno, and libpthread decodes it. Reword to describe the real
+mechanism (see the matching libpthread decode in pthread_cond/mutex/rwlock).
+---
+ .../xnu_syscall/bsd/impl/psynch/psynch_cvwait.c   | 15 ++++++++-------
+ .../bsd/impl/psynch/psynch_mutexwait.c            | 13 ++++++++-----
+ .../bsd/impl/psynch/psynch_rw_rdlock.c            | 10 ++++++----
+ .../bsd/impl/psynch/psynch_rw_wrlock.c            | 10 ++++++----
+ 4 files changed, 28 insertions(+), 20 deletions(-)
+
+diff --git a/darling/src/libsystem_kernel/emulation/src/xnu_syscall/bsd/impl/psynch/psynch_cvwait.c b/darling/src/libsystem_kernel/emulation/src/xnu_syscall/bsd/impl/psynch/psynch_cvwait.c
+index f4172b2f5cf6fc52d3a765ded4783e50a8dee5d3..f8f341752c964daa8a3956741ab60bb2e40a4a7e 100644
+--- a/darling/src/libsystem_kernel/emulation/src/xnu_syscall/bsd/impl/psynch/psynch_cvwait.c
++++ b/darling/src/libsystem_kernel/emulation/src/xnu_syscall/bsd/impl/psynch/psynch_cvwait.c
+@@ -23,12 +23,13 @@ long sys_psynch_cvwait(void* cv, uint64_t cvlsgen, uint32_t cvugen, void * mutex
+ 
+ 	// A non-zero result code is the BSD error returned by psynch_cvcontinue
+ 	// (EINTR/ETIMEDOUT, possibly OR'd with the cvar ECVCLEARED/ECVPREPOST
+-	// status bits). It must be propagated as a *negative* return so cerror
+-	// sets errno and the syscall returns -1; libpthread then masks errno&0xff
+-	// for EINTR/ETIMEDOUT and inspects the ECVCLEARED/ECVPREPOST bits to clear
+-	// any orphaned prepost via psynch_cvclrprepost. Returning it positively
+-	// (the previous behaviour) made libpthread treat the error code as a
+-	// successful updateval, so the prepost was never cleared and an
+-	// interrupted cvwait could permanently strand a condvar wakeup.
++	// status bits). Return it *negated* so it reaches libpthread as a negative
++	// value. NOTE: unlike a real macOS syscall this emulated BSD syscall does
++	// NOT route the negative return through cerror -> errno; the value arrives
++	// directly in libpthread's return register, where _pthread_psynch_cond_wait
++	// decodes it ((int32_t)ret < 0 -> err = -ret) to run the EINTR / prepost
++	// recovery. Returning it positively would make libpthread treat the error
++	// as a successful updateval, leaving an orphaned prepost that permanently
++	// strands a later condvar wakeup.
+ 	return (ret) ? -ret : retval;
+ }
+diff --git a/darling/src/libsystem_kernel/emulation/src/xnu_syscall/bsd/impl/psynch/psynch_mutexwait.c b/darling/src/libsystem_kernel/emulation/src/xnu_syscall/bsd/impl/psynch/psynch_mutexwait.c
+index 3290a6ce4873754e6e77db4fb6750dacb7ded688..40327917d17a31e53427b84e4c6d769d68bb08aa 100644
+--- a/darling/src/libsystem_kernel/emulation/src/xnu_syscall/bsd/impl/psynch/psynch_mutexwait.c
++++ b/darling/src/libsystem_kernel/emulation/src/xnu_syscall/bsd/impl/psynch/psynch_mutexwait.c
+@@ -22,10 +22,13 @@ long sys_psynch_mutexwait(void* mutex, uint32_t mgen, uint32_t ugen, uint64_t ti
+ 	}
+ 
+ 	// Non-zero result code is a BSD error (EINTR/ETIMEDOUT) from
+-	// psynch_mtxcontinue; propagate it as a negative return so cerror sets
+-	// errno and the syscall returns -1. Returning it positively would make
+-	// libpthread treat the error as a successful mutex updateval, defeating
+-	// the EINTR retry / kw_intr interrupted-wakeup redirection and stranding
+-	// a contended-mutex handoff. See psynch_cvwait.c for the full analysis.
++	// psynch_mtxcontinue; return it negated so it reaches libpthread as a
++	// negative value (this emulated BSD syscall does NOT route it through
++	// cerror -> errno; it arrives directly in the return register, where the
++	// mutex wait loop decodes (int32_t)ret < 0 and retries the kernel wait).
++	// Returning it positively would make libpthread treat the error as a
++	// successful mutex updateval, defeating the EINTR retry / kw_intr
++	// interrupted-wakeup redirection and stranding a contended-mutex handoff.
++	// See psynch_cvwait.c for the full analysis.
+ 	return (ret) ? -ret : retval;
+ }
+diff --git a/darling/src/libsystem_kernel/emulation/src/xnu_syscall/bsd/impl/psynch/psynch_rw_rdlock.c b/darling/src/libsystem_kernel/emulation/src/xnu_syscall/bsd/impl/psynch/psynch_rw_rdlock.c
+index e76de9c3cd1c6edab529af918d1449ed460769b3..d6601c09ff0594928ee2724c6aa9da2a6ad4a8bb 100644
+--- a/darling/src/libsystem_kernel/emulation/src/xnu_syscall/bsd/impl/psynch/psynch_rw_rdlock.c
++++ b/darling/src/libsystem_kernel/emulation/src/xnu_syscall/bsd/impl/psynch/psynch_rw_rdlock.c
+@@ -20,9 +20,11 @@ long sys_psynch_rw_rdlock(void* rwlock, uint32_t lgenval, uint32_t ugenval, uint
+ 		__simple_abort();
+ 	}
+ 
+-	// Non-zero result code is a BSD error (EINTR/ETIMEDOUT); propagate it as a
+-	// negative return so cerror sets errno and the syscall returns -1, rather
+-	// than letting libpthread mistake the error for a successful rwlock
+-	// updateval. See psynch_cvwait.c for the full analysis.
++	// Non-zero result code is a BSD error (EINTR/ETIMEDOUT); return it negated
++	// so it reaches libpthread as a negative value (this emulated BSD syscall
++	// does NOT route it through cerror -> errno; it arrives directly in the
++	// return register, where the rwlock wait loop decodes (int32_t)ret < 0 and
++	// retries on EINTR) rather than letting libpthread mistake the error for a
++	// successful rwlock updateval. See psynch_cvwait.c for the full analysis.
+ 	return (ret) ? -ret : retval;
+ }
+diff --git a/darling/src/libsystem_kernel/emulation/src/xnu_syscall/bsd/impl/psynch/psynch_rw_wrlock.c b/darling/src/libsystem_kernel/emulation/src/xnu_syscall/bsd/impl/psynch/psynch_rw_wrlock.c
+index b6b90e7c53a1cfd13b8ef4500b36bfebe6ce0f04..7576b8918f4f45c4e2f60d31277330ee0b4b983d 100644
+--- a/darling/src/libsystem_kernel/emulation/src/xnu_syscall/bsd/impl/psynch/psynch_rw_wrlock.c
++++ b/darling/src/libsystem_kernel/emulation/src/xnu_syscall/bsd/impl/psynch/psynch_rw_wrlock.c
+@@ -20,9 +20,11 @@ long sys_psynch_rw_wrlock(void* rwlock, uint32_t lgenval, uint32_t ugenval, uint
+ 		__simple_abort();
+ 	}
+ 
+-	// Non-zero result code is a BSD error (EINTR/ETIMEDOUT); propagate it as a
+-	// negative return so cerror sets errno and the syscall returns -1, rather
+-	// than letting libpthread mistake the error for a successful rwlock
+-	// updateval. See psynch_cvwait.c for the full analysis.
++	// Non-zero result code is a BSD error (EINTR/ETIMEDOUT); return it negated
++	// so it reaches libpthread as a negative value (this emulated BSD syscall
++	// does NOT route it through cerror -> errno; it arrives directly in the
++	// return register, where the rwlock wait loop decodes (int32_t)ret < 0 and
++	// retries on EINTR) rather than letting libpthread mistake the error for a
++	// successful rwlock updateval. See psynch_cvwait.c for the full analysis.
+ 	return (ret) ? -ret : retval;
+ }

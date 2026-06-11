@@ -1,0 +1,79 @@
+From 35eea7e22f94d64c5d34d609565bc10611193895 Mon Sep 17 00:00:00 2001
+From: Ilya Gulya <ilya@gulya.me>
+Date: Thu, 11 Jun 2026 04:04:46 +0000
+Subject: [PATCH] SDK: add SDKSettings.json so Homebrew can detect the macOS
+ SDK
+
+Homebrew's SDK locator (os/mac/sdk.rb read_sdk_version) only parses
+SDKSettings.JSON; our bundled MacOSX.sdk shipped only SDKSettings.plist, so
+MacOS.sdk resolved to nil and every 'brew install --build-from-source' failed
+the diagnostic.rb check_if_supported_sdk_available gate with 'Your CLT does not
+support macOS 11. It is either outdated or was modified.'
+
+Add a minimal SDKSettings.json declaring Version 11.3 (matching the macOS 11
+userland Darling emulates) so the SDK is discoverable. The headers remain the
+existing set; this only makes the SDK visible to Homebrew's scanner.
+
+Part of making Homebrew source builds work under Darling (dar-pk4).
+---
+ .../Developer/SDKs/MacOSX.sdk/SDKSettings.json        | 11 +++++++++++
+ 1 file changed, 11 insertions(+)
+ create mode 100644 Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk/SDKSettings.json
+
+diff --git a/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk/SDKSettings.json b/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk/SDKSettings.json
+new file mode 100644
+index 0000000000000000000000000000000000000000..5549de4d1c967a446b2a2b5b86806066918aa3bf
+--- /dev/null
++++ b/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk/SDKSettings.json
+@@ -0,0 +1,11 @@
++{
++  "CanonicalName": "macosx11.3",
++  "DisplayName": "macOS 11.3",
++  "MinimalDisplayName": "11.3",
++  "Version": "11.3",
++  "MaximumDeploymentTarget": "11.3",
++  "DefaultDeploymentTarget": "11.3",
++  "DefaultProperties": {
++    "PLATFORM_NAME": "macosx"
++  }
++}
+
+From b8b186a6e31c2b1cf63f8946c7b170b4a75ae794 Mon Sep 17 00:00:00 2001
+From: Ilya Gulya <ilya@gulya.me>
+Date: Thu, 11 Jun 2026 06:14:07 +0000
+Subject: [PATCH] SDK: rename versioned SDK symlink MacOSX10.13.sdk ->
+ MacOSX11.sdk
+
+The bundled MacOSX.sdk now declares Version 11.3 (75437f43b), but the
+versioned discovery symlink still carried the old 10.13 name. Homebrew's
+check_broken_sdks (extend/os/mac/diagnostic.rb) scans MacOSX*.sdk and fails
+fatally when a versioned SDK folder name's major version disagrees with its
+SDKSettings.json content version (10 != 11). Rename the symlink so the name
+matches the 11.3 content. The unversioned MacOSX.sdk (used by the build via
+DARLING_SDK_RELATIVE_PATH) is unaffected; no source references the 10.13
+name. Mirrors the fix already applied to the CLT test prefix.
+
+Part of dar-pk4 (Homebrew source builds out of the box).
+---
+ .../Platforms/MacOSX.platform/Developer/SDKs/MacOSX10.13.sdk     | 1 -
+ Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX11.sdk  | 1 +
+ 2 files changed, 1 insertion(+), 1 deletion(-)
+ delete mode 120000 Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX10.13.sdk
+ create mode 120000 Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX11.sdk
+
+diff --git a/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX10.13.sdk b/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX10.13.sdk
+deleted file mode 120000
+index 36876e3682a09e3a4201bddeff9dc6619c2ffc38..0000000000000000000000000000000000000000
+--- a/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX10.13.sdk
++++ /dev/null
+@@ -1 +0,0 @@
+-MacOSX.sdk/
+\ No newline at end of file
+diff --git a/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX11.sdk b/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX11.sdk
+new file mode 120000
+index 0000000000000000000000000000000000000000..36876e3682a09e3a4201bddeff9dc6619c2ffc38
+--- /dev/null
++++ b/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX11.sdk
+@@ -0,0 +1 @@
++MacOSX.sdk/
+\ No newline at end of file

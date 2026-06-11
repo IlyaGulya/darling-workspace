@@ -43,6 +43,29 @@ def git(
     return run(repo, "git", *args, capture=capture, check=check, env=env)
 
 
+def format_patch_command(patch, commit: str) -> list[str]:
+    revision = (
+        f"{patch['source-base']}..{commit}"
+        if patch.get("source-base")
+        else commit
+    )
+    command = [
+        "git",
+        "format-patch",
+        "--stdout",
+        "--no-signature",
+        "--no-numbered",
+        "--subject-prefix=PATCH",
+        "--full-index",
+        "--binary",
+        "--no-renames",
+    ]
+    if not patch.get("source-base"):
+        command.append("-1")
+    command.append(revision)
+    return command
+
+
 class DarlingPatch(WestCommand):
     def __init__(self):
         super().__init__("patch", "", "Apply tracked Darling patch profiles")
@@ -180,19 +203,7 @@ class DarlingPatch(WestCommand):
 
             path = self._verify_patch(profile_dir, patch)
             exported = subprocess.run(
-                [
-                    "git",
-                    "format-patch",
-                    "-1",
-                    "--stdout",
-                    "--no-signature",
-                    "--no-numbered",
-                    "--subject-prefix=PATCH",
-                    "--full-index",
-                    "--binary",
-                    "--no-renames",
-                    source_commit,
-                ],
+                format_patch_command(patch, source_commit),
                 cwd=repo,
                 check=True,
                 stdout=subprocess.PIPE,

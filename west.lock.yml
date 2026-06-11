@@ -687,7 +687,7 @@ manifest:
       upstream-repository: darling-libressl
   - name: darling-src-external-libressl-2-8-3
     url: git@github.com:IlyaGulya/darling-libressl
-    revision: 75c81f4e3ede9bb653b2b90bcca2681eda9aecd8
+    revision: 2a56b36b77a00573c53ccd8e6932eb136172c950
     path: darling/src/external/libressl-2.8.3
     userdata:
       kind: darling-source

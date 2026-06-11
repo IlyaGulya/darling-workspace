@@ -40,6 +40,29 @@ def git(repo: Path, *args: str, capture: bool = False, check: bool = True) -> st
     return run(repo, "git", *args, capture=capture, check=check)
 
 
+def format_patch_command(patch, commit: str) -> list[str]:
+    revision = (
+        f"{patch['source-base']}..{commit}"
+        if patch.get("source-base")
+        else commit
+    )
+    command = [
+        "git",
+        "format-patch",
+        "--stdout",
+        "--no-signature",
+        "--no-numbered",
+        "--subject-prefix=PATCH",
+        "--full-index",
+        "--binary",
+        "--no-renames",
+    ]
+    if not patch.get("source-base"):
+        command.append("-1")
+    command.append(revision)
+    return command
+
+
 class DarlingPr(WestCommand):
     def __init__(self):
         super().__init__("pr", "", "Manage staged and upstream Darling pull requests")
@@ -279,19 +302,7 @@ class DarlingPr(WestCommand):
         if checksum != patch["sha256sum"]:
             self.die(f"{patch['bead']}: patch checksum drifted")
         exported = subprocess.run(
-            [
-                "git",
-                "format-patch",
-                "-1",
-                "--stdout",
-                "--no-signature",
-                "--no-numbered",
-                "--subject-prefix=PATCH",
-                "--full-index",
-                "--binary",
-                "--no-renames",
-                head,
-            ],
+            format_patch_command(patch, head),
             cwd=repo,
             check=True,
             stdout=subprocess.PIPE,

@@ -15,6 +15,7 @@ FETCH_OVERRIDES = {
     "darling/src/external/libressl-2.8.3": {
         "remote": "ilya",
         "repo-path": "darling-libressl",
+        "revision": "2a56b36b77a00573c53ccd8e6932eb136172c950",
         "reason": "upstream-pruned-pin",
     },
 }
@@ -43,7 +44,7 @@ def main() -> None:
             "repo-path": override.get("repo-path", project.attrib["name"]),
             "path": path,
             "remote": override.get("remote", "darling"),
-            "revision": project.attrib["revision"],
+            "revision": override.get("revision", project.attrib["revision"]),
             "userdata": {
                 "kind": "darling-source",
                 "upstream-repository": project.attrib["name"],

@@ -18,6 +18,24 @@
           "source_ref": "refs/heads/fix/homebrew-psynch-ruby-hang"
         },
         {
+          "branch": "fix/mldr-glibc-fork-reset",
+          "head": "e3be6fa451e23a77bdfd0a345a5992a04c96a71c",
+          "upstream": "",
+          "source_ref": "refs/heads/fix/mldr-glibc-fork-reset"
+        },
+        {
+          "branch": "fix/sandbox-exec-pass-through",
+          "head": "c905b818c0f58554a15812bf81e39a56f067b942",
+          "upstream": "",
+          "source_ref": "refs/heads/fix/sandbox-exec-pass-through"
+        },
+        {
+          "branch": "fix/sdk-homebrew-detection",
+          "head": "b8b186a6e31c2b1cf63f8946c7b170b4a75ae794",
+          "upstream": "",
+          "source_ref": "refs/heads/fix/sdk-homebrew-detection"
+        },
+        {
           "branch": "experiment/libressl-4.3.2",
           "head": "f880c0da12707273e6a7e38896ff1484fdfb0db7",
           "upstream": "origin/experiment/libressl-4.3.2",
@@ -40,6 +58,12 @@
           "head": "6577cdac17a49ec743a67a5e2d0d05f5e9be8fd8",
           "upstream": "",
           "source_ref": "refs/heads/backup/local-snapshot-20260609"
+        },
+        {
+          "branch": "fix/cancel-stale-wait-timer",
+          "head": "8c98528d1902ad2f5b06e0b1113427afa2e2e6f7",
+          "upstream": "",
+          "source_ref": "refs/heads/fix/cancel-stale-wait-timer"
         },
         {
           "branch": "fix/fork-checkin-bound",
@@ -112,6 +136,36 @@
           "head": "3de6464ed57c4b7127207e5aeefd674f5c0f31b6",
           "upstream": "origin/fix/homebrew-psynch-ruby-hang",
           "source_ref": "refs/heads/fix/homebrew-psynch-ruby-hang"
+        },
+        {
+          "branch": "fix/psynch-negative-returns",
+          "head": "b007105f34a0f433016276cf05dff77f2217b89e",
+          "upstream": "",
+          "source_ref": "refs/heads/fix/psynch-negative-returns"
+        }
+      ]
+    },
+    {
+      "path": "src/external/libressl-2.8.3",
+      "bundle": "src__external__libressl-2.8.3.bundle",
+      "branches": [
+        {
+          "branch": "fix/libressl-283-nist-strict-aliasing",
+          "head": "75c81f4e3ede9bb653b2b90bcca2681eda9aecd8",
+          "upstream": "",
+          "source_ref": "refs/heads/fix/libressl-283-nist-strict-aliasing"
+        },
+        {
+          "branch": "manifest-rev",
+          "head": "2a56b36b77a00573c53ccd8e6932eb136172c950",
+          "upstream": "",
+          "source_ref": "refs/heads/manifest-rev"
+        },
+        {
+          "branch": "master",
+          "head": "75c81f4e3ede9bb653b2b90bcca2681eda9aecd8",
+          "upstream": "",
+          "source_ref": "refs/heads/master"
         }
       ]
     },
@@ -180,6 +234,18 @@
           "source_ref": "refs/heads/fix/fork-postfork-child"
         },
         {
+          "branch": "fix/getattrlist-name-objtype",
+          "head": "cacba0fd01468e316e58e3c5a15a4d3c5273fcc5",
+          "upstream": "",
+          "source_ref": "refs/heads/fix/getattrlist-name-objtype"
+        },
+        {
+          "branch": "fix/getattrlistbulk",
+          "head": "69775cf24aa169d585921818695fff0ae19b3e64",
+          "upstream": "",
+          "source_ref": "refs/heads/fix/getattrlistbulk"
+        },
+        {
           "branch": "fix/homebrew-psynch-ruby-hang",
           "head": "b8d9ccc9c1daaf050f21530200008dcc4fa93a95",
           "upstream": "origin/fix/homebrew-psynch-ruby-hang",
@@ -192,10 +258,22 @@
           "source_ref": "refs/heads/fix/psynch-cvsignal-args"
         },
         {
+          "branch": "fix/psynch-negative-errno",
+          "head": "0d7844f548b9c04a259fcb00a9556cdf9b39d9ef",
+          "upstream": "",
+          "source_ref": "refs/heads/fix/psynch-negative-errno"
+        },
+        {
           "branch": "fix/select-pselect-fdset",
           "head": "bb7e6dedc850abb2b0dfecfcb2437ccde1d66452",
           "upstream": "origin/main",
           "source_ref": "refs/heads/fix/select-pselect-fdset"
+        },
+        {
+          "branch": "fix/sigexc-sa-restart",
+          "head": "7bdf08bfa0e56d6fc1487dcf4dc99c95a24f5c6c",
+          "upstream": "",
+          "source_ref": "refs/heads/fix/sigexc-sa-restart"
         },
         {
           "branch": "fix/socket-siocgifconf",
