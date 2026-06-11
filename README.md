@@ -91,6 +91,32 @@ integration branch or detached at `manifest-rev`, and refuses dirty worktrees.
 `--force` is reserved for intentional recovery. The tracked profile lock is
 updated only by a successful `west patch apply`.
 
+## Pull request workflow
+
+GitHub publication is a separate state machine over the same clean branches:
+
+```bash
+west pr list --profile homebrew
+west pr check --profile homebrew dar-q95.3
+west pr fork-draft --profile homebrew dar-q95.3 --dry-run
+west pr fork-draft --profile homebrew dar-q95.3
+west pr sync --profile homebrew dar-q95.3
+west pr upstream-draft --profile homebrew dar-q95.3
+west pr update-body --profile homebrew dar-q95.3 --target fork
+west pr ready --profile homebrew dar-q95.3 --target upstream
+```
+
+A fork draft compares `fix/*` against `preupstream/<base>` inside the
+`IlyaGulya` fork. `west pr fork-draft` updates that staging base from
+`manifest-rev`, pushes the exact `source-commit`, and opens a draft without
+notifying Darling maintainers. An upstream draft is a separate PR from the same
+fork branch into `darlinghq`.
+
+PR bodies are generated from the `## Title` and `## Body` sections in
+`pr-drafts/*.md`. GitHub URLs and synchronized state are stored under each
+patch's `github.fork` and `github.upstream` sections. Publishing is always
+single-Bead and explicit; there is no bulk publish or automatic merge command.
+
 One private manifest repository is intentional. Split Beads only if it needs
 different access control or an independent lifecycle.
 
