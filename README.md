@@ -82,3 +82,8 @@ different access control or an independent lifecycle.
 
 See `docs/branch-migration.md` for converting the preserved mega-branches into
 clean per-PR branches and eventually retiring the old checkout.
+
+`west.yml` is the selected workspace backend and includes private workspace
+tools such as `darling-debug-runner`. The old `repo` manifests remain only
+until the first integration profile and branch migration pass. See
+`docs/west-spike.md` for validation results.

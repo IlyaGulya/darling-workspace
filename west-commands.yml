@@ -1,0 +1,7 @@
+west-commands:
+  - file: west_commands/dw.py
+    commands:
+      - name: dw
+        class: DarlingWorkspace
+        help: Darling workspace coordination and handoff
+
