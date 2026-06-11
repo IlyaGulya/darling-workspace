@@ -1,0 +1,99 @@
+From a35ec396c8b3221dbf33a5693f234494e40737ec Mon Sep 17 00:00:00 2001
+From: Ilya Gulya <ilya@gulya.me>
+Date: Mon, 8 Jun 2026 16:42:44 +0500
+Subject: [PATCH] Preserve bzero return register on x86_64
+
+---
+ CMakeLists.txt                       |  6 +++++
+ src/string/generic/bzero.c           |  7 ++++++
+ tests/darling_bzero_return_regress.c | 36 ++++++++++++++++++++++++++++
+ 3 files changed, 49 insertions(+)
+ create mode 100644 tests/darling_bzero_return_regress.c
+
+diff --git a/CMakeLists.txt b/CMakeLists.txt
+index 54d2843..f865d11 100644
+--- a/CMakeLists.txt
++++ b/CMakeLists.txt
+@@ -2,6 +2,8 @@ project(libplatform)
+ 
+ cmake_minimum_required(VERSION 3.13)
+ 
++include(darling_exe)
++
+ set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -nostdinc -Wno-error=int-conversion")
+ # -Wl,-alias_list,${CMAKE_CURRENT_SOURCE_DIR}/xcodeconfig/libplatform.aliases
+ set(CMAKE_SHARED_LINKER_FLAGS "${CMAKE_SHARED_LINKER_FLAGS} -Wl,-no_arch_warnings -Wl,-bind_at_load")
+@@ -114,6 +116,10 @@ set_target_properties(platform PROPERTIES OUTPUT_NAME "system_platform")
+ 
+ #target_link_libraries(platform PRIVATE system_kernel compiler_rt)
+ 
++add_darling_executable(darling_bzero_return_regress
++	tests/darling_bzero_return_regress.c
++)
++
+ if (BUILD_TARGET_32BIT)
+ 	add_darling_static_library(platform_static32 SOURCES ${platform_sources} $<TARGET_OBJECTS:platform_32bit>)
+ 	set_target_properties(platform_static32 PROPERTIES COMPILE_FLAGS "-arch ${APPLE_ARCH_32BIT} -DVARIANT_STATIC -fvisibility=hidden")
+diff --git a/src/string/generic/bzero.c b/src/string/generic/bzero.c
+index 4559dde..f12f2c1 100644
+--- a/src/string/generic/bzero.c
++++ b/src/string/generic/bzero.c
+@@ -64,6 +64,13 @@ void
+ _platform_bzero(void *s, size_t n)
+ {
+ 	_platform_memset(s, 0, n);
++#if defined(__x86_64__)
++	/*
++	 * Clang can lower `return memset(p, 0, n)` to a tail call to ___bzero.
++	 * Darwin's ___bzero leaves p in the return register for that sequence.
++	 */
++	__asm__ volatile("" : : "a"(s));
++#endif
+ }
+ 
+ #if VARIANT_STATIC
+diff --git a/tests/darling_bzero_return_regress.c b/tests/darling_bzero_return_regress.c
+new file mode 100644
+index 0000000..0aa4f94
+--- /dev/null
++++ b/tests/darling_bzero_return_regress.c
+@@ -0,0 +1,36 @@
++/*
++ * Regression test for code generated from `return memset(p, 0, n)`.
++ *
++ * Clang may lower that expression to a tail call to ___bzero. Darwin's
++ * implementation leaves the original destination pointer in the return
++ * register even though bzero is declared as returning void. Perl 5.28's
++ * perl_alloc() depends on this generated-code behavior in Darling builds.
++ */
++
++#include <stddef.h>
++#include <stdio.h>
++#include <stdlib.h>
++
++extern void *__darling_bzero_return(void *, size_t) asm("___bzero");
++
++int
++main(void)
++{
++	char *ptr = malloc(0xc50);
++	void *ret;
++
++	if (ptr == NULL) {
++		perror("malloc");
++		return 2;
++	}
++
++	ret = __darling_bzero_return(ptr, 0xc50);
++	if (ret != ptr) {
++		fprintf(stderr, "___bzero returned %p for %p\n", ret, ptr);
++		free(ptr);
++		return 1;
++	}
++
++	free(ptr);
++	return 0;
++}
+-- 
+2.43.0
+

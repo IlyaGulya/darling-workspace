@@ -1,0 +1,123 @@
+From b37ac3179fae9e090104d93a218c835452e17c21 Mon Sep 17 00:00:00 2001
+From: Ilya Gulya <ilya@gulya.me>
+Date: Mon, 8 Jun 2026 16:42:45 +0500
+Subject: [PATCH] Disable unavailable NSGetExecutablePath in Perl configs
+
+---
+ 5.18/perl/config.h                                              | 2 +-
+ 5.18/perl/lib/Config_heavy.pl                                   | 2 +-
+ 5.28/perl/config.h                                              | 2 +-
+ 5.28/perl/lib/Config_heavy.pl                                   | 2 +-
+ .../Library/Perl/5.18/darwin-thread-multi-2level/CORE/config.h  | 2 +-
+ .../Perl/5.18/darwin-thread-multi-2level/Config_heavy.pl        | 2 +-
+ .../Library/Perl/5.28/darwin-thread-multi-2level/CORE/config.h  | 2 +-
+ .../Perl/5.28/darwin-thread-multi-2level/Config_heavy.pl        | 2 +-
+ 8 files changed, 8 insertions(+), 8 deletions(-)
+
+diff --git a/5.18/perl/config.h b/5.18/perl/config.h
+index 50f831d4..d4fddd93 100644
+--- a/5.18/perl/config.h
++++ b/5.18/perl/config.h
+@@ -4728,7 +4728,7 @@
+  *	and realpath to get a full path for the executable, and hence convert
+  *	$^X to an absolute path.
+  */
+-#define USE_NSGETEXECUTABLEPATH	/**/
++/*#define USE_NSGETEXECUTABLEPATH	/ **/
+ 
+ /* USE_PERLIO:
+  *	This symbol, if defined, indicates that the PerlIO abstraction should
+diff --git a/5.18/perl/lib/Config_heavy.pl b/5.18/perl/lib/Config_heavy.pl
+index 0b70eed2..2f235919 100644
+--- a/5.18/perl/lib/Config_heavy.pl
++++ b/5.18/perl/lib/Config_heavy.pl
+@@ -1213,7 +1213,7 @@ usemorebits='undef'
+ usemultiplicity='define'
+ usemymalloc='n'
+ usenm='false'
+-usensgetexecutablepath='define'
++usensgetexecutablepath='undef'
+ useopcode='true'
+ useperlio='define'
+ useposix='true'
+diff --git a/5.28/perl/config.h b/5.28/perl/config.h
+index bb8cfaba..f42875dc 100644
+--- a/5.28/perl/config.h
++++ b/5.28/perl/config.h
+@@ -4243,7 +4243,7 @@
+  *	and realpath to get a full path for the executable, and hence convert
+  *	$^X to an absolute path.
+  */
+-#define USE_NSGETEXECUTABLEPATH	/**/
++/*#define USE_NSGETEXECUTABLEPATH	/ **/
+ 
+ /* USE_PERLIO:
+  *	This symbol, if defined, indicates that the PerlIO abstraction should
+diff --git a/5.28/perl/lib/Config_heavy.pl b/5.28/perl/lib/Config_heavy.pl
+index a34103af..a3aad201 100644
+--- a/5.28/perl/lib/Config_heavy.pl
++++ b/5.28/perl/lib/Config_heavy.pl
+@@ -1347,7 +1347,7 @@ usemorebits='undef'
+ usemultiplicity='define'
+ usemymalloc='n'
+ usenm='false'
+-usensgetexecutablepath='define'
++usensgetexecutablepath='undef'
+ useopcode='true'
+ useperlio='define'
+ useposix='true'
+diff --git a/DSTROOT/System/Library/Perl/5.18/darwin-thread-multi-2level/CORE/config.h b/DSTROOT/System/Library/Perl/5.18/darwin-thread-multi-2level/CORE/config.h
+index 182ef822..9c7294ba 100644
+--- a/DSTROOT/System/Library/Perl/5.18/darwin-thread-multi-2level/CORE/config.h
++++ b/DSTROOT/System/Library/Perl/5.18/darwin-thread-multi-2level/CORE/config.h
+@@ -4727,7 +4727,7 @@
+  *	and realpath to get a full path for the executable, and hence convert
+  *	$^X to an absolute path.
+  */
+-#define USE_NSGETEXECUTABLEPATH	/**/
++/*#define USE_NSGETEXECUTABLEPATH	/ **/
+ 
+ /* USE_PERLIO:
+  *	This symbol, if defined, indicates that the PerlIO abstraction should
+diff --git a/DSTROOT/System/Library/Perl/5.18/darwin-thread-multi-2level/Config_heavy.pl b/DSTROOT/System/Library/Perl/5.18/darwin-thread-multi-2level/Config_heavy.pl
+index 05f498fd..a226996d 100644
+--- a/DSTROOT/System/Library/Perl/5.18/darwin-thread-multi-2level/Config_heavy.pl
++++ b/DSTROOT/System/Library/Perl/5.18/darwin-thread-multi-2level/Config_heavy.pl
+@@ -1220,7 +1220,7 @@ usemorebits='undef'
+ usemultiplicity='define'
+ usemymalloc='n'
+ usenm='false'
+-usensgetexecutablepath='define'
++usensgetexecutablepath='undef'
+ useopcode='true'
+ useperlio='define'
+ useposix='true'
+diff --git a/DSTROOT/System/Library/Perl/5.28/darwin-thread-multi-2level/CORE/config.h b/DSTROOT/System/Library/Perl/5.28/darwin-thread-multi-2level/CORE/config.h
+index bb8cfaba..f42875dc 100644
+--- a/DSTROOT/System/Library/Perl/5.28/darwin-thread-multi-2level/CORE/config.h
++++ b/DSTROOT/System/Library/Perl/5.28/darwin-thread-multi-2level/CORE/config.h
+@@ -4243,7 +4243,7 @@
+  *	and realpath to get a full path for the executable, and hence convert
+  *	$^X to an absolute path.
+  */
+-#define USE_NSGETEXECUTABLEPATH	/**/
++/*#define USE_NSGETEXECUTABLEPATH	/ **/
+ 
+ /* USE_PERLIO:
+  *	This symbol, if defined, indicates that the PerlIO abstraction should
+diff --git a/DSTROOT/System/Library/Perl/5.28/darwin-thread-multi-2level/Config_heavy.pl b/DSTROOT/System/Library/Perl/5.28/darwin-thread-multi-2level/Config_heavy.pl
+index 9fc2dd86..1115ee80 100644
+--- a/DSTROOT/System/Library/Perl/5.28/darwin-thread-multi-2level/Config_heavy.pl
++++ b/DSTROOT/System/Library/Perl/5.28/darwin-thread-multi-2level/Config_heavy.pl
+@@ -1354,7 +1354,7 @@ usemorebits='undef'
+ usemultiplicity='define'
+ usemymalloc='n'
+ usenm='false'
+-usensgetexecutablepath='define'
++usensgetexecutablepath='undef'
+ useopcode='true'
+ useperlio='define'
+ useposix='true'
+-- 
+2.43.0
+

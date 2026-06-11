@@ -1,0 +1,139 @@
+From f62bc4ba6387e5e5ba50507ba840cacb8c6278a3 Mon Sep 17 00:00:00 2001
+From: Ilya Gulya <ilya@gulya.me>
+Date: Wed, 10 Jun 2026 10:05:56 +0000
+Subject: [PATCH] thread: fix microthread resume-before-suspend lost wakeup
+
+A wake (resume()) arriving before or during a microthread's physical
+suspension was dropped, stranding the thread forever. Introduce a
+coalesced _resumePermit recorded by resume() while the thread is
+running or suspended, consumed by suspend() before sleeping and after
+context capture, and replayed by doWork() if a wake lands after the
+final suspend-side check (rescheduling only once the microthread has
+physically stopped, so no two workers run it concurrently). Document
+_running / _suspended / _resumePermit as orthogonal lifecycle
+dimensions.
+---
+ internal-include/darlingserver/thread.hpp |  5 +++
+ src/thread.cpp                            | 49 +++++++++++++++++++++--
+ 2 files changed, 50 insertions(+), 4 deletions(-)
+
+diff --git a/internal-include/darlingserver/thread.hpp b/internal-include/darlingserver/thread.hpp
+index 57117f2..6871d5f 100644
+--- a/internal-include/darlingserver/thread.hpp
++++ b/internal-include/darlingserver/thread.hpp
+@@ -80,7 +80,12 @@ namespace DarlingServer {
+ 		Address _address;
+ 		mutable std::shared_mutex _rwlock;
+ 		StackPool::Stack _stack;
++		// These are orthogonal lifecycle dimensions, not one enum state:
++		// _running means a worker currently owns this microthread;
++		// _suspended means it has a resumable context; and _resumePermit is a
++		// coalesced wake request that bridges the transition between the two.
+ 		bool _suspended = false;
++		bool _resumePermit = false;
+ 		ucontext_t _resumeContext;
+ 		dtape_thread_t* _dtapeThread;
+ 		std::function<void()> _continuationCallback = nullptr;
+diff --git a/src/thread.cpp b/src/thread.cpp
+index 5563ad9..89fcd20 100644
+--- a/src/thread.cpp
++++ b/src/thread.cpp
+@@ -423,6 +423,10 @@ void DarlingServer::Thread::doWork() {
+ 		goto doneWorking;
+ 	}
+ 
++	if (_suspended) {
++		// This execution was scheduled by resume(); consume that wake permit.
++		_resumePermit = false;
++	}
+ 	_running = true;
+ 	currentThreadVar = shared_from_this();
+ 	dtape_thread_entering(_dtapeThread);
+@@ -545,6 +549,10 @@ doneWorking:
+ 		currentThreadVar = nullptr;
+ 		_running = false;
+ 	}
++	// A wake can arrive after suspend()'s final permit check but before it
++	// physically switches back here. Now that _running is false, rescheduling
++	// is safe and cannot race another worker running this microthread.
++	bool resumeAfterWorking = _resumePermit && _suspended && !_terminating && !_dead;
+ 	bool canRelease = false;
+ 	if (_dead) {
+ 		threadLog.debug() << *this << ": dead thread returning. active call? " << (!!_activeCall ? "true" : "false") << " terminating? " << (_terminating ? "true" : "false") << threadLog.endLog;
+@@ -581,6 +589,9 @@ doneWorking:
+ 		unlockMeWhenSuspending = nullptr;
+ 	}
+ 	_runningCondvar.notify_all();
++	if (resumeAfterWorking) {
++		Server::sharedInstance().scheduleThread(shared_from_this());
++	}
+ 	if (canRelease) {
+ 		_scheduleRelease();
+ 	}
+@@ -597,6 +608,15 @@ void DarlingServer::Thread::suspend(std::function<void()> continuationCallback,
+ 	}
+ 
+ 	_rwlock.lock();
++	// Consume a wake that arrived before suspend() marked us suspended.
++	if (_resumePermit) {
++		_resumePermit = false;
++		_rwlock.unlock();
++		if (unlockMe) {
++			libsimple_lock_unlock(unlockMe);
++		}
++		return;
++	}
+ 	_suspended = true;
+ 	_rwlock.unlock();
+ 
+@@ -605,6 +625,17 @@ void DarlingServer::Thread::suspend(std::function<void()> continuationCallback,
+ 	getcontext(&_resumeContext);
+ 
+ 	_rwlock.lock();
++	// Consume a wake that arrived while the resume context was being captured.
++	if (_resumePermit) {
++		_resumePermit = false;
++		_suspended = false;
++		_rwlock.unlock();
++		if (unlockMeWhenSuspending) {
++			libsimple_lock_unlock(unlockMeWhenSuspending);
++			unlockMeWhenSuspending = nullptr;
++		}
++		return;
++	}
+ 	if (_suspended) {
+ 		if (continuationCallback) {
+ 			// when suspendeding with a continuation, the current continuation and call are discarded (since they can no longer be safely returned to)
+@@ -639,15 +670,25 @@ void DarlingServer::Thread::suspend(std::function<void()> continuationCallback,
+ };
+ 
+ void DarlingServer::Thread::resume() {
++	bool schedule = false;
+ 	{
+-		std::shared_lock lock(_rwlock);
+-		if (!_suspended) {
+-			// maybe we should throw an error here?
++		std::unique_lock lock(_rwlock);
++		if (!_running && !_suspended) {
+ 			return;
+ 		}
++		if (_resumePermit) {
++			return;
++		}
++		// Coalesce repeated wakes into one permit. If the microthread is still
++		// running, it will either consume the permit in suspend() or reschedule
++		// itself from doWork() after physically stopping.
++		_resumePermit = true;
++		schedule = _suspended && !_running;
+ 	}
+ 
+-	Server::sharedInstance().scheduleThread(shared_from_this());
++	if (schedule) {
++		Server::sharedInstance().scheduleThread(shared_from_this());
++	}
+ };
+ 
+ void DarlingServer::Thread::terminate() {
+-- 
+2.43.0
+

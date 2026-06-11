@@ -1,0 +1,73 @@
+From ec55325e53dbf3b2593d73428a5d7a90ccb95fca Mon Sep 17 00:00:00 2001
+From: Ilya Gulya <ilya@gulya.me>
+Date: Wed, 10 Jun 2026 10:06:33 +0000
+Subject: [PATCH] getpriority/setpriority: handle PRIO_DARWIN_THREAD/PROCESS
+
+Darwin-only 'which' values (PRIO_DARWIN_THREAD/PROCESS) were forwarded
+verbatim to the Linux get/setpriority syscalls, which reject them.
+Handle them in-emulation: accept who==0, treat prio 0/PRIO_DARWIN_BG/
+PRIO_DARWIN_NONUI as success, EINVAL otherwise.
+---
+ .../bsd/impl/process/getpriority.c            | 13 ++++++++++++
+ .../bsd/impl/process/setpriority.c            | 21 +++++++++++++++++++
+ 2 files changed, 34 insertions(+)
+
+diff --git a/darling/src/libsystem_kernel/emulation/src/xnu_syscall/bsd/impl/process/getpriority.c b/darling/src/libsystem_kernel/emulation/src/xnu_syscall/bsd/impl/process/getpriority.c
+index a02f1e4..e1adbd4 100644
+--- a/darling/src/libsystem_kernel/emulation/src/xnu_syscall/bsd/impl/process/getpriority.c
++++ b/darling/src/libsystem_kernel/emulation/src/xnu_syscall/bsd/impl/process/getpriority.c
+@@ -1,6 +1,19 @@
+ #include <darling/emulation/xnu_syscall/bsd/impl/process/getpriority.h>
++#include <errno.h>
+ 
+ int sys_getpriority(int which, id_t who) {
++	if (which == PRIO_DARWIN_THREAD) {
++		if (who != 0) {
++			return EINVAL;
++		}
++
++		return 0;
++	}
++
++	if (which == PRIO_DARWIN_PROCESS) {
++		return 0;
++	}
++
+ 	return LINUX_SYSCALL(__NR_getpriority, which, who);
+ 
+ 	// TODO: Errors
+diff --git a/darling/src/libsystem_kernel/emulation/src/xnu_syscall/bsd/impl/process/setpriority.c b/darling/src/libsystem_kernel/emulation/src/xnu_syscall/bsd/impl/process/setpriority.c
+index ccac110..8c9e6a4 100644
+--- a/darling/src/libsystem_kernel/emulation/src/xnu_syscall/bsd/impl/process/setpriority.c
++++ b/darling/src/libsystem_kernel/emulation/src/xnu_syscall/bsd/impl/process/setpriority.c
+@@ -1,6 +1,27 @@
+ #include <darling/emulation/xnu_syscall/bsd/impl/process/setpriority.h>
++#include <errno.h>
+ 
+ int sys_setpriority(int which, int who, int prio) {
++	if (which == PRIO_DARWIN_THREAD) {
++		if (who != 0) {
++			return EINVAL;
++		}
++
++		if (prio == 0 || prio == PRIO_DARWIN_BG || prio == PRIO_DARWIN_NONUI) {
++			return 0;
++		}
++
++		return EINVAL;
++	}
++
++	if (which == PRIO_DARWIN_PROCESS) {
++		if (prio == 0 || prio == PRIO_DARWIN_BG || prio == PRIO_DARWIN_NONUI) {
++			return 0;
++		}
++
++		return EINVAL;
++	}
++
+ 	return LINUX_SYSCALL(__NR_setpriority, which, who, prio);
+ 
+ 	// TODO: Errors
+-- 
+2.43.0
+

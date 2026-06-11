@@ -65,6 +65,24 @@ in the bundle until it is merged.
 8. After all Beads have either a PR URL or an explicit archived disposition,
    archive `~/work/darling` and prune obsolete fork branches.
 
+## Patch profiles
+
+Clean PR branches remain canonical. The control repository exports them as
+reviewable `git format-patch` files with checksums and source provenance under
+`patches/<profile>/`. Apply the local composition with:
+
+```bash
+west dw restore
+west patch list --profile homebrew
+west patch apply --profile homebrew
+```
+
+Each affected project gets `integration/<profile>` rebuilt from its
+`manifest-rev` with `git am --3way`. The top-level Darling branch records the
+resulting gitlinks, and `patches/<profile>/west.lock.yml` records exact SHAs for
+the resulting workspace. `west patch clean --profile homebrew` returns all
+affected projects to their manifest checkout.
+
 ## Retirement gate
 
 The old checkout can be removed only when:
@@ -74,4 +92,3 @@ The old checkout can be removed only when:
 - every intended fix has a Bead and PR draft;
 - a clean bootstrap succeeds on another directory or machine;
 - bundle restoration and the required builds/tests pass.
-
