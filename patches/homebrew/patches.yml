@@ -3,70 +3,70 @@ description: Clean upstreamable fixes used by the local Homebrew-capable Darling
 integration-date: '2026-06-11T00:00:00Z'
 patches:
 - path: darlingserver/psynch-cvwait-balanced.patch
-  sha256sum: c15ac3a743eede787db9a7807b1cf25fe99e7882583064b36fd7daad83d31a2e
+  sha256sum: e90861e9c6f6d64f8a3d13453ee7f3d76ff7c38150b1fc1bd3ebe8314ce4b911
   module: darling/src/external/darlingserver
   source-branch: fix/psynch-cvwait-balanced
   source-commit: ce7ce5e7888eb5b3c20ec652db097519c9c2fbe5
   bead: dar-q95.1
   pr-draft: pr-drafts/darlingserver-psynch-cvwait-balanced.md
 - path: darlingserver/microthread-resume-race.patch
-  sha256sum: 06b722b68bc568e2c348e9fd80843df49687ab2ee9226d2875aa0fcdd5bcaeb3
+  sha256sum: bc8697ec7c05659dd94e516925b9f6f582c08ccb11596872c30f4af941481afe
   module: darling/src/external/darlingserver
   source-branch: fix/microthread-resume-race
   source-commit: f62bc4ba6387e5e5ba50507ba840cacb8c6278a3
   bead: dar-q95.8
   pr-draft: pr-drafts/darlingserver-microthread-resume-race.md
 - path: darlingserver/fork-checkin-bound.patch
-  sha256sum: c9bdd28dedee436ed0dc3b75988500967fc69223ab2bd6a26edcb20bd6c25c74
+  sha256sum: 2bc0e01797b747dff191e11677c0ef883b2defc43c0998caaabc5c7a1077e033
   module: darling/src/external/darlingserver
   source-branch: fix/fork-checkin-bound
   source-commit: 8746148c12bda639054f15b0510e1578a11034df
   bead: dar-q95.13
   pr-draft: pr-drafts/darlingserver-fork-checkin-bound.md
 - path: xnu/psynch-cvsignal-args.patch
-  sha256sum: fc06faa227cbbe0823eed79ae7a896203a6ce72244ab46b647e4d9510359e151
+  sha256sum: b75649b702368a694e7ee58e6b3e94034f4b03b189f5b80751cd5f72797d2d95
   module: darling/src/external/xnu
   source-branch: fix/psynch-cvsignal-args
   source-commit: 8a7797fd85b1522a528551fc9601b245c083b8e8
   bead: dar-q95.2
   pr-draft: pr-drafts/xnu-psynch-cvsignal-args.md
 - path: xnu/select-pselect-fdset.patch
-  sha256sum: 19ba4f921909602a153a90edca3c3d04b1f607de3e34309045ebef86b38cd5c6
+  sha256sum: 62c2cdb90755e0910a9576662a10ff6f52ff9d8d36f13f7c20bf5c6ab658afc6
   module: darling/src/external/xnu
   source-branch: fix/select-pselect-fdset
   source-commit: bb7e6dedc850abb2b0dfecfcb2437ccde1d66452
   bead: dar-q95.3
   pr-draft: pr-drafts/xnu-select-pselect-fdset.md
 - path: xnu/darwin-priority.patch
-  sha256sum: 7a62145fa0e549c5e7dcbf3fb077b094ac98e40df427f86bb0cefba459616862
+  sha256sum: 8b08ec84b0084bca458829b114898291b56726b569dc43c51d53bff55c37b21c
   module: darling/src/external/xnu
   source-branch: fix/darwin-priority
   source-commit: ec55325e53dbf3b2593d73428a5d7a90ccb95fca
   bead: dar-q95.10
   pr-draft: pr-drafts/xnu-darwin-priority.md
 - path: xnu/socket-siocgifconf.patch
-  sha256sum: 9980d76002354464bc4f8dd7e1faa244b313d54e6512e5c09dba334ada41050e
+  sha256sum: 9304dfc426333b574bd6d7a70a9829871f6e478c858de80ee173debc21a925a7
   module: darling/src/external/xnu
   source-branch: fix/socket-siocgifconf
   source-commit: 2e5539a3c895596b5f4dab7ac3cb924f52a4375b
   bead: dar-q95.11
   pr-draft: pr-drafts/xnu-socket-siocgifconf.md
 - path: xnu/fork-postfork-child.patch
-  sha256sum: 7e54f8e97adbb362c6956a97666a37b08b7a735a95351dd338ac962133ca3a25
+  sha256sum: 574e9924e7c878a50d5c12bd5934c5715520b09a2dd412fd84dae31d422662f0
   module: darling/src/external/xnu
   source-branch: fix/fork-postfork-child
   source-commit: 86cb1cf68d174a5255e075528ec8679abebb4b20
   bead: dar-q95.12
   pr-draft: pr-drafts/xnu-fork-postfork-child.md
 - path: libplatform/bzero-return-register.patch
-  sha256sum: dacface5807d29028f1d73533bb418e11dc5c9749e7d21293417e393ebae43d1
+  sha256sum: 14f83009c83b6dfddb9b6894d792a9557e2fd2c73c0c65ecb53df5ed06fa6dbe
   module: darling/src/external/libplatform
   source-branch: fix/bzero-return-register
   source-commit: a35ec396c8b3221dbf33a5693f234494e40737ec
   bead: dar-q95.4
   merge-pr: https://github.com/darlinghq/darling-libplatform/pull/5
 - path: perl/disable-nsgetexecutablepath.patch
-  sha256sum: fd8129899b11c92374d77ed0a191eef1beaa216ed305c6de388ad2301f3ef160
+  sha256sum: af4e10eb46490ea5fec3ca6e6e1427656a8aeb99ee2963c56f4db3a624d113c8
   module: darling/src/external/perl
   source-branch: fix/disable-nsgetexecutablepath
   source-commit: b37ac3179fae9e090104d93a218c835452e17c21

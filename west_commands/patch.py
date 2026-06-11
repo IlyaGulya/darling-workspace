@@ -3,8 +3,11 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import os
+import re
 import subprocess
+import tempfile
 from collections import OrderedDict
 from pathlib import Path
 
@@ -47,11 +50,13 @@ class DarlingPatch(WestCommand):
     def do_add_parser(self, parser_adder):
         parser = parser_adder.add_parser(self.name, description=self.description)
         subparsers = parser.add_subparsers(dest="action", required=True)
-        for action in ("list", "apply", "clean"):
+        for action in ("list", "verify", "apply", "clean"):
             command = subparsers.add_parser(action)
             command.add_argument("--profile", default="homebrew")
             if action == "apply":
                 command.add_argument("--roll-back", action="store_true")
+            if action == "clean":
+                command.add_argument("--force", action="store_true")
         return parser
 
     def do_run(self, args, unknown):
@@ -68,6 +73,8 @@ class DarlingPatch(WestCommand):
         patches = profile.get("patches", [])
         if args.action == "list":
             self._list(patches)
+        elif args.action == "verify":
+            self._verify(profile_dir, patches)
         elif args.action == "apply":
             self._apply(
                 args.profile,
@@ -77,7 +84,7 @@ class DarlingPatch(WestCommand):
                 args.roll_back,
             )
         else:
-            self._clean(args.profile, patches)
+            self._clean(args.profile, patches, args.force)
 
     def _projects(self):
         result = {}
@@ -103,7 +110,7 @@ class DarlingPatch(WestCommand):
         if parent:
             command.extend(["--ignore-submodules=all", "--untracked-files=no"])
         if git(repo, *command, capture=True):
-            self.die(f"worktree is dirty: {repo}")
+            raise RuntimeError(f"worktree is dirty: {repo}")
 
     def _list(self, patches):
         for patch in patches:
@@ -118,6 +125,22 @@ class DarlingPatch(WestCommand):
         git(repo, "branch", "-f", branch, "refs/heads/manifest-rev")
         git(repo, "switch", branch)
 
+    def _ensure_generated_context(self, module: str, profile: str):
+        repo = self._repo(module)
+        branch = f"integration/{profile}"
+        current = git(repo, "branch", "--show-current", capture=True)
+        manifest_revision = git(
+            repo, "rev-parse", "refs/heads/manifest-rev", capture=True
+        )
+        head = git(repo, "rev-parse", "HEAD", capture=True)
+        allowed = current == branch or (not current and head == manifest_revision)
+        if not allowed:
+            raise RuntimeError(
+                f"{module}: expected {branch} or detached manifest-rev, "
+                f"found {current or head}"
+            )
+        self._ensure_clean(repo, parent=module == "darling")
+
     def _verify_patch(self, profile_dir: Path, patch):
         path = profile_dir / patch["path"]
         actual = hashlib.sha256(path.read_bytes()).hexdigest()
@@ -127,6 +150,101 @@ class DarlingPatch(WestCommand):
                 f"checksum mismatch for {path}: {actual} != {expected}"
             )
         return path
+
+    def _verify(self, profile_dir: Path, patches):
+        manifest_repo = Path(self.manifest.repo_abspath)
+        bead_ids = {
+            json.loads(line)["id"]
+            for line in (
+                manifest_repo / ".beads" / "issues.jsonl"
+            ).read_text().splitlines()
+            if line.strip()
+        }
+        grouped = self._group(patches)
+
+        for patch in patches:
+            source_commit = patch.get("source-commit", "")
+            if not re.fullmatch(r"[0-9a-f]{40}", source_commit):
+                self.die(f"{patch['path']}: source-commit must be a full SHA")
+
+            repo = self._repo(patch["module"])
+            source_branch = patch["source-branch"]
+            if not self._branch_exists(repo, source_branch):
+                self.die(f"{patch['module']}: missing source branch {source_branch}")
+            branch_head = git(repo, "rev-parse", source_branch, capture=True)
+            if branch_head != source_commit:
+                self.die(
+                    f"{patch['module']}: {source_branch} drifted "
+                    f"({branch_head} != {source_commit})"
+                )
+
+            path = self._verify_patch(profile_dir, patch)
+            exported = subprocess.run(
+                [
+                    "git",
+                    "format-patch",
+                    "-1",
+                    "--stdout",
+                    "--no-signature",
+                    "--no-numbered",
+                    "--subject-prefix=PATCH",
+                    "--full-index",
+                    "--binary",
+                    "--no-renames",
+                    source_commit,
+                ],
+                cwd=repo,
+                check=True,
+                stdout=subprocess.PIPE,
+            ).stdout
+            if hashlib.sha256(exported).hexdigest() != patch["sha256sum"]:
+                self.die(f"{patch['path']}: patch export drifted")
+
+            bead = patch.get("bead")
+            if bead and bead not in bead_ids:
+                self.die(f"{patch['path']}: unknown Bead {bead}")
+            pr_draft = patch.get("pr-draft")
+            if pr_draft and not (manifest_repo / pr_draft).is_file():
+                self.die(f"{patch['path']}: missing PR draft {pr_draft}")
+            self.inf(f"verified {path.relative_to(manifest_repo)}")
+
+        self._verify_applicability(profile_dir, grouped)
+        self.inf(f"verified {len(patches)} patches")
+
+    def _verify_applicability(self, profile_dir: Path, grouped):
+        with tempfile.TemporaryDirectory(prefix="west-patch-verify-") as temp:
+            temp_root = Path(temp)
+            for index, (module, module_patches) in enumerate(grouped.items()):
+                repo = self._repo(module)
+                worktree = temp_root / str(index)
+                git(
+                    repo,
+                    "worktree",
+                    "add",
+                    "--quiet",
+                    "--detach",
+                    str(worktree),
+                    "refs/heads/manifest-rev",
+                )
+                try:
+                    for patch in module_patches:
+                        git(
+                            worktree,
+                            "am",
+                            "--3way",
+                            "--committer-date-is-author-date",
+                            str(profile_dir / patch["path"]),
+                        )
+                finally:
+                    self._abort_am(worktree)
+                    git(
+                        repo,
+                        "worktree",
+                        "remove",
+                        "--force",
+                        str(worktree),
+                        check=False,
+                    )
 
     def _abort_am(self, repo: Path):
         am_state = git(
@@ -159,6 +277,15 @@ class DarlingPatch(WestCommand):
 
         branch = f"integration/{profile}"
         grouped = self._group(patches)
+        modules = list(grouped)
+        if "darling" not in modules:
+            modules.append("darling")
+        for module in modules:
+            try:
+                self._ensure_generated_context(module, profile)
+            except RuntimeError as error:
+                self.die(str(error))
+
         touched = []
         try:
             for module, module_patches in grouped.items():
@@ -181,7 +308,7 @@ class DarlingPatch(WestCommand):
             for repo in touched:
                 self._abort_am(repo)
             if roll_back:
-                self._reset(profile, grouped)
+                self._reset(profile, grouped, force=True)
             self.die(str(error))
 
     def _record_integration(
@@ -229,18 +356,29 @@ class DarlingPatch(WestCommand):
         output.write_text(yaml.safe_dump(lock_data, sort_keys=False, width=1000))
         return output
 
-    def _reset(self, profile: str, grouped):
+    def _reset(self, profile: str, grouped, force: bool):
         branch = f"integration/{profile}"
         modules = list(grouped)
         if "darling" not in modules:
             modules.append("darling")
+
+        for module in modules:
+            if not force:
+                try:
+                    self._ensure_generated_context(module, profile)
+                except RuntimeError as error:
+                    self.die(f"refusing to clean: {error}")
+
         for module in reversed(modules):
             repo = self._repo(module)
             self._abort_am(repo)
-            git(repo, "switch", "--detach", "refs/heads/manifest-rev")
+            switch_args = ["switch", "--detach", "refs/heads/manifest-rev"]
+            if force:
+                switch_args.insert(1, "--discard-changes")
+            git(repo, *switch_args)
             if self._branch_exists(repo, branch):
                 git(repo, "branch", "-D", branch)
             self.inf(f"{module}: reset to manifest-rev")
 
-    def _clean(self, profile: str, patches):
-        self._reset(profile, self._group(patches))
+    def _clean(self, profile: str, patches, force: bool):
+        self._reset(profile, self._group(patches), force=force)

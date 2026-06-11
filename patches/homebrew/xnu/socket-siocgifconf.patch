@@ -13,7 +13,7 @@ until per-container networking is implemented.
  1 file changed, 13 insertions(+)
 
 diff --git a/darling/src/libsystem_kernel/emulation/src/xnu_syscall/bsd/helper/ioctl/socket.c b/darling/src/libsystem_kernel/emulation/src/xnu_syscall/bsd/helper/ioctl/socket.c
-index f890ab2..5dc9dbf 100644
+index f890ab2a6f8ed164543d78646e318c54bd32f7fd..5dc9dbfae06373c452eeaf6ef3ea2a961db021dc 100644
 --- a/darling/src/libsystem_kernel/emulation/src/xnu_syscall/bsd/helper/ioctl/socket.c
 +++ b/darling/src/libsystem_kernel/emulation/src/xnu_syscall/bsd/helper/ioctl/socket.c
 @@ -12,6 +12,19 @@ int handle_socket(int fd, unsigned int cmd, void* arg, int* retval)
@@ -36,6 +36,3 @@ index f890ab2..5dc9dbf 100644
  		// TODO: This has to be implemented for container with separate networking
  		case SIOCGIFFLAGS:
  		case SIOCSIFFLAGS:
--- 
-2.43.0
-

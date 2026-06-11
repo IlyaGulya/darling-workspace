@@ -18,7 +18,7 @@ dimensions.
  2 files changed, 50 insertions(+), 4 deletions(-)
 
 diff --git a/internal-include/darlingserver/thread.hpp b/internal-include/darlingserver/thread.hpp
-index 57117f2..6871d5f 100644
+index 57117f2a77467316437a74a1749fc8d106836625..6871d5f6e2b83c08a57de51c0d8fc0d833d8fe3f 100644
 --- a/internal-include/darlingserver/thread.hpp
 +++ b/internal-include/darlingserver/thread.hpp
 @@ -80,7 +80,12 @@ namespace DarlingServer {
@@ -35,7 +35,7 @@ index 57117f2..6871d5f 100644
  		dtape_thread_t* _dtapeThread;
  		std::function<void()> _continuationCallback = nullptr;
 diff --git a/src/thread.cpp b/src/thread.cpp
-index 5563ad9..89fcd20 100644
+index 5563ad92cea6ff5f717abc55ec330b6a215a6ab6..89fcd20bfc3b21a5ae850bb1141da736354a3e5c 100644
 --- a/src/thread.cpp
 +++ b/src/thread.cpp
 @@ -423,6 +423,10 @@ void DarlingServer::Thread::doWork() {
@@ -134,6 +134,3 @@ index 5563ad9..89fcd20 100644
  };
  
  void DarlingServer::Thread::terminate() {
--- 
-2.43.0
-
