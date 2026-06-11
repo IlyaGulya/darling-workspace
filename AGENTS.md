@@ -4,6 +4,11 @@ This repository contains private coordination state, not Darling source code.
 It is the source of truth for workspace manifests, tasks, unpublished branch
 refs, PR drafts, and agent handoff.
 
+- Canonical fix source: the clean `fix/*` branch.
+- Portable integration source: patch files and `patches.yml`.
+- Canonical PR text: `pr-drafts/*.md`.
+- Process state: the owning Bead.
+- Fork and upstream PRs are published views, not sources of truth.
 - Run source commands in the West workspace, not in this manifest repository.
 - Use `west dw beads ...` for issue operations.
 - Use `west patch verify|apply|clean|list` for local integration profiles.
@@ -15,7 +20,14 @@ refs, PR drafts, and agent handoff.
 - Publish PRs only with `west pr`, one Bead at a time, from clean `fix/*`
   branches. Never publish generated, backup, or historical mega-branches.
 - Fork-local draft PRs are staging review objects, not private artifacts.
-- Do not run `west pr upstream-draft` without explicit user approval.
+- Safe read-only PR commands are `list`, `dashboard`, `check`, `publish-plan`,
+  `sync`, and `open --print`.
+- Do not run any mutating PR command without explicit user approval:
+  `fork-draft`, `upstream-draft`, `update-body`, or `ready`.
+- Never bulk-publish fixes or merge PRs from workspace automation.
+- Never change a GitHub PR body directly. Update `pr-drafts/*.md`, then run the
+  explicitly approved `west pr update-body`.
+- Never publish when `west pr check` fails.
 - Run `west dw handoff` before ending a session that changed Beads or private
   branches.
 - Never add workspace metadata, PR drafts, agent state, or Beads files to the

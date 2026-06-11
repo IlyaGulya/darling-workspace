@@ -97,13 +97,16 @@ GitHub publication is a separate state machine over the same clean branches:
 
 ```bash
 west pr list --profile homebrew
+west pr dashboard --profile homebrew
 west pr check --profile homebrew dar-q95.3
+west pr publish-plan --profile homebrew dar-q95.3 --target fork
 west pr fork-draft --profile homebrew dar-q95.3 --dry-run
 west pr fork-draft --profile homebrew dar-q95.3
 west pr sync --profile homebrew dar-q95.3
 west pr upstream-draft --profile homebrew dar-q95.3
 west pr update-body --profile homebrew dar-q95.3 --target fork
 west pr ready --profile homebrew dar-q95.3 --target upstream
+west pr open --profile homebrew dar-q95.3 --target upstream
 ```
 
 A fork draft compares `fix/*` against `preupstream/<base>` inside the

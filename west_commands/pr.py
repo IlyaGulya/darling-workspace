@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import shlex
 import subprocess
 import tempfile
 from pathlib import Path
@@ -49,12 +50,23 @@ class DarlingPr(WestCommand):
 
         list_parser = subparsers.add_parser("list")
         list_parser.add_argument("--profile", default="homebrew")
+        dashboard = subparsers.add_parser("dashboard")
+        dashboard.add_argument("--profile", default="homebrew")
         check = subparsers.add_parser("check")
         check.add_argument("--profile", default="homebrew")
         check.add_argument("bead", nargs="?")
+        plan = subparsers.add_parser("publish-plan")
+        plan.add_argument("--profile", default="homebrew")
+        plan.add_argument("bead")
+        plan.add_argument("--target", choices=("fork", "upstream"), default="fork")
         sync = subparsers.add_parser("sync")
         sync.add_argument("--profile", default="homebrew")
         sync.add_argument("bead", nargs="?")
+        open_parser = subparsers.add_parser("open")
+        open_parser.add_argument("--profile", default="homebrew")
+        open_parser.add_argument("bead")
+        open_parser.add_argument("--target", choices=("fork", "upstream"), required=True)
+        open_parser.add_argument("--print", action="store_true", dest="print_only")
 
         fork = subparsers.add_parser("fork-draft")
         fork.add_argument("--profile", default="homebrew")
@@ -99,6 +111,9 @@ class DarlingPr(WestCommand):
         if args.action == "list":
             self._list()
             return
+        if args.action == "dashboard":
+            self._dashboard()
+            return
 
         selected = self._select(getattr(args, "bead", None))
         if args.action == "check":
@@ -109,6 +124,12 @@ class DarlingPr(WestCommand):
             for patch in selected:
                 self._sync(patch)
             self._save()
+            return
+        if args.action == "publish-plan":
+            self._publish_plan(selected[0], args.target)
+            return
+        if args.action == "open":
+            self._open(selected[0], args.target, args.print_only)
             return
 
         patch = selected[0]
@@ -150,6 +171,86 @@ class DarlingPr(WestCommand):
             self.inf(
                 f"{patch.get('bead', '-')}: {patch['source-branch']} "
                 f"fork={fork} upstream={upstream}"
+            )
+
+    def _checks(self, data) -> str:
+        checks = data.get("statusCheckRollup") or []
+        if not checks:
+            return "-"
+        states = []
+        for check in checks:
+            state = (
+                check.get("conclusion")
+                or check.get("state")
+                or check.get("status")
+                or ""
+            ).upper()
+            if state:
+                states.append(state)
+        if not states:
+            return "-"
+        if any(state in {"FAILURE", "ERROR", "CANCELLED", "TIMED_OUT"} for state in states):
+            return "failed"
+        if any(state in {"PENDING", "QUEUED", "IN_PROGRESS", "EXPECTED"} for state in states):
+            return "pending"
+        if all(state in {"SUCCESS", "NEUTRAL", "SKIPPED"} for state in states):
+            return "passed"
+        return "unknown"
+
+    def _patch_status(self, patch) -> str:
+        path = self.profile_path.parent / patch["path"]
+        if not path.is_file():
+            return "missing"
+        checksum = hashlib.sha256(path.read_bytes()).hexdigest()
+        return "ok" if checksum == patch["sha256sum"] else "drift"
+
+    def _pr_summary(self, patch, target) -> tuple[str, str]:
+        config = patch.get("github", {}).get(target, {})
+        url = config.get("url")
+        if not url:
+            state = config.get("state", "none")
+            return ("none" if state == "local" else state), "-"
+        data = self._gh_json(config["repo"], url)
+        state = self._state(data)
+        if data["headRefOid"] != patch["source-commit"]:
+            state = "needs-update"
+        number = data.get("number")
+        label = f"{state} #{number}" if number else state
+        return label, self._checks(data)
+
+    def _dashboard(self):
+        rows = []
+        for patch in self.patches:
+            fork, fork_checks = self._pr_summary(patch, "fork")
+            upstream, upstream_checks = self._pr_summary(patch, "upstream")
+            checks = upstream_checks if upstream_checks != "-" else fork_checks
+            rows.append(
+                (
+                    patch.get("bead", "-"),
+                    patch["source-branch"],
+                    self._patch_status(patch),
+                    fork,
+                    upstream,
+                    checks,
+                )
+            )
+        headers = ("Bead", "Branch", "Patch", "Fork PR", "Upstream PR", "Checks")
+        widths = [
+            max(len(str(row[index])) for row in [headers, *rows])
+            for index in range(len(headers))
+        ]
+        self.inf(
+            "  ".join(
+                str(value).ljust(widths[index])
+                for index, value in enumerate(headers)
+            )
+        )
+        for row in rows:
+            self.inf(
+                "  ".join(
+                    str(value).ljust(widths[index])
+                    for index, value in enumerate(row)
+                )
             )
 
     def _check(self, patch):
@@ -377,6 +478,82 @@ class DarlingPr(WestCommand):
         )
         return repo, commands
 
+    def _create_command(self, patch, target):
+        config = patch["github"][target]
+        title, _ = self._draft_content(self.manifest_repo / patch["pr-draft"])
+        head = patch["source-branch"]
+        if target == "upstream":
+            fork_owner = patch["github"]["fork"]["repo"].split("/", 1)[0]
+            head = f"{fork_owner}:{head}"
+        return [
+            "gh",
+            "pr",
+            "create",
+            "--repo",
+            config["repo"],
+            "--base",
+            config["base"],
+            "--head",
+            head,
+            "--draft",
+            "--title",
+            title,
+            "--body-file",
+            str(self.manifest_repo / patch["pr-draft"]),
+        ]
+
+    def _publish_plan(self, patch, target):
+        self._check(patch)
+        config = patch["github"][target]
+        if config.get("url"):
+            state = "already exists"
+        elif (
+            target == "upstream"
+            and patch["github"]["fork"].get("state", "local")
+            not in {"open", "draft", "ready", "merged"}
+        ):
+            state = "blocked: fork draft required"
+        else:
+            state = "would create draft"
+        self.inf("Bead       Repo                           Branch                       Target    State")
+        self.inf(
+            f"{patch['bead']:<10} {config['repo']:<30} "
+            f"{patch['source-branch']:<28} {target:<9} {state}"
+        )
+        if config.get("url"):
+            self.inf(config["url"])
+            return
+        if state.startswith("blocked:"):
+            return
+        _, push_commands = self._push_command(patch, target, dry_run=True)
+        for command in push_commands:
+            self.inf("$ " + shlex.join(command))
+        create = self._create_command(patch, target)[:-2]
+        draft = self.manifest_repo / patch["pr-draft"]
+        body_source = (
+            f"<(sed -n '/^## Body$/,$p' {shlex.quote(str(draft))} | tail -n +2)"
+        )
+        self.inf("$ " + shlex.join(create) + " --body-file " + body_source)
+
+    def _open(self, patch, target, print_only):
+        config = patch.get("github", {}).get(target, {})
+        url = config.get("url")
+        if not url:
+            self.die(f"{patch['bead']}: no {target} PR")
+        if print_only:
+            self.inf(url)
+            return
+        run(
+            self.manifest_repo,
+            "gh",
+            "pr",
+            "view",
+            url,
+            "--repo",
+            config["repo"],
+            "--web",
+        )
+
     def _publish(self, patch, target, dry_run):
         self._check(patch)
         config = patch["github"][target]
@@ -403,28 +580,10 @@ class DarlingPr(WestCommand):
             )
 
         repo, push_commands = self._push_command(patch, target, dry_run)
-        title, body = self._draft_content(
+        _, body = self._draft_content(
             self.manifest_repo / patch["pr-draft"]
         )
-        head = patch["source-branch"]
-        if target == "upstream":
-            fork_owner = patch["github"]["fork"]["repo"].split("/", 1)[0]
-            head = f"{fork_owner}:{head}"
-
-        create = [
-            "gh",
-            "pr",
-            "create",
-            "--repo",
-            config["repo"],
-            "--base",
-            config["base"],
-            "--head",
-            head,
-            "--draft",
-            "--title",
-            title,
-        ]
+        create = self._create_command(patch, target)[:-2]
         if dry_run:
             for command in push_commands:
                 self.inf("DRY RUN: " + " ".join(command))
