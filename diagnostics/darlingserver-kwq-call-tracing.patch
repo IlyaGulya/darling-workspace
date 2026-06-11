@@ -1,0 +1,119 @@
+duct-tape/pthread/kern_synch.c | 20 ++++++++++++++++++++
+ src/call.cpp                   |  2 ++
+ 2 files changed, 22 insertions(+)
+
+diff --git a/duct-tape/pthread/kern_synch.c b/duct-tape/pthread/kern_synch.c
+index 961f9a7..c9d5bce 100644
+--- a/duct-tape/pthread/kern_synch.c
++++ b/duct-tape/pthread/kern_synch.c
+@@ -560,6 +560,10 @@ _psynch_mutexdrop_internal(ksyn_wait_queue_t kwq, uint32_t mgen, uint32_t ugen,
+ 
+ 	ksyn_wqlock(kwq);
+ 	kwq->kw_lastunlockseq = (ugen & PTHRW_COUNT_MASK);
++	dtape_log_error("KWQDBG mtxdrop-enter uaddr=0x%llx kwq=%p inq=%d io=%d prepost=%d firstfit=%d nextgen=0x%x",
++			(unsigned long long)kwq->kw_addr, (void*)kwq, (int)kwq->kw_inqueue,
++			kwq->kw_iocount, kwq->kw_prepost.count, firstfit,
++			(ugen + PTHRW_INC) & PTHRW_COUNT_MASK);
+ 
+ redrive:
+ 	updatebits = (kwq->kw_highseq & PTHRW_COUNT_MASK) |
+@@ -644,6 +648,9 @@ redrive:
+ 		}
+ 	}
+ 
++	dtape_log_error("KWQDBG mtxdrop-exit uaddr=0x%llx kwq=%p inq=%d prepost=%d",
++			(unsigned long long)kwq->kw_addr, (void*)kwq, (int)kwq->kw_inqueue,
++			kwq->kw_prepost.count);
+ 	ksyn_wqunlock(kwq);
+ 	pthread_kern->psynch_wait_cleanup();
+ 	_kwq_cleanup_old_owner(&old_owner);
+@@ -783,6 +790,9 @@ again:
+ 		tid_th = THREAD_NULL;
+ 	}
+ 	assert(old_owner == THREAD_NULL);
++	dtape_log_error("KWQDBG mtxwait-enqueue uaddr=0x%llx kwq=%p inq=%d io=%d lseq=0x%x tid=%llu",
++			(unsigned long long)mutex, (void*)kwq, (int)kwq->kw_inqueue,
++			kwq->kw_iocount, lseq, (unsigned long long)tid);
+ 	error = ksyn_wait(kwq, KSYN_QUEUE_WRITE, mgen, ins_flags, 0, 0,
+ 			psynch_mtxcontinue, kThreadWaitPThreadMutex);
+ 	// ksyn_wait drops wait queue lock
+@@ -1790,6 +1800,16 @@ ksyn_wqfind(user_addr_t uaddr, uint32_t mgen, uint32_t ugen, uint32_t sgen,
+ 	if (nkwq) {
+ 		_kwq_destroy(nkwq);
+ 	}
++	if ((wqtype & KSYN_WQTYPE_MTX) != 0) {
++		dtape_log_error("KWQDBG wqfind uaddr=0x%llx shared=%d obj=0x%llx off=0x%llx kwq=%p io=%d inq=%d wqtype=0x%x res=%d",
++				(unsigned long long)uaddr,
++				((flags & PTHREAD_PSHARED_FLAGS_MASK) == PTHREAD_PROCESS_SHARED) ? 1 : 0,
++				(unsigned long long)object, (unsigned long long)offset,
++				(void*)kwq,
++				kwq ? kwq->kw_iocount : -1,
++				kwq ? (int)kwq->kw_inqueue : -1,
++				wqtype, res);
++	}
+ 	return res;
+ }
+ 
+diff --git a/src/call.cpp b/src/call.cpp
+index 7ad16e8..f8702f1 100644
+--- a/src/call.cpp
++++ b/src/call.cpp
+@@ -126,6 +126,8 @@ std::shared_ptr<DarlingServer::Call> DarlingServer::Call::callFromMessage(Messag
+ 
+ 	auto pidString = (process) ? (std::to_string(process->id()) + " (" + std::to_string(process->nsid()) + ")") : (std::to_string(header->pid) + " (-1)");
+ 	auto tidString = (thread) ? (std::to_string(thread->id()) + " (" + std::to_string(thread->nsid()) + ")") : (std::to_string(header->tid) + " (-1)");
++	callLog.error() << "[CALLDBG] received #" << header->number << " (" << dserver_callnum_to_string(header->number)
++			<< ") from PID " << pidString << ", TID " << tidString << callLog.endLog;
+ 	callLog.debug() << "Received call #" << header->number << " (" << dserver_callnum_to_string(header->number) << ") from PID " << pidString << ", TID " << tidString << callLog.endLog;
+ 
+ 	if (header->number == dserver_callnum_s2c) {
+
+Changes:
+
+duct-tape/pthread/kern_synch.c
+  @@ -560,6 +560,10 @@ _psynch_mutexdrop_internal(ksyn_wait_queue_t kwq, uint32_t mgen, uint32_t ugen,
+  +	dtape_log_error("KWQDBG mtxdrop-enter uaddr=0x%llx kwq=%p inq=%d io=%d prepost=%d firstfit=%d nextgen=0x%x",
+  +			(unsigned long long)kwq->kw_addr, (void*)kwq, (int)kwq->kw_inqueue,
+  +			kwq->kw_iocount, kwq->kw_prepost.count, firstfit,
+  +			(ugen + PTHRW_INC) & PTHRW_COUNT_MASK);
+   
+   redrive:
+   	updatebits = (kwq->kw_highseq & PTHRW_COUNT_MASK) |
+  @@ -644,6 +648,9 @@ redrive:
+  +	dtape_log_error("KWQDBG mtxdrop-exit uaddr=0x%llx kwq=%p inq=%d prepost=%d",
+  +			(unsigned long long)kwq->kw_addr, (void*)kwq, (int)kwq->kw_inqueue,
+  +			kwq->kw_prepost.count);
+   	ksyn_wqunlock(kwq);
+   	pthread_kern->psynch_wait_cleanup();
+   	_kwq_cleanup_old_owner(&old_owner);
+  @@ -783,6 +790,9 @@ again:
+  +	dtape_log_error("KWQDBG mtxwait-enqueue uaddr=0x%llx kwq=%p inq=%d io=%d lseq=0x%x tid=%llu",
+  +			(unsigned long long)mutex, (void*)kwq, (int)kwq->kw_inqueue,
+  +			kwq->kw_iocount, lseq, (unsigned long long)tid);
+   	error = ksyn_wait(kwq, KSYN_QUEUE_WRITE, mgen, ins_flags, 0, 0,
+   			psynch_mtxcontinue, kThreadWaitPThreadMutex);
+   	// ksyn_wait drops wait queue lock
+  @@ -1790,6 +1800,16 @@ ksyn_wqfind(user_addr_t uaddr, uint32_t mgen, uint32_t ugen, uint32_t sgen,
+  +	if ((wqtype & KSYN_WQTYPE_MTX) != 0) {
+  +		dtape_log_error("KWQDBG wqfind uaddr=0x%llx shared=%d obj=0x%llx off=0x%llx kwq=%p io=%d inq=%d wqtype=0x%x res=%d",
+  +				(unsigned long long)uaddr,
+  +				((flags & PTHREAD_PSHARED_FLAGS_MASK) == PTHREAD_PROCESS_SHARED) ? 1 : 0,
+  +				(unsigned long long)object, (unsigned long long)offset,
+  +				(void*)kwq,
+  +				kwq ? kwq->kw_iocount : -1,
+  +				kwq ? (int)kwq->kw_inqueue : -1,
+  +				wqtype, res);
+  +	}
+   	return res;
+   }
+   
+  +20 -0
+
+src/call.cpp
+  @@ -126,6 +126,8 @@ std::shared_ptr<DarlingServer::Call> DarlingServer::Call::callFromMessage(Messag
+  +	callLog.error() << "[CALLDBG] received #" << header->number << " (" << dserver_callnum_to_string(header->number)
+  +			<< ") from PID " << pidString << ", TID " << tidString << callLog.endLog;
+   	callLog.debug() << "Received call #" << header->number << " (" << dserver_callnum_to_string(header->number) << ") from PID " << pidString << ", TID " << tidString << callLog.endLog;
+   
+   	if (header->number == dserver_callnum_s2c) {
+  +2 -0

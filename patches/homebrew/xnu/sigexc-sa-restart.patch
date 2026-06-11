@@ -1,0 +1,69 @@
+From 7bdf08bfa0e56d6fc1487dcf4dc99c95a24f5c6c Mon Sep 17 00:00:00 2001
+From: Ilya Gulya <ilya@gulya.me>
+Date: Thu, 11 Jun 2026 09:38:05 +0000
+Subject: [PATCH] Mirror Darwin SA_RESTART in sigexc handlers
+
+---
+ .../include/linux_premigration/signal/sigexc.h    |  1 +
+ .../src/linux_premigration/signal/sigexc.c        | 15 +++++++++++++++
+ .../src/xnu_syscall/bsd/impl/signal/sigaction.c   |  9 +++++++++
+ 3 files changed, 25 insertions(+)
+
+diff --git a/darling/src/libsystem_kernel/emulation/include/linux_premigration/signal/sigexc.h b/darling/src/libsystem_kernel/emulation/include/linux_premigration/signal/sigexc.h
+index 78fdcbae35c9ec6c4b2a75c46e49bd4ea42b7bb7..93a3cf4fb94f419dba7fcca14fa3469055a8c0c6 100644
+--- a/darling/src/libsystem_kernel/emulation/include/linux_premigration/signal/sigexc.h
++++ b/darling/src/libsystem_kernel/emulation/include/linux_premigration/signal/sigexc.h
+@@ -16,6 +16,7 @@ void sigexc_setup(void);
+ // for PT_SIGEXC to handle this operation synchronously
+ void darling_sigexc_self(void);
+ void sigexc_handler(int linux_signum, struct linux_siginfo* info, struct linux_ucontext* ctxt);
++long sigexc_set_restart(int linux_signum, bool restart);
+ 
+ void sigexc_thread_setup(void);
+ void sigexc_thread_exit(void);
+diff --git a/darling/src/libsystem_kernel/emulation/src/linux_premigration/signal/sigexc.c b/darling/src/libsystem_kernel/emulation/src/linux_premigration/signal/sigexc.c
+index 206e92e4623b15ec9b156a15ba73618d0d669e66..4b4b492327583b7cc5c58e30292f36345b96295f 100644
+--- a/darling/src/libsystem_kernel/emulation/src/linux_premigration/signal/sigexc.c
++++ b/darling/src/libsystem_kernel/emulation/src/linux_premigration/signal/sigexc.c
+@@ -236,6 +236,21 @@ void darling_sigexc_self(void)
+ 	sys_sigaltstack(&newstack, NULL);
+ }
+ 
++long sigexc_set_restart(int linux_signum, bool restart)
++{
++	struct linux_sigaction sa;
++
++	sa.sa_sigaction = (linux_sig_handler*) sigexc_handler;
++	sa.sa_mask = 0x7fffffff;
++	sa.sa_mask |= (1ull << (SIGNAL_SIGEXC_SUSPEND-1));
++	sa.sa_flags = LINUX_SA_RESTORER | LINUX_SA_SIGINFO | LINUX_SA_ONSTACK;
++	if (restart)
++		sa.sa_flags |= LINUX_SA_RESTART;
++	sa.sa_restorer = sig_restorer;
++
++	return LINUX_SYSCALL(__NR_rt_sigaction, linux_signum, &sa, NULL, sizeof(sa.sa_mask));
++}
++
+ 
+ static void state_to_kernel(struct linux_ucontext* ctxt, void* tstate, void* fstate)
+ {
+diff --git a/darling/src/libsystem_kernel/emulation/src/xnu_syscall/bsd/impl/signal/sigaction.c b/darling/src/libsystem_kernel/emulation/src/xnu_syscall/bsd/impl/signal/sigaction.c
+index 4b6d175a9e285f1bd2f28c5931b3d20b61834b28..b933544de9fe6ff241732ec2de5915086bf9162d 100644
+--- a/darling/src/libsystem_kernel/emulation/src/xnu_syscall/bsd/impl/signal/sigaction.c
++++ b/darling/src/libsystem_kernel/emulation/src/xnu_syscall/bsd/impl/signal/sigaction.c
+@@ -85,6 +85,15 @@ long sys_sigaction(int signum, const struct bsd___sigaction* nsa, struct bsd_sig
+ 	{
+ 		ret = 0;
+ 
++		if (nsa != NULL)
++		{
++			bool restart = nsa->sa_sigaction == XNU_SIG_IGN
++				|| (nsa->sa_flags & BSD_SA_RESTART);
++			ret = sigexc_set_restart(linux_signum, restart);
++			if (ret < 0)
++				return errno_linux_to_bsd(ret);
++		}
++
+ 		if (osa != NULL)
+ 		{
+ 			osa->sa_sigaction = sig_handlers[linux_signum];
