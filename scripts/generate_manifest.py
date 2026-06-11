@@ -23,6 +23,21 @@ def git(repo: Path, *args: str, required: bool = True) -> str:
     return result.stdout.strip()
 
 
+def public_base(repo: Path, head: str) -> str | None:
+    if not git(repo, "symbolic-ref", "--quiet", "--short", "HEAD", required=False):
+        return None
+    for ref in ("refs/remotes/origin/main", "refs/remotes/origin/master"):
+        base = git(repo, "rev-parse", "--verify", ref, required=False)
+        if not base or base == head:
+            continue
+        if subprocess.run(
+            ["git", "-C", str(repo), "merge-base", "--is-ancestor", base, head],
+            check=False,
+        ).returncode == 0:
+            return base
+    return None
+
+
 def github_name(url: str) -> str:
     if url.startswith("git@github.com:"):
         path = url.split(":", 1)[1]
@@ -57,9 +72,16 @@ def submodule_url(source: Path, relative: str) -> str:
     raise SystemExit(f"cannot find submodule URL for {relative}")
 
 
-def projects(source: Path) -> list[tuple[str, str, str]]:
+def projects(source: Path) -> list[tuple[str, str, str, bool]]:
     output = git(source, "submodule", "status", "--recursive")
-    result = [(".", git(source, "rev-parse", "HEAD"), git(source, "remote", "get-url", "origin"))]
+    result = [
+        (
+            ".",
+            git(source, "rev-parse", "HEAD"),
+            git(source, "remote", "get-url", "origin"),
+            True,
+        )
+    ]
     for line in output.splitlines():
         marker = line[0]
         fields = line[1:].split()
@@ -68,10 +90,12 @@ def projects(source: Path) -> list[tuple[str, str, str]]:
             repo = source / relative
             if marker == "-":
                 origin = submodule_url(source, relative)
+                initialized = False
             else:
                 sha = git(repo, "rev-parse", "HEAD")
                 origin = git(repo, "remote", "get-url", "origin")
-            result.append((relative, sha, origin))
+                initialized = True
+            result.append((relative, sha, origin, initialized))
     return result
 
 
@@ -79,6 +103,7 @@ def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--source", required=True, type=Path)
     parser.add_argument("--output", required=True, type=Path)
+    parser.add_argument("--base", action="store_true")
     args = parser.parse_args()
 
     source = args.source.resolve()
@@ -97,7 +122,10 @@ def main() -> None:
     )
 
     seen: set[tuple[str, str]] = set()
-    for relative, revision, origin in projects(source):
+    for relative, revision, origin, initialized in projects(source):
+        repo = source if relative == "." else source / relative
+        if args.base and initialized:
+            revision = public_base(repo, revision) or revision
         name = github_name(origin)
         path = "darling" if relative == "." else f"darling/{relative}"
         key = (name, path)

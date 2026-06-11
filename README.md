@@ -5,7 +5,9 @@ Darling without adding personal metadata to Darling or its upstream submodules.
 
 ## Ownership boundaries
 
-- `locked.xml`: exact SHA of the superproject and every nested submodule.
+- `base.xml`: publicly fetchable revisions used to bootstrap.
+- `locked.xml`: exact local SHA of every repository for auditing.
+- `handoff/`: minimal Git bundles containing unpublished topic commits.
 - `.beads/issues.jsonl`: shared task graph for humans and agents.
 - `pr-drafts/`: PR descriptions and review notes.
 - `state/repos.tsv`: reproducible snapshot of checked-out commits and branches.
@@ -46,9 +48,13 @@ bin/dw beads ready
 bin/dw handoff
 ```
 
-`dw handoff` exports Beads, refreshes `state/repos.tsv`, and regenerates
-`locked.xml` from every actual checkout HEAD. Commit and push the control
-repository to hand the exact workspace state to another machine or agent.
+`dw handoff` exports Beads, refreshes both manifests, and creates minimal Git
+bundles for topic commits not contained in `origin/main` or `origin/master`.
+The bootstrap flow syncs `base.xml`, then restores those topic branches from
+the bundles. This moves committed WIP without pushing it to upstream or forks.
+
+Uncommitted worktree changes cannot be handed off. `dw handoff` prints every
+dirty repository so it can be committed or intentionally discarded first.
 
 `dw setup-local` writes only checkout-local files and `.git/info/exclude`; it
 does not edit Darling's tracked `.gitignore`.
