@@ -1,0 +1,14 @@
+.beads/*.db
+.beads/*.db-*
+.beads/*.lock
+.beads/.br_history/
+.beads/.br_recovery/
+.beads/last-touched
+.beads/sync_base.jsonl
+.beads/dolt/
+.beads/dolt-server.*
+.beads/.bv.lock
+.beads/redirect
+
+workspace.env
+

@@ -1,0 +1,144 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+DW_ROOT="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
+if [[ -f "$DW_ROOT/workspace.env" ]]; then
+  # shellcheck disable=SC1091
+  source "$DW_ROOT/workspace.env"
+fi
+DW_DARLING_SRC="${DW_DARLING_SRC:-$(cd "$DW_ROOT/.." && pwd)/darling}"
+BEADS_DIR="$DW_ROOT/.beads"
+export BEADS_DIR
+
+die() {
+  printf 'dw: %s\n' "$*" >&2
+  exit 1
+}
+
+require_source() {
+  git -C "$DW_DARLING_SRC" rev-parse --show-toplevel >/dev/null 2>&1 ||
+    die "Darling checkout not found at $DW_DARLING_SRC"
+}
+
+status() {
+  require_source
+  printf 'control: %s\nsource:  %s\n\n' "$DW_ROOT" "$DW_DARLING_SRC"
+  git -C "$DW_DARLING_SRC" status --short --branch
+  git -C "$DW_DARLING_SRC" submodule foreach --recursive '
+    changes=$(git status --porcelain)
+    branch=$(git symbolic-ref --quiet --short HEAD || printf "DETACHED")
+    if test -n "$changes" || test "$branch" != "DETACHED"; then
+      printf "\n[%s] %s\n" "$displaypath" "$branch"
+      git status --short
+    fi
+  '
+}
+
+snapshot() {
+  require_source
+  local output tmp
+  output="$DW_ROOT/state/repos.tsv"
+  tmp="$output.tmp"
+  printf 'path\thead\tbranch\torigin\tworktree\n' >"$tmp"
+
+  local head branch origin worktree
+  head=$(git -C "$DW_DARLING_SRC" rev-parse HEAD)
+  branch=$(git -C "$DW_DARLING_SRC" symbolic-ref --quiet --short HEAD || printf 'DETACHED')
+  origin=$(git -C "$DW_DARLING_SRC" remote get-url origin 2>/dev/null || printf '-')
+  worktree=clean
+  [[ -z "$(git -C "$DW_DARLING_SRC" status --porcelain)" ]] || worktree=dirty
+  printf '.\t%s\t%s\t%s\t%s\n' "$head" "$branch" "$origin" "$worktree" >>"$tmp"
+
+  export DW_SNAPSHOT="$tmp"
+  git -C "$DW_DARLING_SRC" submodule foreach --quiet --recursive '
+    head=$(git rev-parse HEAD)
+    branch=$(git symbolic-ref --quiet --short HEAD || printf "DETACHED")
+    origin=$(git remote get-url origin 2>/dev/null || printf "-")
+    worktree=clean
+    test -z "$(git status --porcelain)" || worktree=dirty
+    printf "%s\t%s\t%s\t%s\t%s\n" \
+      "$displaypath" "$head" "$branch" "$origin" "$worktree" >>"$DW_SNAPSHOT"
+  '
+  mv "$tmp" "$output"
+  printf 'wrote %s\n' "$output"
+}
+
+doctor() {
+  require_source
+  command -v br >/dev/null || die "br is not installed"
+  printf 'control: %s\nsource:  %s\nbeads:   %s\n' \
+    "$DW_ROOT" "$DW_DARLING_SRC" "$(br where)"
+  br sync --status
+}
+
+setup_local() {
+  require_source
+  local exclude source_agents target_agents pattern
+  exclude="$DW_DARLING_SRC/.git/info/exclude"
+  source_agents="$DW_ROOT/source/AGENTS.md"
+  target_agents="$DW_DARLING_SRC/AGENTS.md"
+
+  mkdir -p "$(dirname "$exclude")"
+  for pattern in '.beads/' 'AGENTS.md' 'pr-drafts/' '.bv/'; do
+    grep -Fqx "$pattern" "$exclude" 2>/dev/null ||
+      printf '%s\n' "$pattern" >>"$exclude"
+  done
+
+  if [[ ! -e "$target_agents" ]]; then
+    cp "$source_agents" "$target_agents"
+    printf 'installed %s\n' "$target_agents"
+  elif ! cmp -s "$source_agents" "$target_agents"; then
+    printf 'kept existing %s (differs from control copy)\n' "$target_agents"
+  fi
+  printf 'updated %s\n' "$exclude"
+}
+
+usage() {
+  cat <<'EOF'
+Usage: dw <command> [args]
+
+Commands:
+  status            Show source and active submodule state
+  snapshot          Write state/repos.tsv
+  beads [args...]   Run br against the control repository
+  sync              Export Beads and refresh state/repos.tsv
+  doctor            Validate paths and Beads state
+  setup-local       Install local agent instructions and Git excludes
+  env               Print resolved workspace paths
+EOF
+}
+
+case "${1:-}" in
+  status)
+    status
+    ;;
+  snapshot)
+    snapshot
+    ;;
+  beads)
+    shift
+    exec br "$@"
+    ;;
+  sync)
+    br sync --flush-only
+    snapshot
+    git -C "$DW_ROOT" status --short
+    ;;
+  doctor)
+    doctor
+    ;;
+  setup-local)
+    setup_local
+    ;;
+  env)
+    printf 'DW_ROOT=%s\nDW_DARLING_SRC=%s\nBEADS_DIR=%s\n' \
+      "$DW_ROOT" "$DW_DARLING_SRC" "$BEADS_DIR"
+    ;;
+  help|-h|--help|'')
+    usage
+    ;;
+  *)
+    usage >&2
+    exit 2
+    ;;
+esac
