@@ -24,6 +24,77 @@ def initialized_projects(source: Path):
             yield relative, source / relative
 
 
+def private_branches(repo: Path, include_remote_only: bool = False) -> list[dict[str, str]]:
+    origin_url = git(repo, "remote", "get-url", "origin", required=False).lower()
+    personal_origin = "ilyagulya" in origin_url
+    output = git(
+        repo,
+        "for-each-ref",
+        "--format=%(refname:short)\t%(objectname)\t%(upstream:short)",
+        "refs/heads",
+    )
+    branches = []
+    for line in output.splitlines():
+        branch, head, upstream = (line.split("\t") + ["", ""])[:3]
+        if branch in {"main", "master"}:
+            remote_head = git(
+                repo,
+                "rev-parse",
+                "--verify",
+                f"refs/remotes/origin/{branch}",
+                required=False,
+            )
+            if remote_head == head:
+                continue
+        if upstream:
+            upstream_head = git(
+                repo,
+                "rev-parse",
+                "--verify",
+                upstream,
+                required=False,
+            )
+            if upstream_head == head and (
+                not personal_origin
+                or not branch.startswith(("fix/", "experiment/", "backup/"))
+            ):
+                continue
+        branches.append(
+            {
+                "branch": branch,
+                "head": head,
+                "upstream": upstream,
+                "source_ref": f"refs/heads/{branch}",
+            }
+        )
+
+    if not include_remote_only:
+        return branches
+
+    local_names = {item["branch"] for item in branches}
+    remote_output = git(
+        repo,
+        "for-each-ref",
+        "--format=%(refname:strip=3)\t%(objectname)",
+        "refs/remotes/origin",
+    )
+    for line in remote_output.splitlines():
+        branch, head = line.split("\t")
+        if branch in {"HEAD", "main", "master"} or branch in local_names:
+            continue
+        if not branch.startswith(("fix/", "experiment/", "backup/")):
+            continue
+        branches.append(
+            {
+                "branch": branch,
+                "head": head,
+                "upstream": f"origin/{branch}",
+                "source_ref": f"refs/remotes/origin/{branch}",
+            }
+        )
+    return branches
+
+
 def pack(source: Path, output: Path) -> None:
     if output.exists():
         shutil.rmtree(output)
@@ -36,15 +107,34 @@ def pack(source: Path, output: Path) -> None:
         if changes:
             dirty.append(relative)
 
-        head = git(repo, "rev-parse", "HEAD")
-        base = public_base(repo, head)
-        if not base:
+        branches = private_branches(repo, include_remote_only=relative == ".")
+        if not branches:
             continue
-        branch = git(repo, "symbolic-ref", "--quiet", "--short", "HEAD")
         filename = ("root" if relative == "." else relative.replace("/", "__")) + ".bundle"
         bundle = output / filename
+        refs = [item["source_ref"] for item in branches]
+        exclusions = []
+        for default_branch in ("main", "master"):
+            base = git(
+                repo,
+                "rev-parse",
+                "--verify",
+                f"refs/remotes/origin/{default_branch}",
+                required=False,
+            )
+            if base:
+                exclusions.append(f"^{base}")
         result = subprocess.run(
-            ["git", "-C", str(repo), "bundle", "create", str(bundle), "HEAD", f"^{base}"],
+            [
+                "git",
+                "-C",
+                str(repo),
+                "bundle",
+                "create",
+                str(bundle),
+                *refs,
+                *exclusions,
+            ],
             check=False,
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
@@ -53,10 +143,8 @@ def pack(source: Path, output: Path) -> None:
             records.append(
                 {
                     "path": relative,
-                    "branch": branch,
-                    "head": head,
-                    "base": base,
                     "bundle": filename,
+                    "branches": branches,
                 }
             )
 
@@ -74,18 +162,25 @@ def restore(source: Path, input_dir: Path) -> None:
     data = json.loads((input_dir / "manifest.json").read_text())
     for record in data["projects"]:
         repo = source if record["path"] == "." else source / record["path"]
-        branch = record["branch"]
-        head = record["head"]
         bundle = input_dir / record["bundle"]
-        existing = git(repo, "rev-parse", "--verify", f"refs/heads/{branch}", required=False)
-        if existing and existing != head:
-            raise SystemExit(f"{record['path']}: branch {branch} already differs")
-        subprocess.run(
-            ["git", "-C", str(repo), "fetch", str(bundle), f"HEAD:refs/heads/{branch}"],
-            check=True,
-        )
-        subprocess.run(["git", "-C", str(repo), "switch", branch], check=True)
-        print(f"restored {record['path']} -> {branch}")
+        for branch_record in record["branches"]:
+            branch = branch_record["branch"]
+            head = branch_record["head"]
+            existing = git(repo, "rev-parse", "--verify", f"refs/heads/{branch}", required=False)
+            if existing and existing != head:
+                raise SystemExit(f"{record['path']}: branch {branch} already differs")
+            subprocess.run(
+                [
+                    "git",
+                    "-C",
+                    str(repo),
+                    "fetch",
+                    str(bundle),
+                    f"{branch_record['source_ref']}:refs/heads/{branch}",
+                ],
+                check=True,
+            )
+            print(f"restored {record['path']} -> {branch}")
 
 
 def main() -> None:
