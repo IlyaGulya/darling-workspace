@@ -17,9 +17,10 @@ profile and branch migration are complete.
 ## Fetch overrides
 
 `darling/src/external/libressl-2.8.3` is fetched from
-`IlyaGulya/darling-libressl`: Darling pins `75c81f4`, but darlinghq's current
-`v2.8.3` ref no longer contains that object. The fork preserves the exact
-gitlink commit. This is explicit `userdata`, not a silent revision change.
+`IlyaGulya/darling-libressl`: darlinghq's current `v2.8.3` ref no longer
+contains Darling's historical base `2a56b36`. The fork preserves that base.
+The local `75c81f4` fix is applied by the Homebrew patch profile instead of
+being hidden in the manifest revision.
 
 ## Local spike
 

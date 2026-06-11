@@ -1,0 +1,79 @@
+From c905b818c0f58554a15812bf81e39a56f067b942 Mon Sep 17 00:00:00 2001
+From: Ilya Gulya <ilya@gulya.me>
+Date: Thu, 11 Jun 2026 06:21:23 +0000
+Subject: [PATCH] sandbox: ship a sandbox-exec(1) pass-through command
+
+macOS ships sandbox-exec(1) in /usr/bin alongside the sandbox library, and
+Homebrew gates source builds on its presence (Sandbox.available? checks
+File.executable?("/usr/bin/sandbox-exec") and wraps every build step in
+'sandbox-exec -f homebrew.sb <command>'). Darling shipped the sandbox library
+(libsystem_sandbox, a no-op) but no sandbox-exec binary, so source builds
+needed a HOMEBREW_NO_SANDBOX=1 workaround.
+
+The Seatbelt sandbox provides no isolation under emulation (sandbox_init() is
+a no-op), so install a thin shell pass-through that discards the
+profile-selection options (-f/-p/-n/-D, plus any other flag, and a '--'
+terminator) and execs the command directly. Installed to usr/bin/sandbox-exec
+following the pagesize.tproj script-command convention.
+
+With this, stock Homebrew's sandbox path works unmodified: verified
+'brew install --build-from-source lz4' green with no HOMEBREW_NO_SANDBOX and
+no sandbox.rb edit. Part of dar-pk4.
+---
+ src/sandbox/CMakeLists.txt  |  5 +++++
+ src/sandbox/sandbox-exec.sh | 33 +++++++++++++++++++++++++++++++++
+ 2 files changed, 38 insertions(+)
+ create mode 100644 src/sandbox/sandbox-exec.sh
+
+diff --git a/src/sandbox/CMakeLists.txt b/src/sandbox/CMakeLists.txt
+index 367cf999d9cd2d534c9dbe7292750b59bee25ff1..cfa0fb8e7ac5466165b6186ae98e72deadc50e25 100644
+--- a/src/sandbox/CMakeLists.txt
++++ b/src/sandbox/CMakeLists.txt
+@@ -14,3 +14,8 @@ add_circular(system_sandbox FAT
+ )
+ 
+ install(TARGETS system_sandbox DESTINATION libexec/darling/usr/lib/system)
++
++# macOS ships the sandbox-exec(1) command alongside the sandbox library. Under
++# Darling the sandbox is a no-op, so install a thin pass-through that keeps the
++# CLI compatible (see sandbox-exec.sh) for callers like Homebrew.
++install(PROGRAMS sandbox-exec.sh DESTINATION libexec/darling/usr/bin RENAME sandbox-exec)
+diff --git a/src/sandbox/sandbox-exec.sh b/src/sandbox/sandbox-exec.sh
+new file mode 100644
+index 0000000000000000000000000000000000000000..c7f89f63644a19c3ed5fcaad2928c84b33443e2e
+--- /dev/null
++++ b/src/sandbox/sandbox-exec.sh
+@@ -0,0 +1,33 @@
++#!/bin/sh
++# Darling stub for macOS sandbox-exec(1).
++#
++# The macOS sandbox (Seatbelt / libsystem_sandbox) provides no isolation under
++# Darling's emulation -- sandbox_init() and friends are no-ops. This stub keeps
++# the command-line interface compatible (so callers such as Homebrew, which wrap
++# build steps in `sandbox-exec -f profile.sb <command>`, work unchanged) by
++# discarding the profile-selection options and executing the command directly.
++#
++# Recognised options that take an argument: -f file, -p string, -n name,
++# -D key=value. Everything after the options (or after a `--`) is the command.
++
++while [ $# -gt 0 ]; do
++	case "$1" in
++		-f|-p|-n|-D)
++			# These options consume the following argument.
++			shift 2
++			;;
++		--)
++			shift
++			break
++			;;
++		-*)
++			# Any other flag with no argument.
++			shift
++			;;
++		*)
++			break
++			;;
++	esac
++done
++
++exec "$@"

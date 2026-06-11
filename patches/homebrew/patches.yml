@@ -169,3 +169,165 @@ patches:
       repo: darlinghq/darling-perl
       base: master
       state: local
+- path: libressl/libressl-283-nist-strict-aliasing.patch
+  sha256sum: dcd346a6b7f2d409e42c9a7b9488039ba4cf43ffb6d23d2bec0604a7944d6e97
+  module: darling/src/external/libressl-2.8.3
+  source-branch: fix/libressl-283-nist-strict-aliasing
+  source-commit: 75c81f4e3ede9bb653b2b90bcca2681eda9aecd8
+  bead: dar-q95.6
+  pr-draft: pr-drafts/libressl-283-nist-strict-aliasing.md
+  github:
+    fork:
+      repo: IlyaGulya/darling-libressl
+      base: preupstream/master
+      state: local
+    upstream:
+      repo: darlinghq/darling-libressl
+      base: master
+      state: local
+- path: darlingserver/cancel-stale-wait-timer.patch
+  sha256sum: c9ebc009bed1cd07bf5e3c3b1ab6758c42c5178e70892be60f1dd9f187d312dc
+  module: darling/src/external/darlingserver
+  source-branch: fix/cancel-stale-wait-timer
+  source-commit: 8c98528d1902ad2f5b06e0b1113427afa2e2e6f7
+  bead: dar-q95.15
+  pr-draft: pr-drafts/darlingserver-cancel-wait-timer.md
+  github:
+    fork:
+      repo: IlyaGulya/darlingserver
+      base: preupstream/main
+      state: local
+    upstream:
+      repo: darlinghq/darlingserver
+      base: main
+      state: local
+- path: libpthread/psynch-negative-returns.patch
+  sha256sum: 9a0e6c8c1ed9c793c43f036484fbca7b6c8877bc6d450256e838b838ff38caf8
+  module: darling/src/external/libpthread
+  source-branch: fix/psynch-negative-returns
+  source-commit: b007105f34a0f433016276cf05dff77f2217b89e
+  bead: dar-q95.16
+  pr-draft: pr-drafts/libpthread-psynch-negative-returns.md
+  github:
+    fork:
+      repo: IlyaGulya/darling-libpthread
+      base: preupstream/master
+      state: local
+    upstream:
+      repo: darlinghq/darling-libpthread
+      base: master
+      state: local
+- path: xnu/getattrlist-name-objtype.patch
+  sha256sum: 984225243c3aa2b9e1874fa3f6be83bbad29ac1fd34cabbfb44a0eb407b7c996
+  module: darling/src/external/xnu
+  source-branch: fix/getattrlist-name-objtype
+  source-commit: cacba0fd01468e316e58e3c5a15a4d3c5273fcc5
+  bead: dar-q95.17
+  pr-draft: pr-drafts/xnu-getattrlist-name-objtype.md
+  github:
+    fork:
+      repo: IlyaGulya/darling-xnu
+      base: preupstream/main
+      state: local
+    upstream:
+      repo: darlinghq/darling-xnu
+      base: main
+      state: local
+- path: xnu/getattrlistbulk.patch
+  sha256sum: 3d62e5e90e32bd31980ada3de8e6c7a8c7584c8604f94e7e8080ac81ce81f54e
+  module: darling/src/external/xnu
+  source-branch: fix/getattrlistbulk
+  source-commit: 69775cf24aa169d585921818695fff0ae19b3e64
+  bead: dar-q95.18
+  pr-draft: pr-drafts/xnu-getattrlistbulk.md
+  github:
+    fork:
+      repo: IlyaGulya/darling-xnu
+      base: preupstream/main
+      state: local
+    upstream:
+      repo: darlinghq/darling-xnu
+      base: main
+      state: local
+- path: xnu/psynch-negative-errno.patch
+  sha256sum: 1ef9225f37a3421caa4e939ad9a409e6c4ec76b24ae29a4268f9411ae33a6c33
+  module: darling/src/external/xnu
+  source-branch: fix/psynch-negative-errno
+  source-base: 5f26a4c2365d9774b5a1e66ae7da20b61ab6d2db
+  source-commit: 0d7844f548b9c04a259fcb00a9556cdf9b39d9ef
+  bead: dar-q95.19
+  pr-draft: pr-drafts/xnu-psynch-negative-errno.md
+  github:
+    fork:
+      repo: IlyaGulya/darling-xnu
+      base: preupstream/main
+      state: local
+    upstream:
+      repo: darlinghq/darling-xnu
+      base: main
+      state: local
+- path: xnu/sigexc-sa-restart.patch
+  sha256sum: 3aeffa895490f07679d529e76546f12f74b79e59bc59b824a2aa88e91393f912
+  module: darling/src/external/xnu
+  source-branch: fix/sigexc-sa-restart
+  source-commit: 7bdf08bfa0e56d6fc1487dcf4dc99c95a24f5c6c
+  bead: dar-q95.20
+  pr-draft: pr-drafts/xnu-sigexc-sa-restart.md
+  github:
+    fork:
+      repo: IlyaGulya/darling-xnu
+      base: preupstream/main
+      state: local
+    upstream:
+      repo: darlinghq/darling-xnu
+      base: main
+      state: local
+- path: darling/mldr-glibc-fork-reset.patch
+  sha256sum: ebb0a9b373be0c40216d434c9a1b648a6193ae63695aee89e3b5d6d2cb9b7c38
+  module: darling
+  source-branch: fix/mldr-glibc-fork-reset
+  source-commit: e3be6fa451e23a77bdfd0a345a5992a04c96a71c
+  bead: dar-q95.14
+  pr-draft: pr-drafts/mldr-glibc-fork-reset.md
+  github:
+    fork:
+      repo: IlyaGulya/darling
+      base: preupstream/master
+      state: local
+    upstream:
+      repo: darlinghq/darling
+      base: master
+      state: local
+- path: darling/sandbox-exec-pass-through.patch
+  sha256sum: 79af1bc5209cfda5d0657a9e0ecdfb6692de299812b5b1d98b0a10892dc13b19
+  module: darling
+  source-branch: fix/sandbox-exec-pass-through
+  source-commit: c905b818c0f58554a15812bf81e39a56f067b942
+  bead: dar-q95.21
+  pr-draft: pr-drafts/top-level-sandbox-exec-pass-through.md
+  github:
+    fork:
+      repo: IlyaGulya/darling
+      base: preupstream/master
+      state: local
+    upstream:
+      repo: darlinghq/darling
+      base: master
+      state: local
+- path: darling/sdk-homebrew-detection.patch
+  sha256sum: 20696a2416639d977cac7f32e0ca38642ec65f0152a738ba73ce581e8d73ca74
+  module: darling
+  source-branch: fix/sdk-homebrew-detection
+  source-base: 5f2d7401d878455cf3c3c0865ee5a4290dfa03f0
+  source-commit: b8b186a6e31c2b1cf63f8946c7b170b4a75ae794
+  bead: dar-q95.22
+  pr-draft: pr-drafts/top-level-sdk-homebrew-detection.md
+  github:
+    fork:
+      repo: IlyaGulya/darling
+      base: preupstream/master
+      state: local
+    upstream:
+      repo: darlinghq/darling
+      base: master
+      state: local

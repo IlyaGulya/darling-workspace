@@ -794,7 +794,7 @@ manifest:
     repo-path: darling-libressl
     path: darling/src/external/libressl-2.8.3
     remote: ilya
-    revision: 75c81f4e3ede9bb653b2b90bcca2681eda9aecd8
+    revision: 2a56b36b77a00573c53ccd8e6932eb136172c950
     userdata:
       kind: darling-source
       upstream-repository: darling-libressl

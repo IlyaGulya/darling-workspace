@@ -2,7 +2,7 @@ manifest:
   projects:
   - name: darling
     url: https://github.com/darlinghq/darling
-    revision: 6e6dbcf9e5c7438d806587cac2a4071fc5d52878
+    revision: 0c9dfd06d76ba228362a97e17733cf780fae7b8c
     userdata:
       kind: darling-source
       upstream-repository: darling
@@ -379,7 +379,7 @@ manifest:
       upstream-repository: darling-dmg
   - name: darling-src-external-darlingserver
     url: https://github.com/darlinghq/darlingserver
-    revision: 834b164c44c7ea4403d3a5bec7807e0e69fbdb69
+    revision: ff0268d0893c8b240688128bb297a915038148ca
     path: darling/src/external/darlingserver
     userdata:
       kind: darling-source
@@ -652,7 +652,7 @@ manifest:
       upstream-repository: darling-libplatform
   - name: darling-src-external-libpthread
     url: https://github.com/darlinghq/darling-libpthread
-    revision: f07f265bfbcf071c1adfc808de971e053ea5edc5
+    revision: de1599e9ec0fba41a6c7748625a22d332ac2017f
     path: darling/src/external/libpthread
     userdata:
       kind: darling-source
@@ -687,7 +687,7 @@ manifest:
       upstream-repository: darling-libressl
   - name: darling-src-external-libressl-2-8-3
     url: git@github.com:IlyaGulya/darling-libressl
-    revision: 75c81f4e3ede9bb653b2b90bcca2681eda9aecd8
+    revision: fb3669cee40467408716c7d96ec8f31f83bf7aeb
     path: darling/src/external/libressl-2.8.3
     userdata:
       kind: darling-source
@@ -1108,7 +1108,7 @@ manifest:
       upstream-repository: linenoise
   - name: darling-src-external-xnu
     url: https://github.com/darlinghq/darling-xnu
-    revision: eab8810fdd255f78ad0b103544f884d19a949ea9
+    revision: 685a7c963fb21096b0ba397c0b8db404f0e71074
     path: darling/src/external/xnu
     userdata:
       kind: darling-source

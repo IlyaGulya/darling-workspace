@@ -1,0 +1,252 @@
+From cacba0fd01468e316e58e3c5a15a4d3c5273fcc5 Mon Sep 17 00:00:00 2001
+From: Ilya Gulya <ilya@gulya.me>
+Date: Thu, 11 Jun 2026 05:09:43 +0000
+Subject: [PATCH] libsystem_kernel: implement getattrlist ATTR_CMN_NAME +
+ ATTR_CMN_OBJTYPE
+
+getattrlist_generic.c rejected any request containing an attribute outside
+{ATTR_CMN_FNDRINFO, ATTR_CMN_OBJTAG} with EINVAL. In particular ATTR_CMN_NAME
+and ATTR_CMN_OBJTYPE were unsupported.
+
+The macOS (Darwin) build of Ruby's dir.c globber resolves every *literal* path
+component via replace_real_basename(), which calls
+
+    getattrlist(path, {ATTR_CMN_NAME | ATTR_CMN_OBJTYPE}, ..., FSOPT_NOFOLLOW)
+
+and, on failure, marks the component path_noent -- there is no lstat fallback
+on this code path (USE_NAME_ON_FS_REAL_BASENAME). So the EINVAL made Dir.glob /
+Pathname.glob return empty for ANY pattern containing a literal component
+(e.g. "/usr/*", "/bin/bash"), while pure-magic or base-relative globs worked.
+
+This silently broke Homebrew under Darling: Keg#empty_installation? uses
+Pathname.glob and therefore always saw a freshly-built keg as empty, aborting
+every --build-from-source install with "Empty installation". It also affects
+any program relying on glob(3) real-basename resolution or getattrlistbulk.
+
+Implement both attributes:
+- ATTR_CMN_NAME: pack an attrreference_t + the entry's basename (from the
+  supplied path, or /proc/self/fd/<fd> for the fd variant).
+- ATTR_CMN_OBJTYPE: stat the entry and return the fsobj_type_t (VREG/VDIR/...).
+
+Field order (name ref, then objtype, then the name string in the variable-data
+area) matches what replace_real_basename expects.
+
+With this, Ruby Dir.glob matches Dir.entries, empty_installation? is correct,
+and 'brew install --build-from-source' completes cleanly with no workarounds.
+---
+ .../bsd/helper/xattr/getattrlist_generic.c    | 157 +++++++++++++++++-
+ 1 file changed, 156 insertions(+), 1 deletion(-)
+
+diff --git a/darling/src/libsystem_kernel/emulation/include/xnu_syscall/bsd/helper/xattr/getattrlist_generic.c b/darling/src/libsystem_kernel/emulation/include/xnu_syscall/bsd/helper/xattr/getattrlist_generic.c
+index 8377a325d56dd944c5883e663e89a9284339ad0b..75834a70f5cda191c48817d470bb1760d9e5c690 100644
+--- a/darling/src/libsystem_kernel/emulation/include/xnu_syscall/bsd/helper/xattr/getattrlist_generic.c
++++ b/darling/src/libsystem_kernel/emulation/include/xnu_syscall/bsd/helper/xattr/getattrlist_generic.c
+@@ -7,6 +7,7 @@
+ #include <darling/emulation/conversion/fcntl/open.h>
+ #include <darling/emulation/conversion/common_at.h>
+ #include <darling/emulation/linux_premigration/vchroot_expand.h>
++#include <darling/emulation/conversion/stat/common.h>
+ #include <darling/emulation/xnu_syscall/bsd/impl/dirent/getdirentries.h>
+ #include <darling/emulation/xnu_syscall/bsd/impl/unistd/dup.h>
+ #include <darling/emulation/xnu_syscall/bsd/impl/fcntl/open.h>
+@@ -15,17 +16,49 @@
+ 
+ #define ATTR_BIT_MAP_COUNT 5
+ 
+-#define COMMON_SUPPORTED (ATTR_CMN_FNDRINFO | ATTR_CMN_OBJTAG)
++#define COMMON_SUPPORTED (ATTR_CMN_NAME | ATTR_CMN_OBJTYPE | ATTR_CMN_FNDRINFO | ATTR_CMN_OBJTAG)
+ #define VOLUME_SUPPORTED 0
+ #define DIR_SUPPORTED (ATTR_DIR_ENTRYCOUNT)
+ #define FILE_SUPPORTED (ATTR_FILE_RSRCLENGTH)
+ #define FORK_SUPPORTED 0
+ 
++#define ATTR_CMN_NAME 0x00000001
++#define ATTR_CMN_OBJTYPE 0x00000008
+ #define ATTR_CMN_FNDRINFO 0x4000
+ #define ATTR_FILE_RSRCLENGTH 0x1000
+ #define ATTR_CMN_OBJTAG 0x00000010
+ #define ATTR_DIR_ENTRYCOUNT 0x00000002
+ 
++// fsobj_type_t values (sys/vnode.h) returned for ATTR_CMN_OBJTYPE.
++#define DTAPE_VNON  0
++#define DTAPE_VREG  1
++#define DTAPE_VDIR  2
++#define DTAPE_VBLK  3
++#define DTAPE_VCHR  4
++#define DTAPE_VLNK  5
++#define DTAPE_VSOCK 6
++#define DTAPE_VFIFO 7
++
++#define LINUX_S_IFMT   0170000
++#define LINUX_S_IFSOCK 0140000
++#define LINUX_S_IFLNK  0120000
++#define LINUX_S_IFREG  0100000
++#define LINUX_S_IFBLK  0060000
++#define LINUX_S_IFDIR  0040000
++#define LINUX_S_IFCHR  0020000
++#define LINUX_S_IFIFO  0010000
++
++#ifndef LINUX_AT_SYMLINK_NOFOLLOW
++#define LINUX_AT_SYMLINK_NOFOLLOW 0x100
++#endif
++
++// attrreference_t as packed by getattrlist for variable-length attributes
++// (e.g. ATTR_CMN_NAME). attr_dataoffset is relative to the reference itself.
++struct dtape_attrreference {
++	int attr_dataoffset;
++	unsigned int attr_length;
++};
++
+ #define XATTR_FINDER_INFO "com.apple.FinderInfo"
+ #define XATTR_RESOURCE_FORK "com.apple.ResourceFork"
+ 
+@@ -39,6 +72,7 @@
+ extern void *memcpy(void *dest, const void *src, __SIZE_TYPE__ n);
+ extern void *memset(void *s, int c, __SIZE_TYPE__ n);
+ extern char *strcpy(char *dest, const char *src);
++extern __SIZE_TYPE__ strlen(const char *s);
+ 
+ long
+ FUNC_NAME(int fd,
+@@ -85,6 +119,99 @@ struct xnu_attrlist* alist, void *attributeBuffer, __SIZE_TYPE__ bufferSize, uns
+ 	if ((alist->forkattr & FORK_SUPPORTED) != alist->forkattr)
+ 		return -EINVAL;
+ 
++	// ATTR_CMN_NAME: the entry's on-disk name. For the path variants this is the
++	// basename of the supplied path; for fgetattrlist we resolve the fd through
++	// /proc/self/fd. Ruby's Dir.glob (replace_real_basename) requests this for
++	// every literal path component, so without it glob silently returns nothing.
++	char nameBuf[256];
++	const char *theName = nameBuf;
++	__SIZE_TYPE__ nameFieldLen = 0; // strlen + 1 (NUL)
++	__SIZE_TYPE__ nameAligned = 0;
++	if (alist->commonattr & ATTR_CMN_NAME)
++	{
++#if HAS_PATH
++		const char *p = path;
++#else
++		// resolve the fd to a path via /proc/self/fd/<fd>, then take its basename
++		char fdlink[64];
++		static const char pfx[] = "/proc/self/fd/";
++		__SIZE_TYPE__ k = 0;
++		for (const char *s = pfx; *s; ++s)
++			fdlink[k++] = *s;
++		if (fd == 0)
++			fdlink[k++] = '0';
++		else
++		{
++			int v = fd;
++			char tmp[16];
++			int t = 0;
++			if (v < 0) { fdlink[k++] = '-'; v = -v; }
++			while (v > 0 && t < (int) sizeof(tmp)) { tmp[t++] = (char) ('0' + (v % 10)); v /= 10; }
++			while (t > 0)
++				fdlink[k++] = tmp[--t];
++		}
++		fdlink[k] = '\0';
++		long rl = LINUX_SYSCALL(__NR_readlinkat, -100 /* AT_FDCWD */, fdlink, nameBuf, sizeof(nameBuf) - 1);
++		if (rl < 0)
++			rl = 0;
++		nameBuf[rl] = '\0';
++		const char *p = nameBuf;
++#endif
++		// strip trailing slashes, then isolate the basename
++		__SIZE_TYPE__ pl = strlen(p);
++		while (pl > 1 && p[pl - 1] == '/')
++			--pl;
++		__SIZE_TYPE__ start = 0;
++		for (__SIZE_TYPE__ i = pl; i > 0; --i)
++		{
++			if (p[i - 1] == '/') { start = i; break; }
++		}
++		__SIZE_TYPE__ bl = pl - start;
++		char tmpname[256];
++		if (bl > sizeof(tmpname) - 1)
++			bl = sizeof(tmpname) - 1;
++		memcpy(tmpname, p + start, bl);
++		tmpname[bl] = '\0';
++		memcpy(nameBuf, tmpname, bl + 1); // p may alias nameBuf (fd case); copy via tmp first
++		theName = nameBuf;
++		nameFieldLen = bl + 1;
++		nameAligned = (nameFieldLen + 3) & ~(__SIZE_TYPE__) 3;
++		spaceNeeded += sizeof(struct dtape_attrreference) + nameAligned;
++	}
++
++	// ATTR_CMN_OBJTYPE: the vnode type (VREG/VDIR/VLNK/...). Ruby's glob requests
++	// this together with ATTR_CMN_NAME and uses it to decide whether a plain path
++	// component is a directory to descend into; getattrlist failing here makes
++	// glob treat the component as non-existent.
++	unsigned int objType = DTAPE_VNON;
++	if (alist->commonattr & ATTR_CMN_OBJTYPE)
++	{
++		struct linux_stat lst;
++		long sr;
++		int lflags = (options & FSOPT_NOFOLLOW) ? LINUX_AT_SYMLINK_NOFOLLOW : 0;
++#if HAS_PATH
++#ifdef __NR_newfstatat
++		sr = LINUX_SYSCALL(__NR_newfstatat, vc.dfd, vc.path, &lst, lflags);
++#else
++		sr = LINUX_SYSCALL(__NR_fstatat64, vc.dfd, vc.path, &lst, lflags);
++#endif
++#else
++		sr = LINUX_SYSCALL(__NR_fstat, fd, &lst);
++#endif
++		if (sr >= 0)
++		{
++			unsigned int fmt = lst.st_mode & LINUX_S_IFMT;
++			if (fmt == LINUX_S_IFREG) objType = DTAPE_VREG;
++			else if (fmt == LINUX_S_IFDIR) objType = DTAPE_VDIR;
++			else if (fmt == LINUX_S_IFLNK) objType = DTAPE_VLNK;
++			else if (fmt == LINUX_S_IFBLK) objType = DTAPE_VBLK;
++			else if (fmt == LINUX_S_IFCHR) objType = DTAPE_VCHR;
++			else if (fmt == LINUX_S_IFSOCK) objType = DTAPE_VSOCK;
++			else if (fmt == LINUX_S_IFIFO) objType = DTAPE_VFIFO;
++		}
++		spaceNeeded += sizeof(uint32_t); // fsobj_type_t
++	}
++
+ 	if (alist->commonattr & ATTR_CMN_FNDRINFO)
+ 		spaceNeeded += 32;
+ 	if (alist->fileattr & ATTR_FILE_RSRCLENGTH)
+@@ -97,6 +224,24 @@ struct xnu_attrlist* alist, void *attributeBuffer, __SIZE_TYPE__ bufferSize, uns
+ 	ourBuffer = (char*) __builtin_alloca(spaceNeeded);
+ 	next = ourBuffer + 4;
+ 
++	// ATTR_CMN_NAME is the lowest common-attr bit, so its fixed-size reference is
++	// packed first; the name string itself goes into the variable-data area after
++	// all fixed attributes (filled in below once `next` reaches that area).
++	char *nameRef = 0;
++	if (alist->commonattr & ATTR_CMN_NAME)
++	{
++		nameRef = next;
++		next += sizeof(struct dtape_attrreference);
++	}
++
++	// ATTR_CMN_OBJTYPE (bit 0x8) is packed right after the name reference, matching
++	// the field order Ruby's replace_real_basename expects (ref then objtype).
++	if (alist->commonattr & ATTR_CMN_OBJTYPE)
++	{
++		*((uint32_t*) next) = objType;
++		next += sizeof(uint32_t);
++	}
++
+ 	if (alist->commonattr & ATTR_CMN_FNDRINFO)
+ 	{
+ #if HAS_PATH
+@@ -170,6 +315,16 @@ attr_dir_entrycount_out_no_fd:
+ 		next += 4;
+ 	}
+ 
++	if (nameRef)
++	{
++		// `next` now points at the variable-data area (after every fixed attr).
++		struct dtape_attrreference *ref = (struct dtape_attrreference*) nameRef;
++		ref->attr_dataoffset = (int) (next - nameRef);
++		ref->attr_length = (unsigned int) nameFieldLen;
++		memcpy(next, theName, nameFieldLen);
++		next += nameAligned;
++	}
++
+ 	if (!(options & FSOPT_REPORT_FULLSIZE) && bufferSize < spaceNeeded)
+ 		bufferSize = spaceNeeded;
+ 

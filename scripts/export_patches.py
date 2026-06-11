@@ -17,6 +17,29 @@ def source_repo(source_root: Path, module: str) -> Path:
     return source_root / Path(module).relative_to("darling")
 
 
+def format_patch_command(patch: dict, commit: str) -> list[str]:
+    revision = (
+        f"{patch['source-base']}..{commit}"
+        if patch.get("source-base")
+        else commit
+    )
+    command = [
+        "git",
+        "format-patch",
+        "--stdout",
+        "--no-signature",
+        "--no-numbered",
+        "--subject-prefix=PATCH",
+        "--full-index",
+        "--binary",
+        "--no-renames",
+    ]
+    if not patch.get("source-base"):
+        command.append("-1")
+    command.append(revision)
+    return command
+
+
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("profile")
@@ -39,19 +62,7 @@ def main() -> None:
             stdout=subprocess.PIPE,
         ).stdout.strip()
         content = subprocess.run(
-            [
-                "git",
-                "format-patch",
-                "-1",
-                "--stdout",
-                "--no-signature",
-                "--no-numbered",
-                "--subject-prefix=PATCH",
-                "--full-index",
-                "--binary",
-                "--no-renames",
-                commit,
-            ],
+            format_patch_command(patch, commit),
             cwd=repo,
             check=True,
             stdout=subprocess.PIPE,
