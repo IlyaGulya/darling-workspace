@@ -19,7 +19,7 @@ lifecycle logging.
  6 files changed, 53 insertions(+), 5 deletions(-)
 
 diff --git a/duct-tape/include/darlingserver/duct-tape.h b/duct-tape/include/darlingserver/duct-tape.h
-index a5ddfc7..0d31100 100644
+index a5ddfc7877d4b8eef7b0783dd678eb38de73785e..0d3110084a1759e16c8ab9c9c719677430f58103 100644
 --- a/duct-tape/include/darlingserver/duct-tape.h
 +++ b/duct-tape/include/darlingserver/duct-tape.h
 @@ -103,6 +103,7 @@ bool dtape_kqchan_mach_port_has_events(dtape_kqchan_mach_port_t* kqchan);
@@ -31,7 +31,7 @@ index a5ddfc7..0d31100 100644
  
  uint64_t dtape_debug_task_port_count(dtape_task_t* task);
 diff --git a/duct-tape/include/darlingserver/duct-tape/types.h b/duct-tape/include/darlingserver/duct-tape/types.h
-index b53134d..9e40d64 100644
+index b53134d5c2c265c2b7615c940f3ee894c68f4e34..9e40d640a5fa3dc4198baeada7d7b9c6c4cf50ee 100644
 --- a/duct-tape/include/darlingserver/duct-tape/types.h
 +++ b/duct-tape/include/darlingserver/duct-tape/types.h
 @@ -25,6 +25,7 @@ typedef enum dtape_semaphore_wait_result {
@@ -43,7 +43,7 @@ index b53134d..9e40d64 100644
  
  typedef void (*dtape_thread_continuation_callback_f)(void* context);
 diff --git a/duct-tape/src/semaphore.c b/duct-tape/src/semaphore.c
-index 20b1a62..17071bc 100644
+index 20b1a626c1267211bd1ffa5f926c407b0e43cf97..17071bcca89b8bd3603bae31a1745d4d809127c9 100644
 --- a/duct-tape/src/semaphore.c
 +++ b/duct-tape/src/semaphore.c
 @@ -48,6 +48,24 @@ dtape_semaphore_wait_result_t dtape_semaphore_down(dtape_semaphore_t* semaphore)
@@ -72,7 +72,7 @@ index 20b1a62..17071bc 100644
  	switch (dtape_semaphore_down(semaphore)) {
  		case dtape_semaphore_wait_result_ok:
 diff --git a/internal-include/darlingserver/process.hpp b/internal-include/darlingserver/process.hpp
-index c97be30..eeb3150 100644
+index c97be303837591b80fe0fc5280d02b481a4e5e13..eeb3150fbea99866209b76ccdbe8d32cfeb65ca8 100644
 --- a/internal-include/darlingserver/process.hpp
 +++ b/internal-include/darlingserver/process.hpp
 @@ -180,7 +180,7 @@ namespace DarlingServer {
@@ -85,7 +85,7 @@ index c97be30..eeb3150 100644
  		bool is64Bit() const;
  		Architecture architecture() const;
 diff --git a/src/call.cpp b/src/call.cpp
-index cc10f1d..7ad16e8 100644
+index cc10f1d8e452f7e967051e9ace5b24ed00bba59a..7ad16e8fc8c02ecdc14613fe1bfbb23ba26bd8d2 100644
 --- a/src/call.cpp
 +++ b/src/call.cpp
 @@ -21,6 +21,7 @@
@@ -108,7 +108,7 @@ index cc10f1d..7ad16e8 100644
  			code = -ESRCH;
  		}
 diff --git a/src/process.cpp b/src/process.cpp
-index 9cd7b81..3ba0ec9 100644
+index 9cd7b8194268eecf7c37f75804bae4982dcbe2ab..3ba0ec95f9a7e10130bffbac459afb257328b07a 100644
 --- a/src/process.cpp
 +++ b/src/process.cpp
 @@ -86,7 +86,11 @@ DarlingServer::Process::Process(ID id, NSID nsid, Architecture architecture, int
@@ -166,6 +166,3 @@ index 9cd7b81..3ba0ec9 100644
  };
  
  void DarlingServer::Process::registerListeningKqchan(std::shared_ptr<Kqchan::Process> kqchan) {
--- 
-2.43.0
-

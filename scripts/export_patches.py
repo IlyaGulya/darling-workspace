@@ -22,6 +22,7 @@ def main() -> None:
     parser.add_argument("profile")
     parser.add_argument("--source-root", required=True, type=Path)
     parser.add_argument("--manifest-repo", type=Path, default=Path(__file__).parents[1])
+    parser.add_argument("--check", action="store_true")
     args = parser.parse_args()
 
     profile_dir = args.manifest_repo.resolve() / "patches" / args.profile
@@ -38,18 +39,40 @@ def main() -> None:
             stdout=subprocess.PIPE,
         ).stdout.strip()
         content = subprocess.run(
-            ["git", "format-patch", "-1", "--stdout", commit],
+            [
+                "git",
+                "format-patch",
+                "-1",
+                "--stdout",
+                "--no-signature",
+                "--no-numbered",
+                "--subject-prefix=PATCH",
+                "--full-index",
+                "--binary",
+                "--no-renames",
+                commit,
+            ],
             cwd=repo,
             check=True,
             stdout=subprocess.PIPE,
         ).stdout
         output = profile_dir / patch["path"]
-        output.parent.mkdir(parents=True, exist_ok=True)
-        output.write_bytes(content)
-        patch["source-commit"] = commit
-        patch["sha256sum"] = hashlib.sha256(content).hexdigest()
+        checksum = hashlib.sha256(content).hexdigest()
+        if args.check:
+            if patch.get("source-commit") != commit:
+                raise SystemExit(f"{patch['path']}: source commit drift")
+            if patch.get("sha256sum") != checksum:
+                raise SystemExit(f"{patch['path']}: checksum drift")
+            if not output.is_file() or output.read_bytes() != content:
+                raise SystemExit(f"{patch['path']}: exported patch drift")
+        else:
+            output.parent.mkdir(parents=True, exist_ok=True)
+            output.write_bytes(content)
+            patch["source-commit"] = commit
+            patch["sha256sum"] = checksum
 
-    manifest_path.write_text(yaml.safe_dump(data, sort_keys=False, width=1000))
+    if not args.check:
+        manifest_path.write_text(yaml.safe_dump(data, sort_keys=False, width=1000))
 
 
 if __name__ == "__main__":

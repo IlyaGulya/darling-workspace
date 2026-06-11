@@ -30,6 +30,7 @@ cd ~/work/darling-dev
 west update
 west dw restore
 west dw beads sync --import-only --rebuild
+west patch verify --profile homebrew
 west patch apply --profile homebrew --roll-back
 ```
 
@@ -42,6 +43,7 @@ west dw summary
 west dw beads ready
 west dw restore
 west patch list --profile homebrew
+west patch verify --profile homebrew
 west patch apply --profile homebrew --roll-back
 west patch clean --profile homebrew
 west dw handoff
@@ -63,12 +65,31 @@ branches selected for local composition with:
 ```bash
 ./scripts/export_patches.py homebrew \
   --source-root /path/to/existing/darling
+./scripts/export_patches.py homebrew --check \
+  --source-root /path/to/existing/darling
 ```
 
 `patches/<profile>/patches.yml` records the source branch and commit, Bead or
 PR, patch checksum, and application order. `west patch apply` uses
 `git am --3way`, creates clean `integration/<profile>` branches, records the
 top-level submodule pointers, and writes a frozen profile lock.
+
+## Patch profile invariants
+
+- Canonical editable source: clean `fix/*` branch in the owning repository.
+- Portable integration source: patch files plus `patches/<profile>/patches.yml`.
+- Generated local state: `integration/<profile>` branches and the profile
+  `west.lock.yml`.
+- Historical source: `backup/*` and preserved mega-branches.
+
+Never edit or open a PR from `integration/<profile>`. Never edit patch files or
+generated locks manually. Refresh patches with `scripts/export_patches.py`,
+then run `west patch verify`. Source commits must be full 40-character SHAs.
+
+`west patch clean` only operates when affected repositories are on the matching
+integration branch or detached at `manifest-rev`, and refuses dirty worktrees.
+`--force` is reserved for intentional recovery. The tracked profile lock is
+updated only by a successful `west patch apply`.
 
 One private manifest repository is intentional. Split Beads only if it needs
 different access control or an independent lifecycle.

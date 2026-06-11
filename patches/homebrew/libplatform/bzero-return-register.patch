@@ -11,7 +11,7 @@ Subject: [PATCH] Preserve bzero return register on x86_64
  create mode 100644 tests/darling_bzero_return_regress.c
 
 diff --git a/CMakeLists.txt b/CMakeLists.txt
-index 54d2843..f865d11 100644
+index 54d2843cdc132704b41cc5f55751c91a10c10d55..f865d1198663a3f38e23cb05ef1f44fc72afeb26 100644
 --- a/CMakeLists.txt
 +++ b/CMakeLists.txt
 @@ -2,6 +2,8 @@ project(libplatform)
@@ -35,7 +35,7 @@ index 54d2843..f865d11 100644
  	add_darling_static_library(platform_static32 SOURCES ${platform_sources} $<TARGET_OBJECTS:platform_32bit>)
  	set_target_properties(platform_static32 PROPERTIES COMPILE_FLAGS "-arch ${APPLE_ARCH_32BIT} -DVARIANT_STATIC -fvisibility=hidden")
 diff --git a/src/string/generic/bzero.c b/src/string/generic/bzero.c
-index 4559dde..f12f2c1 100644
+index 4559ddea282a60af6c18771da1ce65a26e9cdffc..f12f2c1f1837c9d19cb2db412c18c79f3660f84d 100644
 --- a/src/string/generic/bzero.c
 +++ b/src/string/generic/bzero.c
 @@ -64,6 +64,13 @@ void
@@ -54,7 +54,7 @@ index 4559dde..f12f2c1 100644
  #if VARIANT_STATIC
 diff --git a/tests/darling_bzero_return_regress.c b/tests/darling_bzero_return_regress.c
 new file mode 100644
-index 0000000..0aa4f94
+index 0000000000000000000000000000000000000000..0aa4f94974a7f6b7cec9d29c13d11303bc54838d
 --- /dev/null
 +++ b/tests/darling_bzero_return_regress.c
 @@ -0,0 +1,36 @@
@@ -94,6 +94,3 @@ index 0000000..0aa4f94
 +	free(ptr);
 +	return 0;
 +}
--- 
-2.43.0
-

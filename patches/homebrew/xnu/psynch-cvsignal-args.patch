@@ -15,7 +15,7 @@ server never saw the condvar's associated mutex; pass mutex.
  3 files changed, 3 insertions(+), 3 deletions(-)
 
 diff --git a/darling/src/libsystem_kernel/emulation/include/xnu_syscall/bsd/impl/psynch/psynch_cvsignal.h b/darling/src/libsystem_kernel/emulation/include/xnu_syscall/bsd/impl/psynch/psynch_cvsignal.h
-index 35e1ca1..48826e9 100644
+index 35e1ca19d64116aed6d39e7edd9691d0ad5daac8..48826e932a4aa9ff444f8ece37f41f92689a5c67 100644
 --- a/darling/src/libsystem_kernel/emulation/include/xnu_syscall/bsd/impl/psynch/psynch_cvsignal.h
 +++ b/darling/src/libsystem_kernel/emulation/include/xnu_syscall/bsd/impl/psynch/psynch_cvsignal.h
 @@ -3,7 +3,7 @@
@@ -28,7 +28,7 @@ index 35e1ca1..48826e9 100644
  
  #endif // LINUX_PSYNCH_CVSIGNAL_H
 diff --git a/darling/src/libsystem_kernel/emulation/src/xnu_syscall/bsd/impl/psynch/psynch_cvbroad.c b/darling/src/libsystem_kernel/emulation/src/xnu_syscall/bsd/impl/psynch/psynch_cvbroad.c
-index 997b2a8..f2dae28 100644
+index 997b2a8d85987497f871d4f1af7e24e730ee105b..f2dae2820875d951744200911ea40f003784779d 100644
 --- a/darling/src/libsystem_kernel/emulation/src/xnu_syscall/bsd/impl/psynch/psynch_cvbroad.c
 +++ b/darling/src/libsystem_kernel/emulation/src/xnu_syscall/bsd/impl/psynch/psynch_cvbroad.c
 @@ -10,7 +10,7 @@ long sys_psynch_cvbroad(void* cv, uint64_t cvlsgen, uint64_t cvudgen, uint32_t f
@@ -41,7 +41,7 @@ index 997b2a8..f2dae28 100644
  	if (ret < 0) {
  		__simple_printf("psynch_cvbroad failed internally: %d", ret);
 diff --git a/darling/src/libsystem_kernel/emulation/src/xnu_syscall/bsd/impl/psynch/psynch_cvsignal.c b/darling/src/libsystem_kernel/emulation/src/xnu_syscall/bsd/impl/psynch/psynch_cvsignal.c
-index a11c77c..53cdb04 100644
+index a11c77cf48829f644baac340cf072652bba1f188..53cdb047ba40c4d121c651510abfa2e8de46c9a8 100644
 --- a/darling/src/libsystem_kernel/emulation/src/xnu_syscall/bsd/impl/psynch/psynch_cvsignal.c
 +++ b/darling/src/libsystem_kernel/emulation/src/xnu_syscall/bsd/impl/psynch/psynch_cvsignal.c
 @@ -6,7 +6,7 @@
@@ -53,6 +53,3 @@ index a11c77c..53cdb04 100644
  		uint64_t tid, uint32_t flags)
  {
  	uint32_t retval;
--- 
-2.43.0
-

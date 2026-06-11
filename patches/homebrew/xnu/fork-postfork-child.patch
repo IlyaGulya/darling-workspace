@@ -13,7 +13,7 @@ and invoke it at the top of the child path before any RPC checkin.
  3 files changed, 8 insertions(+)
 
 diff --git a/darling/src/libsystem_kernel/emulation/include/linux_premigration/elfcalls_wrapper.h b/darling/src/libsystem_kernel/emulation/include/linux_premigration/elfcalls_wrapper.h
-index c5f9972..a7dd5b8 100644
+index c5f99727f2345a99bbfff46c772567a23901deab..a7dd5b845c800da7b7f5368c7f9e8933ccbcd02a 100644
 --- a/darling/src/libsystem_kernel/emulation/include/linux_premigration/elfcalls_wrapper.h
 +++ b/darling/src/libsystem_kernel/emulation/include/linux_premigration/elfcalls_wrapper.h
 @@ -16,6 +16,7 @@ int native_dlclose(void* module);
@@ -25,7 +25,7 @@ index c5f9972..a7dd5b8 100644
  // Native thread wrapping
  void* __darling_thread_create(unsigned long stack_size, unsigned long pthobj_size,
 diff --git a/darling/src/libsystem_kernel/emulation/src/linux_premigration/elfcalls_wrapper.c b/darling/src/libsystem_kernel/emulation/src/linux_premigration/elfcalls_wrapper.c
-index 01213e2..7ee7b58 100644
+index 01213e293cb9cffc601b5134881eeea241d44fc6..7ee7b586832d9f4ce3528af285887e58a76b9c2d 100644
 --- a/darling/src/libsystem_kernel/emulation/src/linux_premigration/elfcalls_wrapper.c
 +++ b/darling/src/libsystem_kernel/emulation/src/linux_premigration/elfcalls_wrapper.c
 @@ -38,6 +38,11 @@ long native_sysconf(int name)
@@ -41,7 +41,7 @@ index 01213e2..7ee7b58 100644
  			void* entry_point, uintptr_t arg3,
  			uintptr_t arg4, uintptr_t arg5, uintptr_t arg6,
 diff --git a/darling/src/libsystem_kernel/emulation/src/xnu_syscall/bsd/impl/process/fork.c b/darling/src/libsystem_kernel/emulation/src/xnu_syscall/bsd/impl/process/fork.c
-index 76b6f53..5ab5d29 100644
+index 76b6f53e21dec0ed37d252ba852d9090e50a2bba..5ab5d291bc4f8a5f09aae216c1abc9d9ddec185e 100644
 --- a/darling/src/libsystem_kernel/emulation/src/xnu_syscall/bsd/impl/process/fork.c
 +++ b/darling/src/libsystem_kernel/emulation/src/xnu_syscall/bsd/impl/process/fork.c
 @@ -34,6 +34,8 @@ long sys_fork(void)
@@ -53,6 +53,3 @@ index 76b6f53..5ab5d29 100644
  		// the old RPC FD will be closed in `guard_table_postfork_child`;
  		// we don't need to close it ourselves.
  		// that should also take care of closing descriptors for any other threads.
--- 
-2.43.0
-

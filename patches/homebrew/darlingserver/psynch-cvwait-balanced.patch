@@ -13,7 +13,7 @@ on the genuine error path.
  1 file changed, 3 insertions(+), 2 deletions(-)
 
 diff --git a/duct-tape/pthread/kern_synch.c b/duct-tape/pthread/kern_synch.c
-index aa2b6d3..961f9a7 100644
+index aa2b6d39ecf12b2c27639db6a7513d263c21fad8..961f9a7434d58f2d52ec94445b89f91d8c50a310 100644
 --- a/duct-tape/pthread/kern_synch.c
 +++ b/duct-tape/pthread/kern_synch.c
 @@ -1161,8 +1161,9 @@ _psynch_cvwait(__unused proc_t p, user_addr_t cv, uint64_t cvlsgen,
@@ -28,6 +28,3 @@ index aa2b6d3..961f9a7 100644
  		return EINVAL;
  	}
  
--- 
-2.43.0
-

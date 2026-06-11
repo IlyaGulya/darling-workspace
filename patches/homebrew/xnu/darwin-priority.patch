@@ -13,7 +13,7 @@ PRIO_DARWIN_NONUI as success, EINVAL otherwise.
  2 files changed, 34 insertions(+)
 
 diff --git a/darling/src/libsystem_kernel/emulation/src/xnu_syscall/bsd/impl/process/getpriority.c b/darling/src/libsystem_kernel/emulation/src/xnu_syscall/bsd/impl/process/getpriority.c
-index a02f1e4..e1adbd4 100644
+index a02f1e4cf263423a8cffd62cc88b041653a15bcd..e1adbd421eb5491a9d5638ea77274f0daf24a49c 100644
 --- a/darling/src/libsystem_kernel/emulation/src/xnu_syscall/bsd/impl/process/getpriority.c
 +++ b/darling/src/libsystem_kernel/emulation/src/xnu_syscall/bsd/impl/process/getpriority.c
 @@ -1,6 +1,19 @@
@@ -37,7 +37,7 @@ index a02f1e4..e1adbd4 100644
  
  	// TODO: Errors
 diff --git a/darling/src/libsystem_kernel/emulation/src/xnu_syscall/bsd/impl/process/setpriority.c b/darling/src/libsystem_kernel/emulation/src/xnu_syscall/bsd/impl/process/setpriority.c
-index ccac110..8c9e6a4 100644
+index ccac110c86f4eea8c95d2f02b23d5edb83956228..8c9e6a4e8a6aa3935119f4f4b631db9fbcb2a58b 100644
 --- a/darling/src/libsystem_kernel/emulation/src/xnu_syscall/bsd/impl/process/setpriority.c
 +++ b/darling/src/libsystem_kernel/emulation/src/xnu_syscall/bsd/impl/process/setpriority.c
 @@ -1,6 +1,27 @@
@@ -68,6 +68,3 @@ index ccac110..8c9e6a4 100644
  	return LINUX_SYSCALL(__NR_setpriority, which, who, prio);
  
  	// TODO: Errors
--- 
-2.43.0
-
