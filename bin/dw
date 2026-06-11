@@ -74,8 +74,16 @@ snapshot() {
   "$DW_ROOT/scripts/generate_manifest.py" \
     --source "$DW_DARLING_SRC" \
     --output "$DW_ROOT/locked.xml"
+  "$DW_ROOT/scripts/generate_manifest.py" \
+    --source "$DW_DARLING_SRC" \
+    --output "$DW_ROOT/base.xml" \
+    --base
+  "$DW_ROOT/scripts/handoff.py" pack \
+    --source "$DW_DARLING_SRC" \
+    --bundles "$DW_ROOT/handoff"
   printf 'wrote %s\n' "$output"
   printf 'wrote %s\n' "$DW_ROOT/locked.xml"
+  printf 'wrote %s\n' "$DW_ROOT/base.xml"
 }
 
 doctor() {
@@ -103,9 +111,12 @@ bootstrap() {
   mkdir -p "$destination"
   (
     cd "$destination"
-    repo init -u "$manifest_url" -m locked.xml
+    repo init -u "$manifest_url" -m base.xml
     repo sync -c --no-tags -j"${DW_SYNC_JOBS:-16}"
   )
+  "$DW_ROOT/scripts/handoff.py" restore \
+    --source "$destination/darling" \
+    --bundles "$DW_ROOT/handoff"
   printf 'workspace ready at %s\n' "$destination"
 }
 

@@ -1,0 +1,75 @@
+{
+  "version": 1,
+  "projects": [
+    {
+      "path": ".",
+      "branch": "fix/homebrew-psynch-ruby-hang",
+      "head": "5fb98a598737725fc1a70f1b792e76d36c856369",
+      "base": "5f2d7401d878455cf3c3c0865ee5a4290dfa03f0",
+      "bundle": "root.bundle"
+    },
+    {
+      "path": "src/external/darlingserver",
+      "branch": "fix/homebrew-psynch-ruby-hang",
+      "head": "32af4d56ddcdfa98c932d7b1dfb98c758663b7f0",
+      "base": "89751e64bc6c2082f7725061824ee0e33395b0de",
+      "bundle": "src__external__darlingserver.bundle"
+    },
+    {
+      "path": "src/external/dyld",
+      "branch": "fix/homebrew-psynch-ruby-hang",
+      "head": "a9c2e2922a9fa6226f591fe9101bcbc706cf6dcd",
+      "base": "63f667cf06d7ed59553adebb0c8d70a117135ac9",
+      "bundle": "src__external__dyld.bundle"
+    },
+    {
+      "path": "src/external/libplatform",
+      "branch": "fix/bzero-return-register",
+      "head": "a35ec396c8b3221dbf33a5693f234494e40737ec",
+      "base": "5a3e5b529d25c70257dcfa97e94f1826e71e9f40",
+      "bundle": "src__external__libplatform.bundle"
+    },
+    {
+      "path": "src/external/libpthread",
+      "branch": "fix/homebrew-psynch-ruby-hang",
+      "head": "3de6464ed57c4b7127207e5aeefd674f5c0f31b6",
+      "base": "f07f265bfbcf071c1adfc808de971e053ea5edc5",
+      "bundle": "src__external__libpthread.bundle"
+    },
+    {
+      "path": "src/external/libunwind",
+      "branch": "fix/homebrew-psynch-ruby-hang",
+      "head": "57781ec72f7a426a809c2a807ce83d98dd3f5ee0",
+      "base": "a91da1a0e262e04eb601152a84228ff733e48422",
+      "bundle": "src__external__libunwind.bundle"
+    },
+    {
+      "path": "src/external/objc4",
+      "branch": "fix/homebrew-psynch-ruby-hang",
+      "head": "ec7d97e9c95ab298af3d2ee4c898b9ce0866c9eb",
+      "base": "1a12df76d12bfc9fdfffadb290f7742763568765",
+      "bundle": "src__external__objc4.bundle"
+    },
+    {
+      "path": "src/external/perl",
+      "branch": "fix/disable-nsgetexecutablepath",
+      "head": "b37ac3179fae9e090104d93a218c835452e17c21",
+      "base": "a65d68be2146d85928e511aabc8f3a2b05e564ba",
+      "bundle": "src__external__perl.bundle"
+    },
+    {
+      "path": "src/external/xnu",
+      "branch": "fix/homebrew-psynch-ruby-hang",
+      "head": "b8d9ccc9c1daaf050f21530200008dcc4fa93a95",
+      "base": "5f26a4c2365d9774b5a1e66ae7da20b61ab6d2db",
+      "bundle": "src__external__xnu.bundle"
+    },
+    {
+      "path": "src/external/zlib",
+      "branch": "fix/homebrew-psynch-ruby-hang",
+      "head": "ada74d8636d868f9ca609cea5ead2254610081ab",
+      "base": "677de9b1c2bea1e428f56d8fc63300aa471eaf99",
+      "bundle": "src__external__zlib.bundle"
+    }
+  ]
+}

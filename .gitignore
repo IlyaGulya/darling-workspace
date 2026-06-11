@@ -12,3 +12,4 @@
 
 workspace.env
 .repo/
+scripts/__pycache__/
