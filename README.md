@@ -3,11 +3,15 @@
 Private `repo` manifest and portable coordination state for development on
 Darling without adding personal metadata to Darling or its upstream submodules.
 
+This repository is the source of truth for the development workspace. A
+checkout under `~/work/darling` is an existing working copy, not the durable
+record of tasks, unpublished branches, or PR preparation.
+
 ## Ownership boundaries
 
 - `base.xml`: publicly fetchable revisions used to bootstrap.
 - `locked.xml`: exact local SHA of every repository for auditing.
-- `handoff/`: minimal Git bundles containing unpublished topic commits.
+- `handoff/`: Git bundles containing every local non-default branch.
 - `.beads/issues.jsonl`: shared task graph for humans and agents.
 - `pr-drafts/`: PR descriptions and review notes.
 - `state/repos.tsv`: reproducible snapshot of checked-out commits and branches.
@@ -48,10 +52,10 @@ bin/dw beads ready
 bin/dw handoff
 ```
 
-`dw handoff` exports Beads, refreshes both manifests, and creates minimal Git
-bundles for topic commits not contained in `origin/main` or `origin/master`.
-The bootstrap flow syncs `base.xml`, then restores those topic branches from
-the bundles. This moves committed WIP without pushing it to upstream or forks.
+`dw handoff` exports Beads, refreshes both manifests, and creates Git bundles
+for every local branch except an unchanged `main`/`master`. This includes
+active topics, clean PR branches, and backup snapshots. The bootstrap flow
+syncs `base.xml`, then restores all those branch refs from the bundles.
 
 Uncommitted worktree changes cannot be handed off. `dw handoff` prints every
 dirty repository so it can be committed or intentionally discarded first.
@@ -75,3 +79,6 @@ to this repository.
 
 One private manifest repository is intentional. Split Beads only if it needs
 different access control or an independent lifecycle.
+
+See `docs/branch-migration.md` for converting the preserved mega-branches into
+clean per-PR branches and eventually retiring the old checkout.
