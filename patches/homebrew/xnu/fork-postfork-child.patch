@@ -1,0 +1,58 @@
+From 86cb1cf68d174a5255e075528ec8679abebb4b20 Mon Sep 17 00:00:00 2001
+From: Ilya Gulya <ilya@gulya.me>
+Date: Wed, 10 Jun 2026 10:07:05 +0000
+Subject: [PATCH] fork: reset mldr/elfcalls state in the fork child
+
+The fork child reused the parent's elfcalls/mldr state, which is invalid
+after fork. Add __mldr_postfork_child() (wrapping elfcalls()->postfork_child())
+and invoke it at the top of the child path before any RPC checkin.
+---
+ .../emulation/include/linux_premigration/elfcalls_wrapper.h  | 1 +
+ .../emulation/src/linux_premigration/elfcalls_wrapper.c      | 5 +++++
+ .../emulation/src/xnu_syscall/bsd/impl/process/fork.c        | 2 ++
+ 3 files changed, 8 insertions(+)
+
+diff --git a/darling/src/libsystem_kernel/emulation/include/linux_premigration/elfcalls_wrapper.h b/darling/src/libsystem_kernel/emulation/include/linux_premigration/elfcalls_wrapper.h
+index c5f9972..a7dd5b8 100644
+--- a/darling/src/libsystem_kernel/emulation/include/linux_premigration/elfcalls_wrapper.h
++++ b/darling/src/libsystem_kernel/emulation/include/linux_premigration/elfcalls_wrapper.h
+@@ -16,6 +16,7 @@ int native_dlclose(void* module);
+ void native_exit(int ec);
+ 
+ long native_sysconf(int name);
++void __mldr_postfork_child(void);
+ 
+ // Native thread wrapping
+ void* __darling_thread_create(unsigned long stack_size, unsigned long pthobj_size,
+diff --git a/darling/src/libsystem_kernel/emulation/src/linux_premigration/elfcalls_wrapper.c b/darling/src/libsystem_kernel/emulation/src/linux_premigration/elfcalls_wrapper.c
+index 01213e2..7ee7b58 100644
+--- a/darling/src/libsystem_kernel/emulation/src/linux_premigration/elfcalls_wrapper.c
++++ b/darling/src/libsystem_kernel/emulation/src/linux_premigration/elfcalls_wrapper.c
+@@ -38,6 +38,11 @@ long native_sysconf(int name)
+ 	return -1;
+ }
+ 
++void __mldr_postfork_child(void)
++{
++	return elfcalls()->postfork_child();
++}
++
+ void* __darling_thread_create(unsigned long stack_size, unsigned long pthobj_size,
+ 			void* entry_point, uintptr_t arg3,
+ 			uintptr_t arg4, uintptr_t arg5, uintptr_t arg6,
+diff --git a/darling/src/libsystem_kernel/emulation/src/xnu_syscall/bsd/impl/process/fork.c b/darling/src/libsystem_kernel/emulation/src/xnu_syscall/bsd/impl/process/fork.c
+index 76b6f53..5ab5d29 100644
+--- a/darling/src/libsystem_kernel/emulation/src/xnu_syscall/bsd/impl/process/fork.c
++++ b/darling/src/libsystem_kernel/emulation/src/xnu_syscall/bsd/impl/process/fork.c
+@@ -34,6 +34,8 @@ long sys_fork(void)
+ 	{
+ 		// in the child
+ 
++		__mldr_postfork_child();
++
+ 		// the old RPC FD will be closed in `guard_table_postfork_child`;
+ 		// we don't need to close it ourselves.
+ 		// that should also take care of closing descriptors for any other threads.
+-- 
+2.43.0
+

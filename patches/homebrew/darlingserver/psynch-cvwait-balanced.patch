@@ -1,0 +1,33 @@
+From ce7ce5e7888eb5b3c20ec652db097519c9c2fbe5 Mon Sep 17 00:00:00 2001
+From: Ilya Gulya <ilya@gulya.me>
+Date: Wed, 10 Jun 2026 10:05:56 +0000
+Subject: [PATCH] psynch: allow balanced cvwait sequences (is_seqhigher)
+
+_psynch_cvwait rejected valid cvwait sequences by comparing with
+is_seqhigher_eq; equal sequence numbers are legitimate for a balanced
+cvwait/cvsignal pair. Use is_seqhigher so only strictly-higher (stale)
+sequences are rejected, and emit a detailed __FAILEDUSERTEST2__ trace
+on the genuine error path.
+---
+ duct-tape/pthread/kern_synch.c | 5 +++--
+ 1 file changed, 3 insertions(+), 2 deletions(-)
+
+diff --git a/duct-tape/pthread/kern_synch.c b/duct-tape/pthread/kern_synch.c
+index aa2b6d3..961f9a7 100644
+--- a/duct-tape/pthread/kern_synch.c
++++ b/duct-tape/pthread/kern_synch.c
+@@ -1161,8 +1161,9 @@ _psynch_cvwait(__unused proc_t p, user_addr_t cv, uint64_t cvlsgen,
+ 	 * timeouts. However S word needs to be within bounds and validated at
+ 	 * user level as well.
+ 	 */
+-	if (is_seqhigher_eq(csgen, lockseq) != 0) {
+-		__FAILEDUSERTEST__("psync_cvwait; invalid sequence numbers\n");
++	if (is_seqhigher(csgen, lockseq) != 0) {
++		__FAILEDUSERTEST2__("psync_cvwait; invalid sequence numbers cv=0x%llx cvlsgen=0x%llx cvugen=0x%x mutex=0x%llx mugen=0x%llx flags=0x%x cgen=0x%x csgen=0x%x lockseq=0x%x",
++				cv, cvlsgen, cvugen, mutex, mugen, flags, cgen, csgen, lockseq);
+ 		return EINVAL;
+ 	}
+ 
+-- 
+2.43.0
+

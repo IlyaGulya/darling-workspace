@@ -4,4 +4,8 @@ west-commands:
       - name: dw
         class: DarlingWorkspace
         help: Darling workspace coordination and handoff
-
+  - file: west_commands/patch.py
+    commands:
+      - name: patch
+        class: DarlingPatch
+        help: Apply tracked Darling patch profiles

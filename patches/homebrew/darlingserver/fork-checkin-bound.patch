@@ -1,0 +1,171 @@
+From 8746148c12bda639054f15b0510e1578a11034df Mon Sep 17 00:00:00 2001
+From: Ilya Gulya <ilya@gulya.me>
+Date: Wed, 10 Jun 2026 10:05:56 +0000
+Subject: [PATCH] process: bound fork-child checkin wait with a timeout
+
+waitForChildAfterFork() blocked forever on the fork-wait semaphore, so a
+child that never checked in wedged the parent's microthread permanently.
+Add dtape_semaphore_down_timeout (+ dtape_semaphore_wait_result_timed_out)
+and wait at most 30s; waitForChildAfterFork() now returns bool and
+ForkWaitForChild replies -ETIMEDOUT on timeout. Add fork-child checkin
+lifecycle logging.
+---
+ duct-tape/include/darlingserver/duct-tape.h   |  1 +
+ .../include/darlingserver/duct-tape/types.h   |  1 +
+ duct-tape/src/semaphore.c                     | 18 +++++++++++
+ internal-include/darlingserver/process.hpp    |  2 +-
+ src/call.cpp                                  |  5 ++-
+ src/process.cpp                               | 31 +++++++++++++++++--
+ 6 files changed, 53 insertions(+), 5 deletions(-)
+
+diff --git a/duct-tape/include/darlingserver/duct-tape.h b/duct-tape/include/darlingserver/duct-tape.h
+index a5ddfc7..0d31100 100644
+--- a/duct-tape/include/darlingserver/duct-tape.h
++++ b/duct-tape/include/darlingserver/duct-tape.h
+@@ -103,6 +103,7 @@ bool dtape_kqchan_mach_port_has_events(dtape_kqchan_mach_port_t* kqchan);
+ 
+ void dtape_semaphore_up(dtape_semaphore_t* semaphore);
+ dtape_semaphore_wait_result_t dtape_semaphore_down(dtape_semaphore_t* semaphore);
++dtape_semaphore_wait_result_t dtape_semaphore_down_timeout(dtape_semaphore_t* semaphore, unsigned int seconds);
+ bool dtape_semaphore_down_simple(dtape_semaphore_t* semaphore);
+ 
+ uint64_t dtape_debug_task_port_count(dtape_task_t* task);
+diff --git a/duct-tape/include/darlingserver/duct-tape/types.h b/duct-tape/include/darlingserver/duct-tape/types.h
+index b53134d..9e40d64 100644
+--- a/duct-tape/include/darlingserver/duct-tape/types.h
++++ b/duct-tape/include/darlingserver/duct-tape/types.h
+@@ -25,6 +25,7 @@ typedef enum dtape_semaphore_wait_result {
+ 	dtape_semaphore_wait_result_error = -1,
+ 	dtape_semaphore_wait_result_ok = 0,
+ 	dtape_semaphore_wait_result_interrupted = 1,
++	dtape_semaphore_wait_result_timed_out = 2,
+ } dtape_semaphore_wait_result_t;
+ 
+ typedef void (*dtape_thread_continuation_callback_f)(void* context);
+diff --git a/duct-tape/src/semaphore.c b/duct-tape/src/semaphore.c
+index 20b1a62..17071bc 100644
+--- a/duct-tape/src/semaphore.c
++++ b/duct-tape/src/semaphore.c
+@@ -48,6 +48,24 @@ dtape_semaphore_wait_result_t dtape_semaphore_down(dtape_semaphore_t* semaphore)
+ 	}
+ };
+ 
++dtape_semaphore_wait_result_t dtape_semaphore_down_timeout(dtape_semaphore_t* semaphore, unsigned int seconds) {
++	mach_timespec_t timeout = {
++		.tv_sec = seconds,
++		.tv_nsec = 0,
++	};
++	kern_return_t kr = semaphore_timedwait(semaphore->xnu_semaphore, timeout);
++	switch (kr) {
++		case KERN_SUCCESS:
++			return dtape_semaphore_wait_result_ok;
++		case KERN_ABORTED:
++			return dtape_semaphore_wait_result_interrupted;
++		case KERN_OPERATION_TIMED_OUT:
++			return dtape_semaphore_wait_result_timed_out;
++		default:
++			return dtape_semaphore_wait_result_error;
++	}
++};
++
+ bool dtape_semaphore_down_simple(dtape_semaphore_t* semaphore) {
+ 	switch (dtape_semaphore_down(semaphore)) {
+ 		case dtape_semaphore_wait_result_ok:
+diff --git a/internal-include/darlingserver/process.hpp b/internal-include/darlingserver/process.hpp
+index c97be30..eeb3150 100644
+--- a/internal-include/darlingserver/process.hpp
++++ b/internal-include/darlingserver/process.hpp
+@@ -180,7 +180,7 @@ namespace DarlingServer {
+ 		void registerListeningKqchan(std::shared_ptr<Kqchan::Process> kqchan);
+ 		void unregisterListeningKqchan(uintptr_t kqchanID);
+ 
+-		void waitForChildAfterFork();
++		bool waitForChildAfterFork();
+ 
+ 		bool is64Bit() const;
+ 		Architecture architecture() const;
+diff --git a/src/call.cpp b/src/call.cpp
+index cc10f1d..7ad16e8 100644
+--- a/src/call.cpp
++++ b/src/call.cpp
+@@ -21,6 +21,7 @@
+ #include <darlingserver/call.hpp>
+ #include <darlingserver/server.hpp>
+ #include <sys/uio.h>
++#include <errno.h>
+ 
+ #include <darlingserver/logging.hpp>
+ #include <darlingserver/duct-tape.h>
+@@ -699,7 +700,9 @@ void DarlingServer::Call::ForkWaitForChild::processCall() {
+ 
+ 	if (auto thread = _thread.lock()) {
+ 		if (auto process = thread->process()) {
+-			process->waitForChildAfterFork();
++			if (!process->waitForChildAfterFork()) {
++				code = -ETIMEDOUT;
++			}
+ 		} else {
+ 			code = -ESRCH;
+ 		}
+diff --git a/src/process.cpp b/src/process.cpp
+index 9cd7b81..3ba0ec9 100644
+--- a/src/process.cpp
++++ b/src/process.cpp
+@@ -86,7 +86,11 @@ DarlingServer::Process::Process(ID id, NSID nsid, Architecture architecture, int
+ 	_dtapeTask = dtape_task_create(parentProcess ? parentProcess->_dtapeTask : nullptr, _nspid, this, static_cast<dserver_rpc_architecture_t>(_architecture));
+ 	_dtapeForkWaitSemaphore = dtape_semaphore_create(_dtapeTask, 0);
+ 
+-	processLog.info() << "New process created with ID " << _pid << " and NSID " << _nspid;
++	if (parentProcess) {
++		processLog.info() << *this << ": process created with parent " << *parentProcess << processLog.endLog;
++	} else {
++		processLog.info() << *this << ": process created without registered parent" << processLog.endLog;
++	}
+ };
+ 
+ DarlingServer::Process::Process(KernelProcessConstructorTag tag):
+@@ -369,8 +373,11 @@ void DarlingServer::Process::notifyCheckin(Architecture architecture) {
+ 	} else {
+ 		// notify the parent process (if we have one) that we've arrived
+ 		if (auto parent = _parentProcess.lock()) {
++			processLog.info() << *this << ": notifying fork parent " << *parent << " after checkin" << processLog.endLog;
+ 			dtape_semaphore_up(parent->_dtapeForkWaitSemaphore);
+ 			parent->_notifyListeningKqchannels(NOTE_FORK, nsid());
++		} else {
++			processLog.info() << *this << ": checkin without registered fork parent" << processLog.endLog;
+ 		}
+ 	}
+ };
+@@ -395,9 +402,27 @@ void DarlingServer::Process::unregisterKqchan(std::shared_ptr<Kqchan> kqchan) {
+ 	_kqchannels.erase(kqchan->_idForProcess());
+ };
+ 
+-void DarlingServer::Process::waitForChildAfterFork() {
++bool DarlingServer::Process::waitForChildAfterFork() {
+ 	// this function is always called within a microthread
+-	dtape_semaphore_down_simple(_dtapeForkWaitSemaphore);
++	constexpr unsigned int forkWaitTimeoutSeconds = 30;
++
++	processLog.info() << *this << ": waiting up to " << forkWaitTimeoutSeconds
++			<< " seconds for fork child checkin" << processLog.endLog;
++
++	switch (dtape_semaphore_down_timeout(_dtapeForkWaitSemaphore, forkWaitTimeoutSeconds)) {
++		case dtape_semaphore_wait_result_ok:
++			processLog.info() << *this << ": fork child checkin observed" << processLog.endLog;
++			return true;
++		case dtape_semaphore_wait_result_interrupted:
++			return false;
++		case dtape_semaphore_wait_result_timed_out:
++			processLog.error() << *this << ": timed out waiting " << forkWaitTimeoutSeconds
++					<< " seconds for fork child checkin" << processLog.endLog;
++			return false;
++		default:
++			processLog.error() << *this << ": failed while waiting for fork child checkin" << processLog.endLog;
++			return false;
++	}
+ };
+ 
+ void DarlingServer::Process::registerListeningKqchan(std::shared_ptr<Kqchan::Process> kqchan) {
+-- 
+2.43.0
+

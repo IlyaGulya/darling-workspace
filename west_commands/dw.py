@@ -23,7 +23,7 @@ class DarlingWorkspace(WestCommand):
         parser = parser_adder.add_parser(self.name, description=self.description)
         parser.add_argument(
             "action",
-            choices=("summary", "beads", "handoff"),
+            choices=("summary", "beads", "restore", "handoff"),
         )
         parser.add_argument("args", nargs=argparse.REMAINDER)
         return parser
@@ -50,6 +50,21 @@ class DarlingWorkspace(WestCommand):
                     env=env,
                     check=False,
                 ).returncode
+            )
+
+        if args.action == "restore":
+            command = [
+                str(manifest_repo / "scripts" / "west_workspace.py"),
+                "--topdir",
+                self.topdir,
+                "--manifest-repo",
+                str(manifest_repo),
+                "restore",
+                *args.args,
+                *unknown,
+            ]
+            raise SystemExit(
+                subprocess.run(command, cwd=manifest_repo, check=False).returncode
             )
 
         env = os.environ.copy()

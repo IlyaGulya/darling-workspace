@@ -1,0 +1,41 @@
+From 2e5539a3c895596b5f4dab7ac3cb924f52a4375b Mon Sep 17 00:00:00 2001
+From: Ilya Gulya <ilya@gulya.me>
+Date: Wed, 10 Jun 2026 10:06:33 +0000
+Subject: [PATCH] socket ioctl: stub SIOCGIFCONF returning an empty interface
+ list
+
+SIOCGIFCONF (0xC00C6924) fell through unhandled. Answer it by zeroing
+ifc_len and returning success (EFAULT if arg is NULL) so callers that
+enumerate interfaces get an empty list instead of failing. Stop-gap
+until per-container networking is implemented.
+---
+ .../src/xnu_syscall/bsd/helper/ioctl/socket.c       | 13 +++++++++++++
+ 1 file changed, 13 insertions(+)
+
+diff --git a/darling/src/libsystem_kernel/emulation/src/xnu_syscall/bsd/helper/ioctl/socket.c b/darling/src/libsystem_kernel/emulation/src/xnu_syscall/bsd/helper/ioctl/socket.c
+index f890ab2..5dc9dbf 100644
+--- a/darling/src/libsystem_kernel/emulation/src/xnu_syscall/bsd/helper/ioctl/socket.c
++++ b/darling/src/libsystem_kernel/emulation/src/xnu_syscall/bsd/helper/ioctl/socket.c
+@@ -12,6 +12,19 @@ int handle_socket(int fd, unsigned int cmd, void* arg, int* retval)
+ {
+ 	switch (cmd)
+ 	{
++		case 0xC00C6924:
++		{
++			struct ifconf* ifc = (struct ifconf*) arg;
++			if (ifc == NULL)
++			{
++				*retval = -EFAULT;
++				return IOCTL_HANDLED;
++			}
++
++			ifc->ifc_len = 0;
++			*retval = 0;
++			return IOCTL_HANDLED;
++		}
+ 		// TODO: This has to be implemented for container with separate networking
+ 		case SIOCGIFFLAGS:
+ 		case SIOCSIFFLAGS:
+-- 
+2.43.0
+
