@@ -208,9 +208,10 @@ class DarlingPr(WestCommand):
             github = patch.get("github", {})
             fork = github.get("fork", {}).get("state", "-")
             upstream = github.get("upstream", {}).get("state", "-")
+            review = patch.get("publication-status", "unreviewed")
             self.inf(
                 f"{patch.get('bead', '-')}: {patch['source-branch']} "
-                f"fork={fork} upstream={upstream}"
+                f"review={review} fork={fork} upstream={upstream}"
             )
 
     def _checks(self, data) -> str:
@@ -268,13 +269,22 @@ class DarlingPr(WestCommand):
                 (
                     patch.get("bead", "-"),
                     patch["source-branch"],
+                    patch.get("publication-status", "unreviewed"),
                     self._patch_status(patch),
                     fork,
                     upstream,
                     checks,
                 )
             )
-        headers = ("Bead", "Branch", "Patch", "Fork PR", "Upstream PR", "Checks")
+        headers = (
+            "Bead",
+            "Branch",
+            "Review",
+            "Patch",
+            "Fork PR",
+            "Upstream PR",
+            "Checks",
+        )
         widths = [
             max(len(str(row[index])) for row in [headers, *rows])
             for index in range(len(headers))
@@ -293,7 +303,24 @@ class DarlingPr(WestCommand):
                 )
             )
 
-    def _check(self, patch):
+    def _check(self, patch, target=None):
+        review = patch.get("publication-status", "unreviewed")
+        blocker = patch.get("publication-blocker", "architecture review required")
+        if review == "blocked":
+            self.die(f"{patch['bead']}: publication blocked: {blocker}")
+        if review == "unreviewed":
+            self.die(f"{patch['bead']}: publication blocked: {blocker}")
+        if review == "provisional":
+            if target == "upstream":
+                self.die(
+                    f"{patch['bead']}: upstream publication blocked pending "
+                    f"{blocker}"
+                )
+            self.wrn(
+                f"{patch['bead']}: provisional; fork-local staging only "
+                f"pending {blocker}"
+            )
+
         branch = patch["source-branch"]
         if not branch.startswith("fix/"):
             self.die(f"{patch['bead']}: only clean fix/* branches are publishable")
@@ -357,7 +384,8 @@ class DarlingPr(WestCommand):
                 f"{patch['bead']}: upstream base {github['upstream']['base']} "
                 f"is not default branch {upstream_default}"
             )
-        self.inf(f"{patch['bead']}: publishable")
+        state = "publishable" if review == "ready" else "staging-ready"
+        self.inf(f"{patch['bead']}: {state}")
 
     def _github_repo(self, repo: str):
         if repo not in self.repo_info:
@@ -536,7 +564,7 @@ class DarlingPr(WestCommand):
         ]
 
     def _publish_plan(self, patch, target):
-        self._check(patch)
+        self._check(patch, target)
         config = patch["github"][target]
         if config.get("url"):
             state = "already exists"
@@ -588,7 +616,7 @@ class DarlingPr(WestCommand):
         )
 
     def _publish(self, patch, target, dry_run):
-        self._check(patch)
+        self._check(patch, target)
         config = patch["github"][target]
         if config.get("url"):
             self.die(f"{patch['bead']}: {target} PR already exists: {config['url']}")
