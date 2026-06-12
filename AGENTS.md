@@ -24,6 +24,10 @@ refs, PR drafts, and agent handoff.
   `sync`, and `open --print`.
 - Do not run any mutating PR command without explicit user approval:
   `fork-draft`, `upstream-draft`, `update-body`, or `ready`.
+- Upstream PRs are strictly opt-in. Approval to create or update a fork-local
+  PR never permits creating, updating, reopening, marking ready, or otherwise
+  mutating an upstream PR. Every upstream mutation requires separate explicit
+  user approval naming the upstream action.
 - Never bulk-publish fixes or merge PRs from workspace automation.
 - Never change a GitHub PR body directly. Update `pr-drafts/*.md`, then run the
   explicitly approved `west pr update-body`.
