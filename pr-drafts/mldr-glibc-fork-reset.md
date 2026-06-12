@@ -2,13 +2,14 @@
 
 - **beads:** dar-q95.14
 - **repo:** darlinghq/darling
-- **branch:** `fix/homebrew-psynch-ruby-hang`
+- **branch:** `fix/mldr-glibc-fork-reset`
 - **base:** top-level Darling upstream branch
-- **commit:** `5fb98a598`
+- **commit:** `d90fe8f2a949bcf51f5d4a5aed6ce3fd3a7ef98f`
 - **files:**
   `src/startup/mldr/glibc_fork_reset.{c,h}`,
   `src/startup/mldr/mldr.c`,
   `src/startup/mldr/CMakeLists.txt`,
+  `src/startup/mldr/elfcalls/elfcalls.{c,h}`,
   `tests/regression/run-glibc-fork-lock-reset.sh`,
   `tests/regression/glibc_fork_lock_reset.c`,
   `tests/regression/glibc_fork_lock_reset_tls.c`

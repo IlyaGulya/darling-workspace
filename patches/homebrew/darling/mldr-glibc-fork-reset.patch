@@ -1,17 +1,19 @@
-From e3be6fa451e23a77bdfd0a345a5992a04c96a71c Mon Sep 17 00:00:00 2001
+From d90fe8f2a949bcf51f5d4a5aed6ce3fd3a7ef98f Mon Sep 17 00:00:00 2001
 From: Ilya Gulya <ilya@gulya.me>
 Date: Thu, 11 Jun 2026 17:08:54 +0000
 Subject: [PATCH] mldr: reset glibc loader locks after raw fork
 
 ---
  src/startup/mldr/CMakeLists.txt               |   1 +
+ src/startup/mldr/elfcalls/elfcalls.c          |   3 +
+ src/startup/mldr/elfcalls/elfcalls.h          |   4 +-
  src/startup/mldr/glibc_fork_reset.c           | 127 ++++++++++++++++
  src/startup/mldr/glibc_fork_reset.h           |  22 +++
  src/startup/mldr/mldr.c                       |  16 ++
  tests/regression/glibc_fork_lock_reset.c      | 143 ++++++++++++++++++
  tests/regression/glibc_fork_lock_reset_tls.c  |   5 +
  tests/regression/run-glibc-fork-lock-reset.sh |  28 ++++
- 7 files changed, 342 insertions(+)
+ 9 files changed, 348 insertions(+), 1 deletion(-)
  create mode 100644 src/startup/mldr/glibc_fork_reset.c
  create mode 100644 src/startup/mldr/glibc_fork_reset.h
  create mode 100644 tests/regression/glibc_fork_lock_reset.c
@@ -30,6 +32,46 @@ index 5e4271a174b92064bc231b51a578205cfba015ec..87ae9af791ccf07b92777228c9282359
  	commpage.c
  	elfcalls/elfcalls.c
  	elfcalls/threads.c
+diff --git a/src/startup/mldr/elfcalls/elfcalls.c b/src/startup/mldr/elfcalls/elfcalls.c
+index 8f0b9e61fe60f66a1a11f62254c47390f83f707f..d9277fac7585d7972c42b9e998878eff65874848 100644
+--- a/src/startup/mldr/elfcalls/elfcalls.c
++++ b/src/startup/mldr/elfcalls/elfcalls.c
+@@ -62,6 +62,7 @@ static const void* __dserver_socket_address(void) {
+ 	return &__dserver_socket_address_data;
+ };
+ 
++extern void __mldr_postfork_child(void);
+ extern void __mldr_close_rpc_socket(int socket);
+ 
+ extern int __mldr_create_process_lifetime_pipe(int* fds);
+@@ -108,6 +109,8 @@ void elfcalls_make(struct elf_calls* calls)
+ 
+ 	calls->sysconf = sysconf;
+ 
++	calls->postfork_child = __mldr_postfork_child;
++
+ 	*((void**)&calls->sem_open) = sem_open;
+ 	*((void**)&calls->sem_wait) = sem_wait;
+ 	*((void**)&calls->sem_trywait) = sem_trywait;
+diff --git a/src/startup/mldr/elfcalls/elfcalls.h b/src/startup/mldr/elfcalls/elfcalls.h
+index fee1bde87d14ae27e19215347c25c686329c4e33..9cbadce2bfc6e2e508a1783906a23ed53c3edb7d 100644
+--- a/src/startup/mldr/elfcalls/elfcalls.h
++++ b/src/startup/mldr/elfcalls/elfcalls.h
+@@ -61,6 +61,9 @@ struct elf_calls
+ 	// POSIX sysconf
+ 	long (*sysconf)(int name);
+ 
++	// mldr process state
++	void (*postfork_child)(void);
++
+ 	// darlingserver RPC info
+ 	const void* (*dserver_socket_address)(void);
+ 	int (*dserver_per_thread_socket)(void);
+@@ -74,4 +77,3 @@ struct elf_calls
+ };
+ 
+ #endif
+-
 diff --git a/src/startup/mldr/glibc_fork_reset.c b/src/startup/mldr/glibc_fork_reset.c
 new file mode 100644
 index 0000000000000000000000000000000000000000..4629343e5416c9a6e07d18fea095e67685a02616

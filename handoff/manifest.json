@@ -19,7 +19,7 @@
         },
         {
           "branch": "fix/mldr-glibc-fork-reset",
-          "head": "e3be6fa451e23a77bdfd0a345a5992a04c96a71c",
+          "head": "d90fe8f2a949bcf51f5d4a5aed6ce3fd3a7ef98f",
           "upstream": "",
           "source_ref": "refs/heads/fix/mldr-glibc-fork-reset"
         },
