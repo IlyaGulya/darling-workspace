@@ -170,7 +170,7 @@ patches:
       repo: darlinghq/darling-libplatform
       base: master
       url: https://github.com/darlinghq/darling-libplatform/pull/5
-      state: draft
+      state: closed
       number: 5
       head-commit: 36eb5d508032ef1c614d41e166bbca3064b6620c
       is-draft: true
