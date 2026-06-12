@@ -4,7 +4,7 @@ Private West manifest and portable coordination state for development on
 Darling without adding personal metadata to Darling or its upstream submodules.
 
 This repository is the source of truth for the development workspace. A
-checkout under `~/work/darling` is an existing working copy, not the durable
+checkout under `~/work/darling-dev/darling` is a working copy, not the durable
 record of tasks, unpublished branches, or PR preparation.
 
 ## Ownership boundaries
@@ -123,10 +123,11 @@ single-Bead and explicit; there is no bulk publish or automatic merge command.
 One private manifest repository is intentional. Split Beads only if it needs
 different access control or an independent lifecycle.
 
-See `docs/branch-migration.md` for converting the preserved mega-branches into
-clean per-PR branches and eventually retiring the old checkout.
+See `docs/branch-migration.md` for the branch workflow and
+`docs/mega-branch-audit-2026-06-12.md` for the completed migration audit,
+residual dispositions, and conditions for retiring the historical refs.
 
 `west.yml` is the selected workspace backend and includes private workspace
-tools such as `darling-debug-runner`. The old `repo` manifests remain only
-until the first integration profile and branch migration pass. See
-`docs/west-spike.md` for validation results.
+tools such as `darling-debug-runner`. The old `repo` manifests are retained as
+migration evidence and fallback only. See `docs/west-spike.md` for validation
+results.

@@ -283,10 +283,10 @@ patches:
       base: main
       state: local
 - path: darling/mldr-glibc-fork-reset.patch
-  sha256sum: ebb0a9b373be0c40216d434c9a1b648a6193ae63695aee89e3b5d6d2cb9b7c38
+  sha256sum: 2f3b297c30d64379057bb73aaa9f95ac5af79bec1ed6cb97187b741789b5e05e
   module: darling
   source-branch: fix/mldr-glibc-fork-reset
-  source-commit: e3be6fa451e23a77bdfd0a345a5992a04c96a71c
+  source-commit: d90fe8f2a949bcf51f5d4a5aed6ce3fd3a7ef98f
   bead: dar-q95.14
   pr-draft: pr-drafts/mldr-glibc-fork-reset.md
   github:
