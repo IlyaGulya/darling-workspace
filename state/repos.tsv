@@ -1,5 +1,5 @@
 path	head	branch	origin	worktree
-.	5fb98a598737725fc1a70f1b792e76d36c856369	fix/homebrew-psynch-ruby-hang	git@github.com:IlyaGulya/darling.git	clean
+.	5fb98a598737725fc1a70f1b792e76d36c856369	fix/homebrew-psynch-ruby-hang	git@github.com:IlyaGulya/darling.git	dirty
 src/external/AvailabilityVersions	e28c029a8fa46fa933cbf6d6d9a1c00978c5fad1	DETACHED	git@github.com:IlyaGulya/darling-AvailabilityVersions	clean
 src/external/BerkeleyDB	1411173f0eb71f96ab6134de4e052d16acb8c673	DETACHED	git@github.com:IlyaGulya/darling-BerkeleyDB.git	clean
 src/external/DSTools	e015256b16965ac032412f2277c608c7213c03b3	DETACHED	git@github.com:IlyaGulya/darling-DSTools.git	clean
@@ -90,7 +90,7 @@ src/external/liblzma	855ebc93f8208ae4b6e77a018d4ba4a4be4d2ab7	DETACHED	git@githu
 src/external/libmalloc	a57991e2651226a675654bd96e5d9ab6bec288c5	DETACHED	git@github.com:IlyaGulya/darling-libmalloc.git	clean
 src/external/libnetwork	56c5fad43f24a40d8ca7f8a1d0badedfeaf7e64e	DETACHED	git@github.com:IlyaGulya/darling-libnetwork.git	clean
 src/external/libnotify	98156d3f847a3ced6c5f52c12a889047bc4f9b20	DETACHED	git@github.com:IlyaGulya/darling-Libnotify.git	clean
-src/external/libplatform	a35ec396c8b3221dbf33a5693f234494e40737ec	fix/bzero-return-register	git@github.com:IlyaGulya/darling-libplatform.git	clean
+src/external/libplatform	36eb5d508032ef1c614d41e166bbca3064b6620c	fix/bzero-return-register	git@github.com:IlyaGulya/darling-libplatform.git	clean
 src/external/libpthread	3de6464ed57c4b7127207e5aeefd674f5c0f31b6	fix/homebrew-psynch-ruby-hang	git@github.com:IlyaGulya/darling-libpthread.git	clean
 src/external/libresolv	cf955392e5449efb269b8b3510c755085fd36a2d	DETACHED	git@github.com:IlyaGulya/darling-libresolv.git	clean
 src/external/libressl-2.2.9	c5e9edb9d82ccf5fde5d8ae32b162fec8fe11318	DETACHED	git@github.com:IlyaGulya/darling-libressl.git	clean

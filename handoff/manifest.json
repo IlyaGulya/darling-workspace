@@ -115,7 +115,7 @@
         },
         {
           "branch": "fix/bzero-return-register",
-          "head": "a35ec396c8b3221dbf33a5693f234494e40737ec",
+          "head": "36eb5d508032ef1c614d41e166bbca3064b6620c",
           "upstream": "origin/fix/bzero-return-register",
           "source_ref": "refs/heads/fix/bzero-return-register"
         },
