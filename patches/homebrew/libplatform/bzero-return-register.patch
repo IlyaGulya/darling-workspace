@@ -1,17 +1,19 @@
-From a35ec396c8b3221dbf33a5693f234494e40737ec Mon Sep 17 00:00:00 2001
+From 36eb5d508032ef1c614d41e166bbca3064b6620c Mon Sep 17 00:00:00 2001
 From: Ilya Gulya <ilya@gulya.me>
 Date: Mon, 8 Jun 2026 16:42:44 +0500
 Subject: [PATCH] Preserve bzero return register on x86_64
 
 ---
- CMakeLists.txt                       |  6 +++++
- src/string/generic/bzero.c           |  7 ++++++
- tests/darling_bzero_return_regress.c | 36 ++++++++++++++++++++++++++++
- 3 files changed, 49 insertions(+)
+ CMakeLists.txt                       | 14 ++++++++
+ src/string/generic/bzero.c           |  2 ++
+ src/string/x86_64/bzero.S            | 20 ++++++++++++
+ tests/darling_bzero_return_regress.c | 48 ++++++++++++++++++++++++++++
+ 4 files changed, 84 insertions(+)
+ create mode 100644 src/string/x86_64/bzero.S
  create mode 100644 tests/darling_bzero_return_regress.c
 
 diff --git a/CMakeLists.txt b/CMakeLists.txt
-index 54d2843cdc132704b41cc5f55751c91a10c10d55..f865d1198663a3f38e23cb05ef1f44fc72afeb26 100644
+index 54d2843cdc132704b41cc5f55751c91a10c10d55..796a18be5cf9a7d7d5225d6bf19a2fdbbceebc1c 100644
 --- a/CMakeLists.txt
 +++ b/CMakeLists.txt
 @@ -2,6 +2,8 @@ project(libplatform)
@@ -23,7 +25,15 @@ index 54d2843cdc132704b41cc5f55751c91a10c10d55..f865d1198663a3f38e23cb05ef1f44fc
  set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -nostdinc -Wno-error=int-conversion")
  # -Wl,-alias_list,${CMAKE_CURRENT_SOURCE_DIR}/xcodeconfig/libplatform.aliases
  set(CMAKE_SHARED_LINKER_FLAGS "${CMAKE_SHARED_LINKER_FLAGS} -Wl,-no_arch_warnings -Wl,-bind_at_load")
-@@ -114,6 +116,10 @@ set_target_properties(platform PROPERTIES OUTPUT_NAME "system_platform")
+@@ -27,6 +29,7 @@ if (TARGET_x86_64 OR TARGET_ARM64)
+ 			src/cachecontrol/x86_64/cache.S
+ 			src/atomics/x86_64/pfz.S
+ 			src/atomics/x86_64/OSAtomic.S
++			src/string/x86_64/bzero.S
+ 		)
+ 	elseif (TARGET_ARM64)
+ 		set(platform_64bit_sources
+@@ -114,6 +117,17 @@ set_target_properties(platform PROPERTIES OUTPUT_NAME "system_platform")
  
  #target_link_libraries(platform PRIVATE system_kernel compiler_rt)
  
@@ -31,33 +41,66 @@ index 54d2843cdc132704b41cc5f55751c91a10c10d55..f865d1198663a3f38e23cb05ef1f44fc
 +	tests/darling_bzero_return_regress.c
 +)
 +
++if (BUILD_TESTING AND CMAKE_CROSSCOMPILING_EMULATOR)
++	add_test(
++		NAME darling_bzero_return_regress
++		COMMAND darling_bzero_return_regress
++	)
++endif ()
++
  if (BUILD_TARGET_32BIT)
  	add_darling_static_library(platform_static32 SOURCES ${platform_sources} $<TARGET_OBJECTS:platform_32bit>)
  	set_target_properties(platform_static32 PROPERTIES COMPILE_FLAGS "-arch ${APPLE_ARCH_32BIT} -DVARIANT_STATIC -fvisibility=hidden")
 diff --git a/src/string/generic/bzero.c b/src/string/generic/bzero.c
-index 4559ddea282a60af6c18771da1ce65a26e9cdffc..f12f2c1f1837c9d19cb2db412c18c79f3660f84d 100644
+index 4559ddea282a60af6c18771da1ce65a26e9cdffc..63337e103fb56c27244e4b645a29804b63ef272e 100644
 --- a/src/string/generic/bzero.c
 +++ b/src/string/generic/bzero.c
-@@ -64,6 +64,13 @@ void
+@@ -60,11 +60,13 @@ memset(void *b, int c, size_t len) {
+ 
+ #if !_PLATFORM_OPTIMIZED_BZERO
+ 
++#if !defined(__x86_64__)
+ void
  _platform_bzero(void *s, size_t n)
  {
  	_platform_memset(s, 0, n);
-+#if defined(__x86_64__)
-+	/*
-+	 * Clang can lower `return memset(p, 0, n)` to a tail call to ___bzero.
-+	 * Darwin's ___bzero leaves p in the return register for that sequence.
-+	 */
-+	__asm__ volatile("" : : "a"(s));
-+#endif
  }
++#endif
  
  #if VARIANT_STATIC
+ void
+diff --git a/src/string/x86_64/bzero.S b/src/string/x86_64/bzero.S
+new file mode 100644
+index 0000000000000000000000000000000000000000..21bda5e40669b97780b39b460ab225e03d55430f
+--- /dev/null
++++ b/src/string/x86_64/bzero.S
+@@ -0,0 +1,20 @@
++/*
++ * Preserve the effective Darwin ___bzero return-register contract.
++ *
++ * LLVM may lower a value-producing memset(ptr, 0, len) to ___bzero on Darwin
++ * even though bzero is declared void. Keep the original destination in RAX at
++ * the actual return instruction so compiler-generated C epilogues cannot
++ * clobber it.
++ */
++
++	.text
++	.align 4, 0x00
++
++	.globl __platform_bzero
++__platform_bzero:
++	pushq	%rdi
++	movq	%rsi, %rdx
++	xorl	%esi, %esi
++	call	__platform_memset
++	popq	%rax
++	ret
 diff --git a/tests/darling_bzero_return_regress.c b/tests/darling_bzero_return_regress.c
 new file mode 100644
-index 0000000000000000000000000000000000000000..0aa4f94974a7f6b7cec9d29c13d11303bc54838d
+index 0000000000000000000000000000000000000000..1e6cd620dff88a379f09dc87e3e7a87910dbd19f
 --- /dev/null
 +++ b/tests/darling_bzero_return_regress.c
-@@ -0,0 +1,36 @@
+@@ -0,0 +1,48 @@
 +/*
 + * Regression test for code generated from `return memset(p, 0, n)`.
 + *
@@ -76,7 +119,8 @@ index 0000000000000000000000000000000000000000..0aa4f94974a7f6b7cec9d29c13d11303
 +int
 +main(void)
 +{
-+	char *ptr = malloc(0xc50);
++	size_t size = 0xc50;
++	unsigned char *ptr = malloc(size);
 +	void *ret;
 +
 +	if (ptr == NULL) {
@@ -84,11 +128,22 @@ index 0000000000000000000000000000000000000000..0aa4f94974a7f6b7cec9d29c13d11303
 +		return 2;
 +	}
 +
-+	ret = __darling_bzero_return(ptr, 0xc50);
++	for (size_t i = 0; i < size; ++i)
++		ptr[i] = 0xa5;
++
++	ret = __darling_bzero_return(ptr, size);
 +	if (ret != ptr) {
 +		fprintf(stderr, "___bzero returned %p for %p\n", ret, ptr);
 +		free(ptr);
 +		return 1;
++	}
++
++	for (size_t i = 0; i < size; ++i) {
++		if (ptr[i] != 0) {
++			fprintf(stderr, "___bzero left byte %zu as 0x%02x\n", i, ptr[i]);
++			free(ptr);
++			return 1;
++		}
 +	}
 +
 +	free(ptr);

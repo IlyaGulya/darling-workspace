@@ -68,7 +68,8 @@ patches:
     fork:
       repo: IlyaGulya/darling-xnu
       base: preupstream/main
-      state: local
+      state: draft
+      url: https://github.com/IlyaGulya/darling-xnu/pull/1
     upstream:
       repo: darlinghq/darling-xnu
       base: main
@@ -146,10 +147,10 @@ patches:
       base: main
       state: local
 - path: libplatform/bzero-return-register.patch
-  sha256sum: 14f83009c83b6dfddb9b6894d792a9557e2fd2c73c0c65ecb53df5ed06fa6dbe
+  sha256sum: 6703e099f83ddcf638cd40e3128226acbb16ae7db4e3b254e31b36207b7cc51c
   module: darling/src/external/libplatform
   source-branch: fix/bzero-return-register
-  source-commit: a35ec396c8b3221dbf33a5693f234494e40737ec
+  source-commit: 36eb5d508032ef1c614d41e166bbca3064b6620c
   bead: dar-q95.4
   publication-status: ready
   pr-draft: pr-drafts/libplatform-bzero-return-register.md
@@ -158,14 +159,20 @@ patches:
     fork:
       repo: IlyaGulya/darling-libplatform
       base: preupstream/master
-      state: local
+      state: draft
+      url: https://github.com/IlyaGulya/darling-libplatform/pull/1
+      number: 1
+      head-commit: 36eb5d508032ef1c614d41e166bbca3064b6620c
+      is-draft: true
+      review-decision: ''
+      merge-state: CLEAN
     upstream:
       repo: darlinghq/darling-libplatform
       base: master
       url: https://github.com/darlinghq/darling-libplatform/pull/5
       state: draft
       number: 5
-      head-commit: a35ec396c8b3221dbf33a5693f234494e40737ec
+      head-commit: 36eb5d508032ef1c614d41e166bbca3064b6620c
       is-draft: true
       review-decision: ''
       merge-state: CLEAN
@@ -199,7 +206,8 @@ patches:
     fork:
       repo: IlyaGulya/darling-libressl
       base: preupstream/master
-      state: local
+      state: draft
+      url: https://github.com/IlyaGulya/darling-libressl/pull/1
     upstream:
       repo: darlinghq/darling-libressl
       base: master
