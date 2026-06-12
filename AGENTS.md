@@ -28,6 +28,11 @@ refs, PR drafts, and agent handoff.
 - Never change a GitHub PR body directly. Update `pr-drafts/*.md`, then run the
   explicitly approved `west pr update-body`.
 - Never publish when `west pr check` fails.
+- Treat `publication-status` in a patch profile as an architecture gate:
+  `blocked` is local-only, `provisional` may be staged in a fork-local draft
+  but not published upstream, and only `ready` may be published upstream.
+- Do not remove or weaken a publication blocker without resolving its owning
+  Bead and updating the foundational review evidence.
 - Run `west dw handoff` before ending a session that changed Beads or private
   branches.
 - Never add workspace metadata, PR drafts, agent state, or Beads files to the

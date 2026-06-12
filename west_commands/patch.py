@@ -128,6 +128,23 @@ class DarlingPatch(WestCommand):
             self.die(f"unknown West project: {module}")
         return Path(project.abspath)
 
+    def _manifest_revision(self, module: str) -> str:
+        project = self._projects().get(module)
+        if project is None:
+            self.die(f"unknown West project: {module}")
+        revision = project.revision
+        repo = Path(project.abspath)
+        if not revision or subprocess.run(
+            ["git", "cat-file", "-e", f"{revision}^{{commit}}"],
+            cwd=repo,
+            check=False,
+        ).returncode != 0:
+            self.die(
+                f"{module}: manifest revision {revision or '<empty>'} "
+                f"is not available; run west update {project.name}"
+            )
+        return revision
+
     def _ensure_clean(self, repo: Path, parent: bool = False):
         command = ["status", "--porcelain"]
         if parent:
@@ -142,24 +159,26 @@ class DarlingPatch(WestCommand):
             self.inf(f"{patch['module']}: {source} [{bead}]")
             self.inf(f"  {patch['path']}")
 
-    def _prepare(self, repo: Path, branch: str, parent: bool = False):
+    def _prepare(
+        self, module: str, repo: Path, branch: str, parent: bool = False
+    ):
         self._ensure_clean(repo, parent=parent)
-        git(repo, "switch", "--detach", "refs/heads/manifest-rev")
-        git(repo, "branch", "-f", branch, "refs/heads/manifest-rev")
+        revision = self._manifest_revision(module)
+        git(repo, "switch", "--detach", revision)
+        git(repo, "branch", "-f", branch, revision)
         git(repo, "switch", branch)
 
     def _ensure_generated_context(self, module: str, profile: str):
         repo = self._repo(module)
         branch = f"integration/{profile}"
         current = git(repo, "branch", "--show-current", capture=True)
-        manifest_revision = git(
-            repo, "rev-parse", "refs/heads/manifest-rev", capture=True
-        )
+        manifest_revision = self._manifest_revision(module)
+        manifest_commit = git(repo, "rev-parse", manifest_revision, capture=True)
         head = git(repo, "rev-parse", "HEAD", capture=True)
-        allowed = current == branch or (not current and head == manifest_revision)
+        allowed = current == branch or (not current and head == manifest_commit)
         if not allowed:
             raise RuntimeError(
-                f"{module}: expected {branch} or detached manifest-rev, "
+                f"{module}: expected {branch} or detached {manifest_revision}, "
                 f"found {current or head}"
             )
         self._ensure_clean(repo, parent=module == "darling")
@@ -189,6 +208,21 @@ class DarlingPatch(WestCommand):
             source_commit = patch.get("source-commit", "")
             if not re.fullmatch(r"[0-9a-f]{40}", source_commit):
                 self.die(f"{patch['path']}: source-commit must be a full SHA")
+
+            publication_status = patch.get("publication-status")
+            if publication_status not in {"ready", "provisional", "blocked"}:
+                self.die(
+                    f"{patch['path']}: invalid publication-status "
+                    f"{publication_status!r}"
+                )
+            if (
+                publication_status != "ready"
+                and not patch.get("publication-blocker")
+            ):
+                self.die(
+                    f"{patch['path']}: {publication_status} fixes require "
+                    "publication-blocker"
+                )
 
             repo = self._repo(patch["module"])
             source_branch = patch["source-branch"]
@@ -228,6 +262,7 @@ class DarlingPatch(WestCommand):
             for index, (module, module_patches) in enumerate(grouped.items()):
                 repo = self._repo(module)
                 worktree = temp_root / str(index)
+                revision = self._manifest_revision(module)
                 git(
                     repo,
                     "worktree",
@@ -235,7 +270,7 @@ class DarlingPatch(WestCommand):
                     "--quiet",
                     "--detach",
                     str(worktree),
-                    "refs/heads/manifest-rev",
+                    revision,
                 )
                 try:
                     for patch in module_patches:
@@ -301,7 +336,9 @@ class DarlingPatch(WestCommand):
         try:
             for module, module_patches in grouped.items():
                 repo = self._repo(module)
-                self._prepare(repo, branch, parent=module == "darling")
+                self._prepare(
+                    module, repo, branch, parent=module == "darling"
+                )
                 touched.append(repo)
                 for patch in module_patches:
                     path = self._verify_patch(profile_dir, patch)
@@ -328,7 +365,7 @@ class DarlingPatch(WestCommand):
         branch = f"integration/{profile}"
         darling = self._repo("darling")
         if "darling" not in grouped:
-            self._prepare(darling, branch, parent=True)
+            self._prepare("darling", darling, branch, parent=True)
 
         nested = [module for module in grouped if module != "darling"]
         if nested:
@@ -383,13 +420,14 @@ class DarlingPatch(WestCommand):
         for module in reversed(modules):
             repo = self._repo(module)
             self._abort_am(repo)
-            switch_args = ["switch", "--detach", "refs/heads/manifest-rev"]
+            revision = self._manifest_revision(module)
+            switch_args = ["switch", "--detach", revision]
             if force:
                 switch_args.insert(1, "--discard-changes")
             git(repo, *switch_args)
             if self._branch_exists(repo, branch):
                 git(repo, "branch", "-D", branch)
-            self.inf(f"{module}: reset to manifest-rev")
+            self.inf(f"{module}: reset to {revision}")
 
     def _clean(self, profile: str, patches, force: bool):
         self._reset(profile, self._group(patches), force=force)

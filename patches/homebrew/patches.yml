@@ -8,6 +8,8 @@ patches:
   source-branch: fix/psynch-cvwait-balanced
   source-commit: ce7ce5e7888eb5b3c20ec652db097519c9c2fbe5
   bead: dar-q95.1
+  publication-status: provisional
+  publication-blocker: direct psynch generation invariant tests under dar-q95.29.6
   pr-draft: pr-drafts/darlingserver-psynch-cvwait-balanced.md
   github:
     fork:
@@ -24,6 +26,8 @@ patches:
   source-branch: fix/microthread-resume-race
   source-commit: f62bc4ba6387e5e5ba50507ba840cacb8c6278a3
   bead: dar-q95.8
+  publication-status: provisional
+  publication-blocker: modeled wake-epoch and duplicate-scheduling tests under dar-q95.29.6
   pr-draft: pr-drafts/darlingserver-microthread-resume-race.md
   github:
     fork:
@@ -40,6 +44,8 @@ patches:
   source-branch: fix/fork-checkin-bound
   source-commit: 8746148c12bda639054f15b0510e1578a11034df
   bead: dar-q95.13
+  publication-status: blocked
+  publication-blocker: timeout is a defensive bound, not a fork lifecycle fix; see dar-q95.29.7
   pr-draft: pr-drafts/darlingserver-fork-checkin-bound.md
   github:
     fork:
@@ -56,6 +62,7 @@ patches:
   source-branch: fix/psynch-cvsignal-args
   source-commit: 8a7797fd85b1522a528551fc9601b245c083b8e8
   bead: dar-q95.2
+  publication-status: ready
   pr-draft: pr-drafts/xnu-psynch-cvsignal-args.md
   github:
     fork:
@@ -72,6 +79,8 @@ patches:
   source-branch: fix/select-pselect-fdset
   source-commit: bb7e6dedc850abb2b0dfecfcb2437ccde1d66452
   bead: dar-q95.3
+  publication-status: blocked
+  publication-blocker: unbounded nfds drives stack allocation and fd_set access; see dar-q95.29.3
   pr-draft: pr-drafts/xnu-select-pselect-fdset.md
   github:
     fork:
@@ -88,6 +97,8 @@ patches:
   source-branch: fix/darwin-priority
   source-commit: ec55325e53dbf3b2593d73428a5d7a90ccb95fca
   bead: dar-q95.10
+  publication-status: blocked
+  publication-blocker: success-returning priority no-op has no Darwin semantics; see dar-q95.29.4
   pr-draft: pr-drafts/xnu-darwin-priority.md
   github:
     fork:
@@ -104,6 +115,8 @@ patches:
   source-branch: fix/socket-siocgifconf
   source-commit: 2e5539a3c895596b5f4dab7ac3cb924f52a4375b
   bead: dar-q95.11
+  publication-status: blocked
+  publication-blocker: empty-success SIOCGIFCONF is an explicit compatibility stub; see dar-q95.29.4
   pr-draft: pr-drafts/xnu-socket-siocgifconf.md
   github:
     fork:
@@ -120,6 +133,8 @@ patches:
   source-branch: fix/fork-postfork-child
   source-commit: 86cb1cf68d174a5255e075528ec8679abebb4b20
   bead: dar-q95.12
+  publication-status: provisional
+  publication-blocker: supported host-runtime fork recovery design under dar-q95.29.9
   pr-draft: pr-drafts/xnu-fork-postfork-child.md
   github:
     fork:
@@ -136,6 +151,7 @@ patches:
   source-branch: fix/bzero-return-register
   source-commit: a35ec396c8b3221dbf33a5693f234494e40737ec
   bead: dar-q95.4
+  publication-status: ready
   pr-draft: pr-drafts/libplatform-bzero-return-register.md
   merge-pr: https://github.com/darlinghq/darling-libplatform/pull/5
   github:
@@ -159,6 +175,8 @@ patches:
   source-branch: fix/disable-nsgetexecutablepath
   source-commit: b37ac3179fae9e090104d93a218c835452e17c21
   bead: dar-q95.5
+  publication-status: blocked
+  publication-blocker: package workaround must be replaced by _NSGetExecutablePath; see dar-q95.29.4
   pr-draft: pr-drafts/perl-disable-nsgetexecutablepath.md
   github:
     fork:
@@ -175,6 +193,7 @@ patches:
   source-branch: fix/libressl-283-nist-strict-aliasing
   source-commit: 75c81f4e3ede9bb653b2b90bcca2681eda9aecd8
   bead: dar-q95.6
+  publication-status: ready
   pr-draft: pr-drafts/libressl-283-nist-strict-aliasing.md
   github:
     fork:
@@ -191,6 +210,8 @@ patches:
   source-branch: fix/cancel-stale-wait-timer
   source-commit: 8c98528d1902ad2f5b06e0b1113427afa2e2e6f7
   bead: dar-q95.15
+  publication-status: provisional
+  publication-blocker: direct timer cancellation parity and race tests under dar-q95.29.6
   pr-draft: pr-drafts/darlingserver-cancel-wait-timer.md
   github:
     fork:
@@ -207,6 +228,8 @@ patches:
   source-branch: fix/psynch-negative-returns
   source-commit: b007105f34a0f433016276cf05dff77f2217b89e
   bead: dar-q95.16
+  publication-status: blocked
+  publication-blocker: private negative-error ABI and retry-all loop; see dar-q95.29.2
   pr-draft: pr-drafts/libpthread-psynch-negative-returns.md
   github:
     fork:
@@ -223,6 +246,8 @@ patches:
   source-branch: fix/getattrlist-name-objtype
   source-commit: cacba0fd01468e316e58e3c5a15a4d3c5273fcc5
   bead: dar-q95.17
+  publication-status: blocked
+  publication-blocker: short-buffer overflow and attribute encoder correctness; see dar-q95.29.1
   pr-draft: pr-drafts/xnu-getattrlist-name-objtype.md
   github:
     fork:
@@ -239,6 +264,8 @@ patches:
   source-branch: fix/getattrlistbulk
   source-commit: 69775cf24aa169d585921818695fff0ae19b3e64
   bead: dar-q95.18
+  publication-status: blocked
+  publication-blocker: duplicated non-conformant bulk attribute encoder; see dar-q95.29.1
   pr-draft: pr-drafts/xnu-getattrlistbulk.md
   github:
     fork:
@@ -256,6 +283,8 @@ patches:
   source-base: 5f26a4c2365d9774b5a1e66ae7da20b61ab6d2db
   source-commit: 0d7844f548b9c04a259fcb00a9556cdf9b39d9ef
   bead: dar-q95.19
+  publication-status: blocked
+  publication-blocker: private negative-error ABI must be fixed at syscall boundary; see dar-q95.29.2
   pr-draft: pr-drafts/xnu-psynch-negative-errno.md
   github:
     fork:
@@ -272,6 +301,8 @@ patches:
   source-branch: fix/sigexc-sa-restart
   source-commit: 7bdf08bfa0e56d6fc1487dcf4dc99c95a24f5c6c
   bead: dar-q95.20
+  publication-status: provisional
+  publication-blocker: signal restart state-machine and conformance tests under dar-q95.29.5
   pr-draft: pr-drafts/xnu-sigexc-sa-restart.md
   github:
     fork:
@@ -288,12 +319,20 @@ patches:
   source-branch: fix/mldr-glibc-fork-reset
   source-commit: d90fe8f2a949bcf51f5d4a5aed6ce3fd3a7ef98f
   bead: dar-q95.14
+  publication-status: blocked
+  publication-blocker: private glibc _rtld_global heuristic is version-sensitive; see dar-q95.29.9
   pr-draft: pr-drafts/mldr-glibc-fork-reset.md
   github:
     fork:
       repo: IlyaGulya/darling
       base: preupstream/master
-      state: local
+      state: draft
+      url: https://github.com/IlyaGulya/darling/pull/1
+      number: 1
+      head-commit: d90fe8f2a949bcf51f5d4a5aed6ce3fd3a7ef98f
+      is-draft: true
+      review-decision: ''
+      merge-state: CLEAN
     upstream:
       repo: darlinghq/darling
       base: master
@@ -304,6 +343,8 @@ patches:
   source-branch: fix/sandbox-exec-pass-through
   source-commit: c905b818c0f58554a15812bf81e39a56f067b942
   bead: dar-q95.21
+  publication-status: blocked
+  publication-blocker: pass-through silently removes sandbox security; see dar-q95.29.4
   pr-draft: pr-drafts/top-level-sandbox-exec-pass-through.md
   github:
     fork:
@@ -321,6 +362,8 @@ patches:
   source-base: 5f2d7401d878455cf3c3c0865ee5a4290dfa03f0
   source-commit: b8b186a6e31c2b1cf63f8946c7b170b4a75ae794
   bead: dar-q95.22
+  publication-status: provisional
+  publication-blocker: SDK identity provenance and install-tree consistency under dar-q95.29.8
   pr-draft: pr-drafts/top-level-sdk-homebrew-detection.md
   github:
     fork:
