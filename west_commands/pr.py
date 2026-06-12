@@ -186,6 +186,23 @@ class DarlingPr(WestCommand):
             self.die(f"unknown West project: {patch['module']}")
         return Path(project.abspath)
 
+    def _manifest_revision(self, patch) -> str:
+        project = self.projects.get(patch["module"])
+        if project is None:
+            self.die(f"unknown West project: {patch['module']}")
+        revision = project.revision
+        repo = Path(project.abspath)
+        if not revision or subprocess.run(
+            ["git", "cat-file", "-e", f"{revision}^{{commit}}"],
+            cwd=repo,
+            check=False,
+        ).returncode != 0:
+            self.die(
+                f"{patch['bead']}: manifest revision {revision or '<empty>'} "
+                f"is not available; run west update {project.name}"
+            )
+        return revision
+
     def _list(self):
         for patch in self.patches:
             github = patch.get("github", {})
@@ -289,13 +306,17 @@ class DarlingPr(WestCommand):
         head = git(repo, "rev-parse", branch, capture=True)
         if head != patch["source-commit"]:
             self.die(f"{patch['bead']}: source branch drifted")
+        manifest_revision = self._manifest_revision(patch)
         ancestor = subprocess.run(
-            ["git", "merge-base", "--is-ancestor", "manifest-rev", head],
+            ["git", "merge-base", "--is-ancestor", manifest_revision, head],
             cwd=repo,
             check=False,
         ).returncode
         if ancestor != 0:
-            self.die(f"{patch['bead']}: source branch is not based on manifest-rev")
+            self.die(
+                f"{patch['bead']}: source branch is not based on "
+                f"manifest revision {manifest_revision}"
+            )
 
         patch_path = self.profile_path.parent / patch["path"]
         checksum = hashlib.sha256(patch_path.read_bytes()).hexdigest()
@@ -461,12 +482,13 @@ class DarlingPr(WestCommand):
         commands = []
         if target == "fork":
             base = config["base"]
+            manifest_revision = self._manifest_revision(patch)
             commands.append(
                 [
                     "git",
                     "push",
                     "origin",
-                    f"refs/heads/manifest-rev:refs/heads/{base}",
+                    f"{manifest_revision}:refs/heads/{base}",
                     (
                         "--force-with-lease"
                         if dry_run
