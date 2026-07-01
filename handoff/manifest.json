@@ -79,9 +79,15 @@
         },
         {
           "branch": "integration/homebrew",
-          "head": "e82a69150056c2a60b4a53756b56d97fc27efb55",
+          "head": "3491cfeed23965e61448a84d61c66f92ca7e1743",
           "upstream": "",
           "source_ref": "refs/heads/integration/homebrew"
+        },
+        {
+          "branch": "integration/perf",
+          "head": "5f7c12ea129e6b8b727f17d50b19ea1cbe425c3b",
+          "upstream": "",
+          "source_ref": "refs/heads/integration/perf"
         },
         {
           "branch": "experiment/libressl-4.3.2",
@@ -211,7 +217,7 @@
         },
         {
           "branch": "integration/homebrew",
-          "head": "5e5d688886589025929d246e51ca349aa18b1cbb",
+          "head": "92049f05ceec9fa02b132b3882e264822586d91d",
           "upstream": "",
           "source_ref": "refs/heads/integration/homebrew"
         },
@@ -661,7 +667,7 @@
         },
         {
           "branch": "integration/homebrew",
-          "head": "a0328833b5ea96dd0055a16bf0c55bbafa227dd0",
+          "head": "1169ebe2d99cf0c7ba36c1f2613fcf66a9cbbb1c",
           "upstream": "",
           "source_ref": "refs/heads/integration/homebrew"
         },
