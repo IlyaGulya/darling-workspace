@@ -1,0 +1,19 @@
+version: 1
+description: >-
+  Performance work that stacks ON TOP of the homebrew profile. The homebrew
+  fixes (e.g. mldr glibc-fork-lock-reset and main-stack EEXIST fallback) are
+  prerequisites for a bootable build, so this profile declares homebrew as its
+  base rather than applying against the raw manifest revision.
+base-profile: homebrew
+integration-date: 2026-07-01T00:00:00Z
+patches:
+  - path: darling/mldr-compact-fd-band.patch
+    sha256sum: 18545aee2d1ab085b86ce6d72f03a95a6874e9973031d705a5c623430b1f1891
+    module: darling
+    source-branch: fix/mldr-compact-fd-band
+    source-commit: 0de8081a0a1c8a401bca7a43d2206ecabaecca80
+    bead: dar-dar6x4-perf-5dq
+    publication-status: blocked
+    publication-blocker: >-
+      perf#21b compact protected internal fd band is a local performance
+      experiment; not proposed upstream. See perf#21b brief.
