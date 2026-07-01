@@ -61,6 +61,38 @@ runs the doctor as a pre-gate, refuses to build on failure (unless `--force`), a
 after `--deploy`. Update `deploy-baseline.md5` when a legitimate rebuild changes what is
 deployed.
 
+## Claude Code guardrails (hooks + skills)
+
+The workspace ships Claude Code automation that encodes the guardrails and
+procedures learned the hard way (the perf#24c2c-pre detours). All of it is
+tracked here so it survives `west init` on another machine.
+
+- `hooks/pretooluse-build-gate.sh` — a `PreToolUse` (Bash) hook. Before any
+  command that looks like a Darling build/deploy/boot (`ninja`, `west
+  darling-build`, a copy into `libexec/darling`, `darling shell`, `shellspawn`,
+  …) it runs `west darling-doctor` and **blocks** on failure. Catches #89
+  (wrong build dir) and #90 (manifest↔worktree drift) automatically. Escape
+  hatch: `--force`, `--skip-doctor`, or `DARLING_SKIP_DOCTOR=1`.
+- `hooks/stop-durability-reminder.sh` — a `Stop` hook. On session end it warns
+  if the manifest repo is uncommitted or a tracked worktree (dyld /
+  darlingserver / xnu / superproject) is dirty, and blocks the stop once so the
+  work isn't silently abandoned. It respects `stop_hook_active` (no loop).
+- `.claude/skills/darling-boot/` — clean teardown + single boot protocol
+  (kill orphan launchd, settle, one boot + poll) to avoid the perf#23a wedge.
+- `.claude/skills/darling-durability/` — triage → rescue onto `fix/*` → commit
+  manifest → `west dw handoff` → verify.
+
+Activation is per-checkout and lives OUTSIDE the manifest repo (the workspace
+root is not a git repo):
+
+```bash
+# from the workspace root (~/work/darling-dev)
+mkdir -p .claude
+ln -sfn darling-workspace/.claude/skills .claude/skills        # skills source of truth
+cp darling-workspace/.claude/settings.sample.json .claude/settings.json
+# (settings.json references the hook scripts by absolute path)
+```
+
 `west dw handoff` exports Beads, refreshes manifests, and creates Git bundles
 for every local branch except an unchanged `main`/`master`. This includes
 active topics, clean PR branches, and backup snapshots. The bootstrap flow

@@ -1,0 +1,29 @@
+{
+  "//": "Sample Claude Code project settings for the Darling workspace. Copy to ~/work/darling-dev/.claude/settings.json (the workspace root, which is not a git repo). Hook scripts are referenced by absolute path and live in darling-workspace/hooks/. If your workspace root is not ~/work/darling-dev, adjust the absolute paths (or export DARLING_WORKSPACE) accordingly.",
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "/home/ilyagulya/work/darling-dev/darling-workspace/hooks/pretooluse-build-gate.sh",
+            "timeout": 120
+          }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "matcher": "",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "/home/ilyagulya/work/darling-dev/darling-workspace/hooks/stop-durability-reminder.sh",
+            "timeout": 30
+          }
+        ]
+      }
+    ]
+  }
+}
