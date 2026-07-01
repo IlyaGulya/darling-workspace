@@ -1,0 +1,318 @@
+From 6144a4bb6b1182e635fb88dd737cd11fd71e6189 Mon Sep 17 00:00:00 2001
+From: Ilya Gulya <ilya@gulya.me>
+Date: Sun, 28 Jun 2026 03:26:43 +0000
+Subject: [PATCH] darlingserver: run cheap RPCs inline on the main loop (perf
+ #2b)
+
+Under a fork/checkin storm (Homebrew `make -j`), profiling (perf #2a, bead
+dar-dar6x4-perf-5dq.7) showed ~70% of darlingserver CPU was spent in the
+main-loop -> worker-pool handoff, NOT in the kernel emulation: per inbound
+message the single event loop did _workQueue.push() -> pthread_cond_signal ->
+kernel futex_wake to wake a parked worker that did sub-microsecond work and
+immediately re-parked. The actual RPC work (callFromMessage 0.66%, doWork
+0.51%) was <1% of CPU; the wakeup tax dwarfed it. This is why enabling the
+multi-threaded work queue made the server ~32% SLOWER than single-threaded
+(live A/B: ST ~3830 checkin/s vs naive MT ~2594/s) -- and why upstream left
+DSERVER_SINGLE_THREADED on.
+
+Fix: in the event loop, run the call's microthread INLINE via Thread::doWork()
+instead of always pushing it to the pool. doWork() never blocks its caller --
+a non-blocking call (the overwhelming majority: checkin, self-traps, port ops,
+etc.) runs to completion right there with zero wakeup; a call that blocks
+suspends its microthread (setcontext back to the loop) having already arranged
+its own resume onto the work queue, so the loop keeps serving and only the
+genuinely-blocking minority ever uses a worker. New metrics inline_handled /
+queued_to_pool make the split observable.
+
+Live A/B (8-proc tcstorm multistorm, DSERVER_SINGLE_THREADED=OFF):
+  ST baseline:      ~3830 checkin/s, p50 16-32us, p95/p99 512us
+  naive MT:         ~2594 checkin/s, p50 64us,    p95/p99 512us  (regression)
+  inline + MT:    4676-7295 checkin/s, p50 8us,   p95/p99 64us
+=> +22%..+90% throughput over ST, ~8x better p99 latency, and 99.998% of RPCs
+handled inline (241 of 11.27M went to the pool). Boot + 200x fork/exec/wait
+correctness (exit codes, pipelines) verified; server stable across runs.
+
+RED->GREEN regression test committed alongside (tests/server_inline_fastpath.c
++ run-server-inline-fastpath.sh): models the two dispatch strategies over an
+identical tiny RPC and gates on context-switches/item -- the per-message
+handoff path incurs ~1 ctx-switch/item (RED, fails), the inline path ~0
+(GREEN, passes).
+
+Bead: dar-dar6x4-perf-5dq.8
+
+Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
+---
+ internal-include/darlingserver/metrics.hpp |   7 ++
+ internal-include/darlingserver/thread.hpp  |   7 ++
+ src/metrics.cpp                            |   2 +
+ src/server.cpp                             |  24 ++++-
+ src/thread.cpp                             |   8 ++
+ tests/run-server-inline-fastpath.sh        |  29 +++++
+ tests/server_inline_fastpath.c             | 119 +++++++++++++++++++++
+ 7 files changed, 195 insertions(+), 1 deletion(-)
+ create mode 100755 tests/run-server-inline-fastpath.sh
+ create mode 100644 tests/server_inline_fastpath.c
+
+diff --git a/internal-include/darlingserver/metrics.hpp b/internal-include/darlingserver/metrics.hpp
+index 7af0e51b5b01a61b23438b5343b5b97996fd1e6a..234794cd9c22fa81113bd50ea9c7ca747db28c2d 100644
+--- a/internal-include/darlingserver/metrics.hpp
++++ b/internal-include/darlingserver/metrics.hpp
+@@ -136,6 +136,13 @@ namespace DarlingServer {
+ 		std::atomic<uint64_t> checkins {0};       // checkin RPCs (process/thread registration)
+ 		std::atomic<uint64_t> forks {0};          // fork-checkins specifically
+ 		std::atomic<uint64_t> messagesReceived {0};
++		// perf #2b (dar-dar6x4-perf-5dq.8): inline fast-path accounting. A call run to
++		// completion directly on the main event loop (no worker wakeup) increments
++		// inlineHandled; a call that suspended its microthread (so it must finish on the
++		// worker pool when resumed) increments queuedToPool. Under a healthy fast-path the
++		// vast majority of cheap RPCs (checkin etc.) should be inlineHandled.
++		std::atomic<uint64_t> inlineHandled {0};
++		std::atomic<uint64_t> queuedToPool {0};
+ 
+ 		// ---- gauges sampled at snapshot time (set by the owner) ----
+ 		// These are filled in by Server when producing a snapshot, not on the hot path.
+diff --git a/internal-include/darlingserver/thread.hpp b/internal-include/darlingserver/thread.hpp
+index 6871d5f6e2b83c08a57de51c0d8fc0d833d8fe3f..492e80e67a089a2bf29c0bf5114d9792092da4c6 100644
+--- a/internal-include/darlingserver/thread.hpp
++++ b/internal-include/darlingserver/thread.hpp
+@@ -197,6 +197,13 @@ namespace DarlingServer {
+ 
+ 		void doWork();
+ 
++		// perf #2b (dar-dar6x4-perf-5dq.8): the main event loop runs cheap, non-blocking
++		// RPCs inline via doWork() instead of paying a worker-thread wakeup. After an inline
++		// doWork() returns, this reports whether the microthread is still suspended (i.e. the
++		// call blocked and will be resumed on the worker pool) vs ran to completion.
++		// Cheap, lock-protected read of the same _suspended flag doWork() itself consults.
++		bool isCurrentlySuspended() const;
++
+ 		/**
+ 		 * NOTE: This currently only works if this thread is the current thread.
+ 		 *       It will throw an error in all other cases.
+diff --git a/src/metrics.cpp b/src/metrics.cpp
+index 66715eb7911be5beef2e48e8189c5cfe4ea83f4f..0f6b19a74b69f2f1d93621bfcdcf28c3ea6d60fb 100644
+--- a/src/metrics.cpp
++++ b/src/metrics.cpp
+@@ -58,6 +58,8 @@ std::string DarlingServer::Metrics::snapshotJSON(const std::string& extraGauges)
+ 	out << "  \"messages_received\": " << messagesReceived.load(std::memory_order_relaxed) << ",\n";
+ 	out << "  \"checkins\": " << checkins.load(std::memory_order_relaxed) << ",\n";
+ 	out << "  \"forks\": " << forks.load(std::memory_order_relaxed) << ",\n";
++	out << "  \"inline_handled\": " << inlineHandled.load(std::memory_order_relaxed) << ",\n";
++	out << "  \"queued_to_pool\": " << queuedToPool.load(std::memory_order_relaxed) << ",\n";
+ 	out << "  \"last_reply_age_ms\": " << lastReplyAgeMs << ",\n";
+ 	if (!extraGauges.empty()) {
+ 		out << "  " << extraGauges << ",\n";
+diff --git a/src/server.cpp b/src/server.cpp
+index f54a46a6589663d6b39b88f1ee1c23f944800afb..af80eca5faf8ffe2901ee2fac21f5cb2b11fcf47 100644
+--- a/src/server.cpp
++++ b/src/server.cpp
+@@ -668,7 +668,29 @@ void DarlingServer::Server::start() {
+ 				try {
+ 					auto call = DarlingServer::Call::callFromMessage(std::move(*msg));
+ 					if (call) {
+-						_workQueue.push(call->thread());
++						// perf #2b (dar-dar6x4-perf-5dq.8): run the call INLINE on the main
++						// event loop instead of always handing it to the worker pool. The
++						// profile (perf #2a) showed ~70% of server CPU was the main-loop ->
++						// worker condvar handoff (pthread_cond_signal -> futex_wake) for work
++						// that is itself <1% of CPU -- so for the common case of a cheap,
++						// non-blocking RPC (checkin etc.) the wakeup tax dwarfs the work.
++						//
++						// doWork() never blocks its caller: a non-blocking call runs to
++						// completion here; a call that blocks suspends its microthread (via
++						// setcontext) and returns control to us, having already arranged its
++						// own resume onto the work queue (Thread::doWork doneWorking ->
++						// scheduleThread). So running inline is safe in BOTH cases and only
++						// the genuinely-blocking minority ever pays for the worker pool.
++						auto thread = call->thread();
++						if (thread) {
++							thread->doWork();
++							auto& m = Metrics::shared();
++							if (thread->isCurrentlySuspended()) {
++								m.queuedToPool.fetch_add(1, std::memory_order_relaxed);
++							} else {
++								m.inlineHandled.fetch_add(1, std::memory_order_relaxed);
++							}
++						}
+ 					}
+ 				} catch (const std::exception& ex) {
+ 					static DarlingServer::Log serverLog("server");
+diff --git a/src/thread.cpp b/src/thread.cpp
+index 89ebbe7f23553a7a63dc0e2a7ae53055bdb28e45..35bb53237359ae903423564b8e68256df3437a2a 100644
+--- a/src/thread.cpp
++++ b/src/thread.cpp
+@@ -1478,6 +1478,14 @@ void DarlingServer::Thread::pushCallReply(std::shared_ptr<Call> expectedCall, Me
+ 	}
+ };
+ 
++bool DarlingServer::Thread::isCurrentlySuspended() const {
++	// perf #2b: read the same _suspended flag doWork()/suspend() maintain. A microthread
++	// that ran to completion inline never set _suspended; one that blocked has it set
++	// (until a resume clears it). Shared-lock is enough -- this is a single-bool read.
++	std::shared_lock lock(_rwlock);
++	return _suspended;
++};
++
+ DarlingServer::Thread::RunState DarlingServer::Thread::getRunState() const {
+ 	auto process = this->process();
+ 	if (!process || isDead()) {
+diff --git a/tests/run-server-inline-fastpath.sh b/tests/run-server-inline-fastpath.sh
+new file mode 100755
+index 0000000000000000000000000000000000000000..f937094f7ba3722a43943d69a14a4ea21287f437
+--- /dev/null
++++ b/tests/run-server-inline-fastpath.sh
+@@ -0,0 +1,29 @@
++#!/usr/bin/env bash
++# Regression test for perf #2b (dar-dar6x4-perf-5dq.8): the darlingserver main loop must
++# run cheap RPCs inline rather than waking a worker thread per message.
++#
++# Builds the dispatch-cost model and asserts:
++#   - RED  (handoff path):  per-item worker wakeup -> ~1 ctx-switch/item -> FAILS (exit 1)
++#   - GREEN (inline path):  no wakeup -> ~0 ctx-switch/item -> PASSES (exit 0)
++#
++# HOST test (plain glibc, no Darling runtime). Finishes in well under 1s. Exit 0 on PASS.
++set -euo pipefail
++
++here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
++work="$(mktemp -d)"
++trap 'rm -rf "$work"' EXIT
++cc="${CC:-cc}"
++
++"$cc" -O2 -g "$here/server_inline_fastpath.c" -o "$work/sif" -lpthread
++
++# RED proof first: the per-item handoff path MUST fail, else the test is blind.
++echo "--- RED proof (per-message worker handoff, expected to FAIL) ---"
++if "$work/sif" handoff; then
++	echo "FAIL: handoff path unexpectedly passed -- test does not discriminate the wakeup tax" >&2
++	exit 2
++fi
++echo "(RED path failed as expected)"
++
++# GREEN: the inline fast-path must pass.
++echo "--- GREEN (inline dispatch, expected to PASS) ---"
++"$work/sif"
+diff --git a/tests/server_inline_fastpath.c b/tests/server_inline_fastpath.c
+new file mode 100644
+index 0000000000000000000000000000000000000000..df1cc2c28219330748511074cf180a247278e560
+--- /dev/null
++++ b/tests/server_inline_fastpath.c
+@@ -0,0 +1,119 @@
++// Regression test for perf #2b (dar-dar6x4-perf-5dq.8):
++// darlingserver's main event loop must run cheap, non-blocking RPCs INLINE instead of
++// handing every message to a worker thread via a condvar wakeup.
++//
++// perf #2a profiling showed ~70% of server CPU under a fork/checkin storm was the
++// main-loop -> worker handoff: per message the main loop did pthread_cond_signal ->
++// kernel futex_wake -> wake a parked worker that did sub-microsecond work and re-parked.
++// The work itself was <1% of CPU. So for the common cheap RPC the wakeup tax dominates.
++//
++// We can't link the whole server in a host test, so we model the two dispatch strategies
++// over an identical, deliberately-tiny "RPC" (the work a checkin does is trivial) and
++// measure the involuntary context switches the dispatch costs:
++//
++//   RED  (handoff):  producer hands each item to a pool worker via mutex+condvar.
++//                    Every item forces a futex_wake + a cross-thread context switch.
++//   GREEN (inline):  producer runs the same tiny work itself, no wakeup, no switch.
++//
++// The discriminator is involuntary+voluntary context switches per item (getrusage
++// nvcsw+nivcsw). The handoff path incurs ~1 voluntary ctx switch per item (the worker
++// blocks/unblocks); the inline path incurs ~none. This is exactly the cost the fix
++// removes. HOST test (plain glibc); see run-server-inline-fastpath.sh. Exit 0 = PASS.
++#define _GNU_SOURCE
++#include <pthread.h>
++#include <stdio.h>
++#include <stdlib.h>
++#include <string.h>
++#include <stdint.h>
++#include <stdatomic.h>
++#include <unistd.h>
++#include <sys/resource.h>
++
++#define N_ITEMS 200000
++
++// the "RPC work": trivial, like a checkin (bump a counter). Volatile so it isn't elided.
++static volatile uint64_t g_work_sink = 0;
++static inline void do_tiny_rpc(void) { g_work_sink += 1; }
++
++// ---- handoff (RED) machinery: a single pool worker fed via condvar ----
++static pthread_mutex_t q_mtx = PTHREAD_MUTEX_INITIALIZER;
++static pthread_cond_t  q_cv  = PTHREAD_COND_INITIALIZER;
++static int q_pending = 0;       // 1 = an item is waiting for the worker
++static int q_done_flag = 0;     // worker sets after handling, producer waits on it
++static pthread_cond_t  done_cv = PTHREAD_COND_INITIALIZER;
++static int q_dying = 0;
++
++static void* handoff_worker(void* arg) {
++	(void)arg;
++	pthread_mutex_lock(&q_mtx);
++	while (1) {
++		while (!q_pending && !q_dying)
++			pthread_cond_wait(&q_cv, &q_mtx);   // park -> futex_wait
++		if (q_dying && !q_pending) break;
++		q_pending = 0;
++		pthread_mutex_unlock(&q_mtx);
++
++		do_tiny_rpc();                          // the actual (tiny) work
++
++		pthread_mutex_lock(&q_mtx);
++		q_done_flag = 1;
++		pthread_cond_signal(&done_cv);          // wake producer -> futex_wake
++	}
++	pthread_mutex_unlock(&q_mtx);
++	return NULL;
++}
++
++static long ctx_switches(void) {
++	struct rusage ru;
++	getrusage(RUSAGE_SELF, &ru);
++	return ru.ru_nvcsw + ru.ru_nivcsw;
++}
++
++int main(int argc, char** argv) {
++	int use_handoff = (argc > 1 && strcmp(argv[1], "handoff") == 0);
++
++	long csw0 = ctx_switches();
++
++	if (use_handoff) {
++		// RED: dispatch every item to the worker, synchronously, as the old main loop
++		// effectively did (push + signal, worker wakes, runs, signals back).
++		pthread_t th;
++		pthread_create(&th, NULL, handoff_worker, NULL);
++		for (int i = 0; i < N_ITEMS; ++i) {
++			pthread_mutex_lock(&q_mtx);
++			q_pending = 1;
++			q_done_flag = 0;
++			pthread_cond_signal(&q_cv);          // wake the worker
++			while (!q_done_flag)
++				pthread_cond_wait(&done_cv, &q_mtx);
++			pthread_mutex_unlock(&q_mtx);
++		}
++		pthread_mutex_lock(&q_mtx);
++		q_dying = 1;
++		pthread_cond_signal(&q_cv);
++		pthread_mutex_unlock(&q_mtx);
++		pthread_join(th, NULL);
++	} else {
++		// GREEN: run the tiny work inline on the dispatching thread -- no wakeup.
++		for (int i = 0; i < N_ITEMS; ++i)
++			do_tiny_rpc();
++	}
++
++	long csw = ctx_switches() - csw0;
++	printf("variant=%s items=%d ctx_switches=%ld (%.2f per item) sink=%llu\n",
++		use_handoff ? "handoff" : "inline", N_ITEMS, csw,
++		(double)csw / N_ITEMS, (unsigned long long)g_work_sink);
++
++	// The inline path should incur essentially no context switches; the handoff path
++	// incurs roughly one per item. Gate at a low fraction so the test is robust to a
++	// little scheduler noise but still fails hard for the per-item-wakeup design.
++	const double LIMIT_PER_ITEM = 0.10;
++	double per_item = (double)csw / N_ITEMS;
++	if (per_item > LIMIT_PER_ITEM) {
++		fprintf(stderr, "FAIL: %.2f ctx-switches/item (limit %.2f) -- per-item worker wakeup\n",
++			per_item, LIMIT_PER_ITEM);
++		return 1;
++	}
++	printf("PASS: inline dispatch incurred %.2f ctx-switches/item (<= %.2f)\n", per_item, LIMIT_PER_ITEM);
++	return 0;
++}

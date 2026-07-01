@@ -1,0 +1,447 @@
+From 96298b16269a3baf5919c6ff8f844e2b53bbb7cf Mon Sep 17 00:00:00 2001
+From: Ilya Gulya <ilya@gulya.me>
+Date: Sun, 28 Jun 2026 08:15:52 +0000
+Subject: [PATCH] darlingserver: NO_REPLY fire-and-forget RPC class for pure
+ setters (perf #10)
+
+The per-call RPC profile (perf #9, dar-dar6x4-perf-5dq.16) showed ~40% of build RPCs
+are once-per-process startup calls, and several are pure SETTERS with an EMPTY reply
+(set_dyld_info, set_executable_path, ...). Each still pays a full synchronous round-
+trip: send + a ~200us recvmsg sleep, only to read a status code the guest discards.
+That reply-wait sleep is the 57% of guest build wall-clock the profile (perf #6) found.
+
+Add a NO_REPLY rpc flag. For a NO_REPLY call:
+  - the generated client wrapper sends the request and returns 0 IMMEDIATELY, skipping
+    the entire receive/decode block (that skipped recvmsg sleep is the win);
+  - the server-side _sendReply is generated as a no-op, so the server emits NO reply
+    datagram (a stray reply would land in the per-thread socket buffer and desync the
+    next synchronous call's reply matching). processCall() still runs the work.
+Ordering is preserved: per-thread datagrams are processed in send order, so a NO_REPLY
+setter is always applied before any later synchronous call that depends on its effect.
+
+Applied to set_dyld_info + set_executable_path (mldr-side, pure crash-report/introspect
+metadata nothing on the startup critical path reads back). set_thread_handles was tried
+but reverted -- early pthread init is sensitive; left synchronous.
+
+IMPORTANT build note: mldr STATICALLY links the generated RPC wrappers (mldr_dserver_rpc
+from rpc.c), so a NO_REPLY change requires rebuilding mldr too -- otherwise a stale mldr
+keeps waiting for a reply the new server no longer sends and the guest hangs in recvmsg
+at launchd startup (no shellspawn). All three consumers (mldr, libsystem_kernel, server)
+must be rebuilt together.
+
+Validated: full matched set boots (shellspawn up) and a real make -j8 build completes
+500/500; set_dyld_info/set_executable_path no longer block the guest on a reply.
+
+RED->GREEN test committed alongside (standing TDD rule): no_reply_rpc_test.sh runs the
+generator and asserts a NO_REPLY call's wrapper omits receive_message and its server
+_sendReply is a no-op, while a normal call (checkin) still receives. Proven RED before
+the flag existed.
+
+Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
+---
+ scripts/generate-rpc-wrappers.py | 243 ++++++++++++++++++-------------
+ tests/no_reply_rpc_test.sh       |  89 +++++++++++
+ 2 files changed, 230 insertions(+), 102 deletions(-)
+ create mode 100755 tests/no_reply_rpc_test.sh
+
+diff --git a/scripts/generate-rpc-wrappers.py b/scripts/generate-rpc-wrappers.py
+index e35221c20fe086dfc686a512089c772a94192128..86ea376dcef1e887daee10a71e201ba939543ee0 100755
+--- a/scripts/generate-rpc-wrappers.py
++++ b/scripts/generate-rpc-wrappers.py
+@@ -16,6 +16,7 @@ XNU_BSD_TRAP_CALL      = XNU_TRAP_CALL | XNU_TRAP_NOPREFIX | XNU_TRAP_NOSUFFIX |
+ UNMANAGED_CALL         = 1 << 6
+ ALLOW_INTERRUPTIONS    = 1 << 7
+ PUSH_UNKNOWN_REPLIES   = 1 << 8
++NO_REPLY               = 1 << 9
+ 
+ # NOTE: in Python 3.7+, we can rely on dictionaries having their items in insertion order.
+ #       unfortunately, we can't expect everyone building Darling to have Python 3.7+ installed.
+@@ -92,6 +93,18 @@ calls = [
+ 	#     call queued for delivery when the signal was received, the client will send interrupt_enter and immediately receive the reply to the interrupted
+ 	#     call. without handling this gracefully (by saving the reply for later), RPC communication becomes desynchronized and the program crashes.
+ 	#
++	#   NO_REPLY
++	#     (perf #10, dar-dar6x4-perf-5dq.17) marks a "fire-and-forget" call: the client sends the request and returns
++	#     IMMEDIATELY without waiting for a reply. The profile (perf #9) showed pure setters with an empty reply
++	#     (set_dyld_info, set_executable_path, set_thread_handles) each cost a full synchronous round-trip -- send plus a
++	#     ~200us recvmsg sleep -- only to read a status code the guest discards; that sleep dominates build wall-clock (perf #6).
++	#     For a NO_REPLY call the generated client wrapper skips the entire receive block (returning 0 after a good send), and
++	#     the server-side _sendReply is generated as a NO-OP so the server emits no reply datagram (a stray reply would land in
++	#     the per-thread socket buffer and desync the NEXT synchronous call's reply matching). processCall() still runs the work.
++	#     CONSTRAINTS: NO_REPLY is only valid for calls with NO reply parameters (nothing to return), and only for calls whose
++	#     status code the caller genuinely ignores. Ordering is preserved -- the per-thread socket delivers datagrams in send
++	#     order, so a NO_REPLY setter is always processed before any later synchronous call that depends on its effect.
++	#
+ 	#     note that this flag should only be used in very special circumstances (interrupt_enter currently being the only such one).
+ 	#     not only can it mask legitimate RPC communication errors, but it also requires significantly more stack space to handle such calls,
+ 	#     as the wrapper must create a buffer large enough to store any possible reply (including any potential descriptors).
+@@ -193,7 +206,7 @@ calls = [
+ 	('set_dyld_info', [
+ 		('address', 'uint64_t'),
+ 		('length', 'uint64_t'),
+-	], []),
++	], [], NO_REPLY),
+ 
+ 	('stop_after_exec', [], []),
+ 
+@@ -229,7 +242,7 @@ calls = [
+ 	('set_executable_path', [
+ 		('buffer', 'const char*', 'uint64_t'),
+ 		('buffer_size', 'uint64_t')
+-	], []),
++	], [], NO_REPLY),
+ 
+ 	('get_executable_path', [
+ 		('pid', 'int32_t'),
+@@ -1018,42 +1031,50 @@ for call in calls:
+ 		internal_header.write(", " + parse_type(param, False) + " " + param_name)
+ 	internal_header.write(") { \\\n")
+ 
+-	internal_header.write("\t\t\trpcReplyLog.debug() << \"Replying to call #\" << dserver_callnum_" + call_name + " << \" (dserver_callnum_" + call_name + ") from PID \" << _header.pid << \", TID \" << _header.tid << \" with result code \" << resultCode ")
++	if (flags & NO_REPLY) != 0:
++		# perf #10: NO_REPLY calls send no reply datagram -- the client returned right
++		# after sending and is not waiting, and a stray reply would desync the next
++		# synchronous call's reply matching on the per-thread socket. The call's work is
++		# still done in processCall(); _sendReply just swallows the status code.
++		internal_header.write("\t\t\t(void)resultCode; /* NO_REPLY: fire-and-forget, server emits no reply */ \\\n")
++		internal_header.write("\t\t}; \\\n")
++	else:
++		internal_header.write("\t\t\trpcReplyLog.debug() << \"Replying to call #\" << dserver_callnum_" + call_name + " << \" (dserver_callnum_" + call_name + ") from PID \" << _header.pid << \", TID \" << _header.tid << \" with result code \" << resultCode ")
+ 
+-	for param in reply_parameters:
+-		param_name = param[0]
++		for param in reply_parameters:
++			param_name = param[0]
+ 
+-		internal_header.write("<< \", " + param_name + "=\" << " + param_name + " ")
++			internal_header.write("<< \", " + param_name + "=\" << " + param_name + " ")
+ 
+-	internal_header.write("<< rpcReplyLog.endLog; \\\n")
++		internal_header.write("<< rpcReplyLog.endLog; \\\n")
+ 
+-	internal_header.write(textwrap.indent(textwrap.dedent("""\
+-		Message reply(sizeof(dserver_rpc_reply_{0}_t), 0); \\
+-		int fdIndex = 0; \\
+-		reply.setAddress(_replyAddress); \\
+-		auto replyStruct = reinterpret_cast<dserver_rpc_reply_{0}_t*>(reply.data().data()); \\
+-		replyStruct->header.number = dserver_callnum_{0}; \\
+-		replyStruct->header.code = resultCode; \\
+-		"""), '\t\t\t').format(call_name))
+-
+-	fd_index = 0
+-	for param in reply_parameters:
+-		param_name = param[0]
+-		val = param_name
++		internal_header.write(textwrap.indent(textwrap.dedent("""\
++			Message reply(sizeof(dserver_rpc_reply_{0}_t), 0); \\
++			int fdIndex = 0; \\
++			reply.setAddress(_replyAddress); \\
++			auto replyStruct = reinterpret_cast<dserver_rpc_reply_{0}_t*>(reply.data().data()); \\
++			replyStruct->header.number = dserver_callnum_{0}; \\
++			replyStruct->header.code = resultCode; \\
++			"""), '\t\t\t').format(call_name))
+ 
+-		if is_fd(param):
+-			val = "((" + param_name + " >= 0) ? (fdIndex++) : (-1))"
+-			internal_header.write("\t\t\tif (" + param_name + " >= 0) { \\\n")
+-			internal_header.write("\t\t\t\treply.pushDescriptor(" + param_name + "); \\\n")
+-			internal_header.write("\t\t\t} \\\n")
+-
+-		internal_header.write("\t\t\treplyStruct->body." + param_name + " = " + val + "; \\\n")
+-	internal_header.write("\t\t\tif (auto thread = _thread.lock()) { \\\n")
+-	internal_header.write("\t\t\t\tthread->pushCallReply(shared_from_this(), std::move(reply)); \\\n")
+-	internal_header.write("\t\t\t} else { \\\n")
+-	internal_header.write("\t\t\t\tCall::sendReply(std::move(reply)); \\\n")
+-	internal_header.write("\t\t\t} \\\n")
+-	internal_header.write("\t\t}; \\\n")
++		fd_index = 0
++		for param in reply_parameters:
++			param_name = param[0]
++			val = param_name
++
++			if is_fd(param):
++				val = "((" + param_name + " >= 0) ? (fdIndex++) : (-1))"
++				internal_header.write("\t\t\tif (" + param_name + " >= 0) { \\\n")
++				internal_header.write("\t\t\t\treply.pushDescriptor(" + param_name + "); \\\n")
++				internal_header.write("\t\t\t} \\\n")
++
++			internal_header.write("\t\t\treplyStruct->body." + param_name + " = " + val + "; \\\n")
++		internal_header.write("\t\t\tif (auto thread = _thread.lock()) { \\\n")
++		internal_header.write("\t\t\t\tthread->pushCallReply(shared_from_this(), std::move(reply)); \\\n")
++		internal_header.write("\t\t\t} else { \\\n")
++		internal_header.write("\t\t\t\tCall::sendReply(std::move(reply)); \\\n")
++		internal_header.write("\t\t\t} \\\n")
++		internal_header.write("\t\t}; \\\n")
+ 
+ 	if len(reply_parameters) == 0:
+ 		internal_header.write("\tpublic: \\\n")
+@@ -1455,87 +1476,105 @@ for call in calls:
+ 	library_source.write("\t\treturn dserver_rpc_hooks_get_communication_error_status();\n")
+ 	library_source.write("\t}\n\n")
+ 
+-	library_source.write("retry_receive:\n")
+-	library_source.write("\tlong_status = dserver_rpc_hooks_receive_message(server_socket, &replymsg);\n\n")
+-
+-	library_source.write("\tif (long_status == dserver_rpc_hooks_get_interrupt_status()) {\n")
+-	library_source.write("\t\tgoto retry_receive;\n")
+-	library_source.write("\t}\n\n")
+-	
+-	library_source.write("\tif (long_status < 0) {\n")
+-	if (flags & ALLOW_INTERRUPTIONS) == 0:
+-		library_source.write("\t\tdserver_rpc_hooks_atomic_end(&atomic_save);\n")
+-	library_source.write("\t\tdserver_rpc_hooks_printf(\"*** %d:%d: %s: BAD RECEIVE STATUS: %ld ***\\n\", dserver_rpc_hooks_get_pid(), dserver_rpc_hooks_get_tid(), __func__, long_status);\n")
+-	library_source.write("\t\treturn (int)long_status;\n")
+-	library_source.write("\t}\n\n")
++	# perf #10 (dar-dar6x4-perf-5dq.17): fire-and-forget. The send succeeded; for a
++	# NO_REPLY call the server processes the request but sends NO reply, so we must NOT
++	# block in receive_message (skipping that ~200us reply-wait sleep is the whole win).
++	# Close the atomic region (matching the begin above) and return success now; the
++	# entire receive/decode block below is emitted only for normal (reply-bearing) calls.
++	# perf #10: NO_REPLY ("fire-and-forget") calls return right after a successful send
++	# -- the server emits no reply, so the entire receive/decode block is skipped (that
++	# skipped ~200us recvmsg sleep is the win). The thin forwarder + prototype tail below
++	# is still emitted for them (NO_REPLY calls have no reply params, so it's identical).
++	no_reply = (flags & NO_REPLY) != 0
++
++	if no_reply:
++		if (flags & ALLOW_INTERRUPTIONS) == 0:
++			library_source.write("\tdserver_rpc_hooks_atomic_end(&atomic_save);\n")
++		library_source.write("\treturn 0;\n")
++		library_source.write("};\n\n")
+ 
+-	library_source.write("\tif (long_status < sizeof(dserver_rpc_replyhdr_t)) {\n")
+-	if (flags & ALLOW_INTERRUPTIONS) == 0:
+-		library_source.write("\t\tdserver_rpc_hooks_atomic_end(&atomic_save);\n")
+-	library_source.write("\t\tdserver_rpc_hooks_printf(\"*** %d:%d: %s: BAD RECEIVE MESSAGE: length=%ld (expected %zu) ***\\n\", dserver_rpc_hooks_get_pid(), dserver_rpc_hooks_get_tid(), __func__, long_status, sizeof(reply_msg.reply));\n")
+-	library_source.write("\t\treturn dserver_rpc_hooks_get_communication_error_status();\n")
+-	library_source.write("\t}\n\n")
++	if not no_reply:
++		library_source.write("retry_receive:\n")
++		library_source.write("\tlong_status = dserver_rpc_hooks_receive_message(server_socket, &replymsg);\n\n")
+ 
+-	library_source.write("\tif (reply_msg.reply.header.number != dserver_callnum_" + call_name + ") {\n")
+-	if (flags & PUSH_UNKNOWN_REPLIES) != 0:
+-		library_source.write("\t\tdserver_rpc_hooks_push_reply(server_socket, &replymsg, long_status);\n")
++		library_source.write("\tif (long_status == dserver_rpc_hooks_get_interrupt_status()) {\n")
+ 		library_source.write("\t\tgoto retry_receive;\n")
+-	else:
++		library_source.write("\t}\n\n")
++		
++		library_source.write("\tif (long_status < 0) {\n")
+ 		if (flags & ALLOW_INTERRUPTIONS) == 0:
+ 			library_source.write("\t\tdserver_rpc_hooks_atomic_end(&atomic_save);\n")
+-		library_source.write("\t\tdserver_rpc_hooks_printf(\"*** %d:%d: %s: BAD RECEIVE MESSAGE: number=%d (expected %d), code=%d, length=%ld (expected %zu) ***\\n\", dserver_rpc_hooks_get_pid(), dserver_rpc_hooks_get_tid(), __func__, reply_msg.reply.header.number, dserver_callnum_" + call_name + ", reply_msg.reply.header.code, long_status, sizeof(reply_msg.reply));\n")
+-		library_source.write("\t\treturn dserver_rpc_hooks_get_communication_error_status();\n")
+-	library_source.write("\t}\n\n")
+-
+-	library_source.write("\tif (long_status != sizeof(reply_msg.reply)) {\n")
+-	if (flags & ALLOW_INTERRUPTIONS) == 0:
+-		library_source.write("\t\tdserver_rpc_hooks_atomic_end(&atomic_save);\n")
+-	library_source.write("\t\tdserver_rpc_hooks_printf(\"*** %d:%d: %s: BAD RECEIVE MESSAGE: number=%d (expected %d), code=%d, length=%ld (expected %zu) ***\\n\", dserver_rpc_hooks_get_pid(), dserver_rpc_hooks_get_tid(), __func__, reply_msg.reply.header.number, dserver_callnum_" + call_name + ", reply_msg.reply.header.code, long_status, sizeof(reply_msg.reply));\n")
+-	library_source.write("\t\treturn dserver_rpc_hooks_get_communication_error_status();\n")
+-	library_source.write("\t}\n\n")
+-
+-	if (flags & ALLOW_INTERRUPTIONS) == 0:
+-		library_source.write("\tdserver_rpc_hooks_atomic_end(&atomic_save);\n\n")
++		library_source.write("\t\tdserver_rpc_hooks_printf(\"*** %d:%d: %s: BAD RECEIVE STATUS: %ld ***\\n\", dserver_rpc_hooks_get_pid(), dserver_rpc_hooks_get_tid(), __func__, long_status);\n")
++		library_source.write("\t\treturn (int)long_status;\n")
++		library_source.write("\t}\n\n")
+ 
+-	if fd_count_in_reply != 0:
+-		library_source.write("\tvalid_fd_count = 0;\n")
+-		for param in reply_parameters:
+-			param_name = param[0]
++		library_source.write("\tif (long_status < sizeof(dserver_rpc_replyhdr_t)) {\n")
++		if (flags & ALLOW_INTERRUPTIONS) == 0:
++			library_source.write("\t\tdserver_rpc_hooks_atomic_end(&atomic_save);\n")
++		library_source.write("\t\tdserver_rpc_hooks_printf(\"*** %d:%d: %s: BAD RECEIVE MESSAGE: length=%ld (expected %zu) ***\\n\", dserver_rpc_hooks_get_pid(), dserver_rpc_hooks_get_tid(), __func__, long_status, sizeof(reply_msg.reply));\n")
++		library_source.write("\t\treturn dserver_rpc_hooks_get_communication_error_status();\n")
++		library_source.write("\t}\n\n")
+ 
+-			if not is_fd(param):
+-				continue
++		library_source.write("\tif (reply_msg.reply.header.number != dserver_callnum_" + call_name + ") {\n")
++		if (flags & PUSH_UNKNOWN_REPLIES) != 0:
++			library_source.write("\t\tdserver_rpc_hooks_push_reply(server_socket, &replymsg, long_status);\n")
++			library_source.write("\t\tgoto retry_receive;\n")
++		else:
++			if (flags & ALLOW_INTERRUPTIONS) == 0:
++				library_source.write("\t\tdserver_rpc_hooks_atomic_end(&atomic_save);\n")
++			library_source.write("\t\tdserver_rpc_hooks_printf(\"*** %d:%d: %s: BAD RECEIVE MESSAGE: number=%d (expected %d), code=%d, length=%ld (expected %zu) ***\\n\", dserver_rpc_hooks_get_pid(), dserver_rpc_hooks_get_tid(), __func__, reply_msg.reply.header.number, dserver_callnum_" + call_name + ", reply_msg.reply.header.code, long_status, sizeof(reply_msg.reply));\n")
++			library_source.write("\t\treturn dserver_rpc_hooks_get_communication_error_status();\n")
++		library_source.write("\t}\n\n")
+ 
+-			library_source.write("\tif (reply_msg.reply.body." + param_name + " >= 0) {\n")
+-			library_source.write("\t\t++valid_fd_count;\n")
+-			library_source.write("\t}\n")
++		library_source.write("\tif (long_status != sizeof(reply_msg.reply)) {\n")
++		if (flags & ALLOW_INTERRUPTIONS) == 0:
++			library_source.write("\t\tdserver_rpc_hooks_atomic_end(&atomic_save);\n")
++		library_source.write("\t\tdserver_rpc_hooks_printf(\"*** %d:%d: %s: BAD RECEIVE MESSAGE: number=%d (expected %d), code=%d, length=%ld (expected %zu) ***\\n\", dserver_rpc_hooks_get_pid(), dserver_rpc_hooks_get_tid(), __func__, reply_msg.reply.header.number, dserver_callnum_" + call_name + ", reply_msg.reply.header.code, long_status, sizeof(reply_msg.reply));\n")
++		library_source.write("\t\treturn dserver_rpc_hooks_get_communication_error_status();\n")
++		library_source.write("\t}\n\n")
+ 
+-		library_source.write(textwrap.indent(textwrap.dedent("""\
+-			if (valid_fd_count > 0) {
+-				dserver_rpc_hooks_cmsghdr_t* reply_cmsg = DSERVER_RPC_HOOKS_CMSG_FIRSTHDR(&replymsg);
+-				if (!reply_cmsg || reply_cmsg->cmsg_level != DSERVER_RPC_HOOKS_SOL_SOCKET || reply_cmsg->cmsg_type != DSERVER_RPC_HOOKS_SCM_RIGHTS || reply_cmsg->cmsg_len != DSERVER_RPC_HOOKS_CMSG_LEN(sizeof(int) * valid_fd_count)) {
+-					return dserver_rpc_hooks_get_bad_message_status();
++		if (flags & ALLOW_INTERRUPTIONS) == 0:
++			library_source.write("\tdserver_rpc_hooks_atomic_end(&atomic_save);\n\n")
++
++		if fd_count_in_reply != 0:
++			library_source.write("\tvalid_fd_count = 0;\n")
++			for param in reply_parameters:
++				param_name = param[0]
++
++				if not is_fd(param):
++					continue
++
++				library_source.write("\tif (reply_msg.reply.body." + param_name + " >= 0) {\n")
++				library_source.write("\t\t++valid_fd_count;\n")
++				library_source.write("\t}\n")
++
++			library_source.write(textwrap.indent(textwrap.dedent("""\
++				if (valid_fd_count > 0) {
++					dserver_rpc_hooks_cmsghdr_t* reply_cmsg = DSERVER_RPC_HOOKS_CMSG_FIRSTHDR(&replymsg);
++					if (!reply_cmsg || reply_cmsg->cmsg_level != DSERVER_RPC_HOOKS_SOL_SOCKET || reply_cmsg->cmsg_type != DSERVER_RPC_HOOKS_SCM_RIGHTS || reply_cmsg->cmsg_len != DSERVER_RPC_HOOKS_CMSG_LEN(sizeof(int) * valid_fd_count)) {
++						return dserver_rpc_hooks_get_bad_message_status();
++					}
++					dserver_rpc_hooks_memcpy(fds, DSERVER_RPC_HOOKS_CMSG_DATA(reply_cmsg), sizeof(int) * valid_fd_count);
+ 				}
+-				dserver_rpc_hooks_memcpy(fds, DSERVER_RPC_HOOKS_CMSG_DATA(reply_cmsg), sizeof(int) * valid_fd_count);
+-			}
+-			"""), '\t'))
+-
+-	for param in reply_parameters:
+-		param_name = param[0]
+-
+-		if is_fd(param):
+-			library_source.write("\tif (out_" + param_name + ") {\n")
+-			library_source.write("\t\t*out_" + param_name + " = (reply_msg.reply.body." + param_name + " >= 0) ? fds[reply_msg.reply.body." + param_name + "] : -1;\n")
+-			library_source.write("\t} else if (reply_msg.reply.body." + param_name + " >= 0) {\n")
+-			library_source.write("\t\tdserver_rpc_hooks_close_fd(fds[reply_msg.reply.body." + param_name + "]);\n")
+-			library_source.write("\t}\n")
+-		else:
+-			library_source.write("\tif (out_" + param_name + ") {\n")
+-			library_source.write("\t\t*out_" + param_name + " = reply_msg.reply.body." + param_name + ";\n")
+-			library_source.write("\t}\n")
++				"""), '\t'))
+ 
+-	library_source.write("\treturn reply_msg.reply.header.code;\n")
++		for param in reply_parameters:
++			param_name = param[0]
+ 
+-	library_source.write("};\n\n")
++			if is_fd(param):
++				library_source.write("\tif (out_" + param_name + ") {\n")
++				library_source.write("\t\t*out_" + param_name + " = (reply_msg.reply.body." + param_name + " >= 0) ? fds[reply_msg.reply.body." + param_name + "] : -1;\n")
++				library_source.write("\t} else if (reply_msg.reply.body." + param_name + " >= 0) {\n")
++				library_source.write("\t\tdserver_rpc_hooks_close_fd(fds[reply_msg.reply.body." + param_name + "]);\n")
++				library_source.write("\t}\n")
++			else:
++				library_source.write("\tif (out_" + param_name + ") {\n")
++				library_source.write("\t\t*out_" + param_name + " = reply_msg.reply.body." + param_name + ";\n")
++				library_source.write("\t}\n")
++
++		library_source.write("\treturn reply_msg.reply.header.code;\n")
++
++		library_source.write("};\n\n")
+ 
+ 	# declare the RPC call wrapper function
+ 	# (and output the prototype part of the function definition)
+diff --git a/tests/no_reply_rpc_test.sh b/tests/no_reply_rpc_test.sh
+new file mode 100755
+index 0000000000000000000000000000000000000000..9d8de9bfa80f027a81ea22c5832b9c3585726c04
+--- /dev/null
++++ b/tests/no_reply_rpc_test.sh
+@@ -0,0 +1,89 @@
++#!/usr/bin/env bash
++# perf #10 (dar-dar6x4-perf-5dq.17) regression test: the NO_REPLY ("fire-and-forget")
++# RPC class.
++#
++# The per-call RPC profile (perf #9) showed ~40% of build RPCs are once-per-process
++# pure SETTERS with an EMPTY reply (set_dyld_info, set_executable_path,
++# set_thread_handles, ...). Each still pays a full synchronous round-trip: send + a
++# ~200us recvmsg sleep, only to read a status code the guest discards. That sleep IS
++# the 57% guest wall-clock the profile (perf #6) measured.
++#
++# A NO_REPLY call must:
++#   GUEST  (library source wrapper): send the message and RETURN immediately -- no
++#          receive_message call, so the thread never sleeps for an ack.
++#   SERVER (internal header _sendReply): be a NO-OP -- the call still runs its work in
++#          processCall(), but emits NO reply datagram (a stray reply would desync the
++#          next synchronous RPC's reply matching on the same per-thread socket).
++#
++# RED->GREEN: this drives a generator change. Before the NO_REPLY flag exists, the
++# generated wrapper for a NO_REPLY call still contains receive_message (RED). After,
++# the wrapper for a NO_REPLY call omits receive_message AND its _sendReply body is
++# empty, while a normal reply-less call (e.g. a non-flagged setter) STILL receives.
++#
++# Hermetic: runs the python generator into a temp dir and greps the output. No build,
++# no server. Exit 0 = GREEN.
++set -u
++
++HERE="$(cd "$(dirname "$0")" && pwd)"
++GEN="$HERE/../scripts/generate-rpc-wrappers.py"
++TMP="$(mktemp -d)"
++trap 'rm -rf "$TMP"' EXIT
++
++python3 "$GEN" "$TMP/public.h" "$TMP/internal.h" "$TMP/library.c" "test-import" || {
++	echo "FAIL: generator did not run"; exit 1; }
++
++LIB="$TMP/library.c"
++INT="$TMP/internal.h"
++fails=0
++
++# Extract the generated wrapper body for a call. The real send/receive logic lives in
++# the `dserver_rpc_explicit_<name>(int server_socket, ...)` variant (the thin
++# `dserver_rpc_<name>` just forwards to it), so scope the grep to the explicit wrapper.
++wrapper_body() { # $1 = call name
++	awk -v fn="int dserver_rpc_explicit_$1(" '
++		index($0, fn) == 1 { inb=1 }
++		inb { print }
++		inb && ($0 == "}" || $0 == "};") { exit }
++	' "$LIB"
++}
++
++# A NO_REPLY call: wrapper must NOT wait for a reply.
++NR_CALL="set_dyld_info"
++if wrapper_body "$NR_CALL" | grep -q "receive_message"; then
++	echo "FAIL: NO_REPLY call '$NR_CALL' wrapper still calls receive_message (does NOT fire-and-forget)"
++	fails=$((fails+1))
++fi
++
++# Its server-side _sendReply must be a no-op (no Message/pushCallReply emitted for it).
++# The generated _sendReply is inside the per-call class macro. Scope to the
++# `class Call::SetDyldInfo:` definition (NOT the `class SetDyldInfo;` forward decl),
++# ending at the start of the next class definition.
++awk '
++	index($0, "class Call::SetDyldInfo:") > 0 { inblk=1 }
++	inblk && index($0, "class Call::") > 0 && index($0, "SetDyldInfo") == 0 { exit }
++	inblk { print }
++' "$INT" > "$TMP/sdi.int"
++# Its _sendReply must NOT emit a reply (no pushCallReply / Call::sendReply) and MUST
++# carry the fire-and-forget no-op marker.
++if grep -q "pushCallReply\|Call::sendReply" "$TMP/sdi.int"; then
++	echo "FAIL: NO_REPLY call '$NR_CALL' server _sendReply still emits a reply datagram"
++	fails=$((fails+1))
++fi
++if ! grep -q "NO_REPLY: fire-and-forget" "$TMP/sdi.int"; then
++	echo "FAIL: NO_REPLY call '$NR_CALL' server _sendReply missing the no-op marker"
++	fails=$((fails+1))
++fi
++
++# CONTROL: a normal (non-NO_REPLY) call MUST still receive, so we didn't break the
++# default path. checkin returns data and must stay synchronous.
++if ! wrapper_body "checkin" | grep -q "receive_message"; then
++	echo "FAIL: normal call 'checkin' wrapper no longer receives (default path broken)"
++	fails=$((fails+1))
++fi
++
++if [ "$fails" -eq 0 ]; then
++	echo "GREEN: NO_REPLY calls fire-and-forget (no recv, no server reply); normal calls still receive"
++	exit 0
++fi
++echo "RED: $fails NO_REPLY check(s) failed"
++exit 1

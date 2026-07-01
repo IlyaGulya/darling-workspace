@@ -1,0 +1,72 @@
+From 7344b17facc2f18c8a8db2e36e8850c032965dd7 Mon Sep 17 00:00:00 2001
+From: Ilya Gulya <ilya.gulya@indriver.com>
+Date: Wed, 24 Jun 2026 15:15:58 +0000
+Subject: [PATCH] duct-tape: cancel stale wait_timer when entering a new wait
+
+A thread can only be in one wait at a time, so any wait_timer still armed
+when the thread reaches waitq_assert_wait64_locked() is a leftover from a
+PRIOR wait. XNU keeps this from happening by cancelling the wait_timer in
+thread_unblock() on every wakeup (see the cancel-stale-wait-timer fix,
+dar-gwn.2). But in duct-tape some wakeup/continuation paths complete a
+timed wait WITHOUT routing through thread_unblock() -- e.g. a timed psynch
+cvwait that is woken (THREAD_AWAKENED) and whose continuation immediately
+re-blocks in a new, untimed wait before the leftover timer is serviced.
+
+When that happens the stale timer later fires thread_timer_expire() ->
+clear_wait_internal(THREAD_TIMED_OUT) against the thread's CURRENT wait,
+delivering a spurious timeout. On an untimed wait (deadline == 0) that
+surfaces as a bogus ETIMEDOUT from psynch_cvwait, which Ruby's
+rb_native_cond_wait treats as a fatal `[BUG] pthread_cond_wait: Operation
+timed out (ETIMEDOUT)` -- the intermittent Homebrew download_queue.rb:184
+abort under `brew install` (concurrent-ruby fork/exec storm).
+
+Defensively cancel any leftover armed wait_timer at the top of
+waitq_assert_wait64_locked(), before (re)arming for the new wait, so the
+wait_timer state always starts clean -- matching XNU's invariant that a
+thread entering assert_wait has no live wait_timer. The cancel follows the
+same accounting protocol as thread_unblock()/dtape_thread_destroy(): only
+decrement wait_timer_active when timer_call_cancel() actually dequeued the
+call; if it was already in flight, clearing wait_timer_is_set makes the
+pending thread_timer_expire() a no-op.
+
+Complements (does not replace) the thread_unblock() cancel; that handles
+the common case, this closes the residual leak it cannot reach.
+
+Refs dar-gwn.1.9.
+
+Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
+---
+ duct-tape/xnu/osfmk/kern/waitq.c | 20 ++++++++++++++++++++
+ 1 file changed, 20 insertions(+)
+
+diff --git a/duct-tape/xnu/osfmk/kern/waitq.c b/duct-tape/xnu/osfmk/kern/waitq.c
+index f79894f8bfc98563cd2b39d552c294df90522e71..5391dec8ab2683707adbb4df30686bd2b8f56e5c 100644
+--- a/duct-tape/xnu/osfmk/kern/waitq.c
++++ b/duct-tape/xnu/osfmk/kern/waitq.c
+@@ -2915,6 +2915,26 @@ waitq_assert_wait64_locked(struct waitq *waitq,
+ 		thread->wait_event = wait_event;
+ 		thread->waitq = waitq;
+ 
++		// dar-gwn.1.8/.1.9: A thread can only be in one wait at a time, so any
++		// wait_timer still armed here is a leftover from a PRIOR wait that was
++		// woken through a path which did not cancel it (XNU relies on
++		// thread_unblock() cancelling it on every wakeup; in duct-tape some
++		// wakeup/continuation paths can complete a timed wait without routing
++		// through thread_unblock). If left armed, that stale timer fires
++		// thread_timer_expire() -> clear_wait_internal(THREAD_TIMED_OUT) on THIS
++		// new wait, delivering a spurious timeout. For an untimed wait
++		// (deadline == 0) that becomes a bogus ETIMEDOUT, which Ruby's
++		// rb_native_cond_wait treats as a fatal [BUG] (Homebrew download_queue
++		// abort). Cancel any such leftover before (re)arming for this wait so
++		// the wait_timer state starts clean. Matches XNU's invariant that a
++		// thread entering assert_wait has no live wait_timer.
++		if (thread->wait_timer_is_set) {
++			if (timer_call_cancel(&thread->wait_timer)) {
++				thread->wait_timer_active--;
++			}
++			thread->wait_timer_is_set = FALSE;
++		}
++
+ 		if (deadline != 0) {
+ 			boolean_t act;
+ 

@@ -14,3 +14,4 @@ workspace.env
 .repo/
 scripts/__pycache__/
 west_commands/__pycache__/
+testkit/build/

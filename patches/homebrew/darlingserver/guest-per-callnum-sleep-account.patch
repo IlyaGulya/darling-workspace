@@ -1,0 +1,174 @@
+From ee46485ef0bb7b5ab65e9a25417f52c4fdeb3072 Mon Sep 17 00:00:00 2001
+From: Ilya Gulya <ilya@gulya.me>
+Date: Sun, 28 Jun 2026 08:44:01 +0000
+Subject: [PATCH] perf #9-decompose: guest per-callnum recvmsg-sleep accounting
+ (generator + test)
+
+perf #6 showed ~57% of build wall-clock is the guest asleep in recvmsg waiting for
+an RPC reply; perf #9 measured only SERVER service time (tiny everywhere), so we never
+learned WHICH call numbers the guest sleeps on longest. The call number is a
+compile-time constant only at the wrapper's receive site (dserver_callnum_<name>), not
+in the shared receive_message hook -- so the timing must be emitted by the generator.
+
+generate-rpc-wrappers.py now brackets each reply-bearing wrapper's receive with
+__darling_rpc_sleep_account_begin()/_end(start, dserver_callnum_<name>), guarded by
+#ifdef DARLING_RPC_SLEEP_ACCOUNT so a normal build emits byte-identical wrappers (zero
+cost) and only a diagnostic build defines the macro. begin/end bracket the entire
+receive (incl. the retry loop). NO_REPLY (fire-and-forget) calls never receive, so they
+get no accounting. The accountant itself (table + rdtsc timing + exit dump) lives in
+libsystem_kernel (separate commit in the xnu submodule).
+
+RED->GREEN: tests/rpc_sleep_account_test.sh runs the generator and asserts the wrapper
+brackets its receive with the guarded per-callnum accounting and that NO_REPLY calls
+have none. Proven RED before the generator change (exit 1), GREEN after.
+
+Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
+---
+ scripts/generate-rpc-wrappers.py | 23 +++++++-
+ tests/rpc_sleep_account_test.sh  | 97 ++++++++++++++++++++++++++++++++
+ 2 files changed, 119 insertions(+), 1 deletion(-)
+ create mode 100755 tests/rpc_sleep_account_test.sh
+
+diff --git a/scripts/generate-rpc-wrappers.py b/scripts/generate-rpc-wrappers.py
+index 86ea376dcef1e887daee10a71e201ba939543ee0..23655d0fc5c355f051dbf4bc51b074ab2a6b458e 100755
+--- a/scripts/generate-rpc-wrappers.py
++++ b/scripts/generate-rpc-wrappers.py
+@@ -1494,13 +1494,34 @@ for call in calls:
+ 		library_source.write("};\n\n")
+ 
+ 	if not no_reply:
++		# perf #9-decompose (dar-dar6x4-perf-5dq): GUEST-SIDE per-callnum recvmsg-sleep
++		# accounting. perf #6 showed ~57% of build wall-clock is the guest asleep in
++		# recvmsg waiting for the reply; perf #9 measured only the (tiny) SERVER service
++		# time, so we still don't know WHICH calls the guest sleeps on longest. The call
++		# number is a compile-time constant ONLY here at the wrapper's receive site
++		# (dserver_callnum_<name>) -- NOT inside the shared receive_message hook -- so the
++		# timing must be emitted by the generator around the receive. It is wrapped in
++		# #ifdef DARLING_RPC_SLEEP_ACCOUNT so a normal build emits byte-identical wrappers
++		# (zero cost); only an instrumented diagnostic build defines the macro. begin/end
++		# bracket the ENTIRE receive (including the retry_receive loop on EINTR / unknown
++		# replies), so the attributed time is the full reply-wait this call paid.
++		library_source.write("#ifdef DARLING_RPC_SLEEP_ACCOUNT\n")
++		library_source.write("\tunsigned long __sleep_acct_start = __darling_rpc_sleep_account_begin();\n")
++		library_source.write("#endif\n")
+ 		library_source.write("retry_receive:\n")
+ 		library_source.write("\tlong_status = dserver_rpc_hooks_receive_message(server_socket, &replymsg);\n\n")
+ 
+ 		library_source.write("\tif (long_status == dserver_rpc_hooks_get_interrupt_status()) {\n")
+ 		library_source.write("\t\tgoto retry_receive;\n")
+ 		library_source.write("\t}\n\n")
+-		
++
++		# perf #9-decompose: the reply-wait is over (terminal status, not an EINTR retry).
++		# Attribute the elapsed wait to THIS call number. End is reached for every terminal
++		# outcome (success or error), so the accounting is complete regardless of result.
++		library_source.write("#ifdef DARLING_RPC_SLEEP_ACCOUNT\n")
++		library_source.write("\t__darling_rpc_sleep_account_end(__sleep_acct_start, dserver_callnum_" + call_name + ");\n")
++		library_source.write("#endif\n")
++
+ 		library_source.write("\tif (long_status < 0) {\n")
+ 		if (flags & ALLOW_INTERRUPTIONS) == 0:
+ 			library_source.write("\t\tdserver_rpc_hooks_atomic_end(&atomic_save);\n")
+diff --git a/tests/rpc_sleep_account_test.sh b/tests/rpc_sleep_account_test.sh
+new file mode 100755
+index 0000000000000000000000000000000000000000..b32408fa69fb374a9c998b2a43c68907c067b7aa
+--- /dev/null
++++ b/tests/rpc_sleep_account_test.sh
+@@ -0,0 +1,97 @@
++#!/usr/bin/env bash
++# perf #9-decompose (dar-dar6x4-perf-5dq): GUEST-SIDE per-callnum recvmsg-sleep
++# accounting.
++#
++# perf #6 profiled a real build: the guest spends ~57% of wall-clock asleep in
++# recvmsg waiting for an RPC reply. perf #9 measured only the SERVER side (service
++# time, tiny everywhere), so we still don't know WHICH call numbers the guest sleeps
++# on longest -- and that is exactly what we must know to attack the 57% instead of
++# guessing one call at a time.
++#
++# The fix is a guest-side accountant that times the recv (reply-wait) and attributes
++# the elapsed time to the call number being waited on. The call number is a
++# compile-time constant ONLY at the wrapper's receive site (dserver_callnum_<name>),
++# not inside the shared receive_message hook -- so the timing must be emitted by the
++# GENERATOR around the receive call, not buried in the hook (which would have no
++# callnum). To stay zero-cost by default and avoid touching the hook signature (which
++# has 3 divergent copies), the timing is wrapped in #ifdef DARLING_RPC_SLEEP_ACCOUNT:
++# a normal build emits byte-identical wrappers; only an instrumented diagnostic build
++# defines the macro.
++#
++# RED->GREEN: this drives the generator change. Before it, the generated wrapper has
++# no per-callnum accounting hooks around the receive (RED). After, a reply-bearing
++# call's wrapper brackets its receive with __darling_rpc_sleep_account_begin() ...
++# __darling_rpc_sleep_account_end(dserver_callnum_<name>), all under the
++# DARLING_RPC_SLEEP_ACCOUNT guard, and a NO_REPLY (fire-and-forget) call -- which
++# never receives -- gets NO accounting.
++#
++# Hermetic: runs the python generator into a temp dir and greps the output. No build,
++# no server. Exit 0 = GREEN.
++set -u
++
++HERE="$(cd "$(dirname "$0")" && pwd)"
++GEN="$HERE/../scripts/generate-rpc-wrappers.py"
++TMP="$(mktemp -d)"
++trap 'rm -rf "$TMP"' EXIT
++
++python3 "$GEN" "$TMP/public.h" "$TMP/internal.h" "$TMP/library.c" "test-import" || {
++	echo "FAIL: generator did not run"; exit 1; }
++
++LIB="$TMP/library.c"
++fails=0
++
++# Extract the generated wrapper body for a call (the explicit variant carries the
++# real send/receive logic; the thin dserver_rpc_<name> just forwards).
++wrapper_body() { # $1 = call name
++	awk -v fn="int dserver_rpc_explicit_$1(" '
++		index($0, fn) == 1 { inb=1 }
++		inb { print }
++		inb && ($0 == "}" || $0 == "};") { exit }
++	' "$LIB"
++}
++
++# 1) A normal reply-bearing call must bracket its receive with the accountant. The
++#    begin must precede the receive_message and the end must name the call number.
++CALL="checkin"
++body="$(wrapper_body "$CALL")"
++
++if ! grep -q "__darling_rpc_sleep_account_begin" <<<"$body"; then
++	echo "FAIL: '$CALL' wrapper has no __darling_rpc_sleep_account_begin around its receive"
++	fails=$((fails+1))
++fi
++if ! grep -q "__darling_rpc_sleep_account_end(__sleep_acct_start, dserver_callnum_$CALL" <<<"$body"; then
++	echo "FAIL: '$CALL' wrapper does not attribute its recv time to dserver_callnum_$CALL"
++	fails=$((fails+1))
++fi
++
++# 2) The accounting must be compile-time gated so default builds are byte-identical:
++#    the begin/end must appear only inside a DARLING_RPC_SLEEP_ACCOUNT #ifdef block.
++if ! grep -q "DARLING_RPC_SLEEP_ACCOUNT" <<<"$body"; then
++	echo "FAIL: '$CALL' accounting is not guarded by DARLING_RPC_SLEEP_ACCOUNT (would cost on default builds)"
++	fails=$((fails+1))
++fi
++
++# 3) begin must come BEFORE the receive_message call, end AFTER it (we time the wait).
++begin_ln="$(grep -n "__darling_rpc_sleep_account_begin" <<<"$body" | head -1 | cut -d: -f1)"
++recv_ln="$(grep -n "dserver_rpc_hooks_receive_message" <<<"$body" | head -1 | cut -d: -f1)"
++end_ln="$(grep -n "__darling_rpc_sleep_account_end" <<<"$body" | tail -1 | cut -d: -f1)"
++if [ -n "$begin_ln" ] && [ -n "$recv_ln" ] && [ -n "$end_ln" ]; then
++	if ! { [ "$begin_ln" -lt "$recv_ln" ] && [ "$recv_ln" -lt "$end_ln" ]; }; then
++		echo "FAIL: '$CALL' accounting does not bracket the receive (begin=$begin_ln recv=$recv_ln end=$end_ln)"
++		fails=$((fails+1))
++	fi
++fi
++
++# 4) A NO_REPLY (fire-and-forget) call never receives, so it must have NO accounting.
++NR_CALL="set_dyld_info"
++if wrapper_body "$NR_CALL" | grep -q "__darling_rpc_sleep_account"; then
++	echo "FAIL: NO_REPLY call '$NR_CALL' has sleep accounting but it never receives"
++	fails=$((fails+1))
++fi
++
++if [ "$fails" -eq 0 ]; then
++	echo "GREEN: reply-bearing wrappers bracket their receive with guarded per-callnum sleep accounting; NO_REPLY calls have none"
++	exit 0
++fi
++echo "RED: $fails sleep-accounting check(s) failed"
++exit 1

@@ -1,0 +1,287 @@
+From d87489f876d9582ac72fd36c50f1034cebcb5bf0 Mon Sep 17 00:00:00 2001
+From: Ilya Gulya <ilya.gulya@indriver.com>
+Date: Sun, 28 Jun 2026 01:46:20 +0000
+Subject: [PATCH] mldr: adaptive spin-then-FUTEX_WAIT for thread-create checkin
+
+perf #1 (dar-dar6x4-perf-5dq.1). __darling_thread_create() waited for the new
+thread's darlingserver checkin with an UNBOUNDED `while (args.pth != NULL)
+sched_yield();` busy-spin. Under high thread-creation density (e.g. `make -j`
+link storms) every in-flight creator burned a full core, starving the new
+threads -- and the single-threaded darlingserver -- of the CPU they needed to
+complete the very checkin the creator was spinning on.
+
+A naive unconditional FUTEX_WAIT regresses the common case: the checkin is
+usually fast (p50 ~16-64us on a warm server), faster than a futex syscall
+round-trip, so blocking immediately adds latency a short spin would have avoided
+(measured ~25% fewer checkins/s on a fast warm server). Use an ADAPTIVE wait
+instead: spin a bounded number of times first (wins the fast path with no
+syscall), then fall back to FUTEX_WAIT so a SLOW checkin can never monopolise a
+core. A dedicated `_Atomic int checked_in` word (appended LAST in arg_struct so
+the hardcoded i386 byte offsets into &args stay valid) is cleared before launch;
+the creator spins-then-FUTEX_WAITs on it; the new thread stores 1 + FUTEX_WAKEs
+after it has checked in. A defensive sched_yield covers the should-never-happen
+non-EAGAIN/EINTR futex error so we can never hang.
+
+RED->GREEN regression test committed alongside (tests/regression/
+thread_create_checkin_wait.c + run-thread-create-checkin-wait.sh): it reproduces
+the exact creator/child handshake both ways and asserts the creator's own CPU
+stays low while it waits out a 300ms checkin (bounded spin then sleep, ~1ms CPU)
+vs burning a core (unbounded spin, ~141-300ms CPU).
+
+Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
+---
+ src/startup/mldr/elfcalls/threads.c           |  56 ++++++++-
+ .../run-thread-create-checkin-wait.sh         |  29 +++++
+ tests/regression/thread_create_checkin_wait.c | 109 ++++++++++++++++++
+ 3 files changed, 192 insertions(+), 2 deletions(-)
+ create mode 100755 tests/regression/run-thread-create-checkin-wait.sh
+ create mode 100644 tests/regression/thread_create_checkin_wait.c
+
+diff --git a/src/startup/mldr/elfcalls/threads.c b/src/startup/mldr/elfcalls/threads.c
+index e789986eab14e28541d9303df820b5f6642d9aff..c1dbd8b591602167027bfde1a8f0a6a637ac1eb4 100644
+--- a/src/startup/mldr/elfcalls/threads.c
++++ b/src/startup/mldr/elfcalls/threads.c
+@@ -32,6 +32,9 @@ along with Darling.  If not, see <http://www.gnu.org/licenses/>.
+ #include <sys/socket.h>
+ #include <stdio.h>
+ #include <fcntl.h>
++#include <stdatomic.h>
++#include <linux/futex.h>
++#include <errno.h>
+ 
+ #include "dthreads.h"
+ 
+@@ -67,8 +70,18 @@ struct arg_struct
+ 	uintptr_t stack_bottom;
+ 	uintptr_t stack_addr;
+ 	bool is_workqueue;
++	// perf #1 (dar-dar6x4-perf-5dq.1): completion handshake futex word. The creating
++	// thread FUTEX_WAITs on this instead of busy-spinning sched_yield() until the new
++	// thread has checked in with darlingserver; the new thread stores 1 + FUTEX_WAKEs.
++	// Appended LAST so the hardcoded i386 byte offsets into &args below stay valid.
++	_Atomic int checked_in;
+ };
+ 
++// raw futex syscall wrappers (no glibc wrapper exists)
++static inline long __dthread_futex(_Atomic int* uaddr, int op, int val) {
++	return syscall(SYS_futex, (int*)uaddr, op, val, NULL, NULL, 0);
++}
++
+ static void* darling_thread_entry(void* p);
+ 
+ #ifndef PTHREAD_STACK_MIN
+@@ -159,6 +172,7 @@ void* __darling_thread_create(unsigned long stack_size, unsigned long pth_obj_si
+ 		.callbacks        = callbacks,
+ 		.stack_addr       = 0, // set later on
+ 		.is_workqueue     = real_entry_point == 0, // our `workq_kernreturn` sets `real_entry_point` to NULL; `bsdthread_create` actually passes a value
++		.checked_in       = 0, // perf #1: cleared before launch, set to 1 by the new thread after checkin
+ 	};
+ 	pthread_attr_t attr;
+ 	pthread_t nativeLibcThread;
+@@ -196,8 +210,39 @@ void* __darling_thread_create(unsigned long stack_size, unsigned long pth_obj_si
+ 	pthread_create(&nativeLibcThread, &attr, darling_thread_entry, &args);
+ 	pthread_attr_destroy(&attr);
+ 
+-	while (args.pth != NULL)
+-		sched_yield();
++	// perf #1 (dar-dar6x4-perf-5dq.1): wait for the new thread to finish its darlingserver
++	// checkin. The original code was an unbounded `while (args.pth != NULL) sched_yield();`
++	// busy-spin: under high thread-creation density (e.g. `make -j` link storms) every
++	// in-flight creator burned a whole core, starving the new threads AND the single-threaded
++	// darlingserver of the CPU they needed to complete the very checkin being waited on.
++	//
++	// But the checkin is usually FAST (p50 ~16-64us on a warm server), faster than a futex
++	// syscall round-trip, so an immediate FUTEX_WAIT regresses the common case. Use an
++	// ADAPTIVE wait: spin a bounded number of times first (wins the fast path with no
++	// syscall), then fall back to FUTEX_WAIT so a slow checkin can never monopolise a core.
++	// This keeps the fast-path throughput of the spin while removing the pathological
++	// starvation of the unbounded spin.
++	{
++		// ~tuned so the spin phase covers a typical fast checkin but bails out quickly
++		// (each iteration is a relaxed load + a sched_yield, i.e. a few hundred ns).
++		const int kSpinIters = 4000;
++		int spins = 0;
++		while (atomic_load_explicit(&args.checked_in, memory_order_acquire) == 0) {
++			if (spins < kSpinIters) {
++				++spins;
++				sched_yield();
++				continue;
++			}
++			// slow checkin: stop burning CPU and block in the kernel.
++			long r = __dthread_futex(&args.checked_in, FUTEX_WAIT_PRIVATE, 0);
++			// EAGAIN => the value already changed (checkin won the race); EINTR => spurious
++			// wakeup. Both just re-check the predicate. Any other error: yield so we can
++			// never hang (defensive; should not happen).
++			if (r != 0 && errno != EAGAIN && errno != EINTR) {
++				sched_yield();
++			}
++		}
++	}
+ 
+ 	return pth;
+ }
+@@ -244,7 +289,14 @@ static void* darling_thread_entry(void* p)
+ 	dthread->tsd[DTHREAD_TSD_SLOT_MACH_THREAD_SELF] = (void*)(intptr_t)thread_self_port;
+ 	args.port = thread_self_port;
+ 
++	// perf #1 (dar-dar6x4-perf-5dq.1): signal the creating thread that we've checked in and
++	// wake it from its FUTEX_WAIT. This is our LAST access to `in_args` (the creator's stack):
++	// once it observes checked_in==1 it may return and reuse that frame, so we must not touch
++	// `in_args` afterward. `pth` is nulled too for backwards-compat with anything inspecting it.
+ 	in_args->pth = NULL;
++	atomic_store_explicit(&in_args->checked_in, 1, memory_order_release);
++	// exactly one waiter (the creating thread) ever waits on this word
++	__dthread_futex(&in_args->checked_in, FUTEX_WAKE_PRIVATE, 1);
+ 
+ 	if (setjmp(t_jmpbuf))
+ 	{
+diff --git a/tests/regression/run-thread-create-checkin-wait.sh b/tests/regression/run-thread-create-checkin-wait.sh
+new file mode 100755
+index 0000000000000000000000000000000000000000..a58086a19bec18e5494424f8d3ecef6d84c6ae4a
+--- /dev/null
++++ b/tests/regression/run-thread-create-checkin-wait.sh
+@@ -0,0 +1,29 @@
++#!/usr/bin/env bash
++# Regression test for perf #1 (dar-dar6x4-perf-5dq.1): __darling_thread_create() must
++# FUTEX_WAIT for the new thread's checkin, not busy-spin sched_yield().
++#
++# Builds the handshake harness and asserts:
++#   - GREEN: the futex path keeps the creator's CPU ~0 while it waits  (exit 0)
++#   - RED:   the old spin path burns a core (exit 1) -- proves the test discriminates
++#
++# HOST test (plain glibc, no Darling runtime). Finishes in ~1s. Exit 0 on PASS.
++set -euo pipefail
++
++here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
++work="$(mktemp -d)"
++trap 'rm -rf "$work"' EXIT
++cc="${CC:-cc}"
++
++"$cc" -O2 -g "$here/thread_create_checkin_wait.c" -o "$work/tccw" -lpthread
++
++# RED proof first: the discriminating spin path MUST fail (non-zero), else the test is blind.
++echo "--- RED proof (old sched_yield spin path, expected to FAIL) ---"
++if "$work/tccw" spin; then
++	echo "FAIL: spin path unexpectedly passed -- test does not discriminate busy-spin" >&2
++	exit 2
++fi
++echo "(RED path failed as expected)"
++
++# GREEN: the production futex path must pass.
++echo "--- GREEN (futex wait path, expected to PASS) ---"
++"$work/tccw"
+diff --git a/tests/regression/thread_create_checkin_wait.c b/tests/regression/thread_create_checkin_wait.c
+new file mode 100644
+index 0000000000000000000000000000000000000000..daf89968584885d3630db5aad6a49db3fc90d259
+--- /dev/null
++++ b/tests/regression/thread_create_checkin_wait.c
+@@ -0,0 +1,109 @@
++// Regression test for perf #1 (dar-dar6x4-perf-5dq.1):
++// __darling_thread_create() must WAIT for the new thread's darlingserver checkin via
++// FUTEX_WAIT, NOT a sched_yield() busy-spin. The old spin burned a whole core per
++// in-flight thread creation; under `make -j` link storms that starved the very threads
++// (and the single-threaded darlingserver) it was waiting on.
++//
++// We can't link mldr's full thread machinery in a host test, so we reproduce the exact
++// creator/child handshake both ways and measure the CREATOR's own CPU time while it waits
++// out a deliberately-delayed checkin:
++//
++//   GREEN (futex): creator blocks in the kernel  -> ~0 CPU during the wait.
++//   RED   (spin):  creator burns a core          -> CPU ~= wall time during the wait.
++//
++// This is a HOST test (plain glibc, no Darling runtime needed); see run-thread-create-
++// checkin-wait.sh. Exit 0 = PASS (futex path); the runner also proves the RED case fails.
++#define _GNU_SOURCE
++#include <pthread.h>
++#include <stdio.h>
++#include <stdlib.h>
++#include <string.h>
++#include <stdatomic.h>
++#include <unistd.h>
++#include <time.h>
++#include <errno.h>
++#include <sched.h>
++#include <sys/syscall.h>
++#include <linux/futex.h>
++
++static _Atomic int checked_in = 0;
++static int use_spin = 0;
++
++static long ms_thread_cpu(void) {
++	struct timespec ts;
++	clock_gettime(CLOCK_THREAD_CPUTIME_ID, &ts);
++	return ts.tv_sec * 1000L + ts.tv_nsec / 1000000L;
++}
++
++static long futex(_Atomic int* uaddr, int op, int val) {
++	return syscall(SYS_futex, (int*)uaddr, op, val, NULL, NULL, 0);
++}
++
++// emulates darling_thread_entry: slow "checkin", then signal + wake the creator
++static void* child(void* p) {
++	(void)p;
++	struct timespec d = { 0, 300 * 1000 * 1000 }; // 300ms artificial checkin latency
++	nanosleep(&d, NULL);
++	atomic_store_explicit(&checked_in, 1, memory_order_release);
++	if (!use_spin)
++		futex(&checked_in, FUTEX_WAKE_PRIVATE, 1);
++	return NULL;
++}
++
++int main(int argc, char** argv) {
++	if (argc > 1 && strcmp(argv[1], "spin") == 0)
++		use_spin = 1;
++
++	pthread_t th;
++	long cpu0 = ms_thread_cpu();
++	struct timespec w0, w1;
++	clock_gettime(CLOCK_MONOTONIC, &w0);
++
++	if (pthread_create(&th, NULL, child, NULL) != 0) {
++		perror("pthread_create");
++		return 2;
++	}
++
++	// THE WAIT under test -- exactly the two variants from __darling_thread_create()
++	if (use_spin) {
++		// RED: the original unbounded busy-spin.
++		while (atomic_load_explicit(&checked_in, memory_order_acquire) == 0)
++			sched_yield();
++	} else {
++		// GREEN: the production ADAPTIVE wait -- bounded spin (fast path) then FUTEX_WAIT
++		// so a slow checkin can never monopolise a core.
++		const int kSpinIters = 4000;
++		int spins = 0;
++		while (atomic_load_explicit(&checked_in, memory_order_acquire) == 0) {
++			if (spins < kSpinIters) {
++				++spins;
++				sched_yield();
++				continue;
++			}
++			long r = futex(&checked_in, FUTEX_WAIT_PRIVATE, 0);
++			if (r != 0 && errno != EAGAIN && errno != EINTR)
++				sched_yield();
++		}
++	}
++
++	long cpu1 = ms_thread_cpu();
++	clock_gettime(CLOCK_MONOTONIC, &w1);
++	pthread_join(th, NULL);
++
++	long cpu_ms = cpu1 - cpu0;
++	long wall_ms = (w1.tv_sec - w0.tv_sec) * 1000L + (w1.tv_nsec - w0.tv_nsec) / 1000000L;
++	printf("variant=%s creator_cpu=%ldms wall=%ldms\n", use_spin ? "spin" : "futex", cpu_ms, wall_ms);
++
++	if (wall_ms < 250) {
++		fprintf(stderr, "FAIL: wait too short (%ldms) -- handshake did not block\n", wall_ms);
++		return 2;
++	}
++
++	const long CPU_LIMIT_MS = 30;
++	if (cpu_ms > CPU_LIMIT_MS) {
++		fprintf(stderr, "FAIL: creator burned %ldms CPU while waiting (limit %ldms) -- busy-spin\n", cpu_ms, CPU_LIMIT_MS);
++		return 1;
++	}
++	printf("PASS: creator slept through the checkin (%ldms CPU <= %ldms)\n", cpu_ms, CPU_LIMIT_MS);
++	return 0;
++}

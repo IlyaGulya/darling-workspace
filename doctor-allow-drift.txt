@@ -1,0 +1,30 @@
+# west darling-doctor — DECLARED manifest<->working-tree drift allowlist.
+#
+# `west darling-doctor` treats a project whose working-tree HEAD differs from its West manifest
+# revision as an ERROR, unless its name or path is listed here. This is what would have caught #90
+# (xnu silently on an experimental perf branch instead of the manifest revision).
+#
+# One project NAME (as in `west list`) or PATH per line; '#' starts a comment. Declare only
+# INTENTIONAL drift for current dev work, and note WHY. Remove a line when the project is reset to
+# its manifest revision.
+#
+# NOTE: declared drift still means "a fresh build compiles this checked-out source, not the pinned
+# one." For a KNOWN-GOOD BOOTABLE closure build, the closure projects must be at their manifest
+# revisions (e.g. xnu: the perf/shmem-ring-guest branch does NOT boot — #90). Reset to manifest-rev
+# for deployable builds, then restore dev drift.
+
+# --- currently intentional (perf#24c2* work + homebrew integration profile) ---
+# The 'darling' superproject and several externals are ahead of the base manifest because the
+# integration/homebrew patch profile (see `west patch list --profile homebrew`) and the active
+# perf#21b/24c2* work sit on top of it. This is expected dev state, not accidental drift.
+darling                              # superproject: perf#21b mldr + homebrew integration ahead of base manifest
+darling-src-external-darlingserver   # perf#18 ring + perf#21b/24c2* dev (server side)
+darling-src-external-dyld            # perf#24c2* DCC2 reader work (+ uncommitted edits)
+darling-src-external-libplatform     # homebrew integration profile
+darling-src-external-libpthread      # homebrew integration profile (psynch)
+darling-src-external-libressl-2-8-3  # homebrew integration profile
+darling-src-external-libunwind       # homebrew-psynch dev branch
+darling-src-external-objc4           # ahead of manifest (dev)
+darling-src-external-perl            # homebrew integration profile
+darling-src-external-xnu             # perf/shmem-ring-guest — does NOT boot; use manifest-rev for deployable builds
+darling-src-external-zlib            # ahead of manifest (dev)

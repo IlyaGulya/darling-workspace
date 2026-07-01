@@ -1,0 +1,272 @@
+From b3e857add3d2ba316ec04a6dfe8f69dff5036ad2 Mon Sep 17 00:00:00 2001
+From: Ilya Gulya <ilya@gulya.me>
+Date: Sun, 28 Jun 2026 07:42:16 +0000
+Subject: [PATCH] libsystem_kernel: cache the immutable task self port (perf
+ #7)
+
+The real-build per-call RPC profile (perf #9, dar-dar6x4-perf-5dq.16) showed
+task_self_trap is ~13% of ALL RPCs in a fork/exec-heavy build -- called ~6x per
+process even though the task self port is IMMUTABLE for a process's lifetime and
+macOS itself treats it as a one-shot (libsyscall caches task_self_trap() once into
+the mach_task_self_ macro and never traps again; nobody ever deallocates it). Every
+trap after the first is a pure redundant RPC round-trip, and the guest spends ~57%
+of build wall-clock asleep waiting for exactly these replies (perf #6).
+
+Cache the task self-port name after the first real trap (cached_self_ports.h, a
+header-only dependency-injected cache). It is fork-safe: mach_init_doit() -- which
+runs at process init AND in _mach_fork_child() -- resets the cache before re-reading
+mach_task_self_, so a forked child re-traps its own new self port.
+
+Scope: ONLY task_self_trap. host_self_trap and thread_self_trap deliberately remain
+uncached -- mach_host_self()/mach_thread_self() return send rights the CALLER is
+expected to mach_port_deallocate() (documented contract), so collapsing N calls to
+one name without N server-side ref increments would over-release the port.
+mach_task_self() has no such contract.
+
+Live result on a real make -j8 build: task_self_trap 6162 -> 4109 (-33%, ~2050
+RPCs eliminated; total RPCs -4.4%), build completes 500/500 correctly. The residual
+~4/process come from dyld-early callers that init mach_task_self_ via their own path.
+
+RED->GREEN test committed alongside (standing TDD rule): cached_self_ports_test.c
+links only the header, asserts (1) N gets => 1 real trap (suppression), (2) reset
+forces a fresh trap and adopts the new value (fork-safety), (3) a failed trap is not
+cached so the next get retries. Proven RED with a non-caching stub, GREEN with the
+real header.
+
+Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
+---
+ .../xnu_syscall/mach/impl/cached_self_ports.h | 68 ++++++++++++++++
+ .../src/xnu_syscall/mach/impl/mach_traps.c    | 25 +++++-
+ .../tests/cached_self_ports_test.c            | 77 +++++++++++++++++++
+ libsyscall/mach/mach_init.c                   |  7 ++
+ 4 files changed, 176 insertions(+), 1 deletion(-)
+ create mode 100644 darling/src/libsystem_kernel/emulation/include/xnu_syscall/mach/impl/cached_self_ports.h
+ create mode 100644 darling/src/libsystem_kernel/tests/cached_self_ports_test.c
+
+diff --git a/darling/src/libsystem_kernel/emulation/include/xnu_syscall/mach/impl/cached_self_ports.h b/darling/src/libsystem_kernel/emulation/include/xnu_syscall/mach/impl/cached_self_ports.h
+new file mode 100644
+index 0000000000000000000000000000000000000000..9ee9703d6d093d282bf1996cb26e1c148e657f37
+--- /dev/null
++++ b/darling/src/libsystem_kernel/emulation/include/xnu_syscall/mach/impl/cached_self_ports.h
+@@ -0,0 +1,68 @@
++// perf #7 (dar-dar6x4-perf-5dq.14): cache the process-stable Mach self-port traps.
++//
++// The real-build profile (perf #9, dar-dar6x4-perf-5dq.16) showed task_self_trap is
++// ~13% of ALL RPCs in a fork/exec-heavy build -- called ~6x per process even though
++// the task self port is IMMUTABLE for a process's lifetime. macOS itself treats it as
++// a one-shot: libsyscall caches task_self_trap() once into the `mach_task_self_` macro
++// and never traps again, and nobody ever mach_port_deallocate()s it. So every trap
++// after the first is a pure, redundant RPC round-trip -- 57% of guest wall-clock is
++// spent asleep waiting for exactly these replies (perf #6).
++//
++// This caches the self-port name in a process-global after the first real trap and
++// returns the cached name thereafter. It is fork-safe: the cache MUST be reset in the
++// atfork-child path BEFORE anything reads it (a forked child is a new task with a new
++// self port), via cached_self_port_reset(). mach_init_doit() -- which runs at both
++// process init and in _mach_fork_child() -- is the single reset point.
++//
++// Why only task/thread self (not host self): host_self_trap() returns a send right the
++// CALLER is expected to mach_port_deallocate() (the documented mach_host_self contract),
++// so collapsing N calls to one name without N server-side ref increments would
++// over-release the port. task/thread self ports are never deallocated by their macros,
++// so collapsing them is semantically transparent.
++//
++// Kept header-only + dependency-injected (the trap fn is passed in) so it can be unit
++// tested hermetically off-target. MACH_PORT_NULL (0) is the "empty" sentinel; a real
++// self port is never 0, so a populated cache is unambiguous.
++
++#ifndef _DARLING_CACHED_SELF_PORTS_H_
++#define _DARLING_CACHED_SELF_PORTS_H_
++
++#include <stdint.h>
++
++typedef uint32_t cached_port_name_t;
++#ifndef CACHED_MACH_PORT_NULL
++#define CACHED_MACH_PORT_NULL ((cached_port_name_t)0)
++#endif
++
++// One cache slot. Plain (non-atomic) is correct for task/host self because the value is
++// process-stable and identical regardless of which thread fills it first: a benign race
++// only means two threads both perform the first trap and store the same name. For the
++// thread-self slot the storage must be thread-local (the caller decides), but the logic
++// is identical, so the same helper serves both.
++typedef struct {
++	cached_port_name_t name;
++} cached_self_port_t;
++
++// Return the cached self-port name, performing the real trap exactly once (per reset
++// epoch) via do_trap(). On a trap failure (returns CACHED_MACH_PORT_NULL) nothing is
++// cached, so the next call retries -- a transient RPC failure never poisons the cache.
++static inline cached_port_name_t cached_self_port_get(cached_self_port_t* slot,
++                                                      cached_port_name_t (*do_trap)(void)) {
++	cached_port_name_t cached = slot->name;
++	if (cached != CACHED_MACH_PORT_NULL) {
++		return cached;
++	}
++	cached_port_name_t fresh = do_trap();
++	if (fresh != CACHED_MACH_PORT_NULL) {
++		slot->name = fresh;
++	}
++	return fresh;
++}
++
++// Drop the cached value so the next get() performs a fresh trap. Call from the
++// atfork-child path (a forked child is a new task -> new self port).
++static inline void cached_self_port_reset(cached_self_port_t* slot) {
++	slot->name = CACHED_MACH_PORT_NULL;
++}
++
++#endif // _DARLING_CACHED_SELF_PORTS_H_
+diff --git a/darling/src/libsystem_kernel/emulation/src/xnu_syscall/mach/impl/mach_traps.c b/darling/src/libsystem_kernel/emulation/src/xnu_syscall/mach/impl/mach_traps.c
+index b998456fa41b459b833196269f616e50abe08805..ba01503995e02e6545525c462c7b3f47629a9e6b 100644
+--- a/darling/src/libsystem_kernel/emulation/src/xnu_syscall/mach/impl/mach_traps.c
++++ b/darling/src/libsystem_kernel/emulation/src/xnu_syscall/mach/impl/mach_traps.c
+@@ -15,8 +15,24 @@
+ 
+ #include <darlingserver/rpc.h>
+ 
++#include <darling/emulation/xnu_syscall/mach/impl/cached_self_ports.h>
++
+ #define UNIMPLEMENTED_TRAP() { char msg[] = "Called unimplemented Mach trap: "; write(2, msg, sizeof(msg)-1); write(2, __FUNCTION__, sizeof(__FUNCTION__)-1); write(2, "\n", 1); }
+ 
++// perf #7 (dar-dar6x4-perf-5dq.14): the task self port is immutable for a process's
++// lifetime, yet the profile (perf #9) showed task_self_trap = ~13% of ALL RPCs in a
++// fork/exec build (~6x per process). Cache it after the first real trap; the reset
++// hook below is called from mach_init_doit() (which runs at process init AND in the
++// atfork-child path) so a forked child re-traps its own new self port. See
++// cached_self_ports.h for the fork-safety + macOS-contract reasoning (host_self_trap
++// is deliberately NOT cached -- its result is caller-deallocated).
++static cached_self_port_t __task_self_port_cache = { CACHED_MACH_PORT_NULL };
++
++// Exposed for mach_init_doit() (libsyscall, same dylib) to reset on init/fork.
++void __darling_reset_cached_self_ports(void) {
++	cached_self_port_reset(&__task_self_port_cache);
++}
++
+ mach_port_name_t mach_reply_port_impl(void)
+ {
+ 	unsigned int port_name;
+@@ -703,7 +719,7 @@ kern_return_t syscall_thread_switch_impl(
+ 	return KERN_SUCCESS;
+ }
+ 
+-mach_port_name_t task_self_trap_impl(void)
++static cached_port_name_t __task_self_trap_rpc(void)
+ {
+ 	unsigned int port_name;
+ 	if (dserver_rpc_task_self_trap(&port_name) != 0) {
+@@ -712,6 +728,13 @@ mach_port_name_t task_self_trap_impl(void)
+ 	return port_name;
+ }
+ 
++mach_port_name_t task_self_trap_impl(void)
++{
++	// perf #7: the task self port is immutable per process; serve it from the cache
++	// (filled by one real RPC, reset on fork via __darling_reset_cached_self_ports).
++	return cached_self_port_get(&__task_self_port_cache, __task_self_trap_rpc);
++}
++
+ /*
+  *	Obsolete interfaces.
+  */
+diff --git a/darling/src/libsystem_kernel/tests/cached_self_ports_test.c b/darling/src/libsystem_kernel/tests/cached_self_ports_test.c
+new file mode 100644
+index 0000000000000000000000000000000000000000..3d73c08c0c906258318a0a79f74db4bb241fd1f4
+--- /dev/null
++++ b/darling/src/libsystem_kernel/tests/cached_self_ports_test.c
+@@ -0,0 +1,77 @@
++// perf #7 (dar-dar6x4-perf-5dq.14) regression test: process-stable self-port caching.
++//
++// The real-build profile (perf #9) showed task_self_trap = ~13% of ALL RPCs, called
++// ~6x per process for an IMMUTABLE value. cached_self_ports.h collapses those to one
++// real trap per process (per fork epoch). This test pins the two properties the win
++// AND the correctness depend on:
++//   1. SUPPRESSION: N gets perform exactly ONE real trap (the rest hit the cache).
++//   2. FORK-RESET: after reset() the next get performs a fresh trap and adopts the new
++//      value -- so a forked child (new task, new self port) never returns the parent's
++//      stale port.
++//   3. FAILURE-SAFE: a trap that fails (returns NULL) is not cached, so the next get
++//      retries (a transient RPC error must not poison the cache forever).
++//
++// RED->GREEN: a non-caching implementation (trap on every get) fails property 1
++// (trap_calls == N, not 1). The header's cache makes it 1. Hermetic: host-compiled,
++// no darlingserver, no boot. Exit 0 = GREEN.
++
++#include <xnu_syscall/mach/impl/cached_self_ports.h>
++
++#include <stdio.h>
++
++static int failures = 0;
++#define CHECK(cond, msg) do { \
++	if (!(cond)) { fprintf(stderr, "FAIL: %s (%s:%d)\n", (msg), __FILE__, __LINE__); ++failures; } \
++} while (0)
++
++// A mock trap: counts how many times the "RPC" actually fired, and returns a
++// controllable value (so we can simulate a fork changing the self port, and a failure).
++static int trap_calls = 0;
++static cached_port_name_t trap_value = 0;
++static cached_port_name_t mock_trap(void) {
++	++trap_calls;
++	return trap_value;
++}
++
++int main(void) {
++	cached_self_port_t slot = { CACHED_MACH_PORT_NULL };
++
++	// ---- 1. suppression: 1000 gets, exactly one real trap ----
++	trap_value = 0x103;   // a plausible self-port name (non-zero)
++	trap_calls = 0;
++	cached_port_name_t first = cached_self_port_get(&slot, mock_trap);
++	CHECK(first == 0x103, "first get returns the trapped value");
++	for (int i = 0; i < 999; ++i) {
++		cached_port_name_t v = cached_self_port_get(&slot, mock_trap);
++		CHECK(v == 0x103, "cached gets return the same value");
++	}
++	CHECK(trap_calls == 1, "1000 gets perform exactly ONE real trap (suppression)");
++
++	// ---- 2. fork-reset: after reset, a fresh trap adopts the new (child) value ----
++	trap_value = 0x207;   // the child's new self port
++	cached_self_port_reset(&slot);
++	cached_port_name_t afterFork = cached_self_port_get(&slot, mock_trap);
++	CHECK(afterFork == 0x207, "after reset, get adopts the NEW self port (fork-safe)");
++	CHECK(trap_calls == 2, "reset forces exactly one additional real trap");
++	// and it re-caches the new value
++	(void) cached_self_port_get(&slot, mock_trap);
++	CHECK(trap_calls == 2, "post-reset value is re-cached (no extra trap)");
++
++	// ---- 3. failure-safe: a NULL trap result is not cached; next get retries ----
++	cached_self_port_reset(&slot);
++	trap_value = CACHED_MACH_PORT_NULL; // simulate a transient trap failure
++	cached_port_name_t failed = cached_self_port_get(&slot, mock_trap);
++	CHECK(failed == CACHED_MACH_PORT_NULL, "failed trap returns NULL");
++	CHECK(trap_calls == 3, "failed trap fired");
++	trap_value = 0x305; // RPC recovers
++	cached_port_name_t recovered = cached_self_port_get(&slot, mock_trap);
++	CHECK(recovered == 0x305, "after a failure the next get retries and succeeds");
++	CHECK(trap_calls == 4, "the retry performed a real trap (failure was not cached)");
++
++	if (failures == 0) {
++		printf("GREEN: self-port cache suppresses redundant traps, resets on fork, retries on failure\n");
++		return 0;
++	}
++	fprintf(stderr, "RED: %d self-port cache check(s) failed\n", failures);
++	return 1;
++}
+diff --git a/libsyscall/mach/mach_init.c b/libsyscall/mach/mach_init.c
+index 74a72ee6349a30787aa39103e970428d89482752..f06b7b78b116067e5887c6bf716f00f48d6f2b4a 100644
+--- a/libsyscall/mach/mach_init.c
++++ b/libsyscall/mach/mach_init.c
+@@ -186,6 +186,13 @@ mach_init_doit(void)
+ {
+ #ifdef DARLING
+ 	mach_driver_init(applep);
++
++	// perf #7 (dar-dar6x4-perf-5dq.14): drop the cached task self port BEFORE we re-read
++	// it below. mach_init_doit() runs both at process init and in _mach_fork_child(), so
++	// this is the single point that keeps the self-port cache consistent across fork (a
++	// forked child is a new task with a new self port). Must precede task_self_trap().
++	extern void __darling_reset_cached_self_ports(void);
++	__darling_reset_cached_self_ports();
+ #endif
+ 
+ 	// Initialize cached mach ports defined in mach_init.h

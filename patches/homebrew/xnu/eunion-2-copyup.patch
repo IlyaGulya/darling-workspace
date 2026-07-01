@@ -1,0 +1,300 @@
+From b63a1f4ff1cc8de6e23cdbf8ab73b1b55032fa56 Mon Sep 17 00:00:00 2001
+From: Ilya Gulya <ilya@gulya.me>
+Date: Mon, 15 Jun 2026 18:04:35 +0000
+Subject: [PATCH] EXPERIMENT E-UNION: race-safe copy-on-write in vchroot (PoC,
+ #ifdef EUNION)
+
+Adds vchroot_copyup(guest_path): materializes a lower-only object into the
+writable upper layer before it is mutated, so the shared read-only template is
+never touched. Modeled on gVisor overlay copy_up.go but adds the cross-process
+safety gVisor's in-process copyMu lacks -- Darling runs a separate translator
+per client process (launchd + daemons + shell) all copying up into the SAME
+upper prefix.
+
+- recursive parent copy-up (lower-only ancestor dirs recreated in upper);
+- regular file: copy into UPPER/.union-work/<tid>.<seq> fully, then atomic
+  rename() into place -> a concurrent reader never sees a half/empty file;
+- winner-takes-all: a rename/EEXIST race == someone copied it up first == ok,
+  loser unlinks its staging file;
+- dir (recreate empty, contents merged lazily by resolver+readdir), symlink
+  (target preserved); fifo/socket/device -> EPERM (gVisor parity).
+
+Still #ifdef EUNION -> production untouched. Verified by the workspace test
+runner (experiments/e-union): 24 assertions incl. C7, a 16-way fork race over a
+4MiB lower file -- no child observes a partial file, all succeed, one final
+copy, no leftover staging. Mode/exec bits preserved, idempotent, absent->error.
+
+CoW is the shared core of both union and hardlink layering (per the bead), so
+this de-risks both. Next: whiteout + opaque-dir (user.* xattr, unprivileged) +
+readdir-merge.
+
+Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
+---
+ .../linux_premigration/vchroot_userspace.c    | 254 ++++++++++++++++++
+ 1 file changed, 254 insertions(+)
+
+diff --git a/darling/src/libsystem_kernel/emulation/src/linux_premigration/vchroot_userspace.c b/darling/src/libsystem_kernel/emulation/src/linux_premigration/vchroot_userspace.c
+index 82f6a0e8524f98359fd29163e582b1a2edad3352..76c4953daaa61b0858592d5df9617fb416b0abac 100644
+--- a/darling/src/libsystem_kernel/emulation/src/linux_premigration/vchroot_userspace.c
++++ b/darling/src/libsystem_kernel/emulation/src/linux_premigration/vchroot_userspace.c
+@@ -96,6 +96,260 @@ static void set_libexec_path(const char* p)
+ 	libexec_path_len = (int)strlen(libexec_path);
+ }
+ #define HAVE_LIBEXEC_SETTER 1
++
++// -------- E-UNION copy-on-write ------------------------------------------
++//
++// When a guest path that exists only in the read-only lower template is about
++// to be mutated (open-for-write, truncate, chmod, rename source, create child,
++// ...), it must first be materialized ("copied up") into the writable upper
++// layer so the shared template is never modified. Modeled on gVisor overlay
++// copy_up.go, with the cross-process safety the gVisor in-process copyMu lacks:
++//
++//   * recursive parent copy-up first (a lower-only parent dir is recreated up);
++//   * copy into UPPER/.union-work/<tid>.<seq> fully (data+mode), then atomic
++//     rename() into place -- so a concurrent reader never sees a half file;
++//   * winner-takes-all: a rename/EEXIST race just means someone else copied it
++//     up first, which is success (idempotent).
++//
++// This is the shared CoW core that both the pure-union and hardlink layering
++// strategies build on (see the bead).
++
++#ifndef LINUX_O_WRONLY
++#define LINUX_O_WRONLY 01
++#endif
++#ifndef LINUX_O_CREAT
++#define LINUX_O_CREAT 0100
++#endif
++#ifndef LINUX_O_EXCL
++#define LINUX_O_EXCL 0200
++#endif
++#ifndef LINUX_S_IFDIR
++#define LINUX_S_IFDIR 0040000
++#endif
++#ifndef LINUX_S_IFREG
++#define LINUX_S_IFREG 0100000
++#endif
++
++extern int __simple_sprintf(char* str, const char* fmt, ...);
++
++// Build the host path for `guest` (a guest-absolute path, no symlink follow)
++// under `root` (prefix_path or libexec_path). Returns length, or -1 on overflow.
++static int eunion_host_path(const char* root, int root_len, const char* guest, char* out, int cap)
++{
++	int glen = (int)strlen(guest);
++	if (root_len + glen + 1 > cap)
++		return -1;
++	memcpy(out, root, root_len);
++	memcpy(out + root_len, guest, glen + 1);
++	return root_len + glen;
++}
++
++static int eunion_lstat(const char* host, stat_t* st)
++{
++	#if defined(__NR_lstat)
++		return LINUX_SYSCALL(__NR_lstat, host, st);
++	#elif defined(__NR_newfstatat)
++		return LINUX_SYSCALL(__NR_newfstatat, LINUX_AT_FDCWD, host, st, LINUX_AT_SYMLINK_NOFOLLOW);
++	#else
++		return LINUX_SYSCALL(__NR_fstatat64, LINUX_AT_FDCWD, host, st, LINUX_AT_SYMLINK_NOFOLLOW);
++	#endif
++}
++
++static int eunion_mkdir(const char* host, unsigned int mode)
++{
++	#if defined(__NR_mkdir)
++		return LINUX_SYSCALL(__NR_mkdir, host, mode);
++	#else
++		return LINUX_SYSCALL(__NR_mkdirat, LINUX_AT_FDCWD, host, mode);
++	#endif
++}
++
++// Ensure every parent component of guest path `guest` exists in the upper
++// layer, recreating lower-only dirs with their lower mode. `guest` includes the
++// leaf; only its ancestors are created here.
++static int eunion_mkparents_upper(const char* guest)
++{
++	char up[4096], lo[4096];
++	// walk components, creating each ancestor dir in the upper layer
++	int i = 0;
++	while (guest[i] == '/') i++;
++	for (;;)
++	{
++		// find end of this component
++		int start = i;
++		while (guest[i] && guest[i] != '/') i++;
++		if (guest[i] == '\0')
++			break; // reached the leaf; nothing more to create
++		// ancestor guest path = guest[0..i)
++		char anc[4096];
++		memcpy(anc, guest, i);
++		anc[i] = '\0';
++
++		if (eunion_host_path(prefix_path, prefix_path_len, anc, up, sizeof(up)) < 0)
++			return -LINUX_ENAMETOOLONG;
++
++		stat_t st;
++		if (eunion_lstat(up, &st) == 0)
++		{
++			// already in upper; descend
++		}
++		else
++		{
++			// take the lower mode if available, else default 0755
++			unsigned int mode = 0755;
++			if (eunion_host_path(libexec_path, libexec_path_len, anc, lo, sizeof(lo)) >= 0)
++			{
++				stat_t ls;
++				if (eunion_lstat(lo, &ls) == 0)
++					mode = ls.st_mode & 07777;
++			}
++			int r = eunion_mkdir(up, mode);
++			if (r < 0 && r != -LINUX_EEXIST)
++				return r;
++		}
++
++		while (guest[i] == '/') i++;
++	}
++	return 0;
++}
++
++// Atomic copy of a regular file from `src_host` to upper `dst_host`, preserving
++// mode. Copies via UPPER/.union-work/<unique> + rename so a concurrent reader
++// never sees a partial file. A rename/EEXIST race == someone else won == ok.
++static int eunion_copy_regular(const char* src_host, const char* dst_host, unsigned int mode)
++{
++	int sfd = LINUX_SYSCALL(__NR_openat, LINUX_AT_FDCWD, src_host, LINUX_O_RDONLY, 0);
++	if (sfd < 0)
++		return sfd;
++
++	// staging path in the upper work dir
++	char work[4096];
++	__simple_sprintf(work, "%s/.union-work", prefix_path);
++	eunion_mkdir(work, 0700); // best-effort; EEXIST ok
++
++	char tmp[4096];
++	static unsigned long seq = 0;
++	int tid = (int)LINUX_SYSCALL(__NR_gettid);
++	__simple_sprintf(tmp, "%s/.union-work/cu.%d.%lu", prefix_path, tid, (unsigned long)(seq++));
++
++	int dfd = LINUX_SYSCALL(__NR_openat, LINUX_AT_FDCWD, tmp,
++		LINUX_O_WRONLY | LINUX_O_CREAT | LINUX_O_EXCL, mode & 07777);
++	if (dfd < 0)
++	{
++		LINUX_SYSCALL(__NR_close, sfd);
++		return dfd;
++	}
++
++	char buf[65536];
++	int rv = 0;
++	for (;;)
++	{
++		int n = LINUX_SYSCALL(__NR_read, sfd, buf, sizeof(buf));
++		if (n < 0) { rv = n; break; }
++		if (n == 0) break;
++		int off = 0;
++		while (off < n)
++		{
++			int w = LINUX_SYSCALL(__NR_write, dfd, buf + off, n - off);
++			if (w < 0) { rv = w; goto done; }
++			off += w;
++		}
++	}
++done:
++	LINUX_SYSCALL(__NR_close, sfd);
++	LINUX_SYSCALL(__NR_close, dfd);
++
++	if (rv < 0)
++	{
++		LINUX_SYSCALL(__NR_unlink, tmp);
++		return rv;
++	}
++
++	// publish atomically
++	#if defined(__NR_rename)
++		rv = LINUX_SYSCALL(__NR_rename, tmp, dst_host);
++	#else
++		rv = LINUX_SYSCALL(__NR_renameat, LINUX_AT_FDCWD, tmp, LINUX_AT_FDCWD, dst_host);
++	#endif
++	if (rv < 0)
++	{
++		// a racer may have created dst_host first; that is success
++		LINUX_SYSCALL(__NR_unlink, tmp);
++		stat_t st;
++		if (eunion_lstat(dst_host, &st) == 0)
++			return 0;
++		return rv;
++	}
++	return 0;
++}
++
++// Copy up `guest` (a guest-absolute path) from the lower template into the
++// upper layer if it lives only in the lower layer. Returns 0 if the object is
++// (now) present in the upper layer, a negative Linux errno otherwise.
++int vchroot_copyup(const char* guest)
++{
++	if (libexec_path_len <= 0 || prefix_path_len < 0)
++		return -LINUX_ENOENT;
++
++	char up[4096], lo[4096];
++	if (eunion_host_path(prefix_path, prefix_path_len, guest, up, sizeof(up)) < 0)
++		return -LINUX_ENAMETOOLONG;
++
++	stat_t ust;
++	if (eunion_lstat(up, &ust) == 0)
++		return 0; // already in upper layer
++
++	if (eunion_host_path(libexec_path, libexec_path_len, guest, lo, sizeof(lo)) < 0)
++		return -LINUX_ENAMETOOLONG;
++
++	stat_t lst;
++	if (eunion_lstat(lo, &lst) != 0)
++		return -LINUX_ENOENT; // absent in both layers
++
++	// materialize ancestor dirs in the upper layer
++	int r = eunion_mkparents_upper(guest);
++	if (r < 0)
++		return r;
++
++	unsigned int fmt = lst.st_mode & LINUX_S_IFMT;
++	if (fmt == LINUX_S_IFDIR)
++	{
++		// a lower-only directory: recreate (empty) in upper with same mode;
++		// merge of contents is handled lazily by the union resolver + readdir.
++		r = eunion_mkdir(up, lst.st_mode & 07777);
++		if (r < 0 && r != -LINUX_EEXIST)
++			return r;
++		return 0;
++	}
++	else if (fmt == LINUX_S_IFREG)
++	{
++		return eunion_copy_regular(lo, up, lst.st_mode);
++	}
++	else if (fmt == LINUX_S_IFLNK)
++	{
++		char link[4096];
++		#if defined(__NR_readlink)
++			int n = LINUX_SYSCALL(__NR_readlink, lo, link, sizeof(link) - 1);
++		#else
++			int n = LINUX_SYSCALL(__NR_readlinkat, LINUX_AT_FDCWD, lo, link, sizeof(link) - 1);
++		#endif
++		if (n < 0)
++			return n;
++		link[n] = '\0';
++		#if defined(__NR_symlink)
++			r = LINUX_SYSCALL(__NR_symlink, link, up);
++		#else
++			r = LINUX_SYSCALL(__NR_symlinkat, link, LINUX_AT_FDCWD, up);
++		#endif
++		if (r < 0 && r != -LINUX_EEXIST)
++			return r;
++		return 0;
++	}
++
++	// FIFO/socket/device: gVisor returns EPERM for fifo/socket. Keep it simple
++	// for the PoC and refuse copy-up of special files.
++	return -LINUX_EPERM;
++}
+ #endif
+ 
+ static const char EXIT_PATH[] = "/Volumes/SystemRoot";

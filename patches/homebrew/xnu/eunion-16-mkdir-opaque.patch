@@ -1,0 +1,116 @@
+From 3a76b3646111cf8f0283490337c3920b1b81812c Mon Sep 17 00:00:00 2001
+From: Ilya Gulya <ilya@gulya.me>
+Date: Tue, 16 Jun 2026 06:29:49 +0000
+Subject: [PATCH] EXPERIMENT E-UNION: mkdir over a removed lower dir must be
+ opaque (PoC, #ifdef EUNION)
+
+Delete-recreate bug: rmdir of a populated lower-only directory drops a whiteout
+(vchroot_prepare_unlink -> SKIP, never touching the shared template), but a
+subsequent mkdir of the SAME name only unwhiteouts + copies up the parent
+(vchroot_prepare_create). The freshly created upper dir was never marked opaque,
+so the resolver/readdir re-merge the OLD lower children -> the deleted directory
+contents resurrect. vchroot_set_opaque() existed but had ZERO wired callers.
+
+Add vchroot_post_mkdir(guest): AFTER a successful mkdir, if the new name shadows
+a LOWER directory (lower lstat is S_IFDIR), mark the new upper dir opaque so its
+stale lower children are not re-merged. No-op when there is no lower namesake or
+the lower namesake is not a directory (a brand-new name needs no marker). It runs
+post-mkdir because set_opaque copies the dir up, which only exists after mkdir.
+Wire it in mkdirat.c after __NR_mkdirat returns success.
+
+gVisor sets opaque on mkdir-over-whiteout and rename-dir for exactly this reason.
+
+All #ifdef EUNION; production builds (no DARLING_EUNION) byte-identical to
+baseline (verified per-file via gcc -E -fdirectives-only vs HEAD and the upstream
+baseline). Mutation-verified in the hermetic suite (MK1 positive, MK2 negative):
+always-no-op, always-opaque (drop the namesake skip), and inverted S_IFDIR guard
+all drive the tests RED. Local experiment under dar-test-infra-sp5.8.4.4.6.
+
+Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
+---
+ .../linux_premigration/vchroot_expand.h       |  6 ++++
+ .../linux_premigration/vchroot_userspace.c    | 30 +++++++++++++++++++
+ .../src/xnu_syscall/bsd/impl/stat/mkdirat.c   | 13 ++++++++
+ 3 files changed, 49 insertions(+)
+
+diff --git a/darling/src/libsystem_kernel/emulation/include/linux_premigration/vchroot_expand.h b/darling/src/libsystem_kernel/emulation/include/linux_premigration/vchroot_expand.h
+index 0b1312eec2009d173c536018011e3c4d41e69ad1..d10ed59c67a42457645c692ea3e6e7e502815106 100644
+--- a/darling/src/libsystem_kernel/emulation/include/linux_premigration/vchroot_expand.h
++++ b/darling/src/libsystem_kernel/emulation/include/linux_premigration/vchroot_expand.h
+@@ -36,6 +36,12 @@ int vchroot_copyup_tree(const char* guest);
+ int vchroot_whiteout(const char* guest);
+ int vchroot_unwhiteout(const char* guest);
+ int vchroot_set_opaque(const char* guest);
++// AFTER a successful mkdir over a name that shadows a LOWER directory: mark the
++// new upper dir opaque so the stale lower children are not re-merged (delete-
++// recreate of a populated dir must not resurrect its old contents). No-op when
++// the name has no lower directory namesake. Call from the mkdir site after the
++// host mkdir returns success.
++int vchroot_post_mkdir(const char* guest);
+ // Marker-namespace isolation: 1 if `name` is in the reserved `user.union.*`
+ // overlay-private namespace. The xattr syscall sites use this to reject guest
+ // attempts to forge a marker (setxattr/removexattr -> EPERM) and to hide markers
+diff --git a/darling/src/libsystem_kernel/emulation/src/linux_premigration/vchroot_userspace.c b/darling/src/libsystem_kernel/emulation/src/linux_premigration/vchroot_userspace.c
+index fd8c018ea1c86fa31583092675fca9e076f7ef61..fb2bb2c0e43370dceaa272aeb93e365c480c92f0 100644
+--- a/darling/src/libsystem_kernel/emulation/src/linux_premigration/vchroot_userspace.c
++++ b/darling/src/libsystem_kernel/emulation/src/linux_premigration/vchroot_userspace.c
+@@ -649,6 +649,36 @@ int vchroot_unwhiteout(const char* guest)
+ 	return 0;
+ }
+ 
++// AFTER a successful mkdir: if the new name shadows a LOWER directory, the freshly
++// created upper dir must be made opaque, or the resolver/readdir would re-merge the
++// stale lower children (delete-recreate of a populated dir resurrects its old
++// contents). Set opaque ONLY when the lower namesake is itself a directory -- a
++// brand-new name with no lower dir namesake needs no marker (an opaque empty dir is
++// harmless but pointless, and we avoid touching the upper for the common case).
++// Must run AFTER the mkdir (vchroot_set_opaque copies the dir up, which only exists
++// post-mkdir). No-op when unmanaged or when nothing shadows a lower dir.
++int vchroot_post_mkdir(const char* guest)
++{
++	if (!eunion_manage(guest))
++		return 0;
++
++	// Does the new name shadow a LOWER directory? Only then is opacity needed --
++	// a mkdir of a brand-new name (no lower namesake, or a lower non-dir namesake)
++	// has nothing to mask.
++	char lo[4096];
++	if (eunion_host_path(libexec_path, libexec_path_len, guest, lo, sizeof(lo)) < 0)
++		return -LINUX_ENAMETOOLONG;
++	stat_t lst;
++	if (eunion_lstat(lo, &lst) != 0)
++		return 0; // no lower namesake: nothing to mask
++	if ((lst.st_mode & LINUX_S_IFMT) != LINUX_S_IFDIR)
++		return 0; // lower namesake is not a dir: no dir-merge to suppress
++
++	// The new upper dir shadows a populated lower dir. Mark it opaque so the stale
++	// lower children are not re-merged into the recreated dir.
++	return vchroot_set_opaque(guest);
++}
++
+ // Mark an upper directory opaque so its lower namesake is not merged.
+ int vchroot_set_opaque(const char* guest)
+ {
+diff --git a/darling/src/libsystem_kernel/emulation/src/xnu_syscall/bsd/impl/stat/mkdirat.c b/darling/src/libsystem_kernel/emulation/src/xnu_syscall/bsd/impl/stat/mkdirat.c
+index 29ddff2909a0187a55eabcb13b0ed5b8e24ab603..8265263fa0fe122c817caeb9107d972b1d3a53bd 100644
+--- a/darling/src/libsystem_kernel/emulation/src/xnu_syscall/bsd/impl/stat/mkdirat.c
++++ b/darling/src/libsystem_kernel/emulation/src/xnu_syscall/bsd/impl/stat/mkdirat.c
+@@ -45,5 +45,18 @@ long sys_mkdirat(int fd, const char* path, unsigned int mode)
+ 	if (ret < 0)
+ 		return errno_linux_to_bsd(ret);
+ 
++#ifdef EUNION
++	// If the new dir shadows a LOWER directory (delete-recreate of a populated
++	// dir), mark it opaque so the stale lower children are not re-merged. Only
++	// meaningful for an absolute guest path; best-effort (a failed opaque-set does
++	// not undo the successful mkdir, but the dir would then leak lower content --
++	// so surface the error to the caller).
++	if (path[0] == '/') {
++		int op = vchroot_post_mkdir(path);
++		if (op < 0)
++			return errno_linux_to_bsd(op);
++	}
++#endif
++
+ 	return 0;
+ }

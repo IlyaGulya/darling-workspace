@@ -14,3 +14,18 @@ west-commands:
       - name: pr
         class: DarlingPr
         help: Manage staged and upstream Darling pull requests
+  - file: west_commands/test.py
+    commands:
+      - name: test
+        class: DarlingTest
+        help: Run Darling regression/compat tests (changed-only, by bead, or full)
+  - file: west_commands/doctor.py
+    commands:
+      - name: darling-doctor
+        class: DarlingDoctor
+        help: Verify manifest/build/deploy alignment before building or booting
+  - file: west_commands/darling_build.py
+    commands:
+      - name: darling-build
+        class: DarlingBuild
+        help: Doctor-gated ninja build of dyld + closure, with opt-in deploy

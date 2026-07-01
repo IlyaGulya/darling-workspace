@@ -1,0 +1,261 @@
+From 92049f05ceec9fa02b132b3882e264822586d91d Mon Sep 17 00:00:00 2001
+From: Ilya Gulya <ilya@gulya.me>
+Date: Sun, 28 Jun 2026 13:04:59 +0000
+Subject: [PATCH] fix(dar-l8k): publish new dtape thread before releasing old
+ on exec checkin
+
+Process::notifyCheckin's exec/"replace task" branch released the old dtape
+thread and task BEFORE republishing the new dtape thread as the microthread's
+current thread. The old task's IPC-space teardown (dtape_task_release ->
+ipc_space_terminate -> ipc_right_terminate -> ipc_port_destroy) reads
+current_thread()->ith_assertions (IMPORTANCE_INHERITANCE=1). current_thread()
+resolves to Thread::currentThread()->_dtapeThread == mainThread->_dtapeThread,
+which was still the just-freed old dtape_thread at that point -> heap UAF.
+
+Surfaced rarely (~1 in 3-6) as a SIGSEGV in the main loop's later malloc
+(corrupted freelist) under fork+exec storms; deterministic at boot under an
+ASan server build: "heap-use-after-free in ipc_port_destroy" (free at
+process.cpp dtape_thread_release, use at ipc_port.c:936 via current_thread()).
+
+Fix: publish _dtapeTask/_dtapeThread (+ new semaphores) under _rwlock first,
+drop the lock, THEN release the old thread/task so current_thread() resolves to
+the live new thread during the old task's teardown. The releases stay outside
+the lock because dtape_task_release can suspend the microthread (same reason
+the dtape_*_create calls run unlocked).
+
+RED->GREEN gate committed with the fix (red-tdd): tests/
+checkin_retask_current_thread_uaf.c + run-checkin-retask-current-thread-uaf.sh
+model the exact free/use ordering under ASan. e2e: fork-heavy make -j8 builds
+6/6 DONE clean (was ~1-in-3-6 SERVER_CRASHED); ASan server boots clean 3/3.
+
+Bead: dar-l8k (epic dar-dar6x4-perf-5dq)
+
+Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
+---
+ src/process.cpp                               |  31 ++++-
+ tests/checkin_retask_current_thread_uaf.c     | 118 ++++++++++++++++++
+ .../run-checkin-retask-current-thread-uaf.sh  |  41 ++++++
+ 3 files changed, 185 insertions(+), 5 deletions(-)
+ create mode 100644 tests/checkin_retask_current_thread_uaf.c
+ create mode 100755 tests/run-checkin-retask-current-thread-uaf.sh
+
+diff --git a/src/process.cpp b/src/process.cpp
+index 0414720268fb37217ea7ab475e10a81715b58d1e..f174234fdf65681925de9575468c6351b7c579f0 100644
+--- a/src/process.cpp
++++ b/src/process.cpp
+@@ -360,11 +360,23 @@ void DarlingServer::Process::notifyCheckin(Architecture architecture) {
+ 		dtape_semaphore_destroy(mainThread->_s2cInterruptExitSemaphore);
+ 		dtape_semaphore_destroy(_dtapeForkWaitSemaphore);
+ 
+-		// release the main thread's old duct-taped thread and the old task
+-		dtape_thread_release(oldThread);
+-		dtape_task_release(oldTask);
+-
+-		// publish the new state under the lock again
++		// publish the new state FIRST, then release the old task/thread.
++		//
++		// dar-l8k: the order matters. dtape_task_release(oldTask) tears down the old task's
++		// IPC space -> ipc_space_terminate -> ipc_right_terminate -> ipc_port_destroy, which
++		// (with IMPORTANCE_INHERITANCE) reads `current_thread()->ith_assertions`.
++		// `current_thread()` resolves through dtape_hook_current_thread to
++		// `Thread::currentThread()->_dtapeThread` -- i.e. mainThread->_dtapeThread. If we
++		// release+free oldThread and run the task teardown while mainThread->_dtapeThread is
++		// STILL oldThread, the teardown dereferences the freed dtape_thread (heap UAF, pinned
++		// by ASan: free at dtape_thread_release here, use at ipc_port_destroy:936). So we must
++		// repoint mainThread->_dtapeThread at the live newThread BEFORE the releases.
++		//
++		// The publish needs _rwlock; the releases must NOT hold it (dtape_task_release can
++		// suspend the microthread, and a suspended microthread resumes on a different OS
++		// thread -- holding the std::shared_mutex write lock across a suspend strands it, the
++		// exact wedge documented above for the dtape_*_create calls). So: publish under the
++		// lock, drop the lock, then release the old handles.
+ 		lock.lock();
+ 		_dtapeTask = newTask;
+ 		mainThread->_dtapeThread = newThread;
+@@ -374,6 +386,15 @@ void DarlingServer::Process::notifyCheckin(Architecture architecture) {
+ 		mainThread->_s2cReplySempahore = newReply;
+ 		mainThread->_s2cInterruptEnterSemaphore = newInterruptEnter;
+ 		mainThread->_s2cInterruptExitSemaphore = newInterruptExit;
++		lock.unlock();
++
++		// release the main thread's old duct-taped thread and the old task now that
++		// current_thread() resolves to the live newThread (see dar-l8k note above).
++		dtape_thread_release(oldThread);
++		dtape_task_release(oldTask);
++
++		// re-acquire so the rest of the function runs under the lock as before.
++		lock.lock();
+ 	} else {
+ 		// fork case
+ 
+diff --git a/tests/checkin_retask_current_thread_uaf.c b/tests/checkin_retask_current_thread_uaf.c
+new file mode 100644
+index 0000000000000000000000000000000000000000..36622e8bff0a6fd7b5e6a28ed0454055bdd5505d
+--- /dev/null
++++ b/tests/checkin_retask_current_thread_uaf.c
+@@ -0,0 +1,118 @@
++// Regression test for dar-l8k (under epic dar-dar6x4-perf-5dq):
++// darlingserver SIGSEGVs RARELY under fork+exec storms (~1 in 3-6 heavy fork-heavy
++// builds), and DETERMINISTICALLY at boot when built with AddressSanitizer. Pinned to a
++// heap-use-after-free with an ASan-instrumented server build:
++//
++//   freed by:  free() <- dtape_thread_release(oldThread)   src/process.cpp:364 (pre-fix)
++//   used by:   ipc_port_destroy reads current_thread()->ith_assertions
++//                                                          ipc/ipc_port.c:936
++//              via dtape_task_release(oldThread's task)     src/process.cpp:365 (pre-fix)
++//   alloc:     dtape_thread_create (the dtape_thread struct, ~3200 bytes)
++//
++// Mechanism (Process::notifyCheckin, the exec/"replace task" branch):
++//   1. a new task + new dtape thread are created to replace the old ones,
++//   2. (BUG) the OLD dtape thread is released -> on its last ref it is free()d,
++//   3. the OLD task is released -> its IPC space is torn down -> ipc_space_terminate ->
++//      ipc_right_terminate -> ipc_port_destroy, which (IMPORTANCE_INHERITANCE=1) reads
++//      `current_thread()->ith_assertions`.
++//   `current_thread()` resolves through dtape_hook_current_thread to
++//   `Thread::currentThread()->_dtapeThread` == mainThread->_dtapeThread, which is STILL
++//   the freed OLD thread at this point (the new thread is not published until AFTER the
++//   releases). So the task teardown dereferences the just-freed dtape_thread -> UAF.
++//
++// The fix publishes mainThread->_dtapeThread = newThread (so current_thread() resolves to
++// the LIVE new thread) BEFORE releasing the old thread/task. This test models that exact
++// invariant with the same primitives: a "current thread" pointer consulted during a task
++// teardown, a heap-allocated thread object freed on its last release, and the two possible
++// orderings. Built with -fsanitize=address: the buggy order trips a deterministic
++// heap-use-after-free; the fixed order is clean.
++//
++//   RED   (unsafe): release+free the old thread, THEN run the task teardown while the
++//                   "current thread" pointer still points at the freed object -> the
++//                   teardown reads it -> ASan heap-use-after-free -> FAIL.
++//   GREEN (fixed):  publish the new thread as "current" first, THEN release the old one;
++//                   the teardown reads the live new thread -> clean -> PASS.
++//
++// Arm by argv[1]: "unsafe" = RED, "safe" = GREEN (default).
++// HOST test (plain glibc + ASan). Exit 0 = PASS. See run-checkin-retask-current-thread-uaf.sh.
++#define _GNU_SOURCE
++#include <stdio.h>
++#include <stdlib.h>
++#include <string.h>
++#include <stdatomic.h>
++
++// Models a dtape_thread: the field the teardown reads is `ith_assertions` (as in
++// ipc_port_destroy: `current_thread()->ith_assertions`). Heap-allocated so ASan tracks it.
++typedef struct dtape_thread {
++	atomic_int ref_count;     // os_ref; release drops it, frees on last ref
++	int        ith_assertions; // the field ipc_port_destroy reads via current_thread()
++	int        thread_id;
++} dtape_thread_t;
++
++// The microthread's "current thread" pointer, resolved by current_thread() during the
++// task teardown -- this is the moral equivalent of mainThread->_dtapeThread.
++static dtape_thread_t* g_current_thread = NULL;
++
++static dtape_thread_t* thread_create(int id) {
++	dtape_thread_t* t = (dtape_thread_t*)malloc(sizeof(dtape_thread_t));
++	atomic_store(&t->ref_count, 1);
++	t->ith_assertions = 0;
++	t->thread_id = id;
++	return t;
++}
++
++// thread_deallocate / dtape_thread_release: drop a ref; free on the last one.
++static void thread_release(dtape_thread_t* t) {
++	if (atomic_fetch_sub(&t->ref_count, 1) == 1) {
++		free(t);  // == dtape_thread_destroy -> free(thread)
++	}
++}
++
++// Models the body of the old task's IPC-space teardown that reaches ipc_port_destroy,
++// which reads current_thread()->ith_assertions. Whatever g_current_thread points at when
++// this runs gets dereferenced.
++static void task_release_teardown(void) {
++	dtape_thread_t* self = g_current_thread;   // == current_thread()
++	// ipc_port_destroy:936 -> `boolean_t top = (self->ith_assertions == 0);`
++	volatile int top = (self->ith_assertions == 0);  // UAF READ in the buggy ordering
++	(void)top;
++}
++
++int main(int argc, char** argv) {
++	const char* arm = (argc > 1) ? argv[1] : "safe";
++	int safe = (strcmp(arm, "unsafe") == 0) ? 0 : 1;
++
++	// run many rounds; the UAF is deterministic under ASan on the very first one, but we
++	// loop to mirror a checkin storm and keep the harness shape consistent.
++	const int ROUNDS = 1000;
++	for (int r = 0; r < ROUNDS; ++r) {
++		// state at the top of the exec/"replace task" branch: the OLD thread is current.
++		dtape_thread_t* oldThread = thread_create(r * 2);
++		g_current_thread = oldThread;
++
++		// create the replacement thread (models dtape_thread_create(newTask, ...)).
++		dtape_thread_t* newThread = thread_create(r * 2 + 1);
++
++		if (safe) {
++			// GREEN/fix: publish the new thread as current FIRST, so current_thread()
++			// resolves to the live newThread during the old task's teardown...
++			g_current_thread = newThread;
++			// ...then release the old thread (frees it) and run the old task teardown.
++			thread_release(oldThread);
++			task_release_teardown();    // reads g_current_thread == live newThread -> OK
++		} else {
++			// RED/buggy (the pre-fix order): release+free the old thread while it is STILL
++			// current, then run the old task's teardown -> it reads the freed old thread.
++			thread_release(oldThread);  // last ref -> free(oldThread)
++			task_release_teardown();    // reads g_current_thread == freed oldThread -> UAF
++			g_current_thread = newThread; // (too late: the teardown already UAF'd)
++		}
++
++		// drop the surviving thread to keep the test leak-clean.
++		thread_release(g_current_thread);
++		g_current_thread = NULL;
++	}
++
++	printf("PASS: no use-after-free (arm=%s)\n", arm);
++	return 0;
++}
+diff --git a/tests/run-checkin-retask-current-thread-uaf.sh b/tests/run-checkin-retask-current-thread-uaf.sh
+new file mode 100755
+index 0000000000000000000000000000000000000000..5501a38d3eea11d29d81e461ae25a17fc42b744e
+--- /dev/null
++++ b/tests/run-checkin-retask-current-thread-uaf.sh
+@@ -0,0 +1,41 @@
++#!/usr/bin/env bash
++# Regression test for dar-l8k (epic dar-dar6x4-perf-5dq): in Process::notifyCheckin's
++# exec/"replace task" branch, darlingserver must publish the NEW dtape thread as the
++# microthread's current thread BEFORE releasing the OLD dtape thread + task. Otherwise the
++# old task's IPC-space teardown (dtape_task_release -> ipc_space_terminate ->
++# ipc_right_terminate -> ipc_port_destroy) reads `current_thread()->ith_assertions`, and
++# current_thread() still resolves to the just-freed old dtape_thread -> heap UAF -> SIGSEGV.
++#
++# Pinned with an AddressSanitizer build of darlingserver, which crashes DETERMINISTICALLY
++# at boot: "heap-use-after-free in ipc_port_destroy" (free at src/process.cpp:364
++# dtape_thread_release, use at duct-tape/.../ipc/ipc_port.c:936 via current_thread()).
++#
++# Asserts (under ASan, which makes the UAF deterministic):
++#   - RED   (unsafe order: release old thread, then teardown reads current==freed): UAF -> FAIL.
++#   - GREEN (fix: publish new thread as current, then release old): clean -> PASS.
++#
++# HOST test (plain glibc + ASan). Finishes in well under a second. Exit 0 on PASS.
++set -euo pipefail
++
++here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
++work="$(mktemp -d)"
++trap 'rm -rf "$work"' EXIT
++cc="${CC:-cc}"
++
++"$cc" -O1 -g -fsanitize=address -fno-omit-frame-pointer \
++	"$here/checkin_retask_current_thread_uaf.c" -o "$work/t"
++
++export ASAN_OPTIONS="abort_on_error=1:detect_leaks=0:halt_on_error=1"
++
++# RED proof first: the buggy ordering MUST trip a use-after-free, else the test is blind.
++echo "--- RED proof (release-before-republish, expected ASan UAF / FAIL) ---"
++if "$work/t" unsafe; then
++	echo "FAIL: unsafe arm unexpectedly passed -- test does not catch the use-after-free" >&2
++	exit 2
++fi
++echo "(RED arm tripped the use-after-free as expected)"
++
++# GREEN: publishing the new current thread before the release (the fix) must be clean.
++echo "--- GREEN (republish-before-release = the fix, expected to PASS) ---"
++"$work/t" safe
++echo "PASS"

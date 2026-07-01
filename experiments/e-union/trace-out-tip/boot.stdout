@@ -1,0 +1,5 @@
+HELLO_EUNION
+mach_msg_overwrite failed (internally): -111
+*** dserver_rpc_interrupt_enter failed: code=-111 pid=189 tid=191 handler=sigexc linux_signum=6 ***
+semaphore_timedwait failed (internally): code=-111 pid=194 tid=200 wait=5123 sec=0 nsec=10000000
+*** dserver_rpc_interrupt_enter failed: code=-111 pid=194 tid=200 handler=sigexc linux_signum=6 ***

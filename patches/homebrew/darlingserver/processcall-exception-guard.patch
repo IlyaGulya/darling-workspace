@@ -1,0 +1,184 @@
+From a52a15e2412cda068548e40047d8a3b18d3dba0b Mon Sep 17 00:00:00 2001
+From: Ilya Gulya <ilya@gulya.me>
+Date: Sun, 21 Jun 2026 14:40:33 +0000
+Subject: [PATCH] thread/call/server: contain exceptions that can terminate the
+ server
+
+A Call::processCall() implementation may throw -- e.g. std::system_error
+from a memory operation (writeMemory/readMemory/memoryInfo) on a guest
+that died concurrently with an in-flight RPC, or std::runtime_error from
+the exec-replacement path ("Main thread for process died?"). And message
+construction in Call::callFromMessage() may throw too -- notably
+std::runtime_error("Thread's pending call overwritten while active") from
+Thread::setPendingCall() when an RPC races a still-pending call, plus
+std::invalid_argument for a malformed/unknown call. None of these three
+sites had a surrounding try/catch:
+
+  - Thread::microthreadWorker() runs on a makecontext()-established fiber
+    stack and never returns normally (it always setcontext()s away), so an
+    uncaught exception unwinding out of it is undefined behavior and in
+    practice reaches std::terminate -> the whole server dies.
+  - Call::callFromMessage()'s kernelAsync path (thread-less calls) had the
+    same exposure.
+  - Call::callFromMessage() itself is invoked directly in the main event
+    loop Server::start() with no try/catch, so a throw during message
+    construction/dispatch (e.g. the pending-call-overwrite race) unwinds
+    out of the event loop and terminates the server just the same.
+
+When the server dies, every other guest with an in-flight RPC is stranded
+forever blocked in recvmsg on its per-thread RPC socket, and the whole
+guest tree is orphaned.
+
+Fix: wrap all three.
+  - In microthreadWorker, on a caught exception log the offending call and
+    attempt Call::sendBasicReply(-code) so the client gets an error reply
+    instead of hanging, then continue the normal post-call flow.
+  - In the kernelAsync path there is no client thread to reply to, so log
+    and drop.
+  - In the event loop, log and drop just the one offending message so the
+    server keeps serving every other guest.
+
+This converts "one unlucky RPC race terminates the server and wedges every
+guest" into "that one RPC fails (error reply or dropped); all other guests
+keep working."
+---
+ src/call.cpp   | 18 +++++++++++++++++-
+ src/server.cpp | 28 +++++++++++++++++++++++++---
+ src/thread.cpp | 42 +++++++++++++++++++++++++++++++++++++++++-
+ 3 files changed, 83 insertions(+), 5 deletions(-)
+
+diff --git a/src/call.cpp b/src/call.cpp
+index cc10f1d8e452f7e967051e9ace5b24ed00bba59a..a5110d429ecf08753fa2cc095cf3d0fc13b0218e 100644
+--- a/src/call.cpp
++++ b/src/call.cpp
+@@ -28,6 +28,7 @@
+ #include <sys/fcntl.h>
+ #include <sys/syscall.h>
+ #include <darlingserver/kqchan.hpp>
++#include <system_error>
+ 
+ static DarlingServer::Log callLog("calls");
+ 
+@@ -219,7 +220,22 @@ std::shared_ptr<DarlingServer::Call> DarlingServer::Call::callFromMessage(Messag
+ 		return result;
+ 	} else {
+ 		Thread::kernelAsync([result]() {
+-			result->processCall();
++			// Contain a throwing processCall so it cannot terminate the whole server
++			// (see the matching guard in Thread::microthreadWorker). This path has no
++			// client thread to reply to, so just log and drop.
++			try {
++				result->processCall();
++			} catch (const std::system_error& err) {
++				callLog.error() << "Uncaught std::system_error from kernel-async processCall (call "
++					<< DarlingServer::Call::callNumberToString(result->number()) << "): " << err.what()
++					<< " (code " << err.code().value() << ")" << callLog.endLog;
++			} catch (const std::exception& ex) {
++				callLog.error() << "Uncaught exception from kernel-async processCall (call "
++					<< DarlingServer::Call::callNumberToString(result->number()) << "): " << ex.what() << callLog.endLog;
++			} catch (...) {
++				callLog.error() << "Uncaught non-std exception from kernel-async processCall (call "
++					<< DarlingServer::Call::callNumberToString(result->number()) << ")" << callLog.endLog;
++			}
+ 		});
+ 		return nullptr;
+ 	}
+diff --git a/src/server.cpp b/src/server.cpp
+index e502e2854652c9053ad13e3f53653f795a19a48e..b71b4889a3de7978ef62b30f891cd314212f8622 100644
+--- a/src/server.cpp
++++ b/src/server.cpp
+@@ -538,9 +538,31 @@ void DarlingServer::Server::start() {
+ 
+ 			while (auto msg = _inbox.pop()) {
+ 				// TODO: this could be done concurrently
+-				auto call = DarlingServer::Call::callFromMessage(std::move(*msg));
+-				if (call) {
+-					_workQueue.push(call->thread());
++				//
++				// callFromMessage() runs here on the main event loop and can throw:
++				//   * std::invalid_argument for a malformed/unknown call,
++				//   * std::runtime_error("Thread's pending call overwritten while active")
++				//     from Thread::setPendingCall when an RPC races a still-pending call
++				//     (routinely under a heavy fork/signal storm, e.g. building Homebrew),
++				//   * std::system_error from the dtape/registry machinery.
++				// There is no try/catch anywhere above this in Server::start(), so an
++				// uncaught throw here unwinds out of the event loop -> std::terminate ->
++				// the whole darlingserver process dies, orphaning every guest. (This is a
++				// distinct server-exit path from the processCall() guards in
++				// Thread::microthreadWorker / Call::kernelAsync, which do NOT cover message
++				// construction/dispatch.) Contain it: log and drop just this one message so
++				// the server keeps serving every other guest.
++				try {
++					auto call = DarlingServer::Call::callFromMessage(std::move(*msg));
++					if (call) {
++						_workQueue.push(call->thread());
++					}
++				} catch (const std::exception& ex) {
++					static DarlingServer::Log serverLog("server");
++					serverLog.error() << "Dropping message: callFromMessage threw: " << ex.what() << serverLog.endLog;
++				} catch (...) {
++					static DarlingServer::Log serverLog("server");
++					serverLog.error() << "Dropping message: callFromMessage threw a non-std exception" << serverLog.endLog;
+ 				}
+ 			}
+ 		}
+diff --git a/src/thread.cpp b/src/thread.cpp
+index 5563ad92cea6ff5f717abc55ec330b6a215a6ab6..2d16c96bee63570b1d602f3c9d3f13e786e35fcd 100644
+--- a/src/thread.cpp
++++ b/src/thread.cpp
+@@ -43,6 +43,8 @@
+ #include <assert.h>
+ 
+ #include <limits>
++#include <system_error>
++#include <cerrno>
+ #include <sys/ptrace.h>
+ #include <sys/user.h>
+ #include <sys/wait.h>
+@@ -343,7 +345,45 @@ void DarlingServer::Thread::microthreadWorker() {
+ 
+ 	currentContinuation = nullptr;
+ 	currentThreadVar->makePendingCallActive();
+-	currentThreadVar->_activeCall->processCall();
++
++	// A processCall() implementation may throw (e.g. std::system_error from a memory
++	// operation on a guest that died concurrently, or std::runtime_error from the
++	// exec-replacement path). This worker runs on a makecontext()-established fiber
++	// stack and never returns normally (it always setcontext()s away below), so an
++	// uncaught exception unwinding out of here is undefined behavior -> std::terminate
++	// -> the whole darlingserver process dies, stranding every other guest with an
++	// in-flight RPC blocked forever in recvmsg. Contain it: turn the failure into an
++	// error reply when the call supports one, otherwise just log and drop it, and
++	// continue the normal post-call flow so the server stays alive.
++	try {
++		currentThreadVar->_activeCall->processCall();
++	} catch (const std::system_error& err) {
++		microthreadLog.error()
++			<< "Uncaught std::system_error from processCall (call "
++			<< DarlingServer::Call::callNumberToString(currentThreadVar->_activeCall->number())
++			<< "): " << err.what() << " (code " << err.code().value() << ")" << microthreadLog.endLog;
++		try {
++			currentThreadVar->_activeCall->sendBasicReply(-err.code().value());
++		} catch (...) {
++			// call has no basic reply (returns data); nothing more we can do but survive
++		}
++	} catch (const std::exception& ex) {
++		microthreadLog.error()
++			<< "Uncaught exception from processCall (call "
++			<< DarlingServer::Call::callNumberToString(currentThreadVar->_activeCall->number())
++			<< "): " << ex.what() << microthreadLog.endLog;
++		try {
++			currentThreadVar->_activeCall->sendBasicReply(-EINVAL);
++		} catch (...) {}
++	} catch (...) {
++		microthreadLog.error()
++			<< "Uncaught non-std exception from processCall (call "
++			<< DarlingServer::Call::callNumberToString(currentThreadVar->_activeCall->number())
++			<< ")" << microthreadLog.endLog;
++		try {
++			currentThreadVar->_activeCall->sendBasicReply(-EINVAL);
++		} catch (...) {}
++	}
+ 
+ 	if (currentThreadVar->_handlingInterruptedCall) {
+ 		currentThreadVar->_didSyscallReturnDuringInterrupt = true;

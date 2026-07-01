@@ -1,0 +1,311 @@
+From 121ae98d08e3e0c303abfeecb1d19d9f1845782e Mon Sep 17 00:00:00 2001
+From: Ilya Gulya <ilya@gulya.me>
+Date: Tue, 16 Jun 2026 03:37:38 +0000
+Subject: [PATCH] =?UTF-8?q?EXPERIMENT=20E-UNION:=20hardening=20=E2=80=94?=
+ =?UTF-8?q?=20rename-tree,=20*at()=20copy-up,=20xattr/setid=20(PoC)?=
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Closes the correctness gaps surfaced by TDD (runner.c H1-H5, now 92/92):
+
+* rename of a lower-only DIRECTORY with contents (H1): rename physically moves
+  the upper dir then whiteouts the origin, after which the lazy lower-merge no
+  longer applies — descendants left only in the template would vanish. Add
+  vchroot_copyup_tree() (node + ALL descendants, recursive via getdents on the
+  lower dir) and call it from the renameat source (gVisor copy_up.go F.3).
+
+* dirfd-relative write targets (H2): the write-op sites gated copy-up on
+  guest[0]=='/', so openat(dirfd,"rel",O_WRONLY) into a lower-only dir skipped
+  copy-up and hit the read-only template. Add vchroot_prepare_write_at(dfd,rel)
+  — resolves the dirfd to its guest path via vchroot_fdpath (which now
+  detranslates lower too), joins rel, prepare_writes the result. Wired into
+  sys_openat (the dominant write path).
+
+* setid + xattrs on copy-up (H4): eunion_copy_regular created the upper copy
+  with mode & 07777 (kept setuid) and dropped xattrs. Now create with mode &
+  0777 (STRIP setid — never publish a setuid binary into the writable prefix)
+  and add eunion_copy_xattrs() (flistxattr/fgetxattr/fsetxattr) so file
+  capabilities + user.* survive (overlay/gVisor copy-up semantics).
+
+* hardlink-break (H3) and symlink copy-up (H5) were already correct; pinned
+  with regression assertions.
+
+All #ifdef EUNION; production builds (no DARLING_EUNION) byte-identical.
+Live zero-copy boot still green (darling shell echo -> rc=0, ~572K prefix).
+
+Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
+---
+ .../linux_premigration/vchroot_expand.h       |   7 +
+ .../linux_premigration/vchroot_userspace.c    | 156 +++++++++++++++++-
+ .../src/xnu_syscall/bsd/impl/fcntl/openat.c   |  12 +-
+ .../xnu_syscall/bsd/impl/unistd/renameat.c    |  10 +-
+ 4 files changed, 172 insertions(+), 13 deletions(-)
+
+diff --git a/darling/src/libsystem_kernel/emulation/include/linux_premigration/vchroot_expand.h b/darling/src/libsystem_kernel/emulation/include/linux_premigration/vchroot_expand.h
+index 89519268259e4017349aab0c999c29410a86bfe0..24f1af11bcd256acf8f64b240ac644af59969055 100644
+--- a/darling/src/libsystem_kernel/emulation/include/linux_premigration/vchroot_expand.h
++++ b/darling/src/libsystem_kernel/emulation/include/linux_premigration/vchroot_expand.h
+@@ -29,6 +29,10 @@ int vchroot_fdpath(struct vchroot_fdpath_args* args);
+ // E-UNION: writable-upper / read-only-lower union by path translation.
+ // Copy-up / whiteout / opaque / merged-readdir primitives.
+ int vchroot_copyup(const char* guest);
++// Recursive copy-up of a guest subtree (node + ALL descendants). Use for rename
++// of a lower-only directory, where the lazy dir-merge no longer applies after
++// the host moves the upper dir and whiteouts the source.
++int vchroot_copyup_tree(const char* guest);
+ int vchroot_whiteout(const char* guest);
+ int vchroot_unwhiteout(const char* guest);
+ int vchroot_set_opaque(const char* guest);
+@@ -42,6 +46,9 @@ void vchroot_dir_closed(int fd);
+ //   vchroot_post_unlink(guest)   AFTER a successful unlink/rmdir;
+ //   vchroot_pre_mkdir(guest)     BEFORE re-creating a possibly-deleted name.
+ int vchroot_prepare_write(const char* guest);
++// *at() variant: resolve a dirfd-relative target to a guest-absolute path via
++// the dirfd, then prepare_write. For openat/mkdirat/etc. with a relative path.
++int vchroot_prepare_write_at(int dfd, const char* rel);
+ int vchroot_post_unlink(const char* guest);
+ int vchroot_pre_mkdir(const char* guest);
+ #endif // EUNION
+diff --git a/darling/src/libsystem_kernel/emulation/src/linux_premigration/vchroot_userspace.c b/darling/src/libsystem_kernel/emulation/src/linux_premigration/vchroot_userspace.c
+index b1e0fcde8f3ac4e12a2ac19013999fcd54aff6bc..38bbed8a5cbca6880494d12598ee48d9888d91e8 100644
+--- a/darling/src/libsystem_kernel/emulation/src/linux_premigration/vchroot_userspace.c
++++ b/darling/src/libsystem_kernel/emulation/src/linux_premigration/vchroot_userspace.c
+@@ -250,9 +250,41 @@ static int eunion_mkparents_upper(const char* guest)
+ 	return 0;
+ }
+ 
+-// Atomic copy of a regular file from `src_host` to upper `dst_host`, preserving
+-// mode. Copies via UPPER/.union-work/<unique> + rename so a concurrent reader
+-// never sees a partial file. A rename/EEXIST race == someone else won == ok.
++// Copy all extended attributes from src fd to dst fd. overlay/gVisor preserve
++// xattrs on copy-up (security.capability is a MUST-copy so file capabilities
++// survive; user.* carry app metadata). Overlay-private markers (our
++// user.union.*) are never present on a lower-layer source, so no filtering is
++// needed here. Best-effort: a failure to copy one xattr does not fail copy-up.
++static void eunion_copy_xattrs(int sfd, int dfd)
++{
++#if defined(__NR_flistxattr) && defined(__NR_fgetxattr) && defined(__NR_fsetxattr)
++	char names[4096];
++	int ln = LINUX_SYSCALL(__NR_flistxattr, sfd, names, sizeof(names));
++	if (ln <= 0)
++		return; // none, or list too big for the PoC buffer
++	char val[1024];
++	int off = 0;
++	while (off < ln)
++	{
++		const char* name = names + off;
++		int nlen = (int)strlen(name);
++		if (nlen == 0) { off++; continue; }
++		off += nlen + 1;
++		int vn = LINUX_SYSCALL(__NR_fgetxattr, sfd, name, val, sizeof(val));
++		if (vn < 0)
++			continue;
++		LINUX_SYSCALL(__NR_fsetxattr, dfd, name, val, vn, 0);
++	}
++#else
++	(void)sfd; (void)dfd;
++#endif
++}
++
++// Atomic copy of a regular file from `src_host` to upper `dst_host`. Copies via
++// UPPER/.union-work/<unique> + rename so a concurrent reader never sees a partial
++// file. A rename/EEXIST race == someone else won == ok. Preserves permission bits
++// and xattrs but STRIPS setuid/setgid (a copy-up must never publish a setid
++// binary into the writable prefix -- overlay/gVisor clear setid on data copy).
+ static int eunion_copy_regular(const char* src_host, const char* dst_host, unsigned int mode)
+ {
+ 	int sfd = LINUX_SYSCALL(__NR_openat, LINUX_AT_FDCWD, src_host, LINUX_O_RDONLY, 0);
+@@ -269,8 +301,9 @@ static int eunion_copy_regular(const char* src_host, const char* dst_host, unsig
+ 	int tid = (int)LINUX_SYSCALL(__NR_gettid);
+ 	__simple_sprintf(tmp, "%s/.union-work/cu.%d.%lu", prefix_path, tid, (unsigned long)(seq++));
+ 
++	// strip setid: create with permission bits only (mode & 0777), never 07777.
+ 	int dfd = LINUX_SYSCALL(__NR_openat, LINUX_AT_FDCWD, tmp,
+-		LINUX_O_WRONLY | LINUX_O_CREAT | LINUX_O_EXCL, mode & 07777);
++		LINUX_O_WRONLY | LINUX_O_CREAT | LINUX_O_EXCL, mode & 0777);
+ 	if (dfd < 0)
+ 	{
+ 		LINUX_SYSCALL(__NR_close, sfd);
+@@ -292,6 +325,8 @@ static int eunion_copy_regular(const char* src_host, const char* dst_host, unsig
+ 			off += w;
+ 		}
+ 	}
++	// carry xattrs over before publishing (while both fds are open)
++	eunion_copy_xattrs(sfd, dfd);
+ done:
+ 	LINUX_SYSCALL(__NR_close, sfd);
+ 	LINUX_SYSCALL(__NR_close, dfd);
+@@ -388,6 +423,77 @@ int vchroot_copyup(const char* guest)
+ 	return -LINUX_EPERM;
+ }
+ 
++// Recursively copy up a guest subtree into the upper layer (node + ALL
++// descendants). Plain vchroot_copyup() is LAZY for directories -- it recreates
++// the dir empty and lets the resolver merge contents on demand. That laziness
++// is correct for an in-place write, but WRONG for rename(): rename physically
++// moves the upper directory and then whiteouts the source name, after which the
++// lazy lower-merge no longer applies -- so any descendant left only in the
++// template would vanish. rename of a lower-only dir must therefore deep-copy the
++// whole subtree first. (gVisor copy_up.go F.3: copy-up src + all descendants
++// before the host rename.)
++#ifndef LINUX_O_DIRECTORY
++#define LINUX_O_DIRECTORY 0200000
++#endif
++static int eunion_manage(const char* guest); // defined with the write-op helpers
++
++int vchroot_copyup_tree(const char* guest)
++{
++	if (!eunion_manage(guest))
++		return 0;
++
++	int r = vchroot_copyup(guest);
++	if (r < 0)
++		return (r == -LINUX_ENOENT) ? 0 : r;
++
++	// only directories have descendants to recurse into
++	char lo[4096];
++	if (eunion_host_path(libexec_path, libexec_path_len, guest, lo, sizeof(lo)) < 0)
++		return 0; // not in template: nothing more to pull up
++	stat_t lst;
++	if (eunion_lstat(lo, &lst) != 0)
++		return 0;
++	if ((lst.st_mode & LINUX_S_IFMT) != LINUX_S_IFDIR)
++		return 0;
++
++	int fd = LINUX_SYSCALL(__NR_openat, LINUX_AT_FDCWD, lo,
++		LINUX_O_RDONLY | LINUX_O_DIRECTORY, 0);
++	if (fd < 0)
++		return 0; // best-effort; the dir itself is already up
++
++	int glen = (int)strlen(guest);
++	char dbuf[8192];
++	for (;;)
++	{
++		int n = LINUX_SYSCALL(__NR_getdents64, fd, dbuf, sizeof(dbuf));
++		if (n <= 0)
++			break;
++		int off = 0;
++		while (off < n)
++		{
++			struct linux_dirent64* de = (struct linux_dirent64*)(dbuf + off);
++			off += de->d_reclen;
++			const char* nm = de->d_name;
++			if (nm[0] == '.' && (nm[1] == '\0' || (nm[1] == '.' && nm[2] == '\0')))
++				continue;
++			// build child guest path = guest + "/" + name
++			char child[4096];
++			int nl = (int)strlen(nm);
++			if (glen + 1 + nl + 1 > (int)sizeof(child))
++				continue; // too long: skip (best-effort PoC)
++			memcpy(child, guest, glen);
++			int ci = glen;
++			if (ci == 0 || child[ci-1] != '/')
++				child[ci++] = '/';
++			memcpy(child + ci, nm, nl + 1);
++			int cr = vchroot_copyup_tree(child);
++			if (cr < 0) { LINUX_SYSCALL(__NR_close, fd); return cr; }
++		}
++	}
++	LINUX_SYSCALL(__NR_close, fd);
++	return 0;
++}
++
+ // -------- E-UNION whiteout + opaque markers ------------------------------
+ //
+ // The translator runs as uid 0 INSIDE the container but is NOT real host root,
+@@ -559,6 +665,48 @@ int vchroot_prepare_write(const char* guest)
+ 	return r; // 0 if copied up or already upper; negative on real error
+ }
+ 
++// *at() variant: the mutating target is addressed RELATIVE to a directory fd
++// (openat/mkdirat/...). The plain vchroot_prepare_write only acts on absolute
++// guest paths, so a dirfd-relative write into a lower-only dir would otherwise
++// skip copy-up and hit the read-only template. Resolve the dirfd to its guest
++// path (vchroot_fdpath already detranslates upper AND lower -> guest), join the
++// relative path, and prepare_write the result. An absolute `rel`, AT_FDCWD with
++// a relative path we cannot resolve, or any failure falls back to the plain
++// absolute path handling (no-op for relative) -- never worse than before.
++int vchroot_prepare_write_at(int dfd, const char* rel)
++{
++	if (!rel)
++		return 0;
++	if (rel[0] == '/')
++		return vchroot_prepare_write(rel); // already absolute
++
++	// need a real dir fd to resolve against
++	if (dfd < 0)
++		return 0; // AT_FDCWD/relative without a base we can map: PoC no-op
++
++	char base[4096];
++	struct vchroot_fdpath_args fp;
++	fp.fd = dfd; fp.path = base; fp.maxlen = sizeof(base);
++	if (vchroot_fdpath(&fp) < 0)
++		return 0; // cannot map the dirfd: leave to the absolute path (no-op)
++	if (base[0] != '/')
++		return 0; // dirfd resolved outside the guest (escape hatch): no-op
++
++	// join base + "/" + rel into a guest-absolute path
++	char guest[4096];
++	int bl = (int)strlen(base);
++	int rl = (int)strlen(rel);
++	if (bl + 1 + rl + 1 > (int)sizeof(guest))
++		return -LINUX_ENAMETOOLONG;
++	memcpy(guest, base, bl);
++	int gi = bl;
++	if (gi == 0 || guest[gi-1] != '/')
++		guest[gi++] = '/';
++	memcpy(guest + gi, rel, rl + 1);
++
++	return vchroot_prepare_write(guest);
++}
++
+ // After a successful unlink/rmdir of the upper object: if the name still exists
+ // in the lower template, drop a whiteout so it stays deleted. If it was
+ // upper-only (absent from lower), do nothing -- the unlink already removed it.
+diff --git a/darling/src/libsystem_kernel/emulation/src/xnu_syscall/bsd/impl/fcntl/openat.c b/darling/src/libsystem_kernel/emulation/src/xnu_syscall/bsd/impl/fcntl/openat.c
+index 2649e350e19787482530dd8e571016d205642b94..2faa203b7c13ce10945699d5b82e7658c18772e3 100644
+--- a/darling/src/libsystem_kernel/emulation/src/xnu_syscall/bsd/impl/fcntl/openat.c
++++ b/darling/src/libsystem_kernel/emulation/src/xnu_syscall/bsd/impl/fcntl/openat.c
+@@ -68,12 +68,14 @@ long sys_openat_nocancel(int fd, const char* filename, int flags, unsigned int m
+ #ifdef EUNION
+ 	// E-UNION: if this open writes/creates/truncates, materialize the target in
+ 	// the writable upper layer BEFORE expand so the real syscall never mutates the
+-	// shared read-only template. Absolute guest paths only; relative/out-of-prefix
+-	// is a no-op inside the helper. (Read-only opens are left alone.)
+-	if (filename[0] == '/' &&
+-	    ((flags & 0x3) == BSD_O_WRONLY || (flags & 0x3) == BSD_O_RDWR ||
++	// shared read-only template. Handles BOTH absolute paths and dirfd-relative
++	// paths (openat into a lower-only dir): prepare_write_at resolves the dirfd to
++	// a guest path and joins the relative target. (Read-only opens are left alone.)
++	if (((flags & 0x3) == BSD_O_WRONLY || (flags & 0x3) == BSD_O_RDWR ||
+ 	     (flags & BSD_O_CREAT) || (flags & BSD_O_TRUNC))) {
+-		int wr = vchroot_prepare_write(filename);
++		int wr = (filename[0] == '/')
++			? vchroot_prepare_write(filename)
++			: vchroot_prepare_write_at(atfd(fd), filename);
+ 		if (wr < 0)
+ 			return errno_linux_to_bsd(wr);
+ 	}
+diff --git a/darling/src/libsystem_kernel/emulation/src/xnu_syscall/bsd/impl/unistd/renameat.c b/darling/src/libsystem_kernel/emulation/src/xnu_syscall/bsd/impl/unistd/renameat.c
+index ee0e02869804fd89a7eeaa400b08f97064725f1c..633e2584fa551a6b1396f6d858bfeffe10acdb76 100644
+--- a/darling/src/libsystem_kernel/emulation/src/xnu_syscall/bsd/impl/unistd/renameat.c
++++ b/darling/src/libsystem_kernel/emulation/src/xnu_syscall/bsd/impl/unistd/renameat.c
+@@ -32,11 +32,13 @@ long sys_renameat(int oldfd, const char* oldpath, int newfd, const char* newpath
+ 	// name must clear any whiteout. After a successful rename the source name is
+ 	// gone from upper -- if the template still has it, whiteout the origin so it
+ 	// does not resurrect from the lower layer.
+-	// PoC limitation: a lower-only *directory* source only copies up its top dir
+-	// here, not its descendants (gVisor F.3 recursion); files and empty dirs are
+-	// correct. Tracked in DESIGN.md.
++	// A lower-only DIRECTORY source must be deep-copied (node + ALL descendants):
++	// once the host moves the upper dir and we whiteout the origin, the lazy
++	// lower-merge no longer applies, so any descendant left only in the template
++	// would vanish (gVisor copy_up.go F.3). vchroot_copyup_tree handles files
++	// (single copy), symlinks, and directories (recursive) uniformly.
+ 	if (oldpath[0] == '/') {
+-		int wr = vchroot_prepare_write(oldpath);
++		int wr = vchroot_copyup_tree(oldpath);
+ 		if (wr < 0)
+ 			return errno_linux_to_bsd(wr);
+ 	}

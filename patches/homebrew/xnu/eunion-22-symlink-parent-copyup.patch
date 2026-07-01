@@ -1,0 +1,137 @@
+From 95366eda55e3a437f9bd4bf7007278e48da6b96a Mon Sep 17 00:00:00 2001
+From: Ilya Gulya <ilya@gulya.me>
+Date: Sat, 20 Jun 2026 15:05:46 +0000
+Subject: [PATCH] EXPERIMENT E-UNION: copy up symlink-parent's real target dir
+ on create (PoC, #ifdef EUNION)
+
+A create through a SYMLINKED lower-only parent dir failed with ENOENT under EUNION.
+Real-world repro: inside the guest `touch /tmp/x` returned "No such file or
+directory" -- /tmp is a symlink (-> private/tmp), and eunion_copyup_parent copied
+up the /tmp SYMLINK pointing at a target dir that was NOT materialized in the
+upper layer, so the kernel's open(O_CREAT) followed the upper symlink into a
+directory absent from the upper and failed ENOENT. (mkdir worked; only
+open(O_CREAT)-through-symlink hit it.)
+
+Fix: eunion_copyup_dir_resolved() materializes a parent DIRECTORY in the upper
+layer while FOLLOWING any symlink at the final component to its real target dir
+(handles relative + absolute targets and bounded chains), copying up each link
+and finally the real target. eunion_copyup_parent() now calls it instead of a
+plain vchroot_copyup() of the literal parent. Absent-in-both still succeeds (the
+create makes it). The fd-metadata/content helpers and other sites are untouched.
+
+EUNION-only (copy-mode copies the whole template so both /tmp and private/tmp are
+writable there -> no bug). All new code inside the file's #ifdef EUNION region;
+non-EUNION preprocessed output is byte-identical to baseline (verified).
+
+Hermetic suite: new SP1 (symlink-parent create, 6 asserts) RED before / GREEN
+after; mutation-verified 2/2 (revert-to-plain-copyup RED; disable-symlink-follow
+RED). Suite 222 -> 228, 0 failed. Live-verified: `touch /tmp/x` in a real guest
+boot now succeeds and materializes private/tmp/x in the upper prefix.
+
+Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
+---
+ .../linux_premigration/vchroot_userspace.c    | 84 ++++++++++++++++++-
+ 1 file changed, 82 insertions(+), 2 deletions(-)
+
+diff --git a/darling/src/libsystem_kernel/emulation/src/linux_premigration/vchroot_userspace.c b/darling/src/libsystem_kernel/emulation/src/linux_premigration/vchroot_userspace.c
+index aa27186b76a0e7934ac26c4f73608ef6b635281a..024ca655535df09af16e052c927001ac50484aff 100644
+--- a/darling/src/libsystem_kernel/emulation/src/linux_premigration/vchroot_userspace.c
++++ b/darling/src/libsystem_kernel/emulation/src/linux_premigration/vchroot_userspace.c
+@@ -1012,6 +1012,83 @@ int vchroot_prepare_unlink(const char* guest)
+ 	return VCHROOT_UNLINK_SKIP;
+ }
+ 
++// Materialize a guest DIRECTORY path in the upper layer, following any symlink at
++// the final component to its REAL target dir. A create lands at <parent>/<leaf>,
++// and the kernel resolves the parent's symlinks before creating; so it is not
++// enough to copy up a symlinked parent as a symlink -- the link's TARGET dir must
++// also exist in the upper, or open(O_CREAT) follows the upper symlink into a
++// directory that is absent from the upper layer and fails ENOENT. (Real example:
++// /tmp -> private/tmp; `touch /tmp/x` copied up the /tmp symlink but never
++// materialized private/tmp.) Resolves a chain of dir symlinks (bounded), copying
++// up each link and finally its target real dir. Returns 0 on success (or if the
++// path is absent in both layers -- the create will make it), negative on error.
++static int eunion_copyup_dir_resolved(const char* dir)
++{
++	char cur[4096];
++	int n = (int)strlen(dir);
++	if (n + 1 > (int)sizeof(cur))
++		return -LINUX_ENAMETOOLONG;
++	memcpy(cur, dir, n + 1);
++
++	// bound symlink chains (same limit as the resolver's MAX_SYMLINK_DEPTH, which
++	// is defined later in the file).
++	#define EUNION_MAX_DIR_SYMLINK_HOPS 10
++	for (int hop = 0; hop <= EUNION_MAX_DIR_SYMLINK_HOPS; hop++)
++	{
++		// copy up this path component as-is (a symlink copies up as a symlink;
++		// a real dir copies up as a dir). Absent-in-both -> the create makes it.
++		int r = vchroot_copyup(cur);
++		if (r < 0 && r != -LINUX_ENOENT)
++			return r;
++
++		// inspect the LOWER object to see if it is a symlink we must follow.
++		char lo[4096];
++		if (eunion_host_path(libexec_path, libexec_path_len, cur, lo, sizeof(lo)) < 0)
++			return -LINUX_ENAMETOOLONG;
++		stat_t lst;
++		if (eunion_lstat(lo, &lst) != 0)
++			return 0; // not in the template: nothing more to resolve
++		if ((lst.st_mode & LINUX_S_IFMT) != LINUX_S_IFLNK)
++			return 0; // a real dir (or file): done
++
++		// read the symlink target and rebase it to a guest-absolute dir path.
++		char link[4096];
++		#if defined(__NR_readlink)
++			int ln = LINUX_SYSCALL(__NR_readlink, lo, link, sizeof(link) - 1);
++		#else
++			int ln = LINUX_SYSCALL(__NR_readlinkat, LINUX_AT_FDCWD, lo, link, sizeof(link) - 1);
++		#endif
++		if (ln < 0)
++			return ln;
++		link[ln] = '\0';
++
++		char next[4096];
++		if (link[0] == '/')
++		{
++			// absolute target: it is already a guest-absolute path
++			if (ln + 1 > (int)sizeof(next))
++				return -LINUX_ENAMETOOLONG;
++			memcpy(next, link, ln + 1);
++		}
++		else
++		{
++			// relative target: resolve against cur's PARENT dir
++			int slash = -1;
++			for (int i = 0; cur[i]; i++)
++				if (cur[i] == '/') slash = i;
++			int base = (slash <= 0) ? 0 : slash; // keep leading '/'; "" if root-level
++			if (base + 1 + ln + 1 > (int)sizeof(next))
++				return -LINUX_ENAMETOOLONG;
++			memcpy(next, cur, base);
++			next[base] = '/';
++			memcpy(next + base + 1, link, ln + 1);
++		}
++		// loop to materialize the (possibly again-symlinked) target dir
++		memcpy(cur, next, strlen(next) + 1);
++	}
++	return -LINUX_ELOOP; // too many symlink hops
++}
++
+ // Copy the guest path's PARENT directory up into the writable upper layer. Used
+ // before a create/rename so the new entry lands in the upper, not the template.
+ // No-op success if there is no parent (root) or the path is unmanaged.
+@@ -1030,8 +1107,11 @@ static int eunion_copyup_parent(const char* guest)
+ 		return -LINUX_ENAMETOOLONG;
+ 	memcpy(parent, guest, last);
+ 	parent[last] = '\0';
+-	int r = vchroot_copyup(parent);
+-	return (r == -LINUX_ENOENT) ? 0 : r; // absent-in-both parent: a create makes it
++	// Resolve symlinks at the parent so the link's REAL target dir is materialized
++	// in the upper layer, not just a symlink pointing at an absent target (else a
++	// create through the symlinked parent would ENOENT). eunion_copyup_dir_resolved
++	// already treats absent-in-both as success (the create makes it).
++	return eunion_copyup_dir_resolved(parent);
+ }
+ 
+ // BEFORE a rename's DESTINATION is committed: ensure the move lands in the upper

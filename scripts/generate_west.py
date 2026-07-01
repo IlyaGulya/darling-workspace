@@ -57,7 +57,7 @@ def main() -> None:
     projects.append(
         {
             "name": "darling-debug-runner",
-            "path": "tools/darling-debug-runner",
+            "path": "darling-debug-runner",
             "remote": "ilya",
             "revision": args.runner_revision,
             "groups": ["private", "debug-tools"],

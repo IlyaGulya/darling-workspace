@@ -1,0 +1,148 @@
+From eb7e93b706d16c85fb50cf60c054ce3c2fac075b Mon Sep 17 00:00:00 2001
+From: Ilya Gulya <ilya@gulya.me>
+Date: Sat, 27 Jun 2026 00:17:31 +0000
+Subject: [PATCH] process: fix lost fork-child checkin under signal-aborted
+ wait (dar-gwn.6.5)
+
+A forked child checks in with darlingserver by raising its parent's
+fork-wait semaphore (Process::notifyCheckin); the parent blocks for it in
+Process::waitForChildAfterFork. That wait is forcibly aborted whenever a
+signal is delivered to the parent's server microthread
+(dtape_thread_sigexc_enter clears the wait even for an uninterruptible
+block). In practice a SIGCHLD raised on the parent by a *sibling* that
+just died while the parent is forking the next child triggers exactly
+this. If the child's checkin hands its semaphore wakeup off to the parent
+at the same instant the wait aborts, the wakeup is discarded and the XNU
+semaphore count is left stuck at -1 -- so a later fork's wait starves
+forever, producing a spurious 30 s "fork child checkin" timeout, a
+permanent fork hang, and a pile of unreaped zombie children. This is
+readily hit by a SIGCHLD-heavy parallel fork storm such as `make -j`
+(observed installing Homebrew's libunistring under Darling).
+
+Back the fragile counting-semaphore handoff with a sticky per-process
+flag: notifyCheckin sets _forkChildCheckedIn before raising the
+semaphore, and waitForChildAfterFork checks it on entry, after an
+interrupt, and at timeout. The semaphore remains the fast wakeup path,
+but even if its wakeup is lost to a signal-forced abort the sticky flag
+is still set, so the guest's existing re-issue of fork_wait_for_child
+(after -EINTR) observes the checkin and returns immediately. The handler
+never re-blocks the microthread itself (that is unsafe in the duct-tape);
+the guest's per-RPC retry is the re-wait vehicle. The flag is reset when
+consumed and when the process is replaced via exec.
+
+Validated with a deterministic SIGCHLD-driven fork-storm repro (RED ->
+GREEN, 400/400 rounds) and end-to-end: `brew reinstall wget` no longer
+stalls building libunistring (0 fork-checkin timeouts, the make phase
+advances normally).
+
+Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
+---
+ internal-include/darlingserver/process.hpp |  5 +++
+ src/process.cpp                            | 51 +++++++++++++++++++++-
+ 2 files changed, 55 insertions(+), 1 deletion(-)
+
+diff --git a/internal-include/darlingserver/process.hpp b/internal-include/darlingserver/process.hpp
+index eeb3150fbea99866209b76ccdbe8d32cfeb65ca8..a5e12aa33b3a9cbd022cb8e5364ada261c191667 100644
+--- a/internal-include/darlingserver/process.hpp
++++ b/internal-include/darlingserver/process.hpp
+@@ -27,6 +27,7 @@
+ #include <shared_mutex>
+ #include <unordered_map>
+ #include <unordered_set>
++#include <atomic>
+ 
+ #include <darlingserver/duct-tape.h>
+ #include <darlingserver/utility.hpp>
+@@ -99,6 +100,10 @@ namespace DarlingServer {
+ 		std::unordered_map<uintptr_t, std::shared_ptr<Kqchan>> _kqchannels;
+ 		std::unordered_map<uintptr_t, std::weak_ptr<Kqchan::Process>> _listeningKqchannels;
+ 		dtape_semaphore_t* _dtapeForkWaitSemaphore;
++		// dar-gwn.6.5: sticky flag set by a child's checkin (notifyCheckin) and
++		// consumed by waitForChildAfterFork. Backstops the fork-wait semaphore,
++		// whose wakeup can be lost when a signal forcibly aborts the wait.
++		std::atomic<bool> _forkChildCheckedIn{false};
+ 		Architecture _architecture;
+ 		std::weak_ptr<Process> _tracerProcess;
+ 		std::string _executablePath;
+diff --git a/src/process.cpp b/src/process.cpp
+index 3ba0ec95f9a7e10130bffbac459afb257328b07a..1822715591bed431137655bddd77519d81d27c18 100644
+--- a/src/process.cpp
++++ b/src/process.cpp
+@@ -349,6 +349,7 @@ void DarlingServer::Process::notifyCheckin(Architecture architecture) {
+ 
+ 		// create a new fork-wait semaphore for the new task
+ 		_dtapeForkWaitSemaphore = dtape_semaphore_create(_dtapeTask, 0);
++		_forkChildCheckedIn.store(false); // dar-gwn.6.5: reset sticky flag with the new semaphore
+ 
+ 		// create new S2C semaphores for the main thread
+ 		mainThread->_s2cPerformSempahore = dtape_semaphore_create(_dtapeTask, 1);
+@@ -374,6 +375,10 @@ void DarlingServer::Process::notifyCheckin(Architecture architecture) {
+ 		// notify the parent process (if we have one) that we've arrived
+ 		if (auto parent = _parentProcess.lock()) {
+ 			processLog.info() << *this << ": notifying fork parent " << *parent << " after checkin" << processLog.endLog;
++			// dar-gwn.6.5: set the STICKY checkin flag BEFORE raising the
++			// semaphore, so a parent whose semaphore wakeup is lost to a
++			// signal-forced wait abort still observes the checkin on retry.
++			parent->_forkChildCheckedIn.store(true);
+ 			dtape_semaphore_up(parent->_dtapeForkWaitSemaphore);
+ 			parent->_notifyListeningKqchannels(NOTE_FORK, nsid());
+ 		} else {
+@@ -409,13 +414,57 @@ bool DarlingServer::Process::waitForChildAfterFork() {
+ 	processLog.info() << *this << ": waiting up to " << forkWaitTimeoutSeconds
+ 			<< " seconds for fork child checkin" << processLog.endLog;
+ 
+-	switch (dtape_semaphore_down_timeout(_dtapeForkWaitSemaphore, forkWaitTimeoutSeconds)) {
++	// dar-gwn.6.5: the child checkin is delivered two ways, and the STICKY FLAG
++	// is what makes it reliable. notifyCheckin sets _forkChildCheckedIn = true
++	// (sticky) and then raises the fork-wait semaphore. The semaphore is the
++	// fast wakeup path, but it is FRAGILE: this wait is forcibly aborted whenever
++	// a signal is delivered to the parent microthread (dtape_thread_sigexc_enter
++	// clear_wait's it even if THREAD_UNINT), and in practice a SIGCHLD from a
++	// *sibling* that died while the parent is forking the next child does exactly
++	// that. If the checkin's semaphore wakeup is handed off at the same instant
++	// the wait aborts, that wakeup is lost and the semaphore count is left stuck
++	// at -1 -- starving a later fork forever (spurious 30s timeout + unreaped
++	// zombies under make -j). The sticky flag closes that lost-edge: even if the
++	// semaphore wakeup is lost, _forkChildCheckedIn remains set, so the guest's
++	// retry (it re-issues fork_wait_for_child after -EINTR) observes the checkin
++	// here and returns immediately. We never re-block within this handler (the
++	// duct-tape cannot safely re-block a microthread mid-call); the guest's
++	// per-RPC retry is the safe re-wait vehicle.
++
++	// Fast path: the child already checked in (possibly while we were being
++	// interrupted on a previous attempt). Consume it without touching the
++	// fragile semaphore.
++	if (_forkChildCheckedIn.exchange(false)) {
++		processLog.info() << *this << ": fork child checkin already observed (sticky)" << processLog.endLog;
++		// Drain any matching semaphore up that may also be pending, so the count
++		// does not accumulate across forks.
++		(void)dtape_semaphore_down_timeout(_dtapeForkWaitSemaphore, 0);
++		return true;
++	}
++
++	auto result = dtape_semaphore_down_timeout(_dtapeForkWaitSemaphore, forkWaitTimeoutSeconds);
++
++	switch (result) {
+ 		case dtape_semaphore_wait_result_ok:
+ 			processLog.info() << *this << ": fork child checkin observed" << processLog.endLog;
++			_forkChildCheckedIn.store(false);
+ 			return true;
+ 		case dtape_semaphore_wait_result_interrupted:
++			// A signal aborted the wait. If the checkin landed in the race
++			// window, the sticky flag caught it; report it as observed so the
++			// guest does not have to retry. Otherwise return false and the guest
++			// re-issues, re-checking the sticky flag on the next entry.
++			if (_forkChildCheckedIn.exchange(false)) {
++				processLog.info() << *this << ": fork child checkin observed (sticky, after interrupt)" << processLog.endLog;
++				return true;
++			}
+ 			return false;
+ 		case dtape_semaphore_wait_result_timed_out:
++			// Genuine timeout: re-check the sticky flag one last time.
++			if (_forkChildCheckedIn.exchange(false)) {
++				processLog.info() << *this << ": fork child checkin observed (sticky, at timeout)" << processLog.endLog;
++				return true;
++			}
+ 			processLog.error() << *this << ": timed out waiting " << forkWaitTimeoutSeconds
+ 					<< " seconds for fork child checkin" << processLog.endLog;
+ 			return false;
