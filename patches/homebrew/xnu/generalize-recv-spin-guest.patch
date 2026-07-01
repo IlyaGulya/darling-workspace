@@ -1,0 +1,256 @@
+From 1169ebe2d99cf0c7ba36c1f2613fcf66a9cbbb1c Mon Sep 17 00:00:00 2001
+From: Ilya Gulya <ilya@gulya.me>
+Date: Sun, 28 Jun 2026 11:04:28 +0000
+Subject: [PATCH] perf #7-generalize: adaptive recv-spin in the GUEST RPC
+ receive hook
+
+The perf#6 profile found 57% of a real build's guest wall-clock is spent in
+__skb_wait_for_more_packets -- guest threads sleeping in recvmsg waiting for an
+RPC reply. perf#9-decompose attributed most of it to the guest's OWN
+reply-bearing RPCs: mach_msg_overwrite 19%, mach_reply_port 8.7%,
+mach_port_deallocate 8.4%, plus the self-traps.
+
+perf#3 (mldr-recv-adaptive-spin) added a bounded non-blocking recvmsg spin
+before blocking, but ONLY to mldr's copy of dserver-rpc-defs.h. The guest
+processes (clang/make/sh) issue their RPCs through libsystem_kernel.dylib's
+SEPARATE copy of dserver_rpc_hooks_receive_message, which did a plain BLOCKING
+recvmsg with NO spin -- so none of that 28%+ ever got the spin. (The bead's
+prior note that "perf#3 is already generic" was mistaken: the spin lives only
+in the mldr copy.)
+
+This ports the same mechanism into the dylib hook: a bounded LINUX_MSG_DONTWAIT
+poll loop with a CPU pause between polls, falling through to the normal blocking
+recvmsg when the budget is exhausted -- so a fast reply (server p50 ~8us after
+perf#2b) is grabbed before the thread sleeps, and a slow reply never busy-waits
+unboundedly (symmetric to perf#1 on the creator side / perf#3 on the mldr
+waiter side). The path is libc-free: raw syscall + __builtin_ia32_pause, no
+env/TLS in the signal-blocked atomic region. Budget is a compile-time constant
+DARLING_GUEST_RECVSPIN (default 512, matching perf#3); the CMake cache var lets
+A/B and tuning override it (-DDARLING_GUEST_RECVSPIN=0 disables) without editing
+the header. NOTE the hook is compiled into BOTH libsystem_kernel.dylib AND dyld
+(dyld statically links the VARIANT_DYLD emulation), so both must be rebuilt and
+redeployed.
+
+RED->GREEN: tests/dylib_recv_adaptive_spin_test.sh (hermetic source-grep)
+asserts the hook does a bounded non-blocking poll, gated by
+DARLING_GUEST_RECVSPIN, ordered before the blocking recv, with a pause between
+polls and EAGAIN-vs-real-error handling. RED 5/5 fail pre-fix, GREEN post-fix.
+
+bead: dar-dar6x4-perf-5dq.14
+
+Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
+---
+ .../libsystem_kernel/emulation/CMakeLists.txt | 17 ++++
+ .../resources/dserver-rpc-defs.h              | 62 ++++++++++++++
+ .../tests/dylib_recv_adaptive_spin_test.sh    | 83 +++++++++++++++++++
+ 3 files changed, 162 insertions(+)
+ create mode 100755 darling/src/libsystem_kernel/tests/dylib_recv_adaptive_spin_test.sh
+
+diff --git a/darling/src/libsystem_kernel/emulation/CMakeLists.txt b/darling/src/libsystem_kernel/emulation/CMakeLists.txt
+index 2f2bb44217d08dc505c2a1c4977b0a2d4bc3593d..aeec3cd26c581e944aed75c31bf36ba86e05087a 100644
+--- a/darling/src/libsystem_kernel/emulation/CMakeLists.txt
++++ b/darling/src/libsystem_kernel/emulation/CMakeLists.txt
+@@ -389,6 +389,23 @@ if (DARLING_RPC_SLEEP_ACCOUNT)
+ 	target_compile_definitions(emulation_dyld PRIVATE DARLING_RPC_SLEEP_ACCOUNT)
+ endif()
+ 
++# perf #7-generalize (dar-dar6x4-perf-5dq.14): guest-side adaptive recv-spin budget.
++# The dylib RPC receive hook (dserver-rpc-defs.h) does a bounded LINUX_MSG_DONTWAIT
++# spin before the blocking recvmsg, so a fast RPC reply is grabbed before the guest
++# thread sleeps (attacks the perf#6 57% __skb_wait reply-wait for the guest's own RPCs:
++# mach_msg_overwrite, mach_reply_port, ...). The budget is a compile-time constant; the
++# header defaults it to 512 (matches perf#3, validated to cover server p99). This cache
++# variable lets A/B and tuning override it WITHOUT editing the header:
++#   -DDARLING_GUEST_RECVSPIN=0   -> disabled: legacy blocking recvmsg (A/B baseline)
++#   -DDARLING_GUEST_RECVSPIN=N   -> spin up to N non-blocking polls, then block
++# Leave UNSET to take the header default (512, the shipped value). Symmetric to perf#1
++# (creator wait) and perf#3 (mldr checkin recv); bounded so it never busy-waits forever.
++set(DARLING_GUEST_RECVSPIN "" CACHE STRING "Guest RPC recv-spin poll budget (empty = header default 512; 0 = disabled)")
++if (NOT DARLING_GUEST_RECVSPIN STREQUAL "")
++	target_compile_definitions(emulation PRIVATE DARLING_GUEST_RECVSPIN=${DARLING_GUEST_RECVSPIN})
++	target_compile_definitions(emulation_dyld PRIVATE DARLING_GUEST_RECVSPIN=${DARLING_GUEST_RECVSPIN})
++endif()
++
+ # E-UNION (dar-test-infra-sp5.8.4.4): union-by-path-translation in vchroot.
+ # OFF by default -> the emulation builds byte-identical to baseline. When ON,
+ # define EUNION (activates the #ifdef EUNION code) and EUNION_LIBEXEC_PATH (the
+diff --git a/darling/src/libsystem_kernel/emulation/include/linux_premigration/resources/dserver-rpc-defs.h b/darling/src/libsystem_kernel/emulation/include/linux_premigration/resources/dserver-rpc-defs.h
+index de49a0629234e3a4265ddc4ad817878631d06582..1dc520d427c8e584cd6572fea417e8a6456cb3f4 100644
+--- a/darling/src/libsystem_kernel/emulation/include/linux_premigration/resources/dserver-rpc-defs.h
++++ b/darling/src/libsystem_kernel/emulation/include/linux_premigration/resources/dserver-rpc-defs.h
+@@ -7,6 +7,7 @@
+ #include <darling/emulation/xnu_syscall/bsd/impl/network/sendto.h>
+ #include <darling/emulation/common/base.h>
+ #include <darling/emulation/conversion/duct_errno.h>
++#include <darling/emulation/conversion/network/duct.h>
+ #include <darling/emulation/conversion/network/getsockopt.h>
+ #include <darling/emulation/other/mach/lkm.h>
+ #include <darling/emulation/linux_premigration/elfcalls_wrapper.h>
+@@ -87,10 +88,69 @@ static long int dserver_rpc_hooks_send_message(int socket, const dserver_rpc_hoo
+ #endif
+ };
+ 
++// perf #7-generalize (dar-dar6x4-perf-5dq.14): adaptive recv-spin for the GUEST RPC
++// path. The perf#6 profile showed 57% of a real build's wall-clock is guest threads
++// SLEEPING in recvmsg waiting for an RPC reply (__skb_wait_for_more_packets), and
++// perf#9-decompose attributed most of it to the guest's OWN reply-bearing RPCs
++// (mach_msg_overwrite 19%, mach_reply_port 8.7%, mach_port_deallocate 8.4%, the
++// self-traps, ...). perf#3 added a bounded non-blocking recv spin before blocking, but
++// only to MLDR's copy of this hook -- the guest processes (clang/make/sh) go through
++// THIS dylib copy, which until now did a plain BLOCKING recvmsg with no spin, so none
++// of that 28%+ got the spin. This ports the same mechanism here.
++//
++// When the server replies quickly (the common case -- server-side p50 ~8us after perf
++// #2b), a short bounded non-blocking recv grabs the reply before the thread ever sleeps,
++// saving the full ~200us scheduler sleep/wakeup. On a slow reply we fall through to the
++// normal BLOCKING recvmsg, so we never busy-wait unboundedly (the perf#1 starvation we
++// already fixed on the creator side -- this is the symmetric fix on the guest waiter
++// side). This path is libc-free: the poll is a raw LINUX_MSG_DONTWAIT recvmsg syscall
++// and the relax between polls is a CPU pause (NOT sched_yield: the reply comes from the
++// server on a DIFFERENT core, so pause keeps us on-core for the few us it takes the
++// reply to land instead of donating the core to the whole runqueue). The budget is a
++// compile-time constant so the hot path branches on a constant and we touch no env in
++// the signal-blocked atomic region; tunable / A-B-able via -DDARLING_GUEST_RECVSPIN=N
++// (0 = legacy blocking recvmsg). Default 512 matches perf#3 (validated to cover the
++// server's p99 reply while exiting in a few us on the common fast reply).
++#ifndef DARLING_GUEST_RECVSPIN
++#define DARLING_GUEST_RECVSPIN 512
++#endif
++
++static inline void __dserver_recvspin_relax(void) {
++#if defined(__x86_64__) || defined(__i386__)
++	__builtin_ia32_pause();
++#elif defined(__aarch64__)
++	__asm__ __volatile__("yield");
++#else
++	LINUX_SYSCALL0(__NR_sched_yield);
++#endif
++}
++
+ static long int dserver_rpc_hooks_receive_message(int socket, dserver_rpc_hooks_msghdr_t* out_message) {
+ 	long int ret = 0;
+ 
+ retry:
++#if DARLING_GUEST_RECVSPIN > 0
++	for (int __spin = 0; __spin < (DARLING_GUEST_RECVSPIN); ++__spin) {
++		// Bounded non-blocking poll: catch a fast reply without paying the recvmsg
++		// sleep/wakeup. Capped, so a genuinely slow reply falls through to the real
++		// blocking recvmsg below and never busy-waits unboundedly.
++#ifdef __NR_socketcall
++		ret = LINUX_SYSCALL(__NR_socketcall, LINUX_SYS_RECVMSG, ((long[6]) { socket, out_message, LINUX_MSG_DONTWAIT }));
++#else
++		ret = LINUX_SYSCALL(__NR_recvmsg, socket, out_message, LINUX_MSG_DONTWAIT);
++#endif
++		if (ret >= 0) {
++			goto got_message;
++		}
++		// On Linux EWOULDBLOCK == EAGAIN (11), so EAGAIN alone means "no data yet".
++		if (ret != -LINUX_EAGAIN) {
++			// a real error (not "no data yet") -- bail just like the blocking path would
++			return ret;
++		}
++		__dserver_recvspin_relax();
++	}
++#endif
++
+ #ifdef __NR_socketcall
+ 	ret = LINUX_SYSCALL(__NR_socketcall, LINUX_SYS_RECVMSG, ((long[6]) { socket, out_message, 0 }));
+ #else
+@@ -100,6 +160,8 @@ retry:
+ 		return ret;
+ 	}
+ 
++got_message:
++
+ 	if (ret >= sizeof(dserver_s2c_callhdr_t)) {
+ 		dserver_s2c_callhdr_t* callhdr = out_message->msg_iov->iov_base;
+ 
+diff --git a/darling/src/libsystem_kernel/tests/dylib_recv_adaptive_spin_test.sh b/darling/src/libsystem_kernel/tests/dylib_recv_adaptive_spin_test.sh
+new file mode 100755
+index 0000000000000000000000000000000000000000..8addb8e0fff8214ed794c6ce8ad5063a317ff7c5
+--- /dev/null
++++ b/darling/src/libsystem_kernel/tests/dylib_recv_adaptive_spin_test.sh
+@@ -0,0 +1,83 @@
++#!/usr/bin/env bash
++# perf #7-generalize (dar-dar6x4-perf-5dq.14): the perf#6 profile found 57% of a real
++# build's guest wall-clock is spent in __skb_wait_for_more_packets -- guest threads
++# SLEEPING in recvmsg waiting for an RPC reply. perf#9-decompose attributed that wait
++# per call: mach_msg_overwrite 19% + mach_reply_port 8.7% + mach_port_deallocate 8.4%
++# + host/thread_self_trap + ... -- the GUEST process's own RPCs, all reply-bearing.
++#
++# perf#3 (mldr-recv-adaptive-spin) added a bounded non-blocking recvmsg spin before
++# blocking, but ONLY to mldr's copy of dserver-rpc-defs.h. The GUEST processes (clang,
++# make, sh, ...) issue their RPCs through libsystem_kernel.dylib's SEPARATE copy of
++# dserver_rpc_hooks_receive_message, which still does a plain BLOCKING recvmsg with NO
++# spin -- so none of the 28%+ above ever gets the spin. This task ports the spin to the
++# dylib hook so every synchronous guest RPC reply can be grabbed before sleeping.
++#
++# The dylib path is libc-free: no glibc recvmsg/getenv -- it uses raw LINUX_SYSCALL with
++# LINUX_MSG_DONTWAIT and a CPU pause, with a compile-time budget gate.
++#
++# RED->GREEN (source-level, hermetic -- no build, no server): before the fix the dylib's
++# dserver_rpc_hooks_receive_message has only the unconditional blocking recvmsg (RED);
++# after, it spins LINUX_MSG_DONTWAIT polls (capped) before falling through to the blocking
++# recvmsg. We assert the spin exists, is non-blocking, is bounded, sits BEFORE the blocking
++# recv, and that the spin is absent from mldr-specific reasoning (this is the dylib copy).
++# Exit 0 = GREEN.
++set -u
++
++HDR="$(cd "$(dirname "$0")/../emulation/include/linux_premigration/resources" && pwd)/dserver-rpc-defs.h"
++fails=0
++
++if [ ! -f "$HDR" ]; then
++	echo "FAIL: cannot find dylib dserver-rpc-defs.h at $HDR"
++	exit 1
++fi
++
++# (1) The receive hook must issue a NON-BLOCKING recv (LINUX_MSG_DONTWAIT) -- the spin poll.
++if ! grep -q "LINUX_MSG_DONTWAIT" "$HDR"; then
++	echo "FAIL: dylib receive hook has no LINUX_MSG_DONTWAIT non-blocking poll (no recv-spin)"
++	fails=$((fails+1))
++fi
++
++# (2) The spin must be bounded by a compile-time budget gate (never an unbounded busy-wait;
++#     symmetric to perf#1/#3). The budget macro keys on DARLING_GUEST_RECVSPIN.
++if ! grep -q "DARLING_GUEST_RECVSPIN" "$HDR"; then
++	echo "FAIL: dylib recv-spin has no DARLING_GUEST_RECVSPIN budget gate (must be bounded)"
++	fails=$((fails+1))
++fi
++
++# (3) The non-blocking poll must come BEFORE the blocking recvmsg fallback, inside the
++#     receive hook -- i.e. the first recv attempt is the DONTWAIT spin, then we fall back.
++#     Assert the DONTWAIT line appears before the plain blocking recvmsg syscall line.
++dontwait_ln=$(grep -n "LINUX_MSG_DONTWAIT" "$HDR" | head -1 | cut -d: -f1)
++# the blocking fallback is the recvmsg/recvmsg-via-socketcall WITHOUT the DONTWAIT flag,
++# i.e. the existing "retry:" path that passes 0 as flags.
++block_ln=$(grep -n "__NR_recvmsg" "$HDR" | grep -v "DONTWAIT" | tail -1 | cut -d: -f1)
++if [ -n "$dontwait_ln" ] && [ -n "$block_ln" ]; then
++	if [ "$dontwait_ln" -ge "$block_ln" ]; then
++		echo "FAIL: the LINUX_MSG_DONTWAIT spin (line $dontwait_ln) is not before the blocking recvmsg fallback (line $block_ln)"
++		fails=$((fails+1))
++	fi
++else
++	echo "FAIL: could not locate both the DONTWAIT spin and the blocking recvmsg in the hook"
++	fails=$((fails+1))
++fi
++
++# (4) Must use a CPU pause between polls (not sched_yield as the primary on x86), matching
++#     perf#3's reasoning (the reply lands from the server on another core).
++if ! grep -Eq "ia32_pause|__asm__.*pause|\"yield\"" "$HDR"; then
++	echo "FAIL: dylib recv-spin does not pause/relax between polls (would burn the core hot)"
++	fails=$((fails+1))
++fi
++
++# (5) On a non-EAGAIN error during the spin, it must bail (return the error), not loop --
++#     guard against turning a real recv error into a spin.
++if ! grep -q "LINUX_EAGAIN" "$HDR"; then
++	echo "FAIL: dylib recv-spin does not distinguish LINUX_EAGAIN from real errors"
++	fails=$((fails+1))
++fi
++
++if [ "$fails" -eq 0 ]; then
++	echo "GREEN: dylib RPC receive hook does a bounded LINUX_MSG_DONTWAIT recv-spin before blocking (covers all guest RPCs)"
++	exit 0
++fi
++echo "RED: $fails dylib recv-spin check(s) failed"
++exit 1

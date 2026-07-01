@@ -1,0 +1,151 @@
+From ddfc26341331ad3f3148d85e0fee2ef165f422b5 Mon Sep 17 00:00:00 2001
+From: Ilya Gulya <ilya@gulya.me>
+Date: Fri, 26 Jun 2026 07:38:43 +0000
+Subject: [PATCH] call: reply with an error instead of silently dropping at
+ ingest
+
+callFromMessage() had three message-ingest paths that discarded a managed
+call without ever replying to the guest thread that sent it:
+
+  * non-existent process  (registerIfAbsent factory threw -> nullptr)
+  * non-existent thread    (same)
+  * pending-call-overwrite (Thread::setPendingCall threw when a non-interrupt
+    call raced a still-pending call; the throw unwound to the Server::start()
+    guard, which logs and drops the message)
+
+A guest thread that issues a managed RPC then blocks in recvmsg on its
+per-thread socket waiting for the reply. When the server drops the message
+with no reply, that thread hangs forever. Under a fork/signal storm (e.g.
+building Homebrew dependencies: a child forks, the parent reaps, signals
+fly) this is reached routinely, and a permanently-parked thread degrades
+into a fatal SEGV in the guest (the dar-gwn fork-storm crash family).
+
+Reply instead of dropping. Add Call::sendErrorReplyFromHeader(), which
+builds a minimal reply (just the reply header: {number, code}) from the raw
+call header -- no constructed Call object is needed, which is why these
+ingest paths couldn't reply before. The two "non-existent" paths reply
+-ESRCH; the pending-call-overwrite path replies -EAGAIN (so the guest can
+retry) and is now caught at its source in callFromMessage rather than
+unwinding to the server-loop guard. For a call that expected a larger reply
+body the guest's RPC wrapper returns -ECOMM on the short reply; for a
+body-less call it returns the code. Either way the guest syscall RETURNS
+instead of hanging.
+
+This is the unifying fix for the lost-reply class: every ingest-time
+discard now unblocks the waiting guest.
+---
+ internal-include/darlingserver/call.hpp | 10 +++++
+ src/call.cpp                            | 49 +++++++++++++++++++++----
+ 2 files changed, 52 insertions(+), 7 deletions(-)
+
+diff --git a/internal-include/darlingserver/call.hpp b/internal-include/darlingserver/call.hpp
+index fa40665faa50aeda96948d028460f1432d3f826b..97140aa4c46e9d856ce988b3b7d993a40a2865e2 100644
+--- a/internal-include/darlingserver/call.hpp
++++ b/internal-include/darlingserver/call.hpp
+@@ -55,6 +55,16 @@ namespace DarlingServer {
+ 		static void sendReply(Message&& reply);
+ 
+ 	public:
++		// Send a minimal error reply (header only: {number, code}) to the client that
++		// sent `requestMessage`, WITHOUT a constructed Call object. Used at the message
++		// ingest paths in callFromMessage() that would otherwise silently drop a message
++		// (non-existent process/thread, pending-call-overwrite). A waiting guest thread
++		// is parked in recvmsg on its per-thread RPC socket; if its call is dropped with
++		// no reply it hangs forever (and under a fork/signal storm degrades into a SEGV).
++		// For a call that expects a reply *body*, the guest's RPC wrapper sees a short
++		// reply and returns -ECOMM; for a body-less call it returns `code` (e.g. -ESRCH).
++		// Either way the guest syscall RETURNS instead of hanging. (dar-gwn.6.2)
++		static void sendErrorReplyFromHeader(const dserver_rpc_callhdr_t* header, Address replyAddress, int code);
+ 		Call(std::shared_ptr<Thread> thread, Address replyAddress, dserver_rpc_callhdr_t* callHeader);
+ 		virtual ~Call();
+ 
+diff --git a/src/call.cpp b/src/call.cpp
+index a5110d429ecf08753fa2cc095cf3d0fc13b0218e..8cbb20d0a232576e18df68db0d84cb181431445f 100644
+--- a/src/call.cpp
++++ b/src/call.cpp
+@@ -29,6 +29,7 @@
+ #include <sys/syscall.h>
+ #include <darlingserver/kqchan.hpp>
+ #include <system_error>
++#include <cerrno>
+ 
+ static DarlingServer::Log callLog("calls");
+ 
+@@ -81,10 +82,13 @@ std::shared_ptr<DarlingServer::Call> DarlingServer::Call::callFromMessage(Messag
+ 		});
+ 
+ 		if (!process) {
+-			callLog.error() << "Received call from non-existent process?" << callLog.endLog;
++			callLog.error() << "Received call from non-existent process (number "
++				<< header->number << "); replying -ESRCH instead of dropping" << callLog.endLog;
+ 
+-			// ignore this call
+-			// TODO: instead of ignoring it, we should return a generic reply indicating `-ESRCH` or something like that.
++			// Don't drop silently: the guest thread is parked in recvmsg waiting for a
++			// reply, and dropping leaves it hung forever (-> SEGV under a fork/signal
++			// storm). Reply -ESRCH so the guest syscall returns. (dar-gwn.6.2)
++			sendErrorReplyFromHeader(header, requestMessage.address(), -ESRCH);
+ 			return nullptr;
+ 		}
+ 
+@@ -110,10 +114,12 @@ std::shared_ptr<DarlingServer::Call> DarlingServer::Call::callFromMessage(Messag
+ 		});
+ 
+ 		if (!thread) {
+-			callLog.error() << "Received call from non-existent thread?" << callLog.endLog;
++			callLog.error() << "Received call from non-existent thread (number "
++				<< header->number << "); replying -ESRCH instead of dropping" << callLog.endLog;
+ 
+-			// ignore this call
+-			// TODO: instead of ignoring it, we should return a generic reply indicating `-ESRCH` or something like that.
++			// Same as the non-existent-process case: reply -ESRCH so the parked guest
++			// thread's recvmsg returns instead of hanging forever. (dar-gwn.6.2)
++			sendErrorReplyFromHeader(header, requestMessage.address(), -ESRCH);
+ 			return nullptr;
+ 		}
+ 
+@@ -216,7 +222,22 @@ std::shared_ptr<DarlingServer::Call> DarlingServer::Call::callFromMessage(Messag
+ 	#undef CALL_CASE
+ 
+ 	if (thread) {
+-		thread->setPendingCall(result);
++		try {
++			thread->setPendingCall(result);
++		} catch (const std::exception& ex) {
++			// setPendingCall throws "pending call overwritten while active" when a
++			// non-interrupt call races a still-pending call on the same thread (seen
++			// under the Homebrew fork/signal storm). Previously this unwound to the
++			// Server::start() guard, which dropped the message silently -> the guest
++			// thread that sent THIS call stayed parked in recvmsg forever (-> SEGV under
++			// the storm). Reply -EAGAIN here instead, so that guest syscall returns and
++			// the guest can retry, while leaving the genuinely-pending call untouched.
++			// (dar-gwn.6.2)
++			callLog.error() << "setPendingCall rejected call (number " << header->number
++				<< "): " << ex.what() << "; replying -EAGAIN instead of dropping" << callLog.endLog;
++			sendErrorReplyFromHeader(header, requestMessage.address(), -EAGAIN);
++			return nullptr;
++		}
+ 		return result;
+ 	} else {
+ 		Thread::kernelAsync([result]() {
+@@ -273,6 +294,20 @@ void DarlingServer::Call::sendReply(Message&& reply) {
+ 	Server::sharedInstance().sendMessage(std::move(reply));
+ };
+ 
++void DarlingServer::Call::sendErrorReplyFromHeader(const dserver_rpc_callhdr_t* header, Address replyAddress, int code) {
++	// Build a minimal reply (just the reply header) from the raw call header. We don't
++	// have a Call object here, so we can't size the reply to the specific call's reply
++	// struct -- but the guest's RPC wrapper will still return (with -ECOMM for a call
++	// that expected a larger reply body, or with `code` for a body-less call) rather
++	// than blocking forever in recvmsg. The point is to UNBLOCK the parked guest thread.
++	Message reply(sizeof(dserver_rpc_replyhdr_t), 0);
++	reply.setAddress(replyAddress);
++	auto replyStruct = reinterpret_cast<dserver_rpc_replyhdr_t*>(reply.data().data());
++	replyStruct->number = header->number;
++	replyStruct->code = code;
++	sendReply(std::move(reply));
++};
++
+ //
+ // call processing
+ //

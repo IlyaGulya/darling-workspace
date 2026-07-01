@@ -46,8 +46,20 @@ west patch list --profile homebrew
 west patch verify --profile homebrew
 west patch apply --profile homebrew --roll-back
 west patch clean --profile homebrew
+west darling-doctor            # verify manifest/build/deploy alignment BEFORE building or booting
+west darling-build             # doctor-gated ninja build of dyld + closure (add --deploy to install)
 west dw handoff
 ```
+
+`west darling-doctor` is the guard against the drift that caused the perf#24c2c-pre
+detours: it checks each project's working tree against its **West manifest** revision
+(intentional drift is declared in `doctor-allow-drift.txt`), that the build dir's
+`CMAKE_INSTALL_PREFIX` matches the prefix baked into the setuid launcher (a mismatched
+build can never boot the prefix), and that the deployed dyld/mldr/darlingserver match the
+known-good `deploy-baseline.md5`. Run it before any build/deploy/boot. `west darling-build`
+runs the doctor as a pre-gate, refuses to build on failure (unless `--force`), and re-checks
+after `--deploy`. Update `deploy-baseline.md5` when a legitimate rebuild changes what is
+deployed.
 
 `west dw handoff` exports Beads, refreshes manifests, and creates Git bundles
 for every local branch except an unchanged `main`/`master`. This includes

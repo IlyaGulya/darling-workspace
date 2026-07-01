@@ -1,0 +1,10 @@
+Setting up a new Darling prefix at /tmp/dp/.darling-eunion
+sh: 1: xdg-user-dir: not found
+sh: 1: xdg-user-dir: not found
+sh: 1: xdg-user-dir: not found
+sh: 1: xdg-user-dir: not found
+sh: 1: xdg-user-dir: not found
+sh: 1: xdg-user-dir: not found
+sh: 1: xdg-user-dir: not found
+Warning: failed to increase FD rlimit: Operation not permitted
+Error connecting to shellspawn in the container (/tmp/dp/.darling-eunion/var/run/shellspawn.sock): No such file or directory

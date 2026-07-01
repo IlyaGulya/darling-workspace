@@ -1,0 +1,55 @@
+From 362aafc1cbc28b00d7ec53827b6d94550a72ce79 Mon Sep 17 00:00:00 2001
+From: Ilya Gulya <ilya@gulya.me>
+Date: Fri, 26 Jun 2026 13:04:13 +0000
+Subject: [PATCH] sigexc: re-raise fatal default signal to self thread, not the
+ process group
+
+The 'emulating default signal effects' path in sigexc_handler re-raised the
+signal with kill(0, sig). pid 0 broadcasts to the caller's ENTIRE process
+group, not just the calling process, so a fatal default signal (e.g. SIGSEGV
+from a crashing process) was delivered to parent/sibling processes sharing the
+pgid, killing them with a spurious SI_USER signal.
+
+Observed: gnulib's CHECK_PRINTF_SAFE printf-OOM conftest crashes by design
+(its nocrash handler is meant to absorb it / it terminates the conftest); the
+conftest's default SIGSEGV was broadcast via kill(0) to its parent bash and the
+configure/ruby build driver (sigprocess showed code=0 SI_USER, sender_pid=the
+conftest, the 0x3e8<<32|nsid signature), killing the whole build tree ->
+'terminated by uncaught signal SEGV'. macOS terminates only the faulting
+process.
+
+Re-raise to THIS thread with tgkill(getpid(), gettid(), sig) (raise()
+semantics) so the default action affects only this process.
+
+Fixes dar-gwn.1.5 / dar-gwn.6.4 parent-kill cascade.
+
+Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
+---
+ .../src/linux_premigration/signal/sigexc.c         | 14 ++++++++++++--
+ 1 file changed, 12 insertions(+), 2 deletions(-)
+
+diff --git a/darling/src/libsystem_kernel/emulation/src/linux_premigration/signal/sigexc.c b/darling/src/libsystem_kernel/emulation/src/linux_premigration/signal/sigexc.c
+index 19d0c33d7da5789bca09a49f9862e82b2419a848..67de2d0262238c1193b6fa7cb04d591439f74f75 100644
+--- a/darling/src/libsystem_kernel/emulation/src/linux_premigration/signal/sigexc.c
++++ b/darling/src/libsystem_kernel/emulation/src/linux_premigration/signal/sigexc.c
+@@ -379,8 +379,18 @@ void sigexc_handler(int linux_signum, struct linux_siginfo* info, struct linux_u
+ 						&sa, NULL,
+ 						sizeof(sa.sa_mask));
+ 
+-				// Resend signal to self
+-				LINUX_SYSCALL(__NR_kill, 0, linux_signum);
++				// Resend signal to self. NOTE: kill(0, sig) targets the
++				// CALLER'S ENTIRE PROCESS GROUP, not just this process, so a
++				// fatal default signal (e.g. SIGSEGV from a crashing conftest)
++				// would be broadcast to parent/sibling processes sharing the
++				// pgid and kill them too (observed: gnulib's printf-OOM conftest
++				// taking down its parent bash/configure with a spurious SI_USER
++				// SIGSEGV; dar-gwn.1.5 / dar-gwn.6.4). macOS terminates only the
++				// faulting process. Re-raise to THIS thread (raise() semantics)
++				// via tgkill(pid, tid, sig) so only this process is affected.
++				int self_pid = LINUX_SYSCALL(__NR_getpid);
++				int self_tid = LINUX_SYSCALL(__NR_gettid);
++				LINUX_SYSCALL(__NR_tgkill, self_pid, self_tid, linux_signum);
+ 			}
+ 		}
+ 	}

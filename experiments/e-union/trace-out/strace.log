@@ -1,0 +1,508 @@
+179   02:40:38.437542 execve("/usr/bin/env", ["env", "DARLING_ROOTLESS=1", "DPREFIX=/tmp/dp/.darling-eunion", "/usr/local/bin/darling", "shell", "echo", "HELLO_EUNION"], 0x7ffd81504ce8 /* 6 vars */) = 0 <0.000284>
+179   02:40:38.438368 openat(AT_FDCWD, "/etc/ld.so.cache", O_RDONLY|O_CLOEXEC) = 3 <0.000057>
+179   02:40:38.438878 openat(AT_FDCWD, "/lib/x86_64-linux-gnu/libc.so.6", O_RDONLY|O_CLOEXEC) = 3 <0.000069>
+179   02:40:38.442416 execve("/usr/local/bin/darling", ["/usr/local/bin/darling", "shell", "echo", "HELLO_EUNION"], 0x5a6d10dc9400 /* 8 vars */) = 0 <0.000287>
+179   02:40:38.444175 openat(AT_FDCWD, 0x74f146abd38f, O_RDONLY|O_CLOEXEC) = 3 <0.000110>
+179   02:40:38.445027 openat(AT_FDCWD, 0x74f146a8d140, O_RDONLY|O_CLOEXEC) = 3 <0.000090>
+179   02:40:38.453488 connect(3, 0x7fff2f9c19b0, 110) = -1 ENOENT (No such file or directory) <0.000080>
+179   02:40:38.454099 connect(3, 0x7fff2f9c1ba0, 110) = -1 ENOENT (No such file or directory) <0.000122>
+179   02:40:38.454987 openat(AT_FDCWD, 0x74f146a47d92, O_RDONLY|O_CLOEXEC) = 3 <0.000066>
+179   02:40:38.455783 openat(AT_FDCWD, 0x74f146a48320, O_RDONLY|O_CLOEXEC) = 3 <0.000075>
+179   02:40:38.456348 openat(AT_FDCWD, 0x7fff2f9c1ec0, O_WRONLY|O_CREAT|O_TRUNC, 0666) = 3 <0.000111>
+179   02:40:38.456890 openat(AT_FDCWD, 0x7fff2f9c1ec0, O_WRONLY|O_CREAT|O_TRUNC, 0666) = 3 <0.000131>
+179   02:40:38.457421 openat(AT_FDCWD, 0x7fff2f9c1ec0, O_WRONLY|O_CREAT|O_TRUNC, 0666) = 3 <0.000074>
+179   02:40:38.458286 openat(AT_FDCWD, 0x7fff2f9c2df0, O_RDONLY) = -1 ENOENT (No such file or directory) <0.000065>
+179   02:40:38.458924 clone(child_stack=NULL, flags=CLONE_CHILD_CLEARTID|CLONE_CHILD_SETTID|SIGCHLD, child_tidptr=0x74f146876a10) = 180 <0.000273>
+180   02:40:38.459765 execve(0x5777f95bb533, 0x7fff2f9c2db0, 0x7fff2f9c4080) = 0 <0.000261>
+180   02:40:38.460521 openat(AT_FDCWD, "/etc/ld.so.cache", O_RDONLY|O_CLOEXEC) = 3 <0.000058>
+180   02:40:38.461196 openat(AT_FDCWD, "/lib/x86_64-linux-gnu/libstdc++.so.6", O_RDONLY|O_CLOEXEC) = 3 <0.000065>
+180   02:40:38.462329 openat(AT_FDCWD, "/lib/x86_64-linux-gnu/libm.so.6", O_RDONLY|O_CLOEXEC) = 3 <0.000059>
+180   02:40:38.463279 openat(AT_FDCWD, "/lib/x86_64-linux-gnu/libgcc_s.so.1", O_RDONLY|O_CLOEXEC) = 3 <0.000060>
+180   02:40:38.464248 openat(AT_FDCWD, "/lib/x86_64-linux-gnu/libc.so.6", O_RDONLY|O_CLOEXEC) = 3 <0.000059>
+180   02:40:38.471772 connect(3, {sa_family=AF_UNIX, sun_path="/var/run/nscd/socket"}, 110) = -1 ENOENT (No such file or directory) <0.000058>
+180   02:40:38.472156 connect(3, {sa_family=AF_UNIX, sun_path="/var/run/nscd/socket"}, 110) = -1 ENOENT (No such file or directory) <0.000057>
+180   02:40:38.472635 openat(AT_FDCWD, "/etc/nsswitch.conf", O_RDONLY|O_CLOEXEC) = 3 <0.000057>
+180   02:40:38.473334 openat(AT_FDCWD, "/etc/passwd", O_RDONLY|O_CLOEXEC) = 3 <0.000057>
+180   02:40:38.475036 clone(child_stack=0x7ea8ed2caff0, flags=CLONE_VM|CLONE_VFORK|SIGCHLD <unfinished ...>
+181   02:40:38.482778 execve("/bin/sh", ["sh", "-c", "--", "xdg-user-dir DESKTOP"], 0x7ffc1453bad0 /* 7 vars */ <unfinished ...>
+180   02:40:38.482922 <... clone resumed>) = 181 <0.007872>
+181   02:40:38.482988 <... execve resumed>) = 0 <0.000184>
+181   02:40:38.483311 openat(AT_FDCWD, "/etc/ld.so.cache", O_RDONLY|O_CLOEXEC) = 3 <0.000036>
+181   02:40:38.483906 openat(AT_FDCWD, "/lib/x86_64-linux-gnu/libc.so.6", O_RDONLY|O_CLOEXEC) = 3 <0.000044>
+181   02:40:38.489951 exit_group(127)   = ?
+181   02:40:38.490139 +++ exited with 127 +++
+180   02:40:38.490205 --- SIGCHLD {si_signo=SIGCHLD, si_code=CLD_EXITED, si_pid=181, si_uid=0, si_status=127, si_utime=0, si_stime=0} ---
+180   02:40:38.491553 clone(child_stack=0x7ea8ed2caff0, flags=CLONE_VM|CLONE_VFORK|SIGCHLD <unfinished ...>
+182   02:40:38.500387 execve("/bin/sh", ["sh", "-c", "--", "xdg-user-dir DOWNLOAD"], 0x7ffc1453bad0 /* 7 vars */ <unfinished ...>
+180   02:40:38.500573 <... clone resumed>) = 182 <0.009006>
+182   02:40:38.500640 <... execve resumed>) = 0 <0.000211>
+182   02:40:38.500964 openat(AT_FDCWD, "/etc/ld.so.cache", O_RDONLY|O_CLOEXEC) = 3 <0.000036>
+182   02:40:38.501388 openat(AT_FDCWD, "/lib/x86_64-linux-gnu/libc.so.6", O_RDONLY|O_CLOEXEC) = 3 <0.000062>
+182   02:40:38.507472 exit_group(127)   = ?
+182   02:40:38.507661 +++ exited with 127 +++
+180   02:40:38.507757 --- SIGCHLD {si_signo=SIGCHLD, si_code=CLD_EXITED, si_pid=182, si_uid=0, si_status=127, si_utime=0, si_stime=0} ---
+180   02:40:38.509261 clone(child_stack=0x7ea8ed2caff0, flags=CLONE_VM|CLONE_VFORK|SIGCHLD <unfinished ...>
+183   02:40:38.517155 execve("/bin/sh", ["sh", "-c", "--", "xdg-user-dir PUBLICSHARE"], 0x7ffc1453bad0 /* 7 vars */ <unfinished ...>
+180   02:40:38.517321 <... clone resumed>) = 183 <0.008045>
+183   02:40:38.517390 <... execve resumed>) = 0 <0.000204>
+183   02:40:38.517723 openat(AT_FDCWD, "/etc/ld.so.cache", O_RDONLY|O_CLOEXEC) = 3 <0.000036>
+183   02:40:38.518297 openat(AT_FDCWD, "/lib/x86_64-linux-gnu/libc.so.6", O_RDONLY|O_CLOEXEC) = 3 <0.000061>
+183   02:40:38.524334 exit_group(127)   = ?
+183   02:40:38.524589 +++ exited with 127 +++
+180   02:40:38.524866 --- SIGCHLD {si_signo=SIGCHLD, si_code=CLD_EXITED, si_pid=183, si_uid=0, si_status=127, si_utime=0, si_stime=0} ---
+180   02:40:38.526245 clone(child_stack=0x7ea8ed2caff0, flags=CLONE_VM|CLONE_VFORK|SIGCHLD <unfinished ...>
+184   02:40:38.533648 execve("/bin/sh", ["sh", "-c", "--", "xdg-user-dir DOCUMENTS"], 0x7ffc1453bad0 /* 7 vars */ <unfinished ...>
+180   02:40:38.533850 <... clone resumed>) = 184 <0.007587>
+184   02:40:38.533879 <... execve resumed>) = 0 <0.000205>
+184   02:40:38.534256 openat(AT_FDCWD, "/etc/ld.so.cache", O_RDONLY|O_CLOEXEC) = 3 <0.000036>
+184   02:40:38.534657 openat(AT_FDCWD, "/lib/x86_64-linux-gnu/libc.so.6", O_RDONLY|O_CLOEXEC) = 3 <0.000060>
+184   02:40:38.540276 exit_group(127)   = ?
+184   02:40:38.540507 +++ exited with 127 +++
+180   02:40:38.540697 --- SIGCHLD {si_signo=SIGCHLD, si_code=CLD_EXITED, si_pid=184, si_uid=0, si_status=127, si_utime=0, si_stime=0} ---
+180   02:40:38.541792 clone(child_stack=0x7ea8ed2caff0, flags=CLONE_VM|CLONE_VFORK|SIGCHLD <unfinished ...>
+185   02:40:38.549572 execve("/bin/sh", ["sh", "-c", "--", "xdg-user-dir MUSIC"], 0x7ffc1453bad0 /* 7 vars */ <unfinished ...>
+180   02:40:38.549743 <... clone resumed>) = 185 <0.007937>
+185   02:40:38.549808 <... execve resumed>) = 0 <0.000205>
+185   02:40:38.550124 openat(AT_FDCWD, "/etc/ld.so.cache", O_RDONLY|O_CLOEXEC) = 3 <0.000035>
+185   02:40:38.550535 openat(AT_FDCWD, "/lib/x86_64-linux-gnu/libc.so.6", O_RDONLY|O_CLOEXEC) = 3 <0.000057>
+185   02:40:38.556612 exit_group(127)   = ?
+185   02:40:38.556805 +++ exited with 127 +++
+180   02:40:38.556876 --- SIGCHLD {si_signo=SIGCHLD, si_code=CLD_EXITED, si_pid=185, si_uid=0, si_status=127, si_utime=0, si_stime=0} ---
+180   02:40:38.558285 clone(child_stack=0x7ea8ed2caff0, flags=CLONE_VM|CLONE_VFORK|SIGCHLD <unfinished ...>
+186   02:40:38.568955 execve("/bin/sh", ["sh", "-c", "--", "xdg-user-dir PICTURES"], 0x7ffc1453bad0 /* 7 vars */ <unfinished ...>
+180   02:40:38.569247 <... clone resumed>) = 186 <0.010912>
+186   02:40:38.569387 <... execve resumed>) = 0 <0.000365>
+186   02:40:38.569972 openat(AT_FDCWD, "/etc/ld.so.cache", O_RDONLY|O_CLOEXEC) = 3 <0.000052>
+186   02:40:38.570476 openat(AT_FDCWD, "/lib/x86_64-linux-gnu/libc.so.6", O_RDONLY|O_CLOEXEC) = 3 <0.000064>
+186   02:40:38.576668 exit_group(127)   = ?
+186   02:40:38.576915 +++ exited with 127 +++
+180   02:40:38.576996 --- SIGCHLD {si_signo=SIGCHLD, si_code=CLD_EXITED, si_pid=186, si_uid=0, si_status=127, si_utime=0, si_stime=0} ---
+180   02:40:38.577983 clone(child_stack=0x7ea8ed2caff0, flags=CLONE_VM|CLONE_VFORK|SIGCHLD <unfinished ...>
+187   02:40:38.586598 execve("/bin/sh", ["sh", "-c", "--", "xdg-user-dir VIDEOS"], 0x7ffc1453bad0 /* 7 vars */ <unfinished ...>
+180   02:40:38.586806 <... clone resumed>) = 187 <0.008807>
+187   02:40:38.586874 <... execve resumed>) = 0 <0.000228>
+187   02:40:38.587337 openat(AT_FDCWD, "/etc/ld.so.cache", O_RDONLY|O_CLOEXEC) = 3 <0.000035>
+187   02:40:38.587770 openat(AT_FDCWD, "/lib/x86_64-linux-gnu/libc.so.6", O_RDONLY|O_CLOEXEC) = 3 <0.000060>
+187   02:40:38.593868 exit_group(127)   = ?
+187   02:40:38.594088 +++ exited with 127 +++
+180   02:40:38.594191 --- SIGCHLD {si_signo=SIGCHLD, si_code=CLD_EXITED, si_pid=187, si_uid=0, si_status=127, si_utime=0, si_stime=0} ---
+180   02:40:38.594602 openat(AT_FDCWD, "/proc/sys/fs/nr_open", O_RDONLY) = 3 <0.000069>
+180   02:40:38.596138 openat(AT_FDCWD, "/tmp/dp/.darling-eunion", O_RDONLY|O_NONBLOCK|O_CLOEXEC|O_DIRECTORY) = 3 <0.000057>
+180   02:40:38.596376 getdents64(3, 0x613cfcee83e0 /* 9 entries */, 32768) = 256 <0.000060>
+180   02:40:38.596625 openat(AT_FDCWD, "/tmp/dp/.darling-eunion/usr", O_RDONLY|O_NONBLOCK|O_CLOEXEC|O_DIRECTORY) = 5 <0.000084>
+180   02:40:38.597072 getdents64(5, 0x613cfcef0420 /* 3 entries */, 32768) = 80 <0.000059>
+180   02:40:38.597344 openat(AT_FDCWD, "/tmp/dp/.darling-eunion/usr/local", O_RDONLY|O_NONBLOCK|O_CLOEXEC|O_DIRECTORY) = 6 <0.000060>
+180   02:40:38.597594 getdents64(6, 0x613cfcef8460 /* 3 entries */, 32768) = 80 <0.000063>
+180   02:40:38.597922 openat(AT_FDCWD, "/tmp/dp/.darling-eunion/usr/local/share", O_RDONLY|O_NONBLOCK|O_CLOEXEC|O_DIRECTORY) = 7 <0.000124>
+180   02:40:38.598323 getdents64(7, 0x613cfcf004a0 /* 2 entries */, 32768) = 48 <0.000058>
+180   02:40:38.598452 getdents64(7, 0x613cfcf004a0 /* 0 entries */, 32768) = 0 <0.000051>
+180   02:40:38.598706 getdents64(6, 0x613cfcef8460 /* 0 entries */, 32768) = 0 <0.000073>
+180   02:40:38.598993 getdents64(5, 0x613cfcef0420 /* 0 entries */, 32768) = 0 <0.000070>
+180   02:40:38.599523 openat(AT_FDCWD, "/tmp/dp/.darling-eunion/Users", O_RDONLY|O_NONBLOCK|O_CLOEXEC|O_DIRECTORY) = 5 <0.000057>
+180   02:40:38.599760 getdents64(5, 0x613cfcef0420 /* 4 entries */, 32768) = 104 <0.000072>
+180   02:40:38.600097 openat(AT_FDCWD, "/tmp/dp/.darling-eunion/Users/root", O_RDONLY|O_NONBLOCK|O_CLOEXEC|O_DIRECTORY) = 6 <0.000090>
+180   02:40:38.600394 getdents64(6, 0x613cfcef8460 /* 3 entries */, 32768) = 80 <0.000059>
+180   02:40:38.600525 getdents64(6, 0x613cfcef8460 /* 0 entries */, 32768) = 0 <0.000052>
+180   02:40:38.600856 openat(AT_FDCWD, "/tmp/dp/.darling-eunion/Users/Shared", O_RDONLY|O_NONBLOCK|O_CLOEXEC|O_DIRECTORY) = 6 <0.000056>
+180   02:40:38.601078 getdents64(6, 0x613cfcef8460 /* 2 entries */, 32768) = 48 <0.000072>
+180   02:40:38.601227 getdents64(6, 0x613cfcef8460 /* 0 entries */, 32768) = 0 <0.000038>
+180   02:40:38.601488 getdents64(5, 0x613cfcef0420 /* 0 entries */, 32768) = 0 <0.000054>
+180   02:40:38.601822 openat(AT_FDCWD, "/tmp/dp/.darling-eunion/.union-work", O_RDONLY|O_NONBLOCK|O_CLOEXEC|O_DIRECTORY) = 5 <0.000061>
+180   02:40:38.602073 getdents64(5, 0x613cfcef0420 /* 2 entries */, 32768) = 48 <0.000056>
+180   02:40:38.602203 getdents64(5, 0x613cfcef0420 /* 0 entries */, 32768) = 0 <0.000052>
+180   02:40:38.602565 openat(AT_FDCWD, "/tmp/dp/.darling-eunion/Volumes", O_RDONLY|O_NONBLOCK|O_CLOEXEC|O_DIRECTORY) = 5 <0.000057>
+180   02:40:38.602796 getdents64(5, 0x613cfcef0420 /* 2 entries */, 32768) = 48 <0.000056>
+180   02:40:38.602921 getdents64(5, 0x613cfcef0420 /* 0 entries */, 32768) = 0 <0.000097>
+180   02:40:38.603344 openat(AT_FDCWD, "/tmp/dp/.darling-eunion/Applications", O_RDONLY|O_NONBLOCK|O_CLOEXEC|O_DIRECTORY) = 5 <0.000058>
+180   02:40:38.603582 getdents64(5, 0x613cfcef0420 /* 2 entries */, 32768) = 48 <0.000060>
+180   02:40:38.603713 getdents64(5, 0x613cfcef0420 /* 0 entries */, 32768) = 0 <0.000052>
+180   02:40:38.604061 openat(AT_FDCWD, "/tmp/dp/.darling-eunion/private", O_RDONLY|O_NONBLOCK|O_CLOEXEC|O_DIRECTORY) = 5 <0.000057>
+180   02:40:38.604292 getdents64(5, 0x613cfcef0420 /* 4 entries */, 32768) = 96 <0.000057>
+180   02:40:38.604528 openat(AT_FDCWD, "/tmp/dp/.darling-eunion/private/etc", O_RDONLY|O_NONBLOCK|O_CLOEXEC|O_DIRECTORY) = 6 <0.000056>
+180   02:40:38.604757 getdents64(6, 0x613cfcef8460 /* 5 entries */, 32768) = 152 <0.000057>
+180   02:40:38.604882 getdents64(6, 0x613cfcef8460 /* 0 entries */, 32768) = 0 <0.000052>
+180   02:40:38.605213 openat(AT_FDCWD, "/tmp/dp/.darling-eunion/private/var", O_RDONLY|O_NONBLOCK|O_CLOEXEC|O_DIRECTORY) = 6 <0.000056>
+180   02:40:38.605441 getdents64(6, 0x613cfcef8460 /* 4 entries */, 32768) = 96 <0.000056>
+180   02:40:38.605674 openat(AT_FDCWD, "/tmp/dp/.darling-eunion/private/var/log", O_RDONLY|O_NONBLOCK|O_CLOEXEC|O_DIRECTORY) = 7 <0.000056>
+180   02:40:38.605907 getdents64(7, 0x613cfcf004a0 /* 2 entries */, 32768) = 48 <0.000081>
+180   02:40:38.606060 getdents64(7, 0x613cfcf004a0 /* 0 entries */, 32768) = 0 <0.000051>
+180   02:40:38.606387 openat(AT_FDCWD, "/tmp/dp/.darling-eunion/private/var/db", O_RDONLY|O_NONBLOCK|O_CLOEXEC|O_DIRECTORY) = 7 <0.000056>
+180   02:40:38.606620 getdents64(7, 0x613cfcf004a0 /* 2 entries */, 32768) = 48 <0.000056>
+180   02:40:38.606745 getdents64(7, 0x613cfcf004a0 /* 0 entries */, 32768) = 0 <0.000051>
+180   02:40:38.607005 getdents64(6, 0x613cfcef8460 /* 0 entries */, 32768) = 0 <0.000061>
+180   02:40:38.607250 getdents64(5, 0x613cfcef0420 /* 0 entries */, 32768) = 0 <0.000053>
+180   02:40:38.607612 openat(AT_FDCWD, "/tmp/dp/.darling-eunion/var", O_RDONLY|O_NONBLOCK|O_CLOEXEC|O_DIRECTORY) = 5 <0.000059>
+180   02:40:38.607861 getdents64(5, 0x613cfcef0420 /* 5 entries */, 32768) = 120 <0.000057>
+180   02:40:38.608142 openat(AT_FDCWD, "/tmp/dp/.darling-eunion/var/run", O_RDONLY|O_NONBLOCK|O_CLOEXEC|O_DIRECTORY) = 6 <0.000058>
+180   02:40:38.608386 getdents64(6, 0x613cfcef8460 /* 2 entries */, 32768) = 48 <0.000057>
+180   02:40:38.608519 getdents64(6, 0x613cfcef8460 /* 0 entries */, 32768) = 0 <0.000057>
+180   02:40:38.608882 openat(AT_FDCWD, "/tmp/dp/.darling-eunion/var/log", O_RDONLY|O_NONBLOCK|O_CLOEXEC|O_DIRECTORY) = 6 <0.000060>
+180   02:40:38.609164 getdents64(6, 0x613cfcef8460 /* 2 entries */, 32768) = 48 <0.000063>
+180   02:40:38.609299 getdents64(6, 0x613cfcef8460 /* 0 entries */, 32768) = 0 <0.000052>
+180   02:40:38.609651 openat(AT_FDCWD, "/tmp/dp/.darling-eunion/var/tmp", O_RDONLY|O_NONBLOCK|O_CLOEXEC|O_DIRECTORY) = 6 <0.000060>
+180   02:40:38.609918 getdents64(6, 0x613cfcef8460 /* 2 entries */, 32768) = 48 <0.000085>
+180   02:40:38.610092 getdents64(6, 0x613cfcef8460 /* 0 entries */, 32768) = 0 <0.000055>
+180   02:40:38.610328 getdents64(5, 0x613cfcef0420 /* 0 entries */, 32768) = 0 <0.000054>
+180   02:40:38.610568 getdents64(3, 0x613cfcee83e0 /* 0 entries */, 32768) = 0 <0.000057>
+180   02:40:38.611063 openat(AT_FDCWD, "/tmp/dp/.darling-eunion/private/etc/passwd", O_RDONLY|O_NONBLOCK|O_CLOEXEC|O_DIRECTORY) = -1 ENOTDIR (Not a directory) <0.000058>
+180   02:40:38.611313 openat(AT_FDCWD, "/tmp/dp/.darling-eunion/private/etc/master.passwd", O_RDONLY|O_NONBLOCK|O_CLOEXEC|O_DIRECTORY) = -1 ENOTDIR (Not a directory) <0.000056>
+180   02:40:38.611570 openat(AT_FDCWD, "/tmp/dp/.darling-eunion/private/etc/group", O_RDONLY|O_NONBLOCK|O_CLOEXEC|O_DIRECTORY) = -1 ENOTDIR (Not a directory) <0.000058>
+180   02:40:38.611705 openat(AT_FDCWD, "/tmp/dp/.darling-eunion/var/tmp", O_RDONLY|O_NONBLOCK|O_CLOEXEC|O_DIRECTORY) = 3 <0.000058>
+180   02:40:38.611960 getdents64(3, 0x613cfcee83e0 /* 2 entries */, 32768) = 48 <0.000054>
+180   02:40:38.612092 getdents64(3, 0x613cfcee83e0 /* 0 entries */, 32768) = 0 <0.000057>
+180   02:40:38.612325 openat(AT_FDCWD, "/tmp/dp/.darling-eunion/var/run", O_RDONLY|O_NONBLOCK|O_CLOEXEC|O_DIRECTORY) = 3 <0.000057>
+180   02:40:38.612569 getdents64(3, 0x613cfcee83e0 /* 2 entries */, 32768) = 48 <0.000059>
+180   02:40:38.612723 getdents64(3, 0x613cfcee83e0 /* 0 entries */, 32768) = 0 <0.000054>
+180   02:40:38.613587 clone(child_stack=NULL, flags=CLONE_CHILD_CLEARTID|CLONE_CHILD_SETTID|SIGCHLD <unfinished ...>
+179   02:40:38.613681 openat(AT_FDCWD, 0x7fff2f9c2e90, O_WRONLY|O_CREAT|O_TRUNC, 0666) = 3 <0.000157>
+180   02:40:38.614094 <... clone resumed>, child_tidptr=0x7ea8ed35de50) = 188 <0.000493>
+180   02:40:38.615195 clone(child_stack=0x7ea8ed2c9b30, flags=CLONE_VM|CLONE_FS|CLONE_FILES|CLONE_SIGHAND|CLONE_THREAD|CLONE_SYSVSEM|CLONE_SETTLS|CLONE_PARENT_SETTID|CLONE_CHILD_CLEARTID, parent_tid=[189], tls=0x7ea8ed2ca6c0, child_tidptr=0x7ea8ed2ca990) = 189 <0.000157>
+188   02:40:38.617435 execve("/usr/local/libexec/darling/usr/libexec/darling/mldr", ["mldr!/usr/local/libexec/darling/usr/libexec/darling/vchroot", "vchroot", "/tmp/dp/.darling-eunion", "/sbin/launchd"], 0x613cfcee6ee0 /* 10 vars */ <unfinished ...>
+180   02:40:38.617594 openat(AT_FDCWD, "/tmp/dp/.darling-eunion/private/var/log/dserver.log", O_WRONLY|O_CREAT|O_APPEND, 0644 <unfinished ...>
+188   02:40:38.617687 <... execve resumed>) = 0 <0.000227>
+180   02:40:38.617712 <... openat resumed>) = 4 <0.000100>
+180   02:40:38.617807 openat(AT_FDCWD, "/sys/devices/system/cpu/possible", O_RDONLY|O_CLOEXEC) = 8 <0.000154>
+188   02:40:38.618217 openat(AT_FDCWD, "/etc/ld.so.cache", O_RDONLY|O_CLOEXEC) = 3 <0.000070>
+180   02:40:38.618401 openat(AT_FDCWD, "/sys/devices/system/cpu/online", O_RDONLY|O_CLOEXEC) = 8 <0.000084>
+188   02:40:38.618808 openat(AT_FDCWD, "/lib/x86_64-linux-gnu/libm.so.6", O_RDONLY|O_CLOEXEC) = 3 <0.000047>
+188   02:40:38.619668 openat(AT_FDCWD, "/lib/x86_64-linux-gnu/libc.so.6", O_RDONLY|O_CLOEXEC) = 3 <0.000036>
+188   02:40:38.622054 openat(AT_FDCWD, "/usr/local/libexec/darling/usr/libexec/darling/vchroot", O_RDONLY) = 3 <0.000037>
+188   02:40:38.622492 openat(AT_FDCWD, "/sys/devices/system/cpu/possible", O_RDONLY|O_CLOEXEC) = 4 <0.000065>
+188   02:40:38.622871 openat(AT_FDCWD, "/sys/devices/system/cpu/online", O_RDONLY|O_CLOEXEC) = 4 <0.000060>
+180   02:40:38.636646 openat(AT_FDCWD, "/proc/188/status", O_RDONLY) = 9 <0.000068>
+180   02:40:38.637311 openat(AT_FDCWD, "/proc/188/task", O_RDONLY|O_CLOEXEC|O_DIRECTORY) = 9 <0.000060>
+180   02:40:38.638086 getdents64(9, 0x613cfcf05d90 /* 3 entries */, 32768) = 72 <0.000064>
+180   02:40:38.638242 openat(AT_FDCWD, "/proc/188/task/188/status", O_RDONLY) = 10 <0.000061>
+180   02:40:38.638603 getdents64(9, 0x613cfcf05d90 /* 0 entries */, 32768) = 0 <0.000051>
+188   02:40:38.642538 openat(AT_FDCWD, "/usr/local/libexec/darling/usr/lib/dyld", O_RDONLY) = 4 <0.000061>
+189   02:40:38.785965 openat(AT_FDCWD, "/sys/devices/system/cpu/possible", O_RDONLY|O_CLOEXEC) = 9 <0.000096>
+189   02:40:38.786482 openat(AT_FDCWD, "/sys/devices/system/cpu/online", O_RDONLY|O_CLOEXEC) = 9 <0.000061>
+188   02:40:38.817293 openat(AT_FDCWD, "/usr/local/libexec/darling/usr/lib/dyld_sim", O_RDONLY) = -1 ENOENT (No such file or directory) <0.000057>
+188   02:40:38.818019 openat(AT_FDCWD, "/proc/188/smaps", O_RDONLY) = 3 <0.000062>
+188   02:40:38.834864 openat(AT_FDCWD, "/usr/local/libexec/darling/usr/lib/libSystem.B.dylib", O_RDONLY) = 3 <0.000068>
+188   02:40:38.837767 openat(AT_FDCWD, "/usr/local/libexec/darling/usr/lib/system/libsystem_sandbox.dylib", O_RDONLY) = 3 <0.000055>
+188   02:40:38.841200 openat(AT_FDCWD, "/usr/local/libexec/darling/usr/lib/system/libquarantine.dylib", O_RDONLY) = 3 <0.000056>
+188   02:40:38.844183 openat(AT_FDCWD, "/usr/local/libexec/darling/usr/lib/system/libremovefile.dylib", O_RDONLY) = 3 <0.000057>
+188   02:40:38.846968 openat(AT_FDCWD, "/usr/local/libexec/darling/usr/lib/system/libcopyfile.dylib", O_RDONLY) = 3 <0.000054>
+188   02:40:38.850552 openat(AT_FDCWD, "/usr/local/libexec/darling/usr/lib/system/libsystem_coreservices.dylib", O_RDONLY) = 3 <0.000056>
+188   02:40:38.853957 openat(AT_FDCWD, "/usr/local/libexec/darling/usr/lib/system/libsystem_coretls.dylib", O_RDONLY) = 3 <0.000060>
+188   02:40:38.857203 openat(AT_FDCWD, "/usr/local/libexec/darling/usr/lib/system/libsystem_malloc.dylib", O_RDONLY) = 3 <0.000057>
+188   02:40:38.860303 openat(AT_FDCWD, "/usr/local/libexec/darling/usr/lib/system/libsystem_c.dylib", O_RDONLY) = 3 <0.000056>
+188   02:40:38.863197 openat(AT_FDCWD, "/usr/local/libexec/darling/usr/lib/system/libsystem_kernel.dylib", O_RDONLY) = 3 <0.000057>
+188   02:40:38.866171 openat(AT_FDCWD, "/usr/local/libexec/darling/usr/lib/system/libsystem_trace.dylib", O_RDONLY) = 3 <0.000059>
+188   02:40:38.869074 openat(AT_FDCWD, "/usr/local/libexec/darling/usr/lib/system/libkeymgr.dylib", O_RDONLY) = 3 <0.000057>
+188   02:40:38.871827 openat(AT_FDCWD, "/usr/local/libexec/darling/usr/lib/system/libsystem_m.dylib", O_RDONLY) = 3 <0.000060>
+188   02:40:38.875216 openat(AT_FDCWD, "/usr/local/libexec/darling/usr/lib/system/libsystem_info.dylib", O_RDONLY) = 3 <0.000057>
+188   02:40:38.878110 openat(AT_FDCWD, "/usr/local/libexec/darling/usr/lib/system/libsystem_notify.dylib", O_RDONLY) = 3 <0.000056>
+188   02:40:38.880920 openat(AT_FDCWD, "/usr/local/libexec/darling/usr/lib/system/libdispatch.dylib", O_RDONLY) = 3 <0.000056>
+188   02:40:38.883762 openat(AT_FDCWD, "/usr/local/libexec/darling/usr/lib/system/liblaunch.dylib", O_RDONLY) = 3 <0.000056>
+188   02:40:38.886603 openat(AT_FDCWD, "/usr/local/libexec/darling/usr/lib/system/libcompiler_rt.dylib", O_RDONLY) = 3 <0.000054>
+188   02:40:38.889440 openat(AT_FDCWD, "/usr/local/libexec/darling/usr/lib/system/libdyld.dylib", O_RDONLY) = 3 <0.000056>
+188   02:40:38.892274 openat(AT_FDCWD, "/usr/local/libexec/darling/usr/lib/system/libmacho.dylib", O_RDONLY) = 3 <0.000062>
+188   02:40:38.895085 openat(AT_FDCWD, "/usr/local/libexec/darling/usr/lib/system/libsystem_pthread.dylib", O_RDONLY) = 3 <0.000054>
+188   02:40:38.897950 openat(AT_FDCWD, "/usr/local/libexec/darling/usr/lib/system/libsystem_platform.dylib", O_RDONLY) = 3 <0.000115>
+188   02:40:38.900898 openat(AT_FDCWD, "/usr/local/libexec/darling/usr/lib/system/libsystem_asl.dylib", O_RDONLY) = 3 <0.000085>
+188   02:40:38.903831 openat(AT_FDCWD, "/usr/local/libexec/darling/usr/lib/system/libsystem_duct.dylib", O_RDONLY) = 3 <0.000056>
+188   02:40:38.906792 openat(AT_FDCWD, "/usr/local/libexec/darling/usr/lib/system/libsystem_blocks.dylib", O_RDONLY) = 3 <0.000057>
+188   02:40:38.909692 openat(AT_FDCWD, "/usr/local/libexec/darling/usr/lib/system/libxpc.dylib", O_RDONLY) = 3 <0.000055>
+188   02:40:38.912733 openat(AT_FDCWD, "/usr/local/libexec/darling/usr/lib/system/libcorecrypto.dylib", O_RDONLY) = 3 <0.000064>
+188   02:40:38.915539 openat(AT_FDCWD, "/usr/local/libexec/darling/usr/lib/system/libcommonCrypto.dylib", O_RDONLY) = 3 <0.000058>
+188   02:40:38.918407 openat(AT_FDCWD, "/usr/local/libexec/darling/usr/lib/system/libsystem_dnssd.dylib", O_RDONLY) = 3 <0.000057>
+188   02:40:38.921310 openat(AT_FDCWD, "/usr/local/libexec/darling/usr/lib/system/libsystem_networkextension.dylib", O_RDONLY) = 3 <0.000054>
+188   02:40:38.926268 openat(AT_FDCWD, "/usr/local/libexec/darling/usr/lib/system/libunwind.dylib", O_RDONLY) = 3 <0.000122>
+188   02:40:38.929273 openat(AT_FDCWD, "/usr/local/libexec/darling/usr/lib/system/libsystem_darwin.dylib", O_RDONLY) = 3 <0.000056>
+188   02:40:38.932123 openat(AT_FDCWD, "/usr/local/libexec/darling/usr/lib/system/libcache.dylib", O_RDONLY) = 3 <0.000060>
+188   02:40:38.935530 openat(AT_FDCWD, "/usr/local/libexec/darling/usr/lib/system/libsystem_configuration.dylib", O_RDONLY) = 3 <0.000059>
+188   02:40:38.938100 openat(AT_FDCWD, "/usr/local/libexec/darling/usr/lib/libobjc.A.dylib", O_RDONLY) = 3 <0.000054>
+188   02:40:38.941513 openat(AT_FDCWD, "/usr/local/libexec/darling/usr/lib/libc++.1.dylib", O_RDONLY) = 3 <0.000056>
+188   02:40:38.944398 openat(AT_FDCWD, "/usr/local/libexec/darling/usr/lib/libc++abi.dylib", O_RDONLY) = 3 <0.000067>
+188   02:40:38.947751 openat(AT_FDCWD, "/usr/local/libexec/darling/usr/lib/libresolv.9.dylib", O_RDONLY) = 3 <0.000054>
+188   02:40:39.169009 openat(AT_FDCWD, "/dev/urandom", O_RDONLY) = 3 <0.000046>
+188   02:40:39.251193 getdents64(3, 0x7fffffdfb5b0 /* 25 entries */, 4096) = 664 <0.000081>
+188   02:40:39.251361 getdents64(3, 0x7fffffdfb5b0 /* 0 entries */, 4096) = 0 <0.000040>
+188   02:40:39.252105 getdents64(3, 0x7fffffdfb3f0 /* 13 entries */, 4096) = 344 <0.000081>
+188   02:40:39.252267 getdents64(3, 0x7fffffdfb3f0 /* 0 entries */, 4096) = 0 <0.000058>
+188   02:40:39.252517 openat(AT_FDCWD, "/var/db/ConfigurationProfiles/Settings/com.apple.InternalDiagnostics.plist", O_RDONLY) = -1 ENOENT (No such file or directory) <0.000060>
+188   02:40:39.252902 getdents64(3, 0x7fffffdfb5b0 /* 25 entries */, 4096) = 664 <0.000085>
+188   02:40:39.253070 getdents64(3, 0x7fffffdfb5b0 /* 0 entries */, 4096) = 0 <0.000063>
+188   02:40:39.253703 getdents64(3, 0x7fffffdfb5b0 /* 25 entries */, 4096) = 664 <0.000077>
+188   02:40:39.253859 getdents64(3, 0x7fffffdfb5b0 /* 0 entries */, 4096) = 0 <0.000060>
+188   02:40:39.254514 getdents64(3, 0x7fffffdfb5b0 /* 25 entries */, 4096) = 664 <0.000076>
+188   02:40:39.254670 getdents64(3, 0x7fffffdfb5b0 /* 0 entries */, 4096) = 0 <0.000059>
+188   02:40:39.255418 getdents64(3, 0x7fffffdfb590 /* 13 entries */, 4096) = 344 <0.000074>
+188   02:40:39.255587 getdents64(3, 0x7fffffdfb590 /* 0 entries */, 4096) = 0 <0.000058>
+188   02:40:39.256918 getdents64(3, 0x7fffffdfb590 /* 13 entries */, 4096) = 344 <0.000060>
+188   02:40:39.257086 getdents64(3, 0x7fffffdfb590 /* 0 entries */, 4096) = 0 <0.000080>
+188   02:40:39.277291 getdents64(3, 0x7fffffdfada0 /* 11 entries */, 4096) = 328 <0.000087>
+188   02:40:39.277512 getdents64(3, 0x7fffffdfada0 /* 0 entries */, 4096) = 0 <0.000042>
+188   02:40:39.279475 openat(AT_FDCWD, "/tmp/dp/.darling-eunion", O_RDONLY|O_DIRECTORY) = 3 <0.000070>
+188   02:40:39.329554 openat(AT_FDCWD, "/usr/local/libexec/darling/sbin/launchd", O_RDONLY) = 3 <0.000079>
+188   02:40:39.346313 execve("/usr/local/libexec/darling/usr/libexec/darling/mldr", ["/usr/local/libexec/darling/usr/libexec/darling/mldr!/usr/local/libexec/darling/sbin/launchd", "/sbin/launchd"], 0x7fffffdfbc20 /* 9 vars */) = 0 <0.000941>
+188   02:40:39.347754 openat(AT_FDCWD, "/etc/ld.so.cache", O_RDONLY|O_CLOEXEC) = 3 <0.000042>
+188   02:40:39.348276 openat(AT_FDCWD, "/lib/x86_64-linux-gnu/libm.so.6", O_RDONLY|O_CLOEXEC) = 3 <0.000076>
+188   02:40:39.349448 openat(AT_FDCWD, "/lib/x86_64-linux-gnu/libc.so.6", O_RDONLY|O_CLOEXEC) = 3 <0.000075>
+188   02:40:39.352670 openat(AT_FDCWD, "/usr/local/libexec/darling/sbin/launchd", O_RDONLY) = 3 <0.000094>
+188   02:40:39.353320 openat(AT_FDCWD, "/sys/devices/system/cpu/possible", O_RDONLY|O_CLOEXEC) = 4 <0.000074>
+188   02:40:39.353897 openat(AT_FDCWD, "/sys/devices/system/cpu/online", O_RDONLY|O_CLOEXEC) = 4 <0.000120>
+188   02:40:39.389343 openat(AT_FDCWD, "/tmp/dp/.darling-eunion/usr/lib/dyld", O_RDONLY) = -1 ENOENT (No such file or directory) <0.000082>
+188   02:40:39.389549 openat(AT_FDCWD, "/usr/local/libexec/darling/usr/lib/dyld", O_RDONLY) = 4 <0.000069>
+189   02:40:39.556975 openat(AT_FDCWD, "/sys/devices/system/cpu/possible", O_RDONLY|O_CLOEXEC) = 10 <0.000080>
+189   02:40:39.557424 openat(AT_FDCWD, "/sys/devices/system/cpu/online", O_RDONLY|O_CLOEXEC) = 10 <0.000069>
+188   02:40:39.606754 openat(AT_FDCWD, "/usr/local/libexec/darling/proc/188/smaps", O_RDONLY) = -1 ENOENT (No such file or directory) <0.000069>
+188   02:40:39.608964 openat(AT_FDCWD, "/usr/local/libexec/darling/usr/lib/libbsm.0.dylib", O_RDONLY) = 3 <0.000070>
+188   02:40:39.612900 openat(AT_FDCWD, "/usr/local/libexec/darling/usr/lib/libSystem.B.dylib", O_RDONLY) = 3 <0.000072>
+188   02:40:39.616271 openat(AT_FDCWD, "/usr/local/libexec/darling/usr/lib/system/libsystem_sandbox.dylib", O_RDONLY) = 3 <0.000074>
+188   02:40:39.619664 openat(AT_FDCWD, "/usr/local/libexec/darling/usr/lib/system/libquarantine.dylib", O_RDONLY) = 3 <0.000069>
+188   02:40:39.622924 openat(AT_FDCWD, "/usr/local/libexec/darling/usr/lib/system/libremovefile.dylib", O_RDONLY) = 3 <0.000090>
+188   02:40:39.626528 openat(AT_FDCWD, "/usr/local/libexec/darling/usr/lib/system/libcopyfile.dylib", O_RDONLY) = 3 <0.000074>
+188   02:40:39.630056 openat(AT_FDCWD, "/usr/local/libexec/darling/usr/lib/system/libsystem_coreservices.dylib", O_RDONLY) = 3 <0.000071>
+188   02:40:39.633569 openat(AT_FDCWD, "/usr/local/libexec/darling/usr/lib/system/libsystem_coretls.dylib", O_RDONLY) = 3 <0.000073>
+188   02:40:39.637096 openat(AT_FDCWD, "/usr/local/libexec/darling/usr/lib/system/libsystem_malloc.dylib", O_RDONLY) = 3 <0.000072>
+188   02:40:39.640542 openat(AT_FDCWD, "/usr/local/libexec/darling/usr/lib/system/libsystem_c.dylib", O_RDONLY) = 3 <0.000104>
+188   02:40:39.644062 openat(AT_FDCWD, "/usr/local/libexec/darling/usr/lib/system/libsystem_kernel.dylib", O_RDONLY) = 3 <0.000101>
+188   02:40:39.648715 openat(AT_FDCWD, "/usr/local/libexec/darling/usr/lib/system/libsystem_trace.dylib", O_RDONLY) = 3 <0.000076>
+188   02:40:39.651794 openat(AT_FDCWD, "/usr/local/libexec/darling/usr/lib/system/libkeymgr.dylib", O_RDONLY) = 3 <0.000070>
+188   02:40:39.654738 openat(AT_FDCWD, "/usr/local/libexec/darling/usr/lib/system/libsystem_m.dylib", O_RDONLY) = 3 <0.000070>
+188   02:40:39.657733 openat(AT_FDCWD, "/usr/local/libexec/darling/usr/lib/system/libsystem_info.dylib", O_RDONLY) = 3 <0.000071>
+188   02:40:39.661665 openat(AT_FDCWD, "/usr/local/libexec/darling/usr/lib/system/libsystem_notify.dylib", O_RDONLY) = 3 <0.000331>
+188   02:40:39.665823 openat(AT_FDCWD, "/usr/local/libexec/darling/usr/lib/system/libdispatch.dylib", O_RDONLY) = 3 <0.000113>
+188   02:40:39.668876 openat(AT_FDCWD, "/usr/local/libexec/darling/usr/lib/system/liblaunch.dylib", O_RDONLY) = 3 <0.000069>
+188   02:40:39.672071 openat(AT_FDCWD, "/usr/local/libexec/darling/usr/lib/system/libcompiler_rt.dylib", O_RDONLY) = 3 <0.000067>
+188   02:40:39.675095 openat(AT_FDCWD, "/usr/local/libexec/darling/usr/lib/system/libdyld.dylib", O_RDONLY) = 3 <0.000077>
+188   02:40:39.679152 openat(AT_FDCWD, "/usr/local/libexec/darling/usr/lib/system/libmacho.dylib", O_RDONLY) = 3 <0.000118>
+188   02:40:39.682320 openat(AT_FDCWD, "/usr/local/libexec/darling/usr/lib/system/libsystem_pthread.dylib", O_RDONLY) = 3 <0.000066>
+188   02:40:39.685493 openat(AT_FDCWD, "/usr/local/libexec/darling/usr/lib/system/libsystem_platform.dylib", O_RDONLY) = 3 <0.000107>
+188   02:40:39.688513 openat(AT_FDCWD, "/usr/local/libexec/darling/usr/lib/system/libsystem_asl.dylib", O_RDONLY) = 3 <0.000064>
+188   02:40:39.692735 openat(AT_FDCWD, "/usr/local/libexec/darling/usr/lib/system/libsystem_duct.dylib", O_RDONLY) = 3 <0.000094>
+188   02:40:39.696100 openat(AT_FDCWD, "/usr/local/libexec/darling/usr/lib/system/libsystem_blocks.dylib", O_RDONLY) = 3 <0.000069>
+188   02:40:39.699961 openat(AT_FDCWD, "/usr/local/libexec/darling/usr/lib/system/libxpc.dylib", O_RDONLY) = 3 <0.000070>
+188   02:40:39.703617 openat(AT_FDCWD, "/usr/local/libexec/darling/usr/lib/system/libcorecrypto.dylib", O_RDONLY) = 3 <0.000095>
+188   02:40:39.706978 openat(AT_FDCWD, "/usr/local/libexec/darling/usr/lib/system/libcommonCrypto.dylib", O_RDONLY) = 3 <0.000066>
+188   02:40:39.709918 openat(AT_FDCWD, "/usr/local/libexec/darling/usr/lib/system/libsystem_dnssd.dylib", O_RDONLY) = 3 <0.000065>
+188   02:40:39.713530 openat(AT_FDCWD, "/usr/local/libexec/darling/usr/lib/system/libsystem_networkextension.dylib", O_RDONLY) = 3 <0.000067>
+188   02:40:39.716749 openat(AT_FDCWD, "/usr/local/libexec/darling/usr/lib/system/libunwind.dylib", O_RDONLY) = 3 <0.000066>
+188   02:40:39.720362 openat(AT_FDCWD, "/usr/local/libexec/darling/usr/lib/system/libsystem_darwin.dylib", O_RDONLY) = 3 <0.000096>
+188   02:40:39.723553 openat(AT_FDCWD, "/usr/local/libexec/darling/usr/lib/system/libcache.dylib", O_RDONLY) = 3 <0.000068>
+188   02:40:39.726463 openat(AT_FDCWD, "/usr/local/libexec/darling/usr/lib/system/libsystem_configuration.dylib", O_RDONLY) = 3 <0.000065>
+188   02:40:39.729750 openat(AT_FDCWD, "/usr/local/libexec/darling/usr/lib/libobjc.A.dylib", O_RDONLY) = 3 <0.000062>
+188   02:40:39.732563 openat(AT_FDCWD, "/usr/local/libexec/darling/usr/lib/libc++.1.dylib", O_RDONLY) = 3 <0.000064>
+188   02:40:39.735428 openat(AT_FDCWD, "/usr/local/libexec/darling/usr/lib/libc++abi.dylib", O_RDONLY) = 3 <0.000064>
+188   02:40:39.738393 openat(AT_FDCWD, "/usr/local/libexec/darling/usr/lib/libresolv.9.dylib", O_RDONLY) = 3 <0.000108>
+188   02:40:39.986912 openat(AT_FDCWD, "/dev/urandom", O_RDONLY) = 3 <0.000068>
+188   02:40:40.078885 getdents64(3, 0x7fffffdfb520 /* 5 entries */, 4096) = 176 <0.000096>
+188   02:40:40.079079 getdents64(3, 0x7fffffdfb520 /* 0 entries */, 4096) = 0 <0.000059>
+188   02:40:40.080365 getdents64(3, 0x7fffffdfb360 /* 7 entries */, 4096) = 216 <0.000066>
+188   02:40:40.080514 getdents64(3, 0x7fffffdfb360 /* 0 entries */, 4096) = 0 <0.000058>
+188   02:40:40.080766 openat(AT_FDCWD, "/usr/local/libexec/darling/var/db/ConfigurationProfiles/Settings/com.apple.InternalDiagnostics.plist", O_RDONLY) = -1 ENOENT (No such file or directory) <0.000062>
+188   02:40:40.081660 getdents64(3, 0x7fffffdfb520 /* 5 entries */, 4096) = 176 <0.000062>
+188   02:40:40.081802 getdents64(3, 0x7fffffdfb520 /* 0 entries */, 4096) = 0 <0.000058>
+188   02:40:40.082873 getdents64(3, 0x7fffffdfb520 /* 13 entries */, 4096) = 424 <0.000083>
+188   02:40:40.083041 getdents64(3, 0x7fffffdfb520 /* 0 entries */, 4096) = 0 <0.000058>
+188   02:40:40.084245 getdents64(3, 0x7fffffdfb520 /* 5 entries */, 4096) = 176 <0.000065>
+188   02:40:40.084397 getdents64(3, 0x7fffffdfb520 /* 0 entries */, 4096) = 0 <0.000067>
+188   02:40:40.085834 getdents64(3, 0x7fffffdfb500 /* 7 entries */, 4096) = 216 <0.000063>
+188   02:40:40.086020 getdents64(3, 0x7fffffdfb500 /* 0 entries */, 4096) = 0 <0.000063>
+188   02:40:40.087337 getdents64(3, 0x7fffffdfb500 /* 7 entries */, 4096) = 216 <0.000064>
+188   02:40:40.087485 getdents64(3, 0x7fffffdfb500 /* 0 entries */, 4096) = 0 <0.000061>
+188   02:40:40.089079 getdents64(3, 0x7fffffdfb2f0 /* 11 entries */, 4096) = 328 <0.000064>
+188   02:40:40.089223 getdents64(3, 0x7fffffdfb2f0 /* 0 entries */, 4096) = 0 <0.000059>
+188   02:40:40.091482 getdents64(3, 0x7fffffdfb2f0 /* 2 entries */, 4096) = 48 <0.000077>
+188   02:40:40.091644 getdents64(3, 0x7fffffdfb2f0 /* 0 entries */, 4096) = 0 <0.000316>
+188   02:40:40.094386 getdents64(3, 0x7fffffdfb2f0 /* 2 entries */, 4096) = 48 <0.000117>
+188   02:40:40.094597 getdents64(3, 0x7fffffdfb2f0 /* 0 entries */, 4096) = 0 <0.000131>
+188   02:40:40.096461 getdents64(3, 0x7fffffdfb2f0 /* 2 entries */, 4096) = 48 <0.000085>
+188   02:40:40.096639 getdents64(3, 0x7fffffdfb2f0 /* 0 entries */, 4096) = 0 <0.000057>
+188   02:40:40.098232 getdents64(3, 0x7fffffdfb2f0 /* 2 entries */, 4096) = 48 <0.000060>
+188   02:40:40.098375 getdents64(3, 0x7fffffdfb2f0 /* 0 entries */, 4096) = 0 <0.000056>
+188   02:40:40.100779 getdents64(3, 0x7fffffdfb2f0 /* 2 entries */, 4096) = 48 <0.000060>
+188   02:40:40.100921 getdents64(3, 0x7fffffdfb2f0 /* 0 entries */, 4096) = 0 <0.000068>
+188   02:40:40.217477 clone(child_stack=0x7f1fc7bfeeb0, flags=CLONE_VM|CLONE_FS|CLONE_FILES|CLONE_SIGHAND|CLONE_THREAD|CLONE_SYSVSEM|CLONE_SETTLS|CLONE_PARENT_SETTID|CLONE_CHILD_CLEARTID, parent_tid=[190], tls=0x7f1fc7bff6c0, child_tidptr=0x7f1fc7bff990) = 190 <0.000186>
+180   02:40:40.230173 openat(AT_FDCWD, "/proc/188/task", O_RDONLY|O_CLOEXEC|O_DIRECTORY) = 11 <0.000051>
+180   02:40:40.230557 getdents64(11, 0x613cfcf089b0 /* 4 entries */, 32768) = 96 <0.000085>
+180   02:40:40.230773 openat(AT_FDCWD, "/proc/188/task/188/status", O_RDONLY) = 12 <0.000056>
+180   02:40:40.231529 openat(AT_FDCWD, "/proc/188/task/190/status", O_RDONLY) = 12 <0.000052>
+180   02:40:40.231882 getdents64(11, 0x613cfcf089b0 /* 0 entries */, 32768) = 0 <0.000040>
+188   02:40:40.312028 clone(child_stack=0x7f1fc73fdeb0, flags=CLONE_VM|CLONE_FS|CLONE_FILES|CLONE_SIGHAND|CLONE_THREAD|CLONE_SYSVSEM|CLONE_SETTLS|CLONE_PARENT_SETTID|CLONE_CHILD_CLEARTID, parent_tid=[191], tls=0x7f1fc73fe6c0, child_tidptr=0x7f1fc73fe990) = 191 <0.000173>
+180   02:40:40.325325 openat(AT_FDCWD, "/proc/188/task", O_RDONLY|O_CLOEXEC|O_DIRECTORY) = 12 <0.000105>
+180   02:40:40.325896 getdents64(12, 0x613cfcf0a5f0 /* 5 entries */, 32768) = 120 <0.000089>
+180   02:40:40.326111 openat(AT_FDCWD, "/proc/188/task/188/status", O_RDONLY) = 13 <0.000049>
+180   02:40:40.326599 openat(AT_FDCWD, "/proc/188/task/190/status", O_RDONLY) = 13 <0.000041>
+180   02:40:40.327141 openat(AT_FDCWD, "/proc/188/task/191/status", O_RDONLY) = 13 <0.000108>
+180   02:40:40.327567 getdents64(12, 0x613cfcf0a5f0 /* 0 entries */, 32768) = 0 <0.000041>
+188   02:40:40.523422 getdents64(10, 0x7fffffdfc8e0 /* 2 entries */, 4096) = 48 <0.000069>
+188   02:40:40.523604 getdents64(10, 0x7fffffdfc8e0 /* 0 entries */, 4096) = 0 <0.000063>
+188   02:40:40.523874 openat(AT_FDCWD, "/usr/local/libexec/darling/proc/mounts", O_RDONLY) = -1 ENOENT (No such file or directory) <0.000066>
+188   02:40:40.526104 getdents64(10, 0x7fffffdfbc10 /* 2 entries */, 4096) = 48 <0.000062>
+188   02:40:40.526249 getdents64(10, 0x7fffffdfbc10 /* 0 entries */, 4096) = 0 <0.000064>
+188   02:40:40.593768 clone(child_stack=NULL, flags=SIGCHLD) = 192 <0.000536>
+180   02:40:40.609736 openat(AT_FDCWD, "/proc/192/status", O_RDONLY) = 13 <0.000117>
+180   02:40:40.611244 openat(AT_FDCWD, "/proc/192/task", O_RDONLY|O_CLOEXEC|O_DIRECTORY) = 13 <0.000074>
+180   02:40:40.611962 getdents64(13, 0x613cfcf0e300 /* 3 entries */, 32768) = 72 <0.000061>
+180   02:40:40.612193 openat(AT_FDCWD, "/proc/192/task/192/status", O_RDONLY) = 14 <0.000073>
+180   02:40:40.612636 getdents64(13, 0x613cfcf0e300 /* 0 entries */, 32768) = 0 <0.000063>
+188   02:40:40.689068 getdents64(12, 0x7fffffdfb6c0 /* 2 entries */, 4096) = 48 <0.000098>
+188   02:40:40.689288 getdents64(12, 0x7fffffdfb6c0 /* 0 entries */, 4096) = 0 <0.000078>
+188   02:40:40.689581 openat(AT_FDCWD, "/usr/local/libexec/darling/proc/192/stat", O_RDONLY) = -1 ENOENT (No such file or directory) <0.000040>
+188   02:40:40.911714 openat(AT_FDCWD, "/dev/null", O_RDONLY|O_NONBLOCK) = 10 <0.000067>
+192   02:40:41.236440 openat(AT_FDCWD, "/usr/local/libexec/darling/bin/launchctl", O_RDONLY) = 3 <0.000041>
+192   02:40:41.269974 execve("/usr/local/libexec/darling/usr/libexec/darling/mldr", ["/usr/local/libexec/darling/usr/libexec/darling/mldr!/usr/local/libexec/darling/bin/launchctl", "/bin/launchctl", "bootstrap", "-S", "System"], 0x7fffffdfaef0 /* 10 vars */) = 0 <0.000583>
+192   02:40:41.271045 openat(AT_FDCWD, "/etc/ld.so.cache", O_RDONLY|O_CLOEXEC) = 3 <0.000039>
+192   02:40:41.271469 openat(AT_FDCWD, "/lib/x86_64-linux-gnu/libm.so.6", O_RDONLY|O_CLOEXEC) = 3 <0.000091>
+192   02:40:41.272477 openat(AT_FDCWD, "/lib/x86_64-linux-gnu/libc.so.6", O_RDONLY|O_CLOEXEC) = 3 <0.000064>
+192   02:40:41.275440 openat(AT_FDCWD, "/usr/local/libexec/darling/bin/launchctl", O_RDONLY) = 3 <0.000063>
+192   02:40:41.275960 openat(AT_FDCWD, "/sys/devices/system/cpu/possible", O_RDONLY|O_CLOEXEC) = 4 <0.000070>
+192   02:40:41.276350 openat(AT_FDCWD, "/sys/devices/system/cpu/online", O_RDONLY|O_CLOEXEC) = 4 <0.000063>
+192   02:40:41.337668 openat(AT_FDCWD, "/tmp/dp/.darling-eunion/usr/lib/dyld", O_RDONLY) = -1 ENOENT (No such file or directory) <0.000039>
+192   02:40:41.337815 openat(AT_FDCWD, "/usr/local/libexec/darling/usr/lib/dyld", O_RDONLY) = 4 <0.000039>
+189   02:40:41.518532 openat(AT_FDCWD, "/sys/devices/system/cpu/possible", O_RDONLY|O_CLOEXEC) = 16 <0.000074>
+189   02:40:41.518968 openat(AT_FDCWD, "/sys/devices/system/cpu/online", O_RDONLY|O_CLOEXEC) = 16 <0.000064>
+192   02:40:41.568473 openat(AT_FDCWD, "/usr/local/libexec/darling/proc/192/smaps", O_RDONLY) = -1 ENOENT (No such file or directory) <0.000063>
+192   02:40:41.571242 openat(AT_FDCWD, "/usr/local/libexec/darling/usr/lib/system/libxpc.dylib", O_RDONLY) = 3 <0.000135>
+192   02:40:41.574899 openat(AT_FDCWD, "/usr/local/libexec/darling/System/Library/Frameworks/CoreFoundation.framework/Versions/A/CoreFoundation", O_RDONLY) = 3 <0.000052>
+192   02:40:41.577739 openat(AT_FDCWD, "/usr/local/libexec/darling/usr/lib/libedit.3.dylib", O_RDONLY) = 3 <0.000069>
+192   02:40:41.580579 openat(AT_FDCWD, "/usr/local/libexec/darling/usr/lib/libSystem.B.dylib", O_RDONLY) = 3 <0.000060>
+192   02:40:41.583613 openat(AT_FDCWD, "/usr/local/libexec/darling/usr/lib/system/libsystem_c.dylib", O_RDONLY) = 3 <0.000059>
+192   02:40:41.586585 openat(AT_FDCWD, "/usr/local/libexec/darling/usr/lib/system/libsystem_kernel.dylib", O_RDONLY) = 3 <0.000077>
+192   02:40:41.589639 openat(AT_FDCWD, "/usr/local/libexec/darling/usr/lib/system/libsystem_blocks.dylib", O_RDONLY) = 3 <0.000072>
+192   02:40:41.593325 openat(AT_FDCWD, "/usr/local/libexec/darling/usr/lib/system/libdispatch.dylib", O_RDONLY) = 3 <0.000068>
+192   02:40:41.596316 openat(AT_FDCWD, "/usr/local/libexec/darling/usr/lib/system/libsystem_platform.dylib", O_RDONLY) = 3 <0.000059>
+192   02:40:41.599039 openat(AT_FDCWD, "/usr/local/libexec/darling/usr/lib/system/libsystem_malloc.dylib", O_RDONLY) = 3 <0.000059>
+192   02:40:41.602268 openat(AT_FDCWD, "/usr/local/libexec/darling/usr/lib/system/liblaunch.dylib", O_RDONLY) = 3 <0.000058>
+192   02:40:41.604956 openat(AT_FDCWD, "/usr/local/libexec/darling/usr/lib/system/libsystem_info.dylib", O_RDONLY) = 3 <0.000064>
+192   02:40:41.607685 openat(AT_FDCWD, "/usr/local/libexec/darling/usr/lib/system/libdyld.dylib", O_RDONLY) = 3 <0.000064>
+192   02:40:41.610726 openat(AT_FDCWD, "/usr/local/libexec/darling/usr/lib/system/libunwind.dylib", O_RDONLY) = 3 <0.000062>
+192   02:40:41.613639 openat(AT_FDCWD, "/usr/local/libexec/darling/usr/lib/system/libcompiler_rt.dylib", O_RDONLY) = 3 <0.000060>
+192   02:40:41.617425 openat(AT_FDCWD, "/usr/local/libexec/darling/usr/lib/system/libsystem_pthread.dylib", O_RDONLY) = 3 <0.000140>
+192   02:40:41.621258 openat(AT_FDCWD, "/usr/local/libexec/darling/usr/lib/system/libsystem_trace.dylib", O_RDONLY) = 3 <0.000087>
+192   02:40:41.624509 openat(AT_FDCWD, "/usr/local/libexec/darling/usr/lib/libobjc.A.dylib", O_RDONLY) = 3 <0.000066>
+192   02:40:41.627400 openat(AT_FDCWD, "/usr/local/libexec/darling/usr/lib/system/libsystem_m.dylib", O_RDONLY) = 3 <0.000061>
+192   02:40:41.630333 openat(AT_FDCWD, "/usr/local/libexec/darling/usr/lib/system/libsystem_notify.dylib", O_RDONLY) = 3 <0.000061>
+192   02:40:41.633828 openat(AT_FDCWD, "/usr/local/libexec/darling/usr/lib/system/libmacho.dylib", O_RDONLY) = 3 <0.000115>
+192   02:40:41.636715 openat(AT_FDCWD, "/usr/local/libexec/darling/usr/lib/system/libsystem_duct.dylib", O_RDONLY) = 3 <0.000061>
+192   02:40:41.639463 openat(AT_FDCWD, "/usr/local/libexec/darling/usr/lib/system/libsystem_asl.dylib", O_RDONLY) = 3 <0.000063>
+192   02:40:41.642463 openat(AT_FDCWD, "/usr/local/libexec/darling/usr/lib/system/libcorecrypto.dylib", O_RDONLY) = 3 <0.000129>
+192   02:40:41.645436 openat(AT_FDCWD, "/usr/local/libexec/darling/usr/lib/system/libkeymgr.dylib", O_RDONLY) = 3 <0.000060>
+192   02:40:41.649044 openat(AT_FDCWD, "/usr/local/libexec/darling/usr/lib/system/libsystem_sandbox.dylib", O_RDONLY) = 3 <0.000066>
+192   02:40:41.651888 openat(AT_FDCWD, "/usr/local/libexec/darling/usr/lib/libc++.1.dylib", O_RDONLY) = 3 <0.000070>
+192   02:40:41.654509 openat(AT_FDCWD, "/usr/local/libexec/darling/usr/lib/libc++abi.dylib", O_RDONLY) = 3 <0.000065>
+192   02:40:41.657254 openat(AT_FDCWD, "/usr/local/libexec/darling/usr/lib/system/libquarantine.dylib", O_RDONLY) = 3 <0.000064>
+192   02:40:41.660267 openat(AT_FDCWD, "/usr/local/libexec/darling/usr/lib/system/libremovefile.dylib", O_RDONLY) = 3 <0.000066>
+192   02:40:41.662941 openat(AT_FDCWD, "/usr/local/libexec/darling/usr/lib/system/libcopyfile.dylib", O_RDONLY) = 3 <0.000058>
+192   02:40:41.665878 openat(AT_FDCWD, "/usr/local/libexec/darling/usr/lib/system/libsystem_coreservices.dylib", O_RDONLY) = 3 <0.000062>
+192   02:40:41.669343 openat(AT_FDCWD, "/usr/local/libexec/darling/usr/lib/system/libsystem_coretls.dylib", O_RDONLY) = 3 <0.000058>
+192   02:40:41.672025 openat(AT_FDCWD, "/usr/local/libexec/darling/usr/lib/system/libcommonCrypto.dylib", O_RDONLY) = 3 <0.000065>
+192   02:40:41.675255 openat(AT_FDCWD, "/usr/local/libexec/darling/usr/lib/system/libsystem_dnssd.dylib", O_RDONLY) = 3 <0.000057>
+192   02:40:41.677764 openat(AT_FDCWD, "/usr/local/libexec/darling/usr/lib/system/libsystem_networkextension.dylib", O_RDONLY) = 3 <0.000061>
+192   02:40:41.680408 openat(AT_FDCWD, "/usr/local/libexec/darling/usr/lib/system/libsystem_darwin.dylib", O_RDONLY) = 3 <0.000058>
+192   02:40:41.683095 openat(AT_FDCWD, "/usr/local/libexec/darling/usr/lib/system/libcache.dylib", O_RDONLY) = 3 <0.000074>
+192   02:40:41.685967 openat(AT_FDCWD, "/usr/local/libexec/darling/usr/lib/system/libsystem_configuration.dylib", O_RDONLY) = 3 <0.000059>
+192   02:40:41.688917 openat(AT_FDCWD, "/usr/local/libexec/darling/usr/lib/libresolv.9.dylib", O_RDONLY) = 3 <0.000059>
+192   02:40:41.691344 openat(AT_FDCWD, "/usr/local/libexec/darling/usr/lib/libicucore.A.dylib", O_RDONLY) = 3 <0.000057>
+192   02:40:41.693828 openat(AT_FDCWD, "/usr/local/libexec/darling/usr/lib/libncurses.5.4.dylib", O_RDONLY) = 3 <0.000059>
+192   02:40:41.941249 openat(AT_FDCWD, "/dev/urandom", O_RDONLY) = 3 <0.000067>
+192   02:40:42.026228 getdents64(3, 0x7fffffdfb340 /* 5 entries */, 4096) = 176 <0.000070>
+192   02:40:42.026397 getdents64(3, 0x7fffffdfb340 /* 0 entries */, 4096) = 0 <0.000069>
+192   02:40:42.027763 getdents64(3, 0x7fffffdfb180 /* 7 entries */, 4096) = 216 <0.000065>
+192   02:40:42.027912 getdents64(3, 0x7fffffdfb180 /* 0 entries */, 4096) = 0 <0.000048>
+192   02:40:42.028155 openat(AT_FDCWD, "/usr/local/libexec/darling/var/db/ConfigurationProfiles/Settings/com.apple.InternalDiagnostics.plist", O_RDONLY) = -1 ENOENT (No such file or directory) <0.000061>
+192   02:40:42.029033 getdents64(3, 0x7fffffdfb340 /* 5 entries */, 4096) = 176 <0.000061>
+192   02:40:42.029173 getdents64(3, 0x7fffffdfb340 /* 0 entries */, 4096) = 0 <0.000058>
+192   02:40:42.030227 getdents64(3, 0x7fffffdfb340 /* 13 entries */, 4096) = 424 <0.000079>
+192   02:40:42.030427 getdents64(3, 0x7fffffdfb340 /* 0 entries */, 4096) = 0 <0.000057>
+192   02:40:42.031572 getdents64(3, 0x7fffffdfb340 /* 5 entries */, 4096) = 176 <0.000070>
+192   02:40:42.031729 getdents64(3, 0x7fffffdfb340 /* 0 entries */, 4096) = 0 <0.000062>
+192   02:40:42.033632 getdents64(3, 0x7fffffdfb320 /* 7 entries */, 4096) = 216 <0.000155>
+192   02:40:42.033926 getdents64(3, 0x7fffffdfb320 /* 0 entries */, 4096) = 0 <0.000062>
+192   02:40:42.035228 getdents64(3, 0x7fffffdfb320 /* 7 entries */, 4096) = 216 <0.000070>
+192   02:40:42.035386 getdents64(3, 0x7fffffdfb320 /* 0 entries */, 4096) = 0 <0.000063>
+192   02:40:42.039783 openat(AT_FDCWD, "/usr/local/libexec/darl/private/etc/master.passwd", O_RDONLY) = -1 ENOENT (No such file or directory) <0.000059>
+192   02:40:42.138725 openat(AT_FDCWD, "/usr/local/libexec/darl/private/etc/master.passwd", O_RDONLY) = -1 ENOENT (No such file or directory) <0.000069>
+192   02:40:42.162970 getdents64(3, 0x7fffffdfb5b0 /* 11 entries */, 4096) = 328 <0.000068>
+192   02:40:42.163123 getdents64(3, 0x7fffffdfb5b0 /* 0 entries */, 4096) = 0 <0.000055>
+192   02:40:42.164327 getdents64(3, 0x7fffffdfb5b0 /* 7 entries */, 4096) = 216 <0.000061>
+192   02:40:42.164465 getdents64(3, 0x7fffffdfb5b0 /* 0 entries */, 4096) = 0 <0.000055>
+192   02:40:42.248730 getdents64(7, 0x7fffffdfab20 /* 17 entries */, 4096) = 456 <0.000314>
+192   02:40:42.249243 getdents64(7, 0x7fffffdfab20 /* 0 entries */, 4096) = 0 <0.000062>
+192   02:40:42.249518 connect(6, {sa_family=AF_UNIX, sun_path="/dev/log"}, 10) = -1 ENOENT (No such file or directory) <0.000063>
+192   02:40:42.255398 openat(AT_FDCWD, "/usr/local/libexec/darl/private/etc/sysctl.conf", O_RDONLY) = -1 ENOENT (No such file or directory) <0.000062>
+192   02:40:42.257597 getdents64(6, 0x7fffffdfab30 /* 2 entries */, 4096) = 48 <0.000068>
+192   02:40:42.257759 getdents64(6, 0x7fffffdfab30 /* 0 entries */, 4096) = 0 <0.000055>
+192   02:40:42.258088 openat(AT_FDCWD, "/usr/local/libexec/darling/proc/self/mounts", O_RDONLY) = -1 ENOENT (No such file or directory) <0.000060>
+192   02:40:42.259747 getdents64(6, 0x7fffffdfbfa0 /* 27 entries */, 4096) = 880 <0.000069>
+192   02:40:42.259896 getdents64(6, 0x7fffffdfbfa0 /* 0 entries */, 4096) = 0 <0.000089>
+192   02:40:42.262025 openat(AT_FDCWD, "/usr/local/libexec/darl/private/etc/launchd-user.conf", O_RDONLY) = -1 ENOENT (No such file or directory) <0.000063>
+192   02:40:42.262987 getdents64(6, 0x7fffffdfbfa0 /* 5 entries */, 4096) = 120 <0.000078>
+192   02:40:42.263263 getdents64(6, 0x7fffffdfbfa0 /* 0 entries */, 4096) = 0 <0.000067>
+192   02:40:42.267430 openat(AT_FDCWD, "/tmp/dp/.darling-eunion", O_RDONLY) = 6 <0.000117>
+192   02:40:42.268972 openat(AT_FDCWD, "/tmp/dp/.darling-eunion/var/run", O_RDONLY|O_NONBLOCK|O_CLOEXEC|O_DIRECTORY) = 7 <0.000065>
+192   02:40:42.270255 getdents64(8, 0x7fffffdfac30 /* 2 entries */, 4096) = 48 <0.000061>
+192   02:40:42.270408 getdents64(8, 0x7fffffdfac30 /* 0 entries */, 4096) = 0 <0.000058>
+192   02:40:42.270677 openat(AT_FDCWD, "/usr/local/libexec/darling/proc/self/mounts", O_RDONLY) = -1 ENOENT (No such file or directory) <0.000059>
+192   02:40:42.270943 openat(7, "/tmp/dp/.darling-eunion/var/run", O_RDONLY|O_CLOEXEC) = 8 <0.000042>
+192   02:40:42.271452 openat(AT_FDCWD, "/tmp/dp/.darling-eunion/var/run", O_RDONLY|O_DIRECTORY) = 9 <0.000068>
+192   02:40:42.271598 getdents64(9, 0x7fffffdf8ac0 /* 2 entries */, 8192) = 48 <0.000060>
+192   02:40:42.271735 getdents64(9, 0x7fffffdf8ac0 /* 0 entries */, 8192) = 0 <0.000054>
+192   02:40:42.272113 openat(AT_FDCWD, "/usr/local/libexec/darling/var/run", O_RDONLY|O_DIRECTORY) = 9 <0.000063>
+192   02:40:42.272254 getdents64(9, 0x7fffffdf8ac0 /* 3 entries */, 8192) = 80 <0.000058>
+192   02:40:42.272418 getdents64(9, 0x7fffffdf8ac0 /* 0 entries */, 8192) = 0 <0.000061>
+192   02:40:42.283067 getdents64(6, 0x7fffffdfbfa0 /* 27 entries */, 4096) = 880 <0.000061>
+192   02:40:42.283212 getdents64(6, 0x7fffffdfbfa0 /* 0 entries */, 4096) = 0 <0.000056>
+192   02:40:42.284915 getdents64(6, 0x7fffffdfbf30 /* 2 entries */, 4096) = 48 <0.000046>
+192   02:40:42.285041 getdents64(6, 0x7fffffdfbf30 /* 0 entries */, 4096) = 0 <0.000060>
+192   02:40:42.285287 openat(AT_FDCWD, "/tmp/dp/.darling-eunion/var/run/utmpx", O_RDONLY|O_CREAT, 0666) = 6 <0.000093>
+192   02:40:42.287088 getdents64(6, 0x7fffffdfbf30 /* 3 entries */, 4096) = 80 <0.000087>
+192   02:40:42.287254 getdents64(6, 0x7fffffdfbf30 /* 0 entries */, 4096) = 0 <0.000060>
+192   02:40:42.287511 openat(AT_FDCWD, "/tmp/dp/.darling-eunion/var/run/.systemStarterRunning", O_RDONLY|O_CREAT, 0666) = 6 <0.000078>
+192   02:40:42.289694 getdents64(6, 0x7fffffdfbec0 /* 52 entries */, 4096) = 1600 <0.000076>
+192   02:40:42.289858 getdents64(6, 0x7fffffdfbec0 /* 0 entries */, 4096) = 0 <0.000060>
+192   02:40:42.433320 getdents64(6, 0x7fffffdfb650 /* 2 entries */, 4096) = 48 <0.000064>
+192   02:40:42.433485 getdents64(6, 0x7fffffdfb650 /* 0 entries */, 4096) = 0 <0.000065>
+192   02:40:42.433866 openat(AT_FDCWD, "/tmp/dp/.darling-eunion/private/var/db/launchd.db/com.apple.launchd/overrides.plist", O_RDONLY|O_CREAT, 0600) = -1 ENOENT (No such file or directory) <0.000066>
+192   02:40:42.437068 getdents64(6, 0x7fffffdf9e70 /* 7 entries */, 4096) = 216 <0.000065>
+192   02:40:42.437220 getdents64(6, 0x7fffffdf9e70 /* 0 entries */, 4096) = 0 <0.000062>
+192   02:40:42.437483 openat(AT_FDCWD, "/usr/local/libexec/darling/var/db/timezone/zoneinfo/UTC", O_RDONLY) = -1 ENOENT (No such file or directory) <0.000063>
+192   02:40:42.438907 getdents64(6, 0x7fffffdf9d70 /* 7 entries */, 4096) = 216 <0.000047>
+192   02:40:42.439041 getdents64(6, 0x7fffffdf9d70 /* 0 entries */, 4096) = 0 <0.000082>
+192   02:40:42.439271 openat(AT_FDCWD, "/usr/local/libexec/darling/var/db/timezone/zoneinfo/posixrules", O_RDONLY) = -1 ENOENT (No such file or directory) <0.000062>
+192   02:40:42.441726 getdents64(6, 0x7fffffdf9da0 /* 7 entries */, 4096) = 216 <0.000065>
+192   02:40:42.441877 getdents64(6, 0x7fffffdf9da0 /* 0 entries */, 4096) = 0 <0.000041>
+192   02:40:42.442138 openat(AT_FDCWD, "/usr/local/libexec/darling/var/db/timezone/zoneinfo/UTC", O_RDONLY) = -1 ENOENT (No such file or directory) <0.000062>
+192   02:40:42.443241 getdents64(6, 0x7fffffdf9ca0 /* 7 entries */, 4096) = 216 <0.000060>
+192   02:40:42.443382 getdents64(6, 0x7fffffdf9ca0 /* 0 entries */, 4096) = 0 <0.000059>
+192   02:40:42.443637 openat(AT_FDCWD, "/usr/local/libexec/darling/var/db/timezone/zoneinfo/posixrules", O_RDONLY) = -1 ENOENT (No such file or directory) <0.000060>
+192   02:40:42.446324 getdents64(7, 0x7fffffdf97f0 /* 17 entries */, 4096) = 456 <0.000061>
+192   02:40:42.446470 getdents64(7, 0x7fffffdf97f0 /* 0 entries */, 4096) = 0 <0.000237>
+192   02:40:42.447154 connect(6, {sa_family=AF_UNIX, sun_path="/dev/log"}, 10) = -1 ENOENT (No such file or directory) <0.000061>
+192   02:40:42.451211 openat(AT_FDCWD, "/usr/local/libexec/darling/Library/LaunchDaemons", O_RDONLY|O_NONBLOCK|O_CLOEXEC|O_DIRECTORY) = 6 <0.000132>
+192   02:40:42.452402 getdents64(7, 0x7fffffdf9fe0 /* 2 entries */, 4096) = 48 <0.000061>
+192   02:40:42.452550 getdents64(7, 0x7fffffdf9fe0 /* 0 entries */, 4096) = 0 <0.000060>
+192   02:40:42.452802 openat(AT_FDCWD, "/usr/local/libexec/darling/proc/self/mounts", O_RDONLY) = -1 ENOENT (No such file or directory) <0.000069>
+192   02:40:42.453075 openat(6, "/usr/local/libexec/darling/Library/LaunchDaemons", O_RDONLY|O_CLOEXEC) = 7 <0.000061>
+192   02:40:42.453459 openat(AT_FDCWD, "/tmp/dp/.darling-eunion/Volumes/SystemRoot/usr/local/libexec/darling/Library/LaunchDaemons", O_RDONLY|O_DIRECTORY) = -1 ENOENT (No such file or directory) <0.000061>
+192   02:40:42.453720 openat(AT_FDCWD, "/usr/local/libexec/darling/Volumes/SystemRoot/usr/local/libexec/darling/Library/LaunchDaemons", O_RDONLY|O_DIRECTORY) = -1 ENOENT (No such file or directory) <0.000066>
+192   02:40:42.454846 getdents64(6, 0x7fffffdf4f10 /* 11 entries */, 4096) = 328 <0.000069>
+192   02:40:42.455049 getdents64(6, 0x7fffffdf4f10 /* 0 entries */, 4096) = 0 <0.000060>
+192   02:40:42.458069 openat(AT_FDCWD, "/usr/local/libexec/darling/System/Library/LaunchDaemons", O_RDONLY|O_NONBLOCK|O_CLOEXEC|O_DIRECTORY) = 6 <0.000072>
+192   02:40:42.459040 getdents64(7, 0x7fffffdf9fe0 /* 2 entries */, 4096) = 48 <0.000059>
+192   02:40:42.459179 getdents64(7, 0x7fffffdf9fe0 /* 0 entries */, 4096) = 0 <0.000053>
+192   02:40:42.459405 openat(AT_FDCWD, "/usr/local/libexec/darling/proc/self/mounts", O_RDONLY) = -1 ENOENT (No such file or directory) <0.000061>
+192   02:40:42.459659 openat(6, "/usr/local/libexec/darling/System/Library/LaunchDaemons", O_RDONLY|O_CLOEXEC) = 7 <0.000061>
+192   02:40:42.460128 openat(AT_FDCWD, "/tmp/dp/.darling-eunion/Volumes/SystemRoot/usr/local/libexec/darling/System/Library/LaunchDaemons", O_RDONLY|O_DIRECTORY) = -1 ENOENT (No such file or directory) <0.000072>
+192   02:40:42.460462 openat(AT_FDCWD, "/usr/local/libexec/darling/Volumes/SystemRoot/usr/local/libexec/darling/System/Library/LaunchDaemons", O_RDONLY|O_DIRECTORY) = -1 ENOENT (No such file or directory) <0.000058>
+192   02:40:42.462415 getdents64(6, 0x7fffffdfbec0 /* 52 entries */, 4096) = 1600 <0.000069>
+192   02:40:42.462574 getdents64(6, 0x7fffffdfbec0 /* 0 entries */, 4096) = 0 <0.000062>
+179   02:40:53.621584 connect(3, 0x7fff2f9c1e32, 110) = -1 ENOENT (No such file or directory) <0.000071>
+179   02:40:53.621905 exit_group(1)     = ?
+179   02:40:53.622142 +++ exited with 1 +++
+180   02:41:18.436089 --- SIGTERM {si_signo=SIGTERM, si_code=SI_USER, si_pid=175, si_uid=0} ---
+189   02:41:18.436168 --- SIGCONT {si_signo=SIGCONT, si_code=SI_USER, si_pid=175, si_uid=0} ---
+189   02:41:18.436324 +++ killed by SIGTERM +++
+180   02:41:18.436821 +++ killed by SIGTERM +++
+190   02:41:18.438296 --- SIGABRT {si_signo=SIGABRT, si_code=SI_USER, si_pid=188, si_uid=0} ---
+188   02:41:18.440096 --- SIGABRT {si_signo=SIGABRT, si_code=SI_USER, si_pid=188, si_uid=0} ---
+190   02:41:18.440154 --- SIGILL {si_signo=SIGILL, si_code=ILL_ILLOPN, si_addr=0x7f1fc9c8c63a} ---
+191   02:41:18.523593 +++ killed by SIGILL (core dumped) +++
+190   02:41:18.523633 +++ killed by SIGILL (core dumped) +++
+188   02:41:18.524174 +++ killed by SIGILL (core dumped) +++
+192   02:41:42.244810 exit_group(0)     = ?
+192   02:41:42.245720 +++ exited with 0 +++

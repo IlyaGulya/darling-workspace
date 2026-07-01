@@ -1,0 +1,59 @@
+From 7268517f76d64438042918537facb53a9be2d68d Mon Sep 17 00:00:00 2001
+From: Ilya Gulya <ilya@gulya.me>
+Date: Tue, 23 Jun 2026 09:31:51 +0000
+Subject: [PATCH] sigexc: don't enable DEBUG_SIGEXC by default (RPC log flood)
+
+sigexc.c hardcoded `#define DEBUG_SIGEXC`, which routes every kern_printf()
+in the signal-delivery and thread state save/restore paths through
+__simple_kprintf() -- a synchronous RPC round-trip to darlingserver.
+
+The sigexc handler and its helpers emit dozens of these lines per signal
+(dump_gregs alone loops 23 registers; the float/thread state save+restore
+add more), so any signal- or suspend-heavy workload turns into a flood of
+thousands of blocking server round-trips. Under a fork/exec storm (e.g.
+`brew install`, where the download workers spawn and reap many short-lived
+curl children) this collapses guest throughput: the guest spends all its
+time logging register dumps, downloads stall, and exited children pile up
+as unreaped zombies.
+
+Remove the unconditional define so the debug path is compiled out by
+default (the existing #ifdef/#else already provides the no-op form), and
+route the per-S2C "sigrt_handler S2C" line through the same gate. The
+once-per-process darling_sigexc_self() boot marker is left as-is.
+
+DEBUG_SIGEXC can still be enabled via the build when actively debugging
+the signal/exception machinery.
+
+Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
+---
+ .../emulation/src/linux_premigration/signal/sigexc.c   | 10 ++++++++--
+ 1 file changed, 8 insertions(+), 2 deletions(-)
+
+diff --git a/darling/src/libsystem_kernel/emulation/src/linux_premigration/signal/sigexc.c b/darling/src/libsystem_kernel/emulation/src/linux_premigration/signal/sigexc.c
+index 206e92e4623b15ec9b156a15ba73618d0d669e66..a628b47d5e1d58a98c9300d283ba97ce62d97402 100644
+--- a/darling/src/libsystem_kernel/emulation/src/linux_premigration/signal/sigexc.c
++++ b/darling/src/libsystem_kernel/emulation/src/linux_premigration/signal/sigexc.c
+@@ -61,7 +61,13 @@ static void float_state_to_mcontext(const x86_float_state32_t* s, linux_fpregset
+ static void state_from_kernel(struct linux_ucontext* ctxt, const void* tstate, const void* fstate);
+ static void state_to_kernel(struct linux_ucontext* ctxt, void* tstate, void* fstate);
+ 
+-#define DEBUG_SIGEXC
++// DEBUG_SIGEXC routes every kern_printf() in the signal/suspend path through
++// __simple_kprintf(), which is a synchronous RPC round-trip to darlingserver.
++// The sigexc handler and its state save/restore helpers emit dozens of these
++// per signal (dump_gregs alone logs 23 lines), so leaving this on turns any
++// signal-heavy or suspend-heavy workload (e.g. a fork/exec storm) into a flood
++// of thousands of blocking RPCs that collapses guest throughput. Keep it off by
++// default; define it (e.g. via the build) only when actively debugging sigexc.
+ #ifdef DEBUG_SIGEXC
+ #define kern_printf(...) __simple_kprintf(__VA_ARGS__)
+ #else
+@@ -177,7 +183,7 @@ void sigrt_handler(int signum, struct linux_siginfo* info, struct linux_ucontext
+ 
+ 	state_from_kernel(ctxt, &tstate, &fstate);
+ 	} else if (signum == SIGNAL_S2C) {
+-		__simple_kprintf("sigexc: sigrt_handler S2C");
++		kern_printf("sigexc: sigrt_handler S2C");
+ 
+ 		int ret = dserver_rpc_s2c_perform();
+ 		if (ret < 0) {

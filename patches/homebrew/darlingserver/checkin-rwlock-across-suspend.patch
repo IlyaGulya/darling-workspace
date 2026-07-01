@@ -1,0 +1,338 @@
+From 5e5d688886589025929d246e51ca349aa18b1cbb Mon Sep 17 00:00:00 2001
+From: Ilya Gulya <ilya@gulya.me>
+Date: Sun, 28 Jun 2026 05:21:03 +0000
+Subject: [PATCH] dar-6x4: don't hold Process::_rwlock across suspending dtape
+ calls in notifyCheckin
+
+Fork+exec storms (e.g. `make -jN` of many small compiles, libunistring/gettext
+builds) intermittently WEDGE darlingserver: rpcs_serviced goes flat, every guest
+hangs in recvmsg, and the server never recovers. This was previously misfiled as
+mere slowness; it is a real deadlock.
+
+Root cause (pinned live with gdb): notifyCheckin()'s exec branch holds the
+per-process std::shared_mutex _rwlock across dtape_task_create /
+dtape_thread_create / dtape_semaphore_* , which can SUSPEND the microthread
+(they enter duct-taped XNU code that blocks on a waitq/lock). _rwlock ownership
+is per-OS-THREAD, but perf #2b (dar-dar6x4-perf-5dq.8) runs cheap RPCs INLINE on
+the MAIN event-loop thread while a suspended microthread resumes on the WORKER.
+So when an exec checkin runs inline on MAIN and suspends, the write lock is left
+stranded owned by MAIN; a sibling's fork-checkin then runs on the single WORKER
+and blocks forever in _notifyListeningKqchannels() taking the SAME process lock
+for read -- and the only thread that could resume the lock-holder is that
+now-stuck worker. gdb at the wedge: __cur_writer == MAIN tid, worker blocked in
+pthread_rwlock_rdlock (__readers = WRLOCKED|WRPHASE). Pre-#2b this could not
+happen: every microthread ran on the single worker, so a process lock was always
+acquired and released on the same OS thread.
+
+A/B confirmation (heavy fork+exec load): pristine inline-on -> WEDGED on attempt
+1; forcing all calls to the worker pool (no inline) -> 20/20 builds clean; this
+fix with inline left ON -> 20/20 builds clean. So the fix removes the deadlock
+without giving up the perf #2b inline win.
+
+Fix: in the exec branch, drop _rwlock around the dtape create/destroy/release
+calls and re-acquire it to publish the new task/thread/semaphore handles -- the
+same pattern the thread-clear loop just above already uses around the blocking
+notifyDead(). Safe to drop: all other threads are already cleared (only the main
+thread remains in _threads), _pendingReplacement stays true, and the swapped
+dtape handles are not traversed by _rwlock readers.
+
+RED->GREEN regression test committed alongside the fix
+(tests/inline_suspend_rwlock_deadlock.c + runner): models a process rwlock held
+by one OS thread across a "microthread" suspension while another OS thread takes
+it for read. RED arm (held across suspend) deadlocks (watchdog, exit 1); GREEN
+arm (released before suspend = this fix) passes. HOST test, <5s.
+
+bead: dar-6x4 (epic dar-dar6x4-perf-5dq)
+
+Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
+---
+ src/process.cpp                             |  62 ++++++---
+ tests/inline_suspend_rwlock_deadlock.c      | 146 ++++++++++++++++++++
+ tests/run-inline-suspend-rwlock-deadlock.sh |  35 +++++
+ 3 files changed, 221 insertions(+), 22 deletions(-)
+ create mode 100644 tests/inline_suspend_rwlock_deadlock.c
+ create mode 100755 tests/run-inline-suspend-rwlock-deadlock.sh
+
+diff --git a/src/process.cpp b/src/process.cpp
+index 1822715591bed431137655bddd77519d81d27c18..0414720268fb37217ea7ab475e10a81715b58d1e 100644
+--- a/src/process.cpp
++++ b/src/process.cpp
+@@ -317,45 +317,63 @@ void DarlingServer::Process::notifyCheckin(Architecture architecture) {
+ 		// update the process architecture
+ 		_architecture = architecture;
+ 
++		// dar-6x4: the dtape_task_create / dtape_thread_create / dtape_semaphore_*
++		// calls below can SUSPEND the microthread (they enter duct-taped XNU code that
++		// may block on a waitq/lock). We MUST NOT hold _rwlock across a suspension:
++		// _rwlock is a std::shared_mutex (a real per-OS-thread rwlock), but a suspended
++		// microthread resumes on a DIFFERENT OS thread (perf #2b runs cheap RPCs inline
++		// on the MAIN thread, while resumes happen on the WORKER). Holding the write
++		// lock across the suspend strands it owned by the suspending OS thread; a
++		// sibling's fork-checkin then blocks forever in _notifyListeningKqchannels()
++		// taking this same lock for read on the worker, wedging the whole server
++		// (confirmed live: gdb __cur_writer == main tid, worker stuck in rdlock). The
++		// thread-clear loop above already drops the lock around the blocking
++		// notifyDead() for exactly this reason; do the same for the dtape work here.
++		//
++		// It is safe to drop the lock for this block: all other threads have been
++		// cleared (only mainThread remains in _threads), _pendingReplacement is still
++		// true, and the dtape handles being swapped (_dtapeTask, mainThread->_dtapeThread,
++		// the semaphores) are not traversed by _rwlock readers -- readers consult
++		// _threads / _listeningKqchannels / _kqchannels / scalar fields, none of which
++		// we mutate while unlocked.
++		lock.unlock();
++
+ 		// replace the old task with a new task that inherits from it
+ 		auto oldTask = _dtapeTask;
+ 		auto newTask = dtape_task_create(oldTask, _nspid, this, static_cast<dserver_rpc_architecture_t>(_architecture));
+-		_dtapeTask = newTask;
+ 
+ 		// now replace the main thread's duct-taped thread with a new one
+ 		auto oldThread = mainThread->_dtapeThread;
+-		auto newThread = dtape_thread_create(_dtapeTask, mainThread->_nstid, mainThread.get());
+-		mainThread->_dtapeThread = newThread;
++		auto newThread = dtape_thread_create(newTask, mainThread->_nstid, mainThread.get());
+ 
+-		// destroy the main thread's old S2C semaphores
++		// create a new fork-wait semaphore and new S2C semaphores for the new task
++		auto newForkWaitSemaphore = dtape_semaphore_create(newTask, 0);
++		auto newPerform = dtape_semaphore_create(newTask, 1);
++		auto newReply = dtape_semaphore_create(newTask, 0);
++		auto newInterruptEnter = dtape_semaphore_create(newTask, 0);
++		auto newInterruptExit = dtape_semaphore_create(newTask, 0);
++
++		// destroy the old semaphores (created against the old task)
+ 		dtape_semaphore_destroy(mainThread->_s2cPerformSempahore);
+-		mainThread->_s2cPerformSempahore = nullptr;
+ 		dtape_semaphore_destroy(mainThread->_s2cReplySempahore);
+-		mainThread->_s2cReplySempahore = nullptr;
+ 		dtape_semaphore_destroy(mainThread->_s2cInterruptEnterSemaphore);
+-		mainThread->_s2cInterruptEnterSemaphore = nullptr;
+ 		dtape_semaphore_destroy(mainThread->_s2cInterruptExitSemaphore);
+-		mainThread->_s2cInterruptExitSemaphore = nullptr;
+-
+-		// destroy the fork-wait semaphore
+ 		dtape_semaphore_destroy(_dtapeForkWaitSemaphore);
+-		_dtapeForkWaitSemaphore = nullptr;
+ 
+-		// release the main thread's old duct-taped thread
++		// release the main thread's old duct-taped thread and the old task
+ 		dtape_thread_release(oldThread);
+-
+-		// release the old task
+ 		dtape_task_release(oldTask);
+ 
+-		// create a new fork-wait semaphore for the new task
+-		_dtapeForkWaitSemaphore = dtape_semaphore_create(_dtapeTask, 0);
++		// publish the new state under the lock again
++		lock.lock();
++		_dtapeTask = newTask;
++		mainThread->_dtapeThread = newThread;
++		_dtapeForkWaitSemaphore = newForkWaitSemaphore;
+ 		_forkChildCheckedIn.store(false); // dar-gwn.6.5: reset sticky flag with the new semaphore
+-
+-		// create new S2C semaphores for the main thread
+-		mainThread->_s2cPerformSempahore = dtape_semaphore_create(_dtapeTask, 1);
+-		mainThread->_s2cReplySempahore = dtape_semaphore_create(_dtapeTask, 0);
+-		mainThread->_s2cInterruptEnterSemaphore = dtape_semaphore_create(_dtapeTask, 0);
+-		mainThread->_s2cInterruptExitSemaphore = dtape_semaphore_create(_dtapeTask, 0);
++		mainThread->_s2cPerformSempahore = newPerform;
++		mainThread->_s2cReplySempahore = newReply;
++		mainThread->_s2cInterruptEnterSemaphore = newInterruptEnter;
++		mainThread->_s2cInterruptExitSemaphore = newInterruptExit;
+ 	} else {
+ 		// fork case
+ 
+diff --git a/tests/inline_suspend_rwlock_deadlock.c b/tests/inline_suspend_rwlock_deadlock.c
+new file mode 100644
+index 0000000000000000000000000000000000000000..376222a7e50ae8c43a7ac24a23c62e0131eef69e
+--- /dev/null
++++ b/tests/inline_suspend_rwlock_deadlock.c
+@@ -0,0 +1,146 @@
++// Regression test for dar-6x4 (under epic dar-dar6x4-perf-5dq):
++// darlingserver deadlocks under a fork+exec storm (e.g. `make -jN` of many tiny
++// compiles). Root cause, pinned live (gdb: __cur_writer == MAIN thread tid, the
++// single worker blocked in pthread_rwlock_rdlock with __readers==WRLOCKED|WRPHASE):
++//
++//   perf #2b (dar-dar6x4-perf-5dq.8) runs cheap RPCs INLINE on the MAIN event-loop
++//   thread instead of always handing them to the single worker. A microthread that
++//   suspends keeps running later on the WORKER. But darlingserver's per-process lock
++//   (Process::_rwlock, a std::shared_mutex) is a real OS rwlock whose ownership is
++//   per-OS-THREAD. notifyCheckin()'s exec branch holds that write lock across the
++//   suspending dtape_task_create / dtape_thread_create calls. When that checkin runs
++//   inline on MAIN and suspends, the write lock is left owned by MAIN while the
++//   microthread parks. A sibling's fork-checkin then runs on the WORKER and blocks in
++//   _notifyListeningKqchannels() taking the SAME process lock for read -- forever,
++//   because the only thread that could resume the lock-holding microthread is that
++//   now-stuck worker. The whole server wedges (rpcs_serviced flat, every guest's
++//   recvmsg hangs). Pre-#2b this could not happen: ALL microthreads ran on the single
++//   worker, so a process lock was always acquired and released on the same OS thread.
++//
++// We can't link the whole server in a host test, so we model the exact invariant with
++// the same primitives: a std::shared_mutex-style rwlock (pthread_rwlock) that a
++// "microthread" takes for WRITE on OS-thread A (= main) and then "suspends" (parks)
++// WITHOUT releasing, while OS-thread B (= worker) tries to take it for READ. With a
++// writer-preferring/ writer-present glibc rwlock this read blocks, and since the
++// write-holder never resumes (its resume vehicle is exactly the blocked reader thread),
++// the pair deadlocks -- which is the bug.
++//
++//   RED   (held-across-suspend): writer parks holding the write lock -> reader on the
++//                                other OS thread blocks forever -> DEADLOCK -> FAIL.
++//   GREEN (fixed):               the write lock is RELEASED before the suspend point
++//                                (the fix: notifyCheckin drops _rwlock around the
++//                                suspending dtape calls) -> the reader proceeds ->
++//                                both finish -> PASS.
++//
++// The arm is chosen by argv[1]: "heldacross" = RED, "released" = GREEN (default).
++// A watchdog thread bounds the run: if the reader hasn't completed within the deadline
++// the process reports DEADLOCK and exits non-zero. HOST test (plain glibc + pthreads).
++// Exit 0 = PASS (no deadlock). See run-inline-suspend-rwlock-deadlock.sh.
++#define _GNU_SOURCE
++#include <pthread.h>
++#include <stdio.h>
++#include <stdlib.h>
++#include <string.h>
++#include <stdatomic.h>
++#include <unistd.h>
++#include <time.h>
++
++// The per-process lock, modeled as a glibc rwlock (std::shared_mutex maps onto this).
++static pthread_rwlock_t proc_lock = PTHREAD_RWLOCK_INITIALIZER;
++
++// Coordination so the reader (worker) only races the lock AFTER the writer (main) has
++// taken it -- this makes the deadlock deterministic rather than timing-dependent.
++static atomic_int writer_locked = 0;     // writer has acquired the write lock
++static atomic_int reader_done = 0;       // reader successfully took+released read lock
++static atomic_int writer_parked = 0;     // writer has reached its "suspend" point
++
++// Whether the writer releases the lock before parking (GREEN) or holds it (RED).
++static int g_release_before_suspend = 1;
++
++// "worker" OS thread: models a sibling fork-checkin running notifyCheckin ->
++// _notifyListeningKqchannels -> rdlock(parent->_rwlock).
++static void* worker_reader(void* arg) {
++	(void)arg;
++	// wait until the writer (main) holds the lock, to force the contended ordering
++	while (!atomic_load(&writer_locked))
++		usleep(100);
++	pthread_rwlock_rdlock(&proc_lock);     // <-- blocks forever in the RED arm
++	// got the read lock: do the trivial notify work, then release
++	pthread_rwlock_unlock(&proc_lock);
++	atomic_store(&reader_done, 1);
++	return NULL;
++}
++
++// "main" OS thread inline path: models notifyCheckin's exec branch taking the process
++// write lock and then suspending (dtape_task_create/thread_create park the microthread).
++static void main_inline_checkin(void) {
++	pthread_rwlock_wrlock(&proc_lock);     // take process _rwlock for WRITE
++	atomic_store(&writer_locked, 1);
++
++	// ... mutate process state (architecture, dtape task/thread) ...
++
++	// THE SUSPEND POINT: dtape_task_create / dtape_thread_create park the microthread.
++	// In the real server the microthread would resume later on the WORKER. Here we just
++	// model "we are about to give up this OS thread for a long time while a sibling runs
++	// on the worker." The fix releases the lock before this point.
++	if (g_release_before_suspend) {
++		pthread_rwlock_unlock(&proc_lock); // GREEN: fix -- don't hold _rwlock across suspend
++	}
++	atomic_store(&writer_parked, 1);
++
++	// "suspend": wait for the worker's reader to make progress. In the RED arm, if we
++	// still hold the write lock, the reader can never make progress, so this never
++	// returns within the deadline -> the watchdog fires -> deadlock proven.
++	while (!atomic_load(&reader_done))
++		usleep(100);
++
++	if (!g_release_before_suspend) {
++		// (never reached in RED before the watchdog, but keep it correct)
++		pthread_rwlock_unlock(&proc_lock);
++	}
++}
++
++static void* watchdog(void* arg) {
++	double deadline_s = *(double*)arg;
++	struct timespec start, now;
++	clock_gettime(CLOCK_MONOTONIC, &start);
++	for (;;) {
++		usleep(20 * 1000);
++		if (atomic_load(&reader_done))
++			return NULL;                   // success: reader finished
++		clock_gettime(CLOCK_MONOTONIC, &now);
++		double elapsed = (now.tv_sec - start.tv_sec) + (now.tv_nsec - start.tv_nsec) / 1e9;
++		if (elapsed > deadline_s) {
++			fprintf(stderr,
++				"DEADLOCK: reader did not complete within %.1fs "
++				"(writer_locked=%d writer_parked=%d reader_done=%d)\n",
++				deadline_s, atomic_load(&writer_locked),
++				atomic_load(&writer_parked), atomic_load(&reader_done));
++			// hard-exit non-zero: the deadlock is real and the process can't unwind it
++			_exit(1);
++		}
++	}
++}
++
++int main(int argc, char** argv) {
++	const char* arm = (argc > 1) ? argv[1] : "released";
++	if (strcmp(arm, "heldacross") == 0)
++		g_release_before_suspend = 0;      // RED: hold the lock across the suspend
++	else
++		g_release_before_suspend = 1;      // GREEN: release before suspend (the fix)
++
++	static double deadline_s = 4.0;
++	pthread_t wd, wk;
++	pthread_create(&wd, NULL, watchdog, &deadline_s);
++	pthread_create(&wk, NULL, worker_reader, NULL);
++
++	main_inline_checkin();
++
++	pthread_join(wk, NULL);
++	// cancel the watchdog (reader_done is set, so it returns on its own next tick)
++	pthread_join(wd, NULL);
++
++	printf("PASS: no deadlock (arm=%s) -- write lock was %s across the suspend\n",
++		arm, g_release_before_suspend ? "RELEASED before" : "HELD across");
++	return 0;
++}
+diff --git a/tests/run-inline-suspend-rwlock-deadlock.sh b/tests/run-inline-suspend-rwlock-deadlock.sh
+new file mode 100755
+index 0000000000000000000000000000000000000000..6c19a20b93ca6b8278bf78fdb8c07b793a5a1299
+--- /dev/null
++++ b/tests/run-inline-suspend-rwlock-deadlock.sh
+@@ -0,0 +1,35 @@
++#!/usr/bin/env bash
++# Regression test for dar-6x4 (epic dar-dar6x4-perf-5dq): darlingserver must NOT hold a
++# per-process rwlock (Process::_rwlock) across a microthread suspension, because perf #2b
++# can run that microthread inline on the MAIN thread while it later resumes on the WORKER
++# -- leaving the OS-thread-owned lock stranded and deadlocking a sibling's fork-checkin
++# reader on the single worker. (Live proof: gdb __cur_writer == main tid, worker blocked
++# in pthread_rwlock_rdlock, whole server wedged with rpcs_serviced flat.)
++#
++# Asserts:
++#   - RED   (held-across-suspend): writer parks holding the write lock -> reader on the
++#                                  other OS thread never proceeds -> watchdog -> FAILS.
++#   - GREEN (released before suspend = the fix): reader proceeds -> both finish -> PASSES.
++#
++# HOST test (plain glibc + pthreads). Finishes in <5s. Exit 0 on PASS.
++set -euo pipefail
++
++here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
++work="$(mktemp -d)"
++trap 'rm -rf "$work"' EXIT
++cc="${CC:-cc}"
++
++"$cc" -O2 -g "$here/inline_suspend_rwlock_deadlock.c" -o "$work/isr" -lpthread
++
++# RED proof first: holding the lock across the suspend MUST deadlock, else the test is blind.
++echo "--- RED proof (process lock held across suspend, expected to DEADLOCK/FAIL) ---"
++if "$work/isr" heldacross; then
++	echo "FAIL: held-across-suspend arm unexpectedly passed -- test does not catch the deadlock" >&2
++	exit 2
++fi
++echo "(RED arm deadlocked as expected)"
++
++# GREEN: releasing the lock before the suspend (the fix) must pass.
++echo "--- GREEN (lock released before suspend, expected to PASS) ---"
++"$work/isr" released
++echo "PASS"

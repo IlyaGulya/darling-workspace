@@ -1,0 +1,129 @@
+From 9d5c22289dc701e0875226827bed26d4c0ec0099 Mon Sep 17 00:00:00 2001
+From: Ilya Gulya <ilya@gulya.me>
+Date: Wed, 24 Jun 2026 16:15:56 +0000
+Subject: [PATCH] libsystem_kernel: retry ulock_wait on EINTR instead of
+ aborting os_unfair_lock
+
+Under a fork/exec signal storm, os_unfair_lock's contended slow path
+(__os_unfair_lock_lock_slow, via e.g. free_tiny taking the malloc magazine
+lock) crashes the process with SIGILL.
+
+Mechanism: the slow path calls __ulock_wait(UL_UNFAIR_LOCK | ULF_NO_ERRNO, ...)
+and does `switch (-ret)`, treating only EINTR/EFAULT/EOWNERDEAD as non-fatal --
+anything else falls into _os_unfair_lock_corruption_abort -> ud2 -> SIGILL. It
+therefore needs __ulock_wait to return a raw negated errno.
+
+But Darling's generic BSD-syscall stub (___ulock_wait -> __darling_bsd_syscall)
+treats any return in the errno range [-4095,-1] as a failed syscall and routes
+it through cerror_nocancel, which returns -1. So when futex(FUTEX_WAIT) is woken
+early by a signal and sys_ulock_wait returned -EINTR, the caller saw -1 (not
+EINTR) and hit the corruption abort. (The previous `ret &= ~0x800` made this
+worse: applied to an already-negative value it mangled -EINTR(-4) into -2052.)
+There is no way to smuggle a small -errno back through the generic cerror stub.
+
+Fix: retry futex(FUTEX_WAIT) internally on EINTR for untimed
+UL_COMPARE_AND_WAIT / UL_UNFAIR_LOCK waits, instead of returning it. This is
+semantically what os_unfair_lock would do on EINTR (re-read the lock word and
+re-wait) and matches macOS's internal ulock restart across signals, while never
+handing a spurious errno to the corruption-abort path. Also drop the bogus
+`0x800` mask in ulock_wake for the same reason.
+
+Bead: dar-gwn.6
+
+Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
+---
+ .../xnu_syscall/bsd/impl/psynch/ulock_wait.c  | 33 +++++++++++++++----
+ .../xnu_syscall/bsd/impl/psynch/ulock_wake.c  |  7 ++--
+ 2 files changed, 30 insertions(+), 10 deletions(-)
+
+diff --git a/darling/src/libsystem_kernel/emulation/src/xnu_syscall/bsd/impl/psynch/ulock_wait.c b/darling/src/libsystem_kernel/emulation/src/xnu_syscall/bsd/impl/psynch/ulock_wait.c
+index f26ec28df7742d8ae9cad301b61bfbb4e1bd1519..dfa40949347b0db06f8d9b8eead4fcbd2efe0fac 100644
+--- a/darling/src/libsystem_kernel/emulation/src/xnu_syscall/bsd/impl/psynch/ulock_wait.c
++++ b/darling/src/libsystem_kernel/emulation/src/xnu_syscall/bsd/impl/psynch/ulock_wait.c
+@@ -20,7 +20,6 @@ long sys_ulock_wait(uint32_t operation, void* addr, uint64_t value, uint32_t tim
+ {
+ 	int ret, op;
+ 	struct timespec ts;
+-	bool no_errno = operation & XNU_ULF_NO_ERRNO;
+ 
+ 
+ 	// char dbg[100];
+@@ -36,8 +35,30 @@ long sys_ulock_wait(uint32_t operation, void* addr, uint64_t value, uint32_t tim
+ 	op = operation & XNU_UL_OPCODE_MASK;
+ 	if (op == XNU_UL_COMPARE_AND_WAIT || op == XNU_UL_UNFAIR_LOCK)
+ 	{
+-		ret = LINUX_SYSCALL(__NR_futex, addr, FUTEX_WAIT | FUTEX_PRIVATE_FLAG,
+-			value, (timeout != 0) ? & ts : NULL);
++		// dar-gwn.6: retry on EINTR instead of returning it.
++		//
++		// Darling's BSD-syscall stub treats ANY return in the errno range
++		// [-4095,-1] as a failed syscall and routes it through cerror, which
++		// returns -1 to the caller. But os_unfair_lock's slow path passes
++		// ULF_NO_ERRNO and expects __ulock_wait to return a raw negated errno
++		// (it does `switch (-ret)` and only EINTR/EFAULT/EOWNERDEAD are
++		// non-fatal -- anything else, including the cerror'd -1, falls into
++		// _os_unfair_lock_corruption_abort -> ud2 -> SIGILL). There is no way
++		// to smuggle a small -errno back through the generic cerror stub, and
++		// the previous `ret &= ~0x800` hack just mangled the value further.
++		//
++		// Under a fork/exec signal storm futex(FUTEX_WAIT) is constantly woken
++		// early with -EINTR while a thread holds e.g. the malloc magazine
++		// os_unfair_lock, so this misfires and aborts the process. Since the
++		// caller would only re-read the lock word and re-wait on EINTR anyway
++		// (and macOS's ulock_wait restarts internally across signals), just
++		// retry the futex here. This keeps the contended-wait blocking until a
++		// real wake/contention change, and never hands a spurious errno to the
++		// corruption-abort path.
++		do {
++			ret = LINUX_SYSCALL(__NR_futex, addr, FUTEX_WAIT | FUTEX_PRIVATE_FLAG,
++				value, (timeout != 0) ? & ts : NULL);
++		} while (ret == -LINUX_EINTR && timeout == 0);
+ 
+ 		// unlike ulock_wait(), futex(FUTEX_WAIT) does not return how many
+ 		// other threads are now (still) waiting for the lock.
+@@ -49,13 +70,13 @@ long sys_ulock_wait(uint32_t operation, void* addr, uint64_t value, uint32_t tim
+ 			ret = 1;
+ 	}
+ 	else
+-		return no_errno ? -(EINVAL | 0x800) : -EINVAL;
++		return -EINVAL;
+ 
+ 	if (ret < 0)
+ 	{
++		// Map any remaining error to a negated BSD errno (e.g. ETIMEDOUT for a
++		// timed wait). EINTR on an untimed wait was already retried above.
+ 		ret = errno_linux_to_bsd(ret);
+-		if (no_errno)
+-			ret &= ~0x800;
+ 	}
+ 
+ 	return ret;
+diff --git a/darling/src/libsystem_kernel/emulation/src/xnu_syscall/bsd/impl/psynch/ulock_wake.c b/darling/src/libsystem_kernel/emulation/src/xnu_syscall/bsd/impl/psynch/ulock_wake.c
+index 71e32f9e46497b5966c5c94443f14bd89c763c7b..2004c43a85e7a987bd7206827f4e3be77ee89c71 100644
+--- a/darling/src/libsystem_kernel/emulation/src/xnu_syscall/bsd/impl/psynch/ulock_wake.c
++++ b/darling/src/libsystem_kernel/emulation/src/xnu_syscall/bsd/impl/psynch/ulock_wake.c
+@@ -12,7 +12,6 @@
+ long sys_ulock_wake(uint32_t operation, void* addr, uint64_t wake_value)
+ {
+ 	int ret, op;
+-	bool no_errno = operation & XNU_ULF_NO_ERRNO;
+ 
+ 	// char buf[100];
+ 	// __simple_sprintf(buf, "ulock_wake on %p", addr);
+@@ -34,13 +33,13 @@ long sys_ulock_wake(uint32_t operation, void* addr, uint64_t wake_value)
+ 			value);
+ 	}
+ 	else
+-		return no_errno ? -(EINVAL | 0x800) : -EINVAL;
++		return -EINVAL;
+ 
+ 	if (ret < 0)
+ 	{
++		// Return a clean negated BSD errno (no bogus 0x800 mask -- it mangled
++		// negative values; same bug as ulock_wait). See dar-gwn.6.
+ 		ret = errno_linux_to_bsd(ret);
+-		if (no_errno)
+-			ret &= ~0x800;
+ 	} else {
+ 		// callers of ulock_wake expect it to return 0 on success
+ 		ret = 0;

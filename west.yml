@@ -1304,7 +1304,7 @@ manifest:
       kind: darling-source
       upstream-repository: darling-zsh
   - name: darling-debug-runner
-    path: tools/darling-debug-runner
+    path: darling-debug-runner
     remote: ilya
     revision: c85f1bd1ed7238a74c0b30a8e5c0daf3ee933a52
     groups:

@@ -1,0 +1,283 @@
+From 2b28548ca817c805cf45634fd7ac371598130c0c Mon Sep 17 00:00:00 2001
+From: Ilya Gulya <ilya@gulya.me>
+Date: Sun, 28 Jun 2026 08:44:19 +0000
+Subject: [PATCH] perf #9-decompose: libsystem_kernel guest-side recvmsg-sleep
+ accountant
+
+The accountant for the generator hooks (darlingserver commit). Times each RPC
+reply-wait per call number and dumps per process at exit, so a real build's 57%
+recvmsg-sleep (perf #6) can be decomposed by call. OFF by default
+(option DARLING_RPC_SLEEP_ACCOUNT) -> emulation builds byte-identical to baseline.
+
+Design forced by this being the libc-free, below-libSystem RPC path:
+ - timebase is rdtsc, NOT clock_gettime. A raw clock_gettime syscall between the RPC
+   send and recv (inside the signal-blocked atomic region) wedges the guest -- launchd
+   hangs forever in recvmsg. Bisected: stubbed bodies boot, table-write boots, the clock
+   syscall is the sole trigger. rdtsc is a plain instruction (no syscall) -> safe. Unit
+   is CPU ticks, directly comparable across calls for ranking.
+ - start stamp is a STACK local threaded begin->end, NOT __thread (TLS aborts here
+   pre-pthread: "pthread_t was corrupted").
+ - dumped from the clean exit path (sys_exit -> __darling_rpc_sleep_dump), NOT a
+   destructor: dyld rejects initializers/terminators in this below-libSystem image
+   ("initializer in image ... that does not link with libSystem.dylib").
+ - the table + dump live in a single .c compiled ONCE into the emulation lib, with the
+   header providing only inline begin/end over an extern table. The generated rpc.c is
+   compiled into BOTH emulation and emulation_dyld; a header-static table would split in
+   two -> the running wrappers fill one while the dump reads the other (observed: dumps
+   fired but every table was empty). One shared definition fixes it.
+
+Validated: ON build boots + real make -j8 300/300, dumps a clean per-callnum breakdown
+(mach_msg_overwrite 19%, kprintf 14.5%, fork_wait_for_child 12.6%, ...). OFF build boots
+clean with zero diagnostic output and no diagnostic strings/symbols in the dylib.
+
+Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
+---
+ .../libsystem_kernel/emulation/CMakeLists.txt | 13 +++
+ .../resources/dserver-rpc-defs.h              |  4 +
+ .../resources/rpc-sleep-account.h             | 83 +++++++++++++++++++
+ .../resources/rpc-sleep-account.c             | 73 ++++++++++++++++
+ .../src/xnu_syscall/bsd/impl/unistd/exit.c    | 11 +++
+ 5 files changed, 184 insertions(+)
+ create mode 100644 darling/src/libsystem_kernel/emulation/include/linux_premigration/resources/rpc-sleep-account.h
+ create mode 100644 darling/src/libsystem_kernel/emulation/src/linux_premigration/resources/rpc-sleep-account.c
+
+diff --git a/darling/src/libsystem_kernel/emulation/CMakeLists.txt b/darling/src/libsystem_kernel/emulation/CMakeLists.txt
+index 4918aff9962999fd521c81251aebf0bd589ed993..2f2bb44217d08dc505c2a1c4977b0a2d4bc3593d 100644
+--- a/darling/src/libsystem_kernel/emulation/CMakeLists.txt
++++ b/darling/src/libsystem_kernel/emulation/CMakeLists.txt
+@@ -82,6 +82,7 @@ set(linux_premigration_sources
+ 	src/linux_premigration/ext/uname.c
+ 	src/linux_premigration/misc/ioctl.c
+ 	src/linux_premigration/resources/dserver-rpc-defs.c
++	src/linux_premigration/resources/rpc-sleep-account.c
+ 	src/linux_premigration/signal/sig_restorer.S
+ 	src/linux_premigration/signal/sigexc.c
+ 	src/linux_premigration/elfcalls_wrapper.c
+@@ -376,6 +377,18 @@ set_target_properties(emulation_dyld PROPERTIES COMPILE_FLAGS "-ffunction-sectio
+ add_dependencies(emulation rtsig_h generate_dserver_rpc_wrappers)
+ add_dependencies(emulation_dyld rtsig_h generate_dserver_rpc_wrappers)
+ 
++# perf #9-decompose (dar-dar6x4-perf-5dq): guest-side per-callnum recvmsg-sleep
++# accounting. OFF by default -> the emulation builds byte-identical to baseline (the
++# accounting #ifdef DARLING_RPC_SLEEP_ACCOUNT compiles to nothing). When ON, the
++# generated RPC wrappers time each reply-wait and attribute it per call number, dumped
++# at process exit to DARLING_RPC_SLEEP_ACCOUNT_PATH (default /tmp/darling-rpc-sleep.log).
++# Diagnostic only -- never ship ON.
++option(DARLING_RPC_SLEEP_ACCOUNT "Enable guest-side per-callnum recvmsg-sleep accounting (diagnostic)" OFF)
++if (DARLING_RPC_SLEEP_ACCOUNT)
++	target_compile_definitions(emulation PRIVATE DARLING_RPC_SLEEP_ACCOUNT)
++	target_compile_definitions(emulation_dyld PRIVATE DARLING_RPC_SLEEP_ACCOUNT)
++endif()
++
+ # E-UNION (dar-test-infra-sp5.8.4.4): union-by-path-translation in vchroot.
+ # OFF by default -> the emulation builds byte-identical to baseline. When ON,
+ # define EUNION (activates the #ifdef EUNION code) and EUNION_LIBEXEC_PATH (the
+diff --git a/darling/src/libsystem_kernel/emulation/include/linux_premigration/resources/dserver-rpc-defs.h b/darling/src/libsystem_kernel/emulation/include/linux_premigration/resources/dserver-rpc-defs.h
+index f6588cc53a2d8bd26753a58636fd515260bd6310..de49a0629234e3a4265ddc4ad817878631d06582 100644
+--- a/darling/src/libsystem_kernel/emulation/include/linux_premigration/resources/dserver-rpc-defs.h
++++ b/darling/src/libsystem_kernel/emulation/include/linux_premigration/resources/dserver-rpc-defs.h
+@@ -19,6 +19,10 @@
+ 
+ #include <rtsig.h>
+ 
++// perf #9-decompose: guest-side per-callnum recvmsg-sleep accountant. No-op unless the
++// TU is compiled with -DDARLING_RPC_SLEEP_ACCOUNT (diagnostic builds only).
++#include "rpc-sleep-account.h"
++
+ #ifndef DSERVER_RPC_HOOKS_ARCHITECTURE
+ #define DSERVER_RPC_HOOKS_ARCHITECTURE 1
+ enum dserver_rpc_architecture {
+diff --git a/darling/src/libsystem_kernel/emulation/include/linux_premigration/resources/rpc-sleep-account.h b/darling/src/libsystem_kernel/emulation/include/linux_premigration/resources/rpc-sleep-account.h
+new file mode 100644
+index 0000000000000000000000000000000000000000..74eb81a9043af6037eaa81bd9b49053414229e85
+--- /dev/null
++++ b/darling/src/libsystem_kernel/emulation/include/linux_premigration/resources/rpc-sleep-account.h
+@@ -0,0 +1,83 @@
++// perf #9-decompose (dar-dar6x4-perf-5dq): GUEST-SIDE per-callnum recvmsg-sleep
++// accountant for the libsystem_kernel emulation RPC path.
++//
++// perf #6 profiled a real build: the guest spends ~57% of wall-clock asleep in
++// recvmsg waiting for an RPC reply, but perf #9 only measured (tiny) SERVER service
++// time -- so we never learned WHICH call numbers dominate the guest's reply-wait.
++// This accountant times each wrapper's receive (the reply-wait) and attributes the
++// elapsed CPU ticks to the call number being waited on. The generated wrapper brackets
++// its receive with __darling_rpc_sleep_account_begin()/_end(start, callnum) (see
++// generate-rpc-wrappers.py), gated by DARLING_RPC_SLEEP_ACCOUNT -- so a normal build
++// never compiles any of this in (zero cost) and only a diagnostic build defines it.
++//
++// SPLIT: this header provides only the INLINE timing hooks (begin/end) that the wrapper
++// calls, referencing the accumulator table by `extern`. The single shared table and the
++// dump routine live in rpc-sleep-account.c, compiled exactly ONCE into the emulation
++// object library. (The generated rpc.c is compiled into BOTH the `emulation` and
++// `emulation_dyld` object libraries; if the table were defined here it would become two
++// separate statics -- the running wrappers would fill one while the dump read the other,
++// which we observed: dumps fired but every table was empty.)
++//
++// CONSTRAINTS (see the .c for the full story): libc-free (raw LINUX_SYSCALL, no stdio);
++// timebase is rdtsc, NOT clock_gettime (the clock syscall in this send/recv atomic region
++// wedges the guest -- bisected); start stamp is a STACK local threaded begin->end (no
++// __thread: TLS aborts here pre-pthread); dumped once per process from the clean exit
++// path (sys_exit -> __darling_rpc_sleep_dump; NO destructor -- dyld rejects initializers
++// in this below-libSystem image).
++
++#ifndef DARLING_RPC_SLEEP_ACCOUNT_H
++#define DARLING_RPC_SLEEP_ACCOUNT_H
++
++#ifdef DARLING_RPC_SLEEP_ACCOUNT
++
++#define DARLING_RPC_SLEEP_ACCOUNT_MAX 256
++
++// The single shared accumulators (defined in rpc-sleep-account.c). Unit: TSC ticks.
++extern unsigned long __darling_rpc_sleep_count[DARLING_RPC_SLEEP_ACCOUNT_MAX];
++extern unsigned long __darling_rpc_sleep_total_ticks[DARLING_RPC_SLEEP_ACCOUNT_MAX];
++
++// Dump the per-process table once, appended to the host log. Defined in the .c; called
++// from the clean exit path (sys_exit).
++extern void __darling_rpc_sleep_dump(void);
++
++// Timebase: read the CPU timestamp counter directly (rdtsc), NOT clock_gettime. A raw
++// LINUX_SYSCALL(__NR_clock_gettime) issued here -- between the RPC send and recv, inside
++// the signal-blocked atomic region of the emulation RPC path -- wedges the guest (launchd
++// hangs forever in recvmsg; bisected). rdtsc is a plain userspace instruction, no syscall,
++// no guest trap, so it is safe here. The unit is CPU ticks; for a per-callnum RANKING of
++// where the guest's reply-wait goes (the whole point of this diagnostic) ticks are
++// directly comparable across calls.
++static inline unsigned long __darling_rpc_now_ticks(void) {
++#if defined(__x86_64__) || defined(__i386__)
++	unsigned int lo, hi;
++	__asm__ __volatile__("rdtsc" : "=a"(lo), "=d"(hi));
++	return ((unsigned long)hi << 32) | lo;
++#elif defined(__aarch64__)
++	unsigned long v;
++	__asm__ __volatile__("mrs %0, cntvct_el0" : "=r"(v));
++	return v;
++#else
++	return 0;
++#endif
++}
++
++// The start stamp is carried in a STACK local in the generated wrapper (begin returns it,
++// end takes it) -- NOT in thread-local storage (TLS aborts here pre-pthread).
++static inline unsigned long __darling_rpc_sleep_account_begin(void) {
++	return __darling_rpc_now_ticks();
++}
++
++static inline void __darling_rpc_sleep_account_end(unsigned long start_ticks, unsigned int callnum) {
++	unsigned long elapsed = __darling_rpc_now_ticks() - start_ticks;
++	unsigned idx = callnum & (DARLING_RPC_SLEEP_ACCOUNT_MAX - 1);
++	// Plain non-atomic accumulate: the table is touched only between begin/end on the
++	// calling thread; concurrent threads race at most to lose/duplicate a sample, fine
++	// for a coarse ranking. Indexed by (callnum & 0xff): UNMANAGED calls carry a high
++	// bit, so masking folds them onto their low byte.
++	__darling_rpc_sleep_count[idx] += 1;
++	__darling_rpc_sleep_total_ticks[idx] += elapsed;
++}
++
++#endif // DARLING_RPC_SLEEP_ACCOUNT
++
++#endif // DARLING_RPC_SLEEP_ACCOUNT_H
+diff --git a/darling/src/libsystem_kernel/emulation/src/linux_premigration/resources/rpc-sleep-account.c b/darling/src/libsystem_kernel/emulation/src/linux_premigration/resources/rpc-sleep-account.c
+new file mode 100644
+index 0000000000000000000000000000000000000000..b6b389c8e5213c2f7401eb6a8e9e1a755e305948
+--- /dev/null
++++ b/darling/src/libsystem_kernel/emulation/src/linux_premigration/resources/rpc-sleep-account.c
+@@ -0,0 +1,73 @@
++// perf #9-decompose (dar-dar6x4-perf-5dq): single shared per-callnum recvmsg-sleep
++// accumulator table + the process-exit dump. See rpc-sleep-account.h for the design.
++//
++// Compiled ONCE into the emulation object library (not via the generated rpc.c, which is
++// compiled into two object libraries). The inline begin/end hooks in the header reference
++// this table by `extern`, so both rpc.c copies and the exit path all touch the SAME table.
++//
++// Entire file is empty unless DARLING_RPC_SLEEP_ACCOUNT is defined (diagnostic builds).
++
++#ifdef DARLING_RPC_SLEEP_ACCOUNT
++
++#include <darling/emulation/common/base.h>
++#include <darling/emulation/linux_premigration/linux-syscalls/linux.h>
++#include <darling/emulation/linux_premigration/resources/rpc-sleep-account.h>
++
++// The single shared accumulators (declared extern in the header). Unit: TSC ticks.
++unsigned long __darling_rpc_sleep_count[DARLING_RPC_SLEEP_ACCOUNT_MAX];
++unsigned long __darling_rpc_sleep_total_ticks[DARLING_RPC_SLEEP_ACCOUNT_MAX];
++
++#ifndef DARLING_RPC_SLEEP_ACCOUNT_PATH
++// Fixed HOST path: raw Linux syscalls hit the host kernel directly, so this is a host
++// path, not a guest/vchroot path. Diagnostic-only; the harness truncates it before a run
++// and aggregates it after.
++#define DARLING_RPC_SLEEP_ACCOUNT_PATH "/tmp/darling-rpc-sleep.log"
++#endif
++
++static int __darling_rpc_utoa(unsigned long v, char* buf) {
++	char tmp[20];
++	int n = 0;
++	if (v == 0) { buf[0] = '0'; return 1; }
++	while (v > 0) { tmp[n++] = (char)('0' + (v % 10)); v /= 10; }
++	for (int i = 0; i < n; ++i) buf[i] = tmp[n - 1 - i];
++	return n;
++}
++
++static int __darling_rpc_sleep_dumped;
++
++// Dump the per-process table, once, appended to the host log as
++// "<pid> <callnum> <count> <total_ticks>\n" lines (only nonzero rows). Idempotent guard
++// so a second call (e.g. exit then _exit) never double-counts. A build forks thousands of
++// short guest processes -> thousands of appended dumps -> sum offline by call number.
++// Each per-process dump is well under PIPE_BUF, so O_APPEND writes do not interleave.
++void __darling_rpc_sleep_dump(void) {
++	if (__darling_rpc_sleep_dumped) return;
++	__darling_rpc_sleep_dumped = 1;
++
++	int any = 0;
++	for (int i = 0; i < DARLING_RPC_SLEEP_ACCOUNT_MAX; ++i) {
++		if (__darling_rpc_sleep_count[i]) { any = 1; break; }
++	}
++	if (!any) return;
++
++	// open(path, O_WRONLY|O_CREAT|O_APPEND, 0644). Linux: O_WRONLY=01, O_CREAT=0100,
++	// O_APPEND=02000; AT_FDCWD=-100.
++	long fd = LINUX_SYSCALL(__NR_openat, -100, DARLING_RPC_SLEEP_ACCOUNT_PATH,
++		01 | 0100 | 02000, 0644);
++	if (fd < 0) return;
++
++	char line[80];
++	int pid = (int)LINUX_SYSCALL0(__NR_getpid);
++	for (int i = 0; i < DARLING_RPC_SLEEP_ACCOUNT_MAX; ++i) {
++		if (!__darling_rpc_sleep_count[i]) continue;
++		int p = 0;
++		p += __darling_rpc_utoa((unsigned long)pid, line + p); line[p++] = ' ';
++		p += __darling_rpc_utoa((unsigned long)i, line + p); line[p++] = ' ';
++		p += __darling_rpc_utoa(__darling_rpc_sleep_count[i], line + p); line[p++] = ' ';
++		p += __darling_rpc_utoa(__darling_rpc_sleep_total_ticks[i], line + p); line[p++] = '\n';
++		LINUX_SYSCALL(__NR_write, fd, line, p);
++	}
++	LINUX_SYSCALL(__NR_close, fd);
++}
++
++#endif // DARLING_RPC_SLEEP_ACCOUNT
+diff --git a/darling/src/libsystem_kernel/emulation/src/xnu_syscall/bsd/impl/unistd/exit.c b/darling/src/libsystem_kernel/emulation/src/xnu_syscall/bsd/impl/unistd/exit.c
+index 852fef6163275b97b4248b0c41f0f2a01c2f1c50..1304fd123ff99fd5994f5c4ced206ded4ec46409 100644
+--- a/darling/src/libsystem_kernel/emulation/src/xnu_syscall/bsd/impl/unistd/exit.c
++++ b/darling/src/libsystem_kernel/emulation/src/xnu_syscall/bsd/impl/unistd/exit.c
+@@ -5,10 +5,21 @@
+ #include <darling/emulation/linux_premigration/linux-syscalls/linux.h>
+ #include <darling/emulation/linux_premigration/elfcalls_wrapper.h>
+ 
++#ifdef DARLING_RPC_SLEEP_ACCOUNT
++// perf #9-decompose: flush the per-callnum recvmsg-sleep table on the clean exit path
++// (in addition to the destructor), so the dump is robust even if fini handlers don't
++// run for this -nostdlib dylib. Defined in the generated-wrapper TU via the accountant.
++extern void __darling_rpc_sleep_dump(void);
++#endif
++
+ long sys_exit(int status)
+ {
+ 	int ret;
+ 
++#ifdef DARLING_RPC_SLEEP_ACCOUNT
++	__darling_rpc_sleep_dump();
++#endif
++
+ 	native_exit(status);
+ 
+ 	ret = LINUX_SYSCALL1(__NR_exit_group, status);

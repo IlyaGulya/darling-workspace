@@ -1,0 +1,230 @@
+From a61f3e6a718bf2082d54d1134fed58fa3026c4b2 Mon Sep 17 00:00:00 2001
+From: Ilya Gulya <ilya@gulya.me>
+Date: Mon, 15 Jun 2026 18:09:15 +0000
+Subject: [PATCH] EXPERIMENT E-UNION: unprivileged whiteout + opaque-dir in
+ vchroot (PoC)
+
+Adds deletion (whiteout) and non-merge (opaque) semantics, using encodings that
+work WITHOUT privilege -- the translator is uid 0 inside the container but not
+real host root, so gVisor/overlayfs defaults (char-dev(0,0) whiteout needs
+CAP_MKNOD, trusted.overlay.* needs CAP_SYS_ADMIN) are unavailable. Mirroring
+gVisor's userxattr fallback:
+
+  * whiteout = an empty owner-writable placeholder file at the upper path
+    carrying user.union.whiteout=y. The resolver maps such a path to ENOENT and
+    does NOT fall through to the lower layer; the placeholder is never exposed.
+  * opaque  = user.union.opaque=y on an upper dir; the lower-layer fallback for
+    its children is suppressed so the lower namesake is not merged in.
+
+vchroot_run() honors both: whiteout returns -ENOENT mid-walk; an opaque parent
+disables the lower fallback for the missing child.
+
+Bug found+fixed by the test harness: the kernel refuses user.* xattrs on a
+mode-0000 file (EACCES) -- the whiteout placeholder must be owner-writable
+(0600). Important note for the real impl. Marker-set failure rolls back the
+placeholder so a half-made whiteout never masquerades as an empty file.
+
+Still #ifdef EUNION -> production untouched (verified: without the flag every
+E-UNION symbol is absent). Test runner now 36 assertions, all green and stable:
+read-only union (8) + copy-up incl. 16-way fork race (16) + whiteout/opaque (12).
+
+Next: readdir-merge (dedup + whiteout subtraction + opaque honoring); then wire
+copyup/whiteout into the write-op emulation sites; then route-2 verify in
+default unprivileged docker.
+
+Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
+---
+ .../linux_premigration/vchroot_userspace.c    | 165 ++++++++++++++++++
+ 1 file changed, 165 insertions(+)
+
+diff --git a/darling/src/libsystem_kernel/emulation/src/linux_premigration/vchroot_userspace.c b/darling/src/libsystem_kernel/emulation/src/linux_premigration/vchroot_userspace.c
+index 76c4953daaa61b0858592d5df9617fb416b0abac..1900faa7fa29d5af2b7a9dffebea18d9782dc5e7 100644
+--- a/darling/src/libsystem_kernel/emulation/src/linux_premigration/vchroot_userspace.c
++++ b/darling/src/libsystem_kernel/emulation/src/linux_premigration/vchroot_userspace.c
+@@ -350,6 +350,133 @@ int vchroot_copyup(const char* guest)
+ 	// for the PoC and refuse copy-up of special files.
+ 	return -LINUX_EPERM;
+ }
++
++// -------- E-UNION whiteout + opaque markers ------------------------------
++//
++// The translator runs as uid 0 INSIDE the container but is NOT real host root,
++// so the overlayfs/gVisor default encodings are unavailable to us:
++//   * char-dev(0,0) whiteouts need CAP_MKNOD;
++//   * trusted.overlay.* xattrs need CAP_SYS_ADMIN.
++// gVisor hit the same wall and falls back to user.overlay.* (its `userxattr`
++// mode). We do the same, unprivileged:
++//   * whiteout = an empty placeholder REGULAR file at the upper path carrying
++//     the xattr `user.union.whiteout=y`. A guest path whose upper object is a
++//     whiteout reads as ENOENT and does NOT fall through to the lower layer.
++//   * opaque  = the xattr `user.union.opaque=y` on an upper directory; its
++//     lower namesake is not merged in.
++// user.* xattrs are settable by the file owner without privilege on ext4.
++
++static const char EUNION_WH_XATTR[]     = "user.union.whiteout";
++static const char EUNION_OPAQUE_XATTR[] = "user.union.opaque";
++
++#ifndef LINUX_O_DIRECTORY
++#define LINUX_O_DIRECTORY 0200000
++#endif
++
++// returns 1 if host path `host` carries xattr `name` == "y", else 0
++static int eunion_has_marker(const char* host, const char* name)
++{
++	char val[4];
++	#if defined(__NR_lgetxattr)
++		int n = LINUX_SYSCALL(__NR_lgetxattr, host, name, val, sizeof(val));
++	#else
++		int n = LINUX_SYSCALL(__NR_getxattr, host, name, val, sizeof(val));
++	#endif
++	return (n >= 1 && val[0] == 'y');
++}
++
++static int eunion_set_marker(const char* host, const char* name)
++{
++	#if defined(__NR_lsetxattr)
++		return LINUX_SYSCALL(__NR_lsetxattr, host, name, "y", 1, 0);
++	#else
++		return LINUX_SYSCALL(__NR_setxattr, host, name, "y", 1, 0);
++	#endif
++}
++
++// Is the guest path whited-out in the upper layer? (upper object exists and
++// carries the whiteout marker.)
++static int eunion_is_whiteout(const char* guest)
++{
++	char up[4096];
++	if (eunion_host_path(prefix_path, prefix_path_len, guest, up, sizeof(up)) < 0)
++		return 0;
++	stat_t st;
++	if (eunion_lstat(up, &st) != 0)
++		return 0;
++	return eunion_has_marker(up, EUNION_WH_XATTR);
++}
++
++// Record deletion of a guest path: leave an empty placeholder regular file in
++// the upper layer carrying the whiteout xattr, so the lower object stays hidden.
++int vchroot_whiteout(const char* guest)
++{
++	if (prefix_path_len < 0)
++		return -LINUX_ENOENT;
++
++	int r = eunion_mkparents_upper(guest);
++	if (r < 0)
++		return r;
++
++	char up[4096];
++	if (eunion_host_path(prefix_path, prefix_path_len, guest, up, sizeof(up)) < 0)
++		return -LINUX_ENAMETOOLONG;
++
++	// If an upper object already exists (e.g. a copied-up file), replace it with
++	// the placeholder. Try to create exclusively; if it exists, unlink + retry.
++	// NOTE: the placeholder must be owner-writable -- the kernel refuses to set
++	// a user.* xattr on a mode-0000 file (EACCES). The placeholder is never
++	// exposed to the guest (the resolver maps it to ENOENT), so its mode is
++	// irrelevant beyond letting us attach the marker.
++	int fd = LINUX_SYSCALL(__NR_openat, LINUX_AT_FDCWD, up,
++		LINUX_O_WRONLY | LINUX_O_CREAT | LINUX_O_EXCL, 0600);
++	if (fd == -LINUX_EEXIST)
++	{
++		LINUX_SYSCALL(__NR_unlink, up);
++		fd = LINUX_SYSCALL(__NR_openat, LINUX_AT_FDCWD, up,
++			LINUX_O_WRONLY | LINUX_O_CREAT | LINUX_O_EXCL, 0600);
++	}
++	if (fd < 0)
++		return fd;
++	LINUX_SYSCALL(__NR_close, fd);
++
++	int mr = eunion_set_marker(up, EUNION_WH_XATTR);
++	if (mr < 0)
++	{
++		// roll back the placeholder so a failed whiteout doesn't masquerade as
++		// an empty file
++		LINUX_SYSCALL(__NR_unlink, up);
++		return mr;
++	}
++	return 0;
++}
++
++// Remove a whiteout marker (the path is being recreated). Removes the
++// placeholder file entirely so a subsequent copy-up / create can take its place.
++int vchroot_unwhiteout(const char* guest)
++{
++	char up[4096];
++	if (eunion_host_path(prefix_path, prefix_path_len, guest, up, sizeof(up)) < 0)
++		return -LINUX_ENAMETOOLONG;
++	if (!eunion_is_whiteout(guest))
++		return 0; // nothing to do
++	int r = LINUX_SYSCALL(__NR_unlink, up);
++	if (r < 0 && r != -LINUX_ENOENT)
++		return r;
++	return 0;
++}
++
++// Mark an upper directory opaque so its lower namesake is not merged.
++int vchroot_set_opaque(const char* guest)
++{
++	int r = vchroot_copyup(guest); // ensure the dir exists in the upper layer
++	if (r < 0)
++		return r;
++	char up[4096];
++	if (eunion_host_path(prefix_path, prefix_path_len, guest, up, sizeof(up)) < 0)
++		return -LINUX_ENAMETOOLONG;
++	return eunion_set_marker(up, EUNION_OPAQUE_XATTR);
++}
+ #endif
+ 
+ static const char EXIT_PATH[] = "/Volumes/SystemRoot";
+@@ -610,6 +737,22 @@ static int vchroot_run(const char* input_path, struct context* ctxt)
+ 					#endif
+ 
+ #ifdef EUNION
++					// E-UNION whiteout: if the component exists in the upper
++					// layer but is a whiteout marker, the path is deleted -- report
++					// ENOENT and DO NOT fall back to the lower layer. We detect the
++					// marker only when rooted at the upper layer.
++					if (status == 0
++						&& libexec_path_len > 0
++						&& ctxt->current_root_len == prefix_path_len
++						&& strncmp(ctxt->current_path, prefix_path, prefix_path_len) == 0
++						&& eunion_has_marker(ctxt->current_path, EUNION_WH_XATTR))
++					{
++						// The guest path is deleted. Report ENOENT to the caller --
++						// the whiteout placeholder must never be opened/statted as a
++						// real object, and the lower namesake must stay hidden.
++						return -LINUX_ENOENT;
++					}
++
+ 					// E-UNION lower-layer fallback: the component does not exist
+ 					// in the writable upper layer (prefix_path). If we are still
+ 					// rooted at the upper layer and a shared read-only template
+@@ -617,7 +760,29 @@ static int vchroot_run(const char* input_path, struct context* ctxt)
+ 					// path against the template. The guest-relative suffix is
+ 					// everything past current_root_len; we swap only the host root
+ 					// prefix so the rest of the resolver is layer-agnostic.
++					//
++					// Suppressed when the parent upper directory is opaque (lower
++					// namesake not merged). (Whiteouts already returned ENOENT above.)
++					bool eunion_opaque_parent = false;
++					if (status == -LINUX_ENOENT
++						&& libexec_path_len > 0
++						&& ctxt->current_root_len == prefix_path_len
++						&& strncmp(ctxt->current_path, prefix_path, prefix_path_len) == 0)
++					{
++						// parent upper dir = current_path with the last component
++						// (and its leading slash) stripped.
++						char parent[4096];
++						int plen = prevlen - 1; // drop the '/' before the component
++						if (plen <= prefix_path_len)
++							plen = prefix_path_len; // parent is the upper root itself
++						memcpy(parent, ctxt->current_path, plen);
++						parent[plen] = '\0';
++						if (plen > prefix_path_len && eunion_has_marker(parent, EUNION_OPAQUE_XATTR))
++							eunion_opaque_parent = true;
++					}
++
+ 					if (status == -LINUX_ENOENT
++						&& !eunion_opaque_parent
+ 						&& libexec_path_len > 0
+ 						&& ctxt->current_root_len == prefix_path_len
+ 						&& strncmp(ctxt->current_path, prefix_path, prefix_path_len) == 0)
