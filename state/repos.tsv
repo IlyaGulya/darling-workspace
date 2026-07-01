@@ -56,7 +56,7 @@ src/external/darlingserver	8e416d6f41a83dfcd3d3b1899ba746ccd8bb16cd	perf/shmem-r
 src/external/dbuskit	890e51fda949e4dd2c46765e39074f790c10ca18	DETACHED	git@github.com:IlyaGulya/darling-dbuskit.git	clean
 src/external/doc_cmds	60c6a2b858abe1f27b441f479aad2b0a9d0f9ba2	DETACHED	git@github.com:IlyaGulya/darling-doc_cmds.git	clean
 src/external/dtrace	4f52343b36756e32a81eb302242ac6472e9075fa	DETACHED	git@github.com:IlyaGulya/darling-dtrace.git	clean
-src/external/dyld	b352871fcbd92fe27cd0f56064047206803df361	fix/dyld-dcc2-reader	git@github.com:IlyaGulya/darling-dyld.git	clean
+src/external/dyld	a50d76098d6ead090c8297f395e802babcac78b9	fix/dyld-dcc2-reader	git@github.com:IlyaGulya/darling-dyld.git	clean
 src/external/energytrace	e277fcfd430ddab2d8b52187cf480f2857629104	DETACHED	git@github.com:IlyaGulya/darling-energytrace.git	clean
 src/external/expat	70006a0c32d7c8653c11e53fc0c905f1bb498218	DETACHED	git@github.com:IlyaGulya/darling-expat.git	clean
 src/external/file	c6ee65265d253d24b1a496f8ca54b5e449fe108c	DETACHED	git@github.com:IlyaGulya/darling-file.git	clean
