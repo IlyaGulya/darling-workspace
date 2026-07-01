@@ -118,6 +118,40 @@ PR, patch checksum, and application order. `west patch apply` uses
 `git am --3way`, creates clean `integration/<profile>` branches, records the
 top-level submodule pointers, and writes a frozen profile lock.
 
+## Stacked profiles (`base-profile`)
+
+A profile may declare `base-profile: <name>` at the top of its `patches.yml` to
+be applied ON TOP of another profile's integration branch instead of the raw
+manifest revision. This exists because some work is orthogonal in source but
+depends on another layer to build/boot — e.g. the `perf` profile stacks on
+`homebrew` because a bootable `mldr` needs the homebrew fork/stack fixes
+underneath (measured: perf#21b compiles standalone but the binary won't link
+without homebrew's `glibc_fork_reset.c`).
+
+Semantics when `base-profile` is set:
+
+- `apply`/`verify`/`clean` start each module from the tip of
+  `integration/<base>` (falling back to `manifest-rev` for modules the base
+  profile does not patch), not from `manifest-rev`.
+- `apply` refuses to run unless the base profile is already applied
+  (`integration/<base>` present); it tells you to `west patch apply --profile
+  <base>` first.
+- `clean` resets a stacked profile back to the base profile's integration tip,
+  leaving the base layer intact.
+- The stacked profile's `west.lock.yml` is seeded from the base profile's lock,
+  so modules it does not touch keep the base revisions.
+
+Order of operations:
+
+```bash
+west patch apply --profile homebrew     # base layer first
+west patch apply --profile perf         # stacks on integration/homebrew
+west patch clean --profile perf         # back to integration/homebrew
+west patch clean --profile homebrew     # back to manifest-rev
+```
+
+Profiles without `base-profile` (e.g. `homebrew`) behave exactly as before.
+
 ## Patch profile invariants
 
 - Canonical editable source: clean `fix/*` branch in the owning repository.

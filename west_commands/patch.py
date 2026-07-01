@@ -69,6 +69,8 @@ def format_patch_command(patch, commit: str) -> list[str]:
 class DarlingPatch(WestCommand):
     def __init__(self):
         super().__init__("patch", "", "Apply tracked Darling patch profiles")
+        # Set per-invocation in do_run from the profile's `base-profile` key.
+        self._base_profile = None
 
     def do_add_parser(self, parser_adder):
         parser = parser_adder.add_parser(self.name, description=self.description)
@@ -100,6 +102,14 @@ class DarlingPatch(WestCommand):
 
         profile = yaml.safe_load(profile_path.read_text())
         patches = profile.get("patches", [])
+        # Optional stacking: a profile may declare `base-profile: <name>` to be
+        # applied ON TOP of another profile's integration branch instead of the
+        # raw manifest revision (e.g. a `perf` profile that stacks on `homebrew`
+        # because a bootable build needs the homebrew fixes underneath). When
+        # unset, the base is the manifest revision (the original behaviour).
+        self._base_profile = profile.get("base-profile")
+        if self._base_profile == args.profile:
+            self.die(f"{args.profile}: base-profile cannot be itself")
         if args.action == "list":
             self._list(patches)
         elif args.action == "verify":
@@ -153,6 +163,53 @@ class DarlingPatch(WestCommand):
             )
         return revision
 
+    def _base_revision(self, module: str) -> str:
+        """The commit a profile's patches are applied ON TOP of, for `module`.
+
+        Without a base-profile this is the frozen manifest revision (original
+        behaviour). With `base-profile: <name>`, it is the tip of that base
+        profile's `integration/<name>` branch in the module IF that branch
+        exists there (i.e. the base profile actually patches this module);
+        otherwise it falls back to the manifest revision, because the base
+        profile does not touch this module and there is nothing to stack on.
+        """
+        if not self._base_profile:
+            return self._manifest_revision(module)
+        repo = self._repo(module)
+        base_branch = f"integration/{self._base_profile}"
+        if self._branch_exists(repo, base_branch):
+            return git(repo, "rev-parse", base_branch, capture=True)
+        # Base profile does not patch this module -> stack directly on manifest.
+        return self._manifest_revision(module)
+
+    def _require_base_applied(self, modules):
+        """Fail early if a stacked profile is asked to apply but its base
+        profile's integration branch is missing from every module that base
+        would patch. This catches "apply perf before applying homebrew"."""
+        if not self._base_profile:
+            return
+        base_branch = f"integration/{self._base_profile}"
+        base_dir = Path(self.manifest.repo_abspath) / "patches" / self._base_profile
+        base_yml = base_dir / "patches.yml"
+        if not base_yml.is_file():
+            self.die(
+                f"base-profile {self._base_profile!r} not found at {base_yml}"
+            )
+        base_modules = {
+            p["module"] for p in yaml.safe_load(base_yml.read_text()).get("patches", [])
+        }
+        missing = [
+            m
+            for m in base_modules
+            if not self._branch_exists(self._repo(m), base_branch)
+        ]
+        if missing:
+            self.die(
+                f"base profile {self._base_profile!r} is not applied "
+                f"(missing {base_branch} in: {', '.join(sorted(missing))}). "
+                f"Run `west patch apply --profile {self._base_profile}` first."
+            )
+
     def _ensure_clean(self, repo: Path, parent: bool = False):
         command = ["status", "--porcelain"]
         if parent:
@@ -171,7 +228,9 @@ class DarlingPatch(WestCommand):
         self, module: str, repo: Path, branch: str, parent: bool = False
     ):
         self._ensure_clean(repo, parent=parent)
-        revision = self._manifest_revision(module)
+        # Start from the base revision: manifest-rev normally, or the base
+        # profile's integration tip when this profile stacks (base-profile).
+        revision = self._base_revision(module)
         git(repo, "switch", "--detach", revision)
         git(repo, "branch", "-f", branch, revision)
         git(repo, "switch", branch)
@@ -180,14 +239,29 @@ class DarlingPatch(WestCommand):
         repo = self._repo(module)
         branch = f"integration/{profile}"
         current = git(repo, "branch", "--show-current", capture=True)
-        manifest_revision = self._manifest_revision(module)
-        manifest_commit = git(repo, "rev-parse", manifest_revision, capture=True)
+        # The acceptable detached base is the base revision (manifest-rev, or
+        # the base profile's integration tip when stacking).
+        base_revision = self._base_revision(module)
+        base_commit = git(repo, "rev-parse", base_revision, capture=True)
         head = git(repo, "rev-parse", "HEAD", capture=True)
-        allowed = current == branch or (not current and head == manifest_commit)
+        # Accept being: on our own integration branch; detached at the base
+        # commit; or (when stacking) still on the base profile's integration
+        # branch -- which is exactly where the module legitimately sits right
+        # before a stacked profile is applied for the first time.
+        base_branch = (
+            f"integration/{self._base_profile}" if self._base_profile else None
+        )
+        allowed = (
+            current == branch
+            or (current == base_branch and base_branch is not None)
+            or (not current and head == base_commit)
+        )
         if not allowed:
+            expected = f"{branch} or detached {base_revision}"
+            if base_branch:
+                expected = f"{branch}, {base_branch}, or detached {base_revision}"
             raise RuntimeError(
-                f"{module}: expected {branch} or detached {manifest_revision}, "
-                f"found {current or head}"
+                f"{module}: expected {expected}, found {current or head}"
             )
         self._ensure_clean(repo, parent=module == "darling")
 
@@ -270,7 +344,10 @@ class DarlingPatch(WestCommand):
             for index, (module, module_patches) in enumerate(grouped.items()):
                 repo = self._repo(module)
                 worktree = temp_root / str(index)
-                revision = self._manifest_revision(module)
+                # Verify each module's patches apply on the SAME base they will
+                # be applied on: manifest-rev, or the base profile's integration
+                # tip when stacking.
+                revision = self._base_revision(module)
                 git(
                     repo,
                     "worktree",
@@ -417,6 +494,8 @@ class DarlingPatch(WestCommand):
 
         branch = f"integration/{profile}"
         grouped = self._group(patches)
+        # A stacked profile requires its base profile to be applied first.
+        self._require_base_applied(list(grouped))
         modules = list(grouped)
         if "darling" not in modules:
             modules.append("darling")
@@ -476,9 +555,22 @@ class DarlingPatch(WestCommand):
                 env=commit_env,
             )
 
-        lock_data = yaml.safe_load(
-            (Path(self.manifest.repo_abspath) / "west.lock.yml").read_text()
-        )
+        # Seed the lock from the base profile's lock when stacking (so modules
+        # the stacked profile does NOT patch keep the base profile's revisions,
+        # not the raw manifest revision); otherwise from the frozen manifest.
+        if self._base_profile:
+            base_lock = (
+                Path(self.manifest.repo_abspath)
+                / "patches"
+                / self._base_profile
+                / "west.lock.yml"
+            )
+            lock_path = base_lock if base_lock.is_file() else (
+                Path(self.manifest.repo_abspath) / "west.lock.yml"
+            )
+        else:
+            lock_path = Path(self.manifest.repo_abspath) / "west.lock.yml"
+        lock_data = yaml.safe_load(lock_path.read_text())
         revisions = {"darling": git(darling, "rev-parse", "HEAD", capture=True)}
         for module in grouped:
             revisions[module] = git(
@@ -514,7 +606,10 @@ class DarlingPatch(WestCommand):
         for module in reversed(modules):
             repo = self._repo(module)
             self._abort_am(repo)
-            revision = self._manifest_revision(module)
+            # Reset to the base this profile was applied on: manifest-rev, or
+            # the base profile's integration tip when stacking. Resetting a
+            # stacked profile therefore leaves the base profile intact.
+            revision = self._base_revision(module)
             switch_args = ["switch", "--detach", revision]
             if force:
                 switch_args.insert(1, "--discard-changes")
