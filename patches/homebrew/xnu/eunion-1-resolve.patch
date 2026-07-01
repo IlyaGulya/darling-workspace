@@ -1,0 +1,128 @@
+From d8973410c831710d8f28ee881123d2844b1dbd9d Mon Sep 17 00:00:00 2001
+From: Ilya Gulya <ilya@gulya.me>
+Date: Mon, 15 Jun 2026 17:47:30 +0000
+Subject: [PATCH] EXPERIMENT E-UNION: read-only union resolve in vchroot (PoC,
+ #ifdef EUNION)
+
+PoC for dar-test-infra-sp5.8.4.4 -- assemble the macOS guest root by unioning
+a writable per-prefix upper layer over a shared read-only system template, in
+the userspace path translator, with no mount/fuse/userns (works in any
+unprivileged container incl. default root-docker).
+
+vchroot_run(): when a component is absent in the upper layer (prefix_path) and
+a template (libexec_path) is configured, retry the same guest-relative suffix
+against the template and, on a hit, switch current_root to the template for the
+rest of the resolve. Per-component, so mixed paths (upper dir + lower leaf)
+resolve correctly; one-way upper->lower so a lower miss never falls back up.
+
+Entirely guarded by #ifdef EUNION: production builds (which do not define it)
+are byte-for-byte unchanged -- verified by running the same test suite with and
+without the flag (5 lower-only assertions fail identically to baseline when
+off, all 8 pass when on).
+
+Read-only deliverable only. Copy-on-write, whiteout and readdir-merge are the
+next TDD steps. Test harness lives in the workspace (experiments/e-union), not
+in this repo.
+
+Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
+---
+ .../linux_premigration/vchroot_userspace.c    | 79 +++++++++++++++++++
+ 1 file changed, 79 insertions(+)
+
+diff --git a/darling/src/libsystem_kernel/emulation/src/linux_premigration/vchroot_userspace.c b/darling/src/libsystem_kernel/emulation/src/linux_premigration/vchroot_userspace.c
+index 2b72ad9d330c60bed3d3185531a0ffc615f84ab1..82f6a0e8524f98359fd29163e582b1a2edad3352 100644
+--- a/darling/src/libsystem_kernel/emulation/src/linux_premigration/vchroot_userspace.c
++++ b/darling/src/libsystem_kernel/emulation/src/linux_premigration/vchroot_userspace.c
+@@ -76,6 +76,28 @@ static bool next_component(const char* from, const char** end);
+ static char prefix_path[4096] = {0}; // MUST NOT end with '/'
+ static int prefix_path_len = -1;
+ 
++#ifdef EUNION
++// E-UNION (dar-test-infra-sp5.8.4.4): shared read-only system template that
++// the writable per-prefix layer (prefix_path) is unioned over. When a guest
++// path is absent in prefix_path it falls back to libexec_path. Empty/unset
++// (len <= 0) disables the union and the resolver behaves exactly as before.
++static char libexec_path[4096] = {0}; // MUST NOT end with '/'
++static int libexec_path_len = -1;
++
++static void set_libexec_path(const char* p)
++{
++	if (!p || !*p)
++	{
++		libexec_path[0] = '\0';
++		libexec_path_len = 0;
++		return;
++	}
++	strcpy(libexec_path, p);
++	libexec_path_len = (int)strlen(libexec_path);
++}
++#define HAVE_LIBEXEC_SETTER 1
++#endif
++
+ static const char EXIT_PATH[] = "/Volumes/SystemRoot";
+ 
+ #ifndef TEST
+@@ -333,6 +355,63 @@ static int vchroot_run(const char* input_path, struct context* ctxt)
+ 						#endif
+ 					#endif
+ 
++#ifdef EUNION
++					// E-UNION lower-layer fallback: the component does not exist
++					// in the writable upper layer (prefix_path). If we are still
++					// rooted at the upper layer and a shared read-only template
++					// (libexec_path) is configured, retry the SAME guest-relative
++					// path against the template. The guest-relative suffix is
++					// everything past current_root_len; we swap only the host root
++					// prefix so the rest of the resolver is layer-agnostic.
++					if (status == -LINUX_ENOENT
++						&& libexec_path_len > 0
++						&& ctxt->current_root_len == prefix_path_len
++						&& strncmp(ctxt->current_path, prefix_path, prefix_path_len) == 0)
++					{
++						char relbuf[4096];
++						const int rellen = ctxt->current_path_len - prefix_path_len;
++						if (libexec_path_len + rellen + 1 <= (int)sizeof(ctxt->current_path))
++						{
++							// stash the guest-relative suffix, rebuild under libexec
++							memcpy(relbuf, ctxt->current_path + prefix_path_len, rellen);
++							relbuf[rellen] = '\0';
++
++							memcpy(ctxt->current_path, libexec_path, libexec_path_len);
++							memcpy(ctxt->current_path + libexec_path_len, relbuf, rellen + 1);
++							ctxt->current_path_len = libexec_path_len + rellen;
++
++							#if defined(__NR_lstat)
++								int lstatus = LINUX_SYSCALL(__NR_lstat, ctxt->current_path, &st);
++							#else
++								#if __NR_newfstatat
++									int lstatus = LINUX_SYSCALL(__NR_newfstatat, LINUX_AT_FDCWD, ctxt->current_path, &st, LINUX_AT_SYMLINK_NOFOLLOW);
++								#else
++									int lstatus = LINUX_SYSCALL(__NR_fstatat64, LINUX_AT_FDCWD, ctxt->current_path, &st, LINUX_AT_SYMLINK_NOFOLLOW);
++								#endif
++							#endif
++
++							if (lstatus == 0 || lstatus != -LINUX_ENOENT)
++							{
++								// Found in (or definitively errored against) the
++								// lower layer: commit the switch to the template
++								// root and adopt the lower-layer stat result.
++								ctxt->current_root = libexec_path;
++								ctxt->current_root_len = libexec_path_len;
++								status = lstatus;
++							}
++							else
++							{
++								// Not in lower layer either: restore the upper-layer
++								// path so the case-insensitive search below runs
++								// against prefix_path as it did originally.
++								memcpy(ctxt->current_path, prefix_path, prefix_path_len);
++								memcpy(ctxt->current_path + prefix_path_len, relbuf, rellen + 1);
++								ctxt->current_path_len = prefix_path_len + rellen;
++							}
++						}
++					}
++#endif
++
+ 					if (icase_enabled && status == -LINUX_ENOENT)
+ 					{
+ 						// Case insensitive search

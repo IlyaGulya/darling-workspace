@@ -1,0 +1,40 @@
+From 2530b9eea87b8a9c78284fae70b5e47033fcacd6 Mon Sep 17 00:00:00 2001
+From: Ilya Gulya <ilya@gulya.me>
+Date: Mon, 15 Jun 2026 20:41:15 +0000
+Subject: [PATCH] EXPERIMENT E-UNION: getdents_merge passthrough when union
+ inactive (PoC)
+
+vchroot_getdents_merge now returns the raw getdents64 stream when no template is
+configured (libexec_path_len <= 0), instead of synthesizing dirents (d_ino=1,
+DT_UNKNOWN) through the merge path. The synthetic ino/type are correct for a
+genuinely merged listing but must not be imposed when the union is switched off
+-- otherwise an EUNION-compiled build alters every readdir even with no active
+union. Defensive correctness fix; #ifdef EUNION -> production byte-identical.
+
+Local only, nothing pushed.
+
+Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
+---
+ .../emulation/src/linux_premigration/vchroot_userspace.c | 9 +++++++++
+ 1 file changed, 9 insertions(+)
+
+diff --git a/darling/src/libsystem_kernel/emulation/src/linux_premigration/vchroot_userspace.c b/darling/src/libsystem_kernel/emulation/src/linux_premigration/vchroot_userspace.c
+index 0011f1c7d5499fee71744a2a0992a138a04ccd0f..4a3afbee6967647ccb5cf5e8eb134af44972c958 100644
+--- a/darling/src/libsystem_kernel/emulation/src/linux_premigration/vchroot_userspace.c
++++ b/darling/src/libsystem_kernel/emulation/src/linux_premigration/vchroot_userspace.c
+@@ -816,6 +816,15 @@ int vchroot_getdents_merge(int fd, char* out, int cap)
+ 	if (prefix_path_len < 0)
+ 		return -LINUX_ENOENT;
+ 
++	// Union inactive (no template configured for this prefix): pass straight
++	// through to the real getdents64 so callers see the kernel's true d_ino /
++	// d_type. The merge path synthesizes those (d_ino=1, DT_UNKNOWN), which is
++	// fine for a merged listing but must NOT be imposed when there is nothing to
++	// merge -- otherwise an EUNION build regresses every readdir even with the
++	// union switched off.
++	if (libexec_path_len <= 0)
++		return LINUX_SYSCALL(__NR_getdents64, fd, out, cap);
++
+ 	struct eunion_dir_state* s = eunion_dir_find(fd);
+ 	if (!s)
+ 	{

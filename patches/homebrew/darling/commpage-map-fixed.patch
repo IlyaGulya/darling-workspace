@@ -1,0 +1,75 @@
+From 2ed457f76effbb46649408a3c2d0e84596aabf60 Mon Sep 17 00:00:00 2001
+From: Ilya Gulya <ilya@gulya.me>
+Date: Sat, 27 Jun 2026 03:13:05 +0000
+Subject: [PATCH] mldr: map the commpage with MAP_FIXED at its canonical
+ address
+
+commpage_setup() mmap'd the commpage at the fixed _COMM_PAGE64_BASE_ADDRESS
+without MAP_FIXED, so the base was only a hint. That address (0x7fffffe00000)
+lies in the Linux ASLR mmap/stack region; intermittently something already
+occupied the slot and the kernel relocated the mapping. commpage_setup then
+wrote the CPU-count bytes to the relocated page while Apple code (e.g.
+libmalloc's __malloc_initialize, which divides by _COMM_PAGE_PHYSICAL_CPUS)
+read the canonical absolute address -- a fresh zero-filled page -- and divided
+by zero, raising SIGFPE in random short-lived processes under a fork/exec storm.
+
+The commpage is a fixed-address ABI contract and must live at its canonical
+address. Map it with MAP_FIXED so it always lands there; the loaded Mach-O has
+not been mapped yet at this point, so only mldr's own loader artifacts could
+collide, and replacing a stray mapping there is strictly better than a later
+divide-by-zero. Abort if MAP_FIXED still does not return the requested address.
+---
+ src/startup/mldr/commpage.c | 35 +++++++++++++++++++++++++++++++++--
+ 1 file changed, 33 insertions(+), 2 deletions(-)
+
+diff --git a/src/startup/mldr/commpage.c b/src/startup/mldr/commpage.c
+index d9a7aea963c85d15b7364f2abedfa2614f7e8b7e..08030471efe51a251346afb07ecceeb7b58edf9d 100644
+--- a/src/startup/mldr/commpage.c
++++ b/src/startup/mldr/commpage.c
+@@ -33,13 +33,44 @@ void commpage_setup(bool _64bit)
+ 	uint8_t *user_page_shift, *kernel_page_shift;
+ 	struct sysinfo si;
+ 
+-	commpage = (uint8_t*) mmap((void*)(_64bit ? _COMM_PAGE64_BASE_ADDRESS : _COMM_PAGE32_BASE_ADDRESS),
+-			_64bit ? _COMM_PAGE64_AREA_LENGTH : _COMM_PAGE32_AREA_LENGTH, PROT_READ|PROT_WRITE, MAP_PRIVATE|MAP_ANONYMOUS, -1, 0);
++	// The commpage is a fixed-address ABI contract: Apple code (e.g. libmalloc's
++	// __malloc_initialize, which divides by the _COMM_PAGE_PHYSICAL_CPUS byte)
++	// reads the commpage through the absolute hardcoded address
++	// _COMM_PAGE64_BASE_ADDRESS. It MUST be mapped exactly there.
++	//
++	// dar-gwn.6.6: this mmap used MAP_PRIVATE|MAP_ANONYMOUS WITHOUT MAP_FIXED, so
++	// the base was only a hint. That address (0x7fffffe00000) sits in the Linux
++	// ASLR mmap/stack region, and intermittently (~1 in several thousand execs,
++	// depending on ASLR) something already occupied it, so the kernel relocated
++	// the mapping. commpage_setup then wrote the CPU-count bytes to the WRONG
++	// page while libmalloc read the canonical address -- a zero-filled page --
++	// and divided by zero: "Floating point exception: 8" killing random
++	// short-lived guest processes under a fork/exec storm (e.g. brew's
++	// libunistring config.h build). The relocated mapping was harmless on its
++	// own; the bug was that nothing forced the commpage to its required address.
++	//
++	// Fix: map at the canonical address with MAP_FIXED so it always lands there.
++	// At this point in setup_space() the loaded Mach-O image has not been mapped
++	// yet, so the only mappings present are mldr's own loader artifacts, which the
++	// Linux loader places via ASLR and which essentially never legitimately need
++	// this specific high address; replacing a stray mapping there is strictly
++	// better than the guaranteed-later divide-by-zero crash.
++	void* want = (void*)(_64bit ? _COMM_PAGE64_BASE_ADDRESS : _COMM_PAGE32_BASE_ADDRESS);
++	size_t area_len = _64bit ? _COMM_PAGE64_AREA_LENGTH : _COMM_PAGE32_AREA_LENGTH;
++	commpage = (uint8_t*) mmap(want, area_len, PROT_READ|PROT_WRITE,
++			MAP_PRIVATE|MAP_ANONYMOUS|MAP_FIXED, -1, 0);
+ 	if (commpage == MAP_FAILED)
+ 	{
+ 		fprintf(stderr, "Cannot mmap commpage: %s\n", strerror(errno));
+ 		exit(1);
+ 	}
++	if ((void*)commpage != want)
++	{
++		// MAP_FIXED is supposed to either return the requested address or fail;
++		// anything else is a contract violation we cannot recover from.
++		fprintf(stderr, "Commpage landed at %p, not the required %p\n", (void*)commpage, want);
++		exit(1);
++	}
+ 
+ 	signature = (char*)CGET(_COMM_PAGE_SIGNATURE);
+ 	version = (uint16_t*)CGET(_COMM_PAGE_VERSION);

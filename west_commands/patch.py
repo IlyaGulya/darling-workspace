@@ -73,13 +73,19 @@ class DarlingPatch(WestCommand):
     def do_add_parser(self, parser_adder):
         parser = parser_adder.add_parser(self.name, description=self.description)
         subparsers = parser.add_subparsers(dest="action", required=True)
-        for action in ("list", "verify", "apply", "clean"):
+        for action in ("list", "verify", "apply", "clean", "status"):
             command = subparsers.add_parser(action)
             command.add_argument("--profile", default="homebrew")
             if action == "apply":
                 command.add_argument("--roll-back", action="store_true")
             if action == "clean":
                 command.add_argument("--force", action="store_true")
+            if action == "status":
+                command.add_argument(
+                    "--strict",
+                    action="store_true",
+                    help="exit non-zero if any patch is MISSING or CONFLICT",
+                )
         return parser
 
     def do_run(self, args, unknown):
@@ -98,6 +104,8 @@ class DarlingPatch(WestCommand):
             self._list(patches)
         elif args.action == "verify":
             self._verify(profile_dir, patches)
+        elif args.action == "status":
+            self._status(profile_dir, patches, args.strict)
         elif args.action == "apply":
             self._apply(
                 args.profile,
@@ -291,6 +299,92 @@ class DarlingPatch(WestCommand):
                         str(worktree),
                         check=False,
                     )
+
+    def _patch_state(self, repo: Path, patch_path: Path) -> str:
+        """Classify a patch against the CURRENT working tree of `repo`.
+
+        Unlike `verify` (which checks the patches against a throwaway worktree at
+        the frozen manifest revision), this inspects the tree you actually build
+        from -- so it catches the case where the build tree drifted away from
+        patches.yml and a tracked fix is silently missing.
+
+          APPLIED  - the patch reverse-applies cleanly: its content is present
+                     verbatim against the current tree.
+          MISSING  - the patch forward-applies cleanly: its content is ABSENT.
+                     This is the authoritative "lost patch" signal.
+          STACKED? - neither clean reverse nor clean forward. For a standalone
+                     patch this means partially applied / context-shifted /
+                     conflicting. But it is ALSO the normal result for a member
+                     of an interdependent patch SERIES (e.g. eunion-*): once a
+                     later patch in the series edits the same lines, an earlier
+                     patch no longer reverse-applies verbatim even though it is
+                     fully present. So STACKED? is NOT proof of drift -- only
+                     MISSING is. Trust a clean `west patch apply`/`verify` as the
+                     authoritative applicability check for stacked series.
+        """
+        reverse_ok = (
+            subprocess.run(
+                ["git", "apply", "--reverse", "--check", str(patch_path)],
+                cwd=repo,
+                check=False,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+            ).returncode
+            == 0
+        )
+        if reverse_ok:
+            return "APPLIED"
+        forward_ok = (
+            subprocess.run(
+                ["git", "apply", "--check", str(patch_path)],
+                cwd=repo,
+                check=False,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+            ).returncode
+            == 0
+        )
+        if forward_ok:
+            return "MISSING"
+        return "STACKED?"
+
+    def _status(self, profile_dir: Path, patches, strict: bool):
+        grouped = self._group(patches)
+        counts = {"APPLIED": 0, "MISSING": 0, "STACKED?": 0, "NOFILE": 0}
+        for module, module_patches in grouped.items():
+            repo = self._repo(module)
+            branch = git(repo, "branch", "--show-current", capture=True) or (
+                "(detached " + git(repo, "rev-parse", "--short", "HEAD", capture=True) + ")"
+            )
+            self.inf(f"{module}  [{branch}]")
+            for patch in module_patches:
+                patch_path = profile_dir / patch["path"]
+                if not patch_path.is_file():
+                    state = "NOFILE"
+                else:
+                    state = self._patch_state(repo, patch_path)
+                counts[state] = counts.get(state, 0) + 1
+                bead = patch.get("bead", "-")
+                self.inf(f"  {state:8} {patch['path']}  [{bead}]")
+        total = sum(counts.values())
+        self.inf(
+            f"status: {counts['APPLIED']} applied, {counts['MISSING']} missing, "
+            f"{counts['STACKED?']} stacked?, {counts['NOFILE']} no-file "
+            f"(of {total})"
+        )
+        if counts["STACKED?"]:
+            self.inf(
+                "note: STACKED? is expected for interdependent series (eunion-*) "
+                "and is NOT drift; only MISSING means a tracked patch is absent."
+            )
+        # MISSING is the authoritative drift signal; STACKED? is not (see
+        # _patch_state). A NOFILE is a real error (patches.yml references a
+        # patch file that does not exist).
+        if strict and (counts["MISSING"] or counts["NOFILE"]):
+            self.die(
+                f"{counts['MISSING']} missing + {counts['NOFILE']} no-file "
+                "patch(es) -- build tree drifted from patches.yml"
+            )
 
     def _abort_am(self, repo: Path):
         am_state = git(

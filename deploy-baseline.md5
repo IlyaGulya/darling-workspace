@@ -1,0 +1,17 @@
+# Known-good DEPLOYED binary baseline for `west darling-doctor` check 3.
+#
+# These are the md5s of the last-known-good deployed closure binaries in the install prefix. The
+# doctor compares the deployed dyld (both copies) / mldr / darlingserver against these by default.
+#
+# Format: one "key = md5" per line; '#' comments. Keys: dyld, mldr, dserver.
+# UPDATE this file (and note why + which Bead) whenever a legitimate rebuild changes what is
+# deployed — otherwise the doctor will (correctly) flag the new deploy as a baseline mismatch.
+#
+# Current baseline: the prod-matched set restored after perf#24c2* work
+#   dyld    79b22273  (dyld-733.6, boot-compatible with the deployed 06-15 closure)
+#   mldr    f0cd2a82  (perf#21b compact-fd band)
+#   dserver 835946f9  (perf#18 ring transport)
+
+dyld    = 79b22273481ea61ab63c0606c23ab300
+mldr    = f0cd2a82efc4cb4614b63cabac0168f8
+dserver = 835946f9df06f3902581e2e66f3c08e7

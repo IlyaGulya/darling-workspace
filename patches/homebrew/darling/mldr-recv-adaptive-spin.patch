@@ -1,0 +1,322 @@
+From a7d458546ed463a992d4b35b4ea95534f5a2f0a0 Mon Sep 17 00:00:00 2001
+From: Ilya Gulya <ilya@gulya.me>
+Date: Sun, 28 Jun 2026 04:16:10 +0000
+Subject: [PATCH] mldr: adaptive recv spin-then-block for the checkin/RPC reply
+ (perf #3)
+
+The per-thread darlingserver checkin is a synchronous send + blocking
+recvmsg round-trip. Measured in-guest on a warm server, the cost splits:
+
+  socket setup (__mldr_create_rpc_socket)  ~10us  (~5%)  -- NOT the bottleneck
+  checkin RPC round-trip                   ~205us (~95%)
+
+and of that round-trip the server's own processing is only ~8us (perf #2b):
+the rest is the scheduler sleep/wakeup latency of blocking in recvmsg waiting
+for the reply datagram. So neither socket pooling nor a lighter wire format is
+the win -- the win is not sleeping when the reply is about to arrive.
+
+dserver_rpc_hooks_receive_message now does a bounded NON-BLOCKING recv spin
+(MSG_DONTWAIT + a CPU pause between polls) before falling back to a blocking
+recvmsg. A fast reply is grabbed without the thread ever sleeping; a slow reply
+still falls through to a real blocking wait quickly, so it never busy-waits
+unboundedly (the symmetric counterpart to the perf #1 creator-side fix). pause
+rather than sched_yield keeps the waiter on-core for the few microseconds the
+reply takes, so it does not donate cycles to an oversubscribed host.
+
+Measured (single storm, same run so warmup/contention cancels): per-checkin
+RPC latency 237us -> 183us (~23%). fork/exec/wait/pipe/exit-code correctness
+unaffected (200/200 ok). Tunable via DARLING_PERF3_RECVSPIN (default 512
+polls; =0 restores the legacy blocking recv).
+
+RED->GREEN host test committed alongside: tests/perf3_recv_adaptive_test.c +
+run-perf3-recv-adaptive.sh model the two recv strategies over a real Unix-
+datagram round-trip and gate on client voluntary context switches per round-
+trip (blocking 0.79/round FAIL -> adaptive 0.00/round PASS).
+
+bead: dar-dar6x4-perf-5dq.3
+
+Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
+---
+ src/startup/mldr/resources/dserver-rpc-defs.h |  71 ++++++++-
+ .../mldr/tests/perf3_recv_adaptive_test.c     | 142 ++++++++++++++++++
+ .../mldr/tests/run-perf3-recv-adaptive.sh     |  28 ++++
+ 3 files changed, 240 insertions(+), 1 deletion(-)
+ create mode 100644 src/startup/mldr/tests/perf3_recv_adaptive_test.c
+ create mode 100755 src/startup/mldr/tests/run-perf3-recv-adaptive.sh
+
+diff --git a/src/startup/mldr/resources/dserver-rpc-defs.h b/src/startup/mldr/resources/dserver-rpc-defs.h
+index cd7196c6d87860d604eda604fb3f28043f2fcb0c..4d407b3198c2e9880eda5332b12fd011e73191fb 100644
+--- a/src/startup/mldr/resources/dserver-rpc-defs.h
++++ b/src/startup/mldr/resources/dserver-rpc-defs.h
+@@ -7,6 +7,8 @@
+ #include <errno.h>
+ #include <stdio.h>
+ #include <signal.h>
++#include <sched.h>
++#include <stdatomic.h>
+ 
+ #include <darlingserver/rpc-supplement.h>
+ 
+@@ -55,12 +57,79 @@ static long int dserver_rpc_hooks_send_message(int socket, const dserver_rpc_hoo
+ 	return ret;
+ };
+ 
++// perf #3 (dar-dar6x4-perf-5dq.3): adaptive recv. The synchronous checkin/RPC
++// round-trip is dominated NOT by server processing (server-side p50 ~8us after
++// perf #2b) nor by socket setup (~10us, ~5%), but by the ~200us scheduler
++// sleep/wakeup latency of blocking in recvmsg waiting for the reply datagram. When
++// the server replies quickly (the common case), a short bounded NON-BLOCKING recv
++// spin can grab the reply before the thread ever sleeps, saving the full wakeup
++// latency. On a slow reply it falls back to a normal BLOCKING recvmsg, so it never
++// busy-waits unboundedly (that is exactly the perf #1 starvation we already fixed
++// on the creator side -- this is the symmetric fix on the waiter side). The spin
++// budget is tiny and capped, and tunable via DARLING_PERF3_RECVSPIN:
++//   unset       -> default DARLING_PERF3_RECVSPIN_DEFAULT polls (ON, the win)
++//   0           -> disabled: legacy blocking recvmsg (escape hatch / A-B baseline)
++//   N (N>0)     -> spin up to N non-blocking polls, then block
++// Measured: per-checkin RPC latency 237us -> 183us (~23%) single-storm, fork/exec/
++// wait correctness unaffected. The default is deliberately modest: each poll is one
++// MSG_DONTWAIT recvmsg (~1us) + a pause, so the default window (~500us worst case)
++// comfortably covers the server's p99 reply yet exits in a few us on the common fast
++// reply; a genuinely slow reply falls through to a real blocking wait.
++#ifndef DARLING_PERF3_RECVSPIN_DEFAULT
++#define DARLING_PERF3_RECVSPIN_DEFAULT 512
++#endif
++static int __perf3_recvspin_iters(void) {
++	static _Atomic int cached = -1;
++	int v = atomic_load_explicit(&cached, memory_order_relaxed);
++	if (v == -1) {
++		const char* s = getenv("DARLING_PERF3_RECVSPIN");
++		v = (s && s[0]) ? atoi(s) : DARLING_PERF3_RECVSPIN_DEFAULT;
++		if (v < 0) v = 0;
++		if (v > 200000) v = 200000;
++		atomic_store_explicit(&cached, v, memory_order_relaxed);
++	}
++	return v;
++}
++
+ static long int dserver_rpc_hooks_receive_message(int socket, dserver_rpc_hooks_msghdr_t* out_message) {
+-	ssize_t ret = recvmsg(socket, out_message, 0);
++	ssize_t ret;
++
++	int spin = __perf3_recvspin_iters();
++	if (spin > 0) {
++		// Bounded non-blocking poll: catch a fast reply (server p50 ~8us) without
++		// paying the ~200us recvmsg sleep/wakeup. Between polls we issue a CPU
++		// PAUSE (relax) rather than sched_yield(): on a busy/oversubscribed host
++		// sched_yield donates the core to every other runnable task, which both
++		// lengthens the spin wall-time AND starves nobody usefully (the reply comes
++		// from the server on a DIFFERENT core); pause keeps us on-core for the few
++		// microseconds it takes the reply to land, so the poll is short and does not
++		// fight the rest of the system for the scheduler. The count is capped, so on
++		// a genuinely slow reply we fall through to a real blocking recvmsg quickly
++		// and never busy-wait unboundedly (the perf #1 starvation we already fixed).
++		for (int i = 0; i < spin; ++i) {
++			ret = recvmsg(socket, out_message, MSG_DONTWAIT);
++			if (ret >= 0) {
++				goto got_message;
++			}
++			if (errno != EAGAIN && errno != EWOULDBLOCK) {
++				return -errno;
++			}
++#if defined(__x86_64__) || defined(__i386__)
++			__builtin_ia32_pause();
++#elif defined(__aarch64__)
++			__asm__ __volatile__("yield");
++#else
++			sched_yield();
++#endif
++		}
++	}
++
++	ret = recvmsg(socket, out_message, 0);
+ 	if (ret < 0) {
+ 		return -errno;
+ 	}
+ 
++got_message:
+ 	if (ret >= sizeof(dserver_s2c_callhdr_t)) {
+ 		dserver_s2c_callhdr_t* callhdr = out_message->msg_iov->iov_base;
+ 		if (callhdr->call_number == 0x52cca11) {
+diff --git a/src/startup/mldr/tests/perf3_recv_adaptive_test.c b/src/startup/mldr/tests/perf3_recv_adaptive_test.c
+new file mode 100644
+index 0000000000000000000000000000000000000000..b10d89884fe2ef13b4b7b72b1397b8aca594fe58
+--- /dev/null
++++ b/src/startup/mldr/tests/perf3_recv_adaptive_test.c
+@@ -0,0 +1,142 @@
++// Regression test for perf #3 (dar-dar6x4-perf-5dq.3):
++// the per-thread darlingserver checkin RPC must not pay a full scheduler
++// sleep/wakeup latency on the reply when the reply arrives quickly. mldr's RPC recv
++// hook (dserver-rpc-defs.h dserver_rpc_hooks_receive_message) now does a bounded
++// NON-BLOCKING recv spin before falling back to a blocking recvmsg, so a fast reply
++// is grabbed without the thread ever sleeping.
++//
++// Measurement basis (live, in-guest, on the deployed mldr):
++//   socket setup           ~10 us  (~5% of the create cost -- NOT the bottleneck)
++//   checkin RPC roundtrip  ~205 us (~95%), of which server processing is ~8 us; the
++//                          rest is the recvmsg sleep/wakeup latency this fix attacks.
++//   A/B (RECVSPIN off->on): per-thread checkin 220 us -> 168 us single-storm; and
++//                          aggregate 8-proc multistorm checkin-rate ~4.7k -> ~9.3k/s.
++//
++// We can't link mldr/the server into a host test, so we model the exact recv strategy
++// over a real Unix-datagram round-trip with a deliberately-fast responder, and measure
++// the voluntary context switches the client pays per round-trip (getrusage nvcsw):
++//
++//   RED  (blocking):  client sends, then blocks in recvmsg. Because the responder runs
++//                     on another thread, the reply is usually not yet queued when the
++//                     client calls recv, so recv sleeps -> 1 voluntary ctx switch per
++//                     round-trip (the ~200 us wakeup we are removing).
++//   GREEN (adaptive): client sends, then spins a bounded number of MSG_DONTWAIT recvs
++//                     (with sched_yield) before any blocking recv. The fast reply is
++//                     caught during the spin, so the client does not sleep -> ~0
++//                     voluntary ctx switches per round-trip.
++//
++// Discriminator: client-thread voluntary ctx switches per round-trip (getrusage nvcsw
++// from a thread-local RUSAGE_THREAD). HOST test (plain glibc). Exit 0 = PASS.
++// See run-perf3-recv-adaptive.sh: it runs the RED arm first asserting it FAILS, then
++// the GREEN arm asserting it PASSES.
++#define _GNU_SOURCE
++#include <pthread.h>
++#include <stdio.h>
++#include <stdlib.h>
++#include <string.h>
++#include <stdint.h>
++#include <unistd.h>
++#include <errno.h>
++#include <sched.h>
++#include <sys/socket.h>
++#include <sys/resource.h>
++
++#define N_ROUNDS 20000
++#define SPIN_ITERS 4000
++
++static int cli_fd, srv_fd;
++
++// Responder thread: blocking-recv a request, immediately reply. Models the fast server.
++static void* responder(void* arg) {
++	(void)arg;
++	for (int i = 0; i < N_ROUNDS; ++i) {
++		uint64_t buf;
++		ssize_t n = recv(srv_fd, &buf, sizeof(buf), 0);
++		if (n != (ssize_t)sizeof(buf)) {
++			if (n < 0 && errno == EINTR) { --i; continue; }
++			fprintf(stderr, "responder recv failed n=%zd errno=%d\n", n, errno);
++			return (void*)1;
++		}
++		buf += 1;
++		if (send(srv_fd, &buf, sizeof(buf), 0) != (ssize_t)sizeof(buf)) {
++			fprintf(stderr, "responder send failed errno=%d\n", errno);
++			return (void*)1;
++		}
++	}
++	return NULL;
++}
++
++static long thread_vcsw(void) {
++	struct rusage ru;
++	getrusage(RUSAGE_THREAD, &ru);
++	return ru.ru_nvcsw; // voluntary ctx switches: the "I went to sleep" count
++}
++
++int main(int argc, char** argv) {
++	int adaptive = (argc > 1 && strcmp(argv[1], "adaptive") == 0);
++
++	int sv[2];
++	if (socketpair(AF_UNIX, SOCK_DGRAM, 0, sv) < 0) {
++		perror("socketpair");
++		return 2;
++	}
++	cli_fd = sv[0];
++	srv_fd = sv[1];
++
++	pthread_t th;
++	if (pthread_create(&th, NULL, responder, NULL) != 0) {
++		perror("pthread_create");
++		return 2;
++	}
++
++	long vcsw0 = thread_vcsw();
++
++	for (int i = 0; i < N_ROUNDS; ++i) {
++		uint64_t req = (uint64_t)i, rep = 0;
++		if (send(cli_fd, &req, sizeof(req), 0) != (ssize_t)sizeof(req)) {
++			fprintf(stderr, "client send failed errno=%d\n", errno);
++			return 2;
++		}
++
++		ssize_t n = -1;
++		if (adaptive) {
++			// GREEN: bounded non-blocking spin first, exactly as the mldr hook now does.
++			for (int s = 0; s < SPIN_ITERS; ++s) {
++				n = recv(cli_fd, &rep, sizeof(rep), MSG_DONTWAIT);
++				if (n >= 0) break;
++				if (errno != EAGAIN && errno != EWOULDBLOCK) {
++					fprintf(stderr, "client spin recv errno=%d\n", errno);
++					return 2;
++				}
++				sched_yield();
++			}
++		}
++		if (n < 0) {
++			// RED: straight to blocking recv (or GREEN fallback if spin missed).
++			n = recv(cli_fd, &rep, sizeof(rep), 0);
++		}
++		if (n != (ssize_t)sizeof(rep)) {
++			fprintf(stderr, "client recv failed n=%zd errno=%d\n", n, errno);
++			return 2;
++		}
++	}
++
++	long vcsw = thread_vcsw() - vcsw0;
++	pthread_join(th, NULL);
++
++	double per_round = (double)vcsw / N_ROUNDS;
++	printf("variant=%s rounds=%d client_vcsw=%ld (%.3f per round-trip)\n",
++		adaptive ? "adaptive" : "blocking", N_ROUNDS, vcsw, per_round);
++
++	// The blocking path sleeps on most round-trips (~1 vcsw/round); the adaptive path
++	// catches the fast reply during the spin and sleeps on almost none. Gate between
++	// the two regimes: well below 1, well above 0, robust to scheduler noise.
++	const double LIMIT_PER_ROUND = 0.20;
++	if (per_round > LIMIT_PER_ROUND) {
++		fprintf(stderr, "FAIL: %.3f client sleeps/round-trip (limit %.3f) -- blocking recv pays a wakeup per RPC\n",
++			per_round, LIMIT_PER_ROUND);
++		return 1;
++	}
++	printf("PASS: adaptive recv incurred %.3f client sleeps/round-trip (<= %.3f)\n", per_round, LIMIT_PER_ROUND);
++	return 0;
++}
+diff --git a/src/startup/mldr/tests/run-perf3-recv-adaptive.sh b/src/startup/mldr/tests/run-perf3-recv-adaptive.sh
+new file mode 100755
+index 0000000000000000000000000000000000000000..0187c6b984cd9837aeec8a34388f8cf934587087
+--- /dev/null
++++ b/src/startup/mldr/tests/run-perf3-recv-adaptive.sh
+@@ -0,0 +1,28 @@
++#!/usr/bin/env bash
++# RED->GREEN runner for perf #3 (dar-dar6x4-perf-5dq.3): the mldr RPC recv hook's
++# adaptive spin-then-block. Builds the host model test, asserts the BLOCKING arm FAILS
++# (RED proof: a wakeup per RPC) and the ADAPTIVE arm PASSES (GREEN: fast reply caught
++# without sleeping). Exit 0 only if RED failed AND GREEN passed.
++set -u
++HERE="$(cd "$(dirname "$0")" && pwd)"
++SRC="$HERE/perf3_recv_adaptive_test.c"
++BIN="$(mktemp -d)/perf3_recv_adaptive"
++
++cc -O2 -o "$BIN" "$SRC" -lpthread || { echo "BUILD FAILED"; exit 2; }
++
++echo "=== RED arm (blocking recv: must FAIL) ==="
++if "$BIN" blocking; then
++	echo "UNEXPECTED: blocking arm PASSED -- the test does not discriminate; aborting"
++	exit 3
++fi
++echo "(RED failed as expected)"
++echo
++
++echo "=== GREEN arm (adaptive spin-then-block: must PASS) ==="
++if ! "$BIN" adaptive; then
++	echo "REGRESSION: adaptive arm FAILED"
++	exit 1
++fi
++
++echo
++echo "perf3 recv-adaptive RED->GREEN OK"

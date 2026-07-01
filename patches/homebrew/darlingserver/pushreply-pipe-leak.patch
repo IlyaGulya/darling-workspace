@@ -1,0 +1,119 @@
+From 0c190ddc66961e694b9362cf360fac9668450a86 Mon Sep 17 00:00:00 2001
+From: Ilya Gulya <ilya.gulya@indriver.com>
+Date: Tue, 23 Jun 2026 02:24:36 +0000
+Subject: [PATCH] call: never strand the push_reply synchronization pipe on a
+ throw
+
+The push_reply handler in callFromMessage() extracts the client's
+reply-push synchronization pipe write-end as a raw fd, then does several
+things that can throw (readMemory of the pushed reply, the "no live
+interrupt" / "overwriting saved reply" invariant checks) before it finally
+write()s the handshake byte and close()s the fd.
+
+The client's push hook (libsystem_kernel
+__dserver_rpc_hooks_push_reply) blocks in read() on the read end of that
+pipe until the server writes a byte or closes its write end (EOF). If the
+handler throws after extracting the fd but before resolving it, the raw fd
+leaks: it is never written and never closed, so the client's read() blocks
+forever. The interrupted call's reply is then never re-delivered and the
+guest's RPC recvmsg hangs indefinitely (siblings time out with
+semaphore_timedwait -111) while darlingserver stays alive but idle. This is
+the flavor-C build hang. The event-loop exception-containment guard makes it
+worse in the sense that it turns the throw into a silent dropped message
+(rather than a server crash), so the leaked pipe just hangs the one guest.
+
+Fix it two ways:
+
+1. Bind the extracted fd to an RAII FD immediately, so it is always closed
+   on every exit path -- including an exception unwinding out of the handler.
+   The client's read() then always returns (a byte on the success path, EOF
+   on any failure path) and never strands the guest.
+
+2. When the push_reply arrives after its interrupt has already been torn
+   down (interrupt_exit popped it, so _interrupts is empty), don't throw and
+   drop the pushed reply -- that reply IS the reply to the interrupted call
+   and the client is still waiting for it. Send it straight back to the
+   client so the call completes instead of hanging.
+
+Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
+---
+ src/call.cpp | 45 ++++++++++++++++++++++++++++++++++++---------
+ 1 file changed, 36 insertions(+), 9 deletions(-)
+
+diff --git a/src/call.cpp b/src/call.cpp
+index a5110d429ecf08753fa2cc095cf3d0fc13b0218e..7423b063da5ed93379ba2377eb18763951343589 100644
+--- a/src/call.cpp
++++ b/src/call.cpp
+@@ -151,15 +151,30 @@ std::shared_ptr<DarlingServer::Call> DarlingServer::Call::callFromMessage(Messag
+ 		auto pushReplyCall = reinterpret_cast<const dserver_rpc_call_push_reply_t*>(requestMessage.data().data());
+ 		Message replyToSave(pushReplyCall->reply_size, 0);
+ 
+-		// extract the reply-push synchronization pipe
+-		auto pipeDesc = requestMessage.extractDescriptorAtIndex(requestMessage.descriptors().size() - 1);
++		// Extract the reply-push synchronization pipe and take RAII ownership of it
++		// IMMEDIATELY. The client's push-reply hook
++		// (dserver-rpc-defs.c:__dserver_rpc_hooks_push_reply) blocks in a
++		// `read()` on the read end of this pipe until we either write a byte to
++		// our write end or close it (EOF). If ANY code below throws before we
++		// resolve the pipe, the raw fd would leak (never written, never closed):
++		// the client's read() would then block forever, the interrupted call's
++		// reply would never be re-delivered, and the guest's recvmsg would hang
++		// indefinitely (semaphore_timedwait -111 on siblings) while darlingserver
++		// stays alive but idle. That is exactly the dar-gwn.1.7 flavor-C hang,
++		// and the Server::start() throw-containment guard (which drops the
++		// message on an uncaught throw) makes it a silent leak rather than a
++		// crash. Binding the fd to an FD here guarantees it is always closed on
++		// every path -- so the client's read() always returns (a byte on success,
++		// EOF on failure) and never strands the guest. (dar-gwn.1.7)
++		FD pipeDesc(requestMessage.extractDescriptorAtIndex(requestMessage.descriptors().size() - 1));
+ 		char tmp = 1;
+ 
+-		if (pipeDesc < 0) {
++		if (!pipeDesc) {
+ 			throw std::runtime_error("Failed to extract reply-push synchronization pipe");
+ 		}
+ 
+ 		if (!process->readMemory(pushReplyCall->reply, replyToSave.data().data(), pushReplyCall->reply_size)) {
++			// pipeDesc's FD dtor closes the pipe -> client read() sees EOF and unblocks.
+ 			throw std::runtime_error("Failed to read client-pushed reply body");
+ 		}
+ 
+@@ -175,10 +190,23 @@ std::shared_ptr<DarlingServer::Call> DarlingServer::Call::callFromMessage(Messag
+ 				// the client saw this unexpected reply while waiting for interrupt_enter to respond and sent it back to us,
+ 				// and we received both calls (interrupt_enter and push_reply) at the same time
+ 				thread->_pendingSavedReply = std::move(replyToSave);
+-			} else {
+-				if (thread->_interrupts.empty()) {
+-					throw std::runtime_error("Client tried to push reply outside of interrupt");
++			} else if (thread->_interrupts.empty()) {
++				// The push_reply races the interrupt's lifetime: the interrupt was
++				// already torn down (interrupt_exit popped it) by the time this
++				// pushed-back reply arrived, so there is no saved-reply slot to
++				// stash it in. The pushed reply IS the reply to the interrupted
++				// call, and the client is still waiting for it -- so DON'T drop it
++				// (that would hang the call forever). Send it straight back to the
++				// client now. (dar-gwn.1.7)
++				lock.unlock();
++				callLog.debug() << *thread << ": push_reply arrived with no live interrupt; re-sending pushed reply directly" << callLog.endLog;
++				if (!thread->isDead()) {
++					Server::sharedInstance().sendMessage(std::move(replyToSave));
+ 				}
++				// signal the client's push hook so it can continue
++				write(pipeDesc.fd(), &tmp, sizeof(tmp));
++				return nullptr;
++			} else {
+ 				if (thread->_interrupts.top().savedReply) {
+ 					throw std::runtime_error("Client-pushed reply overwriting existing saved reply");
+ 				}
+@@ -189,9 +217,8 @@ std::shared_ptr<DarlingServer::Call> DarlingServer::Call::callFromMessage(Messag
+ 		callLog.debug() << *thread << ": Saved client-pushed reply (" << ((thread->_pendingSavedReply) ? "pending" : "normal") << ")" << callLog.endLog;
+ 
+ 		// write a byte to the pipe so the caller can continue
+-		write(pipeDesc, &tmp, sizeof(tmp));
+-		// and close it
+-		close(pipeDesc);
++		// (pipeDesc's FD dtor closes the fd when this scope exits)
++		write(pipeDesc.fd(), &tmp, sizeof(tmp));
+ 
+ 		return nullptr;
+ 	}

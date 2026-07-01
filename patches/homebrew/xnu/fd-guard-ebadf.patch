@@ -1,0 +1,113 @@
+From 8b01cc14b39c5fc1589191132682a419383ddb54 Mon Sep 17 00:00:00 2001
+From: Ilya Gulya <ilya@gulya.me>
+Date: Sat, 27 Jun 2026 13:07:06 +0000
+Subject: [PATCH] libsystem_kernel: return EBADF, not abort, on guarded-fd
+ dup2/dup/fcntl
+
+The reserved darlingserver per-thread RPC socket sits at the top of the Linux
+fd table (rlim_cur-1 == getdtablesize()), but sys_getrlimit reports NOFILE-1 so
+the guest sees a table size equal to that very fd. gnulib's fd tests compute
+bad_fd = getdtablesize() and do dup2(_, bad_fd) / fcntl(bad_fd, ...) expecting
+EBADF; instead they tripped the guard table's __simple_abort() and crashed with
+SIGABRT (test-cloexec/dup2/fcntl/getdtablesize).
+
+macOS answers operations on such an out-of-range/reserved fd with EBADF, never
+by aborting. So on a guard_flag_prevent_close hit, return -EBADF instead of
+abort: dup2 (guarding both endpoints), dup, and fcntl (which had no guard at
+all and would otherwise expose the live socket). Internal RPC is unaffected --
+it talks to the socket via raw Linux sendmsg/recvmsg/close, not these wrappers.
+Cheap: in-memory guard-table lookup, no extra syscall on the hot fd paths.
+
+Bug: dar-6x4.1
+---
+ .../src/xnu_syscall/bsd/impl/fcntl/fcntl.c          | 10 ++++++++++
+ .../emulation/src/xnu_syscall/bsd/impl/unistd/dup.c |  8 ++++++++
+ .../src/xnu_syscall/bsd/impl/unistd/dup2.c          | 13 ++++++++++---
+ 3 files changed, 28 insertions(+), 3 deletions(-)
+
+diff --git a/darling/src/libsystem_kernel/emulation/src/xnu_syscall/bsd/impl/fcntl/fcntl.c b/darling/src/libsystem_kernel/emulation/src/xnu_syscall/bsd/impl/fcntl/fcntl.c
+index 49bac54179d07949d3f0411090b15740eaa95151..9bc7eaafe1da4a8e3598d5600daf9df14521c9c9 100644
+--- a/darling/src/libsystem_kernel/emulation/src/xnu_syscall/bsd/impl/fcntl/fcntl.c
++++ b/darling/src/libsystem_kernel/emulation/src/xnu_syscall/bsd/impl/fcntl/fcntl.c
+@@ -11,6 +11,7 @@
+ #include <darling/emulation/linux_premigration/linux-syscalls/linux.h>
+ #include <darling/emulation/xnu_syscall/bsd/helper/bsdthread/cancelable.h>
+ #include <darling/emulation/xnu_syscall/bsd/helper/misc/fdpath.h>
++#include <darling/emulation/common/guarded/table.h>
+ 
+ #ifndef O_NOFOLLOW
+ #   define O_NOFOLLOW 0x0100
+@@ -76,6 +77,15 @@ long sys_fcntl_nocancel(int fd, int cmd, long arg)
+ 	int ret, linux_cmd = cmd_bsd_to_linux(cmd);
+ 	long original_arg = arg;
+ 
++	// dar-6x4.1: the reserved darlingserver RPC fd(s) live at the top of the Linux
++	// table (== getdtablesize()), but XNU reports a lower table size, so to the guest
++	// these fds are out of range. A guest fcntl on one must look like an invalid fd
++	// (EBADF), never touch the live socket. gnulib test-cloexec does
++	// fcntl(getdtablesize(), F_GETFD) / F_DUPFD_CLOEXEC and expects EBADF.
++	if (guard_table_check(fd, guard_flag_prevent_close)) {
++		return -EBADF;
++	}
++
+ 	switch (cmd)
+ 	{
+ 		case F_CHECK_LV:
+diff --git a/darling/src/libsystem_kernel/emulation/src/xnu_syscall/bsd/impl/unistd/dup.c b/darling/src/libsystem_kernel/emulation/src/xnu_syscall/bsd/impl/unistd/dup.c
+index 88aff1857633772b814fbfa6259506e01385c723..57b6cfc2b937c8d6cd4eb2a592f69f80607bbeaf 100644
+--- a/darling/src/libsystem_kernel/emulation/src/xnu_syscall/bsd/impl/unistd/dup.c
++++ b/darling/src/libsystem_kernel/emulation/src/xnu_syscall/bsd/impl/unistd/dup.c
+@@ -1,8 +1,10 @@
+ #include <darling/emulation/xnu_syscall/bsd/impl/unistd/dup.h>
+ 
++#include <sys/errno.h>
+ #include <darling/emulation/common/base.h>
+ #include <darling/emulation/conversion/errno.h>
+ #include <darling/emulation/linux_premigration/linux-syscalls/linux.h>
++#include <darling/emulation/common/guarded/table.h>
+ 
+ __attribute__((weak))
+ __attribute__((visibility("default")))
+@@ -12,6 +14,12 @@ long sys_dup(int fd)
+ {
+ 	int ret;
+ 
++	// dar-6x4.1: a reserved darlingserver RPC fd is out-of-range to the guest;
++	// duplicating it must look like an invalid fd (EBADF), not expose the socket.
++	if (guard_table_check(fd, guard_flag_prevent_close)) {
++		return -EBADF;
++	}
++
+ 	ret = LINUX_SYSCALL1(__NR_dup, fd);
+ 	if (ret < 0)
+ 		ret = errno_linux_to_bsd(ret);
+diff --git a/darling/src/libsystem_kernel/emulation/src/xnu_syscall/bsd/impl/unistd/dup2.c b/darling/src/libsystem_kernel/emulation/src/xnu_syscall/bsd/impl/unistd/dup2.c
+index 62c0a2a6ae352a8459acb7beade40038fbe4d204..79a2e102dc55cbfa06f38a96d86dee3270048cbc 100644
+--- a/darling/src/libsystem_kernel/emulation/src/xnu_syscall/bsd/impl/unistd/dup2.c
++++ b/darling/src/libsystem_kernel/emulation/src/xnu_syscall/bsd/impl/unistd/dup2.c
+@@ -1,5 +1,6 @@
+ #include <darling/emulation/xnu_syscall/bsd/impl/unistd/dup2.h>
+ 
++#include <sys/errno.h>
+ #include <darling/emulation/common/base.h>
+ #include <darling/emulation/conversion/errno.h>
+ #include <darling/emulation/linux_premigration/linux-syscalls/linux.h>
+@@ -14,9 +15,15 @@ long sys_dup2(int fd_from, int fd_to)
+ {
+ 	int ret;
+ 
+-	if (guard_table_check(fd_to, guard_flag_prevent_close)) {
+-		__simple_kprintf("*** Someone tried to close a guarded FD (%d) via dup2! ***", fd_to);
+-		__simple_abort();
++	// dar-6x4.1: the reserved darlingserver RPC fd(s) sit at the top of the Linux
++	// table (rlim_cur-1 == getdtablesize()), but XNU reports the table size lower so
++	// these fds appear out-of-range to the guest. A guest dup2 onto (or from) one is
++	// therefore an operation on an invalid fd, which macOS answers with EBADF -- it
++	// must not abort the process. gnulib test-dup2/test-getdtablesize do exactly
++	// dup2(fd, getdtablesize()) and expect EBADF.
++	if (guard_table_check(fd_to, guard_flag_prevent_close)
++			|| guard_table_check(fd_from, guard_flag_prevent_close)) {
++		return -EBADF;
+ 	}
+ 
+ 	#if defined(__NR_dup2)

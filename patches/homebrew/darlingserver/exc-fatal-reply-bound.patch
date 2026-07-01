@@ -1,0 +1,177 @@
+From 4ada639c93580ac908a7f9a10b45f24b7603ac84 Mon Sep 17 00:00:00 2001
+From: Ilya Gulya <ilya.gulya@indriver.com>
+Date: Wed, 24 Jun 2026 01:03:22 +0000
+Subject: [PATCH] duct-tape: bound the reply wait for fatal EXC_BAD_ACCESS
+ delivery
+
+When a thread takes a fatal EXC_BAD_ACCESS the duct-tape exception machinery
+delivers it synchronously to the task/thread's registered EXCEPTION_DEFAULT
+handler via mach_exception_raise and blocks the faulting microthread waiting
+for the handler's reply.
+
+On real macOS that unbounded wait is harmless: if the handler consumes the
+exception but never resumes the faulting thread -- e.g. a handler that merely
+calls exit(), like gnulib's "checking whether printf survives out-of-memory
+conditions" nocrash_init probe -- task termination tears the whole task down
+and the faulting thread (and any lock it held) goes away with it.
+darlingserver has no such teardown: task_terminate is a stub, so the faulting
+microthread waits forever for a reply that never comes. Worse, it does so
+still holding whatever guest userspace locks it faulted with, so any thread
+that needs one of those locks (such as the handler thread, once it runs
+exit()/stdio cleanup) deadlocks behind it. Both the guest's faulting thread
+and its handler thread end up parked in recvmsg with darlingserver idle, and
+the process hangs forever. (This is the dar-gwn.1.10 libunistring ./configure
+hang.)
+
+Bound the reply receive for this case. Flag the faulting microthread
+(dtape_thread.fatal_exception_delivery) across exception_triage_thread, and in
+kernel_mach_msg_rpc arm the reply ipc_mqueue_receive with MACH_RCV_TIMEOUT
+(default 3s) when that flag is set. On timeout the raise returns
+MACH_RCV_TIMED_OUT, so exception_deliver fails and exception_triage_thread
+falls through to the next handler level -- the host ux_handler, which posts
+the default fatal signal (SIGSEGV) and terminates the guest process. That
+matches macOS's "handler didn't handle it -> default action" outcome and
+releases the deadlock.
+
+Scoped to EXC_BAD_ACCESS only: that is the proven deadlock case. Other
+exception types (EXC_BAD_INSTRUCTION / EXC_ARITHMETIC / EXC_BREAKPOINT) have
+legitimate catch-and-resume handlers in real workloads (debuggers; the
+brew/Ruby download path raises and recovers from SIGILL) that must not be
+timed out and turned into a forced termination.
+
+Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
+---
+ .../darlingserver/duct-tape/thread.h          | 16 +++++++++
+ duct-tape/src/thread.c                        | 20 +++++++++++
+ duct-tape/xnu/osfmk/kern/ipc_mig.c            | 36 +++++++++++++++++--
+ 3 files changed, 70 insertions(+), 2 deletions(-)
+
+diff --git a/duct-tape/internal-include/darlingserver/duct-tape/thread.h b/duct-tape/internal-include/darlingserver/duct-tape/thread.h
+index 633d729fde9d43b48bb55077d45acecbfafa5024..af083b3e9afb91656ba519f144b71031cff1110e 100644
+--- a/duct-tape/internal-include/darlingserver/duct-tape/thread.h
++++ b/duct-tape/internal-include/darlingserver/duct-tape/thread.h
+@@ -37,6 +37,22 @@ struct dtape_thread {
+ 	dtape_thread_user_state_t default_state;
+ 	bool processing_signal;
+ 
++	// Set while this microthread is synchronously delivering a *fatal* Mach
++	// exception (EXC_BAD_ACCESS and friends) to a user EXCEPTION_DEFAULT handler
++	// via mach_exception_raise. macOS lets the faulting thread block for the
++	// handler's reply indefinitely because, if the handler never resumes the
++	// thread (e.g. it just calls exit(), as gnulib's printf-OOM nocrash_init
++	// handler does), task termination tears the whole task down and frees any
++	// locks the faulting thread held. darlingserver has no such teardown
++	// (task_terminate is a stub), so an unreplied fatal exception wedges the
++	// faulting microthread forever -- and any thread that needs a lock the
++	// faulting thread is holding deadlocks behind it. When this flag is set we
++	// bound the reply receive; on timeout the delivery fails so exception_triage
++	// falls through to the host-level ux_handler, which raises the default fatal
++	// signal (SIGSEGV) and terminates the guest process -- matching the macOS
++	// "handler didn't handle it -> default action" outcome. See dar-gwn.1.10.
++	bool fatal_exception_delivery;
++
+ 	bool waiting_suspended;
+ 	dtape_mutex_t suspension_mutex;
+ 	dtape_condvar_t suspension_condvar;
+diff --git a/duct-tape/src/thread.c b/duct-tape/src/thread.c
+index f4ce909677bfe659e948a04d477b1ce9003b2bc6..cfd5cd042c2f7cdaa1c4c2275c63c9f972513614 100644
+--- a/duct-tape/src/thread.c
++++ b/duct-tape/src/thread.c
+@@ -344,8 +344,28 @@ void dtape_thread_process_signal(dtape_thread_t* thread, int bsd_signal_number,
+ 
+ 	dtape_log_debug("calling exception_triage_thread(%d, [%lld, %lld])", mach_exception, codes[0], codes[1]);
+ 
++	// For a fatal bad-memory-access fault, bound the synchronous reply wait on
++	// the user EXCEPTION_DEFAULT handler. If a handler consumes the exception
++	// but never resumes us (it just exit()s, like gnulib's printf-OOM
++	// nocrash_init handler), the reply never comes; on macOS task teardown would
++	// unwedge us, but here we would block forever holding any guest locks we
++	// faulted with. On timeout the user-level delivery fails and
++	// exception_triage falls through to the host ux_handler -> default SIGSEGV
++	// -> guest terminates, which is macOS's "unhandled fatal exception"
++	// behavior. See dar-gwn.1.10.
++	//
++	// Scoped to EXC_BAD_ACCESS only: that is the proven deadlock case, and other
++	// exception types (EXC_BAD_INSTRUCTION / EXC_ARITHMETIC / EXC_BREAKPOINT)
++	// have legitimate catch-and-resume handlers in real workloads (e.g. the
++	// brew/Ruby download path raises and recovers from SIGILL) that we must not
++	// time out and turn into a forced termination.
++	bool fatal = (mach_exception == EXC_BAD_ACCESS);
++	thread->fatal_exception_delivery = fatal;
++
+ 	exception_triage_thread(mach_exception, codes, EXCEPTION_CODE_MAX, &thread->xnu_thread);
+ 
++	thread->fatal_exception_delivery = false;
++
+ 	dtape_log_debug("exception_triage_thread returned");
+ 
+ out:
+diff --git a/duct-tape/xnu/osfmk/kern/ipc_mig.c b/duct-tape/xnu/osfmk/kern/ipc_mig.c
+index c1c99b9328f0a0e9718d0764c8e32b65912e4f06..991048339a119bfeb8f492f69581a6e4ba1c8f73 100644
+--- a/duct-tape/xnu/osfmk/kern/ipc_mig.c
++++ b/duct-tape/xnu/osfmk/kern/ipc_mig.c
+@@ -84,6 +84,19 @@
+ 
+ #include <libkern/OSAtomic.h>
+ 
++#include <darlingserver/duct-tape/thread.h>
++
++// Bound (in milliseconds) on how long the faulting microthread waits for a
++// user EXCEPTION_DEFAULT handler to reply to a *fatal* Mach exception raise
++// before we give up and let exception_triage fall through to the host
++// ux_handler (default SIGSEGV -> guest terminates). See
++// dtape_thread.fatal_exception_delivery and dar-gwn.1.10. A real handler that
++// intends to recover replies in microseconds; this bound only fires when the
++// handler consumed the exception but will never resume us (e.g. it exit()s).
++#ifndef DTAPE_FATAL_EXC_REPLY_TIMEOUT_MS
++#define DTAPE_FATAL_EXC_REPLY_TIMEOUT_MS 3000
++#endif
++
+ void
+ mach_msg_receive_results_complete(ipc_object_t object);
+ 
+@@ -443,6 +456,15 @@ kernel_mach_msg_rpc(
+ 		return mr;
+ 	}
+ 
++	// If this microthread is synchronously delivering a fatal Mach exception to
++	// a user EXCEPTION_DEFAULT handler, bound the reply wait so an unreplying
++	// handler (e.g. one that just exit()s) can't wedge us forever. See
++	// dtape_thread.fatal_exception_delivery / dar-gwn.1.10.
++	dtape_thread_t* dthread = dtape_thread_for_xnu_thread(self);
++	boolean_t bounded = (dthread && dthread->fatal_exception_delivery);
++	mach_msg_option_t rcv_option = bounded ? MACH_RCV_TIMEOUT : MACH_MSG_OPTION_NONE;
++	mach_msg_timeout_t rcv_timeout = bounded ? DTAPE_FATAL_EXC_REPLY_TIMEOUT_MS : MACH_MSG_TIMEOUT_NONE;
++
+ 	for (;;) {
+ 		ipc_mqueue_t mqueue;
+ 
+@@ -460,9 +482,9 @@ kernel_mach_msg_rpc(
+ 
+ 		mqueue = &reply->ip_messages;
+ 		ipc_mqueue_receive(mqueue,
+-		    MACH_MSG_OPTION_NONE,
++		    rcv_option,
+ 		    MACH_MSG_SIZE_MAX,
+-		    MACH_MSG_TIMEOUT_NONE,
++		    rcv_timeout,
+ 		    interruptible ? THREAD_INTERRUPTIBLE : THREAD_UNINT);
+ 
+ 		mr = self->ith_state;
+@@ -475,6 +497,16 @@ kernel_mach_msg_rpc(
+ 			break;
+ 		}
+ 
++		// Bounded fatal-exception delivery timed out: the handler never replied.
++		// Give up so exception_triage can fall through to the default handler
++		// (ux_handler -> SIGSEGV -> guest terminates), matching macOS's
++		// "unhandled fatal exception" outcome instead of deadlocking.
++		if (mr == MACH_RCV_TIMED_OUT) {
++			ipc_port_dealloc_reply(reply);
++			self->ith_rpc_reply = IP_NULL;
++			return mr;
++		}
++
+ 		assert(mr == MACH_RCV_INTERRUPTED);
+ 		assert(interruptible);
+ 		assert(reply == self->ith_rpc_reply);

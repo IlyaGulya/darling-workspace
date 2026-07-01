@@ -1,0 +1,123 @@
+From ac73b9f1e1e0441ff2456f4b4de6ac998acdddd6 Mon Sep 17 00:00:00 2001
+From: Ilya Gulya <ilya@gulya.me>
+Date: Mon, 15 Jun 2026 18:47:20 +0000
+Subject: [PATCH] EXPERIMENT E-UNION: activate union at translator startup +
+ build switch (PoC)
+
+Step 6 (libexec plumbing): the in-guest translator activates the union for a
+prefix iff the server provisioned it in E-UNION mode, signalled by the presence
+of $prefix/.union-work (the copy-up staging dir, which doubles as the activation
+marker). eunion_init_from_prefix() stats the marker after prefix_path is known
+(called from both __darling_vchroot and init_vchroot_path); on hit it calls
+set_libexec_path(EUNION_LIBEXEC_PATH), the build-time template path. Absent
+marker -> libexec_path stays unset -> every E-UNION path is inert (baseline).
+
+The build switch is the new CMake option DARLING_EUNION (OFF by default). When
+ON, emulation/CMakeLists.txt defines EUNION + EUNION_LIBEXEC_PATH (=
+${CMAKE_INSTALL_PREFIX}/libexec/darling) on the emulation object libraries.
+OFF -> byte-identical to baseline (verified: zero E-UNION symbols without the
+define). Hermetic test grows the startup-activation case (inert without marker,
+active with marker, template == EUNION_LIBEXEC_PATH); experiments/e-union now
+70 assertions, green & stable.
+
+Local only, nothing pushed.
+
+Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
+---
+ .../libsystem_kernel/emulation/CMakeLists.txt | 12 +++++
+ .../linux_premigration/vchroot_userspace.c    | 45 +++++++++++++++++++
+ 2 files changed, 57 insertions(+)
+
+diff --git a/darling/src/libsystem_kernel/emulation/CMakeLists.txt b/darling/src/libsystem_kernel/emulation/CMakeLists.txt
+index 5b2e765dfba7f1ff923dd87728447739a418e4c9..4918aff9962999fd521c81251aebf0bd589ed993 100644
+--- a/darling/src/libsystem_kernel/emulation/CMakeLists.txt
++++ b/darling/src/libsystem_kernel/emulation/CMakeLists.txt
+@@ -376,6 +376,18 @@ set_target_properties(emulation_dyld PROPERTIES COMPILE_FLAGS "-ffunction-sectio
+ add_dependencies(emulation rtsig_h generate_dserver_rpc_wrappers)
+ add_dependencies(emulation_dyld rtsig_h generate_dserver_rpc_wrappers)
+ 
++# E-UNION (dar-test-infra-sp5.8.4.4): union-by-path-translation in vchroot.
++# OFF by default -> the emulation builds byte-identical to baseline. When ON,
++# define EUNION (activates the #ifdef EUNION code) and EUNION_LIBEXEC_PATH (the
++# shared read-only template, == darlingserver's LIBEXEC_PATH).
++option(DARLING_EUNION "Enable E-UNION union-in-vchroot prefix assembly (experimental)" OFF)
++if (DARLING_EUNION)
++	target_compile_definitions(emulation PRIVATE
++		EUNION EUNION_LIBEXEC_PATH="${CMAKE_INSTALL_PREFIX}/libexec/darling")
++	target_compile_definitions(emulation_dyld PRIVATE
++		EUNION EUNION_LIBEXEC_PATH="${CMAKE_INSTALL_PREFIX}/libexec/darling")
++endif()
++
+ make_fat(emulation)
+ make_fat(emulation_dyld)
+ 
+diff --git a/darling/src/libsystem_kernel/emulation/src/linux_premigration/vchroot_userspace.c b/darling/src/libsystem_kernel/emulation/src/linux_premigration/vchroot_userspace.c
+index bf4834b238143674787e9dab46cf0ca288adf030..0011f1c7d5499fee71744a2a0992a138a04ccd0f 100644
+--- a/darling/src/libsystem_kernel/emulation/src/linux_premigration/vchroot_userspace.c
++++ b/darling/src/libsystem_kernel/emulation/src/linux_premigration/vchroot_userspace.c
+@@ -97,6 +97,43 @@ static void set_libexec_path(const char* p)
+ }
+ #define HAVE_LIBEXEC_SETTER 1
+ 
++// The shared template path baked in at build time (== darlingserver's
++// LIBEXEC_PATH). Provided to the emulation build as a compile definition; the
++// fallback below keeps the hermetic unit build (which sets the template itself)
++// and any build that forgets the define from breaking.
++#ifndef EUNION_LIBEXEC_PATH
++#define EUNION_LIBEXEC_PATH ""
++#endif
++
++static int eunion_lstat(const char* host, stat_t* st); // defined below
++
++// Activate the union for this prefix iff the server provisioned it in E-UNION
++// mode, signalled by the presence of the copy-up staging dir `$prefix/.union-work`
++// (the server creates it instead of copying the 7GB template). If the marker is
++// absent (route 1 / copy-mode), the template path is left unset so libexec_path_len
++// stays <= 0 and every E-UNION code path is inert -- behaviour identical to
++// baseline. `prefix` must already be set in prefix_path. Idempotent.
++static void eunion_init_from_prefix(void)
++{
++	if (libexec_path_len > 0) // already initialised
++		return;
++	if (prefix_path_len <= 0)
++		return;
++
++	char marker[4096];
++	int n = prefix_path_len;
++	if (n + (int)sizeof("/.union-work") > (int)sizeof(marker))
++		return;
++	memcpy(marker, prefix_path, n);
++	strcpy(marker + n, "/.union-work");
++
++	stat_t st;
++	if (eunion_lstat(marker, &st) != 0)
++		return; // not provisioned for union -> stay inert (copy-mode)
++
++	set_libexec_path(EUNION_LIBEXEC_PATH);
++}
++
+ // -------- E-UNION copy-on-write ------------------------------------------
+ //
+ // When a guest path that exists only in the read-only lower template is about
+@@ -882,6 +919,10 @@ int __darling_vchroot(int dfd)
+ 	prefix_path[rv] = '\0';
+ 	prefix_path_len = rv;
+ 
++#ifdef EUNION
++	eunion_init_from_prefix();
++#endif
++
+ 	return 0;
+ }
+ 
+@@ -914,6 +955,10 @@ static void init_vchroot_path(void)
+ 
+ 	prefix_path_len = (int)tmp_len;
+ 
++#ifdef EUNION
++	eunion_init_from_prefix();
++#endif
++
+ #ifndef TEST
+ 	__simple_printf("init_vchroot_path: %s\n", prefix_path);
+ #endif

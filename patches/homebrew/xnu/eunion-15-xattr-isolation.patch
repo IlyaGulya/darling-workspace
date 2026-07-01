@@ -1,0 +1,314 @@
+From a698e01440be1934fe3f896f5817d7b97479ad84 Mon Sep 17 00:00:00 2001
+From: Ilya Gulya <ilya@gulya.me>
+Date: Tue, 16 Jun 2026 06:13:58 +0000
+Subject: [PATCH] EXPERIMENT E-UNION: xattr marker-namespace isolation +
+ path-xattr copy-up (PoC, #ifdef EUNION)
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+The path-based setxattr/removexattr emulation never expanded the guest path
+(a pre-EUNION bug: the raw guest path was handed straight to the host syscall),
+and under E-UNION they had no copy-up, so an xattr write on a lower-only object
+would mutate the SHARED read-only template for every prefix. listxattr expanded
+the path then ignored the result, listing the wrong object.
+
+Add a single policy predicate vchroot_xattr_is_marker(name) (reserved
+"user.union.*" namespace; the trailing dot is significant so "user.unionX" is a
+guest-legal name, not a marker) and wire it at all four xattr sites:
+  * setxattr/removexattr (path): reject a guest attempt to forge a union marker
+    (EPERM), copy up a lower-only target (vchroot_prepare_write), expand, and
+    issue the syscall against the writable upper path (l/setxattr honouring
+    XATTR_NOFOLLOW) — never the template.
+  * getxattr: a read of a union marker returns ENOATTR (markers invisible).
+  * listxattr: use the expanded path (baseline-bug fix) and filter user.union.*
+    out of the returned name list (compact in place, shrink the byte count).
+
+Marker isolation stops the guest forging a whiteout/opaque to resurrect a
+deleted name or unhide a lower subtree, and stops it probing the union's
+internal bookkeeping.
+
+All #ifdef EUNION; production builds (no DARLING_EUNION) are byte-identical to
+baseline (verified per-file with gcc -E -fdirectives-only against the git
+baseline). The predicate is mutation-verified in the hermetic suite (XM1-XM4,
+XS1): always-0, drop-the-dot, and over-broad "user." all drive the new tests
+RED. Local experiment under dar-test-infra-sp5.8.4.4.5.
+
+Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
+---
+ .../linux_premigration/vchroot_expand.h       |  5 ++
+ .../linux_premigration/vchroot_userspace.c    | 22 +++++++++
+ .../src/xnu_syscall/bsd/impl/xattr/getxattr.c |  9 ++++
+ .../xnu_syscall/bsd/impl/xattr/listxattr.c    | 48 ++++++++++++++++++-
+ .../xnu_syscall/bsd/impl/xattr/removexattr.c  | 35 ++++++++++++++
+ .../src/xnu_syscall/bsd/impl/xattr/setxattr.c | 34 +++++++++++++
+ 6 files changed, 152 insertions(+), 1 deletion(-)
+
+diff --git a/darling/src/libsystem_kernel/emulation/include/linux_premigration/vchroot_expand.h b/darling/src/libsystem_kernel/emulation/include/linux_premigration/vchroot_expand.h
+index 59fbdb351dd87daea3cd2ec9fcfd364a28d82e2d..0b1312eec2009d173c536018011e3c4d41e69ad1 100644
+--- a/darling/src/libsystem_kernel/emulation/include/linux_premigration/vchroot_expand.h
++++ b/darling/src/libsystem_kernel/emulation/include/linux_premigration/vchroot_expand.h
+@@ -36,6 +36,11 @@ int vchroot_copyup_tree(const char* guest);
+ int vchroot_whiteout(const char* guest);
+ int vchroot_unwhiteout(const char* guest);
+ int vchroot_set_opaque(const char* guest);
++// Marker-namespace isolation: 1 if `name` is in the reserved `user.union.*`
++// overlay-private namespace. The xattr syscall sites use this to reject guest
++// attempts to forge a marker (setxattr/removexattr -> EPERM) and to hide markers
++// from the guest (getxattr -> ENOATTR, listxattr -> filtered out).
++int vchroot_xattr_is_marker(const char* name);
+ int vchroot_readdir_merge(const char* guest, char* out, int cap);
+ // Paged merged getdents for getdirentries (per-fd state); vchroot_dir_closed
+ // MUST be called from close()/closedir() so the per-fd state is freed.
+diff --git a/darling/src/libsystem_kernel/emulation/src/linux_premigration/vchroot_userspace.c b/darling/src/libsystem_kernel/emulation/src/linux_premigration/vchroot_userspace.c
+index 59f43550adba991bf5f912f5f4f63af36f45dfeb..fd8c018ea1c86fa31583092675fca9e076f7ef61 100644
+--- a/darling/src/libsystem_kernel/emulation/src/linux_premigration/vchroot_userspace.c
++++ b/darling/src/libsystem_kernel/emulation/src/linux_premigration/vchroot_userspace.c
+@@ -530,6 +530,28 @@ int vchroot_copyup_tree(const char* guest)
+ static const char EUNION_WH_XATTR[]     = "user.union.whiteout";
+ static const char EUNION_OPAQUE_XATTR[] = "user.union.opaque";
+ 
++// E-UNION reserves the `user.union.` xattr namespace for its own overlay-private
++// markers (whiteout/opaque). The guest must never be able to FORGE a marker (a
++// setxattr/removexattr that would fabricate or clear a whiteout/opaque and so
++// resurrect a deleted name or unhide a lower subtree), nor OBSERVE one (a
++// getxattr/listxattr that would leak the union's internal bookkeeping). The
++// syscall-emulation xattr sites call this predicate to reject (set/remove ->
++// EPERM) or hide (get -> ENOATTR, list -> filtered) any name in the namespace.
++// Returns 1 if `name` is in the reserved `user.union.` namespace, else 0.
++static const char EUNION_MARKER_NS[] = "user.union.";
++int vchroot_xattr_is_marker(const char* name)
++{
++	if (!name)
++		return 0;
++	// Reserved iff the name begins with the full "user.union." namespace prefix
++	// (the trailing dot is significant: "user.unionX" is a distinct guest-legal
++	// name, NOT a marker). strncmp over the prefix length tests exactly that
++	// boundary -- a bare "user.union" or "user.unionX" both differ before or at
++	// the dot and so are not matched.
++	int nslen = (int)sizeof(EUNION_MARKER_NS) - 1; // strlen("user.union.")
++	return strncmp(name, EUNION_MARKER_NS, nslen) == 0;
++}
++
+ #ifndef LINUX_O_DIRECTORY
+ #define LINUX_O_DIRECTORY 0200000
+ #endif
+diff --git a/darling/src/libsystem_kernel/emulation/src/xnu_syscall/bsd/impl/xattr/getxattr.c b/darling/src/libsystem_kernel/emulation/src/xnu_syscall/bsd/impl/xattr/getxattr.c
+index 6dfbc6cbb62d702e9898fd37806a641b8fa953f2..acdbd856638d1a25e944cf9a372ec57c63f8469d 100644
+--- a/darling/src/libsystem_kernel/emulation/src/xnu_syscall/bsd/impl/xattr/getxattr.c
++++ b/darling/src/libsystem_kernel/emulation/src/xnu_syscall/bsd/impl/xattr/getxattr.c
+@@ -19,6 +19,15 @@ long sys_getxattr(const char* path, const char* name, char* value,
+ 	if (pos != 0)
+ 		return -ERANGE;
+ 
++#ifdef EUNION
++	// E-UNION marker isolation: the union's overlay-private markers (user.union.*)
++	// must be invisible to the guest -- a getxattr of one returns ENOATTR exactly
++	// as if the attribute did not exist, so the guest cannot probe the union's
++	// internal whiteout/opaque bookkeeping.
++	if (vchroot_xattr_is_marker(name))
++		return -ENOATTR;
++#endif
++
+ 	struct vchroot_expand_args vc;
+ 	vc.flags = (options & XATTR_NOFOLLOW) ? 0 : VCHROOT_FOLLOW;
+ 	vc.dfd = get_perthread_wd();
+diff --git a/darling/src/libsystem_kernel/emulation/src/xnu_syscall/bsd/impl/xattr/listxattr.c b/darling/src/libsystem_kernel/emulation/src/xnu_syscall/bsd/impl/xattr/listxattr.c
+index 115ecb3e33b0a1f1a6a9cc1cc12bb726c8b9ddec..df240ba1d117de0f52281f0acfb59dbb0c5ed7ef 100644
+--- a/darling/src/libsystem_kernel/emulation/src/xnu_syscall/bsd/impl/xattr/listxattr.c
++++ b/darling/src/libsystem_kernel/emulation/src/xnu_syscall/bsd/impl/xattr/listxattr.c
+@@ -1,6 +1,11 @@
+ #include <darling/emulation/xnu_syscall/bsd/impl/xattr/listxattr.h>
+ 
+ #include <sys/errno.h>
++
++#ifdef EUNION
++extern void* memmove(void* dest, const void* src, __SIZE_TYPE__ n);
++#endif
++
+ #include <darling/emulation/common/base.h>
+ #include <darling/emulation/conversion/errno.h>
+ #include <darling/emulation/linux_premigration/linux-syscalls/linux.h>
+@@ -16,7 +21,7 @@ long sys_listxattr(const char* path, char* namebuf, unsigned long size, int opti
+ 
+ 	vc.flags = (options & XATTR_NOFOLLOW) ? 0 : VCHROOT_FOLLOW;
+ 	vc.dfd = get_perthread_wd();
+-	
++
+ 	if (!path)
+ 		return -EFAULT;
+ 
+@@ -26,6 +31,46 @@ long sys_listxattr(const char* path, char* namebuf, unsigned long size, int opti
+ 	if (ret < 0)
+ 		return errno_linux_to_bsd(ret);
+ 
++#ifdef EUNION
++	// E-UNION: the baseline issued the host syscall against the UN-expanded `path`
++	// (it expanded then ignored the result -- a latent bug). Under the union we
++	// must list the resolved object, so use vc.path.
++	if (options & XATTR_NOFOLLOW)
++		ret = LINUX_SYSCALL(__NR_llistxattr, vc.path, namebuf, size);
++	else
++		ret = LINUX_SYSCALL(__NR_listxattr, vc.path, namebuf, size);
++
++	if (ret < 0)
++		return errno_linux_to_bsd(ret);
++
++	// Marker isolation: the union's overlay-private markers (user.union.*) must
++	// not leak into the guest's attribute listing. The kernel returns a
++	// NUL-separated list of names totalling `ret` bytes; compact it in place,
++	// dropping every name in the reserved namespace and shrinking the byte count.
++	// (When size==0 the kernel returns the buffer size needed and writes no names;
++	// there is nothing to filter, and we leave that probe value unchanged -- a
++	// mild over-estimate by the markers' length, which the spec permits.)
++	if (size != 0 && ret > 0)
++	{
++		int in = 0, out = 0;
++		while (in < ret)
++		{
++			const char* nm = namebuf + in;
++			int nlen = 0;
++			while (in + nlen < ret && nm[nlen] != '\0')
++				nlen++;
++			int entry = nlen + 1; // include the NUL terminator
++			if (!vchroot_xattr_is_marker(nm))
++			{
++				if (out != in)
++					memmove(namebuf + out, nm, entry);
++				out += entry;
++			}
++			in += entry;
++		}
++		ret = out;
++	}
++#else
+ 	if (options & XATTR_NOFOLLOW)
+ 		ret = LINUX_SYSCALL(__NR_llistxattr, path, namebuf, size);
+ 	else
+@@ -33,6 +78,7 @@ long sys_listxattr(const char* path, char* namebuf, unsigned long size, int opti
+ 
+ 	if (ret < 0)
+ 		return errno_linux_to_bsd(ret);
++#endif
+ 
+ 	return ret;
+ }
+diff --git a/darling/src/libsystem_kernel/emulation/src/xnu_syscall/bsd/impl/xattr/removexattr.c b/darling/src/libsystem_kernel/emulation/src/xnu_syscall/bsd/impl/xattr/removexattr.c
+index 628a4f72d95f7c827ebd0e6e12e0340c7f0c3826..0c97d8cc42514e2c255450d23273a08f57d257db 100644
+--- a/darling/src/libsystem_kernel/emulation/src/xnu_syscall/bsd/impl/xattr/removexattr.c
++++ b/darling/src/libsystem_kernel/emulation/src/xnu_syscall/bsd/impl/xattr/removexattr.c
+@@ -1,7 +1,13 @@
+ #include <darling/emulation/xnu_syscall/bsd/impl/xattr/removexattr.h>
+ 
++#include <sys/errno.h>
++
++extern char* strcpy(char* dst, const char* src);
++
+ #include <darling/emulation/common/base.h>
+ #include <darling/emulation/conversion/errno.h>
++#include <darling/emulation/linux_premigration/vchroot_expand.h>
++#include <darling/emulation/common/bsdthread/per_thread_wd.h>
+ #include <darling/emulation/linux_premigration/linux-syscalls/linux.h>
+ 
+ #define XATTR_NOFOLLOW	1
+@@ -10,10 +16,39 @@ long sys_removexattr(const char* path, const char* name, int options)
+ {
+ 	int ret;
+ 
++#ifdef EUNION
++	// E-UNION xattr policy (mirrors setxattr):
++	//  (1) marker isolation: removing a union-private marker (user.union.*) would
++	//      let the guest clear a whiteout/opaque and resurrect/unhide content.
++	//      Reject with EPERM.
++	//  (2) expand the path (the baseline never did -- pre-EUNION bug) and copy up a
++	//      lower-only target first so the remove lands on the WRITABLE upper copy
++	//      and never mutates the shared read-only template.
++	if (vchroot_xattr_is_marker(name))
++		return -EPERM;
++
++	int wr = vchroot_prepare_write(path);
++	if (wr < 0)
++		return errno_linux_to_bsd(wr);
++
++	struct vchroot_expand_args vc;
++	vc.flags = (options & XATTR_NOFOLLOW) ? 0 : VCHROOT_FOLLOW;
++	vc.dfd = get_perthread_wd();
++	strcpy(vc.path, path);
++	ret = vchroot_expand(&vc);
++	if (ret < 0)
++		return errno_linux_to_bsd(ret);
++
++	if (options & XATTR_NOFOLLOW)
++		ret = LINUX_SYSCALL(__NR_lremovexattr, vc.path, name);
++	else
++		ret = LINUX_SYSCALL(__NR_removexattr, vc.path, name);
++#else
+ 	if (options & XATTR_NOFOLLOW)
+ 		ret = LINUX_SYSCALL(__NR_lremovexattr, path, name);
+ 	else
+ 		ret = LINUX_SYSCALL(__NR_removexattr, path, name);
++#endif
+ 
+ 	if (ret < 0)
+ 		return errno_linux_to_bsd(ret);
+diff --git a/darling/src/libsystem_kernel/emulation/src/xnu_syscall/bsd/impl/xattr/setxattr.c b/darling/src/libsystem_kernel/emulation/src/xnu_syscall/bsd/impl/xattr/setxattr.c
+index c1b2d50e5212cab93fc4d827f3fe503d138ee579..ee84b44992295cfef7521cf831fc3f200283c89b 100644
+--- a/darling/src/libsystem_kernel/emulation/src/xnu_syscall/bsd/impl/xattr/setxattr.c
++++ b/darling/src/libsystem_kernel/emulation/src/xnu_syscall/bsd/impl/xattr/setxattr.c
+@@ -2,8 +2,12 @@
+ 
+ #include <sys/errno.h>
+ 
++extern char* strcpy(char* dst, const char* src);
++
+ #include <darling/emulation/common/base.h>
+ #include <darling/emulation/conversion/errno.h>
++#include <darling/emulation/linux_premigration/vchroot_expand.h>
++#include <darling/emulation/common/bsdthread/per_thread_wd.h>
+ #include <darling/emulation/linux_premigration/linux-syscalls/linux.h>
+ 
+ #define XATTR_NOFOLLOW	1
+@@ -16,6 +20,35 @@ long sys_setxattr(const char* path, const char* name, const void* value,
+ 	if (pos != 0)
+ 		return -ERANGE;
+ 
++#ifdef EUNION
++	// E-UNION xattr policy:
++	//  (1) marker isolation: the guest must not forge a union-private marker
++	//      (user.union.*) -- doing so could fabricate a whiteout/opaque and
++	//      resurrect a deleted name or unhide a lower subtree. Reject with EPERM.
++	//  (2) the baseline path was never expanded (a pre-EUNION bug: the raw guest
++	//      path was handed to the host syscall). Expand it through vchroot, AND
++	//      copy up a lower-only target first so the setxattr lands on the WRITABLE
++	//      upper copy and never mutates the shared read-only template.
++	if (vchroot_xattr_is_marker(name))
++		return -EPERM;
++
++	int wr = vchroot_prepare_write(path);
++	if (wr < 0)
++		return errno_linux_to_bsd(wr);
++
++	struct vchroot_expand_args vc;
++	vc.flags = (options & XATTR_NOFOLLOW) ? 0 : VCHROOT_FOLLOW;
++	vc.dfd = get_perthread_wd();
++	strcpy(vc.path, path);
++	ret = vchroot_expand(&vc);
++	if (ret < 0)
++		return errno_linux_to_bsd(ret);
++
++	if (options & XATTR_NOFOLLOW)
++		ret = LINUX_SYSCALL(__NR_lsetxattr, vc.path, name, value, size);
++	else
++		ret = LINUX_SYSCALL(__NR_setxattr, vc.path, name, value, size);
++#else
+ 	if (options & XATTR_NOFOLLOW)
+ 	{
+ 		ret = LINUX_SYSCALL(__NR_lsetxattr, path, name, value, size);
+@@ -24,6 +57,7 @@ long sys_setxattr(const char* path, const char* name, const void* value,
+ 	{
+ 		ret = LINUX_SYSCALL(__NR_setxattr, path, name, value, size);
+ 	}
++#endif
+ 
+ 	if (ret < 0)
+ 		return errno_linux_to_bsd(ret);

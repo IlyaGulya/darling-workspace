@@ -1,0 +1,197 @@
+From 0984b9b441e4c01e3c4f3e8ef36aef99d9bcb9e6 Mon Sep 17 00:00:00 2001
+From: Ilya Gulya <ilya@gulya.me>
+Date: Sun, 28 Jun 2026 09:13:07 +0000
+Subject: [PATCH] perf: gate hot-path kprintf debug traces (removes ~14.5% of
+ build reply-wait)
+
+The guest per-callnum reply-wait breakdown (perf #9-decompose) showed kprintf was
+14.5% of a clean build's recvmsg-sleep -- 1833 calls in a 300-file build. Capturing
+the server-side kprintf log during a real build (DSERVER_LOG_LEVEL=info) revealed it is
+almost entirely UNCONDITIONAL DEBUG TRACES on hot paths, each a full synchronous RPC
+round-trip (~100us reply-wait sleep) with zero value in a normal build:
+  - execve.c "execve expand %s -> %s, ret %d"  -- fires on EVERY exec; a build is execs
+  - filio.c  "dtype for fd %d -> %s"           -- fires on a hot ioctl path
+  - sigexc.c "darling_sigexc_self()"           -- fires on sigexc_setup, i.e. EVERY
+             process startup (43% of the spam); just a marker, no data
+
+Fix: route each through a debug gate that compiles to nothing by default.
+  - new hotpath_kdebug(...) macro in common/simple.h: no-op unless built with
+    -DDARLING_HOTPATH_KPRINTF_DEBUG (still type-checks args via if(0) so format bugs are
+    caught). Used for execve.c and filio.c.
+  - sigexc.c's marker routes through the file's existing kern_printf gate (DEBUG_SIGEXC,
+    already off by default) instead of a bare __simple_kprintf.
+Genuine error/diagnostic kprintf (failures, guard violations) are left as __simple_kprintf;
+only the success-hot-path traces lose their cost.
+
+Validated two ways: (1) server kprintf log over a real build 144 -> 0 lines (the three
+traces 62+45+16 -> 0); (2) the guest per-callnum sleep breakdown no longer lists kprintf
+at all (was 14.5%). Build completes clean (100/100). NOTE: the sigexc/execve/filio traces
+are compiled into BOTH libsystem_kernel.dylib AND dyld (dyld statically links the
+VARIANT_DYLD emulation incl. sigexc.c) -- the per-process darling_sigexc_self() marker
+comes from dyld, so dyld must be rebuilt+redeployed too, not just the dylib.
+
+RED->GREEN: tests/hotpath_kprintf_gated_test.sh asserts each trace is routed through its
+gate and no longer a bare __simple_kprintf. Proven RED before the fix (exit 1), GREEN after.
+
+Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
+---
+ .../emulation/include/common/simple.h         | 17 +++++
+ .../src/linux_premigration/signal/sigexc.c    |  7 +-
+ .../src/xnu_syscall/bsd/helper/ioctl/filio.c  |  2 +-
+ .../src/xnu_syscall/bsd/impl/process/execve.c |  2 +-
+ .../tests/hotpath_kprintf_gated_test.sh       | 74 +++++++++++++++++++
+ 5 files changed, 99 insertions(+), 3 deletions(-)
+ create mode 100755 darling/src/libsystem_kernel/tests/hotpath_kprintf_gated_test.sh
+
+diff --git a/darling/src/libsystem_kernel/emulation/include/common/simple.h b/darling/src/libsystem_kernel/emulation/include/common/simple.h
+index 38496fa616aca2c47aea8c70f4ba109b54685ae7..1cb1cde128fdcdfb7933e147a1d18fc2d12a111b 100644
+--- a/darling/src/libsystem_kernel/emulation/include/common/simple.h
++++ b/darling/src/libsystem_kernel/emulation/include/common/simple.h
+@@ -25,6 +25,23 @@ void __simple_vfprintf(int fd, const char* format, va_list args) __attribute__((
+ unsigned long long __simple_atoi(const char* str, const char** endp);
+ unsigned long long __simple_atoi16(const char* str, const char** endp);
+ 
++// perf #9-decompose follow-on (dar-dar6x4-perf-5dq): hot-path kprintf gate.
++// __simple_kprintf is a SYNCHRONOUS RPC round-trip to darlingserver (send + a ~100us
++// recvmsg reply-wait). The guest per-callnum reply-wait breakdown showed unconditional
++// debug traces on hot paths (every exec, a hot ioctl, sigexc init) made kprintf 14.5% of
++// a clean build's total reply-wait -- pure noise paid for on every build. Such traces
++// must use hotpath_kdebug(...) instead of __simple_kprintf(...): it compiles to NOTHING
++// by default (no RPC, no sleep) and restores the trace only when the image is built with
++// -DDARLING_HOTPATH_KPRINTF_DEBUG. (Genuine error/diagnostic kprintf -- failures, guard
++// violations -- stay as __simple_kprintf; only remove cost from traces that fire on the
++// success hot path.) The do{}while(0) keeps it a statement and still type-checks the
++// args (so format mistakes are caught) even when compiled out.
++#ifdef DARLING_HOTPATH_KPRINTF_DEBUG
++	#define hotpath_kdebug(...) __simple_kprintf(__VA_ARGS__)
++#else
++	#define hotpath_kdebug(...) do { if (0) __simple_kprintf(__VA_ARGS__); } while (0)
++#endif
++
+ // TODO: Remove this in favor of readline in readline.c?
+ struct simple_readline_buf
+ {
+diff --git a/darling/src/libsystem_kernel/emulation/src/linux_premigration/signal/sigexc.c b/darling/src/libsystem_kernel/emulation/src/linux_premigration/signal/sigexc.c
+index 67de2d0262238c1193b6fa7cb04d591439f74f75..e8dc8e2bf9c6875b38ba6b01b38d2c7810f5df39 100644
+--- a/darling/src/libsystem_kernel/emulation/src/linux_premigration/signal/sigexc.c
++++ b/darling/src/libsystem_kernel/emulation/src/linux_premigration/signal/sigexc.c
+@@ -207,7 +207,12 @@ void darling_sigexc_self(void)
+ {
+ 	am_i_ptraced = true;
+ 
+-	__simple_kprintf("darling_sigexc_self()\n");
++	// Routed through kern_printf (gated by DEBUG_SIGEXC, off by default) instead of a
++	// bare __simple_kprintf: sigexc_setup() runs on EVERY process startup, so this
++	// once-per-process marker was a synchronous RPC round-trip per process -- part of the
++	// kprintf 14.5% of a build's reply-wait measured by perf #9-decompose. No data, pure
++	// trace; compiled out by default.
++	kern_printf("darling_sigexc_self()\n");
+ 	// Make sigexc_handler the handler for all signals in the process
+ 	for (int i = 1; i <= 31; i++)
+ 	{
+diff --git a/darling/src/libsystem_kernel/emulation/src/xnu_syscall/bsd/helper/ioctl/filio.c b/darling/src/libsystem_kernel/emulation/src/xnu_syscall/bsd/helper/ioctl/filio.c
+index 553f26a1a48ed23f8ae17c936eb1b98263647d88..88a7b271ecc5dd74e460e2ddc6360fd373c37f77 100644
+--- a/darling/src/libsystem_kernel/emulation/src/xnu_syscall/bsd/helper/ioctl/filio.c
++++ b/darling/src/libsystem_kernel/emulation/src/xnu_syscall/bsd/helper/ioctl/filio.c
+@@ -60,7 +60,7 @@ int handle_filio(int fd, int cmd, void* arg, int* retval)
+ 				*retval = -EBADF;
+ 				return IOCTL_HANDLED;
+ 			}
+-			__simple_kprintf("dtype for fd %d -> %s\n", fd, orig_path);
++			hotpath_kdebug("dtype for fd %d -> %s\n", fd, orig_path);
+ 
+ 			*retval = 0;
+ 			if (strncmp(orig_path, "/dev/pts", 8) == 0
+diff --git a/darling/src/libsystem_kernel/emulation/src/xnu_syscall/bsd/impl/process/execve.c b/darling/src/libsystem_kernel/emulation/src/xnu_syscall/bsd/impl/process/execve.c
+index e1c4cc485197a9ecae24136aad0393619d794b79..b9859120cdb6d463041ac3923ede4e786482b474 100644
+--- a/darling/src/libsystem_kernel/emulation/src/xnu_syscall/bsd/impl/process/execve.c
++++ b/darling/src/libsystem_kernel/emulation/src/xnu_syscall/bsd/impl/process/execve.c
+@@ -57,7 +57,7 @@ long sys_execve(const char* fname, const char** argvp, const char** envp)
+ 	strcpy(vc.path, fname);
+ 
+ 	ret = vchroot_expand(&vc);
+-	__simple_kprintf("execve expand %s -> %s, ret %d", fname, vc.path, ret);
++	hotpath_kdebug("execve expand %s -> %s, ret %d", fname, vc.path, ret);
+ 	if (ret < 0)
+ 		return errno_linux_to_bsd(ret);
+ 
+diff --git a/darling/src/libsystem_kernel/tests/hotpath_kprintf_gated_test.sh b/darling/src/libsystem_kernel/tests/hotpath_kprintf_gated_test.sh
+new file mode 100755
+index 0000000000000000000000000000000000000000..d53df7682f2deffd2776b72e0b180cd945d6097d
+--- /dev/null
++++ b/darling/src/libsystem_kernel/tests/hotpath_kprintf_gated_test.sh
+@@ -0,0 +1,74 @@
++#!/usr/bin/env bash
++# perf #9-decompose follow-on (dar-dar6x4-perf-5dq): the guest per-callnum reply-wait
++# breakdown showed kprintf is 14.5% of a clean build's recvmsg-sleep. Capturing the
++# server-side kprintf log during a real build revealed it is almost entirely UNCONDITIONAL
++# DEBUG TRACES on the hot path -- each a full synchronous RPC round-trip (~100us sleep)
++# with zero value in a normal build:
++#   - execve.c:    "execve expand %s -> %s, ret %d"   (fires on EVERY exec; a build is execs)
++#   - filio.c:     "dtype for fd %d -> %s"            (fires on a hot ioctl path)
++#   - sigexc.c:    "darling_sigexc_self()"            (fires on sigexc init; 43% of the spam)
++#
++# These should NOT cost an RPC by default. The fix gates them behind a debug macro
++# (DARLING_HOTPATH_KPRINTF_DEBUG, default off) so the default build is silent on the hot
++# path and the traces are restorable for debugging.
++#
++# RED->GREEN (source-level, hermetic -- no build, no server): before the fix these are
++# bare __simple_kprintf(...) statements (RED); after, each is wrapped so it is compiled
++# out unless DARLING_HOTPATH_KPRINTF_DEBUG is defined. We assert (a) the debug macro name
++# appears guarding each site, and (b) none of the three trace strings is reachable from a
++# bare/unconditional __simple_kprintf line. Exit 0 = GREEN.
++set -u
++
++ROOT="$(cd "$(dirname "$0")/../emulation/src" && pwd)"
++EXECVE="$ROOT/xnu_syscall/bsd/impl/process/execve.c"
++FILIO="$ROOT/xnu_syscall/bsd/helper/ioctl/filio.c"
++SIGEXC="$ROOT/linux_premigration/signal/sigexc.c"
++fails=0
++
++# A trace is "gated" if its __simple_kprintf is replaced by the debug-only macro
++# hotpath_kdebug(...) (which expands to nothing unless DARLING_HOTPATH_KPRINTF_DEBUG).
++# RED gate: the original bare __simple_kprintf("execve expand"...) must be GONE.
++check_gated() { # $1=file  $2=needle (unique substring of the trace string)
++	local f="$1" needle="$2"
++	if grep -F "$needle" "$f" | grep -q "__simple_kprintf"; then
++		echo "FAIL: $(basename "$f"): trace '$needle' still uses an unconditional __simple_kprintf (hot-path RPC not removed)"
++		fails=$((fails+1))
++	fi
++	if ! grep -F "$needle" "$f" | grep -q "hotpath_kdebug"; then
++		echo "FAIL: $(basename "$f"): trace '$needle' is not routed through the gated hotpath_kdebug macro"
++		fails=$((fails+1))
++	fi
++}
++
++check_gated "$EXECVE" "execve expand"
++check_gated "$FILIO"  "dtype for fd"
++
++# sigexc.c already has its own gate macro kern_printf (no-op unless DEBUG_SIGEXC). The
++# darling_sigexc_self() marker fires on EVERY process startup, so it must route through
++# that existing gate rather than a bare __simple_kprintf.
++if grep -F "darling_sigexc_self()" "$SIGEXC" | grep -q "__simple_kprintf"; then
++	echo "FAIL: sigexc.c: darling_sigexc_self() marker still uses an unconditional __simple_kprintf (hot-path RPC per process)"
++	fails=$((fails+1))
++fi
++if ! grep -F 'kern_printf("darling_sigexc_self()' "$SIGEXC" >/dev/null; then
++	echo "FAIL: sigexc.c: darling_sigexc_self() marker is not routed through the gated kern_printf"
++	fails=$((fails+1))
++fi
++
++# The macro itself must be defined as a no-op by default and only active under the flag.
++HDR="$(cd "$(dirname "$0")/../emulation/include/common" && pwd)/simple.h"
++if ! grep -q "hotpath_kdebug" "$HDR"; then
++	echo "FAIL: hotpath_kdebug macro is not defined in common/simple.h"
++	fails=$((fails+1))
++fi
++if ! grep -q "DARLING_HOTPATH_KPRINTF_DEBUG" "$HDR"; then
++	echo "FAIL: simple.h does not key the gate on DARLING_HOTPATH_KPRINTF_DEBUG"
++	fails=$((fails+1))
++fi
++
++if [ "$fails" -eq 0 ]; then
++	echo "GREEN: hot-path kprintf debug traces are gated behind DARLING_HOTPATH_KPRINTF_DEBUG (no RPC by default)"
++	exit 0
++fi
++echo "RED: $fails hot-path kprintf check(s) failed"
++exit 1

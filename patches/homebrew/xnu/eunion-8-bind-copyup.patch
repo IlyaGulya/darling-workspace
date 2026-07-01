@@ -1,0 +1,73 @@
+From 98c1723ced7401e308dc8895a090a24b2104bdb0 Mon Sep 17 00:00:00 2001
+From: Ilya Gulya <ilya@gulya.me>
+Date: Mon, 15 Jun 2026 20:31:21 +0000
+Subject: [PATCH] EXPERIMENT E-UNION: copy-up parent dir on AF_UNIX bind (PoC,
+ #ifdef EUNION)
+
+Binding an AF_UNIX socket creates a filesystem object, so its parent directory
+must live in the writable upper layer -- otherwise the socket is created in (or
+fails against) the read-only shared template. Wire sys_bind to
+vchroot_prepare_write() the socket path's parent dir before the path is
+expanded and bound (e.g. /var/run for /var/run/shellspawn.sock).
+
+Found while bringing up route 2 with -DDARLING_EUNION=ON in default
+unprivileged docker. Necessary for any guest unix-socket bind under the union;
+not by itself sufficient to clear the launchctl-bootstrap Mach stall (see bead
+notes). #ifdef EUNION -> production byte-identical.
+
+Local only, nothing pushed.
+
+Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
+---
+ .../src/xnu_syscall/bsd/impl/network/bind.c   | 31 +++++++++++++++++++
+ 1 file changed, 31 insertions(+)
+
+diff --git a/darling/src/libsystem_kernel/emulation/src/xnu_syscall/bsd/impl/network/bind.c b/darling/src/libsystem_kernel/emulation/src/xnu_syscall/bsd/impl/network/bind.c
+index 62d9db04ced2a137e3b79287ce9d3b9fe233a780..8155fde4971a12c47103ed02b495a54e278c77ec 100644
+--- a/darling/src/libsystem_kernel/emulation/src/xnu_syscall/bsd/impl/network/bind.c
++++ b/darling/src/libsystem_kernel/emulation/src/xnu_syscall/bsd/impl/network/bind.c
+@@ -2,6 +2,7 @@
+ 
+ #include <sys/errno.h>
+ #include <sys/socket.h>
++#include <sys/un.h>
+ 
+ #include <darling/emulation/common/base.h>
+ #include <darling/emulation/conversion/errno.h>
+@@ -25,6 +26,36 @@ long sys_bind(int fd, const void* name, int socklen)
+ 	if (socklen > 512)
+ 		return -EINVAL;
+ 
++#ifdef EUNION
++	// E-UNION: binding an AF_UNIX socket CREATES a filesystem object. Its parent
++	// directory must live in the writable upper layer, or the bind lands in (or
++	// fails against) the read-only template -- e.g. launchd binding
++	// /var/run/shellspawn.sock, whose /var/run exists only in the template until
++	// copied up. Materialize the parent before the path is expanded+bound.
++	{
++		const struct sockaddr* sa = (const struct sockaddr*) name;
++		// AF_UNIX == 1 on both BSD and Linux family numbering used here
++		if (sa && socklen > 2 && sa->sa_family == 1)
++		{
++			const char* p = ((const struct sockaddr_un*) name)->sun_path;
++			if (p[0] == '/')
++			{
++				// copy-up the PARENT dir of the socket path
++				char parent[4096];
++				int n = (int) strlen(p);
++				if (n > 0 && n < (int) sizeof(parent))
++				{
++					strcpy(parent, p);
++					char* slash = parent;
++					for (char* c = parent; *c; ++c)
++						if (*c == '/') slash = c;
++					if (slash != parent) { *slash = '\0'; vchroot_prepare_write(parent); }
++				}
++			}
++		}
++	}
++#endif
++
+ 	fixed = __builtin_alloca(sockaddr_fixup_size_from_bsd(name, socklen));
+ 	ret = socklen = sockaddr_fixup_from_bsd(fixed, name, socklen);
+ 	if (ret < 0)

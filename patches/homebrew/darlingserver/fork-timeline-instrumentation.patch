@@ -1,0 +1,68 @@
+# perf #12 (bead dar-dar6x4-perf-5dq.21) fork-checkin TIMELINE instrumentation.
+#
+# Diagnostic only: under -DDARLING_FORK_TIMELINE the Checkin handler emits a per-fork
+# server-side timeline (tid_resolve / dtape_create / notify+handler / ctor_to_reply_total)
+# to the 'forktimeline' log. Default-OFF -> byte-identical when the flag is unset.
+#
+# STATUS when stashed (2026-06-30): this was an UNCOMMITTED, ORPHANED working-tree diff in
+# call.cpp only. Its companion darForkTimelineSnapshot() impl (commented as 'Defined in
+# thread.cpp') is NOT present in the tree, so building with -DDARLING_FORK_TIMELINE would
+# FAIL TO LINK (undefined symbol). The flag is not a cmake option anywhere and was never in
+# git history. Stashed here + reverted from call.cpp so it stops shadowing perf#18 ring work
+# (it kept showing call.cpp as modified, a hazard for ring commits). To resurrect: re-apply
+# this AND restore the thread.cpp darForkTimelineSnapshot() implementation (recover it from
+# the perf#12 work / transcript -- it is NOT in this patch).
+#
+# Apply from darling/src/external/darlingserver/:  git apply <this file>  (strip the # header first)
+# ---8<--- patch below ---8<---
+diff --git a/src/call.cpp b/src/call.cpp
+index 1209bc9..14f840e 100644
+--- a/src/call.cpp
++++ b/src/call.cpp
+@@ -43,6 +43,17 @@ static DarlingServer::Log callLog("calls");
+ 
+ DarlingServer::Log DarlingServer::Call::rpcReplyLog("replies");
+ 
++#ifdef DARLING_FORK_TIMELINE
++// perf #12 (bead dar-dar6x4-perf-5dq.21): the Thread ctor (run during Call/Message dispatch,
++// before processCall) stashes its construction-phase timestamps in a thread_local; this
++// accessor lets the Checkin handler read them back and emit the full per-fork timeline.
++// Defined in thread.cpp. Gated by -DDARLING_FORK_TIMELINE; byte-identical when off.
++namespace DarlingServer {
++	bool darForkTimelineSnapshot(uint64_t& ctorEnterUs, uint64_t& tidResolvedUs, uint64_t& dtapeDoneUs, bool& usedPtrace, int& ptraceCandidates);
++}
++static DarlingServer::Log forkTimelineLog("forktimeline");
++#endif
++
+ std::shared_ptr<DarlingServer::Call> DarlingServer::Call::callFromMessage(Message&& requestMessage) {
+ 	if (requestMessage.data().size() < sizeof(dserver_rpc_callhdr_t)) {
+ 		throw std::invalid_argument("Message buffer was too small for call header");
+@@ -468,6 +479,28 @@ void DarlingServer::Call::Checkin::processCall() {
+ 		metrics.forkLatency.record((now >= startUs) ? (now - startUs) : 0);
+ 	}
+ 
++#ifdef DARLING_FORK_TIMELINE
++	// perf #12: emit the full server-side timeline for a fork checkin, attributing the
++	// per-fork cost across procfs/ptrace TID resolution, dtape task/thread creation, the
++	// notifyCheckin handler, and the time until just before the reply is sent.
++	if (_body.is_fork) {
++		uint64_t ctorEnterUs = 0, tidResolvedUs = 0, dtapeDoneUs = 0;
++		bool usedPtrace = false; int ptraceCandidates = 0;
++		if (DarlingServer::darForkTimelineSnapshot(ctorEnterUs, tidResolvedUs, dtapeDoneUs, usedPtrace, ptraceCandidates) && ctorEnterUs != 0) {
++			uint64_t replyUs = Metrics::nowMonoUs();
++			auto d = [](uint64_t a, uint64_t b) -> long long { return (b >= a) ? (long long)(b - a) : -1; };
++			forkTimelineLog.info()
++				<< "fork-checkin timeline us:"
++				<< " tid_resolve=" << d(ctorEnterUs, tidResolvedUs)
++				<< " (ptrace=" << (usedPtrace ? 1 : 0) << " cand=" << ptraceCandidates << ")"
++				<< " dtape_create=" << d(tidResolvedUs, dtapeDoneUs)
++				<< " notify+handler=" << d(dtapeDoneUs, replyUs)
++				<< " ctor_to_reply_total=" << d(ctorEnterUs, replyUs)
++				<< forkTimelineLog.endLog;
++		}
++	}
++#endif
++
+ 	_sendReply(code);
+ };
+ 
