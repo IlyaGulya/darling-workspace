@@ -1137,7 +1137,7 @@ manifest:
   - name: darling-debug-runner
     url: git@github.com:IlyaGulya/darling-debug-runner
     revision: c85f1bd1ed7238a74c0b30a8e5c0daf3ee933a52
-    path: tools/darling-debug-runner
+    path: darling-debug-runner
     groups:
     - private
     - debug-tools
