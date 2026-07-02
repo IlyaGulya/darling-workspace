@@ -241,7 +241,7 @@
         },
         {
           "branch": "perf/shmem-ring-abi-validator",
-          "head": "6111ce183d3a0a43a516b87b15589e7b2659efe3",
+          "head": "257ac04bcb88e112d08f451121674f5ab34ae905",
           "upstream": "",
           "source_ref": "refs/heads/perf/shmem-ring-abi-validator"
         }
@@ -253,7 +253,7 @@
       "branches": [
         {
           "branch": "fix/dyld-dcc2-reader",
-          "head": "bcf77af2cafd5a80beb0d043bd9ac608cbbc87c4",
+          "head": "7a93752e3d996a355ba3a8a4d00e2b70015ee40c",
           "upstream": "",
           "source_ref": "refs/heads/fix/dyld-dcc2-reader"
         },
