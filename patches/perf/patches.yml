@@ -1,19 +1,31 @@
 version: 1
-description: >-
-  Performance work that stacks ON TOP of the homebrew profile. The homebrew
-  fixes (e.g. mldr glibc-fork-lock-reset and main-stack EEXIST fallback) are
-  prerequisites for a bootable build, so this profile declares homebrew as its
-  base rather than applying against the raw manifest revision.
+description: Performance work that stacks ON TOP of the homebrew profile. The homebrew fixes (e.g. mldr glibc-fork-lock-reset and main-stack EEXIST fallback) are prerequisites for a bootable build, so this profile declares homebrew as its base rather than applying against the raw manifest revision.
 base-profile: homebrew
-integration-date: 2026-07-01T00:00:00Z
+integration-date: 2026-07-01 00:00:00+00:00
 patches:
-  - path: darling/mldr-compact-fd-band.patch
-    sha256sum: 18545aee2d1ab085b86ce6d72f03a95a6874e9973031d705a5c623430b1f1891
-    module: darling
-    source-branch: fix/mldr-compact-fd-band
-    source-commit: 0de8081a0a1c8a401bca7a43d2206ecabaecca80
-    bead: dar-dar6x4-perf-5dq
-    publication-status: blocked
-    publication-blocker: >-
-      perf#21b compact protected internal fd band is a local performance
-      experiment; not proposed upstream. See perf#21b brief.
+- path: darling/mldr-compact-fd-band.patch
+  sha256sum: 18545aee2d1ab085b86ce6d72f03a95a6874e9973031d705a5c623430b1f1891
+  module: darling
+  source-branch: fix/mldr-compact-fd-band
+  source-commit: 0de8081a0a1c8a401bca7a43d2206ecabaecca80
+  bead: dar-dar6x4-perf-5dq
+  publication-status: blocked
+  publication-blocker: perf#21b compact protected internal fd band is a local performance experiment; not proposed upstream. See perf#21b brief.
+- path: xnu/shmem-ring-guest.patch
+  sha256sum: 8b6aeb9acc982955db48cffec4d6b333de874d81e444a3e699acc03ba75966c9
+  module: darling/src/external/xnu
+  source-branch: perf/shmem-ring-guest
+  source-base: 1169ebe2d99cf0c7ba36c1f2613fcf66a9cbbb1c
+  source-commit: caddc2b7ef7718e60318f98ec39dab7d40df38ca
+  bead: dar-1il.12
+  publication-status: blocked
+  publication-blocker: perf#18 guest shared-memory ring transport (D3..D18a staircase) is an EXPERIMENTAL transport, flag-gated behind DARLING_RING_TRANSPORT / DARLING_SERVER_FAST_OPS. It has a residual RPC-loss failure mode under heavy concurrent fork/exec/exit (see perf#25a-hang, bead dar A0). Not default-on, not proposed upstream. Base is 1169ebe (perf#7-generalize recv-spin), already exported by the homebrew profile as xnu/generalize-recv-spin-guest, so this patch carries ONLY the 17 ring-specific commits on top of it.
+- path: dyld/dcc2-reader.patch
+  sha256sum: bc1acc8ba1a4c969d216391f022111eb14239c96c6fedb0707bb75ff5953f6a5
+  module: darling/src/external/dyld
+  source-branch: fix/dyld-dcc2-reader
+  source-base: 63f667cf06d7ed59553adebb0c8d70a117135ac9
+  source-commit: aec6a4af4efaacbda31911aaf32d73495d4a7da1
+  bead: dar-dar6x4-perf-5dq.26
+  publication-status: blocked
+  publication-blocker: perf#24 DCC6 packed-shared-cache dyld reader (3-region + TEXT RIP-relative rewrite + precomputed fixup table). CLOSED as a functionally-proven, kernel-measured PROTOTYPE that is FLAG-GATED (DARLING_DYLD_DCC2=1 + DARLING_DYLD_DCC2_PATH) and NOT default-on; productization needs separate hardening (cache-build/staleness deploy, coverage beyond the 40-dylib closure, cache ABI-version discipline). See tests/PERF24-DCC6-FINAL.md. Base is 63f667cf (manifest dyld revision).
