@@ -52,7 +52,7 @@ src/external/csu	93b25cf0930a727b44fa50893bffd71056ad032f	DETACHED	git@github.co
 src/external/cups	51b7c251ef5ff81adc20284544394de8cc2e1315	DETACHED	git@github.com:IlyaGulya/darling-cups.git	clean
 src/external/curl	92f54fd7eceabed2c2382a4acc0f7293dedd92ff	DETACHED	git@github.com:IlyaGulya/darling-curl.git	clean
 src/external/darling-dmg	1a6de10c5886c40a414090701b2520bd0417ce29	DETACHED	git@github.com:IlyaGulya/darling-dmg.git	clean
-src/external/darlingserver	895ceb61fc1b347ed130e87311cf9c640659c216	perf/shmem-ring-abi-validator	git@github.com:IlyaGulya/darlingserver.git	clean
+src/external/darlingserver	2353b39359a2886ae1cdb18b0d1ae008f9df274a	perf/shmem-ring-abi-validator	git@github.com:IlyaGulya/darlingserver.git	clean
 src/external/dbuskit	890e51fda949e4dd2c46765e39074f790c10ca18	DETACHED	git@github.com:IlyaGulya/darling-dbuskit.git	clean
 src/external/doc_cmds	60c6a2b858abe1f27b441f479aad2b0a9d0f9ba2	DETACHED	git@github.com:IlyaGulya/darling-doc_cmds.git	clean
 src/external/dtrace	4f52343b36756e32a81eb302242ac6472e9075fa	DETACHED	git@github.com:IlyaGulya/darling-dtrace.git	clean
