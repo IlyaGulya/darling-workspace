@@ -241,7 +241,7 @@
         },
         {
           "branch": "perf/shmem-ring-abi-validator",
-          "head": "7ef8ee2d9a1373401374f6cac48aa1897206df8c",
+          "head": "22901db58ce9ee18e0e20a675231e6506d27ab8f",
           "upstream": "",
           "source_ref": "refs/heads/perf/shmem-ring-abi-validator"
         }
