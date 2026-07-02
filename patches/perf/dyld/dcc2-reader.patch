@@ -1,0 +1,1284 @@
+From a9c2e2922a9fa6226f591fe9101bcbc706cf6dcd Mon Sep 17 00:00:00 2001
+From: Ilya Gulya <ilya@gulya.me>
+Date: Tue, 9 Jun 2026 09:10:38 +0000
+Subject: [PATCH] WIP: preserve Homebrew debugging changes
+
+---
+ CMakeLists.txt | 3 +--
+ 1 file changed, 1 insertion(+), 2 deletions(-)
+
+diff --git a/CMakeLists.txt b/CMakeLists.txt
+index e4c6115746f67ce86bdc7c5c81bb67ba9b32b505..0cac88eaa24f3b606ca675f8c6d81d119e4054ce 100644
+--- a/CMakeLists.txt
++++ b/CMakeLists.txt
+@@ -129,7 +129,7 @@ dsym(system_loader)
+ set_target_properties(system_loader PROPERTIES OUTPUT_NAME "dyld")
+ set_property(TARGET system_loader APPEND_STRING PROPERTY
+ 	COMPILE_FLAGS " -DBUILDING_DYLD=1 -DPRIVATE=1 -gfull -fPIC -fno-stack-check")
+-set_property(TARGET system_loader APPEND_STRING PROPERTY LINK_FLAGS " -Wl,-dylinker -Wl,-dead_strip -Wl,-data_const -nostdlib -Wl,-e,__dyld_start -Wl,-fixup_chains -Wl,-image_base,0x1fe00000 -Wl,-exported_symbols_list,${CMAKE_CURRENT_SOURCE_DIR}/src/dyld.exp")
++set_property(TARGET system_loader APPEND_STRING PROPERTY LINK_FLAGS " -Wl,-dylinker -Wl,-dead_strip -Wl,-u,_elfcalls -Wl,-data_const -nostdlib -Wl,-e,__dyld_start -Wl,-fixup_chains -Wl,-image_base,0x1fe00000 -Wl,-exported_symbols_list,${CMAKE_CURRENT_SOURCE_DIR}/src/dyld.exp")
+ target_link_libraries(system_loader libc_static system_blocks_static
+ 	cxx_static
+ 	unwind_static system_m_static cxxabi_static
+@@ -168,4 +168,3 @@ install(FILES
+ 	DESTINATION
+ 	libexec/darling/usr/share/man/man3
+ )
+-
+
+From b352871fcbd92fe27cd0f56064047206803df361 Mon Sep 17 00:00:00 2001
+From: Ilya Gulya <ilya@gulya.me>
+Date: Wed, 1 Jul 2026 13:22:37 +0000
+Subject: [PATCH] perf#24c2e: WIP DCC2 reader on dyld2 classic path (durability
+ commit)
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Retarget the DCC2 packed-closure reader from the dyld3 closure path
+(launchWithClosure) to the dyld2 classic path that Darling actually
+launches through. Guarded by DARLING_DYLD_DCC2.
+
+- dyld3/DCC2Reader.{h,cpp}: shared singleton, isDCC2Image (exact,
+  addr==_arena+image_vmbase), applyAllFixupsOnce (whole-cache single
+  apply, hard-fail on loc-not-RW / unknown-kind / unresolved-extern),
+  counters + dumpCounters.
+- src/dyld2.cpp: initShared() after main-exe instantiate; dccTryLoad()
+  hook at top of load() substituting cached images.
+- src/ImageLoaderMachOCompressed.cpp: guarded-if in rebase() (apply DCC2
+  fixups once) and doBind() (skip; hard-fail if fixups not yet applied).
+- dyld3/Loading.{cpp,h}: dyld3-path DCC2 edits wrapped in #if BUILDING_DYLD
+  (fixes libdyld.dylib link — Loading.cpp is in both loader targets).
+
+WIP: 2-dylib live smoke still crashes in instantiateFromCache (scattered
+LINKEDIT pointer math) — task #91 open. Committed for durability so the
+work survives checkout/handoff; NOT yet exported to a patch profile.
+
+Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
+---
+ CMakeLists.txt                     |   1 +
+ dyld3/DCC2Reader.cpp               | 258 +++++++++++++++++++++++++++++
+ dyld3/DCC2Reader.h                 | 146 ++++++++++++++++
+ dyld3/Loading.cpp                  |  78 +++++++++
+ dyld3/Loading.h                    |   8 +
+ src/ImageLoaderMachOCompressed.cpp |  45 +++++
+ src/dyld2.cpp                      |  53 ++++++
+ 7 files changed, 589 insertions(+)
+ create mode 100644 dyld3/DCC2Reader.cpp
+ create mode 100644 dyld3/DCC2Reader.h
+
+diff --git a/CMakeLists.txt b/CMakeLists.txt
+index 0cac88eaa24f3b606ca675f8c6d81d119e4054ce..b48bc8d7e5fc0a125eba9bc70bbf0f7d43a0a085 100644
+--- a/CMakeLists.txt
++++ b/CMakeLists.txt
+@@ -108,6 +108,7 @@ add_executable(system_loader
+ 	dyld3/ClosureWriter.cpp
+ 	dyld3/Tracing.cpp
+ 	dyld3/Loading.cpp
++	dyld3/DCC2Reader.cpp
+ 	dyld3/Diagnostics.cpp
+ 	dyld3/SharedCacheRuntime.cpp
+ 	dyld3/shared-cache/DyldSharedCache.cpp
+diff --git a/dyld3/DCC2Reader.cpp b/dyld3/DCC2Reader.cpp
+new file mode 100644
+index 0000000000000000000000000000000000000000..b1c5854e60b712dbc8e4523cb59f7baf106069d1
+--- /dev/null
++++ b/dyld3/DCC2Reader.cpp
+@@ -0,0 +1,258 @@
++/* perf#24c2c — DCC2 cache reader implementation (flag-gated). See DCC2Reader.h. */
++
++#include <stdint.h>
++#include <string.h>
++#include <fcntl.h>
++#include <errno.h>
++#include <sys/stat.h>
++#include <System/sys/mman.h>
++#include <mach/mach.h>
++#include <_simple.h>
++
++#include "DCC2Reader.h"
++#include "MachOFile.h"
++#include "dyld2.h"
++
++namespace dyld3 {
++
++// dyld3::open / dyld3::stat live in MachOFile.cpp
++int  open(const char* path, int flag, int other);
++int  stat(const char* path, struct stat* buf);
++
++static uint64_t roundup2(uint64_t v, uint64_t a) { return (v + a - 1) & ~(a - 1); }
++
++DCC2Reader* DCC2Reader::init(const char* envp[], LogFunc log)
++{
++    const char* on = _simple_getenv(envp, "DARLING_DYLD_DCC2");
++    if ( (on == nullptr) || (on[0] != '1') )
++        return nullptr;                       // flag absent => exact old behavior
++
++    const char* path = _simple_getenv(envp, "DARLING_DYLD_DCC2_PATH");
++    bool hardFail = true;                     // present flag but broken cache: default to hard fail
++    const char* soft = _simple_getenv(envp, "DARLING_DYLD_DCC2_SOFT");
++    if ( soft && soft[0]=='1' ) hardFail = false;  // opt-in clean fallback for experiments
++
++    static DCC2Reader reader;                 // singleton (dyld is single-threaded at this point)
++    reader._log = log;
++
++    if ( path == nullptr ) {
++        if ( log ) log("dyld[DCC2]: DARLING_DYLD_DCC2=1 but DARLING_DYLD_DCC2_PATH unset\n");
++        if ( hardFail ) dyld::halt("DCC2: cache path unset");
++        return nullptr;
++    }
++    strlcpy(reader._path, path, sizeof reader._path);
++
++    int fd = dyld3::open(path, O_RDONLY, 0);
++    if ( fd < 0 ) {
++        if ( log ) log("dyld[DCC2]: open('%s') failed errno=%d\n", path, errno);
++        if ( hardFail ) dyld::halt("DCC2: cannot open cache");
++        return nullptr;
++    }
++    if ( !reader.validate(fd) || !reader.mapRegions(fd) ) {
++        ::close(fd);
++        reader._arena = 0;
++        if ( hardFail ) dyld::halt("DCC2: cache invalid/stale");
++        return nullptr;
++    }
++    reader._fd = fd;
++    if ( log ) log("dyld[DCC2]: enabled, %u images from '%s' (arena=0x%llx)\n",
++                   reader._hdr->image_count, path, (unsigned long long)reader._arena);
++    return &reader;
++}
++
++// perf#24c2e: process-wide singleton for the dyld2 classic path.
++static DCC2Reader* sSharedDCC2 = nullptr;
++
++void DCC2Reader::initShared(const char* envp[], LogFunc log)
++{
++    sSharedDCC2 = DCC2Reader::init(envp, log);   // nullptr if flag absent / cache invalid (soft)
++}
++
++DCC2Reader* DCC2Reader::shared()
++{
++    return sSharedDCC2;
++}
++
++bool DCC2Reader::validate(int fd)
++{
++    struct stat st;
++    if ( fstat(fd, &st) != 0 ) return false;
++    _cacheSize = st.st_size;
++    void* m = ::mmap(nullptr, _cacheSize, PROT_READ, MAP_PRIVATE, fd, 0);
++    if ( m == MAP_FAILED ) return false;
++    _cache = (uint8_t*)m;
++    _hdr   = (DCC2Header*)_cache;
++    if ( _hdr->magic != DCC2_MAGIC )   { if(_log)_log("dyld[DCC2]: bad magic\n"); return false; }
++    if ( _hdr->version != DCC2_VERSION){ if(_log)_log("dyld[DCC2]: bad version\n"); return false; }
++    _images    = (DCC2Image*)(_cache + sizeof(DCC2Header));
++    _fixups    = (DCC2Fixup*)(_cache + _hdr->fixup_off);
++    _externStr = (const char*)(_cache + _hdr->extern_off);
++
++    // staleness: every source dylib's inode/mtime/size must match what the builder recorded.
++    for ( uint32_t i = 0; i < _hdr->image_count; ++i ) {
++        DCC2Image* im = &_images[i];
++        struct stat s2;
++        if ( dyld3::stat(im->path, &s2) != 0 ) {
++            if(_log)_log("dyld[DCC2]: stale/missing source '%s'\n", im->path); return false;
++        }
++        if ( (uint64_t)s2.st_ino != im->src_inode || (uint64_t)s2.st_mtime != im->src_mtime || (uint64_t)s2.st_size != im->src_size ) {
++            if(_log)_log("dyld[DCC2]: stale source '%s' (inode/mtime/size changed)\n", im->path); return false;
++        }
++    }
++    return true;
++}
++
++bool DCC2Reader::mapRegions(int fd)
++{
++    // reserve one arena covering [0 .. max(vm_base+size)] then MAP_FIXED each region so relative
++    // spacing is preserved (one uniform slide). RX+RO shared, RW private (COW).
++    uint64_t span = 0;
++    for (int i=0;i<3;i++){ uint64_t end=_hdr->regions[i].vm_base + roundup2(_hdr->regions[i].size, DCC2_REGION_ALIGN); if(end>span)span=end; }
++    vm_address_t arena = 0;
++    if ( ::vm_allocate(mach_task_self(), &arena, (vm_size_t)span, VM_FLAGS_ANYWHERE) != KERN_SUCCESS ) {
++        if(_log)_log("dyld[DCC2]: vm_allocate(0x%llx) failed\n", (unsigned long long)span); return false;
++    }
++    _arena = (uint64_t)arena;
++    int prot[3] = { PROT_READ|PROT_EXEC, PROT_READ|PROT_WRITE, PROT_READ };
++    int flags[3]= { MAP_FIXED|MAP_PRIVATE, MAP_FIXED|MAP_PRIVATE /*COW*/, MAP_FIXED|MAP_PRIVATE };
++    for (int i=0;i<3;i++){
++        void* want = (void*)(_arena + _hdr->regions[i].vm_base);
++        void* got  = ::mmap(want, roundup2(_hdr->regions[i].size, DCC2_REGION_ALIGN), prot[i], flags[i], fd, _hdr->regions[i].file_off);
++        if ( got == MAP_FAILED ) { if(_log)_log("dyld[DCC2]: map region %d failed errno=%d\n", i, errno); return false; }
++        _rmap[i] = (uint8_t*)got;
++    }
++    // one-slide invariant: relative spacing preserved
++    if ( ((uint64_t)_rmap[1] - _hdr->regions[1].vm_base != _arena) ||
++         ((uint64_t)_rmap[2] - _hdr->regions[2].vm_base != _arena) ) {
++        if(_log)_log("dyld[DCC2]: region spacing not preserved (one-slide broken)\n"); return false;
++    }
++    return true;
++}
++
++const MachOLoaded* DCC2Reader::loadedAddressFor(const char* path, uint32_t* outImageIndex)
++{
++    if ( !enabled() ) return nullptr;
++    for ( uint32_t i = 0; i < _hdr->image_count; ++i ) {
++        if ( strcmp(_images[i].path, path) == 0 ) {
++            const MachOLoaded* mh = (const MachOLoaded*)(_arena + _images[i].image_vmbase);
++            if ( _nDccAddrs < kMaxDCC ) _dccAddrs[_nDccAddrs++] = mh;
++            if ( outImageIndex ) *outImageIndex = i;
++            return mh;
++        }
++    }
++    return nullptr;
++}
++
++bool DCC2Reader::isDCCImage(const MachOLoaded* mh) const
++{
++    for ( int i = 0; i < _nDccAddrs; ++i ) if ( _dccAddrs[i] == mh ) return true;
++    return false;
++}
++
++// perf#24c2e: cheap+exact — a mach_header is DCC-owned iff it sits at _arena + image_vmbase for one
++// of the cached images. (Exact pointer identity, not a range test.)
++bool DCC2Reader::isDCC2Image(const struct mach_header* mh, uint32_t* outIndex) const
++{
++    if ( !enabled() || mh == nullptr ) return false;
++    const uint64_t addr = (uint64_t)mh;
++    for ( uint32_t i = 0; i < _hdr->image_count; ++i ) {
++        if ( addr == (_arena + _images[i].image_vmbase) ) {
++            if ( outIndex ) *outIndex = i;
++            return true;
++        }
++    }
++    return false;
++}
++
++// perf#24c2e: apply EVERY cached image's fixups, once, for the whole cache. Bind targets are
++// cross-image (BIND_INTERNAL references another cached image's region), so this must run after all
++// DCC2 images are registered — hence once-per-cache, not per-image. Idempotent: a second call is a
++// no-op returning true.
++bool DCC2Reader::applyAllFixupsOnce(LogFunc logFixups,
++                                    uintptr_t (^resolveExtern)(const char* symbolName, bool& found))
++{
++    if ( !enabled() ) return false;
++    if ( _allApplied ) return true;                  // already applied for this cache
++    const uint64_t slide = _arena;
++    uint32_t applied = 0;
++    for ( uint32_t fi = 0; fi < _hdr->fixup_count; ++fi ) {
++        DCC2Fixup* f = &_fixups[fi];
++        if ( f->loc_region != 1 ) { if(_log)_log("dyld[DCC2]: fixup %u loc not in RW (region=%d) hard fail\n", fi, f->loc_region); return false; }
++        uintptr_t* loc = (uintptr_t*)(_rmap[1] + f->loc_off);
++        switch ( f->kind ) {
++            case DCC2_FIX_REBASE:
++                *loc += (uintptr_t)slide;
++                break;
++            case DCC2_FIX_BIND_INTERNAL:
++                *loc = (uintptr_t)(_hdr->regions[f->tgt_region].vm_base + f->tgt_off + slide + f->addend);
++                break;
++            case DCC2_FIX_BIND_EXTERN: {
++                const char* sym = _externStr + f->extern_sym;
++                bool found = false;
++                uintptr_t v = resolveExtern ? resolveExtern(sym, found) : 0;
++                if ( !found ) { if(_log)_log("dyld[DCC2]: extern symbol '%s' unresolved (hard fail)\n", sym); return false; }
++                *loc = v + (uintptr_t)f->addend;
++                break;
++            }
++            default:
++                if(_log)_log("dyld[DCC2]: unknown fixup kind %d (hard fail)\n", f->kind); return false;
++        }
++        ++applied;
++        if ( logFixups ) logFixups("dyld[DCC2]: fixup #%u kind=%d loc=%p\n", fi, f->kind, (void*)loc);
++    }
++    _allApplied = true;
++    _cFixupsApplied = applied;
++    if ( _log ) _log("dyld[DCC2]: applied %u fixups once for whole cache (slide=0x%llx)\n",
++                     applied, (unsigned long long)slide);
++    return true;
++}
++
++void DCC2Reader::dumpCounters(LogFunc log) const
++{
++    if ( !log ) return;
++    log("dyld[DCC2]: counters: reader_init=1 regions_mapped=3 images_registered=%u "
++        "normal_rebase_skipped=%u normal_bind_skipped=%u fixups_applied_once=%d fixup_count=%u\n",
++        _cImagesRegistered, _cNormalRebaseSkipped, _cNormalBindSkipped,
++        _allApplied ? 1 : 0, _cFixupsApplied);
++}
++
++bool DCC2Reader::applyFixups(uint32_t imageIndex, LogFunc logFixups,
++                             uintptr_t (^resolveExtern)(const char* symbolName, bool& found))
++{
++    if ( !enabled() || imageIndex >= _hdr->image_count ) return false;
++    // applied exactly once
++    if ( imageIndex < (uint32_t)kMaxDCC ) {
++        if ( _appliedOnce[imageIndex] ) { if(_log)_log("dyld[DCC2]: fixups already applied for image %u\n", imageIndex); return false; }
++        _appliedOnce[imageIndex] = true;
++    }
++    DCC2Image* im = &_images[imageIndex];
++    const uint64_t slide = _arena;
++    for ( uint32_t k = 0; k < im->fixup_count; ++k ) {
++        DCC2Fixup* f = &_fixups[im->fixup_first + k];
++        if ( f->image_index != imageIndex ) { if(_log)_log("dyld[DCC2]: fixup image mismatch\n"); return false; }
++        if ( f->loc_region != 1 ) { if(_log)_log("dyld[DCC2]: fixup loc not in RW\n"); return false; }
++        uintptr_t* loc = (uintptr_t*)(_rmap[1] + f->loc_off);
++        switch ( f->kind ) {
++            case DCC2_FIX_REBASE:
++                *loc += (uintptr_t)slide;
++                break;
++            case DCC2_FIX_BIND_INTERNAL:
++                *loc = (uintptr_t)(_hdr->regions[f->tgt_region].vm_base + f->tgt_off + slide + f->addend);
++                break;
++            case DCC2_FIX_BIND_EXTERN: {
++                const char* sym = _externStr + f->extern_sym;
++                bool found = false;
++                uintptr_t v = resolveExtern ? resolveExtern(sym, found) : 0;
++                if ( !found ) { if(_log)_log("dyld[DCC2]: extern symbol '%s' unresolved (hard fail)\n", sym); return false; }
++                *loc = v + (uintptr_t)f->addend;
++                break;
++            }
++            default:
++                if(_log)_log("dyld[DCC2]: unknown fixup kind %d\n", f->kind); return false;
++        }
++        if ( logFixups ) logFixups("dyld[DCC2]: fixup %s:%p (kind=%d)\n", im->path, (void*)loc, f->kind);
++    }
++    return true;
++}
++
++} // namespace dyld3
+diff --git a/dyld3/DCC2Reader.h b/dyld3/DCC2Reader.h
+new file mode 100644
+index 0000000000000000000000000000000000000000..ebcc997d885d5bf52c612e1e4011fb3724efc776
+--- /dev/null
++++ b/dyld3/DCC2Reader.h
+@@ -0,0 +1,146 @@
++/* perf#24c2c — DCC2 cache reader (flag-gated). Loads region-packed images from a DCC2 cache and
++ * applies the cache-native fixup table, bypassing the normal Mach-O fixup engine (which is
++ * known-wrong for region-packed layout — perf#24c2a).
++ *
++ * Feature-gated ONLY by env:
++ *   DARLING_DYLD_DCC2=1
++ *   DARLING_DYLD_DCC2_PATH=/path/to/cache.dcc2
++ * Env absent  => reader is a no-op; dyld behaves exactly as before.
++ * Cache invalid/stale => clean fallback (reader disables itself) OR explicit hard fail; never a
++ *   half-cache / half-normal state.
++ */
++#ifndef __DYLD_DCC2_READER_H__
++#define __DYLD_DCC2_READER_H__
++
++#include <stdint.h>
++#include "MachOLoaded.h"
++
++namespace dyld3 {
++
++/* on-disk format (must match tools/closure-cache/dcc2-format.h) */
++#define DCC2_MAGIC   0x44434332u
++#define DCC2_VERSION 2
++#define DCC2_REGION_ALIGN 0x4000
++#define DCC2_MAX_SEGS 8
++#define DCC2_FIX_REBASE        0
++#define DCC2_FIX_BIND_INTERNAL 1
++#define DCC2_FIX_BIND_EXTERN   2
++
++struct DCC2Region { uint64_t file_off, size, vm_base; uint32_t prot, _pad; };
++struct DCC2Seg    { char name[16]; uint64_t vmaddr, vmsize, region_off, filesize; uint32_t region_idx, prot; };
++struct DCC2Image {
++    char     path[256];
++    uint8_t  uuid[16];
++    uint64_t src_inode, src_mtime, src_size;
++    uint64_t image_vmbase;
++    uint32_t nsegs, init_index;
++    uint32_t fixup_first, fixup_count;
++    DCC2Seg  segs[DCC2_MAX_SEGS];
++};
++struct DCC2Fixup {
++    uint8_t  kind, loc_region, tgt_region, _pad;
++    uint32_t image_index;
++    uint64_t loc_off, tgt_off;
++    int64_t  addend;
++    uint32_t extern_sym, _pad2;
++};
++struct DCC2Header {
++    uint32_t magic, version, arch, image_count;
++    uint64_t closure_hash;
++    char     install_root[256];
++    DCC2Region regions[3];
++    uint64_t fixup_off;  uint32_t fixup_count;  uint32_t _pad0;
++    uint64_t extern_off; uint32_t extern_size;  uint32_t _pad1;
++};
++
++//
++// Singleton reader. Initialized once (flag-gated) at the top of mapAndFixupAllImages.
++//
++class DCC2Reader {
++public:
++    typedef bool (*LogFunc)(const char*, ...) __attribute__((format(printf, 1, 2)));
++
++    // Returns the enabled reader if DARLING_DYLD_DCC2=1 and the cache mapped+validated OK.
++    // Returns nullptr if the flag is absent (normal dyld). If the flag is present but the cache is
++    // invalid: on hardFail it halts; otherwise returns nullptr (clean fallback to normal dyld).
++    static DCC2Reader*  init(const char* envp[], LogFunc log);
++
++    // perf#24c2e: process-wide singleton for the dyld2 classic path. initShared() is called once,
++    // early in dyld2 _main; shared() returns it (or nullptr if the flag was absent / cache invalid).
++    // This lets ImageLoaderMachO* reach the reader without threading a pointer through the loader.
++    static void         initShared(const char* envp[], LogFunc log);
++    static DCC2Reader*  shared();
++
++    bool                enabled() const { return _arena != 0; }
++
++    // If 'path' is a DCC2-cached image, returns its runtime loaded address (arena + image_vmbase)
++    // and marks it DCC-owned; else returns nullptr (image loads normally).
++    const MachOLoaded*  loadedAddressFor(const char* path, uint32_t* outImageIndex);
++
++    // True if the image at this loadedAddress is DCC-owned (used to enforce the invariant).
++    bool                isDCCImage(const MachOLoaded* mh) const;
++
++    // perf#24c2e (dyld2 classic path): cheap+exact test used by the guarded hook in
++    // ImageLoaderMachOCompressed::doRebase/doBind. A mach_header* is DCC-owned iff it points inside
++    // the RX region at one of the registered image_vmbase offsets. Also returns the image index.
++    bool                isDCC2Image(const struct mach_header* mh, uint32_t* outIndex = nullptr) const;
++
++    // perf#24c2e: apply ALL cached images' fixups exactly once for the whole cache (bind targets are
++    // cross-image, so this must run once after all DCC2 images are registered, not per-image).
++    // resolveExtern resolves a flat/extern symbol; a required symbol returning found=false is a hard
++    // fail. Returns false on any hard-fail condition. Idempotent-guarded: a second call is a no-op
++    // that returns true (already applied).
++    bool                applyAllFixupsOnce(LogFunc logFixups,
++                                           uintptr_t (^resolveExtern)(const char* symbolName, bool& found));
++    bool                allFixupsApplied() const { return _allApplied; }
++
++    // perf#24c2e counters (for the smoke gate; logged via dumpCounters()).
++    void                noteNormalRebaseSkipped() { ++_cNormalRebaseSkipped; }
++    void                noteNormalBindSkipped()   { ++_cNormalBindSkipped; }
++    void                noteImageRegistered()     { ++_cImagesRegistered; }
++    void                dumpCounters(LogFunc log) const;
++
++    // Apply this image's cache-native fixups to the (COW) RW region. 'resolveExtern' resolves a
++    // flat/extern symbol name to a runtime address (the normal dyld symbol resolver); if it returns
++    // 0 for a required symbol, this is a hard fail (no silent NULL).
++    // Returns false on any hard-fail condition.
++    bool                applyFixups(uint32_t imageIndex, LogFunc logFixups,
++                                    uintptr_t (^resolveExtern)(const char* symbolName, bool& found));
++
++    uint64_t            slide() const { return _arena; }
++    const char*         cachePath() const { return _path; }
++
++private:
++    bool                mapRegions(int fd);
++    bool                validate(int fd);
++
++    uint8_t*            _cache      = nullptr;   // mmap of the cache file (header + tables)
++    uint64_t            _cacheSize  = 0;
++    uint64_t            _arena      = 0;         // base of the 3-region arena (== uniform slide, RX.vm_base==0)
++    uint8_t*            _rmap[3]    = { nullptr, nullptr, nullptr };
++    int                 _fd         = -1;
++    char                _path[512]  = { 0 };
++    LogFunc             _log        = nullptr;
++
++    DCC2Header*         _hdr        = nullptr;
++    DCC2Image*          _images     = nullptr;
++    DCC2Fixup*          _fixups     = nullptr;
++    const char*         _externStr  = nullptr;
++
++    // record which loadedAddresses are DCC-owned (small fixed set for the smoke)
++    static const int    kMaxDCC = 128;
++    const MachOLoaded*  _dccAddrs[kMaxDCC] = { nullptr };
++    int                 _nDccAddrs = 0;
++    bool                _appliedOnce[kMaxDCC] = { false };  // enforce "applied exactly once" (per-image path)
++
++    // perf#24c2e: whole-cache single-apply guard + counters for the dyld2 classic path
++    bool                _allApplied = false;
++    uint32_t            _cImagesRegistered   = 0;
++    uint32_t            _cNormalRebaseSkipped = 0;
++    uint32_t            _cNormalBindSkipped   = 0;
++    uint32_t            _cFixupsApplied       = 0;
++};
++
++} // namespace dyld3
++
++#endif
+diff --git a/dyld3/Loading.cpp b/dyld3/Loading.cpp
+index e2a9720154959983ad74c6710cbb27ff5ac206e9..00d88ac823dd9fbdc0058bc5b4c309390350767e 100644
+--- a/dyld3/Loading.cpp
++++ b/dyld3/Loading.cpp
+@@ -311,6 +311,27 @@ void Loader::mapAndFixupAllImages(Diagnostics& diag, bool processDOFs, bool from
+                 }
+             }
+         }
++#if BUILDING_DYLD
++        else if ( (_dcc2 != nullptr) && _dcc2->enabled() && (info.loadedAddress() == nullptr)
++                  && !info.image()->isExecutable() ) {
++            // perf#24c2c: flag-gated DCC2 path. If this image is in the packed cache, take it over:
++            // set its loadedAddress into the cache arena and mark it fixedUp so the normal Mach-O
++            // fixup engine is SKIPPED (that path is known-wrong for region-packed layout). The
++            // cache-native fixup table is applied below.
++            uint32_t dccIdx = 0;
++            const MachOLoaded* dccAddr = _dcc2->loadedAddressFor(info.image()->path(), &dccIdx);
++            if ( dccAddr != nullptr ) {
++                info.setLoadedAddress(dccAddr);
++                info.setState(LoadedImage::State::mapped);   // fixups applied by DCC2 table below
++                _logSegments("dyld[DCC2]: using cached image %s @ %p\n", info.image()->path(), dccAddr);
++            }
++            else {
++                mapImage(diag, info, fromOFI, closureOutOfDate);
++                if ( diag.hasError() )
++                    break;
++            }
++        }
++#endif
+         else {
+             mapImage(diag, info, fromOFI, closureOutOfDate);
+             if ( diag.hasError() )
+@@ -334,6 +355,30 @@ void Loader::mapAndFixupAllImages(Diagnostics& diag, bool processDOFs, bool from
+             mainInfo = &info;
+             continue;
+         }
++#if BUILDING_DYLD
++        // perf#24c2c: DCC2-owned images use the cache-native fixup table, NEVER the normal Mach-O
++        // fixup engine (known-wrong for region-packed layout). Enforce that as a hard invariant.
++        if ( (_dcc2 != nullptr) && _dcc2->enabled() && _dcc2->isDCCImage(info.loadedAddress()) ) {
++            if ( info.state() < LoadedImage::State::fixedUp ) {
++                uint32_t dccIdx = 0;
++                if ( _dcc2->loadedAddressFor(info.image()->path(), &dccIdx) == nullptr ) {
++                    diag.error("DCC2: image %s marked DCC but not found in cache", info.image()->path());
++                    break;
++                }
++                Loader* self = this;
++                bool ok = _dcc2->applyFixups(dccIdx, _logFixups,
++                    ^(const char* symbolName, bool& found) {
++                        return self->dcc2ResolveExtern(symbolName, found);
++                    });
++                if ( !ok ) {
++                    diag.error("DCC2: fixup application failed (hard fail) for %s", info.image()->path());
++                    break;
++                }
++                info.setState(LoadedImage::State::fixedUp);
++            }
++            continue;
++        }
++#endif
+         // previously loaded images were previously fixed up
+         if ( info.state() < LoadedImage::State::fixedUp ) {
+             applyFixupsToImage(diag, info);
+@@ -788,8 +833,41 @@ static const char* targetString(const MachOAnalyzerSet::FixupTarget& target)
+     return "";
+ }
+ 
++#if BUILDING_DYLD
++uintptr_t Loader::dcc2ResolveExtern(const char* symbolName, bool& found) const
++{
++    // perf#24c2c: resolve a DCC2 flat/extern symbol via the normal dyld exported-symbol lookup over
++    // the already-loaded images. No silent NULL: 'found' stays false if not resolved.
++    found = false;
++    MachOLoaded::DependentToMachOLoaded finder = ^(const MachOLoaded*, uint32_t) { return (const MachOLoaded*)nullptr; };
++    for (const LoadedImage& li : _newImages) {
++        if ( li.loadedAddress() == nullptr )
++            continue;
++        Diagnostics d2;
++        const MachOAnalyzer* ma = (const MachOAnalyzer*)li.loadedAddress();
++        MachOAnalyzer::FoundSymbol fs;
++        if ( ma->findExportedSymbol(d2, symbolName, false, fs, finder) ) {
++            uintptr_t base = (uintptr_t)fs.foundInDylib;
++            switch ( fs.kind ) {
++                case MachOAnalyzer::FoundSymbol::Kind::headerOffset:   found = true; return base + (uintptr_t)fs.value;
++                case MachOAnalyzer::FoundSymbol::Kind::absolute:       found = true; return (uintptr_t)fs.value;
++                case MachOAnalyzer::FoundSymbol::Kind::resolverOffset: found = true; return base + (uintptr_t)fs.resolverFuncOffset;
++            }
++        }
++    }
++    return 0;
++}
++#endif // BUILDING_DYLD
++
+ void Loader::applyFixupsToImage(Diagnostics& diag, LoadedImage& info)
+ {
++#if BUILDING_DYLD
++    // perf#24c2c INVARIANT: a DCC2-owned image must NEVER reach the normal Mach-O fixup engine —
++    // that path assumes contiguous file layout and is known-wrong for region-packed images.
++    if ( (_dcc2 != nullptr) && _dcc2->enabled() && _dcc2->isDCCImage(info.loadedAddress()) )
++        dyld::halt("DCC2: region-packed image entered normal Mach-O fixup path (invariant violation)");
++#endif
++
+     dyld3::ScopedTimer timer(DBG_DYLD_TIMING_APPLY_FIXUPS, (uint64_t)info.loadedAddress(), 0, 0);
+     closure::ImageNum       cacheImageNum;
+     const char*             leafName         = info.image()->leafName();
+diff --git a/dyld3/Loading.h b/dyld3/Loading.h
+index 8baece443b2417d39bdb03dc862d272348009563..e4414b4a68ce4e8da591aebce142d36eb7065216 100644
+--- a/dyld3/Loading.h
++++ b/dyld3/Loading.h
+@@ -34,6 +34,7 @@
+ #include "Closure.h"
+ #include "MachOLoaded.h"
+ #include "MachOAnalyzerSet.h"
++#include "DCC2Reader.h"
+ 
+ namespace objc_opt {
+ struct objc_clsopt_t;
+@@ -111,6 +112,9 @@ public:
+                                bool allowMissingLazies=false, dyld3::LaunchErrorInfo* launchErrorInfo=nullptr);
+ 
+     void                addImage(const LoadedImage&);
++#if BUILDING_DYLD
++    void                setDCC2Reader(DCC2Reader* r) { _dcc2 = r; }   // perf#24c2c (flag-gated)
++#endif
+     void                completeAllDependents(Diagnostics& diag, bool& someCacheImageOverridden);
+     void                mapAndFixupAllImages(Diagnostics& diag, bool processDOFs, bool fromOFI, bool* closureOutOfDate, bool* recoverable);
+     uintptr_t           resolveTarget(closure::Image::ResolvedSymbolTarget target);
+@@ -154,6 +158,9 @@ private:
+ 
+     void                mapImage(Diagnostics& diag, LoadedImage& info, bool fromOFI, bool* closureOutOfDate);
+     void                applyFixupsToImage(Diagnostics& diag, LoadedImage& info);
++#if BUILDING_DYLD
++    uintptr_t           dcc2ResolveExtern(const char* symbolName, bool& found) const;   // perf#24c2c
++#endif
+     void                registerDOFs(const Array<DOFInfo>& dofs);
+     void                setSegmentProtects(const LoadedImage& info, bool write);
+ 	bool                sandboxBlockedMmap(const char* path);
+@@ -189,6 +196,7 @@ private:
+     LogFunc                                         _logFixups;
+     LogFunc                                         _logDofs;
+     dyld3::LaunchErrorInfo*                         _launchErrorInfo;
++    DCC2Reader*                                     _dcc2 = nullptr;   // perf#24c2c (flag-gated; null=off)
+ };
+ 
+ 
+diff --git a/src/ImageLoaderMachOCompressed.cpp b/src/ImageLoaderMachOCompressed.cpp
+index 54fb8dc4d80bca5bf25eef1f1df2aed386e4a7c8..04f13cc19c35599e4caeb741533bdfc9b1e50ff4 100644
+--- a/src/ImageLoaderMachOCompressed.cpp
++++ b/src/ImageLoaderMachOCompressed.cpp
+@@ -44,6 +44,7 @@
+ #include "ImageLoaderMachOCompressed.h"
+ #include "Closure.h"
+ #include "Array.h"
++#include "DCC2Reader.h"   // perf#24c2e: DCC2 packed-cache guarded hook (flag-gated)
+ 
+ #ifndef BIND_SUBOPCODE_THREADED_SET_JOP
+    #define BIND_SUBOPCODE_THREADED_SET_JOP								0x0F
+@@ -363,6 +364,35 @@ void ImageLoaderMachOCompressed::throwBadRebaseAddress(uintptr_t address, uintpt
+ 
+ void ImageLoaderMachOCompressed::rebase(const LinkContext& context, uintptr_t slide)
+ {
++	// perf#24c2e: DCC2 packed-cache image => the cache-native fixup table replaces BOTH normal rebase
++	// AND bind (rebase+bind+extern in one table). Apply it HERE, in the rebase phase, so the image's
++	// DATA (GOT / bind pointers) is valid before ANYTHING reads it — recursiveRebase runs after
++	// recursiveLoadLibraries has loaded every image, so all cache images are already registered and
++	// cross-image binds resolve. Applied ONCE for the whole cache; the normal opcode rebase (and bind,
++	// below in doBind) are skipped for DCC images. Running the opcode engine on a region-scattered
++	// image is known-wrong (perf#24c2a).
++	{
++		dyld3::DCC2Reader* dcc = dyld3::DCC2Reader::shared();
++		if ( (dcc != nullptr) && dcc->enabled() && dcc->isDCC2Image(this->machHeader()) ) {
++			dcc->noteNormalRebaseSkipped();
++			const LinkContext& ctx = context;
++			bool ok = dcc->applyAllFixupsOnce((dyld3::DCC2Reader::LogFunc)0,
++				^uintptr_t(const char* symbolName, bool& found) {
++					const ImageLoader::Symbol* sym = nullptr;
++					const ImageLoader* image = nullptr;
++					if ( ctx.flatExportFinder(symbolName, &sym, &image) && (image != nullptr) ) {
++						found = true;
++						return image->getExportedSymbolAddress(sym, ctx, nullptr, false);
++					}
++					found = false;
++					return (uintptr_t)0;
++				});
++			if ( !ok )
++				dyld::halt("DCC2: applyAllFixupsOnce failed (hard fail) during rebase");
++			return;
++		}
++	}
++
+ 	// binary uses chained fixups where are applied during binding
+ 	if ( fDyldInfo == NULL )
+ 		return;
+@@ -892,6 +922,21 @@ void ImageLoaderMachOCompressed::doBind(const LinkContext& context, bool forceLa
+ {
+ 	CRSetCrashLogMessage2(this->getPath());
+ 
++	// perf#24c2e: DCC2 packed-cache image => bind (and rebase) were already applied by the cache-native
++	// fixup table in rebase() (the rebase phase). The normal opcode bind is SKIPPED — running it on a
++	// region-scattered image is known-wrong (perf#24c2a). Invariant: a DCC image must never reach the
++	// opcode engine; the applyAllFixupsOnce guard is idempotent so this is a clean skip.
++	{
++		dyld3::DCC2Reader* dcc = dyld3::DCC2Reader::shared();
++		if ( (dcc != nullptr) && dcc->enabled() && dcc->isDCC2Image(this->machHeader()) ) {
++			dcc->noteNormalBindSkipped();
++			if ( !dcc->allFixupsApplied() )
++				dyld::halt("DCC2: doBind reached for a DCC image before fixups were applied (invariant violation)");
++			CRSetCrashLogMessage2(NULL);
++			return;
++		}
++	}
++
+ 	// if prebound and loaded at prebound address, and all libraries are same as when this was prebound, then no need to bind
+ 	// note: flat-namespace binaries need to have imports rebound (even if correctly prebound)
+ 	if ( this->usablePrebinding(context) ) {
+diff --git a/src/dyld2.cpp b/src/dyld2.cpp
+index 371087075e31f7d74d4c23fcc37b34b2c3f56ae9..dc98d32c2a4371821b8e90d5445433f2427b9dbe 100644
+--- a/src/dyld2.cpp
++++ b/src/dyld2.cpp
+@@ -4107,9 +4107,52 @@ static ImageLoader* loadPhase0(const char* path, const char* orgPath, const Load
+ // the path.  Either time, if an image is found, the phases all unwind without checking
+ // for other paths.
+ //
++// perf#24c2e: DCC2 packed-cache substitution for the dyld2 classic path (flag-gated).
++// If 'path' names a DCC2-cached dylib, instantiate an ImageLoader over the already-mapped cache
++// regions (no open/mmap) and register it, instead of loading from disk. Returns the (possibly
++// pre-existing) ImageLoader for a cached image, or nullptr if 'path' is not cached / reader off.
++static ImageLoader* dccTryLoad(const char* path, const LoadContext& context)
++{
++	dyld3::DCC2Reader* dcc = dyld3::DCC2Reader::shared();
++	if ( (dcc == nullptr) || !dcc->enabled() )
++		return nullptr;
++	uint32_t imageIndex = 0;
++	const dyld3::MachOLoaded* ml = dcc->loadedAddressFor(path, &imageIndex);
++	if ( ml == nullptr )
++		return nullptr;                         // not a cached image => normal disk load
++	const macho_header* mh = (const macho_header*)ml;
++
++	// dedup: if this cached header is already registered, return the existing ImageLoader.
++	for (ImageLoader* existing : sAllImages) {
++		if ( (const void*)existing->machHeader() == (const void*)mh )
++			return existing;
++	}
++
++	// synthesize a stat from the recorded source metadata (dyld records dev/ino/mtime for the image)
++	struct stat info;
++	memset(&info, 0, sizeof(info));
++	if ( dyld3::stat(path, &info) != 0 )
++		memset(&info, 0, sizeof(info));         // best-effort; staleness already validated at init
++
++	// instantiate over the pre-mapped cache regions. slide == arena base (single-slide model):
++	// segActualLoadAddress(i) = seg.vmaddr + slide reproduces each scattered region address.
++	ImageLoader* image = ImageLoaderMachO::instantiateFromCache(mh, path, (long)dcc->slide(), info, gLinkContext);
++	addImage(image);
++	dcc->noteImageRegistered();
++	if ( gLinkContext.verboseMapping )
++		dyld::log("dyld[DCC2]: substituted cached image %s @ %p (index %u)\n", path, (void*)mh, imageIndex);
++	return image;
++}
++
+ ImageLoader* load(const char* path, const LoadContext& context, unsigned& cacheIndex)
+ {
+ 	CRSetCrashLogMessage2(path);
++	// perf#24c2e: flag-gated DCC2 packed-cache substitution (no-op when the flag is absent).
++	if ( ImageLoader* dccImage = dccTryLoad(path, context) ) {
++		cacheIndex = UINT32_MAX;
++		CRSetCrashLogMessage2(NULL);
++		return dccImage;
++	}
+ 	const char* orgPath = path;
+ 	cacheIndex = UINT32_MAX;
+ 	
+@@ -6108,6 +6151,10 @@ static bool launchWithClosure(const dyld3::closure::LaunchClosure* mainClosure,
+ 		}
+ 	});
+ 
++	// perf#24c2c: flag-gated DCC2 packed-cache reader (DARLING_DYLD_DCC2=1 + DARLING_DYLD_DCC2_PATH).
++	// Absent => nullptr => exact old behavior. Present+broken => halt (or clean fallback if _SOFT=1).
++	loader.setDCC2Reader(dyld3::DCC2Reader::init(envp, (gLinkContext.verboseMapping ? &dolog : &nolog)));
++
+ 	// recursively load all dependents and fill in allImages array
+ 	bool someCacheImageOverridden = false;
+ 	loader.completeAllDependents(diag, someCacheImageOverridden);
+@@ -7132,6 +7179,12 @@ reloadAllImages:
+ 		gLinkContext.mainExecutable = sMainExecutable;
+ 		gLinkContext.mainExecutableCodeSigned = hasCodeSignatureLoadCommand(mainExecutableMH);
+ 
++		// perf#24c2e: flag-gated DCC2 packed-cache reader for the dyld2 CLASSIC path.
++		// DARLING_DYLD_DCC2=1 + DARLING_DYLD_DCC2_PATH. Absent => shared()==nullptr => exact old
++		// behavior. Init here, before dependent libraries are loaded/linked, so loadPhase5load can
++		// substitute cached images and doRebase/doBind can route them to the DCC2 fixup table.
++		dyld3::DCC2Reader::initShared(envp, (gLinkContext.verboseMapping ? &dolog : &nolog));
++
+ #if TARGET_OS_SIMULATOR
+ 		// check main executable is not too new for this OS
+ 		{
+
+From a50d76098d6ead090c8297f395e802babcac78b9 Mon Sep 17 00:00:00 2001
+From: Ilya Gulya <ilya@gulya.me>
+Date: Wed, 1 Jul 2026 15:03:05 +0000
+Subject: [PATCH] =?UTF-8?q?perf#24c2e:=20fix=20DCC2=20crash=20=E2=80=94=20?=
+ =?UTF-8?q?bypass=20prebinding=20shortcut=20in=20doRebase=20(#91=20SOLVED)?=
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Root cause of the DCC2 2-dylib smoke crash: a substituted DCC2 image sets
+fInSharedCache=true (in instantiateFromCache), which makes
+ImageLoaderMachO::usablePrebinding() return true, so doRebase() takes the
+"prebinding is valid, skip rebase" early-return BEFORE ever calling rebase().
+The perf#24c2e DCC2 fixup guard lives in rebase()/doBind(), so it never fired:
+the cache-native fixup table was NEVER applied, the images' DATA (GOT / bind
+pointers) stayed unrelocated, and the first deref of a cached image's pointer
+faulted (the ~0xdd near-null). This was NOT the "scattered LINKEDIT" theory —
+the LINKEDIT/symtab math is self-consistent; construction succeeded for both
+images (both "substituted cached image" lines print). The crash was deferred to
+first use of unfixed DATA.
+
+Fix: in ImageLoaderMachO::doRebase(), before the usablePrebinding() shortcut,
+detect a DCC2 image (DCC2Reader::shared()->isDCC2Image(machHeader())) and route
+straight to rebase(context, fSlide), which applies the whole-cache fixup table
+once via DCC2Reader::applyAllFixupsOnce(). A DCC2 image is NOT prebound.
+
+Verified by an instrumented live 2-dylib smoke ({libsystem_blocks, libunwind}):
+both images substituted from the packed cache, doRebase bypasses prebinding for
+each, rebase() fires with isDCC2=1, applyAllFixupsOnce applies all 55 fixups
+(50 rebase + 5 bind) once for the whole cache with NO crash, and /usr/bin/true
+runs to completion returning exit 0. No SIGSEGV/halt in dserver.log. Prod dyld
+restored byte-identical (79b22273 both copies); instrumentation logs removed.
+
+Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
+---
+ src/ImageLoaderMachO.cpp | 15 +++++++++++++++
+ 1 file changed, 15 insertions(+)
+
+diff --git a/src/ImageLoaderMachO.cpp b/src/ImageLoaderMachO.cpp
+index 9242278a2285b15dc929e325d7d33f72ce9359e5..8d6892ac1df9384994db4b4e19d783f3483bc4fa 100644
+--- a/src/ImageLoaderMachO.cpp
++++ b/src/ImageLoaderMachO.cpp
+@@ -58,6 +58,7 @@
+ #endif
+ #include "Tracing.h"
+ #include "dyld2.h"
++#include "DCC2Reader.h"   // perf#24c2e: DCC2 packed-cache prebinding bypass in doRebase
+ 
+ // <rdar://problem/8718137> use stack guard random value to add padding between dylibs
+ extern "C" long __stack_chk_guard;
+@@ -1597,6 +1598,20 @@ void ImageLoaderMachO::doRebase(const LinkContext& context)
+     if ( !this->inSharedCache() && (this->machHeader()->flags & MH_HAS_TLV_DESCRIPTORS) )
+         this->setNeverUnload();
+ 
++	// perf#24c2e: a DCC2 packed-cache image sets fInSharedCache=true, which would make
++	// usablePrebinding() below return true and SKIP rebase() entirely — but a DCC2 image is NOT
++	// prebound: its fixups live in the cache-native table applied by our guarded rebase(). So for a
++	// DCC2 image, bypass the prebinding shortcut and fall through to rebase() (which routes to
++	// applyAllFixupsOnce). Without this, doRebase returns here, the guard never fires, DATA stays
++	// unfixed, and the first deref of a cached image's GOT/bind pointer crashes (the perf#24c2e 0xdd).
++	{
++		dyld3::DCC2Reader* dcc = dyld3::DCC2Reader::shared();
++		if ( (dcc != nullptr) && dcc->enabled() && dcc->isDCC2Image(this->machHeader()) ) {
++			this->rebase(context, fSlide);
++			return;
++		}
++	}
++
+ 	// if prebound and loaded at prebound address, then no need to rebase
+ 	if ( this->usablePrebinding(context) ) {
+ 		// skip rebasing because prebinding is valid
+
+From 02696ac730f4057bd1a21a91805df37c91a5ac0e Mon Sep 17 00:00:00 2001
+From: Ilya Gulya <ilya@gulya.me>
+Date: Wed, 1 Jul 2026 15:53:33 +0000
+Subject: [PATCH] =?UTF-8?q?perf#24c2d:=20DCC2=20reader=20=E2=80=94=20handl?=
+ =?UTF-8?q?e=20DCC=5FFIX=5FBIND=5FEXTERN=5FLAZY=20(resolve-or-sentinel)?=
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Companion to the builder's lazy-tolerant extern fix. A lazy bind whose symbol
+is genuinely absent (Darling stub gap) must not abort the process: normal dyld
+resolves lazy binds only on first call, so an unused missing symbol never
+faults. New fixup kind DCC2_FIX_BIND_EXTERN_LAZY (3): applyAllFixupsOnce /
+applyFixups try resolveExtern and, if not found, write a sentinel (0) instead
+of hard-failing (as plain DCC2_FIX_BIND_EXTERN still does). Kept in sync with
+tools/closure-cache/dcc2-format.h.
+
+Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
+---
+ dyld3/DCC2Reader.cpp | 18 ++++++++++++++++++
+ dyld3/DCC2Reader.h   |  1 +
+ 2 files changed, 19 insertions(+)
+
+diff --git a/dyld3/DCC2Reader.cpp b/dyld3/DCC2Reader.cpp
+index b1c5854e60b712dbc8e4523cb59f7baf106069d1..69a93f2c7c4c689251c77878fce7688123e9dc46 100644
+--- a/dyld3/DCC2Reader.cpp
++++ b/dyld3/DCC2Reader.cpp
+@@ -194,6 +194,17 @@ bool DCC2Reader::applyAllFixupsOnce(LogFunc logFixups,
+                 *loc = v + (uintptr_t)f->addend;
+                 break;
+             }
++            case DCC2_FIX_BIND_EXTERN_LAZY: {
++                // A lazy bind whose symbol may be genuinely absent (Darling stub gap). Try to resolve; if
++                // not found, write a sentinel (0) instead of hard-failing — preserving lazy "resolve/trap
++                // on first call" semantics for a symbol that is not called on the paths we exercise.
++                const char* sym = _externStr + f->extern_sym;
++                bool found = false;
++                uintptr_t v = resolveExtern ? resolveExtern(sym, found) : 0;
++                *loc = found ? (v + (uintptr_t)f->addend) : (uintptr_t)0;
++                if ( !found && _log ) _log("dyld[DCC2]: lazy extern '%s' unresolved => sentinel 0 (never-called ok)\n", sym);
++                break;
++            }
+             default:
+                 if(_log)_log("dyld[DCC2]: unknown fixup kind %d (hard fail)\n", f->kind); return false;
+         }
+@@ -247,6 +258,13 @@ bool DCC2Reader::applyFixups(uint32_t imageIndex, LogFunc logFixups,
+                 *loc = v + (uintptr_t)f->addend;
+                 break;
+             }
++            case DCC2_FIX_BIND_EXTERN_LAZY: {
++                const char* sym = _externStr + f->extern_sym;
++                bool found = false;
++                uintptr_t v = resolveExtern ? resolveExtern(sym, found) : 0;
++                *loc = found ? (v + (uintptr_t)f->addend) : (uintptr_t)0;
++                break;
++            }
+             default:
+                 if(_log)_log("dyld[DCC2]: unknown fixup kind %d\n", f->kind); return false;
+         }
+diff --git a/dyld3/DCC2Reader.h b/dyld3/DCC2Reader.h
+index ebcc997d885d5bf52c612e1e4011fb3724efc776..696265ee55c5dc5f8c6c653d813409e6727269be 100644
+--- a/dyld3/DCC2Reader.h
++++ b/dyld3/DCC2Reader.h
+@@ -25,6 +25,7 @@ namespace dyld3 {
+ #define DCC2_FIX_REBASE        0
+ #define DCC2_FIX_BIND_INTERNAL 1
+ #define DCC2_FIX_BIND_EXTERN   2
++#define DCC2_FIX_BIND_EXTERN_LAZY 3  /* lazy bind: resolve if possible, else write sentinel (no hard-fail) */
+ 
+ struct DCC2Region { uint64_t file_off, size, vm_base; uint32_t prot, _pad; };
+ struct DCC2Seg    { char name[16]; uint64_t vmaddr, vmsize, region_off, filesize; uint32_t region_idx, prot; };
+
+From bcf77af2cafd5a80beb0d043bd9ac608cbbc87c4 Mon Sep 17 00:00:00 2001
+From: Ilya Gulya <ilya@gulya.me>
+Date: Thu, 2 Jul 2026 05:04:55 +0000
+Subject: [PATCH] perf#24f: point DCC2Reader at DCC5 cache (3-region +
+ pre-rewritten TEXT)
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+The DCC5 cache is binary-compatible with the DCC2 3-region reader: same regions,
+same fixup table, one uniform slide. The ONLY reader change needed is accepting
+the DCC5 magic/version — the rewritten RIP-relative disp32 live in the packed RX
+bytes, so mapping RX and executing it "just works" with no reader logic change.
+
+- Header struct extended with the 4 trailing riprel_* totals so sizeof() matches
+  the DCC5 header (424) and the image table starts at the right offset. dcc_image
+  stays byte-identical to DCC2's 768-byte layout (per-image riprel counts are not
+  stored on disk), so DCC2Image matches exactly.
+- validate() now requires DCC5_MAGIC / version 5 and rejects the historical DCC2
+  cache (smaller header + stale __TEXT that crashes on non-leaf images). Production
+  only ever maps a rewritten cache.
+
+Offline gates for the DCC5 builder are all green (darlingserver PERF24F). Live
+smoke is the next step. Not deployed; prod dyld untouched.
+
+Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
+---
+ dyld3/DCC2Reader.cpp |  7 +++++--
+ dyld3/DCC2Reader.h   | 15 ++++++++++++++-
+ 2 files changed, 19 insertions(+), 3 deletions(-)
+
+diff --git a/dyld3/DCC2Reader.cpp b/dyld3/DCC2Reader.cpp
+index 69a93f2c7c4c689251c77878fce7688123e9dc46..a7f13b31238d0e97a09e7f37a0ee7031ef55158c 100644
+--- a/dyld3/DCC2Reader.cpp
++++ b/dyld3/DCC2Reader.cpp
+@@ -82,8 +82,11 @@ bool DCC2Reader::validate(int fd)
+     if ( m == MAP_FAILED ) return false;
+     _cache = (uint8_t*)m;
+     _hdr   = (DCC2Header*)_cache;
+-    if ( _hdr->magic != DCC2_MAGIC )   { if(_log)_log("dyld[DCC2]: bad magic\n"); return false; }
+-    if ( _hdr->version != DCC2_VERSION){ if(_log)_log("dyld[DCC2]: bad version\n"); return false; }
++    // perf#24f: accept the DCC5 cache (3-region + pre-rewritten __TEXT). The historical DCC2 cache has a
++    // smaller header and stale __TEXT (crashes on non-leaf images) — reject it so production only ever
++    // maps a rewritten cache.
++    if ( _hdr->magic != DCC5_MAGIC )     { if(_log)_log("dyld[DCC2]: bad magic (need DCC5)\n"); return false; }
++    if ( _hdr->version != DCC5_VERSION ) { if(_log)_log("dyld[DCC2]: bad version (need 5)\n"); return false; }
+     _images    = (DCC2Image*)(_cache + sizeof(DCC2Header));
+     _fixups    = (DCC2Fixup*)(_cache + _hdr->fixup_off);
+     _externStr = (const char*)(_cache + _hdr->extern_off);
+diff --git a/dyld3/DCC2Reader.h b/dyld3/DCC2Reader.h
+index 696265ee55c5dc5f8c6c653d813409e6727269be..44a84c7ad54fe0eb98bfe3d9eb7369676914e198 100644
+--- a/dyld3/DCC2Reader.h
++++ b/dyld3/DCC2Reader.h
+@@ -17,9 +17,19 @@
+ 
+ namespace dyld3 {
+ 
+-/* on-disk format (must match tools/closure-cache/dcc2-format.h) */
++/* on-disk format (must match tools/closure-cache/dcc2-format.h AND dcc5-format.h).
++ * perf#24f: DCC5 is binary-compatible with DCC2 (same regions + fixup table) EXCEPT (a) magic/version,
++ * (b) the header carries 4 extra riprel_* accounting uint32 at the end, and (c) the packed __TEXT has
++ * its RIP-relative disp32 pre-rewritten so region-packing no longer breaks TEXT->DATA refs (the DCC2
++ * "__text" crash, task #97). The reader accepts BOTH: for DCC2 it maps stale __TEXT (crashes on any
++ * non-leaf image — kept only for the historical 2-dylib smoke); for DCC5 the __TEXT is correct.
++ * The header struct below matches dcc5-format.h so sizeof() places the image table correctly for a
++ * DCC5 cache; a DCC2 cache written by the old builder has a smaller header, so DCC2 is now read via the
++ * legacy path only (magic gate) — production uses DCC5. */
+ #define DCC2_MAGIC   0x44434332u
+ #define DCC2_VERSION 2
++#define DCC5_MAGIC   0x44434335u
++#define DCC5_VERSION 5
+ #define DCC2_REGION_ALIGN 0x4000
+ #define DCC2_MAX_SEGS 8
+ #define DCC2_FIX_REBASE        0
+@@ -52,6 +62,9 @@ struct DCC2Header {
+     DCC2Region regions[3];
+     uint64_t fixup_off;  uint32_t fixup_count;  uint32_t _pad0;
+     uint64_t extern_off; uint32_t extern_size;  uint32_t _pad1;
++    /* perf#24f DCC5 rewrite totals (present only in DCC5; included so sizeof() matches the DCC5 header
++     * and the image table starts at the right offset). */
++    uint32_t riprel_total, riprel_rewritten, riprel_sametext, riprel_skipped_pool;
+ };
+ 
+ //
+
+From 7a93752e3d996a355ba3a8a4d00e2b70015ee40c Mon Sep 17 00:00:00 2001
+From: Ilya Gulya <ilya@gulya.me>
+Date: Thu, 2 Jul 2026 09:57:15 +0000
+Subject: [PATCH] perf#24f-fix-elfcalls-handoff (#104): run __dyld func-lookup
+ handoff for DCC images
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Root cause (captured task #103, refined #104): a DCC-substituted image never
+went through ImageLoaderMachOCompressed::doBind's tail, which normally calls
+setupLazyPointerHandler() to patch each image's __DATA,__dyld section
+(dyldLazyBinder + dyldFuncLookup) to point into dyld proper. So libdyld's
+__dyld section kept its baked dyldFuncLookup = 0x0 (verified live:
+"libdyld __dyld sect ... dyldFuncLookup 0x0"), and libsystem_kernel's
+_mach_driver_init resolved __dyld_get_elfcalls to NULL -> called NULL -> RIP=0.
+
+Fix: in doBind's DCC skip branch, call setupLazyPointerHandler(context) before
+returning, so a DCC-substituted image participates in the exact same func-lookup
+handoff as a disk-loaded one. The DCC image's __DATA is COW-mapped RW, so the two
+pointer writes are safe. Verified live: libdyld dyldFuncLookup 0x0 -> dyld
+_dyld_func_lookup for all 38 substituted images; the elfcalls RIP=0 crash is
+GONE. Added a RED regression gate: hard-fail with an explicit message if
+__dyld_get_elfcalls still resolves NULL after the handoff (better than a silent
+RIP=0). No builder/cache change; dyld-only.
+
+NOTE: this advances DCC5-ON boot past elfcalls; a separate, later data-fixup
+crash remains (libsystem_c _flockfile deref of a bad FILE* whose bytes read as
+the string "m_pthrea") — tracked as a follow-up bead, out of scope for the
+elfcalls handoff.
+
+Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
+---
+ src/ImageLoaderMachOCompressed.cpp | 19 +++++++++++++++++++
+ 1 file changed, 19 insertions(+)
+
+diff --git a/src/ImageLoaderMachOCompressed.cpp b/src/ImageLoaderMachOCompressed.cpp
+index 04f13cc19c35599e4caeb741533bdfc9b1e50ff4..f3b41d8d75f3cbe4a388cd2222a15ffd6a14a44c 100644
+--- a/src/ImageLoaderMachOCompressed.cpp
++++ b/src/ImageLoaderMachOCompressed.cpp
+@@ -46,6 +46,10 @@
+ #include "Array.h"
+ #include "DCC2Reader.h"   // perf#24c2e: DCC2 packed-cache guarded hook (flag-gated)
+ 
++// perf#24f-fix-elfcalls-handoff (#104): dyld-proper's func-lookup (has the DARLING __dyld_get_elfcalls
++// entry). Used only for the regression guard below.
++extern "C" int _dyld_func_lookup(const char* name, void** address);
++
+ #ifndef BIND_SUBOPCODE_THREADED_SET_JOP
+    #define BIND_SUBOPCODE_THREADED_SET_JOP								0x0F
+ #endif
+@@ -932,6 +936,21 @@ void ImageLoaderMachOCompressed::doBind(const LinkContext& context, bool forceLa
+ 			dcc->noteNormalBindSkipped();
+ 			if ( !dcc->allFixupsApplied() )
+ 				dyld::halt("DCC2: doBind reached for a DCC image before fixups were applied (invariant violation)");
++			// perf#24f-fix-elfcalls-handoff (#104): the normal doBind tail calls setupLazyPointerHandler,
++			// which patches each image's __DATA,__dyld section (dyldLazyBinder + dyldFuncLookup) to point
++			// into dyld proper. Skipping doBind for a DCC image ALSO skipped that patch, so libdyld's
++			// __dyld section kept its baked dyldFuncLookup and libsystem_kernel's _mach_driver_init
++			// resolved __dyld_get_elfcalls to NULL => crash (RIP=0). Run just the __dyld handoff here so a
++			// DCC-substituted image participates in the same func-lookup handoff as a disk-loaded one. The
++			// DCC image's __DATA is COW-mapped RW, so these two pointer writes are safe.
++			this->setupLazyPointerHandler(context);
++			// RED regression gate: __dyld_get_elfcalls MUST resolve non-NULL before libsystem_kernel's
++			// _mach_driver_init calls it. An explicit hard fail here beats a NULL-call RIP=0 crash later.
++			{
++				void* elfcallsGetter = nullptr;
++				if ( !_dyld_func_lookup("__dyld_get_elfcalls", &elfcallsGetter) || elfcallsGetter == nullptr )
++					dyld::halt("DCC2: __dyld_get_elfcalls lookup is NULL after DCC handoff (perf#24f-fix-elfcalls-handoff regression)");
++			}
+ 			CRSetCrashLogMessage2(NULL);
+ 			return;
+ 		}
+
+From aec6a4af4efaacbda31911aaf32d73495d4a7da1 Mon Sep 17 00:00:00 2001
+From: Ilya Gulya <ilya@gulya.me>
+Date: Thu, 2 Jul 2026 12:13:44 +0000
+Subject: [PATCH] perf#24f (#107): translate DCC exported-symbol addresses via
+ original seg table
+
+exportedSymbolAddress computed a DCC image export as fMachOData(TEXT/RX) +
+trieOffset. The trie offset is ORIGINAL-image-relative, but a DCC image is region
+-packed, so a __DATA export (___stdinp/___stdoutp/___stderrp) landed inside the
+RX region on load-command bytes. bash read that as a FILE* -> _flockfile crash
+in sh/bash stdio init (#106; /usr/bin/true was unaffected because it binds no
+DATA exports from a DCC image).
+
+Fix: DCC2Reader::translateVmaddr maps an original-image-relative vmaddr through
+the DCC6 original seg table (orig_vmaddr/orig_vmsize) to the rewritten arena
+address (arena + region.vm_base + region_off + delta). exportedSymbolAddress uses
+it for DCC images (REGULAR/THREAD_LOCAL/resolver-stub cases) with a RED gate that
+halts if a vmaddr maps to no segment (refuses a garbage address). Reader now
+requires DCC6 (rejects pre-#107 caches that lack the original seg table).
+
+Verified live (DCC6 cache): env /usr/bin/true=0, /usr/bin/false=1, sh/bash no
+longer crash in _flockfile, shellspawn pipeline/loops/subshells OK, clang -c
+1-file produces a valid Mach-O .o. DCC substitution + single arena + 0 staleness
+intact. RED arm: old DCC5 cache => bad magic (need DCC6) => clean hard fail.
+
+Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
+---
+ dyld3/DCC2Reader.cpp               | 30 +++++++++++++++++++++++--
+ dyld3/DCC2Reader.h                 | 16 +++++++++++++-
+ src/ImageLoaderMachOCompressed.cpp | 35 ++++++++++++++++++++++++++----
+ 3 files changed, 74 insertions(+), 7 deletions(-)
+
+diff --git a/dyld3/DCC2Reader.cpp b/dyld3/DCC2Reader.cpp
+index a7f13b31238d0e97a09e7f37a0ee7031ef55158c..ed8b536f2720b2aa24512a38542c0f45bb11f734 100644
+--- a/dyld3/DCC2Reader.cpp
++++ b/dyld3/DCC2Reader.cpp
+@@ -85,8 +85,10 @@ bool DCC2Reader::validate(int fd)
+     // perf#24f: accept the DCC5 cache (3-region + pre-rewritten __TEXT). The historical DCC2 cache has a
+     // smaller header and stale __TEXT (crashes on non-leaf images) — reject it so production only ever
+     // maps a rewritten cache.
+-    if ( _hdr->magic != DCC5_MAGIC )     { if(_log)_log("dyld[DCC2]: bad magic (need DCC5)\n"); return false; }
+-    if ( _hdr->version != DCC5_VERSION ) { if(_log)_log("dyld[DCC2]: bad version (need 5)\n"); return false; }
++    // perf#24f-#107: require DCC6 (per-seg orig_vmaddr/orig_vmsize). A pre-#107 DCC5 cache lacks them
++    // (dcc_seg is smaller) => reject, so we never translate exports against a rewritten-only seg table.
++    if ( _hdr->magic != DCC6_MAGIC )     { if(_log)_log("dyld[DCC2]: bad magic (need DCC6)\n"); return false; }
++    if ( _hdr->version != DCC6_VERSION ) { if(_log)_log("dyld[DCC2]: bad version (need 6)\n"); return false; }
+     _images    = (DCC2Image*)(_cache + sizeof(DCC2Header));
+     _fixups    = (DCC2Fixup*)(_cache + _hdr->fixup_off);
+     _externStr = (const char*)(_cache + _hdr->extern_off);
+@@ -167,6 +169,30 @@ bool DCC2Reader::isDCC2Image(const struct mach_header* mh, uint32_t* outIndex) c
+     return false;
+ }
+ 
++// perf#24f-fix-flockfile-datafixup (#105b): map an image-relative vmaddr to its runtime address in
++// the 3-region arena. The export trie stores each symbol's address as an offset from the image's
++// preferred base (== the ORIGINAL LC_SEGMENT vmaddr). For a region-packed DCC image the segment
++// containing that vmaddr may be the __DATA seg living in the RW region, so we cannot just add the
++// RX/__TEXT base (the bug: bash's ___stdinp resolved into the RX region → "m_pthrea" FILE*).
++//
++// The export trie address is ORIGINAL-image-relative, so we test containment against each seg's
++// ORIGINAL vmaddr range (orig_vmaddr/orig_vmsize, recorded by the DCC6 builder) and map to the
++// REWRITTEN region-relative destination via region_off. Using seg.vmaddr (rewritten) here would be
++// a coordinate-space error (#106: ___stdinp orig off 0xc8890 vs rewritten __DATA vmaddr 0x5ac000).
++uintptr_t DCC2Reader::translateVmaddr(uint32_t imageIndex, uint64_t imageRelVmaddr) const
++{
++    if ( !enabled() || imageIndex >= _hdr->image_count ) return 0;
++    const DCC2Image& img = _images[imageIndex];
++    for ( uint32_t s = 0; s < img.nsegs; ++s ) {
++        const DCC2Seg& seg = img.segs[s];
++        if ( imageRelVmaddr >= seg.orig_vmaddr && imageRelVmaddr < seg.orig_vmaddr + seg.orig_vmsize ) {
++            return (uintptr_t)(_arena + _hdr->regions[seg.region_idx].vm_base
++                               + seg.region_off + (imageRelVmaddr - seg.orig_vmaddr));
++        }
++    }
++    return 0;
++}
++
+ // perf#24c2e: apply EVERY cached image's fixups, once, for the whole cache. Bind targets are
+ // cross-image (BIND_INTERNAL references another cached image's region), so this must run after all
+ // DCC2 images are registered — hence once-per-cache, not per-image. Idempotent: a second call is a
+diff --git a/dyld3/DCC2Reader.h b/dyld3/DCC2Reader.h
+index 44a84c7ad54fe0eb98bfe3d9eb7369676914e198..ba123f5445b803554a147e215f9ec57b18f524be 100644
+--- a/dyld3/DCC2Reader.h
++++ b/dyld3/DCC2Reader.h
+@@ -30,6 +30,10 @@ namespace dyld3 {
+ #define DCC2_VERSION 2
+ #define DCC5_MAGIC   0x44434335u
+ #define DCC5_VERSION 5
++/* perf#24f-#107: DCC6 adds per-seg orig_vmaddr/orig_vmsize (dcc_seg grew) so exported-symbol
++ * addresses (original-image-relative trie offsets) translate correctly to the rewritten arena. */
++#define DCC6_MAGIC   0x44434336u
++#define DCC6_VERSION 6
+ #define DCC2_REGION_ALIGN 0x4000
+ #define DCC2_MAX_SEGS 8
+ #define DCC2_FIX_REBASE        0
+@@ -38,7 +42,9 @@ namespace dyld3 {
+ #define DCC2_FIX_BIND_EXTERN_LAZY 3  /* lazy bind: resolve if possible, else write sentinel (no hard-fail) */
+ 
+ struct DCC2Region { uint64_t file_off, size, vm_base; uint32_t prot, _pad; };
+-struct DCC2Seg    { char name[16]; uint64_t vmaddr, vmsize, region_off, filesize; uint32_t region_idx, prot; };
++/* perf#24f-#107: orig_vmaddr/orig_vmsize are the ORIGINAL (pre-repack) seg vmaddr/vmsize; vmaddr/vmsize
++ * are the REWRITTEN region-relative values. MUST match tools/closure-cache/dcc5-format.h (DCC6). */
++struct DCC2Seg    { char name[16]; uint64_t vmaddr, vmsize, region_off, filesize; uint32_t region_idx, prot; uint64_t orig_vmaddr, orig_vmsize; };
+ struct DCC2Image {
+     char     path[256];
+     uint8_t  uuid[16];
+@@ -124,6 +130,14 @@ public:
+     uint64_t            slide() const { return _arena; }
+     const char*         cachePath() const { return _path; }
+ 
++    // perf#24f-fix-flockfile-datafixup (#105b): translate an image-relative vmaddr (as stored in the
++    // export trie / LC_SEGMENT vmaddrs of the ORIGINAL image) to its runtime address in the 3-region
++    // arena. Normal dyld computes exportAddr = fMachOData + trieOffset, which is only correct for a
++    // contiguously-mapped image; for a region-packed DCC image a __DATA export (e.g. ___stdinp) would
++    // land inside the RX/__TEXT region. This walks the per-image seg table to find the region+offset.
++    // Returns 0 if imageIndex is invalid or vmaddr is not covered by any of the image's segments.
++    uintptr_t           translateVmaddr(uint32_t imageIndex, uint64_t imageRelVmaddr) const;
++
+ private:
+     bool                mapRegions(int fd);
+     bool                validate(int fd);
+diff --git a/src/ImageLoaderMachOCompressed.cpp b/src/ImageLoaderMachOCompressed.cpp
+index f3b41d8d75f3cbe4a388cd2222a15ffd6a14a44c..e0271a2245773d46cf26ce43f23faf8749dd096e 100644
+--- a/src/ImageLoaderMachOCompressed.cpp
++++ b/src/ImageLoaderMachOCompressed.cpp
+@@ -576,18 +576,29 @@ uintptr_t ImageLoaderMachOCompressed::exportedSymbolAddress(const LinkContext& c
+ 		throw "symbol is not in trie";
+ 	//dyld::log("exportedSymbolAddress(): node=%p, nodeOffset=0x%04X in %s\n", symbol, (int)((uint8_t*)symbol - exportTrieStart), this->getShortName());
+ 	uintptr_t flags = read_uleb128(exportNode, exportTrieEnd);
++	// perf#24f-fix-flockfile-datafixup (#105b): for a region-packed DCC image, the trie's image-relative
++	// offset must be mapped through the segment->region table (a __DATA export like ___stdinp otherwise
++	// resolves into the RX/__TEXT region and yields garbage). Compute the image index once here.
++	dyld3::DCC2Reader* dccExp = dyld3::DCC2Reader::shared();
++	uint32_t dccExpIndex = 0;
++	const bool dccExpImage = ( dccExp != nullptr ) && dccExp->enabled()
++	                         && dccExp->isDCC2Image(this->machHeader(), &dccExpIndex);
+ 	switch ( flags & EXPORT_SYMBOL_FLAGS_KIND_MASK ) {
+ 		case EXPORT_SYMBOL_FLAGS_KIND_REGULAR:
+ 			if ( runResolver && (flags & EXPORT_SYMBOL_FLAGS_STUB_AND_RESOLVER) ) {
+ 				// this node has a stub and resolver, run the resolver to get target address
+-				uintptr_t stub = read_uleb128(exportNode, exportTrieEnd) + (uintptr_t)fMachOData; // skip over stub
++				uint64_t stubOff = read_uleb128(exportNode, exportTrieEnd); // skip over stub
++				uintptr_t stub = dccExpImage ? dccExp->translateVmaddr(dccExpIndex, stubOff)
++				                             : stubOff + (uintptr_t)fMachOData;
+ 				// <rdar://problem/10657737> interposing dylibs have the stub address as their replacee
+ 				uintptr_t interposedStub = interposedAddress(context, stub, requestor);
+ 				if ( interposedStub != stub )
+ 					return interposedStub;
+ 				// stub was not interposed, so run resolver
+ 				typedef uintptr_t (*ResolverProc)(void);
+-				ResolverProc resolver = (ResolverProc)(read_uleb128(exportNode, exportTrieEnd) + (uintptr_t)fMachOData);
++				uint64_t resolverOff = read_uleb128(exportNode, exportTrieEnd);
++				ResolverProc resolver = (ResolverProc)(dccExpImage ? dccExp->translateVmaddr(dccExpIndex, resolverOff)
++				                                                    : resolverOff + (uintptr_t)fMachOData);
+ #if __has_feature(ptrauth_calls)
+ 				resolver = (ResolverProc)__builtin_ptrauth_sign_unauthenticated(resolver, ptrauth_key_asia, 0);
+ #endif
+@@ -599,11 +610,27 @@ uintptr_t ImageLoaderMachOCompressed::exportedSymbolAddress(const LinkContext& c
+ #endif
+ 				return result;
+ 			}
+-			return read_uleb128(exportNode, exportTrieEnd) + (uintptr_t)fMachOData;
++			{
++				uint64_t symOff = read_uleb128(exportNode, exportTrieEnd);
++				if ( dccExpImage ) {
++					uintptr_t a = dccExp->translateVmaddr(dccExpIndex, symOff);
++					// RED gate (perf#24f-#107): the trie offset is original-image-relative; translateVmaddr
++					// maps it via the DCC6 original seg table to the rewritten arena address (a __DATA export
++					// like ___stdinp lands in the RW region, not RX). A vmaddr covered by no segment is an
++					// invariant violation — hard fail rather than return a garbage (header/loadcmd) address.
++					if ( a == 0 )
++						dyld::halt("DCC2: exported symbol vmaddr not covered by any segment (perf#24f-fix-flockfile-datafixup regression)");
++					return a;
++				}
++				return symOff + (uintptr_t)fMachOData;
++			}
+ 		case EXPORT_SYMBOL_FLAGS_KIND_THREAD_LOCAL:
+ 			if ( flags & EXPORT_SYMBOL_FLAGS_STUB_AND_RESOLVER )
+ 				dyld::throwf("unsupported exported symbol kind. flags=%lu at node=%p", flags, symbol);
+-			return read_uleb128(exportNode, exportTrieEnd) + (uintptr_t)fMachOData;
++			{
++				uint64_t tlvOff = read_uleb128(exportNode, exportTrieEnd);
++				return dccExpImage ? dccExp->translateVmaddr(dccExpIndex, tlvOff) : tlvOff + (uintptr_t)fMachOData;
++			}
+ 		case EXPORT_SYMBOL_FLAGS_KIND_ABSOLUTE:
+ 			if ( flags & EXPORT_SYMBOL_FLAGS_STUB_AND_RESOLVER )
+ 				dyld::throwf("unsupported exported symbol kind. flags=%lu at node=%p", flags, symbol);
