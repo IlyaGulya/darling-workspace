@@ -120,6 +120,12 @@
           "source_ref": "refs/heads/exp/route2-nomount"
         },
         {
+          "branch": "fix/a0-kqchan-auxlog",
+          "head": "09fbe8a89dc8ad659501890476719d4e1315aaf9",
+          "upstream": "",
+          "source_ref": "refs/heads/fix/a0-kqchan-auxlog"
+        },
+        {
           "branch": "fix/assert-wait-cancel-stale-timer",
           "head": "7344b17facc2f18c8a8db2e36e8850c032965dd7",
           "upstream": "",
