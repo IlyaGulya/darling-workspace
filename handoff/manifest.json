@@ -120,6 +120,12 @@
           "source_ref": "refs/heads/exp/route2-nomount"
         },
         {
+          "branch": "fix/a0-arch-redesign",
+          "head": "128021943a16ad39416045c485aac7c2748c18eb",
+          "upstream": "",
+          "source_ref": "refs/heads/fix/a0-arch-redesign"
+        },
+        {
           "branch": "fix/a0-kqchan-auxlog",
           "head": "d494338771802d0d43b2f0f34ea0e7eda1687cab",
           "upstream": "",
