@@ -121,7 +121,7 @@
         },
         {
           "branch": "fix/a0-kqchan-auxlog",
-          "head": "d9db0b4d16e78c68af326dd9f25bbf3c57d92bfc",
+          "head": "4e04fe4dd8d751f05b8d77fca218017e6d061f89",
           "upstream": "",
           "source_ref": "refs/heads/fix/a0-kqchan-auxlog"
         },
