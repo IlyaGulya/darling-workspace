@@ -7,11 +7,13 @@
 # UPDATE this file (and note why + which Bead) whenever a legitimate rebuild changes what is
 # deployed — otherwise the doctor will (correctly) flag the new deploy as a baseline mismatch.
 #
-# Current baseline: the prod-matched set restored after perf#24c2* work
+# Current baseline (2026-07-03, task #113 A0): darlingserver updated to the A0 zero-hang fix
+# (perf#25a parts 1+2a+3+3b-3f+4, darlingserver commit a3de8c2; gate tests/a0-repro/a0-gate.sh
+# 17/17 gating legs green incl. brew xz/wget). dyld/mldr unchanged (ring + DCC kept).
 #   dyld    79b22273  (dyld-733.6, boot-compatible with the deployed 06-15 closure)
 #   mldr    f0cd2a82  (perf#21b compact-fd band)
-#   dserver 835946f9  (perf#18 ring transport)
+#   dserver 886d13af  (perf#18 ring transport + A0 zero-hang fix a3de8c2)
 
 dyld    = 79b22273481ea61ab63c0606c23ab300
 mldr    = f0cd2a82efc4cb4614b63cabac0168f8
-dserver = 835946f9df06f3902581e2e66f3c08e7
+dserver = 886d13af40d872fe779610a92b1d69cb
