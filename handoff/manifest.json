@@ -211,7 +211,7 @@
         },
         {
           "branch": "fix/psynch-cvwait-timer-cancel-on-sigexc",
-          "head": "f2d93480ff25201fade194583ca90dce553b42fe",
+          "head": "8f93ee1992c4f1cb2be5d02d9082c5c72596d099",
           "upstream": "",
           "source_ref": "refs/heads/fix/psynch-cvwait-timer-cancel-on-sigexc"
         },
