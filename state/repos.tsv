@@ -1,5 +1,5 @@
 path	head	branch	origin	worktree
-.	5f7c12ea129e6b8b727f17d50b19ea1cbe425c3b	integration/perf	git@github.com:IlyaGulya/darling.git	dirty
+.	3491cfeed23965e61448a84d61c66f92ca7e1743	integration/perf	git@github.com:IlyaGulya/darling.git	dirty
 src/external/AvailabilityVersions	e28c029a8fa46fa933cbf6d6d9a1c00978c5fad1	DETACHED	git@github.com:IlyaGulya/darling-AvailabilityVersions	clean
 src/external/BerkeleyDB	1411173f0eb71f96ab6134de4e052d16acb8c673	DETACHED	git@github.com:IlyaGulya/darling-BerkeleyDB.git	clean
 src/external/DSTools	e015256b16965ac032412f2277c608c7213c03b3	DETACHED	git@github.com:IlyaGulya/darling-DSTools.git	clean
@@ -102,7 +102,7 @@ src/external/libstdcxx	73eb757fe23170c372bef17d6de41787c1271c80	DETACHED	git@git
 src/external/libsystem	08df454b6eb0df9400aa4c39839a7efd6efd2c3c	DETACHED	git@github.com:IlyaGulya/darling-Libsystem.git	clean
 src/external/libtelnet	1ebd4eef48d06e6411ed2a0f60ba5d3fce5ab455	DETACHED	git@github.com:IlyaGulya/darling-libtelnet.git	clean
 src/external/libtrace	8cf07f02b15f7dca6436882a03678fff0392eaf6	DETACHED	git@github.com:IlyaGulya/darling-libtrace.git	clean
-src/external/libunwind	57781ec72f7a426a809c2a807ce83d98dd3f5ee0	fix/homebrew-psynch-ruby-hang	git@github.com:IlyaGulya/darling-libunwind.git	clean
+src/external/libunwind	a91da1a0e262e04eb601152a84228ff733e48422	DETACHED	git@github.com:IlyaGulya/darling-libunwind.git	clean
 src/external/libutil	e3782a467c248c8d181aba1200ee0642abb65baf	DETACHED	git@github.com:IlyaGulya/darling-libutil.git	clean
 src/external/libxml2	d4f2967c8ca84a23a886978098c0520fe2963b92	DETACHED	git@github.com:IlyaGulya/darling-libxml2.git	clean
 src/external/libxpc	394e033333d3c253a12f08a99090c113b0917d00	DETACHED	git@github.com:IlyaGulya/darling-libxpc.git	clean
@@ -122,7 +122,7 @@ src/external/network_cmds	9a0a90e2021ecdde91986b91f65a236eda158023	DETACHED	git@
 src/external/nghttp2	1a1853837b4350d4393bd25e1e4cb6018ab2d918	DETACHED	git@github.com:IlyaGulya/darling-nghttp2.git	clean
 src/external/nghttp2/third-party/mruby	7c91efc1ffda769a5f1a872c646c82b00698f1b8	DETACHED	git@github.com:IlyaGulya/mruby	clean
 src/external/nghttp2/third-party/neverbleed	b967ca054f48a36f82d8fcdd32e54ec5144f2751	DETACHED	git@github.com:IlyaGulya/neverbleed.git	clean
-src/external/objc4	ec7d97e9c95ab298af3d2ee4c898b9ce0866c9eb	fix/homebrew-psynch-ruby-hang	git@github.com:IlyaGulya/darling-objc4.git	clean
+src/external/objc4	1a12df76d12bfc9fdfffadb290f7742763568765	DETACHED	git@github.com:IlyaGulya/darling-objc4.git	clean
 src/external/openjdk	5a541c1844a9508e48b3addaf2d38775683abb38	DETACHED	git@github.com:IlyaGulya/openjdk.git	clean
 src/external/openpam	8362545bac04032fcf59287cd66e6f4662a3692b	DETACHED	git@github.com:IlyaGulya/darling-openpam.git	clean
 src/external/openpam/darling/submodules/pam_modules	241bbee0da845d1dfebc747b16a62aaed22f165b	DETACHED	git@github.com:IlyaGulya/darling-pam_modules.git	clean
@@ -158,5 +158,5 @@ src/external/xcbuild/ThirdParty/googletest	a2b8a8e07628e5fd60644b6dd99c1b5e7d7f1
 src/external/xcbuild/ThirdParty/linenoise	c894b9e59f02203dbe4e2be657572cf88c4230c3	DETACHED	git@github.com:IlyaGulya/linenoise.git	clean
 src/external/xnu	caddc2b7ef7718e60318f98ec39dab7d40df38ca	perf/shmem-ring-guest	git@github.com:IlyaGulya/darling-xnu.git	clean
 src/external/zip	caf41ebbc3ebab0250e4d13aa42221ef91a9802c	DETACHED	git@github.com:IlyaGulya/darling-zip.git	clean
-src/external/zlib	ada74d8636d868f9ca609cea5ead2254610081ab	fix/homebrew-psynch-ruby-hang	git@github.com:IlyaGulya/darling-zlib.git	clean
+src/external/zlib	677de9b1c2bea1e428f56d8fc63300aa471eaf99	DETACHED	git@github.com:IlyaGulya/darling-zlib.git	clean
 src/external/zsh	4a7a6ebf6216395c7db698a4993db16e484aa54d	DETACHED	git@github.com:IlyaGulya/darling-zsh.git	clean

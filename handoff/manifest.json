@@ -85,7 +85,7 @@
         },
         {
           "branch": "integration/perf",
-          "head": "5f7c12ea129e6b8b727f17d50b19ea1cbe425c3b",
+          "head": "3491cfeed23965e61448a84d61c66f92ca7e1743",
           "upstream": "",
           "source_ref": "refs/heads/integration/perf"
         },
@@ -292,6 +292,12 @@
           "head": "a9c2e2922a9fa6226f591fe9101bcbc706cf6dcd",
           "upstream": "origin/fix/homebrew-psynch-ruby-hang",
           "source_ref": "refs/heads/fix/homebrew-psynch-ruby-hang"
+        },
+        {
+          "branch": "integration/perf",
+          "head": "aec6a4af4efaacbda31911aaf32d73495d4a7da1",
+          "upstream": "",
+          "source_ref": "refs/heads/integration/perf"
         }
       ]
     },
@@ -700,6 +706,12 @@
           "head": "1169ebe2d99cf0c7ba36c1f2613fcf66a9cbbb1c",
           "upstream": "",
           "source_ref": "refs/heads/integration/homebrew"
+        },
+        {
+          "branch": "integration/perf",
+          "head": "caddc2b7ef7718e60318f98ec39dab7d40df38ca",
+          "upstream": "",
+          "source_ref": "refs/heads/integration/perf"
         },
         {
           "branch": "perf/cache-task-self-trap",
