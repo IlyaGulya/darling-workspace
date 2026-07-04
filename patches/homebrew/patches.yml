@@ -1389,3 +1389,37 @@ patches:
   bead: dar-l8k
   publication-status: blocked
   publication-blocker: fixes a heap use-after-free in Process::notifyCheckin's exec/"replace task" branch that crashed darlingserver under fork+exec storms (~1 in 3-6 heavy builds) and deterministically at boot under an ASan server build. The branch released the old dtape thread + task BEFORE republishing the new dtape thread as the microthread's current thread; the old task's IPC-space teardown (dtape_task_release -> ipc_space_terminate -> ipc_right_terminate -> ipc_port_destroy) reads current_thread()->ith_assertions (IMPORTANCE_INHERITANCE=1), and current_thread() resolves to mainThread->_dtapeThread which was still the just-freed old dtape_thread -> UAF (free at process.cpp dtape_thread_release, use at ipc_port.c:936; the rare prod symptom was a downstream SIGSEGV in the main loop's malloc on a corrupted freelist). Fix publishes _dtapeTask/_dtapeThread + new semaphores under _rwlock first, drops the lock, then releases the old thread/task (releases stay unlocked because dtape_task_release can suspend the microthread, same constraint as the dtape_*_create calls). Pinned via an ASan darlingserver build (DSERVER_ASAN=ON, detect_stack_use_after_return=0 to see past the fiber/ucontext fake-stack noise). RED->GREEN host gate tests/checkin_retask_current_thread_uaf.c + run-checkin-retask-current-thread-uaf.sh model the exact free/use ordering under ASan. Validated -- ASan server boots clean 3/3 (was UAF 3/3 pre-fix); fork-heavy make -j8 6/6 DONE clean. Distinct from 5e5d688 (that was the checkin _rwlock-across-suspend deadlock; this is the exec re-task current_thread UAF). Needs upstream review before publishing. See dar-l8k.
+- path: darlingserver/pot-guest-lifetime-binding.patch
+  sha256sum: c9b7c4b008661ae00a6f52404b9bc9a751462a30ab0b39b0c97d8e007e25cb7f
+  module: darling/src/external/darlingserver
+  source-branch: fix/pot-guest-lifetime-binding
+  source-base: 89751e64bc6c2082f7725061824ee0e33395b0de
+  source-commit: d0cfd7b6605dac15471240724dec03bb9b91231e
+  bead: dar-pot
+  publication-status: blocked
+  publication-blocker: |-
+    dar-pot root fix: orphaned mldr guests leak across sessions and wedge fresh
+    boots. darlingserver creates the guest PID namespace via clone(CLONE_NEWPID);
+    the clone child (launchd, ns PID 1) now sets prctl(PR_SET_PDEATHSIG, SIGKILL)
+    so that when darlingserver dies for any reason, ns-PID-1 dies with it and the
+    kernel cascade-kills every guest in the namespace -- no guest can outlive its
+    server, so none can accumulate. Set AFTER perma_drop_privileges (a credential
+    change clears the pdeathsig) and BEFORE spawnLaunchd; survives the exec into
+    mldr (not set-uid). Base = manifest-rev (the clone region is byte-identical
+    across the homebrew/perf/arch stacks, so this is profile-independent and lives
+    in the foundational homebrew profile). RED->GREEN hermetic host-model gate
+    tests/pot_lifetime_binding_test.c + run-pot-lifetime-binding.sh (nobind arm
+    reproduces the orphan = GUEST-SURVIVED; bind arm = GUEST-REAPED). LIVE-verified
+    on the fixed binary (baseline d81b5cf1 + this fix, md5 6d854a92): 3/3 clean brew
+    reinstalls leave zero mldr + zero zombie darlingserver after shutdown, and a
+    SIGKILL of darlingserver alone (no darling shutdown) cascade-kills the guest via
+    the pdeathsig. Needs upstream review before publishing. See dar-pot.
+  github:
+    fork:
+      repo: IlyaGulya/darlingserver
+      base: preupstream/main
+      state: local
+    upstream:
+      repo: darlinghq/darlingserver
+      base: main
+      state: local
