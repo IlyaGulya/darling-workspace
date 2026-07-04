@@ -470,6 +470,35 @@ class DarlingPatch(WestCommand):
         if (repo / am_state).exists():
             git(repo, "am", "--abort", check=False)
 
+    def _reset_submodule_index(self, repo: Path):
+        """Reset submodule gitlink entries in the index to match HEAD.
+
+        Parking the submodules (detaching them onto their base revisions) moves
+        each nested module's HEAD, which dirties the superproject's gitlink
+        pointers in the index. `git am` runs its own dirty-index guard that --
+        unlike our `_ensure_clean` (which passes --ignore-submodules=all) -- is
+        NOT submodule-aware, so it refuses with "Dirty index: cannot apply".
+        The darling-module patches only touch real files (e.g. mldr.c), never
+        the gitlinks, so restoring the gitlink index entries to HEAD makes the
+        index clean from `git am`'s perspective without dropping any real change.
+        The submodules' own working trees / branches are untouched."""
+        dirty = git(
+            repo,
+            "diff",
+            "--cached",
+            "--ignore-submodules=none",
+            "--name-only",
+            "--diff-filter=M",
+            capture=True,
+        )
+        paths = [
+            line
+            for line in dirty.splitlines()
+            if (repo / line / ".git").exists()
+        ]
+        for path in paths:
+            git(repo, "reset", "--quiet", "HEAD", "--", path)
+
     def _branch_exists(self, repo: Path, branch: str) -> bool:
         return (
             subprocess.run(
@@ -513,6 +542,11 @@ class DarlingPatch(WestCommand):
                     module, repo, branch, parent=module == "darling"
                 )
                 touched.append(repo)
+                if module == "darling":
+                    # `git am` on the superproject has a submodule-unaware
+                    # dirty-index guard; parked submodule gitlinks trip it even
+                    # though the patches only touch real files. See helper.
+                    self._reset_submodule_index(repo)
                 for patch in module_patches:
                     path = self._verify_patch(profile_dir, patch)
                     git(

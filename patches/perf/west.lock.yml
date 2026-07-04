@@ -2,7 +2,7 @@ manifest:
   projects:
   - name: darling
     url: https://github.com/darlinghq/darling
-    revision: 5f7c12ea129e6b8b727f17d50b19ea1cbe425c3b
+    revision: 7115289e0206f321b2e3e869ebe664aff110a53a
     userdata:
       kind: darling-source
       upstream-repository: darling
@@ -379,7 +379,7 @@ manifest:
       upstream-repository: darling-dmg
   - name: darling-src-external-darlingserver
     url: https://github.com/darlinghq/darlingserver
-    revision: 92049f05ceec9fa02b132b3882e264822586d91d
+    revision: c667be45de91c475a85e1d48586d44cd06d016ae
     path: darling/src/external/darlingserver
     userdata:
       kind: darling-source
@@ -407,7 +407,7 @@ manifest:
       upstream-repository: darling-dtrace
   - name: darling-src-external-dyld
     url: https://github.com/darlinghq/darling-dyld
-    revision: 63f667cf06d7ed59553adebb0c8d70a117135ac9
+    revision: aec6a4af4efaacbda31911aaf32d73495d4a7da1
     path: darling/src/external/dyld
     userdata:
       kind: darling-source
@@ -1108,7 +1108,7 @@ manifest:
       upstream-repository: linenoise
   - name: darling-src-external-xnu
     url: https://github.com/darlinghq/darling-xnu
-    revision: 1169ebe2d99cf0c7ba36c1f2613fcf66a9cbbb1c
+    revision: caddc2b7ef7718e60318f98ec39dab7d40df38ca
     path: darling/src/external/xnu
     userdata:
       kind: darling-source
