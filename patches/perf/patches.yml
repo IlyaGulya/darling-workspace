@@ -47,3 +47,21 @@ patches:
   publication-blocker: 'A0 hang fix class (perf#25a-hang): stranded SIGCHLD / lost wait4 reply + interrupted-wait state-clobber family + exec-checkin race + zero-hang gate harness. 41 commits. Landed + gated; sits below A0-ARCH. See dar-a0-hang-fixes-gkev.'
   source-commit: f4530b5f635672a815eff0f344ec7c91bc1ec12b
   sha256sum: 2c435647a7b41846032f2514f3d4e505b3e55416f716dad8a5d2a0a703996672
+- path: xnu/j7e7-lane-wakefd-sentinel.patch
+  sha256sum: 6883cbd4cd27fb6a4dd1ebd433fc769b1d8fa87adddb0587b28d5fa5b44d0b65
+  module: darling/src/external/xnu
+  source-branch: fix/j7e7-lane-wakefd-sentinel
+  source-base: caddc2b7ef7718e60318f98ec39dab7d40df38ca
+  source-commit: 8d554c2b67e809cb580692f19199a4fafcf1372a
+  bead: dar-j7e7
+  publication-status: blocked
+  publication-blocker: 'dar-j7e7 regression fix for the D16 per-thread ring lanes (guest): __dserver_ring_postfork_reset() freed each lane on wake_fd>=0, but the static (zero-init) lane table has wake_fd==0 on un-attached lanes, so the fork child ran close(0) once per untouched lane -> broken stdin -> brew "cannot duplicate fd 0". Frees now gated on the ownership marker (active==1); wake_fd=-1 sentinel restored at claim+reset; FD_CLOEXEC set on the received wake_fd. Stacks on xnu/shmem-ring-guest.patch (base caddc2b). Same experimental ring transport gating; not upstream-proposed until the ring itself is. See dar-j7e7.'
+- path: darlingserver/j7e7-postfork-reset-gate.patch
+  sha256sum: ed025dd0c30f5429c45cdd3001a38712500d3649c3006d2cbf223b6d6a743f10
+  module: darling/src/external/darlingserver
+  source-branch: fix/j7e7-postfork-reset-gate
+  source-base: 03cf98e489f6c7830d82e10b5ee2217d44b9a1ae
+  source-commit: 757bb94c2e9fe43dfbab708f7dd7a0f4f0d56e70
+  bead: dar-j7e7
+  publication-status: blocked
+  publication-blocker: 'dar-j7e7 test coverage: hermetic host gate ring_postfork_reset_gate_test.c pinning __dserver_ring_postfork_reset()''s resource-ownership predicate (the D16 multilane gate covered active/generation races but NOT what postfork_reset frees per lane -- the gap that let the close(0) regression ship). RED arms reproduce the shipped bug + a dropped sentinel; wired into run-ring-shm-validate.sh. Stacks on darlingserver/perf18-server-ring.patch (base 03cf98e). Pairs with xnu/j7e7-lane-wakefd-sentinel.patch. Same ring-experimental gating. See dar-j7e7.'
