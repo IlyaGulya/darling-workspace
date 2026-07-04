@@ -1,0 +1,10 @@
+# Transient beads state — never commit (doctor: gitignore.beads_inner_present).
+# Canonical tracked state is config.yaml, issues.jsonl, metadata.json.
+*.db
+*.db-wal
+*.db-shm
+.write.lock
+.write.lock.*
+*.tmp
+*.orphaned-moved-*
+beads.base.jsonl
