@@ -78,6 +78,12 @@
           "source_ref": "refs/heads/fix/sdk-homebrew-detection"
         },
         {
+          "branch": "integration/arch",
+          "head": "790a74d632f5c352f9d7d281636268d4bfd25dad",
+          "upstream": "",
+          "source_ref": "refs/heads/integration/arch"
+        },
+        {
           "branch": "integration/homebrew",
           "head": "3491cfeed23965e61448a84d61c66f92ca7e1743",
           "upstream": "",
@@ -85,7 +91,7 @@
         },
         {
           "branch": "integration/perf",
-          "head": "3491cfeed23965e61448a84d61c66f92ca7e1743",
+          "head": "7115289e0206f321b2e3e869ebe664aff110a53a",
           "upstream": "",
           "source_ref": "refs/heads/integration/perf"
         },
@@ -246,10 +252,22 @@
           "source_ref": "refs/heads/fix/server-inline-fastpath"
         },
         {
+          "branch": "integration/arch",
+          "head": "d5cb4869cb55c962e83b30d341b61cd8336fbf9d",
+          "upstream": "",
+          "source_ref": "refs/heads/integration/arch"
+        },
+        {
           "branch": "integration/homebrew",
           "head": "92049f05ceec9fa02b132b3882e264822586d91d",
           "upstream": "",
           "source_ref": "refs/heads/integration/homebrew"
+        },
+        {
+          "branch": "integration/perf",
+          "head": "c667be45de91c475a85e1d48586d44cd06d016ae",
+          "upstream": "",
+          "source_ref": "refs/heads/integration/perf"
         },
         {
           "branch": "perf/guest-per-callnum-sleep-account",
