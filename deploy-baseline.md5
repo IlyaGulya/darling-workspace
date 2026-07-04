@@ -7,20 +7,23 @@
 # UPDATE this file (and note why + which Bead) whenever a legitimate rebuild changes what is
 # deployed — otherwise the doctor will (correctly) flag the new deploy as a baseline mismatch.
 #
-# Current baseline (2026-07-03, task #116 A0-ARCH stage 1): darlingserver updated to the
-# A0-ARCH stage 0+1 landing (fuzzer DSERVER_SCHED_FUZZ; typed wake tokens; savedResumeContext
-# jumpToResume fix; interrupt-desync survival guards; built with -g for live triage; branch
-# fix/a0-arch-redesign, see tests/A0-ARCH-STAGE1.md). Acceptance: synth gate 13/13 gating
-# green; brew xz 2/2 strict green; the single full-gate wget freeze proved PRE-EXISTING
-# (baseline 886d13af froze the same way in an 11-run A/B, ~1/10 rate; fingerprint ~57.4k
-# pthread_canceled storm then all-parked; tracked for stages 2/3); perf A/B within noise
-# (nestwait −1.2%, 300xtrue identical); fuzz survival better than baseline (4/6 vs 5/6 RED).
-# dyld/mldr unchanged (ring + DCC kept).
+# Current baseline (2026-07-04, task #116 A0-ARCH stage 2a): darlingserver updated to the
+# A0-ARCH stage 2a landing (shadow MicroState machine: one per-thread run-state written by
+# a single legality-asserting transition function at every _running/_suspended flip site,
+# 32-entry per-thread transition tape dumped on violations and from the duct-tape panic
+# funnel; DSERVER_MSTATE_ABORT=1 gate wiring; branch fix/a0-arch-redesign, see
+# tests/A0-ARCH-STAGE2.md). Acceptance: quick gate 15/15 gating green (synth 13/13 +
+# brew xz 2/2 strict) with ZERO mstate violations across the battery incl. brew; fuzz
+# survival 4/6 RED identical to stage-1c (deaths = pre-existing classes, tape-verified);
+# perf A/B no regression (nestwait 3642/3614/3692 vs ~3635-3679, 300xtrue 2s identical);
+# ASAN leg green on 9/9 gating legs (needs ASAN_OPTIONS=detect_stack_use_after_return=0,
+# fake-stack vs fiber switches). dyld/mldr unchanged.
 #   dyld    79b22273  (dyld-733.6, boot-compatible with the deployed 06-15 closure)
 #   mldr    f0cd2a82  (perf#21b compact-fd band)
-#   dserver a889e85f  (ring + A0 fixes a3de8c2 + A0-ARCH stages 0/1/1b/1c)
-# Previous dserver baseline: 886d13af (a3de8c2, task #113) — backup in job tmp.
+#   dserver e50a3450  (ring + A0 a3de8c2 + A0-ARCH stages 0/1 + 2a shadow machine)
+# Previous dserver baseline: a889e85f (stage 1, backup darlingserver.a889e85f.bak in
+# darling-prefix/bin and job tmp); before that 886d13af (a3de8c2, task #113).
 
 dyld    = 79b22273481ea61ab63c0606c23ab300
 mldr    = f0cd2a82efc4cb4614b63cabac0168f8
-dserver = a889e85fa2ff6fc12f970f898bb43715
+dserver = e50a3450b3543621711359c754a9d7e1
