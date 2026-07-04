@@ -121,7 +121,7 @@
         },
         {
           "branch": "fix/a0-arch-redesign",
-          "head": "a6ce93e50e8cfbe6f924121dfc0cc7d43d2feff4",
+          "head": "c6a64401449b93922f755746ef79a29a7cc5ae22",
           "upstream": "",
           "source_ref": "refs/heads/fix/a0-arch-redesign"
         },
