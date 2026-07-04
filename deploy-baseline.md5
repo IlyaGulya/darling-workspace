@@ -7,23 +7,23 @@
 # UPDATE this file (and note why + which Bead) whenever a legitimate rebuild changes what is
 # deployed — otherwise the doctor will (correctly) flag the new deploy as a baseline mismatch.
 #
-# Current baseline (2026-07-04, task #116 A0-ARCH stage 2a): darlingserver updated to the
-# A0-ARCH stage 2a landing (shadow MicroState machine: one per-thread run-state written by
-# a single legality-asserting transition function at every _running/_suspended flip site,
-# 32-entry per-thread transition tape dumped on violations and from the duct-tape panic
-# funnel; DSERVER_MSTATE_ABORT=1 gate wiring; branch fix/a0-arch-redesign, see
-# tests/A0-ARCH-STAGE2.md). Acceptance: quick gate 15/15 gating green (synth 13/13 +
-# brew xz 2/2 strict) with ZERO mstate violations across the battery incl. brew; fuzz
-# survival 4/6 RED identical to stage-1c (deaths = pre-existing classes, tape-verified);
-# perf A/B no regression (nestwait 3642/3614/3692 vs ~3635-3679, 300xtrue 2s identical);
-# ASAN leg green on 9/9 gating legs (needs ASAN_OPTIONS=detect_stack_use_after_return=0,
-# fake-stack vs fiber switches). dyld/mldr unchanged.
+# Current baseline (2026-07-04, task #116 A0-ARCH stage 2b): darlingserver updated to the
+# A0-ARCH stage 2b landing: run-state AUTHORITY flipped to the MicroState machine --
+# _running/_suspended are derived views updated only by the transition function; the
+# impersonation lockout is its own _impersonationPin; doWork/suspend/inline paths read
+# the state field (preDispatchParked / parkedContextIntact carry the dispatch-window
+# facts). Includes the tape-caught repark fix (a no-op dispatch of a Parked thread must
+# repark, not idle -- fuzz boot wedge otherwise). Branch fix/a0-arch-redesign, see
+# tests/A0-ARCH-STAGE2.md. Acceptance: quick gate 15/15 gating green (synth + brew xz
+# 2/2 strict), zero mstate violations; perf A/B in the baseline corridor (nestwait
+# 3626/3674/3644, 300xtrue 2s); one non-reproducing nestwait-off teardown death (8/8
+# green under gdb) = pre-existing #114-family watch item. dyld/mldr unchanged.
 #   dyld    79b22273  (dyld-733.6, boot-compatible with the deployed 06-15 closure)
 #   mldr    f0cd2a82  (perf#21b compact-fd band)
-#   dserver e50a3450  (ring + A0 a3de8c2 + A0-ARCH stages 0/1 + 2a shadow machine)
-# Previous dserver baseline: a889e85f (stage 1, backup darlingserver.a889e85f.bak in
-# darling-prefix/bin and job tmp); before that 886d13af (a3de8c2, task #113).
+#   dserver 47ac175d  (ring + A0 a3de8c2 + A0-ARCH stages 0/1 + 2a/2b state machine)
+# Previous dserver baselines: e50a3450 (2a), a889e85f (stage 1, .bak in darling-prefix/bin),
+# 886d13af (a3de8c2, task #113).
 
 dyld    = 79b22273481ea61ab63c0606c23ab300
 mldr    = f0cd2a82efc4cb4614b63cabac0168f8
-dserver = e50a3450b3543621711359c754a9d7e1
+dserver = 47ac175da32f70d17bf05ff3c02eec28
