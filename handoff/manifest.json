@@ -252,6 +252,12 @@
           "source_ref": "refs/heads/fix/server-inline-fastpath"
         },
         {
+          "branch": "fix/z27x3-deadline-scheduler",
+          "head": "93c70498f3c97f8933af56b6308a8780bbaa5f26",
+          "upstream": "",
+          "source_ref": "refs/heads/fix/z27x3-deadline-scheduler"
+        },
+        {
           "branch": "integration/arch",
           "head": "d5cb4869cb55c962e83b30d341b61cd8336fbf9d",
           "upstream": "",
