@@ -55,7 +55,7 @@
   <project name="darling-cups" path="darling/src/external/cups" revision="51b7c251ef5ff81adc20284544394de8cc2e1315" />
   <project name="darling-curl" path="darling/src/external/curl" revision="92f54fd7eceabed2c2382a4acc0f7293dedd92ff" />
   <project name="darling-dmg" path="darling/src/external/darling-dmg" revision="1a6de10c5886c40a414090701b2520bd0417ce29" />
-  <project name="darlingserver" path="darling/src/external/darlingserver" revision="e29e62fff550496c7258744d85c6b1703c690918" />
+  <project name="darlingserver" path="darling/src/external/darlingserver" revision="49892fe3b9411b1705eb223af6031c4311ee2505" />
   <project name="darling-dbuskit" path="darling/src/external/dbuskit" revision="890e51fda949e4dd2c46765e39074f790c10ca18" />
   <project name="darling-doc_cmds" path="darling/src/external/doc_cmds" revision="60c6a2b858abe1f27b441f479aad2b0a9d0f9ba2" />
   <project name="darling-dtrace" path="darling/src/external/dtrace" revision="4f52343b36756e32a81eb302242ac6472e9075fa" />
