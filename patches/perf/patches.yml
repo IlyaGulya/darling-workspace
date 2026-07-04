@@ -29,3 +29,21 @@ patches:
   bead: dar-dar6x4-perf-5dq.26
   publication-status: blocked
   publication-blocker: perf#24 DCC6 packed-shared-cache dyld reader (3-region + TEXT RIP-relative rewrite + precomputed fixup table). CLOSED as a functionally-proven, kernel-measured PROTOTYPE that is FLAG-GATED (DARLING_DYLD_DCC2=1 + DARLING_DYLD_DCC2_PATH) and NOT default-on; productization needs separate hardening (cache-build/staleness deploy, coverage beyond the 40-dylib closure, cache ABI-version discipline). See tests/PERF24-DCC6-FINAL.md. Base is 63f667cf (manifest dyld revision).
+- path: darlingserver/perf18-server-ring.patch
+  module: darling/src/external/darlingserver
+  source-branch: fix/perf18-server-ring
+  source-base: 92049f05ceec9fa02b132b3882e264822586d91d
+  bead: dar-dar6x4-perf-5dq.30
+  publication-status: blocked
+  publication-blocker: perf#18 SERVER-side shared-memory SPSC ring transport for darlingserver (pairs with guest-side xnu/shmem-ring-guest.patch in this profile). 78 commits above integration/homebrew tip. Experimental, behind DARLING_SERVER_FAST_OPS; wants ring ABI + trust-boundary review before upstreaming. See dar-dar6x4-perf-5dq.30.
+  source-commit: 03cf98e489f6c7830d82e10b5ee2217d44b9a1ae
+  sha256sum: 44ac2b59cab921e6065094348bc746555071203294950b9d16154f66584db5fe
+- path: darlingserver/a0-hang-fixes.patch
+  module: darling/src/external/darlingserver
+  source-branch: fix/a0-hang-fixes
+  source-base: 03cf98e489f6c7830d82e10b5ee2217d44b9a1ae
+  bead: dar-a0-hang-fixes-gkev
+  publication-status: provisional
+  publication-blocker: 'A0 hang fix class (perf#25a-hang): stranded SIGCHLD / lost wait4 reply + interrupted-wait state-clobber family + exec-checkin race + zero-hang gate harness. 41 commits. Landed + gated; sits below A0-ARCH. See dar-a0-hang-fixes-gkev.'
+  source-commit: f4530b5f635672a815eff0f344ec7c91bc1ec12b
+  sha256sum: 2c435647a7b41846032f2514f3d4e505b3e55416f716dad8a5d2a0a703996672
