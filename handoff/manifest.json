@@ -228,6 +228,12 @@
           "source_ref": "refs/heads/fix/perf18-server-ring"
         },
         {
+          "branch": "fix/pot-guest-lifetime-binding",
+          "head": "d0cfd7b6605dac15471240724dec03bb9b91231e",
+          "upstream": "",
+          "source_ref": "refs/heads/fix/pot-guest-lifetime-binding"
+        },
+        {
           "branch": "fix/processcall-exception-guard",
           "head": "a52a15e2412cda068548e40047d8a3b18d3dba0b",
           "upstream": "",
