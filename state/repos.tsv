@@ -1,5 +1,5 @@
 path	head	branch	origin	worktree
-.	3491cfeed23965e61448a84d61c66f92ca7e1743	integration/perf	git@github.com:IlyaGulya/darling.git	dirty
+.	790a74d632f5c352f9d7d281636268d4bfd25dad	integration/arch	git@github.com:IlyaGulya/darling.git	dirty
 src/external/AvailabilityVersions	e28c029a8fa46fa933cbf6d6d9a1c00978c5fad1	DETACHED	git@github.com:IlyaGulya/darling-AvailabilityVersions	clean
 src/external/BerkeleyDB	1411173f0eb71f96ab6134de4e052d16acb8c673	DETACHED	git@github.com:IlyaGulya/darling-BerkeleyDB.git	clean
 src/external/DSTools	e015256b16965ac032412f2277c608c7213c03b3	DETACHED	git@github.com:IlyaGulya/darling-DSTools.git	clean
@@ -52,11 +52,11 @@ src/external/csu	93b25cf0930a727b44fa50893bffd71056ad032f	DETACHED	git@github.co
 src/external/cups	51b7c251ef5ff81adc20284544394de8cc2e1315	DETACHED	git@github.com:IlyaGulya/darling-cups.git	clean
 src/external/curl	92f54fd7eceabed2c2382a4acc0f7293dedd92ff	DETACHED	git@github.com:IlyaGulya/darling-curl.git	clean
 src/external/darling-dmg	1a6de10c5886c40a414090701b2520bd0417ce29	DETACHED	git@github.com:IlyaGulya/darling-dmg.git	clean
-src/external/darlingserver	93c70498f3c97f8933af56b6308a8780bbaa5f26	fix/a0-arch-redesign	git@github.com:IlyaGulya/darlingserver.git	clean
+src/external/darlingserver	d5cb4869cb55c962e83b30d341b61cd8336fbf9d	integration/arch	git@github.com:IlyaGulya/darlingserver.git	clean
 src/external/dbuskit	890e51fda949e4dd2c46765e39074f790c10ca18	DETACHED	git@github.com:IlyaGulya/darling-dbuskit.git	clean
 src/external/doc_cmds	60c6a2b858abe1f27b441f479aad2b0a9d0f9ba2	DETACHED	git@github.com:IlyaGulya/darling-doc_cmds.git	clean
 src/external/dtrace	4f52343b36756e32a81eb302242ac6472e9075fa	DETACHED	git@github.com:IlyaGulya/darling-dtrace.git	clean
-src/external/dyld	aec6a4af4efaacbda31911aaf32d73495d4a7da1	fix/dyld-dcc2-reader	git@github.com:IlyaGulya/darling-dyld.git	clean
+src/external/dyld	aec6a4af4efaacbda31911aaf32d73495d4a7da1	integration/perf	git@github.com:IlyaGulya/darling-dyld.git	clean
 src/external/energytrace	e277fcfd430ddab2d8b52187cf480f2857629104	DETACHED	git@github.com:IlyaGulya/darling-energytrace.git	clean
 src/external/expat	70006a0c32d7c8653c11e53fc0c905f1bb498218	DETACHED	git@github.com:IlyaGulya/darling-expat.git	clean
 src/external/file	c6ee65265d253d24b1a496f8ca54b5e449fe108c	DETACHED	git@github.com:IlyaGulya/darling-file.git	clean
@@ -156,7 +156,7 @@ src/external/xar	887bd4f42eb4ac9139a7f621b5811065aa86f3e3	DETACHED	git@github.co
 src/external/xcbuild	a903c6952fc5617816113cbb7b551ac701dba2ff	DETACHED	git@github.com:IlyaGulya/xcbuild.git	clean
 src/external/xcbuild/ThirdParty/googletest	a2b8a8e07628e5fd60644b6dd99c1b5e7d7f1f47	DETACHED	git@github.com:IlyaGulya/googletest.git	clean
 src/external/xcbuild/ThirdParty/linenoise	c894b9e59f02203dbe4e2be657572cf88c4230c3	DETACHED	git@github.com:IlyaGulya/linenoise.git	clean
-src/external/xnu	caddc2b7ef7718e60318f98ec39dab7d40df38ca	perf/shmem-ring-guest	git@github.com:IlyaGulya/darling-xnu.git	clean
+src/external/xnu	caddc2b7ef7718e60318f98ec39dab7d40df38ca	integration/perf	git@github.com:IlyaGulya/darling-xnu.git	clean
 src/external/zip	caf41ebbc3ebab0250e4d13aa42221ef91a9802c	DETACHED	git@github.com:IlyaGulya/darling-zip.git	clean
 src/external/zlib	677de9b1c2bea1e428f56d8fc63300aa471eaf99	DETACHED	git@github.com:IlyaGulya/darling-zlib.git	clean
 src/external/zsh	4a7a6ebf6216395c7db698a4993db16e484aa54d	DETACHED	git@github.com:IlyaGulya/darling-zsh.git	clean
