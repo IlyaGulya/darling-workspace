@@ -1,6 +1,6 @@
 version: 1
 description: Architectural redesign that stacks ON TOP of the perf profile. A0-ARCH (interrupt-as-cancellation wake/wait redesign) depends on the perf#18 server ring + the A0-hang fix class, both provided by the perf profile, so it declares perf as its base.
-integration-date: '2026-07-04 00:00:00+00:00'
+integration-date: '2026-07-04T00:00:00Z'
 base-profile: perf
 patches:
 - path: darlingserver/a0-arch-redesign.patch

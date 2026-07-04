@@ -2,7 +2,7 @@
 <manifest>
   <remote name="darling" fetch="https://github.com/darlinghq/" />
   <default remote="darling" sync-j="16" sync-tags="false" />
-  <project name="darling" path="darling" revision="5f7c12ea129e6b8b727f17d50b19ea1cbe425c3b" />
+  <project name="darling" path="darling" revision="3491cfeed23965e61448a84d61c66f92ca7e1743" />
   <project name="darling-AvailabilityVersions" path="darling/src/external/AvailabilityVersions" revision="e28c029a8fa46fa933cbf6d6d9a1c00978c5fad1" />
   <project name="darling-BerkeleyDB" path="darling/src/external/BerkeleyDB" revision="1411173f0eb71f96ab6134de4e052d16acb8c673" />
   <project name="darling-DSTools" path="darling/src/external/DSTools" revision="e015256b16965ac032412f2277c608c7213c03b3" />
@@ -105,7 +105,7 @@
   <project name="darling-Libsystem" path="darling/src/external/libsystem" revision="08df454b6eb0df9400aa4c39839a7efd6efd2c3c" />
   <project name="darling-libtelnet" path="darling/src/external/libtelnet" revision="1ebd4eef48d06e6411ed2a0f60ba5d3fce5ab455" />
   <project name="darling-libtrace" path="darling/src/external/libtrace" revision="8cf07f02b15f7dca6436882a03678fff0392eaf6" />
-  <project name="darling-libunwind" path="darling/src/external/libunwind" revision="57781ec72f7a426a809c2a807ce83d98dd3f5ee0" />
+  <project name="darling-libunwind" path="darling/src/external/libunwind" revision="a91da1a0e262e04eb601152a84228ff733e48422" />
   <project name="darling-libutil" path="darling/src/external/libutil" revision="e3782a467c248c8d181aba1200ee0642abb65baf" />
   <project name="darling-libxml2" path="darling/src/external/libxml2" revision="d4f2967c8ca84a23a886978098c0520fe2963b92" />
   <project name="darling-libxpc" path="darling/src/external/libxpc" revision="394e033333d3c253a12f08a99090c113b0917d00" />
@@ -125,7 +125,7 @@
   <project name="darling-nghttp2" path="darling/src/external/nghttp2" revision="1a1853837b4350d4393bd25e1e4cb6018ab2d918" />
   <project name="mruby" path="darling/src/external/nghttp2/third-party/mruby" revision="7c91efc1ffda769a5f1a872c646c82b00698f1b8" />
   <project name="neverbleed" path="darling/src/external/nghttp2/third-party/neverbleed" revision="b967ca054f48a36f82d8fcdd32e54ec5144f2751" />
-  <project name="darling-objc4" path="darling/src/external/objc4" revision="ec7d97e9c95ab298af3d2ee4c898b9ce0866c9eb" />
+  <project name="darling-objc4" path="darling/src/external/objc4" revision="1a12df76d12bfc9fdfffadb290f7742763568765" />
   <project name="openjdk" path="darling/src/external/openjdk" revision="5a541c1844a9508e48b3addaf2d38775683abb38" />
   <project name="darling-openpam" path="darling/src/external/openpam" revision="8362545bac04032fcf59287cd66e6f4662a3692b" />
   <project name="darling-pam_modules" path="darling/src/external/openpam/darling/submodules/pam_modules" revision="241bbee0da845d1dfebc747b16a62aaed22f165b" />
@@ -161,6 +161,6 @@
   <project name="linenoise" path="darling/src/external/xcbuild/ThirdParty/linenoise" revision="c894b9e59f02203dbe4e2be657572cf88c4230c3" />
   <project name="darling-xnu" path="darling/src/external/xnu" revision="caddc2b7ef7718e60318f98ec39dab7d40df38ca" />
   <project name="darling-zip" path="darling/src/external/zip" revision="caf41ebbc3ebab0250e4d13aa42221ef91a9802c" />
-  <project name="darling-zlib" path="darling/src/external/zlib" revision="ada74d8636d868f9ca609cea5ead2254610081ab" />
+  <project name="darling-zlib" path="darling/src/external/zlib" revision="677de9b1c2bea1e428f56d8fc63300aa471eaf99" />
   <project name="darling-zsh" path="darling/src/external/zsh" revision="4a7a6ebf6216395c7db698a4993db16e484aa54d" />
 </manifest>

@@ -1,7 +1,7 @@
 version: 1
 description: Performance work that stacks ON TOP of the homebrew profile. The homebrew fixes (e.g. mldr glibc-fork-lock-reset and main-stack EEXIST fallback) are prerequisites for a bootable build, so this profile declares homebrew as its base rather than applying against the raw manifest revision.
 base-profile: homebrew
-integration-date: 2026-07-01 00:00:00+00:00
+integration-date: '2026-07-01T00:00:00Z'
 patches:
 - path: darling/mldr-compact-fd-band.patch
   sha256sum: 18545aee2d1ab085b86ce6d72f03a95a6874e9973031d705a5c623430b1f1891
