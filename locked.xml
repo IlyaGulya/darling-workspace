@@ -159,7 +159,7 @@
   <project name="xcbuild" path="darling/src/external/xcbuild" revision="a903c6952fc5617816113cbb7b551ac701dba2ff" />
   <project name="googletest" path="darling/src/external/xcbuild/ThirdParty/googletest" revision="a2b8a8e07628e5fd60644b6dd99c1b5e7d7f1f47" />
   <project name="linenoise" path="darling/src/external/xcbuild/ThirdParty/linenoise" revision="c894b9e59f02203dbe4e2be657572cf88c4230c3" />
-  <project name="darling-xnu" path="darling/src/external/xnu" revision="caddc2b7ef7718e60318f98ec39dab7d40df38ca" />
+  <project name="darling-xnu" path="darling/src/external/xnu" revision="8d554c2b67e809cb580692f19199a4fafcf1372a" />
   <project name="darling-zip" path="darling/src/external/zip" revision="caf41ebbc3ebab0250e4d13aa42221ef91a9802c" />
   <project name="darling-zlib" path="darling/src/external/zlib" revision="677de9b1c2bea1e428f56d8fc63300aa471eaf99" />
   <project name="darling-zsh" path="darling/src/external/zsh" revision="4a7a6ebf6216395c7db698a4993db16e484aa54d" />

@@ -217,7 +217,7 @@
         },
         {
           "branch": "fix/perf18-server-ring",
-          "head": "03cf98e489f6c7830d82e10b5ee2217d44b9a1ae",
+          "head": "757bb94c2e9fe43dfbab708f7dd7a0f4f0d56e70",
           "upstream": "",
           "source_ref": "refs/heads/fix/perf18-server-ring"
         },
@@ -670,6 +670,12 @@
           "head": "b8d9ccc9c1daaf050f21530200008dcc4fa93a95",
           "upstream": "origin/fix/homebrew-psynch-ruby-hang",
           "source_ref": "refs/heads/fix/homebrew-psynch-ruby-hang"
+        },
+        {
+          "branch": "fix/j7e7-lane-wakefd-sentinel",
+          "head": "8d554c2b67e809cb580692f19199a4fafcf1372a",
+          "upstream": "",
+          "source_ref": "refs/heads/fix/j7e7-lane-wakefd-sentinel"
         },
         {
           "branch": "fix/psynch-cvsignal-args",
