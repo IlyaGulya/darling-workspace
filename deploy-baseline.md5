@@ -7,23 +7,23 @@
 # UPDATE this file (and note why + which Bead) whenever a legitimate rebuild changes what is
 # deployed — otherwise the doctor will (correctly) flag the new deploy as a baseline mismatch.
 #
-# Current baseline (2026-07-04, task #116 A0-ARCH stage 2b): darlingserver updated to the
-# A0-ARCH stage 2b landing: run-state AUTHORITY flipped to the MicroState machine --
-# _running/_suspended are derived views updated only by the transition function; the
-# impersonation lockout is its own _impersonationPin; doWork/suspend/inline paths read
-# the state field (preDispatchParked / parkedContextIntact carry the dispatch-window
-# facts). Includes the tape-caught repark fix (a no-op dispatch of a Parked thread must
-# repark, not idle -- fuzz boot wedge otherwise). Branch fix/a0-arch-redesign, see
-# tests/A0-ARCH-STAGE2.md. Acceptance: quick gate 15/15 gating green (synth + brew xz
-# 2/2 strict), zero mstate violations; perf A/B in the baseline corridor (nestwait
-# 3626/3674/3644, 300xtrue 2s); one non-reproducing nestwait-off teardown death (8/8
-# green under gdb) = pre-existing #114-family watch item. dyld/mldr unchanged.
+# Current baseline (2026-07-04, task #116 A0-ARCH stage 2c): darlingserver updated to the
+# A0-ARCH stage 2c landing (commit 5cf6081): ALL XNU wait-state writes (TH_* bits +
+# wait_result) routed through ONE named-transition funnel (xnu_wait_state_write in
+# duct-tape/src/thread.c, 9 sites) reported onto the per-thread state tape via the new
+# thread_xwait_transition hook; dtape_thread_entering DELETED (its TH_WAIT clobber was
+# the A0 disease) and doWork's preserveWaitState skip-dance replaced by a loud
+# fresh-dispatch stranded-TH_WAIT assertion (recovery-clears like the old silent
+# launder). Branch fix/a0-arch-redesign, see tests/A0-ARCH-STAGE2.md. Acceptance:
+# quick gate 19/19 gating green (synth + both storm known-limit legs + brew xz 2/2
+# strict), ZERO mstate/xwait violations across synth+fuzz+brew; perf A/B in corridor
+# (nestwait 3627/3662/3625, 300xtrue 1s). dyld/mldr unchanged.
 #   dyld    79b22273  (dyld-733.6, boot-compatible with the deployed 06-15 closure)
 #   mldr    f0cd2a82  (perf#21b compact-fd band)
-#   dserver 47ac175d  (ring + A0 a3de8c2 + A0-ARCH stages 0/1 + 2a/2b state machine)
-# Previous dserver baselines: e50a3450 (2a), a889e85f (stage 1, .bak in darling-prefix/bin),
-# 886d13af (a3de8c2, task #113).
+#   dserver 7692d9f6  (ring + A0 a3de8c2 + A0-ARCH stages 0/1 + 2a/2b/2c state machine)
+# Previous dserver baselines: 47ac175d (2b, .bak in darling-prefix/bin), e50a3450 (2a),
+# a889e85f (stage 1, .bak in darling-prefix/bin), 886d13af (a3de8c2, task #113).
 
 dyld    = 79b22273481ea61ab63c0606c23ab300
 mldr    = f0cd2a82efc4cb4614b63cabac0168f8
-dserver = 47ac175da32f70d17bf05ff3c02eec28
+dserver = 7692d9f61b42223cbd271877e41d29bd
