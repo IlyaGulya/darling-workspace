@@ -52,7 +52,7 @@ src/external/csu	93b25cf0930a727b44fa50893bffd71056ad032f	DETACHED	git@github.co
 src/external/cups	51b7c251ef5ff81adc20284544394de8cc2e1315	DETACHED	git@github.com:IlyaGulya/darling-cups.git	clean
 src/external/curl	92f54fd7eceabed2c2382a4acc0f7293dedd92ff	DETACHED	git@github.com:IlyaGulya/darling-curl.git	clean
 src/external/darling-dmg	1a6de10c5886c40a414090701b2520bd0417ce29	DETACHED	git@github.com:IlyaGulya/darling-dmg.git	clean
-src/external/darlingserver	93c70498f3c97f8933af56b6308a8780bbaa5f26	fix/z27x3-deadline-scheduler	git@github.com:IlyaGulya/darlingserver.git	clean
+src/external/darlingserver	4e602cf388ee646aa3b35f4c9e3a21afa2fbe07e	wip/z27x7-sigprocess-fold	git@github.com:IlyaGulya/darlingserver.git	clean
 src/external/dbuskit	890e51fda949e4dd2c46765e39074f790c10ca18	DETACHED	git@github.com:IlyaGulya/darling-dbuskit.git	clean
 src/external/doc_cmds	60c6a2b858abe1f27b441f479aad2b0a9d0f9ba2	DETACHED	git@github.com:IlyaGulya/darling-doc_cmds.git	clean
 src/external/dtrace	4f52343b36756e32a81eb302242ac6472e9075fa	DETACHED	git@github.com:IlyaGulya/darling-dtrace.git	clean
@@ -156,7 +156,7 @@ src/external/xar	887bd4f42eb4ac9139a7f621b5811065aa86f3e3	DETACHED	git@github.co
 src/external/xcbuild	a903c6952fc5617816113cbb7b551ac701dba2ff	DETACHED	git@github.com:IlyaGulya/xcbuild.git	clean
 src/external/xcbuild/ThirdParty/googletest	a2b8a8e07628e5fd60644b6dd99c1b5e7d7f1f47	DETACHED	git@github.com:IlyaGulya/googletest.git	clean
 src/external/xcbuild/ThirdParty/linenoise	c894b9e59f02203dbe4e2be657572cf88c4230c3	DETACHED	git@github.com:IlyaGulya/linenoise.git	clean
-src/external/xnu	8d554c2b67e809cb580692f19199a4fafcf1372a	fix/j7e7-lane-wakefd-sentinel	git@github.com:IlyaGulya/darling-xnu.git	clean
+src/external/xnu	fd3c4a4b71ee66c88d31cd2ac67b0f4f825827b9	wip/z27x7-sigprocess-fold	git@github.com:IlyaGulya/darling-xnu.git	clean
 src/external/zip	caf41ebbc3ebab0250e4d13aa42221ef91a9802c	DETACHED	git@github.com:IlyaGulya/darling-zip.git	clean
 src/external/zlib	677de9b1c2bea1e428f56d8fc63300aa471eaf99	DETACHED	git@github.com:IlyaGulya/darling-zlib.git	clean
 src/external/zsh	4a7a6ebf6216395c7db698a4993db16e484aa54d	DETACHED	git@github.com:IlyaGulya/darling-zsh.git	clean

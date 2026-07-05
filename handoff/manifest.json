@@ -313,7 +313,7 @@
         },
         {
           "branch": "wip/z27x7-sigprocess-fold",
-          "head": "5e0e61b1d86df67f1acdb0e513b299680fcc2bb7",
+          "head": "4e602cf388ee646aa3b35f4c9e3a21afa2fbe07e",
           "upstream": "",
           "source_ref": "refs/heads/wip/z27x7-sigprocess-fold"
         }
