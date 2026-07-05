@@ -310,6 +310,12 @@
           "head": "6c65f7dcd833f1761f3c115f90ad77528948b081",
           "upstream": "",
           "source_ref": "refs/heads/perf/shmem-ring-abi-validator"
+        },
+        {
+          "branch": "wip/z27x7-sigprocess-fold",
+          "head": "5e0e61b1d86df67f1acdb0e513b299680fcc2bb7",
+          "upstream": "",
+          "source_ref": "refs/heads/wip/z27x7-sigprocess-fold"
         }
       ]
     },
@@ -790,6 +796,12 @@
           "head": "caddc2b7ef7718e60318f98ec39dab7d40df38ca",
           "upstream": "",
           "source_ref": "refs/heads/perf/shmem-ring-guest"
+        },
+        {
+          "branch": "wip/z27x7-sigprocess-fold",
+          "head": "fd3c4a4b71ee66c88d31cd2ac67b0f4f825827b9",
+          "upstream": "",
+          "source_ref": "refs/heads/wip/z27x7-sigprocess-fold"
         }
       ]
     },
