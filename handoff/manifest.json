@@ -79,7 +79,7 @@
         },
         {
           "branch": "integration/arch",
-          "head": "c106393f1bbb8ed744caf1eceb78d6c5c1d0ae7c",
+          "head": "0c1a02949972daf78b826a8d3d47659eddb123f4",
           "upstream": "",
           "source_ref": "refs/heads/integration/arch"
         },
@@ -331,7 +331,7 @@
         },
         {
           "branch": "integration/arch",
-          "head": "6e231d6477b334b4bb482b92e00a90661eb7e2f0",
+          "head": "fcb9f33f721772b358a2077dbe7da938b5474f3b",
           "upstream": "",
           "source_ref": "refs/heads/integration/arch"
         },
@@ -457,7 +457,7 @@
         },
         {
           "branch": "fix/psynch-kernel-return-helper",
-          "head": "a1f66caa8f9bc59fc4147186910280233862df0b",
+          "head": "0110e3ca3c5c45afbec375a03472f184b7fd19ad",
           "upstream": "",
           "source_ref": "refs/heads/fix/psynch-kernel-return-helper"
         },
@@ -532,6 +532,12 @@
           "head": "d5fbc8180ea2e06efa693ee03a768e532a98671f",
           "upstream": "",
           "source_ref": "refs/heads/fix/libunwind-static-no-jump-tables-for-dyld"
+        },
+        {
+          "branch": "integration/arch",
+          "head": "d5fbc8180ea2e06efa693ee03a768e532a98671f",
+          "upstream": "",
+          "source_ref": "refs/heads/integration/arch"
         }
       ]
     },
@@ -751,7 +757,7 @@
         },
         {
           "branch": "fix/getattrlist-shared-packer",
-          "head": "5fd2eb462219cc33d408f8be26eca2dd7ae28709",
+          "head": "783b3a890940e9b9f40db35e0966f4754be5a04a",
           "upstream": "",
           "source_ref": "refs/heads/fix/getattrlist-shared-packer"
         },
@@ -844,6 +850,12 @@
           "head": "aad62153c971cb93f0953490b2513b5b1aeeeaff",
           "upstream": "origin/preupstream/main",
           "source_ref": "refs/heads/fix/vchroot-pathnull-guard"
+        },
+        {
+          "branch": "integration/arch",
+          "head": "41040ddd9f2a6353137a1f0a960d938f9d640d90",
+          "upstream": "",
+          "source_ref": "refs/heads/integration/arch"
         },
         {
           "branch": "integration/homebrew",
