@@ -531,6 +531,18 @@ class DarlingPatch(WestCommand):
                         errors.append(
                             f"tests[{index}] red-proof guest-runtime-deploy bad-profile must be current-minus-patch"
                         )
+                    skip_patches = proof.get("current-minus-skip-patches")
+                    if skip_patches is not None:
+                        if bad_profile != "current-minus-patch":
+                            errors.append(
+                                f"tests[{index}] current-minus-skip-patches requires bad-profile: current-minus-patch"
+                            )
+                        elif not isinstance(skip_patches, list) or not all(
+                            isinstance(path, str) and path for path in skip_patches
+                        ):
+                            errors.append(
+                                f"tests[{index}] current-minus-skip-patches must be a list of patch paths"
+                            )
                     artifacts = proof.get("runtime-artifacts")
                     if not isinstance(artifacts, list) or not artifacts:
                         errors.append(
