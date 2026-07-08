@@ -244,6 +244,8 @@ class DarlingPatch(WestCommand):
                 target = (
                     test.get("ctest-label")
                     or test.get("command")
+                    or test.get("target")
+                    or test.get("script")
                     or test.get("name", "-")
                 )
                 self.inf(f"    test:{red} {test.get('name', '-')} -> {target}")
@@ -265,8 +267,26 @@ class DarlingPatch(WestCommand):
                 continue
             if not test.get("name"):
                 errors.append(f"tests[{index}] missing name")
-            if not (test.get("command") or test.get("ctest-label")):
-                errors.append(f"tests[{index}] needs command or ctest-label")
+            if not (
+                test.get("command")
+                or test.get("ctest-label")
+                or test.get("script")
+                or test.get("target")
+            ):
+                errors.append(
+                    f"tests[{index}] needs script, target, ctest-label, or command override"
+                )
+            runner = test.get("runner")
+            if runner and runner not in {"script", "west-build", "ctest"}:
+                errors.append(f"tests[{index}] invalid runner {runner!r}")
+            if test.get("target") and runner not in {None, "west-build"}:
+                errors.append(f"tests[{index}] target requires runner: west-build")
+            if test.get("script") and runner not in {None, "script"}:
+                errors.append(f"tests[{index}] script requires runner: script")
+            if test.get("args") is not None and not isinstance(test.get("args"), list):
+                errors.append(f"tests[{index}] args must be a list")
+            if test.get("env-vars") is not None and not isinstance(test.get("env-vars"), dict):
+                errors.append(f"tests[{index}] env-vars must be a mapping")
             env = test.get("env")
             if env and env not in {"host", "darling", "macos"}:
                 errors.append(f"tests[{index}] invalid env {env!r}")
@@ -324,7 +344,7 @@ class DarlingPatch(WestCommand):
         )
         if missing:
             self.inf(
-                "hint: add tests: [{name, command|ctest-label, env, diag, kind, red}] "
+                "hint: add tests: [{name, runner, script|target|ctest-label, env, diag, kind, red}] "
                 "or test-exception: {reason, note}"
             )
         if strict and (missing or invalid):

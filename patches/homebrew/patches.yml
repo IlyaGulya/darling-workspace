@@ -464,6 +464,15 @@ patches:
   bead: dar-q95.29.2
   publication-status: blocked
   publication-blocker: xnu-side psynch wait wrappers still use the Darling-local negative augmented return path; libpthread now decodes base errno/status bits explicitly and has a focused runtime gate, but publication still needs the syscall boundary contract reconciled with dar-q95.19
+  tests:
+  - name: psynch_kernel_return_contract
+    kind: guest
+    env: darling
+    diag: guarded
+    red: true
+    runner: script
+    script: tests/run-psynch-kernel-return-contract.sh
+    note: Requires DPREFIX. Guest runtime contract for psynch return decoding and EINTR handling.
   github:
     fork:
       repo: IlyaGulya/darling-libpthread
@@ -517,6 +526,15 @@ patches:
   bead: dar-q95.29.1
   publication-status: blocked
   publication-blocker: shared packer and focused conformance gate are green locally; remaining publication review is Darwin parity for unsupported/subset policy and full Homebrew runtime gate after broader a0/cvstorm follow-up
+  tests:
+  - name: getattrlist_shared_packer
+    kind: guest
+    env: darling
+    diag: guarded
+    red: true
+    runner: script
+    script: darling/src/libsystem_kernel/tests/run-getattrlist-shared-packer.sh
+    note: Requires DPREFIX. Guest runtime contract for shared getattrlist/fgetattrlist/getattrlistat/getattrlistbulk packing.
   github:
     fork:
       repo: IlyaGulya/darling-xnu
@@ -1226,6 +1244,15 @@ patches:
   bead: dar-dar6x4-perf-5dq.1
   publication-status: blocked
   publication-blocker: replaces the UNBOUNDED thread-create-checkin busy-spin (sched_yield) with an ADAPTIVE bounded-spin-then-FUTEX_WAIT handshake in __darling_thread_create (keeps the fast-path spin so the common sub-100us checkin is not regressed, but caps CPU so a slow checkin can never monopolise a core). Correctness validated RED->GREEN by tests/regression/thread_create_checkin_wait.c (creator ~1ms CPU vs a core spinning 141-300ms) and futex compiled into both creator+child paths. Live single-storm A/B was within noise (~+3.6% creates/s fixed); a pure-FUTEX variant regressed the fast warm-server case ~25% (p50 16us spin beats a futex round-trip), which is why the adaptive form was chosen. Multistorm aggregate A/B was too noisy on this host (clickhouse contention, baseline alone 5.4k-8.3k/s) to resolve. Wants a second reviewer + a clean-host perf measurement before upstreaming. See dar-dar6x4-perf-5dq.1.
+  tests:
+  - name: thread_create_checkin_wait
+    kind: contract
+    env: host
+    diag: bare
+    red: true
+    runner: script
+    script: tests/regression/run-thread-create-checkin-wait.sh
+    note: Host RED->GREEN model for replacing sched_yield busy-spin with bounded futex wait.
   github:
     fork:
       repo: IlyaGulya/darling
@@ -1244,6 +1271,15 @@ patches:
   bead: dar-dar6x4-perf-5dq.8
   publication-status: blocked
   publication-blocker: runs cheap, non-blocking RPCs INLINE on the darlingserver event loop instead of always handing every message to the worker pool. perf #2a profiling proved ~70% of server CPU under a fork/checkin storm was the main-loop->worker condvar handoff (pthread_cond_signal->futex_wake) for work that is <1% of CPU, which is why enabling the multi-threaded work queue regressed throughput ~32% vs single-threaded (and why upstream left DSERVER_SINGLE_THREADED on). Thread::doWork() never blocks its caller, so inlining is safe in both cases - a blocking call suspends its microthread (setcontext back to the loop) and resumes on the pool. Live A/B (8-proc tcstorm multistorm, DSERVER_SINGLE_THREADED=OFF): inline+MT 4676-7295 checkin/s vs ST baseline ~3830 vs naive-MT ~2594; checkin p99 512us->64us; 99.998% of RPCs handled inline (241 of 11.27M to the pool). Boot + 200x fork/exec/wait correctness verified, server stable across runs. RED->GREEN by tests/server_inline_fastpath.c (gates ctx-switches/item: handoff ~1/item fails, inline ~0/item passes). Stacks on the perf #0 progress-metrics commit (adds inline_handled/queued_to_pool counters). Wants design review (does this make the worker pool default-on? interaction with the DSERVER_SINGLE_THREADED flag) + a clean-host perf measurement before upstreaming. See dar-dar6x4-perf-5dq.8.
+  tests:
+  - name: server_inline_fastpath
+    kind: contract
+    env: host
+    diag: bare
+    red: true
+    runner: script
+    script: tests/run-server-inline-fastpath.sh
+    note: Host RED->GREEN model for avoiding per-message worker handoff on cheap RPCs.
   github:
     fork:
       repo: IlyaGulya/darling

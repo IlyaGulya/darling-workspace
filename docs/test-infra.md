@@ -59,12 +59,39 @@ and future destination, not a local blocker.
     env: host             # host|darling|macos
     diag: bare            # bare|guarded|forensic
     red: true             # this proves RED->GREEN for the fix
-    command: west darling-build --force --skip-doctor --targets example_contract_run
+    runner: script
+    script: tests/run-example-contract.sh
     note: Fails on the parent commit, passes with this patch.
 ```
 
-Use `ctest-label` instead of `command` once the test is discoverable through the
-CTest registry:
+Use structured runners for common cases:
+
+```yaml
+  - name: dserver_stack_pool_tests_run
+    kind: contract
+    env: host
+    diag: bare
+    red: true
+    runner: west-build
+    target: dserver_stack_pool_tests_run
+```
+
+Script tests may declare arguments and environment without dropping to a shell:
+
+```yaml
+  - name: a0_gate_full_strict
+    kind: guest
+    env: darling
+    diag: guarded
+    red: true
+    runner: script
+    script: tests/a0-repro/a0-gate.sh
+    args: [full]
+    env-vars:
+      A0_STRICT: '1'
+```
+
+Use `ctest-label` once the test is discoverable through the CTest registry:
 
 ```yaml
   - name: wait4_guest_contract
@@ -74,6 +101,10 @@ CTest registry:
     red: true
     ctest-label: bead:dar-example
 ```
+
+`command:` is intentionally an override for corner cases only. Prefer
+`runner/script`, `runner/target`, or `ctest-label` so `west test` owns how tests
+are launched, filtered, deduplicated, and eventually wrapped by diagnostics.
 
 If a non-documentation patch truly cannot carry a committed red test, record an
 explicit exception:
