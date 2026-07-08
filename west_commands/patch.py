@@ -595,11 +595,19 @@ class DarlingPatch(WestCommand):
                     f"({len(behavioral)} behavioral test(s); {tier_summary}{suffix})"
                 )
             elif tests:
-                missing.append(patch)
-                self.inf(
-                    f"SOURCE    {patch['path']} ({len(tests)} source-contract(s); "
-                    f"missing behavioral test)  [{patch.get('bead', '-')}]"
-                )
+                if exception:
+                    excepted += 1
+                    reason = exception.get("reason", "-")
+                    self.inf(
+                        f"EXCEPTION {patch['path']} ({reason}; "
+                        f"{len(tests)} source-contract(s))"
+                    )
+                else:
+                    missing.append(patch)
+                    self.inf(
+                        f"SOURCE    {patch['path']} ({len(tests)} source-contract(s); "
+                        f"missing behavioral test)  [{patch.get('bead', '-')}]"
+                    )
             elif exception:
                 excepted += 1
                 reason = exception.get("reason", "-")

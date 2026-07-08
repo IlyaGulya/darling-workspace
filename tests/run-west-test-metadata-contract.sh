@@ -35,6 +35,19 @@ patches:
       source-env: DARLING_SRC_ROOT
     runner: python
     script: tests/source_only_contract.py
+- path: test/source-only-exception.patch
+  module: darling
+  tests:
+  - name: source_only_exception_contract
+    kind: source-contract
+    coverage-tier: source
+    env: host
+    diag: bare
+    runner: python
+    script: tests/source_only_contract.py
+  test-exception:
+    reason: blocked-on-runtime-hook
+    note: Metadata-only fixture proving source-contract plus explicit exception is not reported as an unexplained missing behavioral test.
 - path: test/model.patch
   module: darling
   tests:
@@ -270,6 +283,8 @@ printf '%s\n' "$source_only_check" | grep -q 'missing behavioral test' ||
 if printf '%s\n' "$source_only_check" | grep -q 'TESTED    test/source-only.patch'; then
 	fail 'source-contract-only patch was incorrectly counted as TESTED'
 fi
+printf '%s\n' "$source_only_check" | grep -q 'EXCEPTION test/source-only-exception.patch (blocked-on-runtime-hook; 1 source-contract(s))' ||
+	fail 'source-contract exception patch was not reported as an explicit exception'
 printf '%s\n' "$source_only_check" | grep -q 'MODEL     test/model.patch' ||
 	fail 'model-tier patch was not reported as MODEL'
 printf '%s\n' "$source_only_check" | grep -q 'COMPILE   test/c-fixture.patch' ||
@@ -296,7 +311,7 @@ object_symbol_fixture="$(
 printf '%s\n' "$object_symbol_fixture" | grep -q \
 	'cc -c -std=gnu11 -Wall -Wextra -Werror -I tests/fixtures/c-fixture/include -I src tests/c_fixture_helper.c -o <temp>/<variant>.o && nm -u <temp>/<variant>.o && nm -g <temp>/<variant>.o' ||
 	fail 'object-symbol-fixture metadata did not resolve to a compile-and-nm command'
-printf '%s\n' "$source_only_check" | grep -q 'test metadata: 9 covered (runtime 1, compile 3, host 4, model 1)' ||
+printf '%s\n' "$source_only_check" | grep -q 'test metadata: 9 covered (runtime 1, compile 3, host 4, model 1), 1 exceptions, 1 missing' ||
 	fail 'coverage-tier summary did not classify runtime/host/compile/model coverage'
 
 invalid_guest_red_check="$(west patch check --profile __metadata_invalid_contract 2>&1)"
