@@ -66,28 +66,37 @@ patches:
       base: main
       state: local
 - path: darlingserver/fork-checkin-bound.patch
-  sha256sum: 2bc0e01797b747dff191e11677c0ef883b2defc43c0998caaabc5c7a1077e033
+  sha256sum: 63297ef1c85843a94c5529685dd534c5042430ec260d8690287a317e2ffdf25f
   module: darling/src/external/darlingserver
   source-branch: fix/fork-checkin-bound
-  source-commit: 8746148c12bda639054f15b0510e1578a11034df
+  source-commit: f00bc66c395f2c601c17376b9b64970fba675116
   bead: dar-q95.13
   publication-status: blocked
   publication-blocker: timeout is a defensive bound, not a fork lifecycle fix; see dar-q95.29.7
   tests:
-  - name: fork_checkin_bound_model
+  - name: fork_checkin_bound_contract
     kind: contract
-    coverage-tier: model
+    coverage-tier: compile
     env: host
     diag: bare
     red: true
     red-proof:
-      mode: self
-      why-self: The model drives missing-child-checkin wait behavior through old unbounded and fixed timeout semantics.
-    runner: python
+      mode: source-base
+      source-env: DSERVER_SRC_ROOT
+    runner: c-fixture
     repo: darling-workspace
-    script: tests/darlingserver_behavior_models.py
-    args: [fork-checkin-bound]
-    note: Host behavioral model; old wait blocks forever, fixed wait returns ETIMEDOUT while preserving successful checkin.
+    script: tests/fork_checkin_bound_contract.cpp
+    cc: c++
+    include-dirs:
+    - internal-include
+    stub-headers:
+    - darlingserver/duct-tape.h
+    compile-flags:
+    - -std=c++17
+    - -Wall
+    - -Wextra
+    - -Werror
+    note: Compile contract for the production fork-checkin wait helper; old source has no bounded outcome helper, fixed source maps semaphore timeout/interrupt/error explicitly and uses the intended 30s default.
   pr-draft: pr-drafts/darlingserver-fork-checkin-bound.md
   github:
     fork:
@@ -99,28 +108,37 @@ patches:
       base: main
       state: local
 - path: darlingserver/fork-checkin-sticky-flag.patch
-  sha256sum: fcd2d4bb3422950ade6fc244472af789f4b16ec05eceeebfc34bf93c6b2f09cf
+  sha256sum: 94a395a258d969ac928ad57659fc89954e390cffa99c00b2092a4ef18cc6215c
   module: darling/src/external/darlingserver
   source-branch: fix/fork-checkin-sticky-flag
-  source-commit: eb7e93b706d16c85fb50cf60c054ce3c2fac075b
+  source-commit: 04ae50129488b1d1943461e571f68b1939be1ecc
   bead: dar-gwn.6.5
   publication-status: blocked
   publication-blocker: needs review of the sticky-flag vs the underlying duct-tape sigexc-forced-clear_wait semaphore handoff/abort race; the real defect is that a signal-aborted semaphore wait loses a handed-off up(). The sticky flag is a correct, minimal fix at the fork-checkin layer but a broader duct-tape fix may be preferable upstream. Validated locally (RED->GREEN forkstorm2 + brew libunistring past the make stall).
   tests:
-  - name: fork_checkin_sticky_flag_model
+  - name: fork_checkin_sticky_flag_contract
     kind: contract
-    coverage-tier: model
+    coverage-tier: compile
     env: host
     diag: bare
     red: true
     red-proof:
-      mode: self
-      why-self: The model drives the lost semaphore handoff/retry behavior through old and sticky-flag semantics.
-    runner: python
+      mode: source-base
+      source-env: DSERVER_SRC_ROOT
+    runner: c-fixture
     repo: darling-workspace
-    script: tests/darlingserver_behavior_models.py
-    args: [fork-checkin-sticky-flag]
-    note: Host behavioral model; old retry starves after a lost wake, fixed retry observes the sticky child-checkin flag.
+    script: tests/fork_checkin_sticky_contract.cpp
+    cc: c++
+    include-dirs:
+    - internal-include
+    stub-headers:
+    - darlingserver/duct-tape.h
+    compile-flags:
+    - -std=c++17
+    - -Wall
+    - -Wextra
+    - -Werror
+    note: Compile contract for the production fork-checkin sticky state helper; old source loses checkins across interrupted/timed-out waits, fixed source consumes sticky checkins exactly once.
   pr-draft: pr-drafts/darlingserver-fork-checkin-sticky-flag.md
   github:
     fork:
@@ -2097,14 +2115,14 @@ patches:
       base: master
       state: local
 - path: darlingserver/checkin-rwlock-across-suspend.patch
-  sha256sum: 0dffea8157ca35a216b61529141023590485dc4e0f732b6be8756a87e4647209
+  sha256sum: 070c56ae4c246b8597eca79b9a93aaeb6003441b9d94abf18ba3d1b2d1c9a479
   module: darling/src/external/darlingserver
   source-branch: fix/checkin-rwlock-across-suspend
-  source-base: 6144a4bb6b1182e635fb88dd737cd11fd71e6189
-  source-commit: 5e5d688886589025929d246e51ca349aa18b1cbb
+  source-base: 04ae50129488b1d1943461e571f68b1939be1ecc
+  source-commit: b6d1c6d496d37226b2563ea9a0109e3e50eddb34
   bead: dar-6x4
   publication-status: blocked
-  publication-blocker: fixes a real darlingserver DEADLOCK (not slowness) under fork+exec storms (make -jN, libunistring/gettext builds) that intermittently wedges the server - rpcs_serviced goes flat, every guest hangs in recvmsg, no recovery. Root cause pinned live with gdb (__cur_writer == MAIN thread tid, the single worker blocked in pthread_rwlock_rdlock with __readers WRLOCKED|WRPHASE) - notifyCheckin() exec branch held the per-process std--shared_mutex _rwlock across the suspending dtape_task_create / dtape_thread_create / dtape_semaphore_* calls. _rwlock ownership is per-OS-thread, but perf #2b (server-inline-fastpath) runs cheap RPCs INLINE on the MAIN event-loop thread while a suspended microthread resumes on the WORKER; an exec checkin running inline on MAIN then strands the write lock owned by MAIN, and a sibling fork-checkin on the single worker blocks forever in _notifyListeningKqchannels() reading the same process lock - the only thread that could resume the holder. Pre-#2b this could not happen (all microthreads ran on the one worker; lock acquired+released on the same OS thread), so this is a latent hazard that perf #2b activated. Fix drops _rwlock around the dtape work and re-acquires it to publish the new task/thread/semaphore handles, mirroring the pattern the thread-clear loop just above already uses around the blocking notifyDead(). A/B under heavy fork+exec load - pristine inline-on WEDGED on attempt 1; forcing all calls to the worker pool (no inline) 20/20 builds clean; this fix with inline ON 20/20 builds clean. fork/exec/wait/exit-code correctness verified (HELLO_EXEC_OK, child fork chain, rc 7 propagation). RED-to-GREEN by tests/inline_suspend_rwlock_deadlock.c (a process rwlock held by one OS thread across a microthread suspension while another OS thread reads it - RED arm deadlocks via watchdog/exit 1, GREEN arm releases-before-suspend and passes; HOST test under 5s). Stacks on fix/server-inline-fastpath (source-base is its source-commit 6144a4bb). Wants design review of the broader invariant (audit that no other Process _rwlock write region can suspend) before upstreaming. See dar-6x4 and epic dar-dar6x4-perf-5dq.
+  publication-blocker: fixes a real darlingserver DEADLOCK (not slowness) under fork+exec storms (make -jN, libunistring/gettext builds) that intermittently wedges the server - rpcs_serviced goes flat, every guest hangs in recvmsg, no recovery. Root cause pinned live with gdb (__cur_writer == MAIN thread tid, the single worker blocked in pthread_rwlock_rdlock with __readers WRLOCKED|WRPHASE) - notifyCheckin() exec branch held the per-process std--shared_mutex _rwlock across the suspending dtape_task_create / dtape_thread_create / dtape_semaphore_* calls. _rwlock ownership is per-OS-thread, but perf #2b (server-inline-fastpath) runs cheap RPCs INLINE on the MAIN event-loop thread while a suspended microthread resumes on the WORKER; an exec checkin running inline on MAIN then strands the write lock owned by MAIN, and a sibling fork-checkin on the single worker blocks forever in _notifyListeningKqchannels() reading the same process lock - the only thread that could resume the holder. Pre-#2b this could not happen (all microthreads ran on the one worker; lock acquired+released on the same OS thread), so this is a latent hazard that perf #2b activated. Fix drops _rwlock around the dtape work and re-acquires it to publish the new task/thread/semaphore handles, mirroring the pattern the thread-clear loop just above already uses around the blocking notifyDead(). A/B under heavy fork+exec load - pristine inline-on WEDGED on attempt 1; forcing all calls to the worker pool (no inline) 20/20 builds clean; this fix with inline ON 20/20 builds clean. fork/exec/wait/exit-code correctness verified (HELLO_EXEC_OK, child fork chain, rc 7 propagation). RED-to-GREEN by tests/inline_suspend_rwlock_deadlock.c (a process rwlock held by one OS thread across a microthread suspension while another OS thread reads it - RED arm deadlocks via watchdog/exit 1, GREEN arm releases-before-suspend and passes; HOST test under 5s). Rebased over the fork-checkin helper/sticky split so the exec replacement path resets ForkCheckinState instead of the old raw atomic flag. Wants design review of the broader invariant (audit that no other Process _rwlock write region can suspend) before upstreaming. See dar-6x4 and epic dar-dar6x4-perf-5dq.
   tests:
   - name: inline_suspend_rwlock_deadlock
     kind: contract
