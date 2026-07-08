@@ -1,4 +1,4 @@
-From 82bee19a03e33fa3aea286c6cfaff090ea0b483e Mon Sep 17 00:00:00 2001
+From 9ef96df95ff182283d1fc0cc9cb9faa7637e7d23 Mon Sep 17 00:00:00 2001
 From: Ilya Gulya <ilya@gulya.me>
 Date: Wed, 8 Jul 2026 08:47:47 +0000
 Subject: [PATCH] libsystem_kernel: route psynch wait errors through cerror
@@ -10,8 +10,8 @@ Subject: [PATCH] libsystem_kernel: route psynch wait errors through cerror
  .../bsd/impl/psynch/psynch_rw_rdlock.c        |  5 +-
  .../bsd/impl/psynch/psynch_rw_wrlock.c        |  5 +-
  .../tests/psynch_return_contract_test.c       | 56 +++++++++++++++++++
- .../tests/run-psynch-return-contract.sh       | 11 ++++
- 7 files changed, 107 insertions(+), 8 deletions(-)
+ .../tests/run-psynch-return-contract.sh       | 12 ++++
+ 7 files changed, 108 insertions(+), 8 deletions(-)
  create mode 100644 darling/src/libsystem_kernel/emulation/include/xnu_syscall/bsd/impl/psynch/psynch_return.h
  create mode 100644 darling/src/libsystem_kernel/tests/psynch_return_contract_test.c
  create mode 100755 darling/src/libsystem_kernel/tests/run-psynch-return-contract.sh
@@ -210,15 +210,16 @@ index 0000000000000000000000000000000000000000..9adb9f7cb4bf47132c35aacb4b5a2793
 +}
 diff --git a/darling/src/libsystem_kernel/tests/run-psynch-return-contract.sh b/darling/src/libsystem_kernel/tests/run-psynch-return-contract.sh
 new file mode 100755
-index 0000000000000000000000000000000000000000..45feb4d8e7e17eb5eb9b23159e359367167fbf23
+index 0000000000000000000000000000000000000000..24c08e870a2c6c512454fa756ba872b515a049fd
 --- /dev/null
 +++ b/darling/src/libsystem_kernel/tests/run-psynch-return-contract.sh
-@@ -0,0 +1,11 @@
+@@ -0,0 +1,12 @@
 +#!/usr/bin/env bash
 +set -euo pipefail
 +
-+root="${XNU_SRC_ROOT:-$(git rev-parse --show-toplevel)}"
-+src="$root/darling/src/libsystem_kernel/tests/psynch_return_contract_test.c"
++here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
++root="${XNU_SRC_ROOT:-$(git -C "$here" rev-parse --show-toplevel)}"
++src="$here/psynch_return_contract_test.c"
 +include="$root/darling/src/libsystem_kernel/emulation/include"
 +out="$(mktemp /tmp/psynch-return-contract.XXXXXX)"
 +trap 'rm -f "$out"' EXIT

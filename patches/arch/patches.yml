@@ -15,7 +15,6 @@ patches:
     kind: build
     env: host
     diag: bare
-    red: true
     runner: west-build
     target: src/external/dyld/dyld
     requires-profile: arch
@@ -34,7 +33,6 @@ patches:
     kind: contract
     env: host
     diag: bare
-    red: true
     runner: script
     repo: darling-src-external-darlingserver
     script: tests/ring_committed_unknown_contract_test.sh
@@ -53,7 +51,6 @@ patches:
     kind: contract
     env: host
     diag: bare
-    red: true
     runner: script
     script: darling/src/libsystem_kernel/tests/rpc_disconnect_status_contract_test.sh
     note: Follow-up same-profile test patch; fails before disconnect status classification exists.
@@ -71,7 +68,6 @@ patches:
     kind: contract
     env: host
     diag: bare
-    red: true
     runner: script
     script: darling/src/libsystem_kernel/tests/rpc_disconnect_status_contract_test.sh
     note: Test patch that pins RPC disconnect status classification.
@@ -89,7 +85,6 @@ patches:
     kind: guest
     env: darling
     diag: guarded
-    red: true
     runner: script
     script: tests/a0-repro/a0-gate.sh
     args:
@@ -145,7 +140,6 @@ patches:
     kind: contract
     env: host
     diag: bare
-    red: true
     runner: script
     script: tests/ring_committed_unknown_contract_test.sh
     note: Static contract gate for no UDS retry after a ring operation is committed/unknown.
@@ -163,7 +157,6 @@ patches:
     kind: contract
     env: host
     diag: bare
-    red: true
     runner: script
     script: tests/duct_tape_fail_closed_stubs_test.sh
     note: Static contract gate for reachable duct-tape stubs failing closed instead of aborting the server.
@@ -181,7 +174,6 @@ patches:
     kind: contract
     env: host
     diag: bare
-    red: true
     runner: script
     script: tests/rpc_serial_contract_test.sh
     note: Static contract gate for packed call serial/correlation in UDS replies.
@@ -211,7 +203,6 @@ patches:
     kind: contract
     env: host
     diag: bare
-    red: true
     runner: script
     script: tests/rpc_disconnect_send_contract_test.sh
     note: Follow-up same-profile test patch; fails before disconnect sends are mapped to EINTR.
@@ -229,7 +220,6 @@ patches:
     kind: contract
     env: host
     diag: bare
-    red: true
     runner: west-build
     target: dserver_stack_pool_tests_run
     note: Fails on the pre-fix parent because StackPool::free(empty) accepts an invalid handle; passes with the fix.
@@ -259,7 +249,6 @@ patches:
     kind: contract
     env: host
     diag: bare
-    red: true
     runner: script
     script: tests/standard_signal_coalescing_contract_test.sh
     note: Pins standard signal coalescing contract.
@@ -267,7 +256,6 @@ patches:
     kind: contract
     env: host
     diag: bare
-    red: true
     runner: script
     script: tests/rpc_disconnect_send_contract_test.sh
     note: Pins RPC disconnect send-to-EINTR contract.
