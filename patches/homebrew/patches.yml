@@ -473,10 +473,10 @@ patches:
       base: main
       state: local
 - path: darlingserver/processcall-exception-guard.patch
-  sha256sum: ed5884e70b296f1d12ac889b3f3358692987d49c7391eff3eccb37546d0dc357
+  sha256sum: efd783f594c0c0449db34cdf19ea17f7552e6582927973f89293430febfe6ed9
   module: darling/src/external/darlingserver
   source-branch: fix/processcall-exception-guard
-  source-commit: a52a15e2412cda068548e40047d8a3b18d3dba0b
+  source-commit: 8a2c9c5994e65ea2101d7c821355e1a05ad55fc4
   bead: dar-gwn.1.5
   publication-status: blocked
   publication-blocker: |-
@@ -493,20 +493,27 @@ patches:
     separately caught firing in a controlled boot; justification rests on the one before/after
     plus static proof this is the only uncaught throw site on the event-loop path.
   tests:
-  - name: processcall_exception_guard_model
+  - name: processcall_exception_guard_contract
     kind: contract
-    coverage-tier: model
+    coverage-tier: compile
     env: host
     diag: bare
     red: true
     red-proof:
-      mode: self
-      why-self: The model drives throwing processCall/message-dispatch behavior through old uncaught and fixed guarded semantics.
-    runner: python
+      mode: source-base
+      source-env: DSERVER_SRC_ROOT
+    runner: c-fixture
     repo: darling-workspace
-    script: tests/darlingserver_behavior_models.py
-    args: [processcall-exception-guard]
-    note: Host behavioral model; old uncaught exception terminates the server, fixed guard keeps server alive and sends an error reply.
+    script: tests/processcall_guard_contract.cpp
+    cc: c++
+    include-dirs:
+    - internal-include
+    compile-flags:
+    - -std=c++17
+    - -Wall
+    - -Wextra
+    - -Werror
+    note: Compile contract for the production processCall exception guard; old source has no guard contract, fixed source contains exceptions and maps them to reply codes.
   pr-draft: pr-drafts/darlingserver-processcall-exception-guard.md
   github:
     fork:
@@ -2065,11 +2072,11 @@ patches:
       base: main
       state: local
 - path: darlingserver/progress-metrics.patch
-  sha256sum: 12532bb36f25075564fee77c81e64ea0d2b0fa8885e44af6f8897b4b55498a94
+  sha256sum: c9bb079aabca7ce0c0777938e2cb803b3e889bf2dfa95b376accdb9df3e7441e
   module: darling/src/external/darlingserver
   source-branch: fix/darlingserver-progress-metrics
-  source-base: b0f99486a2d9a3989e6d24252f34221c053eae1a
-  source-commit: 33c02576b7ebae4b806498cd32060cf1f2c54fb3
+  source-base: f4c74e1286ade91761bb7cbedd46ce515c7e2ad9
+  source-commit: 5e43b68e43461d5fe12aa9d9f223c30ef162b9f6
   bead: dar-dar6x4-perf-5dq.6
   publication-status: blocked
   publication-blocker: new observability surface (abstract stat socket + JSON metrics) added for the dar-6x4 perf epic; reachable host-side because the net namespace is shared while mnt is not. Validated live (darling-stat snapshot + darling-progress-watch reports PROGRESSING under a fork-heavy workload) and RED->GREEN by tests/metrics_histogram_test.cpp + tests/progress_classifier_test.py, but wants design review of the socket surface before upstreaming. See dar-dar6x4-perf-5dq.6.
