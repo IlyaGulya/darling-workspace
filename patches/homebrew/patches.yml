@@ -1317,7 +1317,19 @@ patches:
     runner: script
     repo: darling-workspace
     script: tests/vchroot_pathnull_guard_contract.sh
-    note: Host RED->GREEN contract that every vchroot path syscall touched by the patch returns EFAULT for NULL before strcpy, vchroot_expand, or Linux syscall fallback.
+    note: Host RED->GREEN contract that active vchroot path syscalls touched by the patch return EFAULT for NULL before strcpy, vchroot_expand, or Linux syscall fallback; fchownat/lchown are tracked separately in dar-gyvb because their active implementation is a disabled success stub.
+  - name: vchroot_pathnull_guard_guest
+    kind: guest
+    env: darling
+    diag: guarded
+    runner: guest-c-fixture
+    repo: darling-workspace
+    script: tests/vchroot_pathnull_guard_guest.c
+    ok-marker: VCHROOT_PATHNULL_GUARD_GUEST_OK
+    timeout-seconds: 30
+    requires:
+    - darling-prefix
+    note: Guest runtime gate that active NULL path inputs return EFAULT through Darling instead of crashing in vchroot path expansion; fchownat/lchown disabled-stub semantics are tracked in dar-gyvb.
   pr-draft: pr-drafts/xnu-vchroot-pathnull-guard.md
   github:
     fork:
