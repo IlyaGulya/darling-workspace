@@ -58,12 +58,17 @@ refs, PR drafts, and agent handoff.
 - Do not close patch coverage with source matching. Tests that grep, parse, or
   assert that specific code text exists are audit checks only; they must not be
   counted as the patch's behavioral test and must not be recorded as `kind:
-  contract` to make `west patch check` show TESTED. A patch is covered only by
+  contract` or any non-source `coverage-tier` to make `west patch check` show
+  HOST/MODEL/COMPILE/RUNTIME coverage. A patch is covered only by
   a test that executes behavior: guest/runtime test, C/host fixture, model test
   that drives the state machine, generator test that runs the generator and
   validates generated behavior, or a build/compile/link test that exercises the
   changed build contract. If behavior cannot yet be executed, leave the patch
   MISSING/SOURCE and create a task instead of faking coverage.
+- Classify patch test evidence with `coverage-tier`: `runtime`, `compile`,
+  `host`, `model`, or `source`. Any old-vs-fixed model must be explicit
+  `coverage-tier: model`; source/text audits must be `coverage-tier: source`
+  and must not be counted as behavioral coverage.
 - Prefer shared test helpers over ad hoc shell boilerplate. Static contract
   scripts should use a local `contract-test-lib.sh`; Darling guest C verdict
   tests should use a local `guest-verdict-test-lib.sh` and declare runtime

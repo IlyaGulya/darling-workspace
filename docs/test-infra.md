@@ -56,6 +56,7 @@ and future destination, not a local blocker.
   tests:
   - name: example_contract
     kind: contract        # unit|contract|guest|package|fuzz|stress|build|gate
+    coverage-tier: host   # runtime|compile|host|model|source
     env: host             # host|darling|macos
     diag: bare            # bare|guarded|forensic
     red: true             # this proves RED->GREEN for the fix
@@ -66,6 +67,25 @@ and future destination, not a local blocker.
     script: tests/run-example-contract.sh
     note: Fails on the parent commit, passes with this patch.
 ```
+
+`coverage-tier` classifies the strength of evidence independently from `kind`:
+
+- `runtime`: runs the real guest/runtime path (`env: darling`/`macos`, guest
+  harnesses, package/runtime reproducers). This is the strongest publication
+  evidence.
+- `compile`: compiles, links, or builds a focused fixture/target that exercises
+  the changed contract (`runner: c-fixture`, `runner: west-build`, build gates).
+- `host`: executes a host-side behavioral contract script against real commands,
+  generated outputs, or test assets, but not the full guest runtime.
+- `model`: executes an explicit old-vs-fixed behavioral/state-machine model. It
+  is a valid RED oracle when runtime reproduction is not stable or cheap yet,
+  but it is weaker than runtime/compile evidence and should be visible as such.
+- `source`: source/text audit only. It is not behavioral coverage and must use
+  `kind: source-contract`.
+
+If `coverage-tier` is omitted, `west patch check` derives a conservative tier
+from `kind`, `env`, and `runner`. New metadata should set it explicitly whenever
+the distinction matters, especially for `model`.
 
 `red: true` does **not** mean the test should fail on the latest checkout.
 Normal `west test --profile ...` runs are regression runs and must pass on the
@@ -98,6 +118,7 @@ Source/text checks are allowed only as auxiliary drift guards:
 ```yaml
   - name: example_source_contract
     kind: source-contract
+    coverage-tier: source
     env: host
     diag: bare
     red: true
