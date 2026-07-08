@@ -1,17 +1,20 @@
-From 7b38ce973d87e66d0087a11e43d669e379bffd1b Mon Sep 17 00:00:00 2001
+From c7d851d90e13eb49ce484fd94679462a5345548c Mon Sep 17 00:00:00 2001
 From: Ilya Gulya <ilya@gulya.me>
-Date: Wed, 8 Jul 2026 11:30:27 +0000
+Date: Wed, 8 Jul 2026 11:47:25 +0000
 Subject: [PATCH] select/pselect: convert fd_set between BSD and Linux word
  sizes
 
+BSD fd_set uses 32-bit words while Linux uses native unsigned long words. Convert read/write/except sets on the syscall boundary so descriptors above 31 are preserved correctly.
+
+Add a host C fixture that exercises high-fd round trips through the shared helper. west test runs it as a c-fixture and proves RED against the source-base tree.
 ---
- .../src/xnu_syscall/bsd/impl/select/fdset.h   | 64 +++++++++++++
- .../src/xnu_syscall/bsd/impl/select/pselect.c | 17 +++-
- .../src/xnu_syscall/bsd/impl/select/select.c  | 19 +++-
- tests/select_fdset_contract.py                | 95 +++++++++++++++++++
- 4 files changed, 192 insertions(+), 3 deletions(-)
+ .../src/xnu_syscall/bsd/impl/select/fdset.h   | 64 +++++++++++++++++++
+ .../src/xnu_syscall/bsd/impl/select/pselect.c | 17 ++++-
+ .../src/xnu_syscall/bsd/impl/select/select.c  | 19 +++++-
+ tests/select_fdset_contract.c                 | 53 +++++++++++++++
+ 4 files changed, 150 insertions(+), 3 deletions(-)
  create mode 100644 darling/src/libsystem_kernel/emulation/src/xnu_syscall/bsd/impl/select/fdset.h
- create mode 100755 tests/select_fdset_contract.py
+ create mode 100644 tests/select_fdset_contract.c
 
 diff --git a/darling/src/libsystem_kernel/emulation/src/xnu_syscall/bsd/impl/select/fdset.h b/darling/src/libsystem_kernel/emulation/src/xnu_syscall/bsd/impl/select/fdset.h
 new file mode 100644
@@ -181,41 +184,30 @@ index c3c33f9485d76479422d4ed947543443bce9351d..2e13fe59d7f000d57954c2c654096c2d
  
  		return ret;
  	#else
-diff --git a/tests/select_fdset_contract.py b/tests/select_fdset_contract.py
-new file mode 100755
-index 0000000000000000000000000000000000000000..c6d3c9155cf35bf87d3ffaf4e9c578dd31696932
+diff --git a/tests/select_fdset_contract.c b/tests/select_fdset_contract.c
+new file mode 100644
+index 0000000000000000000000000000000000000000..d4bb2a162a1193cf5c0a431315559fed449ad452
 --- /dev/null
-+++ b/tests/select_fdset_contract.py
-@@ -0,0 +1,95 @@
-+#!/usr/bin/env python3
-+from __future__ import annotations
-+
-+import os
-+import subprocess
-+import tempfile
-+from pathlib import Path
-+
-+
-+ROOT = Path(os.environ.get("XNU_SRC_ROOT", Path.cwd())).resolve()
-+HEADER = ROOT / "darling/src/libsystem_kernel/emulation/src/xnu_syscall/bsd/impl/select/fdset.h"
-+
-+
-+SOURCE = r"""
++++ b/tests/select_fdset_contract.c
+@@ -0,0 +1,53 @@
 +#include <stdint.h>
 +#include <stdio.h>
 +#include <string.h>
 +
 +#include "fdset.h"
 +
-+static int expect(int condition, const char* message) {
-+	if (!condition) {
++static int expect(int condition, const char* message)
++{
++	if (!condition)
++	{
 +		fprintf(stderr, "%s\n", message);
 +		return 1;
 +	}
 +	return 0;
 +}
 +
-+int main(void) {
++int main(void)
++{
 +	enum { NFDS = 96 };
 +	uint32_t bsd[bsd_fdset_words(NFDS)];
 +	unsigned long linux_words[linux_fdset_words(NFDS)];
@@ -240,8 +232,10 @@ index 0000000000000000000000000000000000000000..c6d3c9155cf35bf87d3ffaf4e9c578dd
 +	if (expect(!linux_fdset_isset(linux_words, 65), "spurious fd 65 in BSD->Linux")) return 1;
 +
 +	linux_fdset_to_bsd(NFDS, linux_words, roundtrip);
-+	for (int fd = 0; fd < NFDS; fd++) {
-+		if (bsd_fdset_isset(bsd, fd) != bsd_fdset_isset(roundtrip, fd)) {
++	for (int fd = 0; fd < NFDS; fd++)
++	{
++		if (bsd_fdset_isset(bsd, fd) != bsd_fdset_isset(roundtrip, fd))
++		{
 +			fprintf(stderr, "roundtrip mismatch at fd %d\n", fd);
 +			return 1;
 +		}
@@ -249,36 +243,3 @@ index 0000000000000000000000000000000000000000..c6d3c9155cf35bf87d3ffaf4e9c578dd
 +
 +	return 0;
 +}
-+"""
-+
-+
-+def main() -> int:
-+	if not HEADER.is_file():
-+		print(f"missing fdset helper header: {HEADER}", flush=True)
-+		return 1
-+	with tempfile.TemporaryDirectory(prefix="select-fdset-contract-") as temp:
-+		tempdir = Path(temp)
-+		source = tempdir / "select_fdset_contract.c"
-+		binary = tempdir / "select_fdset_contract"
-+		source.write_text(SOURCE)
-+		subprocess.run(
-+			[
-+				"cc",
-+				"-std=c11",
-+				"-Wall",
-+				"-Wextra",
-+				"-Werror",
-+				"-I",
-+				str(HEADER.parent),
-+				str(source),
-+				"-o",
-+				str(binary),
-+			],
-+			check=True,
-+		)
-+		subprocess.run([str(binary)], check=True)
-+	return 0
-+
-+
-+if __name__ == "__main__":
-+	raise SystemExit(main())

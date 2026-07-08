@@ -117,10 +117,10 @@ patches:
       base: main
       state: local
 - path: xnu/select-pselect-fdset.patch
-  sha256sum: a70bb4d6ca4a18546b40cf6478e992a91477b9c243966b6725873ad9f9049901
+  sha256sum: 6cee76ab959ae29d5dcbcb2b4e3396c2f773fc5c9e0e363bd27f12be924970f6
   module: darling/src/external/xnu
   source-branch: fix/select-pselect-fdset
-  source-commit: 7b38ce973d87e66d0087a11e43d669e379bffd1b
+  source-commit: c7d851d90e13eb49ce484fd94679462a5345548c
   bead: dar-q95.3
   publication-status: blocked
   publication-blocker: unbounded nfds drives stack allocation and fd_set access; see dar-q95.29.3
@@ -133,8 +133,11 @@ patches:
     red-proof:
       mode: source-base
       source-env: XNU_SRC_ROOT
-    runner: python
-    script: tests/select_fdset_contract.py
+    runner: c-fixture
+    script: tests/select_fdset_contract.c
+    include-dirs:
+    - darling/src/libsystem_kernel/emulation/src/xnu_syscall/bsd/impl/select
+    compile-flags: [-std=gnu11, -Wall, -Wextra, -Werror]
     note: Host unit RED->GREEN contract for BSD/Linux fd_set word-size conversion above 32 fds.
   pr-draft: pr-drafts/xnu-select-pselect-fdset.md
   github:
@@ -147,26 +150,31 @@ patches:
       base: main
       state: local
 - path: xnu/darwin-priority.patch
-  sha256sum: 8b08ec84b0084bca458829b114898291b56726b569dc43c51d53bff55c37b21c
+  sha256sum: c7d3d8e43cd26e17259290ba22a6fe9e956411e64fa87c8a7a1fe008c7259685
   module: darling/src/external/xnu
   source-branch: fix/darwin-priority
-  source-commit: ec55325e53dbf3b2593d73428a5d7a90ccb95fca
+  source-commit: ccf4c98e0749805ffb864e9e28682ecb91d20be2
   bead: dar-q95.10
   publication-status: blocked
   publication-blocker: success-returning priority no-op has no Darwin semantics; see dar-q95.29.4
   tests:
-  - name: darwin_priority_source_contract
-    kind: source-contract
+  - name: darwin_priority_contract
+    kind: unit
     env: host
     diag: bare
     red: true
     red-proof:
       mode: source-base
       source-env: XNU_SRC_ROOT
-    runner: python
-    script: tests/west_source_contracts.py
-    args: [darwin-priority]
-    note: Source-level RED->GREEN contract for Darwin priority class handling.
+    runner: c-fixture
+    script: tests/darwin_priority_contract.c
+    include-dirs:
+    - darling/src/libsystem_kernel/emulation/src/xnu_syscall/bsd/impl/process
+    stub-headers:
+    - darling/emulation/xnu_syscall/bsd/impl/process/getpriority.h
+    - darling/emulation/xnu_syscall/bsd/impl/process/setpriority.h
+    compile-flags: [-std=gnu11, -Wall, -Wextra, -Werror]
+    note: Host unit RED->GREEN contract for Darwin priority class handling without Linux syscall pass-through.
   pr-draft: pr-drafts/xnu-darwin-priority.md
   github:
     fork:
@@ -178,26 +186,32 @@ patches:
       base: main
       state: local
 - path: xnu/socket-siocgifconf.patch
-  sha256sum: 9304dfc426333b574bd6d7a70a9829871f6e478c858de80ee173debc21a925a7
+  sha256sum: 31ec7e354c7b298c3df3614670031b6ab047dc43eaad87d5bffbd1eec02e5f59
   module: darling/src/external/xnu
   source-branch: fix/socket-siocgifconf
-  source-commit: 2e5539a3c895596b5f4dab7ac3cb924f52a4375b
+  source-commit: c06036cc3d7c4b55966490b594a266148b039245
   bead: dar-q95.11
   publication-status: blocked
   publication-blocker: empty-success SIOCGIFCONF is an explicit compatibility stub; see dar-q95.29.4
   tests:
-  - name: socket_siocgifconf_source_contract
-    kind: source-contract
+  - name: socket_siocgifconf_contract
+    kind: unit
     env: host
     diag: bare
     red: true
     red-proof:
       mode: source-base
       source-env: XNU_SRC_ROOT
-    runner: python
-    script: tests/west_source_contracts.py
-    args: [socket-siocgifconf]
-    note: Source-level RED->GREEN contract for SIOCGIFCONF handling.
+    runner: c-fixture
+    script: tests/socket_siocgifconf_contract.c
+    include-dirs:
+    - darling/src/libsystem_kernel/emulation/src/xnu_syscall/bsd/helper/ioctl
+    stub-headers:
+    - darling/emulation/xnu_syscall/bsd/helper/ioctl/socket.h
+    - sys/sockio.h
+    - netinet6/in6_var.h
+    compile-flags: [-std=gnu11, -Wall, -Wextra, -Werror, -Wno-unused-parameter]
+    note: Host unit RED->GREEN contract for SIOCGIFCONF empty-list behavior and NULL EFAULT handling.
   pr-draft: pr-drafts/xnu-socket-siocgifconf.md
   github:
     fork:
