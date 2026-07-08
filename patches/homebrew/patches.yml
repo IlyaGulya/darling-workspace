@@ -2112,6 +2112,17 @@ patches:
     repo: darling-workspace
     script: tests/abort_with_payload_self_signal_contract.sh
     note: Compiles real sys_abort_with_payload and verifies it re-raises with tgkill(self pid, self tid, SIGABRT) instead of sys_kill(0, SIGABRT) process-group broadcast.
+  - name: abort_with_payload_no_group_broadcast_guest
+    kind: guest
+    env: darling
+    diag: guarded
+    runner: guest-c-fixture
+    script: darling/src/libsystem_kernel/tests/abort_with_payload_no_group_broadcast.c
+    ok-marker: 'GREEN: abort_with_payload stayed local'
+    timeout-seconds: 30
+    requires:
+    - darling-prefix
+    note: Guest runtime gate that abort_with_payload kills only the aborting child and does not broadcast SIGABRT to its process group.
   github:
     fork:
       repo: IlyaGulya/darling-xnu
