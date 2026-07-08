@@ -67,6 +67,11 @@ refs, PR drafts, and agent handoff.
   validates generated behavior, or a build/compile/link test that exercises the
   changed build contract. If behavior cannot yet be executed, leave the patch
   MISSING/SOURCE and create a task instead of faking coverage.
+- Do not run cleanup/leak assertion contracts in parallel with commands that
+  legitimately create temporary worktrees or prefixes, such as
+  `west test --prove-red` or materialized-profile runs. Run those checks
+  sequentially after the creating command exits, otherwise the assertion can
+  report a false leak.
 - Classify patch test evidence with `coverage-tier`: `runtime`, `compile`,
   `host`, `model`, or `source`. Any old-vs-fixed model must be explicit
   `coverage-tier: model`; source/text audits must be `coverage-tier: source`
