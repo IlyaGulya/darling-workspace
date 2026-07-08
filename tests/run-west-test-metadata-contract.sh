@@ -33,6 +33,22 @@ patches:
       source-env: DARLING_SRC_ROOT
     runner: python
     script: tests/source_only_contract.py
+- path: test/c-fixture.patch
+  module: darling
+  tests:
+  - name: c_fixture_contract
+    kind: unit
+    env: host
+    diag: bare
+    red: true
+    red-proof:
+      mode: source-base
+      source-env: DARLING_SRC_ROOT
+    runner: c-fixture
+    script: tests/c_fixture_contract.c
+    include-dirs: [src]
+    stub-headers: [darling/example.h]
+    compile-flags: [-std=gnu11, -Wall, -Wextra, -Werror]
 YAML
 
 fail() {
@@ -136,5 +152,17 @@ printf '%s\n' "$source_only_check" | grep -q 'missing behavioral test' ||
 if printf '%s\n' "$source_only_check" | grep -q 'TESTED    test/source-only.patch'; then
 	fail 'source-contract-only patch was incorrectly counted as TESTED'
 fi
+
+c_fixture="$(
+	west test --profile __metadata_contract \
+		--patch test/c-fixture.patch \
+		--list
+)"
+
+printf '%s\n' "$c_fixture" | grep -q \
+	'cc -std=gnu11 -Wall -Wextra -Werror -I src -I <generated-stubs> tests/c_fixture_contract.c -o' ||
+	fail 'c-fixture metadata did not resolve to a compile-and-run command'
+printf '%s\n' "$source_only_check" | grep -q 'TESTED    test/c-fixture.patch' ||
+	fail 'c-fixture behavioral test was not counted as TESTED'
 
 printf 'PASS west-test-metadata-contract\n'

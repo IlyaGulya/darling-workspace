@@ -632,6 +632,47 @@ class DarlingTest(WestCommand):
                 "name": test.get("name", patch["path"]),
                 "timeout_seconds": int(test.get("timeout-seconds", 600)),
             }
+        if runner == "c-fixture":
+            repo = test.get("repo", patch["module"])
+            script = test["script"]
+            cwd = self._project_path(repo)
+            script_path = cwd / script
+            env = None
+            if test.get("env-vars"):
+                env = os.environ.copy()
+                env.update({str(k): str(v) for k, v in test["env-vars"].items()})
+            proof = test.get("red-proof") if isinstance(test.get("red-proof"), dict) else {}
+            source_env = test.get("source-env") or proof.get("source-env")
+            cc = str(test.get("cc", os.environ.get("CC", "cc")))
+            output = f"<temp>/{Path(script).stem}"
+            display_parts = [quote(cc), *[quote(str(flag)) for flag in test.get("compile-flags", [])]]
+            for include_dir in test.get("include-dirs", []):
+                display_parts.extend(["-I", quote(str(include_dir))])
+            if test.get("stub-headers"):
+                display_parts.extend(["-I", "<generated-stubs>"])
+            display_parts.extend([quote(script), "-o", quote(output)])
+            display = f"cd {quote(repo)} && {' '.join(display_parts)} && {quote(output)}"
+            return {
+                "key": f"c-fixture:{repo}:{script}",
+                "display": display,
+                "cwd": cwd,
+                "script_path": script_path,
+                "args": None,
+                "shell": False,
+                "env": env,
+                "c_fixture": True,
+                "cc": cc,
+                "include_dirs": [str(item) for item in test.get("include-dirs", [])],
+                "stub_headers": [str(item) for item in test.get("stub-headers", [])],
+                "compile_flags": [str(item) for item in test.get("compile-flags", [])],
+                "source_root_env": source_env,
+                "requires_resources": list(test.get("requires", [])),
+                "requires_env": list(test.get("requires-env", [])),
+                "requires_profile": test.get("requires-profile"),
+                "diag": self._resolved_diag(test),
+                "name": test.get("name", patch["path"]),
+                "timeout_seconds": int(test.get("timeout-seconds", 600)),
+            }
 
         self.die(f"{patch['path']}: unsupported test runner {runner!r}")
 
@@ -755,6 +796,8 @@ class DarlingTest(WestCommand):
         return " ".join(quote(str(arg)) for arg in args)
 
     def _run_invocation(self, invocation, env=None) -> int:
+        if invocation.get("c_fixture"):
+            return self._run_c_fixture(invocation, env=env)
         result = subprocess.run(
             self._debug_runner_args(invocation),
             cwd=invocation["cwd"],
@@ -763,6 +806,49 @@ class DarlingTest(WestCommand):
             check=False,
         )
         return result.returncode
+
+    def _run_c_fixture(self, invocation, env=None) -> int:
+        if invocation.get("diag", "bare") != "bare":
+            self.die(f"{invocation['name']}: c-fixture currently supports diag:bare only")
+        run_env = env if env is not None else invocation.get("env")
+        source_root = invocation["cwd"]
+        source_root_env = invocation.get("source_root_env")
+        if source_root_env and run_env and run_env.get(source_root_env):
+            source_root = Path(run_env[source_root_env])
+        with tempfile.TemporaryDirectory(prefix=f"west-c-fixture-{invocation['name']}-") as temp:
+            tempdir = Path(temp)
+            stub_root = tempdir / "include"
+            for header in invocation.get("stub_headers", []):
+                header_path = stub_root / header
+                header_path.parent.mkdir(parents=True, exist_ok=True)
+                header_path.write_text("\n")
+            binary = tempdir / Path(invocation["script_path"]).stem
+            args = [
+                invocation.get("cc", "cc"),
+                *invocation.get("compile_flags", []),
+                "-I",
+                str(stub_root),
+            ]
+            for include_dir in invocation.get("include_dirs", []):
+                include_path = Path(include_dir)
+                if not include_path.is_absolute():
+                    include_path = source_root / include_path
+                args.extend(["-I", str(include_path)])
+            args.extend([str(invocation["script_path"]), "-o", str(binary)])
+            compile_rc = subprocess.run(
+                args,
+                cwd=invocation["cwd"],
+                env=run_env,
+                check=False,
+            ).returncode
+            if compile_rc:
+                return compile_rc
+            return subprocess.run(
+                [str(binary)],
+                cwd=invocation["cwd"],
+                env=run_env,
+                check=False,
+            ).returncode
 
     def _execution_env(self, invocation) -> dict[str, str] | None:
         env = invocation.get("env")

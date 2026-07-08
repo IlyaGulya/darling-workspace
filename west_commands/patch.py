@@ -286,17 +286,23 @@ class DarlingPatch(WestCommand):
                     f"tests[{index}] needs script, target, ctest-label, or command override"
                 )
             runner = test.get("runner")
-            if runner and runner not in {"script", "python", "west-build", "ctest"}:
+            if runner and runner not in {"script", "python", "c-fixture", "west-build", "ctest"}:
                 errors.append(f"tests[{index}] invalid runner {runner!r}")
             if test.get("target") and runner not in {None, "west-build"}:
                 errors.append(f"tests[{index}] target requires runner: west-build")
-            if test.get("script") and runner not in {None, "script", "python"}:
-                errors.append(f"tests[{index}] script requires runner: script or python")
+            if test.get("script") and runner not in {None, "script", "python", "c-fixture"}:
+                errors.append(f"tests[{index}] script requires runner: script, python, or c-fixture")
             if test.get("script"):
                 repo_ref = test.get("repo", patch["module"])
                 repo_path = self._project_path(repo_ref)
                 if repo_path is None:
                     errors.append(f"tests[{index}] unknown test repo {repo_ref!r}")
+            if runner == "c-fixture":
+                if not test.get("script"):
+                    errors.append(f"tests[{index}] c-fixture requires script")
+                for key in ("include-dirs", "stub-headers", "compile-flags"):
+                    if test.get(key) is not None and not isinstance(test.get(key), list):
+                        errors.append(f"tests[{index}] {key} must be a list")
             if test.get("args") is not None and not isinstance(test.get("args"), list):
                 errors.append(f"tests[{index}] args must be a list")
             if test.get("env-vars") is not None and not isinstance(test.get("env-vars"), dict):

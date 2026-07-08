@@ -158,6 +158,32 @@ rather than marked executable:
     script: tests/progress_classifier_test.py
 ```
 
+Use `runner: c-fixture` for small host C fixtures that should be compiled and
+executed directly by `west test`:
+
+```yaml
+  - name: select_fdset_conversion
+    kind: unit
+    env: host
+    diag: bare
+    red: true
+    red-proof:
+      mode: source-base
+      source-env: XNU_SRC_ROOT
+    runner: c-fixture
+    script: tests/select_fdset_contract.c
+    include-dirs:
+    - darling/src/libsystem_kernel/emulation/src/xnu_syscall/bsd/impl/select
+    compile-flags: [-std=gnu11, -Wall, -Wextra, -Werror]
+```
+
+`c-fixture` compiles the fixture from the current test-asset checkout, but
+resolves relative `include-dirs` against the source tree named by
+`red-proof.source-env` during source-base RED proof. This lets the same fixture
+compile against the bad tree for RED and the current materialized profile for
+GREEN. `stub-headers` may list empty generated headers for isolated production
+`.c` unit tests that include project-local headers not needed by the fixture.
+
 Use `requires` for resources that the test framework can provide. Darling
 guest/runtime scripts should declare `requires: [darling-prefix]`; `west test`
 then supplies `DPREFIX` from `--prefix`, `--prefix existing:/path`,
