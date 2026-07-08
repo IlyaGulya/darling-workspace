@@ -2458,9 +2458,19 @@ patches:
     red-proof:
       mode: source-base
       source-env: XNU_SRC_ROOT
-    runner: script
+    runner: c-fixture
     repo: darling-workspace
-    script: tests/fd_guard_ebadf_contract.sh
+    script: tests/fd_guard_ebadf_contract.c
+    source-files:
+    - darling/src/libsystem_kernel/emulation/src/xnu_syscall/bsd/impl/unistd/dup.c
+    - darling/src/libsystem_kernel/emulation/src/xnu_syscall/bsd/impl/unistd/dup2.c
+    - darling/src/libsystem_kernel/emulation/src/xnu_syscall/bsd/impl/fcntl/fcntl.c
+    fixture-include-dirs:
+    - tests/fixtures/fd-guard/include
+    compile-flags:
+    - -std=gnu11
+    - -w
+    - -Ulinux
     note: Host RED->GREEN contract that guarded fd dup, dup2, and fcntl return EBADF instead of aborting or reaching Linux syscall fallback.
   - name: fd_guard_ebadf_guest
     kind: guest
