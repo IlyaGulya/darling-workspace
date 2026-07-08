@@ -61,6 +61,7 @@ and future destination, not a local blocker.
     red: true             # this proves RED->GREEN for the fix
     red-proof:
       mode: self          # self|source-base; normal runs still expect GREEN
+      why-self: The script contains explicit bad and fixed arms.
     runner: script
     script: tests/run-example-contract.sh
     note: Fails on the parent commit, passes with this patch.
@@ -78,9 +79,13 @@ west test --profile homebrew --patch darling/mldr-thread-create-futex-wait.patch
 
 RED proof modes:
 
-- `red-proof: {mode: self}`: the test contains its own bad-path oracle, such as
-  running an old algorithm/model and requiring that it fails before running the
-  fixed path.
+- Every test with `red: true` must have `red-proof`. If a test is only a
+  current-tree regression/acceptance gate, leave `red` unset instead of
+  implying that `west test --prove-red` can prove the old tree fails.
+- `red-proof: {mode: self, why-self: ...}`: the test contains its own
+  bad-path oracle, such as running an old algorithm/model and requiring that it
+  fails before running the fixed path. This is weaker than source-base proof;
+  use it only when the negative case is explicit and self-contained.
 - `red-proof: {mode: source-base, source-env: DSERVER_SRC_ROOT}`: `west test`
   takes the test from the current checkout, creates a temporary worktree at the
   patch's `source-base` (or `source-commit^` when no explicit base is recorded),
@@ -214,18 +219,17 @@ files plus the touched entry's `source-commit` and `sha256sum` fields in
 `patches.yml`; it must not reserialize unrelated entries or rewrite block
 scalars/quoting across the profile.
 
-Some build gates need a consistent patch profile rather than the developer's
-current mixture of fix branches. Mark those with `requires-profile: arch` (or
-another profile name). `west test` will list those tests anywhere, but real
-execution is allowed only when all modules touched by that profile are currently
-on `integration/<profile>`, unless `--materialize-profile` is passed. With that
-flag, `west test` temporarily materializes missing `integration/<profile>`
-branches with `west patch clean --force` + `west patch apply`, switches the
-profile modules to those branches for the selected test, then restores the
-original branches/detached HEADs. This intentionally requires clean worktrees;
-the `darling` superproject may still have submodule-pointer noise, which is
-ignored for the dirty check because those pointers are exactly what profile
-materialization changes.
+Some gates need a consistent patch profile rather than the developer's current
+mixture of fix branches. Mark those with `requires-profile: arch` (or another
+profile name). `west test` will list those tests anywhere, but real execution is
+allowed only when all modules touched by that profile are currently on
+`integration/<profile>`, unless `--materialize-profile` is passed.
+
+With `--materialize-profile`, selected profile metadata tests run from temporary
+detached worktrees built from the West manifest revisions plus the profile's
+patch files. For stacked profiles, base profiles are applied first. The live
+checkout is not switched, and stale `integration/<profile>` branches are not
+trusted for test assets. List mode never materializes worktrees.
 
 ## Problem
 

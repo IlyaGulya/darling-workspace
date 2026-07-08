@@ -323,6 +323,8 @@ class DarlingPatch(WestCommand):
                 test.get("requires-profile"), str
             ):
                 errors.append(f"tests[{index}] requires-profile must be a string")
+            if test.get("red") and test.get("red-proof") is None:
+                errors.append(f"tests[{index}] red test needs red-proof")
             if test.get("red-proof") is not None:
                 proof = test.get("red-proof")
                 if not isinstance(proof, dict):
@@ -334,6 +336,10 @@ class DarlingPatch(WestCommand):
                 elif proof.get("mode") == "source-base" and not proof.get("source-env"):
                     errors.append(
                         f"tests[{index}] red-proof source-base needs source-env"
+                    )
+                elif proof.get("mode") == "self" and not proof.get("why-self"):
+                    errors.append(
+                        f"tests[{index}] red-proof self needs why-self"
                     )
             env = test.get("env")
             if env and env not in {"host", "darling", "macos"}:
