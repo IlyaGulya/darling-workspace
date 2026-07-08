@@ -335,9 +335,20 @@ patches:
     red-proof:
       mode: source-base
       source-env: XNU_SRC_ROOT
-    runner: script
+    runner: c-fixture
     repo: darling-workspace
-    script: tests/fork_postfork_child_contract.sh
+    script: tests/fork_postfork_child_contract.c
+    source-files:
+    - darling/src/libsystem_kernel/emulation/src/xnu_syscall/bsd/impl/process/fork.c
+    fixture-include-dirs:
+    - tests/fixtures/fork-postfork/include
+    include-dirs:
+    - darling/src/libsystem_kernel/emulation/include
+    compile-flags:
+    - -std=gnu11
+    - -Wall
+    - -Wextra
+    - -Werror
     note: Compiles production fork.c with fork/RPC stubs and checks the child path calls __mldr_postfork_child before guard/socket refresh/checkin while parent/error paths skip child hooks.
   pr-draft: pr-drafts/xnu-fork-postfork-child.md
   github:
