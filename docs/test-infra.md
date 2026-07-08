@@ -130,8 +130,11 @@ For metadata tests that use `requires: [darling-prefix]`, `west test` also owns
 the resource lock and shutdown path. A real run takes `$DPREFIX/.west-test.lock`
 before launching the test, holds it through cleanup, calls `darling shutdown`
 for the selected prefix, and kills a matching leftover `darlingserver` if
-shutdown did not finish cleanly. Pass `--keep-prefix-running` only when
-intentionally keeping the prefix warm for a manual debug loop.
+shutdown did not finish cleanly. After cleanup it checks the remaining
+`darlingserver` process tree for that prefix; leftover processes make the
+`west test` run fail, even if the test payload itself passed. Pass
+`--keep-prefix-running` only when intentionally keeping the prefix warm for a
+manual debug loop.
 
 For patch metadata, `diag: guarded` and `diag: forensic` are enforced by
 `west test`, not by each script. `guarded` wraps the structured invocation in
