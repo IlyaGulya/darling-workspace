@@ -1416,6 +1416,18 @@ patches:
   bead: dar-dar6x4-perf-5dq.17
   publication-status: blocked
   publication-blocker: adds a NO_REPLY ("fire-and-forget") flag to the RPC wrapper generator -- the client wrapper sends and returns 0 without waiting for a reply (skipping the ~200us recvmsg reply-wait sleep that perf #6 showed dominates build wall-clock), and the server _sendReply is a no-op. Applied to pure setters set_dyld_info + set_executable_path (scalar args copied into the request datagram, status discarded). set_thread_handles was tried and reverted (early pthread init too sensitive). Ordering safe -- per-thread datagrams processed in send order. GOTCHA -- mldr statically links the rpc wrappers, so a NO_REPLY change requires rebuilding mldr+dylib+server together or guest launchd hangs in recvmsg. Validated boot + make -j8 500/500. RED->GREEN tests/no_reply_rpc_test.sh. Stacks on per-call-rpc-metrics. Wants review that each NO_REPLY call is truly reply-independent before upstreaming. See dar-dar6x4-perf-5dq.17.
+  tests:
+  - name: no_reply_rpc_generator_contract
+    kind: contract
+    env: host
+    diag: bare
+    red: true
+    red-proof:
+      mode: self
+      note: Script generates wrappers and asserts NO_REPLY calls omit receive/reply while normal calls still receive.
+    runner: script
+    script: tests/no_reply_rpc_test.sh
+    note: Source-level RED->GREEN generator contract for fire-and-forget RPC wrappers.
   github:
     fork:
       repo: IlyaGulya/darling
@@ -1434,6 +1446,18 @@ patches:
   bead: dar-dar6x4-perf-5dq.19
   publication-status: blocked
   publication-blocker: generator half of the guest-side per-callnum recvmsg-sleep accountant -- brackets each reply-bearing wrapper's receive with __darling_rpc_sleep_account_begin()/_end(start, dserver_callnum_<name>) guarded by #ifdef DARLING_RPC_SLEEP_ACCOUNT (default OFF -> byte-identical wrappers, zero cost), so a diagnostic build can attribute the 57pct reply-wait per call number. NO_REPLY calls get no accounting. The accountant itself (table+rdtsc+dump) is the paired xnu commit. Decomposed the wait -- mach_msg_overwrite 19%, kprintf 14.5%, fork_wait_for_child 12.6%. RED->GREEN tests/rpc_sleep_account_test.sh. Diagnostic instrumentation; stays local. Stacks on no-reply-fire-and-forget-rpcs. See dar-dar6x4-perf-5dq.19.
+  tests:
+  - name: rpc_sleep_account_generator_contract
+    kind: contract
+    env: host
+    diag: bare
+    red: true
+    red-proof:
+      mode: self
+      note: Script generates wrappers and asserts reply-bearing calls bracket receive accounting while NO_REPLY calls do not.
+    runner: script
+    script: tests/rpc_sleep_account_test.sh
+    note: Source-level RED->GREEN generator contract for per-callnum recv sleep accounting hooks.
   github:
     fork:
       repo: IlyaGulya/darling
@@ -1488,6 +1512,18 @@ patches:
   bead: dar-dar6x4-perf-5dq.20
   publication-status: blocked
   publication-blocker: gates three UNCONDITIONAL hot-path kprintf debug traces that perf #9-decompose measured at 14.5% of a clean build's recvmsg reply-wait, each being a full synchronous RPC round-trip with no build value. execve.c "execve expand" (every exec), filio.c "dtype for fd" (hot ioctl), sigexc.c "darling_sigexc_self()" (every process startup). New hotpath_kdebug() macro (common/simple.h) compiles to nothing unless -DDARLING_HOTPATH_KPRINTF_DEBUG (still type-checks args via if(0)); execve/filio use it, sigexc routes through its existing kern_printf/DEBUG_SIGEXC gate. Genuine error/guard kprintf left intact. NOTE -- these traces are compiled into BOTH libsystem_kernel.dylib AND dyld (dyld statically links VARIANT_DYLD sigexc.c) so dyld must be rebuilt+redeployed too. Validated -- server kprintf log over a real build 144->0, guest breakdown drops kprintf entirely, build 100/100. RED->GREEN tests/hotpath_kprintf_gated_test.sh. This one is plausibly upstreamable (pure debug-noise removal) but wants review of the macro choice first. Stacks on guest-per-callnum-sleep-account. See dar-dar6x4-perf-5dq.20.
+  tests:
+  - name: hotpath_kprintf_gated
+    kind: contract
+    env: host
+    diag: bare
+    red: true
+    red-proof:
+      mode: self
+      note: Script asserts hot-path debug traces are gated and no bare unconditional __simple_kprintf remains.
+    runner: script
+    script: darling/src/libsystem_kernel/tests/hotpath_kprintf_gated_test.sh
+    note: Source-level RED->GREEN gate for removing default hot-path kprintf RPCs.
   github:
     fork:
       repo: IlyaGulya/darling-xnu
@@ -1506,6 +1542,18 @@ patches:
   bead: dar-dar6x4-perf-5dq.14
   publication-status: blocked
   publication-blocker: ports perf #3's bounded recv-spin (which only ever landed in mldr's copy of dserver-rpc-defs.h) into libsystem_kernel.dylib's RPC receive hook, so the guest build processes (clang/make/sh) also grab a fast RPC reply before sleeping instead of always blocking in recvmsg. Attacks the perf #6 57% __skb_wait reply-wait for the guest's OWN reply-bearing RPCs (mach_msg_overwrite 19% + mach_reply_port 8.7% + mach_port_deallocate 8.4% + self-traps -- perf #9-decompose). Bounded LINUX_MSG_DONTWAIT poll with a CPU pause then a blocking recvmsg fallback; never busy-waits unboundedly (symmetric to perf #1/#3). libc-free (raw syscall + ia32_pause, no env/TLS in the signal-blocked atomic region). Budget is compile-time DARLING_GUEST_RECVSPIN (default 512) -- CMake cache var lets A/B set 0 to disable. NOTE -- the hook is compiled into BOTH the dylib AND dyld so both must be rebuilt+redeployed. RED to GREEN tests/dylib_recv_adaptive_spin_test.sh. Correctness validated (clean boot + 200/200 fork-heavy build) before the prefix env degraded. Wall-clock A/B inconclusive (boot-noise-dominated for a few-percent RPC change, as perf #6 predicted) AND blocked by a separate env issue -- the prefix server lacks the dar-6x4 checkin-suspend crash fix 5e5d688 and segfaults under fork storms. Stacks on gate-hotpath-kprintf-debug. See dar-dar6x4-perf-5dq.14.
+  tests:
+  - name: dylib_recv_adaptive_spin
+    kind: contract
+    env: host
+    diag: bare
+    red: true
+    red-proof:
+      mode: self
+      note: Script asserts the libsystem_kernel receive hook has bounded non-blocking spin before blocking recv.
+    runner: script
+    script: darling/src/libsystem_kernel/tests/dylib_recv_adaptive_spin_test.sh
+    note: Source-level RED->GREEN gate for guest RPC receive spin in the dylib hook.
   github:
     fork:
       repo: IlyaGulya/darling-xnu
