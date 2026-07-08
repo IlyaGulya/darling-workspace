@@ -106,6 +106,10 @@ refs, PR drafts, and agent handoff.
 - Darling guest tests should prefer `requires: [darling-prefix]` over
   `requires-env: [DPREFIX]`; let `west test --prefix/--prefix-profile` provide
   `DPREFIX`.
+- When validating a source change in `libsystem_kernel` against a real prefix,
+  deploy dyld together with `libsystem_kernel.dylib`; dyld carries a static
+  emulation path, so closure-only deploys can leave guest runtime tests running
+  stale syscall behavior even when the dylib was rebuilt.
 - `west test` owns the Darling prefix lifecycle for metadata tests that declare
   `requires: [darling-prefix]`: it takes `$DPREFIX/.west-test.lock`, runs the
   test, then runs `darling shutdown` for that prefix and kills a matching
