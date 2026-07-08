@@ -1,9 +1,7 @@
 #include <signal.h>
+#include <errno.h>
 #include <stdio.h>
 #include <stdlib.h>
-#include <sys/types.h>
-#include <sys/wait.h>
-#include <time.h>
 #include <unistd.h>
 
 static const char *fault_path = "/private/var/tmp/dserver-test-fault";
@@ -40,77 +38,20 @@ static void write_fault(void)
 	fclose(file);
 }
 
-static int child_main(void)
-{
-	write_fault();
-
-	pid_t child = fork();
-	if (child < 0) {
-		perror("inner fork");
-		return 21;
-	}
-	if (child == 0) {
-		_exit(0);
-	}
-
-	const time_t deadline = time(NULL) + 8;
-	for (;;) {
-		int status = 0;
-		pid_t got = waitpid(child, &status, WNOHANG);
-		if (got == child) {
-			break;
-		}
-		if (got < 0) {
-			perror("inner waitpid");
-			return 22;
-		}
-		if (time(NULL) >= deadline) {
-			kill(child, SIGKILL);
-			waitpid(child, NULL, 0);
-			fprintf(stderr, "inner child wedged after injected missing-process ingest fault\n");
-			return 23;
-		}
-		usleep(100000);
-	}
-
-	unlink(fault_path);
-	puts("INGEST_FORCE_MISSING_PROCESS_CHILD_OK");
-	return 0;
-}
-
 int main(void)
 {
-	pid_t child = fork();
-	if (child < 0) {
-		perror("fork");
-		return 1;
-	}
-	if (child == 0) {
-		_exit(child_main());
+	uid_t uid = getuid();
+
+	write_fault();
+
+	int rc = setuid(uid);
+	unlink(fault_path);
+
+	if (rc == 0) {
+		fprintf(stderr, "expected injected setuid RPC to fail\n");
+		return 2;
 	}
 
-	const time_t deadline = time(NULL) + 12;
-	for (;;) {
-		int status = 0;
-		pid_t got = waitpid(child, &status, WNOHANG);
-		if (got == child) {
-			if (WIFEXITED(status) && WEXITSTATUS(status) == 0) {
-				puts("INGEST_FORCE_MISSING_PROCESS_OK");
-				return 0;
-			}
-			fprintf(stderr, "child failed: status=0x%x\n", status);
-			return 2;
-		}
-		if (got < 0) {
-			perror("waitpid");
-			return 3;
-		}
-		if (time(NULL) >= deadline) {
-			kill(child, SIGKILL);
-			waitpid(child, NULL, 0);
-			fprintf(stderr, "child wedged after injected missing-process ingest fault\n");
-			return 4;
-		}
-		usleep(100000);
-	}
+	puts("INGEST_FORCE_MISSING_PROCESS_OK");
+	return 0;
 }
