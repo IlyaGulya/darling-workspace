@@ -830,6 +830,48 @@ class DarlingTest(WestCommand):
                 "name": test.get("name", patch["path"]),
                 "timeout_seconds": int(test.get("timeout-seconds", 600)),
             }
+        if runner == "source-script-fixture":
+            repo = test.get("repo", patch["module"])
+            cwd = self._project_path(repo)
+            env = None
+            if test.get("env-vars"):
+                env = os.environ.copy()
+                env.update({str(k): str(v) for k, v in test["env-vars"].items()})
+            source_script = str(test["source-script"])
+            cases = [
+                {
+                    "name": str(case.get("name", f"case-{index}")),
+                    "args": [str(arg) for arg in case.get("args", [])],
+                    "stdout": None if case.get("stdout") is None else str(case.get("stdout")),
+                    "returncode": int(case.get("returncode", 0)),
+                }
+                for index, case in enumerate(test.get("cases", []))
+            ]
+            display = (
+                f"cd {quote(repo)} && "
+                f"<source-script-fixture> {quote(source_script)} "
+                f"({len(cases)} case(s))"
+            )
+            return {
+                "key": f"source-script-fixture:{repo}:{source_script}:{repr(cases)}",
+                "display": display,
+                "cwd": cwd,
+                "args": None,
+                "shell": False,
+                "env": env,
+                "source_script_fixture": True,
+                "source_script": source_script,
+                "cases": cases,
+                "source_root_env": source_env,
+                "source_env": source_env,
+                "source_module": source_module,
+                "requires_resources": list(test.get("requires", [])),
+                "requires_env": list(test.get("requires-env", [])),
+                "requires_profile": test.get("requires-profile"),
+                "diag": self._resolved_diag(test),
+                "name": test.get("name", patch["path"]),
+                "timeout_seconds": int(test.get("timeout-seconds", 600)),
+            }
         if runner == "guest-c-fixture":
             repo = test.get("repo", patch["module"])
             script = test["script"]
@@ -1053,6 +1095,8 @@ class DarlingTest(WestCommand):
             return self._run_object_symbol_fixture(invocation, env=env)
         if invocation.get("source_build_fixture"):
             return self._run_source_build_fixture(invocation, env=env)
+        if invocation.get("source_script_fixture"):
+            return self._run_source_script_fixture(invocation, env=env)
         result = subprocess.run(
             self._debug_runner_args(invocation),
             cwd=invocation["cwd"],
@@ -1214,6 +1258,57 @@ class DarlingTest(WestCommand):
                         if symbol in defined_symbols:
                             self.err(f"{invocation['name']}:{check['name']}: unexpected defined symbol {symbol}")
                             return 1
+        return 0
+
+    def _run_source_script_fixture(self, invocation, env=None) -> int:
+        if invocation.get("diag", "bare") != "bare":
+            self.die(f"{invocation['name']}: source-script-fixture currently supports diag:bare only")
+        run_env = env if env is not None else invocation.get("env")
+        source_root = invocation["cwd"]
+        source_root_env = invocation.get("source_root_env")
+        if source_root_env and run_env and run_env.get(source_root_env):
+            source_root = Path(run_env[source_root_env])
+        script_path = source_root / invocation["source_script"]
+        if not script_path.is_file():
+            self.err(f"{invocation['name']}: source script not found: {script_path}")
+            return 1
+
+        timeout_seconds = int(invocation.get("timeout_seconds", 600))
+        for case in invocation.get("cases", []):
+            args = ["sh", str(script_path), *case.get("args", [])]
+            try:
+                result = subprocess.run(
+                    args,
+                    cwd=source_root,
+                    env=run_env,
+                    capture_output=True,
+                    text=True,
+                    check=False,
+                    timeout=timeout_seconds,
+                )
+            except subprocess.TimeoutExpired:
+                self.err(
+                    f"{invocation['name']}:{case['name']}: timed out after "
+                    f"{timeout_seconds}s"
+                )
+                return 124
+            expected_rc = case.get("returncode", 0)
+            if result.returncode != expected_rc:
+                sys.stderr.write(result.stdout)
+                sys.stderr.write(result.stderr)
+                self.err(
+                    f"{invocation['name']}:{case['name']}: rc {result.returncode}, "
+                    f"want {expected_rc}"
+                )
+                return 1
+            expected_stdout = case.get("stdout")
+            if expected_stdout is not None and result.stdout != expected_stdout:
+                sys.stderr.write(result.stderr)
+                self.err(
+                    f"{invocation['name']}:{case['name']}: stdout "
+                    f"{result.stdout!r}, want {expected_stdout!r}"
+                )
+                return 1
         return 0
 
     def _run_source_build_fixture(self, invocation, env=None) -> int:

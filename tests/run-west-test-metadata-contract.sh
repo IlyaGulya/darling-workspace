@@ -94,6 +94,19 @@ patches:
     script: tests/guest_c_fixture_contract.c
     build-commands: [":"]
     run-commands: [":"]
+- path: test/source-script-fixture.patch
+  module: darling
+  tests:
+  - name: west_source_script_fixture_contract
+    kind: contract
+    env: host
+    diag: bare
+    runner: source-script-fixture
+    source-script: src/sandbox/sandbox-exec.sh
+    cases:
+    - name: passthrough
+      args: [-q, /bin/sh, -c, "printf ok"]
+      stdout: ok
 - path: test/object-symbol-fixture.patch
   module: darling
   tests:
@@ -255,7 +268,7 @@ object_symbol_fixture="$(
 printf '%s\n' "$object_symbol_fixture" | grep -q \
 	'cc -c -std=gnu11 -Wall -Wextra -Werror -I tests/fixtures/c-fixture/include -I src tests/c_fixture_helper.c -o <temp>/<variant>.o && nm -u <temp>/<variant>.o && nm -g <temp>/<variant>.o' ||
 	fail 'object-symbol-fixture metadata did not resolve to a compile-and-nm command'
-printf '%s\n' "$source_only_check" | grep -q 'test metadata: 6 covered (runtime 1, compile 2, host 2, model 1)' ||
+printf '%s\n' "$source_only_check" | grep -q 'test metadata: 7 covered (runtime 1, compile 2, host 3, model 1)' ||
 	fail 'coverage-tier summary did not classify runtime/host/compile/model coverage'
 
 invalid_guest_red_check="$(west patch check --profile __metadata_invalid_contract 2>&1)"
@@ -287,6 +300,8 @@ printf '%s\n' "$source_only_check" | grep -q 'RUNTIME   test/guest-c-fixture.pat
 	fail 'guest-c-fixture patch was not reported as RUNTIME'
 printf '%s\n' "$source_only_check" | grep -q 'HOST      test/source-build-fixture.patch' ||
 	fail 'source-build-fixture patch was not reported as HOST'
+printf '%s\n' "$source_only_check" | grep -q 'HOST      test/source-script-fixture.patch' ||
+	fail 'source-script-fixture patch was not reported as HOST'
 
 source_build_fixture="$(
 	west test --profile __metadata_contract \
@@ -297,6 +312,16 @@ source_build_fixture="$(
 printf '%s\n' "$source_build_fixture" | grep -q \
 	'<archive-source> && : && :' ||
 	fail 'source-build-fixture metadata did not resolve to an archive/build/run command'
+
+source_script_fixture="$(
+	west test --profile __metadata_contract \
+		--patch test/source-script-fixture.patch \
+		--list
+)"
+
+printf '%s\n' "$source_script_fixture" | grep -q \
+	'<source-script-fixture> src/sandbox/sandbox-exec.sh (1 case(s))' ||
+	fail 'source-script-fixture metadata did not resolve to a source script command'
 
 fake_darling="$(mktemp)"
 cat >"$fake_darling" <<'SH'
