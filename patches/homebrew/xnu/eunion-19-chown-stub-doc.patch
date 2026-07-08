@@ -1,7 +1,8 @@
 From 559d6bf31f36f0c28ef609c73346ca1734961fc4 Mon Sep 17 00:00:00 2001
 From: Ilya Gulya <ilya@gulya.me>
 Date: Sat, 20 Jun 2026 12:21:19 +0000
-Subject: [PATCH] E-UNION: keep path chown NULL guards outside disabled stubs
+Subject: [PATCH] DOC E-UNION: warn that un-stubbing chown needs copy-up (PoC,
+ doc-only)
 
 fchown/fchownat/lchown are entirely under `#if 0` (return 0, no mutation), so
 they are SAFE today. But un-stubbing any of them adds an INSTANT template-
@@ -12,22 +13,18 @@ so a chown there mutates ownership for ALL prefixes at once.
 Add a warning comment to each stub documenting the hazard and the required
 copy-up before re-enabling: vchroot_prepare_write_fd(fd) for the fd-based
 fchown, vchroot_prepare_write(path) for the path-based fchownat/lchown (with
-lchown materializing the LINK, not its target).
-
-Keep the path NULL guards outside the disabled path-based bodies. The earlier
-path-null patch added those guards inside the active implementation, but after
-this E-UNION stub patch the bodies are compiled out; leaving the guards inside
-`#if 0` makes fchownat(NULL)/lchown(NULL) incorrectly return stub success
-instead of EFAULT.
+lchown materializing the LINK, not its target). Doc-only: every added line is a
+comment, so the generated code is byte-identical in all build configurations
+(no logic, no #ifdef). Not RED-testable (the syscalls are compiled out).
 
 Local experiment under dar-test-infra-sp5.8.4.4.8.
 
 Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
 ---
- .../emulation/src/xnu_syscall/bsd/impl/unistd/fchown.c   |  7 +++++++
- .../emulation/src/xnu_syscall/bsd/impl/unistd/fchownat.c | 15 ++++++++++++---
- .../emulation/src/xnu_syscall/bsd/impl/unistd/lchown.c   | 15 ++++++++++++---
- 3 files changed, 31 insertions(+), 6 deletions(-)
+ .../emulation/src/xnu_syscall/bsd/impl/unistd/fchown.c   | 7 +++++++
+ .../emulation/src/xnu_syscall/bsd/impl/unistd/fchownat.c | 9 +++++++++
+ .../emulation/src/xnu_syscall/bsd/impl/unistd/lchown.c   | 9 +++++++++
+ 3 files changed, 25 insertions(+)
 
 diff --git a/darling/src/libsystem_kernel/emulation/src/xnu_syscall/bsd/impl/unistd/fchown.c b/darling/src/libsystem_kernel/emulation/src/xnu_syscall/bsd/impl/unistd/fchown.c
 index 1abab55bf69cd62c139f612eeecb890c4342522d..c8f7dba8fa840443351170c0670be4ded22c14a9 100644
@@ -51,13 +48,10 @@ diff --git a/darling/src/libsystem_kernel/emulation/src/xnu_syscall/bsd/impl/uni
 index c662f3d5129ab4a502c71faa136582aaf1adaee3..a56eef0f52ff7a64c6d29207d4b2077261f14c71 100644
 --- a/darling/src/libsystem_kernel/emulation/src/xnu_syscall/bsd/impl/unistd/fchownat.c
 +++ b/darling/src/libsystem_kernel/emulation/src/xnu_syscall/bsd/impl/unistd/fchownat.c
-@@ -14,6 +14,18 @@ extern char* strcpy(char* dst, const char* src);
+@@ -14,6 +14,15 @@ extern char* strcpy(char* dst, const char* src);
  
  long sys_fchownat(int fd, const char* path, int uid, int gid, int flag)
  {
-+	if (!path)
-+		return -EFAULT;
-+
 +	// E-UNION HAZARD (dar-test-infra-sp5.8.4.4.8): this stub is SAFE only because
 +	// it is disabled (returns 0, no mutation). If it is ever un-stubbed, it becomes
 +	// an immediate template-corruption path: the body below vchroot_expand()s the
@@ -70,26 +64,14 @@ index c662f3d5129ab4a502c71faa136582aaf1adaee3..a56eef0f52ff7a64c6d29207d4b20772
  #if 0
  	int ret;
  	struct vchroot_expand_args vc;
-@@ -22,8 +34,5 @@ long sys_fchownat(int fd, const char* path, int uid, int gid, int flag)
- 
- 	vc.flags = VCHROOT_FOLLOW;
- 	vc.dfd = atfd(fd);
- 	
--	if (!path)
--		return -EFAULT;
--
- 	strcpy(vc.path, path);
 diff --git a/darling/src/libsystem_kernel/emulation/src/xnu_syscall/bsd/impl/unistd/lchown.c b/darling/src/libsystem_kernel/emulation/src/xnu_syscall/bsd/impl/unistd/lchown.c
 index 029d9a9615a47f95ba7de1dac543e28ef316147c..d013dec465337555dc5a281e3a6a56d8b100a2f1 100644
 --- a/darling/src/libsystem_kernel/emulation/src/xnu_syscall/bsd/impl/unistd/lchown.c
 +++ b/darling/src/libsystem_kernel/emulation/src/xnu_syscall/bsd/impl/unistd/lchown.c
-@@ -10,6 +10,18 @@
+@@ -10,6 +10,15 @@
  
  long sys_lchown(const char* path, int uid, int gid)
  {
-+	if (!path)
-+		return -EFAULT;
-+
 +	// E-UNION HAZARD (dar-test-infra-sp5.8.4.4.8): this stub is SAFE only because
 +	// it is disabled (returns 0, no mutation). If it is ever un-stubbed, it becomes
 +	// an immediate template-corruption path: the body below vchroot_expand()s the
@@ -102,12 +84,3 @@ index 029d9a9615a47f95ba7de1dac543e28ef316147c..d013dec465337555dc5a281e3a6a56d8
  #if 0
  	int ret;
  	struct vchroot_expand_args vc;
-@@ -18,8 +30,5 @@ long sys_lchown(const char* path, int uid, int gid)
- 
- 	vc.flags = 0;
- 	vc.dfd = get_perthread_wd();
- 	
--	if (!path)
--		return -EFAULT;
--
- 	strcpy(vc.path, path);

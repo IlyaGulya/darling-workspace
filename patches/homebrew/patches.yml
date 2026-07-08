@@ -1805,7 +1805,7 @@ patches:
       base: main
       state: local
 - path: xnu/eunion-19-chown-stub-doc.patch
-  sha256sum: 65aab03246c677bddb13085d1056b40ddfa17681d68c4292193d44b8e27fa0d6
+  sha256sum: 408809321422c115c2de7aa6b21fe6f427b176e7ec47ab1a5cc4c4a3144aa608
   module: darling/src/external/xnu
   source-branch: fix/e-union-19-chown-stub-doc
   source-base: 7c4af0d829b603a28ff0e326e3cf38ca33514f78
