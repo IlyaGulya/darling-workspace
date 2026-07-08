@@ -806,9 +806,16 @@ patches:
     red-proof:
       mode: source-base
       source-env: DSERVER_SRC_ROOT
-    runner: script
+    runner: c-fixture
     repo: darling-workspace
-    script: tests/pthread_cancel_state_contract.sh
+    script: tests/pthread_cancel_state_contract.c
+    include-dirs:
+    - duct-tape/internal-include
+    compile-flags:
+    - -std=c11
+    - -Wall
+    - -Wextra
+    - -Werror
     note: Compiles the production pthread cancel-state helper and verifies XNU-style action 0/1/2 plus markcancel state transitions.
   github:
     fork:
