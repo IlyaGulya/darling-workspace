@@ -1604,7 +1604,7 @@ class DarlingTest(WestCommand):
                     f"{result.stdout!r}, want {expected_stdout!r}"
                 )
                 return 1
-            return 0
+        return 0
 
     def _archive_source_to(self, source_root: Path, destination: Path) -> int:
         destination.mkdir(parents=True, exist_ok=True)
@@ -2924,6 +2924,13 @@ fi
                 args.profile, args.patch, args.bead, args.env, args.diag, args.red_only
             )
             if args.prove_red:
+                selected = [
+                    (patch, test)
+                    for patch, test in selected
+                    if test.get("red") or test.get("red-proof")
+                ]
+                if not selected:
+                    self.die("no red-proof tests selected from patch metadata")
                 self._reject_unsupported_red_proof_models(selected)
                 if not args.list:
                     self._check_red_proof_requirements(selected)
@@ -2935,7 +2942,7 @@ fi
                 and not args.list
                 and not self._materialize_profile
                 and not self._profile_is_applied(args.profile)
-                and (args.prove_red or self._metadata_needs_profile_worktree(selected))
+                and self._metadata_needs_profile_worktree(selected)
             ):
                 self.inf(
                     f"{args.profile}: selected tests need the profile checkout; "
@@ -2950,13 +2957,6 @@ fi
                     if selected:
                         needs_prefix = self._metadata_needs_prefix(selected) and not args.list
                         if args.prove_red:
-                            selected = [
-                                (patch, test)
-                                for patch, test in selected
-                                if test.get("red") or test.get("red-proof")
-                            ]
-                            if not selected:
-                                self.die("no red-proof tests selected from patch metadata")
                             needs_prefix = self._metadata_needs_prefix(selected) and not args.list
                             with self._prefix_resource_context(needs_prefix):
                                 result = self._run_red_proofs(selected, args.list, unknown)
