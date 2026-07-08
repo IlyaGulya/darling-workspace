@@ -1171,6 +1171,19 @@ patches:
     repo: darling-workspace
     script: tests/ulock_eintr_retry_contract.sh
     note: Compiles production ulock_wait/ulock_wake with a fake futex backend and checks untimed EINTR retry, timed EINTR passthrough, clean wake errno, and wake success behavior.
+  - name: ulock_eintr_retry_guest
+    kind: guest
+    env: darling
+    diag: guarded
+    runner: guest-c-fixture
+    repo: darling-workspace
+    script: tests/ulock_eintr_retry_guest.c
+    ok-marker: ULOCK_EINTR_RETRY_GUEST_OK
+    timeout-seconds: 30
+    compile-flags: [-pthread]
+    requires:
+    - darling-prefix
+    note: Guest runtime gate that an untimed __ulock_wait survives a handled signal and returns only after a later __ulock_wake.
   pr-draft: pr-drafts/xnu-ulock-wait-eintr-retry.md
   github:
     fork:
