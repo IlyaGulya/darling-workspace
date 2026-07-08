@@ -199,7 +199,7 @@
         },
         {
           "branch": "fix/dserver-recent-contract-tests",
-          "head": "a3fa390d3b4fd2f804168b0ff7132fbb3c37ef29",
+          "head": "447579f0c84b04aa06d9c0779a50099ef44d191e",
           "upstream": "",
           "source_ref": "refs/heads/fix/dserver-recent-contract-tests"
         },
@@ -751,7 +751,7 @@
         },
         {
           "branch": "fix/getattrlist-shared-packer",
-          "head": "72020097cfa0d3ea7e925e1aba3b2df9b7a3a0dc",
+          "head": "a491dc1ca9edcb5b3950cf9d3d400b1534c36ccf",
           "upstream": "",
           "source_ref": "refs/heads/fix/getattrlist-shared-packer"
         },

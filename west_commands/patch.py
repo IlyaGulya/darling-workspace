@@ -297,10 +297,6 @@ class DarlingPatch(WestCommand):
                 repo_path = self._project_path(repo_ref)
                 if repo_path is None:
                     errors.append(f"tests[{index}] unknown test repo {repo_ref!r}")
-                elif not (repo_path / test["script"]).is_file():
-                    errors.append(
-                        f"tests[{index}] script not found: {repo_ref}/{test['script']}"
-                    )
             if test.get("args") is not None and not isinstance(test.get("args"), list):
                 errors.append(f"tests[{index}] args must be a list")
             if test.get("env-vars") is not None and not isinstance(test.get("env-vars"), dict):

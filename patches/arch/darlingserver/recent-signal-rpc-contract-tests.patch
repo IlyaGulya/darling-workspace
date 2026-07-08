@@ -1,15 +1,54 @@
-From a3fa390d3b4fd2f804168b0ff7132fbb3c37ef29 Mon Sep 17 00:00:00 2001
+From 447579f0c84b04aa06d9c0779a50099ef44d191e Mon Sep 17 00:00:00 2001
 From: Ilya Gulya <ilya@gulya.me>
 Date: Wed, 8 Jul 2026 06:41:31 +0000
 Subject: [PATCH] tests: cover recent signal and RPC contracts
 
 ---
+ tests/contract-test-lib.sh                    | 31 +++++++++++++
  tests/rpc_disconnect_send_contract_test.sh    | 45 +++++++++++++++++++
- ...tandard_signal_coalescing_contract_test.sh | 33 ++++++++++++++
- 2 files changed, 78 insertions(+)
+ ...tandard_signal_coalescing_contract_test.sh | 32 +++++++++++++
+ 3 files changed, 108 insertions(+)
+ create mode 100644 tests/contract-test-lib.sh
  create mode 100755 tests/rpc_disconnect_send_contract_test.sh
  create mode 100755 tests/standard_signal_coalescing_contract_test.sh
 
+diff --git a/tests/contract-test-lib.sh b/tests/contract-test-lib.sh
+new file mode 100644
+index 0000000000000000000000000000000000000000..8052648a67148ce2d2b0ec7783bc05c965c829c4
+--- /dev/null
++++ b/tests/contract-test-lib.sh
+@@ -0,0 +1,31 @@
++#!/usr/bin/env bash
++
++contract_test_init() {
++	CONTRACT_TEST_NAME="$1"
++}
++
++fail() {
++	echo "${CONTRACT_TEST_NAME:-contract_test}: $*" >&2
++	exit 1
++}
++
++require_file() {
++	[ -f "$1" ] || fail "$2 not found at $1"
++}
++
++require_grep() {
++	local pattern="$1" file="$2" message="$3"
++	grep -q "$pattern" "$file" || fail "$message"
++}
++
++require_not_grep() {
++	local pattern="$1" file="$2" message="$3"
++	if grep -Eq "$pattern" "$file"; then
++		fail "$message"
++	fi
++}
++
++require_text() {
++	local pattern="$1" text="$2" message="$3"
++	grep -q "$pattern" <<<"$text" || fail "$message"
++}
 diff --git a/tests/rpc_disconnect_send_contract_test.sh b/tests/rpc_disconnect_send_contract_test.sh
 new file mode 100755
 index 0000000000000000000000000000000000000000..341ea55efdee0130fecb29f061b9c59cdbe4ae0c
@@ -63,40 +102,39 @@ index 0000000000000000000000000000000000000000..341ea55efdee0130fecb29f061b9c59c
 +echo "RPC_DISCONNECT_SEND_CONTRACT_OK"
 diff --git a/tests/standard_signal_coalescing_contract_test.sh b/tests/standard_signal_coalescing_contract_test.sh
 new file mode 100755
-index 0000000000000000000000000000000000000000..2d8b8f1fc78c4f6185d314eec935843b066412b6
+index 0000000000000000000000000000000000000000..a15b1c5b4a1d4a3ba45208ce994516b5cdfd2e98
 --- /dev/null
 +++ b/tests/standard_signal_coalescing_contract_test.sh
-@@ -0,0 +1,33 @@
+@@ -0,0 +1,32 @@
 +#!/usr/bin/env bash
 +set -euo pipefail
 +
-+cd "${DSERVER_SRC_ROOT:-$(dirname "$0")/..}"
++here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
++. "$here/contract-test-lib.sh"
++contract_test_init standard_signal_coalescing_contract_test
++
++cd "${DSERVER_SRC_ROOT:-$here/..}"
 +
 +thread_h=internal-include/darlingserver/thread.hpp
 +thread_cpp=src/thread.cpp
 +
-+fail() {
-+	echo "standard_signal_coalescing_contract_test: $*" >&2
-+	exit 1
-+}
-+
-+grep -q "_pendingStandardSignalMask" "$thread_h" \
-+	|| fail "Thread does not carry a pending standard-signal mask"
++require_grep "_pendingStandardSignalMask" "$thread_h" \
++	"Thread does not carry a pending standard-signal mask"
 +
 +send_signal_body="$(sed -n '/void DarlingServer::Thread::sendSignal/,/^};/p' "$thread_cpp")"
 +process_signal_body="$(sed -n '/void DarlingServer::Thread::processSignal/,/dtape_thread_process_signal/p' "$thread_cpp")"
 +
-+grep -q "signal != SIGCHLD && signal != SIGUSR1" <<<"$send_signal_body" \
-+	|| fail "sendSignal does not exempt SIGCHLD/SIGUSR1 from coalescing"
-+grep -q "_pendingStandardSignalMask & bit" <<<"$send_signal_body" \
-+	|| fail "sendSignal does not drop duplicate pending standard signals"
-+grep -q "_pendingStandardSignalMask |= bit" <<<"$send_signal_body" \
-+	|| fail "sendSignal does not mark standard signals pending before tgkill"
-+grep -q "_pendingStandardSignalMask &= ~(1ull << signal)" <<<"$send_signal_body" \
-+	|| fail "sendSignal does not clear pending mask on tgkill/process errors"
-+grep -q "StandardSignalPendingClear" <<<"$process_signal_body" \
-+	|| fail "processSignal does not clear pending standard signal state at completion"
-+grep -q "_pendingStandardSignalMask &= ~(1ull << linuxSignalNumber)" <<<"$process_signal_body" \
-+	|| fail "processSignal clear guard does not reset the delivered signal bit"
++require_text "signal != SIGCHLD && signal != SIGUSR1" "$send_signal_body" \
++	"sendSignal does not exempt SIGCHLD/SIGUSR1 from coalescing"
++require_text "_pendingStandardSignalMask & bit" "$send_signal_body" \
++	"sendSignal does not drop duplicate pending standard signals"
++require_text "_pendingStandardSignalMask |= bit" "$send_signal_body" \
++	"sendSignal does not mark standard signals pending before tgkill"
++require_text "_pendingStandardSignalMask &= ~(1ull << signal)" "$send_signal_body" \
++	"sendSignal does not clear pending mask on tgkill/process errors"
++require_text "StandardSignalPendingClear" "$process_signal_body" \
++	"processSignal does not clear pending standard signal state at completion"
++require_text "_pendingStandardSignalMask &= ~(1ull << linuxSignalNumber)" "$process_signal_body" \
++	"processSignal clear guard does not reset the delivered signal bit"
 +
 +echo "STANDARD_SIGNAL_COALESCING_CONTRACT_OK"
