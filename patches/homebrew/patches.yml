@@ -1968,20 +1968,19 @@ patches:
   publication-status: blocked
   publication-blocker: returns EBADF on guarded-fd dup2/dup/fcntl instead of aborting; correct vs macOS and validated (gnulib fd tests + libunistring make check GREEN) but the guarded-fd-as-out-of-range contract wants a second reviewer before upstreaming. See dar-6x4.1.
   tests:
-  - name: fd_guard_ebadf_model
+  - name: fd_guard_ebadf_contract
     kind: contract
-    coverage-tier: model
+    coverage-tier: compile
     env: host
     diag: bare
     red: true
     red-proof:
-      mode: self
-      why-self: The model drives guarded-fd dup/fcntl behavior through old abort and fixed EBADF semantics.
-    runner: python
+      mode: source-base
+      source-env: XNU_SRC_ROOT
+    runner: script
     repo: darling-workspace
-    script: tests/xnu_behavior_models.py
-    args: [fd-guard-ebadf]
-    note: Host behavioral model; old guarded-fd operation aborts, fixed operation returns EBADF while normal fds still work.
+    script: tests/fd_guard_ebadf_contract.sh
+    note: Host RED->GREEN contract that guarded fd dup, dup2, and fcntl return EBADF instead of aborting or reaching Linux syscall fallback.
   github:
     fork:
       repo: IlyaGulya/darling-xnu
