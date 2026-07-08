@@ -148,5 +148,7 @@ int main(void)
 	failed |= install_and_check("SA_RESTART install", app_handler, BSD_SA_RESTART, 1);
 	failed |= install_and_check("non-restart install", app_handler, 0, 0);
 	failed |= install_and_check("SIG_IGN install", XNU_SIG_IGN, 0, 1);
+	if (!failed)
+		puts("GREEN: sigexc SA_RESTART contract");
 	return failed ? 1 : 0;
 }

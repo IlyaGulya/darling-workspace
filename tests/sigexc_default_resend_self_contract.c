@@ -168,5 +168,7 @@ int main(void)
 	failed |= expect_long("tgkill tid", last_tgkill_tid, 4343);
 	failed |= expect_long("tgkill signal", last_tgkill_signal, LINUX_SIGSEGV);
 	failed |= expect_long("interrupt exit", interrupt_exit_count, 1);
+	if (!failed)
+		puts("GREEN: sigexc default resend-self contract");
 	return failed ? 1 : 0;
 }
