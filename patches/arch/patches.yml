@@ -30,6 +30,15 @@ patches:
   publication-blocker: local RPC teardown/interrupt correctness hardening; needs broader fork/signal storm soak before upstreaming.
   source-commit: aadfa984275b74ad6e6f35d144bff20fe6c14565
   sha256sum: a46ddd2abd07e5ecdc37dd55c861f4402b0a8c09e29e391078cded4a33bdea04
+- path: xnu/rpc-disconnect-status-contract-test.patch
+  module: darling/src/external/xnu
+  source-branch: fix/rpc-disconnect-status-contract-test
+  source-base: aadfa984275b74ad6e6f35d144bff20fe6c14565
+  bead: dar-rpc-correctness-z27x.6
+  publication-status: blocked
+  publication-blocker: follow-up committed red test for local RPC teardown/interrupt correctness hardening.
+  source-commit: 8becacfaa14c5058619c00e8a351e6b8146b1a05
+  sha256sum: 865d4d4984839bc8b64ecb98771116b655e9a22235b38720c201b6137d8f02dd
 - path: darlingserver/a0-arch-redesign.patch
   module: darling/src/external/darlingserver
   source-branch: fix/a0-arch-redesign
@@ -119,3 +128,12 @@ patches:
   publication-blocker: local A0 repro instrumentation for focused ring-on fork/wait crash diagnosis; not a correctness fix.
   source-commit: c72d9d8412800ed6a9d2e343ed3a3884f87ede51
   sha256sum: 1e102e56d45708fa57edaad27c98845c0173e65294ebfe14e810ce5a37426b13
+- path: darlingserver/recent-signal-rpc-contract-tests.patch
+  module: darling/src/external/darlingserver
+  source-branch: fix/dserver-recent-contract-tests
+  source-base: c72d9d8412800ed6a9d2e343ed3a3884f87ede51
+  bead: dar-rpc-correctness-z27x.8
+  publication-status: blocked
+  publication-blocker: follow-up committed red tests for local standard-signal coalescing and RPC disconnect-send contracts.
+  source-commit: a3fa390d3b4fd2f804168b0ff7132fbb3c37ef29
+  sha256sum: 815302b31a4503d6bb1b52fc7c582a39a8e6127c29c05859e6e4d98f24138673
