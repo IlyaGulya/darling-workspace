@@ -126,6 +126,12 @@ then supplies `DPREFIX` from `--prefix`, `--prefix existing:/path`,
 `west test --list` never requires those resources; real execution fails before
 launch if a requirement is missing.
 
+For metadata tests that use `requires: [darling-prefix]`, `west test` also owns
+the resource shutdown path. After a real run it calls `darling shutdown` for the
+selected prefix and kills a matching leftover `darlingserver` if shutdown did
+not finish cleanly. Pass `--keep-prefix-running` only when intentionally keeping
+the prefix warm for a manual debug loop.
+
 For patch metadata, `diag: guarded` and `diag: forensic` are enforced by
 `west test`, not by each script. `guarded` wraps the structured invocation in
 `darling-debug-runner run --timeout-seconds ...`, writes a small debug bundle,
