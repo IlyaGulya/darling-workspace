@@ -1,4 +1,4 @@
-From 8a7797fd85b1522a528551fc9601b245c083b8e8 Mon Sep 17 00:00:00 2001
+From f21fb14efa1b64b708bbcd8279dedf0cbd56efc8 Mon Sep 17 00:00:00 2001
 From: Ilya Gulya <ilya@gulya.me>
 Date: Wed, 10 Jun 2026 10:06:33 +0000
 Subject: [PATCH] psynch: fix cvsignal/cvbroad argument widths and cvbroad
@@ -9,10 +9,12 @@ sys_psynch_cvsignal passed cvlsgen/mugen as uint32_t, truncating the
 sys_psynch_cvbroad passed mugen where the mutex pointer belongs, so the
 server never saw the condvar's associated mutex; pass mutex.
 ---
- .../include/xnu_syscall/bsd/impl/psynch/psynch_cvsignal.h       | 2 +-
- .../emulation/src/xnu_syscall/bsd/impl/psynch/psynch_cvbroad.c  | 2 +-
- .../emulation/src/xnu_syscall/bsd/impl/psynch/psynch_cvsignal.c | 2 +-
- 3 files changed, 3 insertions(+), 3 deletions(-)
+ .../bsd/impl/psynch/psynch_cvsignal.h         |  2 +-
+ .../bsd/impl/psynch/psynch_cvbroad.c          |  2 +-
+ .../bsd/impl/psynch/psynch_cvsignal.c         |  2 +-
+ .../tests/psynch_cvsignal_args_contract.sh    | 54 +++++++++++++++++++
+ 4 files changed, 57 insertions(+), 3 deletions(-)
+ create mode 100755 darling/src/libsystem_kernel/tests/psynch_cvsignal_args_contract.sh
 
 diff --git a/darling/src/libsystem_kernel/emulation/include/xnu_syscall/bsd/impl/psynch/psynch_cvsignal.h b/darling/src/libsystem_kernel/emulation/include/xnu_syscall/bsd/impl/psynch/psynch_cvsignal.h
 index 35e1ca19d64116aed6d39e7edd9691d0ad5daac8..48826e932a4aa9ff444f8ece37f41f92689a5c67 100644
@@ -53,3 +55,63 @@ index a11c77cf48829f644baac340cf072652bba1f188..53cdb047ba40c4d121c651510abfa2e8
  		uint64_t tid, uint32_t flags)
  {
  	uint32_t retval;
+diff --git a/darling/src/libsystem_kernel/tests/psynch_cvsignal_args_contract.sh b/darling/src/libsystem_kernel/tests/psynch_cvsignal_args_contract.sh
+new file mode 100755
+index 0000000000000000000000000000000000000000..54e9bab50f796d5cd2bf51139ea74cfc3f3e79cc
+--- /dev/null
++++ b/darling/src/libsystem_kernel/tests/psynch_cvsignal_args_contract.sh
+@@ -0,0 +1,54 @@
++#!/usr/bin/env bash
++set -euo pipefail
++
++here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
++root="${XNU_SRC_ROOT:-$(git -C "$here" rev-parse --show-toplevel)}"
++header="$root/darling/src/libsystem_kernel/emulation/include/xnu_syscall/bsd/impl/psynch/psynch_cvsignal.h"
++cvsignal="$root/darling/src/libsystem_kernel/emulation/src/xnu_syscall/bsd/impl/psynch/psynch_cvsignal.c"
++cvbroad="$root/darling/src/libsystem_kernel/emulation/src/xnu_syscall/bsd/impl/psynch/psynch_cvbroad.c"
++
++fail() {
++	printf 'psynch_cvsignal_args_contract: %s\n' "$*" >&2
++	exit 1
++}
++
++[ -f "$header" ] || fail "header not found at $header"
++[ -f "$cvsignal" ] || fail "cvsignal source not found at $cvsignal"
++[ -f "$cvbroad" ] || fail "cvbroad source not found at $cvbroad"
++
++python3 - "$header" "$cvsignal" "$cvbroad" <<'PY'
++from pathlib import Path
++import re
++import sys
++
++header = Path(sys.argv[1]).read_text()
++cvsignal = Path(sys.argv[2]).read_text()
++cvbroad = Path(sys.argv[3]).read_text()
++
++def normalized_signature(text, name):
++    match = re.search(rf"long\s+{name}\s*\((.*?)\)", text, re.S)
++    if not match:
++        raise SystemExit(f"{name} signature not found")
++    return " ".join(match.group(1).split())
++
++sig_header = normalized_signature(header, "sys_psynch_cvsignal")
++sig_impl = normalized_signature(cvsignal, "sys_psynch_cvsignal")
++required = (
++    "void* cv, uint64_t cvlsgen, uint32_t cvugen, int thread_port, "
++    "void* mutex, uint64_t mugen, uint64_t tid, uint32_t flags"
++)
++if sig_header != required:
++    raise SystemExit(f"header signature mismatch: {sig_header}")
++if sig_impl != required:
++    raise SystemExit(f"implementation signature mismatch: {sig_impl}")
++
++call = re.search(r"dserver_rpc_psynch_cvbroad\s*\((.*?)\)", cvbroad, re.S)
++if not call:
++    raise SystemExit("dserver_rpc_psynch_cvbroad call not found")
++args = [part.strip() for part in call.group(1).replace("\n", " ").split(",")]
++expected = ["cv", "cvlsgen", "cvudgen", "flags", "mutex", "mugen", "tid", "&retval"]
++if args != expected:
++    raise SystemExit(f"cvbroad RPC args mismatch: {args}")
++PY
++
++printf 'PSYNCH_CVSIGNAL_ARGS_CONTRACT_OK\n'
