@@ -1125,6 +1125,20 @@ patches:
     coverage-tier: runtime
     env: darling
     diag: guarded
+    red: true
+    red-proof:
+      mode: guest-runtime-deploy
+      runtime-artifacts:
+      - module: darling/src/external/xnu
+        build-targets:
+        - system_kernel
+        deploy:
+        - usr/lib/system/libsystem_kernel.dylib
+      - module: darling/src/external/dyld
+        build-targets:
+        - src/external/dyld/dyld
+        deploy:
+        - usr/lib/dyld
     runner: guest-c-fixture
     repo: darling-workspace
     script: tests/getattrlist_name_objtype_guest.c
