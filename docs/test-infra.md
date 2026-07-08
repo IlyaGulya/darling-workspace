@@ -3,6 +3,41 @@
 Status: draft / proof-of-concept landed under `testkit/`.
 Owner: ilyagulya. Decision target: after vacation (resume 2026-07-03).
 
+## 2026-07-08 Audit Refresh
+
+The current upstream `darling-testsuite` still confirms the original direction:
+use CMake/CTest as the backend and keep our local tooling as a thin
+orchestration layer, not a second test framework. Upstream HEAD checked for
+this refresh was `ce56358` (2026-07-05). It uses `add_test()`, CTest
+`WILL_FAIL`, the install layout `darling-testsuite/{testcase,resource,manual}`,
+`darling-testsuite-lib` for assertions/resources/XML, and
+`darling-directsyscall` for direct kernel syscall tests.
+
+The patch-profile audit found the real gap is not the choice of backend, but
+test normalization and discoverability. Across `arch`, `homebrew`, and `perf`
+there are 97 patch files with mixed proof styles: shell gates, raw C/C++ unit
+tests, CMake/CTest targets, markdown acceptance notes, and the E-UNION
+experiment runner. Many non-documentation fixes still have no committed red
+test in their patch profile; `dar-r7z7` tracks that inventory.
+
+Product direction:
+
+- Keep upstream-compatible testcase sources and install layout as the portability
+  seam.
+- Put local ergonomics in metadata and `west test`: `bead:*`, `profile:*`,
+  `patch:*`, `submod:*`, `env:*`, `diag:*`, `fuzz:*`, and `stress:*` labels.
+- Support five runnable kinds through the same CTest surface: host
+  unit/contract tests, Darling guest/runtime tests, macOS oracle tests, external
+  package/repro gates, and bounded fuzz/stress jobs.
+- Default host tests to `bare`, Darling guest tests to guarded
+  `darling-debug-runner`, and forensic capture to explicit opt-in.
+- Treat fuzzing as a labelled bounded runner contract: seed corpus, maximum
+  time, artifact bundle, replay command, and minimized failures promoted to
+  normal committed regressions.
+- Grow `west test` selectors for `--profile`, `--patch`, red-test audit output,
+  and manifest/submodule discovery so the runner can answer "what proves this
+  patch?" without hand-grepping patch files.
+
 ## Problem
 
 Regression reproducers for fixed bugs currently live as throwaway `/tmp/run-*.sh`
