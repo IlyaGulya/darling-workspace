@@ -1180,6 +1180,20 @@ patches:
     - -Wextra
     - -Werror
     note: Compiles against the production shared packer and checks RETURNED_ATTRS subset reporting plus multiple length-prefixed records, the contract getattrlistbulk uses for continuation.
+  - name: getattrlistbulk_guest
+    kind: guest
+    coverage-tier: runtime
+    env: darling
+    diag: guarded
+    runner: guest-c-fixture
+    repo: darling-workspace
+    script: tests/getattrlistbulk_guest.c
+    ok-marker: GETATTRLISTBULK_GUEST_OK
+    timeout-seconds: 30
+    requires:
+    - darling-prefix
+    note: |
+      Guest runtime gate for public getattrlistbulk(2): creates a directory with regular files and a subdirectory, verifies length-prefixed RETURNED_ATTRS/NAME/OBJTYPE records, and checks small-buffer continuation by reading one record per call.
   pr-draft: pr-drafts/xnu-getattrlistbulk.md
   github:
     fork:
