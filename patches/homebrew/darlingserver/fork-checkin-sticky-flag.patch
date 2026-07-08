@@ -1,4 +1,4 @@
-From eb7e93b706d16c85fb50cf60c054ce3c2fac075b Mon Sep 17 00:00:00 2001
+From 04ae50129488b1d1943461e571f68b1939be1ecc Mon Sep 17 00:00:00 2001
 From: Ilya Gulya <ilya@gulya.me>
 Date: Sat, 27 Jun 2026 00:17:31 +0000
 Subject: [PATCH] process: fix lost fork-child checkin under signal-aborted
@@ -37,112 +37,116 @@ advances normally).
 
 Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
 ---
- internal-include/darlingserver/process.hpp |  5 +++
- src/process.cpp                            | 51 +++++++++++++++++++++-
- 2 files changed, 55 insertions(+), 1 deletion(-)
+ .../darlingserver/fork-checkin.hpp            | 41 +++++++++++++++++++
+ internal-include/darlingserver/process.hpp    |  2 +
+ src/process.cpp                               |  4 +-
+ 3 files changed, 46 insertions(+), 1 deletion(-)
 
+diff --git a/internal-include/darlingserver/fork-checkin.hpp b/internal-include/darlingserver/fork-checkin.hpp
+index e9c833ca759edbd132a5ec2573e260e4f3f1affa..49629d748eb3c564768474666dcc826e6f46b815 100644
+--- a/internal-include/darlingserver/fork-checkin.hpp
++++ b/internal-include/darlingserver/fork-checkin.hpp
+@@ -1,6 +1,8 @@
+ #ifndef _DARLINGSERVER_FORK_CHECKIN_HPP_
+ #define _DARLINGSERVER_FORK_CHECKIN_HPP_
+ 
++#include <atomic>
++
+ #include <darlingserver/duct-tape.h>
+ 
+ namespace DarlingServer {
+@@ -25,6 +27,45 @@ namespace DarlingServer {
+ 				return ForkCheckinWaitResult::Error;
+ 		}
+ 	}
++
++	class ForkCheckinState {
++	public:
++		void reset() {
++			_childCheckedIn.store(false);
++		}
++
++		void markChildCheckedIn() {
++			_childCheckedIn.store(true);
++		}
++
++		ForkCheckinWaitResult wait(dtape_semaphore_t* semaphore, unsigned int timeoutSeconds = ForkCheckinWaitTimeoutSeconds) {
++			if (consumeSticky()) {
++				(void)dtape_semaphore_down_timeout(semaphore, 0);
++				return ForkCheckinWaitResult::Observed;
++			}
++
++			auto result = waitForForkCheckin(semaphore, timeoutSeconds);
++			if (result == ForkCheckinWaitResult::Observed) {
++				reset();
++				return result;
++			}
++			if (resultCanRaceWithStickyCheckin(result) && consumeSticky()) {
++				return ForkCheckinWaitResult::Observed;
++			}
++			return result;
++		}
++
++	private:
++		static bool resultCanRaceWithStickyCheckin(ForkCheckinWaitResult result) {
++			return result == ForkCheckinWaitResult::Interrupted || result == ForkCheckinWaitResult::TimedOut;
++		}
++
++		bool consumeSticky() {
++			return _childCheckedIn.exchange(false);
++		}
++
++		std::atomic<bool> _childCheckedIn{false};
++	};
+ }
+ 
+ #endif
 diff --git a/internal-include/darlingserver/process.hpp b/internal-include/darlingserver/process.hpp
-index eeb3150fbea99866209b76ccdbe8d32cfeb65ca8..a5e12aa33b3a9cbd022cb8e5364ada261c191667 100644
+index eeb3150fbea99866209b76ccdbe8d32cfeb65ca8..aea5aa26995adae19ae6d7833e8a63345d31bef2 100644
 --- a/internal-include/darlingserver/process.hpp
 +++ b/internal-include/darlingserver/process.hpp
-@@ -27,6 +27,7 @@
- #include <shared_mutex>
+@@ -28,6 +28,7 @@
  #include <unordered_map>
  #include <unordered_set>
-+#include <atomic>
  
++#include <darlingserver/fork-checkin.hpp>
  #include <darlingserver/duct-tape.h>
  #include <darlingserver/utility.hpp>
-@@ -99,6 +100,10 @@ namespace DarlingServer {
+ #include <darlingserver/kqchan.hpp>
+@@ -99,6 +100,7 @@ namespace DarlingServer {
  		std::unordered_map<uintptr_t, std::shared_ptr<Kqchan>> _kqchannels;
  		std::unordered_map<uintptr_t, std::weak_ptr<Kqchan::Process>> _listeningKqchannels;
  		dtape_semaphore_t* _dtapeForkWaitSemaphore;
-+		// dar-gwn.6.5: sticky flag set by a child's checkin (notifyCheckin) and
-+		// consumed by waitForChildAfterFork. Backstops the fork-wait semaphore,
-+		// whose wakeup can be lost when a signal forcibly aborts the wait.
-+		std::atomic<bool> _forkChildCheckedIn{false};
++		ForkCheckinState _forkChildCheckin;
  		Architecture _architecture;
  		std::weak_ptr<Process> _tracerProcess;
  		std::string _executablePath;
 diff --git a/src/process.cpp b/src/process.cpp
-index 3ba0ec95f9a7e10130bffbac459afb257328b07a..1822715591bed431137655bddd77519d81d27c18 100644
+index 8ac0a59b590f49b5be33e3c864f168141267e30c..b6f9b1f3c30f73e9462f1db68e9d5ff70ab982b0 100644
 --- a/src/process.cpp
 +++ b/src/process.cpp
-@@ -349,6 +349,7 @@ void DarlingServer::Process::notifyCheckin(Architecture architecture) {
+@@ -350,6 +350,7 @@ void DarlingServer::Process::notifyCheckin(Architecture architecture) {
  
  		// create a new fork-wait semaphore for the new task
  		_dtapeForkWaitSemaphore = dtape_semaphore_create(_dtapeTask, 0);
-+		_forkChildCheckedIn.store(false); // dar-gwn.6.5: reset sticky flag with the new semaphore
++		_forkChildCheckin.reset();
  
  		// create new S2C semaphores for the main thread
  		mainThread->_s2cPerformSempahore = dtape_semaphore_create(_dtapeTask, 1);
-@@ -374,6 +375,10 @@ void DarlingServer::Process::notifyCheckin(Architecture architecture) {
+@@ -375,6 +376,7 @@ void DarlingServer::Process::notifyCheckin(Architecture architecture) {
  		// notify the parent process (if we have one) that we've arrived
  		if (auto parent = _parentProcess.lock()) {
  			processLog.info() << *this << ": notifying fork parent " << *parent << " after checkin" << processLog.endLog;
-+			// dar-gwn.6.5: set the STICKY checkin flag BEFORE raising the
-+			// semaphore, so a parent whose semaphore wakeup is lost to a
-+			// signal-forced wait abort still observes the checkin on retry.
-+			parent->_forkChildCheckedIn.store(true);
++			parent->_forkChildCheckin.markChildCheckedIn();
  			dtape_semaphore_up(parent->_dtapeForkWaitSemaphore);
  			parent->_notifyListeningKqchannels(NOTE_FORK, nsid());
  		} else {
-@@ -409,13 +414,57 @@ bool DarlingServer::Process::waitForChildAfterFork() {
- 	processLog.info() << *this << ": waiting up to " << forkWaitTimeoutSeconds
+@@ -408,7 +410,7 @@ bool DarlingServer::Process::waitForChildAfterFork() {
+ 	processLog.info() << *this << ": waiting up to " << ForkCheckinWaitTimeoutSeconds
  			<< " seconds for fork child checkin" << processLog.endLog;
  
--	switch (dtape_semaphore_down_timeout(_dtapeForkWaitSemaphore, forkWaitTimeoutSeconds)) {
-+	// dar-gwn.6.5: the child checkin is delivered two ways, and the STICKY FLAG
-+	// is what makes it reliable. notifyCheckin sets _forkChildCheckedIn = true
-+	// (sticky) and then raises the fork-wait semaphore. The semaphore is the
-+	// fast wakeup path, but it is FRAGILE: this wait is forcibly aborted whenever
-+	// a signal is delivered to the parent microthread (dtape_thread_sigexc_enter
-+	// clear_wait's it even if THREAD_UNINT), and in practice a SIGCHLD from a
-+	// *sibling* that died while the parent is forking the next child does exactly
-+	// that. If the checkin's semaphore wakeup is handed off at the same instant
-+	// the wait aborts, that wakeup is lost and the semaphore count is left stuck
-+	// at -1 -- starving a later fork forever (spurious 30s timeout + unreaped
-+	// zombies under make -j). The sticky flag closes that lost-edge: even if the
-+	// semaphore wakeup is lost, _forkChildCheckedIn remains set, so the guest's
-+	// retry (it re-issues fork_wait_for_child after -EINTR) observes the checkin
-+	// here and returns immediately. We never re-block within this handler (the
-+	// duct-tape cannot safely re-block a microthread mid-call); the guest's
-+	// per-RPC retry is the safe re-wait vehicle.
-+
-+	// Fast path: the child already checked in (possibly while we were being
-+	// interrupted on a previous attempt). Consume it without touching the
-+	// fragile semaphore.
-+	if (_forkChildCheckedIn.exchange(false)) {
-+		processLog.info() << *this << ": fork child checkin already observed (sticky)" << processLog.endLog;
-+		// Drain any matching semaphore up that may also be pending, so the count
-+		// does not accumulate across forks.
-+		(void)dtape_semaphore_down_timeout(_dtapeForkWaitSemaphore, 0);
-+		return true;
-+	}
-+
-+	auto result = dtape_semaphore_down_timeout(_dtapeForkWaitSemaphore, forkWaitTimeoutSeconds);
-+
-+	switch (result) {
- 		case dtape_semaphore_wait_result_ok:
+-	switch (waitForForkCheckin(_dtapeForkWaitSemaphore)) {
++	switch (_forkChildCheckin.wait(_dtapeForkWaitSemaphore)) {
+ 		case ForkCheckinWaitResult::Observed:
  			processLog.info() << *this << ": fork child checkin observed" << processLog.endLog;
-+			_forkChildCheckedIn.store(false);
  			return true;
- 		case dtape_semaphore_wait_result_interrupted:
-+			// A signal aborted the wait. If the checkin landed in the race
-+			// window, the sticky flag caught it; report it as observed so the
-+			// guest does not have to retry. Otherwise return false and the guest
-+			// re-issues, re-checking the sticky flag on the next entry.
-+			if (_forkChildCheckedIn.exchange(false)) {
-+				processLog.info() << *this << ": fork child checkin observed (sticky, after interrupt)" << processLog.endLog;
-+				return true;
-+			}
- 			return false;
- 		case dtape_semaphore_wait_result_timed_out:
-+			// Genuine timeout: re-check the sticky flag one last time.
-+			if (_forkChildCheckedIn.exchange(false)) {
-+				processLog.info() << *this << ": fork child checkin observed (sticky, at timeout)" << processLog.endLog;
-+				return true;
-+			}
- 			processLog.error() << *this << ": timed out waiting " << forkWaitTimeoutSeconds
- 					<< " seconds for fork child checkin" << processLog.endLog;
- 			return false;
