@@ -944,20 +944,19 @@ patches:
   bead: dar-gwn.1.9
   publication-status: ready
   tests:
-  - name: sigexc_debug_flood_model
+  - name: sigexc_debug_flood_contract
     kind: contract
-    coverage-tier: model
+    coverage-tier: compile
     env: host
     diag: bare
     red: true
     red-proof:
-      mode: self
-      why-self: The model drives startup debug-event emission through old unconditional and fixed gated semantics.
-    runner: python
+      mode: source-base
+      source-env: XNU_SRC_ROOT
+    runner: script
     repo: darling-workspace
-    script: tests/xnu_behavior_models.py
-    args: [sigexc-debug-flood]
-    note: Host behavioral model; old startup emits debug events unconditionally, fixed path is quiet unless debug is enabled.
+    script: tests/sigexc_debug_flood_contract.sh
+    note: Compiles real sigexc.c and verifies the default build has no __simple_kprintf dependency while DEBUG_SIGEXC still enables the debug path.
   pr-draft: pr-drafts/xnu-sigexc-debug-flood.md
   github:
     fork:
