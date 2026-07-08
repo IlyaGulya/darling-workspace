@@ -10,7 +10,9 @@ refs, PR drafts, and agent handoff.
 - Process state: the owning Bead.
 - Fork and upstream PRs are published views, not sources of truth.
 - Run source commands in the West workspace, not in this manifest repository.
-- Use `west dw beads ...` for issue operations.
+- Use `west dw beads ...` for issue operations. For comments, use
+  `west dw beads comment <id> <text>`; it is a workspace alias for the Beads
+  `comments add` subcommand.
 - Use `west patch verify|apply|clean|list` for local integration profiles.
 - Treat clean `fix/*` branches as canonical editable source.
 - Treat patch files and `patches.yml` as portable integration artifacts.
