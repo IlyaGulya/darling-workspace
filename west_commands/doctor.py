@@ -90,6 +90,7 @@ class DarlingDoctor(WestCommand):
 
         self._check_manifest_drift(topdir, args)
         self._check_build_prefix(topdir, args)
+        self._check_prefix_boot_prereqs(args)
         self._check_baseline(args)
         self._check_extra_prefixes(args)
 
@@ -215,6 +216,26 @@ class DarlingDoctor(WestCommand):
                         self._warn(f"a second build dir at {wrong} has prefix={wp} (NOT {baked}); "
                                    f"do not build deployable binaries there")
                     break
+
+    # -- CHECK 2b: prefix boot prerequisites ------------------------------
+    def _check_prefix_boot_prereqs(self, args):
+        self.inf("\n== 2b. prefix boot prerequisites ==")
+
+        def check_one(prefix: Path, label: str):
+            for rel in ("private/var/tmp", "libexec/darling/private/var/tmp"):
+                path = prefix / rel
+                if not path.is_dir():
+                    self._problem(f"{label}: {rel} missing; launchd cannot create runtime sockets")
+                    continue
+                mode = path.stat().st_mode & 0o7777
+                if mode != 0o1777:
+                    self._problem(f"{label}: {rel} mode {mode:o}, expected 1777")
+                else:
+                    self._ok(f"{label}: {rel} exists with mode 1777")
+
+        check_one(Path(args.prefix), "prefix")
+        for extra in args.extra_prefix:
+            check_one(Path(extra), f"extra {extra}")
 
     # -- CHECK 3: deployed binaries vs known-good baseline ----------------
     def _check_baseline(self, args):

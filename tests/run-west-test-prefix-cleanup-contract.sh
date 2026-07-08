@@ -64,6 +64,12 @@ test._kill_dserver_for_prefix = lambda _prefix: None
 test._ps_entries = lambda: []
 assert test._shutdown_test_prefix()
 
+with tempfile.TemporaryDirectory() as temp:
+    stale_prefix = Path(temp)
+    (stale_prefix / ".init.pid").write_text("999999999\n")
+    test._remove_stale_init_pid(stale_prefix)
+    assert not (stale_prefix / ".init.pid").exists()
+
 test = make_test()
 with tempfile.TemporaryDirectory() as temp:
     test._prefix = temp
@@ -71,6 +77,42 @@ with tempfile.TemporaryDirectory() as temp:
     with test._prefix_resource_context(True):
         pass
     assert test._prefix_cleanup_failed
+
+test = make_test()
+with tempfile.TemporaryDirectory() as temp:
+    prefix = Path(temp)
+    problems = test._prefix_boot_prerequisite_problems(prefix)
+    assert "private/var/tmp missing in Darling prefix" in problems, problems
+    assert "libexec/darling/private/var/tmp missing in Darling prefix" in problems, problems
+
+    (prefix / "private/var/tmp").mkdir(parents=True)
+    (prefix / "libexec/darling/private/var/tmp").mkdir(parents=True)
+    (prefix / "private/var/tmp").chmod(0o755)
+    (prefix / "libexec/darling/private/var/tmp").chmod(0o1777)
+    problems = test._prefix_boot_prerequisite_problems(prefix)
+    assert "private/var/tmp mode 755, expected 1777" in problems, problems
+    assert all("libexec/darling/private/var/tmp" not in item for item in problems), problems
+
+    (prefix / "private/var/tmp").chmod(0o1777)
+    assert test._prefix_boot_prerequisite_problems(prefix) == []
+
+    problems = test._guest_c_fixture_prerequisite_problems(
+        prefix,
+        "/Library/Developer/CommandLineTools/usr/bin/clang",
+        "-isysroot /Library/Developer/CommandLineTools/SDKs/MacOSX.sdk",
+    )
+    assert any("guest compiler missing in prefix root" in item for item in problems), problems
+    assert any("guest SDK sysroot missing in base tree" in item for item in problems), problems
+
+    for root in (prefix, prefix / "libexec/darling"):
+        (root / "Library/Developer/CommandLineTools/usr/bin").mkdir(parents=True)
+        (root / "Library/Developer/CommandLineTools/usr/bin/clang").write_text("")
+        (root / "Library/Developer/CommandLineTools/SDKs/MacOSX.sdk").mkdir(parents=True)
+    assert test._guest_c_fixture_prerequisite_problems(
+        prefix,
+        "/Library/Developer/CommandLineTools/usr/bin/clang",
+        "-isysroot /Library/Developer/CommandLineTools/SDKs/MacOSX.sdk",
+    ) == []
 
 test = make_test()
 test.manifest = types.SimpleNamespace(repo_abspath=str(Path.cwd()), projects=[])
