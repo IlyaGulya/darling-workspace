@@ -105,6 +105,11 @@ class DarlingTest(WestCommand):
             help="do not shut down a Darling prefix after prefix-backed metadata tests",
         )
         parser.add_argument(
+            "--no-overlayfs",
+            action="store_true",
+            help="run Darling prefix tests with DARLING_NOOVERLAYFS=1",
+        )
+        parser.add_argument(
             "--materialize-profile",
             action="store_true",
             help="run profile metadata tests from temporary worktrees built from manifest revisions plus patch files",
@@ -362,6 +367,9 @@ class DarlingTest(WestCommand):
                 self._restore_checkout_state(repo, state)
 
     def _resolve_prefix(self, args) -> str | None:
+        self._prefix_env = {}
+        if args.no_overlayfs:
+            self._prefix_env["DARLING_NOOVERLAYFS"] = "1"
         if args.prefix and args.prefix_profile:
             self.die("--prefix and --prefix-profile are mutually exclusive")
         if args.prefix:
@@ -374,6 +382,8 @@ class DarlingTest(WestCommand):
                 "homebrew": "~/work/darling-prefix-homebrew-test",
                 "smoke": "~/work/darling-prefix-smoke",
             }
+            if args.prefix_profile == "homebrew":
+                self._prefix_env["DARLING_NOOVERLAYFS"] = "1"
             return str(Path(profiles.get(args.prefix_profile, args.prefix_profile)).expanduser())
         if os.environ.get("DPREFIX"):
             return os.environ["DPREFIX"]
@@ -801,6 +811,14 @@ class DarlingTest(WestCommand):
                 return True
         return False
 
+    def _metadata_needs_profile_worktree(self, tests) -> bool:
+        for patch, test in tests:
+            invocation = self._test_invocation(patch, test)
+            script_path = invocation.get("script_path")
+            if script_path is not None and not script_path.is_file():
+                return True
+        return False
+
     def _display_ctest_label(self, label: str) -> str:
         build = self._testkit_dir() / "build"
         args = ["ctest", "--test-dir", str(build), "--output-on-failure", "-L", label]
@@ -1078,6 +1096,7 @@ grep -q '^ORACLE_RC=0$' "$verdict"
         if not prefix:
             return merged
         merged["DPREFIX"] = prefix
+        merged.update(getattr(self, "_prefix_env", {}))
         launcher = self._resolve_darling_launcher(prefix)
         if launcher:
             merged["DARLING"] = launcher
@@ -1256,6 +1275,7 @@ grep -q '^ORACLE_RC=0$' "$verdict"
         if launcher:
             env = os.environ.copy()
             env["DPREFIX"] = prefix
+            env.update(getattr(self, "_prefix_env", {}))
             self.inf(f"shutdown Darling prefix: {prefix}")
             subprocess.run(
                 [launcher, "shutdown"],
@@ -1482,37 +1502,53 @@ grep -q '^ORACLE_RC=0$' "$verdict"
             self.die("--patch requires --profile")
 
         if args.profile:
-            with self._selected_profile_context(args.profile, list_only=args.list):
-                selected, missing = self._metadata_tests(
-                    args.profile, args.patch, args.bead, args.env, args.diag, args.red_only
+            selected, missing = self._metadata_tests(
+                args.profile, args.patch, args.bead, args.env, args.diag, args.red_only
+            )
+            materialize_was_requested = self._materialize_profile
+            if (
+                selected
+                and not args.list
+                and not self._materialize_profile
+                and not self._profile_is_applied(args.profile)
+                and self._metadata_needs_profile_worktree(selected)
+            ):
+                self.inf(
+                    f"{args.profile}: selected test asset is not in the live checkout; "
+                    "temporarily materializing profile in worktrees"
                 )
-                if missing:
-                    for patch in missing:
-                        self.inf(f"missing test metadata: {patch['path']} [{patch.get('bead', '-')}]")
-                if selected:
-                    needs_prefix = self._metadata_needs_prefix(selected) and not args.list
-                    if args.prove_red:
-                        selected = [
-                            (patch, test)
-                            for patch, test in selected
-                            if test.get("red") or test.get("red-proof")
-                        ]
-                        if not selected:
-                            self.die("no red-proof tests selected from patch metadata")
+                self._materialize_profile = True
+            try:
+                with self._selected_profile_context(args.profile, list_only=args.list):
+                    if missing:
+                        for patch in missing:
+                            self.inf(f"missing test metadata: {patch['path']} [{patch.get('bead', '-')}]")
+                    if selected:
                         needs_prefix = self._metadata_needs_prefix(selected) and not args.list
+                        if args.prove_red:
+                            selected = [
+                                (patch, test)
+                                for patch, test in selected
+                                if test.get("red") or test.get("red-proof")
+                            ]
+                            if not selected:
+                                self.die("no red-proof tests selected from patch metadata")
+                            needs_prefix = self._metadata_needs_prefix(selected) and not args.list
+                            with self._prefix_resource_context(needs_prefix):
+                                result = self._run_red_proofs(selected, args.list, unknown)
+                            if getattr(self, "_prefix_cleanup_failed", False):
+                                result = result or 1
+                            raise SystemExit(result)
                         with self._prefix_resource_context(needs_prefix):
-                            result = self._run_red_proofs(selected, args.list, unknown)
+                            result = self._run_metadata_tests(selected, args.list, unknown)
                         if getattr(self, "_prefix_cleanup_failed", False):
                             result = result or 1
                         raise SystemExit(result)
-                    with self._prefix_resource_context(needs_prefix):
-                        result = self._run_metadata_tests(selected, args.list, unknown)
-                    if getattr(self, "_prefix_cleanup_failed", False):
-                        result = result or 1
-                    raise SystemExit(result)
-                if args.list:
-                    return
-                self.die("no tests selected from patch metadata")
+                    if args.list:
+                        return
+                    self.die("no tests selected from patch metadata")
+            finally:
+                self._materialize_profile = materialize_was_requested
 
         testkit = self._testkit_dir()
         if not testkit.exists():
