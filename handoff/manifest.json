@@ -457,7 +457,7 @@
         },
         {
           "branch": "fix/psynch-kernel-return-helper",
-          "head": "6b96e2471f5b68bc4486c14de126f7109dbaf984",
+          "head": "c29d7b38b2a1ffac4466c43a683f71bb5437ba00",
           "upstream": "",
           "source_ref": "refs/heads/fix/psynch-kernel-return-helper"
         },
@@ -469,7 +469,7 @@
         },
         {
           "branch": "integration/homebrew",
-          "head": "6b96e2471f5b68bc4486c14de126f7109dbaf984",
+          "head": "c29d7b38b2a1ffac4466c43a683f71bb5437ba00",
           "upstream": "",
           "source_ref": "refs/heads/integration/homebrew"
         }

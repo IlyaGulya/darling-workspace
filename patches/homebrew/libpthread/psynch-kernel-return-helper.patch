@@ -345,7 +345,7 @@ index e64e932367083086e66892554f0ff7a96fc959c3..3df19a44a83f45ed8458b6efd8d0db9c
  }
 -
 
-From 6b96e2471f5b68bc4486c14de126f7109dbaf984 Mon Sep 17 00:00:00 2001
+From c29d7b38b2a1ffac4466c43a683f71bb5437ba00 Mon Sep 17 00:00:00 2001
 From: Ilya Gulya <ilya@gulya.me>
 Date: Tue, 7 Jul 2026 16:52:46 +0000
 Subject: [PATCH] libpthread: split psynch return decoding contract
@@ -355,9 +355,11 @@ Subject: [PATCH] libpthread: split psynch return decoding contract
  src/pthread_cond.c                         |  14 +-
  src/pthread_mutex.c                        |  28 ++-
  src/pthread_rwlock.c                       |   8 +-
+ tests/guest-verdict-test-lib.sh            |  57 +++++
  tests/psynch_kernel_return_contract.c      | 270 +++++++++++++++++++++
- tests/run-psynch-kernel-return-contract.sh |  52 ++++
- 6 files changed, 384 insertions(+), 36 deletions(-)
+ tests/run-psynch-kernel-return-contract.sh |  17 ++
+ 7 files changed, 406 insertions(+), 36 deletions(-)
+ create mode 100644 tests/guest-verdict-test-lib.sh
  create mode 100644 tests/psynch_kernel_return_contract.c
  create mode 100755 tests/run-psynch-kernel-return-contract.sh
 
@@ -559,6 +561,69 @@ index 3df19a44a83f45ed8458b6efd8d0db9c8379e9ca..67c3b3ec8ebb2882a383d37eda62a694
  		if (res == 0) {
  			res = 0;
  			RWLOCK_DEBUG_SEQ(wakeup, rwlock, oldseq, newseq, updateval,
+diff --git a/tests/guest-verdict-test-lib.sh b/tests/guest-verdict-test-lib.sh
+new file mode 100644
+index 0000000000000000000000000000000000000000..ee08ac2d095da20eaa7e2de4cc7b51f3789573af
+--- /dev/null
++++ b/tests/guest-verdict-test-lib.sh
+@@ -0,0 +1,57 @@
++#!/usr/bin/env bash
++
++guest_verdict_run_c() {
++	local name="$1" src="$2" ok_marker="$3" timeout_seconds="$4"
++	shift 4
++	local output="/tmp/$name"
++	local guest_src="/tmp/$(basename "$src")"
++	local verdict="/tmp/$name.verdict"
++	local runner_log="/tmp/$name.runner.log"
++	local launch="${DARLING:-darling}"
++	local guest_prelude="${GUEST_VERDICT_GUEST_PRELUDE:-:}"
++
++	: "${DPREFIX:?set DPREFIX to a bootable Darling prefix}"
++
++	rm -f "$DPREFIX$verdict" 2>/dev/null || true
++	cp "$src" "$DPREFIX$guest_src"
++	env DPREFIX="$DPREFIX" "$launch" shell /bin/bash --login -c "rm -f '$verdict'" >/dev/null 2>&1 || true
++
++	local compile_args=""
++	printf -v compile_args " %q" "$@"
++	env DPREFIX="$DPREFIX" "$launch" shell /bin/bash --login -c "
++		$guest_prelude
++		clang -O2 -Wall -Wextra -o '$output' '$guest_src'$compile_args 2>&1
++		'$output' > '$verdict' 2>&1
++		echo \"ORACLE_RC=\\$?\" >> '$verdict'
++	" </dev/null > "$runner_log" 2>&1 &
++	local shell_pid=$!
++
++	local deadline=$((SECONDS + timeout_seconds))
++	while [ "$SECONDS" -lt "$deadline" ]; do
++		if env DPREFIX="$DPREFIX" "$launch" shell /bin/bash --login -c \
++			"test -f '$verdict' && grep -q '^ORACLE_RC=' '$verdict'" >/dev/null 2>&1; then
++			break
++		fi
++		sleep 1
++	done
++
++	if ! env DPREFIX="$DPREFIX" "$launch" shell /bin/bash --login -c \
++		"test -f '$verdict' && grep -q '^ORACLE_RC=' '$verdict'" >/dev/null 2>&1; then
++		kill "$shell_pid" 2>/dev/null || true
++		wait "$shell_pid" 2>/dev/null || true
++		echo "=== runner log ==="
++		grep -vE "Xlib|libGL|MESA|X11" "$runner_log" 2>/dev/null || true
++		echo "no verdict produced before timeout"
++		return 2
++	fi
++
++	kill "$shell_pid" 2>/dev/null || true
++	wait "$shell_pid" 2>/dev/null || true
++
++	echo "=== verdict ==="
++	local guest_verdict
++	guest_verdict="$(env DPREFIX="$DPREFIX" "$launch" shell /bin/bash --login -c "cat '$verdict'" 2>/dev/null || true)"
++	printf '%s\n' "$guest_verdict"
++	grep -q "^$ok_marker" <<<"$guest_verdict" &&
++		grep -q "ORACLE_RC=0" <<<"$guest_verdict"
++}
 diff --git a/tests/psynch_kernel_return_contract.c b/tests/psynch_kernel_return_contract.c
 new file mode 100644
 index 0000000000000000000000000000000000000000..623daa684ab76e2465ce5e7d60185abd4aebeb65
@@ -837,10 +902,10 @@ index 0000000000000000000000000000000000000000..623daa684ab76e2465ce5e7d60185abd
 +}
 diff --git a/tests/run-psynch-kernel-return-contract.sh b/tests/run-psynch-kernel-return-contract.sh
 new file mode 100755
-index 0000000000000000000000000000000000000000..25b42997dcdbdbe5e1c8eb5d1a898c4bf07250e8
+index 0000000000000000000000000000000000000000..dd9ccbd3168f11b2623aac3c71732ff19c1a29e9
 --- /dev/null
 +++ b/tests/run-psynch-kernel-return-contract.sh
-@@ -0,0 +1,52 @@
+@@ -0,0 +1,17 @@
 +#!/usr/bin/env bash
 +# Runtime gate for dar-q95.29.2: psynch wait return decoding keeps base errno
 +# distinct from condvar status bits, retries only EINTR, and preserves
@@ -848,48 +913,13 @@ index 0000000000000000000000000000000000000000..25b42997dcdbdbe5e1c8eb5d1a898c4b
 +set -euo pipefail
 +
 +here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-+LAUNCH="${DARLING:-darling}"
-+: "${DPREFIX:?set DPREFIX to a bootable Darling prefix}"
++. "$here/guest-verdict-test-lib.sh"
 +
-+src="$here/psynch_kernel_return_contract.c"
-+verdict="/tmp/psynch_kernel_return_contract.verdict"
-+rm -f "$DPREFIX/tmp/psynch_kernel_return_contract.verdict" 2>/dev/null || true
-+cp "$src" "$DPREFIX/tmp/psynch_kernel_return_contract.c"
-+env DPREFIX="$DPREFIX" "$LAUNCH" shell /bin/bash --login -c "rm -f '$verdict'" >/dev/null 2>&1 || true
++GUEST_VERDICT_GUEST_PRELUDE="export PTHREAD_MUTEX_USE_ULOCK=0"
 +
-+guest_timeout="${PSYNCH_CONTRACT_TIMEOUT:-90}"
-+env DPREFIX="$DPREFIX" "$LAUNCH" shell /bin/bash --login -c '
-+  export PTHREAD_MUTEX_USE_ULOCK=0
-+  clang -O2 -Wall -Wextra -o /tmp/psynch_kernel_return_contract /tmp/psynch_kernel_return_contract.c -lpthread 2>&1
-+  /tmp/psynch_kernel_return_contract > /tmp/psynch_kernel_return_contract.verdict 2>&1
-+  echo "ORACLE_RC=$?" >> /tmp/psynch_kernel_return_contract.verdict
-+' </dev/null > /tmp/psynch_kernel_return_contract.runner.log 2>&1 &
-+shell_pid=$!
-+
-+deadline=$((SECONDS + guest_timeout))
-+while [ "$SECONDS" -lt "$deadline" ]; do
-+  if env DPREFIX="$DPREFIX" "$LAUNCH" shell /bin/bash --login -c \
-+      "test -f '$verdict' && grep -q '^ORACLE_RC=' '$verdict'" >/dev/null 2>&1; then
-+    break
-+  fi
-+  sleep 1
-+done
-+
-+if ! env DPREFIX="$DPREFIX" "$LAUNCH" shell /bin/bash --login -c \
-+    "test -f '$verdict' && grep -q '^ORACLE_RC=' '$verdict'" >/dev/null 2>&1; then
-+  kill "$shell_pid" 2>/dev/null || true
-+  wait "$shell_pid" 2>/dev/null || true
-+  echo "=== runner log ==="
-+  grep -vE "Xlib|libGL|MESA|X11" /tmp/psynch_kernel_return_contract.runner.log 2>/dev/null || true
-+  echo "no verdict produced before timeout"
-+  exit 2
-+fi
-+
-+kill "$shell_pid" 2>/dev/null || true
-+wait "$shell_pid" 2>/dev/null || true
-+
-+echo "=== verdict ==="
-+guest_verdict="$(env DPREFIX="$DPREFIX" "$LAUNCH" shell /bin/bash --login -c "cat '$verdict'" 2>/dev/null || true)"
-+printf '%s\n' "$guest_verdict"
-+grep -q "^PSYNCH_KERNEL_RETURN_CONTRACT_OK" <<<"$guest_verdict" &&
-+  grep -q "ORACLE_RC=0" <<<"$guest_verdict"
++guest_verdict_run_c \
++	psynch_kernel_return_contract \
++	"$here/psynch_kernel_return_contract.c" \
++	PSYNCH_KERNEL_RETURN_CONTRACT_OK \
++	"${PSYNCH_CONTRACT_TIMEOUT:-90}" \
++	-lpthread
