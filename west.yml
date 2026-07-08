@@ -1306,7 +1306,7 @@ manifest:
   - name: darling-debug-runner
     path: darling-debug-runner
     remote: ilya
-    revision: c85f1bd1ed7238a74c0b30a8e5c0daf3ee933a52
+    revision: dbcd8ebfbb63a94e5f3f21fb6df570b831425b33
     groups:
     - private
     - debug-tools

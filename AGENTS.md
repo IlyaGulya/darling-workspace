@@ -55,6 +55,9 @@ refs, PR drafts, and agent handoff.
 - Darling guest tests should prefer `requires: [darling-prefix]` over
   `requires-env: [DPREFIX]`; let `west test --prefix/--prefix-profile` provide
   `DPREFIX`.
+- Patch metadata tests with `diag: guarded` or `diag: forensic` must run
+  through `darling-debug-runner`; keep timeouts/capture in `west test`, not as
+  unbounded bespoke shell around every guest test.
 - `west patch export` must not create unrelated `patches.yml` formatting churn.
   Treat block-scalar/quoting rewrites as a tooling bug, not acceptable review
   noise.

@@ -301,6 +301,10 @@ class DarlingPatch(WestCommand):
                 errors.append(f"tests[{index}] args must be a list")
             if test.get("env-vars") is not None and not isinstance(test.get("env-vars"), dict):
                 errors.append(f"tests[{index}] env-vars must be a mapping")
+            if test.get("timeout-seconds") is not None:
+                timeout = test.get("timeout-seconds")
+                if not isinstance(timeout, int) or timeout <= 0:
+                    errors.append(f"tests[{index}] timeout-seconds must be a positive integer")
             if test.get("requires-env") is not None:
                 required = test.get("requires-env")
                 if not isinstance(required, list) or not all(
