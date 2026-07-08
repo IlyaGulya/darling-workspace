@@ -1,4 +1,4 @@
-From ddfc26341331ad3f3148d85e0fee2ef165f422b5 Mon Sep 17 00:00:00 2001
+From 418cf7fc07686bd78fbc69b1caac58ebbfc91a20 Mon Sep 17 00:00:00 2001
 From: Ilya Gulya <ilya@gulya.me>
 Date: Fri, 26 Jun 2026 07:38:43 +0000
 Subject: [PATCH] call: reply with an error instead of silently dropping at
@@ -34,9 +34,11 @@ instead of hanging.
 This is the unifying fix for the lost-reply class: every ingest-time
 discard now unblocks the waiting guest.
 ---
- internal-include/darlingserver/call.hpp | 10 +++++
- src/call.cpp                            | 49 +++++++++++++++++++++----
- 2 files changed, 52 insertions(+), 7 deletions(-)
+ internal-include/darlingserver/call.hpp       | 10 ++++
+ .../darlingserver/rpc-error-reply.hpp         | 14 ++++++
+ src/call.cpp                                  | 49 ++++++++++++++++---
+ 3 files changed, 66 insertions(+), 7 deletions(-)
+ create mode 100644 internal-include/darlingserver/rpc-error-reply.hpp
 
 diff --git a/internal-include/darlingserver/call.hpp b/internal-include/darlingserver/call.hpp
 index fa40665faa50aeda96948d028460f1432d3f826b..97140aa4c46e9d856ce988b3b7d993a40a2865e2 100644
@@ -59,11 +61,39 @@ index fa40665faa50aeda96948d028460f1432d3f826b..97140aa4c46e9d856ce988b3b7d993a4
  		Call(std::shared_ptr<Thread> thread, Address replyAddress, dserver_rpc_callhdr_t* callHeader);
  		virtual ~Call();
  
+diff --git a/internal-include/darlingserver/rpc-error-reply.hpp b/internal-include/darlingserver/rpc-error-reply.hpp
+new file mode 100644
+index 0000000000000000000000000000000000000000..a7317c2d0784c7008151664f85d221957c91c12c
+--- /dev/null
++++ b/internal-include/darlingserver/rpc-error-reply.hpp
+@@ -0,0 +1,14 @@
++#ifndef _DARLINGSERVER_RPC_ERROR_REPLY_HPP_
++#define _DARLINGSERVER_RPC_ERROR_REPLY_HPP_
++
++namespace DarlingServer {
++	template <typename ReplyHeader, typename CallHeader>
++	inline ReplyHeader rpcErrorReplyHeaderFromCall(const CallHeader* header, int code) {
++		ReplyHeader reply = {};
++		reply.number = header->number;
++		reply.code = code;
++		return reply;
++	}
++}
++
++#endif
 diff --git a/src/call.cpp b/src/call.cpp
-index a5110d429ecf08753fa2cc095cf3d0fc13b0218e..8cbb20d0a232576e18df68db0d84cb181431445f 100644
+index a5110d429ecf08753fa2cc095cf3d0fc13b0218e..339820dd05ad71f37f664ed65567ddf90f387865 100644
 --- a/src/call.cpp
 +++ b/src/call.cpp
-@@ -29,6 +29,7 @@
+@@ -19,6 +19,7 @@
+ 
+ #define _GNU_SOURCE 1
+ #include <darlingserver/call.hpp>
++#include <darlingserver/rpc-error-reply.hpp>
+ #include <darlingserver/server.hpp>
+ #include <sys/uio.h>
+ 
+@@ -29,6 +30,7 @@
  #include <sys/syscall.h>
  #include <darlingserver/kqchan.hpp>
  #include <system_error>
@@ -71,7 +101,7 @@ index a5110d429ecf08753fa2cc095cf3d0fc13b0218e..8cbb20d0a232576e18df68db0d84cb18
  
  static DarlingServer::Log callLog("calls");
  
-@@ -81,10 +82,13 @@ std::shared_ptr<DarlingServer::Call> DarlingServer::Call::callFromMessage(Messag
+@@ -81,10 +83,13 @@ std::shared_ptr<DarlingServer::Call> DarlingServer::Call::callFromMessage(Messag
  		});
  
  		if (!process) {
@@ -88,7 +118,7 @@ index a5110d429ecf08753fa2cc095cf3d0fc13b0218e..8cbb20d0a232576e18df68db0d84cb18
  			return nullptr;
  		}
  
-@@ -110,10 +114,12 @@ std::shared_ptr<DarlingServer::Call> DarlingServer::Call::callFromMessage(Messag
+@@ -110,10 +115,12 @@ std::shared_ptr<DarlingServer::Call> DarlingServer::Call::callFromMessage(Messag
  		});
  
  		if (!thread) {
@@ -104,7 +134,7 @@ index a5110d429ecf08753fa2cc095cf3d0fc13b0218e..8cbb20d0a232576e18df68db0d84cb18
  			return nullptr;
  		}
  
-@@ -216,7 +222,22 @@ std::shared_ptr<DarlingServer::Call> DarlingServer::Call::callFromMessage(Messag
+@@ -216,7 +223,22 @@ std::shared_ptr<DarlingServer::Call> DarlingServer::Call::callFromMessage(Messag
  	#undef CALL_CASE
  
  	if (thread) {
@@ -128,7 +158,7 @@ index a5110d429ecf08753fa2cc095cf3d0fc13b0218e..8cbb20d0a232576e18df68db0d84cb18
  		return result;
  	} else {
  		Thread::kernelAsync([result]() {
-@@ -273,6 +294,20 @@ void DarlingServer::Call::sendReply(Message&& reply) {
+@@ -273,6 +295,19 @@ void DarlingServer::Call::sendReply(Message&& reply) {
  	Server::sharedInstance().sendMessage(std::move(reply));
  };
  
@@ -141,8 +171,7 @@ index a5110d429ecf08753fa2cc095cf3d0fc13b0218e..8cbb20d0a232576e18df68db0d84cb18
 +	Message reply(sizeof(dserver_rpc_replyhdr_t), 0);
 +	reply.setAddress(replyAddress);
 +	auto replyStruct = reinterpret_cast<dserver_rpc_replyhdr_t*>(reply.data().data());
-+	replyStruct->number = header->number;
-+	replyStruct->code = code;
++	*replyStruct = rpcErrorReplyHeaderFromCall<dserver_rpc_replyhdr_t>(header, code);
 +	sendReply(std::move(reply));
 +};
 +
