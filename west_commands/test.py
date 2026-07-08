@@ -669,8 +669,10 @@ class DarlingTest(WestCommand):
             display_parts = [quote(cc), *[quote(str(flag)) for flag in test.get("compile-flags", [])]]
             for include_dir in test.get("include-dirs", []):
                 display_parts.extend(["-I", quote(str(include_dir))])
-            if test.get("stub-headers"):
+            if test.get("stub-headers") or test.get("generated-headers"):
                 display_parts.extend(["-I", "<generated-stubs>"])
+            for source_file in test.get("source-files", []):
+                display_parts.append(quote(str(source_file)))
             display_parts.extend([quote(script), "-o", quote(output)])
             display = f"cd {quote(repo)} && {' '.join(display_parts)} && {quote(output)}"
             return {
@@ -685,6 +687,11 @@ class DarlingTest(WestCommand):
                 "cc": cc,
                 "include_dirs": [str(item) for item in test.get("include-dirs", [])],
                 "stub_headers": [str(item) for item in test.get("stub-headers", [])],
+                "generated_headers": {
+                    str(path): str(content)
+                    for path, content in (test.get("generated-headers") or {}).items()
+                },
+                "source_files": [str(item) for item in test.get("source-files", [])],
                 "compile_flags": [str(item) for item in test.get("compile-flags", [])],
                 "source_root_env": source_env,
                 "source_env": source_env,
@@ -979,6 +986,10 @@ class DarlingTest(WestCommand):
                 header_path = stub_root / header
                 header_path.parent.mkdir(parents=True, exist_ok=True)
                 header_path.write_text("\n")
+            for header, content in invocation.get("generated_headers", {}).items():
+                header_path = stub_root / header
+                header_path.parent.mkdir(parents=True, exist_ok=True)
+                header_path.write_text(content)
             binary = tempdir / Path(invocation["script_path"]).stem
             args = [
                 invocation.get("cc", "cc"),
@@ -991,6 +1002,11 @@ class DarlingTest(WestCommand):
                 if not include_path.is_absolute():
                     include_path = source_root / include_path
                 args.extend(["-I", str(include_path)])
+            for source_file in invocation.get("source_files", []):
+                source_path = Path(source_file)
+                if not source_path.is_absolute():
+                    source_path = source_root / source_path
+                args.append(str(source_path))
             args.extend([str(invocation["script_path"]), "-o", str(binary)])
             compile_rc = subprocess.run(
                 args,

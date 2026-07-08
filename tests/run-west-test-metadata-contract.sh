@@ -62,8 +62,13 @@ patches:
       source-env: DARLING_SRC_ROOT
     runner: c-fixture
     script: tests/c_fixture_contract.c
+    source-files: [tests/c_fixture_helper.c]
     include-dirs: [src]
     stub-headers: [darling/example.h]
+    generated-headers:
+      darling/generated.h: |
+        #pragma once
+        #define WEST_GENERATED_HEADER 1
     compile-flags: [-std=gnu11, -Wall, -Wextra, -Werror]
 - path: test/guest-c-fixture.patch
   module: darling-workspace
@@ -221,7 +226,7 @@ c_fixture="$(
 )"
 
 printf '%s\n' "$c_fixture" | grep -q \
-	'cc -std=gnu11 -Wall -Wextra -Werror -I src -I <generated-stubs> tests/c_fixture_contract.c -o' ||
+	'cc -std=gnu11 -Wall -Wextra -Werror -I src -I <generated-stubs> tests/c_fixture_helper.c tests/c_fixture_contract.c -o' ||
 	fail 'c-fixture metadata did not resolve to a compile-and-run command'
 printf '%s\n' "$source_only_check" | grep -q 'test metadata: 5 covered (runtime 1, compile 1, host 2, model 1)' ||
 	fail 'coverage-tier summary did not classify runtime/host/compile/model coverage'
