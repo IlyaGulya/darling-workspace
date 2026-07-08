@@ -5,8 +5,8 @@ from __future__ import annotations
 
 import argparse
 import json
-import shutil
 import subprocess
+import tempfile
 from pathlib import Path
 
 from generate_manifest import git, public_base
@@ -95,12 +95,34 @@ def private_branches(repo: Path, include_remote_only: bool = False) -> list[dict
     return branches
 
 
+def bundle_heads(bundle: Path) -> dict[str, str]:
+    if not bundle.exists():
+        return {}
+    result = subprocess.run(
+        ["git", "bundle", "list-heads", str(bundle)],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if result.returncode != 0:
+        return {}
+    heads = {}
+    for line in result.stdout.splitlines():
+        head, ref = (line.split(maxsplit=1) + [""])[:2]
+        if ref:
+            heads[ref] = head
+    return heads
+
+
+def expected_bundle_heads(branches: list[dict[str, str]]) -> dict[str, str]:
+    return {item["source_ref"]: item["head"] for item in branches}
+
+
 def pack(source: Path, output: Path) -> None:
-    if output.exists():
-        shutil.rmtree(output)
-    output.mkdir(parents=True)
+    output.mkdir(parents=True, exist_ok=True)
     records = []
     dirty = []
+    expected_files = {"manifest.json"}
 
     for relative, repo in initialized_projects(source):
         changes = git(repo, "status", "--porcelain")
@@ -124,29 +146,40 @@ def pack(source: Path, output: Path) -> None:
             )
             if base:
                 exclusions.append(f"^{base}")
-        result = subprocess.run(
-            [
-                "git",
-                "-C",
-                str(repo),
-                "bundle",
-                "create",
-                str(bundle),
-                *refs,
-                *exclusions,
-            ],
-            check=False,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-        )
-        if result.returncode == 0:
-            records.append(
-                {
-                    "path": relative,
-                    "bundle": filename,
-                    "branches": branches,
-                }
+        current_heads = bundle_heads(bundle)
+        target_heads = expected_bundle_heads(branches)
+        with tempfile.TemporaryDirectory(prefix=f".{filename}.", dir=output) as temp:
+            temp_bundle = Path(temp) / filename
+            result = subprocess.run(
+                [
+                    "git",
+                    "-C",
+                    str(repo),
+                    "bundle",
+                    "create",
+                    str(temp_bundle),
+                    *refs,
+                    *exclusions,
+                ],
+                check=False,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
             )
+            if result.returncode == 0:
+                expected_files.add(filename)
+                if current_heads != target_heads:
+                    temp_bundle.replace(bundle)
+                records.append(
+                    {
+                        "path": relative,
+                        "bundle": filename,
+                        "branches": branches,
+                    }
+                )
+
+    for stale in output.glob("*.bundle"):
+        if stale.name not in expected_files:
+            stale.unlink()
 
     (output / "manifest.json").write_text(
         json.dumps({"version": 1, "projects": records}, indent=2) + "\n"
