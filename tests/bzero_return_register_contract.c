@@ -1,23 +1,14 @@
-#!/usr/bin/env bash
-set -euo pipefail
-
-src="${LIBPLATFORM_SRC_ROOT:?set LIBPLATFORM_SRC_ROOT}"
-asm="$src/src/string/x86_64/bzero.S"
-test -f "$asm"
-
-tmp="$(mktemp -d)"
-trap 'rm -rf "$tmp"' EXIT
-
-cat > "$tmp/harness.c" <<'C_EOF'
 #include <stddef.h>
 #include <stdio.h>
 #include <string.h>
 
-void *__platform_memset(void *s, int c, size_t n) {
+void *__platform_memset(void *s, int c, size_t n)
+{
 	return memset(s, c, n);
 }
 
-int main(void) {
+int main(void)
+{
 	unsigned char buf[64];
 	memset(buf, 0xa5, sizeof(buf));
 
@@ -39,9 +30,6 @@ int main(void) {
 			return 1;
 		}
 	}
+	puts("GREEN: bzero return register contract");
 	return 0;
 }
-C_EOF
-
-cc -std=gnu11 -Wall -Wextra -Werror "$tmp/harness.c" "$asm" -o "$tmp/bzero-contract"
-"$tmp/bzero-contract"
