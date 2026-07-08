@@ -2044,6 +2044,18 @@ patches:
     repo: darling-workspace
     script: tests/fd_guard_ebadf_contract.sh
     note: Host RED->GREEN contract that guarded fd dup, dup2, and fcntl return EBADF instead of aborting or reaching Linux syscall fallback.
+  - name: fd_guard_ebadf_guest
+    kind: guest
+    env: darling
+    diag: guarded
+    runner: guest-c-fixture
+    repo: darling-workspace
+    script: tests/fd_guard_ebadf_guest.c
+    ok-marker: FD_GUARD_EBADF_GUEST_OK
+    timeout-seconds: 30
+    requires:
+    - darling-prefix
+    note: Guest runtime gate for dup/dup2/fcntl on the Darling guarded fd boundary returning EBADF instead of aborting.
   github:
     fork:
       repo: IlyaGulya/darling-xnu
