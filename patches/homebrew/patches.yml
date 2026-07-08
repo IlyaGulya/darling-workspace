@@ -1923,29 +1923,28 @@ patches:
       base: master
       state: local
 - path: darling/mldr-stack-mmap-fallback.patch
-  sha256sum: 546e98b3340a188b049f82d23945f140556989bbe98ad333bc742affc98c7c9c
+  sha256sum: 65acc2f2dcabaec29280c46873dd5060f314b99ef99c042e54c1e5e9debe169e
   module: darling
   source-branch: fix/mldr-stack-mmap-fallback
   source-base: d75d7cf6372aab62bd97951be313f5a257cdce3c
-  source-commit: e1420127bc3c682578a2086c9f360f1b1bbb76d8
+  source-commit: f51f5a405f6a294cb13c505b6d14e5deb9feda51
   bead: dar-stackmmap-eexist-9j9
   publication-status: blocked
   publication-blocker: changes the guest main-stack placement contract (fixed slot -> kernel-chosen fallback on EEXIST); proven safe + validated GREEN x2 locally but wants a second reviewer on the stack_top/KERN_USRSTACK invariant before upstreaming. See dar-stackmmap-eexist-9j9.
   tests:
-  - name: mldr_stack_mmap_fallback_model
+  - name: mldr_stack_mapping_contract
     kind: contract
-    coverage-tier: model
+    coverage-tier: compile
     env: host
     diag: bare
     red: true
     red-proof:
-      mode: self
-      why-self: The model drives guest stack mapping through old EEXIST exit and fixed kernel-chosen fallback semantics.
-    runner: python
+      mode: source-base
+      source-env: DARLING_SRC_ROOT
+    runner: script
     repo: darling-workspace
-    script: tests/darling_behavior_models.py
-    args: [mldr-stack-mmap-fallback]
-    note: Host behavioral model; old stack setup fails on occupied preferred range, fixed setup falls back and updates stack_top.
+    script: tests/mldr_stack_mapping_contract.sh
+    note: Compiles the production mldr stack mapping helper with a fake mmap backend and checks preferred fixed mapping, EEXIST retry without MAP_FIXED_NOREPLACE, relocated stack_top, and non-EEXIST failure behavior.
   github:
     fork:
       repo: IlyaGulya/darling
