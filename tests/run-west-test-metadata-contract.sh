@@ -104,6 +104,24 @@ patches:
       contains:
       - WEST_GUEST_TRACE_OK
     host-trace-oracle: true
+- path: test/script-host-trace.patch
+  module: darling-workspace
+  tests:
+  - name: west_script_host_trace_contract
+    kind: guest
+    coverage-tier: runtime
+    env: darling
+    diag: bare
+    runner: script
+    script: tests/run-west-test-metadata-contract.sh
+    host-trace-files:
+    - env: WEST_SCRIPT_TRACE_FILE
+      prefix-relative-path: private/var/tmp/west-script-trace.log
+      contains:
+      - WEST_SCRIPT_TRACE_OK
+    host-trace-oracle: true
+    requires:
+    - darling-prefix
 - path: test/source-build-fixture.patch
   module: darling-workspace
   tests:
@@ -396,7 +414,7 @@ object_symbol_fixture="$(
 printf '%s\n' "$object_symbol_fixture" | grep -q \
 	'cc -c -std=gnu11 -Wall -Wextra -Werror -I tests/fixtures/c-fixture/include -I src tests/c_fixture_helper.c -o <temp>/<variant>.o && nm -u <temp>/<variant>.o && nm -g <temp>/<variant>.o' ||
 	fail 'object-symbol-fixture metadata did not resolve to a compile-and-nm command'
-printf '%s\n' "$source_only_check" | grep -q 'test metadata: 9 covered (runtime 1, compile 3, host 4, model 1), 1 exceptions, 1 missing' ||
+printf '%s\n' "$source_only_check" | grep -q 'test metadata: 10 covered (runtime 2, compile 3, host 4, model 1), 1 exceptions, 1 missing' ||
 	fail 'coverage-tier summary did not classify runtime/host/compile/model coverage'
 
 invalid_guest_red_check="$(west patch check --profile __metadata_invalid_contract 2>&1)"

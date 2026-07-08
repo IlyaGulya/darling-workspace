@@ -461,8 +461,8 @@ class DarlingPatch(WestCommand):
                     errors.append(f"tests[{index}] has unsupported requires resource")
             if test.get("host-trace-files") is not None:
                 traces = test.get("host-trace-files")
-                if runner != "guest-c-fixture":
-                    errors.append(f"tests[{index}] host-trace-files requires runner: guest-c-fixture")
+                if runner not in {"guest-c-fixture", "script"}:
+                    errors.append(f"tests[{index}] host-trace-files requires runner: guest-c-fixture or script")
                 elif not isinstance(traces, list) or not traces:
                     errors.append(f"tests[{index}] host-trace-files must be a non-empty list")
                 elif not all(isinstance(trace, dict) for trace in traces):
