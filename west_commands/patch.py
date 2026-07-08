@@ -284,6 +284,7 @@ class DarlingPatch(WestCommand):
                 or test.get("source-script")
                 or test.get("source-file")
                 or test.get("target")
+                or test.get("runner") == "cmake-configure-fixture"
             ):
                 errors.append(
                     f"tests[{index}] needs script, source-script, source-file, target, ctest-label, or command override"
@@ -292,6 +293,7 @@ class DarlingPatch(WestCommand):
             if runner and runner not in {
                 "script",
                 "python",
+                "cmake-configure-fixture",
                 "c-fixture",
                 "guest-c-fixture",
                 "object-symbol-fixture",
@@ -393,6 +395,14 @@ class DarlingPatch(WestCommand):
                     for case_index, case in enumerate(cases):
                         if case.get("args") is not None and not isinstance(case.get("args"), list):
                             errors.append(f"tests[{index}].cases[{case_index}] args must be a list")
+            if runner == "cmake-configure-fixture":
+                for key in ("configure-args", "marker-files"):
+                    if test.get(key) is not None and not isinstance(test.get(key), list):
+                        errors.append(f"tests[{index}] {key} must be a list")
+                if test.get("fake-tools") is not None and not isinstance(test.get("fake-tools"), dict):
+                    errors.append(f"tests[{index}] fake-tools must be a mapping")
+                if test.get("expect") is not None and not isinstance(test.get("expect"), dict):
+                    errors.append(f"tests[{index}] expect must be a mapping")
             if test.get("args") is not None and not isinstance(test.get("args"), list):
                 errors.append(f"tests[{index}] args must be a list")
             if test.get("env-vars") is not None and not isinstance(test.get("env-vars"), dict):
