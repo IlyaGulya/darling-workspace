@@ -2209,7 +2209,9 @@ fi
             target_text = list_text(targets, "<missing-build-targets>")
             deploy_text = list_text(deploy, "<missing-deploy>")
             artifacts.append(f"{module_text}[build:{target_text}; deploy:{deploy_text}]")
-        return "guest-runtime-deploy: " + "; ".join(artifacts)
+        bad_profile = proof.get("bad-profile")
+        suffix = f" [{bad_profile}]" if bad_profile else ""
+        return "guest-runtime-deploy" + suffix + ": " + "; ".join(artifacts)
 
     def _project_manifest_path(self, ref: str) -> Path:
         for project in self.manifest.projects:
@@ -2238,6 +2240,20 @@ fi
             current = current.parent
         return False
 
+    def _reverse_apply_patch_file(self, patch, target: Path) -> None:
+        profile = getattr(self, "_active_profile", None)
+        if not profile:
+            self.die(f"{patch['path']}: current-minus-patch needs an active profile")
+        patch_file = self._profile_path(profile).parent / patch["path"]
+        if not patch_file.is_file():
+            self.die(f"{patch['path']}: patch file not found for current-minus-patch: {patch_file}")
+        self.inf(f"  RED current-minus-patch: reverse-apply {patch_file}")
+        subprocess.run(
+            ["git", "apply", "-R", "--3way", str(patch_file)],
+            cwd=target,
+            check=True,
+        )
+
     @contextmanager
     def _guest_runtime_source_forest(self, patch, proof):
         """Create a temporary Darling source forest for a bad runtime build.
@@ -2256,13 +2272,16 @@ fi
         if darling_repo is None:
             self.die("guest-runtime-deploy needs a West project at path 'darling'")
         patch_module_path = self._project_manifest_path(patch["module"])
-        bad_revision = self._bad_revision(patch)
+        current_minus_patch = proof.get("bad-profile") == "current-minus-patch"
+        bad_revision = None if current_minus_patch else self._bad_revision(patch)
         added: list[tuple[Path, Path]] = []
         with tempfile.TemporaryDirectory(prefix="west-red-proof-source-") as temp:
             root = Path(temp)
             source_root = root / "darling"
+            darling_ref = "HEAD" if current_minus_patch else self._manifest_revision("darling")
+            bad_text = "current-minus-patch" if current_minus_patch else str(bad_revision)
             self.inf(
-                f"  RED source forest: {patch_module_path}={bad_revision} under {source_root}"
+                f"  RED source forest: {patch_module_path}={bad_text} under {source_root}"
             )
             subprocess.run(
                 [
@@ -2272,7 +2291,7 @@ fi
                     "--quiet",
                     "--detach",
                     str(source_root),
-                    self._manifest_revision("darling"),
+                    darling_ref,
                 ],
                 cwd=darling_repo,
                 check=True,
@@ -2301,6 +2320,7 @@ fi
                     if target.exists() or target.is_symlink():
                         self._remove_path_for_materialize(target)
                     if project_path == patch_module_path:
+                        revision = "HEAD" if current_minus_patch else str(bad_revision)
                         subprocess.run(
                             [
                                 "git",
@@ -2309,12 +2329,14 @@ fi
                                 "--quiet",
                                 "--detach",
                                 str(target),
-                                bad_revision,
+                                revision,
                             ],
                             cwd=repo,
                             check=True,
                         )
                         added.append((repo, target))
+                        if current_minus_patch:
+                            self._reverse_apply_patch_file(patch, target)
                     else:
                         os.symlink(repo, target, target_is_directory=True)
                 yield source_root
@@ -2883,6 +2905,8 @@ fi
                 if not args.list:
                     self._check_red_proof_requirements(selected)
             materialize_was_requested = self._materialize_profile
+            previous_active_profile = getattr(self, "_active_profile", None)
+            self._active_profile = args.profile
             if (
                 selected
                 and not args.list
@@ -2926,6 +2950,7 @@ fi
                     self.die("no tests selected from patch metadata")
             finally:
                 self._materialize_profile = materialize_was_requested
+                self._active_profile = previous_active_profile
 
         testkit = self._testkit_dir()
         if not testkit.exists():
