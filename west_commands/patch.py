@@ -162,6 +162,15 @@ class DarlingPatch(WestCommand):
             self.die(f"unknown West project: {module}")
         return Path(project.abspath)
 
+    def _project_path(self, ref: str) -> Path | None:
+        project = self._projects().get(ref)
+        if project is not None:
+            return Path(project.abspath)
+        path = Path(self.topdir) / ref
+        if path.exists():
+            return path
+        return None
+
     def _manifest_revision(self, module: str) -> str:
         project = self._projects().get(module)
         if project is None:
@@ -283,10 +292,25 @@ class DarlingPatch(WestCommand):
                 errors.append(f"tests[{index}] target requires runner: west-build")
             if test.get("script") and runner not in {None, "script"}:
                 errors.append(f"tests[{index}] script requires runner: script")
+            if test.get("script"):
+                repo_ref = test.get("repo", patch["module"])
+                repo_path = self._project_path(repo_ref)
+                if repo_path is None:
+                    errors.append(f"tests[{index}] unknown test repo {repo_ref!r}")
+                elif not (repo_path / test["script"]).is_file():
+                    errors.append(
+                        f"tests[{index}] script not found: {repo_ref}/{test['script']}"
+                    )
             if test.get("args") is not None and not isinstance(test.get("args"), list):
                 errors.append(f"tests[{index}] args must be a list")
             if test.get("env-vars") is not None and not isinstance(test.get("env-vars"), dict):
                 errors.append(f"tests[{index}] env-vars must be a mapping")
+            if test.get("requires-env") is not None:
+                required = test.get("requires-env")
+                if not isinstance(required, list) or not all(
+                    isinstance(name, str) and name for name in required
+                ):
+                    errors.append(f"tests[{index}] requires-env must be a list of names")
             env = test.get("env")
             if env and env not in {"host", "darling", "macos"}:
                 errors.append(f"tests[{index}] invalid env {env!r}")

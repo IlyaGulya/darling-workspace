@@ -146,6 +146,22 @@ class DarlingTest(WestCommand):
             self.die(f"patch profile not found: {path}")
         return yaml.safe_load(path.read_text()) or {}
 
+    def _projects(self) -> dict[str, Path]:
+        projects: dict[str, Path] = {}
+        for project in self.manifest.projects:
+            projects[project.name] = Path(project.abspath)
+            projects[project.path] = Path(project.abspath)
+        return projects
+
+    def _project_path(self, ref: str) -> Path:
+        projects = self._projects()
+        if ref in projects:
+            return projects[ref]
+        path = Path(self.topdir) / ref
+        if path.exists():
+            return path
+        self.die(f"unknown West project or path: {ref}")
+
     def _metadata_tests(
         self,
         profile: str,
@@ -238,13 +254,18 @@ class DarlingTest(WestCommand):
             if test.get("env-vars"):
                 env = os.environ.copy()
                 env.update({str(k): str(v) for k, v in test["env-vars"].items()})
+            cwd = self._project_path(repo)
+            script_path = cwd / script
+            if not script_path.is_file():
+                self.die(f"{patch['path']}: test script not found: {repo}/{script}")
             return {
                 "key": display,
                 "display": display,
-                "cwd": Path(self.topdir) / repo,
+                "cwd": cwd,
                 "args": args,
                 "shell": False,
                 "env": env,
+                "requires_env": list(test.get("requires-env", [])),
             }
 
         self.die(f"{patch['path']}: unsupported test runner {runner!r}")
@@ -272,6 +293,16 @@ class DarlingTest(WestCommand):
                     f"{patch['path']}: ctest-label metadata is list-only until "
                     "profile test-tree discovery is implemented; use runner: script "
                     "or runner: west-build for runnable local metadata"
+                )
+            missing_env = [
+                name
+                for name in invocation.get("requires_env", [])
+                if not os.environ.get(name)
+            ]
+            if missing_env:
+                self.die(
+                    f"{patch['path']}: missing required environment for {name}: "
+                    f"{', '.join(missing_env)}"
                 )
             if invocation["key"] in seen_invocations:
                 self.inf(f"  skipped duplicate invocation already run")
