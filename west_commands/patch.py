@@ -351,6 +351,7 @@ class DarlingPatch(WestCommand):
             if kind and kind not in {
                 "unit",
                 "contract",
+                "source-contract",
                 "guest",
                 "package",
                 "fuzz",
@@ -366,6 +367,17 @@ class DarlingPatch(WestCommand):
                 errors.append("test-exception needs reason")
         return errors
 
+    @staticmethod
+    def _is_behavioral_test(test) -> bool:
+        """Whether a test is strong enough to close patch coverage.
+
+        Source contracts are useful drift guards, but they only prove that text
+        or symbols are present. They do not prove the fixed behavior in a host,
+        guest, build, package, fuzz, or stress scenario, so they are deliberately
+        excluded from the coverage count.
+        """
+        return test.get("kind") != "source-contract"
+
     def _check(self, profile_dir: Path, patches, strict: bool):
         missing = []
         invalid = []
@@ -377,10 +389,22 @@ class DarlingPatch(WestCommand):
                 invalid.append((patch, errors))
                 continue
             tests = patch.get("tests") or []
+            behavioral = [test for test in tests if self._is_behavioral_test(test)]
             exception = patch.get("test-exception")
-            if tests:
+            if behavioral:
                 covered += 1
-                self.inf(f"TESTED    {patch['path']} ({len(tests)} test(s))")
+                suffix = ""
+                if len(behavioral) != len(tests):
+                    suffix = f", {len(tests) - len(behavioral)} source-contract(s)"
+                self.inf(
+                    f"TESTED    {patch['path']} ({len(behavioral)} behavioral test(s){suffix})"
+                )
+            elif tests:
+                missing.append(patch)
+                self.inf(
+                    f"SOURCE    {patch['path']} ({len(tests)} source-contract(s); "
+                    f"missing behavioral test)  [{patch.get('bead', '-')}]"
+                )
             elif exception:
                 excepted += 1
                 reason = exception.get("reason", "-")
@@ -398,7 +422,7 @@ class DarlingPatch(WestCommand):
         )
         if missing:
             self.inf(
-                "hint: add tests: [{name, runner, script|target|ctest-label, env, diag, kind, red}] "
+                "hint: add behavioral tests: [{name, runner, script|target|ctest-label, env, diag, kind, red}] "
                 "or test-exception: {reason, note}"
             )
         if strict and (missing or invalid):

@@ -16,7 +16,23 @@ patches:
     env: host
     diag: bare
     red: true
+    red-proof:
+      mode: self
+      why-self: Metadata-only fixture; this script validates selection/listing, not RED execution.
     ctest-label: bead:dar-gwn.5
+- path: test/source-only.patch
+  module: darling
+  tests:
+  - name: source_only_contract
+    kind: source-contract
+    env: host
+    diag: bare
+    red: true
+    red-proof:
+      mode: source-base
+      source-env: DARLING_SRC_ROOT
+    runner: python
+    script: tests/source_only_contract.py
 YAML
 
 fail() {
@@ -110,6 +126,15 @@ printf '%s\n' "$ctest_label" | grep -q 'ctest .* -L bead:dar-gwn.5' ||
 	fail 'ctest-label metadata did not resolve to a runnable ctest command'
 if printf '%s\n' "$ctest_label" | grep -q 'list-only'; then
 	fail 'ctest-label metadata is still reported as list-only'
+fi
+
+source_only_check="$(west patch check --profile __metadata_contract)"
+printf '%s\n' "$source_only_check" | grep -q 'SOURCE    test/source-only.patch' ||
+	fail 'source-contract-only patch was not reported as SOURCE'
+printf '%s\n' "$source_only_check" | grep -q 'missing behavioral test' ||
+	fail 'source-contract-only patch did not require behavioral coverage'
+if printf '%s\n' "$source_only_check" | grep -q 'TESTED    test/source-only.patch'; then
+	fail 'source-contract-only patch was incorrectly counted as TESTED'
 fi
 
 printf 'PASS west-test-metadata-contract\n'

@@ -117,16 +117,16 @@ patches:
       base: main
       state: local
 - path: xnu/select-pselect-fdset.patch
-  sha256sum: 62c2cdb90755e0910a9576662a10ff6f52ff9d8d36f13f7c20bf5c6ab658afc6
+  sha256sum: a70bb4d6ca4a18546b40cf6478e992a91477b9c243966b6725873ad9f9049901
   module: darling/src/external/xnu
   source-branch: fix/select-pselect-fdset
-  source-commit: bb7e6dedc850abb2b0dfecfcb2437ccde1d66452
+  source-commit: 7b38ce973d87e66d0087a11e43d669e379bffd1b
   bead: dar-q95.3
   publication-status: blocked
   publication-blocker: unbounded nfds drives stack allocation and fd_set access; see dar-q95.29.3
   tests:
-  - name: select_pselect_fdset_source_contract
-    kind: contract
+  - name: select_fdset_conversion
+    kind: unit
     env: host
     diag: bare
     red: true
@@ -134,9 +134,8 @@ patches:
       mode: source-base
       source-env: XNU_SRC_ROOT
     runner: python
-    script: tests/west_source_contracts.py
-    args: [select-pselect-fdset]
-    note: Source-level RED->GREEN contract for BSD/Linux fd_set word-size conversion in select and pselect.
+    script: tests/select_fdset_contract.py
+    note: Host unit RED->GREEN contract for BSD/Linux fd_set word-size conversion above 32 fds.
   pr-draft: pr-drafts/xnu-select-pselect-fdset.md
   github:
     fork:
@@ -157,7 +156,7 @@ patches:
   publication-blocker: success-returning priority no-op has no Darwin semantics; see dar-q95.29.4
   tests:
   - name: darwin_priority_source_contract
-    kind: contract
+    kind: source-contract
     env: host
     diag: bare
     red: true
@@ -188,7 +187,7 @@ patches:
   publication-blocker: empty-success SIOCGIFCONF is an explicit compatibility stub; see dar-q95.29.4
   tests:
   - name: socket_siocgifconf_source_contract
-    kind: contract
+    kind: source-contract
     env: host
     diag: bare
     red: true
@@ -219,7 +218,7 @@ patches:
   publication-blocker: supported host-runtime fork recovery design under dar-q95.29.9
   tests:
   - name: fork_postfork_child_source_contract
-    kind: contract
+    kind: source-contract
     env: host
     diag: bare
     red: true
@@ -663,7 +662,7 @@ patches:
   publication-blocker: signal restart state-machine and conformance tests under dar-q95.29.5
   tests:
   - name: sigexc_sa_restart_source_contract
-    kind: contract
+    kind: source-contract
     env: host
     diag: bare
     red: true
@@ -693,7 +692,7 @@ patches:
   publication-status: ready
   tests:
   - name: sigexc_debug_flood_source_contract
-    kind: contract
+    kind: source-contract
     env: host
     diag: bare
     red: true
@@ -741,7 +740,7 @@ patches:
     dar-gwn.1.5 sigexc leg (re-opened) -- reconcile before publish.
   tests:
   - name: sigexc_default_resend_self_source_contract
-    kind: contract
+    kind: source-contract
     env: host
     diag: bare
     red: true
@@ -786,7 +785,7 @@ patches:
     full from-source brew end-to-end is not yet green.
   tests:
   - name: ulock_wait_eintr_retry_source_contract
-    kind: contract
+    kind: source-contract
     env: host
     diag: bare
     red: true
@@ -910,7 +909,7 @@ patches:
   publication-blocker: E-UNION proof-of-concept; not built/verified end-to-end in route 2. Local experiment under dar-test-infra-sp5.8.4.4. Depends on the route2-nomount experiment base, not on upstream.
   tests:
   - name: eunion_1_source_contract
-    kind: contract
+    kind: source-contract
     env: host
     diag: bare
     red: true
@@ -941,7 +940,7 @@ patches:
   publication-blocker: E-UNION proof-of-concept; race-safe copy-up depends on the resolve patch. Local experiment under dar-test-infra-sp5.8.4.4.
   tests:
   - name: eunion_2_source_contract
-    kind: contract
+    kind: source-contract
     env: host
     diag: bare
     red: true
@@ -972,7 +971,7 @@ patches:
   publication-blocker: E-UNION proof-of-concept; unprivileged whiteout/opaque encoding. Local experiment under dar-test-infra-sp5.8.4.4.
   tests:
   - name: eunion_3_source_contract
-    kind: contract
+    kind: source-contract
     env: host
     diag: bare
     red: true
@@ -1003,7 +1002,7 @@ patches:
   publication-blocker: E-UNION proof-of-concept; readdir name-merge. Local experiment under dar-test-infra-sp5.8.4.4.
   tests:
   - name: eunion_4_source_contract
-    kind: contract
+    kind: source-contract
     env: host
     diag: bare
     red: true
@@ -1034,7 +1033,7 @@ patches:
   publication-blocker: E-UNION proof-of-concept; wires copy-up/whiteout into 13 write-op emulation sites. Local experiment under dar-test-infra-sp5.8.4.4.
   tests:
   - name: eunion_5_source_contract
-    kind: contract
+    kind: source-contract
     env: host
     diag: bare
     red: true
@@ -1065,7 +1064,7 @@ patches:
   publication-blocker: E-UNION proof-of-concept; routes getdirentries through the paged merge. Local experiment under dar-test-infra-sp5.8.4.4.
   tests:
   - name: eunion_6_source_contract
-    kind: contract
+    kind: source-contract
     env: host
     diag: bare
     red: true
@@ -1096,7 +1095,7 @@ patches:
   publication-blocker: E-UNION proof-of-concept; activates the union at translator startup via the $prefix/.union-work marker + the DARLING_EUNION build switch. Local experiment under dar-test-infra-sp5.8.4.4.
   tests:
   - name: eunion_7_source_contract
-    kind: contract
+    kind: source-contract
     env: host
     diag: bare
     red: true
@@ -1127,7 +1126,7 @@ patches:
   publication-blocker: E-UNION proof-of-concept; copies up the parent dir on AF_UNIX bind so socket creation lands in the writable upper. Local experiment under dar-test-infra-sp5.8.4.4.
   tests:
   - name: eunion_8_source_contract
-    kind: contract
+    kind: source-contract
     env: host
     diag: bare
     red: true
@@ -1158,7 +1157,7 @@ patches:
   publication-blocker: E-UNION proof-of-concept; passes getdents64 through raw when the union is inactive. Local experiment under dar-test-infra-sp5.8.4.4.
   tests:
   - name: eunion_9_source_contract
-    kind: contract
+    kind: source-contract
     env: host
     diag: bare
     red: true
@@ -1189,7 +1188,7 @@ patches:
   publication-blocker: E-UNION proof-of-concept; detranslates lower-template fds/paths to guest paths in vchroot_fdpath/unexpand (fixes the launchctl-bootstrap stall; full guest pipeline boots zero-copy in default docker). Local experiment under dar-test-infra-sp5.8.4.4.
   tests:
   - name: eunion_10_source_contract
-    kind: contract
+    kind: source-contract
     env: host
     diag: bare
     red: true
@@ -1220,7 +1219,7 @@ patches:
   publication-blocker: E-UNION proof-of-concept; hardening — recursive copy-up on dir rename, *at()-relative copy-up (sys_openat), setid-strip + xattr-preserve on copy-up. Local experiment under dar-test-infra-sp5.8.4.4.
   tests:
   - name: eunion_11_source_contract
-    kind: contract
+    kind: source-contract
     env: host
     diag: bare
     red: true
@@ -1251,7 +1250,7 @@ patches:
   publication-blocker: E-UNION proof-of-concept; template-protection primitives (prepare_unlink/rename_dest/create/write_fd) + site wiring so delete/rename/create/fd-meta never mutate the shared lower template. The lower template is a shared live directory, not a RO mount. Local experiment under dar-test-infra-sp5.8.4.4 (.1/.2/.3).
   tests:
   - name: eunion_12_source_contract
-    kind: contract
+    kind: source-contract
     env: host
     diag: bare
     red: true
@@ -1282,7 +1281,7 @@ patches:
   publication-blocker: E-UNION proof-of-concept; make the copy-up privilege-strip load-bearing — explicit fchmod(mode & 0777) setid strip (FS-independent) + drop security.capability (setuid-equivalent) on copy-up. Found by mutation-testing the hermetic suite. Local experiment under dar-test-infra-sp5.8.4.4.9.
   tests:
   - name: eunion_13_source_contract
-    kind: contract
+    kind: source-contract
     env: host
     diag: bare
     red: true
@@ -1313,7 +1312,7 @@ patches:
   publication-blocker: E-UNION proof-of-concept; protect the shared template on fd-metadata syscalls (fchmod/fchmod_extended/futimes/fsetxattr/fremovexattr) by copying up + re-opening the upper copy (vchroot_fd_for_meta_write); also fixes the EXIT_PATH escape detection in vchroot_prepare_write_fd. Local experiment under dar-test-infra-sp5.8.4.4.4.
   tests:
   - name: eunion_14_source_contract
-    kind: contract
+    kind: source-contract
     env: host
     diag: bare
     red: true
@@ -1344,7 +1343,7 @@ patches:
   publication-blocker: E-UNION proof-of-concept; path-based setxattr/removexattr never expanded the guest path (pre-EUNION bug) and had no copy-up, so an xattr write on a lower-only object would mutate the shared template; listxattr listed the un-expanded path. Add vchroot_xattr_is_marker (reserved user.union.* namespace) and wire all four xattr sites — set/remove reject marker forging (EPERM) + copy up + operate on the upper path; get hides markers (ENOATTR); list uses the expanded path and filters markers. Mutation-verified (XM1-XM4, XS1). Local experiment under dar-test-infra-sp5.8.4.4.5.
   tests:
   - name: eunion_15_source_contract
-    kind: contract
+    kind: source-contract
     env: host
     diag: bare
     red: true
@@ -1375,7 +1374,7 @@ patches:
   publication-blocker: E-UNION proof-of-concept; delete-recreate of a populated lower-only dir resurrected its old children — rmdir dropped a whiteout but the subsequent mkdir never marked the recreated upper dir opaque, so readdir re-merged the stale lower children. Add vchroot_post_mkdir (set opaque when the new name shadows a lower directory) and wire it in mkdirat after the host mkdir succeeds. vchroot_set_opaque previously had zero callers. Mutation-verified (MK1 positive, MK2 negative). Local experiment under dar-test-infra-sp5.8.4.4.6.
   tests:
   - name: eunion_16_source_contract
-    kind: contract
+    kind: source-contract
     env: host
     diag: bare
     red: true
@@ -1406,7 +1405,7 @@ patches:
   publication-blocker: E-UNION proof-of-concept; three union-path fixes. (a) Per-component two-layer resolution — vchroot_run committed current_root to the template after the first lower-only component and gated whiteout/opaque/upper checks on being upper-rooted, so an upper object under a lower-committed walk was invisible; rewritten to recompute upper-wins-then-lower from the guest-relative suffix at every component (literal case unreachable via the union's own writes, pinned by white-box test PC3). (b) eunion_copy_regular preserves mtime/uid/gid on copy-up (overlay parity; resetting mtime breaks make/ninja/ccache). (c) eunion_emit_dirent emits a valid d_type and real d_ino instead of DT_UNKNOWN/1. Mutation-verified (PC3, CM, G4). Local experiment under dar-test-infra-sp5.8.4.4.7.
   tests:
   - name: eunion_17_source_contract
-    kind: contract
+    kind: source-contract
     env: host
     diag: bare
     red: true
@@ -1437,7 +1436,7 @@ patches:
   publication-blocker: BASELINE fix (outside #ifdef EUNION) surfaced by the E-UNION harness. The EXIT_PATH escape-hatch check used strncasecmp_l(current_path+current_root_len, EXIT_PATH, ..., LC_C_LOCALE) where LC_C_LOCALE is ((locale_t)NULL); glibc's strncasecmp_l dereferences the locale the instant the bytes match, so a NULL locale SEGVs precisely when a guest path equals EXIT_PATH ("/Volumes/SystemRoot") — exactly when the escape hatch fires (gcc warns -Wnonnull). EXIT_PATH is pure ASCII, so the case-fold needs no locale; replaced with a locale-free ASCII comparator (eunion_ascii_ncasecmp) and removed the dead locale_t/LC_C_LOCALE/strncasecmp_l decls. Mutation-verified (EP1-EP4 — always-equal, no-fold, asymmetric-fold all caught). Local experiment under dar-test-infra-sp5.8.4.4.10.
   tests:
   - name: eunion_18_source_contract
-    kind: contract
+    kind: source-contract
     env: host
     diag: bare
     red: true
@@ -1489,7 +1488,7 @@ patches:
   publication-blocker: E-UNION proof-of-concept; a full 216-file write-op audit of vchroot template protection found one unprotected mutating site — sys_ftruncate hit __NR_ftruncate on the raw fd with no copy-up. ftruncate mutates CONTENT by descriptor, the same class as the fd-metadata syscalls protected in .4 but omitted from that set; a writable fd on a lower-only (shared template) inode would shrink the template for ALL prefixes. Unlike fchmod/utimensat/fsetxattr (which work on the .4 meta-write helper's O_RDONLY fd), ftruncate REQUIRES a writable fd, so this adds a sibling helper vchroot_fd_for_content_write (same copy-up, re-opens the upper copy O_RDWR) and wires sys_ftruncate to it under #ifdef EUNION (#else = original, OFF byte-identical). The .4 helper is left untouched. Mutation-verified (FT — content helper opening O_RDONLY drives EINVAL/no-truncate RED; stub no-copy-up drives different-fd + template-safety RED). Local experiment under dar-test-infra-sp5.8.4.4.11.
   tests:
   - name: eunion_20_source_contract
-    kind: contract
+    kind: source-contract
     env: host
     diag: bare
     red: true
@@ -1541,7 +1540,7 @@ patches:
   publication-blocker: E-UNION proof-of-concept. A create through a symlinked lower-only parent dir failed ENOENT under EUNION — surfaced by a live  smoke test where  failed because /tmp is a symlink (to private/tmp) and eunion_copyup_parent copied up the symlink pointing at a target dir never materialized in the upper layer, so open(O_CREAT) followed the upper symlink into an absent directory. Fix adds eunion_copyup_dir_resolved (materializes the parent dir while following any final-component symlink to its real target, relative+absolute targets, bounded chains) and rewires eunion_copyup_parent to it. EUNION-only (copy-mode copies the whole template so no bug); all new code inside the file #ifdef EUNION so OFF byte-identical (verified via non-EUNION preprocessed diff). Hermetic SP1 (6 asserts) RED before, GREEN after, mutation-verified 2/2; suite 222 to 228. Live-verified  now works. Local experiment under dar-test-infra-sp5.8.4.4.
   tests:
   - name: eunion_22_source_contract
-    kind: contract
+    kind: source-contract
     env: host
     diag: bare
     red: true
@@ -1622,7 +1621,7 @@ patches:
   publication-blocker: returns EBADF on guarded-fd dup2/dup/fcntl instead of aborting; correct vs macOS and validated (gnulib fd tests + libunistring make check GREEN) but the guarded-fd-as-out-of-range contract wants a second reviewer before upstreaming. See dar-6x4.1.
   tests:
   - name: fd_guard_ebadf_source_contract
-    kind: contract
+    kind: source-contract
     env: host
     diag: bare
     red: true
@@ -1653,7 +1652,7 @@ patches:
   publication-blocker: sys_abort_with_payload now re-raises to self via tgkill instead of kill(0) process-group broadcast; matches macOS (abort terminates only the caller) and validated RED->GREEN by tests/regression/abort_with_payload_no_group_broadcast.c + brew reinstall -s gettext, but wants a second reviewer before upstreaming. See dar-cps.
   tests:
   - name: abort_with_payload_no_group_broadcast_source_contract
-    kind: contract
+    kind: source-contract
     env: host
     diag: bare
     red: true
