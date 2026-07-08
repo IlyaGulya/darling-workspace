@@ -146,6 +146,29 @@ patches:
     - -Wextra
     - -Werror
     note: Compile contract for the production fork-checkin sticky state helper; old source loses checkins across interrupted/timed-out waits, fixed source consumes sticky checkins exactly once.
+  - name: fork_checkin_signal_storm_guest
+    kind: guest
+    coverage-tier: runtime
+    env: darling
+    diag: guarded
+    runner: guest-c-fixture
+    repo: darling-workspace
+    script: tests/fork_checkin_signal_storm_guest.c
+    ok-marker: FORK_CHECKIN_SIGNAL_STORM_OK
+    timeout-seconds: 45
+    compile-flags:
+    - -std=gnu11
+    - -Wall
+    - -Wextra
+    - -Werror
+    requires:
+    - darling-prefix
+    note: >-
+      Guest fork/signal storm for lost fork-child checkins when the parent wait
+      is interrupted. Current GREEN runtime gate; RED runtime proof is blocked
+      by dar-r7fc.2.1.1 because current-minus-patch materialization must resolve
+      stacked darlingserver dependencies without using an incompatible
+      historical server.
   pr-draft: pr-drafts/darlingserver-fork-checkin-sticky-flag.md
   github:
     fork:
