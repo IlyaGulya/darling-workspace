@@ -94,7 +94,7 @@
   <project name="darling-libnetwork" path="darling/src/external/libnetwork" revision="56c5fad43f24a40d8ca7f8a1d0badedfeaf7e64e" />
   <project name="darling-Libnotify" path="darling/src/external/libnotify" revision="98156d3f847a3ced6c5f52c12a889047bc4f9b20" />
   <project name="darling-libplatform" path="darling/src/external/libplatform" revision="6a71adae2108910bc6f77a05b2bff8947b049121" />
-  <project name="darling-libpthread" path="darling/src/external/libpthread" revision="6b96e2471f5b68bc4486c14de126f7109dbaf984" />
+  <project name="darling-libpthread" path="darling/src/external/libpthread" revision="c29d7b38b2a1ffac4466c43a683f71bb5437ba00" />
   <project name="darling-libresolv" path="darling/src/external/libresolv" revision="cf955392e5449efb269b8b3510c755085fd36a2d" />
   <project name="darling-libressl" path="darling/src/external/libressl-2.2.9" revision="c5e9edb9d82ccf5fde5d8ae32b162fec8fe11318" />
   <project name="darling-libressl" path="darling/src/external/libressl-2.5.5" revision="1f663b5bdc9082178717c080e4728fe3e7084de4" />
