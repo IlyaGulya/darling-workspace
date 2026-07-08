@@ -57,6 +57,12 @@ refs, PR drafts, and agent handoff.
   executes behavior rather than matching source text.
   Tests that only prove the current/fixed tree stays GREEN must leave `red`
   unset.
+- Do not mark `guest-c-fixture` tests `red: true` just because their patch has
+  `red-proof: {mode: source-base}`. Source-base proof swaps source checkouts for
+  source/compile tests; it does not rebuild and deploy the bad dylib/server into
+  the Darling prefix. For deployed guest behavior, a guest test is a GREEN
+  runtime gate unless the runner explicitly builds/deploys both bad and fixed
+  trees into isolated prefixes and runs the same guest fixture against each.
 - Do not close patch coverage with source matching. Tests that grep, parse, or
   assert that specific code text exists are audit checks only; they must not be
   counted as the patch's behavioral test and must not be recorded as `kind:
@@ -71,7 +77,11 @@ refs, PR drafts, and agent handoff.
   legitimately create temporary worktrees or prefixes, such as
   `west test --prove-red` or materialized-profile runs. Run those checks
   sequentially after the creating command exits, otherwise the assertion can
-  report a false leak.
+  report a false leak. In practice, do not put
+  `tests/run-west-test-metadata-contract.sh`,
+  `tests/run-west-test-prefix-cleanup-contract.sh`, or manual
+  `west-profile-`/`west-red-proof-` leak checks in the same `multi_tool`
+  parallel batch as any `west test` command.
 - Classify patch test evidence with `coverage-tier`: `runtime`, `compile`,
   `host`, `model`, or `source`. Any old-vs-fixed model must be explicit
   `coverage-tier: model`; source/text audits must be `coverage-tier: source`
