@@ -1269,6 +1269,18 @@ patches:
   bead: dar-dar6x4-perf-5dq.6
   publication-status: blocked
   publication-blocker: new observability surface (abstract stat socket + JSON metrics) added for the dar-6x4 perf epic; reachable host-side because the net namespace is shared while mnt is not. Validated live (darling-stat snapshot + darling-progress-watch reports PROGRESSING under a fork-heavy workload) and RED->GREEN by tests/metrics_histogram_test.cpp + tests/progress_classifier_test.py, but wants design review of the socket surface before upstreaming. See dar-dar6x4-perf-5dq.6.
+  tests:
+  - name: progress_classifier
+    kind: contract
+    env: host
+    diag: bare
+    red: true
+    red-proof:
+      mode: self
+      note: Python test imports the real classifier and asserts the slow/wedged/idle/progress cases.
+    runner: python
+    script: tests/progress_classifier_test.py
+    note: Host RED->GREEN classifier contract for distinguishing slow progress from wedges.
 - path: darling/mldr-thread-create-futex-wait.patch
   sha256sum: 0b006aae3e27d6fa243070160b001b075d89ecd5f5b490267487d52861a0d40b
   module: darling
@@ -1609,6 +1621,18 @@ patches:
     reinstalls leave zero mldr + zero zombie darlingserver after shutdown, and a
     SIGKILL of darlingserver alone (no darling shutdown) cascade-kills the guest via
     the pdeathsig. Needs upstream review before publishing. See dar-pot.
+  tests:
+  - name: pot_lifetime_binding
+    kind: contract
+    env: host
+    diag: bare
+    red: true
+    red-proof:
+      mode: self
+      note: Script requires the nobind arm to reproduce an orphan and the bind arm to reap it.
+    runner: script
+    script: tests/run-pot-lifetime-binding.sh
+    note: Host RED->GREEN model for binding guest lifetime to darlingserver lifetime.
   github:
     fork:
       repo: IlyaGulya/darlingserver
