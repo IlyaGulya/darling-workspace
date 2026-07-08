@@ -117,7 +117,10 @@ RED proof modes:
   deploying bad runtime artifacts into an isolated Darling prefix, then running
   the same guest fixture against bad and fixed runtimes. Metadata validation
   accepts this only for `runner: guest-c-fixture` and requires declared runtime
-  artifacts. Execution currently fails clearly because the deploy runner is not
+  artifacts. Each artifact must declare `module`, `build-targets`, and `deploy`
+  paths so the future runner knows which source tree to materialize, what to
+  build, and which prefix files to swap. `--prove-red --list` prints the deploy
+  plan. Execution currently fails clearly because the deploy runner is not
   implemented yet; track that work under `dar-facb`. Do not substitute
   `source-base` for this mode.
 

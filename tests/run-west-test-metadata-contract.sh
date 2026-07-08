@@ -194,6 +194,23 @@ patches:
     red: true
     red-proof:
       mode: guest-runtime-deploy
+- path: test/incomplete-guest-runtime-artifact.patch
+  module: darling-workspace
+  tests:
+  - name: incomplete_guest_runtime_artifact
+    kind: guest
+    env: darling
+    diag: bare
+    runner: guest-c-fixture
+    script: tests/guest_c_fixture_contract.c
+    ok-marker: WEST_GUEST_C_FIXTURE_OK
+    red: true
+    red-proof:
+      mode: guest-runtime-deploy
+      runtime-artifacts:
+      - module: darling/src/external/xnu
+        deploy:
+        - usr/lib/system/libsystem_kernel.dylib
 YAML
 
 cat >"$tmp_runtime_red_profile/patches.yml" <<'YAML'
@@ -358,10 +375,20 @@ printf '%s\n' "$invalid_guest_red_check" | grep -q \
 printf '%s\n' "$invalid_guest_red_check" | grep -q \
 	'INVALID   test/invalid-guest-runtime-red-proof.patch: tests\[1\] red-proof guest-runtime-deploy needs runtime-artifacts' ||
 	fail 'guest-runtime-deploy metadata without runtime-artifacts was not rejected'
+printf '%s\n' "$invalid_guest_red_check" | grep -q \
+	'INVALID   test/incomplete-guest-runtime-artifact.patch: tests\[1\].red-proof.runtime-artifacts\[0\] needs build-targets' ||
+	fail 'guest-runtime-deploy artifact without build-targets was not rejected'
 
 runtime_red_check="$(west patch check --profile __metadata_runtime_red_contract)"
 printf '%s\n' "$runtime_red_check" | grep -q 'RUNTIME   test/guest-runtime-red-proof.patch' ||
 	fail 'guest-runtime-deploy metadata was not accepted as runtime coverage'
+
+runtime_red_list="$(west test --profile __metadata_runtime_red_contract \
+	--patch test/guest-runtime-red-proof.patch \
+	--prove-red --list)"
+printf '%s\n' "$runtime_red_list" | grep -q \
+	'guest-runtime-deploy: darling/src/external/xnu\[build:libsystem_kernel; deploy:usr/lib/system/libsystem_kernel.dylib\]' ||
+	fail 'guest-runtime-deploy list mode did not show deploy plan'
 
 if west test --profile __metadata_invalid_contract \
 	--patch test/invalid-guest-red-proof.patch \

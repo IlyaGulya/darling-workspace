@@ -495,6 +495,26 @@ class DarlingPatch(WestCommand):
                         errors.append(
                             f"tests[{index}] red-proof guest-runtime-deploy runtime-artifacts must be mappings"
                         )
+                    else:
+                        for artifact_index, artifact in enumerate(artifacts):
+                            if not artifact.get("module") or not isinstance(artifact.get("module"), str):
+                                errors.append(
+                                    f"tests[{index}].red-proof.runtime-artifacts[{artifact_index}] needs module"
+                                )
+                            build_targets = artifact.get("build-targets")
+                            if not isinstance(build_targets, list) or not build_targets or not all(
+                                isinstance(target, str) and target for target in build_targets
+                            ):
+                                errors.append(
+                                    f"tests[{index}].red-proof.runtime-artifacts[{artifact_index}] needs build-targets"
+                                )
+                            deploy = artifact.get("deploy")
+                            if not isinstance(deploy, list) or not deploy or not all(
+                                isinstance(path, str) and path for path in deploy
+                            ):
+                                errors.append(
+                                    f"tests[{index}].red-proof.runtime-artifacts[{artifact_index}] needs deploy"
+                                )
             env = test.get("env")
             if env and env not in {"host", "darling", "macos"}:
                 errors.append(f"tests[{index}] invalid env {env!r}")

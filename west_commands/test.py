@@ -2058,6 +2058,28 @@ grep -q '^ORACLE_RC=0$' "$verdict"
             "current-prefix guest smoke."
         )
 
+    def _display_guest_runtime_deploy_plan(self, proof) -> str:
+        def list_text(value, missing):
+            if not isinstance(value, list):
+                return missing
+            if not value:
+                return missing
+            return ",".join(str(item) for item in value)
+
+        artifacts = []
+        for artifact in proof.get("runtime-artifacts", []):
+            if not isinstance(artifact, dict):
+                artifacts.append("<invalid-artifact>")
+                continue
+            module = artifact.get("module")
+            targets = artifact.get("build-targets")
+            deploy = artifact.get("deploy")
+            module_text = module if isinstance(module, str) and module else "<missing-module>"
+            target_text = list_text(targets, "<missing-build-targets>")
+            deploy_text = list_text(deploy, "<missing-deploy>")
+            artifacts.append(f"{module_text}[build:{target_text}; deploy:{deploy_text}]")
+        return "guest-runtime-deploy: " + "; ".join(artifacts)
+
     def _run_source_base_proof(self, patch, proof, invocation) -> int:
         if invocation["shell"]:
             self.die(f"{patch['path']}: source-base proof requires a structured runner")
@@ -2129,6 +2151,8 @@ grep -q '^ORACLE_RC=0$' "$verdict"
             invocation = self._test_invocation(patch, test)
             self.inf(f"{patch['path']}: {name} RED proof [{mode}]")
             self.inf(f"  {self._display_invocation(invocation)}")
+            if mode == "guest-runtime-deploy" and isinstance(proof, dict):
+                self.inf(f"  {self._display_guest_runtime_deploy_plan(proof)}")
             if list_only:
                 continue
             if mode not in {"self", "source-base", "guest-runtime-deploy"}:
