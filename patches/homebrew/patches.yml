@@ -165,10 +165,10 @@ patches:
     - darling-prefix
     note: >-
       Guest fork/signal storm for lost fork-child checkins when the parent wait
-      is interrupted. Current GREEN runtime gate; RED runtime proof is blocked
-      by dar-r7fc.2.1.1 because current-minus-patch materialization must resolve
-      stacked darlingserver dependencies without using an incompatible
-      historical server.
+      is interrupted. Current-minus-patch runtime RED materialization works with
+      an explicit downstream skip closure, but this workload passed on the bad
+      runtime; keep it as a GREEN gate until dar-r7fc.2.1 has a stronger
+      deterministic RED repro.
   pr-draft: pr-drafts/darlingserver-fork-checkin-sticky-flag.md
   github:
     fork:
@@ -903,6 +903,19 @@ patches:
     coverage-tier: runtime
     env: darling
     diag: guarded
+    red: true
+    red-proof:
+      mode: guest-runtime-deploy
+      bad-profile: current-minus-patch
+      current-minus-skip-patches:
+      - darlingserver/pthread-canceled-xnu-semantics.patch
+      - darlingserver/test-diagnostics-trace.patch
+      runtime-artifacts:
+      - module: darling/src/external/darlingserver
+        build-targets:
+        - darlingserver
+        deploy:
+        - bin/darlingserver
     runner: guest-c-fixture
     repo: darling-workspace
     script: tests/fatal_exception_unreplying_handler_guest.c
@@ -913,7 +926,7 @@ patches:
     - -Wall
     - -Wextra
     - -Werror
-    note: Guest runtime regression for a fatal EXC_BAD_ACCESS delivered to an EXCEPTION_DEFAULT handler that consumes the message and never replies; fixed darlingserver bounds the reply wait and lets the child terminate instead of wedging. Runtime RED proof is blocked by dar-r7fc.2.1.1 because current-minus-patch cannot yet materialize this stack without conflicts in downstream darlingserver patches.
+    note: Guest runtime regression for a fatal EXC_BAD_ACCESS delivered to an EXCEPTION_DEFAULT handler that consumes the message and never replies; fixed darlingserver bounds the reply wait and lets the child terminate instead of wedging. Runtime RED builds the current stack minus this patch and its declared downstream skip closure.
   pr-draft: pr-drafts/darlingserver-exc-fatal-reply-bound.md
   github:
     fork:
