@@ -28,6 +28,7 @@ import os
 import signal
 import shutil
 import subprocess
+import sys
 import tempfile
 import time
 from contextlib import contextmanager
@@ -667,6 +668,8 @@ class DarlingTest(WestCommand):
             cc = str(test.get("cc", os.environ.get("CC", "cc")))
             output = f"<temp>/{Path(script).stem}"
             display_parts = [quote(cc), *[quote(str(flag)) for flag in test.get("compile-flags", [])]]
+            for include_dir in test.get("fixture-include-dirs", []):
+                display_parts.extend(["-I", quote(str(include_dir))])
             for include_dir in test.get("include-dirs", []):
                 display_parts.extend(["-I", quote(str(include_dir))])
             if test.get("stub-headers") or test.get("generated-headers"):
@@ -686,6 +689,9 @@ class DarlingTest(WestCommand):
                 "c_fixture": True,
                 "cc": cc,
                 "include_dirs": [str(item) for item in test.get("include-dirs", [])],
+                "fixture_include_dirs": [
+                    str(item) for item in test.get("fixture-include-dirs", [])
+                ],
                 "stub_headers": [str(item) for item in test.get("stub-headers", [])],
                 "generated_headers": {
                     str(path): str(content)
@@ -693,6 +699,64 @@ class DarlingTest(WestCommand):
                 },
                 "source_files": [str(item) for item in test.get("source-files", [])],
                 "compile_flags": [str(item) for item in test.get("compile-flags", [])],
+                "source_root_env": source_env,
+                "source_env": source_env,
+                "source_module": source_module,
+                "requires_resources": list(test.get("requires", [])),
+                "requires_env": list(test.get("requires-env", [])),
+                "requires_profile": test.get("requires-profile"),
+                "diag": self._resolved_diag(test),
+                "name": test.get("name", patch["path"]),
+                "timeout_seconds": int(test.get("timeout-seconds", 600)),
+            }
+        if runner == "object-symbol-fixture":
+            repo = test.get("repo", patch["module"])
+            cwd = self._project_path(repo)
+            env = None
+            if test.get("env-vars"):
+                env = os.environ.copy()
+                env.update({str(k): str(v) for k, v in test["env-vars"].items()})
+            cc = str(test.get("cc", os.environ.get("CC", "cc")))
+            source_file = str(test["source-file"])
+            display_parts = [
+                quote(cc),
+                "-c",
+                *[quote(str(flag)) for flag in test.get("compile-flags", [])],
+            ]
+            for include_dir in test.get("fixture-include-dirs", []):
+                display_parts.extend(["-I", quote(str(include_dir))])
+            for include_dir in test.get("include-dirs", []):
+                display_parts.extend(["-I", quote(str(include_dir))])
+            display_parts.extend([quote(source_file), "-o", "<temp>/<variant>.o", "&&", "nm", "-u", "<temp>/<variant>.o"])
+            display = f"cd {quote(repo)} && {' '.join(display_parts)}"
+            return {
+                "key": f"object-symbol-fixture:{repo}:{source_file}",
+                "display": display,
+                "cwd": cwd,
+                "args": None,
+                "shell": False,
+                "env": env,
+                "object_symbol_fixture": True,
+                "cc": cc,
+                "source_file": source_file,
+                "include_dirs": [str(item) for item in test.get("include-dirs", [])],
+                "fixture_include_dirs": [
+                    str(item) for item in test.get("fixture-include-dirs", [])
+                ],
+                "compile_flags": [str(item) for item in test.get("compile-flags", [])],
+                "symbol_checks": [
+                    {
+                        "name": str(check.get("name", f"check-{index}")),
+                        "compile_flags": [str(item) for item in check.get("compile-flags", [])],
+                        "present_undefined_symbols": [
+                            str(item) for item in check.get("present-undefined-symbols", [])
+                        ],
+                        "absent_undefined_symbols": [
+                            str(item) for item in check.get("absent-undefined-symbols", [])
+                        ],
+                    }
+                    for index, check in enumerate(test.get("symbol-checks", []))
+                ],
                 "source_root_env": source_env,
                 "source_env": source_env,
                 "source_module": source_module,
@@ -960,6 +1024,8 @@ class DarlingTest(WestCommand):
             return self._run_guest_c_fixture(invocation, env=env)
         if invocation.get("c_fixture"):
             return self._run_c_fixture(invocation, env=env)
+        if invocation.get("object_symbol_fixture"):
+            return self._run_object_symbol_fixture(invocation, env=env)
         if invocation.get("source_build_fixture"):
             return self._run_source_build_fixture(invocation, env=env)
         result = subprocess.run(
@@ -997,6 +1063,11 @@ class DarlingTest(WestCommand):
                 "-I",
                 str(stub_root),
             ]
+            for include_dir in invocation.get("fixture_include_dirs", []):
+                include_path = Path(include_dir)
+                if not include_path.is_absolute():
+                    include_path = invocation["cwd"] / include_path
+                args.extend(["-I", str(include_path)])
             for include_dir in invocation.get("include_dirs", []):
                 include_path = Path(include_dir)
                 if not include_path.is_absolute():
@@ -1022,6 +1093,73 @@ class DarlingTest(WestCommand):
                 env=run_env,
                 check=False,
             ).returncode
+
+    def _run_object_symbol_fixture(self, invocation, env=None) -> int:
+        if invocation.get("diag", "bare") != "bare":
+            self.die(f"{invocation['name']}: object-symbol-fixture currently supports diag:bare only")
+        run_env = env if env is not None else invocation.get("env")
+        source_root = invocation["cwd"]
+        source_root_env = invocation.get("source_root_env")
+        if source_root_env and run_env and run_env.get(source_root_env):
+            source_root = Path(run_env[source_root_env])
+        source_path = Path(invocation["source_file"])
+        if not source_path.is_absolute():
+            source_path = source_root / source_path
+        with tempfile.TemporaryDirectory(prefix=f"west-object-symbol-{invocation['name']}-") as temp:
+            tempdir = Path(temp)
+            for check in invocation.get("symbol_checks", []):
+                object_path = tempdir / f"{check['name']}.o"
+                args = [
+                    invocation.get("cc", "cc"),
+                    "-c",
+                    *invocation.get("compile_flags", []),
+                    *check.get("compile_flags", []),
+                ]
+                for include_dir in invocation.get("fixture_include_dirs", []):
+                    include_path = Path(include_dir)
+                    if not include_path.is_absolute():
+                        include_path = invocation["cwd"] / include_path
+                    args.extend(["-I", str(include_path)])
+                for include_dir in invocation.get("include_dirs", []):
+                    include_path = Path(include_dir)
+                    if not include_path.is_absolute():
+                        include_path = source_root / include_path
+                    args.extend(["-I", str(include_path)])
+                args.extend([str(source_path), "-o", str(object_path)])
+                compile_rc = subprocess.run(
+                    args,
+                    cwd=invocation["cwd"],
+                    env=run_env,
+                    check=False,
+                ).returncode
+                if compile_rc:
+                    return compile_rc
+                nm = subprocess.run(
+                    ["nm", "-u", str(object_path)],
+                    cwd=invocation["cwd"],
+                    env=run_env,
+                    check=False,
+                    capture_output=True,
+                    text=True,
+                )
+                if nm.returncode:
+                    sys.stderr.write(nm.stdout)
+                    sys.stderr.write(nm.stderr)
+                    return nm.returncode
+                symbols = {
+                    line.split()[-1]
+                    for line in nm.stdout.splitlines()
+                    if line.split()
+                }
+                for symbol in check.get("present_undefined_symbols", []):
+                    if symbol not in symbols:
+                        self.err(f"{invocation['name']}:{check['name']}: missing undefined symbol {symbol}")
+                        return 1
+                for symbol in check.get("absent_undefined_symbols", []):
+                    if symbol in symbols:
+                        self.err(f"{invocation['name']}:{check['name']}: unexpected undefined symbol {symbol}")
+                        return 1
+        return 0
 
     def _run_source_build_fixture(self, invocation, env=None) -> int:
         if invocation.get("diag", "bare") != "bare":

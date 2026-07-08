@@ -281,10 +281,11 @@ class DarlingPatch(WestCommand):
                 test.get("command")
                 or test.get("ctest-label")
                 or test.get("script")
+                or test.get("source-file")
                 or test.get("target")
             ):
                 errors.append(
-                    f"tests[{index}] needs script, target, ctest-label, or command override"
+                    f"tests[{index}] needs script, source-file, target, ctest-label, or command override"
                 )
             runner = test.get("runner")
             if runner and runner not in {
@@ -292,6 +293,7 @@ class DarlingPatch(WestCommand):
                 "python",
                 "c-fixture",
                 "guest-c-fixture",
+                "object-symbol-fixture",
                 "source-build-fixture",
                 "west-build",
                 "ctest",
@@ -305,12 +307,18 @@ class DarlingPatch(WestCommand):
                 "python",
                 "c-fixture",
                 "guest-c-fixture",
+                "object-symbol-fixture",
                 "source-build-fixture",
             }:
                 errors.append(
-                    f"tests[{index}] script requires runner: script, python, c-fixture, guest-c-fixture, or source-build-fixture"
+                    f"tests[{index}] script requires runner: script, python, c-fixture, guest-c-fixture, object-symbol-fixture, or source-build-fixture"
                 )
             if test.get("script"):
+                repo_ref = test.get("repo", patch["module"])
+                repo_path = self._project_path(repo_ref)
+                if repo_path is None:
+                    errors.append(f"tests[{index}] unknown test repo {repo_ref!r}")
+            if runner == "object-symbol-fixture":
                 repo_ref = test.get("repo", patch["module"])
                 repo_path = self._project_path(repo_ref)
                 if repo_path is None:
@@ -328,6 +336,28 @@ class DarlingPatch(WestCommand):
                         for path, content in headers.items()
                     ):
                         errors.append(f"tests[{index}] generated-headers must be a string mapping")
+            if runner == "object-symbol-fixture":
+                if not test.get("source-file"):
+                    errors.append(f"tests[{index}] object-symbol-fixture requires source-file")
+                for key in ("include-dirs", "fixture-include-dirs", "compile-flags"):
+                    if test.get(key) is not None and not isinstance(test.get(key), list):
+                        errors.append(f"tests[{index}] {key} must be a list")
+                checks = test.get("symbol-checks")
+                if not isinstance(checks, list) or not checks:
+                    errors.append(f"tests[{index}] object-symbol-fixture requires symbol-checks")
+                elif not all(isinstance(check, dict) for check in checks):
+                    errors.append(f"tests[{index}] symbol-checks must be a list of mappings")
+                else:
+                    for check_index, check in enumerate(checks):
+                        for key in (
+                            "compile-flags",
+                            "present-undefined-symbols",
+                            "absent-undefined-symbols",
+                        ):
+                            if check.get(key) is not None and not isinstance(check.get(key), list):
+                                errors.append(
+                                    f"tests[{index}].symbol-checks[{check_index}] {key} must be a list"
+                                )
             if runner == "guest-c-fixture":
                 if not test.get("script"):
                     errors.append(f"tests[{index}] guest-c-fixture requires script")
@@ -452,7 +482,7 @@ class DarlingPatch(WestCommand):
             or test.get("runner") == "guest-c-fixture"
         ):
             return "runtime"
-        if test.get("runner") in {"c-fixture", "west-build"} or test.get("kind") == "build":
+        if test.get("runner") in {"c-fixture", "object-symbol-fixture", "west-build"} or test.get("kind") == "build":
             return "compile"
         return "host"
 
