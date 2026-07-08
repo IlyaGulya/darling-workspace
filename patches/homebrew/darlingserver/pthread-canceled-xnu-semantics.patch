@@ -187,3 +187,174 @@ index 20497639c5290c7acedd9eccaac9ed12f26f60f2..7089a76051114f2e54fd520853a00c55
  	} else {
  		code = -ESRCH;
  	}
+
+From 2069c75492f6813f7eb623af3ba66f8891422c20 Mon Sep 17 00:00:00 2001
+From: Ilya Gulya <ilya@gulya.me>
+Date: Wed, 8 Jul 2026 14:55:59 +0000
+Subject: [PATCH] duct-tape: isolate pthread cancel state transitions
+
+---
+ .../darlingserver/duct-tape/thread-cancel.h   | 59 +++++++++++++++++++
+ .../darlingserver/duct-tape/thread.h          | 19 ++----
+ duct-tape/src/thread.c                        | 31 +---------
+ 3 files changed, 67 insertions(+), 42 deletions(-)
+ create mode 100644 duct-tape/internal-include/darlingserver/duct-tape/thread-cancel.h
+
+diff --git a/duct-tape/internal-include/darlingserver/duct-tape/thread-cancel.h b/duct-tape/internal-include/darlingserver/duct-tape/thread-cancel.h
+new file mode 100644
+index 0000000000000000000000000000000000000000..30398cd2816bb23036f1dc3d94f47f8e9ecab2be
+--- /dev/null
++++ b/duct-tape/internal-include/darlingserver/duct-tape/thread-cancel.h
+@@ -0,0 +1,59 @@
++#ifndef _DARLINGSERVER_DUCT_TAPE_THREAD_CANCEL_H_
++#define _DARLINGSERVER_DUCT_TAPE_THREAD_CANCEL_H_
++
++#include <stdbool.h>
++#include <errno.h>
++
++typedef struct dtape_thread_cancel_state {
++	// POSIX thread-cancellation state, mirroring XNU's per-uthread uu_flag bits
++	// (UT_CANCELDISABLE / UT_CANCEL / UT_CANCELED). The guest libpthread drives
++	// these through the __pthread_canceled / __pthread_markcancel syscalls.
++	bool disable;
++	bool pending;
++	bool canceled;
++} dtape_thread_cancel_state_t;
++
++static inline void
++dtape_thread_cancel_state_init(dtape_thread_cancel_state_t* state)
++{
++	state->disable = false;
++	state->pending = false;
++	state->canceled = false;
++}
++
++static inline int
++dtape_thread_cancel_state_canceled(dtape_thread_cancel_state_t* state, int action)
++{
++	switch (action) {
++		case 1:
++			state->disable = false;
++			return 0;
++		case 2:
++			state->disable = true;
++			return 0;
++		case 0:
++		default:
++			// Mirror XNU: act only when UT_CANCEL is set and neither
++			// UT_CANCELDISABLE nor UT_CANCELED is set, i.e.
++			// (uu_flag & (CANCELDISABLE|CANCEL|CANCELED)) == UT_CANCEL.
++			if (state->pending && !state->disable && !state->canceled) {
++				state->pending = false;
++				state->canceled = true;
++				return 0;
++			}
++			return EINVAL;
++	}
++}
++
++static inline int
++dtape_thread_cancel_state_markcancel(dtape_thread_cancel_state_t* state)
++{
++	// Mirror XNU's guard: only arm a cancel if one is not already in flight
++	// or acted upon ((uu_flag & (CANCEL|CANCELED)) == 0; we have no vfork bit).
++	if (!state->pending && !state->canceled) {
++		state->pending = true;
++	}
++	return 0;
++}
++
++#endif // _DARLINGSERVER_DUCT_TAPE_THREAD_CANCEL_H_
+diff --git a/duct-tape/internal-include/darlingserver/duct-tape/thread.h b/duct-tape/internal-include/darlingserver/duct-tape/thread.h
+index e5e7b74230aca13144f1c4e3987b7c75ced74099..6dd19645ae9e378542666b383d3e334265db1bdd 100644
+--- a/duct-tape/internal-include/darlingserver/duct-tape/thread.h
++++ b/duct-tape/internal-include/darlingserver/duct-tape/thread.h
+@@ -5,6 +5,7 @@
+ #include <darlingserver/duct-tape/locks.h>
+ #include <darlingserver/duct-tape/task.h>
+ #include <darlingserver/duct-tape/condvar.h>
++#include <darlingserver/duct-tape/thread-cancel.h>
+ 
+ #include <sys/event.h>
+ 
+@@ -53,20 +54,10 @@ struct dtape_thread {
+ 	// "handler didn't handle it -> default action" outcome. See dar-gwn.1.10.
+ 	bool fatal_exception_delivery;
+ 
+-	// POSIX thread-cancellation state, mirroring XNU's per-uthread uu_flag bits
+-	// (UT_CANCELDISABLE / UT_CANCEL / UT_CANCELED). The guest libpthread drives
+-	// these through the __pthread_canceled / __pthread_markcancel syscalls. The
+-	// old server stub returned -ENOSYS for every call, which broke the guest's
+-	// cancellation handshake and made cancelable syscalls (and thus brew's
+-	// portable-ruby) spin re-issuing pthread_canceled forever -- a livelock.
+-	// See dar-gwn.6.3.
+-	//
+-	//   cancel_disable == UT_CANCELDISABLE: cancellation deferred/blocked
+-	//   cancel_pending == UT_CANCEL:        cancel requested (pthread_cancel)
+-	//   canceled       == UT_CANCELED:      request has been acted upon
+-	bool cancel_disable;
+-	bool cancel_pending;
+-	bool canceled;
++	// The old server stubs returned -ENOSYS for every pthread cancellation
++	// operation, which broke the guest cancellation handshake and made cancelable
++	// syscalls spin re-issuing pthread_canceled forever. See dar-gwn.6.3.
++	dtape_thread_cancel_state_t cancel;
+ 
+ 	bool waiting_suspended;
+ 	dtape_mutex_t suspension_mutex;
+diff --git a/duct-tape/src/thread.c b/duct-tape/src/thread.c
+index 7438fad6f6eb8f3c7be2e36164184772f6c59c39..8f4b5aa85204b204e41a18b43d8f7bc3d59d294b 100644
+--- a/duct-tape/src/thread.c
++++ b/duct-tape/src/thread.c
+@@ -52,9 +52,7 @@ dtape_thread_t* dtape_thread_create(dtape_task_t* task, uint64_t nsid, void* con
+ 	thread->context = context;
+ 	thread->processing_signal = false;
+ 	thread->name = NULL;
+-	thread->cancel_disable = false;
+-	thread->cancel_pending = false;
+-	thread->canceled = false;
++	dtape_thread_cancel_state_init(&thread->cancel);
+ 	thread->waiting_suspended = false;
+ 	LIST_INIT(&thread->user_states);
+ 	dtape_mutex_init(&thread->suspension_mutex);
+@@ -193,25 +191,7 @@ void dtape_thread_set_handles(dtape_thread_t* thread, uintptr_t pthread_handle,
+ //   action 0 (or default) -> if a cancel is pending and not disabled/already
+ //       acted upon, mark it canceled and return 0; otherwise return EINVAL.
+ int dtape_thread_canceled(dtape_thread_t* thread, int action) {
+-	switch (action) {
+-		case 1:
+-			thread->cancel_disable = false;
+-			return 0;
+-		case 2:
+-			thread->cancel_disable = true;
+-			return 0;
+-		case 0:
+-		default:
+-			// Mirror XNU: act only when UT_CANCEL is set and neither
+-			// UT_CANCELDISABLE nor UT_CANCELED is set, i.e.
+-			// (uu_flag & (CANCELDISABLE|CANCEL|CANCELED)) == UT_CANCEL.
+-			if (thread->cancel_pending && !thread->cancel_disable && !thread->canceled) {
+-				thread->cancel_pending = false;
+-				thread->canceled = true;
+-				return 0;
+-			}
+-			return EINVAL;
+-	}
++	return dtape_thread_cancel_state_canceled(&thread->cancel, action);
+ };
+ 
+ // Implements XNU's __pthread_markcancel(thread_port): requests cancellation of
+@@ -220,12 +200,7 @@ int dtape_thread_canceled(dtape_thread_t* thread, int action) {
+ // observes the request via dtape_thread_canceled(action 0) at its next
+ // cancellation point. Returns 0 on success.
+ int dtape_thread_markcancel(dtape_thread_t* thread) {
+-	// Mirror XNU's guard: only arm a cancel if one is not already in flight
+-	// or acted upon ((uu_flag & (CANCEL|CANCELED)) == 0; we have no vfork bit).
+-	if (!thread->cancel_pending && !thread->canceled) {
+-		thread->cancel_pending = true;
+-	}
+-	return 0;
++	return dtape_thread_cancel_state_markcancel(&thread->cancel);
+ };
+ 
+ dtape_thread_t* dtape_thread_for_port(uint32_t thread_port) {

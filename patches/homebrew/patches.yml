@@ -675,10 +675,11 @@ patches:
       base: main
       state: local
 - path: darlingserver/pthread-canceled-xnu-semantics.patch
-  sha256sum: 37f20a7afec6c8261653272e5aa6e488e77019d83614fe41424912674cb229f3
+  sha256sum: bdd1611d721c16ed4653cfa7fd223ebada4dd1ad7395168de6d63f13b827b798
   module: darling/src/external/darlingserver
   source-branch: fix/pthread-canceled-xnu-semantics
-  source-commit: 6883a8363d2dc2d7a43eae109e172a18e4b4f36c
+  source-base: 25e1b6c50cdfd1f3b94febed30c88d4fea8a7c99
+  source-commit: 2069c75492f6813f7eb623af3ba66f8891422c20
   bead: dar-gwn.6.3
   publication-status: blocked
   publication-blocker: |-
@@ -697,20 +698,19 @@ patches:
     from the full integration tree to confirm the #31 livelock clears and brew
     advances past the libunistring phase.
   tests:
-  - name: pthread_canceled_xnu_semantics_model
+  - name: pthread_cancel_state_contract
     kind: contract
-    coverage-tier: model
+    coverage-tier: compile
     env: host
     diag: bare
     red: true
     red-proof:
-      mode: self
-      why-self: The model drives __pthread_canceled/__pthread_markcancel state transitions through old ENOSYS stubs and fixed XNU semantics.
-    runner: python
+      mode: source-base
+      source-env: DSERVER_SRC_ROOT
+    runner: script
     repo: darling-workspace
-    script: tests/darlingserver_behavior_models.py
-    args: [pthread-canceled-xnu-semantics]
-    note: Host behavioral model; old cancellation RPCs return ENOSYS, fixed model implements action 0/1/2 and markcancel transitions.
+    script: tests/pthread_cancel_state_contract.sh
+    note: Compiles the production pthread cancel-state helper and verifies XNU-style action 0/1/2 plus markcancel state transitions.
   github:
     fork:
       repo: IlyaGulya/darlingserver
