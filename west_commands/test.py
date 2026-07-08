@@ -25,6 +25,7 @@ import argparse
 import os
 import shutil
 import subprocess
+import tempfile
 from pathlib import Path
 from shlex import quote
 
@@ -326,17 +327,76 @@ class DarlingTest(WestCommand):
                 rc = result.returncode
         return rc
 
+    def _bad_revision(self, patch) -> str:
+        if patch.get("source-base"):
+            return patch["source-base"]
+        source_commit = patch.get("source-commit")
+        if not source_commit:
+            self.die(f"{patch['path']}: source-base proof needs source-base or source-commit")
+        return f"{source_commit}^"
+
+    def _run_invocation(self, invocation, env=None) -> int:
+        result = subprocess.run(
+            invocation["args"],
+            cwd=invocation["cwd"],
+            env=env if env is not None else invocation.get("env"),
+            shell=invocation["shell"],
+            check=False,
+        )
+        return result.returncode
+
+    def _run_source_base_proof(self, patch, proof, invocation) -> int:
+        if invocation["shell"]:
+            self.die(f"{patch['path']}: source-base proof requires a structured runner")
+        source_env = proof.get("source-env")
+        if not source_env:
+            self.die(f"{patch['path']}: source-base proof needs red-proof.source-env")
+        script_path = invocation.get("script_path")
+        if script_path is not None and not script_path.is_file():
+            self.die(f"{patch['path']}: test script not found: {script_path}")
+
+        module_repo = self._project_path(proof.get("source-module", patch["module"]))
+        bad_revision = self._bad_revision(patch)
+        with tempfile.TemporaryDirectory(prefix="west-red-proof-") as temp:
+            worktree = Path(temp) / "source-base"
+            subprocess.run(
+                ["git", "worktree", "add", "--quiet", "--detach", str(worktree), bad_revision],
+                cwd=module_repo,
+                check=True,
+            )
+            try:
+                bad_env = os.environ.copy()
+                if invocation.get("env"):
+                    bad_env.update(invocation["env"])
+                bad_env[source_env] = str(worktree)
+                self.inf(f"  RED source tree: {bad_revision} via {source_env}={worktree}")
+                bad_rc = self._run_invocation(invocation, env=bad_env)
+                if bad_rc == 0:
+                    self.err("  RED proof failed: source-base run unexpectedly passed")
+                    return 1
+                self.inf(f"  RED path failed as expected (rc={bad_rc})")
+            finally:
+                subprocess.run(
+                    ["git", "worktree", "remove", "--force", str(worktree)],
+                    cwd=module_repo,
+                    check=False,
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                )
+
+        self.inf("  GREEN current tree")
+        return self._run_invocation(invocation)
+
     def _run_red_proofs(self, tests, list_only: bool, unknown: list[str]) -> int:
         """Run the proof that a regression test really distinguishes old/bad behavior.
 
         A normal metadata test run always expects GREEN on the current checkout.
-        RED proof is an explicit second mode. Today the implemented proof kind is
-        `mode: self`: the test binary/script contains its own bad-path oracle
+        RED proof is an explicit second mode. `mode: self` means the
+        test binary/script contains its own bad-path oracle
         (for example, run an old algorithm and require that it fails, then run
-        the fixed algorithm and require that it passes). Source-base worktree
-        proofs are intentionally metadata-modelled but not guessed here: many of
-        these tests were introduced by the fix patch, so running "the script at
-        source-base" would often mean there is no script to run.
+        the fixed algorithm and require that it passes). `mode: source-base`
+        keeps the current test asset and points it at a bad/source-base worktree
+        through an explicit source-root environment variable.
         """
         if unknown:
             self.die("metadata RED proofs do not accept raw ctest passthrough arguments")
@@ -355,11 +415,10 @@ class DarlingTest(WestCommand):
             self.inf(f"  {invocation['display']}")
             if list_only:
                 continue
-            if mode != "self":
+            if mode not in {"self", "source-base"}:
                 self.die(
                     f"{patch['path']}: RED proof mode {mode!r} is not implemented; "
-                    "use mode: self for self-discriminating tests or migrate this "
-                    "test to a source-base-capable shared runner"
+                    "use mode: self or mode: source-base"
                 )
             script_path = invocation.get("script_path")
             if script_path is not None and not script_path.is_file():
@@ -378,15 +437,12 @@ class DarlingTest(WestCommand):
                 self.inf("  skipped duplicate invocation already run")
                 continue
             seen_invocations.add(invocation["key"])
-            result = subprocess.run(
-                invocation["args"],
-                cwd=invocation["cwd"],
-                env=invocation.get("env"),
-                shell=invocation["shell"],
-                check=False,
-            )
-            if result.returncode:
-                rc = result.returncode
+            if mode == "source-base":
+                result_rc = self._run_source_base_proof(patch, proof, invocation)
+            else:
+                result_rc = self._run_invocation(invocation)
+            if result_rc:
+                rc = result_rc
         return rc
 
     def _changed_submodules(self) -> list[str]:
