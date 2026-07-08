@@ -8,6 +8,7 @@ python3 - <<'PY'
 import tempfile
 import sys
 import types
+from argparse import Namespace
 from pathlib import Path
 
 west_module = types.ModuleType("west")
@@ -70,6 +71,19 @@ with tempfile.TemporaryDirectory() as temp:
     with test._prefix_resource_context(True):
         pass
     assert test._prefix_cleanup_failed
+
+test = make_test()
+test.manifest = types.SimpleNamespace(repo_abspath=str(Path.cwd()), projects=[])
+test.topdir = str(Path.cwd())
+args = Namespace(prefix=None, prefix_profile="homebrew", no_overlayfs=False)
+prefix = test._resolve_prefix(args)
+assert prefix.endswith("darling-prefix-homebrew-test"), prefix
+assert test._prefix_env == {"DARLING_NOOVERLAYFS": "1"}, test._prefix_env
+
+args = Namespace(prefix="/tmp/custom-prefix", prefix_profile=None, no_overlayfs=True)
+prefix = test._resolve_prefix(args)
+assert prefix == "/tmp/custom-prefix", prefix
+assert test._prefix_env == {"DARLING_NOOVERLAYFS": "1"}, test._prefix_env
 
 print("PASS west-test-prefix-cleanup-contract")
 PY
