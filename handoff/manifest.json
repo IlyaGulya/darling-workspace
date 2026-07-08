@@ -79,19 +79,19 @@
         },
         {
           "branch": "integration/arch",
-          "head": "790a74d632f5c352f9d7d281636268d4bfd25dad",
+          "head": "c106393f1bbb8ed744caf1eceb78d6c5c1d0ae7c",
           "upstream": "",
           "source_ref": "refs/heads/integration/arch"
         },
         {
           "branch": "integration/homebrew",
-          "head": "3491cfeed23965e61448a84d61c66f92ca7e1743",
+          "head": "4dfa8a21be8f8561ea801112dcb96565b5103af0",
           "upstream": "",
           "source_ref": "refs/heads/integration/homebrew"
         },
         {
           "branch": "integration/perf",
-          "head": "7115289e0206f321b2e3e869ebe664aff110a53a",
+          "head": "698e3c176922415675cead8f099599604d6bd939",
           "upstream": "",
           "source_ref": "refs/heads/integration/perf"
         },
@@ -130,6 +130,24 @@
           "head": "93c70498f3c97f8933af56b6308a8780bbaa5f26",
           "upstream": "",
           "source_ref": "refs/heads/fix/a0-arch-redesign"
+        },
+        {
+          "branch": "fix/a0-gate-client-rpc-log",
+          "head": "cbb7d64fcd17d8498f2c5f374e3771a26d979db5",
+          "upstream": "",
+          "source_ref": "refs/heads/fix/a0-gate-client-rpc-log"
+        },
+        {
+          "branch": "fix/a0-gate-focused-synth-markers",
+          "head": "c72d9d8412800ed6a9d2e343ed3a3884f87ede51",
+          "upstream": "",
+          "source_ref": "refs/heads/fix/a0-gate-focused-synth-markers"
+        },
+        {
+          "branch": "fix/a0-gate-shellspawn-retry",
+          "head": "6e231d6477b334b4bb482b92e00a90661eb7e2f0",
+          "upstream": "",
+          "source_ref": "refs/heads/fix/a0-gate-shellspawn-retry"
         },
         {
           "branch": "fix/a0-hang-fixes",
@@ -178,6 +196,24 @@
           "head": "33c02576b7ebae4b806498cd32060cf1f2c54fb3",
           "upstream": "",
           "source_ref": "refs/heads/fix/darlingserver-progress-metrics"
+        },
+        {
+          "branch": "fix/dserver-recent-contract-tests",
+          "head": "a3fa390d3b4fd2f804168b0ff7132fbb3c37ef29",
+          "upstream": "",
+          "source_ref": "refs/heads/fix/dserver-recent-contract-tests"
+        },
+        {
+          "branch": "fix/dserver-stack-pool-empty-handle",
+          "head": "142b89c011bc3cae3b9e1d72035d2d0081f6f42b",
+          "upstream": "",
+          "source_ref": "refs/heads/fix/dserver-stack-pool-empty-handle"
+        },
+        {
+          "branch": "fix/duct-tape-fail-closed-stubs",
+          "head": "e8ad65c9feb96b95551b9eb3ce24daacaad42b83",
+          "upstream": "",
+          "source_ref": "refs/heads/fix/duct-tape-fail-closed-stubs"
         },
         {
           "branch": "fix/exc-fatal-reply-bound",
@@ -258,10 +294,34 @@
           "source_ref": "refs/heads/fix/pthread-canceled-xnu-semantics"
         },
         {
+          "branch": "fix/ring-committed-unknown-gate",
+          "head": "ea28bd095742be30f96b3d73510321f7c8124a51",
+          "upstream": "",
+          "source_ref": "refs/heads/fix/ring-committed-unknown-gate"
+        },
+        {
+          "branch": "fix/rpc-transport-interrupt-contract",
+          "head": "9956c99a8228a7540a4cefd9da52517f245d06ad",
+          "upstream": "",
+          "source_ref": "refs/heads/fix/rpc-transport-interrupt-contract"
+        },
+        {
+          "branch": "fix/rpc-uds-packed-correlation",
+          "head": "03fbc437f6da90297ef0f3055cea90e2373c3786",
+          "upstream": "",
+          "source_ref": "refs/heads/fix/rpc-uds-packed-correlation"
+        },
+        {
           "branch": "fix/server-inline-fastpath",
           "head": "6144a4bb6b1182e635fb88dd737cd11fd71e6189",
           "upstream": "",
           "source_ref": "refs/heads/fix/server-inline-fastpath"
+        },
+        {
+          "branch": "fix/standard-signal-coalescing",
+          "head": "695ed8c479df1561fa2f46efde1d0e5c30150103",
+          "upstream": "",
+          "source_ref": "refs/heads/fix/standard-signal-coalescing"
         },
         {
           "branch": "fix/z27x3-deadline-scheduler",
@@ -271,19 +331,19 @@
         },
         {
           "branch": "integration/arch",
-          "head": "d5cb4869cb55c962e83b30d341b61cd8336fbf9d",
+          "head": "6e231d6477b334b4bb482b92e00a90661eb7e2f0",
           "upstream": "",
           "source_ref": "refs/heads/integration/arch"
         },
         {
           "branch": "integration/homebrew",
-          "head": "92049f05ceec9fa02b132b3882e264822586d91d",
+          "head": "1f94b8ae35c84022bcf6af46866ec80199fab406",
           "upstream": "",
           "source_ref": "refs/heads/integration/homebrew"
         },
         {
           "branch": "integration/perf",
-          "head": "c667be45de91c475a85e1d48586d44cd06d016ae",
+          "head": "9e6529aeacb6edaea31532a62b4a3d7f07d034d3",
           "upstream": "",
           "source_ref": "refs/heads/integration/perf"
         },
@@ -396,6 +456,12 @@
           "source_ref": "refs/heads/fix/homebrew-psynch-ruby-hang"
         },
         {
+          "branch": "fix/psynch-kernel-return-helper",
+          "head": "6b96e2471f5b68bc4486c14de126f7109dbaf984",
+          "upstream": "",
+          "source_ref": "refs/heads/fix/psynch-kernel-return-helper"
+        },
+        {
           "branch": "fix/psynch-negative-returns",
           "head": "b007105f34a0f433016276cf05dff77f2217b89e",
           "upstream": "",
@@ -403,7 +469,7 @@
         },
         {
           "branch": "integration/homebrew",
-          "head": "de1599e9ec0fba41a6c7748625a22d332ac2017f",
+          "head": "6b96e2471f5b68bc4486c14de126f7109dbaf984",
           "upstream": "",
           "source_ref": "refs/heads/integration/homebrew"
         }
@@ -460,6 +526,12 @@
           "head": "57781ec72f7a426a809c2a807ce83d98dd3f5ee0",
           "upstream": "origin/fix/homebrew-psynch-ruby-hang",
           "source_ref": "refs/heads/fix/homebrew-psynch-ruby-hang"
+        },
+        {
+          "branch": "fix/libunwind-static-no-jump-tables-for-dyld",
+          "head": "d5fbc8180ea2e06efa693ee03a768e532a98671f",
+          "upstream": "",
+          "source_ref": "refs/heads/fix/libunwind-static-no-jump-tables-for-dyld"
         }
       ]
     },
@@ -678,6 +750,12 @@
           "source_ref": "refs/heads/fix/getattrlist-name-objtype"
         },
         {
+          "branch": "fix/getattrlist-shared-packer",
+          "head": "72020097cfa0d3ea7e925e1aba3b2df9b7a3a0dc",
+          "upstream": "",
+          "source_ref": "refs/heads/fix/getattrlist-shared-packer"
+        },
+        {
           "branch": "fix/getattrlistbulk",
           "head": "69775cf24aa169d585921818695fff0ae19b3e64",
           "upstream": "",
@@ -706,6 +784,24 @@
           "head": "0d7844f548b9c04a259fcb00a9556cdf9b39d9ef",
           "upstream": "",
           "source_ref": "refs/heads/fix/psynch-negative-errno"
+        },
+        {
+          "branch": "fix/ring-committed-unknown-guest",
+          "head": "8d746cb73e874b057a2db9f453bbd0812b5e46e3",
+          "upstream": "",
+          "source_ref": "refs/heads/fix/ring-committed-unknown-guest"
+        },
+        {
+          "branch": "fix/rpc-disconnect-status-contract-test",
+          "head": "8becacfaa14c5058619c00e8a351e6b8146b1a05",
+          "upstream": "",
+          "source_ref": "refs/heads/fix/rpc-disconnect-status-contract-test"
+        },
+        {
+          "branch": "fix/rpc-transport-interrupt-status",
+          "head": "aadfa984275b74ad6e6f35d144bff20fe6c14565",
+          "upstream": "",
+          "source_ref": "refs/heads/fix/rpc-transport-interrupt-status"
         },
         {
           "branch": "fix/select-pselect-fdset",
@@ -751,13 +847,13 @@
         },
         {
           "branch": "integration/homebrew",
-          "head": "1169ebe2d99cf0c7ba36c1f2613fcf66a9cbbb1c",
+          "head": "77c69408682dac6d20f64e4b3553ae00584a9006",
           "upstream": "",
           "source_ref": "refs/heads/integration/homebrew"
         },
         {
           "branch": "integration/perf",
-          "head": "caddc2b7ef7718e60318f98ec39dab7d40df38ca",
+          "head": "d068e65d28bb0c059a0e1f4ea327c2f88c722c6f",
           "upstream": "",
           "source_ref": "refs/heads/integration/perf"
         },
