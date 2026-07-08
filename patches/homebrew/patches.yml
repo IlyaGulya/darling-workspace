@@ -2222,9 +2222,22 @@ patches:
     red-proof:
       mode: source-base
       source-env: XNU_SRC_ROOT
-    runner: script
+    runner: c-fixture
     repo: darling-workspace
-    script: tests/chown_disabled_null_guard_contract.sh
+    script: tests/chown_disabled_null_guard_contract.c
+    source-files:
+    - darling/src/libsystem_kernel/emulation/src/xnu_syscall/bsd/impl/unistd/fchown.c
+    - darling/src/libsystem_kernel/emulation/src/xnu_syscall/bsd/impl/unistd/fchownat.c
+    - darling/src/libsystem_kernel/emulation/src/xnu_syscall/bsd/impl/unistd/lchown.c
+    - darling/src/libsystem_kernel/emulation/src/xnu_syscall/bsd/impl/unistd/chown.c
+    fixture-include-dirs:
+    - tests/fixtures/chown-disabled/include
+    compile-flags:
+    - -std=gnu11
+    - -Wall
+    - -Wextra
+    - -Werror
+    - -Wno-unused-parameter
     note: Compiles production fchown/chown/fchownat/lchown stubs and verifies disabled ownership changes return ENOTSUP while NULL path inputs return EFAULT before vchroot/Linux fallback.
   - name: chown_disabled_null_guard_guest
     kind: contract
