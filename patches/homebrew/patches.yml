@@ -2226,9 +2226,50 @@ patches:
     red-proof:
       mode: source-base
       source-env: XNU_SRC_ROOT
-    runner: script
+    runner: c-fixture
     repo: darling-workspace
-    script: tests/abort_with_payload_self_signal_contract.sh
+    script: tests/abort_with_payload_self_signal_contract.c
+    source-files:
+    - darling/src/libsystem_kernel/emulation/src/xnu_syscall/bsd/impl/misc/abort_with_payload.c
+    generated-headers:
+      darling/emulation/common/base.h: |
+        #pragma once
+        #ifdef __cplusplus
+        #define CPP_EXTERN_BEGIN extern "C" {
+        #define CPP_EXTERN_END }
+        #else
+        #define CPP_EXTERN_BEGIN
+        #define CPP_EXTERN_END
+        #endif
+      darling/emulation/common/simple.h: |
+        #pragma once
+        void __simple_printf(const char* message, ...);
+      darling/emulation/conversion/signal/duct_signals.h: |
+        #pragma once
+        int signum_bsd_to_linux(int signum);
+      darling/emulation/linux_premigration/linux-syscalls/linux.h: |
+        #pragma once
+        #define __NR_getpid 39
+        #define __NR_gettid 186
+        #define __NR_tgkill 234
+        long test_linux_syscall(long nr, ...);
+        #define LINUX_SYSCALL0(n) test_linux_syscall((n))
+        #define LINUX_SYSCALL1(n, a) test_linux_syscall((n), (long)(a))
+        #define LINUX_SYSCALL2(n, a, b) test_linux_syscall((n), (long)(a), (long)(b))
+        #define LINUX_SYSCALL3(n, a, b, c) test_linux_syscall((n), (long)(a), (long)(b), (long)(c))
+        #define LINUX_SYSCALL(n, ...) test_linux_syscall((n), ##__VA_ARGS__)
+      darling/emulation/xnu_syscall/bsd/impl/misc/abort_with_payload.h: |
+        #pragma once
+        long sys_abort_with_payload(unsigned int reason_namespace, unsigned long long reason_code, void *payload, unsigned int payload_size, const char *reason_string, unsigned long long reason_flags);
+      darling/emulation/xnu_syscall/bsd/impl/signal/kill.h: |
+        #pragma once
+        long sys_kill(int pid, int sig, int posix);
+    compile-flags:
+    - -std=gnu11
+    - -Wall
+    - -Wextra
+    - -Werror
+    - -Wno-unused-parameter
     note: Compiles real sys_abort_with_payload and verifies it re-raises with tgkill(self pid, self tid, SIGABRT) instead of sys_kill(0, SIGABRT) process-group broadcast.
   - name: abort_with_payload_no_group_broadcast_guest
     kind: guest

@@ -318,9 +318,16 @@ class DarlingPatch(WestCommand):
             if runner == "c-fixture":
                 if not test.get("script"):
                     errors.append(f"tests[{index}] c-fixture requires script")
-                for key in ("include-dirs", "stub-headers", "compile-flags"):
+                for key in ("include-dirs", "stub-headers", "compile-flags", "source-files"):
                     if test.get(key) is not None and not isinstance(test.get(key), list):
                         errors.append(f"tests[{index}] {key} must be a list")
+                if test.get("generated-headers") is not None:
+                    headers = test.get("generated-headers")
+                    if not isinstance(headers, dict) or not all(
+                        isinstance(path, str) and isinstance(content, str)
+                        for path, content in headers.items()
+                    ):
+                        errors.append(f"tests[{index}] generated-headers must be a string mapping")
             if runner == "guest-c-fixture":
                 if not test.get("script"):
                     errors.append(f"tests[{index}] guest-c-fixture requires script")
