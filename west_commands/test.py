@@ -2050,6 +2050,14 @@ grep -q '^ORACLE_RC=0$' "$verdict"
             "Use a GREEN-only guest gate or add an isolated bad/fixed deploy runner."
         )
 
+    def _reject_guest_runtime_deploy_red_proof_not_implemented(self, patch) -> None:
+        self.die(
+            f"{patch['path']}: guest-runtime-deploy RED proof is declared but "
+            "the isolated bad/fixed Darling runtime deploy runner is not implemented yet. "
+            "Track this under dar-facb; do not fall back to source-base or a "
+            "current-prefix guest smoke."
+        )
+
     def _run_source_base_proof(self, patch, proof, invocation) -> int:
         if invocation["shell"]:
             self.die(f"{patch['path']}: source-base proof requires a structured runner")
@@ -2123,11 +2131,13 @@ grep -q '^ORACLE_RC=0$' "$verdict"
             self.inf(f"  {self._display_invocation(invocation)}")
             if list_only:
                 continue
-            if mode not in {"self", "source-base"}:
+            if mode not in {"self", "source-base", "guest-runtime-deploy"}:
                 self.die(
                     f"{patch['path']}: RED proof mode {mode!r} is not implemented; "
-                    "use mode: self or mode: source-base"
+                    "use mode: self, source-base, or guest-runtime-deploy"
                 )
+            if mode == "guest-runtime-deploy":
+                self._reject_guest_runtime_deploy_red_proof_not_implemented(patch)
             if mode == "source-base" and invocation.get("guest_c_fixture"):
                 self._reject_guest_source_base_red_proof(patch)
             script_path = invocation.get("script_path")
@@ -2164,6 +2174,12 @@ grep -q '^ORACLE_RC=0$' "$verdict"
                 continue
             if test.get("runner") == "guest-c-fixture":
                 self._reject_guest_source_base_red_proof(patch)
+
+    def _reject_unimplemented_red_proof_models(self, tests) -> None:
+        for patch, test in tests:
+            proof = test.get("red-proof")
+            if isinstance(proof, dict) and proof.get("mode") == "guest-runtime-deploy":
+                self._reject_guest_runtime_deploy_red_proof_not_implemented(patch)
 
     def _shutdown_test_prefix(self) -> bool:
         prefix = getattr(self, "_prefix", None)
@@ -2405,6 +2421,8 @@ grep -q '^ORACLE_RC=0$' "$verdict"
             )
             if args.prove_red:
                 self._reject_unsupported_red_proof_models(selected)
+                if not args.list:
+                    self._reject_unimplemented_red_proof_models(selected)
             materialize_was_requested = self._materialize_profile
             if (
                 selected

@@ -112,6 +112,14 @@ RED proof modes:
   points the named environment variable at that bad source tree, and expects the
   test to fail there before passing on the current tree. Use this only for
   source-root-aware scripts; do not rely on implicit checkout mutation.
+- `red-proof: {mode: guest-runtime-deploy, runtime-artifacts: [...]}`: the
+  intended model for guest/runtime tests whose RED proof requires building and
+  deploying bad runtime artifacts into an isolated Darling prefix, then running
+  the same guest fixture against bad and fixed runtimes. Metadata validation
+  accepts this only for `runner: guest-c-fixture` and requires declared runtime
+  artifacts. Execution currently fails clearly because the deploy runner is not
+  implemented yet; track that work under `dar-facb`. Do not substitute
+  `source-base` for this mode.
 
 Source/text checks are allowed only as auxiliary drift guards:
 
