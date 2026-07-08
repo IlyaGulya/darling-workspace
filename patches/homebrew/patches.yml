@@ -255,29 +255,19 @@ patches:
   source-commit: a52a15e2412cda068548e40047d8a3b18d3dba0b
   bead: dar-gwn.1.5
   publication-status: blocked
-  publication-blocker: 'brew install not yet green end-to-end. dar-gwn.1.5 leg B core still open: the spurious
-
+  publication-blocker: |-
+    brew install not yet green end-to-end. dar-gwn.1.5 leg B core still open: the spurious
     SI_USER SIGSEGV delivered to a syscall-parked guest thread via the sigexc path; also the
-
     dar-gwn.1 fetch-phase reply-loss hang. This patch now guards ALL THREE server-killing throw
-
     sites including the event-loop Call::callFromMessage at server.cpp:541, which is the path
-
-    that turns the leg-B SEGV''s pending-call-overwrite throw into a server terminate + dar-pot
-
+    that turns the leg-B SEGV's pending-call-overwrite throw into a server terminate + dar-pot
     guest leak. ONE clean before/after captured (brew install libunistring): pre-fix produced
-
-    "terminate called ... Thread''s pending call overwritten while active" + dead server + 14
-
+    "terminate called ... Thread's pending call overwritten while active" + dead server + 14
     orphaned mldr; post-fix had the same SEGV trigger but the server stayed alive, no terminate,
-
     clean exit. Non-regressive across repeated boots (0 zombie darlingserver, 0 post-cleanup
-
-    mldr leak). Caveat: the overwrite race is flaky, so the guard''s log+drop line was not
-
+    mldr leak). Caveat: the overwrite race is flaky, so the guard's log+drop line was not
     separately caught firing in a controlled boot; justification rests on the one before/after
-
-    plus static proof this is the only uncaught throw site on the event-loop path.'
+    plus static proof this is the only uncaught throw site on the event-loop path.
   pr-draft: pr-drafts/darlingserver-processcall-exception-guard.md
   github:
     fork:
@@ -295,21 +285,15 @@ patches:
   source-commit: ddfc26341331ad3f3148d85e0fee2ef165f422b5
   bead: dar-gwn.6.2
   publication-status: blocked
-  publication-blocker: 'brew install not yet green end-to-end with this fix. Stacks on
-
+  publication-blocker: |-
+    brew install not yet green end-to-end with this fix. Stacks on
     processcall-exception-guard (a52a15e): that guard contains the throws and
-
     drops the message; this turns the drops at the three ingest sites
-
     (non-existent process/thread -> -ESRCH, pending-call-overwrite -> -EAGAIN)
-
-    into replies so the parked guest thread''s recvmsg returns instead of
-
+    into replies so the parked guest thread's recvmsg returns instead of
     hanging into a SEGV under the Homebrew fork/signal storm. Needs the live
-
     before/after on brew reinstall wget at the libunistring phase to confirm
-
-    the 0x3e8 SEGV clears.'
+    the 0x3e8 SEGV clears.
   github:
     fork:
       repo: IlyaGulya/darlingserver
@@ -326,27 +310,18 @@ patches:
   source-commit: 0c190ddc66961e694b9362cf360fac9668450a86
   bead: dar-gwn.1.7
   publication-status: blocked
-  publication-blocker: 'brew install not yet green end-to-end. This fixes the flavor-C lost-reply
-
+  publication-blocker: |-
+    brew install not yet green end-to-end. This fixes the flavor-C lost-reply
     hang: a push_reply that throws in callFromMessage leaked the client
-
     synchronization-pipe write fd, hanging the guest forever (the server stays
-
     alive but idle). Stacks on processcall-exception-guard (a52a15e): without
-
     that guard the throw crashes the server instead, so this only matters once
-
     throws are contained. Live-verified mechanism (in-binary forced-throw
-
     injection: the guest thread whose push_reply was sabotaged kept running
-
     instead of wedging in recvmsg; server stayed alive, 0 terminate) plus a
-
     deterministic standalone pipe-protocol test (old code hangs, fixed code
-
     unblocks via EOF). Still open: the orthogonal psynch download-queue hang
-
-    that blocks driving a full from-source brew build to completion.'
+    that blocks driving a full from-source brew build to completion.
   pr-draft: pr-drafts/darlingserver-pushreply-pipe-leak.md
   github:
     fork:
@@ -364,43 +339,26 @@ patches:
   source-commit: 4ada639c93580ac908a7f9a10b45f24b7603ac84
   bead: dar-gwn.1.10
   publication-status: blocked
-  publication-blocker: 'brew install not yet green end-to-end. This fixes the dar-gwn.1.10
-
+  publication-blocker: |-
+    brew install not yet green end-to-end. This fixes the dar-gwn.1.10
     exception-delivery deadlock: a fatal EXC_BAD_ACCESS delivered to an
-
     in-process EXCEPTION_DEFAULT handler that consumes it but never resumes
-
-    the faulting thread (gnulib''s printf-OOM nocrash_init probe in
-
+    the faulting thread (gnulib's printf-OOM nocrash_init probe in
     libunistring ./configure) wedges forever, because the faulting microthread
-
-    blocks in mach_exception_raise holding a libsystem_c lock the handler''s
-
+    blocks in mach_exception_raise holding a libsystem_c lock the handler's
     exit() path then needs. macOS unwedges this via task teardown; darlingserver
-
     has no task_terminate, so both guest threads park in recvmsg and the process
-
     hangs. Fix bounds the fatal-exception reply wait (MACH_RCV_TIMEOUT 3s) so
-
     exception_triage falls through to the host ux_handler -> default SIGSEGV ->
-
     guest terminates (macOS-faithful). Scoped to EXC_BAD_ACCESS only after a
-
     live-verified regression: bounding EXC_BAD_INSTRUCTION broke the brew/Ruby
-
-    download path''s legitimate SIGILL catch-and-resume (deterministic SIGILL
-
+    download path's legitimate SIGILL catch-and-resume (deterministic SIGILL
     crash at the first fetch), gone once narrowed. Proven RED->GREEN by the
-
     deterministic gnulib-nocrash_init unit repro (dar-gwn110-repro/run-repro6.sh:
-
     baseline wedges 8s+ all-threads-recvmsg + server idle; fixed terminates ~3s
-
     after fault, no wedge). Full from-source brew run still blocked upstream of
-
     this by the orthogonal download_queue psynch cond_wait ETIMEDOUT
-
-    (dar-gwn.1.8/.1.9 family), so end-to-end green is not yet demonstrable.'
+    (dar-gwn.1.8/.1.9 family), so end-to-end green is not yet demonstrable.
   pr-draft: pr-drafts/darlingserver-exc-fatal-reply-bound.md
   github:
     fork:
@@ -418,43 +376,26 @@ patches:
   source-commit: 7344b17facc2f18c8a8db2e36e8850c032965dd7
   bead: dar-gwn.1.9
   publication-status: blocked
-  publication-blocker: 'brew install not yet green end-to-end. This closes the residual half of
-
+  publication-blocker: |-
+    brew install not yet green end-to-end. This closes the residual half of
     the dar-gwn.1.8/.1.9 download_queue ETIMEDOUT abort that the
-
     thread_unblock() cancel (cancel-stale-wait-timer, dar-gwn.2) did not
-
     reach. Root cause (instrumented, DSERVER_TMRTRACE): a timed psynch cvwait
-
     is woken (THREAD_AWAKENED) and its continuation re-blocks in a new untimed
-
-    wait before the prior wait''s wait_timer is serviced, via a wakeup path
-
+    wait before the prior wait's wait_timer is serviced, via a wakeup path
     that does not route through thread_unblock(); the leftover timer then
-
     fires thread_timer_expire -> clear_wait_internal(THREAD_TIMED_OUT) on the
-
-    new untimed wait, surfacing as a bogus ETIMEDOUT that Ruby''s
-
+    new untimed wait, surfacing as a bogus ETIMEDOUT that Ruby's
     rb_native_cond_wait makes a fatal [BUG] (Homebrew download_queue.rb:184).
-
     Fix cancels any leftover armed wait_timer at the top of
-
-    waitq_assert_wait64_locked before (re)arming, matching XNU''s invariant
-
+    waitq_assert_wait64_locked before (re)arming, matching XNU's invariant
     that a thread entering assert_wait has no live wait_timer. Proven
-
     RED->GREEN by a deterministic fork/exec-storm Ruby repro
-
     (dar-gwn18-etimedout-repro/sleep_stress2.rb): baseline aborts at
-
     download_queue.rb:184 within RUN1/ROUND0 and TMRTRACE shows the stale
-
     untimed-wait timeout firing; fixed shows 0 stale across tens of thousands
-
     of timer expiries and no abort. Complements (does not replace)
-
-    cancel-stale-wait-timer. Full from-source brew end-to-end still pending.'
+    cancel-stale-wait-timer. Full from-source brew end-to-end still pending.
   pr-draft: pr-drafts/darlingserver-assert-wait-cancel-stale-timer.md
   github:
     fork:
@@ -472,33 +413,21 @@ patches:
   source-commit: 6883a8363d2dc2d7a43eae109e172a18e4b4f36c
   bead: dar-gwn.6.3
   publication-status: blocked
-  publication-blocker: 'brew install not yet green end-to-end with this fix. Implements the
-
+  publication-blocker: |-
+    brew install not yet green end-to-end with this fix. Implements the
     __pthread_canceled / __pthread_markcancel RPC handlers (Call::PthreadCanceled
-
     and Call::PthreadMarkcancel), which were TODO stubs replying -ENOSYS for
-
     every action. The stub broke the guest libpthread cancellation handshake:
-
     under a cancelable-syscall + fork storm the guest spun re-issuing
-
     dserver_callnum_pthread_canceled forever (~670/sec, 167k calls observed
-
-    while brew''s portable-ruby built libunistring) -- a livelock. Carries
-
+    while brew's portable-ruby built libunistring) -- a livelock. Carries
     per-thread cancel state on dtape_thread (cancel_disable / cancel_pending /
-
     canceled, mirroring XNU UT_CANCELDISABLE / UT_CANCEL / UT_CANCELED) and
-
     implements XNU semantics (action1 clear-disable->0, action2 set-disable->0,
-
-    action0 canceled?0:EINVAL; markcancel arms the target''s pending bit). Stacks
-
+    action0 canceled?0:EINVAL; markcancel arms the target's pending bit). Stacks
     on ingest-error-reply (dar-gwn.6.2). Needs the live brew reinstall wget run
-
     from the full integration tree to confirm the #31 livelock clears and brew
-
-    advances past the libunistring phase.'
+    advances past the libunistring phase.
   github:
     fork:
       repo: IlyaGulya/darlingserver
@@ -680,39 +609,24 @@ patches:
   source-commit: 362aafc1cbc28b00d7ec53827b6d94550a72ce79
   bead: dar-gwn.6.4
   publication-status: blocked
-  publication-blocker: 'Fixes the dar-gwn.6.4 / dar-gwn.1.5 process-group-kill cascade. sigexc_handler''s
-
+  publication-blocker: |-
+    Fixes the dar-gwn.6.4 / dar-gwn.1.5 process-group-kill cascade. sigexc_handler's
     "emulating default signal effects" path re-raised the fatal default signal with
-
-    kill(0, sig); pid 0 targets the caller''s ENTIRE process group, not just the
-
-    process, so a crashing child (e.g. gnulib''s CHECK_PRINTF_SAFE printf-OOM conftest,
-
+    kill(0, sig); pid 0 targets the caller's ENTIRE process group, not just the
+    process, so a crashing child (e.g. gnulib's CHECK_PRINTF_SAFE printf-OOM conftest,
     which crashes by design) broadcast its SIGSEGV to its parent bash/configure/ruby
-
     and killed the whole build ("terminated by uncaught signal SEGV" -> libunistring
-
     install RC=1). Fix re-raises to THIS thread via tgkill(getpid(), gettid(), sig)
-
-    (raise() semantics), matching macOS''s per-process ux_handler delivery.
-
+    (raise() semantics), matching macOS's per-process ux_handler delivery.
     VALIDATED: (1) server-side sigprocess trace (DSERVER_DARGWN64SIG) showed the
-
     BEFORE=cross-process SIGSEGV (sender=conftest nsid, code=0 SI_USER, 0x3e8 sig)
-
     to two parent bash pids; AFTER=0 cross-process deliveries across 156 events in a
-
     live libunistring fork-storm. (2) Portable grpkill_oracle (dar-gwn110-repro)
-
     A/B: real macOS 26.5.1 PASS == native Linux PASS == Darling-fixed PASS;
-
     Darling-unfixed FAIL. (3) brew reinstall wget: libunistring config.log ran PAST
-
     the OOM probe (L7255->29569, reached configure tail) with 0 "uncaught signal".
-
     Blocker: full brew-green end-to-end RC still being confirmed; also overlaps the
-
-    dar-gwn.1.5 sigexc leg (re-opened) -- reconcile before publish.'
+    dar-gwn.1.5 sigexc leg (re-opened) -- reconcile before publish.
   pr-draft: pr-drafts/xnu-sigexc-default-resend-self.md
   github:
     fork:
@@ -730,8 +644,21 @@ patches:
   source-commit: 9d5c22289dc701e0875226827bed26d4c0ec0099
   bead: dar-gwn.6
   publication-status: blocked
-  publication-blocker: 'Fixes the dar-gwn.6 os_unfair_lock corruption-abort SIGILL: under a fork/exec signal storm sys_ulock_wait returned -EINTR, which Darling''s generic BSD-syscall cerror stub converted to -1, which os_unfair_lock''s slow path (switch(-ret), only EINTR/EFAULT/EOWNERDEAD non-fatal) routed to _os_unfair_lock_corruption_abort -> ud2 -> SIGILL. Fix retries the futex on EINTR internally for untimed UL_COMPARE_AND_WAIT/UL_UNFAIR_LOCK waits (and drops the bogus 0x800 mask in ulock_wake). TDD: live [dargwn6] sigexc trace + symbolize.sh pinned the fault to __os_unfair_lock_lock_slow+0x13f (ud2); RED = sleep_stress2.rb fork-storm crashes at ROUND ~200; with the fix the SIGILL is eliminated (0 across a RUNS=8 NWORK=10 ROUNDS=600 storm, well past the baseline failure point). Blocked: a SEPARATE orthogonal failure (dar-gwn.1.5: a reaped-child SIGCHLD mis-delivered as a fatal signal with SI_USER, observed as SIGFPE handler=SIG_DFL) still ends the same storm, so full from-source brew
-    end-to-end is not yet green.'
+  publication-blocker: >-
+    Fixes the dar-gwn.6 os_unfair_lock corruption-abort SIGILL: under a
+    fork/exec signal storm sys_ulock_wait returned -EINTR, which Darling's
+    generic BSD-syscall cerror stub converted to -1, which os_unfair_lock's
+    slow path (switch(-ret), only EINTR/EFAULT/EOWNERDEAD non-fatal) routed to
+    _os_unfair_lock_corruption_abort -> ud2 -> SIGILL. Fix retries the futex on
+    EINTR internally for untimed UL_COMPARE_AND_WAIT/UL_UNFAIR_LOCK waits (and
+    drops the bogus 0x800 mask in ulock_wake). TDD: live [dargwn6] sigexc trace
+    + symbolize.sh pinned the fault to __os_unfair_lock_lock_slow+0x13f (ud2);
+    RED = sleep_stress2.rb fork-storm crashes at ROUND ~200; with the fix the
+    SIGILL is eliminated (0 across a RUNS=8 NWORK=10 ROUNDS=600 storm, well past
+    the baseline failure point). Blocked: a SEPARATE orthogonal failure
+    (dar-gwn.1.5: a reaped-child SIGCHLD mis-delivered as a fatal signal with
+    SI_USER, observed as SIGFPE handler=SIG_DFL) still ends the same storm, so
+    full from-source brew end-to-end is not yet green.
   pr-draft: pr-drafts/xnu-ulock-wait-eintr-retry.md
   github:
     fork:
@@ -1009,7 +936,7 @@ patches:
   source-commit: 121ae98d08e3e0c303abfeecb1d19d9f1845782e
   bead: dar-test-infra-sp5.8.4.4
   publication-status: blocked
-  publication-blocker: "E-UNION proof-of-concept; hardening \u2014 recursive copy-up on dir rename, *at()-relative copy-up (sys_openat), setid-strip + xattr-preserve on copy-up. Local experiment under dar-test-infra-sp5.8.4.4."
+  publication-blocker: E-UNION proof-of-concept; hardening — recursive copy-up on dir rename, *at()-relative copy-up (sys_openat), setid-strip + xattr-preserve on copy-up. Local experiment under dar-test-infra-sp5.8.4.4.
   github:
     fork:
       repo: IlyaGulya/darling-xnu
@@ -1045,7 +972,7 @@ patches:
   source-commit: 788646ddc5621ae31008b8ab91cc1a2295646106
   bead: dar-test-infra-sp5.8.4.4
   publication-status: blocked
-  publication-blocker: "E-UNION proof-of-concept; make the copy-up privilege-strip load-bearing \u2014 explicit fchmod(mode & 0777) setid strip (FS-independent) + drop security.capability (setuid-equivalent) on copy-up. Found by mutation-testing the hermetic suite. Local experiment under dar-test-infra-sp5.8.4.4.9."
+  publication-blocker: E-UNION proof-of-concept; make the copy-up privilege-strip load-bearing — explicit fchmod(mode & 0777) setid strip (FS-independent) + drop security.capability (setuid-equivalent) on copy-up. Found by mutation-testing the hermetic suite. Local experiment under dar-test-infra-sp5.8.4.4.9.
   github:
     fork:
       repo: IlyaGulya/darling-xnu
@@ -1081,7 +1008,7 @@ patches:
   source-commit: a698e01440be1934fe3f896f5817d7b97479ad84
   bead: dar-test-infra-sp5.8.4.4
   publication-status: blocked
-  publication-blocker: "E-UNION proof-of-concept; path-based setxattr/removexattr never expanded the guest path (pre-EUNION bug) and had no copy-up, so an xattr write on a lower-only object would mutate the shared template; listxattr listed the un-expanded path. Add vchroot_xattr_is_marker (reserved user.union.* namespace) and wire all four xattr sites \u2014 set/remove reject marker forging (EPERM) + copy up + operate on the upper path; get hides markers (ENOATTR); list uses the expanded path and filters markers. Mutation-verified (XM1-XM4, XS1). Local experiment under dar-test-infra-sp5.8.4.4.5."
+  publication-blocker: E-UNION proof-of-concept; path-based setxattr/removexattr never expanded the guest path (pre-EUNION bug) and had no copy-up, so an xattr write on a lower-only object would mutate the shared template; listxattr listed the un-expanded path. Add vchroot_xattr_is_marker (reserved user.union.* namespace) and wire all four xattr sites — set/remove reject marker forging (EPERM) + copy up + operate on the upper path; get hides markers (ENOATTR); list uses the expanded path and filters markers. Mutation-verified (XM1-XM4, XS1). Local experiment under dar-test-infra-sp5.8.4.4.5.
   github:
     fork:
       repo: IlyaGulya/darling-xnu
@@ -1099,7 +1026,7 @@ patches:
   source-commit: 3a76b3646111cf8f0283490337c3920b1b81812c
   bead: dar-test-infra-sp5.8.4.4
   publication-status: blocked
-  publication-blocker: "E-UNION proof-of-concept; delete-recreate of a populated lower-only dir resurrected its old children \u2014 rmdir dropped a whiteout but the subsequent mkdir never marked the recreated upper dir opaque, so readdir re-merged the stale lower children. Add vchroot_post_mkdir (set opaque when the new name shadows a lower directory) and wire it in mkdirat after the host mkdir succeeds. vchroot_set_opaque previously had zero callers. Mutation-verified (MK1 positive, MK2 negative). Local experiment under dar-test-infra-sp5.8.4.4.6."
+  publication-blocker: E-UNION proof-of-concept; delete-recreate of a populated lower-only dir resurrected its old children — rmdir dropped a whiteout but the subsequent mkdir never marked the recreated upper dir opaque, so readdir re-merged the stale lower children. Add vchroot_post_mkdir (set opaque when the new name shadows a lower directory) and wire it in mkdirat after the host mkdir succeeds. vchroot_set_opaque previously had zero callers. Mutation-verified (MK1 positive, MK2 negative). Local experiment under dar-test-infra-sp5.8.4.4.6.
   github:
     fork:
       repo: IlyaGulya/darling-xnu
@@ -1117,7 +1044,7 @@ patches:
   source-commit: d87aa6d5d23b81cc434464a09ff7093a3649a564
   bead: dar-test-infra-sp5.8.4.4
   publication-status: blocked
-  publication-blocker: "E-UNION proof-of-concept; three union-path fixes. (a) Per-component two-layer resolution \u2014 vchroot_run committed current_root to the template after the first lower-only component and gated whiteout/opaque/upper checks on being upper-rooted, so an upper object under a lower-committed walk was invisible; rewritten to recompute upper-wins-then-lower from the guest-relative suffix at every component (literal case unreachable via the union's own writes, pinned by white-box test PC3). (b) eunion_copy_regular preserves mtime/uid/gid on copy-up (overlay parity; resetting mtime breaks make/ninja/ccache). (c) eunion_emit_dirent emits a valid d_type and real d_ino instead of DT_UNKNOWN/1. Mutation-verified (PC3, CM, G4). Local experiment under dar-test-infra-sp5.8.4.4.7."
+  publication-blocker: E-UNION proof-of-concept; three union-path fixes. (a) Per-component two-layer resolution — vchroot_run committed current_root to the template after the first lower-only component and gated whiteout/opaque/upper checks on being upper-rooted, so an upper object under a lower-committed walk was invisible; rewritten to recompute upper-wins-then-lower from the guest-relative suffix at every component (literal case unreachable via the union's own writes, pinned by white-box test PC3). (b) eunion_copy_regular preserves mtime/uid/gid on copy-up (overlay parity; resetting mtime breaks make/ninja/ccache). (c) eunion_emit_dirent emits a valid d_type and real d_ino instead of DT_UNKNOWN/1. Mutation-verified (PC3, CM, G4). Local experiment under dar-test-infra-sp5.8.4.4.7.
   github:
     fork:
       repo: IlyaGulya/darling-xnu
@@ -1135,7 +1062,7 @@ patches:
   source-commit: 7c4af0d829b603a28ff0e326e3cf38ca33514f78
   bead: dar-test-infra-sp5.8.4.4
   publication-status: blocked
-  publication-blocker: BASELINE fix (outside
+  publication-blocker: BASELINE fix (outside #ifdef EUNION) surfaced by the E-UNION harness. The EXIT_PATH escape-hatch check used strncasecmp_l(current_path+current_root_len, EXIT_PATH, ..., LC_C_LOCALE) where LC_C_LOCALE is ((locale_t)NULL); glibc's strncasecmp_l dereferences the locale the instant the bytes match, so a NULL locale SEGVs precisely when a guest path equals EXIT_PATH ("/Volumes/SystemRoot") — exactly when the escape hatch fires (gcc warns -Wnonnull). EXIT_PATH is pure ASCII, so the case-fold needs no locale; replaced with a locale-free ASCII comparator (eunion_ascii_ncasecmp) and removed the dead locale_t/LC_C_LOCALE/strncasecmp_l decls. Mutation-verified (EP1-EP4 — always-equal, no-fold, asymmetric-fold all caught). Local experiment under dar-test-infra-sp5.8.4.4.10.
   github:
     fork:
       repo: IlyaGulya/darling-xnu
@@ -1153,7 +1080,7 @@ patches:
   source-commit: 559d6bf31f36f0c28ef609c73346ca1734961fc4
   bead: dar-test-infra-sp5.8.4.4
   publication-status: blocked
-  publication-blocker: E-UNION proof-of-concept; doc-only. fchown/fchownat/lchown are entirely under
+  publication-blocker: E-UNION proof-of-concept; doc-only. fchown/fchownat/lchown are entirely under #if 0 (return 0, no mutation) and so SAFE today, but un-stubbing any of them adds an instant template-corruption path — for a lower-only target the expanded path is the shared lower template, so the chown mutates ownership for ALL prefixes. Added a warning comment to each stub naming the required copy-up before re-enabling (vchroot_prepare_write_fd for fd-based fchown; vchroot_prepare_write for path-based fchownat/lchown, lchown materializing the link not its target). Every added line is a comment, so generated code is byte-identical in all configs; not RED-testable (compiled out). Local experiment under dar-test-infra-sp5.8.4.4.8.
   github:
     fork:
       repo: IlyaGulya/darling-xnu
@@ -1171,7 +1098,7 @@ patches:
   source-commit: d5e8efb03497030714126778058ac24778f4ed2c
   bead: dar-test-infra-sp5.8.4.4
   publication-status: blocked
-  publication-blocker: "E-UNION proof-of-concept; a full 216-file write-op audit of vchroot template protection found one unprotected mutating site \u2014 sys_ftruncate hit __NR_ftruncate on the raw fd with no copy-up. ftruncate mutates CONTENT by descriptor, the same class as the fd-metadata syscalls protected in .4 but omitted from that set; a writable fd on a lower-only (shared template) inode would shrink the template for ALL prefixes. Unlike fchmod/utimensat/fsetxattr (which work on the .4 meta-write helper's O_RDONLY fd), ftruncate REQUIRES a writable fd, so this adds a sibling helper vchroot_fd_for_content_write (same copy-up, re-opens the upper copy O_RDWR) and wires sys_ftruncate to it under"
+  publication-blocker: E-UNION proof-of-concept; a full 216-file write-op audit of vchroot template protection found one unprotected mutating site — sys_ftruncate hit __NR_ftruncate on the raw fd with no copy-up. ftruncate mutates CONTENT by descriptor, the same class as the fd-metadata syscalls protected in .4 but omitted from that set; a writable fd on a lower-only (shared template) inode would shrink the template for ALL prefixes. Unlike fchmod/utimensat/fsetxattr (which work on the .4 meta-write helper's O_RDONLY fd), ftruncate REQUIRES a writable fd, so this adds a sibling helper vchroot_fd_for_content_write (same copy-up, re-opens the upper copy O_RDWR) and wires sys_ftruncate to it under #ifdef EUNION (#else = original, OFF byte-identical). The .4 helper is left untouched. Mutation-verified (FT — content helper opening O_RDONLY drives EINVAL/no-truncate RED; stub no-copy-up drives different-fd + template-safety RED). Local experiment under dar-test-infra-sp5.8.4.4.11.
   github:
     fork:
       repo: IlyaGulya/darling-xnu
@@ -1189,7 +1116,7 @@ patches:
   source-commit: 2c9fa529b58d2868633b038e9263b3140e7d76f5
   bead: dar-test-infra-sp5.8.4.4
   publication-status: blocked
-  publication-blocker: "E-UNION proof-of-concept (comment-only). Centralizes a provenance/license header at the top of the EUNION region naming each borrowed-idea source with its license and URL \u2014 gVisor overlay (Apache-2.0) for the copy-up/whiteout/opaque/readdir-merge algorithms and the Linux overlayfs docs for semantics \u2014 and states that no third-party code is copied or translated (the new C is under this file's existing license) and that PRoot (GPL-2) was reviewed but contributes no code or design. Independent reimplementation of ideas only; Apache-2.0 imposes no attribution duty on reimplemented concepts, the credit is for auditability. Inside"
+  publication-blocker: E-UNION proof-of-concept (comment-only). Centralizes a provenance/license header at the top of the EUNION region naming each borrowed-idea source with its license and URL — gVisor overlay (Apache-2.0) for the copy-up/whiteout/opaque/readdir-merge algorithms and the Linux overlayfs docs for semantics — and states that no third-party code is copied or translated (the new C is under this file's existing license) and that PRoot (GPL-2) was reviewed but contributes no code or design. Independent reimplementation of ideas only; Apache-2.0 imposes no attribution duty on reimplemented concepts, the credit is for auditability. Inside #ifdef EUNION so OFF builds stay byte-identical; hermetic suite 222/222 green. Local experiment under dar-test-infra-sp5.8.4.4.
   github:
     fork:
       repo: IlyaGulya/darling-xnu
@@ -1207,7 +1134,7 @@ patches:
   source-commit: 95366eda55e3a437f9bd4bf7007278e48da6b96a
   bead: dar-test-infra-sp5.8.4.4
   publication-status: blocked
-  publication-blocker: "E-UNION proof-of-concept. A create through a symlinked lower-only parent dir failed ENOENT under EUNION \u2014 surfaced by a live  smoke test where  failed because /tmp is a symlink (to private/tmp) and eunion_copyup_parent copied up the symlink pointing at a target dir never materialized in the upper layer, so open(O_CREAT) followed the upper symlink into an absent directory. Fix adds eunion_copyup_dir_resolved (materializes the parent dir while following any final-component symlink to its real target, relative+absolute targets, bounded chains) and rewires eunion_copyup_parent to it. EUNION-only (copy-mode copies the whole template so no bug); all new code inside the file"
+  publication-blocker: E-UNION proof-of-concept. A create through a symlinked lower-only parent dir failed ENOENT under EUNION — surfaced by a live  smoke test where  failed because /tmp is a symlink (to private/tmp) and eunion_copyup_parent copied up the symlink pointing at a target dir never materialized in the upper layer, so open(O_CREAT) followed the upper symlink into an absent directory. Fix adds eunion_copyup_dir_resolved (materializes the parent dir while following any final-component symlink to its real target, relative+absolute targets, bounded chains) and rewires eunion_copyup_parent to it. EUNION-only (copy-mode copies the whole template so no bug); all new code inside the file #ifdef EUNION so OFF byte-identical (verified via non-EUNION preprocessed diff). Hermetic SP1 (6 asserts) RED before, GREEN after, mutation-verified 2/2; suite 222 to 228. Live-verified  now works. Local experiment under dar-test-infra-sp5.8.4.4.
   github:
     fork:
       repo: IlyaGulya/darling-xnu
@@ -1350,7 +1277,7 @@ patches:
   source-commit: 6144a4bb6b1182e635fb88dd737cd11fd71e6189
   bead: dar-dar6x4-perf-5dq.8
   publication-status: blocked
-  publication-blocker: runs cheap, non-blocking RPCs INLINE on the darlingserver event loop instead of always handing every message to the worker pool. perf
+  publication-blocker: runs cheap, non-blocking RPCs INLINE on the darlingserver event loop instead of always handing every message to the worker pool. perf #2a profiling proved ~70% of server CPU under a fork/checkin storm was the main-loop->worker condvar handoff (pthread_cond_signal->futex_wake) for work that is <1% of CPU, which is why enabling the multi-threaded work queue regressed throughput ~32% vs single-threaded (and why upstream left DSERVER_SINGLE_THREADED on). Thread::doWork() never blocks its caller, so inlining is safe in both cases - a blocking call suspends its microthread (setcontext back to the loop) and resumes on the pool. Live A/B (8-proc tcstorm multistorm, DSERVER_SINGLE_THREADED=OFF): inline+MT 4676-7295 checkin/s vs ST baseline ~3830 vs naive-MT ~2594; checkin p99 512us->64us; 99.998% of RPCs handled inline (241 of 11.27M to the pool). Boot + 200x fork/exec/wait correctness verified, server stable across runs. RED->GREEN by tests/server_inline_fastpath.c (gates ctx-switches/item: handoff ~1/item fails, inline ~0/item passes). Stacks on the perf #0 progress-metrics commit (adds inline_handled/queued_to_pool counters). Wants design review (does this make the worker pool default-on? interaction with the DSERVER_SINGLE_THREADED flag) + a clean-host perf measurement before upstreaming. See dar-dar6x4-perf-5dq.8.
   tests:
   - name: server_inline_fastpath
     kind: contract
@@ -1380,7 +1307,7 @@ patches:
   source-commit: 5e5d688886589025929d246e51ca349aa18b1cbb
   bead: dar-6x4
   publication-status: blocked
-  publication-blocker: fixes a real darlingserver DEADLOCK (not slowness) under fork+exec storms (make -jN, libunistring/gettext builds) that intermittently wedges the server - rpcs_serviced goes flat, every guest hangs in recvmsg, no recovery. Root cause pinned live with gdb (__cur_writer == MAIN thread tid, the single worker blocked in pthread_rwlock_rdlock with __readers WRLOCKED|WRPHASE) - notifyCheckin() exec branch held the per-process std--shared_mutex _rwlock across the suspending dtape_task_create / dtape_thread_create / dtape_semaphore_* calls. _rwlock ownership is per-OS-thread, but perf
+  publication-blocker: fixes a real darlingserver DEADLOCK (not slowness) under fork+exec storms (make -jN, libunistring/gettext builds) that intermittently wedges the server - rpcs_serviced goes flat, every guest hangs in recvmsg, no recovery. Root cause pinned live with gdb (__cur_writer == MAIN thread tid, the single worker blocked in pthread_rwlock_rdlock with __readers WRLOCKED|WRPHASE) - notifyCheckin() exec branch held the per-process std--shared_mutex _rwlock across the suspending dtape_task_create / dtape_thread_create / dtape_semaphore_* calls. _rwlock ownership is per-OS-thread, but perf #2b (server-inline-fastpath) runs cheap RPCs INLINE on the MAIN event-loop thread while a suspended microthread resumes on the WORKER; an exec checkin running inline on MAIN then strands the write lock owned by MAIN, and a sibling fork-checkin on the single worker blocks forever in _notifyListeningKqchannels() reading the same process lock - the only thread that could resume the holder. Pre-#2b this could not happen (all microthreads ran on the one worker; lock acquired+released on the same OS thread), so this is a latent hazard that perf #2b activated. Fix drops _rwlock around the dtape work and re-acquires it to publish the new task/thread/semaphore handles, mirroring the pattern the thread-clear loop just above already uses around the blocking notifyDead(). A/B under heavy fork+exec load - pristine inline-on WEDGED on attempt 1; forcing all calls to the worker pool (no inline) 20/20 builds clean; this fix with inline ON 20/20 builds clean. fork/exec/wait/exit-code correctness verified (HELLO_EXEC_OK, child fork chain, rc 7 propagation). RED-to-GREEN by tests/inline_suspend_rwlock_deadlock.c (a process rwlock held by one OS thread across a microthread suspension while another OS thread reads it - RED arm deadlocks via watchdog/exit 1, GREEN arm releases-before-suspend and passes; HOST test under 5s). Stacks on fix/server-inline-fastpath (source-base is its source-commit 6144a4bb). Wants design review of the broader invariant (audit that no other Process _rwlock write region can suspend) before upstreaming. See dar-6x4 and epic dar-dar6x4-perf-5dq.
   github:
     fork:
       repo: IlyaGulya/darling
@@ -1398,7 +1325,7 @@ patches:
   source-commit: a7d458546ed463a992d4b35b4ea95534f5a2f0a0
   bead: dar-dar6x4-perf-5dq.3
   publication-status: blocked
-  publication-blocker: makes mldr's RPC recv hook (dserver_rpc_hooks_receive_message) do a bounded NON-BLOCKING recv spin (MSG_DONTWAIT + CPU pause between polls) before the blocking recvmsg, so a fast checkin reply is grabbed without the thread sleeping. Faithful in-guest measurement showed the per-thread create cost is ~95% the checkin RPC round-trip (~205us) and only ~5% socket setup (~10us), and of that round-trip the server's own work is ~8us (post perf
+  publication-blocker: makes mldr's RPC recv hook (dserver_rpc_hooks_receive_message) do a bounded NON-BLOCKING recv spin (MSG_DONTWAIT + CPU pause between polls) before the blocking recvmsg, so a fast checkin reply is grabbed without the thread sleeping. Faithful in-guest measurement showed the per-thread create cost is ~95% the checkin RPC round-trip (~205us) and only ~5% socket setup (~10us), and of that round-trip the server's own work is ~8us (post perf #2b) - the rest is the recvmsg sleep/wakeup latency this attacks (so socket pooling, the obvious option, was rejected as low-ROI). Single-storm A/B (same run, warmup cancels) cut per-checkin RPC latency 237us->183us (~23%); fork/exec/wait/pipe/exit-code correctness 200/200 ok; symmetric to the perf #1 creator-side adaptive wait and bounded so it never busy-waits unboundedly. Default on (DARLING_PERF3_RECVSPIN=512; =0 restores legacy blocking recv). CAVEAT not yet resolved- aggregate throughput A/B on this oversubscribed host (load 68/12 cores, node+clickhouse contention) was noise-dominated and could not confirm a throughput win (one ordering showed ON slightly slower), so the claim is a per-checkin LATENCY reduction, not a measured throughput gain; pause (not sched_yield) was chosen specifically to bound the saturation downside. Wants a clean-host throughput measurement + review of the default-on choice before upstreaming. RED->GREEN by tests/perf3_recv_adaptive_test.c (client voluntary ctx-switches/round-trip- blocking 0.79 FAIL, adaptive 0.00 PASS). See dar-dar6x4-perf-5dq.3.
   github:
     fork:
       repo: IlyaGulya/darling
@@ -1434,7 +1361,7 @@ patches:
   source-commit: 96298b16269a3baf5919c6ff8f844e2b53bbb7cf
   bead: dar-dar6x4-perf-5dq.17
   publication-status: blocked
-  publication-blocker: adds a NO_REPLY ("fire-and-forget") flag to the RPC wrapper generator -- the client wrapper sends and returns 0 without waiting for a reply (skipping the ~200us recvmsg reply-wait sleep that perf
+  publication-blocker: adds a NO_REPLY ("fire-and-forget") flag to the RPC wrapper generator -- the client wrapper sends and returns 0 without waiting for a reply (skipping the ~200us recvmsg reply-wait sleep that perf #6 showed dominates build wall-clock), and the server _sendReply is a no-op. Applied to pure setters set_dyld_info + set_executable_path (scalar args copied into the request datagram, status discarded). set_thread_handles was tried and reverted (early pthread init too sensitive). Ordering safe -- per-thread datagrams processed in send order. GOTCHA -- mldr statically links the rpc wrappers, so a NO_REPLY change requires rebuilding mldr+dylib+server together or guest launchd hangs in recvmsg. Validated boot + make -j8 500/500. RED->GREEN tests/no_reply_rpc_test.sh. Stacks on per-call-rpc-metrics. Wants review that each NO_REPLY call is truly reply-independent before upstreaming. See dar-dar6x4-perf-5dq.17.
   github:
     fork:
       repo: IlyaGulya/darling
@@ -1452,7 +1379,7 @@ patches:
   source-commit: ee46485ef0bb7b5ab65e9a25417f52c4fdeb3072
   bead: dar-dar6x4-perf-5dq.19
   publication-status: blocked
-  publication-blocker: generator half of the guest-side per-callnum recvmsg-sleep accountant -- brackets each reply-bearing wrapper's receive with __darling_rpc_sleep_account_begin()/_end(start, dserver_callnum_<name>) guarded by
+  publication-blocker: generator half of the guest-side per-callnum recvmsg-sleep accountant -- brackets each reply-bearing wrapper's receive with __darling_rpc_sleep_account_begin()/_end(start, dserver_callnum_<name>) guarded by #ifdef DARLING_RPC_SLEEP_ACCOUNT (default OFF -> byte-identical wrappers, zero cost), so a diagnostic build can attribute the 57pct reply-wait per call number. NO_REPLY calls get no accounting. The accountant itself (table+rdtsc+dump) is the paired xnu commit. Decomposed the wait -- mach_msg_overwrite 19%, kprintf 14.5%, fork_wait_for_child 12.6%. RED->GREEN tests/rpc_sleep_account_test.sh. Diagnostic instrumentation; stays local. Stacks on no-reply-fire-and-forget-rpcs. See dar-dar6x4-perf-5dq.19.
   github:
     fork:
       repo: IlyaGulya/darling
@@ -1506,7 +1433,7 @@ patches:
   source-commit: 0984b9b441e4c01e3c4f3e8ef36aef99d9bcb9e6
   bead: dar-dar6x4-perf-5dq.20
   publication-status: blocked
-  publication-blocker: gates three UNCONDITIONAL hot-path kprintf debug traces that perf
+  publication-blocker: gates three UNCONDITIONAL hot-path kprintf debug traces that perf #9-decompose measured at 14.5% of a clean build's recvmsg reply-wait, each being a full synchronous RPC round-trip with no build value. execve.c "execve expand" (every exec), filio.c "dtype for fd" (hot ioctl), sigexc.c "darling_sigexc_self()" (every process startup). New hotpath_kdebug() macro (common/simple.h) compiles to nothing unless -DDARLING_HOTPATH_KPRINTF_DEBUG (still type-checks args via if(0)); execve/filio use it, sigexc routes through its existing kern_printf/DEBUG_SIGEXC gate. Genuine error/guard kprintf left intact. NOTE -- these traces are compiled into BOTH libsystem_kernel.dylib AND dyld (dyld statically links VARIANT_DYLD sigexc.c) so dyld must be rebuilt+redeployed too. Validated -- server kprintf log over a real build 144->0, guest breakdown drops kprintf entirely, build 100/100. RED->GREEN tests/hotpath_kprintf_gated_test.sh. This one is plausibly upstreamable (pure debug-noise removal) but wants review of the macro choice first. Stacks on guest-per-callnum-sleep-account. See dar-dar6x4-perf-5dq.20.
   github:
     fork:
       repo: IlyaGulya/darling-xnu
@@ -1524,7 +1451,7 @@ patches:
   source-commit: 1169ebe2d99cf0c7ba36c1f2613fcf66a9cbbb1c
   bead: dar-dar6x4-perf-5dq.14
   publication-status: blocked
-  publication-blocker: ports perf
+  publication-blocker: ports perf #3's bounded recv-spin (which only ever landed in mldr's copy of dserver-rpc-defs.h) into libsystem_kernel.dylib's RPC receive hook, so the guest build processes (clang/make/sh) also grab a fast RPC reply before sleeping instead of always blocking in recvmsg. Attacks the perf #6 57% __skb_wait reply-wait for the guest's OWN reply-bearing RPCs (mach_msg_overwrite 19% + mach_reply_port 8.7% + mach_port_deallocate 8.4% + self-traps -- perf #9-decompose). Bounded LINUX_MSG_DONTWAIT poll with a CPU pause then a blocking recvmsg fallback; never busy-waits unboundedly (symmetric to perf #1/#3). libc-free (raw syscall + ia32_pause, no env/TLS in the signal-blocked atomic region). Budget is compile-time DARLING_GUEST_RECVSPIN (default 512) -- CMake cache var lets A/B set 0 to disable. NOTE -- the hook is compiled into BOTH the dylib AND dyld so both must be rebuilt+redeployed. RED to GREEN tests/dylib_recv_adaptive_spin_test.sh. Correctness validated (clean boot + 200/200 fork-heavy build) before the prefix env degraded. Wall-clock A/B inconclusive (boot-noise-dominated for a few-percent RPC change, as perf #6 predicted) AND blocked by a separate env issue -- the prefix server lacks the dar-6x4 checkin-suspend crash fix 5e5d688 and segfaults under fork storms. Stacks on gate-hotpath-kprintf-debug. See dar-dar6x4-perf-5dq.14.
   github:
     fork:
       repo: IlyaGulya/darling-xnu
@@ -1542,8 +1469,7 @@ patches:
   source-commit: 92049f05ceec9fa02b132b3882e264822586d91d
   bead: dar-l8k
   publication-status: blocked
-  publication-blocker: fixes a heap use-after-free in Process::notifyCheckin's exec/"replace task" branch that crashed darlingserver under fork+exec storms (~1 in 3-6 heavy builds) and deterministically at boot under an ASan server build. The branch released the old dtape thread + task BEFORE republishing the new dtape thread as the microthread's current thread; the old task's IPC-space teardown (dtape_task_release -> ipc_space_terminate -> ipc_right_terminate -> ipc_port_destroy) reads current_thread()->ith_assertions (IMPORTANCE_INHERITANCE=1), and current_thread() resolves to mainThread->_dtapeThread which was still the just-freed old dtape_thread -> UAF (free at process.cpp dtape_thread_release, use at ipc_port.c:936; the rare prod symptom was a downstream SIGSEGV in the main loop's malloc on a corrupted freelist). Fix publishes _dtapeTask/_dtapeThread + new semaphores under _rwlock first, drops the lock, then releases the old thread/task (releases stay unlocked because dtape_task_release
-    can suspend the microthread, same constraint as the dtape_*_create calls). Pinned via an ASan darlingserver build (DSERVER_ASAN=ON, detect_stack_use_after_return=0 to see past the fiber/ucontext fake-stack noise). RED->GREEN host gate tests/checkin_retask_current_thread_uaf.c + run-checkin-retask-current-thread-uaf.sh model the exact free/use ordering under ASan. Validated -- ASan server boots clean 3/3 (was UAF 3/3 pre-fix); fork-heavy make -j8 6/6 DONE clean. Distinct from 5e5d688 (that was the checkin _rwlock-across-suspend deadlock; this is the exec re-task current_thread UAF). Needs upstream review before publishing. See dar-l8k.
+  publication-blocker: fixes a heap use-after-free in Process::notifyCheckin's exec/"replace task" branch that crashed darlingserver under fork+exec storms (~1 in 3-6 heavy builds) and deterministically at boot under an ASan server build. The branch released the old dtape thread + task BEFORE republishing the new dtape thread as the microthread's current thread; the old task's IPC-space teardown (dtape_task_release -> ipc_space_terminate -> ipc_right_terminate -> ipc_port_destroy) reads current_thread()->ith_assertions (IMPORTANCE_INHERITANCE=1), and current_thread() resolves to mainThread->_dtapeThread which was still the just-freed old dtape_thread -> UAF (free at process.cpp dtape_thread_release, use at ipc_port.c:936; the rare prod symptom was a downstream SIGSEGV in the main loop's malloc on a corrupted freelist). Fix publishes _dtapeTask/_dtapeThread + new semaphores under _rwlock first, drops the lock, then releases the old thread/task (releases stay unlocked because dtape_task_release can suspend the microthread, same constraint as the dtape_*_create calls). Pinned via an ASan darlingserver build (DSERVER_ASAN=ON, detect_stack_use_after_return=0 to see past the fiber/ucontext fake-stack noise). RED->GREEN host gate tests/checkin_retask_current_thread_uaf.c + run-checkin-retask-current-thread-uaf.sh model the exact free/use ordering under ASan. Validated -- ASan server boots clean 3/3 (was UAF 3/3 pre-fix); fork-heavy make -j8 6/6 DONE clean. Distinct from 5e5d688 (that was the checkin _rwlock-across-suspend deadlock; this is the exec re-task current_thread UAF). Needs upstream review before publishing. See dar-l8k.
 - path: darlingserver/pot-guest-lifetime-binding.patch
   sha256sum: c9b7c4b008661ae00a6f52404b9bc9a751462a30ab0b39b0c97d8e007e25cb7f
   module: darling/src/external/darlingserver
@@ -1552,37 +1478,23 @@ patches:
   source-commit: d0cfd7b6605dac15471240724dec03bb9b91231e
   bead: dar-pot
   publication-status: blocked
-  publication-blocker: 'dar-pot root fix: orphaned mldr guests leak across sessions and wedge fresh
-
+  publication-blocker: |-
+    dar-pot root fix: orphaned mldr guests leak across sessions and wedge fresh
     boots. darlingserver creates the guest PID namespace via clone(CLONE_NEWPID);
-
     the clone child (launchd, ns PID 1) now sets prctl(PR_SET_PDEATHSIG, SIGKILL)
-
     so that when darlingserver dies for any reason, ns-PID-1 dies with it and the
-
     kernel cascade-kills every guest in the namespace -- no guest can outlive its
-
     server, so none can accumulate. Set AFTER perma_drop_privileges (a credential
-
     change clears the pdeathsig) and BEFORE spawnLaunchd; survives the exec into
-
     mldr (not set-uid). Base = manifest-rev (the clone region is byte-identical
-
     across the homebrew/perf/arch stacks, so this is profile-independent and lives
-
     in the foundational homebrew profile). RED->GREEN hermetic host-model gate
-
     tests/pot_lifetime_binding_test.c + run-pot-lifetime-binding.sh (nobind arm
-
     reproduces the orphan = GUEST-SURVIVED; bind arm = GUEST-REAPED). LIVE-verified
-
     on the fixed binary (baseline d81b5cf1 + this fix, md5 6d854a92): 3/3 clean brew
-
     reinstalls leave zero mldr + zero zombie darlingserver after shutdown, and a
-
     SIGKILL of darlingserver alone (no darling shutdown) cascade-kills the guest via
-
-    the pdeathsig. Needs upstream review before publishing. See dar-pot.'
+    the pdeathsig. Needs upstream review before publishing. See dar-pot.
   github:
     fork:
       repo: IlyaGulya/darlingserver
