@@ -1254,6 +1254,9 @@ patches:
     env: host
     diag: bare
     red: true
+    red-proof:
+      mode: self
+      note: Script first runs the old sched_yield spin model and requires it to fail, then runs the futex model and requires it to pass.
     runner: script
     script: tests/regression/run-thread-create-checkin-wait.sh
     note: Host RED->GREEN model for replacing sched_yield busy-spin with bounded futex wait.
@@ -1281,6 +1284,9 @@ patches:
     env: host
     diag: bare
     red: true
+    red-proof:
+      mode: self
+      note: Script first runs the per-message handoff model and requires it to fail, then runs the inline model and requires it to pass.
     runner: script
     script: tests/run-server-inline-fastpath.sh
     note: Host RED->GREEN model for avoiding per-message worker handoff on cheap RPCs.

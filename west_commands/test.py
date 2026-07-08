@@ -69,6 +69,11 @@ class DarlingTest(WestCommand):
             help="with --profile/--patch, select only tests marked red: true",
         )
         parser.add_argument(
+            "--prove-red",
+            action="store_true",
+            help="with --profile/--patch, run RED proof mode; normal runs still expect GREEN on current checkout",
+        )
+        parser.add_argument(
             "--red-audit",
             action="store_true",
             help="with --profile, list patches missing tests or test-exception",
@@ -295,9 +300,69 @@ class DarlingTest(WestCommand):
                     "or runner: west-build for runnable local metadata"
                 )
             missing_env = [
-                name
-                for name in invocation.get("requires_env", [])
-                if not os.environ.get(name)
+                env_name
+                for env_name in invocation.get("requires_env", [])
+                if not os.environ.get(env_name)
+            ]
+            if missing_env:
+                self.die(
+                    f"{patch['path']}: missing required environment for {test.get('name', '-')}: "
+                    f"{', '.join(missing_env)}"
+                )
+            if invocation["key"] in seen_invocations:
+                self.inf(f"  skipped duplicate invocation already run")
+                continue
+            seen_invocations.add(invocation["key"])
+            result = subprocess.run(
+                invocation["args"],
+                cwd=invocation["cwd"],
+                env=invocation.get("env"),
+                shell=invocation["shell"],
+                check=False,
+            )
+            if result.returncode:
+                rc = result.returncode
+        return rc
+
+    def _run_red_proofs(self, tests, list_only: bool, unknown: list[str]) -> int:
+        """Run the proof that a regression test really distinguishes old/bad behavior.
+
+        A normal metadata test run always expects GREEN on the current checkout.
+        RED proof is an explicit second mode. Today the implemented proof kind is
+        `mode: self`: the test binary/script contains its own bad-path oracle
+        (for example, run an old algorithm and require that it fails, then run
+        the fixed algorithm and require that it passes). Source-base worktree
+        proofs are intentionally metadata-modelled but not guessed here: many of
+        these tests were introduced by the fix patch, so running "the script at
+        source-base" would often mean there is no script to run.
+        """
+        if unknown:
+            self.die("metadata RED proofs do not accept raw ctest passthrough arguments")
+        rc = 0
+        seen_invocations: set[str] = set()
+        for patch, test in tests:
+            proof = test.get("red-proof")
+            name = test.get("name", "-")
+            if not proof:
+                self.die(
+                    f"{patch['path']}: {name} is marked red but has no red-proof metadata"
+                )
+            mode = proof.get("mode") if isinstance(proof, dict) else proof
+            invocation = self._test_invocation(patch, test)
+            self.inf(f"{patch['path']}: {name} RED proof [{mode}]")
+            self.inf(f"  {invocation['display']}")
+            if list_only:
+                continue
+            if mode != "self":
+                self.die(
+                    f"{patch['path']}: RED proof mode {mode!r} is not implemented; "
+                    "use mode: self for self-discriminating tests or migrate this "
+                    "test to a source-base-capable shared runner"
+                )
+            missing_env = [
+                env_name
+                for env_name in invocation.get("requires_env", [])
+                if not os.environ.get(env_name)
             ]
             if missing_env:
                 self.die(
@@ -305,7 +370,7 @@ class DarlingTest(WestCommand):
                     f"{', '.join(missing_env)}"
                 )
             if invocation["key"] in seen_invocations:
-                self.inf(f"  skipped duplicate invocation already run")
+                self.inf("  skipped duplicate invocation already run")
                 continue
             seen_invocations.add(invocation["key"])
             result = subprocess.run(
@@ -425,6 +490,15 @@ class DarlingTest(WestCommand):
                 for patch in missing:
                     self.inf(f"missing test metadata: {patch['path']} [{patch.get('bead', '-')}]")
             if selected:
+                if args.prove_red:
+                    selected = [
+                        (patch, test)
+                        for patch, test in selected
+                        if test.get("red") or test.get("red-proof")
+                    ]
+                    if not selected:
+                        self.die("no red-proof tests selected from patch metadata")
+                    raise SystemExit(self._run_red_proofs(selected, args.list, unknown))
                 raise SystemExit(self._run_metadata_tests(selected, args.list, unknown))
             if args.list:
                 return

@@ -59,10 +59,34 @@ and future destination, not a local blocker.
     env: host             # host|darling|macos
     diag: bare            # bare|guarded|forensic
     red: true             # this proves RED->GREEN for the fix
+    red-proof:
+      mode: self          # self|source-base; normal runs still expect GREEN
     runner: script
     script: tests/run-example-contract.sh
     note: Fails on the parent commit, passes with this patch.
 ```
+
+`red: true` does **not** mean the test should fail on the latest checkout.
+Normal `west test --profile ...` runs are regression runs and must pass on the
+current/fixed tree. It means the test is intended to prove a RED->GREEN
+regression. That proof is exercised explicitly:
+
+```sh
+west test --profile homebrew --patch darling/mldr-thread-create-futex-wait.patch
+west test --profile homebrew --patch darling/mldr-thread-create-futex-wait.patch --prove-red
+```
+
+RED proof modes:
+
+- `red-proof: {mode: self}`: the test contains its own bad-path oracle, such as
+  running an old algorithm/model and requiring that it fails before running the
+  fixed path. This is the current implemented mode.
+- `red-proof: {mode: source-base}`: intended for a shared runner that takes the
+  test from the current checkout and runs it against a temporary worktree at the
+  patch's `source-base`. This is the correct long-term mode for normal
+  regression tests whose files are added by the fix patch, but it needs a runner
+  contract for redirecting source roots/fixtures instead of guessing per-script
+  behavior.
 
 Use structured runners for common cases:
 
