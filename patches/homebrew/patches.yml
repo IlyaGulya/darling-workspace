@@ -566,10 +566,10 @@ patches:
       base: main
       state: local
 - path: darlingserver/pushreply-pipe-leak.patch
-  sha256sum: 4c8ad4c1e5e1f5ad3303cf65d988280b818b234260191279c25b9a2585bc0da1
+  sha256sum: 1dbd9d965273e304f2b6130b5d1e0d9ceafcf8fa2b1c9cd3db4149e46523030d
   module: darling/src/external/darlingserver
   source-branch: fix/dar-gwn-1-7-pushreply-pipe-leak
-  source-commit: 0c190ddc66961e694b9362cf360fac9668450a86
+  source-commit: 3d4428d7ec9ec44aa9b7f9a71597dd0aeb463a03
   bead: dar-gwn.1.7
   publication-status: blocked
   publication-blocker: |-
@@ -585,20 +585,27 @@ patches:
     unblocks via EOF). Still open: the orthogonal psynch download-queue hang
     that blocks driving a full from-source brew build to completion.
   tests:
-  - name: pushreply_pipe_leak_model
+  - name: pushreply_pipe_leak_contract
     kind: contract
-    coverage-tier: model
+    coverage-tier: compile
     env: host
     diag: bare
     red: true
     red-proof:
-      mode: self
-      why-self: The model drives push_reply throw paths through old leaked-pipe and fixed RAII-close semantics.
-    runner: python
+      mode: source-base
+      source-env: DSERVER_SRC_ROOT
+    runner: c-fixture
     repo: darling-workspace
-    script: tests/darlingserver_behavior_models.py
-    args: [pushreply-pipe-leak]
-    note: Host behavioral model; old throw leaves the sync pipe open, fixed throw closes it so the waiting reader sees EOF.
+    script: tests/push_reply_sync_pipe_contract.cpp
+    cc: c++
+    include-dirs:
+    - internal-include
+    compile-flags:
+    - -std=c++17
+    - -Wall
+    - -Wextra
+    - -Werror
+    note: Compile contract for the production push_reply sync-pipe guard; old source has no close-on-exit guard, fixed source closes on errors and writes an ack byte on success.
   pr-draft: pr-drafts/darlingserver-pushreply-pipe-leak.md
   github:
     fork:

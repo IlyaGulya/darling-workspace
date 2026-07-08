@@ -1,4 +1,4 @@
-From 0c190ddc66961e694b9362cf360fac9668450a86 Mon Sep 17 00:00:00 2001
+From 3d4428d7ec9ec44aa9b7f9a71597dd0aeb463a03 Mon Sep 17 00:00:00 2001
 From: Ilya Gulya <ilya.gulya@indriver.com>
 Date: Tue, 23 Jun 2026 02:24:36 +0000
 Subject: [PATCH] call: never strand the push_reply synchronization pipe on a
@@ -37,19 +37,87 @@ Fix it two ways:
 
 Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
 ---
- src/call.cpp | 45 ++++++++++++++++++++++++++++++++++++---------
- 1 file changed, 36 insertions(+), 9 deletions(-)
+ .../darlingserver/push-reply-sync-pipe.hpp    | 49 +++++++++++++++++++
+ src/call.cpp                                  | 49 ++++++++++++++-----
+ 2 files changed, 87 insertions(+), 11 deletions(-)
+ create mode 100644 internal-include/darlingserver/push-reply-sync-pipe.hpp
 
+diff --git a/internal-include/darlingserver/push-reply-sync-pipe.hpp b/internal-include/darlingserver/push-reply-sync-pipe.hpp
+new file mode 100644
+index 0000000000000000000000000000000000000000..faa7ac4e2f08f9960d861a03c501b00cf189cc9c
+--- /dev/null
++++ b/internal-include/darlingserver/push-reply-sync-pipe.hpp
+@@ -0,0 +1,49 @@
++#ifndef _DARLINGSERVER_PUSH_REPLY_SYNC_PIPE_HPP_
++#define _DARLINGSERVER_PUSH_REPLY_SYNC_PIPE_HPP_
++
++#include <unistd.h>
++
++namespace DarlingServer {
++	class PushReplySyncPipe {
++	public:
++		explicit PushReplySyncPipe(int fd): _fd(fd) {}
++
++		~PushReplySyncPipe() {
++			if (_fd >= 0) {
++				close(_fd);
++			}
++		}
++
++		PushReplySyncPipe(const PushReplySyncPipe&) = delete;
++		PushReplySyncPipe& operator=(const PushReplySyncPipe&) = delete;
++
++		PushReplySyncPipe(PushReplySyncPipe&& other): _fd(other._fd) {
++			other._fd = -1;
++		}
++
++		PushReplySyncPipe& operator=(PushReplySyncPipe&& other) {
++			if (this != &other) {
++				if (_fd >= 0) {
++					close(_fd);
++				}
++				_fd = other._fd;
++				other._fd = -1;
++			}
++			return *this;
++		}
++
++		explicit operator bool() const {
++			return _fd >= 0;
++		}
++
++		void acknowledge() const {
++			char value = 1;
++			(void)!write(_fd, &value, sizeof(value));
++		}
++
++	private:
++		int _fd;
++	};
++}
++
++#endif
 diff --git a/src/call.cpp b/src/call.cpp
-index a5110d429ecf08753fa2cc095cf3d0fc13b0218e..7423b063da5ed93379ba2377eb18763951343589 100644
+index 339820dd05ad71f37f664ed65567ddf90f387865..1a952944825e482ead7c781aaf80de6dac375c38 100644
 --- a/src/call.cpp
 +++ b/src/call.cpp
-@@ -151,15 +151,30 @@ std::shared_ptr<DarlingServer::Call> DarlingServer::Call::callFromMessage(Messag
+@@ -20,6 +20,7 @@
+ #define _GNU_SOURCE 1
+ #include <darlingserver/call.hpp>
+ #include <darlingserver/rpc-error-reply.hpp>
++#include <darlingserver/push-reply-sync-pipe.hpp>
+ #include <darlingserver/server.hpp>
+ #include <sys/uio.h>
+ 
+@@ -158,15 +159,29 @@ std::shared_ptr<DarlingServer::Call> DarlingServer::Call::callFromMessage(Messag
  		auto pushReplyCall = reinterpret_cast<const dserver_rpc_call_push_reply_t*>(requestMessage.data().data());
  		Message replyToSave(pushReplyCall->reply_size, 0);
  
 -		// extract the reply-push synchronization pipe
 -		auto pipeDesc = requestMessage.extractDescriptorAtIndex(requestMessage.descriptors().size() - 1);
+-		char tmp = 1;
+-
+-		if (pipeDesc < 0) {
 +		// Extract the reply-push synchronization pipe and take RAII ownership of it
 +		// IMMEDIATELY. The client's push-reply hook
 +		// (dserver-rpc-defs.c:__dserver_rpc_hooks_push_reply) blocks in a
@@ -65,10 +133,8 @@ index a5110d429ecf08753fa2cc095cf3d0fc13b0218e..7423b063da5ed93379ba2377eb187639
 +		// crash. Binding the fd to an FD here guarantees it is always closed on
 +		// every path -- so the client's read() always returns (a byte on success,
 +		// EOF on failure) and never strands the guest. (dar-gwn.1.7)
-+		FD pipeDesc(requestMessage.extractDescriptorAtIndex(requestMessage.descriptors().size() - 1));
- 		char tmp = 1;
- 
--		if (pipeDesc < 0) {
++		PushReplySyncPipe pipeDesc(requestMessage.extractDescriptorAtIndex(requestMessage.descriptors().size() - 1));
++
 +		if (!pipeDesc) {
  			throw std::runtime_error("Failed to extract reply-push synchronization pipe");
  		}
@@ -78,7 +144,7 @@ index a5110d429ecf08753fa2cc095cf3d0fc13b0218e..7423b063da5ed93379ba2377eb187639
  			throw std::runtime_error("Failed to read client-pushed reply body");
  		}
  
-@@ -175,10 +190,23 @@ std::shared_ptr<DarlingServer::Call> DarlingServer::Call::callFromMessage(Messag
+@@ -182,10 +197,23 @@ std::shared_ptr<DarlingServer::Call> DarlingServer::Call::callFromMessage(Messag
  				// the client saw this unexpected reply while waiting for interrupt_enter to respond and sent it back to us,
  				// and we received both calls (interrupt_enter and push_reply) at the same time
  				thread->_pendingSavedReply = std::move(replyToSave);
@@ -99,13 +165,13 @@ index a5110d429ecf08753fa2cc095cf3d0fc13b0218e..7423b063da5ed93379ba2377eb187639
 +					Server::sharedInstance().sendMessage(std::move(replyToSave));
  				}
 +				// signal the client's push hook so it can continue
-+				write(pipeDesc.fd(), &tmp, sizeof(tmp));
++				pipeDesc.acknowledge();
 +				return nullptr;
 +			} else {
  				if (thread->_interrupts.top().savedReply) {
  					throw std::runtime_error("Client-pushed reply overwriting existing saved reply");
  				}
-@@ -189,9 +217,8 @@ std::shared_ptr<DarlingServer::Call> DarlingServer::Call::callFromMessage(Messag
+@@ -196,9 +224,8 @@ std::shared_ptr<DarlingServer::Call> DarlingServer::Call::callFromMessage(Messag
  		callLog.debug() << *thread << ": Saved client-pushed reply (" << ((thread->_pendingSavedReply) ? "pending" : "normal") << ")" << callLog.endLog;
  
  		// write a byte to the pipe so the caller can continue
@@ -113,7 +179,7 @@ index a5110d429ecf08753fa2cc095cf3d0fc13b0218e..7423b063da5ed93379ba2377eb187639
 -		// and close it
 -		close(pipeDesc);
 +		// (pipeDesc's FD dtor closes the fd when this scope exits)
-+		write(pipeDesc.fd(), &tmp, sizeof(tmp));
++		pipeDesc.acknowledge();
  
  		return nullptr;
  	}
