@@ -2143,9 +2143,16 @@ patches:
     red-proof:
       mode: source-base
       source-env: DARLING_SRC_ROOT
-    runner: script
+    runner: c-fixture
     repo: darling-workspace
-    script: tests/mldr_stack_mapping_contract.sh
+    script: tests/mldr_stack_mapping_contract.c
+    include-dirs:
+    - .
+    compile-flags:
+    - -std=gnu11
+    - -Wall
+    - -Wextra
+    - -Werror
     note: Compiles the production mldr stack mapping helper with a fake mmap backend and checks preferred fixed mapping, EEXIST retry without MAP_FIXED_NOREPLACE, relocated stack_top, and non-EEXIST failure behavior.
   github:
     fork:
