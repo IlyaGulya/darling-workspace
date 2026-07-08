@@ -1136,7 +1136,7 @@ manifest:
       upstream-repository: darling-zsh
   - name: darling-debug-runner
     url: git@github.com:IlyaGulya/darling-debug-runner
-    revision: c85f1bd1ed7238a74c0b30a8e5c0daf3ee933a52
+    revision: dbcd8ebfbb63a94e5f3f21fb6df570b831425b33
     path: darling-debug-runner
     groups:
     - private

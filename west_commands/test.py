@@ -216,6 +216,32 @@ class DarlingTest(WestCommand):
                 return str(candidate)
         return None
 
+    def _resolve_executor(self, explicit: str | None) -> str | None:
+        if explicit:
+            return str(Path(explicit).expanduser())
+        path = shutil.which("darling-debug-runner")
+        if path:
+            return path
+        project = self._projects().get("darling-debug-runner")
+        if project is None:
+            return None
+        repo = project
+        candidates = [
+            repo / "target" / "release" / "darling-debug-runner",
+            repo / "target" / "debug" / "darling-debug-runner",
+        ]
+        for candidate in candidates:
+            if candidate.exists():
+                return str(candidate)
+        return None
+
+    @staticmethod
+    def _resolved_diag(test) -> str:
+        diag = test.get("diag")
+        if diag:
+            return diag
+        return "guarded" if test.get("env") == "darling" else "bare"
+
     def _projects(self) -> dict[str, Path]:
         projects: dict[str, Path] = {}
         for project in self.manifest.projects:
@@ -256,7 +282,7 @@ class DarlingTest(WestCommand):
             if env:
                 tests = [test for test in tests if test.get("env") == env]
             if diag:
-                tests = [test for test in tests if test.get("diag") == diag]
+                tests = [test for test in tests if self._resolved_diag(test) == diag]
             if tests:
                 for test in tests:
                     selected.append((patch, test))
@@ -280,6 +306,9 @@ class DarlingTest(WestCommand):
                 "args": test["command"],
                 "shell": True,
                 "requires_profile": test.get("requires-profile"),
+                "diag": self._resolved_diag(test),
+                "name": test.get("name", patch["path"]),
+                "timeout_seconds": int(test.get("timeout-seconds", 600)),
             }
         if test.get("ctest-label"):
             return {
@@ -289,6 +318,9 @@ class DarlingTest(WestCommand):
                 "args": None,
                 "shell": False,
                 "requires_profile": test.get("requires-profile"),
+                "diag": self._resolved_diag(test),
+                "name": test.get("name", patch["path"]),
+                "timeout_seconds": int(test.get("timeout-seconds", 600)),
             }
 
         runner = test.get("runner", "script" if test.get("script") else None)
@@ -309,6 +341,9 @@ class DarlingTest(WestCommand):
                 "args": args,
                 "shell": False,
                 "requires_profile": test.get("requires-profile"),
+                "diag": self._resolved_diag(test),
+                "name": test.get("name", patch["path"]),
+                "timeout_seconds": int(test.get("timeout-seconds", 600)),
             }
         if runner == "script":
             repo = test.get("repo", patch["module"])
@@ -340,6 +375,9 @@ class DarlingTest(WestCommand):
                 "requires_resources": list(test.get("requires", [])),
                 "requires_env": list(test.get("requires-env", [])),
                 "requires_profile": test.get("requires-profile"),
+                "diag": self._resolved_diag(test),
+                "name": test.get("name", patch["path"]),
+                "timeout_seconds": int(test.get("timeout-seconds", 600)),
             }
 
         self.die(f"{patch['path']}: unsupported test runner {runner!r}")
@@ -352,14 +390,14 @@ class DarlingTest(WestCommand):
         for patch, test in tests:
             name = test.get("name", "-")
             env = test.get("env", "-")
-            diag = test.get("diag", "-")
+            diag = self._resolved_diag(test)
             kind = test.get("kind", "-")
             red = "red" if test.get("red") else "non-red"
             invocation = self._test_invocation(patch, test)
             self.inf(
                 f"{patch['path']}: {name} [{red}, env:{env}, diag:{diag}, kind:{kind}]"
             )
-            self.inf(f"  {invocation['display']}")
+            self.inf(f"  {self._display_invocation(invocation)}")
             if list_only:
                 continue
             if test.get("ctest-label"):
@@ -395,12 +433,54 @@ class DarlingTest(WestCommand):
             self.die(f"{patch['path']}: source-base proof needs source-base or source-commit")
         return f"{source_commit}^"
 
+    def _wrapped_args(self, invocation) -> list[str]:
+        if invocation["shell"]:
+            return ["/bin/bash", "-lc", invocation["args"]]
+        return [str(arg) for arg in invocation["args"]]
+
+    def _debug_runner_args(self, invocation, *, display_only: bool = False) -> list[str]:
+        diag = invocation.get("diag", "bare")
+        if diag == "bare":
+            return self._wrapped_args(invocation)
+        executor = getattr(self, "_executor", None)
+        if not executor:
+            if display_only:
+                executor = "<darling-debug-runner>"
+            else:
+                self.die(
+                    f"{invocation['name']}: diag:{diag} requires darling-debug-runner. "
+                    "Build the west project with `cargo build --release` in "
+                    "`darling-debug-runner`, install it on PATH, or pass --executor."
+                )
+        name = f"west-test-{invocation['name']}"
+        args = [
+            executor,
+            "run",
+            "--name",
+            name,
+            "--bundle-root",
+            str(getattr(self, "_bundle_root", "~/work/darling-debug")),
+            "--timeout-seconds",
+            str(invocation.get("timeout_seconds", 600)),
+        ]
+        if diag == "forensic":
+            args.extend(["--capture-gdb", "--capture-tree"])
+        args.append("--")
+        args.extend(self._wrapped_args(invocation))
+        return args
+
+    def _display_invocation(self, invocation) -> str:
+        if invocation.get("diag", "bare") == "bare":
+            return invocation["display"]
+        args = self._debug_runner_args(invocation, display_only=True)
+        return " ".join(quote(str(arg)) for arg in args)
+
     def _run_invocation(self, invocation, env=None) -> int:
         result = subprocess.run(
-            invocation["args"],
+            self._debug_runner_args(invocation),
             cwd=invocation["cwd"],
             env=env if env is not None else invocation.get("env"),
-            shell=invocation["shell"],
+            shell=False,
             check=False,
         )
         return result.returncode
@@ -523,7 +603,7 @@ class DarlingTest(WestCommand):
             mode = proof.get("mode") if isinstance(proof, dict) else proof
             invocation = self._test_invocation(patch, test)
             self.inf(f"{patch['path']}: {name} RED proof [{mode}]")
-            self.inf(f"  {invocation['display']}")
+            self.inf(f"  {self._display_invocation(invocation)}")
             if list_only:
                 continue
             if mode not in {"self", "source-base"}:
@@ -632,6 +712,8 @@ class DarlingTest(WestCommand):
 
     def do_run(self, args, unknown):
         self._prefix = self._resolve_prefix(args)
+        self._executor = self._resolve_executor(args.executor)
+        self._bundle_root = str(Path(args.bundle_root).expanduser())
 
         if args.gc:
             self._gc_bundles(
