@@ -1032,8 +1032,9 @@ class DarlingTest(WestCommand):
             compile_flags = [str(item) for item in test.get("compile-flags", [])]
             link_flags = [str(item) for item in test.get("link-flags", [])]
             run_args = [str(item) for item in test.get("run-args", [])]
+            host_trace_oracle = bool(test.get("host-trace-oracle", False))
             ok_marker = test.get("ok-marker")
-            if not ok_marker:
+            if not ok_marker and not host_trace_oracle:
                 self.die(f"{patch['path']}: guest-c-fixture needs ok-marker")
             display = (
                 f"cd {quote(repo)} && <upload> {quote(script)} && "
@@ -1057,7 +1058,9 @@ class DarlingTest(WestCommand):
                 "compile_flags": compile_flags,
                 "link_flags": link_flags,
                 "run_args": run_args,
-                "ok_marker": str(ok_marker),
+                "ok_marker": str(ok_marker or ""),
+                "host_trace_files": list(test.get("host-trace-files", [])),
+                "host_trace_oracle": host_trace_oracle,
                 "source_env": source_env,
                 "source_module": source_module,
                 "requires_resources": sorted(resources),
@@ -1895,6 +1898,46 @@ timingsafe_bcmp(const void *b1, const void *b2, size_t n)
             guest_prelude = invocation.get("guest_prelude", "")
             if not guest_prelude:
                 guest_prelude = ":"
+            trace_setup_lines = []
+            trace_check_lines = []
+            for index, trace in enumerate(invocation.get("host_trace_files", [])):
+                if not isinstance(trace, dict):
+                    self.die(f"{invocation['name']}: host-trace-files entries must be mappings")
+                env_name = str(trace.get("env", ""))
+                rel_path = str(trace.get("prefix-relative-path", ""))
+                if not env_name or not rel_path:
+                    self.die(
+                        f"{invocation['name']}: host-trace-files[{index}] needs env "
+                        "and prefix-relative-path"
+                    )
+                if rel_path.startswith("/") or ".." in Path(rel_path).parts:
+                    self.die(
+                        f"{invocation['name']}: host-trace-files[{index}] path must "
+                        "be prefix-relative"
+                    )
+                contains = [str(item) for item in trace.get("contains", [])]
+                trace_var = f"host_trace_{index}"
+                trace_setup_lines.extend(
+                    [
+                        f"{trace_var}=\"$DPREFIX/{rel_path}\"",
+                        f"rm -f \"${trace_var}\"",
+                        f"mkdir -p \"$(dirname \"${trace_var}\")\"",
+                        f"export {env_name}=\"${trace_var}\"",
+                    ]
+                )
+                trace_check_lines.extend(
+                    [
+                        f"if [ ! -f \"${trace_var}\" ]; then",
+                        f"\tprintf 'missing host trace file: %s\\n' \"${trace_var}\" >&2",
+                        "\texit 1",
+                        "fi",
+                        f"cat \"${trace_var}\"",
+                    ]
+                )
+                for expected in contains:
+                    trace_check_lines.append(f"grep -F -q {quote(expected)} \"${trace_var}\"")
+            trace_setup = "\n".join(trace_setup_lines) or ":"
+            trace_check = "\n".join(trace_check_lines) or ":"
             script = f"""#!/usr/bin/env bash
 set -euo pipefail
 : "${{DPREFIX:?set DPREFIX}}"
@@ -1905,6 +1948,9 @@ guest_src={quote(guest_src)}
 guest_bin={quote(guest_bin)}
 timeout_seconds={int(invocation.get("timeout_seconds", 600))}
 ok_marker={quote(invocation["ok_marker"])}
+host_trace_oracle={quote("1" if invocation.get("host_trace_oracle") else "0")}
+
+{trace_setup}
 
 guest_shell() {{
 \tlocal seconds="$1"
@@ -1935,11 +1981,14 @@ rc=$?
 set -e
 
 cat "$verdict" 2>/dev/null || true
-if [ "$rc" -ne 0 ]; then
+if [ "$rc" -ne 0 ] && [ "$host_trace_oracle" != 1 ]; then
 \texit "$rc"
 fi
-grep -q "^$ok_marker" "$verdict"
-grep -q '^ORACLE_RC=0$' "$verdict"
+if [ "$host_trace_oracle" != 1 ]; then
+\tgrep -q "^$ok_marker" "$verdict"
+\tgrep -q '^ORACLE_RC=0$' "$verdict"
+fi
+{trace_check}
 """
             host_runner.write_text(script)
             host_runner.chmod(0o755)

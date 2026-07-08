@@ -1,4 +1,4 @@
-From f21fb14efa1b64b708bbcd8279dedf0cbd56efc8 Mon Sep 17 00:00:00 2001
+From 6dc451c247b85bd2428c42283702ee5346e30ff0 Mon Sep 17 00:00:00 2001
 From: Ilya Gulya <ilya@gulya.me>
 Date: Wed, 10 Jun 2026 10:06:33 +0000
 Subject: [PATCH] psynch: fix cvsignal/cvbroad argument widths and cvbroad
@@ -13,8 +13,10 @@ server never saw the condvar's associated mutex; pass mutex.
  .../bsd/impl/psynch/psynch_cvbroad.c          |  2 +-
  .../bsd/impl/psynch/psynch_cvsignal.c         |  2 +-
  .../tests/psynch_cvsignal_args_contract.sh    | 54 +++++++++++++++++++
- 4 files changed, 57 insertions(+), 3 deletions(-)
+ .../tests/psynch_cvsignal_args_guest.c        | 28 ++++++++++
+ 5 files changed, 85 insertions(+), 3 deletions(-)
  create mode 100755 darling/src/libsystem_kernel/tests/psynch_cvsignal_args_contract.sh
+ create mode 100644 darling/src/libsystem_kernel/tests/psynch_cvsignal_args_guest.c
 
 diff --git a/darling/src/libsystem_kernel/emulation/include/xnu_syscall/bsd/impl/psynch/psynch_cvsignal.h b/darling/src/libsystem_kernel/emulation/include/xnu_syscall/bsd/impl/psynch/psynch_cvsignal.h
 index 35e1ca19d64116aed6d39e7edd9691d0ad5daac8..48826e932a4aa9ff444f8ece37f41f92689a5c67 100644
@@ -115,3 +117,37 @@ index 0000000000000000000000000000000000000000..54e9bab50f796d5cd2bf51139ea74cfc
 +PY
 +
 +printf 'PSYNCH_CVSIGNAL_ARGS_CONTRACT_OK\n'
+diff --git a/darling/src/libsystem_kernel/tests/psynch_cvsignal_args_guest.c b/darling/src/libsystem_kernel/tests/psynch_cvsignal_args_guest.c
+new file mode 100644
+index 0000000000000000000000000000000000000000..ac45d001819993e13dc4c67f423c4827f17822b2
+--- /dev/null
++++ b/darling/src/libsystem_kernel/tests/psynch_cvsignal_args_guest.c
+@@ -0,0 +1,28 @@
++#include <stdint.h>
++#include <stdio.h>
++#include <sys/mman.h>
++#include <unistd.h>
++
++extern int psynch_cvsignal_stub(void* cv, uint64_t cvlsgen, uint32_t cvugen, int thread_port, void* mutex, uint64_t mugen, uint64_t tid, uint32_t flags) asm("___psynch_cvsignal");
++extern int psynch_cvbroad_stub(void* cv, uint64_t cvlsgen, uint64_t cvudgen, uint32_t flags, void* mutex, uint64_t mugen, uint64_t tid) asm("___psynch_cvbroad");
++
++int main(void) {
++	void* cv = mmap((void*)0x123450001000ULL, 4096, PROT_READ | PROT_WRITE, MAP_ANON | MAP_PRIVATE | MAP_FIXED, -1, 0);
++	void* mutex = mmap((void*)0x123450002000ULL, 4096, PROT_READ | PROT_WRITE, MAP_ANON | MAP_PRIVATE | MAP_FIXED, -1, 0);
++	if (cv != (void*)0x123450001000ULL || mutex != (void*)0x123450002000ULL) {
++		perror("mmap");
++		return 2;
++	}
++	uint64_t cvlsgen = 0x100000123ULL;
++	uint64_t cvudgen = 0x200000456ULL;
++	uint32_t cvugen = 0x789U;
++	uint64_t mugen = 0x300000abcULL;
++	uint64_t tid = 0x400000defULL;
++	uint32_t flags = 0x55U;
++
++	(void)psynch_cvsignal_stub(cv, cvlsgen, cvugen, -1, mutex, mugen, tid, flags);
++	(void)psynch_cvbroad_stub(cv, cvlsgen, cvudgen, flags, mutex, mugen, tid);
++
++	write(1, "PSYNCH_CVSIGNAL_ARGS_GUEST_OK\n", 31);
++	_exit(0);
++}

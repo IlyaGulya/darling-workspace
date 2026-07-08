@@ -7,6 +7,7 @@ cd "$repo"
 python3 - <<'PY'
 import tempfile
 import sys
+import os
 import types
 from types import SimpleNamespace
 from pathlib import Path
@@ -51,8 +52,11 @@ with tempfile.TemporaryDirectory() as temp:
     prefix = Path(temp)
     prepare_versioned_clt(prefix)
 
+    stale_pid = prefix / ".init.pid"
+    stale_pid.write_text("999999999\n")
     check = repair_prefix_prerequisites(prefix, check=True)
     assert not check.success
+    assert any(".init.pid points to stale pid 999999999" in item for item in check.problems), check
     assert any("private/var/tmp missing" in item for item in check.problems), check
     assert any("canonical Library/Developer/CommandLineTools symlink missing" in item for item in check.problems), check
     assert any("DarlingCLT clang link missing" in item for item in check.problems), check
@@ -60,6 +64,7 @@ with tempfile.TemporaryDirectory() as temp:
     repaired = repair_prefix_prerequisites(prefix)
     assert repaired.success, repaired
     assert repaired.changed, repaired
+    assert not stale_pid.exists(), repaired
     assert prefix_boot_prerequisite_problems(prefix) == []
     assert guest_c_fixture_prerequisite_problems(
         prefix,
@@ -85,6 +90,17 @@ with tempfile.TemporaryDirectory() as temp:
     failed = repair_prefix_prerequisites(prefix)
     assert not failed.success
     assert any("no CommandLineTools.apple-clt-*" in item for item in failed.problems), failed
+
+with tempfile.TemporaryDirectory() as temp:
+    prefix = Path(temp)
+    prepare_versioned_clt(prefix)
+    init_pid = prefix / ".init.pid"
+    init_pid.write_text(f"{os.getpid()}\n")
+
+    repaired = repair_prefix_prerequisites(prefix)
+    assert repaired.success, repaired
+    assert init_pid.read_text().strip() == str(os.getpid()), repaired
+    assert any(".init.pid points to live pid" in item for item in repaired.ok), repaired
 
 with tempfile.TemporaryDirectory() as temp:
     prefix = Path(temp)

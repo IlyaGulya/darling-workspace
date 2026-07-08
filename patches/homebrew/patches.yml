@@ -156,11 +156,27 @@ patches:
       repo: darlinghq/darlingserver
       base: main
       state: local
+- path: darlingserver/psynch-rpc-arg-trace.patch
+  module: darling/src/external/darlingserver
+  source-branch: fix/psynch-rpc-arg-trace
+  source-base: 89751e64bc6c2082f7725061824ee0e33395b0de
+  source-commit: bc82f1b871820b310ea46662ea453e9e48a311d1
+  bead: dar-r7fc.6
+  publication-status: blocked
+  publication-blocker: test-only runtime instrumentation; keep local until a supported upstream diagnostics interface is designed
+  test-exception:
+    reason: test-instrumentation
+    note: >-
+      This patch adds an opt-in DSERVER_PSYNCH_TRACE_FILE hook used by
+      xnu/psynch-cvsignal-args.patch's guest runtime proof. It is not product
+      behavior and is validated by that runtime gate plus west guest-c-fixture
+      host-trace-files contract coverage.
+  sha256sum: 5c84d3c92b1926178166502dc80b86dd05949c6cd9f01f85cb57e4caaf9ff586
 - path: xnu/psynch-cvsignal-args.patch
-  sha256sum: 692cddc1e34e198edaac6bb26da89076dce16b9fb2ef610dcddbf1bcee261987
+  sha256sum: 1cb3a9f55304c7b8d7234c3b5307b204d07db011ca4039cd759927f523f97404
   module: darling/src/external/xnu
   source-branch: fix/psynch-cvsignal-args
-  source-commit: f21fb14efa1b64b708bbcd8279dedf0cbd56efc8
+  source-commit: 6dc451c247b85bd2428c42283702ee5346e30ff0
   bead: dar-q95.2
   publication-status: ready
   tests:
@@ -176,18 +192,44 @@ patches:
     runner: script
     script: darling/src/libsystem_kernel/tests/psynch_cvsignal_args_contract.sh
     note: Source-level RED->GREEN contract for full-width cvsignal generations and cvbroad mutex argument placement.
-  test-exception:
-    reason: blocked-on-runtime-argument-probe
+  - name: psynch_cvsignal_args_guest
+    kind: guest
+    coverage-tier: runtime
+    env: darling
+    diag: guarded
+    red: true
+    red-proof:
+      mode: guest-runtime-deploy
+      runtime-artifacts:
+      - module: darling/src/external/xnu
+        build-targets:
+        - system_kernel
+        deploy:
+        - usr/lib/system/libsystem_kernel.dylib
+      - module: darling/src/external/dyld
+        build-targets:
+        - src/external/dyld/dyld
+        deploy:
+        - usr/lib/dyld
+    runner: guest-c-fixture
+    repo: darling/src/external/xnu
+    script: darling/src/libsystem_kernel/tests/psynch_cvsignal_args_guest.c
+    ok-marker: PSYNCH_CVSIGNAL_ARGS_GUEST_OK
+    timeout-seconds: 30
+    host-trace-files:
+    - env: DSERVER_PSYNCH_TRACE_FILE
+      prefix-relative-path: private/var/tmp/psynch-cvsignal-args.trace
+      contains:
+      - psynch_cvsignal cv=0x123450001000 cvlsgen=0x100000123
+      - psynch_cvbroad cv=0x123450001000 cvlsgen=0x100000123 cvudgen=0x200000456 flags=0x55 mutex=0x123450002000
+    host-trace-oracle: true
+    requires:
+    - darling-prefix
     note: >-
-      Guest pthread_cond_signal/broadcast smoke tests do not prove this patch:
-      public libpthread paths pass mutex=NULL/mugen=0 and do not expose whether
-      libsystem_kernel forwarded full-width cvlsgen/cvugen or the cvbroad mutex
-      argument correctly. A real behavioral gate needs either a deterministic
-      psynch oracle that fails on generation truncation/wrong mutex placement,
-      or first-class server-side trace/test-hook support that records the
-      psynch_cvsignal/cvbroad RPC arguments produced by a guest-triggered call.
-      Until then, keep psynch_cvsignal_args_contract as source/root-cause RED
-      proof and do not count it as behavioral runtime coverage.
+      Guest runtime gate for psynch cvsignal/cvbroad ABI forwarding. The paired
+      darlingserver test hook records RPC arguments produced by real guest
+      syscalls; bad libsystem_kernel truncates cvlsgen and passes mugen as the
+      cvbroad mutex, fixed runtime records the full generations and mutex.
   pr-draft: pr-drafts/xnu-psynch-cvsignal-args.md
   github:
     fork:
@@ -902,11 +944,11 @@ patches:
       base: main
       state: local
 - path: darlingserver/pthread-canceled-xnu-semantics.patch
-  sha256sum: bdd1611d721c16ed4653cfa7fd223ebada4dd1ad7395168de6d63f13b827b798
+  sha256sum: 862e8bf3a7b53782ad7159270e156f9ed0f603b71707e0ea6ed78d44c367e9e3
   module: darling/src/external/darlingserver
   source-branch: fix/pthread-canceled-xnu-semantics
   source-base: 25e1b6c50cdfd1f3b94febed30c88d4fea8a7c99
-  source-commit: 2069c75492f6813f7eb623af3ba66f8891422c20
+  source-commit: 830e0fcd4f32a7594c83d3acb56c4c46caec3b22
   bead: dar-gwn.6.3
   publication-status: blocked
   publication-blocker: |-
