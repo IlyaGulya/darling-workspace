@@ -1164,9 +1164,18 @@ grep -q '^ORACLE_RC=0$' "$verdict"
         with self._profile_worktree_checkout(profile):
             yield
 
+    def _reject_guest_source_base_red_proof(self, patch) -> None:
+        self.die(
+            f"{patch['path']}: guest-c-fixture cannot use source-base RED proof "
+            "because it would run against the already deployed Darling prefix. "
+            "Use a GREEN-only guest gate or add an isolated bad/fixed deploy runner."
+        )
+
     def _run_source_base_proof(self, patch, proof, invocation) -> int:
         if invocation["shell"]:
             self.die(f"{patch['path']}: source-base proof requires a structured runner")
+        if invocation.get("guest_c_fixture"):
+            self._reject_guest_source_base_red_proof(patch)
         source_env = proof.get("source-env")
         if not source_env:
             self.die(f"{patch['path']}: source-base proof needs red-proof.source-env")
@@ -1240,6 +1249,8 @@ grep -q '^ORACLE_RC=0$' "$verdict"
                     f"{patch['path']}: RED proof mode {mode!r} is not implemented; "
                     "use mode: self or mode: source-base"
                 )
+            if mode == "source-base" and invocation.get("guest_c_fixture"):
+                self._reject_guest_source_base_red_proof(patch)
             script_path = invocation.get("script_path")
             if script_path is not None and not script_path.is_file():
                 self.die(f"{patch['path']}: test script not found: {script_path}")
@@ -1266,6 +1277,14 @@ grep -q '^ORACLE_RC=0$' "$verdict"
             if result_rc:
                 rc = result_rc
         return rc
+
+    def _reject_unsupported_red_proof_models(self, tests) -> None:
+        for patch, test in tests:
+            proof = test.get("red-proof")
+            if not isinstance(proof, dict) or proof.get("mode") != "source-base":
+                continue
+            if test.get("runner") == "guest-c-fixture":
+                self._reject_guest_source_base_red_proof(patch)
 
     def _shutdown_test_prefix(self) -> bool:
         prefix = getattr(self, "_prefix", None)
@@ -1505,6 +1524,8 @@ grep -q '^ORACLE_RC=0$' "$verdict"
             selected, missing = self._metadata_tests(
                 args.profile, args.patch, args.bead, args.env, args.diag, args.red_only
             )
+            if args.prove_red:
+                self._reject_unsupported_red_proof_models(selected)
             materialize_was_requested = self._materialize_profile
             if (
                 selected

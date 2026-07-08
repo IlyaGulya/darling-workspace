@@ -4,8 +4,9 @@ set -euo pipefail
 repo="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$repo"
 tmp_profile="patches/__metadata_contract"
-trap 'rm -rf "$tmp_profile"' EXIT
-mkdir -p "$tmp_profile"
+tmp_invalid_profile="patches/__metadata_invalid_contract"
+trap 'rm -rf "$tmp_profile" "$tmp_invalid_profile"' EXIT
+mkdir -p "$tmp_profile" "$tmp_invalid_profile"
 cat >"$tmp_profile/patches.yml" <<'YAML'
 patches:
 - path: test/ctest-label.patch
@@ -76,6 +77,24 @@ patches:
     ok-marker: WEST_GUEST_C_FIXTURE_OK
     timeout-seconds: 20
     compile-flags: [-std=gnu11, -Wall, -Wextra, -Werror]
+YAML
+
+cat >"$tmp_invalid_profile/patches.yml" <<'YAML'
+patches:
+- path: test/invalid-guest-red-proof.patch
+  module: darling-workspace
+  tests:
+  - name: invalid_guest_source_base_red
+    kind: guest
+    env: darling
+    diag: bare
+    runner: guest-c-fixture
+    script: tests/guest_c_fixture_contract.c
+    ok-marker: WEST_GUEST_C_FIXTURE_OK
+    red: true
+    red-proof:
+      mode: source-base
+      source-env: DARLING_SRC_ROOT
 YAML
 
 fail() {
@@ -195,6 +214,21 @@ printf '%s\n' "$c_fixture" | grep -q \
 	fail 'c-fixture metadata did not resolve to a compile-and-run command'
 printf '%s\n' "$source_only_check" | grep -q 'test metadata: 4 covered (runtime 1, compile 1, host 1, model 1)' ||
 	fail 'coverage-tier summary did not classify runtime/host/compile/model coverage'
+
+invalid_guest_red_check="$(west patch check --profile __metadata_invalid_contract 2>&1)"
+printf '%s\n' "$invalid_guest_red_check" | grep -q \
+	'INVALID   test/invalid-guest-red-proof.patch: tests\[1\] guest-c-fixture cannot use source-base red-proof' ||
+	fail 'guest-c-fixture source-base red-proof metadata was not rejected'
+
+if west test --profile __metadata_invalid_contract \
+	--patch test/invalid-guest-red-proof.patch \
+	--prove-red >/tmp/west-test-invalid-guest-red-proof.out 2>&1
+then
+	fail 'guest-c-fixture source-base red-proof execution unexpectedly passed'
+fi
+grep -q 'guest-c-fixture cannot use source-base RED proof' \
+	/tmp/west-test-invalid-guest-red-proof.out ||
+	fail 'guest-c-fixture source-base red-proof execution did not report the proof model error'
 
 guest_c_fixture="$(
 	west test --profile __metadata_contract \
