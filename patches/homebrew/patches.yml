@@ -294,6 +294,18 @@ patches:
     - netinet6/in6_var.h
     compile-flags: [-std=gnu11, -Wall, -Wextra, -Werror, -Wno-unused-parameter]
     note: Host unit RED->GREEN contract for SIOCGIFCONF empty-list behavior and NULL EFAULT handling.
+  - name: socket_siocgifconf_guest
+    kind: guest
+    env: darling
+    diag: guarded
+    runner: guest-c-fixture
+    repo: darling-workspace
+    script: tests/socket_siocgifconf_guest.c
+    ok-marker: SOCKET_SIOCGIFCONF_GUEST_OK
+    timeout-seconds: 30
+    requires:
+    - darling-prefix
+    note: Guest runtime gate for SIOCGIFCONF empty-list success and NULL EFAULT behavior.
   pr-draft: pr-drafts/xnu-socket-siocgifconf.md
   github:
     fork:
