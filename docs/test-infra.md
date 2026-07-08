@@ -89,7 +89,14 @@ Script tests may declare arguments and environment without dropping to a shell:
     args: [full]
     env-vars:
       A0_STRICT: '1'
+    requires-env:
+    - DPREFIX
 ```
+
+Use `requires-env` for host-side prerequisites that must exist before the test
+starts. For example, Darling guest/runtime scripts should declare `DPREFIX`
+instead of burying that requirement in prose. `west test` fails before launch if
+the variable is missing.
 
 Use `ctest-label` once the test is discoverable through the CTest registry:
 
@@ -105,6 +112,8 @@ Use `ctest-label` once the test is discoverable through the CTest registry:
 `command:` is intentionally an override for corner cases only. Prefer
 `runner/script`, `runner/target`, or `ctest-label` so `west test` owns how tests
 are launched, filtered, deduplicated, and eventually wrapped by diagnostics.
+`west patch check` validates structured entries, including resolving `repo`
+against the West manifest/path map and checking that declared scripts exist.
 
 If a non-documentation patch truly cannot carry a committed red test, record an
 explicit exception:
