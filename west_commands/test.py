@@ -1,4 +1,4 @@
-"""Darling workspace test orchestrator (PoC).
+"""Darling workspace test orchestrator.
 
 `west test` is a thin layer over CTest, in the same spirit as gVisor's Bazel
 test targets and Wine's winetest: the runner sits ON TOP of the build system,
@@ -15,13 +15,15 @@ This command adds the three things CTest does not give for free in this repo:
               diagnosis tiers, so a hang becomes a captured, timed-out failure
               instead of a stall (the tier is set per-test in add_compat_test).
 
-It is a PoC: the test tree lives under testkit/ and is configured/built here.
-The real version would discover per-submodule test trees from the manifest.
+Patch metadata can point at local scripts/build targets or at CTest labels.
+CTest remains the execution backend for suite-style tests; west owns patch
+selection, profile materialization, resource provisioning, and diagnostics.
 """
 
 from __future__ import annotations
 
 import argparse
+import fcntl
 import os
 import signal
 import shutil
@@ -424,14 +426,22 @@ class DarlingTest(WestCommand):
                 "timeout_seconds": int(test.get("timeout-seconds", 600)),
             }
         if test.get("ctest-label"):
+            env = None
+            if test.get("env-vars"):
+                env = os.environ.copy()
+                env.update({str(k): str(v) for k, v in test["env-vars"].items()})
             return {
                 "key": f"ctest-label:{test['ctest-label']}",
-                "display": f"ctest-label:{test['ctest-label']}",
-                "cwd": None,
+                "display": self._display_ctest_label(test["ctest-label"]),
+                "cwd": Path(self.topdir),
                 "args": None,
                 "shell": False,
+                "env": env,
+                "ctest_label": test["ctest-label"],
+                "requires_resources": list(test.get("requires", [])),
+                "requires_env": list(test.get("requires-env", [])),
                 "requires_profile": test.get("requires-profile"),
-                "diag": self._resolved_diag(test),
+                "diag": "bare",
                 "name": test.get("name", patch["path"]),
                 "timeout_seconds": int(test.get("timeout-seconds", 600)),
             }
@@ -513,12 +523,6 @@ class DarlingTest(WestCommand):
             self.inf(f"  {self._display_invocation(invocation)}")
             if list_only:
                 continue
-            if test.get("ctest-label"):
-                self.die(
-                    f"{patch['path']}: ctest-label metadata is list-only until "
-                    "profile test-tree discovery is implemented; use runner: script "
-                    "or runner: west-build for runnable local metadata"
-                )
             script_path = invocation.get("script_path")
             if script_path is not None and not script_path.is_file():
                 self.die(f"{patch['path']}: test script not found: {script_path}")
@@ -545,6 +549,29 @@ class DarlingTest(WestCommand):
                 return True
         return False
 
+    def _display_ctest_label(self, label: str) -> str:
+        build = self._testkit_dir() / "build"
+        args = ["ctest", "--test-dir", str(build), "--output-on-failure", "-L", label]
+        return " ".join(quote(str(arg)) for arg in args)
+
+    def _ensure_ctest_build(self) -> Path:
+        build = getattr(self, "_ctest_build", None)
+        if build is not None:
+            return build
+        build = self._configure_and_build(self._testkit_dir(), self._executor)
+        self._ctest_build = build
+        return build
+
+    def _ctest_label_args(self, invocation) -> list[str]:
+        return [
+            "ctest",
+            "--test-dir",
+            str(self._ensure_ctest_build()),
+            "--output-on-failure",
+            "-L",
+            invocation["ctest_label"],
+        ]
+
     def _bad_revision(self, patch) -> str:
         if patch.get("source-base"):
             return patch["source-base"]
@@ -554,6 +581,8 @@ class DarlingTest(WestCommand):
         return f"{source_commit}^"
 
     def _wrapped_args(self, invocation) -> list[str]:
+        if invocation.get("ctest_label"):
+            return self._ctest_label_args(invocation)
         if invocation["shell"]:
             return ["/bin/bash", "-lc", invocation["args"]]
         return [str(arg) for arg in invocation["args"]]
@@ -825,26 +854,61 @@ class DarlingTest(WestCommand):
                     pass
             time.sleep(1)
 
+    @contextmanager
+    def _prefix_resource_context(self, enabled: bool):
+        prefix = getattr(self, "_prefix", None)
+        if not enabled or not prefix:
+            yield
+            return
+
+        lock_path = Path(prefix).expanduser() / ".west-test.lock"
+        lock_path.parent.mkdir(parents=True, exist_ok=True)
+        with lock_path.open("a+") as lock:
+            self.inf(f"lock Darling prefix: {prefix}")
+            fcntl.flock(lock.fileno(), fcntl.LOCK_EX)
+            try:
+                yield
+            finally:
+                try:
+                    self._shutdown_test_prefix()
+                finally:
+                    fcntl.flock(lock.fileno(), fcntl.LOCK_UN)
+
     def _changed_submodules(self) -> list[str]:
         """Submodules whose checkout differs from their manifest revision.
 
-        PoC heuristic: ask west which projects are not at manifest-rev. The real
-        version would diff each project against its upstream merge-base and also
-        honour an explicit submod:<name> mapping on each test.
+        Prefer West's local manifest-rev ref when available. It records the
+        exact revision selected by the manifest, regardless of whether the
+        manifest used a branch name or SHA. Dirty worktrees are always selected.
         """
         changed: list[str] = []
         for project in self.manifest.projects:
             if not self.manifest.is_active(project):
                 continue
             path = Path(self.topdir) / project.path
+            if path == Path(self.manifest.repo_abspath):
+                continue
             if not (path / ".git").exists():
+                continue
+            label_name = Path(project.path).name
+            if self._worktree_dirty(path, parent=project.name == "darling"):
+                changed.append(label_name)
                 continue
             head = subprocess.run(
                 ["git", "rev-parse", "HEAD"],
                 cwd=path, capture_output=True, text=True, check=False,
             ).stdout.strip()
-            if project.revision and head and not head.startswith(project.revision):
-                changed.append(project.name)
+            manifest_rev = subprocess.run(
+                ["git", "rev-parse", "--verify", "manifest-rev^{commit}"],
+                cwd=path, capture_output=True, text=True, check=False,
+            ).stdout.strip()
+            if not manifest_rev and project.revision:
+                manifest_rev = subprocess.run(
+                    ["git", "rev-parse", "--verify", f"{project.revision}^{{commit}}"],
+                    cwd=path, capture_output=True, text=True, check=False,
+            ).stdout.strip()
+            if head and manifest_rev and head != manifest_rev:
+                changed.append(label_name)
         return changed
 
     def _configure_and_build(self, testkit: Path, executor: str | None) -> Path:
@@ -937,6 +1001,7 @@ class DarlingTest(WestCommand):
                 for patch in missing:
                     self.inf(f"missing test metadata: {patch['path']} [{patch.get('bead', '-')}]")
             if selected:
+                needs_prefix = self._metadata_needs_prefix(selected) and not args.list
                 if args.prove_red:
                     selected = [
                         (patch, test)
@@ -945,16 +1010,11 @@ class DarlingTest(WestCommand):
                     ]
                     if not selected:
                         self.die("no red-proof tests selected from patch metadata")
-                    try:
+                    needs_prefix = self._metadata_needs_prefix(selected) and not args.list
+                    with self._prefix_resource_context(needs_prefix):
                         raise SystemExit(self._run_red_proofs(selected, args.list, unknown))
-                    finally:
-                        if not args.list and self._metadata_needs_prefix(selected):
-                            self._shutdown_test_prefix()
-                try:
+                with self._prefix_resource_context(needs_prefix):
                     raise SystemExit(self._run_metadata_tests(selected, args.list, unknown))
-                finally:
-                    if not args.list and self._metadata_needs_prefix(selected):
-                        self._shutdown_test_prefix()
             if args.list:
                 return
             self.die("no tests selected from patch metadata")
@@ -963,8 +1023,7 @@ class DarlingTest(WestCommand):
         if not testkit.exists():
             self.die(f"no testkit at {testkit}")
 
-        executor = args.executor or shutil.which("darling-debug-runner")
-        build = self._configure_and_build(testkit, executor)
+        build = self._configure_and_build(testkit, self._executor)
 
         # Translate selectors into a CTest label regex (-L is ANDed per flag).
         label_args: list[str] = []

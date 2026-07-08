@@ -1,13 +1,13 @@
 # SPDX-License-Identifier: MIT-0
 #
-# PoC test tree for the `west test` proof-of-concept. Self-contained: builds with
-# plain cc/clang, registers cases via add_compat_test(), and is driven by ctest
-# (and, on top of it, by `west test`). It compiles the REAL production code under
-# test from the darling checkout (DARLING_SRC), so the regressions track the code
-# they guard rather than a copy.
+# Local compatibility suite for `west test`. Self-contained: builds with plain
+# cc/clang, registers cases via add_compat_test(), and is driven by ctest (and,
+# on top of it, by `west test`). It compiles the REAL production code under test
+# from the darling checkout (DARLING_SRC), so regressions track the code they
+# guard rather than a copy.
 
 cmake_minimum_required(VERSION 3.13)
-project(darling-testkit-poc C)
+project(darling-testkit C)
 
 include(CTest)
 include("${CMAKE_CURRENT_SOURCE_DIR}/cmake/AddCompatTest.cmake")

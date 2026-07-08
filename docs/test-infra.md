@@ -1,7 +1,7 @@
 # Darling test infrastructure — design RFC
 
-Status: draft / proof-of-concept landed under `testkit/`.
-Owner: ilyagulya. Decision target: after vacation (resume 2026-07-03).
+Status: local productized foundation; migration and CI rollout still open.
+Owner: ilyagulya.
 
 ## 2026-07-08 Audit Refresh
 
@@ -127,10 +127,11 @@ then supplies `DPREFIX` from `--prefix`, `--prefix existing:/path`,
 launch if a requirement is missing.
 
 For metadata tests that use `requires: [darling-prefix]`, `west test` also owns
-the resource shutdown path. After a real run it calls `darling shutdown` for the
-selected prefix and kills a matching leftover `darlingserver` if shutdown did
-not finish cleanly. Pass `--keep-prefix-running` only when intentionally keeping
-the prefix warm for a manual debug loop.
+the resource lock and shutdown path. A real run takes `$DPREFIX/.west-test.lock`
+before launching the test, holds it through cleanup, calls `darling shutdown`
+for the selected prefix, and kills a matching leftover `darlingserver` if
+shutdown did not finish cleanly. Pass `--keep-prefix-running` only when
+intentionally keeping the prefix warm for a manual debug loop.
 
 For patch metadata, `diag: guarded` and `diag: forensic` are enforced by
 `west test`, not by each script. `guarded` wraps the structured invocation in
@@ -151,7 +152,9 @@ for the repeated DPREFIX flow: copy fixture into the prefix, launch
 host runner process. Bespoke scripts such as long A0 gates are acceptable, but
 they should be the exception rather than the default shape for new tests.
 
-Use `ctest-label` once the test is discoverable through the CTest registry:
+Use `ctest-label` once the test is discoverable through the CTest registry.
+This is a runnable selector: `west test` configures/builds the local
+compatibility suite and executes `ctest -L <label>`.
 
 ```yaml
   - name: wait4_guest_contract
@@ -429,21 +432,25 @@ test by hand (3 lines × 282 files) — the wrapper addresses that exact pain.
 - CI tiering (decouples the SUID-in-container worry from getting value now):
   - Tier 0 (per PR, seconds): HOST regressions + reuse/lint, no prefix needed.
   - Tier 1 (submodule PR, minutes): build full Darling at the new submodule
-    pointer, run `ctest -L submod:<changed>` (ccache already on in the root
-    CMake). This is the only honest CI per CuriousTommy — submodules don't build
-    alone.
+    pointer, compare active West projects against their local `manifest-rev`
+    refs plus dirty worktrees, normalize changed labels to project path
+    basenames, and run `ctest -L submod:<changed>` (ccache already on in the
+    root CMake). This is the only honest CI per CuriousTommy — submodules don't
+    build alone.
   - Tier 2 (nightly/farm, à la WineTestBot): full suite on a matrix of Darling
     + real macOS versions. The testsuite's own long-term goal.
 
-## Proof of concept (landed)
+## Local Compatibility Suite
 
-`testkit/` is a self-contained PoC; nothing under `darling/` is touched. It
-compiles the REAL production code from the darling checkout (auto-located as the
-sibling `../darling`, override with `-DDARLING_SRC`).
+`testkit/` is a self-contained local compatibility suite; nothing under
+`darling/` is touched. It compiles the REAL production code from the darling
+checkout (auto-located as the sibling `../darling`, override with
+`-DDARLING_SRC`).
 
 - `testkit/cmake/AddCompatTest.cmake` — the `add_compat_test()` generator
   (EXTRA_SOURCES/INCLUDES/DEFINES/LIBS/WORKDIR let a case link the real code).
-- `testkit/CMakeLists.txt` — registers the real dar-gwn.5 case.
+- `testkit/CMakeLists.txt` — registers compatibility cases, starting with the
+  real dar-gwn.5 case.
 - `west_commands/test.py` — the orchestrator, registered in `west-commands.yml`.
 
 The dar-gwn.5 case is a REAL regression, not a stand-in: it mirrors
@@ -477,7 +484,8 @@ Verified end-to-end on this machine:
   tree vs build-graph. Labels are the gVisor/CTest-idiomatic answer; revisit if
   coverage gaps appear.
 - GUEST (`env=darling`) execution needs a built prefix + Apple headers/toolchain
-  for Mach-O cases; not exercised in this PoC (HOST only).
+  for Mach-O cases. Local `west test --prefix-profile homebrew` is exercised;
+  CI/container provisioning remains separate work.
 - SUID removal for containerised Tier 1/2 — separate bead, not a dependency of
   Tier 0 or local `west test`.
 ```
