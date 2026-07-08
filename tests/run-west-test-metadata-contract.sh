@@ -404,11 +404,11 @@ if west test --profile __metadata_runtime_red_contract \
 	--patch test/guest-runtime-red-proof.patch \
 	--prove-red >/tmp/west-test-guest-runtime-red-proof.out 2>&1
 then
-	fail 'guest-runtime-deploy RED proof unexpectedly passed before runner implementation'
+	fail 'guest-runtime-deploy RED proof unexpectedly passed without a prefix'
 fi
-grep -q 'guest-runtime-deploy RED proof is declared but' \
+grep -q 'missing required environment .*darling-prefix' \
 	/tmp/west-test-guest-runtime-red-proof.out ||
-	fail 'guest-runtime-deploy RED proof did not report unimplemented runner clearly'
+	fail 'guest-runtime-deploy RED proof did not report missing prefix clearly'
 
 guest_c_fixture="$(
 	west test --profile __metadata_contract \
