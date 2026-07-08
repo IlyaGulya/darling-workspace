@@ -165,7 +165,8 @@ patches:
   publication-status: ready
   tests:
   - name: psynch_cvsignal_args_contract
-    kind: contract
+    kind: source-contract
+    coverage-tier: source
     env: host
     diag: bare
     red: true
