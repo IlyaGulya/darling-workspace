@@ -366,9 +366,16 @@ patches:
     red-proof:
       mode: source-base
       source-env: LIBPLATFORM_SRC_ROOT
-    runner: script
+    runner: c-fixture
     repo: darling-workspace
-    script: tests/bzero_return_register_contract.sh
+    script: tests/bzero_return_register_contract.c
+    source-files:
+    - src/string/x86_64/bzero.S
+    compile-flags:
+    - -std=gnu11
+    - -Wall
+    - -Wextra
+    - -Werror
     note: Host RED->GREEN contract that the x86_64 bzero implementation preserves the destination pointer in RAX.
   pr-draft: pr-drafts/libplatform-bzero-return-register.md
   merge-pr: https://github.com/darlinghq/darling-libplatform/pull/5
