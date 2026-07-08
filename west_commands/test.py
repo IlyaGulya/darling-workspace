@@ -22,9 +22,11 @@ The real version would discover per-submodule test trees from the manifest.
 from __future__ import annotations
 
 import argparse
+import os
 import shutil
 import subprocess
 from pathlib import Path
+from shlex import quote
 
 import yaml
 from west.commands import WestCommand
@@ -149,6 +151,8 @@ class DarlingTest(WestCommand):
         profile: str,
         patch_path: str | None,
         bead: str | None,
+        env: str | None,
+        diag: str | None,
         red_only: bool,
     ):
         data = self._load_profile(profile)
@@ -159,43 +163,127 @@ class DarlingTest(WestCommand):
                 continue
             if bead and patch.get("bead") != bead:
                 continue
-            tests = patch.get("tests") or []
+            all_tests = patch.get("tests") or []
+            tests = all_tests
             if red_only:
                 tests = [test for test in tests if test.get("red")]
+            if env:
+                tests = [test for test in tests if test.get("env") == env]
+            if diag:
+                tests = [test for test in tests if test.get("diag") == diag]
             if tests:
                 for test in tests:
                     selected.append((patch, test))
-            elif not patch.get("test-exception"):
+            elif not all_tests and not patch.get("test-exception"):
                 missing.append(patch)
         if patch_path and not selected and not missing:
             self.die(f"{profile}: patch not found or has no selected tests: {patch_path}")
         return selected, missing
 
+    def _test_invocation(self, patch, test):
+        """Resolve structured patch metadata to a concrete local invocation.
+
+        `command` is intentionally still supported as an escape hatch, but the
+        common cases should be structured so west owns how tests are launched.
+        """
+        if test.get("command"):
+            return {
+                "key": f"shell:{test['command']}",
+                "display": test["command"],
+                "cwd": Path(self.topdir),
+                "args": test["command"],
+                "shell": True,
+            }
+        if test.get("ctest-label"):
+            return {
+                "key": f"ctest-label:{test['ctest-label']}",
+                "display": f"ctest-label:{test['ctest-label']}",
+                "cwd": None,
+                "args": None,
+                "shell": False,
+            }
+
+        runner = test.get("runner", "script" if test.get("script") else None)
+        if runner == "west-build":
+            target = test["target"]
+            args = [
+                "west",
+                "darling-build",
+                "--force",
+                "--skip-doctor",
+                "--targets",
+                target,
+            ]
+            return {
+                "key": " ".join(args),
+                "display": " ".join(args),
+                "cwd": Path(self.topdir),
+                "args": args,
+                "shell": False,
+            }
+        if runner == "script":
+            repo = test.get("repo", patch["module"])
+            script = test["script"]
+            script_args = [str(arg) for arg in test.get("args", [])]
+            args = [str(Path(script)), *script_args]
+            prefix = ""
+            if test.get("env-vars"):
+                prefix = " ".join(
+                    f"{quote(str(key))}={quote(str(value))}"
+                    for key, value in test["env-vars"].items()
+                ) + " "
+            display_args = " ".join(quote(arg) for arg in args)
+            display = f"cd {quote(repo)} && {prefix}{display_args}"
+            env = None
+            if test.get("env-vars"):
+                env = os.environ.copy()
+                env.update({str(k): str(v) for k, v in test["env-vars"].items()})
+            return {
+                "key": display,
+                "display": display,
+                "cwd": Path(self.topdir) / repo,
+                "args": args,
+                "shell": False,
+                "env": env,
+            }
+
+        self.die(f"{patch['path']}: unsupported test runner {runner!r}")
+
     def _run_metadata_tests(self, tests, list_only: bool, unknown: list[str]) -> int:
         if unknown:
             self.die("metadata command tests do not accept raw ctest passthrough arguments")
         rc = 0
+        seen_invocations: set[str] = set()
         for patch, test in tests:
             name = test.get("name", "-")
             env = test.get("env", "-")
             diag = test.get("diag", "-")
             kind = test.get("kind", "-")
             red = "red" if test.get("red") else "non-red"
-            command = test.get("command")
-            label = test.get("ctest-label")
-            target = command or f"ctest-label:{label}"
+            invocation = self._test_invocation(patch, test)
             self.inf(
                 f"{patch['path']}: {name} [{red}, env:{env}, diag:{diag}, kind:{kind}]"
             )
-            self.inf(f"  {target}")
+            self.inf(f"  {invocation['display']}")
             if list_only:
                 continue
-            if label:
+            if test.get("ctest-label"):
                 self.die(
                     f"{patch['path']}: ctest-label metadata is list-only until "
-                    "profile test-tree discovery is implemented; use command for now"
+                    "profile test-tree discovery is implemented; use runner: script "
+                    "or runner: west-build for runnable local metadata"
                 )
-            result = subprocess.run(command, cwd=self.topdir, shell=True, check=False)
+            if invocation["key"] in seen_invocations:
+                self.inf(f"  skipped duplicate invocation already run")
+                continue
+            seen_invocations.add(invocation["key"])
+            result = subprocess.run(
+                invocation["args"],
+                cwd=invocation["cwd"],
+                env=invocation.get("env"),
+                shell=invocation["shell"],
+                check=False,
+            )
             if result.returncode:
                 rc = result.returncode
         return rc
@@ -288,7 +376,7 @@ class DarlingTest(WestCommand):
         if args.red_audit:
             profile = args.profile or "homebrew"
             _, missing = self._metadata_tests(
-                profile, args.patch, args.bead, red_only=False
+                profile, args.patch, args.bead, args.env, args.diag, red_only=False
             )
             for patch in missing:
                 self.inf(f"MISSING {patch['path']} [{patch.get('bead', '-')}]")
@@ -300,7 +388,7 @@ class DarlingTest(WestCommand):
 
         if args.profile:
             selected, missing = self._metadata_tests(
-                args.profile, args.patch, args.bead, args.red_only
+                args.profile, args.patch, args.bead, args.env, args.diag, args.red_only
             )
             if missing:
                 for patch in missing:
