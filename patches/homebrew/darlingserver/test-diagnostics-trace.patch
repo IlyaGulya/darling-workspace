@@ -498,3 +498,136 @@ index 0000000000000000000000000000000000000000..28bbeab628863080f5f1bdb479fd0abd
 +}
 +
 +}
+
+From a727a1fcb1eed8fe767dee5b2a016173e84366bf Mon Sep 17 00:00:00 2001
+From: Ilya Gulya <ilya@gulya.me>
+Date: Wed, 8 Jul 2026 22:31:46 +0000
+Subject: [PATCH] test: add guarded ingest fault trigger
+
+---
+ .../darlingserver/test-diagnostics.hpp        |  1 +
+ src/call.cpp                                  | 12 +++++
+ src/test-diagnostics.cpp                      | 48 +++++++++++++++++++
+ 3 files changed, 61 insertions(+)
+
+diff --git a/internal-include/darlingserver/test-diagnostics.hpp b/internal-include/darlingserver/test-diagnostics.hpp
+index 3d77ed6f393f115a2e1f6ab047823d17f1f17306..de5a448b6802c8f8dbaf623e46e02a81070c5f5e 100644
+--- a/internal-include/darlingserver/test-diagnostics.hpp
++++ b/internal-include/darlingserver/test-diagnostics.hpp
+@@ -5,6 +5,7 @@
+ namespace DarlingServer::TestDiagnostics {
+ 
+ bool enabled();
++bool consumeFault(const char* name);
+ void traceLine(const std::string& line);
+ 
+ }
+diff --git a/src/call.cpp b/src/call.cpp
+index f5616ab3fab77407d738c06b11cf29f69c8135d1..51847f4435c43f9c5ddadaa2fe11acabe1cdf631 100644
+--- a/src/call.cpp
++++ b/src/call.cpp
+@@ -66,6 +66,10 @@ std::shared_ptr<DarlingServer::Call> DarlingServer::Call::callFromMessage(Messag
+ 		process = processRegistry().registerIfAbsent(header->pid, [&]() {
+ 			std::shared_ptr<Process> tmp = nullptr;
+ 
++			if (TestDiagnostics::consumeFault("ingest.process_register_fail")) {
++				return tmp;
++			}
++
+ 			int lifetimePipe = -1;
+ 
+ 			if (header->number == dserver_callnum_checkin) {
+@@ -86,6 +90,10 @@ std::shared_ptr<DarlingServer::Call> DarlingServer::Call::callFromMessage(Messag
+ 			return tmp;
+ 		});
+ 
++		if (TestDiagnostics::consumeFault("ingest.force_missing_process")) {
++			process = nullptr;
++		}
++
+ 		if (!process) {
+ 			callLog.error() << "Received call from non-existent process (number "
+ 				<< header->number << "); replying -ESRCH instead of dropping" << callLog.endLog;
+@@ -106,6 +114,10 @@ std::shared_ptr<DarlingServer::Call> DarlingServer::Call::callFromMessage(Messag
+ 		thread = threadRegistry().registerIfAbsent(header->tid, [&]() {
+ 			std::shared_ptr<Thread> tmp = nullptr;
+ 
++			if (TestDiagnostics::consumeFault("ingest.thread_register_fail")) {
++				return tmp;
++			}
++
+ 			void* stackHint = nullptr;
+ 
+ 			if (header->number == dserver_callnum_checkin) {
+diff --git a/src/test-diagnostics.cpp b/src/test-diagnostics.cpp
+index 28bbeab628863080f5f1bdb479fd0abdec3ee9c2..5ebb97766d84ae8e4816c3bd6fa4548be61a4e24 100644
+--- a/src/test-diagnostics.cpp
++++ b/src/test-diagnostics.cpp
+@@ -1,6 +1,7 @@
+ #include <darlingserver/test-diagnostics.hpp>
+ 
+ #include <cstdlib>
++#include <cstring>
+ #include <mutex>
+ #include <string>
+ #include <unistd.h>
+@@ -9,12 +10,59 @@
+ namespace DarlingServer::TestDiagnostics {
+ 
+ static constexpr const char* TraceEnv = "DSERVER_TEST_TRACE_FILE";
++static constexpr const char* FaultEnv = "DSERVER_TEST_FAULT_FILE";
+ static std::mutex traceMutex;
+ 
+ bool enabled() {
+ 	return std::getenv(TraceEnv) != nullptr;
+ }
+ 
++bool consumeFault(const char* name) {
++	const char* path = std::getenv(FaultEnv);
++	if (!path || path[0] == '\0' || !name || name[0] == '\0') {
++		return false;
++	}
++
++	int fd = open(path, O_RDONLY | O_CLOEXEC);
++	std::string hostPath;
++	if (fd < 0 && path[0] == '/') {
++		if (const char* prefix = std::getenv("DPREFIX"); prefix && prefix[0] != '\0') {
++			hostPath = std::string(prefix) + path;
++			fd = open(hostPath.c_str(), O_RDONLY | O_CLOEXEC);
++			if (fd < 0) {
++				hostPath = std::string(prefix) + "/libexec/darling" + path;
++				fd = open(hostPath.c_str(), O_RDONLY | O_CLOEXEC);
++			}
++		}
++	}
++	if (fd < 0) {
++		return false;
++	}
++
++	char buffer[128] = {};
++	ssize_t count = read(fd, buffer, sizeof(buffer) - 1);
++	close(fd);
++	if (count <= 0) {
++		return false;
++	}
++
++	while (count > 0 && (buffer[count - 1] == '\n' || buffer[count - 1] == '\r' || buffer[count - 1] == ' ' || buffer[count - 1] == '\t')) {
++		buffer[--count] = '\0';
++	}
++
++	if (std::strcmp(buffer, name) != 0) {
++		return false;
++	}
++
++	if (!hostPath.empty()) {
++		unlink(hostPath.c_str());
++	} else {
++		unlink(path);
++	}
++	traceLine(std::string("test_fault.consume name=") + name);
++	return true;
++}
++
+ void traceLine(const std::string& line) {
+ 	const char* path = std::getenv(TraceEnv);
+ 	if (!path || path[0] == '\0') {

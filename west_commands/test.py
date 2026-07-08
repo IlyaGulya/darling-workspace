@@ -1062,6 +1062,7 @@ class DarlingTest(WestCommand):
                 "run_args": run_args,
                 "ok_marker": str(ok_marker or ""),
                 "host_trace_files": list(test.get("host-trace-files", [])),
+                "host_temp_files": list(test.get("host-temp-files", [])),
                 "host_trace_oracle": host_trace_oracle,
                 "source_env": source_env,
                 "source_module": source_module,
@@ -1961,6 +1962,30 @@ timingsafe_bcmp(const void *b1, const void *b2, size_t n)
                 guest_prelude = ":"
             trace_setup_lines = []
             trace_check_lines = []
+            for index, temp_file in enumerate(invocation.get("host_temp_files", [])):
+                if not isinstance(temp_file, dict):
+                    self.die(f"{invocation['name']}: host-temp-files entries must be mappings")
+                env_name = str(temp_file.get("env", ""))
+                rel_path = str(temp_file.get("prefix-relative-path", ""))
+                if not env_name or not rel_path:
+                    self.die(
+                        f"{invocation['name']}: host-temp-files[{index}] needs env "
+                        "and prefix-relative-path"
+                    )
+                if rel_path.startswith("/") or ".." in Path(rel_path).parts:
+                    self.die(
+                        f"{invocation['name']}: host-temp-files[{index}] path must "
+                        "be prefix-relative"
+                    )
+                temp_var = f"host_temp_{index}"
+                trace_setup_lines.extend(
+                    [
+                        f"{temp_var}=\"$DPREFIX/{rel_path}\"",
+                        f"rm -f \"${temp_var}\"",
+                        f"mkdir -p \"$(dirname \"${temp_var}\")\"",
+                        f"export {env_name}=\"${temp_var}\"",
+                    ]
+                )
             for index, trace in enumerate(invocation.get("host_trace_files", [])):
                 if not isinstance(trace, dict):
                     self.die(f"{invocation['name']}: host-trace-files entries must be mappings")
