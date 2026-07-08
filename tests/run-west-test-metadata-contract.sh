@@ -5,8 +5,9 @@ repo="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$repo"
 tmp_profile="patches/__metadata_contract"
 tmp_invalid_profile="patches/__metadata_invalid_contract"
-trap 'rm -rf "$tmp_profile" "$tmp_invalid_profile"' EXIT
-mkdir -p "$tmp_profile" "$tmp_invalid_profile"
+tmp_runtime_red_profile="patches/__metadata_runtime_red_contract"
+trap 'rm -rf "$tmp_profile" "$tmp_invalid_profile" "$tmp_runtime_red_profile"' EXIT
+mkdir -p "$tmp_profile" "$tmp_invalid_profile" "$tmp_runtime_red_profile"
 cat >"$tmp_profile/patches.yml" <<'YAML'
 patches:
 - path: test/ctest-label.patch
@@ -180,6 +181,42 @@ patches:
     red-proof:
       mode: source-base
       source-env: DARLING_SRC_ROOT
+- path: test/invalid-guest-runtime-red-proof.patch
+  module: darling-workspace
+  tests:
+  - name: invalid_guest_runtime_red
+    kind: guest
+    env: darling
+    diag: bare
+    runner: guest-c-fixture
+    script: tests/guest_c_fixture_contract.c
+    ok-marker: WEST_GUEST_C_FIXTURE_OK
+    red: true
+    red-proof:
+      mode: guest-runtime-deploy
+YAML
+
+cat >"$tmp_runtime_red_profile/patches.yml" <<'YAML'
+patches:
+- path: test/guest-runtime-red-proof.patch
+  module: darling-workspace
+  tests:
+  - name: guest_runtime_red
+    kind: guest
+    coverage-tier: runtime
+    env: darling
+    diag: bare
+    runner: guest-c-fixture
+    script: tests/guest_c_fixture_contract.c
+    ok-marker: WEST_GUEST_C_FIXTURE_OK
+    red: true
+    red-proof:
+      mode: guest-runtime-deploy
+      runtime-artifacts:
+      - module: darling/src/external/xnu
+        build-targets: [libsystem_kernel]
+        deploy:
+        - usr/lib/system/libsystem_kernel.dylib
 YAML
 
 fail() {
@@ -318,6 +355,13 @@ invalid_guest_red_check="$(west patch check --profile __metadata_invalid_contrac
 printf '%s\n' "$invalid_guest_red_check" | grep -q \
 	'INVALID   test/invalid-guest-red-proof.patch: tests\[1\] guest-c-fixture cannot use source-base red-proof' ||
 	fail 'guest-c-fixture source-base red-proof metadata was not rejected'
+printf '%s\n' "$invalid_guest_red_check" | grep -q \
+	'INVALID   test/invalid-guest-runtime-red-proof.patch: tests\[1\] red-proof guest-runtime-deploy needs runtime-artifacts' ||
+	fail 'guest-runtime-deploy metadata without runtime-artifacts was not rejected'
+
+runtime_red_check="$(west patch check --profile __metadata_runtime_red_contract)"
+printf '%s\n' "$runtime_red_check" | grep -q 'RUNTIME   test/guest-runtime-red-proof.patch' ||
+	fail 'guest-runtime-deploy metadata was not accepted as runtime coverage'
 
 if west test --profile __metadata_invalid_contract \
 	--patch test/invalid-guest-red-proof.patch \
@@ -328,6 +372,16 @@ fi
 grep -q 'guest-c-fixture cannot use source-base RED proof' \
 	/tmp/west-test-invalid-guest-red-proof.out ||
 	fail 'guest-c-fixture source-base red-proof execution did not report the proof model error'
+
+if west test --profile __metadata_runtime_red_contract \
+	--patch test/guest-runtime-red-proof.patch \
+	--prove-red >/tmp/west-test-guest-runtime-red-proof.out 2>&1
+then
+	fail 'guest-runtime-deploy RED proof unexpectedly passed before runner implementation'
+fi
+grep -q 'guest-runtime-deploy RED proof is declared but' \
+	/tmp/west-test-guest-runtime-red-proof.out ||
+	fail 'guest-runtime-deploy RED proof did not report unimplemented runner clearly'
 
 guest_c_fixture="$(
 	west test --profile __metadata_contract \
