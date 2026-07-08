@@ -2257,6 +2257,15 @@ fi
         suffix = f" [{bad_profile}]" if bad_profile else ""
         return "guest-runtime-deploy" + suffix + ": " + "; ".join(artifacts)
 
+    def _red_source_patch_path(self, path: str) -> Path:
+        rel = Path(path)
+        if rel.is_absolute() or ".." in rel.parts:
+            self.die(f"red-proof source-patches path must be workspace-relative: {path}")
+        result = Path(self.manifest.repo_abspath) / rel
+        if not result.is_file():
+            self.die(f"red-proof source patch not found: {result}")
+        return result
+
     def _project_manifest_path(self, ref: str) -> Path:
         for project in self.manifest.projects:
             if ref in {project.name, project.path}:
@@ -2413,6 +2422,14 @@ fi
                             str(project_path),
                             target,
                             skip_patch_paths=skips,
+                        )
+                    for source_patch in proof.get("source-patches", []):
+                        patch_path = self._red_source_patch_path(str(source_patch))
+                        self.inf(f"  apply RED source patch {patch_path.relative_to(self.manifest.repo_abspath)} -> {project_path}")
+                        subprocess.run(
+                            ["git", "apply", "--3way", str(patch_path)],
+                            cwd=target,
+                            check=True,
                         )
                 else:
                     os.symlink(repo, target, target_is_directory=True)

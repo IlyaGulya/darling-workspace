@@ -567,6 +567,18 @@ class DarlingPatch(WestCommand):
                             errors.append(
                                 f"tests[{index}] current-minus-skip-patches must be a list of patch paths"
                             )
+                    source_patches = proof.get("source-patches")
+                    if source_patches is not None:
+                        if not isinstance(source_patches, list) or not all(
+                            isinstance(path, str)
+                            and path
+                            and not Path(path).is_absolute()
+                            and ".." not in Path(path).parts
+                            for path in source_patches
+                        ):
+                            errors.append(
+                                f"tests[{index}] source-patches must be a list of workspace-relative patch paths"
+                            )
                     artifacts = proof.get("runtime-artifacts")
                     if not isinstance(artifacts, list) or not artifacts:
                         errors.append(
