@@ -427,28 +427,34 @@ patches:
       base: master
       state: local
 - path: darlingserver/cancel-stale-wait-timer.patch
-  sha256sum: c9ebc009bed1cd07bf5e3c3b1ab6758c42c5178e70892be60f1dd9f187d312dc
+  sha256sum: c4a79783065bdba03a6b8b1d070391718701e964babf3de386d2398866d1fc79
   module: darling/src/external/darlingserver
   source-branch: fix/cancel-stale-wait-timer
-  source-commit: 8c98528d1902ad2f5b06e0b1113427afa2e2e6f7
+  source-commit: a22a5e8437cfa7a6c278a50e15eb55f96060ab9b
   bead: dar-q95.15
   publication-status: provisional
   publication-blocker: direct timer cancellation parity and race tests under dar-q95.29.6
   tests:
-  - name: cancel_stale_wait_timer_model
+  - name: cancel_stale_wait_timer_contract
     kind: contract
-    coverage-tier: model
+    coverage-tier: compile
     env: host
     diag: bare
     red: true
     red-proof:
-      mode: self
-      why-self: The model drives a timed wait woken early followed by an untimed wait through old and fixed timer cancellation semantics.
-    runner: python
+      mode: source-base
+      source-env: DSERVER_SRC_ROOT
+    runner: c-fixture
     repo: darling-workspace
-    script: tests/darlingserver_behavior_models.py
-    args: [cancel-stale-wait-timer]
-    note: Host behavioral model; old stale wait_timer times out a later untimed wait, fixed thread_unblock cancels it.
+    script: tests/wait_timer_cancel_contract.c
+    include-dirs:
+    - duct-tape/internal-include
+    compile-flags:
+    - -std=c11
+    - -Wall
+    - -Wextra
+    - -Werror
+    note: Compile contract for the production wait_timer cancellation helper; old source has no shared helper, fixed source clears armed timers and updates active-count accounting correctly.
   pr-draft: pr-drafts/darlingserver-cancel-wait-timer.md
   github:
     fork:
@@ -641,10 +647,10 @@ patches:
       base: main
       state: local
 - path: darlingserver/assert-wait-cancel-stale-timer.patch
-  sha256sum: 47b3479f497163e7d5f80497177b23089bf793ff89a49a0c7005f468429abe72
+  sha256sum: e8e9e997a63a4c8b63edc36a48e62f6037bce5fbf3a01e4c816221c179e2b340
   module: darling/src/external/darlingserver
   source-branch: fix/assert-wait-cancel-stale-timer
-  source-commit: 7344b17facc2f18c8a8db2e36e8850c032965dd7
+  source-commit: 10194531c37acd1ad5d1e79a9d1aa31353ed7158
   bead: dar-gwn.1.9
   publication-status: blocked
   publication-blocker: |-
@@ -668,20 +674,26 @@ patches:
     of timer expiries and no abort. Complements (does not replace)
     cancel-stale-wait-timer. Full from-source brew end-to-end still pending.
   tests:
-  - name: assert_wait_cancel_stale_timer_model
+  - name: assert_wait_cancel_stale_timer_contract
     kind: contract
-    coverage-tier: model
+    coverage-tier: compile
     env: host
     diag: bare
     red: true
     red-proof:
-      mode: self
-      why-self: The model drives new assert_wait entry with a leftover timer through old and fixed cancellation semantics.
-    runner: python
+      mode: source-base
+      source-env: DSERVER_SRC_ROOT
+    runner: c-fixture
     repo: darling-workspace
-    script: tests/darlingserver_behavior_models.py
-    args: [assert-wait-cancel-stale-timer]
-    note: Host behavioral model; old assert_wait leaves a stale timer armed, fixed assert_wait cancels it before the new wait.
+    script: tests/wait_timer_prepare_for_wait_contract.c
+    include-dirs:
+    - duct-tape/internal-include
+    compile-flags:
+    - -std=c11
+    - -Wall
+    - -Wextra
+    - -Werror
+    note: Compile contract for the production prepare-for-wait helper used by assert_wait; old source has no prepare contract, fixed source clears stale timers before a new wait can be armed.
   pr-draft: pr-drafts/darlingserver-assert-wait-cancel-stale-timer.md
   github:
     fork:
