@@ -496,6 +496,7 @@ class DarlingPatch(WestCommand):
 
     def _export(self, profile_path: Path, profile_dir: Path, profile, patches, check: bool):
         changed = False
+        metadata_updates: dict[str, dict[str, str]] = {}
         for patch in patches:
             repo = self._repo(patch["module"])
             source_branch = patch["source-branch"]
@@ -526,18 +527,75 @@ class DarlingPatch(WestCommand):
 
             output.parent.mkdir(parents=True, exist_ok=True)
             output.write_bytes(exported)
-            patch["source-commit"] = commit
-            patch["sha256sum"] = checksum
+            if patch.get("source-commit") != commit or patch.get("sha256sum") != checksum:
+                metadata_updates[patch["path"]] = {
+                    "source-commit": commit,
+                    "sha256sum": checksum,
+                }
             changed = changed or patch_changed
             self.inf(f"exported {output.relative_to(profile_dir)}")
 
         if not check:
-            profile_path.write_text(yaml.safe_dump(profile, sort_keys=False, width=1000))
+            if metadata_updates:
+                self._update_profile_metadata(profile_path, metadata_updates)
             self.inf(
                 f"updated {profile_path.relative_to(Path(self.manifest.repo_abspath))}"
                 if changed
                 else f"refreshed {profile_path.relative_to(Path(self.manifest.repo_abspath))}"
             )
+
+    def _update_profile_metadata(
+        self, profile_path: Path, updates: dict[str, dict[str, str]]
+    ) -> None:
+        """Patch source-commit/sha256sum fields without reserializing YAML.
+
+        PyYAML rewrites human-authored block scalars and quoting across the
+        whole profile. Export only needs to refresh two scalar fields in the
+        touched patch entries, so keep the original text layout intact.
+        """
+        lines = profile_path.read_text().splitlines(keepends=True)
+        updated = set()
+        index = 0
+        while index < len(lines):
+            match = re.match(r"^(\s*)- path:\s+(.+?)\s*$", lines[index])
+            if not match:
+                index += 1
+                continue
+            indent, path = match.groups()
+            end = index + 1
+            while end < len(lines):
+                next_match = re.match(r"^(\s*)- path:\s+(.+?)\s*$", lines[end])
+                if next_match and len(next_match.group(1)) <= len(indent):
+                    break
+                end += 1
+            if path not in updates:
+                index = end
+                continue
+
+            fields = updates[path]
+            field_indent = indent + "  "
+            present = set()
+            insert_at = end
+            for line_no in range(index + 1, end):
+                for field, value in fields.items():
+                    if re.match(rf"^{re.escape(field_indent)}{field}:\s+", lines[line_no]):
+                        newline = "\n" if lines[line_no].endswith("\n") else ""
+                        lines[line_no] = f"{field_indent}{field}: {value}{newline}"
+                        present.add(field)
+                if re.match(rf"^{re.escape(field_indent)}github:\s*$", lines[line_no]):
+                    insert_at = min(insert_at, line_no)
+            missing = [field for field in ("source-commit", "sha256sum") if field not in present]
+            if missing:
+                new_lines = [f"{field_indent}{field}: {fields[field]}\n" for field in missing]
+                lines[insert_at:insert_at] = new_lines
+                end += len(new_lines)
+            updated.add(path)
+            index = end
+
+        missing_updates = sorted(set(updates) - updated)
+        if missing_updates:
+            self.die(f"{profile_path}: failed to update entries: {', '.join(missing_updates)}")
+        profile_path.write_text("".join(lines))
 
     def _verify_applicability(self, profile_dir: Path, grouped):
         with tempfile.TemporaryDirectory(prefix="west-patch-verify-") as temp:

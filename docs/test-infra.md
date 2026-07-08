@@ -170,6 +170,11 @@ west test --profile arch --patch darlingserver/stack-pool-empty-stack-handle.pat
 west test --profile arch --patch darlingserver/stack-pool-empty-stack-handle.patch
 ```
 
+Patch export must keep review diffs narrow. `west patch export` updates patch
+files plus the touched entry's `source-commit` and `sha256sum` fields in
+`patches.yml`; it must not reserialize unrelated entries or rewrite block
+scalars/quoting across the profile.
+
 ## Problem
 
 Regression reproducers for fixed bugs currently live as throwaway `/tmp/run-*.sh`
