@@ -24,6 +24,25 @@ fail() {
 	exit 1
 }
 
+branch_of() {
+	git -C "$1" branch --show-current
+}
+
+assert_no_temp_worktrees() {
+	local repo_path
+	for repo_path in \
+		../darling \
+		../darling/src/external/darlingserver \
+		../darling/src/external/libpthread \
+		../darling/src/external/xnu
+	do
+		if git -C "$repo_path" worktree list --porcelain |
+			grep -Eq 'west-profile-|west-red-proof-'; then
+			fail "temporary worktree leaked for $repo_path"
+		fi
+	done
+}
+
 guarded="$(
 	west test --profile homebrew \
 		--patch xnu/getattrlist-shared-packer.patch \
@@ -59,6 +78,27 @@ printf '%s\n' "$profile_bound" | grep -q 'dyld_static_libunwind_link' ||
 if printf '%s\n' "$profile_bound" | grep -q 'materialize '; then
 	fail 'list mode unexpectedly materialized a profile'
 fi
+
+assert_no_temp_worktrees
+darling_branch="$(branch_of ../darling)"
+dserver_branch="$(branch_of ../darling/src/external/darlingserver)"
+libpthread_branch="$(branch_of ../darling/src/external/libpthread)"
+xnu_branch="$(branch_of ../darling/src/external/xnu)"
+
+west test --profile homebrew \
+	--patch darlingserver/progress-metrics.patch \
+	--materialize-profile \
+	--prove-red >/dev/null
+
+[ "$(branch_of ../darling)" = "$darling_branch" ] ||
+	fail 'materialize-profile changed the live darling checkout'
+[ "$(branch_of ../darling/src/external/darlingserver)" = "$dserver_branch" ] ||
+	fail 'materialize-profile changed the live darlingserver checkout'
+[ "$(branch_of ../darling/src/external/libpthread)" = "$libpthread_branch" ] ||
+	fail 'materialize-profile changed the live libpthread checkout'
+[ "$(branch_of ../darling/src/external/xnu)" = "$xnu_branch" ] ||
+	fail 'materialize-profile changed the live xnu checkout'
+assert_no_temp_worktrees
 
 ctest_label="$(
 	west test --profile __metadata_contract \
