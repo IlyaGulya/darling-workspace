@@ -1093,6 +1093,9 @@ patches:
   bead: dar-test-infra-sp5.8.4.4
   publication-status: blocked
   publication-blocker: E-UNION proof-of-concept; doc-only. fchown/fchownat/lchown are entirely under #if 0 (return 0, no mutation) and so SAFE today, but un-stubbing any of them adds an instant template-corruption path — for a lower-only target the expanded path is the shared lower template, so the chown mutates ownership for ALL prefixes. Added a warning comment to each stub naming the required copy-up before re-enabling (vchroot_prepare_write_fd for fd-based fchown; vchroot_prepare_write for path-based fchownat/lchown, lchown materializing the link not its target). Every added line is a comment, so generated code is byte-identical in all configs; not RED-testable (compiled out). Local experiment under dar-test-infra-sp5.8.4.4.8.
+  test-exception:
+    reason: doc-only
+    note: Adds warning comments to #if 0 chown stubs only; generated code is byte-identical in all configs.
   github:
     fork:
       repo: IlyaGulya/darling-xnu
@@ -1129,6 +1132,9 @@ patches:
   bead: dar-test-infra-sp5.8.4.4
   publication-status: blocked
   publication-blocker: E-UNION proof-of-concept (comment-only). Centralizes a provenance/license header at the top of the EUNION region naming each borrowed-idea source with its license and URL — gVisor overlay (Apache-2.0) for the copy-up/whiteout/opaque/readdir-merge algorithms and the Linux overlayfs docs for semantics — and states that no third-party code is copied or translated (the new C is under this file's existing license) and that PRoot (GPL-2) was reviewed but contributes no code or design. Independent reimplementation of ideas only; Apache-2.0 imposes no attribution duty on reimplemented concepts, the credit is for auditability. Inside #ifdef EUNION so OFF builds stay byte-identical; hermetic suite 222/222 green. Local experiment under dar-test-infra-sp5.8.4.4.
+  test-exception:
+    reason: comment-only
+    note: Adds provenance/license comments inside the EUNION region only; no executable behavior changes.
   github:
     fork:
       repo: IlyaGulya/darling-xnu
