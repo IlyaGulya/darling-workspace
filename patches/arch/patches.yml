@@ -258,5 +258,5 @@ patches:
     runner: script
     script: tests/rpc_disconnect_send_contract_test.sh
     note: Pins RPC disconnect send-to-EINTR contract.
-  source-commit: a3fa390d3b4fd2f804168b0ff7132fbb3c37ef29
-  sha256sum: 815302b31a4503d6bb1b52fc7c582a39a8e6127c29c05859e6e4d98f24138673
+  source-commit: 447579f0c84b04aa06d9c0779a50099ef44d191e
+  sha256sum: 8471aad9374219d03fcbe3aca7fba2cc6609d037c91f3d1648389fafa514f53a

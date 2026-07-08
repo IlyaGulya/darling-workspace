@@ -261,12 +261,11 @@ class DarlingTest(WestCommand):
                 env.update({str(k): str(v) for k, v in test["env-vars"].items()})
             cwd = self._project_path(repo)
             script_path = cwd / script
-            if not script_path.is_file():
-                self.die(f"{patch['path']}: test script not found: {repo}/{script}")
             return {
                 "key": display,
                 "display": display,
                 "cwd": cwd,
+                "script_path": script_path,
                 "args": args,
                 "shell": False,
                 "env": env,
@@ -299,6 +298,9 @@ class DarlingTest(WestCommand):
                     "profile test-tree discovery is implemented; use runner: script "
                     "or runner: west-build for runnable local metadata"
                 )
+            script_path = invocation.get("script_path")
+            if script_path is not None and not script_path.is_file():
+                self.die(f"{patch['path']}: test script not found: {script_path}")
             missing_env = [
                 env_name
                 for env_name in invocation.get("requires_env", [])
@@ -359,6 +361,9 @@ class DarlingTest(WestCommand):
                     "use mode: self for self-discriminating tests or migrate this "
                     "test to a source-base-capable shared runner"
                 )
+            script_path = invocation.get("script_path")
+            if script_path is not None and not script_path.is_file():
+                self.die(f"{patch['path']}: test script not found: {script_path}")
             missing_env = [
                 env_name
                 for env_name in invocation.get("requires_env", [])

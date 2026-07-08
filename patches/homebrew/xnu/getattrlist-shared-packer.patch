@@ -1,4 +1,4 @@
-From 72020097cfa0d3ea7e925e1aba3b2df9b7a3a0dc Mon Sep 17 00:00:00 2001
+From a491dc1ca9edcb5b3950cf9d3d400b1534c36ccf Mon Sep 17 00:00:00 2001
 From: Ilya Gulya <ilya@gulya.me>
 Date: Tue, 7 Jul 2026 16:58:10 +0000
 Subject: [PATCH] xnu: share getattrlist attribute packing
@@ -8,10 +8,12 @@ Subject: [PATCH] xnu: share getattrlist attribute packing
  .../bsd/helper/xattr/getattrlist_pack.h       | 252 ++++++++++
  .../bsd/impl/xattr/getattrlistbulk.c          | 347 +++-----------
  .../tests/getattrlist_shared_packer_test.c    | 323 +++++++++++++
- .../tests/run-getattrlist-shared-packer.sh    |  51 ++
- 5 files changed, 881 insertions(+), 531 deletions(-)
+ .../tests/guest-verdict-test-lib.sh           |  53 +++
+ .../tests/run-getattrlist-shared-packer.sh    |  14 +
+ 6 files changed, 897 insertions(+), 531 deletions(-)
  create mode 100644 darling/src/libsystem_kernel/emulation/include/xnu_syscall/bsd/helper/xattr/getattrlist_pack.h
  create mode 100644 darling/src/libsystem_kernel/tests/getattrlist_shared_packer_test.c
+ create mode 100644 darling/src/libsystem_kernel/tests/guest-verdict-test-lib.sh
  create mode 100755 darling/src/libsystem_kernel/tests/run-getattrlist-shared-packer.sh
 
 diff --git a/darling/src/libsystem_kernel/emulation/include/xnu_syscall/bsd/helper/xattr/getattrlist_generic.c b/darling/src/libsystem_kernel/emulation/include/xnu_syscall/bsd/helper/xattr/getattrlist_generic.c
@@ -1559,12 +1561,71 @@ index 0000000000000000000000000000000000000000..6462752659b1b0b75b9b9efe49750df2
 +	puts("GETATTRLIST_SHARED_PACKER_OK");
 +	return 0;
 +}
+diff --git a/darling/src/libsystem_kernel/tests/guest-verdict-test-lib.sh b/darling/src/libsystem_kernel/tests/guest-verdict-test-lib.sh
+new file mode 100644
+index 0000000000000000000000000000000000000000..e219007f45bbfc66ee3c7c702f42157dc297f761
+--- /dev/null
++++ b/darling/src/libsystem_kernel/tests/guest-verdict-test-lib.sh
+@@ -0,0 +1,53 @@
++#!/usr/bin/env bash
++
++guest_verdict_run_c() {
++	local name="$1" src="$2" ok_marker="$3"
++	local timeout_seconds="${4:-60}"
++	local output="/tmp/$name"
++	local guest_src="/tmp/$(basename "$src")"
++	local verdict="/tmp/$name.verdict"
++	local runner_log="/tmp/$name.runner.log"
++	local launch="${DARLING:-darling}"
++
++	: "${DPREFIX:?set DPREFIX to a bootable Darling prefix}"
++
++	rm -f "$DPREFIX$verdict" 2>/dev/null || true
++	cp "$src" "$DPREFIX$guest_src"
++	env DPREFIX="$DPREFIX" "$launch" shell /bin/bash --login -c "rm -f '$verdict'" >/dev/null 2>&1 || true
++
++	env DPREFIX="$DPREFIX" "$launch" shell /bin/bash --login -c "
++		clang -O2 -Wall -Wextra -o '$output' '$guest_src' 2>&1
++		'$output' > '$verdict' 2>&1
++		echo \"ORACLE_RC=\\$?\" >> '$verdict'
++	" </dev/null > "$runner_log" 2>&1 &
++	local shell_pid=$!
++
++	local deadline=$((SECONDS + timeout_seconds))
++	while [ "$SECONDS" -lt "$deadline" ]; do
++		if env DPREFIX="$DPREFIX" "$launch" shell /bin/bash --login -c \
++			"test -f '$verdict' && grep -q '^ORACLE_RC=' '$verdict'" >/dev/null 2>&1; then
++			break
++		fi
++		sleep 1
++	done
++
++	if ! env DPREFIX="$DPREFIX" "$launch" shell /bin/bash --login -c \
++		"test -f '$verdict' && grep -q '^ORACLE_RC=' '$verdict'" >/dev/null 2>&1; then
++		kill "$shell_pid" 2>/dev/null || true
++		wait "$shell_pid" 2>/dev/null || true
++		echo "=== runner log ==="
++		grep -vE "Xlib|libGL|MESA|X11" "$runner_log" 2>/dev/null || true
++		echo "no verdict produced before timeout"
++		return 2
++	fi
++
++	kill "$shell_pid" 2>/dev/null || true
++	wait "$shell_pid" 2>/dev/null || true
++
++	echo "=== verdict ==="
++	local guest_verdict
++	guest_verdict="$(env DPREFIX="$DPREFIX" "$launch" shell /bin/bash --login -c "cat '$verdict'" 2>/dev/null || true)"
++	printf '%s\n' "$guest_verdict"
++	grep -q "^$ok_marker" <<<"$guest_verdict" &&
++		grep -q "ORACLE_RC=0" <<<"$guest_verdict"
++}
 diff --git a/darling/src/libsystem_kernel/tests/run-getattrlist-shared-packer.sh b/darling/src/libsystem_kernel/tests/run-getattrlist-shared-packer.sh
 new file mode 100755
-index 0000000000000000000000000000000000000000..05fb89b1694efd371507764b0c425f2bce171ca1
+index 0000000000000000000000000000000000000000..ba73918eb9fac5f0ef56a281bc62a15e205011a4
 --- /dev/null
 +++ b/darling/src/libsystem_kernel/tests/run-getattrlist-shared-packer.sh
-@@ -0,0 +1,51 @@
+@@ -0,0 +1,14 @@
 +#!/usr/bin/env bash
 +# Runtime smoke for dar-q95.29.1: single-entry getattrlist/fgetattrlist/
 +# getattrlistat share the packer for name+objtype, and getattrlistbulk can
@@ -1572,47 +1633,10 @@ index 0000000000000000000000000000000000000000..05fb89b1694efd371507764b0c425f2b
 +set -euo pipefail
 +
 +here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-+LAUNCH="${DARLING:-darling}"
-+: "${DPREFIX:?set DPREFIX to a bootable Darling prefix}"
++. "$here/guest-verdict-test-lib.sh"
 +
-+src="$here/getattrlist_shared_packer_test.c"
-+verdict="/tmp/getattrlist_shared_packer.verdict"
-+rm -f "$DPREFIX/tmp/getattrlist_shared_packer.verdict" 2>/dev/null || true
-+cp "$src" "$DPREFIX/tmp/getattrlist_shared_packer_test.c"
-+env DPREFIX="$DPREFIX" "$LAUNCH" shell /bin/bash --login -c "rm -f '$verdict'" >/dev/null 2>&1 || true
-+
-+guest_timeout="${GETATTRLIST_PACKER_TIMEOUT:-60}"
-+env DPREFIX="$DPREFIX" "$LAUNCH" shell /bin/bash --login -c '
-+  clang -O2 -Wall -Wextra -o /tmp/getattrlist_shared_packer_test /tmp/getattrlist_shared_packer_test.c 2>&1
-+  /tmp/getattrlist_shared_packer_test > /tmp/getattrlist_shared_packer.verdict 2>&1
-+  echo "ORACLE_RC=$?" >> /tmp/getattrlist_shared_packer.verdict
-+' </dev/null > /tmp/getattrlist_shared_packer.runner.log 2>&1 &
-+shell_pid=$!
-+
-+deadline=$((SECONDS + guest_timeout))
-+while [ "$SECONDS" -lt "$deadline" ]; do
-+  if env DPREFIX="$DPREFIX" "$LAUNCH" shell /bin/bash --login -c \
-+      "test -f '$verdict' && grep -q '^ORACLE_RC=' '$verdict'" >/dev/null 2>&1; then
-+    break
-+  fi
-+  sleep 1
-+done
-+
-+if ! env DPREFIX="$DPREFIX" "$LAUNCH" shell /bin/bash --login -c \
-+    "test -f '$verdict' && grep -q '^ORACLE_RC=' '$verdict'" >/dev/null 2>&1; then
-+  kill "$shell_pid" 2>/dev/null || true
-+  wait "$shell_pid" 2>/dev/null || true
-+  echo "=== runner log ==="
-+  grep -vE "Xlib|libGL|MESA|X11" /tmp/getattrlist_shared_packer.runner.log 2>/dev/null || true
-+  echo "no verdict produced before timeout"
-+  exit 2
-+fi
-+
-+kill "$shell_pid" 2>/dev/null || true
-+wait "$shell_pid" 2>/dev/null || true
-+
-+echo "=== verdict ==="
-+guest_verdict="$(env DPREFIX="$DPREFIX" "$LAUNCH" shell /bin/bash --login -c "cat '$verdict'" 2>/dev/null || true)"
-+printf '%s\n' "$guest_verdict"
-+grep -q "^GETATTRLIST_SHARED_PACKER_OK" <<<"$guest_verdict" &&
-+  grep -q "ORACLE_RC=0" <<<"$guest_verdict"
++guest_verdict_run_c \
++	getattrlist_shared_packer \
++	"$here/getattrlist_shared_packer_test.c" \
++	GETATTRLIST_SHARED_PACKER_OK \
++	"${GETATTRLIST_PACKER_TIMEOUT:-60}"
