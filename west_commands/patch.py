@@ -287,12 +287,27 @@ class DarlingPatch(WestCommand):
                     f"tests[{index}] needs script, target, ctest-label, or command override"
                 )
             runner = test.get("runner")
-            if runner and runner not in {"script", "python", "c-fixture", "west-build", "ctest"}:
+            if runner and runner not in {
+                "script",
+                "python",
+                "c-fixture",
+                "guest-c-fixture",
+                "west-build",
+                "ctest",
+            }:
                 errors.append(f"tests[{index}] invalid runner {runner!r}")
             if test.get("target") and runner not in {None, "west-build"}:
                 errors.append(f"tests[{index}] target requires runner: west-build")
-            if test.get("script") and runner not in {None, "script", "python", "c-fixture"}:
-                errors.append(f"tests[{index}] script requires runner: script, python, or c-fixture")
+            if test.get("script") and runner not in {
+                None,
+                "script",
+                "python",
+                "c-fixture",
+                "guest-c-fixture",
+            }:
+                errors.append(
+                    f"tests[{index}] script requires runner: script, python, c-fixture, or guest-c-fixture"
+                )
             if test.get("script"):
                 repo_ref = test.get("repo", patch["module"])
                 repo_path = self._project_path(repo_ref)
@@ -302,6 +317,14 @@ class DarlingPatch(WestCommand):
                 if not test.get("script"):
                     errors.append(f"tests[{index}] c-fixture requires script")
                 for key in ("include-dirs", "stub-headers", "compile-flags"):
+                    if test.get(key) is not None and not isinstance(test.get(key), list):
+                        errors.append(f"tests[{index}] {key} must be a list")
+            if runner == "guest-c-fixture":
+                if not test.get("script"):
+                    errors.append(f"tests[{index}] guest-c-fixture requires script")
+                if not test.get("ok-marker"):
+                    errors.append(f"tests[{index}] guest-c-fixture requires ok-marker")
+                for key in ("compile-flags", "link-flags", "run-args"):
                     if test.get(key) is not None and not isinstance(test.get(key), list):
                         errors.append(f"tests[{index}] {key} must be a list")
             if test.get("args") is not None and not isinstance(test.get("args"), list):
@@ -398,7 +421,11 @@ class DarlingPatch(WestCommand):
             return explicit
         if test.get("kind") == "source-contract":
             return "source"
-        if test.get("env") in {"darling", "macos"} or test.get("kind") == "guest":
+        if (
+            test.get("env") in {"darling", "macos"}
+            or test.get("kind") == "guest"
+            or test.get("runner") == "guest-c-fixture"
+        ):
             return "runtime"
         if test.get("runner") in {"c-fixture", "west-build"} or test.get("kind") == "build":
             return "compile"

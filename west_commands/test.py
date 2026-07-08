@@ -32,7 +32,7 @@ import tempfile
 import time
 from contextlib import contextmanager
 from pathlib import Path
-from shlex import quote
+from shlex import quote, join as shell_join
 
 import yaml
 from west.commands import WestCommand
@@ -686,6 +686,74 @@ class DarlingTest(WestCommand):
                 "name": test.get("name", patch["path"]),
                 "timeout_seconds": int(test.get("timeout-seconds", 600)),
             }
+        if runner == "guest-c-fixture":
+            repo = test.get("repo", patch["module"])
+            script = test["script"]
+            cwd = self._project_path(repo)
+            script_path = cwd / script
+            env = None
+            if test.get("env-vars"):
+                env = os.environ.copy()
+                env.update({str(k): str(v) for k, v in test["env-vars"].items()})
+            resources = set(test.get("requires", []))
+            resources.add("darling-prefix")
+            name = test.get("name", Path(script).stem)
+            guest_cc = str(
+                test.get(
+                    "guest-cc",
+                    os.environ.get(
+                        "DARLING_GUEST_CC",
+                        "/Library/Developer/CommandLineTools/usr/bin/clang",
+                    ),
+                )
+            )
+            guest_cflags = str(
+                test.get(
+                    "guest-cflags",
+                    os.environ.get(
+                        "DARLING_GUEST_CFLAGS",
+                        "-isysroot /Library/Developer/CommandLineTools/SDKs/MacOSX.sdk",
+                    ),
+                )
+            )
+            compile_flags = [str(item) for item in test.get("compile-flags", [])]
+            link_flags = [str(item) for item in test.get("link-flags", [])]
+            run_args = [str(item) for item in test.get("run-args", [])]
+            ok_marker = test.get("ok-marker")
+            if not ok_marker:
+                self.die(f"{patch['path']}: guest-c-fixture needs ok-marker")
+            display = (
+                f"cd {quote(repo)} && <upload> {quote(script)} && "
+                f"darling shell {quote(guest_cc)} {guest_cflags} "
+                f"{shell_join(compile_flags)} -o /tmp/{quote(name)} /tmp/{quote(name)}.c "
+                f"{shell_join(link_flags)} && darling shell /tmp/{quote(name)} "
+                f"{shell_join(run_args)}"
+            )
+            return {
+                "key": f"guest-c-fixture:{repo}:{script}",
+                "display": display,
+                "cwd": cwd,
+                "script_path": script_path,
+                "args": None,
+                "shell": False,
+                "env": env,
+                "guest_c_fixture": True,
+                "guest_cc": guest_cc,
+                "guest_cflags": guest_cflags,
+                "guest_prelude": str(test.get("guest-prelude", "")),
+                "compile_flags": compile_flags,
+                "link_flags": link_flags,
+                "run_args": run_args,
+                "ok_marker": str(ok_marker),
+                "source_env": source_env,
+                "source_module": source_module,
+                "requires_resources": sorted(resources),
+                "requires_env": list(test.get("requires-env", [])),
+                "requires_profile": test.get("requires-profile"),
+                "diag": self._resolved_diag(test),
+                "name": name,
+                "timeout_seconds": int(test.get("timeout-seconds", 600)),
+            }
 
         self.die(f"{patch['path']}: unsupported test runner {runner!r}")
 
@@ -805,10 +873,28 @@ class DarlingTest(WestCommand):
     def _display_invocation(self, invocation) -> str:
         if invocation.get("diag", "bare") == "bare":
             return invocation["display"]
+        if invocation.get("guest_c_fixture"):
+            executor = getattr(self, "_executor", None) or "<darling-debug-runner>"
+            args = [
+                executor,
+                "run",
+                "--name",
+                f"west-test-{invocation['name']}",
+                "--bundle-root",
+                str(getattr(self, "_bundle_root", "~/work/darling-debug")),
+                "--timeout-seconds",
+                str(invocation.get("timeout_seconds", 600)),
+                "--",
+                "<guest-c-fixture>",
+                invocation["display"],
+            ]
+            return " ".join(quote(str(arg)) for arg in args)
         args = self._debug_runner_args(invocation, display_only=True)
         return " ".join(quote(str(arg)) for arg in args)
 
     def _run_invocation(self, invocation, env=None) -> int:
+        if invocation.get("guest_c_fixture"):
+            return self._run_guest_c_fixture(invocation, env=env)
         if invocation.get("c_fixture"):
             return self._run_c_fixture(invocation, env=env)
         result = subprocess.run(
@@ -862,6 +948,116 @@ class DarlingTest(WestCommand):
                 env=run_env,
                 check=False,
             ).returncode
+
+    def _run_guest_c_fixture(self, invocation, env=None) -> int:
+        run_env = env if env is not None else invocation.get("env")
+        if not run_env:
+            run_env = self._execution_env(invocation)
+        if not run_env:
+            run_env = os.environ.copy()
+
+        prefix = run_env.get("DPREFIX") or getattr(self, "_prefix", None)
+        if not prefix:
+            self.die(f"{invocation['name']}: guest-c-fixture needs DPREFIX")
+        launcher = (
+            run_env.get("DARLING_LAUNCHER")
+            or run_env.get("DARLING")
+            or self._resolve_darling_launcher(prefix)
+        )
+        if not launcher:
+            self.die(f"{invocation['name']}: guest-c-fixture needs a Darling launcher")
+
+        with tempfile.TemporaryDirectory(prefix=f"west-guest-c-fixture-{invocation['name']}-") as temp:
+            tempdir = Path(temp)
+            host_runner = tempdir / "run.sh"
+            verdict = tempdir / "verdict.txt"
+            name = invocation["name"]
+            run_id = f"{os.getpid()}.{int(time.time() * 1000)}"
+            guest_src = f"/tmp/{name}.{run_id}.c"
+            guest_bin = f"/tmp/{name}.{run_id}"
+            compile_parts = [
+                '"$guest_cc"',
+                *[quote(arg) for arg in invocation.get("guest_cflags", "").split() if arg],
+                *[quote(arg) for arg in invocation.get("compile_flags", [])],
+                "-o",
+                quote(guest_bin),
+                quote(guest_src),
+                *[quote(arg) for arg in invocation.get("link_flags", [])],
+            ]
+            run_parts = [
+                quote(guest_bin),
+                *[quote(arg) for arg in invocation.get("run_args", [])],
+            ]
+            guest_prelude = invocation.get("guest_prelude", "")
+            if not guest_prelude:
+                guest_prelude = ":"
+            script = f"""#!/usr/bin/env bash
+set -euo pipefail
+: "${{DPREFIX:?set DPREFIX}}"
+launch={quote(str(launcher))}
+host_src={quote(str(invocation["script_path"]))}
+verdict={quote(str(verdict))}
+guest_src={quote(guest_src)}
+guest_bin={quote(guest_bin)}
+timeout_seconds={int(invocation.get("timeout_seconds", 600))}
+ok_marker={quote(invocation["ok_marker"])}
+
+guest_shell() {{
+\tlocal seconds="$1"
+\tshift
+\ttimeout --kill-after=5 "$seconds" env DPREFIX="$DPREFIX" "$launch" shell /bin/bash --login -c "$@"
+}}
+
+guest_shell 10 "rm -f '$guest_src' '$guest_bin'" >/dev/null 2>&1 || true
+guest_shell 10 "cat > '$guest_src'" < "$host_src"
+
+set +e
+guest_shell "$timeout_seconds" {quote(f'''
+{guest_prelude}
+guest_cc={quote(invocation["guest_cc"])}
+if [ ! -x "$guest_cc" ]; then guest_cc=clang; fi
+{' '.join(compile_parts)}
+compile_rc=$?
+if [ "$compile_rc" -ne 0 ]; then
+\tprintf 'ORACLE_RC=%s\\n' "$compile_rc"
+\texit "$compile_rc"
+fi
+{' '.join(run_parts)}
+run_rc=$?
+printf 'ORACLE_RC=%s\\n' "$run_rc"
+exit "$run_rc"
+''')} > "$verdict" 2>&1
+rc=$?
+set -e
+
+cat "$verdict" 2>/dev/null || true
+if [ "$rc" -ne 0 ]; then
+\texit "$rc"
+fi
+grep -q "^$ok_marker" "$verdict"
+grep -q '^ORACLE_RC=0$' "$verdict"
+"""
+            host_runner.write_text(script)
+            host_runner.chmod(0o755)
+            child = dict(invocation)
+            child.pop("guest_c_fixture", None)
+            child.update(
+                {
+                    "key": f"guest-c-fixture-runner:{invocation['key']}",
+                    "display": str(host_runner),
+                    "cwd": invocation["cwd"],
+                    "args": [str(host_runner)],
+                    "shell": False,
+                }
+            )
+            result = subprocess.run(
+                self._debug_runner_args(child),
+                cwd=invocation["cwd"],
+                env=run_env,
+                shell=False,
+                check=False,
+            )
+            return result.returncode
 
     def _execution_env(self, invocation) -> dict[str, str] | None:
         env = invocation.get("env")
