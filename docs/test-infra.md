@@ -180,9 +180,10 @@ scalars/quoting across the profile.
 
 Some build gates need a consistent patch profile rather than the developer's
 current mixture of fix branches. Mark those with `requires-profile: arch` (or
-another profile name). Until the materialized-profile runner exists, `west test`
-will list those tests but will refuse to execute them against an arbitrary mixed
-checkout.
+another profile name). `west test` will list those tests anywhere, but real
+execution is allowed only when all modules touched by that profile are currently
+on `integration/<profile>`. Temporary materialized-profile execution remains a
+future runner improvement.
 
 ## Problem
 

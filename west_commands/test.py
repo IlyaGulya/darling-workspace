@@ -162,6 +162,28 @@ class DarlingTest(WestCommand):
             self.die(f"patch profile not found: {path}")
         return yaml.safe_load(path.read_text()) or {}
 
+    def _profile_modules(self, profile: str) -> set[str]:
+        return {
+            patch["module"]
+            for patch in self._load_profile(profile).get("patches", [])
+            if patch.get("module")
+        }
+
+    def _profile_is_applied(self, profile: str) -> bool:
+        expected = f"integration/{profile}"
+        for module in self._profile_modules(profile):
+            repo = self._project_path(module)
+            current = subprocess.run(
+                ["git", "branch", "--show-current"],
+                cwd=repo,
+                capture_output=True,
+                text=True,
+                check=False,
+            ).stdout.strip()
+            if current != expected:
+                return False
+        return True
+
     def _resolve_prefix(self, args) -> str | None:
         if args.prefix and args.prefix_profile:
             self.die("--prefix and --prefix-profile are mutually exclusive")
@@ -399,11 +421,13 @@ class DarlingTest(WestCommand):
         required = invocation.get("requires_profile")
         if not required:
             return
+        if self._profile_is_applied(required):
+            return
         self.die(
             f"{patch['path']}: test requires materialized patch profile {required!r}; "
-            "current mixed checkout execution is intentionally blocked. "
-            "Implement/run the materialized-profile runner tracked by "
-            "dar-test-infra-sp5.11.12."
+            f"current checkout is not fully on integration/{required}. "
+            f"Run `west patch apply --profile {required}` first, or use the "
+            "future temporary materialized-profile runner tracked by dar-test-infra-sp5.11.12."
         )
 
     def _run_source_base_proof(self, patch, proof, invocation) -> int:
