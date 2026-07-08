@@ -88,7 +88,10 @@ refs, PR drafts, and agent handoff.
   `tests/run-west-test-metadata-contract.sh`,
   `tests/run-west-test-prefix-cleanup-contract.sh`, or manual
   `west-profile-`/`west-red-proof-` leak checks in the same `multi_tool`
-  parallel batch as any `west test` command.
+  parallel batch as any `west test` command. Treat cleanup/leak checks as a
+  final separate phase after all RED/GREEN test commands have exited; if a
+  cleanup contract fails while another `west test` was running, rerun it
+  sequentially and fix the process mistake before making further claims.
 - Classify patch test evidence with `coverage-tier`: `runtime`, `compile`,
   `host`, `model`, or `source`. Any old-vs-fixed model must be explicit
   `coverage-tier: model`; source/text audits must be `coverage-tier: source`
