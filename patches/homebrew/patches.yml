@@ -245,10 +245,10 @@ patches:
       base: main
       state: local
 - path: xnu/darwin-priority.patch
-  sha256sum: c7d3d8e43cd26e17259290ba22a6fe9e956411e64fa87c8a7a1fe008c7259685
+  sha256sum: 917f3a5b31dba3febd90107dcc26eb00f2c275cd4325e2db2cff05dc8cca0aeb
   module: darling/src/external/xnu
   source-branch: fix/darwin-priority
-  source-commit: ccf4c98e0749805ffb864e9e28682ecb91d20be2
+  source-commit: d021cbe8dac2e47e56f5321021246331edae55ff
   bead: dar-q95.10
   publication-status: blocked
   publication-blocker: success-returning priority no-op has no Darwin semantics; see dar-q95.29.4
@@ -270,6 +270,19 @@ patches:
     - darling/emulation/xnu_syscall/bsd/impl/process/setpriority.h
     compile-flags: [-std=gnu11, -Wall, -Wextra, -Werror]
     note: Host unit RED->GREEN contract for Darwin priority class handling without Linux syscall pass-through.
+  - name: darwin_priority_guest
+    kind: guest
+    coverage-tier: runtime
+    env: darling
+    diag: guarded
+    runner: guest-c-fixture
+    repo: darling-workspace
+    script: tests/darwin_priority_guest.c
+    ok-marker: DARWIN_PRIORITY_GUEST_OK
+    timeout-seconds: 30
+    requires:
+    - darling-prefix
+    note: Guest runtime gate for PRIO_DARWIN_THREAD/PROCESS success and invalid-case raw -EINVAL through the deployed libsystem_kernel/dyld path. RED is carried by the compile contract because source-base guest RED would require rebuilding/deploying the old libsystem_kernel into an isolated prefix. Full Darwin priority semantics remain blocked by dar-q95.29.4.3.
   pr-draft: pr-drafts/xnu-darwin-priority.md
   github:
     fork:

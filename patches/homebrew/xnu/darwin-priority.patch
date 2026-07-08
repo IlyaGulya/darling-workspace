@@ -1,4 +1,4 @@
-From ccf4c98e0749805ffb864e9e28682ecb91d20be2 Mon Sep 17 00:00:00 2001
+From d021cbe8dac2e47e56f5321021246331edae55ff Mon Sep 17 00:00:00 2001
 From: Ilya Gulya <ilya@gulya.me>
 Date: Wed, 8 Jul 2026 11:48:55 +0000
 Subject: [PATCH] getpriority/setpriority: handle PRIO_DARWIN_THREAD/PROCESS
@@ -14,7 +14,7 @@ Add a host C fixture that stubs the Linux syscall path, checks Darwin classes do
  create mode 100644 tests/darwin_priority_contract.c
 
 diff --git a/darling/src/libsystem_kernel/emulation/src/xnu_syscall/bsd/impl/process/getpriority.c b/darling/src/libsystem_kernel/emulation/src/xnu_syscall/bsd/impl/process/getpriority.c
-index a02f1e4cf263423a8cffd62cc88b041653a15bcd..e1adbd421eb5491a9d5638ea77274f0daf24a49c 100644
+index a02f1e4cf263423a8cffd62cc88b041653a15bcd..d8c2530bc7458863644134b87dcba6777969cade 100644
 --- a/darling/src/libsystem_kernel/emulation/src/xnu_syscall/bsd/impl/process/getpriority.c
 +++ b/darling/src/libsystem_kernel/emulation/src/xnu_syscall/bsd/impl/process/getpriority.c
 @@ -1,6 +1,19 @@
@@ -24,7 +24,7 @@ index a02f1e4cf263423a8cffd62cc88b041653a15bcd..e1adbd421eb5491a9d5638ea77274f0d
  int sys_getpriority(int which, id_t who) {
 +	if (which == PRIO_DARWIN_THREAD) {
 +		if (who != 0) {
-+			return EINVAL;
++			return -EINVAL;
 +		}
 +
 +		return 0;
@@ -38,7 +38,7 @@ index a02f1e4cf263423a8cffd62cc88b041653a15bcd..e1adbd421eb5491a9d5638ea77274f0d
  
  	// TODO: Errors
 diff --git a/darling/src/libsystem_kernel/emulation/src/xnu_syscall/bsd/impl/process/setpriority.c b/darling/src/libsystem_kernel/emulation/src/xnu_syscall/bsd/impl/process/setpriority.c
-index ccac110c86f4eea8c95d2f02b23d5edb83956228..8c9e6a4e8a6aa3935119f4f4b631db9fbcb2a58b 100644
+index ccac110c86f4eea8c95d2f02b23d5edb83956228..8f886fd541fc10d556ce625feba4fcefba6cb829 100644
 --- a/darling/src/libsystem_kernel/emulation/src/xnu_syscall/bsd/impl/process/setpriority.c
 +++ b/darling/src/libsystem_kernel/emulation/src/xnu_syscall/bsd/impl/process/setpriority.c
 @@ -1,6 +1,27 @@
@@ -48,14 +48,14 @@ index ccac110c86f4eea8c95d2f02b23d5edb83956228..8c9e6a4e8a6aa3935119f4f4b631db9f
  int sys_setpriority(int which, int who, int prio) {
 +	if (which == PRIO_DARWIN_THREAD) {
 +		if (who != 0) {
-+			return EINVAL;
++			return -EINVAL;
 +		}
 +
 +		if (prio == 0 || prio == PRIO_DARWIN_BG || prio == PRIO_DARWIN_NONUI) {
 +			return 0;
 +		}
 +
-+		return EINVAL;
++		return -EINVAL;
 +	}
 +
 +	if (which == PRIO_DARWIN_PROCESS) {
@@ -63,7 +63,7 @@ index ccac110c86f4eea8c95d2f02b23d5edb83956228..8c9e6a4e8a6aa3935119f4f4b631db9f
 +			return 0;
 +		}
 +
-+		return EINVAL;
++		return -EINVAL;
 +	}
 +
  	return LINUX_SYSCALL(__NR_setpriority, which, who, prio);
@@ -71,7 +71,7 @@ index ccac110c86f4eea8c95d2f02b23d5edb83956228..8c9e6a4e8a6aa3935119f4f4b631db9f
  	// TODO: Errors
 diff --git a/tests/darwin_priority_contract.c b/tests/darwin_priority_contract.c
 new file mode 100644
-index 0000000000000000000000000000000000000000..0b987e2b74b9f68525d4665b1f508518814998ff
+index 0000000000000000000000000000000000000000..537e5137be66daa41f00fba8d71c22e4437d3237
 --- /dev/null
 +++ b/tests/darwin_priority_contract.c
 @@ -0,0 +1,72 @@
@@ -128,17 +128,17 @@ index 0000000000000000000000000000000000000000..0b987e2b74b9f68525d4665b1f508518
 +int main(void)
 +{
 +	if (expect(sys_getpriority(PRIO_DARWIN_THREAD, 0) == 0, "thread getpriority should be accepted")) return 1;
-+	if (expect(sys_getpriority(PRIO_DARWIN_THREAD, 7) == EINVAL, "thread getpriority nonzero who should fail")) return 1;
++	if (expect(sys_getpriority(PRIO_DARWIN_THREAD, 7) == -EINVAL, "thread getpriority nonzero who should fail")) return 1;
 +	if (expect(sys_getpriority(PRIO_DARWIN_PROCESS, 99) == 0, "process getpriority should be accepted")) return 1;
 +	if (expect(linux_getpriority_calls == 0, "Darwin getpriority classes must not reach Linux syscall")) return 1;
 +
 +	if (expect(sys_setpriority(PRIO_DARWIN_THREAD, 0, 0) == 0, "thread priority 0 should be accepted")) return 1;
 +	if (expect(sys_setpriority(PRIO_DARWIN_THREAD, 0, PRIO_DARWIN_BG) == 0, "thread BG should be accepted")) return 1;
 +	if (expect(sys_setpriority(PRIO_DARWIN_THREAD, 0, PRIO_DARWIN_NONUI) == 0, "thread NONUI should be accepted")) return 1;
-+	if (expect(sys_setpriority(PRIO_DARWIN_THREAD, 1, 0) == EINVAL, "thread nonzero who should fail")) return 1;
-+	if (expect(sys_setpriority(PRIO_DARWIN_THREAD, 0, 123) == EINVAL, "thread unknown priority should fail")) return 1;
++	if (expect(sys_setpriority(PRIO_DARWIN_THREAD, 1, 0) == -EINVAL, "thread nonzero who should fail")) return 1;
++	if (expect(sys_setpriority(PRIO_DARWIN_THREAD, 0, 123) == -EINVAL, "thread unknown priority should fail")) return 1;
 +	if (expect(sys_setpriority(PRIO_DARWIN_PROCESS, 3, PRIO_DARWIN_BG) == 0, "process BG should be accepted")) return 1;
-+	if (expect(sys_setpriority(PRIO_DARWIN_PROCESS, 3, 123) == EINVAL, "process unknown priority should fail")) return 1;
++	if (expect(sys_setpriority(PRIO_DARWIN_PROCESS, 3, 123) == -EINVAL, "process unknown priority should fail")) return 1;
 +	if (expect(linux_setpriority_calls == 0, "Darwin setpriority classes must not reach Linux syscall")) return 1;
 +
 +	if (expect(sys_getpriority(0, 0) == 42, "non-Darwin getpriority should pass through")) return 1;

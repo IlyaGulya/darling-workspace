@@ -2,7 +2,7 @@ manifest:
   projects:
   - name: darling
     url: https://github.com/darlinghq/darling
-    revision: 90c3e27acab67333cc94c8453de363c92cfb1e23
+    revision: 5c55ea02fba572740b4d5b9be4c025687af361be
     userdata:
       kind: darling-source
       upstream-repository: darling
@@ -1108,7 +1108,7 @@ manifest:
       upstream-repository: linenoise
   - name: darling-src-external-xnu
     url: https://github.com/darlinghq/darling-xnu
-    revision: a50db4b7aa5c93c8bec0e7d50e56c7559fb76b0f
+    revision: 01e7bda995948f2316d94d5b5d22f8403f4d5271
     path: darling/src/external/xnu
     userdata:
       kind: darling-source
