@@ -276,20 +276,19 @@ patches:
   publication-status: provisional
   publication-blocker: supported host-runtime fork recovery design under dar-q95.29.9
   tests:
-  - name: fork_postfork_child_model
+  - name: fork_postfork_child_contract
     kind: contract
-    coverage-tier: model
+    coverage-tier: compile
     env: host
     diag: bare
     red: true
     red-proof:
-      mode: self
-      why-self: The model drives parent/child postfork hook dispatch through old and fixed fork semantics.
-    runner: python
+      mode: source-base
+      source-env: XNU_SRC_ROOT
+    runner: script
     repo: darling-workspace
-    script: tests/xnu_behavior_models.py
-    args: [fork-postfork-child]
-    note: Host behavioral model; old fork path skips child postfork hooks, fixed path runs them in the child.
+    script: tests/fork_postfork_child_contract.sh
+    note: Compiles production fork.c with fork/RPC stubs and checks the child path calls __mldr_postfork_child before guard/socket refresh/checkin while parent/error paths skip child hooks.
   pr-draft: pr-drafts/xnu-fork-postfork-child.md
   github:
     fork:
