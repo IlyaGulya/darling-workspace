@@ -367,6 +367,11 @@ class DarlingPatch(WestCommand):
                     errors.append(
                         f"tests[{index}] red-proof source-base needs source-env"
                     )
+                elif runner == "guest-c-fixture" and proof.get("mode") == "source-base":
+                    errors.append(
+                        f"tests[{index}] guest-c-fixture cannot use source-base red-proof "
+                        "without an isolated bad/fixed Darling deploy runner"
+                    )
                 elif proof.get("mode") == "self" and not proof.get("why-self"):
                     errors.append(
                         f"tests[{index}] red-proof self needs why-self"
