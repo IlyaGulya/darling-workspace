@@ -42,3 +42,9 @@ refs, PR drafts, and agent handoff.
 - Never add workspace metadata, PR drafts, agent state, or Beads files to the
   Darling source repositories.
 - Do not push investigation branches unless explicitly requested.
+- Patch-local red tests must be GREEN on the current checkout. `red: true`
+  means the test is a RED->GREEN regression proof, not that latest should fail.
+  Use `west test --profile ...` for the normal GREEN regression run and
+  `west test --profile ... --prove-red` for explicit RED-proof mode. Do not
+  fake source-base RED proofs with ad hoc shell; add shared runner support when
+  a test needs current test assets executed against a bad/source-base tree.

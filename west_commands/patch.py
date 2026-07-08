@@ -311,6 +311,14 @@ class DarlingPatch(WestCommand):
                     isinstance(name, str) and name for name in required
                 ):
                     errors.append(f"tests[{index}] requires-env must be a list of names")
+            if test.get("red-proof") is not None:
+                proof = test.get("red-proof")
+                if not isinstance(proof, dict):
+                    errors.append(f"tests[{index}] red-proof must be a mapping")
+                elif proof.get("mode") not in {"self", "source-base"}:
+                    errors.append(
+                        f"tests[{index}] red-proof mode must be self or source-base"
+                    )
             env = test.get("env")
             if env and env not in {"host", "darling", "macos"}:
                 errors.append(f"tests[{index}] invalid env {env!r}")
