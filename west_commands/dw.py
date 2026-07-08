@@ -5,9 +5,13 @@ from __future__ import annotations
 import argparse
 import os
 import subprocess
+import sys
 from pathlib import Path
 
 from west.commands import WestCommand
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from beads_aliases import normalize_beads_args
 
 
 class DarlingWorkspace(WestCommand):
@@ -43,9 +47,10 @@ class DarlingWorkspace(WestCommand):
         if args.action == "beads":
             env = os.environ.copy()
             env["BEADS_DIR"] = str(manifest_repo / ".beads")
+            command = normalize_beads_args(args.args, unknown)
             raise SystemExit(
                 subprocess.run(
-                    ["br", *args.args, *unknown],
+                    ["br", *command],
                     cwd=manifest_repo,
                     env=env,
                     check=False,
