@@ -1994,20 +1994,19 @@ patches:
   publication-status: blocked
   publication-blocker: sys_abort_with_payload now re-raises to self via tgkill instead of kill(0) process-group broadcast; matches macOS (abort terminates only the caller) and validated RED->GREEN by tests/regression/abort_with_payload_no_group_broadcast.c + brew reinstall -s gettext, but wants a second reviewer before upstreaming. See dar-cps.
   tests:
-  - name: abort_with_payload_no_group_broadcast_model
+  - name: abort_with_payload_self_signal_contract
     kind: contract
-    coverage-tier: model
+    coverage-tier: compile
     env: host
     diag: bare
     red: true
     red-proof:
-      mode: self
-      why-self: The model drives abort_with_payload resend through old process-group and fixed self-target semantics.
-    runner: python
+      mode: source-base
+      source-env: XNU_SRC_ROOT
+    runner: script
     repo: darling-workspace
-    script: tests/xnu_behavior_models.py
-    args: [abort-with-payload-no-group-broadcast]
-    note: Host behavioral model; old abort_with_payload broadcasts to the process group, fixed path only terminates the caller.
+    script: tests/abort_with_payload_self_signal_contract.sh
+    note: Compiles real sys_abort_with_payload and verifies it re-raises with tgkill(self pid, self tid, SIGABRT) instead of sys_kill(0, SIGABRT) process-group broadcast.
   github:
     fork:
       repo: IlyaGulya/darling-xnu
