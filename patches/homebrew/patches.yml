@@ -33,28 +33,35 @@ patches:
       base: main
       state: local
 - path: darlingserver/microthread-resume-race.patch
-  sha256sum: bc8697ec7c05659dd94e516925b9f6f582c08ccb11596872c30f4af941481afe
+  sha256sum: 993c19b6765de374c19ebe237e729d04c4e403b36e451bd9bee2ada835848fd9
   module: darling/src/external/darlingserver
   source-branch: fix/microthread-resume-race
-  source-commit: f62bc4ba6387e5e5ba50507ba840cacb8c6278a3
+  source-commit: d2d76a9a16fdc8d05947b1acfb54285c062563b2
   bead: dar-q95.8
   publication-status: provisional
   publication-blocker: modeled wake-epoch and duplicate-scheduling tests under dar-q95.29.6
   tests:
-  - name: microthread_resume_race_model
+  - name: microthread_resume_race_contract
     kind: contract
-    coverage-tier: model
+    coverage-tier: compile
     env: host
     diag: bare
     red: true
     red-proof:
-      mode: self
-      why-self: The model drives the resume-before-suspend state transition through old and fixed microthread semantics.
-    runner: python
+      mode: source-base
+      source-env: DSERVER_SRC_ROOT
+    runner: c-fixture
     repo: darling-workspace
-    script: tests/darlingserver_behavior_models.py
-    args: [microthread-resume-race]
-    note: Host behavioral model; old drops an early resume and sleeps, fixed consumes the coalesced resume permit.
+    script: tests/microthread_resume_contract.cpp
+    cc: c++
+    include-dirs:
+    - internal-include
+    compile-flags:
+    - -std=c++17
+    - -Wall
+    - -Wextra
+    - -Werror
+    note: Compile contract for the production microthread resume helper; old source has no coalesced resume contract, fixed source records, consumes, and schedules resume permits without dropping wakeups.
   pr-draft: pr-drafts/darlingserver-microthread-resume-race.md
   github:
     fork:
