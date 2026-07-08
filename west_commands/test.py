@@ -1994,13 +1994,62 @@ grep -q '^ORACLE_RC=0$' "$verdict"
         ):
             missing.append("darling-prefix (--prefix, --prefix-profile, or DPREFIX)")
         if "darling-prefix" in invocation.get("requires_resources", []):
-            launcher = self._resolve_darling_launcher(getattr(self, "_prefix", None))
+            prefix = getattr(self, "_prefix", None)
+            launcher = self._resolve_darling_launcher(prefix)
             if not launcher:
                 missing.append(
                     "darling-launcher (DARLING, DARLING_LAUNCHER, "
                     "prefix/bin/darling, or ~/work/darling-prefix/bin/darling)"
                 )
+            if prefix:
+                missing.extend(self._prefix_boot_prerequisite_problems(Path(prefix)))
+                if invocation.get("guest_c_fixture"):
+                    missing.extend(
+                        self._guest_c_fixture_prerequisite_problems(
+                            Path(prefix),
+                            invocation.get("guest_cc", ""),
+                            invocation.get("guest_cflags", ""),
+                        )
+                    )
         return missing
+
+    def _prefix_boot_prerequisite_problems(self, prefix: Path) -> list[str]:
+        problems = []
+        for rel in ("private/var/tmp", "libexec/darling/private/var/tmp"):
+            path = prefix / rel
+            if not path.is_dir():
+                problems.append(f"{rel} missing in Darling prefix")
+                continue
+            mode = path.stat().st_mode & 0o7777
+            if mode != 0o1777:
+                problems.append(f"{rel} mode {mode:o}, expected 1777")
+        return problems
+
+    def _guest_c_fixture_prerequisite_problems(
+        self,
+        prefix: Path,
+        guest_cc: str,
+        guest_cflags: str,
+    ) -> list[str]:
+        problems = []
+
+        def check_guest_path(guest_path: str, description: str):
+            rel = guest_path.lstrip("/")
+            for root_rel in ("", "libexec/darling"):
+                host_path = prefix / root_rel / rel if root_rel else prefix / rel
+                if not host_path.exists():
+                    root_name = "prefix root" if not root_rel else "base tree"
+                    problems.append(f"{description} missing in {root_name}: {guest_path}")
+
+        if guest_cc.startswith("/Library/Developer/CommandLineTools/"):
+            check_guest_path(guest_cc, "guest compiler")
+        words = guest_cflags.split()
+        for index, word in enumerate(words):
+            if word == "-isysroot" and index + 1 < len(words):
+                sysroot = words[index + 1]
+                if sysroot.startswith("/Library/Developer/CommandLineTools/"):
+                    check_guest_path(sysroot, "guest SDK sysroot")
+        return problems
 
     def _check_requires_profile(self, patch, invocation) -> None:
         required = invocation.get("requires_profile")
@@ -2311,6 +2360,7 @@ grep -q '^ORACLE_RC=0$' "$verdict"
             for entry in leftovers:
                 self.err(f"  {entry}")
             return False
+        self._remove_stale_init_pid(prefix)
         return True
 
     def _run_guest_runtime_deploy_proof(self, patch, proof, invocation) -> int:
@@ -2493,11 +2543,26 @@ grep -q '^ORACLE_RC=0$' "$verdict"
         self._kill_dserver_for_prefix(Path(prefix))
         leftovers = self._prefix_process_snapshot(Path(prefix))
         if not leftovers:
+            self._remove_stale_init_pid(Path(prefix))
             return True
         self.err(f"leftover Darling prefix process(es) after cleanup for {prefix}:")
         for entry in leftovers:
             self.err(f"  {entry}")
         return False
+
+    def _remove_stale_init_pid(self, prefix: Path) -> None:
+        init_pid = prefix / ".init.pid"
+        try:
+            text = init_pid.read_text().strip()
+        except FileNotFoundError:
+            return
+        if not text.isdigit():
+            return
+        pid = int(text)
+        try:
+            os.kill(pid, 0)
+        except ProcessLookupError:
+            init_pid.unlink(missing_ok=True)
 
     def _ps_entries(self) -> list[tuple[int, int, str]]:
         result = subprocess.run(
