@@ -75,9 +75,15 @@ class DarlingPatch(WestCommand):
     def do_add_parser(self, parser_adder):
         parser = parser_adder.add_parser(self.name, description=self.description)
         subparsers = parser.add_subparsers(dest="action", required=True)
-        for action in ("list", "verify", "apply", "clean", "status"):
+        for action in ("list", "verify", "export", "apply", "clean", "status"):
             command = subparsers.add_parser(action)
             command.add_argument("--profile", default="homebrew")
+            if action == "export":
+                command.add_argument(
+                    "--check",
+                    action="store_true",
+                    help="verify exported patch files and metadata without writing",
+                )
             if action == "apply":
                 command.add_argument("--roll-back", action="store_true")
             if action == "clean":
@@ -114,6 +120,8 @@ class DarlingPatch(WestCommand):
             self._list(patches)
         elif args.action == "verify":
             self._verify(profile_dir, patches)
+        elif args.action == "export":
+            self._export(profile_path, profile_dir, profile, patches, args.check)
         elif args.action == "status":
             self._status(profile_dir, patches, args.strict)
         elif args.action == "apply":
@@ -337,6 +345,51 @@ class DarlingPatch(WestCommand):
 
         self._verify_applicability(profile_dir, grouped)
         self.inf(f"verified {len(patches)} patches")
+
+    def _export(self, profile_path: Path, profile_dir: Path, profile, patches, check: bool):
+        changed = False
+        for patch in patches:
+            repo = self._repo(patch["module"])
+            source_branch = patch["source-branch"]
+            if not self._branch_exists(repo, source_branch):
+                self.die(f"{patch['module']}: missing source branch {source_branch}")
+
+            commit = git(repo, "rev-parse", source_branch, capture=True)
+            exported = subprocess.run(
+                format_patch_command(patch, commit),
+                cwd=repo,
+                check=True,
+                stdout=subprocess.PIPE,
+            ).stdout
+            checksum = hashlib.sha256(exported).hexdigest()
+            output = profile_dir / patch["path"]
+
+            current_content = output.read_bytes() if output.is_file() else None
+            patch_changed = (
+                patch.get("source-commit") != commit
+                or patch.get("sha256sum") != checksum
+                or current_content != exported
+            )
+            if check:
+                if patch_changed:
+                    self.die(f"{patch['path']}: exported patch drift")
+                self.inf(f"export-check OK {output.relative_to(profile_dir)}")
+                continue
+
+            output.parent.mkdir(parents=True, exist_ok=True)
+            output.write_bytes(exported)
+            patch["source-commit"] = commit
+            patch["sha256sum"] = checksum
+            changed = changed or patch_changed
+            self.inf(f"exported {output.relative_to(profile_dir)}")
+
+        if not check:
+            profile_path.write_text(yaml.safe_dump(profile, sort_keys=False, width=1000))
+            self.inf(
+                f"updated {profile_path.relative_to(Path(self.manifest.repo_abspath))}"
+                if changed
+                else f"refreshed {profile_path.relative_to(Path(self.manifest.repo_abspath))}"
+            )
 
     def _verify_applicability(self, profile_dir: Path, grouped):
         with tempfile.TemporaryDirectory(prefix="west-patch-verify-") as temp:
