@@ -1573,9 +1573,29 @@ patches:
     red-proof:
       mode: source-base
       source-env: XNU_SRC_ROOT
-    runner: script
+    runner: c-fixture
     repo: darling-workspace
-    script: tests/vchroot_pathnull_guard_contract.sh
+    script: tests/vchroot_pathnull_guard_contract.c
+    source-files:
+    - darling/src/libsystem_kernel/emulation/src/xnu_syscall/bsd/impl/stat/lstat.c
+    - darling/src/libsystem_kernel/emulation/src/xnu_syscall/bsd/impl/stat/statfs.c
+    - darling/src/libsystem_kernel/emulation/src/xnu_syscall/bsd/impl/time/utimes.c
+    - darling/src/libsystem_kernel/emulation/src/xnu_syscall/bsd/impl/unistd/chdir.c
+    - darling/src/libsystem_kernel/emulation/src/xnu_syscall/bsd/impl/unistd/chmod_extended.c
+    - darling/src/libsystem_kernel/emulation/src/xnu_syscall/bsd/impl/unistd/fchmodat.c
+    - darling/src/libsystem_kernel/emulation/src/xnu_syscall/bsd/impl/unistd/linkat.c
+    - darling/src/libsystem_kernel/emulation/src/xnu_syscall/bsd/impl/unistd/mknod.c
+    - darling/src/libsystem_kernel/emulation/src/xnu_syscall/bsd/impl/unistd/readlinkat.c
+    - darling/src/libsystem_kernel/emulation/src/xnu_syscall/bsd/impl/unistd/truncate.c
+    - darling/src/libsystem_kernel/emulation/src/xnu_syscall/bsd/impl/unistd/unlinkat.c
+    - darling/src/libsystem_kernel/emulation/src/xnu_syscall/bsd/impl/xattr/getxattr.c
+    - darling/src/libsystem_kernel/emulation/src/xnu_syscall/bsd/impl/xattr/listxattr.c
+    fixture-include-dirs:
+    - tests/fixtures/vchroot-pathnull/include
+    compile-flags:
+    - -std=gnu11
+    - -w
+    - -Ulinux
     note: Host RED->GREEN contract that active vchroot path syscalls touched by the patch return EFAULT for NULL before strcpy, vchroot_expand, or Linux syscall fallback; fchownat/lchown are tracked separately in dar-gyvb because their active implementation is a disabled success stub.
   - name: vchroot_pathnull_guard_guest
     kind: guest
@@ -2168,7 +2188,7 @@ patches:
   publication-blocker: E-UNION proof-of-concept. fchown/fchownat/lchown are entirely under #if 0 (return 0, no mutation) and so SAFE today, but un-stubbing any of them adds an instant template-corruption path — for a lower-only target the expanded path is the shared lower template, so the chown mutates ownership for ALL prefixes. Adds warning comments to each stub naming the required copy-up before re-enabling, and keeps the path-based NULL guards outside the disabled fchownat/lchown bodies so the full patchset still returns EFAULT for NULL paths instead of stub success. Covered by xnu/vchroot-pathnull-guard.patch's full-profile contract.
   test-exception:
     reason: covered-by-vchroot-pathnull-guard
-    note: The only executable change preserves the path-null EFAULT contract exercised by tests/vchroot_pathnull_guard_contract.sh against the full applied profile.
+    note: The only executable change preserves the path-null EFAULT contract exercised by tests/vchroot_pathnull_guard_contract.c against the full applied profile.
   github:
     fork:
       repo: IlyaGulya/darling-xnu
