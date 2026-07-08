@@ -811,7 +811,7 @@
         },
         {
           "branch": "fix/select-pselect-fdset",
-          "head": "bb7e6dedc850abb2b0dfecfcb2437ccde1d66452",
+          "head": "7b38ce973d87e66d0087a11e43d669e379bffd1b",
           "upstream": "origin/main",
           "source_ref": "refs/heads/fix/select-pselect-fdset"
         },
