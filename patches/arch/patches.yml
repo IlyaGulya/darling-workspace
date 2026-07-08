@@ -117,6 +117,14 @@ patches:
   bead: dar-9f8b
   publication-status: blocked
   publication-blocker: local darlingserver crash hardening for A0 ring-on fork/wait storm; needs longer soak before upstreaming.
+  tests:
+  - name: dserver_stack_pool_tests_run
+    kind: contract
+    env: host
+    diag: bare
+    red: true
+    command: west darling-build --force --skip-doctor --targets dserver_stack_pool_tests_run
+    note: Fails on the pre-fix parent because StackPool::free(empty) accepts an invalid handle; passes with the fix.
   source-commit: 142b89c011bc3cae3b9e1d72035d2d0081f6f42b
   sha256sum: 3477a387be03d4f3f2606c174043bc9816817870c986af85f98240b23dd7c537
 - path: darlingserver/a0-gate-focused-synth-markers.patch

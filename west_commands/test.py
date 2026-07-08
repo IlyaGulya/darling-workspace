@@ -26,6 +26,7 @@ import shutil
 import subprocess
 from pathlib import Path
 
+import yaml
 from west.commands import WestCommand
 
 
@@ -49,6 +50,26 @@ class DarlingTest(WestCommand):
             "--bead",
             metavar="ID",
             help="run tests attached to a bead (label bead:<ID>)",
+        )
+        parser.add_argument(
+            "--profile",
+            metavar="NAME",
+            help="run tests declared by a patch profile's patches.yml metadata",
+        )
+        parser.add_argument(
+            "--patch",
+            metavar="PATH",
+            help="run tests declared for one patch path in patches.yml metadata",
+        )
+        parser.add_argument(
+            "--red-only",
+            action="store_true",
+            help="with --profile/--patch, select only tests marked red: true",
+        )
+        parser.add_argument(
+            "--red-audit",
+            action="store_true",
+            help="with --profile, list patches missing tests or test-exception",
         )
         parser.add_argument(
             "--env",
@@ -113,6 +134,71 @@ class DarlingTest(WestCommand):
 
     def _testkit_dir(self) -> Path:
         return Path(self.manifest.repo_abspath) / "testkit"
+
+    def _profile_path(self, profile: str) -> Path:
+        return Path(self.manifest.repo_abspath) / "patches" / profile / "patches.yml"
+
+    def _load_profile(self, profile: str) -> dict:
+        path = self._profile_path(profile)
+        if not path.is_file():
+            self.die(f"patch profile not found: {path}")
+        return yaml.safe_load(path.read_text()) or {}
+
+    def _metadata_tests(
+        self,
+        profile: str,
+        patch_path: str | None,
+        bead: str | None,
+        red_only: bool,
+    ):
+        data = self._load_profile(profile)
+        selected = []
+        missing = []
+        for patch in data.get("patches", []):
+            if patch_path and patch["path"] != patch_path:
+                continue
+            if bead and patch.get("bead") != bead:
+                continue
+            tests = patch.get("tests") or []
+            if red_only:
+                tests = [test for test in tests if test.get("red")]
+            if tests:
+                for test in tests:
+                    selected.append((patch, test))
+            elif not patch.get("test-exception"):
+                missing.append(patch)
+        if patch_path and not selected and not missing:
+            self.die(f"{profile}: patch not found or has no selected tests: {patch_path}")
+        return selected, missing
+
+    def _run_metadata_tests(self, tests, list_only: bool, unknown: list[str]) -> int:
+        if unknown:
+            self.die("metadata command tests do not accept raw ctest passthrough arguments")
+        rc = 0
+        for patch, test in tests:
+            name = test.get("name", "-")
+            env = test.get("env", "-")
+            diag = test.get("diag", "-")
+            kind = test.get("kind", "-")
+            red = "red" if test.get("red") else "non-red"
+            command = test.get("command")
+            label = test.get("ctest-label")
+            target = command or f"ctest-label:{label}"
+            self.inf(
+                f"{patch['path']}: {name} [{red}, env:{env}, diag:{diag}, kind:{kind}]"
+            )
+            self.inf(f"  {target}")
+            if list_only:
+                continue
+            if label:
+                self.die(
+                    f"{patch['path']}: ctest-label metadata is list-only until "
+                    "profile test-tree discovery is implemented; use command for now"
+                )
+            result = subprocess.run(command, cwd=self.topdir, shell=True, check=False)
+            if result.returncode:
+                rc = result.returncode
+        return rc
 
     def _changed_submodules(self) -> list[str]:
         """Submodules whose checkout differs from their manifest revision.
@@ -198,6 +284,32 @@ class DarlingTest(WestCommand):
                 dry_run=args.dry_run,
             )
             return
+
+        if args.red_audit:
+            profile = args.profile or "homebrew"
+            _, missing = self._metadata_tests(
+                profile, args.patch, args.bead, red_only=False
+            )
+            for patch in missing:
+                self.inf(f"MISSING {patch['path']} [{patch.get('bead', '-')}]")
+            self.inf(f"red-audit: {len(missing)} patch(es) missing tests/exception")
+            return
+
+        if args.patch and not args.profile:
+            self.die("--patch requires --profile")
+
+        if args.profile:
+            selected, missing = self._metadata_tests(
+                args.profile, args.patch, args.bead, args.red_only
+            )
+            if missing:
+                for patch in missing:
+                    self.inf(f"missing test metadata: {patch['path']} [{patch.get('bead', '-')}]")
+            if selected:
+                raise SystemExit(self._run_metadata_tests(selected, args.list, unknown))
+            if args.list:
+                return
+            self.die("no tests selected from patch metadata")
 
         testkit = self._testkit_dir()
         if not testkit.exists():

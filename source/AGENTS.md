@@ -32,6 +32,11 @@ to Darling commits. The `br` examples below must be run through
   the fix is considered complete. Runtime/manual validation is useful evidence
   but is not a substitute for a committed red test; any exception must be
   explicit in the Bead and patch metadata.
+- Prefer patch-local red tests: put the minimal proof in the same source repo
+  and profile entry as the fix when practical. Do not require a separate
+  upstream `darling-testsuite` patch for local completion; use that suite as the
+  portable testcase style/future upstream destination. Record runnable proof in
+  `patches.yml` `tests:` metadata, or a machine-readable `test-exception:`.
 - Runtime deploys must keep the launcher prefix and any test `DPREFIX` in sync.
   Prefer `west darling-build --deploy --deploy-extra-prefix "$DPREFIX" ...`;
   otherwise verify matching closure dylib md5s before trusting runtime results.
