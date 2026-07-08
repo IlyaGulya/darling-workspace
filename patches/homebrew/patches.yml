@@ -1211,9 +1211,47 @@ patches:
     red-proof:
       mode: source-base
       source-env: XNU_SRC_ROOT
-    runner: script
+    runner: c-fixture
     repo: darling-workspace
-    script: tests/ulock_eintr_retry_contract.sh
+    script: tests/ulock_eintr_retry_contract.c
+    source-files:
+    - darling/src/libsystem_kernel/emulation/src/xnu_syscall/bsd/impl/psynch/ulock_wait.c
+    - darling/src/libsystem_kernel/emulation/src/xnu_syscall/bsd/impl/psynch/ulock_wake.c
+    include-dirs:
+    - darling/src/libsystem_kernel/emulation/include
+    generated-headers:
+      darling/emulation/common/base.h: |
+        #pragma once
+        #ifdef __cplusplus
+        #define CPP_EXTERN_BEGIN extern "C" {
+        #define CPP_EXTERN_END }
+        #else
+        #define CPP_EXTERN_BEGIN
+        #define CPP_EXTERN_END
+        #endif
+      darling/emulation/conversion/errno.h: |
+        #pragma once
+        int errno_linux_to_bsd(int err);
+      darling/emulation/conversion/duct_errno.h: |
+        #pragma once
+        #include <conversion/duct_errno.h>
+      darling/emulation/linux_premigration/linux-syscalls/linux.h: |
+        #pragma once
+        #define __NR_futex 202
+        long test_linux_syscall(long nr, ...);
+        #define LINUX_SYSCALL(n, ...) test_linux_syscall((n), __VA_ARGS__)
+      darling/emulation/xnu_syscall/bsd/impl/psynch/ulock_wait.h: |
+        #pragma once
+        #include <xnu_syscall/bsd/impl/psynch/ulock_wait.h>
+      darling/emulation/xnu_syscall/bsd/impl/psynch/ulock_wake.h: |
+        #pragma once
+        #include <xnu_syscall/bsd/impl/psynch/ulock_wake.h>
+    compile-flags:
+    - -std=gnu11
+    - -Wall
+    - -Wextra
+    - -Werror
+    - -Wno-unused-parameter
     note: Compiles production ulock_wait/ulock_wake with a fake futex backend and checks untimed EINTR retry, timed EINTR passthrough, clean wake errno, and wake success behavior.
   - name: ulock_eintr_retry_guest
     kind: guest
