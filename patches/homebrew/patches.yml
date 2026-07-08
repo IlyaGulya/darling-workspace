@@ -408,20 +408,20 @@ patches:
   bead: dar-q95.6
   publication-status: ready
   tests:
-  - name: libressl_nist_strict_aliasing_model
+  - name: libressl_nist_strict_aliasing_regress
     kind: contract
-    coverage-tier: model
+    coverage-tier: host
     env: host
     diag: bare
     red: true
     red-proof:
-      mode: self
-      why-self: The model drives NIST EC key validation through old strict-aliasing miscompile and fixed no-strict-aliasing semantics.
-    runner: python
+      mode: source-base
+      source-env: LIBRESSL_SRC_ROOT
+    runner: script
     repo: darling-workspace
-    script: tests/darling_behavior_models.py
-    args: [libressl-nist-strict-aliasing]
-    note: Host behavioral model; old optimized strict-aliasing crypto build rejects common EC public keys, fixed build validates them.
+    script: tests/run-libressl-nist-regress.sh
+    timeout-seconds: 240
+    note: Host behavior regression that builds LibreSSL 2.8.3 libcrypto from the source tree with -fno-strict-aliasing, links the committed EC/SPKI regression program, and runs P-256/P-384/P-521 validation checks.
   pr-draft: pr-drafts/libressl-283-nist-strict-aliasing.md
   github:
     fork:
