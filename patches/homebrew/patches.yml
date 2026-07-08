@@ -1113,6 +1113,18 @@ patches:
     repo: darling-workspace
     script: tests/sigexc_default_resend_self_contract.sh
     note: Compiles real sigexc_handler and verifies the fatal default-action path re-raises with tgkill(self pid, self tid, signal) instead of kill(0, signal) process-group broadcast.
+  - name: sigexc_default_resend_self_guest
+    kind: guest
+    env: darling
+    diag: guarded
+    runner: guest-c-fixture
+    repo: darling-workspace
+    script: tests/sigexc_default_resend_self_guest.c
+    ok-marker: SIGEXC_DEFAULT_RESEND_SELF_GUEST_OK
+    timeout-seconds: 30
+    requires:
+    - darling-prefix
+    note: Guest runtime gate that a child taking default SIGSEGV does not broadcast SIGSEGV to its parent process group.
   pr-draft: pr-drafts/xnu-sigexc-default-resend-self.md
   github:
     fork:
