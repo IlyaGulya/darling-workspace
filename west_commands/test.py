@@ -1511,10 +1511,10 @@ grep -q '^ORACLE_RC=0$' "$verdict"
                 and not args.list
                 and not self._materialize_profile
                 and not self._profile_is_applied(args.profile)
-                and self._metadata_needs_profile_worktree(selected)
+                and (args.prove_red or self._metadata_needs_profile_worktree(selected))
             ):
                 self.inf(
-                    f"{args.profile}: selected test asset is not in the live checkout; "
+                    f"{args.profile}: selected tests need the profile checkout; "
                     "temporarily materializing profile in worktrees"
                 )
                 self._materialize_profile = True
