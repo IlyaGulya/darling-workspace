@@ -3540,6 +3540,18 @@ patches:
     runner: script
     script: tests/run-pot-lifetime-binding.sh
     note: Host RED->GREEN model for binding guest lifetime to darlingserver lifetime.
+  - name: pot_lifetime_binding_runtime
+    kind: guest
+    coverage-tier: runtime
+    env: darling
+    diag: guarded
+    runner: script
+    repo: darling-workspace
+    script: tests/run-pot-lifetime-binding-runtime.sh
+    timeout-seconds: 30
+    requires:
+    - darling-prefix
+    note: Runtime gate that starts a real Darling guest process, kills only darlingserver, and verifies the guest descendants are reaped instead of surviving as orphaned mldr processes.
   github:
     fork:
       repo: IlyaGulya/darlingserver
