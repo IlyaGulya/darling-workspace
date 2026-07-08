@@ -63,6 +63,10 @@ refs, PR drafts, and agent handoff.
   the Darling prefix. For deployed guest behavior, a guest test is a GREEN
   runtime gate unless the runner explicitly builds/deploys both bad and fixed
   trees into isolated prefixes and runs the same guest fixture against each.
+  Use `red-proof: {mode: guest-runtime-deploy, runtime-artifacts: [...]}` for
+  that intended model; until the `dar-facb` runner is implemented, west must
+  fail such RED proof execution clearly instead of silently using the current
+  prefix.
 - Do not close patch coverage with source matching. Tests that grep, parse, or
   assert that specific code text exists are audit checks only; they must not be
   counted as the patch's behavioral test and must not be recorded as `kind:

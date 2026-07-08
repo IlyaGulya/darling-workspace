@@ -464,9 +464,9 @@ class DarlingPatch(WestCommand):
                 proof = test.get("red-proof")
                 if not isinstance(proof, dict):
                     errors.append(f"tests[{index}] red-proof must be a mapping")
-                elif proof.get("mode") not in {"self", "source-base"}:
+                elif proof.get("mode") not in {"self", "source-base", "guest-runtime-deploy"}:
                     errors.append(
-                        f"tests[{index}] red-proof mode must be self or source-base"
+                        f"tests[{index}] red-proof mode must be self, source-base, or guest-runtime-deploy"
                     )
                 elif proof.get("mode") == "source-base" and not proof.get("source-env"):
                     errors.append(
@@ -481,6 +481,20 @@ class DarlingPatch(WestCommand):
                     errors.append(
                         f"tests[{index}] red-proof self needs why-self"
                     )
+                elif proof.get("mode") == "guest-runtime-deploy":
+                    if runner != "guest-c-fixture":
+                        errors.append(
+                            f"tests[{index}] red-proof guest-runtime-deploy requires runner: guest-c-fixture"
+                        )
+                    artifacts = proof.get("runtime-artifacts")
+                    if not isinstance(artifacts, list) or not artifacts:
+                        errors.append(
+                            f"tests[{index}] red-proof guest-runtime-deploy needs runtime-artifacts"
+                        )
+                    elif not all(isinstance(artifact, dict) for artifact in artifacts):
+                        errors.append(
+                            f"tests[{index}] red-proof guest-runtime-deploy runtime-artifacts must be mappings"
+                        )
             env = test.get("env")
             if env and env not in {"host", "darling", "macos"}:
                 errors.append(f"tests[{index}] invalid env {env!r}")
