@@ -1,0 +1,248 @@
+From 03fbc437f6da90297ef0f3055cea90e2373c3786 Mon Sep 17 00:00:00 2001
+From: Ilya Gulya <ilya@gulya.me>
+Date: Tue, 7 Jul 2026 17:36:39 +0000
+Subject: [PATCH] rpc: tag UDS replies with packed call serial
+
+---
+ scripts/generate-rpc-wrappers.py  | 45 ++++++++++++++++++++++++++-----
+ src/call.cpp                      | 19 ++++++-------
+ tests/rpc_serial_contract_test.sh | 39 +++++++++++++++++++++++++++
+ 3 files changed, 88 insertions(+), 15 deletions(-)
+ create mode 100755 tests/rpc_serial_contract_test.sh
+
+diff --git a/scripts/generate-rpc-wrappers.py b/scripts/generate-rpc-wrappers.py
+index 4a1b07f580436d97b4000f04e9bdefcacd76144b..96c85fe82623984bbfdb7e8e86a2d8842d228c86 100755
+--- a/scripts/generate-rpc-wrappers.py
++++ b/scripts/generate-rpc-wrappers.py
+@@ -796,7 +796,11 @@ extern "C" {
+ 
+ """)
+ 
+-public_header.write("#define DSERVER_CALL_UNMANAGED_FLAG 0x80000000U\n\n")
++public_header.write("#define DSERVER_CALL_UNMANAGED_FLAG 0x80000000U\n")
++public_header.write("#define DSERVER_CALL_SERIAL_FLAG 0x40000000U\n")
++public_header.write("#define DSERVER_CALL_SERIAL_MASK 0x3fff0000U\n")
++public_header.write("#define DSERVER_CALL_SERIAL_SHIFT 16U\n")
++public_header.write("#define DSERVER_CALL_BASE_MASK 0x8000ffffU\n\n")
+ public_header.write("enum dserver_callnum {\n")
+ # "52ccall" -> "s2c call"
+ public_header.write("\tdserver_callnum_s2c = 0x52cca11,\n")
+@@ -823,6 +827,26 @@ public_header.write("""\
+ 
+ typedef enum dserver_callnum dserver_callnum_t;
+ 
++__attribute__((always_inline)) static dserver_callnum_t dserver_rpc_callnum_base(dserver_callnum_t callnum) {
++	uint32_t raw = (uint32_t)callnum;
++	if ((raw & DSERVER_CALL_SERIAL_FLAG) == 0)
++		return callnum;
++	return (dserver_callnum_t)(raw & DSERVER_CALL_BASE_MASK);
++}
++
++__attribute__((always_inline)) static uint32_t dserver_rpc_callnum_serial(dserver_callnum_t callnum) {
++	uint32_t raw = (uint32_t)callnum;
++	if ((raw & DSERVER_CALL_SERIAL_FLAG) == 0)
++		return 0;
++	return (raw & DSERVER_CALL_SERIAL_MASK) >> DSERVER_CALL_SERIAL_SHIFT;
++}
++
++__attribute__((always_inline)) static dserver_callnum_t dserver_rpc_callnum_with_serial(dserver_callnum_t callnum, uint32_t serial) {
++	if (serial == 0)
++		return callnum;
++	return (dserver_callnum_t)(((uint32_t)callnum & DSERVER_CALL_BASE_MASK) | DSERVER_CALL_SERIAL_FLAG | ((serial << DSERVER_CALL_SERIAL_SHIFT) & DSERVER_CALL_SERIAL_MASK));
++}
++
+ #ifndef DSERVER_RPC_HOOKS_ARCHITECTURE
+ #define DSERVER_RPC_HOOKS_ARCHITECTURE 1
+ enum dserver_rpc_architecture {
+@@ -959,6 +983,15 @@ DSERVER_RPC_HOOKS_ATTRIBUTE void dserver_rpc_hooks_push_reply(int socket, const
+ 
+ """.format(library_import))
+ 
++library_source.write("""\
++static uint32_t __dserver_rpc_next_serial(void) {
++\tstatic uint32_t next_serial = 1;
++\tuint32_t serial = __atomic_fetch_add(&next_serial, 1, __ATOMIC_RELAXED) & 0x3fffU;
++\treturn serial ? serial : 1;
++}
++
++""")
++
+ internal_header.write("#define DSERVER_VALID_CALLNUM_CASES \\\n")
+ for call in calls:
+ 	call_name = call[0]
+@@ -1087,7 +1120,7 @@ for call in calls:
+ 			int fdIndex = 0; \\
+ 			reply.setAddress(_replyAddress); \\
+ 			auto replyStruct = reinterpret_cast<dserver_rpc_reply_{0}_t*>(reply.data().data()); \\
+-			replyStruct->header.number = dserver_callnum_{0}; \\
++			replyStruct->header.number = _header.number; \\
+ 			replyStruct->header.code = resultCode; \\
+ 			"""), '\t\t\t').format(call_name))
+ 
+@@ -1261,7 +1294,7 @@ for call in calls:
+ internal_header.write("\n")
+ 
+ public_header.write("__attribute__((always_inline)) static const char* dserver_callnum_to_string(dserver_callnum_t callnum) {\n")
+-public_header.write("\tswitch (callnum) {\n")
++public_header.write("\tswitch (dserver_rpc_callnum_base(callnum)) {\n")
+ public_header.write("\t\tcase dserver_callnum_s2c: return \"dserver_callnum_s2c\";\n")
+ public_header.write("\t\tcase dserver_callnum_push_reply: return \"dserver_callnum_push_reply\";\n")
+ for call in calls:
+@@ -1375,7 +1408,7 @@ for call in calls:
+ 				.architecture = dserver_rpc_hooks_get_architecture(),
+ 				.pid = dserver_rpc_hooks_get_pid(),
+ 				.tid = dserver_rpc_hooks_get_tid(),
+-				.number = dserver_callnum_{0},
++				.number = dserver_rpc_callnum_with_serial(dserver_callnum_{0}, __dserver_rpc_next_serial()),
+ 			}},
+ 		"""), '\t').format(call_name))
+ 
+@@ -1570,14 +1603,14 @@ for call in calls:
+ 		library_source.write("\t\treturn dserver_rpc_hooks_get_communication_error_status();\n")
+ 		library_source.write("\t}\n\n")
+ 
+-		library_source.write("\tif (reply_msg.reply.header.number != dserver_callnum_" + call_name + ") {\n")
++		library_source.write("\tif (dserver_rpc_callnum_base(reply_msg.reply.header.number) != dserver_callnum_" + call_name + " || dserver_rpc_callnum_serial(reply_msg.reply.header.number) != dserver_rpc_callnum_serial(call.header.number)) {\n")
+ 		if (flags & PUSH_UNKNOWN_REPLIES) != 0:
+ 			library_source.write("\t\tdserver_rpc_hooks_push_reply(server_socket, &replymsg, long_status);\n")
+ 			library_source.write("\t\tgoto retry_receive;\n")
+ 		else:
+ 			if (flags & ALLOW_INTERRUPTIONS) == 0:
+ 				library_source.write("\t\tdserver_rpc_hooks_atomic_end(&atomic_save);\n")
+-			library_source.write("\t\tdserver_rpc_hooks_printf(\"*** %d:%d: %s: BAD RECEIVE MESSAGE: number=%d (expected %d), code=%d, length=%ld (expected %zu) ***\\n\", dserver_rpc_hooks_get_pid(), dserver_rpc_hooks_get_tid(), __func__, reply_msg.reply.header.number, dserver_callnum_" + call_name + ", reply_msg.reply.header.code, long_status, sizeof(reply_msg.reply));\n")
++			library_source.write("\t\tdserver_rpc_hooks_printf(\"*** %d:%d: %s: BAD RECEIVE MESSAGE: number=%d (expected %d), serial=%u (expected %u), code=%d, length=%ld (expected %zu) ***\\n\", dserver_rpc_hooks_get_pid(), dserver_rpc_hooks_get_tid(), __func__, dserver_rpc_callnum_base(reply_msg.reply.header.number), dserver_callnum_" + call_name + ", dserver_rpc_callnum_serial(reply_msg.reply.header.number), dserver_rpc_callnum_serial(call.header.number), reply_msg.reply.header.code, long_status, sizeof(reply_msg.reply));\n")
+ 			library_source.write("\t\treturn dserver_rpc_hooks_get_communication_error_status();\n")
+ 		library_source.write("\t}\n\n")
+ 
+diff --git a/src/call.cpp b/src/call.cpp
+index 3c8ea0d37b8bd1efe98c074b0d4f2b620d3e6e57..91c41f947a896e00ba77bace2578b26f4639061e 100644
+--- a/src/call.cpp
++++ b/src/call.cpp
+@@ -135,12 +135,13 @@ std::shared_ptr<DarlingServer::Call> DarlingServer::Call::callFromMessage(Messag
+ 	}
+ 
+ 	dserver_rpc_callhdr_t* header = reinterpret_cast<dserver_rpc_callhdr_t*>(requestMessage.data().data());
++	dserver_callnum_t callNumber = dserver_rpc_callnum_base(header->number);
+ 	std::shared_ptr<Call> result = nullptr;
+ 	std::shared_ptr<Process> process = nullptr;
+ 	std::shared_ptr<Thread> thread = nullptr;
+ 
+ 	// first, make sure we know this call number
+-	switch (header->number) {
++	switch (callNumber) {
+ 		case dserver_callnum_s2c:
+ 		case dserver_callnum_push_reply:
+ 		DSERVER_VALID_CALLNUM_CASES
+@@ -157,7 +158,7 @@ std::shared_ptr<DarlingServer::Call> DarlingServer::Call::callFromMessage(Messag
+ 
+ 			int lifetimePipe = -1;
+ 
+-			if (header->number == dserver_callnum_checkin) {
++			if (callNumber == dserver_callnum_checkin) {
+ 				auto checkinCall = reinterpret_cast<dserver_rpc_call_checkin_t*>(header);
+ 				if (checkinCall->body.lifetime_listener_pipe != -1) {
+ 					lifetimePipe = requestMessage.extractDescriptorAtIndex(checkinCall->body.lifetime_listener_pipe);
+@@ -191,7 +192,7 @@ std::shared_ptr<DarlingServer::Call> DarlingServer::Call::callFromMessage(Messag
+ 
+ 			void* stackHint = nullptr;
+ 
+-			if (header->number == dserver_callnum_checkin) {
++			if (callNumber == dserver_callnum_checkin) {
+ 				auto checkinCall = reinterpret_cast<dserver_rpc_call_checkin_t*>(header);
+ 				stackHint = reinterpret_cast<void*>(checkinCall->body.stack_hint);
+ 			}
+@@ -226,19 +227,19 @@ std::shared_ptr<DarlingServer::Call> DarlingServer::Call::callFromMessage(Messag
+ 
+ 	auto pidString = (process) ? (std::to_string(process->id()) + " (" + std::to_string(process->nsid()) + ")") : (std::to_string(header->pid) + " (-1)");
+ 	auto tidString = (thread) ? (std::to_string(thread->id()) + " (" + std::to_string(thread->nsid()) + ")") : (std::to_string(header->tid) + " (-1)");
+-	callLog.debug() << "Received call #" << header->number << " (" << dserver_callnum_to_string(header->number) << ") from PID " << pidString << ", TID " << tidString << callLog.endLog;
++	callLog.debug() << "Received call #" << callNumber << " (" << dserver_callnum_to_string(callNumber) << ") from PID " << pidString << ", TID " << tidString << callLog.endLog;
+ 
+ 	// A0 RPC TRACE: every call the server accepts, keyed by host tid (matches /proc/<tid> in the guest
+ 	// capture) + guest nsid. The nsid pins WHICH guest thread; the host tid ties it to the recvmsg the
+ 	// stall capture saw parked. s2c/push_reply are logged here too (they return early below) so the tape
+ 	// shows the interrupt/S2C protocol traffic interleaved with the call it belongs to.
+ 	DarlingServer::__rpctrace("RECV call=%u(%s) hpid=%d htid=%d nspid=%lld nstid=%lld",
+-		(unsigned)header->number, dserver_callnum_to_string(header->number),
++		(unsigned)callNumber, dserver_callnum_to_string(callNumber),
+ 		header->pid, header->tid,
+ 		(long long)(process ? process->nsid() : -1),
+ 		(long long)(thread ? thread->nsid() : -1));
+ 
+-	if (header->number == dserver_callnum_s2c) {
++	if (callNumber == dserver_callnum_s2c) {
+ 		// this is an S2C reply
+ 
+ 		{
+@@ -254,7 +255,7 @@ std::shared_ptr<DarlingServer::Call> DarlingServer::Call::callFromMessage(Messag
+ 		dtape_semaphore_up(thread->_s2cReplySempahore);
+ 
+ 		return nullptr;
+-	} else if (header->number == dserver_callnum_push_reply) {
++	} else if (callNumber == dserver_callnum_push_reply) {
+ 		// this is a reply push
+ 		// (used to send interrupted replies back to the server)
+ 
+@@ -345,7 +346,7 @@ std::shared_ptr<DarlingServer::Call> DarlingServer::Call::callFromMessage(Messag
+ 	// send path -- by the message body's complex/descriptor shape (one cheap readMemory of the header,
+ 	// skipped entirely when the census is off so the hot path is byte-identical). The goal is to size
+ 	// the reclaimable fraction of the ~19% msg_overwrite hotness BEFORE designing any ring migration.
+-	if (header->number == dserver_callnum_mach_msg_overwrite &&
++	if (callNumber == dserver_callnum_mach_msg_overwrite &&
+ 	    Metrics::shared().msgCensusOn.load(std::memory_order_relaxed) &&
+ 	    requestMessage.data().size() >= sizeof(dserver_rpc_call_mach_msg_overwrite_t)) {
+ 		auto* mc = reinterpret_cast<const dserver_rpc_call_mach_msg_overwrite_t*>(header);
+@@ -407,7 +408,7 @@ std::shared_ptr<DarlingServer::Call> DarlingServer::Call::callFromMessage(Messag
+ 			result = std::make_shared<_className>(thread, reinterpret_cast<dserver_rpc_call_ ## _callName ## _t*>(header), std::move(requestMessage)); \
+ 		} break;
+ 
+-	switch (header->number) {
++	switch (callNumber) {
+ 		DSERVER_CONSTRUCT_CASES
+ 
+ 		default:
+diff --git a/tests/rpc_serial_contract_test.sh b/tests/rpc_serial_contract_test.sh
+new file mode 100755
+index 0000000000000000000000000000000000000000..1917b598aac4ef42ce7e5ebbbf38bb4d33998dd1
+--- /dev/null
++++ b/tests/rpc_serial_contract_test.sh
+@@ -0,0 +1,39 @@
++#!/usr/bin/env bash
++# Static gate for UDS RPC correlation: generated clients must tag each request with a packed
++# serial in the existing callnum word, generated/server replies must echo it, and guest receive
++# validation must match base-callnum+serial without changing the wire header size.
++set -eu
++
++HERE="$(cd "$(dirname "$0")" && pwd)"
++ROOT="$(cd "$HERE/.." && pwd)"
++GEN="$ROOT/scripts/generate-rpc-wrappers.py"
++CALL="$ROOT/src/call.cpp"
++THREAD="$ROOT/src/thread.cpp"
++XNU_RPC="${XNU_RPC_DEFS:-$ROOT/../xnu/darling/src/libsystem_kernel/emulation/src/linux_premigration/resources/dserver-rpc-defs.c}"
++
++fail() {
++	echo "FAIL: $*" >&2
++	exit 1
++}
++
++! grep -q "uint64_t serial" "$GEN" || fail "generated RPC headers grew a serial field"
++grep -q "DSERVER_CALL_SERIAL_FLAG" "$GEN" || fail "generated RPC header has no packed serial flag"
++grep -q "dserver_rpc_callnum_base" "$GEN" || fail "generated RPC header has no callnum base helper"
++grep -q "dserver_rpc_callnum_serial" "$GEN" || fail "generated RPC header has no callnum serial helper"
++grep -q "dserver_rpc_callnum_with_serial" "$GEN" || fail "generated RPC header has no serial packing helper"
++grep -q "__dserver_rpc_next_serial" "$GEN" || fail "generated guest wrappers have no serial allocator"
++grep -q "dserver_rpc_callnum_with_serial(dserver_callnum_" "$GEN" || fail "generated calls do not pack a serial"
++grep -q "replyStruct->header.number = _header.number" "$GEN" || fail "generated replies do not echo packed request number"
++grep -q "dserver_rpc_callnum_serial(reply_msg.reply.header.number) != dserver_rpc_callnum_serial(call.header.number)" "$GEN" \
++	|| fail "generated receive path still matches replies by base call number only"
++
++grep -q "replyStruct->number = header->number" "$CALL" || fail "manual error replies do not echo packed request number"
++grep -q "dserver_rpc_callnum_base(header->number)" "$CALL" || fail "server dispatch does not mask packed serial bits"
++! grep -q "hdr->serial = seq" "$CALL" || fail "ring-dispatch synthetic RPC headers still write removed serial field"
++! grep -q "reply.header.serial" "$THREAD" || fail "manual mach_reply_port fallback still writes removed serial field"
++
++[ -f "$XNU_RPC" ] || fail "xnu dserver-rpc-defs.c not found at $XNU_RPC"
++! grep -q "__dserver_rpc_push_reply_next_serial" "$XNU_RPC" || fail "push_reply incorrectly allocates serial for special callnum"
++! grep -q "\\.serial =" "$XNU_RPC" || fail "push_reply still writes removed serial field"
++
++echo "rpc_serial_contract_test: UDS RPC replies match base-callnum+packed-serial"
