@@ -798,10 +798,10 @@ class DarlingTest(WestCommand):
                 rc = result_rc
         return rc
 
-    def _shutdown_test_prefix(self) -> None:
+    def _shutdown_test_prefix(self) -> bool:
         prefix = getattr(self, "_prefix", None)
         if not prefix or getattr(self, "_keep_prefix_running", False):
-            return
+            return True
         launcher = self._resolve_darling_launcher(prefix)
         if launcher:
             env = os.environ.copy()
@@ -815,25 +815,61 @@ class DarlingTest(WestCommand):
                 check=False,
             )
         self._kill_dserver_for_prefix(Path(prefix))
+        leftovers = self._prefix_process_snapshot(Path(prefix))
+        if not leftovers:
+            return True
+        self.err(f"leftover Darling prefix process(es) after cleanup for {prefix}:")
+        for entry in leftovers:
+            self.err(f"  {entry}")
+        return False
 
-    def _kill_dserver_for_prefix(self, prefix: Path) -> None:
+    def _ps_entries(self) -> list[tuple[int, int, str]]:
         result = subprocess.run(
-            ["ps", "-eo", "pid=,args="],
+            ["ps", "-eo", "pid=,ppid=,args="],
             capture_output=True,
             text=True,
             check=False,
         )
-        pids: list[int] = []
+        entries = []
         for line in result.stdout.splitlines():
             line = line.strip()
             if not line:
                 continue
-            pid_text, _, args = line.partition(" ")
-            if not pid_text.isdigit():
+            parts = line.split(None, 2)
+            if len(parts) < 3 or not parts[0].isdigit() or not parts[1].isdigit():
                 continue
+            entries.append((int(parts[0]), int(parts[1]), parts[2]))
+        return entries
+
+    def _prefix_process_snapshot(self, prefix: Path) -> list[str]:
+        entries = self._ps_entries()
+        children: dict[int, list[int]] = {}
+        args_by_pid: dict[int, str] = {}
+        roots: list[int] = []
+        for pid, ppid, args in entries:
+            args_by_pid[pid] = args
+            children.setdefault(ppid, []).append(pid)
             argv = args.split()
             if len(argv) >= 2 and Path(argv[0]).name == "darlingserver" and argv[1] == str(prefix):
-                pids.append(int(pid_text))
+                roots.append(pid)
+        if not roots:
+            return []
+        seen: set[int] = set()
+        stack = list(roots)
+        while stack:
+            pid = stack.pop()
+            if pid in seen:
+                continue
+            seen.add(pid)
+            stack.extend(children.get(pid, []))
+        return [f"{pid} {args_by_pid[pid]}" for pid in sorted(seen) if pid in args_by_pid]
+
+    def _kill_dserver_for_prefix(self, prefix: Path) -> None:
+        pids: list[int] = []
+        for pid, _, args in self._ps_entries():
+            argv = args.split()
+            if len(argv) >= 2 and Path(argv[0]).name == "darlingserver" and argv[1] == str(prefix):
+                pids.append(pid)
         if not pids:
             return
         self.wrn(f"stopping live darlingserver for {prefix}: pids={pids}")
@@ -866,11 +902,13 @@ class DarlingTest(WestCommand):
         with lock_path.open("a+") as lock:
             self.inf(f"lock Darling prefix: {prefix}")
             fcntl.flock(lock.fileno(), fcntl.LOCK_EX)
+            self._prefix_cleanup_failed = False
             try:
                 yield
             finally:
                 try:
-                    self._shutdown_test_prefix()
+                    if not self._shutdown_test_prefix():
+                        self._prefix_cleanup_failed = True
                 finally:
                     fcntl.flock(lock.fileno(), fcntl.LOCK_UN)
 
@@ -1012,9 +1050,15 @@ class DarlingTest(WestCommand):
                         self.die("no red-proof tests selected from patch metadata")
                     needs_prefix = self._metadata_needs_prefix(selected) and not args.list
                     with self._prefix_resource_context(needs_prefix):
-                        raise SystemExit(self._run_red_proofs(selected, args.list, unknown))
+                        result = self._run_red_proofs(selected, args.list, unknown)
+                    if getattr(self, "_prefix_cleanup_failed", False):
+                        result = result or 1
+                    raise SystemExit(result)
                 with self._prefix_resource_context(needs_prefix):
-                    raise SystemExit(self._run_metadata_tests(selected, args.list, unknown))
+                    result = self._run_metadata_tests(selected, args.list, unknown)
+                if getattr(self, "_prefix_cleanup_failed", False):
+                    result = result or 1
+                raise SystemExit(result)
             if args.list:
                 return
             self.die("no tests selected from patch metadata")

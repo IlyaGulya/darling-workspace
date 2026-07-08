@@ -58,7 +58,8 @@ refs, PR drafts, and agent handoff.
 - `west test` owns the Darling prefix lifecycle for metadata tests that declare
   `requires: [darling-prefix]`: it takes `$DPREFIX/.west-test.lock`, runs the
   test, then runs `darling shutdown` for that prefix and kills a matching
-  leftover `darlingserver` if needed. Use `--keep-prefix-running` only for
+  leftover `darlingserver` if needed. If prefix processes still remain after
+  cleanup, the test run must fail. Use `--keep-prefix-running` only for
   deliberate fast local iteration.
 - Patch metadata tests with `diag: guarded` or `diag: forensic` must run
   through `darling-debug-runner`; keep timeouts/capture in `west test`, not as
