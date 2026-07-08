@@ -14,6 +14,16 @@ refs, PR drafts, and agent handoff.
   `west dw beads comment <id> <text>`; it is a workspace alias for the Beads
   `comments add` subcommand.
 - Use `west patch verify|apply|clean|list` for local integration profiles.
+- Use `west darling-prefix-repair --prefix <prefix>` when guest tests report
+  missing prefix prerequisites such as `private/var/tmp`, canonical
+  `CommandLineTools`, or `DarlingCLT` clang links. Do not repair those by
+  undocumented manual `mkdir`/`ln` sequences unless the command itself is what
+  you are debugging.
+- If a Darling guest run leaves mounted filesystems under a prefix, use
+  `west darling-prefix-repair --prefix <prefix> --cleanup-mounts` after
+  confirming no Darling processes are left. Do not ignore prefix mount tails;
+  either clean them through tooling or keep the owning Bead open with the exact
+  repro.
 - Treat clean `fix/*` branches as canonical editable source.
 - Treat patch files and `patches.yml` as portable integration artifacts.
 - Treat `integration/*` branches and profile `west.lock.yml` files as generated.
