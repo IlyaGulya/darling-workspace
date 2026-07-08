@@ -1,0 +1,376 @@
+From 142b89c011bc3cae3b9e1d72035d2d0081f6f42b Mon Sep 17 00:00:00 2001
+From: Ilya Gulya <ilya@gulya.me>
+Date: Wed, 8 Jul 2026 06:35:59 +0000
+Subject: [PATCH] dserver: guard stack pool against empty stack handles
+
+---
+ CMakeLists.txt                       | 14 ++++
+ src/darlingserver.cpp                | 98 ++++++++++++++++++++++++++++
+ src/stack-pool.cpp                   | 55 ++++++++++++----
+ src/thread.cpp                       | 40 +++++++++++-
+ tests/stack-pool-null-regression.cpp | 34 ++++++++++
+ 5 files changed, 229 insertions(+), 12 deletions(-)
+ create mode 100644 tests/stack-pool-null-regression.cpp
+
+diff --git a/CMakeLists.txt b/CMakeLists.txt
+index 4fd913b3c050aebb2b60aad03b18ddd2ee73c2b5..91628af08e8196f6c8b159e6fea8bb4e6682af25 100644
+--- a/CMakeLists.txt
++++ b/CMakeLists.txt
+@@ -132,6 +132,20 @@ add_executable(darlingserver
+ 	src/ring.cpp
+ )
+ 
++add_executable(dserver_stack_pool_tests
++	tests/stack-pool-null-regression.cpp
++	src/stack-pool.cpp
++)
++
++target_compile_options(dserver_stack_pool_tests PRIVATE
++	-std=c++17
++)
++
++add_custom_target(dserver_stack_pool_tests_run
++	COMMAND $<TARGET_FILE:dserver_stack_pool_tests>
++	DEPENDS dserver_stack_pool_tests
++)
++
+ add_dependencies(darlingserver
+ 	generate_dserver_rpc_wrappers
+ 	rtsig_h
+diff --git a/src/darlingserver.cpp b/src/darlingserver.cpp
+index 8b2a5cac8485ac1b281ed9ecc870236faa69d714..d82aa147e40a7b62bc67ac2cf3bd7f7f5ff33891 100644
+--- a/src/darlingserver.cpp
++++ b/src/darlingserver.cpp
+@@ -38,6 +38,8 @@
+ #include <sys/syscall.h>
+ #include <sys/signal.h>
+ #include <filesystem>
++#include <exception>
++#include <execinfo.h>
+ 
+ #include <darling-config.h>
+ 
+@@ -58,6 +60,100 @@
+ 
+ // TODO: most of the code here was ported over from startup/darling.c; we should C++-ify it.
+ 
++static bool g_exitTraceBacktrace = false;
++
++extern "C" const char* dserver_last_makecontext_trace();
++
++static bool exitTraceEnabled() {
++	const char* value = getenv("DSERVER_EXIT_TRACE");
++	return value != nullptr && value[0] != '\0' && strcmp(value, "0") != 0;
++}
++
++static bool exitTraceAllSignalsEnabled() {
++	const char* value = getenv("DSERVER_EXIT_TRACE_ALL_SIGNALS");
++	return value != nullptr && value[0] != '\0' && strcmp(value, "0") != 0;
++}
++
++static void writeSignalNumber(int signum) {
++	char buf[16];
++	size_t off = sizeof(buf);
++	unsigned int value = static_cast<unsigned int>(signum);
++
++	buf[--off] = '\0';
++	do {
++		buf[--off] = static_cast<char>('0' + (value % 10));
++		value /= 10;
++	} while (value != 0 && off > 0);
++
++	write(STDERR_FILENO, &buf[off], sizeof(buf) - off - 1);
++}
++
++static void exitTraceSignalHandler(int signum) {
++	static const char prefix[] = "DSERVER_EXIT_TRACE: signal ";
++	static const char suffix[] = "\n";
++	static const char btPrefix[] = "DSERVER_EXIT_TRACE: backtrace\n";
++	static const char contextPrefix[] = "DSERVER_EXIT_TRACE: last_makecontext ";
++
++	write(STDERR_FILENO, prefix, sizeof(prefix) - 1);
++	writeSignalNumber(signum);
++	write(STDERR_FILENO, suffix, sizeof(suffix) - 1);
++	const char* context = dserver_last_makecontext_trace();
++	if (context) {
++		write(STDERR_FILENO, contextPrefix, sizeof(contextPrefix) - 1);
++		write(STDERR_FILENO, context, strlen(context));
++		write(STDERR_FILENO, suffix, sizeof(suffix) - 1);
++	}
++	if (g_exitTraceBacktrace) {
++		void* frames[64];
++		int count = backtrace(frames, sizeof(frames) / sizeof(frames[0]));
++		write(STDERR_FILENO, btPrefix, sizeof(btPrefix) - 1);
++		backtrace_symbols_fd(frames, count, STDERR_FILENO);
++	}
++	_exit(128 + signum);
++}
++
++static void exitTraceAtExit() {
++	if (exitTraceEnabled()) {
++		fputs("DSERVER_EXIT_TRACE: atexit\n", stderr);
++		fflush(stderr);
++	}
++}
++
++static void exitTraceTerminate() {
++	if (exitTraceEnabled()) {
++		fputs("DSERVER_EXIT_TRACE: std::terminate\n", stderr);
++		fflush(stderr);
++	}
++	abort();
++}
++
++static void installExitTrace() {
++	if (!exitTraceEnabled()) {
++		return;
++	}
++
++	const char* backtrace = getenv("DSERVER_EXIT_TRACE_BACKTRACE");
++	g_exitTraceBacktrace = backtrace != nullptr && backtrace[0] != '\0' && strcmp(backtrace, "0") != 0;
++	atexit(exitTraceAtExit);
++	std::set_terminate(exitTraceTerminate);
++
++	struct sigaction action = {};
++	action.sa_handler = exitTraceSignalHandler;
++	sigemptyset(&action.sa_mask);
++	action.sa_flags = SA_RESETHAND;
++
++	int fatalSignals[] = { SIGABRT, SIGSEGV, SIGBUS, SIGILL, SIGFPE };
++	for (int signum : fatalSignals) {
++		sigaction(signum, &action, nullptr);
++	}
++	if (exitTraceAllSignalsEnabled()) {
++		int allSignals[] = { SIGHUP, SIGINT, SIGQUIT, SIGTERM, SIGPIPE };
++		for (int signum : allSignals) {
++			sigaction(signum, &action, nullptr);
++		}
++	}
++}
++
+ void fixPermissionsRecursive(const char* path, uid_t originalUID, gid_t originalGID)
+ {
+ 	DIR* dir;
+@@ -498,6 +594,8 @@ static void handle_sigusr1(int signum) {
+ #endif
+ 
+ int main(int argc, char** argv) {
++	installExitTrace();
++
+ 	const char* prefix = NULL;
+ 	uid_t originalUID = -1;
+ 	gid_t originalGID = -1;
+diff --git a/src/stack-pool.cpp b/src/stack-pool.cpp
+index af895bece84deab5ee948dea0afe333dddfc66e9..3af6e75dd1eb41f2078808c7e273690d71aacff3 100644
+--- a/src/stack-pool.cpp
++++ b/src/stack-pool.cpp
+@@ -22,6 +22,9 @@
+ #include <unistd.h>
+ #include <sys/mman.h>
+ #include <assert.h>
++#include <stdio.h>
++#include <stdlib.h>
++#include <string.h>
+ #include <system_error>
+ 
+ #if DSERVER_ASAN
+@@ -36,6 +39,14 @@ DarlingServer::StackPool::Stack::operator bool() const {
+ 	return isValid();
+ };
+ 
++static bool stackPoolTraceEnabled() {
++	static const bool enabled = []() {
++		const char* value = getenv("DSERVER_STACKPOOL_TRACE");
++		return value != nullptr && value[0] != '\0' && strcmp(value, "0") != 0;
++	}();
++	return enabled;
++}
++
+ DarlingServer::StackPool::StackPool(size_t idleStackCount, size_t stackSize, bool useGuardPages):
+ 	_idleStackCount(idleStackCount),
+ 	_stackSize(stackSize),
+@@ -86,25 +97,47 @@ void DarlingServer::StackPool::_free(void* stack, size_t stackSize, bool useGuar
+ void DarlingServer::StackPool::allocate(Stack& stack) {
+ 	std::scoped_lock lock(_mutex);
+ 
+-	if (_stacks.size() > 0) {
+-		// great, we can use one from the pool
++	while (_stacks.size() > 0) {
++		// Great, we can use one from the pool. Older buggy frees could leave a
++		// null entry behind; do not ever hand that to makecontext().
++		void* base = _stacks.back();
++		_stacks.pop_back();
+ 
+-		stack.base = _stacks.back();
+-		stack.size = _stackSize;
+-		stack.usesGuardPages = _useGuardPages;
++		if (base != nullptr) {
++			stack.base = base;
++			stack.size = _stackSize;
++			stack.usesGuardPages = _useGuardPages;
++			return;
++		}
+ 
+-		_stacks.pop_back();
+-	} else {
+-		// we don't have any available, so we have to allocate one now
+-		stack.base = _allocate(_stackSize, _useGuardPages);
+-		stack.size = _stackSize;
+-		stack.usesGuardPages = _useGuardPages;
++		if (stackPoolTraceEnabled()) {
++			fprintf(stderr, "DSERVER_STACKPOOL_TRACE: dropped null idle stack\n");
++			fflush(stderr);
++		}
+ 	}
++
++	// we don't have any available, so we have to allocate one now
++	stack.base = _allocate(_stackSize, _useGuardPages);
++	stack.size = _stackSize;
++	stack.usesGuardPages = _useGuardPages;
+ };
+ 
+ void DarlingServer::StackPool::free(Stack& stack) {
+ 	std::scoped_lock lock(_mutex);
+ 
++	if (!stack.isValid()) {
++		if (stackPoolTraceEnabled()) {
++			fprintf(stderr,
++					"DSERVER_STACKPOOL_TRACE: ignored invalid free base=%p size=%zu guard=%d\n",
++					stack.base,
++					stack.size,
++					stack.usesGuardPages ? 1 : 0);
++			fflush(stderr);
++		}
++		stack = Stack();
++		return;
++	}
++
+ 	// for now, we only support a single standard stack size and guard page usage
+ 	assert(stack.size == _stackSize);
+ 	assert(stack.usesGuardPages == _useGuardPages);
+diff --git a/src/thread.cpp b/src/thread.cpp
+index 572b7eaba8d7779f6711dcb9d053219c5fd43acd..d8d61843a3e2b133448872d821d16eabcffeb263 100644
+--- a/src/thread.cpp
++++ b/src/thread.cpp
+@@ -52,6 +52,7 @@
+ #include <limits>
+ #include <system_error>
+ #include <cerrno>
++#include <cstdio>
+ #include <sys/ptrace.h>
+ #include <sys/user.h>
+ #include <sys/wait.h>
+@@ -67,6 +68,7 @@ static thread_local bool returningToThreadTop = false;
+ static thread_local ucontext_t backToThreadTopContext;
+ static thread_local libsimple_lock_t* unlockMeWhenSuspending = nullptr;
+ static thread_local std::function<void()> currentContinuation = nullptr;
++static thread_local char lastMakecontextTrace[256] = "none";
+ 
+ /**
+  * Our microthreads use cooperative multitasking, so we don't really use interrupts per-se.
+@@ -78,6 +80,40 @@ static thread_local std::function<void()> currentContinuation = nullptr;
+  */
+ static thread_local uint64_t interruptDisableCount = 0;
+ 
++static bool envFlagEnabled(const char* name) {
++	const char* value = getenv(name);
++	return value != nullptr && value[0] != '\0' && strcmp(value, "0") != 0;
++}
++
++static bool contextTraceEnabled() {
++	static const bool enabled = envFlagEnabled("DSERVER_CONTEXT_TRACE");
++	return enabled;
++}
++
++extern "C" const char* dserver_last_makecontext_trace() {
++	return lastMakecontextTrace;
++}
++
++static void recordMakecontextTrace(const char* branch, const DarlingServer::Thread* thread, const DarlingServer::StackPool::Stack& stack, const std::shared_ptr<DarlingServer::Call>& call) {
++	auto callNumber = call ? call->number() : DarlingServer::Call::Number::Invalid;
++	snprintf(lastMakecontextTrace,
++			sizeof(lastMakecontextTrace),
++			"branch=%s thread=%p stack=%p size=%zu call=%u(%s)",
++			branch,
++			static_cast<const void*>(thread),
++			stack.base,
++			stack.size,
++			static_cast<unsigned int>(callNumber),
++			DarlingServer::Call::callNumberToString(callNumber));
++
++	if (!contextTraceEnabled()) {
++		return;
++	}
++
++	fprintf(stderr, "DSERVER_CONTEXT_TRACE: %s\n", lastMakecontextTrace);
++	fflush(stderr);
++}
++
+ // A0-ARCH stage 0: scheduling-order fuzzer. Every A0 wake/wait bug was a 2-event reorder
+ // (dispatch vs wake, wake-before-suspend, stale re-run); this injects exactly that class of
+ // reorders on purpose so the a0-gate synth legs can find protocol holes in minutes instead
+@@ -637,7 +673,7 @@ void DarlingServer::Thread::doWork() {
+ 
+ 		_rwlock.lock();
+ 
+-		if (_microState != MicroState::Parking || _continuationCallback) {
++		if ((_microState != MicroState::Parking || _continuationCallback) && _stack.isValid()) {
+ 			// we discard the old stack when either:
+ 			//   * we exit normally (i.e. without suspending -- state stayed Running);
+ 			//   * or when we suspend with a continuation callback.
+@@ -701,6 +737,7 @@ void DarlingServer::Thread::doWork() {
+ 				_resumeContext.uc_stack.ss_size = _stack.size;
+ 				_resumeContext.uc_stack.ss_flags = 0;
+ 				_resumeContext.uc_link = &backToThreadTopContext;
++				recordMakecontextTrace("continuation", this, _stack, _pendingCall);
+ 				makecontext(&_resumeContext, microthreadContinuation, 0);
+ 			} else {
+ 				// otherwise, we expect to have a valid stack to continue where we left off
+@@ -738,6 +775,7 @@ void DarlingServer::Thread::doWork() {
+ 			newContext.uc_stack.ss_size = _stack.size;
+ 			newContext.uc_stack.ss_flags = 0;
+ 			newContext.uc_link = &backToThreadTopContext;
++			recordMakecontextTrace("worker", this, _stack, _pendingCall);
+ 			makecontext(&newContext, microthreadWorker, 0);
+ 
+ #if DSERVER_ASAN
+diff --git a/tests/stack-pool-null-regression.cpp b/tests/stack-pool-null-regression.cpp
+new file mode 100644
+index 0000000000000000000000000000000000000000..ef9139b280c8c0998731dad173f34be71f7acf56
+--- /dev/null
++++ b/tests/stack-pool-null-regression.cpp
+@@ -0,0 +1,34 @@
++/**
++ * This file is part of Darling.
++ *
++ * Copyright (C) 2026 Darling developers
++ *
++ * Darling is free software: you can redistribute it and/or modify
++ * it under the terms of the GNU General Public License as published by
++ * the Free Software Foundation, either version 3 of the License, or
++ * (at your option) any later version.
++ */
++
++#include <darlingserver/stack-pool.hpp>
++
++#include <cstdio>
++
++int main() {
++	DarlingServer::StackPool pool(0, 64 * 1024, true);
++	DarlingServer::StackPool::Stack empty;
++
++	// Regression for dar-9f8b: the old free() path accepted an empty handle in
++	// release builds, parked nullptr in the idle list, and the next allocate()
++	// handed that nullptr to makecontext().
++	pool.free(empty);
++
++	DarlingServer::StackPool::Stack allocated;
++	pool.allocate(allocated);
++	if (!allocated.isValid() || allocated.base == nullptr) {
++		std::fprintf(stderr, "StackPool returned an invalid stack after free(empty)\n");
++		return 1;
++	}
++
++	pool.free(allocated);
++	return 0;
++}
