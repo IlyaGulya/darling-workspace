@@ -789,6 +789,26 @@ patches:
     - -Wextra
     - -Werror
     note: Compile contract for the production ingest error-reply helper; old source has no raw-header reply contract, fixed source preserves call number and ESRCH/EAGAIN code in a minimal reply.
+  - name: ingest_process_register_fault_guest
+    kind: guest
+    coverage-tier: runtime
+    env: darling
+    diag: guarded
+    runner: guest-c-fixture
+    repo: darling-workspace
+    script: tests/ingest_process_register_fault_guest.c
+    ok-marker: INGEST_FORCE_MISSING_PROCESS_OK
+    timeout-seconds: 30
+    host-temp-files:
+    - env: DSERVER_TEST_FAULT_FILE
+      prefix-relative-path: private/var/tmp/dserver-test-fault
+    host-trace-files:
+    - env: DSERVER_TEST_TRACE_FILE
+      prefix-relative-path: private/var/tmp/dserver-ingest-fault.trace
+      contains:
+      - test_fault.consume name=ingest.force_missing_process
+      - call.ingest_missing_process
+    note: Guest runtime fault gate for the ingest-time missing-process path; the diagnostics hook consumes a one-shot guest-written fault file and forces the next managed RPC through the missing-process branch, fixed darlingserver replies instead of silently dropping it, and the parent observes exit instead of wedging. Runtime RED is blocked until the fault hook is split into a current-minus-compatible pre-ingest diagnostics patch; current test-diagnostics-trace conflicts when ingest-error-reply is skipped.
   github:
     fork:
       repo: IlyaGulya/darlingserver
@@ -3578,7 +3598,7 @@ patches:
   module: darling/src/external/darlingserver
   source-branch: fix/test-diagnostics-trace
   source-base: b5c7403d9e70fa5708c7c5ed66821534a017d032
-  source-commit: 027ae40c1d54c40e78cb3b88ffa87efb13134fef
+  source-commit: a727a1fcb1eed8fe767dee5b2a016173e84366bf
   bead: dar-r7fc.7
   publication-status: blocked
   publication-blocker: test-only runtime diagnostics; keep local until a supported upstream diagnostics interface is designed
@@ -3607,4 +3627,4 @@ patches:
       Guest runtime smoke for the opt-in DSERVER_TEST_TRACE_FILE diagnostics
       hook. The script only launches a real guest process; west owns the host
       trace setup and oracle.
-  sha256sum: a375113aca68758ffd8458013c097bb63164ee90413a34190a6bf37c8245a046
+  sha256sum: a20484a4750af7d4a6774eaada1128b6e20553315d0a664f527abd3afefb0f9b
