@@ -93,6 +93,28 @@ RED proof modes:
   test to fail there before passing on the current tree. Use this only for
   source-root-aware scripts; do not rely on implicit checkout mutation.
 
+Source/text checks are allowed only as auxiliary drift guards:
+
+```yaml
+  - name: example_source_contract
+    kind: source-contract
+    env: host
+    diag: bare
+    red: true
+    red-proof:
+      mode: source-base
+      source-env: XNU_SRC_ROOT
+    runner: python
+    script: tests/west_source_contracts.py
+```
+
+`kind: source-contract` can prove that a hunk/symbol/comment is present or absent
+on a source tree, but it does not prove runtime behavior. `west patch check`
+therefore does **not** count source-contracts as patch coverage. A patch with
+only source-contracts is reported as `SOURCE ... missing behavioral test` until
+it also has a behavioral host/guest/build/package/fuzz/stress/gate test or a
+real `test-exception`.
+
 Use structured runners for common cases:
 
 ```yaml
