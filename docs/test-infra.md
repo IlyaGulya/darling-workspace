@@ -184,6 +184,13 @@ compile against the bad tree for RED and the current materialized profile for
 GREEN. `stub-headers` may list empty generated headers for isolated production
 `.c` unit tests that include project-local headers not needed by the fixture.
 
+Structured tests may also use `red-proof.source-env` with `runner: script` or
+`runner: python`. `west test` sets that environment variable to the selected
+profile's source tree for normal GREEN runs, including `--materialize-profile`,
+and overrides it with the temporary bad/source-base worktree for `--prove-red`.
+This keeps workspace-hosted suites honest: the test asset can live in the
+workspace while the source under test still comes from the current profile tree.
+
 Use `requires` for resources that the test framework can provide. Darling
 guest/runtime scripts should declare `requires: [darling-prefix]`; `west test`
 then supplies `DPREFIX` from `--prefix`, `--prefix existing:/path`,

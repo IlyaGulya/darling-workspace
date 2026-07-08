@@ -510,6 +510,9 @@ class DarlingTest(WestCommand):
         `command` is intentionally still supported as an escape hatch, but the
         common cases should be structured so west owns how tests are launched.
         """
+        proof = test.get("red-proof") if isinstance(test.get("red-proof"), dict) else {}
+        source_env = test.get("source-env") or proof.get("source-env")
+        source_module = proof.get("source-module", patch["module"])
         if test.get("command"):
             return {
                 "key": f"shell:{test['command']}",
@@ -521,6 +524,8 @@ class DarlingTest(WestCommand):
                 "diag": self._resolved_diag(test),
                 "name": test.get("name", patch["path"]),
                 "timeout_seconds": int(test.get("timeout-seconds", 600)),
+                "source_env": source_env,
+                "source_module": source_module,
             }
         if test.get("ctest-label"):
             env = None
@@ -541,6 +546,8 @@ class DarlingTest(WestCommand):
                 "diag": "bare",
                 "name": test.get("name", patch["path"]),
                 "timeout_seconds": int(test.get("timeout-seconds", 600)),
+                "source_env": source_env,
+                "source_module": source_module,
             }
 
         runner = test.get("runner", "script" if test.get("script") else None)
@@ -564,6 +571,8 @@ class DarlingTest(WestCommand):
                 "diag": self._resolved_diag(test),
                 "name": test.get("name", patch["path"]),
                 "timeout_seconds": int(test.get("timeout-seconds", 600)),
+                "source_env": source_env,
+                "source_module": source_module,
             }
         if runner == "script":
             repo = test.get("repo", patch["module"])
@@ -598,6 +607,8 @@ class DarlingTest(WestCommand):
                 "diag": self._resolved_diag(test),
                 "name": test.get("name", patch["path"]),
                 "timeout_seconds": int(test.get("timeout-seconds", 600)),
+                "source_env": source_env,
+                "source_module": source_module,
             }
         if runner == "python":
             repo = test.get("repo", patch["module"])
@@ -631,6 +642,8 @@ class DarlingTest(WestCommand):
                 "diag": self._resolved_diag(test),
                 "name": test.get("name", patch["path"]),
                 "timeout_seconds": int(test.get("timeout-seconds", 600)),
+                "source_env": source_env,
+                "source_module": source_module,
             }
         if runner == "c-fixture":
             repo = test.get("repo", patch["module"])
@@ -641,8 +654,6 @@ class DarlingTest(WestCommand):
             if test.get("env-vars"):
                 env = os.environ.copy()
                 env.update({str(k): str(v) for k, v in test["env-vars"].items()})
-            proof = test.get("red-proof") if isinstance(test.get("red-proof"), dict) else {}
-            source_env = test.get("source-env") or proof.get("source-env")
             cc = str(test.get("cc", os.environ.get("CC", "cc")))
             output = f"<temp>/{Path(script).stem}"
             display_parts = [quote(cc), *[quote(str(flag)) for flag in test.get("compile-flags", [])]]
@@ -666,6 +677,8 @@ class DarlingTest(WestCommand):
                 "stub_headers": [str(item) for item in test.get("stub-headers", [])],
                 "compile_flags": [str(item) for item in test.get("compile-flags", [])],
                 "source_root_env": source_env,
+                "source_env": source_env,
+                "source_module": source_module,
                 "requires_resources": list(test.get("requires", [])),
                 "requires_env": list(test.get("requires-env", [])),
                 "requires_profile": test.get("requires-profile"),
@@ -852,14 +865,22 @@ class DarlingTest(WestCommand):
 
     def _execution_env(self, invocation) -> dict[str, str] | None:
         env = invocation.get("env")
-        if "darling-prefix" not in invocation.get("requires_resources", []):
-            return env
-        prefix = getattr(self, "_prefix", None)
-        if not prefix:
+        needs_prefix = "darling-prefix" in invocation.get("requires_resources", [])
+        source_env = invocation.get("source_env")
+        if not needs_prefix and not source_env:
             return env
         merged = os.environ.copy()
         if env:
             merged.update(env)
+        if source_env and not merged.get(source_env):
+            source_root = self._project_path(invocation.get("source_module"))
+            if source_root is not None:
+                merged[source_env] = str(source_root)
+        if not needs_prefix:
+            return merged
+        prefix = getattr(self, "_prefix", None)
+        if not prefix:
+            return merged
         merged["DPREFIX"] = prefix
         launcher = self._resolve_darling_launcher(prefix)
         if launcher:
@@ -1013,10 +1034,15 @@ class DarlingTest(WestCommand):
                     f"{patch['path']}: missing required environment for {name}: "
                     f"{', '.join(missing_env)}"
                 )
-            if invocation["key"] in seen_invocations:
+            invocation_key = (
+                f"{patch['path']}:{invocation['key']}"
+                if mode == "source-base"
+                else invocation["key"]
+            )
+            if invocation_key in seen_invocations:
                 self.inf("  skipped duplicate invocation already run")
                 continue
-            seen_invocations.add(invocation["key"])
+            seen_invocations.add(invocation_key)
             with self._required_profile_context(patch, invocation):
                 if mode == "source-base":
                     result_rc = self._run_source_base_proof(patch, proof, invocation)

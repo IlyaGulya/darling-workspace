@@ -9,9 +9,15 @@
 set -euo pipefail
 
 HERE="$(cd "$(dirname "$0")" && pwd)"
-XNU=/home/ilyagulya/work/darling-dev/darling/src/external/xnu/darling/src/libsystem_kernel/emulation
+XNU_SRC_ROOT="${XNU_SRC_ROOT:-/home/ilyagulya/work/darling-dev/darling/src/external/xnu}"
+XNU="$XNU_SRC_ROOT/darling/src/libsystem_kernel/emulation"
 SRCDIR="$XNU/src/linux_premigration"
 INCDIR="$XNU/include"
+
+if [ ! -f "$SRCDIR/vchroot_userspace.c" ]; then
+	echo "missing vchroot_userspace.c under XNU_SRC_ROOT=$XNU_SRC_ROOT" >&2
+	exit 1
+fi
 
 WORK="$(mktemp -d /tmp/eunion-tdd.XXXXXX)"
 trap 'rm -rf "$WORK"' EXIT
