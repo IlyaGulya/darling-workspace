@@ -30,6 +30,11 @@ from pathlib import Path
 
 from west.commands import WestCommand
 
+_EXTRA_PREFIX_DYLIBS = [
+    "libsystem_kernel.dylib",
+    "libsystem_pthread.dylib",
+]
+
 
 def _run(cmd, cwd=None):
     return subprocess.run(cmd, cwd=cwd, capture_output=True, text=True, check=False)
@@ -64,19 +69,29 @@ class DarlingDoctor(WestCommand):
         p.add_argument("--allow-drift", action="append", default=[],
                        help="project name/path whose manifest<->worktree drift is intentional (repeatable). "
                             "Also read from darling-workspace/doctor-allow-drift.txt if present.")
+        p.add_argument("--extra-prefix", action="append", default=[], metavar="PREFIX",
+                       help="additional runtime/test prefix whose critical closure dylibs must match --prefix "
+                            "(repeatable; DARLING_TEST_PREFIX is also checked when set)")
         return p
 
     def do_run(self, args, unknown):
         self.fail = 0
         topdir = Path(self.topdir)
+        env_extra = os.environ.get("DARLING_TEST_PREFIX")
+        if env_extra and env_extra not in args.extra_prefix:
+            args.extra_prefix.append(env_extra)
+
         self.inf("== Darling env doctor ==")
         self.inf(f"  workspace = {topdir}")
         self.inf(f"  build     = {args.build_dir}")
         self.inf(f"  prefix    = {args.prefix}")
+        if args.extra_prefix:
+            self.inf(f"  extra     = {', '.join(args.extra_prefix)}")
 
         self._check_manifest_drift(topdir, args)
         self._check_build_prefix(topdir, args)
         self._check_baseline(args)
+        self._check_extra_prefixes(args)
 
         self.inf("== Result ==")
         if self.fail:
@@ -237,3 +252,32 @@ class DarlingDoctor(WestCommand):
                 self._ok("both deployed dyld copies match each other")
             else:
                 self._problem(f"the two deployed dyld copies DIFFER (half-deploy); deploy to BOTH {d1} AND {d2}")
+
+    # -- CHECK 4: additional runtime/test prefixes vs primary prefix ------
+    def _check_extra_prefixes(self, args):
+        if not args.extra_prefix:
+            return
+        self.inf("\n== 4. extra runtime prefixes vs primary prefix ==")
+        primary = Path(args.prefix)
+        for raw in args.extra_prefix:
+            extra = Path(raw)
+            self.inf(f"  extra prefix = {extra}")
+            local_fail = False
+            for name in _EXTRA_PREFIX_DYLIBS:
+                primary_path = primary / "usr/lib/system" / name
+                extra_path = extra / "usr/lib/system" / name
+                if not primary_path.exists():
+                    self._problem(f"primary prefix missing {name} at {primary_path}")
+                    local_fail = True
+                    continue
+                if not extra_path.exists():
+                    self._problem(f"extra prefix missing {name} at {extra_path}")
+                    local_fail = True
+                    continue
+                primary_md5 = _md5(primary_path)
+                extra_md5 = _md5(extra_path)
+                if primary_md5 != extra_md5:
+                    self._problem(f"{extra}: {name} md5 {extra_md5} != primary {primary_md5}")
+                    local_fail = True
+            if not local_fail:
+                self._ok(f"{extra} critical closure dylibs match primary prefix")
