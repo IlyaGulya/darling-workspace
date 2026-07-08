@@ -286,12 +286,12 @@ class DarlingPatch(WestCommand):
                     f"tests[{index}] needs script, target, ctest-label, or command override"
                 )
             runner = test.get("runner")
-            if runner and runner not in {"script", "west-build", "ctest"}:
+            if runner and runner not in {"script", "python", "west-build", "ctest"}:
                 errors.append(f"tests[{index}] invalid runner {runner!r}")
             if test.get("target") and runner not in {None, "west-build"}:
                 errors.append(f"tests[{index}] target requires runner: west-build")
-            if test.get("script") and runner not in {None, "script"}:
-                errors.append(f"tests[{index}] script requires runner: script")
+            if test.get("script") and runner not in {None, "script", "python"}:
+                errors.append(f"tests[{index}] script requires runner: script or python")
             if test.get("script"):
                 repo_ref = test.get("repo", patch["module"])
                 repo_path = self._project_path(repo_ref)

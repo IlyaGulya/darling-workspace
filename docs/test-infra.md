@@ -118,6 +118,19 @@ Script tests may declare arguments and environment without dropping to a shell:
     - darling-prefix
 ```
 
+Use `runner: python` for Python files that should be invoked through `python3`
+rather than marked executable:
+
+```yaml
+  - name: progress_classifier
+    kind: contract
+    env: host
+    diag: bare
+    red: true
+    runner: python
+    script: tests/progress_classifier_test.py
+```
+
 Use `requires` for resources that the test framework can provide. Darling
 guest/runtime scripts should declare `requires: [darling-prefix]`; `west test`
 then supplies `DPREFIX` from `--prefix`, `--prefix existing:/path`,
