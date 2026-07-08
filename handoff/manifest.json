@@ -55,7 +55,7 @@
         },
         {
           "branch": "fix/mldr-stack-mmap-fallback",
-          "head": "e1420127bc3c682578a2086c9f360f1b1bbb76d8",
+          "head": "f51f5a405f6a294cb13c505b6d14e5deb9feda51",
           "upstream": "",
           "source_ref": "refs/heads/fix/mldr-stack-mmap-fallback"
         },
