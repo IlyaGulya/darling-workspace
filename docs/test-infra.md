@@ -113,6 +113,7 @@ Script tests may declare arguments and environment without dropping to a shell:
     args: [full]
     env-vars:
       A0_STRICT: '1'
+    timeout-seconds: 600
     requires:
     - darling-prefix
 ```
@@ -124,6 +125,16 @@ then supplies `DPREFIX` from `--prefix`, `--prefix existing:/path`,
 `requires-env` only for low-level prerequisites that west cannot provision yet.
 `west test --list` never requires those resources; real execution fails before
 launch if a requirement is missing.
+
+For patch metadata, `diag: guarded` and `diag: forensic` are enforced by
+`west test`, not by each script. `guarded` wraps the structured invocation in
+`darling-debug-runner run --timeout-seconds ...`, writes a small debug bundle,
+and kills the process group on timeout. `forensic` adds process-tree and GDB
+capture. The runner is resolved from `--executor`, `PATH`, or the checked-out
+`darling-debug-runner` west project (`target/release` preferred, then
+`target/debug`). If a non-bare test is executed without a runner, `west test`
+fails before launching the test. `--list` is still offline and shows the wrapper
+shape without requiring the binary to exist.
 
 Keep shell scripts thin. Static source-contract scripts should source a local
 `contract-test-lib.sh` helper for common `fail`, `require_grep`, and
