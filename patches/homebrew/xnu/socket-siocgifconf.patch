@@ -1,16 +1,17 @@
-From 2e5539a3c895596b5f4dab7ac3cb924f52a4375b Mon Sep 17 00:00:00 2001
+From c06036cc3d7c4b55966490b594a266148b039245 Mon Sep 17 00:00:00 2001
 From: Ilya Gulya <ilya@gulya.me>
-Date: Wed, 10 Jun 2026 10:06:33 +0000
+Date: Wed, 8 Jul 2026 11:49:28 +0000
 Subject: [PATCH] socket ioctl: stub SIOCGIFCONF returning an empty interface
  list
 
-SIOCGIFCONF (0xC00C6924) fell through unhandled. Answer it by zeroing
-ifc_len and returning success (EFAULT if arg is NULL) so callers that
-enumerate interfaces get an empty list instead of failing. Stop-gap
-until per-container networking is implemented.
+SIOCGIFCONF should be an explicit compatibility stub instead of falling through as an unknown ioctl. Return an empty interface list for a valid ifconf pointer and EFAULT for NULL.
+
+Add a host C fixture for success, NULL, and pass-through behavior; west test runs it as a c-fixture and proves RED against the source-base tree.
 ---
- .../src/xnu_syscall/bsd/helper/ioctl/socket.c       | 13 +++++++++++++
- 1 file changed, 13 insertions(+)
+ .../src/xnu_syscall/bsd/helper/ioctl/socket.c | 13 +++++
+ tests/socket_siocgifconf_contract.c           | 47 +++++++++++++++++++
+ 2 files changed, 60 insertions(+)
+ create mode 100644 tests/socket_siocgifconf_contract.c
 
 diff --git a/darling/src/libsystem_kernel/emulation/src/xnu_syscall/bsd/helper/ioctl/socket.c b/darling/src/libsystem_kernel/emulation/src/xnu_syscall/bsd/helper/ioctl/socket.c
 index f890ab2a6f8ed164543d78646e318c54bd32f7fd..5dc9dbfae06373c452eeaf6ef3ea2a961db021dc 100644
@@ -36,3 +37,56 @@ index f890ab2a6f8ed164543d78646e318c54bd32f7fd..5dc9dbfae06373c452eeaf6ef3ea2a96
  		// TODO: This has to be implemented for container with separate networking
  		case SIOCGIFFLAGS:
  		case SIOCSIFFLAGS:
+diff --git a/tests/socket_siocgifconf_contract.c b/tests/socket_siocgifconf_contract.c
+new file mode 100644
+index 0000000000000000000000000000000000000000..668f9778e04d93959d21eda73a0fd27d50c3495c
+--- /dev/null
++++ b/tests/socket_siocgifconf_contract.c
+@@ -0,0 +1,47 @@
++#include <errno.h>
++#include <stdio.h>
++#include <string.h>
++#include <net/if.h>
++
++#define IOCTL_PASS 0
++#define IOCTL_HANDLED 1
++#define SIOCGIFFLAGS 0x8913
++#define SIOCSIFFLAGS 0x8914
++#define SIOCAIFADDR 0x1111
++#define SIOCAIFADDR_IN6 0x2222
++
++#include "socket.c"
++
++static int expect(int condition, const char* message)
++{
++	if (!condition)
++	{
++		fprintf(stderr, "%s\n", message);
++		return 1;
++	}
++	return 0;
++}
++
++int main(void)
++{
++	int retval = 12345;
++	struct ifconf ifc;
++	memset(&ifc, 0xa5, sizeof(ifc));
++	ifc.ifc_len = 777;
++
++	if (expect(handle_socket(-1, 0xC00C6924, &ifc, &retval) == IOCTL_HANDLED,
++			"SIOCGIFCONF should be handled")) return 1;
++	if (expect(retval == 0, "SIOCGIFCONF retval should be success")) return 1;
++	if (expect(ifc.ifc_len == 0, "SIOCGIFCONF should report an empty interface list")) return 1;
++
++	retval = 12345;
++	if (expect(handle_socket(-1, 0xC00C6924, NULL, &retval) == IOCTL_HANDLED,
++			"SIOCGIFCONF NULL arg should be handled")) return 1;
++	if (expect(retval == -EFAULT, "SIOCGIFCONF NULL arg should return -EFAULT")) return 1;
++
++	retval = 12345;
++	if (expect(handle_socket(-1, 0x12345678, &ifc, &retval) == IOCTL_PASS,
++			"unknown socket ioctl should pass through")) return 1;
++	if (expect(retval == 12345, "pass-through ioctl should not modify retval")) return 1;
++	return 0;
++}
