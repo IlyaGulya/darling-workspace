@@ -32,4 +32,17 @@ if printf '%s\n' "$bare" | grep -q 'darling-debug-runner run '; then
 	fail 'bare host metadata was unexpectedly wrapped'
 fi
 
+profile_bound="$(
+	west test --profile arch \
+		--patch libunwind/static-no-jump-tables-for-dyld.patch \
+		--materialize-profile \
+		--list
+)"
+
+printf '%s\n' "$profile_bound" | grep -q 'dyld_static_libunwind_link' ||
+	fail 'profile-bound metadata was not listed'
+if printf '%s\n' "$profile_bound" | grep -q 'materialize '; then
+	fail 'list mode unexpectedly materialized a profile'
+fi
+
 printf 'PASS west-test-metadata-contract\n'
