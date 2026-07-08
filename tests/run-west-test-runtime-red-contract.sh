@@ -116,27 +116,60 @@ with tempfile.TemporaryDirectory() as temp:
     (target / "file.txt").write_text("base\n")
     subprocess.run(["git", "add", "file.txt"], cwd=target, check=True)
     subprocess.run(["git", "commit", "-q", "-m", "base"], cwd=target, check=True)
-    (target / "file.txt").write_text("base\nadded\n")
-    patch_text = subprocess.run(
-        ["git", "diff", "--", "file.txt"],
+    base_rev = subprocess.run(
+        ["git", "rev-parse", "HEAD"],
+        cwd=target,
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
+    (target / "file.txt").write_text("base\nskipped\n")
+    subprocess.run(["git", "add", "file.txt"], cwd=target, check=True)
+    subprocess.run(["git", "commit", "-q", "-m", "skipped patch"], cwd=target, check=True)
+    skipped_patch = subprocess.run(
+        ["git", "format-patch", "-1", "--stdout"],
         cwd=target,
         check=True,
         capture_output=True,
         text=True,
     ).stdout
-    subprocess.run(["git", "add", "file.txt"], cwd=target, check=True)
-    subprocess.run(["git", "commit", "-q", "-m", "add line"], cwd=target, check=True)
+    (target / "other.txt").write_text("kept\n")
+    subprocess.run(["git", "add", "other.txt"], cwd=target, check=True)
+    subprocess.run(["git", "commit", "-q", "-m", "kept patch"], cwd=target, check=True)
+    kept_patch = subprocess.run(
+        ["git", "format-patch", "-1", "--stdout"],
+        cwd=target,
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout
 
     profile_dir = tempdir / "patches/runtime"
-    patch_file = profile_dir / "x/example.patch"
-    patch_file.parent.mkdir(parents=True)
-    patch_file.write_text(patch_text)
+    skipped_patch_file = profile_dir / "x/skipped.patch"
+    kept_patch_file = profile_dir / "x/kept.patch"
+    skipped_patch_file.parent.mkdir(parents=True)
+    skipped_patch_file.write_text(skipped_patch)
+    kept_patch_file.write_text(kept_patch)
+    subprocess.run(["git", "reset", "--hard", "-q", base_rev], cwd=target, check=True)
 
     test = make_test()
     test.manifest = types.SimpleNamespace(repo_abspath=str(tempdir))
-    test._active_profile = "runtime"
-    test._reverse_apply_patch_file({"path": "x/example.patch"}, target)
+    test._profile_stack = lambda profile: [profile]
+    test._load_profile = lambda _profile: {
+        "patches": [
+            {"path": "x/skipped.patch", "module": "module"},
+            {"path": "x/kept.patch", "module": "module"},
+        ]
+    }
+    test._profile_path = lambda profile: tempdir / "patches" / profile / "patches.yml"
+    test._apply_profile_module_patches(
+        "runtime",
+        "module",
+        target,
+        skip_patch_path="x/skipped.patch",
+    )
     assert (target / "file.txt").read_text() == "base\n"
+    assert (target / "other.txt").read_text() == "kept\n"
 
 print("PASS west-test-runtime-red-contract")
 PY
