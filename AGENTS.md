@@ -56,12 +56,16 @@ refs, PR drafts, and agent handoff.
   `requires-env: [DPREFIX]`; let `west test --prefix/--prefix-profile` provide
   `DPREFIX`.
 - `west test` owns the Darling prefix lifecycle for metadata tests that declare
-  `requires: [darling-prefix]`: after real execution it runs `darling shutdown`
-  for that prefix and kills a matching leftover `darlingserver` if needed. Use
-  `--keep-prefix-running` only for deliberate fast local iteration.
+  `requires: [darling-prefix]`: it takes `$DPREFIX/.west-test.lock`, runs the
+  test, then runs `darling shutdown` for that prefix and kills a matching
+  leftover `darlingserver` if needed. Use `--keep-prefix-running` only for
+  deliberate fast local iteration.
 - Patch metadata tests with `diag: guarded` or `diag: forensic` must run
   through `darling-debug-runner`; keep timeouts/capture in `west test`, not as
   unbounded bespoke shell around every guest test.
+- Prefer `ctest-label` for tests registered in the compatibility suite. It is a
+  runnable selector, not documentation; `west test` builds the suite and runs
+  `ctest -L <label>`.
 - `west patch export` must not create unrelated `patches.yml` formatting churn.
   Treat block-scalar/quoting rewrites as a tooling bug, not acceptable review
   noise.
