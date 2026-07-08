@@ -281,11 +281,12 @@ class DarlingPatch(WestCommand):
                 test.get("command")
                 or test.get("ctest-label")
                 or test.get("script")
+                or test.get("source-script")
                 or test.get("source-file")
                 or test.get("target")
             ):
                 errors.append(
-                    f"tests[{index}] needs script, source-file, target, ctest-label, or command override"
+                    f"tests[{index}] needs script, source-script, source-file, target, ctest-label, or command override"
                 )
             runner = test.get("runner")
             if runner and runner not in {
@@ -294,6 +295,7 @@ class DarlingPatch(WestCommand):
                 "c-fixture",
                 "guest-c-fixture",
                 "object-symbol-fixture",
+                "source-script-fixture",
                 "source-build-fixture",
                 "west-build",
                 "ctest",
@@ -379,6 +381,18 @@ class DarlingPatch(WestCommand):
                         errors.append(f"tests[{index}] {key} must be a list of strings")
                 if not test.get("run-commands"):
                     errors.append(f"tests[{index}] source-build-fixture requires run-commands")
+            if runner == "source-script-fixture":
+                if not test.get("source-script"):
+                    errors.append(f"tests[{index}] source-script-fixture requires source-script")
+                cases = test.get("cases")
+                if not isinstance(cases, list) or not cases:
+                    errors.append(f"tests[{index}] source-script-fixture requires cases")
+                elif not all(isinstance(case, dict) for case in cases):
+                    errors.append(f"tests[{index}] source-script-fixture cases must be mappings")
+                else:
+                    for case_index, case in enumerate(cases):
+                        if case.get("args") is not None and not isinstance(case.get("args"), list):
+                            errors.append(f"tests[{index}].cases[{case_index}] args must be a list")
             if test.get("args") is not None and not isinstance(test.get("args"), list):
                 errors.append(f"tests[{index}] args must be a list")
             if test.get("env-vars") is not None and not isinstance(test.get("env-vars"), dict):
