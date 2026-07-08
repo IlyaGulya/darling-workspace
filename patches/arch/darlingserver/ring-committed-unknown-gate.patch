@@ -1,0 +1,82 @@
+From ea28bd095742be30f96b3d73510321f7c8124a51 Mon Sep 17 00:00:00 2001
+From: Ilya Gulya <ilya@gulya.me>
+Date: Tue, 7 Jul 2026 17:09:14 +0000
+Subject: [PATCH] tests: pin ring committed-unknown no-retry contract
+
+---
+ tests/ring_committed_unknown_contract_test.sh | 42 +++++++++++++++++++
+ tests/run-ring-shm-validate.sh                | 12 ++++++
+ 2 files changed, 54 insertions(+)
+ create mode 100755 tests/ring_committed_unknown_contract_test.sh
+
+diff --git a/tests/ring_committed_unknown_contract_test.sh b/tests/ring_committed_unknown_contract_test.sh
+new file mode 100755
+index 0000000000000000000000000000000000000000..037a04f56d74fb5abe9fbd7f0a0fb80d0c646630
+--- /dev/null
++++ b/tests/ring_committed_unknown_contract_test.sh
+@@ -0,0 +1,42 @@
++#!/usr/bin/env bash
++# Static gate for the ring RPC retry contract:
++#   * before publish: negative helper result may fall back to UDS
++#   * after publish: timeout/bad-reply is committed-unknown and must NOT UDS-retry
++#
++# The guest helper is intentionally libc-free and mostly static functions, so this test pins the
++# source-level contract that prevents future edits from reintroducing post-publish UDS retry.
++set -eu
++
++HERE="$(cd "$(dirname "$0")" && pwd)"
++SRC="${XNU_RING_SRC:-$HERE/../../xnu/darling/src/libsystem_kernel/emulation/src/linux_premigration/resources/dserver-ring.c}"
++HDR="${XNU_RING_HDR:-$HERE/../../xnu/darling/src/libsystem_kernel/emulation/include/linux_premigration/resources/dserver-ring.h}"
++
++fail() {
++	echo "FAIL: $*" >&2
++	exit 1
++}
++
++[ -f "$SRC" ] || fail "dserver-ring.c not found at $SRC"
++[ -f "$HDR" ] || fail "dserver-ring.h not found at $HDR"
++
++grep -q "GR_WAIT_COMMITTED_UNKNOWN" "$SRC" \
++	|| fail "guest wait path has no typed committed-unknown state"
++
++grep -q "published: do NOT retry over UDS" "$SRC" \
++	|| fail "post-publish helpers do not document/enforce no-UDS-retry"
++
++grep -q "out_code) \\*out_code = KERN_FAILURE" "$SRC" \
++	|| fail "post-publish body helpers do not surface KERN_FAILURE without retry"
++
++grep -q "timeout/bad-reply.*never UDS-falls-back" "$HDR" \
++	|| fail "public ring helper comments do not state the committed-unknown no-retry contract"
++
++if grep -Eq "gave up[^\\n]*UDS fallback|gave up[^\\n]*UDS-fall-back|timeout[^\\n]*UDS fallback|timeout[^\\n]*UDS-fall-back" "$SRC"; then
++	fail "source still describes post-publish timeout as UDS fallback"
++fi
++
++if grep -Eq "KERN_SUCCESS[^\\n]*do NOT retry|out_code\\) \\*out_code = 0;[^\\n]*do NOT retry" "$SRC"; then
++	fail "committed-unknown path still fabricates success instead of KERN_FAILURE"
++fi
++
++echo "ring_committed_unknown_contract_test: post-publish ring misses do not UDS-retry"
+diff --git a/tests/run-ring-shm-validate.sh b/tests/run-ring-shm-validate.sh
+index 5c426011ee9e8c4d1db8f036c58e6d06aafd447f..1e533db8c9d46b154fa03b7695a00db7debd3240 100755
+--- a/tests/run-ring-shm-validate.sh
++++ b/tests/run-ring-shm-validate.sh
+@@ -206,6 +206,18 @@ else
+ 		echo
+ 	fi
+ 
++	# --- RPC correctness z27x.2: once a guest has published a request onto the ring, timeout/bad-reply
++	#     is committed-unknown and MUST NOT UDS-fall-back (retrying a non-idempotent op can double-apply
++	#     it). This static gate pins the guest helper comments + fail-closed KERN_FAILURE paths. ---
++	CUSRC="$HERE/ring_committed_unknown_contract_test.sh"
++	if [ -f "$CUSRC" ]; then
++		echo "== committed-unknown no-UDS-retry contract =="
++		if ! "$CUSRC"; then
++			echo "committed-unknown contract FAILED"; exit 1
++		fi
++		echo
++	fi
++
+ 	# --- Phase A (dar-dar6x4-perf-5dq.30.1): THREE-LANE op classification + the static guardrail that
+ 	#     a destroy-capable / caller-S2C op CANNOT enter the simple ring. Two kinds of arm:
+ 	#       (i)  C host gate (ring_lane_class_gate_test.c): GREEN runs; RED -DLANECLASS_READD_DEALLOCATE

@@ -1,0 +1,86 @@
+From aadfa984275b74ad6e6f35d144bff20fe6c14565 Mon Sep 17 00:00:00 2001
+From: Ilya Gulya <ilya@gulya.me>
+Date: Wed, 8 Jul 2026 02:31:58 +0000
+Subject: [PATCH] a1: classify RPC send disconnects for interruptible waits
+
+---
+ .../resources/dserver-rpc-defs.h               |  8 ++++++++
+ .../src/linux_premigration/signal/sigexc.c     | 18 ++++++++++++++++++
+ 2 files changed, 26 insertions(+)
+
+diff --git a/darling/src/libsystem_kernel/emulation/include/linux_premigration/resources/dserver-rpc-defs.h b/darling/src/libsystem_kernel/emulation/include/linux_premigration/resources/dserver-rpc-defs.h
+index 1dc520d427c8e584cd6572fea417e8a6456cb3f4..8de6b5cf4862a7cf825b8ee137cc5f7ffd06c4b7 100644
+--- a/darling/src/libsystem_kernel/emulation/include/linux_premigration/resources/dserver-rpc-defs.h
++++ b/darling/src/libsystem_kernel/emulation/include/linux_premigration/resources/dserver-rpc-defs.h
+@@ -338,6 +338,14 @@ got_message:
+ 
+ #define dserver_rpc_hooks_get_broken_pipe_status() (-LINUX_EPIPE)
+ 
++static int dserver_rpc_hooks_is_disconnect_status(long int status) {
++	return status == -LINUX_EBADF
++		|| status == -LINUX_EPIPE
++		|| status == -LINUX_ECONNRESET
++		|| status == -LINUX_ENOTCONN
++		|| status == -LINUX_ECONNREFUSED;
++}
++
+ #define dserver_rpc_hooks_close_fd(fd) ((int)LINUX_SYSCALL1(__NR_close, fd))
+ 
+ #define dserver_rpc_hooks_get_socket mach_driver_get_fd
+diff --git a/darling/src/libsystem_kernel/emulation/src/linux_premigration/signal/sigexc.c b/darling/src/libsystem_kernel/emulation/src/linux_premigration/signal/sigexc.c
+index 1d76bda9fa782a073618abc1c5d92dd410ae3acf..8c954d8573a226b696ba6f2c6e2fbf970a8912c5 100644
+--- a/darling/src/libsystem_kernel/emulation/src/linux_premigration/signal/sigexc.c
++++ b/darling/src/libsystem_kernel/emulation/src/linux_premigration/signal/sigexc.c
+@@ -14,6 +14,7 @@
+ #include <darling/emulation/xnu_syscall/bsd/impl/mman/mman.h>
+ #include <darling/emulation/xnu_syscall/bsd/impl/signal/kill.h>
+ #include <darling/emulation/common/simple.h>
++#include <darling/emulation/conversion/duct_errno.h>
+ 
+ #include <darlingserver/rpc.h>
+ #include <darling/emulation/linux_premigration/resources/dserver-ring.h>
+@@ -28,6 +29,8 @@ static void sigexc_fake_suspend(struct linux_ucontext* ctxt);
+ extern void sig_restorer(void);
+ extern int getpid(void);
+ 
++static bool sigexc_rpc_endpoint_unavailable(int status);
++
+ extern _libkernel_functions_t _libkernel_functions;
+ 
+ void darling_sigexc_uninstall(void);
+@@ -165,6 +168,9 @@ void sigrt_handler(int signum, struct linux_siginfo* info, struct linux_ucontext
+ 	int status = dserver_rpc_interrupt_enter();
+ 
+ 	if (status != 0) {
++		if (sigexc_rpc_endpoint_unavailable(status)) {
++			return;
++		}
+ 		__simple_printf("*** dserver_rpc_interrupt_enter failed with code %d ***\n", status);
+ 		__simple_abort();
+ 	}
+@@ -210,6 +216,15 @@ void sigrt_handler(int signum, struct linux_siginfo* info, struct linux_ucontext
+ 	}
+ }
+ 
++static bool sigexc_rpc_endpoint_unavailable(int status)
++{
++	return status == -LINUX_EBADF
++		|| status == -LINUX_EPIPE
++		|| status == -LINUX_ECONNRESET
++		|| status == -LINUX_ENOTCONN
++		|| status == -LINUX_ECONNREFUSED;
++}
++
+ 
+ void darling_sigexc_self(void)
+ {
+@@ -306,6 +321,9 @@ void sigexc_handler(int linux_signum, struct linux_siginfo* info, struct linux_u
+ 	int status = dserver_rpc_interrupt_enter();
+ 
+ 	if (status != 0) {
++		if (sigexc_rpc_endpoint_unavailable(status)) {
++			return;
++		}
+ 		__simple_printf("*** dserver_rpc_interrupt_enter failed with code %d ***\n", status);
+ 		__simple_abort();
+ 	}

@@ -1,0 +1,1618 @@
+From 72020097cfa0d3ea7e925e1aba3b2df9b7a3a0dc Mon Sep 17 00:00:00 2001
+From: Ilya Gulya <ilya@gulya.me>
+Date: Tue, 7 Jul 2026 16:58:10 +0000
+Subject: [PATCH] xnu: share getattrlist attribute packing
+
+---
+ .../bsd/helper/xattr/getattrlist_generic.c    | 439 ++++++++----------
+ .../bsd/helper/xattr/getattrlist_pack.h       | 252 ++++++++++
+ .../bsd/impl/xattr/getattrlistbulk.c          | 347 +++-----------
+ .../tests/getattrlist_shared_packer_test.c    | 323 +++++++++++++
+ .../tests/run-getattrlist-shared-packer.sh    |  51 ++
+ 5 files changed, 881 insertions(+), 531 deletions(-)
+ create mode 100644 darling/src/libsystem_kernel/emulation/include/xnu_syscall/bsd/helper/xattr/getattrlist_pack.h
+ create mode 100644 darling/src/libsystem_kernel/tests/getattrlist_shared_packer_test.c
+ create mode 100755 darling/src/libsystem_kernel/tests/run-getattrlist-shared-packer.sh
+
+diff --git a/darling/src/libsystem_kernel/emulation/include/xnu_syscall/bsd/helper/xattr/getattrlist_generic.c b/darling/src/libsystem_kernel/emulation/include/xnu_syscall/bsd/helper/xattr/getattrlist_generic.c
+index 75834a70f5cda191c48817d470bb1760d9e5c690..0194691384ff323f32dac89a942475ab6d7a7b81 100644
+--- a/darling/src/libsystem_kernel/emulation/include/xnu_syscall/bsd/helper/xattr/getattrlist_generic.c
++++ b/darling/src/libsystem_kernel/emulation/include/xnu_syscall/bsd/helper/xattr/getattrlist_generic.c
+@@ -1,78 +1,152 @@
+ #include <stddef.h>
++#include <stdint.h>
++#include <string.h>
+ #include <sys/errno.h>
+ 
+ #include <darling/emulation/common/base.h>
++#include <darling/emulation/conversion/common_at.h>
+ #include <darling/emulation/conversion/dirent/getdirentries.h>
+ #include <darling/emulation/conversion/errno.h>
+ #include <darling/emulation/conversion/fcntl/open.h>
+-#include <darling/emulation/conversion/common_at.h>
+-#include <darling/emulation/linux_premigration/vchroot_expand.h>
+ #include <darling/emulation/conversion/stat/common.h>
++#include <darling/emulation/linux_premigration/linux-syscalls/linux.h>
++#include <darling/emulation/linux_premigration/vchroot_expand.h>
++#include <darling/emulation/xnu_syscall/bsd/helper/xattr/getattrlist_pack.h>
+ #include <darling/emulation/xnu_syscall/bsd/impl/dirent/getdirentries.h>
+-#include <darling/emulation/xnu_syscall/bsd/impl/unistd/dup.h>
+ #include <darling/emulation/xnu_syscall/bsd/impl/fcntl/open.h>
+ #include <darling/emulation/xnu_syscall/bsd/impl/unistd/close.h>
+-#include <darling/emulation/linux_premigration/linux-syscalls/linux.h>
+-
+-#define ATTR_BIT_MAP_COUNT 5
+-
+-#define COMMON_SUPPORTED (ATTR_CMN_NAME | ATTR_CMN_OBJTYPE | ATTR_CMN_FNDRINFO | ATTR_CMN_OBJTAG)
+-#define VOLUME_SUPPORTED 0
+-#define DIR_SUPPORTED (ATTR_DIR_ENTRYCOUNT)
+-#define FILE_SUPPORTED (ATTR_FILE_RSRCLENGTH)
+-#define FORK_SUPPORTED 0
+-
+-#define ATTR_CMN_NAME 0x00000001
+-#define ATTR_CMN_OBJTYPE 0x00000008
+-#define ATTR_CMN_FNDRINFO 0x4000
+-#define ATTR_FILE_RSRCLENGTH 0x1000
+-#define ATTR_CMN_OBJTAG 0x00000010
+-#define ATTR_DIR_ENTRYCOUNT 0x00000002
+-
+-// fsobj_type_t values (sys/vnode.h) returned for ATTR_CMN_OBJTYPE.
+-#define DTAPE_VNON  0
+-#define DTAPE_VREG  1
+-#define DTAPE_VDIR  2
+-#define DTAPE_VBLK  3
+-#define DTAPE_VCHR  4
+-#define DTAPE_VLNK  5
+-#define DTAPE_VSOCK 6
+-#define DTAPE_VFIFO 7
+-
+-#define LINUX_S_IFMT   0170000
+-#define LINUX_S_IFSOCK 0140000
+-#define LINUX_S_IFLNK  0120000
+-#define LINUX_S_IFREG  0100000
+-#define LINUX_S_IFBLK  0060000
+-#define LINUX_S_IFDIR  0040000
+-#define LINUX_S_IFCHR  0020000
+-#define LINUX_S_IFIFO  0010000
++#include <darling/emulation/xnu_syscall/bsd/impl/unistd/dup.h>
+ 
+ #ifndef LINUX_AT_SYMLINK_NOFOLLOW
+ #define LINUX_AT_SYMLINK_NOFOLLOW 0x100
+ #endif
+ 
+-// attrreference_t as packed by getattrlist for variable-length attributes
+-// (e.g. ATTR_CMN_NAME). attr_dataoffset is relative to the reference itself.
+-struct dtape_attrreference {
+-	int attr_dataoffset;
+-	unsigned int attr_length;
+-};
+-
+ #define XATTR_FINDER_INFO "com.apple.FinderInfo"
+ #define XATTR_RESOURCE_FORK "com.apple.ResourceFork"
+ 
+ #define FSOPT_NOFOLLOW 1
+-#define FSOPT_REPORT_FULLSIZE 4
+ 
+-#define VT_HFS 16
++#ifndef LINUX_O_RDONLY
++#define LINUX_O_RDONLY    0
++#endif
++#define LINUX_O_DIRECTORY 0200000
+ 
+ #define min(a,b) (((a) < (b)) ? (a) : (b))
+ 
+-extern void *memcpy(void *dest, const void *src, __SIZE_TYPE__ n);
+-extern void *memset(void *s, int c, __SIZE_TYPE__ n);
+-extern char *strcpy(char *dest, const char *src);
+-extern __SIZE_TYPE__ strlen(const char *s);
++static int darling_getattr_is_dot_or_dotdot(const char* name)
++{
++	if (name[0] != '.')
++		return 0;
++	if (name[1] == '\0')
++		return 1;
++	if (name[1] == '.' && name[2] == '\0')
++		return 1;
++	return 0;
++}
++
++static uint32_t darling_count_dir_entries(int fd)
++{
++	uint32_t count = 0;
++	char buf[2048];
++
++	while (1) {
++		long rv = LINUX_SYSCALL(__NR_getdents64, fd, buf, sizeof(buf));
++		if (rv <= 0)
++			break;
++
++		for (char* iter = buf; iter < buf + rv; iter += ((struct linux_dirent64*)iter)->d_reclen) {
++			if (!darling_getattr_is_dot_or_dotdot(((struct linux_dirent64*)iter)->d_name))
++				++count;
++		}
++	}
++
++	return count;
++}
++
++static uint32_t darling_getattr_dir_entrycount(int fd
++#if HAS_PATH
++	, const struct vchroot_expand_args* vc
++#endif
++)
++{
++	int tmp_fd;
++
++#if HAS_PATH
++	tmp_fd = LINUX_SYSCALL(__NR_openat, vc->dfd, vc->path, LINUX_O_RDONLY | LINUX_O_DIRECTORY, 0);
++#else
++	tmp_fd = sys_dup(fd);
++#endif
++	if (tmp_fd < 0)
++		return 0;
++
++	uint32_t count = darling_count_dir_entries(tmp_fd);
++	close_internal(tmp_fd);
++	return count;
++}
++
++static void darling_getattr_basename(char* out, size_t out_size, int fd
++#if HAS_PATH
++	, const char* path
++#endif
++)
++{
++#if HAS_PATH
++	const char* p = path;
++#else
++	char fdlink[64];
++	static const char pfx[] = "/proc/self/fd/";
++	size_t k = 0;
++	for (const char* s = pfx; *s; ++s)
++		fdlink[k++] = *s;
++	if (fd == 0) {
++		fdlink[k++] = '0';
++	} else {
++		int v = fd;
++		char tmp[16];
++		int t = 0;
++		if (v < 0) {
++			fdlink[k++] = '-';
++			v = -v;
++		}
++		while (v > 0 && t < (int)sizeof(tmp)) {
++			tmp[t++] = (char)('0' + (v % 10));
++			v /= 10;
++		}
++		while (t > 0)
++			fdlink[k++] = tmp[--t];
++	}
++	fdlink[k] = '\0';
++
++	long rl = LINUX_SYSCALL(__NR_readlinkat, -100, fdlink, out, out_size - 1);
++	if (rl < 0)
++		rl = 0;
++	out[rl] = '\0';
++	const char* p = out;
++#endif
++
++	size_t plen = strlen(p);
++	while (plen > 1 && p[plen - 1] == '/')
++		--plen;
++
++	size_t start = 0;
++	for (size_t i = plen; i > 0; --i) {
++		if (p[i - 1] == '/') {
++			start = i;
++			break;
++		}
++	}
++
++	size_t len = plen - start;
++	if (len > out_size - 1)
++		len = out_size - 1;
++
++	char tmpname[256];
++	if (len > sizeof(tmpname) - 1)
++		len = sizeof(tmpname) - 1;
++	memcpy(tmpname, p + start, len);
++	tmpname[len] = '\0';
++	memcpy(out, tmpname, len + 1);
++}
+ 
+ long
+ FUNC_NAME(int fd,
+@@ -83,11 +157,10 @@ const char* path,
+ 
+ struct xnu_attrlist* alist, void *attributeBuffer, __SIZE_TYPE__ bufferSize, unsigned long options)
+ {
+-	int rv;
+-	char *ourBuffer, *next;
+-	__SIZE_TYPE__ spaceNeeded = 4; // 4 bytes for the length header
+-
+-	if (!alist)
++	int rv = darling_attrlist_validate(alist, 0);
++	if (rv < 0)
++		return rv;
++	if (!attributeBuffer)
+ 		return -EFAULT;
+ 
+ #if HAS_PATH
+@@ -97,240 +170,94 @@ struct xnu_attrlist* alist, void *attributeBuffer, __SIZE_TYPE__ bufferSize, uns
+ 	struct vchroot_expand_args vc;
+ 	vc.flags = (options & FSOPT_NOFOLLOW) ? 0 : VCHROOT_FOLLOW;
+ 	vc.dfd = atfd(fd);
+-
+ 	strcpy(vc.path, path);
++
+ 	rv = vchroot_expand(&vc);
+-	
+ 	if (rv < 0)
+ 		return rv;
+ #endif
+ 
+-	if (alist->bitmapcount < ATTR_BIT_MAP_COUNT)
+-		return -EINVAL;
+-
+-	if ((alist->commonattr & COMMON_SUPPORTED) != alist->commonattr)
+-		return -EINVAL;
+-	if ((alist->volattr & VOLUME_SUPPORTED) != alist->volattr)
+-		return -EINVAL;
+-	if ((alist->dirattr & DIR_SUPPORTED) != alist->dirattr)
+-		return -EINVAL;
+-	if ((alist->fileattr & FILE_SUPPORTED) != alist->fileattr)
+-		return -EINVAL;
+-	if ((alist->forkattr & FORK_SUPPORTED) != alist->forkattr)
+-		return -EINVAL;
+-
+-	// ATTR_CMN_NAME: the entry's on-disk name. For the path variants this is the
+-	// basename of the supplied path; for fgetattrlist we resolve the fd through
+-	// /proc/self/fd. Ruby's Dir.glob (replace_real_basename) requests this for
+-	// every literal path component, so without it glob silently returns nothing.
+-	char nameBuf[256];
+-	const char *theName = nameBuf;
+-	__SIZE_TYPE__ nameFieldLen = 0; // strlen + 1 (NUL)
+-	__SIZE_TYPE__ nameAligned = 0;
+-	if (alist->commonattr & ATTR_CMN_NAME)
+-	{
++	struct darling_attrpack_entry entry;
++	memset(&entry, 0, sizeof(entry));
++
++	char name_buf[256];
++	if (alist->commonattr & DARLING_ATTR_CMN_NAME) {
++		darling_getattr_basename(name_buf, sizeof(name_buf), fd
+ #if HAS_PATH
+-		const char *p = path;
+-#else
+-		// resolve the fd to a path via /proc/self/fd/<fd>, then take its basename
+-		char fdlink[64];
+-		static const char pfx[] = "/proc/self/fd/";
+-		__SIZE_TYPE__ k = 0;
+-		for (const char *s = pfx; *s; ++s)
+-			fdlink[k++] = *s;
+-		if (fd == 0)
+-			fdlink[k++] = '0';
+-		else
+-		{
+-			int v = fd;
+-			char tmp[16];
+-			int t = 0;
+-			if (v < 0) { fdlink[k++] = '-'; v = -v; }
+-			while (v > 0 && t < (int) sizeof(tmp)) { tmp[t++] = (char) ('0' + (v % 10)); v /= 10; }
+-			while (t > 0)
+-				fdlink[k++] = tmp[--t];
+-		}
+-		fdlink[k] = '\0';
+-		long rl = LINUX_SYSCALL(__NR_readlinkat, -100 /* AT_FDCWD */, fdlink, nameBuf, sizeof(nameBuf) - 1);
+-		if (rl < 0)
+-			rl = 0;
+-		nameBuf[rl] = '\0';
+-		const char *p = nameBuf;
++			, path
+ #endif
+-		// strip trailing slashes, then isolate the basename
+-		__SIZE_TYPE__ pl = strlen(p);
+-		while (pl > 1 && p[pl - 1] == '/')
+-			--pl;
+-		__SIZE_TYPE__ start = 0;
+-		for (__SIZE_TYPE__ i = pl; i > 0; --i)
+-		{
+-			if (p[i - 1] == '/') { start = i; break; }
+-		}
+-		__SIZE_TYPE__ bl = pl - start;
+-		char tmpname[256];
+-		if (bl > sizeof(tmpname) - 1)
+-			bl = sizeof(tmpname) - 1;
+-		memcpy(tmpname, p + start, bl);
+-		tmpname[bl] = '\0';
+-		memcpy(nameBuf, tmpname, bl + 1); // p may alias nameBuf (fd case); copy via tmp first
+-		theName = nameBuf;
+-		nameFieldLen = bl + 1;
+-		nameAligned = (nameFieldLen + 3) & ~(__SIZE_TYPE__) 3;
+-		spaceNeeded += sizeof(struct dtape_attrreference) + nameAligned;
++		);
++		entry.name = name_buf;
++		entry.name_len = strlen(name_buf);
+ 	}
+ 
+-	// ATTR_CMN_OBJTYPE: the vnode type (VREG/VDIR/VLNK/...). Ruby's glob requests
+-	// this together with ATTR_CMN_NAME and uses it to decide whether a plain path
+-	// component is a directory to descend into; getattrlist failing here makes
+-	// glob treat the component as non-existent.
+-	unsigned int objType = DTAPE_VNON;
+-	if (alist->commonattr & ATTR_CMN_OBJTYPE)
+-	{
+-		struct linux_stat lst;
+-		long sr;
++	struct linux_stat lst;
++	long stat_rv = 0;
++	int need_stat = darling_attr_wants_objtype(alist);
++	if (need_stat) {
+ 		int lflags = (options & FSOPT_NOFOLLOW) ? LINUX_AT_SYMLINK_NOFOLLOW : 0;
+ #if HAS_PATH
+ #ifdef __NR_newfstatat
+-		sr = LINUX_SYSCALL(__NR_newfstatat, vc.dfd, vc.path, &lst, lflags);
++		stat_rv = LINUX_SYSCALL(__NR_newfstatat, vc.dfd, vc.path, &lst, lflags);
+ #else
+-		sr = LINUX_SYSCALL(__NR_fstatat64, vc.dfd, vc.path, &lst, lflags);
++		stat_rv = LINUX_SYSCALL(__NR_fstatat64, vc.dfd, vc.path, &lst, lflags);
+ #endif
+ #else
+-		sr = LINUX_SYSCALL(__NR_fstat, fd, &lst);
++		stat_rv = LINUX_SYSCALL(__NR_fstat, fd, &lst);
+ #endif
+-		if (sr >= 0)
+-		{
+-			unsigned int fmt = lst.st_mode & LINUX_S_IFMT;
+-			if (fmt == LINUX_S_IFREG) objType = DTAPE_VREG;
+-			else if (fmt == LINUX_S_IFDIR) objType = DTAPE_VDIR;
+-			else if (fmt == LINUX_S_IFLNK) objType = DTAPE_VLNK;
+-			else if (fmt == LINUX_S_IFBLK) objType = DTAPE_VBLK;
+-			else if (fmt == LINUX_S_IFCHR) objType = DTAPE_VCHR;
+-			else if (fmt == LINUX_S_IFSOCK) objType = DTAPE_VSOCK;
+-			else if (fmt == LINUX_S_IFIFO) objType = DTAPE_VFIFO;
+-		}
+-		spaceNeeded += sizeof(uint32_t); // fsobj_type_t
+ 	}
+ 
+-	if (alist->commonattr & ATTR_CMN_FNDRINFO)
+-		spaceNeeded += 32;
+-	if (alist->fileattr & ATTR_FILE_RSRCLENGTH)
+-		spaceNeeded += 8; // off_t
+-	if (alist->commonattr & ATTR_CMN_OBJTAG)
+-		spaceNeeded += sizeof(uint32_t); // fsobj_tag_t
+-	if (alist->dirattr & ATTR_DIR_ENTRYCOUNT)
+-		spaceNeeded += sizeof(uint32_t);
+-
+-	ourBuffer = (char*) __builtin_alloca(spaceNeeded);
+-	next = ourBuffer + 4;
+-
+-	// ATTR_CMN_NAME is the lowest common-attr bit, so its fixed-size reference is
+-	// packed first; the name string itself goes into the variable-data area after
+-	// all fixed attributes (filled in below once `next` reaches that area).
+-	char *nameRef = 0;
+-	if (alist->commonattr & ATTR_CMN_NAME)
+-	{
+-		nameRef = next;
+-		next += sizeof(struct dtape_attrreference);
++	if (alist->commonattr & DARLING_ATTR_CMN_OBJTYPE) {
++		entry.has_objtype = 1;
++		entry.objtype = (stat_rv >= 0) ? darling_objtype_from_mode(lst.st_mode) : DARLING_DTAPE_VNON;
+ 	}
+-
+-	// ATTR_CMN_OBJTYPE (bit 0x8) is packed right after the name reference, matching
+-	// the field order Ruby's replace_real_basename expects (ref then objtype).
+-	if (alist->commonattr & ATTR_CMN_OBJTYPE)
+-	{
+-		*((uint32_t*) next) = objType;
+-		next += sizeof(uint32_t);
++	if (alist->commonattr & DARLING_ATTR_CMN_OBJTAG) {
++		entry.has_objtag = 1;
++		entry.objtag = DARLING_VT_UNKNOWN;
+ 	}
+-
+-	if (alist->commonattr & ATTR_CMN_FNDRINFO)
+-	{
++	if (alist->commonattr & DARLING_ATTR_CMN_FNDRINFO) {
++		static const char zero_finderinfo[32] = {0};
++		char finderinfo[32];
+ #if HAS_PATH
+-		rv = LINUX_SYSCALL(__NR_getxattr, vc.path, XATTR_FINDER_INFO, next, 32);
++		long xr = LINUX_SYSCALL(__NR_getxattr, vc.path, XATTR_FINDER_INFO, finderinfo, sizeof(finderinfo));
+ #else
+-		rv = LINUX_SYSCALL(__NR_fgetxattr, fd, XATTR_FINDER_INFO, next, 32);
++		long xr = LINUX_SYSCALL(__NR_fgetxattr, fd, XATTR_FINDER_INFO, finderinfo, sizeof(finderinfo));
+ #endif
+-		if (rv < 0)
+-			memset(next, 0, 32);
+-		next += 32;
++		entry.has_finderinfo = 1;
++		entry.finderinfo = xr >= 0 ? finderinfo : zero_finderinfo;
++	}
++	if (alist->commonattr & DARLING_ATTR_CMN_ERROR) {
++		entry.has_error = 1;
++		entry.error = 0;
+ 	}
+-	if (alist->fileattr & ATTR_FILE_RSRCLENGTH)
+-	{
++	if (alist->dirattr & DARLING_ATTR_DIR_ENTRYCOUNT) {
++		entry.has_dir_entrycount = 1;
++		if (stat_rv >= 0 && darling_objtype_from_mode(lst.st_mode) == DARLING_DTAPE_VDIR) {
++			entry.dir_entrycount = darling_getattr_dir_entrycount(fd
+ #if HAS_PATH
+-		rv = LINUX_SYSCALL(__NR_getxattr, vc.path, XATTR_FINDER_INFO, NULL, 0);
+-#else
+-		rv = LINUX_SYSCALL(__NR_fgetxattr, fd, XATTR_FINDER_INFO, NULL, 0);
++				, &vc
+ #endif
+-		if (rv < 0)
+-			*((uint32_t*) next) = 0;
+-		else
+-			*((uint32_t*) next) = rv;
+-		next += 4;
+-	}
+-
+-	if (alist->commonattr & ATTR_CMN_OBJTAG) {
+-		// pretend we're always on HFS
+-		*((uint32_t*)next) = VT_HFS;
+-		next += 4;
++			);
++		}
+ 	}
+-
+-	if (alist->dirattr & ATTR_DIR_ENTRYCOUNT) {
+-		char buf[1024]; // maybe this should be smaller?
+-		int tmp_fd;
+-
+-		*((uint32_t*)next) = 0;
+-
++	if (alist->fileattr & DARLING_ATTR_FILE_RSRCLENGTH) {
++		long xr;
+ #if HAS_PATH
+-		tmp_fd = LINUX_SYSCALL(__NR_openat, vc.dfd, vc.path, LINUX_O_RDONLY | LINUX_O_DIRECTORY, 0);
+-		if (tmp_fd < 0) {
+-			rv = -EIO; // translate all errors into EIO (to avoid confusing our caller)
+-			goto attr_dir_entrycount_out_no_fd;
+-		}
++		xr = LINUX_SYSCALL(__NR_getxattr, vc.path, XATTR_RESOURCE_FORK, 0, 0);
+ #else
+-		// dupe it to avoid advancing the internal `getdents` position if our caller is using that
+-		tmp_fd = sys_dup(fd);
+-		if (tmp_fd < 0) {
+-			rv = -EIO; // see above
+-			goto attr_dir_entrycount_out_no_fd;
+-		}
++		xr = LINUX_SYSCALL(__NR_fgetxattr, fd, XATTR_RESOURCE_FORK, 0, 0);
+ #endif
+-
+-		while (1) {
+-			// there's basically no other way to do this (at least none that either i or the internet know of)
+-			rv = LINUX_SYSCALL(__NR_getdents64, tmp_fd, buf, sizeof(buf));
+-			if (rv < 0) {
+-				rv = -EIO; // same as before: avoid confusing our caller with unexepected errnos
+-				goto attr_dir_entrycount_out;
+-			} else if (rv == 0) {
+-				break;
+-			}
+-
+-			for (char* iter = buf; iter < buf + rv; iter += ((struct linux_dirent64*)iter)->d_reclen) {
+-				++(*((uint32_t*)next));
+-			}
+-		}
+-
+-attr_dir_entrycount_out:
+-		close_internal(tmp_fd);
+-attr_dir_entrycount_out_no_fd:
+-		next += 4;
+-	}
+-
+-	if (nameRef)
+-	{
+-		// `next` now points at the variable-data area (after every fixed attr).
+-		struct dtape_attrreference *ref = (struct dtape_attrreference*) nameRef;
+-		ref->attr_dataoffset = (int) (next - nameRef);
+-		ref->attr_length = (unsigned int) nameFieldLen;
+-		memcpy(next, theName, nameFieldLen);
+-		next += nameAligned;
++		entry.has_file_rsrclength = 1;
++		entry.file_rsrclength = xr > 0 ? (uint64_t)xr : 0;
+ 	}
+ 
+-	if (!(options & FSOPT_REPORT_FULLSIZE) && bufferSize < spaceNeeded)
+-		bufferSize = spaceNeeded;
++	size_t space_needed = darling_attrpack_entry_size(alist, &entry);
++	char* out = (char*)__builtin_alloca(space_needed);
++	darling_attrpack_entry(out, alist, &entry);
+ 
+-	*((uint32_t*) ourBuffer) = bufferSize;
++	if (bufferSize < space_needed && !(options & DARLING_FSOPT_REPORT_FULLSIZE))
++		return -ERANGE;
+ 
+-	memcpy(attributeBuffer, ourBuffer, min(bufferSize, spaceNeeded));
+-	
++	memcpy(attributeBuffer, out, min(bufferSize, space_needed));
+ 	return 0;
+ }
+diff --git a/darling/src/libsystem_kernel/emulation/include/xnu_syscall/bsd/helper/xattr/getattrlist_pack.h b/darling/src/libsystem_kernel/emulation/include/xnu_syscall/bsd/helper/xattr/getattrlist_pack.h
+new file mode 100644
+index 0000000000000000000000000000000000000000..f423d4e6348dcdff5c2e32537da6c20617ff7872
+--- /dev/null
++++ b/darling/src/libsystem_kernel/emulation/include/xnu_syscall/bsd/helper/xattr/getattrlist_pack.h
+@@ -0,0 +1,252 @@
++#ifndef DARLING_XNU_SYSCALL_BSD_HELPER_XATTR_GETATTRLIST_PACK_H
++#define DARLING_XNU_SYSCALL_BSD_HELPER_XATTR_GETATTRLIST_PACK_H
++
++#include <stdint.h>
++#include <stddef.h>
++#include <string.h>
++#include <sys/errno.h>
++
++#include <darling/emulation/conversion/xattr/getattrlist.h>
++
++#define DARLING_ATTR_BIT_MAP_COUNT 5
++
++#define DARLING_ATTR_CMN_NAME            0x00000001
++#define DARLING_ATTR_CMN_OBJTYPE         0x00000008
++#define DARLING_ATTR_CMN_OBJTAG          0x00000010
++#define DARLING_ATTR_CMN_FNDRINFO        0x00004000
++#define DARLING_ATTR_CMN_ERROR           0x20000000
++#define DARLING_ATTR_CMN_RETURNED_ATTRS  0x80000000
++
++#define DARLING_ATTR_DIR_ENTRYCOUNT      0x00000002
++#define DARLING_ATTR_FILE_RSRCLENGTH     0x00001000
++
++#define DARLING_ATTR_CMN_SUPPORTED \
++	(DARLING_ATTR_CMN_RETURNED_ATTRS | DARLING_ATTR_CMN_NAME | DARLING_ATTR_CMN_OBJTYPE | \
++	 DARLING_ATTR_CMN_OBJTAG | DARLING_ATTR_CMN_FNDRINFO | DARLING_ATTR_CMN_ERROR)
++#define DARLING_ATTR_VOL_SUPPORTED       0
++#define DARLING_ATTR_DIR_SUPPORTED       DARLING_ATTR_DIR_ENTRYCOUNT
++#define DARLING_ATTR_FILE_SUPPORTED      DARLING_ATTR_FILE_RSRCLENGTH
++#define DARLING_ATTR_FORK_SUPPORTED      0
++
++#define DARLING_FSOPT_REPORT_FULLSIZE    4
++
++#define DARLING_VT_UNKNOWN               0
++
++#define DARLING_DTAPE_VNON  0
++#define DARLING_DTAPE_VREG  1
++#define DARLING_DTAPE_VDIR  2
++#define DARLING_DTAPE_VBLK  3
++#define DARLING_DTAPE_VCHR  4
++#define DARLING_DTAPE_VLNK  5
++#define DARLING_DTAPE_VSOCK 6
++#define DARLING_DTAPE_VFIFO 7
++
++#define DARLING_LINUX_DT_FIFO    1
++#define DARLING_LINUX_DT_CHR     2
++#define DARLING_LINUX_DT_DIR     4
++#define DARLING_LINUX_DT_BLK     6
++#define DARLING_LINUX_DT_REG     8
++#define DARLING_LINUX_DT_LNK     10
++#define DARLING_LINUX_DT_SOCK    12
++
++#define DARLING_LINUX_S_IFMT   0170000
++#define DARLING_LINUX_S_IFSOCK 0140000
++#define DARLING_LINUX_S_IFLNK  0120000
++#define DARLING_LINUX_S_IFREG  0100000
++#define DARLING_LINUX_S_IFBLK  0060000
++#define DARLING_LINUX_S_IFDIR  0040000
++#define DARLING_LINUX_S_IFCHR  0020000
++#define DARLING_LINUX_S_IFIFO  0010000
++
++struct darling_attrreference {
++	int attr_dataoffset;
++	unsigned int attr_length;
++};
++
++struct darling_attribute_set {
++	unsigned int commonattr;
++	unsigned int volattr;
++	unsigned int dirattr;
++	unsigned int fileattr;
++	unsigned int forkattr;
++};
++
++struct darling_attrpack_entry {
++	const char* name;
++	size_t name_len;
++	unsigned int objtype;
++	uint32_t objtag;
++	const void* finderinfo;
++	uint32_t error;
++	uint32_t dir_entrycount;
++	uint64_t file_rsrclength;
++	int has_objtype;
++	int has_objtag;
++	int has_finderinfo;
++	int has_error;
++	int has_dir_entrycount;
++	int has_file_rsrclength;
++};
++
++static inline size_t darling_attr_align4(size_t value)
++{
++	return (value + 3) & ~(size_t)3;
++}
++
++static inline int darling_attrlist_has_unsupported(const struct xnu_attrlist* alist)
++{
++	return ((alist->commonattr & DARLING_ATTR_CMN_SUPPORTED) != alist->commonattr) ||
++		((alist->volattr & DARLING_ATTR_VOL_SUPPORTED) != alist->volattr) ||
++		((alist->dirattr & DARLING_ATTR_DIR_SUPPORTED) != alist->dirattr) ||
++		((alist->fileattr & DARLING_ATTR_FILE_SUPPORTED) != alist->fileattr) ||
++		((alist->forkattr & DARLING_ATTR_FORK_SUPPORTED) != alist->forkattr);
++}
++
++static inline int darling_attrlist_validate(const struct xnu_attrlist* alist, int allow_returned_subset)
++{
++	if (!alist)
++		return -EFAULT;
++	if (alist->bitmapcount < DARLING_ATTR_BIT_MAP_COUNT)
++		return -EINVAL;
++	if (!allow_returned_subset || !(alist->commonattr & DARLING_ATTR_CMN_RETURNED_ATTRS)) {
++		if (darling_attrlist_has_unsupported(alist))
++			return -EINVAL;
++	}
++	return 0;
++}
++
++static inline unsigned int darling_objtype_from_mode(unsigned int mode)
++{
++	switch (mode & DARLING_LINUX_S_IFMT) {
++		case DARLING_LINUX_S_IFREG:  return DARLING_DTAPE_VREG;
++		case DARLING_LINUX_S_IFDIR:  return DARLING_DTAPE_VDIR;
++		case DARLING_LINUX_S_IFLNK:  return DARLING_DTAPE_VLNK;
++		case DARLING_LINUX_S_IFBLK:  return DARLING_DTAPE_VBLK;
++		case DARLING_LINUX_S_IFCHR:  return DARLING_DTAPE_VCHR;
++		case DARLING_LINUX_S_IFSOCK: return DARLING_DTAPE_VSOCK;
++		case DARLING_LINUX_S_IFIFO:  return DARLING_DTAPE_VFIFO;
++		default:                     return DARLING_DTAPE_VNON;
++	}
++}
++
++static inline unsigned int darling_objtype_from_dtype(unsigned char d_type)
++{
++	switch (d_type) {
++		case DARLING_LINUX_DT_REG:  return DARLING_DTAPE_VREG;
++		case DARLING_LINUX_DT_DIR:  return DARLING_DTAPE_VDIR;
++		case DARLING_LINUX_DT_LNK:  return DARLING_DTAPE_VLNK;
++		case DARLING_LINUX_DT_BLK:  return DARLING_DTAPE_VBLK;
++		case DARLING_LINUX_DT_CHR:  return DARLING_DTAPE_VCHR;
++		case DARLING_LINUX_DT_SOCK: return DARLING_DTAPE_VSOCK;
++		case DARLING_LINUX_DT_FIFO: return DARLING_DTAPE_VFIFO;
++		default:                    return DARLING_DTAPE_VNON;
++	}
++}
++
++static inline int darling_attr_wants_objtype(const struct xnu_attrlist* alist)
++{
++	return (alist->commonattr & DARLING_ATTR_CMN_OBJTYPE) ||
++		(alist->dirattr & DARLING_ATTR_DIR_SUPPORTED) ||
++		(alist->fileattr & DARLING_ATTR_FILE_SUPPORTED);
++}
++
++static inline size_t darling_attrpack_entry_size(const struct xnu_attrlist* alist, const struct darling_attrpack_entry* entry)
++{
++	size_t size = sizeof(uint32_t);
++
++	if (alist->commonattr & DARLING_ATTR_CMN_RETURNED_ATTRS)
++		size += sizeof(struct darling_attribute_set);
++	if (alist->commonattr & DARLING_ATTR_CMN_NAME)
++		size += sizeof(struct darling_attrreference) + darling_attr_align4(entry->name_len + 1);
++	if ((alist->commonattr & DARLING_ATTR_CMN_OBJTYPE) && entry->has_objtype)
++		size += sizeof(uint32_t);
++	if ((alist->commonattr & DARLING_ATTR_CMN_OBJTAG) && entry->has_objtag)
++		size += sizeof(uint32_t);
++	if ((alist->commonattr & DARLING_ATTR_CMN_FNDRINFO) && entry->has_finderinfo)
++		size += 32;
++	if (alist->commonattr & DARLING_ATTR_CMN_ERROR)
++		size += sizeof(uint32_t);
++	if ((alist->dirattr & DARLING_ATTR_DIR_ENTRYCOUNT) && entry->has_dir_entrycount)
++		size += sizeof(uint32_t);
++	if ((alist->fileattr & DARLING_ATTR_FILE_RSRCLENGTH) && entry->has_file_rsrclength)
++		size += sizeof(uint64_t);
++
++	return size;
++}
++
++static inline size_t darling_attrpack_entry(char* out, const struct xnu_attrlist* alist, const struct darling_attrpack_entry* entry)
++{
++	char* p = out;
++	char* len_field = p;
++	p += sizeof(uint32_t);
++
++	struct darling_attribute_set* returned = 0;
++	if (alist->commonattr & DARLING_ATTR_CMN_RETURNED_ATTRS) {
++		returned = (struct darling_attribute_set*)p;
++		p += sizeof(struct darling_attribute_set);
++	}
++
++	unsigned int r_common = returned ? DARLING_ATTR_CMN_RETURNED_ATTRS : 0;
++	unsigned int r_dir = 0;
++	unsigned int r_file = 0;
++
++	char* name_ref = 0;
++	if (alist->commonattr & DARLING_ATTR_CMN_NAME) {
++		name_ref = p;
++		p += sizeof(struct darling_attrreference);
++		r_common |= DARLING_ATTR_CMN_NAME;
++	}
++	if ((alist->commonattr & DARLING_ATTR_CMN_OBJTYPE) && entry->has_objtype) {
++		*((uint32_t*)p) = entry->objtype;
++		p += sizeof(uint32_t);
++		r_common |= DARLING_ATTR_CMN_OBJTYPE;
++	}
++	if ((alist->commonattr & DARLING_ATTR_CMN_OBJTAG) && entry->has_objtag) {
++		*((uint32_t*)p) = entry->objtag;
++		p += sizeof(uint32_t);
++		r_common |= DARLING_ATTR_CMN_OBJTAG;
++	}
++	if ((alist->commonattr & DARLING_ATTR_CMN_FNDRINFO) && entry->has_finderinfo) {
++		memcpy(p, entry->finderinfo, 32);
++		p += 32;
++		r_common |= DARLING_ATTR_CMN_FNDRINFO;
++	}
++	if (alist->commonattr & DARLING_ATTR_CMN_ERROR) {
++		*((uint32_t*)p) = entry->error;
++		p += sizeof(uint32_t);
++		r_common |= DARLING_ATTR_CMN_ERROR;
++	}
++	if ((alist->dirattr & DARLING_ATTR_DIR_ENTRYCOUNT) && entry->has_dir_entrycount) {
++		*((uint32_t*)p) = entry->dir_entrycount;
++		p += sizeof(uint32_t);
++		r_dir |= DARLING_ATTR_DIR_ENTRYCOUNT;
++	}
++	if ((alist->fileattr & DARLING_ATTR_FILE_RSRCLENGTH) && entry->has_file_rsrclength) {
++		*((uint64_t*)p) = entry->file_rsrclength;
++		p += sizeof(uint64_t);
++		r_file |= DARLING_ATTR_FILE_RSRCLENGTH;
++	}
++	if (name_ref) {
++		struct darling_attrreference* ref = (struct darling_attrreference*)name_ref;
++		size_t name_bytes = entry->name_len + 1;
++		size_t name_aligned = darling_attr_align4(name_bytes);
++		ref->attr_dataoffset = (int)(p - name_ref);
++		ref->attr_length = (unsigned int)name_bytes;
++		memcpy(p, entry->name, name_bytes);
++		if (name_aligned != name_bytes)
++			memset(p + name_bytes, 0, name_aligned - name_bytes);
++		p += name_aligned;
++	}
++	if (returned) {
++		returned->commonattr = r_common;
++		returned->volattr = 0;
++		returned->dirattr = r_dir;
++		returned->fileattr = r_file;
++		returned->forkattr = 0;
++	}
++
++	*((uint32_t*)len_field) = (uint32_t)(p - len_field);
++	return (size_t)(p - out);
++}
++
++#endif
+diff --git a/darling/src/libsystem_kernel/emulation/src/xnu_syscall/bsd/impl/xattr/getattrlistbulk.c b/darling/src/libsystem_kernel/emulation/src/xnu_syscall/bsd/impl/xattr/getattrlistbulk.c
+index 84c9a7c27a9ce3dd77101befd5b2467fd97cea32..710d8a0c03253ac43494338ce69285f5f89665aa 100644
+--- a/darling/src/libsystem_kernel/emulation/src/xnu_syscall/bsd/impl/xattr/getattrlistbulk.c
++++ b/darling/src/libsystem_kernel/emulation/src/xnu_syscall/bsd/impl/xattr/getattrlistbulk.c
+@@ -1,92 +1,29 @@
+ #include <darling/emulation/xnu_syscall/bsd/impl/xattr/getattrlistbulk.h>
+ 
+ #include <stddef.h>
++#include <stdint.h>
++#include <string.h>
+ #include <sys/errno.h>
+ 
+ #include <darling/emulation/common/base.h>
+-#include <darling/emulation/conversion/errno.h>
+-#include <darling/emulation/conversion/xattr/getattrlist.h>
+ #include <darling/emulation/conversion/dirent/getdirentries.h>
++#include <darling/emulation/conversion/errno.h>
+ #include <darling/emulation/conversion/stat/common.h>
++#include <darling/emulation/linux_premigration/linux-syscalls/linux.h>
++#include <darling/emulation/xnu_syscall/bsd/helper/xattr/getattrlist_pack.h>
+ #include <darling/emulation/xnu_syscall/bsd/impl/unistd/close.h>
+ #include <darling/emulation/xnu_syscall/bsd/impl/unistd/lseek.h>
+-#include <darling/emulation/linux_premigration/linux-syscalls/linux.h>
+-
+-#define ATTR_BIT_MAP_COUNT 5
+-
+-// Attribute bits we understand (sys/attr.h).
+-#define ATTR_CMN_NAME            0x00000001
+-#define ATTR_CMN_OBJTYPE         0x00000008
+-#define ATTR_CMN_OBJTAG          0x00000010
+-#define ATTR_CMN_FNDRINFO        0x00004000
+-#define ATTR_CMN_ERROR           0x40000000
+-#define ATTR_CMN_RETURNED_ATTRS  0x80000000
+-
+-#define ATTR_DIR_ENTRYCOUNT      0x00000002
+-#define ATTR_FILE_RSRCLENGTH     0x00001000
+-
+-#define COMMON_SUPPORTED (ATTR_CMN_RETURNED_ATTRS | ATTR_CMN_NAME | ATTR_CMN_OBJTYPE | ATTR_CMN_OBJTAG | ATTR_CMN_FNDRINFO | ATTR_CMN_ERROR)
+-#define DIR_SUPPORTED    (ATTR_DIR_ENTRYCOUNT)
+-#define FILE_SUPPORTED   (ATTR_FILE_RSRCLENGTH)
+-
+-// fsobj_type_t values (sys/vnode.h).
+-#define DTAPE_VNON  0
+-#define DTAPE_VREG  1
+-#define DTAPE_VDIR  2
+-#define DTAPE_VBLK  3
+-#define DTAPE_VCHR  4
+-#define DTAPE_VLNK  5
+-#define DTAPE_VSOCK 6
+-#define DTAPE_VFIFO 7
+-
+-// Linux dirent d_type values.
+-#define LINUX_DT_FIFO    1
+-#define LINUX_DT_CHR     2
+-#define LINUX_DT_DIR     4
+-#define LINUX_DT_BLK     6
+-#define LINUX_DT_REG     8
+-#define LINUX_DT_LNK     10
+-#define LINUX_DT_SOCK    12
+-
+-#define LINUX_S_IFMT   0170000
+-#define LINUX_S_IFSOCK 0140000
+-#define LINUX_S_IFLNK  0120000
+-#define LINUX_S_IFREG  0100000
+-#define LINUX_S_IFBLK  0060000
+-#define LINUX_S_IFDIR  0040000
+-#define LINUX_S_IFCHR  0020000
+-#define LINUX_S_IFIFO  0010000
+ 
+ #ifndef LINUX_AT_SYMLINK_NOFOLLOW
+ #define LINUX_AT_SYMLINK_NOFOLLOW 0x100
+ #endif
+ 
++#ifndef LINUX_O_RDONLY
+ #define LINUX_O_RDONLY    0
++#endif
+ #define LINUX_O_DIRECTORY 0200000
+-
+ #define LINUX_SEEK_SET 0
+ 
+-#define VT_HFS 16
+-
+-// attrreference_t for variable-length attributes (e.g. ATTR_CMN_NAME).
+-struct dtape_attrreference {
+-	int attr_dataoffset;
+-	unsigned int attr_length;
+-};
+-
+-// attribute_set_t reported for ATTR_CMN_RETURNED_ATTRS.
+-struct dtape_attribute_set {
+-	unsigned int commonattr;
+-	unsigned int volattr;
+-	unsigned int dirattr;
+-	unsigned int fileattr;
+-	unsigned int forkattr;
+-};
+-
+-extern void *memcpy(void *dest, const void *src, __SIZE_TYPE__ n);
+-extern void *memset(void *s, int c, __SIZE_TYPE__ n);
+-extern __SIZE_TYPE__ strlen(const char *s);
+-
+ static int is_dot_or_dotdot(const char* name)
+ {
+ 	if (name[0] != '.')
+@@ -98,38 +35,6 @@ static int is_dot_or_dotdot(const char* name)
+ 	return 0;
+ }
+ 
+-static unsigned int objtype_from_mode(unsigned int mode)
+-{
+-	switch (mode & LINUX_S_IFMT)
+-	{
+-		case LINUX_S_IFREG:  return DTAPE_VREG;
+-		case LINUX_S_IFDIR:  return DTAPE_VDIR;
+-		case LINUX_S_IFLNK:  return DTAPE_VLNK;
+-		case LINUX_S_IFBLK:  return DTAPE_VBLK;
+-		case LINUX_S_IFCHR:  return DTAPE_VCHR;
+-		case LINUX_S_IFSOCK: return DTAPE_VSOCK;
+-		case LINUX_S_IFIFO:  return DTAPE_VFIFO;
+-		default:             return DTAPE_VNON;
+-	}
+-}
+-
+-static unsigned int objtype_from_dtype(unsigned char d_type)
+-{
+-	switch (d_type)
+-	{
+-		case LINUX_DT_REG:  return DTAPE_VREG;
+-		case LINUX_DT_DIR:  return DTAPE_VDIR;
+-		case LINUX_DT_LNK:  return DTAPE_VLNK;
+-		case LINUX_DT_BLK:  return DTAPE_VBLK;
+-		case LINUX_DT_CHR:  return DTAPE_VCHR;
+-		case LINUX_DT_SOCK: return DTAPE_VSOCK;
+-		case LINUX_DT_FIFO: return DTAPE_VFIFO;
+-		default:            return DTAPE_VNON; // DT_UNKNOWN -> caller must stat
+-	}
+-}
+-
+-// Count the entries in a subdirectory (excluding "." and ".."), used for
+-// ATTR_DIR_ENTRYCOUNT. Returns 0 on any failure (best effort).
+ static unsigned int dir_entry_count(int dirfd, const char* name)
+ {
+ 	int subfd = LINUX_SYSCALL(__NR_openat, dirfd, name, LINUX_O_RDONLY | LINUX_O_DIRECTORY, 0);
+@@ -138,13 +43,11 @@ static unsigned int dir_entry_count(int dirfd, const char* name)
+ 
+ 	unsigned int n = 0;
+ 	char buf[2048];
+-	while (1)
+-	{
++	while (1) {
+ 		long r = LINUX_SYSCALL(__NR_getdents64, subfd, buf, sizeof(buf));
+ 		if (r <= 0)
+ 			break;
+-		for (char* it = buf; it < buf + r; it += ((struct linux_dirent64*) it)->d_reclen)
+-		{
++		for (char* it = buf; it < buf + r; it += ((struct linux_dirent64*) it)->d_reclen) {
+ 			if (!is_dot_or_dotdot(((struct linux_dirent64*) it)->d_name))
+ 				++n;
+ 		}
+@@ -156,76 +59,51 @@ static unsigned int dir_entry_count(int dirfd, const char* name)
+ 
+ long sys_getattrlistbulk(int fd, struct xnu_attrlist* alist, void* attributeBuffer, __SIZE_TYPE__ bufferSize, unsigned long options)
+ {
+-	if (!alist || !attributeBuffer)
+-		return -EFAULT;
+-
+-	if (alist->bitmapcount < ATTR_BIT_MAP_COUNT)
+-		return -EINVAL;
++	(void)options;
+ 
+-	const int wantReturned = (alist->commonattr & ATTR_CMN_RETURNED_ATTRS) != 0;
+-
+-	// Without ATTR_CMN_RETURNED_ATTRS the caller assumes a fixed layout of exactly
+-	// the attributes it asked for, so we may not silently drop unsupported ones.
+-	// With it, we report what we actually packed and unsupported attributes are
+-	// simply omitted (the documented, most-compatible behaviour).
+-	if (!wantReturned)
+-	{
+-		if ((alist->commonattr & COMMON_SUPPORTED) != alist->commonattr)
+-			return -EINVAL;
+-		if (alist->volattr != 0)
+-			return -EINVAL;
+-		if ((alist->dirattr & DIR_SUPPORTED) != alist->dirattr)
+-			return -EINVAL;
+-		if ((alist->fileattr & FILE_SUPPORTED) != alist->fileattr)
+-			return -EINVAL;
+-		if (alist->forkattr != 0)
+-			return -EINVAL;
+-	}
++	if (!attributeBuffer)
++		return -EFAULT;
+ 
+-	// We need the object type if it was requested directly, or to decide whether
+-	// the per-entry directory/file attributes apply.
+-	const int needType = (alist->commonattr & ATTR_CMN_OBJTYPE)
+-		|| (alist->dirattr & DIR_SUPPORTED)
+-		|| (alist->fileattr & FILE_SUPPORTED);
++	int rv = darling_attrlist_validate(alist, 1);
++	if (rv < 0)
++		return rv;
+ 
+-	char* outp = (char*) attributeBuffer;
+-	__SIZE_TYPE__ outRemaining = bufferSize;
++	const int need_type = darling_attr_wants_objtype(alist);
++	char* outp = (char*)attributeBuffer;
++	size_t out_remaining = bufferSize;
+ 	int count = 0;
+ 
+-	// Loop over getdents64 blocks: a block consisting solely of "." / ".." would
+-	// otherwise look like end-of-directory, so keep reading until we pack at least
+-	// one entry, run out of buffer, or hit the real EOF.
+-	while (1)
+-	{
++	while (1) {
+ 		char dbuf[4096];
+ 		long n = LINUX_SYSCALL(__NR_getdents64, fd, dbuf, sizeof(dbuf));
+ 		if (n < 0)
+ 			return errno_linux_to_bsd(n);
+ 		if (n == 0)
+-			return count; // real end of directory
++			return count;
+ 
+-		long long committedOff = -1; // d_off of the last entry we are done with
+-		int stoppedEarly = 0;
++		long long committed_off = -1;
++		int stopped_early = 0;
+ 
+-		for (char* iter = dbuf; iter < dbuf + n; )
+-		{
+-			struct linux_dirent64* de = (struct linux_dirent64*) iter;
+-			char* deNext = iter + de->d_reclen;
++		for (char* iter = dbuf; iter < dbuf + n; ) {
++			struct linux_dirent64* de = (struct linux_dirent64*)iter;
++			char* de_next = iter + de->d_reclen;
+ 
+-			if (is_dot_or_dotdot(de->d_name))
+-			{
+-				committedOff = (long long) de->d_off;
+-				iter = deNext;
++			if (is_dot_or_dotdot(de->d_name)) {
++				committed_off = (long long)de->d_off;
++				iter = de_next;
+ 				continue;
+ 			}
+ 
+-			// Resolve object type (from d_type, falling back to a stat).
+-			unsigned int objType = DTAPE_VNON;
+-			if (needType)
+-			{
+-				objType = objtype_from_dtype(de->d_type);
+-				if (objType == DTAPE_VNON)
+-				{
++			struct darling_attrpack_entry entry;
++			memset(&entry, 0, sizeof(entry));
++
++			entry.name = de->d_name;
++			entry.name_len = strlen(de->d_name);
++
++			unsigned int objtype = DARLING_DTAPE_VNON;
++			if (need_type) {
++				objtype = darling_objtype_from_dtype(de->d_type);
++				if (objtype == DARLING_DTAPE_VNON) {
+ 					struct linux_stat lst;
+ 					long sr;
+ #ifdef __NR_newfstatat
+@@ -234,139 +112,58 @@ long sys_getattrlistbulk(int fd, struct xnu_attrlist* alist, void* attributeBuff
+ 					sr = LINUX_SYSCALL(__NR_fstatat64, fd, de->d_name, &lst, LINUX_AT_SYMLINK_NOFOLLOW);
+ #endif
+ 					if (sr >= 0)
+-						objType = objtype_from_mode(lst.st_mode);
++						objtype = darling_objtype_from_mode(lst.st_mode);
+ 				}
+ 			}
+ 
+-			const int packDirEntryCount = (objType == DTAPE_VDIR) && (alist->dirattr & ATTR_DIR_ENTRYCOUNT);
+-			const int packRsrcLength    = (objType == DTAPE_VREG) && (alist->fileattr & ATTR_FILE_RSRCLENGTH);
+-
+-			__SIZE_TYPE__ nameLen = strlen(de->d_name);
+-			__SIZE_TYPE__ nameFieldLen = nameLen + 1;
+-			__SIZE_TYPE__ nameAligned = (nameFieldLen + 3) & ~(__SIZE_TYPE__) 3;
+-
+-			// Compute the exact byte size of this entry; must mirror the packing below.
+-			__SIZE_TYPE__ spaceNeeded = 4; // leading uint32_t length
+-			if (wantReturned)
+-				spaceNeeded += sizeof(struct dtape_attribute_set);
+-			if (alist->commonattr & ATTR_CMN_NAME)
+-				spaceNeeded += sizeof(struct dtape_attrreference) + nameAligned;
+-			if (alist->commonattr & ATTR_CMN_OBJTYPE)
+-				spaceNeeded += sizeof(uint32_t);
+-			if (alist->commonattr & ATTR_CMN_OBJTAG)
+-				spaceNeeded += sizeof(uint32_t);
+-			if (alist->commonattr & ATTR_CMN_FNDRINFO)
+-				spaceNeeded += 32;
+-			if (alist->commonattr & ATTR_CMN_ERROR)
+-				spaceNeeded += sizeof(uint32_t);
+-			if (packDirEntryCount)
+-				spaceNeeded += sizeof(uint32_t);
+-			if (packRsrcLength)
+-				spaceNeeded += sizeof(uint64_t);
+-
+-			if (spaceNeeded > outRemaining)
+-			{
+-				stoppedEarly = 1;
+-				break;
+-			}
+-
+-			// --- pack the entry ---
+-			char* p = outp;
+-			char* lenField = p;
+-			p += 4;
+-
+-			struct dtape_attribute_set* retp = 0;
+-			if (wantReturned)
+-			{
+-				retp = (struct dtape_attribute_set*) p;
+-				p += sizeof(struct dtape_attribute_set);
+-			}
+-
+-			unsigned int rCmn = wantReturned ? ATTR_CMN_RETURNED_ATTRS : 0;
+-			unsigned int rDir = 0, rFile = 0;
+-
+-			char* nameRef = 0;
+-			if (alist->commonattr & ATTR_CMN_NAME)
+-			{
+-				nameRef = p;
+-				p += sizeof(struct dtape_attrreference);
+-				rCmn |= ATTR_CMN_NAME;
+-			}
+-			if (alist->commonattr & ATTR_CMN_OBJTYPE)
+-			{
+-				*((uint32_t*) p) = objType;
+-				p += sizeof(uint32_t);
+-				rCmn |= ATTR_CMN_OBJTYPE;
+-			}
+-			if (alist->commonattr & ATTR_CMN_OBJTAG)
+-			{
+-				*((uint32_t*) p) = VT_HFS; // pretend we're always on HFS
+-				p += sizeof(uint32_t);
+-				rCmn |= ATTR_CMN_OBJTAG;
++			if (alist->commonattr & DARLING_ATTR_CMN_OBJTYPE) {
++				entry.has_objtype = 1;
++				entry.objtype = objtype;
+ 			}
+-			if (alist->commonattr & ATTR_CMN_FNDRINFO)
+-			{
+-				memset(p, 0, 32); // no Finder info under Linux
+-				p += 32;
+-				rCmn |= ATTR_CMN_FNDRINFO;
++			if (alist->commonattr & DARLING_ATTR_CMN_OBJTAG) {
++				entry.has_objtag = 1;
++				entry.objtag = DARLING_VT_UNKNOWN;
+ 			}
+-			if (alist->commonattr & ATTR_CMN_ERROR)
+-			{
+-				*((uint32_t*) p) = 0; // per-entry error: success
+-				p += sizeof(uint32_t);
+-				rCmn |= ATTR_CMN_ERROR;
++			if (alist->commonattr & DARLING_ATTR_CMN_FNDRINFO) {
++				static const char zero_finderinfo[32] = {0};
++				entry.has_finderinfo = 1;
++				entry.finderinfo = zero_finderinfo;
+ 			}
+-			if (packDirEntryCount)
+-			{
+-				*((uint32_t*) p) = dir_entry_count(fd, de->d_name);
+-				p += sizeof(uint32_t);
+-				rDir |= ATTR_DIR_ENTRYCOUNT;
++			if (alist->commonattr & DARLING_ATTR_CMN_ERROR) {
++				entry.has_error = 1;
++				entry.error = 0;
+ 			}
+-			if (packRsrcLength)
+-			{
+-				*((uint64_t*) p) = 0; // no resource fork under Linux
+-				p += sizeof(uint64_t);
+-				rFile |= ATTR_FILE_RSRCLENGTH;
++			if ((alist->dirattr & DARLING_ATTR_DIR_ENTRYCOUNT) && objtype == DARLING_DTAPE_VDIR) {
++				entry.has_dir_entrycount = 1;
++				entry.dir_entrycount = dir_entry_count(fd, de->d_name);
+ 			}
+-			if (nameRef)
+-			{
+-				struct dtape_attrreference* ref = (struct dtape_attrreference*) nameRef;
+-				ref->attr_dataoffset = (int) (p - nameRef);
+-				ref->attr_length = (unsigned int) nameFieldLen;
+-				memcpy(p, de->d_name, nameFieldLen);
+-				p += nameAligned;
+-			}
+-			if (retp)
+-			{
+-				retp->commonattr = rCmn;
+-				retp->volattr = 0;
+-				retp->dirattr = rDir;
+-				retp->fileattr = rFile;
+-				retp->forkattr = 0;
++			if ((alist->fileattr & DARLING_ATTR_FILE_RSRCLENGTH) && objtype == DARLING_DTAPE_VREG) {
++				entry.has_file_rsrclength = 1;
++				entry.file_rsrclength = 0;
+ 			}
+ 
+-			*((uint32_t*) lenField) = (uint32_t) (p - lenField);
++			size_t space_needed = darling_attrpack_entry_size(alist, &entry);
++			if (space_needed > out_remaining) {
++				stopped_early = 1;
++				break;
++			}
+ 
+-			outp = p;
+-			outRemaining -= spaceNeeded;
+-			committedOff = (long long) de->d_off;
++			size_t packed = darling_attrpack_entry(outp, alist, &entry);
++			outp += packed;
++			out_remaining -= packed;
++			committed_off = (long long)de->d_off;
+ 			++count;
+-			iter = deNext;
++			iter = de_next;
+ 		}
+ 
+-		if (stoppedEarly)
+-		{
+-			// Rewind the directory so the entries we could not fit are re-read on the
+-			// next call. d_off is the opaque seek cookie produced by getdents64.
+-			if (committedOff >= 0)
+-				sys_lseek(fd, committedOff, LINUX_SEEK_SET);
++		if (stopped_early) {
++			if (committed_off >= 0)
++				sys_lseek(fd, committed_off, LINUX_SEEK_SET);
+ 			if (count == 0)
+-				return -EINVAL; // buffer too small to hold even a single entry
++				return -EINVAL;
+ 			return count;
+ 		}
+ 
+-		// Whole block consumed. If we packed anything, return it; otherwise the block
+-		// was all "." / ".." so loop to read the next block.
+ 		if (count > 0)
+ 			return count;
+ 	}
+diff --git a/darling/src/libsystem_kernel/tests/getattrlist_shared_packer_test.c b/darling/src/libsystem_kernel/tests/getattrlist_shared_packer_test.c
+new file mode 100644
+index 0000000000000000000000000000000000000000..6462752659b1b0b75b9b9efe49750df2178d35e3
+--- /dev/null
++++ b/darling/src/libsystem_kernel/tests/getattrlist_shared_packer_test.c
+@@ -0,0 +1,323 @@
++#include <sys/attr.h>
++#include <sys/fcntl.h>
++#include <sys/stat.h>
++#include <unistd.h>
++#include <errno.h>
++#include <stdio.h>
++#include <stdint.h>
++#include <string.h>
++
++#ifndef FSOPT_NOFOLLOW
++#define FSOPT_NOFOLLOW 1
++#endif
++#ifndef FSOPT_REPORT_FULLSIZE
++#define FSOPT_REPORT_FULLSIZE 4
++#endif
++#ifndef ATTR_CMN_CRTIME
++#define ATTR_CMN_CRTIME 0x00000200
++#endif
++#ifndef VLNK
++#define VLNK 5
++#endif
++
++struct packed_single {
++	uint32_t length;
++	attrreference_t name;
++	fsobj_type_t objtype;
++	char storage[256];
++};
++
++struct returned_attrs {
++	uint32_t commonattr;
++	uint32_t volattr;
++	uint32_t dirattr;
++	uint32_t fileattr;
++	uint32_t forkattr;
++};
++
++static int check_single(const char* label, struct packed_single* packed, const char* want_name)
++{
++	char* name = ((char*)&packed->name) + packed->name.attr_dataoffset;
++
++	if (packed->length < sizeof(*packed) - sizeof(packed->storage)) {
++		fprintf(stderr, "%s: short packed length %u\n", label, packed->length);
++		return 1;
++	}
++	if (packed->name.attr_length == 0 || strcmp(name, want_name) != 0) {
++		fprintf(stderr, "%s: bad name '%s', want '%s'\n", label, name, want_name);
++		return 1;
++	}
++	if (packed->objtype == 0) {
++		fprintf(stderr, "%s: missing object type\n", label);
++		return 1;
++	}
++	return 0;
++}
++
++static int check_getattrlist_family(void)
++{
++	const char* path = "/tmp/dar-getattrlist-packer-file";
++	const char* want_name = "dar-getattrlist-packer-file";
++	int fd = open(path, O_CREAT | O_TRUNC | O_RDWR, 0644);
++	if (fd < 0) {
++		perror("open");
++		return 1;
++	}
++
++	struct attrlist attrs = {0};
++	attrs.bitmapcount = ATTR_BIT_MAP_COUNT;
++	attrs.commonattr = ATTR_CMN_NAME | ATTR_CMN_OBJTYPE;
++
++	struct packed_single packed = {0};
++	if (getattrlist(path, &attrs, &packed, sizeof(packed), 0) != 0) {
++		fprintf(stderr, "getattrlist: %s\n", strerror(errno));
++		return 1;
++	}
++	if (check_single("getattrlist", &packed, want_name))
++		return 1;
++
++	memset(&packed, 0, sizeof(packed));
++	if (fgetattrlist(fd, &attrs, &packed, sizeof(packed), 0) != 0) {
++		fprintf(stderr, "fgetattrlist: %s\n", strerror(errno));
++		return 1;
++	}
++	if (check_single("fgetattrlist", &packed, want_name))
++		return 1;
++
++	memset(&packed, 0, sizeof(packed));
++	if (getattrlistat(AT_FDCWD, path, &attrs, &packed, sizeof(packed), 0) != 0) {
++		fprintf(stderr, "getattrlistat: %s\n", strerror(errno));
++		return 1;
++	}
++	if (check_single("getattrlistat", &packed, want_name))
++		return 1;
++
++	close(fd);
++	unlink(path);
++	return 0;
++}
++
++static int check_error_paths(void)
++{
++	const char* path = "/tmp/dar-getattrlist-packer-error-file";
++	int fd = open(path, O_CREAT | O_TRUNC | O_RDWR, 0644);
++	if (fd < 0) {
++		perror("open error file");
++		return 1;
++	}
++	close(fd);
++
++	struct attrlist attrs = {0};
++	attrs.bitmapcount = ATTR_BIT_MAP_COUNT;
++	attrs.commonattr = ATTR_CMN_NAME | ATTR_CMN_OBJTYPE;
++
++	uint32_t tiny = 0;
++	errno = 0;
++	if (getattrlist(path, &attrs, &tiny, sizeof(tiny), 0) == 0 || errno != ERANGE) {
++		fprintf(stderr, "getattrlist tiny buffer: rc/errno mismatch errno=%d %s\n", errno, strerror(errno));
++		unlink(path);
++		return 1;
++	}
++
++	tiny = 0;
++	errno = 0;
++	if (getattrlist(path, &attrs, &tiny, sizeof(tiny), FSOPT_REPORT_FULLSIZE) != 0) {
++		fprintf(stderr, "getattrlist REPORT_FULLSIZE: %s\n", strerror(errno));
++		unlink(path);
++		return 1;
++	}
++	if (tiny <= sizeof(tiny)) {
++		fprintf(stderr, "getattrlist REPORT_FULLSIZE: bad full length %u\n", tiny);
++		unlink(path);
++		return 1;
++	}
++
++	attrs.commonattr = ATTR_CMN_CRTIME;
++	errno = 0;
++	struct packed_single packed = {0};
++	if (getattrlist(path, &attrs, &packed, sizeof(packed), 0) == 0 || errno != EINVAL) {
++		fprintf(stderr, "getattrlist unsupported attr: rc/errno mismatch errno=%d %s\n", errno, strerror(errno));
++		unlink(path);
++		return 1;
++	}
++
++	unlink(path);
++	return 0;
++}
++
++static int check_symlink_nofollow(void)
++{
++	const char* target = "/tmp/dar-getattrlist-packer-symlink-target";
++	const char* link = "/tmp/dar-getattrlist-packer-symlink";
++	unlink(link);
++	unlink(target);
++	int fd = open(target, O_CREAT | O_TRUNC | O_RDWR, 0644);
++	if (fd < 0) {
++		perror("open symlink target");
++		return 1;
++	}
++	close(fd);
++	if (symlink(target, link) != 0) {
++		perror("symlink");
++		unlink(target);
++		return 1;
++	}
++
++	struct attrlist attrs = {0};
++	attrs.bitmapcount = ATTR_BIT_MAP_COUNT;
++	attrs.commonattr = ATTR_CMN_NAME | ATTR_CMN_OBJTYPE;
++
++	struct packed_single packed = {0};
++	if (getattrlist(link, &attrs, &packed, sizeof(packed), FSOPT_NOFOLLOW) != 0) {
++		fprintf(stderr, "getattrlist symlink nofollow: %s\n", strerror(errno));
++		unlink(link);
++		unlink(target);
++		return 1;
++	}
++	if (check_single("getattrlist symlink", &packed, "dar-getattrlist-packer-symlink")) {
++		unlink(link);
++		unlink(target);
++		return 1;
++	}
++	if (packed.objtype != VLNK) {
++		fprintf(stderr, "getattrlist symlink: objtype=%u want VLNK=%u\n", packed.objtype, VLNK);
++		unlink(link);
++		unlink(target);
++		return 1;
++	}
++
++	unlink(link);
++	unlink(target);
++	return 0;
++}
++
++static int check_bulk_error(void)
++{
++	const char* dir = "/tmp/dar-getattrlistbulk-packer-dir";
++	const char* file = "/tmp/dar-getattrlistbulk-packer-dir/file";
++	mkdir(dir, 0755);
++	int fd = open(file, O_CREAT | O_TRUNC | O_RDWR, 0644);
++	if (fd >= 0)
++		close(fd);
++
++	int dfd = open(dir, O_RDONLY | O_DIRECTORY);
++	if (dfd < 0) {
++		perror("open dir");
++		return 1;
++	}
++
++	struct attrlist attrs = {0};
++	attrs.bitmapcount = ATTR_BIT_MAP_COUNT;
++	attrs.commonattr = ATTR_CMN_RETURNED_ATTRS | ATTR_CMN_NAME | ATTR_CMN_OBJTYPE | ATTR_CMN_ERROR;
++
++	char buffer[4096] = {0};
++	int count = getattrlistbulk(dfd, &attrs, buffer, sizeof(buffer), 0);
++	if (count <= 0) {
++		fprintf(stderr, "getattrlistbulk: count=%d errno=%d %s\n", count, errno, strerror(errno));
++		return 1;
++	}
++
++	uint32_t length = *(uint32_t*)buffer;
++	struct returned_attrs* returned = (struct returned_attrs*)(buffer + sizeof(uint32_t));
++	if (length <= sizeof(uint32_t) + sizeof(struct returned_attrs)) {
++		fprintf(stderr, "getattrlistbulk: short record length %u\n", length);
++		return 1;
++	}
++	if (!(returned->commonattr & ATTR_CMN_ERROR)) {
++		fprintf(stderr, "getattrlistbulk: ATTR_CMN_ERROR not returned (common=0x%x)\n", returned->commonattr);
++		return 1;
++	}
++
++	close(dfd);
++	unlink(file);
++	rmdir(dir);
++	return 0;
++}
++
++static int check_bulk_resume(void)
++{
++	const char* dir = "/tmp/dar-getattrlistbulk-resume-dir";
++	mkdir(dir, 0755);
++	char path[128];
++	for (int i = 0; i < 3; ++i) {
++		snprintf(path, sizeof(path), "%s/file%d", dir, i);
++		int fd = open(path, O_CREAT | O_TRUNC | O_RDWR, 0644);
++		if (fd >= 0)
++			close(fd);
++	}
++
++	int dfd = open(dir, O_RDONLY | O_DIRECTORY);
++	if (dfd < 0) {
++		perror("open resume dir");
++		return 1;
++	}
++
++	struct attrlist attrs = {0};
++	attrs.bitmapcount = ATTR_BIT_MAP_COUNT;
++	attrs.commonattr = ATTR_CMN_RETURNED_ATTRS | ATTR_CMN_NAME | ATTR_CMN_OBJTYPE | ATTR_CMN_ERROR;
++
++	char probe[4096] = {0};
++	int first = getattrlistbulk(dfd, &attrs, probe, sizeof(probe), 0);
++	if (first < 3) {
++		fprintf(stderr, "getattrlistbulk resume probe: count=%d errno=%d %s\n", first, errno, strerror(errno));
++		close(dfd);
++		return 1;
++	}
++	uint32_t first_len = *(uint32_t*)probe;
++	if (first_len == 0 || first_len >= sizeof(probe)) {
++		fprintf(stderr, "getattrlistbulk resume probe: bad first len %u\n", first_len);
++		close(dfd);
++		return 1;
++	}
++
++	lseek(dfd, 0, SEEK_SET);
++	char small[512] = {0};
++	int total = 0;
++	for (int i = 0; i < 4; ++i) {
++		memset(small, 0, sizeof(small));
++		int count = getattrlistbulk(dfd, &attrs, small, first_len, 0);
++		if (count < 0) {
++			fprintf(stderr, "getattrlistbulk resume chunk: count=%d errno=%d %s\n", count, errno, strerror(errno));
++			close(dfd);
++			return 1;
++		}
++		if (count == 0)
++			break;
++		if (count != 1) {
++			fprintf(stderr, "getattrlistbulk resume chunk: count=%d want 1\n", count);
++			close(dfd);
++			return 1;
++		}
++		total += count;
++	}
++	if (total != 3) {
++		fprintf(stderr, "getattrlistbulk resume total=%d want 3\n", total);
++		close(dfd);
++		return 1;
++	}
++
++	close(dfd);
++	for (int i = 0; i < 3; ++i) {
++		snprintf(path, sizeof(path), "%s/file%d", dir, i);
++		unlink(path);
++	}
++	rmdir(dir);
++	return 0;
++}
++
++int main(void)
++{
++	if (check_getattrlist_family())
++		return 1;
++	if (check_error_paths())
++		return 1;
++	if (check_symlink_nofollow())
++		return 1;
++	if (check_bulk_error())
++		return 1;
++	if (check_bulk_resume())
++		return 1;
++
++	puts("GETATTRLIST_SHARED_PACKER_OK");
++	return 0;
++}
+diff --git a/darling/src/libsystem_kernel/tests/run-getattrlist-shared-packer.sh b/darling/src/libsystem_kernel/tests/run-getattrlist-shared-packer.sh
+new file mode 100755
+index 0000000000000000000000000000000000000000..05fb89b1694efd371507764b0c425f2bce171ca1
+--- /dev/null
++++ b/darling/src/libsystem_kernel/tests/run-getattrlist-shared-packer.sh
+@@ -0,0 +1,51 @@
++#!/usr/bin/env bash
++# Runtime smoke for dar-q95.29.1: single-entry getattrlist/fgetattrlist/
++# getattrlistat share the packer for name+objtype, and getattrlistbulk can
++# report ATTR_CMN_ERROR records through the same packer.
++set -euo pipefail
++
++here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
++LAUNCH="${DARLING:-darling}"
++: "${DPREFIX:?set DPREFIX to a bootable Darling prefix}"
++
++src="$here/getattrlist_shared_packer_test.c"
++verdict="/tmp/getattrlist_shared_packer.verdict"
++rm -f "$DPREFIX/tmp/getattrlist_shared_packer.verdict" 2>/dev/null || true
++cp "$src" "$DPREFIX/tmp/getattrlist_shared_packer_test.c"
++env DPREFIX="$DPREFIX" "$LAUNCH" shell /bin/bash --login -c "rm -f '$verdict'" >/dev/null 2>&1 || true
++
++guest_timeout="${GETATTRLIST_PACKER_TIMEOUT:-60}"
++env DPREFIX="$DPREFIX" "$LAUNCH" shell /bin/bash --login -c '
++  clang -O2 -Wall -Wextra -o /tmp/getattrlist_shared_packer_test /tmp/getattrlist_shared_packer_test.c 2>&1
++  /tmp/getattrlist_shared_packer_test > /tmp/getattrlist_shared_packer.verdict 2>&1
++  echo "ORACLE_RC=$?" >> /tmp/getattrlist_shared_packer.verdict
++' </dev/null > /tmp/getattrlist_shared_packer.runner.log 2>&1 &
++shell_pid=$!
++
++deadline=$((SECONDS + guest_timeout))
++while [ "$SECONDS" -lt "$deadline" ]; do
++  if env DPREFIX="$DPREFIX" "$LAUNCH" shell /bin/bash --login -c \
++      "test -f '$verdict' && grep -q '^ORACLE_RC=' '$verdict'" >/dev/null 2>&1; then
++    break
++  fi
++  sleep 1
++done
++
++if ! env DPREFIX="$DPREFIX" "$LAUNCH" shell /bin/bash --login -c \
++    "test -f '$verdict' && grep -q '^ORACLE_RC=' '$verdict'" >/dev/null 2>&1; then
++  kill "$shell_pid" 2>/dev/null || true
++  wait "$shell_pid" 2>/dev/null || true
++  echo "=== runner log ==="
++  grep -vE "Xlib|libGL|MESA|X11" /tmp/getattrlist_shared_packer.runner.log 2>/dev/null || true
++  echo "no verdict produced before timeout"
++  exit 2
++fi
++
++kill "$shell_pid" 2>/dev/null || true
++wait "$shell_pid" 2>/dev/null || true
++
++echo "=== verdict ==="
++guest_verdict="$(env DPREFIX="$DPREFIX" "$LAUNCH" shell /bin/bash --login -c "cat '$verdict'" 2>/dev/null || true)"
++printf '%s\n' "$guest_verdict"
++grep -q "^GETATTRLIST_SHARED_PACKER_OK" <<<"$guest_verdict" &&
++  grep -q "ORACLE_RC=0" <<<"$guest_verdict"
