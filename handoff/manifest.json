@@ -601,7 +601,7 @@
         },
         {
           "branch": "fix/darwin-priority",
-          "head": "ec55325e53dbf3b2593d73428a5d7a90ccb95fca",
+          "head": "ccf4c98e0749805ffb864e9e28682ecb91d20be2",
           "upstream": "origin/main",
           "source_ref": "refs/heads/fix/darwin-priority"
         },
@@ -811,7 +811,7 @@
         },
         {
           "branch": "fix/select-pselect-fdset",
-          "head": "7b38ce973d87e66d0087a11e43d669e379bffd1b",
+          "head": "c7d851d90e13eb49ce484fd94679462a5345548c",
           "upstream": "origin/main",
           "source_ref": "refs/heads/fix/select-pselect-fdset"
         },
@@ -835,7 +835,7 @@
         },
         {
           "branch": "fix/socket-siocgifconf",
-          "head": "2e5539a3c895596b5f4dab7ac3cb924f52a4375b",
+          "head": "c06036cc3d7c4b55966490b594a266148b039245",
           "upstream": "origin/main",
           "source_ref": "refs/heads/fix/socket-siocgifconf"
         },
