@@ -118,6 +118,21 @@ patches:
     configure-args: [-DDARLING_SKIP_DRIFT_GATE=ON]
     expect:
       returncode: nonzero
+- path: test/darling-cmake-target-fixture.patch
+  module: darling
+  tests:
+  - name: west_darling_cmake_target_fixture_contract
+    kind: contract
+    coverage-tier: host
+    env: host
+    diag: bare
+    runner: darling-cmake-target-fixture
+    target: west_fixture_target
+    source-dir: source
+    fixture-files: [tests/west_fixture_target.c]
+    fallback-executable-sources: [source/tests/west_fixture_target.c]
+    fallback-include-dirs: [source/src]
+    fallback-link-libraries: []
 - path: test/object-symbol-fixture.patch
   module: darling
   tests:
@@ -261,6 +276,8 @@ printf '%s\n' "$source_only_check" | grep -q 'COMPILE   test/c-fixture.patch' ||
 	fail 'c-fixture patch was not reported as COMPILE'
 printf '%s\n' "$source_only_check" | grep -q 'COMPILE   test/object-symbol-fixture.patch' ||
 	fail 'object-symbol-fixture patch was not reported as COMPILE'
+printf '%s\n' "$source_only_check" | grep -q 'HOST      test/darling-cmake-target-fixture.patch' ||
+	fail 'darling-cmake-target-fixture patch was not reported as HOST'
 
 c_fixture="$(
 	west test --profile __metadata_contract \
@@ -279,7 +296,7 @@ object_symbol_fixture="$(
 printf '%s\n' "$object_symbol_fixture" | grep -q \
 	'cc -c -std=gnu11 -Wall -Wextra -Werror -I tests/fixtures/c-fixture/include -I src tests/c_fixture_helper.c -o <temp>/<variant>.o && nm -u <temp>/<variant>.o && nm -g <temp>/<variant>.o' ||
 	fail 'object-symbol-fixture metadata did not resolve to a compile-and-nm command'
-printf '%s\n' "$source_only_check" | grep -q 'test metadata: 8 covered (runtime 1, compile 3, host 3, model 1)' ||
+printf '%s\n' "$source_only_check" | grep -q 'test metadata: 9 covered (runtime 1, compile 3, host 4, model 1)' ||
 	fail 'coverage-tier summary did not classify runtime/host/compile/model coverage'
 
 invalid_guest_red_check="$(west patch check --profile __metadata_invalid_contract 2>&1)"
@@ -315,6 +332,8 @@ printf '%s\n' "$source_only_check" | grep -q 'HOST      test/source-script-fixtu
 	fail 'source-script-fixture patch was not reported as HOST'
 printf '%s\n' "$source_only_check" | grep -q 'COMPILE   test/cmake-configure-fixture.patch' ||
 	fail 'cmake-configure-fixture patch was not reported as COMPILE'
+printf '%s\n' "$source_only_check" | grep -q 'HOST      test/darling-cmake-target-fixture.patch' ||
+	fail 'darling-cmake-target-fixture patch was not reported as HOST'
 
 source_build_fixture="$(
 	west test --profile __metadata_contract \
@@ -345,6 +364,19 @@ cmake_configure_fixture="$(
 printf '%s\n' "$cmake_configure_fixture" | grep -q \
 	'<cmake-configure-fixture> cmake -S <source> -B <temp>/build -DDARLING_SKIP_DRIFT_GATE=ON' ||
 	fail 'cmake-configure-fixture metadata did not resolve to a cmake configure command'
+
+darling_cmake_target_fixture="$(
+	west test --profile __metadata_contract \
+		--patch test/darling-cmake-target-fixture.patch \
+		--list
+)"
+
+printf '%s\n' "$darling_cmake_target_fixture" | grep -q \
+	'<darling-cmake-target-fixture> cmake -S <superproject> -B <temp>/build' ||
+	fail 'darling-cmake-target-fixture metadata did not resolve to a cmake target command'
+printf '%s\n' "$darling_cmake_target_fixture" | grep -q \
+	'cmake --build <temp>/build --target west_fixture_target' ||
+	fail 'darling-cmake-target-fixture metadata did not include the target build'
 
 fake_darling="$(mktemp)"
 cat >"$fake_darling" <<'SH'
