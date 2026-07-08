@@ -24,6 +24,11 @@ west-commands:
       - name: darling-doctor
         class: DarlingDoctor
         help: Verify manifest/build/deploy alignment before building or booting
+  - file: west_commands/darling_prefix_repair.py
+    commands:
+      - name: darling-prefix-repair
+        class: DarlingPrefixRepair
+        help: Repair Darling prefix boot and guest-test prerequisites
   - file: west_commands/darling_build.py
     commands:
       - name: darling-build

@@ -26,9 +26,13 @@ from __future__ import annotations
 import argparse
 import os
 import subprocess
+import sys
 from pathlib import Path
 
 from west.commands import WestCommand
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from prefix_repair import prefix_boot_prerequisite_problems
 
 _EXTRA_PREFIX_DYLIBS = [
     "libsystem_kernel.dylib",
@@ -222,16 +226,13 @@ class DarlingDoctor(WestCommand):
         self.inf("\n== 2b. prefix boot prerequisites ==")
 
         def check_one(prefix: Path, label: str):
+            problems = prefix_boot_prerequisite_problems(prefix)
+            if problems:
+                for problem in problems:
+                    self._problem(f"{label}: {problem}")
+                return
             for rel in ("private/var/tmp", "libexec/darling/private/var/tmp"):
-                path = prefix / rel
-                if not path.is_dir():
-                    self._problem(f"{label}: {rel} missing; launchd cannot create runtime sockets")
-                    continue
-                mode = path.stat().st_mode & 0o7777
-                if mode != 0o1777:
-                    self._problem(f"{label}: {rel} mode {mode:o}, expected 1777")
-                else:
-                    self._ok(f"{label}: {rel} exists with mode 1777")
+                self._ok(f"{label}: {rel} exists with mode 1777")
 
         check_one(Path(args.prefix), "prefix")
         for extra in args.extra_prefix:

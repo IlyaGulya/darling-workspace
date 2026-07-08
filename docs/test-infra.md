@@ -233,6 +233,24 @@ then supplies `DPREFIX` from `--prefix`, `--prefix existing:/path`,
 `west test --list` never requires those resources; real execution fails before
 launch if a requirement is missing.
 
+If a real run reports missing prefix boot or guest compiler prerequisites, fix
+the prefix through the framework instead of hand-editing it:
+
+```sh
+west darling-prefix-repair --prefix "$HOME/work/darling-prefix"
+west darling-prefix-repair --prefix "$HOME/work/darling-prefix" --check
+west darling-prefix-repair --prefix "$HOME/work/darling-prefix" --cleanup-mounts
+```
+
+The repair command creates the required `private/var/tmp` directories with mode
+`1777` and restores canonical `CommandLineTools`/`DarlingCLT` clang links from
+the versioned CLT already installed in the prefix. `west test` and
+`west darling-doctor` share the same prerequisite checks, so a repaired prefix
+is checked against the same contract that guest metadata tests require. The
+`--cleanup-mounts` mode unmounts stale filesystems left under an otherwise idle
+prefix; `west test` runs the same cleanup after `darling shutdown` and fails the
+test run if mounts remain.
+
 For metadata tests that use `requires: [darling-prefix]`, `west test` also owns
 the resource lock and shutdown path. A real run takes `$DPREFIX/.west-test.lock`
 before launching the test, holds it through cleanup, calls `darling shutdown`
