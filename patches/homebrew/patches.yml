@@ -1947,6 +1947,15 @@ patches:
     repo: darling-workspace
     script: tests/chown_disabled_null_guard_contract.sh
     note: Compiles production fchown/chown/fchownat/lchown stubs and verifies disabled ownership changes return ENOTSUP while NULL path inputs return EFAULT before vchroot/Linux fallback.
+  - name: chown_disabled_null_guard_guest
+    kind: contract
+    env: darling
+    diag: guarded
+    runner: guest-c-fixture
+    repo: darling-workspace
+    script: tests/chown_disabled_null_guard_guest.c
+    ok-marker: CHOWN_DISABLED_NULL_GUARD_GUEST_OK
+    note: "Guest runtime gate for disabled chown-family syscall returns: NULL paths report EFAULT and disabled ownership mutations report ENOTSUP instead of false success."
   github:
     fork:
       repo: IlyaGulya/darling-xnu
