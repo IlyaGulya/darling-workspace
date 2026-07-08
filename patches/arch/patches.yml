@@ -3,6 +3,33 @@ description: Architectural redesign that stacks ON TOP of the perf profile. A0-A
 integration-date: '2026-07-04T00:00:00Z'
 base-profile: perf
 patches:
+- path: libunwind/static-no-jump-tables-for-dyld.patch
+  module: darling/src/external/libunwind
+  source-branch: fix/libunwind-static-no-jump-tables-for-dyld
+  source-base: a91da1a0e262e04eb601152a84228ff733e48422
+  bead: dar-rru4
+  publication-status: blocked
+  publication-blocker: local build-tooling fix for focused dyld/libsystem_kernel validation; needs upstream build review because it changes static libunwind codegen for dyld.
+  source-commit: d5fbc8180ea2e06efa693ee03a768e532a98671f
+  sha256sum: 3c9a977d4af28fd5685edcf8ad84d36cb45a41a854fe721380154c86d2300408
+- path: xnu/ring-committed-unknown-guest.patch
+  module: darling/src/external/xnu
+  source-branch: fix/ring-committed-unknown-guest
+  source-base: d068e65d28bb0c059a0e1f4ea327c2f88c722c6f
+  bead: dar-rpc-correctness-z27x.2
+  publication-status: blocked
+  publication-blocker: ring/duplex transport is still experimental and flag-gated; correctness patch is local until the perf#18 ring ABI is productized/reviewed.
+  source-commit: 8d746cb73e874b057a2db9f453bbd0812b5e46e3
+  sha256sum: 4eaad65fe29eb98866e14eac81160c35a574dad70ba654311598e24a41af2e9d
+- path: xnu/rpc-interruptible-disconnect-status.patch
+  module: darling/src/external/xnu
+  source-branch: fix/rpc-transport-interrupt-status
+  source-base: 8d746cb73e874b057a2db9f453bbd0812b5e46e3
+  bead: dar-rpc-correctness-z27x.6
+  publication-status: blocked
+  publication-blocker: local RPC teardown/interrupt correctness hardening; needs broader fork/signal storm soak before upstreaming.
+  source-commit: aadfa984275b74ad6e6f35d144bff20fe6c14565
+  sha256sum: a46ddd2abd07e5ecdc37dd55c861f4402b0a8c09e29e391078cded4a33bdea04
 - path: darlingserver/a0-arch-redesign.patch
   module: darling/src/external/darlingserver
   source-branch: fix/a0-arch-redesign
@@ -12,3 +39,83 @@ patches:
   publication-blocker: 'A0-ARCH wake/wait protocol redesign (stages 0-3: fuzzer, typed wake tokens, MicroState machine + taped XNU wait-state funnel, interrupt-as-cancellation replacing jumpToResime stack-borrowing). Eliminates the #114 storm-on-condvar SEGV crash class. 40 commits. LANDED, deployed d81b5cf1; synth 16/16, quick gate 19/19, perf A/B no-regression, stage 4 no-go. Wants design review before upstreaming. See dar-a0arch-redesign-253u + tests/A0-ARCH-STAGE{1,2,3}.md.'
   source-commit: 93c70498f3c97f8933af56b6308a8780bbaa5f26
   sha256sum: 8b1d6f2a4bdc5c595f8adb39a3481e7712c7bf6717f48ca0a200d452a4ce897b
+- path: darlingserver/standard-signal-coalescing.patch
+  module: darling/src/external/darlingserver
+  source-branch: fix/standard-signal-coalescing
+  bead: dar-rpc-correctness-z27x.8
+  publication-status: blocked
+  publication-blocker: focused a0 synth gate is currently red independent of this patch; see dar-a0-focused-synth-forkwait-cvstorm-red-swcg
+  source-commit: 695ed8c479df1561fa2f46efde1d0e5c30150103
+  sha256sum: d4a8e94dfbac1906c0e2764915d74f97dba88920e2679a45419f9e387f31f17e
+- path: darlingserver/a0-gate-shellspawn-retry.patch
+  module: darling/src/external/darlingserver
+  source-branch: fix/a0-gate-shellspawn-retry
+  source-base: b7f63db18fe3efaac16286544aa0df1cd13991b3
+  bead: dar-xl0d
+  publication-status: blocked
+  publication-blocker: local a0 gate harness stabilization for cleanboot/shellspawn flakes
+  source-commit: 6e231d6477b334b4bb482b92e00a90661eb7e2f0
+  sha256sum: 98ba25ca417bb755d99b86105f47130373ddc959b31c9e5e84bc8fd632864d1b
+- path: darlingserver/ring-committed-unknown-gate.patch
+  module: darling/src/external/darlingserver
+  source-branch: fix/ring-committed-unknown-gate
+  source-base: 6e231d6477b334b4bb482b92e00a90661eb7e2f0
+  bead: dar-rpc-correctness-z27x.2
+  publication-status: blocked
+  publication-blocker: static contract gate for experimental ring/duplex transport; publish only with the underlying ring ABI review.
+  source-commit: ea28bd095742be30f96b3d73510321f7c8124a51
+  sha256sum: 64ea94c9b9e5a3e6d3c7ef191343a8254a1c6299efa3b0e1f7feb79ff7a301ee
+- path: darlingserver/duct-tape-fail-closed-stubs.patch
+  module: darling/src/external/darlingserver
+  source-branch: fix/duct-tape-fail-closed-stubs
+  source-base: ea28bd095742be30f96b3d73510321f7c8124a51
+  bead: dar-rpc-correctness-z27x.4
+  publication-status: blocked
+  publication-blocker: local fail-closed duct-tape policy sweep; needs broader Darwin-policy parity review before upstreaming.
+  source-commit: e8ad65c9feb96b95551b9eb3ce24daacaad42b83
+  sha256sum: 1e3ea456f90debbb3fdac5061600ccf798d292913d9ed5a396256c04423753d1
+- path: darlingserver/rpc-uds-packed-correlation.patch
+  module: darling/src/external/darlingserver
+  source-branch: fix/rpc-uds-packed-correlation
+  source-base: e8ad65c9feb96b95551b9eb3ce24daacaad42b83
+  bead: dar-rpc-correctness-z27x.1
+  publication-status: blocked
+  publication-blocker: local RPC correctness hardening; needs soak under fork/signal storm and broader UDS/ring transport review before upstreaming.
+  source-commit: 03fbc437f6da90297ef0f3055cea90e2373c3786
+  sha256sum: b7bb60ec1e15006ce53e5e737c36f89c345e8e719aa01ed574ae3b00c48c7d7c
+- path: darlingserver/a0-gate-client-rpc-log.patch
+  module: darling/src/external/darlingserver
+  source-branch: fix/a0-gate-client-rpc-log
+  source-base: 03fbc437f6da90297ef0f3055cea90e2373c3786
+  bead: dar-rpc-correctness-z27x.6
+  publication-status: blocked
+  publication-blocker: local A0 repro instrumentation for the nestwait/interrupt_enter -111 class; not a correctness fix.
+  source-commit: cbb7d64fcd17d8498f2c5f374e3771a26d979db5
+  sha256sum: 64c655f9651af3d3ce831887b3ccfa1a22b5e1a236bf7b60c71d23ac885289a8
+- path: darlingserver/rpc-interruptible-disconnect-eintr.patch
+  module: darling/src/external/darlingserver
+  source-branch: fix/rpc-transport-interrupt-contract
+  source-base: cbb7d64fcd17d8498f2c5f374e3771a26d979db5
+  bead: dar-rpc-correctness-z27x.6
+  publication-status: blocked
+  publication-blocker: local RPC teardown/interrupt correctness hardening; needs broader fork/signal storm soak before upstreaming.
+  source-commit: 9956c99a8228a7540a4cefd9da52517f245d06ad
+  sha256sum: b8f4510c8016e625c0106f307d7099144b283c1ef744dc138f9aa93d519c13ed
+- path: darlingserver/stack-pool-empty-stack-handle.patch
+  module: darling/src/external/darlingserver
+  source-branch: fix/dserver-stack-pool-empty-handle
+  source-base: 9956c99a8228a7540a4cefd9da52517f245d06ad
+  bead: dar-9f8b
+  publication-status: blocked
+  publication-blocker: local darlingserver crash hardening for A0 ring-on fork/wait storm; needs longer soak before upstreaming.
+  source-commit: 142b89c011bc3cae3b9e1d72035d2d0081f6f42b
+  sha256sum: 3477a387be03d4f3f2606c174043bc9816817870c986af85f98240b23dd7c537
+- path: darlingserver/a0-gate-focused-synth-markers.patch
+  module: darling/src/external/darlingserver
+  source-branch: fix/a0-gate-focused-synth-markers
+  source-base: 142b89c011bc3cae3b9e1d72035d2d0081f6f42b
+  bead: dar-9f8b
+  publication-status: blocked
+  publication-blocker: local A0 repro instrumentation for focused ring-on fork/wait crash diagnosis; not a correctness fix.
+  source-commit: c72d9d8412800ed6a9d2e343ed3a3884f87ede51
+  sha256sum: 1e102e56d45708fa57edaad27c98845c0173e65294ebfe14e810ce5a37426b13
