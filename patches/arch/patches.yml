@@ -10,6 +10,16 @@ patches:
   bead: dar-rru4
   publication-status: blocked
   publication-blocker: local build-tooling fix for focused dyld/libsystem_kernel validation; needs upstream build review because it changes static libunwind codegen for dyld.
+  tests:
+  - name: dyld_static_libunwind_link
+    kind: build
+    env: host
+    diag: bare
+    red: true
+    runner: west-build
+    target: src/external/dyld/dyld
+    requires-profile: arch
+    note: Rebuilds dyld, which links libunwind_static and failed before unwind_static used -fno-jump-tables.
   source-commit: d5fbc8180ea2e06efa693ee03a768e532a98671f
   sha256sum: 3c9a977d4af28fd5685edcf8ad84d36cb45a41a854fe721380154c86d2300408
 - path: xnu/ring-committed-unknown-guest.patch

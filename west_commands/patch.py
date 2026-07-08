@@ -315,6 +315,10 @@ class DarlingPatch(WestCommand):
                     errors.append(f"tests[{index}] requires must be a list of names")
                 elif any(name not in {"darling-prefix"} for name in required):
                     errors.append(f"tests[{index}] has unsupported requires resource")
+            if test.get("requires-profile") is not None and not isinstance(
+                test.get("requires-profile"), str
+            ):
+                errors.append(f"tests[{index}] requires-profile must be a string")
             if test.get("red-proof") is not None:
                 proof = test.get("red-proof")
                 if not isinstance(proof, dict):

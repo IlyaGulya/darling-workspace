@@ -178,6 +178,12 @@ files plus the touched entry's `source-commit` and `sha256sum` fields in
 `patches.yml`; it must not reserialize unrelated entries or rewrite block
 scalars/quoting across the profile.
 
+Some build gates need a consistent patch profile rather than the developer's
+current mixture of fix branches. Mark those with `requires-profile: arch` (or
+another profile name). Until the materialized-profile runner exists, `west test`
+will list those tests but will refuse to execute them against an arbitrary mixed
+checkout.
+
 ## Problem
 
 Regression reproducers for fixed bugs currently live as throwaway `/tmp/run-*.sh`

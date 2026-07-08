@@ -243,6 +243,7 @@ class DarlingTest(WestCommand):
                 "cwd": Path(self.topdir),
                 "args": test["command"],
                 "shell": True,
+                "requires_profile": test.get("requires-profile"),
             }
         if test.get("ctest-label"):
             return {
@@ -251,6 +252,7 @@ class DarlingTest(WestCommand):
                 "cwd": None,
                 "args": None,
                 "shell": False,
+                "requires_profile": test.get("requires-profile"),
             }
 
         runner = test.get("runner", "script" if test.get("script") else None)
@@ -270,6 +272,7 @@ class DarlingTest(WestCommand):
                 "cwd": Path(self.topdir),
                 "args": args,
                 "shell": False,
+                "requires_profile": test.get("requires-profile"),
             }
         if runner == "script":
             repo = test.get("repo", patch["module"])
@@ -300,6 +303,7 @@ class DarlingTest(WestCommand):
                 "env": env,
                 "requires_resources": list(test.get("requires", [])),
                 "requires_env": list(test.get("requires-env", [])),
+                "requires_profile": test.get("requires-profile"),
             }
 
         self.die(f"{patch['path']}: unsupported test runner {runner!r}")
@@ -328,6 +332,7 @@ class DarlingTest(WestCommand):
                     "profile test-tree discovery is implemented; use runner: script "
                     "or runner: west-build for runnable local metadata"
                 )
+            self._check_requires_profile(patch, invocation)
             script_path = invocation.get("script_path")
             if script_path is not None and not script_path.is_file():
                 self.die(f"{patch['path']}: test script not found: {script_path}")
@@ -389,6 +394,17 @@ class DarlingTest(WestCommand):
         ):
             missing.append("darling-prefix (--prefix, --prefix-profile, or DPREFIX)")
         return missing
+
+    def _check_requires_profile(self, patch, invocation) -> None:
+        required = invocation.get("requires_profile")
+        if not required:
+            return
+        self.die(
+            f"{patch['path']}: test requires materialized patch profile {required!r}; "
+            "current mixed checkout execution is intentionally blocked. "
+            "Implement/run the materialized-profile runner tracked by "
+            "dar-test-infra-sp5.11.12."
+        )
 
     def _run_source_base_proof(self, patch, proof, invocation) -> int:
         if invocation["shell"]:
@@ -466,6 +482,7 @@ class DarlingTest(WestCommand):
                     f"{patch['path']}: RED proof mode {mode!r} is not implemented; "
                     "use mode: self or mode: source-base"
                 )
+            self._check_requires_profile(patch, invocation)
             script_path = invocation.get("script_path")
             if script_path is not None and not script_path.is_file():
                 self.die(f"{patch['path']}: test script not found: {script_path}")
