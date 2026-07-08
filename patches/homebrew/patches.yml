@@ -791,20 +791,19 @@ patches:
   publication-status: blocked
   publication-blocker: short-buffer overflow and attribute encoder correctness; see dar-q95.29.1
   tests:
-  - name: getattrlist_name_objtype_model
+  - name: getattrlist_pack_name_objtype_contract
     kind: contract
-    coverage-tier: model
+    coverage-tier: compile
     env: host
     diag: bare
     red: true
     red-proof:
-      mode: self
-      why-self: The model drives NAME|OBJTYPE getattrlist requests through old unsupported and fixed packed-basename/object-type semantics.
-    runner: python
+      mode: source-base
+      source-env: XNU_SRC_ROOT
+    runner: script
     repo: darling-workspace
-    script: tests/xnu_behavior_models.py
-    args: [getattrlist-name-objtype]
-    note: Host behavioral model; old getattrlist rejects ATTR_CMN_NAME|ATTR_CMN_OBJTYPE, fixed packing returns basename and object type.
+    script: tests/getattrlist_pack_contract.sh
+    note: Compiles against the production shared getattrlist packer and checks NAME|OBJTYPE record layout, basename references, object type mapping, and size accounting.
   pr-draft: pr-drafts/xnu-getattrlist-name-objtype.md
   github:
     fork:
@@ -824,20 +823,19 @@ patches:
   publication-status: blocked
   publication-blocker: duplicated non-conformant bulk attribute encoder; see dar-q95.29.1
   tests:
-  - name: getattrlistbulk_model
+  - name: getattrlistbulk_pack_contract
     kind: contract
-    coverage-tier: model
+    coverage-tier: compile
     env: host
     diag: bare
     red: true
     red-proof:
-      mode: self
-      why-self: The model drives bulk directory attribute iteration through old ENOTSUP and fixed packed-entry/continuation semantics.
-    runner: python
+      mode: source-base
+      source-env: XNU_SRC_ROOT
+    runner: script
     repo: darling-workspace
-    script: tests/xnu_behavior_models.py
-    args: [getattrlistbulk]
-    note: Host behavioral model; old getattrlistbulk returns ENOTSUP, fixed path skips dot entries, packs visible names, and preserves continuation.
+    script: tests/getattrlist_pack_contract.sh
+    note: Compiles against the production shared packer and checks RETURNED_ATTRS subset reporting plus multiple length-prefixed records, the contract getattrlistbulk uses for continuation.
   pr-draft: pr-drafts/xnu-getattrlistbulk.md
   github:
     fork:
