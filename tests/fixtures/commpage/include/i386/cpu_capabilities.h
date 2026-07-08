@@ -1,15 +1,3 @@
-#!/usr/bin/env bash
-set -euo pipefail
-
-src="${DARLING_SRC_ROOT:?set DARLING_SRC_ROOT}"
-commpage_c="$src/src/startup/mldr/commpage.c"
-test -f "$commpage_c"
-
-tmp="$(mktemp -d)"
-trap 'rm -rf "$tmp"' EXIT
-mkdir -p "$tmp/include/i386"
-
-cat > "$tmp/include/i386/cpu_capabilities.h" <<'H_EOF'
 #pragma once
 #define _COMM_PAGE_START_ADDRESS        0x00007fffffe00000ULL
 #define _COMM_PAGE64_BASE_ADDRESS       0x00007fffffe00000ULL
@@ -63,49 +51,3 @@ cat > "$tmp/include/i386/cpu_capabilities.h" <<'H_EOF'
 #define kHasAVX512VL 0x0000200000000000ULL
 #define kHasSHA 0x0000400000000000ULL
 #define kHasAVX512VBMI 0x0000800000000000ULL
-H_EOF
-
-cat > "$tmp/harness.c" <<'C_EOF'
-#include <stdint.h>
-#include <stdio.h>
-#include <sys/mman.h>
-#include <unistd.h>
-
-#include "src/startup/mldr/commpage.h"
-#include <i386/cpu_capabilities.h>
-
-int main(void) {
-	void *want = (void *)_COMM_PAGE64_BASE_ADDRESS;
-	void *pre = mmap(want, _COMM_PAGE64_AREA_LENGTH, PROT_READ | PROT_WRITE,
-	    MAP_PRIVATE | MAP_ANONYMOUS | MAP_FIXED, -1, 0);
-	if (pre != want) {
-		perror("premap canonical commpage");
-		return 2;
-	}
-
-	((uint8_t *)want)[_COMM_PAGE_PHYSICAL_CPUS - _COMM_PAGE_START_ADDRESS] = 0;
-	commpage_setup(1);
-
-	uint8_t physical =
-	    ((uint8_t *)want)[_COMM_PAGE_PHYSICAL_CPUS - _COMM_PAGE_START_ADDRESS];
-	uint16_t version =
-	    *(uint16_t *)((uint8_t *)want + (_COMM_PAGE_VERSION - _COMM_PAGE_START_ADDRESS));
-
-	if (physical == 0) {
-		fprintf(stderr, "canonical commpage was not populated\n");
-		return 1;
-	}
-	if (version != _COMM_PAGE_THIS_VERSION) {
-		fprintf(stderr, "bad commpage version %u\n", version);
-		return 1;
-	}
-	return 0;
-}
-C_EOF
-
-cc -std=gnu11 -Wall -Wextra -Werror \
-	-I "$tmp/include" \
-	-I "$src" \
-	-I "$src/src/startup/mldr" \
-	"$tmp/harness.c" "$commpage_c" -o "$tmp/commpage-contract"
-"$tmp/commpage-contract"

@@ -2387,9 +2387,21 @@ patches:
     red-proof:
       mode: source-base
       source-env: DARLING_SRC_ROOT
-    runner: script
+    runner: c-fixture
     repo: darling-workspace
-    script: tests/commpage_map_fixed_contract.sh
+    script: tests/commpage_map_fixed_contract.c
+    source-files:
+    - src/startup/mldr/commpage.c
+    fixture-include-dirs:
+    - tests/fixtures/commpage/include
+    include-dirs:
+    - .
+    - src/startup/mldr
+    compile-flags:
+    - -std=gnu11
+    - -Wall
+    - -Wextra
+    - -Werror
     note: Host compile/run RED->GREEN contract for production commpage_setup; an occupied canonical slot must still be populated at the canonical address.
   github:
     fork:
