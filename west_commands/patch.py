@@ -526,6 +526,11 @@ class DarlingPatch(WestCommand):
                         errors.append(
                             f"tests[{index}] red-proof guest-runtime-deploy requires runner: guest-c-fixture"
                         )
+                    bad_profile = proof.get("bad-profile")
+                    if bad_profile is not None and bad_profile != "current-minus-patch":
+                        errors.append(
+                            f"tests[{index}] red-proof guest-runtime-deploy bad-profile must be current-minus-patch"
+                        )
                     artifacts = proof.get("runtime-artifacts")
                     if not isinstance(artifacts, list) or not artifacts:
                         errors.append(
