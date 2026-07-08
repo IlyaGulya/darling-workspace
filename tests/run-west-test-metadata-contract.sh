@@ -77,6 +77,17 @@ patches:
     ok-marker: WEST_GUEST_C_FIXTURE_OK
     timeout-seconds: 20
     compile-flags: [-std=gnu11, -Wall, -Wextra, -Werror]
+- path: test/source-build-fixture.patch
+  module: darling-workspace
+  tests:
+  - name: west_source_build_fixture_contract
+    kind: contract
+    env: host
+    diag: bare
+    runner: source-build-fixture
+    script: tests/guest_c_fixture_contract.c
+    build-commands: [":"]
+    run-commands: [":"]
 YAML
 
 cat >"$tmp_invalid_profile/patches.yml" <<'YAML'
@@ -212,7 +223,7 @@ c_fixture="$(
 printf '%s\n' "$c_fixture" | grep -q \
 	'cc -std=gnu11 -Wall -Wextra -Werror -I src -I <generated-stubs> tests/c_fixture_contract.c -o' ||
 	fail 'c-fixture metadata did not resolve to a compile-and-run command'
-printf '%s\n' "$source_only_check" | grep -q 'test metadata: 4 covered (runtime 1, compile 1, host 1, model 1)' ||
+printf '%s\n' "$source_only_check" | grep -q 'test metadata: 5 covered (runtime 1, compile 1, host 2, model 1)' ||
 	fail 'coverage-tier summary did not classify runtime/host/compile/model coverage'
 
 invalid_guest_red_check="$(west patch check --profile __metadata_invalid_contract 2>&1)"
@@ -242,6 +253,18 @@ printf '%s\n' "$guest_c_fixture" | grep -q \
 	fail 'guest-c-fixture metadata did not resolve to a guest compile-and-run command'
 printf '%s\n' "$source_only_check" | grep -q 'RUNTIME   test/guest-c-fixture.patch' ||
 	fail 'guest-c-fixture patch was not reported as RUNTIME'
+printf '%s\n' "$source_only_check" | grep -q 'HOST      test/source-build-fixture.patch' ||
+	fail 'source-build-fixture patch was not reported as HOST'
+
+source_build_fixture="$(
+	west test --profile __metadata_contract \
+		--patch test/source-build-fixture.patch \
+		--list
+)"
+
+printf '%s\n' "$source_build_fixture" | grep -q \
+	'<archive-source> && : && :' ||
+	fail 'source-build-fixture metadata did not resolve to an archive/build/run command'
 
 fake_darling="$(mktemp)"
 cat >"$fake_darling" <<'SH'
