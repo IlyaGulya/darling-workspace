@@ -25,6 +25,7 @@ patches:
   tests:
   - name: source_only_contract
     kind: source-contract
+    coverage-tier: source
     env: host
     diag: bare
     red: true
@@ -33,6 +34,20 @@ patches:
       source-env: DARLING_SRC_ROOT
     runner: python
     script: tests/source_only_contract.py
+- path: test/model.patch
+  module: darling
+  tests:
+  - name: model_contract
+    kind: contract
+    coverage-tier: model
+    env: host
+    diag: bare
+    red: true
+    red-proof:
+      mode: self
+      why-self: Metadata-only fixture that verifies model-tier reporting.
+    runner: python
+    script: tests/model_contract.py
 - path: test/c-fixture.patch
   module: darling
   tests:
@@ -152,6 +167,10 @@ printf '%s\n' "$source_only_check" | grep -q 'missing behavioral test' ||
 if printf '%s\n' "$source_only_check" | grep -q 'TESTED    test/source-only.patch'; then
 	fail 'source-contract-only patch was incorrectly counted as TESTED'
 fi
+printf '%s\n' "$source_only_check" | grep -q 'MODEL     test/model.patch' ||
+	fail 'model-tier patch was not reported as MODEL'
+printf '%s\n' "$source_only_check" | grep -q 'COMPILE   test/c-fixture.patch' ||
+	fail 'c-fixture patch was not reported as COMPILE'
 
 c_fixture="$(
 	west test --profile __metadata_contract \
@@ -162,7 +181,7 @@ c_fixture="$(
 printf '%s\n' "$c_fixture" | grep -q \
 	'cc -std=gnu11 -Wall -Wextra -Werror -I src -I <generated-stubs> tests/c_fixture_contract.c -o' ||
 	fail 'c-fixture metadata did not resolve to a compile-and-run command'
-printf '%s\n' "$source_only_check" | grep -q 'TESTED    test/c-fixture.patch' ||
-	fail 'c-fixture behavioral test was not counted as TESTED'
+printf '%s\n' "$source_only_check" | grep -q 'test metadata: 3 covered (runtime 0, compile 1, host 1, model 1)' ||
+	fail 'coverage-tier summary did not classify host/compile/model coverage'
 
 printf 'PASS west-test-metadata-contract\n'
