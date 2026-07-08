@@ -50,10 +50,20 @@ refs, PR drafts, and agent handoff.
   a test needs current test assets executed against a bad/source-base tree.
   Prefer `red-proof: {mode: source-base}` when a regression can be proven
   against the bad source tree. `red-proof: {mode: self}` must include
-  `why-self:` and is only for tests with an explicit bad/good model,
-  generator/source-shape oracle, or similarly self-contained negative case.
+  `why-self:` and is only for tests with an explicit bad/good behavioral model,
+  generator execution oracle, or similarly self-contained negative case that
+  executes behavior rather than matching source text.
   Tests that only prove the current/fixed tree stays GREEN must leave `red`
   unset.
+- Do not close patch coverage with source matching. Tests that grep, parse, or
+  assert that specific code text exists are audit checks only; they must not be
+  counted as the patch's behavioral test and must not be recorded as `kind:
+  contract` to make `west patch check` show TESTED. A patch is covered only by
+  a test that executes behavior: guest/runtime test, C/host fixture, model test
+  that drives the state machine, generator test that runs the generator and
+  validates generated behavior, or a build/compile/link test that exercises the
+  changed build contract. If behavior cannot yet be executed, leave the patch
+  MISSING/SOURCE and create a task instead of faking coverage.
 - Prefer shared test helpers over ad hoc shell boilerplate. Static contract
   scripts should use a local `contract-test-lib.sh`; Darling guest C verdict
   tests should use a local `guest-verdict-test-lib.sh` and declare runtime
