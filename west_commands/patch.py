@@ -285,6 +285,7 @@ class DarlingPatch(WestCommand):
                 or test.get("source-file")
                 or test.get("target")
                 or test.get("runner") == "cmake-configure-fixture"
+                or test.get("runner") == "darling-cmake-target-fixture"
             ):
                 errors.append(
                     f"tests[{index}] needs script, source-script, source-file, target, ctest-label, or command override"
@@ -295,6 +296,7 @@ class DarlingPatch(WestCommand):
                 "python",
                 "cmake-configure-fixture",
                 "c-fixture",
+                "darling-cmake-target-fixture",
                 "guest-c-fixture",
                 "object-symbol-fixture",
                 "source-script-fixture",
@@ -303,8 +305,8 @@ class DarlingPatch(WestCommand):
                 "ctest",
             }:
                 errors.append(f"tests[{index}] invalid runner {runner!r}")
-            if test.get("target") and runner not in {None, "west-build"}:
-                errors.append(f"tests[{index}] target requires runner: west-build")
+            if test.get("target") and runner not in {None, "west-build", "darling-cmake-target-fixture"}:
+                errors.append(f"tests[{index}] target requires runner: west-build or darling-cmake-target-fixture")
             if test.get("script") and runner not in {
                 None,
                 "script",
@@ -403,6 +405,33 @@ class DarlingPatch(WestCommand):
                     errors.append(f"tests[{index}] fake-tools must be a mapping")
                 if test.get("expect") is not None and not isinstance(test.get("expect"), dict):
                     errors.append(f"tests[{index}] expect must be a mapping")
+            if runner == "darling-cmake-target-fixture":
+                if not test.get("target"):
+                    errors.append(f"tests[{index}] darling-cmake-target-fixture requires target")
+                for key in (
+                    "fixture-files",
+                    "cmake-args",
+                    "build-args",
+                    "fallback-executable-sources",
+                    "fallback-include-dirs",
+                    "fallback-link-libraries",
+                    "required-compile-options",
+                ):
+                    if test.get(key) is not None and not isinstance(test.get(key), list):
+                        errors.append(f"tests[{index}] {key} must be a list")
+                checks = test.get("required-compile-options") or []
+                if not all(isinstance(check, dict) for check in checks):
+                    errors.append(f"tests[{index}] required-compile-options must be a list of mappings")
+                else:
+                    for check_index, check in enumerate(checks):
+                        if not check.get("source"):
+                            errors.append(
+                                f"tests[{index}].required-compile-options[{check_index}] requires source"
+                            )
+                        if check.get("options") is not None and not isinstance(check.get("options"), list):
+                            errors.append(
+                                f"tests[{index}].required-compile-options[{check_index}] options must be a list"
+                            )
             if test.get("args") is not None and not isinstance(test.get("args"), list):
                 errors.append(f"tests[{index}] args must be a list")
             if test.get("env-vars") is not None and not isinstance(test.get("env-vars"), dict):
