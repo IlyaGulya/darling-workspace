@@ -549,14 +549,26 @@ patches:
       base: main
       state: local
 - path: xnu/psynch-negative-errno.patch
-  sha256sum: 1ef9225f37a3421caa4e939ad9a409e6c4ec76b24ae29a4268f9411ae33a6c33
+  sha256sum: a82e8b677420bf27333639d8da20ed9ca884ccb47bde9a68a3c4da01aa3de4bc
   module: darling/src/external/xnu
   source-branch: fix/psynch-negative-errno
   source-base: 5f26a4c2365d9774b5a1e66ae7da20b61ab6d2db
-  source-commit: 0d7844f548b9c04a259fcb00a9556cdf9b39d9ef
+  source-commit: 82bee19a03e33fa3aea286c6cfaff090ea0b483e
   bead: dar-q95.19
   publication-status: blocked
-  publication-blocker: private negative-error ABI must be fixed at syscall boundary; see dar-q95.29.2
+  publication-blocker: broader psynch publication still depends on dar-q95.29.2 runtime/stress coverage across condvar/mutex/rwlock, but this patch now routes wait errors through cerror instead of the Darling-local negative augmented return path
+  tests:
+  - name: psynch_return_contract
+    kind: contract
+    env: host
+    diag: bare
+    red: true
+    red-proof:
+      mode: source-base
+      source-env: XNU_SRC_ROOT
+    runner: script
+    script: darling/src/libsystem_kernel/tests/run-psynch-return-contract.sh
+    note: Host contract for Darwin-style psynch wait cerror propagation preserving augmented status bits.
   pr-draft: pr-drafts/xnu-psynch-negative-errno.md
   github:
     fork:
