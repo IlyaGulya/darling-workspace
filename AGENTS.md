@@ -73,6 +73,13 @@ refs, PR drafts, and agent handoff.
   validates generated behavior, or a build/compile/link test that exercises the
   changed build contract. If behavior cannot yet be executed, leave the patch
   MISSING/SOURCE and create a task instead of faking coverage.
+- For build-system patches, the RED proof must exercise the build path and
+  target contract that the patch actually changes. Do not prove a CMake target
+  fix through an alternate autotools/manual compile path, and do not inject the
+  fixed compiler/linker flag from test metadata in a way that makes the bad
+  source tree pass. If current test assets were added by the patch, the runner
+  may copy those assets into a bad/source-base build tree, but the bad tree must
+  still fail because of the old build behavior, not because a file is missing.
 - Do not run cleanup/leak assertion contracts in parallel with commands that
   legitimately create temporary worktrees or prefixes, such as
   `west test --prove-red` or materialized-profile runs. Run those checks

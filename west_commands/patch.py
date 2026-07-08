@@ -292,6 +292,7 @@ class DarlingPatch(WestCommand):
                 "python",
                 "c-fixture",
                 "guest-c-fixture",
+                "source-build-fixture",
                 "west-build",
                 "ctest",
             }:
@@ -304,9 +305,10 @@ class DarlingPatch(WestCommand):
                 "python",
                 "c-fixture",
                 "guest-c-fixture",
+                "source-build-fixture",
             }:
                 errors.append(
-                    f"tests[{index}] script requires runner: script, python, c-fixture, or guest-c-fixture"
+                    f"tests[{index}] script requires runner: script, python, c-fixture, guest-c-fixture, or source-build-fixture"
                 )
             if test.get("script"):
                 repo_ref = test.get("repo", patch["module"])
@@ -327,6 +329,17 @@ class DarlingPatch(WestCommand):
                 for key in ("compile-flags", "link-flags", "run-args"):
                     if test.get(key) is not None and not isinstance(test.get(key), list):
                         errors.append(f"tests[{index}] {key} must be a list")
+            if runner == "source-build-fixture":
+                if not test.get("script"):
+                    errors.append(f"tests[{index}] source-build-fixture requires script")
+                for key in ("build-commands", "run-commands"):
+                    if test.get(key) is not None and (
+                        not isinstance(test.get(key), list)
+                        or not all(isinstance(command, str) for command in test.get(key))
+                    ):
+                        errors.append(f"tests[{index}] {key} must be a list of strings")
+                if not test.get("run-commands"):
+                    errors.append(f"tests[{index}] source-build-fixture requires run-commands")
             if test.get("args") is not None and not isinstance(test.get("args"), list):
                 errors.append(f"tests[{index}] args must be a list")
             if test.get("env-vars") is not None and not isinstance(test.get("env-vars"), dict):

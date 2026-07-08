@@ -696,6 +696,44 @@ class DarlingTest(WestCommand):
                 "name": test.get("name", patch["path"]),
                 "timeout_seconds": int(test.get("timeout-seconds", 600)),
             }
+        if runner == "source-build-fixture":
+            repo = test.get("repo", patch["module"])
+            script = test["script"]
+            cwd = self._project_path(repo)
+            script_path = cwd / script
+            env = None
+            if test.get("env-vars"):
+                env = os.environ.copy()
+                env.update({str(k): str(v) for k, v in test["env-vars"].items()})
+            build_commands = [str(item) for item in test.get("build-commands", [])]
+            run_commands = [str(item) for item in test.get("run-commands", [])]
+            display_steps = [
+                "<archive-source>",
+                *build_commands,
+                *run_commands,
+            ]
+            display = f"cd {quote(repo)} && " + " && ".join(display_steps)
+            return {
+                "key": f"source-build-fixture:{repo}:{script}",
+                "display": display,
+                "cwd": cwd,
+                "script_path": script_path,
+                "args": None,
+                "shell": False,
+                "env": env,
+                "source_build_fixture": True,
+                "build_commands": build_commands,
+                "run_commands": run_commands,
+                "source_root_env": source_env,
+                "source_env": source_env,
+                "source_module": source_module,
+                "requires_resources": list(test.get("requires", [])),
+                "requires_env": list(test.get("requires-env", [])),
+                "requires_profile": test.get("requires-profile"),
+                "diag": self._resolved_diag(test),
+                "name": test.get("name", patch["path"]),
+                "timeout_seconds": int(test.get("timeout-seconds", 600)),
+            }
         if runner == "guest-c-fixture":
             repo = test.get("repo", patch["module"])
             script = test["script"]
@@ -915,6 +953,8 @@ class DarlingTest(WestCommand):
             return self._run_guest_c_fixture(invocation, env=env)
         if invocation.get("c_fixture"):
             return self._run_c_fixture(invocation, env=env)
+        if invocation.get("source_build_fixture"):
+            return self._run_source_build_fixture(invocation, env=env)
         result = subprocess.run(
             self._debug_runner_args(invocation),
             cwd=invocation["cwd"],
@@ -966,6 +1006,75 @@ class DarlingTest(WestCommand):
                 env=run_env,
                 check=False,
             ).returncode
+
+    def _run_source_build_fixture(self, invocation, env=None) -> int:
+        if invocation.get("diag", "bare") != "bare":
+            self.die(f"{invocation['name']}: source-build-fixture currently supports diag:bare only")
+        run_env = env if env is not None else invocation.get("env")
+        if not run_env:
+            run_env = os.environ.copy()
+        else:
+            run_env = dict(run_env)
+        source_root = invocation["cwd"]
+        source_root_env = invocation.get("source_root_env")
+        if source_root_env and run_env.get(source_root_env):
+            source_root = Path(run_env[source_root_env])
+        relative_script = invocation["script_path"].relative_to(invocation["cwd"])
+        fixture_path = invocation["script_path"]
+        if not fixture_path.is_file():
+            source_fixture = source_root / relative_script
+            if source_fixture.is_file():
+                fixture_path = source_fixture
+            else:
+                self.die(f"{invocation['name']}: fixture not found: {fixture_path}")
+        with tempfile.TemporaryDirectory(prefix=f"west-source-build-{invocation['name']}-") as temp:
+            tempdir = Path(temp)
+            build_root = tempdir / "source"
+            build_root.mkdir()
+            archive = subprocess.Popen(
+                ["git", "archive", "--format=tar", "HEAD"],
+                cwd=source_root,
+                stdout=subprocess.PIPE,
+            )
+            try:
+                tar = subprocess.run(
+                    ["tar", "-C", str(build_root), "-xf", "-"],
+                    stdin=archive.stdout,
+                    check=False,
+                )
+            finally:
+                if archive.stdout is not None:
+                    archive.stdout.close()
+            archive_rc = archive.wait()
+            if archive_rc or tar.returncode:
+                return archive_rc or tar.returncode
+            build_fixture = build_root / relative_script
+            if not build_fixture.is_file():
+                build_fixture.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copy2(fixture_path, build_fixture)
+            child_env = dict(run_env)
+            child_env["WEST_TEST_TMP"] = str(tempdir)
+            child_env["WEST_TEST_SOURCE_ROOT"] = str(build_root)
+            timeout_seconds = int(invocation.get("timeout_seconds", 600))
+            for command in [*invocation.get("build_commands", []), *invocation.get("run_commands", [])]:
+                self.inf(f"  source-build-fixture: {command}")
+                try:
+                    result = subprocess.run(
+                        ["/bin/bash", "-lc", command],
+                        cwd=build_root,
+                        env=child_env,
+                        check=False,
+                        timeout=timeout_seconds,
+                    )
+                except subprocess.TimeoutExpired:
+                    self.err(
+                        f"  source-build-fixture timed out after "
+                        f"{timeout_seconds}s: {command}"
+                    )
+                    return 124
+                if result.returncode:
+                    return result.returncode
+            return 0
 
     def _run_guest_c_fixture(self, invocation, env=None) -> int:
         run_env = env if env is not None else invocation.get("env")
