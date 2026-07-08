@@ -994,20 +994,19 @@ patches:
     Blocker: full brew-green end-to-end RC still being confirmed; also overlaps the
     dar-gwn.1.5 sigexc leg (re-opened) -- reconcile before publish.
   tests:
-  - name: sigexc_default_resend_self_model
+  - name: sigexc_default_resend_self_contract
     kind: contract
-    coverage-tier: model
+    coverage-tier: compile
     env: host
     diag: bare
     red: true
     red-proof:
-      mode: self
-      why-self: The model drives default fatal signal resend through old process-group and fixed self-target semantics.
-    runner: python
+      mode: source-base
+      source-env: XNU_SRC_ROOT
+    runner: script
     repo: darling-workspace
-    script: tests/xnu_behavior_models.py
-    args: [sigexc-default-resend-self]
-    note: Host behavioral model; old default resend signals the process group, fixed resend targets only the crashing thread.
+    script: tests/sigexc_default_resend_self_contract.sh
+    note: Compiles real sigexc_handler and verifies the fatal default-action path re-raises with tgkill(self pid, self tid, signal) instead of kill(0, signal) process-group broadcast.
   pr-draft: pr-drafts/xnu-sigexc-default-resend-self.md
   github:
     fork:
