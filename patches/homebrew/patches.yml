@@ -1919,6 +1919,43 @@ patches:
       repo: darlinghq/darling-xnu
       base: main
       state: local
+- path: xnu/chown-disabled-null-guard.patch
+  sha256sum: 5e62dae9facde57badb825a2ad067e04c6a6a0959f6b504bcbb7d8dc6e82f88a
+  module: darling/src/external/xnu
+  source-branch: fix/chown-disabled-null-guard
+  source-base: 559d6bf31f36f0c28ef609c73346ca1734961fc4
+  source-commit: b9e995ad224e566db505072a166f70423225ea51
+  bead: dar-gyvb
+  publication-status: blocked
+  publication-blocker: >-
+    Local correctness follow-up to the disabled chown stubs documented by
+    eunion-19. fchown/fchownat/lchown must not report success when ownership
+    mutation is deliberately disabled for E-UNION template-safety reasons;
+    return ENOTSUP for the disabled operation and EFAULT for NULL path inputs.
+    Keep blocked until the broader ownership mutation policy is reviewed.
+  tests:
+  - name: chown_disabled_null_guard_contract
+    kind: contract
+    coverage-tier: compile
+    env: host
+    diag: bare
+    red: true
+    red-proof:
+      mode: source-base
+      source-env: XNU_SRC_ROOT
+    runner: script
+    repo: darling-workspace
+    script: tests/chown_disabled_null_guard_contract.sh
+    note: Compiles production fchown/chown/fchownat/lchown stubs and verifies disabled ownership changes return ENOTSUP while NULL path inputs return EFAULT before vchroot/Linux fallback.
+  github:
+    fork:
+      repo: IlyaGulya/darling-xnu
+      base: preupstream/main
+      state: local
+    upstream:
+      repo: darlinghq/darling-xnu
+      base: main
+      state: local
 - path: xnu/eunion-20-ftruncate-fd-copyup.patch
   sha256sum: 4b8fb45a20e330cf78e7f9c0b4a81a2210bc957504eb763182cebf7c81a2925e
   module: darling/src/external/xnu
