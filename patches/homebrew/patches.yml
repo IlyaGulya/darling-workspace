@@ -1042,20 +1042,19 @@ patches:
     SI_USER, observed as SIGFPE handler=SIG_DFL) still ends the same storm, so
     full from-source brew end-to-end is not yet green.
   tests:
-  - name: ulock_wait_eintr_retry_model
+  - name: ulock_eintr_retry_contract
     kind: contract
-    coverage-tier: model
+    coverage-tier: compile
     env: host
     diag: bare
     red: true
     red-proof:
-      mode: self
-      why-self: The model drives untimed ulock wait outcomes through old leaked-EINTR and fixed retry semantics.
-    runner: python
+      mode: source-base
+      source-env: XNU_SRC_ROOT
+    runner: script
     repo: darling-workspace
-    script: tests/xnu_behavior_models.py
-    args: [ulock-wait-eintr-retry]
-    note: Host behavioral model; old untimed ulock wait leaks EINTR, fixed wait retries EINTR internally.
+    script: tests/ulock_eintr_retry_contract.sh
+    note: Compiles production ulock_wait/ulock_wake with a fake futex backend and checks untimed EINTR retry, timed EINTR passthrough, clean wake errno, and wake success behavior.
   pr-draft: pr-drafts/xnu-ulock-wait-eintr-retry.md
   github:
     fork:
