@@ -2385,9 +2385,26 @@ patches:
     red-proof:
       mode: source-base
       source-env: DARLING_SRC_ROOT
-    runner: script
-    repo: darling-workspace
-    script: tests/build_drift_gate_contract.sh
+    runner: cmake-configure-fixture
+    repo: darling
+    configure-args:
+    - -DDARLING_SKIP_DRIFT_GATE=OFF
+    marker-files:
+    - path: ../darling-workspace/patches/homebrew/patches.yml
+      content: "patches: []\n"
+    fake-tools:
+      west:
+        stderr: "fake drift from test west\n"
+        returncode: 42
+        log-args: true
+    expect:
+      returncode: nonzero
+      output-contains:
+      - patchset DRIFT
+      - fake drift from test west
+      tool-args-contains:
+        west:
+        - patch status --strict
     note: Host RED->GREEN contract that CMake configure invokes west patch status --strict and fails with the drift-gate diagnostic.
   github:
     fork:

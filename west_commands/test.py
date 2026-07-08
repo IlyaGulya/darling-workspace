@@ -872,6 +872,59 @@ class DarlingTest(WestCommand):
                 "name": test.get("name", patch["path"]),
                 "timeout_seconds": int(test.get("timeout-seconds", 600)),
             }
+        if runner == "cmake-configure-fixture":
+            repo = test.get("repo", patch["module"])
+            cwd = self._project_path(repo)
+            env = None
+            if test.get("env-vars"):
+                env = os.environ.copy()
+                env.update({str(k): str(v) for k, v in test["env-vars"].items()})
+            configure_args = [str(arg) for arg in test.get("configure-args", [])]
+            fake_tools = {
+                str(name): {
+                    "stdout": str(spec.get("stdout", "")),
+                    "stderr": str(spec.get("stderr", "")),
+                    "returncode": int(spec.get("returncode", 0)),
+                    "log_args": bool(spec.get("log-args", False)),
+                }
+                for name, spec in (test.get("fake-tools") or {}).items()
+            }
+            display = (
+                f"cd {quote(repo)} && <cmake-configure-fixture> "
+                f"cmake -S <source> -B <temp>/build "
+                f"{shell_join(configure_args)}"
+            )
+            return {
+                "key": (
+                    f"cmake-configure-fixture:{repo}:"
+                    f"{repr(configure_args)}:{repr(fake_tools)}"
+                ),
+                "display": display,
+                "cwd": cwd,
+                "args": None,
+                "shell": False,
+                "env": env,
+                "cmake_configure_fixture": True,
+                "configure_args": configure_args,
+                "fake_tools": fake_tools,
+                "marker_files": [
+                    {
+                        "path": str(marker["path"]),
+                        "content": str(marker.get("content", "")),
+                    }
+                    for marker in test.get("marker-files", [])
+                ],
+                "expect": test.get("expect", {}),
+                "source_root_env": source_env,
+                "source_env": source_env,
+                "source_module": source_module,
+                "requires_resources": list(test.get("requires", [])),
+                "requires_env": list(test.get("requires-env", [])),
+                "requires_profile": test.get("requires-profile"),
+                "diag": self._resolved_diag(test),
+                "name": test.get("name", patch["path"]),
+                "timeout_seconds": int(test.get("timeout-seconds", 600)),
+            }
         if runner == "guest-c-fixture":
             repo = test.get("repo", patch["module"])
             script = test["script"]
@@ -1097,6 +1150,8 @@ class DarlingTest(WestCommand):
             return self._run_source_build_fixture(invocation, env=env)
         if invocation.get("source_script_fixture"):
             return self._run_source_script_fixture(invocation, env=env)
+        if invocation.get("cmake_configure_fixture"):
+            return self._run_cmake_configure_fixture(invocation, env=env)
         result = subprocess.run(
             self._debug_runner_args(invocation),
             cwd=invocation["cwd"],
@@ -1259,6 +1314,103 @@ class DarlingTest(WestCommand):
                             self.err(f"{invocation['name']}:{check['name']}: unexpected defined symbol {symbol}")
                             return 1
         return 0
+
+    def _run_cmake_configure_fixture(self, invocation, env=None) -> int:
+        if invocation.get("diag", "bare") != "bare":
+            self.die(f"{invocation['name']}: cmake-configure-fixture currently supports diag:bare only")
+        run_env = env if env is not None else invocation.get("env")
+        if not run_env:
+            run_env = os.environ.copy()
+        else:
+            run_env = dict(run_env)
+        source_root = invocation["cwd"]
+        source_root_env = invocation.get("source_root_env")
+        if source_root_env and run_env.get(source_root_env):
+            source_root = Path(run_env[source_root_env])
+        if not (source_root / "CMakeLists.txt").is_file():
+            self.err(f"{invocation['name']}: CMakeLists.txt not found: {source_root}")
+            return 1
+
+        with tempfile.TemporaryDirectory(prefix=f"west-cmake-configure-{invocation['name']}-") as temp:
+            tempdir = Path(temp)
+            bin_dir = tempdir / "bin"
+            build_dir = tempdir / "build"
+            bin_dir.mkdir()
+            build_dir.mkdir()
+            for marker in invocation.get("marker_files", []):
+                marker_path = source_root / marker["path"]
+                if marker_path.exists():
+                    continue
+                marker_path.parent.mkdir(parents=True, exist_ok=True)
+                marker_path.write_text(marker.get("content", ""))
+            for name, spec in invocation.get("fake_tools", {}).items():
+                tool_path = bin_dir / name
+                log_line = f"printf '%s\\n' \"$*\" >> {quote(str(tempdir / f'{name}.log'))}\n" if spec.get("log_args") else ""
+                tool_path.write_text(
+                    "#!/usr/bin/env bash\n"
+                    "set -euo pipefail\n"
+                    f"{log_line}"
+                    f"printf '%s' {quote(spec.get('stdout', ''))}\n"
+                    f"printf '%s' {quote(spec.get('stderr', ''))} >&2\n"
+                    f"exit {int(spec.get('returncode', 0))}\n"
+                )
+                tool_path.chmod(0o755)
+            child_env = dict(run_env)
+            child_env["PATH"] = f"{bin_dir}:{child_env.get('PATH', '')}"
+            args = [
+                "cmake",
+                "-S",
+                str(source_root),
+                "-B",
+                str(build_dir),
+                *invocation.get("configure_args", []),
+            ]
+            try:
+                result = subprocess.run(
+                    args,
+                    cwd=invocation["cwd"],
+                    env=child_env,
+                    capture_output=True,
+                    text=True,
+                    check=False,
+                    timeout=int(invocation.get("timeout_seconds", 600)),
+                )
+            except subprocess.TimeoutExpired:
+                self.err(f"{invocation['name']}: cmake configure timed out")
+                return 124
+            output = result.stdout + result.stderr
+            def write_output_tail() -> None:
+                lines = output.splitlines()
+                tail = "\n".join(lines[-120:])
+                if tail:
+                    sys.stderr.write(tail + "\n")
+            expect = invocation.get("expect") or {}
+            rc_mode = expect.get("returncode", 0)
+            if rc_mode == "nonzero":
+                if result.returncode == 0:
+                    self.err(f"{invocation['name']}: cmake configure succeeded unexpectedly")
+                    return 1
+            elif result.returncode != int(rc_mode):
+                write_output_tail()
+                self.err(
+                    f"{invocation['name']}: cmake configure rc {result.returncode}, "
+                    f"want {rc_mode}"
+                )
+                return 1
+            for needle in expect.get("output-contains", []):
+                if str(needle) not in output:
+                    write_output_tail()
+                    self.err(f"{invocation['name']}: cmake output missing {needle!r}")
+                    return 1
+            for tool, checks in (expect.get("tool-args-contains") or {}).items():
+                log_path = tempdir / f"{tool}.log"
+                log = log_path.read_text() if log_path.is_file() else ""
+                for needle in checks:
+                    if str(needle) not in log:
+                        write_output_tail()
+                        self.err(f"{invocation['name']}: {tool} args missing {needle!r}")
+                        return 1
+            return 0
 
     def _run_source_script_fixture(self, invocation, env=None) -> int:
         if invocation.get("diag", "bare") != "bare":
