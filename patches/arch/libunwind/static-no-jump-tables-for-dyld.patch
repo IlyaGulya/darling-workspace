@@ -1,0 +1,22 @@
+From d5fbc8180ea2e06efa693ee03a768e532a98671f Mon Sep 17 00:00:00 2001
+From: Ilya Gulya <ilya@gulya.me>
+Date: Wed, 8 Jul 2026 04:59:14 +0000
+Subject: [PATCH] build: avoid jump tables in static libunwind for dyld
+
+---
+ CMakeLists.txt | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+diff --git a/CMakeLists.txt b/CMakeLists.txt
+index 55f300f940d25badf0dd5f9b92d4abdc9f3b2063..4126784ac243bdca2e8c05132d98a37095fe54de 100644
+--- a/CMakeLists.txt
++++ b/CMakeLists.txt
+@@ -53,7 +53,7 @@ add_circular(unwind FAT
+ 
+ include(darling_static_lib)
+ add_darling_static_library(unwind_static SOURCES ${LIBUNWIND_SOURCES})
+-set_target_properties(unwind_static PROPERTIES COMPILE_FLAGS "-DNDEBUG=1")
++set_target_properties(unwind_static PROPERTIES COMPILE_FLAGS "-DNDEBUG=1 -fno-jump-tables")
+ make_fat(unwind_static)
+ 
+ install(TARGETS unwind DESTINATION libexec/darling/usr/lib/system)

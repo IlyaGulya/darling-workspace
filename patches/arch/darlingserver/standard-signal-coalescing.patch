@@ -1,0 +1,75 @@
+From 695ed8c479df1561fa2f46efde1d0e5c30150103 Mon Sep 17 00:00:00 2001
+From: Ilya Gulya <ilya@gulya.me>
+Date: Tue, 7 Jul 2026 15:33:38 +0000
+Subject: [PATCH] darlingserver: coalesce selected standard signals
+
+---
+ internal-include/darlingserver/thread.hpp |  1 +
+ src/thread.cpp                            | 29 +++++++++++++++++++++++
+ 2 files changed, 30 insertions(+)
+
+diff --git a/internal-include/darlingserver/thread.hpp b/internal-include/darlingserver/thread.hpp
+index 693777e3b45726cdf0aeac2c5c212ed2b7cb3c64..88e85da969e8d14b781af1517482d78661289a2c 100644
+--- a/internal-include/darlingserver/thread.hpp
++++ b/internal-include/darlingserver/thread.hpp
+@@ -279,6 +279,7 @@ namespace DarlingServer {
+ 		std::stack<InterruptContext> _interrupts;
+ 		std::queue<std::shared_ptr<Call>> _pendingInterrupts;
+ 		std::optional<Message> _pendingSavedReply = std::nullopt;
++		mutable uint64_t _pendingStandardSignalMask = 0;
+ 		bool _dead = false;
+ 		std::shared_ptr<Thread> _selfReference = nullptr;
+ 
+diff --git a/src/thread.cpp b/src/thread.cpp
+index 04663af002f460269d670ff3b2f4edcad85d9c3e..dec609628ed6ad6d327fd4172244ea88075295ca 100644
+--- a/src/thread.cpp
++++ b/src/thread.cpp
+@@ -1858,6 +1858,17 @@ void DarlingServer::Thread::processSignal(int bsdSignalNumber, int linuxSignalNu
+ 		_processingSignal = true;
+ 	}
+ 
++	struct StandardSignalPendingClear {
++		Thread* thread;
++		int linuxSignalNumber;
++		~StandardSignalPendingClear() {
++			if (linuxSignalNumber > 0 && linuxSignalNumber < 32) {
++				std::unique_lock lock(thread->_rwlock);
++				thread->_pendingStandardSignalMask &= ~(1ull << linuxSignalNumber);
++			}
++		}
++	} clearPendingStandardSignal{this, linuxSignalNumber};
++
+ 	dtape_thread_process_signal(_dtapeThread, bsdSignalNumber, linuxSignalNumber, code, signalAddress);
+ 
+ 	// LLDB commonly suspends the thread upon reception of an exception and assumes
+@@ -2940,12 +2951,30 @@ void DarlingServer::Thread::sendSignal(int signal) const {
+ 	if (isDead()) {
+ 		return;
+ 	}
++	bool markedPending = false;
++	if (signal > 0 && signal < 32 && signal != SIGCHLD && signal != SIGUSR1) {
++		std::unique_lock lock(_rwlock);
++		uint64_t bit = 1ull << signal;
++		if (_pendingStandardSignalMask & bit) {
++			return;
++		}
++		_pendingStandardSignalMask |= bit;
++		markedPending = true;
++	}
+ 	if (_process) {
+ 		if (syscall(SYS_tgkill, _process->id(), id(), signal) < 0) {
+ 			int code = errno;
++			if (markedPending) {
++				std::unique_lock lock(_rwlock);
++				_pendingStandardSignalMask &= ~(1ull << signal);
++			}
+ 			throw std::system_error(code, std::generic_category());
+ 		}
+ 	} else {
++		if (markedPending) {
++			std::unique_lock lock(_rwlock);
++			_pendingStandardSignalMask &= ~(1ull << signal);
++		}
+ 		throw std::system_error(ESRCH, std::generic_category());
+ 	}
+ };

@@ -1,0 +1,895 @@
+From de1599e9ec0fba41a6c7748625a22d332ac2017f Mon Sep 17 00:00:00 2001
+From: Ilya Gulya <ilya@gulya.me>
+Date: Wed, 10 Jun 2026 19:33:56 +0000
+Subject: [PATCH] pthread: decode negative BSD-error returns from emulated
+ psynch waits
+
+The emulated BSD psynch wait syscalls (cvwait/mutexwait/rw_rdlock/rw_wrlock)
+return their BSD error (EINTR/ETIMEDOUT, for condvars OR'd with the
+ECVCLEARED/ECVPREPOST status bits) as a *negative* value directly in the
+return register. Unlike a real macOS syscall, this path does NOT route the
+negative value through cerror -> errno, so libpthread's upstream
+'== (uint32_t)-1' / errno checks never matched: an interrupted or errored
+wait was misread as a successful updateval/acquisition.
+
+For condvars that left an orphaned prepost that stranded a later wakeup; for
+mutexes/rwlocks it skipped the EINTR retry, so the kernel's kw_intr
+interrupted-wakeup redirection was never consumed and a contended handoff
+deadlocked. Decode the negative return ((int32_t)x < 0 -> err = -x) in the
+cond wait, both mutex wait loops, and the rwlock wait loop so the EINTR /
+prepost recovery runs.
+
+Fixes the 'brew install' psynch deadlock (dar-gwn.2 layer 3). Validated:
+brew fetch wget 13/13 across two loops (was 100% stall on iter 1-2); brew
+install jq now runs past 'Fetching downloads' instead of hanging.
+---
+ src/pthread_cond.c   | 13 ++++++++++---
+ src/pthread_mutex.c  | 14 ++++++++++++--
+ src/pthread_rwlock.c |  6 ++++++
+ 3 files changed, 28 insertions(+), 5 deletions(-)
+
+diff --git a/src/pthread_cond.c b/src/pthread_cond.c
+index f7e532cbb76262f06cf1a66b81afb6f453c8b8ef..91621a35cfb0faeca4026a5a16acb0dcfd618690 100644
+--- a/src/pthread_cond.c
++++ b/src/pthread_cond.c
+@@ -633,8 +633,16 @@ _pthread_psynch_cond_wait(pthread_cond_t *cond,
+ 		updateval = __psynch_cvwait(cond, cvlsgen, ucntval, (pthread_mutex_t *)npmtx, mugen, flags, (int64_t)(then->tv_sec), (int32_t)(then->tv_nsec));
+ 	}
+ 
+-	if (updateval == (uint32_t)-1) {
+-		int err = errno;
++	// Darling: the emulated BSD psynch_cvwait syscall returns its BSD error
++	// (EINTR/ETIMEDOUT, possibly OR'd with the cvar ECVCLEARED/ECVPREPOST
++	// status bits) as a *negative* value directly in the return register, not
++	// as the -1 + errno that upstream macOS uses. Accept both: -1 means read
++	// errno; any other negative value carries the (augmented) error itself.
++	// Without this decode libpthread mistakes the error for a successful
++	// updateval, skips the EINTR/prepost recovery, and orphan preposts strand
++	// a later condvar wakeup.
++	if ((int32_t)updateval < 0) {
++		int err = updateval == (uint32_t)-1 ? errno : -(int32_t)updateval;
+ 		switch (err & 0xff) {
+ 		case ETIMEDOUT:
+ 			res = ETIMEDOUT;
+@@ -993,4 +1001,3 @@ pthread_cond_init(pthread_cond_t *cond, const pthread_condattr_t *attr)
+ 	_pthread_lock_init(&cond->lock);
+ 	return _pthread_cond_init(cond, attr, _PTHREAD_COND_SIG_pristine);
+ }
+-
+diff --git a/src/pthread_mutex.c b/src/pthread_mutex.c
+index e7b0155cc748825a308da3ff8f818d785cc1c375..e0358fe89464839a7cbde975548e1c6ebf54a138 100644
+--- a/src/pthread_mutex.c
++++ b/src/pthread_mutex.c
+@@ -770,7 +770,14 @@ _pthread_mutex_fairshare_lock_wait(pthread_mutex_t *mutex, mutex_seq newseq,
+ 			updateval = __psynch_mutexwait(mutex, newseq.lgenval,
+ 					newseq.ugenval, oldtid, mutex->mtxopts.value);
+ 			oldtid = os_atomic_load_wide(tidaddr, relaxed);
+-		} while (updateval == (uint32_t)-1);
++		// Darling: the emulated BSD syscall returns an interrupted/errored
++		// wait (e.g. EINTR) as a *negative* value directly in the return
++		// register, not as -1 + errno. Retry the kernel wait on any such
++		// negative return so the kw_intr interrupted-wakeup redirection is
++		// consumed; exiting here would mistake the error for a successful
++		// acquisition and strand a contended-mutex handoff. See
++		// libsystem_kernel psynch_cvwait.c / pthread_cond.c for the analysis.
++		} while ((int32_t)updateval < 0);
+ 
+ 		// returns 0 on succesful update; in firstfit it may fail with 1
+ 	} while (_pthread_mutex_fairshare_lock_updatebits(mutex, selfid) == 1);
+@@ -1411,7 +1418,10 @@ _pthread_mutex_firstfit_lock_wait(pthread_mutex_t *mutex, mutex_seq newseq,
+ 			PTHREAD_TRACE(psynch_ffmutex_wait | DBG_FUNC_END, mutex,
+ 					uval, 0, 0);
+ 			oldtid = os_atomic_load_wide(tidaddr, relaxed);
+-		} while (uval == (uint32_t)-1);
++		// Darling: retry on a negative BSD-error return (EINTR delivered
++		// directly in the return register, not -1 + errno). See the
++		// fairshare wait loop above for the full rationale.
++		} while ((int32_t)uval < 0);
+ 	} while (!_pthread_mutex_firstfit_lock_updatebits(mutex, selfid, &newseq));
+ 	PLOCKSTAT_MUTEX_BLOCKED((pthread_mutex_t *)mutex, BLOCK_SUCCESS_PLOCKSTAT);
+ 
+diff --git a/src/pthread_rwlock.c b/src/pthread_rwlock.c
+index 55834c925f9c5296a07d8648fd78008c3ac528c6..e64e932367083086e66892554f0ff7a96fc959c3 100644
+--- a/src/pthread_rwlock.c
++++ b/src/pthread_rwlock.c
+@@ -644,6 +644,12 @@ _pthread_rwlock_lock_wait(pthread_rwlock_t *rwlock, bool readlock,
+ 		}
+ 		if (updateval == (uint32_t)-1) {
+ 			res = errno;
++		} else if ((int32_t)updateval < 0) {
++			// Darling: the emulated BSD syscall returns an interrupted/errored
++			// wait as a negative value directly in the return register, not as
++			// -1 + errno. Decode it so an EINTR retries the kernel wait instead
++			// of being mistaken for a successful rwlock updateval.
++			res = -(int32_t)updateval;
+ 		} else {
+ 			res = 0;
+ 		}
+
+From 4a35dcecfce4cd223e1099a1ed0254d9f431b8bb Mon Sep 17 00:00:00 2001
+From: Ilya Gulya <ilya@gulya.me>
+Date: Tue, 7 Jul 2026 15:33:38 +0000
+Subject: [PATCH] libpthread: centralize psynch return decoding
+
+---
+ src/inline_internal.h | 23 +++++++++++++++++
+ src/pthread_cond.c    | 21 +++++----------
+ src/pthread_mutex.c   | 60 +++++++++++++++++++------------------------
+ src/pthread_rwlock.c  | 18 +++----------
+ 4 files changed, 59 insertions(+), 63 deletions(-)
+
+diff --git a/src/inline_internal.h b/src/inline_internal.h
+index bc6d65add6ca74028ca70bb461d92099fb315609..6f179f05856eb0ba6c02c2c6d69787a1eb60a184 100644
+--- a/src/inline_internal.h
++++ b/src/inline_internal.h
+@@ -160,6 +160,29 @@ _pthread_lock_unlock(os_unfair_lock_t lock, mach_port_t mts)
+ #undef  errno
+ #define errno          (*_pthread_errno_address_direct())
+ 
++OS_ALWAYS_INLINE
++static inline int
++_pthread_psynch_kernel_return_error(uint32_t updateval, uint32_t *status)
++{
++	if (updateval == (uint32_t)-1) {
++		return errno;
++	}
++	if ((int32_t)updateval < 0) {
++		return -(int32_t)updateval;
++	}
++	if (status) {
++		*status = updateval;
++	}
++	return 0;
++}
++
++OS_ALWAYS_INLINE
++static inline int
++_pthread_psynch_kernel_error_code(int err)
++{
++	return err & 0xff;
++}
++
+ #define _pthread_tsd_slot(th, name) \
+ 		(*(_PTHREAD_TSD_SLOT_##name##_TYPE *)(uintptr_t *)&(th)->tsd[_PTHREAD_TSD_SLOT_##name])
+ 
+diff --git a/src/pthread_cond.c b/src/pthread_cond.c
+index 91621a35cfb0faeca4026a5a16acb0dcfd618690..c018fc65193db905f33d79422af45b402acb7626 100644
+--- a/src/pthread_cond.c
++++ b/src/pthread_cond.c
+@@ -633,17 +633,10 @@ _pthread_psynch_cond_wait(pthread_cond_t *cond,
+ 		updateval = __psynch_cvwait(cond, cvlsgen, ucntval, (pthread_mutex_t *)npmtx, mugen, flags, (int64_t)(then->tv_sec), (int32_t)(then->tv_nsec));
+ 	}
+ 
+-	// Darling: the emulated BSD psynch_cvwait syscall returns its BSD error
+-	// (EINTR/ETIMEDOUT, possibly OR'd with the cvar ECVCLEARED/ECVPREPOST
+-	// status bits) as a *negative* value directly in the return register, not
+-	// as the -1 + errno that upstream macOS uses. Accept both: -1 means read
+-	// errno; any other negative value carries the (augmented) error itself.
+-	// Without this decode libpthread mistakes the error for a successful
+-	// updateval, skips the EINTR/prepost recovery, and orphan preposts strand
+-	// a later condvar wakeup.
+-	if ((int32_t)updateval < 0) {
+-		int err = updateval == (uint32_t)-1 ? errno : -(int32_t)updateval;
+-		switch (err & 0xff) {
++	uint32_t psynch_status = 0;
++	int psynch_err = _pthread_psynch_kernel_return_error(updateval, &psynch_status);
++	if (psynch_err) {
++		switch (_pthread_psynch_kernel_error_code(psynch_err)) {
+ 		case ETIMEDOUT:
+ 			res = ETIMEDOUT;
+ 			break;
+@@ -657,12 +650,12 @@ _pthread_psynch_cond_wait(pthread_cond_t *cond,
+ 		}
+ 
+ 		// add unlock ref to show one less waiter
+-		_pthread_cond_updateval(cond, mutex, err, 0);
+-	} else if (updateval != 0) {
++		_pthread_cond_updateval(cond, mutex, psynch_err, 0);
++	} else if (psynch_status != 0) {
+ 		// Successful wait
+ 		// The return due to prepost and might have bit states
+ 		// update S and return for prepo if needed
+-		_pthread_cond_updateval(cond, mutex, 0, updateval);
++		_pthread_cond_updateval(cond, mutex, 0, psynch_status);
+ 	}
+ 
+ 	pthread_mutex_lock(mutex);
+diff --git a/src/pthread_mutex.c b/src/pthread_mutex.c
+index e0358fe89464839a7cbde975548e1c6ebf54a138..e1ee4a18b6327db18221b1391e9e101dafc35c23 100644
+--- a/src/pthread_mutex.c
++++ b/src/pthread_mutex.c
+@@ -766,18 +766,16 @@ _pthread_mutex_fairshare_lock_wait(pthread_mutex_t *mutex, mutex_seq newseq,
+ 	PLOCKSTAT_MUTEX_BLOCK((pthread_mutex_t *)mutex);
+ 	do {
+ 		uint32_t updateval;
++		int psynch_err;
+ 		do {
+ 			updateval = __psynch_mutexwait(mutex, newseq.lgenval,
+ 					newseq.ugenval, oldtid, mutex->mtxopts.value);
+ 			oldtid = os_atomic_load_wide(tidaddr, relaxed);
+-		// Darling: the emulated BSD syscall returns an interrupted/errored
+-		// wait (e.g. EINTR) as a *negative* value directly in the return
+-		// register, not as -1 + errno. Retry the kernel wait on any such
+-		// negative return so the kw_intr interrupted-wakeup redirection is
+-		// consumed; exiting here would mistake the error for a successful
+-		// acquisition and strand a contended-mutex handoff. See
+-		// libsystem_kernel psynch_cvwait.c / pthread_cond.c for the analysis.
+-		} while ((int32_t)updateval < 0);
++			psynch_err = _pthread_psynch_kernel_return_error(updateval, NULL);
++			if (psynch_err && psynch_err != EINTR) {
++				PTHREAD_INTERNAL_CRASH(psynch_err, "__psynch_mutexwait failed");
++			}
++		} while (psynch_err == EINTR);
+ 
+ 		// returns 0 on succesful update; in firstfit it may fail with 1
+ 	} while (_pthread_mutex_fairshare_lock_updatebits(mutex, selfid) == 1);
+@@ -943,19 +941,15 @@ _pthread_mutex_fairshare_unlock_drop(pthread_mutex_t *mutex, mutex_seq newseq,
+ 
+ 	PTHREAD_TRACE(psynch_mutex_uunlock | DBG_FUNC_END, mutex, updateval, 0, 0);
+ 
+-	if (updateval == (uint32_t)-1) {
+-		res = errno;
+-
+-		if (res == EINTR) {
+-			res = 0;
+-		}
+-		if (res != 0) {
+-			PTHREAD_INTERNAL_CRASH(res, "__psynch_mutexdrop failed");
+-		}
+-		return res;
++	res = _pthread_psynch_kernel_return_error(updateval, NULL);
++	if (res == EINTR) {
++		res = 0;
++	}
++	if (res != 0) {
++		PTHREAD_INTERNAL_CRASH(res, "__psynch_mutexdrop failed");
+ 	}
+ 
+-	return 0;
++	return res;
+ }
+ 
+ OS_NOINLINE
+@@ -1319,17 +1313,14 @@ _pthread_mutex_firstfit_wake(pthread_mutex_t *mutex, mutex_seq newseq,
+ 	int res = __psynch_mutexdrop(mutex, newseq.lgenval, newseq.ugenval, 0,
+ 			flags);
+ 
+-	if (res == -1) {
+-		res = errno;
+-		if (res == EINTR) {
+-			res = 0;
+-		}
+-		if (res != 0) {
+-			PTHREAD_INTERNAL_CRASH(res, "__psynch_mutexdrop failed");
+-		}
+-		return res;
++	res = _pthread_psynch_kernel_return_error((uint32_t)res, NULL);
++	if (res == EINTR) {
++		res = 0;
+ 	}
+-	return 0;
++	if (res != 0) {
++		PTHREAD_INTERNAL_CRASH(res, "__psynch_mutexdrop failed");
++	}
++	return res;
+ }
+ 
+ OS_NOINLINE
+@@ -1410,6 +1401,7 @@ _pthread_mutex_firstfit_lock_wait(pthread_mutex_t *mutex, mutex_seq newseq,
+ 	PLOCKSTAT_MUTEX_BLOCK((pthread_mutex_t *)mutex);
+ 	do {
+ 		uint32_t uval;
++		int psynch_err;
+ 		do {
+ 			PTHREAD_TRACE(psynch_ffmutex_wait | DBG_FUNC_START, mutex,
+ 					newseq.lgenval, newseq.ugenval, mutex->mtxopts.value);
+@@ -1418,10 +1410,11 @@ _pthread_mutex_firstfit_lock_wait(pthread_mutex_t *mutex, mutex_seq newseq,
+ 			PTHREAD_TRACE(psynch_ffmutex_wait | DBG_FUNC_END, mutex,
+ 					uval, 0, 0);
+ 			oldtid = os_atomic_load_wide(tidaddr, relaxed);
+-		// Darling: retry on a negative BSD-error return (EINTR delivered
+-		// directly in the return register, not -1 + errno). See the
+-		// fairshare wait loop above for the full rationale.
+-		} while ((int32_t)uval < 0);
++			psynch_err = _pthread_psynch_kernel_return_error(uval, NULL);
++			if (psynch_err && psynch_err != EINTR) {
++				PTHREAD_INTERNAL_CRASH(psynch_err, "__psynch_mutexwait failed");
++			}
++		} while (psynch_err == EINTR);
+ 	} while (!_pthread_mutex_firstfit_lock_updatebits(mutex, selfid, &newseq));
+ 	PLOCKSTAT_MUTEX_BLOCKED((pthread_mutex_t *)mutex, BLOCK_SUCCESS_PLOCKSTAT);
+ 
+@@ -1905,4 +1898,3 @@ pthread_mutexattr_destroy(pthread_mutexattr_t *attr)
+ 	attr->sig = _PTHREAD_NO_SIG;
+ 	return 0;
+ }
+-
+diff --git a/src/pthread_rwlock.c b/src/pthread_rwlock.c
+index e64e932367083086e66892554f0ff7a96fc959c3..3df19a44a83f45ed8458b6efd8d0db9c8379e9ca 100644
+--- a/src/pthread_rwlock.c
++++ b/src/pthread_rwlock.c
+@@ -642,17 +642,7 @@ _pthread_rwlock_lock_wait(pthread_rwlock_t *rwlock, bool readlock,
+ 			updateval = __psynch_rw_wrlock(rwlock, newseq.lcntval,
+ 					newseq.ucntval, newseq.rw_seq, rwlock->rw_flags);
+ 		}
+-		if (updateval == (uint32_t)-1) {
+-			res = errno;
+-		} else if ((int32_t)updateval < 0) {
+-			// Darling: the emulated BSD syscall returns an interrupted/errored
+-			// wait as a negative value directly in the return register, not as
+-			// -1 + errno. Decode it so an EINTR retries the kernel wait instead
+-			// of being mistaken for a successful rwlock updateval.
+-			res = -(int32_t)updateval;
+-		} else {
+-			res = 0;
+-		}
++		res = _pthread_psynch_kernel_return_error(updateval, NULL);
+ 	} while (res == EINTR);
+ 
+ 	if (res == 0) {
+@@ -895,9 +885,8 @@ _pthread_rwlock_unlock_drop(pthread_rwlock_t *rwlock, rwlock_seq oldseq,
+ 	do {
+ 		updateval = __psynch_rw_unlock(rwlock, oldseq.lcntval,
+ 				newseq.ucntval, newseq.rw_seq, rwlock->rw_flags);
+-		if (updateval == (uint32_t)-1) {
+-			res = errno;
+-		} else {
++		res = _pthread_psynch_kernel_return_error(updateval, NULL);
++		if (res == 0) {
+ 			res = 0;
+ 			RWLOCK_DEBUG_SEQ(wakeup, rwlock, oldseq, newseq, updateval,
+ 					RWLOCK_SEQ_LSU);
+@@ -1059,4 +1048,3 @@ pthread_rwlock_unlock(pthread_rwlock_t *rwlock)
+ 
+ 	return 0;
+ }
+-
+
+From 6b96e2471f5b68bc4486c14de126f7109dbaf984 Mon Sep 17 00:00:00 2001
+From: Ilya Gulya <ilya@gulya.me>
+Date: Tue, 7 Jul 2026 16:52:46 +0000
+Subject: [PATCH] libpthread: split psynch return decoding contract
+
+---
+ src/inline_internal.h                      |  48 ++--
+ src/pthread_cond.c                         |  14 +-
+ src/pthread_mutex.c                        |  28 ++-
+ src/pthread_rwlock.c                       |   8 +-
+ tests/psynch_kernel_return_contract.c      | 270 +++++++++++++++++++++
+ tests/run-psynch-kernel-return-contract.sh |  52 ++++
+ 6 files changed, 384 insertions(+), 36 deletions(-)
+ create mode 100644 tests/psynch_kernel_return_contract.c
+ create mode 100755 tests/run-psynch-kernel-return-contract.sh
+
+diff --git a/src/inline_internal.h b/src/inline_internal.h
+index 6f179f05856eb0ba6c02c2c6d69787a1eb60a184..0d52533dd24052cb9c0015e03498d32624294226 100644
+--- a/src/inline_internal.h
++++ b/src/inline_internal.h
+@@ -161,26 +161,44 @@ _pthread_lock_unlock(os_unfair_lock_t lock, mach_port_t mts)
+ #define errno          (*_pthread_errno_address_direct())
+ 
+ OS_ALWAYS_INLINE
+-static inline int
+-_pthread_psynch_kernel_return_error(uint32_t updateval, uint32_t *status)
++static inline uint32_t
++_pthread_psynch_kernel_error_base(uint32_t err)
+ {
+-	if (updateval == (uint32_t)-1) {
+-		return errno;
+-	}
+-	if ((int32_t)updateval < 0) {
+-		return -(int32_t)updateval;
+-	}
+-	if (status) {
+-		*status = updateval;
+-	}
+-	return 0;
++	return err & 0xff;
+ }
+ 
++static const uint32_t _PTHREAD_PSYNCH_STATUS_MASK = ~0xffu;
++
++typedef struct {
++	uint32_t raw_error;
++	uint32_t base_error;
++	uint32_t status_bits;
++	uint32_t updateval;
++} _pthread_psynch_kernel_return_t;
++
+ OS_ALWAYS_INLINE
+-static inline int
+-_pthread_psynch_kernel_error_code(int err)
++static inline _pthread_psynch_kernel_return_t
++_pthread_psynch_kernel_return_decode(uint32_t updateval)
+ {
+-	return err & 0xff;
++	_pthread_psynch_kernel_return_t decoded = {
++		.raw_error = 0,
++		.base_error = 0,
++		.status_bits = 0,
++		.updateval = 0,
++	};
++
++	if (updateval == (uint32_t)-1) {
++		decoded.raw_error = errno;
++	} else if ((int32_t)updateval < 0) {
++		decoded.raw_error = -(int32_t)updateval;
++	} else {
++		decoded.updateval = updateval;
++		return decoded;
++	}
++
++	decoded.base_error = _pthread_psynch_kernel_error_base(decoded.raw_error);
++	decoded.status_bits = decoded.raw_error & _PTHREAD_PSYNCH_STATUS_MASK;
++	return decoded;
+ }
+ 
+ #define _pthread_tsd_slot(th, name) \
+diff --git a/src/pthread_cond.c b/src/pthread_cond.c
+index c018fc65193db905f33d79422af45b402acb7626..09272bec4b70e5afc5dba90c53ddd1e6a430c3de 100644
+--- a/src/pthread_cond.c
++++ b/src/pthread_cond.c
+@@ -633,10 +633,10 @@ _pthread_psynch_cond_wait(pthread_cond_t *cond,
+ 		updateval = __psynch_cvwait(cond, cvlsgen, ucntval, (pthread_mutex_t *)npmtx, mugen, flags, (int64_t)(then->tv_sec), (int32_t)(then->tv_nsec));
+ 	}
+ 
+-	uint32_t psynch_status = 0;
+-	int psynch_err = _pthread_psynch_kernel_return_error(updateval, &psynch_status);
+-	if (psynch_err) {
+-		switch (_pthread_psynch_kernel_error_code(psynch_err)) {
++	_pthread_psynch_kernel_return_t psynch_ret =
++			_pthread_psynch_kernel_return_decode(updateval);
++	if (psynch_ret.base_error) {
++		switch (psynch_ret.base_error) {
+ 		case ETIMEDOUT:
+ 			res = ETIMEDOUT;
+ 			break;
+@@ -650,12 +650,12 @@ _pthread_psynch_cond_wait(pthread_cond_t *cond,
+ 		}
+ 
+ 		// add unlock ref to show one less waiter
+-		_pthread_cond_updateval(cond, mutex, psynch_err, 0);
+-	} else if (psynch_status != 0) {
++		_pthread_cond_updateval(cond, mutex, psynch_ret.raw_error, 0);
++	} else if (psynch_ret.updateval != 0) {
+ 		// Successful wait
+ 		// The return due to prepost and might have bit states
+ 		// update S and return for prepo if needed
+-		_pthread_cond_updateval(cond, mutex, 0, psynch_status);
++		_pthread_cond_updateval(cond, mutex, 0, psynch_ret.updateval);
+ 	}
+ 
+ 	pthread_mutex_lock(mutex);
+diff --git a/src/pthread_mutex.c b/src/pthread_mutex.c
+index e1ee4a18b6327db18221b1391e9e101dafc35c23..e2420e237aa0a8e81f8e55869a6c6f78ddbbbb34 100644
+--- a/src/pthread_mutex.c
++++ b/src/pthread_mutex.c
+@@ -766,16 +766,16 @@ _pthread_mutex_fairshare_lock_wait(pthread_mutex_t *mutex, mutex_seq newseq,
+ 	PLOCKSTAT_MUTEX_BLOCK((pthread_mutex_t *)mutex);
+ 	do {
+ 		uint32_t updateval;
+-		int psynch_err;
++		_pthread_psynch_kernel_return_t psynch_ret;
+ 		do {
+ 			updateval = __psynch_mutexwait(mutex, newseq.lgenval,
+ 					newseq.ugenval, oldtid, mutex->mtxopts.value);
+ 			oldtid = os_atomic_load_wide(tidaddr, relaxed);
+-			psynch_err = _pthread_psynch_kernel_return_error(updateval, NULL);
+-			if (psynch_err && psynch_err != EINTR) {
+-				PTHREAD_INTERNAL_CRASH(psynch_err, "__psynch_mutexwait failed");
++			psynch_ret = _pthread_psynch_kernel_return_decode(updateval);
++			if (psynch_ret.base_error && psynch_ret.base_error != EINTR) {
++				PTHREAD_INTERNAL_CRASH(psynch_ret.base_error, "__psynch_mutexwait failed");
+ 			}
+-		} while (psynch_err == EINTR);
++		} while (psynch_ret.base_error == EINTR);
+ 
+ 		// returns 0 on succesful update; in firstfit it may fail with 1
+ 	} while (_pthread_mutex_fairshare_lock_updatebits(mutex, selfid) == 1);
+@@ -941,7 +941,9 @@ _pthread_mutex_fairshare_unlock_drop(pthread_mutex_t *mutex, mutex_seq newseq,
+ 
+ 	PTHREAD_TRACE(psynch_mutex_uunlock | DBG_FUNC_END, mutex, updateval, 0, 0);
+ 
+-	res = _pthread_psynch_kernel_return_error(updateval, NULL);
++	_pthread_psynch_kernel_return_t psynch_ret =
++			_pthread_psynch_kernel_return_decode(updateval);
++	res = psynch_ret.base_error;
+ 	if (res == EINTR) {
+ 		res = 0;
+ 	}
+@@ -1313,7 +1315,9 @@ _pthread_mutex_firstfit_wake(pthread_mutex_t *mutex, mutex_seq newseq,
+ 	int res = __psynch_mutexdrop(mutex, newseq.lgenval, newseq.ugenval, 0,
+ 			flags);
+ 
+-	res = _pthread_psynch_kernel_return_error((uint32_t)res, NULL);
++	_pthread_psynch_kernel_return_t psynch_ret =
++			_pthread_psynch_kernel_return_decode((uint32_t)res);
++	res = psynch_ret.base_error;
+ 	if (res == EINTR) {
+ 		res = 0;
+ 	}
+@@ -1401,7 +1405,7 @@ _pthread_mutex_firstfit_lock_wait(pthread_mutex_t *mutex, mutex_seq newseq,
+ 	PLOCKSTAT_MUTEX_BLOCK((pthread_mutex_t *)mutex);
+ 	do {
+ 		uint32_t uval;
+-		int psynch_err;
++		_pthread_psynch_kernel_return_t psynch_ret;
+ 		do {
+ 			PTHREAD_TRACE(psynch_ffmutex_wait | DBG_FUNC_START, mutex,
+ 					newseq.lgenval, newseq.ugenval, mutex->mtxopts.value);
+@@ -1410,11 +1414,11 @@ _pthread_mutex_firstfit_lock_wait(pthread_mutex_t *mutex, mutex_seq newseq,
+ 			PTHREAD_TRACE(psynch_ffmutex_wait | DBG_FUNC_END, mutex,
+ 					uval, 0, 0);
+ 			oldtid = os_atomic_load_wide(tidaddr, relaxed);
+-			psynch_err = _pthread_psynch_kernel_return_error(uval, NULL);
+-			if (psynch_err && psynch_err != EINTR) {
+-				PTHREAD_INTERNAL_CRASH(psynch_err, "__psynch_mutexwait failed");
++			psynch_ret = _pthread_psynch_kernel_return_decode(uval);
++			if (psynch_ret.base_error && psynch_ret.base_error != EINTR) {
++				PTHREAD_INTERNAL_CRASH(psynch_ret.base_error, "__psynch_mutexwait failed");
+ 			}
+-		} while (psynch_err == EINTR);
++		} while (psynch_ret.base_error == EINTR);
+ 	} while (!_pthread_mutex_firstfit_lock_updatebits(mutex, selfid, &newseq));
+ 	PLOCKSTAT_MUTEX_BLOCKED((pthread_mutex_t *)mutex, BLOCK_SUCCESS_PLOCKSTAT);
+ 
+diff --git a/src/pthread_rwlock.c b/src/pthread_rwlock.c
+index 3df19a44a83f45ed8458b6efd8d0db9c8379e9ca..67c3b3ec8ebb2882a383d37eda62a69466de2fea 100644
+--- a/src/pthread_rwlock.c
++++ b/src/pthread_rwlock.c
+@@ -642,7 +642,9 @@ _pthread_rwlock_lock_wait(pthread_rwlock_t *rwlock, bool readlock,
+ 			updateval = __psynch_rw_wrlock(rwlock, newseq.lcntval,
+ 					newseq.ucntval, newseq.rw_seq, rwlock->rw_flags);
+ 		}
+-		res = _pthread_psynch_kernel_return_error(updateval, NULL);
++		_pthread_psynch_kernel_return_t psynch_ret =
++				_pthread_psynch_kernel_return_decode(updateval);
++		res = psynch_ret.base_error;
+ 	} while (res == EINTR);
+ 
+ 	if (res == 0) {
+@@ -885,7 +887,9 @@ _pthread_rwlock_unlock_drop(pthread_rwlock_t *rwlock, rwlock_seq oldseq,
+ 	do {
+ 		updateval = __psynch_rw_unlock(rwlock, oldseq.lcntval,
+ 				newseq.ucntval, newseq.rw_seq, rwlock->rw_flags);
+-		res = _pthread_psynch_kernel_return_error(updateval, NULL);
++		_pthread_psynch_kernel_return_t psynch_ret =
++				_pthread_psynch_kernel_return_decode(updateval);
++		res = psynch_ret.base_error;
+ 		if (res == 0) {
+ 			res = 0;
+ 			RWLOCK_DEBUG_SEQ(wakeup, rwlock, oldseq, newseq, updateval,
+diff --git a/tests/psynch_kernel_return_contract.c b/tests/psynch_kernel_return_contract.c
+new file mode 100644
+index 0000000000000000000000000000000000000000..623daa684ab76e2465ce5e7d60185abd4aebeb65
+--- /dev/null
++++ b/tests/psynch_kernel_return_contract.c
+@@ -0,0 +1,270 @@
++#include <errno.h>
++#include <pthread.h>
++#include <sched.h>
++#include <signal.h>
++#include <stdio.h>
++#include <stdlib.h>
++#include <string.h>
++#include <sys/time.h>
++#include <time.h>
++#include <unistd.h>
++
++static volatile int stop_storm;
++static volatile int timed_out;
++
++static void
++fail_errno(const char *what, int err)
++{
++	fprintf(stderr, "%s: %s (%d)\n", what, strerror(err), err);
++	_exit(2);
++}
++
++static void
++alarm_handler(int signo)
++{
++	(void)signo;
++	timed_out = 1;
++}
++
++static void
++signal_handler(int signo)
++{
++	(void)signo;
++}
++
++static void
++deadline_after_us(struct timespec *ts, long usec)
++{
++	struct timeval tv;
++	gettimeofday(&tv, NULL);
++	tv.tv_usec += usec;
++	tv.tv_sec += tv.tv_usec / 1000000;
++	tv.tv_usec %= 1000000;
++	ts->tv_sec = tv.tv_sec;
++	ts->tv_nsec = tv.tv_usec * 1000;
++}
++
++static void *
++storm_thread(void *arg)
++{
++	pthread_t target = *(pthread_t *)arg;
++	while (!stop_storm) {
++		pthread_kill(target, SIGUSR1);
++		usleep(2000);
++	}
++	return NULL;
++}
++
++static void
++test_cond_timedwait_eintr_contract(void)
++{
++	pthread_cond_t cv = PTHREAD_COND_INITIALIZER;
++	pthread_mutex_t mtx = PTHREAD_MUTEX_INITIALIZER;
++	pthread_t self = pthread_self();
++	pthread_t storm;
++	int timeouts = 0;
++	int rc;
++
++	stop_storm = 0;
++	rc = pthread_create(&storm, NULL, storm_thread, &self);
++	if (rc) fail_errno("pthread_create storm", rc);
++
++	rc = pthread_mutex_lock(&mtx);
++	if (rc) fail_errno("pthread_mutex_lock timed", rc);
++	while (timeouts < 50) {
++		struct timespec ts;
++		deadline_after_us(&ts, 1000);
++		rc = pthread_cond_timedwait(&cv, &mtx, &ts);
++		if (rc == ETIMEDOUT) {
++			timeouts++;
++		} else if (rc == 0) {
++			continue;
++		} else if (rc == EINTR) {
++			fail_errno("pthread_cond_timedwait returned EINTR", rc);
++		} else {
++			fail_errno("pthread_cond_timedwait unexpected", rc);
++		}
++		if (timed_out) fail_errno("cond timedwait alarm", ETIMEDOUT);
++	}
++	rc = pthread_mutex_unlock(&mtx);
++	if (rc) fail_errno("pthread_mutex_unlock timed", rc);
++
++	stop_storm = 1;
++	rc = pthread_join(storm, NULL);
++	if (rc) fail_errno("pthread_join storm", rc);
++}
++
++struct cv_handoff {
++	pthread_cond_t cv;
++	pthread_mutex_t mtx;
++	int work;
++	int done;
++	int target;
++};
++
++static void *
++consumer_thread(void *arg)
++{
++	struct cv_handoff *ctx = arg;
++	for (;;) {
++		int rc = pthread_mutex_lock(&ctx->mtx);
++		if (rc) fail_errno("consumer mutex lock", rc);
++		while (ctx->work == 0 && ctx->done < ctx->target) {
++			rc = pthread_cond_wait(&ctx->cv, &ctx->mtx);
++			if (rc) fail_errno("pthread_cond_wait", rc);
++		}
++		if (ctx->done >= ctx->target) {
++			rc = pthread_mutex_unlock(&ctx->mtx);
++			if (rc) fail_errno("consumer mutex unlock exit", rc);
++			return NULL;
++		}
++		ctx->work--;
++		ctx->done++;
++		rc = pthread_mutex_unlock(&ctx->mtx);
++		if (rc) fail_errno("consumer mutex unlock", rc);
++	}
++}
++
++static void
++test_cond_handoff_under_signals(void)
++{
++	struct cv_handoff ctx = {
++		.cv = PTHREAD_COND_INITIALIZER,
++		.mtx = PTHREAD_MUTEX_INITIALIZER,
++		.target = 5000,
++	};
++	pthread_t consumers[4];
++	pthread_t storm;
++	pthread_t main_thread = pthread_self();
++	int rc;
++
++	stop_storm = 0;
++	rc = pthread_create(&storm, NULL, storm_thread, &main_thread);
++	if (rc) fail_errno("pthread_create handoff storm", rc);
++
++	for (size_t i = 0; i < sizeof(consumers) / sizeof(consumers[0]); i++) {
++		rc = pthread_create(&consumers[i], NULL, consumer_thread, &ctx);
++		if (rc) fail_errno("pthread_create consumer", rc);
++	}
++
++	for (int i = 0; i < ctx.target; i++) {
++		rc = pthread_mutex_lock(&ctx.mtx);
++		if (rc) fail_errno("producer mutex lock", rc);
++		ctx.work++;
++		rc = pthread_cond_signal(&ctx.cv);
++		if (rc) fail_errno("pthread_cond_signal", rc);
++		rc = pthread_mutex_unlock(&ctx.mtx);
++		if (rc) fail_errno("producer mutex unlock", rc);
++		if ((i & 0x3f) == 0) sched_yield();
++		if (timed_out) fail_errno("cond handoff alarm", ETIMEDOUT);
++	}
++
++	rc = pthread_mutex_lock(&ctx.mtx);
++	if (rc) fail_errno("producer final lock", rc);
++	while (ctx.done < ctx.target) {
++		rc = pthread_mutex_unlock(&ctx.mtx);
++		if (rc) fail_errno("producer poll unlock", rc);
++		usleep(1000);
++		rc = pthread_mutex_lock(&ctx.mtx);
++		if (rc) fail_errno("producer poll lock", rc);
++		if (timed_out) fail_errno("cond handoff drain alarm", ETIMEDOUT);
++	}
++	rc = pthread_cond_broadcast(&ctx.cv);
++	if (rc) fail_errno("pthread_cond_broadcast", rc);
++	rc = pthread_mutex_unlock(&ctx.mtx);
++	if (rc) fail_errno("producer final unlock", rc);
++
++	for (size_t i = 0; i < sizeof(consumers) / sizeof(consumers[0]); i++) {
++		rc = pthread_join(consumers[i], NULL);
++		if (rc) fail_errno("pthread_join consumer", rc);
++	}
++
++	stop_storm = 1;
++	rc = pthread_join(storm, NULL);
++	if (rc) fail_errno("pthread_join handoff storm", rc);
++}
++
++struct lock_stress {
++	pthread_mutex_t mtx;
++	pthread_rwlock_t rwlock;
++	int iters;
++	int value;
++};
++
++static void *
++mutex_worker(void *arg)
++{
++	struct lock_stress *ctx = arg;
++	for (int i = 0; i < ctx->iters; i++) {
++		int rc = pthread_mutex_lock(&ctx->mtx);
++		if (rc) fail_errno("stress mutex lock", rc);
++		ctx->value++;
++		rc = pthread_mutex_unlock(&ctx->mtx);
++		if (rc) fail_errno("stress mutex unlock", rc);
++	}
++	return NULL;
++}
++
++static void *
++rwlock_worker(void *arg)
++{
++	struct lock_stress *ctx = arg;
++	for (int i = 0; i < ctx->iters; i++) {
++		int rc;
++		if (i & 1) {
++			rc = pthread_rwlock_wrlock(&ctx->rwlock);
++			if (rc) fail_errno("rwlock wrlock", rc);
++			ctx->value++;
++		} else {
++			rc = pthread_rwlock_rdlock(&ctx->rwlock);
++			if (rc) fail_errno("rwlock rdlock", rc);
++			(void)ctx->value;
++		}
++		rc = pthread_rwlock_unlock(&ctx->rwlock);
++		if (rc) fail_errno("rwlock unlock", rc);
++	}
++	return NULL;
++}
++
++static void
++run_workers(void *(*fn)(void *), struct lock_stress *ctx)
++{
++	pthread_t threads[8];
++	int rc;
++	for (size_t i = 0; i < sizeof(threads) / sizeof(threads[0]); i++) {
++		rc = pthread_create(&threads[i], NULL, fn, ctx);
++		if (rc) fail_errno("pthread_create worker", rc);
++	}
++	for (size_t i = 0; i < sizeof(threads) / sizeof(threads[0]); i++) {
++		rc = pthread_join(threads[i], NULL);
++		if (rc) fail_errno("pthread_join worker", rc);
++	}
++}
++
++int
++main(void)
++{
++	struct sigaction sa;
++	memset(&sa, 0, sizeof(sa));
++	sa.sa_handler = signal_handler;
++	sigemptyset(&sa.sa_mask);
++	if (sigaction(SIGUSR1, &sa, NULL) != 0) {
++		fail_errno("sigaction SIGUSR1", errno);
++	}
++	signal(SIGALRM, alarm_handler);
++	alarm(30);
++
++	test_cond_timedwait_eintr_contract();
++	test_cond_handoff_under_signals();
++
++	struct lock_stress ctx = {
++		.mtx = PTHREAD_MUTEX_INITIALIZER,
++		.rwlock = PTHREAD_RWLOCK_INITIALIZER,
++		.iters = 20000,
++	};
++	run_workers(mutex_worker, &ctx);
++	run_workers(rwlock_worker, &ctx);
++
++	printf("PSYNCH_KERNEL_RETURN_CONTRACT_OK value=%d\n", ctx.value);
++	return 0;
++}
+diff --git a/tests/run-psynch-kernel-return-contract.sh b/tests/run-psynch-kernel-return-contract.sh
+new file mode 100755
+index 0000000000000000000000000000000000000000..25b42997dcdbdbe5e1c8eb5d1a898c4bf07250e8
+--- /dev/null
++++ b/tests/run-psynch-kernel-return-contract.sh
+@@ -0,0 +1,52 @@
++#!/usr/bin/env bash
++# Runtime gate for dar-q95.29.2: psynch wait return decoding keeps base errno
++# distinct from condvar status bits, retries only EINTR, and preserves
++# condvar/mutex/rwlock handoff under signal interruption.
++set -euo pipefail
++
++here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
++LAUNCH="${DARLING:-darling}"
++: "${DPREFIX:?set DPREFIX to a bootable Darling prefix}"
++
++src="$here/psynch_kernel_return_contract.c"
++verdict="/tmp/psynch_kernel_return_contract.verdict"
++rm -f "$DPREFIX/tmp/psynch_kernel_return_contract.verdict" 2>/dev/null || true
++cp "$src" "$DPREFIX/tmp/psynch_kernel_return_contract.c"
++env DPREFIX="$DPREFIX" "$LAUNCH" shell /bin/bash --login -c "rm -f '$verdict'" >/dev/null 2>&1 || true
++
++guest_timeout="${PSYNCH_CONTRACT_TIMEOUT:-90}"
++env DPREFIX="$DPREFIX" "$LAUNCH" shell /bin/bash --login -c '
++  export PTHREAD_MUTEX_USE_ULOCK=0
++  clang -O2 -Wall -Wextra -o /tmp/psynch_kernel_return_contract /tmp/psynch_kernel_return_contract.c -lpthread 2>&1
++  /tmp/psynch_kernel_return_contract > /tmp/psynch_kernel_return_contract.verdict 2>&1
++  echo "ORACLE_RC=$?" >> /tmp/psynch_kernel_return_contract.verdict
++' </dev/null > /tmp/psynch_kernel_return_contract.runner.log 2>&1 &
++shell_pid=$!
++
++deadline=$((SECONDS + guest_timeout))
++while [ "$SECONDS" -lt "$deadline" ]; do
++  if env DPREFIX="$DPREFIX" "$LAUNCH" shell /bin/bash --login -c \
++      "test -f '$verdict' && grep -q '^ORACLE_RC=' '$verdict'" >/dev/null 2>&1; then
++    break
++  fi
++  sleep 1
++done
++
++if ! env DPREFIX="$DPREFIX" "$LAUNCH" shell /bin/bash --login -c \
++    "test -f '$verdict' && grep -q '^ORACLE_RC=' '$verdict'" >/dev/null 2>&1; then
++  kill "$shell_pid" 2>/dev/null || true
++  wait "$shell_pid" 2>/dev/null || true
++  echo "=== runner log ==="
++  grep -vE "Xlib|libGL|MESA|X11" /tmp/psynch_kernel_return_contract.runner.log 2>/dev/null || true
++  echo "no verdict produced before timeout"
++  exit 2
++fi
++
++kill "$shell_pid" 2>/dev/null || true
++wait "$shell_pid" 2>/dev/null || true
++
++echo "=== verdict ==="
++guest_verdict="$(env DPREFIX="$DPREFIX" "$LAUNCH" shell /bin/bash --login -c "cat '$verdict'" 2>/dev/null || true)"
++printf '%s\n' "$guest_verdict"
++grep -q "^PSYNCH_KERNEL_RETURN_CONTRACT_OK" <<<"$guest_verdict" &&
++  grep -q "ORACLE_RC=0" <<<"$guest_verdict"

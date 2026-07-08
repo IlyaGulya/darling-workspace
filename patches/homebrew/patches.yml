@@ -455,6 +455,24 @@ patches:
       repo: darlinghq/darling-libpthread
       base: master
       state: local
+- path: libpthread/psynch-kernel-return-helper.patch
+  sha256sum: 8e5e3bd6810e6d973fa1fc90a0c5aa7bdfaf6042f122e924a5c028528d006c13
+  module: darling/src/external/libpthread
+  source-branch: fix/psynch-kernel-return-helper
+  source-base: f07f265bfbcf071c1adfc808de971e053ea5edc5
+  source-commit: 6b96e2471f5b68bc4486c14de126f7109dbaf984
+  bead: dar-q95.29.2
+  publication-status: blocked
+  publication-blocker: xnu-side psynch wait wrappers still use the Darling-local negative augmented return path; libpthread now decodes base errno/status bits explicitly and has a focused runtime gate, but publication still needs the syscall boundary contract reconciled with dar-q95.19
+  github:
+    fork:
+      repo: IlyaGulya/darling-libpthread
+      base: preupstream/master
+      state: local
+    upstream:
+      repo: darlinghq/darling-libpthread
+      base: master
+      state: local
 - path: xnu/getattrlist-name-objtype.patch
   sha256sum: 984225243c3aa2b9e1874fa3f6be83bbad29ac1fd34cabbfb44a0eb407b7c996
   module: darling/src/external/xnu
@@ -482,6 +500,23 @@ patches:
   publication-status: blocked
   publication-blocker: duplicated non-conformant bulk attribute encoder; see dar-q95.29.1
   pr-draft: pr-drafts/xnu-getattrlistbulk.md
+  github:
+    fork:
+      repo: IlyaGulya/darling-xnu
+      base: preupstream/main
+      state: local
+    upstream:
+      repo: darlinghq/darling-xnu
+      base: main
+      state: local
+- path: xnu/getattrlist-shared-packer.patch
+  sha256sum: de09fc3c27f115be422fbf7ac472e3fd730de9815146248c78f4e698d74504b4
+  module: darling/src/external/xnu
+  source-branch: fix/getattrlist-shared-packer
+  source-commit: 72020097cfa0d3ea7e925e1aba3b2df9b7a3a0dc
+  bead: dar-q95.29.1
+  publication-status: blocked
+  publication-blocker: shared packer and focused conformance gate are green locally; remaining publication review is Darwin parity for unsupported/subset policy and full Homebrew runtime gate after broader a0/cvstorm follow-up
   github:
     fork:
       repo: IlyaGulya/darling-xnu
