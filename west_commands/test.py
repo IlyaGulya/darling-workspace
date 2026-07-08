@@ -26,6 +26,7 @@ import os
 import shutil
 import subprocess
 import tempfile
+from contextlib import contextmanager
 from pathlib import Path
 from shlex import quote
 
@@ -93,6 +94,11 @@ class DarlingTest(WestCommand):
             "--prefix-profile",
             metavar="NAME",
             help="named Darling prefix shortcut (homebrew -> ~/work/darling-prefix-homebrew-test)",
+        )
+        parser.add_argument(
+            "--materialize-profile",
+            action="store_true",
+            help="temporarily switch requires-profile tests to integration/<profile> branches and restore afterward",
         )
         parser.add_argument(
             "--executor",
@@ -163,11 +169,14 @@ class DarlingTest(WestCommand):
         return yaml.safe_load(path.read_text()) or {}
 
     def _profile_modules(self, profile: str) -> set[str]:
-        return {
+        modules = {
             patch["module"]
             for patch in self._load_profile(profile).get("patches", [])
             if patch.get("module")
         }
+        if modules:
+            modules.add("darling")
+        return modules
 
     def _profile_is_applied(self, profile: str) -> bool:
         expected = f"integration/{profile}"
@@ -183,6 +192,103 @@ class DarlingTest(WestCommand):
             if current != expected:
                 return False
         return True
+
+    def _branch_exists(self, repo: Path, branch: str) -> bool:
+        return (
+            subprocess.run(
+                ["git", "show-ref", "--verify", "--quiet", f"refs/heads/{branch}"],
+                cwd=repo,
+                check=False,
+            ).returncode
+            == 0
+        )
+
+    def _worktree_dirty(self, repo: Path, *, parent: bool = False) -> bool:
+        command = ["git", "status", "--porcelain"]
+        if parent:
+            command.extend(["--ignore-submodules=all", "--untracked-files=no"])
+        return bool(
+            subprocess.run(
+                command,
+                cwd=repo,
+                capture_output=True,
+                text=True,
+                check=False,
+            ).stdout.strip()
+        )
+
+    def _checkout_state(self, repo: Path) -> tuple[str, str]:
+        branch = subprocess.run(
+            ["git", "branch", "--show-current"],
+            cwd=repo,
+            capture_output=True,
+            text=True,
+            check=False,
+        ).stdout.strip()
+        if branch:
+            return ("branch", branch)
+        head = subprocess.run(
+            ["git", "rev-parse", "HEAD"],
+            cwd=repo,
+            capture_output=True,
+            text=True,
+            check=True,
+        ).stdout.strip()
+        return ("detach", head)
+
+    def _restore_checkout_state(self, repo: Path, state: tuple[str, str]) -> None:
+        kind, value = state
+        args = ["git", "switch", value] if kind == "branch" else ["git", "switch", "--detach", value]
+        subprocess.run(args, cwd=repo, check=True)
+
+    @contextmanager
+    def _profile_checkout(self, profile: str):
+        branch = f"integration/{profile}"
+        repos = [
+            (module, self._project_path(module))
+            for module in sorted(self._profile_modules(profile))
+        ]
+        dirty = [
+            module
+            for module, repo in repos
+            if self._worktree_dirty(repo, parent=module == "darling")
+        ]
+        if dirty:
+            self.die(
+                f"cannot materialize profile {profile!r}; dirty worktree(s): "
+                f"{', '.join(dirty)}"
+            )
+
+        states = [(repo, self._checkout_state(repo)) for _, repo in repos]
+        try:
+            missing = [
+                module
+                for module, repo in repos
+                if not self._branch_exists(repo, branch)
+            ]
+            if missing:
+                self.inf(
+                    f"  profile {profile!r} missing integration branch in: "
+                    f"{', '.join(missing)}"
+                )
+                self.inf(f"  generating integration/{profile} with west patch apply")
+                subprocess.run(
+                    ["west", "patch", "clean", "--profile", profile, "--force"],
+                    cwd=self.topdir,
+                    check=True,
+                )
+                subprocess.run(
+                    ["west", "patch", "apply", "--profile", profile],
+                    cwd=self.topdir,
+                    check=True,
+                )
+            for module, repo in repos:
+                self.inf(f"  materialize {module}: {branch}")
+                subprocess.run(["git", "switch", branch], cwd=repo, check=True)
+            yield
+        finally:
+            for repo, state in reversed(states):
+                self._restore_checkout_state(repo, state)
 
     def _resolve_prefix(self, args) -> str | None:
         if args.prefix and args.prefix_profile:
@@ -406,7 +512,6 @@ class DarlingTest(WestCommand):
                     "profile test-tree discovery is implemented; use runner: script "
                     "or runner: west-build for runnable local metadata"
                 )
-            self._check_requires_profile(patch, invocation)
             script_path = invocation.get("script_path")
             if script_path is not None and not script_path.is_file():
                 self.die(f"{patch['path']}: test script not found: {script_path}")
@@ -420,7 +525,8 @@ class DarlingTest(WestCommand):
                 self.inf(f"  skipped duplicate invocation already run")
                 continue
             seen_invocations.add(invocation["key"])
-            result_rc = self._run_invocation(invocation, env=self._execution_env(invocation))
+            with self._required_profile_context(patch, invocation):
+                result_rc = self._run_invocation(invocation, env=self._execution_env(invocation))
             if result_rc:
                 rc = result_rc
         return rc
@@ -528,12 +634,28 @@ class DarlingTest(WestCommand):
             return
         if self._profile_is_applied(required):
             return
+        if getattr(self, "_materialize_profile", False):
+            return
         self.die(
             f"{patch['path']}: test requires materialized patch profile {required!r}; "
             f"current checkout is not fully on integration/{required}. "
-            f"Run `west patch apply --profile {required}` first, or use the "
-            "future temporary materialized-profile runner tracked by dar-test-infra-sp5.11.12."
+            f"Run `west patch apply --profile {required}` first, or pass "
+            "`west test --materialize-profile` to switch temporarily."
         )
+
+    @contextmanager
+    def _required_profile_context(self, patch, invocation):
+        required = invocation.get("requires_profile")
+        if not required or self._profile_is_applied(required):
+            yield
+            return
+        if not getattr(self, "_materialize_profile", False):
+            self._check_requires_profile(patch, invocation)
+            yield
+            return
+        self.inf(f"{patch['path']}: temporarily materializing profile {required!r}")
+        with self._profile_checkout(required):
+            yield
 
     def _run_source_base_proof(self, patch, proof, invocation) -> int:
         if invocation["shell"]:
@@ -611,7 +733,6 @@ class DarlingTest(WestCommand):
                     f"{patch['path']}: RED proof mode {mode!r} is not implemented; "
                     "use mode: self or mode: source-base"
                 )
-            self._check_requires_profile(patch, invocation)
             script_path = invocation.get("script_path")
             if script_path is not None and not script_path.is_file():
                 self.die(f"{patch['path']}: test script not found: {script_path}")
@@ -625,10 +746,11 @@ class DarlingTest(WestCommand):
                 self.inf("  skipped duplicate invocation already run")
                 continue
             seen_invocations.add(invocation["key"])
-            if mode == "source-base":
-                result_rc = self._run_source_base_proof(patch, proof, invocation)
-            else:
-                result_rc = self._run_invocation(invocation, env=self._execution_env(invocation))
+            with self._required_profile_context(patch, invocation):
+                if mode == "source-base":
+                    result_rc = self._run_source_base_proof(patch, proof, invocation)
+                else:
+                    result_rc = self._run_invocation(invocation, env=self._execution_env(invocation))
             if result_rc:
                 rc = result_rc
         return rc
@@ -714,6 +836,7 @@ class DarlingTest(WestCommand):
         self._prefix = self._resolve_prefix(args)
         self._executor = self._resolve_executor(args.executor)
         self._bundle_root = str(Path(args.bundle_root).expanduser())
+        self._materialize_profile = args.materialize_profile
 
         if args.gc:
             self._gc_bundles(

@@ -193,8 +193,14 @@ Some build gates need a consistent patch profile rather than the developer's
 current mixture of fix branches. Mark those with `requires-profile: arch` (or
 another profile name). `west test` will list those tests anywhere, but real
 execution is allowed only when all modules touched by that profile are currently
-on `integration/<profile>`. Temporary materialized-profile execution remains a
-future runner improvement.
+on `integration/<profile>`, unless `--materialize-profile` is passed. With that
+flag, `west test` temporarily materializes missing `integration/<profile>`
+branches with `west patch clean --force` + `west patch apply`, switches the
+profile modules to those branches for the selected test, then restores the
+original branches/detached HEADs. This intentionally requires clean worktrees;
+the `darling` superproject may still have submodule-pointer noise, which is
+ignored for the dirty check because those pointers are exactly what profile
+materialization changes.
 
 ## Problem
 
