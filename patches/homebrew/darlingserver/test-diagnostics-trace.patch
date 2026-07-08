@@ -1,4 +1,4 @@
-From 00788f1f08a0c3327cec6ef79e356d1399fa18f8 Mon Sep 17 00:00:00 2001
+From cc99ed446f294cf441059f7c5ab86fe93fed928d Mon Sep 17 00:00:00 2001
 From: Ilya Gulya <ilya@gulya.me>
 Date: Wed, 8 Jul 2026 22:57:26 +0000
 Subject: [PATCH] test: add guarded diagnostics and ingest fault trigger
@@ -12,10 +12,10 @@ Subject: [PATCH] test: add guarded diagnostics and ingest fault trigger
  duct-tape/xnu/osfmk/kern/ipc_mig.c            |  2 +
  duct-tape/xnu/osfmk/kern/waitq.c              |  7 ++
  .../darlingserver/test-diagnostics.hpp        | 11 +++
- src/call.cpp                                  | 33 ++++++-
+ src/call.cpp                                  | 38 +++++++-
  src/process.cpp                               | 25 +++++
  src/test-diagnostics.cpp                      | 95 +++++++++++++++++++
- 11 files changed, 263 insertions(+), 1 deletion(-)
+ 11 files changed, 268 insertions(+), 1 deletion(-)
  create mode 100644 duct-tape/internal-include/darlingserver/duct-tape/test-diagnostics.h
  create mode 100644 duct-tape/src/test-diagnostics.c
  create mode 100644 internal-include/darlingserver/test-diagnostics.hpp
@@ -234,7 +234,7 @@ index 0000000000000000000000000000000000000000..de5a448b6802c8f8dbaf623e46e02a81
 +
 +}
 diff --git a/src/call.cpp b/src/call.cpp
-index a443cd837393f8f73204ffe99461717da46ad54c..a2bff74a51c1799a46c0692fdb91cc9e7c0052e7 100644
+index a443cd837393f8f73204ffe99461717da46ad54c..969ae523bfb2dc1f7b9c948438c4e432cf3ba6e4 100644
 --- a/src/call.cpp
 +++ b/src/call.cpp
 @@ -29,6 +29,7 @@
@@ -318,6 +318,18 @@ index a443cd837393f8f73204ffe99461717da46ad54c..a2bff74a51c1799a46c0692fdb91cc9e
  			}
  		});
  		return nullptr;
+@@ -614,6 +645,11 @@ void DarlingServer::Call::Uidgid::processCall() {
+ 	int uid = -1;
+ 	int gid = -1;
+ 
++	if (TestDiagnostics::consumeFault("processcall.uidgid_throw")) {
++		TestDiagnostics::traceLine("call.processcall_throw name=uidgid");
++		throw std::runtime_error("injected uidgid processCall failure");
++	}
++
+ 	if (auto thread = _thread.lock()) {
+ 		if (auto process = thread->process()) {
+ 			// HACK
 diff --git a/src/process.cpp b/src/process.cpp
 index 6fce47973d9eeb0dcad0f96bdf5803c020c88ee4..b56ee4381bb95eb847805dc549929bbba83d2ac5 100644
 --- a/src/process.cpp

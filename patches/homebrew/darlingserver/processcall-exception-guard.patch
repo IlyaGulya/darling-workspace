@@ -1,4 +1,4 @@
-From 8a2c9c5994e65ea2101d7c821355e1a05ad55fc4 Mon Sep 17 00:00:00 2001
+From 44fbb9f428da4f403f53a102b58a353ca6d2dddd Mon Sep 17 00:00:00 2001
 From: Ilya Gulya <ilya@gulya.me>
 Date: Sun, 21 Jun 2026 14:40:33 +0000
 Subject: [PATCH] thread/call/server: contain exceptions that can terminate the
@@ -43,10 +43,10 @@ guest" into "that one RPC fails (error reply or dropped); all other guests
 keep working."
 ---
  .../darlingserver/processcall-guard.hpp       | 24 ++++++++++++++++
- src/call.cpp                                  | 18 +++++++++++-
+ src/call.cpp                                  | 25 +++++++++++++++--
  src/server.cpp                                | 28 +++++++++++++++++--
  src/thread.cpp                                | 28 ++++++++++++++++++-
- 4 files changed, 93 insertions(+), 5 deletions(-)
+ 4 files changed, 99 insertions(+), 6 deletions(-)
  create mode 100644 internal-include/darlingserver/processcall-guard.hpp
 
 diff --git a/internal-include/darlingserver/processcall-guard.hpp b/internal-include/darlingserver/processcall-guard.hpp
@@ -80,7 +80,7 @@ index 0000000000000000000000000000000000000000..eefc7f34910a935662340e2c4caef369
 +
 +#endif
 diff --git a/src/call.cpp b/src/call.cpp
-index 7ad16e8fc8c02ecdc14613fe1bfbb23ba26bd8d2..721031c7680c5c14317f793c138b0b80ca177c89 100644
+index 7ad16e8fc8c02ecdc14613fe1bfbb23ba26bd8d2..5811aa70620868918687ef1fb51ea15c69d2bca6 100644
 --- a/src/call.cpp
 +++ b/src/call.cpp
 @@ -29,6 +29,7 @@
@@ -115,6 +115,20 @@ index 7ad16e8fc8c02ecdc14613fe1bfbb23ba26bd8d2..721031c7680c5c14317f793c138b0b80
  		});
  		return nullptr;
  	}
+@@ -239,7 +255,12 @@ std::shared_ptr<DarlingServer::Thread> DarlingServer::Call::thread() const {
+ };
+ 
+ void DarlingServer::Call::sendBasicReply(int resultCode) {
+-	throw std::runtime_error("This call cannot send a basic reply");
++	Message reply(sizeof(dserver_rpc_replyhdr_t), 0);
++	reply.setAddress(_replyAddress);
++	auto replyStruct = reinterpret_cast<dserver_rpc_replyhdr_t*>(reply.data().data());
++	replyStruct->number = _header.number;
++	replyStruct->code = resultCode;
++	sendReply(std::move(reply));
+ };
+ 
+ void DarlingServer::Call::sendBSDReply(int resultCode, uint32_t returnValue) {
 diff --git a/src/server.cpp b/src/server.cpp
 index e502e2854652c9053ad13e3f53653f795a19a48e..b71b4889a3de7978ef62b30f891cd314212f8622 100644
 --- a/src/server.cpp

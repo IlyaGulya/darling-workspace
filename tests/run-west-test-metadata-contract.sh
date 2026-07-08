@@ -301,6 +301,27 @@ patches:
         build-targets: [libsystem_kernel]
         deploy:
         - usr/lib/system/libsystem_kernel.dylib
+- path: test/invalid-source-patches.patch
+  module: darling-workspace
+  tests:
+  - name: invalid_source_patches
+    kind: guest
+    env: darling
+    diag: bare
+    runner: guest-c-fixture
+    script: tests/guest_c_fixture_contract.c
+    ok-marker: WEST_GUEST_C_FIXTURE_OK
+    red: true
+    red-proof:
+      mode: guest-runtime-deploy
+      bad-profile: current-minus-patch
+      source-patches:
+      - /tmp/bad.patch
+      runtime-artifacts:
+      - module: darling/src/external/xnu
+        build-targets: [libsystem_kernel]
+        deploy:
+        - usr/lib/system/libsystem_kernel.dylib
 - path: test/invalid-host-trace.patch
   module: darling-workspace
   tests:
@@ -501,6 +522,9 @@ printf '%s\n' "$invalid_guest_red_check" | grep -q \
 printf '%s\n' "$invalid_guest_red_check" | grep -q \
 	'INVALID   test/invalid-current-minus-skip-list.patch: tests\[1\] current-minus-skip-patches must be a list of patch paths' ||
 	fail 'invalid current-minus-skip-patches list was not rejected'
+printf '%s\n' "$invalid_guest_red_check" | grep -q \
+	'INVALID   test/invalid-source-patches.patch: tests\[1\] source-patches must be a list of workspace-relative patch paths' ||
+	fail 'invalid source-patches list was not rejected'
 printf '%s\n' "$invalid_guest_red_check" | grep -q \
 	'INVALID   test/invalid-host-trace.patch: tests\[1\].host-trace-files\[0\] env must be a shell variable name' ||
 	fail 'invalid host-trace-files env was not rejected'
