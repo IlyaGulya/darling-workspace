@@ -67,6 +67,8 @@ refs, PR drafts, and agent handoff.
 - Prefer `ctest-label` for tests registered in the compatibility suite. It is a
   runnable selector, not documentation; `west test` builds the suite and runs
   `ctest -L <label>`.
+- Use `runner: python` for non-executable Python test files; do not use
+  `command:` just to spell `python3 path/to/test.py`.
 - `west patch export` must not create unrelated `patches.yml` formatting churn.
   Treat block-scalar/quoting rewrites as a tooling bug, not acceptable review
   noise.

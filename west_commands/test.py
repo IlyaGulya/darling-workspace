@@ -502,6 +502,39 @@ class DarlingTest(WestCommand):
                 "name": test.get("name", patch["path"]),
                 "timeout_seconds": int(test.get("timeout-seconds", 600)),
             }
+        if runner == "python":
+            repo = test.get("repo", patch["module"])
+            script = test["script"]
+            script_args = [str(arg) for arg in test.get("args", [])]
+            args = ["python3", str(Path(script)), *script_args]
+            prefix = ""
+            if test.get("env-vars"):
+                prefix = " ".join(
+                    f"{quote(str(key))}={quote(str(value))}"
+                    for key, value in test["env-vars"].items()
+                ) + " "
+            display = f"cd {quote(repo)} && {prefix}{' '.join(quote(arg) for arg in args)}"
+            env = None
+            if test.get("env-vars"):
+                env = os.environ.copy()
+                env.update({str(k): str(v) for k, v in test["env-vars"].items()})
+            cwd = self._project_path(repo)
+            script_path = cwd / script
+            return {
+                "key": display,
+                "display": display,
+                "cwd": cwd,
+                "script_path": script_path,
+                "args": args,
+                "shell": False,
+                "env": env,
+                "requires_resources": list(test.get("requires", [])),
+                "requires_env": list(test.get("requires-env", [])),
+                "requires_profile": test.get("requires-profile"),
+                "diag": self._resolved_diag(test),
+                "name": test.get("name", patch["path"]),
+                "timeout_seconds": int(test.get("timeout-seconds", 600)),
+            }
 
         self.die(f"{patch['path']}: unsupported test runner {runner!r}")
 
