@@ -209,6 +209,18 @@ patches:
     - darling/src/libsystem_kernel/emulation/src/xnu_syscall/bsd/impl/select
     compile-flags: [-std=gnu11, -Wall, -Wextra, -Werror]
     note: Host unit RED->GREEN contract for BSD/Linux fd_set word-size conversion above 32 fds.
+  - name: select_fdset_guest
+    kind: guest
+    env: darling
+    diag: guarded
+    runner: guest-c-fixture
+    repo: darling-workspace
+    script: tests/select_fdset_guest.c
+    ok-marker: SELECT_FDSET_GUEST_OK
+    timeout-seconds: 30
+    requires:
+    - darling-prefix
+    note: Guest runtime gate that select and pselect observe readiness on fd numbers above 32.
   pr-draft: pr-drafts/xnu-select-pselect-fdset.md
   github:
     fork:
