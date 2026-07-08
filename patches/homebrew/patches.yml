@@ -912,20 +912,19 @@ patches:
   publication-status: provisional
   publication-blocker: signal restart state-machine and conformance tests under dar-q95.29.5
   tests:
-  - name: sigexc_sa_restart_model
+  - name: sigexc_sa_restart_contract
     kind: contract
-    coverage-tier: model
+    coverage-tier: compile
     env: host
     diag: bare
     red: true
     red-proof:
-      mode: self
-      why-self: The model drives SA_RESTART propagation through old dropped-flag and fixed preserved-flag signal semantics.
-    runner: python
+      mode: source-base
+      source-env: XNU_SRC_ROOT
+    runner: script
     repo: darling-workspace
-    script: tests/xnu_behavior_models.py
-    args: [sigexc-sa-restart]
-    note: Host behavioral model; old sigexc translation drops SA_RESTART, fixed translation preserves it.
+    script: tests/sigexc_sa_restart_contract.sh
+    note: Compiles real sys_sigaction plus sigexc and verifies Darwin SA_RESTART/SIG_IGN state is mirrored into the installed Linux sigexc handler flags.
   pr-draft: pr-drafts/xnu-sigexc-sa-restart.md
   github:
     fork:
