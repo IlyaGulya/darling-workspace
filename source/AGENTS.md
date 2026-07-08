@@ -14,6 +14,34 @@ Do not add `.beads/`, `AGENTS.md`, `pr-drafts/`, `.bv/`, or other agent state
 to Darling commits. The `br` examples below must be run through
 `../darling-workspace/bin/dw beads` so they use the shared control repository.
 
+## Darling workspace rules
+
+- Use `west dw beads ...` for Beads in this workspace; do not run raw `br`
+  from Darling source unless routed through `darling-workspace`.
+- Do not push upstream. Only push to the user's forks with explicit approval;
+  the default workflow is local-only.
+- Patch workflow: clean `fix/*` branches are canonical source; `patches.yml`,
+  patch files, and `west.lock.yml` are portable integration artifacts. After
+  editing a source branch, regenerate the patch, update full `source-commit`
+  and `sha256sum`, then run `west patch verify` and
+  `west patch status --strict`.
+- Runtime deploys must keep the launcher prefix and any test `DPREFIX` in sync.
+  Prefer `west darling-build --deploy --deploy-extra-prefix "$DPREFIX" ...`;
+  otherwise verify matching closure dylib md5s before trusting runtime results.
+- `libsystem_kernel.dylib` changes can also affect dyld's statically linked
+  `emulation_dyld` objects. Do not validate signal/RPC/libsystem_kernel
+  behavior with `--no-deploy-dyld` unless you explicitly mean closure-only
+  validation and record that limitation; otherwise rebuild/deploy dyld too.
+- Never run concurrent raw `ninja` commands against the same Darling build dir.
+  Use `west darling-build` for deployable builds because it serializes the
+  build dir.
+- If a runner, cleanboot, shellspawn, or deploy tool flakes/hangs,
+  create/update a Bead and add timeout/diagnostics while the repro is fresh.
+- Run `west dw handoff` before ending after Beads, patchset, or private branch
+  changes.
+- The generated Beads checklists below mention `git push`; in this fork
+  workflow, that step is disabled unless the user explicitly asks for a push.
+
 <!-- br-agent-instructions-v1 -->
 
 ---
