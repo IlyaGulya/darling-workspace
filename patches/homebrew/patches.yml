@@ -729,20 +729,19 @@ patches:
   publication-status: blocked
   publication-blocker: private negative-error ABI and retry-all loop; see dar-q95.29.2
   tests:
-  - name: psynch_negative_returns_model
+  - name: psynch_kernel_return_decode_contract
     kind: contract
-    coverage-tier: model
+    coverage-tier: compile
     env: host
     diag: bare
     red: true
     red-proof:
-      mode: self
-      why-self: The model drives negative augmented psynch return decoding through old success-misread and fixed errno/status extraction semantics.
-    runner: python
+      mode: source-base
+      source-env: LIBPTHREAD_SRC_ROOT
+    runner: script
     repo: darling-workspace
-    script: tests/xnu_behavior_models.py
-    args: [psynch-negative-returns]
-    note: Host behavioral model; old libpthread treats augmented negative returns as success, fixed decoding recovers errno and prepost status bits.
+    script: tests/psynch_kernel_return_decode_contract.sh
+    note: Compiles real libpthread inline_internal.h and verifies negative psynch kernel returns decode errno base/status bits while successful updatevals remain values.
   pr-draft: pr-drafts/libpthread-psynch-negative-returns.md
   github:
     fork:
