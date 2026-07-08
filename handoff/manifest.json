@@ -163,13 +163,13 @@
         },
         {
           "branch": "fix/assert-wait-cancel-stale-timer",
-          "head": "7344b17facc2f18c8a8db2e36e8850c032965dd7",
+          "head": "10194531c37acd1ad5d1e79a9d1aa31353ed7158",
           "upstream": "",
           "source_ref": "refs/heads/fix/assert-wait-cancel-stale-timer"
         },
         {
           "branch": "fix/cancel-stale-wait-timer",
-          "head": "8c98528d1902ad2f5b06e0b1113427afa2e2e6f7",
+          "head": "a22a5e8437cfa7a6c278a50e15eb55f96060ab9b",
           "upstream": "",
           "source_ref": "refs/heads/fix/cancel-stale-wait-timer"
         },
@@ -181,7 +181,7 @@
         },
         {
           "branch": "fix/checkin-rwlock-across-suspend",
-          "head": "5e5d688886589025929d246e51ca349aa18b1cbb",
+          "head": "b6d1c6d496d37226b2563ea9a0109e3e50eddb34",
           "upstream": "",
           "source_ref": "refs/heads/fix/checkin-rwlock-across-suspend"
         },
@@ -223,13 +223,13 @@
         },
         {
           "branch": "fix/fork-checkin-bound",
-          "head": "8746148c12bda639054f15b0510e1578a11034df",
+          "head": "f00bc66c395f2c601c17376b9b64970fba675116",
           "upstream": "origin/main",
           "source_ref": "refs/heads/fix/fork-checkin-bound"
         },
         {
           "branch": "fix/fork-checkin-sticky-flag",
-          "head": "eb7e93b706d16c85fb50cf60c054ce3c2fac075b",
+          "head": "04ae50129488b1d1943461e571f68b1939be1ecc",
           "upstream": "",
           "source_ref": "refs/heads/fix/fork-checkin-sticky-flag"
         },
@@ -289,7 +289,7 @@
         },
         {
           "branch": "fix/pthread-canceled-xnu-semantics",
-          "head": "6883a8363d2dc2d7a43eae109e172a18e4b4f36c",
+          "head": "2069c75492f6813f7eb623af3ba66f8891422c20",
           "upstream": "",
           "source_ref": "refs/heads/fix/pthread-canceled-xnu-semantics"
         },
