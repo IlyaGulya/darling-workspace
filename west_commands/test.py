@@ -202,6 +202,20 @@ class DarlingTest(WestCommand):
             return os.environ["DPREFIX"]
         return None
 
+    def _resolve_darling_launcher(self, prefix: str | None) -> str | None:
+        if os.environ.get("DARLING"):
+            return os.environ["DARLING"]
+        if os.environ.get("DARLING_LAUNCHER"):
+            return os.environ["DARLING_LAUNCHER"]
+        candidates = []
+        if prefix:
+            candidates.append(Path(prefix).expanduser() / "bin" / "darling")
+        candidates.append(Path("~/work/darling-prefix/bin/darling").expanduser())
+        for candidate in candidates:
+            if candidate.exists():
+                return str(candidate)
+        return None
+
     def _projects(self) -> dict[str, Path]:
         projects: dict[str, Path] = {}
         for project in self.manifest.projects:
@@ -402,6 +416,10 @@ class DarlingTest(WestCommand):
         if env:
             merged.update(env)
         merged["DPREFIX"] = prefix
+        launcher = self._resolve_darling_launcher(prefix)
+        if launcher:
+            merged["DARLING"] = launcher
+            merged["DARLING_LAUNCHER"] = launcher
         return merged
 
     def _missing_requirements(self, invocation) -> list[str]:
@@ -415,6 +433,13 @@ class DarlingTest(WestCommand):
             and not getattr(self, "_prefix", None)
         ):
             missing.append("darling-prefix (--prefix, --prefix-profile, or DPREFIX)")
+        if "darling-prefix" in invocation.get("requires_resources", []):
+            launcher = self._resolve_darling_launcher(getattr(self, "_prefix", None))
+            if not launcher:
+                missing.append(
+                    "darling-launcher (DARLING, DARLING_LAUNCHER, "
+                    "prefix/bin/darling, or ~/work/darling-prefix/bin/darling)"
+                )
         return missing
 
     def _check_requires_profile(self, patch, invocation) -> None:

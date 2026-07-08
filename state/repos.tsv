@@ -91,7 +91,7 @@ src/external/libmalloc	a57991e2651226a675654bd96e5d9ab6bec288c5	DETACHED	git@git
 src/external/libnetwork	56c5fad43f24a40d8ca7f8a1d0badedfeaf7e64e	DETACHED	git@github.com:IlyaGulya/darling-libnetwork.git	clean
 src/external/libnotify	98156d3f847a3ced6c5f52c12a889047bc4f9b20	DETACHED	git@github.com:IlyaGulya/darling-Libnotify.git	clean
 src/external/libplatform	6a71adae2108910bc6f77a05b2bff8947b049121	integration/homebrew	git@github.com:IlyaGulya/darling-libplatform.git	clean
-src/external/libpthread	c29d7b38b2a1ffac4466c43a683f71bb5437ba00	integration/homebrew	git@github.com:IlyaGulya/darling-libpthread.git	clean
+src/external/libpthread	a1f66caa8f9bc59fc4147186910280233862df0b	fix/psynch-kernel-return-helper	git@github.com:IlyaGulya/darling-libpthread.git	clean
 src/external/libresolv	cf955392e5449efb269b8b3510c755085fd36a2d	DETACHED	git@github.com:IlyaGulya/darling-libresolv.git	clean
 src/external/libressl-2.2.9	c5e9edb9d82ccf5fde5d8ae32b162fec8fe11318	DETACHED	git@github.com:IlyaGulya/darling-libressl.git	clean
 src/external/libressl-2.5.5	1f663b5bdc9082178717c080e4728fe3e7084de4	DETACHED	git@github.com:IlyaGulya/darling-libressl.git	clean
@@ -156,7 +156,7 @@ src/external/xar	887bd4f42eb4ac9139a7f621b5811065aa86f3e3	DETACHED	git@github.co
 src/external/xcbuild	a903c6952fc5617816113cbb7b551ac701dba2ff	DETACHED	git@github.com:IlyaGulya/xcbuild.git	clean
 src/external/xcbuild/ThirdParty/googletest	a2b8a8e07628e5fd60644b6dd99c1b5e7d7f1f47	DETACHED	git@github.com:IlyaGulya/googletest.git	clean
 src/external/xcbuild/ThirdParty/linenoise	c894b9e59f02203dbe4e2be657572cf88c4230c3	DETACHED	git@github.com:IlyaGulya/linenoise.git	clean
-src/external/xnu	a491dc1ca9edcb5b3950cf9d3d400b1534c36ccf	fix/getattrlist-shared-packer	git@github.com:IlyaGulya/darling-xnu.git	clean
+src/external/xnu	5fd2eb462219cc33d408f8be26eca2dd7ae28709	fix/getattrlist-shared-packer	git@github.com:IlyaGulya/darling-xnu.git	clean
 src/external/zip	caf41ebbc3ebab0250e4d13aa42221ef91a9802c	DETACHED	git@github.com:IlyaGulya/darling-zip.git	clean
 src/external/zlib	677de9b1c2bea1e428f56d8fc63300aa471eaf99	DETACHED	git@github.com:IlyaGulya/darling-zlib.git	clean
 src/external/zsh	4a7a6ebf6216395c7db698a4993db16e484aa54d	DETACHED	git@github.com:IlyaGulya/darling-zsh.git	clean

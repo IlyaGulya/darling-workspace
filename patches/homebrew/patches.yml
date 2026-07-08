@@ -456,11 +456,11 @@ patches:
       base: master
       state: local
 - path: libpthread/psynch-kernel-return-helper.patch
-  sha256sum: ab41ae6bb3803ba8c44e98210fdf123daf98ae04645eaa2c868c2e1e8ef60af9
+  sha256sum: 6addbdfe4ab14cc0c2582d2a28f5902c9864859d6797db81fde8bd9cb35c41b7
   module: darling/src/external/libpthread
   source-branch: fix/psynch-kernel-return-helper
   source-base: f07f265bfbcf071c1adfc808de971e053ea5edc5
-  source-commit: c29d7b38b2a1ffac4466c43a683f71bb5437ba00
+  source-commit: a1f66caa8f9bc59fc4147186910280233862df0b
   bead: dar-q95.29.2
   publication-status: blocked
   publication-blocker: xnu-side psynch wait wrappers still use the Darling-local negative augmented return path; libpthread now decodes base errno/status bits explicitly and has a focused runtime gate, but publication still needs the syscall boundary contract reconciled with dar-q95.19
@@ -521,10 +521,10 @@ patches:
       base: main
       state: local
 - path: xnu/getattrlist-shared-packer.patch
-  sha256sum: 73d694d12d709b4a795b5aa4270fc5c8b237a1bcb79998ce8aaaba124150e2f6
+  sha256sum: dae9356f65d26b8977952009c88b04ccd37ed516a0bb29e14b60840654b341d3
   module: darling/src/external/xnu
   source-branch: fix/getattrlist-shared-packer
-  source-commit: a491dc1ca9edcb5b3950cf9d3d400b1534c36ccf
+  source-commit: 5fd2eb462219cc33d408f8be26eca2dd7ae28709
   bead: dar-q95.29.1
   publication-status: blocked
   publication-blocker: shared packer and focused conformance gate are green locally; remaining publication review is Darwin parity for unsupported/subset policy and full Homebrew runtime gate after broader a0/cvstorm follow-up
