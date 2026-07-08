@@ -86,8 +86,8 @@ patches:
     - full
     env-vars:
       A0_STRICT: '1'
-    requires-env:
-    - DPREFIX
+    requires:
+    - darling-prefix
     note: Long guest acceptance gate from the A0-ARCH stage docs; run manually/guarded, not as a fast local default.
   source-commit: 93c70498f3c97f8933af56b6308a8780bbaa5f26
   sha256sum: 8b1d6f2a4bdc5c595f8adb39a3481e7712c7bf6717f48ca0a200d452a4ce897b

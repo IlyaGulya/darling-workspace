@@ -113,14 +113,17 @@ Script tests may declare arguments and environment without dropping to a shell:
     args: [full]
     env-vars:
       A0_STRICT: '1'
-    requires-env:
-    - DPREFIX
+    requires:
+    - darling-prefix
 ```
 
-Use `requires-env` for host-side prerequisites that must exist before the test
-starts. For example, Darling guest/runtime scripts should declare `DPREFIX`
-instead of burying that requirement in prose. `west test` fails before launch if
-the variable is missing.
+Use `requires` for resources that the test framework can provide. Darling
+guest/runtime scripts should declare `requires: [darling-prefix]`; `west test`
+then supplies `DPREFIX` from `--prefix`, `--prefix existing:/path`,
+`--prefix-profile homebrew`, or an already exported `DPREFIX`. Keep
+`requires-env` only for low-level prerequisites that west cannot provision yet.
+`west test --list` never requires those resources; real execution fails before
+launch if a requirement is missing.
 
 Keep shell scripts thin. Static source-contract scripts should source a local
 `contract-test-lib.sh` helper for common `fail`, `require_grep`, and
