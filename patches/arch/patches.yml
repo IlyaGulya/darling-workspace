@@ -103,6 +103,9 @@ patches:
     env: host
     diag: bare
     red: true
+    red-proof:
+      mode: source-base
+      source-env: DSERVER_SRC_ROOT
     runner: script
     script: tests/standard_signal_coalescing_contract_test.sh
     note: Follow-up same-profile test patch; fails before standard signal coalescing state exists.

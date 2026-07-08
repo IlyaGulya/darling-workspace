@@ -315,6 +315,10 @@ class DarlingPatch(WestCommand):
                     errors.append(
                         f"tests[{index}] red-proof mode must be self or source-base"
                     )
+                elif proof.get("mode") == "source-base" and not proof.get("source-env"):
+                    errors.append(
+                        f"tests[{index}] red-proof source-base needs source-env"
+                    )
             env = test.get("env")
             if env and env not in {"host", "darling", "macos"}:
                 errors.append(f"tests[{index}] invalid env {env!r}")
