@@ -1026,6 +1026,26 @@ patches:
     - -Wextra
     - -Werror
     note: Compiles the production pthread cancel-state helper and verifies XNU-style action 0/1/2 plus markcancel state transitions.
+  - name: pthread_cancel_read_guest
+    kind: guest
+    coverage-tier: runtime
+    env: darling
+    diag: guarded
+    runner: guest-c-fixture
+    repo: darling-workspace
+    script: tests/pthread_cancel_read_guest.c
+    ok-marker: PTHREAD_CANCEL_READ_GUEST_OK
+    timeout-seconds: 20
+    compile-flags:
+    - -std=gnu11
+    - -Wall
+    - -Wextra
+    - -Werror
+    note: |-
+      Guest runtime gate for the pthread cancellation RPC handshake: a thread
+      blocked in a cancelable read must be marked via __pthread_markcancel and
+      exit through __pthread_canceled(0) as PTHREAD_CANCELED instead of
+      livelocking or remaining blocked.
   github:
     fork:
       repo: IlyaGulya/darlingserver
