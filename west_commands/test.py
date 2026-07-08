@@ -2240,19 +2240,30 @@ fi
             current = current.parent
         return False
 
-    def _reverse_apply_patch_file(self, patch, target: Path) -> None:
-        profile = getattr(self, "_active_profile", None)
-        if not profile:
-            self.die(f"{patch['path']}: current-minus-patch needs an active profile")
-        patch_file = self._profile_path(profile).parent / patch["path"]
-        if not patch_file.is_file():
-            self.die(f"{patch['path']}: patch file not found for current-minus-patch: {patch_file}")
-        self.inf(f"  RED current-minus-patch: reverse-apply {patch_file}")
-        subprocess.run(
-            ["git", "apply", "-R", "--3way", str(patch_file)],
-            cwd=target,
-            check=True,
-        )
+    def _apply_profile_module_patches(
+        self,
+        profile: str,
+        module: str,
+        target: Path,
+        *,
+        skip_patch_path: str | None = None,
+    ) -> None:
+        for stacked in self._profile_stack(profile):
+            data = self._load_profile(stacked)
+            profile_dir = self._profile_path(stacked).parent
+            for patch in data.get("patches", []):
+                if patch.get("module") != module:
+                    continue
+                if skip_patch_path and patch.get("path") == skip_patch_path:
+                    self.inf(f"  skip {stacked}/{patch['path']} for current-minus-patch")
+                    continue
+                patch_file = profile_dir / patch["path"]
+                self.inf(f"  apply {stacked}/{patch['path']} -> {module}")
+                subprocess.run(
+                    ["git", "am", "--3way", "--committer-date-is-author-date", str(patch_file)],
+                    cwd=target,
+                    check=True,
+                )
 
     @contextmanager
     def _guest_runtime_source_forest(self, patch, proof):
@@ -2320,7 +2331,11 @@ fi
                     if target.exists() or target.is_symlink():
                         self._remove_path_for_materialize(target)
                     if project_path == patch_module_path:
-                        revision = "HEAD" if current_minus_patch else str(bad_revision)
+                        revision = (
+                            self._manifest_revision(str(project_path))
+                            if current_minus_patch
+                            else str(bad_revision)
+                        )
                         subprocess.run(
                             [
                                 "git",
@@ -2336,7 +2351,15 @@ fi
                         )
                         added.append((repo, target))
                         if current_minus_patch:
-                            self._reverse_apply_patch_file(patch, target)
+                            profile = getattr(self, "_active_profile", None)
+                            if not profile:
+                                self.die(f"{patch['path']}: current-minus-patch needs an active profile")
+                            self._apply_profile_module_patches(
+                                profile,
+                                str(project_path),
+                                target,
+                                skip_patch_path=patch["path"],
+                            )
                     else:
                         os.symlink(repo, target, target_is_directory=True)
                 yield source_root
