@@ -757,7 +757,7 @@
         },
         {
           "branch": "fix/getattrlist-shared-packer",
-          "head": "783b3a890940e9b9f40db35e0966f4754be5a04a",
+          "head": "ff82026eb2b6fa3fc620b2464d182118d262ae53",
           "upstream": "",
           "source_ref": "refs/heads/fix/getattrlist-shared-packer"
         },
