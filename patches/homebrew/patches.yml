@@ -624,10 +624,10 @@ patches:
       base: main
       state: local
 - path: darlingserver/exc-fatal-reply-bound.patch
-  sha256sum: c0cba47f6a5633b96846337888fe190dc9aa3e0a36bbff9412c6a41ef885d9dd
+  sha256sum: 8a3396833cbb0915521c6f8ea4248ebc2c47c30f47629be6200fcb41a1eb5256
   module: darling/src/external/darlingserver
   source-branch: fix/exc-fatal-reply-bound
-  source-commit: 4ada639c93580ac908a7f9a10b45f24b7603ac84
+  source-commit: 42f9910cbd4eaf45a361572f5019f3e0f63c5b77
   bead: dar-gwn.1.10
   publication-status: blocked
   publication-blocker: |-
@@ -651,20 +651,27 @@ patches:
     this by the orthogonal download_queue psynch cond_wait ETIMEDOUT
     (dar-gwn.1.8/.1.9 family), so end-to-end green is not yet demonstrable.
   tests:
-  - name: exc_fatal_reply_bound_model
+  - name: exc_fatal_reply_bound_contract
     kind: contract
-    coverage-tier: model
+    coverage-tier: compile
     env: host
     diag: bare
     red: true
     red-proof:
-      mode: self
-      why-self: The model drives fatal-exception reply wait behavior through old unbounded and fixed timeout semantics.
-    runner: python
+      mode: source-base
+      source-env: DSERVER_SRC_ROOT
+    runner: c-fixture
     repo: darling-workspace
-    script: tests/darlingserver_behavior_models.py
-    args: [exc-fatal-reply-bound]
-    note: Host behavioral model; old fatal exception waits forever, fixed waits up to the bound then falls through to default action.
+    script: tests/fatal_exception_reply_contract.c
+    cc: cc
+    include-dirs:
+    - duct-tape/internal-include
+    compile-flags:
+    - -std=c11
+    - -Wall
+    - -Wextra
+    - -Werror
+    note: Compile contract for the production fatal-exception reply wait helper; old source has no bounded wait contract, fixed source maps fatal delivery to MACH_RCV_TIMEOUT and a 3000ms bound while preserving unbounded non-fatal waits.
   pr-draft: pr-drafts/darlingserver-exc-fatal-reply-bound.md
   github:
     fork:
