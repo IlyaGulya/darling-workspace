@@ -1,2 +1,2 @@
 handoff/*.bundle -diff
-
+patches/**/*.patch whitespace=-space-before-tab
