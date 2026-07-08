@@ -909,9 +909,23 @@ patches:
     red-proof:
       mode: source-base
       source-env: XNU_SRC_ROOT
-    runner: script
+    runner: c-fixture
     repo: darling-workspace
-    script: tests/getattrlist_pack_contract.sh
+    script: tests/getattrlist_pack_contract.c
+    include-dirs:
+    - darling/src/libsystem_kernel/emulation/include
+    generated-headers:
+      darling/emulation/conversion/xattr/getattrlist.h: |
+        #pragma once
+        #include <conversion/xattr/getattrlist.h>
+      darling/emulation/xnu_syscall/bsd/helper/xattr/getattrlist_pack.h: |
+        #pragma once
+        #include <xnu_syscall/bsd/helper/xattr/getattrlist_pack.h>
+    compile-flags:
+    - -std=gnu11
+    - -Wall
+    - -Wextra
+    - -Werror
     note: Compiles against the production shared getattrlist packer and checks NAME|OBJTYPE record layout, basename references, object type mapping, and size accounting.
   pr-draft: pr-drafts/xnu-getattrlist-name-objtype.md
   github:
@@ -941,9 +955,23 @@ patches:
     red-proof:
       mode: source-base
       source-env: XNU_SRC_ROOT
-    runner: script
+    runner: c-fixture
     repo: darling-workspace
-    script: tests/getattrlist_pack_contract.sh
+    script: tests/getattrlist_pack_contract.c
+    include-dirs:
+    - darling/src/libsystem_kernel/emulation/include
+    generated-headers:
+      darling/emulation/conversion/xattr/getattrlist.h: |
+        #pragma once
+        #include <conversion/xattr/getattrlist.h>
+      darling/emulation/xnu_syscall/bsd/helper/xattr/getattrlist_pack.h: |
+        #pragma once
+        #include <xnu_syscall/bsd/helper/xattr/getattrlist_pack.h>
+    compile-flags:
+    - -std=gnu11
+    - -Wall
+    - -Wextra
+    - -Werror
     note: Compiles against the production shared packer and checks RETURNED_ATTRS subset reporting plus multiple length-prefixed records, the contract getattrlistbulk uses for continuation.
   pr-draft: pr-drafts/xnu-getattrlistbulk.md
   github:
