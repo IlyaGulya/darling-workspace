@@ -1120,6 +1120,20 @@ patches:
     - -Wextra
     - -Werror
     note: Compiles against the production shared getattrlist packer and checks NAME|OBJTYPE record layout, basename references, object type mapping, and size accounting.
+  - name: getattrlist_name_objtype_guest
+    kind: guest
+    coverage-tier: runtime
+    env: darling
+    diag: guarded
+    runner: guest-c-fixture
+    repo: darling-workspace
+    script: tests/getattrlist_name_objtype_guest.c
+    ok-marker: GETATTRLIST_NAME_OBJTYPE_GUEST_OK
+    timeout-seconds: 30
+    requires:
+    - darling-prefix
+    note: |
+      Guest runtime gate for public getattrlist(ATTR_CMN_NAME|ATTR_CMN_OBJTYPE): creates file, directory, and symlink entries inside Darling and verifies packed basename references plus VREG/VDIR/VLNK object types.
   pr-draft: pr-drafts/xnu-getattrlist-name-objtype.md
   github:
     fork:
