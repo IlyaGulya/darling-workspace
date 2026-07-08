@@ -133,6 +133,16 @@ with tempfile.TemporaryDirectory() as temp:
         capture_output=True,
         text=True,
     ).stdout
+    (target / "dependent.txt").write_text("dependent\n")
+    subprocess.run(["git", "add", "dependent.txt"], cwd=target, check=True)
+    subprocess.run(["git", "commit", "-q", "-m", "dependent patch"], cwd=target, check=True)
+    dependent_patch = subprocess.run(
+        ["git", "format-patch", "-1", "--stdout"],
+        cwd=target,
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout
     (target / "other.txt").write_text("kept\n")
     subprocess.run(["git", "add", "other.txt"], cwd=target, check=True)
     subprocess.run(["git", "commit", "-q", "-m", "kept patch"], cwd=target, check=True)
@@ -146,9 +156,11 @@ with tempfile.TemporaryDirectory() as temp:
 
     profile_dir = tempdir / "patches/runtime"
     skipped_patch_file = profile_dir / "x/skipped.patch"
+    dependent_patch_file = profile_dir / "x/dependent.patch"
     kept_patch_file = profile_dir / "x/kept.patch"
     skipped_patch_file.parent.mkdir(parents=True)
     skipped_patch_file.write_text(skipped_patch)
+    dependent_patch_file.write_text(dependent_patch)
     kept_patch_file.write_text(kept_patch)
     subprocess.run(["git", "reset", "--hard", "-q", base_rev], cwd=target, check=True)
 
@@ -158,6 +170,7 @@ with tempfile.TemporaryDirectory() as temp:
     test._load_profile = lambda _profile: {
         "patches": [
             {"path": "x/skipped.patch", "module": "module"},
+            {"path": "x/dependent.patch", "module": "module"},
             {"path": "x/kept.patch", "module": "module"},
         ]
     }
@@ -166,9 +179,10 @@ with tempfile.TemporaryDirectory() as temp:
         "runtime",
         "module",
         target,
-        skip_patch_path="x/skipped.patch",
+        skip_patch_paths={"x/skipped.patch", "x/dependent.patch"},
     )
     assert (target / "file.txt").read_text() == "base\n"
+    assert not (target / "dependent.txt").exists()
     assert (target / "other.txt").read_text() == "kept\n"
 
 print("PASS west-test-runtime-red-contract")

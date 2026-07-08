@@ -2246,15 +2246,16 @@ fi
         module: str,
         target: Path,
         *,
-        skip_patch_path: str | None = None,
+        skip_patch_paths: set[str] | None = None,
     ) -> None:
+        skips = skip_patch_paths or set()
         for stacked in self._profile_stack(profile):
             data = self._load_profile(stacked)
             profile_dir = self._profile_path(stacked).parent
             for patch in data.get("patches", []):
                 if patch.get("module") != module:
                     continue
-                if skip_patch_path and patch.get("path") == skip_patch_path:
+                if patch.get("path") in skips:
                     self.inf(f"  skip {stacked}/{patch['path']} for current-minus-patch")
                     continue
                 patch_file = profile_dir / patch["path"]
@@ -2354,11 +2355,18 @@ fi
                             profile = getattr(self, "_active_profile", None)
                             if not profile:
                                 self.die(f"{patch['path']}: current-minus-patch needs an active profile")
+                            skips = {
+                                patch["path"],
+                                *[
+                                    str(path)
+                                    for path in proof.get("current-minus-skip-patches", [])
+                                ],
+                            }
                             self._apply_profile_module_patches(
                                 profile,
                                 str(project_path),
                                 target,
-                                skip_patch_path=patch["path"],
+                                skip_patch_paths=skips,
                             )
                     else:
                         os.symlink(repo, target, target_is_directory=True)

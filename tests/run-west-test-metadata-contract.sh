@@ -258,6 +258,46 @@ patches:
       - module: darling/src/external/xnu
         deploy:
         - usr/lib/system/libsystem_kernel.dylib
+- path: test/invalid-current-minus-skip-mode.patch
+  module: darling-workspace
+  tests:
+  - name: invalid_current_minus_skip_mode
+    kind: guest
+    env: darling
+    diag: bare
+    runner: guest-c-fixture
+    script: tests/guest_c_fixture_contract.c
+    ok-marker: WEST_GUEST_C_FIXTURE_OK
+    red: true
+    red-proof:
+      mode: guest-runtime-deploy
+      current-minus-skip-patches:
+      - x/dependent.patch
+      runtime-artifacts:
+      - module: darling/src/external/xnu
+        build-targets: [libsystem_kernel]
+        deploy:
+        - usr/lib/system/libsystem_kernel.dylib
+- path: test/invalid-current-minus-skip-list.patch
+  module: darling-workspace
+  tests:
+  - name: invalid_current_minus_skip_list
+    kind: guest
+    env: darling
+    diag: bare
+    runner: guest-c-fixture
+    script: tests/guest_c_fixture_contract.c
+    ok-marker: WEST_GUEST_C_FIXTURE_OK
+    red: true
+    red-proof:
+      mode: guest-runtime-deploy
+      bad-profile: current-minus-patch
+      current-minus-skip-patches: x/dependent.patch
+      runtime-artifacts:
+      - module: darling/src/external/xnu
+        build-targets: [libsystem_kernel]
+        deploy:
+        - usr/lib/system/libsystem_kernel.dylib
 - path: test/invalid-host-trace.patch
   module: darling-workspace
   tests:
@@ -449,6 +489,12 @@ printf '%s\n' "$invalid_guest_red_check" | grep -q \
 printf '%s\n' "$invalid_guest_red_check" | grep -q \
 	'INVALID   test/incomplete-guest-runtime-artifact.patch: tests\[1\].red-proof.runtime-artifacts\[0\] needs build-targets' ||
 	fail 'guest-runtime-deploy artifact without build-targets was not rejected'
+printf '%s\n' "$invalid_guest_red_check" | grep -q \
+	'INVALID   test/invalid-current-minus-skip-mode.patch: tests\[1\] current-minus-skip-patches requires bad-profile: current-minus-patch' ||
+	fail 'current-minus-skip-patches without current-minus bad-profile was not rejected'
+printf '%s\n' "$invalid_guest_red_check" | grep -q \
+	'INVALID   test/invalid-current-minus-skip-list.patch: tests\[1\] current-minus-skip-patches must be a list of patch paths' ||
+	fail 'invalid current-minus-skip-patches list was not rejected'
 printf '%s\n' "$invalid_guest_red_check" | grep -q \
 	'INVALID   test/invalid-host-trace.patch: tests\[1\].host-trace-files\[0\] env must be a shell variable name' ||
 	fail 'invalid host-trace-files env was not rejected'
