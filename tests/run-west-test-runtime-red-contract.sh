@@ -6,6 +6,7 @@ cd "$repo"
 
 python3 - <<'PY'
 import sys
+import subprocess
 import tempfile
 import types
 from contextlib import contextmanager
@@ -104,6 +105,38 @@ with tempfile.TemporaryDirectory() as temp:
     symlink_parent.symlink_to(prefix, target_is_directory=True)
     nested_target = symlink_parent / "nested/project"
     assert test._has_symlink_parent(nested_target, tempdir / "forest/darling")
+
+with tempfile.TemporaryDirectory() as temp:
+    tempdir = Path(temp)
+    target = tempdir / "target"
+    target.mkdir()
+    subprocess.run(["git", "init", "-q"], cwd=target, check=True)
+    subprocess.run(["git", "config", "user.email", "test@example.invalid"], cwd=target, check=True)
+    subprocess.run(["git", "config", "user.name", "west test"], cwd=target, check=True)
+    (target / "file.txt").write_text("base\n")
+    subprocess.run(["git", "add", "file.txt"], cwd=target, check=True)
+    subprocess.run(["git", "commit", "-q", "-m", "base"], cwd=target, check=True)
+    (target / "file.txt").write_text("base\nadded\n")
+    patch_text = subprocess.run(
+        ["git", "diff", "--", "file.txt"],
+        cwd=target,
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout
+    subprocess.run(["git", "add", "file.txt"], cwd=target, check=True)
+    subprocess.run(["git", "commit", "-q", "-m", "add line"], cwd=target, check=True)
+
+    profile_dir = tempdir / "patches/runtime"
+    patch_file = profile_dir / "x/example.patch"
+    patch_file.parent.mkdir(parents=True)
+    patch_file.write_text(patch_text)
+
+    test = make_test()
+    test.manifest = types.SimpleNamespace(repo_abspath=str(tempdir))
+    test._active_profile = "runtime"
+    test._reverse_apply_patch_file({"path": "x/example.patch"}, target)
+    assert (target / "file.txt").read_text() == "base\n"
 
 print("PASS west-test-runtime-red-contract")
 PY

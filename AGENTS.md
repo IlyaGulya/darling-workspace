@@ -146,3 +146,9 @@ refs, PR drafts, and agent handoff.
   `- path:` blocks or use a structural script and verify ordering with `rg`.
   Do not insert after generic repeated keys such as `github:`/`upstream:`; patch
   order is semantic and must match each entry's `source-base`.
+- For stacked runtime RED proofs, do not accept a historical `source-commit^`
+  bad runtime when later patches in the same module can change boot/lifecycle
+  behavior. Prefer a `guest-runtime-deploy` proof that materializes the current
+  profile minus the patch under test, or leave the guest test blocked with the
+  exact materialization conflict. A RED failure from an old, incompatible server
+  is not a valid regression proof.
