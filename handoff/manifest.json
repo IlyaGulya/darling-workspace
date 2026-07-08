@@ -187,13 +187,13 @@
         },
         {
           "branch": "fix/dar-gwn-1-7-pushreply-pipe-leak",
-          "head": "0c190ddc66961e694b9362cf360fac9668450a86",
+          "head": "3d4428d7ec9ec44aa9b7f9a71597dd0aeb463a03",
           "upstream": "",
           "source_ref": "refs/heads/fix/dar-gwn-1-7-pushreply-pipe-leak"
         },
         {
           "branch": "fix/darlingserver-progress-metrics",
-          "head": "33c02576b7ebae4b806498cd32060cf1f2c54fb3",
+          "head": "5e43b68e43461d5fe12aa9d9f223c30ef162b9f6",
           "upstream": "",
           "source_ref": "refs/heads/fix/darlingserver-progress-metrics"
         },
@@ -217,7 +217,7 @@
         },
         {
           "branch": "fix/exc-fatal-reply-bound",
-          "head": "4ada639c93580ac908a7f9a10b45f24b7603ac84",
+          "head": "42f9910cbd4eaf45a361572f5019f3e0f63c5b77",
           "upstream": "",
           "source_ref": "refs/heads/fix/exc-fatal-reply-bound"
         },
@@ -241,7 +241,7 @@
         },
         {
           "branch": "fix/ingest-error-reply",
-          "head": "ddfc26341331ad3f3148d85e0fee2ef165f422b5",
+          "head": "418cf7fc07686bd78fbc69b1caac58ebbfc91a20",
           "upstream": "",
           "source_ref": "refs/heads/fix/ingest-error-reply"
         },
@@ -253,7 +253,7 @@
         },
         {
           "branch": "fix/microthread-resume-race",
-          "head": "f62bc4ba6387e5e5ba50507ba840cacb8c6278a3",
+          "head": "d2d76a9a16fdc8d05947b1acfb54285c062563b2",
           "upstream": "origin/main",
           "source_ref": "refs/heads/fix/microthread-resume-race"
         },
@@ -271,7 +271,7 @@
         },
         {
           "branch": "fix/processcall-exception-guard",
-          "head": "a52a15e2412cda068548e40047d8a3b18d3dba0b",
+          "head": "8a2c9c5994e65ea2101d7c821355e1a05ad55fc4",
           "upstream": "",
           "source_ref": "refs/heads/fix/processcall-exception-guard"
         },
@@ -757,7 +757,7 @@
         },
         {
           "branch": "fix/getattrlist-shared-packer",
-          "head": "ff82026eb2b6fa3fc620b2464d182118d262ae53",
+          "head": "783b3a890940e9b9f40db35e0966f4754be5a04a",
           "upstream": "",
           "source_ref": "refs/heads/fix/getattrlist-shared-packer"
         },
