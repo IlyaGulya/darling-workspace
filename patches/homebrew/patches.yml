@@ -898,6 +898,22 @@ patches:
     - -Wextra
     - -Werror
     note: Compile contract for the production fatal-exception reply wait helper; old source has no bounded wait contract, fixed source maps fatal delivery to MACH_RCV_TIMEOUT and a 3000ms bound while preserving unbounded non-fatal waits.
+  - name: fatal_exception_unreplying_handler_guest
+    kind: guest
+    coverage-tier: runtime
+    env: darling
+    diag: guarded
+    runner: guest-c-fixture
+    repo: darling-workspace
+    script: tests/fatal_exception_unreplying_handler_guest.c
+    ok-marker: FATAL_EXCEPTION_UNREPLYING_HANDLER_OK
+    timeout-seconds: 30
+    compile-flags:
+    - -std=gnu11
+    - -Wall
+    - -Wextra
+    - -Werror
+    note: Guest runtime regression for a fatal EXC_BAD_ACCESS delivered to an EXCEPTION_DEFAULT handler that consumes the message and never replies; fixed darlingserver bounds the reply wait and lets the child terminate instead of wedging. Runtime RED proof is blocked by dar-r7fc.2.1.1 because current-minus-patch cannot yet materialize this stack without conflicts in downstream darlingserver patches.
   pr-draft: pr-drafts/darlingserver-exc-fatal-reply-bound.md
   github:
     fork:

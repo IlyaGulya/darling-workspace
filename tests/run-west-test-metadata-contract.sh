@@ -7,7 +7,8 @@ tmp_profile="patches/__metadata_contract"
 tmp_invalid_profile="patches/__metadata_invalid_contract"
 tmp_runtime_red_profile="patches/__metadata_runtime_red_contract"
 guest_prefix=/tmp/west-test-guest-c-fixture-prefix
-trap 'rm -rf "$tmp_profile" "$tmp_invalid_profile" "$tmp_runtime_red_profile" "$guest_prefix"' EXIT
+source_script_marker=/tmp/west-source-script-fixture-second-case
+trap 'rm -rf "$tmp_profile" "$tmp_invalid_profile" "$tmp_runtime_red_profile" "$guest_prefix" "$source_script_marker"' EXIT
 mkdir -p "$tmp_profile" "$tmp_invalid_profile" "$tmp_runtime_red_profile"
 cat >"$tmp_profile/patches.yml" <<'YAML'
 patches:
@@ -104,6 +105,25 @@ patches:
       contains:
       - WEST_GUEST_TRACE_OK
     host-trace-oracle: true
+- path: test/mixed-red-nonred.patch
+  module: darling-workspace
+  tests:
+  - name: mixed_red_self_contract
+    kind: contract
+    env: host
+    diag: bare
+    red: true
+    red-proof:
+      mode: self
+      why-self: Metadata fixture proving prove-red ignores adjacent non-red tests before requirement checks.
+    command: ":"
+  - name: mixed_nonred_guest_contract
+    kind: guest
+    env: darling
+    diag: bare
+    runner: guest-c-fixture
+    script: tests/guest_c_fixture_contract.c
+    ok-marker: WEST_GUEST_C_FIXTURE_OK
 - path: test/script-host-trace.patch
   module: darling-workspace
   tests:
@@ -146,6 +166,8 @@ patches:
     - name: passthrough
       args: [-q, /bin/sh, -c, "printf ok"]
       stdout: ok
+    - name: second-case
+      args: [-q, /bin/sh, -c, "printf second >/tmp/west-source-script-fixture-second-case"]
 - path: test/cmake-configure-fixture.patch
   module: darling
   tests:
@@ -414,7 +436,7 @@ object_symbol_fixture="$(
 printf '%s\n' "$object_symbol_fixture" | grep -q \
 	'cc -c -std=gnu11 -Wall -Wextra -Werror -I tests/fixtures/c-fixture/include -I src tests/c_fixture_helper.c -o <temp>/<variant>.o && nm -u <temp>/<variant>.o && nm -g <temp>/<variant>.o' ||
 	fail 'object-symbol-fixture metadata did not resolve to a compile-and-nm command'
-printf '%s\n' "$source_only_check" | grep -q 'test metadata: 10 covered (runtime 2, compile 3, host 4, model 1), 1 exceptions, 1 missing' ||
+printf '%s\n' "$source_only_check" | grep -q 'test metadata: 11 covered (runtime 3, compile 3, host 4, model 1), 1 exceptions, 1 missing' ||
 	fail 'coverage-tier summary did not classify runtime/host/compile/model coverage'
 
 invalid_guest_red_check="$(west patch check --profile __metadata_invalid_contract 2>&1)"
@@ -450,6 +472,10 @@ runtime_red_list="$(west test --profile __metadata_runtime_red_contract \
 printf '%s\n' "$runtime_red_list" | grep -q \
 	'guest-runtime-deploy: darling/src/external/xnu\[build:libsystem_kernel; deploy:usr/lib/system/libsystem_kernel.dylib\]' ||
 	fail 'guest-runtime-deploy list mode did not show deploy plan'
+
+west test --profile __metadata_contract \
+	--patch test/mixed-red-nonred.patch \
+	--prove-red >/dev/null
 
 if west test --profile __metadata_invalid_contract \
 	--patch test/invalid-guest-red-proof.patch \
@@ -523,8 +549,13 @@ source_script_fixture="$(
 )"
 
 printf '%s\n' "$source_script_fixture" | grep -q \
-	'<source-script-fixture> src/sandbox/sandbox-exec.sh (1 case(s))' ||
+	'<source-script-fixture> src/sandbox/sandbox-exec.sh (2 case(s))' ||
 	fail 'source-script-fixture metadata did not resolve to a source script command'
+rm -f "$source_script_marker"
+west test --profile __metadata_contract \
+	--patch test/source-script-fixture.patch >/dev/null
+[ "$(cat "$source_script_marker" 2>/dev/null)" = second ] ||
+	fail 'source-script-fixture did not execute every declared case'
 
 cmake_configure_fixture="$(
 	west test --profile __metadata_contract \
