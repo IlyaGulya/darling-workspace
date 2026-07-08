@@ -369,8 +369,13 @@ class DarlingPatch(WestCommand):
             if runner == "guest-c-fixture":
                 if not test.get("script"):
                     errors.append(f"tests[{index}] guest-c-fixture requires script")
-                if not test.get("ok-marker"):
+                if not test.get("ok-marker") and not test.get("host-trace-oracle"):
                     errors.append(f"tests[{index}] guest-c-fixture requires ok-marker")
+                if test.get("host-trace-oracle") is not None:
+                    if not isinstance(test.get("host-trace-oracle"), bool):
+                        errors.append(f"tests[{index}] host-trace-oracle must be boolean")
+                    elif test.get("host-trace-oracle") and not test.get("host-trace-files"):
+                        errors.append(f"tests[{index}] host-trace-oracle requires host-trace-files")
                 for key in ("compile-flags", "link-flags", "run-args"):
                     if test.get(key) is not None and not isinstance(test.get(key), list):
                         errors.append(f"tests[{index}] {key} must be a list")
@@ -454,6 +459,41 @@ class DarlingPatch(WestCommand):
                     errors.append(f"tests[{index}] requires must be a list of names")
                 elif any(name not in {"darling-prefix"} for name in required):
                     errors.append(f"tests[{index}] has unsupported requires resource")
+            if test.get("host-trace-files") is not None:
+                traces = test.get("host-trace-files")
+                if runner != "guest-c-fixture":
+                    errors.append(f"tests[{index}] host-trace-files requires runner: guest-c-fixture")
+                elif not isinstance(traces, list) or not traces:
+                    errors.append(f"tests[{index}] host-trace-files must be a non-empty list")
+                elif not all(isinstance(trace, dict) for trace in traces):
+                    errors.append(f"tests[{index}] host-trace-files entries must be mappings")
+                else:
+                    for trace_index, trace in enumerate(traces):
+                        env_name = trace.get("env")
+                        rel_path = trace.get("prefix-relative-path")
+                        contains = trace.get("contains", [])
+                        if not isinstance(env_name, str) or not env_name:
+                            errors.append(
+                                f"tests[{index}].host-trace-files[{trace_index}] needs env"
+                            )
+                        elif not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", env_name):
+                            errors.append(
+                                f"tests[{index}].host-trace-files[{trace_index}] env must be a shell variable name"
+                            )
+                        if not isinstance(rel_path, str) or not rel_path:
+                            errors.append(
+                                f"tests[{index}].host-trace-files[{trace_index}] needs prefix-relative-path"
+                            )
+                        elif rel_path.startswith("/") or ".." in Path(rel_path).parts:
+                            errors.append(
+                                f"tests[{index}].host-trace-files[{trace_index}] path must be prefix-relative"
+                            )
+                        if not isinstance(contains, list) or not all(
+                            isinstance(item, str) and item for item in contains
+                        ):
+                            errors.append(
+                                f"tests[{index}].host-trace-files[{trace_index}] contains must be a list of strings"
+                            )
             if test.get("requires-profile") is not None and not isinstance(
                 test.get("requires-profile"), str
             ):

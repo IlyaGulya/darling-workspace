@@ -188,7 +188,7 @@ index 20497639c5290c7acedd9eccaac9ed12f26f60f2..7089a76051114f2e54fd520853a00c55
  		code = -ESRCH;
  	}
 
-From 2069c75492f6813f7eb623af3ba66f8891422c20 Mon Sep 17 00:00:00 2001
+From 830e0fcd4f32a7594c83d3acb56c4c46caec3b22 Mon Sep 17 00:00:00 2001
 From: Ilya Gulya <ilya@gulya.me>
 Date: Wed, 8 Jul 2026 14:55:59 +0000
 Subject: [PATCH] duct-tape: isolate pthread cancel state transitions
@@ -202,7 +202,7 @@ Subject: [PATCH] duct-tape: isolate pthread cancel state transitions
 
 diff --git a/duct-tape/internal-include/darlingserver/duct-tape/thread-cancel.h b/duct-tape/internal-include/darlingserver/duct-tape/thread-cancel.h
 new file mode 100644
-index 0000000000000000000000000000000000000000..30398cd2816bb23036f1dc3d94f47f8e9ecab2be
+index 0000000000000000000000000000000000000000..5f0bc5ef91b539c89a4f73c47e44a78e14a50b2a
 --- /dev/null
 +++ b/duct-tape/internal-include/darlingserver/duct-tape/thread-cancel.h
 @@ -0,0 +1,59 @@
@@ -210,7 +210,7 @@ index 0000000000000000000000000000000000000000..30398cd2816bb23036f1dc3d94f47f8e
 +#define _DARLINGSERVER_DUCT_TAPE_THREAD_CANCEL_H_
 +
 +#include <stdbool.h>
-+#include <errno.h>
++#include <sys/errno.h>
 +
 +typedef struct dtape_thread_cancel_state {
 +	// POSIX thread-cancellation state, mirroring XNU's per-uthread uu_flag bits

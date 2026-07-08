@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import errno
 import subprocess
 from collections import Counter
 from dataclasses import dataclass, field
@@ -14,6 +15,7 @@ TMP_RELS = ("private/var/tmp", "libexec/darling/private/var/tmp")
 CANONICAL_CLT_REL = Path("Library/Developer/CommandLineTools")
 DARLING_CLT_CLANG_REL = Path("Library/Developer/DarlingCLT/usr/bin/clang")
 DARLING_CLT_CLANG_TARGET = Path("../../../CommandLineTools/usr/bin/clang")
+INIT_PID_REL = Path(".init.pid")
 
 
 @dataclass
@@ -166,6 +168,50 @@ def cleanup_prefix_mounts(
     return result
 
 
+def _pid_is_alive(pid: int) -> bool:
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    except OSError as error:
+        if error.errno == errno.ESRCH:
+            return False
+        return True
+    return True
+
+
+def _repair_stale_init_pid(prefix: Path, result: PrefixRepairResult, *, check: bool) -> None:
+    init_pid = prefix / INIT_PID_REL
+    if not init_pid.exists():
+        result.ok.append(f"{INIT_PID_REL} absent")
+        return
+    if not init_pid.is_file() and not init_pid.is_symlink():
+        result.problems.append(f"{INIT_PID_REL} exists but is not a regular file")
+        return
+
+    raw_pid = init_pid.read_text(errors="replace").strip()
+    try:
+        pid = int(raw_pid)
+    except ValueError:
+        if check:
+            result.problems.append(f"{INIT_PID_REL} contains invalid pid {raw_pid!r}")
+            return
+        init_pid.unlink()
+        result.changed.append(f"removed invalid {INIT_PID_REL}")
+        return
+
+    if _pid_is_alive(pid):
+        result.ok.append(f"{INIT_PID_REL} points to live pid {pid}")
+        return
+    if check:
+        result.problems.append(f"{INIT_PID_REL} points to stale pid {pid}")
+        return
+    init_pid.unlink()
+    result.changed.append(f"removed stale {INIT_PID_REL} for pid {pid}")
+
+
 def _candidate_clt_dirs(root: Path) -> list[Path]:
     developer = root / "Library/Developer"
     if not developer.is_dir():
@@ -298,6 +344,7 @@ def repair_prefix_prerequisites(
     check: bool = False,
 ) -> PrefixRepairResult:
     result = PrefixRepairResult()
+    _repair_stale_init_pid(prefix, result, check=check)
     _repair_tmp_dirs(prefix, result, check=check)
     for root_name, root in prefix_roots(prefix):
         fallback_root = prefix if root != prefix else None

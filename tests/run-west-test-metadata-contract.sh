@@ -98,6 +98,12 @@ patches:
     ok-marker: WEST_GUEST_C_FIXTURE_OK
     timeout-seconds: 20
     compile-flags: [-std=gnu11, -Wall, -Wextra, -Werror]
+    host-trace-files:
+    - env: WEST_GUEST_TRACE_FILE
+      prefix-relative-path: private/var/tmp/west-guest-trace.log
+      contains:
+      - WEST_GUEST_TRACE_OK
+    host-trace-oracle: true
 - path: test/source-build-fixture.patch
   module: darling-workspace
   tests:
@@ -212,6 +218,30 @@ patches:
       - module: darling/src/external/xnu
         deploy:
         - usr/lib/system/libsystem_kernel.dylib
+- path: test/invalid-host-trace.patch
+  module: darling-workspace
+  tests:
+  - name: invalid_host_trace
+    kind: guest
+    env: darling
+    diag: bare
+    runner: guest-c-fixture
+    script: tests/guest_c_fixture_contract.c
+    ok-marker: WEST_GUEST_C_FIXTURE_OK
+    host-trace-files:
+    - env: 1BAD
+      prefix-relative-path: /private/var/tmp/trace.log
+      contains: BAD_TRACE
+- path: test/invalid-host-trace-oracle.patch
+  module: darling-workspace
+  tests:
+  - name: invalid_host_trace_oracle
+    kind: guest
+    env: darling
+    diag: bare
+    runner: guest-c-fixture
+    script: tests/guest_c_fixture_contract.c
+    host-trace-oracle: true
 YAML
 
 cat >"$tmp_runtime_red_profile/patches.yml" <<'YAML'
@@ -379,6 +409,18 @@ printf '%s\n' "$invalid_guest_red_check" | grep -q \
 printf '%s\n' "$invalid_guest_red_check" | grep -q \
 	'INVALID   test/incomplete-guest-runtime-artifact.patch: tests\[1\].red-proof.runtime-artifacts\[0\] needs build-targets' ||
 	fail 'guest-runtime-deploy artifact without build-targets was not rejected'
+printf '%s\n' "$invalid_guest_red_check" | grep -q \
+	'INVALID   test/invalid-host-trace.patch: tests\[1\].host-trace-files\[0\] env must be a shell variable name' ||
+	fail 'invalid host-trace-files env was not rejected'
+printf '%s\n' "$invalid_guest_red_check" | grep -q \
+	'INVALID   test/invalid-host-trace.patch: tests\[1\].host-trace-files\[0\] path must be prefix-relative' ||
+	fail 'invalid host-trace-files path was not rejected'
+printf '%s\n' "$invalid_guest_red_check" | grep -q \
+	'INVALID   test/invalid-host-trace.patch: tests\[1\].host-trace-files\[0\] contains must be a list of strings' ||
+	fail 'invalid host-trace-files contains was not rejected'
+printf '%s\n' "$invalid_guest_red_check" | grep -q \
+	'INVALID   test/invalid-host-trace-oracle.patch: tests\[1\] host-trace-oracle requires host-trace-files' ||
+	fail 'host-trace-oracle without host-trace-files was not rejected'
 
 runtime_red_check="$(west patch check --profile __metadata_runtime_red_contract)"
 printf '%s\n' "$runtime_red_check" | grep -q 'RUNTIME   test/guest-runtime-red-proof.patch' ||
@@ -495,6 +537,10 @@ cat >"$fake_darling" <<'SH'
 set -euo pipefail
 if [ "$1" = shell ]; then
 	shift
+	if [ -n "${WEST_GUEST_TRACE_FILE:-}" ]; then
+		mkdir -p "$(dirname "$WEST_GUEST_TRACE_FILE")"
+		printf 'WEST_GUEST_TRACE_OK\n' >"$WEST_GUEST_TRACE_FILE"
+	fi
 	exec "$@"
 fi
 exit 64
