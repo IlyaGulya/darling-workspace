@@ -1,4 +1,4 @@
-From 8746148c12bda639054f15b0510e1578a11034df Mon Sep 17 00:00:00 2001
+From f00bc66c395f2c601c17376b9b64970fba675116 Mon Sep 17 00:00:00 2001
 From: Ilya Gulya <ilya@gulya.me>
 Date: Wed, 10 Jun 2026 10:05:56 +0000
 Subject: [PATCH] process: bound fork-child checkin wait with a timeout
@@ -13,10 +13,12 @@ lifecycle logging.
  duct-tape/include/darlingserver/duct-tape.h   |  1 +
  .../include/darlingserver/duct-tape/types.h   |  1 +
  duct-tape/src/semaphore.c                     | 18 +++++++++++
+ .../darlingserver/fork-checkin.hpp            | 30 +++++++++++++++++++
  internal-include/darlingserver/process.hpp    |  2 +-
- src/call.cpp                                  |  5 ++-
- src/process.cpp                               | 31 +++++++++++++++++--
- 6 files changed, 53 insertions(+), 5 deletions(-)
+ src/call.cpp                                  |  5 +++-
+ src/process.cpp                               | 30 +++++++++++++++++--
+ 7 files changed, 82 insertions(+), 5 deletions(-)
+ create mode 100644 internal-include/darlingserver/fork-checkin.hpp
 
 diff --git a/duct-tape/include/darlingserver/duct-tape.h b/duct-tape/include/darlingserver/duct-tape.h
 index a5ddfc7877d4b8eef7b0783dd678eb38de73785e..0d3110084a1759e16c8ab9c9c719677430f58103 100644
@@ -71,6 +73,42 @@ index 20b1a626c1267211bd1ffa5f926c407b0e43cf97..17071bcca89b8bd3603bae31a1745d4d
  bool dtape_semaphore_down_simple(dtape_semaphore_t* semaphore) {
  	switch (dtape_semaphore_down(semaphore)) {
  		case dtape_semaphore_wait_result_ok:
+diff --git a/internal-include/darlingserver/fork-checkin.hpp b/internal-include/darlingserver/fork-checkin.hpp
+new file mode 100644
+index 0000000000000000000000000000000000000000..e9c833ca759edbd132a5ec2573e260e4f3f1affa
+--- /dev/null
++++ b/internal-include/darlingserver/fork-checkin.hpp
+@@ -0,0 +1,30 @@
++#ifndef _DARLINGSERVER_FORK_CHECKIN_HPP_
++#define _DARLINGSERVER_FORK_CHECKIN_HPP_
++
++#include <darlingserver/duct-tape.h>
++
++namespace DarlingServer {
++	enum class ForkCheckinWaitResult {
++		Observed,
++		Interrupted,
++		TimedOut,
++		Error,
++	};
++
++	constexpr unsigned int ForkCheckinWaitTimeoutSeconds = 30;
++
++	inline ForkCheckinWaitResult waitForForkCheckin(dtape_semaphore_t* semaphore, unsigned int timeoutSeconds = ForkCheckinWaitTimeoutSeconds) {
++		switch (dtape_semaphore_down_timeout(semaphore, timeoutSeconds)) {
++			case dtape_semaphore_wait_result_ok:
++				return ForkCheckinWaitResult::Observed;
++			case dtape_semaphore_wait_result_interrupted:
++				return ForkCheckinWaitResult::Interrupted;
++			case dtape_semaphore_wait_result_timed_out:
++				return ForkCheckinWaitResult::TimedOut;
++			default:
++				return ForkCheckinWaitResult::Error;
++		}
++	}
++}
++
++#endif
 diff --git a/internal-include/darlingserver/process.hpp b/internal-include/darlingserver/process.hpp
 index c97be303837591b80fe0fc5280d02b481a4e5e13..eeb3150fbea99866209b76ccdbe8d32cfeb65ca8 100644
 --- a/internal-include/darlingserver/process.hpp
@@ -108,10 +146,18 @@ index cc10f1d8e452f7e967051e9ace5b24ed00bba59a..7ad16e8fc8c02ecdc14613fe1bfbb23b
  			code = -ESRCH;
  		}
 diff --git a/src/process.cpp b/src/process.cpp
-index 9cd7b8194268eecf7c37f75804bae4982dcbe2ab..3ba0ec95f9a7e10130bffbac459afb257328b07a 100644
+index 9cd7b8194268eecf7c37f75804bae4982dcbe2ab..8ac0a59b590f49b5be33e3c864f168141267e30c 100644
 --- a/src/process.cpp
 +++ b/src/process.cpp
-@@ -86,7 +86,11 @@ DarlingServer::Process::Process(ID id, NSID nsid, Architecture architecture, int
+@@ -18,6 +18,7 @@
+  */
+ 
+ #include <darlingserver/process.hpp>
++#include <darlingserver/fork-checkin.hpp>
+ #include <darlingserver/registry.hpp>
+ #include <sys/syscall.h>
+ #include <unistd.h>
+@@ -86,7 +87,11 @@ DarlingServer::Process::Process(ID id, NSID nsid, Architecture architecture, int
  	_dtapeTask = dtape_task_create(parentProcess ? parentProcess->_dtapeTask : nullptr, _nspid, this, static_cast<dserver_rpc_architecture_t>(_architecture));
  	_dtapeForkWaitSemaphore = dtape_semaphore_create(_dtapeTask, 0);
  
@@ -124,7 +170,7 @@ index 9cd7b8194268eecf7c37f75804bae4982dcbe2ab..3ba0ec95f9a7e10130bffbac459afb25
  };
  
  DarlingServer::Process::Process(KernelProcessConstructorTag tag):
-@@ -369,8 +373,11 @@ void DarlingServer::Process::notifyCheckin(Architecture architecture) {
+@@ -369,8 +374,11 @@ void DarlingServer::Process::notifyCheckin(Architecture architecture) {
  	} else {
  		// notify the parent process (if we have one) that we've arrived
  		if (auto parent = _parentProcess.lock()) {
@@ -136,7 +182,7 @@ index 9cd7b8194268eecf7c37f75804bae4982dcbe2ab..3ba0ec95f9a7e10130bffbac459afb25
  		}
  	}
  };
-@@ -395,9 +402,27 @@ void DarlingServer::Process::unregisterKqchan(std::shared_ptr<Kqchan> kqchan) {
+@@ -395,9 +403,25 @@ void DarlingServer::Process::unregisterKqchan(std::shared_ptr<Kqchan> kqchan) {
  	_kqchannels.erase(kqchan->_idForProcess());
  };
  
@@ -144,19 +190,17 @@ index 9cd7b8194268eecf7c37f75804bae4982dcbe2ab..3ba0ec95f9a7e10130bffbac459afb25
 +bool DarlingServer::Process::waitForChildAfterFork() {
  	// this function is always called within a microthread
 -	dtape_semaphore_down_simple(_dtapeForkWaitSemaphore);
-+	constexpr unsigned int forkWaitTimeoutSeconds = 30;
-+
-+	processLog.info() << *this << ": waiting up to " << forkWaitTimeoutSeconds
++	processLog.info() << *this << ": waiting up to " << ForkCheckinWaitTimeoutSeconds
 +			<< " seconds for fork child checkin" << processLog.endLog;
 +
-+	switch (dtape_semaphore_down_timeout(_dtapeForkWaitSemaphore, forkWaitTimeoutSeconds)) {
-+		case dtape_semaphore_wait_result_ok:
++	switch (waitForForkCheckin(_dtapeForkWaitSemaphore)) {
++		case ForkCheckinWaitResult::Observed:
 +			processLog.info() << *this << ": fork child checkin observed" << processLog.endLog;
 +			return true;
-+		case dtape_semaphore_wait_result_interrupted:
++		case ForkCheckinWaitResult::Interrupted:
 +			return false;
-+		case dtape_semaphore_wait_result_timed_out:
-+			processLog.error() << *this << ": timed out waiting " << forkWaitTimeoutSeconds
++		case ForkCheckinWaitResult::TimedOut:
++			processLog.error() << *this << ": timed out waiting " << ForkCheckinWaitTimeoutSeconds
 +					<< " seconds for fork child checkin" << processLog.endLog;
 +			return false;
 +		default:

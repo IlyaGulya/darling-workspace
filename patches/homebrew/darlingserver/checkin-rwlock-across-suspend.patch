@@ -1,4 +1,4 @@
-From 5e5d688886589025929d246e51ca349aa18b1cbb Mon Sep 17 00:00:00 2001
+From b6d1c6d496d37226b2563ea9a0109e3e50eddb34 Mon Sep 17 00:00:00 2001
 From: Ilya Gulya <ilya@gulya.me>
 Date: Sun, 28 Jun 2026 05:21:03 +0000
 Subject: [PATCH] dar-6x4: don't hold Process::_rwlock across suspending dtape
@@ -54,10 +54,10 @@ Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
  create mode 100755 tests/run-inline-suspend-rwlock-deadlock.sh
 
 diff --git a/src/process.cpp b/src/process.cpp
-index 1822715591bed431137655bddd77519d81d27c18..0414720268fb37217ea7ab475e10a81715b58d1e 100644
+index b6f9b1f3c30f73e9462f1db68e9d5ff70ab982b0..44124d8cc5be8299fab7367f584369f8d5666be6 100644
 --- a/src/process.cpp
 +++ b/src/process.cpp
-@@ -317,45 +317,63 @@ void DarlingServer::Process::notifyCheckin(Architecture architecture) {
+@@ -318,45 +318,63 @@ void DarlingServer::Process::notifyCheckin(Architecture architecture) {
  		// update the process architecture
  		_architecture = architecture;
  
@@ -129,7 +129,7 @@ index 1822715591bed431137655bddd77519d81d27c18..0414720268fb37217ea7ab475e10a817
 +		_dtapeTask = newTask;
 +		mainThread->_dtapeThread = newThread;
 +		_dtapeForkWaitSemaphore = newForkWaitSemaphore;
- 		_forkChildCheckedIn.store(false); // dar-gwn.6.5: reset sticky flag with the new semaphore
+ 		_forkChildCheckin.reset();
 -
 -		// create new S2C semaphores for the main thread
 -		mainThread->_s2cPerformSempahore = dtape_semaphore_create(_dtapeTask, 1);
