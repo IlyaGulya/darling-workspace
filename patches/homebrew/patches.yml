@@ -518,10 +518,10 @@ patches:
       base: main
       state: local
 - path: darlingserver/ingest-error-reply.patch
-  sha256sum: 5c6ce3ff4176bf6db9d150069dcb8026c8780d1bf9ef533a0e3be3f9da194436
+  sha256sum: 03222772fbeb541168e08361c03ef89e6c3b7c5b494ee3d616543cd10060a9e5
   module: darling/src/external/darlingserver
   source-branch: fix/ingest-error-reply
-  source-commit: ddfc26341331ad3f3148d85e0fee2ef165f422b5
+  source-commit: 418cf7fc07686bd78fbc69b1caac58ebbfc91a20
   bead: dar-gwn.6.2
   publication-status: blocked
   publication-blocker: |-
@@ -534,20 +534,28 @@ patches:
     before/after on brew reinstall wget at the libunistring phase to confirm
     the 0x3e8 SEGV clears.
   tests:
-  - name: ingest_error_reply_model
+  - name: ingest_error_reply_contract
     kind: contract
-    coverage-tier: model
+    coverage-tier: compile
     env: host
     diag: bare
     red: true
     red-proof:
-      mode: self
-      why-self: The model drives the three ingest-drop cases through old no-reply and fixed error-reply behavior.
-    runner: python
+      mode: source-base
+      source-env: DSERVER_SRC_ROOT
+    runner: c-fixture
     repo: darling-workspace
-    script: tests/darlingserver_behavior_models.py
-    args: [ingest-error-reply]
-    note: Host behavioral model; old missing-process/thread and pending-overwrite paths drop, fixed paths reply ESRCH/EAGAIN.
+    script: tests/rpc_error_reply_contract.cpp
+    cc: c++
+    include-dirs:
+    - internal-include
+    - include
+    compile-flags:
+    - -std=c++17
+    - -Wall
+    - -Wextra
+    - -Werror
+    note: Compile contract for the production ingest error-reply helper; old source has no raw-header reply contract, fixed source preserves call number and ESRCH/EAGAIN code in a minimal reply.
   github:
     fork:
       repo: IlyaGulya/darlingserver
