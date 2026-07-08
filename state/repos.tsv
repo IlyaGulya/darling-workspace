@@ -156,7 +156,7 @@ src/external/xar	887bd4f42eb4ac9139a7f621b5811065aa86f3e3	DETACHED	git@github.co
 src/external/xcbuild	a903c6952fc5617816113cbb7b551ac701dba2ff	DETACHED	git@github.com:IlyaGulya/xcbuild.git	clean
 src/external/xcbuild/ThirdParty/googletest	a2b8a8e07628e5fd60644b6dd99c1b5e7d7f1f47	DETACHED	git@github.com:IlyaGulya/googletest.git	clean
 src/external/xcbuild/ThirdParty/linenoise	c894b9e59f02203dbe4e2be657572cf88c4230c3	DETACHED	git@github.com:IlyaGulya/linenoise.git	clean
-src/external/xnu	783b3a890940e9b9f40db35e0966f4754be5a04a	fix/getattrlist-shared-packer	git@github.com:IlyaGulya/darling-xnu.git	clean
+src/external/xnu	ff82026eb2b6fa3fc620b2464d182118d262ae53	fix/getattrlist-shared-packer	git@github.com:IlyaGulya/darling-xnu.git	clean
 src/external/zip	caf41ebbc3ebab0250e4d13aa42221ef91a9802c	DETACHED	git@github.com:IlyaGulya/darling-zip.git	clean
 src/external/zlib	677de9b1c2bea1e428f56d8fc63300aa471eaf99	DETACHED	git@github.com:IlyaGulya/darling-zlib.git	clean
 src/external/zsh	4a7a6ebf6216395c7db698a4993db16e484aa54d	DETACHED	git@github.com:IlyaGulya/darling-zsh.git	clean
