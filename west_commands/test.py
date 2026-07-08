@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import argparse
 import fcntl
+import json
 import os
 import signal
 import shutil
@@ -925,6 +926,72 @@ class DarlingTest(WestCommand):
                 "name": test.get("name", patch["path"]),
                 "timeout_seconds": int(test.get("timeout-seconds", 600)),
             }
+        if runner == "darling-cmake-target-fixture":
+            repo = test.get("repo", patch["module"])
+            cwd = self._project_path(repo)
+            env = None
+            if test.get("env-vars"):
+                env = os.environ.copy()
+                env.update({str(k): str(v) for k, v in test["env-vars"].items()})
+            target = str(test["target"])
+            source_dir = str(test.get("source-dir", "source"))
+            cmake_args = [str(arg) for arg in test.get("cmake-args", [])]
+            build_args = [str(arg) for arg in test.get("build-args", [])]
+            run_binary = str(test.get("run-binary", f"{source_dir}/{target}"))
+            display = (
+                f"cd {quote(repo)} && <darling-cmake-target-fixture> "
+                f"cmake -S <superproject> -B <temp>/build "
+                f"{shell_join(cmake_args)} && "
+                f"cmake --build <temp>/build --target {quote(target)} "
+                f"{shell_join(build_args)} && "
+                f"<temp>/build/{quote(run_binary)}"
+            )
+            return {
+                "key": (
+                    f"darling-cmake-target-fixture:{repo}:{target}:"
+                    f"{source_dir}:{run_binary}:"
+                    f"{repr(test.get('fixture-files', []))}:"
+                    f"{repr(cmake_args)}:{repr(build_args)}:"
+                    f"{repr(test.get('required-compile-options', []))}"
+                ),
+                "display": display,
+                "cwd": cwd,
+                "args": None,
+                "shell": False,
+                "env": env,
+                "darling_cmake_target_fixture": True,
+                "target": target,
+                "source_dir": source_dir,
+                "run_binary": run_binary,
+                "fixture_files": [str(item) for item in test.get("fixture-files", [])],
+                "cmake_args": cmake_args,
+                "build_args": build_args,
+                "fallback_executable_sources": [
+                    str(item) for item in test.get("fallback-executable-sources", [])
+                ],
+                "fallback_include_dirs": [
+                    str(item) for item in test.get("fallback-include-dirs", [])
+                ],
+                "fallback_link_libraries": [
+                    str(item) for item in test.get("fallback-link-libraries", ["crypto44"])
+                ],
+                "required_compile_options": [
+                    {
+                        "source": str(check["source"]),
+                        "options": [str(item) for item in check.get("options", [])],
+                    }
+                    for check in test.get("required-compile-options", [])
+                ],
+                "source_root_env": source_env,
+                "source_env": source_env,
+                "source_module": source_module,
+                "requires_resources": list(test.get("requires", [])),
+                "requires_env": list(test.get("requires-env", [])),
+                "requires_profile": test.get("requires-profile"),
+                "diag": self._resolved_diag(test),
+                "name": test.get("name", patch["path"]),
+                "timeout_seconds": int(test.get("timeout-seconds", 600)),
+            }
         if runner == "guest-c-fixture":
             repo = test.get("repo", patch["module"])
             script = test["script"]
@@ -1043,6 +1110,9 @@ class DarlingTest(WestCommand):
     def _metadata_needs_profile_worktree(self, tests) -> bool:
         for patch, test in tests:
             invocation = self._test_invocation(patch, test)
+            required = invocation.get("requires_profile")
+            if required and not self._profile_is_applied(required):
+                return True
             script_path = invocation.get("script_path")
             if script_path is not None and not script_path.is_file():
                 return True
@@ -1152,6 +1222,8 @@ class DarlingTest(WestCommand):
             return self._run_source_script_fixture(invocation, env=env)
         if invocation.get("cmake_configure_fixture"):
             return self._run_cmake_configure_fixture(invocation, env=env)
+        if invocation.get("darling_cmake_target_fixture"):
+            return self._run_darling_cmake_target_fixture(invocation, env=env)
         result = subprocess.run(
             self._debug_runner_args(invocation),
             cwd=invocation["cwd"],
@@ -1461,7 +1533,264 @@ class DarlingTest(WestCommand):
                     f"{result.stdout!r}, want {expected_stdout!r}"
                 )
                 return 1
+            return 0
+
+    def _archive_source_to(self, source_root: Path, destination: Path) -> int:
+        destination.mkdir(parents=True, exist_ok=True)
+        archive = subprocess.Popen(
+            ["git", "archive", "--format=tar", "HEAD"],
+            cwd=source_root,
+            stdout=subprocess.PIPE,
+        )
+        try:
+            tar = subprocess.run(
+                ["tar", "-C", str(destination), "-xf", "-"],
+                stdin=archive.stdout,
+                check=False,
+            )
+        finally:
+            if archive.stdout is not None:
+                archive.stdout.close()
+        archive_rc = archive.wait()
+        return archive_rc or tar.returncode
+
+    def _write_darling_cmake_superproject(self, project_root: Path, invocation) -> None:
+        source_dir = invocation["source_dir"]
+        target = invocation["target"]
+        fallback_sources = invocation.get("fallback_executable_sources", [])
+        if not fallback_sources:
+            fallback_sources = [f"{source_dir}/tests/{target}.c"]
+        fallback_include_dirs = invocation.get("fallback_include_dirs", [])
+        fallback_link_libraries = invocation.get("fallback_link_libraries", [])
+        fallback_source_lines = "\n    ".join(fallback_sources)
+        fallback_include_lines = " ".join(fallback_include_dirs)
+        fallback_link_lines = " ".join(fallback_link_libraries)
+        cmake = f"""cmake_minimum_required(VERSION 3.16)
+project(west_darling_cmake_target_fixture C)
+
+set(BUILD_TARGET_64BIT ON)
+set(BUILD_TARGET_32BIT OFF)
+
+function(_west_darling_collect_sources out_var)
+    set(srcs)
+    foreach(arg IN LISTS ARGN)
+        if(arg STREQUAL FAT OR arg STREQUAL SOURCES OR arg STREQUAL 32BIT_ONLY OR arg STREQUAL 64BIT_ONLY)
+            continue()
+        endif()
+        list(APPEND srcs ${{arg}})
+    endforeach()
+    set(${{out_var}} ${{srcs}} PARENT_SCOPE)
+endfunction()
+
+function(add_darling_static_library name)
+    _west_darling_collect_sources(srcs ${{ARGN}})
+    add_library(${{name}} STATIC ${{srcs}})
+endfunction()
+
+function(add_darling_object_library name)
+    _west_darling_collect_sources(srcs ${{ARGN}})
+    add_library(${{name}} OBJECT ${{srcs}})
+endfunction()
+
+function(add_darling_library name)
+    _west_darling_collect_sources(srcs ${{ARGN}})
+    add_library(${{name}} STATIC ${{srcs}})
+endfunction()
+
+function(add_darling_executable name)
+    add_executable(${{name}} ${{ARGN}})
+endfunction()
+
+add_library(system STATIC system_shim.c)
+add_subdirectory({source_dir})
+
+if(NOT TARGET {target})
+    add_executable({target}
+    {fallback_source_lines}
+    )
+    if(NOT "{fallback_include_lines}" STREQUAL "")
+        target_include_directories({target} PRIVATE {fallback_include_lines})
+    endif()
+    if(NOT "{fallback_link_lines}" STREQUAL "")
+        target_link_libraries({target} {fallback_link_lines})
+    endif()
+endif()
+
+set_target_properties({target} PROPERTIES
+    RUNTIME_OUTPUT_DIRECTORY "${{CMAKE_BINARY_DIR}}/{source_dir}"
+)
+target_link_libraries({target} system)
+"""
+        shim = """#include <stddef.h>
+
+int
+timingsafe_bcmp(const void *b1, const void *b2, size_t n)
+{
+	const unsigned char *p1 = b1;
+	const unsigned char *p2 = b2;
+	unsigned char result = 0;
+
+	for (size_t i = 0; i < n; i++)
+		result |= p1[i] ^ p2[i];
+	return result != 0;
+}
+"""
+        (project_root / "CMakeLists.txt").write_text(cmake)
+        (project_root / "system_shim.c").write_text(shim)
+
+    def _write_cmake_compiler_launcher(self, launcher: Path, log_path: Path) -> None:
+        launcher.write_text(
+            "#!/usr/bin/env python3\n"
+            "import json\n"
+            "import subprocess\n"
+            "import sys\n"
+            f"with open({str(log_path)!r}, 'a') as log:\n"
+            "    log.write(json.dumps(sys.argv[1:]) + '\\n')\n"
+            "sys.exit(subprocess.call(sys.argv[1:]))\n"
+        )
+        launcher.chmod(0o755)
+
+    def _check_required_compile_options(self, invocation, log_path: Path) -> int:
+        checks = invocation.get("required_compile_options", [])
+        if not checks:
+            return 0
+        if not log_path.is_file():
+            self.err(f"{invocation['name']}: compiler launcher log not found")
+            return 1
+        entries = []
+        for line in log_path.read_text().splitlines():
+            try:
+                args = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if isinstance(args, list):
+                entries.append([str(arg) for arg in args])
+        for check in checks:
+            source = check["source"]
+            options = check.get("options", [])
+            matches = [
+                args
+                for args in entries
+                if any(arg == source or arg.endswith(f"/{source}") for arg in args)
+            ]
+            if not matches:
+                self.err(
+                    f"{invocation['name']}: no compile command recorded for {source}"
+                )
+                return 1
+            if not any(all(option in args for option in options) for args in matches):
+                self.err(
+                    f"{invocation['name']}: compile command for {source} missing "
+                    f"option(s): {', '.join(options)}"
+                )
+                return 1
         return 0
+
+    def _run_darling_cmake_target_fixture(self, invocation, env=None) -> int:
+        if invocation.get("diag", "bare") != "bare":
+            self.die(f"{invocation['name']}: darling-cmake-target-fixture currently supports diag:bare only")
+        run_env = env if env is not None else invocation.get("env")
+        if not run_env:
+            run_env = os.environ.copy()
+        else:
+            run_env = dict(run_env)
+        source_root = invocation["cwd"]
+        source_root_env = invocation.get("source_root_env")
+        if source_root_env and run_env.get(source_root_env):
+            source_root = Path(run_env[source_root_env])
+        if not (source_root / "CMakeLists.txt").is_file():
+            self.err(f"{invocation['name']}: CMakeLists.txt not found: {source_root}")
+            return 1
+
+        timeout_seconds = int(invocation.get("timeout_seconds", 600))
+        with tempfile.TemporaryDirectory(prefix=f"west-darling-cmake-target-{invocation['name']}-") as temp:
+            tempdir = Path(temp)
+            project_root = tempdir / "project"
+            source_copy = project_root / invocation["source_dir"]
+            build_dir = tempdir / "build"
+            bin_dir = tempdir / "bin"
+            compile_log = tempdir / "compile-commands.jsonl"
+            rc = self._archive_source_to(source_root, source_copy)
+            if rc:
+                return rc
+            for fixture in invocation.get("fixture_files", []):
+                source_fixture = source_copy / fixture
+                if source_fixture.is_file():
+                    continue
+                current_fixture = invocation["cwd"] / fixture
+                if not current_fixture.is_file():
+                    self.err(f"{invocation['name']}: fixture file not found: {current_fixture}")
+                    return 1
+                source_fixture.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copy2(current_fixture, source_fixture)
+
+            self._write_darling_cmake_superproject(project_root, invocation)
+            if invocation.get("required_compile_options"):
+                bin_dir.mkdir()
+                launcher = bin_dir / "west-c-compiler-launcher"
+                self._write_cmake_compiler_launcher(launcher, compile_log)
+            cmake_args = list(invocation.get("cmake_args", []))
+            if invocation.get("required_compile_options"):
+                cmake_args.append(f"-DCMAKE_C_COMPILER_LAUNCHER={launcher}")
+            configure_args = [
+                "cmake",
+                "-S",
+                str(project_root),
+                "-B",
+                str(build_dir),
+                "-DCMAKE_BUILD_TYPE=Release",
+                *cmake_args,
+            ]
+            build_args = [
+                "cmake",
+                "--build",
+                str(build_dir),
+                "--target",
+                invocation["target"],
+                "-j",
+                str(os.environ.get("WEST_TEST_BUILD_JOBS", "2")),
+                *invocation.get("build_args", []),
+            ]
+            commands = [
+                ("cmake configure", configure_args),
+                ("cmake build", build_args),
+                (
+                    "run target",
+                    [str(build_dir / invocation["run_binary"])],
+                ),
+            ]
+            for label, command in commands:
+                self.inf(f"  darling-cmake-target-fixture: {label}")
+                try:
+                    result = subprocess.run(
+                        command,
+                        cwd=project_root,
+                        env=run_env,
+                        capture_output=True,
+                        text=True,
+                        check=False,
+                        timeout=timeout_seconds,
+                    )
+                except subprocess.TimeoutExpired:
+                    self.err(
+                        f"{invocation['name']}: {label} timed out after "
+                        f"{timeout_seconds}s"
+                    )
+                    return 124
+                if result.returncode:
+                    output = result.stdout + result.stderr
+                    tail = "\n".join(output.splitlines()[-160:])
+                    if tail:
+                        sys.stderr.write(tail + "\n")
+                    self.err(
+                        f"{invocation['name']}: {label} failed with rc "
+                        f"{result.returncode}"
+                    )
+                    return result.returncode
+            rc = self._check_required_compile_options(invocation, compile_log)
+            if rc:
+                return rc
+            return 0
 
     def _run_source_build_fixture(self, invocation, env=None) -> int:
         if invocation.get("diag", "bare") != "bare":
@@ -1486,24 +1815,9 @@ class DarlingTest(WestCommand):
         with tempfile.TemporaryDirectory(prefix=f"west-source-build-{invocation['name']}-") as temp:
             tempdir = Path(temp)
             build_root = tempdir / "source"
-            build_root.mkdir()
-            archive = subprocess.Popen(
-                ["git", "archive", "--format=tar", "HEAD"],
-                cwd=source_root,
-                stdout=subprocess.PIPE,
-            )
-            try:
-                tar = subprocess.run(
-                    ["tar", "-C", str(build_root), "-xf", "-"],
-                    stdin=archive.stdout,
-                    check=False,
-                )
-            finally:
-                if archive.stdout is not None:
-                    archive.stdout.close()
-            archive_rc = archive.wait()
-            if archive_rc or tar.returncode:
-                return archive_rc or tar.returncode
+            rc = self._archive_source_to(source_root, build_root)
+            if rc:
+                return rc
             build_fixture = build_root / relative_script
             if not build_fixture.is_file():
                 build_fixture.parent.mkdir(parents=True, exist_ok=True)

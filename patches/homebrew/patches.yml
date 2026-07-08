@@ -451,6 +451,43 @@ patches:
   bead: dar-q95.6
   publication-status: ready
   tests:
+  - name: libressl_nist_darling_cmake_target_regress
+    kind: contract
+    coverage-tier: host
+    env: host
+    diag: bare
+    red: true
+    red-proof:
+      mode: source-base
+      source-env: LIBRESSL_SRC_ROOT
+    runner: darling-cmake-target-fixture
+    target: darling_ec_tls_regress
+    source-dir: libressl
+    run-binary: libressl/darling_ec_tls_regress
+    fixture-files:
+    - tests/darling_ec_tls_regress.c
+    fallback-executable-sources:
+    - libressl/tests/darling_ec_tls_regress.c
+    fallback-include-dirs:
+    - libressl/include
+    - libressl/crypto
+    fallback-link-libraries:
+    - crypto44
+    required-compile-options:
+    - source: crypto/bn/bn_nist.c
+      options: [-fno-strict-aliasing]
+    - source: crypto/ec/ecp_nist.c
+      options: [-fno-strict-aliasing]
+    requires-profile: homebrew
+    timeout-seconds: 240
+    note: |
+      RED->GREEN host behavior gate for the actual Darling CMake target. The
+      runner builds crypto44 through LibreSSL's CMakeLists.txt, injects the
+      current regression source into the source-base tree if needed, and runs
+      darling_ec_tls_regress without adding -fno-strict-aliasing from metadata.
+      Because the aliasing UB is compiler-dependent, RED is proven
+      deterministically by the build graph too: the real CMake target must pass
+      -fno-strict-aliasing to the vulnerable NIST translation units.
   - name: libressl_nist_strict_aliasing_regress
     kind: contract
     coverage-tier: host
