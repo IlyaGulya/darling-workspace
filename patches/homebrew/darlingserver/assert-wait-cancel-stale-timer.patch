@@ -1,4 +1,4 @@
-From 7344b17facc2f18c8a8db2e36e8850c032965dd7 Mon Sep 17 00:00:00 2001
+From 10194531c37acd1ad5d1e79a9d1aa31353ed7158 Mon Sep 17 00:00:00 2001
 From: Ilya Gulya <ilya.gulya@indriver.com>
 Date: Wed, 24 Jun 2026 15:15:58 +0000
 Subject: [PATCH] duct-tape: cancel stale wait_timer when entering a new wait
@@ -36,14 +36,36 @@ Refs dar-gwn.1.9.
 
 Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
 ---
- duct-tape/xnu/osfmk/kern/waitq.c | 20 ++++++++++++++++++++
- 1 file changed, 20 insertions(+)
+ .../darlingserver/duct-tape/wait-timer.h         |  4 ++++
+ duct-tape/xnu/osfmk/kern/waitq.c                 | 16 ++++++++++++++++
+ 2 files changed, 20 insertions(+)
 
+diff --git a/duct-tape/internal-include/darlingserver/duct-tape/wait-timer.h b/duct-tape/internal-include/darlingserver/duct-tape/wait-timer.h
+index 37160144b6dd099431a021090c4f373f0ab6d7ce..b1271dc1f0afc7529894c132af8e41cfe2a1528f 100644
+--- a/duct-tape/internal-include/darlingserver/duct-tape/wait-timer.h
++++ b/duct-tape/internal-include/darlingserver/duct-tape/wait-timer.h
+@@ -14,4 +14,8 @@ static inline bool dtape_thread_cancel_wait_timer(thread_t thread) {
+ 	return true;
+ }
+ 
++static inline bool dtape_thread_prepare_for_wait(thread_t thread) {
++	return dtape_thread_cancel_wait_timer(thread);
++}
++
+ #endif
 diff --git a/duct-tape/xnu/osfmk/kern/waitq.c b/duct-tape/xnu/osfmk/kern/waitq.c
-index f79894f8bfc98563cd2b39d552c294df90522e71..5391dec8ab2683707adbb4df30686bd2b8f56e5c 100644
+index f79894f8bfc98563cd2b39d552c294df90522e71..2af4bec50622178e1cc3c58f79821af79a373099 100644
 --- a/duct-tape/xnu/osfmk/kern/waitq.c
 +++ b/duct-tape/xnu/osfmk/kern/waitq.c
-@@ -2915,6 +2915,26 @@ waitq_assert_wait64_locked(struct waitq *waitq,
+@@ -75,6 +75,7 @@
+ #include <kern/zalloc.h>
+ #include <kern/policy_internal.h>
+ #include <kern/turnstile.h>
++#include <darlingserver/duct-tape/wait-timer.h>
+ 
+ #include <os/hash.h>
+ #include <libkern/OSAtomic.h>
+@@ -2915,6 +2916,21 @@ waitq_assert_wait64_locked(struct waitq *waitq,
  		thread->wait_event = wait_event;
  		thread->waitq = waitq;
  
@@ -60,12 +82,7 @@ index f79894f8bfc98563cd2b39d552c294df90522e71..5391dec8ab2683707adbb4df30686bd2
 +		// abort). Cancel any such leftover before (re)arming for this wait so
 +		// the wait_timer state starts clean. Matches XNU's invariant that a
 +		// thread entering assert_wait has no live wait_timer.
-+		if (thread->wait_timer_is_set) {
-+			if (timer_call_cancel(&thread->wait_timer)) {
-+				thread->wait_timer_active--;
-+			}
-+			thread->wait_timer_is_set = FALSE;
-+		}
++		dtape_thread_prepare_for_wait(thread);
 +
  		if (deadline != 0) {
  			boolean_t act;
