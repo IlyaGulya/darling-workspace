@@ -1962,6 +1962,7 @@ timingsafe_bcmp(const void *b1, const void *b2, size_t n)
                 guest_prelude = ":"
             trace_setup_lines = []
             trace_check_lines = []
+            trace_dump_lines = []
             for index, temp_file in enumerate(invocation.get("host_temp_files", [])):
                 if not isinstance(temp_file, dict):
                     self.die(f"{invocation['name']}: host-temp-files entries must be mappings")
@@ -1984,6 +1985,14 @@ timingsafe_bcmp(const void *b1, const void *b2, size_t n)
                         f"rm -f \"${temp_var}\"",
                         f"mkdir -p \"$(dirname \"${temp_var}\")\"",
                         f"export {env_name}=\"${temp_var}\"",
+                    ]
+                )
+                trace_dump_lines.extend(
+                    [
+                        f"if [ -f \"${temp_var}\" ]; then",
+                        f"\tprintf '%s\\n' \"--- host temp file: ${temp_var} ---\" >&2",
+                        f"\tcat \"${temp_var}\" >&2 || true",
+                        "fi",
                     ]
                 )
             for index, trace in enumerate(invocation.get("host_trace_files", [])):
@@ -2011,6 +2020,14 @@ timingsafe_bcmp(const void *b1, const void *b2, size_t n)
                         f"export {env_name}=\"${trace_var}\"",
                     ]
                 )
+                trace_dump_lines.extend(
+                    [
+                        f"if [ -f \"${trace_var}\" ]; then",
+                        f"\tprintf '%s\\n' \"--- host trace file: ${trace_var} ---\" >&2",
+                        f"\tcat \"${trace_var}\" >&2 || true",
+                        "fi",
+                    ]
+                )
                 trace_check_lines.extend(
                     [
                         f"if [ ! -f \"${trace_var}\" ]; then",
@@ -2024,6 +2041,7 @@ timingsafe_bcmp(const void *b1, const void *b2, size_t n)
                     trace_check_lines.append(f"grep -F -q {quote(expected)} \"${trace_var}\"")
             trace_setup = "\n".join(trace_setup_lines) or ":"
             trace_check = "\n".join(trace_check_lines) or ":"
+            trace_dump = "\n".join(trace_dump_lines) or ":"
             script = f"""#!/usr/bin/env bash
 set -euo pipefail
 : "${{DPREFIX:?set DPREFIX}}"
@@ -2068,6 +2086,7 @@ set -e
 
 cat "$verdict" 2>/dev/null || true
 if [ "$rc" -ne 0 ] && [ "$host_trace_oracle" != 1 ]; then
+\t{trace_dump}
 \texit "$rc"
 fi
 if [ "$host_trace_oracle" != 1 ]; then
@@ -2312,7 +2331,10 @@ fi
         current_minus_patch = proof.get("bad-profile") == "current-minus-patch"
         bad_revision = None if current_minus_patch else self._bad_revision(patch)
         added: list[tuple[Path, Path]] = []
-        with tempfile.TemporaryDirectory(prefix="west-red-proof-source-") as temp:
+        temp = tempfile.mkdtemp(prefix="west-red-proof-source-")
+        yielded = False
+        keep_on_failure = False
+        try:
             root = Path(temp)
             source_root = root / "darling"
             darling_ref = "HEAD" if current_minus_patch else self._manifest_revision("darling")
@@ -2334,69 +2356,75 @@ fi
                 check=True,
             )
             added.append((darling_repo, source_root))
-            try:
-                for project_path, repo in sorted(
-                    projects_by_path.items(),
-                    key=lambda item: (len(item[0].parts), str(item[0])),
-                ):
-                    if project_path == Path("darling"):
-                        continue
-                    try:
-                        rel = project_path.relative_to("darling")
-                    except ValueError:
-                        continue
-                    target = source_root / rel
-                    if self._has_symlink_parent(target, source_root):
-                        if project_path == patch_module_path:
-                            self.die(
-                                f"{patch['path']}: cannot materialize nested patch module "
-                                f"{project_path} inside a symlinked parent source tree"
-                            )
-                        continue
-                    target.parent.mkdir(parents=True, exist_ok=True)
-                    if target.exists() or target.is_symlink():
-                        self._remove_path_for_materialize(target)
+            for project_path, repo in sorted(
+                projects_by_path.items(),
+                key=lambda item: (len(item[0].parts), str(item[0])),
+            ):
+                if project_path == Path("darling"):
+                    continue
+                try:
+                    rel = project_path.relative_to("darling")
+                except ValueError:
+                    continue
+                target = source_root / rel
+                if self._has_symlink_parent(target, source_root):
                     if project_path == patch_module_path:
-                        revision = (
-                            self._manifest_revision(str(project_path))
-                            if current_minus_patch
-                            else str(bad_revision)
+                        self.die(
+                            f"{patch['path']}: cannot materialize nested patch module "
+                            f"{project_path} inside a symlinked parent source tree"
                         )
-                        subprocess.run(
-                            [
-                                "git",
-                                "worktree",
-                                "add",
-                                "--quiet",
-                                "--detach",
-                                str(target),
-                                revision,
+                    continue
+                target.parent.mkdir(parents=True, exist_ok=True)
+                if target.exists() or target.is_symlink():
+                    self._remove_path_for_materialize(target)
+                if project_path == patch_module_path:
+                    revision = (
+                        self._manifest_revision(str(project_path))
+                        if current_minus_patch
+                        else str(bad_revision)
+                    )
+                    subprocess.run(
+                        [
+                            "git",
+                            "worktree",
+                            "add",
+                            "--quiet",
+                            "--detach",
+                            str(target),
+                            revision,
+                        ],
+                        cwd=repo,
+                        check=True,
+                    )
+                    added.append((repo, target))
+                    if current_minus_patch:
+                        profile = getattr(self, "_active_profile", None)
+                        if not profile:
+                            self.die(f"{patch['path']}: current-minus-patch needs an active profile")
+                        skips = {
+                            patch["path"],
+                            *[
+                                str(path)
+                                for path in proof.get("current-minus-skip-patches", [])
                             ],
-                            cwd=repo,
-                            check=True,
+                        }
+                        self._apply_profile_module_patches(
+                            profile,
+                            str(project_path),
+                            target,
+                            skip_patch_paths=skips,
                         )
-                        added.append((repo, target))
-                        if current_minus_patch:
-                            profile = getattr(self, "_active_profile", None)
-                            if not profile:
-                                self.die(f"{patch['path']}: current-minus-patch needs an active profile")
-                            skips = {
-                                patch["path"],
-                                *[
-                                    str(path)
-                                    for path in proof.get("current-minus-skip-patches", [])
-                                ],
-                            }
-                            self._apply_profile_module_patches(
-                                profile,
-                                str(project_path),
-                                target,
-                                skip_patch_paths=skips,
-                            )
-                    else:
-                        os.symlink(repo, target, target_is_directory=True)
-                yield source_root
-            finally:
+                else:
+                    os.symlink(repo, target, target_is_directory=True)
+            yielded = True
+            yield source_root
+        except Exception:
+            keep_on_failure = not yielded
+            if keep_on_failure:
+                self.err(f"preserving failed RED source forest for inspection: {temp}")
+            raise
+        finally:
+            if not keep_on_failure:
                 for repo, target in reversed(added):
                     subprocess.run(
                         ["git", "worktree", "remove", "--force", str(target)],
@@ -2405,6 +2433,7 @@ fi
                         stdout=subprocess.DEVNULL,
                         stderr=subprocess.DEVNULL,
                     )
+                shutil.rmtree(temp, ignore_errors=True)
 
     def _cmake_cache_value(self, build_dir: Path, key: str) -> str | None:
         cache = build_dir / "CMakeCache.txt"

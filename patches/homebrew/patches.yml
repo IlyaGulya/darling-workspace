@@ -794,6 +794,18 @@ patches:
     coverage-tier: runtime
     env: darling
     diag: guarded
+    red: true
+    red-proof:
+      mode: guest-runtime-deploy
+      bad-profile: current-minus-patch
+      current-minus-skip-patches:
+      - darlingserver/pushreply-pipe-leak.patch
+      runtime-artifacts:
+      - module: darling/src/external/darlingserver
+        build-targets:
+        - darlingserver
+        deploy:
+        - bin/darlingserver
     runner: guest-c-fixture
     repo: darling-workspace
     script: tests/ingest_process_register_fault_guest.c
@@ -808,7 +820,7 @@ patches:
       contains:
       - test_fault.consume name=ingest.force_missing_process
       - call.ingest_missing_process
-    note: Guest runtime fault gate for the ingest-time missing-process path; the diagnostics hook consumes a one-shot guest-written fault file and forces the next managed RPC through the missing-process branch, fixed darlingserver replies instead of silently dropping it, and the parent observes exit instead of wedging. Runtime RED is blocked until the fault hook is split into a current-minus-compatible pre-ingest diagnostics patch; current test-diagnostics-trace conflicts when ingest-error-reply is skipped.
+    note: Guest runtime fault gate for the ingest-time missing-process path; the diagnostics hook consumes a one-shot guest-written fault file and forces the next managed RPC through the missing-process branch, fixed darlingserver replies instead of silently dropping it, and the parent observes exit instead of wedging. Runtime RED builds current stack minus this patch and its declared downstream pushreply skip.
   github:
     fork:
       repo: IlyaGulya/darlingserver
@@ -3598,7 +3610,7 @@ patches:
   module: darling/src/external/darlingserver
   source-branch: fix/test-diagnostics-trace
   source-base: b5c7403d9e70fa5708c7c5ed66821534a017d032
-  source-commit: a727a1fcb1eed8fe767dee5b2a016173e84366bf
+  source-commit: 00788f1f08a0c3327cec6ef79e356d1399fa18f8
   bead: dar-r7fc.7
   publication-status: blocked
   publication-blocker: test-only runtime diagnostics; keep local until a supported upstream diagnostics interface is designed
@@ -3627,4 +3639,4 @@ patches:
       Guest runtime smoke for the opt-in DSERVER_TEST_TRACE_FILE diagnostics
       hook. The script only launches a real guest process; west owns the host
       trace setup and oracle.
-  sha256sum: a20484a4750af7d4a6774eaada1128b6e20553315d0a664f527abd3afefb0f9b
+  sha256sum: 94d878e438340fc0009a0234e7890d0b9c6cc7272eccfa16b688eb51547af2d6

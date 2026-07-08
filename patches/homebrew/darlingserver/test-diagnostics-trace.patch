@@ -1,21 +1,21 @@
-From 027ae40c1d54c40e78cb3b88ffa87efb13134fef Mon Sep 17 00:00:00 2001
+From 00788f1f08a0c3327cec6ef79e356d1399fa18f8 Mon Sep 17 00:00:00 2001
 From: Ilya Gulya <ilya@gulya.me>
-Date: Wed, 8 Jul 2026 21:28:30 +0000
-Subject: [PATCH] Add guarded test diagnostics trace hook
+Date: Wed, 8 Jul 2026 22:57:26 +0000
+Subject: [PATCH] test: add guarded diagnostics and ingest fault trigger
 
 ---
  CMakeLists.txt                                |  1 +
  duct-tape/CMakeLists.txt                      |  1 +
- .../duct-tape/test-diagnostics.h              | 14 ++++
- duct-tape/src/test-diagnostics.c              | 71 +++++++++++++++++++
- duct-tape/src/thread.c                        |  4 ++
+ .../duct-tape/test-diagnostics.h              | 14 +++
+ duct-tape/src/test-diagnostics.c              | 71 ++++++++++++++
+ duct-tape/src/thread.c                        |  4 +
  duct-tape/xnu/osfmk/kern/ipc_mig.c            |  2 +
  duct-tape/xnu/osfmk/kern/waitq.c              |  7 ++
- .../darlingserver/test-diagnostics.hpp        | 10 +++
- src/call.cpp                                  | 58 +++++++++++++++
- src/process.cpp                               | 25 +++++++
- src/test-diagnostics.cpp                      | 47 ++++++++++++
- 11 files changed, 240 insertions(+)
+ .../darlingserver/test-diagnostics.hpp        | 11 +++
+ src/call.cpp                                  | 33 ++++++-
+ src/process.cpp                               | 25 +++++
+ src/test-diagnostics.cpp                      | 95 +++++++++++++++++++
+ 11 files changed, 263 insertions(+), 1 deletion(-)
  create mode 100644 duct-tape/internal-include/darlingserver/duct-tape/test-diagnostics.h
  create mode 100644 duct-tape/src/test-diagnostics.c
  create mode 100644 internal-include/darlingserver/test-diagnostics.hpp
@@ -218,10 +218,10 @@ index 2af4bec50622178e1cc3c58f79821af79a373099..d6a33a586938ed1eb26f4566a2cd3fd5
  		if (deadline != 0) {
 diff --git a/internal-include/darlingserver/test-diagnostics.hpp b/internal-include/darlingserver/test-diagnostics.hpp
 new file mode 100644
-index 0000000000000000000000000000000000000000..3d77ed6f393f115a2e1f6ab047823d17f1f17306
+index 0000000000000000000000000000000000000000..de5a448b6802c8f8dbaf623e46e02a81070c5f5e
 --- /dev/null
 +++ b/internal-include/darlingserver/test-diagnostics.hpp
-@@ -0,0 +1,10 @@
+@@ -0,0 +1,11 @@
 +#pragma once
 +
 +#include <string>
@@ -229,11 +229,12 @@ index 0000000000000000000000000000000000000000..3d77ed6f393f115a2e1f6ab047823d17
 +namespace DarlingServer::TestDiagnostics {
 +
 +bool enabled();
++bool consumeFault(const char* name);
 +void traceLine(const std::string& line);
 +
 +}
 diff --git a/src/call.cpp b/src/call.cpp
-index a443cd837393f8f73204ffe99461717da46ad54c..f5616ab3fab77407d738c06b11cf29f69c8135d1 100644
+index a443cd837393f8f73204ffe99461717da46ad54c..a2bff74a51c1799a46c0692fdb91cc9e7c0052e7 100644
 --- a/src/call.cpp
 +++ b/src/call.cpp
 @@ -29,6 +29,7 @@
@@ -244,94 +245,54 @@ index a443cd837393f8f73204ffe99461717da46ad54c..f5616ab3fab77407d738c06b11cf29f6
  #include <sys/fcntl.h>
  #include <sys/syscall.h>
  #include <darlingserver/kqchan.hpp>
-@@ -88,6 +89,12 @@ std::shared_ptr<DarlingServer::Call> DarlingServer::Call::callFromMessage(Messag
- 		if (!process) {
- 			callLog.error() << "Received call from non-existent process (number "
- 				<< header->number << "); replying -ESRCH instead of dropping" << callLog.endLog;
+@@ -65,6 +66,10 @@ std::shared_ptr<DarlingServer::Call> DarlingServer::Call::callFromMessage(Messag
+ 		process = processRegistry().registerIfAbsent(header->pid, [&]() {
+ 			std::shared_ptr<Process> tmp = nullptr;
+ 
++			if (TestDiagnostics::consumeFault("ingest.process_register_fail")) {
++				return tmp;
++			}
++
+ 			int lifetimePipe = -1;
+ 
+ 			if (header->number == dserver_callnum_checkin) {
+@@ -85,6 +90,16 @@ std::shared_ptr<DarlingServer::Call> DarlingServer::Call::callFromMessage(Messag
+ 			return tmp;
+ 		});
+ 
++		if (TestDiagnostics::consumeFault("ingest.force_missing_process")) {
 +			TestDiagnostics::traceLine(
 +				"call.ingest_missing_process number=" + std::to_string(header->number) +
 +				" pid=" + std::to_string(header->pid) +
 +				" tid=" + std::to_string(header->tid) +
-+				" code=" + std::to_string(-ESRCH)
++				" forced=1 code=" + std::to_string(-ESRCH)
 +			);
- 
- 			// Don't drop silently: the guest thread is parked in recvmsg waiting for a
- 			// reply, and dropping leaves it hung forever (-> SEGV under a fork/signal
-@@ -120,6 +127,12 @@ std::shared_ptr<DarlingServer::Call> DarlingServer::Call::callFromMessage(Messag
- 		if (!thread) {
- 			callLog.error() << "Received call from non-existent thread (number "
++			process = nullptr;
++		}
++
+ 		if (!process) {
+ 			callLog.error() << "Received call from non-existent process (number "
  				<< header->number << "); replying -ESRCH instead of dropping" << callLog.endLog;
-+			TestDiagnostics::traceLine(
-+				"call.ingest_missing_thread number=" + std::to_string(header->number) +
-+				" pid=" + std::to_string(header->pid) +
-+				" tid=" + std::to_string(header->tid) +
-+				" code=" + std::to_string(-ESRCH)
-+			);
+@@ -99,6 +114,10 @@ std::shared_ptr<DarlingServer::Call> DarlingServer::Call::callFromMessage(Messag
+ 		thread = threadRegistry().registerIfAbsent(header->tid, [&]() {
+ 			std::shared_ptr<Thread> tmp = nullptr;
  
- 			// Same as the non-existent-process case: reply -ESRCH so the parked guest
- 			// thread's recvmsg returns instead of hanging forever. (dar-gwn.6.2)
-@@ -140,6 +153,10 @@ std::shared_ptr<DarlingServer::Call> DarlingServer::Call::callFromMessage(Messag
++			if (TestDiagnostics::consumeFault("ingest.thread_register_fail")) {
++				return tmp;
++			}
++
+ 			void* stackHint = nullptr;
+ 
+ 			if (header->number == dserver_callnum_checkin) {
+@@ -140,7 +159,6 @@ std::shared_ptr<DarlingServer::Call> DarlingServer::Call::callFromMessage(Messag
  
  	if (header->number == dserver_callnum_s2c) {
  		// this is an S2C reply
-+		TestDiagnostics::traceLine(
-+			"call.s2c_reply pid=" + std::to_string(header->pid) +
-+			" tid=" + std::to_string(header->tid)
-+		);
- 
+-
  		{
  			std::unique_lock lock(thread->_rwlock);
-@@ -177,6 +194,12 @@ std::shared_ptr<DarlingServer::Call> DarlingServer::Call::callFromMessage(Messag
- 		// every path -- so the client's read() always returns (a byte on success,
- 		// EOF on failure) and never strands the guest. (dar-gwn.1.7)
- 		PushReplySyncPipe pipeDesc(requestMessage.extractDescriptorAtIndex(requestMessage.descriptors().size() - 1));
-+		TestDiagnostics::traceLine(
-+			"call.push_reply.extract pid=" + std::to_string(header->pid) +
-+			" tid=" + std::to_string(header->tid) +
-+			" reply_size=" + std::to_string(pushReplyCall->reply_size) +
-+			" ok=" + std::to_string(static_cast<bool>(pipeDesc))
-+		);
  
- 		if (!pipeDesc) {
- 			throw std::runtime_error("Failed to extract reply-push synchronization pipe");
-@@ -209,6 +232,11 @@ std::shared_ptr<DarlingServer::Call> DarlingServer::Call::callFromMessage(Messag
- 				// client now. (dar-gwn.1.7)
- 				lock.unlock();
- 				callLog.debug() << *thread << ": push_reply arrived with no live interrupt; re-sending pushed reply directly" << callLog.endLog;
-+				TestDiagnostics::traceLine(
-+					"call.push_reply.direct_resend pid=" + std::to_string(header->pid) +
-+					" tid=" + std::to_string(header->tid) +
-+					" thread_dead=" + std::to_string(thread->isDead())
-+				);
- 				if (!thread->isDead()) {
- 					Server::sharedInstance().sendMessage(std::move(replyToSave));
- 				}
-@@ -224,6 +252,11 @@ std::shared_ptr<DarlingServer::Call> DarlingServer::Call::callFromMessage(Messag
- 		}
- 
- 		callLog.debug() << *thread << ": Saved client-pushed reply (" << ((thread->_pendingSavedReply) ? "pending" : "normal") << ")" << callLog.endLog;
-+		TestDiagnostics::traceLine(
-+			"call.push_reply.saved pid=" + std::to_string(header->pid) +
-+			" tid=" + std::to_string(header->tid) +
-+			" pending=" + std::to_string(static_cast<bool>(thread->_pendingSavedReply))
-+		);
- 
- 		// write a byte to the pipe so the caller can continue
- 		// (pipeDesc's FD dtor closes the fd when this scope exits)
-@@ -265,6 +298,12 @@ std::shared_ptr<DarlingServer::Call> DarlingServer::Call::callFromMessage(Messag
- 			// (dar-gwn.6.2)
- 			callLog.error() << "setPendingCall rejected call (number " << header->number
- 				<< "): " << ex.what() << "; replying -EAGAIN instead of dropping" << callLog.endLog;
-+			TestDiagnostics::traceLine(
-+				"call.pending_reject number=" + std::to_string(header->number) +
-+				" pid=" + std::to_string(header->pid) +
-+				" tid=" + std::to_string(header->tid) +
-+				" code=" + std::to_string(-EAGAIN)
-+			);
- 			sendErrorReplyFromHeader(header, requestMessage.address(), -EAGAIN);
- 			return nullptr;
- 		}
-@@ -280,12 +319,25 @@ std::shared_ptr<DarlingServer::Call> DarlingServer::Call::callFromMessage(Messag
+@@ -280,12 +298,25 @@ std::shared_ptr<DarlingServer::Call> DarlingServer::Call::callFromMessage(Messag
  				callLog.error() << "Uncaught std::system_error from kernel-async processCall (call "
  					<< DarlingServer::Call::callNumberToString(result->number()) << "): " << err.what()
  					<< " (code " << err.code().value() << ")" << callLog.endLog;
@@ -357,19 +318,6 @@ index a443cd837393f8f73204ffe99461717da46ad54c..f5616ab3fab77407d738c06b11cf29f6
  			}
  		});
  		return nullptr;
-@@ -334,6 +386,12 @@ void DarlingServer::Call::sendErrorReplyFromHeader(const dserver_rpc_callhdr_t*
- 	reply.setAddress(replyAddress);
- 	auto replyStruct = reinterpret_cast<dserver_rpc_replyhdr_t*>(reply.data().data());
- 	*replyStruct = rpcErrorReplyHeaderFromCall<dserver_rpc_replyhdr_t>(header, code);
-+	TestDiagnostics::traceLine(
-+		"call.error_reply_send number=" + std::to_string(header->number) +
-+		" pid=" + std::to_string(header->pid) +
-+		" tid=" + std::to_string(header->tid) +
-+		" code=" + std::to_string(code)
-+	);
- 	sendReply(std::move(reply));
- };
- 
 diff --git a/src/process.cpp b/src/process.cpp
 index 6fce47973d9eeb0dcad0f96bdf5803c020c88ee4..b56ee4381bb95eb847805dc549929bbba83d2ac5 100644
 --- a/src/process.cpp
@@ -447,13 +395,14 @@ index 6fce47973d9eeb0dcad0f96bdf5803c020c88ee4..b56ee4381bb95eb847805dc549929bbb
  };
 diff --git a/src/test-diagnostics.cpp b/src/test-diagnostics.cpp
 new file mode 100644
-index 0000000000000000000000000000000000000000..28bbeab628863080f5f1bdb479fd0abdec3ee9c2
+index 0000000000000000000000000000000000000000..5ebb97766d84ae8e4816c3bd6fa4548be61a4e24
 --- /dev/null
 +++ b/src/test-diagnostics.cpp
-@@ -0,0 +1,47 @@
+@@ -0,0 +1,95 @@
 +#include <darlingserver/test-diagnostics.hpp>
 +
 +#include <cstdlib>
++#include <cstring>
 +#include <mutex>
 +#include <string>
 +#include <unistd.h>
@@ -462,126 +411,13 @@ index 0000000000000000000000000000000000000000..28bbeab628863080f5f1bdb479fd0abd
 +namespace DarlingServer::TestDiagnostics {
 +
 +static constexpr const char* TraceEnv = "DSERVER_TEST_TRACE_FILE";
++static constexpr const char* FaultEnv = "DSERVER_TEST_FAULT_FILE";
 +static std::mutex traceMutex;
 +
 +bool enabled() {
 +	return std::getenv(TraceEnv) != nullptr;
 +}
 +
-+void traceLine(const std::string& line) {
-+	const char* path = std::getenv(TraceEnv);
-+	if (!path || path[0] == '\0') {
-+		return;
-+	}
-+
-+	std::string record = line;
-+	record.push_back('\n');
-+
-+	std::lock_guard lock(traceMutex);
-+	int fd = open(path, O_WRONLY | O_CREAT | O_APPEND | O_CLOEXEC, 0666);
-+	if (fd < 0) {
-+		return;
-+	}
-+
-+	const char* cursor = record.data();
-+	size_t remaining = record.size();
-+	while (remaining > 0) {
-+		ssize_t written = write(fd, cursor, remaining);
-+		if (written <= 0) {
-+			break;
-+		}
-+		cursor += written;
-+		remaining -= static_cast<size_t>(written);
-+	}
-+
-+	close(fd);
-+}
-+
-+}
-
-From a727a1fcb1eed8fe767dee5b2a016173e84366bf Mon Sep 17 00:00:00 2001
-From: Ilya Gulya <ilya@gulya.me>
-Date: Wed, 8 Jul 2026 22:31:46 +0000
-Subject: [PATCH] test: add guarded ingest fault trigger
-
----
- .../darlingserver/test-diagnostics.hpp        |  1 +
- src/call.cpp                                  | 12 +++++
- src/test-diagnostics.cpp                      | 48 +++++++++++++++++++
- 3 files changed, 61 insertions(+)
-
-diff --git a/internal-include/darlingserver/test-diagnostics.hpp b/internal-include/darlingserver/test-diagnostics.hpp
-index 3d77ed6f393f115a2e1f6ab047823d17f1f17306..de5a448b6802c8f8dbaf623e46e02a81070c5f5e 100644
---- a/internal-include/darlingserver/test-diagnostics.hpp
-+++ b/internal-include/darlingserver/test-diagnostics.hpp
-@@ -5,6 +5,7 @@
- namespace DarlingServer::TestDiagnostics {
- 
- bool enabled();
-+bool consumeFault(const char* name);
- void traceLine(const std::string& line);
- 
- }
-diff --git a/src/call.cpp b/src/call.cpp
-index f5616ab3fab77407d738c06b11cf29f69c8135d1..51847f4435c43f9c5ddadaa2fe11acabe1cdf631 100644
---- a/src/call.cpp
-+++ b/src/call.cpp
-@@ -66,6 +66,10 @@ std::shared_ptr<DarlingServer::Call> DarlingServer::Call::callFromMessage(Messag
- 		process = processRegistry().registerIfAbsent(header->pid, [&]() {
- 			std::shared_ptr<Process> tmp = nullptr;
- 
-+			if (TestDiagnostics::consumeFault("ingest.process_register_fail")) {
-+				return tmp;
-+			}
-+
- 			int lifetimePipe = -1;
- 
- 			if (header->number == dserver_callnum_checkin) {
-@@ -86,6 +90,10 @@ std::shared_ptr<DarlingServer::Call> DarlingServer::Call::callFromMessage(Messag
- 			return tmp;
- 		});
- 
-+		if (TestDiagnostics::consumeFault("ingest.force_missing_process")) {
-+			process = nullptr;
-+		}
-+
- 		if (!process) {
- 			callLog.error() << "Received call from non-existent process (number "
- 				<< header->number << "); replying -ESRCH instead of dropping" << callLog.endLog;
-@@ -106,6 +114,10 @@ std::shared_ptr<DarlingServer::Call> DarlingServer::Call::callFromMessage(Messag
- 		thread = threadRegistry().registerIfAbsent(header->tid, [&]() {
- 			std::shared_ptr<Thread> tmp = nullptr;
- 
-+			if (TestDiagnostics::consumeFault("ingest.thread_register_fail")) {
-+				return tmp;
-+			}
-+
- 			void* stackHint = nullptr;
- 
- 			if (header->number == dserver_callnum_checkin) {
-diff --git a/src/test-diagnostics.cpp b/src/test-diagnostics.cpp
-index 28bbeab628863080f5f1bdb479fd0abdec3ee9c2..5ebb97766d84ae8e4816c3bd6fa4548be61a4e24 100644
---- a/src/test-diagnostics.cpp
-+++ b/src/test-diagnostics.cpp
-@@ -1,6 +1,7 @@
- #include <darlingserver/test-diagnostics.hpp>
- 
- #include <cstdlib>
-+#include <cstring>
- #include <mutex>
- #include <string>
- #include <unistd.h>
-@@ -9,12 +10,59 @@
- namespace DarlingServer::TestDiagnostics {
- 
- static constexpr const char* TraceEnv = "DSERVER_TEST_TRACE_FILE";
-+static constexpr const char* FaultEnv = "DSERVER_TEST_FAULT_FILE";
- static std::mutex traceMutex;
- 
- bool enabled() {
- 	return std::getenv(TraceEnv) != nullptr;
- }
- 
 +bool consumeFault(const char* name) {
 +	const char* path = std::getenv(FaultEnv);
 +	if (!path || path[0] == '\0' || !name || name[0] == '\0') {
@@ -628,6 +464,33 @@ index 28bbeab628863080f5f1bdb479fd0abdec3ee9c2..5ebb97766d84ae8e4816c3bd6fa4548b
 +	return true;
 +}
 +
- void traceLine(const std::string& line) {
- 	const char* path = std::getenv(TraceEnv);
- 	if (!path || path[0] == '\0') {
++void traceLine(const std::string& line) {
++	const char* path = std::getenv(TraceEnv);
++	if (!path || path[0] == '\0') {
++		return;
++	}
++
++	std::string record = line;
++	record.push_back('\n');
++
++	std::lock_guard lock(traceMutex);
++	int fd = open(path, O_WRONLY | O_CREAT | O_APPEND | O_CLOEXEC, 0666);
++	if (fd < 0) {
++		return;
++	}
++
++	const char* cursor = record.data();
++	size_t remaining = record.size();
++	while (remaining > 0) {
++		ssize_t written = write(fd, cursor, remaining);
++		if (written <= 0) {
++			break;
++		}
++		cursor += written;
++		remaining -= static_cast<size_t>(written);
++	}
++
++	close(fd);
++}
++
++}
