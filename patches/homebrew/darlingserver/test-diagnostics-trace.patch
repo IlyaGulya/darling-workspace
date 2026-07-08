@@ -1,0 +1,500 @@
+From 027ae40c1d54c40e78cb3b88ffa87efb13134fef Mon Sep 17 00:00:00 2001
+From: Ilya Gulya <ilya@gulya.me>
+Date: Wed, 8 Jul 2026 21:28:30 +0000
+Subject: [PATCH] Add guarded test diagnostics trace hook
+
+---
+ CMakeLists.txt                                |  1 +
+ duct-tape/CMakeLists.txt                      |  1 +
+ .../duct-tape/test-diagnostics.h              | 14 ++++
+ duct-tape/src/test-diagnostics.c              | 71 +++++++++++++++++++
+ duct-tape/src/thread.c                        |  4 ++
+ duct-tape/xnu/osfmk/kern/ipc_mig.c            |  2 +
+ duct-tape/xnu/osfmk/kern/waitq.c              |  7 ++
+ .../darlingserver/test-diagnostics.hpp        | 10 +++
+ src/call.cpp                                  | 58 +++++++++++++++
+ src/process.cpp                               | 25 +++++++
+ src/test-diagnostics.cpp                      | 47 ++++++++++++
+ 11 files changed, 240 insertions(+)
+ create mode 100644 duct-tape/internal-include/darlingserver/duct-tape/test-diagnostics.h
+ create mode 100644 duct-tape/src/test-diagnostics.c
+ create mode 100644 internal-include/darlingserver/test-diagnostics.hpp
+ create mode 100644 src/test-diagnostics.cpp
+
+diff --git a/CMakeLists.txt b/CMakeLists.txt
+index cfde48f5b2456963241bac83e89f33fde58956c6..d6e6b4bc5f78005df8c0b253ad24ccf2ec032e00 100644
+--- a/CMakeLists.txt
++++ b/CMakeLists.txt
+@@ -119,6 +119,7 @@ add_executable(darlingserver
+ 	src/async-writer.cpp
+ 	src/stack-pool.cpp
+ 	src/metrics.cpp
++	src/test-diagnostics.cpp
+ )
+ 
+ add_dependencies(darlingserver
+diff --git a/duct-tape/CMakeLists.txt b/duct-tape/CMakeLists.txt
+index 5950c7fe83c2d1d08ac10c6cbaba9fddbe6e5d09..e3d5910c8eb7e31d120fc8216822591a519edfc2 100644
+--- a/duct-tape/CMakeLists.txt
++++ b/duct-tape/CMakeLists.txt
+@@ -270,6 +270,7 @@ add_library(darlingserver_duct_tape STATIC
+ 	src/psynch.c
+ 	src/condvar.c
+ 	src/debug.c
++	src/test-diagnostics.c
+ 
+ 	xnu/libkern/os/refcnt.c
+ 	xnu/libkern/gen/OSAtomicOperations.c
+diff --git a/duct-tape/internal-include/darlingserver/duct-tape/test-diagnostics.h b/duct-tape/internal-include/darlingserver/duct-tape/test-diagnostics.h
+new file mode 100644
+index 0000000000000000000000000000000000000000..de0afd5482b912879f51a876201b902ea1c646ec
+--- /dev/null
++++ b/duct-tape/internal-include/darlingserver/duct-tape/test-diagnostics.h
+@@ -0,0 +1,14 @@
++#pragma once
++
++void dtape_test_trace_wait_timer(
++	const char* event,
++	unsigned long long thread,
++	int wait_result,
++	int had_timer,
++	int active
++);
++void dtape_test_trace_exception_reply_wait(
++	unsigned long long thread,
++	int bounded,
++	unsigned int timeout
++);
+diff --git a/duct-tape/src/test-diagnostics.c b/duct-tape/src/test-diagnostics.c
+new file mode 100644
+index 0000000000000000000000000000000000000000..116aa62af944e109c22fec49652392fad7eeabb0
+--- /dev/null
++++ b/duct-tape/src/test-diagnostics.c
+@@ -0,0 +1,71 @@
++#include <darlingserver/duct-tape/test-diagnostics.h>
++
++extern char* getenv(const char* name);
++extern int open(const char* pathname, int flags, ...);
++extern long write(int fd, const void* buf, unsigned long count);
++extern int close(int fd);
++extern int snprintf(char* str, unsigned long size, const char* format, ...);
++
++#define DSERVER_TEST_TRACE_FILE "DSERVER_TEST_TRACE_FILE"
++#define DSERVER_O_WRONLY 00000001
++#define DSERVER_O_CREAT 00000100
++#define DSERVER_O_APPEND 00002000
++#define DSERVER_O_CLOEXEC 02000000
++
++static unsigned long dtape_test_trace_strlen(const char* string) {
++	unsigned long result = 0;
++	while (string && string[result] != '\0') {
++		++result;
++	}
++	return result;
++}
++
++static void dtape_test_trace_line(const char* line) {
++	const char* path = getenv(DSERVER_TEST_TRACE_FILE);
++	if (!path || path[0] == '\0') {
++		return;
++	}
++
++	int fd = open(path, DSERVER_O_WRONLY | DSERVER_O_CREAT | DSERVER_O_APPEND | DSERVER_O_CLOEXEC, 0666);
++	if (fd < 0) {
++		return;
++	}
++
++	write(fd, line, dtape_test_trace_strlen(line));
++	write(fd, "\n", 1);
++	close(fd);
++}
++
++void dtape_test_trace_wait_timer(
++	const char* event,
++	unsigned long long thread,
++	int wait_result,
++	int had_timer,
++	int active
++) {
++	char line[192];
++	snprintf(line, sizeof(line),
++		"dtape.wait_timer event=%s thread=0x%llx wait_result=%d had_timer=%d active=%d",
++		event,
++		thread,
++		wait_result,
++		had_timer,
++		active
++	);
++	dtape_test_trace_line(line);
++}
++
++void dtape_test_trace_exception_reply_wait(
++	unsigned long long thread,
++	int bounded,
++	unsigned int timeout
++) {
++	char line[160];
++	snprintf(line, sizeof(line),
++		"dtape.exception_reply_wait thread=0x%llx bounded=%d timeout=%u",
++		thread,
++		bounded,
++		timeout
++	);
++	dtape_test_trace_line(line);
++}
+diff --git a/duct-tape/src/thread.c b/duct-tape/src/thread.c
+index 9071efbf339135b1c73cf432d6f09fb525e3692b..3e3fb2dea1919783dcc4463b978a2e3e3748310b 100644
+--- a/duct-tape/src/thread.c
++++ b/duct-tape/src/thread.c
+@@ -3,6 +3,7 @@
+ #include <darlingserver/duct-tape/task.h>
+ #include <darlingserver/duct-tape/thread.h>
+ #include <darlingserver/duct-tape/wait-timer.h>
++#include <darlingserver/duct-tape/test-diagnostics.h>
+ #include <darlingserver/duct-tape/hooks.internal.h>
+ #include <darlingserver/duct-tape/log.h>
+ #include <darlingserver/duct-tape/psynch.h>
+@@ -593,6 +594,8 @@ wait_result_t thread_block(thread_continue_t continuation) {
+ // thread locked
+ boolean_t thread_unblock(thread_t xthread, wait_result_t wresult) {
+ 	dtape_thread_t* thread = dtape_thread_for_xnu_thread(xthread);
++	int had_timer = xthread->wait_timer_is_set;
++	int active = xthread->wait_timer_active;
+ 	thread->xnu_thread.wait_result = wresult;
+ 
+ 	// Cancel the wait timer if one was armed for a timed wait. XNU's
+@@ -605,6 +608,7 @@ boolean_t thread_unblock(thread_t xthread, wait_result_t wresult) {
+ 	// typically a subsequent deadline-less psynch wait -- aborting it with
+ 	// ETIMEDOUT and stranding a condvar/mutex handoff (intermittent hang).
+ 	dtape_thread_cancel_wait_timer(&thread->xnu_thread);
++	dtape_test_trace_wait_timer("thread_unblock", (unsigned long long)xthread, wresult, had_timer, active);
+ 
+ 	dtape_hooks->thread_resume(thread->context);
+ 	return TRUE;
+diff --git a/duct-tape/xnu/osfmk/kern/ipc_mig.c b/duct-tape/xnu/osfmk/kern/ipc_mig.c
+index 49075b1923e91e8cf32f28a5c4ed8058a65fdca9..e0008388f73fe52b41e80f51e22d506ec45fe722 100644
+--- a/duct-tape/xnu/osfmk/kern/ipc_mig.c
++++ b/duct-tape/xnu/osfmk/kern/ipc_mig.c
+@@ -86,6 +86,7 @@
+ 
+ #include <darlingserver/duct-tape/fatal-exception-reply.h>
+ #include <darlingserver/duct-tape/thread.h>
++#include <darlingserver/duct-tape/test-diagnostics.h>
+ 
+ void
+ mach_msg_receive_results_complete(ipc_object_t object);
+@@ -455,6 +456,7 @@ kernel_mach_msg_rpc(
+ 	    dthread->fatal_exception_delivery));
+ 	mach_msg_option_t rcv_option = dtape_exception_reply_wait_option(bounded);
+ 	mach_msg_timeout_t rcv_timeout = dtape_exception_reply_wait_timeout(bounded);
++	dtape_test_trace_exception_reply_wait((unsigned long long)self, bounded, rcv_timeout);
+ 
+ 	for (;;) {
+ 		ipc_mqueue_t mqueue;
+diff --git a/duct-tape/xnu/osfmk/kern/waitq.c b/duct-tape/xnu/osfmk/kern/waitq.c
+index 2af4bec50622178e1cc3c58f79821af79a373099..d6a33a586938ed1eb26f4566a2cd3fd536b82cd3 100644
+--- a/duct-tape/xnu/osfmk/kern/waitq.c
++++ b/duct-tape/xnu/osfmk/kern/waitq.c
+@@ -76,6 +76,7 @@
+ #include <kern/policy_internal.h>
+ #include <kern/turnstile.h>
+ #include <darlingserver/duct-tape/wait-timer.h>
++#include <darlingserver/duct-tape/test-diagnostics.h>
+ 
+ #include <os/hash.h>
+ #include <libkern/OSAtomic.h>
+@@ -2929,6 +2930,12 @@ waitq_assert_wait64_locked(struct waitq *waitq,
+ 		// abort). Cancel any such leftover before (re)arming for this wait so
+ 		// the wait_timer state starts clean. Matches XNU's invariant that a
+ 		// thread entering assert_wait has no live wait_timer.
++		dtape_test_trace_wait_timer(
++		    "wait_prepare",
++		    (unsigned long long)thread,
++		    thread->wait_result,
++		    thread->wait_timer_is_set,
++		    thread->wait_timer_active);
+ 		dtape_thread_prepare_for_wait(thread);
+ 
+ 		if (deadline != 0) {
+diff --git a/internal-include/darlingserver/test-diagnostics.hpp b/internal-include/darlingserver/test-diagnostics.hpp
+new file mode 100644
+index 0000000000000000000000000000000000000000..3d77ed6f393f115a2e1f6ab047823d17f1f17306
+--- /dev/null
++++ b/internal-include/darlingserver/test-diagnostics.hpp
+@@ -0,0 +1,10 @@
++#pragma once
++
++#include <string>
++
++namespace DarlingServer::TestDiagnostics {
++
++bool enabled();
++void traceLine(const std::string& line);
++
++}
+diff --git a/src/call.cpp b/src/call.cpp
+index a443cd837393f8f73204ffe99461717da46ad54c..f5616ab3fab77407d738c06b11cf29f69c8135d1 100644
+--- a/src/call.cpp
++++ b/src/call.cpp
+@@ -29,6 +29,7 @@
+ #include <darlingserver/duct-tape.h>
+ #include <darlingserver/config.hpp>
+ #include <darlingserver/metrics.hpp>
++#include <darlingserver/test-diagnostics.hpp>
+ #include <sys/fcntl.h>
+ #include <sys/syscall.h>
+ #include <darlingserver/kqchan.hpp>
+@@ -88,6 +89,12 @@ std::shared_ptr<DarlingServer::Call> DarlingServer::Call::callFromMessage(Messag
+ 		if (!process) {
+ 			callLog.error() << "Received call from non-existent process (number "
+ 				<< header->number << "); replying -ESRCH instead of dropping" << callLog.endLog;
++			TestDiagnostics::traceLine(
++				"call.ingest_missing_process number=" + std::to_string(header->number) +
++				" pid=" + std::to_string(header->pid) +
++				" tid=" + std::to_string(header->tid) +
++				" code=" + std::to_string(-ESRCH)
++			);
+ 
+ 			// Don't drop silently: the guest thread is parked in recvmsg waiting for a
+ 			// reply, and dropping leaves it hung forever (-> SEGV under a fork/signal
+@@ -120,6 +127,12 @@ std::shared_ptr<DarlingServer::Call> DarlingServer::Call::callFromMessage(Messag
+ 		if (!thread) {
+ 			callLog.error() << "Received call from non-existent thread (number "
+ 				<< header->number << "); replying -ESRCH instead of dropping" << callLog.endLog;
++			TestDiagnostics::traceLine(
++				"call.ingest_missing_thread number=" + std::to_string(header->number) +
++				" pid=" + std::to_string(header->pid) +
++				" tid=" + std::to_string(header->tid) +
++				" code=" + std::to_string(-ESRCH)
++			);
+ 
+ 			// Same as the non-existent-process case: reply -ESRCH so the parked guest
+ 			// thread's recvmsg returns instead of hanging forever. (dar-gwn.6.2)
+@@ -140,6 +153,10 @@ std::shared_ptr<DarlingServer::Call> DarlingServer::Call::callFromMessage(Messag
+ 
+ 	if (header->number == dserver_callnum_s2c) {
+ 		// this is an S2C reply
++		TestDiagnostics::traceLine(
++			"call.s2c_reply pid=" + std::to_string(header->pid) +
++			" tid=" + std::to_string(header->tid)
++		);
+ 
+ 		{
+ 			std::unique_lock lock(thread->_rwlock);
+@@ -177,6 +194,12 @@ std::shared_ptr<DarlingServer::Call> DarlingServer::Call::callFromMessage(Messag
+ 		// every path -- so the client's read() always returns (a byte on success,
+ 		// EOF on failure) and never strands the guest. (dar-gwn.1.7)
+ 		PushReplySyncPipe pipeDesc(requestMessage.extractDescriptorAtIndex(requestMessage.descriptors().size() - 1));
++		TestDiagnostics::traceLine(
++			"call.push_reply.extract pid=" + std::to_string(header->pid) +
++			" tid=" + std::to_string(header->tid) +
++			" reply_size=" + std::to_string(pushReplyCall->reply_size) +
++			" ok=" + std::to_string(static_cast<bool>(pipeDesc))
++		);
+ 
+ 		if (!pipeDesc) {
+ 			throw std::runtime_error("Failed to extract reply-push synchronization pipe");
+@@ -209,6 +232,11 @@ std::shared_ptr<DarlingServer::Call> DarlingServer::Call::callFromMessage(Messag
+ 				// client now. (dar-gwn.1.7)
+ 				lock.unlock();
+ 				callLog.debug() << *thread << ": push_reply arrived with no live interrupt; re-sending pushed reply directly" << callLog.endLog;
++				TestDiagnostics::traceLine(
++					"call.push_reply.direct_resend pid=" + std::to_string(header->pid) +
++					" tid=" + std::to_string(header->tid) +
++					" thread_dead=" + std::to_string(thread->isDead())
++				);
+ 				if (!thread->isDead()) {
+ 					Server::sharedInstance().sendMessage(std::move(replyToSave));
+ 				}
+@@ -224,6 +252,11 @@ std::shared_ptr<DarlingServer::Call> DarlingServer::Call::callFromMessage(Messag
+ 		}
+ 
+ 		callLog.debug() << *thread << ": Saved client-pushed reply (" << ((thread->_pendingSavedReply) ? "pending" : "normal") << ")" << callLog.endLog;
++		TestDiagnostics::traceLine(
++			"call.push_reply.saved pid=" + std::to_string(header->pid) +
++			" tid=" + std::to_string(header->tid) +
++			" pending=" + std::to_string(static_cast<bool>(thread->_pendingSavedReply))
++		);
+ 
+ 		// write a byte to the pipe so the caller can continue
+ 		// (pipeDesc's FD dtor closes the fd when this scope exits)
+@@ -265,6 +298,12 @@ std::shared_ptr<DarlingServer::Call> DarlingServer::Call::callFromMessage(Messag
+ 			// (dar-gwn.6.2)
+ 			callLog.error() << "setPendingCall rejected call (number " << header->number
+ 				<< "): " << ex.what() << "; replying -EAGAIN instead of dropping" << callLog.endLog;
++			TestDiagnostics::traceLine(
++				"call.pending_reject number=" + std::to_string(header->number) +
++				" pid=" + std::to_string(header->pid) +
++				" tid=" + std::to_string(header->tid) +
++				" code=" + std::to_string(-EAGAIN)
++			);
+ 			sendErrorReplyFromHeader(header, requestMessage.address(), -EAGAIN);
+ 			return nullptr;
+ 		}
+@@ -280,12 +319,25 @@ std::shared_ptr<DarlingServer::Call> DarlingServer::Call::callFromMessage(Messag
+ 				callLog.error() << "Uncaught std::system_error from kernel-async processCall (call "
+ 					<< DarlingServer::Call::callNumberToString(result->number()) << "): " << err.what()
+ 					<< " (code " << err.code().value() << ")" << callLog.endLog;
++				TestDiagnostics::traceLine(
++					"call.kernel_async_exception kind=system number=" +
++					std::to_string(static_cast<int>(result->number())) +
++					" code=" + std::to_string(err.code().value())
++				);
+ 			} catch (const std::exception& ex) {
+ 				callLog.error() << "Uncaught exception from kernel-async processCall (call "
+ 					<< DarlingServer::Call::callNumberToString(result->number()) << "): " << ex.what() << callLog.endLog;
++				TestDiagnostics::traceLine(
++					"call.kernel_async_exception kind=std number=" +
++					std::to_string(static_cast<int>(result->number()))
++				);
+ 			} catch (...) {
+ 				callLog.error() << "Uncaught non-std exception from kernel-async processCall (call "
+ 					<< DarlingServer::Call::callNumberToString(result->number()) << ")" << callLog.endLog;
++				TestDiagnostics::traceLine(
++					"call.kernel_async_exception kind=unknown number=" +
++					std::to_string(static_cast<int>(result->number()))
++				);
+ 			}
+ 		});
+ 		return nullptr;
+@@ -334,6 +386,12 @@ void DarlingServer::Call::sendErrorReplyFromHeader(const dserver_rpc_callhdr_t*
+ 	reply.setAddress(replyAddress);
+ 	auto replyStruct = reinterpret_cast<dserver_rpc_replyhdr_t*>(reply.data().data());
+ 	*replyStruct = rpcErrorReplyHeaderFromCall<dserver_rpc_replyhdr_t>(header, code);
++	TestDiagnostics::traceLine(
++		"call.error_reply_send number=" + std::to_string(header->number) +
++		" pid=" + std::to_string(header->pid) +
++		" tid=" + std::to_string(header->tid) +
++		" code=" + std::to_string(code)
++	);
+ 	sendReply(std::move(reply));
+ };
+ 
+diff --git a/src/process.cpp b/src/process.cpp
+index 6fce47973d9eeb0dcad0f96bdf5803c020c88ee4..b56ee4381bb95eb847805dc549929bbba83d2ac5 100644
+--- a/src/process.cpp
++++ b/src/process.cpp
+@@ -24,6 +24,7 @@
+ #include <unistd.h>
+ #include <sys/uio.h>
+ #include <darlingserver/logging.hpp>
++#include <darlingserver/test-diagnostics.hpp>
+ 
+ #include <fstream>
+ #include <regex>
+@@ -292,6 +293,11 @@ void DarlingServer::Process::notifyCheckin(Architecture architecture) {
+ 		// exec case
+ 
+ 		processLog.info() << *this << ": replacing process with a new task (with architecture \"" << architectureToString(architecture) << "\")" << processLog.endLog;
++		TestDiagnostics::traceLine(
++			"process.checkin.exec_begin pid=" + std::to_string(id()) +
++			" nsid=" + std::to_string(nsid()) +
++			" arch=" + std::to_string(static_cast<int>(architecture))
++		);
+ 
+ 		// clear all threads except the main thread
+ 		std::shared_ptr<Thread> mainThread = nullptr;
+@@ -387,12 +393,20 @@ void DarlingServer::Process::notifyCheckin(Architecture architecture) {
+ 		mainThread->_s2cReplySempahore = newReply;
+ 		mainThread->_s2cInterruptEnterSemaphore = newInterruptEnter;
+ 		mainThread->_s2cInterruptExitSemaphore = newInterruptExit;
++		TestDiagnostics::traceLine(
++			"process.checkin.exec_publish pid=" + std::to_string(id()) +
++			" nsid=" + std::to_string(nsid())
++		);
+ 		lock.unlock();
+ 
+ 		// release the main thread's old duct-taped thread and the old task now that
+ 		// current_thread() resolves to the live newThread (see dar-l8k note above).
+ 		dtape_thread_release(oldThread);
+ 		dtape_task_release(oldTask);
++		TestDiagnostics::traceLine(
++			"process.checkin.exec_release_old pid=" + std::to_string(id()) +
++			" nsid=" + std::to_string(nsid())
++		);
+ 
+ 		// re-acquire so the rest of the function runs under the lock as before.
+ 		lock.lock();
+@@ -415,11 +429,18 @@ void DarlingServer::Process::notifyCheckin(Architecture architecture) {
+ 		// notify the parent process (if we have one) that we've arrived
+ 		if (auto parent = _parentProcess.lock()) {
+ 			processLog.info() << *this << ": notifying fork parent " << *parent << " after checkin" << processLog.endLog;
++			TestDiagnostics::traceLine(
++				"process.checkin.fork_notify_parent child=" + std::to_string(nsid()) +
++				" parent=" + std::to_string(parent->nsid())
++			);
+ 			parent->_forkChildCheckin.markChildCheckedIn();
+ 			dtape_semaphore_up(parent->_dtapeForkWaitSemaphore);
+ 			parent->_notifyListeningKqchannels(NOTE_FORK, nsid());
+ 		} else {
+ 			processLog.info() << *this << ": checkin without registered fork parent" << processLog.endLog;
++			TestDiagnostics::traceLine(
++				"process.checkin.fork_no_parent child=" + std::to_string(nsid())
++			);
+ 		}
+ 	}
+ };
+@@ -428,6 +449,10 @@ void DarlingServer::Process::setPendingReplacement() {
+ 	std::unique_lock lock(_rwlock);
+ 
+ 	processLog.info() << "Process " << id() << " (" << nsid() << ") is now pending replacement" << processLog.endLog;
++	TestDiagnostics::traceLine(
++		"process.pending_replacement pid=" + std::to_string(id()) +
++		" nsid=" + std::to_string(nsid())
++	);
+ 
+ 	_pendingReplacement = true;
+ };
+diff --git a/src/test-diagnostics.cpp b/src/test-diagnostics.cpp
+new file mode 100644
+index 0000000000000000000000000000000000000000..28bbeab628863080f5f1bdb479fd0abdec3ee9c2
+--- /dev/null
++++ b/src/test-diagnostics.cpp
+@@ -0,0 +1,47 @@
++#include <darlingserver/test-diagnostics.hpp>
++
++#include <cstdlib>
++#include <mutex>
++#include <string>
++#include <unistd.h>
++#include <fcntl.h>
++
++namespace DarlingServer::TestDiagnostics {
++
++static constexpr const char* TraceEnv = "DSERVER_TEST_TRACE_FILE";
++static std::mutex traceMutex;
++
++bool enabled() {
++	return std::getenv(TraceEnv) != nullptr;
++}
++
++void traceLine(const std::string& line) {
++	const char* path = std::getenv(TraceEnv);
++	if (!path || path[0] == '\0') {
++		return;
++	}
++
++	std::string record = line;
++	record.push_back('\n');
++
++	std::lock_guard lock(traceMutex);
++	int fd = open(path, O_WRONLY | O_CREAT | O_APPEND | O_CLOEXEC, 0666);
++	if (fd < 0) {
++		return;
++	}
++
++	const char* cursor = record.data();
++	size_t remaining = record.size();
++	while (remaining > 0) {
++		ssize_t written = write(fd, cursor, remaining);
++		if (written <= 0) {
++			break;
++		}
++		cursor += written;
++		remaining -= static_cast<size_t>(written);
++	}
++
++	close(fd);
++}
++
++}
