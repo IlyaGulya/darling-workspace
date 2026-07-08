@@ -250,6 +250,7 @@ class DarlingPatch(WestCommand):
             self.inf(f"  {patch['path']}")
             for test in patch.get("tests", []) or []:
                 red = " red" if test.get("red") else ""
+                tier = self._coverage_tier(test)
                 target = (
                     test.get("ctest-label")
                     or test.get("command")
@@ -257,7 +258,7 @@ class DarlingPatch(WestCommand):
                     or test.get("script")
                     or test.get("name", "-")
                 )
-                self.inf(f"    test:{red} {test.get('name', '-')} -> {target}")
+                self.inf(f"    test:{red} [{tier}] {test.get('name', '-')} -> {target}")
             if patch.get("test-exception"):
                 exc = patch["test-exception"]
                 reason = exc.get("reason", exc) if isinstance(exc, dict) else exc
@@ -366,12 +367,42 @@ class DarlingPatch(WestCommand):
                 "gate",
             }:
                 errors.append(f"tests[{index}] invalid kind {kind!r}")
+            tier = test.get("coverage-tier")
+            if tier and tier not in {"runtime", "compile", "host", "model", "source"}:
+                errors.append(f"tests[{index}] invalid coverage-tier {tier!r}")
+            if kind == "source-contract" and tier and tier != "source":
+                errors.append(
+                    f"tests[{index}] source-contract must use coverage-tier: source"
+                )
+            if tier == "source" and kind != "source-contract":
+                errors.append(
+                    f"tests[{index}] coverage-tier: source requires kind: source-contract"
+                )
         if exception is not None:
             if not isinstance(exception, dict):
                 errors.append("test-exception must be a mapping")
             elif not exception.get("reason"):
                 errors.append("test-exception needs reason")
         return errors
+
+    @staticmethod
+    def _coverage_tier(test) -> str:
+        """Classify how directly a test exercises the patch contract.
+
+        `kind` describes the test's domain; `coverage-tier` describes the
+        strength of evidence. Older entries without an explicit tier get a
+        conservative derived tier so existing metadata stays readable.
+        """
+        explicit = test.get("coverage-tier")
+        if explicit:
+            return explicit
+        if test.get("kind") == "source-contract":
+            return "source"
+        if test.get("env") in {"darling", "macos"} or test.get("kind") == "guest":
+            return "runtime"
+        if test.get("runner") in {"c-fixture", "west-build"} or test.get("kind") == "build":
+            return "compile"
+        return "host"
 
     @staticmethod
     def _is_behavioral_test(test) -> bool:
@@ -382,12 +413,17 @@ class DarlingPatch(WestCommand):
         guest, build, package, fuzz, or stress scenario, so they are deliberately
         excluded from the coverage count.
         """
-        return test.get("kind") != "source-contract"
+        return DarlingPatch._coverage_tier(test) != "source"
 
     def _check(self, profile_dir: Path, patches, strict: bool):
         missing = []
         invalid = []
-        covered = 0
+        covered_by_tier = {
+            "runtime": 0,
+            "compile": 0,
+            "host": 0,
+            "model": 0,
+        }
         excepted = 0
         for patch in patches:
             errors = self._validate_test_metadata(patch)
@@ -398,12 +434,28 @@ class DarlingPatch(WestCommand):
             behavioral = [test for test in tests if self._is_behavioral_test(test)]
             exception = patch.get("test-exception")
             if behavioral:
-                covered += 1
+                tiers = [self._coverage_tier(test) for test in behavioral]
+                strongest = min(
+                    tiers,
+                    key=lambda tier: {
+                        "runtime": 0,
+                        "compile": 1,
+                        "host": 2,
+                        "model": 3,
+                    }.get(tier, 99),
+                )
+                covered_by_tier[strongest] += 1
                 suffix = ""
                 if len(behavioral) != len(tests):
                     suffix = f", {len(tests) - len(behavioral)} source-contract(s)"
+                tier_summary = ", ".join(
+                    f"{tier}:{tiers.count(tier)}"
+                    for tier in ("runtime", "compile", "host", "model")
+                    if tier in tiers
+                )
                 self.inf(
-                    f"TESTED    {patch['path']} ({len(behavioral)} behavioral test(s){suffix})"
+                    f"{strongest.upper():<9} {patch['path']} "
+                    f"({len(behavioral)} behavioral test(s); {tier_summary}{suffix})"
                 )
             elif tests:
                 missing.append(patch)
@@ -422,7 +474,13 @@ class DarlingPatch(WestCommand):
             for error in errors:
                 self.err(f"INVALID   {patch['path']}: {error}")
         self.inf(
-            f"test metadata: {covered} covered, {excepted} exceptions, "
+            "test metadata: "
+            f"{sum(covered_by_tier.values())} covered "
+            f"(runtime {covered_by_tier['runtime']}, "
+            f"compile {covered_by_tier['compile']}, "
+            f"host {covered_by_tier['host']}, "
+            f"model {covered_by_tier['model']}), "
+            f"{excepted} exceptions, "
             f"{len(missing)} missing, {len(invalid)} invalid "
             f"(of {len(patches)})"
         )
