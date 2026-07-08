@@ -176,6 +176,18 @@ patches:
     runner: script
     script: darling/src/libsystem_kernel/tests/psynch_cvsignal_args_contract.sh
     note: Source-level RED->GREEN contract for full-width cvsignal generations and cvbroad mutex argument placement.
+  test-exception:
+    reason: blocked-on-runtime-argument-probe
+    note: >-
+      Guest pthread_cond_signal/broadcast smoke tests do not prove this patch:
+      public libpthread paths pass mutex=NULL/mugen=0 and do not expose whether
+      libsystem_kernel forwarded full-width cvlsgen/cvugen or the cvbroad mutex
+      argument correctly. A real behavioral gate needs either a deterministic
+      psynch oracle that fails on generation truncation/wrong mutex placement,
+      or first-class server-side trace/test-hook support that records the
+      psynch_cvsignal/cvbroad RPC arguments produced by a guest-triggered call.
+      Until then, keep psynch_cvsignal_args_contract as source/root-cause RED
+      proof and do not count it as behavioral runtime coverage.
   pr-draft: pr-drafts/xnu-psynch-cvsignal-args.md
   github:
     fork:
