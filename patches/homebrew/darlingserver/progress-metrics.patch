@@ -1,4 +1,4 @@
-From 33c02576b7ebae4b806498cd32060cf1f2c54fb3 Mon Sep 17 00:00:00 2001
+From 5e43b68e43461d5fe12aa9d9f223c30ef162b9f6 Mon Sep 17 00:00:00 2001
 From: Ilya Gulya <ilya@gulya.me>
 Date: Sun, 28 Jun 2026 01:17:33 +0000
 Subject: [PATCH] darlingserver: progress + timing metrics over an abstract
@@ -318,10 +318,10 @@ index 2f6e7aaa1051f41da0088c5839e90d1bf15c72a6..d85d04ef10efd27930a5cca9e97d1cf3
  			std::unique_lock lock(_queueMutex);
  			_workItems.push(std::move(workItem));
 diff --git a/src/call.cpp b/src/call.cpp
-index 7089a76051114f2e54fd520853a00c5591e097d2..a9c211814d295254462dc4222ae26fd2045314a0 100644
+index e6040f16660a913169e55a2ff9befb072d5a0494..a443cd837393f8f73204ffe99461717da46ad54c 100644
 --- a/src/call.cpp
 +++ b/src/call.cpp
-@@ -26,6 +26,7 @@
+@@ -28,6 +28,7 @@
  #include <darlingserver/logging.hpp>
  #include <darlingserver/duct-tape.h>
  #include <darlingserver/config.hpp>
@@ -641,10 +641,10 @@ index b71b4889a3de7978ef62b30f891cd314212f8622..f54a46a6589663d6b39b88f1ee1c23f9
  				std::unique_lock lock(_timerLock);
  				uint64_t expirations = 0;
 diff --git a/src/thread.cpp b/src/thread.cpp
-index 429ec919342557ce8bd3cff76aadaecd7763ce02..89ebbe7f23553a7a63dc0e2a7ae53055bdb28e45 100644
+index 0b95f72c36e946d7958353bfb17caff9d6a2ef05..0f98f6bf4baba92422be893ec90e94b3a0418fea 100644
 --- a/src/thread.cpp
 +++ b/src/thread.cpp
-@@ -23,6 +23,7 @@
+@@ -25,6 +25,7 @@
  #include <darlingserver/call.hpp>
  #include <darlingserver/server.hpp>
  #include <darlingserver/logging.hpp>
@@ -652,7 +652,7 @@ index 429ec919342557ce8bd3cff76aadaecd7763ce02..89ebbe7f23553a7a63dc0e2a7ae53055
  #include <filesystem>
  #include <fstream>
  
-@@ -355,6 +356,13 @@ void DarlingServer::Thread::microthreadWorker() {
+@@ -357,6 +358,13 @@ void DarlingServer::Thread::microthreadWorker() {
  	// in-flight RPC blocked forever in recvmsg. Contain it: turn the failure into an
  	// error reply when the call supports one, otherwise just log and drop it, and
  	// continue the normal post-call flow so the server stays alive.
@@ -663,11 +663,11 @@ index 429ec919342557ce8bd3cff76aadaecd7763ce02..89ebbe7f23553a7a63dc0e2a7ae53055
 +	uint64_t _callStartUs = DarlingServer::Metrics::nowMonoUs();
 +	auto _callNumber = currentThreadVar->_activeCall->number();
 +
- 	try {
+ 	int guardedReplyCode = DarlingServer::processCallBasicReplyCode([&]() {
  		currentThreadVar->_activeCall->processCall();
- 	} catch (const std::system_error& err) {
-@@ -385,6 +393,17 @@ void DarlingServer::Thread::microthreadWorker() {
- 		} catch (...) {}
+ 	});
+@@ -372,6 +380,17 @@ void DarlingServer::Thread::microthreadWorker() {
+ 		}
  	}
  
 +	// perf #0: record service latency (worker entry -> completion).

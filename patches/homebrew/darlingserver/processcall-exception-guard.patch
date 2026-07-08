@@ -1,4 +1,4 @@
-From a52a15e2412cda068548e40047d8a3b18d3dba0b Mon Sep 17 00:00:00 2001
+From 8a2c9c5994e65ea2101d7c821355e1a05ad55fc4 Mon Sep 17 00:00:00 2001
 From: Ilya Gulya <ilya@gulya.me>
 Date: Sun, 21 Jun 2026 14:40:33 +0000
 Subject: [PATCH] thread/call/server: contain exceptions that can terminate the
@@ -42,16 +42,48 @@ This converts "one unlucky RPC race terminates the server and wedges every
 guest" into "that one RPC fails (error reply or dropped); all other guests
 keep working."
 ---
- src/call.cpp   | 18 +++++++++++++++++-
- src/server.cpp | 28 +++++++++++++++++++++++++---
- src/thread.cpp | 42 +++++++++++++++++++++++++++++++++++++++++-
- 3 files changed, 83 insertions(+), 5 deletions(-)
+ .../darlingserver/processcall-guard.hpp       | 24 ++++++++++++++++
+ src/call.cpp                                  | 18 +++++++++++-
+ src/server.cpp                                | 28 +++++++++++++++++--
+ src/thread.cpp                                | 28 ++++++++++++++++++-
+ 4 files changed, 93 insertions(+), 5 deletions(-)
+ create mode 100644 internal-include/darlingserver/processcall-guard.hpp
 
+diff --git a/internal-include/darlingserver/processcall-guard.hpp b/internal-include/darlingserver/processcall-guard.hpp
+new file mode 100644
+index 0000000000000000000000000000000000000000..eefc7f34910a935662340e2c4caef36987f584d5
+--- /dev/null
++++ b/internal-include/darlingserver/processcall-guard.hpp
+@@ -0,0 +1,24 @@
++#ifndef _DARLINGSERVER_PROCESSCALL_GUARD_HPP_
++#define _DARLINGSERVER_PROCESSCALL_GUARD_HPP_
++
++#include <cerrno>
++#include <exception>
++#include <system_error>
++
++namespace DarlingServer {
++	template <typename Function>
++	inline int processCallBasicReplyCode(Function&& function) {
++		try {
++			function();
++			return 0;
++		} catch (const std::system_error& err) {
++			return -err.code().value();
++		} catch (const std::exception&) {
++			return -EINVAL;
++		} catch (...) {
++			return -EINVAL;
++		}
++	}
++}
++
++#endif
 diff --git a/src/call.cpp b/src/call.cpp
-index cc10f1d8e452f7e967051e9ace5b24ed00bba59a..a5110d429ecf08753fa2cc095cf3d0fc13b0218e 100644
+index 7ad16e8fc8c02ecdc14613fe1bfbb23ba26bd8d2..721031c7680c5c14317f793c138b0b80ca177c89 100644
 --- a/src/call.cpp
 +++ b/src/call.cpp
-@@ -28,6 +28,7 @@
+@@ -29,6 +29,7 @@
  #include <sys/fcntl.h>
  #include <sys/syscall.h>
  #include <darlingserver/kqchan.hpp>
@@ -59,7 +91,7 @@ index cc10f1d8e452f7e967051e9ace5b24ed00bba59a..a5110d429ecf08753fa2cc095cf3d0fc
  
  static DarlingServer::Log callLog("calls");
  
-@@ -219,7 +220,22 @@ std::shared_ptr<DarlingServer::Call> DarlingServer::Call::callFromMessage(Messag
+@@ -220,7 +221,22 @@ std::shared_ptr<DarlingServer::Call> DarlingServer::Call::callFromMessage(Messag
  		return result;
  	} else {
  		Thread::kernelAsync([result]() {
@@ -123,10 +155,18 @@ index e502e2854652c9053ad13e3f53653f795a19a48e..b71b4889a3de7978ef62b30f891cd314
  			}
  		}
 diff --git a/src/thread.cpp b/src/thread.cpp
-index 5563ad92cea6ff5f717abc55ec330b6a215a6ab6..2d16c96bee63570b1d602f3c9d3f13e786e35fcd 100644
+index 9e83b2da70d7a56aed5e1192c767de05b1d65fc4..0b95f72c36e946d7958353bfb17caff9d6a2ef05 100644
 --- a/src/thread.cpp
 +++ b/src/thread.cpp
-@@ -43,6 +43,8 @@
+@@ -20,6 +20,7 @@
+ #include "darlingserver/registry.hpp"
+ #include <darlingserver/thread.hpp>
+ #include <darlingserver/microthread-resume.hpp>
++#include <darlingserver/processcall-guard.hpp>
+ #include <darlingserver/process.hpp>
+ #include <darlingserver/call.hpp>
+ #include <darlingserver/server.hpp>
+@@ -44,6 +45,8 @@
  #include <assert.h>
  
  #include <limits>
@@ -135,7 +175,7 @@ index 5563ad92cea6ff5f717abc55ec330b6a215a6ab6..2d16c96bee63570b1d602f3c9d3f13e7
  #include <sys/ptrace.h>
  #include <sys/user.h>
  #include <sys/wait.h>
-@@ -343,7 +345,45 @@ void DarlingServer::Thread::microthreadWorker() {
+@@ -344,7 +347,30 @@ void DarlingServer::Thread::microthreadWorker() {
  
  	currentContinuation = nullptr;
  	currentThreadVar->makePendingCallActive();
@@ -150,34 +190,19 @@ index 5563ad92cea6ff5f717abc55ec330b6a215a6ab6..2d16c96bee63570b1d602f3c9d3f13e7
 +	// in-flight RPC blocked forever in recvmsg. Contain it: turn the failure into an
 +	// error reply when the call supports one, otherwise just log and drop it, and
 +	// continue the normal post-call flow so the server stays alive.
-+	try {
++	int guardedReplyCode = DarlingServer::processCallBasicReplyCode([&]() {
 +		currentThreadVar->_activeCall->processCall();
-+	} catch (const std::system_error& err) {
-+		microthreadLog.error()
-+			<< "Uncaught std::system_error from processCall (call "
-+			<< DarlingServer::Call::callNumberToString(currentThreadVar->_activeCall->number())
-+			<< "): " << err.what() << " (code " << err.code().value() << ")" << microthreadLog.endLog;
-+		try {
-+			currentThreadVar->_activeCall->sendBasicReply(-err.code().value());
-+		} catch (...) {
-+			// call has no basic reply (returns data); nothing more we can do but survive
-+		}
-+	} catch (const std::exception& ex) {
++	});
++	if (guardedReplyCode < 0) {
 +		microthreadLog.error()
 +			<< "Uncaught exception from processCall (call "
 +			<< DarlingServer::Call::callNumberToString(currentThreadVar->_activeCall->number())
-+			<< "): " << ex.what() << microthreadLog.endLog;
++			<< "); replying " << guardedReplyCode << microthreadLog.endLog;
 +		try {
-+			currentThreadVar->_activeCall->sendBasicReply(-EINVAL);
-+		} catch (...) {}
-+	} catch (...) {
-+		microthreadLog.error()
-+			<< "Uncaught non-std exception from processCall (call "
-+			<< DarlingServer::Call::callNumberToString(currentThreadVar->_activeCall->number())
-+			<< ")" << microthreadLog.endLog;
-+		try {
-+			currentThreadVar->_activeCall->sendBasicReply(-EINVAL);
-+		} catch (...) {}
++			currentThreadVar->_activeCall->sendBasicReply(guardedReplyCode);
++		} catch (...) {
++			// call has no basic reply (returns data); nothing more we can do but survive
++		}
 +	}
  
  	if (currentThreadVar->_handlingInterruptedCall) {
