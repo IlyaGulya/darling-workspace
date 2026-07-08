@@ -628,6 +628,8 @@ class DarlingTest(WestCommand):
                 "timeout_seconds": int(test.get("timeout-seconds", 600)),
                 "source_env": source_env,
                 "source_module": source_module,
+                "host_trace_files": list(test.get("host-trace-files", [])),
+                "host_trace_oracle": bool(test.get("host-trace-oracle", False)),
             }
         if runner == "python":
             repo = test.get("repo", patch["module"])
@@ -1234,14 +1236,73 @@ class DarlingTest(WestCommand):
             return self._run_cmake_configure_fixture(invocation, env=env)
         if invocation.get("darling_cmake_target_fixture"):
             return self._run_darling_cmake_target_fixture(invocation, env=env)
-        result = subprocess.run(
-            self._debug_runner_args(invocation),
-            cwd=invocation["cwd"],
-            env=env if env is not None else invocation.get("env"),
-            shell=False,
-            check=False,
-        )
-        return result.returncode
+        run_env = env if env is not None else invocation.get("env")
+        with self._host_trace_context(invocation, run_env) as trace_env:
+            result = subprocess.run(
+                self._debug_runner_args(invocation),
+                cwd=invocation["cwd"],
+                env=trace_env,
+                shell=False,
+                check=False,
+            )
+            rc = result.returncode
+            if rc:
+                return rc
+            return self._check_host_traces(invocation, trace_env)
+
+    @contextmanager
+    def _host_trace_context(self, invocation, env):
+        traces = invocation.get("host_trace_files", [])
+        if not traces:
+            yield env
+            return
+        prefix = (env or {}).get("DPREFIX") or getattr(self, "_prefix", None)
+        if not prefix:
+            self.die(f"{invocation['name']}: host-trace-files need DPREFIX")
+        trace_env = dict(env or os.environ.copy())
+        trace_paths = []
+        for index, trace in enumerate(traces):
+            if not isinstance(trace, dict):
+                self.die(f"{invocation['name']}: host-trace-files entries must be mappings")
+            env_name = str(trace.get("env", ""))
+            rel_path = str(trace.get("prefix-relative-path", ""))
+            if not env_name or not rel_path:
+                self.die(
+                    f"{invocation['name']}: host-trace-files[{index}] needs env "
+                    "and prefix-relative-path"
+                )
+            if rel_path.startswith("/") or ".." in Path(rel_path).parts:
+                self.die(
+                    f"{invocation['name']}: host-trace-files[{index}] path must "
+                    "be prefix-relative"
+                )
+            trace_path = Path(prefix) / rel_path
+            trace_path.parent.mkdir(parents=True, exist_ok=True)
+            try:
+                trace_path.unlink()
+            except FileNotFoundError:
+                pass
+            trace_env[env_name] = str(trace_path)
+            trace_paths.append(trace_path)
+        invocation["_host_trace_paths"] = trace_paths
+        yield trace_env
+
+    def _check_host_traces(self, invocation, env) -> int:
+        traces = invocation.get("host_trace_files", [])
+        if not traces:
+            return 0
+        for index, trace in enumerate(traces):
+            trace_path = invocation.get("_host_trace_paths", [])[index]
+            if not trace_path.is_file():
+                self.err(f"  missing host trace file: {trace_path}")
+                return 1
+            content = trace_path.read_text(errors="replace")
+            print(content, end="" if content.endswith("\n") else "\n")
+            for expected in [str(item) for item in trace.get("contains", [])]:
+                if expected not in content:
+                    self.err(f"  missing host trace content in {trace_path}: {expected}")
+                    return 1
+        return 0
 
     def _run_c_fixture(self, invocation, env=None) -> int:
         if invocation.get("diag", "bare") != "bare":

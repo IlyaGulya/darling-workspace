@@ -142,3 +142,7 @@ refs, PR drafts, and agent handoff.
 - `west patch export` must not create unrelated `patches.yml` formatting churn.
   Treat block-scalar/quoting rewrites as a tooling bug, not acceptable review
   noise.
+- When moving or inserting entries in `patches.yml`, anchor edits on unique
+  `- path:` blocks or use a structural script and verify ordering with `rg`.
+  Do not insert after generic repeated keys such as `github:`/`upstream:`; patch
+  order is semantic and must match each entry's `source-base`.

@@ -3490,3 +3490,37 @@ patches:
       repo: darlinghq/darlingserver
       base: main
       state: local
+- path: darlingserver/test-diagnostics-trace.patch
+  module: darling/src/external/darlingserver
+  source-branch: fix/test-diagnostics-trace
+  source-base: b5c7403d9e70fa5708c7c5ed66821534a017d032
+  source-commit: 027ae40c1d54c40e78cb3b88ffa87efb13134fef
+  bead: dar-r7fc.7
+  publication-status: blocked
+  publication-blocker: test-only runtime diagnostics; keep local until a supported upstream diagnostics interface is designed
+  tests:
+  - name: dserver_test_diagnostics_trace
+    kind: guest
+    coverage-tier: runtime
+    env: darling
+    diag: guarded
+    runner: script
+    repo: darling-workspace
+    script: tests/run-dserver-test-diagnostics-trace.sh
+    timeout-seconds: 45
+    host-trace-files:
+    - env: DSERVER_TEST_TRACE_FILE
+      prefix-relative-path: private/var/tmp/dserver-test-diagnostics.trace
+      contains:
+      - process.checkin
+      - process.pending_replacement
+      - dtape.wait_timer event=wait_prepare
+      - dtape.wait_timer event=thread_unblock
+    host-trace-oracle: true
+    requires:
+    - darling-prefix
+    note: >-
+      Guest runtime smoke for the opt-in DSERVER_TEST_TRACE_FILE diagnostics
+      hook. The script only launches a real guest process; west owns the host
+      trace setup and oracle.
+  sha256sum: a375113aca68758ffd8458013c097bb63164ee90413a34190a6bf37c8245a046
