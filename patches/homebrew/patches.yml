@@ -469,7 +469,6 @@ patches:
     kind: guest
     env: darling
     diag: guarded
-    red: true
     runner: script
     script: tests/run-psynch-kernel-return-contract.sh
     requires:
@@ -533,7 +532,6 @@ patches:
     kind: guest
     env: darling
     diag: guarded
-    red: true
     runner: script
     script: darling/src/libsystem_kernel/tests/run-getattrlist-shared-packer.sh
     requires:
@@ -549,11 +547,11 @@ patches:
       base: main
       state: local
 - path: xnu/psynch-negative-errno.patch
-  sha256sum: a82e8b677420bf27333639d8da20ed9ca884ccb47bde9a68a3c4da01aa3de4bc
+  sha256sum: 072bcc03af9d324c41c31dbb7d7690e20319568ca2062bf7d2b174ec2d17bd4b
   module: darling/src/external/xnu
   source-branch: fix/psynch-negative-errno
   source-base: 5f26a4c2365d9774b5a1e66ae7da20b61ab6d2db
-  source-commit: 82bee19a03e33fa3aea286c6cfaff090ea0b483e
+  source-commit: 9ef96df95ff182283d1fc0cc9cb9faa7637e7d23
   bead: dar-q95.19
   publication-status: blocked
   publication-blocker: broader psynch publication still depends on dar-q95.29.2 runtime/stress coverage across condvar/mutex/rwlock, but this patch now routes wait errors through cerror instead of the Darling-local negative augmented return path
@@ -697,6 +695,7 @@ patches:
     red: true
     red-proof:
       mode: self
+      why-self: The script contains explicit no-reset and reset arms, so the negative case is self-contained and does not need checkout mutation.
       note: Script requires the no-reset arm to deadlock and the reset arm to pass.
     runner: script
     script: tests/regression/run-glibc-fork-lock-reset.sh
@@ -1277,6 +1276,7 @@ patches:
     red: true
     red-proof:
       mode: self
+      why-self: The Python test enumerates bad, slow, wedged, idle, and progress samples directly; source-base proof would need injecting the old classifier implementation.
       note: Python test imports the real classifier and asserts the slow/wedged/idle/progress cases.
     runner: python
     script: tests/progress_classifier_test.py
@@ -1298,6 +1298,7 @@ patches:
     red: true
     red-proof:
       mode: self
+      why-self: The script contains explicit sched_yield-spin and futex-wait arms, so the bad and fixed cases are modeled in one test.
       note: Script first runs the old sched_yield spin model and requires it to fail, then runs the futex model and requires it to pass.
     runner: script
     script: tests/regression/run-thread-create-checkin-wait.sh
@@ -1328,6 +1329,7 @@ patches:
     red: true
     red-proof:
       mode: self
+      why-self: The script contains explicit worker-handoff and inline-fastpath arms, so the bad and fixed cases are modeled in one test.
       note: Script first runs the per-message handoff model and requires it to fail, then runs the inline model and requires it to pass.
     runner: script
     script: tests/run-server-inline-fastpath.sh
@@ -1358,6 +1360,7 @@ patches:
     red: true
     red-proof:
       mode: self
+      why-self: The script contains explicit lock-held and release-before-suspend arms, so the deadlock oracle is self-contained.
       note: Script requires lock-held-across-suspend to deadlock and release-before-suspend to pass.
     runner: script
     script: tests/run-inline-suspend-rwlock-deadlock.sh
@@ -1388,6 +1391,7 @@ patches:
     red: true
     red-proof:
       mode: self
+      why-self: The script contains explicit blocking-recv and adaptive-spin arms, so the latency regression oracle is self-contained.
       note: Script requires blocking recv to exceed the sleep budget and adaptive spin to pass.
     runner: script
     script: src/startup/mldr/tests/run-perf3-recv-adaptive.sh
@@ -1436,6 +1440,7 @@ patches:
     red: true
     red-proof:
       mode: self
+      why-self: The generator contract creates wrappers in a temporary tree and checks the bad source shape directly, so it does not need source checkout mutation.
       note: Script generates wrappers and asserts NO_REPLY calls omit receive/reply while normal calls still receive.
     runner: script
     script: tests/no_reply_rpc_test.sh
@@ -1466,6 +1471,7 @@ patches:
     red: true
     red-proof:
       mode: self
+      why-self: The generator contract creates wrappers in a temporary tree and checks the receive-accounting source shape directly, so it does not need source checkout mutation.
       note: Script generates wrappers and asserts reply-bearing calls bracket receive accounting while NO_REPLY calls do not.
     runner: script
     script: tests/rpc_sleep_account_test.sh
@@ -1532,6 +1538,7 @@ patches:
     red: true
     red-proof:
       mode: self
+      why-self: The source-shape test checks for the forbidden unconditional kprintf pattern directly, so the negative oracle is self-contained.
       note: Script asserts hot-path debug traces are gated and no bare unconditional __simple_kprintf remains.
     runner: script
     script: darling/src/libsystem_kernel/tests/hotpath_kprintf_gated_test.sh
@@ -1562,6 +1569,7 @@ patches:
     red: true
     red-proof:
       mode: self
+      why-self: The source-shape test checks the receive hook for bounded non-blocking spin before blocking recv, so the negative oracle is self-contained.
       note: Script asserts the libsystem_kernel receive hook has bounded non-blocking spin before blocking recv.
     runner: script
     script: darling/src/libsystem_kernel/tests/dylib_recv_adaptive_spin_test.sh
@@ -1592,6 +1600,7 @@ patches:
     red: true
     red-proof:
       mode: self
+      why-self: The script contains explicit release-before-republish and republish-before-release ASan arms, so the UAF oracle is self-contained.
       note: Script requires release-before-republish to trip ASan and republish-before-release to pass.
     runner: script
     script: tests/run-checkin-retask-current-thread-uaf.sh
@@ -1629,6 +1638,7 @@ patches:
     red: true
     red-proof:
       mode: self
+      why-self: The script contains explicit nobind and bind arms, so the orphan-process lifetime oracle is self-contained.
       note: Script requires the nobind arm to reproduce an orphan and the bind arm to reap it.
     runner: script
     script: tests/run-pot-lifetime-binding.sh

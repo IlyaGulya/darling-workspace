@@ -107,7 +107,7 @@ class DarlingTest(WestCommand):
         parser.add_argument(
             "--materialize-profile",
             action="store_true",
-            help="temporarily switch requires-profile tests to integration/<profile> branches and restore afterward",
+            help="run profile metadata tests from temporary worktrees built from manifest revisions plus patch files",
         )
         parser.add_argument(
             "--executor",
@@ -251,6 +251,68 @@ class DarlingTest(WestCommand):
         subprocess.run(args, cwd=repo, check=True)
 
     @contextmanager
+    def _profile_worktree_checkout(self, profile: str):
+        projects = self._projects()
+        modules = sorted(
+            self._profile_stack_modules(profile),
+            key=lambda module: (len(Path(module).parts), module),
+        )
+        repos = [(module, projects[module]) for module in modules]
+
+        previous_overrides = getattr(self, "_project_overrides", {})
+        added: list[tuple[Path, Path]] = []
+        with tempfile.TemporaryDirectory(prefix=f"west-profile-{profile}-") as temp:
+            root = Path(temp)
+            overrides = dict(previous_overrides)
+            try:
+                for module, repo in repos:
+                    target = root / module
+                    if target.exists() or target.is_symlink():
+                        if target.is_dir() and not target.is_symlink():
+                            shutil.rmtree(target)
+                        else:
+                            target.unlink()
+                    target.parent.mkdir(parents=True, exist_ok=True)
+                    revision = self._manifest_revision(module)
+                    self.inf(f"  materialize {module}: {revision} -> {target}")
+                    subprocess.run(
+                        ["git", "worktree", "add", "--quiet", "--detach", str(target), revision],
+                        cwd=repo,
+                        check=True,
+                    )
+                    added.append((repo, target))
+                    for ref, project_path in projects.items():
+                        if project_path == repo:
+                            overrides[ref] = target
+                    overrides[module] = target
+                self._project_overrides = overrides
+                for stacked in self._profile_stack(profile):
+                    data = self._load_profile(stacked)
+                    profile_dir = Path(self.manifest.repo_abspath) / "patches" / stacked
+                    for patch in data.get("patches", []):
+                        target = overrides.get(patch["module"])
+                        if target is None:
+                            continue
+                        patch_file = profile_dir / patch["path"]
+                        self.inf(f"  apply {stacked}/{patch['path']}")
+                        subprocess.run(
+                            ["git", "am", "--3way", str(patch_file)],
+                            cwd=target,
+                            check=True,
+                        )
+                yield
+            finally:
+                self._project_overrides = previous_overrides
+                for repo, target in reversed(added):
+                    subprocess.run(
+                        ["git", "worktree", "remove", "--force", str(target)],
+                        cwd=repo,
+                        check=False,
+                        stdout=subprocess.DEVNULL,
+                        stderr=subprocess.DEVNULL,
+                    )
+
+    @contextmanager
     def _profile_checkout(self, profile: str):
         branch = f"integration/{profile}"
         repos = [
@@ -364,7 +426,42 @@ class DarlingTest(WestCommand):
             projects[project.path] = Path(project.abspath)
         return projects
 
+    def _manifest_revision(self, ref: str) -> str:
+        for project in self.manifest.projects:
+            if ref in {project.name, project.path}:
+                revision = project.revision
+                repo = Path(project.abspath)
+                if not revision or subprocess.run(
+                    ["git", "cat-file", "-e", f"{revision}^{{commit}}"],
+                    cwd=repo,
+                    check=False,
+                ).returncode != 0:
+                    self.die(
+                        f"{ref}: manifest revision {revision or '<empty>'} "
+                        f"is not available; run west update {project.name}"
+                    )
+                return revision
+        self.die(f"unknown West project: {ref}")
+
+    def _profile_stack(self, profile: str) -> list[str]:
+        data = self._load_profile(profile)
+        base = data.get("base-profile")
+        if not base:
+            return [profile]
+        if base == profile:
+            self.die(f"{profile}: base-profile cannot be itself")
+        return [*self._profile_stack(base), profile]
+
+    def _profile_stack_modules(self, profile: str) -> set[str]:
+        modules: set[str] = set()
+        for stacked in self._profile_stack(profile):
+            modules.update(self._profile_modules(stacked))
+        return modules
+
     def _project_path(self, ref: str) -> Path:
+        overrides = getattr(self, "_project_overrides", {})
+        if ref in overrides:
+            return overrides[ref]
         projects = self._projects()
         if ref in projects:
             return projects[ref]
@@ -733,6 +830,18 @@ class DarlingTest(WestCommand):
         with self._profile_checkout(required):
             yield
 
+    @contextmanager
+    def _selected_profile_context(self, profile: str, *, list_only: bool = False):
+        if list_only or not getattr(self, "_materialize_profile", False):
+            yield
+            return
+        if self._profile_is_applied(profile):
+            yield
+            return
+        self.inf(f"temporarily materializing selected profile {profile!r} in worktrees")
+        with self._profile_worktree_checkout(profile):
+            yield
+
     def _run_source_base_proof(self, patch, proof, invocation) -> int:
         if invocation["shell"]:
             self.die(f"{patch['path']}: source-base proof requires a structured runner")
@@ -1065,36 +1174,37 @@ class DarlingTest(WestCommand):
             self.die("--patch requires --profile")
 
         if args.profile:
-            selected, missing = self._metadata_tests(
-                args.profile, args.patch, args.bead, args.env, args.diag, args.red_only
-            )
-            if missing:
-                for patch in missing:
-                    self.inf(f"missing test metadata: {patch['path']} [{patch.get('bead', '-')}]")
-            if selected:
-                needs_prefix = self._metadata_needs_prefix(selected) and not args.list
-                if args.prove_red:
-                    selected = [
-                        (patch, test)
-                        for patch, test in selected
-                        if test.get("red") or test.get("red-proof")
-                    ]
-                    if not selected:
-                        self.die("no red-proof tests selected from patch metadata")
+            with self._selected_profile_context(args.profile, list_only=args.list):
+                selected, missing = self._metadata_tests(
+                    args.profile, args.patch, args.bead, args.env, args.diag, args.red_only
+                )
+                if missing:
+                    for patch in missing:
+                        self.inf(f"missing test metadata: {patch['path']} [{patch.get('bead', '-')}]")
+                if selected:
                     needs_prefix = self._metadata_needs_prefix(selected) and not args.list
+                    if args.prove_red:
+                        selected = [
+                            (patch, test)
+                            for patch, test in selected
+                            if test.get("red") or test.get("red-proof")
+                        ]
+                        if not selected:
+                            self.die("no red-proof tests selected from patch metadata")
+                        needs_prefix = self._metadata_needs_prefix(selected) and not args.list
+                        with self._prefix_resource_context(needs_prefix):
+                            result = self._run_red_proofs(selected, args.list, unknown)
+                        if getattr(self, "_prefix_cleanup_failed", False):
+                            result = result or 1
+                        raise SystemExit(result)
                     with self._prefix_resource_context(needs_prefix):
-                        result = self._run_red_proofs(selected, args.list, unknown)
+                        result = self._run_metadata_tests(selected, args.list, unknown)
                     if getattr(self, "_prefix_cleanup_failed", False):
                         result = result or 1
                     raise SystemExit(result)
-                with self._prefix_resource_context(needs_prefix):
-                    result = self._run_metadata_tests(selected, args.list, unknown)
-                if getattr(self, "_prefix_cleanup_failed", False):
-                    result = result or 1
-                raise SystemExit(result)
-            if args.list:
-                return
-            self.die("no tests selected from patch metadata")
+                if args.list:
+                    return
+                self.die("no tests selected from patch metadata")
 
         testkit = self._testkit_dir()
         if not testkit.exists():

@@ -48,6 +48,12 @@ refs, PR drafts, and agent handoff.
   `west test --profile ... --prove-red` for explicit RED-proof mode. Do not
   fake source-base RED proofs with ad hoc shell; add shared runner support when
   a test needs current test assets executed against a bad/source-base tree.
+  Prefer `red-proof: {mode: source-base}` when a regression can be proven
+  against the bad source tree. `red-proof: {mode: self}` must include
+  `why-self:` and is only for tests with an explicit bad/good model,
+  generator/source-shape oracle, or similarly self-contained negative case.
+  Tests that only prove the current/fixed tree stays GREEN must leave `red`
+  unset.
 - Prefer shared test helpers over ad hoc shell boilerplate. Static contract
   scripts should use a local `contract-test-lib.sh`; Darling guest C verdict
   tests should use a local `guest-verdict-test-lib.sh` and declare runtime
