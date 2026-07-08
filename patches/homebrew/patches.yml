@@ -3,13 +3,25 @@ description: Clean upstreamable fixes used by the local Homebrew-capable Darling
 integration-date: '2026-06-11T00:00:00Z'
 patches:
 - path: darlingserver/psynch-cvwait-balanced.patch
-  sha256sum: e90861e9c6f6d64f8a3d13453ee7f3d76ff7c38150b1fc1bd3ebe8314ce4b911
+  sha256sum: dda9f75c475d65dc062fc0f4636179d58f5484d502616882011d559930fc738f
   module: darling/src/external/darlingserver
   source-branch: fix/psynch-cvwait-balanced
-  source-commit: ce7ce5e7888eb5b3c20ec652db097519c9c2fbe5
+  source-commit: 0404f605e87eddaf720b6d795d022c5add9b08ce
   bead: dar-q95.1
   publication-status: provisional
   publication-blocker: direct psynch generation invariant tests under dar-q95.29.6
+  tests:
+  - name: psynch_cvwait_sequence_contract
+    kind: contract
+    env: host
+    diag: bare
+    red: true
+    red-proof:
+      mode: source-base
+      source-env: DSERVER_SRC_ROOT
+    runner: script
+    script: tests/psynch_cvwait_sequence_contract.sh
+    note: Source-level RED->GREEN contract that balanced equal cvwait sequences are accepted and stale sequences still log context.
   pr-draft: pr-drafts/darlingserver-psynch-cvwait-balanced.md
   github:
     fork:
@@ -75,12 +87,24 @@ patches:
       base: main
       state: local
 - path: xnu/psynch-cvsignal-args.patch
-  sha256sum: b75649b702368a694e7ee58e6b3e94034f4b03b189f5b80751cd5f72797d2d95
+  sha256sum: 692cddc1e34e198edaac6bb26da89076dce16b9fb2ef610dcddbf1bcee261987
   module: darling/src/external/xnu
   source-branch: fix/psynch-cvsignal-args
-  source-commit: 8a7797fd85b1522a528551fc9601b245c083b8e8
+  source-commit: f21fb14efa1b64b708bbcd8279dedf0cbd56efc8
   bead: dar-q95.2
   publication-status: ready
+  tests:
+  - name: psynch_cvsignal_args_contract
+    kind: contract
+    env: host
+    diag: bare
+    red: true
+    red-proof:
+      mode: source-base
+      source-env: XNU_SRC_ROOT
+    runner: script
+    script: darling/src/libsystem_kernel/tests/psynch_cvsignal_args_contract.sh
+    note: Source-level RED->GREEN contract for full-width cvsignal generations and cvbroad mutex argument placement.
   pr-draft: pr-drafts/xnu-psynch-cvsignal-args.md
   github:
     fork:

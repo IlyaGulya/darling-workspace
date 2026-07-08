@@ -1,4 +1,4 @@
-From ce7ce5e7888eb5b3c20ec652db097519c9c2fbe5 Mon Sep 17 00:00:00 2001
+From 0404f605e87eddaf720b6d795d022c5add9b08ce Mon Sep 17 00:00:00 2001
 From: Ilya Gulya <ilya@gulya.me>
 Date: Wed, 10 Jun 2026 10:05:56 +0000
 Subject: [PATCH] psynch: allow balanced cvwait sequences (is_seqhigher)
@@ -9,8 +9,10 @@ cvwait/cvsignal pair. Use is_seqhigher so only strictly-higher (stale)
 sequences are rejected, and emit a detailed __FAILEDUSERTEST2__ trace
 on the genuine error path.
 ---
- duct-tape/pthread/kern_synch.c | 5 +++--
- 1 file changed, 3 insertions(+), 2 deletions(-)
+ duct-tape/pthread/kern_synch.c           |  5 +--
+ tests/psynch_cvwait_sequence_contract.sh | 39 ++++++++++++++++++++++++
+ 2 files changed, 42 insertions(+), 2 deletions(-)
+ create mode 100755 tests/psynch_cvwait_sequence_contract.sh
 
 diff --git a/duct-tape/pthread/kern_synch.c b/duct-tape/pthread/kern_synch.c
 index aa2b6d39ecf12b2c27639db6a7513d263c21fad8..961f9a7434d58f2d52ec94445b89f91d8c50a310 100644
@@ -28,3 +30,48 @@ index aa2b6d39ecf12b2c27639db6a7513d263c21fad8..961f9a7434d58f2d52ec94445b89f91d
  		return EINVAL;
  	}
  
+diff --git a/tests/psynch_cvwait_sequence_contract.sh b/tests/psynch_cvwait_sequence_contract.sh
+new file mode 100755
+index 0000000000000000000000000000000000000000..905c9b86b5ae8842bc23b1e8956ff8fe866615d7
+--- /dev/null
++++ b/tests/psynch_cvwait_sequence_contract.sh
+@@ -0,0 +1,39 @@
++#!/usr/bin/env bash
++set -euo pipefail
++
++here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
++root="${DSERVER_SRC_ROOT:-$(git -C "$here" rev-parse --show-toplevel)}"
++src="$root/duct-tape/pthread/kern_synch.c"
++
++fail() {
++	printf 'psynch_cvwait_sequence_contract: %s\n' "$*" >&2
++	exit 1
++}
++
++[ -f "$src" ] || fail "kern_synch.c not found at $src"
++
++body="$(
++	python3 - "$src" <<'PY'
++from pathlib import Path
++import sys
++
++text = Path(sys.argv[1]).read_text()
++start = text.find("_psynch_cvwait(")
++if start < 0:
++    raise SystemExit("_psynch_cvwait not found")
++next_func = text.find("\nint\n", start + 1)
++if next_func < 0:
++    next_func = len(text)
++print(text[start:next_func])
++PY
++)"
++
++grep -q 'is_seqhigher(csgen, lockseq)' <<<"$body" ||
++	fail "cvwait rejects balanced equal sequence numbers"
++if grep -q 'is_seqhigher_eq(csgen, lockseq)' <<<"$body"; then
++	fail "cvwait still uses inclusive stale-sequence check"
++fi
++grep -q '__FAILEDUSERTEST2__' <<<"$body" ||
++	fail "invalid-sequence path has no diagnostic context"
++
++printf 'PSYNCH_CVWAIT_SEQUENCE_CONTRACT_OK\n'
