@@ -85,6 +85,16 @@ class DarlingTest(WestCommand):
             help="restrict to one environment",
         )
         parser.add_argument(
+            "--prefix",
+            metavar="PATH",
+            help="Darling prefix for guest tests; accepts PATH or existing:PATH",
+        )
+        parser.add_argument(
+            "--prefix-profile",
+            metavar="NAME",
+            help="named Darling prefix shortcut (homebrew -> ~/work/darling-prefix-homebrew-test)",
+        )
+        parser.add_argument(
             "--executor",
             metavar="PATH",
             help="darling-debug-runner binary for guarded/forensic tiers",
@@ -151,6 +161,24 @@ class DarlingTest(WestCommand):
         if not path.is_file():
             self.die(f"patch profile not found: {path}")
         return yaml.safe_load(path.read_text()) or {}
+
+    def _resolve_prefix(self, args) -> str | None:
+        if args.prefix and args.prefix_profile:
+            self.die("--prefix and --prefix-profile are mutually exclusive")
+        if args.prefix:
+            prefix = args.prefix
+            if prefix.startswith("existing:"):
+                prefix = prefix.removeprefix("existing:")
+            return str(Path(prefix).expanduser())
+        if args.prefix_profile:
+            profiles = {
+                "homebrew": "~/work/darling-prefix-homebrew-test",
+                "smoke": "~/work/darling-prefix-smoke",
+            }
+            return str(Path(profiles.get(args.prefix_profile, args.prefix_profile)).expanduser())
+        if os.environ.get("DPREFIX"):
+            return os.environ["DPREFIX"]
+        return None
 
     def _projects(self) -> dict[str, Path]:
         projects: dict[str, Path] = {}
@@ -270,6 +298,7 @@ class DarlingTest(WestCommand):
                 "args": args,
                 "shell": False,
                 "env": env,
+                "requires_resources": list(test.get("requires", [])),
                 "requires_env": list(test.get("requires-env", [])),
             }
 
@@ -302,11 +331,7 @@ class DarlingTest(WestCommand):
             script_path = invocation.get("script_path")
             if script_path is not None and not script_path.is_file():
                 self.die(f"{patch['path']}: test script not found: {script_path}")
-            missing_env = [
-                env_name
-                for env_name in invocation.get("requires_env", [])
-                if not os.environ.get(env_name)
-            ]
+            missing_env = self._missing_requirements(invocation)
             if missing_env:
                 self.die(
                     f"{patch['path']}: missing required environment for {test.get('name', '-')}: "
@@ -316,15 +341,9 @@ class DarlingTest(WestCommand):
                 self.inf(f"  skipped duplicate invocation already run")
                 continue
             seen_invocations.add(invocation["key"])
-            result = subprocess.run(
-                invocation["args"],
-                cwd=invocation["cwd"],
-                env=invocation.get("env"),
-                shell=invocation["shell"],
-                check=False,
-            )
-            if result.returncode:
-                rc = result.returncode
+            result_rc = self._run_invocation(invocation, env=self._execution_env(invocation))
+            if result_rc:
+                rc = result_rc
         return rc
 
     def _bad_revision(self, patch) -> str:
@@ -344,6 +363,32 @@ class DarlingTest(WestCommand):
             check=False,
         )
         return result.returncode
+
+    def _execution_env(self, invocation) -> dict[str, str] | None:
+        env = invocation.get("env")
+        if "darling-prefix" not in invocation.get("requires_resources", []):
+            return env
+        prefix = getattr(self, "_prefix", None)
+        if not prefix:
+            return env
+        merged = os.environ.copy()
+        if env:
+            merged.update(env)
+        merged["DPREFIX"] = prefix
+        return merged
+
+    def _missing_requirements(self, invocation) -> list[str]:
+        missing = [
+            env_name
+            for env_name in invocation.get("requires_env", [])
+            if not os.environ.get(env_name)
+        ]
+        if (
+            "darling-prefix" in invocation.get("requires_resources", [])
+            and not getattr(self, "_prefix", None)
+        ):
+            missing.append("darling-prefix (--prefix, --prefix-profile, or DPREFIX)")
+        return missing
 
     def _run_source_base_proof(self, patch, proof, invocation) -> int:
         if invocation["shell"]:
@@ -366,8 +411,9 @@ class DarlingTest(WestCommand):
             )
             try:
                 bad_env = os.environ.copy()
-                if invocation.get("env"):
-                    bad_env.update(invocation["env"])
+                exec_env = self._execution_env(invocation)
+                if exec_env:
+                    bad_env.update(exec_env)
                 bad_env[source_env] = str(worktree)
                 self.inf(f"  RED source tree: {bad_revision} via {source_env}={worktree}")
                 bad_rc = self._run_invocation(invocation, env=bad_env)
@@ -385,7 +431,7 @@ class DarlingTest(WestCommand):
                 )
 
         self.inf("  GREEN current tree")
-        return self._run_invocation(invocation)
+        return self._run_invocation(invocation, env=self._execution_env(invocation))
 
     def _run_red_proofs(self, tests, list_only: bool, unknown: list[str]) -> int:
         """Run the proof that a regression test really distinguishes old/bad behavior.
@@ -423,11 +469,7 @@ class DarlingTest(WestCommand):
             script_path = invocation.get("script_path")
             if script_path is not None and not script_path.is_file():
                 self.die(f"{patch['path']}: test script not found: {script_path}")
-            missing_env = [
-                env_name
-                for env_name in invocation.get("requires_env", [])
-                if not os.environ.get(env_name)
-            ]
+            missing_env = self._missing_requirements(invocation)
             if missing_env:
                 self.die(
                     f"{patch['path']}: missing required environment for {name}: "
@@ -440,7 +482,7 @@ class DarlingTest(WestCommand):
             if mode == "source-base":
                 result_rc = self._run_source_base_proof(patch, proof, invocation)
             else:
-                result_rc = self._run_invocation(invocation)
+                result_rc = self._run_invocation(invocation, env=self._execution_env(invocation))
             if result_rc:
                 rc = result_rc
         return rc
@@ -523,6 +565,8 @@ class DarlingTest(WestCommand):
     # --- entrypoint ---------------------------------------------------------
 
     def do_run(self, args, unknown):
+        self._prefix = self._resolve_prefix(args)
+
         if args.gc:
             self._gc_bundles(
                 Path(args.bundle_root), args.keep_last, args.max_bundle_mb,

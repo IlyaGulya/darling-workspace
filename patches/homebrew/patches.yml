@@ -472,8 +472,8 @@ patches:
     red: true
     runner: script
     script: tests/run-psynch-kernel-return-contract.sh
-    requires-env:
-    - DPREFIX
+    requires:
+    - darling-prefix
     note: Requires DPREFIX. Guest runtime contract for psynch return decoding and EINTR handling.
   github:
     fork:
@@ -536,8 +536,8 @@ patches:
     red: true
     runner: script
     script: darling/src/libsystem_kernel/tests/run-getattrlist-shared-packer.sh
-    requires-env:
-    - DPREFIX
+    requires:
+    - darling-prefix
     note: Requires DPREFIX. Guest runtime contract for shared getattrlist/fgetattrlist/getattrlistat/getattrlistbulk packing.
   github:
     fork:

@@ -307,6 +307,14 @@ class DarlingPatch(WestCommand):
                     isinstance(name, str) and name for name in required
                 ):
                     errors.append(f"tests[{index}] requires-env must be a list of names")
+            if test.get("requires") is not None:
+                required = test.get("requires")
+                if not isinstance(required, list) or not all(
+                    isinstance(name, str) and name for name in required
+                ):
+                    errors.append(f"tests[{index}] requires must be a list of names")
+                elif any(name not in {"darling-prefix"} for name in required):
+                    errors.append(f"tests[{index}] has unsupported requires resource")
             if test.get("red-proof") is not None:
                 proof = test.get("red-proof")
                 if not isinstance(proof, dict):

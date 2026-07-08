@@ -52,6 +52,9 @@ refs, PR drafts, and agent handoff.
   scripts should use a local `contract-test-lib.sh`; Darling guest C verdict
   tests should use a local `guest-verdict-test-lib.sh` and declare runtime
   prerequisites in patch metadata.
+- Darling guest tests should prefer `requires: [darling-prefix]` over
+  `requires-env: [DPREFIX]`; let `west test --prefix/--prefix-profile` provide
+  `DPREFIX`.
 - `west patch export` must not create unrelated `patches.yml` formatting churn.
   Treat block-scalar/quoting rewrites as a tooling bug, not acceptable review
   noise.
