@@ -1,4 +1,4 @@
-From a491dc1ca9edcb5b3950cf9d3d400b1534c36ccf Mon Sep 17 00:00:00 2001
+From 5fd2eb462219cc33d408f8be26eca2dd7ae28709 Mon Sep 17 00:00:00 2001
 From: Ilya Gulya <ilya@gulya.me>
 Date: Tue, 7 Jul 2026 16:58:10 +0000
 Subject: [PATCH] xnu: share getattrlist attribute packing
@@ -8,9 +8,9 @@ Subject: [PATCH] xnu: share getattrlist attribute packing
  .../bsd/helper/xattr/getattrlist_pack.h       | 252 ++++++++++
  .../bsd/impl/xattr/getattrlistbulk.c          | 347 +++-----------
  .../tests/getattrlist_shared_packer_test.c    | 323 +++++++++++++
- .../tests/guest-verdict-test-lib.sh           |  53 +++
+ .../tests/guest-verdict-test-lib.sh           |  60 +++
  .../tests/run-getattrlist-shared-packer.sh    |  14 +
- 6 files changed, 897 insertions(+), 531 deletions(-)
+ 6 files changed, 904 insertions(+), 531 deletions(-)
  create mode 100644 darling/src/libsystem_kernel/emulation/include/xnu_syscall/bsd/helper/xattr/getattrlist_pack.h
  create mode 100644 darling/src/libsystem_kernel/tests/getattrlist_shared_packer_test.c
  create mode 100644 darling/src/libsystem_kernel/tests/guest-verdict-test-lib.sh
@@ -1563,10 +1563,10 @@ index 0000000000000000000000000000000000000000..6462752659b1b0b75b9b9efe49750df2
 +}
 diff --git a/darling/src/libsystem_kernel/tests/guest-verdict-test-lib.sh b/darling/src/libsystem_kernel/tests/guest-verdict-test-lib.sh
 new file mode 100644
-index 0000000000000000000000000000000000000000..e219007f45bbfc66ee3c7c702f42157dc297f761
+index 0000000000000000000000000000000000000000..00bf9abd2573c56c65c8db2f4e342b9f8079fd59
 --- /dev/null
 +++ b/darling/src/libsystem_kernel/tests/guest-verdict-test-lib.sh
-@@ -0,0 +1,53 @@
+@@ -0,0 +1,60 @@
 +#!/usr/bin/env bash
 +
 +guest_verdict_run_c() {
@@ -1576,15 +1576,22 @@ index 0000000000000000000000000000000000000000..e219007f45bbfc66ee3c7c702f42157d
 +	local guest_src="/tmp/$(basename "$src")"
 +	local verdict="/tmp/$name.verdict"
 +	local runner_log="/tmp/$name.runner.log"
-+	local launch="${DARLING:-darling}"
++	local launch="${DARLING_LAUNCHER:-${DARLING:-darling}}"
++	local poll_timeout="${GUEST_VERDICT_POLL_TIMEOUT:-10}"
 +
 +	: "${DPREFIX:?set DPREFIX to a bootable Darling prefix}"
 +
++	guest_verdict_shell() {
++		local seconds="$1"
++		shift
++		timeout --kill-after=5 "$seconds" env DPREFIX="$DPREFIX" "$launch" shell /bin/bash --login -c "$*"
++	}
++
 +	rm -f "$DPREFIX$verdict" 2>/dev/null || true
 +	cp "$src" "$DPREFIX$guest_src"
-+	env DPREFIX="$DPREFIX" "$launch" shell /bin/bash --login -c "rm -f '$verdict'" >/dev/null 2>&1 || true
++	guest_verdict_shell "$poll_timeout" "rm -f '$verdict'" >/dev/null 2>&1 || true
 +
-+	env DPREFIX="$DPREFIX" "$launch" shell /bin/bash --login -c "
++	guest_verdict_shell "$timeout_seconds" "
 +		clang -O2 -Wall -Wextra -o '$output' '$guest_src' 2>&1
 +		'$output' > '$verdict' 2>&1
 +		echo \"ORACLE_RC=\\$?\" >> '$verdict'
@@ -1593,14 +1600,14 @@ index 0000000000000000000000000000000000000000..e219007f45bbfc66ee3c7c702f42157d
 +
 +	local deadline=$((SECONDS + timeout_seconds))
 +	while [ "$SECONDS" -lt "$deadline" ]; do
-+		if env DPREFIX="$DPREFIX" "$launch" shell /bin/bash --login -c \
++		if guest_verdict_shell "$poll_timeout" \
 +			"test -f '$verdict' && grep -q '^ORACLE_RC=' '$verdict'" >/dev/null 2>&1; then
 +			break
 +		fi
 +		sleep 1
 +	done
 +
-+	if ! env DPREFIX="$DPREFIX" "$launch" shell /bin/bash --login -c \
++	if ! guest_verdict_shell "$poll_timeout" \
 +		"test -f '$verdict' && grep -q '^ORACLE_RC=' '$verdict'" >/dev/null 2>&1; then
 +		kill "$shell_pid" 2>/dev/null || true
 +		wait "$shell_pid" 2>/dev/null || true
@@ -1615,7 +1622,7 @@ index 0000000000000000000000000000000000000000..e219007f45bbfc66ee3c7c702f42157d
 +
 +	echo "=== verdict ==="
 +	local guest_verdict
-+	guest_verdict="$(env DPREFIX="$DPREFIX" "$launch" shell /bin/bash --login -c "cat '$verdict'" 2>/dev/null || true)"
++	guest_verdict="$(guest_verdict_shell "$poll_timeout" "cat '$verdict'" 2>/dev/null || true)"
 +	printf '%s\n' "$guest_verdict"
 +	grep -q "^$ok_marker" <<<"$guest_verdict" &&
 +		grep -q "ORACLE_RC=0" <<<"$guest_verdict"

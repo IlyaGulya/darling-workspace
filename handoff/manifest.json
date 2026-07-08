@@ -457,7 +457,7 @@
         },
         {
           "branch": "fix/psynch-kernel-return-helper",
-          "head": "c29d7b38b2a1ffac4466c43a683f71bb5437ba00",
+          "head": "a1f66caa8f9bc59fc4147186910280233862df0b",
           "upstream": "",
           "source_ref": "refs/heads/fix/psynch-kernel-return-helper"
         },
@@ -751,7 +751,7 @@
         },
         {
           "branch": "fix/getattrlist-shared-packer",
-          "head": "a491dc1ca9edcb5b3950cf9d3d400b1534c36ccf",
+          "head": "5fd2eb462219cc33d408f8be26eca2dd7ae28709",
           "upstream": "",
           "source_ref": "refs/heads/fix/getattrlist-shared-packer"
         },
