@@ -38,6 +38,62 @@ Product direction:
   and manifest/submodule discovery so the runner can answer "what proves this
   patch?" without hand-grepping patch files.
 
+### Patch-Local Red-Test Metadata
+
+Local patch profiles do not need a separate upstream `darling-testsuite` patch
+for every fix. The default workflow is: the smallest deterministic red test
+travels with the fix in the same source repo and, when practical, the same patch
+file/profile entry. Cross-repo bugs can use a small adjacent test patch in the
+same profile. Upstream `darling-testsuite` remains the portable testcase style
+and future destination, not a local blocker.
+
+`patches.yml` entries may declare runnable proof metadata:
+
+```yaml
+- path: darlingserver/example-fix.patch
+  module: darling/src/external/darlingserver
+  bead: dar-example
+  tests:
+  - name: example_contract
+    kind: contract        # unit|contract|guest|package|fuzz|stress|build|gate
+    env: host             # host|darling|macos
+    diag: bare            # bare|guarded|forensic
+    red: true             # this proves RED->GREEN for the fix
+    command: west darling-build --force --skip-doctor --targets example_contract_run
+    note: Fails on the parent commit, passes with this patch.
+```
+
+Use `ctest-label` instead of `command` once the test is discoverable through the
+CTest registry:
+
+```yaml
+  - name: wait4_guest_contract
+    kind: guest
+    env: darling
+    diag: guarded
+    red: true
+    ctest-label: bead:dar-example
+```
+
+If a non-documentation patch truly cannot carry a committed red test, record an
+explicit exception:
+
+```yaml
+  test-exception:
+    reason: doc-only
+    note: Comment-only warning for code compiled out in all configurations.
+```
+
+The local gates are:
+
+```sh
+west patch check --profile arch
+west patch check --profile arch --strict
+west test --profile arch --list --red-only
+west test --profile arch --patch darlingserver/stack-pool-empty-stack-handle.patch --list
+west test --profile arch --patch darlingserver/stack-pool-empty-stack-handle.patch
+```
+
 ## Problem
 
 Regression reproducers for fixed bugs currently live as throwaway `/tmp/run-*.sh`

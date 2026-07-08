@@ -75,7 +75,7 @@ class DarlingPatch(WestCommand):
     def do_add_parser(self, parser_adder):
         parser = parser_adder.add_parser(self.name, description=self.description)
         subparsers = parser.add_subparsers(dest="action", required=True)
-        for action in ("list", "verify", "export", "apply", "clean", "status"):
+        for action in ("list", "verify", "export", "apply", "clean", "status", "check"):
             command = subparsers.add_parser(action)
             command.add_argument("--profile", default="homebrew")
             if action == "export":
@@ -93,6 +93,12 @@ class DarlingPatch(WestCommand):
                     "--strict",
                     action="store_true",
                     help="exit non-zero if any patch is MISSING or CONFLICT",
+                )
+            if action == "check":
+                command.add_argument(
+                    "--strict",
+                    action="store_true",
+                    help="exit non-zero if a non-doc patch has no tests/exception",
                 )
         return parser
 
@@ -124,6 +130,8 @@ class DarlingPatch(WestCommand):
             self._export(profile_path, profile_dir, profile, patches, args.check)
         elif args.action == "status":
             self._status(profile_dir, patches, args.strict)
+        elif args.action == "check":
+            self._check(profile_dir, patches, args.strict)
         elif args.action == "apply":
             self._apply(
                 args.profile,
@@ -231,6 +239,98 @@ class DarlingPatch(WestCommand):
             bead = patch.get("bead", "-")
             self.inf(f"{patch['module']}: {source} [{bead}]")
             self.inf(f"  {patch['path']}")
+            for test in patch.get("tests", []) or []:
+                red = " red" if test.get("red") else ""
+                target = (
+                    test.get("ctest-label")
+                    or test.get("command")
+                    or test.get("name", "-")
+                )
+                self.inf(f"    test:{red} {test.get('name', '-')} -> {target}")
+            if patch.get("test-exception"):
+                exc = patch["test-exception"]
+                reason = exc.get("reason", exc) if isinstance(exc, dict) else exc
+                self.inf(f"    test-exception: {reason}")
+
+    def _validate_test_metadata(self, patch) -> list[str]:
+        errors: list[str] = []
+        tests = patch.get("tests")
+        exception = patch.get("test-exception")
+        if tests is not None and not isinstance(tests, list):
+            errors.append("tests must be a list")
+            return errors
+        for index, test in enumerate(tests or [], start=1):
+            if not isinstance(test, dict):
+                errors.append(f"tests[{index}] must be a mapping")
+                continue
+            if not test.get("name"):
+                errors.append(f"tests[{index}] missing name")
+            if not (test.get("command") or test.get("ctest-label")):
+                errors.append(f"tests[{index}] needs command or ctest-label")
+            env = test.get("env")
+            if env and env not in {"host", "darling", "macos"}:
+                errors.append(f"tests[{index}] invalid env {env!r}")
+            diag = test.get("diag")
+            if diag and diag not in {"bare", "guarded", "forensic"}:
+                errors.append(f"tests[{index}] invalid diag {diag!r}")
+            kind = test.get("kind")
+            if kind and kind not in {
+                "unit",
+                "contract",
+                "guest",
+                "package",
+                "fuzz",
+                "stress",
+                "build",
+                "gate",
+            }:
+                errors.append(f"tests[{index}] invalid kind {kind!r}")
+        if exception is not None:
+            if not isinstance(exception, dict):
+                errors.append("test-exception must be a mapping")
+            elif not exception.get("reason"):
+                errors.append("test-exception needs reason")
+        return errors
+
+    def _check(self, profile_dir: Path, patches, strict: bool):
+        missing = []
+        invalid = []
+        covered = 0
+        excepted = 0
+        for patch in patches:
+            errors = self._validate_test_metadata(patch)
+            if errors:
+                invalid.append((patch, errors))
+                continue
+            tests = patch.get("tests") or []
+            exception = patch.get("test-exception")
+            if tests:
+                covered += 1
+                self.inf(f"TESTED    {patch['path']} ({len(tests)} test(s))")
+            elif exception:
+                excepted += 1
+                reason = exception.get("reason", "-")
+                self.inf(f"EXCEPTION {patch['path']} ({reason})")
+            else:
+                missing.append(patch)
+                self.inf(f"MISSING   {patch['path']}  [{patch.get('bead', '-')}]")
+        for patch, errors in invalid:
+            for error in errors:
+                self.err(f"INVALID   {patch['path']}: {error}")
+        self.inf(
+            f"test metadata: {covered} covered, {excepted} exceptions, "
+            f"{len(missing)} missing, {len(invalid)} invalid "
+            f"(of {len(patches)})"
+        )
+        if missing:
+            self.inf(
+                "hint: add tests: [{name, command|ctest-label, env, diag, kind, red}] "
+                "or test-exception: {reason, note}"
+            )
+        if strict and (missing or invalid):
+            self.die(
+                f"{len(missing)} missing + {len(invalid)} invalid patch test metadata entries"
+            )
 
     def _prepare(
         self, module: str, repo: Path, branch: str, parent: bool = False
