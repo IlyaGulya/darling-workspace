@@ -80,13 +80,13 @@ RED proof modes:
 
 - `red-proof: {mode: self}`: the test contains its own bad-path oracle, such as
   running an old algorithm/model and requiring that it fails before running the
-  fixed path. This is the current implemented mode.
-- `red-proof: {mode: source-base}`: intended for a shared runner that takes the
-  test from the current checkout and runs it against a temporary worktree at the
-  patch's `source-base`. This is the correct long-term mode for normal
-  regression tests whose files are added by the fix patch, but it needs a runner
-  contract for redirecting source roots/fixtures instead of guessing per-script
-  behavior.
+  fixed path.
+- `red-proof: {mode: source-base, source-env: DSERVER_SRC_ROOT}`: `west test`
+  takes the test from the current checkout, creates a temporary worktree at the
+  patch's `source-base` (or `source-commit^` when no explicit base is recorded),
+  points the named environment variable at that bad source tree, and expects the
+  test to fail there before passing on the current tree. Use this only for
+  source-root-aware scripts; do not rely on implicit checkout mutation.
 
 Use structured runners for common cases:
 
