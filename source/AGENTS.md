@@ -25,6 +25,13 @@ to Darling commits. The `br` examples below must be run through
   editing a source branch, regenerate the patch, update full `source-commit`
   and `sha256sum`, then run `west patch verify` and
   `west patch status --strict`.
+- Every non-documentation fix patch must carry a committed red test in the
+  patchset: a runnable regression, contract, gate, or focused repro that fails
+  on the pre-fix tree and passes with the fix. If the test must land as a
+  follow-up patch, it must use the same Bead and be in the same profile before
+  the fix is considered complete. Runtime/manual validation is useful evidence
+  but is not a substitute for a committed red test; any exception must be
+  explicit in the Bead and patch metadata.
 - Runtime deploys must keep the launcher prefix and any test `DPREFIX` in sync.
   Prefer `west darling-build --deploy --deploy-extra-prefix "$DPREFIX" ...`;
   otherwise verify matching closure dylib md5s before trusting runtime results.
