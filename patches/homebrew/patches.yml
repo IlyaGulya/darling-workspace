@@ -689,6 +689,18 @@ patches:
   bead: dar-q95.14
   publication-status: blocked
   publication-blocker: private glibc _rtld_global heuristic is version-sensitive; see dar-q95.29.9
+  tests:
+  - name: glibc_fork_lock_reset
+    kind: contract
+    env: host
+    diag: bare
+    red: true
+    red-proof:
+      mode: self
+      note: Script requires the no-reset arm to deadlock and the reset arm to pass.
+    runner: script
+    script: tests/regression/run-glibc-fork-lock-reset.sh
+    note: Host RED->GREEN model for resetting glibc loader locks after raw fork.
   pr-draft: pr-drafts/mldr-glibc-fork-reset.md
   github:
     fork:
@@ -1326,6 +1338,18 @@ patches:
   bead: dar-6x4
   publication-status: blocked
   publication-blocker: fixes a real darlingserver DEADLOCK (not slowness) under fork+exec storms (make -jN, libunistring/gettext builds) that intermittently wedges the server - rpcs_serviced goes flat, every guest hangs in recvmsg, no recovery. Root cause pinned live with gdb (__cur_writer == MAIN thread tid, the single worker blocked in pthread_rwlock_rdlock with __readers WRLOCKED|WRPHASE) - notifyCheckin() exec branch held the per-process std--shared_mutex _rwlock across the suspending dtape_task_create / dtape_thread_create / dtape_semaphore_* calls. _rwlock ownership is per-OS-thread, but perf #2b (server-inline-fastpath) runs cheap RPCs INLINE on the MAIN event-loop thread while a suspended microthread resumes on the WORKER; an exec checkin running inline on MAIN then strands the write lock owned by MAIN, and a sibling fork-checkin on the single worker blocks forever in _notifyListeningKqchannels() reading the same process lock - the only thread that could resume the holder. Pre-#2b this could not happen (all microthreads ran on the one worker; lock acquired+released on the same OS thread), so this is a latent hazard that perf #2b activated. Fix drops _rwlock around the dtape work and re-acquires it to publish the new task/thread/semaphore handles, mirroring the pattern the thread-clear loop just above already uses around the blocking notifyDead(). A/B under heavy fork+exec load - pristine inline-on WEDGED on attempt 1; forcing all calls to the worker pool (no inline) 20/20 builds clean; this fix with inline ON 20/20 builds clean. fork/exec/wait/exit-code correctness verified (HELLO_EXEC_OK, child fork chain, rc 7 propagation). RED-to-GREEN by tests/inline_suspend_rwlock_deadlock.c (a process rwlock held by one OS thread across a microthread suspension while another OS thread reads it - RED arm deadlocks via watchdog/exit 1, GREEN arm releases-before-suspend and passes; HOST test under 5s). Stacks on fix/server-inline-fastpath (source-base is its source-commit 6144a4bb). Wants design review of the broader invariant (audit that no other Process _rwlock write region can suspend) before upstreaming. See dar-6x4 and epic dar-dar6x4-perf-5dq.
+  tests:
+  - name: inline_suspend_rwlock_deadlock
+    kind: contract
+    env: host
+    diag: bare
+    red: true
+    red-proof:
+      mode: self
+      note: Script requires lock-held-across-suspend to deadlock and release-before-suspend to pass.
+    runner: script
+    script: tests/run-inline-suspend-rwlock-deadlock.sh
+    note: Host RED->GREEN model for not holding Process::_rwlock across suspending dtape calls.
   github:
     fork:
       repo: IlyaGulya/darling
@@ -1344,6 +1368,18 @@ patches:
   bead: dar-dar6x4-perf-5dq.3
   publication-status: blocked
   publication-blocker: makes mldr's RPC recv hook (dserver_rpc_hooks_receive_message) do a bounded NON-BLOCKING recv spin (MSG_DONTWAIT + CPU pause between polls) before the blocking recvmsg, so a fast checkin reply is grabbed without the thread sleeping. Faithful in-guest measurement showed the per-thread create cost is ~95% the checkin RPC round-trip (~205us) and only ~5% socket setup (~10us), and of that round-trip the server's own work is ~8us (post perf #2b) - the rest is the recvmsg sleep/wakeup latency this attacks (so socket pooling, the obvious option, was rejected as low-ROI). Single-storm A/B (same run, warmup cancels) cut per-checkin RPC latency 237us->183us (~23%); fork/exec/wait/pipe/exit-code correctness 200/200 ok; symmetric to the perf #1 creator-side adaptive wait and bounded so it never busy-waits unboundedly. Default on (DARLING_PERF3_RECVSPIN=512; =0 restores legacy blocking recv). CAVEAT not yet resolved- aggregate throughput A/B on this oversubscribed host (load 68/12 cores, node+clickhouse contention) was noise-dominated and could not confirm a throughput win (one ordering showed ON slightly slower), so the claim is a per-checkin LATENCY reduction, not a measured throughput gain; pause (not sched_yield) was chosen specifically to bound the saturation downside. Wants a clean-host throughput measurement + review of the default-on choice before upstreaming. RED->GREEN by tests/perf3_recv_adaptive_test.c (client voluntary ctx-switches/round-trip- blocking 0.79 FAIL, adaptive 0.00 PASS). See dar-dar6x4-perf-5dq.3.
+  tests:
+  - name: mldr_recv_adaptive_spin
+    kind: contract
+    env: host
+    diag: bare
+    red: true
+    red-proof:
+      mode: self
+      note: Script requires blocking recv to exceed the sleep budget and adaptive spin to pass.
+    runner: script
+    script: src/startup/mldr/tests/run-perf3-recv-adaptive.sh
+    note: Host RED->GREEN model for bounded spin before blocking RPC recv.
   github:
     fork:
       repo: IlyaGulya/darling
@@ -1488,6 +1524,18 @@ patches:
   bead: dar-l8k
   publication-status: blocked
   publication-blocker: fixes a heap use-after-free in Process::notifyCheckin's exec/"replace task" branch that crashed darlingserver under fork+exec storms (~1 in 3-6 heavy builds) and deterministically at boot under an ASan server build. The branch released the old dtape thread + task BEFORE republishing the new dtape thread as the microthread's current thread; the old task's IPC-space teardown (dtape_task_release -> ipc_space_terminate -> ipc_right_terminate -> ipc_port_destroy) reads current_thread()->ith_assertions (IMPORTANCE_INHERITANCE=1), and current_thread() resolves to mainThread->_dtapeThread which was still the just-freed old dtape_thread -> UAF (free at process.cpp dtape_thread_release, use at ipc_port.c:936; the rare prod symptom was a downstream SIGSEGV in the main loop's malloc on a corrupted freelist). Fix publishes _dtapeTask/_dtapeThread + new semaphores under _rwlock first, drops the lock, then releases the old thread/task (releases stay unlocked because dtape_task_release can suspend the microthread, same constraint as the dtape_*_create calls). Pinned via an ASan darlingserver build (DSERVER_ASAN=ON, detect_stack_use_after_return=0 to see past the fiber/ucontext fake-stack noise). RED->GREEN host gate tests/checkin_retask_current_thread_uaf.c + run-checkin-retask-current-thread-uaf.sh model the exact free/use ordering under ASan. Validated -- ASan server boots clean 3/3 (was UAF 3/3 pre-fix); fork-heavy make -j8 6/6 DONE clean. Distinct from 5e5d688 (that was the checkin _rwlock-across-suspend deadlock; this is the exec re-task current_thread UAF). Needs upstream review before publishing. See dar-l8k.
+  tests:
+  - name: checkin_retask_current_thread_uaf
+    kind: contract
+    env: host
+    diag: bare
+    red: true
+    red-proof:
+      mode: self
+      note: Script requires release-before-republish to trip ASan and republish-before-release to pass.
+    runner: script
+    script: tests/run-checkin-retask-current-thread-uaf.sh
+    note: Host ASan RED->GREEN model for publishing the new dtape thread before releasing the old one.
 - path: darlingserver/pot-guest-lifetime-binding.patch
   sha256sum: c9b7c4b008661ae00a6f52404b9bc9a751462a30ab0b39b0c97d8e007e25cb7f
   module: darling/src/external/darlingserver
