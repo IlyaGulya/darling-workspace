@@ -2304,20 +2304,19 @@ patches:
   publication-status: blocked
   publication-blocker: libsystem_kernel half of the guest-side recvmsg-sleep accountant (paired with the darlingserver generator commit). Single shared per-callnum table + rdtsc timing + per-process exit dump, behind option DARLING_RPC_SLEEP_ACCOUNT (default OFF -> emulation byte-identical to baseline, zero diagnostic symbols/strings). Design forced by the libc-free below-libSystem RPC path -- rdtsc not clock_gettime (the clock syscall in the send/recv atomic region wedges the guest), stack-local start stamp not __thread (TLS aborts pre-pthread), dump from sys_exit not a destructor (dyld rejects initializers in this image), one .c compiled once (the generated rpc.c is in two object libs). Validated ON build boots + make -j8 300/300. Diagnostic instrumentation; stays local. Stacks on cache-task-self-trap. See dar-dar6x4-perf-5dq.19.
   tests:
-  - name: guest_per_callnum_sleep_account_model
+  - name: guest_per_callnum_sleep_account_contract
     kind: contract
-    coverage-tier: model
+    coverage-tier: compile
     env: host
     diag: bare
     red: true
     red-proof:
-      mode: self
-      why-self: The model drives guest-side receive sleep accounting through old no-bucket and fixed opt-in per-call aggregation semantics.
-    runner: python
+      mode: source-base
+      source-env: XNU_SRC_ROOT
+    runner: script
     repo: darling-workspace
-    script: tests/xnu_behavior_models.py
-    args: [guest-per-callnum-sleep-account]
-    note: Host behavioral model; old guest side has no per-call sleep buckets, fixed accounting stays off by default and aggregates by call number when enabled.
+    script: tests/rpc_sleep_account_contract.sh
+    note: Compiles the production RPC sleep accounting implementation with syscall stubs; checks masked per-call aggregation, one-shot dump writes, and that the default OFF build emits no diagnostic symbols.
   github:
     fork:
       repo: IlyaGulya/darling-xnu
