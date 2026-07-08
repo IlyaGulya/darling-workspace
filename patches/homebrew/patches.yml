@@ -1508,9 +1508,35 @@ patches:
     red-proof:
       mode: source-base
       source-env: DARLING_SRC_ROOT
-    runner: script
-    repo: darling-workspace
-    script: tests/sandbox_exec_contract.sh
+    runner: source-script-fixture
+    repo: darling
+    source-script: src/sandbox/sandbox-exec.sh
+    cases:
+    - name: option_passthrough
+      args:
+      - -f
+      - ignored.sb
+      - -D
+      - KEY=VALUE
+      - -p
+      - (version 1)
+      - -n
+      - name
+      - --
+      - /bin/sh
+      - -c
+      - 'printf "%s:%s" "$1" "$2"'
+      - sh
+      - alpha
+      - beta
+      stdout: alpha:beta
+    - name: quiet_flag_passthrough
+      args:
+      - -q
+      - /bin/sh
+      - -c
+      - printf ok
+      stdout: ok
     note: Host RED->GREEN contract that sandbox-exec consumes sandbox flags and execs the requested command unchanged.
   pr-draft: pr-drafts/top-level-sandbox-exec-pass-through.md
   github:
