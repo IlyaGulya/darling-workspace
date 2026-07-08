@@ -6,7 +6,8 @@ cd "$repo"
 tmp_profile="patches/__metadata_contract"
 tmp_invalid_profile="patches/__metadata_invalid_contract"
 tmp_runtime_red_profile="patches/__metadata_runtime_red_contract"
-trap 'rm -rf "$tmp_profile" "$tmp_invalid_profile" "$tmp_runtime_red_profile"' EXIT
+guest_prefix=/tmp/west-test-guest-c-fixture-prefix
+trap 'rm -rf "$tmp_profile" "$tmp_invalid_profile" "$tmp_runtime_red_profile" "$guest_prefix"' EXIT
 mkdir -p "$tmp_profile" "$tmp_invalid_profile" "$tmp_runtime_red_profile"
 cat >"$tmp_profile/patches.yml" <<'YAML'
 patches:
@@ -410,10 +411,24 @@ grep -q 'missing required environment .*darling-prefix' \
 	/tmp/west-test-guest-runtime-red-proof.out ||
 	fail 'guest-runtime-deploy RED proof did not report missing prefix clearly'
 
+rm -rf "$guest_prefix"
+mkdir -p \
+	"$guest_prefix/private/var/tmp" \
+	"$guest_prefix/libexec/darling/private/var/tmp" \
+	"$guest_prefix/Library/Developer/CommandLineTools/usr/bin" \
+	"$guest_prefix/libexec/darling/Library/Developer/CommandLineTools/usr/bin" \
+	"$guest_prefix/Library/Developer/CommandLineTools/SDKs/MacOSX.sdk" \
+	"$guest_prefix/libexec/darling/Library/Developer/CommandLineTools/SDKs/MacOSX.sdk"
+chmod 1777 \
+	"$guest_prefix/private/var/tmp" \
+	"$guest_prefix/libexec/darling/private/var/tmp"
+: >"$guest_prefix/Library/Developer/CommandLineTools/usr/bin/clang"
+: >"$guest_prefix/libexec/darling/Library/Developer/CommandLineTools/usr/bin/clang"
+
 guest_c_fixture="$(
 	west test --profile __metadata_contract \
 		--patch test/guest-c-fixture.patch \
-		--prefix /tmp/west-test-guest-c-fixture-prefix \
+		--prefix "$guest_prefix" \
 		--list
 )"
 

@@ -1,0 +1,290 @@
+From 32dd08e513243b1d1056dd9bc718d10ab44d233c Mon Sep 17 00:00:00 2001
+From: Ilya Gulya <ilya@gulya.me>
+Date: Wed, 8 Jul 2026 20:18:40 +0000
+Subject: [PATCH] fstatfs: tolerate missing proc mounts
+
+---
+ .../src/xnu_syscall/bsd/impl/stat/fstatfs.c   | 18 +++--
+ .../darling/emulation/common/base.h           |  1 +
+ .../darling/emulation/common/simple.h         | 15 ++++
+ .../darling/emulation/conversion/errno.h      |  6 ++
+ .../emulation/conversion/stat/common.h        |  7 ++
+ .../linux_premigration/linux-syscalls/linux.h |  1 +
+ .../xnu_syscall/bsd/helper/misc/fdpath.h      |  1 +
+ .../xnu_syscall/bsd/impl/fcntl/open.h         |  1 +
+ .../xnu_syscall/bsd/impl/stat/fstatfs.h       |  1 +
+ .../xnu_syscall/bsd/impl/unistd/close.h       |  7 ++
+ .../xnu_syscall/bsd/impl/unistd/readlink.h    |  1 +
+ .../fstatfs_missing_proc_stubs.h              | 32 ++++++++
+ .../tests/fstatfs_missing_proc_contract.c     | 73 +++++++++++++++++++
+ 13 files changed, 158 insertions(+), 6 deletions(-)
+ create mode 100644 darling/src/libsystem_kernel/tests/fixtures/fstatfs-missing-proc/darling/emulation/common/base.h
+ create mode 100644 darling/src/libsystem_kernel/tests/fixtures/fstatfs-missing-proc/darling/emulation/common/simple.h
+ create mode 100644 darling/src/libsystem_kernel/tests/fixtures/fstatfs-missing-proc/darling/emulation/conversion/errno.h
+ create mode 100644 darling/src/libsystem_kernel/tests/fixtures/fstatfs-missing-proc/darling/emulation/conversion/stat/common.h
+ create mode 100644 darling/src/libsystem_kernel/tests/fixtures/fstatfs-missing-proc/darling/emulation/linux_premigration/linux-syscalls/linux.h
+ create mode 100644 darling/src/libsystem_kernel/tests/fixtures/fstatfs-missing-proc/darling/emulation/xnu_syscall/bsd/helper/misc/fdpath.h
+ create mode 100644 darling/src/libsystem_kernel/tests/fixtures/fstatfs-missing-proc/darling/emulation/xnu_syscall/bsd/impl/fcntl/open.h
+ create mode 100644 darling/src/libsystem_kernel/tests/fixtures/fstatfs-missing-proc/darling/emulation/xnu_syscall/bsd/impl/stat/fstatfs.h
+ create mode 100644 darling/src/libsystem_kernel/tests/fixtures/fstatfs-missing-proc/darling/emulation/xnu_syscall/bsd/impl/unistd/close.h
+ create mode 100644 darling/src/libsystem_kernel/tests/fixtures/fstatfs-missing-proc/darling/emulation/xnu_syscall/bsd/impl/unistd/readlink.h
+ create mode 100644 darling/src/libsystem_kernel/tests/fixtures/fstatfs-missing-proc/fstatfs_missing_proc_stubs.h
+ create mode 100644 darling/src/libsystem_kernel/tests/fstatfs_missing_proc_contract.c
+
+diff --git a/darling/src/libsystem_kernel/emulation/src/xnu_syscall/bsd/impl/stat/fstatfs.c b/darling/src/libsystem_kernel/emulation/src/xnu_syscall/bsd/impl/stat/fstatfs.c
+index 1098510c6766cfba090e581b061b9ff7ee06553f..a6dc79bc2ef6ae90557392117efc634b8d0e2b00 100644
+--- a/darling/src/libsystem_kernel/emulation/src/xnu_syscall/bsd/impl/stat/fstatfs.c
++++ b/darling/src/libsystem_kernel/emulation/src/xnu_syscall/bsd/impl/stat/fstatfs.c
+@@ -49,6 +49,11 @@ long sys_fstatfs64(int fd, struct bsd_statfs64* buf)
+ 
+ 	statfs_linux_to_bsd64(&lbuf, buf);
+ 
++	buf->f_mntonname[0] = 0;
++	buf->f_fstypename[0] = 0;
++	buf->f_mntfromname[0] = 0;
++	buf->f_iosize = 512;
++
+ 	ret = fdpath(fd, path, sizeof(path));
+ 
+ 	if (ret < 0)
+@@ -56,15 +61,16 @@ long sys_fstatfs64(int fd, struct bsd_statfs64* buf)
+ 
+ 	fd_m = sys_open("/proc/self/mounts", O_RDONLY, 0);
+ 	if (fd_m < 0)
+-		return fd_m;
++		/*
++		 * The fd is valid and the core statfs data is already filled in
++		 * from the Linux fstatfs syscall above. /proc/self/mounts is only
++		 * used to populate cosmetic mount-name strings, and can be absent
++		 * in copy-mode prefixes without a procfs bind mount.
++		 */
++		return 0;
+ 	
+ 	__simple_readline_init(&rbuf);
+ 
+-	buf->f_mntonname[0] = 0;
+-	buf->f_fstypename[0] = 0;
+-	buf->f_mntfromname[0] = 0;
+-	buf->f_iosize = 512;
+-
+ 	while (__simple_readline(fd_m, &rbuf, line, sizeof(line)))
+ 	{
+ 		char* p;
+diff --git a/darling/src/libsystem_kernel/tests/fixtures/fstatfs-missing-proc/darling/emulation/common/base.h b/darling/src/libsystem_kernel/tests/fixtures/fstatfs-missing-proc/darling/emulation/common/base.h
+new file mode 100644
+index 0000000000000000000000000000000000000000..463e17c08e9bfc23ffa9064e407d51f58f993023
+--- /dev/null
++++ b/darling/src/libsystem_kernel/tests/fixtures/fstatfs-missing-proc/darling/emulation/common/base.h
+@@ -0,0 +1 @@
++#include "fstatfs_missing_proc_stubs.h"
+diff --git a/darling/src/libsystem_kernel/tests/fixtures/fstatfs-missing-proc/darling/emulation/common/simple.h b/darling/src/libsystem_kernel/tests/fixtures/fstatfs-missing-proc/darling/emulation/common/simple.h
+new file mode 100644
+index 0000000000000000000000000000000000000000..72c4c50831ece0dda19bc3328be747c11df2b525
+--- /dev/null
++++ b/darling/src/libsystem_kernel/tests/fixtures/fstatfs-missing-proc/darling/emulation/common/simple.h
+@@ -0,0 +1,15 @@
++#include "fstatfs_missing_proc_stubs.h"
++
++static inline void __simple_readline_init(struct simple_readline_buf* buf)
++{
++	(void)buf;
++}
++
++static inline int __simple_readline(int fd, struct simple_readline_buf* buf, char* line, unsigned long line_size)
++{
++	(void)fd;
++	(void)buf;
++	(void)line;
++	(void)line_size;
++	return 0;
++}
+diff --git a/darling/src/libsystem_kernel/tests/fixtures/fstatfs-missing-proc/darling/emulation/conversion/errno.h b/darling/src/libsystem_kernel/tests/fixtures/fstatfs-missing-proc/darling/emulation/conversion/errno.h
+new file mode 100644
+index 0000000000000000000000000000000000000000..db06b43fed1c81238b334b3688cdc95dbb0991c4
+--- /dev/null
++++ b/darling/src/libsystem_kernel/tests/fixtures/fstatfs-missing-proc/darling/emulation/conversion/errno.h
+@@ -0,0 +1,6 @@
++#include "fstatfs_missing_proc_stubs.h"
++
++static inline long errno_linux_to_bsd(long ret)
++{
++	return ret;
++}
+diff --git a/darling/src/libsystem_kernel/tests/fixtures/fstatfs-missing-proc/darling/emulation/conversion/stat/common.h b/darling/src/libsystem_kernel/tests/fixtures/fstatfs-missing-proc/darling/emulation/conversion/stat/common.h
+new file mode 100644
+index 0000000000000000000000000000000000000000..217d3b772647c304b1dbedeb91ca8c6dad26c1d1
+--- /dev/null
++++ b/darling/src/libsystem_kernel/tests/fixtures/fstatfs-missing-proc/darling/emulation/conversion/stat/common.h
+@@ -0,0 +1,7 @@
++#include "fstatfs_missing_proc_stubs.h"
++
++static inline void statfs_linux_to_bsd64(struct linux_statfs64* linux_buf, struct bsd_statfs64* bsd_buf)
++{
++	(void)linux_buf;
++	bsd_buf->converted_from_linux = 1;
++}
+diff --git a/darling/src/libsystem_kernel/tests/fixtures/fstatfs-missing-proc/darling/emulation/linux_premigration/linux-syscalls/linux.h b/darling/src/libsystem_kernel/tests/fixtures/fstatfs-missing-proc/darling/emulation/linux_premigration/linux-syscalls/linux.h
+new file mode 100644
+index 0000000000000000000000000000000000000000..463e17c08e9bfc23ffa9064e407d51f58f993023
+--- /dev/null
++++ b/darling/src/libsystem_kernel/tests/fixtures/fstatfs-missing-proc/darling/emulation/linux_premigration/linux-syscalls/linux.h
+@@ -0,0 +1 @@
++#include "fstatfs_missing_proc_stubs.h"
+diff --git a/darling/src/libsystem_kernel/tests/fixtures/fstatfs-missing-proc/darling/emulation/xnu_syscall/bsd/helper/misc/fdpath.h b/darling/src/libsystem_kernel/tests/fixtures/fstatfs-missing-proc/darling/emulation/xnu_syscall/bsd/helper/misc/fdpath.h
+new file mode 100644
+index 0000000000000000000000000000000000000000..463e17c08e9bfc23ffa9064e407d51f58f993023
+--- /dev/null
++++ b/darling/src/libsystem_kernel/tests/fixtures/fstatfs-missing-proc/darling/emulation/xnu_syscall/bsd/helper/misc/fdpath.h
+@@ -0,0 +1 @@
++#include "fstatfs_missing_proc_stubs.h"
+diff --git a/darling/src/libsystem_kernel/tests/fixtures/fstatfs-missing-proc/darling/emulation/xnu_syscall/bsd/impl/fcntl/open.h b/darling/src/libsystem_kernel/tests/fixtures/fstatfs-missing-proc/darling/emulation/xnu_syscall/bsd/impl/fcntl/open.h
+new file mode 100644
+index 0000000000000000000000000000000000000000..463e17c08e9bfc23ffa9064e407d51f58f993023
+--- /dev/null
++++ b/darling/src/libsystem_kernel/tests/fixtures/fstatfs-missing-proc/darling/emulation/xnu_syscall/bsd/impl/fcntl/open.h
+@@ -0,0 +1 @@
++#include "fstatfs_missing_proc_stubs.h"
+diff --git a/darling/src/libsystem_kernel/tests/fixtures/fstatfs-missing-proc/darling/emulation/xnu_syscall/bsd/impl/stat/fstatfs.h b/darling/src/libsystem_kernel/tests/fixtures/fstatfs-missing-proc/darling/emulation/xnu_syscall/bsd/impl/stat/fstatfs.h
+new file mode 100644
+index 0000000000000000000000000000000000000000..463e17c08e9bfc23ffa9064e407d51f58f993023
+--- /dev/null
++++ b/darling/src/libsystem_kernel/tests/fixtures/fstatfs-missing-proc/darling/emulation/xnu_syscall/bsd/impl/stat/fstatfs.h
+@@ -0,0 +1 @@
++#include "fstatfs_missing_proc_stubs.h"
+diff --git a/darling/src/libsystem_kernel/tests/fixtures/fstatfs-missing-proc/darling/emulation/xnu_syscall/bsd/impl/unistd/close.h b/darling/src/libsystem_kernel/tests/fixtures/fstatfs-missing-proc/darling/emulation/xnu_syscall/bsd/impl/unistd/close.h
+new file mode 100644
+index 0000000000000000000000000000000000000000..bd1ac1ae68e830d61926553a9f4a88fd85cf0a2f
+--- /dev/null
++++ b/darling/src/libsystem_kernel/tests/fixtures/fstatfs-missing-proc/darling/emulation/xnu_syscall/bsd/impl/unistd/close.h
+@@ -0,0 +1,7 @@
++#include "fstatfs_missing_proc_stubs.h"
++
++static inline long close_internal(int fd)
++{
++	(void)fd;
++	return 0;
++}
+diff --git a/darling/src/libsystem_kernel/tests/fixtures/fstatfs-missing-proc/darling/emulation/xnu_syscall/bsd/impl/unistd/readlink.h b/darling/src/libsystem_kernel/tests/fixtures/fstatfs-missing-proc/darling/emulation/xnu_syscall/bsd/impl/unistd/readlink.h
+new file mode 100644
+index 0000000000000000000000000000000000000000..463e17c08e9bfc23ffa9064e407d51f58f993023
+--- /dev/null
++++ b/darling/src/libsystem_kernel/tests/fixtures/fstatfs-missing-proc/darling/emulation/xnu_syscall/bsd/impl/unistd/readlink.h
+@@ -0,0 +1 @@
++#include "fstatfs_missing_proc_stubs.h"
+diff --git a/darling/src/libsystem_kernel/tests/fixtures/fstatfs-missing-proc/fstatfs_missing_proc_stubs.h b/darling/src/libsystem_kernel/tests/fixtures/fstatfs-missing-proc/fstatfs_missing_proc_stubs.h
+new file mode 100644
+index 0000000000000000000000000000000000000000..1f21fb8b9ac09cfabc4257a349cc01adefc4cdc7
+--- /dev/null
++++ b/darling/src/libsystem_kernel/tests/fixtures/fstatfs-missing-proc/fstatfs_missing_proc_stubs.h
+@@ -0,0 +1,32 @@
++#ifndef FSTATFS_MISSING_PROC_STUBS_H
++#define FSTATFS_MISSING_PROC_STUBS_H
++
++struct bsd_statfs {
++	int unused;
++};
++
++struct bsd_statfs64 {
++	char f_mntonname[1024];
++	char f_fstypename[16];
++	char f_mntfromname[1024];
++	long f_iosize;
++	int converted_from_linux;
++};
++
++struct linux_statfs64 {
++	unsigned long f_type;
++};
++
++struct simple_readline_buf {
++	int unused;
++};
++
++long sys_fstatfs64(int fd, struct bsd_statfs64* buf);
++int fdpath(int fd, char* path, unsigned long size);
++long sys_open(const char* path, int flags, int mode);
++long fake_linux_fstatfs64(int fd, unsigned long size, struct linux_statfs64* buf);
++
++#define __NR_fstatfs64 1
++#define LINUX_SYSCALL3(nr, fd, size, buf) fake_linux_fstatfs64((fd), (size), (buf))
++
++#endif
+diff --git a/darling/src/libsystem_kernel/tests/fstatfs_missing_proc_contract.c b/darling/src/libsystem_kernel/tests/fstatfs_missing_proc_contract.c
+new file mode 100644
+index 0000000000000000000000000000000000000000..13bef9da2282d4b53eaf2443e432653c59325ab9
+--- /dev/null
++++ b/darling/src/libsystem_kernel/tests/fstatfs_missing_proc_contract.c
+@@ -0,0 +1,73 @@
++#include "fstatfs_missing_proc_stubs.h"
++
++#include <stdio.h>
++#include <string.h>
++
++static int saw_mounts_open;
++
++long fake_linux_fstatfs64(int fd, unsigned long size, struct linux_statfs64* buf)
++{
++	if (fd != 42 || size != sizeof(*buf) || buf == NULL)
++		return -22;
++	memset(buf, 0, sizeof(*buf));
++	buf->f_type = 0x1234;
++	return 0;
++}
++
++int fdpath(int fd, char* path, unsigned long size)
++{
++	if (fd != 42 || path == NULL || size < 5)
++		return -22;
++	strcpy(path, "/tmp");
++	return 0;
++}
++
++long sys_open(const char* path, int flags, int mode)
++{
++	(void)flags;
++	(void)mode;
++	if (strcmp(path, "/proc/self/mounts") != 0)
++		return -2;
++	saw_mounts_open = 1;
++	return -2;
++}
++
++unsigned long strlcpy(char* dst, const char* src, unsigned long size)
++{
++	unsigned long len = strlen(src);
++	if (size != 0) {
++		unsigned long copy = len < size - 1 ? len : size - 1;
++		memcpy(dst, src, copy);
++		dst[copy] = '\0';
++	}
++	return len;
++}
++
++extern long sys_fstatfs64(int fd, struct bsd_statfs64* buf);
++
++int main(void)
++{
++	struct bsd_statfs64 buf;
++	memset(&buf, 0xa5, sizeof(buf));
++
++	long rc = sys_fstatfs64(42, &buf);
++	if (rc != 0) {
++		fprintf(stderr, "sys_fstatfs64 returned %ld when /proc/self/mounts is absent\n", rc);
++		return 1;
++	}
++	if (!saw_mounts_open) {
++		fprintf(stderr, "test did not exercise /proc/self/mounts open path\n");
++		return 1;
++	}
++	if (buf.converted_from_linux != 1 || buf.f_iosize != 512) {
++		fprintf(stderr, "statfs conversion fields were not preserved\n");
++		return 1;
++	}
++	if (buf.f_mntonname[0] != '\0' || buf.f_fstypename[0] != '\0' || buf.f_mntfromname[0] != '\0') {
++		fprintf(stderr, "missing mounts should leave cosmetic mount names empty\n");
++		return 1;
++	}
++
++	puts("PASS fstatfs_missing_proc_contract");
++	return 0;
++}

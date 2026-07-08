@@ -199,6 +199,41 @@ patches:
       repo: darlinghq/darling-xnu
       base: main
       state: local
+- path: xnu/fstatfs-missing-proc-mounts.patch
+  sha256sum: 5c4c37cccfdd8cf93f7d6438108e4180edff9d7e6b105bd481c161576a8e9574
+  module: darling/src/external/xnu
+  source-branch: fix/fstatfs-missing-proc-mounts
+  source-commit: 32dd08e513243b1d1056dd9bc718d10ab44d233c
+  bead: dar-vqr9
+  publication-status: blocked
+  publication-blocker: guest boot/canary validation pending; see dar-vqr9
+  tests:
+  - name: fstatfs_missing_proc_contract
+    kind: unit
+    coverage-tier: host
+    env: host
+    diag: bare
+    red: true
+    red-proof:
+      mode: source-base
+      source-env: XNU_SRC_ROOT
+    runner: c-fixture
+    script: darling/src/libsystem_kernel/tests/fstatfs_missing_proc_contract.c
+    source-files:
+    - darling/src/libsystem_kernel/emulation/src/xnu_syscall/bsd/impl/stat/fstatfs.c
+    fixture-include-dirs:
+    - darling/src/libsystem_kernel/tests/fixtures/fstatfs-missing-proc
+    compile-flags: [-std=gnu11, -Wall, -Wextra, -Werror]
+    note: RED->GREEN contract for copy-mode prefixes where /proc/self/mounts is absent; valid fstatfs must still succeed.
+  github:
+    fork:
+      repo: IlyaGulya/darling-xnu
+      base: preupstream/main
+      state: local
+    upstream:
+      repo: darlinghq/darling-xnu
+      base: main
+      state: local
 - path: xnu/select-pselect-fdset.patch
   sha256sum: 6cee76ab959ae29d5dcbcb2b4e3396c2f773fc5c9e0e363bd27f12be924970f6
   module: darling/src/external/xnu
