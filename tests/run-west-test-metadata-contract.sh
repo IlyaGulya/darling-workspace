@@ -64,6 +64,18 @@ patches:
     include-dirs: [src]
     stub-headers: [darling/example.h]
     compile-flags: [-std=gnu11, -Wall, -Wextra, -Werror]
+- path: test/guest-c-fixture.patch
+  module: darling-workspace
+  tests:
+  - name: west_guest_c_fixture_contract
+    kind: guest
+    env: darling
+    diag: bare
+    runner: guest-c-fixture
+    script: tests/guest_c_fixture_contract.c
+    ok-marker: WEST_GUEST_C_FIXTURE_OK
+    timeout-seconds: 20
+    compile-flags: [-std=gnu11, -Wall, -Wextra, -Werror]
 YAML
 
 fail() {
@@ -181,7 +193,36 @@ c_fixture="$(
 printf '%s\n' "$c_fixture" | grep -q \
 	'cc -std=gnu11 -Wall -Wextra -Werror -I src -I <generated-stubs> tests/c_fixture_contract.c -o' ||
 	fail 'c-fixture metadata did not resolve to a compile-and-run command'
-printf '%s\n' "$source_only_check" | grep -q 'test metadata: 3 covered (runtime 0, compile 1, host 1, model 1)' ||
-	fail 'coverage-tier summary did not classify host/compile/model coverage'
+printf '%s\n' "$source_only_check" | grep -q 'test metadata: 4 covered (runtime 1, compile 1, host 1, model 1)' ||
+	fail 'coverage-tier summary did not classify runtime/host/compile/model coverage'
+
+guest_c_fixture="$(
+	west test --profile __metadata_contract \
+		--patch test/guest-c-fixture.patch \
+		--prefix /tmp/west-test-guest-c-fixture-prefix \
+		--list
+)"
+
+printf '%s\n' "$guest_c_fixture" | grep -q \
+	'<upload> tests/guest_c_fixture_contract.c && darling shell' ||
+	fail 'guest-c-fixture metadata did not resolve to a guest compile-and-run command'
+printf '%s\n' "$source_only_check" | grep -q 'RUNTIME   test/guest-c-fixture.patch' ||
+	fail 'guest-c-fixture patch was not reported as RUNTIME'
+
+fake_darling="$(mktemp)"
+cat >"$fake_darling" <<'SH'
+#!/usr/bin/env bash
+set -euo pipefail
+if [ "$1" = shell ]; then
+	shift
+	exec "$@"
+fi
+exit 64
+SH
+chmod +x "$fake_darling"
+mkdir -p /tmp/west-test-guest-c-fixture-prefix
+DARLING="$fake_darling" DPREFIX=/tmp/west-test-guest-c-fixture-prefix \
+	west test --profile __metadata_contract \
+		--patch test/guest-c-fixture.patch >/dev/null
 
 printf 'PASS west-test-metadata-contract\n'

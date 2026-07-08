@@ -832,11 +832,16 @@ patches:
     kind: guest
     env: darling
     diag: guarded
-    runner: script
-    script: tests/run-psynch-kernel-return-contract.sh
+    runner: guest-c-fixture
+    script: tests/psynch_kernel_return_contract.c
+    ok-marker: PSYNCH_KERNEL_RETURN_CONTRACT_OK
+    timeout-seconds: 90
+    guest-prelude: export PTHREAD_MUTEX_USE_ULOCK=0
+    link-flags:
+    - -lpthread
     requires:
     - darling-prefix
-    note: Requires DPREFIX. Guest runtime contract for psynch return decoding and EINTR handling.
+    note: Guest C fixture. west uploads, compiles, runs, checks verdict marker, and owns the Darling prefix lifecycle.
   github:
     fork:
       repo: IlyaGulya/darling-libpthread
@@ -923,11 +928,13 @@ patches:
     kind: guest
     env: darling
     diag: guarded
-    runner: script
-    script: darling/src/libsystem_kernel/tests/run-getattrlist-shared-packer.sh
+    runner: guest-c-fixture
+    script: darling/src/libsystem_kernel/tests/getattrlist_shared_packer_test.c
+    ok-marker: GETATTRLIST_SHARED_PACKER_OK
+    timeout-seconds: 60
     requires:
     - darling-prefix
-    note: Requires DPREFIX. Guest runtime contract for shared getattrlist/fgetattrlist/getattrlistat/getattrlistbulk packing.
+    note: Guest C fixture. west uploads, compiles, runs, checks verdict marker, and owns the Darling prefix lifecycle.
   github:
     fork:
       repo: IlyaGulya/darling-xnu

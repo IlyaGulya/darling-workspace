@@ -71,8 +71,11 @@ refs, PR drafts, and agent handoff.
   and must not be counted as behavioral coverage.
 - Prefer shared test helpers over ad hoc shell boilerplate. Static contract
   scripts should use a local `contract-test-lib.sh`; Darling guest C verdict
-  tests should use a local `guest-verdict-test-lib.sh` and declare runtime
-  prerequisites in patch metadata.
+  tests should prefer `runner: guest-c-fixture` so `west test` owns upload,
+  in-guest compilation, execution, timeout, verdict-marker checking, and prefix
+  cleanup. Use a local `guest-verdict-test-lib.sh` only for corner cases the
+  structured runner cannot express yet, and declare runtime prerequisites in
+  patch metadata.
 - Darling guest tests should prefer `requires: [darling-prefix]` over
   `requires-env: [DPREFIX]`; let `west test --prefix/--prefix-profile` provide
   `DPREFIX`.
