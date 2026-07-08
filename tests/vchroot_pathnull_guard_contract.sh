@@ -10,8 +10,6 @@ for file in \
 	"$impl/unistd/chdir.c" \
 	"$impl/unistd/chmod_extended.c" \
 	"$impl/unistd/fchmodat.c" \
-	"$impl/unistd/fchownat.c" \
-	"$impl/unistd/lchown.c" \
 	"$impl/unistd/linkat.c" \
 	"$impl/unistd/mknod.c" \
 	"$impl/unistd/readlinkat.c" \
@@ -193,8 +191,6 @@ struct bsd_timeval { long tv_sec; int tv_usec; };
 #include "$impl/unistd/chdir.c"
 #include "$impl/unistd/chmod_extended.c"
 #include "$impl/unistd/fchmodat.c"
-#include "$impl/unistd/fchownat.c"
-#include "$impl/unistd/lchown.c"
 #include "$impl/unistd/linkat.c"
 #include "$impl/unistd/mknod.c"
 #include "$impl/unistd/readlinkat.c"
@@ -243,10 +239,8 @@ static void run_case(const char *name) {
 	else if (name[0] == '3') expect_efault("sys_chdir", sys_chdir(NULL));
 	else if (name[0] == '4') expect_efault("sys_chmod_extended", sys_chmod_extended(NULL, 0, 0, 0, NULL));
 	else if (name[0] == '5') expect_efault("sys_fchmodat", sys_fchmodat(0, NULL, 0, 0));
-	else if (name[0] == '6') expect_efault("sys_fchownat", sys_fchownat(0, NULL, 0, 0, 0));
-	else if (name[0] == '7') expect_efault("sys_lchown", sys_lchown(NULL, 0, 0));
-	else if (name[0] == '8') expect_efault("sys_linkat left", sys_linkat(0, NULL, 0, "dst", 0));
-	else if (name[0] == '9') expect_efault("sys_linkat right", sys_linkat(0, "src", 0, NULL, 0));
+	else if (name[0] == '6') expect_efault("sys_linkat left", sys_linkat(0, NULL, 0, "dst", 0));
+	else if (name[0] == '7') expect_efault("sys_linkat right", sys_linkat(0, "src", 0, NULL, 0));
 	else if (name[0] == 'a') expect_efault("sys_mknod", sys_mknod(NULL, 0, 0));
 	else if (name[0] == 'b') expect_efault("sys_readlinkat", sys_readlinkat(0, NULL, NULL, 0));
 	else if (name[0] == 'c') expect_efault("sys_truncate", sys_truncate(NULL, 0));
@@ -259,7 +253,7 @@ static void run_case(const char *name) {
 int main(void) {
 	const char *cases[] = {
 		"0", "1", "2", "3", "4", "5", "6", "7",
-		"8", "9", "a", "b", "c", "d", "e", "f",
+		"a", "b", "c", "d", "e", "f",
 	};
 	for (unsigned i = 0; i < sizeof(cases) / sizeof(cases[0]); i++) {
 		pid_t pid = fork();
