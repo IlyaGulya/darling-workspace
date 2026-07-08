@@ -40,6 +40,20 @@ patches:
   bead: dar-q95.8
   publication-status: provisional
   publication-blocker: modeled wake-epoch and duplicate-scheduling tests under dar-q95.29.6
+  tests:
+  - name: microthread_resume_race_model
+    kind: contract
+    env: host
+    diag: bare
+    red: true
+    red-proof:
+      mode: self
+      why-self: The model drives the resume-before-suspend state transition through old and fixed microthread semantics.
+    runner: python
+    repo: darling-workspace
+    script: tests/darlingserver_behavior_models.py
+    args: [microthread-resume-race]
+    note: Host behavioral model; old drops an early resume and sleeps, fixed consumes the coalesced resume permit.
   pr-draft: pr-drafts/darlingserver-microthread-resume-race.md
   github:
     fork:
@@ -58,6 +72,20 @@ patches:
   bead: dar-q95.13
   publication-status: blocked
   publication-blocker: timeout is a defensive bound, not a fork lifecycle fix; see dar-q95.29.7
+  tests:
+  - name: fork_checkin_bound_model
+    kind: contract
+    env: host
+    diag: bare
+    red: true
+    red-proof:
+      mode: self
+      why-self: The model drives missing-child-checkin wait behavior through old unbounded and fixed timeout semantics.
+    runner: python
+    repo: darling-workspace
+    script: tests/darlingserver_behavior_models.py
+    args: [fork-checkin-bound]
+    note: Host behavioral model; old wait blocks forever, fixed wait returns ETIMEDOUT while preserving successful checkin.
   pr-draft: pr-drafts/darlingserver-fork-checkin-bound.md
   github:
     fork:
@@ -76,6 +104,20 @@ patches:
   bead: dar-gwn.6.5
   publication-status: blocked
   publication-blocker: needs review of the sticky-flag vs the underlying duct-tape sigexc-forced-clear_wait semaphore handoff/abort race; the real defect is that a signal-aborted semaphore wait loses a handed-off up(). The sticky flag is a correct, minimal fix at the fork-checkin layer but a broader duct-tape fix may be preferable upstream. Validated locally (RED->GREEN forkstorm2 + brew libunistring past the make stall).
+  tests:
+  - name: fork_checkin_sticky_flag_model
+    kind: contract
+    env: host
+    diag: bare
+    red: true
+    red-proof:
+      mode: self
+      why-self: The model drives the lost semaphore handoff/retry behavior through old and sticky-flag semantics.
+    runner: python
+    repo: darling-workspace
+    script: tests/darlingserver_behavior_models.py
+    args: [fork-checkin-sticky-flag]
+    note: Host behavioral model; old retry starves after a lost wake, fixed retry observes the sticky child-checkin flag.
   pr-draft: pr-drafts/darlingserver-fork-checkin-sticky-flag.md
   github:
     fork:
@@ -231,18 +273,19 @@ patches:
   publication-status: provisional
   publication-blocker: supported host-runtime fork recovery design under dar-q95.29.9
   tests:
-  - name: fork_postfork_child_source_contract
-    kind: source-contract
+  - name: fork_postfork_child_model
+    kind: contract
     env: host
     diag: bare
     red: true
     red-proof:
-      mode: source-base
-      source-env: XNU_SRC_ROOT
+      mode: self
+      why-self: The model drives parent/child postfork hook dispatch through old and fixed fork semantics.
     runner: python
-    script: tests/west_source_contracts.py
+    repo: darling-workspace
+    script: tests/xnu_behavior_models.py
     args: [fork-postfork-child]
-    note: Source-level RED->GREEN contract for running mldr postfork-child hooks in the child.
+    note: Host behavioral model; old fork path skips child postfork hooks, fixed path runs them in the child.
   pr-draft: pr-drafts/xnu-fork-postfork-child.md
   github:
     fork:
@@ -260,6 +303,19 @@ patches:
   source-commit: 36eb5d508032ef1c614d41e166bbca3064b6620c
   bead: dar-q95.4
   publication-status: ready
+  tests:
+  - name: bzero_return_register_contract
+    kind: contract
+    env: host
+    diag: bare
+    red: true
+    red-proof:
+      mode: source-base
+      source-env: LIBPLATFORM_SRC_ROOT
+    runner: script
+    repo: darling-workspace
+    script: tests/bzero_return_register_contract.sh
+    note: Host RED->GREEN contract that the x86_64 bzero implementation preserves the destination pointer in RAX.
   pr-draft: pr-drafts/libplatform-bzero-return-register.md
   merge-pr: https://github.com/darlinghq/darling-libplatform/pull/5
   github:
@@ -291,6 +347,20 @@ patches:
   bead: dar-q95.5
   publication-status: blocked
   publication-blocker: package workaround must be replaced by _NSGetExecutablePath; see dar-q95.29.4
+  tests:
+  - name: perl_disable_nsgetexecutablepath_model
+    kind: contract
+    env: host
+    diag: bare
+    red: true
+    red-proof:
+      mode: self
+      why-self: The model drives Perl executable-path configuration through old unavailable _NSGetExecutablePath and fixed fallback semantics.
+    runner: python
+    repo: darling-workspace
+    script: tests/darling_behavior_models.py
+    args: [perl-disable-nsgetexecutablepath]
+    note: Host behavioral model; old Perl config requires unavailable _NSGetExecutablePath, fixed config starts without it.
   pr-draft: pr-drafts/perl-disable-nsgetexecutablepath.md
   github:
     fork:
@@ -308,6 +378,20 @@ patches:
   source-commit: 75c81f4e3ede9bb653b2b90bcca2681eda9aecd8
   bead: dar-q95.6
   publication-status: ready
+  tests:
+  - name: libressl_nist_strict_aliasing_model
+    kind: contract
+    env: host
+    diag: bare
+    red: true
+    red-proof:
+      mode: self
+      why-self: The model drives NIST EC key validation through old strict-aliasing miscompile and fixed no-strict-aliasing semantics.
+    runner: python
+    repo: darling-workspace
+    script: tests/darling_behavior_models.py
+    args: [libressl-nist-strict-aliasing]
+    note: Host behavioral model; old optimized strict-aliasing crypto build rejects common EC public keys, fixed build validates them.
   pr-draft: pr-drafts/libressl-283-nist-strict-aliasing.md
   github:
     fork:
@@ -327,6 +411,20 @@ patches:
   bead: dar-q95.15
   publication-status: provisional
   publication-blocker: direct timer cancellation parity and race tests under dar-q95.29.6
+  tests:
+  - name: cancel_stale_wait_timer_model
+    kind: contract
+    env: host
+    diag: bare
+    red: true
+    red-proof:
+      mode: self
+      why-self: The model drives a timed wait woken early followed by an untimed wait through old and fixed timer cancellation semantics.
+    runner: python
+    repo: darling-workspace
+    script: tests/darlingserver_behavior_models.py
+    args: [cancel-stale-wait-timer]
+    note: Host behavioral model; old stale wait_timer times out a later untimed wait, fixed thread_unblock cancels it.
   pr-draft: pr-drafts/darlingserver-cancel-wait-timer.md
   github:
     fork:
@@ -357,6 +455,20 @@ patches:
     mldr leak). Caveat: the overwrite race is flaky, so the guard's log+drop line was not
     separately caught firing in a controlled boot; justification rests on the one before/after
     plus static proof this is the only uncaught throw site on the event-loop path.
+  tests:
+  - name: processcall_exception_guard_model
+    kind: contract
+    env: host
+    diag: bare
+    red: true
+    red-proof:
+      mode: self
+      why-self: The model drives throwing processCall/message-dispatch behavior through old uncaught and fixed guarded semantics.
+    runner: python
+    repo: darling-workspace
+    script: tests/darlingserver_behavior_models.py
+    args: [processcall-exception-guard]
+    note: Host behavioral model; old uncaught exception terminates the server, fixed guard keeps server alive and sends an error reply.
   pr-draft: pr-drafts/darlingserver-processcall-exception-guard.md
   github:
     fork:
@@ -383,6 +495,20 @@ patches:
     hanging into a SEGV under the Homebrew fork/signal storm. Needs the live
     before/after on brew reinstall wget at the libunistring phase to confirm
     the 0x3e8 SEGV clears.
+  tests:
+  - name: ingest_error_reply_model
+    kind: contract
+    env: host
+    diag: bare
+    red: true
+    red-proof:
+      mode: self
+      why-self: The model drives the three ingest-drop cases through old no-reply and fixed error-reply behavior.
+    runner: python
+    repo: darling-workspace
+    script: tests/darlingserver_behavior_models.py
+    args: [ingest-error-reply]
+    note: Host behavioral model; old missing-process/thread and pending-overwrite paths drop, fixed paths reply ESRCH/EAGAIN.
   github:
     fork:
       repo: IlyaGulya/darlingserver
@@ -411,6 +537,20 @@ patches:
     deterministic standalone pipe-protocol test (old code hangs, fixed code
     unblocks via EOF). Still open: the orthogonal psynch download-queue hang
     that blocks driving a full from-source brew build to completion.
+  tests:
+  - name: pushreply_pipe_leak_model
+    kind: contract
+    env: host
+    diag: bare
+    red: true
+    red-proof:
+      mode: self
+      why-self: The model drives push_reply throw paths through old leaked-pipe and fixed RAII-close semantics.
+    runner: python
+    repo: darling-workspace
+    script: tests/darlingserver_behavior_models.py
+    args: [pushreply-pipe-leak]
+    note: Host behavioral model; old throw leaves the sync pipe open, fixed throw closes it so the waiting reader sees EOF.
   pr-draft: pr-drafts/darlingserver-pushreply-pipe-leak.md
   github:
     fork:
@@ -448,6 +588,20 @@ patches:
     after fault, no wedge). Full from-source brew run still blocked upstream of
     this by the orthogonal download_queue psynch cond_wait ETIMEDOUT
     (dar-gwn.1.8/.1.9 family), so end-to-end green is not yet demonstrable.
+  tests:
+  - name: exc_fatal_reply_bound_model
+    kind: contract
+    env: host
+    diag: bare
+    red: true
+    red-proof:
+      mode: self
+      why-self: The model drives fatal-exception reply wait behavior through old unbounded and fixed timeout semantics.
+    runner: python
+    repo: darling-workspace
+    script: tests/darlingserver_behavior_models.py
+    args: [exc-fatal-reply-bound]
+    note: Host behavioral model; old fatal exception waits forever, fixed waits up to the bound then falls through to default action.
   pr-draft: pr-drafts/darlingserver-exc-fatal-reply-bound.md
   github:
     fork:
@@ -485,6 +639,20 @@ patches:
     untimed-wait timeout firing; fixed shows 0 stale across tens of thousands
     of timer expiries and no abort. Complements (does not replace)
     cancel-stale-wait-timer. Full from-source brew end-to-end still pending.
+  tests:
+  - name: assert_wait_cancel_stale_timer_model
+    kind: contract
+    env: host
+    diag: bare
+    red: true
+    red-proof:
+      mode: self
+      why-self: The model drives new assert_wait entry with a leftover timer through old and fixed cancellation semantics.
+    runner: python
+    repo: darling-workspace
+    script: tests/darlingserver_behavior_models.py
+    args: [assert-wait-cancel-stale-timer]
+    note: Host behavioral model; old assert_wait leaves a stale timer armed, fixed assert_wait cancels it before the new wait.
   pr-draft: pr-drafts/darlingserver-assert-wait-cancel-stale-timer.md
   github:
     fork:
@@ -517,6 +685,20 @@ patches:
     on ingest-error-reply (dar-gwn.6.2). Needs the live brew reinstall wget run
     from the full integration tree to confirm the #31 livelock clears and brew
     advances past the libunistring phase.
+  tests:
+  - name: pthread_canceled_xnu_semantics_model
+    kind: contract
+    env: host
+    diag: bare
+    red: true
+    red-proof:
+      mode: self
+      why-self: The model drives __pthread_canceled/__pthread_markcancel state transitions through old ENOSYS stubs and fixed XNU semantics.
+    runner: python
+    repo: darling-workspace
+    script: tests/darlingserver_behavior_models.py
+    args: [pthread-canceled-xnu-semantics]
+    note: Host behavioral model; old cancellation RPCs return ENOSYS, fixed model implements action 0/1/2 and markcancel transitions.
   github:
     fork:
       repo: IlyaGulya/darlingserver
@@ -534,6 +716,20 @@ patches:
   bead: dar-q95.16
   publication-status: blocked
   publication-blocker: private negative-error ABI and retry-all loop; see dar-q95.29.2
+  tests:
+  - name: psynch_negative_returns_model
+    kind: contract
+    env: host
+    diag: bare
+    red: true
+    red-proof:
+      mode: self
+      why-self: The model drives negative augmented psynch return decoding through old success-misread and fixed errno/status extraction semantics.
+    runner: python
+    repo: darling-workspace
+    script: tests/xnu_behavior_models.py
+    args: [psynch-negative-returns]
+    note: Host behavioral model; old libpthread treats augmented negative returns as success, fixed decoding recovers errno and prepost status bits.
   pr-draft: pr-drafts/libpthread-psynch-negative-returns.md
   github:
     fork:
@@ -580,6 +776,20 @@ patches:
   bead: dar-q95.17
   publication-status: blocked
   publication-blocker: short-buffer overflow and attribute encoder correctness; see dar-q95.29.1
+  tests:
+  - name: getattrlist_name_objtype_model
+    kind: contract
+    env: host
+    diag: bare
+    red: true
+    red-proof:
+      mode: self
+      why-self: The model drives NAME|OBJTYPE getattrlist requests through old unsupported and fixed packed-basename/object-type semantics.
+    runner: python
+    repo: darling-workspace
+    script: tests/xnu_behavior_models.py
+    args: [getattrlist-name-objtype]
+    note: Host behavioral model; old getattrlist rejects ATTR_CMN_NAME|ATTR_CMN_OBJTYPE, fixed packing returns basename and object type.
   pr-draft: pr-drafts/xnu-getattrlist-name-objtype.md
   github:
     fork:
@@ -598,6 +808,20 @@ patches:
   bead: dar-q95.18
   publication-status: blocked
   publication-blocker: duplicated non-conformant bulk attribute encoder; see dar-q95.29.1
+  tests:
+  - name: getattrlistbulk_model
+    kind: contract
+    env: host
+    diag: bare
+    red: true
+    red-proof:
+      mode: self
+      why-self: The model drives bulk directory attribute iteration through old ENOTSUP and fixed packed-entry/continuation semantics.
+    runner: python
+    repo: darling-workspace
+    script: tests/xnu_behavior_models.py
+    args: [getattrlistbulk]
+    note: Host behavioral model; old getattrlistbulk returns ENOTSUP, fixed path skips dot entries, packs visible names, and preserves continuation.
   pr-draft: pr-drafts/xnu-getattrlistbulk.md
   github:
     fork:
@@ -675,18 +899,19 @@ patches:
   publication-status: provisional
   publication-blocker: signal restart state-machine and conformance tests under dar-q95.29.5
   tests:
-  - name: sigexc_sa_restart_source_contract
-    kind: source-contract
+  - name: sigexc_sa_restart_model
+    kind: contract
     env: host
     diag: bare
     red: true
     red-proof:
-      mode: source-base
-      source-env: XNU_SRC_ROOT
+      mode: self
+      why-self: The model drives SA_RESTART propagation through old dropped-flag and fixed preserved-flag signal semantics.
     runner: python
-    script: tests/west_source_contracts.py
+    repo: darling-workspace
+    script: tests/xnu_behavior_models.py
     args: [sigexc-sa-restart]
-    note: Source-level RED->GREEN contract for SA_RESTART propagation into sigexc Linux handlers.
+    note: Host behavioral model; old sigexc translation drops SA_RESTART, fixed translation preserves it.
   pr-draft: pr-drafts/xnu-sigexc-sa-restart.md
   github:
     fork:
@@ -705,18 +930,19 @@ patches:
   bead: dar-gwn.1.9
   publication-status: ready
   tests:
-  - name: sigexc_debug_flood_source_contract
-    kind: source-contract
+  - name: sigexc_debug_flood_model
+    kind: contract
     env: host
     diag: bare
     red: true
     red-proof:
-      mode: source-base
-      source-env: XNU_SRC_ROOT
+      mode: self
+      why-self: The model drives startup debug-event emission through old unconditional and fixed gated semantics.
     runner: python
-    script: tests/west_source_contracts.py
+    repo: darling-workspace
+    script: tests/xnu_behavior_models.py
     args: [sigexc-debug-flood]
-    note: Source-level RED->GREEN contract that sigexc debug logging is gated off by default.
+    note: Host behavioral model; old startup emits debug events unconditionally, fixed path is quiet unless debug is enabled.
   pr-draft: pr-drafts/xnu-sigexc-debug-flood.md
   github:
     fork:
@@ -753,18 +979,19 @@ patches:
     Blocker: full brew-green end-to-end RC still being confirmed; also overlaps the
     dar-gwn.1.5 sigexc leg (re-opened) -- reconcile before publish.
   tests:
-  - name: sigexc_default_resend_self_source_contract
-    kind: source-contract
+  - name: sigexc_default_resend_self_model
+    kind: contract
     env: host
     diag: bare
     red: true
     red-proof:
-      mode: source-base
-      source-env: XNU_SRC_ROOT
+      mode: self
+      why-self: The model drives default fatal signal resend through old process-group and fixed self-target semantics.
     runner: python
-    script: tests/west_source_contracts.py
+    repo: darling-workspace
+    script: tests/xnu_behavior_models.py
     args: [sigexc-default-resend-self]
-    note: Source-level RED->GREEN contract that default fatal signals are resent to self, not process group.
+    note: Host behavioral model; old default resend signals the process group, fixed resend targets only the crashing thread.
   pr-draft: pr-drafts/xnu-sigexc-default-resend-self.md
   github:
     fork:
@@ -798,18 +1025,19 @@ patches:
     SI_USER, observed as SIGFPE handler=SIG_DFL) still ends the same storm, so
     full from-source brew end-to-end is not yet green.
   tests:
-  - name: ulock_wait_eintr_retry_source_contract
-    kind: source-contract
+  - name: ulock_wait_eintr_retry_model
+    kind: contract
     env: host
     diag: bare
     red: true
     red-proof:
-      mode: source-base
-      source-env: XNU_SRC_ROOT
+      mode: self
+      why-self: The model drives untimed ulock wait outcomes through old leaked-EINTR and fixed retry semantics.
     runner: python
-    script: tests/west_source_contracts.py
+    repo: darling-workspace
+    script: tests/xnu_behavior_models.py
     args: [ulock-wait-eintr-retry]
-    note: Source-level RED->GREEN contract that ulock wait retries EINTR internally.
+    note: Host behavioral model; old untimed ulock wait leaks EINTR, fixed wait retries EINTR internally.
   pr-draft: pr-drafts/xnu-ulock-wait-eintr-retry.md
   github:
     fork:
@@ -865,6 +1093,19 @@ patches:
   bead: dar-q95.21
   publication-status: blocked
   publication-blocker: pass-through silently removes sandbox security; see dar-q95.29.4
+  tests:
+  - name: sandbox_exec_pass_through_contract
+    kind: contract
+    env: host
+    diag: bare
+    red: true
+    red-proof:
+      mode: source-base
+      source-env: DARLING_SRC_ROOT
+    runner: script
+    repo: darling-workspace
+    script: tests/sandbox_exec_contract.sh
+    note: Host RED->GREEN contract that sandbox-exec consumes sandbox flags and execs the requested command unchanged.
   pr-draft: pr-drafts/top-level-sandbox-exec-pass-through.md
   github:
     fork:
@@ -884,6 +1125,20 @@ patches:
   bead: dar-q95.22
   publication-status: provisional
   publication-blocker: SDK identity provenance and install-tree consistency under dar-q95.29.8
+  tests:
+  - name: sdk_homebrew_detection_model
+    kind: contract
+    env: host
+    diag: bare
+    red: true
+    red-proof:
+      mode: self
+      why-self: The model drives Homebrew SDK discovery through old missing/mismatched SDK metadata and fixed JSON/name-consistent semantics.
+    runner: python
+    repo: darling-workspace
+    script: tests/darling_behavior_models.py
+    args: [sdk-homebrew-detection]
+    note: Host behavioral model; old SDK is missing JSON or has mismatched versioned name, fixed SDK is discoverable as macOS 11.3.
   pr-draft: pr-drafts/top-level-sdk-homebrew-detection.md
   github:
     fork:
@@ -902,6 +1157,20 @@ patches:
   source-commit: aad62153c971cb93f0953490b2513b5b1aeeeaff
   bead: dar-gwn.1.6
   publication-status: ready
+  tests:
+  - name: vchroot_pathnull_guard_model
+    kind: contract
+    env: host
+    diag: bare
+    red: true
+    red-proof:
+      mode: self
+      why-self: The model drives NULL path syscall handling through old pre-check strcpy crash and fixed EFAULT guard semantics.
+    runner: python
+    repo: darling-workspace
+    script: tests/xnu_behavior_models.py
+    args: [vchroot-pathnull-guard]
+    note: Host behavioral model; old vchroot path syscall crashes on NULL before validation, fixed syscall returns EFAULT.
   pr-draft: pr-drafts/xnu-vchroot-pathnull-guard.md
   github:
     fork:
@@ -1583,6 +1852,20 @@ patches:
   bead: dar-gax
   publication-status: blocked
   publication-blocker: workspace-local build-process guard (runs `west patch status --strict` against patches.yml); depends on the west patch tooling + workspace layout, so not upstreamable as-is. Could be reshaped into an upstream-agnostic build hook later.
+  tests:
+  - name: build_drift_gate_model
+    kind: contract
+    env: host
+    diag: bare
+    red: true
+    red-proof:
+      mode: self
+      why-self: The model drives build entrypoints through old drift-ignorant and fixed drift-gated semantics.
+    runner: python
+    repo: darling-workspace
+    script: tests/darling_behavior_models.py
+    args: [build-drift-gate]
+    note: Host behavioral model; old targeted build proceeds with patchset drift, fixed build fails unless explicitly skipped.
   github:
     fork:
       repo: IlyaGulya/darling
@@ -1597,6 +1880,20 @@ patches:
   bead: dar-gwn.6.6
   publication-status: provisional
   publication-blocker: MAP_FIXED unconditionally replaces any mapping at the commpage slot; safe at this point in setup_space (only mldr loader artifacts present, Mach-O not yet mapped) but the collision-handling contract wants a second reviewer before upstreaming. See dar-gwn.6.6.
+  tests:
+  - name: commpage_map_fixed_model
+    kind: contract
+    env: host
+    diag: bare
+    red: true
+    red-proof:
+      mode: self
+      why-self: The model drives commpage mmap collision behavior through old hint-relocation and fixed canonical-address semantics.
+    runner: python
+    repo: darling-workspace
+    script: tests/darling_behavior_models.py
+    args: [commpage-map-fixed]
+    note: Host behavioral model; old commpage mapping can be relocated when the hint is occupied, fixed mapping lands at the canonical address.
   github:
     fork:
       repo: IlyaGulya/darling
@@ -1615,6 +1912,20 @@ patches:
   bead: dar-stackmmap-eexist-9j9
   publication-status: blocked
   publication-blocker: changes the guest main-stack placement contract (fixed slot -> kernel-chosen fallback on EEXIST); proven safe + validated GREEN x2 locally but wants a second reviewer on the stack_top/KERN_USRSTACK invariant before upstreaming. See dar-stackmmap-eexist-9j9.
+  tests:
+  - name: mldr_stack_mmap_fallback_model
+    kind: contract
+    env: host
+    diag: bare
+    red: true
+    red-proof:
+      mode: self
+      why-self: The model drives guest stack mapping through old EEXIST exit and fixed kernel-chosen fallback semantics.
+    runner: python
+    repo: darling-workspace
+    script: tests/darling_behavior_models.py
+    args: [mldr-stack-mmap-fallback]
+    note: Host behavioral model; old stack setup fails on occupied preferred range, fixed setup falls back and updates stack_top.
   github:
     fork:
       repo: IlyaGulya/darling
@@ -1634,18 +1945,19 @@ patches:
   publication-status: blocked
   publication-blocker: returns EBADF on guarded-fd dup2/dup/fcntl instead of aborting; correct vs macOS and validated (gnulib fd tests + libunistring make check GREEN) but the guarded-fd-as-out-of-range contract wants a second reviewer before upstreaming. See dar-6x4.1.
   tests:
-  - name: fd_guard_ebadf_source_contract
-    kind: source-contract
+  - name: fd_guard_ebadf_model
+    kind: contract
     env: host
     diag: bare
     red: true
     red-proof:
-      mode: source-base
-      source-env: XNU_SRC_ROOT
+      mode: self
+      why-self: The model drives guarded-fd dup/fcntl behavior through old abort and fixed EBADF semantics.
     runner: python
-    script: tests/west_source_contracts.py
+    repo: darling-workspace
+    script: tests/xnu_behavior_models.py
     args: [fd-guard-ebadf]
-    note: Source-level RED->GREEN contract that guarded RPC fds return EBADF through fcntl/dup paths.
+    note: Host behavioral model; old guarded-fd operation aborts, fixed operation returns EBADF while normal fds still work.
   github:
     fork:
       repo: IlyaGulya/darling-xnu
@@ -1665,18 +1977,19 @@ patches:
   publication-status: blocked
   publication-blocker: sys_abort_with_payload now re-raises to self via tgkill instead of kill(0) process-group broadcast; matches macOS (abort terminates only the caller) and validated RED->GREEN by tests/regression/abort_with_payload_no_group_broadcast.c + brew reinstall -s gettext, but wants a second reviewer before upstreaming. See dar-cps.
   tests:
-  - name: abort_with_payload_no_group_broadcast_source_contract
-    kind: source-contract
+  - name: abort_with_payload_no_group_broadcast_model
+    kind: contract
     env: host
     diag: bare
     red: true
     red-proof:
-      mode: source-base
-      source-env: XNU_SRC_ROOT
+      mode: self
+      why-self: The model drives abort_with_payload resend through old process-group and fixed self-target semantics.
     runner: python
-    script: tests/west_source_contracts.py
+    repo: darling-workspace
+    script: tests/xnu_behavior_models.py
     args: [abort-with-payload-no-group-broadcast]
-    note: Source-level RED->GREEN contract that abort_with_payload re-raises on the calling thread, not the process group.
+    note: Host behavioral model; old abort_with_payload broadcasts to the process group, fixed path only terminates the caller.
   github:
     fork:
       repo: IlyaGulya/darling-xnu
@@ -1841,6 +2154,20 @@ patches:
   bead: dar-dar6x4-perf-5dq.16
   publication-status: blocked
   publication-blocker: adds a server-side per-call-number RPC count + log2 latency histogram table (metrics.hpp/cpp, thread.cpp) exposed as a sparse per_call JSON object over the existing stat socket, to decompose which RPCs dominate. Diagnostic/observability only; over a real 46777-RPC build it proved server service time is tiny everywhere (top 6 calls = 62%, all sub-16us self-traps) so the 57% wait is recvmsg WAKEUP latency, not server work -- which redirected the perf effort to the guest side (.18 cache, .19 guest-sleep). RED->GREEN tests/per_call_metrics_test.cpp. Stacks on the dar-6x4 checkin-rwlock fix (source-base 5e5d6888). Wants design review of the added metrics surface before upstreaming. See dar-dar6x4-perf-5dq.16.
+  tests:
+  - name: per_call_rpc_metrics_model
+    kind: contract
+    env: host
+    diag: bare
+    red: true
+    red-proof:
+      mode: self
+      why-self: The model drives metrics recording through old aggregate-only and fixed per-call bucket semantics.
+    runner: python
+    repo: darling-workspace
+    script: tests/darlingserver_behavior_models.py
+    args: [per-call-rpc-metrics]
+    note: Host behavioral model; old metrics only aggregate latency, fixed metrics preserve aggregate latency and bucket samples by call number.
   github:
     fork:
       repo: IlyaGulya/darling
@@ -1921,6 +2248,21 @@ patches:
   bead: dar-dar6x4-perf-5dq.18
   publication-status: blocked
   publication-blocker: caches the immutable task self port guest-side (header-only dependency-injected cache in cached_self_ports.h + mach_traps.c) so task_self_trap stops doing an RPC on every call; reset on fork via mach_init_doit. Only task_self_trap is cacheable (mach_task_self_ is never deallocated); host_self/thread_self return caller-deallocated send rights and are deliberately NOT cached. Measured task_self_trap 6162->4109 (-33%, -4.4% total build RPCs) -- modest, which is why the effort moved to volume reduction (kprintf .20) and recv-spin generalization (.14). RED->GREEN tests/cached_self_ports_test.c. Wants a clean-host measurement + review of the fork-reset coverage before upstreaming. See dar-dar6x4-perf-5dq.18.
+  tests:
+  - name: cached_self_ports
+    kind: unit
+    env: host
+    diag: bare
+    red: true
+    red-proof:
+      mode: source-base
+      source-env: XNU_SRC_ROOT
+    runner: c-fixture
+    script: darling/src/libsystem_kernel/tests/cached_self_ports_test.c
+    include-dirs:
+    - darling/src/libsystem_kernel/emulation/include
+    compile-flags: [-std=gnu11, -Wall, -Wextra, -Werror]
+    note: Host RED->GREEN unit for task-self-port caching, fork reset, and transient failure retry.
   github:
     fork:
       repo: IlyaGulya/darling-xnu
@@ -1939,6 +2281,20 @@ patches:
   bead: dar-dar6x4-perf-5dq.19
   publication-status: blocked
   publication-blocker: libsystem_kernel half of the guest-side recvmsg-sleep accountant (paired with the darlingserver generator commit). Single shared per-callnum table + rdtsc timing + per-process exit dump, behind option DARLING_RPC_SLEEP_ACCOUNT (default OFF -> emulation byte-identical to baseline, zero diagnostic symbols/strings). Design forced by the libc-free below-libSystem RPC path -- rdtsc not clock_gettime (the clock syscall in the send/recv atomic region wedges the guest), stack-local start stamp not __thread (TLS aborts pre-pthread), dump from sys_exit not a destructor (dyld rejects initializers in this image), one .c compiled once (the generated rpc.c is in two object libs). Validated ON build boots + make -j8 300/300. Diagnostic instrumentation; stays local. Stacks on cache-task-self-trap. See dar-dar6x4-perf-5dq.19.
+  tests:
+  - name: guest_per_callnum_sleep_account_model
+    kind: contract
+    env: host
+    diag: bare
+    red: true
+    red-proof:
+      mode: self
+      why-self: The model drives guest-side receive sleep accounting through old no-bucket and fixed opt-in per-call aggregation semantics.
+    runner: python
+    repo: darling-workspace
+    script: tests/xnu_behavior_models.py
+    args: [guest-per-callnum-sleep-account]
+    note: Host behavioral model; old guest side has no per-call sleep buckets, fixed accounting stays off by default and aggregates by call number when enabled.
   github:
     fork:
       repo: IlyaGulya/darling-xnu
@@ -1958,18 +2314,19 @@ patches:
   publication-status: blocked
   publication-blocker: gates three UNCONDITIONAL hot-path kprintf debug traces that perf #9-decompose measured at 14.5% of a clean build's recvmsg reply-wait, each being a full synchronous RPC round-trip with no build value. execve.c "execve expand" (every exec), filio.c "dtype for fd" (hot ioctl), sigexc.c "darling_sigexc_self()" (every process startup). New hotpath_kdebug() macro (common/simple.h) compiles to nothing unless -DDARLING_HOTPATH_KPRINTF_DEBUG (still type-checks args via if(0)); execve/filio use it, sigexc routes through its existing kern_printf/DEBUG_SIGEXC gate. Genuine error/guard kprintf left intact. NOTE -- these traces are compiled into BOTH libsystem_kernel.dylib AND dyld (dyld statically links VARIANT_DYLD sigexc.c) so dyld must be rebuilt+redeployed too. Validated -- server kprintf log over a real build 144->0, guest breakdown drops kprintf entirely, build 100/100. RED->GREEN tests/hotpath_kprintf_gated_test.sh. This one is plausibly upstreamable (pure debug-noise removal) but wants review of the macro choice first. Stacks on guest-per-callnum-sleep-account. See dar-dar6x4-perf-5dq.20.
   tests:
-  - name: hotpath_kprintf_gated
+  - name: hotpath_kprintf_gated_model
     kind: contract
     env: host
     diag: bare
     red: true
     red-proof:
       mode: self
-      why-self: The source-shape test checks for the forbidden unconditional kprintf pattern directly, so the negative oracle is self-contained.
-      note: Script asserts hot-path debug traces are gated and no bare unconditional __simple_kprintf remains.
-    runner: script
-    script: darling/src/libsystem_kernel/tests/hotpath_kprintf_gated_test.sh
-    note: Source-level RED->GREEN gate for removing default hot-path kprintf RPCs.
+      why-self: The model drives hot-path debug emission through old unconditional and fixed opt-in gated semantics.
+    runner: python
+    repo: darling-workspace
+    script: tests/xnu_behavior_models.py
+    args: [hotpath-kprintf-gated]
+    note: Host behavioral model; old hot paths emit kprintf RPCs with debug disabled, fixed path is quiet unless debug is enabled.
   github:
     fork:
       repo: IlyaGulya/darling-xnu
@@ -1989,18 +2346,19 @@ patches:
   publication-status: blocked
   publication-blocker: ports perf #3's bounded recv-spin (which only ever landed in mldr's copy of dserver-rpc-defs.h) into libsystem_kernel.dylib's RPC receive hook, so the guest build processes (clang/make/sh) also grab a fast RPC reply before sleeping instead of always blocking in recvmsg. Attacks the perf #6 57% __skb_wait reply-wait for the guest's OWN reply-bearing RPCs (mach_msg_overwrite 19% + mach_reply_port 8.7% + mach_port_deallocate 8.4% + self-traps -- perf #9-decompose). Bounded LINUX_MSG_DONTWAIT poll with a CPU pause then a blocking recvmsg fallback; never busy-waits unboundedly (symmetric to perf #1/#3). libc-free (raw syscall + ia32_pause, no env/TLS in the signal-blocked atomic region). Budget is compile-time DARLING_GUEST_RECVSPIN (default 512) -- CMake cache var lets A/B set 0 to disable. NOTE -- the hook is compiled into BOTH the dylib AND dyld so both must be rebuilt+redeployed. RED to GREEN tests/dylib_recv_adaptive_spin_test.sh. Correctness validated (clean boot + 200/200 fork-heavy build) before the prefix env degraded. Wall-clock A/B inconclusive (boot-noise-dominated for a few-percent RPC change, as perf #6 predicted) AND blocked by a separate env issue -- the prefix server lacks the dar-6x4 checkin-suspend crash fix 5e5d688 and segfaults under fork storms. Stacks on gate-hotpath-kprintf-debug. See dar-dar6x4-perf-5dq.14.
   tests:
-  - name: dylib_recv_adaptive_spin
+  - name: dylib_recv_adaptive_spin_model
     kind: contract
     env: host
     diag: bare
     red: true
     red-proof:
       mode: self
-      why-self: The source-shape test checks the receive hook for bounded non-blocking spin before blocking recv, so the negative oracle is self-contained.
-      note: Script asserts the libsystem_kernel receive hook has bounded non-blocking spin before blocking recv.
-    runner: script
-    script: darling/src/libsystem_kernel/tests/dylib_recv_adaptive_spin_test.sh
-    note: Source-level RED->GREEN gate for guest RPC receive spin in the dylib hook.
+      why-self: The model drives guest reply receive behavior through old immediate blocking and fixed bounded non-blocking spin semantics.
+    runner: python
+    repo: darling-workspace
+    script: tests/xnu_behavior_models.py
+    args: [generalize-recv-spin-guest]
+    note: Host behavioral model; old guest receive blocks immediately, fixed hook polls with a bounded budget before fallback.
   github:
     fork:
       repo: IlyaGulya/darling-xnu
