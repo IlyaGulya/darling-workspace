@@ -353,20 +353,19 @@ patches:
   publication-status: blocked
   publication-blocker: package workaround must be replaced by _NSGetExecutablePath; see dar-q95.29.4
   tests:
-  - name: perl_disable_nsgetexecutablepath_model
+  - name: perl_nsgetexecutablepath_config_contract
     kind: contract
-    coverage-tier: model
+    coverage-tier: host
     env: host
     diag: bare
     red: true
     red-proof:
-      mode: self
-      why-self: The model drives Perl executable-path configuration through old unavailable _NSGetExecutablePath and fixed fallback semantics.
+      mode: source-base
+      source-env: PERL_SRC_ROOT
     runner: python
     repo: darling-workspace
-    script: tests/darling_behavior_models.py
-    args: [perl-disable-nsgetexecutablepath]
-    note: Host behavioral model; old Perl config requires unavailable _NSGetExecutablePath, fixed config starts without it.
+    script: tests/perl_nsgetexecutablepath_config_contract.py
+    note: Host RED->GREEN contract that every shipped Perl config disables unavailable _NSGetExecutablePath consistently.
   pr-draft: pr-drafts/perl-disable-nsgetexecutablepath.md
   github:
     fork:
@@ -1148,20 +1147,19 @@ patches:
   publication-status: provisional
   publication-blocker: SDK identity provenance and install-tree consistency under dar-q95.29.8
   tests:
-  - name: sdk_homebrew_detection_model
+  - name: sdk_homebrew_detection_contract
     kind: contract
-    coverage-tier: model
+    coverage-tier: host
     env: host
     diag: bare
     red: true
     red-proof:
-      mode: self
-      why-self: The model drives Homebrew SDK discovery through old missing/mismatched SDK metadata and fixed JSON/name-consistent semantics.
+      mode: source-base
+      source-env: DARLING_SRC_ROOT
     runner: python
     repo: darling-workspace
-    script: tests/darling_behavior_models.py
-    args: [sdk-homebrew-detection]
-    note: Host behavioral model; old SDK is missing JSON or has mismatched versioned name, fixed SDK is discoverable as macOS 11.3.
+    script: tests/sdk_homebrew_detection_contract.py
+    note: Host RED->GREEN contract that Homebrew can discover a JSON-described macOS 11.3 SDK through a matching versioned symlink.
   pr-draft: pr-drafts/top-level-sdk-homebrew-detection.md
   github:
     fork:
@@ -1877,20 +1875,19 @@ patches:
   publication-status: blocked
   publication-blocker: workspace-local build-process guard (runs `west patch status --strict` against patches.yml); depends on the west patch tooling + workspace layout, so not upstreamable as-is. Could be reshaped into an upstream-agnostic build hook later.
   tests:
-  - name: build_drift_gate_model
+  - name: build_drift_gate_contract
     kind: contract
-    coverage-tier: model
+    coverage-tier: host
     env: host
     diag: bare
     red: true
     red-proof:
-      mode: self
-      why-self: The model drives build entrypoints through old drift-ignorant and fixed drift-gated semantics.
-    runner: python
+      mode: source-base
+      source-env: DARLING_SRC_ROOT
+    runner: script
     repo: darling-workspace
-    script: tests/darling_behavior_models.py
-    args: [build-drift-gate]
-    note: Host behavioral model; old targeted build proceeds with patchset drift, fixed build fails unless explicitly skipped.
+    script: tests/build_drift_gate_contract.sh
+    note: Host RED->GREEN contract that CMake configure invokes west patch status --strict and fails with the drift-gate diagnostic.
   github:
     fork:
       repo: IlyaGulya/darling
@@ -1906,20 +1903,19 @@ patches:
   publication-status: provisional
   publication-blocker: MAP_FIXED unconditionally replaces any mapping at the commpage slot; safe at this point in setup_space (only mldr loader artifacts present, Mach-O not yet mapped) but the collision-handling contract wants a second reviewer before upstreaming. See dar-gwn.6.6.
   tests:
-  - name: commpage_map_fixed_model
+  - name: commpage_map_fixed_contract
     kind: contract
-    coverage-tier: model
+    coverage-tier: compile
     env: host
     diag: bare
     red: true
     red-proof:
-      mode: self
-      why-self: The model drives commpage mmap collision behavior through old hint-relocation and fixed canonical-address semantics.
-    runner: python
+      mode: source-base
+      source-env: DARLING_SRC_ROOT
+    runner: script
     repo: darling-workspace
-    script: tests/darling_behavior_models.py
-    args: [commpage-map-fixed]
-    note: Host behavioral model; old commpage mapping can be relocated when the hint is occupied, fixed mapping lands at the canonical address.
+    script: tests/commpage_map_fixed_contract.sh
+    note: Host compile/run RED->GREEN contract for production commpage_setup; an occupied canonical slot must still be populated at the canonical address.
   github:
     fork:
       repo: IlyaGulya/darling
