@@ -114,14 +114,16 @@ RED proof modes:
   source-root-aware scripts; do not rely on implicit checkout mutation.
 - `red-proof: {mode: guest-runtime-deploy, runtime-artifacts: [...]}`: the
   intended model for guest/runtime tests whose RED proof requires building and
-  deploying bad runtime artifacts into an isolated Darling prefix, then running
+  deploying bad runtime artifacts into the selected Darling prefix, then running
   the same guest fixture against bad and fixed runtimes. Metadata validation
   accepts this only for `runner: guest-c-fixture` and requires declared runtime
   artifacts. Each artifact must declare `module`, `build-targets`, and `deploy`
-  paths so the future runner knows which source tree to materialize, what to
+  paths so the runner knows which source tree to materialize, what to
   build, and which prefix files to swap. `--prove-red --list` prints the deploy
-  plan. Execution currently fails clearly because the deploy runner is not
-  implemented yet; track that work under `dar-facb`. Do not substitute
+  plan. Execution creates a temporary bad source forest and CMake/Ninja build
+  dir, shuts down the selected prefix, backs up the declared deploy paths,
+  copies bad artifacts, requires the guest fixture to fail, restores the
+  original artifacts, then runs GREEN on the current prefix. Do not substitute
   `source-base` for this mode.
 
 Source/text checks are allowed only as auxiliary drift guards:

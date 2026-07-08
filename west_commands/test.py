@@ -2050,14 +2050,6 @@ grep -q '^ORACLE_RC=0$' "$verdict"
             "Use a GREEN-only guest gate or add an isolated bad/fixed deploy runner."
         )
 
-    def _reject_guest_runtime_deploy_red_proof_not_implemented(self, patch) -> None:
-        self.die(
-            f"{patch['path']}: guest-runtime-deploy RED proof is declared but "
-            "the isolated bad/fixed Darling runtime deploy runner is not implemented yet. "
-            "Track this under dar-facb; do not fall back to source-base or a "
-            "current-prefix guest smoke."
-        )
-
     def _display_guest_runtime_deploy_plan(self, proof) -> str:
         def list_text(value, missing):
             if not isinstance(value, list):
@@ -2079,6 +2071,278 @@ grep -q '^ORACLE_RC=0$' "$verdict"
             deploy_text = list_text(deploy, "<missing-deploy>")
             artifacts.append(f"{module_text}[build:{target_text}; deploy:{deploy_text}]")
         return "guest-runtime-deploy: " + "; ".join(artifacts)
+
+    def _project_manifest_path(self, ref: str) -> Path:
+        for project in self.manifest.projects:
+            if ref in {project.name, project.path}:
+                return Path(project.path)
+        path = Path(ref)
+        if path.exists():
+            workspace_root = Path(self.topdir).parent
+            try:
+                return path.resolve().relative_to(workspace_root)
+            except ValueError:
+                pass
+        self.die(f"unknown West project or path: {ref}")
+
+    def _remove_path_for_materialize(self, path: Path) -> None:
+        if path.is_symlink() or path.is_file():
+            path.unlink()
+        elif path.is_dir():
+            shutil.rmtree(path)
+
+    def _has_symlink_parent(self, path: Path, stop: Path) -> bool:
+        current = path.parent
+        while current != stop and stop in current.parents:
+            if current.is_symlink():
+                return True
+            current = current.parent
+        return False
+
+    @contextmanager
+    def _guest_runtime_source_forest(self, patch, proof):
+        """Create a temporary Darling source forest for a bad runtime build.
+
+        The top-level Darling tree is a detached worktree. Nested West projects
+        are symlinked to the current checkout, except the patch module, which is
+        checked out at the patch's bad revision. This keeps the live checkout
+        stable while giving CMake one coherent source root.
+        """
+        projects_by_path = {
+            Path(project.path): Path(project.abspath)
+            for project in self.manifest.projects
+            if project.name != "manifest"
+        }
+        darling_repo = projects_by_path.get(Path("darling"))
+        if darling_repo is None:
+            self.die("guest-runtime-deploy needs a West project at path 'darling'")
+        patch_module_path = self._project_manifest_path(patch["module"])
+        bad_revision = self._bad_revision(patch)
+        added: list[tuple[Path, Path]] = []
+        with tempfile.TemporaryDirectory(prefix="west-red-proof-source-") as temp:
+            root = Path(temp)
+            source_root = root / "darling"
+            self.inf(
+                f"  RED source forest: {patch_module_path}={bad_revision} under {source_root}"
+            )
+            subprocess.run(
+                [
+                    "git",
+                    "worktree",
+                    "add",
+                    "--quiet",
+                    "--detach",
+                    str(source_root),
+                    self._manifest_revision("darling"),
+                ],
+                cwd=darling_repo,
+                check=True,
+            )
+            added.append((darling_repo, source_root))
+            try:
+                for project_path, repo in sorted(
+                    projects_by_path.items(),
+                    key=lambda item: (len(item[0].parts), str(item[0])),
+                ):
+                    if project_path == Path("darling"):
+                        continue
+                    try:
+                        rel = project_path.relative_to("darling")
+                    except ValueError:
+                        continue
+                    target = source_root / rel
+                    if self._has_symlink_parent(target, source_root):
+                        if project_path == patch_module_path:
+                            self.die(
+                                f"{patch['path']}: cannot materialize nested patch module "
+                                f"{project_path} inside a symlinked parent source tree"
+                            )
+                        continue
+                    target.parent.mkdir(parents=True, exist_ok=True)
+                    if target.exists() or target.is_symlink():
+                        self._remove_path_for_materialize(target)
+                    if project_path == patch_module_path:
+                        subprocess.run(
+                            [
+                                "git",
+                                "worktree",
+                                "add",
+                                "--quiet",
+                                "--detach",
+                                str(target),
+                                bad_revision,
+                            ],
+                            cwd=repo,
+                            check=True,
+                        )
+                        added.append((repo, target))
+                    else:
+                        os.symlink(repo, target, target_is_directory=True)
+                yield source_root
+            finally:
+                for repo, target in reversed(added):
+                    subprocess.run(
+                        ["git", "worktree", "remove", "--force", str(target)],
+                        cwd=repo,
+                        check=False,
+                        stdout=subprocess.DEVNULL,
+                        stderr=subprocess.DEVNULL,
+                    )
+
+    def _cmake_cache_value(self, build_dir: Path, key: str) -> str | None:
+        cache = build_dir / "CMakeCache.txt"
+        if not cache.exists():
+            return None
+        prefix = f"{key}:"
+        for line in cache.read_text(errors="replace").splitlines():
+            if line.startswith(prefix):
+                return line.split("=", 1)[1]
+        return None
+
+    def _runtime_red_configure_args(self, prefix: Path) -> list[str]:
+        current_build = Path(
+            os.environ.get("DARLING_BUILD_DIR", str(Path.home() / "work/darling-build"))
+        )
+        args = ["-G", self._cmake_cache_value(current_build, "CMAKE_GENERATOR") or "Ninja"]
+        for key in ("CMAKE_BUILD_TYPE", "CMAKE_C_COMPILER", "CMAKE_CXX_COMPILER"):
+            value = self._cmake_cache_value(current_build, key)
+            if value:
+                args.append(f"-D{key}={value}")
+        args.append(f"-DCMAKE_INSTALL_PREFIX={prefix}")
+        return args
+
+    def _runtime_red_build_artifacts(
+        self,
+        source_root: Path,
+        proof,
+        prefix: Path,
+        scratch_root: Path,
+    ) -> Path:
+        targets: list[str] = []
+        for artifact in proof.get("runtime-artifacts", []):
+            for target in artifact.get("build-targets", []):
+                if target not in targets:
+                    targets.append(target)
+        build_root = scratch_root / "build"
+        self.inf(f"  RED configure: {source_root} -> {build_root}")
+        subprocess.run(
+            ["cmake", "-S", str(source_root), "-B", str(build_root), *self._runtime_red_configure_args(prefix)],
+            cwd=self.topdir,
+            check=True,
+        )
+        self.inf(f"  RED build: {', '.join(targets)}")
+        subprocess.run(["ninja", "-C", str(build_root), *targets], cwd=self.topdir, check=True)
+        return build_root
+
+    def _runtime_red_find_build_output(self, build_root: Path, deploy_path: str) -> Path:
+        name = Path(deploy_path).name
+        best: tuple[float, Path] | None = None
+        for path in build_root.rglob(name):
+            if not path.is_file() or "CMakeFiles" in path.parts:
+                continue
+            mtime = path.stat().st_mtime
+            if best is None or mtime > best[0]:
+                best = (mtime, path)
+        if best is None:
+            self.die(f"guest-runtime-deploy built artifact not found for {deploy_path}")
+        return best[1]
+
+    def _runtime_red_deploy_targets(self, prefix: Path, deploy_path: str) -> list[Path]:
+        rel = Path(deploy_path)
+        if rel.is_absolute() or ".." in rel.parts:
+            self.die(f"guest-runtime-deploy deploy path must be relative: {deploy_path}")
+        if rel.parts and rel.parts[0] == "usr":
+            return [prefix / "libexec/darling" / rel, prefix / rel]
+        return [prefix / rel]
+
+    @contextmanager
+    def _runtime_red_deployed_artifacts(self, proof, build_root: Path, prefix: Path):
+        backups: list[tuple[Path, Path | None]] = []
+        with tempfile.TemporaryDirectory(prefix="west-red-proof-deploy-") as temp:
+            backup_root = Path(temp)
+            if not self._shutdown_runtime_prefix(prefix):
+                self.die(f"guest-runtime-deploy could not stop Darling prefix before deploy: {prefix}")
+            try:
+                for artifact in proof.get("runtime-artifacts", []):
+                    for deploy_path in artifact.get("deploy", []):
+                        src = self._runtime_red_find_build_output(build_root, deploy_path)
+                        for dst in self._runtime_red_deploy_targets(prefix, deploy_path):
+                            backup = None
+                            if dst.exists():
+                                backup = backup_root / str(len(backups))
+                                backup.parent.mkdir(parents=True, exist_ok=True)
+                                shutil.copy2(dst, backup)
+                            backups.append((dst, backup))
+                            dst.parent.mkdir(parents=True, exist_ok=True)
+                            shutil.copy2(src, dst)
+                            self.inf(f"  RED deploy: {src} -> {dst}")
+                yield
+            finally:
+                if not self._shutdown_runtime_prefix(prefix):
+                    self.err(f"guest-runtime-deploy could not stop Darling prefix before restore: {prefix}")
+                for dst, backup in reversed(backups):
+                    if backup is None:
+                        try:
+                            dst.unlink()
+                        except FileNotFoundError:
+                            pass
+                    else:
+                        dst.parent.mkdir(parents=True, exist_ok=True)
+                        shutil.copy2(backup, dst)
+                self._shutdown_runtime_prefix(prefix)
+
+    def _shutdown_runtime_prefix(self, prefix: Path) -> bool:
+        launcher = self._resolve_darling_launcher(str(prefix))
+        if launcher:
+            env = os.environ.copy()
+            env["DPREFIX"] = str(prefix)
+            env.update(getattr(self, "_prefix_env", {}))
+            subprocess.run(
+                [launcher, "shutdown"],
+                env=env,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                check=False,
+            )
+        self._kill_dserver_for_prefix(prefix)
+        leftovers = self._prefix_process_snapshot(prefix)
+        if leftovers:
+            self.err(f"leftover Darling prefix process(es) for {prefix}:")
+            for entry in leftovers:
+                self.err(f"  {entry}")
+            return False
+        return True
+
+    def _run_guest_runtime_deploy_proof(self, patch, proof, invocation) -> int:
+        if not invocation.get("guest_c_fixture"):
+            self.die(f"{patch['path']}: guest-runtime-deploy requires guest-c-fixture")
+        missing_env = self._missing_requirements(invocation)
+        if missing_env:
+            self.die(
+                f"{patch['path']}: missing required environment for {invocation['name']}: "
+                f"{', '.join(missing_env)}"
+            )
+        prefix_text = getattr(self, "_prefix", None)
+        if not prefix_text:
+            self.die(f"{patch['path']}: guest-runtime-deploy needs a Darling prefix")
+        prefix = Path(prefix_text)
+        with tempfile.TemporaryDirectory(prefix="west-red-proof-runtime-") as temp:
+            scratch_root = Path(temp)
+            with self._guest_runtime_source_forest(patch, proof) as source_root:
+                build_root = self._runtime_red_build_artifacts(
+                    source_root,
+                    proof,
+                    prefix,
+                    scratch_root,
+                )
+                with self._runtime_red_deployed_artifacts(proof, build_root, prefix):
+                    bad_rc = self._run_invocation(invocation, env=self._execution_env(invocation))
+                    if bad_rc == 0:
+                        self.err("  RED proof failed: deployed bad runtime unexpectedly passed")
+                        return 1
+                    self.inf(f"  RED runtime failed as expected (rc={bad_rc})")
+        self.inf("  GREEN current runtime")
+        return self._run_invocation(invocation, env=self._execution_env(invocation))
 
     def _run_source_base_proof(self, patch, proof, invocation) -> int:
         if invocation["shell"]:
@@ -2160,8 +2424,6 @@ grep -q '^ORACLE_RC=0$' "$verdict"
                     f"{patch['path']}: RED proof mode {mode!r} is not implemented; "
                     "use mode: self, source-base, or guest-runtime-deploy"
                 )
-            if mode == "guest-runtime-deploy":
-                self._reject_guest_runtime_deploy_red_proof_not_implemented(patch)
             if mode == "source-base" and invocation.get("guest_c_fixture"):
                 self._reject_guest_source_base_red_proof(patch)
             script_path = invocation.get("script_path")
@@ -2185,6 +2447,8 @@ grep -q '^ORACLE_RC=0$' "$verdict"
             with self._required_profile_context(patch, invocation):
                 if mode == "source-base":
                     result_rc = self._run_source_base_proof(patch, proof, invocation)
+                elif mode == "guest-runtime-deploy":
+                    result_rc = self._run_guest_runtime_deploy_proof(patch, proof, invocation)
                 else:
                     result_rc = self._run_invocation(invocation, env=self._execution_env(invocation))
             if result_rc:
@@ -2199,11 +2463,15 @@ grep -q '^ORACLE_RC=0$' "$verdict"
             if test.get("runner") == "guest-c-fixture":
                 self._reject_guest_source_base_red_proof(patch)
 
-    def _reject_unimplemented_red_proof_models(self, tests) -> None:
+    def _check_red_proof_requirements(self, tests) -> None:
         for patch, test in tests:
-            proof = test.get("red-proof")
-            if isinstance(proof, dict) and proof.get("mode") == "guest-runtime-deploy":
-                self._reject_guest_runtime_deploy_red_proof_not_implemented(patch)
+            invocation = self._test_invocation(patch, test)
+            missing = self._missing_requirements(invocation)
+            if missing:
+                self.die(
+                    f"{patch['path']}: missing required environment for "
+                    f"{test.get('name', '-')}: {', '.join(missing)}"
+                )
 
     def _shutdown_test_prefix(self) -> bool:
         prefix = getattr(self, "_prefix", None)
@@ -2446,7 +2714,7 @@ grep -q '^ORACLE_RC=0$' "$verdict"
             if args.prove_red:
                 self._reject_unsupported_red_proof_models(selected)
                 if not args.list:
-                    self._reject_unimplemented_red_proof_models(selected)
+                    self._check_red_proof_requirements(selected)
             materialize_was_requested = self._materialize_profile
             if (
                 selected
