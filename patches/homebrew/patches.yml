@@ -1168,9 +1168,27 @@ patches:
     red-proof:
       mode: source-base
       source-env: XNU_SRC_ROOT
-    runner: script
+    runner: c-fixture
     repo: darling-workspace
-    script: tests/sigexc_sa_restart_contract.sh
+    script: tests/sigexc_sa_restart_contract.c
+    source-files:
+    - darling/src/libsystem_kernel/emulation/src/xnu_syscall/bsd/impl/signal/sigaction.c
+    - darling/src/libsystem_kernel/emulation/src/linux_premigration/signal/sigexc.c
+    fixture-include-dirs:
+    - tests/fixtures/sigexc/include
+    include-dirs:
+    - darling/src/libsystem_kernel/emulation/include
+    compile-flags:
+    - -std=gnu11
+    - -Wall
+    - -Wextra
+    - -Werror
+    - -Wno-unused-parameter
+    - -Wno-unused-variable
+    - -Wno-unused-but-set-variable
+    - -Wno-unused-function
+    - -include
+    - string.h
     note: Compiles real sys_sigaction plus sigexc and verifies Darwin SA_RESTART/SIG_IGN state is mirrored into the installed Linux sigexc handler flags.
   - name: sigexc_sa_restart_guest
     kind: guest
@@ -1211,9 +1229,33 @@ patches:
     red-proof:
       mode: source-base
       source-env: XNU_SRC_ROOT
-    runner: script
+    runner: object-symbol-fixture
     repo: darling-workspace
-    script: tests/sigexc_debug_flood_contract.sh
+    source-file: darling/src/libsystem_kernel/emulation/src/linux_premigration/signal/sigexc.c
+    fixture-include-dirs:
+    - tests/fixtures/sigexc/include
+    include-dirs:
+    - darling/src/libsystem_kernel/emulation/include
+    compile-flags:
+    - -std=gnu11
+    - -Wall
+    - -Wextra
+    - -Werror
+    - -Wno-unused-parameter
+    - -Wno-unused-variable
+    - -Wno-unused-but-set-variable
+    - -Wno-unused-function
+    - -include
+    - string.h
+    symbol-checks:
+    - name: default
+      absent-undefined-symbols:
+      - __simple_kprintf
+    - name: debug
+      compile-flags:
+      - -DDEBUG_SIGEXC
+      present-undefined-symbols:
+      - __simple_kprintf
     note: Compiles real sigexc.c and verifies the default build has no __simple_kprintf dependency while DEBUG_SIGEXC still enables the debug path.
   pr-draft: pr-drafts/xnu-sigexc-debug-flood.md
   github:
@@ -1260,9 +1302,26 @@ patches:
     red-proof:
       mode: source-base
       source-env: XNU_SRC_ROOT
-    runner: script
+    runner: c-fixture
     repo: darling-workspace
-    script: tests/sigexc_default_resend_self_contract.sh
+    script: tests/sigexc_default_resend_self_contract.c
+    source-files:
+    - darling/src/libsystem_kernel/emulation/src/linux_premigration/signal/sigexc.c
+    fixture-include-dirs:
+    - tests/fixtures/sigexc/include
+    include-dirs:
+    - darling/src/libsystem_kernel/emulation/include
+    compile-flags:
+    - -std=gnu11
+    - -Wall
+    - -Wextra
+    - -Werror
+    - -Wno-unused-parameter
+    - -Wno-unused-variable
+    - -Wno-unused-but-set-variable
+    - -Wno-unused-function
+    - -include
+    - string.h
     note: Compiles real sigexc_handler and verifies the fatal default-action path re-raises with tgkill(self pid, self tid, signal) instead of kill(0, signal) process-group broadcast.
   - name: sigexc_default_resend_self_guest
     kind: guest
