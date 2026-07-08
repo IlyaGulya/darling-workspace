@@ -413,6 +413,19 @@ patches:
     - -Wextra
     - -Werror
     note: Host RED->GREEN contract that the x86_64 bzero implementation preserves the destination pointer in RAX.
+  - name: bzero_return_register_guest
+    kind: guest
+    coverage-tier: runtime
+    env: darling
+    diag: guarded
+    runner: guest-c-fixture
+    repo: darling-workspace
+    script: tests/bzero_return_register_guest.c
+    ok-marker: BZERO_RETURN_REGISTER_GUEST_OK
+    timeout-seconds: 30
+    requires:
+    - darling-prefix
+    note: Guest runtime ABI gate for ___bzero preserving the original destination pointer in the return register while zeroing the buffer. RED is carried by the compile contract because source-base guest RED would require rebuilding/deploying old libplatform into an isolated prefix.
   pr-draft: pr-drafts/libplatform-bzero-return-register.md
   merge-pr: https://github.com/darlinghq/darling-libplatform/pull/5
   github:
