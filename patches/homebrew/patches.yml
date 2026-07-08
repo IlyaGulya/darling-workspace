@@ -2178,20 +2178,19 @@ patches:
   publication-status: blocked
   publication-blocker: adds a server-side per-call-number RPC count + log2 latency histogram table (metrics.hpp/cpp, thread.cpp) exposed as a sparse per_call JSON object over the existing stat socket, to decompose which RPCs dominate. Diagnostic/observability only; over a real 46777-RPC build it proved server service time is tiny everywhere (top 6 calls = 62%, all sub-16us self-traps) so the 57% wait is recvmsg WAKEUP latency, not server work -- which redirected the perf effort to the guest side (.18 cache, .19 guest-sleep). RED->GREEN tests/per_call_metrics_test.cpp. Stacks on the dar-6x4 checkin-rwlock fix (source-base 5e5d6888). Wants design review of the added metrics surface before upstreaming. See dar-dar6x4-perf-5dq.16.
   tests:
-  - name: per_call_rpc_metrics_model
+  - name: per_call_metrics_contract
     kind: contract
-    coverage-tier: model
+    coverage-tier: compile
     env: host
     diag: bare
     red: true
     red-proof:
-      mode: self
-      why-self: The model drives metrics recording through old aggregate-only and fixed per-call bucket semantics.
-    runner: python
+      mode: source-base
+      source-env: DSERVER_SRC_ROOT
+    runner: script
     repo: darling-workspace
-    script: tests/darlingserver_behavior_models.py
-    args: [per-call-rpc-metrics]
-    note: Host behavioral model; old metrics only aggregate latency, fixed metrics preserve aggregate latency and bucket samples by call number.
+    script: tests/per_call_metrics_contract.sh
+    note: Host RED->GREEN compile contract that the real per_call_metrics_test.cpp links with production metrics.cpp and proves per-call counts, names, sparse output, and per-call latency are preserved.
   github:
     fork:
       repo: IlyaGulya/darling
