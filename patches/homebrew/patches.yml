@@ -1021,6 +1021,18 @@ patches:
     repo: darling-workspace
     script: tests/sigexc_sa_restart_contract.sh
     note: Compiles real sys_sigaction plus sigexc and verifies Darwin SA_RESTART/SIG_IGN state is mirrored into the installed Linux sigexc handler flags.
+  - name: sigexc_sa_restart_guest
+    kind: guest
+    env: darling
+    diag: guarded
+    runner: guest-c-fixture
+    repo: darling-workspace
+    script: tests/sigexc_sa_restart_guest.c
+    ok-marker: SIGEXC_SA_RESTART_GUEST_OK
+    timeout-seconds: 30
+    requires:
+    - darling-prefix
+    note: Guest runtime gate that read(2) returns EINTR without SA_RESTART and resumes with SA_RESTART after a handled signal.
   pr-draft: pr-drafts/xnu-sigexc-sa-restart.md
   github:
     fork:
