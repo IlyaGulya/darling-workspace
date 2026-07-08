@@ -39,6 +39,13 @@ from shlex import quote, join as shell_join
 import yaml
 from west.commands import WestCommand
 
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from prefix_repair import (
+    cleanup_prefix_mounts,
+    guest_c_fixture_prerequisite_problems,
+    prefix_boot_prerequisite_problems,
+)
+
 
 class DarlingTest(WestCommand):
     def __init__(self):
@@ -2014,16 +2021,7 @@ grep -q '^ORACLE_RC=0$' "$verdict"
         return missing
 
     def _prefix_boot_prerequisite_problems(self, prefix: Path) -> list[str]:
-        problems = []
-        for rel in ("private/var/tmp", "libexec/darling/private/var/tmp"):
-            path = prefix / rel
-            if not path.is_dir():
-                problems.append(f"{rel} missing in Darling prefix")
-                continue
-            mode = path.stat().st_mode & 0o7777
-            if mode != 0o1777:
-                problems.append(f"{rel} mode {mode:o}, expected 1777")
-        return problems
+        return prefix_boot_prerequisite_problems(prefix)
 
     def _guest_c_fixture_prerequisite_problems(
         self,
@@ -2031,25 +2029,7 @@ grep -q '^ORACLE_RC=0$' "$verdict"
         guest_cc: str,
         guest_cflags: str,
     ) -> list[str]:
-        problems = []
-
-        def check_guest_path(guest_path: str, description: str):
-            rel = guest_path.lstrip("/")
-            for root_rel in ("", "libexec/darling"):
-                host_path = prefix / root_rel / rel if root_rel else prefix / rel
-                if not host_path.exists():
-                    root_name = "prefix root" if not root_rel else "base tree"
-                    problems.append(f"{description} missing in {root_name}: {guest_path}")
-
-        if guest_cc.startswith("/Library/Developer/CommandLineTools/"):
-            check_guest_path(guest_cc, "guest compiler")
-        words = guest_cflags.split()
-        for index, word in enumerate(words):
-            if word == "-isysroot" and index + 1 < len(words):
-                sysroot = words[index + 1]
-                if sysroot.startswith("/Library/Developer/CommandLineTools/"):
-                    check_guest_path(sysroot, "guest SDK sysroot")
-        return problems
+        return guest_c_fixture_prerequisite_problems(prefix, guest_cc, guest_cflags)
 
     def _check_requires_profile(self, patch, invocation) -> None:
         required = invocation.get("requires_profile")
@@ -2360,6 +2340,8 @@ grep -q '^ORACLE_RC=0$' "$verdict"
             for entry in leftovers:
                 self.err(f"  {entry}")
             return False
+        if not self._cleanup_prefix_mounts(prefix):
+            return False
         self._remove_stale_init_pid(prefix)
         return True
 
@@ -2542,13 +2524,23 @@ grep -q '^ORACLE_RC=0$' "$verdict"
             )
         self._kill_dserver_for_prefix(Path(prefix))
         leftovers = self._prefix_process_snapshot(Path(prefix))
-        if not leftovers:
+        if not leftovers and self._cleanup_prefix_mounts(Path(prefix)):
             self._remove_stale_init_pid(Path(prefix))
             return True
+        if not leftovers:
+            return False
         self.err(f"leftover Darling prefix process(es) after cleanup for {prefix}:")
         for entry in leftovers:
             self.err(f"  {entry}")
         return False
+
+    def _cleanup_prefix_mounts(self, prefix: Path) -> bool:
+        result = cleanup_prefix_mounts(prefix)
+        for message in result.changed:
+            self.inf(f"cleanup Darling prefix mount: {message}")
+        for message in result.problems:
+            self.err(f"leftover Darling prefix mount for {prefix}: {message}")
+        return result.success
 
     def _remove_stale_init_pid(self, prefix: Path) -> None:
         init_pid = prefix / ".init.pid"
