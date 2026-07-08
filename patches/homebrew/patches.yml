@@ -2754,9 +2754,63 @@ patches:
     red-proof:
       mode: source-base
       source-env: DSERVER_SRC_ROOT
-    runner: script
-    repo: darling-workspace
-    script: tests/per_call_metrics_contract.sh
+    runner: c-fixture
+    repo: darling/src/external/darlingserver
+    script: tests/per_call_metrics_test.cpp
+    cc: c++
+    source-files:
+    - src/metrics.cpp
+    include-dirs:
+    - include
+    - internal-include
+    generated-headers:
+      darlingserver/rpc.h: |
+        #pragma once
+        #include <stdint.h>
+
+        #ifdef __cplusplus
+        extern "C" {
+        #endif
+
+        #define DSERVER_CALL_UNMANAGED_FLAG 0x80000000u
+
+        typedef enum dserver_callnum {
+        	dserver_callnum_invalid = 0,
+        	dserver_callnum_checkin = 1,
+        	dserver_callnum_mach_msg_overwrite = 2,
+        	dserver_callnum_vchroot = 3,
+        } dserver_callnum_t;
+
+        static inline const char *dserver_callnum_to_string(dserver_callnum_t callnum) {
+        	switch ((uint32_t)callnum & ~DSERVER_CALL_UNMANAGED_FLAG) {
+        	case dserver_callnum_checkin:
+        		return "checkin";
+        	case dserver_callnum_mach_msg_overwrite:
+        		return "mach_msg_overwrite";
+        	case dserver_callnum_vchroot:
+        		return "vchroot";
+        	default:
+        		return 0;
+        	}
+        }
+
+        #ifdef __cplusplus
+        }
+        #endif
+      darlingserver/rpc-supplement.h: |
+        #pragma once
+        #include <stdint.h>
+        #define DSERVER_RING_CLASS_SIMPLE_C2S 0x1u
+        #define DSERVER_RING_CLASS_NOFIBER_FAST 0x2u
+        #define DSERVER_RING_CLASS_DESTROY 0x4u
+        #define DSERVER_RING_CLASS_CALLER_S2C 0x8u
+        static inline uint32_t dserver_ring_op_class(uint32_t callnum) {
+        	(void)callnum;
+        	return 0;
+        }
+    compile-flags:
+    - -std=c++17
+    - -w
     note: Host RED->GREEN compile contract that the real per_call_metrics_test.cpp links with production metrics.cpp and proves per-call counts, names, sparse output, and per-call latency are preserved.
   github:
     fork:
@@ -2882,10 +2936,66 @@ patches:
     red-proof:
       mode: source-base
       source-env: XNU_SRC_ROOT
-    runner: script
+    runner: c-fixture
     repo: darling-workspace
-    script: tests/rpc_sleep_account_contract.sh
+    script: tests/rpc_sleep_account_contract.c
+    source-files:
+    - darling/src/libsystem_kernel/emulation/src/linux_premigration/resources/rpc-sleep-account.c
+    include-dirs:
+    - darling/src/libsystem_kernel/emulation/include
+    generated-headers:
+      darling/emulation/common/base.h: |
+        #pragma once
+        #ifdef __cplusplus
+        #define CPP_EXTERN_BEGIN extern "C" {
+        #define CPP_EXTERN_END }
+        #else
+        #define CPP_EXTERN_BEGIN
+        #define CPP_EXTERN_END
+        #endif
+      darling/emulation/linux_premigration/linux-syscalls/linux.h: |
+        #pragma once
+        #define __NR_openat 257
+        #define __NR_getpid 39
+        #define __NR_write 1
+        #define __NR_close 3
+        long test_linux_syscall(long nr, ...);
+        #define LINUX_SYSCALL0(n) test_linux_syscall((n))
+        #define LINUX_SYSCALL(n, ...) test_linux_syscall((n), ##__VA_ARGS__)
+      darling/emulation/linux_premigration/resources/rpc-sleep-account.h: |
+        #pragma once
+        #include <linux_premigration/resources/rpc-sleep-account.h>
+    compile-flags:
+    - -std=gnu11
+    - -Wall
+    - -Wextra
+    - -Werror
+    - -DDARLING_RPC_SLEEP_ACCOUNT
     note: Compiles the production RPC sleep accounting implementation with syscall stubs; checks masked per-call aggregation, one-shot dump writes, and that the default OFF build emits no diagnostic symbols.
+  - name: guest_per_callnum_sleep_account_off_contract
+    kind: contract
+    coverage-tier: compile
+    env: host
+    diag: bare
+    red: true
+    red-proof:
+      mode: source-base
+      source-env: XNU_SRC_ROOT
+    runner: object-symbol-fixture
+    repo: darling-workspace
+    source-file: darling/src/libsystem_kernel/emulation/src/linux_premigration/resources/rpc-sleep-account.c
+    compile-flags:
+    - -std=gnu11
+    - -Wall
+    - -Wextra
+    - -Werror
+    symbol-checks:
+    - name: default-off
+      absent-defined-symbols:
+      - __darling_rpc_sleep_count
+      - __darling_rpc_sleep_total_ticks
+      - __darling_rpc_sleep_dump
+    note: OFF-build symbol contract for the production RPC sleep accounting implementation; default builds must not export diagnostic accounting state or dump APIs.
   github:
     fork:
       repo: IlyaGulya/darling-xnu
@@ -2905,7 +3015,7 @@ patches:
   publication-status: blocked
   publication-blocker: gates three UNCONDITIONAL hot-path kprintf debug traces that perf #9-decompose measured at 14.5% of a clean build's recvmsg reply-wait, each being a full synchronous RPC round-trip with no build value. execve.c "execve expand" (every exec), filio.c "dtype for fd" (hot ioctl), sigexc.c "darling_sigexc_self()" (every process startup). New hotpath_kdebug() macro (common/simple.h) compiles to nothing unless -DDARLING_HOTPATH_KPRINTF_DEBUG (still type-checks args via if(0)); execve/filio use it, sigexc routes through its existing kern_printf/DEBUG_SIGEXC gate. Genuine error/guard kprintf left intact. NOTE -- these traces are compiled into BOTH libsystem_kernel.dylib AND dyld (dyld statically links VARIANT_DYLD sigexc.c) so dyld must be rebuilt+redeployed too. Validated -- server kprintf log over a real build 144->0, guest breakdown drops kprintf entirely, build 100/100. RED->GREEN tests/hotpath_kprintf_gate_contract.sh covers hotpath_kdebug semantics plus compiled execve/filio object behavior; a real sigexc runtime/build gate is tracked separately as dar-sigexc-hotpath-kprintf-runtime-gate-9mpv. This one is plausibly upstreamable (pure debug-noise removal) but wants review of the macro choice first. Stacks on guest-per-callnum-sleep-account. See dar-dar6x4-perf-5dq.20.
   tests:
-  - name: hotpath_kprintf_gate_contract
+  - name: hotpath_kdebug_default_contract
     kind: contract
     coverage-tier: compile
     env: host
@@ -2914,10 +3024,87 @@ patches:
     red-proof:
       mode: source-base
       source-env: XNU_SRC_ROOT
-    runner: script
+    runner: c-fixture
     repo: darling-workspace
-    script: tests/hotpath_kprintf_gate_contract.sh
-    note: Host RED->GREEN compile contract that hotpath_kdebug is no-op by default, active under DARLING_HOTPATH_KPRINTF_DEBUG, and compiled execve/filio hot paths no longer reference __simple_kprintf in the default build.
+    script: tests/hotpath_kdebug_default_contract.c
+    fixture-include-dirs:
+    - tests/fixtures/hotpath-kprintf/include
+    include-dirs:
+    - darling/src/libsystem_kernel/emulation/include
+    compile-flags:
+    - -std=gnu11
+    - -Wall
+    - -Wextra
+    note: Host RED->GREEN contract that hotpath_kdebug compiles out calls and argument side effects by default.
+  - name: hotpath_kdebug_debug_contract
+    kind: contract
+    coverage-tier: compile
+    env: host
+    diag: bare
+    red: true
+    red-proof:
+      mode: source-base
+      source-env: XNU_SRC_ROOT
+    runner: c-fixture
+    repo: darling-workspace
+    script: tests/hotpath_kdebug_debug_contract.c
+    fixture-include-dirs:
+    - tests/fixtures/hotpath-kprintf/include
+    include-dirs:
+    - darling/src/libsystem_kernel/emulation/include
+    compile-flags:
+    - -std=gnu11
+    - -Wall
+    - -Wextra
+    note: Host RED->GREEN contract that DARLING_HOTPATH_KPRINTF_DEBUG restores kprintf calls and evaluates arguments.
+  - name: hotpath_kprintf_execve_object_contract
+    kind: contract
+    coverage-tier: compile
+    env: host
+    diag: bare
+    red: true
+    red-proof:
+      mode: source-base
+      source-env: XNU_SRC_ROOT
+    runner: object-symbol-fixture
+    repo: darling-workspace
+    source-file: darling/src/libsystem_kernel/emulation/src/xnu_syscall/bsd/impl/process/execve.c
+    fixture-include-dirs:
+    - tests/fixtures/hotpath-kprintf/include
+    include-dirs:
+    - darling/src/libsystem_kernel/emulation/include
+    compile-flags:
+    - -std=gnu11
+    - -w
+    symbol-checks:
+    - name: default
+      absent-undefined-symbols:
+      - __simple_kprintf
+    note: Object contract that the default execve hot path no longer references synchronous kprintf.
+  - name: hotpath_kprintf_filio_object_contract
+    kind: contract
+    coverage-tier: compile
+    env: host
+    diag: bare
+    red: true
+    red-proof:
+      mode: source-base
+      source-env: XNU_SRC_ROOT
+    runner: object-symbol-fixture
+    repo: darling-workspace
+    source-file: darling/src/libsystem_kernel/emulation/src/xnu_syscall/bsd/helper/ioctl/filio.c
+    fixture-include-dirs:
+    - tests/fixtures/hotpath-kprintf/include
+    include-dirs:
+    - darling/src/libsystem_kernel/emulation/include
+    compile-flags:
+    - -std=gnu11
+    - -w
+    symbol-checks:
+    - name: default
+      absent-undefined-symbols:
+      - __simple_kprintf
+    note: Object contract that the default filio hot path no longer references synchronous kprintf.
   github:
     fork:
       repo: IlyaGulya/darling-xnu
@@ -2937,7 +3124,7 @@ patches:
   publication-status: blocked
   publication-blocker: ports perf #3's bounded recv-spin (which only ever landed in mldr's copy of dserver-rpc-defs.h) into libsystem_kernel.dylib's RPC receive hook, so the guest build processes (clang/make/sh) also grab a fast RPC reply before sleeping instead of always blocking in recvmsg. Attacks the perf #6 57% __skb_wait reply-wait for the guest's OWN reply-bearing RPCs (mach_msg_overwrite 19% + mach_reply_port 8.7% + mach_port_deallocate 8.4% + self-traps -- perf #9-decompose). Bounded LINUX_MSG_DONTWAIT poll with a CPU pause then a blocking recvmsg fallback; never busy-waits unboundedly (symmetric to perf #1/#3). libc-free (raw syscall + ia32_pause, no env/TLS in the signal-blocked atomic region). Budget is compile-time DARLING_GUEST_RECVSPIN (default 512) -- CMake cache var lets A/B set 0 to disable. NOTE -- the hook is compiled into BOTH the dylib AND dyld so both must be rebuilt+redeployed. RED to GREEN tests/dylib_recv_adaptive_spin_test.sh. Correctness validated (clean boot + 200/200 fork-heavy build) before the prefix env degraded. Wall-clock A/B inconclusive (boot-noise-dominated for a few-percent RPC change, as perf #6 predicted) AND blocked by a separate env issue -- the prefix server lacks the dar-6x4 checkin-suspend crash fix 5e5d688 and segfaults under fork storms. Stacks on gate-hotpath-kprintf-debug. See dar-dar6x4-perf-5dq.14.
   tests:
-  - name: dylib_recv_adaptive_spin_contract
+  - name: dylib_recv_adaptive_spin_enabled_contract
     kind: contract
     coverage-tier: compile
     env: host
@@ -2946,10 +3133,48 @@ patches:
     red-proof:
       mode: source-base
       source-env: XNU_SRC_ROOT
-    runner: script
+    runner: c-fixture
     repo: darling-workspace
-    script: tests/dylib_recv_adaptive_spin_contract.sh
-    note: Compiles the production dylib RPC receive hook with syscall stubs and checks fast DONTWAIT success, bounded EAGAIN spin then blocking fallback, real-error bailout, and DARLING_GUEST_RECVSPIN=0 legacy behavior.
+    script: tests/dylib_recv_adaptive_spin_contract.c
+    fixture-include-dirs:
+    - tests/fixtures/dylib-recv/include
+    include-dirs:
+    - darling/src/libsystem_kernel/emulation/include
+    compile-flags:
+    - -std=gnu11
+    - -Wall
+    - -Wextra
+    - -Werror
+    - -Wno-unused-function
+    - -Wno-unused-label
+    - -Wno-sign-compare
+    - -Wno-int-conversion
+    - -DDARLING_GUEST_RECVSPIN=3
+    note: Compiles the production dylib RPC receive hook with syscall stubs and checks fast DONTWAIT success, bounded EAGAIN spin then blocking fallback, and real-error bailout.
+  - name: dylib_recv_adaptive_spin_disabled_contract
+    kind: contract
+    coverage-tier: compile
+    env: host
+    diag: bare
+    source-env: XNU_SRC_ROOT
+    runner: c-fixture
+    repo: darling-workspace
+    script: tests/dylib_recv_adaptive_spin_contract.c
+    fixture-include-dirs:
+    - tests/fixtures/dylib-recv/include
+    include-dirs:
+    - darling/src/libsystem_kernel/emulation/include
+    compile-flags:
+    - -std=gnu11
+    - -Wall
+    - -Wextra
+    - -Werror
+    - -Wno-unused-function
+    - -Wno-unused-label
+    - -Wno-sign-compare
+    - -Wno-int-conversion
+    - -DDARLING_GUEST_RECVSPIN=0
+    note: Compiles the production dylib RPC receive hook with syscall stubs and checks the legacy disabled budget blocks immediately.
   github:
     fork:
       repo: IlyaGulya/darling-xnu

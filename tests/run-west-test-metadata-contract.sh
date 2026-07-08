@@ -109,6 +109,7 @@ patches:
     symbol-checks:
     - name: default
       absent-undefined-symbols: [definitely_not_a_real_symbol]
+      absent-defined-symbols: [definitely_not_a_real_symbol]
 YAML
 
 cat >"$tmp_invalid_profile/patches.yml" <<'YAML'
@@ -252,7 +253,7 @@ object_symbol_fixture="$(
 		--list
 )"
 printf '%s\n' "$object_symbol_fixture" | grep -q \
-	'cc -c -std=gnu11 -Wall -Wextra -Werror -I tests/fixtures/c-fixture/include -I src tests/c_fixture_helper.c -o <temp>/<variant>.o && nm -u <temp>/<variant>.o' ||
+	'cc -c -std=gnu11 -Wall -Wextra -Werror -I tests/fixtures/c-fixture/include -I src tests/c_fixture_helper.c -o <temp>/<variant>.o && nm -u <temp>/<variant>.o && nm -g <temp>/<variant>.o' ||
 	fail 'object-symbol-fixture metadata did not resolve to a compile-and-nm command'
 printf '%s\n' "$source_only_check" | grep -q 'test metadata: 6 covered (runtime 1, compile 2, host 2, model 1)' ||
 	fail 'coverage-tier summary did not classify runtime/host/compile/model coverage'

@@ -679,7 +679,15 @@ class DarlingTest(WestCommand):
             display_parts.extend([quote(script), "-o", quote(output)])
             display = f"cd {quote(repo)} && {' '.join(display_parts)} && {quote(output)}"
             return {
-                "key": f"c-fixture:{repo}:{script}",
+                "key": (
+                    f"c-fixture:{repo}:{script}:"
+                    f"{repr(test.get('compile-flags', []))}:"
+                    f"{repr(test.get('source-files', []))}:"
+                    f"{repr(test.get('include-dirs', []))}:"
+                    f"{repr(test.get('fixture-include-dirs', []))}:"
+                    f"{repr(test.get('stub-headers', []))}:"
+                    f"{repr(sorted((test.get('generated-headers') or {}).keys()))}"
+                ),
                 "display": display,
                 "cwd": cwd,
                 "script_path": script_path,
@@ -728,9 +736,20 @@ class DarlingTest(WestCommand):
             for include_dir in test.get("include-dirs", []):
                 display_parts.extend(["-I", quote(str(include_dir))])
             display_parts.extend([quote(source_file), "-o", "<temp>/<variant>.o", "&&", "nm", "-u", "<temp>/<variant>.o"])
+            if any(
+                check.get("present-defined-symbols") or check.get("absent-defined-symbols")
+                for check in test.get("symbol-checks", [])
+            ):
+                display_parts.extend(["&&", "nm", "-g", "<temp>/<variant>.o"])
             display = f"cd {quote(repo)} && {' '.join(display_parts)}"
             return {
-                "key": f"object-symbol-fixture:{repo}:{source_file}",
+                "key": (
+                    f"object-symbol-fixture:{repo}:{source_file}:"
+                    f"{repr(test.get('compile-flags', []))}:"
+                    f"{repr(test.get('include-dirs', []))}:"
+                    f"{repr(test.get('fixture-include-dirs', []))}:"
+                    f"{repr(test.get('symbol-checks', []))}"
+                ),
                 "display": display,
                 "cwd": cwd,
                 "args": None,
@@ -753,6 +772,12 @@ class DarlingTest(WestCommand):
                         ],
                         "absent_undefined_symbols": [
                             str(item) for item in check.get("absent-undefined-symbols", [])
+                        ],
+                        "present_defined_symbols": [
+                            str(item) for item in check.get("present-defined-symbols", [])
+                        ],
+                        "absent_defined_symbols": [
+                            str(item) for item in check.get("absent-defined-symbols", [])
                         ],
                     }
                     for index, check in enumerate(test.get("symbol-checks", []))
@@ -1159,6 +1184,36 @@ class DarlingTest(WestCommand):
                     if symbol in symbols:
                         self.err(f"{invocation['name']}:{check['name']}: unexpected undefined symbol {symbol}")
                         return 1
+                if check.get("present_defined_symbols") or check.get("absent_defined_symbols"):
+                    defined_nm = subprocess.run(
+                        ["nm", "-g", str(object_path)],
+                        cwd=invocation["cwd"],
+                        env=run_env,
+                        check=False,
+                        capture_output=True,
+                        text=True,
+                    )
+                    if defined_nm.returncode:
+                        sys.stderr.write(defined_nm.stdout)
+                        sys.stderr.write(defined_nm.stderr)
+                        return defined_nm.returncode
+                    defined_symbols = set()
+                    for line in defined_nm.stdout.splitlines():
+                        parts = line.split()
+                        if not parts:
+                            continue
+                        if parts[0] == "U":
+                            continue
+                        if len(parts) >= 3:
+                            defined_symbols.add(parts[-1])
+                    for symbol in check.get("present_defined_symbols", []):
+                        if symbol not in defined_symbols:
+                            self.err(f"{invocation['name']}:{check['name']}: missing defined symbol {symbol}")
+                            return 1
+                    for symbol in check.get("absent_defined_symbols", []):
+                        if symbol in defined_symbols:
+                            self.err(f"{invocation['name']}:{check['name']}: unexpected defined symbol {symbol}")
+                            return 1
         return 0
 
     def _run_source_build_fixture(self, invocation, env=None) -> int:

@@ -353,6 +353,8 @@ class DarlingPatch(WestCommand):
                             "compile-flags",
                             "present-undefined-symbols",
                             "absent-undefined-symbols",
+                            "present-defined-symbols",
+                            "absent-defined-symbols",
                         ):
                             if check.get(key) is not None and not isinstance(check.get(key), list):
                                 errors.append(
