@@ -55,6 +55,10 @@ refs, PR drafts, and agent handoff.
 - Darling guest tests should prefer `requires: [darling-prefix]` over
   `requires-env: [DPREFIX]`; let `west test --prefix/--prefix-profile` provide
   `DPREFIX`.
+- `west test` owns the Darling prefix lifecycle for metadata tests that declare
+  `requires: [darling-prefix]`: after real execution it runs `darling shutdown`
+  for that prefix and kills a matching leftover `darlingserver` if needed. Use
+  `--keep-prefix-running` only for deliberate fast local iteration.
 - Patch metadata tests with `diag: guarded` or `diag: forensic` must run
   through `darling-debug-runner`; keep timeouts/capture in `west test`, not as
   unbounded bespoke shell around every guest test.

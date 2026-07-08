@@ -23,9 +23,11 @@ from __future__ import annotations
 
 import argparse
 import os
+import signal
 import shutil
 import subprocess
 import tempfile
+import time
 from contextlib import contextmanager
 from pathlib import Path
 from shlex import quote
@@ -94,6 +96,11 @@ class DarlingTest(WestCommand):
             "--prefix-profile",
             metavar="NAME",
             help="named Darling prefix shortcut (homebrew -> ~/work/darling-prefix-homebrew-test)",
+        )
+        parser.add_argument(
+            "--keep-prefix-running",
+            action="store_true",
+            help="do not shut down a Darling prefix after prefix-backed metadata tests",
         )
         parser.add_argument(
             "--materialize-profile",
@@ -531,6 +538,13 @@ class DarlingTest(WestCommand):
                 rc = result_rc
         return rc
 
+    def _metadata_needs_prefix(self, tests) -> bool:
+        for patch, test in tests:
+            invocation = self._test_invocation(patch, test)
+            if "darling-prefix" in invocation.get("requires_resources", []):
+                return True
+        return False
+
     def _bad_revision(self, patch) -> str:
         if patch.get("source-base"):
             return patch["source-base"]
@@ -755,6 +769,62 @@ class DarlingTest(WestCommand):
                 rc = result_rc
         return rc
 
+    def _shutdown_test_prefix(self) -> None:
+        prefix = getattr(self, "_prefix", None)
+        if not prefix or getattr(self, "_keep_prefix_running", False):
+            return
+        launcher = self._resolve_darling_launcher(prefix)
+        if launcher:
+            env = os.environ.copy()
+            env["DPREFIX"] = prefix
+            self.inf(f"shutdown Darling prefix: {prefix}")
+            subprocess.run(
+                [launcher, "shutdown"],
+                env=env,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                check=False,
+            )
+        self._kill_dserver_for_prefix(Path(prefix))
+
+    def _kill_dserver_for_prefix(self, prefix: Path) -> None:
+        result = subprocess.run(
+            ["ps", "-eo", "pid=,args="],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        pids: list[int] = []
+        for line in result.stdout.splitlines():
+            line = line.strip()
+            if not line:
+                continue
+            pid_text, _, args = line.partition(" ")
+            if not pid_text.isdigit():
+                continue
+            argv = args.split()
+            if len(argv) >= 2 and Path(argv[0]).name == "darlingserver" and argv[1] == str(prefix):
+                pids.append(int(pid_text))
+        if not pids:
+            return
+        self.wrn(f"stopping live darlingserver for {prefix}: pids={pids}")
+        for sig in (signal.SIGTERM, signal.SIGKILL):
+            live = []
+            for pid in pids:
+                try:
+                    os.kill(pid, 0)
+                    live.append(pid)
+                except ProcessLookupError:
+                    pass
+            if not live:
+                return
+            for pid in live:
+                try:
+                    os.kill(pid, sig)
+                except ProcessLookupError:
+                    pass
+            time.sleep(1)
+
     def _changed_submodules(self) -> list[str]:
         """Submodules whose checkout differs from their manifest revision.
 
@@ -837,6 +907,7 @@ class DarlingTest(WestCommand):
         self._executor = self._resolve_executor(args.executor)
         self._bundle_root = str(Path(args.bundle_root).expanduser())
         self._materialize_profile = args.materialize_profile
+        self._keep_prefix_running = args.keep_prefix_running
 
         if args.gc:
             self._gc_bundles(
@@ -874,8 +945,16 @@ class DarlingTest(WestCommand):
                     ]
                     if not selected:
                         self.die("no red-proof tests selected from patch metadata")
-                    raise SystemExit(self._run_red_proofs(selected, args.list, unknown))
-                raise SystemExit(self._run_metadata_tests(selected, args.list, unknown))
+                    try:
+                        raise SystemExit(self._run_red_proofs(selected, args.list, unknown))
+                    finally:
+                        if not args.list and self._metadata_needs_prefix(selected):
+                            self._shutdown_test_prefix()
+                try:
+                    raise SystemExit(self._run_metadata_tests(selected, args.list, unknown))
+                finally:
+                    if not args.list and self._metadata_needs_prefix(selected):
+                        self._shutdown_test_prefix()
             if args.list:
                 return
             self.die("no tests selected from patch metadata")

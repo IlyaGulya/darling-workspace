@@ -1,4 +1,4 @@
-From 5fd2eb462219cc33d408f8be26eca2dd7ae28709 Mon Sep 17 00:00:00 2001
+From 783b3a890940e9b9f40db35e0966f4754be5a04a Mon Sep 17 00:00:00 2001
 From: Ilya Gulya <ilya@gulya.me>
 Date: Tue, 7 Jul 2026 16:58:10 +0000
 Subject: [PATCH] xnu: share getattrlist attribute packing
@@ -8,9 +8,9 @@ Subject: [PATCH] xnu: share getattrlist attribute packing
  .../bsd/helper/xattr/getattrlist_pack.h       | 252 ++++++++++
  .../bsd/impl/xattr/getattrlistbulk.c          | 347 +++-----------
  .../tests/getattrlist_shared_packer_test.c    | 323 +++++++++++++
- .../tests/guest-verdict-test-lib.sh           |  60 +++
+ .../tests/guest-verdict-test-lib.sh           |  74 +++
  .../tests/run-getattrlist-shared-packer.sh    |  14 +
- 6 files changed, 904 insertions(+), 531 deletions(-)
+ 6 files changed, 918 insertions(+), 531 deletions(-)
  create mode 100644 darling/src/libsystem_kernel/emulation/include/xnu_syscall/bsd/helper/xattr/getattrlist_pack.h
  create mode 100644 darling/src/libsystem_kernel/tests/getattrlist_shared_packer_test.c
  create mode 100644 darling/src/libsystem_kernel/tests/guest-verdict-test-lib.sh
@@ -1563,20 +1563,23 @@ index 0000000000000000000000000000000000000000..6462752659b1b0b75b9b9efe49750df2
 +}
 diff --git a/darling/src/libsystem_kernel/tests/guest-verdict-test-lib.sh b/darling/src/libsystem_kernel/tests/guest-verdict-test-lib.sh
 new file mode 100644
-index 0000000000000000000000000000000000000000..00bf9abd2573c56c65c8db2f4e342b9f8079fd59
+index 0000000000000000000000000000000000000000..75fd11e7c28a3a36e7b3ae5a2b265f67d8f192a1
 --- /dev/null
 +++ b/darling/src/libsystem_kernel/tests/guest-verdict-test-lib.sh
-@@ -0,0 +1,60 @@
+@@ -0,0 +1,74 @@
 +#!/usr/bin/env bash
 +
 +guest_verdict_run_c() {
 +	local name="$1" src="$2" ok_marker="$3"
 +	local timeout_seconds="${4:-60}"
-+	local output="/tmp/$name"
-+	local guest_src="/tmp/$(basename "$src")"
-+	local verdict="/tmp/$name.verdict"
-+	local runner_log="/tmp/$name.runner.log"
++	local run_id="${BASHPID:-$$}.$RANDOM"
++	local output="/tmp/$name.$run_id"
++	local guest_src="/tmp/$name.$run_id.c"
++	local verdict="/tmp/$name.$run_id.verdict"
++	local runner_log="/tmp/$name.$run_id.runner.log"
 +	local launch="${DARLING_LAUNCHER:-${DARLING:-darling}}"
++	local guest_cc="${DARLING_GUEST_CC:-/Library/Developer/CommandLineTools/usr/bin/clang}"
++	local guest_cflags="${DARLING_GUEST_CFLAGS:--isysroot /Library/Developer/CommandLineTools/SDKs/MacOSX.sdk}"
 +	local poll_timeout="${GUEST_VERDICT_POLL_TIMEOUT:-10}"
 +
 +	: "${DPREFIX:?set DPREFIX to a bootable Darling prefix}"
@@ -1588,13 +1591,24 @@ index 0000000000000000000000000000000000000000..00bf9abd2573c56c65c8db2f4e342b9f
 +	}
 +
 +	rm -f "$DPREFIX$verdict" 2>/dev/null || true
-+	cp "$src" "$DPREFIX$guest_src"
-+	guest_verdict_shell "$poll_timeout" "rm -f '$verdict'" >/dev/null 2>&1 || true
++	guest_verdict_shell "$poll_timeout" "rm -f '$verdict' '$guest_src' '$output'" >/dev/null 2>&1 || true
++	timeout --kill-after=5 "$poll_timeout" env DPREFIX="$DPREFIX" "$launch" \
++		shell /bin/bash --login -c "cat > '$guest_src'" < "$src"
 +
++	local guest_cc_literal=""
++	printf -v guest_cc_literal "%q" "$guest_cc"
 +	guest_verdict_shell "$timeout_seconds" "
-+		clang -O2 -Wall -Wextra -o '$output' '$guest_src' 2>&1
++		guest_cc=$guest_cc_literal
++		if [ ! -x \"\$guest_cc\" ]; then guest_cc=clang; fi
++		\"\$guest_cc\" $guest_cflags -O2 -Wall -Wextra -o '$output' '$guest_src' > '$verdict' 2>&1
++		rc=\$?
++		if [ \"\$rc\" -ne 0 ]; then
++			printf 'ORACLE_RC=%s\n' \"\$rc\" >> '$verdict'
++			exit 0
++		fi
 +		'$output' > '$verdict' 2>&1
-+		echo \"ORACLE_RC=\\$?\" >> '$verdict'
++		rc=\$?
++		printf 'ORACLE_RC=%s\n' \"\$rc\" >> '$verdict'
 +	" </dev/null > "$runner_log" 2>&1 &
 +	local shell_pid=$!
 +
