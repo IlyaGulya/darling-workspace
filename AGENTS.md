@@ -61,12 +61,13 @@ refs, PR drafts, and agent handoff.
   `red-proof: {mode: source-base}`. Source-base proof swaps source checkouts for
   source/compile tests; it does not rebuild and deploy the bad dylib/server into
   the Darling prefix. For deployed guest behavior, a guest test is a GREEN
-  runtime gate unless the runner explicitly builds/deploys both bad and fixed
-  trees into isolated prefixes and runs the same guest fixture against each.
+  runtime gate unless the runner explicitly builds/deploys the bad runtime,
+  restores the fixed/current runtime, and runs the same guest fixture against
+  each.
   Use `red-proof: {mode: guest-runtime-deploy, runtime-artifacts: [...]}` for
-  that intended model; until the `dar-facb` runner is implemented, west must
-  fail such RED proof execution clearly instead of silently using the current
-  prefix.
+  that model. The runner must use temporary source/build state and backup/restore
+  every declared prefix deploy path; never fall back to current-prefix smoke or
+  fake `source-base` proof for deployed guest behavior.
 - Do not close patch coverage with source matching. Tests that grep, parse, or
   assert that specific code text exists are audit checks only; they must not be
   counted as the patch's behavioral test and must not be recorded as `kind:
