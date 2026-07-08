@@ -345,7 +345,7 @@ index e64e932367083086e66892554f0ff7a96fc959c3..3df19a44a83f45ed8458b6efd8d0db9c
  }
 -
 
-From c29d7b38b2a1ffac4466c43a683f71bb5437ba00 Mon Sep 17 00:00:00 2001
+From a1f66caa8f9bc59fc4147186910280233862df0b Mon Sep 17 00:00:00 2001
 From: Ilya Gulya <ilya@gulya.me>
 Date: Tue, 7 Jul 2026 16:52:46 +0000
 Subject: [PATCH] libpthread: split psynch return decoding contract
@@ -355,10 +355,10 @@ Subject: [PATCH] libpthread: split psynch return decoding contract
  src/pthread_cond.c                         |  14 +-
  src/pthread_mutex.c                        |  28 ++-
  src/pthread_rwlock.c                       |   8 +-
- tests/guest-verdict-test-lib.sh            |  57 +++++
+ tests/guest-verdict-test-lib.sh            |  64 +++++
  tests/psynch_kernel_return_contract.c      | 270 +++++++++++++++++++++
  tests/run-psynch-kernel-return-contract.sh |  17 ++
- 7 files changed, 406 insertions(+), 36 deletions(-)
+ 7 files changed, 413 insertions(+), 36 deletions(-)
  create mode 100644 tests/guest-verdict-test-lib.sh
  create mode 100644 tests/psynch_kernel_return_contract.c
  create mode 100755 tests/run-psynch-kernel-return-contract.sh
@@ -563,10 +563,10 @@ index 3df19a44a83f45ed8458b6efd8d0db9c8379e9ca..67c3b3ec8ebb2882a383d37eda62a694
  			RWLOCK_DEBUG_SEQ(wakeup, rwlock, oldseq, newseq, updateval,
 diff --git a/tests/guest-verdict-test-lib.sh b/tests/guest-verdict-test-lib.sh
 new file mode 100644
-index 0000000000000000000000000000000000000000..ee08ac2d095da20eaa7e2de4cc7b51f3789573af
+index 0000000000000000000000000000000000000000..482ff7e152571bca00fa67e5380208a9ea60f5bf
 --- /dev/null
 +++ b/tests/guest-verdict-test-lib.sh
-@@ -0,0 +1,57 @@
+@@ -0,0 +1,64 @@
 +#!/usr/bin/env bash
 +
 +guest_verdict_run_c() {
@@ -576,18 +576,25 @@ index 0000000000000000000000000000000000000000..ee08ac2d095da20eaa7e2de4cc7b51f3
 +	local guest_src="/tmp/$(basename "$src")"
 +	local verdict="/tmp/$name.verdict"
 +	local runner_log="/tmp/$name.runner.log"
-+	local launch="${DARLING:-darling}"
++	local launch="${DARLING_LAUNCHER:-${DARLING:-darling}}"
 +	local guest_prelude="${GUEST_VERDICT_GUEST_PRELUDE:-:}"
++	local poll_timeout="${GUEST_VERDICT_POLL_TIMEOUT:-10}"
 +
 +	: "${DPREFIX:?set DPREFIX to a bootable Darling prefix}"
 +
++	guest_verdict_shell() {
++		local seconds="$1"
++		shift
++		timeout --kill-after=5 "$seconds" env DPREFIX="$DPREFIX" "$launch" shell /bin/bash --login -c "$*"
++	}
++
 +	rm -f "$DPREFIX$verdict" 2>/dev/null || true
 +	cp "$src" "$DPREFIX$guest_src"
-+	env DPREFIX="$DPREFIX" "$launch" shell /bin/bash --login -c "rm -f '$verdict'" >/dev/null 2>&1 || true
++	guest_verdict_shell "$poll_timeout" "rm -f '$verdict'" >/dev/null 2>&1 || true
 +
 +	local compile_args=""
 +	printf -v compile_args " %q" "$@"
-+	env DPREFIX="$DPREFIX" "$launch" shell /bin/bash --login -c "
++	guest_verdict_shell "$timeout_seconds" "
 +		$guest_prelude
 +		clang -O2 -Wall -Wextra -o '$output' '$guest_src'$compile_args 2>&1
 +		'$output' > '$verdict' 2>&1
@@ -597,14 +604,14 @@ index 0000000000000000000000000000000000000000..ee08ac2d095da20eaa7e2de4cc7b51f3
 +
 +	local deadline=$((SECONDS + timeout_seconds))
 +	while [ "$SECONDS" -lt "$deadline" ]; do
-+		if env DPREFIX="$DPREFIX" "$launch" shell /bin/bash --login -c \
++		if guest_verdict_shell "$poll_timeout" \
 +			"test -f '$verdict' && grep -q '^ORACLE_RC=' '$verdict'" >/dev/null 2>&1; then
 +			break
 +		fi
 +		sleep 1
 +	done
 +
-+	if ! env DPREFIX="$DPREFIX" "$launch" shell /bin/bash --login -c \
++	if ! guest_verdict_shell "$poll_timeout" \
 +		"test -f '$verdict' && grep -q '^ORACLE_RC=' '$verdict'" >/dev/null 2>&1; then
 +		kill "$shell_pid" 2>/dev/null || true
 +		wait "$shell_pid" 2>/dev/null || true
@@ -619,7 +626,7 @@ index 0000000000000000000000000000000000000000..ee08ac2d095da20eaa7e2de4cc7b51f3
 +
 +	echo "=== verdict ==="
 +	local guest_verdict
-+	guest_verdict="$(env DPREFIX="$DPREFIX" "$launch" shell /bin/bash --login -c "cat '$verdict'" 2>/dev/null || true)"
++	guest_verdict="$(guest_verdict_shell "$poll_timeout" "cat '$verdict'" 2>/dev/null || true)"
 +	printf '%s\n' "$guest_verdict"
 +	grep -q "^$ok_marker" <<<"$guest_verdict" &&
 +		grep -q "ORACLE_RC=0" <<<"$guest_verdict"

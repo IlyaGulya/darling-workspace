@@ -94,7 +94,7 @@
   <project name="darling-libnetwork" path="darling/src/external/libnetwork" revision="56c5fad43f24a40d8ca7f8a1d0badedfeaf7e64e" />
   <project name="darling-Libnotify" path="darling/src/external/libnotify" revision="98156d3f847a3ced6c5f52c12a889047bc4f9b20" />
   <project name="darling-libplatform" path="darling/src/external/libplatform" revision="6a71adae2108910bc6f77a05b2bff8947b049121" />
-  <project name="darling-libpthread" path="darling/src/external/libpthread" revision="c29d7b38b2a1ffac4466c43a683f71bb5437ba00" />
+  <project name="darling-libpthread" path="darling/src/external/libpthread" revision="a1f66caa8f9bc59fc4147186910280233862df0b" />
   <project name="darling-libresolv" path="darling/src/external/libresolv" revision="cf955392e5449efb269b8b3510c755085fd36a2d" />
   <project name="darling-libressl" path="darling/src/external/libressl-2.2.9" revision="c5e9edb9d82ccf5fde5d8ae32b162fec8fe11318" />
   <project name="darling-libressl" path="darling/src/external/libressl-2.5.5" revision="1f663b5bdc9082178717c080e4728fe3e7084de4" />
@@ -159,7 +159,7 @@
   <project name="xcbuild" path="darling/src/external/xcbuild" revision="a903c6952fc5617816113cbb7b551ac701dba2ff" />
   <project name="googletest" path="darling/src/external/xcbuild/ThirdParty/googletest" revision="a2b8a8e07628e5fd60644b6dd99c1b5e7d7f1f47" />
   <project name="linenoise" path="darling/src/external/xcbuild/ThirdParty/linenoise" revision="c894b9e59f02203dbe4e2be657572cf88c4230c3" />
-  <project name="darling-xnu" path="darling/src/external/xnu" revision="a491dc1ca9edcb5b3950cf9d3d400b1534c36ccf" />
+  <project name="darling-xnu" path="darling/src/external/xnu" revision="5fd2eb462219cc33d408f8be26eca2dd7ae28709" />
   <project name="darling-zip" path="darling/src/external/zip" revision="caf41ebbc3ebab0250e4d13aa42221ef91a9802c" />
   <project name="darling-zlib" path="darling/src/external/zlib" revision="677de9b1c2bea1e428f56d8fc63300aa471eaf99" />
   <project name="darling-zsh" path="darling/src/external/zsh" revision="4a7a6ebf6216395c7db698a4993db16e484aa54d" />
