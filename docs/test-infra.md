@@ -122,6 +122,15 @@ starts. For example, Darling guest/runtime scripts should declare `DPREFIX`
 instead of burying that requirement in prose. `west test` fails before launch if
 the variable is missing.
 
+Keep shell scripts thin. Static source-contract scripts should source a local
+`contract-test-lib.sh` helper for common `fail`, `require_grep`, and
+`require_text` assertions instead of copying that boilerplate into every test.
+Guest runtime C fixtures should use a local `guest-verdict-test-lib.sh` helper
+for the repeated DPREFIX flow: copy fixture into the prefix, launch
+`darling shell`, poll for an `ORACLE_RC` verdict, print logs, and clean up the
+host runner process. Bespoke scripts such as long A0 gates are acceptable, but
+they should be the exception rather than the default shape for new tests.
+
 Use `ctest-label` once the test is discoverable through the CTest registry:
 
 ```yaml
@@ -136,8 +145,11 @@ Use `ctest-label` once the test is discoverable through the CTest registry:
 `command:` is intentionally an override for corner cases only. Prefer
 `runner/script`, `runner/target`, or `ctest-label` so `west test` owns how tests
 are launched, filtered, deduplicated, and eventually wrapped by diagnostics.
-`west patch check` validates structured entries, including resolving `repo`
-against the West manifest/path map and checking that declared scripts exist.
+`west patch check` validates structured entries and resolves `repo` against the
+West manifest/path map. `west test` validates the script path against the actual
+checkout immediately before running, because a profile may reference tests added
+by another patch in the same stack and the current subrepo branch may not be the
+profile integration tree.
 
 If a non-documentation patch truly cannot carry a committed red test, record an
 explicit exception:
