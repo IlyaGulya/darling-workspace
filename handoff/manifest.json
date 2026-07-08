@@ -277,7 +277,7 @@
         },
         {
           "branch": "fix/psynch-cvwait-balanced",
-          "head": "ce7ce5e7888eb5b3c20ec652db097519c9c2fbe5",
+          "head": "0404f605e87eddaf720b6d795d022c5add9b08ce",
           "upstream": "origin/main",
           "source_ref": "refs/heads/fix/psynch-cvwait-balanced"
         },
@@ -781,7 +781,7 @@
         },
         {
           "branch": "fix/psynch-cvsignal-args",
-          "head": "8a7797fd85b1522a528551fc9601b245c083b8e8",
+          "head": "f21fb14efa1b64b708bbcd8279dedf0cbd56efc8",
           "upstream": "origin/main",
           "source_ref": "refs/heads/fix/psynch-cvsignal-args"
         },
