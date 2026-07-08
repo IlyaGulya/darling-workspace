@@ -438,15 +438,23 @@ patches:
     coverage-tier: host
     env: host
     diag: bare
-    red: true
-    red-proof:
-      mode: source-base
-      source-env: LIBRESSL_SRC_ROOT
-    runner: script
-    repo: darling-workspace
-    script: tests/run-libressl-nist-regress.sh
+    runner: source-build-fixture
+    script: tests/darling_ec_tls_regress.c
+    build-commands:
+    - ./configure --disable-shared --enable-static --disable-asm CFLAGS="${LIBRESSL_NIST_CFLAGS:--O2 -fno-strict-aliasing}"
+    - make -j"${LIBRESSL_NIST_JOBS:-2}"
+    run-commands:
+    - cc -O2 tests/darling_ec_tls_regress.c -Iinclude -Icrypto -Lcrypto/.libs -lcrypto -o "$WEST_TEST_TMP/darling_ec_tls_regress"
+    - "$WEST_TEST_TMP/darling_ec_tls_regress"
+    - printf 'LIBRESSL_NIST_REGRESS_OK\n'
     timeout-seconds: 240
-    note: Host behavior regression that builds LibreSSL 2.8.3 libcrypto from the source tree with -fno-strict-aliasing, links the committed EC/SPKI regression program, and runs P-256/P-384/P-521 validation checks.
+    note: |
+      Host behavior GREEN gate that builds LibreSSL 2.8.3 libcrypto and runs the
+      committed EC/SPKI regression program. This is not a RED proof: the patch
+      changes Darling's CMake target flags, while this portable autotools build
+      supplies -fno-strict-aliasing explicitly. True RED proof needs a Darling
+      CMake target/source-build runner that exercises crypto44's
+      target_compile_options.
   pr-draft: pr-drafts/libressl-283-nist-strict-aliasing.md
   github:
     fork:
