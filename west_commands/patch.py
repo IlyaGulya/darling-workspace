@@ -494,6 +494,30 @@ class DarlingPatch(WestCommand):
                             errors.append(
                                 f"tests[{index}].host-trace-files[{trace_index}] contains must be a list of strings"
                             )
+            if test.get("host-temp-files") is not None:
+                temps = test.get("host-temp-files")
+                if runner != "guest-c-fixture":
+                    errors.append(f"tests[{index}] host-temp-files requires runner: guest-c-fixture")
+                elif not isinstance(temps, list) or not temps:
+                    errors.append(f"tests[{index}] host-temp-files must be a non-empty list")
+                elif not all(isinstance(temp_file, dict) for temp_file in temps):
+                    errors.append(f"tests[{index}] host-temp-files entries must be mappings")
+                else:
+                    for temp_index, temp_file in enumerate(temps):
+                        env_name = temp_file.get("env")
+                        rel_path = temp_file.get("prefix-relative-path")
+                        if not isinstance(env_name, str) or not re.match(r"^[A-Za-z_][A-Za-z0-9_]*$", env_name):
+                            errors.append(
+                                f"tests[{index}].host-temp-files[{temp_index}] env must be a shell variable name"
+                            )
+                        if not isinstance(rel_path, str) or not rel_path:
+                            errors.append(
+                                f"tests[{index}].host-temp-files[{temp_index}] needs prefix-relative-path"
+                            )
+                        elif rel_path.startswith("/") or ".." in Path(rel_path).parts:
+                            errors.append(
+                                f"tests[{index}].host-temp-files[{temp_index}] path must be prefix-relative"
+                            )
             if test.get("requires-profile") is not None and not isinstance(
                 test.get("requires-profile"), str
             ):
