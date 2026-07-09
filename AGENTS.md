@@ -134,6 +134,11 @@ refs, PR drafts, and agent handoff.
   cleanup. Use a local `guest-verdict-test-lib.sh` only for corner cases the
   structured runner cannot express yet, and declare runtime prerequisites in
   patch metadata.
+- Framework-internal contracts belong in small Python modules under
+  `tests/west_test_contracts/`. Keep `tests/run-west-test-*-contract.sh` as
+  thin compatibility entrypoints only; do not grow them with embedded Python
+  heredocs or large inline fixtures unless the test is intentionally exercising
+  shell/CLI integration.
 - Darling guest tests should prefer `requires: [darling-prefix]` over
   `requires-env: [DPREFIX]`; let `west test --prefix/--prefix-profile` provide
   `DPREFIX`.
