@@ -523,7 +523,14 @@ bare="$(
 
 printf '%s\n' "$bare" | grep -q 'diag:bare' ||
 	fail 'host metadata did not resolve to diag:bare'
-if printf '%s\n' "$bare" | grep -q 'darling-debug-runner run '; then
+bare_host_display="$(
+	printf '%s\n' "$bare" |
+		awk '
+			/psynch_return_contract \[red, env:host, diag:bare, kind:contract\]/ { getline; print; found=1 }
+			END { if (!found) exit 1 }
+		'
+)" || fail 'bare host metadata line was not found'
+if printf '%s\n' "$bare_host_display" | grep -q 'darling-debug-runner run '; then
 	fail 'bare host metadata was unexpectedly wrapped'
 fi
 
