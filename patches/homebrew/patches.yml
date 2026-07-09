@@ -741,10 +741,10 @@ patches:
       base: main
       state: local
 - path: libplatform/bzero-return-register.patch
-  sha256sum: 6703e099f83ddcf638cd40e3128226acbb16ae7db4e3b254e31b36207b7cc51c
+  sha256sum: d4eb3e7be7e5091c1af9e287f7c4d38d1f18ba3a92da0df91d9d4d1e6c623eff
   module: darling/src/external/libplatform
   source-branch: fix/bzero-return-register
-  source-commit: 36eb5d508032ef1c614d41e166bbca3064b6620c
+  source-commit: 71d3d9e661ab85581e4ea5fb66af5e691df6f6b9
   bead: dar-q95.4
   publication-status: ready
   tests:
@@ -837,10 +837,10 @@ patches:
       base: master
       state: local
 - path: libressl/libressl-283-nist-strict-aliasing.patch
-  sha256sum: dcd346a6b7f2d409e42c9a7b9488039ba4cf43ffb6d23d2bec0604a7944d6e97
+  sha256sum: 06f39bcbaa915dbb4435de9e3ecccacddf687cac4d446f63bdef5caa1e861b74
   module: darling/src/external/libressl-2.8.3
   source-branch: fix/libressl-283-nist-strict-aliasing
-  source-commit: 75c81f4e3ede9bb653b2b90bcca2681eda9aecd8
+  source-commit: 54b3b04fbe0df07b7b4d1e6a51ef485a1f3c1c15
   bead: dar-q95.6
   publication-status: ready
   tests:
@@ -850,6 +850,7 @@ patches:
       source-env: LIBRESSL_SRC_ROOT
     target: darling_ec_tls_regress
     source-dir: libressl
+    ctest-label: bead:dar-q95.6
     run-binary: libressl/darling_ec_tls_regress
     fixture-files:
     - tests/darling_ec_tls_regress.c

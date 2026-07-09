@@ -37,7 +37,7 @@ patches:
   - name: ctest_label_contract
     kind: contract
     env: host
-    diag: bare
+    diag: guarded
     red: true
     red-proof:
       mode: self
@@ -295,10 +295,11 @@ patches:
     kind: contract
     coverage-tier: host
     env: host
-    diag: bare
+    diag: guarded
     runner: darling-cmake-target-fixture
     target: west_fixture_target
     source-dir: source
+    ctest-label: bead:dar-cmake-fixture
     fixture-files: [tests/west_fixture_target.c]
     fallback-executable-sources: [source/tests/west_fixture_target.c]
     fallback-include-dirs: [source/src]
@@ -620,6 +621,8 @@ ctest_label="$(
 
 printf '%s\n' "$ctest_label" | grep -q 'ctest .* -L bead:dar-gwn.5' ||
 	fail 'ctest-label metadata did not resolve to a runnable ctest command'
+printf '%s\n' "$ctest_label" | grep -q 'darling-debug-runner.* run .* ctest .* -L bead:dar-gwn.5' ||
+	fail 'ctest-label metadata did not preserve diag:guarded wrapping'
 if printf '%s\n' "$ctest_label" | grep -q 'list-only'; then
 	fail 'ctest-label metadata is still reported as list-only'
 fi
@@ -885,6 +888,9 @@ printf '%s\n' "$darling_cmake_target_fixture" | grep -q \
 printf '%s\n' "$darling_cmake_target_fixture" | grep -q \
 	'cmake --build <temp>/build --target west_fixture_target' ||
 	fail 'darling-cmake-target-fixture metadata did not include the target build'
+printf '%s\n' "$darling_cmake_target_fixture" | grep -q \
+	'<darling-debug-runner> run -- ctest --test-dir <temp>/build --output-on-failure -L bead:dar-cmake-fixture' ||
+	fail 'darling-cmake-target-fixture metadata did not preserve source CTest guarded execution'
 
 python3 - <<'PY' || fail 'darling-eunion-prefix prerequisite helper is wrong'
 import sys

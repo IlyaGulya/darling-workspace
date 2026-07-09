@@ -1,16 +1,16 @@
-From 75c81f4e3ede9bb653b2b90bcca2681eda9aecd8 Mon Sep 17 00:00:00 2001
+From 54b3b04fbe0df07b7b4d1e6a51ef485a1f3c1c15 Mon Sep 17 00:00:00 2001
 From: Ilya Gulya <ilya@gulya.me>
 Date: Sat, 6 Jun 2026 01:43:37 +0500
 Subject: [PATCH] Fix LibreSSL NIST EC reduction build
 
 ---
- CMakeLists.txt                 |  12 +++
+ CMakeLists.txt                 |  22 +++++
  tests/darling_ec_tls_regress.c | 164 +++++++++++++++++++++++++++++++++
- 2 files changed, 176 insertions(+)
+ 2 files changed, 186 insertions(+)
  create mode 100644 tests/darling_ec_tls_regress.c
 
 diff --git a/CMakeLists.txt b/CMakeLists.txt
-index 2d39ec43f5aa42a15924750a830cf63d578adad1..ca1eabd8f42692ae02292d075a8ea7fd36f21bfb 100644
+index 2d39ec43f5aa42a15924750a830cf63d578adad1..8e8b0ce807b9c6640068a4edd92208fd10f64dc8 100644
 --- a/CMakeLists.txt
 +++ b/CMakeLists.txt
 @@ -692,6 +692,10 @@ target_compile_definitions(crypto44 PRIVATE
@@ -24,7 +24,7 @@ index 2d39ec43f5aa42a15924750a830cf63d578adad1..ca1eabd8f42692ae02292d075a8ea7fd
  target_include_directories(crypto44 PRIVATE
  	crypto
  	crypto/asn1
-@@ -900,6 +904,14 @@ target_link_libraries(openssl
+@@ -900,6 +904,24 @@ target_link_libraries(openssl
  	ssl46
  )
  
@@ -35,6 +35,16 @@ index 2d39ec43f5aa42a15924750a830cf63d578adad1..ca1eabd8f42692ae02292d075a8ea7fd
 +target_link_libraries(darling_ec_tls_regress
 +	crypto44
 +)
++
++if (BUILD_TESTING)
++	add_test(
++		NAME darling_ec_tls_regress
++		COMMAND darling_ec_tls_regress
++	)
++	set_tests_properties(darling_ec_tls_regress PROPERTIES
++		LABELS "bead:dar-q95.6;env:host;diag:bare;submod:libressl"
++	)
++endif ()
 +
  # install everything
  install(TARGETS crypto44 ssl46 tls18 DESTINATION libexec/darling/usr/lib)
