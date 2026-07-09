@@ -805,3 +805,86 @@ index d08fb3e993919f0d1dc2c5f144f921ee3359cef1..c79b36dcbf51d9c0931f9c4df387e2b2
  			return false;
  	}
  };
+
+From d1589fd450bb590a4d3a72fdabf0d19555b74b92 Mon Sep 17 00:00:00 2001
+From: Ilya Gulya <ilya@gulya.me>
+Date: Thu, 9 Jul 2026 01:46:46 +0000
+Subject: [PATCH] test: trace microthread resume-before-suspend window
+
+---
+ .../darlingserver/duct-tape/test-diagnostics.h              | 1 +
+ duct-tape/src/test-diagnostics.c                            | 2 +-
+ duct-tape/src/thread.c                                      | 6 ++++++
+ src/thread.cpp                                              | 3 +++
+ 4 files changed, 11 insertions(+), 1 deletion(-)
+
+diff --git a/duct-tape/internal-include/darlingserver/duct-tape/test-diagnostics.h b/duct-tape/internal-include/darlingserver/duct-tape/test-diagnostics.h
+index 1f9c6ae7d705ce22d2f49b3dd108ec23eec87c2d..4c1445037d99eaa0379d9b7b2a4d93a0830974cd 100644
+--- a/duct-tape/internal-include/darlingserver/duct-tape/test-diagnostics.h
++++ b/duct-tape/internal-include/darlingserver/duct-tape/test-diagnostics.h
+@@ -1,6 +1,7 @@
+ #pragma once
+ 
+ int dtape_test_consume_fault(const char* name);
++void dtape_test_trace_line(const char* line);
+ void dtape_test_trace_wait_timer(
+ 	const char* event,
+ 	unsigned long long thread,
+diff --git a/duct-tape/src/test-diagnostics.c b/duct-tape/src/test-diagnostics.c
+index 8197670847f2cb159c00c2a45e5ecacc7963d864..8bcfe3e80aece7af69942009f4ee09547341e5b1 100644
+--- a/duct-tape/src/test-diagnostics.c
++++ b/duct-tape/src/test-diagnostics.c
+@@ -24,7 +24,7 @@ static unsigned long dtape_test_trace_strlen(const char* string) {
+ 	return result;
+ }
+ 
+-static void dtape_test_trace_line(const char* line) {
++void dtape_test_trace_line(const char* line) {
+ 	const char* path = getenv(DSERVER_TEST_TRACE_FILE);
+ 	if (!path || path[0] == '\0') {
+ 		return;
+diff --git a/duct-tape/src/thread.c b/duct-tape/src/thread.c
+index 3e3fb2dea1919783dcc4463b978a2e3e3748310b..f9d1186729b163e1762b7c2a5d18d2261db08ed9 100644
+--- a/duct-tape/src/thread.c
++++ b/duct-tape/src/thread.c
+@@ -452,6 +452,12 @@ void dtape_thread_wait_while_user_suspended(dtape_thread_t* thread) {
+ 
+ 		thread->xnu_thread.wait_result = THREAD_WAITING;
+ 
++		if (dtape_test_consume_fault("microthread.resume_before_suspend")) {
++			dtape_test_trace_line("microthread.dtape.resume_before_suspend");
++			thread->xnu_thread.suspend_count = 0;
++			dtape_hooks->thread_resume(thread->context);
++		}
++
+ 		dtape_hooks->thread_suspend(thread->context, NULL, NULL, NULL);
+ 
+ 		dtape_log_debug("sigexc: woken up");
+diff --git a/src/thread.cpp b/src/thread.cpp
+index e480158b6a73a0b363afcc3c436f305565da1f08..9a54079a2de9e73d78c4e003c0c4074dda37f094 100644
+--- a/src/thread.cpp
++++ b/src/thread.cpp
+@@ -26,6 +26,7 @@
+ #include <darlingserver/server.hpp>
+ #include <darlingserver/logging.hpp>
+ #include <darlingserver/metrics.hpp>
++#include <darlingserver/test-diagnostics.hpp>
+ #include <filesystem>
+ #include <fstream>
+ 
+@@ -659,6 +660,7 @@ void DarlingServer::Thread::suspend(std::function<void()> continuationCallback,
+ 	_rwlock.lock();
+ 	// Consume a wake that arrived before suspend() marked us suspended.
+ 	if (microthreadConsumePendingResume(_resumePermit)) {
++		TestDiagnostics::traceLine("microthread.suspend.consume_pending_resume");
+ 		_rwlock.unlock();
+ 		if (unlockMe) {
+ 			libsimple_lock_unlock(unlockMe);
+@@ -675,6 +677,7 @@ void DarlingServer::Thread::suspend(std::function<void()> continuationCallback,
+ 	_rwlock.lock();
+ 	// Consume a wake that arrived while the resume context was being captured.
+ 	if (microthreadConsumeResumeDuringSuspend(_suspended, _resumePermit)) {
++		TestDiagnostics::traceLine("microthread.suspend.consume_resume_during_suspend");
+ 		_rwlock.unlock();
+ 		if (unlockMeWhenSuspending) {
+ 			libsimple_lock_unlock(unlockMeWhenSuspending);
