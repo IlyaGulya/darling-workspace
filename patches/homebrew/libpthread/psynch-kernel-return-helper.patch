@@ -345,7 +345,7 @@ index e64e932367083086e66892554f0ff7a96fc959c3..3df19a44a83f45ed8458b6efd8d0db9c
  }
 -
 
-From 0110e3ca3c5c45afbec375a03472f184b7fd19ad Mon Sep 17 00:00:00 2001
+From 077301590f7c739451aee66f1286f63a89461fac Mon Sep 17 00:00:00 2001
 From: Ilya Gulya <ilya@gulya.me>
 Date: Tue, 7 Jul 2026 16:52:46 +0000
 Subject: [PATCH] libpthread: split psynch return decoding contract
@@ -353,12 +353,12 @@ Subject: [PATCH] libpthread: split psynch return decoding contract
 ---
  src/inline_internal.h                      |  48 ++--
  src/pthread_cond.c                         |  14 +-
- src/pthread_mutex.c                        |  28 ++-
+ src/pthread_mutex.c                        |  28 +-
  src/pthread_rwlock.c                       |   8 +-
  tests/guest-verdict-test-lib.sh            |  78 ++++++
- tests/psynch_kernel_return_contract.c      | 270 +++++++++++++++++++++
+ tests/psynch_kernel_return_contract.c      | 287 +++++++++++++++++++++
  tests/run-psynch-kernel-return-contract.sh |  17 ++
- 7 files changed, 427 insertions(+), 36 deletions(-)
+ 7 files changed, 444 insertions(+), 36 deletions(-)
  create mode 100644 tests/guest-verdict-test-lib.sh
  create mode 100644 tests/psynch_kernel_return_contract.c
  create mode 100755 tests/run-psynch-kernel-return-contract.sh
@@ -647,10 +647,10 @@ index 0000000000000000000000000000000000000000..3b782e04029fed830f683c30929c9386
 +}
 diff --git a/tests/psynch_kernel_return_contract.c b/tests/psynch_kernel_return_contract.c
 new file mode 100644
-index 0000000000000000000000000000000000000000..623daa684ab76e2465ce5e7d60185abd4aebeb65
+index 0000000000000000000000000000000000000000..3f0ae1314f2ce9c7a3c948bf9515e0ffc87bf1dd
 --- /dev/null
 +++ b/tests/psynch_kernel_return_contract.c
-@@ -0,0 +1,270 @@
+@@ -0,0 +1,287 @@
 +#include <errno.h>
 +#include <pthread.h>
 +#include <sched.h>
@@ -664,6 +664,13 @@ index 0000000000000000000000000000000000000000..623daa684ab76e2465ce5e7d60185abd
 +
 +static volatile int stop_storm;
 +static volatile int timed_out;
++
++static void
++phase(const char *name)
++{
++	printf("PHASE %s\n", name);
++	fflush(stdout);
++}
 +
 +static void
 +fail_errno(const char *what, int err)
@@ -711,6 +718,7 @@ index 0000000000000000000000000000000000000000..623daa684ab76e2465ce5e7d60185abd
 +static void
 +test_cond_timedwait_eintr_contract(void)
 +{
++	phase("cond_timedwait_eintr:start");
 +	pthread_cond_t cv = PTHREAD_COND_INITIALIZER;
 +	pthread_mutex_t mtx = PTHREAD_MUTEX_INITIALIZER;
 +	pthread_t self = pthread_self();
@@ -745,6 +753,7 @@ index 0000000000000000000000000000000000000000..623daa684ab76e2465ce5e7d60185abd
 +	stop_storm = 1;
 +	rc = pthread_join(storm, NULL);
 +	if (rc) fail_errno("pthread_join storm", rc);
++	phase("cond_timedwait_eintr:done");
 +}
 +
 +struct cv_handoff {
@@ -781,6 +790,7 @@ index 0000000000000000000000000000000000000000..623daa684ab76e2465ce5e7d60185abd
 +static void
 +test_cond_handoff_under_signals(void)
 +{
++	phase("cond_handoff:start");
 +	struct cv_handoff ctx = {
 +		.cv = PTHREAD_COND_INITIALIZER,
 +		.mtx = PTHREAD_MUTEX_INITIALIZER,
@@ -835,6 +845,7 @@ index 0000000000000000000000000000000000000000..623daa684ab76e2465ce5e7d60185abd
 +	stop_storm = 1;
 +	rc = pthread_join(storm, NULL);
 +	if (rc) fail_errno("pthread_join handoff storm", rc);
++	phase("cond_handoff:done");
 +}
 +
 +struct lock_stress {
@@ -897,6 +908,7 @@ index 0000000000000000000000000000000000000000..623daa684ab76e2465ce5e7d60185abd
 +int
 +main(void)
 +{
++	phase("setup:start");
 +	struct sigaction sa;
 +	memset(&sa, 0, sizeof(sa));
 +	sa.sa_handler = signal_handler;
@@ -906,6 +918,7 @@ index 0000000000000000000000000000000000000000..623daa684ab76e2465ce5e7d60185abd
 +	}
 +	signal(SIGALRM, alarm_handler);
 +	alarm(30);
++	phase("setup:done");
 +
 +	test_cond_timedwait_eintr_contract();
 +	test_cond_handoff_under_signals();
@@ -915,8 +928,12 @@ index 0000000000000000000000000000000000000000..623daa684ab76e2465ce5e7d60185abd
 +		.rwlock = PTHREAD_RWLOCK_INITIALIZER,
 +		.iters = 20000,
 +	};
++	phase("mutex_stress:start");
 +	run_workers(mutex_worker, &ctx);
++	phase("mutex_stress:done");
++	phase("rwlock_stress:start");
 +	run_workers(rwlock_worker, &ctx);
++	phase("rwlock_stress:done");
 +
 +	printf("PSYNCH_KERNEL_RETURN_CONTRACT_OK value=%d\n", ctx.value);
 +	return 0;
