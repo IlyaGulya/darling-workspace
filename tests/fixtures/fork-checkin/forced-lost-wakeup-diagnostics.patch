@@ -1,0 +1,162 @@
+diff --git a/CMakeLists.txt b/CMakeLists.txt
+index 4fe1b6bc96cbb5832f3c9ecfd7fdd6097eab2a1c..d6f4fa1176c750a5144c845fd582d4896fa40759 100644
+--- a/CMakeLists.txt
++++ b/CMakeLists.txt
+@@ -119,6 +119,7 @@ add_executable(darlingserver
+ 	src/async-writer.cpp
+ 	src/stack-pool.cpp
+ 	src/metrics.cpp
++	src/test-diagnostics.cpp
+ )
+ 
+ add_dependencies(darlingserver
+diff --git a/internal-include/darlingserver/test-diagnostics.hpp b/internal-include/darlingserver/test-diagnostics.hpp
+new file mode 100644
+index 0000000000000000000000000000000000000000..de5a448b6802c8f8dbaf623e46e02a81070c5f5e
+--- /dev/null
++++ b/internal-include/darlingserver/test-diagnostics.hpp
+@@ -0,0 +1,11 @@
++#pragma once
++
++#include <string>
++
++namespace DarlingServer::TestDiagnostics {
++
++bool enabled();
++bool consumeFault(const char* name);
++void traceLine(const std::string& line);
++
++}
+diff --git a/src/process.cpp b/src/process.cpp
+index 8ac0a59b590f49b5be33e3c864f168141267e30c..bd3a9b7f101969a3d3d42608e570ac8100547a71 100644
+--- a/src/process.cpp
++++ b/src/process.cpp
+@@ -24,6 +24,7 @@
+ #include <unistd.h>
+ #include <sys/uio.h>
+ #include <darlingserver/logging.hpp>
++#include <darlingserver/test-diagnostics.hpp>
+ 
+ #include <fstream>
+ #include <regex>
+@@ -375,7 +376,18 @@ void DarlingServer::Process::notifyCheckin(Architecture architecture) {
+ 		// notify the parent process (if we have one) that we've arrived
+ 		if (auto parent = _parentProcess.lock()) {
+ 			processLog.info() << *this << ": notifying fork parent " << *parent << " after checkin" << processLog.endLog;
+-			dtape_semaphore_up(parent->_dtapeForkWaitSemaphore);
++			TestDiagnostics::traceLine(
++				"process.checkin.fork_notify_parent child=" + std::to_string(nsid()) +
++				" parent=" + std::to_string(parent->nsid())
++			);
++			if (TestDiagnostics::consumeFault("fork.skip_checkin_semaphore")) {
++				TestDiagnostics::traceLine(
++					"process.checkin.fork_skip_semaphore child=" + std::to_string(nsid()) +
++					" parent=" + std::to_string(parent->nsid())
++				);
++			} else {
++				dtape_semaphore_up(parent->_dtapeForkWaitSemaphore);
++			}
+ 			parent->_notifyListeningKqchannels(NOTE_FORK, nsid());
+ 		} else {
+ 			processLog.info() << *this << ": checkin without registered fork parent" << processLog.endLog;
+diff --git a/src/test-diagnostics.cpp b/src/test-diagnostics.cpp
+new file mode 100644
+index 0000000000000000000000000000000000000000..5ebb97766d84ae8e4816c3bd6fa4548be61a4e24
+--- /dev/null
++++ b/src/test-diagnostics.cpp
+@@ -0,0 +1,95 @@
++#include <darlingserver/test-diagnostics.hpp>
++
++#include <cstdlib>
++#include <cstring>
++#include <mutex>
++#include <string>
++#include <unistd.h>
++#include <fcntl.h>
++
++namespace DarlingServer::TestDiagnostics {
++
++static constexpr const char* TraceEnv = "DSERVER_TEST_TRACE_FILE";
++static constexpr const char* FaultEnv = "DSERVER_TEST_FAULT_FILE";
++static std::mutex traceMutex;
++
++bool enabled() {
++	return std::getenv(TraceEnv) != nullptr;
++}
++
++bool consumeFault(const char* name) {
++	const char* path = std::getenv(FaultEnv);
++	if (!path || path[0] == '\0' || !name || name[0] == '\0') {
++		return false;
++	}
++
++	int fd = open(path, O_RDONLY | O_CLOEXEC);
++	std::string hostPath;
++	if (fd < 0 && path[0] == '/') {
++		if (const char* prefix = std::getenv("DPREFIX"); prefix && prefix[0] != '\0') {
++			hostPath = std::string(prefix) + path;
++			fd = open(hostPath.c_str(), O_RDONLY | O_CLOEXEC);
++			if (fd < 0) {
++				hostPath = std::string(prefix) + "/libexec/darling" + path;
++				fd = open(hostPath.c_str(), O_RDONLY | O_CLOEXEC);
++			}
++		}
++	}
++	if (fd < 0) {
++		return false;
++	}
++
++	char buffer[128] = {};
++	ssize_t count = read(fd, buffer, sizeof(buffer) - 1);
++	close(fd);
++	if (count <= 0) {
++		return false;
++	}
++
++	while (count > 0 && (buffer[count - 1] == '\n' || buffer[count - 1] == '\r' || buffer[count - 1] == ' ' || buffer[count - 1] == '\t')) {
++		buffer[--count] = '\0';
++	}
++
++	if (std::strcmp(buffer, name) != 0) {
++		return false;
++	}
++
++	if (!hostPath.empty()) {
++		unlink(hostPath.c_str());
++	} else {
++		unlink(path);
++	}
++	traceLine(std::string("test_fault.consume name=") + name);
++	return true;
++}
++
++void traceLine(const std::string& line) {
++	const char* path = std::getenv(TraceEnv);
++	if (!path || path[0] == '\0') {
++		return;
++	}
++
++	std::string record = line;
++	record.push_back('\n');
++
++	std::lock_guard lock(traceMutex);
++	int fd = open(path, O_WRONLY | O_CREAT | O_APPEND | O_CLOEXEC, 0666);
++	if (fd < 0) {
++		return;
++	}
++
++	const char* cursor = record.data();
++	size_t remaining = record.size();
++	while (remaining > 0) {
++		ssize_t written = write(fd, cursor, remaining);
++		if (written <= 0) {
++			break;
++		}
++		cursor += written;
++		remaining -= static_cast<size_t>(written);
++	}
++
++	close(fd);
++}
++
++}
