@@ -337,7 +337,7 @@ patches:
       source-patches:
       - tests/fixtures/fork-checkin/forced-lost-wakeup-diagnostics.patch
       expect-output-contains:
-      - test_fault.consume name=fork.skip_checkin_semaphore
+      - test_fault.consume name=fork.skip_checkin_semaphore parent=
       - process.checkin.fork_skip_semaphore
       runtime-artifacts:
       - module: darling/src/external/darlingserver
@@ -362,7 +362,7 @@ patches:
     - env: DSERVER_TEST_TRACE_FILE
       prefix-relative-path: private/var/tmp/dserver-fork-checkin-fault.trace
       contains:
-      - test_fault.consume name=fork.skip_checkin_semaphore
+      - test_fault.consume name=fork.skip_checkin_semaphore parent=
       - process.checkin.fork_skip_semaphore
     note: >-
       Deterministic guest runtime proof for the sticky fork-checkin flag:
@@ -5069,7 +5069,7 @@ patches:
   module: darling/src/external/darlingserver
   source-branch: fix/test-diagnostics-trace
   source-base: b983a36ada0c2d13125ca6c5c62cc0d417c272dc
-  source-commit: 1ca29fe8e8c2c5f784522f9144809057918c4c36
+  source-commit: e6b270a88842ea118e026894851e00a5e218a586
   bead: dar-r7fc.7
   publication-status: blocked
   publication-blocker: test-only runtime diagnostics; keep local until a supported upstream diagnostics interface is designed
@@ -5098,7 +5098,7 @@ patches:
       Guest runtime smoke for the opt-in DSERVER_TEST_TRACE_FILE diagnostics
       hook. The script only launches a real guest process; west owns the host
       trace setup and oracle.
-  sha256sum: 971579eeeb1ff589cdbdeaf0dc19b4b03a1c1660eebcdbcfc1445490b86951ec
+  sha256sum: a88fdced4cb236f010bcd4a8349cdc5058e15c65715903075e419e368a5f9429
 - path: darlingserver/eunion-runtime-prefix.patch
   sha256sum: e32e0125b3521837389ddf3c6d5889becd9acba92f9d88d5e39c686181cf60b1
   module: darling/src/external/darlingserver
