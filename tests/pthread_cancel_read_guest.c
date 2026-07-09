@@ -16,7 +16,10 @@ interrupt_handler(int signal_number)
 static void
 timeout_handler(int signal_number)
 {
+	static const char message[] = "pthread cancel read timed out waiting for PTHREAD_CANCELED\n";
+
 	(void)signal_number;
+	write(STDERR_FILENO, message, sizeof(message) - 1);
 	_exit(124);
 }
 
