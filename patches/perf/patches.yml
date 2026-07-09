@@ -2,6 +2,64 @@ version: 1
 description: Performance work that stacks ON TOP of the homebrew profile. The homebrew fixes (e.g. mldr glibc-fork-lock-reset and main-stack EEXIST fallback) are prerequisites for a bootable build, so this profile declares homebrew as its base rather than applying against the raw manifest revision.
 base-profile: homebrew
 integration-date: '2026-07-01T00:00:00Z'
+test-profiles:
+  guest-c-runtime-red:
+    kind: guest
+    coverage-tier: runtime
+    env: darling
+    diag: bare
+    red: true
+    red-proof:
+      mode: guest-runtime-deploy
+      bad-profile: current-minus-patch
+    runner: guest-c-fixture
+    repo: darling-workspace
+    compile-flags:
+    - -std=gnu11
+    - -Wall
+    - -Wextra
+    - -Werror
+    requires:
+    - darling-prefix
+  guest-command-runtime-red:
+    kind: guest
+    coverage-tier: runtime
+    env: darling
+    diag: bare
+    red: true
+    red-proof:
+      mode: guest-runtime-deploy
+      bad-profile: current-minus-patch
+    runner: guest-command-fixture
+    repo: darling-workspace
+    guest-command: /usr/bin/true
+    requires:
+    - darling-prefix
+  dcc6-smoke-cache:
+    dcc-cache:
+      source-module: darling/src/external/darlingserver
+      source-ref: 03cf98e489f6c7830d82e10b5ee2217d44b9a1ae
+      tools-dir: tools/closure-cache
+      builder: dcc5-builder.c
+      closure-list: smoke2-list.txt
+      install-root: guest-visible
+      env: DARLING_DYLD_DCC2_PATH
+      enable-env: DARLING_DYLD_DCC2
+artifact-profiles:
+  mldr-runtime:
+    module: darling
+    build-targets:
+    - src/startup/mldr/mldr
+    - src/startup/mldr/mldr32
+    deploy:
+    - usr/libexec/darling/mldr
+    - usr/libexec/darling/mldr32
+  dyld-runtime:
+    module: darling/src/external/dyld
+    build-targets:
+    - src/external/dyld/dyld
+    deploy:
+    - usr/lib/dyld
 patches:
 - path: darling/mldr-compact-fd-band.patch
   sha256sum: 6c53feb1b90bfb78c04d6377c702bdc737c42f59cdd55c5aeb6b094309a8c742
@@ -14,36 +72,13 @@ patches:
   publication-blocker: perf#21b compact protected internal fd band is a local performance experiment; not proposed upstream. See perf#21b brief.
   tests:
   - name: mldr_compact_fd_band_guest
-    kind: guest
-    coverage-tier: runtime
-    env: darling
-    diag: bare
-    red: true
-    red-proof:
-      mode: guest-runtime-deploy
-      bad-profile: current-minus-patch
-      runtime-artifacts:
-      - module: darling
-        build-targets:
-        - src/startup/mldr/mldr
-        - src/startup/mldr/mldr32
-        deploy:
-        - usr/libexec/darling/mldr
-        - usr/libexec/darling/mldr32
-    runner: guest-c-fixture
-    repo: darling-workspace
+    use: guest-c-runtime-red
+    artifacts: mldr-runtime
     script: tests/mldr_compact_fd_band_guest.c
     ok-marker: WEST_MLDR_COMPACT_FD_BAND_OK
     timeout-seconds: 60
-    compile-flags:
-    - -std=gnu11
-    - -Wall
-    - -Wextra
-    - -Werror
     guest-env-vars:
       DARLING_INTERNAL_FD_TOP: '4096'
-    requires:
-    - darling-prefix
     note: |
       Guest runtime RED->GREEN probe for perf#21b. With DARLING_INTERNAL_FD_TOP=4096,
       fixed mldr sets the real fd ceiling so Darwin getrlimit reports 4095,
@@ -123,42 +158,16 @@ patches:
   publication-blocker: perf#24 DCC6 packed-shared-cache dyld reader (3-region + TEXT RIP-relative rewrite + precomputed fixup table). CLOSED as a functionally-proven, kernel-measured PROTOTYPE that is FLAG-GATED (DARLING_DYLD_DCC2=1 + DARLING_DYLD_DCC2_PATH) and NOT default-on; productization needs separate hardening (cache-build/staleness deploy, coverage beyond the 40-dylib closure, cache ABI-version discipline). See tests/PERF24-DCC6-FINAL.md. Base is 63f667cf (manifest dyld revision).
   tests:
   - name: dcc2_valid_cache_guest
-    kind: guest
-    coverage-tier: runtime
-    env: darling
-    diag: bare
-    red: true
-    red-proof:
-      mode: guest-runtime-deploy
-      bad-profile: current-minus-patch
-      runtime-artifacts:
-      - module: darling/src/external/dyld
-        build-targets:
-        - src/external/dyld/dyld
-        deploy:
-        - usr/lib/dyld
-    runner: guest-command-fixture
-    repo: darling-workspace
-    guest-command: /usr/bin/true
+    use: [guest-command-runtime-red, dcc6-smoke-cache]
+    artifacts: dyld-runtime
     timeout-seconds: 90
     guest-env-vars:
       DYLD_PRINT_SEGMENTS: '1'
-    dcc-cache:
-      source-module: darling/src/external/darlingserver
-      source-ref: 03cf98e489f6c7830d82e10b5ee2217d44b9a1ae
-      tools-dir: tools/closure-cache
-      builder: dcc5-builder.c
-      closure-list: smoke2-list.txt
-      install-root: guest-visible
-      env: DARLING_DYLD_DCC2_PATH
-      enable-env: DARLING_DYLD_DCC2
     expect:
       returncode: 0
       output-contains:
       - 'dyld[DCC2]: enabled'
       - 'dyld[DCC2]: substituted cached image'
-    requires:
-    - darling-prefix
     note: |
       Builds a real DCC6 cache from the perf source tree, deploys the profile
       dyld, enables the reader in guest, and requires dyld's own runtime log to
