@@ -468,7 +468,7 @@ class DarlingPatch(WestCommand):
                     isinstance(name, str) and name for name in required
                 ):
                     errors.append(f"tests[{index}] requires must be a list of names")
-                elif any(name not in {"darling-prefix"} for name in required):
+                elif any(name not in {"darling-prefix", "darling-eunion-prefix"} for name in required):
                     errors.append(f"tests[{index}] has unsupported requires resource")
             required_resources = test.get("requires") if isinstance(test.get("requires"), list) else []
             if test.get("host-trace-files") is not None:
@@ -535,6 +535,32 @@ class DarlingPatch(WestCommand):
                             errors.append(
                                 f"tests[{index}].host-temp-files[{temp_index}] contents must be a string"
                             )
+            if test.get("eunion-template-files") is not None:
+                files = test.get("eunion-template-files")
+                if "darling-eunion-prefix" not in required_resources:
+                    errors.append(f"tests[{index}] eunion-template-files requires darling-eunion-prefix")
+                elif runner not in {"guest-c-fixture", "script"}:
+                    errors.append(f"tests[{index}] eunion-template-files requires runner: guest-c-fixture or script")
+                elif not isinstance(files, list) or not files:
+                    errors.append(f"tests[{index}] eunion-template-files must be a non-empty list")
+                elif not all(isinstance(item, dict) for item in files):
+                    errors.append(f"tests[{index}] eunion-template-files entries must be mappings")
+                else:
+                    for file_index, item in enumerate(files):
+                        guest_path = item.get("guest-path")
+                        contents = item.get("contents", "")
+                        if (
+                            not isinstance(guest_path, str)
+                            or not guest_path.startswith("/")
+                            or ".." in Path(guest_path).parts
+                        ):
+                            errors.append(
+                                f"tests[{index}].eunion-template-files[{file_index}] guest-path must be absolute without '..'"
+                            )
+                        if contents is not None and not isinstance(contents, str):
+                            errors.append(
+                                f"tests[{index}].eunion-template-files[{file_index}] contents must be a string"
+                            )
             if test.get("requires-profile") is not None and not isinstance(
                 test.get("requires-profile"), str
             ):
@@ -567,7 +593,9 @@ class DarlingPatch(WestCommand):
                         errors.append(
                             f"tests[{index}] red-proof guest-runtime-deploy requires runner: guest-c-fixture or script"
                         )
-                    elif runner == "script" and "darling-prefix" not in required_resources:
+                    elif runner == "script" and not (
+                        {"darling-prefix", "darling-eunion-prefix"} & set(required_resources)
+                    ):
                         errors.append(
                             f"tests[{index}] red-proof guest-runtime-deploy script runner requires darling-prefix"
                         )
