@@ -1091,7 +1091,8 @@ patches:
       - darlingserver/pot-guest-lifetime-binding.patch
       - darlingserver/test-diagnostics-trace.patch
       source-patches:
-      - tests/fixtures/processcall/uidgid-fault-diagnostics.patch
+      - tests/fixtures/darlingserver/launchfree-test-diagnostics.patch
+      - tests/fixtures/processcall/uidgid-fault-hook.patch
       - tests/fixtures/processcall/dserverdbg-uidgid-fault-oracle.patch
       expect-output-contains:
       - test_fault.consume name=processcall.uidgid_throw
@@ -1210,12 +1211,35 @@ patches:
       expect-output-contains:
       - test_fault.consume name=ingest.force_missing_process
       - call.ingest_missing_process
+      source-patches:
+      - tests/fixtures/darlingserver/launchfree-test-diagnostics.patch
+      - tests/fixtures/ingest/missing-process-hook.patch
+      - tests/fixtures/processcall/dserverdbg-uidgid-fault-oracle.patch
+      - tests/fixtures/ingest/dserverdbg-ingest-missing-process-oracle.patch
+      red-runner:
+        runner: script
+        repo: darling-workspace
+        script: tests/run-dserverdbg-ingest-missing-process.sh
+        timeout-seconds: 30
+        host-temp-files:
+        - env: DSERVER_TEST_FAULT_FILE
+          prefix-relative-path: private/var/tmp/dserver-test-fault
+        host-trace-files:
+        - env: DSERVER_TEST_TRACE_FILE
+          prefix-relative-path: private/var/tmp/dserver-ingest-fault.trace
+          contains:
+          - test_fault.consume name=ingest.force_missing_process
+          - call.ingest_missing_process
+      cmake-defines:
+        DSERVER_TOOLS: true
       runtime-artifacts:
       - module: darling/src/external/darlingserver
         build-targets:
         - darlingserver
+        - dserverdbg
         deploy:
         - bin/darlingserver
+        - bin/dserverdbg
     runner: guest-c-fixture
     repo: darling-workspace
     script: tests/ingest_process_register_fault_guest.c
