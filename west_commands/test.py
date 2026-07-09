@@ -47,6 +47,7 @@ from prefix_repair import (
     prefix_boot_prerequisite_problems,
 )
 from test_manifest import ManifestError, load_test_profile
+from test_resources import resource_context
 
 
 class DarlingTest(WestCommand):
@@ -2596,12 +2597,11 @@ fi
 
     @contextmanager
     def _resource_context(self, invocation, env):
-        with self._dcc_cache_context(invocation, env):
-            with self._resource_context_after_dcc(invocation, env):
-                yield
+        with resource_context(self, invocation, env):
+            yield
 
     @contextmanager
-    def _resource_context_after_dcc(self, invocation, env):
+    def _eunion_prefix_context(self, invocation, env):
         resources = set(invocation.get("requires_resources", []))
         if "darling-eunion-prefix" not in resources:
             yield
