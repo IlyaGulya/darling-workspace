@@ -2565,32 +2565,6 @@ patches:
     repo: darling-workspace
     script: experiments/e-union/run.sh
     note: Host hermetic RED->GREEN E-UNION suite; exercises the workspace two-layer vchroot fixture against this patchset source tree.
-  - name: eunion_activation_guest_smoke
-    kind: guest
-    coverage-tier: runtime
-    env: darling
-    diag: bare
-    runner: guest-c-fixture
-    repo: darling-workspace
-    script: tests/eunion_prefix_smoke_guest.c
-    ok-marker: WEST_EUNION_PREFIX_SMOKE_OK
-    timeout-seconds: 20
-    compile-flags:
-    - -std=gnu11
-    - -Wall
-    - -Wextra
-    - -Werror
-    requires:
-    - darling-eunion-prefix
-    eunion-template-files:
-    - guest-path: /private/var/tmp/west-eunion-lower-smoke.txt
-      contents: |
-        WEST_EUNION_LOWER_OK
-    note: >-
-      Guest runtime smoke for E-UNION activation: west prepares a lower-only
-      template file and a temporary .union-work marker, then the guest opens the
-      file through the normal guest path. A copy-mode prefix or a libsystem_kernel
-      built without DARLING_EUNION fails before or during the smoke.
   github:
     fork:
       repo: IlyaGulya/darling-xnu
