@@ -10,10 +10,12 @@ sources). This wrapper enforces the guard rails:
   2. BUILD: ninja the requested targets in the build dir (default: dyld + the closure dylibs).
      For focused validation, --deploy-closure-names can narrow the default build/deploy set to the
      named closure dylibs.
-  3. DEPLOY (opt-in --deploy): copy the freshly built dyld + closure dylibs into BOTH closure
-     copies of the prefix, after backing up what is there. Focused deploys can skip dyld with
-     --no-deploy-dyld, sync test prefixes with --deploy-extra-prefix, and opt into deploying
-     darlingserver and selected boot binaries when guest/server ABI must move in lock-step.
+  3. DEPLOY (opt-in --deploy): copy the selected runtime artifacts into the prefix after backing
+     up what is there. Default deploys copy dyld + closure dylibs into BOTH closure copies; focused
+     deploys with explicit --targets only copy the requested non-closure runtime binaries unless
+     --deploy-closure-names or a dyld target asks for closure/dyld deploy. They can also sync test
+     prefixes with --deploy-extra-prefix and opt into deploying darlingserver and selected boot
+     binaries when guest/server ABI must move in lock-step.
   4. POST-CHECK (only with --deploy): re-run the doctor so a bad deploy is caught immediately,
      including extra-prefix closure consistency when requested.
 
@@ -89,7 +91,7 @@ class DarlingBuild(WestCommand):
         p.add_argument("--targets", nargs="*", default=None,
                        help="ninja targets to build (default: dyld + all closure dylibs)")
         p.add_argument("--deploy", action="store_true",
-                       help="after building, copy dyld+closure into BOTH prefix closure copies (backs up first)")
+                       help="after building, deploy selected runtime artifacts into the prefix (backs up first)")
         p.add_argument("--deploy-extra-prefix", action="append", default=[], metavar="PREFIX",
                        help="with --deploy, also copy closure dylibs into this additional prefix root (repeatable)")
         p.add_argument("--deploy-closure-names", nargs="*", default=None, metavar="BASENAME",
@@ -144,8 +146,10 @@ class DarlingBuild(WestCommand):
         if not cache.exists():
             self.err(f"no CMakeCache.txt in {build_dir}; not a configured build dir")
             raise SystemExit(1)
+        deploy_closure_names = self._deploy_closure_names(args)
+        deploy_dyld = self._deploy_dyld(args, deploy_closure_names)
         if args.targets:
-            targets = args.targets
+            targets = list(args.targets)
         elif args.deploy_closure_names is not None:
             targets = self._closure_targets(build_dir, args.deploy_closure_names)
         else:
@@ -153,8 +157,8 @@ class DarlingBuild(WestCommand):
         if (
             args.deploy
             and args.no_deploy_dyld
-            and args.deploy_closure_names is not None
-            and "libsystem_kernel.dylib" in args.deploy_closure_names
+            and deploy_closure_names is not None
+            and "libsystem_kernel.dylib" in deploy_closure_names
             and not args.allow_stale_dyld_for_kernel
         ):
             self.err(
@@ -164,7 +168,7 @@ class DarlingBuild(WestCommand):
                 "closure-only validation."
             )
             raise SystemExit(1)
-        if args.deploy and not args.no_deploy_dyld and _DYLD_TARGET not in targets:
+        if deploy_dyld and _DYLD_TARGET not in targets:
             targets.insert(0, _DYLD_TARGET)
         if args.deploy and args.deploy_darlingserver and _DARLINGSERVER_TARGET not in targets:
             targets.append(_DARLINGSERVER_TARGET)
@@ -195,8 +199,8 @@ class DarlingBuild(WestCommand):
             self._deploy(
                 build_dir,
                 prefix,
-                closure_names=args.deploy_closure_names,
-                deploy_dyld=not args.no_deploy_dyld,
+                closure_names=deploy_closure_names,
+                deploy_dyld=deploy_dyld,
                 deploy_darlingserver=args.deploy_darlingserver,
                 deploy_launcher=args.deploy_launcher,
                 deploy_mldr=args.deploy_mldr,
@@ -238,6 +242,30 @@ class DarlingBuild(WestCommand):
         for extra in extra_prefixes or []:
             cmd.extend(["--extra-prefix", str(extra)])
         return subprocess.run(cmd, cwd=topdir).returncode
+
+    def _deploy_closure_names(self, args):
+        """Return the closure deploy scope for this invocation.
+
+        None means the full closure, a list means that exact subset, and an
+        empty list means this deploy is limited to explicitly requested
+        non-closure runtime binaries such as mldr or shellspawn.
+        """
+        if not args.deploy:
+            return []
+        if args.deploy_closure_names is not None:
+            return list(args.deploy_closure_names)
+        if args.targets:
+            return []
+        return None
+
+    def _deploy_dyld(self, args, closure_names) -> bool:
+        if not args.deploy or args.no_deploy_dyld:
+            return False
+        if closure_names is None:
+            return True
+        if closure_names:
+            return True
+        return bool(args.targets and _DYLD_TARGET in args.targets)
 
     def _shutdown_prefixes(self, prefix, extra_prefixes=None):
         launcher = prefix / "bin/darling"

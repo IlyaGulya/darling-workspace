@@ -4,17 +4,51 @@ base-profile: homebrew
 integration-date: '2026-07-01T00:00:00Z'
 patches:
 - path: darling/mldr-compact-fd-band.patch
-  sha256sum: 18545aee2d1ab085b86ce6d72f03a95a6874e9973031d705a5c623430b1f1891
+  sha256sum: 56c5d68b6953650631b16ef6ca94ae3c8ca4450c443d3d954176a24a096917e6
   module: darling
-  source-branch: fix/mldr-compact-fd-band
-  source-commit: 0de8081a0a1c8a401bca7a43d2206ecabaecca80
+  source-branch: fix/mldr-compact-fd-band-current
+  source-base: c044c084aa4f4033b6e916b59358e7d7308b0911
+  source-commit: e713e788b26d0332fb45f18bee6de920da85f092
   bead: dar-dar6x4-perf-5dq
   publication-status: blocked
   publication-blocker: perf#21b compact protected internal fd band is a local performance experiment; not proposed upstream. See perf#21b brief.
-  test-exception:
-    reason: needs-runtime-fd-band-probe
+  tests:
+  - name: mldr_compact_fd_band_guest
+    kind: guest
+    coverage-tier: runtime
+    env: darling
+    diag: bare
+    red: true
+    red-proof:
+      mode: guest-runtime-deploy
+      bad-profile: current-minus-patch
+      runtime-artifacts:
+      - module: darling
+        build-targets:
+        - src/startup/mldr/mldr
+        - src/startup/mldr/mldr32
+        deploy:
+        - usr/libexec/darling/mldr
+        - usr/libexec/darling/mldr32
+    runner: guest-c-fixture
+    repo: darling-workspace
+    script: tests/mldr_compact_fd_band_guest.c
+    ok-marker: WEST_MLDR_COMPACT_FD_BAND_OK
+    timeout-seconds: 60
+    compile-flags:
+    - -std=gnu11
+    - -Wall
+    - -Wextra
+    - -Werror
+    guest-env-vars:
+      DARLING_INTERNAL_FD_TOP: '4096'
+    requires:
+    - darling-prefix
     note: |
-      The patch changes guest-visible runtime fd-limit/internal-fd placement and fork fd-table cost. Current evidence is manual perf/boot/fork-storm measurement in the patch message; no automated west guest/runtime probe yet verifies compact service fds, compatible getrlimit behavior, and no internal-fd collision under an isolated prefix.
+      Guest runtime RED->GREEN probe for perf#21b. With DARLING_INTERNAL_FD_TOP=4096,
+      fixed mldr sets the real fd ceiling so Darwin getrlimit reports 4095,
+      internal service fds sit in [3584,4096), ordinary guest opens stay below
+      the protected band, and fork/exec still works.
 - path: xnu/shmem-ring-guest.patch
   sha256sum: 8b6aeb9acc982955db48cffec4d6b333de874d81e444a3e699acc03ba75966c9
   module: darling/src/external/xnu
