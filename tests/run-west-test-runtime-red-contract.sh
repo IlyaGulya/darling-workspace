@@ -218,6 +218,43 @@ with tempfile.TemporaryDirectory() as temp:
     tempdir = Path(temp)
     prefix = tempdir / "prefix"
     prefix.mkdir()
+    launcher = tempdir / "fake-darling-any"
+    launcher.write_text(
+        """#!/usr/bin/env bash
+set -euo pipefail
+if [ "${1:-}" = shutdown ]; then
+\texit 0
+fi
+printf 'ANY_RETURN_MARKER\\n' >&2
+exit 7
+"""
+    )
+    launcher.chmod(0o755)
+
+    test = make_test()
+    test._prefix = str(prefix)
+    invocation = {
+        "name": "guest_command_any_returncode_contract",
+        "cwd": tempdir,
+        "guest_command_fixture": True,
+        "guest_command": "/usr/bin/true",
+        "guest_env_vars": {},
+        "timeout_seconds": 1,
+        "expect": {
+            "returncode": "any",
+            "output-contains": ["ANY_RETURN_MARKER"],
+        },
+    }
+    env = os.environ.copy()
+    env["DPREFIX"] = str(prefix)
+    env["DARLING_LAUNCHER"] = str(launcher)
+    rc = test._run_guest_command_fixture(invocation, env=env)
+    assert rc == 0, (rc, test.err_messages)
+
+with tempfile.TemporaryDirectory() as temp:
+    tempdir = Path(temp)
+    prefix = tempdir / "prefix"
+    prefix.mkdir()
     test = make_test()
     test._prefix = str(prefix)
     before = set(Path(tempfile.gettempdir()).glob("west-red-proof-runtime-*"))
