@@ -153,6 +153,10 @@ only side-effecting build/deploy/restore orchestration in `west_commands/test.py
 Process-tree matching and stale init-pid decisions should be tested there;
 keep only side-effecting shutdown, mount cleanup, locking, and signal delivery
 in `west_commands/test.py`.
+- CTest command construction belongs in `west_commands/test_ctest.py`.
+Keep label selector composition, list mode, and passthrough argument assembly
+there with focused contracts; `west_commands/test.py` should orchestrate, not
+hand-build CTest argv in multiple places.
 - For `runner: guest-command-fixture`, use `expect.returncode: any` only when
 the Darling launcher cannot reliably propagate the guest program status for
 the behavior under test. Pair it with a concrete guest-visible
