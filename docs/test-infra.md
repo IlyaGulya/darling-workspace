@@ -207,6 +207,12 @@ RED proof modes:
   namespace setup, RPC protocol bootstrap, or shellspawn readiness before the
   fixture reaches its own `main`, the proof remains blocked and needs a
   launch-free/direct harness instead of a broader matcher.
+  For that split shape, use `red-proof.red-runner`: RED builds and deploys the
+  bad runtime artifacts, runs the explicit RED runner under that deployment,
+  checks the declared RED reason, restores artifacts, and then runs the
+  original test as the GREEN runtime gate. The RED runner is for a real
+  behavioral oracle such as a direct server protocol fixture; it is not an
+  escape hatch for source matching or accepting unrelated startup failures.
 
 Source/text checks are allowed only as auxiliary drift guards:
 

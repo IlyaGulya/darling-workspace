@@ -510,6 +510,53 @@ with tempfile.TemporaryDirectory() as temp:
         None,
     ), calls
 
+    root_copy.write_text("ORIGINAL\n")
+    base_copy.write_text("ORIGINAL\n")
+    calls.clear()
+    red_runner_script = tempdir / "red-oracle.sh"
+    red_runner_script.write_text("#!/usr/bin/env sh\nexit 1\n")
+    test._project_path = lambda repo=None: tempdir
+
+    def fake_run_with_red_runner(invocation, env=None):
+        env = env or {}
+        calls.append(
+            (
+                "run",
+                invocation["name"],
+                invocation.get("runner"),
+                root_copy.read_text(),
+                base_copy.read_text(),
+                env.get("WEST_RUNTIME_SOURCE_ROOT"),
+                env.get("WEST_GUEST_C_FIXTURE_RUN_ONLY"),
+            )
+        )
+        return 77 if invocation["name"] == "runtime_red_contract_red" else 0
+
+    test._run_invocation = fake_run_with_red_runner
+    red_runner_proof = dict(proof)
+    red_runner_proof["red-runner"] = {
+        "runner": "script",
+        "repo": ".",
+        "script": "red-oracle.sh",
+    }
+    rc = test._run_guest_runtime_deploy_proof(patch, red_runner_proof, invocation)
+    assert rc == 0, rc
+    assert calls[0] == ("source", "darling/src/external/xnu", "guest-runtime-deploy", True), calls
+    assert calls[1][0] == "build" and calls[1][4] == "RED", calls
+    assert calls[2][0:5] == (
+        "run",
+        "runtime_red_contract_red",
+        "script",
+        "RED\n",
+        "RED\n",
+    ), calls
+    assert calls[2][5] == str(tempdir / "source/darling"), calls
+    assert calls[2][6] is None, calls
+    assert calls[3] == ("source", "darling/src/external/xnu", "guest-runtime-deploy", False), calls
+    assert calls[4][0] == "build" and calls[4][4] == "GREEN", calls
+    assert calls[5][0:3] == ("run", "runtime_red_contract", None), calls
+    assert calls[5][3:5] == ("GREEN\n", "GREEN\n"), calls
+
     symlink_parent = tempdir / "forest/darling/src/external/parent"
     symlink_parent.parent.mkdir(parents=True)
     symlink_parent.symlink_to(prefix, target_is_directory=True)

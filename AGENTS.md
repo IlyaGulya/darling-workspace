@@ -110,6 +110,12 @@ refs, PR drafts, and agent handoff.
   failures before the fixture's `main`, do not keep adding source patches or
   broad matchers; create/use a launch-free or direct runtime harness and keep
   the shell-based proof blocked.
+  If RED needs that alternate harness while GREEN should remain the normal guest
+  runtime gate, express it as `red-proof.red-runner`. The bad-runtime phase then
+  deploys the declared artifacts and runs the explicit RED runner; the GREEN
+  phase still runs the original test on the fixed/current runtime. The RED
+  runner must execute a real behavioral oracle for the old runtime, not source
+  text matching or a startup/protocol failure unrelated to the patch contract.
 - Do not close patch coverage with source matching. Tests that grep, parse, or
   assert that specific code text exists are audit checks only; they must not be
   counted as the patch's behavioral test and must not be recorded as `kind:
