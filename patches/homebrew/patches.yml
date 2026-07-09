@@ -836,10 +836,10 @@ patches:
       base: master
       state: local
 - path: libressl/libressl-283-nist-strict-aliasing.patch
-  sha256sum: 06f39bcbaa915dbb4435de9e3ecccacddf687cac4d446f63bdef5caa1e861b74
+  sha256sum: c33f592e3558a15cc0d515d83f26737d64a363ea354dbc30223a42f4c4061956
   module: darling/src/external/libressl-2.8.3
   source-branch: fix/libressl-283-nist-strict-aliasing
-  source-commit: 54b3b04fbe0df07b7b4d1e6a51ef485a1f3c1c15
+  source-commit: 7599e3e01d3b1a742aa0293123290f267b6eb720
   bead: dar-q95.6
   publication-status: ready
   tests:

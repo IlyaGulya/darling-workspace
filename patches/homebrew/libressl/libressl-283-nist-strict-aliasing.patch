@@ -1,16 +1,17 @@
-From 54b3b04fbe0df07b7b4d1e6a51ef485a1f3c1c15 Mon Sep 17 00:00:00 2001
+From 7599e3e01d3b1a742aa0293123290f267b6eb720 Mon Sep 17 00:00:00 2001
 From: Ilya Gulya <ilya@gulya.me>
 Date: Sat, 6 Jun 2026 01:43:37 +0500
 Subject: [PATCH] Fix LibreSSL NIST EC reduction build
 
 ---
- CMakeLists.txt                 |  22 +++++
+ CMakeLists.txt                 |   9 ++
+ tests/CMakeLists.txt           |  18 +++-
  tests/darling_ec_tls_regress.c | 164 +++++++++++++++++++++++++++++++++
- 2 files changed, 186 insertions(+)
+ 3 files changed, 190 insertions(+), 1 deletion(-)
  create mode 100644 tests/darling_ec_tls_regress.c
 
 diff --git a/CMakeLists.txt b/CMakeLists.txt
-index 2d39ec43f5aa42a15924750a830cf63d578adad1..8e8b0ce807b9c6640068a4edd92208fd10f64dc8 100644
+index 2d39ec43f5aa42a15924750a830cf63d578adad1..cd655d231f774eeb7062e1d8bdba5a9de8182fbe 100644
 --- a/CMakeLists.txt
 +++ b/CMakeLists.txt
 @@ -692,6 +692,10 @@ target_compile_definitions(crypto44 PRIVATE
@@ -24,19 +25,33 @@ index 2d39ec43f5aa42a15924750a830cf63d578adad1..8e8b0ce807b9c6640068a4edd92208fd
  target_include_directories(crypto44 PRIVATE
  	crypto
  	crypto/asn1
-@@ -900,6 +904,24 @@ target_link_libraries(openssl
+@@ -900,6 +904,11 @@ target_link_libraries(openssl
  	ssl46
  )
  
-+add_darling_executable(darling_ec_tls_regress
-+	tests/darling_ec_tls_regress.c
-+)
-+
-+target_link_libraries(darling_ec_tls_regress
-+	crypto44
-+)
-+
 +if (BUILD_TESTING)
++	set(DARLING_LIBRESSL_ONLY_TESTS ON)
++	add_subdirectory(tests)
++endif ()
++
+ # install everything
+ install(TARGETS crypto44 ssl46 tls18 DESTINATION libexec/darling/usr/lib)
+ install(TARGETS openssl DESTINATION libexec/darling/usr/bin)
+diff --git a/tests/CMakeLists.txt b/tests/CMakeLists.txt
+index 5aa87ee173294cd4ba7f6886bbd11379244f86a5..6106b966d29f4c2d1698bbb0763a5d27530530fb 100644
+--- a/tests/CMakeLists.txt
++++ b/tests/CMakeLists.txt
+@@ -13,6 +13,23 @@ add_definitions(-D_PATH_SSL_CA_FILE=\"${CMAKE_CURRENT_SOURCE_DIR}/../apps/openss
+ 
+ file(TO_NATIVE_PATH ${CMAKE_CURRENT_SOURCE_DIR} TEST_SOURCE_DIR)
+ 
++if(DARLING_LIBRESSL_ONLY_TESTS)
++	add_darling_executable(darling_ec_tls_regress
++		darling_ec_tls_regress.c
++	)
++	target_link_libraries(darling_ec_tls_regress
++		crypto44
++	)
 +	add_test(
 +		NAME darling_ec_tls_regress
 +		COMMAND darling_ec_tls_regress
@@ -44,11 +59,17 @@ index 2d39ec43f5aa42a15924750a830cf63d578adad1..8e8b0ce807b9c6640068a4edd92208fd
 +	set_tests_properties(darling_ec_tls_regress PROPERTIES
 +		LABELS "bead:dar-q95.6;env:host;diag:bare;submod:libressl"
 +	)
-+endif ()
++	return()
++endif()
 +
- # install everything
- install(TARGETS crypto44 ssl46 tls18 DESTINATION libexec/darling/usr/lib)
- install(TARGETS openssl DESTINATION libexec/darling/usr/bin)
+ # aeadtest
+ add_executable(aeadtest aeadtest.c)
+ target_link_libraries(aeadtest ${OPENSSL_LIBS})
+@@ -471,4 +488,3 @@ if(BUILD_SHARED_LIBS)
+ 		"${CMAKE_CURRENT_BINARY_DIR}"
+ 		COMMENT "Copying DLLs for regression tests")
+ endif()
+-
 diff --git a/tests/darling_ec_tls_regress.c b/tests/darling_ec_tls_regress.c
 new file mode 100644
 index 0000000000000000000000000000000000000000..65c78d3bb975e61d9975836733e739f961d77dae
