@@ -1248,6 +1248,16 @@ patches:
     coverage-tier: runtime
     env: darling
     diag: guarded
+    red: true
+    red-proof:
+      mode: guest-runtime-deploy
+      bad-profile: current-minus-patch
+      runtime-artifacts:
+      - module: darling/src/external/darlingserver
+        build-targets:
+        - darlingserver
+        deploy:
+        - bin/darlingserver
     runner: guest-c-fixture
     repo: darling-workspace
     script: tests/pthread_cancel_read_guest.c
