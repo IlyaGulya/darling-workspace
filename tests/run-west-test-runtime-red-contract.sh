@@ -7,6 +7,7 @@ cd "$repo"
 python3 - <<'PY'
 import sys
 import os
+import io
 import signal
 import shutil
 import subprocess
@@ -14,6 +15,7 @@ import tempfile
 import time
 import types
 from contextlib import contextmanager
+from contextlib import redirect_stderr
 from pathlib import Path
 
 west_module = types.ModuleType("west")
@@ -84,6 +86,67 @@ with tempfile.TemporaryDirectory() as temp:
     assert "-DDARLING_GUEST_RECVSPIN=512" in args, args
     assert "-DDSERVER_RING_TRANSPORT=ON" in args, args
     assert f"-DCMAKE_INSTALL_PREFIX={tempdir / 'prefix'}" in args, args
+
+with tempfile.TemporaryDirectory() as temp:
+    tempdir = Path(temp)
+    test = make_test()
+    test.topdir = str(tempdir)
+    source_root = tempdir / "source"
+    source_root.mkdir()
+    calls = []
+    old_run = west_test_module.subprocess.run
+
+    def quiet_success_run(args, **kwargs):
+        calls.append((list(args), kwargs.get("capture_output"), kwargs.get("text")))
+        return subprocess.CompletedProcess(
+            args,
+            0,
+            stdout="\n".join(f"noisy stdout {index}" for index in range(300)),
+            stderr="\n".join(f"noisy stderr {index}" for index in range(300)),
+        )
+
+    west_test_module.subprocess.run = quiet_success_run
+    stderr = io.StringIO()
+    try:
+        with redirect_stderr(stderr):
+            build_root = test._runtime_red_build_artifacts(
+                source_root,
+                {
+                    "runtime-artifacts": [
+                        {"build-targets": ["target-a"], "deploy": ["bin/a"]},
+                        {"build-targets": ["target-a", "target-b"], "deploy": ["bin/b"]},
+                    ]
+                },
+                tempdir / "prefix",
+                tempdir / "scratch",
+                label="GREEN",
+            )
+    finally:
+        west_test_module.subprocess.run = old_run
+    assert build_root == tempdir / "scratch/build"
+    assert stderr.getvalue() == "", stderr.getvalue()
+    assert len(calls) == 2, calls
+    assert calls[0][1:] == (True, True), calls
+    assert calls[1][0][-2:] == ["target-a", "target-b"], calls
+
+with tempfile.TemporaryDirectory() as temp:
+    tempdir = Path(temp)
+    test = make_test()
+    result = subprocess.CompletedProcess(
+        ["fake"],
+        7,
+        stdout="\n".join(f"old stdout {index}" for index in range(150)),
+        stderr="\n".join(f"tail stderr {index}" for index in range(120)),
+    )
+    stderr = io.StringIO()
+    with redirect_stderr(stderr):
+        test._dump_command_tail("RED build", result)
+    dumped = stderr.getvalue()
+    assert "old stdout 0" not in dumped, dumped
+    assert "old stdout 69" not in dumped, dumped
+    assert "old stdout 70" in dumped, dumped
+    assert "tail stderr 119" in dumped, dumped
+    assert test.err_messages == ["RED build failed with rc 7"], test.err_messages
 
 with tempfile.TemporaryDirectory() as temp:
     tempdir = Path(temp)
@@ -250,6 +313,63 @@ exit 7
     env["DARLING_LAUNCHER"] = str(launcher)
     rc = test._run_guest_command_fixture(invocation, env=env)
     assert rc == 0, (rc, test.err_messages)
+
+with tempfile.TemporaryDirectory() as temp:
+    tempdir = Path(temp)
+    prefix = tempdir / "prefix"
+    prefix.mkdir()
+    fixture = tempdir / "fixture.c"
+    fixture.write_text('int main(void) { return 0; }\\n')
+    launcher = tempdir / "fake-darling"
+    launcher.write_text("#!/usr/bin/env bash\nexit 0\n")
+    launcher.chmod(0o755)
+    test = make_test()
+    test._prefix = str(prefix)
+    old_run = west_test_module.subprocess.run
+    inspected = []
+
+    def inspect_guest_c_runner(args, **kwargs):
+        del kwargs
+        runner = Path(args[-1])
+        content = runner.read_text()
+        inspected.append(content)
+        return subprocess.CompletedProcess(args, 0)
+
+    west_test_module.subprocess.run = inspect_guest_c_runner
+    try:
+        rc = test._run_guest_c_fixture(
+            {
+                "name": "guest_c_namespace_diagnostic_contract",
+                "key": "guest-c-namespace-diagnostic",
+                "display": "guest-c-namespace-diagnostic",
+                "cwd": tempdir,
+                "script_path": fixture,
+                "guest_cc": "/usr/bin/clang",
+                "guest_cflags": "",
+                "guest_prelude": "",
+                "guest_env_vars": {},
+                "compile_flags": [],
+                "link_flags": [],
+                "run_args": [],
+                "ok_marker": "",
+                "host_trace_files": [],
+                "host_temp_files": [],
+                "host_stat_deltas": [],
+                "host_trace_oracle": False,
+                "timeout_seconds": 1,
+                "diag": "bare",
+            },
+            env={"DPREFIX": str(prefix), "DARLING_LAUNCHER": str(launcher)},
+        )
+    finally:
+        west_test_module.subprocess.run = old_run
+    assert rc == 0, rc
+    assert inspected, "guest-c runner was not generated"
+    generated = inspected[0]
+    assert "dump_namespace_state()" in generated, generated
+    assert "WEST_GUEST_NAMESPACE_INIT_PID" in generated, generated
+    assert "WEST_GUEST_NAMESPACE_MNT" in generated, generated
+    assert "Cannot open mnt namespace file" in generated, generated
 
 with tempfile.TemporaryDirectory() as temp:
     tempdir = Path(temp)

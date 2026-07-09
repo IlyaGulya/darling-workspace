@@ -8,6 +8,7 @@ python3 - <<'PY'
 import tempfile
 import sys
 import os
+import socket
 import types
 from types import SimpleNamespace
 from pathlib import Path
@@ -53,10 +54,16 @@ with tempfile.TemporaryDirectory() as temp:
     prepare_versioned_clt(prefix)
 
     stale_pid = prefix / ".init.pid"
+    stale_socket = prefix / ".darlingserver.sock"
     stale_pid.write_text("999999999\n")
+    server = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    server.bind(str(stale_socket))
+    server.close()
+
     check = repair_prefix_prerequisites(prefix, check=True)
     assert not check.success
     assert any(".init.pid points to stale pid 999999999" in item for item in check.problems), check
+    assert any(".darlingserver.sock is stale" in item for item in check.problems), check
     assert any("private/var/tmp missing" in item for item in check.problems), check
     assert any("canonical Library/Developer/CommandLineTools symlink missing" in item for item in check.problems), check
     assert any("DarlingCLT clang link missing" in item for item in check.problems), check
@@ -65,6 +72,7 @@ with tempfile.TemporaryDirectory() as temp:
     assert repaired.success, repaired
     assert repaired.changed, repaired
     assert not stale_pid.exists(), repaired
+    assert not stale_socket.exists(), repaired
     assert prefix_boot_prerequisite_problems(prefix) == []
     assert guest_c_fixture_prerequisite_problems(
         prefix,
@@ -95,11 +103,16 @@ with tempfile.TemporaryDirectory() as temp:
     prefix = Path(temp)
     prepare_versioned_clt(prefix)
     init_pid = prefix / ".init.pid"
+    server_socket = prefix / ".darlingserver.sock"
     init_pid.write_text(f"{os.getpid()}\n")
+    server = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    server.bind(str(server_socket))
+    server.close()
 
     repaired = repair_prefix_prerequisites(prefix)
     assert repaired.success, repaired
     assert init_pid.read_text().strip() == str(os.getpid()), repaired
+    assert server_socket.exists(), repaired
     assert any(".init.pid points to live pid" in item for item in repaired.ok), repaired
 
 with tempfile.TemporaryDirectory() as temp:
