@@ -42,6 +42,12 @@
           "source_ref": "refs/heads/fix/mldr-compact-fd-band"
         },
         {
+          "branch": "fix/mldr-compact-fd-band-current",
+          "head": "e713e788b26d0332fb45f18bee6de920da85f092",
+          "upstream": "",
+          "source_ref": "refs/heads/fix/mldr-compact-fd-band-current"
+        },
+        {
           "branch": "fix/mldr-glibc-fork-reset",
           "head": "d90fe8f2a949bcf51f5d4a5aed6ce3fd3a7ef98f",
           "upstream": "",

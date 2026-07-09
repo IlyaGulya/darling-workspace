@@ -1,5 +1,5 @@
 path	head	branch	origin	worktree
-.	c044c084aa4f4033b6e916b59358e7d7308b0911	integration/homebrew	git@github.com:IlyaGulya/darling.git	dirty
+.	e713e788b26d0332fb45f18bee6de920da85f092	fix/mldr-compact-fd-band-current	git@github.com:IlyaGulya/darling.git	dirty
 src/external/AvailabilityVersions	e28c029a8fa46fa933cbf6d6d9a1c00978c5fad1	DETACHED	git@github.com:IlyaGulya/darling-AvailabilityVersions	clean
 src/external/BerkeleyDB	1411173f0eb71f96ab6134de4e052d16acb8c673	DETACHED	git@github.com:IlyaGulya/darling-BerkeleyDB.git	clean
 src/external/DSTools	e015256b16965ac032412f2277c608c7213c03b3	DETACHED	git@github.com:IlyaGulya/darling-DSTools.git	clean
