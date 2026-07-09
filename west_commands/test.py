@@ -671,6 +671,7 @@ class DarlingTest(WestCommand):
                 "source_env": source_env,
                 "source_module": source_module,
                 "host_trace_files": list(test.get("host-trace-files", [])),
+                "host_temp_files": list(test.get("host-temp-files", [])),
                 "host_trace_oracle": bool(test.get("host-trace-oracle", False)),
             }
         if runner == "python":
@@ -1464,6 +1465,52 @@ class DarlingTest(WestCommand):
             trace_paths.append(trace_path)
         invocation["_host_trace_paths"] = trace_paths
         yield trace_env
+
+    @contextmanager
+    def _host_temp_context(self, invocation, env):
+        temp_files = invocation.get("host_temp_files", [])
+        if not temp_files:
+            yield env
+            return
+        prefix = (env or {}).get("DPREFIX") or getattr(self, "_prefix", None)
+        if not prefix:
+            self.die(f"{invocation['name']}: host-temp-files need DPREFIX")
+        temp_env = dict(env or os.environ.copy())
+        temp_paths = []
+        for index, temp_file in enumerate(temp_files):
+            if not isinstance(temp_file, dict):
+                self.die(f"{invocation['name']}: host-temp-files entries must be mappings")
+            env_name = str(temp_file.get("env", ""))
+            rel_path = str(temp_file.get("prefix-relative-path", ""))
+            if not env_name or not rel_path:
+                self.die(
+                    f"{invocation['name']}: host-temp-files[{index}] needs env "
+                    "and prefix-relative-path"
+                )
+            if rel_path.startswith("/") or ".." in Path(rel_path).parts:
+                self.die(
+                    f"{invocation['name']}: host-temp-files[{index}] path must "
+                    "be prefix-relative"
+                )
+            temp_path = Path(prefix) / rel_path
+            temp_path.parent.mkdir(parents=True, exist_ok=True)
+            try:
+                temp_path.unlink()
+            except FileNotFoundError:
+                pass
+            if "contents" in temp_file and temp_file["contents"] is not None:
+                temp_path.write_text(str(temp_file["contents"]))
+            temp_env[env_name] = str(temp_path)
+            temp_paths.append(temp_path)
+        invocation["_host_temp_paths"] = temp_paths
+        try:
+            yield temp_env
+        finally:
+            for temp_path in temp_paths:
+                try:
+                    temp_path.unlink()
+                except FileNotFoundError:
+                    pass
 
     def _check_host_traces(self, invocation, env) -> int:
         traces = invocation.get("host_trace_files", [])
@@ -3615,6 +3662,14 @@ fi
                     args.append(f"-D{key}={value}")
                 continue
             args.append(f"-D{key}=OFF")
+        for key, value in sorted((proof.get("cmake-defines") or {}).items()):
+            if isinstance(value, bool):
+                value_text = "ON" if value else "OFF"
+            elif value is None:
+                value_text = ""
+            else:
+                value_text = str(value)
+            args.append(f"-D{key}={value_text}")
         args.append(f"-DCMAKE_INSTALL_PREFIX={self._runtime_build_install_prefix(proof, prefix)}")
         return args
 
@@ -3826,6 +3881,11 @@ fi
         red_test.setdefault("name", f"{invocation['name']}_red")
         red_test.setdefault("diag", invocation.get("diag", "bare"))
         red_test.setdefault("timeout-seconds", invocation.get("timeout_seconds", 600))
+        resources = set(red_test.get("requires", []))
+        inherited_resources = set(invocation.get("requires_resources", []))
+        prefix_resources = inherited_resources & {"darling-prefix", "darling-eunion-prefix"}
+        resources.update(prefix_resources or {"darling-prefix"})
+        red_test["requires"] = sorted(resources)
         return self._test_invocation(patch, red_test)
 
     def _run_guest_runtime_deploy_green(self, patch, proof, invocation) -> int:
@@ -3858,9 +3918,9 @@ fi
                         green_env = dict(green_env)
                     green_env["WEST_RUNTIME_SOURCE_ROOT"] = str(source_root)
                     runtime_invocation = self._invocation_from_runtime_source(invocation, source_root)
-                    with self._resource_context(runtime_invocation, green_env):
+                    with self._resource_context(runtime_invocation, green_env) as resource_env:
                         green_started_at = time.time()
-                        green_rc = self._run_invocation(runtime_invocation, env=green_env)
+                        green_rc = self._run_invocation(runtime_invocation, env=resource_env)
                     if green_rc != 0:
                         keep_on_failure = True
                         self.err(f"preserving failed GREEN runtime scratch for inspection: {temp}")
@@ -3996,8 +4056,8 @@ fi
                     prepare_env["WEST_GUEST_C_FIXTURE_PREPARE_ONLY"] = "1"
                     prepare_invocation = self._invocation_from_runtime_source(invocation, source_root)
                     self.inf("  RED prepare guest fixture before bad runtime deploy")
-                    with self._resource_context(prepare_invocation, prepare_env):
-                        prepare_rc = self._run_invocation(prepare_invocation, env=prepare_env)
+                    with self._resource_context(prepare_invocation, prepare_env) as resource_env:
+                        prepare_rc = self._run_invocation(prepare_invocation, env=resource_env)
                     if prepare_rc != 0:
                         keep_on_failure = True
                         self.err(f"preserving failed RED runtime scratch for inspection: {temp}")
@@ -4014,9 +4074,9 @@ fi
                         bad_env["WEST_GUEST_C_FIXTURE_ID"] = fixture_id
                         bad_env["WEST_GUEST_C_FIXTURE_RUN_ONLY"] = "1"
                     runtime_invocation = self._invocation_from_runtime_source(red_invocation, source_root)
-                    with self._resource_context(runtime_invocation, bad_env):
+                    with self._resource_context(runtime_invocation, bad_env) as resource_env:
                         red_started_at = time.time()
-                        bad_rc = self._run_invocation(runtime_invocation, env=bad_env)
+                        bad_rc = self._run_invocation(runtime_invocation, env=resource_env)
                     if bad_rc == 0:
                         self.err("  RED proof failed: deployed bad runtime unexpectedly passed")
                         keep_on_failure = True

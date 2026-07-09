@@ -428,6 +428,27 @@ patches:
         build-targets: [libsystem_kernel]
         deploy:
         - usr/lib/system/libsystem_kernel.dylib
+- path: test/invalid-runtime-cmake-defines.patch
+  module: darling-workspace
+  tests:
+  - name: invalid_runtime_cmake_defines
+    kind: guest
+    runs: guest
+    diag: bare
+    runner: guest-c-fixture
+    script: tests/guest_c_fixture_contract.c
+    ok-marker: WEST_GUEST_C_FIXTURE_OK
+    red: true
+    red-proof:
+      mode: guest-runtime-deploy
+      bad-profile: current-minus-patch
+      cmake-defines:
+      - DSERVER_TOOLS=ON
+      runtime-artifacts:
+      - module: darling/src/external/xnu
+        build-targets: [libsystem_kernel]
+        deploy:
+        - usr/lib/system/libsystem_kernel.dylib
 - path: test/invalid-red-runner.patch
   module: darling-workspace
   tests:
@@ -766,6 +787,9 @@ printf '%s\n' "$invalid_guest_red_check" | grep -q \
 printf '%s\n' "$invalid_guest_red_check" | grep -q \
 	'INVALID   test/invalid-source-patches.patch: tests\[1\] source-patches must be a list of workspace-relative patch paths' ||
 	fail 'invalid source-patches list was not rejected'
+printf '%s\n' "$invalid_guest_red_check" | grep -q \
+	'INVALID   test/invalid-runtime-cmake-defines.patch: tests\[1\] red-proof cmake-defines must be a mapping' ||
+	fail 'invalid runtime cmake-defines was not rejected'
 printf '%s\n' "$invalid_guest_red_check" | grep -q \
 	'INVALID   test/invalid-red-runner.patch: tests\[1\] red-proof red-runner must not define red-proof' ||
 	fail 'red-runner with nested red-proof was not rejected'
