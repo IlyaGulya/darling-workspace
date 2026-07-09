@@ -892,27 +892,8 @@ printf '%s\n' "$darling_cmake_target_fixture" | grep -q \
 	'<darling-debug-runner> run -- ctest --test-dir <temp>/build --output-on-failure -L bead:dar-cmake-fixture' ||
 	fail 'darling-cmake-target-fixture metadata did not preserve source CTest guarded execution'
 
-python3 - <<'PY' || fail 'darling-eunion-prefix prerequisite helper is wrong'
-import sys
-import tempfile
-from pathlib import Path
-
-sys.path.insert(0, "west_commands")
-from prefix_repair import eunion_prefix_prerequisite_problems
-
-with tempfile.TemporaryDirectory() as tmp:
-    prefix = Path(tmp)
-    (prefix / "libexec/darling").mkdir(parents=True)
-    kernel = prefix / "usr/lib/system/libsystem_kernel.dylib"
-    kernel.parent.mkdir(parents=True)
-    kernel.write_bytes(b"plain kernel")
-    assert any(
-        "lacks E-UNION markers" in problem
-        for problem in eunion_prefix_prerequisite_problems(prefix)
-    )
-    kernel.write_bytes(b"/.union-work user.union.whiteout user.union.opaque")
-    assert eunion_prefix_prerequisite_problems(prefix) == []
-PY
+python3 tests/west_test_contracts/eunion_prereq_contract.py ||
+	fail 'darling-eunion-prefix prerequisite helper is wrong'
 
 fake_darling="$(mktemp)"
 cat >"$fake_darling" <<'SH'

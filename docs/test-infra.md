@@ -388,6 +388,13 @@ for the repeated DPREFIX flow: copy fixture into the prefix, launch
 host runner process. Bespoke scripts such as long A0 gates are acceptable, but
 they should be the exception rather than the default shape for new tests.
 
+Framework-internal contracts use Python modules in `tests/west_test_contracts/`.
+The `tests/run-west-test-*-contract.sh` files are compatibility entrypoints and
+should stay thin: change directory to the repo and invoke the matching Python
+contract. Do not add large embedded-Python heredocs to those wrappers; if a
+contract needs reusable logic, move it into a module and keep shell only for
+CLI integration setup.
+
 Use `ctest-label` once the test is discoverable through the CTest registry.
 This is a runnable selector: `west test` configures/builds the local
 compatibility suite and executes `ctest -L <label>`.
