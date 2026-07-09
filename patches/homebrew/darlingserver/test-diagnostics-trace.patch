@@ -888,3 +888,27 @@ index e480158b6a73a0b363afcc3c436f305565da1f08..9a54079a2de9e73d78c4e003c0c4074d
  		_rwlock.unlock();
  		if (unlockMeWhenSuspending) {
  			libsimple_lock_unlock(unlockMeWhenSuspending);
+
+From e6b270a88842ea118e026894851e00a5e218a586 Mon Sep 17 00:00:00 2001
+From: Ilya Gulya <ilya@gulya.me>
+Date: Thu, 9 Jul 2026 22:08:17 +0000
+Subject: [PATCH] test: target fork checkin diagnostic fault
+
+---
+ src/process.cpp | 3 ++-
+ 1 file changed, 2 insertions(+), 1 deletion(-)
+
+diff --git a/src/process.cpp b/src/process.cpp
+index c79b36dcbf51d9c0931f9c4df387e2b2e4fd7277..2099a6fbc8a9c4d0d313561027fc5e3ebf882460 100644
+--- a/src/process.cpp
++++ b/src/process.cpp
+@@ -450,7 +450,8 @@ void DarlingServer::Process::notifyCheckin(Architecture architecture) {
+ 				return;
+ 			}
+ 			parent->_forkChildCheckin.markChildCheckedIn();
+-			if (TestDiagnostics::consumeFault("fork.skip_checkin_semaphore")) {
++			std::string targetedFault = "fork.skip_checkin_semaphore parent=" + std::to_string(parent->nsid());
++			if (TestDiagnostics::consumeFault(targetedFault.c_str())) {
+ 				TestDiagnostics::traceLine(
+ 					"process.checkin.fork_skip_semaphore child=" + std::to_string(nsid()) +
+ 					" parent=" + std::to_string(parent->nsid())

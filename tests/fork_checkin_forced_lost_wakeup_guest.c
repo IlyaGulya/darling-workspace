@@ -44,7 +44,7 @@ static void write_fault(void)
 		perror("fopen fault");
 		exit(20);
 	}
-	fputs("fork.skip_checkin_semaphore\n", file);
+	fprintf(file, "fork.skip_checkin_semaphore parent=%ld\n", (long)getpid());
 	fclose(file);
 }
 
