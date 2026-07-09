@@ -32,6 +32,11 @@ sys.modules.setdefault("west.commands", west_commands_module)
 
 import west_commands.test as west_test_module
 from west_commands.test import DarlingTest
+from west_commands.test_runtime import (
+    describe_runtime_deploy_plan,
+    runtime_build_targets,
+    runtime_deploy_targets,
+)
 
 
 def make_test():
@@ -49,6 +54,46 @@ def make_test():
     test._missing_requirements = lambda _invocation: []
     test._execution_env = lambda _invocation: {"DPREFIX": test._prefix}
     return test
+
+
+proof_plan = {
+    "bad-profile": "current-minus-patch",
+    "source-modules": ["darling/src/external/darlingserver"],
+    "runtime-artifacts": [
+        {
+            "module": "darling/src/external/xnu",
+            "build-targets": ["system_kernel", "system_kernel"],
+            "deploy": ["usr/lib/system/libsystem_kernel.dylib"],
+        },
+        {
+            "module": "darling/src/external/darlingserver",
+            "build-targets": ["darlingserver"],
+            "deploy": ["bin/darlingserver"],
+        },
+    ],
+}
+assert runtime_build_targets(proof_plan) == ["system_kernel", "darlingserver"]
+assert describe_runtime_deploy_plan(proof_plan) == (
+    "guest-runtime-deploy [current-minus-patch] "
+    "sources:darling/src/external/darlingserver: "
+    "darling/src/external/xnu[build:system_kernel,system_kernel; "
+    "deploy:usr/lib/system/libsystem_kernel.dylib]; "
+    "darling/src/external/darlingserver[build:darlingserver; deploy:bin/darlingserver]"
+)
+prefix_for_targets = Path("/tmp/prefix")
+assert runtime_deploy_targets(prefix_for_targets, "usr/lib/system/libsystem_kernel.dylib") == [
+    prefix_for_targets / "libexec/darling/usr/lib/system/libsystem_kernel.dylib",
+    prefix_for_targets / "usr/lib/system/libsystem_kernel.dylib",
+]
+assert runtime_deploy_targets(prefix_for_targets, "bin/darlingserver") == [
+    prefix_for_targets / "bin/darlingserver",
+]
+try:
+    runtime_deploy_targets(prefix_for_targets, "/absolute/bad")
+except ValueError as exc:
+    assert "must be relative" in str(exc)
+else:
+    raise AssertionError("absolute deploy path was accepted")
 
 
 with tempfile.TemporaryDirectory() as temp:
