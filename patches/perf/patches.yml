@@ -138,10 +138,47 @@ patches:
   bead: dar-j7e7
   publication-status: blocked
   publication-blocker: 'dar-j7e7 regression fix for the D16 per-thread ring lanes (guest): __dserver_ring_postfork_reset() freed each lane on wake_fd>=0, but the static (zero-init) lane table has wake_fd==0 on un-attached lanes, so the fork child ran close(0) once per untouched lane -> broken stdin -> brew "cannot duplicate fd 0". Frees now gated on the ownership marker (active==1); wake_fd=-1 sentinel restored at claim+reset; FD_CLOEXEC set on the received wake_fd. Stacks on xnu/shmem-ring-guest.patch (base caddc2b). Same experimental ring transport gating; not upstream-proposed until the ring itself is. See dar-j7e7.'
-  test-exception:
-    reason: needs-guest-postfork-fd-probe
+  tests:
+  - name: j7e7_postfork_stdin_guest
+    kind: guest
+    coverage-tier: runtime
+    env: darling
+    diag: bare
+    red: true
+    red-proof:
+      mode: guest-runtime-deploy
+      bad-profile: current-minus-patch
+      source-modules:
+      - darling/src/external/darlingserver
+      runtime-artifacts:
+      - module: darling/src/external/xnu
+        build-targets:
+        - system_kernel
+        deploy:
+        - usr/lib/system/libsystem_kernel.dylib
+      - module: darling/src/external/dyld
+        build-targets:
+        - src/external/dyld/dyld
+        deploy:
+        - usr/lib/dyld
+    runner: guest-c-fixture
+    repo: darling-workspace
+    script: tests/j7e7_postfork_stdin_guest.c
+    ok-marker: WEST_J7E7_POSTFORK_STDIN_OK
+    timeout-seconds: 60
+    compile-flags:
+    - -std=gnu11
+    - -Wall
+    - -Wextra
+    - -Werror
+    requires:
+    - darling-prefix
     note: |
-      The paired darlingserver patch adds a hermetic model gate for the ownership predicate, but this XNU guest patch still needs an automated deployed fork/exec probe proving child stdin survives postfork_reset and wake_fd sentinels/FD_CLOEXEC behave under the real guest runtime.
+      Guest runtime RED->GREEN probe for dar-j7e7. With ring transport compiled
+      into libsystem_kernel/dyld, the test installs a pipe as fd 0 before fork,
+      then execs /bin/sh in the child and proves stdin still receives the
+      parent payload. The pre-fix postfork_reset path closes fd 0 for untouched
+      zero-initialized lanes, so the RED runtime loses child stdin.
 - path: darlingserver/j7e7-postfork-reset-gate.patch
   sha256sum: ed025dd0c30f5429c45cdd3001a38712500d3649c3006d2cbf223b6d6a743f10
   module: darling/src/external/darlingserver

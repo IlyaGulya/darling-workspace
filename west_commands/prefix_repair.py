@@ -220,6 +220,18 @@ def _pid_is_alive(pid: int) -> bool:
     return True
 
 
+def darling_init_pid_is_usable(pid: int) -> bool:
+    if not _pid_is_alive(pid):
+        return False
+    try:
+        os.stat(Path("/proc") / str(pid) / "ns/mnt")
+    except OSError as error:
+        if error.errno in (errno.ENOENT, errno.ENOTDIR, errno.ESRCH):
+            return False
+        return True
+    return True
+
+
 def _repair_stale_init_pid(prefix: Path, result: PrefixRepairResult, *, check: bool) -> None:
     init_pid = prefix / INIT_PID_REL
     if not init_pid.exists():
@@ -240,7 +252,7 @@ def _repair_stale_init_pid(prefix: Path, result: PrefixRepairResult, *, check: b
         result.changed.append(f"removed invalid {INIT_PID_REL}")
         return
 
-    if _pid_is_alive(pid):
+    if darling_init_pid_is_usable(pid):
         result.ok.append(f"{INIT_PID_REL} points to live pid {pid}")
         return
     if check:
