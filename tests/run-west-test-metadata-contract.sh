@@ -428,6 +428,30 @@ patches:
         build-targets: [libsystem_kernel]
         deploy:
         - usr/lib/system/libsystem_kernel.dylib
+- path: test/invalid-red-runner.patch
+  module: darling-workspace
+  tests:
+  - name: invalid_red_runner
+    kind: guest
+    runs: guest
+    diag: bare
+    runner: guest-c-fixture
+    script: tests/guest_c_fixture_contract.c
+    ok-marker: WEST_GUEST_C_FIXTURE_OK
+    red: true
+    red-proof:
+      mode: guest-runtime-deploy
+      bad-profile: current-minus-patch
+      red-runner:
+        runner: script
+        script: tests/red-oracle.sh
+        red-proof:
+          mode: self
+      runtime-artifacts:
+      - module: darling/src/external/xnu
+        build-targets: [libsystem_kernel]
+        deploy:
+        - usr/lib/system/libsystem_kernel.dylib
 - path: test/invalid-script-runtime-red-proof.patch
   module: darling-workspace
   tests:
@@ -515,6 +539,31 @@ patches:
     red: true
     red-proof:
       mode: guest-runtime-deploy
+      runtime-artifacts:
+      - module: darling/src/external/xnu
+        build-targets: [libsystem_kernel]
+        deploy:
+        - usr/lib/system/libsystem_kernel.dylib
+- path: test/guest-runtime-red-runner-proof.patch
+  module: darling-workspace
+  tests:
+  - name: guest_runtime_red_runner
+    kind: guest
+    coverage-tier: runtime
+    runs: guest
+    diag: bare
+    runner: guest-c-fixture
+    script: tests/guest_c_fixture_contract.c
+    ok-marker: WEST_GUEST_C_FIXTURE_OK
+    red: true
+    red-proof:
+      mode: guest-runtime-deploy
+      expect-output-contains:
+      - red oracle
+      red-runner:
+        runner: script
+        repo: darling-workspace
+        script: tests/run-west-test-metadata-contract.sh
       runtime-artifacts:
       - module: darling/src/external/xnu
         build-targets: [libsystem_kernel]
@@ -718,6 +767,9 @@ printf '%s\n' "$invalid_guest_red_check" | grep -q \
 	'INVALID   test/invalid-source-patches.patch: tests\[1\] source-patches must be a list of workspace-relative patch paths' ||
 	fail 'invalid source-patches list was not rejected'
 printf '%s\n' "$invalid_guest_red_check" | grep -q \
+	'INVALID   test/invalid-red-runner.patch: tests\[1\] red-proof red-runner must not define red-proof' ||
+	fail 'red-runner with nested red-proof was not rejected'
+printf '%s\n' "$invalid_guest_red_check" | grep -q \
 	'INVALID   test/invalid-script-runtime-red-proof.patch: tests\[1\] red-proof guest-runtime-deploy script runner requires darling-prefix' ||
 	fail 'script guest-runtime-deploy without darling-prefix was not rejected'
 printf '%s\n' "$invalid_guest_red_check" | grep -q \
@@ -756,6 +808,8 @@ printf '%s\n' "$runtime_red_check" | grep -q 'RUNTIME   test/guest-runtime-red-p
 	fail 'guest-runtime-deploy metadata was not accepted as runtime coverage'
 printf '%s\n' "$runtime_red_check" | grep -q 'RUNTIME   test/script-runtime-red-proof.patch' ||
 	fail 'script guest-runtime-deploy metadata was not accepted as runtime coverage'
+printf '%s\n' "$runtime_red_check" | grep -q 'RUNTIME   test/guest-runtime-red-runner-proof.patch' ||
+	fail 'guest-runtime-deploy red-runner metadata was not accepted as runtime coverage'
 
 runtime_red_list="$(west test --profile __metadata_runtime_red_contract \
 	--patch test/guest-runtime-red-proof.patch \
@@ -769,6 +823,12 @@ script_runtime_red_list="$(west test --profile __metadata_runtime_red_contract \
 printf '%s\n' "$script_runtime_red_list" | grep -q \
 	'guest-runtime-deploy: darling/src/external/xnu\[build:libsystem_kernel; deploy:usr/lib/system/libsystem_kernel.dylib\]' ||
 	fail 'script guest-runtime-deploy list mode did not show deploy plan'
+red_runner_runtime_red_list="$(west test --profile __metadata_runtime_red_contract \
+	--patch test/guest-runtime-red-runner-proof.patch \
+	--prove-red --list)"
+printf '%s\n' "$red_runner_runtime_red_list" | grep -q \
+	'guest-runtime-deploy: darling/src/external/xnu\[build:libsystem_kernel; deploy:usr/lib/system/libsystem_kernel.dylib\]' ||
+	fail 'guest-runtime-deploy red-runner list mode did not show deploy plan'
 
 west test --profile __metadata_contract \
 	--patch test/mixed-red-nonred.patch \

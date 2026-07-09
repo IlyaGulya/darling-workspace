@@ -3804,6 +3804,18 @@ fi
         runtime_invocation["script_path"] = runtime_cwd / script
         return runtime_invocation
 
+    def _guest_runtime_red_invocation(self, patch, proof, invocation):
+        red_runner = proof.get("red-runner")
+        if red_runner is None:
+            return invocation
+        if not isinstance(red_runner, dict):
+            self.die(f"{patch['path']}: red-proof.red-runner must be a mapping")
+        red_test = dict(red_runner)
+        red_test.setdefault("name", f"{invocation['name']}_red")
+        red_test.setdefault("diag", invocation.get("diag", "bare"))
+        red_test.setdefault("timeout-seconds", invocation.get("timeout_seconds", 600))
+        return self._test_invocation(patch, red_test)
+
     def _run_guest_runtime_deploy_green(self, patch, proof, invocation) -> int:
         prefix_text = getattr(self, "_prefix", None)
         if not prefix_text:
@@ -3979,16 +3991,17 @@ fi
                         self.err(f"preserving failed RED runtime scratch for inspection: {temp}")
                         return prepare_rc
                 with self._runtime_red_deployed_artifacts(proof, build_root, prefix, label="RED"):
-                    bad_env = self._execution_env(invocation)
+                    red_invocation = self._guest_runtime_red_invocation(patch, proof, invocation)
+                    bad_env = self._execution_env(red_invocation)
                     if bad_env is None:
                         bad_env = os.environ.copy()
                     else:
                         bad_env = dict(bad_env)
                     bad_env["WEST_RUNTIME_SOURCE_ROOT"] = str(source_root)
-                    if invocation.get("guest_c_fixture") and proof.get("prepare-fixture-before-deploy"):
+                    if red_invocation.get("guest_c_fixture") and proof.get("prepare-fixture-before-deploy"):
                         bad_env["WEST_GUEST_C_FIXTURE_ID"] = fixture_id
                         bad_env["WEST_GUEST_C_FIXTURE_RUN_ONLY"] = "1"
-                    runtime_invocation = self._invocation_from_runtime_source(invocation, source_root)
+                    runtime_invocation = self._invocation_from_runtime_source(red_invocation, source_root)
                     with self._resource_context(runtime_invocation, bad_env):
                         red_started_at = time.time()
                         bad_rc = self._run_invocation(runtime_invocation, env=bad_env)
