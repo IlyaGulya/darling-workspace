@@ -3271,6 +3271,53 @@ patches:
     runner: script
     script: tests/run-inline-suspend-rwlock-deadlock.sh
     note: Host RED->GREEN model for not holding Process::_rwlock across suspending dtape calls.
+  - name: checkin_exec_rwlock_runtime_trace
+    kind: guest
+    coverage-tier: runtime
+    env: darling
+    diag: guarded
+    red: true
+    red-proof:
+      mode: guest-runtime-deploy
+      bad-profile: current-minus-patch
+      current-minus-skip-patches:
+      - darlingserver/checkin-retask-current-thread-uaf.patch
+      - darlingserver/test-diagnostics-trace.patch
+      source-patches:
+      - tests/fixtures/checkin/exec-diagnostics-no-rwlock.patch
+      runtime-artifacts:
+      - module: darling/src/external/darlingserver
+        build-targets:
+        - darlingserver
+        deploy:
+        - bin/darlingserver
+    runner: guest-c-fixture
+    repo: darling-workspace
+    script: tests/checkin_exec_trace_guest.c
+    ok-marker: CHECKIN_EXEC_TRACE_GUEST_OK
+    timeout-seconds: 30
+    compile-flags:
+    - -std=gnu11
+    - -Wall
+    - -Wextra
+    - -Werror
+    requires:
+    - darling-prefix
+    host-trace-files:
+    - env: DSERVER_TEST_TRACE_FILE
+      prefix-relative-path: private/var/tmp/dserver-checkin-rwlock.trace
+      contains:
+      - process.checkin.exec_begin
+      - process.checkin.exec_dtape_create_unlocked
+    host-trace-oracle: true
+    note: |-
+      Guest runtime ordering proof for the real Process::notifyCheckin exec
+      replacement path. The guest fixture compiles and execs itself under
+      Darling; fixed runtime traces that dtape task/thread creation starts only
+      after _rwlock has been dropped. The current-minus RED runtime uses a
+      matching diagnostic source patch on the old code and traces only the
+      locked create point, so the same trace oracle fails without relying on a
+      probabilistic fork/exec deadlock.
   github:
     fork:
       repo: IlyaGulya/darling
@@ -3782,6 +3829,51 @@ patches:
     runner: script
     script: tests/run-checkin-retask-current-thread-uaf.sh
     note: Host ASan RED->GREEN model for publishing the new dtape thread before releasing the old one.
+  - name: checkin_retask_current_thread_runtime_trace
+    kind: guest
+    coverage-tier: runtime
+    env: darling
+    diag: guarded
+    red: true
+    red-proof:
+      mode: guest-runtime-deploy
+      bad-profile: current-minus-patch
+      current-minus-skip-patches:
+      - darlingserver/test-diagnostics-trace.patch
+      source-patches:
+      - tests/fixtures/checkin/exec-diagnostics-no-retask.patch
+      runtime-artifacts:
+      - module: darling/src/external/darlingserver
+        build-targets:
+        - darlingserver
+        deploy:
+        - bin/darlingserver
+    runner: guest-c-fixture
+    repo: darling-workspace
+    script: tests/checkin_exec_trace_guest.c
+    ok-marker: CHECKIN_EXEC_TRACE_GUEST_OK
+    timeout-seconds: 30
+    compile-flags:
+    - -std=gnu11
+    - -Wall
+    - -Wextra
+    - -Werror
+    requires:
+    - darling-prefix
+    host-trace-files:
+    - env: DSERVER_TEST_TRACE_FILE
+      prefix-relative-path: private/var/tmp/dserver-checkin-retask.trace
+      contains:
+      - process.checkin.exec_begin
+      - process.checkin.exec_publish_before_release
+      - process.checkin.exec_release_old
+    host-trace-oracle: true
+    note: |-
+      Guest runtime ordering proof for the exec retask UAF fix. The guest drives
+      a real Darling self-exec and the server trace must show that the new
+      dtape task/thread was published before old task/thread release. The
+      current-minus RED runtime gets the same diagnostic helper on the old
+      release-before-publish code and therefore fails this trace oracle.
 - path: darlingserver/pot-guest-lifetime-binding.patch
   sha256sum: c9b7c4b008661ae00a6f52404b9bc9a751462a30ab0b39b0c97d8e007e25cb7f
   module: darling/src/external/darlingserver
@@ -3855,7 +3947,7 @@ patches:
   module: darling/src/external/darlingserver
   source-branch: fix/test-diagnostics-trace
   source-base: b5c7403d9e70fa5708c7c5ed66821534a017d032
-  source-commit: 1aaa544a8be02fe4b83cd8c8736f1bfab4173829
+  source-commit: e99d848aee8cc7b832f939e4c065f862d6948e95
   bead: dar-r7fc.7
   publication-status: blocked
   publication-blocker: test-only runtime diagnostics; keep local until a supported upstream diagnostics interface is designed
@@ -3884,4 +3976,4 @@ patches:
       Guest runtime smoke for the opt-in DSERVER_TEST_TRACE_FILE diagnostics
       hook. The script only launches a real guest process; west owns the host
       trace setup and oracle.
-  sha256sum: ab744da55b1f1e49f12873ef05a36fabc6b1d8f0d65c3ac566dfc58f02d1eab8
+  sha256sum: 52777d2732c839876898e28ff4f981d91e9d11abb8f56b462a36447c009da617
