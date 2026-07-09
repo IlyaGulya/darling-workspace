@@ -249,6 +249,19 @@ that matches dyld's guest filesystem view: `DPREFIX` when
 `install-root: base` or `install-root: prefix` only for tests that intentionally
 validate one of those views.
 
+`west test` provisions structured resources through typed providers, not
+runner-local ad hoc setup. The current provider stack is ordered as:
+
+1. `dcc-cache`: materializes/builds the declared cache tooling and injects the
+   guest DCC environment.
+2. `darling-eunion-prefix`: boots/verifies the E-UNION prefix and stages
+   upper/lower fixture files.
+
+Provider order is part of the contract: cache resources are prepared before
+prefix fixtures that may boot or probe the runtime. New shared runtime setup
+should become a provider with a focused contract instead of growing individual
+runner bodies.
+
 `runner: guest-command-fixture` may check both process status and captured
 output:
 

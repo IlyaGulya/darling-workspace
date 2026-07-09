@@ -138,13 +138,17 @@ refs, PR drafts, and agent handoff.
   `requires-env: [DPREFIX]`; let `west test --prefix/--prefix-profile` provide
   `DPREFIX`.
 - Repetitive patch test metadata should use compact `test-profiles` and
-  `artifact-profiles` in `patches.yml` instead of restating the same
-  guest/runtime boilerplate in every test. Keep per-test entries focused on the
-  unique script, oracle, resources, and exceptional overrides.
+`artifact-profiles` in `patches.yml` instead of restating the same
+guest/runtime boilerplate in every test. Keep per-test entries focused on the
+unique script, oracle, resources, and exceptional overrides.
+- Shared `west test` runtime setup belongs in typed resource providers, not in
+individual runner bodies. Add or extend `west_commands/test_resources.py` for
+common resources such as DCC cache or E-UNION prefix setup, and cover provider
+ordering/selection with a focused contract.
 - For `runner: guest-command-fixture`, use `expect.returncode: any` only when
-  the Darling launcher cannot reliably propagate the guest program status for
-  the behavior under test. Pair it with a concrete guest-visible
-  `output-contains`/`output-lacks` oracle; do not use it to hide missing
+the Darling launcher cannot reliably propagate the guest program status for
+the behavior under test. Pair it with a concrete guest-visible
+`output-contains`/`output-lacks` oracle; do not use it to hide missing
   behavior or flaky exits.
 - When validating a source change in `libsystem_kernel` against a real prefix,
   deploy dyld together with `libsystem_kernel.dylib`; dyld carries a static
