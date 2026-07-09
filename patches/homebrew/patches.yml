@@ -417,6 +417,9 @@ patches:
     red-proof:
       mode: guest-runtime-deploy
       bad-profile: current-minus-patch
+      expect-output-contains:
+      - ORACLE_RC=124
+      - process.fork_wait result=timed_out
       runtime-artifacts:
       - module: darling/src/external/xnu
         build-targets:
@@ -1654,6 +1657,9 @@ patches:
       bad-profile: current-minus-patch
       current-minus-skip-patches:
       - xnu/getattrlist-shared-packer.patch
+      expect-output-contains:
+      - 'getattrlist: Invalid argument (22)'
+      - ORACLE_RC=2
       runtime-artifacts:
       - module: darling/src/external/xnu
         build-targets:
