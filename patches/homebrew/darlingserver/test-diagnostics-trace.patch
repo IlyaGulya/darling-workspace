@@ -506,3 +506,33 @@ index 0000000000000000000000000000000000000000..5ebb97766d84ae8e4816c3bd6fa4548b
 +}
 +
 +}
+
+From b63070a07443ef9350a89328f8264298ef8e194a Mon Sep 17 00:00:00 2001
+From: Ilya Gulya <ilya@gulya.me>
+Date: Wed, 8 Jul 2026 23:51:25 +0000
+Subject: [PATCH] test: allow forcing lost fork checkin wakeup
+
+---
+ src/process.cpp | 9 ++++++++-
+ 1 file changed, 8 insertions(+), 1 deletion(-)
+
+diff --git a/src/process.cpp b/src/process.cpp
+index b56ee4381bb95eb847805dc549929bbba83d2ac5..8a9c473389e1d2009d12f7e68b2eab0c9b2d5bdb 100644
+--- a/src/process.cpp
++++ b/src/process.cpp
+@@ -434,7 +434,14 @@ void DarlingServer::Process::notifyCheckin(Architecture architecture) {
+ 				" parent=" + std::to_string(parent->nsid())
+ 			);
+ 			parent->_forkChildCheckin.markChildCheckedIn();
+-			dtape_semaphore_up(parent->_dtapeForkWaitSemaphore);
++			if (TestDiagnostics::consumeFault("fork.skip_checkin_semaphore")) {
++				TestDiagnostics::traceLine(
++					"process.checkin.fork_skip_semaphore child=" + std::to_string(nsid()) +
++					" parent=" + std::to_string(parent->nsid())
++				);
++			} else {
++				dtape_semaphore_up(parent->_dtapeForkWaitSemaphore);
++			}
+ 			parent->_notifyListeningKqchannels(NOTE_FORK, nsid());
+ 		} else {
+ 			processLog.info() << *this << ": checkin without registered fork parent" << processLog.endLog;
