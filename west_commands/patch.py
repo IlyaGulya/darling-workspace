@@ -11,12 +11,26 @@ import sys
 import tempfile
 from collections import OrderedDict
 from pathlib import Path
+from typing import NamedTuple
 
 import yaml
 from west.commands import WestCommand
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import test_manifest
+
+
+DEFAULT_EXPORT_MAX_LINES = 200_000
+DEFAULT_EXPORT_MAX_GROWTH = 20
+
+
+class ExportPlan(NamedTuple):
+    patch: dict
+    output: Path
+    commit: str
+    exported: bytes
+    checksum: str
+    patch_changed: bool
 
 
 def run(
@@ -88,6 +102,11 @@ class DarlingPatch(WestCommand):
                     action="store_true",
                     help="verify exported patch files and metadata without writing",
                 )
+                command.add_argument(
+                    "--allow-large-output",
+                    action="store_true",
+                    help="allow writing unusually large exported patch output",
+                )
             if action == "apply":
                 command.add_argument("--roll-back", action="store_true")
             if action == "clean":
@@ -134,7 +153,14 @@ class DarlingPatch(WestCommand):
         elif args.action == "verify":
             self._verify(profile_dir, patches)
         elif args.action == "export":
-            self._export(profile_path, profile_dir, profile, patches, args.check)
+            self._export(
+                profile_path,
+                profile_dir,
+                profile,
+                patches,
+                args.check,
+                args.allow_large_output,
+            )
         elif args.action == "status":
             self._status(profile_dir, patches, args.strict)
         elif args.action == "check":
@@ -1043,45 +1069,38 @@ class DarlingPatch(WestCommand):
         self._verify_applicability(profile_dir, grouped)
         self.inf(f"verified {len(patches)} patches")
 
-    def _export(self, profile_path: Path, profile_dir: Path, profile, patches, check: bool):
+    def _export(
+        self,
+        profile_path: Path,
+        profile_dir: Path,
+        profile,
+        patches,
+        check: bool,
+        allow_large_output: bool,
+    ):
+        plans = self._plan_export(profile_dir, patches, allow_large_output)
         changed = False
         metadata_updates: dict[str, dict[str, str]] = {}
-        for patch in patches:
-            repo = self._repo(patch["module"])
-            source_branch = patch["source-branch"]
-            if not self._branch_exists(repo, source_branch):
-                self.die(f"{patch['module']}: missing source branch {source_branch}")
-
-            commit = git(repo, "rev-parse", source_branch, capture=True)
-            exported = subprocess.run(
-                format_patch_command(patch, commit),
-                cwd=repo,
-                check=True,
-                stdout=subprocess.PIPE,
-            ).stdout
-            checksum = hashlib.sha256(exported).hexdigest()
-            output = profile_dir / patch["path"]
-
-            current_content = output.read_bytes() if output.is_file() else None
-            patch_changed = (
-                patch.get("source-commit") != commit
-                or patch.get("sha256sum") != checksum
-                or current_content != exported
-            )
+        for plan in plans:
+            patch = plan.patch
+            output = plan.output
             if check:
-                if patch_changed:
+                if plan.patch_changed:
                     self.die(f"{patch['path']}: exported patch drift")
                 self.inf(f"export-check OK {output.relative_to(profile_dir)}")
                 continue
 
             output.parent.mkdir(parents=True, exist_ok=True)
-            output.write_bytes(exported)
-            if patch.get("source-commit") != commit or patch.get("sha256sum") != checksum:
+            output.write_bytes(plan.exported)
+            if (
+                patch.get("source-commit") != plan.commit
+                or patch.get("sha256sum") != plan.checksum
+            ):
                 metadata_updates[patch["path"]] = {
-                    "source-commit": commit,
-                    "sha256sum": checksum,
+                    "source-commit": plan.commit,
+                    "sha256sum": plan.checksum,
                 }
-            changed = changed or patch_changed
+            changed = changed or plan.patch_changed
             self.inf(f"exported {output.relative_to(profile_dir)}")
 
         if not check:
@@ -1091,6 +1110,128 @@ class DarlingPatch(WestCommand):
                 f"updated {profile_path.relative_to(Path(self.manifest.repo_abspath))}"
                 if changed
                 else f"refreshed {profile_path.relative_to(Path(self.manifest.repo_abspath))}"
+            )
+
+    def _plan_export(
+        self,
+        profile_dir: Path,
+        patches,
+        allow_large_output: bool,
+    ) -> list[ExportPlan]:
+        plans: list[ExportPlan] = []
+        for patch in patches:
+            repo = self._repo(patch["module"])
+            source_branch = patch["source-branch"]
+            if not self._branch_exists(repo, source_branch):
+                self.die(f"{patch['module']}: missing source branch {source_branch}")
+
+            commit = git(repo, "rev-parse", source_branch, capture=True)
+            self._validate_export_revision(repo, patch, "source-commit", commit)
+            self._validate_export_revision(repo, patch, "source-base", commit)
+
+            result = subprocess.run(
+                format_patch_command(patch, commit),
+                cwd=repo,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+            )
+            if result.returncode:
+                stderr = result.stderr.decode(errors="replace").strip()
+                self.die(
+                    f"{patch['path']}: git format-patch failed before export writes"
+                    + (f": {stderr}" if stderr else "")
+                )
+            exported = result.stdout
+            checksum = hashlib.sha256(exported).hexdigest()
+            output = profile_dir / patch["path"]
+            current_content = output.read_bytes() if output.is_file() else None
+            patch_changed = (
+                patch.get("source-commit") != commit
+                or patch.get("sha256sum") != checksum
+                or current_content != exported
+            )
+            if not allow_large_output:
+                self._check_export_size(patch, exported, current_content)
+            plans.append(
+                ExportPlan(
+                    patch=patch,
+                    output=output,
+                    commit=commit,
+                    exported=exported,
+                    checksum=checksum,
+                    patch_changed=patch_changed,
+                )
+            )
+        return plans
+
+    def _validate_export_revision(
+        self,
+        repo: Path,
+        patch,
+        field: str,
+        branch_commit: str,
+    ) -> None:
+        revision = patch.get(field)
+        if not revision:
+            return
+        if not re.fullmatch(r"[0-9a-f]{40}", revision):
+            self.die(f"{patch['path']}: {field} must be a full SHA")
+        if (
+            subprocess.run(
+                ["git", "cat-file", "-e", f"{revision}^{{commit}}"],
+                cwd=repo,
+                check=False,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+            ).returncode
+            == 0
+        ):
+            return
+        hint = ""
+        if field == "source-base":
+            parent = subprocess.run(
+                ["git", "rev-parse", f"{branch_commit}^"],
+                cwd=repo,
+                check=False,
+                text=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.DEVNULL,
+            ).stdout.strip()
+            if parent:
+                hint = f"; source branch parent is {parent}"
+        elif field == "source-commit":
+            hint = f"; source branch currently points to {branch_commit}"
+        self.die(
+            f"{patch['path']}: {field} {revision} is not available{hint}; "
+            "repair stale patch metadata before exporting"
+        )
+
+    def _check_export_size(
+        self,
+        patch,
+        exported: bytes,
+        current_content: bytes | None,
+    ) -> None:
+        max_lines = int(
+            os.environ.get("WEST_PATCH_EXPORT_MAX_LINES", DEFAULT_EXPORT_MAX_LINES)
+        )
+        max_growth = int(
+            os.environ.get("WEST_PATCH_EXPORT_MAX_GROWTH", DEFAULT_EXPORT_MAX_GROWTH)
+        )
+        exported_lines = exported.count(b"\n")
+        if exported_lines <= max_lines:
+            return
+        current_lines = current_content.count(b"\n") if current_content is not None else 0
+        grew_too_much = current_lines == 0 or exported_lines > current_lines * max_growth
+        if grew_too_much:
+            baseline = (
+                f"{current_lines} current lines"
+                if current_content is not None
+                else "no current file"
+            )
+            self.die(
+                f"{patch['path']}: exported patch has {exported_lines} lines "
+                f"({baseline}); pass --allow-large-output to write it"
             )
 
     def _update_profile_metadata(
