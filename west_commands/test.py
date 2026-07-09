@@ -48,6 +48,11 @@ from prefix_repair import (
 )
 from test_manifest import ManifestError, load_test_profile
 from test_resources import resource_context
+from test_runtime import (
+    describe_runtime_deploy_plan,
+    runtime_build_targets,
+    runtime_deploy_targets,
+)
 
 
 class DarlingTest(WestCommand):
@@ -3176,32 +3181,7 @@ fi
         )
 
     def _display_guest_runtime_deploy_plan(self, proof) -> str:
-        def list_text(value, missing):
-            if not isinstance(value, list):
-                return missing
-            if not value:
-                return missing
-            return ",".join(str(item) for item in value)
-
-        artifacts = []
-        for artifact in proof.get("runtime-artifacts", []):
-            if not isinstance(artifact, dict):
-                artifacts.append("<invalid-artifact>")
-                continue
-            module = artifact.get("module")
-            targets = artifact.get("build-targets")
-            deploy = artifact.get("deploy")
-            module_text = module if isinstance(module, str) and module else "<missing-module>"
-            target_text = list_text(targets, "<missing-build-targets>")
-            deploy_text = list_text(deploy, "<missing-deploy>")
-            artifacts.append(f"{module_text}[build:{target_text}; deploy:{deploy_text}]")
-        bad_profile = proof.get("bad-profile")
-        suffix = f" [{bad_profile}]" if bad_profile else ""
-        source_modules = proof.get("source-modules")
-        source_text = ""
-        if isinstance(source_modules, list) and source_modules:
-            source_text = " sources:" + ",".join(str(item) for item in source_modules)
-        return "guest-runtime-deploy" + suffix + source_text + ": " + "; ".join(artifacts)
+        return describe_runtime_deploy_plan(proof)
 
     def _red_source_patch_path(self, path: str) -> Path:
         rel = Path(path)
@@ -3511,11 +3491,7 @@ fi
         *,
         label: str = "RED",
     ) -> Path:
-        targets: list[str] = []
-        for artifact in proof.get("runtime-artifacts", []):
-            for target in artifact.get("build-targets", []):
-                if target not in targets:
-                    targets.append(target)
+        targets = runtime_build_targets(proof)
         build_root = scratch_root / "build"
         self.inf(f"  {label} configure: {source_root} -> {build_root}")
         configure = subprocess.run(
@@ -3563,12 +3539,10 @@ fi
         return best[1]
 
     def _runtime_red_deploy_targets(self, prefix: Path, deploy_path: str) -> list[Path]:
-        rel = Path(deploy_path)
-        if rel.is_absolute() or ".." in rel.parts:
+        try:
+            return runtime_deploy_targets(prefix, deploy_path)
+        except ValueError:
             self.die(f"guest-runtime-deploy deploy path must be relative: {deploy_path}")
-        if rel.parts and rel.parts[0] == "usr":
-            return [prefix / "libexec/darling" / rel, prefix / rel]
-        return [prefix / rel]
 
     def _runtime_replace_file(self, src: Path, dst: Path) -> None:
         dst.parent.mkdir(parents=True, exist_ok=True)

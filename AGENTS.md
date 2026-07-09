@@ -146,6 +146,9 @@ individual runner bodies. Add or extend `west_commands/test_resources.py` for
 common resources such as host trace files, host stat deltas, DCC cache, or
 E-UNION prefix setup, and cover provider ordering/selection with a focused
 contract.
+- Runtime RED artifact planning belongs in `west_commands/test_runtime.py`.
+Keep pure plan/display/target-mapping logic there with focused contracts; leave
+only side-effecting build/deploy/restore orchestration in `west_commands/test.py`.
 - For `runner: guest-command-fixture`, use `expect.returncode: any` only when
 the Darling launcher cannot reliably propagate the guest program status for
 the behavior under test. Pair it with a concrete guest-visible

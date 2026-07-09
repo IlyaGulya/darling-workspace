@@ -267,6 +267,12 @@ before prefix fixtures that may boot or probe the runtime. New shared runtime
 setup should become a provider with a focused contract instead of growing
 individual runner bodies.
 
+Runtime RED artifact planning lives in a separate helper layer. The pure
+planning code owns build-target de-duplication, deploy-plan display, and mapping
+guest-visible deploy paths to the prefix files that must be swapped. The
+side-effecting build/deploy/restore sequence stays in `west test` until the
+runtime lifecycle can be split further without changing behavior.
+
 `runner: guest-command-fixture` may check both process status and captured
 output:
 
