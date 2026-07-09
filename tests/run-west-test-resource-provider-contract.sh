@@ -5,21 +5,57 @@ repo="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$repo"
 
 python3 - <<'PY'
+from contextlib import contextmanager
 import sys
 
 sys.path.insert(0, "west_commands")
-from test_resources import active_resource_provider_names
+from test_resources import active_resource_provider_names, resource_context
 
 assert active_resource_provider_names({}) == []
 assert active_resource_provider_names({"requires_resources": ["darling-prefix"]}) == []
+assert active_resource_provider_names({"host_trace_files": [{"env": "TRACE"}]}) == ["host-trace-files"]
 assert active_resource_provider_names({"dcc_cache": {"source-ref": "HEAD"}}) == ["dcc-cache"]
 assert active_resource_provider_names({
     "requires_resources": ["darling-eunion-prefix"],
 }) == ["darling-eunion-prefix"]
 assert active_resource_provider_names({
     "requires_resources": ["unknown-resource", "darling-eunion-prefix"],
+    "host_trace_files": [{"env": "TRACE"}],
     "dcc_cache": {"source-ref": "HEAD"},
-}) == ["dcc-cache", "darling-eunion-prefix"]
+}) == ["host-trace-files", "dcc-cache", "darling-eunion-prefix"]
+
+class Command:
+    def __init__(self):
+        self.order = []
+
+    @contextmanager
+    def _host_trace_context(self, invocation, env):
+        self.order.append("host-trace-files")
+        merged = dict(env or {})
+        merged["TRACE_FROM_PROVIDER"] = "1"
+        yield merged
+
+    @contextmanager
+    def _dcc_cache_context(self, invocation, env):
+        self.order.append("dcc-cache")
+        assert env["TRACE_FROM_PROVIDER"] == "1"
+        yield
+
+    @contextmanager
+    def _eunion_prefix_context(self, invocation, env):
+        self.order.append("darling-eunion-prefix")
+        assert env["TRACE_FROM_PROVIDER"] == "1"
+        yield
+
+command = Command()
+invocation = {
+    "host_trace_files": [{"env": "TRACE"}],
+    "dcc_cache": {"source-ref": "HEAD"},
+    "requires_resources": ["darling-eunion-prefix"],
+}
+with resource_context(command, invocation, {}) as env:
+    assert env["TRACE_FROM_PROVIDER"] == "1"
+assert command.order == ["host-trace-files", "dcc-cache", "darling-eunion-prefix"]
 PY
 
 printf 'PASS west-test-resource-provider-contract\n'
