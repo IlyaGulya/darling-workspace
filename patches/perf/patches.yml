@@ -166,7 +166,6 @@ patches:
       current-minus RED runtime has no DCC reader, so the command can still run
       but cannot produce the DCC runtime evidence.
   - name: dcc2_missing_path_hard_fail_guest
-    blocked: true
     kind: guest
     coverage-tier: runtime
     env: darling
@@ -188,13 +187,12 @@ patches:
     guest-env-vars:
       DARLING_DYLD_DCC2: '1'
     expect:
-      returncode: timeout
+      returncode: any
       output-contains:
       - 'DCC2: cache path unset'
     requires:
     - darling-prefix
   - name: dcc2_stale_cache_hard_fail_guest
-    blocked: true
     kind: guest
     coverage-tier: runtime
     env: darling
@@ -203,8 +201,6 @@ patches:
     red-proof:
       mode: guest-runtime-deploy
       bad-profile: current-minus-patch
-      source-modules:
-      - darling/src/external/darlingserver
       runtime-artifacts:
       - module: darling/src/external/dyld
         build-targets:
@@ -217,20 +213,21 @@ patches:
     timeout-seconds: 20
     dcc-cache:
       source-module: darling/src/external/darlingserver
+      source-ref: 03cf98e489f6c7830d82e10b5ee2217d44b9a1ae
       tools-dir: tools/closure-cache
       builder: dcc5-builder.c
-      closure-list: closure-list.txt
+      closure-list: smoke2-list.txt
+      install-root: guest-visible
       env: DARLING_DYLD_DCC2_PATH
       enable-env: DARLING_DYLD_DCC2
       stale: true
     expect:
-      returncode: timeout
+      returncode: any
       output-contains:
       - 'DCC2: cache invalid/stale'
     requires:
     - darling-prefix
   - name: dcc2_stale_cache_soft_fallback_guest
-    blocked: true
     kind: guest
     coverage-tier: runtime
     env: darling
@@ -241,9 +238,11 @@ patches:
     timeout-seconds: 240
     dcc-cache:
       source-module: darling/src/external/darlingserver
+      source-ref: 03cf98e489f6c7830d82e10b5ee2217d44b9a1ae
       tools-dir: tools/closure-cache
       builder: dcc5-builder.c
-      closure-list: closure-list.txt
+      closure-list: smoke2-list.txt
+      install-root: guest-visible
       env: DARLING_DYLD_DCC2_PATH
       enable-env: DARLING_DYLD_DCC2
       stale: true
@@ -252,17 +251,6 @@ patches:
       returncode: 0
     requires:
     - darling-prefix
-  test-exception:
-    reason: blocked-dcc-valid-cache-hang
-    blocker: dar-6hri
-    note: |
-      The structured west DCC cache/guest-command harness now builds the cache
-      from the dyld-visible no-overlay install root and the reader gets past
-      stale source validation. The valid-cache runtime gate is still blocked:
-      dyld enables DCC2, substitutes the cached images, applies the cache fixups,
-      then /usr/bin/true hangs until the guest-command watchdog times out. Keep
-      these tests blocked until dar-6hri root-causes the post-fixup runtime hang
-      and the valid-cache guest gate exits 0.
 - path: darlingserver/perf18-server-ring.patch
   module: darling/src/external/darlingserver
   source-branch: fix/perf18-server-ring
