@@ -503,12 +503,18 @@ class DarlingTest(WestCommand):
         data = self._load_profile(profile)
         selected = []
         missing = []
+        found_patch = False
         for patch in data.get("patches", []):
             if patch_path and patch["path"] != patch_path:
                 continue
+            found_patch = True
             if bead and patch.get("bead") != bead:
                 continue
-            all_tests = patch.get("tests") or []
+            all_tests = [
+                test
+                for test in (patch.get("tests") or [])
+                if not test.get("blocked")
+            ]
             tests = all_tests
             if red_only:
                 tests = [test for test in tests if test.get("red")]
@@ -521,7 +527,7 @@ class DarlingTest(WestCommand):
                     selected.append((patch, test))
             elif not all_tests and not patch.get("test-exception"):
                 missing.append(patch)
-        if patch_path and not selected and not missing:
+        if patch_path and not found_patch:
             self.die(f"{profile}: patch not found or has no selected tests: {patch_path}")
         return selected, missing
 
@@ -1095,6 +1101,48 @@ class DarlingTest(WestCommand):
                 "name": name,
                 "timeout_seconds": int(test.get("timeout-seconds", 600)),
             }
+        if runner == "guest-command-fixture":
+            repo = test.get("repo", patch["module"])
+            cwd = self._project_path(repo)
+            env = None
+            if test.get("env-vars"):
+                env = os.environ.copy()
+                env.update({str(k): str(v) for k, v in test["env-vars"].items()})
+            resources = set(test.get("requires", []))
+            resources.add("darling-prefix")
+            guest_command = str(test["guest-command"])
+            guest_env_vars = {
+                str(k): str(v) for k, v in test.get("guest-env-vars", {}).items()
+            }
+            expect = test.get("expect", {})
+            display = f"cd {quote(repo)} && darling shell /bin/bash --login -c {quote(guest_command)}"
+            return {
+                "key": (
+                    f"guest-command-fixture:{repo}:{guest_command}:"
+                    f"{repr(test.get('guest-env-vars', {}))}:"
+                    f"{repr(test.get('dcc-cache', {}))}:"
+                    f"{repr(expect)}"
+                ),
+                "display": display,
+                "cwd": cwd,
+                "args": None,
+                "shell": False,
+                "runner": "guest-command-fixture",
+                "env": env,
+                "guest_command_fixture": True,
+                "guest_command": guest_command,
+                "guest_env_vars": guest_env_vars,
+                "expect": expect,
+                "dcc_cache": test.get("dcc-cache"),
+                "source_env": source_env,
+                "source_module": source_module,
+                "requires_resources": sorted(resources),
+                "requires_env": list(test.get("requires-env", [])),
+                "requires_profile": test.get("requires-profile"),
+                "diag": self._resolved_diag(test),
+                "name": test.get("name", patch["path"]),
+                "timeout_seconds": int(test.get("timeout-seconds", 600)),
+            }
 
         self.die(f"{patch['path']}: unsupported test runner {runner!r}")
 
@@ -1257,6 +1305,8 @@ class DarlingTest(WestCommand):
     def _run_invocation(self, invocation, env=None) -> int:
         if invocation.get("guest_c_fixture"):
             return self._run_guest_c_fixture(invocation, env=env)
+        if invocation.get("guest_command_fixture"):
+            return self._run_guest_command_fixture(invocation, env=env)
         if invocation.get("c_fixture"):
             return self._run_c_fixture(invocation, env=env)
         if invocation.get("object_symbol_fixture"):
@@ -2267,6 +2317,108 @@ fi
             )
             return result.returncode
 
+    def _run_guest_command_fixture(self, invocation, env=None) -> int:
+        run_env = env if env is not None else invocation.get("env")
+        if not run_env:
+            run_env = self._execution_env(invocation)
+        if not run_env:
+            run_env = os.environ.copy()
+
+        prefix = run_env.get("DPREFIX") or getattr(self, "_prefix", None)
+        if not prefix:
+            self.die(f"{invocation['name']}: guest-command-fixture needs DPREFIX")
+        launcher = (
+            run_env.get("DARLING_LAUNCHER")
+            or run_env.get("DARLING")
+            or self._resolve_darling_launcher(prefix)
+        )
+        if not launcher:
+            self.die(f"{invocation['name']}: guest-command-fixture needs a Darling launcher")
+
+        guest_env_setup = "\n".join(
+            f"export {key}={quote(value)}"
+            for key, value in invocation.get("guest_env_vars", {}).items()
+        ) or ":"
+        guest_script = f"""set -u
+{guest_env_setup}
+{invocation["guest_command"]}
+"""
+        timeout_seconds = int(invocation.get("timeout_seconds", 600))
+        command = [
+            "timeout",
+            "--kill-after=5",
+            str(timeout_seconds),
+            "env",
+            f"DPREFIX={prefix}",
+            str(launcher),
+            "shell",
+            "/bin/bash",
+            "--login",
+            "-c",
+            guest_script,
+        ]
+        process = subprocess.Popen(
+            command,
+            cwd=invocation["cwd"],
+            env=run_env,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            start_new_session=True,
+        )
+        try:
+            stdout, stderr = process.communicate(timeout=timeout_seconds + 15)
+            returncode = process.returncode
+        except subprocess.TimeoutExpired:
+            try:
+                os.killpg(process.pid, signal.SIGKILL)
+            except ProcessLookupError:
+                pass
+            stdout, stderr = process.communicate()
+            output = (stdout or "") + (stderr or "")
+            if output:
+                print(output, end="" if output.endswith("\n") else "\n")
+            expect = invocation.get("expect") or {}
+            if expect.get("returncode") == "timeout":
+                for needle in expect.get("output-contains", []):
+                    if str(needle) not in output:
+                        self.err(f"{invocation['name']}: output missing {needle!r}")
+                        return 1
+                return 0
+            self.err(
+                f"{invocation['name']}: guest command watchdog timed out after "
+                f"{timeout_seconds + 15}s"
+            )
+            return 124
+
+        output = stdout + stderr
+        if output:
+            print(output, end="" if output.endswith("\n") else "\n")
+        expect = invocation.get("expect") or {}
+        rc_mode = expect.get("returncode", 0)
+        if rc_mode == "timeout":
+            self.err(f"{invocation['name']}: guest command returned before expected timeout")
+            return 1
+        if rc_mode == "nonzero":
+            if returncode == 0:
+                self.err(f"{invocation['name']}: guest command succeeded unexpectedly")
+                return 1
+        elif returncode != int(rc_mode):
+            self.err(
+                f"{invocation['name']}: guest command rc {returncode}, "
+                f"want {rc_mode}"
+            )
+            return 1
+        for needle in expect.get("output-contains", []):
+            if str(needle) not in output:
+                self.err(f"{invocation['name']}: output missing {needle!r}")
+                return 1
+        for needle in expect.get("output-lacks", []):
+            if str(needle) in output:
+                self.err(f"{invocation['name']}: output unexpectedly contains {needle!r}")
+                return 1
+        return 0
+
     def _execution_env(self, invocation) -> dict[str, str] | None:
         env = invocation.get("env")
         resources = set(invocation.get("requires_resources", []))
@@ -2346,6 +2498,12 @@ fi
 
     @contextmanager
     def _resource_context(self, invocation, env):
+        with self._dcc_cache_context(invocation, env):
+            with self._resource_context_after_dcc(invocation, env):
+                yield
+
+    @contextmanager
+    def _resource_context_after_dcc(self, invocation, env):
         resources = set(invocation.get("requires_resources", []))
         if "darling-eunion-prefix" not in resources:
             yield
@@ -2532,6 +2690,96 @@ fi
                     self._verify_eunion_template_files_after(invocation, template_assertions)
             finally:
                 cleanup_fixture_state()
+
+    @contextmanager
+    def _dcc_cache_context(self, invocation, env):
+        spec = invocation.get("dcc_cache")
+        if spec is None:
+            yield
+            return
+        if not isinstance(spec, dict):
+            self.die(f"{invocation['name']}: dcc-cache must be a mapping")
+        prefix_text = (env or {}).get("DPREFIX") or getattr(self, "_prefix", None)
+        if not prefix_text:
+            self.die(f"{invocation['name']}: dcc-cache needs DPREFIX")
+        prefix = Path(prefix_text)
+        source_module = str(spec.get("source-module", "darling/src/external/darlingserver"))
+        tools_dir_name = str(spec.get("tools-dir", "tools/closure-cache"))
+        builder_name = str(spec.get("builder", "dcc5-builder.c"))
+        list_name = str(spec.get("closure-list", "closure-list.txt"))
+        guest_env_name = str(spec.get("env", "DARLING_DYLD_DCC2_PATH"))
+        enable_env_name = str(spec.get("enable-env", "DARLING_DYLD_DCC2"))
+        if not guest_env_name or not guest_env_name.isidentifier():
+            self.die(f"{invocation['name']}: dcc-cache env must be a shell variable name")
+        if enable_env_name and not enable_env_name.isidentifier():
+            self.die(f"{invocation['name']}: dcc-cache enable-env must be a shell variable name")
+
+        runtime_source_root = (env or {}).get("WEST_RUNTIME_SOURCE_ROOT")
+        if runtime_source_root:
+            module_path = Path(source_module)
+            try:
+                rel = module_path.relative_to("darling")
+            except ValueError:
+                rel = module_path
+            source_root = Path(runtime_source_root) / rel
+        else:
+            source_root = self._project_path(source_module)
+        tools_dir = source_root / tools_dir_name
+        builder_source = tools_dir / builder_name
+        closure_list = tools_dir / list_name
+        if not builder_source.is_file():
+            self.die(f"{invocation['name']}: DCC builder not found: {builder_source}")
+        if not closure_list.is_file():
+            self.die(f"{invocation['name']}: DCC closure list not found: {closure_list}")
+
+        old_guest_env = dict(invocation.get("guest_env_vars", {}))
+        work_rel = Path("private/var/tmp") / f"west-dcc-cache-{os.getpid()}-{int(time.time() * 1000)}"
+        host_dir = prefix / "libexec/darling" / work_rel
+        guest_dir = "/" + str(work_rel)
+        with tempfile.TemporaryDirectory(prefix=f"west-dcc-cache-{invocation['name']}-") as temp:
+            tempdir = Path(temp)
+            builder = tempdir / Path(builder_name).stem
+            host_cache = host_dir / "system-closure.dcc6"
+            guest_cache = f"{guest_dir}/system-closure.dcc6"
+            try:
+                host_dir.mkdir(parents=True, exist_ok=False)
+                compile_args = ["gcc", "-O2", "-o", str(builder), str(builder_source)]
+                self.inf(f"  DCC cache builder: {' '.join(quote(str(arg)) for arg in compile_args)}")
+                subprocess.run(compile_args, cwd=tools_dir, check=True)
+                build_args = [
+                    str(builder),
+                    str(prefix / "libexec/darling"),
+                    str(closure_list),
+                    str(host_cache),
+                ]
+                self.inf(f"  DCC cache build: {host_cache}")
+                subprocess.run(build_args, cwd=tools_dir, check=True)
+                if spec.get("stale"):
+                    self._make_dcc_cache_stale(host_cache)
+                guest_env = dict(old_guest_env)
+                if enable_env_name:
+                    guest_env[enable_env_name] = str(spec.get("enable-value", "1"))
+                guest_env[guest_env_name] = guest_cache
+                if spec.get("soft"):
+                    guest_env["DARLING_DYLD_DCC2_SOFT"] = "1"
+                invocation["guest_env_vars"] = guest_env
+                yield
+            finally:
+                invocation["guest_env_vars"] = old_guest_env
+                shutil.rmtree(host_dir, ignore_errors=True)
+
+    def _make_dcc_cache_stale(self, cache_path: Path) -> None:
+        """Mutate the first image's recorded src_size so reader validation rejects it."""
+        header_size = 424
+        first_image_src_size_offset = header_size + 256 + 16 + 8 + 8
+        with cache_path.open("r+b") as handle:
+            handle.seek(first_image_src_size_offset)
+            raw = handle.read(8)
+            if len(raw) != 8:
+                self.die(f"DCC cache too small to stale-mutate: {cache_path}")
+            value = int.from_bytes(raw, "little", signed=False)
+            handle.seek(first_image_src_size_offset)
+            handle.write((value + 1).to_bytes(8, "little", signed=False))
 
     def _boot_eunion_runtime_prefix(self, invocation, env, prefix: Path) -> None:
         launcher = (
@@ -3102,14 +3350,35 @@ fi
                     targets.append(target)
         build_root = scratch_root / "build"
         self.inf(f"  {label} configure: {source_root} -> {build_root}")
-        subprocess.run(
+        configure = subprocess.run(
             ["cmake", "-S", str(source_root), "-B", str(build_root), *self._runtime_red_configure_args(prefix)],
             cwd=self.topdir,
-            check=True,
+            capture_output=True,
+            text=True,
+            check=False,
         )
+        if configure.returncode:
+            self._dump_command_tail(f"{label} configure", configure)
+            configure.check_returncode()
         self.inf(f"  {label} build: {', '.join(targets)}")
-        subprocess.run(["ninja", "-C", str(build_root), *targets], cwd=self.topdir, check=True)
+        build = subprocess.run(
+            ["ninja", "-C", str(build_root), *targets],
+            cwd=self.topdir,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        if build.returncode:
+            self._dump_command_tail(f"{label} build", build)
+            build.check_returncode()
         return build_root
+
+    def _dump_command_tail(self, label: str, result: subprocess.CompletedProcess) -> None:
+        output = (result.stdout or "") + (result.stderr or "")
+        tail = "\n".join(output.splitlines()[-200:])
+        if tail:
+            sys.stderr.write(tail + "\n")
+        self.err(f"{label} failed with rc {result.returncode}")
 
     def _runtime_red_find_build_output(self, build_root: Path, deploy_path: str) -> Path:
         name = Path(deploy_path).name
@@ -3228,6 +3497,11 @@ fi
                     label="GREEN",
                 ):
                     green_env = self._execution_env(invocation)
+                    if green_env is None:
+                        green_env = os.environ.copy()
+                    else:
+                        green_env = dict(green_env)
+                    green_env["WEST_RUNTIME_SOURCE_ROOT"] = str(source_root)
                     with self._resource_context(invocation, green_env):
                         return self._run_invocation(invocation, env=green_env)
         except Exception:
@@ -3239,8 +3513,12 @@ fi
                 shutil.rmtree(temp, ignore_errors=True)
 
     def _run_guest_runtime_deploy_proof(self, patch, proof, invocation) -> int:
-        if not invocation.get("guest_c_fixture") and invocation.get("runner") != "script":
-            self.die(f"{patch['path']}: guest-runtime-deploy requires guest-c-fixture or script")
+        if (
+            not invocation.get("guest_c_fixture")
+            and not invocation.get("guest_command_fixture")
+            and invocation.get("runner") != "script"
+        ):
+            self.die(f"{patch['path']}: guest-runtime-deploy requires guest-c-fixture, guest-command-fixture, or script")
         if invocation.get("runner") == "script":
             resources = set(invocation.get("requires_resources", []))
             if not resources & {"darling-prefix", "darling-eunion-prefix"}:
@@ -3269,6 +3547,11 @@ fi
                 )
                 with self._runtime_red_deployed_artifacts(proof, build_root, prefix, label="RED"):
                     bad_env = self._execution_env(invocation)
+                    if bad_env is None:
+                        bad_env = os.environ.copy()
+                    else:
+                        bad_env = dict(bad_env)
+                    bad_env["WEST_RUNTIME_SOURCE_ROOT"] = str(source_root)
                     with self._resource_context(invocation, bad_env):
                         bad_rc = self._run_invocation(invocation, env=bad_env)
                     if bad_rc == 0:

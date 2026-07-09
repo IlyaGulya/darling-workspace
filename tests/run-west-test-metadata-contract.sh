@@ -112,6 +112,46 @@ patches:
     guest-env-vars:
       WEST_GUEST_TEMP_FILE: /private/var/tmp/west-guest-temp.flag
     host-trace-oracle: true
+- path: test/guest-command-fixture.patch
+  module: darling-workspace
+  tests:
+  - name: west_guest_command_fixture_contract
+    kind: guest
+    coverage-tier: runtime
+    env: darling
+    diag: bare
+    runner: guest-command-fixture
+    guest-command: /usr/bin/true
+    timeout-seconds: 20
+    guest-env-vars:
+      WEST_GUEST_COMMAND_CONTRACT: '1'
+    dcc-cache:
+      source-module: darling/src/external/darlingserver
+      tools-dir: tools/closure-cache
+      builder: dcc5-builder.c
+      closure-list: smoke2-list.txt
+      env: DARLING_DYLD_DCC2_PATH
+      enable-env: DARLING_DYLD_DCC2
+      stale: true
+      soft: true
+    expect:
+      returncode: timeout
+      output-contains:
+      - 'DCC2: cache invalid/stale'
+- path: test/blocked-guest-command.patch
+  module: darling-workspace
+  tests:
+  - name: blocked_guest_command_contract
+    blocked: true
+    kind: guest
+    coverage-tier: runtime
+    env: darling
+    diag: bare
+    runner: guest-command-fixture
+    guest-command: /usr/bin/true
+  test-exception:
+    reason: blocked-contract
+    note: Metadata-only fixture proving blocked tests do not count as coverage.
 - path: test/eunion-prefix-resource.patch
   module: darling-workspace
   tests:
@@ -571,7 +611,15 @@ object_symbol_fixture="$(
 printf '%s\n' "$object_symbol_fixture" | grep -q \
 	'cc -c -std=gnu11 -Wall -Wextra -Werror -I tests/fixtures/c-fixture/include -I src tests/c_fixture_helper.c -o <temp>/<variant>.o && nm -u <temp>/<variant>.o && nm -g <temp>/<variant>.o' ||
 	fail 'object-symbol-fixture metadata did not resolve to a compile-and-nm command'
-printf '%s\n' "$source_only_check" | grep -q 'test metadata: 12 covered (runtime 4, compile 3, host 4, model 1), 1 exceptions, 1 missing' ||
+guest_command_fixture="$(
+	west test --profile __metadata_contract \
+		--patch test/guest-command-fixture.patch \
+		--list
+)"
+printf '%s\n' "$guest_command_fixture" | grep -q \
+	'darling shell /bin/bash --login -c /usr/bin/true' ||
+	fail 'guest-command-fixture metadata did not resolve to a guest shell command'
+printf '%s\n' "$source_only_check" | grep -q 'test metadata: 13 covered (runtime 5, compile 3, host 4, model 1), 2 exceptions, 1 missing' ||
 	fail 'coverage-tier summary did not classify runtime/host/compile/model coverage'
 
 invalid_guest_red_check="$(west patch check --profile __metadata_invalid_contract 2>&1)"

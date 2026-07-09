@@ -121,10 +121,150 @@ patches:
   bead: dar-dar6x4-perf-5dq.26
   publication-status: blocked
   publication-blocker: perf#24 DCC6 packed-shared-cache dyld reader (3-region + TEXT RIP-relative rewrite + precomputed fixup table). CLOSED as a functionally-proven, kernel-measured PROTOTYPE that is FLAG-GATED (DARLING_DYLD_DCC2=1 + DARLING_DYLD_DCC2_PATH) and NOT default-on; productization needs separate hardening (cache-build/staleness deploy, coverage beyond the 40-dylib closure, cache ABI-version discipline). See tests/PERF24-DCC6-FINAL.md. Base is 63f667cf (manifest dyld revision).
-  test-exception:
-    reason: prototype-needs-dcc2-runtime-harness
+  tests:
+  - name: dcc2_valid_cache_guest
+    blocked: true
+    kind: guest
+    coverage-tier: runtime
+    env: darling
+    diag: bare
+    red: true
+    red-proof:
+      mode: guest-runtime-deploy
+      bad-profile: current-minus-patch
+      source-modules:
+      - darling/src/external/darlingserver
+      runtime-artifacts:
+      - module: darling/src/external/dyld
+        build-targets:
+        - src/external/dyld/dyld
+        deploy:
+        - usr/lib/dyld
+    runner: guest-command-fixture
+    repo: darling-workspace
+    guest-command: /usr/bin/true
+    timeout-seconds: 90
+    guest-env-vars:
+      DYLD_PRINT_SEGMENTS: '1'
+    dcc-cache:
+      source-module: darling/src/external/darlingserver
+      tools-dir: tools/closure-cache
+      builder: dcc5-builder.c
+      closure-list: smoke2-list.txt
+      env: DARLING_DYLD_DCC2_PATH
+      enable-env: DARLING_DYLD_DCC2
+    expect:
+      returncode: 0
+      output-contains:
+      - 'dyld[DCC2]: enabled'
+      - 'dyld[DCC2]: substituted cached image'
+    requires:
+    - darling-prefix
     note: |
-      The patch is an explicitly flag-gated WIP/prototype and the patch message notes a live 2-dylib smoke crash. It needs an automated DCC2 cache-builder/reader runtime harness with valid-cache, stale-cache, missing-path, and fallback/hard-fail cases before it can be counted as covered.
+      Builds a real DCC6 cache from the perf source tree, deploys the profile
+      dyld, enables the reader in guest, and requires dyld's own runtime log to
+      show both reader enablement and cached-image substitution. The
+      current-minus RED runtime has no DCC reader, so the command can still run
+      but cannot produce the DCC runtime evidence.
+  - name: dcc2_missing_path_hard_fail_guest
+    blocked: true
+    kind: guest
+    coverage-tier: runtime
+    env: darling
+    diag: bare
+    red: true
+    red-proof:
+      mode: guest-runtime-deploy
+      bad-profile: current-minus-patch
+      runtime-artifacts:
+      - module: darling/src/external/dyld
+        build-targets:
+        - src/external/dyld/dyld
+        deploy:
+        - usr/lib/dyld
+    runner: guest-command-fixture
+    repo: darling-workspace
+    guest-command: /usr/bin/true
+    timeout-seconds: 60
+    guest-env-vars:
+      DARLING_DYLD_DCC2: '1'
+    expect:
+      returncode: timeout
+      output-contains:
+      - 'DCC2: cache path unset'
+    requires:
+    - darling-prefix
+  - name: dcc2_stale_cache_hard_fail_guest
+    blocked: true
+    kind: guest
+    coverage-tier: runtime
+    env: darling
+    diag: bare
+    red: true
+    red-proof:
+      mode: guest-runtime-deploy
+      bad-profile: current-minus-patch
+      source-modules:
+      - darling/src/external/darlingserver
+      runtime-artifacts:
+      - module: darling/src/external/dyld
+        build-targets:
+        - src/external/dyld/dyld
+        deploy:
+        - usr/lib/dyld
+    runner: guest-command-fixture
+    repo: darling-workspace
+    guest-command: /usr/bin/true
+    timeout-seconds: 20
+    dcc-cache:
+      source-module: darling/src/external/darlingserver
+      tools-dir: tools/closure-cache
+      builder: dcc5-builder.c
+      closure-list: closure-list.txt
+      env: DARLING_DYLD_DCC2_PATH
+      enable-env: DARLING_DYLD_DCC2
+      stale: true
+    expect:
+      returncode: timeout
+      output-contains:
+      - 'DCC2: cache invalid/stale'
+    requires:
+    - darling-prefix
+  - name: dcc2_stale_cache_soft_fallback_guest
+    blocked: true
+    kind: guest
+    coverage-tier: runtime
+    env: darling
+    diag: bare
+    runner: guest-command-fixture
+    repo: darling-workspace
+    guest-command: /usr/bin/true
+    timeout-seconds: 240
+    dcc-cache:
+      source-module: darling/src/external/darlingserver
+      tools-dir: tools/closure-cache
+      builder: dcc5-builder.c
+      closure-list: closure-list.txt
+      env: DARLING_DYLD_DCC2_PATH
+      enable-env: DARLING_DYLD_DCC2
+      stale: true
+      soft: true
+    expect:
+      returncode: 0
+    requires:
+    - darling-prefix
+  test-exception:
+    reason: blocked-dcc-cache-filesystem-view
+    blocker: dar-exnv
+    note: |
+      The structured west DCC cache/guest-command harness is in place, but the
+      valid-cache runtime gate is blocked: the host-built cache opens inside
+      Darling but the reader rejects it as stale because source metadata
+      recorded by the host builder does not match dyld3::stat('/usr/lib/...') in
+      the guest filesystem view. Keep these tests blocked until dar-exnv makes
+      the builder use or normalize the exact dyld-visible filesystem metadata;
+      do not count this patch as fully runtime-covered before that valid-cache
+      gate passes.
 - path: darlingserver/perf18-server-ring.patch
   module: darling/src/external/darlingserver
   source-branch: fix/perf18-server-ring
