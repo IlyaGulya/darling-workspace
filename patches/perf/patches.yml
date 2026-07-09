@@ -254,12 +254,12 @@ patches:
 - path: darlingserver/perf18-server-ring.patch
   module: darling/src/external/darlingserver
   source-branch: fix/perf18-server-ring
-  source-base: 92049f05ceec9fa02b132b3882e264822586d91d
+  source-base: fe20cfe17a21966813b542373dade61c02e53315
   bead: dar-dar6x4-perf-5dq.30
   publication-status: blocked
   publication-blocker: perf#18 SERVER-side shared-memory SPSC ring transport for darlingserver (pairs with guest-side xnu/shmem-ring-guest.patch in this profile). 78 commits above integration/homebrew tip. Experimental, behind DARLING_SERVER_FAST_OPS; wants ring ABI + trust-boundary review before upstreaming. See dar-dar6x4-perf-5dq.30.
-  source-commit: 03cf98e489f6c7830d82e10b5ee2217d44b9a1ae
-  sha256sum: 44ac2b59cab921e6065094348bc746555071203294950b9d16154f66584db5fe
+  source-commit: 82f41e2e0dc352c18dd8910963d908395c94afda
+  sha256sum: cc3b818ae8c05d662308edcaecef51736b17d0c6775672247dfa7344306b086b
   tests:
   - name: perf18_ring_host_gate_suite
     kind: gate
@@ -279,12 +279,12 @@ patches:
 - path: darlingserver/a0-hang-fixes.patch
   module: darling/src/external/darlingserver
   source-branch: fix/a0-hang-fixes
-  source-base: eab7f3fe16c11774cf8e4c58aa547d400a846489
+  source-base: 82f41e2e0dc352c18dd8910963d908395c94afda
   bead: dar-a0-hang-fixes-gkev
   publication-status: provisional
   publication-blocker: 'A0 hang fix class (perf#25a-hang): stranded SIGCHLD / lost wait4 reply + interrupted-wait state-clobber family + exec-checkin race + zero-hang gate harness. 41 commits. Landed + gated; sits below A0-ARCH. See dar-a0-hang-fixes-gkev.'
-  source-commit: 32eb65ac4eb434ccc7432bbb76c7fffabb99d676
-  sha256sum: 736c60a0cbfde51bb0d9cc77047f40c0e163f732574ac70306e321b839150641
+  source-commit: 41ea4e4ea05eefd8fe5d4092b5a27ed35e510866
+  sha256sum: 85dac2e7426b149d620a7660a3644360ffb744f2d9d15b90d75d4e0ad23898d5
   tests:
   - name: a0_zero_hang_synth_gate
     kind: guest
