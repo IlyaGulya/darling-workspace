@@ -835,6 +835,78 @@ with tempfile.TemporaryDirectory() as temp:
 
 with tempfile.TemporaryDirectory() as temp:
     tempdir = Path(temp)
+    repo = tempdir / "darling"
+    repo.mkdir()
+    subprocess.run(["git", "init", "-q"], cwd=repo, check=True)
+    subprocess.run(["git", "config", "user.email", "test@example.invalid"], cwd=repo, check=True)
+    subprocess.run(["git", "config", "user.name", "west test"], cwd=repo, check=True)
+    (repo / "base.txt").write_text("base\n")
+    subprocess.run(["git", "add", "base.txt"], cwd=repo, check=True)
+    subprocess.run(["git", "commit", "-q", "-m", "base"], cwd=repo, check=True)
+    base_rev = subprocess.run(
+        ["git", "rev-parse", "HEAD"],
+        cwd=repo,
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
+    (repo / "fixed.txt").write_text("fixed\n")
+    subprocess.run(["git", "add", "fixed.txt"], cwd=repo, check=True)
+    subprocess.run(["git", "commit", "-q", "-m", "fixed patch"], cwd=repo, check=True)
+    fixed_patch = subprocess.run(
+        ["git", "format-patch", "-1", "--stdout"],
+        cwd=repo,
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout
+    subprocess.run(["git", "reset", "--hard", "-q", base_rev], cwd=repo, check=True)
+
+    profile_dir = tempdir / "patches/runtime/darling"
+    profile_dir.mkdir(parents=True)
+    (profile_dir / "fixed.patch").write_text(fixed_patch)
+
+    test = make_test()
+    test.manifest = types.SimpleNamespace(
+        repo_abspath=str(tempdir),
+        projects=[
+            types.SimpleNamespace(
+                name="darling",
+                path="darling",
+                abspath=str(repo),
+                revision=base_rev,
+            )
+        ],
+    )
+    test._active_profile = "runtime"
+    test._profile_stack = lambda profile: [profile]
+    test._load_profile = lambda _profile: {
+        "patches": [
+            {"path": "darling/fixed.patch", "module": "darling"},
+        ]
+    }
+    test._profile_path = lambda profile: tempdir / "patches" / profile / "patches.yml"
+    test._execution_env = lambda _invocation: {}
+    seen = []
+
+    def run_invocation(_invocation, env=None):
+        source_root = Path(env["SRC_ROOT"])
+        has_fixed = (source_root / "fixed.txt").exists()
+        seen.append(has_fixed)
+        return 0 if has_fixed else 1
+
+    test._run_invocation = run_invocation
+    rc = test._run_source_base_proof(
+        {"path": "darling/fixed.patch", "module": "darling", "source-base": base_rev},
+        {"mode": "source-base", "source-env": "SRC_ROOT"},
+        {"name": "source_profile_green", "shell": False},
+    )
+    assert rc == 0
+    assert seen == [False, True], seen
+    assert not (repo / "fixed.txt").exists(), "live checkout should not be the GREEN proof source"
+
+with tempfile.TemporaryDirectory() as temp:
+    tempdir = Path(temp)
     darling_repo = tempdir / "darling"
     xnu_repo = tempdir / "xnu"
     dserver_repo = tempdir / "darlingserver"
