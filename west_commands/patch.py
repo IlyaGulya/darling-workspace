@@ -535,6 +535,33 @@ class DarlingPatch(WestCommand):
                             errors.append(
                                 f"tests[{index}].host-temp-files[{temp_index}] contents must be a string"
                             )
+            if test.get("host-stat-deltas") is not None:
+                deltas = test.get("host-stat-deltas")
+                if runner != "guest-c-fixture":
+                    errors.append(f"tests[{index}] host-stat-deltas requires runner: guest-c-fixture")
+                elif not isinstance(deltas, list) or not deltas:
+                    errors.append(f"tests[{index}] host-stat-deltas must be a non-empty list")
+                elif not all(isinstance(delta, dict) for delta in deltas):
+                    errors.append(f"tests[{index}] host-stat-deltas entries must be mappings")
+                else:
+                    for delta_index, delta in enumerate(deltas):
+                        path = delta.get("path")
+                        minimum = delta.get("min-delta", 1)
+                        if not isinstance(path, str) or not path:
+                            errors.append(
+                                f"tests[{index}].host-stat-deltas[{delta_index}] needs path"
+                            )
+                        elif not all(
+                            re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", part)
+                            for part in path.split(".")
+                        ):
+                            errors.append(
+                                f"tests[{index}].host-stat-deltas[{delta_index}] path must be a dotted JSON field path"
+                            )
+                        if not isinstance(minimum, int) or minimum <= 0:
+                            errors.append(
+                                f"tests[{index}].host-stat-deltas[{delta_index}] min-delta must be a positive integer"
+                            )
             if test.get("eunion-template-files") is not None:
                 files = test.get("eunion-template-files")
                 if "darling-eunion-prefix" not in required_resources:
