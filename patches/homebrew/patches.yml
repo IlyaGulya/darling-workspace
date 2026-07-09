@@ -494,13 +494,12 @@ patches:
       base: main
       state: local
 - path: xnu/select-pselect-fdset.patch
-  sha256sum: 6cee76ab959ae29d5dcbcb2b4e3396c2f773fc5c9e0e363bd27f12be924970f6
+  sha256sum: 06c677b73f4db5a5abd020247869f6baee991b035f2e0a46a253a7d666ee4bba
   module: darling/src/external/xnu
   source-branch: fix/select-pselect-fdset
-  source-commit: c7d851d90e13eb49ce484fd94679462a5345548c
+  source-commit: 014ae062d051cfdd48a0095f3cc05b19900a20ca
   bead: dar-q95.3
-  publication-status: blocked
-  publication-blocker: unbounded nfds drives stack allocation and fd_set access; see dar-q95.29.3
+  publication-status: ready
   tests:
   - name: select_fdset_conversion
     kind: unit
@@ -518,8 +517,22 @@ patches:
     note: Host unit RED->GREEN contract for BSD/Linux fd_set word-size conversion above 32 fds.
   - name: select_fdset_guest
     kind: guest
+    coverage-tier: runtime
     runs: guest
     diag: guarded
+    red: true
+    red-proof:
+      mode: guest-runtime-deploy
+      bad-profile: current-minus-patch
+      expect-output-contains:
+      - pselect high fd failed
+      - errno=14
+      runtime-artifacts:
+      - module: darling/src/external/xnu
+        build-targets:
+        - system_kernel
+        deploy:
+        - usr/lib/system/libsystem_kernel.dylib
     runner: guest-c-fixture
     repo: darling-workspace
     script: tests/select_fdset_guest.c
