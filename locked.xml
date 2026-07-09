@@ -2,7 +2,7 @@
 <manifest>
   <remote name="darling" fetch="https://github.com/darlinghq/" />
   <default remote="darling" sync-j="16" sync-tags="false" />
-  <project name="darling" path="darling" revision="c044c084aa4f4033b6e916b59358e7d7308b0911" />
+  <project name="darling" path="darling" revision="e713e788b26d0332fb45f18bee6de920da85f092" />
   <project name="darling-AvailabilityVersions" path="darling/src/external/AvailabilityVersions" revision="e28c029a8fa46fa933cbf6d6d9a1c00978c5fad1" />
   <project name="darling-BerkeleyDB" path="darling/src/external/BerkeleyDB" revision="1411173f0eb71f96ab6134de4e052d16acb8c673" />
   <project name="darling-DSTools" path="darling/src/external/DSTools" revision="e015256b16965ac032412f2277c608c7213c03b3" />
