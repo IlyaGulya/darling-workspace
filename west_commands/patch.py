@@ -7,12 +7,16 @@ import json
 import os
 import re
 import subprocess
+import sys
 import tempfile
 from collections import OrderedDict
 from pathlib import Path
 
 import yaml
 from west.commands import WestCommand
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import test_manifest
 
 
 def run(
@@ -112,7 +116,10 @@ class DarlingPatch(WestCommand):
         if not profile_path.is_file():
             self.die(f"patch profile not found: {profile_path}")
 
-        profile = yaml.safe_load(profile_path.read_text())
+        try:
+            profile = test_manifest.load_test_profile(profile_path)
+        except test_manifest.ManifestError as error:
+            self.die(str(error))
         patches = profile.get("patches", [])
         # Optional stacking: a profile may declare `base-profile: <name>` to be
         # applied ON TOP of another profile's integration branch instead of the

@@ -11,6 +11,25 @@ source_script_marker=/tmp/west-source-script-fixture-second-case
 trap 'rm -rf "$tmp_profile" "$tmp_invalid_profile" "$tmp_runtime_red_profile" "$guest_prefix" "$source_script_marker"' EXIT
 mkdir -p "$tmp_profile" "$tmp_invalid_profile" "$tmp_runtime_red_profile"
 cat >"$tmp_profile/patches.yml" <<'YAML'
+test-profiles:
+  guest-c-runtime-red:
+    kind: guest
+    coverage-tier: runtime
+    env: darling
+    diag: bare
+    runner: guest-c-fixture
+    repo: darling-workspace
+    requires: [darling-prefix]
+    compile-flags: [-std=gnu11, -Wall, -Wextra, -Werror]
+    red: true
+    red-proof:
+      mode: guest-runtime-deploy
+      bad-profile: current-minus-patch
+artifact-profiles:
+  xnu-kernel:
+    module: darling/src/external/xnu
+    build-targets: [system_kernel]
+    deploy: [usr/lib/system/libsystem_kernel.dylib]
 patches:
 - path: test/ctest-label.patch
   module: darling
@@ -51,6 +70,15 @@ patches:
   test-exception:
     reason: blocked-on-runtime-hook
     note: Metadata-only fixture proving source-contract plus explicit exception is not reported as an unexplained missing behavioral test.
+- path: test/compact-guest-runtime.patch
+  module: darling-workspace
+  tests:
+  - use: guest-c-runtime-red
+    name: compact_guest_runtime_contract
+    script: tests/guest_c_fixture_contract.c
+    ok-marker: WEST_GUEST_C_FIXTURE_OK
+    artifacts: xnu-kernel
+    timeout-seconds: 20
 - path: test/model.patch
   module: darling
   tests:
@@ -606,6 +634,8 @@ if printf '%s\n' "$source_only_check" | grep -q 'TESTED    test/source-only.patc
 fi
 printf '%s\n' "$source_only_check" | grep -q 'EXCEPTION test/source-only-exception.patch (blocked-on-runtime-hook; 1 source-contract(s))' ||
 	fail 'source-contract exception patch was not reported as an explicit exception'
+printf '%s\n' "$source_only_check" | grep -q 'RUNTIME   test/compact-guest-runtime.patch' ||
+	fail 'compact guest runtime profile was not normalized into runtime coverage'
 printf '%s\n' "$source_only_check" | grep -q 'MODEL     test/model.patch' ||
 	fail 'model-tier patch was not reported as MODEL'
 printf '%s\n' "$source_only_check" | grep -q 'COMPILE   test/c-fixture.patch' ||
@@ -626,6 +656,29 @@ c_fixture="$(
 printf '%s\n' "$c_fixture" | grep -q \
 	'cc -std=gnu11 -Wall -Wextra -Werror -I tests/fixtures/c-fixture/include -I src -I <generated-stubs> tests/c_fixture_helper.c tests/c_fixture_contract.c -o' ||
 	fail 'c-fixture metadata did not resolve to a compile-and-run command'
+compact_guest="$(
+	west test --profile __metadata_contract \
+		--patch test/compact-guest-runtime.patch \
+		--list
+)"
+printf '%s\n' "$compact_guest" | grep -q 'compact_guest_runtime_contract' ||
+	fail 'compact manifest profile did not preserve the test name'
+printf '%s\n' "$compact_guest" | grep -q '<upload> tests/guest_c_fixture_contract.c' ||
+	fail 'compact manifest profile did not resolve to the guest C upload plan'
+printf '%s\n' "$compact_guest" | grep -q 'darling shell /Library/Developer/CommandLineTools/usr/bin/clang' ||
+	fail 'compact manifest profile did not resolve to the guest C compile plan'
+printf '%s\n' "$compact_guest" | grep -q 'darling shell /tmp/compact_guest_runtime_contract' ||
+	fail 'compact manifest profile did not resolve to the guest C run plan'
+compact_red="$(
+	west test --profile __metadata_contract \
+		--patch test/compact-guest-runtime.patch \
+		--prove-red \
+		--list
+)"
+printf '%s\n' "$compact_red" | grep -q 'test/compact-guest-runtime.patch: compact_guest_runtime_contract RED proof \[guest-runtime-deploy\]' ||
+	fail 'compact manifest artifact profile did not expand into a runtime RED plan'
+printf '%s\n' "$compact_red" | grep -q 'darling/src/external/xnu\[build:system_kernel; deploy:usr/lib/system/libsystem_kernel.dylib\]' ||
+	fail 'compact artifact profile did not expand xnu-kernel runtime artifact'
 object_symbol_fixture="$(
 	west test --profile __metadata_contract \
 		--patch test/object-symbol-fixture.patch \
@@ -642,7 +695,7 @@ guest_command_fixture="$(
 printf '%s\n' "$guest_command_fixture" | grep -q \
 	'darling shell /bin/bash --login -c /usr/bin/true' ||
 	fail 'guest-command-fixture metadata did not resolve to a guest shell command'
-printf '%s\n' "$source_only_check" | grep -q 'test metadata: 14 covered (runtime 6, compile 3, host 4, model 1), 2 exceptions, 1 missing' ||
+printf '%s\n' "$source_only_check" | grep -q 'test metadata: 15 covered (runtime 7, compile 3, host 4, model 1), 2 exceptions, 1 missing' ||
 	fail 'coverage-tier summary did not classify runtime/host/compile/model coverage'
 
 invalid_guest_red_check="$(west patch check --profile __metadata_invalid_contract 2>&1)"

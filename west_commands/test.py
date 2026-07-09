@@ -36,7 +36,6 @@ from contextlib import contextmanager
 from pathlib import Path
 from shlex import quote, join as shell_join
 
-import yaml
 from west.commands import WestCommand
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -47,6 +46,7 @@ from prefix_repair import (
     guest_c_fixture_prerequisite_problems,
     prefix_boot_prerequisite_problems,
 )
+from test_manifest import ManifestError, load_test_profile
 
 
 class DarlingTest(WestCommand):
@@ -191,7 +191,10 @@ class DarlingTest(WestCommand):
         path = self._profile_path(profile)
         if not path.is_file():
             self.die(f"patch profile not found: {path}")
-        return yaml.safe_load(path.read_text()) or {}
+        try:
+            return load_test_profile(path)
+        except ManifestError as error:
+            self.die(str(error))
 
     def _profile_modules(self, profile: str) -> set[str]:
         modules = {
