@@ -42,6 +42,7 @@ from west.commands import WestCommand
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from prefix_repair import (
     cleanup_prefix_mounts,
+    darling_init_pid_is_usable,
     eunion_prefix_prerequisite_problems,
     guest_c_fixture_prerequisite_problems,
     prefix_boot_prerequisite_problems,
@@ -2646,7 +2647,11 @@ fi
             artifacts.append(f"{module_text}[build:{target_text}; deploy:{deploy_text}]")
         bad_profile = proof.get("bad-profile")
         suffix = f" [{bad_profile}]" if bad_profile else ""
-        return "guest-runtime-deploy" + suffix + ": " + "; ".join(artifacts)
+        source_modules = proof.get("source-modules")
+        source_text = ""
+        if isinstance(source_modules, list) and source_modules:
+            source_text = " sources:" + ",".join(str(item) for item in source_modules)
+        return "guest-runtime-deploy" + suffix + source_text + ": " + "; ".join(artifacts)
 
     def _red_source_patch_path(self, path: str) -> Path:
         rel = Path(path)
@@ -2742,6 +2747,51 @@ fi
                 check=True,
             )
 
+    def _guest_runtime_source_modules(self, patch, proof) -> set[Path]:
+        modules = {self._project_manifest_path(patch["module"])}
+        source_modules = proof.get("source-modules", [])
+        if not isinstance(source_modules, list):
+            self.die(f"{patch['path']}: red-proof.source-modules must be a list of West project paths")
+        for module in source_modules:
+            if not isinstance(module, str) or not module:
+                self.die(f"{patch['path']}: red-proof.source-modules must be a list of West project paths")
+            modules.add(self._project_manifest_path(module))
+        return modules
+
+    def _profile_module_source_commit(self, profile: str, module: str) -> str | None:
+        result = None
+        for stacked in self._profile_stack(profile):
+            data = self._load_profile(stacked)
+            for patch in data.get("patches", []):
+                if patch.get("module") == module and patch.get("source-commit"):
+                    result = str(patch["source-commit"])
+        return result
+
+    def _guest_runtime_source_revision(
+        self,
+        patch,
+        project_path: Path,
+        patch_module_path: Path,
+        current_minus_patch: bool,
+        bad_revision,
+    ) -> tuple[str, bool]:
+        module = str(project_path)
+        if not current_minus_patch:
+            if project_path == patch_module_path:
+                return str(bad_revision), False
+            return self._manifest_revision(module), False
+
+        if project_path == patch_module_path:
+            return self._manifest_revision(module), False
+
+        source_commit = self._profile_module_source_commit(
+            self._active_runtime_profile(patch),
+            module,
+        )
+        if source_commit is not None:
+            return source_commit, True
+        return self._manifest_revision(module), False
+
     @contextmanager
     def _guest_runtime_source_forest(self, patch, proof):
         """Create a temporary Darling source forest for a bad runtime build.
@@ -2760,6 +2810,7 @@ fi
         if darling_repo is None:
             self.die("guest-runtime-deploy needs a West project at path 'darling'")
         patch_module_path = self._project_manifest_path(patch["module"])
+        materialized_modules = self._guest_runtime_source_modules(patch, proof)
         patch_module_is_darling_root = patch_module_path == Path("darling")
         current_minus_patch = proof.get("bad-profile") == "current-minus-patch"
         bad_revision = None if current_minus_patch else self._bad_revision(patch)
@@ -2821,11 +2872,16 @@ fi
                 target.parent.mkdir(parents=True, exist_ok=True)
                 if target.exists() or target.is_symlink():
                     self._remove_path_for_materialize(target)
-                if project_path == patch_module_path:
-                    revision = (
-                        self._manifest_revision(str(project_path))
-                        if current_minus_patch
-                        else str(bad_revision)
+                if project_path in materialized_modules:
+                    module_text = str(project_path)
+                    revision, uses_profile_source_commit = (
+                        self._guest_runtime_source_revision(
+                            patch,
+                            project_path,
+                            patch_module_path,
+                            current_minus_patch,
+                            bad_revision,
+                        )
                     )
                     subprocess.run(
                         [
@@ -2841,17 +2897,18 @@ fi
                         check=True,
                     )
                     added.append((repo, target))
-                    if current_minus_patch:
-                        self._apply_current_minus_profile(patch, proof, str(project_path), target)
-                    self._apply_red_source_patches(proof, str(project_path), target)
+                    if current_minus_patch and not uses_profile_source_commit:
+                        self._apply_current_minus_profile(patch, proof, module_text, target)
+                    if project_path == patch_module_path:
+                        self._apply_red_source_patches(proof, module_text, target)
                 else:
                     os.symlink(repo, target, target_is_directory=True)
             yielded = True
             yield source_root
         except Exception:
-            keep_on_failure = not yielded
-            if keep_on_failure:
-                self.err(f"preserving failed RED source forest for inspection: {temp}")
+            keep_on_failure = True
+            suffix = " before yield" if not yielded else ""
+            self.err(f"preserving failed RED source forest{suffix} for inspection: {temp}")
             raise
         finally:
             if not keep_on_failure:
@@ -2888,7 +2945,9 @@ fi
             "DARLING_COREDUMP_SANITIZE",
             "DARLING_EUNION",
             "DARLING_GUEST_RECVSPIN",
+            "DARLING_RING_TRANSPORT",
             "DARLING_RPC_SLEEP_ACCOUNT",
+            "DSERVER_RING_TRANSPORT",
             "DARLING_SKIP_DRIFT_GATE",
         ):
             value = self._cmake_cache_value(current_build, key)
@@ -3023,7 +3082,9 @@ fi
         if not prefix_text:
             self.die(f"{patch['path']}: guest-runtime-deploy needs a Darling prefix")
         prefix = Path(prefix_text)
-        with tempfile.TemporaryDirectory(prefix="west-red-proof-runtime-") as temp:
+        temp = tempfile.mkdtemp(prefix="west-red-proof-runtime-")
+        keep_on_failure = False
+        try:
             scratch_root = Path(temp)
             with self._guest_runtime_source_forest(patch, proof) as source_root:
                 build_root = self._runtime_red_build_artifacts(
@@ -3040,7 +3101,16 @@ fi
                         self.err("  RED proof failed: deployed bad runtime unexpectedly passed")
                         return 1
                     self.inf(f"  RED runtime failed as expected (rc={bad_rc})")
+        except Exception:
+            keep_on_failure = True
+            self.err(f"preserving failed RED runtime scratch for inspection: {temp}")
+            raise
+        finally:
+            if not keep_on_failure:
+                shutil.rmtree(temp, ignore_errors=True)
         self.inf("  GREEN current runtime")
+        if not self._shutdown_runtime_prefix(prefix):
+            self.die(f"guest-runtime-deploy could not clean Darling prefix before GREEN runtime: {prefix}")
         green_env = self._execution_env(invocation)
         with self._resource_context(invocation, green_env):
             return self._run_invocation(invocation, env=green_env)
@@ -3222,9 +3292,7 @@ fi
         if not text.isdigit():
             return
         pid = int(text)
-        try:
-            os.kill(pid, 0)
-        except ProcessLookupError:
+        if not darling_init_pid_is_usable(pid):
             init_pid.unlink(missing_ok=True)
 
     def _ps_entries(self) -> list[tuple[int, int, str]]:
