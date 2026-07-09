@@ -441,6 +441,17 @@ class DarlingPatch(WestCommand):
                 errors.append(f"tests[{index}] args must be a list")
             if test.get("env-vars") is not None and not isinstance(test.get("env-vars"), dict):
                 errors.append(f"tests[{index}] env-vars must be a mapping")
+            if test.get("guest-env-vars") is not None:
+                guest_env_vars = test.get("guest-env-vars")
+                if runner != "guest-c-fixture":
+                    errors.append(f"tests[{index}] guest-env-vars requires runner: guest-c-fixture")
+                elif not isinstance(guest_env_vars, dict) or not all(
+                    isinstance(k, str)
+                    and re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", k)
+                    and isinstance(v, (str, int, float, bool))
+                    for k, v in guest_env_vars.items()
+                ):
+                    errors.append(f"tests[{index}] guest-env-vars must be a mapping of shell variable names to scalar values")
             if test.get("timeout-seconds") is not None:
                 timeout = test.get("timeout-seconds")
                 if not isinstance(timeout, int) or timeout <= 0:
@@ -507,6 +518,7 @@ class DarlingPatch(WestCommand):
                     for temp_index, temp_file in enumerate(temps):
                         env_name = temp_file.get("env")
                         rel_path = temp_file.get("prefix-relative-path")
+                        contents = temp_file.get("contents", "")
                         if not isinstance(env_name, str) or not re.match(r"^[A-Za-z_][A-Za-z0-9_]*$", env_name):
                             errors.append(
                                 f"tests[{index}].host-temp-files[{temp_index}] env must be a shell variable name"
@@ -518,6 +530,10 @@ class DarlingPatch(WestCommand):
                         elif rel_path.startswith("/") or ".." in Path(rel_path).parts:
                             errors.append(
                                 f"tests[{index}].host-temp-files[{temp_index}] path must be prefix-relative"
+                            )
+                        if contents is not None and not isinstance(contents, str):
+                            errors.append(
+                                f"tests[{index}].host-temp-files[{temp_index}] contents must be a string"
                             )
             if test.get("requires-profile") is not None and not isinstance(
                 test.get("requires-profile"), str
