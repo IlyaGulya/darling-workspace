@@ -1,0 +1,24 @@
+diff --git a/src/call.cpp b/src/call.cpp
+index 7ad16e8..b7e3bd2 100644
+--- a/src/call.cpp
++++ b/src/call.cpp
+@@ -26,6 +26,7 @@
+ #include <darlingserver/logging.hpp>
+ #include <darlingserver/duct-tape.h>
+ #include <darlingserver/config.hpp>
++#include <darlingserver/test-diagnostics.hpp>
+ #include <sys/fcntl.h>
+ #include <sys/syscall.h>
+ #include <darlingserver/kqchan.hpp>
+@@ -517,6 +518,11 @@ void DarlingServer::Call::Uidgid::processCall() {
+ 	int uid = -1;
+ 	int gid = -1;
+ 
++	if (TestDiagnostics::consumeFault("processcall.uidgid_throw")) {
++		TestDiagnostics::traceLine("call.processcall_throw name=uidgid");
++		throw std::runtime_error("injected uidgid processCall failure");
++	}
++
+ 	if (auto thread = _thread.lock()) {
+ 		if (auto process = thread->process()) {
+ 			// HACK

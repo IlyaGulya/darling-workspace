@@ -1,0 +1,161 @@
+diff --git a/tools/dserverdbg.c b/tools/dserverdbg.c
+index 09f7b6a..54dfb28 100644
+--- a/tools/dserverdbg.c
++++ b/tools/dserverdbg.c
+@@ -49,6 +49,7 @@ typedef enum dserverdbg_command {
+ 	dserverdbg_command_lspset,
+ 	dserverdbg_command_lsmsg,
+ 	dserverdbg_command_uidgid_fault,
++	dserverdbg_command_ingest_missing_process,
+ } dserverdbg_command_t;
+ 
+ struct sockaddr_un __dserver_socket_address_data = {0};
+@@ -238,6 +239,71 @@ static int run_uidgid_fault_oracle(void) {
+ 	return 1;
+ }
+ 
++static int write_ingest_missing_process_fault(void) {
++	const char* path = getenv("DSERVER_TEST_FAULT_FILE");
++	if (!path || path[0] == '\0') {
++		fprintf(stderr, "DSERVERDBG_INGEST_FAULT_FILE=missing\n");
++		return 1;
++	}
++
++	FILE* file = fopen(path, "w");
++	if (!file) {
++		int status = errno;
++		fprintf(stderr, "DSERVERDBG_INGEST_FAULT_WRITE_RC=%d (%s)\n", status, strerror(status));
++		return status;
++	}
++
++	if (fputs("ingest.force_missing_process\n", file) < 0) {
++		int status = errno;
++		fclose(file);
++		fprintf(stderr, "DSERVERDBG_INGEST_FAULT_WRITE_RC=%d (%s)\n", status, strerror(status));
++		return status;
++	}
++	if (fclose(file) != 0) {
++		int status = errno;
++		fprintf(stderr, "DSERVERDBG_INGEST_FAULT_CLOSE_RC=%d (%s)\n", status, strerror(status));
++		return status;
++	}
++
++	printf("DSERVERDBG_INGEST_FAULT_WRITTEN=1\n");
++	return 0;
++}
++
++static int run_ingest_missing_process_oracle(void) {
++	int old_uid = -1;
++	int old_gid = -1;
++	int status = 0;
++
++	status = set_receive_timeout(__dserver_main_thread_socket_fd, 3);
++	if (status != 0) {
++		fprintf(stderr, "DSERVERDBG_RECV_TIMEOUT_SETUP_RC=%d (%s)\n", status, strerror(status));
++		return 1;
++	}
++
++	status = dserver_rpc_checkin(false, NULL, -1);
++	printf("DSERVERDBG_CHECKIN_RC=%d\n", status);
++	if (status != 0) {
++		return 1;
++	}
++
++	status = write_ingest_missing_process_fault();
++	if (status != 0) {
++		return 1;
++	}
++
++	status = dserver_rpc_uidgid(-1, -1, &old_uid, &old_gid);
++	printf("DSERVERDBG_INGEST_UIDGID_RC=%d\n", status);
++	printf("DSERVERDBG_INGEST_OLD_UID=%d\n", old_uid);
++	printf("DSERVERDBG_INGEST_OLD_GID=%d\n", old_gid);
++
++	if (status == -ESRCH) {
++		printf("DSERVERDBG_INGEST_MISSING_PROCESS_OK\n");
++		return 0;
++	}
++
++	return 1;
++}
++
+ // borrowed from `src/startup/darling.c`
+ static void missingSetuidRoot(void)
+ {
+@@ -283,6 +349,35 @@ out:
+ 	return status;
+ }
+ 
++static int run_direct_ingest_missing_process_command(uid_t original_uid) {
++	char* prefix_path = get_prefix_path(original_uid);
++	int status = 1;
++
++	if (!prefix_path) {
++		fprintf(stderr, "Failed to determine prefix path\n");
++		return 1;
++	}
++
++	__dserver_socket_address_data.sun_family = AF_UNIX;
++	snprintf(__dserver_socket_address_data.sun_path, sizeof(__dserver_socket_address_data.sun_path), "%s/.darlingserver.sock", prefix_path);
++
++	__dserver_main_thread_socket_fd = setup_socket();
++	if (__dserver_main_thread_socket_fd < 0) {
++		fprintf(stderr, "Failed to set up darlingserver client socket\n");
++		goto out;
++	}
++
++	status = run_ingest_missing_process_oracle();
++
++out:
++	if (__dserver_main_thread_socket_fd >= 0) {
++		close(__dserver_main_thread_socket_fd);
++		__dserver_main_thread_socket_fd = -1;
++	}
++	free(prefix_path);
++	return status;
++}
++
+ int main(int argc, char** argv) {
+ 	char* prefix_path = NULL;
+ 	dserverdbg_command_t command = dserverdbg_command_ps;
+@@ -306,6 +401,13 @@ int main(int argc, char** argv) {
+ 		}
+ 		return run_direct_uidgid_fault_command(getuid());
+ 	}
++	if (argc > 1 && strcmp(argv[1], "ingest-missing-process") == 0) {
++		if (argc > 2) {
++			fprintf(stderr, "Expected 1 argument (subcommand); got %d arguments\n", argc);
++			return 1;
++		}
++		return run_direct_ingest_missing_process_command(getuid());
++	}
+ 
+ 	if (geteuid() != 0) {
+ 		missingSetuidRoot();
+@@ -350,6 +452,8 @@ int main(int argc, char** argv) {
+ 			command = dserverdbg_command_lsmsg;
+ 		} else if (strcmp(argv[1], "uidgid-fault") == 0) {
+ 			command = dserverdbg_command_uidgid_fault;
++		} else if (strcmp(argv[1], "ingest-missing-process") == 0) {
++			command = dserverdbg_command_ingest_missing_process;
+ 		} else {
+ 			fprintf(stderr, "Unknown subcommand: %s\n", argv[1]);
+ 			return 1;
+@@ -371,6 +475,7 @@ int main(int argc, char** argv) {
+ 			command_pid = atoi(argv[2]);
+ 			break;
+ 		case dserverdbg_command_uidgid_fault:
++		case dserverdbg_command_ingest_missing_process:
+ 			if (argc > 2) {
+ 				fprintf(stderr, "Expected 1 argument (subcommand); got %d arguments\n", argc);
+ 				return 1;
+@@ -407,6 +512,9 @@ int main(int argc, char** argv) {
+ 		case dserverdbg_command_uidgid_fault:
+ 			status = run_uidgid_fault_oracle();
+ 			goto out;
++		case dserverdbg_command_ingest_missing_process:
++			status = run_ingest_missing_process_oracle();
++			goto out;
+ 	}
+ 
+ 	if (status != 0) {
