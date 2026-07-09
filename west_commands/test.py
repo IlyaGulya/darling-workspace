@@ -1327,6 +1327,33 @@ class DarlingTest(WestCommand):
         args.extend(self._wrapped_args(invocation))
         return args
 
+    def _debug_bundle_root(self) -> Path:
+        return Path(os.path.expanduser(str(getattr(self, "_bundle_root", "~/work/darling-debug"))))
+
+    def _latest_debug_bundle(self, invocation, *, since: float) -> Path | None:
+        root = self._debug_bundle_root()
+        if not root.is_dir():
+            return None
+        suffix = f"west-test-{invocation['name']}"
+        candidates = [
+            path
+            for path in root.iterdir()
+            if path.is_dir()
+            and path.name.endswith(suffix)
+            and path.stat().st_mtime >= since - 1
+        ]
+        if not candidates:
+            return None
+        return max(candidates, key=lambda path: path.stat().st_mtime)
+
+    def _debug_bundle_output(self, bundle: Path) -> str:
+        parts = []
+        for name in ("stdout.log", "stderr.log", "exit-status.txt"):
+            path = bundle / name
+            if path.is_file():
+                parts.append(path.read_text(errors="replace"))
+        return "".join(parts)
+
     def _display_invocation(self, invocation) -> str:
         if invocation.get("darling_cmake_target_fixture"):
             return invocation["display"]
@@ -3483,6 +3510,41 @@ fi
             if not keep_on_failure:
                 shutil.rmtree(temp, ignore_errors=True)
 
+    def _check_guest_runtime_red_failure(self, proof, invocation, *, since: float) -> bool:
+        contains = proof.get("expect-output-contains", [])
+        lacks = proof.get("expect-output-lacks", [])
+        if isinstance(contains, str):
+            contains = [contains]
+        if isinstance(lacks, str):
+            lacks = [lacks]
+        if not contains and not lacks:
+            return True
+
+        bundle = self._latest_debug_bundle(invocation, since=since)
+        if bundle is None:
+            self.err(
+                f"{invocation['name']}: RED failure output requested, "
+                f"but no recent debug bundle was found under {self._debug_bundle_root()}"
+            )
+            return False
+
+        output = self._debug_bundle_output(bundle)
+        for needle in contains:
+            if str(needle) not in output:
+                self.err(
+                    f"{invocation['name']}: RED failure output missing {needle!r} "
+                    f"in {bundle}"
+                )
+                return False
+        for needle in lacks:
+            if str(needle) in output:
+                self.err(
+                    f"{invocation['name']}: RED failure output unexpectedly contains "
+                    f"{needle!r} in {bundle}"
+                )
+                return False
+        return True
+
     def _run_guest_runtime_deploy_proof(self, patch, proof, invocation) -> int:
         if (
             not invocation.get("guest_c_fixture")
@@ -3525,9 +3587,16 @@ fi
                     bad_env["WEST_RUNTIME_SOURCE_ROOT"] = str(source_root)
                     runtime_invocation = self._invocation_from_runtime_source(invocation, source_root)
                     with self._resource_context(runtime_invocation, bad_env):
+                        red_started_at = time.time()
                         bad_rc = self._run_invocation(runtime_invocation, env=bad_env)
                     if bad_rc == 0:
                         self.err("  RED proof failed: deployed bad runtime unexpectedly passed")
+                        return 1
+                    if not self._check_guest_runtime_red_failure(
+                        proof,
+                        runtime_invocation,
+                        since=red_started_at,
+                    ):
                         return 1
                     self.inf(f"  RED runtime failed as expected (rc={bad_rc})")
         except Exception:

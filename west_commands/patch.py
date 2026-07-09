@@ -725,6 +725,17 @@ class DarlingPatch(WestCommand):
                         f"tests[{index}] red-proof self needs why-self"
                     )
                 elif proof.get("mode") == "guest-runtime-deploy":
+                    for key in ("expect-output-contains", "expect-output-lacks"):
+                        expected_output = proof.get(key)
+                        if expected_output is not None:
+                            if isinstance(expected_output, str):
+                                pass
+                            elif not isinstance(expected_output, list) or not all(
+                                isinstance(item, str) and item for item in expected_output
+                            ):
+                                errors.append(
+                                    f"tests[{index}] red-proof {key} must be a string or list of strings"
+                                )
                     if runner not in {"guest-c-fixture", "guest-command-fixture", "script"}:
                         errors.append(
                             f"tests[{index}] red-proof guest-runtime-deploy requires runner: guest-c-fixture, guest-command-fixture, or script"

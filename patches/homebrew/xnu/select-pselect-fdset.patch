@@ -1,4 +1,4 @@
-From c7d851d90e13eb49ce484fd94679462a5345548c Mon Sep 17 00:00:00 2001
+From 014ae062d051cfdd48a0095f3cc05b19900a20ca Mon Sep 17 00:00:00 2001
 From: Ilya Gulya <ilya@gulya.me>
 Date: Wed, 8 Jul 2026 11:47:25 +0000
 Subject: [PATCH] select/pselect: convert fd_set between BSD and Linux word
@@ -8,29 +8,67 @@ BSD fd_set uses 32-bit words while Linux uses native unsigned long words. Conver
 
 Add a host C fixture that exercises high-fd round trips through the shared helper. west test runs it as a c-fixture and proves RED against the source-base tree.
 ---
- .../src/xnu_syscall/bsd/impl/select/fdset.h   | 64 +++++++++++++++++++
- .../src/xnu_syscall/bsd/impl/select/pselect.c | 17 ++++-
- .../src/xnu_syscall/bsd/impl/select/select.c  | 19 +++++-
- tests/select_fdset_contract.c                 | 53 +++++++++++++++
- 4 files changed, 150 insertions(+), 3 deletions(-)
+ .../xnu_syscall/bsd/impl/select/pselect.h     |   7 +-
+ .../src/xnu_syscall/bsd/impl/select/fdset.h   |  98 +++++++++++++++++
+ .../src/xnu_syscall/bsd/impl/select/pselect.c |  42 +++++--
+ .../src/xnu_syscall/bsd/impl/select/select.c  |  41 ++++++-
+ tests/select_fdset_contract.c                 | 104 ++++++++++++++++++
+ 5 files changed, 275 insertions(+), 17 deletions(-)
  create mode 100644 darling/src/libsystem_kernel/emulation/src/xnu_syscall/bsd/impl/select/fdset.h
  create mode 100644 tests/select_fdset_contract.c
 
+diff --git a/darling/src/libsystem_kernel/emulation/include/xnu_syscall/bsd/impl/select/pselect.h b/darling/src/libsystem_kernel/emulation/include/xnu_syscall/bsd/impl/select/pselect.h
+index d84932d8ab2ef4a724ef0ef0bbda4cf09bc55958..1c175635c826d13dba20e236441fccb344c61e42 100644
+--- a/darling/src/libsystem_kernel/emulation/include/xnu_syscall/bsd/impl/select/pselect.h
++++ b/darling/src/libsystem_kernel/emulation/include/xnu_syscall/bsd/impl/select/pselect.h
+@@ -1,10 +1,11 @@
+ #ifndef LINUX_PSELECT_H
+ #define LINUX_PSELECT_H
+ 
+-#include <darling/emulation/xnu_syscall/bsd/impl/time/gettimeofday.h>
++#include <time.h>
++
+ #include <darling/emulation/conversion/signal/duct_signals.h>
+ 
+-long sys_pselect(int nfds, void* rfds, void* wfds, void* efds, struct bsd_timeval* timeout, const sigset_t* mask);
+-long sys_pselect_nocancel(int nfds, void* rfds, void* wfds, void* efds, struct bsd_timeval* timeout, const sigset_t* mask);
++long sys_pselect(int nfds, void* rfds, void* wfds, void* efds, const struct timespec* timeout, const sigset_t* mask);
++long sys_pselect_nocancel(int nfds, void* rfds, void* wfds, void* efds, const struct timespec* timeout, const sigset_t* mask);
+ 
+ #endif // LINUX_PSELECT_H
 diff --git a/darling/src/libsystem_kernel/emulation/src/xnu_syscall/bsd/impl/select/fdset.h b/darling/src/libsystem_kernel/emulation/src/xnu_syscall/bsd/impl/select/fdset.h
 new file mode 100644
-index 0000000000000000000000000000000000000000..170e7d18f02ef0fb8c2534097bd17a4d78fa7d3e
+index 0000000000000000000000000000000000000000..2f18c27278dfd72ae62ec20900a7d76ae38afb9f
 --- /dev/null
 +++ b/darling/src/libsystem_kernel/emulation/src/xnu_syscall/bsd/impl/select/fdset.h
-@@ -0,0 +1,64 @@
+@@ -0,0 +1,98 @@
 +#ifndef LINUX_BSD_IMPL_SELECT_FDSET_H
 +#define LINUX_BSD_IMPL_SELECT_FDSET_H
 +
++#include <errno.h>
 +#include <stddef.h>
 +#include <stdint.h>
 +#include <string.h>
 +
 +#define BSD_FDSET_BITS_PER_WORD 32
 +#define LINUX_FDSET_BITS_PER_WORD (sizeof(unsigned long) * 8)
++#define DARWIN_FD_SETSIZE 1024
++
++#define DARWIN_FDSET_LINUX_WORDS \
++	((DARWIN_FD_SETSIZE + LINUX_FDSET_BITS_PER_WORD - 1) / LINUX_FDSET_BITS_PER_WORD)
++
++typedef struct {
++	void* bsd_set;
++	unsigned long linux_set[DARWIN_FDSET_LINUX_WORDS];
++} darwin_fdset_adapter_t;
++
++static inline int darwin_fdset_validate_nfds(int nfds)
++{
++	if (nfds < 0 || nfds > DARWIN_FD_SETSIZE)
++		return -EINVAL;
++
++	return 0;
++}
 +
 +static inline size_t bsd_fdset_words(int nfds) {
 +	return (nfds <= 0) ? 0 : (((size_t)nfds + BSD_FDSET_BITS_PER_WORD - 1) / BSD_FDSET_BITS_PER_WORD);
@@ -54,6 +92,11 @@ index 0000000000000000000000000000000000000000..170e7d18f02ef0fb8c2534097bd17a4d
 +
 +static inline void linux_fdset_set(unsigned long* set, int fd) {
 +	set[fd / LINUX_FDSET_BITS_PER_WORD] |= 1UL << (fd % LINUX_FDSET_BITS_PER_WORD);
++}
++
++static inline unsigned long* darwin_fdset_linux_ptr(darwin_fdset_adapter_t* adapter)
++{
++	return adapter->bsd_set ? adapter->linux_set : NULL;
 +}
 +
 +static inline void bsd_fdset_to_linux(int nfds, const void* bsd_set, unsigned long* linux_set) {
@@ -85,59 +128,105 @@ index 0000000000000000000000000000000000000000..170e7d18f02ef0fb8c2534097bd17a4d
 +	}
 +}
 +
++static inline void darwin_fdset_prepare(darwin_fdset_adapter_t* adapter, int nfds, void* bsd_set)
++{
++	adapter->bsd_set = bsd_set;
++	bsd_fdset_to_linux(nfds, bsd_set, adapter->linux_set);
++}
++
++static inline void darwin_fdset_copyback(const darwin_fdset_adapter_t* adapter, int nfds)
++{
++	linux_fdset_to_bsd(nfds, adapter->linux_set, adapter->bsd_set);
++}
++
 +#endif
 diff --git a/darling/src/libsystem_kernel/emulation/src/xnu_syscall/bsd/impl/select/pselect.c b/darling/src/libsystem_kernel/emulation/src/xnu_syscall/bsd/impl/select/pselect.c
-index 8bef4e6e606947c9affa27b11a9a6e3f88cc6ef5..da2115e09cfa67aedc71f0a7ccd6217e8324091c 100644
+index 8bef4e6e606947c9affa27b11a9a6e3f88cc6ef5..861a48c5c36f80d3443ca99b8f5b20f2d3cf6b2c 100644
 --- a/darling/src/libsystem_kernel/emulation/src/xnu_syscall/bsd/impl/select/pselect.c
 +++ b/darling/src/libsystem_kernel/emulation/src/xnu_syscall/bsd/impl/select/pselect.c
-@@ -7,6 +7,8 @@
+@@ -7,39 +7,59 @@
  #include <darling/emulation/linux_premigration/linux-syscalls/linux.h>
  #include <darling/emulation/xnu_syscall/bsd/helper/bsdthread/cancelable.h>
  
+-long sys_pselect(int nfds, void* rfds, void* wfds, void* efds, struct bsd_timeval* timeout, const sigset_t* mask)
 +#include "fdset.h"
 +
- long sys_pselect(int nfds, void* rfds, void* wfds, void* efds, struct bsd_timeval* timeout, const sigset_t* mask)
++long sys_pselect(int nfds, void* rfds, void* wfds, void* efds, const struct timespec* timeout, const sigset_t* mask)
  {
  	CANCELATION_POINT();
-@@ -18,6 +20,10 @@ long sys_pselect_nocancel(int nfds, void* rfds, void* wfds, void* efds, struct b
+ 	return sys_pselect_nocancel(nfds, rfds, wfds, efds, timeout, mask);
+ }
+ 
+-long sys_pselect_nocancel(int nfds, void* rfds, void* wfds, void* efds, struct bsd_timeval* timeout, const sigset_t* mask)
++long sys_pselect_nocancel(int nfds, void* rfds, void* wfds, void* efds, const struct timespec* timeout, const sigset_t* mask)
+ {
  	int ret;
- 	struct linux_timeval ltv;
+-	struct linux_timeval ltv;
++	struct timespec lts;
++	linux_sigset_t lmask;
  	long data[2];
-+	size_t words = linux_fdset_words(nfds);
-+	unsigned long* linux_rfds = (rfds != NULL) ? __builtin_alloca(words * sizeof(*linux_rfds)) : NULL;
-+	unsigned long* linux_wfds = (wfds != NULL) ? __builtin_alloca(words * sizeof(*linux_wfds)) : NULL;
-+	unsigned long* linux_efds = (efds != NULL) ? __builtin_alloca(words * sizeof(*linux_efds)) : NULL;
++	darwin_fdset_adapter_t readfds;
++	darwin_fdset_adapter_t writefds;
++	darwin_fdset_adapter_t exceptfds;
++
++	ret = darwin_fdset_validate_nfds(nfds);
++	if (ret < 0)
++		return ret;
  
  	if (timeout != NULL)
  	{
-@@ -34,12 +40,21 @@ long sys_pselect_nocancel(int nfds, void* rfds, void* wfds, void* efds, struct b
- 		data[1] = 65/8; // _NSIG / 8
+-		ltv.tv_sec = timeout->tv_sec;
+-		ltv.tv_usec = timeout->tv_usec;
++		lts.tv_sec = timeout->tv_sec;
++		lts.tv_nsec = timeout->tv_nsec;
+ 	}
+ 	if (mask != NULL)
+ 	{
+-		linux_sigset_t lmask;
+-
+ 		sigset_bsd_to_linux(mask, &lmask);
+ 
+-		data[0] = (long)lmask;
+-		data[1] = 65/8; // _NSIG / 8
++		data[0] = (long)&lmask;
++		data[1] = sizeof(lmask);
  	}
  
 -	ret = LINUX_SYSCALL(__NR_pselect6, nfds, rfds, wfds, efds,
-+	bsd_fdset_to_linux(nfds, rfds, linux_rfds);
-+	bsd_fdset_to_linux(nfds, wfds, linux_wfds);
-+	bsd_fdset_to_linux(nfds, efds, linux_efds);
+-			(timeout != NULL) ? &ltv : NULL,
++	darwin_fdset_prepare(&readfds, nfds, rfds);
++	darwin_fdset_prepare(&writefds, nfds, wfds);
++	darwin_fdset_prepare(&exceptfds, nfds, efds);
 +
-+	ret = LINUX_SYSCALL(__NR_pselect6, nfds, linux_rfds, linux_wfds, linux_efds,
- 			(timeout != NULL) ? &ltv : NULL,
++	ret = LINUX_SYSCALL(__NR_pselect6, nfds,
++			darwin_fdset_linux_ptr(&readfds),
++			darwin_fdset_linux_ptr(&writefds),
++			darwin_fdset_linux_ptr(&exceptfds),
++			(timeout != NULL) ? &lts : NULL,
  			(mask != NULL) ? data : NULL);
  
  	if (ret < 0)
  		ret = errno_linux_to_bsd(ret);
 +	else {
-+		linux_fdset_to_bsd(nfds, linux_rfds, rfds);
-+		linux_fdset_to_bsd(nfds, linux_wfds, wfds);
-+		linux_fdset_to_bsd(nfds, linux_efds, efds);
++		darwin_fdset_copyback(&readfds, nfds);
++		darwin_fdset_copyback(&writefds, nfds);
++		darwin_fdset_copyback(&exceptfds, nfds);
 +	}
  
  	return ret;
  }
 diff --git a/darling/src/libsystem_kernel/emulation/src/xnu_syscall/bsd/impl/select/select.c b/darling/src/libsystem_kernel/emulation/src/xnu_syscall/bsd/impl/select/select.c
-index c3c33f9485d76479422d4ed947543443bce9351d..2e13fe59d7f000d57954c2c654096c2d8d42894f 100644
+index c3c33f9485d76479422d4ed947543443bce9351d..078a24bd9ffa0548f0ddd4cd7e8b50196ecb624c 100644
 --- a/darling/src/libsystem_kernel/emulation/src/xnu_syscall/bsd/impl/select/select.c
 +++ b/darling/src/libsystem_kernel/emulation/src/xnu_syscall/bsd/impl/select/select.c
-@@ -7,6 +7,8 @@
+@@ -1,12 +1,15 @@
+ #include <darling/emulation/xnu_syscall/bsd/impl/select/select.h>
+ 
+ #include <stddef.h>
++#include <time.h>
+ 
+ #include <darling/emulation/common/base.h>
+ #include <darling/emulation/conversion/errno.h>
  #include <darling/emulation/linux_premigration/linux-syscalls/linux.h>
  #include <darling/emulation/xnu_syscall/bsd/helper/bsdthread/cancelable.h>
  
@@ -146,50 +235,73 @@ index c3c33f9485d76479422d4ed947543443bce9351d..2e13fe59d7f000d57954c2c654096c2d
  long sys_select(int nfds, void* rfds, void* wfds, void* efds, struct bsd_timeval* timeout)
  {
  	CANCELATION_POINT();
-@@ -18,6 +20,10 @@ long sys_select_nocancel(int nfds, void* rfds, void* wfds, void* efds, struct bs
+@@ -18,6 +21,13 @@ long sys_select_nocancel(int nfds, void* rfds, void* wfds, void* efds, struct bs
  	#if defined(__NR__newselect) || defined(__NR_select)
  		int ret;
  		struct linux_timeval ltv;
-+		size_t words = linux_fdset_words(nfds);
-+		unsigned long* linux_rfds = (rfds != NULL) ? __builtin_alloca(words * sizeof(*linux_rfds)) : NULL;
-+		unsigned long* linux_wfds = (wfds != NULL) ? __builtin_alloca(words * sizeof(*linux_wfds)) : NULL;
-+		unsigned long* linux_efds = (efds != NULL) ? __builtin_alloca(words * sizeof(*linux_efds)) : NULL;
++		darwin_fdset_adapter_t readfds;
++		darwin_fdset_adapter_t writefds;
++		darwin_fdset_adapter_t exceptfds;
++
++		ret = darwin_fdset_validate_nfds(nfds);
++		if (ret < 0)
++			return ret;
  
  		if (timeout != NULL)
  		{
-@@ -25,15 +31,24 @@ long sys_select_nocancel(int nfds, void* rfds, void* wfds, void* efds, struct bs
+@@ -25,18 +35,43 @@ long sys_select_nocancel(int nfds, void* rfds, void* wfds, void* efds, struct bs
  			ltv.tv_usec = timeout->tv_usec;
  		}
  
-+		bsd_fdset_to_linux(nfds, rfds, linux_rfds);
-+		bsd_fdset_to_linux(nfds, wfds, linux_wfds);
-+		bsd_fdset_to_linux(nfds, efds, linux_efds);
++		darwin_fdset_prepare(&readfds, nfds, rfds);
++		darwin_fdset_prepare(&writefds, nfds, wfds);
++		darwin_fdset_prepare(&exceptfds, nfds, efds);
 +
  		#if defined(__NR__newselect)
 -			ret = LINUX_SYSCALL(__NR__newselect, nfds, rfds, wfds, efds,
-+			ret = LINUX_SYSCALL(__NR__newselect, nfds, linux_rfds, linux_wfds, linux_efds,
++			ret = LINUX_SYSCALL(__NR__newselect, nfds,
++					darwin_fdset_linux_ptr(&readfds),
++					darwin_fdset_linux_ptr(&writefds),
++					darwin_fdset_linux_ptr(&exceptfds),
  					(timeout != NULL) ? &ltv : NULL);
  		#else
 -			ret = LINUX_SYSCALL(__NR_select, nfds, rfds, wfds, efds,
-+			ret = LINUX_SYSCALL(__NR_select, nfds, linux_rfds, linux_wfds, linux_efds,
++			ret = LINUX_SYSCALL(__NR_select, nfds,
++					darwin_fdset_linux_ptr(&readfds),
++					darwin_fdset_linux_ptr(&writefds),
++					darwin_fdset_linux_ptr(&exceptfds),
  					(timeout != NULL) ? &ltv : NULL);
  		#endif
  		if (ret < 0)
  			ret = errno_linux_to_bsd(ret);
 +		else {
-+			linux_fdset_to_bsd(nfds, linux_rfds, rfds);
-+			linux_fdset_to_bsd(nfds, linux_wfds, wfds);
-+			linux_fdset_to_bsd(nfds, linux_efds, efds);
++			darwin_fdset_copyback(&readfds, nfds);
++			darwin_fdset_copyback(&writefds, nfds);
++			darwin_fdset_copyback(&exceptfds, nfds);
 +		}
  
  		return ret;
  	#else
+-		return sys_pselect_nocancel(nfds, rfds, wfds, efds, timeout, NULL);
++		if (timeout != NULL)
++		{
++			struct timespec ts = {
++				.tv_sec = timeout->tv_sec,
++				.tv_nsec = timeout->tv_usec * 1000,
++			};
++
++			return sys_pselect_nocancel(nfds, rfds, wfds, efds, &ts, NULL);
++		}
++
++		return sys_pselect_nocancel(nfds, rfds, wfds, efds, NULL, NULL);
+ 	#endif
+ }
 diff --git a/tests/select_fdset_contract.c b/tests/select_fdset_contract.c
 new file mode 100644
-index 0000000000000000000000000000000000000000..d4bb2a162a1193cf5c0a431315559fed449ad452
+index 0000000000000000000000000000000000000000..d9d0a69678ffa0e094b158b28ad908cbda72dae5
 --- /dev/null
 +++ b/tests/select_fdset_contract.c
-@@ -0,0 +1,53 @@
+@@ -0,0 +1,104 @@
 +#include <stdint.h>
 +#include <stdio.h>
 +#include <string.h>
@@ -206,12 +318,49 @@ index 0000000000000000000000000000000000000000..d4bb2a162a1193cf5c0a431315559fed
 +	return 0;
 +}
 +
++static int
++check_validation(void)
++{
++	if (expect(darwin_fdset_validate_nfds(-1) == -EINVAL,
++				"negative nfds must fail"))
++		return 1;
++	if (expect(darwin_fdset_validate_nfds(0) == 0,
++				"zero nfds must pass"))
++		return 1;
++	if (expect(darwin_fdset_validate_nfds(DARWIN_FD_SETSIZE) == 0,
++				"FD_SETSIZE nfds must pass"))
++		return 1;
++	if (expect(darwin_fdset_validate_nfds(DARWIN_FD_SETSIZE + 1) == -EINVAL,
++				"oversized nfds must fail"))
++		return 1;
++	return 0;
++}
++
++static int
++check_null_set(void)
++{
++	darwin_fdset_adapter_t adapter;
++
++	memset(&adapter, 0xa5, sizeof(adapter));
++	darwin_fdset_prepare(&adapter, 64, NULL);
++	if (expect(darwin_fdset_linux_ptr(&adapter) == NULL,
++				"NULL BSD set must stay NULL for Linux"))
++		return 1;
++	darwin_fdset_copyback(&adapter, 64);
++	return 0;
++}
++
 +int main(void)
 +{
 +	enum { NFDS = 96 };
 +	uint32_t bsd[bsd_fdset_words(NFDS)];
 +	unsigned long linux_words[linux_fdset_words(NFDS)];
 +	uint32_t roundtrip[bsd_fdset_words(NFDS)];
++	darwin_fdset_adapter_t adapter;
++
++	if (check_validation()) return 1;
++	if (check_null_set()) return 1;
++
 +	memset(bsd, 0, sizeof(bsd));
 +	memset(linux_words, 0xa5, sizeof(linux_words));
 +	memset(roundtrip, 0xa5, sizeof(roundtrip));
@@ -240,6 +389,20 @@ index 0000000000000000000000000000000000000000..d4bb2a162a1193cf5c0a431315559fed
 +			return 1;
 +		}
 +	}
++
++	memset(roundtrip, 0xa5, sizeof(roundtrip));
++	darwin_fdset_prepare(&adapter, NFDS, bsd);
++	if (expect(darwin_fdset_linux_ptr(&adapter) == adapter.linux_set,
++				"non-NULL BSD set must produce Linux set"))
++		return 1;
++	memset(bsd, 0, sizeof(bsd));
++	memset(adapter.linux_set, 0, sizeof(adapter.linux_set));
++	linux_fdset_set(adapter.linux_set, 64);
++	darwin_fdset_copyback(&adapter, NFDS);
++	if (expect(bsd_fdset_isset(bsd, 64), "adapter copyback lost fd 64"))
++		return 1;
++	if (expect(!bsd_fdset_isset(bsd, 63), "adapter copyback kept stale fd 63"))
++		return 1;
 +
 +	return 0;
 +}
