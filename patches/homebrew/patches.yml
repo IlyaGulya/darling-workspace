@@ -688,6 +688,7 @@ patches:
     - tests/fixtures/fork-postfork/include
     include-dirs:
     - darling/src/libsystem_kernel/emulation/include
+    - darling/src/libsystem_kernel/emulation/include/darling/emulation
     compile-flags:
     - -std=gnu11
     - -Wall
@@ -1712,6 +1713,7 @@ patches:
     script: tests/getattrlist_pack_contract.c
     include-dirs:
     - darling/src/libsystem_kernel/emulation/include
+    - darling/src/libsystem_kernel/emulation/include/darling/emulation
     generated-headers:
       darling/emulation/conversion/xattr/getattrlist.h: |
         #pragma once
