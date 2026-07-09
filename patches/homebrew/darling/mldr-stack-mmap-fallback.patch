@@ -1,4 +1,4 @@
-From e1420127bc3c682578a2086c9f360f1b1bbb76d8 Mon Sep 17 00:00:00 2001
+From ce528917f6d11978b4920b7e5cdac5637b50e3f0 Mon Sep 17 00:00:00 2001
 From: Ilya Gulya <ilya@gulya.me>
 Date: Sat, 27 Jun 2026 13:06:28 +0000
 Subject: [PATCH] mldr: fall back to a kernel-chosen main-stack address on
@@ -90,7 +90,7 @@ index 4fa57cb772dd7185e058cb2c7aa5c22967a99c02..2373ebc699291ab9e00724982403027a
  
  	lr->kernfd = __mldr_create_rpc_socket();
 
-From f51f5a405f6a294cb13c505b6d14e5deb9feda51 Mon Sep 17 00:00:00 2001
+From 1618c856360ccf298629b8d602901a8e32308368 Mon Sep 17 00:00:00 2001
 From: Ilya Gulya <ilya.gulya@indriver.com>
 Date: Wed, 8 Jul 2026 14:21:07 +0000
 Subject: [PATCH] mldr: isolate guest stack mapping fallback

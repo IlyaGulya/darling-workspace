@@ -2244,10 +2244,10 @@ patches:
       base: main
       state: local
 - path: darling/mldr-glibc-fork-reset.patch
-  sha256sum: 2f3b297c30d64379057bb73aaa9f95ac5af79bec1ed6cb97187b741789b5e05e
+  sha256sum: 3e4648ae3113cbfe030a3b92df5e5f17e4a07457a0da7569016ac6361b829109
   module: darling
   source-branch: fix/mldr-glibc-fork-reset
-  source-commit: d90fe8f2a949bcf51f5d4a5aed6ce3fd3a7ef98f
+  source-commit: 159d141cbff62c6ca8b1c2c24a40f44853c5fc5d
   bead: dar-q95.14
   publication-status: blocked
   publication-blocker: private glibc _rtld_global heuristic is version-sensitive; see dar-q95.29.9
@@ -2272,7 +2272,7 @@ patches:
       state: draft
       url: https://github.com/IlyaGulya/darling/pull/1
       number: 1
-      head-commit: d90fe8f2a949bcf51f5d4a5aed6ce3fd3a7ef98f
+      head-commit: 159d141cbff62c6ca8b1c2c24a40f44853c5fc5d
       is-draft: true
       review-decision: ''
       merge-state: CLEAN
@@ -2281,10 +2281,10 @@ patches:
       base: master
       state: local
 - path: darling/sandbox-exec-pass-through.patch
-  sha256sum: 79af1bc5209cfda5d0657a9e0ecdfb6692de299812b5b1d98b0a10892dc13b19
+  sha256sum: 0be41d7971442902a8118085d79e57bbbcb073a13ac4808ad97e28e54400cecb
   module: darling
   source-branch: fix/sandbox-exec-pass-through
-  source-commit: c905b818c0f58554a15812bf81e39a56f067b942
+  source-commit: c44476a36ee892b73184ddde36b6e9a50fa2d2f6
   bead: dar-q95.21
   publication-status: blocked
   publication-blocker: pass-through silently removes sandbox security; see dar-q95.29.4
@@ -2339,11 +2339,11 @@ patches:
       base: master
       state: local
 - path: darling/sdk-homebrew-detection.patch
-  sha256sum: 20696a2416639d977cac7f32e0ca38642ec65f0152a738ba73ce581e8d73ca74
+  sha256sum: c69dd77c5297e0a48bb6fd69925c5e536bd716fde65eb4a89eb30a1cc185cfae
   module: darling
   source-branch: fix/sdk-homebrew-detection
-  source-base: 5f2d7401d878455cf3c3c0865ee5a4290dfa03f0
-  source-commit: b8b186a6e31c2b1cf63f8946c7b170b4a75ae794
+  source-base: d014d57080972464a2baabfa299cc6e85041dd0e
+  source-commit: b597d6855c64ee0d9bed23e4d518560170ec1c49
   bead: dar-q95.22
   publication-status: provisional
   publication-blocker: SDK identity provenance and install-tree consistency under dar-q95.29.8
@@ -4000,11 +4000,11 @@ patches:
       base: main
       state: local
 - path: darling/build-drift-gate.patch
-  sha256sum: 5ae8fae2cf6e5c39abcee848d508ed0b43a8af959fc4e588ef4c25fae0804575
+  sha256sum: b92318e304300dc55772e6ecde061dfe61fa9bf052c5ea68197cef442ff0015e
   module: darling
   source-branch: fix/build-drift-gate
-  source-base: 5f2d7401d878455cf3c3c0865ee5a4290dfa03f0
-  source-commit: fc45343a2a16394983500c7d16f885199d28f292
+  source-base: d014d57080972464a2baabfa299cc6e85041dd0e
+  source-commit: d6774696a155a31e9bcc82542363c665b2937669
   bead: dar-gax
   publication-status: blocked
   publication-blocker: workspace-local build-process guard (runs `west patch status --strict` against patches.yml); depends on the west patch tooling + workspace layout, so not upstreamable as-is. Could be reshaped into an upstream-agnostic build hook later.
@@ -4045,11 +4045,11 @@ patches:
       base: preupstream/master
       state: local
 - path: darling/commpage-map-fixed.patch
-  sha256sum: d619aa57a4b838566ad137113196c72aac6a064fdce4353ffcb0b1a2291c46ff
+  sha256sum: aaba2a1b102c034d79d5e454059887d443af5eff4cd5f199372442cf8b4262ee
   module: darling
   source-branch: fix/commpage-map-fixed
-  source-base: 5f2d7401d878455cf3c3c0865ee5a4290dfa03f0
-  source-commit: 2ed457f76effbb46649408a3c2d0e84596aabf60
+  source-base: d014d57080972464a2baabfa299cc6e85041dd0e
+  source-commit: acf345173c280ce1b607a0e4a80b9585ab4202d7
   bead: dar-gwn.6.6
   publication-status: provisional
   publication-blocker: MAP_FIXED unconditionally replaces any mapping at the commpage slot; safe at this point in setup_space (only mldr loader artifacts present, Mach-O not yet mapped) but the collision-handling contract wants a second reviewer before upstreaming. See dar-gwn.6.6.
@@ -4089,11 +4089,11 @@ patches:
       base: master
       state: local
 - path: darling/mldr-stack-mmap-fallback.patch
-  sha256sum: 65acc2f2dcabaec29280c46873dd5060f314b99ef99c042e54c1e5e9debe169e
+  sha256sum: 48217e835dedc53882e8bf9afa8fc080b58cbabcf8213168b23293b20ff75618
   module: darling
   source-branch: fix/mldr-stack-mmap-fallback
-  source-base: d75d7cf6372aab62bd97951be313f5a257cdce3c
-  source-commit: f51f5a405f6a294cb13c505b6d14e5deb9feda51
+  source-base: f018846695366df54e77089d9a03824528f72c41
+  source-commit: 1618c856360ccf298629b8d602901a8e32308368
   bead: dar-stackmmap-eexist-9j9
   publication-status: blocked
   publication-blocker: changes the guest main-stack placement contract (fixed slot -> kernel-chosen fallback on EEXIST); proven safe + validated GREEN x2 locally but wants a second reviewer on the stack_top/KERN_USRSTACK invariant before upstreaming. See dar-stackmmap-eexist-9j9.
@@ -4288,11 +4288,11 @@ patches:
     script: tests/progress_classifier_test.py
     note: Host RED->GREEN classifier contract for distinguishing slow progress from wedges.
 - path: darling/mldr-thread-create-futex-wait.patch
-  sha256sum: 0b006aae3e27d6fa243070160b001b075d89ecd5f5b490267487d52861a0d40b
+  sha256sum: 34fca6f71c1bc83bed9e9ebca2efc8f1f8eb596c376a5214b53262ae441ec1f0
   module: darling
   source-branch: fix/mldr-thread-create-futex-wait
-  source-base: 9701495a1aa420763ad622f0e2f18b9195d6bc9e
-  source-commit: d87489f876d9582ac72fd36c50f1034cebcb5bf0
+  source-base: 73a11f00a54d62504b7162325a88993dfaa6e087
+  source-commit: dd6b42e57eed3cd4d1f576fcca8869b9b12efc21
   bead: dar-dar6x4-perf-5dq.1
   publication-status: blocked
   publication-blocker: replaces the UNBOUNDED thread-create-checkin busy-spin (sched_yield) with an ADAPTIVE bounded-spin-then-FUTEX_WAIT handshake in __darling_thread_create (keeps the fast-path spin so the common sub-100us checkin is not regressed, but caps CPU so a slow checkin can never monopolise a core). Correctness validated RED->GREEN by tests/regression/thread_create_checkin_wait.c (creator ~1ms CPU vs a core spinning 141-300ms) and futex compiled into both creator+child paths. Live single-storm A/B was within noise (~+3.6% creates/s fixed); a pure-FUTEX variant regressed the fast warm-server case ~25% (p50 16us spin beats a futex round-trip), which is why the adaptive form was chosen. Multistorm aggregate A/B was too noisy on this host (clickhouse contention, baseline alone 5.4k-8.3k/s) to resolve. Wants a second reviewer + a clean-host perf measurement before upstreaming. See dar-dar6x4-perf-5dq.1.
@@ -4428,11 +4428,11 @@ patches:
       base: master
       state: local
 - path: darling/mldr-recv-adaptive-spin.patch
-  sha256sum: 5129cf19fbc2fc8b012fb8d01fd543278362c8a15b6aba416fadc1f4ceaec018
+  sha256sum: f02a4121cb97f595807a27afd61a471549aae3879935d784ec38eca122b35b83
   module: darling
   source-branch: fix/mldr-recv-adaptive-spin
-  source-base: 4cbf9ba5b6071117def9c5fea18572e4bba4ce89
-  source-commit: a7d458546ed463a992d4b35b4ea95534f5a2f0a0
+  source-base: 67f40c81b103ba8fcbc2ee07965af7f9ac4d84e4
+  source-commit: 3fd7a8ed87d7e187854f946b470885f6f660b205
   bead: dar-dar6x4-perf-5dq.3
   publication-status: blocked
   publication-blocker: makes mldr's RPC recv hook (dserver_rpc_hooks_receive_message) do a bounded NON-BLOCKING recv spin (MSG_DONTWAIT + CPU pause between polls) before the blocking recvmsg, so a fast checkin reply is grabbed without the thread sleeping. Faithful in-guest measurement showed the per-thread create cost is ~95% the checkin RPC round-trip (~205us) and only ~5% socket setup (~10us), and of that round-trip the server's own work is ~8us (post perf #2b) - the rest is the recvmsg sleep/wakeup latency this attacks (so socket pooling, the obvious option, was rejected as low-ROI). Single-storm A/B (same run, warmup cancels) cut per-checkin RPC latency 237us->183us (~23%); fork/exec/wait/pipe/exit-code correctness 200/200 ok; symmetric to the perf #1 creator-side adaptive wait and bounded so it never busy-waits unboundedly. Default on (DARLING_PERF3_RECVSPIN=512; =0 restores legacy blocking recv). CAVEAT not yet resolved- aggregate throughput A/B on this oversubscribed host (load 68/12 cores, node+clickhouse contention) was noise-dominated and could not confirm a throughput win (one ordering showed ON slightly slower), so the claim is a per-checkin LATENCY reduction, not a measured throughput gain; pause (not sched_yield) was chosen specifically to bound the saturation downside. Wants a clean-host throughput measurement + review of the default-on choice before upstreaming. RED->GREEN by tests/perf3_recv_adaptive_test.c (client voluntary ctx-switches/round-trip- blocking 0.79 FAIL, adaptive 0.00 PASS). See dar-dar6x4-perf-5dq.3.

@@ -1,4 +1,4 @@
-From d87489f876d9582ac72fd36c50f1034cebcb5bf0 Mon Sep 17 00:00:00 2001
+From dd6b42e57eed3cd4d1f576fcca8869b9b12efc21 Mon Sep 17 00:00:00 2001
 From: Ilya Gulya <ilya.gulya@indriver.com>
 Date: Sun, 28 Jun 2026 01:46:20 +0000
 Subject: [PATCH] mldr: adaptive spin-then-FUTEX_WAIT for thread-create checkin
@@ -27,8 +27,6 @@ thread_create_checkin_wait.c + run-thread-create-checkin-wait.sh): it reproduces
 the exact creator/child handshake both ways and asserts the creator's own CPU
 stays low while it waits out a 300ms checkin (bounded spin then sleep, ~1ms CPU)
 vs burning a core (unbounded spin, ~141-300ms CPU).
-
-Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
 ---
  src/startup/mldr/elfcalls/threads.c           |  56 ++++++++-
  .../run-thread-create-checkin-wait.sh         |  29 +++++

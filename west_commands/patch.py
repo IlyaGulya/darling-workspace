@@ -1128,6 +1128,7 @@ class DarlingPatch(WestCommand):
             commit = git(repo, "rev-parse", source_branch, capture=True)
             self._validate_export_revision(repo, patch, "source-commit", commit)
             self._validate_export_revision(repo, patch, "source-base", commit)
+            self._validate_export_base_ancestor(repo, patch, commit)
 
             result = subprocess.run(
                 format_patch_command(patch, commit),
@@ -1204,6 +1205,41 @@ class DarlingPatch(WestCommand):
         self.die(
             f"{patch['path']}: {field} {revision} is not available{hint}; "
             "repair stale patch metadata before exporting"
+        )
+
+    def _validate_export_base_ancestor(
+        self,
+        repo: Path,
+        patch,
+        branch_commit: str,
+    ) -> None:
+        source_base = patch.get("source-base")
+        if not source_base:
+            return
+        if (
+            subprocess.run(
+                ["git", "merge-base", "--is-ancestor", source_base, branch_commit],
+                cwd=repo,
+                check=False,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+            ).returncode
+            == 0
+        ):
+            return
+        parent = subprocess.run(
+            ["git", "rev-parse", f"{branch_commit}^"],
+            cwd=repo,
+            check=False,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+        ).stdout.strip()
+        hint = f"; source branch parent is {parent}" if parent else ""
+        self.die(
+            f"{patch['path']}: source-base {source_base} is not an ancestor "
+            f"of source branch head {branch_commit}{hint}; repair stale patch "
+            "metadata before exporting"
         )
 
     def _check_export_size(

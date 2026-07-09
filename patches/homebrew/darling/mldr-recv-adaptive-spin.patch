@@ -1,4 +1,4 @@
-From a7d458546ed463a992d4b35b4ea95534f5a2f0a0 Mon Sep 17 00:00:00 2001
+From 3fd7a8ed87d7e187854f946b470885f6f660b205 Mon Sep 17 00:00:00 2001
 From: Ilya Gulya <ilya@gulya.me>
 Date: Sun, 28 Jun 2026 04:16:10 +0000
 Subject: [PATCH] mldr: adaptive recv spin-then-block for the checkin/RPC reply
@@ -34,8 +34,6 @@ datagram round-trip and gate on client voluntary context switches per round-
 trip (blocking 0.79/round FAIL -> adaptive 0.00/round PASS).
 
 bead: dar-dar6x4-perf-5dq.3
-
-Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
 ---
  src/startup/mldr/resources/dserver-rpc-defs.h |  71 ++++++++-
  .../mldr/tests/perf3_recv_adaptive_test.c     | 142 ++++++++++++++++++
