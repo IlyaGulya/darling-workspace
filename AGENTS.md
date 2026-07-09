@@ -13,6 +13,11 @@ refs, PR drafts, and agent handoff.
 - Use `west dw beads ...` for issue operations. For comments, use
   `west dw beads comment <id> <text>`; it is a workspace alias for the Beads
   `comments add` subcommand.
+- Beads flag spelling differs by command: `create` accepts `--labels`, while
+  `list` filters with singular `--label`.
+- `rtk find` intentionally rejects compound predicates/actions such as
+  `-exec`; use `rtk proxy find ...` for those commands instead of retrying the
+  same command shape.
 - Use `west patch verify|apply|clean|list` for local integration profiles.
 - Use `west darling-prefix-repair --prefix <prefix>` when guest tests report
   missing prefix prerequisites such as `private/var/tmp`, canonical
