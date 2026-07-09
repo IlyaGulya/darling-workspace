@@ -218,5 +218,74 @@ with tempfile.TemporaryDirectory() as temp:
     assert not (target / "dependent.txt").exists()
     assert (target / "other.txt").read_text() == "kept\n"
 
+with tempfile.TemporaryDirectory() as temp:
+    tempdir = Path(temp)
+    repo = tempdir / "darling"
+    repo.mkdir()
+    subprocess.run(["git", "init", "-q"], cwd=repo, check=True)
+    subprocess.run(["git", "config", "user.email", "test@example.invalid"], cwd=repo, check=True)
+    subprocess.run(["git", "config", "user.name", "west test"], cwd=repo, check=True)
+    (repo / "base.txt").write_text("base\n")
+    subprocess.run(["git", "add", "base.txt"], cwd=repo, check=True)
+    subprocess.run(["git", "commit", "-q", "-m", "base"], cwd=repo, check=True)
+    base_rev = subprocess.run(
+        ["git", "rev-parse", "HEAD"],
+        cwd=repo,
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
+
+    def independent_patch(path, contents, message):
+        subprocess.run(["git", "reset", "--hard", "-q", base_rev], cwd=repo, check=True)
+        (repo / path).write_text(contents)
+        subprocess.run(["git", "add", path], cwd=repo, check=True)
+        subprocess.run(["git", "commit", "-q", "-m", message], cwd=repo, check=True)
+        return subprocess.run(
+            ["git", "format-patch", "-1", "--stdout"],
+            cwd=repo,
+            check=True,
+            capture_output=True,
+            text=True,
+        ).stdout
+
+    skipped_patch = independent_patch("skipped.txt", "skipped\n", "skipped patch")
+    kept_patch = independent_patch("kept.txt", "kept\n", "kept patch")
+    subprocess.run(["git", "reset", "--hard", "-q", base_rev], cwd=repo, check=True)
+
+    profile_dir = tempdir / "patches/runtime/darling"
+    profile_dir.mkdir(parents=True)
+    (profile_dir / "skipped.patch").write_text(skipped_patch)
+    (profile_dir / "kept.patch").write_text(kept_patch)
+
+    test = make_test()
+    test.manifest = types.SimpleNamespace(
+        repo_abspath=str(tempdir),
+        projects=[
+            types.SimpleNamespace(
+                name="darling",
+                path="darling",
+                abspath=str(repo),
+                revision=base_rev,
+            )
+        ],
+    )
+    test._active_profile = "runtime"
+    test._profile_stack = lambda profile: [profile]
+    test._load_profile = lambda _profile: {
+        "patches": [
+            {"path": "darling/skipped.patch", "module": "darling"},
+            {"path": "darling/kept.patch", "module": "darling"},
+        ]
+    }
+    test._profile_path = lambda profile: tempdir / "patches" / profile / "patches.yml"
+
+    patch = {"path": "darling/skipped.patch", "module": "darling"}
+    proof = {"mode": "guest-runtime-deploy", "bad-profile": "current-minus-patch"}
+    with test._guest_runtime_source_forest(patch, proof) as source_root:
+        assert (source_root / "base.txt").read_text() == "base\n"
+        assert not (source_root / "skipped.txt").exists()
+        assert (source_root / "kept.txt").read_text() == "kept\n"
+
 print("PASS west-test-runtime-red-contract")
 PY

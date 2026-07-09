@@ -2710,6 +2710,38 @@ fi
                     check=True,
                 )
 
+    def _current_minus_skip_patch_paths(self, patch, proof) -> set[str]:
+        return {
+            str(patch["path"]),
+            *[str(path) for path in proof.get("current-minus-skip-patches", [])],
+        }
+
+    def _active_runtime_profile(self, patch) -> str:
+        profile = getattr(self, "_active_profile", None)
+        if not profile:
+            self.die(f"{patch['path']}: current-minus-patch needs an active profile")
+        return profile
+
+    def _apply_current_minus_profile(self, patch, proof, module: str, target: Path) -> None:
+        profile = self._active_runtime_profile(patch)
+        self._apply_profile_module_patches(
+            profile,
+            module,
+            target,
+            skip_patch_paths=self._current_minus_skip_patch_paths(patch, proof),
+        )
+
+    def _apply_red_source_patches(self, proof, module_label: str, target: Path) -> None:
+        for source_patch in proof.get("source-patches", []):
+            patch_path = self._red_source_patch_path(str(source_patch))
+            rel = patch_path.relative_to(self.manifest.repo_abspath)
+            self.inf(f"  apply RED source patch {rel} -> {module_label}")
+            subprocess.run(
+                ["git", "apply", "--3way", str(patch_path)],
+                cwd=target,
+                check=True,
+            )
+
     @contextmanager
     def _guest_runtime_source_forest(self, patch, proof):
         """Create a temporary Darling source forest for a bad runtime build.
@@ -2728,6 +2760,7 @@ fi
         if darling_repo is None:
             self.die("guest-runtime-deploy needs a West project at path 'darling'")
         patch_module_path = self._project_manifest_path(patch["module"])
+        patch_module_is_darling_root = patch_module_path == Path("darling")
         current_minus_patch = proof.get("bad-profile") == "current-minus-patch"
         bad_revision = None if current_minus_patch else self._bad_revision(patch)
         added: list[tuple[Path, Path]] = []
@@ -2737,7 +2770,14 @@ fi
         try:
             root = Path(temp)
             source_root = root / "darling"
-            darling_ref = "HEAD" if current_minus_patch else self._manifest_revision("darling")
+            if patch_module_is_darling_root:
+                darling_ref = (
+                    self._manifest_revision("darling")
+                    if current_minus_patch
+                    else str(bad_revision)
+                )
+            else:
+                darling_ref = "HEAD" if current_minus_patch else self._manifest_revision("darling")
             bad_text = "current-minus-patch" if current_minus_patch else str(bad_revision)
             self.inf(
                 f"  RED source forest: {patch_module_path}={bad_text} under {source_root}"
@@ -2756,6 +2796,10 @@ fi
                 check=True,
             )
             added.append((darling_repo, source_root))
+            if patch_module_is_darling_root:
+                if current_minus_patch:
+                    self._apply_current_minus_profile(patch, proof, "darling", source_root)
+                self._apply_red_source_patches(proof, "darling", source_root)
             for project_path, repo in sorted(
                 projects_by_path.items(),
                 key=lambda item: (len(item[0].parts), str(item[0])),
@@ -2798,30 +2842,8 @@ fi
                     )
                     added.append((repo, target))
                     if current_minus_patch:
-                        profile = getattr(self, "_active_profile", None)
-                        if not profile:
-                            self.die(f"{patch['path']}: current-minus-patch needs an active profile")
-                        skips = {
-                            patch["path"],
-                            *[
-                                str(path)
-                                for path in proof.get("current-minus-skip-patches", [])
-                            ],
-                        }
-                        self._apply_profile_module_patches(
-                            profile,
-                            str(project_path),
-                            target,
-                            skip_patch_paths=skips,
-                        )
-                    for source_patch in proof.get("source-patches", []):
-                        patch_path = self._red_source_patch_path(str(source_patch))
-                        self.inf(f"  apply RED source patch {patch_path.relative_to(self.manifest.repo_abspath)} -> {project_path}")
-                        subprocess.run(
-                            ["git", "apply", "--3way", str(patch_path)],
-                            cwd=target,
-                            check=True,
-                        )
+                        self._apply_current_minus_profile(patch, proof, str(project_path), target)
+                    self._apply_red_source_patches(proof, str(project_path), target)
                 else:
                     os.symlink(repo, target, target_is_directory=True)
             yielded = True
