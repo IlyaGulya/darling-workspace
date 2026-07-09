@@ -2379,6 +2379,38 @@ patches:
     repo: darling-workspace
     script: experiments/e-union/run.sh
     note: Host hermetic RED->GREEN E-UNION suite; exercises the workspace two-layer vchroot fixture against this patchset source tree.
+  - name: eunion_path_direnum_guest
+    kind: guest
+    coverage-tier: runtime
+    env: darling
+    diag: bare
+    runner: guest-c-fixture
+    repo: darling-workspace
+    script: tests/eunion_path_direnum_guest.c
+    ok-marker: WEST_EUNION_PATH_DIRENUM_OK
+    timeout-seconds: 20
+    compile-flags:
+    - -std=gnu11
+    - -Wall
+    - -Wextra
+    - -Werror
+    requires:
+    - darling-eunion-prefix
+    eunion-template-files:
+    - guest-path: /private/var/tmp/west-eunion-direnum/lower-only.txt
+      contents: |
+        LOWER_ONLY
+    - guest-path: /private/var/tmp/west-eunion-direnum/shadow.txt
+      contents: |
+        LOWER_SHADOW
+    eunion-upper-files:
+    - guest-path: /private/var/tmp/west-eunion-direnum/upper-only.txt
+      contents: |
+        UPPER_ONLY
+    - guest-path: /private/var/tmp/west-eunion-direnum/shadow.txt
+      contents: |
+        UPPER_SHADOW
+    note: Guest runtime coverage for E-UNION path resolution, upper-over-lower shadowing, directory merge enumeration, and F_GETPATH guest path detranslation.
   github:
     fork:
       repo: IlyaGulya/darling-xnu
@@ -2472,6 +2504,38 @@ patches:
     repo: darling-workspace
     script: experiments/e-union/run.sh
     note: Host hermetic RED->GREEN E-UNION suite; exercises the workspace two-layer vchroot fixture against this patchset source tree.
+  - name: eunion_path_direnum_guest
+    kind: guest
+    coverage-tier: runtime
+    env: darling
+    diag: bare
+    runner: guest-c-fixture
+    repo: darling-workspace
+    script: tests/eunion_path_direnum_guest.c
+    ok-marker: WEST_EUNION_PATH_DIRENUM_OK
+    timeout-seconds: 20
+    compile-flags:
+    - -std=gnu11
+    - -Wall
+    - -Wextra
+    - -Werror
+    requires:
+    - darling-eunion-prefix
+    eunion-template-files:
+    - guest-path: /private/var/tmp/west-eunion-direnum/lower-only.txt
+      contents: |
+        LOWER_ONLY
+    - guest-path: /private/var/tmp/west-eunion-direnum/shadow.txt
+      contents: |
+        LOWER_SHADOW
+    eunion-upper-files:
+    - guest-path: /private/var/tmp/west-eunion-direnum/upper-only.txt
+      contents: |
+        UPPER_ONLY
+    - guest-path: /private/var/tmp/west-eunion-direnum/shadow.txt
+      contents: |
+        UPPER_SHADOW
+    note: Guest runtime coverage for E-UNION path resolution, upper-over-lower shadowing, directory merge enumeration, and F_GETPATH guest path detranslation.
   github:
     fork:
       repo: IlyaGulya/darling-xnu
@@ -2534,6 +2598,38 @@ patches:
     repo: darling-workspace
     script: experiments/e-union/run.sh
     note: Host hermetic RED->GREEN E-UNION suite; exercises the workspace two-layer vchroot fixture against this patchset source tree.
+  - name: eunion_path_direnum_guest
+    kind: guest
+    coverage-tier: runtime
+    env: darling
+    diag: bare
+    runner: guest-c-fixture
+    repo: darling-workspace
+    script: tests/eunion_path_direnum_guest.c
+    ok-marker: WEST_EUNION_PATH_DIRENUM_OK
+    timeout-seconds: 20
+    compile-flags:
+    - -std=gnu11
+    - -Wall
+    - -Wextra
+    - -Werror
+    requires:
+    - darling-eunion-prefix
+    eunion-template-files:
+    - guest-path: /private/var/tmp/west-eunion-direnum/lower-only.txt
+      contents: |
+        LOWER_ONLY
+    - guest-path: /private/var/tmp/west-eunion-direnum/shadow.txt
+      contents: |
+        LOWER_SHADOW
+    eunion-upper-files:
+    - guest-path: /private/var/tmp/west-eunion-direnum/upper-only.txt
+      contents: |
+        UPPER_ONLY
+    - guest-path: /private/var/tmp/west-eunion-direnum/shadow.txt
+      contents: |
+        UPPER_SHADOW
+    note: Guest runtime coverage for E-UNION path resolution, upper-over-lower shadowing, directory merge enumeration, and F_GETPATH guest path detranslation.
   github:
     fork:
       repo: IlyaGulya/darling-xnu
@@ -2565,6 +2661,41 @@ patches:
     repo: darling-workspace
     script: experiments/e-union/run.sh
     note: Host hermetic RED->GREEN E-UNION suite; exercises the workspace two-layer vchroot fixture against this patchset source tree.
+  - name: eunion_activation_guest_smoke
+    kind: guest
+    coverage-tier: runtime
+    env: darling
+    diag: bare
+    runner: guest-c-fixture
+    repo: darling-workspace
+    script: tests/eunion_prefix_smoke_guest.c
+    ok-marker: WEST_EUNION_PREFIX_SMOKE_OK
+    timeout-seconds: 20
+    compile-flags:
+    - -std=gnu11
+    - -Wall
+    - -Wextra
+    - -Werror
+    requires:
+    - darling-eunion-prefix
+    eunion-template-files:
+    - guest-path: /private/var/tmp/west-eunion-smoke/lower.txt
+      contents: |
+        LOWER
+    - guest-path: /private/var/tmp/west-eunion-smoke/shadow.txt
+      contents: |
+        LOWER_SHADOW
+    eunion-upper-files:
+    - guest-path: /private/var/tmp/west-eunion-smoke/upper.txt
+      contents: |
+        UPPER
+    - guest-path: /private/var/tmp/west-eunion-smoke/shadow.txt
+      contents: |
+        UPPER_SHADOW
+    note: >-
+      Guest runtime smoke for active E-UNION provisioning: west boots the prefix,
+      then prepares lower-template and upper fixtures and verifies lower fallback,
+      upper-only visibility, and upper-over-lower shadowing through Darling.
   github:
     fork:
       repo: IlyaGulya/darling-xnu
@@ -2627,6 +2758,38 @@ patches:
     repo: darling-workspace
     script: experiments/e-union/run.sh
     note: Host hermetic RED->GREEN E-UNION suite; exercises the workspace two-layer vchroot fixture against this patchset source tree.
+  - name: eunion_path_direnum_guest
+    kind: guest
+    coverage-tier: runtime
+    env: darling
+    diag: bare
+    runner: guest-c-fixture
+    repo: darling-workspace
+    script: tests/eunion_path_direnum_guest.c
+    ok-marker: WEST_EUNION_PATH_DIRENUM_OK
+    timeout-seconds: 20
+    compile-flags:
+    - -std=gnu11
+    - -Wall
+    - -Wextra
+    - -Werror
+    requires:
+    - darling-eunion-prefix
+    eunion-template-files:
+    - guest-path: /private/var/tmp/west-eunion-direnum/lower-only.txt
+      contents: |
+        LOWER_ONLY
+    - guest-path: /private/var/tmp/west-eunion-direnum/shadow.txt
+      contents: |
+        LOWER_SHADOW
+    eunion-upper-files:
+    - guest-path: /private/var/tmp/west-eunion-direnum/upper-only.txt
+      contents: |
+        UPPER_ONLY
+    - guest-path: /private/var/tmp/west-eunion-direnum/shadow.txt
+      contents: |
+        UPPER_SHADOW
+    note: Guest runtime coverage for E-UNION path resolution, upper-over-lower shadowing, directory merge enumeration, and F_GETPATH guest path detranslation.
   github:
     fork:
       repo: IlyaGulya/darling-xnu
@@ -2658,6 +2821,38 @@ patches:
     repo: darling-workspace
     script: experiments/e-union/run.sh
     note: Host hermetic RED->GREEN E-UNION suite; exercises the workspace two-layer vchroot fixture against this patchset source tree.
+  - name: eunion_path_direnum_guest
+    kind: guest
+    coverage-tier: runtime
+    env: darling
+    diag: bare
+    runner: guest-c-fixture
+    repo: darling-workspace
+    script: tests/eunion_path_direnum_guest.c
+    ok-marker: WEST_EUNION_PATH_DIRENUM_OK
+    timeout-seconds: 20
+    compile-flags:
+    - -std=gnu11
+    - -Wall
+    - -Wextra
+    - -Werror
+    requires:
+    - darling-eunion-prefix
+    eunion-template-files:
+    - guest-path: /private/var/tmp/west-eunion-direnum/lower-only.txt
+      contents: |
+        LOWER_ONLY
+    - guest-path: /private/var/tmp/west-eunion-direnum/shadow.txt
+      contents: |
+        LOWER_SHADOW
+    eunion-upper-files:
+    - guest-path: /private/var/tmp/west-eunion-direnum/upper-only.txt
+      contents: |
+        UPPER_ONLY
+    - guest-path: /private/var/tmp/west-eunion-direnum/shadow.txt
+      contents: |
+        UPPER_SHADOW
+    note: Guest runtime coverage for E-UNION path resolution, upper-over-lower shadowing, directory merge enumeration, and F_GETPATH guest path detranslation.
   github:
     fork:
       repo: IlyaGulya/darling-xnu
@@ -2875,6 +3070,38 @@ patches:
     repo: darling-workspace
     script: experiments/e-union/run.sh
     note: Host hermetic RED->GREEN E-UNION suite; exercises the workspace two-layer vchroot fixture against this patchset source tree.
+  - name: eunion_path_direnum_guest
+    kind: guest
+    coverage-tier: runtime
+    env: darling
+    diag: bare
+    runner: guest-c-fixture
+    repo: darling-workspace
+    script: tests/eunion_path_direnum_guest.c
+    ok-marker: WEST_EUNION_PATH_DIRENUM_OK
+    timeout-seconds: 20
+    compile-flags:
+    - -std=gnu11
+    - -Wall
+    - -Wextra
+    - -Werror
+    requires:
+    - darling-eunion-prefix
+    eunion-template-files:
+    - guest-path: /private/var/tmp/west-eunion-direnum/lower-only.txt
+      contents: |
+        LOWER_ONLY
+    - guest-path: /private/var/tmp/west-eunion-direnum/shadow.txt
+      contents: |
+        LOWER_SHADOW
+    eunion-upper-files:
+    - guest-path: /private/var/tmp/west-eunion-direnum/upper-only.txt
+      contents: |
+        UPPER_ONLY
+    - guest-path: /private/var/tmp/west-eunion-direnum/shadow.txt
+      contents: |
+        UPPER_SHADOW
+    note: Guest runtime coverage for E-UNION path resolution, upper-over-lower shadowing, directory merge enumeration, and F_GETPATH guest path detranslation.
   github:
     fork:
       repo: IlyaGulya/darling-xnu
@@ -2894,6 +3121,24 @@ patches:
   publication-status: blocked
   publication-blocker: BASELINE fix (outside #ifdef EUNION) surfaced by the E-UNION harness. The EXIT_PATH escape-hatch check used strncasecmp_l(current_path+current_root_len, EXIT_PATH, ..., LC_C_LOCALE) where LC_C_LOCALE is ((locale_t)NULL); glibc's strncasecmp_l dereferences the locale the instant the bytes match, so a NULL locale SEGVs precisely when a guest path equals EXIT_PATH ("/Volumes/SystemRoot") — exactly when the escape hatch fires (gcc warns -Wnonnull). EXIT_PATH is pure ASCII, so the case-fold needs no locale; replaced with a locale-free ASCII comparator (eunion_ascii_ncasecmp) and removed the dead locale_t/LC_C_LOCALE/strncasecmp_l decls. Mutation-verified (EP1-EP4 — always-equal, no-fold, asymmetric-fold all caught). Local experiment under dar-test-infra-sp5.8.4.4.10.
   tests:
+  - name: eunion_exitpath_systemroot_guest
+    kind: guest
+    coverage-tier: runtime
+    env: darling
+    diag: bare
+    runner: guest-c-fixture
+    repo: darling-workspace
+    script: tests/eunion_exitpath_systemroot_guest.c
+    ok-marker: WEST_EUNION_EXITPATH_SYSTEMROOT_OK
+    timeout-seconds: 20
+    compile-flags:
+    - -std=gnu11
+    - -Wall
+    - -Wextra
+    - -Werror
+    requires:
+    - darling-prefix
+    note: Guest runtime gate for the /Volumes/SystemRoot EXIT_PATH escape hatch and its ASCII case-folded spelling.
   - name: eunion_18_host_suite
     kind: unit
     env: host
@@ -3069,6 +3314,57 @@ patches:
     repo: darling-workspace
     script: experiments/e-union/run.sh
     note: Host hermetic RED->GREEN E-UNION suite; exercises the workspace two-layer vchroot fixture against this patchset source tree.
+  github:
+    fork:
+      repo: IlyaGulya/darling-xnu
+      base: preupstream/main
+      state: local
+    upstream:
+      repo: darlinghq/darling-xnu
+      base: main
+      state: local
+- path: xnu/eunion-23-fdpath-nested-lower.patch
+  sha256sum: ed3a071a498d27622ec0b29305e7317d00a3b1a4fb7a333382696a90b231cb9b
+  module: darling/src/external/xnu
+  source-branch: fix/eunion-fdpath-nested-lower
+  source-base: 9159de2e2b985d24c57df445a44ee75afefbcdcc
+  source-commit: afeb053fa1bcdf3de819d403d6c1aacb244fa659
+  bead: dar-r7fc.4.2
+  publication-status: blocked
+  publication-blocker: E-UNION proof-of-concept follow-up; fdpath detranslation for route-2 lower nested under prefix, local until the E-UNION patchset is productized.
+  tests:
+  - name: eunion_path_direnum_guest
+    kind: guest
+    coverage-tier: runtime
+    env: darling
+    diag: bare
+    runner: guest-c-fixture
+    repo: darling-workspace
+    script: tests/eunion_path_direnum_guest.c
+    ok-marker: WEST_EUNION_PATH_DIRENUM_OK
+    timeout-seconds: 20
+    compile-flags:
+    - -std=gnu11
+    - -Wall
+    - -Wextra
+    - -Werror
+    requires:
+    - darling-eunion-prefix
+    eunion-template-files:
+    - guest-path: /private/var/tmp/west-eunion-direnum/lower-only.txt
+      contents: |
+        LOWER_ONLY
+    - guest-path: /private/var/tmp/west-eunion-direnum/shadow.txt
+      contents: |
+        LOWER_SHADOW
+    eunion-upper-files:
+    - guest-path: /private/var/tmp/west-eunion-direnum/upper-only.txt
+      contents: |
+        UPPER_ONLY
+    - guest-path: /private/var/tmp/west-eunion-direnum/shadow.txt
+      contents: |
+        UPPER_SHADOW
+    note: Guest runtime coverage for E-UNION path resolution, upper-over-lower shadowing, directory merge enumeration, and F_GETPATH guest path detranslation.
   github:
     fork:
       repo: IlyaGulya/darling-xnu
@@ -4156,3 +4452,57 @@ patches:
       hook. The script only launches a real guest process; west owns the host
       trace setup and oracle.
   sha256sum: de88218082549530a371dfb7704750d8802616a76ca814dee57a2902eafc2657
+- path: darlingserver/eunion-runtime-prefix.patch
+  sha256sum: 455396c1a6d34f39b283b1bef1d806444c776e46e05939d8c8417a95454d8a2d
+  module: darling/src/external/darlingserver
+  source-branch: fix/eunion-runtime-prefix
+  source-base: 1a60bae2de97cd645e0c25b941fca821949918ff
+  source-commit: 6856e3321a96583a5a9806082db520f6c7fb8315
+  bead: dar-r7fc.4.1.1
+  publication-status: blocked
+  publication-blocker: E-UNION proof-of-concept runtime provisioning; local route-2 no-overlay test path only until the E-UNION patchset is productized.
+  tests:
+  - name: eunion_activation_guest_smoke
+    kind: guest
+    coverage-tier: runtime
+    env: darling
+    diag: bare
+    runner: guest-c-fixture
+    repo: darling-workspace
+    script: tests/eunion_prefix_smoke_guest.c
+    ok-marker: WEST_EUNION_PREFIX_SMOKE_OK
+    timeout-seconds: 20
+    compile-flags:
+    - -std=gnu11
+    - -Wall
+    - -Wextra
+    - -Werror
+    requires:
+    - darling-eunion-prefix
+    eunion-template-files:
+    - guest-path: /private/var/tmp/west-eunion-smoke/lower.txt
+      contents: |
+        LOWER
+    - guest-path: /private/var/tmp/west-eunion-smoke/shadow.txt
+      contents: |
+        LOWER_SHADOW
+    eunion-upper-files:
+    - guest-path: /private/var/tmp/west-eunion-smoke/upper.txt
+      contents: |
+        UPPER
+    - guest-path: /private/var/tmp/west-eunion-smoke/shadow.txt
+      contents: |
+        UPPER_SHADOW
+    note: >-
+      Guest runtime smoke for active E-UNION provisioning: west boots the prefix,
+      then prepares lower-template and upper fixtures and verifies lower fallback,
+      upper-only visibility, and upper-over-lower shadowing through Darling.
+  github:
+    fork:
+      repo: IlyaGulya/darlingserver
+      base: preupstream/main
+      state: local
+    upstream:
+      repo: darlinghq/darlingserver
+      base: main
+      state: local
