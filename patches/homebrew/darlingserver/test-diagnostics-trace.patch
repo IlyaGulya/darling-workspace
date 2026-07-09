@@ -1,4 +1,4 @@
-From cc99ed446f294cf441059f7c5ab86fe93fed928d Mon Sep 17 00:00:00 2001
+From 29a2f1a4ab44738d8d7be6f5b562d0c58169299f Mon Sep 17 00:00:00 2001
 From: Ilya Gulya <ilya@gulya.me>
 Date: Wed, 8 Jul 2026 22:57:26 +0000
 Subject: [PATCH] test: add guarded diagnostics and ingest fault trigger
@@ -234,7 +234,7 @@ index 0000000000000000000000000000000000000000..de5a448b6802c8f8dbaf623e46e02a81
 +
 +}
 diff --git a/src/call.cpp b/src/call.cpp
-index a443cd837393f8f73204ffe99461717da46ad54c..969ae523bfb2dc1f7b9c948438c4e432cf3ba6e4 100644
+index c512636d8b093b4ef3bd8f8545ddfcae6d64da6a..f279dd92931c675b2135232c4c8ed58d99f32e6d 100644
 --- a/src/call.cpp
 +++ b/src/call.cpp
 @@ -29,6 +29,7 @@
@@ -318,7 +318,7 @@ index a443cd837393f8f73204ffe99461717da46ad54c..969ae523bfb2dc1f7b9c948438c4e432
  			}
  		});
  		return nullptr;
-@@ -614,6 +645,11 @@ void DarlingServer::Call::Uidgid::processCall() {
+@@ -619,6 +650,11 @@ void DarlingServer::Call::Uidgid::processCall() {
  	int uid = -1;
  	int gid = -1;
  
@@ -507,7 +507,7 @@ index 0000000000000000000000000000000000000000..5ebb97766d84ae8e4816c3bd6fa4548b
 +
 +}
 
-From b63070a07443ef9350a89328f8264298ef8e194a Mon Sep 17 00:00:00 2001
+From 41ec1142da31f60f28f4e07419f4c1b02ddfb360 Mon Sep 17 00:00:00 2001
 From: Ilya Gulya <ilya@gulya.me>
 Date: Wed, 8 Jul 2026 23:51:25 +0000
 Subject: [PATCH] test: allow forcing lost fork checkin wakeup
@@ -537,7 +537,7 @@ index b56ee4381bb95eb847805dc549929bbba83d2ac5..8a9c473389e1d2009d12f7e68b2eab0c
  		} else {
  			processLog.info() << *this << ": checkin without registered fork parent" << processLog.endLog;
 
-From 1aaa544a8be02fe4b83cd8c8736f1bfab4173829 Mon Sep 17 00:00:00 2001
+From 7e6970d394b839921ef9cd3542dc131ee6f6efe8 Mon Sep 17 00:00:00 2001
 From: Ilya Gulya <ilya@gulya.me>
 Date: Thu, 9 Jul 2026 00:35:50 +0000
 Subject: [PATCH] test: trace assert-wait timer cleanup
@@ -680,9 +680,9 @@ index d6a33a586938ed1eb26f4566a2cd3fd536b82cd3..486b3ba4a6a2fbffe2cc0621212bdfec
  		if (deadline != 0) {
  			boolean_t act;
 
-From e99d848aee8cc7b832f939e4c065f862d6948e95 Mon Sep 17 00:00:00 2001
+From 1503eccabc06b880fd620fee01b23ba2f28de681 Mon Sep 17 00:00:00 2001
 From: Ilya Gulya <ilya@gulya.me>
-Date: Thu, 9 Jul 2026 01:00:04 +0000
+Date: Thu, 9 Jul 2026 01:02:06 +0000
 Subject: [PATCH] test: trace checkin exec ordering
 
 ---
@@ -716,7 +716,7 @@ index 8a9c473389e1d2009d12f7e68b2eab0c9b2d5bdb..d08fb3e993919f0d1dc2c5f144f921ee
  
  		// release the main thread's old duct-taped thread and the old task now that
 
-From 6fe2b2ca0b4668d2ff9b2766d3c29eb989aa5d5e Mon Sep 17 00:00:00 2001
+From 59efaf7d492c0261dc3191acc7310bc591e432d3 Mon Sep 17 00:00:00 2001
 From: Ilya Gulya <ilya@gulya.me>
 Date: Thu, 9 Jul 2026 01:15:02 +0000
 Subject: [PATCH] test: trace dropped fork checkin timeout
@@ -806,7 +806,7 @@ index d08fb3e993919f0d1dc2c5f144f921ee3359cef1..c79b36dcbf51d9c0931f9c4df387e2b2
  	}
  };
 
-From d1589fd450bb590a4d3a72fdabf0d19555b74b92 Mon Sep 17 00:00:00 2001
+From 1ca29fe8e8c2c5f784522f9144809057918c4c36 Mon Sep 17 00:00:00 2001
 From: Ilya Gulya <ilya@gulya.me>
 Date: Thu, 9 Jul 2026 01:46:46 +0000
 Subject: [PATCH] test: trace microthread resume-before-suspend window

@@ -1,4 +1,4 @@
-From 96298b16269a3baf5919c6ff8f844e2b53bbb7cf Mon Sep 17 00:00:00 2001
+From 82183e60cbcab3c9b3b7e627feb6019e598c6965 Mon Sep 17 00:00:00 2001
 From: Ilya Gulya <ilya@gulya.me>
 Date: Sun, 28 Jun 2026 08:15:52 +0000
 Subject: [PATCH] darlingserver: NO_REPLY fire-and-forget RPC class for pure
@@ -36,12 +36,11 @@ RED->GREEN test committed alongside (standing TDD rule): no_reply_rpc_test.sh ru
 generator and asserts a NO_REPLY call's wrapper omits receive_message and its server
 _sendReply is a no-op, while a normal call (checkin) still receives. Proven RED before
 the flag existed.
-
-Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
 ---
  scripts/generate-rpc-wrappers.py | 243 ++++++++++++++++++-------------
+ src/call.cpp                     |   2 +-
  tests/no_reply_rpc_test.sh       |  89 +++++++++++
- 2 files changed, 230 insertions(+), 102 deletions(-)
+ 3 files changed, 231 insertions(+), 103 deletions(-)
  create mode 100755 tests/no_reply_rpc_test.sh
 
 diff --git a/scripts/generate-rpc-wrappers.py b/scripts/generate-rpc-wrappers.py
@@ -350,6 +349,19 @@ index e35221c20fe086dfc686a512089c772a94192128..86ea376dcef1e887daee10a71e201ba9
  
  	# declare the RPC call wrapper function
  	# (and output the prototype part of the function definition)
+diff --git a/src/call.cpp b/src/call.cpp
+index 717ec8e36bfb7d16c0b8f5601409ae083e7e806d..c512636d8b093b4ef3bd8f8545ddfcae6d64da6a 100644
+--- a/src/call.cpp
++++ b/src/call.cpp
+@@ -265,7 +265,7 @@ std::shared_ptr<DarlingServer::Call> DarlingServer::Call::callFromMessage(Messag
+ 			// (dar-gwn.6.2)
+ 			callLog.error() << "setPendingCall rejected call (number " << header->number
+ 				<< "): " << ex.what() << "; replying -EAGAIN instead of dropping" << callLog.endLog;
+-			sendErrorReplyFromHeader(header, requestMessage.address(), -EAGAIN);
++			result->sendBasicReply(-EAGAIN);
+ 			return nullptr;
+ 		}
+ 		return result;
 diff --git a/tests/no_reply_rpc_test.sh b/tests/no_reply_rpc_test.sh
 new file mode 100755
 index 0000000000000000000000000000000000000000..9d8de9bfa80f027a81ea22c5832b9c3585726c04

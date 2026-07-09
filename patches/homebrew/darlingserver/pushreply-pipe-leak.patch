@@ -1,4 +1,4 @@
-From 3d4428d7ec9ec44aa9b7f9a71597dd0aeb463a03 Mon Sep 17 00:00:00 2001
+From bb620a209a3a72d2a238b30102147438e58b35ef Mon Sep 17 00:00:00 2001
 From: Ilya Gulya <ilya.gulya@indriver.com>
 Date: Tue, 23 Jun 2026 02:24:36 +0000
 Subject: [PATCH] call: never strand the push_reply synchronization pipe on a
@@ -98,7 +98,7 @@ index 0000000000000000000000000000000000000000..faa7ac4e2f08f9960d861a03c501b00c
 +
 +#endif
 diff --git a/src/call.cpp b/src/call.cpp
-index 339820dd05ad71f37f664ed65567ddf90f387865..1a952944825e482ead7c781aaf80de6dac375c38 100644
+index a63f8701bf2fd699d351a47c9e51d22b263cb5dd..c8dfe293110a9f5c4f20c3108e729b8e617e6f62 100644
 --- a/src/call.cpp
 +++ b/src/call.cpp
 @@ -20,6 +20,7 @@
@@ -108,8 +108,8 @@ index 339820dd05ad71f37f664ed65567ddf90f387865..1a952944825e482ead7c781aaf80de6d
 +#include <darlingserver/push-reply-sync-pipe.hpp>
  #include <darlingserver/server.hpp>
  #include <sys/uio.h>
- 
-@@ -158,15 +159,29 @@ std::shared_ptr<DarlingServer::Call> DarlingServer::Call::callFromMessage(Messag
+ #include <errno.h>
+@@ -159,15 +160,29 @@ std::shared_ptr<DarlingServer::Call> DarlingServer::Call::callFromMessage(Messag
  		auto pushReplyCall = reinterpret_cast<const dserver_rpc_call_push_reply_t*>(requestMessage.data().data());
  		Message replyToSave(pushReplyCall->reply_size, 0);
  
@@ -144,7 +144,7 @@ index 339820dd05ad71f37f664ed65567ddf90f387865..1a952944825e482ead7c781aaf80de6d
  			throw std::runtime_error("Failed to read client-pushed reply body");
  		}
  
-@@ -182,10 +197,23 @@ std::shared_ptr<DarlingServer::Call> DarlingServer::Call::callFromMessage(Messag
+@@ -183,10 +198,23 @@ std::shared_ptr<DarlingServer::Call> DarlingServer::Call::callFromMessage(Messag
  				// the client saw this unexpected reply while waiting for interrupt_enter to respond and sent it back to us,
  				// and we received both calls (interrupt_enter and push_reply) at the same time
  				thread->_pendingSavedReply = std::move(replyToSave);
@@ -171,7 +171,7 @@ index 339820dd05ad71f37f664ed65567ddf90f387865..1a952944825e482ead7c781aaf80de6d
  				if (thread->_interrupts.top().savedReply) {
  					throw std::runtime_error("Client-pushed reply overwriting existing saved reply");
  				}
-@@ -196,9 +224,8 @@ std::shared_ptr<DarlingServer::Call> DarlingServer::Call::callFromMessage(Messag
+@@ -197,9 +225,8 @@ std::shared_ptr<DarlingServer::Call> DarlingServer::Call::callFromMessage(Messag
  		callLog.debug() << *thread << ": Saved client-pushed reply (" << ((thread->_pendingSavedReply) ? "pending" : "normal") << ")" << callLog.endLog;
  
  		// write a byte to the pipe so the caller can continue

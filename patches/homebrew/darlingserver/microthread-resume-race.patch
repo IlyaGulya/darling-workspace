@@ -1,4 +1,4 @@
-From d2d76a9a16fdc8d05947b1acfb54285c062563b2 Mon Sep 17 00:00:00 2001
+From a99d52248f437be96239a22c8ce5f58fbf32d221 Mon Sep 17 00:00:00 2001
 From: Ilya Gulya <ilya@gulya.me>
 Date: Wed, 10 Jun 2026 10:05:56 +0000
 Subject: [PATCH] thread: fix microthread resume-before-suspend lost wakeup

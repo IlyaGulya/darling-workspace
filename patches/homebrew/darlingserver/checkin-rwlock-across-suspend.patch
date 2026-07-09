@@ -1,4 +1,4 @@
-From b6d1c6d496d37226b2563ea9a0109e3e50eddb34 Mon Sep 17 00:00:00 2001
+From 496fe0259c42288bf21c6cb7e6d9340a67e32b29 Mon Sep 17 00:00:00 2001
 From: Ilya Gulya <ilya@gulya.me>
 Date: Sun, 28 Jun 2026 05:21:03 +0000
 Subject: [PATCH] dar-6x4: don't hold Process::_rwlock across suspending dtape
@@ -43,8 +43,6 @@ it for read. RED arm (held across suspend) deadlocks (watchdog, exit 1); GREEN
 arm (released before suspend = this fix) passes. HOST test, <5s.
 
 bead: dar-6x4 (epic dar-dar6x4-perf-5dq)
-
-Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
 ---
  src/process.cpp                             |  62 ++++++---
  tests/inline_suspend_rwlock_deadlock.c      | 146 ++++++++++++++++++++

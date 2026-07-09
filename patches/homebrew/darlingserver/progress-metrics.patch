@@ -1,4 +1,4 @@
-From 5e43b68e43461d5fe12aa9d9f223c30ef162b9f6 Mon Sep 17 00:00:00 2001
+From bd18a8bd71753b8321e513fe19cb724345f6b873 Mon Sep 17 00:00:00 2001
 From: Ilya Gulya <ilya@gulya.me>
 Date: Sun, 28 Jun 2026 01:17:33 +0000
 Subject: [PATCH] darlingserver: progress + timing metrics over an abstract
@@ -318,7 +318,7 @@ index 2f6e7aaa1051f41da0088c5839e90d1bf15c72a6..d85d04ef10efd27930a5cca9e97d1cf3
  			std::unique_lock lock(_queueMutex);
  			_workItems.push(std::move(workItem));
 diff --git a/src/call.cpp b/src/call.cpp
-index e6040f16660a913169e55a2ff9befb072d5a0494..a443cd837393f8f73204ffe99461717da46ad54c 100644
+index d4825d9b54a849cb890a0be5b34c45bf48394cb8..717ec8e36bfb7d16c0b8f5601409ae083e7e806d 100644
 --- a/src/call.cpp
 +++ b/src/call.cpp
 @@ -28,6 +28,7 @@
@@ -329,7 +329,7 @@ index e6040f16660a913169e55a2ff9befb072d5a0494..a443cd837393f8f73204ffe99461717d
  #include <sys/fcntl.h>
  #include <sys/syscall.h>
  #include <darlingserver/kqchan.hpp>
-@@ -371,6 +372,17 @@ void DarlingServer::Call::sendErrorReplyFromHeader(const dserver_rpc_callhdr_t*
+@@ -376,6 +377,17 @@ void DarlingServer::Call::sendErrorReplyFromHeader(const dserver_rpc_callhdr_t*
  void DarlingServer::Call::Checkin::processCall() {
  	// the Call instance creation already took care of registering the process and thread.
  
@@ -347,7 +347,7 @@ index e6040f16660a913169e55a2ff9befb072d5a0494..a443cd837393f8f73204ffe99461717d
  	int code = 0;
  
  	if (auto thread = _thread.lock()) {
-@@ -385,6 +397,13 @@ void DarlingServer::Call::Checkin::processCall() {
+@@ -390,6 +402,13 @@ void DarlingServer::Call::Checkin::processCall() {
  		code = -ESRCH;
  	}
  

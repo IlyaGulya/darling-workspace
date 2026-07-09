@@ -10,12 +10,18 @@ rm -rf "$profile_root"
 mkdir -p "$profile_root/test"
 
 darling_repo="$repo/../darling"
+darlingserver_repo="$repo/../darling/src/external/darlingserver"
 source_branch="fix/mldr-glibc-fork-reset"
 source_commit="$(git -C "$darling_repo" rev-parse "$source_branch")"
 source_base="$(git -C "$darling_repo" rev-parse "${source_branch}^")"
 nonancestor_base="$(git -C "$darling_repo" rev-parse fix/sandbox-exec-pass-through)"
 missing_base=ffffffffffffffffffffffffffffffffffffffff
 missing_commit=eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee
+stack_first_branch="fix/server-inline-fastpath"
+stack_second_branch="fix/checkin-rwlock-across-suspend"
+stack_first_commit="$(git -C "$darlingserver_repo" rev-parse "$stack_first_branch")"
+stack_second_commit="$(git -C "$darlingserver_repo" rev-parse "$stack_second_branch")"
+stack_stale_base="$(git -C "$darlingserver_repo" rev-parse "${stack_first_branch}^")"
 
 write_profile() {
 	local source_base_value="$1"
@@ -30,6 +36,31 @@ patches:
   source-branch: $source_branch
   source-base: $source_base_value
   source-commit: $source_commit_value
+  bead: dar-jqlo
+  publication-status: blocked
+  publication-blocker: export preflight contract fixture
+YAML
+}
+
+write_stack_profile() {
+	cat >"$profile_root/patches.yml" <<YAML
+version: 1
+integration-date: '2026-07-09T00:00:00Z'
+patches:
+- path: test/first.patch
+  sha256sum: 0000000000000000000000000000000000000000000000000000000000000000
+  module: darling/src/external/darlingserver
+  source-branch: $stack_first_branch
+  source-commit: $stack_first_commit
+  bead: dar-jqlo
+  publication-status: blocked
+  publication-blocker: export preflight contract fixture
+- path: test/second.patch
+  sha256sum: 0000000000000000000000000000000000000000000000000000000000000000
+  module: darling/src/external/darlingserver
+  source-branch: $stack_second_branch
+  source-base: $stack_stale_base
+  source-commit: $stack_second_commit
   bead: dar-jqlo
   publication-status: blocked
   publication-blocker: export preflight contract fixture
@@ -76,6 +107,21 @@ grep -q "source branch parent is $source_base" "$profile_root/nonancestor.out" |
 	fail 'non-ancestor source-base diagnostic did not suggest current branch parent'
 test "$(cat "$profile_root/test/preflight.patch")" = "sentinel" ||
 	fail 'export wrote patch output before non-ancestor source-base preflight failed'
+
+printf 'first-sentinel\n' >"$profile_root/test/first.patch"
+printf 'second-sentinel\n' >"$profile_root/test/second.patch"
+write_stack_profile
+if west patch export --profile __export_preflight_contract >"$profile_root/stale-stack-base.out" 2>&1; then
+	fail 'export with stale linear-stack source-base unexpectedly passed'
+fi
+grep -q "test/second.patch: source-base $stack_stale_base is stale for the linear darling/src/external/darlingserver stack" "$profile_root/stale-stack-base.out" ||
+	fail 'stale linear-stack source-base diagnostic did not name the patch and revision'
+grep -q "previous profile patch is $stack_first_commit" "$profile_root/stale-stack-base.out" ||
+	fail 'stale linear-stack source-base diagnostic did not name the previous patch commit'
+test "$(cat "$profile_root/test/first.patch")" = "first-sentinel" ||
+	fail 'stale linear-stack source-base preflight wrote first patch output before failing'
+test "$(cat "$profile_root/test/second.patch")" = "second-sentinel" ||
+	fail 'stale linear-stack source-base preflight wrote second patch output before failing'
 
 printf 'sentinel\n' >"$profile_root/test/preflight.patch"
 write_profile "$source_base" "$source_commit"

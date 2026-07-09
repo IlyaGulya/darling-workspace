@@ -1,4 +1,4 @@
-From 418cf7fc07686bd78fbc69b1caac58ebbfc91a20 Mon Sep 17 00:00:00 2001
+From 2d7b59dac209ecdb8a9854a3030b758e8428e42b Mon Sep 17 00:00:00 2001
 From: Ilya Gulya <ilya@gulya.me>
 Date: Fri, 26 Jun 2026 07:38:43 +0000
 Subject: [PATCH] call: reply with an error instead of silently dropping at
@@ -82,7 +82,7 @@ index 0000000000000000000000000000000000000000..a7317c2d0784c7008151664f85d22195
 +
 +#endif
 diff --git a/src/call.cpp b/src/call.cpp
-index a5110d429ecf08753fa2cc095cf3d0fc13b0218e..339820dd05ad71f37f664ed65567ddf90f387865 100644
+index 5811aa70620868918687ef1fb51ea15c69d2bca6..a63f8701bf2fd699d351a47c9e51d22b263cb5dd 100644
 --- a/src/call.cpp
 +++ b/src/call.cpp
 @@ -19,6 +19,7 @@
@@ -92,8 +92,8 @@ index a5110d429ecf08753fa2cc095cf3d0fc13b0218e..339820dd05ad71f37f664ed65567ddf9
 +#include <darlingserver/rpc-error-reply.hpp>
  #include <darlingserver/server.hpp>
  #include <sys/uio.h>
- 
-@@ -29,6 +30,7 @@
+ #include <errno.h>
+@@ -30,6 +31,7 @@
  #include <sys/syscall.h>
  #include <darlingserver/kqchan.hpp>
  #include <system_error>
@@ -101,7 +101,7 @@ index a5110d429ecf08753fa2cc095cf3d0fc13b0218e..339820dd05ad71f37f664ed65567ddf9
  
  static DarlingServer::Log callLog("calls");
  
-@@ -81,10 +83,13 @@ std::shared_ptr<DarlingServer::Call> DarlingServer::Call::callFromMessage(Messag
+@@ -82,10 +84,13 @@ std::shared_ptr<DarlingServer::Call> DarlingServer::Call::callFromMessage(Messag
  		});
  
  		if (!process) {
@@ -118,7 +118,7 @@ index a5110d429ecf08753fa2cc095cf3d0fc13b0218e..339820dd05ad71f37f664ed65567ddf9
  			return nullptr;
  		}
  
-@@ -110,10 +115,12 @@ std::shared_ptr<DarlingServer::Call> DarlingServer::Call::callFromMessage(Messag
+@@ -111,10 +116,12 @@ std::shared_ptr<DarlingServer::Call> DarlingServer::Call::callFromMessage(Messag
  		});
  
  		if (!thread) {
@@ -134,7 +134,7 @@ index a5110d429ecf08753fa2cc095cf3d0fc13b0218e..339820dd05ad71f37f664ed65567ddf9
  			return nullptr;
  		}
  
-@@ -216,7 +223,22 @@ std::shared_ptr<DarlingServer::Call> DarlingServer::Call::callFromMessage(Messag
+@@ -217,7 +224,22 @@ std::shared_ptr<DarlingServer::Call> DarlingServer::Call::callFromMessage(Messag
  	#undef CALL_CASE
  
  	if (thread) {
@@ -158,7 +158,7 @@ index a5110d429ecf08753fa2cc095cf3d0fc13b0218e..339820dd05ad71f37f664ed65567ddf9
  		return result;
  	} else {
  		Thread::kernelAsync([result]() {
-@@ -273,6 +295,19 @@ void DarlingServer::Call::sendReply(Message&& reply) {
+@@ -279,6 +301,19 @@ void DarlingServer::Call::sendReply(Message&& reply) {
  	Server::sharedInstance().sendMessage(std::move(reply));
  };
  

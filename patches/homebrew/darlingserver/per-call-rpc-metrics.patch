@@ -1,4 +1,4 @@
-From 4c528d99c54bc4da04b017690195ca628e065526 Mon Sep 17 00:00:00 2001
+From 86cb8e34cc708eef1a26ae6a5287a00ef77aeca4 Mon Sep 17 00:00:00 2001
 From: Ilya Gulya <ilya@gulya.me>
 Date: Sun, 28 Jun 2026 07:11:45 +0000
 Subject: [PATCH] darlingserver: per-call-number RPC metrics breakdown (perf
@@ -24,8 +24,6 @@ points perf #7 at these per-thread traps (spin, or better, cache the stable ones
 RED->GREEN test committed alongside (per the standing TDD rule): per_call_metrics_test.cpp
 links only metrics.cpp, asserts recordCall keeps call numbers separate, names them
 in the snapshot, and omits unrecorded calls. RED before recordCall existed, GREEN after.
-
-Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
 ---
  internal-include/darlingserver/metrics.hpp | 27 +++++++
  src/metrics.cpp                            | 42 ++++++++++-
@@ -135,10 +133,10 @@ index 0f6b19a74b69f2f1d93621bfcdcf28c3ea6d60fb..8d294be418beb9c37d60aea153e48b80
  	return out.str();
  }
 diff --git a/src/thread.cpp b/src/thread.cpp
-index 35bb53237359ae903423564b8e68256df3437a2a..dfd0ae6b3c21e6e989b2b7a40788317a3b7482c4 100644
+index 9daf3611795f631aad1a6e6bc5b68c666bca8d50..e480158b6a73a0b363afcc3c436f305565da1f08 100644
 --- a/src/thread.cpp
 +++ b/src/thread.cpp
-@@ -399,6 +399,9 @@ void DarlingServer::Thread::microthreadWorker() {
+@@ -386,6 +386,9 @@ void DarlingServer::Thread::microthreadWorker() {
  		uint64_t serviceUs = (now >= _callStartUs) ? (now - _callStartUs) : 0;
  		_metrics.rpcsServiced.fetch_add(1, std::memory_order_relaxed);
  		_metrics.rpcLatency.record(serviceUs);

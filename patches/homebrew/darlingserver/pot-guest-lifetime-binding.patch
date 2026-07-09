@@ -1,4 +1,4 @@
-From d0cfd7b6605dac15471240724dec03bb9b91231e Mon Sep 17 00:00:00 2001
+From b983a36ada0c2d13125ca6c5c62cc0d417c272dc Mon Sep 17 00:00:00 2001
 From: Ilya Gulya <ilya@gulya.me>
 Date: Sat, 4 Jul 2026 15:39:40 +0000
 Subject: [PATCH] dar-pot: bind guest-ns launchd lifetime to darlingserver
@@ -44,8 +44,6 @@ Empirically verified: ns-PID-1 getppid()==0 across the ns boundary (so a
 getppid race guard is inapplicable), and pdeathsig fires on parent death.
 
 bead: dar-pot
-
-Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
 ---
  src/darlingserver.cpp             |  18 ++
  tests/pot_lifetime_binding_test.c | 357 ++++++++++++++++++++++++++++++
