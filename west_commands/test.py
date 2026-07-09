@@ -619,6 +619,7 @@ class DarlingTest(WestCommand):
                 "script_path": script_path,
                 "args": args,
                 "shell": False,
+                "runner": "script",
                 "env": env,
                 "requires_resources": list(test.get("requires", [])),
                 "requires_env": list(test.get("requires-env", [])),
@@ -1052,6 +1053,7 @@ class DarlingTest(WestCommand):
                 "script_path": script_path,
                 "args": None,
                 "shell": False,
+                "runner": "guest-c-fixture",
                 "env": env,
                 "guest_c_fixture": True,
                 "guest_cc": guest_cc,
@@ -2590,8 +2592,10 @@ fi
         return True
 
     def _run_guest_runtime_deploy_proof(self, patch, proof, invocation) -> int:
-        if not invocation.get("guest_c_fixture"):
-            self.die(f"{patch['path']}: guest-runtime-deploy requires guest-c-fixture")
+        if not invocation.get("guest_c_fixture") and invocation.get("runner") != "script":
+            self.die(f"{patch['path']}: guest-runtime-deploy requires guest-c-fixture or script")
+        if invocation.get("runner") == "script" and "darling-prefix" not in invocation.get("requires_resources", []):
+            self.die(f"{patch['path']}: guest-runtime-deploy script runner requires darling-prefix")
         missing_env = self._missing_requirements(invocation)
         if missing_env:
             self.die(
