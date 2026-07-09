@@ -85,7 +85,7 @@
         },
         {
           "branch": "integration/homebrew",
-          "head": "4dfa8a21be8f8561ea801112dcb96565b5103af0",
+          "head": "c044c084aa4f4033b6e916b59358e7d7308b0911",
           "upstream": "",
           "source_ref": "refs/heads/integration/homebrew"
         },
@@ -113,6 +113,12 @@
       "path": "src/external/darlingserver",
       "bundle": "src__external__darlingserver.bundle",
       "branches": [
+        {
+          "branch": "backup/a0-hang-fixes-pre-homebrew-stack",
+          "head": "f4530b5f635672a815eff0f344ec7c91bc1ec12b",
+          "upstream": "",
+          "source_ref": "refs/heads/backup/a0-hang-fixes-pre-homebrew-stack"
+        },
         {
           "branch": "backup/local-snapshot-20260609",
           "head": "6577cdac17a49ec743a67a5e2d0d05f5e9be8fd8",
@@ -151,7 +157,7 @@
         },
         {
           "branch": "fix/a0-hang-fixes",
-          "head": "f4530b5f635672a815eff0f344ec7c91bc1ec12b",
+          "head": "32eb65ac4eb434ccc7432bbb76c7fffabb99d676",
           "upstream": "",
           "source_ref": "refs/heads/fix/a0-hang-fixes"
         },
@@ -216,6 +222,12 @@
           "source_ref": "refs/heads/fix/duct-tape-fail-closed-stubs"
         },
         {
+          "branch": "fix/eunion-runtime-prefix",
+          "head": "6856e3321a96583a5a9806082db520f6c7fb8315",
+          "upstream": "",
+          "source_ref": "refs/heads/fix/eunion-runtime-prefix"
+        },
+        {
           "branch": "fix/exc-fatal-reply-bound",
           "head": "42f9910cbd4eaf45a361572f5019f3e0f63c5b77",
           "upstream": "",
@@ -271,7 +283,7 @@
         },
         {
           "branch": "fix/processcall-exception-guard",
-          "head": "8a2c9c5994e65ea2101d7c821355e1a05ad55fc4",
+          "head": "44fbb9f428da4f403f53a102b58a353ca6d2dddd",
           "upstream": "",
           "source_ref": "refs/heads/fix/processcall-exception-guard"
         },
@@ -288,8 +300,14 @@
           "source_ref": "refs/heads/fix/psynch-cvwait-timer-cancel-on-sigexc"
         },
         {
+          "branch": "fix/psynch-rpc-arg-trace",
+          "head": "bc82f1b871820b310ea46662ea453e9e48a311d1",
+          "upstream": "",
+          "source_ref": "refs/heads/fix/psynch-rpc-arg-trace"
+        },
+        {
           "branch": "fix/pthread-canceled-xnu-semantics",
-          "head": "2069c75492f6813f7eb623af3ba66f8891422c20",
+          "head": "830e0fcd4f32a7594c83d3acb56c4c46caec3b22",
           "upstream": "",
           "source_ref": "refs/heads/fix/pthread-canceled-xnu-semantics"
         },
@@ -324,6 +342,12 @@
           "source_ref": "refs/heads/fix/standard-signal-coalescing"
         },
         {
+          "branch": "fix/test-diagnostics-trace",
+          "head": "d1589fd450bb590a4d3a72fdabf0d19555b74b92",
+          "upstream": "",
+          "source_ref": "refs/heads/fix/test-diagnostics-trace"
+        },
+        {
           "branch": "fix/z27x3-deadline-scheduler",
           "head": "93c70498f3c97f8933af56b6308a8780bbaa5f26",
           "upstream": "",
@@ -337,7 +361,7 @@
         },
         {
           "branch": "integration/homebrew",
-          "head": "1f94b8ae35c84022bcf6af46866ec80199fab406",
+          "head": "1a60bae2de97cd645e0c25b941fca821949918ff",
           "upstream": "",
           "source_ref": "refs/heads/integration/homebrew"
         },
@@ -469,7 +493,7 @@
         },
         {
           "branch": "integration/homebrew",
-          "head": "c29d7b38b2a1ffac4466c43a683f71bb5437ba00",
+          "head": "7b0200bdf53551c6d4979eda8a7560b4b9572ab0",
           "upstream": "",
           "source_ref": "refs/heads/integration/homebrew"
         }
@@ -600,8 +624,14 @@
           "source_ref": "refs/heads/fix/abort-with-payload-no-group-broadcast"
         },
         {
+          "branch": "fix/chown-disabled-null-guard",
+          "head": "b9e995ad224e566db505072a166f70423225ea51",
+          "upstream": "",
+          "source_ref": "refs/heads/fix/chown-disabled-null-guard"
+        },
+        {
           "branch": "fix/darwin-priority",
-          "head": "ccf4c98e0749805ffb864e9e28682ecb91d20be2",
+          "head": "d021cbe8dac2e47e56f5321021246331edae55ff",
           "upstream": "origin/main",
           "source_ref": "refs/heads/fix/darwin-priority"
         },
@@ -738,6 +768,12 @@
           "source_ref": "refs/heads/fix/e-union-9-getdents-passthrough"
         },
         {
+          "branch": "fix/eunion-fdpath-nested-lower",
+          "head": "afeb053fa1bcdf3de819d403d6c1aacb244fa659",
+          "upstream": "",
+          "source_ref": "refs/heads/fix/eunion-fdpath-nested-lower"
+        },
+        {
           "branch": "fix/fd-guard-ebadf",
           "head": "8b01cc14b39c5fc1589191132682a419383ddb54",
           "upstream": "",
@@ -748,6 +784,18 @@
           "head": "86cb1cf68d174a5255e075528ec8679abebb4b20",
           "upstream": "origin/main",
           "source_ref": "refs/heads/fix/fork-postfork-child"
+        },
+        {
+          "branch": "fix/fork-wait-timeout-parent",
+          "head": "9159de2e2b985d24c57df445a44ee75afefbcdcc",
+          "upstream": "",
+          "source_ref": "refs/heads/fix/fork-wait-timeout-parent"
+        },
+        {
+          "branch": "fix/fstatfs-missing-proc-mounts",
+          "head": "32dd08e513243b1d1056dd9bc718d10ab44d233c",
+          "upstream": "",
+          "source_ref": "refs/heads/fix/fstatfs-missing-proc-mounts"
         },
         {
           "branch": "fix/getattrlist-name-objtype",
@@ -781,7 +829,7 @@
         },
         {
           "branch": "fix/psynch-cvsignal-args",
-          "head": "f21fb14efa1b64b708bbcd8279dedf0cbd56efc8",
+          "head": "6dc451c247b85bd2428c42283702ee5346e30ff0",
           "upstream": "origin/main",
           "source_ref": "refs/heads/fix/psynch-cvsignal-args"
         },
@@ -859,7 +907,7 @@
         },
         {
           "branch": "integration/homebrew",
-          "head": "77c69408682dac6d20f64e4b3553ae00584a9006",
+          "head": "9159de2e2b985d24c57df445a44ee75afefbcdcc",
           "upstream": "",
           "source_ref": "refs/heads/integration/homebrew"
         },
