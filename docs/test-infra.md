@@ -111,6 +111,11 @@ patches:
 The old verbose form remains valid during migration. New repetitive
 guest/runtime metadata should prefer compact profiles so the manifest describes
 what is unique about the test rather than restating runner boilerplate.
+The `perf` profile carries the first real migrated examples:
+`mldr_compact_fd_band_guest` uses the compact guest-C runtime RED profile plus
+an `mldr-runtime` artifact profile, and `dcc2_valid_cache_guest` composes the
+guest-command runtime RED profile with a DCC cache profile and `dyld-runtime`
+artifact profile.
 
 `coverage-tier` classifies the strength of evidence independently from `kind`:
 
