@@ -24,10 +24,10 @@ submodule as an archive.
 | dar-q95.12 | xnu | `fix/fork-postfork-child`  | `5f26a4c` | `__mldr_postfork_child()` | **created** |
 | dar-q95.17 | xnu | `fix/getattrlist-name-objtype` | `5f26a4c` | getattrlist `ATTR_CMN_NAME` + `ATTR_CMN_OBJTYPE` | **created** |
 | dar-q95.18 | xnu | `fix/getattrlistbulk` | `5f26a4c` | getattrlistbulk implementation | **created** |
-| dar-q95.19 | xnu | `fix/psynch-negative-errno` | `5f26a4c` | psynch wait negative errno returns | **created** |
+| dar-q95.19 | xnu | `fix/psynch-negative-errno` | `5f26a4c` | psynch wait syscall/cerror return contract | **created** |
 | dar-q95.20 | xnu | `fix/sigexc-sa-restart` | `5f26a4c` | `SA_RESTART` in sigexc path | **created** |
 | dar-q95.14 | top-level darling | `fix/mldr-glibc-fork-reset` | `5f2d7401d` | mldr glibc loader-lock reset | **created** |
-| dar-q95.16 | libpthread | `fix/psynch-negative-returns` | `f07f265` | decode negative psynch wait returns | **created** |
+| dar-q95.29.2 | libpthread | `fix/psynch-kernel-return-helper` | `f07f265` | psynch wait return decode/policy helper | **created** |
 | dar-q95.21 | top-level darling | `fix/sandbox-exec-pass-through` | `5f2d7401d` | `sandbox-exec` pass-through | **created** |
 | dar-q95.22 | top-level darling | `fix/sdk-homebrew-detection` | `5f2d7401d` | SDKSettings + `MacOSX11.sdk` symlink | **created** |
 | dar-q95.4  | libplatform | `fix/bzero-return-register`      | — | preserve bzero dest ptr (x86_64) | pre-existing (draft PR darling-libplatform#5) |
@@ -39,7 +39,7 @@ submodule as an archive.
 
 | beads | scope | concern | status |
 |-------|-------|---------|--------|
-| dar-q95.23 | psynch ABI layering | decide whether psynch wait errors should be normalized at libsystem_kernel to macOS-style `-1 + errno`, or intentionally exposed as negative BSD errno values with libpthread decoding as a compatibility backstop | **open** |
+| dar-q95.23 | psynch ABI layering | resolved by dar-q95.29.2: libsystem_kernel owns syscall/cerror transport, libpthread owns pthread wait policy, and the old libpthread negative-return patch is superseded | **closed** |
 
 Upstream repos (submodule URLs are relative `../<repo>.git`, current `origin`
 is the IlyaGulya fork):
@@ -52,9 +52,11 @@ darlingserver and xnu PRs are independent of each other and can go in any
 order. The top-level submodule-pointer bump (dar-q95.7) must come last, after
 the submodule PRs are settled.
 
-Resolve `dar-q95.23` before opening the paired psynch negative-return PRs
-(`dar-q95.16` and `dar-q95.19`). Those two drafts may shrink or change shape if
-the root-correct answer is to normalize the ABI below libpthread.
+The old paired psynch negative-return draft (`dar-q95.16`) is superseded by
+the q95.29.2 split: `xnu/psynch-negative-errno.patch` preserves full psynch
+errno/status bits across the syscall/cerror boundary, and
+`libpthread/psynch-kernel-return-helper.patch` decodes that contract at the
+pthread policy layer.
 
 ## Patch vs root-cause audit
 
@@ -63,10 +65,10 @@ the root-correct answer is to normalize the ABI below libpthread.
   mldr must explicitly restore the critical host-runtime child resets it skips.
   The broader rule for future review: any host libc/runtime child reset skipped
   by Darling's raw-fork path needs an explicit mldr equivalent.
-- psynch negative returns (`dar-q95.16`, `dar-q95.19`) are the main unresolved
-  layering question. The current local fix works around negative BSD errno
-  values reaching libpthread, but `dar-q95.23` tracks whether the deeper fix is
-  to normalize libsystem_kernel to Darwin's `-1 + errno` ABI instead.
+- psynch wait returns are now split by layer: XNU/libsystem_kernel preserves
+  psynch errno/status through the syscall/cerror boundary, while libpthread
+  decodes the result and owns retry/policy decisions. The old libpthread
+  negative-return workaround (`dar-q95.16`) is superseded.
 - `sandbox-exec` pass-through (`dar-q95.21`) is only a compatibility shim for
   build systems that expect the command to exist. It must not be presented as a
   sandbox implementation.
