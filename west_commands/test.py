@@ -1041,9 +1041,14 @@ class DarlingTest(WestCommand):
                 str(k): str(v) for k, v in test.get("guest-env-vars", {}).items()
             }
             host_trace_oracle = bool(test.get("host-trace-oracle", False))
+            host_stat_deltas = list(test.get("host-stat-deltas", []))
             ok_marker = test.get("ok-marker")
             if not ok_marker and not host_trace_oracle:
                 self.die(f"{patch['path']}: guest-c-fixture needs ok-marker")
+            dserver_path = self._project_path("darling/src/external/darlingserver")
+            host_stat_tool = "darling-stat"
+            if dserver_path is not None:
+                host_stat_tool = str(dserver_path / "tools/darling-stat")
             display = (
                 f"cd {quote(repo)} && <upload> {quote(script)} && "
                 f"darling shell {quote(guest_cc)} {guest_cflags} "
@@ -1052,7 +1057,7 @@ class DarlingTest(WestCommand):
                 f"{shell_join(run_args)}"
             )
             return {
-                "key": f"guest-c-fixture:{repo}:{script}",
+                "key": f"guest-c-fixture:{repo}:{script}:{repr(host_stat_deltas)}",
                 "display": display,
                 "cwd": cwd,
                 "script_path": script_path,
@@ -1071,6 +1076,8 @@ class DarlingTest(WestCommand):
                 "ok_marker": str(ok_marker or ""),
                 "host_trace_files": list(test.get("host-trace-files", [])),
                 "host_temp_files": list(test.get("host-temp-files", [])),
+                "host_stat_deltas": host_stat_deltas,
+                "host_stat_tool": host_stat_tool,
                 "eunion_template_files": list(test.get("eunion-template-files", [])),
                 "eunion_template_symlinks": list(test.get("eunion-template-symlinks", [])),
                 "eunion_upper_files": list(test.get("eunion-upper-files", [])),
@@ -1123,9 +1130,16 @@ class DarlingTest(WestCommand):
                 continue
             seen_invocations.add(invocation["key"])
             with self._required_profile_context(patch, invocation):
-                exec_env = self._execution_env(invocation)
-                with self._resource_context(invocation, exec_env):
-                    result_rc = self._run_invocation(invocation, env=exec_env)
+                proof = test.get("red-proof")
+                if (
+                    isinstance(proof, dict)
+                    and proof.get("mode") == "guest-runtime-deploy"
+                ):
+                    result_rc = self._run_guest_runtime_deploy_green(patch, proof, invocation)
+                else:
+                    exec_env = self._execution_env(invocation)
+                    with self._resource_context(invocation, exec_env):
+                        result_rc = self._run_invocation(invocation, env=exec_env)
             if result_rc:
                 rc = result_rc
         return rc
@@ -2069,14 +2083,126 @@ timingsafe_bcmp(const void *b1, const void *b2, size_t n)
             trace_check = "\n".join(trace_check_lines) or ":"
             trace_dump = "\n".join(trace_dump_lines) or ":"
             trace_settle = "sleep 0.25" if invocation.get("host_trace_files") else ":"
+            host_stat_deltas = invocation.get("host_stat_deltas", [])
+            host_stat_specs = quote(json.dumps(host_stat_deltas))
+            host_stat_tool = quote(str(invocation.get("host_stat_tool", "darling-stat")))
+            host_stat_setup = ":"
+            host_stat_before = ":"
+            host_stat_after = ":"
+            host_stat_dump = ":"
+            host_stat_check = ":"
+            if host_stat_deltas:
+                host_stat_setup = f"""host_stat_tool={host_stat_tool}
+host_stat_before={quote(str(tempdir / "stat-before.json"))}
+host_stat_after={quote(str(tempdir / "stat-after.json"))}
+host_stat_specs={host_stat_specs}
+if [ ! -x "$host_stat_tool" ]; then
+\tprintf 'missing darling stat tool: %s\\n' "$host_stat_tool" >&2
+\texit 1
+fi"""
+                host_stat_before = '"$host_stat_tool" "$DPREFIX" > "$host_stat_before"'
+                host_stat_after = '"$host_stat_tool" "$DPREFIX" > "$host_stat_after"'
+                host_stat_dump = """if [ -f "$host_stat_before" ]; then
+\tprintf '%s\\n' '--- host stat before ---' >&2
+\tcat "$host_stat_before" >&2 || true
+fi
+if [ -f "$host_stat_after" ]; then
+\tprintf '%s\\n' '--- host stat after ---' >&2
+\tcat "$host_stat_after" >&2 || true
+fi"""
+                host_stat_check = """python3 - "$host_stat_specs" "$host_stat_before" "$host_stat_after" <<'PY'
+import json
+import sys
+
+specs = json.loads(sys.argv[1])
+with open(sys.argv[2], encoding="utf-8") as handle:
+    before = json.load(handle)
+with open(sys.argv[3], encoding="utf-8") as handle:
+    after = json.load(handle)
+
+def value_at(snapshot, path):
+    current = snapshot
+    for part in path.split("."):
+        if not isinstance(current, dict) or part not in current:
+            raise KeyError(path)
+        current = current[part]
+    if not isinstance(current, (int, float)):
+        raise TypeError(path)
+    return current
+
+failed = False
+for spec in specs:
+    path = str(spec["path"])
+    minimum = float(spec.get("min-delta", 1))
+    old = value_at(before, path)
+    new = value_at(after, path)
+    delta = new - old
+    print(f"HOST_STAT_DELTA {path} {delta:g}")
+    if delta < minimum:
+        print(
+            f"host stat delta too small for {path}: {delta:g} < {minimum:g}",
+            file=sys.stderr,
+        )
+        failed = True
+if failed:
+    sys.exit(1)
+PY"""
             needs_server_env_restart = bool(
-                invocation.get("host_temp_files") or invocation.get("host_trace_files")
+                invocation.get("host_temp_files")
+                or invocation.get("host_trace_files")
+                or host_stat_deltas
             )
             server_env_restart = (
                 "\"$launch\" shutdown >/dev/null 2>&1 || true"
                 if needs_server_env_restart
                 else ":"
             )
+            guest_compile_body = f"""
+{guest_prelude}
+{guest_env_setup}
+guest_cc={quote(invocation["guest_cc"])}
+if [ ! -x "$guest_cc" ]; then guest_cc=clang; fi
+{' '.join(compile_parts)}
+compile_rc=$?
+if [ "$compile_rc" -ne 0 ]; then
+\tprintf 'ORACLE_RC=%s\\n' "$compile_rc"
+\texit "$compile_rc"
+fi
+"""
+            guest_run_body = f"""
+{guest_env_setup}
+{' '.join(run_parts)}
+run_rc=$?
+printf 'ORACLE_RC=%s\\n' "$run_rc"
+exit "$run_rc"
+"""
+            if host_stat_deltas:
+                guest_workload = f"""
+set +e
+guest_shell "$timeout_seconds" {quote(guest_compile_body)} > "$verdict" 2>&1
+compile_rc=$?
+set -e
+if [ "$compile_rc" -ne 0 ]; then
+\tcat "$verdict" 2>/dev/null || true
+\texit "$compile_rc"
+fi
+{host_stat_before}
+set +e
+guest_shell "$timeout_seconds" {quote(guest_run_body)} >> "$verdict" 2>&1
+rc=$?
+set -e
+{host_stat_after}
+"""
+            else:
+                guest_workload = f"""
+set +e
+guest_shell "$timeout_seconds" {quote(f'''
+{guest_compile_body}
+{guest_run_body}
+''')} > "$verdict" 2>&1
+rc=$?
+set -e
+"""
             script = f"""#!/usr/bin/env bash
 set -euo pipefail
 : "${{DPREFIX:?set DPREFIX}}"
@@ -2090,6 +2216,7 @@ ok_marker={quote(invocation["ok_marker"])}
 host_trace_oracle={quote("1" if invocation.get("host_trace_oracle") else "0")}
 
 {trace_setup}
+{host_stat_setup}
 {server_env_restart}
 
 guest_shell() {{
@@ -2101,30 +2228,13 @@ guest_shell() {{
 guest_shell 10 "rm -f '$guest_src' '$guest_bin'" >/dev/null 2>&1 || true
 guest_shell 10 "cat > '$guest_src'" < "$host_src"
 
-set +e
-guest_shell "$timeout_seconds" {quote(f'''
-{guest_prelude}
-{guest_env_setup}
-guest_cc={quote(invocation["guest_cc"])}
-if [ ! -x "$guest_cc" ]; then guest_cc=clang; fi
-{' '.join(compile_parts)}
-compile_rc=$?
-if [ "$compile_rc" -ne 0 ]; then
-\tprintf 'ORACLE_RC=%s\\n' "$compile_rc"
-\texit "$compile_rc"
-fi
-{' '.join(run_parts)}
-run_rc=$?
-printf 'ORACLE_RC=%s\\n' "$run_rc"
-exit "$run_rc"
-''')} > "$verdict" 2>&1
-rc=$?
-set -e
+{guest_workload}
 
 {trace_settle}
 cat "$verdict" 2>/dev/null || true
 if [ "$rc" -ne 0 ] && [ "$host_trace_oracle" != 1 ]; then
 \t{trace_dump}
+\t{host_stat_dump}
 \texit "$rc"
 fi
 if [ "$host_trace_oracle" != 1 ]; then
@@ -2132,6 +2242,7 @@ if [ "$host_trace_oracle" != 1 ]; then
 \tgrep -q '^ORACLE_RC=0$' "$verdict"
 fi
 {trace_check}
+{host_stat_check}
 """
             host_runner.write_text(script)
             host_runner.chmod(0o755)
@@ -2736,6 +2847,13 @@ fi
             skip_patch_paths=self._current_minus_skip_patch_paths(patch, proof),
         )
 
+    def _apply_full_runtime_profile(self, patch, module: str, target: Path) -> None:
+        self._apply_profile_module_patches(
+            self._active_runtime_profile(patch),
+            module,
+            target,
+        )
+
     def _apply_red_source_patches(self, proof, module_label: str, target: Path) -> None:
         for source_patch in proof.get("source-patches", []):
             patch_path = self._red_source_patch_path(str(source_patch))
@@ -2772,11 +2890,17 @@ fi
         patch,
         project_path: Path,
         patch_module_path: Path,
-        current_minus_patch: bool,
+        omit_patch: bool,
         bad_revision,
     ) -> tuple[str, bool]:
         module = str(project_path)
-        if not current_minus_patch:
+        if not omit_patch:
+            source_commit = self._profile_module_source_commit(
+                self._active_runtime_profile(patch),
+                module,
+            )
+            if source_commit is not None:
+                return source_commit, True
             if project_path == patch_module_path:
                 return str(bad_revision), False
             return self._manifest_revision(module), False
@@ -2793,13 +2917,16 @@ fi
         return self._manifest_revision(module), False
 
     @contextmanager
-    def _guest_runtime_source_forest(self, patch, proof):
-        """Create a temporary Darling source forest for a bad runtime build.
+    def _guest_runtime_source_forest(self, patch, proof, *, omit_patch: bool):
+        """Create a temporary Darling source forest for a runtime build.
 
         The top-level Darling tree is a detached worktree. Nested West projects
-        are symlinked to the current checkout, except the patch module, which is
-        checked out at the patch's bad revision. This keeps the live checkout
-        stable while giving CMake one coherent source root.
+        are symlinked to the current checkout unless the proof needs them
+        materialized. When omit_patch is true, the target patch and explicit
+        current-minus skips are removed to build the RED runtime. Otherwise the
+        full active profile is materialized to build the GREEN runtime. This
+        keeps live checkouts and the caller's prefix stable while giving CMake
+        one coherent source root.
         """
         projects_by_path = {
             Path(project.path): Path(project.abspath)
@@ -2813,6 +2940,8 @@ fi
         materialized_modules = self._guest_runtime_source_modules(patch, proof)
         patch_module_is_darling_root = patch_module_path == Path("darling")
         current_minus_patch = proof.get("bad-profile") == "current-minus-patch"
+        if omit_patch and not current_minus_patch:
+            self.die(f"{patch['path']}: only current-minus-patch runtime proofs are supported")
         bad_revision = None if current_minus_patch else self._bad_revision(patch)
         added: list[tuple[Path, Path]] = []
         temp = tempfile.mkdtemp(prefix="west-red-proof-source-")
@@ -2822,16 +2951,12 @@ fi
             root = Path(temp)
             source_root = root / "darling"
             if patch_module_is_darling_root:
-                darling_ref = (
-                    self._manifest_revision("darling")
-                    if current_minus_patch
-                    else str(bad_revision)
-                )
+                darling_ref = self._manifest_revision("darling") if omit_patch else "HEAD"
             else:
                 darling_ref = "HEAD" if current_minus_patch else self._manifest_revision("darling")
-            bad_text = "current-minus-patch" if current_minus_patch else str(bad_revision)
+            bad_text = "current-minus-patch" if omit_patch else "profile-current"
             self.inf(
-                f"  RED source forest: {patch_module_path}={bad_text} under {source_root}"
+                f"  runtime source forest: {patch_module_path}={bad_text} under {source_root}"
             )
             subprocess.run(
                 [
@@ -2848,8 +2973,10 @@ fi
             )
             added.append((darling_repo, source_root))
             if patch_module_is_darling_root:
-                if current_minus_patch:
+                if omit_patch:
                     self._apply_current_minus_profile(patch, proof, "darling", source_root)
+                else:
+                    self._apply_full_runtime_profile(patch, "darling", source_root)
                 self._apply_red_source_patches(proof, "darling", source_root)
             for project_path, repo in sorted(
                 projects_by_path.items(),
@@ -2879,7 +3006,7 @@ fi
                             patch,
                             project_path,
                             patch_module_path,
-                            current_minus_patch,
+                            omit_patch,
                             bad_revision,
                         )
                     )
@@ -2897,9 +3024,12 @@ fi
                         check=True,
                     )
                     added.append((repo, target))
-                    if current_minus_patch and not uses_profile_source_commit:
-                        self._apply_current_minus_profile(patch, proof, module_text, target)
-                    if project_path == patch_module_path:
+                    if not uses_profile_source_commit:
+                        if omit_patch:
+                            self._apply_current_minus_profile(patch, proof, module_text, target)
+                        else:
+                            self._apply_full_runtime_profile(patch, module_text, target)
+                    if omit_patch:
                         self._apply_red_source_patches(proof, module_text, target)
                 else:
                     os.symlink(repo, target, target_is_directory=True)
@@ -2908,7 +3038,7 @@ fi
         except Exception:
             keep_on_failure = True
             suffix = " before yield" if not yielded else ""
-            self.err(f"preserving failed RED source forest{suffix} for inspection: {temp}")
+            self.err(f"preserving failed runtime source forest{suffix} for inspection: {temp}")
             raise
         finally:
             if not keep_on_failure:
@@ -2962,6 +3092,8 @@ fi
         proof,
         prefix: Path,
         scratch_root: Path,
+        *,
+        label: str = "RED",
     ) -> Path:
         targets: list[str] = []
         for artifact in proof.get("runtime-artifacts", []):
@@ -2969,13 +3101,13 @@ fi
                 if target not in targets:
                     targets.append(target)
         build_root = scratch_root / "build"
-        self.inf(f"  RED configure: {source_root} -> {build_root}")
+        self.inf(f"  {label} configure: {source_root} -> {build_root}")
         subprocess.run(
             ["cmake", "-S", str(source_root), "-B", str(build_root), *self._runtime_red_configure_args(prefix)],
             cwd=self.topdir,
             check=True,
         )
-        self.inf(f"  RED build: {', '.join(targets)}")
+        self.inf(f"  {label} build: {', '.join(targets)}")
         subprocess.run(["ninja", "-C", str(build_root), *targets], cwd=self.topdir, check=True)
         return build_root
 
@@ -3001,7 +3133,14 @@ fi
         return [prefix / rel]
 
     @contextmanager
-    def _runtime_red_deployed_artifacts(self, proof, build_root: Path, prefix: Path):
+    def _runtime_red_deployed_artifacts(
+        self,
+        proof,
+        build_root: Path,
+        prefix: Path,
+        *,
+        label: str = "RED",
+    ):
         backups: list[tuple[Path, Path | None]] = []
         with tempfile.TemporaryDirectory(prefix="west-red-proof-deploy-") as temp:
             backup_root = Path(temp)
@@ -3020,7 +3159,7 @@ fi
                             backups.append((dst, backup))
                             dst.parent.mkdir(parents=True, exist_ok=True)
                             shutil.copy2(src, dst)
-                            self.inf(f"  RED deploy: {src} -> {dst}")
+                            self.inf(f"  {label} deploy: {src} -> {dst}")
                 yield
             finally:
                 if not self._shutdown_runtime_prefix(prefix):
@@ -3065,6 +3204,40 @@ fi
         self._remove_stale_init_pid(prefix)
         return True
 
+    def _run_guest_runtime_deploy_green(self, patch, proof, invocation) -> int:
+        prefix_text = getattr(self, "_prefix", None)
+        if not prefix_text:
+            self.die(f"{patch['path']}: guest-runtime-deploy needs a Darling prefix")
+        prefix = Path(prefix_text)
+        temp = tempfile.mkdtemp(prefix="west-green-proof-runtime-")
+        keep_on_failure = False
+        try:
+            scratch_root = Path(temp)
+            with self._guest_runtime_source_forest(patch, proof, omit_patch=False) as source_root:
+                build_root = self._runtime_red_build_artifacts(
+                    source_root,
+                    proof,
+                    prefix,
+                    scratch_root,
+                    label="GREEN",
+                )
+                with self._runtime_red_deployed_artifacts(
+                    proof,
+                    build_root,
+                    prefix,
+                    label="GREEN",
+                ):
+                    green_env = self._execution_env(invocation)
+                    with self._resource_context(invocation, green_env):
+                        return self._run_invocation(invocation, env=green_env)
+        except Exception:
+            keep_on_failure = True
+            self.err(f"preserving failed GREEN runtime scratch for inspection: {temp}")
+            raise
+        finally:
+            if not keep_on_failure:
+                shutil.rmtree(temp, ignore_errors=True)
+
     def _run_guest_runtime_deploy_proof(self, patch, proof, invocation) -> int:
         if not invocation.get("guest_c_fixture") and invocation.get("runner") != "script":
             self.die(f"{patch['path']}: guest-runtime-deploy requires guest-c-fixture or script")
@@ -3086,14 +3259,15 @@ fi
         keep_on_failure = False
         try:
             scratch_root = Path(temp)
-            with self._guest_runtime_source_forest(patch, proof) as source_root:
+            with self._guest_runtime_source_forest(patch, proof, omit_patch=True) as source_root:
                 build_root = self._runtime_red_build_artifacts(
                     source_root,
                     proof,
                     prefix,
                     scratch_root,
+                    label="RED",
                 )
-                with self._runtime_red_deployed_artifacts(proof, build_root, prefix):
+                with self._runtime_red_deployed_artifacts(proof, build_root, prefix, label="RED"):
                     bad_env = self._execution_env(invocation)
                     with self._resource_context(invocation, bad_env):
                         bad_rc = self._run_invocation(invocation, env=bad_env)
@@ -3108,12 +3282,10 @@ fi
         finally:
             if not keep_on_failure:
                 shutil.rmtree(temp, ignore_errors=True)
-        self.inf("  GREEN current runtime")
+        self.inf("  GREEN profile runtime")
         if not self._shutdown_runtime_prefix(prefix):
             self.die(f"guest-runtime-deploy could not clean Darling prefix before GREEN runtime: {prefix}")
-        green_env = self._execution_env(invocation)
-        with self._resource_context(invocation, green_env):
-            return self._run_invocation(invocation, env=green_env)
+        return self._run_guest_runtime_deploy_green(patch, proof, invocation)
 
     def _run_source_base_proof(self, patch, proof, invocation) -> int:
         if invocation["shell"]:

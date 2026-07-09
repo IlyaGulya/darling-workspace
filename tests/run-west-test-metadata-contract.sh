@@ -380,6 +380,9 @@ patches:
       prefix-relative-path: ../bad
       contents:
       - not-a-string
+    host-stat-deltas:
+    - path: per-call.bad
+      min-delta: 0
     guest-env-vars:
       1BAD_GUEST: x
 - path: test/invalid-host-trace-oracle.patch
@@ -611,6 +614,12 @@ printf '%s\n' "$invalid_guest_red_check" | grep -q \
 printf '%s\n' "$invalid_guest_red_check" | grep -q \
 	'INVALID   test/invalid-host-trace.patch: tests\[1\].host-temp-files\[0\] contents must be a string' ||
 	fail 'invalid host-temp-files contents was not rejected'
+printf '%s\n' "$invalid_guest_red_check" | grep -q \
+	'INVALID   test/invalid-host-trace.patch: tests\[1\].host-stat-deltas\[0\] path must be a dotted JSON field path' ||
+	fail 'invalid host-stat-deltas path was not rejected'
+printf '%s\n' "$invalid_guest_red_check" | grep -q \
+	'INVALID   test/invalid-host-trace.patch: tests\[1\].host-stat-deltas\[0\] min-delta must be a positive integer' ||
+	fail 'invalid host-stat-deltas min-delta was not rejected'
 printf '%s\n' "$invalid_guest_red_check" | grep -q \
 	'INVALID   test/invalid-host-trace.patch: tests\[1\] guest-env-vars must be a mapping of shell variable names to scalar values' ||
 	fail 'invalid guest-env-vars was not rejected'

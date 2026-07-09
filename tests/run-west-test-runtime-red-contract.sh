@@ -38,6 +38,7 @@ def make_test():
     test.inf = lambda message: test.inf_messages.append(message)
     test.wrn = lambda message: None
     test.err = lambda message: test.err_messages.append(message)
+    test.die = lambda message: (_ for _ in ()).throw(SystemExit(message))
     test._resolve_darling_launcher = lambda _prefix: None
     test._kill_dserver_for_prefix = lambda _prefix: None
     test._prefix_process_snapshot = lambda _prefix: []
@@ -109,15 +110,15 @@ with tempfile.TemporaryDirectory() as temp:
     calls = []
 
     @contextmanager
-    def fake_source_forest(patch, proof):
-        calls.append(("source", patch["module"], proof["mode"]))
+    def fake_source_forest(patch, proof, *, omit_patch):
+        calls.append(("source", patch["module"], proof["mode"], omit_patch))
         yield tempdir / "source/darling"
 
-    def fake_build(source_root, proof, build_prefix, scratch_root):
-        calls.append(("build", source_root, build_prefix, scratch_root.exists()))
+    def fake_build(source_root, proof, build_prefix, scratch_root, *, label="RED"):
+        calls.append(("build", source_root, build_prefix, scratch_root.exists(), label))
         output = scratch_root / "build/xnu/libsystem_kernel.dylib"
         output.parent.mkdir(parents=True)
-        output.write_text("BAD\n")
+        output.write_text(f"{label}\n")
         return scratch_root / "build"
 
     def fake_run(invocation, env=None):
@@ -146,10 +147,12 @@ with tempfile.TemporaryDirectory() as temp:
     assert rc == 0, rc
     assert root_copy.read_text() == "ORIGINAL\n"
     assert base_copy.read_text() == "ORIGINAL\n"
-    assert calls[0] == ("source", "darling/src/external/xnu", "guest-runtime-deploy"), calls
-    assert calls[1][0] == "build" and calls[1][3] is True, calls
-    assert calls[2] == ("run", "runtime_red_contract", "BAD\n", "BAD\n"), calls
-    assert calls[3] == ("run", "runtime_red_contract", "ORIGINAL\n", "ORIGINAL\n"), calls
+    assert calls[0] == ("source", "darling/src/external/xnu", "guest-runtime-deploy", True), calls
+    assert calls[1][0] == "build" and calls[1][3] is True and calls[1][4] == "RED", calls
+    assert calls[2] == ("run", "runtime_red_contract", "RED\n", "RED\n"), calls
+    assert calls[3] == ("source", "darling/src/external/xnu", "guest-runtime-deploy", False), calls
+    assert calls[4][0] == "build" and calls[4][3] is True and calls[4][4] == "GREEN", calls
+    assert calls[5] == ("run", "runtime_red_contract", "GREEN\n", "GREEN\n"), calls
 
     symlink_parent = tempdir / "forest/darling/src/external/parent"
     symlink_parent.parent.mkdir(parents=True)
@@ -166,10 +169,12 @@ with tempfile.TemporaryDirectory() as temp:
     before = set(Path(tempfile.gettempdir()).glob("west-red-proof-runtime-*"))
 
     @contextmanager
-    def fake_source_forest(_patch, _proof):
+    def fake_source_forest(_patch, _proof, *, omit_patch):
+        assert omit_patch is True
         yield tempdir / "source/darling"
 
-    def failing_build(_source_root, _proof, _build_prefix, scratch_root):
+    def failing_build(_source_root, _proof, _build_prefix, scratch_root, *, label="RED"):
+        assert label == "RED"
         (scratch_root / "diagnostic.txt").write_text("kept\n")
         raise RuntimeError("forced build failure")
 
@@ -336,7 +341,7 @@ with tempfile.TemporaryDirectory() as temp:
 
     patch = {"path": "darling/skipped.patch", "module": "darling"}
     proof = {"mode": "guest-runtime-deploy", "bad-profile": "current-minus-patch"}
-    with test._guest_runtime_source_forest(patch, proof) as source_root:
+    with test._guest_runtime_source_forest(patch, proof, omit_patch=True) as source_root:
         assert (source_root / "base.txt").read_text() == "base\n"
         assert not (source_root / "skipped.txt").exists()
         assert (source_root / "kept.txt").read_text() == "kept\n"
@@ -431,6 +436,7 @@ with tempfile.TemporaryDirectory() as temp:
             "bad-profile": "current-minus-patch",
             "source-modules": ["darling/src/external/darlingserver"],
         },
+        omit_patch=True,
     ) as source_root:
         assert not (source_root / "src/external/xnu/skipped.txt").exists()
         assert (source_root / "src/external/darlingserver/ring_abi.txt").read_text() == "profile abi\n"
@@ -465,12 +471,17 @@ with tempfile.TemporaryDirectory() as temp:
             )
         ],
     )
+    test._active_profile = "runtime"
+    test._profile_stack = lambda profile: [profile]
+    test._load_profile = lambda _profile: {"patches": []}
+    test._profile_path = lambda profile: tempdir / "patches" / profile / "patches.yml"
 
     before = set(Path(tempfile.gettempdir()).glob("west-red-proof-source-*"))
     try:
         with test._guest_runtime_source_forest(
             {"path": "darling/example.patch", "module": "darling", "source-base": base_rev},
-            {"mode": "guest-runtime-deploy"},
+            {"mode": "guest-runtime-deploy", "bad-profile": "current-minus-patch"},
+            omit_patch=True,
         ) as source_root:
             assert (source_root / "base.txt").read_text() == "base\n"
             raise RuntimeError("forced downstream failure")
