@@ -57,7 +57,7 @@ and future destination, not a local blocker.
   - name: example_contract
     kind: contract        # unit|contract|guest|package|fuzz|stress|build|gate
     coverage-tier: host   # runtime|compile|host|model|source
-    env: host             # host|darling|macos
+    runs: host            # host|guest|macos
     diag: bare            # bare|guarded|forensic
     red: true             # this proves RED->GREEN for the fix
     red-proof:
@@ -69,27 +69,43 @@ and future destination, not a local blocker.
 ```
 
 Profiles may also define compact defaults. `test-profiles` are reusable test
-defaults; `artifact-profiles` are reusable runtime deploy plans. A test can use
-one or more profiles with `use` or `extends`; later test fields override profile
-fields, nested mappings merge recursively, and lists are replaced unless a field
-documents special append behavior. `artifacts` expands into
-`red-proof.runtime-artifacts`.
+defaults; `artifact-profiles` are reusable runtime deploy plans;
+`resource-profiles` are caches/oracles/external runtime resources; and
+`fixture-profiles` are setup/cleanup state. A test can use one or more profiles
+with `use` or `extends`; later test fields override profile fields, nested
+mappings merge recursively, and lists are replaced unless a field documents
+special append behavior.
+
+New manifests should use the explicit compact axes:
+
+- `runs: host|guest|macos` declares where the test executes. `runs: guest`
+  expands to the Darling guest envelope (`env: darling`, prefix lifecycle,
+  launcher/debug timeout/cleanup); this must not be hidden in a catch-all field.
+- `red-proof: source|runtime|self|none` declares how `west test --prove-red`
+  proves the test fails without the fix. Keep this separate from `expect`,
+  which describes green-run result expectations.
+- `artifacts` lists build outputs that `west test` builds/deploys/restores
+  during runtime proof.
+- `resources` lists runtime/test resources such as DCC caches, host traces,
+  stat deltas, or external services.
+- `fixtures` lists setup/cleanup state such as E-UNION overlays or seeded
+  prefix templates.
+
+Do not introduce `needs`; it is too broad. Use `artifacts`, `resources`, and
+`fixtures` so the manifest says what kind of dependency is involved.
 
 ```yaml
 test-profiles:
   guest-c-runtime-red:
     kind: guest
     coverage-tier: runtime
-    env: darling
+    runs: guest
     diag: bare
     runner: guest-c-fixture
     repo: darling-workspace
-    requires: [darling-prefix]
     compile-flags: [-std=gnu11, -Wall, -Wextra, -Werror]
     red: true
-    red-proof:
-      mode: guest-runtime-deploy
-      bad-profile: current-minus-patch
+    red-proof: runtime
 
 artifact-profiles:
   xnu-kernel:
@@ -181,7 +197,7 @@ Source/text checks are allowed only as auxiliary drift guards:
   - name: example_source_contract
     kind: source-contract
     coverage-tier: source
-    env: host
+    runs: host
     diag: bare
     red: true
     red-proof:
@@ -203,11 +219,11 @@ Use structured runners for common cases:
 ```yaml
   - name: dserver_stack_pool_tests_run
     kind: contract
-    env: host
+    runs: host
     diag: bare
     red: true
     runner: west-build
-    target: dserver_stack_pool_tests_run
+    build-target: dserver_stack_pool_tests_run
 ```
 
 Script tests may declare arguments and environment without dropping to a shell:
@@ -215,7 +231,7 @@ Script tests may declare arguments and environment without dropping to a shell:
 ```yaml
   - name: a0_gate_full_strict
     kind: guest
-    env: darling
+    runs: guest
     diag: guarded
     red: true
     runner: script
@@ -224,8 +240,6 @@ Script tests may declare arguments and environment without dropping to a shell:
     env-vars:
       A0_STRICT: '1'
     timeout-seconds: 600
-    requires:
-    - darling-prefix
 ```
 
 Use `runner: python` for Python files that should be invoked through `python3`
@@ -234,7 +248,7 @@ rather than marked executable:
 ```yaml
   - name: progress_classifier
     kind: contract
-    env: host
+    runs: host
     diag: bare
     red: true
     runner: python
@@ -306,7 +320,7 @@ executed directly by `west test`:
 ```yaml
   - name: select_fdset_conversion
     kind: unit
-    env: host
+    runs: host
     diag: bare
     red: true
     red-proof:
@@ -333,13 +347,14 @@ and overrides it with the temporary bad/source-base worktree for `--prove-red`.
 This keeps workspace-hosted suites honest: the test asset can live in the
 workspace while the source under test still comes from the current profile tree.
 
-Use `requires` for resources that the test framework can provide. Darling
-guest/runtime scripts should declare `requires: [darling-prefix]`; `west test`
+Use `runs: guest` for tests that execute inside Darling. The compact form
+expands to the low-level `requires: [darling-prefix]` envelope, and `west test`
 then supplies `DPREFIX` from `--prefix`, `--prefix existing:/path`,
-`--prefix-profile homebrew`, or an already exported `DPREFIX`. Keep
-`requires-env` only for low-level prerequisites that west cannot provision yet.
-`west test --list` never requires those resources; real execution fails before
-launch if a requirement is missing.
+`--prefix-profile homebrew`, or an already exported `DPREFIX`. Use explicit
+`resources`/`fixtures` for additional provisioned state, and keep `requires-env`
+only for low-level prerequisites that west cannot provision yet. `west
+test --list` never requires those resources; real execution fails before launch
+if a requirement is missing.
 
 If a real run reports missing prefix boot or guest compiler prerequisites, fix
 the prefix through the framework instead of hand-editing it:
@@ -359,14 +374,14 @@ is checked against the same contract that guest metadata tests require. The
 prefix; `west test` runs the same cleanup after `darling shutdown` and fails the
 test run if mounts remain.
 
-For metadata tests that use `requires: [darling-prefix]`, `west test` also owns
-the resource lock and shutdown path. A real run takes `$DPREFIX/.west-test.lock`
-before launching the test, holds it through cleanup, calls `darling shutdown`
-for the selected prefix, and kills a matching leftover `darlingserver` if
-shutdown did not finish cleanly. After cleanup it checks the remaining
-`darlingserver` process tree for that prefix; leftover processes make the
-`west test` run fail, even if the test payload itself passed. Pass
-`--keep-prefix-running` only when intentionally keeping the prefix warm for a
+For metadata tests that use `runs: guest`, `west test` also owns the resource
+lock and shutdown path. A real run takes `$DPREFIX/.west-test.lock` before
+launching the test, holds it through cleanup, calls `darling shutdown` for the
+selected prefix, and kills a matching leftover `darlingserver` if shutdown did
+not finish cleanly. After cleanup it checks the remaining `darlingserver`
+process tree for that prefix; leftover processes make the `west test` run fail,
+even if the test payload itself passed. Pass `--keep-prefix-running` only when
+intentionally keeping the prefix warm for a
 manual debug loop.
 
 For patch metadata, `diag: guarded` and `diag: forensic` are enforced by
@@ -395,17 +410,18 @@ contract. Do not add large embedded-Python heredocs to those wrappers; if a
 contract needs reusable logic, move it into a module and keep shell only for
 CLI integration setup.
 
-Use `ctest-label` once the test is discoverable through the CTest registry.
-This is a runnable selector: `west test` configures/builds the local
-compatibility suite and executes `ctest -L <label>`.
+Use `ctest` once the test is discoverable through the CTest registry. This is a
+runnable selector: `west test` configures/builds the local compatibility suite
+or source fixture and executes `ctest -L <label>`.
 
 ```yaml
   - name: wait4_guest_contract
     kind: guest
-    env: darling
+    runs: guest
     diag: guarded
-    red: true
-    ctest-label: bead:dar-example
+    red-proof: runtime
+    ctest: bead:dar-example
+    artifacts: [xnu-kernel]
 ```
 
 For a test registered by the patched source repository itself, keep the source
@@ -418,9 +434,9 @@ registration when the old source did not yet have the CTest entry.
 ```yaml
   - name: libressl_nist_darling_cmake_target_regress
     use: darling-cmake-target-source-red
-    target: darling_ec_tls_regress
+    build-target: darling_ec_tls_regress
     source-dir: libressl
-    ctest-label: bead:dar-q95.6
+    ctest: bead:dar-q95.6
 ```
 
 The CTest backend command construction is deliberately small and separate from
@@ -435,7 +451,7 @@ registration, compiler launcher logs, and required compile-option checks belong
 there rather than in the orchestrator.
 
 `command:` is intentionally an override for corner cases only. Prefer
-`runner/script`, `runner/target`, or `ctest-label` so `west test` owns how tests
+`runner/script`, `build-target`, or `ctest` so `west test` owns how tests
 are launched, filtered, deduplicated, and eventually wrapped by diagnostics.
 `west patch check` validates structured entries and resolves `repo` against the
 West manifest/path map. `west test` validates the script path against the actual

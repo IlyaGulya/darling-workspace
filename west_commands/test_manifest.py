@@ -24,6 +24,8 @@ def normalize_test_profile(data: dict[str, Any]) -> dict[str, Any]:
     normalized = deepcopy(data)
     test_profiles = _mapping(normalized.get("test-profiles"), "test-profiles")
     artifact_profiles = _mapping(normalized.get("artifact-profiles"), "artifact-profiles")
+    resource_profiles = _mapping(normalized.get("resource-profiles"), "resource-profiles")
+    fixture_profiles = _mapping(normalized.get("fixture-profiles"), "fixture-profiles")
     for patch in normalized.get("patches", []) or []:
         tests = patch.get("tests")
         if tests is None:
@@ -31,7 +33,14 @@ def normalize_test_profile(data: dict[str, Any]) -> dict[str, Any]:
         if not isinstance(tests, list):
             continue
         patch["tests"] = [
-            normalize_test(test, test_profiles, artifact_profiles, index=index)
+            normalize_test(
+                test,
+                test_profiles,
+                artifact_profiles,
+                resource_profiles,
+                fixture_profiles,
+                index=index,
+            )
             if isinstance(test, dict)
             else test
             for index, test in enumerate(tests, start=1)
@@ -43,9 +52,13 @@ def normalize_test(
     test: dict[str, Any],
     test_profiles: dict[str, Any],
     artifact_profiles: dict[str, Any],
+    resource_profiles: dict[str, Any] | None = None,
+    fixture_profiles: dict[str, Any] | None = None,
     *,
     index: int = 0,
 ) -> dict[str, Any]:
+    resource_profiles = resource_profiles or {}
+    fixture_profiles = fixture_profiles or {}
     refs = test.get("use", test.get("extends"))
     profile_names = _as_list(refs)
     merged: dict[str, Any] = {}
@@ -53,11 +66,21 @@ def normalize_test(
     for name in profile_names:
         merged = _deep_merge(
             merged,
-            _resolve_test_profile(str(name), test_profiles, artifact_profiles, stack),
+            _resolve_test_profile(
+                str(name),
+                test_profiles,
+                artifact_profiles,
+                resource_profiles,
+                fixture_profiles,
+                stack,
+            ),
         )
     override = {key: value for key, value in test.items() if key not in {"use", "extends"}}
     merged = _deep_merge(merged, override)
+    _expand_compact_axes(merged, index=index)
     _expand_artifacts(merged, artifact_profiles, index=index)
+    _expand_resources(merged, resource_profiles, index=index)
+    _expand_fixtures(merged, fixture_profiles, index=index)
     return merged
 
 
@@ -65,6 +88,8 @@ def _resolve_test_profile(
     name: str,
     test_profiles: dict[str, Any],
     artifact_profiles: dict[str, Any],
+    resource_profiles: dict[str, Any],
+    fixture_profiles: dict[str, Any],
     stack: list[str],
 ) -> dict[str, Any]:
     if name in stack:
@@ -81,13 +106,77 @@ def _resolve_test_profile(
     for parent in _as_list(refs):
         merged = _deep_merge(
             merged,
-            _resolve_test_profile(str(parent), test_profiles, artifact_profiles, stack),
+            _resolve_test_profile(
+                str(parent),
+                test_profiles,
+                artifact_profiles,
+                resource_profiles,
+                fixture_profiles,
+                stack,
+            ),
         )
     body = {key: value for key, value in profile.items() if key not in {"use", "extends"}}
     merged = _deep_merge(merged, body)
+    _expand_compact_axes(merged)
     _expand_artifacts(merged, artifact_profiles)
+    _expand_resources(merged, resource_profiles)
+    _expand_fixtures(merged, fixture_profiles)
     stack.pop()
     return merged
+
+
+def _expand_compact_axes(test: dict[str, Any], *, index: int = 0) -> None:
+    location = f"tests[{index}]" if index else "test profile"
+    if "needs" in test:
+        raise ManifestError(
+            f"{location}: needs is not part of the compact test DSL; "
+            "use artifacts/resources/fixtures"
+        )
+    if "ctest" in test:
+        if "ctest-label" in test and test["ctest-label"] != test["ctest"]:
+            raise ManifestError(f"{location}: ctest conflicts with ctest-label")
+        test["ctest-label"] = test.pop("ctest")
+    if "build-target" in test:
+        if "target" in test and test["target"] != test["build-target"]:
+            raise ManifestError(f"{location}: build-target conflicts with target")
+        test["target"] = test.pop("build-target")
+    runs = test.pop("runs", None)
+    if runs is not None:
+        runs_map = {"host": "host", "guest": "darling", "macos": "macos"}
+        if runs not in runs_map:
+            raise ManifestError(f"{location}: runs must be host, guest, or macos")
+        env = runs_map[str(runs)]
+        if "env" in test and test["env"] != env:
+            raise ManifestError(f"{location}: runs conflicts with env")
+        test["env"] = env
+        if runs == "guest":
+            _append_unique(test, "requires", ["darling-prefix"])
+    proof = test.get("red-proof")
+    if isinstance(proof, str):
+        proof_map = {
+            "source": {"mode": "source-base"},
+            "runtime": {
+                "mode": "guest-runtime-deploy",
+                "bad-profile": "current-minus-patch",
+            },
+            "self": {"mode": "self"},
+            "none": None,
+        }
+        if proof not in proof_map:
+            raise ManifestError(
+                f"{location}: red-proof must be source, runtime, self, none, or a mapping"
+            )
+        expanded = proof_map[proof]
+        if expanded is None:
+            test.pop("red-proof", None)
+            test["red"] = False
+        else:
+            test["red-proof"] = expanded
+            test.setdefault("red", True)
+    elif proof is not None and not isinstance(proof, dict):
+        raise ManifestError(
+            f"{location}: red-proof must be source, runtime, self, none, or a mapping"
+        )
 
 
 def _expand_artifacts(
@@ -124,6 +213,155 @@ def _expand_artifacts(
     if existing and not isinstance(existing, list):
         raise ManifestError("red-proof.runtime-artifacts must be a list")
     proof["runtime-artifacts"] = [*deepcopy(existing), *artifacts]
+
+
+def _expand_resources(
+    test: dict[str, Any],
+    resource_profiles: dict[str, Any],
+    *,
+    index: int = 0,
+) -> None:
+    refs = test.pop("resources", None)
+    if refs is None:
+        return
+    for ref in _as_list(refs):
+        profile = _resolve_named_profile(
+            ref,
+            resource_profiles,
+            "resource",
+            index=index,
+        )
+        _merge_typed_resource(test, profile, index=index)
+
+
+def _expand_fixtures(
+    test: dict[str, Any],
+    fixture_profiles: dict[str, Any],
+    *,
+    index: int = 0,
+) -> None:
+    refs = test.pop("fixtures", None)
+    if refs is None:
+        return
+    for ref in _as_list(refs):
+        profile = _resolve_named_profile(
+            ref,
+            fixture_profiles,
+            "fixture",
+            index=index,
+        )
+        _merge_typed_fixture(test, profile, index=index)
+
+
+def _resolve_named_profile(
+    ref: Any,
+    profiles: dict[str, Any],
+    profile_type: str,
+    *,
+    index: int = 0,
+) -> dict[str, Any]:
+    if isinstance(ref, dict):
+        if "use" not in ref:
+            return deepcopy(ref)
+        name = str(ref["use"])
+        override = {key: value for key, value in ref.items() if key != "use"}
+    else:
+        name = str(ref)
+        override = {}
+    if name not in profiles:
+        location = f"tests[{index}]" if index else "test profile"
+        raise ManifestError(f"{location}: unknown {profile_type} profile {name!r}")
+    profile = profiles[name]
+    if not isinstance(profile, dict):
+        raise ManifestError(f"{profile_type} profile {name!r} must be a mapping")
+    return _deep_merge(profile, override)
+
+
+def _merge_typed_resource(
+    test: dict[str, Any],
+    profile: dict[str, Any],
+    *,
+    index: int = 0,
+) -> None:
+    location = f"tests[{index}]" if index else "test profile"
+    kind = profile.get("kind")
+    body = {key: value for key, value in profile.items() if key != "kind"}
+    if kind == "dcc-cache":
+        _merge_single_mapping(test, "dcc-cache", body, location)
+    elif kind == "host-trace-files":
+        _extend_list_field(test, "host-trace-files", body.get("files", []), location)
+        if body.get("oracle") is not None:
+            test["host-trace-oracle"] = bool(body["oracle"])
+    elif kind == "host-stat-deltas":
+        _extend_list_field(test, "host-stat-deltas", body.get("fields", []), location)
+    else:
+        raise ManifestError(
+            f"{location}: resource profile kind must be dcc-cache, "
+            "host-trace-files, or host-stat-deltas"
+        )
+
+
+def _merge_typed_fixture(
+    test: dict[str, Any],
+    profile: dict[str, Any],
+    *,
+    index: int = 0,
+) -> None:
+    location = f"tests[{index}]" if index else "test profile"
+    kind = profile.get("kind")
+    body = {key: value for key, value in profile.items() if key != "kind"}
+    if kind == "eunion-overlay":
+        _append_unique(test, "requires", ["darling-eunion-prefix"])
+        _extend_list_field(test, "eunion-template-files", body.get("template-files", []), location)
+        _extend_list_field(test, "eunion-template-symlinks", body.get("template-symlinks", []), location)
+        _extend_list_field(test, "eunion-upper-files", body.get("upper-files", []), location)
+        _extend_list_field(test, "eunion-cleanup-dirs", body.get("cleanup-dirs", []), location)
+        if body.get("verify-template-files-after") is not None:
+            test["eunion-verify-template-files-after"] = bool(
+                body["verify-template-files-after"]
+            )
+    else:
+        raise ManifestError(f"{location}: fixture profile kind must be eunion-overlay")
+
+
+def _merge_single_mapping(
+    test: dict[str, Any],
+    field: str,
+    value: dict[str, Any],
+    location: str,
+) -> None:
+    if not isinstance(value, dict):
+        raise ManifestError(f"{location}: {field} resource body must be a mapping")
+    if field in test and test[field]:
+        if not isinstance(test[field], dict):
+            raise ManifestError(f"{location}: {field} must be a mapping")
+        test[field] = _deep_merge(test[field], value)
+    else:
+        test[field] = deepcopy(value)
+
+
+def _extend_list_field(
+    test: dict[str, Any],
+    field: str,
+    values: Any,
+    location: str,
+) -> None:
+    if values is None:
+        return
+    if not isinstance(values, list):
+        raise ManifestError(f"{location}: {field} profile data must be a list")
+    existing = test.get(field, [])
+    if existing and not isinstance(existing, list):
+        raise ManifestError(f"{location}: {field} must be a list")
+    test[field] = [*deepcopy(existing), *deepcopy(values)]
+
+
+def _append_unique(test: dict[str, Any], field: str, values: list[Any]) -> None:
+    existing = list(_as_list(test.get(field)))
+    for value in values:
+        if value not in existing:
+            existing.append(value)
+    test[field] = existing
 
 
 def _mapping(value: Any, name: str) -> dict[str, Any]:

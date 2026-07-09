@@ -6,12 +6,10 @@ test-profiles:
   guest-c-runtime-red:
     kind: guest
     coverage-tier: runtime
-    env: darling
+    runs: guest
     diag: bare
     red: true
-    red-proof:
-      mode: guest-runtime-deploy
-      bad-profile: current-minus-patch
+    red-proof: runtime
     runner: guest-c-fixture
     repo: darling-workspace
     compile-flags:
@@ -19,32 +17,27 @@ test-profiles:
     - -Wall
     - -Wextra
     - -Werror
-    requires:
-    - darling-prefix
   guest-command-runtime-red:
     kind: guest
     coverage-tier: runtime
-    env: darling
+    runs: guest
     diag: bare
     red: true
-    red-proof:
-      mode: guest-runtime-deploy
-      bad-profile: current-minus-patch
+    red-proof: runtime
     runner: guest-command-fixture
     repo: darling-workspace
     guest-command: /usr/bin/true
-    requires:
-    - darling-prefix
+resource-profiles:
   dcc6-smoke-cache:
-    dcc-cache:
-      source-module: darling/src/external/darlingserver
-      source-ref: 03cf98e489f6c7830d82e10b5ee2217d44b9a1ae
-      tools-dir: tools/closure-cache
-      builder: dcc5-builder.c
-      closure-list: smoke2-list.txt
-      install-root: guest-visible
-      env: DARLING_DYLD_DCC2_PATH
-      enable-env: DARLING_DYLD_DCC2
+    kind: dcc-cache
+    source-module: darling/src/external/darlingserver
+    source-ref: 03cf98e489f6c7830d82e10b5ee2217d44b9a1ae
+    tools-dir: tools/closure-cache
+    builder: dcc5-builder.c
+    closure-list: smoke2-list.txt
+    install-root: guest-visible
+    env: DARLING_DYLD_DCC2_PATH
+    enable-env: DARLING_DYLD_DCC2
 artifact-profiles:
   mldr-runtime:
     module: darling
@@ -97,7 +90,7 @@ patches:
   - name: shmem_ring_mach_ops_guest
     kind: guest
     coverage-tier: runtime
-    env: darling
+    runs: guest
     diag: bare
     red: true
     red-proof:
@@ -158,8 +151,9 @@ patches:
   publication-blocker: perf#24 DCC6 packed-shared-cache dyld reader (3-region + TEXT RIP-relative rewrite + precomputed fixup table). CLOSED as a functionally-proven, kernel-measured PROTOTYPE that is FLAG-GATED (DARLING_DYLD_DCC2=1 + DARLING_DYLD_DCC2_PATH) and NOT default-on; productization needs separate hardening (cache-build/staleness deploy, coverage beyond the 40-dylib closure, cache ABI-version discipline). See tests/PERF24-DCC6-FINAL.md. Base is 63f667cf (manifest dyld revision).
   tests:
   - name: dcc2_valid_cache_guest
-    use: [guest-command-runtime-red, dcc6-smoke-cache]
+    use: guest-command-runtime-red
     artifacts: dyld-runtime
+    resources: dcc6-smoke-cache
     timeout-seconds: 90
     guest-env-vars:
       DYLD_PRINT_SEGMENTS: '1'
@@ -177,7 +171,7 @@ patches:
   - name: dcc2_missing_path_hard_fail_guest
     kind: guest
     coverage-tier: runtime
-    env: darling
+    runs: guest
     diag: bare
     red: true
     red-proof:
@@ -204,7 +198,7 @@ patches:
   - name: dcc2_stale_cache_hard_fail_guest
     kind: guest
     coverage-tier: runtime
-    env: darling
+    runs: guest
     diag: bare
     red: true
     red-proof:
@@ -239,7 +233,7 @@ patches:
   - name: dcc2_stale_cache_soft_fallback_guest
     kind: guest
     coverage-tier: runtime
-    env: darling
+    runs: guest
     diag: bare
     runner: guest-command-fixture
     repo: darling-workspace
@@ -273,7 +267,7 @@ patches:
   - name: perf18_ring_host_gate_suite
     kind: gate
     coverage-tier: host
-    env: host
+    runs: host
     diag: bare
     red: true
     red-proof:
@@ -298,7 +292,7 @@ patches:
   - name: a0_zero_hang_synth_gate
     kind: guest
     coverage-tier: runtime
-    env: darling
+    runs: guest
     diag: guarded
     runner: script
     script: tests/a0-repro/a0-gate.sh
@@ -327,7 +321,7 @@ patches:
   - name: j7e7_postfork_stdin_guest
     kind: guest
     coverage-tier: runtime
-    env: darling
+    runs: guest
     diag: bare
     red: true
     red-proof:
@@ -377,7 +371,7 @@ patches:
   - name: j7e7_postfork_reset_gate_suite
     kind: gate
     coverage-tier: host
-    env: host
+    runs: host
     diag: bare
     red: true
     red-proof:

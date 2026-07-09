@@ -3,6 +3,8 @@ set -euo pipefail
 
 repo="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$repo"
+
+export PYTHONDONTWRITEBYTECODE=1
 tmp_profile="patches/__metadata_contract"
 tmp_invalid_profile="patches/__metadata_invalid_contract"
 tmp_runtime_red_profile="patches/__metadata_runtime_red_contract"
@@ -15,16 +17,13 @@ test-profiles:
   guest-c-runtime-red:
     kind: guest
     coverage-tier: runtime
-    env: darling
+    runs: guest
     diag: bare
     runner: guest-c-fixture
     repo: darling-workspace
-    requires: [darling-prefix]
     compile-flags: [-std=gnu11, -Wall, -Wextra, -Werror]
     red: true
-    red-proof:
-      mode: guest-runtime-deploy
-      bad-profile: current-minus-patch
+    red-proof: runtime
 artifact-profiles:
   xnu-kernel:
     module: darling/src/external/xnu
@@ -36,20 +35,20 @@ patches:
   tests:
   - name: ctest_label_contract
     kind: contract
-    env: host
+    runs: host
     diag: guarded
     red: true
     red-proof:
       mode: self
       why-self: Metadata-only fixture; this script validates selection/listing, not RED execution.
-    ctest-label: bead:dar-gwn.5
+    ctest: bead:dar-gwn.5
 - path: test/source-only.patch
   module: darling
   tests:
   - name: source_only_contract
     kind: source-contract
     coverage-tier: source
-    env: host
+    runs: host
     diag: bare
     red: true
     red-proof:
@@ -63,7 +62,7 @@ patches:
   - name: source_only_exception_contract
     kind: source-contract
     coverage-tier: source
-    env: host
+    runs: host
     diag: bare
     runner: python
     script: tests/source_only_contract.py
@@ -85,7 +84,7 @@ patches:
   - name: model_contract
     kind: contract
     coverage-tier: model
-    env: host
+    runs: host
     diag: bare
     red: true
     red-proof:
@@ -98,7 +97,7 @@ patches:
   tests:
   - name: c_fixture_contract
     kind: unit
-    env: host
+    runs: host
     diag: bare
     red: true
     red-proof:
@@ -120,7 +119,7 @@ patches:
   tests:
   - name: west_guest_c_fixture_contract
     kind: guest
-    env: darling
+    runs: guest
     diag: bare
     runner: guest-c-fixture
     script: tests/guest_c_fixture_contract.c
@@ -146,7 +145,7 @@ patches:
   - name: west_guest_command_fixture_contract
     kind: guest
     coverage-tier: runtime
-    env: darling
+    runs: guest
     diag: bare
     runner: guest-command-fixture
     guest-command: /usr/bin/true
@@ -174,7 +173,7 @@ patches:
   - name: guest_command_any_returncode_contract
     kind: guest
     coverage-tier: runtime
-    env: darling
+    runs: guest
     diag: bare
     runner: guest-command-fixture
     guest-command: /usr/bin/true
@@ -189,7 +188,7 @@ patches:
     blocked: true
     kind: guest
     coverage-tier: runtime
-    env: darling
+    runs: guest
     diag: bare
     runner: guest-command-fixture
     guest-command: /usr/bin/true
@@ -202,7 +201,7 @@ patches:
   - name: west_eunion_prefix_resource_contract
     kind: guest
     coverage-tier: runtime
-    env: darling
+    runs: guest
     diag: bare
     runner: guest-c-fixture
     script: tests/guest_c_fixture_contract.c
@@ -219,7 +218,7 @@ patches:
   tests:
   - name: mixed_red_self_contract
     kind: contract
-    env: host
+    runs: host
     diag: bare
     red: true
     red-proof:
@@ -228,7 +227,7 @@ patches:
     command: ":"
   - name: mixed_nonred_guest_contract
     kind: guest
-    env: darling
+    runs: guest
     diag: bare
     runner: guest-c-fixture
     script: tests/guest_c_fixture_contract.c
@@ -239,7 +238,7 @@ patches:
   - name: west_script_host_trace_contract
     kind: guest
     coverage-tier: runtime
-    env: darling
+    runs: guest
     diag: bare
     runner: script
     script: tests/run-west-test-metadata-contract.sh
@@ -256,7 +255,7 @@ patches:
   tests:
   - name: west_source_build_fixture_contract
     kind: contract
-    env: host
+    runs: host
     diag: bare
     runner: source-build-fixture
     script: tests/guest_c_fixture_contract.c
@@ -267,7 +266,7 @@ patches:
   tests:
   - name: west_source_script_fixture_contract
     kind: contract
-    env: host
+    runs: host
     diag: bare
     runner: source-script-fixture
     source-script: src/sandbox/sandbox-exec.sh
@@ -282,7 +281,7 @@ patches:
   tests:
   - name: west_cmake_configure_fixture_contract
     kind: build
-    env: host
+    runs: host
     diag: bare
     runner: cmake-configure-fixture
     configure-args: [-DDARLING_SKIP_DRIFT_GATE=ON]
@@ -294,12 +293,12 @@ patches:
   - name: west_darling_cmake_target_fixture_contract
     kind: contract
     coverage-tier: host
-    env: host
+    runs: host
     diag: guarded
     runner: darling-cmake-target-fixture
-    target: west_fixture_target
+    build-target: west_fixture_target
     source-dir: source
-    ctest-label: bead:dar-cmake-fixture
+    ctest: bead:dar-cmake-fixture
     fixture-files: [tests/west_fixture_target.c]
     fallback-executable-sources: [source/tests/west_fixture_target.c]
     fallback-include-dirs: [source/src]
@@ -309,7 +308,7 @@ patches:
   tests:
   - name: object_symbol_fixture_contract
     kind: contract
-    env: host
+    runs: host
     diag: bare
     runner: object-symbol-fixture
     source-file: tests/c_fixture_helper.c
@@ -329,7 +328,7 @@ patches:
   tests:
   - name: invalid_guest_source_base_red
     kind: guest
-    env: darling
+    runs: guest
     diag: bare
     runner: guest-c-fixture
     script: tests/guest_c_fixture_contract.c
@@ -343,7 +342,7 @@ patches:
   tests:
   - name: invalid_guest_runtime_red
     kind: guest
-    env: darling
+    runs: guest
     diag: bare
     runner: guest-c-fixture
     script: tests/guest_c_fixture_contract.c
@@ -356,7 +355,7 @@ patches:
   tests:
   - name: incomplete_guest_runtime_artifact
     kind: guest
-    env: darling
+    runs: guest
     diag: bare
     runner: guest-c-fixture
     script: tests/guest_c_fixture_contract.c
@@ -373,7 +372,7 @@ patches:
   tests:
   - name: invalid_current_minus_skip_mode
     kind: guest
-    env: darling
+    runs: guest
     diag: bare
     runner: guest-c-fixture
     script: tests/guest_c_fixture_contract.c
@@ -393,7 +392,7 @@ patches:
   tests:
   - name: invalid_current_minus_skip_list
     kind: guest
-    env: darling
+    runs: guest
     diag: bare
     runner: guest-c-fixture
     script: tests/guest_c_fixture_contract.c
@@ -413,7 +412,7 @@ patches:
   tests:
   - name: invalid_source_patches
     kind: guest
-    env: darling
+    runs: guest
     diag: bare
     runner: guest-c-fixture
     script: tests/guest_c_fixture_contract.c
@@ -451,7 +450,7 @@ patches:
   tests:
   - name: invalid_host_trace
     kind: guest
-    env: darling
+    runs: guest
     diag: bare
     runner: guest-c-fixture
     script: tests/guest_c_fixture_contract.c
@@ -475,7 +474,7 @@ patches:
   tests:
   - name: invalid_host_trace_oracle
     kind: guest
-    env: darling
+    runs: guest
     diag: bare
     runner: guest-c-fixture
     script: tests/guest_c_fixture_contract.c
@@ -490,7 +489,7 @@ patches:
   - name: guest_runtime_red
     kind: guest
     coverage-tier: runtime
-    env: darling
+    runs: guest
     diag: bare
     runner: guest-c-fixture
     script: tests/guest_c_fixture_contract.c
@@ -509,12 +508,10 @@ patches:
   - name: script_runtime_red
     kind: guest
     coverage-tier: runtime
-    env: darling
+    runs: guest
     diag: bare
     runner: script
     script: tests/run-west-test-metadata-contract.sh
-    requires:
-    - darling-prefix
     red: true
     red-proof:
       mode: guest-runtime-deploy
