@@ -112,6 +112,20 @@ patches:
     guest-env-vars:
       WEST_GUEST_TEMP_FILE: /private/var/tmp/west-guest-temp.flag
     host-trace-oracle: true
+- path: test/eunion-prefix-resource.patch
+  module: darling-workspace
+  tests:
+  - name: west_eunion_prefix_resource_contract
+    kind: guest
+    coverage-tier: runtime
+    env: darling
+    diag: bare
+    runner: guest-c-fixture
+    script: tests/guest_c_fixture_contract.c
+    ok-marker: WEST_GUEST_C_FIXTURE_OK
+    timeout-seconds: 20
+    requires:
+    - darling-eunion-prefix
 - path: test/mixed-red-nonred.patch
   module: darling-workspace
   tests:
@@ -530,6 +544,8 @@ printf '%s\n' "$source_only_check" | grep -q 'COMPILE   test/object-symbol-fixtu
 	fail 'object-symbol-fixture patch was not reported as COMPILE'
 printf '%s\n' "$source_only_check" | grep -q 'HOST      test/darling-cmake-target-fixture.patch' ||
 	fail 'darling-cmake-target-fixture patch was not reported as HOST'
+printf '%s\n' "$source_only_check" | grep -q 'RUNTIME   test/eunion-prefix-resource.patch' ||
+	fail 'darling-eunion-prefix patch was not reported as RUNTIME'
 
 c_fixture="$(
 	west test --profile __metadata_contract \
@@ -548,7 +564,7 @@ object_symbol_fixture="$(
 printf '%s\n' "$object_symbol_fixture" | grep -q \
 	'cc -c -std=gnu11 -Wall -Wextra -Werror -I tests/fixtures/c-fixture/include -I src tests/c_fixture_helper.c -o <temp>/<variant>.o && nm -u <temp>/<variant>.o && nm -g <temp>/<variant>.o' ||
 	fail 'object-symbol-fixture metadata did not resolve to a compile-and-nm command'
-printf '%s\n' "$source_only_check" | grep -q 'test metadata: 11 covered (runtime 3, compile 3, host 4, model 1), 1 exceptions, 1 missing' ||
+printf '%s\n' "$source_only_check" | grep -q 'test metadata: 12 covered (runtime 4, compile 3, host 4, model 1), 1 exceptions, 1 missing' ||
 	fail 'coverage-tier summary did not classify runtime/host/compile/model coverage'
 
 invalid_guest_red_check="$(west patch check --profile __metadata_invalid_contract 2>&1)"
@@ -665,6 +681,15 @@ guest_c_fixture="$(
 printf '%s\n' "$guest_c_fixture" | grep -q \
 	'<upload> tests/guest_c_fixture_contract.c && darling shell' ||
 	fail 'guest-c-fixture metadata did not resolve to a guest compile-and-run command'
+eunion_prefix_resource="$(
+	west test --profile __metadata_contract \
+		--patch test/eunion-prefix-resource.patch \
+		--prefix "$guest_prefix" \
+		--list
+)"
+printf '%s\n' "$eunion_prefix_resource" | grep -q \
+	'<upload> tests/guest_c_fixture_contract.c && darling shell' ||
+	fail 'darling-eunion-prefix metadata did not resolve to a guest compile-and-run command'
 printf '%s\n' "$source_only_check" | grep -q 'RUNTIME   test/guest-c-fixture.patch' ||
 	fail 'guest-c-fixture patch was not reported as RUNTIME'
 printf '%s\n' "$source_only_check" | grep -q 'HOST      test/source-build-fixture.patch' ||
@@ -723,6 +748,28 @@ printf '%s\n' "$darling_cmake_target_fixture" | grep -q \
 printf '%s\n' "$darling_cmake_target_fixture" | grep -q \
 	'cmake --build <temp>/build --target west_fixture_target' ||
 	fail 'darling-cmake-target-fixture metadata did not include the target build'
+
+python3 - <<'PY' || fail 'darling-eunion-prefix prerequisite helper is wrong'
+import sys
+import tempfile
+from pathlib import Path
+
+sys.path.insert(0, "west_commands")
+from prefix_repair import eunion_prefix_prerequisite_problems
+
+with tempfile.TemporaryDirectory() as tmp:
+    prefix = Path(tmp)
+    (prefix / "libexec/darling").mkdir(parents=True)
+    kernel = prefix / "usr/lib/system/libsystem_kernel.dylib"
+    kernel.parent.mkdir(parents=True)
+    kernel.write_bytes(b"plain kernel")
+    assert any(
+        "lacks E-UNION markers" in problem
+        for problem in eunion_prefix_prerequisite_problems(prefix)
+    )
+    kernel.write_bytes(b"/.union-work user.union.whiteout user.union.opaque")
+    assert eunion_prefix_prerequisite_problems(prefix) == []
+PY
 
 fake_darling="$(mktemp)"
 cat >"$fake_darling" <<'SH'

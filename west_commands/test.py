@@ -42,6 +42,7 @@ from west.commands import WestCommand
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from prefix_repair import (
     cleanup_prefix_mounts,
+    eunion_prefix_prerequisite_problems,
     guest_c_fixture_prerequisite_problems,
     prefix_boot_prerequisite_problems,
 )
@@ -1069,6 +1070,7 @@ class DarlingTest(WestCommand):
                 "ok_marker": str(ok_marker or ""),
                 "host_trace_files": list(test.get("host-trace-files", [])),
                 "host_temp_files": list(test.get("host-temp-files", [])),
+                "eunion_template_files": list(test.get("eunion-template-files", [])),
                 "host_trace_oracle": host_trace_oracle,
                 "source_env": source_env,
                 "source_module": source_module,
@@ -1114,7 +1116,9 @@ class DarlingTest(WestCommand):
                 continue
             seen_invocations.add(invocation["key"])
             with self._required_profile_context(patch, invocation):
-                result_rc = self._run_invocation(invocation, env=self._execution_env(invocation))
+                exec_env = self._execution_env(invocation)
+                with self._resource_context(invocation, exec_env):
+                    result_rc = self._run_invocation(invocation, env=exec_env)
             if result_rc:
                 rc = result_rc
         return rc
@@ -1122,7 +1126,8 @@ class DarlingTest(WestCommand):
     def _metadata_needs_prefix(self, tests) -> bool:
         for patch, test in tests:
             invocation = self._test_invocation(patch, test)
-            if "darling-prefix" in invocation.get("requires_resources", []):
+            resources = set(invocation.get("requires_resources", []))
+            if resources & {"darling-prefix", "darling-eunion-prefix"}:
                 return True
         return False
 
@@ -2146,7 +2151,8 @@ fi
 
     def _execution_env(self, invocation) -> dict[str, str] | None:
         env = invocation.get("env")
-        needs_prefix = "darling-prefix" in invocation.get("requires_resources", [])
+        resources = set(invocation.get("requires_resources", []))
+        needs_prefix = bool(resources & {"darling-prefix", "darling-eunion-prefix"})
         source_env = invocation.get("source_env")
         if not needs_prefix and not source_env:
             return env
@@ -2171,17 +2177,18 @@ fi
         return merged
 
     def _missing_requirements(self, invocation) -> list[str]:
+        resources = set(invocation.get("requires_resources", []))
         missing = [
             env_name
             for env_name in invocation.get("requires_env", [])
             if not os.environ.get(env_name)
         ]
         if (
-            "darling-prefix" in invocation.get("requires_resources", [])
+            resources & {"darling-prefix", "darling-eunion-prefix"}
             and not getattr(self, "_prefix", None)
         ):
             missing.append("darling-prefix (--prefix, --prefix-profile, or DPREFIX)")
-        if "darling-prefix" in invocation.get("requires_resources", []):
+        if resources & {"darling-prefix", "darling-eunion-prefix"}:
             prefix = getattr(self, "_prefix", None)
             launcher = self._resolve_darling_launcher(prefix)
             if not launcher:
@@ -2199,6 +2206,8 @@ fi
                             invocation.get("guest_cflags", ""),
                         )
                     )
+                if "darling-eunion-prefix" in resources:
+                    missing.extend(self._eunion_prefix_prerequisite_problems(Path(prefix)))
         return missing
 
     def _prefix_boot_prerequisite_problems(self, prefix: Path) -> list[str]:
@@ -2211,6 +2220,71 @@ fi
         guest_cflags: str,
     ) -> list[str]:
         return guest_c_fixture_prerequisite_problems(prefix, guest_cc, guest_cflags)
+
+    def _eunion_prefix_prerequisite_problems(self, prefix: Path) -> list[str]:
+        return eunion_prefix_prerequisite_problems(prefix)
+
+    @contextmanager
+    def _resource_context(self, invocation, env):
+        resources = set(invocation.get("requires_resources", []))
+        if "darling-eunion-prefix" not in resources:
+            yield
+            return
+
+        prefix_text = (env or {}).get("DPREFIX") or getattr(self, "_prefix", None)
+        if not prefix_text:
+            self.die(f"{invocation['name']}: darling-eunion-prefix needs DPREFIX")
+        prefix = Path(prefix_text)
+        marker = prefix / ".union-work"
+        created_marker = False
+        created_template_files: list[Path] = []
+        blocked_upper_files: list[Path] = []
+        if marker.exists() and not marker.is_dir():
+            self.die(f"{invocation['name']}: E-UNION marker is not a directory: {marker}")
+        if not marker.exists():
+            marker.mkdir(parents=True, mode=0o700)
+            created_marker = True
+
+        for index, spec in enumerate(invocation.get("eunion_template_files", [])):
+            if not isinstance(spec, dict):
+                self.die(f"{invocation['name']}: eunion-template-files entries must be mappings")
+            guest_path = str(spec.get("guest-path", ""))
+            if not guest_path.startswith("/") or ".." in Path(guest_path).parts:
+                self.die(
+                    f"{invocation['name']}: eunion-template-files[{index}] needs "
+                    "an absolute guest-path without '..'"
+                )
+            rel = Path(guest_path.lstrip("/"))
+            upper_path = prefix / rel
+            lower_path = prefix / "libexec/darling" / rel
+            if upper_path.exists():
+                blocked_upper_files.append(upper_path)
+                continue
+            lower_path.parent.mkdir(parents=True, exist_ok=True)
+            if not lower_path.exists():
+                lower_path.write_text(str(spec.get("contents", "")))
+                created_template_files.append(lower_path)
+        if blocked_upper_files:
+            self.die(
+                f"{invocation['name']}: E-UNION lower fixture would be shadowed by "
+                f"upper file(s): {', '.join(str(path) for path in blocked_upper_files)}"
+            )
+
+        self._shutdown_runtime_prefix(prefix)
+        try:
+            yield
+        finally:
+            self._shutdown_runtime_prefix(prefix)
+            for path in reversed(created_template_files):
+                try:
+                    path.unlink()
+                except FileNotFoundError:
+                    pass
+            if created_marker:
+                try:
+                    marker.rmdir()
+                except OSError:
+                    self.err(f"{invocation['name']}: preserving non-empty E-UNION marker {marker}")
 
     def _check_requires_profile(self, patch, invocation) -> None:
         required = invocation.get("requires_profile")
@@ -2609,8 +2683,10 @@ fi
     def _run_guest_runtime_deploy_proof(self, patch, proof, invocation) -> int:
         if not invocation.get("guest_c_fixture") and invocation.get("runner") != "script":
             self.die(f"{patch['path']}: guest-runtime-deploy requires guest-c-fixture or script")
-        if invocation.get("runner") == "script" and "darling-prefix" not in invocation.get("requires_resources", []):
-            self.die(f"{patch['path']}: guest-runtime-deploy script runner requires darling-prefix")
+        if invocation.get("runner") == "script":
+            resources = set(invocation.get("requires_resources", []))
+            if not resources & {"darling-prefix", "darling-eunion-prefix"}:
+                self.die(f"{patch['path']}: guest-runtime-deploy script runner requires darling-prefix")
         missing_env = self._missing_requirements(invocation)
         if missing_env:
             self.die(
@@ -2631,13 +2707,17 @@ fi
                     scratch_root,
                 )
                 with self._runtime_red_deployed_artifacts(proof, build_root, prefix):
-                    bad_rc = self._run_invocation(invocation, env=self._execution_env(invocation))
+                    bad_env = self._execution_env(invocation)
+                    with self._resource_context(invocation, bad_env):
+                        bad_rc = self._run_invocation(invocation, env=bad_env)
                     if bad_rc == 0:
                         self.err("  RED proof failed: deployed bad runtime unexpectedly passed")
                         return 1
                     self.inf(f"  RED runtime failed as expected (rc={bad_rc})")
         self.inf("  GREEN current runtime")
-        return self._run_invocation(invocation, env=self._execution_env(invocation))
+        green_env = self._execution_env(invocation)
+        with self._resource_context(invocation, green_env):
+            return self._run_invocation(invocation, env=green_env)
 
     def _run_source_base_proof(self, patch, proof, invocation) -> int:
         if invocation["shell"]:
@@ -2745,7 +2825,9 @@ fi
                 elif mode == "guest-runtime-deploy":
                     result_rc = self._run_guest_runtime_deploy_proof(patch, proof, invocation)
                 else:
-                    result_rc = self._run_invocation(invocation, env=self._execution_env(invocation))
+                    exec_env = self._execution_env(invocation)
+                    with self._resource_context(invocation, exec_env):
+                        result_rc = self._run_invocation(invocation, env=exec_env)
             if result_rc:
                 rc = result_rc
         return rc
