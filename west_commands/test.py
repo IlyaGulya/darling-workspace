@@ -1035,6 +1035,9 @@ class DarlingTest(WestCommand):
             compile_flags = [str(item) for item in test.get("compile-flags", [])]
             link_flags = [str(item) for item in test.get("link-flags", [])]
             run_args = [str(item) for item in test.get("run-args", [])]
+            guest_env_vars = {
+                str(k): str(v) for k, v in test.get("guest-env-vars", {}).items()
+            }
             host_trace_oracle = bool(test.get("host-trace-oracle", False))
             ok_marker = test.get("ok-marker")
             if not ok_marker and not host_trace_oracle:
@@ -1059,6 +1062,7 @@ class DarlingTest(WestCommand):
                 "guest_cc": guest_cc,
                 "guest_cflags": guest_cflags,
                 "guest_prelude": str(test.get("guest-prelude", "")),
+                "guest_env_vars": guest_env_vars,
                 "compile_flags": compile_flags,
                 "link_flags": link_flags,
                 "run_args": run_args,
@@ -1962,6 +1966,10 @@ timingsafe_bcmp(const void *b1, const void *b2, size_t n)
             guest_prelude = invocation.get("guest_prelude", "")
             if not guest_prelude:
                 guest_prelude = ":"
+            guest_env_setup = "\n".join(
+                f"export {key}={quote(value)}"
+                for key, value in invocation.get("guest_env_vars", {}).items()
+            ) or ":"
             trace_setup_lines = []
             trace_check_lines = []
             trace_dump_lines = []
@@ -1989,6 +1997,10 @@ timingsafe_bcmp(const void *b1, const void *b2, size_t n)
                         f"export {env_name}=\"${temp_var}\"",
                     ]
                 )
+                if "contents" in temp_file:
+                    trace_setup_lines.append(
+                        f"printf %s {quote(str(temp_file['contents']))} > \"${temp_var}\""
+                    )
                 trace_dump_lines.extend(
                     [
                         f"if [ -f \"${temp_var}\" ]; then",
@@ -2079,6 +2091,7 @@ guest_shell 10 "cat > '$guest_src'" < "$host_src"
 set +e
 guest_shell "$timeout_seconds" {quote(f'''
 {guest_prelude}
+{guest_env_setup}
 guest_cc={quote(invocation["guest_cc"])}
 if [ ! -x "$guest_cc" ]; then guest_cc=clang; fi
 {' '.join(compile_parts)}

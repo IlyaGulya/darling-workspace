@@ -1,0 +1,23 @@
+From 9159de2e2b985d24c57df445a44ee75afefbcdcc Mon Sep 17 00:00:00 2001
+From: Ilya Gulya <ilya@gulya.me>
+Date: Thu, 9 Jul 2026 01:33:14 +0000
+Subject: [PATCH] libsyscall: tolerate fork child checkin timeout
+
+---
+ libsyscall/mach/mach_init.c | 3 +++
+ 1 file changed, 3 insertions(+)
+
+diff --git a/libsyscall/mach/mach_init.c b/libsyscall/mach/mach_init.c
+index f06b7b78b116067e5887c6bf716f00f48d6f2b4a..fda4cb082abb6d96c706207f0dd74de6324f5fd6 100644
+--- a/libsyscall/mach/mach_init.c
++++ b/libsyscall/mach/mach_init.c
+@@ -153,6 +153,9 @@ retry:
+ 		if (result == -LINUX_EINTR) {
+ 			goto retry;
+ 		}
++		if (result == -LINUX_ETIMEDOUT) {
++			return 0;
++		}
+ 		__builtin_unreachable();
+ 	}
+ 	return 0;

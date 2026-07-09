@@ -104,6 +104,61 @@ patches:
     - -Wextra
     - -Werror
     note: Compile contract for the production fork-checkin wait helper; old source has no bounded outcome helper, fixed source maps semaphore timeout/interrupt/error explicitly and uses the intended 30s default.
+  - name: fork_checkin_drop_timeout_guest
+    kind: guest
+    coverage-tier: runtime
+    env: darling
+    diag: guarded
+    red: true
+    red-proof:
+      mode: guest-runtime-deploy
+      bad-profile: current-minus-patch
+      current-minus-skip-patches:
+      - darlingserver/fork-checkin-sticky-flag.patch
+      - darlingserver/checkin-rwlock-across-suspend.patch
+      - darlingserver/checkin-retask-current-thread-uaf.patch
+      - darlingserver/test-diagnostics-trace.patch
+      source-patches:
+      - tests/fixtures/fork-checkin/bound-drop-checkin-diagnostics-no-fix.patch
+      runtime-artifacts:
+      - module: darling/src/external/darlingserver
+        build-targets:
+        - darlingserver
+        deploy:
+        - bin/darlingserver
+    runner: guest-c-fixture
+    repo: darling-workspace
+    script: tests/fork_checkin_drop_timeout_guest.c
+    ok-marker: FORK_CHECKIN_DROP_TIMEOUT_OK
+    timeout-seconds: 20
+    compile-flags:
+    - -std=gnu11
+    - -Wall
+    - -Wextra
+    - -Werror
+    requires:
+    - darling-prefix
+    env-vars:
+      DSERVER_TEST_FORK_CHECKIN_TIMEOUT_SECONDS: '1'
+    guest-env-vars:
+      DSERVER_TEST_FAULT_FILE: /private/var/tmp/dserver-fork-checkin-bound-fault
+    host-temp-files:
+    - env: DSERVER_TEST_FAULT_FILE
+      prefix-relative-path: private/var/tmp/dserver-fork-checkin-bound-fault
+    host-trace-files:
+    - env: DSERVER_TEST_TRACE_FILE
+      prefix-relative-path: private/var/tmp/dserver-fork-checkin-bound.trace
+      contains:
+      - test_fault.consume name=fork.drop_checkin
+      - process.checkin.fork_drop
+      - process.fork_wait result=timed_out
+      - timeout=1
+    note: >-
+      Guest runtime proof for the bounded fork-checkin wait: diagnostics drops
+      the child checkin before sticky/semaphore notification, fixed
+      darlingserver times out after the guarded 1s test timeout, the guest
+      atfork parent hook returns instead of wedging, and current-minus runtime
+      without the bound remains stuck under the guest runner timeout.
   pr-draft: pr-drafts/darlingserver-fork-checkin-bound.md
   github:
     fork:
@@ -523,6 +578,67 @@ patches:
     - -Werror
     note: Compiles production fork.c with fork/RPC stubs and checks the child path calls __mldr_postfork_child before guard/socket refresh/checkin while parent/error paths skip child hooks.
   pr-draft: pr-drafts/xnu-fork-postfork-child.md
+  github:
+    fork:
+      repo: IlyaGulya/darling-xnu
+      base: preupstream/main
+      state: local
+    upstream:
+      repo: darlinghq/darling-xnu
+      base: main
+      state: local
+- path: xnu/fork-wait-timeout-parent.patch
+  sha256sum: e95a8fdf7a5c331580f36d02b0937a857b275e6ec7e703f2a7955ccdc2146253
+  module: darling/src/external/xnu
+  source-branch: fix/fork-wait-timeout-parent
+  source-commit: 9159de2e2b985d24c57df445a44ee75afefbcdcc
+  bead: dar-r7fc.2.1
+  publication-status: provisional
+  publication-blocker: companion to defensive fork-checkin timeout handling; upstream shape should be reviewed together with the broader fork lifecycle fix under dar-r7fc.2.1.
+  tests:
+  - name: fork_wait_timeout_parent_guest
+    kind: guest
+    coverage-tier: runtime
+    env: darling
+    diag: guarded
+    red: true
+    red-proof:
+      mode: guest-runtime-deploy
+      bad-profile: current-minus-patch
+      runtime-artifacts:
+      - module: darling/src/external/xnu
+        build-targets:
+        - system_kernel
+        deploy:
+        - usr/lib/system/libsystem_kernel.dylib
+    runner: guest-c-fixture
+    repo: darling-workspace
+    script: tests/fork_checkin_drop_timeout_guest.c
+    ok-marker: FORK_CHECKIN_DROP_TIMEOUT_OK
+    timeout-seconds: 20
+    compile-flags:
+    - -std=gnu11
+    - -Wall
+    - -Wextra
+    - -Werror
+    requires:
+    - darling-prefix
+    env-vars:
+      DSERVER_TEST_FORK_CHECKIN_TIMEOUT_SECONDS: '1'
+    guest-env-vars:
+      DSERVER_TEST_FAULT_FILE: /private/var/tmp/dserver-fork-checkin-bound-fault
+    host-temp-files:
+    - env: DSERVER_TEST_FAULT_FILE
+      prefix-relative-path: private/var/tmp/dserver-fork-checkin-bound-fault
+    host-trace-files:
+    - env: DSERVER_TEST_TRACE_FILE
+      prefix-relative-path: private/var/tmp/dserver-fork-checkin-bound-xnu.trace
+      contains:
+      - test_fault.consume name=fork.drop_checkin
+      - process.checkin.fork_drop
+      - process.fork_wait result=timed_out
+      - timeout=1
+    note: Guest runtime proof for the libsyscall atfork parent side of bounded fork-checkin waits; fixed libsystem_kernel treats the server timeout as a bounded post-fork checkin failure and returns from the parent hook, while current-minus libsystem_kernel treats the reply as unreachable and wedges under the runner timeout.
   github:
     fork:
       repo: IlyaGulya/darling-xnu
@@ -3947,7 +4063,7 @@ patches:
   module: darling/src/external/darlingserver
   source-branch: fix/test-diagnostics-trace
   source-base: b5c7403d9e70fa5708c7c5ed66821534a017d032
-  source-commit: e99d848aee8cc7b832f939e4c065f862d6948e95
+  source-commit: 6fe2b2ca0b4668d2ff9b2766d3c29eb989aa5d5e
   bead: dar-r7fc.7
   publication-status: blocked
   publication-blocker: test-only runtime diagnostics; keep local until a supported upstream diagnostics interface is designed
@@ -3976,4 +4092,4 @@ patches:
       Guest runtime smoke for the opt-in DSERVER_TEST_TRACE_FILE diagnostics
       hook. The script only launches a real guest process; west owns the host
       trace setup and oracle.
-  sha256sum: 52777d2732c839876898e28ff4f981d91e9d11abb8f56b462a36447c009da617
+  sha256sum: d03ef40ed812d56c8e39858732659d66dd770be9d510059c16305d9b4ae3d633
