@@ -254,16 +254,18 @@ runner-local ad hoc setup. The current provider stack is ordered as:
 
 1. `host-trace-files`: prepares prefix-relative host trace paths and exports
    their environment variables for host-launched fixtures.
-2. `dcc-cache`: materializes/builds the declared cache tooling and injects the
+2. `host-stat-deltas`: binds and preflights the host `darling-stat` tool used
+   by guest runtime fixtures that assert before/after counter deltas.
+3. `dcc-cache`: materializes/builds the declared cache tooling and injects the
    guest DCC environment.
-3. `darling-eunion-prefix`: boots/verifies the E-UNION prefix and stages
+4. `darling-eunion-prefix`: boots/verifies the E-UNION prefix and stages
    upper/lower fixture files.
 
-Provider order is part of the contract: host observation paths are prepared
-before cache and prefix setup, and cache resources are prepared before prefix
-fixtures that may boot or probe the runtime. New shared runtime setup should
-become a provider with a focused contract instead of growing individual runner
-bodies.
+Provider order is part of the contract: host observation paths and stat tools
+are prepared before cache and prefix setup, and cache resources are prepared
+before prefix fixtures that may boot or probe the runtime. New shared runtime
+setup should become a provider with a focused contract instead of growing
+individual runner bodies.
 
 `runner: guest-command-fixture` may check both process status and captured
 output:
