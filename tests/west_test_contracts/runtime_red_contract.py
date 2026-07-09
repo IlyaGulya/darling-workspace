@@ -238,6 +238,16 @@ with tempfile.TemporaryDirectory() as temp:
             {"runtime-artifacts": [{"deploy": ["usr/lib/system/libsystem_kernel.dylib"]}]},
             tempdir / "prefix",
         )
+        ring_args = make_test()._runtime_red_configure_args(
+            {
+                "inherit-cmake-cache": [
+                    "DARLING_RING_TRANSPORT",
+                    "DSERVER_RING_TRANSPORT",
+                ],
+                "runtime-artifacts": [{"deploy": ["usr/lib/system/libsystem_kernel.dylib"]}],
+            },
+            tempdir / "prefix",
+        )
         host_test = make_test()
         host_test._resolve_darling_launcher = (
             lambda _prefix: str(tempdir / "install/bin/darling")
@@ -252,12 +262,43 @@ with tempfile.TemporaryDirectory() as temp:
         else:
             os.environ["DARLING_BUILD_DIR"] = old_build_dir
     assert "-DDARLING_EUNION=ON" in args, args
-    assert "-DDARLING_RING_TRANSPORT=ON" in args, args
+    assert "-DDARLING_RING_TRANSPORT=OFF" in args, args
     assert "-DDARLING_RPC_SLEEP_ACCOUNT=OFF" in args, args
     assert "-DDARLING_GUEST_RECVSPIN=512" in args, args
-    assert "-DDSERVER_RING_TRANSPORT=ON" in args, args
+    assert "-DDSERVER_RING_TRANSPORT=OFF" in args, args
+    assert "-DDARLING_RING_TRANSPORT=ON" in ring_args, ring_args
+    assert "-DDSERVER_RING_TRANSPORT=ON" in ring_args, ring_args
     assert f"-DCMAKE_INSTALL_PREFIX={tempdir / 'prefix'}" in args, args
     assert f"-DCMAKE_INSTALL_PREFIX={tempdir / 'install'}" in host_args, host_args
+
+with tempfile.TemporaryDirectory() as temp:
+    tempdir = Path(temp)
+    bad_bundle = tempdir / "bad-bundle"
+    good_bundle = tempdir / "good-bundle"
+    bad_bundle.mkdir()
+    good_bundle.mkdir()
+    (bad_bundle / "stdout.log").write_text("WEST_GUEST_SHELL_RC=1\n")
+    (good_bundle / "stdout.log").write_text("GREEN_OK\nORACLE_RC=0\n")
+    test = make_test()
+    test._latest_debug_bundle = lambda _invocation, *, since: bad_bundle
+    assert not test._check_guest_runtime_green_success(
+        {"name": "green_reason_contract", "ok_marker": "GREEN_OK"},
+        since=time.time(),
+    )
+    assert "GREEN output missing 'GREEN_OK'" in test.err_messages[-1]
+    assert test._check_guest_runtime_green_success(
+        {
+            "name": "green_reason_contract",
+            "ok_marker": "GREEN_OK",
+            "host_trace_oracle": True,
+        },
+        since=time.time(),
+    )
+    test._latest_debug_bundle = lambda _invocation, *, since: good_bundle
+    assert test._check_guest_runtime_green_success(
+        {"name": "green_reason_contract", "ok_marker": "GREEN_OK"},
+        since=time.time(),
+    )
 
 with tempfile.TemporaryDirectory() as temp:
     tempdir = Path(temp)
