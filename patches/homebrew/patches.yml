@@ -735,6 +735,45 @@ patches:
     - -Wextra
     - -Werror
     note: Compile contract for the production wait_timer cancellation helper; old source has no shared helper, fixed source clears armed timers and updates active-count accounting correctly.
+  - name: wait_timer_stale_guest
+    kind: guest
+    coverage-tier: runtime
+    env: darling
+    diag: guarded
+    red: true
+    red-proof:
+      mode: guest-runtime-deploy
+      bad-profile: current-minus-patch
+      current-minus-skip-patches:
+      - darlingserver/assert-wait-cancel-stale-timer.patch
+      - darlingserver/test-diagnostics-trace.patch
+      runtime-artifacts:
+      - module: darling/src/external/darlingserver
+        build-targets:
+        - darlingserver
+        deploy:
+        - bin/darlingserver
+    runner: guest-c-fixture
+    repo: darling-workspace
+    script: tests/wait_timer_stale_guest.c
+    ok-marker: WAIT_TIMER_STALE_GUEST_OK
+    timeout-seconds: 30
+    compile-flags:
+    - -std=gnu11
+    - -Wall
+    - -Wextra
+    - -Werror
+    link-flags:
+    - -pthread
+    requires:
+    - darling-prefix
+    note: >-
+      Guest runtime proof for stale wait_timer delivery: a thread is woken early
+      from pthread_cond_timedwait, immediately re-enters an untimed cond wait,
+      then is held past the original deadline. Fixed runtime cancels the stale
+      timer and waits for the explicit signal; current-minus bad runtime without
+      the thread_unblock cancellation can deliver a bogus timeout into the later
+      untimed wait.
   pr-draft: pr-drafts/darlingserver-cancel-wait-timer.md
   github:
     fork:
