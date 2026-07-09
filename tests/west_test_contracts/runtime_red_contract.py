@@ -91,6 +91,28 @@ except ValueError as exc:
 else:
     raise AssertionError("absolute deploy path was accepted")
 
+with tempfile.TemporaryDirectory() as temp:
+    bundle_root = Path(temp)
+    bundle = bundle_root / "20260709T000000Z-west-test-runtime_red_reason"
+    bundle.mkdir()
+    (bundle / "stdout.log").write_text("old runtime failure\nerrno=14\n")
+    (bundle / "stderr.log").write_text("WEST_GUEST_STAGE=run\n")
+    (bundle / "exit-status.txt").write_text("exit status: 1\n")
+
+    test = make_test()
+    test._bundle_root = str(bundle_root)
+    invocation = {"name": "runtime_red_reason"}
+    assert test._check_guest_runtime_red_failure(
+        {"expect-output-contains": ["old runtime failure", "errno=14"]},
+        invocation,
+        since=time.time() - 10,
+    )
+    assert not test._check_guest_runtime_red_failure(
+        {"expect-output-contains": ["different failure"]},
+        invocation,
+        since=time.time() - 10,
+    )
+
 
 with tempfile.TemporaryDirectory() as temp:
     tempdir = Path(temp)

@@ -100,6 +100,7 @@ profile = {
                     "timeout-seconds": 45,
                     "red-proof": {
                         "current-minus-skip-patches": ["xnu/downstream.patch"],
+                        "expect-output-contains": ["old runtime failure"],
                     },
                 },
                 {
@@ -141,6 +142,7 @@ assert compact["timeout-seconds"] == 45, compact
 assert compact["red-proof"]["mode"] == "guest-runtime-deploy", compact
 assert compact["red-proof"]["bad-profile"] == "current-minus-patch", compact
 assert compact["red-proof"]["current-minus-skip-patches"] == ["xnu/downstream.patch"], compact
+assert compact["red-proof"]["expect-output-contains"] == ["old runtime failure"], compact
 assert compact["red-proof"]["runtime-artifacts"] == [
     {
         "module": "darling/src/external/xnu",
