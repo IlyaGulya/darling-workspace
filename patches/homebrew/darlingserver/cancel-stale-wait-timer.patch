@@ -1,4 +1,4 @@
-From a22a5e8437cfa7a6c278a50e15eb55f96060ab9b Mon Sep 17 00:00:00 2001
+From 33229e0c695e9467b68c1634213849d5f54d7f5d Mon Sep 17 00:00:00 2001
 From: Ilya Gulya <ilya@gulya.me>
 Date: Wed, 10 Jun 2026 15:51:43 +0000
 Subject: [PATCH] duct-tape: cancel wait_timer in thread_unblock

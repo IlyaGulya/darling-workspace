@@ -1,4 +1,4 @@
-From ee46485ef0bb7b5ab65e9a25417f52c4fdeb3072 Mon Sep 17 00:00:00 2001
+From 3ab48c982a7fc9d5410ebec219bd357b975a26ae Mon Sep 17 00:00:00 2001
 From: Ilya Gulya <ilya@gulya.me>
 Date: Sun, 28 Jun 2026 08:44:01 +0000
 Subject: [PATCH] perf #9-decompose: guest per-callnum recvmsg-sleep accounting
@@ -21,8 +21,6 @@ libsystem_kernel (separate commit in the xnu submodule).
 RED->GREEN: tests/rpc_sleep_account_test.sh runs the generator and asserts the wrapper
 brackets its receive with the guarded per-callnum accounting and that NO_REPLY calls
 have none. Proven RED before the generator change (exit 1), GREEN after.
-
-Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
 ---
  scripts/generate-rpc-wrappers.py | 23 +++++++-
  tests/rpc_sleep_account_test.sh  | 97 ++++++++++++++++++++++++++++++++

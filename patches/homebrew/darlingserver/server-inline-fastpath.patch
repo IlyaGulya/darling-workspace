@@ -1,4 +1,4 @@
-From 6144a4bb6b1182e635fb88dd737cd11fd71e6189 Mon Sep 17 00:00:00 2001
+From 3aa068c72bbcc622fcbec82986f4a716b28f1a0a Mon Sep 17 00:00:00 2001
 From: Ilya Gulya <ilya@gulya.me>
 Date: Sun, 28 Jun 2026 03:26:43 +0000
 Subject: [PATCH] darlingserver: run cheap RPCs inline on the main loop (perf
@@ -39,8 +39,6 @@ handoff path incurs ~1 ctx-switch/item (RED, fails), the inline path ~0
 (GREEN, passes).
 
 Bead: dar-dar6x4-perf-5dq.8
-
-Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
 ---
  internal-include/darlingserver/metrics.hpp |   7 ++
  internal-include/darlingserver/thread.hpp  |   7 ++
@@ -138,10 +136,10 @@ index f54a46a6589663d6b39b88f1ee1c23f944800afb..af80eca5faf8ffe2901ee2fac21f5cb2
  				} catch (const std::exception& ex) {
  					static DarlingServer::Log serverLog("server");
 diff --git a/src/thread.cpp b/src/thread.cpp
-index 89ebbe7f23553a7a63dc0e2a7ae53055bdb28e45..35bb53237359ae903423564b8e68256df3437a2a 100644
+index 0f98f6bf4baba92422be893ec90e94b3a0418fea..9daf3611795f631aad1a6e6bc5b68c666bca8d50 100644
 --- a/src/thread.cpp
 +++ b/src/thread.cpp
-@@ -1478,6 +1478,14 @@ void DarlingServer::Thread::pushCallReply(std::shared_ptr<Call> expectedCall, Me
+@@ -1455,6 +1455,14 @@ void DarlingServer::Thread::pushCallReply(std::shared_ptr<Call> expectedCall, Me
  	}
  };
  

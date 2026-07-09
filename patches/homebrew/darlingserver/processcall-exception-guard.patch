@@ -1,4 +1,4 @@
-From 44fbb9f428da4f403f53a102b58a353ca6d2dddd Mon Sep 17 00:00:00 2001
+From f1566efa3cbf2754c48bc62e3f0b0479fff72ba0 Mon Sep 17 00:00:00 2001
 From: Ilya Gulya <ilya@gulya.me>
 Date: Sun, 21 Jun 2026 14:40:33 +0000
 Subject: [PATCH] thread/call/server: contain exceptions that can terminate the

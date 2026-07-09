@@ -1,4 +1,4 @@
-From 6883a8363d2dc2d7a43eae109e172a18e4b4f36c Mon Sep 17 00:00:00 2001
+From ff9c627c57cd9f5498930a5bc346a3a54e4a601a Mon Sep 17 00:00:00 2001
 From: Ilya Gulya <ilya@gulya.me>
 Date: Fri, 26 Jun 2026 09:44:39 +0000
 Subject: [PATCH] call/duct-tape: implement __pthread_canceled and
@@ -83,10 +83,10 @@ index af083b3e9afb91656ba519f144b71031cff1110e..e5e7b74230aca13144f1c4e3987b7c75
  	dtape_mutex_t suspension_mutex;
  	dtape_condvar_t suspension_condvar;
 diff --git a/duct-tape/src/thread.c b/duct-tape/src/thread.c
-index aec1deaf4bb72b31a2d58bd54edbf3ffe9fab9d4..7438fad6f6eb8f3c7be2e36164184772f6c59c39 100644
+index 33f73b07b5b20b17eb273bb4d12c8ee26b4098a1..78aefb90c8adf13eac4efc02b741d75e07e2eeb2 100644
 --- a/duct-tape/src/thread.c
 +++ b/duct-tape/src/thread.c
-@@ -52,6 +52,9 @@ dtape_thread_t* dtape_thread_create(dtape_task_t* task, uint64_t nsid, void* con
+@@ -53,6 +53,9 @@ dtape_thread_t* dtape_thread_create(dtape_task_t* task, uint64_t nsid, void* con
  	thread->context = context;
  	thread->processing_signal = false;
  	thread->name = NULL;
@@ -96,7 +96,7 @@ index aec1deaf4bb72b31a2d58bd54edbf3ffe9fab9d4..7438fad6f6eb8f3c7be2e36164184772
  	thread->waiting_suspended = false;
  	LIST_INIT(&thread->user_states);
  	dtape_mutex_init(&thread->suspension_mutex);
-@@ -179,6 +182,52 @@ void dtape_thread_set_handles(dtape_thread_t* thread, uintptr_t pthread_handle,
+@@ -180,6 +183,52 @@ void dtape_thread_set_handles(dtape_thread_t* thread, uintptr_t pthread_handle,
  	thread_unlock(&thread->xnu_thread);
  };
  
@@ -150,10 +150,10 @@ index aec1deaf4bb72b31a2d58bd54edbf3ffe9fab9d4..7438fad6f6eb8f3c7be2e36164184772
  	thread_t xnu_thread = port_name_to_thread(thread_port, PORT_TO_THREAD_NONE);
  	if (!xnu_thread) {
 diff --git a/src/call.cpp b/src/call.cpp
-index 20497639c5290c7acedd9eccaac9ed12f26f60f2..7089a76051114f2e54fd520853a00c5591e097d2 100644
+index c8dfe293110a9f5c4f20c3108e729b8e617e6f62..d4825d9b54a849cb890a0be5b34c45bf48394cb8 100644
 --- a/src/call.cpp
 +++ b/src/call.cpp
-@@ -696,20 +696,28 @@ void DarlingServer::Call::PthreadKill::processCall() {
+@@ -701,20 +701,28 @@ void DarlingServer::Call::PthreadKill::processCall() {
  };
  
  void DarlingServer::Call::PthreadCanceled::processCall() {
@@ -188,7 +188,7 @@ index 20497639c5290c7acedd9eccaac9ed12f26f60f2..7089a76051114f2e54fd520853a00c55
  		code = -ESRCH;
  	}
 
-From 830e0fcd4f32a7594c83d3acb56c4c46caec3b22 Mon Sep 17 00:00:00 2001
+From 397a044024296c30d94c2f482b6365605ef3f310 Mon Sep 17 00:00:00 2001
 From: Ilya Gulya <ilya@gulya.me>
 Date: Wed, 8 Jul 2026 14:55:59 +0000
 Subject: [PATCH] duct-tape: isolate pthread cancel state transitions
@@ -303,10 +303,10 @@ index e5e7b74230aca13144f1c4e3987b7c75ced74099..6dd19645ae9e378542666b383d3e3342
  	bool waiting_suspended;
  	dtape_mutex_t suspension_mutex;
 diff --git a/duct-tape/src/thread.c b/duct-tape/src/thread.c
-index 7438fad6f6eb8f3c7be2e36164184772f6c59c39..8f4b5aa85204b204e41a18b43d8f7bc3d59d294b 100644
+index 78aefb90c8adf13eac4efc02b741d75e07e2eeb2..9071efbf339135b1c73cf432d6f09fb525e3692b 100644
 --- a/duct-tape/src/thread.c
 +++ b/duct-tape/src/thread.c
-@@ -52,9 +52,7 @@ dtape_thread_t* dtape_thread_create(dtape_task_t* task, uint64_t nsid, void* con
+@@ -53,9 +53,7 @@ dtape_thread_t* dtape_thread_create(dtape_task_t* task, uint64_t nsid, void* con
  	thread->context = context;
  	thread->processing_signal = false;
  	thread->name = NULL;
@@ -317,7 +317,7 @@ index 7438fad6f6eb8f3c7be2e36164184772f6c59c39..8f4b5aa85204b204e41a18b43d8f7bc3
  	thread->waiting_suspended = false;
  	LIST_INIT(&thread->user_states);
  	dtape_mutex_init(&thread->suspension_mutex);
-@@ -193,25 +191,7 @@ void dtape_thread_set_handles(dtape_thread_t* thread, uintptr_t pthread_handle,
+@@ -194,25 +192,7 @@ void dtape_thread_set_handles(dtape_thread_t* thread, uintptr_t pthread_handle,
  //   action 0 (or default) -> if a cancel is pending and not disabled/already
  //       acted upon, mark it canceled and return 0; otherwise return EINVAL.
  int dtape_thread_canceled(dtape_thread_t* thread, int action) {
@@ -344,7 +344,7 @@ index 7438fad6f6eb8f3c7be2e36164184772f6c59c39..8f4b5aa85204b204e41a18b43d8f7bc3
  };
  
  // Implements XNU's __pthread_markcancel(thread_port): requests cancellation of
-@@ -220,12 +200,7 @@ int dtape_thread_canceled(dtape_thread_t* thread, int action) {
+@@ -221,12 +201,7 @@ int dtape_thread_canceled(dtape_thread_t* thread, int action) {
  // observes the request via dtape_thread_canceled(action 0) at its next
  // cancellation point. Returns 0 on success.
  int dtape_thread_markcancel(dtape_thread_t* thread) {

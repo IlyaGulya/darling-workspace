@@ -2144,6 +2144,92 @@ dump_namespace_state() {{
 \tfi
 }}
 
+dump_file_sha() {{
+\tlocal label="$1"
+\tlocal path="$2"
+\tif [ -e "$path" ]; then
+\t\tsha256sum "$path" 2>/dev/null | sed "s#^#WEST_GUEST_FILE_SHA256 $label #; s#  # #g" >&2 || true
+\telse
+\t\tprintf 'WEST_GUEST_FILE_MISSING %s %s\\n' "$label" "$path" >&2
+\tfi
+}}
+
+dump_runtime_file_state() {{
+\tlocal launcher_dir install_root
+\tlauncher_dir="$(dirname "$launch")"
+\tinstall_root="$(cd "$launcher_dir/.." && pwd -P)"
+\tdump_file_sha launcher "$launch"
+\tdump_file_sha launcher_server "$launcher_dir/darlingserver"
+\tdump_file_sha prefix_server "$DPREFIX/bin/darlingserver"
+\tdump_file_sha install_mldr "$install_root/usr/libexec/darling/mldr"
+\tdump_file_sha install_nested_mldr "$install_root/libexec/darling/usr/libexec/darling/mldr"
+\tdump_file_sha prefix_mldr "$DPREFIX/usr/libexec/darling/mldr"
+\tdump_file_sha prefix_nested_mldr "$DPREFIX/libexec/darling/usr/libexec/darling/mldr"
+\tdump_file_sha install_dyld "$install_root/usr/lib/dyld"
+\tdump_file_sha install_nested_dyld "$install_root/libexec/darling/usr/lib/dyld"
+\tdump_file_sha install_libsystem_kernel "$install_root/usr/lib/system/libsystem_kernel.dylib"
+\tdump_file_sha install_nested_libsystem_kernel "$install_root/libexec/darling/usr/lib/system/libsystem_kernel.dylib"
+\tdump_file_sha prefix_libsystem_kernel "$DPREFIX/usr/lib/system/libsystem_kernel.dylib"
+\tdump_file_sha prefix_nested_libsystem_kernel "$DPREFIX/libexec/darling/usr/lib/system/libsystem_kernel.dylib"
+\tdump_file_sha prefix_dyld "$DPREFIX/usr/lib/dyld"
+\tdump_file_sha prefix_nested_dyld "$DPREFIX/libexec/darling/usr/lib/dyld"
+}}
+
+dump_rpc_client_log() {{
+\tlocal log=/tmp/dserver-client-rpc.log
+\tif [ -s "$log" ]; then
+\t\tprintf 'WEST_GUEST_RPC_CLIENT_LOG_BEGIN\\n' >&2
+\t\ttail -80 "$log" >&2 || true
+\t\tprintf 'WEST_GUEST_RPC_CLIENT_LOG_END\\n' >&2
+\tfi
+}}
+
+dump_runtime_process_state() {{
+\tlocal snapshot pid comm args exe found=0
+\tsnapshot="$(mktemp /tmp/west-dserver-ps.XXXXXX)"
+\tps -eo pid=,comm=,args= > "$snapshot" 2>/dev/null || true
+\twhile read -r pid comm args; do
+\t\tif [ "$comm" != "darlingserver" ]; then
+\t\t\tcontinue
+\t\tfi
+\t\tcase "$args" in
+\t\t\t*"$DPREFIX"*)
+\t\t\t\tfound=1
+\t\t\t\tprintf 'WEST_GUEST_DSERVER_PID=%s\\n' "$pid" >&2
+\t\t\t\tprintf 'WEST_GUEST_DSERVER_ARGS=%s\\n' "$args" >&2
+\t\t\t\texe="$(readlink "/proc/$pid/exe" 2>/dev/null || true)"
+\t\t\t\tprintf 'WEST_GUEST_DSERVER_EXE=%s\\n' "${{exe:-<unreadable>}}" >&2
+\t\t\t\tsha256sum "/proc/$pid/exe" 2>/dev/null | sed 's/^/WEST_GUEST_DSERVER_EXE_SHA256=/' >&2 || true
+\t\t\t\t;;
+\t\tesac
+\tdone < "$snapshot"
+\tif [ "$found" -eq 0 ]; then
+\t\twhile read -r pid comm args; do
+\t\t\tif [ "$comm" != "darlingserver" ]; then
+\t\t\t\tcontinue
+\t\t\tfi
+\t\t\tprintf 'WEST_GUEST_DSERVER_OTHER_PID=%s\\n' "$pid" >&2
+\t\t\tprintf 'WEST_GUEST_DSERVER_OTHER_ARGS=%s\\n' "$args" >&2
+\t\t\texe="$(readlink "/proc/$pid/exe" 2>/dev/null || true)"
+\t\t\tprintf 'WEST_GUEST_DSERVER_OTHER_EXE=%s\\n' "${{exe:-<unreadable>}}" >&2
+\t\t\tsha256sum "/proc/$pid/exe" 2>/dev/null | sed 's/^/WEST_GUEST_DSERVER_OTHER_EXE_SHA256=/' >&2 || true
+\t\tdone < "$snapshot"
+\tfi
+\trm -f "$snapshot"
+}}
+
+clear_stale_init_pid() {{
+\tlocal init_pid_file="$DPREFIX/.init.pid"
+\tlocal init_pid=""
+\tif [ ! -r "$init_pid_file" ]; then
+\t\treturn 0
+\tfi
+\tinit_pid="$(tr -d '[:space:]' < "$init_pid_file" || true)"
+\tif [ -z "$init_pid" ] || [ ! -e "/proc/$init_pid/ns/mnt" ]; then
+\t\trm -f "$init_pid_file"
+\tfi
+}}
+
 guest_shell() {{
 \tlocal seconds="$1"
 \tshift
@@ -2155,6 +2241,7 @@ guest_shell() {{
 \t\t\tset +e
 \t\t\t;;
 \tesac
+\tclear_stale_init_pid
 \tns_log="$(mktemp /tmp/west-guest-shell-stderr.XXXXXX)"
 \ttimeout --kill-after=5 "$seconds" env DPREFIX="$DPREFIX" DARLING_PREFIX="$DPREFIX" "$launch" shell /bin/bash --login -c "$@" 2> "$ns_log"
 \tlocal rc=$?
@@ -2163,6 +2250,7 @@ guest_shell() {{
 \t\tdump_namespace_state
 \t\tprintf 'WEST_GUEST_STAGE=namespace-retry\\n' >&2
 \t\t"$launch" shutdown >/dev/null 2>&1 || true
+\t\tclear_stale_init_pid
 \t\ttimeout --kill-after=5 "$seconds" env DPREFIX="$DPREFIX" DARLING_PREFIX="$DPREFIX" "$launch" shell /bin/bash --login -c "$@" 2> "$ns_log"
 \t\trc=$?
 \t\tcat "$ns_log" >&2 || true
@@ -2171,6 +2259,9 @@ guest_shell() {{
 \t\tfi
 \tfi
 \tif [ "$rc" -ne 0 ]; then
+\t\tdump_runtime_file_state
+\t\tdump_runtime_process_state
+\t\tdump_rpc_client_log
 \t\tprintf 'WEST_GUEST_SHELL_RC=%s\\n' "$rc" >&2
 \tfi
 \trm -f "$ns_log"
@@ -2180,8 +2271,12 @@ guest_shell() {{
 \treturn "$rc"
 }}
 
+: > /tmp/dserver-client-rpc.log 2>/dev/null || true
+dump_runtime_file_state
 printf 'WEST_GUEST_STAGE=cleanup\\n' >&2
 guest_shell 10 "rm -f '$guest_src' '$guest_bin'" >/dev/null 2>&1 || true
+"$launch" shutdown >/dev/null 2>&1 || true
+clear_stale_init_pid
 printf 'WEST_GUEST_STAGE=upload\\n' >&2
 guest_shell 10 "cat > '$guest_src'" < "$host_src"
 
@@ -3049,6 +3144,9 @@ fi
                     self.inf(f"  skip {stacked}/{patch['path']} for current-minus-patch")
                     continue
                 patch_file = profile_dir / patch["path"]
+                if self._patch_already_in_history(target, patch_file, patch):
+                    self.inf(f"  skip {stacked}/{patch['path']} already in {module}")
+                    continue
                 self.inf(f"  apply {stacked}/{patch['path']} -> {module}")
                 subprocess.run(
                     [
@@ -3063,6 +3161,133 @@ fi
                     cwd=target,
                     check=True,
                 )
+
+    def _patch_ids_from_text(self, patch_text: str, *, cwd: Path | None = None) -> set[str]:
+        result = subprocess.run(
+            ["git", "patch-id", "--stable"],
+            input=patch_text,
+            cwd=cwd,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        if result.returncode:
+            return set()
+        return {
+            line.split()[0]
+            for line in result.stdout.splitlines()
+            if line.split()
+        }
+
+    def _history_patch_ids(self, repo: Path) -> set[str]:
+        head = subprocess.run(
+            ["git", "rev-parse", "HEAD"],
+            cwd=repo,
+            capture_output=True,
+            text=True,
+            check=True,
+        ).stdout.strip()
+        cache = getattr(self, "_history_patch_id_cache", None)
+        if cache is None:
+            cache = {}
+            self._history_patch_id_cache = cache
+        key = (str(repo), head)
+        if key in cache:
+            return cache[key]
+        history = subprocess.run(
+            [
+                "git",
+                "log",
+                "--patch",
+                "--no-ext-diff",
+                "--no-color",
+                "--format=email",
+            ],
+            cwd=repo,
+            capture_output=True,
+            text=True,
+            errors="replace",
+            check=True,
+        )
+        ids = self._patch_ids_from_text(history.stdout, cwd=repo)
+        cache[key] = ids
+        return ids
+
+    def _commit_is_ancestor(self, repo: Path, commit: str) -> bool:
+        if not commit:
+            return False
+        exists = subprocess.run(
+            ["git", "rev-parse", "--verify", f"{commit}^{{commit}}"],
+            cwd=repo,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        if exists.returncode:
+            return False
+        return subprocess.run(
+            ["git", "merge-base", "--is-ancestor", commit, "HEAD"],
+            cwd=repo,
+            capture_output=True,
+            text=True,
+            check=False,
+        ).returncode == 0
+
+    def _patch_subject_from_text(self, patch_text: str) -> str | None:
+        lines = patch_text.splitlines()
+        for index, line in enumerate(lines):
+            if not line.startswith("Subject: "):
+                continue
+            subject = line.removeprefix("Subject: ").strip()
+            for continuation in lines[index + 1:]:
+                if continuation.startswith((" ", "\t")):
+                    subject = f"{subject} {continuation.strip()}".strip()
+                    continue
+                break
+            if subject.startswith("[PATCH"):
+                _, _, subject = subject.partition("]")
+                subject = subject.strip()
+            return subject or None
+        return None
+
+    def _history_subjects(self, repo: Path) -> set[str]:
+        head = subprocess.run(
+            ["git", "rev-parse", "HEAD"],
+            cwd=repo,
+            capture_output=True,
+            text=True,
+            check=True,
+        ).stdout.strip()
+        cache = getattr(self, "_history_subject_cache", None)
+        if cache is None:
+            cache = {}
+            self._history_subject_cache = cache
+        key = (str(repo), head)
+        if key in cache:
+            return cache[key]
+        history = subprocess.run(
+            ["git", "log", "--format=%s"],
+            cwd=repo,
+            capture_output=True,
+            text=True,
+            errors="replace",
+            check=True,
+        )
+        subjects = {line.strip() for line in history.stdout.splitlines() if line.strip()}
+        cache[key] = subjects
+        return subjects
+
+    def _patch_already_in_history(self, repo: Path, patch_file: Path, patch=None) -> bool:
+        patch_text = patch_file.read_text(errors="replace")
+        patch_ids = self._patch_ids_from_text(patch_text, cwd=repo)
+        if patch_ids and patch_ids <= self._history_patch_ids(repo):
+            return True
+        if patch and self._commit_is_ancestor(repo, str(patch.get("source-commit", ""))):
+            return True
+        if not patch or not patch.get("source-commit"):
+            return False
+        subject = self._patch_subject_from_text(patch_text)
+        return bool(subject and subject in self._history_subjects(repo))
 
     def _current_minus_skip_patch_paths(self, patch, proof) -> set[str]:
         return {
@@ -3127,7 +3352,7 @@ fi
             return self._manifest_revision(module), False
 
         if project_path == patch_module_path:
-            return self._manifest_revision(module), False
+            return bad_revision, False
 
         return self._manifest_revision(module), False
 
@@ -3157,7 +3382,7 @@ fi
         current_minus_patch = proof.get("bad-profile") == "current-minus-patch"
         if omit_patch and not current_minus_patch:
             self.die(f"{patch['path']}: only current-minus-patch runtime proofs are supported")
-        bad_revision = None if current_minus_patch else self._bad_revision(patch)
+        bad_revision = self._bad_revision(patch) if omit_patch else None
         added: list[tuple[Path, Path]] = []
         temp = tempfile.mkdtemp(prefix="west-red-proof-source-")
         yielded = False
@@ -3166,7 +3391,7 @@ fi
             root = Path(temp)
             source_root = root / "darling"
             if patch_module_is_darling_root:
-                darling_ref = self._manifest_revision("darling") if omit_patch else "HEAD"
+                darling_ref = bad_revision if omit_patch else "HEAD"
             else:
                 darling_ref = "HEAD" if current_minus_patch else self._manifest_revision("darling")
             bad_text = "current-minus-patch" if omit_patch else "profile-current"
@@ -3277,7 +3502,16 @@ fi
                 return line.split("=", 1)[1]
         return None
 
-    def _runtime_red_configure_args(self, prefix: Path) -> list[str]:
+    def _runtime_build_install_prefix(self, proof, prefix: Path) -> Path:
+        for artifact in proof.get("runtime-artifacts", []):
+            if "bin/darlingserver" not in artifact.get("deploy", []):
+                continue
+            launcher = self._resolve_darling_launcher(str(prefix))
+            if launcher:
+                return Path(launcher).resolve().parent.parent
+        return prefix
+
+    def _runtime_red_configure_args(self, proof, prefix: Path) -> list[str]:
         current_build = Path(
             os.environ.get("DARLING_BUILD_DIR", str(Path.home() / "work/darling-build"))
         )
@@ -3298,7 +3532,7 @@ fi
             value = self._cmake_cache_value(current_build, key)
             if value is not None:
                 args.append(f"-D{key}={value}")
-        args.append(f"-DCMAKE_INSTALL_PREFIX={prefix}")
+        args.append(f"-DCMAKE_INSTALL_PREFIX={self._runtime_build_install_prefix(proof, prefix)}")
         return args
 
     def _runtime_red_build_artifacts(
@@ -3314,7 +3548,7 @@ fi
         build_root = scratch_root / "build"
         self.inf(f"  {label} configure: {source_root} -> {build_root}")
         configure = subprocess.run(
-            ["cmake", "-S", str(source_root), "-B", str(build_root), *self._runtime_red_configure_args(prefix)],
+            ["cmake", "-S", str(source_root), "-B", str(build_root), *self._runtime_red_configure_args(proof, prefix)],
             cwd=self.topdir,
             capture_output=True,
             text=True,
@@ -3359,9 +3593,38 @@ fi
 
     def _runtime_red_deploy_targets(self, prefix: Path, deploy_path: str) -> list[Path]:
         try:
-            return runtime_deploy_targets(prefix, deploy_path)
+            targets = runtime_deploy_targets(prefix, deploy_path)
         except ValueError:
             self.die(f"guest-runtime-deploy deploy path must be relative: {deploy_path}")
+        if deploy_path == "bin/darlingserver":
+            launcher = self._resolve_darling_launcher(str(prefix))
+            if launcher:
+                server = Path(launcher).with_name("darlingserver")
+                if server not in targets:
+                    targets.append(server)
+        if deploy_path in {
+            "usr/libexec/darling/mldr",
+            "usr/libexec/darling/mldr32",
+            "usr/lib/dyld",
+            "usr/lib/system/libsystem_kernel.dylib",
+        }:
+            targets.extend(
+                target
+                for target in self._runtime_red_launcher_install_targets(prefix, deploy_path)
+                if target not in targets
+            )
+        return targets
+
+    def _runtime_red_launcher_install_targets(self, prefix: Path, deploy_path: str) -> list[Path]:
+        launcher = self._resolve_darling_launcher(str(prefix))
+        if not launcher:
+            return []
+        install_root = Path(launcher).resolve().parent.parent
+        rel = Path(deploy_path)
+        return [
+            install_root / rel,
+            install_root / "libexec/darling" / rel,
+        ]
 
     def _runtime_replace_file(self, src: Path, dst: Path) -> None:
         dst.parent.mkdir(parents=True, exist_ok=True)
@@ -3545,6 +3808,14 @@ fi
                 return False
         return True
 
+    def _guest_runtime_red_has_positive_reason(self, proof) -> bool:
+        contains = proof.get("expect-output-contains")
+        if isinstance(contains, str):
+            return bool(contains)
+        return isinstance(contains, list) and any(
+            isinstance(item, str) and item for item in contains
+        )
+
     def _run_guest_runtime_deploy_proof(self, patch, proof, invocation) -> int:
         if (
             not invocation.get("guest_c_fixture")
@@ -3552,6 +3823,11 @@ fi
             and invocation.get("runner") != "script"
         ):
             self.die(f"{patch['path']}: guest-runtime-deploy requires guest-c-fixture, guest-command-fixture, or script")
+        if not self._guest_runtime_red_has_positive_reason(proof):
+            self.die(
+                f"{patch['path']}: {invocation['name']} guest-runtime-deploy "
+                "RED proof needs expect-output-contains"
+            )
         if invocation.get("runner") == "script":
             resources = set(invocation.get("requires_resources", []))
             if not resources & {"darling-prefix", "darling-eunion-prefix"}:
@@ -3591,12 +3867,16 @@ fi
                         bad_rc = self._run_invocation(runtime_invocation, env=bad_env)
                     if bad_rc == 0:
                         self.err("  RED proof failed: deployed bad runtime unexpectedly passed")
+                        keep_on_failure = True
+                        self.err(f"preserving failed RED runtime scratch for inspection: {temp}")
                         return 1
                     if not self._check_guest_runtime_red_failure(
                         proof,
                         runtime_invocation,
                         since=red_started_at,
                     ):
+                        keep_on_failure = True
+                        self.err(f"preserving failed RED runtime scratch for inspection: {temp}")
                         return 1
                     self.inf(f"  RED runtime failed as expected (rc={bad_rc})")
         except Exception:
@@ -3741,6 +4021,21 @@ fi
                     f"{patch['path']}: missing required environment for "
                     f"{test.get('name', '-')}: {', '.join(missing)}"
                 )
+
+    def _runtime_red_reason_audit(self, tests) -> list[str]:
+        missing = []
+        for patch, test in tests:
+            proof = test.get("red-proof")
+            if not isinstance(proof, dict):
+                continue
+            if proof.get("mode") != "guest-runtime-deploy":
+                continue
+            if not self._guest_runtime_red_has_positive_reason(proof):
+                missing.append(
+                    f"{patch['path']}: {test.get('name', '-')} "
+                    "guest-runtime-deploy RED proof needs expect-output-contains"
+                )
+        return missing
 
     def _shutdown_test_prefix(self) -> bool:
         prefix = getattr(self, "_prefix", None)
@@ -3954,12 +4249,21 @@ fi
 
         if args.red_audit:
             profile = args.profile or "homebrew"
-            _, missing = self._metadata_tests(
+            selected, missing = self._metadata_tests(
                 profile, args.patch, args.bead, args.env, args.diag, red_only=False
             )
+            missing_reasons = self._runtime_red_reason_audit(selected)
             for patch in missing:
                 self.inf(f"MISSING {patch['path']} [{patch.get('bead', '-')}]")
+            for message in missing_reasons:
+                self.inf(f"RED-REASON-MISSING {message}")
             self.inf(f"red-audit: {len(missing)} patch(es) missing tests/exception")
+            self.inf(
+                "red-audit: "
+                f"{len(missing_reasons)} guest-runtime-deploy proof(s) missing RED reason"
+            )
+            if missing or missing_reasons:
+                self.die("red-audit failed")
             return
 
         if args.patch and not args.profile:

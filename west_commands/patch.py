@@ -1130,6 +1130,7 @@ class DarlingPatch(WestCommand):
         allow_large_output: bool,
     ) -> list[ExportPlan]:
         plans: list[ExportPlan] = []
+        previous_commit_by_module: dict[str, str] = {}
         for patch in patches:
             repo = self._repo(patch["module"])
             source_branch = patch["source-branch"]
@@ -1140,6 +1141,12 @@ class DarlingPatch(WestCommand):
             self._validate_export_revision(repo, patch, "source-commit", commit)
             self._validate_export_revision(repo, patch, "source-base", commit)
             self._validate_export_base_ancestor(repo, patch, commit)
+            self._validate_export_stack_base(
+                repo,
+                patch,
+                commit,
+                previous_commit_by_module.get(patch["module"]),
+            )
 
             result = subprocess.run(
                 format_patch_command(patch, commit),
@@ -1174,6 +1181,7 @@ class DarlingPatch(WestCommand):
                     patch_changed=patch_changed,
                 )
             )
+            previous_commit_by_module[patch["module"]] = commit
         return plans
 
     def _validate_export_revision(
@@ -1251,6 +1259,35 @@ class DarlingPatch(WestCommand):
             f"{patch['path']}: source-base {source_base} is not an ancestor "
             f"of source branch head {branch_commit}{hint}; repair stale patch "
             "metadata before exporting"
+        )
+
+    def _validate_export_stack_base(
+        self,
+        repo: Path,
+        patch,
+        branch_commit: str,
+        previous_commit: str | None,
+    ) -> None:
+        source_base = patch.get("source-base")
+        if not source_base or not previous_commit:
+            return
+        previous_is_ancestor = (
+            subprocess.run(
+                ["git", "merge-base", "--is-ancestor", previous_commit, branch_commit],
+                cwd=repo,
+                check=False,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+            ).returncode
+            == 0
+        )
+        if not previous_is_ancestor or source_base == previous_commit:
+            return
+        self.die(
+            f"{patch['path']}: source-base {source_base} is stale for the "
+            f"linear {patch['module']} stack; previous profile patch is "
+            f"{previous_commit}. Rebase/export metadata must use the previous "
+            "patch as source-base or move this patch to a non-linear position."
         )
 
     def _check_export_size(

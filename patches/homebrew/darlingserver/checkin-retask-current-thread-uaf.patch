@@ -1,4 +1,4 @@
-From 92049f05ceec9fa02b132b3882e264822586d91d Mon Sep 17 00:00:00 2001
+From 24ae886e723cc37d41f472f210a216c36a3cd8e1 Mon Sep 17 00:00:00 2001
 From: Ilya Gulya <ilya@gulya.me>
 Date: Sun, 28 Jun 2026 13:04:59 +0000
 Subject: [PATCH] fix(dar-l8k): publish new dtape thread before releasing old
@@ -29,8 +29,6 @@ model the exact free/use ordering under ASan. e2e: fork-heavy make -j8 builds
 6/6 DONE clean (was ~1-in-3-6 SERVER_CRASHED); ASan server boots clean 3/3.
 
 Bead: dar-l8k (epic dar-dar6x4-perf-5dq)
-
-Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
 ---
  src/process.cpp                               |  31 ++++-
  tests/checkin_retask_current_thread_uaf.c     | 118 ++++++++++++++++++
@@ -40,10 +38,10 @@ Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
  create mode 100755 tests/run-checkin-retask-current-thread-uaf.sh
 
 diff --git a/src/process.cpp b/src/process.cpp
-index 0414720268fb37217ea7ab475e10a81715b58d1e..f174234fdf65681925de9575468c6351b7c579f0 100644
+index 44124d8cc5be8299fab7367f584369f8d5666be6..6fce47973d9eeb0dcad0f96bdf5803c020c88ee4 100644
 --- a/src/process.cpp
 +++ b/src/process.cpp
-@@ -360,11 +360,23 @@ void DarlingServer::Process::notifyCheckin(Architecture architecture) {
+@@ -361,11 +361,23 @@ void DarlingServer::Process::notifyCheckin(Architecture architecture) {
  		dtape_semaphore_destroy(mainThread->_s2cInterruptExitSemaphore);
  		dtape_semaphore_destroy(_dtapeForkWaitSemaphore);
  
@@ -72,7 +70,7 @@ index 0414720268fb37217ea7ab475e10a81715b58d1e..f174234fdf65681925de9575468c6351
  		lock.lock();
  		_dtapeTask = newTask;
  		mainThread->_dtapeThread = newThread;
-@@ -374,6 +386,15 @@ void DarlingServer::Process::notifyCheckin(Architecture architecture) {
+@@ -375,6 +387,15 @@ void DarlingServer::Process::notifyCheckin(Architecture architecture) {
  		mainThread->_s2cReplySempahore = newReply;
  		mainThread->_s2cInterruptEnterSemaphore = newInterruptEnter;
  		mainThread->_s2cInterruptExitSemaphore = newInterruptExit;

@@ -1,4 +1,4 @@
-From 04ae50129488b1d1943461e571f68b1939be1ecc Mon Sep 17 00:00:00 2001
+From c9a0107fe772be7a0a12f5dca75d26e1038446ee Mon Sep 17 00:00:00 2001
 From: Ilya Gulya <ilya@gulya.me>
 Date: Sat, 27 Jun 2026 00:17:31 +0000
 Subject: [PATCH] process: fix lost fork-child checkin under signal-aborted

@@ -46,10 +46,10 @@ fixture-profiles:
     kind: eunion-overlay
 patches:
 - path: darlingserver/psynch-cvwait-balanced.patch
-  sha256sum: dda9f75c475d65dc062fc0f4636179d58f5484d502616882011d559930fc738f
+  sha256sum: dd370441db17cff3884ead74f5061144936d7ac3d1d6c889641710a82a6c94ed
   module: darling/src/external/darlingserver
   source-branch: fix/psynch-cvwait-balanced
-  source-commit: 0404f605e87eddaf720b6d795d022c5add9b08ce
+  source-commit: 0a1980bfc8cce7b24f86a300310eb72dab2e4141
   bead: dar-q95.1
   publication-status: provisional
   publication-blocker: direct psynch generation invariant tests under dar-q95.29.6
@@ -76,10 +76,10 @@ patches:
       base: main
       state: local
 - path: darlingserver/microthread-resume-race.patch
-  sha256sum: 993c19b6765de374c19ebe237e729d04c4e403b36e451bd9bee2ada835848fd9
+  sha256sum: c937102741fc500bddc1374a2b3b11da3397c60d2c31352a2762caa6f0b66e6a
   module: darling/src/external/darlingserver
   source-branch: fix/microthread-resume-race
-  source-commit: d2d76a9a16fdc8d05947b1acfb54285c062563b2
+  source-commit: a99d52248f437be96239a22c8ce5f58fbf32d221
   bead: dar-q95.8
   publication-status: provisional
   publication-blocker: modeled wake-epoch and duplicate-scheduling tests under dar-q95.29.6
@@ -116,6 +116,9 @@ patches:
       - darlingserver/test-diagnostics-trace.patch
       source-patches:
       - tests/fixtures/microthread/resume-before-suspend-diagnostics-no-fix.patch
+      expect-output-contains:
+      - test_fault.consume name=microthread.resume_before_suspend
+      - microthread.suspend.inject_resume_before_suspend
       runtime-artifacts:
       - module: darling/src/external/darlingserver
         build-targets:
@@ -164,10 +167,10 @@ patches:
       base: main
       state: local
 - path: darlingserver/fork-checkin-bound.patch
-  sha256sum: 63297ef1c85843a94c5529685dd534c5042430ec260d8690287a317e2ffdf25f
+  sha256sum: 91a33f2ae2b40b05f9c4fa806a65d6388298167b0ffa1000b2d38728fc776156
   module: darling/src/external/darlingserver
   source-branch: fix/fork-checkin-bound
-  source-commit: f00bc66c395f2c601c17376b9b64970fba675116
+  source-commit: daf32392e80071c7f43f45de5393bd128731e56d
   bead: dar-q95.13
   publication-status: blocked
   publication-blocker: timeout is a defensive bound, not a fork lifecycle fix; see dar-q95.29.7
@@ -204,6 +207,9 @@ patches:
     red-proof:
       mode: guest-runtime-deploy
       bad-profile: current-minus-patch
+      expect-output-contains:
+      - ORACLE_RC=124
+      - test_fault.consume name=fork.drop_checkin
       current-minus-skip-patches:
       - darlingserver/fork-checkin-sticky-flag.patch
       - darlingserver/checkin-rwlock-across-suspend.patch
@@ -261,10 +267,10 @@ patches:
       base: main
       state: local
 - path: darlingserver/fork-checkin-sticky-flag.patch
-  sha256sum: 94a395a258d969ac928ad57659fc89954e390cffa99c00b2092a4ef18cc6215c
+  sha256sum: 420f9a7f7d4c39de6fb3bba5dde65557f83aea931213bc37372fd8766727cc05
   module: darling/src/external/darlingserver
   source-branch: fix/fork-checkin-sticky-flag
-  source-commit: 04ae50129488b1d1943461e571f68b1939be1ecc
+  source-commit: c9a0107fe772be7a0a12f5dca75d26e1038446ee
   bead: dar-gwn.6.5
   publication-status: blocked
   publication-blocker: needs review of the sticky-flag vs the underlying duct-tape sigexc-forced-clear_wait semaphore handoff/abort race; the real defect is that a signal-aborted semaphore wait loses a handed-off up(). The sticky flag is a correct, minimal fix at the fork-checkin layer but a broader duct-tape fix may be preferable upstream. Validated locally (RED->GREEN forkstorm2 + brew libunistring past the make stall).
@@ -330,6 +336,9 @@ patches:
       - darlingserver/test-diagnostics-trace.patch
       source-patches:
       - tests/fixtures/fork-checkin/forced-lost-wakeup-diagnostics.patch
+      expect-output-contains:
+      - test_fault.consume name=fork.skip_checkin_semaphore
+      - process.checkin.fork_skip_semaphore
       runtime-artifacts:
       - module: darling/src/external/darlingserver
         build-targets:
@@ -375,8 +384,8 @@ patches:
 - path: darlingserver/psynch-rpc-arg-trace.patch
   module: darling/src/external/darlingserver
   source-branch: fix/psynch-rpc-arg-trace
-  source-base: 89751e64bc6c2082f7725061824ee0e33395b0de
-  source-commit: 4e519bb1818023b23e55896e793105f2c5423388
+  source-base: c9a0107fe772be7a0a12f5dca75d26e1038446ee
+  source-commit: 49319e1789d7f9e04b18530aa1239fb6eae99604
   bead: dar-r7fc.6
   publication-status: blocked
   publication-blocker: test-only runtime instrumentation; keep local until a supported upstream diagnostics interface is designed
@@ -387,7 +396,7 @@ patches:
       xnu/psynch-cvsignal-args.patch's guest runtime proof. It is not product
       behavior and is validated by that runtime gate plus west guest-c-fixture
       host-trace-files contract coverage.
-  sha256sum: d2fe5fe0af93498db2ebbcee743fbee30eb498efea4ee898cd962fb9e6403b5a
+  sha256sum: 2bfe8775476a4b06a22e01c276f951ad8b2c995ab112051cf5b0988e72e51752
 - path: xnu/psynch-cvsignal-args.patch
   sha256sum: 1cb3a9f55304c7b8d7234c3b5307b204d07db011ca4039cd759927f523f97404
   module: darling/src/external/xnu
@@ -418,8 +427,8 @@ patches:
       mode: guest-runtime-deploy
       bad-profile: current-minus-patch
       expect-output-contains:
-      - ORACLE_RC=124
-      - process.fork_wait result=timed_out
+      - psynch_cvsignal cv=0x123450001000 cvlsgen=0x123
+      - psynch_cvbroad cv=0x123450001000 cvlsgen=0x100000123 cvudgen=0x200000456 flags=0x55 mutex=0x300000abc
       runtime-artifacts:
       - module: darling/src/external/xnu
         build-targets:
@@ -432,8 +441,8 @@ patches:
         deploy:
         - usr/lib/dyld
     runner: guest-c-fixture
-    repo: darling/src/external/xnu
-    script: darling/src/libsystem_kernel/tests/psynch_cvsignal_args_guest.c
+    repo: darling-workspace
+    script: tests/psynch_cvsignal_args_guest.c
     ok-marker: PSYNCH_CVSIGNAL_ARGS_GUEST_OK
     timeout-seconds: 30
     host-trace-files:
@@ -713,6 +722,9 @@ patches:
     red-proof:
       mode: guest-runtime-deploy
       bad-profile: current-minus-patch
+      expect-output-contains:
+      - ORACLE_RC=124
+      - process.fork_wait result=timed_out
       runtime-artifacts:
       - module: darling/src/external/xnu
         build-targets:
@@ -924,10 +936,10 @@ patches:
       base: master
       state: local
 - path: darlingserver/cancel-stale-wait-timer.patch
-  sha256sum: c4a79783065bdba03a6b8b1d070391718701e964babf3de386d2398866d1fc79
+  sha256sum: 115caccea2c4d598f425f38240dbf6a21fa15207683152239a88df52b250d3fe
   module: darling/src/external/darlingserver
   source-branch: fix/cancel-stale-wait-timer
-  source-commit: a22a5e8437cfa7a6c278a50e15eb55f96060ab9b
+  source-commit: 33229e0c695e9467b68c1634213849d5f54d7f5d
   bead: dar-q95.15
   publication-status: provisional
   publication-blocker: direct timer cancellation parity and race tests under dar-q95.29.6
@@ -961,6 +973,9 @@ patches:
     red-proof:
       mode: guest-runtime-deploy
       bad-profile: current-minus-patch
+      expect-output-contains:
+      - ORACLE_RC=1
+      - 'untimed wait observed stale timeout/error: 22'
       current-minus-skip-patches:
       - darlingserver/assert-wait-cancel-stale-timer.patch
       - darlingserver/test-diagnostics-trace.patch
@@ -1002,10 +1017,10 @@ patches:
       base: main
       state: local
 - path: darlingserver/processcall-exception-guard.patch
-  sha256sum: 08c50f72eb551f9c2b131ce102b89f0711e4402f2db277b0659c7ca4fd10fa91
+  sha256sum: 7d179019a13f9172b0d6cb18fb0290f6a5312f4aeb9c72e0473fcfdb2c2f2813
   module: darling/src/external/darlingserver
   source-branch: fix/processcall-exception-guard
-  source-commit: 44fbb9f428da4f403f53a102b58a353ca6d2dddd
+  source-commit: f1566efa3cbf2754c48bc62e3f0b0479fff72ba0
   bead: dar-gwn.1.5
   publication-status: blocked
   publication-blocker: |-
@@ -1069,6 +1084,9 @@ patches:
       - darlingserver/test-diagnostics-trace.patch
       source-patches:
       - tests/fixtures/processcall/uidgid-fault-diagnostics.patch
+      expect-output-contains:
+      - test_fault.consume name=processcall.uidgid_throw
+      - call.processcall_throw name=uidgid
       runtime-artifacts:
       - module: darling/src/external/darlingserver
         build-targets:
@@ -1101,10 +1119,10 @@ patches:
       base: main
       state: local
 - path: darlingserver/ingest-error-reply.patch
-  sha256sum: 03222772fbeb541168e08361c03ef89e6c3b7c5b494ee3d616543cd10060a9e5
+  sha256sum: 4fbd41af67013e12316dc6b4b92b22741b062bb6ad464a56f9884e94ee7ba566
   module: darling/src/external/darlingserver
   source-branch: fix/ingest-error-reply
-  source-commit: 418cf7fc07686bd78fbc69b1caac58ebbfc91a20
+  source-commit: 2d7b59dac209ecdb8a9854a3030b758e8428e42b
   bead: dar-gwn.6.2
   publication-status: blocked
   publication-blocker: |-
@@ -1150,6 +1168,21 @@ patches:
       bad-profile: current-minus-patch
       current-minus-skip-patches:
       - darlingserver/pushreply-pipe-leak.patch
+      - darlingserver/exc-fatal-reply-bound.patch
+      - darlingserver/assert-wait-cancel-stale-timer.patch
+      - darlingserver/pthread-canceled-xnu-semantics.patch
+      - darlingserver/progress-metrics.patch
+      - darlingserver/server-inline-fastpath.patch
+      - darlingserver/checkin-rwlock-across-suspend.patch
+      - darlingserver/per-call-rpc-metrics.patch
+      - darlingserver/no-reply-fire-and-forget-rpcs.patch
+      - darlingserver/guest-per-callnum-sleep-account.patch
+      - darlingserver/checkin-retask-current-thread-uaf.patch
+      - darlingserver/pot-guest-lifetime-binding.patch
+      - darlingserver/test-diagnostics-trace.patch
+      expect-output-contains:
+      - test_fault.consume name=ingest.force_missing_process
+      - call.ingest_missing_process
       runtime-artifacts:
       - module: darling/src/external/darlingserver
         build-targets:
@@ -1181,10 +1214,10 @@ patches:
       base: main
       state: local
 - path: darlingserver/pushreply-pipe-leak.patch
-  sha256sum: 1dbd9d965273e304f2b6130b5d1e0d9ceafcf8fa2b1c9cd3db4149e46523030d
+  sha256sum: 4bc22ec44c151e2fe325b4d4cb29f740ad7296d863300eaca7d3eeea348c64f3
   module: darling/src/external/darlingserver
   source-branch: fix/dar-gwn-1-7-pushreply-pipe-leak
-  source-commit: 3d4428d7ec9ec44aa9b7f9a71597dd0aeb463a03
+  source-commit: bb620a209a3a72d2a238b30102147438e58b35ef
   bead: dar-gwn.1.7
   publication-status: blocked
   publication-blocker: |-
@@ -1231,24 +1264,40 @@ patches:
       mode: guest-runtime-deploy
       bad-profile: current-minus-patch
       current-minus-skip-patches:
-      - darlingserver/exc-fatal-reply-bound.patch
-      - darlingserver/assert-wait-cancel-stale-timer.patch
-      - darlingserver/pthread-canceled-xnu-semantics.patch
       - darlingserver/progress-metrics.patch
       - darlingserver/server-inline-fastpath.patch
-      - darlingserver/checkin-rwlock-across-suspend.patch
       - darlingserver/per-call-rpc-metrics.patch
-      - darlingserver/no-reply-fire-and-forget-rpcs.patch
       - darlingserver/guest-per-callnum-sleep-account.patch
       - darlingserver/checkin-retask-current-thread-uaf.patch
       - darlingserver/pot-guest-lifetime-binding.patch
       - darlingserver/test-diagnostics-trace.patch
+      - darlingserver/eunion-runtime-prefix.patch
+      expect-output-contains:
+      - push_reply pipe did not close after bad pointer
+      - ORACLE_RC=1
+      source-modules:
+      - darling/src/external/xnu
       runtime-artifacts:
+      - module: darling
+        build-targets:
+        - mldr
+        deploy:
+        - usr/libexec/darling/mldr
       - module: darling/src/external/darlingserver
         build-targets:
         - darlingserver
         deploy:
         - bin/darlingserver
+      - module: darling/src/external/xnu
+        build-targets:
+        - system_kernel
+        deploy:
+        - usr/lib/system/libsystem_kernel.dylib
+      - module: darling/src/external/dyld
+        build-targets:
+        - src/external/dyld/dyld
+        deploy:
+        - usr/lib/dyld
     runner: guest-c-fixture
     repo: darling-workspace
     script: tests/pushreply_bad_pointer_guest.c
@@ -1271,10 +1320,10 @@ patches:
       base: main
       state: local
 - path: darlingserver/exc-fatal-reply-bound.patch
-  sha256sum: 8a3396833cbb0915521c6f8ea4248ebc2c47c30f47629be6200fcb41a1eb5256
+  sha256sum: e8ce8561665fee0bc5e86be2bb00db5b29642f28bd03b12d7259d7cf11f97998
   module: darling/src/external/darlingserver
   source-branch: fix/exc-fatal-reply-bound
-  source-commit: 42f9910cbd4eaf45a361572f5019f3e0f63c5b77
+  source-commit: 2c8db920a3fe6c003225012e44b0074afad50c19
   bead: dar-gwn.1.10
   publication-status: blocked
   publication-blocker: |-
@@ -1331,6 +1380,9 @@ patches:
       current-minus-skip-patches:
       - darlingserver/pthread-canceled-xnu-semantics.patch
       - darlingserver/test-diagnostics-trace.patch
+      expect-output-contains:
+      - child wedged waiting for fatal exception reply
+      - ORACLE_RC=1
       runtime-artifacts:
       - module: darling/src/external/darlingserver
         build-targets:
@@ -1359,10 +1411,10 @@ patches:
       base: main
       state: local
 - path: darlingserver/assert-wait-cancel-stale-timer.patch
-  sha256sum: e8e9e997a63a4c8b63edc36a48e62f6037bce5fbf3a01e4c816221c179e2b340
+  sha256sum: 0bf32c0b8639a0406991c3c027abce2884f7ed834fc18c2e4bc037bfbd77f128
   module: darling/src/external/darlingserver
   source-branch: fix/assert-wait-cancel-stale-timer
-  source-commit: 10194531c37acd1ad5d1e79a9d1aa31353ed7158
+  source-commit: 4c353baa640d2ea026c59ec08a0e0ccfce33e09a
   bead: dar-gwn.1.9
   publication-status: blocked
   publication-blocker: |-
@@ -1419,6 +1471,9 @@ patches:
       - darlingserver/test-diagnostics-trace.patch
       source-patches:
       - tests/fixtures/wait-timer/assert-prepare-diagnostics-no-fix.patch
+      expect-output-contains:
+      - test_fault.consume name=waitq.assert_wait_stale_timer
+      - dtape.wait_timer event=wait_prepare_fault_uncleared
       runtime-artifacts:
       - module: darling/src/external/darlingserver
         build-targets:
@@ -1470,11 +1525,11 @@ patches:
       base: main
       state: local
 - path: darlingserver/pthread-canceled-xnu-semantics.patch
-  sha256sum: 862e8bf3a7b53782ad7159270e156f9ed0f603b71707e0ea6ed78d44c367e9e3
+  sha256sum: f18615a310b37560b9de598bda5144198edac8f870c05649f22aa6fb652a2498
   module: darling/src/external/darlingserver
   source-branch: fix/pthread-canceled-xnu-semantics
-  source-base: 25e1b6c50cdfd1f3b94febed30c88d4fea8a7c99
-  source-commit: 830e0fcd4f32a7594c83d3acb56c4c46caec3b22
+  source-base: 4c353baa640d2ea026c59ec08a0e0ccfce33e09a
+  source-commit: 397a044024296c30d94c2f482b6365605ef3f310
   bead: dar-gwn.6.3
   publication-status: blocked
   publication-blocker: |-
@@ -1522,6 +1577,20 @@ patches:
     red-proof:
       mode: guest-runtime-deploy
       bad-profile: current-minus-patch
+      current-minus-skip-patches:
+      - darlingserver/fork-checkin-sticky-flag.patch
+      - darlingserver/progress-metrics.patch
+      - darlingserver/server-inline-fastpath.patch
+      - darlingserver/checkin-rwlock-across-suspend.patch
+      - darlingserver/per-call-rpc-metrics.patch
+      - darlingserver/no-reply-fire-and-forget-rpcs.patch
+      - darlingserver/guest-per-callnum-sleep-account.patch
+      - darlingserver/checkin-retask-current-thread-uaf.patch
+      - darlingserver/pot-guest-lifetime-binding.patch
+      - darlingserver/test-diagnostics-trace.patch
+      expect-output-contains:
+      - pthread cancel read timed out waiting for PTHREAD_CANCELED
+      - ORACLE_RC=124
       runtime-artifacts:
       - module: darling/src/external/darlingserver
         build-targets:
@@ -1566,6 +1635,11 @@ patches:
     red-proof:
       mode: guest-runtime-deploy
       bad-profile: current-minus-patch
+      current-minus-skip-patches:
+      - xnu/psynch-negative-errno.patch
+      expect-output-contains:
+      - PHASE cond_timedwait_eintr:start
+      - WEST_GUEST_SHELL_RC=1
       source-modules:
       - darling/src/external/darlingserver
       - darling/src/external/xnu
@@ -1589,10 +1663,15 @@ patches:
     runs: guest
     diag: guarded
     runner: guest-c-fixture
+    repo: darling-workspace
     script: tests/psynch_kernel_return_contract.c
     ok-marker: PSYNCH_KERNEL_RETURN_CONTRACT_OK
     timeout-seconds: 90
     guest-prelude: export PTHREAD_MUTEX_USE_ULOCK=0
+    guest-env-vars:
+      PSYNCH_COND_TIMEOUTS: '1'
+      PSYNCH_COND_HANDOFF_TARGET: '32'
+      PSYNCH_LOCK_STRESS_ITERS: '32'
     link-flags:
     - -lpthread
     requires:
@@ -1767,6 +1846,9 @@ patches:
     red-proof:
       mode: guest-runtime-deploy
       bad-profile: current-minus-patch
+      expect-output-contains:
+      - "getattrlist root: bad name '', want '/'"
+      - ORACLE_RC=1
       runtime-artifacts:
       - module: darling/src/external/xnu
         build-targets:
@@ -1774,7 +1856,8 @@ patches:
         deploy:
         - usr/lib/system/libsystem_kernel.dylib
     runner: guest-c-fixture
-    script: darling/src/libsystem_kernel/tests/getattrlist_shared_packer_test.c
+    repo: darling-workspace
+    script: tests/getattrlist_shared_packer_test.c
     ok-marker: GETATTRLIST_SHARED_PACKER_OK
     timeout-seconds: 60
     requires:
@@ -1821,6 +1904,9 @@ patches:
     red-proof:
       mode: guest-runtime-deploy
       bad-profile: current-minus-patch
+      expect-output-contains:
+      - 'semaphore_timedwait failed (internally): -111'
+      - WEST_GUEST_SHELL_RC=1
       source-modules:
       - darling/src/external/darlingserver
       - darling/src/external/libpthread
@@ -3860,11 +3946,14 @@ patches:
     kind: guest
     coverage-tier: runtime
     runs: guest
-    diag: bare
+    diag: guarded
     red: true
     red-proof:
       mode: guest-runtime-deploy
       bad-profile: current-minus-patch
+      expect-output-contains:
+      - 'mkdir /private/var/tmp/west-eunion-mkdir-opaque/recreate failed: File exists'
+      - ORACLE_RC=1
       runtime-artifacts:
       - module: darling/src/external/xnu
         build-targets:
@@ -4175,11 +4264,11 @@ patches:
       base: main
       state: local
 - path: darlingserver/progress-metrics.patch
-  sha256sum: c9bb079aabca7ce0c0777938e2cb803b3e889bf2dfa95b376accdb9df3e7441e
+  sha256sum: 1f09174ce2b52d497d5d9cb16c7d8670485af847a811e33b06912a40d53bb368
   module: darling/src/external/darlingserver
   source-branch: fix/darlingserver-progress-metrics
-  source-base: f4c74e1286ade91761bb7cbedd46ce515c7e2ad9
-  source-commit: 5e43b68e43461d5fe12aa9d9f223c30ef162b9f6
+  source-base: 397a044024296c30d94c2f482b6365605ef3f310
+  source-commit: bd18a8bd71753b8321e513fe19cb724345f6b873
   bead: dar-dar6x4-perf-5dq.6
   publication-status: blocked
   publication-blocker: new observability surface (abstract stat socket + JSON metrics) added for the dar-6x4 perf epic; reachable host-side because the net namespace is shared while mnt is not. Validated live (darling-stat snapshot + darling-progress-watch reports PROGRESSING under a fork-heavy workload) and RED->GREEN by tests/metrics_histogram_test.cpp + tests/progress_classifier_test.py, but wants design review of the socket surface before upstreaming. See dar-dar6x4-perf-5dq.6.
@@ -4228,11 +4317,11 @@ patches:
       base: master
       state: local
 - path: darlingserver/server-inline-fastpath.patch
-  sha256sum: e164f293093b31bd7362ad613b9ee18791c8ecfe8e5838553db75f63460304c5
+  sha256sum: ff7aa3ce83d9a6cb5f11cabc9c0083b2f623eb148d3b8b00e3db80949182b5b2
   module: darling/src/external/darlingserver
   source-branch: fix/server-inline-fastpath
-  source-base: 33c02576b7ebae4b806498cd32060cf1f2c54fb3
-  source-commit: 6144a4bb6b1182e635fb88dd737cd11fd71e6189
+  source-base: bd18a8bd71753b8321e513fe19cb724345f6b873
+  source-commit: 3aa068c72bbcc622fcbec82986f4a716b28f1a0a
   bead: dar-dar6x4-perf-5dq.8
   publication-status: blocked
   publication-blocker: runs cheap, non-blocking RPCs INLINE on the darlingserver event loop instead of always handing every message to the worker pool. perf #2a profiling proved ~70% of server CPU under a fork/checkin storm was the main-loop->worker condvar handoff (pthread_cond_signal->futex_wake) for work that is <1% of CPU, which is why enabling the multi-threaded work queue regressed throughput ~32% vs single-threaded (and why upstream left DSERVER_SINGLE_THREADED on). Thread::doWork() never blocks its caller, so inlining is safe in both cases - a blocking call suspends its microthread (setcontext back to the loop) and resumes on the pool. Live A/B (8-proc tcstorm multistorm, DSERVER_SINGLE_THREADED=OFF): inline+MT 4676-7295 checkin/s vs ST baseline ~3830 vs naive-MT ~2594; checkin p99 512us->64us; 99.998% of RPCs handled inline (241 of 11.27M to the pool). Boot + 200x fork/exec/wait correctness verified, server stable across runs. RED->GREEN by tests/server_inline_fastpath.c (gates ctx-switches/item: handoff ~1/item fails, inline ~0/item passes). Stacks on the perf #0 progress-metrics commit (adds inline_handled/queued_to_pool counters). Wants design review (does this make the worker pool default-on? interaction with the DSERVER_SINGLE_THREADED flag) + a clean-host perf measurement before upstreaming. See dar-dar6x4-perf-5dq.8.
@@ -4259,11 +4348,11 @@ patches:
       base: master
       state: local
 - path: darlingserver/checkin-rwlock-across-suspend.patch
-  sha256sum: 070c56ae4c246b8597eca79b9a93aaeb6003441b9d94abf18ba3d1b2d1c9a479
+  sha256sum: 988f9ce61d296fbf19470ecb540da4f9644a64eb4a6f6fe2ae8bf09ad5403556
   module: darling/src/external/darlingserver
   source-branch: fix/checkin-rwlock-across-suspend
-  source-base: 04ae50129488b1d1943461e571f68b1939be1ecc
-  source-commit: b6d1c6d496d37226b2563ea9a0109e3e50eddb34
+  source-base: 3aa068c72bbcc622fcbec82986f4a716b28f1a0a
+  source-commit: 496fe0259c42288bf21c6cb7e6d9340a67e32b29
   bead: dar-6x4
   publication-status: blocked
   publication-blocker: fixes a real darlingserver DEADLOCK (not slowness) under fork+exec storms (make -jN, libunistring/gettext builds) that intermittently wedges the server - rpcs_serviced goes flat, every guest hangs in recvmsg, no recovery. Root cause pinned live with gdb (__cur_writer == MAIN thread tid, the single worker blocked in pthread_rwlock_rdlock with __readers WRLOCKED|WRPHASE) - notifyCheckin() exec branch held the per-process std--shared_mutex _rwlock across the suspending dtape_task_create / dtape_thread_create / dtape_semaphore_* calls. _rwlock ownership is per-OS-thread, but perf #2b (server-inline-fastpath) runs cheap RPCs INLINE on the MAIN event-loop thread while a suspended microthread resumes on the WORKER; an exec checkin running inline on MAIN then strands the write lock owned by MAIN, and a sibling fork-checkin on the single worker blocks forever in _notifyListeningKqchannels() reading the same process lock - the only thread that could resume the holder. Pre-#2b this could not happen (all microthreads ran on the one worker; lock acquired+released on the same OS thread), so this is a latent hazard that perf #2b activated. Fix drops _rwlock around the dtape work and re-acquires it to publish the new task/thread/semaphore handles, mirroring the pattern the thread-clear loop just above already uses around the blocking notifyDead(). A/B under heavy fork+exec load - pristine inline-on WEDGED on attempt 1; forcing all calls to the worker pool (no inline) 20/20 builds clean; this fix with inline ON 20/20 builds clean. fork/exec/wait/exit-code correctness verified (HELLO_EXEC_OK, child fork chain, rc 7 propagation). RED-to-GREEN by tests/inline_suspend_rwlock_deadlock.c (a process rwlock held by one OS thread across a microthread suspension while another OS thread reads it - RED arm deadlocks via watchdog/exit 1, GREEN arm releases-before-suspend and passes; HOST test under 5s). Rebased over the fork-checkin helper/sticky split so the exec replacement path resets ForkCheckinState instead of the old raw atomic flag. Wants design review of the broader invariant (audit that no other Process _rwlock write region can suspend) before upstreaming. See dar-6x4 and epic dar-dar6x4-perf-5dq.
@@ -4294,6 +4383,8 @@ patches:
       - darlingserver/test-diagnostics-trace.patch
       source-patches:
       - tests/fixtures/checkin/exec-diagnostics-no-rwlock.patch
+      expect-output-contains:
+      - process.checkin.exec_dtape_create_locked
       runtime-artifacts:
       - module: darling/src/external/darlingserver
         build-targets:
@@ -4368,11 +4459,11 @@ patches:
       base: master
       state: local
 - path: darlingserver/per-call-rpc-metrics.patch
-  sha256sum: d735e9411a6ccd2104e1704b0dafa64ffa150abb68388055e3301e7b1ef11d89
+  sha256sum: 491e95fb0024e62dd99e5b9a2e8f133b6e1548607539437598d15deb87ce7c9b
   module: darling/src/external/darlingserver
   source-branch: perf/per-call-rpc-metrics
-  source-base: 5e5d688886589025929d246e51ca349aa18b1cbb
-  source-commit: 4c528d99c54bc4da04b017690195ca628e065526
+  source-base: 496fe0259c42288bf21c6cb7e6d9340a67e32b29
+  source-commit: 86cb8e34cc708eef1a26ae6a5287a00ef77aeca4
   bead: dar-dar6x4-perf-5dq.16
   publication-status: blocked
   publication-blocker: adds a server-side per-call-number RPC count + log2 latency histogram table (metrics.hpp/cpp, thread.cpp) exposed as a sparse per_call JSON object over the existing stat socket, to decompose which RPCs dominate. Diagnostic/observability only; over a real 46777-RPC build it proved server service time is tiny everywhere (top 6 calls = 62%, all sub-16us self-traps) so the 57% wait is recvmsg WAKEUP latency, not server work -- which redirected the perf effort to the guest side (.18 cache, .19 guest-sleep). RED->GREEN tests/per_call_metrics_test.cpp. Stacks on the dar-6x4 checkin-rwlock fix (source-base 5e5d6888). Wants design review of the added metrics surface before upstreaming. See dar-dar6x4-perf-5dq.16.
@@ -4454,11 +4545,11 @@ patches:
       base: master
       state: local
 - path: darlingserver/no-reply-fire-and-forget-rpcs.patch
-  sha256sum: 6e94e13814b687834201593bdebb569af113f354b1a2896658b615571b97e6f1
+  sha256sum: a8acbd4a1ea2e041ad3f34f749e59387f206bf8d1f1b1c6e243eea7a1e500738
   module: darling/src/external/darlingserver
   source-branch: perf/no-reply-fire-and-forget-rpcs
-  source-base: 4c528d99c54bc4da04b017690195ca628e065526
-  source-commit: 96298b16269a3baf5919c6ff8f844e2b53bbb7cf
+  source-base: 86cb8e34cc708eef1a26ae6a5287a00ef77aeca4
+  source-commit: 82183e60cbcab3c9b3b7e627feb6019e598c6965
   bead: dar-dar6x4-perf-5dq.17
   publication-status: blocked
   publication-blocker: adds a NO_REPLY ("fire-and-forget") flag to the RPC wrapper generator -- the client wrapper sends and returns 0 without waiting for a reply (skipping the ~200us recvmsg reply-wait sleep that perf #6 showed dominates build wall-clock), and the server _sendReply is a no-op. Applied to pure setters set_dyld_info + set_executable_path (scalar args copied into the request datagram, status discarded). set_thread_handles was tried and reverted (early pthread init too sensitive). Ordering safe -- per-thread datagrams processed in send order. GOTCHA -- mldr statically links the rpc wrappers, so a NO_REPLY change requires rebuilding mldr+dylib+server together or guest launchd hangs in recvmsg. Validated boot + make -j8 500/500. RED->GREEN tests/no_reply_rpc_test.sh. Stacks on per-call-rpc-metrics. Wants review that each NO_REPLY call is truly reply-independent before upstreaming. See dar-dar6x4-perf-5dq.17.
@@ -4485,11 +4576,11 @@ patches:
       base: master
       state: local
 - path: darlingserver/guest-per-callnum-sleep-account.patch
-  sha256sum: 605ce07b816686a8a1c00c6d0153c137812293c1a4e361d5305fd0ec1e500c00
+  sha256sum: b2170f69bb565f277d89d466d144ed7566ad9060934e746c27a7128da9d2323b
   module: darling/src/external/darlingserver
   source-branch: perf/guest-per-callnum-sleep-account
-  source-base: 96298b16269a3baf5919c6ff8f844e2b53bbb7cf
-  source-commit: ee46485ef0bb7b5ab65e9a25417f52c4fdeb3072
+  source-base: 82183e60cbcab3c9b3b7e627feb6019e598c6965
+  source-commit: 3ab48c982a7fc9d5410ebec219bd357b975a26ae
   bead: dar-dar6x4-perf-5dq.19
   publication-status: blocked
   publication-blocker: generator half of the guest-side per-callnum recvmsg-sleep accountant -- brackets each reply-bearing wrapper's receive with __darling_rpc_sleep_account_begin()/_end(start, dserver_callnum_<name>) guarded by #ifdef DARLING_RPC_SLEEP_ACCOUNT (default OFF -> byte-identical wrappers, zero cost), so a diagnostic build can attribute the 57pct reply-wait per call number. NO_REPLY calls get no accounting. The accountant itself (table+rdtsc+dump) is the paired xnu commit. Decomposed the wait -- mach_msg_overwrite 19%, kprintf 14.5%, fork_wait_for_child 12.6%. RED->GREEN tests/rpc_sleep_account_test.sh. Diagnostic instrumentation; stays local. Stacks on no-reply-fire-and-forget-rpcs. See dar-dar6x4-perf-5dq.19.
@@ -4817,11 +4908,11 @@ patches:
       base: main
       state: local
 - path: darlingserver/checkin-retask-current-thread-uaf.patch
-  sha256sum: 81c40b289afe372cd47678a76caa1e0fe9be84fadf451567b2430fb6c515454e
+  sha256sum: 2957e47c0b32c3b9300d5509a1666a82b1a037b28154a9dff0e96fe9258ea812
   module: darling/src/external/darlingserver
   source-branch: fix/checkin-retask-current-thread-uaf
-  source-base: ee46485ef0bb7b5ab65e9a25417f52c4fdeb3072
-  source-commit: 92049f05ceec9fa02b132b3882e264822586d91d
+  source-base: 3ab48c982a7fc9d5410ebec219bd357b975a26ae
+  source-commit: 24ae886e723cc37d41f472f210a216c36a3cd8e1
   bead: dar-l8k
   publication-status: blocked
   publication-blocker: fixes a heap use-after-free in Process::notifyCheckin's exec/"replace task" branch that crashed darlingserver under fork+exec storms (~1 in 3-6 heavy builds) and deterministically at boot under an ASan server build. The branch released the old dtape thread + task BEFORE republishing the new dtape thread as the microthread's current thread; the old task's IPC-space teardown (dtape_task_release -> ipc_space_terminate -> ipc_right_terminate -> ipc_port_destroy) reads current_thread()->ith_assertions (IMPORTANCE_INHERITANCE=1), and current_thread() resolves to mainThread->_dtapeThread which was still the just-freed old dtape_thread -> UAF (free at process.cpp dtape_thread_release, use at ipc_port.c:936; the rare prod symptom was a downstream SIGSEGV in the main loop's malloc on a corrupted freelist). Fix publishes _dtapeTask/_dtapeThread + new semaphores under _rwlock first, drops the lock, then releases the old thread/task (releases stay unlocked because dtape_task_release can suspend the microthread, same constraint as the dtape_*_create calls). Pinned via an ASan darlingserver build (DSERVER_ASAN=ON, detect_stack_use_after_return=0 to see past the fiber/ucontext fake-stack noise). RED->GREEN host gate tests/checkin_retask_current_thread_uaf.c + run-checkin-retask-current-thread-uaf.sh model the exact free/use ordering under ASan. Validated -- ASan server boots clean 3/3 (was UAF 3/3 pre-fix); fork-heavy make -j8 6/6 DONE clean. Distinct from 5e5d688 (that was the checkin _rwlock-across-suspend deadlock; this is the exec re-task current_thread UAF). Needs upstream review before publishing. See dar-l8k.
@@ -4851,6 +4942,8 @@ patches:
       - darlingserver/test-diagnostics-trace.patch
       source-patches:
       - tests/fixtures/checkin/exec-diagnostics-no-retask.patch
+      expect-output-contains:
+      - process.checkin.exec_release_old_before_publish
       runtime-artifacts:
       - module: darling/src/external/darlingserver
         build-targets:
@@ -4884,11 +4977,11 @@ patches:
       current-minus RED runtime gets the same diagnostic helper on the old
       release-before-publish code and therefore fails this trace oracle.
 - path: darlingserver/pot-guest-lifetime-binding.patch
-  sha256sum: c9b7c4b008661ae00a6f52404b9bc9a751462a30ab0b39b0c97d8e007e25cb7f
+  sha256sum: 1b5836c421f3cea1172a347c09956625c68199a39813b93950b7436c19d2cc3c
   module: darling/src/external/darlingserver
   source-branch: fix/pot-guest-lifetime-binding
-  source-base: 89751e64bc6c2082f7725061824ee0e33395b0de
-  source-commit: d0cfd7b6605dac15471240724dec03bb9b91231e
+  source-base: 24ae886e723cc37d41f472f210a216c36a3cd8e1
+  source-commit: b983a36ada0c2d13125ca6c5c62cc0d417c272dc
   bead: dar-pot
   publication-status: blocked
   publication-blocker: |-
@@ -4930,6 +5023,8 @@ patches:
     red-proof:
       mode: guest-runtime-deploy
       bad-profile: current-minus-patch
+      expect-output-contains:
+      - guest descendant survived darlingserver death
       runtime-artifacts:
       - module: darling/src/external/darlingserver
         build-targets:
@@ -4955,8 +5050,8 @@ patches:
 - path: darlingserver/test-diagnostics-trace.patch
   module: darling/src/external/darlingserver
   source-branch: fix/test-diagnostics-trace
-  source-base: b5c7403d9e70fa5708c7c5ed66821534a017d032
-  source-commit: d1589fd450bb590a4d3a72fdabf0d19555b74b92
+  source-base: b983a36ada0c2d13125ca6c5c62cc0d417c272dc
+  source-commit: 1ca29fe8e8c2c5f784522f9144809057918c4c36
   bead: dar-r7fc.7
   publication-status: blocked
   publication-blocker: test-only runtime diagnostics; keep local until a supported upstream diagnostics interface is designed
@@ -4985,13 +5080,13 @@ patches:
       Guest runtime smoke for the opt-in DSERVER_TEST_TRACE_FILE diagnostics
       hook. The script only launches a real guest process; west owns the host
       trace setup and oracle.
-  sha256sum: de88218082549530a371dfb7704750d8802616a76ca814dee57a2902eafc2657
+  sha256sum: 971579eeeb1ff589cdbdeaf0dc19b4b03a1c1660eebcdbcfc1445490b86951ec
 - path: darlingserver/eunion-runtime-prefix.patch
-  sha256sum: 455396c1a6d34f39b283b1bef1d806444c776e46e05939d8c8417a95454d8a2d
+  sha256sum: e32e0125b3521837389ddf3c6d5889becd9acba92f9d88d5e39c686181cf60b1
   module: darling/src/external/darlingserver
   source-branch: fix/eunion-runtime-prefix
-  source-base: 1a60bae2de97cd645e0c25b941fca821949918ff
-  source-commit: 6856e3321a96583a5a9806082db520f6c7fb8315
+  source-base: 1ca29fe8e8c2c5f784522f9144809057918c4c36
+  source-commit: 6340d81f5470c928e96a55ac8da402a3504e5698
   bead: dar-r7fc.4.1.1
   publication-status: blocked
   publication-blocker: E-UNION proof-of-concept runtime provisioning; local route-2 no-overlay test path only until the E-UNION patchset is productized.

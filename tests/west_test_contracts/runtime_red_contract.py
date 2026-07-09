@@ -84,6 +84,44 @@ assert runtime_deploy_targets(prefix_for_targets, "usr/lib/system/libsystem_kern
 assert runtime_deploy_targets(prefix_for_targets, "bin/darlingserver") == [
     prefix_for_targets / "bin/darlingserver",
 ]
+deploy_test = make_test()
+deploy_test._resolve_darling_launcher = (
+    lambda _prefix: "/opt/darling-test/bin/darling"
+)
+assert deploy_test._runtime_red_deploy_targets(
+    prefix_for_targets,
+    "bin/darlingserver",
+) == [
+    prefix_for_targets / "bin/darlingserver",
+    Path("/opt/darling-test/bin/darlingserver"),
+]
+assert deploy_test._runtime_red_deploy_targets(
+    prefix_for_targets,
+    "usr/libexec/darling/mldr",
+) == [
+    prefix_for_targets / "libexec/darling/usr/libexec/darling/mldr",
+    prefix_for_targets / "usr/libexec/darling/mldr",
+    Path("/opt/darling-test/usr/libexec/darling/mldr"),
+    Path("/opt/darling-test/libexec/darling/usr/libexec/darling/mldr"),
+]
+assert deploy_test._runtime_red_deploy_targets(
+    prefix_for_targets,
+    "usr/lib/dyld",
+) == [
+    prefix_for_targets / "libexec/darling/usr/lib/dyld",
+    prefix_for_targets / "usr/lib/dyld",
+    Path("/opt/darling-test/usr/lib/dyld"),
+    Path("/opt/darling-test/libexec/darling/usr/lib/dyld"),
+]
+assert deploy_test._runtime_red_deploy_targets(
+    prefix_for_targets,
+    "usr/lib/system/libsystem_kernel.dylib",
+) == [
+    prefix_for_targets / "libexec/darling/usr/lib/system/libsystem_kernel.dylib",
+    prefix_for_targets / "usr/lib/system/libsystem_kernel.dylib",
+    Path("/opt/darling-test/usr/lib/system/libsystem_kernel.dylib"),
+    Path("/opt/darling-test/libexec/darling/usr/lib/system/libsystem_kernel.dylib"),
+]
 try:
     runtime_deploy_targets(prefix_for_targets, "/absolute/bad")
 except ValueError as exc:
@@ -113,6 +151,65 @@ with tempfile.TemporaryDirectory() as temp:
         since=time.time() - 10,
     )
 
+test = make_test()
+assert not test._guest_runtime_red_has_positive_reason({})
+assert not test._guest_runtime_red_has_positive_reason({"expect-output-contains": []})
+assert not test._guest_runtime_red_has_positive_reason({"expect-output-contains": [""]})
+assert test._guest_runtime_red_has_positive_reason({"expect-output-contains": "old runtime symptom"})
+assert test._guest_runtime_red_has_positive_reason({"expect-output-contains": ["old runtime symptom"]})
+assert test._patch_subject_from_text(
+    "From abc Mon Sep 17 00:00:00 2001\n"
+    "Subject: [PATCH] thread/call/server: contain exceptions that can terminate the\n"
+    " server\n"
+    "\n"
+    "body\n"
+) == "thread/call/server: contain exceptions that can terminate the server"
+missing_reasons = test._runtime_red_reason_audit(
+    [
+        (
+            {"path": "xnu/missing.patch"},
+            {
+                "name": "missing_reason",
+                "red-proof": {"mode": "guest-runtime-deploy"},
+            },
+        ),
+        (
+            {"path": "xnu/with_reason.patch"},
+            {
+                "name": "with_reason",
+                "red-proof": {
+                    "mode": "guest-runtime-deploy",
+                    "expect-output-contains": ["old runtime symptom"],
+                },
+            },
+        ),
+        (
+            {"path": "xnu/source_base.patch"},
+            {
+                "name": "source_base",
+                "red-proof": {"mode": "source-base"},
+            },
+        ),
+    ]
+)
+assert missing_reasons == [
+    "xnu/missing.patch: missing_reason "
+    "guest-runtime-deploy RED proof needs expect-output-contains"
+], missing_reasons
+
+test = make_test()
+test._prefix = "/tmp/prefix"
+try:
+    test._run_guest_runtime_deploy_proof(
+        {"path": "xnu/missing.patch"},
+        {"mode": "guest-runtime-deploy", "runtime-artifacts": []},
+        {"name": "missing_reason", "guest_c_fixture": True},
+    )
+except SystemExit as exc:
+    assert "guest-runtime-deploy RED proof needs expect-output-contains" in str(exc)
+else:
+    raise AssertionError("guest-runtime-deploy proof accepted without reason matcher")
+
 
 with tempfile.TemporaryDirectory() as temp:
     tempdir = Path(temp)
@@ -137,7 +234,18 @@ with tempfile.TemporaryDirectory() as temp:
     old_build_dir = os.environ.get("DARLING_BUILD_DIR")
     os.environ["DARLING_BUILD_DIR"] = str(build_dir)
     try:
-        args = make_test()._runtime_red_configure_args(tempdir / "prefix")
+        args = make_test()._runtime_red_configure_args(
+            {"runtime-artifacts": [{"deploy": ["usr/lib/system/libsystem_kernel.dylib"]}]},
+            tempdir / "prefix",
+        )
+        host_test = make_test()
+        host_test._resolve_darling_launcher = (
+            lambda _prefix: str(tempdir / "install/bin/darling")
+        )
+        host_args = host_test._runtime_red_configure_args(
+            {"runtime-artifacts": [{"deploy": ["bin/darlingserver"]}]},
+            tempdir / "prefix",
+        )
     finally:
         if old_build_dir is None:
             os.environ.pop("DARLING_BUILD_DIR", None)
@@ -149,6 +257,7 @@ with tempfile.TemporaryDirectory() as temp:
     assert "-DDARLING_GUEST_RECVSPIN=512" in args, args
     assert "-DDSERVER_RING_TRANSPORT=ON" in args, args
     assert f"-DCMAKE_INSTALL_PREFIX={tempdir / 'prefix'}" in args, args
+    assert f"-DCMAKE_INSTALL_PREFIX={tempdir / 'install'}" in host_args, host_args
 
 with tempfile.TemporaryDirectory() as temp:
     tempdir = Path(temp)
@@ -273,10 +382,12 @@ with tempfile.TemporaryDirectory() as temp:
     test._guest_runtime_source_forest = fake_source_forest
     test._runtime_red_build_artifacts = fake_build
     test._run_invocation = fake_run
+    test._check_guest_runtime_red_failure = lambda _proof, _invocation, *, since: True
 
     patch = {"path": "xnu/example.patch", "module": "darling/src/external/xnu"}
     proof = {
         "mode": "guest-runtime-deploy",
+        "expect-output-contains": ["old runtime symptom"],
         "runtime-artifacts": [
             {
                 "module": "darling/src/external/xnu",
@@ -457,6 +568,27 @@ with tempfile.TemporaryDirectory() as temp:
     assert "WEST_GUEST_NAMESPACE_INIT_PID" in generated, generated
     assert "WEST_GUEST_NAMESPACE_MNT" in generated, generated
     assert "Cannot open mnt namespace file" in generated, generated
+    assert "clear_stale_init_pid()" in generated, generated
+    assert generated.count("clear_stale_init_pid") >= 3, generated
+    assert '"$launch" shutdown >/dev/null 2>&1 || true' in generated, generated
+    cleanup_pos = generated.index('WEST_GUEST_STAGE=cleanup')
+    upload_pos = generated.index('WEST_GUEST_STAGE=upload')
+    assert cleanup_pos < upload_pos, generated
+    assert '"$launch" shutdown >/dev/null 2>&1 || true' in generated[
+        cleanup_pos:upload_pos
+    ], generated
+    assert "dump_runtime_process_state()" in generated, generated
+    assert "snapshot=\"$(mktemp /tmp/west-dserver-ps.XXXXXX)\"" in generated, generated
+    assert "WEST_GUEST_DSERVER_EXE_SHA256" in generated, generated
+    assert "WEST_GUEST_DSERVER_ARGS" in generated, generated
+    assert "dump_runtime_file_state()" in generated, generated
+    assert 'dump_file_sha launcher_server "$launcher_dir/darlingserver"' in generated, generated
+    assert 'dump_file_sha install_dyld "$install_root/usr/lib/dyld"' in generated, generated
+    assert 'dump_file_sha install_libsystem_kernel "$install_root/usr/lib/system/libsystem_kernel.dylib"' in generated, generated
+    assert 'dump_file_sha prefix_libsystem_kernel "$DPREFIX/usr/lib/system/libsystem_kernel.dylib"' in generated, generated
+    assert 'dump_file_sha prefix_dyld "$DPREFIX/usr/lib/dyld"' in generated, generated
+    assert "WEST_GUEST_RPC_CLIENT_LOG_BEGIN" in generated, generated
+    assert ": > /tmp/dserver-client-rpc.log" in generated, generated
     assert 'DARLING_PREFIX="$DPREFIX"' in generated, generated
 
 with tempfile.TemporaryDirectory() as temp:
@@ -483,7 +615,11 @@ with tempfile.TemporaryDirectory() as temp:
     try:
         test._run_guest_runtime_deploy_proof(
             {"path": "xnu/failing.patch", "module": "darling/src/external/xnu"},
-            {"mode": "guest-runtime-deploy", "runtime-artifacts": []},
+            {
+                "mode": "guest-runtime-deploy",
+                "expect-output-contains": ["old runtime symptom"],
+                "runtime-artifacts": [],
+            },
             {"guest_c_fixture": True, "name": "runtime_red_keep_scratch"},
         )
     except RuntimeError:
@@ -517,6 +653,13 @@ with tempfile.TemporaryDirectory() as temp:
     (target / "file.txt").write_text("base\nskipped\n")
     subprocess.run(["git", "add", "file.txt"], cwd=target, check=True)
     subprocess.run(["git", "commit", "-q", "-m", "skipped patch"], cwd=target, check=True)
+    skipped_rev = subprocess.run(
+        ["git", "rev-parse", "HEAD"],
+        cwd=target,
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
     skipped_patch = subprocess.run(
         ["git", "format-patch", "-1", "--stdout"],
         cwd=target,
@@ -544,13 +687,26 @@ with tempfile.TemporaryDirectory() as temp:
         capture_output=True,
         text=True,
     ).stdout
+    subprocess.run(["git", "reset", "--hard", "-q", base_rev], cwd=target, check=True)
+    (target / "rerolled.txt").write_text("rerolled\n")
+    subprocess.run(["git", "add", "rerolled.txt"], cwd=target, check=True)
+    subprocess.run(["git", "commit", "-q", "-m", "skipped patch"], cwd=target, check=True)
+    rerolled_subject_patch = subprocess.run(
+        ["git", "format-patch", "-1", "--stdout"],
+        cwd=target,
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout
 
     profile_dir = tempdir / "patches/runtime"
     skipped_patch_file = profile_dir / "x/skipped.patch"
+    rerolled_subject_patch_file = profile_dir / "x/rerolled-subject.patch"
     dependent_patch_file = profile_dir / "x/dependent.patch"
     kept_patch_file = profile_dir / "x/kept.patch"
     skipped_patch_file.parent.mkdir(parents=True)
     skipped_patch_file.write_text(skipped_patch)
+    rerolled_subject_patch_file.write_text(rerolled_subject_patch)
     dependent_patch_file.write_text(dependent_patch)
     kept_patch_file.write_text(kept_patch)
     subprocess.run(["git", "reset", "--hard", "-q", base_rev], cwd=target, check=True)
@@ -561,6 +717,11 @@ with tempfile.TemporaryDirectory() as temp:
     test._load_profile = lambda _profile: {
         "patches": [
             {"path": "x/skipped.patch", "module": "module"},
+            {
+                "path": "x/rerolled-subject.patch",
+                "module": "module",
+                "source-commit": "0000000000000000000000000000000000000000",
+            },
             {"path": "x/dependent.patch", "module": "module"},
             {"path": "x/kept.patch", "module": "module"},
         ]
@@ -574,6 +735,29 @@ with tempfile.TemporaryDirectory() as temp:
     )
     assert (target / "file.txt").read_text() == "base\n"
     assert not (target / "dependent.txt").exists()
+    assert (target / "other.txt").read_text() == "kept\n"
+
+    subprocess.run(["git", "reset", "--hard", "-q", skipped_rev], cwd=target, check=True)
+    test = make_test()
+    test.manifest = types.SimpleNamespace(repo_abspath=str(tempdir))
+    test._profile_stack = lambda profile: [profile]
+    test._load_profile = lambda _profile: {
+        "patches": [
+            {"path": "x/skipped.patch", "module": "module"},
+            {
+                "path": "x/rerolled-subject.patch",
+                "module": "module",
+                "source-commit": "0000000000000000000000000000000000000000",
+            },
+            {"path": "x/dependent.patch", "module": "module"},
+            {"path": "x/kept.patch", "module": "module"},
+        ]
+    }
+    test._profile_path = lambda profile: tempdir / "patches" / profile / "patches.yml"
+    test._apply_profile_module_patches("runtime", "module", target)
+    assert (target / "file.txt").read_text() == "base\nskipped\n"
+    assert not (target / "rerolled.txt").exists()
+    assert (target / "dependent.txt").read_text() == "dependent\n"
     assert (target / "other.txt").read_text() == "kept\n"
 
 with tempfile.TemporaryDirectory() as temp:
@@ -638,7 +822,11 @@ with tempfile.TemporaryDirectory() as temp:
     }
     test._profile_path = lambda profile: tempdir / "patches" / profile / "patches.yml"
 
-    patch = {"path": "darling/skipped.patch", "module": "darling"}
+    patch = {
+        "path": "darling/skipped.patch",
+        "module": "darling",
+        "source-base": base_rev,
+    }
     proof = {"mode": "guest-runtime-deploy", "bad-profile": "current-minus-patch"}
     with test._guest_runtime_source_forest(patch, proof, omit_patch=True) as source_root:
         assert (source_root / "base.txt").read_text() == "base\n"
@@ -722,14 +910,18 @@ with tempfile.TemporaryDirectory() as temp:
             {
                 "path": "darlingserver/ring-abi.patch",
                 "module": "darling/src/external/darlingserver",
-                "source-commit": dserver_base,
+                "source-commit": dserver_commit,
             },
         ]
     }
     test._profile_path = lambda profile: tempdir / "patches" / profile / "patches.yml"
 
     with test._guest_runtime_source_forest(
-        {"path": "xnu/skipped.patch", "module": "darling/src/external/xnu"},
+        {
+            "path": "xnu/skipped.patch",
+            "module": "darling/src/external/xnu",
+            "source-base": xnu_base,
+        },
         {
             "mode": "guest-runtime-deploy",
             "bad-profile": "current-minus-patch",

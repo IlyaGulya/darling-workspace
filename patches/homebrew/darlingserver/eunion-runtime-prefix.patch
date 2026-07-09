@@ -1,4 +1,4 @@
-From 6856e3321a96583a5a9806082db520f6c7fb8315 Mon Sep 17 00:00:00 2001
+From 6340d81f5470c928e96a55ac8da402a3504e5698 Mon Sep 17 00:00:00 2001
 From: Ilya Gulya <ilya@gulya.me>
 Date: Thu, 9 Jul 2026 03:04:56 +0000
 Subject: [PATCH] darlingserver: add explicit E-UNION prefix runtime mode
