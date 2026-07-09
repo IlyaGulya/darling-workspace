@@ -1,6 +1,50 @@
 version: 1
 description: Clean upstreamable fixes used by the local Homebrew-capable Darling build.
 integration-date: '2026-06-11T00:00:00Z'
+test-profiles:
+  darlingserver-cpp-compile-source-red:
+    kind: contract
+    coverage-tier: compile
+    env: host
+    diag: bare
+    red: true
+    red-proof:
+      mode: source-base
+    runner: c-fixture
+    repo: darling-workspace
+    cc: c++
+    include-dirs:
+    - internal-include
+    compile-flags:
+    - -std=c++17
+    - -Wall
+    - -Wextra
+    - -Werror
+  darling-cmake-target-source-red:
+    kind: contract
+    coverage-tier: host
+    env: host
+    diag: bare
+    red: true
+    red-proof:
+      mode: source-base
+    runner: darling-cmake-target-fixture
+    requires-profile: homebrew
+    timeout-seconds: 240
+  eunion-guest-c-runtime:
+    kind: guest
+    coverage-tier: runtime
+    env: darling
+    diag: bare
+    runner: guest-c-fixture
+    repo: darling-workspace
+    compile-flags:
+    - -std=gnu11
+    - -Wall
+    - -Wextra
+    - -Werror
+    requires:
+    - darling-eunion-prefix
 patches:
 - path: darlingserver/psynch-cvwait-balanced.patch
   sha256sum: dda9f75c475d65dc062fc0f4636179d58f5484d502616882011d559930fc738f
@@ -42,25 +86,10 @@ patches:
   publication-blocker: modeled wake-epoch and duplicate-scheduling tests under dar-q95.29.6
   tests:
   - name: microthread_resume_race_contract
-    kind: contract
-    coverage-tier: compile
-    env: host
-    diag: bare
-    red: true
+    use: darlingserver-cpp-compile-source-red
     red-proof:
-      mode: source-base
       source-env: DSERVER_SRC_ROOT
-    runner: c-fixture
-    repo: darling-workspace
     script: tests/microthread_resume_contract.cpp
-    cc: c++
-    include-dirs:
-    - internal-include
-    compile-flags:
-    - -std=c++17
-    - -Wall
-    - -Wextra
-    - -Werror
     note: Compile contract for the production microthread resume helper; old source has no coalesced resume contract, fixed source records, consumes, and schedules resume permits without dropping wakeups.
   - name: microthread_resume_before_suspend_guest
     kind: guest
@@ -816,15 +845,9 @@ patches:
   publication-status: ready
   tests:
   - name: libressl_nist_darling_cmake_target_regress
-    kind: contract
-    coverage-tier: host
-    env: host
-    diag: bare
-    red: true
+    use: darling-cmake-target-source-red
     red-proof:
-      mode: source-base
       source-env: LIBRESSL_SRC_ROOT
-    runner: darling-cmake-target-fixture
     target: darling_ec_tls_regress
     source-dir: libressl
     run-binary: libressl/darling_ec_tls_regress
@@ -842,8 +865,6 @@ patches:
       options: [-fno-strict-aliasing]
     - source: crypto/ec/ecp_nist.c
       options: [-fno-strict-aliasing]
-    requires-profile: homebrew
-    timeout-seconds: 240
     note: |
       RED->GREEN host behavior gate for the actual Darling CMake target. The
       runner builds crypto44 through LibreSSL's CMakeLists.txt, injects the
@@ -2458,22 +2479,10 @@ patches:
     script: experiments/e-union/run.sh
     note: Host hermetic RED->GREEN E-UNION suite; exercises the workspace two-layer vchroot fixture against this patchset source tree.
   - name: eunion_path_direnum_guest
-    kind: guest
-    coverage-tier: runtime
-    env: darling
-    diag: bare
-    runner: guest-c-fixture
-    repo: darling-workspace
+    use: eunion-guest-c-runtime
     script: tests/eunion_path_direnum_guest.c
     ok-marker: WEST_EUNION_PATH_DIRENUM_OK
     timeout-seconds: 20
-    compile-flags:
-    - -std=gnu11
-    - -Wall
-    - -Wextra
-    - -Werror
-    requires:
-    - darling-eunion-prefix
     eunion-template-files:
     - guest-path: /private/var/tmp/west-eunion-direnum/lower-only.txt
       contents: |
