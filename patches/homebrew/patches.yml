@@ -1675,8 +1675,7 @@ patches:
   source-base: f07f265bfbcf071c1adfc808de971e053ea5edc5
   source-commit: 53a469bff4023acb2eee897bf194bd7bcf0a4f99
   bead: dar-q95.29.2
-  publication-status: blocked
-  publication-blocker: broader psynch publication still depends on dar-q95.29.2 runtime/stress coverage across condvar/mutex/rwlock; the focused guest runtime gate is now unblocked by xnu/psynch-negative-errno.patch
+  publication-status: ready
   tests:
   - name: psynch_kernel_return_contract
     red: true
@@ -1910,8 +1909,7 @@ patches:
   source-base: 5f26a4c2365d9774b5a1e66ae7da20b61ab6d2db
   source-commit: 10096d1101c0685ad53adfc9b057892f9d6f3506
   bead: dar-q95.19
-  publication-status: blocked
-  publication-blocker: broader psynch publication still depends on dar-q95.29.2 runtime/stress coverage across condvar/mutex/rwlock; this patch fixes the syscall-side psynch wait error ABI and its focused guest runtime gate is green
+  publication-status: ready
   tests:
   - name: psynch_return_contract
     kind: contract
