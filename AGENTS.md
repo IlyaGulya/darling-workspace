@@ -149,6 +149,10 @@ contract.
 - Runtime RED artifact planning belongs in `west_commands/test_runtime.py`.
 Keep pure plan/display/target-mapping logic there with focused contracts; leave
 only side-effecting build/deploy/restore orchestration in `west_commands/test.py`.
+- Prefix lifecycle pure helpers belong in `west_commands/test_prefix.py`.
+Process-tree matching and stale init-pid decisions should be tested there;
+keep only side-effecting shutdown, mount cleanup, locking, and signal delivery
+in `west_commands/test.py`.
 - For `runner: guest-command-fixture`, use `expect.returncode: any` only when
 the Darling launcher cannot reliably propagate the guest program status for
 the behavior under test. Pair it with a concrete guest-visible

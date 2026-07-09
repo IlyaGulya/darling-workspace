@@ -24,6 +24,11 @@ sys.modules.setdefault("west", west_module)
 sys.modules.setdefault("west.commands", west_commands_module)
 
 from west_commands.test import DarlingTest
+from west_commands.test_prefix import (
+    darlingserver_pids_for_prefix,
+    prefix_process_snapshot,
+    remove_stale_init_pid,
+)
 
 
 def make_test():
@@ -37,16 +42,24 @@ def make_test():
 
 test = make_test()
 prefix = Path("/tmp/west-test-prefix-contract")
-test._prefix = str(prefix)
-test._keep_prefix_running = False
-test._resolve_darling_launcher = lambda _prefix: None
-test._kill_dserver_for_prefix = lambda _prefix: None
-test._ps_entries = lambda: [
+entries = [
     (100, 1, f"darlingserver {prefix} 1000 1000 4 0"),
     (101, 100, "/sbin/launchd"),
     (102, 101, "/usr/libexec/shellspawn"),
     (200, 1, "darlingserver /tmp/other-prefix 1000 1000 4 0"),
 ]
+helper_snapshot = prefix_process_snapshot(prefix, entries)
+assert any(line.startswith("100 darlingserver ") for line in helper_snapshot), helper_snapshot
+assert any(line == "101 /sbin/launchd" for line in helper_snapshot), helper_snapshot
+assert any(line == "102 /usr/libexec/shellspawn" for line in helper_snapshot), helper_snapshot
+assert all("other-prefix" not in line for line in helper_snapshot), helper_snapshot
+assert darlingserver_pids_for_prefix(prefix, entries) == [100]
+
+test._prefix = str(prefix)
+test._keep_prefix_running = False
+test._resolve_darling_launcher = lambda _prefix: None
+test._kill_dserver_for_prefix = lambda _prefix: None
+test._ps_entries = lambda: entries
 
 snapshot = test._prefix_process_snapshot(prefix)
 assert any(line.startswith("100 darlingserver ") for line in snapshot), snapshot
@@ -66,6 +79,8 @@ assert test._shutdown_test_prefix()
 
 with tempfile.TemporaryDirectory() as temp:
     stale_prefix = Path(temp)
+    (stale_prefix / ".init.pid").write_text("999999999\n")
+    assert remove_stale_init_pid(stale_prefix, pid_is_usable=lambda _pid: False)
     (stale_prefix / ".init.pid").write_text("999999999\n")
     test._remove_stale_init_pid(stale_prefix)
     assert not (stale_prefix / ".init.pid").exists()
