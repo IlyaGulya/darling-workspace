@@ -2430,6 +2430,49 @@ patches:
   publication-status: blocked
   publication-blocker: E-UNION proof-of-concept; race-safe copy-up depends on the resolve patch. Local experiment under dar-test-infra-sp5.8.4.4.
   tests:
+  - name: eunion_mutation_guest
+    kind: guest
+    coverage-tier: runtime
+    env: darling
+    diag: bare
+    runner: guest-c-fixture
+    repo: darling-workspace
+    script: tests/eunion_mutation_guest.c
+    ok-marker: WEST_EUNION_MUTATION_OK
+    timeout-seconds: 30
+    compile-flags:
+    - -std=gnu11
+    - -Wall
+    - -Wextra
+    - -Werror
+    requires:
+    - darling-eunion-prefix
+    eunion-cleanup-dirs:
+    - /private/var/tmp/west-eunion-mutate
+    eunion-verify-template-files-after: true
+    eunion-template-files:
+    - guest-path: /private/var/tmp/west-eunion-mutate/copy.txt
+      contents: |
+        LOWER_COPY
+    - guest-path: /private/var/tmp/west-eunion-mutate/delete.txt
+      contents: |
+        DELETE_ME
+    - guest-path: /private/var/tmp/west-eunion-mutate/create_parent/.keep
+      contents: |
+        keep
+    - guest-path: /private/var/tmp/west-eunion-mutate/rename_src/child.txt
+      contents: |
+        RENAME_CHILD
+    - guest-path: /private/var/tmp/west-eunion-mutate/sp_real/.keep
+      contents: |
+        keep
+    - guest-path: /private/var/tmp/west-eunion-mutate/bind_parent/.keep
+      contents: |
+        keep
+    eunion-template-symlinks:
+    - guest-path: /private/var/tmp/west-eunion-mutate/sp_link
+      target: sp_real
+    note: Guest runtime coverage for E-UNION copy-up, lower-only unlink whiteout, create under lower-only parent, recursive lower-dir rename, symlink-parent create, AF_UNIX bind parent copy-up, and post-test lower template protection.
   - name: eunion_2_host_suite
     kind: unit
     env: host
@@ -2461,6 +2504,49 @@ patches:
   publication-status: blocked
   publication-blocker: E-UNION proof-of-concept; unprivileged whiteout/opaque encoding. Local experiment under dar-test-infra-sp5.8.4.4.
   tests:
+  - name: eunion_mutation_guest
+    kind: guest
+    coverage-tier: runtime
+    env: darling
+    diag: bare
+    runner: guest-c-fixture
+    repo: darling-workspace
+    script: tests/eunion_mutation_guest.c
+    ok-marker: WEST_EUNION_MUTATION_OK
+    timeout-seconds: 30
+    compile-flags:
+    - -std=gnu11
+    - -Wall
+    - -Wextra
+    - -Werror
+    requires:
+    - darling-eunion-prefix
+    eunion-cleanup-dirs:
+    - /private/var/tmp/west-eunion-mutate
+    eunion-verify-template-files-after: true
+    eunion-template-files:
+    - guest-path: /private/var/tmp/west-eunion-mutate/copy.txt
+      contents: |
+        LOWER_COPY
+    - guest-path: /private/var/tmp/west-eunion-mutate/delete.txt
+      contents: |
+        DELETE_ME
+    - guest-path: /private/var/tmp/west-eunion-mutate/create_parent/.keep
+      contents: |
+        keep
+    - guest-path: /private/var/tmp/west-eunion-mutate/rename_src/child.txt
+      contents: |
+        RENAME_CHILD
+    - guest-path: /private/var/tmp/west-eunion-mutate/sp_real/.keep
+      contents: |
+        keep
+    - guest-path: /private/var/tmp/west-eunion-mutate/bind_parent/.keep
+      contents: |
+        keep
+    eunion-template-symlinks:
+    - guest-path: /private/var/tmp/west-eunion-mutate/sp_link
+      target: sp_real
+    note: Guest runtime coverage for E-UNION copy-up, lower-only unlink whiteout, create under lower-only parent, recursive lower-dir rename, symlink-parent create, AF_UNIX bind parent copy-up, and post-test lower template protection.
   - name: eunion_3_host_suite
     kind: unit
     env: host
@@ -2555,6 +2641,49 @@ patches:
   publication-status: blocked
   publication-blocker: E-UNION proof-of-concept; wires copy-up/whiteout into 13 write-op emulation sites. Local experiment under dar-test-infra-sp5.8.4.4.
   tests:
+  - name: eunion_mutation_guest
+    kind: guest
+    coverage-tier: runtime
+    env: darling
+    diag: bare
+    runner: guest-c-fixture
+    repo: darling-workspace
+    script: tests/eunion_mutation_guest.c
+    ok-marker: WEST_EUNION_MUTATION_OK
+    timeout-seconds: 30
+    compile-flags:
+    - -std=gnu11
+    - -Wall
+    - -Wextra
+    - -Werror
+    requires:
+    - darling-eunion-prefix
+    eunion-cleanup-dirs:
+    - /private/var/tmp/west-eunion-mutate
+    eunion-verify-template-files-after: true
+    eunion-template-files:
+    - guest-path: /private/var/tmp/west-eunion-mutate/copy.txt
+      contents: |
+        LOWER_COPY
+    - guest-path: /private/var/tmp/west-eunion-mutate/delete.txt
+      contents: |
+        DELETE_ME
+    - guest-path: /private/var/tmp/west-eunion-mutate/create_parent/.keep
+      contents: |
+        keep
+    - guest-path: /private/var/tmp/west-eunion-mutate/rename_src/child.txt
+      contents: |
+        RENAME_CHILD
+    - guest-path: /private/var/tmp/west-eunion-mutate/sp_real/.keep
+      contents: |
+        keep
+    - guest-path: /private/var/tmp/west-eunion-mutate/bind_parent/.keep
+      contents: |
+        keep
+    eunion-template-symlinks:
+    - guest-path: /private/var/tmp/west-eunion-mutate/sp_link
+      target: sp_real
+    note: Guest runtime coverage for E-UNION copy-up, lower-only unlink whiteout, create under lower-only parent, recursive lower-dir rename, symlink-parent create, AF_UNIX bind parent copy-up, and post-test lower template protection.
   - name: eunion_5_host_suite
     kind: unit
     env: host
@@ -2715,6 +2844,49 @@ patches:
   publication-status: blocked
   publication-blocker: E-UNION proof-of-concept; copies up the parent dir on AF_UNIX bind so socket creation lands in the writable upper. Local experiment under dar-test-infra-sp5.8.4.4.
   tests:
+  - name: eunion_mutation_guest
+    kind: guest
+    coverage-tier: runtime
+    env: darling
+    diag: bare
+    runner: guest-c-fixture
+    repo: darling-workspace
+    script: tests/eunion_mutation_guest.c
+    ok-marker: WEST_EUNION_MUTATION_OK
+    timeout-seconds: 30
+    compile-flags:
+    - -std=gnu11
+    - -Wall
+    - -Wextra
+    - -Werror
+    requires:
+    - darling-eunion-prefix
+    eunion-cleanup-dirs:
+    - /private/var/tmp/west-eunion-mutate
+    eunion-verify-template-files-after: true
+    eunion-template-files:
+    - guest-path: /private/var/tmp/west-eunion-mutate/copy.txt
+      contents: |
+        LOWER_COPY
+    - guest-path: /private/var/tmp/west-eunion-mutate/delete.txt
+      contents: |
+        DELETE_ME
+    - guest-path: /private/var/tmp/west-eunion-mutate/create_parent/.keep
+      contents: |
+        keep
+    - guest-path: /private/var/tmp/west-eunion-mutate/rename_src/child.txt
+      contents: |
+        RENAME_CHILD
+    - guest-path: /private/var/tmp/west-eunion-mutate/sp_real/.keep
+      contents: |
+        keep
+    - guest-path: /private/var/tmp/west-eunion-mutate/bind_parent/.keep
+      contents: |
+        keep
+    eunion-template-symlinks:
+    - guest-path: /private/var/tmp/west-eunion-mutate/sp_link
+      target: sp_real
+    note: Guest runtime coverage for E-UNION copy-up, lower-only unlink whiteout, create under lower-only parent, recursive lower-dir rename, symlink-parent create, AF_UNIX bind parent copy-up, and post-test lower template protection.
   - name: eunion_8_host_suite
     kind: unit
     env: host
@@ -2872,6 +3044,49 @@ patches:
   publication-status: blocked
   publication-blocker: E-UNION proof-of-concept; hardening — recursive copy-up on dir rename, *at()-relative copy-up (sys_openat), setid-strip + xattr-preserve on copy-up. Local experiment under dar-test-infra-sp5.8.4.4.
   tests:
+  - name: eunion_mutation_guest
+    kind: guest
+    coverage-tier: runtime
+    env: darling
+    diag: bare
+    runner: guest-c-fixture
+    repo: darling-workspace
+    script: tests/eunion_mutation_guest.c
+    ok-marker: WEST_EUNION_MUTATION_OK
+    timeout-seconds: 30
+    compile-flags:
+    - -std=gnu11
+    - -Wall
+    - -Wextra
+    - -Werror
+    requires:
+    - darling-eunion-prefix
+    eunion-cleanup-dirs:
+    - /private/var/tmp/west-eunion-mutate
+    eunion-verify-template-files-after: true
+    eunion-template-files:
+    - guest-path: /private/var/tmp/west-eunion-mutate/copy.txt
+      contents: |
+        LOWER_COPY
+    - guest-path: /private/var/tmp/west-eunion-mutate/delete.txt
+      contents: |
+        DELETE_ME
+    - guest-path: /private/var/tmp/west-eunion-mutate/create_parent/.keep
+      contents: |
+        keep
+    - guest-path: /private/var/tmp/west-eunion-mutate/rename_src/child.txt
+      contents: |
+        RENAME_CHILD
+    - guest-path: /private/var/tmp/west-eunion-mutate/sp_real/.keep
+      contents: |
+        keep
+    - guest-path: /private/var/tmp/west-eunion-mutate/bind_parent/.keep
+      contents: |
+        keep
+    eunion-template-symlinks:
+    - guest-path: /private/var/tmp/west-eunion-mutate/sp_link
+      target: sp_real
+    note: Guest runtime coverage for E-UNION copy-up, lower-only unlink whiteout, create under lower-only parent, recursive lower-dir rename, symlink-parent create, AF_UNIX bind parent copy-up, and post-test lower template protection.
   - name: eunion_11_host_suite
     kind: unit
     env: host
@@ -2903,6 +3118,49 @@ patches:
   publication-status: blocked
   publication-blocker: E-UNION proof-of-concept; template-protection primitives (prepare_unlink/rename_dest/create/write_fd) + site wiring so delete/rename/create/fd-meta never mutate the shared lower template. The lower template is a shared live directory, not a RO mount. Local experiment under dar-test-infra-sp5.8.4.4 (.1/.2/.3).
   tests:
+  - name: eunion_mutation_guest
+    kind: guest
+    coverage-tier: runtime
+    env: darling
+    diag: bare
+    runner: guest-c-fixture
+    repo: darling-workspace
+    script: tests/eunion_mutation_guest.c
+    ok-marker: WEST_EUNION_MUTATION_OK
+    timeout-seconds: 30
+    compile-flags:
+    - -std=gnu11
+    - -Wall
+    - -Wextra
+    - -Werror
+    requires:
+    - darling-eunion-prefix
+    eunion-cleanup-dirs:
+    - /private/var/tmp/west-eunion-mutate
+    eunion-verify-template-files-after: true
+    eunion-template-files:
+    - guest-path: /private/var/tmp/west-eunion-mutate/copy.txt
+      contents: |
+        LOWER_COPY
+    - guest-path: /private/var/tmp/west-eunion-mutate/delete.txt
+      contents: |
+        DELETE_ME
+    - guest-path: /private/var/tmp/west-eunion-mutate/create_parent/.keep
+      contents: |
+        keep
+    - guest-path: /private/var/tmp/west-eunion-mutate/rename_src/child.txt
+      contents: |
+        RENAME_CHILD
+    - guest-path: /private/var/tmp/west-eunion-mutate/sp_real/.keep
+      contents: |
+        keep
+    - guest-path: /private/var/tmp/west-eunion-mutate/bind_parent/.keep
+      contents: |
+        keep
+    eunion-template-symlinks:
+    - guest-path: /private/var/tmp/west-eunion-mutate/sp_link
+      target: sp_real
+    note: Guest runtime coverage for E-UNION copy-up, lower-only unlink whiteout, create under lower-only parent, recursive lower-dir rename, symlink-parent create, AF_UNIX bind parent copy-up, and post-test lower template protection.
   - name: eunion_12_host_suite
     kind: unit
     env: host
@@ -2934,6 +3192,52 @@ patches:
   publication-status: blocked
   publication-blocker: E-UNION proof-of-concept; make the copy-up privilege-strip load-bearing — explicit fchmod(mode & 0777) setid strip (FS-independent) + drop security.capability (setuid-equivalent) on copy-up. Found by mutation-testing the hermetic suite. Local experiment under dar-test-infra-sp5.8.4.4.9.
   tests:
+  - name: eunion_metadata_guest
+    kind: guest
+    coverage-tier: runtime
+    env: darling
+    diag: bare
+    runner: guest-c-fixture
+    repo: darling-workspace
+    script: tests/eunion_metadata_guest.c
+    ok-marker: WEST_EUNION_METADATA_OK
+    timeout-seconds: 30
+    compile-flags:
+    - -std=gnu11
+    - -Wall
+    - -Wextra
+    - -Werror
+    requires:
+    - darling-eunion-prefix
+    eunion-cleanup-dirs:
+    - /private/var/tmp/west-eunion-meta
+    eunion-verify-template-files-after: true
+    eunion-template-files:
+    - guest-path: /private/var/tmp/west-eunion-meta/setid.txt
+      mode: "4755"
+      xattrs:
+        user.test.tag: hello
+      contents: |
+        SETID_CONTENT
+    - guest-path: /private/var/tmp/west-eunion-meta/fdmeta.txt
+      mode: "0644"
+      contents: |
+        FDMETA_CONTENT
+    - guest-path: /private/var/tmp/west-eunion-meta/fdxattr.txt
+      absent-xattrs:
+      - user.test.fd
+      contents: |
+        FDXATTR_CONTENT
+    - guest-path: /private/var/tmp/west-eunion-meta/pathxattr.txt
+      absent-xattrs:
+      - user.test.path
+      - user.union.whiteout
+      contents: |
+        PATHXATTR_CONTENT
+    - guest-path: /private/var/tmp/west-eunion-meta/ftrunc.txt
+      contents: |
+        FTRUNC_CONTENT_LONG
+    note: Guest runtime coverage for E-UNION setid stripping and xattr preservation on copy-up, fd metadata retargeting, path/fd xattr copy-up and marker rejection, ftruncate guest-visible template protection, plus post-test lower mode/xattr/content assertions.
   - name: eunion_13_host_suite
     kind: unit
     env: host
@@ -2965,6 +3269,52 @@ patches:
   publication-status: blocked
   publication-blocker: E-UNION proof-of-concept; protect the shared template on fd-metadata syscalls (fchmod/fchmod_extended/futimes/fsetxattr/fremovexattr) by copying up + re-opening the upper copy (vchroot_fd_for_meta_write); also fixes the EXIT_PATH escape detection in vchroot_prepare_write_fd. Local experiment under dar-test-infra-sp5.8.4.4.4.
   tests:
+  - name: eunion_metadata_guest
+    kind: guest
+    coverage-tier: runtime
+    env: darling
+    diag: bare
+    runner: guest-c-fixture
+    repo: darling-workspace
+    script: tests/eunion_metadata_guest.c
+    ok-marker: WEST_EUNION_METADATA_OK
+    timeout-seconds: 30
+    compile-flags:
+    - -std=gnu11
+    - -Wall
+    - -Wextra
+    - -Werror
+    requires:
+    - darling-eunion-prefix
+    eunion-cleanup-dirs:
+    - /private/var/tmp/west-eunion-meta
+    eunion-verify-template-files-after: true
+    eunion-template-files:
+    - guest-path: /private/var/tmp/west-eunion-meta/setid.txt
+      mode: "4755"
+      xattrs:
+        user.test.tag: hello
+      contents: |
+        SETID_CONTENT
+    - guest-path: /private/var/tmp/west-eunion-meta/fdmeta.txt
+      mode: "0644"
+      contents: |
+        FDMETA_CONTENT
+    - guest-path: /private/var/tmp/west-eunion-meta/fdxattr.txt
+      absent-xattrs:
+      - user.test.fd
+      contents: |
+        FDXATTR_CONTENT
+    - guest-path: /private/var/tmp/west-eunion-meta/pathxattr.txt
+      absent-xattrs:
+      - user.test.path
+      - user.union.whiteout
+      contents: |
+        PATHXATTR_CONTENT
+    - guest-path: /private/var/tmp/west-eunion-meta/ftrunc.txt
+      contents: |
+        FTRUNC_CONTENT_LONG
+    note: Guest runtime coverage for E-UNION setid stripping and xattr preservation on copy-up, fd metadata retargeting, path/fd xattr copy-up and marker rejection, ftruncate guest-visible template protection, plus post-test lower mode/xattr/content assertions.
   - name: eunion_14_host_suite
     kind: unit
     env: host
@@ -2996,6 +3346,52 @@ patches:
   publication-status: blocked
   publication-blocker: E-UNION proof-of-concept; path-based setxattr/removexattr never expanded the guest path (pre-EUNION bug) and had no copy-up, so an xattr write on a lower-only object would mutate the shared template; listxattr listed the un-expanded path. Add vchroot_xattr_is_marker (reserved user.union.* namespace) and wire all four xattr sites — set/remove reject marker forging (EPERM) + copy up + operate on the upper path; get hides markers (ENOATTR); list uses the expanded path and filters markers. Mutation-verified (XM1-XM4, XS1). Local experiment under dar-test-infra-sp5.8.4.4.5.
   tests:
+  - name: eunion_metadata_guest
+    kind: guest
+    coverage-tier: runtime
+    env: darling
+    diag: bare
+    runner: guest-c-fixture
+    repo: darling-workspace
+    script: tests/eunion_metadata_guest.c
+    ok-marker: WEST_EUNION_METADATA_OK
+    timeout-seconds: 30
+    compile-flags:
+    - -std=gnu11
+    - -Wall
+    - -Wextra
+    - -Werror
+    requires:
+    - darling-eunion-prefix
+    eunion-cleanup-dirs:
+    - /private/var/tmp/west-eunion-meta
+    eunion-verify-template-files-after: true
+    eunion-template-files:
+    - guest-path: /private/var/tmp/west-eunion-meta/setid.txt
+      mode: "4755"
+      xattrs:
+        user.test.tag: hello
+      contents: |
+        SETID_CONTENT
+    - guest-path: /private/var/tmp/west-eunion-meta/fdmeta.txt
+      mode: "0644"
+      contents: |
+        FDMETA_CONTENT
+    - guest-path: /private/var/tmp/west-eunion-meta/fdxattr.txt
+      absent-xattrs:
+      - user.test.fd
+      contents: |
+        FDXATTR_CONTENT
+    - guest-path: /private/var/tmp/west-eunion-meta/pathxattr.txt
+      absent-xattrs:
+      - user.test.path
+      - user.union.whiteout
+      contents: |
+        PATHXATTR_CONTENT
+    - guest-path: /private/var/tmp/west-eunion-meta/ftrunc.txt
+      contents: |
+        FTRUNC_CONTENT_LONG
+    note: Guest runtime coverage for E-UNION setid stripping and xattr preservation on copy-up, fd metadata retargeting, path/fd xattr copy-up and marker rejection, ftruncate guest-visible template protection, plus post-test lower mode/xattr/content assertions.
   - name: eunion_15_host_suite
     kind: unit
     env: host
@@ -3250,6 +3646,52 @@ patches:
   publication-status: blocked
   publication-blocker: E-UNION proof-of-concept; a full 216-file write-op audit of vchroot template protection found one unprotected mutating site — sys_ftruncate hit __NR_ftruncate on the raw fd with no copy-up. ftruncate mutates CONTENT by descriptor, the same class as the fd-metadata syscalls protected in .4 but omitted from that set; a writable fd on a lower-only (shared template) inode would shrink the template for ALL prefixes. Unlike fchmod/utimensat/fsetxattr (which work on the .4 meta-write helper's O_RDONLY fd), ftruncate REQUIRES a writable fd, so this adds a sibling helper vchroot_fd_for_content_write (same copy-up, re-opens the upper copy O_RDWR) and wires sys_ftruncate to it under #ifdef EUNION (#else = original, OFF byte-identical). The .4 helper is left untouched. Mutation-verified (FT — content helper opening O_RDONLY drives EINVAL/no-truncate RED; stub no-copy-up drives different-fd + template-safety RED). Local experiment under dar-test-infra-sp5.8.4.4.11.
   tests:
+  - name: eunion_metadata_guest
+    kind: guest
+    coverage-tier: runtime
+    env: darling
+    diag: bare
+    runner: guest-c-fixture
+    repo: darling-workspace
+    script: tests/eunion_metadata_guest.c
+    ok-marker: WEST_EUNION_METADATA_OK
+    timeout-seconds: 30
+    compile-flags:
+    - -std=gnu11
+    - -Wall
+    - -Wextra
+    - -Werror
+    requires:
+    - darling-eunion-prefix
+    eunion-cleanup-dirs:
+    - /private/var/tmp/west-eunion-meta
+    eunion-verify-template-files-after: true
+    eunion-template-files:
+    - guest-path: /private/var/tmp/west-eunion-meta/setid.txt
+      mode: "4755"
+      xattrs:
+        user.test.tag: hello
+      contents: |
+        SETID_CONTENT
+    - guest-path: /private/var/tmp/west-eunion-meta/fdmeta.txt
+      mode: "0644"
+      contents: |
+        FDMETA_CONTENT
+    - guest-path: /private/var/tmp/west-eunion-meta/fdxattr.txt
+      absent-xattrs:
+      - user.test.fd
+      contents: |
+        FDXATTR_CONTENT
+    - guest-path: /private/var/tmp/west-eunion-meta/pathxattr.txt
+      absent-xattrs:
+      - user.test.path
+      - user.union.whiteout
+      contents: |
+        PATHXATTR_CONTENT
+    - guest-path: /private/var/tmp/west-eunion-meta/ftrunc.txt
+      contents: |
+        FTRUNC_CONTENT_LONG
+    note: Guest runtime coverage for E-UNION setid stripping and xattr preservation on copy-up, fd metadata retargeting, path/fd xattr copy-up and marker rejection, ftruncate guest-visible template protection, plus post-test lower mode/xattr/content assertions.
   - name: eunion_20_host_suite
     kind: unit
     env: host
@@ -3302,6 +3744,49 @@ patches:
   publication-status: blocked
   publication-blocker: E-UNION proof-of-concept. A create through a symlinked lower-only parent dir failed ENOENT under EUNION — surfaced by a live  smoke test where  failed because /tmp is a symlink (to private/tmp) and eunion_copyup_parent copied up the symlink pointing at a target dir never materialized in the upper layer, so open(O_CREAT) followed the upper symlink into an absent directory. Fix adds eunion_copyup_dir_resolved (materializes the parent dir while following any final-component symlink to its real target, relative+absolute targets, bounded chains) and rewires eunion_copyup_parent to it. EUNION-only (copy-mode copies the whole template so no bug); all new code inside the file #ifdef EUNION so OFF byte-identical (verified via non-EUNION preprocessed diff). Hermetic SP1 (6 asserts) RED before, GREEN after, mutation-verified 2/2; suite 222 to 228. Live-verified  now works. Local experiment under dar-test-infra-sp5.8.4.4.
   tests:
+  - name: eunion_mutation_guest
+    kind: guest
+    coverage-tier: runtime
+    env: darling
+    diag: bare
+    runner: guest-c-fixture
+    repo: darling-workspace
+    script: tests/eunion_mutation_guest.c
+    ok-marker: WEST_EUNION_MUTATION_OK
+    timeout-seconds: 30
+    compile-flags:
+    - -std=gnu11
+    - -Wall
+    - -Wextra
+    - -Werror
+    requires:
+    - darling-eunion-prefix
+    eunion-cleanup-dirs:
+    - /private/var/tmp/west-eunion-mutate
+    eunion-verify-template-files-after: true
+    eunion-template-files:
+    - guest-path: /private/var/tmp/west-eunion-mutate/copy.txt
+      contents: |
+        LOWER_COPY
+    - guest-path: /private/var/tmp/west-eunion-mutate/delete.txt
+      contents: |
+        DELETE_ME
+    - guest-path: /private/var/tmp/west-eunion-mutate/create_parent/.keep
+      contents: |
+        keep
+    - guest-path: /private/var/tmp/west-eunion-mutate/rename_src/child.txt
+      contents: |
+        RENAME_CHILD
+    - guest-path: /private/var/tmp/west-eunion-mutate/sp_real/.keep
+      contents: |
+        keep
+    - guest-path: /private/var/tmp/west-eunion-mutate/bind_parent/.keep
+      contents: |
+        keep
+    eunion-template-symlinks:
+    - guest-path: /private/var/tmp/west-eunion-mutate/sp_link
+      target: sp_real
+    note: Guest runtime coverage for E-UNION copy-up, lower-only unlink whiteout, create under lower-only parent, recursive lower-dir rename, symlink-parent create, AF_UNIX bind parent copy-up, and post-test lower template protection.
   - name: eunion_22_host_suite
     kind: unit
     env: host
