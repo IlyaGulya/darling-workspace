@@ -6,6 +6,7 @@ cd "$repo"
 
 python3 - <<'PY'
 import sys
+import os
 import subprocess
 import tempfile
 import types
@@ -42,6 +43,38 @@ def make_test():
     test._execution_env = lambda _invocation: {"DPREFIX": test._prefix}
     return test
 
+
+with tempfile.TemporaryDirectory() as temp:
+    tempdir = Path(temp)
+    build_dir = tempdir / "build"
+    build_dir.mkdir()
+    (build_dir / "CMakeCache.txt").write_text(
+        "\n".join(
+            [
+                "CMAKE_GENERATOR:INTERNAL=Ninja",
+                "CMAKE_BUILD_TYPE:STRING=Debug",
+                "CMAKE_C_COMPILER:FILEPATH=/usr/bin/clang",
+                "CMAKE_CXX_COMPILER:FILEPATH=/usr/bin/clang++",
+                "DARLING_EUNION:BOOL=ON",
+                "DARLING_RPC_SLEEP_ACCOUNT:BOOL=OFF",
+                "DARLING_GUEST_RECVSPIN:STRING=512",
+            ]
+        )
+        + "\n"
+    )
+    old_build_dir = os.environ.get("DARLING_BUILD_DIR")
+    os.environ["DARLING_BUILD_DIR"] = str(build_dir)
+    try:
+        args = make_test()._runtime_red_configure_args(tempdir / "prefix")
+    finally:
+        if old_build_dir is None:
+            os.environ.pop("DARLING_BUILD_DIR", None)
+        else:
+            os.environ["DARLING_BUILD_DIR"] = old_build_dir
+    assert "-DDARLING_EUNION=ON" in args, args
+    assert "-DDARLING_RPC_SLEEP_ACCOUNT=OFF" in args, args
+    assert "-DDARLING_GUEST_RECVSPIN=512" in args, args
+    assert f"-DCMAKE_INSTALL_PREFIX={tempdir / 'prefix'}" in args, args
 
 with tempfile.TemporaryDirectory() as temp:
     tempdir = Path(temp)

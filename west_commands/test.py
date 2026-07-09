@@ -2862,6 +2862,16 @@ fi
             value = self._cmake_cache_value(current_build, key)
             if value:
                 args.append(f"-D{key}={value}")
+        for key in (
+            "DARLING_COREDUMP_SANITIZE",
+            "DARLING_EUNION",
+            "DARLING_GUEST_RECVSPIN",
+            "DARLING_RPC_SLEEP_ACCOUNT",
+            "DARLING_SKIP_DRIFT_GATE",
+        ):
+            value = self._cmake_cache_value(current_build, key)
+            if value is not None:
+                args.append(f"-D{key}={value}")
         args.append(f"-DCMAKE_INSTALL_PREFIX={prefix}")
         return args
 
