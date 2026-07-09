@@ -1868,7 +1868,7 @@ class DarlingTest(WestCommand):
             host_runner = tempdir / "run.sh"
             verdict = tempdir / "verdict.txt"
             name = invocation["name"]
-            run_id = f"{os.getpid()}.{int(time.time() * 1000)}"
+            run_id = run_env.get("WEST_GUEST_C_FIXTURE_ID") or f"{os.getpid()}.{int(time.time() * 1000)}"
             guest_src = f"/tmp/{name}.{run_id}.c"
             guest_bin = f"/tmp/{name}.{run_id}"
             compile_parts = [
@@ -2121,6 +2121,8 @@ guest_bin={quote(guest_bin)}
 timeout_seconds={int(invocation.get("timeout_seconds", 600))}
 ok_marker={quote(invocation["ok_marker"])}
 host_trace_oracle={quote("1" if invocation.get("host_trace_oracle") else "0")}
+prepare_only="${{WEST_GUEST_C_FIXTURE_PREPARE_ONLY:-0}}"
+run_only="${{WEST_GUEST_C_FIXTURE_RUN_ONLY:-0}}"
 
 {trace_setup}
 {host_stat_setup}
@@ -2273,14 +2275,34 @@ guest_shell() {{
 
 : > /tmp/dserver-client-rpc.log 2>/dev/null || true
 dump_runtime_file_state
-printf 'WEST_GUEST_STAGE=cleanup\\n' >&2
-guest_shell 10 "rm -f '$guest_src' '$guest_bin'" >/dev/null 2>&1 || true
-"$launch" shutdown >/dev/null 2>&1 || true
-clear_stale_init_pid
-printf 'WEST_GUEST_STAGE=upload\\n' >&2
-guest_shell 10 "cat > '$guest_src'" < "$host_src"
+if [ "$run_only" != 1 ]; then
+\tprintf 'WEST_GUEST_STAGE=cleanup\\n' >&2
+\tguest_shell 10 "rm -f '$guest_src' '$guest_bin'" >/dev/null 2>&1 || true
+\t"$launch" shutdown >/dev/null 2>&1 || true
+\tclear_stale_init_pid
+\tprintf 'WEST_GUEST_STAGE=upload\\n' >&2
+\tguest_shell 10 "cat > '$guest_src'" < "$host_src"
+fi
 
-{guest_workload}
+if [ "$prepare_only" = 1 ]; then
+\tset +e
+\tprintf 'WEST_GUEST_STAGE=compile\\n' >&2
+\tguest_shell "$timeout_seconds" {quote(guest_compile_body)} > "$verdict" 2>&1
+\tcompile_rc=$?
+\tset -e
+\tcat "$verdict" 2>/dev/null || true
+\texit "$compile_rc"
+fi
+
+if [ "$run_only" = 1 ]; then
+\tset +e
+\tprintf 'WEST_GUEST_STAGE=run\\n' >&2
+\tguest_shell "$timeout_seconds" {quote(guest_run_body)} > "$verdict" 2>&1
+\trc=$?
+\tset -e
+else
+\t{guest_workload}
+fi
 
 {trace_settle}
 cat "$verdict" 2>/dev/null || true
@@ -3938,6 +3960,24 @@ fi
                     scratch_root,
                     label="RED",
                 )
+                fixture_id = f"{invocation['name']}.{os.getpid()}.{int(time.time() * 1000)}"
+                if invocation.get("guest_c_fixture") and proof.get("prepare-fixture-before-deploy"):
+                    prepare_env = self._execution_env(invocation)
+                    if prepare_env is None:
+                        prepare_env = os.environ.copy()
+                    else:
+                        prepare_env = dict(prepare_env)
+                    prepare_env["WEST_RUNTIME_SOURCE_ROOT"] = str(source_root)
+                    prepare_env["WEST_GUEST_C_FIXTURE_ID"] = fixture_id
+                    prepare_env["WEST_GUEST_C_FIXTURE_PREPARE_ONLY"] = "1"
+                    prepare_invocation = self._invocation_from_runtime_source(invocation, source_root)
+                    self.inf("  RED prepare guest fixture before bad runtime deploy")
+                    with self._resource_context(prepare_invocation, prepare_env):
+                        prepare_rc = self._run_invocation(prepare_invocation, env=prepare_env)
+                    if prepare_rc != 0:
+                        keep_on_failure = True
+                        self.err(f"preserving failed RED runtime scratch for inspection: {temp}")
+                        return prepare_rc
                 with self._runtime_red_deployed_artifacts(proof, build_root, prefix, label="RED"):
                     bad_env = self._execution_env(invocation)
                     if bad_env is None:
@@ -3945,6 +3985,9 @@ fi
                     else:
                         bad_env = dict(bad_env)
                     bad_env["WEST_RUNTIME_SOURCE_ROOT"] = str(source_root)
+                    if invocation.get("guest_c_fixture") and proof.get("prepare-fixture-before-deploy"):
+                        bad_env["WEST_GUEST_C_FIXTURE_ID"] = fixture_id
+                        bad_env["WEST_GUEST_C_FIXTURE_RUN_ONLY"] = "1"
                     runtime_invocation = self._invocation_from_runtime_source(invocation, source_root)
                     with self._resource_context(runtime_invocation, bad_env):
                         red_started_at = time.time()

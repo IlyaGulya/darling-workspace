@@ -450,6 +450,66 @@ with tempfile.TemporaryDirectory() as temp:
     assert calls[4][0] == "build" and calls[4][3] is True and calls[4][4] == "GREEN", calls
     assert calls[5] == ("run", "runtime_red_contract", "GREEN\n", "GREEN\n"), calls
 
+    root_copy.write_text("ORIGINAL\n")
+    base_copy.write_text("ORIGINAL\n")
+    calls.clear()
+
+    def fake_run_prepared(invocation, env=None):
+        env = env or {}
+        calls.append(
+            (
+                "run",
+                invocation["name"],
+                root_copy.read_text(),
+                base_copy.read_text(),
+                env.get("WEST_GUEST_C_FIXTURE_PREPARE_ONLY"),
+                env.get("WEST_GUEST_C_FIXTURE_RUN_ONLY"),
+                env.get("WEST_GUEST_C_FIXTURE_ID"),
+            )
+        )
+        if env.get("WEST_GUEST_C_FIXTURE_PREPARE_ONLY") == "1":
+            return 0
+        if env.get("WEST_GUEST_C_FIXTURE_RUN_ONLY") == "1":
+            return 77
+        return 0
+
+    test._run_invocation = fake_run_prepared
+    prepared_proof = dict(proof)
+    prepared_proof["prepare-fixture-before-deploy"] = True
+    rc = test._run_guest_runtime_deploy_proof(patch, prepared_proof, invocation)
+    assert rc == 0, rc
+    assert root_copy.read_text() == "ORIGINAL\n"
+    assert base_copy.read_text() == "ORIGINAL\n"
+    assert calls[0] == ("source", "darling/src/external/xnu", "guest-runtime-deploy", True), calls
+    assert calls[1][0] == "build" and calls[1][4] == "RED", calls
+    assert calls[2][0:6] == (
+        "run",
+        "runtime_red_contract",
+        "ORIGINAL\n",
+        "ORIGINAL\n",
+        "1",
+        None,
+    ), calls
+    assert calls[3][0:6] == (
+        "run",
+        "runtime_red_contract",
+        "RED\n",
+        "RED\n",
+        None,
+        "1",
+    ), calls
+    assert calls[2][6] and calls[2][6] == calls[3][6], calls
+    assert calls[4] == ("source", "darling/src/external/xnu", "guest-runtime-deploy", False), calls
+    assert calls[5][0] == "build" and calls[5][4] == "GREEN", calls
+    assert calls[6][0:6] == (
+        "run",
+        "runtime_red_contract",
+        "GREEN\n",
+        "GREEN\n",
+        None,
+        None,
+    ), calls
+
     symlink_parent = tempdir / "forest/darling/src/external/parent"
     symlink_parent.parent.mkdir(parents=True)
     symlink_parent.symlink_to(prefix, target_is_directory=True)
