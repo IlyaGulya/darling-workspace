@@ -54,6 +54,17 @@ refs, PR drafts, and agent handoff.
 - Never add workspace metadata, PR drafts, agent state, or Beads files to the
   Darling source repositories.
 - Do not push investigation branches unless explicitly requested.
+- When using `apply_patch` from this workspace, use absolute paths for files
+  outside the current working directory and verify new files with `git status`
+  or `find` before running tests. A relative `tests/...` path from
+  `/home/ilyagulya/work/darling-dev` creates files outside
+  `darling-workspace`; treat that as a process bug and fix it immediately.
+- For focused `darlingserver` validation, use
+  `west darling-build --targets darlingserver --deploy --deploy-darlingserver`
+  instead of the default broad build. The current command still deploys
+  dyld/closure when `--deploy` is present; if that matters for a clean
+  experiment, record the prefix/baseline state and prefer an explicit
+  server-only deploy path or improve the command before claiming isolation.
 - Patch-local red tests must be GREEN on the current checkout. `red: true`
   means the test is a RED->GREEN regression proof, not that latest should fail.
   Use `west test --profile ...` for the normal GREEN regression run and

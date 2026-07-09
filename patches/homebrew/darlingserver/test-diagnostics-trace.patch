@@ -536,3 +536,146 @@ index b56ee4381bb95eb847805dc549929bbba83d2ac5..8a9c473389e1d2009d12f7e68b2eab0c
  			parent->_notifyListeningKqchannels(NOTE_FORK, nsid());
  		} else {
  			processLog.info() << *this << ": checkin without registered fork parent" << processLog.endLog;
+
+From 1aaa544a8be02fe4b83cd8c8736f1bfab4173829 Mon Sep 17 00:00:00 2001
+From: Ilya Gulya <ilya@gulya.me>
+Date: Thu, 9 Jul 2026 00:35:50 +0000
+Subject: [PATCH] test: trace assert-wait timer cleanup
+
+---
+ .../duct-tape/test-diagnostics.h              |  1 +
+ duct-tape/src/test-diagnostics.c              | 53 +++++++++++++++++++
+ duct-tape/xnu/osfmk/kern/waitq.c              | 28 +++++++++-
+ 3 files changed, 81 insertions(+), 1 deletion(-)
+
+diff --git a/duct-tape/internal-include/darlingserver/duct-tape/test-diagnostics.h b/duct-tape/internal-include/darlingserver/duct-tape/test-diagnostics.h
+index de0afd5482b912879f51a876201b902ea1c646ec..1f9c6ae7d705ce22d2f49b3dd108ec23eec87c2d 100644
+--- a/duct-tape/internal-include/darlingserver/duct-tape/test-diagnostics.h
++++ b/duct-tape/internal-include/darlingserver/duct-tape/test-diagnostics.h
+@@ -1,5 +1,6 @@
+ #pragma once
+ 
++int dtape_test_consume_fault(const char* name);
+ void dtape_test_trace_wait_timer(
+ 	const char* event,
+ 	unsigned long long thread,
+diff --git a/duct-tape/src/test-diagnostics.c b/duct-tape/src/test-diagnostics.c
+index 116aa62af944e109c22fec49652392fad7eeabb0..8197670847f2cb159c00c2a45e5ecacc7963d864 100644
+--- a/duct-tape/src/test-diagnostics.c
++++ b/duct-tape/src/test-diagnostics.c
+@@ -3,10 +3,14 @@
+ extern char* getenv(const char* name);
+ extern int open(const char* pathname, int flags, ...);
+ extern long write(int fd, const void* buf, unsigned long count);
++extern long read(int fd, void* buf, unsigned long count);
+ extern int close(int fd);
++extern int unlink(const char* pathname);
+ extern int snprintf(char* str, unsigned long size, const char* format, ...);
+ 
+ #define DSERVER_TEST_TRACE_FILE "DSERVER_TEST_TRACE_FILE"
++#define DSERVER_TEST_FAULT_FILE "DSERVER_TEST_FAULT_FILE"
++#define DSERVER_O_RDONLY 00000000
+ #define DSERVER_O_WRONLY 00000001
+ #define DSERVER_O_CREAT 00000100
+ #define DSERVER_O_APPEND 00002000
+@@ -36,6 +40,55 @@ static void dtape_test_trace_line(const char* line) {
+ 	close(fd);
+ }
+ 
++static int dtape_test_trace_streq(const char* left, const char* right) {
++	unsigned long index = 0;
++	if (!left || !right) {
++		return 0;
++	}
++	while (left[index] != '\0' && right[index] != '\0') {
++		if (left[index] != right[index]) {
++			return 0;
++		}
++		++index;
++	}
++	return left[index] == '\0' && right[index] == '\0';
++}
++
++int dtape_test_consume_fault(const char* name) {
++	const char* path = getenv(DSERVER_TEST_FAULT_FILE);
++	if (!path || path[0] == '\0' || !name || name[0] == '\0') {
++		return 0;
++	}
++
++	int fd = open(path, DSERVER_O_RDONLY | DSERVER_O_CLOEXEC);
++	if (fd < 0) {
++		return 0;
++	}
++
++	char buffer[128] = {};
++	long count = read(fd, buffer, sizeof(buffer) - 1);
++	close(fd);
++	if (count <= 0) {
++		return 0;
++	}
++	while (count > 0 && (
++	    buffer[count - 1] == '\n' ||
++	    buffer[count - 1] == '\r' ||
++	    buffer[count - 1] == ' ' ||
++	    buffer[count - 1] == '\t')) {
++		buffer[--count] = '\0';
++	}
++	if (!dtape_test_trace_streq(buffer, name)) {
++		return 0;
++	}
++
++	unlink(path);
++	char line[160];
++	snprintf(line, sizeof(line), "test_fault.consume name=%s", name);
++	dtape_test_trace_line(line);
++	return 1;
++}
++
+ void dtape_test_trace_wait_timer(
+ 	const char* event,
+ 	unsigned long long thread,
+diff --git a/duct-tape/xnu/osfmk/kern/waitq.c b/duct-tape/xnu/osfmk/kern/waitq.c
+index d6a33a586938ed1eb26f4566a2cd3fd536b82cd3..486b3ba4a6a2fbffe2cc0621212bdfec342fda08 100644
+--- a/duct-tape/xnu/osfmk/kern/waitq.c
++++ b/duct-tape/xnu/osfmk/kern/waitq.c
+@@ -2930,13 +2930,39 @@ waitq_assert_wait64_locked(struct waitq *waitq,
+ 		// abort). Cancel any such leftover before (re)arming for this wait so
+ 		// the wait_timer state starts clean. Matches XNU's invariant that a
+ 		// thread entering assert_wait has no live wait_timer.
++		int injected_stale_timer = dtape_test_consume_fault("waitq.assert_wait_stale_timer");
++		if (injected_stale_timer) {
++			thread->wait_timer_is_set = TRUE;
++			dtape_test_trace_wait_timer(
++			    "wait_prepare_fault",
++			    (unsigned long long)thread,
++			    thread->wait_result,
++			    thread->wait_timer_is_set,
++			    thread->wait_timer_active);
++		}
+ 		dtape_test_trace_wait_timer(
+-		    "wait_prepare",
++		    "wait_prepare_before",
+ 		    (unsigned long long)thread,
+ 		    thread->wait_result,
+ 		    thread->wait_timer_is_set,
+ 		    thread->wait_timer_active);
+ 		dtape_thread_prepare_for_wait(thread);
++		dtape_test_trace_wait_timer(
++		    "wait_prepare_after",
++		    (unsigned long long)thread,
++		    thread->wait_result,
++		    thread->wait_timer_is_set,
++		    thread->wait_timer_active);
++		if (injected_stale_timer) {
++			dtape_test_trace_wait_timer(
++			    thread->wait_timer_is_set ?
++			        "wait_prepare_fault_uncleared" :
++			        "wait_prepare_fault_cleared",
++			    (unsigned long long)thread,
++			    thread->wait_result,
++			    thread->wait_timer_is_set,
++			    thread->wait_timer_active);
++		}
+ 
+ 		if (deadline != 0) {
+ 			boolean_t act;
