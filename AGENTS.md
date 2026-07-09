@@ -175,18 +175,24 @@ the behavior under test. Pair it with a concrete guest-visible
   deploy dyld together with `libsystem_kernel.dylib`; dyld carries a static
   emulation path, so closure-only deploys can leave guest runtime tests running
   stale syscall behavior even when the dylib was rebuilt.
-- `west test` owns the Darling prefix lifecycle for metadata tests that declare
-  `requires: [darling-prefix]`: it takes `$DPREFIX/.west-test.lock`, runs the
-  test, then runs `darling shutdown` for that prefix and kills a matching
-  leftover `darlingserver` if needed. If prefix processes still remain after
-  cleanup, the test run must fail. Use `--keep-prefix-running` only for
-  deliberate fast local iteration.
+- `west test` owns the Darling prefix lifecycle for metadata tests whose
+  compact form says `runs: guest` (expanded form: `requires:
+  [darling-prefix]`): it takes `$DPREFIX/.west-test.lock`, runs the test, then
+  runs `darling shutdown` for that prefix and kills a matching leftover
+  `darlingserver` if needed. If prefix processes still remain after cleanup,
+  the test run must fail. Use `--keep-prefix-running` only for deliberate fast
+  local iteration.
 - Patch metadata tests with `diag: guarded` or `diag: forensic` must run
   through `darling-debug-runner`; keep timeouts/capture in `west test`, not as
   unbounded bespoke shell around every guest test.
-- Prefer `ctest-label` for tests registered in the compatibility suite. It is a
-  runnable selector, not documentation; `west test` builds the suite and runs
-  `ctest -L <label>`.
+- Prefer compact CTest selectors for product tests registered in CMake/CTest:
+  `ctest: <label>`, `runs: host|guest|macos`, `red-proof: source|runtime|self`,
+  `build-target: <target>`, plus explicit `artifacts`, `resources`, and
+  `fixtures`. `ctest-label`, `env`, `target`, and expanded `red-proof.mode`
+  remain supported as normalized output/legacy input, but new manifests should
+  use the compact axes. Do not introduce `needs`; use `artifacts` for
+  build/deploy outputs, `resources` for caches/oracles/external services, and
+  `fixtures` for setup/cleanup state.
 - Use `runner: python` for non-executable Python test files; do not use
   `command:` just to spell `python3 path/to/test.py`.
 - `west patch export` must not create unrelated `patches.yml` formatting churn.

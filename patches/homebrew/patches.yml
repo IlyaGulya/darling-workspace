@@ -5,11 +5,10 @@ test-profiles:
   darlingserver-cpp-compile-source-red:
     kind: contract
     coverage-tier: compile
-    env: host
+    runs: host
     diag: bare
     red: true
-    red-proof:
-      mode: source-base
+    red-proof: source
     runner: c-fixture
     repo: darling-workspace
     cc: c++
@@ -23,18 +22,17 @@ test-profiles:
   darling-cmake-target-source-red:
     kind: contract
     coverage-tier: host
-    env: host
+    runs: host
     diag: bare
     red: true
-    red-proof:
-      mode: source-base
+    red-proof: source
     runner: darling-cmake-target-fixture
     requires-profile: homebrew
     timeout-seconds: 240
   eunion-guest-c-runtime:
     kind: guest
     coverage-tier: runtime
-    env: darling
+    runs: guest
     diag: bare
     runner: guest-c-fixture
     repo: darling-workspace
@@ -43,8 +41,9 @@ test-profiles:
     - -Wall
     - -Wextra
     - -Werror
-    requires:
-    - darling-eunion-prefix
+fixture-profiles:
+  eunion-overlay:
+    kind: eunion-overlay
 patches:
 - path: darlingserver/psynch-cvwait-balanced.patch
   sha256sum: dda9f75c475d65dc062fc0f4636179d58f5484d502616882011d559930fc738f
@@ -57,7 +56,7 @@ patches:
   tests:
   - name: psynch_cvwait_sequence_contract
     kind: contract
-    env: host
+    runs: host
     diag: bare
     red: true
     red-proof:
@@ -94,7 +93,7 @@ patches:
   - name: microthread_resume_before_suspend_guest
     kind: guest
     coverage-tier: runtime
-    env: darling
+    runs: guest
     diag: guarded
     red: true
     red-proof:
@@ -176,7 +175,7 @@ patches:
   - name: fork_checkin_bound_contract
     kind: contract
     coverage-tier: compile
-    env: host
+    runs: host
     diag: bare
     red: true
     red-proof:
@@ -199,7 +198,7 @@ patches:
   - name: fork_checkin_drop_timeout_guest
     kind: guest
     coverage-tier: runtime
-    env: darling
+    runs: guest
     diag: guarded
     red: true
     red-proof:
@@ -273,7 +272,7 @@ patches:
   - name: fork_checkin_sticky_flag_contract
     kind: contract
     coverage-tier: compile
-    env: host
+    runs: host
     diag: bare
     red: true
     red-proof:
@@ -296,7 +295,7 @@ patches:
   - name: fork_checkin_signal_storm_guest
     kind: guest
     coverage-tier: runtime
-    env: darling
+    runs: guest
     diag: guarded
     runner: guest-c-fixture
     repo: darling-workspace
@@ -319,7 +318,7 @@ patches:
   - name: fork_checkin_forced_lost_wakeup_guest
     kind: guest
     coverage-tier: runtime
-    env: darling
+    runs: guest
     diag: guarded
     red: true
     red-proof:
@@ -400,7 +399,7 @@ patches:
   - name: psynch_cvsignal_args_contract
     kind: source-contract
     coverage-tier: source
-    env: host
+    runs: host
     diag: bare
     red: true
     red-proof:
@@ -412,7 +411,7 @@ patches:
   - name: psynch_cvsignal_args_guest
     kind: guest
     coverage-tier: runtime
-    env: darling
+    runs: guest
     diag: guarded
     red: true
     red-proof:
@@ -470,7 +469,7 @@ patches:
   - name: fstatfs_missing_proc_contract
     kind: unit
     coverage-tier: host
-    env: host
+    runs: host
     diag: bare
     red: true
     red-proof:
@@ -504,7 +503,7 @@ patches:
   tests:
   - name: select_fdset_conversion
     kind: unit
-    env: host
+    runs: host
     diag: bare
     red: true
     red-proof:
@@ -518,7 +517,7 @@ patches:
     note: Host unit RED->GREEN contract for BSD/Linux fd_set word-size conversion above 32 fds.
   - name: select_fdset_guest
     kind: guest
-    env: darling
+    runs: guest
     diag: guarded
     runner: guest-c-fixture
     repo: darling-workspace
@@ -549,7 +548,7 @@ patches:
   tests:
   - name: darwin_priority_contract
     kind: unit
-    env: host
+    runs: host
     diag: bare
     red: true
     red-proof:
@@ -567,7 +566,7 @@ patches:
   - name: darwin_priority_guest
     kind: guest
     coverage-tier: runtime
-    env: darling
+    runs: guest
     diag: guarded
     runner: guest-c-fixture
     repo: darling-workspace
@@ -598,7 +597,7 @@ patches:
   tests:
   - name: socket_siocgifconf_contract
     kind: unit
-    env: host
+    runs: host
     diag: bare
     red: true
     red-proof:
@@ -616,7 +615,7 @@ patches:
     note: Host unit RED->GREEN contract for SIOCGIFCONF empty-list behavior and NULL EFAULT handling.
   - name: socket_siocgifconf_guest
     kind: guest
-    env: darling
+    runs: guest
     diag: guarded
     runner: guest-c-fixture
     repo: darling-workspace
@@ -648,7 +647,7 @@ patches:
   - name: fork_postfork_child_contract
     kind: contract
     coverage-tier: compile
-    env: host
+    runs: host
     diag: bare
     red: true
     red-proof:
@@ -691,7 +690,7 @@ patches:
   - name: fork_wait_timeout_parent_guest
     kind: guest
     coverage-tier: runtime
-    env: darling
+    runs: guest
     diag: guarded
     red: true
     red-proof:
@@ -751,7 +750,7 @@ patches:
   - name: bzero_return_register_contract
     kind: contract
     coverage-tier: compile
-    env: host
+    runs: host
     diag: bare
     red: true
     red-proof:
@@ -771,7 +770,7 @@ patches:
   - name: bzero_return_register_guest
     kind: guest
     coverage-tier: runtime
-    env: darling
+    runs: guest
     diag: guarded
     runner: guest-c-fixture
     repo: darling-workspace
@@ -816,7 +815,7 @@ patches:
   - name: perl_nsgetexecutablepath_config_contract
     kind: contract
     coverage-tier: host
-    env: host
+    runs: host
     diag: bare
     red: true
     red-proof:
@@ -848,9 +847,9 @@ patches:
     use: darling-cmake-target-source-red
     red-proof:
       source-env: LIBRESSL_SRC_ROOT
-    target: darling_ec_tls_regress
+    build-target: darling_ec_tls_regress
     source-dir: libressl
-    ctest-label: bead:dar-q95.6
+    ctest: bead:dar-q95.6
     run-binary: libressl/darling_ec_tls_regress
     fixture-files:
     - tests/darling_ec_tls_regress.c
@@ -877,7 +876,7 @@ patches:
   - name: libressl_nist_strict_aliasing_regress
     kind: contract
     coverage-tier: host
-    env: host
+    runs: host
     diag: bare
     runner: source-build-fixture
     script: tests/darling_ec_tls_regress.c
@@ -919,7 +918,7 @@ patches:
   - name: cancel_stale_wait_timer_contract
     kind: contract
     coverage-tier: compile
-    env: host
+    runs: host
     diag: bare
     red: true
     red-proof:
@@ -939,7 +938,7 @@ patches:
   - name: wait_timer_stale_guest
     kind: guest
     coverage-tier: runtime
-    env: darling
+    runs: guest
     diag: guarded
     red: true
     red-proof:
@@ -1009,7 +1008,7 @@ patches:
   - name: processcall_exception_guard_contract
     kind: contract
     coverage-tier: compile
-    env: host
+    runs: host
     diag: bare
     red: true
     red-proof:
@@ -1030,7 +1029,7 @@ patches:
   - name: processcall_uidgid_fault_guest
     kind: guest
     coverage-tier: runtime
-    env: darling
+    runs: guest
     diag: guarded
     red: true
     red-proof:
@@ -1104,7 +1103,7 @@ patches:
   - name: ingest_error_reply_contract
     kind: contract
     coverage-tier: compile
-    env: host
+    runs: host
     diag: bare
     red: true
     red-proof:
@@ -1126,7 +1125,7 @@ patches:
   - name: ingest_process_register_fault_guest
     kind: guest
     coverage-tier: runtime
-    env: darling
+    runs: guest
     diag: guarded
     red: true
     red-proof:
@@ -1187,7 +1186,7 @@ patches:
   - name: pushreply_pipe_leak_contract
     kind: contract
     coverage-tier: compile
-    env: host
+    runs: host
     diag: bare
     red: true
     red-proof:
@@ -1208,7 +1207,7 @@ patches:
   - name: pushreply_bad_pointer_guest
     kind: guest
     coverage-tier: runtime
-    env: darling
+    runs: guest
     diag: guarded
     red: true
     red-proof:
@@ -1285,7 +1284,7 @@ patches:
   - name: exc_fatal_reply_bound_contract
     kind: contract
     coverage-tier: compile
-    env: host
+    runs: host
     diag: bare
     red: true
     red-proof:
@@ -1306,7 +1305,7 @@ patches:
   - name: fatal_exception_unreplying_handler_guest
     kind: guest
     coverage-tier: runtime
-    env: darling
+    runs: guest
     diag: guarded
     red: true
     red-proof:
@@ -1373,7 +1372,7 @@ patches:
   - name: assert_wait_cancel_stale_timer_contract
     kind: contract
     coverage-tier: compile
-    env: host
+    runs: host
     diag: bare
     red: true
     red-proof:
@@ -1393,7 +1392,7 @@ patches:
   - name: wait_timer_assert_prepare_guest
     kind: guest
     coverage-tier: runtime
-    env: darling
+    runs: guest
     diag: guarded
     red: true
     red-proof:
@@ -1480,7 +1479,7 @@ patches:
   - name: pthread_cancel_state_contract
     kind: contract
     coverage-tier: compile
-    env: host
+    runs: host
     diag: bare
     red: true
     red-proof:
@@ -1500,7 +1499,7 @@ patches:
   - name: pthread_cancel_read_guest
     kind: guest
     coverage-tier: runtime
-    env: darling
+    runs: guest
     diag: guarded
     red: true
     red-proof:
@@ -1548,7 +1547,7 @@ patches:
   - name: psynch_kernel_return_decode_contract
     kind: contract
     coverage-tier: compile
-    env: host
+    runs: host
     diag: bare
     red: true
     red-proof:
@@ -1703,7 +1702,7 @@ patches:
         deploy:
         - usr/lib/system/libsystem_pthread.dylib
     kind: guest
-    env: darling
+    runs: guest
     diag: guarded
     runner: guest-c-fixture
     script: tests/psynch_kernel_return_contract.c
@@ -1739,7 +1738,7 @@ patches:
   - name: getattrlist_pack_name_objtype_contract
     kind: contract
     coverage-tier: compile
-    env: host
+    runs: host
     diag: bare
     red: true
     red-proof:
@@ -1766,7 +1765,7 @@ patches:
   - name: getattrlist_name_objtype_guest
     kind: guest
     coverage-tier: runtime
-    env: darling
+    runs: guest
     diag: guarded
     red: true
     red-proof:
@@ -1813,7 +1812,7 @@ patches:
   - name: getattrlistbulk_pack_contract
     kind: contract
     coverage-tier: compile
-    env: host
+    runs: host
     diag: bare
     red: true
     red-proof:
@@ -1840,7 +1839,7 @@ patches:
   - name: getattrlistbulk_guest
     kind: guest
     coverage-tier: runtime
-    env: darling
+    runs: guest
     diag: guarded
     runner: guest-c-fixture
     repo: darling-workspace
@@ -1872,7 +1871,7 @@ patches:
   tests:
   - name: getattrlist_shared_packer
     kind: guest
-    env: darling
+    runs: guest
     diag: guarded
     runner: guest-c-fixture
     script: darling/src/libsystem_kernel/tests/getattrlist_shared_packer_test.c
@@ -1902,7 +1901,7 @@ patches:
   tests:
   - name: psynch_return_contract
     kind: contract
-    env: host
+    runs: host
     diag: bare
     red: true
     red-proof:
@@ -1917,7 +1916,7 @@ patches:
   - name: psynch_return_contract_guest
     kind: guest
     coverage-tier: runtime
-    env: darling
+    runs: guest
     diag: guarded
     red: true
     red-proof:
@@ -1985,7 +1984,7 @@ patches:
   - name: sigexc_sa_restart_contract
     kind: contract
     coverage-tier: compile
-    env: host
+    runs: host
     diag: bare
     red: true
     red-proof:
@@ -2015,7 +2014,7 @@ patches:
     note: Compiles real sys_sigaction plus sigexc and verifies Darwin SA_RESTART/SIG_IGN state is mirrored into the installed Linux sigexc handler flags.
   - name: sigexc_sa_restart_guest
     kind: guest
-    env: darling
+    runs: guest
     diag: guarded
     runner: guest-c-fixture
     repo: darling-workspace
@@ -2046,7 +2045,7 @@ patches:
   - name: sigexc_debug_flood_contract
     kind: contract
     coverage-tier: compile
-    env: host
+    runs: host
     diag: bare
     red: true
     red-proof:
@@ -2119,7 +2118,7 @@ patches:
   - name: sigexc_default_resend_self_contract
     kind: contract
     coverage-tier: compile
-    env: host
+    runs: host
     diag: bare
     red: true
     red-proof:
@@ -2148,7 +2147,7 @@ patches:
     note: Compiles real sigexc_handler and verifies the fatal default-action path re-raises with tgkill(self pid, self tid, signal) instead of kill(0, signal) process-group broadcast.
   - name: sigexc_default_resend_self_guest
     kind: guest
-    env: darling
+    runs: guest
     diag: guarded
     runner: guest-c-fixture
     repo: darling-workspace
@@ -2194,7 +2193,7 @@ patches:
   - name: ulock_eintr_retry_contract
     kind: contract
     coverage-tier: compile
-    env: host
+    runs: host
     diag: bare
     red: true
     red-proof:
@@ -2244,7 +2243,7 @@ patches:
     note: Compiles production ulock_wait/ulock_wake with a fake futex backend and checks untimed EINTR retry, timed EINTR passthrough, clean wake errno, and wake success behavior.
   - name: ulock_eintr_retry_guest
     kind: guest
-    env: darling
+    runs: guest
     diag: guarded
     runner: guest-c-fixture
     repo: darling-workspace
@@ -2276,7 +2275,7 @@ patches:
   tests:
   - name: glibc_fork_lock_reset
     kind: contract
-    env: host
+    runs: host
     diag: bare
     red: true
     red-proof:
@@ -2314,7 +2313,7 @@ patches:
   - name: sandbox_exec_pass_through_contract
     kind: contract
     coverage-tier: host
-    env: host
+    runs: host
     diag: bare
     red: true
     red-proof:
@@ -2373,7 +2372,7 @@ patches:
   - name: sdk_homebrew_detection_contract
     kind: contract
     coverage-tier: host
-    env: host
+    runs: host
     diag: bare
     red: true
     red-proof:
@@ -2405,7 +2404,7 @@ patches:
   - name: vchroot_pathnull_guard_contract
     kind: contract
     coverage-tier: compile
-    env: host
+    runs: host
     diag: bare
     red: true
     red-proof:
@@ -2437,7 +2436,7 @@ patches:
     note: Host RED->GREEN contract that active vchroot path syscalls touched by the patch return EFAULT for NULL before strcpy, vchroot_expand, or Linux syscall fallback; fchownat/lchown are tracked separately in dar-gyvb because their active implementation is a disabled success stub.
   - name: vchroot_pathnull_guard_guest
     kind: guest
-    env: darling
+    runs: guest
     diag: guarded
     runner: guest-c-fixture
     repo: darling-workspace
@@ -2469,7 +2468,7 @@ patches:
   tests:
   - name: eunion_1_host_suite
     kind: unit
-    env: host
+    runs: host
     diag: bare
     red: true
     red-proof:
@@ -2481,6 +2480,7 @@ patches:
     note: Host hermetic RED->GREEN E-UNION suite; exercises the workspace two-layer vchroot fixture against this patchset source tree.
   - name: eunion_path_direnum_guest
     use: eunion-guest-c-runtime
+    fixtures: eunion-overlay
     script: tests/eunion_path_direnum_guest.c
     ok-marker: WEST_EUNION_PATH_DIRENUM_OK
     timeout-seconds: 20
@@ -2521,7 +2521,7 @@ patches:
   - name: eunion_mutation_guest
     kind: guest
     coverage-tier: runtime
-    env: darling
+    runs: guest
     diag: bare
     runner: guest-c-fixture
     repo: darling-workspace
@@ -2563,7 +2563,7 @@ patches:
     note: Guest runtime coverage for E-UNION copy-up, lower-only unlink whiteout, create under lower-only parent, recursive lower-dir rename, symlink-parent create, AF_UNIX bind parent copy-up, and post-test lower template protection.
   - name: eunion_2_host_suite
     kind: unit
-    env: host
+    runs: host
     diag: bare
     red: true
     red-proof:
@@ -2595,7 +2595,7 @@ patches:
   - name: eunion_mutation_guest
     kind: guest
     coverage-tier: runtime
-    env: darling
+    runs: guest
     diag: bare
     runner: guest-c-fixture
     repo: darling-workspace
@@ -2637,7 +2637,7 @@ patches:
     note: Guest runtime coverage for E-UNION copy-up, lower-only unlink whiteout, create under lower-only parent, recursive lower-dir rename, symlink-parent create, AF_UNIX bind parent copy-up, and post-test lower template protection.
   - name: eunion_3_host_suite
     kind: unit
-    env: host
+    runs: host
     diag: bare
     red: true
     red-proof:
@@ -2668,7 +2668,7 @@ patches:
   tests:
   - name: eunion_4_host_suite
     kind: unit
-    env: host
+    runs: host
     diag: bare
     red: true
     red-proof:
@@ -2681,7 +2681,7 @@ patches:
   - name: eunion_path_direnum_guest
     kind: guest
     coverage-tier: runtime
-    env: darling
+    runs: guest
     diag: bare
     runner: guest-c-fixture
     repo: darling-workspace
@@ -2732,7 +2732,7 @@ patches:
   - name: eunion_mutation_guest
     kind: guest
     coverage-tier: runtime
-    env: darling
+    runs: guest
     diag: bare
     runner: guest-c-fixture
     repo: darling-workspace
@@ -2774,7 +2774,7 @@ patches:
     note: Guest runtime coverage for E-UNION copy-up, lower-only unlink whiteout, create under lower-only parent, recursive lower-dir rename, symlink-parent create, AF_UNIX bind parent copy-up, and post-test lower template protection.
   - name: eunion_5_host_suite
     kind: unit
-    env: host
+    runs: host
     diag: bare
     red: true
     red-proof:
@@ -2805,7 +2805,7 @@ patches:
   tests:
   - name: eunion_6_host_suite
     kind: unit
-    env: host
+    runs: host
     diag: bare
     red: true
     red-proof:
@@ -2818,7 +2818,7 @@ patches:
   - name: eunion_path_direnum_guest
     kind: guest
     coverage-tier: runtime
-    env: darling
+    runs: guest
     diag: bare
     runner: guest-c-fixture
     repo: darling-workspace
@@ -2868,7 +2868,7 @@ patches:
   tests:
   - name: eunion_7_host_suite
     kind: unit
-    env: host
+    runs: host
     diag: bare
     red: true
     red-proof:
@@ -2881,7 +2881,7 @@ patches:
   - name: eunion_activation_guest_smoke
     kind: guest
     coverage-tier: runtime
-    env: darling
+    runs: guest
     diag: bare
     runner: guest-c-fixture
     repo: darling-workspace
@@ -2935,7 +2935,7 @@ patches:
   - name: eunion_mutation_guest
     kind: guest
     coverage-tier: runtime
-    env: darling
+    runs: guest
     diag: bare
     runner: guest-c-fixture
     repo: darling-workspace
@@ -2977,7 +2977,7 @@ patches:
     note: Guest runtime coverage for E-UNION copy-up, lower-only unlink whiteout, create under lower-only parent, recursive lower-dir rename, symlink-parent create, AF_UNIX bind parent copy-up, and post-test lower template protection.
   - name: eunion_8_host_suite
     kind: unit
-    env: host
+    runs: host
     diag: bare
     red: true
     red-proof:
@@ -3008,7 +3008,7 @@ patches:
   tests:
   - name: eunion_9_host_suite
     kind: unit
-    env: host
+    runs: host
     diag: bare
     red: true
     red-proof:
@@ -3021,7 +3021,7 @@ patches:
   - name: eunion_path_direnum_guest
     kind: guest
     coverage-tier: runtime
-    env: darling
+    runs: guest
     diag: bare
     runner: guest-c-fixture
     repo: darling-workspace
@@ -3071,7 +3071,7 @@ patches:
   tests:
   - name: eunion_10_host_suite
     kind: unit
-    env: host
+    runs: host
     diag: bare
     red: true
     red-proof:
@@ -3084,7 +3084,7 @@ patches:
   - name: eunion_path_direnum_guest
     kind: guest
     coverage-tier: runtime
-    env: darling
+    runs: guest
     diag: bare
     runner: guest-c-fixture
     repo: darling-workspace
@@ -3135,7 +3135,7 @@ patches:
   - name: eunion_mutation_guest
     kind: guest
     coverage-tier: runtime
-    env: darling
+    runs: guest
     diag: bare
     runner: guest-c-fixture
     repo: darling-workspace
@@ -3177,7 +3177,7 @@ patches:
     note: Guest runtime coverage for E-UNION copy-up, lower-only unlink whiteout, create under lower-only parent, recursive lower-dir rename, symlink-parent create, AF_UNIX bind parent copy-up, and post-test lower template protection.
   - name: eunion_11_host_suite
     kind: unit
-    env: host
+    runs: host
     diag: bare
     red: true
     red-proof:
@@ -3209,7 +3209,7 @@ patches:
   - name: eunion_mutation_guest
     kind: guest
     coverage-tier: runtime
-    env: darling
+    runs: guest
     diag: bare
     runner: guest-c-fixture
     repo: darling-workspace
@@ -3251,7 +3251,7 @@ patches:
     note: Guest runtime coverage for E-UNION copy-up, lower-only unlink whiteout, create under lower-only parent, recursive lower-dir rename, symlink-parent create, AF_UNIX bind parent copy-up, and post-test lower template protection.
   - name: eunion_12_host_suite
     kind: unit
-    env: host
+    runs: host
     diag: bare
     red: true
     red-proof:
@@ -3283,7 +3283,7 @@ patches:
   - name: eunion_metadata_guest
     kind: guest
     coverage-tier: runtime
-    env: darling
+    runs: guest
     diag: bare
     runner: guest-c-fixture
     repo: darling-workspace
@@ -3328,7 +3328,7 @@ patches:
     note: Guest runtime coverage for E-UNION setid stripping and xattr preservation on copy-up, fd metadata retargeting, path/fd xattr copy-up and marker rejection, ftruncate guest-visible template protection, plus post-test lower mode/xattr/content assertions.
   - name: eunion_13_host_suite
     kind: unit
-    env: host
+    runs: host
     diag: bare
     red: true
     red-proof:
@@ -3360,7 +3360,7 @@ patches:
   - name: eunion_metadata_guest
     kind: guest
     coverage-tier: runtime
-    env: darling
+    runs: guest
     diag: bare
     runner: guest-c-fixture
     repo: darling-workspace
@@ -3405,7 +3405,7 @@ patches:
     note: Guest runtime coverage for E-UNION setid stripping and xattr preservation on copy-up, fd metadata retargeting, path/fd xattr copy-up and marker rejection, ftruncate guest-visible template protection, plus post-test lower mode/xattr/content assertions.
   - name: eunion_14_host_suite
     kind: unit
-    env: host
+    runs: host
     diag: bare
     red: true
     red-proof:
@@ -3437,7 +3437,7 @@ patches:
   - name: eunion_metadata_guest
     kind: guest
     coverage-tier: runtime
-    env: darling
+    runs: guest
     diag: bare
     runner: guest-c-fixture
     repo: darling-workspace
@@ -3482,7 +3482,7 @@ patches:
     note: Guest runtime coverage for E-UNION setid stripping and xattr preservation on copy-up, fd metadata retargeting, path/fd xattr copy-up and marker rejection, ftruncate guest-visible template protection, plus post-test lower mode/xattr/content assertions.
   - name: eunion_15_host_suite
     kind: unit
-    env: host
+    runs: host
     diag: bare
     red: true
     red-proof:
@@ -3513,7 +3513,7 @@ patches:
   tests:
   - name: eunion_16_host_suite
     kind: unit
-    env: host
+    runs: host
     diag: bare
     red: true
     red-proof:
@@ -3544,7 +3544,7 @@ patches:
   tests:
   - name: eunion_17_host_suite
     kind: unit
-    env: host
+    runs: host
     diag: bare
     red: true
     red-proof:
@@ -3557,7 +3557,7 @@ patches:
   - name: eunion_path_direnum_guest
     kind: guest
     coverage-tier: runtime
-    env: darling
+    runs: guest
     diag: bare
     runner: guest-c-fixture
     repo: darling-workspace
@@ -3608,7 +3608,7 @@ patches:
   - name: eunion_exitpath_systemroot_guest
     kind: guest
     coverage-tier: runtime
-    env: darling
+    runs: guest
     diag: bare
     runner: guest-c-fixture
     repo: darling-workspace
@@ -3625,7 +3625,7 @@ patches:
     note: Guest runtime gate for the /Volumes/SystemRoot EXIT_PATH escape hatch and its ASCII case-folded spelling.
   - name: eunion_18_host_suite
     kind: unit
-    env: host
+    runs: host
     diag: bare
     red: true
     red-proof:
@@ -3683,7 +3683,7 @@ patches:
   - name: chown_disabled_null_guard_contract
     kind: contract
     coverage-tier: compile
-    env: host
+    runs: host
     diag: bare
     red: true
     red-proof:
@@ -3708,7 +3708,7 @@ patches:
     note: Compiles production fchown/chown/fchownat/lchown stubs and verifies disabled ownership changes return ENOTSUP while NULL path inputs return EFAULT before vchroot/Linux fallback.
   - name: chown_disabled_null_guard_guest
     kind: contract
-    env: darling
+    runs: guest
     diag: guarded
     runner: guest-c-fixture
     repo: darling-workspace
@@ -3737,7 +3737,7 @@ patches:
   - name: eunion_metadata_guest
     kind: guest
     coverage-tier: runtime
-    env: darling
+    runs: guest
     diag: bare
     runner: guest-c-fixture
     repo: darling-workspace
@@ -3782,7 +3782,7 @@ patches:
     note: Guest runtime coverage for E-UNION setid stripping and xattr preservation on copy-up, fd metadata retargeting, path/fd xattr copy-up and marker rejection, ftruncate guest-visible template protection, plus post-test lower mode/xattr/content assertions.
   - name: eunion_20_host_suite
     kind: unit
-    env: host
+    runs: host
     diag: bare
     red: true
     red-proof:
@@ -3835,7 +3835,7 @@ patches:
   - name: eunion_mutation_guest
     kind: guest
     coverage-tier: runtime
-    env: darling
+    runs: guest
     diag: bare
     runner: guest-c-fixture
     repo: darling-workspace
@@ -3877,7 +3877,7 @@ patches:
     note: Guest runtime coverage for E-UNION copy-up, lower-only unlink whiteout, create under lower-only parent, recursive lower-dir rename, symlink-parent create, AF_UNIX bind parent copy-up, and post-test lower template protection.
   - name: eunion_22_host_suite
     kind: unit
-    env: host
+    runs: host
     diag: bare
     red: true
     red-proof:
@@ -3909,7 +3909,7 @@ patches:
   - name: eunion_path_direnum_guest
     kind: guest
     coverage-tier: runtime
-    env: darling
+    runs: guest
     diag: bare
     runner: guest-c-fixture
     repo: darling-workspace
@@ -3960,7 +3960,7 @@ patches:
   - name: eunion_mkdir_opaque_guest
     kind: guest
     coverage-tier: runtime
-    env: darling
+    runs: guest
     diag: bare
     red: true
     red-proof:
@@ -4022,7 +4022,7 @@ patches:
   - name: build_drift_gate_contract
     kind: contract
     coverage-tier: host
-    env: host
+    runs: host
     diag: bare
     red: true
     red-proof:
@@ -4067,7 +4067,7 @@ patches:
   - name: commpage_map_fixed_contract
     kind: contract
     coverage-tier: compile
-    env: host
+    runs: host
     diag: bare
     red: true
     red-proof:
@@ -4111,7 +4111,7 @@ patches:
   - name: mldr_stack_mapping_contract
     kind: contract
     coverage-tier: compile
-    env: host
+    runs: host
     diag: bare
     red: true
     red-proof:
@@ -4150,7 +4150,7 @@ patches:
   - name: fd_guard_ebadf_contract
     kind: contract
     coverage-tier: compile
-    env: host
+    runs: host
     diag: bare
     red: true
     red-proof:
@@ -4172,7 +4172,7 @@ patches:
     note: Host RED->GREEN contract that guarded fd dup, dup2, and fcntl return EBADF instead of aborting or reaching Linux syscall fallback.
   - name: fd_guard_ebadf_guest
     kind: guest
-    env: darling
+    runs: guest
     diag: guarded
     runner: guest-c-fixture
     repo: darling-workspace
@@ -4204,7 +4204,7 @@ patches:
   - name: abort_with_payload_self_signal_contract
     kind: contract
     coverage-tier: compile
-    env: host
+    runs: host
     diag: bare
     red: true
     red-proof:
@@ -4257,7 +4257,7 @@ patches:
     note: Compiles real sys_abort_with_payload and verifies it re-raises with tgkill(self pid, self tid, SIGABRT) instead of sys_kill(0, SIGABRT) process-group broadcast.
   - name: abort_with_payload_no_group_broadcast_guest
     kind: guest
-    env: darling
+    runs: guest
     diag: guarded
     runner: guest-c-fixture
     script: darling/src/libsystem_kernel/tests/abort_with_payload_no_group_broadcast.c
@@ -4287,7 +4287,7 @@ patches:
   tests:
   - name: progress_classifier
     kind: contract
-    env: host
+    runs: host
     diag: bare
     red: true
     red-proof:
@@ -4309,7 +4309,7 @@ patches:
   tests:
   - name: thread_create_checkin_wait
     kind: contract
-    env: host
+    runs: host
     diag: bare
     red: true
     red-proof:
@@ -4340,7 +4340,7 @@ patches:
   tests:
   - name: server_inline_fastpath
     kind: contract
-    env: host
+    runs: host
     diag: bare
     red: true
     red-proof:
@@ -4371,7 +4371,7 @@ patches:
   tests:
   - name: inline_suspend_rwlock_deadlock
     kind: contract
-    env: host
+    runs: host
     diag: bare
     red: true
     red-proof:
@@ -4384,7 +4384,7 @@ patches:
   - name: checkin_exec_rwlock_runtime_trace
     kind: guest
     coverage-tier: runtime
-    env: darling
+    runs: guest
     diag: guarded
     red: true
     red-proof:
@@ -4449,7 +4449,7 @@ patches:
   tests:
   - name: mldr_recv_adaptive_spin
     kind: contract
-    env: host
+    runs: host
     diag: bare
     red: true
     red-proof:
@@ -4481,7 +4481,7 @@ patches:
   - name: per_call_metrics_contract
     kind: contract
     coverage-tier: compile
-    env: host
+    runs: host
     diag: bare
     red: true
     red-proof:
@@ -4566,7 +4566,7 @@ patches:
   tests:
   - name: no_reply_rpc_generator_contract
     kind: contract
-    env: host
+    runs: host
     diag: bare
     red: true
     red-proof:
@@ -4597,7 +4597,7 @@ patches:
   tests:
   - name: rpc_sleep_account_generator_contract
     kind: contract
-    env: host
+    runs: host
     diag: bare
     red: true
     red-proof:
@@ -4629,7 +4629,7 @@ patches:
   - name: cached_self_ports
     kind: unit
     coverage-tier: compile
-    env: host
+    runs: host
     diag: bare
     red: true
     red-proof:
@@ -4663,7 +4663,7 @@ patches:
   - name: guest_per_callnum_sleep_account_contract
     kind: contract
     coverage-tier: compile
-    env: host
+    runs: host
     diag: bare
     red: true
     red-proof:
@@ -4708,7 +4708,7 @@ patches:
   - name: guest_per_callnum_sleep_account_off_contract
     kind: contract
     coverage-tier: compile
-    env: host
+    runs: host
     diag: bare
     red: true
     red-proof:
@@ -4751,7 +4751,7 @@ patches:
   - name: hotpath_kdebug_default_contract
     kind: contract
     coverage-tier: compile
-    env: host
+    runs: host
     diag: bare
     red: true
     red-proof:
@@ -4772,7 +4772,7 @@ patches:
   - name: hotpath_kdebug_debug_contract
     kind: contract
     coverage-tier: compile
-    env: host
+    runs: host
     diag: bare
     red: true
     red-proof:
@@ -4793,7 +4793,7 @@ patches:
   - name: hotpath_kprintf_execve_object_contract
     kind: contract
     coverage-tier: compile
-    env: host
+    runs: host
     diag: bare
     red: true
     red-proof:
@@ -4817,7 +4817,7 @@ patches:
   - name: hotpath_kprintf_filio_object_contract
     kind: contract
     coverage-tier: compile
-    env: host
+    runs: host
     diag: bare
     red: true
     red-proof:
@@ -4860,7 +4860,7 @@ patches:
   - name: dylib_recv_adaptive_spin_enabled_contract
     kind: contract
     coverage-tier: compile
-    env: host
+    runs: host
     diag: bare
     red: true
     red-proof:
@@ -4887,7 +4887,7 @@ patches:
   - name: dylib_recv_adaptive_spin_disabled_contract
     kind: contract
     coverage-tier: compile
-    env: host
+    runs: host
     diag: bare
     source-env: XNU_SRC_ROOT
     runner: c-fixture
@@ -4929,7 +4929,7 @@ patches:
   tests:
   - name: checkin_retask_current_thread_uaf
     kind: contract
-    env: host
+    runs: host
     diag: bare
     red: true
     red-proof:
@@ -4942,7 +4942,7 @@ patches:
   - name: checkin_retask_current_thread_runtime_trace
     kind: guest
     coverage-tier: runtime
-    env: darling
+    runs: guest
     diag: guarded
     red: true
     red-proof:
@@ -5012,7 +5012,7 @@ patches:
   tests:
   - name: pot_lifetime_binding
     kind: contract
-    env: host
+    runs: host
     diag: bare
     red: true
     red-proof:
@@ -5025,7 +5025,7 @@ patches:
   - name: pot_lifetime_binding_runtime
     kind: guest
     coverage-tier: runtime
-    env: darling
+    runs: guest
     diag: guarded
     red: true
     red-proof:
@@ -5065,7 +5065,7 @@ patches:
   - name: dserver_test_diagnostics_trace
     kind: guest
     coverage-tier: runtime
-    env: darling
+    runs: guest
     diag: guarded
     runner: script
     repo: darling-workspace
@@ -5100,7 +5100,7 @@ patches:
   - name: eunion_activation_guest_smoke
     kind: guest
     coverage-tier: runtime
-    env: darling
+    runs: guest
     diag: bare
     runner: guest-c-fixture
     repo: darling-workspace

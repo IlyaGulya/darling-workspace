@@ -13,17 +13,12 @@ profile = {
         "guest-runtime": {
             "kind": "guest",
             "coverage-tier": "runtime",
-            "env": "darling",
+            "runs": "guest",
             "diag": "bare",
             "runner": "guest-c-fixture",
             "repo": "darling-workspace",
-            "requires": ["darling-prefix"],
             "compile-flags": ["-std=gnu11", "-Wall", "-Wextra", "-Werror"],
-            "red": True,
-            "red-proof": {
-                "mode": "guest-runtime-deploy",
-                "bad-profile": "current-minus-patch",
-            },
+            "red-proof": "runtime",
         },
         "guest-runtime-guarded": {
             "extends": "guest-runtime",
@@ -42,6 +37,53 @@ profile = {
             "deploy": ["usr/lib/dyld"],
         },
     },
+    "resource-profiles": {
+        "dcc-smoke-cache": {
+            "kind": "dcc-cache",
+            "source-module": "darling/src/external/darlingserver",
+            "source-ref": "HEAD",
+            "tools-dir": "tools/closure-cache",
+            "builder": "dcc5-builder.c",
+            "closure-list": "smoke2-list.txt",
+            "install-root": "guest-visible",
+            "env": "DARLING_DYLD_DCC2_PATH",
+            "enable-env": "DARLING_DYLD_DCC2",
+        },
+        "guest-trace": {
+            "kind": "host-trace-files",
+            "oracle": True,
+            "files": [
+                {
+                    "env": "WEST_TRACE",
+                    "prefix-relative-path": "private/var/tmp/trace.log",
+                    "contains": ["TRACE_OK"],
+                }
+            ],
+        },
+        "rpc-stats": {
+            "kind": "host-stat-deltas",
+            "fields": [{"path": "rpc.calls", "min-delta": 1}],
+        },
+    },
+    "fixture-profiles": {
+        "eunion-overlay": {
+            "kind": "eunion-overlay",
+            "template-files": [
+                {
+                    "guest-path": "/private/var/tmp/lower.txt",
+                    "contents": "LOWER\n",
+                }
+            ],
+            "upper-files": [
+                {
+                    "guest-path": "/private/var/tmp/upper.txt",
+                    "contents": "UPPER\n",
+                }
+            ],
+            "cleanup-dirs": ["/private/var/tmp/eunion-contract"],
+            "verify-template-files-after": True,
+        },
+    },
     "patches": [
         {
             "path": "xnu/compact.patch",
@@ -53,10 +95,20 @@ profile = {
                     "script": "tests/compact_guest.c",
                     "ok-marker": "COMPACT_OK",
                     "artifacts": ["xnu-kernel"],
+                    "resources": ["guest-trace", "rpc-stats"],
+                    "fixtures": ["eunion-overlay"],
                     "timeout-seconds": 45,
                     "red-proof": {
                         "current-minus-skip-patches": ["xnu/downstream.patch"],
                     },
+                },
+                {
+                    "ctest": "bead:dar-q95.6",
+                    "runs": "host",
+                    "red-proof": "source",
+                    "build-target": "darling_ec_tls_regress",
+                    "runner": "darling-cmake-target-fixture",
+                    "name": "ctest_alias",
                 },
                 {
                     "name": "verbose_host",
@@ -80,7 +132,7 @@ assert compact["env"] == "darling", compact
 assert compact["diag"] == "guarded", compact
 assert compact["runner"] == "guest-c-fixture", compact
 assert compact["repo"] == "darling-workspace", compact
-assert compact["requires"] == ["darling-prefix"], compact
+assert compact["requires"] == ["darling-prefix", "darling-eunion-prefix"], compact
 assert compact["compile-flags"] == ["-std=gnu11", "-Wall", "-Wextra", "-Werror"], compact
 assert compact["red"] is True, compact
 assert compact["script"] == "tests/compact_guest.c", compact
@@ -96,10 +148,43 @@ assert compact["red-proof"]["runtime-artifacts"] == [
         "deploy": ["usr/lib/system/libsystem_kernel.dylib"],
     }
 ], compact
-assert "use" not in compact and "extends" not in compact and "artifacts" not in compact, compact
+assert compact["host-trace-oracle"] is True, compact
+assert compact["host-trace-files"] == [
+    {
+        "env": "WEST_TRACE",
+        "prefix-relative-path": "private/var/tmp/trace.log",
+        "contains": ["TRACE_OK"],
+    }
+], compact
+assert compact["host-stat-deltas"] == [{"path": "rpc.calls", "min-delta": 1}], compact
+assert compact["eunion-template-files"] == [
+    {"guest-path": "/private/var/tmp/lower.txt", "contents": "LOWER\n"}
+], compact
+assert compact["eunion-upper-files"] == [
+    {"guest-path": "/private/var/tmp/upper.txt", "contents": "UPPER\n"}
+], compact
+assert compact["eunion-cleanup-dirs"] == ["/private/var/tmp/eunion-contract"], compact
+assert compact["eunion-verify-template-files-after"] is True, compact
+assert "darling-eunion-prefix" in compact["requires"], compact
+assert (
+    "use" not in compact
+    and "extends" not in compact
+    and "artifacts" not in compact
+    and "resources" not in compact
+    and "fixtures" not in compact
+    and "runs" not in compact
+)
 
-verbose = tests[1]
-assert verbose == profile["patches"][0]["tests"][1], verbose
+ctest_alias = tests[1]
+assert ctest_alias["ctest-label"] == "bead:dar-q95.6", ctest_alias
+assert ctest_alias["env"] == "host", ctest_alias
+assert ctest_alias["red"] is True, ctest_alias
+assert ctest_alias["red-proof"] == {"mode": "source-base"}, ctest_alias
+assert ctest_alias["target"] == "darling_ec_tls_regress", ctest_alias
+assert "ctest" not in ctest_alias and "build-target" not in ctest_alias
+
+verbose = tests[2]
+assert verbose == profile["patches"][0]["tests"][2], verbose
 
 try:
     normalize_test_profile(
@@ -118,5 +203,22 @@ except ManifestError as error:
     assert "unknown artifact profile 'missing'" in str(error), error
 else:
     raise AssertionError("missing artifact profile unexpectedly passed")
+
+try:
+    normalize_test_profile(
+        {
+            "patches": [
+                {
+                    "path": "bad.patch",
+                    "module": "darling",
+                    "tests": [{"name": "bad", "needs": ["xnu-kernel"]}],
+                }
+            ],
+        }
+    )
+except ManifestError as error:
+    assert "needs is not part of the compact test DSL" in str(error), error
+else:
+    raise AssertionError("needs unexpectedly passed")
 
 print("PASS west-test-manifest-contract")
