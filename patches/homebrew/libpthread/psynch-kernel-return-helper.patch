@@ -345,37 +345,38 @@ index e64e932367083086e66892554f0ff7a96fc959c3..3df19a44a83f45ed8458b6efd8d0db9c
  }
 -
 
-From 53a469bff4023acb2eee897bf194bd7bcf0a4f99 Mon Sep 17 00:00:00 2001
+From 22aed109147ee29fec3cddf469f2ad1408de27f7 Mon Sep 17 00:00:00 2001
 From: Ilya Gulya <ilya@gulya.me>
 Date: Tue, 7 Jul 2026 16:52:46 +0000
 Subject: [PATCH] libpthread: split psynch return decoding contract
 
 ---
- src/inline_internal.h                      |  48 +++-
- src/pthread_cond.c                         |  14 +-
- src/pthread_mutex.c                        |  28 +-
- src/pthread_rwlock.c                       |   8 +-
+ src/inline_internal.h                      |  23 --
+ src/psynch_kernel_return.h                 |  58 ++++
+ src/pthread_cond.c                         |  15 +-
+ src/pthread_mutex.c                        |  29 +-
+ src/pthread_rwlock.c                       |   9 +-
  tests/guest-verdict-test-lib.sh            |  78 ++++++
  tests/psynch_kernel_return_contract.c      | 301 +++++++++++++++++++++
  tests/run-psynch-kernel-return-contract.sh |  17 ++
- 7 files changed, 458 insertions(+), 36 deletions(-)
+ 8 files changed, 486 insertions(+), 44 deletions(-)
+ create mode 100644 src/psynch_kernel_return.h
  create mode 100644 tests/guest-verdict-test-lib.sh
  create mode 100644 tests/psynch_kernel_return_contract.c
  create mode 100755 tests/run-psynch-kernel-return-contract.sh
 
 diff --git a/src/inline_internal.h b/src/inline_internal.h
-index 6f179f05856eb0ba6c02c2c6d69787a1eb60a184..0d52533dd24052cb9c0015e03498d32624294226 100644
+index 6f179f05856eb0ba6c02c2c6d69787a1eb60a184..bc6d65add6ca74028ca70bb461d92099fb315609 100644
 --- a/src/inline_internal.h
 +++ b/src/inline_internal.h
-@@ -161,26 +161,44 @@ _pthread_lock_unlock(os_unfair_lock_t lock, mach_port_t mts)
+@@ -160,29 +160,6 @@ _pthread_lock_unlock(os_unfair_lock_t lock, mach_port_t mts)
+ #undef  errno
  #define errno          (*_pthread_errno_address_direct())
  
- OS_ALWAYS_INLINE
+-OS_ALWAYS_INLINE
 -static inline int
 -_pthread_psynch_kernel_return_error(uint32_t updateval, uint32_t *status)
-+static inline uint32_t
-+_pthread_psynch_kernel_error_base(uint32_t err)
- {
+-{
 -	if (updateval == (uint32_t)-1) {
 -		return errno;
 -	}
@@ -386,9 +387,40 @@ index 6f179f05856eb0ba6c02c2c6d69787a1eb60a184..0d52533dd24052cb9c0015e03498d326
 -		*status = updateval;
 -	}
 -	return 0;
-+	return err & 0xff;
- }
+-}
+-
+-OS_ALWAYS_INLINE
+-static inline int
+-_pthread_psynch_kernel_error_code(int err)
+-{
+-	return err & 0xff;
+-}
+-
+ #define _pthread_tsd_slot(th, name) \
+ 		(*(_PTHREAD_TSD_SLOT_##name##_TYPE *)(uintptr_t *)&(th)->tsd[_PTHREAD_TSD_SLOT_##name])
  
+diff --git a/src/psynch_kernel_return.h b/src/psynch_kernel_return.h
+new file mode 100644
+index 0000000000000000000000000000000000000000..bb632a1a6af8ff4d34888bdda42b82ae01bd7029
+--- /dev/null
++++ b/src/psynch_kernel_return.h
+@@ -0,0 +1,58 @@
++/*
++ * Copyright (c) 2026 Darling project contributors.
++ *
++ * Internal helpers for Darling's psynch wait return contract.
++ */
++
++#ifndef _PTHREAD_PSYNCH_KERNEL_RETURN_H
++#define _PTHREAD_PSYNCH_KERNEL_RETURN_H
++
++#include <stdint.h>
++
++/*
++ * Darling routes emulated psynch wait failures through the syscall/cerror
++ * boundary. Condvar waits may carry psynch status bits above the low errno
++ * byte; pthread policy code must see both the base errno and the status bits.
++ */
 +static const uint32_t _PTHREAD_PSYNCH_STATUS_MASK = ~0xffu;
 +
 +typedef struct {
@@ -398,13 +430,17 @@ index 6f179f05856eb0ba6c02c2c6d69787a1eb60a184..0d52533dd24052cb9c0015e03498d326
 +	uint32_t updateval;
 +} _pthread_psynch_kernel_return_t;
 +
- OS_ALWAYS_INLINE
--static inline int
--_pthread_psynch_kernel_error_code(int err)
++OS_ALWAYS_INLINE
++static inline uint32_t
++_pthread_psynch_kernel_error_base(uint32_t err)
++{
++	return err & 0xff;
++}
++
++OS_ALWAYS_INLINE
 +static inline _pthread_psynch_kernel_return_t
 +_pthread_psynch_kernel_return_decode(uint32_t updateval)
- {
--	return err & 0xff;
++{
 +	_pthread_psynch_kernel_return_t decoded = {
 +		.raw_error = 0,
 +		.base_error = 0,
@@ -424,14 +460,22 @@ index 6f179f05856eb0ba6c02c2c6d69787a1eb60a184..0d52533dd24052cb9c0015e03498d326
 +	decoded.base_error = _pthread_psynch_kernel_error_base(decoded.raw_error);
 +	decoded.status_bits = decoded.raw_error & _PTHREAD_PSYNCH_STATUS_MASK;
 +	return decoded;
- }
- 
- #define _pthread_tsd_slot(th, name) \
++}
++
++#endif /* _PTHREAD_PSYNCH_KERNEL_RETURN_H */
 diff --git a/src/pthread_cond.c b/src/pthread_cond.c
-index c018fc65193db905f33d79422af45b402acb7626..09272bec4b70e5afc5dba90c53ddd1e6a430c3de 100644
+index c018fc65193db905f33d79422af45b402acb7626..76c222e452e37f7ebc0aeca08b92c0576000ac44 100644
 --- a/src/pthread_cond.c
 +++ b/src/pthread_cond.c
-@@ -633,10 +633,10 @@ _pthread_psynch_cond_wait(pthread_cond_t *cond,
+@@ -50,6 +50,7 @@
+ 
+ #include "resolver.h"
+ #include "internal.h"
++#include "psynch_kernel_return.h"
+ #include <sys/time.h>	      /* For struct timespec and getclock(). */
+ 
+ #ifdef PLOCKSTAT
+@@ -633,10 +634,10 @@ _pthread_psynch_cond_wait(pthread_cond_t *cond,
  		updateval = __psynch_cvwait(cond, cvlsgen, ucntval, (pthread_mutex_t *)npmtx, mugen, flags, (int64_t)(then->tv_sec), (int32_t)(then->tv_nsec));
  	}
  
@@ -446,7 +490,7 @@ index c018fc65193db905f33d79422af45b402acb7626..09272bec4b70e5afc5dba90c53ddd1e6
  		case ETIMEDOUT:
  			res = ETIMEDOUT;
  			break;
-@@ -650,12 +650,12 @@ _pthread_psynch_cond_wait(pthread_cond_t *cond,
+@@ -650,12 +651,12 @@ _pthread_psynch_cond_wait(pthread_cond_t *cond,
  		}
  
  		// add unlock ref to show one less waiter
@@ -463,10 +507,18 @@ index c018fc65193db905f33d79422af45b402acb7626..09272bec4b70e5afc5dba90c53ddd1e6
  
  	pthread_mutex_lock(mutex);
 diff --git a/src/pthread_mutex.c b/src/pthread_mutex.c
-index e1ee4a18b6327db18221b1391e9e101dafc35c23..e2420e237aa0a8e81f8e55869a6c6f78ddbbbb34 100644
+index e1ee4a18b6327db18221b1391e9e101dafc35c23..f68fe6f44b2be58695add46da094ba3408328b39 100644
 --- a/src/pthread_mutex.c
 +++ b/src/pthread_mutex.c
-@@ -766,16 +766,16 @@ _pthread_mutex_fairshare_lock_wait(pthread_mutex_t *mutex, mutex_seq newseq,
+@@ -52,6 +52,7 @@
+ 
+ #include "resolver.h"
+ #include "internal.h"
++#include "psynch_kernel_return.h"
+ #include "kern/kern_trace.h"
+ 
+ #ifndef BUILDING_VARIANT /* [ */
+@@ -766,16 +767,16 @@ _pthread_mutex_fairshare_lock_wait(pthread_mutex_t *mutex, mutex_seq newseq,
  	PLOCKSTAT_MUTEX_BLOCK((pthread_mutex_t *)mutex);
  	do {
  		uint32_t updateval;
@@ -488,7 +540,7 @@ index e1ee4a18b6327db18221b1391e9e101dafc35c23..e2420e237aa0a8e81f8e55869a6c6f78
  
  		// returns 0 on succesful update; in firstfit it may fail with 1
  	} while (_pthread_mutex_fairshare_lock_updatebits(mutex, selfid) == 1);
-@@ -941,7 +941,9 @@ _pthread_mutex_fairshare_unlock_drop(pthread_mutex_t *mutex, mutex_seq newseq,
+@@ -941,7 +942,9 @@ _pthread_mutex_fairshare_unlock_drop(pthread_mutex_t *mutex, mutex_seq newseq,
  
  	PTHREAD_TRACE(psynch_mutex_uunlock | DBG_FUNC_END, mutex, updateval, 0, 0);
  
@@ -499,7 +551,7 @@ index e1ee4a18b6327db18221b1391e9e101dafc35c23..e2420e237aa0a8e81f8e55869a6c6f78
  	if (res == EINTR) {
  		res = 0;
  	}
-@@ -1313,7 +1315,9 @@ _pthread_mutex_firstfit_wake(pthread_mutex_t *mutex, mutex_seq newseq,
+@@ -1313,7 +1316,9 @@ _pthread_mutex_firstfit_wake(pthread_mutex_t *mutex, mutex_seq newseq,
  	int res = __psynch_mutexdrop(mutex, newseq.lgenval, newseq.ugenval, 0,
  			flags);
  
@@ -510,7 +562,7 @@ index e1ee4a18b6327db18221b1391e9e101dafc35c23..e2420e237aa0a8e81f8e55869a6c6f78
  	if (res == EINTR) {
  		res = 0;
  	}
-@@ -1401,7 +1405,7 @@ _pthread_mutex_firstfit_lock_wait(pthread_mutex_t *mutex, mutex_seq newseq,
+@@ -1401,7 +1406,7 @@ _pthread_mutex_firstfit_lock_wait(pthread_mutex_t *mutex, mutex_seq newseq,
  	PLOCKSTAT_MUTEX_BLOCK((pthread_mutex_t *)mutex);
  	do {
  		uint32_t uval;
@@ -519,7 +571,7 @@ index e1ee4a18b6327db18221b1391e9e101dafc35c23..e2420e237aa0a8e81f8e55869a6c6f78
  		do {
  			PTHREAD_TRACE(psynch_ffmutex_wait | DBG_FUNC_START, mutex,
  					newseq.lgenval, newseq.ugenval, mutex->mtxopts.value);
-@@ -1410,11 +1414,11 @@ _pthread_mutex_firstfit_lock_wait(pthread_mutex_t *mutex, mutex_seq newseq,
+@@ -1410,11 +1415,11 @@ _pthread_mutex_firstfit_lock_wait(pthread_mutex_t *mutex, mutex_seq newseq,
  			PTHREAD_TRACE(psynch_ffmutex_wait | DBG_FUNC_END, mutex,
  					uval, 0, 0);
  			oldtid = os_atomic_load_wide(tidaddr, relaxed);
@@ -536,10 +588,18 @@ index e1ee4a18b6327db18221b1391e9e101dafc35c23..e2420e237aa0a8e81f8e55869a6c6f78
  	PLOCKSTAT_MUTEX_BLOCKED((pthread_mutex_t *)mutex, BLOCK_SUCCESS_PLOCKSTAT);
  
 diff --git a/src/pthread_rwlock.c b/src/pthread_rwlock.c
-index 3df19a44a83f45ed8458b6efd8d0db9c8379e9ca..67c3b3ec8ebb2882a383d37eda62a69466de2fea 100644
+index 3df19a44a83f45ed8458b6efd8d0db9c8379e9ca..895624ef8f89123c957b3f51462d5fe012ce328d 100644
 --- a/src/pthread_rwlock.c
 +++ b/src/pthread_rwlock.c
-@@ -642,7 +642,9 @@ _pthread_rwlock_lock_wait(pthread_rwlock_t *rwlock, bool readlock,
+@@ -57,6 +57,7 @@
+ 
+ #include "resolver.h"
+ #include "internal.h"
++#include "psynch_kernel_return.h"
+ 
+ #ifdef PLOCKSTAT
+ #include "plockstat.h"
+@@ -642,7 +643,9 @@ _pthread_rwlock_lock_wait(pthread_rwlock_t *rwlock, bool readlock,
  			updateval = __psynch_rw_wrlock(rwlock, newseq.lcntval,
  					newseq.ucntval, newseq.rw_seq, rwlock->rw_flags);
  		}
@@ -550,7 +610,7 @@ index 3df19a44a83f45ed8458b6efd8d0db9c8379e9ca..67c3b3ec8ebb2882a383d37eda62a694
  	} while (res == EINTR);
  
  	if (res == 0) {
-@@ -885,7 +887,9 @@ _pthread_rwlock_unlock_drop(pthread_rwlock_t *rwlock, rwlock_seq oldseq,
+@@ -885,7 +888,9 @@ _pthread_rwlock_unlock_drop(pthread_rwlock_t *rwlock, rwlock_seq oldseq,
  	do {
  		updateval = __psynch_rw_unlock(rwlock, oldseq.lcntval,
  				newseq.ucntval, newseq.rw_seq, rwlock->rw_flags);
