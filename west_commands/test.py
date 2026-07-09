@@ -2171,6 +2171,8 @@ fi
             return merged
         merged["DPREFIX"] = prefix
         merged.update(getattr(self, "_prefix_env", {}))
+        if "darling-eunion-prefix" in resources:
+            merged["DARLING_EUNION"] = "1"
         launcher = self._resolve_darling_launcher(prefix)
         if launcher:
             merged["DARLING"] = launcher
@@ -2282,6 +2284,9 @@ fi
                 marker.mkdir(parents=True, mode=0o700)
                 created_marker = True
 
+            self._shutdown_runtime_prefix(prefix)
+            self._boot_eunion_runtime_prefix(invocation, env, prefix)
+
             for index, spec in enumerate(invocation.get("eunion_template_files", [])):
                 if not isinstance(spec, dict):
                     self.die(f"{invocation['name']}: eunion-template-files entries must be mappings")
@@ -2326,15 +2331,50 @@ fi
                 created_upper_files.append(upper_path)
             self._verify_eunion_runtime_prefix(invocation, env, prefix, probe_dirs)
         except BaseException:
+            self._shutdown_runtime_prefix(prefix)
             cleanup_fixture_state()
             raise
 
-        self._shutdown_runtime_prefix(prefix)
         try:
             yield
         finally:
             self._shutdown_runtime_prefix(prefix)
             cleanup_fixture_state()
+
+    def _boot_eunion_runtime_prefix(self, invocation, env, prefix: Path) -> None:
+        launcher = (
+            (env or {}).get("DARLING_LAUNCHER")
+            or (env or {}).get("DARLING")
+            or self._resolve_darling_launcher(str(prefix))
+        )
+        if not launcher:
+            self.die(f"{invocation['name']}: darling-eunion-prefix needs a Darling launcher")
+
+        child_env = dict(env or os.environ.copy())
+        child_env["DPREFIX"] = str(prefix)
+        result = subprocess.run(
+            [
+                "timeout",
+                "--kill-after=5",
+                "15",
+                str(launcher),
+                "shell",
+                "/bin/bash",
+                "--login",
+                "-c",
+                ":",
+            ],
+            env=child_env,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            text=True,
+            check=False,
+        )
+        if result.returncode != 0:
+            self.die(
+                f"{invocation['name']}: failed to boot Darling E-UNION prefix "
+                f"before fixture setup (rc={result.returncode})"
+            )
 
     def _verify_eunion_runtime_prefix(self, invocation, env, prefix: Path, probe_dirs) -> None:
         launcher = (
@@ -2357,7 +2397,6 @@ fi
         (upper_dir / "upper.txt").write_text("UPPER\n")
         (upper_dir / "shadow.txt").write_text("UPPER_SHADOW\n")
 
-        self._shutdown_runtime_prefix(prefix)
         child_env = dict(env or os.environ.copy())
         child_env["DPREFIX"] = str(prefix)
         script = (
@@ -2368,27 +2407,24 @@ fi
         )
         output_path = lower_dir / "probe-output.txt"
         with output_path.open("w+") as output:
-            try:
-                result = subprocess.run(
-                    [
-                        "timeout",
-                        "--kill-after=5",
-                        "15",
-                        str(launcher),
-                        "shell",
-                        "/bin/bash",
-                        "--login",
-                        "-c",
-                        script,
-                    ],
-                    env=child_env,
-                    stdout=output,
-                    stderr=subprocess.STDOUT,
-                    text=True,
-                    check=False,
-                )
-            finally:
-                self._shutdown_runtime_prefix(prefix)
+            result = subprocess.run(
+                [
+                    "timeout",
+                    "--kill-after=5",
+                    "15",
+                    str(launcher),
+                    "shell",
+                    "/bin/bash",
+                    "--login",
+                    "-c",
+                    script,
+                ],
+                env=child_env,
+                stdout=output,
+                stderr=subprocess.STDOUT,
+                text=True,
+                check=False,
+            )
         if result.returncode != 0:
             output = output_path.read_text(errors="replace").strip()
             if output:
