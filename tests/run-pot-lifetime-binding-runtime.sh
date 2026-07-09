@@ -11,8 +11,10 @@ fi
 guest_seconds=60
 host_pid=
 server_pid=
+guest_pids=()
 
 cleanup() {
+	kill_guest_pids || true
 	if [ -n "${server_pid:-}" ] && kill -0 "$server_pid" 2>/dev/null; then
 		kill -KILL "$server_pid" 2>/dev/null || true
 	fi
@@ -34,6 +36,28 @@ descendants_of() {
 	for child in $(children_of "$parent"); do
 		printf '%s\n' "$child"
 		descendants_of "$child"
+	done
+}
+
+pid_is_gone() {
+	local pid="$1"
+	local stat
+	stat="$(ps -p "$pid" -o stat= 2>/dev/null | awk '{ print $1 }')" || return 0
+	[ -z "$stat" ] || [[ "$stat" == Z* ]]
+}
+
+kill_guest_pids() {
+	local pid
+	local index
+	if [ "${#guest_pids[@]}" -eq 0 ]; then
+		return 0
+	fi
+	for ((index = ${#guest_pids[@]} - 1; index >= 0; index--)); do
+		pid="${guest_pids[$index]}"
+		kill -KILL "$pid" 2>/dev/null || true
+	done
+	for pid in "${guest_pids[@]}"; do
+		wait_gone "$pid" || true
 	done
 }
 
@@ -69,7 +93,7 @@ wait_gone() {
 	local pid="$1"
 	local deadline=$((SECONDS + 10))
 	while [ "$SECONDS" -lt "$deadline" ]; do
-		if ! kill -0 "$pid" 2>/dev/null; then
+		if pid_is_gone "$pid"; then
 			return 0
 		fi
 		sleep 0.1
@@ -96,13 +120,14 @@ wait_gone "$server_pid" || {
 
 failed=0
 for pid in "${guest_pids[@]}"; do
-	if kill -0 "$pid" 2>/dev/null; then
+	if ! pid_is_gone "$pid"; then
 		echo "guest descendant survived darlingserver death: $pid $(ps -p "$pid" -o args=)" >&2
 		kill -KILL "$pid" 2>/dev/null || true
 		failed=1
 	fi
 done
 if [ "$failed" -ne 0 ]; then
+	kill_guest_pids || true
 	exit 1
 fi
 
