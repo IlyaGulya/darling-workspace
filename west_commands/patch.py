@@ -561,6 +561,32 @@ class DarlingPatch(WestCommand):
                             errors.append(
                                 f"tests[{index}].eunion-template-files[{file_index}] contents must be a string"
                             )
+            if test.get("eunion-upper-files") is not None:
+                files = test.get("eunion-upper-files")
+                if "darling-eunion-prefix" not in required_resources:
+                    errors.append(f"tests[{index}] eunion-upper-files requires darling-eunion-prefix")
+                elif runner not in {"guest-c-fixture", "script"}:
+                    errors.append(f"tests[{index}] eunion-upper-files requires runner: guest-c-fixture or script")
+                elif not isinstance(files, list) or not files:
+                    errors.append(f"tests[{index}] eunion-upper-files must be a non-empty list")
+                elif not all(isinstance(item, dict) for item in files):
+                    errors.append(f"tests[{index}] eunion-upper-files entries must be mappings")
+                else:
+                    for file_index, item in enumerate(files):
+                        guest_path = item.get("guest-path")
+                        contents = item.get("contents", "")
+                        if (
+                            not isinstance(guest_path, str)
+                            or not guest_path.startswith("/")
+                            or ".." in Path(guest_path).parts
+                        ):
+                            errors.append(
+                                f"tests[{index}].eunion-upper-files[{file_index}] guest-path must be absolute without '..'"
+                            )
+                        if contents is not None and not isinstance(contents, str):
+                            errors.append(
+                                f"tests[{index}].eunion-upper-files[{file_index}] contents must be a string"
+                            )
             if test.get("requires-profile") is not None and not isinstance(
                 test.get("requires-profile"), str
             ):

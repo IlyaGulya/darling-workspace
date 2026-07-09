@@ -1071,6 +1071,7 @@ class DarlingTest(WestCommand):
                 "host_trace_files": list(test.get("host-trace-files", [])),
                 "host_temp_files": list(test.get("host-temp-files", [])),
                 "eunion_template_files": list(test.get("eunion-template-files", [])),
+                "eunion_upper_files": list(test.get("eunion-upper-files", [])),
                 "host_trace_oracle": host_trace_oracle,
                 "source_env": source_env,
                 "source_module": source_module,
@@ -2238,53 +2239,177 @@ fi
         marker = prefix / ".union-work"
         created_marker = False
         created_template_files: list[Path] = []
+        created_template_dirs: list[Path] = []
+        created_upper_files: list[Path] = []
+        created_upper_dirs: list[Path] = []
+        probe_dirs: list[tuple[Path, Path]] = []
         blocked_upper_files: list[Path] = []
-        if marker.exists() and not marker.is_dir():
-            self.die(f"{invocation['name']}: E-UNION marker is not a directory: {marker}")
-        if not marker.exists():
-            marker.mkdir(parents=True, mode=0o700)
-            created_marker = True
 
-        for index, spec in enumerate(invocation.get("eunion_template_files", [])):
-            if not isinstance(spec, dict):
-                self.die(f"{invocation['name']}: eunion-template-files entries must be mappings")
-            guest_path = str(spec.get("guest-path", ""))
-            if not guest_path.startswith("/") or ".." in Path(guest_path).parts:
-                self.die(
-                    f"{invocation['name']}: eunion-template-files[{index}] needs "
-                    "an absolute guest-path without '..'"
+        def cleanup_fixture_state() -> None:
+            for path in reversed(created_upper_files):
+                try:
+                    path.unlink()
+                except FileNotFoundError:
+                    pass
+            for path in reversed(created_template_files):
+                try:
+                    path.unlink()
+                except FileNotFoundError:
+                    pass
+            for path in reversed(created_upper_dirs):
+                try:
+                    path.rmdir()
+                except OSError:
+                    pass
+            for path in reversed(created_template_dirs):
+                try:
+                    path.rmdir()
+                except OSError:
+                    pass
+            for upper_dir, lower_dir in reversed(probe_dirs):
+                shutil.rmtree(upper_dir, ignore_errors=True)
+                shutil.rmtree(lower_dir, ignore_errors=True)
+            if created_marker:
+                try:
+                    marker.rmdir()
+                except OSError:
+                    self.err(f"{invocation['name']}: preserving non-empty E-UNION marker {marker}")
+
+        try:
+            if marker.exists() and not marker.is_dir():
+                self.die(f"{invocation['name']}: E-UNION marker is not a directory: {marker}")
+            if not marker.exists():
+                marker.mkdir(parents=True, mode=0o700)
+                created_marker = True
+
+            for index, spec in enumerate(invocation.get("eunion_template_files", [])):
+                if not isinstance(spec, dict):
+                    self.die(f"{invocation['name']}: eunion-template-files entries must be mappings")
+                guest_path = str(spec.get("guest-path", ""))
+                if not guest_path.startswith("/") or ".." in Path(guest_path).parts:
+                    self.die(
+                        f"{invocation['name']}: eunion-template-files[{index}] needs "
+                        "an absolute guest-path without '..'"
+                    )
+                rel = Path(guest_path.lstrip("/"))
+                upper_path = prefix / rel
+                lower_path = prefix / "libexec/darling" / rel
+                if upper_path.exists():
+                    blocked_upper_files.append(upper_path)
+                    continue
+                created_template_dirs.extend(
+                    self._mkdirs_for_fixture(lower_path.parent, prefix / "libexec/darling")
                 )
-            rel = Path(guest_path.lstrip("/"))
-            upper_path = prefix / rel
-            lower_path = prefix / "libexec/darling" / rel
-            if upper_path.exists():
-                blocked_upper_files.append(upper_path)
-                continue
-            lower_path.parent.mkdir(parents=True, exist_ok=True)
-            if not lower_path.exists():
-                lower_path.write_text(str(spec.get("contents", "")))
-                created_template_files.append(lower_path)
-        if blocked_upper_files:
-            self.die(
-                f"{invocation['name']}: E-UNION lower fixture would be shadowed by "
-                f"upper file(s): {', '.join(str(path) for path in blocked_upper_files)}"
-            )
+                if not lower_path.exists():
+                    lower_path.write_text(str(spec.get("contents", "")))
+                    created_template_files.append(lower_path)
+            if blocked_upper_files:
+                self.die(
+                    f"{invocation['name']}: E-UNION lower fixture would be shadowed by "
+                    f"upper file(s): {', '.join(str(path) for path in blocked_upper_files)}"
+                )
+
+            for index, spec in enumerate(invocation.get("eunion_upper_files", [])):
+                if not isinstance(spec, dict):
+                    self.die(f"{invocation['name']}: eunion-upper-files entries must be mappings")
+                guest_path = str(spec.get("guest-path", ""))
+                if not guest_path.startswith("/") or ".." in Path(guest_path).parts:
+                    self.die(
+                        f"{invocation['name']}: eunion-upper-files[{index}] needs "
+                        "an absolute guest-path without '..'"
+                    )
+                upper_path = prefix / guest_path.lstrip("/")
+                if upper_path.exists():
+                    self.die(f"{invocation['name']}: E-UNION upper fixture already exists: {upper_path}")
+                created_upper_dirs.extend(self._mkdirs_for_fixture(upper_path.parent, prefix))
+                upper_path.write_text(str(spec.get("contents", "")))
+                created_upper_files.append(upper_path)
+            self._verify_eunion_runtime_prefix(invocation, env, prefix, probe_dirs)
+        except BaseException:
+            cleanup_fixture_state()
+            raise
 
         self._shutdown_runtime_prefix(prefix)
         try:
             yield
         finally:
             self._shutdown_runtime_prefix(prefix)
-            for path in reversed(created_template_files):
-                try:
-                    path.unlink()
-                except FileNotFoundError:
-                    pass
-            if created_marker:
-                try:
-                    marker.rmdir()
-                except OSError:
-                    self.err(f"{invocation['name']}: preserving non-empty E-UNION marker {marker}")
+            cleanup_fixture_state()
+
+    def _verify_eunion_runtime_prefix(self, invocation, env, prefix: Path, probe_dirs) -> None:
+        launcher = (
+            (env or {}).get("DARLING_LAUNCHER")
+            or (env or {}).get("DARLING")
+            or self._resolve_darling_launcher(str(prefix))
+        )
+        if not launcher:
+            self.die(f"{invocation['name']}: darling-eunion-prefix needs a Darling launcher")
+
+        name = f"west-eunion-probe-{os.getpid()}-{int(time.time() * 1000)}"
+        guest_dir = f"/private/var/tmp/{name}"
+        upper_dir = prefix / "private/var/tmp" / name
+        lower_dir = prefix / "libexec/darling/private/var/tmp" / name
+        upper_dir.mkdir(parents=True)
+        lower_dir.mkdir(parents=True)
+        probe_dirs.append((upper_dir, lower_dir))
+        (lower_dir / "lower.txt").write_text("LOWER\n")
+        (lower_dir / "shadow.txt").write_text("LOWER_SHADOW\n")
+        (upper_dir / "upper.txt").write_text("UPPER\n")
+        (upper_dir / "shadow.txt").write_text("UPPER_SHADOW\n")
+
+        self._shutdown_runtime_prefix(prefix)
+        child_env = dict(env or os.environ.copy())
+        child_env["DPREFIX"] = str(prefix)
+        script = (
+            "set -e; "
+            f"test \"$(cat {quote(guest_dir + '/lower.txt')})\" = LOWER; "
+            f"test \"$(cat {quote(guest_dir + '/upper.txt')})\" = UPPER; "
+            f"test \"$(cat {quote(guest_dir + '/shadow.txt')})\" = UPPER_SHADOW"
+        )
+        output_path = lower_dir / "probe-output.txt"
+        with output_path.open("w+") as output:
+            try:
+                result = subprocess.run(
+                    [
+                        "timeout",
+                        "--kill-after=5",
+                        "15",
+                        str(launcher),
+                        "shell",
+                        "/bin/bash",
+                        "--login",
+                        "-c",
+                        script,
+                    ],
+                    env=child_env,
+                    stdout=output,
+                    stderr=subprocess.STDOUT,
+                    text=True,
+                    check=False,
+                )
+            finally:
+                self._shutdown_runtime_prefix(prefix)
+        if result.returncode != 0:
+            output = output_path.read_text(errors="replace").strip()
+            if output:
+                self.err(output)
+            self.die(
+                f"{invocation['name']}: Darling prefix is not running as an "
+                "active E-UNION upper-over-template root; upper/lower probe failed"
+            )
+
+    def _mkdirs_for_fixture(self, target: Path, root: Path) -> list[Path]:
+        root = root.resolve()
+        to_create = []
+        current = target
+        while current != root and root in current.resolve().parents:
+            if current.exists():
+                break
+            to_create.append(current)
+            current = current.parent
+        for path in reversed(to_create):
+            path.mkdir()
+        return list(reversed(to_create))
 
     def _check_requires_profile(self, patch, invocation) -> None:
         required = invocation.get("requires_profile")
@@ -2661,13 +2786,17 @@ fi
             env = os.environ.copy()
             env["DPREFIX"] = str(prefix)
             env.update(getattr(self, "_prefix_env", {}))
-            subprocess.run(
-                [launcher, "shutdown"],
-                env=env,
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
-                check=False,
-            )
+            try:
+                subprocess.run(
+                    [launcher, "shutdown"],
+                    env=env,
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                    check=False,
+                    timeout=int(os.environ.get("WEST_TEST_SHUTDOWN_TIMEOUT_SECONDS", "15")),
+                )
+            except subprocess.TimeoutExpired:
+                self.err(f"Darling prefix shutdown timed out for {prefix}; forcing cleanup")
         self._kill_dserver_for_prefix(prefix)
         leftovers = self._prefix_process_snapshot(prefix)
         if leftovers:
