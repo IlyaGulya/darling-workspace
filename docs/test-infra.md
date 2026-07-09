@@ -68,6 +68,50 @@ and future destination, not a local blocker.
     note: Fails on the parent commit, passes with this patch.
 ```
 
+Profiles may also define compact defaults. `test-profiles` are reusable test
+defaults; `artifact-profiles` are reusable runtime deploy plans. A test can use
+one or more profiles with `use` or `extends`; later test fields override profile
+fields, nested mappings merge recursively, and lists are replaced unless a field
+documents special append behavior. `artifacts` expands into
+`red-proof.runtime-artifacts`.
+
+```yaml
+test-profiles:
+  guest-c-runtime-red:
+    kind: guest
+    coverage-tier: runtime
+    env: darling
+    diag: bare
+    runner: guest-c-fixture
+    repo: darling-workspace
+    requires: [darling-prefix]
+    compile-flags: [-std=gnu11, -Wall, -Wextra, -Werror]
+    red: true
+    red-proof:
+      mode: guest-runtime-deploy
+      bad-profile: current-minus-patch
+
+artifact-profiles:
+  xnu-kernel:
+    module: darling/src/external/xnu
+    build-targets: [system_kernel]
+    deploy: [usr/lib/system/libsystem_kernel.dylib]
+
+patches:
+- path: xnu/example-fix.patch
+  module: darling/src/external/xnu
+  tests:
+  - use: guest-c-runtime-red
+    name: example_guest
+    script: tests/example_guest.c
+    ok-marker: EXAMPLE_GUEST_OK
+    artifacts: xnu-kernel
+```
+
+The old verbose form remains valid during migration. New repetitive
+guest/runtime metadata should prefer compact profiles so the manifest describes
+what is unique about the test rather than restating runner boilerplate.
+
 `coverage-tier` classifies the strength of evidence independently from `kind`:
 
 - `runtime`: runs the real guest/runtime path (`env: darling`/`macos`, guest

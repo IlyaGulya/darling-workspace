@@ -137,6 +137,10 @@ refs, PR drafts, and agent handoff.
 - Darling guest tests should prefer `requires: [darling-prefix]` over
   `requires-env: [DPREFIX]`; let `west test --prefix/--prefix-profile` provide
   `DPREFIX`.
+- Repetitive patch test metadata should use compact `test-profiles` and
+  `artifact-profiles` in `patches.yml` instead of restating the same
+  guest/runtime boilerplate in every test. Keep per-test entries focused on the
+  unique script, oracle, resources, and exceptional overrides.
 - For `runner: guest-command-fixture`, use `expect.returncode: any` only when
   the Darling launcher cannot reliably propagate the guest program status for
   the behavior under test. Pair it with a concrete guest-visible
