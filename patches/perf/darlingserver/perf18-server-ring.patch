@@ -1,4 +1,4 @@
-From 4107e7fe3c54653d92b870d8c046c442f9333561 Mon Sep 17 00:00:00 2001
+From f2202ec251c3daa15066109312381bd6eacea8b0 Mon Sep 17 00:00:00 2001
 From: Ilya Gulya <ilya@gulya.me>
 Date: Mon, 29 Jun 2026 05:23:12 +0000
 Subject: [PATCH] perf#18 P2: shared-memory ring transport ABI + trust-boundary
@@ -37,8 +37,6 @@ runs both arms and exits 0 only if RED fails and GREEN passes.
 
 Not pushed. Prod darlingserver a13ec2ae untouched (this is source-only on a fix
 branch; nothing built or deployed).
-
-Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
 ---
  include/darlingserver/rpc-supplement.h | 150 +++++++++++++++++++++
  tests/ring_shm_validate_test.cpp       | 176 +++++++++++++++++++++++++
@@ -434,7 +432,7 @@ index 0000000000000000000000000000000000000000..a2908066eb2fb51fc49ead3dfc8158c2
 +echo
 +echo "ring_shm_validate gate: RED->GREEN OK"
 
-From 5e68f16d7677bcde5267e47d6d6a79878f442d19 Mon Sep 17 00:00:00 2001
+From ee742dffdfabe85e8b0ec7faecb066e6819f7a06 Mon Sep 17 00:00:00 2001
 From: Ilya Gulya <ilya@gulya.me>
 Date: Mon, 29 Jun 2026 05:38:02 +0000
 Subject: [PATCH] perf#18 P2: ring_attach negotiation RPC + server attach-check
@@ -479,8 +477,6 @@ ring types are gated out when off.
 
 Not pushed. Prod darlingserver a13ec2ae untouched (source-only on the fix branch;
 nothing built or deployed).
-
-Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
 ---
  include/darlingserver/rpc-supplement.h |  55 +++++++++
  scripts/generate-rpc-wrappers.py       |  27 +++++
@@ -595,10 +591,10 @@ index 23655d0fc5c355f051dbf4bc51b074ab2a6b458e..892fc60d26805186f25d51647655be5c
  
  ALLOWED_PRIVATE_TYPES = [
 diff --git a/src/call.cpp b/src/call.cpp
-index a9c211814d295254462dc4222ae26fd2045314a0..1c7d89a94b49fd8dec43e7504ab0e0123df6b7dd 100644
+index 9d525a42d14010ec55a1cdfa1bcf782e6f259948..87a8fc220a7bd209f47ee9e12755ba9e619d2532 100644
 --- a/src/call.cpp
 +++ b/src/call.cpp
-@@ -1294,4 +1294,60 @@ void DarlingServer::Call::DebugListMessages::processCall() {
+@@ -1335,4 +1335,60 @@ void DarlingServer::Call::DebugListMessages::processCall() {
  	_sendReply(code, portCount, pipes[0]);
  };
  
@@ -856,7 +852,7 @@ index a2908066eb2fb51fc49ead3dfc8158c282ee9fa5..d7db6700b18f48b2a8b748366481a4a6
 +echo
 +echo "all perf#18 ring gates: OK"
 
-From 6c5ca4f8992e0250965035d70663a40b37a12ba2 Mon Sep 17 00:00:00 2001
+From 100848764e8b4d3975b93cca22aa7eb80b1939e0 Mon Sep 17 00:00:00 2001
 From: Ilya Gulya <ilya@gulya.me>
 Date: Mon, 29 Jun 2026 05:53:47 +0000
 Subject: [PATCH] perf#18 P2: RingBuffer + epoll Monitor lifecycle on
@@ -902,8 +898,6 @@ source list. Behavior is unchanged when OFF (the handler replies "unsupported").
 
 Not pushed, not deployed. Prod darlingserver a13ec2ae untouched (the OFF build in
 ~/work/darling-build is 1b4893d3 and was NOT installed to the prefix).
-
-Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
 ---
  CMakeLists.txt                            |  13 +++
  internal-include/darlingserver/ring.hpp   |  66 ++++++++++++
@@ -916,7 +910,7 @@ Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
  create mode 100644 src/ring.cpp
 
 diff --git a/CMakeLists.txt b/CMakeLists.txt
-index cfde48f5b2456963241bac83e89f33fde58956c6..16feb15f95cc90d7c400e759b299f29ef06618bc 100644
+index d6e6b4bc5f78005df8c0b253ad24ccf2ec032e00..110931246d31d283695b1d0653402dfedf4f3adf 100644
 --- a/CMakeLists.txt
 +++ b/CMakeLists.txt
 @@ -58,6 +58,12 @@ endif()
@@ -932,15 +926,15 @@ index cfde48f5b2456963241bac83e89f33fde58956c6..16feb15f95cc90d7c400e759b299f29e
  if (DSERVER_SINGLE_THREADED)
  	add_compile_definitions(
  		DSERVER_SINGLE_THREADED=1
-@@ -119,6 +125,7 @@ add_executable(darlingserver
- 	src/async-writer.cpp
+@@ -120,6 +126,7 @@ add_executable(darlingserver
  	src/stack-pool.cpp
  	src/metrics.cpp
+ 	src/test-diagnostics.cpp
 +	src/ring.cpp
  )
  
  add_dependencies(darlingserver
-@@ -167,6 +174,12 @@ install(TARGETS darlingserver DESTINATION bin)
+@@ -168,6 +175,12 @@ install(TARGETS darlingserver DESTINATION bin)
  #	"${CMAKE_BINARY_DIR}/${DARLING_SDK_RELATIVE_PATH}/usr/include/darlingserver/rpc.h"
  #)
  
@@ -1061,10 +1055,10 @@ index 492e80e67a089a2bf29c0bf5114d9792092da4c6..c963b565ecedba712f1db306f3d1b6fa
  		 * @note Only to be used by direct XNU traps! (e.g. Mach IPC, psynch, etc.)
  		 */
 diff --git a/src/call.cpp b/src/call.cpp
-index 1c7d89a94b49fd8dec43e7504ab0e0123df6b7dd..5cfca8b58452af14d0ca0d515411f1ae9d641036 100644
+index 87a8fc220a7bd209f47ee9e12755ba9e619d2532..bb61587d78e7c44832c7bdba8fcafa6bd1ea25bd 100644
 --- a/src/call.cpp
 +++ b/src/call.cpp
-@@ -32,6 +32,12 @@
+@@ -35,6 +35,12 @@
  #include <darlingserver/kqchan.hpp>
  #include <system_error>
  #include <cerrno>
@@ -1077,7 +1071,7 @@ index 1c7d89a94b49fd8dec43e7504ab0e0123df6b7dd..5cfca8b58452af14d0ca0d515411f1ae
  
  static DarlingServer::Log callLog("calls");
  
-@@ -1303,9 +1309,11 @@ void DarlingServer::Call::DebugListMessages::processCall() {
+@@ -1344,9 +1350,11 @@ void DarlingServer::Call::DebugListMessages::processCall() {
  // guest pointer and trusting no guest-supplied length. reject_reason is 0 (dserver_ring_ok)
  // on accept or a dserver_ring_reject_t code; on any reject (or with the feature compiled
  // off) the guest stays on UDS forever, no error -- the ring is a fast path, never the only
@@ -1092,7 +1086,7 @@ index 1c7d89a94b49fd8dec43e7504ab0e0123df6b7dd..5cfca8b58452af14d0ca0d515411f1ae
  void DarlingServer::Call::RingAttach::processCall() {
  #ifdef DSERVER_RING_TRANSPORT
  	uint32_t rejectReason = dserver_ring_reject_total_size; // default-deny
-@@ -1316,22 +1324,19 @@ void DarlingServer::Call::RingAttach::processCall() {
+@@ -1357,22 +1365,19 @@ void DarlingServer::Call::RingAttach::processCall() {
  			// no fd arrived -- can't be a valid attach
  			rejectReason = dserver_ring_reject_total_size;
  		} else {
@@ -1123,7 +1117,7 @@ index 1c7d89a94b49fd8dec43e7504ab0e0123df6b7dd..5cfca8b58452af14d0ca0d515411f1ae
  					<< callLog.endLog;
  			} else {
  				callLog.info() << "ring_attach rejected for TID " << thread->nsid()
-@@ -1351,3 +1356,33 @@ void DarlingServer::Call::RingAttach::processCall() {
+@@ -1392,3 +1397,33 @@ void DarlingServer::Call::RingAttach::processCall() {
  };
  
  DSERVER_CLASS_SOURCE_DEFS;
@@ -1286,13 +1280,13 @@ index 0000000000000000000000000000000000000000..018d5ec708624bd790dbe22980b26458
 +
 +#endif // DSERVER_RING_TRANSPORT
 diff --git a/src/thread.cpp b/src/thread.cpp
-index dfd0ae6b3c21e6e989b2b7a40788317a3b7482c4..bbef648289876756cdd60fca73c023f147543ac5 100644
+index 9a54079a2de9e73d78c4e003c0c4074dda37f094..1b62be889b4d8aa712ee3f171fbd0d45e0f3e475 100644
 --- a/src/thread.cpp
 +++ b/src/thread.cpp
-@@ -24,6 +24,10 @@
- #include <darlingserver/server.hpp>
+@@ -27,6 +27,10 @@
  #include <darlingserver/logging.hpp>
  #include <darlingserver/metrics.hpp>
+ #include <darlingserver/test-diagnostics.hpp>
 +#ifdef DSERVER_RING_TRANSPORT
 +	#include <darlingserver/ring.hpp>
 +	#include <darlingserver/monitor.hpp>
@@ -1300,7 +1294,7 @@ index dfd0ae6b3c21e6e989b2b7a40788317a3b7482c4..bbef648289876756cdd60fca73c023f1
  #include <filesystem>
  #include <fstream>
  
-@@ -1561,6 +1565,15 @@ void DarlingServer::Thread::jumpToResume(void* stack, size_t stackSize) {
+@@ -1541,6 +1545,15 @@ void DarlingServer::Thread::jumpToResume(void* stack, size_t stackSize) {
  void DarlingServer::Thread::notifyDead() {
  	bool canRelease = false;
  
@@ -1316,7 +1310,7 @@ index dfd0ae6b3c21e6e989b2b7a40788317a3b7482c4..bbef648289876756cdd60fca73c023f1
  	{
  		std::unique_lock lock(_rwlock);
  		if (_dead) {
-@@ -1570,6 +1583,13 @@ void DarlingServer::Thread::notifyDead() {
+@@ -1550,6 +1563,13 @@ void DarlingServer::Thread::notifyDead() {
  		threadLog.info() << *this << ": thread dying" << threadLog.endLog;
  		_dead = true;
  
@@ -1330,7 +1324,7 @@ index dfd0ae6b3c21e6e989b2b7a40788317a3b7482c4..bbef648289876756cdd60fca73c023f1
  		if (!_activeCall) {
  			// if we have no active call, we won't ever need to run again,
  			// so set `_terminating` to make sure that doesn't happen
-@@ -1578,6 +1598,15 @@ void DarlingServer::Thread::notifyDead() {
+@@ -1558,6 +1578,15 @@ void DarlingServer::Thread::notifyDead() {
  		}
  	}
  
@@ -1346,7 +1340,7 @@ index dfd0ae6b3c21e6e989b2b7a40788317a3b7482c4..bbef648289876756cdd60fca73c023f1
  	// keep ourselves alive until the duct-taped context is done
  	_selfReference = shared_from_this();
  
-@@ -1597,6 +1626,30 @@ bool DarlingServer::Thread::isDead() const {
+@@ -1577,6 +1606,30 @@ bool DarlingServer::Thread::isDead() const {
  	return _dead;
  };
  
@@ -1378,7 +1372,7 @@ index dfd0ae6b3c21e6e989b2b7a40788317a3b7482c4..bbef648289876756cdd60fca73c023f1
  	threadLog.debug() << *this << ": dispose thread context" << threadLog.endLog;
  	_selfReference = nullptr;
 
-From 5a73f8069e3a559c3cd1625c182a25eca837c6c8 Mon Sep 17 00:00:00 2001
+From c0440aa39d375a5ec55a44b98010b82042e97dc2 Mon Sep 17 00:00:00 2001
 From: Ilya Gulya <ilya@gulya.me>
 Date: Mon, 29 Jun 2026 06:28:42 +0000
 Subject: [PATCH] perf#18 P3: ring datapath (SPSC + C2S service + reply) +
@@ -1418,8 +1412,6 @@ datapath(GREEN+RED).
 
 VERIFIED: full darlingserver builds+links flag-OFF (default) AND flag-ON; gates
 green. All gated behind DSERVER_RING_TRANSPORT (default OFF). Nothing deployed.
-
-Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
 ---
  include/darlingserver/rpc-supplement.h    | 191 ++++++++++++++
  internal-include/darlingserver/ring.hpp   |  18 ++
@@ -1722,10 +1714,10 @@ index 892fc60d26805186f25d51647655be5c09434f7f..4a1b07f580436d97b4000f04e9bdefca
  ]
  
 diff --git a/src/call.cpp b/src/call.cpp
-index 5cfca8b58452af14d0ca0d515411f1ae9d641036..615464aaef783034d2fe1ee7377c1250d5c78a87 100644
+index bb61587d78e7c44832c7bdba8fcafa6bd1ea25bd..fe5c1203d6777a9aa6ca6969b6bc33b85cea0950 100644
 --- a/src/call.cpp
 +++ b/src/call.cpp
-@@ -1314,10 +1314,102 @@ void DarlingServer::Call::DebugListMessages::processCall() {
+@@ -1355,10 +1355,102 @@ void DarlingServer::Call::DebugListMessages::processCall() {
  // them on death). The Monitor callback currently just drains the wake eventfd -- no call is
  // migrated onto the ring yet (that's P3), so there is nothing to dispatch; this proves the
  // attach/teardown lifecycle end-to-end.
@@ -1828,7 +1820,7 @@ index 5cfca8b58452af14d0ca0d515411f1ae9d641036..615464aaef783034d2fe1ee7377c1250
  
  	if (auto thread = _thread.lock()) {
  		if (_body.ring_fd < 0) {
-@@ -1338,32 +1430,19 @@ void DarlingServer::Call::RingAttach::processCall() {
+@@ -1379,32 +1471,19 @@ void DarlingServer::Call::RingAttach::processCall() {
  				callLog.debug() << "ring_attach accepted for TID " << thread->nsid()
  					<< " (" << cb.slot_count << " slots of " << cb.slot_size << "B)"
  					<< callLog.endLog;
@@ -1871,7 +1863,7 @@ index 5cfca8b58452af14d0ca0d515411f1ae9d641036..615464aaef783034d2fe1ee7377c1250
  					rejectReason = static_cast<uint32_t>(dserver_ring_reject_total_size);
  				} else {
  					std::weak_ptr<Thread> weakThread = thread;
-@@ -1372,17 +1451,43 @@ DSERVER_CLASS_SOURCE_DEFS;
+@@ -1413,17 +1492,43 @@ DSERVER_CLASS_SOURCE_DEFS;
  						Monitor::Event::Readable | Monitor::Event::HangUp,
  						false, false,
  						[weakThread](std::shared_ptr<Monitor> thisMonitor, Monitor::Event events) {
@@ -1989,10 +1981,10 @@ index 018d5ec708624bd790dbe22980b264583d362de2..8c32dcae265ee4dfe9af829076e13a82
 +
  #endif // DSERVER_RING_TRANSPORT
 diff --git a/src/thread.cpp b/src/thread.cpp
-index bbef648289876756cdd60fca73c023f147543ac5..4977b675b15dad73ae9ed27d458a7db78c48fd53 100644
+index 1b62be889b4d8aa712ee3f171fbd0d45e0f3e475..a005840f8c699178b72acc2b4b22edf15f3b3bfc 100644
 --- a/src/thread.cpp
 +++ b/src/thread.cpp
-@@ -1481,6 +1481,35 @@ void DarlingServer::Thread::pushCallReply(std::shared_ptr<Call> expectedCall, Me
+@@ -1461,6 +1461,35 @@ void DarlingServer::Thread::pushCallReply(std::shared_ptr<Call> expectedCall, Me
  	} else if (_deferReplyForS2C) {
  		_deferredReply = std::move(reply);
  	} else if (!_dead) {
@@ -2028,7 +2020,7 @@ index bbef648289876756cdd60fca73c023f147543ac5..4977b675b15dad73ae9ed27d458a7db7
  		Server::sharedInstance().sendMessage(std::move(reply));
  	}
  };
-@@ -1648,6 +1677,12 @@ std::shared_ptr<DarlingServer::RingBuffer> DarlingServer::Thread::ring() const {
+@@ -1628,6 +1657,12 @@ std::shared_ptr<DarlingServer::RingBuffer> DarlingServer::Thread::ring() const {
  	std::shared_lock lock(_rwlock);
  	return _ring;
  };
@@ -2367,7 +2359,7 @@ index d7db6700b18f48b2a8b748366481a4a621a38fa2..11bcd5e3cc401653b9f3425570750771
 +echo
  echo "all perf#18 ring gates: OK"
 
-From bb9197f915709ff2cb5a443701655f4d1065ded5 Mon Sep 17 00:00:00 2001
+From e51236611ce9860edb1c0ae7e78e09bfb2ad7372 Mon Sep 17 00:00:00 2001
 From: Ilya Gulya <ilya@gulya.me>
 Date: Mon, 29 Jun 2026 06:43:04 +0000
 Subject: [PATCH] perf#18 P3: migrate mach_reply_port onto the ring (uncached
@@ -2389,8 +2381,6 @@ run-ring-shm-validate.sh (skips cleanly if the generated rpc.h isn't built).
 
 Gated under DSERVER_RING_TRANSPORT (default OFF); flag-OFF build byte-identical
 (darlingserver 6c51e981). All ring gates green.
-
-Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
 ---
  src/call.cpp                   | 11 ++++--
  tests/ring_allowlist_test.cpp  | 62 ++++++++++++++++++++++++++++++++++
@@ -2399,10 +2389,10 @@ Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
  create mode 100644 tests/ring_allowlist_test.cpp
 
 diff --git a/src/call.cpp b/src/call.cpp
-index 615464aaef783034d2fe1ee7377c1250d5c78a87..039a81a5b47d9bbcf76f8ed551171e8c77690894 100644
+index fe5c1203d6777a9aa6ca6969b6bc33b85cea0950..c51eef8e67aa89a5ee514bd88e3660d139a2ac9b 100644
 --- a/src/call.cpp
 +++ b/src/call.cpp
-@@ -1359,9 +1359,14 @@ static void darRingServiceC2S(const std::shared_ptr<DarlingServer::Thread>& thre
+@@ -1400,9 +1400,14 @@ static void darRingServiceC2S(const std::shared_ptr<DarlingServer::Thread>& thre
  		uint32_t reqlen = req->length;
  		uint32_t seq = req->seq;
  
@@ -2533,7 +2523,7 @@ index 11bcd5e3cc401653b9f3425570750771c392e9f1..8aebc4f0e50d698572f263c628075b64
 +
  echo "all perf#18 ring gates: OK"
 
-From 1418beef0a3722afdc7c086b7612dce3a45ac212 Mon Sep 17 00:00:00 2001
+From de6748ef54d141af766f81b97c12ea5c7a14be93 Mon Sep 17 00:00:00 2001
 From: Ilya Gulya <ilya@gulya.me>
 Date: Mon, 29 Jun 2026 07:04:31 +0000
 Subject: [PATCH] perf#18 P3 fix: ring C2S header must carry guest-namespace
@@ -2562,17 +2552,15 @@ before sleeping (avoid the syscall/sleep in the common case) = P4.
 
 Gated under DSERVER_RING_TRANSPORT (default OFF); flag-OFF build byte-identical
 (darlingserver 6c51e981).
-
-Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
 ---
  src/call.cpp | 11 +++++++++--
  1 file changed, 9 insertions(+), 2 deletions(-)
 
 diff --git a/src/call.cpp b/src/call.cpp
-index 039a81a5b47d9bbcf76f8ed551171e8c77690894..ded3fa11e2160ec7d5d60bf8210dcb8a7f476cfb 100644
+index c51eef8e67aa89a5ee514bd88e3660d139a2ac9b..8fc8d4c33f37df95b7868c15bdce1e184a2d0ec2 100644
 --- a/src/call.cpp
 +++ b/src/call.cpp
-@@ -1380,8 +1380,14 @@ static void darRingServiceC2S(const std::shared_ptr<DarlingServer::Thread>& thre
+@@ -1421,8 +1421,14 @@ static void darRingServiceC2S(const std::shared_ptr<DarlingServer::Thread>& thre
  		reqMsg.data().resize(totalSize);
  		auto* hdr = reinterpret_cast<dserver_rpc_callhdr_t*>(reqMsg.data().data());
  		hdr->number = static_cast<dserver_callnum_t>(callnum);
@@ -2589,7 +2577,7 @@ index 039a81a5b47d9bbcf76f8ed551171e8c77690894..ded3fa11e2160ec7d5d60bf8210dcb8a
  		hdr->architecture = static_cast<dserver_rpc_architecture_t>(process->architecture());
  		if (reqlen > 0) {
  			memcpy(reqMsg.data().data() + sizeof(dserver_rpc_callhdr_t),
-@@ -1389,6 +1395,7 @@ static void darRingServiceC2S(const std::shared_ptr<DarlingServer::Thread>& thre
+@@ -1430,6 +1436,7 @@ static void darRingServiceC2S(const std::shared_ptr<DarlingServer::Thread>& thre
  			       reqlen);
  		}
  		reqMsg.setAddress(thread->address());
@@ -2598,7 +2586,7 @@ index 039a81a5b47d9bbcf76f8ed551171e8c77690894..ded3fa11e2160ec7d5d60bf8210dcb8a
  		// done reading the request slot; free it before running the call
  		dserver_ring_consumer_advance(c2s);
 
-From 9907e18fc70655766e5178067c5d3fdbef9715ed Mon Sep 17 00:00:00 2001
+From dd36486bbe7a20619e99fb5e6bb055039c1e5d92 Mon Sep 17 00:00:00 2001
 From: Ilya Gulya <ilya@gulya.me>
 Date: Mon, 29 Jun 2026 07:17:32 +0000
 Subject: [PATCH] perf#18 .31 P4-spike: isolated host A/B of ring wake-model
@@ -2631,8 +2619,6 @@ future change reintroduces a per-call syscall/sleep on the hot path, v3 collapse
 toward v0 and the gate fails. Host-only, nothing deployed.
 
 Feeds the P4 integration bead (.33).
-
-Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
 ---
  tests/ring_wake_model_bench.c      | 287 +++++++++++++++++++++++++++++
  tests/run-ring-wake-model-bench.sh |  56 ++++++
@@ -2996,7 +2982,7 @@ index 0000000000000000000000000000000000000000..ba9e0240954199927bdd98338f90712e
 +echo
 +echo "ring_wake_model bench+gate: OK"
 
-From 19b334f55e44649283aafbc6cf36ca109d103aae Mon Sep 17 00:00:00 2001
+From c9c245d5e6fd89db5af598ccdb39b22061b703a8 Mon Sep 17 00:00:00 2001
 From: Ilya Gulya <ilya@gulya.me>
 Date: Mon, 29 Jun 2026 07:53:21 +0000
 Subject: [PATCH] perf#18 .33 P4: v3 wake model -- adaptive server poll +
@@ -3035,8 +3021,6 @@ Live A/B (ring ON, balanced, deployed locally, NOT pushed): mach_reply_port
 phase, 97% of replies needed no FUTEX_WAKE, ~3% doorbells -- hot path ~0 syscalls/call
 as the gist targets. Fork-storm build correctness 3/3 DONE (200/200 .o, no crash/wedge,
 dar-l8k/dar-6x4 unregressed). Prod restored OFF after measurement.
-
-Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
 ---
  include/darlingserver/rpc-supplement.h     |  53 ++++++-
  internal-include/darlingserver/metrics.hpp |  15 ++
@@ -3251,10 +3235,10 @@ index 17e4db438ac452ec116eea5f2fef36651fce7648..3b74483e1deb47310a91f181ea1eb67e
  	};
  };
 diff --git a/src/call.cpp b/src/call.cpp
-index ded3fa11e2160ec7d5d60bf8210dcb8a7f476cfb..fd0d52c707745f4f8a5276dcb77b3b7900ab2d75 100644
+index 8fc8d4c33f37df95b7868c15bdce1e184a2d0ec2..155868c64743df8b3767228c64e568bbd3a943f5 100644
 --- a/src/call.cpp
 +++ b/src/call.cpp
-@@ -1329,11 +1329,12 @@ void DarlingServer::Call::DebugListMessages::processCall() {
+@@ -1370,11 +1370,12 @@ void DarlingServer::Call::DebugListMessages::processCall() {
  // already refuses a corrupt c2s tail; here we additionally (a) bound the inline body to the
  // slot, (b) only accept a small allowlist of ring-eligible call numbers (P3 = task_self_trap),
  // dropping anything else so the guest UDS-falls-back, and (c) never deref a guest pointer.
@@ -3269,7 +3253,7 @@ index ded3fa11e2160ec7d5d60bf8210dcb8a7f476cfb..fd0d52c707745f4f8a5276dcb77b3b79
  	}
  	const auto& cb = ring->controlBlock();
  	dserver_ring_t* c2s = ring->c2sRing();
-@@ -1343,7 +1344,7 @@ static void darRingServiceC2S(const std::shared_ptr<DarlingServer::Thread>& thre
+@@ -1384,7 +1385,7 @@ static void darRingServiceC2S(const std::shared_ptr<DarlingServer::Thread>& thre
  
  	auto process = thread->process();
  	if (!process) {
@@ -3278,7 +3262,7 @@ index ded3fa11e2160ec7d5d60bf8210dcb8a7f476cfb..fd0d52c707745f4f8a5276dcb77b3b79
  	}
  
  	// bounded drain: never loop more than slotCount times even if a buggy/hostile peer keeps
-@@ -1407,6 +1408,7 @@ static void darRingServiceC2S(const std::shared_ptr<DarlingServer::Thread>& thre
+@@ -1448,6 +1449,7 @@ static void darRingServiceC2S(const std::shared_ptr<DarlingServer::Thread>& thre
  			if (call) {
  				// run inline on the main loop (self-traps never block) -- perf#2b path
  				call->thread()->doWork();
@@ -3286,7 +3270,7 @@ index ded3fa11e2160ec7d5d60bf8210dcb8a7f476cfb..fd0d52c707745f4f8a5276dcb77b3b79
  			}
  		} catch (const std::exception& ex) {
  			callLog.error() << "ring C2S dispatch threw: " << ex.what() << callLog.endLog;
-@@ -1414,6 +1416,7 @@ static void darRingServiceC2S(const std::shared_ptr<DarlingServer::Thread>& thre
+@@ -1455,6 +1457,7 @@ static void darRingServiceC2S(const std::shared_ptr<DarlingServer::Thread>& thre
  			// time out on this op and UDS-fall-back. Keep serving the rest.
  		}
  	}
@@ -3294,7 +3278,7 @@ index ded3fa11e2160ec7d5d60bf8210dcb8a7f476cfb..fd0d52c707745f4f8a5276dcb77b3b79
  }
  #endif
  
-@@ -1472,17 +1475,30 @@ void DarlingServer::Call::RingAttach::processCall() {
+@@ -1513,17 +1516,30 @@ void DarlingServer::Call::RingAttach::processCall() {
  								eventfd_read(thisMonitor->fd()->fd(), &value);
  							}
  							if (static_cast<uint64_t>(events & Monitor::Event::HangUp) != 0) {
@@ -3598,10 +3582,10 @@ index af80eca5faf8ffe2901ee2fac21f5cb2b11fcf47..3558f3330cae32ac0604edc56a1cc77e
  	_fd(descriptor),
  	_userEvents(events),
 diff --git a/src/thread.cpp b/src/thread.cpp
-index 4977b675b15dad73ae9ed27d458a7db78c48fd53..6af87a7dad2c1c871b3d56e762f2ce961999a3f7 100644
+index a005840f8c699178b72acc2b4b22edf15f3b3bfc..6268849b16ddba711665c6f2bc18f9844b61f86d 100644
 --- a/src/thread.cpp
 +++ b/src/thread.cpp
-@@ -1628,7 +1628,11 @@ void DarlingServer::Thread::notifyDead() {
+@@ -1608,7 +1608,11 @@ void DarlingServer::Thread::notifyDead() {
  	}
  
  #ifdef DSERVER_RING_TRANSPORT
@@ -3732,7 +3716,7 @@ index ba9e0240954199927bdd98338f90712e9b08320d..92b9d4bf2b5fe654e063465c32347437
 +echo
  echo "ring_wake_model bench+gate: OK"
 
-From 7b58a833abb37a9ffa2ec5d9abc2fc7fba48d185 Mon Sep 17 00:00:00 2001
+From b2955beada4180ffaa1bcc62e3b43e5a3fe18e8b Mon Sep 17 00:00:00 2001
 From: Ilya Gulya <ilya@gulya.me>
 Date: Mon, 29 Jun 2026 08:23:49 +0000
 Subject: [PATCH] perf#18 P6 (dar-aw2): gated rdtsc phase-prof for the hot ring
@@ -3753,8 +3737,6 @@ MEASURED (hot mach_reply_port, 30k calls, TSC 1.9962GHz, balanced):
 + callFromMessage dispatch 14%. Confirms the gist's opcode-fast-path hypothesis: a
 specialized mach_reply_port path skipping Message-rebuild + microthread setup could cut
 the floor toward ~1.5-2us. Wakeup 960ns is shared-host scheduler cost (shrinks pinned).
-
-Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
 ---
  internal-include/darlingserver/metrics.hpp | 30 ++++++++++++++++++++++
  internal-include/darlingserver/thread.hpp  |  9 +++++++
@@ -3839,10 +3821,10 @@ index e089fe38f55593b2f94c84c518e8e7570a1e9996..a072b85e194e5b02b370dd2744a4bbcb
  
  		/**
 diff --git a/src/call.cpp b/src/call.cpp
-index fd0d52c707745f4f8a5276dcb77b3b7900ab2d75..1b2275bf20f538a60db7fb30a4798521a6e55220 100644
+index 155868c64743df8b3767228c64e568bbd3a943f5..1e81713d256327509e7561eb224327386e6ce45c 100644
 --- a/src/call.cpp
 +++ b/src/call.cpp
-@@ -1354,6 +1354,9 @@ uint32_t DarlingServer::ringServiceThread(const std::shared_ptr<DarlingServer::T
+@@ -1395,6 +1395,9 @@ uint32_t DarlingServer::ringServiceThread(const std::shared_ptr<DarlingServer::T
  		if (!req) {
  			break; // empty or corrupt tail
  		}
@@ -3852,7 +3834,7 @@ index fd0d52c707745f4f8a5276dcb77b3b7900ab2d75..1b2275bf20f538a60db7fb30a4798521
  
  		// Copy the transport header out before trusting it (guest can mutate concurrently).
  		uint32_t callnum = req->callnum;
-@@ -1403,12 +1406,33 @@ uint32_t DarlingServer::ringServiceThread(const std::shared_ptr<DarlingServer::T
+@@ -1444,12 +1447,33 @@ uint32_t DarlingServer::ringServiceThread(const std::shared_ptr<DarlingServer::T
  
  		// Arm the one-shot ring-reply sink, then dispatch through the normal Call path.
  		thread->beginRingReply(seq);
@@ -3905,10 +3887,10 @@ index 4b8403b5227911d18fdf8527762b9c6775cbf978..1e0d4a3cb8b376d424a1ce1aeff5527f
  	out << "  \"last_reply_age_ms\": " << lastReplyAgeMs << ",\n";
  	if (!extraGauges.empty()) {
 diff --git a/src/thread.cpp b/src/thread.cpp
-index 6af87a7dad2c1c871b3d56e762f2ce961999a3f7..60add13c614f998f76826bb0d45fdb1ee42ff697 100644
+index 6268849b16ddba711665c6f2bc18f9844b61f86d..3b63321f8c8e9fdfcbf5b00c7d18d9f703d1578e 100644
 --- a/src/thread.cpp
 +++ b/src/thread.cpp
-@@ -1499,7 +1499,14 @@ void DarlingServer::Thread::pushCallReply(std::shared_ptr<Call> expectedCall, Me
+@@ -1479,7 +1479,14 @@ void DarlingServer::Thread::pushCallReply(std::shared_ptr<Call> expectedCall, Me
  				int32_t code = rhdr->code;
  				// publish under the lock is fine (no suspend, no Server-state mutation); the
  				// FUTEX_WAKE is a bare syscall and likewise can't re-enter our locks.
@@ -3924,7 +3906,7 @@ index 6af87a7dad2c1c871b3d56e762f2ce961999a3f7..60add13c614f998f76826bb0d45fdb1e
  					// s2c full: fall back to a UDS reply so the guest still gets its answer.
  					Server::sharedInstance().sendMessage(std::move(reply));
  				} else {
-@@ -1687,6 +1694,14 @@ void DarlingServer::Thread::beginRingReply(uint32_t seq) {
+@@ -1667,6 +1674,14 @@ void DarlingServer::Thread::beginRingReply(uint32_t seq) {
  	_ringReplyPending = true;
  	_ringReplySeq = seq;
  };
@@ -3940,7 +3922,7 @@ index 6af87a7dad2c1c871b3d56e762f2ce961999a3f7..60add13c614f998f76826bb0d45fdb1e
  
  void DarlingServer::Thread::_dispose() {
 
-From 4596b923cd5bab0055535f311f0d01b07de98dcc Mon Sep 17 00:00:00 2001
+From 4ef0a11e070825caed679ccf7e6d1b6edc0f0ce1 Mon Sep 17 00:00:00 2001
 From: Ilya Gulya <ilya@gulya.me>
 Date: Mon, 29 Jun 2026 08:49:54 +0000
 Subject: [PATCH] perf#18 P6.1 (dar-ohp): opcode fast path step 1 -- run
@@ -3976,8 +3958,6 @@ inline ~3.2-3.9us vs generic fiber (FAST_OPS=0) ~4.2-5.0us = ~900ns/~21% saved, 
 (the fiber removal); residual body is real ipc_port_alloc + dtape enter/exit, not wrapper.
 Fork-storm build 3/3 DONE (doWorkInline cleanup doesn't regress dar-l8k/dar-6x4). Prod restored
 OFF. Step 2 (full opcode path skipping Message-rebuild + callFromMessage) would target ~2-2.5us.
-
-Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
 ---
  internal-include/darlingserver/thread.hpp |  16 ++++
  src/call.cpp                              |  51 +++++++++-
@@ -4015,10 +3995,10 @@ index a072b85e194e5b02b370dd2744a4bbcbcf60d69c..f2863337de096016bf056b2d694d1971
  		// RPCs inline via doWork() instead of paying a worker-thread wakeup. After an inline
  		// doWork() returns, this reports whether the microthread is still suspended (i.e. the
 diff --git a/src/call.cpp b/src/call.cpp
-index 1b2275bf20f538a60db7fb30a4798521a6e55220..3230ab887535cd55049306df59bdc4270f8545fb 100644
+index 1e81713d256327509e7561eb224327386e6ce45c..324976d181cc4845aeea377d9e3a4b2b338eda92 100644
 --- a/src/call.cpp
 +++ b/src/call.cpp
-@@ -1329,6 +1329,42 @@ void DarlingServer::Call::DebugListMessages::processCall() {
+@@ -1370,6 +1370,42 @@ void DarlingServer::Call::DebugListMessages::processCall() {
  // already refuses a corrupt c2s tail; here we additionally (a) bound the inline body to the
  // slot, (b) only accept a small allowlist of ring-eligible call numbers (P3 = task_self_trap),
  // dropping anything else so the guest UDS-falls-back, and (c) never deref a guest pointer.
@@ -4061,7 +4041,7 @@ index 1b2275bf20f538a60db7fb30a4798521a6e55220..3230ab887535cd55049306df59bdc427
  uint32_t DarlingServer::ringServiceThread(const std::shared_ptr<DarlingServer::Thread>& thread) {
  	using namespace DarlingServer;
  	uint32_t serviced = 0;
-@@ -1415,8 +1451,19 @@ uint32_t DarlingServer::ringServiceThread(const std::shared_ptr<DarlingServer::T
+@@ -1456,8 +1492,19 @@ uint32_t DarlingServer::ringServiceThread(const std::shared_ptr<DarlingServer::T
  			uint64_t _phaseT2 = Metrics::rdtscCycles(); // dispatch end / body start
  #endif
  			if (call) {
@@ -4084,10 +4064,10 @@ index 1b2275bf20f538a60db7fb30a4798521a6e55220..3230ab887535cd55049306df59bdc427
  #ifdef DSERVER_RING_PHASE_PROF
  				uint64_t _phaseT3 = Metrics::rdtscCycles(); // body end
 diff --git a/src/thread.cpp b/src/thread.cpp
-index 60add13c614f998f76826bb0d45fdb1ee42ff697..640149f5f988454a6bc2d56c644216647b6a1df5 100644
+index 3b63321f8c8e9fdfcbf5b00c7d18d9f703d1578e..f497d1399a30ea2f3c4271320d78475227f36ce0 100644
 --- a/src/thread.cpp
 +++ b/src/thread.cpp
-@@ -664,6 +664,115 @@ doneWorking:
+@@ -652,6 +652,115 @@ doneWorking:
  	return;
  };
  
@@ -4335,7 +4315,7 @@ index 8aebc4f0e50d698572f263c628075b64e87d462b..2c68d4859438cd8c1226b1cb964c2a8a
  
  echo "all perf#18 ring gates: OK"
 
-From e9ce26d4fa04281a25a3d5ee5e7ae857614a4ebc Mon Sep 17 00:00:00 2001
+From 7ade3234c1d3746cd3c4a47a1014758b0ecc8f0f Mon Sep 17 00:00:00 2001
 From: Ilya Gulya <ilya@gulya.me>
 Date: Mon, 29 Jun 2026 09:23:56 +0000
 Subject: [PATCH] perf#18 P6.1 step 2 (dar-ohp): surgical direct ring dispatch
@@ -4380,8 +4360,6 @@ payload/arena-rejection assertions. Wired into run-ring-shm-validate.sh. All rin
 gates GREEN; both RED arms (-DFASTPATH_NO_HATCH, -DNO_SHAPE_GUARD) correctly fail.
 
 Server-only; default OFF (gated DSERVER_RING_TRANSPORT). Prod restored OFF.
-
-Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
 ---
  internal-include/darlingserver/metrics.hpp |   8 ++
  internal-include/darlingserver/thread.hpp  |  16 +++
@@ -4439,10 +4417,10 @@ index f2863337de096016bf056b2d694d19715573e432..546ace5282ffaba69fe499fa51495e2d
  
  		// perf #2b (dar-dar6x4-perf-5dq.8): the main event loop runs cheap, non-blocking
 diff --git a/src/call.cpp b/src/call.cpp
-index 3230ab887535cd55049306df59bdc4270f8545fb..9852b6169bd828523e39731aa943cdf579b6e3ce 100644
+index 324976d181cc4845aeea377d9e3a4b2b338eda92..583b07900ac97b99927f0d895cb9371420468c85 100644
 --- a/src/call.cpp
 +++ b/src/call.cpp
-@@ -1365,6 +1365,24 @@ static bool ringFastPathEligible(uint32_t callnum) {
+@@ -1406,6 +1406,24 @@ static bool ringFastPathEligible(uint32_t callnum) {
  	return false;
  }
  
@@ -4467,7 +4445,7 @@ index 3230ab887535cd55049306df59bdc4270f8545fb..9852b6169bd828523e39731aa943cdf5
  uint32_t DarlingServer::ringServiceThread(const std::shared_ptr<DarlingServer::Thread>& thread) {
  	using namespace DarlingServer;
  	uint32_t serviced = 0;
-@@ -1398,6 +1416,64 @@ uint32_t DarlingServer::ringServiceThread(const std::shared_ptr<DarlingServer::T
+@@ -1439,6 +1457,64 @@ uint32_t DarlingServer::ringServiceThread(const std::shared_ptr<DarlingServer::T
  		uint32_t callnum = req->callnum;
  		uint32_t reqlen = req->length;
  		uint32_t seq = req->seq;
@@ -4546,10 +4524,10 @@ index 1e0d4a3cb8b376d424a1ce1aeff5527fa3a9f7e5..3ac5a99adcf36da4f2614fa6ad017b36
  	out << "  \"phase_samples\": " << phaseSamples.load(std::memory_order_relaxed) << ",\n";
  	out << "  \"phase_drain_cycles\": " << phaseDrainCycles.load(std::memory_order_relaxed) << ",\n";
 diff --git a/src/thread.cpp b/src/thread.cpp
-index 640149f5f988454a6bc2d56c644216647b6a1df5..f8d4746cb38351b0015a569979d636632a930332 100644
+index f497d1399a30ea2f3c4271320d78475227f36ce0..f639b2e3a8db5c9886ec601e13b85a42b2df1b99 100644
 --- a/src/thread.cpp
 +++ b/src/thread.cpp
-@@ -771,6 +771,125 @@ bool DarlingServer::Thread::doWorkInline() {
+@@ -759,6 +759,125 @@ bool DarlingServer::Thread::doWorkInline() {
  	}
  	return true;
  };
@@ -4768,7 +4746,7 @@ index 2c68d4859438cd8c1226b1cb964c2a8a3b0e83ac..9af620ee431005b129317b7a3dbb541f
  		echo
  	fi
 
-From 8707a801a723f3f0a96ec09350722f1e45af0452 Mon Sep 17 00:00:00 2001
+From d010da11228e6fbde4e3db2ba8b2182310db6bc7 Mon Sep 17 00:00:00 2001
 From: Ilya Gulya <ilya@gulya.me>
 Date: Mon, 29 Jun 2026 10:14:09 +0000
 Subject: [PATCH] perf#18 P7 (dar-my8): wake-model lost-wake race gate + full
@@ -4814,8 +4792,6 @@ nonzero = an allowlist misclassification); ring fast-path fallback dispatch
 throwing (fast_fail).
 
 Server-only; default OFF (gated DSERVER_RING_TRANSPORT). Nothing deployed/pushed.
-
-Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
 ---
  internal-include/darlingserver/metrics.hpp |  10 +
  src/call.cpp                               |   1 +
@@ -4848,10 +4824,10 @@ index 443157e8f18916f1ed404536e7d3e63d23134b9a..6cbe71c57040c7de2c8099070e6a8006
  #ifdef DSERVER_RING_PHASE_PROF
  		// perf #18 P6 (dar-aw2): cycle-decompose the hot ring RPC. rdtsc brackets in
 diff --git a/src/call.cpp b/src/call.cpp
-index 9852b6169bd828523e39731aa943cdf579b6e3ce..339a1930229a883ac133ac33128696e10dc85ea2 100644
+index 583b07900ac97b99927f0d895cb9371420468c85..9fef17c91af07ce6568e2bf335f4c0062b6eb9ce 100644
 --- a/src/call.cpp
 +++ b/src/call.cpp
-@@ -1471,6 +1471,7 @@ uint32_t DarlingServer::ringServiceThread(const std::shared_ptr<DarlingServer::T
+@@ -1512,6 +1512,7 @@ uint32_t DarlingServer::ringServiceThread(const std::shared_ptr<DarlingServer::T
  				}
  			} catch (const std::exception& ex) {
  				callLog.error() << "ring fast-path fallback dispatch threw: " << ex.what() << callLog.endLog;
@@ -4874,10 +4850,10 @@ index 3ac5a99adcf36da4f2614fa6ad017b36080e47a9..6dcf62871f86a995864e70552a3f87f7
  	out << "  \"phase_samples\": " << phaseSamples.load(std::memory_order_relaxed) << ",\n";
  	out << "  \"phase_drain_cycles\": " << phaseDrainCycles.load(std::memory_order_relaxed) << ",\n";
 diff --git a/src/thread.cpp b/src/thread.cpp
-index f8d4746cb38351b0015a569979d636632a930332..ef4a772c9ebd8f0451b86b3d1ea978960e43a53a 100644
+index f639b2e3a8db5c9886ec601e13b85a42b2df1b99..fcd1e3014f73b9c420db8daba32f2eabf1d3ab20 100644
 --- a/src/thread.cpp
 +++ b/src/thread.cpp
-@@ -740,6 +740,7 @@ bool DarlingServer::Thread::doWorkInline() {
+@@ -728,6 +728,7 @@ bool DarlingServer::Thread::doWorkInline() {
  			// fiber to resume onto -> we cannot honor it. Log; leave _running cleared so the
  			// thread isn't wedged. (The guest will time out on this op and UDS-fall-back.)
  			microthreadLog.error() << *this << ": doWorkInline call suspended -- not fast-path eligible!" << microthreadLog.endLog;
@@ -4885,7 +4861,7 @@ index f8d4746cb38351b0015a569979d636632a930332..ef4a772c9ebd8f0451b86b3d1ea97896
  			_suspended = false;
  		}
  		_activeCall = nullptr;
-@@ -823,6 +824,10 @@ bool DarlingServer::Thread::doMachReplyPortInline(uint32_t seq) {
+@@ -811,6 +812,10 @@ bool DarlingServer::Thread::doMachReplyPortInline(uint32_t seq) {
  #endif
  	if (published) {
  		ring->wakeGuest();
@@ -4896,7 +4872,7 @@ index f8d4746cb38351b0015a569979d636632a930332..ef4a772c9ebd8f0451b86b3d1ea97896
  	}
  
  	{
-@@ -840,6 +845,7 @@ bool DarlingServer::Thread::doMachReplyPortInline(uint32_t seq) {
+@@ -828,6 +833,7 @@ bool DarlingServer::Thread::doMachReplyPortInline(uint32_t seq) {
  		if (_suspended) {
  			// Impossible for mach_reply_port (it never blocks). Log loudly; clear so we don't wedge.
  			microthreadLog.error() << *this << ": doMachReplyPortInline suspended -- mach_reply_port must never block!" << microthreadLog.endLog;
@@ -4904,7 +4880,7 @@ index f8d4746cb38351b0015a569979d636632a930332..ef4a772c9ebd8f0451b86b3d1ea97896
  			_suspended = false;
  		}
  		dtape_thread_exiting(_dtapeThread);
-@@ -1736,6 +1742,7 @@ void DarlingServer::Thread::pushCallReply(std::shared_ptr<Call> expectedCall, Me
+@@ -1716,6 +1722,7 @@ void DarlingServer::Thread::pushCallReply(std::shared_ptr<Call> expectedCall, Me
  #endif
  				if (!published) {
  					// s2c full: fall back to a UDS reply so the guest still gets its answer.
@@ -5447,7 +5423,7 @@ index 9af620ee431005b129317b7a3dbb541f811d8401..3936ff8d0a644105612bea043b22a7a6
 +
  echo "all perf#18 ring gates: OK"
 
-From adf4e1ad612c1d6428fa621766c3267d168b8234 Mon Sep 17 00:00:00 2001
+From 1f5beead21304611e6391c53fa8471f9fc420068 Mon Sep 17 00:00:00 2001
 From: Ilya Gulya <ilya@gulya.me>
 Date: Mon, 29 Jun 2026 10:30:50 +0000
 Subject: [PATCH] perf#18 P7 (dar-my8): one-time startup NOTICE of the ring
@@ -5467,8 +5443,6 @@ not read as a fault. Verified live: the line appears in dserver.log at the
 default level on first ring attach.
 
 Server-only; default OFF (gated DSERVER_RING_TRANSPORT). Nothing pushed.
-
-Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
 ---
  src/server.cpp | 18 ++++++++++++++++++
  1 file changed, 18 insertions(+)
@@ -5503,7 +5477,7 @@ index 3558f3330cae32ac0604edc56a1cc77e8ee08d01..b6299f1e90d465ac57f4b7583f75f3e6
  #endif // DSERVER_RING_TRANSPORT
  
 
-From 4c742f2c6778b8f7c64abe8cb124627b93e59dc7 Mon Sep 17 00:00:00 2001
+From 75fe5f9a76a0a09da7eb40224471c3b31dfcb686 Mon Sep 17 00:00:00 2001
 From: Ilya Gulya <ilya@gulya.me>
 Date: Mon, 29 Jun 2026 10:36:52 +0000
 Subject: [PATCH] perf#18 P7 (dar-my8): default-ON release checklist +
@@ -5527,8 +5501,6 @@ from the single main-loop site -- once per server, NOT once per client attach, s
 fork-heavy workloads do not spam it.
 
 Server-only; default OFF. Nothing pushed.
-
-Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
 ---
  src/server.cpp                            |  4 +-
  tests/PERF18-RING-DEFAULT-ON-CHECKLIST.md | 53 +++++++++++++++++++++++
@@ -5610,7 +5582,7 @@ index 0000000000000000000000000000000000000000..a1dd07d6dc65aa7d16b5975113246722
 +(`mach_port_mod_refs`) onto the ring with a stricter per-op bar. See the P5 agent brief
 +(`memory/dar-perf18-p5-agent-brief.md`).
 
-From d12389325655d659937b3f5f107e888d8d46e99a Mon Sep 17 00:00:00 2001
+From fa9508043ed6755b0895361738aefb68568289ac Mon Sep 17 00:00:00 2001
 From: Ilya Gulya <ilya@gulya.me>
 Date: Mon, 29 Jun 2026 11:50:52 +0000
 Subject: [PATCH] perf#18 P5 (dar-1il): migrate mach_port_mod_refs onto the
@@ -5651,8 +5623,6 @@ RED->GREEN gate (tests/ring_fastpath_gate_test.c + run-ring-shm-validate.sh):
 pins mod_refs is NOT inline-eligible but IS C2S-allowlisted (body fits a slot);
 RED arms -DC2S_NO_MODREFS (drops it from the allowlist) and the existing
 -DFASTPATH_NO_HATCH / -DNO_SHAPE_GUARD all correctly fail.
-
-Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
 ---
  src/call.cpp                    | 38 +++++++++++++++----
  tests/ring_fastpath_gate_test.c | 66 ++++++++++++++++++++++++++-------
@@ -5660,10 +5630,10 @@ Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
  3 files changed, 93 insertions(+), 20 deletions(-)
 
 diff --git a/src/call.cpp b/src/call.cpp
-index 339a1930229a883ac133ac33128696e10dc85ea2..ee17e8c4ca31a7efcd33ded3d5279bd736279d26 100644
+index 9fef17c91af07ce6568e2bf335f4c0062b6eb9ce..c9755d6ae60759072f9de195a5d5f5768d6216b7 100644
 --- a/src/call.cpp
 +++ b/src/call.cpp
-@@ -1352,6 +1352,19 @@ static bool ringFastMachReplyPortEnabled() {
+@@ -1393,6 +1393,19 @@ static bool ringFastMachReplyPortEnabled() {
  // Is this callnum eligible for the no-fiber inline fast path? Must be a PROVEN-non-blocking op.
  // task_self_trap + mach_reply_port both just mint/return a port via current_task()'s space and
  // never suspend. Each gated by its hatch (task_self_trap rides the global hatch only).
@@ -5683,7 +5653,7 @@ index 339a1930229a883ac133ac33128696e10dc85ea2..ee17e8c4ca31a7efcd33ded3d5279bd7
  static bool ringFastPathEligible(uint32_t callnum) {
  	if (!ringFastOpsEnabled()) {
  		return false;
-@@ -1476,14 +1489,25 @@ uint32_t DarlingServer::ringServiceThread(const std::shared_ptr<DarlingServer::T
+@@ -1517,14 +1530,25 @@ uint32_t DarlingServer::ringServiceThread(const std::shared_ptr<DarlingServer::T
  			continue;
  		}
  
@@ -5842,7 +5812,7 @@ index 3936ff8d0a644105612bea043b22a7a6e655fe99..f0d114b1c209318eb98a9a140ee208d4
  		echo
  	fi
 
-From 9f9b24f24df9af72be8ce44e03b78c74fce034a9 Mon Sep 17 00:00:00 2001
+From 04d9e6f1bcb0912dfc9a7f8c584f5d139a2174c0 Mon Sep 17 00:00:00 2001
 From: Ilya Gulya <ilya@gulya.me>
 Date: Mon, 29 Jun 2026 13:11:57 +0000
 Subject: [PATCH] perf#18 P5-bulk (dar-1il.1): ring-migrate mach_port_allocate
@@ -5893,8 +5863,6 @@ Validation (ring-ON vs TRUE-UDS, prod-off non-ring stack):
 RED->GREEN gates updated + committed: ring_fastpath_gate_test.c (allowlist now
 driven by the shared macro; allocate/insert_right C2S-allowlisted + NOT inline;
 deallocate NOT allowlisted) and the new ring_drift_gate_test.c.
-
-Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
 ---
  include/darlingserver/rpc-supplement.h    |  43 +++++++++
  internal-include/darlingserver/thread.hpp |   7 ++
@@ -5979,10 +5947,10 @@ index 546ace5282ffaba69fe499fa51495e2d8379c476..f1d64b97a996725254d8f1e7d9b6c42d
  		// perf #18 P6: scratch for the TSC cycles publishReply consumed during this call's
  		// doWork(), so ringServiceThread can subtract them from the body window. One-shot.
 diff --git a/src/call.cpp b/src/call.cpp
-index ee17e8c4ca31a7efcd33ded3d5279bd736279d26..a1484085faf2f17651d28384986fa6cef310a269 100644
+index c9755d6ae60759072f9de195a5d5f5768d6216b7..2799043b8f0b9a5e25f254c4ea72c595e1c095fa 100644
 --- a/src/call.cpp
 +++ b/src/call.cpp
-@@ -1502,12 +1502,18 @@ uint32_t DarlingServer::ringServiceThread(const std::shared_ptr<DarlingServer::T
+@@ -1543,12 +1543,18 @@ uint32_t DarlingServer::ringServiceThread(const std::shared_ptr<DarlingServer::T
  		// NOTE: this allowlist must NOT be gated by a per-op env hatch. A request that the guest
  		// published here is parked waiting for a ring reply; silently dropping it (consume + no
  		// reply) strands the guest on its bounded reply-wait every call (slow UDS re-fall-back per
@@ -6007,10 +5975,10 @@ index ee17e8c4ca31a7efcd33ded3d5279bd736279d26..a1484085faf2f17651d28384986fa6ce
  			dserver_ring_consumer_advance(c2s);
  			continue;
 diff --git a/src/thread.cpp b/src/thread.cpp
-index ef4a772c9ebd8f0451b86b3d1ea978960e43a53a..4015e2b24f83eab4e3a37d1496296b6dd935af14 100644
+index fcd1e3014f73b9c420db8daba32f2eabf1d3ab20..da89d3a89cfc345d470ea72abe1fd830f14d2560 100644
 --- a/src/thread.cpp
 +++ b/src/thread.cpp
-@@ -1424,7 +1424,16 @@ std::optional<DarlingServer::Message> DarlingServer::Thread::_s2cPerform(Message
+@@ -1404,7 +1404,16 @@ std::optional<DarlingServer::Message> DarlingServer::Thread::_s2cPerform(Message
  		if (_deferReplyForS2C) {
  			_deferReplyForS2C = false;
  			if (_deferredReply) {
@@ -6028,7 +5996,7 @@ index ef4a772c9ebd8f0451b86b3d1ea978960e43a53a..4015e2b24f83eab4e3a37d1496296b6d
  				_deferredReply = std::nullopt;
  			}
  		}
-@@ -1699,6 +1708,49 @@ void DarlingServer::Thread::logToStream(Log::Stream& stream) const {
+@@ -1679,6 +1688,49 @@ void DarlingServer::Thread::logToStream(Log::Stream& stream) const {
  	stream << "[T:" << _tid << "(" << _nstid << ")]";
  };
  
@@ -6078,7 +6046,7 @@ index ef4a772c9ebd8f0451b86b3d1ea978960e43a53a..4015e2b24f83eab4e3a37d1496296b6d
  void DarlingServer::Thread::pushCallReply(std::shared_ptr<Call> expectedCall, Message&& reply) {
  	std::unique_lock lock(_rwlock);
  
-@@ -1713,43 +1765,15 @@ void DarlingServer::Thread::pushCallReply(std::shared_ptr<Call> expectedCall, Me
+@@ -1693,43 +1745,15 @@ void DarlingServer::Thread::pushCallReply(std::shared_ptr<Call> expectedCall, Me
  
  		_interrupts.top().savedReply = std::move(reply);
  	} else if (_deferReplyForS2C) {
@@ -6372,7 +6340,7 @@ index f0d114b1c209318eb98a9a140ee208d42de1f70e..355c8b9c5a0d28ddd9c66da22aad63ba
  
  # --- P7 wake-model LOST-WAKE race gate (dar-my8). Hermetic: header-only, real shm, two threads.
 
-From 6f9cbe85b5f256fd19e7ebe891e212419522817d Mon Sep 17 00:00:00 2001
+From d314907d84e77c7a9720d0fd0fe5f9d6548c75bc Mon Sep 17 00:00:00 2001
 From: Ilya Gulya <ilya@gulya.me>
 Date: Mon, 29 Jun 2026 14:00:40 +0000
 Subject: [PATCH] perf#18 dar-1il.2: remove mod_refs from ring (S2C-deadlock) +
@@ -6430,8 +6398,6 @@ Latency: ring p50 alloc ~3.5us / insert ~2.8us vs UDS ~15.4us / ~21.4us. Fork-st
 
 call.cpp staged with the foreign DARLING_FORK_TIMELINE hunks filtered out.
 Local only; nothing pushed.
-
-Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
 ---
  include/darlingserver/rpc-supplement.h | 88 +++++++++++++++++++++++++-
  src/call.cpp                           | 24 +++----
@@ -6583,10 +6549,10 @@ index 87ef58e0798991d5d52b5304867488325898ad0c..40f4832a8b9141a07a5073476959ab85
  }
  
 diff --git a/src/call.cpp b/src/call.cpp
-index a1484085faf2f17651d28384986fa6cef310a269..6d1ea48fc164f974d945c9946763a921d539a1d6 100644
+index 2799043b8f0b9a5e25f254c4ea72c595e1c095fa..e9a8eee2150f3bae77b2aae5519587f90cdd02fe 100644
 --- a/src/call.cpp
 +++ b/src/call.cpp
-@@ -1353,18 +1353,18 @@ static bool ringFastMachReplyPortEnabled() {
+@@ -1394,18 +1394,18 @@ static bool ringFastMachReplyPortEnabled() {
  // task_self_trap + mach_reply_port both just mint/return a port via current_task()'s space and
  // never suspend. Each gated by its hatch (task_self_trap rides the global hatch only).
  //
@@ -6991,7 +6957,7 @@ index 355c8b9c5a0d28ddd9c66da22aad63bab386eae5..01815217b7bd632fd6d0e3d340482eb4
  fi
  if "$TMP/wr_redB" "$WR_ITERS" >/dev/null 2>&1; then
 
-From f9978030b502df1609c067b77b59c3faaff9d46b Mon Sep 17 00:00:00 2001
+From cfc0191c26bf06ff0f233d686cbd29b430829635 Mon Sep 17 00:00:00 2001
 From: Ilya Gulya <ilya@gulya.me>
 Date: Mon, 29 Jun 2026 14:20:15 +0000
 Subject: [PATCH] perf#18 dar-1il.2: codify the permanent ring C2S membership
@@ -7011,8 +6977,6 @@ that still risks an S2C. Reframes dar-1il.2 option B (mod_refs) as "waits for th
 duplex lane", not "prove a safe subset on the simple ring".
 
 Local only; nothing pushed.
-
-Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
 ---
  include/darlingserver/rpc-supplement.h | 32 ++++++++++++++++++++++++++
  1 file changed, 32 insertions(+)
@@ -7061,7 +7025,7 @@ index 40f4832a8b9141a07a5073476959ab85bfe98e58..c58cb0f2ec90f3bbc69cbb081a30df45
  // DISTINCT from the no-fiber inline fast path (ringFastPathEligible / Tier 2), a strictly smaller,
  // separately-proven set. Never conflate the two.
 
-From 17fc4d21f7bcc8144d6599ae78819526a629f15f Mon Sep 17 00:00:00 2001
+From d5909bb22be9fd88afb92c7eb3ddbbfc7a7990c6 Mon Sep 17 00:00:00 2001
 From: Ilya Gulya <ilya@gulya.me>
 Date: Mon, 29 Jun 2026 15:16:33 +0000
 Subject: [PATCH] perf#18 Phase A (dar-dar6x4-perf-5dq.30.1): freeze the
@@ -7099,8 +7063,6 @@ tests/ring_lane_class_gate_test.c (new) + run-ring-shm-validate.sh: RED->GREEN g
 
 All existing ring gates remain GREEN; server builds clean ring-ON and ring-OFF; prod
 config restored OFF; nothing deployed.
-
-Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
 ---
  include/darlingserver/rpc-supplement.h | 112 ++++++++++++++++++++
  src/call.cpp                           |   7 ++
@@ -7233,10 +7195,10 @@ index c58cb0f2ec90f3bbc69cbb081a30df45bc9a020f..9d6210ccf86b8da34f7cac5510fbd5fd
  //
  // The shared X-macro above makes the guest and server allowlists drift-proof ONLY when both are
 diff --git a/src/call.cpp b/src/call.cpp
-index 6d1ea48fc164f974d945c9946763a921d539a1d6..dd8ad73a8774ab2bc1b1fbce01e4406c24288895 100644
+index e9a8eee2150f3bae77b2aae5519587f90cdd02fe..21c794e5d80fbe848ce94796d0a4e6d7764f099f 100644
 --- a/src/call.cpp
 +++ b/src/call.cpp
-@@ -1353,6 +1353,13 @@ static bool ringFastMachReplyPortEnabled() {
+@@ -1394,6 +1394,13 @@ static bool ringFastMachReplyPortEnabled() {
  // task_self_trap + mach_reply_port both just mint/return a port via current_task()'s space and
  // never suspend. Each gated by its hatch (task_self_trap rides the global hatch only).
  //
@@ -7463,7 +7425,7 @@ index 01815217b7bd632fd6d0e3d340482eb491ec323f..90fd6d76766a31e72a5312b219fcbf54
  
  # --- P7 wake-model LOST-WAKE race gate (dar-my8). Hermetic: header-only, real shm, two threads.
 
-From 4200f530ef13a7cec02f79ee6d624a37a1f0a9bc Mon Sep 17 00:00:00 2001
+From f551b2847befbd78d0414c7a8d3b1842ff709553 Mon Sep 17 00:00:00 2001
 From: Ilya Gulya <ilya@gulya.me>
 Date: Mon, 29 Jun 2026 15:25:28 +0000
 Subject: [PATCH] perf#18 Phase B: default-ON decision packet for the simple
@@ -7493,8 +7455,6 @@ tests/PERF18-RING-DEFAULT-ON-DECISION.md (new): the decision packet.
 
 Sibling PERF18-RING-DEFAULT-ON-CHECKLIST.md remains the engineering gate (all [x]); this
 packet is the product-facing decision layer on top of it. Nothing pushed.
-
-Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
 ---
  tests/PERF18-RING-DEFAULT-ON-DECISION.md | 199 +++++++++++++++++++++++
  1 file changed, 199 insertions(+)
@@ -7706,7 +7666,7 @@ index 0000000000000000000000000000000000000000..a3cf28dc23d4de0770acfb17961aebe9
 +A `no` closes Phase B with the ring staying OFF by default; the engineering work stands and the
 +decision can be revisited without redoing this packet.
 
-From f872d2a77d3441940b614826cb746fb871d5c0c4 Mon Sep 17 00:00:00 2001
+From 3f95952ddf63a3644d8b2d27d13a170b019424b6 Mon Sep 17 00:00:00 2001
 From: Ilya Gulya <ilya@gulya.me>
 Date: Mon, 29 Jun 2026 15:46:46 +0000
 Subject: [PATCH] perf#18 Phase B Stage 1: default DSERVER_RING_TRANSPORT ON
@@ -7728,14 +7688,12 @@ insert_right ~2.3us, bad=0, side-effects all ok=1; startup [NOTICE] fires exactl
 lifetime; DARLING_SERVER_FAST_OPS=0 + DARLING_SERVER_FAST_MACH_REPLY_PORT=0 both honored (counters
 prove ring still used with fast_hit=0); ABI/opcode-set mismatch -> reject -> UDS fallback covered by
 the validate+attach gates. Counters clean: fail=0 s2c_full=0 suspend=0 clients_blocked=0.
-
-Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
 ---
  CMakeLists.txt | 12 ++++++++----
  1 file changed, 8 insertions(+), 4 deletions(-)
 
 diff --git a/CMakeLists.txt b/CMakeLists.txt
-index 16feb15f95cc90d7c400e759b299f29ef06618bc..a7c02fde98945a5072f1864845fd1571d5f33673 100644
+index 110931246d31d283695b1d0653402dfedf4f3adf..ac7a3033a63678af37a1d4c7b33f3a9aa74368d2 100644
 --- a/CMakeLists.txt
 +++ b/CMakeLists.txt
 @@ -59,10 +59,14 @@ endif()
@@ -7758,7 +7716,7 @@ index 16feb15f95cc90d7c400e759b299f29ef06618bc..a7c02fde98945a5072f1864845fd1571
  if (DSERVER_SINGLE_THREADED)
  	add_compile_definitions(
 
-From da1356779f08ab5d740e1ff0f64b3b8b76cddd3d Mon Sep 17 00:00:00 2001
+From 89ca271ad801b8caa541c9f2e6f9f5ea05e6a66c Mon Sep 17 00:00:00 2001
 From: Ilya Gulya <ilya@gulya.me>
 Date: Tue, 30 Jun 2026 01:29:53 +0000
 Subject: [PATCH] perf#18 P8 (dar-1il.3 / .3.1): duplex-lane design + the
@@ -7794,8 +7752,6 @@ Full perf#18 ring gate suite GREEN incl. the new ring_duplex_wake gate; simple L
 UNTOUCHED. Next (Phase D proper): wire the duplex transport, migrate deallocate of a
 mapped-region-backed port, side-effect A/B vs UDS under a real boot, simple-ring perf unchanged.
 NOTHING PUSHED.
-
-Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
 ---
  tests/PERF18-DUPLEX-LANE-DESIGN.md |  83 ++++++++++
  tests/ring_duplex_wake_gate_test.c | 257 +++++++++++++++++++++++++++++
@@ -8211,7 +8167,7 @@ index 90fd6d76766a31e72a5312b219fcbf542446c4ae..94906aa2f5d06d1c77a7f49e64552506
 +
  echo "all perf#18 ring gates: OK"
 
-From 9b9e0ae111dc2f38f75d7b199c9022284d4539a0 Mon Sep 17 00:00:00 2001
+From 929875595152792327dc3ed52552ce782b19be44 Mon Sep 17 00:00:00 2001
 From: Ilya Gulya <ilya@gulya.me>
 Date: Tue, 30 Jun 2026 01:44:28 +0000
 Subject: [PATCH] perf#18 P8 D1/D2 (dar-1il.3.1): minimal duplex mailbox ABI v4
@@ -8260,8 +8216,6 @@ guarded by the conjunction (caller in duplex parent wait AND caps say duplex AND
 supported AND parent_id known AND a free upcall slot), else the old UDS path; and a guest pump in a
 gr_wait_reply sibling. THEN migrate mach_port_deallocate of a mapped-region-backed port + the
 side-effect A/B under a real boot. NOTHING PUSHED.
-
-Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
 ---
  include/darlingserver/rpc-supplement.h | 109 ++++++++++-
  tests/ring_duplex_roundtrip_test.c     | 254 +++++++++++++++++++++++++
@@ -8717,7 +8671,7 @@ index 94906aa2f5d06d1c77a7f49e645525061483cc2b..0d6dd04d9c993739f75165ffcfe23c21
  
  echo "all perf#18 ring gates: OK"
 
-From e1d7bfc6bf20758d29a624ec580dd20539436043 Mon Sep 17 00:00:00 2001
+From 4965126580440a8f75bb179111b4a7b58c4dd3d3 Mon Sep 17 00:00:00 2001
 From: Ilya Gulya <ilya@gulya.me>
 Date: Tue, 30 Jun 2026 03:22:57 +0000
 Subject: [PATCH] perf#18 P8 D3 (dar-1il.3.1.1): server duplex
@@ -8755,8 +8709,6 @@ host gate suite GREEN; fork-storm 3/3 DONE .o=200/200 clients_blocked=0.
 
 ABI v4 unchanged. (call.cpp staged hunk-filtered to exclude the foreign DARLING_FORK_TIMELINE
 working-tree diff.)
-
-Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
 ---
  internal-include/darlingserver/metrics.hpp |   9 +
  internal-include/darlingserver/ring.hpp    |  14 ++
@@ -8897,10 +8849,10 @@ index f1d64b97a996725254d8f1e7d9b6c42d6d002e0b..3c05b624aef7674a3a4f04dabdce5bc9
  		// perf #18 P6: read + clear the publish-phase TSC cycles recorded during the last reply.
  		uint64_t takeRingPublishCycles();
 diff --git a/src/call.cpp b/src/call.cpp
-index dd8ad73a8774ab2bc1b1fbce01e4406c24288895..9ba4eb61ddd3d49cb7523403b355e629309f2326 100644
+index 21c794e5d80fbe848ce94796d0a4e6d7764f099f..376b4ce4034c9caae065df346257edb33b58edfa 100644
 --- a/src/call.cpp
 +++ b/src/call.cpp
-@@ -1349,6 +1349,19 @@ static bool ringFastMachReplyPortEnabled() {
+@@ -1390,6 +1390,19 @@ static bool ringFastMachReplyPortEnabled() {
  	}();
  	return v;
  }
@@ -8920,7 +8872,7 @@ index dd8ad73a8774ab2bc1b1fbce01e4406c24288895..9ba4eb61ddd3d49cb7523403b355e629
  // Is this callnum eligible for the no-fiber inline fast path? Must be a PROVEN-non-blocking op.
  // task_self_trap + mach_reply_port both just mint/return a port via current_task()'s space and
  // never suspend. Each gated by its hatch (task_self_trap rides the global hatch only).
-@@ -1438,6 +1451,29 @@ uint32_t DarlingServer::ringServiceThread(const std::shared_ptr<DarlingServer::T
+@@ -1479,6 +1492,29 @@ uint32_t DarlingServer::ringServiceThread(const std::shared_ptr<DarlingServer::T
  		uint32_t seq = req->seq;
  		uint32_t arenalen = req->arena_len;
  
@@ -9014,10 +8966,10 @@ index 8437765035e936c5a7a0ec1ea66dad7decf14c12..8d1fd1cb4e32a137e50ebf1a3e8e73c0
  	}
  	if (serviced > 0) {
 diff --git a/src/thread.cpp b/src/thread.cpp
-index 4015e2b24f83eab4e3a37d1496296b6dd935af14..958390f4c04d4653f32d4798766e432e0d49ef16 100644
+index da89d3a89cfc345d470ea72abe1fd830f14d2560..f95356431359944751b2d5f59753cc0f98ecb29e 100644
 --- a/src/thread.cpp
 +++ b/src/thread.cpp
-@@ -1465,6 +1465,188 @@ std::optional<DarlingServer::Message> DarlingServer::Thread::_s2cPerform(Message
+@@ -1445,6 +1445,188 @@ std::optional<DarlingServer::Message> DarlingServer::Thread::_s2cPerform(Message
  	return std::move(*reply);
  };
  
@@ -9398,7 +9350,7 @@ index 0d6dd04d9c993739f75165ffcfe23c2178e6cffc..52c08bb43cc969e1e0c6d190194c971a
 +
  echo "all perf#18 ring gates: OK"
 
-From 297143fab760feab66b0f09c80d4bb36b92b3c8f Mon Sep 17 00:00:00 2001
+From d906bc6e5fba92f6168ab3db99c335b6754f9281 Mon Sep 17 00:00:00 2001
 From: Ilya Gulya <ilya@gulya.me>
 Date: Tue, 30 Jun 2026 05:19:13 +0000
 Subject: [PATCH] perf#18 P8 D4 (dar-1il.3.2.1): mach_port_deallocate via the
@@ -9436,8 +9388,6 @@ stubbed), so ring_duplex_s2c stays 0 -- the dar-1il.1 deadlock cannot be reprodu
 here. The live deadlock-CURE proof is therefore N/A for deallocate; the machinery is correct +
 safe (fail-closed, pre-mutation decline) and kept default-OFF. The real S2C-cure proof target is
 vm_deallocate (a separate op that does drive a caller munmap S2C) -- a follow-up bead.
-
-Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
 ---
  include/darlingserver/rpc-supplement.h     |  71 ++++++++-
  internal-include/darlingserver/metrics.hpp |  12 ++
@@ -9647,10 +9597,10 @@ index 3c05b624aef7674a3a4f04dabdce5bc924a3578a..31b0310b24a43c62715f34f48191989d
  		// perf #18 P6: read + clear the publish-phase TSC cycles recorded during the last reply.
  		uint64_t takeRingPublishCycles();
 diff --git a/src/call.cpp b/src/call.cpp
-index 9ba4eb61ddd3d49cb7523403b355e629309f2326..5222706ee727e06adeb6ed92cc89baf551aa7428 100644
+index 376b4ce4034c9caae065df346257edb33b58edfa..53f8a06c4dfe403f42a6a204482d307f1ae7a77f 100644
 --- a/src/call.cpp
 +++ b/src/call.cpp
-@@ -1474,6 +1474,67 @@ uint32_t DarlingServer::ringServiceThread(const std::shared_ptr<DarlingServer::T
+@@ -1515,6 +1515,67 @@ uint32_t DarlingServer::ringServiceThread(const std::shared_ptr<DarlingServer::T
  			continue;
  		}
  
@@ -9732,10 +9682,10 @@ index f874ba54ea551aa16ed90f84b584b686a3645bd3..a2bca8119c1e388f40fbb6682b7efb50
  	out << "  \"phase_samples\": " << phaseSamples.load(std::memory_order_relaxed) << ",\n";
  	out << "  \"phase_drain_cycles\": " << phaseDrainCycles.load(std::memory_order_relaxed) << ",\n";
 diff --git a/src/thread.cpp b/src/thread.cpp
-index 958390f4c04d4653f32d4798766e432e0d49ef16..d3b66cba94205dfb29c1e7cb3ba894eedcf238c0 100644
+index f95356431359944751b2d5f59753cc0f98ecb29e..66274c67515f7acd30c0f2997363b747da01fee9 100644
 --- a/src/thread.cpp
 +++ b/src/thread.cpp
-@@ -1395,8 +1395,41 @@ std::optional<DarlingServer::Message> DarlingServer::Thread::_s2cPerform(Message
+@@ -1375,8 +1375,41 @@ std::optional<DarlingServer::Message> DarlingServer::Thread::_s2cPerform(Message
  
  	s2cLog.debug() << *this << ": Going to send S2C message" << s2cLog.endLog;
  
@@ -9779,7 +9729,7 @@ index 958390f4c04d4653f32d4798766e432e0d49ef16..d3b66cba94205dfb29c1e7cb3ba894ee
  
  	// now let's wait for the reply
  	if (!dtape_semaphore_down_simple(_s2cReplySempahore)) {
-@@ -1550,6 +1583,7 @@ bool DarlingServer::Thread::_drainDuplexReply() {
+@@ -1530,6 +1563,7 @@ bool DarlingServer::Thread::_drainDuplexReply() {
  	uint32_t finalResult = 0;
  	int32_t  finalCode = 0;
  	bool completeSentinel = false;
@@ -9787,7 +9737,7 @@ index 958390f4c04d4653f32d4798766e432e0d49ef16..d3b66cba94205dfb29c1e7cb3ba894ee
  	{
  		std::unique_lock lock(_rwlock);
  		if (!_duplexUpcallInFlight) {
-@@ -1568,30 +1602,54 @@ bool DarlingServer::Thread::_drainDuplexReply() {
+@@ -1548,30 +1582,54 @@ bool DarlingServer::Thread::_drainDuplexReply() {
  			// correlated reply: harvest it, consume the slot, clear the in-flight state.
  			_duplexReplyStatus = cb->duplex_reply_status;
  			_duplexReplyArg = cb->duplex_reply_arg;
@@ -9847,7 +9797,7 @@ index 958390f4c04d4653f32d4798766e432e0d49ef16..d3b66cba94205dfb29c1e7cb3ba894ee
  			_duplexInFlightFast.store(false, std::memory_order_release);
  			Metrics::shared().ringDuplexReject.fetch_add(1, std::memory_order_relaxed);
  			if (_duplexSentinelSeq != 0) {
-@@ -1601,12 +1659,37 @@ bool DarlingServer::Thread::_drainDuplexReply() {
+@@ -1581,12 +1639,37 @@ bool DarlingServer::Thread::_drainDuplexReply() {
  				finalResult = 0;
  				finalCode = -1; // mis-correlation -> the synthetic parent fails
  				_duplexSentinelSeq = 0;
@@ -9885,7 +9835,7 @@ index 958390f4c04d4653f32d4798766e432e0d49ef16..d3b66cba94205dfb29c1e7cb3ba894ee
  	if (completeSentinel && ringForReply) {
  		// publish the synthetic parent's final reply onto the s2c ring. Reply convention mirrors the
  		// Lane-1 port-trap reply ({reply_hdr.code, uint32 result}); the guest selftest reads `result`.
-@@ -1645,6 +1728,66 @@ bool DarlingServer::Thread::duplexSelftestUpcall(uint32_t arg, uint32_t seq) {
+@@ -1625,6 +1708,66 @@ bool DarlingServer::Thread::duplexSelftestUpcall(uint32_t arg, uint32_t seq) {
  	}
  	return took;
  };
@@ -10235,7 +10185,7 @@ index 52c08bb43cc969e1e0c6d190194c971a084ea41c..717ab15aaf0a02a846a1e602b84aded5
  	#     Two real threads (server publishes upcall + scope-waits; guest pumps + replies) on a real
  	#     mailbox. Proves the transport (not just the model): roundtrip completes, caller-thread
 
-From 24f222be0bc1c054e220dd01e454f4e261e2ac1a Mon Sep 17 00:00:00 2001
+From 84c16d0833a9573f61df677be083526f15d81c56 Mon Sep 17 00:00:00 2001
 From: Ilya Gulya <ilya@gulya.me>
 Date: Tue, 30 Jun 2026 07:45:48 +0000
 Subject: [PATCH] perf#18 P8 D6 (dar-1il.3.2.x): caller-S2C duplex SIDEBAND +
@@ -10273,8 +10223,6 @@ Hard gate tests/ring_duplex_vm_dealloc_gate_test.c (S2C-required + munmap-once +
 fail-closed-bounded; 3 RED arms). Full ring gate suite GREEN, fork-storm 3/3
 (200/200 blocked=0), Lane-1 pbbench unchanged, isolation holds. ABI v5 unchanged
 (new cap bit DUPLEX_CAP_VM_DEALLOCATE 0x4 is forward-compatible). All default-OFF.
-
-Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
 ---
  include/darlingserver/rpc-supplement.h     |  16 +++
  internal-include/darlingserver/metrics.hpp |  27 ++++
@@ -10393,10 +10341,10 @@ index 31b0310b24a43c62715f34f48191989d8356f18c..a96f94e795f2ebaeb4f1dbd58c843bac
  		// perf #18 P6: read + clear the publish-phase TSC cycles recorded during the last reply.
  		uint64_t takeRingPublishCycles();
 diff --git a/src/call.cpp b/src/call.cpp
-index 5222706ee727e06adeb6ed92cc89baf551aa7428..95dccfbdaa44932414766b0515ceb64a2204e518 100644
+index 53f8a06c4dfe403f42a6a204482d307f1ae7a77f..b0e91cd4bb45bd971f09ad28eef1eff859944126 100644
 --- a/src/call.cpp
 +++ b/src/call.cpp
-@@ -1362,6 +1362,35 @@ static bool ringDuplexSelftestEnabled() {
+@@ -1403,6 +1403,35 @@ static bool ringDuplexSelftestEnabled() {
  	}();
  	return v;
  }
@@ -10432,7 +10380,7 @@ index 5222706ee727e06adeb6ed92cc89baf551aa7428..95dccfbdaa44932414766b0515ceb64a
  // Is this callnum eligible for the no-fiber inline fast path? Must be a PROVEN-non-blocking op.
  // task_self_trap + mach_reply_port both just mint/return a port via current_task()'s space and
  // never suspend. Each gated by its hatch (task_self_trap rides the global hatch only).
-@@ -1535,6 +1564,86 @@ uint32_t DarlingServer::ringServiceThread(const std::shared_ptr<DarlingServer::T
+@@ -1576,6 +1605,86 @@ uint32_t DarlingServer::ringServiceThread(const std::shared_ptr<DarlingServer::T
  			continue;
  		}
  
@@ -10540,10 +10488,10 @@ index a2bca8119c1e388f40fbb6682b7efb50601fc4e3..1b5b841251346bb61209756b6fcd7055
  	out << "  \"phase_samples\": " << phaseSamples.load(std::memory_order_relaxed) << ",\n";
  	out << "  \"phase_drain_cycles\": " << phaseDrainCycles.load(std::memory_order_relaxed) << ",\n";
 diff --git a/src/thread.cpp b/src/thread.cpp
-index d3b66cba94205dfb29c1e7cb3ba894eedcf238c0..37b73808f9db75e12bd76de493c3d7e3bc653ddf 100644
+index 66274c67515f7acd30c0f2997363b747da01fee9..9395a364e7661d381d2e9914bae4b3080c7ed9c6 100644
 --- a/src/thread.cpp
 +++ b/src/thread.cpp
-@@ -38,6 +38,7 @@
+@@ -41,6 +41,7 @@
  #include <atomic>
  
  #include <sys/syscall.h>
@@ -10551,7 +10499,7 @@ index d3b66cba94205dfb29c1e7cb3ba894eedcf238c0..37b73808f9db75e12bd76de493c3d7e3
  
  #if DSERVER_ASAN
  	#include <sanitizer/asan_interface.h>
-@@ -1383,6 +1384,31 @@ std::optional<DarlingServer::Message> DarlingServer::Thread::_s2cPerform(Message
+@@ -1363,6 +1364,31 @@ std::optional<DarlingServer::Message> DarlingServer::Thread::_s2cPerform(Message
  			_deferReplyForS2C = true;
  		}
  
@@ -10583,7 +10531,7 @@ index d3b66cba94205dfb29c1e7cb3ba894eedcf238c0..37b73808f9db75e12bd76de493c3d7e3
  		call.setAddress(_address);
  	}
  
-@@ -1608,6 +1634,7 @@ bool DarlingServer::Thread::_drainDuplexReply() {
+@@ -1588,6 +1614,7 @@ bool DarlingServer::Thread::_drainDuplexReply() {
  			dserver_ring_duplex_consume_reply(cb);
  			_duplexUpcallInFlight = false;
  			_duplexRealUpcallNum = 0;
@@ -10591,7 +10539,7 @@ index d3b66cba94205dfb29c1e7cb3ba894eedcf238c0..37b73808f9db75e12bd76de493c3d7e3
  			_duplexInFlightFast.store(false, std::memory_order_release);
  			Metrics::shared().ringDuplexS2c.fetch_add(1, std::memory_order_relaxed);
  			if (_duplexSentinelSeq != 0) {
-@@ -1620,6 +1647,14 @@ bool DarlingServer::Thread::_drainDuplexReply() {
+@@ -1600,6 +1627,14 @@ bool DarlingServer::Thread::_drainDuplexReply() {
  				finalCode = (_duplexReplyStatus == 0) ? 0 : -1;
  				_duplexSentinelSeq = 0;
  			} else if (realUpcallNum == (uint32_t)dserver_s2c_msgnum_munmap) {
@@ -10606,7 +10554,7 @@ index d3b66cba94205dfb29c1e7cb3ba894eedcf238c0..37b73808f9db75e12bd76de493c3d7e3
  				// perf #18 P8 D4: REAL-op resume. Synthesize the _s2cReply Message exactly as the UDS S2C
  				// reply would arrive (a dserver_s2c_reply_munmap_t carrying the guest's munmap result), so
  				// _s2cPerform's reply-extraction + validation path is byte-identical to UDS. Then up
-@@ -1650,6 +1685,7 @@ bool DarlingServer::Thread::_drainDuplexReply() {
+@@ -1630,6 +1665,7 @@ bool DarlingServer::Thread::_drainDuplexReply() {
  			dserver_ring_duplex_consume_reply(cb);
  			_duplexUpcallInFlight = false;
  			_duplexRealUpcallNum = 0;
@@ -10614,7 +10562,7 @@ index d3b66cba94205dfb29c1e7cb3ba894eedcf238c0..37b73808f9db75e12bd76de493c3d7e3
  			_duplexInFlightFast.store(false, std::memory_order_release);
  			Metrics::shared().ringDuplexReject.fetch_add(1, std::memory_order_relaxed);
  			if (_duplexSentinelSeq != 0) {
-@@ -1680,7 +1716,60 @@ bool DarlingServer::Thread::_drainDuplexReply() {
+@@ -1660,7 +1696,60 @@ bool DarlingServer::Thread::_drainDuplexReply() {
  				}
  			}
  		} else {
@@ -10676,7 +10624,7 @@ index d3b66cba94205dfb29c1e7cb3ba894eedcf238c0..37b73808f9db75e12bd76de493c3d7e3
  		}
  	}
  
-@@ -1738,9 +1827,12 @@ bool DarlingServer::Thread::duplexSelftestUpcall(uint32_t arg, uint32_t seq) {
+@@ -1718,9 +1807,12 @@ bool DarlingServer::Thread::duplexSelftestUpcall(uint32_t arg, uint32_t seq) {
  bool DarlingServer::Thread::_s2cTryDuplexMunmapLocked(uint32_t s2cNumber, uint64_t address, uint64_t length, std::unique_lock<std::shared_mutex>& lock) {
  	(void)lock; // documents the held-lock contract
  	auto ring = _ring;
@@ -10692,7 +10640,7 @@ index d3b66cba94205dfb29c1e7cb3ba894eedcf238c0..37b73808f9db75e12bd76de493c3d7e3
  		return false;
  	}
  	dserver_ring_shm_t* cb = ring->liveControlBlock();
-@@ -1769,6 +1861,15 @@ bool DarlingServer::Thread::_s2cTryDuplexMunmapLocked(uint32_t s2cNumber, uint64
+@@ -1749,6 +1841,15 @@ bool DarlingServer::Thread::_s2cTryDuplexMunmapLocked(uint32_t s2cNumber, uint64
  	_duplexUpcallInFlight = true;
  	_duplexRealUpcallNum = s2cNumber; // mark this as a REAL-op upcall (drain synthesizes _s2cReply)
  	_duplexInFlightFast.store(true, std::memory_order_release);
@@ -10708,7 +10656,7 @@ index d3b66cba94205dfb29c1e7cb3ba894eedcf238c0..37b73808f9db75e12bd76de493c3d7e3
  
  	dserver_ring_duplex_publish_munmap_upcall(cb, parentId, upcallId, address, length);
  	ring->wakeGuest();
-@@ -1780,6 +1881,22 @@ void DarlingServer::Thread::setRingDuplexParentActive(bool active) {
+@@ -1760,6 +1861,22 @@ void DarlingServer::Thread::setRingDuplexParentActive(bool active) {
  	_ringDuplexParentActive = active;
  };
  
@@ -10731,7 +10679,7 @@ index d3b66cba94205dfb29c1e7cb3ba894eedcf238c0..37b73808f9db75e12bd76de493c3d7e3
  bool DarlingServer::Thread::duplexDeallocateCapable() const {
  	std::unique_lock lock(const_cast<std::shared_mutex&>(_rwlock));
  	auto ring = _ring;
-@@ -1788,6 +1905,18 @@ bool DarlingServer::Thread::duplexDeallocateCapable() const {
+@@ -1768,6 +1885,18 @@ bool DarlingServer::Thread::duplexDeallocateCapable() const {
  	}
  	return ring->duplexCapable(DSERVER_RING_DUPLEX_CAP_DEALLOCATE);
  };
@@ -10972,7 +10920,7 @@ index 717ab15aaf0a02a846a1e602b84aded5e63b630e..dbe4796088c9fe9a112a7d6aa702ec50
  	#     Two real threads (server publishes upcall + scope-waits; guest pumps + replies) on a real
  	#     mailbox. Proves the transport (not just the model): roundtrip completes, caller-thread
 
-From 8ecd24e18cb72b7f9844677ca1d8e2e18136e05e Mon Sep 17 00:00:00 2001
+From 88f3529ea681ae0b59e80c7b5caa4d2823274533 Mon Sep 17 00:00:00 2001
 From: Ilya Gulya <ilya@gulya.me>
 Date: Tue, 30 Jun 2026 08:09:49 +0000
 Subject: [PATCH] perf#18 P8 D7 (dar-1il.3.2.3): mach_msg_overwrite
@@ -10992,8 +10940,6 @@ simple send-only subset gated behind an mmap-S2C sideband extension of D6.
   concentrated in the send-only fraction -> measure the send/recv split first.
 
 Recon only. No ring wiring, no Lane-1 op-set change, no D6 behavior change.
-
-Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
 ---
  tests/PERF18-MSG-OVERWRITE-RECON.md | 228 ++++++++++++++++++++++++++++
  1 file changed, 228 insertions(+)
@@ -11234,7 +11180,7 @@ index 0000000000000000000000000000000000000000..f79c92e4177c612470adf28535a9a49a
 +  rpc-supplement.h; attribution counters `s2c_munmap_{ring,uds,no}_parent`.
 +- Hotness 19%: dserver-rpc-defs.h:95 + generalize-recv-spin-guest.patch + per_call_metrics_test.cpp.
 
-From 6e7cbcc2640924f36f04ef54d41552b82662a343 Mon Sep 17 00:00:00 2001
+From 4615f1c784d48a29f11fd8a4bd669df0282d1864 Mon Sep 17 00:00:00 2001
 From: Ilya Gulya <ilya@gulya.me>
 Date: Tue, 30 Jun 2026 08:40:22 +0000
 Subject: [PATCH] perf#18 P8 D8 (dar-1il.3.2.3): mach_msg_overwrite shape
@@ -11256,8 +11202,6 @@ ops. The OOL->mmap-S2C architectural stopper stands but is moot for this op.
 Gate: tests/msg_overwrite_census_test.cpp (GREEN + 2 RED arms), wired into
 run-ring-shm-validate.sh; passes in ring-ON and ring-OFF builds. No behavior
 change (off by default). call.cpp foreign DARLING_FORK_TIMELINE hunks excluded.
-
-Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
 ---
  internal-include/darlingserver/metrics.hpp |  66 ++++++++++
  src/call.cpp                               |  58 +++++++++
@@ -11354,10 +11298,10 @@ index 1276db8f57774606a16ff8fbca58061b3724985d..89c077a329f5806cd877ffc33eb030ba
  		std::atomic<uint64_t> lastReplyMonoUs {0};
  
 diff --git a/src/call.cpp b/src/call.cpp
-index 95dccfbdaa44932414766b0515ceb64a2204e518..8f6daa213d0b2c8322f3daaba1b7e16fab18c3da 100644
+index b0e91cd4bb45bd971f09ad28eef1eff859944126..130ba8107b2ca4766238cf5c9f3e938e9651566d 100644
 --- a/src/call.cpp
 +++ b/src/call.cpp
-@@ -237,6 +237,64 @@ std::shared_ptr<DarlingServer::Call> DarlingServer::Call::callFromMessage(Messag
+@@ -256,6 +256,64 @@ std::shared_ptr<DarlingServer::Call> DarlingServer::Call::callFromMessage(Messag
  		return nullptr;
  	}
  
@@ -11733,7 +11677,7 @@ index dbe4796088c9fe9a112a7d6aa702ec50db1757a4..59fe80833ac4da31a7c50b2d11cc5f3b
 +
  echo "all perf#18 ring gates: OK"
 
-From 75e23a196ff8483afb5d1ed3867c070fc006a6cb Mon Sep 17 00:00:00 2001
+From 72401bf4ffac3fc7a706aa2ae99de0623e695479 Mon Sep 17 00:00:00 2001
 From: Ilya Gulya <ilya@gulya.me>
 Date: Tue, 30 Jun 2026 09:54:44 +0000
 Subject: [PATCH] perf#18 P8 D9 (dar-1il.4): global RPC heatmap +
@@ -11765,8 +11709,6 @@ bead. No production behavior change; nothing migrated.
 
 Gate: tests/rpc_heatmap_gate_test.cpp (GREEN + 2 RED arms), wired into
 run-ring-shm-validate.sh. Doc: tests/PERF18-RPC-HEATMAP.md (+ live snapshot).
-
-Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
 ---
  internal-include/darlingserver/metrics.hpp |  53 ++
  internal-include/darlingserver/thread.hpp  |  10 +
@@ -12003,10 +11945,10 @@ index 14de4148740ae11d8d3e25847ddeb044c1230c14..e49021a4a127d2b231def9ca807f8af5
  	unlink(_socketPath.c_str());
  
 diff --git a/src/thread.cpp b/src/thread.cpp
-index 37b73808f9db75e12bd76de493c3d7e3bc653ddf..f4dcd90bf87dd1ca4bff18e471b2b2758c62e72d 100644
+index 9395a364e7661d381d2e9914bae4b3080c7ed9c6..c162cfd4ab619ba8f8738a7bb75c4a93595f4dbd 100644
 --- a/src/thread.cpp
 +++ b/src/thread.cpp
-@@ -407,6 +407,17 @@ void DarlingServer::Thread::microthreadWorker() {
+@@ -395,6 +395,17 @@ void DarlingServer::Thread::microthreadWorker() {
  		// perf #9 (dar-dar6x4-perf-5dq.16): per-call-number breakdown so perf #7 can
  		// see which RPC numbers dominate the guest's recvmsg-wait.
  		_metrics.recordCall(static_cast<uint32_t>(_callNumber), serviceUs);
@@ -12024,7 +11966,7 @@ index 37b73808f9db75e12bd76de493c3d7e3bc653ddf..f4dcd90bf87dd1ca4bff18e471b2b275
  		if (_callNumber == DarlingServer::Call::Number::Checkin) {
  			_metrics.checkinLatency.record(serviceUs);
  		}
-@@ -728,6 +739,16 @@ bool DarlingServer::Thread::doWorkInline() {
+@@ -716,6 +727,16 @@ bool DarlingServer::Thread::doWorkInline() {
  		_metrics.rpcsServiced.fetch_add(1, std::memory_order_relaxed);
  		_metrics.rpcLatency.record(serviceUs);
  		_metrics.recordCall(static_cast<uint32_t>(_callNumber), serviceUs);
@@ -12041,7 +11983,7 @@ index 37b73808f9db75e12bd76de493c3d7e3bc653ddf..f4dcd90bf87dd1ca4bff18e471b2b275
  	}
  
  	// processCall() on a non-blocking op must have run to completion. If somehow it suspended
-@@ -837,6 +858,12 @@ bool DarlingServer::Thread::doMachReplyPortInline(uint32_t seq) {
+@@ -825,6 +846,12 @@ bool DarlingServer::Thread::doMachReplyPortInline(uint32_t seq) {
  		_metrics.rpcsServiced.fetch_add(1, std::memory_order_relaxed);
  		_metrics.rpcLatency.record(serviceUs);
  		_metrics.recordCall(static_cast<uint32_t>(dserver_callnum_mach_reply_port), serviceUs);
@@ -12054,7 +11996,7 @@ index 37b73808f9db75e12bd76de493c3d7e3bc653ddf..f4dcd90bf87dd1ca4bff18e471b2b275
  	}
  
  	// --- completion cleanup: mirror doWorkInline's (no fiber, no _activeCall ever set) ----------
-@@ -1409,6 +1436,14 @@ std::optional<DarlingServer::Message> DarlingServer::Thread::_s2cPerform(Message
+@@ -1389,6 +1416,14 @@ std::optional<DarlingServer::Message> DarlingServer::Thread::_s2cPerform(Message
  		}
  #endif
  
@@ -12069,7 +12011,7 @@ index 37b73808f9db75e12bd76de493c3d7e3bc653ddf..f4dcd90bf87dd1ca4bff18e471b2b275
  		call.setAddress(_address);
  	}
  
-@@ -2406,6 +2441,9 @@ void DarlingServer::Thread::beginRingReply(uint32_t seq) {
+@@ -2386,6 +2421,9 @@ void DarlingServer::Thread::beginRingReply(uint32_t seq) {
  	std::unique_lock lock(_rwlock);
  	_ringReplyPending = true;
  	_ringReplySeq = seq;
@@ -13112,7 +13054,7 @@ index 59fe80833ac4da31a7c50b2d11cc5f3b35943d44..32b71a9911b7af7917c18bbd3949e2a2
 +
  echo "all perf#18 ring gates: OK"
 
-From 69e151507f2b0295a3f16c954b2c08e2d30603c7 Mon Sep 17 00:00:00 2001
+From 93e7b02400c268ac1945fec77d1e6735fff05520 Mon Sep 17 00:00:00 2001
 From: Ilya Gulya <ilya@gulya.me>
 Date: Tue, 30 Jun 2026 10:12:17 +0000
 Subject: [PATCH] perf#18 P8 D10 (dar-1il.5): migrate thread_self_trap +
@@ -13148,8 +13090,6 @@ residual is the expected pre-attach early-boot calls (same as task_self_trap). F
 hash) cleanly UDS-falls-back (no wedge). Prod binary + dylib restored after. NOTHING PUSHED.
 
 Guest side (helpers + trap wiring) committed separately in xnu.
-
-Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
 ---
  include/darlingserver/rpc-supplement.h | 10 ++++++
  src/call.cpp                           |  8 +++++
@@ -13187,10 +13127,10 @@ index 077dab2a447acf03a65f12b14af3c8b4ebc030ee..584318731af5432d6bd66c88f2a3e2a3
  	/* Lane 1 Tier 1 (generic fiber): create/ref bookkeeping, no teardown, no caller S2C. */ \
  	X(mach_port_allocate,     DSERVER_RING_CLASS_SIMPLE_C2S) \
 diff --git a/src/call.cpp b/src/call.cpp
-index 8f6daa213d0b2c8322f3daaba1b7e16fab18c3da..1209bc938153c09cbe987b666fbbfb6e0ffe2667 100644
+index 130ba8107b2ca4766238cf5c9f3e938e9651566d..5011babc8f1f121718c8df242748afa8fd61a66a 100644
 --- a/src/call.cpp
 +++ b/src/call.cpp
-@@ -1482,6 +1482,14 @@ static bool ringFastPathEligible(uint32_t callnum) {
+@@ -1523,6 +1523,14 @@ static bool ringFastPathEligible(uint32_t callnum) {
  	if (callnum == dserver_callnum_task_self_trap) {
  		return true;
  	}
@@ -13340,7 +13280,7 @@ index 32b71a9911b7af7917c18bbd3949e2a2f00a271c..c8e4a6ca9763d34b001f3efa5bdb96cd
  	fi
  	if "$TMP/al_red"; then
 
-From e82c86cde82c86ec399514abfdbd614c920db0cd Mon Sep 17 00:00:00 2001
+From 897b0e1e8f82b3b2b0ab9e2c2dbba640c3868d40 Mon Sep 17 00:00:00 2001
 From: Ilya Gulya <ilya@gulya.me>
 Date: Tue, 30 Jun 2026 11:07:49 +0000
 Subject: [PATCH] perf#18 P8 D11 (dar-1il.6): migrate uidgid +
@@ -13377,8 +13317,6 @@ ring-vs-UDS (id/uidgid/sysctl-64bit/ps outputs). Skew (D11 server + old UDS dyli
 no wedge. Fork-storm 3/3 (30 children each, fail=0).
 
 Guest side is in the matching xnu commit.
-
-Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
 ---
  include/darlingserver/rpc-supplement.h | 23 ++++++++++++++++++++++-
  tests/ring_allowlist_test.cpp          |  6 ++++++
@@ -13471,7 +13409,7 @@ index 8a723cfb6d53a718dff5de349f104293f31da5ce..2097a1ae89717caa4a9c6732f3f45eaf
  	//     (the canon's whole point: "wrong lane, not bad op") ------------------------------------
  	uint32_t dealloc = dserver_ring_op_class(dserver_callnum_mach_port_deallocate);
 
-From 437c2d6e4fe1c426a24199d00a69fe14d960b362 Mon Sep 17 00:00:00 2001
+From 070954ea8ae50b7e782dc7c6276f2068ba68a789 Mon Sep 17 00:00:00 2001
 From: Ilya Gulya <ilya@gulya.me>
 Date: Tue, 30 Jun 2026 11:30:15 +0000
 Subject: [PATCH] =?UTF-8?q?perf#18=20D12=20(dar-1il.7):=20ack-only=20sette?=
@@ -13498,8 +13436,6 @@ lane (vchroot_path 248 + mldr_path 82 + set_executable_path 83, all char*).
 
 doc: tests/PERF18-ACKONLY-SETTER-RECON.md. ABI v5 unchanged, ring set unchanged,
 existing gates GREEN unchanged (no datapath change).
-
-Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
 ---
  tests/PERF18-ACKONLY-SETTER-RECON.md | 89 ++++++++++++++++++++++++++++
  1 file changed, 89 insertions(+)
@@ -13601,7 +13537,7 @@ index 0000000000000000000000000000000000000000..37e31fa46eab610bcc1da7e286bb49e3
 +GREEN unchanged; ring membership set unchanged (D10+D11 = 11 ops); ABI v5 unchanged. No A/B, no
 +fork-storm needed (no datapath change). The heatmap snapshot used is the D9 artifact (committed).
 
-From 88f2727ae7cd3ed9de743282ecc2bedbb2b4d2c7 Mon Sep 17 00:00:00 2001
+From 5b903e5a0233fd265f3cfe5fe55c2ab49d4935ce Mon Sep 17 00:00:00 2001
 From: Ilya Gulya <ilya@gulya.me>
 Date: Tue, 30 Jun 2026 12:10:40 +0000
 Subject: [PATCH] perf#18 D13 (dar-1il.8): migrate mldr_path + vchroot_path to
@@ -13632,8 +13568,6 @@ calls -> canon rule 1 holds, measured directly.
 
 doc: tests/PERF18-LANE15-STRING-ARENA-RECON.md. ABI v5 unchanged. NO arena built
 (not needed -- paths ride /proc/mem). NOT pushed.
-
-Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
 ---
  include/darlingserver/rpc-supplement.h    |  16 ++-
  tests/PERF18-LANE15-STRING-ARENA-RECON.md | 119 ++++++++++++++++++++++
@@ -13832,7 +13766,7 @@ index 2097a1ae89717caa4a9c6732f3f45eafb6e8a2dd..fe3cdbca794b79c2b938533d0cc67176
  
  	// --- the UDS-only ops are tagged destroy-capable + caller-S2C, and are NOT SimpleRingC2SEligible
 
-From d94c9d43c1638c7836e383a2d2b640978b76b0be Mon Sep 17 00:00:00 2001
+From bacdb644260835df43f5dfa9b9bf2c1c0cecb90b Mon Sep 17 00:00:00 2001
 From: Ilya Gulya <ilya@gulya.me>
 Date: Tue, 30 Jun 2026 13:04:58 +0000
 Subject: [PATCH] perf#23 (dar-dar6x4-perf-5dq.23): M1 spike gate for
@@ -13849,8 +13783,6 @@ Committing previously-untracked working-tree files so this perf#23 spike work is
 lost. Not wired into CMake / no test-runner reference yet -- run manually:
   bash tests/run-spawn-helper-pidns-placement.sh
 (Belongs to perf#23, not the perf#18 ring epic; preserved here on the shared branch.)
-
-Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
 ---
  tests/run-spawn-helper-pidns-placement.sh |  59 +++++++
  tests/spawn_helper_pidns_placement.c      | 203 ++++++++++++++++++++++
@@ -14133,7 +14065,7 @@ index 0000000000000000000000000000000000000000..afac26679bab187c63e21dd20b2aef6e
 +	}
 +}
 
-From 74d85853207205448a1171f17e2a7bd363390107 Mon Sep 17 00:00:00 2001
+From 52e4f0f1883af4ef4112d5a0aa947739eecef807 Mon Sep 17 00:00:00 2001
 From: Ilya Gulya <ilya@gulya.me>
 Date: Tue, 30 Jun 2026 13:18:40 +0000
 Subject: [PATCH] perf#18 D14 (dar-dar6x4-perf-5dq / dar-1il.9): per-call
@@ -14172,8 +14104,6 @@ DIFFERENT kind of bead: EARLIER RING ATTACH (move attach ahead of the pre-attach
 not another op migration. Ranked table is the STOP evidence if earlier attach proves infeasible.
 
 call.cpp untouched. Nothing pushed.
-
-Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
 ---
  internal-include/darlingserver/metrics.hpp |  19 +
  internal-include/darlingserver/thread.hpp  |  17 +-
@@ -14246,10 +14176,10 @@ index e7c67dd037590a19434018d4a269a0102a7d4902..778e7e914ea1727fad6dce825c08c36a
  		struct InterruptContext {
  			std::optional<Message> savedReply = std::nullopt;
 diff --git a/src/thread.cpp b/src/thread.cpp
-index f4dcd90bf87dd1ca4bff18e471b2b2758c62e72d..c4a12430e44ee7d67f86bbe68c5c2b0c08385253 100644
+index c162cfd4ab619ba8f8738a7bb75c4a93595f4dbd..2d9110c6343653c63298960bf303fe39d272e77c 100644
 --- a/src/thread.cpp
 +++ b/src/thread.cpp
-@@ -409,15 +409,16 @@ void DarlingServer::Thread::microthreadWorker() {
+@@ -397,15 +397,16 @@ void DarlingServer::Thread::microthreadWorker() {
  		_metrics.recordCall(static_cast<uint32_t>(_callNumber), serviceUs);
  		// perf #18 D9 (dar-1il.4): heatmap. This is the GENERIC fiber worker, so used_fiber=true (the
  		// call ran on a suspendable microthread -- a blocking/fiber op, NOT Tier-2-no-fiber-eligible).
@@ -14269,7 +14199,7 @@ index f4dcd90bf87dd1ca4bff18e471b2b2758c62e72d..c4a12430e44ee7d67f86bbe68c5c2b0c
  		if (_callNumber == DarlingServer::Call::Number::Checkin) {
  			_metrics.checkinLatency.record(serviceUs);
  		}
-@@ -741,14 +742,14 @@ bool DarlingServer::Thread::doWorkInline() {
+@@ -729,14 +730,14 @@ bool DarlingServer::Thread::doWorkInline() {
  		_metrics.recordCall(static_cast<uint32_t>(_callNumber), serviceUs);
  		// perf #18 D9 (dar-1il.4): heatmap. This is doWorkInline -- the Tier-2 NO-FIBER ring path. By
  		// construction it ran a ring-originated allowlisted op without suspending (used_fiber=false); a
@@ -14287,7 +14217,7 @@ index f4dcd90bf87dd1ca4bff18e471b2b2758c62e72d..c4a12430e44ee7d67f86bbe68c5c2b0c
  	}
  
  	// processCall() on a non-blocking op must have run to completion. If somehow it suspended
-@@ -1436,12 +1437,17 @@ std::optional<DarlingServer::Message> DarlingServer::Thread::_s2cPerform(Message
+@@ -1416,12 +1417,17 @@ std::optional<DarlingServer::Message> DarlingServer::Thread::_s2cPerform(Message
  		}
  #endif
  
@@ -14942,7 +14872,7 @@ index c8e4a6ca9763d34b001f3efa5bdb96cd63ee4f7c..f0e88bc4cd75f6d535cec8c899fbb029
  	echo
  fi
 
-From 038256a019e54fa4ce856f5bd68cac8f075056bb Mon Sep 17 00:00:00 2001
+From ae0238fa652688bfda98965cf3ce6e124d2437cc Mon Sep 17 00:00:00 2001
 From: Ilya Gulya <ilya@gulya.me>
 Date: Tue, 30 Jun 2026 13:39:23 +0000
 Subject: [PATCH] perf#18 D15a (dar-dar6x4-perf-5dq / dar-1il.10): ring-attach
@@ -14986,8 +14916,6 @@ deferred), so a non-owner thread's eligible ops ride the ring instead of UDS.
 LESSON: "op observed on UDS" != "op ran before attach." Measure the window before re-architecting
 to widen it. Doc tests/PERF18-ATTACH-TIMELINE-D15a.md + -snapshot.json. Prod binaries restored.
 Nothing pushed.
-
-Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
 ---
  internal-include/darlingserver/call.hpp       |   7 +
  internal-include/darlingserver/metrics.hpp    | 101 ++++++++
@@ -15142,10 +15070,10 @@ index f3e21f588bfb6f00a48c49172fbf3dc51bb38208..81e3a2da8f374140b146396af11a84eb
  		// callNumber is the raw dserver_callnum value (the UNMANAGED flag, if set, is
  		// masked off for indexing). Safe to call from any worker; lock-free.
 diff --git a/internal-include/darlingserver/process.hpp b/internal-include/darlingserver/process.hpp
-index a5e12aa33b3a9cbd022cb8e5364ada261c191667..de6d85734ac00fcd3ecdd209c8e8878c48ede9c7 100644
+index aea5aa26995adae19ae6d7833e8a63345d31bef2..bb9563b825edc6bc8747e9c8ce80d291dacd2311 100644
 --- a/internal-include/darlingserver/process.hpp
 +++ b/internal-include/darlingserver/process.hpp
-@@ -111,6 +111,16 @@ namespace DarlingServer {
+@@ -108,6 +108,16 @@ namespace DarlingServer {
  		std::shared_ptr<Process> _selfReference = nullptr;
  		std::vector<uint32_t> _groups;
  
@@ -15162,7 +15090,7 @@ index a5e12aa33b3a9cbd022cb8e5364ada261c191667..de6d85734ac00fcd3ecdd209c8e8878c
  #if DSERVER_EXTENDED_DEBUG
  		std::unordered_map<uint32_t, uintptr_t> _registeredNames;
  		std::unordered_map<dtape_port_set_id_t, std::unordered_set<dtape_port_id_t>> _portSetMembers;
-@@ -220,6 +230,19 @@ namespace DarlingServer {
+@@ -217,6 +227,19 @@ namespace DarlingServer {
  
  		std::vector<uint32_t> groups() const;
  		void setGroups(const std::vector<uint32_t>& groups);
@@ -15183,10 +15111,10 @@ index a5e12aa33b3a9cbd022cb8e5364ada261c191667..de6d85734ac00fcd3ecdd209c8e8878c
  };
  
 diff --git a/src/call.cpp b/src/call.cpp
-index 1209bc938153c09cbe987b666fbbfb6e0ffe2667..b2dab12542e54e8a3ad52846fe7c489a271fd9f3 100644
+index 5011babc8f1f121718c8df242748afa8fd61a66a..4b44c0d2551c0e42c49b77ade2dbd604156f661d 100644
 --- a/src/call.cpp
 +++ b/src/call.cpp
-@@ -43,6 +43,21 @@ static DarlingServer::Log callLog("calls");
+@@ -46,6 +46,21 @@ static DarlingServer::Log callLog("calls");
  
  DarlingServer::Log DarlingServer::Call::rpcReplyLog("replies");
  
@@ -15208,7 +15136,7 @@ index 1209bc938153c09cbe987b666fbbfb6e0ffe2667..b2dab12542e54e8a3ad52846fe7c489a
  std::shared_ptr<DarlingServer::Call> DarlingServer::Call::callFromMessage(Message&& requestMessage) {
  	if (requestMessage.data().size() < sizeof(dserver_rpc_callhdr_t)) {
  		throw std::invalid_argument("Message buffer was too small for call header");
-@@ -1961,6 +1976,22 @@ void DarlingServer::Call::RingAttach::processCall() {
+@@ -2002,6 +2017,22 @@ void DarlingServer::Call::RingAttach::processCall() {
  				callLog.info() << "ring_attach rejected for TID " << thread->nsid()
  					<< " reason " << rejectReason << " -- thread stays on UDS" << callLog.endLog;
  			}
@@ -15932,7 +15860,7 @@ index f0e88bc4cd75f6d535cec8c899fbb029ef8476fe..d4099b3c9960442e0fad458c0b593432
 +
  echo "all perf#18 ring gates: OK"
 
-From c714f12926e2946e28668150a9deaab42b528b64 Mon Sep 17 00:00:00 2001
+From 3811b71157130794e958cd0af313834fad39ea86 Mon Sep 17 00:00:00 2001
 From: Ilya Gulya <ilya@gulya.me>
 Date: Tue, 30 Jun 2026 14:30:28 +0000
 Subject: [PATCH] perf#18 D16 (dar-dar6x4-perf-5dq / dar-1il.11): per-thread
@@ -15964,8 +15892,6 @@ the first-eligible-call-before-lane-attach -- started_suspended, vchroot_path --
 keeps a residual UDS share). Fork-storm 3/3; ring_fast_fail/s2c_full/fast_suspend/
 clients_blocked all 0. Doc + both snapshots included. Guest impl + full design in the
 xnu commit; ABI stays v5 (a lane is the same ring ABI attached N times).
-
-Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
 ---
  ...ER-THREAD-LANES-D16-baseline-snapshot.json | 841 ++++++++++++++++++
  .../PERF18-PER-THREAD-LANES-D16-snapshot.json | 805 +++++++++++++++++
@@ -18258,7 +18184,7 @@ index d4099b3c9960442e0fad458c0b593432bab25b1b..dd2c0f843754da5483319eecf195c68c
  #     is built on -- pure logic, hermetic. GREEN: the duplex wake model is lost-wake-free (guest park
  #     watches the S2C-upcall stream; server park watches the upcall-reply stream) + correlation-safe.
 
-From d7573c73d159484dae832dd673b166c047536dcd Mon Sep 17 00:00:00 2001
+From aa5b5dc29279ebf39fd81914cad51e1e808ddac3 Mon Sep 17 00:00:00 2001
 From: Ilya Gulya <ilya@gulya.me>
 Date: Tue, 30 Jun 2026 14:54:32 +0000
 Subject: [PATCH] perf#18 D17 (dar-dar6x4-perf-5dq / dar-1il.12): post-D16
@@ -18289,8 +18215,6 @@ and would not help; the real next step is the per-image lane-handoff (a small ~2
 Top total-UDS sources are all expected non-ring classes (pthread floor, control-plane handshakes,
 blocking waits, pre-attach dyld-image ops) -- D9's "hot != reclaimable" holds. Doc + snapshot
 included. Prod restored + md5-verified.
-
-Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
 ---
  internal-include/darlingserver/metrics.hpp  |  70 ++
  src/metrics.cpp                             |  49 ++
@@ -19812,7 +19736,7 @@ index dd2c0f843754da5483319eecf195c68c4d32af5c..498f2b1b304ee496dd351c6a8db85362
 +
  echo "all perf#18 ring gates: OK"
 
-From 615636c1aeac3647559aa13d5588a3653c284f6c Mon Sep 17 00:00:00 2001
+From e13ed2406cc95ba4f3d257210d32b861bfe1ace4 Mon Sep 17 00:00:00 2001
 From: Ilya Gulya <ilya@gulya.me>
 Date: Tue, 30 Jun 2026 22:54:33 +0000
 Subject: [PATCH] perf#18 D17-rerun (dar-1il.13): residual census on a heavy
@@ -19839,8 +19763,6 @@ prod (pre-D16) dylib. The wide-thread + fork-storm probes stand in for the swarm
 
 Adds tests/PERF18-RESIDUAL-UDS-D17-RERUN.md + snapshots + run-residual-census-d17-rerun.sh.
 Prod restored + md5-verified. HEADs darlingserver @d7573c7 / xnu @a1425a0.
-
-Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
 ---
  ...ESIDUAL-UDS-D17-RERUN-snapshot-1probe.json | 867 ++++++++++++++++++
  ...ERF18-RESIDUAL-UDS-D17-RERUN-snapshot.json | 867 ++++++++++++++++++
@@ -21868,7 +21790,7 @@ index 0000000000000000000000000000000000000000..6d27374f9b84226538a7ab118756d085
 +python3 "$TMP/d17summary.py" "$OUT"
 +echo "D17RR-RUN: snapshots -> $TMP/d17rr-snapshot-heavy.json , $OUT"
 
-From e8505dde7471d651675edf999f92c5f3de78b426 Mon Sep 17 00:00:00 2001
+From f6d17026742b2ecb1af876d7c5f0f898f5d33884 Mon Sep 17 00:00:00 2001
 From: Ilya Gulya <ilya@gulya.me>
 Date: Wed, 1 Jul 2026 00:35:53 +0000
 Subject: [PATCH] =?UTF-8?q?perf#18=20D18a=20(task=20#68):=20GR=5FMAX=5FLAN?=
@@ -21907,8 +21829,6 @@ scope per spec. One-line #define, ABI-neutral.
 
 Adds tests/PERF18-D18A-LANES-SCALING.md + 6 snapshots + run-d18a-lanes-ab.sh.
 Prod restored + md5-verified. HEADs darlingserver @615636c / xnu @a1425a0.
-
-Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
 ---
  tests/PERF18-D18A-LANES-SCALING.md           |  99 +++
  tests/PERF18-D18A-lanes128-snapshot.json     | 843 ++++++++++++++++++
@@ -27302,7 +27222,7 @@ index 0000000000000000000000000000000000000000..7e075bf89dd3911095f7c6fe300e319b
 +       "$PPREFIX/usr/lib/dyld" "$PPREFIX/libexec/darling/usr/lib/dyld"
 +echo "D18A done. snapshots: $TMP/d18a-lanes*.json"
 
-From 91a3abda95ed47f9a8c9a835a1f53e8702a899a3 Mon Sep 17 00:00:00 2001
+From a3ca08ece4a38e9b10d87e8494a6990926e44d7c Mon Sep 17 00:00:00 2001
 From: Ilya Gulya <ilya@gulya.me>
 Date: Wed, 1 Jul 2026 01:46:42 +0000
 Subject: [PATCH] perf#18: add ring transport current-state milestone (doc
@@ -27320,8 +27240,6 @@ is still on UDS."
 Cross-checked against the source of truth (DSERVER_RING_C2S_OPCODES macro +
 ringFastPathEligible) — all 13 ring ops match. Anchored on bead/phase names, not
 ephemeral local commit hashes. No code changes, no measurements, no default flips.
-
-Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
 ---
  tests/PERF18-RING-MILESTONE.md | 133 +++++++++++++++++++++++++++++++++
  1 file changed, 133 insertions(+)
@@ -27467,7 +27385,7 @@ index 0000000000000000000000000000000000000000..4453ba2f2f20e6f526029a459c3542e8
 +above (a real wide/churny process for D18b; a real hot caller-S2C op for Lane 2), not from "this op is
 +still on UDS."
 
-From b2d78970638b69f747459f2d025cb99b45f7f82a Mon Sep 17 00:00:00 2001
+From 48463560c127179a7fc5820fb37b26b04d42fc1e Mon Sep 17 00:00:00 2001
 From: Ilya Gulya <ilya@gulya.me>
 Date: Wed, 1 Jul 2026 02:22:38 +0000
 Subject: [PATCH] =?UTF-8?q?perf#19=20D19a:=20host=20futex/off-CPU=20census?=
@@ -27497,8 +27415,6 @@ look at process spawn/exec + compiler-CPU/emulation overhead instead.
 
 Adds tests/PERF19-D19A-FUTEX-CENSUS.md + d19a-futex.bt + perf19-contend.c.
 Prod binaries untouched, repo source clean.
-
-Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
 ---
  tests/PERF19-D19A-FUTEX-CENSUS.md | 80 +++++++++++++++++++++++++++++++
  tests/d19a-futex.bt               | 26 ++++++++++
@@ -27699,7 +27615,7 @@ index 0000000000000000000000000000000000000000..2ed43b8c05f9d8a4ae227dcaa3e9f26c
 +    return 0;
 +}
 
-From b9fdc2297a7cd5dee38bc093715a1d68450037ad Mon Sep 17 00:00:00 2001
+From b558eadcb6cdce581e1bfbbed6ad4283f90f1b28 Mon Sep 17 00:00:00 2001
 From: Ilya Gulya <ilya@gulya.me>
 Date: Wed, 1 Jul 2026 02:28:25 +0000
 Subject: [PATCH] perf#19 D19a: note brew-install-wget not runnable under
@@ -27710,8 +27626,6 @@ did not complete even 'brew --version' in a 200s guest window -- pathologically
 slow to start under emulation. Its cost is Ruby-CPU + process/exec spawning, i.e.
 the non-sync bottleneck D19a already points to; the sync-relevant part is the same
 clang/make -j compilation censused at 0.067% futex WAIT. Verdict A unchanged.
-
-Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
 ---
  tests/PERF19-D19A-FUTEX-CENSUS.md | 10 ++++++++++
  1 file changed, 10 insertions(+)
@@ -27738,7 +27652,7 @@ index ef656326bbbc9b8cc4897f84698c11b355228983..e222d8f6b9146f310cec163d6fd5ca40
  `d19a-futex.bt` (mldr+darlingserver-filtered futex WAIT time, op split, per-TID, duration hist) run under
  `sudo bpftrace` around each workload; guest workloads launched via the setuid `darling shell`; a warm
 
-From b9673beec3e58d294aa926ad35a4cb938339a123 Mon Sep 17 00:00:00 2001
+From f928270ab1ddc25c9c7b9f78574de3e2f2dc4a84 Mon Sep 17 00:00:00 2001
 From: Ilya Gulya <ilya@gulya.me>
 Date: Wed, 1 Jul 2026 03:13:43 +0000
 Subject: [PATCH] =?UTF-8?q?perf#20a:=20spawn/exec=20lifecycle=20census=20?=
@@ -27772,8 +27686,6 @@ benchmark (reference only).
 
 RECON: no behavior change; prod binaries untouched; ring default GR_MAX_LANES
 unchanged. Instruments p20a-lifecycle.bt + p20a-clangcpu.bt + stat snapshots.
-
-Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
 ---
  tests/PERF20A-SPAWN-EXEC-CENSUS.md | 116 +++++++++++++
  tests/p20a-clangcpu.bt             |  29 ++++
@@ -28537,7 +28449,7 @@ index 0000000000000000000000000000000000000000..06d83633994a9c459e7c96c2c01c296a
 +  }
 +}
 
-From 9ba9ec3533c8d5730ad8fd74a4cbf2f263d63e90 Mon Sep 17 00:00:00 2001
+From 10399118b856807b5c481183633cf872084a9de2 Mon Sep 17 00:00:00 2001
 From: Ilya Gulya <ilya@gulya.me>
 Date: Wed, 1 Jul 2026 03:34:20 +0000
 Subject: [PATCH] =?UTF-8?q?perf#21a:=20cc1=20CPU=20attribution=20=E2=80=94?=
@@ -28576,8 +28488,6 @@ ring/sync/psynch, "optimize clang" (only 37%, no baseline/PMU), dyld bead
 (possible 2nd lever after fd fix).
 
 RECON: no code change; prod untouched; no kernel sysctl persisted.
-
-Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
 ---
  tests/PERF21A-CC1-CPU-ATTRIBUTION.md | 114 +++++++++++++++++++++++++++
  tests/p21a-dso-breakdown.txt         |  26 ++++++
@@ -28818,7 +28728,7 @@ index 0000000000000000000000000000000000000000..0a7578035f8e182367c628239e20b77f
 +    printf("=== syscall TOTAL TIME ns by id (mldr) ===\n"); print(@time_ns);
 +}
 
-From eb8e0e6bb31ddf3090516b4fca75f10e857f0022 Mon Sep 17 00:00:00 2001
+From 8e6ef8b4b2b4a69f568f22817ee2c56d37291608 Mon Sep 17 00:00:00 2001
 From: Ilya Gulya <ilya@gulya.me>
 Date: Wed, 1 Jul 2026 04:49:57 +0000
 Subject: [PATCH] =?UTF-8?q?perf#21b:=20compact=20fd=20band=20=E2=80=94=20v?=
@@ -28833,8 +28743,6 @@ health zero, internal fds still guard-protected, no fd at 1048575.
 Band-base sweep validated at 4096/8192/16384. Strict guest-NOFILE cap
 deferred to D21c (broke boot). Source change is mldr.c in the darling
 superproject (separate local commit).
-
-Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
 ---
  tests/PERF21B-COMPACT-FD-BAND.md  | 81 +++++++++++++++++++++++++++++++
  tests/p21b-dupfd-before-after.txt | 24 +++++++++
@@ -28960,7 +28868,7 @@ index 0000000000000000000000000000000000000000..2d2995eba7a9881f95efbb83af366391
 +     0.56%  [k] __memcg_slab_free_hook                     -      -            
 +     0.54%  [k] copy_mc_enhanced_fast_string               -      -            
 
-From 96d36c5604aaaa3b288e1c79ba799b1a86af160f Mon Sep 17 00:00:00 2001
+From 15acfd675c1d3cdabfa93faba7da697397955e57 Mon Sep 17 00:00:00 2001
 From: Ilya Gulya <ilya@gulya.me>
 Date: Wed, 1 Jul 2026 04:57:57 +0000
 Subject: [PATCH] post-D21b reprofile: re-rank build bottlenecks after dup_fd
@@ -28985,8 +28893,6 @@ pagefault/mmap it drives across hundreds of short-lived procs. clang ~35%
 is real LLVM we can't chase without PMU/baseline. Next bead perf#22: dyld/
 startup-mapping attribution (recon-first). NOT touched: NOFILE cap, ring,
 psynch, dyld optimization. No code changes.
-
-Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
 ---
  tests/PERF21B-REPROFILE.md       | 92 ++++++++++++++++++++++++++++++++
  tests/p21b-reprofile-symbols.txt | 60 +++++++++++++++++++++
@@ -29159,7 +29065,7 @@ index 0000000000000000000000000000000000000000..dab570725e15903f62449bee3bd1166b
 +     0.25%  [k] __raw_spin_lock_irqsave                  -      -            
 +     0.24%  [k] __kmalloc                                -      -            
 
-From 217ce697d3e36b561573546f6bff355b36eea295 Mon Sep 17 00:00:00 2001
+From 2de043bc9d55538f3dfca4654ef0c131deb41f2f Mon Sep 17 00:00:00 2001
 From: Ilya Gulya <ilya@gulya.me>
 Date: Wed, 1 Jul 2026 05:09:55 +0000
 Subject: [PATCH] =?UTF-8?q?perf#22a:=20dyld/startup-mapping=20attribution?=
@@ -29194,8 +29100,6 @@ re-running the loader 415x. NOT A (spawn/vfork, only 12%), NOT B (dyld
 cache is a symptom), NOT C/D (faults warm/cheap). Next bead perf#23:
 compiler/loader process-reuse feasibility (recon->design). NOT touched:
 NOFILE cap, ring, psynch, fd-band, clang, dyld opt. No code changes.
-
-Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
 ---
  tests/PERF22A-DYLD-STARTUP-ATTRIBUTION.md | 80 +++++++++++++++++++++++
  tests/p22a-dylib3.bt                      |  6 ++
@@ -29345,7 +29249,7 @@ index 0000000000000000000000000000000000000000..a89e020426e94be78d518aa27a0c25bc
 +  printf("=== mmap / munmap syscalls ===\n"); print(@mmap); print(@munmap);
 +}
 
-From ba67eebd55c22014f6fa6e82d0876f5ef57c0fd2 Mon Sep 17 00:00:00 2001
+From 698313d9365866a084e0f387db3c00a19362903f Mon Sep 17 00:00:00 2001
 From: Ilya Gulya <ilya@gulya.me>
 Date: Wed, 1 Jul 2026 06:08:08 +0000
 Subject: [PATCH] =?UTF-8?q?perf#23a:=20process-reuse=20feasibility=20+=20u?=
@@ -29377,8 +29281,6 @@ Not A (no reuse mode), not B-as-runtime (batching is a build-system change), not
 teardown), not E (Darling overhead is dyld/mapping, not LLVM).
 
 Artifacts: p23a-census.bt, p23a-{baseline,batch,chunk}-census.txt, p23a-{batch,chunk}.sh, p23a-dylib-set.txt.
-
-Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
 ---
  tests/PERF23A-PROCESS-REUSE-FEASIBILITY.md | 127 +++++++++++++++++++++
  tests/p23a-baseline-census.txt             |  37 ++++++
@@ -29817,7 +29719,7 @@ index 0000000000000000000000000000000000000000..d83e935227e01183f8f36d09d0433000
 +> /home/ilyagulya/work/darling-prefix-homebrew-test/usr/lib/native/libXext.dylib
 +> /home/ilyagulya/work/darling-prefix-homebrew-test/usr/lib/native/libXRandR.dylib
 
-From 8c5ad8621f85bd9004645fda2e41b249f0102d2c Mon Sep 17 00:00:00 2001
+From 58346fca1d4795a47d0028598e44eab550618233 Mon Sep 17 00:00:00 2001
 From: Ilya Gulya <ilya@gulya.me>
 Date: Wed, 1 Jul 2026 06:39:45 +0000
 Subject: [PATCH] =?UTF-8?q?perf#24a:=20dyld/mapping=20reduction=20recon=20?=
@@ -29850,8 +29752,6 @@ NEXT perf#24b (design): (1) shared-cache-like single mapping of /usr/lib/system 
 closure VMAs -> fewer VMAs/faults/teardown (not disk; major faults ~0); (2) libSystem.B init audit (D).
 
 Artifacts: p24a-{clang-full,perdylib-1proc,faulted,ranked,smaps,exittime}.txt.
-
-Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
 ---
  tests/PERF24A-DYLD-MAPPING-RECON.md |  126 +
  tests/p24a-clang-full.txt           |  429 +++
@@ -35320,7 +35220,7 @@ index 0000000000000000000000000000000000000000..c482b642a8a45ba8c9c90a7102b6dea5
 +THPeligible:           0
 +VmFlags: ex 
 
-From 867cfdef6cc7663733b0d4fd5d54b32cf4581c0c Mon Sep 17 00:00:00 2001
+From 8b779466550cd8b79e76fb6f8f910cb5416748db Mon Sep 17 00:00:00 2001
 From: Ilya Gulya <ilya@gulya.me>
 Date: Wed, 1 Jul 2026 07:16:18 +0000
 Subject: [PATCH] =?UTF-8?q?perf#24b:=20libSystem=20closure=20shared-mappin?=
@@ -35357,8 +35257,6 @@ RECOMMENDATION C (both, ordered): perf#24c shared-cache prototype FIRST (larger,
   (init smaller/riskier), not STOP (upper-bound cleared bar). NOT touched: prune/reuse/vfork/ring/LLVM/bind.
 
 Artifacts: p24b-upperbound.c, p24b-vmacost.c, p24b-upperbound-results.txt.
-
-Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
 ---
  .../PERF24B-CLOSURE-SHARED-MAPPING-DESIGN.md  | 128 ++++++++++++++++++
  tests/p24b-upperbound-results.txt             |  16 +++
@@ -35673,7 +35571,7 @@ index 0000000000000000000000000000000000000000..c4b90501cb93ef62eb306101c79f2686
 +  return 0;
 +}
 
-From fb8296bb0dfe9156ae4963da1121188c61bd6acd Mon Sep 17 00:00:00 2001
+From 295085603ca853ab53218acc732ac76d545d06ef Mon Sep 17 00:00:00 2001
 From: Ilya Gulya <ilya@gulya.me>
 Date: Wed, 1 Jul 2026 08:01:48 +0000
 Subject: [PATCH] =?UTF-8?q?perf#24c0:=20closure=20packability=20feasibilit?=
@@ -35711,8 +35609,6 @@ A/B VMA/load/teardown). Not B (no text rewriting; init laziness stays separate p
 layout-preserving reduction). Projected: 120->~3-6 VMAs, exit_mmap ~480->162us/proc (~127ms build-wide).
 
 Artifacts: p24c0-validate.sh/.txt, p24c0-pack.py/.txt.
-
-Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
 ---
  ...ERF24C0-CLOSURE-PACKABILITY-FEASIBILITY.md | 113 ++++++++++++++++++
  tests/p24c0-pack-out.txt                      |  25 ++++
@@ -36012,7 +35908,7 @@ index 0000000000000000000000000000000000000000..3716538db1d3a18e162e221397a7437b
 +echo ""
 +echo "SUMMARY: $TOTC dylibs; text-reloc-free+dataconst-free checks: pass=$pass fail=$fail warn(dataconst)=$warn"
 
-From 1b1e65cbd2ce231a8d0a37830863a4a136402c27 Mon Sep 17 00:00:00 2001
+From abc37dd7b7231815fba0a99ce6a7911afd1b0deb Mon Sep 17 00:00:00 2001
 From: Ilya Gulya <ilya@gulya.me>
 Date: Wed, 1 Jul 2026 08:14:18 +0000
 Subject: [PATCH] =?UTF-8?q?perf#24c-gate:=20dyld=20segment=20address=20sem?=
@@ -36041,8 +35937,6 @@ code bytes untouched.
 VERDICT: proceed with CORRECTED region model (not 3 arbitrary planes). inDyldCache() path does NOT already
 support arbitrary multi-mapping-per-image => per user rule, 2-dylib LIVE reader smoke REQUIRED before full
 closure (static insufficient; single-slide x region layout must be executed). c1/c2 tasks updated.
-
-Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
 ---
  .../PERF24C-GATE-SEGMENT-ADDRESS-SEMANTICS.md | 90 +++++++++++++++++++
  1 file changed, 90 insertions(+)
@@ -36145,7 +36039,7 @@ index 0000000000000000000000000000000000000000..34ac7927f93708e5f41239ac3499e266
 +cache path (Loading.cpp:302-344), rebase opcode addressing (MachOAnalyzer.cpp:1234), shared-cache CacheBuilder
 +region model. Reuses perf#24c0 + perf#24b.
 
-From de3e89e69361f9725acd26f249ed09547998e23b Mon Sep 17 00:00:00 2001
+From ec67bac521b536a350f5995680a664e1d27b985a Mon Sep 17 00:00:00 2001
 From: Ilya Gulya <ilya@gulya.me>
 Date: Wed, 1 Jul 2026 08:21:35 +0000
 Subject: [PATCH] perf#24c1: system-closure cache builder (standalone, no dyld
@@ -36175,8 +36069,6 @@ closure_hash) recorded for the reader to reject stale + fall back. VMA projectio
 
 Files: tools/closure-cache/{closure-cache-builder.c, closure-cache-validate.c, closure-list.txt, README.md,
 BUILD-VALIDATE-OUT.txt}. README documents format + the single-slide constraint the c2 reader MUST honor.
-
-Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
 ---
  tools/closure-cache/BUILD-VALIDATE-OUT.txt   |   8 +
  tools/closure-cache/README.md                |  59 +++++
@@ -36667,7 +36559,7 @@ index 0000000000000000000000000000000000000000..6f518e415727de678e526f07bbfafa7b
 +/usr/lib/system/libunwind.dylib
 +/usr/lib/system/libxpc.dylib
 
-From 15386dab030cf36b9d7e4320b180c87064155a68 Mon Sep 17 00:00:00 2001
+From 244ab89d7c26814f50405ad1ef507567ee10809b Mon Sep 17 00:00:00 2001
 From: Ilya Gulya <ilya@gulya.me>
 Date: Wed, 1 Jul 2026 08:48:01 +0000
 Subject: [PATCH] perf#24c2a: DCC1 reader RED LINE + DCC2 rescope + fixup/bind
@@ -36697,8 +36589,6 @@ Findings:
 Artifacts: tests/PERF24C2A-READER-REDLINE-DCC2-AUDIT.md, tools/closure-cache/
 audit/ (slide-harness.c, fixup-audit.c + audit-full.txt, deltas.c, check_hdr.c).
 prod dserver 835946f9 + mldr f0cd2a82 + dyld 10af572e untouched. LOCAL only.
-
-Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
 ---
  tests/PERF24C2A-READER-REDLINE-DCC2-AUDIT.md | 114 ++++++++++++++
  tools/closure-cache/audit/audit-full.txt     |  79 ++++++++++
@@ -37336,7 +37226,7 @@ index 2b91e85c72dba7e9d4b427045205055782a93190..cafb7f420d5bf7aae477998c40b92b7f
           * dyld reads the REWRITTEN LC_SEGMENT vmaddrs (ds->vmaddr) and computes
           *   getSlide = loadedAddr(TEXT) - rewrittenTEXT.vmaddr ; segAddr = seg.vmaddr + slide.
 
-From bbd97bd993d06d5e1f183faf96ed6c24d2b46fb2 Mon Sep 17 00:00:00 2001
+From fdae3db9011543c73ee3f4e2a2fdf614f74ddc93 Mon Sep 17 00:00:00 2001
 From: Ilya Gulya <ilya@gulya.me>
 Date: Wed, 1 Jul 2026 09:03:02 +0000
 Subject: [PATCH] perf#24c2b: DCC2 fixup-table builder + standalone applier
@@ -37378,8 +37268,6 @@ Mach-O fixup path (applyFixupsToImage -> WrappedMachO::forEachFixup); if one
 does it is a hard fail (that path is known-wrong for region-packed layout).
 
 prod dserver 835946f9 + mldr f0cd2a82 + dyld 10af572e untouched. LOCAL only.
-
-Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
 ---
  tests/PERF24C2B-DCC2-FIXUP-BUILDER-APPLIER.md |  79 ++++
  .../closure-cache/DCC2-BUILD-VALIDATE-OUT.txt |  71 +++
@@ -38363,7 +38251,7 @@ index 0000000000000000000000000000000000000000..4a9261a47270a08e4445e6af7def574e
 +/usr/lib/system/libsystem_blocks.dylib
 +/usr/lib/system/libunwind.dylib
 
-From 29487e0531e10cfaa1fe82ec6a1c08f6f5a49334 Mon Sep 17 00:00:00 2001
+From 927f262c048b9c543c66466596cf12b3a35dd455 Mon Sep 17 00:00:00 2001
 From: Ilya Gulya <ilya@gulya.me>
 Date: Wed, 1 Jul 2026 09:43:06 +0000
 Subject: [PATCH] perf#24c2c: live dyld DCC2 reader implemented; smoke blocked
@@ -38394,8 +38282,6 @@ deployed baseline. The DCC2 mechanism itself is already proven correct offline
 
 Environment left healthy (baseline dyld restored and booting). prod dserver
 835946f9 + mldr f0cd2a82 untouched. LOCAL only.
-
-Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
 ---
  tests/PERF24C2C-LIVE-READER-BLOCKED.md        |  71 +++++++
  .../dyld-reader-wip/DCC2Reader.cpp            | 178 ++++++++++++++++++
@@ -38954,7 +38840,7 @@ index 0000000000000000000000000000000000000000..e8963adf612375198b5fa3dce2310377
 + 	bool someCacheImageOverridden = false;
 + 	loader.completeAllDependents(diag, someCacheImageOverridden);
 
-From e39d0b5d2e7bfaee97a2996bb8de33576160e3e8 Mon Sep 17 00:00:00 2001
+From a988049bf2870de1651b6ac2361f9fea504f2bd4 Mon Sep 17 00:00:00 2001
 From: Ilya Gulya <ilya@gulya.me>
 Date: Wed, 1 Jul 2026 10:14:20 +0000
 Subject: [PATCH] perf#24c2c-pre: DCC2 reader exonerated; boot blocker is
@@ -38985,8 +38871,6 @@ flag-OFF boot there first, then enable DCC2.
 DCC2 mechanism already proven correct offline (perf#24c2b). Environment left
 healthy on working baseline 79b22273 (both prefix copies); prod mldr f0cd2a82
 intact. LOCAL only.
-
-Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
 ---
  tests/PERF24C2C-LIVE-READER-BLOCKED.md | 27 ++++++++++++++++++++++++++
  1 file changed, 27 insertions(+)
@@ -39030,7 +38914,7 @@ index aff7b26d2e75f7c1abdc5fd541da4b267afe55ea..90c2dfbd9daca77aa5577ee433699a1e
  Reader code: `src/external/dyld/dyld3/DCC2Reader.{h,cpp}`, edits in `dyld3/Loading.{h,cpp}`, `src/dyld2.cpp`,
  `CMakeLists.txt` (uncommitted in the dyld submodule working tree). prod dserver `835946f9` + mldr `f0cd2a82`
 
-From 8e416d6f41a83dfcd3d3b1899ba746ccd8bb16cd Mon Sep 17 00:00:00 2001
+From 4c8c22c08dca9692eb25717eb9ea7b51d6ddb008 Mon Sep 17 00:00:00 2001
 From: Ilya Gulya <ilya@gulya.me>
 Date: Wed, 1 Jul 2026 13:22:54 +0000
 Subject: [PATCH] perf#24c2*: closure-cache tooling updates (builder guest-path
@@ -39048,8 +38932,6 @@ Content-Transfer-Encoding: 8bit
   hook (the offline record of the perf#24c2e reader now committed in dyld).
 
 Offline tooling / recon artifacts — not darlingserver runtime changes.
-
-Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
 ---
  tools/closure-cache/dcc2-builder.c            |   9 +-
  .../dyld-reader-wip/DCC2Reader.cpp            |  80 +++++
@@ -39669,7 +39551,7 @@ index 0000000000000000000000000000000000000000..02a5de136d6ad34fbe3a716dd8e7b723
 + 		// check main executable is not too new for this OS
 + 		{
 
-From da7f1d28890b0c39dda0a87b7b78ec15e1ef2849 Mon Sep 17 00:00:00 2001
+From 0aa393b6e3acc6780de7e8d87c87006b549960dd Mon Sep 17 00:00:00 2001
 From: Ilya Gulya <ilya@gulya.me>
 Date: Wed, 1 Jul 2026 15:35:26 +0000
 Subject: [PATCH] =?UTF-8?q?perf#24c2d:=20DCC2=20builder=20=E2=80=94=20rewr?=
@@ -39700,8 +39582,6 @@ for the whole cache, and load-time validation passes for the full closure.
 Remaining (separate edge): early launchd still takes a SIGSEGV after dyld
 handoff / early initializers — a runtime DATA-fixup correctness edge, not a
 load-time failure.
-
-Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
 ---
  tools/closure-cache/dcc2-builder.c | 12 +++++++++++-
  1 file changed, 11 insertions(+), 1 deletion(-)
@@ -39737,7 +39617,7 @@ index 093d56ca983ad13d98663733ca2b5916000ae6ed..ecc6bc5f9ca8a63e93b4496528000589
              hc=(void*)((char*)hc+hc->cmdsize); }
          /* seg-in-region invariant */
 
-From 93850968594d8c60c969efdc6a7b56a244632bca Mon Sep 17 00:00:00 2001
+From 9150a46a0dde1b26a524f610a6eecbdb45af8df3 Mon Sep 17 00:00:00 2001
 From: Ilya Gulya <ilya@gulya.me>
 Date: Wed, 1 Jul 2026 15:53:20 +0000
 Subject: [PATCH] =?UTF-8?q?perf#24c2d:=20DCC2=20builder=20=E2=80=94=20cove?=
@@ -39778,8 +39658,6 @@ Live effect: all 40 images substitute, 27,082 fixups apply once for the whole
 cache, the extern abort and the earlier libdispatch ObjC-GC throw are gone.
 Remaining (documented, next lead): early launchd still SIGSEGVs at a "__text"
 (section-name) address — one more wrongly-translated or uncovered DATA pointer.
-
-Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
 ---
  tools/closure-cache/dcc2-applier.c |  4 +-
  tools/closure-cache/dcc2-builder.c | 64 +++++++++++++++++++++++++-----
@@ -39942,7 +39820,7 @@ index ce93d73b69c34dbfcb931f673062761adb23fcbf..b0ce919fb9a80da55259283c3004fcc6
  /* pointer type for a fixup location (all are 8-byte pointers in x86_64 __DATA here) */
  struct dcc_region { uint64_t file_off; uint64_t size; uint64_t vm_base; uint32_t prot; uint32_t _pad; };
 
-From e5d9fe841fe77ca3949e42b90255ccc65261373a Mon Sep 17 00:00:00 2001
+From dc8c4a8082487d9f4d9d6fe36dcd8287c40276bb Mon Sep 17 00:00:00 2001
 From: Ilya Gulya <ilya@gulya.me>
 Date: Thu, 2 Jul 2026 01:43:14 +0000
 Subject: [PATCH] perf#24c2d-crashcap: guest SIGSEGV capture patch for
@@ -39964,8 +39842,6 @@ func-ptr slot holding section_64.sectname bytes, in libSystem.B's first
 initializer (rdi arg0 = libc++ __TEXT+0x1028). Not a static DCC2 fixup
 (wildchk2 clean); a runtime-loaded/computed bad func ptr. See task #96 +
 memory dar-perf24c2d-full-closure-ab.
-
-Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
 ---
  tools/closure-cache/crashcap-sigexc.patch | 47 +++++++++++++++++++++++
  1 file changed, 47 insertions(+)
@@ -40025,7 +39901,7 @@ index 0000000000000000000000000000000000000000..dd24f6028ad366161d368f57698af2e0
 + 
 + #if defined(__x86_64__)
 
-From 895ceb61fc1b347ed130e87311cf9c640659c216 Mon Sep 17 00:00:00 2001
+From 4a85367bc36eb1698db546818fb805c4c1a6894a Mon Sep 17 00:00:00 2001
 From: Ilya Gulya <ilya@gulya.me>
 Date: Thu, 2 Jul 2026 02:04:32 +0000
 Subject: [PATCH] perf#24c2d-callsite: root cause of "__text" SIGSEGV = DCC2
@@ -40053,8 +39929,6 @@ approach) — option A in the doc.
 Adds offline analysis tools (dcc2-extractrx, dcc2-dumpq, dcc2-fxdump, dcc2-stubscan)
 and tests/PERF24C2D-CALLSITE-RIPREL-ROOT-CAUSE.md with full reproduction. No production
 code changed; prod baselines untouched.
-
-Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
 ---
  tests/PERF24C2D-CALLSITE-RIPREL-ROOT-CAUSE.md | 82 +++++++++++++++++++
  tools/closure-cache/dcc2-dumpq.c              | 48 +++++++++++
@@ -40332,7 +40206,7 @@ index 0000000000000000000000000000000000000000..abc8bcee6805c0b1830a7e199a6ecb30
 +    else:
 +        o+=1
 
-From 2353b39359a2886ae1cdb18b0d1ae008f9df274a Mon Sep 17 00:00:00 2001
+From dc22cbdc69a88ea1007105448798cea789171a01 Mon Sep 17 00:00:00 2001
 From: Ilya Gulya <ilya@gulya.me>
 Date: Thu, 2 Jul 2026 04:13:56 +0000
 Subject: [PATCH] perf#24c2d-fix2 + perf#24e: DCC4 unified-arena (dead end) +
@@ -40355,8 +40229,6 @@ exclude the pool. Verdict: conditional GO for the code-rewrite path (perf#24f).
 
 Tools: dcc4-{format.h,builder.c,packsim.py}, dcc-riprelscan.py, dcc-decode-coverage.py,
 tests/PERF24E-RIPREL-REWRITE-FEASIBILITY.md. Offline only; prod untouched.
-
-Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
 ---
  tests/PERF24E-RIPREL-REWRITE-FEASIBILITY.md |  61 +++
  tools/closure-cache/dcc-decode-coverage.py  |  52 ++
@@ -41281,7 +41153,7 @@ index 0000000000000000000000000000000000000000..c3cbc4ed444ba1dfde2425fb5c819641
 +    if r<best[0]:best=(r,f'rand{t}')
 +print("BEST strict-nonoverlap VMAs:",best)
 
-From 13b6d65179056825b31fc49e66a43be0b73be896 Mon Sep 17 00:00:00 2001
+From d0e0333e99db49d836c1e834f694d833a8c08906 Mon Sep 17 00:00:00 2001
 From: Ilya Gulya <ilya@gulya.me>
 Date: Thu, 2 Jul 2026 05:01:32 +0000
 Subject: [PATCH] =?UTF-8?q?perf#24f:=20DCC5=203-region=20cache=20+=20TEXT?=
@@ -41319,8 +41191,6 @@ data / pool as code). Projected collapse 114 -> 3 VMAs per process.
 Offline only; nothing deployed; prod byte-identical (doctor ALL GREEN). Live
 sequence (resurrect DCC5 reader, 2-dylib smoke -> full closure -> clang A/B) is
 the gated next phase.
-
-Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
 ---
  tests/PERF24F-DCC5-RIPREL-REWRITE.md   |  86 ++++
  tools/closure-cache/dcc5-builder.c     | 630 +++++++++++++++++++++++++
@@ -42523,7 +42393,7 @@ index 0000000000000000000000000000000000000000..40ddb083fa440b17ea6fc67c502a21ce
 +print("RESULT:", "PASS" if fails==0 else "FAIL (%d)"%fails)
 +sys.exit(0 if fails==0 else 1)
 
-From 5dd3310a0f9ce08db48f5a2f6b755d4cc2cf4e3f Mon Sep 17 00:00:00 2001
+From af3c3895a1c8288eab8a43bc85d8452101a04bc5 Mon Sep 17 00:00:00 2001
 From: Ilya Gulya <ilya@gulya.me>
 Date: Thu, 2 Jul 2026 05:33:09 +0000
 Subject: [PATCH] =?UTF-8?q?perf#24f-live-smoke:=20DCC5=20runs=20live=20?=
@@ -42551,8 +42421,6 @@ install_root=<prefix>/libexec/darling or the reader's inode staleness check
 hard-fails. Prod dyld/mldr/dserver restored byte-identical afterward (doctor ALL
 GREEN). Empirical per-process VMA count deferred to the A/B bead (flag reaches
 only the transient leaf guest command here).
-
-Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
 ---
  tests/PERF24F-LIVE-SMOKE.md | 59 +++++++++++++++++++++++++++++++++++++
  1 file changed, 59 insertions(+)
@@ -42624,7 +42492,7 @@ index 0000000000000000000000000000000000000000..406e25c875d03a04c5ae145060dba6b4
 +(expect ~unchanged — same bytes fault regardless of packing). Deliver the flag to the clang processes
 +(guest env), and measure the persistent build workers.
 
-From a19caa39bbc67c18bccd3ddd3c84f1be89f73879 Mon Sep 17 00:00:00 2001
+From 274aa35481ef3ebd78d760194851bd3666bcb6cc Mon Sep 17 00:00:00 2001
 From: Ilya Gulya <ilya@gulya.me>
 Date: Thu, 2 Jul 2026 07:03:13 +0000
 Subject: [PATCH] perf#24f: general executable-section coverage (fixes blind
@@ -43192,7 +43060,7 @@ index 0000000000000000000000000000000000000000..f5b6bcf49cc07a847b12ebab587cec36
 +print("RESULT:", "PASS" if fails==0 else "FAIL (%d)"%fails)
 +sys.exit(0 if fails==0 else 1)
 
-From 0147b6498013f7cda033df76b50cd23276f03e71 Mon Sep 17 00:00:00 2001
+From a9c1e48428d31123bdae2d5a6b9cfd3f2dee6f14 Mon Sep 17 00:00:00 2001
 From: Ilya Gulya <ilya@gulya.me>
 Date: Thu, 2 Jul 2026 08:11:38 +0000
 Subject: [PATCH] perf#24f-live-A/B BLOCKED: DCC5 crashes guest early-init;
@@ -43207,8 +43075,6 @@ guest SIGSEGV to a Mach exception before any host-observable fault (crashcap-sig
 too early; strace/gdb wrong tree or clean exit). Remaining path: container-side
 gdbserver or a dserver exception-state dump. Prod restored byte-identical (doctor
 ALL GREEN).
-
-Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
 ---
  tests/PERF24F-LIVE-AB-BLOCKED.md | 58 ++++++++++++++++++++++++++++++++
  1 file changed, 58 insertions(+)
@@ -43279,7 +43145,7 @@ index 0000000000000000000000000000000000000000..0adaa9fc912371448c86270d7811bfb1
 +whose diagnosis is blocked on capturing a fault-PC through Darling's exception-translation layer. This
 +needs either a container-side debugger or a dserver exception-state dump — a distinct piece of work.
 
-From 6111ce183d3a0a43a516b87b15589e7b2659efe3 Mon Sep 17 00:00:00 2001
+From 49b894f923bd70ee45e0589640c38378537784be Mon Sep 17 00:00:00 2001
 From: Ilya Gulya <ilya@gulya.me>
 Date: Thu, 2 Jul 2026 09:07:16 +0000
 Subject: [PATCH] perf#24f-crashcap2: capture + root-cause the DCC5 early-init
@@ -43312,8 +43178,6 @@ cause; the 11 lazy sentinels are all libcommonCrypto->libcorecrypto crypto
 primitives, off the init path. Fix belongs in the DCC substitution path in
 dyld3/Loading.cpp, not the builder/cache. Full detail:
 tests/PERF24F-CRASHCAP2-ROOTCAUSE.md.
-
-Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
 ---
  tests/PERF24F-CRASHCAP2-ROOTCAUSE.md | 75 ++++++++++++++++++++++++++++
  1 file changed, 75 insertions(+)
@@ -43401,7 +43265,7 @@ index 0000000000000000000000000000000000000000..f2a764fa7bd0d537546607d267048162
 +This lives in the DCC substitution code in dyld3/Loading.cpp (`isDCCImage` / substituted-image
 +registration + notify/init handoff), NOT the builder or the cache.
 
-From 257ac04bcb88e112d08f451121674f5ab34ae905 Mon Sep 17 00:00:00 2001
+From 0506730314496152fa79b69f46ffe7fb7e51ed44 Mon Sep 17 00:00:00 2001
 From: Ilya Gulya <ilya@gulya.me>
 Date: Thu, 2 Jul 2026 09:58:23 +0000
 Subject: [PATCH] perf#24f-fix-elfcalls-handoff (#104): doc the fix + the next
@@ -43413,8 +43277,6 @@ __dyld dyldFuncLookup stayed 0x0), the live proof, the RED regression gate, and
 the NEXT crash the fix uncovered: libsystem_c _flockfile deref of a bad FILE*
 (bytes read as "m_pthrea") = a separate DCC data-fixup defect, tracked as a
 follow-up bead. Prod restored byte-identical (doctor ALL GREEN).
-
-Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
 ---
  tests/PERF24F-ELFCALLS-HANDOFF-FIX.md | 69 +++++++++++++++++++++++++++
  1 file changed, 69 insertions(+)
@@ -43496,7 +43358,7 @@ index 0000000000000000000000000000000000000000..e602045850f3177d7420aa3b0f750898
 +- [ ] DCC5-ON /usr/bin/true guest-child exit 0 — NOT yet: blocked by the separate `_flockfile`
 +      data-fixup crash above. That is the follow-up bead, not the elfcalls handoff.
 
-From e08216b5defc812a92763c1e2e59e141f54bb46e Mon Sep 17 00:00:00 2001
+From 62f6448a862a2cefe5b1ff3bc6805a7f1e19b9d6 Mon Sep 17 00:00:00 2001
 From: Ilya Gulya <ilya@gulya.me>
 Date: Thu, 2 Jul 2026 10:41:14 +0000
 Subject: [PATCH] =?UTF-8?q?perf#24f-fix-flockfile-datafixup=20(#105):=20in?=
@@ -43527,8 +43389,6 @@ The remaining _flockfile crash is stdio-init-specific (sh/bash), NOT
 No builder/cache change. dyld fix 7a93752 stays committed. Prod restored
 byte-identical (doctor ALL GREEN). Full detail:
 tests/PERF24F-FLOCKFILE-INVESTIGATION.md.
-
-Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
 ---
  tests/PERF24F-FLOCKFILE-INVESTIGATION.md | 73 ++++++++++++++++++++++++
  1 file changed, 73 insertions(+)
@@ -43614,7 +43474,7 @@ index 0000000000000000000000000000000000000000..b3bafdb1e8d87a79fcf4a8d79203bdac
 +- [ ] Fix + RED gate + clang A/B: pending the slot identification.
 +This is a distinct, narrower follow-up; the crash does NOT block /usr/bin/true (which passes).
 
-From 0e3e6c5218d56f32c5ab2d2d007283fef3d992c5 Mon Sep 17 00:00:00 2001
+From 170bf35f7006392d726c8e30a5f3ae2748e1c48a Mon Sep 17 00:00:00 2001
 From: Ilya Gulya <ilya@gulya.me>
 Date: Thu, 2 Jul 2026 12:13:30 +0000
 Subject: [PATCH] =?UTF-8?q?perf#24f=20(#107):=20DCC6=20cache=20=E2=80=94?=
@@ -43634,8 +43494,6 @@ pre-#107 cache is rejected (the reader needs the original seg table to translate
 exports). Builder fills them from the source LC_SEGMENT_64. Layout, region
 packing, RIP-rel rewrite, and fixup table are unchanged (same 40 dylibs / 27082
 fixups / identical rewrite totals).
-
-Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
 ---
  tools/closure-cache/dcc5-builder.c |  6 +++++-
  tools/closure-cache/dcc5-format.h  | 12 +++++++++++-
@@ -43696,7 +43554,7 @@ index 471d503f6fa3c43a41640531de4910bb294ce8c6..d50baf10e3f9f76c584021ea714a7d85
      char     path[256];
      uint8_t  uuid[16];
 
-From 10bc4fa94e36c168bb69d8f512e8d26a3c014c28 Mon Sep 17 00:00:00 2001
+From 7800862e4d27c6fc46da6555bacf691d27911940 Mon Sep 17 00:00:00 2001
 From: Ilya Gulya <ilya@gulya.me>
 Date: Thu, 2 Jul 2026 12:18:26 +0000
 Subject: [PATCH] =?UTF-8?q?perf#24f=20(#107):=20doc=20=E2=80=94=20exported?=
@@ -43708,8 +43566,6 @@ Content-Transfer-Encoding: 8bit
 Root cause, DCC6 format/builder/reader change, offline gates, live acceptance
 (true/false/sh/bash/shellspawn/clang-1/clang-200-j8), VMA collapse cc1 ~190->~65,
 and RED arms. Prod restored byte-identical (doctor GREEN).
-
-Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
 ---
  ...PERF24F-107-EXPORTED-SYMBOL-TRANSLATION.md | 84 +++++++++++++++++++
  1 file changed, 84 insertions(+)
@@ -43806,7 +43662,7 @@ index 0000000000000000000000000000000000000000..c4f731b0048f8b8e997d74bfb4c3c0b8
 +      codebase build would quantify the exit_mmap/teardown win more precisely (perf#22a: teardown is
 +      88% of the mm bucket; VMA collapse is the mechanism). The functional A/B + VMA collapse are proven.
 
-From fce321f695bdae5e3407fbae668ffa332cb56129 Mon Sep 17 00:00:00 2001
+From 4f1f5426a48c519d00e0e6181ab867d3dc4b1957 Mon Sep 17 00:00:00 2001
 From: Ilya Gulya <ilya@gulya.me>
 Date: Thu, 2 Jul 2026 12:43:35 +0000
 Subject: [PATCH] =?UTF-8?q?perf#24f:=20DCC6=20MILESTONE=20record=20?=
@@ -43822,8 +43678,6 @@ table, original-vmaddr export translation, elfcalls handoff); live acceptance
 closure 120->3); warm 200-file -j8 OFF 1.27s/ON 1.06s; remaining buckets
 (libSystem init, minor faults ~unchanged, real clang CPU); status = NOT
 default-on, prototype/flag-gated. Next = perf#24g larger-build A/B (measure).
-
-Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
 ---
  tests/PERF24F-DCC6-MILESTONE.md | 97 +++++++++++++++++++++++++++++++++
  1 file changed, 97 insertions(+)
@@ -43933,7 +43787,7 @@ index 0000000000000000000000000000000000000000..7de9842354e827ce4f900a47f14b7be1
 +staleness rejects, correctness (object count + build success). Do NOT start init laziness, default-enable,
 +optimize the packer, or rewrite more dyld paths before that.
 
-From 7ef8ee2d9a1373401374f6cac48aa1897206df8c Mon Sep 17 00:00:00 2001
+From 28006847c540dafae345a07adf77c1fb5e381483 Mon Sep 17 00:00:00 2001
 From: Ilya Gulya <ilya@gulya.me>
 Date: Thu, 2 Jul 2026 13:28:15 +0000
 Subject: [PATCH] =?UTF-8?q?perf#24g:=20DCC6=20larger-build=20A/B=20?=
@@ -43954,8 +43808,6 @@ the same rebuilt dyld/cache/install_root.
 - Prod restored byte-identical (dyld 79b22273 both); doctor ALL GREEN.
 
 No DCC6 builder/reader/init/default-on changes. Measurement only.
-
-Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
 ---
  tests/PERF24G-DCC6-LARGER-BUILD-AB.md | 87 +++++++++++++++++++++++++++
  1 file changed, 87 insertions(+)
@@ -44055,7 +43907,7 @@ index 0000000000000000000000000000000000000000..35a6f96fadb0ef928ba5a307334e2230
 +guest `date` has no `%N` (use integer `%s`). Prod dyld 79b22273 both / dserver 835946f9 / mldr
 +f0cd2a82 restored byte-identical; doctor ALL GREEN.
 
-From 22901db58ce9ee18e0e20a675231e6506d27ab8f Mon Sep 17 00:00:00 2001
+From 5f22e311fd306bccd5f64123208111bfefda5f80 Mon Sep 17 00:00:00 2001
 From: Ilya Gulya <ilya@gulya.me>
 Date: Thu, 2 Jul 2026 13:38:00 +0000
 Subject: [PATCH] =?UTF-8?q?perf#24g-teardown:=20direct=20exit=5Fmmap=20A/B?=
@@ -44078,8 +43930,6 @@ not -78%): resident pages still zapped, each proc unmaps its own view of the
 shared DCC regions. 191ms is ~1.4% of the 14s CPU-bound build => no wall move.
 
 Prod restored byte-identical (dyld 79b22273 both); doctor GREEN.
-
-Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
 ---
  tests/PERF24G-DCC6-LARGER-BUILD-AB.md | 43 ++++++++++++++++++++-------
  1 file changed, 32 insertions(+), 11 deletions(-)
@@ -44151,7 +44001,7 @@ index 35a6f96fadb0ef928ba5a307334e223079d3d8d6..03fd7fd923d37eea46bbf114b0a1c9c2
        is VMA/teardown, which this workload does not stress.
  - [x] Prod restored byte-identical (dyld 79b22273 both copies); `west darling-doctor` ALL GREEN.
 
-From daf812f9b6324bdb8a7a2216fec6bbde2af2a140 Mon Sep 17 00:00:00 2001
+From 411864a483fb9d6d2243aefee0fb1a2721239c7d Mon Sep 17 00:00:00 2001
 From: Ilya Gulya <ilya@gulya.me>
 Date: Thu, 2 Jul 2026 13:42:51 +0000
 Subject: [PATCH] =?UTF-8?q?perf#24:=20FINAL=20decision=20record=20?=
@@ -44173,8 +44023,6 @@ the whole perf#24 arc (#79-#109).
   launch-heavy; B: compiler CPU attribution for build-bound — or stop).
 
 No new fix. Decision record only.
-
-Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
 ---
  tests/PERF24-DCC6-FINAL.md | 111 +++++++++++++++++++++++++++++++++++++
  1 file changed, 111 insertions(+)
@@ -44298,7 +44146,7 @@ index 0000000000000000000000000000000000000000..9a819789bd9e1628f8b53a81778f89f2
 +**Do NOT** start either branch as a "DCC fix" — DCC6 is complete for what it is. The next lever is
 +init (branch A) or compiler CPU (branch B), chosen by which workload matters.
 
-From 03cf98e489f6c7830d82e10b5ee2217d44b9a1ae Mon Sep 17 00:00:00 2001
+From 82f41e2e0dc352c18dd8910963d908395c94afda Mon Sep 17 00:00:00 2001
 From: Ilya Gulya <ilya@gulya.me>
 Date: Thu, 2 Jul 2026 14:12:53 +0000
 Subject: [PATCH] =?UTF-8?q?perf#25a:=20brew=20reinstall=20census=20?=
@@ -44323,8 +44171,6 @@ FINDINGS:
 
 Branch A order now: A0 fix lost-RPC hang FIRST -> A1 DCC6-on brew A/B ->
 A2 libSystem init-laziness. Recon only, no code, prod untouched.
-
-Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
 ---
  tests/PERF25A-BREW-REINSTALL-CENSUS.md | 63 ++++++++++++++++++++++++++
  1 file changed, 63 insertions(+)

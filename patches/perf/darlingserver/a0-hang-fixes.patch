@@ -1,4 +1,4 @@
-From 10d2ab5be74a45e5ab72811221977fd77ba799a7 Mon Sep 17 00:00:00 2001
+From 57185d0df20ed8c11dde306cf0a405a95e20db96 Mon Sep 17 00:00:00 2001
 From: Ilya Gulya <ilya@gulya.me>
 Date: Thu, 2 Jul 2026 15:04:52 +0000
 Subject: [PATCH] =?UTF-8?q?perf#25a-hang:=20root-class=20the=20brew=20hang?=
@@ -21,8 +21,6 @@ never arrives. Deeper than the ring fast-path — dserver wait/SIGCHLD delivery
 under heavy concurrent fork/exec/exit. This is the A0 blocker for branch A.
 
 Recon only, no code, prod untouched.
-
-Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
 ---
  tests/PERF25A-BREW-REINSTALL-CENSUS.md | 20 ++++++++++++++++++++
  1 file changed, 20 insertions(+)
@@ -56,7 +54,7 @@ index 00b1fd6272563e14870b3e3b664302f3e8f911cf..cc60738f9c90bbb8e4f36ccaca2969de
 +  fixed. This IS the (A0) blocker for branch A, above any launch/init micro-optimization. Recon only,
 +  not chased here.
 
-From a6bcba15f793299b08a286bd0e0abf2a538a5636 Mon Sep 17 00:00:00 2001
+From 0005e4ea67e13ed91b3787f168e380e5a8158ccc Mon Sep 17 00:00:00 2001
 From: Ilya Gulya <ilya@gulya.me>
 Date: Thu, 2 Jul 2026 16:23:39 +0000
 Subject: [PATCH] perf#25a-hang (A0): root-cause the ring split-brain + record
@@ -78,8 +76,6 @@ GREEN, brew ring-OFF reconfirmed clean.
 A0 fix must be SYMMETRIC (guest+server co-design), not fallback removal. Details +
 corrected fix shape in tests/PERF25A-BREW-REINSTALL-CENSUS.md (UPDATE 2 + UPDATE 3).
 No prod change; recon+revert only.
-
-Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
 ---
  tests/PERF25A-BREW-REINSTALL-CENSUS.md | 61 ++++++++++++++++++++++++++
  1 file changed, 61 insertions(+)
@@ -154,7 +150,7 @@ index cc60738f9c90bbb8e4f36ccaca2969de755fa4f2..0a0466ff6f4403a0f87f8d9b017413d3
 +2/2 clean) before any deploy. Safe interim posture: `DARLING_SERVER_FAST_OPS=0` (proven clean) or building
 +the guest dylib with `DARLING_RING_TRANSPORT=OFF`.
 
-From 6ed9770a2df22bb1c8aabc8125afed3c580c5467 Mon Sep 17 00:00:00 2001
+From de330480b53d0289262c7a929132448f081556ef Mon Sep 17 00:00:00 2001
 From: Ilya Gulya <ilya@gulya.me>
 Date: Thu, 2 Jul 2026 23:25:44 +0000
 Subject: [PATCH] perf#25a-hang (A0): socket-level capture reframes the bug
@@ -173,8 +169,6 @@ per hang (libtool sh / configure ld / launchd). Deeper than the ring; lives in t
 RPC socket-demux + server async-writer backpressure. Needs per-fd tracing + multi-iter
 darlingserver work. Evidence: tests/PERF25A UPDATE 4 (+ a0_sock_snapshot.HANG.txt in job tmp).
 PAUSED, root cause localized to socket layer. Interim: DARLING_SERVER_FAST_OPS=0.
-
-Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
 ---
  tests/PERF25A-BREW-REINSTALL-CENSUS.md | 31 ++++++++++++++++++++++++++
  1 file changed, 31 insertions(+)
@@ -219,7 +213,7 @@ index 0a0466ff6f4403a0f87f8d9b017413d359495068..a9217c2ab5e45561a15bb1857900e4a2
 +localized to the socket layer, prod byte-identical + doctor GREEN. Interim: `DARLING_SERVER_FAST_OPS=0` (ring
 +inline off) is the lowest-hang-rate proven posture.
 
-From a9468648f5ab45acd9739bdca0163ac7565975e1 Mon Sep 17 00:00:00 2001
+From 963ac6e4ce0fe518a605977e9f3496fffda217b5 Mon Sep 17 00:00:00 2001
 From: Ilya Gulya <ilya@gulya.me>
 Date: Thu, 2 Jul 2026 23:40:10 +0000
 Subject: [PATCH] perf#25a-hang (A0): per-fd capture proves it is a SEQPACKET
@@ -237,8 +231,6 @@ either (band fds behave; the stranded ones are the low un-relocated SEQPACKET so
 NEXT (approved, 1 build cycle): server per-connection instrumentation to name which 12-byte
 SEQPACKET aux message strands and which thread should drain it. Detail: PERF25A UPDATE 5,
 evidence a0_fd_snapshot.HANG.txt. Prod byte-identical, doctor GREEN.
-
-Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
 ---
  tests/PERF25A-BREW-REINSTALL-CENSUS.md | 27 ++++++++++++++++++++++++++
  1 file changed, 27 insertions(+)
@@ -279,7 +271,7 @@ index a9217c2ab5e45561a15bb1857900e4a2091421d2..31f1159763f6e6c2bfc870918b419a00
 +the fix (drain-ordering / wakeup on the SEQPACKET channel vs the DGRAM RPC wait). Prod byte-identical
 +(dylib 6bd251c3, srv 835946f9, mldr/dyld baseline), doctor GREEN, guest torn down.
 
-From 50c2fbdd63547cc2d9b2bacde24be1bfe16dd6c7 Mon Sep 17 00:00:00 2001
+From 5b81dce3130d9d1e562212336aadb20fc69219e9 Mon Sep 17 00:00:00 2001
 From: Ilya Gulya <ilya@gulya.me>
 Date: Thu, 2 Jul 2026 23:47:20 +0000
 Subject: [PATCH] perf#25a-hang (A0): next-agent handoff doc (SEQPACKET
@@ -289,8 +281,6 @@ Durable entry point for the next agent (task #113): root cause, decisive per-fd
 evidence, architecture facts, the approved server-instrumentation next step, dead
 ends not to repeat, RED/GREEN baseline, and hard safety rules (baselines, build
 dir, gate workarounds). Points at PERF25A-BREW-REINSTALL-CENSUS.md UPDATE 5.
-
-Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
 ---
  tests/PERF25A-A0-NEXT-AGENT-HANDOFF.md | 94 ++++++++++++++++++++++++++
  1 file changed, 94 insertions(+)
@@ -397,7 +387,7 @@ index 0000000000000000000000000000000000000000..a06704a5700ea2574c147b923ecdca29
 +and `~/work/darling-dev/darling/src/startup/mldr`. darlingserver currently on branch `perf/shmem-ring-abi-validator`
 +@ d46b41f; xnu on `perf/shmem-ring-guest` @ caddc2b. Manifest repo `~/work/darling-dev/darling-workspace`.
 
-From 01f6a6bc0034f2752add2b047e704218db1c8a5d Mon Sep 17 00:00:00 2001
+From 50d0948b275fed66db49616de9237b14d700c14d Mon Sep 17 00:00:00 2001
 From: Ilya Gulya <ilya@gulya.me>
 Date: Fri, 3 Jul 2026 00:04:28 +0000
 Subject: [PATCH] perf#25a-hang (A0): env-gated kqchan SEQPACKET aux-channel
@@ -426,8 +416,6 @@ Observation-only: zero behavioral change (verified by diff -- every added line
 is an auxlog call or comment). Zero cost when the env is unset (one relaxed bool
 load). NOT default-on; to be reverted byte-identical before any non-instrumented
 build. Built from ~/work/darling-build; baseline 835946f9 backed up + restorable.
-
-Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
 ---
  src/kqchan.cpp | 110 +++++++++++++++++++++++++++++++++++++++++++++++++
  1 file changed, 110 insertions(+)
@@ -634,7 +622,7 @@ index 7f766a299b888d5677e7ca8135d09cfb10e67c55..6752e27a766b7881e1ffe9ad6f38c44e
  			_sendNotification();
  		}
 
-From 48410d313f5957fab67a4c7d4879bbc5d31a2c23 Mon Sep 17 00:00:00 2001
+From 1cdd37bf9cb48c34849a212f052b810612f01f1c Mon Sep 17 00:00:00 2001
 From: Ilya Gulya <ilya@gulya.me>
 Date: Fri, 3 Jul 2026 00:21:07 +0000
 Subject: [PATCH] perf#25a-hang (A0): fix kqchan proc-notification lost-wakeup
@@ -681,8 +669,6 @@ Symmetric across both kqchan types (fix is in the shared base). Retains the
 env-gated AUXLOG instrumentation from the previous commit for A/B verification.
 Built from ~/work/darling-build; baseline 835946f9 backed up + restorable.
 Pending: boot smoke + brew ring-ON A/B gate before this is declared GREEN.
-
-Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
 ---
  internal-include/darlingserver/kqchan.hpp | 18 ++++++
  src/kqchan.cpp                            | 71 ++++++++++++++++++-----
@@ -840,7 +826,7 @@ index 6752e27a766b7881e1ffe9ad6f38c44e5aa733a5..a49f0a7e33eb925957cad99e0e0353da
  	Event newEvent;
  
 
-From 72a24402b60705d6e6a11b9a9d3aea8ab1dc6911 Mon Sep 17 00:00:00 2001
+From 197867baab656e47ba1a07fadc4659a391ba14a8 Mon Sep 17 00:00:00 2001
 From: Ilya Gulya <ilya@gulya.me>
 Date: Fri, 3 Jul 2026 00:30:38 +0000
 Subject: [PATCH] =?UTF-8?q?perf#25a-hang=20(A0):=20UPDATE=206=20=E2=80=94?=
@@ -864,8 +850,6 @@ perf#18 ring (ring-OFF clean) and NOT the kqchan notification gate (this fix is
 clean and brew still hangs). Evidence: tmp/a0_auxlog_HANG_afterfix.txt +
 a0_auxlog_snapshot.HANG_afterfix.txt. Fix kept on branch (real correctness
 improvement) but NOT the cure; prod restored byte-identical to baseline 835946f9.
-
-Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
 ---
  tests/PERF25A-BREW-REINSTALL-CENSUS.md | 66 ++++++++++++++++++++++++++
  1 file changed, 66 insertions(+)
@@ -945,7 +929,7 @@ index 31f1159763f6e6c2bfc870918b419a00be303f2d..d0a1e09e9845aebc4471f8ffeaeab55e
 +instrumentation retained behind the env gate for the guest-side investigation. NEXT: guest-thread-stack +
 +per-fd + server-RPC correlated capture to name the stuck RPC call and its missing reply.
 
-From 63e965d3abe5f4102b2ffe85ee746626c45cc6ea Mon Sep 17 00:00:00 2001
+From 111371a06eb62d699c6846fea401fa51ee06bbba Mon Sep 17 00:00:00 2001
 From: Ilya Gulya <ilya@gulya.me>
 Date: Fri, 3 Jul 2026 00:49:16 +0000
 Subject: [PATCH] =?UTF-8?q?perf#25a-hang=20(A0):=20UPDATE=207=20=E2=80=94?=
@@ -976,8 +960,6 @@ reply send, number+tid+target) to name the exact stuck call and drop site.
 
 Prod byte-identical baseline 835946f9, doctor GREEN. Evidence:
 tmp/a0_guest_rpc_snapshot.HANG_dualns.txt + a0_guest_rpc_capture.sh.
-
-Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
 ---
  tests/PERF25A-BREW-REINSTALL-CENSUS.md | 35 ++++++++++++++++++++++++++
  1 file changed, 35 insertions(+)
@@ -1026,7 +1008,7 @@ index d0a1e09e9845aebc4471f8ffeaeab55ef581b37a..d61c69ea860863873a1dd5e88c8cbe5d
 +last call and whether it sent/dropped/mis-routed the reply. That names the call and the exact drop site.
 +Prod byte-identical baseline 835946f9, doctor GREEN, guest torn down. Evidence + harnesses in job tmp.
 
-From c0f68b9e381373b874658eb882d4a1bf5d2804c1 Mon Sep 17 00:00:00 2001
+From bce051ccb169c1bb1185c381d4aeba777091be95 Mon Sep 17 00:00:00 2001
 From: Ilya Gulya <ilya@gulya.me>
 Date: Fri, 3 Jul 2026 01:07:05 +0000
 Subject: [PATCH] perf#25a-hang (A0): env-gated per-tid RPC trace (RECV + reply
@@ -1056,8 +1038,6 @@ a STASH with no matching FLUSH, names the stuck call + drop site.
 Zero cost when the env is unset (one relaxed-load bool guard). Purely additive,
 no behavior change on any path. NOT default-on; reverted before any
 non-instrumented build. Builds clean (b600271b).
-
-Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
 ---
  internal-include/darlingserver/server.hpp |   5 ++
  src/call.cpp                              | 100 ++++++++++++++++++++++
@@ -1081,10 +1061,10 @@ index 3b74483e1deb47310a91f181ea1eb67eec5a2130..3efedf19ccc38767a809ba52c0f725c8
  	class Server {
  		friend class Monitor;
 diff --git a/src/call.cpp b/src/call.cpp
-index 876f1afee53c5a97d8d53711c24b8b1c3b12b286..94bd22fbbcb50bd47ab0e4c0ce609306eea38fac 100644
+index 4b44c0d2551c0e42c49b77ade2dbd604156f661d..052f272f5d097b49898ecbe8d86af8aecd4719fb 100644
 --- a/src/call.cpp
 +++ b/src/call.cpp
-@@ -34,6 +34,13 @@
+@@ -35,6 +35,13 @@
  #include <darlingserver/kqchan.hpp>
  #include <system_error>
  #include <cerrno>
@@ -1098,7 +1078,7 @@ index 876f1afee53c5a97d8d53711c24b8b1c3b12b286..94bd22fbbcb50bd47ab0e4c0ce609306
  #ifdef DSERVER_RING_TRANSPORT
  	#include <darlingserver/ring.hpp>
  	#include <darlingserver/monitor.hpp>
-@@ -45,6 +52,70 @@ static DarlingServer::Log callLog("calls");
+@@ -46,6 +53,70 @@ static DarlingServer::Log callLog("calls");
  
  DarlingServer::Log DarlingServer::Call::rpcReplyLog("replies");
  
@@ -1169,7 +1149,7 @@ index 876f1afee53c5a97d8d53711c24b8b1c3b12b286..94bd22fbbcb50bd47ab0e4c0ce609306
  // perf #18 D15a (dar-1il.10): static ring-eligibility classifier for the attach-timeline census.
  // Mirrors the dispatch allowlist (DSERVER_RING_C2S_OPCODES, rpc-supplement.h) -- the SAME macro the
  // ringServiceThread dispatch keys off -- so "eligible" here means exactly "this op would have ridden
-@@ -159,6 +230,16 @@ std::shared_ptr<DarlingServer::Call> DarlingServer::Call::callFromMessage(Messag
+@@ -178,6 +249,16 @@ std::shared_ptr<DarlingServer::Call> DarlingServer::Call::callFromMessage(Messag
  	auto tidString = (thread) ? (std::to_string(thread->id()) + " (" + std::to_string(thread->nsid()) + ")") : (std::to_string(header->tid) + " (-1)");
  	callLog.debug() << "Received call #" << header->number << " (" << dserver_callnum_to_string(header->number) << ") from PID " << pidString << ", TID " << tidString << callLog.endLog;
  
@@ -1185,8 +1165,8 @@ index 876f1afee53c5a97d8d53711c24b8b1c3b12b286..94bd22fbbcb50bd47ab0e4c0ce609306
 +
  	if (header->number == dserver_callnum_s2c) {
  		// this is an S2C reply
- 
-@@ -220,6 +301,8 @@ std::shared_ptr<DarlingServer::Call> DarlingServer::Call::callFromMessage(Messag
+ 		{
+@@ -238,6 +319,8 @@ std::shared_ptr<DarlingServer::Call> DarlingServer::Call::callFromMessage(Messag
  				// the client saw this unexpected reply while waiting for interrupt_enter to respond and sent it back to us,
  				// and we received both calls (interrupt_enter and push_reply) at the same time
  				thread->_pendingSavedReply = std::move(replyToSave);
@@ -1195,7 +1175,7 @@ index 876f1afee53c5a97d8d53711c24b8b1c3b12b286..94bd22fbbcb50bd47ab0e4c0ce609306
  			} else if (thread->_interrupts.empty()) {
  				// The push_reply races the interrupt's lifetime: the interrupt was
  				// already torn down (interrupt_exit popped it) by the time this
-@@ -230,6 +313,8 @@ std::shared_ptr<DarlingServer::Call> DarlingServer::Call::callFromMessage(Messag
+@@ -248,6 +331,8 @@ std::shared_ptr<DarlingServer::Call> DarlingServer::Call::callFromMessage(Messag
  				// client now. (dar-gwn.1.7)
  				lock.unlock();
  				callLog.debug() << *thread << ": push_reply arrived with no live interrupt; re-sending pushed reply directly" << callLog.endLog;
@@ -1204,7 +1184,7 @@ index 876f1afee53c5a97d8d53711c24b8b1c3b12b286..94bd22fbbcb50bd47ab0e4c0ce609306
  				if (!thread->isDead()) {
  					Server::sharedInstance().sendMessage(std::move(replyToSave));
  				}
-@@ -241,6 +326,8 @@ std::shared_ptr<DarlingServer::Call> DarlingServer::Call::callFromMessage(Messag
+@@ -259,6 +344,8 @@ std::shared_ptr<DarlingServer::Call> DarlingServer::Call::callFromMessage(Messag
  					throw std::runtime_error("Client-pushed reply overwriting existing saved reply");
  				}
  				thread->_interrupts.top().savedReply = std::move(replyToSave);
@@ -1213,7 +1193,7 @@ index 876f1afee53c5a97d8d53711c24b8b1c3b12b286..94bd22fbbcb50bd47ab0e4c0ce609306
  			}
  		}
  
-@@ -400,6 +487,16 @@ bool DarlingServer::Call::isBSDTrap() const {
+@@ -436,6 +523,16 @@ bool DarlingServer::Call::isBSDTrap() const {
  };
  
  void DarlingServer::Call::sendReply(Message&& reply) {
@@ -1230,7 +1210,7 @@ index 876f1afee53c5a97d8d53711c24b8b1c3b12b286..94bd22fbbcb50bd47ab0e4c0ce609306
  	Server::sharedInstance().sendMessage(std::move(reply));
  };
  
-@@ -953,6 +1050,9 @@ void DarlingServer::Call::InterruptExit::processCall() {
+@@ -994,6 +1091,9 @@ void DarlingServer::Call::InterruptExit::processCall() {
  			callLog.debug() << *thread << ": Going to send saved reply" << callLog.endLog;
  			Server::sharedInstance().sendMessage(std::move(*tmp.savedReply));
  			tmp.savedReply = std::nullopt;
@@ -1241,10 +1221,10 @@ index 876f1afee53c5a97d8d53711c24b8b1c3b12b286..94bd22fbbcb50bd47ab0e4c0ce609306
  	}
  };
 diff --git a/src/thread.cpp b/src/thread.cpp
-index a5b4fa637f8c15f48233986bc2fd459f76304882..552380a88eb6767b88e7de68acfe0a3486b4cb12 100644
+index 2d9110c6343653c63298960bf303fe39d272e77c..32e1d7e4857add310ed507998d1d664933f3eb43 100644
 --- a/src/thread.cpp
 +++ b/src/thread.cpp
-@@ -1512,6 +1512,9 @@ std::optional<DarlingServer::Message> DarlingServer::Thread::_s2cPerform(Message
+@@ -1515,6 +1515,9 @@ std::optional<DarlingServer::Message> DarlingServer::Thread::_s2cPerform(Message
  					Server::sharedInstance().sendMessage(std::move(*_deferredReply));
  				}
  				_deferredReply = std::nullopt;
@@ -1254,7 +1234,7 @@ index a5b4fa637f8c15f48233986bc2fd459f76304882..552380a88eb6767b88e7de68acfe0a34
  			}
  		}
  	}
-@@ -2230,6 +2233,20 @@ void DarlingServer::Thread::pushCallReply(std::shared_ptr<Call> expectedCall, Me
+@@ -2233,6 +2236,20 @@ void DarlingServer::Thread::pushCallReply(std::shared_ptr<Call> expectedCall, Me
  		_deactivateCallLocked(expectedCall);
  	}
  
@@ -1275,7 +1255,7 @@ index a5b4fa637f8c15f48233986bc2fd459f76304882..552380a88eb6767b88e7de68acfe0a34
  	if (_interruptedForSignal) {
  		if (_interrupts.top().savedReply) {
  			throw std::runtime_error("New reply would overwrite existing saved reply");
-@@ -2245,9 +2262,11 @@ void DarlingServer::Thread::pushCallReply(std::shared_ptr<Call> expectedCall, Me
+@@ -2248,9 +2265,11 @@ void DarlingServer::Thread::pushCallReply(std::shared_ptr<Call> expectedCall, Me
  	} else if (!_dead) {
  #ifdef DSERVER_RING_TRANSPORT
  		if (_publishReplyToRingLocked(reply)) {
@@ -1287,7 +1267,7 @@ index a5b4fa637f8c15f48233986bc2fd459f76304882..552380a88eb6767b88e7de68acfe0a34
  		Server::sharedInstance().sendMessage(std::move(reply));
  	}
  };
-@@ -2484,6 +2503,9 @@ void DarlingServer::Thread::_handleInterruptEnterForCurrentThread() {
+@@ -2487,6 +2506,9 @@ void DarlingServer::Thread::_handleInterruptEnterForCurrentThread() {
  
  			currentThreadVar->_interrupts.top().savedReply = std::move(*currentThreadVar->_pendingSavedReply);
  			currentThreadVar->_pendingSavedReply = std::nullopt;
@@ -1298,7 +1278,7 @@ index a5b4fa637f8c15f48233986bc2fd459f76304882..552380a88eb6767b88e7de68acfe0a34
  
  		currentThreadVar->_interruptedForSignal = true;
 
-From a83bb15046144051e6ed4b68aa171ce997694f82 Mon Sep 17 00:00:00 2001
+From 0346125dd802b4828af4a73b0eb330a93b741455 Mon Sep 17 00:00:00 2001
 From: Ilya Gulya <ilya@gulya.me>
 Date: Fri, 3 Jul 2026 01:23:15 +0000
 Subject: [PATCH] =?UTF-8?q?perf#25a-hang=20(A0):=20UPDATE=208=20=E2=80=94?=
@@ -1327,8 +1307,6 @@ names for fds 8189-8191. NEXT is pure capture (read guest /proc/net/unix rx_queu
 
 Prod restored byte-identical to baseline 835946f9, west darling-doctor ALL GREEN. Trace lives on branch
 fix/a0-kqchan-auxlog. Evidence + harnesses in job tmp (a0_rpctrace/launchd_anatomy/listener_recvq).
-
-Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
 ---
  tests/PERF25A-BREW-REINSTALL-CENSUS.md | 61 ++++++++++++++++++++++++++
  1 file changed, 61 insertions(+)
@@ -1403,7 +1381,7 @@ index d61c69ea860863873a1dd5e88c8cbe5d2803ad45..402daf4e8dc480bbd7eabf0bc0618f09
 +circular, fix by making the kqchan notification/read not depend on a thread that can be RPC-blocked, or by
 +a server-side timeout/kick). Prod byte-identical baseline 835946f9, doctor GREEN, guest torn down.
 
-From e2a136bdadea03c639dcac6df4a73d2296f044ec Mon Sep 17 00:00:00 2001
+From 38adc95c44e936e5a230644ec7bac7133eeb08b9 Mon Sep 17 00:00:00 2001
 From: Ilya Gulya <ilya@gulya.me>
 Date: Fri, 3 Jul 2026 02:19:09 +0000
 Subject: [PATCH] =?UTF-8?q?perf#25a-hang=20(A0):=20UPDATE=209=20=E2=80=94?=
@@ -1429,8 +1407,6 @@ protocol (interrupt_enter/exit + push_reply) under brew make-check's SIGCHLD/for
 semaphore_timedwait wait. NEXT: catch the FIRST thread to freeze (not the cascade) + its last call.
 
 Prod byte-identical baseline 835946f9, doctor GREEN, guest torn down.
-
-Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
 ---
  tests/PERF25A-BREW-REINSTALL-CENSUS.md | 42 ++++++++++++++++++++++++++
  1 file changed, 42 insertions(+)
@@ -1486,7 +1462,7 @@ index 402daf4e8dc480bbd7eabf0bc0618f0993a1a1b3..efa188fa11150c7624bab0b568a11a14
 +baseline 835946f9, doctor GREEN, guest torn down. Evidence: tmp/a0_guest_recvq_procnet.txt,
 +tmp/a0_baseline_ab.sh output (baseline ring-OFF 4/6 HUNG).
 
-From 0be972c50ef45a68414e50d9de36ad3e85a4e483 Mon Sep 17 00:00:00 2001
+From 016eaf07df7c9e2dd4ed16a2f7f59a71ce1dbc44 Mon Sep 17 00:00:00 2001
 From: Ilya Gulya <ilya@gulya.me>
 Date: Fri, 3 Jul 2026 03:31:52 +0000
 Subject: [PATCH] =?UTF-8?q?perf#25a-hang=20(A0):=20UPDATE=2010=20=E2=80=94?=
@@ -1503,8 +1479,6 @@ promotions, 0 following FLUSH-SAVED — the nstid-370 psynch_mutexwait reply is 
 _pendingSavedReply forever; every peer cascades into __skb_wait behind the un-dropped mutex.
 Supersedes both the ring hypothesis (still exonerated) and the fork-wait sticky-flag bug
 (present in baseline, hang persists WITH it). No fix written; candidate directions recorded.
-
-Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
 ---
  tests/PERF25A-BREW-REINSTALL-CENSUS.md | 66 ++++++++++++++++++++++++++
  1 file changed, 66 insertions(+)
@@ -1584,7 +1558,7 @@ index efa188fa11150c7624bab0b568a11a1476336b5a..5ddb50020b87a34913ace4adaade69a6
 +byte-identical to baseline 835946f9 after capture; doctor GREEN. Evidence: tmp/a0_firstfreeze2_1628865.txt,
 +tmp/a0_sudostacks_1629201.txt, auxlog nstid=370 tail.
 
-From d57121f0f93c4c23c135ea0c15476f3952f2da9b Mon Sep 17 00:00:00 2001
+From 5d2d7e057c2c920dca388bd6c5a02c640119d338 Mon Sep 17 00:00:00 2001
 From: Ilya Gulya <ilya@gulya.me>
 Date: Fri, 3 Jul 2026 03:39:53 +0000
 Subject: [PATCH] =?UTF-8?q?perf#25a-hang=20(A0):=20UPDATE=2011=20=E2=80=94?=
@@ -1601,8 +1575,6 @@ throughput (8918 events/final-sec, 985 SEND vs 1 STASH). Dominant reproducible f
 is a guest-side fork/exec/cancel livelock (nstid replaying launch handshake; another
 hammering pthread_canceled), NOT a darlingserver reply-drop. UPDATE-10 orphan was a
 rare single-run tail case. Direction shifts to guest-side livelock instrumentation.
-
-Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
 ---
  tests/PERF25A-BREW-REINSTALL-CENSUS.md | 44 ++++++++++++++++++++++++++
  1 file changed, 44 insertions(+)
@@ -1660,7 +1632,7 @@ index 5ddb50020b87a34913ace4adaade69a63b45e38e..f03fcf99588222db0f1460299608f96f
 +Prod being restored byte-identical to baseline 835946f9; doctor GREEN. Evidence: tmp/a0_confirm_1629686.txt
 ++ the attempt-3 auxlog accounting above.
 
-From 40ec673bafc657322791fafa963096590307c52d Mon Sep 17 00:00:00 2001
+From 7b832a57fd20352ea0ab6cbc2d09c30a069ac6ce Mon Sep 17 00:00:00 2001
 From: Ilya Gulya <ilya@gulya.me>
 Date: Fri, 3 Jul 2026 03:47:23 +0000
 Subject: [PATCH] =?UTF-8?q?perf#25a-hang=20(A0):=20UPDATE=2012=20=E2=80=94?=
@@ -1680,8 +1652,6 @@ the failure: EINTR mishandling orphans a prepost and strands a later condvar
 wakeup. Same signal-abort-races-wakeup family as the fork-wait sticky flag, now
 in the pthread condition-variable path. Fix locus = guest psynch cvwait/cvsignal
 prepost + server clear_wait interaction. No fix written.
-
-Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
 ---
  tests/PERF25A-BREW-REINSTALL-CENSUS.md | 46 ++++++++++++++++++++++++++
  1 file changed, 46 insertions(+)
@@ -1741,7 +1711,7 @@ index f03fcf99588222db0f1460299608f96f2be4312e..0c1703d88997f95255ecd5090eb90713
 +psynch_cvsignal doesn't drop a signal delivered to a waiter that was just EINTR-aborted. Prod restored
 +byte-identical baseline 835946f9; doctor GREEN. Evidence: tmp/a0_livelock_1630247.txt + the histograms above.
 
-From f4131592c4f10affbdfabc59f88e14457e354633 Mon Sep 17 00:00:00 2001
+From 3a15aa61c50e20905a0ff73d527c638ed9f4972c Mon Sep 17 00:00:00 2001
 From: Ilya Gulya <ilya@gulya.me>
 Date: Fri, 3 Jul 2026 04:22:53 +0000
 Subject: [PATCH] =?UTF-8?q?duct-tape:=20cancel=20wait=5Ftimer=20on=20signa?=
@@ -1764,17 +1734,15 @@ brew reinstall ~33-67% of the time, transport-independent (ring on/off identical
 
 Fix mirrors the existing thread_unblock() timer-cancel exactly. Validation
 (boot smoke + brew A/B both ring modes) recorded separately.
-
-Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
 ---
  duct-tape/src/thread.c | 20 ++++++++++++++++++++
  1 file changed, 20 insertions(+)
 
 diff --git a/duct-tape/src/thread.c b/duct-tape/src/thread.c
-index 9071efbf339135b1c73cf432d6f09fb525e3692b..68ff006a17b077c32c7e65865e13f0731d9880fe 100644
+index f9d1186729b163e1762b7c2a5d18d2261db08ed9..247507df1b58550cdaa95b51213047db1e2205d7 100644
 --- a/duct-tape/src/thread.c
 +++ b/duct-tape/src/thread.c
-@@ -478,6 +478,26 @@ void dtape_thread_sigexc_enter(dtape_thread_t* thread) {
+@@ -485,6 +485,26 @@ void dtape_thread_sigexc_enter(dtape_thread_t* thread) {
  	thread_lock(&thread->xnu_thread);
  	thread->xnu_thread.state &= ~(TH_UNINT | TH_WAIT);
  	thread->xnu_thread.wait_result = THREAD_INTERRUPTED;
@@ -1802,7 +1770,7 @@ index 9071efbf339135b1c73cf432d6f09fb525e3692b..68ff006a17b077c32c7e65865e13f073
  	thread_unlock(&thread->xnu_thread);
  };
 
-From 4b6003e000b296aa637eb1f3218f074625e76a20 Mon Sep 17 00:00:00 2001
+From 874a50d39bc9c622d987053e8724648be863bc95 Mon Sep 17 00:00:00 2001
 From: Ilya Gulya <ilya@gulya.me>
 Date: Fri, 3 Jul 2026 05:19:43 +0000
 Subject: [PATCH] =?UTF-8?q?perf#25a-hang=20(A0):=20UPDATE=2013=20=E2=80=94?=
@@ -1819,8 +1787,6 @@ the driver. Three candidates now falsified: ring, stranded pendingSaved, stale t
 Solid: not ring/transport, server healthy, symptom = condvar livelock (42:1 cvwait).
 Unknown: where the cvsignal/prepost wakeup is lost. Pivot from slow noisy brew gate to
 a deterministic condvar+signal-storm micro-repro for line-level diagnosis + 0-hang invariant.
-
-Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
 ---
  tests/PERF25A-BREW-REINSTALL-CENSUS.md | 29 ++++++++++++++++++++++++++
  1 file changed, 29 insertions(+)
@@ -1863,7 +1829,7 @@ index 0c1703d88997f95255ecd5090eb9071332cc4bb5..a6a9912b4f0ee4db826b36ec426af38e
 +a correct hardening that matches thread_unblock and passed boot smoke) but is NOT the A0 fix and must not be
 +described as such. Prod restored byte-identical baseline 835946f9; doctor GREEN.
 
-From da0c2f426fe64df6c6e7ea77ec80b9a6fbcbc34e Mon Sep 17 00:00:00 2001
+From b3aa801ed16cd29defb784a7e80c98de7eee0991 Mon Sep 17 00:00:00 2001
 From: Ilya Gulya <ilya@gulya.me>
 Date: Fri, 3 Jul 2026 05:29:14 +0000
 Subject: [PATCH] =?UTF-8?q?perf#25a-hang=20(A0):=20UPDATE=2014=20=E2=80=94?=
@@ -1880,8 +1846,6 @@ dtape_thread_sigexc_enter pre-clears TH_WAIT, so clear_wait_internal takes KERN_
 and skips thread_go/thread_unblock, leaving the unblock half-done; the EINTR-retry re-enters
 assert_wait with thread->waitq!=NULL -> panic. Hypothesis to be TESTED on the repro (not
 assumed). Fast deterministic target replaces the slow noisy brew gate.
-
-Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
 ---
  tests/PERF25A-BREW-REINSTALL-CENSUS.md | 36 ++++++++++++++++++++++++++
  1 file changed, 36 insertions(+)
@@ -1931,7 +1895,7 @@ index a6a9912b4f0ee4db826b36ec426af38e02668e6f..7bc37730458b4579d9f7e434aca0450a
 +a correct fix must make cvstorm print RESULT=OK (0 panics) across many runs in seconds, THEN brew A/B must be
 +0 hangs. Evidence: tmp/cvstorm_run_1636387.log. Prod baseline 835946f9, doctor GREEN.
 
-From a0e36f603a5988da491b0cf4cdcf841f278af57c Mon Sep 17 00:00:00 2001
+From 0c52c554b9b459976b52ba100a7223bcccba92fd Mon Sep 17 00:00:00 2001
 From: Ilya Gulya <ilya@gulya.me>
 Date: Fri, 3 Jul 2026 05:31:15 +0000
 Subject: [PATCH] =?UTF-8?q?duct-tape:=20sigexc=5Fenter=20must=20not=20pre-?=
@@ -1954,17 +1918,15 @@ VERIFIED on the repro: the panic is GONE. PARTIAL — the underlying lost-cond-s
 livelock still reproduces (cvstorm still RESULT=HANG, done_count freezes ~1s, 42:1
 symptom persists). This commit fixes the waitq-corruption layer; the lost-wakeup
 layer remains open. Not the complete A0 fix.
-
-Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
 ---
  duct-tape/src/thread.c | 40 +++++++++++++++++++---------------------
  1 file changed, 19 insertions(+), 21 deletions(-)
 
 diff --git a/duct-tape/src/thread.c b/duct-tape/src/thread.c
-index 68ff006a17b077c32c7e65865e13f0731d9880fe..744958b32c424bd3f3dc02f58a8ea9fa64097973 100644
+index 247507df1b58550cdaa95b51213047db1e2205d7..866b88f64e2b1954c393d261cd1d7b91102921ed 100644
 --- a/duct-tape/src/thread.c
 +++ b/duct-tape/src/thread.c
-@@ -476,28 +476,26 @@ void dtape_thread_release(dtape_thread_t* thread) {
+@@ -483,28 +483,26 @@ void dtape_thread_release(dtape_thread_t* thread) {
  
  void dtape_thread_sigexc_enter(dtape_thread_t* thread) {
  	thread_lock(&thread->xnu_thread);
@@ -2013,7 +1975,7 @@ index 68ff006a17b077c32c7e65865e13f0731d9880fe..744958b32c424bd3f3dc02f58a8ea9fa
  	thread_unlock(&thread->xnu_thread);
  };
 
-From 6c3b86540ee008b6b14951eaf0ad50cdf00e09ea Mon Sep 17 00:00:00 2001
+From 8abdce4c7d4107395ad4d85177edb5f45651b8f1 Mon Sep 17 00:00:00 2001
 From: Ilya Gulya <ilya@gulya.me>
 Date: Fri, 3 Jul 2026 05:31:44 +0000
 Subject: [PATCH] =?UTF-8?q?perf#25a-hang=20(A0):=20UPDATE=2015=20=E2=80=94?=
@@ -2028,8 +1990,6 @@ Two layers: bd7cdb9 fixes the waitq-corruption/panic layer; the lost-cond-signal
 wakeup layer persists (cvstorm still RESULT=HANG, 42:1 symptom). Panic gone means the
 repro now exposes the PURE livelock deterministically in ~1s — clean fast target. Next:
 instrument cvwait/cvsignal on the repro to catch the lost handoff.
-
-Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
 ---
  tests/PERF25A-BREW-REINSTALL-CENSUS.md | 22 ++++++++++++++++++++++
  1 file changed, 22 insertions(+)
@@ -2065,7 +2025,7 @@ index 7bc37730458b4579d9f7e434aca0450a1a6db739..10167381ab0bd5f770143f42d3c3fb5f
 +0 hangs on the repro before brew A/B. Prod restore pending; fix binary 50dea03a still deployed for the next
 +instrumented repro run.
 
-From baa5816df12da215bff4c1a9be2d11851ee99029 Mon Sep 17 00:00:00 2001
+From 944556ed02ad32b5a14c62e89d0ebf8bd9df78bf Mon Sep 17 00:00:00 2001
 From: Ilya Gulya <ilya@gulya.me>
 Date: Fri, 3 Jul 2026 05:34:59 +0000
 Subject: [PATCH] =?UTF-8?q?perf#25a-hang=20(A0):=20UPDATE=2016=20=E2=80=94?=
@@ -2084,8 +2044,6 @@ if the mutex is still held it TAILQ_INSERT_TAILs the same mutex_link again -> do
 -> corruption -> in release, unlock wakes a garbage link = lost wakeup = 42:1 livelock.
 Reply-stash accounting is healthy (not the driver). Candidate fix: remove own mutex_link
 on resume before re-insert. To be tested on the repro.
-
-Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
 ---
  tests/PERF25A-BREW-REINSTALL-CENSUS.md | 37 ++++++++++++++++++++++++++
  1 file changed, 37 insertions(+)
@@ -2136,7 +2094,7 @@ index 10167381ab0bd5f770143f42d3c3fb5f7251f5ed..401c367b10d8e714a9b6d07ec6e0e491
 +many runs (deterministic, seconds), THEN brew A/B zero hangs. Prod restored byte-identical baseline 835946f9,
 +doctor GREEN. Evidence: tmp/cvstorm_trace_1636756.log.
 
-From bfe0f90390580588bb789deb27a7b02480e1c44d Mon Sep 17 00:00:00 2001
+From 86bc775e2a995cef207e75b39ab80dc796e378e6 Mon Sep 17 00:00:00 2001
 From: Ilya Gulya <ilya@gulya.me>
 Date: Fri, 3 Jul 2026 05:42:04 +0000
 Subject: [PATCH] =?UTF-8?q?duct-tape:=20DIAGNOSTIC=20=E2=80=94=20=5Fdbg=5F?=
@@ -2153,8 +2111,6 @@ each on a mutex_link already queued — while RESULT=HANG. CONFIRMS UPDATE 16: a
 signal-aborted wait leaves thread->mutex_link linked (the SAME link backs both the
 condvar and mutex queues), and the next dtape_mutex_lock TAILQ_INSERT_TAILs it again ->
 corruption -> lost wakeup -> livelock. Mechanism now proven, not assumed. Fix next.
-
-Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
 ---
  duct-tape/internal-include/darlingserver/duct-tape/locks.h | 4 ++++
  duct-tape/src/condvar.c                                    | 6 ++++++
@@ -2231,7 +2187,7 @@ index 69bdf240c4194df10ba1959ac48b1eb347ab1307..41c9978722673a32a3d9f97481bdfcc3
  	dtape_hooks->thread_resume(thread->context);
  
 
-From 25ed49fccf005eae292b8029a6e2a1f68a81e50a Mon Sep 17 00:00:00 2001
+From 754130784563dc54520c7c80edcb7326fba2cd70 Mon Sep 17 00:00:00 2001
 From: Ilya Gulya <ilya@gulya.me>
 Date: Fri, 3 Jul 2026 05:45:29 +0000
 Subject: [PATCH] =?UTF-8?q?duct-tape:=20unlink=20stale=20wait-queue=20link?=
@@ -2260,8 +2216,6 @@ in flight (cvstorm must go RESULT=OK, 0 panics); result recorded next.
 
 NOTE: _dbg_queued is now load-bearing (misnamed); rename to _queued in a cleanup pass
 after verification.
-
-Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
 ---
  duct-tape/src/condvar.c | 21 ++++++++++++++++++---
  duct-tape/src/locks.c   | 14 +++++++++++---
@@ -2339,7 +2293,7 @@ index 41c9978722673a32a3d9f97481bdfcc36bd68a35..d227fccff88aa1837b4f8f041ed3d456
  		TAILQ_INSERT_TAIL(&mutex->dtape_queue_head, &thread->mutex_link, link);
  
 
-From 45cf70710c6e6e182552e00cd95c204d00eb699d Mon Sep 17 00:00:00 2001
+From 99808abe7ef8d3afb2d108651fc9efa4d8dc8acc Mon Sep 17 00:00:00 2001
 From: Ilya Gulya <ilya@gulya.me>
 Date: Fri, 3 Jul 2026 05:53:43 +0000
 Subject: [PATCH] =?UTF-8?q?perf#25a-hang=20(A0):=20UPDATE=2017=20=E2=80=94?=
@@ -2356,8 +2310,6 @@ namespace file' 3x) vs baseline BASE_BOOT_OK — prime suspect the condvar_wait 
 re-lock under the single-threaded cooperative scheduler. locks.c-only is incorrect (stale
 link is on the CONDVAR queue). Redesign: unlink from the abort/unblock path with a
 queue back-pointer, gate boot FIRST. bd7cdb9 (TH_WAIT) kept; 5766b1d not deployable.
-
-Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
 ---
  tests/PERF25A-BREW-REINSTALL-CENSUS.md | 30 ++++++++++++++++++++++++++
  1 file changed, 30 insertions(+)
@@ -2401,7 +2353,7 @@ index 401c367b10d8e714a9b6d07ec6e0e491a861509e..ac12909c1305f94d5f8d5787fb57dc90
 ++ removes panic, KEEP), 5766b1d (this boot-breaking attempt, on branch — do NOT deploy). Prod baseline
 +835946f9, doctor GREEN.
 
-From a21024c54fcb3d534961a58ba08ced43c3927943 Mon Sep 17 00:00:00 2001
+From e3649b9541a39dc71f2f66c1ccc8c5307b58cf30 Mon Sep 17 00:00:00 2001
 From: Ilya Gulya <ilya@gulya.me>
 Date: Fri, 3 Jul 2026 05:59:17 +0000
 Subject: [PATCH] duct-tape: zero mutex_link in dtape_thread_create
@@ -2414,17 +2366,15 @@ dtape_mutex_lock; nonzero garbage -> a bogus TAILQ_REMOVE on an unqueued link ->
 queue corruption at early init -> 'Cannot open mnt namespace file' boot wedge (both the
 full fix and the locks.c-only subset wedged identically for THIS reason, not the fix
 logic). Zero mutex_link explicitly. Boot re-verification of the full fix in flight.
-
-Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
 ---
  duct-tape/src/thread.c | 5 +++++
  1 file changed, 5 insertions(+)
 
 diff --git a/duct-tape/src/thread.c b/duct-tape/src/thread.c
-index 744958b32c424bd3f3dc02f58a8ea9fa64097973..1e40f09c0df095f76832b6e26571184ed0570be0 100644
+index 866b88f64e2b1954c393d261cd1d7b91102921ed..49a084e3717687ea4a130ea281156afe1306298e 100644
 --- a/duct-tape/src/thread.c
 +++ b/duct-tape/src/thread.c
-@@ -51,6 +51,11 @@ dtape_thread_t* dtape_thread_create(dtape_task_t* task, uint64_t nsid, void* con
+@@ -52,6 +52,11 @@ dtape_thread_t* dtape_thread_create(dtape_task_t* task, uint64_t nsid, void* con
  	}
  
  	thread->context = context;
@@ -2437,7 +2387,7 @@ index 744958b32c424bd3f3dc02f58a8ea9fa64097973..1e40f09c0df095f76832b6e26571184e
  	thread->name = NULL;
  	dtape_thread_cancel_state_init(&thread->cancel);
 
-From ff87022e11e76a1594be47d7d3fbda8ec040fb28 Mon Sep 17 00:00:00 2001
+From 89d1bf15a5dd4552e3acd1f7fe0bc16c4b369c2a Mon Sep 17 00:00:00 2001
 From: Ilya Gulya <ilya@gulya.me>
 Date: Fri, 3 Jul 2026 06:02:07 +0000
 Subject: [PATCH] =?UTF-8?q?perf#25a-hang=20(A0):=20UPDATE=2018=20=E2=80=94?=
@@ -2454,8 +2404,6 @@ TH_WAIT fix is defeated once the mutex-queue change is added. Root cause CLASS p
 (double-insert, 7 hits, deterministic repro) but a complete boot-safe fix not achieved
 in 3 attempts. Keep bd7cdb9 + 65038e3 (both correct). Do NOT spin another fix; next =
 instrument the repro to trace the exact abort->dequeue->waitq sequence before more code.
-
-Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
 ---
  tests/PERF25A-BREW-REINSTALL-CENSUS.md | 34 ++++++++++++++++++++++++++
  1 file changed, 34 insertions(+)
@@ -2503,23 +2451,21 @@ index ac12909c1305f94d5f8d5787fb57dc9053fdfa3a..10ba7c52519aa4816b9d41a855497e46
 +condvar/mutex queues too (not just the XNU waitq), unified at one abort/unblock point. Prod restored
 +byte-identical baseline 835946f9, doctor GREEN. Repro: tmp/cvstorm.c + cvstorm_run.sh. Binaries in job tmp.
 
-From 9d3575ca23baf7ee8742b807bf929e935b5b1b66 Mon Sep 17 00:00:00 2001
+From f540e63b0704a277ba148ec1fd6944d3aa3cd1b7 Mon Sep 17 00:00:00 2001
 From: Ilya Gulya <ilya@gulya.me>
 Date: Fri, 3 Jul 2026 06:05:55 +0000
 Subject: [PATCH] duct-tape: TRACE sigexc abort state (perf#25a A0 diagnosis)
 
 Logs waitq_before/state/clear_wait_ret/waitq_after/mlq per signal-abort. TEMPORARY.
-
-Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
 ---
  duct-tape/src/thread.c | 9 ++++++++-
  1 file changed, 8 insertions(+), 1 deletion(-)
 
 diff --git a/duct-tape/src/thread.c b/duct-tape/src/thread.c
-index 1e40f09c0df095f76832b6e26571184ed0570be0..eb816ff09eb5c7e02d99118976131ae412da1b0a 100644
+index 49a084e3717687ea4a130ea281156afe1306298e..c60ab1b5e4cda270672d9b54aad173e09042e20c 100644
 --- a/duct-tape/src/thread.c
 +++ b/duct-tape/src/thread.c
-@@ -501,7 +501,14 @@ void dtape_thread_sigexc_enter(dtape_thread_t* thread) {
+@@ -508,7 +508,14 @@ void dtape_thread_sigexc_enter(dtape_thread_t* thread) {
  	// thread_go(), not by the caller hand-clearing TH_WAIT. (perf#25a A0)
  	thread->xnu_thread.state &= ~TH_UNINT;
  	thread->xnu_thread.wait_result = THREAD_INTERRUPTED;
@@ -2536,7 +2482,7 @@ index 1e40f09c0df095f76832b6e26571184ed0570be0..eb816ff09eb5c7e02d99118976131ae4
  };
  
 
-From 2401ab2af8fd886ea80b6f0e71c77a724d10f37d Mon Sep 17 00:00:00 2001
+From 9ac1a491e179506a39132ec8b1432e0cc0cda876 Mon Sep 17 00:00:00 2001
 From: Ilya Gulya <ilya@gulya.me>
 Date: Fri, 3 Jul 2026 06:05:55 +0000
 Subject: [PATCH] =?UTF-8?q?perf#25a-hang=20(A0):=20UPDATE=2019=20=E2=80=94?=
@@ -2548,7 +2494,6 @@ MIME-Version: 1.0
 Content-Type: text/plain; charset=UTF-8
 Content-Transfer-Encoding: 8bit
 
-Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
 ---
  tests/PERF25A-BREW-REINSTALL-CENSUS.md | 30 ++++++++++++++++++++++++++
  1 file changed, 30 insertions(+)
@@ -2592,7 +2537,7 @@ index 10ba7c52519aa4816b9d41a855497e46b3994c64..d47002a7da7b7fcc1d891da6bf0ec0c5
 +duct-tape. That is the next thing to pin. KEEP bd7cdb9 + 65038e3 (correct). 5766b1d (mutex-queue) is a real
 +but insufficient fix. Trace commit is temporary. Prod baseline 835946f9, doctor GREEN.
 
-From 8982d417ed81452aeb98b689b751c32b2984abd0 Mon Sep 17 00:00:00 2001
+From 86d487076f63d743e510cc12850fd88b1dacf658 Mon Sep 17 00:00:00 2001
 From: Ilya Gulya <ilya@gulya.me>
 Date: Fri, 3 Jul 2026 06:22:00 +0000
 Subject: [PATCH] =?UTF-8?q?perf#25a-hang=20(A0):=20UPDATE=2020=20=E2=80=94?=
@@ -2625,18 +2570,16 @@ Two decisive measurements on the pristine baseline (835946f9):
 
 Removes the temporary sigexc trace (kept only the byte for the model that is now
 falsified). Repro: tmp/cvstorm2.c -DNCONS=1 -DNO_STORM. Prod baseline 835946f9.
-
-Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
 ---
  duct-tape/src/thread.c                 |  9 +------
  tests/PERF25A-BREW-REINSTALL-CENSUS.md | 37 ++++++++++++++++++++++++++
  2 files changed, 38 insertions(+), 8 deletions(-)
 
 diff --git a/duct-tape/src/thread.c b/duct-tape/src/thread.c
-index eb816ff09eb5c7e02d99118976131ae412da1b0a..1e40f09c0df095f76832b6e26571184ed0570be0 100644
+index c60ab1b5e4cda270672d9b54aad173e09042e20c..49a084e3717687ea4a130ea281156afe1306298e 100644
 --- a/duct-tape/src/thread.c
 +++ b/duct-tape/src/thread.c
-@@ -501,14 +501,7 @@ void dtape_thread_sigexc_enter(dtape_thread_t* thread) {
+@@ -508,14 +508,7 @@ void dtape_thread_sigexc_enter(dtape_thread_t* thread) {
  	// thread_go(), not by the caller hand-clearing TH_WAIT. (perf#25a A0)
  	thread->xnu_thread.state &= ~TH_UNINT;
  	thread->xnu_thread.wait_result = THREAD_INTERRUPTED;
@@ -2698,7 +2641,7 @@ index d47002a7da7b7fcc1d891da6bf0ec0c5b896c884..08edb10c6cc86402a32c994b88c2f54d
 +   ksyn_wakeup finds vs misses a just-parked waiter) on the cvstorm2 -DNCONS=1 repro to catch the exact
 +   dropped wakeup. Prod baseline 835946f9, doctor GREEN.
 
-From 567435eac1b939207be0b7b0c693a187d175a1c4 Mon Sep 17 00:00:00 2001
+From 87278579908a1d4abfec8d585479f0b721a6bb3d Mon Sep 17 00:00:00 2001
 From: Ilya Gulya <ilya@gulya.me>
 Date: Fri, 3 Jul 2026 06:51:54 +0000
 Subject: [PATCH] =?UTF-8?q?perf#25a-hang=20(A0):=20UPDATE=2021+22=20?=
@@ -2734,8 +2677,6 @@ NOT. Fix: doWork()'s _running branch must leave a pending-reschedule marker so
 doneWorking reschedules once _running clears (invariant: one more doWork after
 _running clears). Traces are diagnostic-only; prod byte-identical baseline
 835946f9. Repro tmp/cvstorm2.c, harness tmp/a0_cvtrace.sh.
-
-Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
 ---
  duct-tape/pthread/kern_synch.c         | 49 ++++++++++++++++++++++++--
  duct-tape/src/thread.c                 |  2 ++
@@ -2895,12 +2836,12 @@ index 961f9a7434d58f2d52ec94445b89f91d8c50a310..ac1a5d8780ed25b5d67e60bc2a89c048
  		panic("ksyn_signal: panic waking up thread %x\n", ret);
  	}
 diff --git a/duct-tape/src/thread.c b/duct-tape/src/thread.c
-index 1e40f09c0df095f76832b6e26571184ed0570be0..9579fa1abb25e7d24fc8dd3c8733bce1930f8b4e 100644
+index 49a084e3717687ea4a130ea281156afe1306298e..7af398d8fba33e7e3eb3ea6c902d69fddfb9c2e8 100644
 --- a/duct-tape/src/thread.c
 +++ b/duct-tape/src/thread.c
-@@ -629,6 +629,8 @@ boolean_t thread_unblock(thread_t xthread, wait_result_t wresult) {
- 	// ETIMEDOUT and stranding a condvar/mutex handoff (intermittent hang).
+@@ -639,6 +639,8 @@ boolean_t thread_unblock(thread_t xthread, wait_result_t wresult) {
  	dtape_thread_cancel_wait_timer(&thread->xnu_thread);
+ 	dtape_test_trace_wait_timer("thread_unblock", (unsigned long long)xthread, wresult, had_timer, active);
  
 +	dtape_log_error("A0 UNBLOCK nstid=%llu wresult=%d (about to thread_resume)",
 +		(unsigned long long)thread->xnu_thread.thread_id, (int)wresult);
@@ -2908,10 +2849,10 @@ index 1e40f09c0df095f76832b6e26571184ed0570be0..9579fa1abb25e7d24fc8dd3c8733bce1
  	return TRUE;
  };
 diff --git a/src/thread.cpp b/src/thread.cpp
-index 552380a88eb6767b88e7de68acfe0a3486b4cb12..e508f5e2f96d1efb6b5d5060e26b4cc972dd382f 100644
+index 32e1d7e4857add310ed507998d1d664933f3eb43..17b393ed2cebbfc25b844e26dd7a63efcb00e731 100644
 --- a/src/thread.cpp
 +++ b/src/thread.cpp
-@@ -466,6 +466,7 @@ void DarlingServer::Thread::doWork() {
+@@ -467,6 +467,7 @@ void DarlingServer::Thread::doWork() {
  	_rwlock.lock();
  
  	if (_deferralState != DeferralState::NotDeferred) {
@@ -2919,7 +2860,7 @@ index 552380a88eb6767b88e7de68acfe0a3486b4cb12..e508f5e2f96d1efb6b5d5060e26b4cc9
  		microthreadLog.debug() << _tid << "(" << _nstid << "): execution was deferred" << microthreadLog.endLog;
  		_deferralState = DeferralState::DeferredPending;
  		_rwlock.unlock();
-@@ -474,6 +475,7 @@ void DarlingServer::Thread::doWork() {
+@@ -475,6 +476,7 @@ void DarlingServer::Thread::doWork() {
  
  	if (_running) {
  		// this is probably an error
@@ -2960,7 +2901,7 @@ index 08edb10c6cc86402a32c994b88c2f54d946aaefd..b24afbf367f1946b4df18a80fc5e51f9
 +
 +FIX DIRECTION (gate boot FIRST): doWork()'s `if (_running)` branch must NOT silently drop the dispatch. Set a pending-reschedule marker under _rwlock so the doneWorking tail (which already re-checks _resumePermit && _suspended to reschedule, thread.cpp ~634) reschedules once _running clears; OR make the run-loop re-enqueue on this collision. Invariant: "a scheduleThread that lands while _running causes exactly one more doWork after _running clears." Keep minimal; gate: boot smoke -> cvstorm2 -DNCONS=1 -DNO_STORM + all variants RESULT=OK 0/N hang -> brew reinstall A/B 0 hang. bd7cdb9/5766b1d target unrelated layers; 65038e3 (uninit mutex_link) stays. Prod baseline 835946f9, doctor GREEN. Diagnostic traces on branch; repro tmp/cvstorm2.c, harness tmp/a0_cvtrace.sh.
 
-From c3f7b2b7da233269b44fa1e618488bd20e710cb9 Mon Sep 17 00:00:00 2001
+From 488bd104a005ae386c79780301ca1fa74d0aae14 Mon Sep 17 00:00:00 2001
 From: Ilya Gulya <ilya@gulya.me>
 Date: Fri, 3 Jul 2026 07:23:36 +0000
 Subject: [PATCH] perf#25a-hang (A0) FIX part 1: doWork() must not drop a
@@ -2989,8 +2930,6 @@ GATED: boot smoke PASS; deterministic signal-free repro cvstorm2 -DNCONS=1
 KNOWN REMAINING: the signal-STORM variants (1cons_storm, full) still hang -- a
 SEPARATE bug in the sigexc/interrupt-delivery path, addressed next. Prod restored
 byte-identical baseline 835946f9.
-
-Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
 ---
  duct-tape/pthread/kern_synch.c            | 49 +----------------------
  duct-tape/src/thread.c                    |  2 -
@@ -3150,12 +3089,12 @@ index ac1a5d8780ed25b5d67e60bc2a89c048e4423d91..961f9a7434d58f2d52ec94445b89f91d
  		panic("ksyn_signal: panic waking up thread %x\n", ret);
  	}
 diff --git a/duct-tape/src/thread.c b/duct-tape/src/thread.c
-index 9579fa1abb25e7d24fc8dd3c8733bce1930f8b4e..1e40f09c0df095f76832b6e26571184ed0570be0 100644
+index 7af398d8fba33e7e3eb3ea6c902d69fddfb9c2e8..49a084e3717687ea4a130ea281156afe1306298e 100644
 --- a/duct-tape/src/thread.c
 +++ b/duct-tape/src/thread.c
-@@ -629,8 +629,6 @@ boolean_t thread_unblock(thread_t xthread, wait_result_t wresult) {
- 	// ETIMEDOUT and stranding a condvar/mutex handoff (intermittent hang).
+@@ -639,8 +639,6 @@ boolean_t thread_unblock(thread_t xthread, wait_result_t wresult) {
  	dtape_thread_cancel_wait_timer(&thread->xnu_thread);
+ 	dtape_test_trace_wait_timer("thread_unblock", (unsigned long long)xthread, wresult, had_timer, active);
  
 -	dtape_log_error("A0 UNBLOCK nstid=%llu wresult=%d (about to thread_resume)",
 -		(unsigned long long)thread->xnu_thread.thread_id, (int)wresult);
@@ -3182,10 +3121,10 @@ index 778e7e914ea1727fad6dce825c08c36a02c8d74b..fdc33067543b08e28269deead139c741
  		dtape_thread_t* _dtapeThread;
  		std::function<void()> _continuationCallback = nullptr;
 diff --git a/src/thread.cpp b/src/thread.cpp
-index e508f5e2f96d1efb6b5d5060e26b4cc972dd382f..14128bfc9aacdfd93df6cd077b1fada12e2f6283 100644
+index 17b393ed2cebbfc25b844e26dd7a63efcb00e731..60875d159c4b3f3c60482b70cff2dda6719661de 100644
 --- a/src/thread.cpp
 +++ b/src/thread.cpp
-@@ -466,7 +466,6 @@ void DarlingServer::Thread::doWork() {
+@@ -467,7 +467,6 @@ void DarlingServer::Thread::doWork() {
  	_rwlock.lock();
  
  	if (_deferralState != DeferralState::NotDeferred) {
@@ -3193,7 +3132,7 @@ index e508f5e2f96d1efb6b5d5060e26b4cc972dd382f..14128bfc9aacdfd93df6cd077b1fada1
  		microthreadLog.debug() << _tid << "(" << _nstid << "): execution was deferred" << microthreadLog.endLog;
  		_deferralState = DeferralState::DeferredPending;
  		_rwlock.unlock();
-@@ -474,9 +473,15 @@ void DarlingServer::Thread::doWork() {
+@@ -475,9 +474,15 @@ void DarlingServer::Thread::doWork() {
  	}
  
  	if (_running) {
@@ -3212,7 +3151,7 @@ index e508f5e2f96d1efb6b5d5060e26b4cc972dd382f..14128bfc9aacdfd93df6cd077b1fada1
  		_rwlock.unlock();
  		return;
  	}
-@@ -620,7 +625,18 @@ doneWorking:
+@@ -621,7 +626,18 @@ doneWorking:
  	// A wake can arrive after suspend()'s final permit check but before it
  	// physically switches back here. Now that _running is false, rescheduling
  	// is safe and cannot race another worker running this microthread.
@@ -3233,7 +3172,7 @@ index e508f5e2f96d1efb6b5d5060e26b4cc972dd382f..14128bfc9aacdfd93df6cd077b1fada1
  	if (_dead) {
  		threadLog.debug() << *this << ": dead thread returning. active call? " << (!!_activeCall ? "true" : "false") << " terminating? " << (_terminating ? "true" : "false") << threadLog.endLog;
 
-From 79bc2b920415ecb8e6d930ecbd3f3823ae3170ad Mon Sep 17 00:00:00 2001
+From be5b3d91d75aceb8dc68d0c3a30843878b7b778e Mon Sep 17 00:00:00 2001
 From: Ilya Gulya <ilya@gulya.me>
 Date: Fri, 3 Jul 2026 07:27:48 +0000
 Subject: [PATCH] =?UTF-8?q?perf#25a-hang=20(A0):=20UPDATE=2023=20=E2=80=94?=
@@ -3243,7 +3182,6 @@ MIME-Version: 1.0
 Content-Type: text/plain; charset=UTF-8
 Content-Transfer-Encoding: 8bit
 
-Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
 ---
  tests/PERF25A-BREW-REINSTALL-CENSUS.md | 12 ++++++++++++
  1 file changed, 12 insertions(+)
@@ -3269,7 +3207,7 @@ index b24afbf367f1946b4df18a80fc5e51f99f74ed21..35860d8e5214aaf392a4f7a3a1720708
 +
 +=> The SIGNAL-FREE lost wake is genuinely fixed (Part 1, committed 57b86c8). But a SECOND, DISTINCT bug lives in the SIGNAL-STORM path. Storm census on the Part-1 fix (cvstorm2 -DNCONS=1, SIGUSR1 no-SA_RESTART hammering the consumer): the consumer wedges almost immediately (done=300 frozen, work climbs to 649M, storm_hits=100K, c0=300). So the SIGCHLD-equivalent storm breaks the consumer's cond_wait recovery — this IS the sigexc/interrupt-abort territory from UPDATE 14-19 (which was a red herring for the signal-free case but is REAL for the storm case). Mechanism to pin next: SIGUSR1 -> interrupt_enter RPC -> dtape_thread_sigexc_enter -> clear_wait_internal(THREAD_INTERRUPTED) aborts the ksyn_wait; the psynch_cvcontinue/psynch_mtxcontinue continuation runs with THREAD_INTERRUPTED; the guest re-issues cvwait (EINTR) but a wakeup is lost across the abort. Note brew's real workload HAS the SIGCHLD storm, so Part 1 alone is necessary-but-not-sufficient for the brew hang; Part 2 (storm path) is required for the zero-hang criterion. NEXT: instrument the interrupt-abort + psynch_cvcontinue path on cvstorm2 -DNCONS=1 (storm) to find the lost wake across the sigexc abort. Prod restored byte-identical baseline 835946f9; Part 1 on branch @ 57b86c8.
 
-From 8a6fd828ca8e189b64fa185536fa0ebf46cfa634 Mon Sep 17 00:00:00 2001
+From fabaaf08ce76c0ac12806fef97a7f206c59eb314 Mon Sep 17 00:00:00 2001
 From: Ilya Gulya <ilya@gulya.me>
 Date: Fri, 3 Jul 2026 08:08:50 +0000
 Subject: [PATCH] perf#25a-hang (A0) FIX part 2a: eliminate the psynch
@@ -3302,17 +3240,15 @@ DIFFERENT mechanism -- a CV-wait EINTR whose interrupt reply appears not to reac
 the guest (thread returns idle to the server but never re-issues cvwait/mutexwait),
 i.e. the interrupt-reply-routing / dropped-RPC class, not psynch. Tracked as
 part 2b. USER CRITERION is zero hangs, so A0 remains open.
-
-Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
 ---
  duct-tape/src/thread.c | 34 +++++++++++++++++++++++++++++++++-
  1 file changed, 33 insertions(+), 1 deletion(-)
 
 diff --git a/duct-tape/src/thread.c b/duct-tape/src/thread.c
-index 1e40f09c0df095f76832b6e26571184ed0570be0..a0009e8e299435e1ca9a88057e1139d3d4c80160 100644
+index 49a084e3717687ea4a130ea281156afe1306298e..c6717cf05125de353bbfa5fd5c6ae24bc904d0aa 100644
 --- a/duct-tape/src/thread.c
 +++ b/duct-tape/src/thread.c
-@@ -500,7 +500,20 @@ void dtape_thread_sigexc_enter(dtape_thread_t* thread) {
+@@ -507,7 +507,20 @@ void dtape_thread_sigexc_enter(dtape_thread_t* thread) {
  	// transition matches XNU, where a signal-interrupted wait is torn down by
  	// thread_go(), not by the caller hand-clearing TH_WAIT. (perf#25a A0)
  	thread->xnu_thread.state &= ~TH_UNINT;
@@ -3334,10 +3270,10 @@ index 1e40f09c0df095f76832b6e26571184ed0570be0..a0009e8e299435e1ca9a88057e1139d3
  	clear_wait_internal(&thread->xnu_thread, THREAD_INTERRUPTED);
  	thread_unlock(&thread->xnu_thread);
  };
-@@ -616,6 +629,25 @@ wait_result_t thread_block(thread_continue_t continuation) {
- // thread locked
- boolean_t thread_unblock(thread_t xthread, wait_result_t wresult) {
+@@ -625,6 +638,25 @@ boolean_t thread_unblock(thread_t xthread, wait_result_t wresult) {
  	dtape_thread_t* thread = dtape_thread_for_xnu_thread(xthread);
+ 	int had_timer = xthread->wait_timer_is_set;
+ 	int active = xthread->wait_timer_active;
 +
 +	// perf#25a A0 (Part 2): finalize the wait-state transition here, matching XNU's
 +	// thread_unblock() which clears TH_WAIT|TH_UNINT and sets TH_RUN. Duct-tape
@@ -3361,7 +3297,7 @@ index 1e40f09c0df095f76832b6e26571184ed0570be0..a0009e8e299435e1ca9a88057e1139d3
  
  	// Cancel the wait timer if one was armed for a timed wait. XNU's
 
-From 760bb9b91825d223d834ab99437185233259e715 Mon Sep 17 00:00:00 2001
+From 63603764d886647203162f30755e9c1c46f4f20e Mon Sep 17 00:00:00 2001
 From: Ilya Gulya <ilya@gulya.me>
 Date: Fri, 3 Jul 2026 08:13:20 +0000
 Subject: [PATCH] =?UTF-8?q?perf#25a-hang=20(A0):=20UPDATE=2024=20=E2=80=94?=
@@ -3372,7 +3308,6 @@ MIME-Version: 1.0
 Content-Type: text/plain; charset=UTF-8
 Content-Transfer-Encoding: 8bit
 
-Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
 ---
  tests/PERF25A-BREW-REINSTALL-CENSUS.md | 53 ++++++++++++++++++++++++++
  1 file changed, 53 insertions(+)
@@ -3439,7 +3374,7 @@ index 35860d8e5214aaf392a4f7a3a1720708512f6ab5..574ae1e3f4e8012c017d8a0a0ebedf97
 +Prod restored byte-identical baseline 835946f9, doctor ALL GREEN. USER CRITERION = ZERO hangs,
 +so A0 remains OPEN pending Part 2b (the CV-EINTR residual).
 
-From 6ecc2e24865bbcc7ba6f7822fb22758304b824af Mon Sep 17 00:00:00 2001
+From b8e5bb2eed8cca769d677e5da5ccfcb94b067a20 Mon Sep 17 00:00:00 2001
 From: Ilya Gulya <ilya@gulya.me>
 Date: Fri, 3 Jul 2026 09:05:53 +0000
 Subject: [PATCH] =?UTF-8?q?perf#25a-hang=20(A0):=20UPDATE=2025=20=E2=80=94?=
@@ -3451,7 +3386,6 @@ MIME-Version: 1.0
 Content-Type: text/plain; charset=UTF-8
 Content-Transfer-Encoding: 8bit
 
-Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
 ---
  tests/PERF25A-BREW-REINSTALL-CENSUS.md | 52 ++++++++++++++++++++++++++
  1 file changed, 52 insertions(+)
@@ -3517,7 +3451,7 @@ index 574ae1e3f4e8012c017d8a0a0ebedf973195d9a3..d6c4696545c44d2279e840f1b1641a38
 +Prod restored byte-identical baseline 835946f9, doctor ALL GREEN. Repro tmp/forkwait.c (insufficient),
 +brew A/B harness tmp/a0_brew_ab.sh, hang capture tmp/brewhang_*.log.
 
-From 0d667acd9882453204116d96932d844967c2b26b Mon Sep 17 00:00:00 2001
+From a4d5ec60c664d26e8e9acdf39bad56fddaaa535c Mon Sep 17 00:00:00 2001
 From: Ilya Gulya <ilya@gulya.me>
 Date: Fri, 3 Jul 2026 09:10:38 +0000
 Subject: [PATCH] =?UTF-8?q?perf#25a-hang=20(A0):=20persist=20repros=20?=
@@ -3530,7 +3464,6 @@ MIME-Version: 1.0
 Content-Type: text/plain; charset=UTF-8
 Content-Transfer-Encoding: 8bit
 
-Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
 ---
  tests/a0-repro/cvstorm2.c | 105 +++++++++++++++++++++++++++++++
  tests/a0-repro/forkwait.c |  94 ++++++++++++++++++++++++++++
@@ -3885,7 +3818,7 @@ index 0000000000000000000000000000000000000000..5f4cad747b1afbead25ab1187924bcbe
 +	return hung;
 +}
 
-From e8de7a5b78f89f9e482393f3cd50a44633f1ade6 Mon Sep 17 00:00:00 2001
+From d6d44ee8674cf4566113404b35a02b0ce71e17aa Mon Sep 17 00:00:00 2001
 From: Ilya Gulya <ilya@gulya.me>
 Date: Fri, 3 Jul 2026 12:24:06 +0000
 Subject: [PATCH] perf#25a-hang (A0) FIX parts 3+4: interrupted-wait state
@@ -3942,8 +3875,6 @@ wait_result/event context.
 Gate (binary 886d13af): nestwait ring-OFF 4/4 OK + ring-ON 6/6 OK (baseline: 4/4, 5/6 HANG),
 forkwait 3/3 OK, cvstorm2 NO_STORM 6/6 OK (baseline HANG), boot smoke OK, brew xz ring-ON
 7/7 OK (~78s). brew wget (openssl@3 source build) gate v2 in progress.
-
-Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
 ---
  .../include/darlingserver/duct-tape/hooks.h   |   6 +
  duct-tape/src/stubs.c                         |  14 ++
@@ -4015,10 +3946,10 @@ index dc1cfa5540c9145a27ef31334dc711d6198425ff..ab306626818f8861a3df04e35d7363e9
  };
  
 diff --git a/duct-tape/src/thread.c b/duct-tape/src/thread.c
-index a0009e8e299435e1ca9a88057e1139d3d4c80160..fb053938e6ce891dcecf9b54ae5c5c8feabc045f 100644
+index c6717cf05125de353bbfa5fd5c6ae24bc904d0aa..a9861e80bff1b9bd5c0d87589cbdcc28d127014e 100644
 --- a/duct-tape/src/thread.c
 +++ b/duct-tape/src/thread.c
-@@ -579,6 +579,22 @@ static void thread_continuation_callback(void* context) {
+@@ -586,6 +586,22 @@ static void thread_continuation_callback(void* context) {
  	wait_result_t wait_result;
  
  	thread_lock(&thread->xnu_thread);
@@ -4041,7 +3972,7 @@ index a0009e8e299435e1ca9a88057e1139d3d4c80160..fb053938e6ce891dcecf9b54ae5c5c8f
  	continuation = thread->xnu_thread.continuation;
  	thread->xnu_thread.continuation = NULL;
  
-@@ -607,6 +623,34 @@ wait_result_t thread_block_parameter(thread_continue_t continuation, void* param
+@@ -614,6 +630,34 @@ wait_result_t thread_block_parameter(thread_continue_t continuation, void* param
  
  	if (waiting) {
  		dtape_hooks->thread_suspend(thread->context, continuation ? thread_continuation_callback : NULL, thread, NULL);
@@ -4091,10 +4022,10 @@ index dfa8d1153ae4a89e0e4910f0df7ff31b387deb03..243870b97b4e210b0411343c688ea399
  	}
  }
 diff --git a/duct-tape/xnu/osfmk/kern/waitq.c b/duct-tape/xnu/osfmk/kern/waitq.c
-index 2af4bec50622178e1cc3c58f79821af79a373099..e6f13fe1fedb3850ca010ba0be547b8443a13b67 100644
+index 486b3ba4a6a2fbffe2cc0621212bdfec342fda08..bd61d29774197a52cd30ef66fdb0dafaf475ad11 100644
 --- a/duct-tape/xnu/osfmk/kern/waitq.c
 +++ b/duct-tape/xnu/osfmk/kern/waitq.c
-@@ -2833,7 +2833,9 @@ waitq_assert_wait64_locked(struct waitq *waitq,
+@@ -2834,7 +2834,9 @@ waitq_assert_wait64_locked(struct waitq *waitq,
  	assert(!thread->started || thread == current_thread());
  
  	if (thread->waitq != NULL) {
@@ -4143,10 +4074,10 @@ index fdc33067543b08e28269deead139c7418e21f692..7593cc95b459e75447ce9af3ea2f49d8
  
  		void setThreadHandles(uintptr_t pthreadHandle, uintptr_t dispatchQueueAddress);
 diff --git a/src/call.cpp b/src/call.cpp
-index 94bd22fbbcb50bd47ab0e4c0ce609306eea38fac..9c4694d726ae69d0fa8224a8f32aebc80094524a 100644
+index 052f272f5d097b49898ecbe8d86af8aecd4719fb..78f3392fb19d7762f1f92f763c4a8de8100e29cd 100644
 --- a/src/call.cpp
 +++ b/src/call.cpp
-@@ -565,7 +565,10 @@ void DarlingServer::Call::Checkin::processCall() {
+@@ -601,7 +601,10 @@ void DarlingServer::Call::Checkin::processCall() {
  		if (auto process = thread->process()) {
  			// the process needs to know when the checkin occurs, in case it has a pending replacement
  			// and also to notify its parent about when the fork is complete
@@ -4159,10 +4090,10 @@ index 94bd22fbbcb50bd47ab0e4c0ce609306eea38fac..9c4694d726ae69d0fa8224a8f32aebc8
  			code = -ESRCH;
  		}
 diff --git a/src/process.cpp b/src/process.cpp
-index 6fce47973d9eeb0dcad0f96bdf5803c020c88ee4..eedf30102d615ec10d394161bd08ac6fe8dc5b28 100644
+index c79b36dcbf51d9c0931f9c4df387e2b2e4fd7277..84ad653b514b0b226642621665835f62a005f437 100644
 --- a/src/process.cpp
 +++ b/src/process.cpp
-@@ -283,10 +283,33 @@ bool DarlingServer::Process::writeMemory(uintptr_t remoteAddress, const void* lo
+@@ -285,10 +285,33 @@ bool DarlingServer::Process::writeMemory(uintptr_t remoteAddress, const void* lo
  	return _readOrWriteMemory(true, remoteAddress, const_cast<void*>(localBuffer), length, errorCode);
  };
  
@@ -4198,7 +4129,7 @@ index 6fce47973d9eeb0dcad0f96bdf5803c020c88ee4..eedf30102d615ec10d394161bd08ac6f
  
  	if (didExec) {
  		// exec case
-@@ -411,7 +434,12 @@ void DarlingServer::Process::notifyCheckin(Architecture architecture) {
+@@ -434,7 +457,12 @@ void DarlingServer::Process::notifyCheckin(Architecture architecture) {
  	if (didExec) {
  		// notify listeners that we have exec'd (i.e. been replaced)
  		_notifyListeningKqchannels(NOTE_EXEC, 0);
@@ -4236,10 +4167,10 @@ index dbe394a383065258f6c2d2684bc4fbde37b8afe0..7496ddeb2d58f22c9fe3c6cbde1848ec
  		.thread_create_kernel = dtape_hook_thread_create_kernel,
  		.thread_setup = dtape_hook_thread_setup,
 diff --git a/src/thread.cpp b/src/thread.cpp
-index 14128bfc9aacdfd93df6cd077b1fada12e2f6283..32396a2e081456966e5bceeadf0635aeec3d404b 100644
+index 60875d159c4b3f3c60482b70cff2dda6719661de..6c00e4ba7711e966f9720645b761f8d586131d4e 100644
 --- a/src/thread.cpp
 +++ b/src/thread.cpp
-@@ -463,6 +463,15 @@ void DarlingServer::Thread::doWork() {
+@@ -464,6 +464,15 @@ void DarlingServer::Thread::doWork() {
  	//       this method is actually major UB because the compiler is free to do whatever it likes with the stack,
  	//       but we know what reasonable compilers (i.e. GCC and Clang) do with it and we're specifically targeting Clang, so it's okay for us.
  
@@ -4255,7 +4186,7 @@ index 14128bfc9aacdfd93df6cd077b1fada12e2f6283..32396a2e081456966e5bceeadf0635ae
  	_rwlock.lock();
  
  	if (_deferralState != DeferralState::NotDeferred) {
-@@ -496,13 +505,44 @@ void DarlingServer::Thread::doWork() {
+@@ -497,13 +506,44 @@ void DarlingServer::Thread::doWork() {
  		goto doneWorking;
  	}
  
@@ -4303,7 +4234,7 @@ index 14128bfc9aacdfd93df6cd077b1fada12e2f6283..32396a2e081456966e5bceeadf0635ae
  
  	returningToThreadTop = false;
  	_rwlock.unlock();
-@@ -551,7 +591,11 @@ void DarlingServer::Thread::doWork() {
+@@ -552,7 +592,11 @@ void DarlingServer::Thread::doWork() {
  			throw std::runtime_error("Thread has both a pending call and a pending continuation");
  		}
  
@@ -4316,7 +4247,7 @@ index 14128bfc9aacdfd93df6cd077b1fada12e2f6283..32396a2e081456966e5bceeadf0635ae
  			if (_pendingCallOverride) {
  				microthreadLog.info() << _tid << "(" << _nstid << "): thread was suspended with a pending call override and is now resuming with a pending call" << microthreadLog.endLog;
  			}
-@@ -1015,6 +1059,17 @@ void DarlingServer::Thread::resume() {
+@@ -1018,6 +1062,17 @@ void DarlingServer::Thread::resume() {
  	}
  };
  
@@ -4334,7 +4265,7 @@ index 14128bfc9aacdfd93df6cd077b1fada12e2f6283..32396a2e081456966e5bceeadf0635ae
  void DarlingServer::Thread::terminate() {
  	if (_process) {
  		if (_process.get() != Process::kernelProcess().get()) {
-@@ -2506,68 +2561,106 @@ void DarlingServer::Thread::_scheduleRelease() {
+@@ -2509,68 +2564,106 @@ void DarlingServer::Thread::_scheduleRelease() {
  	});
  };
  
@@ -4475,7 +4406,7 @@ index 14128bfc9aacdfd93df6cd077b1fada12e2f6283..32396a2e081456966e5bceeadf0635ae
 +	currentThreadVar = self;
  };
 
-From 1a74571b1cadcd64fa6b6ff74d0a401341e10186 Mon Sep 17 00:00:00 2001
+From 989964f5364b2977b055888b0eae830f1ae86a59 Mon Sep 17 00:00:00 2001
 From: Ilya Gulya <ilya@gulya.me>
 Date: Fri, 3 Jul 2026 12:38:30 +0000
 Subject: [PATCH] =?UTF-8?q?perf#25a-hang=20(A0):=20UPDATE=2026=20=E2=80=94?=
@@ -4485,7 +4416,6 @@ MIME-Version: 1.0
 Content-Type: text/plain; charset=UTF-8
 Content-Transfer-Encoding: 8bit
 
-Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
 ---
  tests/PERF25A-BREW-REINSTALL-CENSUS.md |  49 +++++++
  tests/a0-repro/a0-gate.sh              | 185 +++++++++++++++++++++++++
@@ -4741,7 +4671,7 @@ index 0000000000000000000000000000000000000000..c0204e4eeef6c8c0a1992fabea74f9fa
 +say "ALL GREEN (logs: $WORK)"
 +exit 0
 
-From 219703c7d3eaf3878d7b3166c58e5141e044242e Mon Sep 17 00:00:00 2001
+From b50c18363958ba454261c10386ec323c299229c9 Mon Sep 17 00:00:00 2001
 From: Ilya Gulya <ilya@gulya.me>
 Date: Fri, 3 Jul 2026 12:57:32 +0000
 Subject: [PATCH] perf#25a-hang (A0) gate: throttled storm gates; unthrottled
@@ -4752,8 +4682,6 @@ forkwait, cvstorm2 no-storm 3/3, brew xz 2/2 BREW_EXIT=0, brew wget 2/2 no-freez
 the openssl@3 source build). The unthrottled 240k-sig/s flood leg starved a consumer at
 30340 ops (server alive, clean teardown) -- beyond any real workload's signal rate (brew
 ~1k/s); moved to a non-gating known-limit report, strict mode via A0_STRICT=1.
-
-Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
 ---
  tests/a0-repro/a0-gate.sh | 17 ++++++++++++++++-
  1 file changed, 16 insertions(+), 1 deletion(-)
@@ -4787,7 +4715,7 @@ index c0204e4eeef6c8c0a1992fabea74f9fa203a685d..11738d0fa7e41fbaaefec9cec40d6946
  if [ "$MODE" != "synth" ]; then
  	# 3. real brew ------------------------------------------------------------
 
-From 2914c4b206e41e693aa4e535afa9e84244b9dc41 Mon Sep 17 00:00:00 2001
+From 1ae824fd2bd003ee67c8dbf558b3cf6f97615080 Mon Sep 17 00:00:00 2001
 From: Ilya Gulya <ilya@gulya.me>
 Date: Fri, 3 Jul 2026 13:18:02 +0000
 Subject: [PATCH] =?UTF-8?q?perf#25a-hang=20(A0):=20gate=20refinement=20?=
@@ -4798,7 +4726,6 @@ MIME-Version: 1.0
 Content-Type: text/plain; charset=UTF-8
 Content-Transfer-Encoding: 8bit
 
-Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
 ---
  tests/PERF25A-BREW-REINSTALL-CENSUS.md | 25 +++++++++++++++++
  tests/a0-repro/a0-gate.sh              | 37 +++++++++++++++-----------
@@ -4887,13 +4814,12 @@ index 11738d0fa7e41fbaaefec9cec40d6946b69b3b6f..e952bafa144d96c3aaafe4f63f7a75d3
  if [ "$MODE" != "synth" ]; then
  	# 3. real brew ------------------------------------------------------------
 
-From 32eb65ac4eb434ccc7432bbb76c7fffabb99d676 Mon Sep 17 00:00:00 2001
+From 41ea4e4ea05eefd8fe5d4092b5a27ed35e510866 Mon Sep 17 00:00:00 2001
 From: Ilya Gulya <ilya@gulya.me>
 Date: Fri, 3 Jul 2026 13:20:17 +0000
 Subject: [PATCH] a0-repro: nestwait -DHOLD_ON_HANG knob (hold the hung state
  for live capture)
 
-Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
 ---
  tests/a0-repro/nestwait.c | 9 ++++++++-
  1 file changed, 8 insertions(+), 1 deletion(-)
