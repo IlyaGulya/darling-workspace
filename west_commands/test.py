@@ -1192,7 +1192,7 @@ class DarlingTest(WestCommand):
             "--bundle-root",
             str(getattr(self, "_bundle_root", "~/work/darling-debug")),
             "--timeout-seconds",
-            str(invocation.get("timeout_seconds", 600)),
+            str(invocation.get("debug_timeout_seconds", invocation.get("timeout_seconds", 600))),
         ]
         if diag == "forensic":
             args.extend(["--capture-gdb", "--capture-tree"])
@@ -1213,7 +1213,7 @@ class DarlingTest(WestCommand):
                 "--bundle-root",
                 str(getattr(self, "_bundle_root", "~/work/darling-debug")),
                 "--timeout-seconds",
-                str(invocation.get("timeout_seconds", 600)),
+                str(invocation.get("debug_timeout_seconds", invocation.get("timeout_seconds", 600))),
                 "--",
                 "<guest-c-fixture>",
                 invocation["display"],
@@ -2042,6 +2042,14 @@ timingsafe_bcmp(const void *b1, const void *b2, size_t n)
             trace_setup = "\n".join(trace_setup_lines) or ":"
             trace_check = "\n".join(trace_check_lines) or ":"
             trace_dump = "\n".join(trace_dump_lines) or ":"
+            needs_server_env_restart = bool(
+                invocation.get("host_temp_files") or invocation.get("host_trace_files")
+            )
+            server_env_restart = (
+                "\"$launch\" shutdown >/dev/null 2>&1 || true"
+                if needs_server_env_restart
+                else ":"
+            )
             script = f"""#!/usr/bin/env bash
 set -euo pipefail
 : "${{DPREFIX:?set DPREFIX}}"
@@ -2055,6 +2063,7 @@ ok_marker={quote(invocation["ok_marker"])}
 host_trace_oracle={quote("1" if invocation.get("host_trace_oracle") else "0")}
 
 {trace_setup}
+{server_env_restart}
 
 guest_shell() {{
 \tlocal seconds="$1"
@@ -2106,6 +2115,7 @@ fi
                     "cwd": invocation["cwd"],
                     "args": [str(host_runner)],
                     "shell": False,
+                    "debug_timeout_seconds": int(invocation.get("timeout_seconds", 600)) + 15,
                 }
             )
             result = subprocess.run(
