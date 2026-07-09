@@ -397,7 +397,10 @@ west test --profile arch --patch darlingserver/stack-pool-empty-stack-handle.pat
 Patch export must keep review diffs narrow. `west patch export` updates patch
 files plus the touched entry's `source-commit` and `sha256sum` fields in
 `patches.yml`; it must not reserialize unrelated entries or rewrite block
-scalars/quoting across the profile.
+scalars/quoting across the profile. Export preflights the whole selected
+profile before writing: every `source-branch`, `source-base`, and
+`source-commit` must resolve, and suspicious patch-size growth is rejected
+unless `--allow-large-output` is passed deliberately.
 
 Some gates need a consistent patch profile rather than the developer's current
 mixture of fix branches. Mark those with `requires-profile: arch` (or another
