@@ -1189,6 +1189,59 @@ patches:
     - -Wextra
     - -Werror
     note: Compile contract for the production prepare-for-wait helper used by assert_wait; old source has no prepare contract, fixed source clears stale timers before a new wait can be armed.
+  - name: wait_timer_assert_prepare_guest
+    kind: guest
+    coverage-tier: runtime
+    env: darling
+    diag: guarded
+    red: true
+    red-proof:
+      mode: guest-runtime-deploy
+      bad-profile: current-minus-patch
+      current-minus-skip-patches:
+      - darlingserver/test-diagnostics-trace.patch
+      source-patches:
+      - tests/fixtures/wait-timer/assert-prepare-diagnostics-no-fix.patch
+      runtime-artifacts:
+      - module: darling/src/external/darlingserver
+        build-targets:
+        - darlingserver
+        deploy:
+        - bin/darlingserver
+    runner: guest-c-fixture
+    repo: darling-workspace
+    script: tests/wait_timer_assert_prepare_guest.c
+    ok-marker: WAIT_TIMER_ASSERT_PREPARE_GUEST_OK
+    timeout-seconds: 30
+    compile-flags:
+    - -std=gnu11
+    - -Wall
+    - -Wextra
+    - -Werror
+    link-flags:
+    - -pthread
+    requires:
+    - darling-prefix
+    host-temp-files:
+    - env: DSERVER_TEST_FAULT_FILE
+      prefix-relative-path: private/var/tmp/dserver-wait-prepare-fault
+    host-trace-files:
+    - env: DSERVER_TEST_TRACE_FILE
+      prefix-relative-path: private/var/tmp/dserver-wait-prepare.trace
+      contains:
+      - test_fault.consume name=waitq.assert_wait_stale_timer
+      - dtape.wait_timer event=wait_prepare_fault
+      - dtape.wait_timer event=wait_prepare_fault_cleared
+      - had_timer=0 active=0
+    note: |-
+      Guest runtime proof for the assert_wait stale-timer invariant. The guarded
+      diagnostic fault injects a synthetic leftover wait_timer immediately before
+      a real guest pthread_cond_wait enters waitq_assert_wait64_locked. Fixed
+      runtime clears it in dtape_thread_prepare_for_wait and traces
+      wait_prepare_fault_cleared with had_timer=0; current-minus bad runtime has
+      the same diagnostic hook but no prepare-for-wait cleanup, so it traces only
+      wait_prepare_fault_uncleared and fails instead of relying on generic timing
+      stress.
   pr-draft: pr-drafts/darlingserver-assert-wait-cancel-stale-timer.md
   github:
     fork:
@@ -3802,7 +3855,7 @@ patches:
   module: darling/src/external/darlingserver
   source-branch: fix/test-diagnostics-trace
   source-base: b5c7403d9e70fa5708c7c5ed66821534a017d032
-  source-commit: b63070a07443ef9350a89328f8264298ef8e194a
+  source-commit: 1aaa544a8be02fe4b83cd8c8736f1bfab4173829
   bead: dar-r7fc.7
   publication-status: blocked
   publication-blocker: test-only runtime diagnostics; keep local until a supported upstream diagnostics interface is designed
@@ -3831,4 +3884,4 @@ patches:
       Guest runtime smoke for the opt-in DSERVER_TEST_TRACE_FILE diagnostics
       hook. The script only launches a real guest process; west owns the host
       trace setup and oracle.
-  sha256sum: edd466abd5fa1c839f2a3b10941f31a8e3a2943dd7fb2eac319a3fe5874e3b2d
+  sha256sum: ab744da55b1f1e49f12873ef05a36fabc6b1d8f0d65c3ac566dfc58f02d1eab8
