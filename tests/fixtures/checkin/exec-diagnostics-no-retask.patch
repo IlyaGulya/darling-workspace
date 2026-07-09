@@ -1,0 +1,176 @@
+diff --git a/CMakeLists.txt b/CMakeLists.txt
+index cfde48f..d6e6b4b 100644
+--- a/CMakeLists.txt
++++ b/CMakeLists.txt
+@@ -119,6 +119,7 @@ add_executable(darlingserver
+ 	src/async-writer.cpp
+ 	src/stack-pool.cpp
+ 	src/metrics.cpp
++	src/test-diagnostics.cpp
+ )
+ 
+ add_dependencies(darlingserver
+diff --git a/internal-include/darlingserver/test-diagnostics.hpp b/internal-include/darlingserver/test-diagnostics.hpp
+new file mode 100644
+index 0000000..de5a448
+--- /dev/null
++++ b/internal-include/darlingserver/test-diagnostics.hpp
+@@ -0,0 +1,11 @@
++#pragma once
++
++#include <string>
++
++namespace DarlingServer::TestDiagnostics {
++
++bool enabled();
++bool consumeFault(const char* name);
++void traceLine(const std::string& line);
++
++}
+diff --git a/src/process.cpp b/src/process.cpp
+index 44124d8..6880fe1 100644
+--- a/src/process.cpp
++++ b/src/process.cpp
+@@ -24,6 +24,7 @@
+ #include <unistd.h>
+ #include <sys/uio.h>
+ #include <darlingserver/logging.hpp>
++#include <darlingserver/test-diagnostics.hpp>
+ 
+ #include <fstream>
+ #include <regex>
+@@ -292,6 +293,11 @@ void DarlingServer::Process::notifyCheckin(Architecture architecture) {
+ 		// exec case
+ 
+ 		processLog.info() << *this << ": replacing process with a new task (with architecture \"" << architectureToString(architecture) << "\")" << processLog.endLog;
++		TestDiagnostics::traceLine(
++			"process.checkin.exec_begin pid=" + std::to_string(id()) +
++			" nsid=" + std::to_string(nsid()) +
++			" arch=" + std::to_string(static_cast<int>(architecture))
++		);
+ 
+ 		// clear all threads except the main thread
+ 		std::shared_ptr<Thread> mainThread = nullptr;
+@@ -338,6 +344,10 @@ void DarlingServer::Process::notifyCheckin(Architecture architecture) {
+ 		// _threads / _listeningKqchannels / _kqchannels / scalar fields, none of which
+ 		// we mutate while unlocked.
+ 		lock.unlock();
++		TestDiagnostics::traceLine(
++			"process.checkin.exec_dtape_create_unlocked pid=" + std::to_string(id()) +
++			" nsid=" + std::to_string(nsid())
++		);
+ 
+ 		// replace the old task with a new task that inherits from it
+ 		auto oldTask = _dtapeTask;
+@@ -364,6 +374,10 @@ void DarlingServer::Process::notifyCheckin(Architecture architecture) {
+ 		// release the main thread's old duct-taped thread and the old task
+ 		dtape_thread_release(oldThread);
+ 		dtape_task_release(oldTask);
++		TestDiagnostics::traceLine(
++			"process.checkin.exec_release_old_before_publish pid=" + std::to_string(id()) +
++			" nsid=" + std::to_string(nsid())
++		);
+ 
+ 		// publish the new state under the lock again
+ 		lock.lock();
+diff --git a/src/test-diagnostics.cpp b/src/test-diagnostics.cpp
+new file mode 100644
+index 0000000..5ebb977
+--- /dev/null
++++ b/src/test-diagnostics.cpp
+@@ -0,0 +1,95 @@
++#include <darlingserver/test-diagnostics.hpp>
++
++#include <cstdlib>
++#include <cstring>
++#include <mutex>
++#include <string>
++#include <unistd.h>
++#include <fcntl.h>
++
++namespace DarlingServer::TestDiagnostics {
++
++static constexpr const char* TraceEnv = "DSERVER_TEST_TRACE_FILE";
++static constexpr const char* FaultEnv = "DSERVER_TEST_FAULT_FILE";
++static std::mutex traceMutex;
++
++bool enabled() {
++	return std::getenv(TraceEnv) != nullptr;
++}
++
++bool consumeFault(const char* name) {
++	const char* path = std::getenv(FaultEnv);
++	if (!path || path[0] == '\0' || !name || name[0] == '\0') {
++		return false;
++	}
++
++	int fd = open(path, O_RDONLY | O_CLOEXEC);
++	std::string hostPath;
++	if (fd < 0 && path[0] == '/') {
++		if (const char* prefix = std::getenv("DPREFIX"); prefix && prefix[0] != '\0') {
++			hostPath = std::string(prefix) + path;
++			fd = open(hostPath.c_str(), O_RDONLY | O_CLOEXEC);
++			if (fd < 0) {
++				hostPath = std::string(prefix) + "/libexec/darling" + path;
++				fd = open(hostPath.c_str(), O_RDONLY | O_CLOEXEC);
++			}
++		}
++	}
++	if (fd < 0) {
++		return false;
++	}
++
++	char buffer[128] = {};
++	ssize_t count = read(fd, buffer, sizeof(buffer) - 1);
++	close(fd);
++	if (count <= 0) {
++		return false;
++	}
++
++	while (count > 0 && (buffer[count - 1] == '\n' || buffer[count - 1] == '\r' || buffer[count - 1] == ' ' || buffer[count - 1] == '\t')) {
++		buffer[--count] = '\0';
++	}
++
++	if (std::strcmp(buffer, name) != 0) {
++		return false;
++	}
++
++	if (!hostPath.empty()) {
++		unlink(hostPath.c_str());
++	} else {
++		unlink(path);
++	}
++	traceLine(std::string("test_fault.consume name=") + name);
++	return true;
++}
++
++void traceLine(const std::string& line) {
++	const char* path = std::getenv(TraceEnv);
++	if (!path || path[0] == '\0') {
++		return;
++	}
++
++	std::string record = line;
++	record.push_back('\n');
++
++	std::lock_guard lock(traceMutex);
++	int fd = open(path, O_WRONLY | O_CREAT | O_APPEND | O_CLOEXEC, 0666);
++	if (fd < 0) {
++		return;
++	}
++
++	const char* cursor = record.data();
++	size_t remaining = record.size();
++	while (remaining > 0) {
++		ssize_t written = write(fd, cursor, remaining);
++		if (written <= 0) {
++			break;
++		}
++		cursor += written;
++		remaining -= static_cast<size_t>(written);
++	}
++
++	close(fd);
++}
++
++}

@@ -679,3 +679,39 @@ index d6a33a586938ed1eb26f4566a2cd3fd536b82cd3..486b3ba4a6a2fbffe2cc0621212bdfec
  
  		if (deadline != 0) {
  			boolean_t act;
+
+From e99d848aee8cc7b832f939e4c065f862d6948e95 Mon Sep 17 00:00:00 2001
+From: Ilya Gulya <ilya@gulya.me>
+Date: Thu, 9 Jul 2026 01:00:04 +0000
+Subject: [PATCH] test: trace checkin exec ordering
+
+---
+ src/process.cpp | 8 ++++++++
+ 1 file changed, 8 insertions(+)
+
+diff --git a/src/process.cpp b/src/process.cpp
+index 8a9c473389e1d2009d12f7e68b2eab0c9b2d5bdb..d08fb3e993919f0d1dc2c5f144f921ee3359cef1 100644
+--- a/src/process.cpp
++++ b/src/process.cpp
+@@ -344,6 +344,10 @@ void DarlingServer::Process::notifyCheckin(Architecture architecture) {
+ 		// _threads / _listeningKqchannels / _kqchannels / scalar fields, none of which
+ 		// we mutate while unlocked.
+ 		lock.unlock();
++		TestDiagnostics::traceLine(
++			"process.checkin.exec_dtape_create_unlocked pid=" + std::to_string(id()) +
++			" nsid=" + std::to_string(nsid())
++		);
+ 
+ 		// replace the old task with a new task that inherits from it
+ 		auto oldTask = _dtapeTask;
+@@ -397,6 +401,10 @@ void DarlingServer::Process::notifyCheckin(Architecture architecture) {
+ 			"process.checkin.exec_publish pid=" + std::to_string(id()) +
+ 			" nsid=" + std::to_string(nsid())
+ 		);
++		TestDiagnostics::traceLine(
++			"process.checkin.exec_publish_before_release pid=" + std::to_string(id()) +
++			" nsid=" + std::to_string(nsid())
++		);
+ 		lock.unlock();
+ 
+ 		// release the main thread's old duct-taped thread and the old task now that
