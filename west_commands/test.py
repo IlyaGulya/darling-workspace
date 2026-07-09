@@ -65,6 +65,7 @@ from test_runtime import (
     runtime_build_targets,
     runtime_deploy_targets,
 )
+from test_worktrees import prune_stale_west_temp_worktrees
 
 
 class DarlingTest(WestCommand):
@@ -1204,6 +1205,7 @@ class DarlingTest(WestCommand):
     def _run_metadata_tests(self, tests, list_only: bool, unknown: list[str]) -> int:
         if unknown:
             self.die("metadata command tests do not accept raw ctest passthrough arguments")
+        self._prune_stale_west_temp_worktrees()
         rc = 0
         seen_invocations: set[str] = set()
         for patch, test in tests:
@@ -1254,6 +1256,16 @@ class DarlingTest(WestCommand):
             if resources & {"darling-prefix", "darling-eunion-prefix"}:
                 return True
         return False
+
+    def _prune_stale_west_temp_worktrees(self) -> None:
+        projects = getattr(self.manifest, "projects", [])
+        repos = [
+            Path(project.abspath)
+            for project in projects
+            if getattr(project, "name", None) != "manifest"
+        ]
+        for path in prune_stale_west_temp_worktrees(repos):
+            self.inf(f"  pruned stale west temp worktree metadata: {path}")
 
     def _metadata_needs_profile_worktree(self, tests) -> bool:
         for patch, test in tests:
