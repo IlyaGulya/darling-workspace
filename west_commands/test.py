@@ -3317,6 +3317,42 @@ fi
             target,
         )
 
+    @contextmanager
+    def _source_base_green_source_tree(self, patch, module: str):
+        """Materialize the fixed/profile source tree for source-base proofs."""
+        profile = getattr(self, "_active_profile", None)
+        if not profile:
+            yield None
+            return
+
+        module_repo = self._project_path(module)
+        revision = self._manifest_revision(module)
+        temp = tempfile.mkdtemp(prefix="west-green-proof-source-")
+        target = Path(temp) / "source"
+        keep_on_failure = False
+        try:
+            subprocess.run(
+                ["git", "worktree", "add", "--quiet", "--detach", str(target), revision],
+                cwd=module_repo,
+                check=True,
+            )
+            self._apply_profile_module_patches(profile, module, target)
+            yield target
+        except Exception:
+            keep_on_failure = True
+            self.err(f"preserving failed GREEN source tree for inspection: {temp}")
+            raise
+        finally:
+            if not keep_on_failure:
+                subprocess.run(
+                    ["git", "worktree", "remove", "--force", str(target)],
+                    cwd=module_repo,
+                    check=False,
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                )
+                shutil.rmtree(temp, ignore_errors=True)
+
     def _apply_red_source_patches(self, proof, module_label: str, target: Path) -> None:
         for source_patch in proof.get("source-patches", []):
             patch_path = self._red_source_patch_path(str(source_patch))
@@ -3933,8 +3969,19 @@ fi
                     stderr=subprocess.DEVNULL,
                 )
 
-        self.inf("  GREEN current tree")
-        return self._run_invocation(invocation, env=self._execution_env(invocation))
+        module = proof.get("source-module", patch["module"])
+        with self._source_base_green_source_tree(patch, module) as green_source:
+            green_env = self._execution_env(invocation)
+            if green_source is not None:
+                if green_env is None:
+                    green_env = os.environ.copy()
+                else:
+                    green_env = dict(green_env)
+                green_env[source_env] = str(green_source)
+                self.inf(f"  GREEN profile source tree: {source_env}={green_source}")
+            else:
+                self.inf("  GREEN current tree")
+            return self._run_invocation(invocation, env=green_env)
 
     def _run_red_proofs(self, tests, list_only: bool, unknown: list[str]) -> int:
         """Run the proof that a regression test really distinguishes old/bad behavior.
