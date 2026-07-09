@@ -625,6 +625,8 @@ class DarlingTest(WestCommand):
                 "display": display,
                 "cwd": cwd,
                 "script_path": script_path,
+                "repo": repo,
+                "script": script,
                 "args": args,
                 "shell": False,
                 "runner": "script",
@@ -663,6 +665,8 @@ class DarlingTest(WestCommand):
                 "display": display,
                 "cwd": cwd,
                 "script_path": script_path,
+                "repo": repo,
+                "script": script,
                 "args": args,
                 "shell": False,
                 "env": env,
@@ -710,6 +714,8 @@ class DarlingTest(WestCommand):
                 "display": display,
                 "cwd": cwd,
                 "script_path": script_path,
+                "repo": repo,
+                "script": script,
                 "args": None,
                 "shell": False,
                 "env": env,
@@ -833,6 +839,8 @@ class DarlingTest(WestCommand):
                 "display": display,
                 "cwd": cwd,
                 "script_path": script_path,
+                "repo": repo,
+                "script": script,
                 "args": None,
                 "shell": False,
                 "env": env,
@@ -1067,6 +1075,8 @@ class DarlingTest(WestCommand):
                 "display": display,
                 "cwd": cwd,
                 "script_path": script_path,
+                "repo": repo,
+                "script": script,
                 "args": None,
                 "shell": False,
                 "runner": "guest-c-fixture",
@@ -2283,16 +2293,31 @@ guest_shell() {{
 \tlocal seconds="$1"
 \tshift
 \tlocal ns_log
+\tlocal restore_errexit=0
+\tcase "$-" in
+\t\t*e*)
+\t\t\trestore_errexit=1
+\t\t\tset +e
+\t\t\t;;
+\tesac
 \tns_log="$(mktemp /tmp/west-guest-shell-stderr.XXXXXX)"
-\ttimeout --kill-after=5 "$seconds" env DPREFIX="$DPREFIX" "$launch" shell /bin/bash --login -c "$@" 2> >(tee "$ns_log" >&2)
+\ttimeout --kill-after=5 "$seconds" env DPREFIX="$DPREFIX" "$launch" shell /bin/bash --login -c "$@" 2> "$ns_log"
 \tlocal rc=$?
+\tcat "$ns_log" >&2 || true
 \tif [ "$rc" -ne 0 ] && grep -q 'Cannot open mnt namespace file' "$ns_log"; then
 \t\tprintf 'WEST_GUEST_STAGE=namespace-retry\\n' >&2
 \t\t"$launch" shutdown >/dev/null 2>&1 || true
-\t\ttimeout --kill-after=5 "$seconds" env DPREFIX="$DPREFIX" "$launch" shell /bin/bash --login -c "$@" 2> >(tee "$ns_log" >&2)
+\t\ttimeout --kill-after=5 "$seconds" env DPREFIX="$DPREFIX" "$launch" shell /bin/bash --login -c "$@" 2> "$ns_log"
 \t\trc=$?
+\t\tcat "$ns_log" >&2 || true
+\tfi
+\tif [ "$rc" -ne 0 ]; then
+\t\tprintf 'WEST_GUEST_SHELL_RC=%s\\n' "$rc" >&2
 \tfi
 \trm -f "$ns_log"
+\tif [ "$restore_errexit" -eq 1 ]; then
+\t\tset -e
+\tfi
 \treturn "$rc"
 }}
 
@@ -3489,6 +3514,26 @@ fi
         self._remove_stale_init_pid(prefix)
         return True
 
+    def _invocation_from_runtime_source(self, invocation, source_root: Path):
+        repo = invocation.get("repo")
+        script = invocation.get("script")
+        if not repo or not script:
+            return invocation
+
+        repo_path = Path(repo)
+        if repo_path == Path("darling"):
+            runtime_cwd = source_root
+        else:
+            try:
+                runtime_cwd = source_root / repo_path.relative_to("darling")
+            except ValueError:
+                return invocation
+
+        runtime_invocation = dict(invocation)
+        runtime_invocation["cwd"] = runtime_cwd
+        runtime_invocation["script_path"] = runtime_cwd / script
+        return runtime_invocation
+
     def _run_guest_runtime_deploy_green(self, patch, proof, invocation) -> int:
         prefix_text = getattr(self, "_prefix", None)
         if not prefix_text:
@@ -3518,8 +3563,9 @@ fi
                     else:
                         green_env = dict(green_env)
                     green_env["WEST_RUNTIME_SOURCE_ROOT"] = str(source_root)
-                    with self._resource_context(invocation, green_env):
-                        return self._run_invocation(invocation, env=green_env)
+                    runtime_invocation = self._invocation_from_runtime_source(invocation, source_root)
+                    with self._resource_context(runtime_invocation, green_env):
+                        return self._run_invocation(runtime_invocation, env=green_env)
         except Exception:
             keep_on_failure = True
             self.err(f"preserving failed GREEN runtime scratch for inspection: {temp}")
@@ -3568,8 +3614,9 @@ fi
                     else:
                         bad_env = dict(bad_env)
                     bad_env["WEST_RUNTIME_SOURCE_ROOT"] = str(source_root)
-                    with self._resource_context(invocation, bad_env):
-                        bad_rc = self._run_invocation(invocation, env=bad_env)
+                    runtime_invocation = self._invocation_from_runtime_source(invocation, source_root)
+                    with self._resource_context(runtime_invocation, bad_env):
+                        bad_rc = self._run_invocation(runtime_invocation, env=bad_env)
                     if bad_rc == 0:
                         self.err("  RED proof failed: deployed bad runtime unexpectedly passed")
                         return 1

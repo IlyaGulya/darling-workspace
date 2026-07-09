@@ -1647,17 +1647,16 @@ patches:
       base: master
       state: local
 - path: libpthread/psynch-kernel-return-helper.patch
-  sha256sum: 6bab8066496962b2c51a4e570bde3a5b46f8be39ae871e814bd569850caf129f
+  sha256sum: eb03b80fd5ab0384e2df7cc9b11b1a734bb6905206693dac955a80c6a5838ddb
   module: darling/src/external/libpthread
   source-branch: fix/psynch-kernel-return-helper
   source-base: f07f265bfbcf071c1adfc808de971e053ea5edc5
-  source-commit: 077301590f7c739451aee66f1286f63a89461fac
+  source-commit: 53a469bff4023acb2eee897bf194bd7bcf0a4f99
   bead: dar-q95.29.2
   publication-status: blocked
   publication-blocker: broader psynch publication still depends on dar-q95.29.2 runtime/stress coverage across condvar/mutex/rwlock; the focused guest runtime gate is now unblocked by xnu/psynch-negative-errno.patch
   tests:
   - name: psynch_kernel_return_contract
-    blocked: true
     red: true
     red-proof:
       mode: guest-runtime-deploy
@@ -1697,14 +1696,6 @@ patches:
     - env: DSERVER_PSYNCH_TRACE_FILE
       prefix-relative-path: private/var/tmp/psynch-kernel-return-contract.trace
     note: Guest C fixture. west uploads, compiles, runs, checks verdict marker, and owns the Darling prefix lifecycle.
-  test-exception:
-    reason: blocked-psynch-runtime-timeout
-    blocker: dar-y1go
-    note: >-
-      Runtime validation now has a hermetic guest-runtime-deploy plan, but the
-      GREEN run is blocked by a separate runtime/tooling failure after the xnu
-      errno ABI fix: darling shell exits or times out before the test reaches
-      its phase markers. See dar-y1go.
   github:
     fork:
       repo: IlyaGulya/darling-libpthread
