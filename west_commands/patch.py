@@ -284,6 +284,7 @@ class DarlingPatch(WestCommand):
                 or test.get("source-script")
                 or test.get("source-file")
                 or test.get("target")
+                or test.get("guest-command")
                 or test.get("runner") == "cmake-configure-fixture"
                 or test.get("runner") == "darling-cmake-target-fixture"
             ):
@@ -298,6 +299,7 @@ class DarlingPatch(WestCommand):
                 "c-fixture",
                 "darling-cmake-target-fixture",
                 "guest-c-fixture",
+                "guest-command-fixture",
                 "object-symbol-fixture",
                 "source-script-fixture",
                 "source-build-fixture",
@@ -324,6 +326,8 @@ class DarlingPatch(WestCommand):
                 repo_path = self._project_path(repo_ref)
                 if repo_path is None:
                     errors.append(f"tests[{index}] unknown test repo {repo_ref!r}")
+            if test.get("guest-command") and runner != "guest-command-fixture":
+                errors.append(f"tests[{index}] guest-command requires runner: guest-command-fixture")
             if runner == "object-symbol-fixture":
                 repo_ref = test.get("repo", patch["module"])
                 repo_path = self._project_path(repo_ref)
@@ -379,6 +383,24 @@ class DarlingPatch(WestCommand):
                 for key in ("compile-flags", "link-flags", "run-args"):
                     if test.get(key) is not None and not isinstance(test.get(key), list):
                         errors.append(f"tests[{index}] {key} must be a list")
+            if runner == "guest-command-fixture":
+                if not isinstance(test.get("guest-command"), str) or not test.get("guest-command"):
+                    errors.append(f"tests[{index}] guest-command-fixture requires guest-command")
+                if test.get("expect") is not None:
+                    expect = test.get("expect")
+                    if not isinstance(expect, dict):
+                        errors.append(f"tests[{index}] expect must be a mapping")
+                    else:
+                        rc_mode = expect.get("returncode", 0)
+                        if rc_mode not in {"nonzero", "timeout"} and not isinstance(rc_mode, int):
+                            errors.append(f"tests[{index}].expect.returncode must be an integer, nonzero, or timeout")
+                        for key in ("output-contains", "output-lacks"):
+                            values = expect.get(key, [])
+                            if values is not None and (
+                                not isinstance(values, list)
+                                or not all(isinstance(item, str) and item for item in values)
+                            ):
+                                errors.append(f"tests[{index}].expect.{key} must be a list of strings")
             if runner == "source-build-fixture":
                 if not test.get("script"):
                     errors.append(f"tests[{index}] source-build-fixture requires script")
@@ -443,8 +465,8 @@ class DarlingPatch(WestCommand):
                 errors.append(f"tests[{index}] env-vars must be a mapping")
             if test.get("guest-env-vars") is not None:
                 guest_env_vars = test.get("guest-env-vars")
-                if runner != "guest-c-fixture":
-                    errors.append(f"tests[{index}] guest-env-vars requires runner: guest-c-fixture")
+                if runner not in {"guest-c-fixture", "guest-command-fixture"}:
+                    errors.append(f"tests[{index}] guest-env-vars requires runner: guest-c-fixture or guest-command-fixture")
                 elif not isinstance(guest_env_vars, dict) or not all(
                     isinstance(k, str)
                     and re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", k)
@@ -452,10 +474,31 @@ class DarlingPatch(WestCommand):
                     for k, v in guest_env_vars.items()
                 ):
                     errors.append(f"tests[{index}] guest-env-vars must be a mapping of shell variable names to scalar values")
+            if test.get("dcc-cache") is not None:
+                dcc_cache = test.get("dcc-cache")
+                if runner not in {"guest-c-fixture", "guest-command-fixture"}:
+                    errors.append(f"tests[{index}] dcc-cache requires runner: guest-c-fixture or guest-command-fixture")
+                elif not isinstance(dcc_cache, dict):
+                    errors.append(f"tests[{index}] dcc-cache must be a mapping")
+                else:
+                    for key in ("source-module", "tools-dir", "builder", "closure-list", "env", "enable-env"):
+                        if dcc_cache.get(key) is not None and (
+                            not isinstance(dcc_cache.get(key), str) or not dcc_cache.get(key)
+                        ):
+                            errors.append(f"tests[{index}].dcc-cache.{key} must be a non-empty string")
+                    for key in ("env", "enable-env"):
+                        value = dcc_cache.get(key)
+                        if value is not None and not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", value):
+                            errors.append(f"tests[{index}].dcc-cache.{key} must be a shell variable name")
+                    for key in ("soft", "stale"):
+                        if dcc_cache.get(key) is not None and not isinstance(dcc_cache.get(key), bool):
+                            errors.append(f"tests[{index}].dcc-cache.{key} must be boolean")
             if test.get("timeout-seconds") is not None:
                 timeout = test.get("timeout-seconds")
                 if not isinstance(timeout, int) or timeout <= 0:
                     errors.append(f"tests[{index}] timeout-seconds must be a positive integer")
+            if test.get("blocked") is not None and not isinstance(test.get("blocked"), bool):
+                errors.append(f"tests[{index}] blocked must be boolean")
             if test.get("requires-env") is not None:
                 required = test.get("requires-env")
                 if not isinstance(required, list) or not all(
@@ -642,9 +685,9 @@ class DarlingPatch(WestCommand):
                         f"tests[{index}] red-proof self needs why-self"
                     )
                 elif proof.get("mode") == "guest-runtime-deploy":
-                    if runner not in {"guest-c-fixture", "script"}:
+                    if runner not in {"guest-c-fixture", "guest-command-fixture", "script"}:
                         errors.append(
-                            f"tests[{index}] red-proof guest-runtime-deploy requires runner: guest-c-fixture or script"
+                            f"tests[{index}] red-proof guest-runtime-deploy requires runner: guest-c-fixture, guest-command-fixture, or script"
                         )
                     elif runner == "script" and not (
                         {"darling-prefix", "darling-eunion-prefix"} & set(required_resources)
@@ -796,7 +839,11 @@ class DarlingPatch(WestCommand):
             if errors:
                 invalid.append((patch, errors))
                 continue
-            tests = patch.get("tests") or []
+            tests = [
+                test
+                for test in (patch.get("tests") or [])
+                if not test.get("blocked")
+            ]
             behavioral = [test for test in tests if self._is_behavioral_test(test)]
             exception = patch.get("test-exception")
             if behavioral:
