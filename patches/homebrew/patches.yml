@@ -1654,9 +1654,10 @@ patches:
   source-commit: 0110e3ca3c5c45afbec375a03472f184b7fd19ad
   bead: dar-q95.29.2
   publication-status: blocked
-  publication-blocker: xnu-side psynch wait wrappers still use the Darling-local negative augmented return path; libpthread now decodes base errno/status bits explicitly and has a focused runtime gate, but publication still needs the syscall boundary contract reconciled with dar-q95.19
+  publication-blocker: xnu-side host boundary contract is present, but guest runtime validation is blocked by dar-q95.29.2.1 because pthread_cond_timedwait under signal interruption currently returns EINVAL
   tests:
   - name: psynch_kernel_return_contract
+    blocked: true
     kind: guest
     env: darling
     diag: guarded
@@ -1670,6 +1671,13 @@ patches:
     requires:
     - darling-prefix
     note: Guest C fixture. west uploads, compiles, runs, checks verdict marker, and owns the Darling prefix lifecycle.
+  test-exception:
+    reason: blocked-psynch-runtime-einval
+    blocker: dar-q95.29.2.1
+    note: >-
+      Runtime validation is recorded but blocked: current guest runtime returns
+      EINVAL from pthread_cond_timedwait under signal interruption. See
+      dar-q95.29.2.1 for the active reproducer and root-cause investigation.
   github:
     fork:
       repo: IlyaGulya/darling-libpthread
@@ -1850,7 +1858,7 @@ patches:
   source-commit: 9ef96df95ff182283d1fc0cc9cb9faa7637e7d23
   bead: dar-q95.19
   publication-status: blocked
-  publication-blocker: broader psynch publication still depends on dar-q95.29.2 runtime/stress coverage across condvar/mutex/rwlock, but this patch now routes wait errors through cerror instead of the Darling-local negative augmented return path
+  publication-blocker: broader psynch publication still depends on dar-q95.29.2 runtime/stress coverage across condvar/mutex/rwlock; this patch routes wait errors through cerror, but the guest runtime gate is blocked by dar-q95.29.2.1 because pthread_cond_timedwait under signal interruption returns EINVAL
   tests:
   - name: psynch_return_contract
     kind: contract
@@ -1863,6 +1871,47 @@ patches:
     runner: script
     script: darling/src/libsystem_kernel/tests/run-psynch-return-contract.sh
     note: Host contract for Darwin-style psynch wait cerror propagation preserving augmented status bits.
+  - name: psynch_return_contract_guest
+    blocked: true
+    kind: guest
+    coverage-tier: runtime
+    env: darling
+    diag: guarded
+    red: true
+    red-proof:
+      mode: guest-runtime-deploy
+      bad-profile: current-minus-patch
+      source-modules:
+      - darling/src/external/libpthread
+      runtime-artifacts:
+      - module: darling/src/external/xnu
+        build-targets:
+        - system_kernel
+        deploy:
+        - usr/lib/system/libsystem_kernel.dylib
+      - module: darling/src/external/libpthread
+        build-targets:
+        - system_pthread
+        deploy:
+        - usr/lib/system/libsystem_pthread.dylib
+    runner: guest-c-fixture
+    repo: darling-workspace
+    script: tests/psynch_return_contract_guest.c
+    ok-marker: PSYNCH_RETURN_CONTRACT_GUEST_OK
+    timeout-seconds: 60
+    guest-prelude: export PTHREAD_MUTEX_USE_ULOCK=0
+    link-flags:
+    - -lpthread
+    requires:
+    - darling-prefix
+    note: >-
+      Guest RED/GREEN runtime gate for the xnu syscall boundary: west builds
+      current-minus-patch system_kernel with profile libpthread for RED, then
+      the fixed runtime for GREEN, and runs a focused condvar timeout under
+      signal interruption inside Darling to verify the public pthread-visible
+      psynch error contract across the syscall boundary. Blocked by
+      dar-q95.29.2.1 because current GREEN reaches pthread_cond_timedwait but
+      returns EINVAL under signal interruption.
   pr-draft: pr-drafts/xnu-psynch-negative-errno.md
   github:
     fork:

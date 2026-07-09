@@ -423,7 +423,7 @@ with tempfile.TemporaryDirectory() as temp:
             {
                 "path": "darlingserver/ring-abi.patch",
                 "module": "darling/src/external/darlingserver",
-                "source-commit": dserver_commit,
+                "source-commit": dserver_base,
             },
         ]
     }

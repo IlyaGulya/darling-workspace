@@ -2220,6 +2220,7 @@ if [ "$compile_rc" -ne 0 ]; then
 fi
 """
             guest_run_body = f"""
+{guest_prelude}
 {guest_env_setup}
 {' '.join(run_parts)}
 run_rc=$?
@@ -2229,6 +2230,7 @@ exit "$run_rc"
             if host_stat_deltas:
                 guest_workload = f"""
 set +e
+printf 'WEST_GUEST_STAGE=compile\\n' >&2
 guest_shell "$timeout_seconds" {quote(guest_compile_body)} > "$verdict" 2>&1
 compile_rc=$?
 set -e
@@ -2238,6 +2240,7 @@ if [ "$compile_rc" -ne 0 ]; then
 fi
 {host_stat_before}
 set +e
+printf 'WEST_GUEST_STAGE=run\\n' >&2
 guest_shell "$timeout_seconds" {quote(guest_run_body)} >> "$verdict" 2>&1
 rc=$?
 set -e
@@ -2246,10 +2249,17 @@ set -e
             else:
                 guest_workload = f"""
 set +e
-guest_shell "$timeout_seconds" {quote(f'''
-{guest_compile_body}
-{guest_run_body}
-''')} > "$verdict" 2>&1
+printf 'WEST_GUEST_STAGE=compile\\n' >&2
+guest_shell "$timeout_seconds" {quote(guest_compile_body)} > "$verdict" 2>&1
+compile_rc=$?
+set -e
+if [ "$compile_rc" -ne 0 ]; then
+\tcat "$verdict" 2>/dev/null || true
+\texit "$compile_rc"
+fi
+set +e
+printf 'WEST_GUEST_STAGE=run\\n' >&2
+guest_shell "$timeout_seconds" {quote(guest_run_body)} >> "$verdict" 2>&1
 rc=$?
 set -e
 """
@@ -2275,7 +2285,9 @@ guest_shell() {{
 \ttimeout --kill-after=5 "$seconds" env DPREFIX="$DPREFIX" "$launch" shell /bin/bash --login -c "$@"
 }}
 
+printf 'WEST_GUEST_STAGE=cleanup\\n' >&2
 guest_shell 10 "rm -f '$guest_src' '$guest_bin'" >/dev/null 2>&1 || true
+printf 'WEST_GUEST_STAGE=upload\\n' >&2
 guest_shell 10 "cat > '$guest_src'" < "$host_src"
 
 {guest_workload}
@@ -3124,15 +3136,6 @@ fi
             modules.add(self._project_manifest_path(module))
         return modules
 
-    def _profile_module_source_commit(self, profile: str, module: str) -> str | None:
-        result = None
-        for stacked in self._profile_stack(profile):
-            data = self._load_profile(stacked)
-            for patch in data.get("patches", []):
-                if patch.get("module") == module and patch.get("source-commit"):
-                    result = str(patch["source-commit"])
-        return result
-
     def _guest_runtime_source_revision(
         self,
         patch,
@@ -3143,25 +3146,11 @@ fi
     ) -> tuple[str, bool]:
         module = str(project_path)
         if not omit_patch:
-            source_commit = self._profile_module_source_commit(
-                self._active_runtime_profile(patch),
-                module,
-            )
-            if source_commit is not None:
-                return source_commit, True
-            if project_path == patch_module_path:
-                return str(bad_revision), False
             return self._manifest_revision(module), False
 
         if project_path == patch_module_path:
             return self._manifest_revision(module), False
 
-        source_commit = self._profile_module_source_commit(
-            self._active_runtime_profile(patch),
-            module,
-        )
-        if source_commit is not None:
-            return source_commit, True
         return self._manifest_revision(module), False
 
     @contextmanager
