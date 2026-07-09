@@ -1,4 +1,4 @@
-From 36eb5d508032ef1c614d41e166bbca3064b6620c Mon Sep 17 00:00:00 2001
+From 71d3d9e661ab85581e4ea5fb66af5e691df6f6b9 Mon Sep 17 00:00:00 2001
 From: Ilya Gulya <ilya@gulya.me>
 Date: Mon, 8 Jun 2026 16:42:44 +0500
 Subject: [PATCH] Preserve bzero return register on x86_64

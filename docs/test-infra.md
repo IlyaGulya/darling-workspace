@@ -401,6 +401,21 @@ compatibility suite and executes `ctest -L <label>`.
     ctest-label: bead:dar-example
 ```
 
+For a test registered by the patched source repository itself, keep the source
+CMake path explicit. `runner: darling-cmake-target-fixture` builds the patched
+source target in an isolated superproject, then runs `ctest -L <label>` from
+that build directory. Source-base RED proof still uses the current test asset
+against the bad source tree; the fixture provides fallback target/test
+registration when the old source did not yet have the CTest entry.
+
+```yaml
+  - name: libressl_nist_darling_cmake_target_regress
+    use: darling-cmake-target-source-red
+    target: darling_ec_tls_regress
+    source-dir: libressl
+    ctest-label: bead:dar-q95.6
+```
+
 The CTest backend command construction is deliberately small and separate from
 patch/resource orchestration. `west_commands/test_ctest.py` owns `ctest`
 argument building for label-backed patch tests and top-level selectors
