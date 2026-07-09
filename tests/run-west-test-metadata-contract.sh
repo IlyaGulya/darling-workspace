@@ -127,9 +127,11 @@ patches:
       WEST_GUEST_COMMAND_CONTRACT: '1'
     dcc-cache:
       source-module: darling/src/external/darlingserver
+      source-ref: HEAD
       tools-dir: tools/closure-cache
       builder: dcc5-builder.c
       closure-list: smoke2-list.txt
+      install-root: guest-visible
       env: DARLING_DYLD_DCC2_PATH
       enable-env: DARLING_DYLD_DCC2
       stale: true

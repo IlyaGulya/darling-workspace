@@ -192,6 +192,19 @@ rather than marked executable:
     script: tests/progress_classifier_test.py
 ```
 
+DCC cache guest tests should use the structured `dcc-cache` resource instead of
+building cache files in ad hoc shell. The resource compiles the declared cache
+builder, creates the cache under `/private/var/tmp`, exports the configured
+guest environment variables, and removes the host cache directory after the
+test. If the cache tools are test assets from a different module than the
+runtime under test, set `source-ref` so west materializes only the declared
+tools directory from that module instead of pulling the module into the runtime
+source forest. Its default `install-root: guest-visible` selects the host root
+that matches dyld's guest filesystem view: `DPREFIX` when
+`DARLING_NOOVERLAYFS=1`, otherwise `DPREFIX/libexec/darling`. Use explicit
+`install-root: base` or `install-root: prefix` only for tests that intentionally
+validate one of those views.
+
 Use `runner: c-fixture` for small host C fixtures that should be compiled and
 executed directly by `west test`:
 
