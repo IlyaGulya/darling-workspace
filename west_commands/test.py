@@ -47,6 +47,11 @@ from prefix_repair import (
     prefix_boot_prerequisite_problems,
 )
 from test_manifest import ManifestError, load_test_profile
+from test_prefix import (
+    darlingserver_pids_for_prefix,
+    prefix_process_snapshot,
+    remove_stale_init_pid,
+)
 from test_resources import resource_context
 from test_runtime import (
     describe_runtime_deploy_plan,
@@ -3918,16 +3923,7 @@ fi
         return result.success
 
     def _remove_stale_init_pid(self, prefix: Path) -> None:
-        init_pid = prefix / ".init.pid"
-        try:
-            text = init_pid.read_text().strip()
-        except FileNotFoundError:
-            return
-        if not text.isdigit():
-            return
-        pid = int(text)
-        if not darling_init_pid_is_usable(pid):
-            init_pid.unlink(missing_ok=True)
+        remove_stale_init_pid(prefix, pid_is_usable=darling_init_pid_is_usable)
 
     def _ps_entries(self) -> list[tuple[int, int, str]]:
         result = subprocess.run(
@@ -3948,34 +3944,10 @@ fi
         return entries
 
     def _prefix_process_snapshot(self, prefix: Path) -> list[str]:
-        entries = self._ps_entries()
-        children: dict[int, list[int]] = {}
-        args_by_pid: dict[int, str] = {}
-        roots: list[int] = []
-        for pid, ppid, args in entries:
-            args_by_pid[pid] = args
-            children.setdefault(ppid, []).append(pid)
-            argv = args.split()
-            if len(argv) >= 2 and Path(argv[0]).name == "darlingserver" and argv[1] == str(prefix):
-                roots.append(pid)
-        if not roots:
-            return []
-        seen: set[int] = set()
-        stack = list(roots)
-        while stack:
-            pid = stack.pop()
-            if pid in seen:
-                continue
-            seen.add(pid)
-            stack.extend(children.get(pid, []))
-        return [f"{pid} {args_by_pid[pid]}" for pid in sorted(seen) if pid in args_by_pid]
+        return prefix_process_snapshot(prefix, self._ps_entries())
 
     def _kill_dserver_for_prefix(self, prefix: Path) -> None:
-        pids: list[int] = []
-        for pid, _, args in self._ps_entries():
-            argv = args.split()
-            if len(argv) >= 2 and Path(argv[0]).name == "darlingserver" and argv[1] == str(prefix):
-                pids.append(pid)
+        pids = darlingserver_pids_for_prefix(prefix, self._ps_entries())
         if not pids:
             return
         self.wrn(f"stopping live darlingserver for {prefix}: pids={pids}")

@@ -273,6 +273,12 @@ guest-visible deploy paths to the prefix files that must be swapped. The
 side-effecting build/deploy/restore sequence stays in `west test` until the
 runtime lifecycle can be split further without changing behavior.
 
+Darling prefix lifecycle helpers are also split from the runner where they are
+pure enough to test directly. `west_commands/test_prefix.py` owns process-tree
+discovery for `darlingserver <prefix>`, matching server PIDs, and stale
+`.init.pid` removal. The runner still owns the side-effecting shutdown,
+mount-cleanup, and lock orchestration.
+
 `runner: guest-command-fixture` may check both process status and captured
 output:
 
