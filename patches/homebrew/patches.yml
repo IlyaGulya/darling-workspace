@@ -169,6 +169,53 @@ patches:
       an explicit downstream skip closure, but this workload passed on the bad
       runtime; keep it as a GREEN gate until dar-r7fc.2.1 has a stronger
       deterministic RED repro.
+  - name: fork_checkin_forced_lost_wakeup_guest
+    kind: guest
+    coverage-tier: runtime
+    env: darling
+    diag: guarded
+    red: true
+    red-proof:
+      mode: guest-runtime-deploy
+      bad-profile: current-minus-patch
+      current-minus-skip-patches:
+      - darlingserver/checkin-rwlock-across-suspend.patch
+      - darlingserver/checkin-retask-current-thread-uaf.patch
+      - darlingserver/test-diagnostics-trace.patch
+      source-patches:
+      - tests/fixtures/fork-checkin/forced-lost-wakeup-diagnostics.patch
+      runtime-artifacts:
+      - module: darling/src/external/darlingserver
+        build-targets:
+        - darlingserver
+        deploy:
+        - bin/darlingserver
+    runner: guest-c-fixture
+    repo: darling-workspace
+    script: tests/fork_checkin_forced_lost_wakeup_guest.c
+    ok-marker: FORK_CHECKIN_FORCED_LOST_WAKEUP_OK
+    timeout-seconds: 45
+    compile-flags:
+    - -std=gnu11
+    - -Wall
+    - -Wextra
+    - -Werror
+    host-temp-files:
+    - env: DSERVER_TEST_FAULT_FILE
+      prefix-relative-path: private/var/tmp/dserver-fork-checkin-fault
+    host-trace-files:
+    - env: DSERVER_TEST_TRACE_FILE
+      prefix-relative-path: private/var/tmp/dserver-fork-checkin-fault.trace
+      contains:
+      - test_fault.consume name=fork.skip_checkin_semaphore
+      - process.checkin.fork_skip_semaphore
+    note: >-
+      Deterministic guest runtime proof for the sticky fork-checkin flag:
+      diagnostics forces the child checkin to skip the semaphore wakeup while a
+      SIGALRM storm interrupts the parent wait. Fixed runtime observes the
+      sticky child-checkin state and completes fork; current-minus bad runtime
+      without the sticky flag loses the wakeup and fails under the bounded
+      runner.
   pr-draft: pr-drafts/darlingserver-fork-checkin-sticky-flag.md
   github:
     fork:
@@ -3696,7 +3743,7 @@ patches:
   module: darling/src/external/darlingserver
   source-branch: fix/test-diagnostics-trace
   source-base: b5c7403d9e70fa5708c7c5ed66821534a017d032
-  source-commit: cc99ed446f294cf441059f7c5ab86fe93fed928d
+  source-commit: b63070a07443ef9350a89328f8264298ef8e194a
   bead: dar-r7fc.7
   publication-status: blocked
   publication-blocker: test-only runtime diagnostics; keep local until a supported upstream diagnostics interface is designed
@@ -3725,4 +3772,4 @@ patches:
       Guest runtime smoke for the opt-in DSERVER_TEST_TRACE_FILE diagnostics
       hook. The script only launches a real guest process; west owns the host
       trace setup and oracle.
-  sha256sum: 365a2c651d4dbc5d9bc54d9e6fde73304722065cbc22fa23bf83bb6f69e2477a
+  sha256sum: edd466abd5fa1c839f2a3b10941f31a8e3a2943dd7fb2eac319a3fe5874e3b2d
