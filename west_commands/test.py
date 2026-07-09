@@ -414,6 +414,15 @@ class DarlingTest(WestCommand):
                 return str(candidate)
         return None
 
+    def _darling_prefix_env(self, prefix: str | Path) -> dict[str, str]:
+        prefix_text = str(prefix)
+        env = {
+            "DPREFIX": prefix_text,
+            "DARLING_PREFIX": prefix_text,
+        }
+        env.update(getattr(self, "_prefix_env", {}))
+        return env
+
     def _resolve_executor(self, explicit: str | None) -> str | None:
         if explicit:
             return str(Path(explicit).expanduser())
@@ -2319,14 +2328,14 @@ guest_shell() {{
 \t\t\t;;
 \tesac
 \tns_log="$(mktemp /tmp/west-guest-shell-stderr.XXXXXX)"
-\ttimeout --kill-after=5 "$seconds" env DPREFIX="$DPREFIX" "$launch" shell /bin/bash --login -c "$@" 2> "$ns_log"
+\ttimeout --kill-after=5 "$seconds" env DPREFIX="$DPREFIX" DARLING_PREFIX="$DPREFIX" "$launch" shell /bin/bash --login -c "$@" 2> "$ns_log"
 \tlocal rc=$?
 \tcat "$ns_log" >&2 || true
 \tif [ "$rc" -ne 0 ] && grep -q 'Cannot open mnt namespace file' "$ns_log"; then
 \t\tdump_namespace_state
 \t\tprintf 'WEST_GUEST_STAGE=namespace-retry\\n' >&2
 \t\t"$launch" shutdown >/dev/null 2>&1 || true
-\t\ttimeout --kill-after=5 "$seconds" env DPREFIX="$DPREFIX" "$launch" shell /bin/bash --login -c "$@" 2> "$ns_log"
+\t\ttimeout --kill-after=5 "$seconds" env DPREFIX="$DPREFIX" DARLING_PREFIX="$DPREFIX" "$launch" shell /bin/bash --login -c "$@" 2> "$ns_log"
 \t\trc=$?
 \t\tcat "$ns_log" >&2 || true
 \t\tif [ "$rc" -ne 0 ] && grep -q 'Cannot open mnt namespace file' "$ns_log"; then
@@ -2420,6 +2429,7 @@ fi
             str(timeout_seconds),
             "env",
             f"DPREFIX={prefix}",
+            f"DARLING_PREFIX={prefix}",
             str(launcher),
             "shell",
             "/bin/bash",
@@ -2524,8 +2534,7 @@ fi
         prefix = getattr(self, "_prefix", None)
         if not prefix:
             return merged
-        merged["DPREFIX"] = prefix
-        merged.update(getattr(self, "_prefix_env", {}))
+        merged.update(self._darling_prefix_env(prefix))
         if "darling-eunion-prefix" in resources:
             merged["DARLING_EUNION"] = "1"
         launcher = self._resolve_darling_launcher(prefix)
@@ -2950,7 +2959,7 @@ fi
             self.die(f"{invocation['name']}: darling-eunion-prefix needs a Darling launcher")
 
         child_env = dict(env or os.environ.copy())
-        child_env["DPREFIX"] = str(prefix)
+        child_env.update(self._darling_prefix_env(prefix))
         result = subprocess.run(
             [
                 "timeout",
@@ -3046,7 +3055,7 @@ fi
         (upper_dir / "shadow.txt").write_text("UPPER_SHADOW\n")
 
         child_env = dict(env or os.environ.copy())
-        child_env["DPREFIX"] = str(prefix)
+        child_env.update(self._darling_prefix_env(prefix))
         script = (
             "set -e; "
             f"test \"$(cat {quote(guest_dir + '/lower.txt')})\" = LOWER; "
@@ -3601,8 +3610,7 @@ fi
         launcher = self._resolve_darling_launcher(str(prefix))
         if launcher:
             env = os.environ.copy()
-            env["DPREFIX"] = str(prefix)
-            env.update(getattr(self, "_prefix_env", {}))
+            env.update(self._darling_prefix_env(prefix))
             try:
                 subprocess.run(
                     [launcher, "shutdown"],
@@ -3883,8 +3891,7 @@ fi
         launcher = self._resolve_darling_launcher(prefix)
         if launcher:
             env = os.environ.copy()
-            env["DPREFIX"] = prefix
-            env.update(getattr(self, "_prefix_env", {}))
+            env.update(self._darling_prefix_env(prefix))
             self.inf(f"shutdown Darling prefix: {prefix}")
             subprocess.run(
                 [launcher, "shutdown"],
