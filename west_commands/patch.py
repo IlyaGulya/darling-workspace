@@ -775,6 +775,32 @@ class DarlingPatch(WestCommand):
                             errors.append(
                                 f"tests[{index}] source-patches must be a list of workspace-relative patch paths"
                             )
+                    red_runner = proof.get("red-runner")
+                    if red_runner is not None:
+                        if not isinstance(red_runner, dict):
+                            errors.append(f"tests[{index}] red-proof red-runner must be a mapping")
+                        else:
+                            red_runner_kind = red_runner.get(
+                                "runner",
+                                "script" if red_runner.get("script") else None,
+                            )
+                            if red_runner.get("red-proof") is not None:
+                                errors.append(
+                                    f"tests[{index}] red-proof red-runner must not define red-proof"
+                                )
+                            if red_runner_kind not in {
+                                "script",
+                                "python",
+                                "c-fixture",
+                                "guest-command-fixture",
+                            }:
+                                errors.append(
+                                    f"tests[{index}] red-proof red-runner uses unsupported runner {red_runner_kind!r}"
+                                )
+                            if red_runner_kind in {"script", "python", "c-fixture"} and not red_runner.get("script"):
+                                errors.append(
+                                    f"tests[{index}] red-proof red-runner requires script"
+                                )
                     artifacts = proof.get("runtime-artifacts")
                     if not isinstance(artifacts, list) or not artifacts:
                         errors.append(
