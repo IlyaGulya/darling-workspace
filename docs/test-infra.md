@@ -396,6 +396,13 @@ compatibility suite and executes `ctest -L <label>`.
     ctest-label: bead:dar-example
 ```
 
+The CTest backend command construction is deliberately small and separate from
+patch/resource orchestration. `west_commands/test_ctest.py` owns `ctest`
+argument building for label-backed patch tests and top-level selectors
+(`--bead`, `--env`, `--diag`, `--label`, `--changed`, list mode, and passthrough
+args). `west_commands/test.py` decides what to run and when to configure the
+testkit; it should not grow new ad hoc CTest command assembly.
+
 `command:` is intentionally an override for corner cases only. Prefer
 `runner/script`, `runner/target`, or `ctest-label` so `west test` owns how tests
 are launched, filtered, deduplicated, and eventually wrapped by diagnostics.

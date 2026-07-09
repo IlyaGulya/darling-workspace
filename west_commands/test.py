@@ -46,6 +46,12 @@ from prefix_repair import (
     guest_c_fixture_prerequisite_problems,
     prefix_boot_prerequisite_problems,
 )
+from test_ctest import (
+    ctest_command,
+    ctest_label_args,
+    ctest_label_display,
+    ctest_selector_label_args,
+)
 from test_manifest import ManifestError, load_test_profile
 from test_prefix import (
     darlingserver_pids_for_prefix,
@@ -1246,8 +1252,7 @@ class DarlingTest(WestCommand):
 
     def _display_ctest_label(self, label: str) -> str:
         build = self._testkit_dir() / "build"
-        args = ["ctest", "--test-dir", str(build), "--output-on-failure", "-L", label]
-        return " ".join(quote(str(arg)) for arg in args)
+        return ctest_label_display(build, label)
 
     def _ensure_ctest_build(self) -> Path:
         build = getattr(self, "_ctest_build", None)
@@ -1258,14 +1263,7 @@ class DarlingTest(WestCommand):
         return build
 
     def _ctest_label_args(self, invocation) -> list[str]:
-        return [
-            "ctest",
-            "--test-dir",
-            str(self._ensure_ctest_build()),
-            "--output-on-failure",
-            "-L",
-            invocation["ctest_label"],
-        ]
+        return ctest_label_args(self._ensure_ctest_build(), invocation["ctest_label"])
 
     def _bad_revision(self, patch) -> str:
         if patch.get("source-base"):
@@ -4171,30 +4169,28 @@ fi
 
         build = self._configure_and_build(testkit, self._executor)
 
-        # Translate selectors into a CTest label regex (-L is ANDed per flag).
-        label_args: list[str] = []
-        if args.bead:
-            label_args += ["-L", f"bead:{args.bead}"]
-        if args.env:
-            label_args += ["-L", f"env:{args.env}"]
-        if args.diag:
-            label_args += ["-L", f"diag:{args.diag}"]
-        if args.label:
-            label_args += ["-L", args.label]
+        changed = None
         if args.changed:
             changed = self._changed_submodules()
             if not changed:
                 self.inf("no changed submodules; nothing selected by --changed")
                 return
-            alternation = "|".join(f"submod:{name}" for name in changed)
-            label_args += ["-L", alternation]
             self.inf(f"changed submodules: {', '.join(changed)}")
-
-        ctest = ["ctest", "--test-dir", str(build), "--output-on-failure"]
-        ctest += label_args
-        if args.list:
-            ctest.append("--show-only")
-        ctest += unknown  # pass through e.g. -j, --repeat, --output-junit
+        # CTest -L selectors are ANDed per flag; changed submodules use one
+        # alternation label regex to select any touched submodule.
+        label_args = ctest_selector_label_args(
+            bead=args.bead,
+            env=args.env,
+            diag=args.diag,
+            label=args.label,
+            changed_submodules=changed,
+        )
+        ctest = ctest_command(
+            build,
+            label_args=label_args,
+            list_only=args.list,
+            passthrough=unknown,
+        )
 
         self.inf(f"running: {' '.join(ctest)}")
         raise SystemExit(subprocess.run(ctest, check=False).returncode)
