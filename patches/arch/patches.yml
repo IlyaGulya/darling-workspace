@@ -13,7 +13,7 @@ patches:
   tests:
   - name: dyld_static_libunwind_link
     kind: build
-    env: host
+    runs: host
     diag: bare
     runner: west-build
     target: src/external/dyld/dyld
@@ -31,7 +31,7 @@ patches:
   tests:
   - name: ring_committed_unknown_contract_test
     kind: contract
-    env: host
+    runs: host
     diag: bare
     runner: script
     repo: darling-src-external-darlingserver
@@ -49,7 +49,7 @@ patches:
   tests:
   - name: rpc_disconnect_status_contract_test
     kind: contract
-    env: host
+    runs: host
     diag: bare
     runner: script
     script: darling/src/libsystem_kernel/tests/rpc_disconnect_status_contract_test.sh
@@ -66,7 +66,7 @@ patches:
   tests:
   - name: rpc_disconnect_status_contract_test
     kind: contract
-    env: host
+    runs: host
     diag: bare
     runner: script
     script: darling/src/libsystem_kernel/tests/rpc_disconnect_status_contract_test.sh
@@ -83,7 +83,7 @@ patches:
   tests:
   - name: a0_gate_full_strict
     kind: guest
-    env: darling
+    runs: guest
     diag: guarded
     runner: script
     script: tests/a0-repro/a0-gate.sh
@@ -105,7 +105,7 @@ patches:
   tests:
   - name: standard_signal_coalescing_contract_test
     kind: contract
-    env: host
+    runs: host
     diag: bare
     red: true
     red-proof:
@@ -138,7 +138,7 @@ patches:
   tests:
   - name: ring_committed_unknown_contract_test
     kind: contract
-    env: host
+    runs: host
     diag: bare
     runner: script
     script: tests/ring_committed_unknown_contract_test.sh
@@ -155,7 +155,7 @@ patches:
   tests:
   - name: duct_tape_fail_closed_stubs_test
     kind: contract
-    env: host
+    runs: host
     diag: bare
     runner: script
     script: tests/duct_tape_fail_closed_stubs_test.sh
@@ -172,7 +172,7 @@ patches:
   tests:
   - name: rpc_serial_contract_test
     kind: contract
-    env: host
+    runs: host
     diag: bare
     runner: script
     script: tests/rpc_serial_contract_test.sh
@@ -201,7 +201,7 @@ patches:
   tests:
   - name: rpc_disconnect_send_contract_test
     kind: contract
-    env: host
+    runs: host
     diag: bare
     runner: script
     script: tests/rpc_disconnect_send_contract_test.sh
@@ -218,7 +218,7 @@ patches:
   tests:
   - name: dserver_stack_pool_tests_run
     kind: contract
-    env: host
+    runs: host
     diag: bare
     runner: west-build
     target: dserver_stack_pool_tests_run
@@ -247,14 +247,14 @@ patches:
   tests:
   - name: standard_signal_coalescing_contract_test
     kind: contract
-    env: host
+    runs: host
     diag: bare
     runner: script
     script: tests/standard_signal_coalescing_contract_test.sh
     note: Pins standard signal coalescing contract.
   - name: rpc_disconnect_send_contract_test
     kind: contract
-    env: host
+    runs: host
     diag: bare
     runner: script
     script: tests/rpc_disconnect_send_contract_test.sh
