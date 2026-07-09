@@ -481,11 +481,16 @@ class DarlingPatch(WestCommand):
                 elif not isinstance(dcc_cache, dict):
                     errors.append(f"tests[{index}] dcc-cache must be a mapping")
                 else:
-                    for key in ("source-module", "tools-dir", "builder", "closure-list", "env", "enable-env"):
+                    for key in ("source-module", "source-ref", "tools-dir", "builder", "closure-list", "env", "enable-env", "install-root"):
                         if dcc_cache.get(key) is not None and (
                             not isinstance(dcc_cache.get(key), str) or not dcc_cache.get(key)
                         ):
                             errors.append(f"tests[{index}].dcc-cache.{key} must be a non-empty string")
+                    install_root = dcc_cache.get("install-root")
+                    if install_root is not None and install_root not in {"guest-visible", "base", "prefix"}:
+                        errors.append(
+                            f"tests[{index}].dcc-cache.install-root must be guest-visible, base, or prefix"
+                        )
                     for key in ("env", "enable-env"):
                         value = dcc_cache.get(key)
                         if value is not None and not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", value):
