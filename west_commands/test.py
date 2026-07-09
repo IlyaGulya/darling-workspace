@@ -3556,18 +3556,31 @@ fi
             value = self._cmake_cache_value(current_build, key)
             if value:
                 args.append(f"-D{key}={value}")
+        inherited_feature_flags = set(proof.get("inherit-cmake-cache", []))
+        if "all" in inherited_feature_flags:
+            inherited_feature_flags.update(
+                {
+                    "DARLING_RING_TRANSPORT",
+                    "DSERVER_RING_TRANSPORT",
+                }
+            )
         for key in (
             "DARLING_COREDUMP_SANITIZE",
             "DARLING_EUNION",
             "DARLING_GUEST_RECVSPIN",
-            "DARLING_RING_TRANSPORT",
             "DARLING_RPC_SLEEP_ACCOUNT",
-            "DSERVER_RING_TRANSPORT",
             "DARLING_SKIP_DRIFT_GATE",
         ):
             value = self._cmake_cache_value(current_build, key)
             if value is not None:
                 args.append(f"-D{key}={value}")
+        for key in ("DARLING_RING_TRANSPORT", "DSERVER_RING_TRANSPORT"):
+            if key in inherited_feature_flags:
+                value = self._cmake_cache_value(current_build, key)
+                if value is not None:
+                    args.append(f"-D{key}={value}")
+                continue
+            args.append(f"-D{key}=OFF")
         args.append(f"-DCMAKE_INSTALL_PREFIX={self._runtime_build_install_prefix(proof, prefix)}")
         return args
 
@@ -3800,7 +3813,20 @@ fi
                     green_env["WEST_RUNTIME_SOURCE_ROOT"] = str(source_root)
                     runtime_invocation = self._invocation_from_runtime_source(invocation, source_root)
                     with self._resource_context(runtime_invocation, green_env):
-                        return self._run_invocation(runtime_invocation, env=green_env)
+                        green_started_at = time.time()
+                        green_rc = self._run_invocation(runtime_invocation, env=green_env)
+                    if green_rc != 0:
+                        keep_on_failure = True
+                        self.err(f"preserving failed GREEN runtime scratch for inspection: {temp}")
+                        return green_rc
+                    if not self._check_guest_runtime_green_success(
+                        runtime_invocation,
+                        since=green_started_at,
+                    ):
+                        keep_on_failure = True
+                        self.err(f"preserving failed GREEN runtime scratch for inspection: {temp}")
+                        return 1
+                    return 0
         except Exception:
             keep_on_failure = True
             self.err(f"preserving failed GREEN runtime scratch for inspection: {temp}")
@@ -3808,6 +3834,28 @@ fi
         finally:
             if not keep_on_failure:
                 shutil.rmtree(temp, ignore_errors=True)
+
+    def _check_guest_runtime_green_success(self, invocation, *, since: float) -> bool:
+        if invocation.get("host_trace_oracle"):
+            return True
+        ok_marker = invocation.get("ok_marker")
+        if not ok_marker:
+            return True
+        bundle = self._latest_debug_bundle(invocation, since=since)
+        if bundle is None:
+            self.err(
+                f"{invocation['name']}: GREEN output requested, "
+                f"but no recent debug bundle was found under {self._debug_bundle_root()}"
+            )
+            return False
+        output = self._debug_bundle_output(bundle)
+        if str(ok_marker) not in output:
+            self.err(f"{invocation['name']}: GREEN output missing {ok_marker!r} in {bundle}")
+            return False
+        if "ORACLE_RC=0" not in output:
+            self.err(f"{invocation['name']}: GREEN output missing 'ORACLE_RC=0' in {bundle}")
+            return False
+        return True
 
     def _check_guest_runtime_red_failure(self, proof, invocation, *, since: float) -> bool:
         contains = proof.get("expect-output-contains", [])

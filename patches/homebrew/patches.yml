@@ -429,7 +429,14 @@ patches:
       expect-output-contains:
       - psynch_cvsignal cv=0x123450001000 cvlsgen=0x123
       - psynch_cvbroad cv=0x123450001000 cvlsgen=0x100000123 cvudgen=0x200000456 flags=0x55 mutex=0x300000abc
+      source-modules:
+      - darling/src/external/darlingserver
       runtime-artifacts:
+      - module: darling/src/external/darlingserver
+        build-targets:
+        - darlingserver
+        deploy:
+        - bin/darlingserver
       - module: darling/src/external/xnu
         build-targets:
         - system_kernel
@@ -1848,10 +1855,19 @@ patches:
     red-proof:
       mode: guest-runtime-deploy
       bad-profile: current-minus-patch
+      current-minus-skip-patches:
+      - xnu/psynch-negative-errno.patch
       expect-output-contains:
       - "getattrlist root: bad name '', want '/'"
       - ORACLE_RC=1
+      source-modules:
+      - darling/src/external/darlingserver
       runtime-artifacts:
+      - module: darling/src/external/darlingserver
+        build-targets:
+        - darlingserver
+        deploy:
+        - bin/darlingserver
       - module: darling/src/external/xnu
         build-targets:
         - system_kernel
