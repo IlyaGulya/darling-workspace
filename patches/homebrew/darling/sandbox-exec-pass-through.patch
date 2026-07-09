@@ -1,4 +1,4 @@
-From c905b818c0f58554a15812bf81e39a56f067b942 Mon Sep 17 00:00:00 2001
+From c44476a36ee892b73184ddde36b6e9a50fa2d2f6 Mon Sep 17 00:00:00 2001
 From: Ilya Gulya <ilya@gulya.me>
 Date: Thu, 11 Jun 2026 06:21:23 +0000
 Subject: [PATCH] sandbox: ship a sandbox-exec(1) pass-through command

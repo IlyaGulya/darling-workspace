@@ -4,11 +4,11 @@ base-profile: homebrew
 integration-date: '2026-07-01T00:00:00Z'
 patches:
 - path: darling/mldr-compact-fd-band.patch
-  sha256sum: 56c5d68b6953650631b16ef6ca94ae3c8ca4450c443d3d954176a24a096917e6
+  sha256sum: 6c53feb1b90bfb78c04d6377c702bdc737c42f59cdd55c5aeb6b094309a8c742
   module: darling
   source-branch: fix/mldr-compact-fd-band-current
-  source-base: c044c084aa4f4033b6e916b59358e7d7308b0911
-  source-commit: e713e788b26d0332fb45f18bee6de920da85f092
+  source-base: 50b2e05dd9e21d9f39e35d947f830ae651aa3366
+  source-commit: 93ba455b8e3d8ee3d04c712b3579c3d5b5e78fb7
   bead: dar-dar6x4-perf-5dq
   publication-status: blocked
   publication-blocker: perf#21b compact protected internal fd band is a local performance experiment; not proposed upstream. See perf#21b brief.
