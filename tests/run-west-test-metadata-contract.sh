@@ -107,6 +107,10 @@ patches:
     host-temp-files:
     - env: WEST_GUEST_TEMP_FILE
       prefix-relative-path: private/var/tmp/west-guest-temp.flag
+      contents: |
+        WEST_GUEST_TEMP_OK
+    guest-env-vars:
+      WEST_GUEST_TEMP_FILE: /private/var/tmp/west-guest-temp.flag
     host-trace-oracle: true
 - path: test/mixed-red-nonred.patch
   module: darling-workspace
@@ -356,6 +360,10 @@ patches:
     host-temp-files:
     - env: 1BAD_TEMP
       prefix-relative-path: ../bad
+      contents:
+      - not-a-string
+    guest-env-vars:
+      1BAD_GUEST: x
 - path: test/invalid-host-trace-oracle.patch
   module: darling-workspace
   tests:
@@ -580,6 +588,12 @@ printf '%s\n' "$invalid_guest_red_check" | grep -q \
 printf '%s\n' "$invalid_guest_red_check" | grep -q \
 	'INVALID   test/invalid-host-trace.patch: tests\[1\].host-temp-files\[0\] path must be prefix-relative' ||
 	fail 'invalid host-temp-files path was not rejected'
+printf '%s\n' "$invalid_guest_red_check" | grep -q \
+	'INVALID   test/invalid-host-trace.patch: tests\[1\].host-temp-files\[0\] contents must be a string' ||
+	fail 'invalid host-temp-files contents was not rejected'
+printf '%s\n' "$invalid_guest_red_check" | grep -q \
+	'INVALID   test/invalid-host-trace.patch: tests\[1\] guest-env-vars must be a mapping of shell variable names to scalar values' ||
+	fail 'invalid guest-env-vars was not rejected'
 printf '%s\n' "$invalid_guest_red_check" | grep -q \
 	'INVALID   test/invalid-host-trace-oracle.patch: tests\[1\] host-trace-oracle requires host-trace-files' ||
 	fail 'host-trace-oracle without host-trace-files was not rejected'
