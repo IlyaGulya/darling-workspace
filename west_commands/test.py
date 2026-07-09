@@ -583,7 +583,7 @@ class DarlingTest(WestCommand):
                 "source_env": source_env,
                 "source_module": source_module,
             }
-        if test.get("ctest-label"):
+        if test.get("ctest-label") and not test.get("runner"):
             env = None
             if test.get("env-vars"):
                 env = os.environ.copy()
@@ -599,7 +599,7 @@ class DarlingTest(WestCommand):
                 "requires_resources": list(test.get("requires", [])),
                 "requires_env": list(test.get("requires-env", [])),
                 "requires_profile": test.get("requires-profile"),
-                "diag": "bare",
+                "diag": self._resolved_diag(test),
                 "name": test.get("name", patch["path"]),
                 "timeout_seconds": int(test.get("timeout-seconds", 600)),
                 "source_env": source_env,
@@ -992,19 +992,33 @@ class DarlingTest(WestCommand):
             source_dir = str(test.get("source-dir", "source"))
             cmake_args = [str(arg) for arg in test.get("cmake-args", [])]
             build_args = [str(arg) for arg in test.get("build-args", [])]
+            ctest_label = test.get("ctest-label")
             run_binary = str(test.get("run-binary", f"{source_dir}/{target}"))
+            diag = self._resolved_diag(test)
+            if ctest_label:
+                ctest_step = (
+                    f"ctest --test-dir <temp>/build --output-on-failure -L "
+                    f"{quote(str(ctest_label))}"
+                )
+                final_step = (
+                    f"<darling-debug-runner> run -- {ctest_step}"
+                    if diag != "bare"
+                    else ctest_step
+                )
+            else:
+                final_step = f"<temp>/build/{quote(run_binary)}"
             display = (
                 f"cd {quote(repo)} && <darling-cmake-target-fixture> "
                 f"cmake -S <superproject> -B <temp>/build "
                 f"{shell_join(cmake_args)} && "
                 f"cmake --build <temp>/build --target {quote(target)} "
                 f"{shell_join(build_args)} && "
-                f"<temp>/build/{quote(run_binary)}"
+                f"{final_step}"
             )
             return {
                 "key": (
                     f"darling-cmake-target-fixture:{repo}:{target}:"
-                    f"{source_dir}:{run_binary}:"
+                    f"{source_dir}:{run_binary}:{ctest_label}:"
                     f"{repr(test.get('fixture-files', []))}:"
                     f"{repr(cmake_args)}:{repr(build_args)}:"
                     f"{repr(test.get('required-compile-options', []))}"
@@ -1018,6 +1032,7 @@ class DarlingTest(WestCommand):
                 "target": target,
                 "source_dir": source_dir,
                 "run_binary": run_binary,
+                "ctest_label": str(ctest_label) if ctest_label else None,
                 "fixture_files": [str(item) for item in test.get("fixture-files", [])],
                 "cmake_args": cmake_args,
                 "build_args": build_args,
@@ -1043,7 +1058,7 @@ class DarlingTest(WestCommand):
                 "requires_resources": list(test.get("requires", [])),
                 "requires_env": list(test.get("requires-env", [])),
                 "requires_profile": test.get("requires-profile"),
-                "diag": self._resolved_diag(test),
+                "diag": diag,
                 "name": test.get("name", patch["path"]),
                 "timeout_seconds": int(test.get("timeout-seconds", 600)),
             }
@@ -1312,6 +1327,8 @@ class DarlingTest(WestCommand):
         return args
 
     def _display_invocation(self, invocation) -> str:
+        if invocation.get("darling_cmake_target_fixture"):
+            return invocation["display"]
         if invocation.get("diag", "bare") == "bare":
             return invocation["display"]
         if invocation.get("guest_c_fixture"):
@@ -1768,43 +1785,42 @@ class DarlingTest(WestCommand):
         fallback_source_lines = "\n    ".join(fallback_sources)
         fallback_include_lines = " ".join(fallback_include_dirs)
         fallback_link_lines = " ".join(fallback_link_libraries)
+        ctest_label = invocation.get("ctest_label") or ""
+        ctest_fallback = ""
+        if ctest_label:
+            ctest_fallback = f"""
+add_test(
+    NAME west_{target}
+    COMMAND {target}
+)
+set_tests_properties(west_{target} PROPERTIES
+    LABELS "{ctest_label}"
+)
+"""
+        host_include_dirs = self._host_c_include_dirs()
+        host_include_lines = "\n".join(
+            f'set(CMAKE_C_FLAGS "${{CMAKE_C_FLAGS}} -isystem {path}")'
+            for path in host_include_dirs
+        )
         cmake = f"""cmake_minimum_required(VERSION 3.16)
 project(west_darling_cmake_target_fixture C)
 
 set(BUILD_TARGET_64BIT ON)
 set(BUILD_TARGET_32BIT OFF)
+set(TARGET_x86_64 ON)
+set(TARGET_ARM64 OFF)
+set(BUILD_TESTING ON)
+set(CMAKE_CROSSCOMPILING_EMULATOR /usr/bin/env CACHE STRING "")
+set(APPLE_TARGET_TRIPLET_PRIMARY west)
+list(PREPEND CMAKE_MODULE_PATH "${{CMAKE_CURRENT_SOURCE_DIR}}")
+enable_testing()
 
-function(_west_darling_collect_sources out_var)
-    set(srcs)
-    foreach(arg IN LISTS ARGN)
-        if(arg STREQUAL FAT OR arg STREQUAL SOURCES OR arg STREQUAL 32BIT_ONLY OR arg STREQUAL 64BIT_ONLY)
-            continue()
-        endif()
-        list(APPEND srcs ${{arg}})
-    endforeach()
-    set(${{out_var}} ${{srcs}} PARENT_SCOPE)
-endfunction()
-
-function(add_darling_static_library name)
-    _west_darling_collect_sources(srcs ${{ARGN}})
-    add_library(${{name}} STATIC ${{srcs}})
-endfunction()
-
-function(add_darling_object_library name)
-    _west_darling_collect_sources(srcs ${{ARGN}})
-    add_library(${{name}} OBJECT ${{srcs}})
-endfunction()
-
-function(add_darling_library name)
-    _west_darling_collect_sources(srcs ${{ARGN}})
-    add_library(${{name}} STATIC ${{srcs}})
-endfunction()
-
-function(add_darling_executable name)
-    add_executable(${{name}} ${{ARGN}})
-endfunction()
-
+include(darling_exe)
 add_library(system STATIC system_shim.c)
+add_custom_target(ranlib)
+add_custom_target(lipo)
+add_custom_target(west-ar)
+{host_include_lines}
 add_subdirectory({source_dir})
 
 if(NOT TARGET {target})
@@ -1819,10 +1835,76 @@ if(NOT TARGET {target})
     endif()
 endif()
 
+{ctest_fallback}
 set_target_properties({target} PROPERTIES
     RUNTIME_OUTPUT_DIRECTORY "${{CMAKE_BINARY_DIR}}/{source_dir}"
 )
 target_link_libraries({target} system)
+"""
+        module = """function(_west_darling_collect_sources out_var)
+    set(srcs)
+    set(mode)
+    set(skip_next FALSE)
+    foreach(arg IN LISTS ARGN)
+        if(skip_next)
+            set(skip_next FALSE)
+            continue()
+        endif()
+        if(arg STREQUAL SOURCES OR arg STREQUAL OBJECTS)
+            set(mode ${arg})
+            continue()
+        endif()
+        if(arg STREQUAL FAT OR arg STREQUAL 32BIT_ONLY OR arg STREQUAL 64BIT_ONLY)
+            continue()
+        endif()
+        if(arg STREQUAL LINK_FLAGS)
+            set(skip_next TRUE)
+            set(mode)
+            continue()
+        endif()
+        if(arg STREQUAL SIBLINGS)
+            set(mode SKIP)
+            continue()
+        endif()
+        if(mode STREQUAL SKIP)
+            continue()
+        endif()
+        if(mode STREQUAL SOURCES OR mode STREQUAL OBJECTS OR NOT mode)
+            if(arg MATCHES "^\\\\$<TARGET_OBJECTS:([^>]+)>$")
+                if(TARGET "${CMAKE_MATCH_1}")
+                    list(APPEND srcs ${arg})
+                endif()
+            else()
+                list(APPEND srcs ${arg})
+            endif()
+        endif()
+    endforeach()
+    set(${out_var} ${srcs} PARENT_SCOPE)
+endfunction()
+
+function(add_darling_static_library name)
+    _west_darling_collect_sources(srcs ${ARGN})
+    add_library(${name} STATIC ${srcs})
+endfunction()
+
+function(add_darling_object_library name)
+    _west_darling_collect_sources(srcs ${ARGN})
+    add_library(${name} OBJECT ${srcs})
+endfunction()
+
+function(add_darling_library name)
+    _west_darling_collect_sources(srcs ${ARGN})
+    add_library(${name} STATIC ${srcs})
+endfunction()
+
+function(add_circular name)
+    _west_darling_collect_sources(srcs ${ARGN})
+    add_library(${name} STATIC ${srcs})
+endfunction()
+
+function(add_darling_executable name)
+    add_executable(${name} ${ARGN})
+endfunction()
 """
         shim = """#include <stddef.h>
 
@@ -1839,7 +1921,32 @@ timingsafe_bcmp(const void *b1, const void *b2, size_t n)
 }
 """
         (project_root / "CMakeLists.txt").write_text(cmake)
+        (project_root / "darling_exe.cmake").write_text(module)
         (project_root / "system_shim.c").write_text(shim)
+
+    def _host_c_include_dirs(self) -> list[str]:
+        include_dirs: list[str] = []
+        try:
+            compiler_include = subprocess.check_output(
+                ["cc", "-print-file-name=include"],
+                text=True,
+            ).strip()
+        except (OSError, subprocess.CalledProcessError):
+            compiler_include = ""
+        if compiler_include and Path(compiler_include).is_dir():
+            include_dirs.append(compiler_include)
+        try:
+            machine = subprocess.check_output(["cc", "-dumpmachine"], text=True).strip()
+        except (OSError, subprocess.CalledProcessError):
+            machine = ""
+        candidates = []
+        if machine:
+            candidates.append(Path("/usr/include") / machine)
+        candidates.append(Path("/usr/include"))
+        for candidate in candidates:
+            if candidate.is_dir():
+                include_dirs.append(str(candidate))
+        return list(dict.fromkeys(include_dirs))
 
     def _write_cmake_compiler_launcher(self, launcher: Path, log_path: Path) -> None:
         launcher.write_text(
@@ -1890,7 +1997,7 @@ timingsafe_bcmp(const void *b1, const void *b2, size_t n)
         return 0
 
     def _run_darling_cmake_target_fixture(self, invocation, env=None) -> int:
-        if invocation.get("diag", "bare") != "bare":
+        if invocation.get("diag", "bare") != "bare" and not invocation.get("ctest_label"):
             self.die(f"{invocation['name']}: darling-cmake-target-fixture currently supports diag:bare only")
         run_env = env if env is not None else invocation.get("env")
         if not run_env:
@@ -1957,11 +2064,43 @@ timingsafe_bcmp(const void *b1, const void *b2, size_t n)
             commands = [
                 ("cmake configure", configure_args),
                 ("cmake build", build_args),
-                (
-                    "run target",
-                    [str(build_dir / invocation["run_binary"])],
-                ),
             ]
+            if invocation.get("ctest_label"):
+                ctest_args = ctest_label_args(build_dir, invocation["ctest_label"])
+                if invocation.get("diag", "bare") != "bare":
+                    executor = getattr(self, "_executor", None)
+                    if not executor:
+                        self.die(
+                            f"{invocation['name']}: diag:{invocation['diag']} "
+                            "requires darling-debug-runner. Build the west project "
+                            "with `cargo build --release` in `darling-debug-runner`, "
+                            "install it on PATH, or pass --executor."
+                        )
+                    ctest_args = [
+                        executor,
+                        "run",
+                        "--name",
+                        f"west-test-{invocation['name']}",
+                        "--bundle-root",
+                        str(getattr(self, "_bundle_root", "~/work/darling-debug")),
+                        "--timeout-seconds",
+                        str(invocation.get("timeout_seconds", 600)),
+                        "--",
+                        *ctest_args,
+                    ]
+                commands.append(
+                    (
+                        "ctest label",
+                        ctest_args,
+                    )
+                )
+            else:
+                commands.append(
+                    (
+                        "run target",
+                        [str(build_dir / invocation["run_binary"])],
+                    )
+                )
             for label, command in commands:
                 self.inf(f"  darling-cmake-target-fixture: {label}")
                 try:
@@ -3139,6 +3278,8 @@ fi
         required = invocation.get("requires_profile")
         if not required:
             return
+        if required in getattr(self, "_worktree_materialized_profiles", set()):
+            return
         if self._profile_is_applied(required):
             return
         if getattr(self, "_materialize_profile", False):
@@ -3153,6 +3294,9 @@ fi
     @contextmanager
     def _required_profile_context(self, patch, invocation):
         required = invocation.get("requires_profile")
+        if required in getattr(self, "_worktree_materialized_profiles", set()):
+            yield
+            return
         if not required or self._profile_is_applied(required):
             yield
             return
@@ -3173,8 +3317,15 @@ fi
             yield
             return
         self.inf(f"temporarily materializing selected profile {profile!r} in worktrees")
-        with self._profile_worktree_checkout(profile):
-            yield
+        active = set(getattr(self, "_worktree_materialized_profiles", set()))
+        active.add(profile)
+        previous = getattr(self, "_worktree_materialized_profiles", set())
+        self._worktree_materialized_profiles = active
+        try:
+            with self._profile_worktree_checkout(profile):
+                yield
+        finally:
+            self._worktree_materialized_profiles = previous
 
     def _reject_guest_source_base_red_proof(self, patch) -> None:
         self.die(
