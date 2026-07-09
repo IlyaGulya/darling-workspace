@@ -102,6 +102,14 @@ refs, PR drafts, and agent handoff.
   Runtime fixtures should normally live in the workspace testkit/tests area and
   stay the same for RED and GREEN; the current-minus source forest is for
   building bad runtime artifacts, not for silently losing the test input.
+  If the bad runtime is too unstable to upload or compile the guest fixture, a
+  proof may use `prepare-fixture-before-deploy: true` to upload/compile on the
+  current runtime and then run the prepared guest binary after bad artifact
+  deployment. This only removes upload/compile from the RED cause. If the bad
+  runtime still cannot start `darling shell` or reaches protocol/shellspawn
+  failures before the fixture's `main`, do not keep adding source patches or
+  broad matchers; create/use a launch-free or direct runtime harness and keep
+  the shell-based proof blocked.
 - Do not close patch coverage with source matching. Tests that grep, parse, or
   assert that specific code text exists are audit checks only; they must not be
   counted as the patch's behavioral test and must not be recorded as `kind:
