@@ -8,7 +8,7 @@ implementation details into as the runner is split further.
 
 from __future__ import annotations
 
-from contextlib import ExitStack, nullcontext
+from contextlib import ExitStack, contextmanager
 from dataclasses import dataclass
 from typing import Any
 
@@ -48,7 +48,19 @@ class EunionPrefixProvider(ResourceProvider):
         return command._eunion_prefix_context(invocation, env)
 
 
+class HostTraceProvider(ResourceProvider):
+    def __init__(self) -> None:
+        super().__init__("host-trace-files")
+
+    def active(self, invocation: dict[str, Any]) -> bool:
+        return bool(invocation.get("host_trace_files"))
+
+    def context(self, command: Any, invocation: dict[str, Any], env: dict[str, str] | None):
+        return command._host_trace_context(invocation, env)
+
+
 RESOURCE_PROVIDERS: tuple[ResourceProvider, ...] = (
+    HostTraceProvider(),
     DccCacheProvider(),
     EunionPrefixProvider(),
 )
@@ -64,6 +76,7 @@ def active_resource_provider_names(invocation: dict[str, Any]) -> list[str]:
     ]
 
 
+@contextmanager
 def resource_context(command: Any, invocation: dict[str, Any], env: dict[str, str] | None):
     """Build the nested resource context for a metadata test invocation."""
 
@@ -73,9 +86,15 @@ def resource_context(command: Any, invocation: dict[str, Any], env: dict[str, st
         if provider.active(invocation)
     ]
     if not active:
-        return nullcontext()
+        yield env
+        return
 
-    stack = ExitStack()
-    for provider in active:
-        stack.enter_context(provider.context(command, invocation, env))
-    return stack
+    current_env = env
+    with ExitStack() as stack:
+        for provider in active:
+            provided_env = stack.enter_context(
+                provider.context(command, invocation, current_env)
+            )
+            if provided_env is not None:
+                current_env = provided_env
+        yield current_env

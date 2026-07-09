@@ -1209,8 +1209,8 @@ class DarlingTest(WestCommand):
                     result_rc = self._run_guest_runtime_deploy_green(patch, proof, invocation)
                 else:
                     exec_env = self._execution_env(invocation)
-                    with self._resource_context(invocation, exec_env):
-                        result_rc = self._run_invocation(invocation, env=exec_env)
+                    with self._resource_context(invocation, exec_env) as resource_env:
+                        result_rc = self._run_invocation(invocation, env=resource_env)
             if result_rc:
                 rc = result_rc
         return rc
@@ -1343,18 +1343,17 @@ class DarlingTest(WestCommand):
         if invocation.get("darling_cmake_target_fixture"):
             return self._run_darling_cmake_target_fixture(invocation, env=env)
         run_env = env if env is not None else invocation.get("env")
-        with self._host_trace_context(invocation, run_env) as trace_env:
-            result = subprocess.run(
-                self._debug_runner_args(invocation),
-                cwd=invocation["cwd"],
-                env=trace_env,
-                shell=False,
-                check=False,
-            )
-            rc = result.returncode
-            if rc:
-                return rc
-            return self._check_host_traces(invocation, trace_env)
+        result = subprocess.run(
+            self._debug_runner_args(invocation),
+            cwd=invocation["cwd"],
+            env=run_env,
+            shell=False,
+            check=False,
+        )
+        rc = result.returncode
+        if rc:
+            return rc
+        return self._check_host_traces(invocation, run_env)
 
     @contextmanager
     def _host_trace_context(self, invocation, env):
@@ -2597,8 +2596,8 @@ fi
 
     @contextmanager
     def _resource_context(self, invocation, env):
-        with resource_context(self, invocation, env):
-            yield
+        with resource_context(self, invocation, env) as resource_env:
+            yield resource_env
 
     @contextmanager
     def _eunion_prefix_context(self, invocation, env):
