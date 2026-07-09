@@ -89,6 +89,22 @@ with tempfile.TemporaryDirectory() as temp:
 
 with tempfile.TemporaryDirectory() as temp:
     tempdir = Path(temp)
+    prefix = tempdir / "prefix"
+    prefix.mkdir()
+    test = make_test()
+    test._prefix = str(prefix)
+    test._prefix_env = {"DARLING_NOOVERLAYFS": "1"}
+    test._resolve_darling_launcher = lambda _prefix: "/tmp/fake-darling"
+    invocation = {"requires_resources": ["darling-prefix"]}
+    env = DarlingTest._execution_env(test, invocation)
+    assert env["DPREFIX"] == str(prefix), env
+    assert env["DARLING_PREFIX"] == str(prefix), env
+    assert env["DARLING_NOOVERLAYFS"] == "1", env
+    assert env["DARLING"] == "/tmp/fake-darling", env
+    assert env["DARLING_LAUNCHER"] == "/tmp/fake-darling", env
+
+with tempfile.TemporaryDirectory() as temp:
+    tempdir = Path(temp)
     test = make_test()
     test.topdir = str(tempdir)
     source_root = tempdir / "source"
@@ -240,6 +256,10 @@ fi
 if [ "${1:-}" != shell ]; then
 \texit 64
 fi
+if [ "${DARLING_PREFIX:-}" != "${DPREFIX:-}" ]; then
+\tprintf 'bad DARLING_PREFIX=%s DPREFIX=%s\\n' "${DARLING_PREFIX:-}" "${DPREFIX:-}" >&2
+\texit 65
+fi
 (sleep 30) &
 echo "$!" > "${WEST_FAKE_HOLD_PID:?}"
 printf 'FAKE_GUEST_COMMAND_DONE\\n' >&2
@@ -287,6 +307,10 @@ with tempfile.TemporaryDirectory() as temp:
 set -euo pipefail
 if [ "${1:-}" = shutdown ]; then
 \texit 0
+fi
+if [ "${DARLING_PREFIX:-}" != "${DPREFIX:-}" ]; then
+\tprintf 'bad DARLING_PREFIX=%s DPREFIX=%s\\n' "${DARLING_PREFIX:-}" "${DPREFIX:-}" >&2
+\texit 65
 fi
 printf 'ANY_RETURN_MARKER\\n' >&2
 exit 7
@@ -370,6 +394,7 @@ with tempfile.TemporaryDirectory() as temp:
     assert "WEST_GUEST_NAMESPACE_INIT_PID" in generated, generated
     assert "WEST_GUEST_NAMESPACE_MNT" in generated, generated
     assert "Cannot open mnt namespace file" in generated, generated
+    assert 'DARLING_PREFIX="$DPREFIX"' in generated, generated
 
 with tempfile.TemporaryDirectory() as temp:
     tempdir = Path(temp)
