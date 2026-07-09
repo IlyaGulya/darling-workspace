@@ -1,4 +1,4 @@
-From f00bc66c395f2c601c17376b9b64970fba675116 Mon Sep 17 00:00:00 2001
+From daf32392e80071c7f43f45de5393bd128731e56d Mon Sep 17 00:00:00 2001
 From: Ilya Gulya <ilya@gulya.me>
 Date: Wed, 10 Jun 2026 10:05:56 +0000
 Subject: [PATCH] process: bound fork-child checkin wait with a timeout

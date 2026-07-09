@@ -1,4 +1,4 @@
-From 0404f605e87eddaf720b6d795d022c5add9b08ce Mon Sep 17 00:00:00 2001
+From 0a1980bfc8cce7b24f86a300310eb72dab2e4141 Mon Sep 17 00:00:00 2001
 From: Ilya Gulya <ilya@gulya.me>
 Date: Wed, 10 Jun 2026 10:05:56 +0000
 Subject: [PATCH] psynch: allow balanced cvwait sequences (is_seqhigher)

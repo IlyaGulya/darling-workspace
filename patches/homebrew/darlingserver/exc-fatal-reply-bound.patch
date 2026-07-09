@@ -1,4 +1,4 @@
-From 42f9910cbd4eaf45a361572f5019f3e0f63c5b77 Mon Sep 17 00:00:00 2001
+From 2c8db920a3fe6c003225012e44b0074afad50c19 Mon Sep 17 00:00:00 2001
 From: Ilya Gulya <ilya.gulya@indriver.com>
 Date: Wed, 24 Jun 2026 01:03:22 +0000
 Subject: [PATCH] duct-tape: bound the reply wait for fatal EXC_BAD_ACCESS
@@ -124,10 +124,10 @@ index 633d729fde9d43b48bb55077d45acecbfafa5024..af083b3e9afb91656ba519f144b71031
  	dtape_mutex_t suspension_mutex;
  	dtape_condvar_t suspension_condvar;
 diff --git a/duct-tape/src/thread.c b/duct-tape/src/thread.c
-index f4ce909677bfe659e948a04d477b1ce9003b2bc6..cfd5cd042c2f7cdaa1c4c2275c63c9f972513614 100644
+index d1c654ebcb4dd7f493316284172830089c68a601..33f73b07b5b20b17eb273bb4d12c8ee26b4098a1 100644
 --- a/duct-tape/src/thread.c
 +++ b/duct-tape/src/thread.c
-@@ -344,8 +344,28 @@ void dtape_thread_process_signal(dtape_thread_t* thread, int bsd_signal_number,
+@@ -345,8 +345,28 @@ void dtape_thread_process_signal(dtape_thread_t* thread, int bsd_signal_number,
  
  	dtape_log_debug("calling exception_triage_thread(%d, [%lld, %lld])", mach_exception, codes[0], codes[1]);
  

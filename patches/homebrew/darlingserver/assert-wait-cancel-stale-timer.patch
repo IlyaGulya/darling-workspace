@@ -1,4 +1,4 @@
-From 10194531c37acd1ad5d1e79a9d1aa31353ed7158 Mon Sep 17 00:00:00 2001
+From 4c353baa640d2ea026c59ec08a0e0ccfce33e09a Mon Sep 17 00:00:00 2001
 From: Ilya Gulya <ilya.gulya@indriver.com>
 Date: Wed, 24 Jun 2026 15:15:58 +0000
 Subject: [PATCH] duct-tape: cancel stale wait_timer when entering a new wait

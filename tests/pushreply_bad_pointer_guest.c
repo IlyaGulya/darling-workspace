@@ -2,6 +2,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <poll.h>
 #include <sys/types.h>
 #include <sys/uio.h>
 #include <sys/socket.h>
@@ -105,6 +106,22 @@ int main(void)
 		return 5;
 	}
 
+	struct pollfd poll_fd = {
+	    .fd = pipe_ends[0],
+	    .events = POLLIN | POLLHUP,
+	};
+	int poll_rc = poll(&poll_fd, 1, 5000);
+	if (poll_rc < 0) {
+		perror("poll push_reply pipe");
+		close(pipe_ends[0]);
+		return 6;
+	}
+	if (poll_rc == 0) {
+		fprintf(stderr, "push_reply pipe did not close after bad pointer\n");
+		close(pipe_ends[0]);
+		return 1;
+	}
+
 	char byte = 0;
 	(void)read(pipe_ends[0], &byte, sizeof(byte));
 	close(pipe_ends[0]);
@@ -112,7 +129,7 @@ int main(void)
 	uid_t uid = getuid();
 	if (setuid(uid) != 0) {
 		perror("setuid after push_reply EOF");
-		return 6;
+		return 7;
 	}
 
 	puts("PUSHREPLY_BAD_POINTER_OK");
