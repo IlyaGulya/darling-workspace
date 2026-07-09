@@ -58,10 +58,60 @@ patches:
   bead: dar-1il.12
   publication-status: blocked
   publication-blocker: perf#18 guest shared-memory ring transport (D3..D18a staircase) is an EXPERIMENTAL transport, flag-gated behind DARLING_RING_TRANSPORT / DARLING_SERVER_FAST_OPS. It has a residual RPC-loss failure mode under heavy concurrent fork/exec/exit (see perf#25a-hang, bead dar A0). Not default-on, not proposed upstream. Base is 1169ebe (perf#7-generalize recv-spin), already exported by the homebrew profile as xnu/generalize-recv-spin-guest, so this patch carries ONLY the 17 ring-specific commits on top of it.
-  test-exception:
-    reason: needs-guest-ring-runtime-probe
+  tests:
+  - name: shmem_ring_mach_ops_guest
+    kind: guest
+    coverage-tier: runtime
+    env: darling
+    diag: bare
+    red: true
+    red-proof:
+      mode: guest-runtime-deploy
+      bad-profile: current-minus-patch
+      current-minus-skip-patches:
+      - xnu/j7e7-lane-wakefd-sentinel.patch
+      source-modules:
+      - darling/src/external/darlingserver
+      runtime-artifacts:
+      - module: darling/src/external/darlingserver
+        build-targets:
+        - src/external/darlingserver/darlingserver
+        deploy:
+        - bin/darlingserver
+      - module: darling/src/external/xnu
+        build-targets:
+        - system_kernel
+        deploy:
+        - usr/lib/system/libsystem_kernel.dylib
+      - module: darling/src/external/dyld
+        build-targets:
+        - src/external/dyld/dyld
+        deploy:
+        - usr/lib/dyld
+    runner: guest-c-fixture
+    repo: darling-workspace
+    script: tests/shmem_ring_mach_ops_guest.c
+    ok-marker: WEST_SHMEM_RING_MACH_OPS_OK
+    timeout-seconds: 60
+    compile-flags:
+    - -std=gnu11
+    - -Wall
+    - -Wextra
+    - -Werror
+    host-stat-deltas:
+    - path: per_call.dserver_callnum_ring_attach.count
+      min-delta: 1
+    requires:
+    - darling-prefix
     note: |
-      The paired darlingserver patch has host/model trust-boundary gates, but this XNU guest patch needs an automated deployed-guest probe that exercises negotiated ring attach, ring/off fallback, duplex selftest, fork/postfork reset, and latency/counter invariants under an isolated Darling prefix. Do not count server-side model gates as coverage for this guest runtime patch.
+      Guest runtime RED->GREEN probe for the guest half of perf#18. The fixture
+      performs Mach port allocate/insert/type/reply/deallocate/mod_refs work in
+      parent and fork child, while west samples darling-stat after compile and
+      after the workload. GREEN requires both guest-visible Mach correctness and
+      host-observable ring negotiation. The runtime deploy keeps the
+      ring-capable server and swaps dyld/libsystem_kernel in lock-step; the
+      current-minus RED runtime removes this guest patch, so the workload can
+      fall back to UDS but cannot issue the ring_attach RPC.
 - path: dyld/dcc2-reader.patch
   sha256sum: bc1acc8ba1a4c969d216391f022111eb14239c96c6fedb0707bb75ff5953f6a5
   module: darling/src/external/dyld
