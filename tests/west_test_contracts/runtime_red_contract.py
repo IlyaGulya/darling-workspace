@@ -256,6 +256,17 @@ with tempfile.TemporaryDirectory() as temp:
             {"runtime-artifacts": [{"deploy": ["bin/darlingserver"]}]},
             tempdir / "prefix",
         )
+        tool_args = make_test()._runtime_red_configure_args(
+            {
+                "cmake-defines": {
+                    "DSERVER_TOOLS": True,
+                    "WEST_EMPTY_DEFINE": None,
+                    "WEST_STRING_DEFINE": "value",
+                },
+                "runtime-artifacts": [{"deploy": ["bin/dserverdbg"]}],
+            },
+            tempdir / "prefix",
+        )
     finally:
         if old_build_dir is None:
             os.environ.pop("DARLING_BUILD_DIR", None)
@@ -270,6 +281,9 @@ with tempfile.TemporaryDirectory() as temp:
     assert "-DDSERVER_RING_TRANSPORT=ON" in ring_args, ring_args
     assert f"-DCMAKE_INSTALL_PREFIX={tempdir / 'prefix'}" in args, args
     assert f"-DCMAKE_INSTALL_PREFIX={tempdir / 'install'}" in host_args, host_args
+    assert "-DDSERVER_TOOLS=ON" in tool_args, tool_args
+    assert "-DWEST_EMPTY_DEFINE=" in tool_args, tool_args
+    assert "-DWEST_STRING_DEFINE=value" in tool_args, tool_args
 
 with tempfile.TemporaryDirectory() as temp:
     tempdir = Path(temp)
@@ -416,12 +430,25 @@ with tempfile.TemporaryDirectory() as temp:
         return scratch_root / "build"
 
     def fake_run(invocation, env=None):
-        del env
-        calls.append(("run", invocation["name"], root_copy.read_text(), base_copy.read_text()))
+        env = env or {}
+        calls.append((
+            "run",
+            invocation["name"],
+            root_copy.read_text(),
+            base_copy.read_text(),
+            env.get("RESOURCE_CONTEXT_MARKER"),
+        ))
         return 77 if len([call for call in calls if call[0] == "run"]) == 1 else 0
+
+    @contextmanager
+    def fake_resource_context(invocation, env):
+        merged = dict(env or {})
+        merged["RESOURCE_CONTEXT_MARKER"] = invocation["name"]
+        yield merged
 
     test._guest_runtime_source_forest = fake_source_forest
     test._runtime_red_build_artifacts = fake_build
+    test._resource_context = fake_resource_context
     test._run_invocation = fake_run
     test._check_guest_runtime_red_failure = lambda _proof, _invocation, *, since: True
 
@@ -445,10 +472,22 @@ with tempfile.TemporaryDirectory() as temp:
     assert base_copy.read_text() == "ORIGINAL\n"
     assert calls[0] == ("source", "darling/src/external/xnu", "guest-runtime-deploy", True), calls
     assert calls[1][0] == "build" and calls[1][3] is True and calls[1][4] == "RED", calls
-    assert calls[2] == ("run", "runtime_red_contract", "RED\n", "RED\n"), calls
+    assert calls[2] == (
+        "run",
+        "runtime_red_contract",
+        "RED\n",
+        "RED\n",
+        "runtime_red_contract",
+    ), calls
     assert calls[3] == ("source", "darling/src/external/xnu", "guest-runtime-deploy", False), calls
     assert calls[4][0] == "build" and calls[4][3] is True and calls[4][4] == "GREEN", calls
-    assert calls[5] == ("run", "runtime_red_contract", "GREEN\n", "GREEN\n"), calls
+    assert calls[5] == (
+        "run",
+        "runtime_red_contract",
+        "GREEN\n",
+        "GREEN\n",
+        "runtime_red_contract",
+    ), calls
 
     root_copy.write_text("ORIGINAL\n")
     base_copy.write_text("ORIGINAL\n")
@@ -465,6 +504,7 @@ with tempfile.TemporaryDirectory() as temp:
                 env.get("WEST_GUEST_C_FIXTURE_PREPARE_ONLY"),
                 env.get("WEST_GUEST_C_FIXTURE_RUN_ONLY"),
                 env.get("WEST_GUEST_C_FIXTURE_ID"),
+                env.get("RESOURCE_CONTEXT_MARKER"),
             )
         )
         if env.get("WEST_GUEST_C_FIXTURE_PREPARE_ONLY") == "1":
@@ -499,6 +539,8 @@ with tempfile.TemporaryDirectory() as temp:
         "1",
     ), calls
     assert calls[2][6] and calls[2][6] == calls[3][6], calls
+    assert calls[2][7] == "runtime_red_contract", calls
+    assert calls[3][7] == "runtime_red_contract", calls
     assert calls[4] == ("source", "darling/src/external/xnu", "guest-runtime-deploy", False), calls
     assert calls[5][0] == "build" and calls[5][4] == "GREEN", calls
     assert calls[6][0:6] == (
@@ -528,6 +570,8 @@ with tempfile.TemporaryDirectory() as temp:
                 base_copy.read_text(),
                 env.get("WEST_RUNTIME_SOURCE_ROOT"),
                 env.get("WEST_GUEST_C_FIXTURE_RUN_ONLY"),
+                list(invocation.get("requires_resources", [])),
+                env.get("RESOURCE_CONTEXT_MARKER"),
             )
         )
         return 77 if invocation["name"] == "runtime_red_contract_red" else 0
@@ -552,6 +596,8 @@ with tempfile.TemporaryDirectory() as temp:
     ), calls
     assert calls[2][5] == str(tempdir / "source/darling"), calls
     assert calls[2][6] is None, calls
+    assert "darling-prefix" in calls[2][7], calls
+    assert calls[2][8] == "runtime_red_contract_red", calls
     assert calls[3] == ("source", "darling/src/external/xnu", "guest-runtime-deploy", False), calls
     assert calls[4][0] == "build" and calls[4][4] == "GREEN", calls
     assert calls[5][0:3] == ("run", "runtime_red_contract", None), calls

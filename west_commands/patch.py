@@ -591,8 +591,8 @@ class DarlingPatch(WestCommand):
                             )
             if test.get("host-temp-files") is not None:
                 temps = test.get("host-temp-files")
-                if runner != "guest-c-fixture":
-                    errors.append(f"tests[{index}] host-temp-files requires runner: guest-c-fixture")
+                if runner not in {"guest-c-fixture", "script"}:
+                    errors.append(f"tests[{index}] host-temp-files requires runner: guest-c-fixture or script")
                 elif not isinstance(temps, list) or not temps:
                     errors.append(f"tests[{index}] host-temp-files must be a non-empty list")
                 elif not all(isinstance(temp_file, dict) for temp_file in temps):
@@ -775,6 +775,27 @@ class DarlingPatch(WestCommand):
                             errors.append(
                                 f"tests[{index}] source-patches must be a list of workspace-relative patch paths"
                             )
+                    cmake_defines = proof.get("cmake-defines")
+                    if cmake_defines is not None:
+                        if not isinstance(cmake_defines, dict):
+                            errors.append(
+                                f"tests[{index}] red-proof cmake-defines must be a mapping"
+                            )
+                        else:
+                            for key, value in cmake_defines.items():
+                                if not isinstance(key, str) or not key:
+                                    errors.append(
+                                        f"tests[{index}] red-proof cmake-defines keys must be non-empty strings"
+                                    )
+                                    continue
+                                if not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", key):
+                                    errors.append(
+                                        f"tests[{index}] red-proof cmake-defines key {key!r} is not a CMake variable name"
+                                    )
+                                if value is not None and not isinstance(value, (str, int, float, bool)):
+                                    errors.append(
+                                        f"tests[{index}] red-proof cmake-defines values must be strings, numbers, booleans, or null"
+                                    )
                     red_runner = proof.get("red-runner")
                     if red_runner is not None:
                         if not isinstance(red_runner, dict):
@@ -801,6 +822,82 @@ class DarlingPatch(WestCommand):
                                 errors.append(
                                     f"tests[{index}] red-proof red-runner requires script"
                                 )
+                            if red_runner.get("host-temp-files") is not None:
+                                temps = red_runner.get("host-temp-files")
+                                if red_runner_kind != "script":
+                                    errors.append(
+                                        f"tests[{index}] red-proof red-runner host-temp-files requires runner: script"
+                                    )
+                                elif not isinstance(temps, list) or not temps:
+                                    errors.append(
+                                        f"tests[{index}] red-proof red-runner host-temp-files must be a non-empty list"
+                                    )
+                                elif not all(isinstance(temp_file, dict) for temp_file in temps):
+                                    errors.append(
+                                        f"tests[{index}] red-proof red-runner host-temp-files entries must be mappings"
+                                    )
+                                else:
+                                    for temp_index, temp_file in enumerate(temps):
+                                        env_name = temp_file.get("env")
+                                        rel_path = temp_file.get("prefix-relative-path")
+                                        contents = temp_file.get("contents", "")
+                                        if not isinstance(env_name, str) or not re.match(r"^[A-Za-z_][A-Za-z0-9_]*$", env_name):
+                                            errors.append(
+                                                f"tests[{index}].red-proof.red-runner.host-temp-files[{temp_index}] env must be a shell variable name"
+                                            )
+                                        if not isinstance(rel_path, str) or not rel_path:
+                                            errors.append(
+                                                f"tests[{index}].red-proof.red-runner.host-temp-files[{temp_index}] needs prefix-relative-path"
+                                            )
+                                        elif rel_path.startswith("/") or ".." in Path(rel_path).parts:
+                                            errors.append(
+                                                f"tests[{index}].red-proof.red-runner.host-temp-files[{temp_index}] path must be prefix-relative"
+                                            )
+                                        if contents is not None and not isinstance(contents, str):
+                                            errors.append(
+                                                f"tests[{index}].red-proof.red-runner.host-temp-files[{temp_index}] contents must be a string"
+                                            )
+                            if red_runner.get("host-trace-files") is not None:
+                                traces = red_runner.get("host-trace-files")
+                                if red_runner_kind != "script":
+                                    errors.append(
+                                        f"tests[{index}] red-proof red-runner host-trace-files requires runner: script"
+                                    )
+                                elif not isinstance(traces, list) or not traces:
+                                    errors.append(
+                                        f"tests[{index}] red-proof red-runner host-trace-files must be a non-empty list"
+                                    )
+                                elif not all(isinstance(trace, dict) for trace in traces):
+                                    errors.append(
+                                        f"tests[{index}] red-proof red-runner host-trace-files entries must be mappings"
+                                    )
+                                else:
+                                    for trace_index, trace in enumerate(traces):
+                                        env_name = trace.get("env")
+                                        rel_path = trace.get("prefix-relative-path")
+                                        contains = trace.get("contains", [])
+                                        if not isinstance(env_name, str) or not env_name:
+                                            errors.append(
+                                                f"tests[{index}].red-proof.red-runner.host-trace-files[{trace_index}] needs env"
+                                            )
+                                        elif not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", env_name):
+                                            errors.append(
+                                                f"tests[{index}].red-proof.red-runner.host-trace-files[{trace_index}] env must be a shell variable name"
+                                            )
+                                        if not isinstance(rel_path, str) or not rel_path:
+                                            errors.append(
+                                                f"tests[{index}].red-proof.red-runner.host-trace-files[{trace_index}] needs prefix-relative-path"
+                                            )
+                                        elif rel_path.startswith("/") or ".." in Path(rel_path).parts:
+                                            errors.append(
+                                                f"tests[{index}].red-proof.red-runner.host-trace-files[{trace_index}] path must be prefix-relative"
+                                            )
+                                        if not isinstance(contains, list) or not all(
+                                            isinstance(item, str) and item for item in contains
+                                        ):
+                                            errors.append(
+                                                f"tests[{index}].red-proof.red-runner.host-trace-files[{trace_index}] contains must be a list of strings"
+                                            )
                     artifacts = proof.get("runtime-artifacts")
                     if not isinstance(artifacts, list) or not artifacts:
                         errors.append(

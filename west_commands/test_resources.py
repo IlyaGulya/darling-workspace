@@ -59,6 +59,17 @@ class HostTraceProvider(ResourceProvider):
         return command._host_trace_context(invocation, env)
 
 
+class HostTempProvider(ResourceProvider):
+    def __init__(self) -> None:
+        super().__init__("host-temp-files")
+
+    def active(self, invocation: dict[str, Any]) -> bool:
+        return bool(invocation.get("host_temp_files"))
+
+    def context(self, command: Any, invocation: dict[str, Any], env: dict[str, str] | None):
+        return command._host_temp_context(invocation, env)
+
+
 class HostStatProvider(ResourceProvider):
     def __init__(self) -> None:
         super().__init__("host-stat-deltas")
@@ -71,6 +82,7 @@ class HostStatProvider(ResourceProvider):
 
 
 RESOURCE_PROVIDERS: tuple[ResourceProvider, ...] = (
+    HostTempProvider(),
     HostTraceProvider(),
     HostStatProvider(),
     DccCacheProvider(),

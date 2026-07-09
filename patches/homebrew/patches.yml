@@ -1092,15 +1092,34 @@ patches:
       - darlingserver/test-diagnostics-trace.patch
       source-patches:
       - tests/fixtures/processcall/uidgid-fault-diagnostics.patch
+      - tests/fixtures/processcall/dserverdbg-uidgid-fault-oracle.patch
       expect-output-contains:
       - test_fault.consume name=processcall.uidgid_throw
       - call.processcall_throw name=uidgid
+      red-runner:
+        runner: script
+        repo: darling-workspace
+        script: tests/run-dserverdbg-uidgid-fault.sh
+        timeout-seconds: 30
+        host-temp-files:
+        - env: DSERVER_TEST_FAULT_FILE
+          prefix-relative-path: private/var/tmp/dserver-processcall-fault
+        host-trace-files:
+        - env: DSERVER_TEST_TRACE_FILE
+          prefix-relative-path: private/var/tmp/dserver-processcall-fault.trace
+          contains:
+          - test_fault.consume name=processcall.uidgid_throw
+          - call.processcall_throw name=uidgid
+      cmake-defines:
+        DSERVER_TOOLS: true
       runtime-artifacts:
       - module: darling/src/external/darlingserver
         build-targets:
         - darlingserver
+        - dserverdbg
         deploy:
         - bin/darlingserver
+        - bin/dserverdbg
     runner: guest-c-fixture
     repo: darling-workspace
     script: tests/processcall_uidgid_fault_guest.c
@@ -5069,7 +5088,7 @@ patches:
   module: darling/src/external/darlingserver
   source-branch: fix/test-diagnostics-trace
   source-base: b983a36ada0c2d13125ca6c5c62cc0d417c272dc
-  source-commit: e6b270a88842ea118e026894851e00a5e218a586
+  source-commit: 2b8a8d2fccbc17fd224eda5216a5b73b94a7dd8c
   bead: dar-r7fc.7
   publication-status: blocked
   publication-blocker: test-only runtime diagnostics; keep local until a supported upstream diagnostics interface is designed
@@ -5098,7 +5117,7 @@ patches:
       Guest runtime smoke for the opt-in DSERVER_TEST_TRACE_FILE diagnostics
       hook. The script only launches a real guest process; west owns the host
       trace setup and oracle.
-  sha256sum: a88fdced4cb236f010bcd4a8349cdc5058e15c65715903075e419e368a5f9429
+  sha256sum: 15917753150e2fd4b13a8d6e781b55ee9738fc8f83d67ab26013aaa3383f91f0
 - path: darlingserver/eunion-runtime-prefix.patch
   sha256sum: e32e0125b3521837389ddf3c6d5889becd9acba92f9d88d5e39c686181cf60b1
   module: darling/src/external/darlingserver
