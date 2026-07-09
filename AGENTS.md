@@ -143,8 +143,9 @@ guest/runtime boilerplate in every test. Keep per-test entries focused on the
 unique script, oracle, resources, and exceptional overrides.
 - Shared `west test` runtime setup belongs in typed resource providers, not in
 individual runner bodies. Add or extend `west_commands/test_resources.py` for
-common resources such as host trace files, DCC cache, or E-UNION prefix setup,
-and cover provider ordering/selection with a focused contract.
+common resources such as host trace files, host stat deltas, DCC cache, or
+E-UNION prefix setup, and cover provider ordering/selection with a focused
+contract.
 - For `runner: guest-command-fixture`, use `expect.returncode: any` only when
 the Darling launcher cannot reliably propagate the guest program status for
 the behavior under test. Pair it with a concrete guest-visible

@@ -1711,6 +1711,25 @@ class DarlingTest(WestCommand):
                 return 1
         return 0
 
+    @contextmanager
+    def _host_stat_context(self, invocation, env):
+        deltas = invocation.get("host_stat_deltas", [])
+        if not deltas:
+            yield env
+            return
+        prefix = (env or {}).get("DPREFIX") or getattr(self, "_prefix", None)
+        if not prefix:
+            self.die(f"{invocation['name']}: host-stat-deltas need DPREFIX")
+        tool = Path(str(invocation.get("host_stat_tool", "darling-stat")))
+        if not tool.is_absolute():
+            resolved = shutil.which(str(tool))
+            if resolved:
+                tool = Path(resolved)
+        if not tool.is_file() or not os.access(tool, os.X_OK):
+            self.die(f"{invocation['name']}: missing darling stat tool: {tool}")
+        invocation["_host_stat_tool"] = str(tool)
+        yield env
+
     def _archive_source_to(self, source_root: Path, destination: Path) -> int:
         destination.mkdir(parents=True, exist_ok=True)
         archive = subprocess.Popen(
@@ -2157,7 +2176,9 @@ timingsafe_bcmp(const void *b1, const void *b2, size_t n)
             trace_settle = "sleep 0.25" if invocation.get("host_trace_files") else ":"
             host_stat_deltas = invocation.get("host_stat_deltas", [])
             host_stat_specs = quote(json.dumps(host_stat_deltas))
-            host_stat_tool = quote(str(invocation.get("host_stat_tool", "darling-stat")))
+            host_stat_tool = quote(
+                str(invocation.get("_host_stat_tool", invocation.get("host_stat_tool", "darling-stat")))
+            )
             host_stat_setup = ":"
             host_stat_before = ":"
             host_stat_after = ":"
