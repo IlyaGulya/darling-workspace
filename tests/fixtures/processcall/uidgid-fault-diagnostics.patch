@@ -26,6 +26,40 @@ index 0000000..cb08439
 +void traceLine(const std::string& line);
 +
 +}
+diff --git a/src/darlingserver.cpp b/src/darlingserver.cpp
+index 7c5efb8..f339df7 100644
+--- a/src/darlingserver.cpp
++++ b/src/darlingserver.cpp
+@@ -716,11 +716,14 @@ int main(int argc, char** argv) {
+ 		exit(1);
+ 	}
+ 
+-	// we have to use `clone` rather than `fork` to create the process in its own PID namespace
+-	// and still be able to spawn new processes and threads of our own
+-	launchdGlobalPID = syscall(SYS_clone, CLONE_NEWPID | SIGCHLD, NULL, NULL, NULL, 0);
++	const bool skipLaunchd = getenv("DSERVER_TEST_SKIP_LAUNCHD") != nullptr;
++	if (!skipLaunchd) {
++		// we have to use `clone` rather than `fork` to create the process in its own PID namespace
++		// and still be able to spawn new processes and threads of our own
++		launchdGlobalPID = syscall(SYS_clone, CLONE_NEWPID | SIGCHLD, NULL, NULL, NULL, 0);
++	}
+ 
+-	if (launchdGlobalPID < 0) {
++	if (!skipLaunchd && launchdGlobalPID < 0) {
+ 		fprintf(stderr, "Failed to fork to start launchd: %s\n", strerror(errno));
+ 		exit(1);
+ 	} else if (launchdGlobalPID == 0) {
+@@ -801,7 +804,9 @@ int main(int argc, char** argv) {
+ 	auto server = new DarlingServer::Server(prefix);
+ 
+ 	// tell the child to go ahead; the socket has been created
+-	write(childWaitFDs[1], ".", 1);
++	if (!skipLaunchd) {
++		write(childWaitFDs[1], ".", 1);
++	}
+ 	close(childWaitFDs[1]);
+ 
+ 	// start the main loop
 diff --git a/src/call.cpp b/src/call.cpp
 index 7ad16e8..b7e3bd2 100644
 --- a/src/call.cpp

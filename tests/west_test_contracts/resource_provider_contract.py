@@ -22,6 +22,7 @@ from test_resources import active_resource_provider_names, resource_context
 
 assert active_resource_provider_names({}) == []
 assert active_resource_provider_names({"requires_resources": ["darling-prefix"]}) == []
+assert active_resource_provider_names({"host_temp_files": [{"env": "FAULT"}]}) == ["host-temp-files"]
 assert active_resource_provider_names({"host_trace_files": [{"env": "TRACE"}]}) == ["host-trace-files"]
 assert active_resource_provider_names({"host_stat_deltas": [{"path": "rpc.count"}]}) == ["host-stat-deltas"]
 assert active_resource_provider_names({"dcc_cache": {"source-ref": "HEAD"}}) == ["dcc-cache"]
@@ -30,10 +31,11 @@ assert active_resource_provider_names({
 }) == ["darling-eunion-prefix"]
 assert active_resource_provider_names({
     "requires_resources": ["unknown-resource", "darling-eunion-prefix"],
+    "host_temp_files": [{"env": "FAULT"}],
     "host_trace_files": [{"env": "TRACE"}],
     "host_stat_deltas": [{"path": "rpc.count"}],
     "dcc_cache": {"source-ref": "HEAD"},
-}) == ["host-trace-files", "host-stat-deltas", "dcc-cache", "darling-eunion-prefix"]
+}) == ["host-temp-files", "host-trace-files", "host-stat-deltas", "dcc-cache", "darling-eunion-prefix"]
 
 class Command:
     def __init__(self):
@@ -42,8 +44,16 @@ class Command:
     @contextmanager
     def _host_trace_context(self, invocation, env):
         self.order.append("host-trace-files")
+        assert env["FAULT_FROM_PROVIDER"] == "1"
         merged = dict(env or {})
         merged["TRACE_FROM_PROVIDER"] = "1"
+        yield merged
+
+    @contextmanager
+    def _host_temp_context(self, invocation, env):
+        self.order.append("host-temp-files")
+        merged = dict(env or {})
+        merged["FAULT_FROM_PROVIDER"] = "1"
         yield merged
 
     @contextmanager
@@ -67,6 +77,7 @@ class Command:
 
 command = Command()
 invocation = {
+    "host_temp_files": [{"env": "FAULT"}],
     "host_trace_files": [{"env": "TRACE"}],
     "host_stat_deltas": [{"path": "rpc.count"}],
     "dcc_cache": {"source-ref": "HEAD"},
@@ -75,7 +86,26 @@ invocation = {
 with resource_context(command, invocation, {}) as env:
     assert env["TRACE_FROM_PROVIDER"] == "1"
 assert invocation["_host_stat_tool"] == "/tmp/fake-darling-stat"
-assert command.order == ["host-trace-files", "host-stat-deltas", "dcc-cache", "darling-eunion-prefix"]
+assert command.order == ["host-temp-files", "host-trace-files", "host-stat-deltas", "dcc-cache", "darling-eunion-prefix"]
+
+with tempfile.TemporaryDirectory() as tmp:
+    tempdir = Path(tmp)
+    real_command = object.__new__(DarlingTest)
+    real_command._prefix = str(tempdir)
+    real_invocation = {
+        "name": "host_temp_provider_contract",
+        "host_temp_files": [
+            {
+                "env": "DSERVER_TEST_FAULT_FILE",
+                "prefix-relative-path": "private/var/tmp/west-fault",
+                "contents": "fault.name\n",
+            }
+        ],
+    }
+    with real_command._host_temp_context(real_invocation, {"DPREFIX": str(tempdir)}) as env:
+        fault_path = Path(env["DSERVER_TEST_FAULT_FILE"])
+        assert fault_path.read_text() == "fault.name\n"
+    assert not fault_path.exists()
 
 with tempfile.TemporaryDirectory() as tmp:
     tempdir = Path(tmp)

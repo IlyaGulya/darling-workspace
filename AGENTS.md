@@ -116,6 +116,10 @@ refs, PR drafts, and agent handoff.
   phase still runs the original test on the fixed/current runtime. The RED
   runner must execute a real behavioral oracle for the old runtime, not source
   text matching or a startup/protocol failure unrelated to the patch contract.
+  If the proof needs a non-default runtime build option such as a test/debug
+  tool target, declare it under `red-proof.cmake-defines` so the RED/GREEN
+  runtime source builds are reproducible; do not rely on the caller's local
+  `CMakeCache.txt` having that target enabled.
 - Do not close patch coverage with source matching. Tests that grep, parse, or
   assert that specific code text exists are audit checks only; they must not be
   counted as the patch's behavioral test and must not be recorded as `kind:

@@ -213,6 +213,11 @@ RED proof modes:
   original test as the GREEN runtime gate. The RED runner is for a real
   behavioral oracle such as a direct server protocol fixture; it is not an
   escape hatch for source matching or accepting unrelated startup failures.
+  Runtime proofs may declare `red-proof.cmake-defines` for explicit CMake cache
+  overrides needed by the proof, for example enabling a test/debug tool target.
+  These defines are applied to both RED and GREEN runtime source builds, after
+  the normal inherited/default feature flags, so the manifest remains the source
+  of truth for non-default build shape.
 
 Source/text checks are allowed only as auxiliary drift guards:
 
