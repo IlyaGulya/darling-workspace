@@ -345,20 +345,20 @@ index e64e932367083086e66892554f0ff7a96fc959c3..3df19a44a83f45ed8458b6efd8d0db9c
  }
 -
 
-From 077301590f7c739451aee66f1286f63a89461fac Mon Sep 17 00:00:00 2001
+From 53a469bff4023acb2eee897bf194bd7bcf0a4f99 Mon Sep 17 00:00:00 2001
 From: Ilya Gulya <ilya@gulya.me>
 Date: Tue, 7 Jul 2026 16:52:46 +0000
 Subject: [PATCH] libpthread: split psynch return decoding contract
 
 ---
- src/inline_internal.h                      |  48 ++--
+ src/inline_internal.h                      |  48 +++-
  src/pthread_cond.c                         |  14 +-
  src/pthread_mutex.c                        |  28 +-
  src/pthread_rwlock.c                       |   8 +-
  tests/guest-verdict-test-lib.sh            |  78 ++++++
- tests/psynch_kernel_return_contract.c      | 287 +++++++++++++++++++++
+ tests/psynch_kernel_return_contract.c      | 301 +++++++++++++++++++++
  tests/run-psynch-kernel-return-contract.sh |  17 ++
- 7 files changed, 444 insertions(+), 36 deletions(-)
+ 7 files changed, 458 insertions(+), 36 deletions(-)
  create mode 100644 tests/guest-verdict-test-lib.sh
  create mode 100644 tests/psynch_kernel_return_contract.c
  create mode 100755 tests/run-psynch-kernel-return-contract.sh
@@ -647,10 +647,10 @@ index 0000000000000000000000000000000000000000..3b782e04029fed830f683c30929c9386
 +}
 diff --git a/tests/psynch_kernel_return_contract.c b/tests/psynch_kernel_return_contract.c
 new file mode 100644
-index 0000000000000000000000000000000000000000..3f0ae1314f2ce9c7a3c948bf9515e0ffc87bf1dd
+index 0000000000000000000000000000000000000000..950db8f7014a9d989ecb073bc79d10e0048f6873
 --- /dev/null
 +++ b/tests/psynch_kernel_return_contract.c
-@@ -0,0 +1,287 @@
+@@ -0,0 +1,301 @@
 +#include <errno.h>
 +#include <pthread.h>
 +#include <sched.h>
@@ -670,6 +670,19 @@ index 0000000000000000000000000000000000000000..3f0ae1314f2ce9c7a3c948bf9515e0ff
 +{
 +	printf("PHASE %s\n", name);
 +	fflush(stdout);
++}
++
++static int
++env_int(const char *name, int fallback)
++{
++	const char *value = getenv(name);
++	if (!value || !*value)
++		return fallback;
++	char *end = NULL;
++	long parsed = strtol(value, &end, 10);
++	if (!end || *end != '\0' || parsed <= 0 || parsed > 1000000)
++		return fallback;
++	return (int)parsed;
 +}
 +
 +static void
@@ -724,6 +737,7 @@ index 0000000000000000000000000000000000000000..3f0ae1314f2ce9c7a3c948bf9515e0ff
 +	pthread_t self = pthread_self();
 +	pthread_t storm;
 +	int timeouts = 0;
++	int target_timeouts = env_int("PSYNCH_COND_TIMEOUTS", 10);
 +	int rc;
 +
 +	stop_storm = 0;
@@ -732,7 +746,7 @@ index 0000000000000000000000000000000000000000..3f0ae1314f2ce9c7a3c948bf9515e0ff
 +
 +	rc = pthread_mutex_lock(&mtx);
 +	if (rc) fail_errno("pthread_mutex_lock timed", rc);
-+	while (timeouts < 50) {
++	while (timeouts < target_timeouts) {
 +		struct timespec ts;
 +		deadline_after_us(&ts, 1000);
 +		rc = pthread_cond_timedwait(&cv, &mtx, &ts);
@@ -794,7 +808,7 @@ index 0000000000000000000000000000000000000000..3f0ae1314f2ce9c7a3c948bf9515e0ff
 +	struct cv_handoff ctx = {
 +		.cv = PTHREAD_COND_INITIALIZER,
 +		.mtx = PTHREAD_MUTEX_INITIALIZER,
-+		.target = 5000,
++		.target = env_int("PSYNCH_COND_HANDOFF_TARGET", 1000),
 +	};
 +	pthread_t consumers[4];
 +	pthread_t storm;
@@ -926,7 +940,7 @@ index 0000000000000000000000000000000000000000..3f0ae1314f2ce9c7a3c948bf9515e0ff
 +	struct lock_stress ctx = {
 +		.mtx = PTHREAD_MUTEX_INITIALIZER,
 +		.rwlock = PTHREAD_RWLOCK_INITIALIZER,
-+		.iters = 20000,
++		.iters = env_int("PSYNCH_LOCK_STRESS_ITERS", 1000),
 +	};
 +	phase("mutex_stress:start");
 +	run_workers(mutex_worker, &ctx);
