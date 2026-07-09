@@ -322,6 +322,23 @@ patches:
         build-targets: [libsystem_kernel]
         deploy:
         - usr/lib/system/libsystem_kernel.dylib
+- path: test/invalid-script-runtime-red-proof.patch
+  module: darling-workspace
+  tests:
+  - name: invalid_script_runtime_red
+    kind: guest
+    env: darling
+    diag: bare
+    runner: script
+    script: tests/run-west-test-metadata-contract.sh
+    red: true
+    red-proof:
+      mode: guest-runtime-deploy
+      runtime-artifacts:
+      - module: darling/src/external/xnu
+        build-targets: [libsystem_kernel]
+        deploy:
+        - usr/lib/system/libsystem_kernel.dylib
 - path: test/invalid-host-trace.patch
   module: darling-workspace
   tests:
@@ -364,6 +381,26 @@ patches:
     runner: guest-c-fixture
     script: tests/guest_c_fixture_contract.c
     ok-marker: WEST_GUEST_C_FIXTURE_OK
+    red: true
+    red-proof:
+      mode: guest-runtime-deploy
+      runtime-artifacts:
+      - module: darling/src/external/xnu
+        build-targets: [libsystem_kernel]
+        deploy:
+        - usr/lib/system/libsystem_kernel.dylib
+- path: test/script-runtime-red-proof.patch
+  module: darling-workspace
+  tests:
+  - name: script_runtime_red
+    kind: guest
+    coverage-tier: runtime
+    env: darling
+    diag: bare
+    runner: script
+    script: tests/run-west-test-metadata-contract.sh
+    requires:
+    - darling-prefix
     red: true
     red-proof:
       mode: guest-runtime-deploy
@@ -526,6 +563,9 @@ printf '%s\n' "$invalid_guest_red_check" | grep -q \
 	'INVALID   test/invalid-source-patches.patch: tests\[1\] source-patches must be a list of workspace-relative patch paths' ||
 	fail 'invalid source-patches list was not rejected'
 printf '%s\n' "$invalid_guest_red_check" | grep -q \
+	'INVALID   test/invalid-script-runtime-red-proof.patch: tests\[1\] red-proof guest-runtime-deploy script runner requires darling-prefix' ||
+	fail 'script guest-runtime-deploy without darling-prefix was not rejected'
+printf '%s\n' "$invalid_guest_red_check" | grep -q \
 	'INVALID   test/invalid-host-trace.patch: tests\[1\].host-trace-files\[0\] env must be a shell variable name' ||
 	fail 'invalid host-trace-files env was not rejected'
 printf '%s\n' "$invalid_guest_red_check" | grep -q \
@@ -547,6 +587,8 @@ printf '%s\n' "$invalid_guest_red_check" | grep -q \
 runtime_red_check="$(west patch check --profile __metadata_runtime_red_contract)"
 printf '%s\n' "$runtime_red_check" | grep -q 'RUNTIME   test/guest-runtime-red-proof.patch' ||
 	fail 'guest-runtime-deploy metadata was not accepted as runtime coverage'
+printf '%s\n' "$runtime_red_check" | grep -q 'RUNTIME   test/script-runtime-red-proof.patch' ||
+	fail 'script guest-runtime-deploy metadata was not accepted as runtime coverage'
 
 runtime_red_list="$(west test --profile __metadata_runtime_red_contract \
 	--patch test/guest-runtime-red-proof.patch \
@@ -554,6 +596,12 @@ runtime_red_list="$(west test --profile __metadata_runtime_red_contract \
 printf '%s\n' "$runtime_red_list" | grep -q \
 	'guest-runtime-deploy: darling/src/external/xnu\[build:libsystem_kernel; deploy:usr/lib/system/libsystem_kernel.dylib\]' ||
 	fail 'guest-runtime-deploy list mode did not show deploy plan'
+script_runtime_red_list="$(west test --profile __metadata_runtime_red_contract \
+	--patch test/script-runtime-red-proof.patch \
+	--prove-red --list)"
+printf '%s\n' "$script_runtime_red_list" | grep -q \
+	'guest-runtime-deploy: darling/src/external/xnu\[build:libsystem_kernel; deploy:usr/lib/system/libsystem_kernel.dylib\]' ||
+	fail 'script guest-runtime-deploy list mode did not show deploy plan'
 
 west test --profile __metadata_contract \
 	--patch test/mixed-red-nonred.patch \

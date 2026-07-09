@@ -459,6 +459,7 @@ class DarlingPatch(WestCommand):
                     errors.append(f"tests[{index}] requires must be a list of names")
                 elif any(name not in {"darling-prefix"} for name in required):
                     errors.append(f"tests[{index}] has unsupported requires resource")
+            required_resources = test.get("requires") if isinstance(test.get("requires"), list) else []
             if test.get("host-trace-files") is not None:
                 traces = test.get("host-trace-files")
                 if runner not in {"guest-c-fixture", "script"}:
@@ -546,9 +547,13 @@ class DarlingPatch(WestCommand):
                         f"tests[{index}] red-proof self needs why-self"
                     )
                 elif proof.get("mode") == "guest-runtime-deploy":
-                    if runner != "guest-c-fixture":
+                    if runner not in {"guest-c-fixture", "script"}:
                         errors.append(
-                            f"tests[{index}] red-proof guest-runtime-deploy requires runner: guest-c-fixture"
+                            f"tests[{index}] red-proof guest-runtime-deploy requires runner: guest-c-fixture or script"
+                        )
+                    elif runner == "script" and "darling-prefix" not in required_resources:
+                        errors.append(
+                            f"tests[{index}] red-proof guest-runtime-deploy script runner requires darling-prefix"
                         )
                     bad_profile = proof.get("bad-profile")
                     if bad_profile is not None and bad_profile != "current-minus-patch":

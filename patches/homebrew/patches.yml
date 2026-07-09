@@ -3762,6 +3762,16 @@ patches:
     coverage-tier: runtime
     env: darling
     diag: guarded
+    red: true
+    red-proof:
+      mode: guest-runtime-deploy
+      bad-profile: current-minus-patch
+      runtime-artifacts:
+      - module: darling/src/external/darlingserver
+        build-targets:
+        - darlingserver
+        deploy:
+        - bin/darlingserver
     runner: script
     repo: darling-workspace
     script: tests/run-pot-lifetime-binding-runtime.sh
