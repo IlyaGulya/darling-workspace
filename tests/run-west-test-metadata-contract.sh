@@ -140,6 +140,20 @@ patches:
       returncode: timeout
       output-contains:
       - 'DCC2: cache invalid/stale'
+- path: test/guest-command-any-returncode.patch
+  module: darling-workspace
+  tests:
+  - name: guest_command_any_returncode_contract
+    kind: guest
+    coverage-tier: runtime
+    env: darling
+    diag: bare
+    runner: guest-command-fixture
+    guest-command: /usr/bin/true
+    expect:
+      returncode: any
+      output-contains:
+      - 'contract marker'
 - path: test/blocked-guest-command.patch
   module: darling-workspace
   tests:
@@ -628,7 +642,7 @@ guest_command_fixture="$(
 printf '%s\n' "$guest_command_fixture" | grep -q \
 	'darling shell /bin/bash --login -c /usr/bin/true' ||
 	fail 'guest-command-fixture metadata did not resolve to a guest shell command'
-printf '%s\n' "$source_only_check" | grep -q 'test metadata: 13 covered (runtime 5, compile 3, host 4, model 1), 2 exceptions, 1 missing' ||
+printf '%s\n' "$source_only_check" | grep -q 'test metadata: 14 covered (runtime 6, compile 3, host 4, model 1), 2 exceptions, 1 missing' ||
 	fail 'coverage-tier summary did not classify runtime/host/compile/model coverage'
 
 invalid_guest_red_check="$(west patch check --profile __metadata_invalid_contract 2>&1)"

@@ -392,8 +392,10 @@ class DarlingPatch(WestCommand):
                         errors.append(f"tests[{index}] expect must be a mapping")
                     else:
                         rc_mode = expect.get("returncode", 0)
-                        if rc_mode not in {"nonzero", "timeout"} and not isinstance(rc_mode, int):
-                            errors.append(f"tests[{index}].expect.returncode must be an integer, nonzero, or timeout")
+                        if rc_mode not in {"any", "nonzero", "timeout"} and not isinstance(rc_mode, int):
+                            errors.append(
+                                f"tests[{index}].expect.returncode must be an integer, any, nonzero, or timeout"
+                            )
                         for key in ("output-contains", "output-lacks"):
                             values = expect.get(key, [])
                             if values is not None and (

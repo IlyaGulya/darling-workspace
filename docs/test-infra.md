@@ -205,6 +205,22 @@ that matches dyld's guest filesystem view: `DPREFIX` when
 `install-root: base` or `install-root: prefix` only for tests that intentionally
 validate one of those views.
 
+`runner: guest-command-fixture` may check both process status and captured
+output:
+
+```yaml
+    expect:
+      returncode: any        # any|nonzero|timeout|integer
+      output-contains:
+      - 'dyld: DCC2: cache invalid/stale'
+```
+
+Use `returncode: any` only when the Darling launcher does not reliably propagate
+the guest process status for the behavior under test. It is not a weaker oracle:
+the test must still assert guest-visible output with `output-contains` or
+`output-lacks`. For ordinary commands, prefer an exact integer status,
+`nonzero`, or `timeout`.
+
 Use `runner: c-fixture` for small host C fixtures that should be compiled and
 executed directly by `west test`:
 

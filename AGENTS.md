@@ -137,6 +137,11 @@ refs, PR drafts, and agent handoff.
 - Darling guest tests should prefer `requires: [darling-prefix]` over
   `requires-env: [DPREFIX]`; let `west test --prefix/--prefix-profile` provide
   `DPREFIX`.
+- For `runner: guest-command-fixture`, use `expect.returncode: any` only when
+  the Darling launcher cannot reliably propagate the guest program status for
+  the behavior under test. Pair it with a concrete guest-visible
+  `output-contains`/`output-lacks` oracle; do not use it to hide missing
+  behavior or flaky exits.
 - When validating a source change in `libsystem_kernel` against a real prefix,
   deploy dyld together with `libsystem_kernel.dylib`; dyld carries a static
   emulation path, so closure-only deploys can leave guest runtime tests running

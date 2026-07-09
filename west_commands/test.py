@@ -2461,7 +2461,9 @@ fi
         if rc_mode == "timeout":
             self.err(f"{invocation['name']}: guest command returned before expected timeout")
             return 1
-        if rc_mode == "nonzero":
+        if rc_mode == "any":
+            pass
+        elif rc_mode == "nonzero":
             if returncode == 0:
                 self.err(f"{invocation['name']}: guest command succeeded unexpectedly")
                 return 1
