@@ -16,6 +16,15 @@ CANONICAL_CLT_REL = Path("Library/Developer/CommandLineTools")
 DARLING_CLT_CLANG_REL = Path("Library/Developer/DarlingCLT/usr/bin/clang")
 DARLING_CLT_CLANG_TARGET = Path("../../../CommandLineTools/usr/bin/clang")
 INIT_PID_REL = Path(".init.pid")
+EUNION_KERNEL_RELS = (
+    Path("usr/lib/system/libsystem_kernel.dylib"),
+    Path("libexec/darling/usr/lib/system/libsystem_kernel.dylib"),
+)
+EUNION_BINARY_MARKERS = (
+    b"/.union-work",
+    b"user.union.whiteout",
+    b"user.union.opaque",
+)
 
 
 @dataclass
@@ -76,6 +85,35 @@ def guest_c_fixture_prerequisite_problems(
             sysroot = words[index + 1]
             if sysroot.startswith("/Library/Developer/CommandLineTools/"):
                 check_guest_path(sysroot, "guest SDK sysroot")
+    return problems
+
+
+def eunion_prefix_prerequisite_problems(prefix: Path) -> list[str]:
+    problems = []
+    template = prefix / "libexec/darling"
+    if not template.is_dir():
+        problems.append("libexec/darling missing in Darling prefix")
+
+    kernels = [prefix / rel for rel in EUNION_KERNEL_RELS if (prefix / rel).is_file()]
+    if not kernels:
+        problems.append("libsystem_kernel.dylib missing in Darling prefix")
+        return problems
+
+    supported = False
+    for kernel in kernels:
+        try:
+            data = kernel.read_bytes()
+        except OSError as error:
+            problems.append(f"cannot read {kernel}: {error}")
+            continue
+        if all(marker in data for marker in EUNION_BINARY_MARKERS):
+            supported = True
+            break
+    if not supported:
+        problems.append(
+            "installed libsystem_kernel.dylib lacks E-UNION markers; rebuild "
+            "Darling with -DDARLING_EUNION=ON and redeploy libsystem_kernel"
+        )
     return problems
 
 
