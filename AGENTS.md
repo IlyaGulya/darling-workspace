@@ -157,6 +157,10 @@ in `west_commands/test.py`.
 Keep label selector composition, list mode, and passthrough argument assembly
 there with focused contracts; `west_commands/test.py` should orchestrate, not
 hand-build CTest argv in multiple places.
+- Source-repo CMake fixture execution belongs in `west_commands/test_cmake.py`.
+Keep generated superproject shims, fallback CTest registration, compiler
+launcher logging, and required compile-option checks there; `west_commands/test.py`
+should only dispatch the invocation and pass reporter/executor context.
 - For `runner: guest-command-fixture`, use `expect.returncode: any` only when
 the Darling launcher cannot reliably propagate the guest program status for
 the behavior under test. Pair it with a concrete guest-visible

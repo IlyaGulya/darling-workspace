@@ -422,6 +422,10 @@ argument building for label-backed patch tests and top-level selectors
 (`--bead`, `--env`, `--diag`, `--label`, `--changed`, list mode, and passthrough
 args). `west_commands/test.py` decides what to run and when to configure the
 testkit; it should not grow new ad hoc CTest command assembly.
+Source-repo CMake fixture execution lives in `west_commands/test_cmake.py`:
+generated superprojects, Darling CMake macro shims, fallback CTest
+registration, compiler launcher logs, and required compile-option checks belong
+there rather than in the orchestrator.
 
 `command:` is intentionally an override for corner cases only. Prefer
 `runner/script`, `runner/target`, or `ctest-label` so `west test` owns how tests
