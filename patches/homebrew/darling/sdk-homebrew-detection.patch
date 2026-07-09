@@ -1,4 +1,4 @@
-From 35eea7e22f94d64c5d34d609565bc10611193895 Mon Sep 17 00:00:00 2001
+From 19be934cc985d596bd3f2d3ba99d45007348acac Mon Sep 17 00:00:00 2001
 From: Ilya Gulya <ilya@gulya.me>
 Date: Thu, 11 Jun 2026 04:04:46 +0000
 Subject: [PATCH] SDK: add SDKSettings.json so Homebrew can detect the macOS
@@ -38,7 +38,7 @@ index 0000000000000000000000000000000000000000..5549de4d1c967a446b2a2b5b86806066
 +  }
 +}
 
-From b8b186a6e31c2b1cf63f8946c7b170b4a75ae794 Mon Sep 17 00:00:00 2001
+From b597d6855c64ee0d9bed23e4d518560170ec1c49 Mon Sep 17 00:00:00 2001
 From: Ilya Gulya <ilya@gulya.me>
 Date: Thu, 11 Jun 2026 06:14:07 +0000
 Subject: [PATCH] SDK: rename versioned SDK symlink MacOSX10.13.sdk ->

@@ -13,6 +13,7 @@ darling_repo="$repo/../darling"
 source_branch="fix/mldr-glibc-fork-reset"
 source_commit="$(git -C "$darling_repo" rev-parse "$source_branch")"
 source_base="$(git -C "$darling_repo" rev-parse "${source_branch}^")"
+nonancestor_base="$(git -C "$darling_repo" rev-parse fix/sandbox-exec-pass-through)"
 missing_base=ffffffffffffffffffffffffffffffffffffffff
 missing_commit=eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee
 
@@ -63,6 +64,18 @@ grep -q "source branch currently points to $source_commit" "$profile_root/commit
 	fail 'missing source-commit diagnostic did not suggest current branch head'
 test "$(cat "$profile_root/test/preflight.patch")" = "sentinel" ||
 	fail 'export wrote patch output before missing source-commit preflight failed'
+
+printf 'sentinel\n' >"$profile_root/test/preflight.patch"
+write_profile "$nonancestor_base" "$source_commit"
+if west patch export --profile __export_preflight_contract >"$profile_root/nonancestor.out" 2>&1; then
+	fail 'export with non-ancestor source-base unexpectedly passed'
+fi
+grep -q "test/preflight.patch: source-base $nonancestor_base is not an ancestor" "$profile_root/nonancestor.out" ||
+	fail 'non-ancestor source-base diagnostic did not name the patch and revision'
+grep -q "source branch parent is $source_base" "$profile_root/nonancestor.out" ||
+	fail 'non-ancestor source-base diagnostic did not suggest current branch parent'
+test "$(cat "$profile_root/test/preflight.patch")" = "sentinel" ||
+	fail 'export wrote patch output before non-ancestor source-base preflight failed'
 
 printf 'sentinel\n' >"$profile_root/test/preflight.patch"
 write_profile "$source_base" "$source_commit"
