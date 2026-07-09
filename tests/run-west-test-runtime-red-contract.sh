@@ -7,9 +7,11 @@ cd "$repo"
 python3 - <<'PY'
 import sys
 import os
+import signal
 import shutil
 import subprocess
 import tempfile
+import time
 import types
 from contextlib import contextmanager
 from pathlib import Path
@@ -159,6 +161,58 @@ with tempfile.TemporaryDirectory() as temp:
     symlink_parent.symlink_to(prefix, target_is_directory=True)
     nested_target = symlink_parent / "nested/project"
     assert test._has_symlink_parent(nested_target, tempdir / "forest/darling")
+
+with tempfile.TemporaryDirectory() as temp:
+    tempdir = Path(temp)
+    prefix = tempdir / "prefix"
+    prefix.mkdir()
+    launcher = tempdir / "fake-darling"
+    hold_pid = tempdir / "hold.pid"
+    launcher.write_text(
+        """#!/usr/bin/env bash
+set -euo pipefail
+if [ "${1:-}" = shutdown ]; then
+\texit 0
+fi
+if [ "${1:-}" != shell ]; then
+\texit 64
+fi
+(sleep 30) &
+echo "$!" > "${WEST_FAKE_HOLD_PID:?}"
+printf 'FAKE_GUEST_COMMAND_DONE\\n' >&2
+exit 0
+"""
+    )
+    launcher.chmod(0o755)
+
+    test = make_test()
+    test._prefix = str(prefix)
+    invocation = {
+        "name": "guest_command_inherited_fd_contract",
+        "cwd": tempdir,
+        "guest_command_fixture": True,
+        "guest_command": "/usr/bin/true",
+        "guest_env_vars": {},
+        "timeout_seconds": 1,
+        "expect": {
+            "returncode": 0,
+            "output-contains": ["FAKE_GUEST_COMMAND_DONE"],
+        },
+    }
+    env = os.environ.copy()
+    env["DPREFIX"] = str(prefix)
+    env["DARLING_LAUNCHER"] = str(launcher)
+    env["WEST_FAKE_HOLD_PID"] = str(hold_pid)
+    started = time.monotonic()
+    rc = test._run_guest_command_fixture(invocation, env=env)
+    elapsed = time.monotonic() - started
+    try:
+        if hold_pid.exists():
+            os.kill(int(hold_pid.read_text()), signal.SIGKILL)
+    except ProcessLookupError:
+        pass
+    assert rc == 0, (rc, test.err_messages)
+    assert elapsed < 5, elapsed
 
 with tempfile.TemporaryDirectory() as temp:
     tempdir = Path(temp)

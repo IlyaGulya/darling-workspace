@@ -2405,41 +2405,55 @@ fi
             "-c",
             guest_script,
         ]
-        process = subprocess.Popen(
-            command,
-            cwd=invocation["cwd"],
-            env=run_env,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            text=True,
-            start_new_session=True,
-        )
-        try:
-            stdout, stderr = process.communicate(timeout=timeout_seconds + 15)
-            returncode = process.returncode
-        except subprocess.TimeoutExpired:
-            try:
-                os.killpg(process.pid, signal.SIGKILL)
-            except ProcessLookupError:
-                pass
-            stdout, stderr = process.communicate()
-            output = (stdout or "") + (stderr or "")
-            if output:
-                print(output, end="" if output.endswith("\n") else "\n")
-            expect = invocation.get("expect") or {}
-            if expect.get("returncode") == "timeout":
-                for needle in expect.get("output-contains", []):
-                    if str(needle) not in output:
-                        self.err(f"{invocation['name']}: output missing {needle!r}")
-                        return 1
-                return 0
-            self.err(
-                f"{invocation['name']}: guest command watchdog timed out after "
-                f"{timeout_seconds + 15}s"
-            )
-            return 124
+        with tempfile.TemporaryDirectory(prefix=f"west-guest-command-{invocation['name']}-") as temp:
+            tempdir = Path(temp)
+            stdout_path = tempdir / "stdout.log"
+            stderr_path = tempdir / "stderr.log"
+            with stdout_path.open("w", encoding="utf-8") as stdout_file, stderr_path.open(
+                "w", encoding="utf-8"
+            ) as stderr_file:
+                process = subprocess.Popen(
+                    command,
+                    cwd=invocation["cwd"],
+                    env=run_env,
+                    stdout=stdout_file,
+                    stderr=stderr_file,
+                    text=True,
+                    start_new_session=True,
+                )
+                try:
+                    returncode = process.wait(timeout=timeout_seconds + 15)
+                except subprocess.TimeoutExpired:
+                    try:
+                        os.killpg(process.pid, signal.SIGKILL)
+                    except ProcessLookupError:
+                        pass
+                    returncode = process.wait()
+                    stdout_file.flush()
+                    stderr_file.flush()
+                    output = stdout_path.read_text(errors="replace") + stderr_path.read_text(
+                        errors="replace"
+                    )
+                    if output:
+                        print(output, end="" if output.endswith("\n") else "\n")
+                    expect = invocation.get("expect") or {}
+                    if expect.get("returncode") == "timeout":
+                        for needle in expect.get("output-contains", []):
+                            if str(needle) not in output:
+                                self.err(f"{invocation['name']}: output missing {needle!r}")
+                                return 1
+                        return 0
+                    self.err(
+                        f"{invocation['name']}: guest command watchdog timed out after "
+                        f"{timeout_seconds + 15}s"
+                    )
+                    return 124
+                stdout_file.flush()
+                stderr_file.flush()
 
-        output = stdout + stderr
+            output = stdout_path.read_text(errors="replace") + stderr_path.read_text(
+                errors="replace"
+            )
         if output:
             print(output, end="" if output.endswith("\n") else "\n")
         expect = invocation.get("expect") or {}
