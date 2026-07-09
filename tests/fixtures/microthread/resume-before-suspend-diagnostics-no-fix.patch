@@ -1,0 +1,147 @@
+diff --git a/duct-tape/CMakeLists.txt b/duct-tape/CMakeLists.txt
+index 1f2c4ac..9c3e4bd 100644
+--- a/duct-tape/CMakeLists.txt
++++ b/duct-tape/CMakeLists.txt
+@@ -266,5 +266,6 @@ add_library(darlingserver_duct_tape STATIC
+ 	src/condvar.c
+ 	src/debug.c
++	src/test-diagnostics.c
+ 
+ 	xnu/libkern/os/refcnt.c
+ 	xnu/libkern/gen/OSAtomicOperations.c
+diff --git a/duct-tape/internal-include/darlingserver/duct-tape/test-diagnostics.h b/duct-tape/internal-include/darlingserver/duct-tape/test-diagnostics.h
+new file mode 100644
+index 0000000..2f47cdb
+--- /dev/null
++++ b/duct-tape/internal-include/darlingserver/duct-tape/test-diagnostics.h
+@@ -0,0 +1,4 @@
++#pragma once
++
++int dtape_test_consume_fault(const char* name);
++void dtape_test_trace_line(const char* line);
+diff --git a/duct-tape/src/test-diagnostics.c b/duct-tape/src/test-diagnostics.c
+new file mode 100644
+index 0000000..719ed48
+--- /dev/null
++++ b/duct-tape/src/test-diagnostics.c
+@@ -0,0 +1,94 @@
++#include <darlingserver/duct-tape/test-diagnostics.h>
++
++extern char* getenv(const char* name);
++extern int open(const char* pathname, int flags, ...);
++extern long write(int fd, const void* buf, unsigned long count);
++extern long read(int fd, void* buf, unsigned long count);
++extern int close(int fd);
++extern int unlink(const char* pathname);
++extern int snprintf(char* str, unsigned long size, const char* format, ...);
++
++#define DSERVER_TEST_TRACE_FILE "DSERVER_TEST_TRACE_FILE"
++#define DSERVER_TEST_FAULT_FILE "DSERVER_TEST_FAULT_FILE"
++#define DSERVER_O_RDONLY 00000000
++#define DSERVER_O_WRONLY 00000001
++#define DSERVER_O_CREAT 00000100
++#define DSERVER_O_APPEND 00002000
++#define DSERVER_O_CLOEXEC 02000000
++
++static unsigned long
++dtape_test_trace_strlen(const char* string)
++{
++	unsigned long result = 0;
++	while (string && string[result] != '\0') {
++		++result;
++	}
++	return result;
++}
++
++void
++dtape_test_trace_line(const char* line)
++{
++	const char* path = getenv(DSERVER_TEST_TRACE_FILE);
++	if (!path || path[0] == '\0') {
++		return;
++	}
++
++	int fd = open(path, DSERVER_O_WRONLY | DSERVER_O_CREAT | DSERVER_O_APPEND | DSERVER_O_CLOEXEC, 0666);
++	if (fd < 0) {
++		return;
++	}
++
++	write(fd, line, dtape_test_trace_strlen(line));
++	write(fd, "\n", 1);
++	close(fd);
++}
++
++static int
++dtape_test_trace_streq(const char* left, const char* right)
++{
++	unsigned long index = 0;
++	if (!left || !right) {
++		return 0;
++	}
++	while (left[index] != '\0' && right[index] != '\0') {
++		if (left[index] != right[index]) {
++			return 0;
++		}
++		++index;
++	}
++	return left[index] == '\0' && right[index] == '\0';
++}
++
++int
++dtape_test_consume_fault(const char* name)
++{
++	const char* path = getenv(DSERVER_TEST_FAULT_FILE);
++	if (!path || path[0] == '\0' || !name || name[0] == '\0') {
++		return 0;
++	}
++
++	int fd = open(path, DSERVER_O_RDONLY | DSERVER_O_CLOEXEC);
++	if (fd < 0) {
++		return 0;
++	}
++
++	char buffer[128] = {};
++	long count = read(fd, buffer, sizeof(buffer) - 1);
++	close(fd);
++	if (count <= 0) {
++		return 0;
++	}
++	while (count > 0 && (buffer[count - 1] == '\n' || buffer[count - 1] == '\r' || buffer[count - 1] == ' ' || buffer[count - 1] == '\t')) {
++		buffer[--count] = '\0';
++	}
++	if (!dtape_test_trace_streq(buffer, name)) {
++		return 0;
++	}
++
++	unlink(path);
++	char line[160];
++	snprintf(line, sizeof(line), "test_fault.consume name=%s", name);
++	dtape_test_trace_line(line);
++	return 1;
++}
+diff --git a/duct-tape/src/thread.c b/duct-tape/src/thread.c
+index 17bd321..cf6d3b7 100644
+--- a/duct-tape/src/thread.c
++++ b/duct-tape/src/thread.c
+@@ -3,7 +3,8 @@
+ #include <darlingserver/duct-tape.h>
+ #include <darlingserver/duct-tape/task.h>
+ #include <darlingserver/duct-tape/thread.h>
+ #include <darlingserver/duct-tape/wait-timer.h>
++#include <darlingserver/duct-tape/test-diagnostics.h>
+ #include <darlingserver/duct-tape/hooks.internal.h>
+ #include <darlingserver/duct-tape/log.h>
+ #include <darlingserver/duct-tape/psynch.h>
+@@ -452,6 +453,12 @@ void dtape_thread_wait_while_user_suspended(dtape_thread_t* thread) {
+ 
+ 		thread->xnu_thread.wait_result = THREAD_WAITING;
+ 
++		if (dtape_test_consume_fault("microthread.resume_before_suspend")) {
++			dtape_test_trace_line("microthread.dtape.resume_before_suspend");
++			thread->xnu_thread.suspend_count = 0;
++			dtape_hooks->thread_resume(thread->context);
++		}
++
+ 		dtape_hooks->thread_suspend(thread->context, NULL, NULL, NULL);
+ 
+ 		dtape_log_debug("sigexc: woken up");

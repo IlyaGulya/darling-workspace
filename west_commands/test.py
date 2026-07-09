@@ -2056,6 +2056,7 @@ timingsafe_bcmp(const void *b1, const void *b2, size_t n)
             trace_setup = "\n".join(trace_setup_lines) or ":"
             trace_check = "\n".join(trace_check_lines) or ":"
             trace_dump = "\n".join(trace_dump_lines) or ":"
+            trace_settle = "sleep 0.25" if invocation.get("host_trace_files") else ":"
             needs_server_env_restart = bool(
                 invocation.get("host_temp_files") or invocation.get("host_trace_files")
             )
@@ -2108,6 +2109,7 @@ exit "$run_rc"
 rc=$?
 set -e
 
+{trace_settle}
 cat "$verdict" 2>/dev/null || true
 if [ "$rc" -ne 0 ] && [ "$host_trace_oracle" != 1 ]; then
 \t{trace_dump}
