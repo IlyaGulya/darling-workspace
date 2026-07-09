@@ -2755,37 +2755,44 @@ fi
         tools_dir_name = str(spec.get("tools-dir", "tools/closure-cache"))
         builder_name = str(spec.get("builder", "dcc5-builder.c"))
         list_name = str(spec.get("closure-list", "closure-list.txt"))
+        source_ref = spec.get("source-ref")
+        install_root_mode = str(spec.get("install-root", "guest-visible"))
         guest_env_name = str(spec.get("env", "DARLING_DYLD_DCC2_PATH"))
         enable_env_name = str(spec.get("enable-env", "DARLING_DYLD_DCC2"))
+        if source_ref is not None and (not isinstance(source_ref, str) or not source_ref):
+            self.die(f"{invocation['name']}: dcc-cache source-ref must be a non-empty string")
+        if install_root_mode not in {"guest-visible", "base", "prefix"}:
+            self.die(
+                f"{invocation['name']}: dcc-cache install-root must be "
+                "guest-visible, base, or prefix"
+            )
         if not guest_env_name or not guest_env_name.isidentifier():
             self.die(f"{invocation['name']}: dcc-cache env must be a shell variable name")
         if enable_env_name and not enable_env_name.isidentifier():
             self.die(f"{invocation['name']}: dcc-cache enable-env must be a shell variable name")
 
-        runtime_source_root = (env or {}).get("WEST_RUNTIME_SOURCE_ROOT")
-        if runtime_source_root:
-            module_path = Path(source_module)
-            try:
-                rel = module_path.relative_to("darling")
-            except ValueError:
-                rel = module_path
-            source_root = Path(runtime_source_root) / rel
-        else:
-            source_root = self._project_path(source_module)
-        tools_dir = source_root / tools_dir_name
-        builder_source = tools_dir / builder_name
-        closure_list = tools_dir / list_name
-        if not builder_source.is_file():
-            self.die(f"{invocation['name']}: DCC builder not found: {builder_source}")
-        if not closure_list.is_file():
-            self.die(f"{invocation['name']}: DCC closure list not found: {closure_list}")
-
         old_guest_env = dict(invocation.get("guest_env_vars", {}))
         work_rel = Path("private/var/tmp") / f"west-dcc-cache-{os.getpid()}-{int(time.time() * 1000)}"
         host_dir = prefix / "libexec/darling" / work_rel
         guest_dir = "/" + str(work_rel)
+        install_root = self._dcc_install_root(prefix, env, install_root_mode)
         with tempfile.TemporaryDirectory(prefix=f"west-dcc-cache-{invocation['name']}-") as temp:
             tempdir = Path(temp)
+            source_root = self._dcc_cache_source_root(
+                invocation,
+                env,
+                source_module,
+                source_ref,
+                tools_dir_name,
+                tempdir,
+            )
+            tools_dir = source_root / tools_dir_name
+            builder_source = tools_dir / builder_name
+            closure_list = tools_dir / list_name
+            if not builder_source.is_file():
+                self.die(f"{invocation['name']}: DCC builder not found: {builder_source}")
+            if not closure_list.is_file():
+                self.die(f"{invocation['name']}: DCC closure list not found: {closure_list}")
             builder = tempdir / Path(builder_name).stem
             host_cache = host_dir / "system-closure.dcc6"
             guest_cache = f"{guest_dir}/system-closure.dcc6"
@@ -2796,11 +2803,14 @@ fi
                 subprocess.run(compile_args, cwd=tools_dir, check=True)
                 build_args = [
                     str(builder),
-                    str(prefix / "libexec/darling"),
+                    str(install_root),
                     str(closure_list),
                     str(host_cache),
                 ]
-                self.inf(f"  DCC cache build: {host_cache}")
+                self.inf(
+                    f"  DCC cache build: {host_cache} "
+                    f"(install-root={install_root})"
+                )
                 subprocess.run(build_args, cwd=tools_dir, check=True)
                 if spec.get("stale"):
                     self._make_dcc_cache_stale(host_cache)
@@ -2815,6 +2825,69 @@ fi
             finally:
                 invocation["guest_env_vars"] = old_guest_env
                 shutil.rmtree(host_dir, ignore_errors=True)
+
+    def _dcc_cache_source_root(
+        self,
+        invocation,
+        env,
+        source_module: str,
+        source_ref: str | None,
+        tools_dir_name: str,
+        tempdir: Path,
+    ) -> Path:
+        if source_ref:
+            source_root = tempdir / "source"
+            source_root.mkdir()
+            repo = self._project_path(source_module)
+            if repo is None:
+                self.die(f"{invocation['name']}: unknown dcc-cache source module {source_module}")
+            archive = subprocess.Popen(
+                ["git", "archive", "--format=tar", source_ref, tools_dir_name],
+                cwd=repo,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+            )
+            assert archive.stdout is not None
+            extract = subprocess.run(
+                ["tar", "-C", str(source_root), "-xf", "-"],
+                stdin=archive.stdout,
+                stderr=subprocess.PIPE,
+                text=True,
+                check=False,
+            )
+            archive.stdout.close()
+            _, archive_stderr = archive.communicate()
+            if archive.returncode or extract.returncode:
+                detail = (archive_stderr or "") + (extract.stderr or "")
+                if detail:
+                    sys.stderr.write(detail)
+                self.die(
+                    f"{invocation['name']}: failed to materialize DCC cache "
+                    f"tools from {source_module}@{source_ref}"
+                )
+            return source_root
+
+        runtime_source_root = (env or {}).get("WEST_RUNTIME_SOURCE_ROOT")
+        if runtime_source_root:
+            module_path = Path(source_module)
+            try:
+                rel = module_path.relative_to("darling")
+            except ValueError:
+                rel = module_path
+            return Path(runtime_source_root) / rel
+        return self._project_path(source_module)
+
+    def _dcc_install_root(self, prefix: Path, env, mode: str) -> Path:
+        if mode == "base":
+            return prefix / "libexec/darling"
+        if mode == "prefix":
+            return prefix
+        run_env = dict(getattr(self, "_prefix_env", {}))
+        if env:
+            run_env.update(env)
+        if run_env.get("DARLING_NOOVERLAYFS") == "1":
+            return prefix
+        return prefix / "libexec/darling"
 
     def _make_dcc_cache_stale(self, cache_path: Path) -> None:
         """Mutate the first image's recorded src_size so reader validation rejects it."""
