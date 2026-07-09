@@ -126,6 +126,10 @@ patches:
     timeout-seconds: 20
     requires:
     - darling-eunion-prefix
+    eunion-upper-files:
+    - guest-path: /private/var/tmp/west-eunion-upper-contract.txt
+      contents: |
+        WEST_EUNION_UPPER_OK
 - path: test/mixed-red-nonred.patch
   module: darling-workspace
   tests:
