@@ -2289,6 +2289,24 @@ host_trace_oracle={quote("1" if invocation.get("host_trace_oracle") else "0")}
 {host_stat_setup}
 {server_env_restart}
 
+dump_namespace_state() {{
+\tlocal init_pid_file="$DPREFIX/.init.pid"
+\tlocal init_pid=""
+\tif [ -r "$init_pid_file" ]; then
+\t\tinit_pid="$(tr -d '[:space:]' < "$init_pid_file" || true)"
+\t\tprintf 'WEST_GUEST_NAMESPACE_INIT_PID=%s\\n' "${{init_pid:-<empty>}}" >&2
+\telse
+\t\tprintf 'WEST_GUEST_NAMESPACE_INIT_PID=<missing>\\n' >&2
+\tfi
+\tif [ -n "$init_pid" ]; then
+\t\tif [ -e "/proc/$init_pid/ns/mnt" ]; then
+\t\t\tprintf 'WEST_GUEST_NAMESPACE_MNT=%s\\n' "$(readlink "/proc/$init_pid/ns/mnt" 2>/dev/null || printf '<unreadable>')" >&2
+\t\telse
+\t\t\tprintf 'WEST_GUEST_NAMESPACE_MNT=<missing:/proc/%s/ns/mnt>\\n' "$init_pid" >&2
+\t\tfi
+\tfi
+}}
+
 guest_shell() {{
 \tlocal seconds="$1"
 \tshift
@@ -2305,11 +2323,15 @@ guest_shell() {{
 \tlocal rc=$?
 \tcat "$ns_log" >&2 || true
 \tif [ "$rc" -ne 0 ] && grep -q 'Cannot open mnt namespace file' "$ns_log"; then
+\t\tdump_namespace_state
 \t\tprintf 'WEST_GUEST_STAGE=namespace-retry\\n' >&2
 \t\t"$launch" shutdown >/dev/null 2>&1 || true
 \t\ttimeout --kill-after=5 "$seconds" env DPREFIX="$DPREFIX" "$launch" shell /bin/bash --login -c "$@" 2> "$ns_log"
 \t\trc=$?
 \t\tcat "$ns_log" >&2 || true
+\t\tif [ "$rc" -ne 0 ] && grep -q 'Cannot open mnt namespace file' "$ns_log"; then
+\t\t\tdump_namespace_state
+\t\tfi
 \tfi
 \tif [ "$rc" -ne 0 ]; then
 \t\tprintf 'WEST_GUEST_SHELL_RC=%s\\n' "$rc" >&2
@@ -3488,7 +3510,8 @@ fi
         return build_root
 
     def _dump_command_tail(self, label: str, result: subprocess.CompletedProcess) -> None:
-        output = (result.stdout or "") + (result.stderr or "")
+        streams = [stream for stream in (result.stdout, result.stderr) if stream]
+        output = "\n".join(stream.rstrip("\n") for stream in streams)
         tail = "\n".join(output.splitlines()[-200:])
         if tail:
             sys.stderr.write(tail + "\n")

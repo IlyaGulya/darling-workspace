@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import os
 import errno
+import stat
 import subprocess
 from collections import Counter
 from dataclasses import dataclass, field
@@ -16,6 +17,7 @@ CANONICAL_CLT_REL = Path("Library/Developer/CommandLineTools")
 DARLING_CLT_CLANG_REL = Path("Library/Developer/DarlingCLT/usr/bin/clang")
 DARLING_CLT_CLANG_TARGET = Path("../../../CommandLineTools/usr/bin/clang")
 INIT_PID_REL = Path(".init.pid")
+SERVER_SOCKET_REL = Path(".darlingserver.sock")
 EUNION_KERNEL_RELS = (
     Path("usr/lib/system/libsystem_kernel.dylib"),
     Path("libexec/darling/usr/lib/system/libsystem_kernel.dylib"),
@@ -234,8 +236,15 @@ def darling_init_pid_is_usable(pid: int) -> bool:
 
 def _repair_stale_init_pid(prefix: Path, result: PrefixRepairResult, *, check: bool) -> None:
     init_pid = prefix / INIT_PID_REL
+    server_socket = prefix / SERVER_SOCKET_REL
     if not init_pid.exists():
         result.ok.append(f"{INIT_PID_REL} absent")
+        _repair_stale_server_socket(
+            server_socket,
+            result,
+            check=check,
+            reason=f"{INIT_PID_REL} is absent",
+        )
         return
     if not init_pid.is_file() and not init_pid.is_symlink():
         result.problems.append(f"{INIT_PID_REL} exists but is not a regular file")
@@ -247,9 +256,21 @@ def _repair_stale_init_pid(prefix: Path, result: PrefixRepairResult, *, check: b
     except ValueError:
         if check:
             result.problems.append(f"{INIT_PID_REL} contains invalid pid {raw_pid!r}")
+            _repair_stale_server_socket(
+                server_socket,
+                result,
+                check=check,
+                reason=f"{INIT_PID_REL} is invalid",
+            )
             return
         init_pid.unlink()
         result.changed.append(f"removed invalid {INIT_PID_REL}")
+        _repair_stale_server_socket(
+            server_socket,
+            result,
+            check=check,
+            reason=f"{INIT_PID_REL} is invalid",
+        )
         return
 
     if darling_init_pid_is_usable(pid):
@@ -257,9 +278,45 @@ def _repair_stale_init_pid(prefix: Path, result: PrefixRepairResult, *, check: b
         return
     if check:
         result.problems.append(f"{INIT_PID_REL} points to stale pid {pid}")
+        _repair_stale_server_socket(
+            server_socket,
+            result,
+            check=check,
+            reason=f"{INIT_PID_REL} points to stale pid {pid}",
+        )
         return
     init_pid.unlink()
     result.changed.append(f"removed stale {INIT_PID_REL} for pid {pid}")
+    _repair_stale_server_socket(
+        server_socket,
+        result,
+        check=check,
+        reason=f"{INIT_PID_REL} points to stale pid {pid}",
+    )
+
+
+def _repair_stale_server_socket(
+    server_socket: Path,
+    result: PrefixRepairResult,
+    *,
+    check: bool,
+    reason: str,
+) -> None:
+    if not server_socket.exists() and not server_socket.is_symlink():
+        return
+    try:
+        mode = server_socket.lstat().st_mode
+    except OSError as error:
+        result.problems.append(f"cannot inspect {SERVER_SOCKET_REL}: {error}")
+        return
+    if not (stat.S_ISSOCK(mode) or stat.S_ISLNK(mode)):
+        result.problems.append(f"{SERVER_SOCKET_REL} exists but is not a socket")
+        return
+    if check:
+        result.problems.append(f"{SERVER_SOCKET_REL} is stale because {reason}")
+        return
+    server_socket.unlink()
+    result.changed.append(f"removed stale {SERVER_SOCKET_REL} ({reason})")
 
 
 def _candidate_clt_dirs(root: Path) -> list[Path]:
