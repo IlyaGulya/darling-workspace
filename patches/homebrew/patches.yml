@@ -416,6 +416,7 @@ patches:
     red: true
     red-proof:
       mode: guest-runtime-deploy
+      bad-profile: current-minus-patch
       runtime-artifacts:
       - module: darling/src/external/xnu
         build-targets:
@@ -1770,6 +1771,9 @@ patches:
     red: true
     red-proof:
       mode: guest-runtime-deploy
+      bad-profile: current-minus-patch
+      current-minus-skip-patches:
+      - xnu/getattrlist-shared-packer.patch
       runtime-artifacts:
       - module: darling/src/external/xnu
         build-targets:
@@ -1861,18 +1865,28 @@ patches:
       base: main
       state: local
 - path: xnu/getattrlist-shared-packer.patch
-  sha256sum: 7783a2f076efd8b395fcb94e04c4520ba67a3cc49093584de0b1b1c2029bad68
+  sha256sum: 5478ba0dfc5b93c04b71a3c899438dac1af159dd58210c38024c51fe82d88949
   module: darling/src/external/xnu
   source-branch: fix/getattrlist-shared-packer
-  source-commit: 783b3a890940e9b9f40db35e0966f4754be5a04a
+  source-commit: ef2998176083f062fb034575912c5936c35e64db
   bead: dar-q95.29.1
-  publication-status: blocked
-  publication-blocker: shared packer and focused conformance gate are green locally; remaining publication review is Darwin parity for unsupported/subset policy and full Homebrew runtime gate after broader a0/cvstorm follow-up
+  publication-status: ready
   tests:
   - name: getattrlist_shared_packer
     kind: guest
+    coverage-tier: runtime
     runs: guest
     diag: guarded
+    red: true
+    red-proof:
+      mode: guest-runtime-deploy
+      bad-profile: current-minus-patch
+      runtime-artifacts:
+      - module: darling/src/external/xnu
+        build-targets:
+        - system_kernel
+        deploy:
+        - usr/lib/system/libsystem_kernel.dylib
     runner: guest-c-fixture
     script: darling/src/libsystem_kernel/tests/getattrlist_shared_packer_test.c
     ok-marker: GETATTRLIST_SHARED_PACKER_OK
