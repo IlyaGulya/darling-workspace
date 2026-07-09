@@ -1071,7 +1071,12 @@ class DarlingTest(WestCommand):
                 "host_trace_files": list(test.get("host-trace-files", [])),
                 "host_temp_files": list(test.get("host-temp-files", [])),
                 "eunion_template_files": list(test.get("eunion-template-files", [])),
+                "eunion_template_symlinks": list(test.get("eunion-template-symlinks", [])),
                 "eunion_upper_files": list(test.get("eunion-upper-files", [])),
+                "eunion_cleanup_dirs": list(test.get("eunion-cleanup-dirs", [])),
+                "eunion_verify_template_files_after": bool(
+                    test.get("eunion-verify-template-files-after", False)
+                ),
                 "host_trace_oracle": host_trace_oracle,
                 "source_env": source_env,
                 "source_module": source_module,
@@ -2241,9 +2246,12 @@ fi
         marker = prefix / ".union-work"
         created_marker = False
         created_template_files: list[Path] = []
+        created_template_symlinks: list[Path] = []
         created_template_dirs: list[Path] = []
         created_upper_files: list[Path] = []
         created_upper_dirs: list[Path] = []
+        cleanup_dirs: list[tuple[Path, Path]] = []
+        template_assertions: list[dict] = []
         probe_dirs: list[tuple[Path, Path]] = []
         blocked_upper_files: list[Path] = []
 
@@ -2258,6 +2266,11 @@ fi
                     path.unlink()
                 except FileNotFoundError:
                     pass
+            for path in reversed(created_template_symlinks):
+                try:
+                    path.unlink()
+                except FileNotFoundError:
+                    pass
             for path in reversed(created_upper_dirs):
                 try:
                     path.rmdir()
@@ -2268,6 +2281,9 @@ fi
                     path.rmdir()
                 except OSError:
                     pass
+            for upper_dir, lower_dir in reversed(cleanup_dirs):
+                shutil.rmtree(upper_dir, ignore_errors=True)
+                shutil.rmtree(lower_dir, ignore_errors=True)
             for upper_dir, lower_dir in reversed(probe_dirs):
                 shutil.rmtree(upper_dir, ignore_errors=True)
                 shutil.rmtree(lower_dir, ignore_errors=True)
@@ -2283,6 +2299,19 @@ fi
             if not marker.exists():
                 marker.mkdir(parents=True, mode=0o700)
                 created_marker = True
+
+            for index, guest_path in enumerate(invocation.get("eunion_cleanup_dirs", [])):
+                guest_path = str(guest_path)
+                if (
+                    not guest_path.startswith("/private/var/tmp/west-")
+                    or ".." in Path(guest_path).parts
+                ):
+                    self.die(
+                        f"{invocation['name']}: eunion-cleanup-dirs[{index}] needs "
+                        "an absolute /private/var/tmp/west-* guest path without '..'"
+                    )
+                rel = Path(guest_path.lstrip("/"))
+                cleanup_dirs.append((prefix / rel, prefix / "libexec/darling" / rel))
 
             self._shutdown_runtime_prefix(prefix)
             self._boot_eunion_runtime_prefix(invocation, env, prefix)
@@ -2308,11 +2337,58 @@ fi
                 if not lower_path.exists():
                     lower_path.write_text(str(spec.get("contents", "")))
                     created_template_files.append(lower_path)
+                if "mode" in spec:
+                    lower_path.chmod(self._parse_file_mode(invocation, "eunion-template-files", index, spec["mode"]))
+                for name, value in (spec.get("xattrs") or {}).items():
+                    try:
+                        os.setxattr(lower_path, str(name).encode(), str(value).encode())
+                    except OSError as exc:
+                        self.die(
+                            f"{invocation['name']}: failed to set E-UNION template xattr "
+                            f"{name} on {lower_path}: {exc}"
+                        )
+                template_assertions.append(
+                    {
+                        "path": lower_path,
+                        "contents": str(spec.get("contents", "")),
+                        "mode": spec.get("mode"),
+                        "xattrs": {str(k): str(v) for k, v in (spec.get("xattrs") or {}).items()},
+                        "absent_xattrs": [str(item) for item in spec.get("absent-xattrs", [])],
+                    }
+                )
             if blocked_upper_files:
                 self.die(
                     f"{invocation['name']}: E-UNION lower fixture would be shadowed by "
                     f"upper file(s): {', '.join(str(path) for path in blocked_upper_files)}"
                 )
+
+            for index, spec in enumerate(invocation.get("eunion_template_symlinks", [])):
+                if not isinstance(spec, dict):
+                    self.die(f"{invocation['name']}: eunion-template-symlinks entries must be mappings")
+                guest_path = str(spec.get("guest-path", ""))
+                target = str(spec.get("target", ""))
+                if not guest_path.startswith("/") or ".." in Path(guest_path).parts:
+                    self.die(
+                        f"{invocation['name']}: eunion-template-symlinks[{index}] needs "
+                        "an absolute guest-path without '..'"
+                    )
+                if not target or target.startswith("/") or ".." in Path(target).parts:
+                    self.die(
+                        f"{invocation['name']}: eunion-template-symlinks[{index}] needs "
+                        "a non-empty relative target without '..'"
+                    )
+                rel = Path(guest_path.lstrip("/"))
+                upper_path = prefix / rel
+                lower_path = prefix / "libexec/darling" / rel
+                if upper_path.exists() or upper_path.is_symlink():
+                    self.die(f"{invocation['name']}: E-UNION symlink fixture shadowed by upper path: {upper_path}")
+                created_template_dirs.extend(
+                    self._mkdirs_for_fixture(lower_path.parent, prefix / "libexec/darling")
+                )
+                if lower_path.exists() or lower_path.is_symlink():
+                    self.die(f"{invocation['name']}: E-UNION symlink fixture already exists: {lower_path}")
+                lower_path.symlink_to(target)
+                created_template_symlinks.append(lower_path)
 
             for index, spec in enumerate(invocation.get("eunion_upper_files", [])):
                 if not isinstance(spec, dict):
@@ -2339,7 +2415,11 @@ fi
             yield
         finally:
             self._shutdown_runtime_prefix(prefix)
-            cleanup_fixture_state()
+            try:
+                if invocation.get("eunion_verify_template_files_after"):
+                    self._verify_eunion_template_files_after(invocation, template_assertions)
+            finally:
+                cleanup_fixture_state()
 
     def _boot_eunion_runtime_prefix(self, invocation, env, prefix: Path) -> None:
         launcher = (
@@ -2375,6 +2455,55 @@ fi
                 f"{invocation['name']}: failed to boot Darling E-UNION prefix "
                 f"before fixture setup (rc={result.returncode})"
             )
+
+    def _parse_file_mode(self, invocation, field: str, index: int, value) -> int:
+        try:
+            if isinstance(value, int):
+                return value
+            return int(str(value), 8)
+        except (TypeError, ValueError):
+            self.die(f"{invocation['name']}: {field}[{index}] has invalid mode: {value!r}")
+
+    def _verify_eunion_template_files_after(self, invocation, assertions) -> None:
+        for assertion in assertions:
+            path = assertion["path"]
+            expected = assertion["contents"]
+            try:
+                got = path.read_text()
+            except FileNotFoundError:
+                self.die(f"{invocation['name']}: E-UNION template fixture was removed: {path}")
+            if got != expected:
+                self.die(f"{invocation['name']}: E-UNION template fixture was modified: {path}")
+            if assertion.get("mode") is not None:
+                expected_mode = self._parse_file_mode(invocation, "eunion-template-files", 0, assertion["mode"])
+                actual_mode = path.stat().st_mode & 0o7777
+                if actual_mode != expected_mode:
+                    self.die(
+                        f"{invocation['name']}: E-UNION template fixture mode changed: "
+                        f"{path} got {actual_mode:o} want {expected_mode:o}"
+                    )
+            for name, expected_value in assertion.get("xattrs", {}).items():
+                try:
+                    got_value = os.getxattr(path, name.encode()).decode()
+                except OSError as exc:
+                    self.die(
+                        f"{invocation['name']}: E-UNION template fixture xattr missing "
+                        f"{name} on {path}: {exc}"
+                    )
+                if got_value != expected_value:
+                    self.die(
+                        f"{invocation['name']}: E-UNION template fixture xattr changed: "
+                        f"{path} {name} got {got_value!r} want {expected_value!r}"
+                    )
+            for name in assertion.get("absent_xattrs", []):
+                try:
+                    got_value = os.getxattr(path, name.encode())
+                except OSError:
+                    continue
+                self.die(
+                    f"{invocation['name']}: E-UNION template fixture xattr was added: "
+                    f"{path} {name}={got_value!r}"
+                )
 
     def _verify_eunion_runtime_prefix(self, invocation, env, prefix: Path, probe_dirs) -> None:
         launcher = (
