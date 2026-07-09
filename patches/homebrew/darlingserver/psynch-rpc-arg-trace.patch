@@ -1,14 +1,14 @@
-From bc82f1b871820b310ea46662ea453e9e48a311d1 Mon Sep 17 00:00:00 2001
+From 4e519bb1818023b23e55896e793105f2c5423388 Mon Sep 17 00:00:00 2001
 From: Ilya Gulya <ilya@gulya.me>
 Date: Wed, 8 Jul 2026 20:56:51 +0000
 Subject: [PATCH] test: trace psynch RPC arguments
 
 ---
- duct-tape/src/psynch.c | 41 +++++++++++++++++++++++++++++++++++++++++
- 1 file changed, 41 insertions(+)
+ duct-tape/src/psynch.c | 59 +++++++++++++++++++++++++++++++++++++++++-
+ 1 file changed, 58 insertions(+), 1 deletion(-)
 
 diff --git a/duct-tape/src/psynch.c b/duct-tape/src/psynch.c
-index 748d0832db1810f92ea53e0e1cdf079668478216..c810d0297863b58b87cd3721a094e303554e077b 100644
+index 748d0832db1810f92ea53e0e1cdf079668478216..77e5ff31cc06005c7acd07d32cd0197b103083e1 100644
 --- a/duct-tape/src/psynch.c
 +++ b/duct-tape/src/psynch.c
 @@ -28,7 +28,43 @@ extern void psynch_zoneinit(void);
@@ -55,7 +55,7 @@ index 748d0832db1810f92ea53e0e1cdf079668478216..c810d0297863b58b87cd3721a094e303
  	return _psynch_cvbroad(current_proc(), cv, cvlsgen, cvudgen, flags, mutex, mugen, tid, retval);
  };
  
-@@ -37,6 +73,11 @@ int dtape_psynch_cvclrprepost(uint64_t cv, uint32_t cvgen, uint32_t cvugen, uint
+@@ -37,11 +73,26 @@ int dtape_psynch_cvclrprepost(uint64_t cv, uint32_t cvgen, uint32_t cvugen, uint
  };
  
  int dtape_psynch_cvsignal(uint64_t cv, uint64_t cvlsgen, uint32_t cvugen, int32_t threadport, uint64_t mutex, uint64_t mugen, uint64_t tid, uint32_t flags, uint32_t* retval) {
@@ -65,5 +65,41 @@ index 748d0832db1810f92ea53e0e1cdf079668478216..c810d0297863b58b87cd3721a094e303
 +			(unsigned long long)mutex, (unsigned long long)mugen, (unsigned long long)tid, flags);
 +	trace_psynch_rpc_args(trace_line);
  	return _psynch_cvsignal(current_proc(), cv, cvlsgen, cvugen, threadport, mutex, mugen, tid, flags, retval);
+ };
+ 
+ int dtape_psynch_cvwait(uint64_t cv, uint64_t cvlsgen, uint32_t cvugen, uint64_t mutex, uint64_t mugen, uint32_t flags, int64_t sec, uint32_t nsec, uint32_t* retval) {
+-	return _psynch_cvwait(current_proc(), cv, cvlsgen, cvugen, mutex, mugen, flags, sec, nsec, retval);
++	char trace_line[256];
++	snprintf(trace_line, sizeof(trace_line), "psynch_cvwait_enter cv=0x%llx cvlsgen=0x%llx cvugen=0x%x mutex=0x%llx mugen=0x%llx flags=0x%x sec=%lld nsec=%u",
++			(unsigned long long)cv, (unsigned long long)cvlsgen, cvugen,
++			(unsigned long long)mutex, (unsigned long long)mugen, flags,
++			(long long)sec, nsec);
++	trace_psynch_rpc_args(trace_line);
++	int ret = _psynch_cvwait(current_proc(), cv, cvlsgen, cvugen, mutex, mugen, flags, sec, nsec, retval);
++	snprintf(trace_line, sizeof(trace_line), "psynch_cvwait_return ret=%d retval=0x%x",
++			ret, retval ? *retval : 0);
++	trace_psynch_rpc_args(trace_line);
++	return ret;
+ };
+ 
+ int dtape_psynch_mutexdrop(uint64_t mutex, uint32_t mgen, uint32_t ugen, uint64_t tid, uint32_t flags, uint32_t* retval) {
+@@ -91,6 +142,9 @@ int proc_pid(proc_t proc) {
+ 
+ __attribute__((noreturn))
+ static void unix_syscall_return(int retval) {
++	char trace_line[128];
++	snprintf(trace_line, sizeof(trace_line), "unix_syscall_return error=%d", retval);
++	trace_psynch_rpc_args(trace_line);
+ 	thread_syscall_return(retval);
+ 	__builtin_unreachable();
+ };
+@@ -633,6 +687,9 @@ static int shim_uthread_is_cancelled(struct uthread* uthread) {
+ };
+ 
+ void shim_uthread_set_returnval(struct uthread* uthread, int retval) {
++	char trace_line[128];
++	snprintf(trace_line, sizeof(trace_line), "uthread_set_returnval retval=0x%x", retval);
++	trace_psynch_rpc_args(trace_line);
+ 	dtape_hooks->current_thread_set_bsd_retval(retval);
  };
  

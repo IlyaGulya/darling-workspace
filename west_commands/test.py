@@ -2282,7 +2282,18 @@ host_trace_oracle={quote("1" if invocation.get("host_trace_oracle") else "0")}
 guest_shell() {{
 \tlocal seconds="$1"
 \tshift
-\ttimeout --kill-after=5 "$seconds" env DPREFIX="$DPREFIX" "$launch" shell /bin/bash --login -c "$@"
+\tlocal ns_log
+\tns_log="$(mktemp /tmp/west-guest-shell-stderr.XXXXXX)"
+\ttimeout --kill-after=5 "$seconds" env DPREFIX="$DPREFIX" "$launch" shell /bin/bash --login -c "$@" 2> >(tee "$ns_log" >&2)
+\tlocal rc=$?
+\tif [ "$rc" -ne 0 ] && grep -q 'Cannot open mnt namespace file' "$ns_log"; then
+\t\tprintf 'WEST_GUEST_STAGE=namespace-retry\\n' >&2
+\t\t"$launch" shutdown >/dev/null 2>&1 || true
+\t\ttimeout --kill-after=5 "$seconds" env DPREFIX="$DPREFIX" "$launch" shell /bin/bash --login -c "$@" 2> >(tee "$ns_log" >&2)
+\t\trc=$?
+\tfi
+\trm -f "$ns_log"
+\treturn "$rc"
 }}
 
 printf 'WEST_GUEST_STAGE=cleanup\\n' >&2
@@ -3390,6 +3401,24 @@ fi
             return [prefix / "libexec/darling" / rel, prefix / rel]
         return [prefix / rel]
 
+    def _runtime_replace_file(self, src: Path, dst: Path) -> None:
+        dst.parent.mkdir(parents=True, exist_ok=True)
+        with tempfile.NamedTemporaryFile(
+            prefix=f".{dst.name}.west-deploy-",
+            dir=dst.parent,
+            delete=False,
+        ) as handle:
+            temp_path = Path(handle.name)
+        try:
+            shutil.copy2(src, temp_path)
+            os.replace(temp_path, dst)
+        except Exception:
+            try:
+                temp_path.unlink()
+            except FileNotFoundError:
+                pass
+            raise
+
     @contextmanager
     def _runtime_red_deployed_artifacts(
         self,
@@ -3415,8 +3444,7 @@ fi
                                 backup.parent.mkdir(parents=True, exist_ok=True)
                                 shutil.copy2(dst, backup)
                             backups.append((dst, backup))
-                            dst.parent.mkdir(parents=True, exist_ok=True)
-                            shutil.copy2(src, dst)
+                            self._runtime_replace_file(src, dst)
                             self.inf(f"  {label} deploy: {src} -> {dst}")
                 yield
             finally:
@@ -3429,8 +3457,7 @@ fi
                         except FileNotFoundError:
                             pass
                     else:
-                        dst.parent.mkdir(parents=True, exist_ok=True)
-                        shutil.copy2(backup, dst)
+                        self._runtime_replace_file(backup, dst)
                 self._shutdown_runtime_prefix(prefix)
 
     def _shutdown_runtime_prefix(self, prefix: Path) -> bool:

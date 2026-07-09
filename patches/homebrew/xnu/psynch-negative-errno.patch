@@ -1,37 +1,35 @@
-From 9ef96df95ff182283d1fc0cc9cb9faa7637e7d23 Mon Sep 17 00:00:00 2001
+From 10096d1101c0685ad53adfc9b057892f9d6f3506 Mon Sep 17 00:00:00 2001
 From: Ilya Gulya <ilya@gulya.me>
 Date: Wed, 8 Jul 2026 08:47:47 +0000
 Subject: [PATCH] libsystem_kernel: route psynch wait errors through cerror
 
 ---
- .../bsd/impl/psynch/psynch_return.h           | 28 ++++++++++
- .../bsd/impl/psynch/psynch_cvwait.c           |  5 +-
- .../bsd/impl/psynch/psynch_mutexwait.c        |  5 +-
- .../bsd/impl/psynch/psynch_rw_rdlock.c        |  5 +-
- .../bsd/impl/psynch/psynch_rw_wrlock.c        |  5 +-
- .../tests/psynch_return_contract_test.c       | 56 +++++++++++++++++++
- .../tests/run-psynch-return-contract.sh       | 12 ++++
- 7 files changed, 108 insertions(+), 8 deletions(-)
+ .../bsd/impl/psynch/psynch_return.h           | 26 ++++++++++++++++
+ .../bsd/impl/psynch/psynch_cvwait.c           |  5 +--
+ .../bsd/impl/psynch/psynch_mutexwait.c        |  5 +--
+ .../bsd/impl/psynch/psynch_rw_rdlock.c        |  5 +--
+ .../bsd/impl/psynch/psynch_rw_wrlock.c        |  5 +--
+ .../tests/psynch_return_contract_test.c       | 31 +++++++++++++++++++
+ .../tests/run-psynch-return-contract.sh       | 12 +++++++
+ 7 files changed, 81 insertions(+), 8 deletions(-)
  create mode 100644 darling/src/libsystem_kernel/emulation/include/xnu_syscall/bsd/impl/psynch/psynch_return.h
  create mode 100644 darling/src/libsystem_kernel/tests/psynch_return_contract_test.c
  create mode 100755 darling/src/libsystem_kernel/tests/run-psynch-return-contract.sh
 
 diff --git a/darling/src/libsystem_kernel/emulation/include/xnu_syscall/bsd/impl/psynch/psynch_return.h b/darling/src/libsystem_kernel/emulation/include/xnu_syscall/bsd/impl/psynch/psynch_return.h
 new file mode 100644
-index 0000000000000000000000000000000000000000..efa613122f9df696c08da368a568b0aa0f622cc9
+index 0000000000000000000000000000000000000000..dd6593c057d7ce7dee319a746df60f9761017667
 --- /dev/null
 +++ b/darling/src/libsystem_kernel/emulation/include/xnu_syscall/bsd/impl/psynch/psynch_return.h
-@@ -0,0 +1,28 @@
+@@ -0,0 +1,26 @@
 +#ifndef DARLING_XNU_SYSCALL_BSD_IMPL_PSYNCH_RETURN_H
 +#define DARLING_XNU_SYSCALL_BSD_IMPL_PSYNCH_RETURN_H
 +
 +#include <stdint.h>
 +
-+extern long cerror(int __err);
-+
 +static inline long darling_psynch_wait_error(int error)
 +{
-+	return cerror(error);
++	return -error;
 +}
 +
 +static inline long darling_psynch_wait_return(int result, uint32_t retval)
@@ -40,11 +38,11 @@ index 0000000000000000000000000000000000000000..efa613122f9df696c08da368a568b0aa
 +		return retval;
 +
 +	/*
-+	 * Darwin psynch wait errors use the normal syscall error path: the public
-+	 * wrapper returns -1 and errno carries the full psynch result. For
-+	 * condvars the high bits may include ECVCLEARED/ECVPREPOST status, so do
-+	 * not mask to the base errno here; libpthread separates the low-byte errno
-+	 * from psynch status bits.
++	 * Darling's BSD syscall implementation returns negative errno values to
++	 * the generated public syscall wrapper, which then routes them through
++	 * cerror. Preserve the full psynch result here: condvars may include
++	 * ECVCLEARED/ECVPREPOST status bits above the low-byte errno, and
++	 * libpthread decodes those bits after cerror stores them in errno.
 +	 */
 +	return darling_psynch_wait_error(result);
 +}
@@ -148,23 +146,15 @@ index 38427a7260085ed73de9f4b2045546108c0a41c0..c1330ea254ef076423dbffbd05fcc12c
  }
 diff --git a/darling/src/libsystem_kernel/tests/psynch_return_contract_test.c b/darling/src/libsystem_kernel/tests/psynch_return_contract_test.c
 new file mode 100644
-index 0000000000000000000000000000000000000000..9adb9f7cb4bf47132c35aacb4b5a27931e7c25fd
+index 0000000000000000000000000000000000000000..00447f9a6fb0586970fc4adef21bfd1f128c49e2
 --- /dev/null
 +++ b/darling/src/libsystem_kernel/tests/psynch_return_contract_test.c
-@@ -0,0 +1,56 @@
+@@ -0,0 +1,31 @@
 +#include <errno.h>
 +#include <stdint.h>
 +#include <stdio.h>
 +
 +#include <xnu_syscall/bsd/impl/psynch/psynch_return.h>
-+
-+static int captured_error;
-+
-+long cerror(int error)
-+{
-+	captured_error = error;
-+	return -1;
-+}
 +
 +static int expect_long(const char* what, long got, long want)
 +{
@@ -174,35 +164,18 @@ index 0000000000000000000000000000000000000000..9adb9f7cb4bf47132c35aacb4b5a2793
 +	return 1;
 +}
 +
-+static int expect_int(const char* what, int got, int want)
-+{
-+	if (got == want)
-+		return 0;
-+	fprintf(stderr, "%s: got %d want %d\n", what, got, want);
-+	return 1;
-+}
-+
 +int main(void)
 +{
 +	const uint32_t updateval = 0x12345678u;
 +	const int augmented_eintr = EINTR | 0x200;
 +
-+	captured_error = 0;
 +	if (expect_long("success return", darling_psynch_wait_return(0, updateval), updateval))
 +		return 1;
-+	if (expect_int("success cerror untouched", captured_error, 0))
++
++	if (expect_long("augmented error return", darling_psynch_wait_return(augmented_eintr, updateval), -augmented_eintr))
 +		return 1;
 +
-+	captured_error = 0;
-+	if (expect_long("augmented error return", darling_psynch_wait_return(augmented_eintr, updateval), -1))
-+		return 1;
-+	if (expect_int("augmented error preserved", captured_error, augmented_eintr))
-+		return 1;
-+
-+	captured_error = 0;
-+	if (expect_long("transport EINTR return", darling_psynch_wait_error(EINTR), -1))
-+		return 1;
-+	if (expect_int("transport EINTR captured", captured_error, EINTR))
++	if (expect_long("transport EINTR return", darling_psynch_wait_error(EINTR), -EINTR))
 +		return 1;
 +
 +	puts("PSYNCH_RETURN_CONTRACT_OK");
