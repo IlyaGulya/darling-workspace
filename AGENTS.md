@@ -93,7 +93,15 @@ refs, PR drafts, and agent handoff.
   Use `red-proof: {mode: guest-runtime-deploy, runtime-artifacts: [...]}` for
   that model. The runner must use temporary source/build state and backup/restore
   every declared prefix deploy path; never fall back to current-prefix smoke or
-  fake `source-base` proof for deployed guest behavior.
+  fake `source-base` proof for deployed guest behavior. A guest-runtime RED
+  proof should also pin the failure reason with `expect-output-contains` or an
+  equivalent structured oracle when the runner can capture output. Do not accept
+  a RED arm that failed because the test fixture/source file was missing,
+  upload/compile infrastructure failed, or the bad runtime unexpectedly passed;
+  fix the fixture ownership/materialization or create a blocking task instead.
+  Runtime fixtures should normally live in the workspace testkit/tests area and
+  stay the same for RED and GREEN; the current-minus source forest is for
+  building bad runtime artifacts, not for silently losing the test input.
 - Do not close patch coverage with source matching. Tests that grep, parse, or
   assert that specific code text exists are audit checks only; they must not be
   counted as the patch's behavioral test and must not be recorded as `kind:

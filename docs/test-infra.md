@@ -189,7 +189,15 @@ RED proof modes:
   dir, shuts down the selected prefix, backs up the declared deploy paths,
   copies bad artifacts, requires the guest fixture to fail, restores the
   original artifacts, then runs GREEN on the current prefix. Do not substitute
-  `source-base` for this mode.
+  `source-base` for this mode. A valid runtime RED proof fails for the intended
+  behavior, not just for any nonzero exit status. Prefer
+  `expect-output-contains`/`expect-output-lacks` or a structured oracle that
+  matches the bad behavior's diagnostic, timeout, errno, trace marker, or other
+  stable symptom. A missing fixture source file, upload failure, compile setup
+  failure, or unexpectedly passing bad runtime is an infrastructure failure to
+  fix or track as a blocker, not a RED proof. Fixtures used to drive runtime
+  RED/GREEN should be stable inputs owned by the workspace testkit/tests area
+  unless a source patch deliberately injects diagnostics into the bad runtime.
 
 Source/text checks are allowed only as auxiliary drift guards:
 
