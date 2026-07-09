@@ -198,6 +198,15 @@ RED proof modes:
   fix or track as a blocker, not a RED proof. Fixtures used to drive runtime
   RED/GREEN should be stable inputs owned by the workspace testkit/tests area
   unless a source patch deliberately injects diagnostics into the bad runtime.
+  `prepare-fixture-before-deploy: true` is available for `guest-c-fixture`
+  runtime proofs where the old runtime cannot be trusted to upload or compile
+  the fixture. In that mode west uploads and compiles the guest C fixture on the
+  current runtime, deploys the bad artifacts, then reuses the same guest binary
+  id in run-only mode for RED. This is not a substitute for the bad-runtime
+  oracle: if the run-only phase still fails during `darling shell` startup,
+  namespace setup, RPC protocol bootstrap, or shellspawn readiness before the
+  fixture reaches its own `main`, the proof remains blocked and needs a
+  launch-free/direct harness instead of a broader matcher.
 
 Source/text checks are allowed only as auxiliary drift guards:
 
