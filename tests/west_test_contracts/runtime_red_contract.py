@@ -1083,7 +1083,14 @@ with tempfile.TemporaryDirectory() as temp:
         text=True,
     ).stdout.strip()
     (repo / "fixed.txt").write_text("fixed\n")
-    subprocess.run(["git", "add", "fixed.txt"], cwd=repo, check=True)
+    (repo / "tests").mkdir()
+    (repo / "tests" / "profile_contract.sh").write_text(
+        "#!/usr/bin/env sh\n"
+        "test -n \"$SRC_ROOT\"\n"
+        "test -f \"$SRC_ROOT/fixed.txt\"\n"
+    )
+    (repo / "tests" / "profile_contract.sh").chmod(0o755)
+    subprocess.run(["git", "add", "fixed.txt", "tests/profile_contract.sh"], cwd=repo, check=True)
     subprocess.run(["git", "commit", "-q", "-m", "fixed patch"], cwd=repo, check=True)
     fixed_patch = subprocess.run(
         ["git", "format-patch", "-1", "--stdout"],
@@ -1120,8 +1127,14 @@ with tempfile.TemporaryDirectory() as temp:
     test._profile_path = lambda profile: tempdir / "patches" / profile / "patches.yml"
     test._execution_env = lambda _invocation: {}
     seen = []
+    seen_assets = []
 
     def run_invocation(_invocation, env=None):
+        if _invocation.get("runner") == "source-profile-script":
+            script_path = _invocation["script_path"]
+            assert script_path.is_file(), script_path
+            assert script_path.parent.parent == _invocation["cwd"], _invocation
+            seen_assets.append(script_path.read_text())
         source_root = Path(env["SRC_ROOT"])
         has_fixed = (source_root / "fixed.txt").exists()
         seen.append(has_fixed)
@@ -1142,6 +1155,36 @@ with tempfile.TemporaryDirectory() as temp:
     assert rc == 0
     assert seen == [False, True], seen
     assert not (repo / "fixed.txt").exists(), "live checkout should not be the GREEN proof source"
+    assert not (repo / "tests" / "profile_contract.sh").exists(), "live checkout should not contain the profile test asset"
+
+    seen.clear()
+    rc = test._run_source_base_proof(
+        {"path": "darling/fixed.patch", "module": "darling", "source-base": base_rev},
+        {
+            "mode": "source-base",
+            "source-env": "SRC_ROOT",
+            "expect-output-contains": ["old source failure"],
+        },
+        {
+            "name": "source_profile_script",
+            "shell": False,
+            "runner": "source-profile-script",
+            "repo": "darling",
+            "script": "tests/profile_contract.sh",
+            "cwd": repo,
+            "script_path": repo / "tests" / "profile_contract.sh",
+        },
+    )
+    assert rc == 0
+    assert seen == [False, True], seen
+    assert seen_assets == [
+        "#!/usr/bin/env sh\n"
+        "test -n \"$SRC_ROOT\"\n"
+        "test -f \"$SRC_ROOT/fixed.txt\"\n",
+        "#!/usr/bin/env sh\n"
+        "test -n \"$SRC_ROOT\"\n"
+        "test -f \"$SRC_ROOT/fixed.txt\"\n",
+    ], seen_assets
 
     seen.clear()
     rc = test._run_source_base_proof(

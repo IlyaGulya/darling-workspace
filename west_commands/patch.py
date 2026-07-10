@@ -346,6 +346,7 @@ class DarlingPatch(WestCommand):
                 "guest-runtime-script",
                 "self-contract-script",
                 "source-contract-script",
+                "source-profile-script",
                 "python",
                 "cmake-configure-fixture",
                 "c-fixture",
@@ -367,6 +368,7 @@ class DarlingPatch(WestCommand):
                 "guest-runtime-script",
                 "self-contract-script",
                 "source-contract-script",
+                "source-profile-script",
                 "python",
                 "c-fixture",
                 "guest-c-fixture",
@@ -374,7 +376,7 @@ class DarlingPatch(WestCommand):
                 "source-build-fixture",
             }:
                 errors.append(
-                    f"tests[{index}] script requires runner: script, guest-runtime-script, self-contract-script, source-contract-script, python, c-fixture, guest-c-fixture, object-symbol-fixture, or source-build-fixture"
+                    f"tests[{index}] script requires runner: script, guest-runtime-script, self-contract-script, source-contract-script, source-profile-script, python, c-fixture, guest-c-fixture, object-symbol-fixture, or source-build-fixture"
                 )
             if test.get("script"):
                 repo_ref = test.get("repo", patch["module"])
@@ -494,6 +496,22 @@ class DarlingPatch(WestCommand):
                 if not proof.get("source-env") and not test.get("source-env"):
                     errors.append(
                         f"tests[{index}] source-contract-script requires source-env"
+                    )
+            if runner == "source-profile-script":
+                proof = test.get("red-proof") if isinstance(test.get("red-proof"), dict) else {}
+                if not test.get("red") or proof.get("mode") != "source-base":
+                    errors.append(
+                        f"tests[{index}] source-profile-script requires red: true and red-proof mode: source-base"
+                    )
+                if not proof.get("source-env") and not test.get("source-env"):
+                    errors.append(
+                        f"tests[{index}] source-profile-script requires source-env"
+                    )
+                source_module = proof.get("source-module", patch["module"])
+                repo = test.get("repo", source_module)
+                if repo != source_module:
+                    errors.append(
+                        f"tests[{index}] source-profile-script repo must match red-proof source-module"
                     )
             if runner == "self-contract-script":
                 proof = test.get("red-proof") if isinstance(test.get("red-proof"), dict) else {}

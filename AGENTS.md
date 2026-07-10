@@ -78,7 +78,10 @@ refs, PR drafts, and agent handoff.
   a test needs current test assets executed against a bad/source-base tree.
   Use `runner: source-contract-script` for workspace-hosted shell contracts
   whose test asset stays fixed while `red-proof.source-env` switches the source
-  tree under test. Use `runner: source-script-fixture` only for scripts that
+  tree under test. Use `runner: source-profile-script` when the script itself
+  is introduced by the patch/profile: `west test --prove-red` must take that
+  test asset from the materialized GREEN profile tree and point `source-env` at
+  the bad/source-base tree for RED. Use `runner: source-script-fixture` only for scripts that
   already belong to the source tree in both RED and GREEN; do not use it for a
   script introduced by the patch, because RED would only prove "file missing".
   Executable source scripts are run through their shebang; non-executable ones
@@ -183,7 +186,7 @@ refs, PR drafts, and agent handoff.
   structured runner cannot express yet, and declare runtime prerequisites in
   patch metadata. Plain `runner: script` is an escape hatch for process/trace/
   runtime orchestration that the framework cannot express yet, not the default
-  form for source-base contracts.
+  form for source-base contracts or profile-owned source scripts.
 - Framework-internal contracts belong in small Python modules under
   `tests/west_test_contracts/`. Keep `tests/run-west-test-*-contract.sh` as
   thin compatibility entrypoints only; do not grow them with embedded Python
