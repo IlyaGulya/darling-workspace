@@ -12,6 +12,7 @@ from pathlib import Path
 from typing import Callable
 
 from test_ctest import ctest_label_args
+from test_execution import run_bounded
 
 
 Reporter = Callable[[str], None]
@@ -157,17 +158,14 @@ def run_darling_cmake_target_fixture(
             )
         for label, command in commands:
             inf(f"  darling-cmake-target-fixture: {label}")
-            try:
-                result = subprocess.run(
-                    command,
-                    cwd=project_root,
-                    env=run_env,
-                    capture_output=True,
-                    text=True,
-                    check=False,
-                    timeout=timeout_seconds,
-                )
-            except subprocess.TimeoutExpired:
+            result = run_bounded(
+                command,
+                cwd=project_root,
+                env=run_env,
+                timeout_seconds=timeout_seconds,
+                capture_output=True,
+            )
+            if result.timed_out:
                 err(
                     f"{invocation['name']}: {label} timed out after "
                     f"{timeout_seconds}s"
