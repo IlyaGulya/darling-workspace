@@ -1,0 +1,195 @@
+--- a/tools/dserverdbg.c
++++ b/tools/dserverdbg.c
+@@ -11,6 +11,10 @@
+ #include <signal.h>
+ #include <sys/un.h>
+ #include <sys/socket.h>
++#include <sys/poll.h>
++#include <sys/syscall.h>
++#include <sys/time.h>
++#include <sys/uio.h>
+ 
+ typedef uint32_t mach_port_type_t;
+ typedef uint32_t mach_port_right_t;
+@@ -193,6 +197,128 @@
+ 	return -1;
+ };
+ 
++
++static int set_receive_timeout(int fd, int seconds) {
++	struct timeval timeout = {
++		.tv_sec = seconds,
++		.tv_usec = 0,
++	};
++
++	if (setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &timeout, sizeof(timeout)) < 0) {
++		return errno;
++	}
++
++	return 0;
++}
++
++static dserver_rpc_architecture_t current_architecture(void) {
++#if __x86_64__
++	return dserver_rpc_architecture_x86_64;
++#elif __i386__
++	return dserver_rpc_architecture_i386;
++#elif __aarch64__
++	return dserver_rpc_architecture_arm64;
++#elif __arm__
++	return dserver_rpc_architecture_arm32;
++#else
++	return dserver_rpc_architecture_invalid;
++#endif
++}
++
++static int run_pushreply_bad_pointer_oracle(void) {
++	int status = 0;
++	int pipe_ends[2] = {-1, -1};
++	dserver_rpc_call_push_reply_t call = {
++		.header = {
++			.number = dserver_callnum_push_reply,
++			.pid = getpid(),
++			.tid = (pid_t)syscall(SYS_gettid),
++			.architecture = current_architecture(),
++		},
++		.reply = 1,
++		.reply_size = sizeof(dserver_rpc_replyhdr_t),
++	};
++	struct iovec iov = {
++		.iov_base = &call,
++		.iov_len = sizeof(call),
++	};
++	char control[CMSG_SPACE(sizeof(int))] = {};
++	struct msghdr message = {
++		.msg_name = &__dserver_socket_address_data,
++		.msg_namelen = sizeof(__dserver_socket_address_data),
++		.msg_iov = &iov,
++		.msg_iovlen = 1,
++		.msg_control = control,
++		.msg_controllen = sizeof(control),
++	};
++	struct cmsghdr* cmsg = CMSG_FIRSTHDR(&message);
++
++	status = set_receive_timeout(__dserver_main_thread_socket_fd, 3);
++	if (status != 0) {
++		fprintf(stderr, "DSERVERDBG_RECV_TIMEOUT_SETUP_RC=%d (%s)\n", status, strerror(status));
++		return 1;
++	}
++
++	status = dserver_rpc_checkin(false, NULL, -1);
++	printf("DSERVERDBG_CHECKIN_RC=%d\n", status);
++	if (status != 0) {
++		return 1;
++	}
++
++	if (pipe(pipe_ends) != 0) {
++		status = errno;
++		fprintf(stderr, "DSERVERDBG_PUSHREPLY_PIPE_RC=%d (%s)\n", status, strerror(status));
++		return 1;
++	}
++
++	cmsg->cmsg_len = CMSG_LEN(sizeof(int));
++	cmsg->cmsg_level = SOL_SOCKET;
++	cmsg->cmsg_type = SCM_RIGHTS;
++	memcpy(CMSG_DATA(cmsg), &pipe_ends[1], sizeof(pipe_ends[1]));
++
++	ssize_t sent = sendmsg(__dserver_main_thread_socket_fd, &message, 0);
++	close(pipe_ends[1]);
++	pipe_ends[1] = -1;
++	printf("DSERVERDBG_PUSHREPLY_SEND_RC=%zd\n", sent);
++	if (sent != (ssize_t)sizeof(call)) {
++		status = errno;
++		fprintf(stderr, "DSERVERDBG_PUSHREPLY_SEND_ERR=%d (%s)\n", status, strerror(status));
++		close(pipe_ends[0]);
++		return 1;
++	}
++
++	struct pollfd poll_fd = {
++		.fd = pipe_ends[0],
++		.events = POLLIN | POLLHUP,
++	};
++	int poll_rc = poll(&poll_fd, 1, 3000);
++	if (poll_rc < 0) {
++		status = errno;
++		fprintf(stderr, "DSERVERDBG_PUSHREPLY_POLL_RC=%d (%s)\n", status, strerror(status));
++		close(pipe_ends[0]);
++		return 1;
++	}
++	printf("DSERVERDBG_PUSHREPLY_POLL_RC=%d\n", poll_rc);
++
++	if (poll_rc == 0) {
++		printf("DSERVERDBG_PUSHREPLY_PIPE_TIMEOUT=1\n");
++		fprintf(stderr, "push_reply pipe did not close after bad pointer\n");
++		close(pipe_ends[0]);
++		return 1;
++	}
++
++	char byte = 0;
++	ssize_t read_rc = read(pipe_ends[0], &byte, sizeof(byte));
++	printf("DSERVERDBG_PUSHREPLY_PIPE_READ_RC=%zd\n", read_rc);
++	if (read_rc == 1) {
++		printf("DSERVERDBG_PUSHREPLY_PIPE_ACK=%d\n", (int)byte);
++	} else if (read_rc == 0) {
++		printf("DSERVERDBG_PUSHREPLY_PIPE_EOF=1\n");
++	}
++	close(pipe_ends[0]);
++	return 0;
++}
++
+ // borrowed from `src/startup/darling.c`
+ static void missingSetuidRoot(void)
+ {
+@@ -209,6 +334,36 @@
+ 	fprintf(stderr, "Darling needs this in order to create mount and PID namespaces and to perform mounts.\n");
+ }
+ 
++
++static int run_direct_pushreply_bad_pointer_command(uid_t original_uid) {
++	char* prefix_path = get_prefix_path(original_uid);
++	int status = 1;
++
++	if (!prefix_path) {
++		fprintf(stderr, "Failed to determine prefix path\n");
++		return 1;
++	}
++
++	__dserver_socket_address_data.sun_family = AF_UNIX;
++	snprintf(__dserver_socket_address_data.sun_path, sizeof(__dserver_socket_address_data.sun_path), "%s/.darlingserver.sock", prefix_path);
++
++	__dserver_main_thread_socket_fd = setup_socket();
++	if (__dserver_main_thread_socket_fd < 0) {
++		fprintf(stderr, "Failed to set up darlingserver client socket\n");
++		goto out;
++	}
++
++	status = run_pushreply_bad_pointer_oracle();
++
++out:
++	if (__dserver_main_thread_socket_fd >= 0) {
++		close(__dserver_main_thread_socket_fd);
++		__dserver_main_thread_socket_fd = -1;
++	}
++	free(prefix_path);
++	return status;
++}
++
+ int main(int argc, char** argv) {
+ 	char* prefix_path = NULL;
+ 	dserverdbg_command_t command = dserverdbg_command_ps;
+@@ -225,6 +380,15 @@
+ 	pid_t pidInit = 0;
+ #endif
+ 
++
++	if (argc > 1 && strcmp(argv[1], "pushreply-bad-pointer") == 0) {
++		if (argc > 2) {
++			fprintf(stderr, "Expected 1 argument (subcommand); got %d arguments\n", argc);
++			return 1;
++		}
++		return run_direct_pushreply_bad_pointer_command(getuid());
++	}
++
+ 	if (geteuid() != 0) {
+ 		missingSetuidRoot();
+ 		return 1;

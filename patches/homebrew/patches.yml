@@ -1327,13 +1327,10 @@ patches:
     coverage-tier: compile
     runs: host
     diag: bare
-    red: true
-    red-proof:
-      mode: source-base
-      source-env: DSERVER_SRC_ROOT
     runner: c-fixture
     repo: darling-workspace
     script: tests/push_reply_sync_pipe_contract.cpp
+    source-env: DSERVER_SRC_ROOT
     cc: c++
     include-dirs:
     - internal-include
@@ -1342,7 +1339,7 @@ patches:
     - -Wall
     - -Wextra
     - -Werror
-    note: Compile contract for the production push_reply sync-pipe guard; old source has no close-on-exit guard, fixed source closes on errors and writes an ack byte on success.
+    note: Compile invariant for the production push_reply sync-pipe guard; runtime RED carries the behavioral proof because old source lacks the helper header and a source-base compile failure would only prove missing test assets.
   - name: pushreply_bad_pointer_guest
     kind: guest
     coverage-tier: runtime
@@ -1362,31 +1359,29 @@ patches:
       - darlingserver/test-diagnostics-trace.patch
       - darlingserver/eunion-runtime-prefix.patch
       expect-output-contains:
+      - DSERVERDBG_PUSHREPLY_PIPE_TIMEOUT=1
       - push_reply pipe did not close after bad pointer
-      - ORACLE_RC=1
-      source-modules:
-      - darling/src/external/xnu
+      source-patches:
+      - tests/fixtures/darlingserver/launchfree-test-diagnostics.patch
+      - tests/fixtures/pushreply/dserverdbg-bad-pointer-oracle.patch
+      red-runner:
+        runner: script
+        repo: darling-workspace
+        script: tests/run-dserverdbg-pushreply-bad-pointer.sh
+        timeout-seconds: 30
+        host-temp-files:
+        - env: DSERVER_TEST_TRACE_FILE
+          prefix-relative-path: private/var/tmp/dserver-pushreply-bad-pointer.trace
+      cmake-defines:
+        DSERVER_TOOLS: true
       runtime-artifacts:
-      - module: darling
-        build-targets:
-        - mldr
-        deploy:
-        - usr/libexec/darling/mldr
       - module: darling/src/external/darlingserver
         build-targets:
         - darlingserver
+        - dserverdbg
         deploy:
         - bin/darlingserver
-      - module: darling/src/external/xnu
-        build-targets:
-        - system_kernel
-        deploy:
-        - usr/lib/system/libsystem_kernel.dylib
-      - module: darling/src/external/dyld
-        build-targets:
-        - src/external/dyld/dyld
-        deploy:
-        - usr/lib/dyld
+        - bin/dserverdbg
     runner: guest-c-fixture
     repo: darling-workspace
     script: tests/pushreply_bad_pointer_guest.c
