@@ -214,13 +214,10 @@ patches:
     coverage-tier: compile
     runs: host
     diag: bare
-    red: true
-    red-proof:
-      mode: source-base
-      source-env: DSERVER_SRC_ROOT
     runner: c-fixture
     repo: darling-workspace
     script: tests/fork_checkin_bound_contract.cpp
+    source-env: DSERVER_SRC_ROOT
     cc: c++
     include-dirs:
     - internal-include
@@ -231,7 +228,7 @@ patches:
     - -Wall
     - -Wextra
     - -Werror
-    note: Compile contract for the production fork-checkin wait helper; old source has no bounded outcome helper, fixed source maps semaphore timeout/interrupt/error explicitly and uses the intended 30s default.
+    note: Compile contract for the production fork-checkin wait helper; the guest runtime proof carries the RED behavior for the old unbounded fork-checkin wait.
   - name: fork_checkin_drop_timeout_guest
     kind: guest
     coverage-tier: runtime
