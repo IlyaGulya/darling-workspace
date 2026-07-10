@@ -28,3 +28,15 @@ runtime-profiles:
       - darlingserver
       deploy:
       - bin/darlingserver
+  homebrew-libplatform:
+    source-profile: homebrew
+    source-module: darling/src/external/libplatform
+    source-modules:
+    - darling
+    - darling/src/external/libplatform
+    runtime-artifacts:
+    - module: darling/src/external/libplatform
+      build-targets:
+      - platform
+      deploy:
+      - usr/lib/system/libsystem_platform.dylib
