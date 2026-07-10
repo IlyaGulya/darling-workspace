@@ -25,6 +25,7 @@
 #     DEFINES       SOME_TEST_HOOK            # -D added to the compile
 #     LIBS          ${CMAKE_DL_LIBS}          # linked in
 #     WORKDIR       ${CMAKE_BINARY_DIR}       # cwd at run time (relative dlopen etc.)
+#     ARGS          --fixture-mode            # argv appended to the test binary
 #     # --- macOS version axis + Tommy-compatible shipping: ---
 #     MIN_VERSION   13.0                      # OSX_DEPLOYMENT_TARGET + macos:<v> label
 #     MAX_VERSION   15.0                      # upper bound of the macos:<min>-<max> label
@@ -62,7 +63,7 @@
 function(add_compat_test)
   set(options WILL_FAIL INSTALL)
   set(oneValue NAME SOURCE BEAD DIAG WORKDIR TIMEOUT MIN_VERSION MAX_VERSION)
-  set(multiValue ENVS SUBMODULES EXTRA_SOURCES INCLUDES DEFINES LIBS RESOURCES)
+  set(multiValue ENVS SUBMODULES EXTRA_SOURCES INCLUDES DEFINES LIBS RESOURCES ARGS)
   cmake_parse_arguments(ACT "${options}" "${oneValue}" "${multiValue}" ${ARGN})
 
   if(NOT ACT_NAME OR NOT ACT_SOURCE)
@@ -134,16 +135,16 @@ function(add_compat_test)
 
     # Per-environment launch command.
     if(env STREQUAL "host")
-      set(cmd "$<TARGET_FILE:${target}>")
+      set(cmd "$<TARGET_FILE:${target}>" ${ACT_ARGS})
     elseif(env STREQUAL "darling")
       # Guest: run the Mach-O/host binary inside the prefix. The orchestrator
       # supplies DARLING_SHELL (e.g. `darling shell`) at run time.
-      set(cmd ${DARLING_SHELL} "$<TARGET_FILE:${target}>")
+      set(cmd ${DARLING_SHELL} "$<TARGET_FILE:${target}>" ${ACT_ARGS})
     elseif(env STREQUAL "macos")
       # TODO: macos currently aliases the host launch path (run the binary
       # directly). When wired up as a real differential oracle it needs a
       # remote/SSH indirection like darling gets via DARLING_SHELL.
-      set(cmd "$<TARGET_FILE:${target}>")
+      set(cmd "$<TARGET_FILE:${target}>" ${ACT_ARGS})
     endif()
 
     # Resolve the diagnosis tier: explicit DIAG wins, else per-env default.
