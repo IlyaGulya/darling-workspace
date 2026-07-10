@@ -98,6 +98,10 @@ class DarlingPatch(WestCommand):
             command.add_argument("--profile", default="homebrew")
             if action == "export":
                 command.add_argument(
+                    "--patch",
+                    help="export only one patch entry from the selected profile",
+                )
+                command.add_argument(
                     "--check",
                     action="store_true",
                     help="verify exported patch files and metadata without writing",
@@ -168,6 +172,7 @@ class DarlingPatch(WestCommand):
                 profile_dir,
                 profile,
                 patches,
+                args.patch,
                 args.check,
                 args.allow_large_output,
             )
@@ -1350,10 +1355,17 @@ class DarlingPatch(WestCommand):
         profile_dir: Path,
         profile,
         patches,
+        patch_selector: str | None,
         check: bool,
         allow_large_output: bool,
     ):
-        plans = self._plan_export(profile_dir, patches, allow_large_output)
+        selected_paths = None
+        if patch_selector:
+            selected_paths = {patch_selector}
+            if not any(patch["path"] == patch_selector for patch in patches):
+                self.die(f"{patch_selector}: patch not found in profile")
+
+        plans = self._plan_export(profile_dir, patches, selected_paths, allow_large_output)
         changed = False
         metadata_updates: dict[str, dict[str, str]] = {}
         for plan in plans:
@@ -1391,17 +1403,36 @@ class DarlingPatch(WestCommand):
         self,
         profile_dir: Path,
         patches,
+        selected_paths: set[str] | None,
         allow_large_output: bool,
     ) -> list[ExportPlan]:
         plans: list[ExportPlan] = []
         previous_commit_by_module: dict[str, str] = {}
+        selected_modules = None
+        planned_paths: set[str] = set()
+        if selected_paths is not None:
+            selected_modules = {
+                patch["module"]
+                for patch in patches
+                if patch["path"] in selected_paths
+            }
         for patch in patches:
+            selected = selected_paths is None or patch["path"] in selected_paths
+            if (
+                selected_paths is not None
+                and not selected
+                and patch["module"] not in selected_modules
+            ):
+                continue
             repo = self._repo(patch["module"])
             source_branch = patch["source-branch"]
             if not self._branch_exists(repo, source_branch):
                 self.die(f"{patch['module']}: missing source branch {source_branch}")
 
             commit = git(repo, "rev-parse", source_branch, capture=True)
+            if not selected:
+                previous_commit_by_module[patch["module"]] = commit
+                continue
             self._validate_export_revision(repo, patch, "source-commit", commit)
             self._validate_export_revision(repo, patch, "source-base", commit)
             self._validate_export_base_ancestor(repo, patch, commit)
@@ -1411,6 +1442,7 @@ class DarlingPatch(WestCommand):
                 commit,
                 previous_commit_by_module.get(patch["module"]),
             )
+            previous_commit_by_module[patch["module"]] = commit
 
             result = subprocess.run(
                 format_patch_command(patch, commit),
@@ -1445,7 +1477,9 @@ class DarlingPatch(WestCommand):
                     patch_changed=patch_changed,
                 )
             )
-            previous_commit_by_module[patch["module"]] = commit
+            planned_paths.add(patch["path"])
+            if selected_paths is not None and planned_paths >= selected_paths:
+                break
         return plans
 
     def _validate_export_revision(

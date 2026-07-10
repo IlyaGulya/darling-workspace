@@ -255,6 +255,9 @@ the behavior under test. Pair it with a concrete guest-visible
   If it reports stale `source-base`/`source-commit` metadata or suspiciously
   large output, repair the metadata/tooling first; use `--allow-large-output`
   only for a reviewed intentional large patch.
+  Use `west patch export --profile <profile> --patch <path>` for focused
+  checks/exports of a single profile entry; full-profile export remains the
+  default when no patch selector is given.
 - When moving or inserting entries in `patches.yml`, anchor edits on unique
   `- path:` blocks or use a structural script and verify ordering with `rg`.
   Do not insert after generic repeated keys such as `github:`/`upstream:`; patch

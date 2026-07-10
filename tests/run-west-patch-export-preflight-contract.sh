@@ -123,6 +123,32 @@ test "$(cat "$profile_root/test/first.patch")" = "first-sentinel" ||
 test "$(cat "$profile_root/test/second.patch")" = "second-sentinel" ||
 	fail 'stale linear-stack source-base preflight wrote second patch output before failing'
 
+printf 'first-sentinel\n' >"$profile_root/test/first.patch"
+printf 'second-sentinel\n' >"$profile_root/test/second.patch"
+write_stack_profile
+west patch export \
+	--profile __export_preflight_contract \
+	--patch test/first.patch >"$profile_root/focused-first.out" 2>&1
+grep -q 'exported test/first.patch' "$profile_root/focused-first.out" ||
+	fail 'focused export did not write the selected patch'
+if grep -q 'test/second.patch' "$profile_root/focused-first.out"; then
+	fail 'focused export reported the unselected patch'
+fi
+if test "$(cat "$profile_root/test/first.patch")" = "first-sentinel"; then
+	fail 'focused export left the selected patch unchanged'
+fi
+test "$(cat "$profile_root/test/second.patch")" = "second-sentinel" ||
+	fail 'focused export wrote the unselected patch'
+west patch export \
+	--profile __export_preflight_contract \
+	--patch test/first.patch \
+	--check >"$profile_root/focused-first-check.out" 2>&1
+grep -q 'export-check OK test/first.patch' "$profile_root/focused-first-check.out" ||
+	fail 'focused export --check did not verify the selected patch'
+if grep -q 'test/second.patch' "$profile_root/focused-first-check.out"; then
+	fail 'focused export --check reported the unselected patch'
+fi
+
 printf 'sentinel\n' >"$profile_root/test/preflight.patch"
 write_profile "$source_base" "$source_commit"
 if WEST_PATCH_EXPORT_MAX_LINES=1 west patch export \
@@ -142,5 +168,17 @@ grep -q 'exported test/preflight.patch' "$profile_root/allow.out" ||
 if test "$(cat "$profile_root/test/preflight.patch")" = "sentinel"; then
 	fail 'explicit large export override left the patch unchanged'
 fi
+
+if west patch export \
+	--profile __export_preflight_contract \
+	--patch test/does-not-exist.patch \
+	--check >"$profile_root/focused-missing.out" 2>&1; then
+	fail 'focused export accepted an unknown patch selector'
+fi
+grep -q 'test/does-not-exist.patch: patch not found in profile' "$profile_root/focused-missing.out" ||
+	fail 'focused export did not report an unknown patch selector clearly'
+
+west patch export --help | grep -q -- '--patch' ||
+	fail 'west patch export help does not advertise --patch'
 
 printf 'PASS west-patch-export-preflight-contract\n'
