@@ -4269,6 +4269,19 @@ class DarlingTest(WestCommand):
         self.die(f"testkit {stage} failed with rc {result.returncode}")
 
     @staticmethod
+    def _clear_ctest_failure_record(build: Path) -> None:
+        """Discard CTest's prior-run failure list before a new invocation.
+
+        CTest does not clear ``LastTestsFailed.log`` after a later green run.
+        Leaving it in place makes a fresh successful selection look failed to
+        humans and to any diagnostic tooling that inspects the build tree.
+        """
+
+        (build / "Testing" / "Temporary" / "LastTestsFailed.log").unlink(
+            missing_ok=True
+        )
+
+    @staticmethod
     def _dir_size(path: Path) -> int:
         return sum(f.stat().st_size for f in path.rglob("*") if f.is_file())
 
@@ -4513,6 +4526,7 @@ class DarlingTest(WestCommand):
         )
         with self._prefix_resource_context(needs_prefix):
             with self._ctest_runtime_profile_context(runtime_profiles):
+                self._clear_ctest_failure_record(build)
                 result = run_bounded(
                     ctest,
                     cwd=Path(self.topdir),
