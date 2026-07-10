@@ -20,6 +20,7 @@ if(NOT DEFINED DARLING_SRC)
   get_filename_component(_ws_parent "${CMAKE_CURRENT_SOURCE_DIR}/../.." ABSOLUTE)
   set(DARLING_SRC "${_ws_parent}/darling")
 endif()
+get_filename_component(_workspace_root "${CMAKE_CURRENT_SOURCE_DIR}/.." ABSOLUTE)
 
 # ---------------------------------------------------------------------------
 # dar-dar6x4-perf-5dq.1 — shell-gate migration for the mldr checkin wait.
@@ -59,6 +60,29 @@ else()
   message(WARNING
     "darling checkout missing ${_thread_checkin_wait}; skipping "
     "dar-dar6x4-perf-5dq.1")
+endif()
+
+# ---------------------------------------------------------------------------
+# dar-test-infra-sp5.8.4.4 — E-UNION host hermetic harness slice.
+#
+# This is intentionally HOST, not guest: it compiles the real XNU
+# vchroot_userspace.c in EUNION test mode and runs the two-layer resolver,
+# copy-up, whiteout, readdir, detranslation, and metadata assertions against a
+# fake prefix/template root. The heavier live route-2 guest validation remains a
+# separate runtime/profile concern.
+# ---------------------------------------------------------------------------
+set(_eunion_host_suite "${_workspace_root}/experiments/e-union/run.sh")
+if(EXISTS "${_eunion_host_suite}")
+  add_test(NAME host/eunion_host_suite
+    COMMAND /bin/bash "${_eunion_host_suite}")
+  set_property(TEST host/eunion_host_suite PROPERTY
+    LABELS "env:host;diag:bare;bead:dar-test-infra-sp5.8.4.4;submod:xnu")
+  set_property(TEST host/eunion_host_suite PROPERTY TIMEOUT 30)
+  set_property(TEST host/eunion_host_suite PROPERTY ENVIRONMENT
+    "XNU_SRC_ROOT=${DARLING_SRC}/src/external/xnu")
+else()
+  message(WARNING
+    "workspace missing ${_eunion_host_suite}; skipping E-UNION host suite")
 endif()
 set(_mldr "${DARLING_SRC}/src/startup/mldr")
 set(_libsystem_kernel_tests
