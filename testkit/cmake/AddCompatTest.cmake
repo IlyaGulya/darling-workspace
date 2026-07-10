@@ -20,7 +20,7 @@
 #     STRESS                                 # label stress:true
 #     DIAG          guarded                  # bare|guarded|forensic (see below)
 #     TIMEOUT       60                       # per-test seconds (default 60)
-#     WILL_FAIL                              # negative case: non-zero == pass
+#     EXPECT_FAILURE_MARKER "expected text"  # require non-zero plus symptom
 #     # --- building a case against the REAL production code: ---
 #     EXTRA_SOURCES src/.../production.c      # compiled WITH the harness
 #     INCLUDES      src/.../include_dir       # added to the include path
