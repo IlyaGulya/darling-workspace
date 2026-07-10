@@ -66,6 +66,7 @@ from test_prefix import (
     remove_stale_init_pid,
 )
 from test_resources import resource_context
+from test_results import InvocationResult
 from test_selection import select_metadata_tests
 from test_runtime import (
     describe_runtime_deploy_plan,
@@ -73,15 +74,6 @@ from test_runtime import (
     runtime_deploy_targets,
 )
 from test_worktrees import prune_stale_west_temp_worktrees, remove_temporary_worktree
-
-
-class InvocationResult:
-    """One captured test invocation, including its runner-owned failure stage."""
-
-    def __init__(self, returncode: int, output: str, failure_phase: str | None):
-        self.returncode = returncode
-        self.output = output
-        self.failure_phase = failure_phase
 
 
 class DarlingTest(WestCommand):
