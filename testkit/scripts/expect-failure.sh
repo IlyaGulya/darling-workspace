@@ -2,10 +2,15 @@
 set -euo pipefail
 
 marker=
+marker_file=
 while (($#)); do
 	case "$1" in
 		--marker)
 			marker="$2"
+			shift 2
+			;;
+		--marker-file)
+			marker_file="$2"
 			shift 2
 			;;
 		--)
@@ -13,14 +18,25 @@ while (($#)); do
 			break
 			;;
 		*)
-			echo "usage: expect-failure.sh --marker TEXT -- COMMAND [ARGS...]" >&2
+			echo "usage: expect-failure.sh --marker TEXT|--marker-file PATH -- COMMAND [ARGS...]" >&2
 			exit 2
 			;;
 	esac
 done
 
+if [[ -n "$marker" && -n "$marker_file" ]]; then
+	echo "--marker and --marker-file are mutually exclusive" >&2
+	exit 2
+fi
+if [[ -n "$marker_file" ]]; then
+	if [[ ! -f "$marker_file" ]]; then
+		echo "marker file not found: $marker_file" >&2
+		exit 2
+	fi
+	marker="$(<"$marker_file")"
+fi
 if [[ -z "$marker" || $# -eq 0 ]]; then
-	echo "usage: expect-failure.sh --marker TEXT -- COMMAND [ARGS...]" >&2
+	echo "usage: expect-failure.sh --marker TEXT|--marker-file PATH -- COMMAND [ARGS...]" >&2
 	exit 2
 fi
 
