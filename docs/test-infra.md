@@ -552,7 +552,10 @@ files plus the touched entry's `source-commit` and `sha256sum` fields in
 scalars/quoting across the profile. Export preflights the whole selected
 profile before writing: every `source-branch`, `source-base`, and
 `source-commit` must resolve, and suspicious patch-size growth is rejected
-unless `--allow-large-output` is passed deliberately.
+unless `--allow-large-output` is passed deliberately. Use
+`west patch export --profile <profile> --patch <path>` for focused checks or
+exports of one entry; the selector uses the exact `patches.yml` path and does
+not write unrelated patch files or metadata entries.
 
 Some gates need a consistent patch profile rather than the developer's current
 mixture of fix branches. Mark those with `requires-profile: arch` (or another
