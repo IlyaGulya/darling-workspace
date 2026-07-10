@@ -60,6 +60,12 @@
 # if a non-bare tier is requested but no executor is configured, the test falls
 # back to bare (with a warning) so the suite still runs.
 
+set(_ADD_COMPAT_TEST_CMAKE_DIR "${CMAKE_CURRENT_LIST_DIR}")
+set(DARLING_SHELL "${DARLING_SHELL}" CACHE STRING
+  "Command list used to launch a test binary inside Darling, e.g. /path/darling;shell")
+set(DARLING_TEST_PREFIX "${DARLING_TEST_PREFIX}" CACHE PATH
+  "Darling prefix exported to env=darling tests as DPREFIX/DARLING_PREFIX")
+
 function(add_compat_test)
   set(options WILL_FAIL INSTALL)
   set(oneValue NAME SOURCE BEAD DIAG WORKDIR TIMEOUT MIN_VERSION MAX_VERSION)
@@ -139,7 +145,14 @@ function(add_compat_test)
     elseif(env STREQUAL "darling")
       # Guest: run the Mach-O/host binary inside the prefix. The orchestrator
       # supplies DARLING_SHELL (e.g. `darling shell`) at run time.
-      set(cmd ${DARLING_SHELL} "$<TARGET_FILE:${target}>" ${ACT_ARGS})
+      if(DARLING_SHELL)
+        set(cmd ${DARLING_SHELL} "$<TARGET_FILE:${target}>" ${ACT_ARGS})
+      else()
+        set(cmd
+          "${CMAKE_COMMAND}"
+          "-DTEST_NAME=${test_name}"
+          -P "${_ADD_COMPAT_TEST_CMAKE_DIR}/MissingDarlingShell.cmake")
+      endif()
     elseif(env STREQUAL "macos")
       # TODO: macos currently aliases the host launch path (run the binary
       # directly). When wired up as a real differential oracle it needs a
@@ -180,6 +193,11 @@ function(add_compat_test)
     add_test(NAME "${test_name}" COMMAND ${cmd})
     if(ACT_WORKDIR)
       set_property(TEST "${test_name}" PROPERTY WORKING_DIRECTORY "${ACT_WORKDIR}")
+    endif()
+    if(env STREQUAL "darling" AND DARLING_TEST_PREFIX)
+      set_property(TEST "${test_name}" APPEND PROPERTY ENVIRONMENT
+        "DPREFIX=${DARLING_TEST_PREFIX}"
+        "DARLING_PREFIX=${DARLING_TEST_PREFIX}")
     endif()
 
     set(labels "env:${env}" "diag:${diag}")

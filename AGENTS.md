@@ -195,6 +195,9 @@ refs, PR drafts, and agent handoff.
 - `tests/run-west-test-testkit-contract.sh` is the focused CLI contract for the
   local CTest/testkit bridge; update it when changing testkit registration or
   top-level CTest selectors.
+- `tests/run-west-test-add-compat-cmake-contract.sh` is the focused CMake
+  contract for `add_compat_test()` command generation; update it when changing
+  guest launch, argv, labels, or prefix environment behavior.
 - Darling guest tests should prefer `requires: [darling-prefix]` over
   `requires-env: [DPREFIX]`; let `west test --prefix/--prefix-profile` provide
   `DPREFIX`.
