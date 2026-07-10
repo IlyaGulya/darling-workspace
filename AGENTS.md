@@ -221,6 +221,10 @@ refs, PR drafts, and agent handoff.
   must upload/compile/run the C source inside the selected Darling prefix via
   `testkit/scripts/run-darling-c-test.sh`. Do not run Linux host-built test
   binaries through `darling shell` and count that as guest coverage.
+- Both CTest guest-C and metadata guest-C must route the low-level
+  `launcher shell` transport through `testkit/scripts/darling-guest-shell.sh`.
+  That helper owns the prefix environment and watchdog; metadata alone owns
+  namespace retry, trace/stat resources, and diagnostic dumps around it.
 - Darling guest tests should prefer `requires: [darling-prefix]` over
   `requires-env: [DPREFIX]`; let `west test --prefix/--prefix-profile` provide
   `DPREFIX`.

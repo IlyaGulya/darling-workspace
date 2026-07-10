@@ -1,6 +1,10 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=darling-guest-shell.sh
+source "$script_dir/darling-guest-shell.sh"
+
 name=
 source=
 guest_cc="${DARLING_GUEST_CC:-/Library/Developer/CommandLineTools/usr/bin/clang}"
@@ -55,6 +59,11 @@ if [[ -z "$launcher" ]]; then
 	echo "$name: DARLING_LAUNCHER is unset" >&2
 	exit 2
 fi
+prefix="${DPREFIX:-${DARLING_PREFIX:-}}"
+if [[ -z "$prefix" ]]; then
+	echo "$name: DPREFIX or DARLING_PREFIX is unset" >&2
+	exit 2
+fi
 if [[ ! -f "$source" ]]; then
 	echo "$name: source not found: $source" >&2
 	exit 2
@@ -73,7 +82,7 @@ for arg in "${args[@]}"; do
 done
 
 set +e
-"$launcher" shell /bin/bash --login -c "
+darling_guest_shell "$launcher" "$prefix" "${DARLING_GUEST_TIMEOUT_SECONDS:-60}" "
 set -euo pipefail
 cleanup() {
   rm -f '$guest_src' '$guest_bin'
