@@ -31,6 +31,7 @@ import west_commands.test_guest_c as guest_c_module
 from west_commands.test import DarlingTest
 from west_commands.test_execution import ProcessResult
 from west_commands.test_runtime import (
+    compose_ctest_runtime_profiles,
     describe_runtime_deploy_plan,
     load_ctest_runtime_profiles,
     runtime_build_targets,
@@ -154,6 +155,49 @@ with tempfile.TemporaryDirectory() as temp:
         assert "must materialize darling" in str(exc), exc
     else:
         raise AssertionError("system_kernel runtime profile accepted mixed live darlingserver source")
+
+
+runtime_profiles = {
+    "kernel": {
+        "source-profile": "homebrew",
+        "source-module": "darling/src/external/xnu",
+        "source-modules": ["darling", "darling/src/external/xnu"],
+        "runtime-artifacts": [{"build-targets": ["system_kernel"], "deploy": ["usr/lib/system/libsystem_kernel.dylib"]}],
+    },
+    "server": {
+        "source-profile": "homebrew",
+        "source-module": "darling/src/external/darlingserver",
+        "source-modules": ["darling", "darling/src/external/darlingserver"],
+        "runtime-artifacts": [{"build-targets": ["darlingserver"], "deploy": ["bin/darlingserver"]}],
+    },
+    "other": {
+        "source-profile": "arch",
+        "source-module": "darling",
+        "source-modules": ["darling"],
+        "runtime-artifacts": [{"build-targets": ["other"], "deploy": ["bin/other"]}],
+    },
+}
+combined_runtime = compose_ctest_runtime_profiles(runtime_profiles, ["kernel", "server", "kernel"])
+assert combined_runtime == {
+    "name": "kernel+server",
+    "source-profile": "homebrew",
+    "source-module": "darling/src/external/xnu",
+    "source-modules": [
+        "darling",
+        "darling/src/external/xnu",
+        "darling/src/external/darlingserver",
+    ],
+    "runtime-artifacts": [
+        {"build-targets": ["system_kernel"], "deploy": ["usr/lib/system/libsystem_kernel.dylib"]},
+        {"build-targets": ["darlingserver"], "deploy": ["bin/darlingserver"]},
+    ],
+}
+try:
+    compose_ctest_runtime_profiles(runtime_profiles, ["kernel", "other"])
+except ValueError as exc:
+    assert "incompatible runtime source profiles" in str(exc), exc
+else:
+    raise AssertionError("incompatible runtime profiles were combined")
 deploy_test = make_test()
 deploy_test._resolve_darling_launcher = (
     lambda _prefix: "/opt/darling-test/bin/darling"

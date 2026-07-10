@@ -16,3 +16,15 @@ runtime-profiles:
       - system_kernel
       deploy:
       - usr/lib/system/libsystem_kernel.dylib
+  homebrew-darlingserver:
+    source-profile: homebrew
+    source-module: darling/src/external/darlingserver
+    source-modules:
+    - darling
+    - darling/src/external/darlingserver
+    runtime-artifacts:
+    - module: darling/src/external/darlingserver
+      build-targets:
+      - darlingserver
+      deploy:
+      - bin/darlingserver
