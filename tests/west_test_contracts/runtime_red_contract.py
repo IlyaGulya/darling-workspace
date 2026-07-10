@@ -1087,17 +1087,54 @@ with tempfile.TemporaryDirectory() as temp:
         source_root = Path(env["SRC_ROOT"])
         has_fixed = (source_root / "fixed.txt").exists()
         seen.append(has_fixed)
+        if not has_fixed:
+            print("old source failure")
         return 0 if has_fixed else 1
 
     test._run_invocation = run_invocation
     rc = test._run_source_base_proof(
         {"path": "darling/fixed.patch", "module": "darling", "source-base": base_rev},
-        {"mode": "source-base", "source-env": "SRC_ROOT"},
+        {
+            "mode": "source-base",
+            "source-env": "SRC_ROOT",
+            "expect-output-contains": ["old source failure"],
+        },
         {"name": "source_profile_green", "shell": False},
     )
     assert rc == 0
     assert seen == [False, True], seen
     assert not (repo / "fixed.txt").exists(), "live checkout should not be the GREEN proof source"
+
+    seen.clear()
+    rc = test._run_source_base_proof(
+        {"path": "darling/fixed.patch", "module": "darling", "source-base": base_rev},
+        {
+            "mode": "source-base",
+            "source-env": "SRC_ROOT",
+            "expect-output-contains": ["different failure"],
+        },
+        {"name": "source_profile_green", "shell": False},
+    )
+    assert rc == 1
+    assert any(
+        "RED failure output missing 'different failure'" in message
+        for message in test.err_messages
+    ), test.err_messages
+
+    subprocess.run(["git", "am", str(profile_dir / "fixed.patch")], cwd=repo, check=True)
+    test._profile_is_applied = lambda _profile: True
+    seen.clear()
+    rc = test._run_source_base_proof(
+        {"path": "darling/fixed.patch", "module": "darling", "source-base": base_rev},
+        {
+            "mode": "source-base",
+            "source-env": "SRC_ROOT",
+            "expect-output-contains": ["old source failure"],
+        },
+        {"name": "source_profile_green", "shell": False},
+    )
+    assert rc == 0
+    assert seen == [False, True], seen
 
 with tempfile.TemporaryDirectory() as temp:
     tempdir = Path(temp)

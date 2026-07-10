@@ -261,3 +261,42 @@ patches:
     note: Pins RPC disconnect send-to-EINTR contract.
   source-commit: 447579f0c84b04aa06d9c0779a50099ef44d191e
   sha256sum: 8471aad9374219d03fcbe3aca7fba2cc6609d037c91f3d1648389fafa514f53a
+- path: darlingserver/message-ctrunc-reject.patch
+  module: darling/src/external/darlingserver
+  source-branch: fix/message-ctrunc-reject
+  source-base: fcb9f33f721772b358a2077dbe7da938b5474f3b
+  source-commit: d231a7cdacd1b643e1941b6dcde9f83f135484dc
+  bead: dar-rpc-correctness-z27x.5
+  publication-status: blocked
+  publication-blocker: local RPC cleanup hardening; should be reviewed with the broader typed reply/message-ingest lifecycle cleanup before upstreaming.
+  tests:
+  - name: message_ctrunc_contract
+    kind: contract
+    coverage-tier: host
+    runs: host
+    diag: bare
+    red: true
+    red-proof:
+      mode: source-base
+      source-env: DSERVER_SRC_ROOT
+      expect-output-contains:
+      - message with maximum push_reply fd count was truncated
+      note: Old MessageQueue accepted MSG_CTRUNC and observed only 4 of the 5 push_reply descriptors under SO_PASSCRED.
+    runner: c-fixture
+    repo: darling-src-external-darlingserver
+    script: tests/message_ctrunc_test.cpp
+    source-env: DSERVER_SRC_ROOT
+    cc: c++
+    include-dirs:
+    - internal-include
+    source-files:
+    - src/message.cpp
+    compile-flags:
+    - -std=c++17
+    - -Wall
+    - -Wextra
+    - -Werror
+    - -Wno-unused-parameter
+    - -Wno-sign-compare
+    note: Host behavior contract for the real MessageQueue SCM_RIGHTS receive path; proves push_reply-sized fd messages survive SO_PASSCRED and oversized/truncated control data is not accepted.
+  sha256sum: 8b9915b55966aec778ed8b730ef1d2f2a281733763da885464518616159339b6
