@@ -7,7 +7,7 @@ Scope:
 
 Current raw metadata inventory after the `source-contract-script` migration:
 - 146 test rows total: 132 homebrew, 14 arch
-- runners: 51 `guest-c-fixture`, 35 `c-fixture`, 27 `script`, 20 `source-contract-script`, 4 `object-symbol-fixture`, 3 `python`, 2 `west-build`, 1 each `darling-cmake-target-fixture`, `source-build-fixture`, `source-script-fixture`, `cmake-configure-fixture`, and 1 ctest-label shorthand row
+- runners: 51 `guest-c-fixture`, 35 `c-fixture`, 20 `source-contract-script`, 18 `script`, 10 `source-script-fixture`, 4 `object-symbol-fixture`, 3 `python`, 2 `west-build`, 1 each `darling-cmake-target-fixture`, `source-build-fixture`, `cmake-configure-fixture`, and 1 ctest-label shorthand row
 - env: recalculated by `west patch check` as behavioral coverage: homebrew 78 covered, arch 13 covered
 - red proof modes: 56 `source-base`, 22 `guest-runtime-deploy`, 10 `self`, 57 non-red/no proof rows, 1 compact shorthand row
 
@@ -36,15 +36,22 @@ Fixed by this audit:
   `source-contract-script` for the 20 workspace-hosted source-base contracts.
   The runner semantics did not change; the metadata now exposes the domain
   intent and lets future quality checks distinguish it from ad hoc shell.
+- Migrated 9 `arch` host contract scripts that already live in source trees to
+  `source-script-fixture`. While doing that, fixed `source-script-fixture` to
+  execute executable scripts directly through their shebang instead of forcing
+  `/bin/sh`; this is required for source contracts that use bash features such
+  as `set -o pipefail`.
 
 Current automated result:
 - `west patch check --profile homebrew --quality --strict-quality`: no quality warnings
 - `west patch check --profile arch --quality --strict-quality`: no quality warnings
 - `tests/run-west-test-metadata-contract.sh`: includes a synthetic bad profile proving `--strict-quality` rejects an XNU runtime proof that omits materialized darlingserver, and a `source-contract-script` probe proving the runner receives `source-env`.
 - Focused E-UNION proof: `west test --profile homebrew --patch xnu/eunion-1-resolve.patch --prove-red` fails on the bad XNU source tree, then passes the GREEN materialized E-UNION suite (`228 tests, 0 failed`).
+- `west test --profile arch --env host`: passes after the arch source-script
+  migration and shebang fix.
 
 Remaining quality debt:
-- 27 tests still use `runner: script`. Some are acceptable thin wrappers, but this remains the largest source of ad hoc behavior. They should be migrated class-by-class into structured runners/profiles or explicitly documented as script-only exceptions.
+- 18 tests still use `runner: script`. Some are acceptable thin wrappers, but this remains the largest source of ad hoc behavior. They should be migrated class-by-class into structured runners/profiles or explicitly documented as script-only exceptions.
   Tracked as `dar-test-infra-sp5.11.15`.
 - Two XNU patches remain runtime-sensitive but compile-only in current metadata:
   - `xnu/fork-postfork-child.patch`

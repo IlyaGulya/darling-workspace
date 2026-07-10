@@ -33,9 +33,11 @@ patches:
     kind: contract
     runs: host
     diag: bare
-    runner: script
+    runner: source-script-fixture
     repo: darling-src-external-darlingserver
-    script: tests/ring_committed_unknown_contract_test.sh
+    source-script: tests/ring_committed_unknown_contract_test.sh
+    cases:
+    - name: default
     note: Same-profile darlingserver test script pins the xnu guest ring committed-unknown no-UDS-retry contract.
   source-commit: 8d746cb73e874b057a2db9f453bbd0812b5e46e3
   sha256sum: 4eaad65fe29eb98866e14eac81160c35a574dad70ba654311598e24a41af2e9d
@@ -51,8 +53,10 @@ patches:
     kind: contract
     runs: host
     diag: bare
-    runner: script
-    script: darling/src/libsystem_kernel/tests/rpc_disconnect_status_contract_test.sh
+    runner: source-script-fixture
+    source-script: darling/src/libsystem_kernel/tests/rpc_disconnect_status_contract_test.sh
+    cases:
+    - name: default
     note: Follow-up same-profile test patch; fails before disconnect status classification exists.
   source-commit: aadfa984275b74ad6e6f35d144bff20fe6c14565
   sha256sum: a46ddd2abd07e5ecdc37dd55c861f4402b0a8c09e29e391078cded4a33bdea04
@@ -68,8 +72,10 @@ patches:
     kind: contract
     runs: host
     diag: bare
-    runner: script
-    script: darling/src/libsystem_kernel/tests/rpc_disconnect_status_contract_test.sh
+    runner: source-script-fixture
+    source-script: darling/src/libsystem_kernel/tests/rpc_disconnect_status_contract_test.sh
+    cases:
+    - name: default
     note: Test patch that pins RPC disconnect status classification.
   source-commit: 8becacfaa14c5058619c00e8a351e6b8146b1a05
   sha256sum: 865d4d4984839bc8b64ecb98771116b655e9a22235b38720c201b6137d8f02dd
@@ -140,8 +146,10 @@ patches:
     kind: contract
     runs: host
     diag: bare
-    runner: script
-    script: tests/ring_committed_unknown_contract_test.sh
+    runner: source-script-fixture
+    source-script: tests/ring_committed_unknown_contract_test.sh
+    cases:
+    - name: default
     note: Static contract gate for no UDS retry after a ring operation is committed/unknown.
   source-commit: ea28bd095742be30f96b3d73510321f7c8124a51
   sha256sum: 64ea94c9b9e5a3e6d3c7ef191343a8254a1c6299efa3b0e1f7feb79ff7a301ee
@@ -157,8 +165,10 @@ patches:
     kind: contract
     runs: host
     diag: bare
-    runner: script
-    script: tests/duct_tape_fail_closed_stubs_test.sh
+    runner: source-script-fixture
+    source-script: tests/duct_tape_fail_closed_stubs_test.sh
+    cases:
+    - name: default
     note: Static contract gate for reachable duct-tape stubs failing closed instead of aborting the server.
   source-commit: e8ad65c9feb96b95551b9eb3ce24daacaad42b83
   sha256sum: 1e3ea456f90debbb3fdac5061600ccf798d292913d9ed5a396256c04423753d1
@@ -174,8 +184,10 @@ patches:
     kind: contract
     runs: host
     diag: bare
-    runner: script
-    script: tests/rpc_serial_contract_test.sh
+    runner: source-script-fixture
+    source-script: tests/rpc_serial_contract_test.sh
+    cases:
+    - name: default
     note: Static contract gate for packed call serial/correlation in UDS replies.
   source-commit: 03fbc437f6da90297ef0f3055cea90e2373c3786
   sha256sum: b7bb60ec1e15006ce53e5e737c36f89c345e8e719aa01ed574ae3b00c48c7d7c
@@ -203,8 +215,10 @@ patches:
     kind: contract
     runs: host
     diag: bare
-    runner: script
-    script: tests/rpc_disconnect_send_contract_test.sh
+    runner: source-script-fixture
+    source-script: tests/rpc_disconnect_send_contract_test.sh
+    cases:
+    - name: default
     note: Follow-up same-profile test patch; fails before disconnect sends are mapped to EINTR.
   source-commit: 9956c99a8228a7540a4cefd9da52517f245d06ad
   sha256sum: b8f4510c8016e625c0106f307d7099144b283c1ef744dc138f9aa93d519c13ed
@@ -249,15 +263,19 @@ patches:
     kind: contract
     runs: host
     diag: bare
-    runner: script
-    script: tests/standard_signal_coalescing_contract_test.sh
+    runner: source-script-fixture
+    source-script: tests/standard_signal_coalescing_contract_test.sh
+    cases:
+    - name: default
     note: Pins standard signal coalescing contract.
   - name: rpc_disconnect_send_contract_test
     kind: contract
     runs: host
     diag: bare
-    runner: script
-    script: tests/rpc_disconnect_send_contract_test.sh
+    runner: source-script-fixture
+    source-script: tests/rpc_disconnect_send_contract_test.sh
+    cases:
+    - name: default
     note: Pins RPC disconnect send-to-EINTR contract.
   source-commit: 447579f0c84b04aa06d9c0779a50099ef44d191e
   sha256sum: 8471aad9374219d03fcbe3aca7fba2cc6609d037c91f3d1648389fafa514f53a
