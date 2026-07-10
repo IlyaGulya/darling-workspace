@@ -39,6 +39,10 @@ patches:
     cases:
     - name: default
     note: Same-profile darlingserver test script pins the xnu guest ring committed-unknown no-UDS-retry contract.
+  test-exception:
+    reason: source-contract-only
+    scope: ring committed-or-unknown no-retry static contract
+    note: This script inspects the source contract only; behavioral ring transport coverage is owned by dar-rpc-correctness-z27x.2.
   source-commit: 8d746cb73e874b057a2db9f453bbd0812b5e46e3
   sha256sum: 4eaad65fe29eb98866e14eac81160c35a574dad70ba654311598e24a41af2e9d
 - path: xnu/rpc-interruptible-disconnect-status.patch
@@ -58,6 +62,10 @@ patches:
     cases:
     - name: default
     note: Follow-up same-profile test patch; fails before disconnect status classification exists.
+  test-exception:
+    reason: source-contract-only
+    scope: XNU disconnect status classification source contract
+    note: This script is a drift guard, not runtime proof; behavioral coverage is owned by dar-rpc-correctness-z27x.6.
   source-commit: aadfa984275b74ad6e6f35d144bff20fe6c14565
   sha256sum: a46ddd2abd07e5ecdc37dd55c861f4402b0a8c09e29e391078cded4a33bdea04
 - path: xnu/rpc-disconnect-status-contract-test.patch
@@ -77,6 +85,10 @@ patches:
     cases:
     - name: default
     note: Test patch that pins RPC disconnect status classification.
+  test-exception:
+    reason: source-contract-only
+    scope: follow-up source-only disconnect status test asset
+    note: The patch only adds a static contract asset; behavioral coverage is owned by dar-rpc-correctness-z27x.6.
   source-commit: 8becacfaa14c5058619c00e8a351e6b8146b1a05
   sha256sum: 865d4d4984839bc8b64ecb98771116b655e9a22235b38720c201b6137d8f02dd
 - path: darlingserver/a0-arch-redesign.patch
@@ -120,6 +132,10 @@ patches:
     runner: source-contract-script
     script: tests/standard_signal_coalescing_contract_test.sh
     note: Follow-up same-profile test patch; fails before standard signal coalescing state exists.
+  test-exception:
+    reason: source-contract-only
+    scope: standard signal coalescing source contract
+    note: This script currently proves source shape only; a process-level signal oracle is tracked by dar-rpc-correctness-z27x.8.
   source-commit: 695ed8c479df1561fa2f46efde1d0e5c30150103
   sha256sum: d4a8e94dfbac1906c0e2764915d74f97dba88920e2679a45419f9e387f31f17e
 - path: darlingserver/a0-gate-shellspawn-retry.patch
@@ -131,6 +147,7 @@ patches:
   publication-blocker: local a0 gate harness stabilization for cleanboot/shellspawn flakes
   test-exception:
     reason: harness-only
+    scope: A0 shellspawn retry harness reliability instrumentation
     note: A0 gate reliability instrumentation; validated by the A0 gate itself rather than a separate red-test.
   source-commit: 6e231d6477b334b4bb482b92e00a90661eb7e2f0
   sha256sum: 98ba25ca417bb755d99b86105f47130373ddc959b31c9e5e84bc8fd632864d1b
@@ -151,6 +168,10 @@ patches:
     cases:
     - name: default
     note: Static contract gate for no UDS retry after a ring operation is committed/unknown.
+  test-exception:
+    reason: source-contract-only
+    scope: ring committed-or-unknown static gate
+    note: This gate is intentionally source-only; behavioral ring transport coverage is owned by dar-rpc-correctness-z27x.2.
   source-commit: ea28bd095742be30f96b3d73510321f7c8124a51
   sha256sum: 64ea94c9b9e5a3e6d3c7ef191343a8254a1c6299efa3b0e1f7feb79ff7a301ee
 - path: darlingserver/duct-tape-fail-closed-stubs.patch
@@ -170,6 +191,10 @@ patches:
     cases:
     - name: default
     note: Static contract gate for reachable duct-tape stubs failing closed instead of aborting the server.
+  test-exception:
+    reason: source-contract-only
+    scope: duct-tape fail-closed stub source gate
+    note: The script does not execute the server; behavioral reachable-stub coverage is owned by dar-rpc-correctness-z27x.4.
   source-commit: e8ad65c9feb96b95551b9eb3ce24daacaad42b83
   sha256sum: 1e3ea456f90debbb3fdac5061600ccf798d292913d9ed5a396256c04423753d1
 - path: darlingserver/rpc-uds-packed-correlation.patch
@@ -189,6 +214,10 @@ patches:
     cases:
     - name: default
     note: Static contract gate for packed call serial/correlation in UDS replies.
+  test-exception:
+    reason: source-contract-only
+    scope: packed UDS correlation source gate
+    note: This static check cannot prove reply accounting; behavioral transport coverage is owned by dar-rpc-correctness-z27x.1.
   source-commit: 03fbc437f6da90297ef0f3055cea90e2373c3786
   sha256sum: b7bb60ec1e15006ce53e5e737c36f89c345e8e719aa01ed574ae3b00c48c7d7c
 - path: darlingserver/a0-gate-client-rpc-log.patch
@@ -200,6 +229,7 @@ patches:
   publication-blocker: local A0 repro instrumentation for the nestwait/interrupt_enter -111 class; not a correctness fix.
   test-exception:
     reason: instrumentation-only
+    scope: A0 client RPC log and digest diagnostics
     note: Adds A0 RPC log/digest diagnostics; no behavior fix to red-test directly.
   source-commit: cbb7d64fcd17d8498f2c5f374e3771a26d979db5
   sha256sum: 64c655f9651af3d3ce831887b3ccfa1a22b5e1a236bf7b60c71d23ac885289a8
@@ -220,6 +250,10 @@ patches:
     cases:
     - name: default
     note: Follow-up same-profile test patch; fails before disconnect sends are mapped to EINTR.
+  test-exception:
+    reason: source-contract-only
+    scope: disconnect send-to-EINTR source contract
+    note: This is a source-only drift guard; behavioral coverage is owned by dar-rpc-correctness-z27x.6.
   source-commit: 9956c99a8228a7540a4cefd9da52517f245d06ad
   sha256sum: b8f4510c8016e625c0106f307d7099144b283c1ef744dc138f9aa93d519c13ed
 - path: darlingserver/stack-pool-empty-stack-handle.patch
@@ -248,6 +282,7 @@ patches:
   publication-blocker: local A0 repro instrumentation for focused ring-on fork/wait crash diagnosis; not a correctness fix.
   test-exception:
     reason: instrumentation-only
+    scope: focused A0 synth marker diagnostics
     note: Adds focused A0 synth filter/markers used by dar-9f8b; no behavior fix to red-test directly.
   source-commit: c72d9d8412800ed6a9d2e343ed3a3884f87ede51
   sha256sum: 1e102e56d45708fa57edaad27c98845c0173e65294ebfe14e810ce5a37426b13
@@ -277,6 +312,10 @@ patches:
     cases:
     - name: default
     note: Pins RPC disconnect send-to-EINTR contract.
+  test-exception:
+    reason: source-contract-only
+    scope: follow-up static signal and disconnect contract assets
+    note: The patch adds source-level test assets only; behavioral work remains under dar-rpc-correctness-z27x.8 and dar-rpc-correctness-z27x.6.
   source-commit: 447579f0c84b04aa06d9c0779a50099ef44d191e
   sha256sum: 8471aad9374219d03fcbe3aca7fba2cc6609d037c91f3d1648389fafa514f53a
 - path: darlingserver/message-ctrunc-reject.patch

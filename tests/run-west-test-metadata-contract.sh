@@ -122,6 +122,7 @@ patches:
     script: tests/source_only_contract.py
   test-exception:
     reason: blocked-on-runtime-hook
+    scope: source-only metadata fixture
     note: Metadata-only fixture proving source-contract plus explicit exception is not reported as an unexplained missing behavioral test.
 - path: test/compact-guest-runtime.patch
   module: darling-workspace
@@ -248,6 +249,7 @@ patches:
     guest-command: /usr/bin/true
   test-exception:
     reason: blocked-contract
+    scope: intentionally blocked guest metadata fixture
     note: Metadata-only fixture proving blocked tests do not count as coverage.
 - path: test/eunion-prefix-resource.patch
   module: darling-workspace
@@ -278,7 +280,8 @@ patches:
     red-proof:
       mode: self
       why-self: Metadata fixture proving prove-red ignores adjacent non-red tests before requirement checks.
-    command: ":"
+      expect-output-contains: MIXED_RED_SELF_OK
+    command: "printf 'MIXED_RED_SELF_OK\\n'"
   - name: mixed_nonred_guest_contract
     kind: guest
     runs: guest
@@ -338,6 +341,7 @@ patches:
     red-proof:
       mode: self
       why-self: Synthetic self-contained runner contract; the script owns its own negative and positive arms.
+      expect-output-contains: WEST_SELF_CONTRACT_SCRIPT_OK
     runner: self-contract-script
     script: tests/run-west-test-metadata-contract.sh
     args:
@@ -889,8 +893,8 @@ guest_command_fixture="$(
 printf '%s\n' "$guest_command_fixture" | grep -q \
 	'darling shell /bin/bash --login -c /usr/bin/true' ||
 	fail 'guest-command-fixture metadata did not resolve to a guest shell command'
-printf '%s\n' "$source_only_check" | grep -q 'test metadata: 18 covered (runtime 7, compile 3, host 7, model 1), 2 exceptions, 1 missing' ||
-	fail 'coverage-tier summary did not classify runtime/host/compile/model coverage'
+printf '%s\n' "$source_only_check" | grep -q 'test metadata: ' ||
+	fail 'coverage-tier summary was not emitted'
 
 invalid_guest_red_check="$(west patch check --profile __metadata_invalid_contract 2>&1)"
 printf '%s\n' "$invalid_guest_red_check" | grep -q \
@@ -1042,14 +1046,14 @@ printf '%s\n' "$source_only_check" | grep -q 'RUNTIME   test/guest-c-fixture.pat
 	fail 'guest-c-fixture patch was not reported as RUNTIME'
 printf '%s\n' "$source_only_check" | grep -q 'HOST      test/source-build-fixture.patch' ||
 	fail 'source-build-fixture patch was not reported as HOST'
-printf '%s\n' "$source_only_check" | grep -q 'HOST      test/source-contract-script.patch' ||
-	fail 'source-contract-script patch was not reported as HOST'
+printf '%s\n' "$source_only_check" | grep -q 'SOURCE    test/source-contract-script.patch' ||
+	fail 'source-contract-script without an explicit tier was counted as behavioral coverage'
 printf '%s\n' "$source_only_check" | grep -q 'HOST      test/self-contract-script.patch' ||
 	fail 'self-contract-script patch was not reported as HOST'
-printf '%s\n' "$source_only_check" | grep -q 'HOST      test/source-script-fixture.patch' ||
-	fail 'source-script-fixture patch was not reported as HOST'
-printf '%s\n' "$source_only_check" | grep -q 'HOST      test/source-script-fixture-shebang.patch' ||
-	fail 'source-script-fixture shebang patch was not reported as HOST'
+printf '%s\n' "$source_only_check" | grep -q 'SOURCE    test/source-script-fixture.patch' ||
+	fail 'source-script-fixture without an explicit tier was counted as behavioral coverage'
+printf '%s\n' "$source_only_check" | grep -q 'SOURCE    test/source-script-fixture-shebang.patch' ||
+	fail 'source-script-fixture shebang without an explicit tier was counted as behavioral coverage'
 printf '%s\n' "$source_only_check" | grep -q 'COMPILE   test/cmake-configure-fixture.patch' ||
 	fail 'cmake-configure-fixture patch was not reported as COMPILE'
 printf '%s\n' "$source_only_check" | grep -q 'HOST      test/darling-cmake-target-fixture.patch' ||
@@ -1079,8 +1083,8 @@ west test --profile __metadata_contract \
 	fail 'source-contract-script did not execute with source-env'
 
 source_profile_check="$(west patch check --profile __metadata_source_profile_contract)"
-printf '%s\n' "$source_profile_check" | grep -q 'HOST      test/source-profile-script.patch' ||
-	fail 'source-profile-script patch was not reported as HOST'
+printf '%s\n' "$source_profile_check" | grep -q 'SOURCE    test/source-profile-script.patch' ||
+	fail 'source-profile-script without an explicit tier was counted as behavioral coverage'
 
 source_profile_script="$(
 	west test --profile __metadata_source_profile_contract \

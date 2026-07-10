@@ -1067,6 +1067,8 @@ class DarlingPatch(WestCommand):
                 errors.append("test-exception must be a mapping")
             elif not exception.get("reason"):
                 errors.append("test-exception needs reason")
+            elif not exception.get("scope"):
+                errors.append("test-exception needs scope")
         return errors
 
     @staticmethod
@@ -1080,6 +1082,15 @@ class DarlingPatch(WestCommand):
         explicit = test.get("coverage-tier")
         if explicit:
             return explicit
+        # A source-path runner is not evidence of behavior by itself. It may
+        # compile a harness, but it may equally grep a generated file or a
+        # production source tree. Metadata must opt it into a behavioral tier.
+        if test.get("runner") in {
+            "source-contract-script",
+            "source-profile-script",
+            "source-script-fixture",
+        }:
+            return "source"
         if test.get("kind") == "source-contract":
             return "source"
         if (
