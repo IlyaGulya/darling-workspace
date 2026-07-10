@@ -28,6 +28,21 @@ runtime-profiles:
       - darlingserver
       deploy:
       - bin/darlingserver
+  perf-darlingserver:
+    # The fork/signal workload exercises server-side wait/reply recovery.
+    # Build it from perf, which extends homebrew with the A0 hang-fix class;
+    # west partitions this lifecycle from ordinary homebrew guest tests.
+    source-profile: perf
+    source-module: darling/src/external/darlingserver
+    source-modules:
+    - darling
+    - darling/src/external/darlingserver
+    runtime-artifacts:
+    - module: darling/src/external/darlingserver
+      build-targets:
+      - darlingserver
+      deploy:
+      - bin/darlingserver
   homebrew-libplatform:
     source-profile: homebrew
     source-module: darling/src/external/libplatform

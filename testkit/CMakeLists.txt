@@ -223,7 +223,7 @@ if(EXISTS "${_fork_checkin_signal_storm_guest}")
     ENVS       darling
     BEAD       dar-gwn.6.5
     SUBMODULES darlingserver
-    RUNTIME_PROFILE homebrew-darlingserver
+    RUNTIME_PROFILE perf-darlingserver
     TIMEOUT    45
     OK_MARKER  "FORK_CHECKIN_SIGNAL_STORM_OK"
   )

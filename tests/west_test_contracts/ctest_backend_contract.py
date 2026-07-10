@@ -12,7 +12,9 @@ from test_ctest import (
     ctest_label_display,
     ctest_selection_command,
     ctest_selector_label_args,
+    ctest_runtime_group_passthrough,
     ctest_submodule_label_name,
+    ctest_test_name_regex,
     ctest_uses_prefix,
 )
 from test_cmake import archive_git_tree_to, archive_source_to
@@ -40,6 +42,15 @@ assert ctest_selection_command(build, label_args=["-L", "env:darling"]) == [
     "-L",
     "env:darling",
 ]
+assert ctest_selection_command(
+    build, label_args=["-L", "env:darling"], passthrough=["--repeat", "until-fail:2"]
+)[-4:] == ["-L", "env:darling", "--repeat", "until-fail:2"]
+assert ctest_test_name_regex(["darling/fork+signal", "host/plain"]) == (
+    r"^(darling/fork\+signal|host/plain)$"
+)
+assert ctest_runtime_group_passthrough([
+    "--repeat", "until-fail:2", "-R", "darling/one", "--union", "-L", "env:darling",
+]) == ["--repeat", "until-fail:2"]
 
 labels = ctest_selector_label_args(
     bead="dar-gwn.5",
