@@ -4495,11 +4495,22 @@ fi
                 changed.append(label_name)
         return changed
 
-    def _configure_and_build(self, testkit: Path, executor: str | None) -> Path:
+    def _configure_and_build(
+        self,
+        testkit: Path,
+        executor: str | None,
+        *,
+        darling_shell: list[str] | None = None,
+        prefix: str | None = None,
+    ) -> Path:
         build = testkit / "build"
         cfg = ["cmake", "-S", str(testkit), "-B", str(build), "-G", "Ninja"]
         if executor:
             cfg.append(f"-DDARLING_TEST_EXECUTOR={executor}")
+        if darling_shell:
+            cfg.append(f"-DDARLING_SHELL={';'.join(darling_shell)}")
+        if prefix:
+            cfg.append(f"-DDARLING_TEST_PREFIX={prefix}")
         self.inf(f"configuring: {testkit}")
         subprocess.run(cfg, check=True)
         subprocess.run(["ninja", "-C", str(build)], check=True)
@@ -4648,7 +4659,19 @@ fi
         if not testkit.exists():
             self.die(f"no testkit at {testkit}")
 
-        build = self._configure_and_build(testkit, self._executor)
+        launcher = self._resolve_darling_launcher(self._prefix)
+        darling_shell = [launcher, "shell"] if launcher else None
+        if args.env == "darling" and not darling_shell and not args.list:
+            self.die(
+                "env:darling CTest runs need a Darling launcher; pass --prefix, "
+                "set DARLING/DARLING_LAUNCHER, or install ~/work/darling-prefix/bin/darling"
+            )
+        build = self._configure_and_build(
+            testkit,
+            self._executor,
+            darling_shell=darling_shell,
+            prefix=self._prefix,
+        )
 
         changed = None
         if args.changed:
