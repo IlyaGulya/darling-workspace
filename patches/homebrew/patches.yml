@@ -85,11 +85,23 @@ patches:
   publication-blocker: modeled wake-epoch and duplicate-scheduling tests under dar-q95.29.6
   tests:
   - name: microthread_resume_race_contract
-    use: darlingserver-cpp-compile-source-red
-    red-proof:
-      source-env: DSERVER_SRC_ROOT
+    kind: contract
+    coverage-tier: compile
+    runs: host
+    diag: bare
+    runner: c-fixture
+    repo: darling-workspace
     script: tests/microthread_resume_contract.cpp
-    note: Compile contract for the production microthread resume helper; old source has no coalesced resume contract, fixed source records, consumes, and schedules resume permits without dropping wakeups.
+    source-env: DSERVER_SRC_ROOT
+    cc: c++
+    include-dirs:
+    - internal-include
+    compile-flags:
+    - -std=c++17
+    - -Wall
+    - -Wextra
+    - -Werror
+    note: Compile contract for the production microthread resume helper; the launch-free dserverdbg runtime oracle carries the RED proof for the old lost-wakeup behavior.
   - name: microthread_resume_before_suspend_guest
     kind: guest
     coverage-tier: runtime
@@ -115,16 +127,38 @@ patches:
       - darlingserver/pot-guest-lifetime-binding.patch
       - darlingserver/test-diagnostics-trace.patch
       source-patches:
-      - tests/fixtures/microthread/resume-before-suspend-diagnostics-no-fix.patch
+      - tests/fixtures/darlingserver/launchfree-test-diagnostics.patch
+      - tests/fixtures/microthread/resume-before-suspend-hook.patch
+      - tests/fixtures/microthread/thread-suspended-direct-suspend-oracle.patch
+      - tests/fixtures/microthread/dserverdbg-resume-before-suspend-oracle.patch
       expect-output-contains:
       - test_fault.consume name=microthread.resume_before_suspend
       - microthread.suspend.inject_resume_before_suspend
+      - DSERVERDBG_THREAD_SUSPENDED_RC=-11
+      red-runner:
+        runner: script
+        repo: darling-workspace
+        script: tests/run-dserverdbg-microthread-resume-before-suspend.sh
+        timeout-seconds: 30
+        host-temp-files:
+        - env: DSERVER_TEST_FAULT_FILE
+          prefix-relative-path: private/var/tmp/dserver-microthread-resume-before-suspend-fault
+        host-trace-files:
+        - env: DSERVER_TEST_TRACE_FILE
+          prefix-relative-path: private/var/tmp/dserver-microthread-resume-before-suspend.trace
+          contains:
+          - test_fault.consume name=microthread.resume_before_suspend
+          - microthread.suspend.inject_resume_before_suspend
+      cmake-defines:
+        DSERVER_TOOLS: true
       runtime-artifacts:
       - module: darling/src/external/darlingserver
         build-targets:
         - darlingserver
+        - dserverdbg
         deploy:
         - bin/darlingserver
+        - bin/dserverdbg
     runner: guest-c-fixture
     repo: darling-workspace
     script: tests/microthread_resume_before_suspend_guest.c
