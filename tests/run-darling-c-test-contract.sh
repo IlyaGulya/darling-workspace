@@ -14,6 +14,27 @@ exec "$@"
 SH
 chmod +x "$tmp/launcher"
 
+cat >"$tmp/detached-launcher" <<'SH'
+#!/usr/bin/env bash
+set -euo pipefail
+[ "$1" = shell ] || exit 64
+shift
+case "$*" in
+	*'cat >'*)
+		input="$(mktemp)"
+		cat >"$input"
+		("$@" <"$input" >/dev/null 2>&1; rm -f "$input") &
+		;;
+	*'cat '*)
+		exec "$@"
+		;;
+	*)
+		"$@" >/dev/null 2>&1 &
+		;;
+esac
+SH
+chmod +x "$tmp/detached-launcher"
+
 cat >"$tmp/guest.c" <<'C'
 #include <stdio.h>
 int main(void) {
@@ -39,6 +60,15 @@ grep -F -x -q WEST_GUEST_STAGE=compile "$tmp/green.out"
 grep -F -x -q WEST_GUEST_STAGE=run "$tmp/green.out"
 grep -F -x -q ORACLE_RC=0 "$tmp/green.out"
 grep -F -x -q GUEST_C_EXACT_OK "$tmp/green.out"
+
+DARLING_GUEST_STATE_DIR="$tmp/guest-state" DPREFIX="$tmp/prefix" \
+	"$repo/testkit/scripts/run-darling-c-test.sh" \
+	--name "${name}_detached" --source "$tmp/guest.c" \
+	--launcher "$tmp/detached-launcher" --cc cc --cflags '' \
+	--ok-marker GUEST_C_EXACT_OK >"$tmp/detached.out" 2>&1
+grep -F -x -q WEST_GUEST_STAGE=run "$tmp/detached.out"
+grep -F -x -q ORACLE_RC=0 "$tmp/detached.out"
+grep -F -x -q GUEST_C_EXACT_OK "$tmp/detached.out"
 
 if find /tmp -maxdepth 1 -name "${name}.*" -print | grep -q .; then
 	find /tmp -maxdepth 1 -name "${name}.*" -print >&2
