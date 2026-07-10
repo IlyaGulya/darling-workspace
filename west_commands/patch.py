@@ -1073,35 +1073,13 @@ class DarlingPatch(WestCommand):
 
     @staticmethod
     def _coverage_tier(test) -> str:
-        """Classify how directly a test exercises the patch contract.
-
-        `kind` describes the test's domain; `coverage-tier` describes the
-        strength of evidence. Older entries without an explicit tier get a
-        conservative derived tier so existing metadata stays readable.
-        """
+        """Return the coverage class materialized by manifest normalization."""
         explicit = test.get("coverage-tier")
         if explicit:
             return explicit
-        # A source-path runner is not evidence of behavior by itself. It may
-        # compile a harness, but it may equally grep a generated file or a
-        # production source tree. Metadata must opt it into a behavioral tier.
-        if test.get("runner") in {
-            "source-contract-script",
-            "source-profile-script",
-            "source-script-fixture",
-        }:
-            return "source"
-        if test.get("kind") == "source-contract":
-            return "source"
-        if (
-            test.get("env") in {"darling", "macos"}
-            or test.get("kind") == "guest"
-            or test.get("runner") == "guest-c-fixture"
-        ):
-            return "runtime"
-        if test.get("runner") in {"c-fixture", "object-symbol-fixture", "west-build"} or test.get("kind") == "build":
-            return "compile"
-        return "host"
+        # Keep a conservative result for direct unit callers that bypass the
+        # public manifest loader; production metadata is always normalized.
+        return "source"
 
     @staticmethod
     def _is_behavioral_test(test) -> bool:

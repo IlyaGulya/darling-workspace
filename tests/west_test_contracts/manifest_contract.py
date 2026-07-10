@@ -4,7 +4,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT))
 
-from west_commands.test_manifest import ManifestError, normalize_test_profile
+from west_commands.test_manifest import ManifestError, normalize_test, normalize_test_profile
 
 
 profile = {
@@ -178,12 +178,41 @@ assert (
 )
 
 ctest_alias = tests[1]
+assert ctest_alias["coverage-tier"] == "host", ctest_alias
 assert ctest_alias["ctest-label"] == "bead:dar-q95.6", ctest_alias
 assert ctest_alias["env"] == "host", ctest_alias
 assert ctest_alias["red"] is True, ctest_alias
-assert ctest_alias["red-proof"] == {"mode": "source-base"}, ctest_alias
+assert ctest_alias["red-proof"] == {
+    "mode": "source-base",
+    "expect-failure-phase": "configure",
+}, ctest_alias
 assert ctest_alias["target"] == "darling_ec_tls_regress", ctest_alias
 assert "ctest" not in ctest_alias and "build-target" not in ctest_alias
+
+source_default = normalize_test(
+    {
+        "kind": "contract",
+        "runner": "source-contract-script",
+        "script": "tests/source-contract.sh",
+    },
+    {},
+    {},
+)
+assert source_default["kind"] == "source-contract", source_default
+assert source_default["coverage-tier"] == "source", source_default
+
+source_behavior_override = normalize_test(
+    {
+        "kind": "contract",
+        "coverage-tier": "host",
+        "runner": "source-contract-script",
+        "script": "tests/behavior-contract.sh",
+    },
+    {},
+    {},
+)
+assert source_behavior_override["kind"] == "contract", source_behavior_override
+assert source_behavior_override["coverage-tier"] == "host", source_behavior_override
 
 verbose = tests[2]
 assert verbose == profile["patches"][0]["tests"][2], verbose
