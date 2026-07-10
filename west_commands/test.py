@@ -4512,6 +4512,7 @@ fi
         *,
         darling_launcher: str | None = None,
         prefix: str | None = None,
+        bundle_root: str | None = None,
     ) -> Path:
         build = testkit / "build"
         cfg = ["cmake", "-S", str(testkit), "-B", str(build), "-G", "Ninja"]
@@ -4521,6 +4522,8 @@ fi
             cfg.append(f"-DDARLING_LAUNCHER={darling_launcher}")
         if prefix:
             cfg.append(f"-DDARLING_TEST_PREFIX={prefix}")
+        if bundle_root:
+            cfg.append(f"-DDARLING_TEST_BUNDLE_ROOT={bundle_root}")
         self.inf(f"configuring: {testkit}")
         subprocess.run(cfg, check=True)
         subprocess.run(["ninja", "-C", str(build)], check=True)
@@ -4682,6 +4685,7 @@ fi
             self._executor,
             darling_launcher=launcher,
             prefix=self._prefix,
+            bundle_root=str(getattr(self, "_bundle_root", "")),
         )
 
         changed = None
