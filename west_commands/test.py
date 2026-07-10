@@ -4038,13 +4038,27 @@ fi
             return False
         return True
 
-    def _check_guest_runtime_red_failure(self, proof, invocation, *, since: float) -> bool:
+    def _check_guest_runtime_red_failure(
+        self,
+        proof,
+        invocation,
+        *,
+        since: float,
+        captured_output: str | None = None,
+    ) -> bool:
         contains, lacks = self._red_output_expectations(proof)
         if not contains and not lacks:
             return True
 
         bundle = self._latest_debug_bundle(invocation, since=since)
         if bundle is None:
+            if captured_output is not None:
+                return self._check_red_output_expectations(
+                    proof,
+                    invocation,
+                    captured_output,
+                    where="in captured RED output",
+                )
             self.err(
                 f"{invocation['name']}: RED failure output requested, "
                 f"but no recent debug bundle was found under {self._debug_bundle_root()}"
@@ -4164,7 +4178,10 @@ fi
                     runtime_invocation = self._invocation_from_runtime_source(red_invocation, source_root)
                     with self._resource_context(runtime_invocation, bad_env) as resource_env:
                         red_started_at = time.time()
-                        bad_rc = self._run_invocation(runtime_invocation, env=resource_env)
+                        bad_rc, bad_output = self._run_invocation_captured(
+                            runtime_invocation,
+                            env=resource_env,
+                        )
                     if bad_rc == 0:
                         self.err("  RED proof failed: deployed bad runtime unexpectedly passed")
                         keep_on_failure = True
@@ -4174,6 +4191,7 @@ fi
                         proof,
                         runtime_invocation,
                         since=red_started_at,
+                        captured_output=bad_output,
                     ):
                         keep_on_failure = True
                         self.err(f"preserving failed RED runtime scratch for inspection: {temp}")
