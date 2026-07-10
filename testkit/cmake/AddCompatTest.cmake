@@ -74,6 +74,8 @@ set(DARLING_LAUNCHER "${DARLING_LAUNCHER}" CACHE FILEPATH
   "Path to the darling launcher used for env=darling CTest entries")
 set(DARLING_TEST_PREFIX "${DARLING_TEST_PREFIX}" CACHE PATH
   "Darling prefix exported to env=darling tests as DPREFIX/DARLING_PREFIX")
+option(DARLING_TEST_NO_OVERLAYFS
+  "Export DARLING_NOOVERLAYFS=1 to env=darling CTest entries" OFF)
 set(DARLING_TEST_BUNDLE_ROOT "${DARLING_TEST_BUNDLE_ROOT}" CACHE PATH
   "Debug bundle root passed to darling-debug-runner for guarded/forensic tests")
 
@@ -255,6 +257,10 @@ function(add_compat_test)
         "DPREFIX=${DARLING_TEST_PREFIX}"
         "DARLING_PREFIX=${DARLING_TEST_PREFIX}"
         "DARLING_GUEST_TIMEOUT_SECONDS=${ACT_TIMEOUT}")
+      if(DARLING_TEST_NO_OVERLAYFS)
+        set_property(TEST "${test_name}" APPEND PROPERTY ENVIRONMENT
+          "DARLING_NOOVERLAYFS=1")
+      endif()
     endif()
 
     set(labels "env:${env}" "diag:${diag}")
