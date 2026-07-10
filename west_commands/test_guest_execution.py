@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import subprocess
 import tempfile
+from dataclasses import dataclass
 from pathlib import Path
 from shlex import quote
 from typing import Callable
@@ -12,6 +13,33 @@ try:
     from .test_execution import ProcessResult, run_bounded
 except ImportError:  # Loaded as a West extension module, not a package.
     from test_execution import ProcessResult, run_bounded
+
+
+@dataclass(frozen=True)
+class GuestExecution:
+    """Resolved host inputs required to launch one Darling guest command."""
+
+    prefix: str
+    launcher: str
+
+
+def resolve_guest_execution(
+    *,
+    name: str,
+    env: dict[str, str],
+    fallback_prefix: str | None,
+    resolve_launcher: Callable[[str | None], str | None],
+    die: Callable[[str], None],
+) -> GuestExecution:
+    """Resolve the prefix and launcher shared by metadata guest runners."""
+
+    prefix = env.get("DPREFIX") or fallback_prefix
+    if not prefix:
+        die(f"{name}: guest fixture needs DPREFIX")
+    launcher = env.get("DARLING_LAUNCHER") or env.get("DARLING") or resolve_launcher(prefix)
+    if not launcher:
+        die(f"{name}: guest fixture needs a Darling launcher")
+    return GuestExecution(prefix=prefix, launcher=launcher)
 
 
 def run_guest_shell(
@@ -84,16 +112,13 @@ def run_guest_command_fixture(
 ) -> int:
     """Run a normalized guest command and validate its observable contract."""
 
-    resolved_prefix = env.get("DPREFIX") or prefix
-    if not resolved_prefix:
-        die(f"{invocation['name']}: guest-command-fixture needs DPREFIX")
-    launcher = (
-        env.get("DARLING_LAUNCHER")
-        or env.get("DARLING")
-        or resolve_launcher(resolved_prefix)
+    guest = resolve_guest_execution(
+        name=invocation["name"],
+        env=env,
+        fallback_prefix=prefix,
+        resolve_launcher=resolve_launcher,
+        die=die,
     )
-    if not launcher:
-        die(f"{invocation['name']}: guest-command-fixture needs a Darling launcher")
 
     guest_env_setup = "\n".join(
         f"export {key}={quote(value)}"
@@ -112,8 +137,8 @@ def run_guest_command_fixture(
             "w", encoding="utf-8"
         ) as stderr_file:
             result = run_guest_shell(
-                str(launcher),
-                resolved_prefix,
+                guest.launcher,
+                guest.prefix,
                 guest_script,
                 cwd=Path(invocation["cwd"]),
                 env=env,

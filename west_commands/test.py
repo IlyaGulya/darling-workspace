@@ -59,6 +59,7 @@ from test_dispatch import dispatch_fixture_runner
 from test_cmake import archive_git_tree_to, archive_source_to, run_darling_cmake_target_fixture
 from test_execution import run_bounded
 from test_guest_execution import (
+    resolve_guest_execution,
     run_guest_command_fixture,
     run_guest_shell,
     shutdown_guest_prefix,
@@ -2052,16 +2053,15 @@ class DarlingTest(WestCommand):
         if not run_env:
             run_env = os.environ.copy()
 
-        prefix = run_env.get("DPREFIX") or getattr(self, "_prefix", None)
-        if not prefix:
-            self.die(f"{invocation['name']}: guest-c-fixture needs DPREFIX")
-        launcher = (
-            run_env.get("DARLING_LAUNCHER")
-            or run_env.get("DARLING")
-            or self._resolve_darling_launcher(prefix)
+        guest = resolve_guest_execution(
+            name=invocation["name"],
+            env=run_env,
+            fallback_prefix=getattr(self, "_prefix", None),
+            resolve_launcher=self._resolve_darling_launcher,
+            die=self.die,
         )
-        if not launcher:
-            self.die(f"{invocation['name']}: guest-c-fixture needs a Darling launcher")
+        prefix = guest.prefix
+        launcher = guest.launcher
 
         with tempfile.TemporaryDirectory(prefix=f"west-guest-c-fixture-{invocation['name']}-") as temp:
             tempdir = Path(temp)
