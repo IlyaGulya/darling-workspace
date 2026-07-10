@@ -11,6 +11,7 @@ guest_cc="${DARLING_GUEST_CC:-/Library/Developer/CommandLineTools/usr/bin/clang}
 guest_cflags="${DARLING_GUEST_CFLAGS:--isysroot /Library/Developer/CommandLineTools/SDKs/MacOSX.sdk}"
 launcher="${DARLING_LAUNCHER:-}"
 ok_marker=
+ok_marker_file=
 args=()
 
 while (($#)); do
@@ -39,6 +40,10 @@ while (($#)); do
 			ok_marker="$2"
 			shift 2
 			;;
+		--ok-marker-file)
+			ok_marker_file="$2"
+			shift 2
+			;;
 		--)
 			shift
 			args=("$@")
@@ -52,7 +57,7 @@ while (($#)); do
 done
 
 if [[ -z "$name" || -z "$source" ]]; then
-	echo "usage: run-darling-c-test.sh --name NAME --source PATH [--launcher PATH] [--ok-marker TEXT] [-- ARGS...]" >&2
+	echo "usage: run-darling-c-test.sh --name NAME --source PATH [--launcher PATH] [--ok-marker TEXT|--ok-marker-file PATH] [-- ARGS...]" >&2
 	exit 2
 fi
 if [[ -z "$launcher" ]]; then
@@ -67,6 +72,17 @@ fi
 if [[ ! -f "$source" ]]; then
 	echo "$name: source not found: $source" >&2
 	exit 2
+fi
+if [[ -n "$ok_marker" && -n "$ok_marker_file" ]]; then
+	echo "$name: --ok-marker and --ok-marker-file are mutually exclusive" >&2
+	exit 2
+fi
+if [[ -n "$ok_marker_file" ]]; then
+	if [[ ! -f "$ok_marker_file" ]]; then
+		echo "$name: ok marker file not found: $ok_marker_file" >&2
+		exit 2
+	fi
+	ok_marker="$(<"$ok_marker_file")"
 fi
 
 safe_name="${name//[^A-Za-z0-9_.-]/_}"
