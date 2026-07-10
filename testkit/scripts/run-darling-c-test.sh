@@ -89,8 +89,22 @@ cleanup() {
 }
 trap cleanup EXIT
 cat > '$guest_src'
+printf 'WEST_GUEST_STAGE=compile\n'
+set +e
 $guest_cc $guest_cflags -o '$guest_bin' '$guest_src'
+compile_rc=\$?
+set -e
+printf 'ORACLE_RC=%s\n' "\$compile_rc"
+if [ "\$compile_rc" -ne 0 ]; then
+  exit "\$compile_rc"
+fi
+printf 'WEST_GUEST_STAGE=run\n'
+set +e
 '$guest_bin' ${quoted_args[*]}
+run_rc=\$?
+set -e
+printf 'ORACLE_RC=%s\n' "\$run_rc"
+exit "\$run_rc"
 " <"$source" >"$output" 2>&1
 rc=$?
 set -e

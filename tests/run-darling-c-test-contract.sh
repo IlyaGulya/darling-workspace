@@ -34,15 +34,32 @@ grep -F -q 'DPREFIX or DARLING_PREFIX is unset' "$tmp/missing-prefix.out"
 
 DPREFIX="$tmp/prefix" "$repo/testkit/scripts/run-darling-c-test.sh" \
 	--name "$name" --source "$tmp/guest.c" --launcher "$tmp/launcher" \
-	--cc cc --cflags '' --ok-marker GUEST_C_EXACT_OK
+	--cc cc --cflags '' --ok-marker GUEST_C_EXACT_OK >"$tmp/green.out" 2>&1
+grep -F -x -q WEST_GUEST_STAGE=compile "$tmp/green.out"
+grep -F -x -q WEST_GUEST_STAGE=run "$tmp/green.out"
+grep -F -x -q ORACLE_RC=0 "$tmp/green.out"
+grep -F -x -q GUEST_C_EXACT_OK "$tmp/green.out"
 
 if find /tmp -maxdepth 1 -name "${name}.*" -print | grep -q .; then
 	find /tmp -maxdepth 1 -name "${name}.*" -print >&2
 	exit 1
 fi
 
-grep -F -q 'darling_guest_shell "$launcher" "$prefix" "${DARLING_GUEST_TIMEOUT_SECONDS:-60}"' \
-	"$repo/testkit/scripts/run-darling-c-test.sh"
+cat >"$tmp/compile-fail.c" <<'C'
+int main(void) { return this_does_not_compile; }
+C
+if DPREFIX="$tmp/prefix" "$repo/testkit/scripts/run-darling-c-test.sh" \
+	--name "${name}_compile_fail" --source "$tmp/compile-fail.c" \
+	--launcher "$tmp/launcher" --cc cc --cflags '' >"$tmp/compile-fail.out" 2>&1; then
+	cat "$tmp/compile-fail.out" >&2
+	exit 1
+fi
+grep -F -x -q WEST_GUEST_STAGE=compile "$tmp/compile-fail.out"
+grep -E -q '^ORACLE_RC=[1-9][0-9]*$' "$tmp/compile-fail.out"
+if grep -F -x -q WEST_GUEST_STAGE=run "$tmp/compile-fail.out"; then
+	cat "$tmp/compile-fail.out" >&2
+	exit 1
+fi
 
 if DPREFIX="$tmp/prefix" "$repo/testkit/scripts/run-darling-c-test.sh" \
 	--name "$name" --source "$tmp/guest.c" --launcher "$tmp/launcher" \
