@@ -208,6 +208,15 @@ refs, PR drafts, and agent handoff.
 - `tests/run-west-test-gc-contract.sh` is the focused GC contract for debug
   bundles and stale runtime proof scratch dirs; update it when changing
   `west test --gc`, proof scratch naming, or dry-run pruning behavior.
+- Do not run a noisy or long `west test --prove-red` foreground command through
+  an output-limited transport: it can be killed before Python `finally` cleanup
+  runs and create a false worktree leak. Send its output to a named log, start
+  it under `nohup setsid`, retain its PID and rc file, poll it to completion,
+  then inspect the log tail and temporary worktree/process state. Never claim a
+  cleanup failure while the recorded test PID is still live.
+- When creating Beads from a shell command, do not put unescaped backticks in
+  `--description`: the shell treats them as command substitution. Use plain
+  command text or safely single-quote/escape it, then verify the created ID.
 - CTest `env=darling` entries are source-driven guest tests: `add_compat_test`
   must upload/compile/run the C source inside the selected Darling prefix via
   `testkit/scripts/run-darling-c-test.sh`. Do not run Linux host-built test

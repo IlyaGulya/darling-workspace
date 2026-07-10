@@ -9,6 +9,7 @@ from west_commands.test_worktrees import (
     path_has_west_temp_component,
     prunable_west_temp_worktrees,
     prune_stale_west_temp_worktrees,
+    remove_temporary_worktree,
 )
 
 
@@ -70,5 +71,35 @@ assert prune_stale_west_temp_worktrees([repo_a, repo_b], runner=fake_runner) == 
 ]
 assert any(call[0] == ("git", "-C", str(repo_a), "worktree", "prune") for call in calls)
 assert not any(call[0] == ("git", "-C", str(repo_b), "worktree", "prune") for call in calls)
+
+
+def successful_remove(args, **kwargs):
+    assert args == ["git", "worktree", "remove", "--force", "/tmp/west-profile-homebrew-ok/darling"]
+    assert kwargs["cwd"] == repo_a
+    assert kwargs["capture_output"] and kwargs["text"] and not kwargs["check"]
+    return subprocess.CompletedProcess(args, 0, stdout="", stderr="")
+
+
+assert remove_temporary_worktree(
+    repo_a,
+    Path("/tmp/west-profile-homebrew-ok/darling"),
+    runner=successful_remove,
+) is None
+
+
+def failed_remove(args, **kwargs):
+    del kwargs
+    return subprocess.CompletedProcess(args, 128, stdout="", stderr="worktree is locked\n")
+
+
+failure = remove_temporary_worktree(
+    repo_a,
+    Path("/tmp/west-profile-homebrew-failed/darling"),
+    runner=failed_remove,
+)
+assert failure == (
+    "/tmp/west-profile-homebrew-failed/darling "
+    "(rc=128): worktree is locked"
+), failure
 
 print("PASS west-test-worktree-cleanup-contract")
