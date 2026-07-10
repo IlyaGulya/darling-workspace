@@ -710,9 +710,13 @@ Key properties that answer the speed/disk fear directly:
 
 Storage is bounded by GC: `west test --gc` keeps the newest `--keep-last N`
 bundles and drops any over `--max-bundle-mb` (catches stray forensic
-cores/traces). Verified: a 77M scratch dir with an 80M "forensic" bundle pruned
-to 20K. This is the part neither CTest, gVisor, nor Wine offers, and the reason
-`west test` exists rather than bare `ninja test` — but it is metered, not free.
+cores/traces). It also prunes stale `west-red-proof-runtime-*` and
+`west-green-proof-runtime-*` scratch dirs older than
+`--proof-scratch-max-age-hours` so preserved failed runtime builds do not
+silently accumulate after investigations. Verified: a 77M scratch dir with an
+80M "forensic" bundle pruned to 20K. This is the part neither CTest, gVisor,
+nor Wine offers, and the reason `west test` exists rather than bare
+`ninja test` — but it is metered, not free.
 
 ### Orchestrator — `west test` (`west_commands/test.py`)
 
@@ -729,7 +733,7 @@ west test --diag guarded        # restrict diagnosis tier
 west test --fuzz                # restrict to fuzz:* labelled jobs
 west test --stress              # restrict to stress:* labelled jobs
 west test --list                # show selection, no run
-west test --gc --keep-last 20 --max-bundle-mb 64   # prune debug bundles
+west test --gc --keep-last 20 --max-bundle-mb 64   # prune bundles + stale proof scratch
 west test ... -j8 --output-junit r.xml   # passthrough to ctest
 ```
 
