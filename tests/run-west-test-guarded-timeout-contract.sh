@@ -47,13 +47,17 @@ if [[ -z "$bundle" ]]; then
 	exit 1
 fi
 
-for artifact in command.txt pid.txt stdout.log stderr.log env.txt; do
+for artifact in command.txt pid.txt stdout.log stderr.log env.txt timeout.txt cleanup-status.txt; do
 	test -f "$bundle/$artifact" || { find "$bundle" -maxdepth 1 -type f -print >&2; exit 1; }
 done
+test -d "$bundle/guarded-tree" || {
+	find "$bundle" -maxdepth 2 -print >&2
+	exit 1
+}
 
 grep -q 'guarded_timeout_contract' "$bundle/command.txt" ||
 	{ cat "$bundle/command.txt" >&2; exit 1; }
-grep -q 'Timeout' "$tmp/ctest.out" ||
+grep -q 'RESULT=timeout' "$tmp/ctest.out" ||
 	{ cat "$tmp/ctest.out" >&2; exit 1; }
 
 pid="$(cat "$bundle/pid.txt")"

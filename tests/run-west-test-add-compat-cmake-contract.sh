@@ -73,9 +73,9 @@ cmake -S "$tmp" -B "$tmp/build-guarded" -G Ninja \
 	-DDARLING_TEST_EXECUTOR=/bin/echo >/dev/null
 
 guarded_ctest_file="$tmp/build-guarded/CTestTestfile.cmake"
-grep -q 'darling/guest_arg_contract.*"--timeout-seconds" "27"' "$guarded_ctest_file" ||
+grep -q 'darling/guest_arg_contract.*"--timeout-seconds" "17"' "$guarded_ctest_file" ||
 	{ cat "$guarded_ctest_file" >&2; exit 1; }
-grep -q 'DARLING_GUEST_TIMEOUT_SECONDS=17' "$guarded_ctest_file" ||
+grep -q 'DARLING_GUEST_TIMEOUT_SECONDS=27' "$guarded_ctest_file" ||
 	{ cat "$guarded_ctest_file" >&2; exit 1; }
 grep -q 'TIMEOUT "27"' "$guarded_ctest_file" ||
 	{ cat "$guarded_ctest_file" >&2; exit 1; }
