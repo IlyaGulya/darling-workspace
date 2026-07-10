@@ -1429,6 +1429,27 @@ class DarlingTest(WestCommand):
             return rc
         return self._check_host_traces(invocation, run_env)
 
+    def _run_invocation_captured(self, invocation, env=None) -> tuple[int, str]:
+        """Run an invocation while capturing subprocess stdout/stderr."""
+        with tempfile.TemporaryFile(mode="w+", encoding="utf-8", errors="replace") as output:
+            stdout_fd = os.dup(1)
+            stderr_fd = os.dup(2)
+            try:
+                sys.stdout.flush()
+                sys.stderr.flush()
+                os.dup2(output.fileno(), 1)
+                os.dup2(output.fileno(), 2)
+                rc = self._run_invocation(invocation, env=env)
+                sys.stdout.flush()
+                sys.stderr.flush()
+            finally:
+                os.dup2(stdout_fd, 1)
+                os.dup2(stderr_fd, 2)
+                os.close(stdout_fd)
+                os.close(stderr_fd)
+            output.seek(0)
+            return rc, output.read()
+
     @contextmanager
     def _host_trace_context(self, invocation, env):
         traces = invocation.get("host_trace_files", [])
@@ -3405,6 +3426,9 @@ fi
         if not profile:
             yield None
             return
+        if self._profile_is_applied(profile):
+            yield None
+            return
 
         module_repo = self._project_path(module)
         revision = self._manifest_revision(module)
@@ -3964,12 +3988,7 @@ fi
         return True
 
     def _check_guest_runtime_red_failure(self, proof, invocation, *, since: float) -> bool:
-        contains = proof.get("expect-output-contains", [])
-        lacks = proof.get("expect-output-lacks", [])
-        if isinstance(contains, str):
-            contains = [contains]
-        if isinstance(lacks, str):
-            lacks = [lacks]
+        contains, lacks = self._red_output_expectations(proof)
         if not contains and not lacks:
             return True
 
@@ -3982,18 +4001,36 @@ fi
             return False
 
         output = self._debug_bundle_output(bundle)
+        return self._check_red_output_expectations(
+            proof,
+            invocation,
+            output,
+            where=f"in {bundle}",
+        )
+
+    def _red_output_expectations(self, proof) -> tuple[list[str], list[str]]:
+        contains = proof.get("expect-output-contains", [])
+        lacks = proof.get("expect-output-lacks", [])
+        if isinstance(contains, str):
+            contains = [contains]
+        if isinstance(lacks, str):
+            lacks = [lacks]
+        return [str(item) for item in contains], [str(item) for item in lacks]
+
+    def _check_red_output_expectations(self, proof, invocation, output: str, *, where: str) -> bool:
+        contains, lacks = self._red_output_expectations(proof)
         for needle in contains:
-            if str(needle) not in output:
+            if needle not in output:
                 self.err(
                     f"{invocation['name']}: RED failure output missing {needle!r} "
-                    f"in {bundle}"
+                    f"{where}"
                 )
                 return False
         for needle in lacks:
-            if str(needle) in output:
+            if needle in output:
                 self.err(
                     f"{invocation['name']}: RED failure output unexpectedly contains "
-                    f"{needle!r} in {bundle}"
+                    f"{needle!r} {where}"
                 )
                 return False
         return True
@@ -4131,9 +4168,16 @@ fi
                     bad_env.update(exec_env)
                 bad_env[source_env] = str(worktree)
                 self.inf(f"  RED source tree: {bad_revision} via {source_env}={worktree}")
-                bad_rc = self._run_invocation(invocation, env=bad_env)
+                bad_rc, bad_output = self._run_invocation_captured(invocation, env=bad_env)
                 if bad_rc == 0:
                     self.err("  RED proof failed: source-base run unexpectedly passed")
+                    return 1
+                if not self._check_red_output_expectations(
+                    proof,
+                    invocation,
+                    bad_output,
+                    where="in source-base RED output",
+                ):
                     return 1
                 self.inf(f"  RED path failed as expected (rc={bad_rc})")
             finally:
@@ -4148,15 +4192,18 @@ fi
         module = proof.get("source-module", patch["module"])
         with self._source_base_green_source_tree(patch, module) as green_source:
             green_env = self._execution_env(invocation)
-            if green_source is not None:
-                if green_env is None:
-                    green_env = os.environ.copy()
-                else:
-                    green_env = dict(green_env)
-                green_env[source_env] = str(green_source)
-                self.inf(f"  GREEN profile source tree: {source_env}={green_source}")
+            if green_env is None:
+                green_env = os.environ.copy()
             else:
-                self.inf("  GREEN current tree")
+                green_env = dict(green_env)
+            if green_source is not None:
+                green_source_env = green_source
+                self.inf(f"  GREEN profile source tree: {source_env}={green_source_env}")
+            else:
+                green_source_env = self._project_path(module)
+                self.inf(f"  GREEN current tree: {source_env}={green_source_env}")
+            if source_env:
+                green_env[source_env] = str(green_source_env)
             return self._run_invocation(invocation, env=green_env)
 
     def _run_red_proofs(self, tests, list_only: bool, unknown: list[str]) -> int:
