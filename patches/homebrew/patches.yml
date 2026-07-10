@@ -1631,13 +1631,10 @@ patches:
     coverage-tier: compile
     runs: host
     diag: bare
-    red: true
-    red-proof:
-      mode: source-base
-      source-env: DSERVER_SRC_ROOT
     runner: c-fixture
     repo: darling-workspace
     script: tests/pthread_cancel_state_contract.c
+    source-env: DSERVER_SRC_ROOT
     include-dirs:
     - duct-tape/internal-include
     compile-flags:
@@ -1645,7 +1642,7 @@ patches:
     - -Wall
     - -Wextra
     - -Werror
-    note: Compiles the production pthread cancel-state helper and verifies XNU-style action 0/1/2 plus markcancel state transitions.
+    note: Compile invariant for the production pthread cancel-state helper; direct runtime RED carries the old-stub behavior because source-base compile failure only proves the helper header is absent.
   - name: pthread_cancel_read_guest
     kind: guest
     coverage-tier: runtime
@@ -1656,7 +1653,6 @@ patches:
       mode: guest-runtime-deploy
       bad-profile: current-minus-patch
       current-minus-skip-patches:
-      - darlingserver/fork-checkin-sticky-flag.patch
       - darlingserver/progress-metrics.patch
       - darlingserver/server-inline-fastpath.patch
       - darlingserver/checkin-rwlock-across-suspend.patch
@@ -1667,14 +1663,29 @@ patches:
       - darlingserver/pot-guest-lifetime-binding.patch
       - darlingserver/test-diagnostics-trace.patch
       expect-output-contains:
-      - pthread cancel read timed out waiting for PTHREAD_CANCELED
-      - ORACLE_RC=124
+      - DSERVERDBG_PTHREAD_CANCELED_ACTION1_RC=-38
+      - DSERVERDBG_PTHREAD_CANCEL_STUB_OK
+      source-patches:
+      - tests/fixtures/darlingserver/launchfree-test-diagnostics.patch
+      - tests/fixtures/pthread-cancel/dserverdbg-cancel-state-oracle.patch
+      red-runner:
+        runner: script
+        repo: darling-workspace
+        script: tests/run-dserverdbg-pthread-cancel-state.sh
+        timeout-seconds: 30
+        host-temp-files:
+        - env: DSERVER_TEST_TRACE_FILE
+          prefix-relative-path: private/var/tmp/dserver-pthread-cancel-state.trace
+      cmake-defines:
+        DSERVER_TOOLS: true
       runtime-artifacts:
       - module: darling/src/external/darlingserver
         build-targets:
         - darlingserver
+        - dserverdbg
         deploy:
         - bin/darlingserver
+        - bin/dserverdbg
     runner: guest-c-fixture
     repo: darling-workspace
     script: tests/pthread_cancel_read_guest.c
