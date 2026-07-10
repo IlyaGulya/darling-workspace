@@ -78,11 +78,11 @@ option(DARLING_TEST_NO_OVERLAYFS
   "Export DARLING_NOOVERLAYFS=1 to env=darling CTest entries" OFF)
 set(DARLING_TEST_BUNDLE_ROOT "${DARLING_TEST_BUNDLE_ROOT}" CACHE PATH
   "Debug bundle root passed to darling-debug-runner for guarded/forensic tests")
-set(DARLING_TEST_GUEST_C_CLEANUP_GRACE_SECONDS 10 CACHE STRING
-  "Seconds reserved after a guest C timeout for diagnostics and cleanup")
-if(NOT DARLING_TEST_GUEST_C_CLEANUP_GRACE_SECONDS MATCHES "^[0-9]+$")
+set(DARLING_TEST_GUARDED_CLEANUP_GRACE_SECONDS 10 CACHE STRING
+  "Seconds reserved after a guarded timeout for diagnostics and cleanup")
+if(NOT DARLING_TEST_GUARDED_CLEANUP_GRACE_SECONDS MATCHES "^[0-9]+$")
   message(FATAL_ERROR
-    "DARLING_TEST_GUEST_C_CLEANUP_GRACE_SECONDS must be a non-negative integer")
+    "DARLING_TEST_GUARDED_CLEANUP_GRACE_SECONDS must be a non-negative integer")
 endif()
 
 function(add_compat_test)
@@ -196,14 +196,16 @@ function(add_compat_test)
 
   foreach(env IN LISTS ACT_ENVS)
     set(test_name "${env}/${ACT_NAME}")
-    # Guest source tests enforce ACT_TIMEOUT inside the Darling shell.  The
-    # outer watchdog needs a little longer so that the inner timeout can emit
-    # its stage, return code, and file diagnostics before cleanup.  Reusing
-    # the exact deadline here races those diagnostics and hides the cause.
+    unset(guest_stage_timeout)
+    # CTest reserves cleanup grace beyond the product timeout. For guarded
+    # guest tests the executor must observe the timeout first: otherwise the
+    # inner shell timeout kills the process tree before the executor can save
+    # its diagnostic snapshot. Bare tests still use the inner stage deadline
+    # directly, so they remain self-bounded without an executor.
     set(test_timeout "${ACT_TIMEOUT}")
     if(env STREQUAL "darling")
       math(EXPR test_timeout
-        "${ACT_TIMEOUT} + ${DARLING_TEST_GUEST_C_CLEANUP_GRACE_SECONDS}")
+        "${ACT_TIMEOUT} + ${DARLING_TEST_GUARDED_CLEANUP_GRACE_SECONDS}")
     endif()
 
     # Per-environment launch command.
@@ -256,7 +258,16 @@ function(add_compat_test)
     # degrade to bare so the suite still runs.
     if(NOT diag STREQUAL "bare")
       if(DARLING_TEST_EXECUTOR)
-        set(exec_args run --name "${test_name}" --timeout-seconds ${test_timeout})
+        set(guest_stage_timeout "${ACT_TIMEOUT}")
+        if(env STREQUAL "darling")
+          math(EXPR guest_stage_timeout
+            "${ACT_TIMEOUT} + ${DARLING_TEST_GUARDED_CLEANUP_GRACE_SECONDS}")
+        endif()
+        if(NOT env STREQUAL "darling")
+          math(EXPR test_timeout
+            "${ACT_TIMEOUT} + ${DARLING_TEST_GUARDED_CLEANUP_GRACE_SECONDS}")
+        endif()
+        set(exec_args run --name "${test_name}" --timeout-seconds ${ACT_TIMEOUT})
         if(DARLING_TEST_BUNDLE_ROOT)
           list(APPEND exec_args --bundle-root "${DARLING_TEST_BUNDLE_ROOT}")
         endif()
@@ -272,6 +283,9 @@ function(add_compat_test)
           "DARLING_TEST_EXECUTOR is unset; falling back to bare")
         set(diag "bare")
       endif()
+    endif()
+    if(NOT DEFINED guest_stage_timeout)
+      set(guest_stage_timeout "${ACT_TIMEOUT}")
     endif()
 
     # CTest's WILL_FAIL only inverts the exit status. A RED case instead needs
@@ -292,7 +306,7 @@ function(add_compat_test)
       set_property(TEST "${test_name}" APPEND PROPERTY ENVIRONMENT
         "DPREFIX=${DARLING_TEST_PREFIX}"
         "DARLING_PREFIX=${DARLING_TEST_PREFIX}"
-        "DARLING_GUEST_TIMEOUT_SECONDS=${ACT_TIMEOUT}")
+        "DARLING_GUEST_TIMEOUT_SECONDS=${guest_stage_timeout}")
       if(DARLING_TEST_NO_OVERLAYFS)
         set_property(TEST "${test_name}" APPEND PROPERTY ENVIRONMENT
           "DARLING_NOOVERLAYFS=1")
