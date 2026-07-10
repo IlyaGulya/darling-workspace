@@ -115,6 +115,30 @@ else()
 endif()
 
 # ---------------------------------------------------------------------------
+# dar-q95.3 — source-driven guest regression for high-fd select/pselect.
+#
+# The fixture is maintained beside its patch metadata in this workspace, not in
+# the xnu checkout.  add_compat_test() uploads and compiles it inside Darling,
+# so registration needs no Linux build and the CTest case follows the deployed
+# libsystem_kernel selected by the active prefix.
+# ---------------------------------------------------------------------------
+set(_select_fdset_guest "${_workspace_root}/tests/select_fdset_guest.c")
+if(EXISTS "${_select_fdset_guest}")
+  add_compat_test(
+    NAME       select_fdset_guest
+    SOURCE     "${_select_fdset_guest}"
+    ENVS       darling
+    BEAD       dar-q95.3
+    SUBMODULES xnu
+    TIMEOUT    30
+    OK_MARKER  "SELECT_FDSET_GUEST_OK"
+  )
+else()
+  message(WARNING
+    "workspace missing ${_select_fdset_guest}; skipping dar-q95.3")
+endif()
+
+# ---------------------------------------------------------------------------
 # dar-gwn.5 — real regression for the mldr raw-fork glibc lock reset.
 #
 # Mirrors tests/regression/run-glibc-fork-lock-reset.sh exactly: the harness is
