@@ -4071,6 +4071,11 @@ class DarlingTest(WestCommand):
             fcntl.flock(lock.fileno(), fcntl.LOCK_EX)
             self._prefix_cleanup_failed = False
             try:
+                if not self._shutdown_test_prefix():
+                    self._prefix_cleanup_failed = True
+                    self.die(
+                        f"could not reset Darling prefix before test run: {prefix}"
+                    )
                 yield
             finally:
                 try:
