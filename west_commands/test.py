@@ -55,6 +55,7 @@ from test_ctest import (
     ctest_selector_label_args,
     ctest_uses_prefix,
 )
+from test_dispatch import dispatch_fixture_runner
 from test_cmake import archive_git_tree_to, archive_source_to, run_darling_cmake_target_fixture
 from test_execution import run_bounded
 from test_guest_execution import run_guest_shell, shutdown_guest_prefix
@@ -1453,33 +1454,37 @@ class DarlingTest(WestCommand):
         return " ".join(quote(str(arg)) for arg in args)
 
     def _run_invocation(self, invocation, env=None) -> int:
-        if invocation.get("guest_c_fixture"):
-            return self._run_guest_c_fixture(invocation, env=env)
-        if invocation.get("guest_command_fixture"):
-            return self._run_guest_command_fixture(invocation, env=env)
-        if invocation.get("c_fixture"):
-            return self._run_c_fixture(invocation, env=env)
-        if invocation.get("object_symbol_fixture"):
-            return self._run_object_symbol_fixture(invocation, env=env)
-        if invocation.get("source_build_fixture"):
-            return self._run_source_build_fixture(invocation, env=env)
-        if invocation.get("source_script_fixture"):
-            return self._run_source_script_fixture(invocation, env=env)
-        if invocation.get("cmake_configure_fixture"):
-            return self._run_cmake_configure_fixture(invocation, env=env)
-        if invocation.get("darling_cmake_target_fixture"):
-            rc = run_darling_cmake_target_fixture(
-                invocation,
-                env=env,
-                executor=getattr(self, "_executor", None),
-                bundle_root=getattr(self, "_bundle_root", "~/work/darling-debug"),
-                inf=self.inf,
-                err=self.err,
-                die=self.die,
-            )
-            if rc:
-                self._record_failure_phase(invocation, "configure")
-            return rc
+        return dispatch_fixture_runner(
+            invocation,
+            env,
+            runners=(
+                ("guest_c_fixture", self._run_guest_c_fixture),
+                ("guest_command_fixture", self._run_guest_command_fixture),
+                ("c_fixture", self._run_c_fixture),
+                ("object_symbol_fixture", self._run_object_symbol_fixture),
+                ("source_build_fixture", self._run_source_build_fixture),
+                ("source_script_fixture", self._run_source_script_fixture),
+                ("cmake_configure_fixture", self._run_cmake_configure_fixture),
+                ("darling_cmake_target_fixture", self._run_darling_cmake_target_fixture),
+            ),
+            fallback=self._run_command_invocation,
+        )
+
+    def _run_darling_cmake_target_fixture(self, invocation, env=None) -> int:
+        rc = run_darling_cmake_target_fixture(
+            invocation,
+            env=env,
+            executor=getattr(self, "_executor", None),
+            bundle_root=getattr(self, "_bundle_root", "~/work/darling-debug"),
+            inf=self.inf,
+            err=self.err,
+            die=self.die,
+        )
+        if rc:
+            self._record_failure_phase(invocation, "configure")
+        return rc
+
+    def _run_command_invocation(self, invocation, env=None) -> int:
         run_env = env if env is not None else invocation.get("env")
         result = run_bounded(
             self._debug_runner_args(invocation),
