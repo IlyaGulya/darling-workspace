@@ -1524,13 +1524,10 @@ patches:
     coverage-tier: compile
     runs: host
     diag: bare
-    red: true
-    red-proof:
-      mode: source-base
-      source-env: DSERVER_SRC_ROOT
     runner: c-fixture
     repo: darling-workspace
     script: tests/wait_timer_prepare_for_wait_contract.c
+    source-env: DSERVER_SRC_ROOT
     include-dirs:
     - duct-tape/internal-include
     compile-flags:
@@ -1538,7 +1535,7 @@ patches:
     - -Wall
     - -Wextra
     - -Werror
-    note: Compile contract for the production prepare-for-wait helper used by assert_wait; old source has no prepare contract, fixed source clears stale timers before a new wait can be armed.
+    note: Compile invariant for the production prepare-for-wait helper used by assert_wait; runtime trace RED carries the behavioral proof because a source-base compile failure only proves the old helper API is absent.
   - name: wait_timer_assert_prepare_guest
     kind: guest
     coverage-tier: runtime
