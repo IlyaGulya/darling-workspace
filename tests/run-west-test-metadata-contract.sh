@@ -29,6 +29,8 @@ if [ "${1:-}" = "--self-contract-probe" ]; then
 fi
 
 export PYTHONDONTWRITEBYTECODE=1
+
+python3 tests/west_test_contracts/selection_contract.py
 tmp_profile="patches/__metadata_contract"
 tmp_source_profile="patches/__metadata_source_profile_contract"
 tmp_invalid_profile="patches/__metadata_invalid_contract"
