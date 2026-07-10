@@ -1,0 +1,170 @@
+From 4f02d05fbd347b145b69882dd4b4e99a9c7e8c30 Mon Sep 17 00:00:00 2001
+From: Ilya Gulya <ilya.gulya@indriver.com>
+Date: Fri, 10 Jul 2026 17:23:51 +0000
+Subject: [PATCH] startup: support rootless no-mount launch
+
+---
+ src/launchd/src/launchd.c | 11 ++++++++++-
+ src/launchd/src/runtime.c |  3 ++-
+ src/startup/darling.c     | 41 +++++++++++++++++++++++++++++++--------
+ src/startup/mldr/mldr.c   |  8 ++++++++
+ 4 files changed, 53 insertions(+), 10 deletions(-)
+
+diff --git a/src/launchd/src/launchd.c b/src/launchd/src/launchd.c
+index cd2cdfec9d3d00cc068db1f3d772cc388a936ff6..ff7dd462888975107eb98c2707804a6a8010ba0d 100644
+--- a/src/launchd/src/launchd.c
++++ b/src/launchd/src/launchd.c
+@@ -103,6 +103,13 @@ static bool do_pid1_crash_diagnosis_mode2(const char *msg);
+ 
+ static void *update_thread(void *nothing);
+ 
++static bool
++rootless_mode_enabled(void)
++{
++	const char *value = getenv("DARLING_ROOTLESS");
++	return value != NULL && strcmp(value, "1") == 0;
++}
++
+ static void *crash_addr;
+ static pid_t crash_pid;
+ 
+@@ -160,7 +167,9 @@ main(int argc, char *const *argv)
+ 		}
+ 	}
+ 
+-	if (getpid() != 1 && getppid() != 1) {
++bool darling_rootless = rootless_mode_enabled();
++
++	if (!darling_rootless && getpid() != 1 && getppid() != 1) {
+ 		fprintf(stderr, "%s: This program is not meant to be run directly.\n", getprogname());
+ 		exit(EXIT_FAILURE);
+ 	}
+diff --git a/src/launchd/src/runtime.c b/src/launchd/src/runtime.c
+index 245489ab650bf397434a9dd48a52c779275e9c4d..9dfe93da01b107ebba6e278d7e5efb25fb69dfaf 100644
+--- a/src/launchd/src/runtime.c
++++ b/src/launchd/src/runtime.c
+@@ -1386,7 +1386,8 @@ do_file_init(void)
+ 
+ 	launchd_system_start = runtime_get_wall_time();
+ 
+-	if (getpid() == 1) {
++	const char* rootless = getenv("DARLING_ROOTLESS");
++	if (getpid() == 1 || (rootless != NULL && strcmp(rootless, "1") == 0)) {
+ 		pid1_magic = true;
+ 	}
+ 
+diff --git a/src/startup/darling.c b/src/startup/darling.c
+index a3f27fbf3858ec9ac29bc6f17ad28c9a27fc3aef..3daf5061b51027307b1e386f670657839081577e 100644
+--- a/src/startup/darling.c
++++ b/src/startup/darling.c
+@@ -29,6 +29,7 @@ along with Darling.  If not, see <http://www.gnu.org/licenses/>.
+ #include <signal.h>
+ #include <stdbool.h>
+ #include <sched.h>
++#include <sys/prctl.h>
+ #include <sys/poll.h>
+ #include <sys/socket.h>
+ #include <sys/un.h>
+@@ -51,6 +52,12 @@ uid_t g_originalUid, g_originalGid;
+ bool g_fixPermissions = false;
+ char g_workingDirectory[4096];
+ 
++static bool rootlessModeEnabled(void)
++{
++	const char* value = getenv("DARLING_ROOTLESS");
++	return value != NULL && value[0] == '1' && value[1] == '\0';
++}
++
+ int main(int argc, char ** argv)
+ {
+ 	pid_t pidInit;
+@@ -61,7 +68,9 @@ int main(int argc, char ** argv)
+ 		return 1;
+ 	}
+ 
+-	if (geteuid() != 0)
++	const bool rootless = rootlessModeEnabled();
++
++	if (!rootless && geteuid() != 0)
+ 	{
+ 		missingSetuidRoot();
+ 		return 1;
+@@ -70,8 +79,19 @@ int main(int argc, char ** argv)
+ 	g_originalUid = getuid();
+ 	g_originalGid = getgid();
+ 
+-	setuid(0);
+-	setgid(0);
++	if (!rootless)
++	{
++		setuid(0);
++		setgid(0);
++	}
++	else
++	{
++		if (prctl(PR_SET_CHILD_SUBREAPER, 1, 0, 0, 0) != 0)
++		{
++			fprintf(stderr, "Cannot enable rootless child reaping: %s\n", strerror(errno));
++			return 1;
++		}
++	}
+ 
+ 	prefix = getenv("DPREFIX");
+ 	if (!prefix)
+@@ -187,10 +207,12 @@ int main(int argc, char ** argv)
+ 	}
+ 
+ #if USE_LINUX_4_11_HACK
+-	joinNamespace(pidInit, CLONE_NEWNS, "mnt");
++	if (!rootless)
++		joinNamespace(pidInit, CLONE_NEWNS, "mnt");
+ #endif
+ 
+-	seteuid(g_originalUid);
++	if (!rootless)
++		seteuid(g_originalUid);
+ 
+ 	if (strcmp(argv[1], "shell") == 0)
+ 	{
+@@ -789,10 +811,13 @@ pid_t spawnInitProcess(void)
+ 		exit(1);
+ 	}
+ 
+-	if (unshare(CLONE_NEWUTS | CLONE_NEWIPC) != 0)
++	if (!rootlessModeEnabled())
+ 	{
+-		fprintf(stderr, "Cannot unshare UTS and IPC namespaces to create darling-init: %s\n", strerror(errno));
+-		exit(1);
++		if (unshare(CLONE_NEWUTS | CLONE_NEWIPC) != 0)
++		{
++			fprintf(stderr, "Cannot unshare UTS and IPC namespaces to create darling-init: %s\n", strerror(errno));
++			exit(1);
++		}
+ 	}
+ 
+ 	pid = fork();
+diff --git a/src/startup/mldr/mldr.c b/src/startup/mldr/mldr.c
+index 7ee672a1812ce61c9c0dfa58002fb685a8581571..6ceb3ee0582e95b96de3bba08fbe4f79692784b0 100644
+--- a/src/startup/mldr/mldr.c
++++ b/src/startup/mldr/mldr.c
+@@ -543,12 +543,20 @@ static void process_special_env(struct load_results* lr) {
+ 		lr->root_path = root_path;
+ 		lr->root_path_length = strlen(lr->root_path);
+ 	}
++
++	str = getenv("__mldr_rootless_pid1");
++	if (str != NULL && strcmp(str, "1") == 0) {
++		char hostPID[32];
++		snprintf(hostPID, sizeof(hostPID), "%ld", (long)getpid());
++		setenv("__darling_rootless_init_host_pid", hostPID, 1);
++	}
+ };
+ 
+ static void unset_special_env() {
+ 	unsetenv("__mldr_bprefs");
+ 	unsetenv("__mldr_sockpath");
+ 	unsetenv("__mldr_lifetime_pipe");
++	unsetenv("__mldr_rootless_pid1");
+ };
+ 
+ typedef struct socket_bitmap {

@@ -1,0 +1,66 @@
+From 3ff5a016214c3a52c09bd8371a2adcf26e6ea139 Mon Sep 17 00:00:00 2001
+From: Ilya Gulya <ilya@gulya.me>
+Date: Fri, 10 Jul 2026 17:22:38 +0000
+Subject: [PATCH] libsystem_kernel: preserve rootless init identity
+
+---
+ .../resources/dserver-rpc-defs.h              |  3 ++-
+ .../src/linux_premigration/elfcalls_wrapper.c | 27 +++++++++++++++++++
+ 2 files changed, 29 insertions(+), 1 deletion(-)
+
+diff --git a/darling/src/libsystem_kernel/emulation/include/linux_premigration/resources/dserver-rpc-defs.h b/darling/src/libsystem_kernel/emulation/include/linux_premigration/resources/dserver-rpc-defs.h
+index 1dc520d427c8e584cd6572fea417e8a6456cb3f4..fb42b9152919f00317b9d370e9387f0ac0aa0590 100644
+--- a/darling/src/libsystem_kernel/emulation/include/linux_premigration/resources/dserver-rpc-defs.h
++++ b/darling/src/libsystem_kernel/emulation/include/linux_premigration/resources/dserver-rpc-defs.h
+@@ -58,7 +58,8 @@ struct linux_sockaddr_un {
+ #define DSERVER_RPC_HOOKS_CMSG_DATA(cmsghdr) (&(cmsghdr)->cmsg_data[0])
+ #define DSERVER_RPC_HOOKS_ATTRIBUTE static
+ 
+-#define dserver_rpc_hooks_get_pid() ((int)LINUX_SYSCALL0(__NR_getpid))
++int __darling_rootless_init_pid(void);
++#define dserver_rpc_hooks_get_pid() (__darling_rootless_init_pid() ? 1 : ((int)LINUX_SYSCALL0(__NR_getpid)))
+ 
+ #define dserver_rpc_hooks_get_tid() ((int)LINUX_SYSCALL(__NR_gettid))
+ 
+diff --git a/darling/src/libsystem_kernel/emulation/src/linux_premigration/elfcalls_wrapper.c b/darling/src/libsystem_kernel/emulation/src/linux_premigration/elfcalls_wrapper.c
+index 7ee7b586832d9f4ce3528af285887e58a76b9c2d..5a721d1d05c07caddd7a25999f9b8ac479d3a2a4 100644
+--- a/darling/src/libsystem_kernel/emulation/src/linux_premigration/elfcalls_wrapper.c
++++ b/darling/src/libsystem_kernel/emulation/src/linux_premigration/elfcalls_wrapper.c
+@@ -4,6 +4,9 @@
+ #include <dlfcn.h>
+ 
+ #include <darling/emulation/common/simple.h>
++#include <darling/emulation/linux_premigration/linux-syscalls/linux.h>
++
++extern char* getenv(const char* name);
+ 
+ extern struct elf_calls* _elfcalls;
+ 
+@@ -110,3 +113,27 @@ int __dserver_process_lifetime_pipe_refresh(void) {
+ void __dserver_close_process_lifetime_pipe(int fd) {
+ 	return elfcalls()->dserver_close_process_lifetime_pipe(fd);
+ };
++
++int __darling_rootless_init_pid(void) {
++	static pid_t initHostPID = -1;
++
++	if (initHostPID == -1) {
++		const char* value = getenv("__darling_rootless_init_host_pid");
++		pid_t parsed = 0;
++
++		if (value == NULL || *value == '\0') {
++			initHostPID = 0;
++		} else {
++			for (; *value != '\0'; ++value) {
++				if (*value < '0' || *value > '9') {
++					parsed = 0;
++					break;
++				}
++				parsed = parsed * 10 + (*value - '0');
++			}
++			initHostPID = parsed;
++		}
++	}
++
++	return initHostPID != 0 && LINUX_SYSCALL0(__NR_getpid) == initHostPID;
++};

@@ -84,10 +84,34 @@
           "source_ref": "refs/heads/fix/mldr-thread-create-futex-wait"
         },
         {
+          "branch": "fix/rootless-no-mount-homebrew",
+          "head": "6aa5c0dcf7f1f5148fcbf0d7d94a5891b03cb296",
+          "upstream": "",
+          "source_ref": "refs/heads/fix/rootless-no-mount-homebrew"
+        },
+        {
+          "branch": "fix/rootless-no-mount-launch",
+          "head": "4f02d05fbd347b145b69882dd4b4e99a9c7e8c30",
+          "upstream": "",
+          "source_ref": "refs/heads/fix/rootless-no-mount-launch"
+        },
+        {
+          "branch": "fix/rootless-no-mount-profile",
+          "head": "f093dd661b8bef0140ab2b8b01033283343a4424",
+          "upstream": "",
+          "source_ref": "refs/heads/fix/rootless-no-mount-profile"
+        },
+        {
           "branch": "fix/rootless-nomount",
-          "head": "f05fa76033ab62014228fdb3b0a687fdb8d37514",
+          "head": "340f418d411f7b680ffeb9ea204586d29a2ef15e",
           "upstream": "",
           "source_ref": "refs/heads/fix/rootless-nomount"
+        },
+        {
+          "branch": "fix/rootless-runtime-components",
+          "head": "6aa5c0dcf7f1f5148fcbf0d7d94a5891b03cb296",
+          "upstream": "",
+          "source_ref": "refs/heads/fix/rootless-runtime-components"
         },
         {
           "branch": "fix/sandbox-exec-pass-through",
@@ -360,8 +384,14 @@
           "source_ref": "refs/heads/fix/ring-committed-unknown-gate"
         },
         {
+          "branch": "fix/rootless-no-mount-profile",
+          "head": "7c936149c57b9abddd4e0aa451e07a48e2a311f5",
+          "upstream": "",
+          "source_ref": "refs/heads/fix/rootless-no-mount-profile"
+        },
+        {
           "branch": "fix/rootless-nomount",
-          "head": "6afc24b03202c86ebb3d9829fd1c7a5b5f847e6c",
+          "head": "826fe301b05bbe797548fbf3ba9a765cde870330",
           "upstream": "",
           "source_ref": "refs/heads/fix/rootless-nomount"
         },
@@ -898,6 +928,18 @@
           "head": "8d746cb73e874b057a2db9f453bbd0812b5e46e3",
           "upstream": "",
           "source_ref": "refs/heads/fix/ring-committed-unknown-guest"
+        },
+        {
+          "branch": "fix/rootless-no-mount-profile",
+          "head": "3ff5a016214c3a52c09bd8371a2adcf26e6ea139",
+          "upstream": "",
+          "source_ref": "refs/heads/fix/rootless-no-mount-profile"
+        },
+        {
+          "branch": "fix/rootless-nomount",
+          "head": "040868879f069599571f1cea5bd18b7bdc121320",
+          "upstream": "",
+          "source_ref": "refs/heads/fix/rootless-nomount"
         },
         {
           "branch": "fix/rpc-disconnect-status-contract-test",
