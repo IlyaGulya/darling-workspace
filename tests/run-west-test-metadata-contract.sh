@@ -267,7 +267,7 @@ patches:
     coverage-tier: runtime
     runs: guest
     diag: bare
-    runner: script
+    runner: guest-runtime-script
     script: tests/run-west-test-metadata-contract.sh
     host-trace-files:
     - env: WEST_SCRIPT_TRACE_FILE
@@ -622,7 +622,7 @@ patches:
     coverage-tier: runtime
     runs: guest
     diag: bare
-    runner: script
+    runner: guest-runtime-script
     script: tests/run-west-test-metadata-contract.sh
     red: true
     red-proof:
@@ -921,6 +921,9 @@ printf '%s\n' "$runtime_red_list" | grep -q \
 script_runtime_red_list="$(west test --profile __metadata_runtime_red_contract \
 	--patch test/script-runtime-red-proof.patch \
 	--prove-red --list)"
+printf '%s\n' "$script_runtime_red_list" | grep -q \
+	'<guest-runtime-script> tests/run-west-test-metadata-contract.sh' ||
+	fail 'guest-runtime-script metadata did not resolve to a runtime script command'
 printf '%s\n' "$script_runtime_red_list" | grep -q \
 	'guest-runtime-deploy: darling/src/external/xnu\[build:libsystem_kernel; deploy:usr/lib/system/libsystem_kernel.dylib\]' ||
 	fail 'script guest-runtime-deploy list mode did not show deploy plan'

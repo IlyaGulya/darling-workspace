@@ -91,7 +91,7 @@ patches:
     kind: guest
     runs: guest
     diag: guarded
-    runner: script
+    runner: guest-runtime-script
     script: tests/a0-repro/a0-gate.sh
     args:
     - full
@@ -117,7 +117,7 @@ patches:
     red-proof:
       mode: source-base
       source-env: DSERVER_SRC_ROOT
-    runner: script
+    runner: source-contract-script
     script: tests/standard_signal_coalescing_contract_test.sh
     note: Follow-up same-profile test patch; fails before standard signal coalescing state exists.
   source-commit: 695ed8c479df1561fa2f46efde1d0e5c30150103
