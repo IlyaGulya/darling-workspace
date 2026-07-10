@@ -321,7 +321,7 @@ patches:
       an explicit downstream skip closure, but this workload passed on the bad
       runtime; keep it as a GREEN gate until dar-r7fc.2.1 has a stronger
       deterministic RED repro.
-  - name: fork_checkin_forced_lost_wakeup_guest
+  - name: fork_checkin_direct_sticky_oracle
     kind: guest
     coverage-tier: runtime
     runs: guest
@@ -335,26 +335,35 @@ patches:
       - darlingserver/checkin-retask-current-thread-uaf.patch
       - darlingserver/test-diagnostics-trace.patch
       source-patches:
-      - tests/fixtures/fork-checkin/forced-lost-wakeup-diagnostics.patch
+      - tests/fixtures/darlingserver/launchfree-test-diagnostics.patch
+      - tests/fixtures/fork-checkin/skip-semaphore-hook.patch
+      - tests/fixtures/fork-checkin/interrupt-wait-diagnostics.patch
+      - tests/fixtures/processcall/dserverdbg-uidgid-fault-oracle.patch
+      - tests/fixtures/fork-checkin/dserverdbg-fork-wait-sticky-oracle.patch
       expect-output-contains:
+      - test_fault.consume name=fork.interrupt_wait parent=
+      - process.fork_wait.force_interrupted parent=
       - test_fault.consume name=fork.skip_checkin_semaphore parent=
       - process.checkin.fork_skip_semaphore
+      - DSERVERDBG_FORK_FIRST_WAIT_RC=-110
+      - DSERVERDBG_FORK_SECOND_WAIT_RC=-11
+      cmake-defines:
+        DSERVER_TOOLS: true
       runtime-artifacts:
       - module: darling/src/external/darlingserver
         build-targets:
         - darlingserver
+        - dserverdbg
         deploy:
         - bin/darlingserver
-    runner: guest-c-fixture
+        - bin/dserverdbg
+    runner: script
     repo: darling-workspace
-    script: tests/fork_checkin_forced_lost_wakeup_guest.c
-    ok-marker: FORK_CHECKIN_FORCED_LOST_WAKEUP_OK
+    script: tests/run-dserverdbg-fork-wait-sticky.sh
+    ok-marker: DSERVERDBG_FORK_WAIT_STICKY_OK
     timeout-seconds: 45
-    compile-flags:
-    - -std=gnu11
-    - -Wall
-    - -Wextra
-    - -Werror
+    requires:
+    - darling-prefix
     host-temp-files:
     - env: DSERVER_TEST_FAULT_FILE
       prefix-relative-path: private/var/tmp/dserver-fork-checkin-fault
@@ -362,15 +371,19 @@ patches:
     - env: DSERVER_TEST_TRACE_FILE
       prefix-relative-path: private/var/tmp/dserver-fork-checkin-fault.trace
       contains:
+      - test_fault.consume name=fork.interrupt_wait parent=
+      - process.fork_wait.force_interrupted parent=
       - test_fault.consume name=fork.skip_checkin_semaphore parent=
       - process.checkin.fork_skip_semaphore
     note: >-
-      Deterministic guest runtime proof for the sticky fork-checkin flag:
-      diagnostics forces the child checkin to skip the semaphore wakeup while a
-      SIGALRM storm interrupts the parent wait. Fixed runtime observes the
-      sticky child-checkin state and completes fork; current-minus bad runtime
-      without the sticky flag loses the wakeup and fails under the bounded
-      runner.
+      Direct runtime proof for the sticky fork-checkin flag. dserverdbg checks
+      in as a parent, forces the first fork_wait_for_child to return through the
+      interrupted/timeout path, forks a real host child that checkins with the
+      semaphore wakeup skipped, then retries fork_wait_for_child. Fixed runtime
+      consumes the sticky child-checkin state and returns 0; current-minus bad
+      runtime without the sticky flag loses the wakeup and leaves the retry
+      without a server reply, so the direct oracle reports -EAGAIN after its
+      bounded receive timeout.
   pr-draft: pr-drafts/darlingserver-fork-checkin-sticky-flag.md
   github:
     fork:
@@ -5112,7 +5125,7 @@ patches:
   module: darling/src/external/darlingserver
   source-branch: fix/test-diagnostics-trace
   source-base: b983a36ada0c2d13125ca6c5c62cc0d417c272dc
-  source-commit: 2b8a8d2fccbc17fd224eda5216a5b73b94a7dd8c
+  source-commit: 6621f77c06cc847a6ff15009f0afe3e824d17ff1
   bead: dar-r7fc.7
   publication-status: blocked
   publication-blocker: test-only runtime diagnostics; keep local until a supported upstream diagnostics interface is designed
@@ -5141,7 +5154,7 @@ patches:
       Guest runtime smoke for the opt-in DSERVER_TEST_TRACE_FILE diagnostics
       hook. The script only launches a real guest process; west owns the host
       trace setup and oracle.
-  sha256sum: 15917753150e2fd4b13a8d6e781b55ee9738fc8f83d67ab26013aaa3383f91f0
+  sha256sum: 54ca6d9a63eac30339d710f2cf7a9f52b31ee852cc8cc4a85865c08d8a287081
 - path: darlingserver/eunion-runtime-prefix.patch
   sha256sum: e32e0125b3521837389ddf3c6d5889becd9acba92f9d88d5e39c686181cf60b1
   module: darling/src/external/darlingserver
