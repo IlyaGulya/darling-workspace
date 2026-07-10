@@ -74,6 +74,8 @@ set(DARLING_LAUNCHER "${DARLING_LAUNCHER}" CACHE FILEPATH
   "Path to the darling launcher used for env=darling CTest entries")
 set(DARLING_TEST_PREFIX "${DARLING_TEST_PREFIX}" CACHE PATH
   "Darling prefix exported to env=darling tests as DPREFIX/DARLING_PREFIX")
+set(DARLING_TEST_BUNDLE_ROOT "${DARLING_TEST_BUNDLE_ROOT}" CACHE PATH
+  "Debug bundle root passed to darling-debug-runner for guarded/forensic tests")
 
 function(add_compat_test)
   set(options WILL_FAIL INSTALL FUZZ STRESS)
@@ -201,6 +203,9 @@ function(add_compat_test)
     if(NOT diag STREQUAL "bare")
       if(DARLING_TEST_EXECUTOR)
         set(exec_args run --name "${test_name}" --timeout-seconds ${ACT_TIMEOUT})
+        if(DARLING_TEST_BUNDLE_ROOT)
+          list(APPEND exec_args --bundle-root "${DARLING_TEST_BUNDLE_ROOT}")
+        endif()
         if(diag STREQUAL "forensic")
           # Full capture: gdb backtrace + whole process tree. Expensive/large;
           # opt-in only. (rpctrace stays off even here unless asked separately.)

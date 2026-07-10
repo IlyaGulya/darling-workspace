@@ -198,6 +198,9 @@ refs, PR drafts, and agent handoff.
 - `tests/run-west-test-add-compat-cmake-contract.sh` is the focused CMake
   contract for `add_compat_test()` command generation; update it when changing
   guest launch, argv, labels, or prefix environment behavior.
+- `tests/run-west-test-guarded-timeout-contract.sh` is the focused guarded
+  timeout contract for the CTest/debug-runner bridge; update it when changing
+  `DARLING_TEST_EXECUTOR`, bundle-root propagation, or timeout wrapping.
 - CTest `env=darling` entries are source-driven guest tests: `add_compat_test`
   must upload/compile/run the C source inside the selected Darling prefix via
   `testkit/scripts/run-darling-c-test.sh`. Do not run Linux host-built test
