@@ -84,6 +84,12 @@
           "source_ref": "refs/heads/fix/mldr-thread-create-futex-wait"
         },
         {
+          "branch": "fix/rootless-nomount",
+          "head": "f05fa76033ab62014228fdb3b0a687fdb8d37514",
+          "upstream": "",
+          "source_ref": "refs/heads/fix/rootless-nomount"
+        },
+        {
           "branch": "fix/sandbox-exec-pass-through",
           "head": "c44476a36ee892b73184ddde36b6e9a50fa2d2f6",
           "upstream": "",
@@ -352,6 +358,12 @@
           "head": "ea28bd095742be30f96b3d73510321f7c8124a51",
           "upstream": "",
           "source_ref": "refs/heads/fix/ring-committed-unknown-gate"
+        },
+        {
+          "branch": "fix/rootless-nomount",
+          "head": "6afc24b03202c86ebb3d9829fd1c7a5b5f847e6c",
+          "upstream": "",
+          "source_ref": "refs/heads/fix/rootless-nomount"
         },
         {
           "branch": "fix/rpc-transport-interrupt-contract",
