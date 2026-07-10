@@ -251,8 +251,8 @@ class DarlingTest(WestCommand):
             "--proof-scratch-root",
             metavar="DIR",
             default=tempfile.gettempdir(),
-            help="with --gc, directory to scan for stale runtime proof scratch dirs "
-            f"(default {tempfile.gettempdir()})",
+            help="with --gc, directory to scan for stale runtime scratch and guest "
+            f"runner output (default {tempfile.gettempdir()})",
         )
         parser.add_argument(
             "--proof-scratch-max-age-hours",
@@ -4373,6 +4373,51 @@ class DarlingTest(WestCommand):
             f"{verb} {len(scratch_dirs)} dir(s), {action} {freed // 1024}K from {root}"
         )
 
+    def _gc_guest_runner_output(
+        self,
+        root: Path,
+        max_age_hours: float,
+        dry_run: bool = False,
+    ) -> None:
+        """Prune stale local output files left by pre-cleanup guest C runners.
+
+        The guest runner now unlinks its output on every exit path.  This pass
+        only repairs historical files, so it uses the same age threshold as
+        runtime scratch and deliberately ignores directories, symlinks, and
+        fresh output that may belong to a still-running test.
+        """
+
+        root = root.expanduser()
+        if max_age_hours < 0:
+            self.die("--proof-scratch-max-age-hours must be >= 0")
+        if not root.is_dir():
+            self.inf(f"no guest runner output root at {root}")
+            return
+        cutoff = time.time() - (max_age_hours * 3600)
+        outputs = sorted(
+            (
+                path
+                for path in root.glob("west-ctest-guest-c.*")
+                if path.is_file()
+                and not path.is_symlink()
+                and path.stat().st_mtime <= cutoff
+            ),
+            key=lambda path: path.stat().st_mtime,
+        )
+        freed = 0
+        verb = "would prune" if dry_run else "pruned"
+        for output in outputs:
+            size = output.stat().st_size
+            freed += size
+            self.inf(f"{verb} guest runner output ({size}B): {output}")
+            if not dry_run:
+                output.unlink(missing_ok=True)
+        action = "would free" if dry_run else "freed"
+        self.inf(
+            "guest-runner gc: "
+            f"{verb} {len(outputs)} file(s), {action} {freed}B from {root}"
+        )
+
     # --- entrypoint ---------------------------------------------------------
 
     def do_run(self, args, unknown):
@@ -4391,6 +4436,11 @@ class DarlingTest(WestCommand):
                 dry_run=args.dry_run,
             )
             self._gc_runtime_proof_scratch(
+                Path(args.proof_scratch_root),
+                args.proof_scratch_max_age_hours,
+                dry_run=args.dry_run,
+            )
+            self._gc_guest_runner_output(
                 Path(args.proof_scratch_root),
                 args.proof_scratch_max_age_hours,
                 dry_run=args.dry_run,
