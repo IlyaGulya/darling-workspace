@@ -120,6 +120,15 @@ refs, PR drafts, and agent handoff.
   tool target, declare it under `red-proof.cmake-defines` so the RED/GREEN
   runtime source builds are reproducible; do not rely on the caller's local
   `CMakeCache.txt` having that target enabled.
+  For XNU `system_kernel` runtime proofs, include
+  `red-proof.source-modules: [darling/src/external/darlingserver]` unless there
+  is a documented reason not to. libsystem_kernel builds consume RPC-generated
+  darlingserver headers/hooks; symlinking the live checkout into a materialized
+  current-minus source forest can mix profiles and turn RED into an unrelated
+  build/link failure. Keep `runtime-artifacts` minimal: do not deploy dyld or
+  other broad artifacts unless the patch/test is actually about that artifact.
+  Run `west patch check --quality` after metadata edits that affect runtime
+  proof shape.
 - Do not close patch coverage with source matching. Tests that grep, parse, or
   assert that specific code text exists are audit checks only; they must not be
   counted as the patch's behavioral test and must not be recorded as `kind:

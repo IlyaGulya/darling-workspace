@@ -218,6 +218,15 @@ RED proof modes:
   These defines are applied to both RED and GREEN runtime source builds, after
   the normal inherited/default feature flags, so the manifest remains the source
   of truth for non-default build shape.
+  XNU `system_kernel` runtime proofs should also declare
+  `red-proof.source-modules: [darling/src/external/darlingserver]` unless the
+  proof has a specific reason not to. The libsystem_kernel build consumes
+  RPC-generated headers/hooks from darlingserver; letting the source forest
+  symlink the developer's live darlingserver checkout can mix profiles and make
+  RED fail at build/link time for an unrelated branch state. Do not add broad
+  runtime artifacts such as dyld just because the selected prefix can run it:
+  each artifact must be part of the behavior under proof, or unrelated build
+  failures can masquerade as RED.
 
 Source/text checks are allowed only as auxiliary drift guards:
 
@@ -516,15 +525,23 @@ unless `--allow-large-output` is passed deliberately.
 
 Some gates need a consistent patch profile rather than the developer's current
 mixture of fix branches. Mark those with `requires-profile: arch` (or another
-profile name). `west test` will list those tests anywhere, but real execution is
-allowed only when all modules touched by that profile are currently on
-`integration/<profile>`, unless `--materialize-profile` is passed.
+profile name). `west test` will list those tests anywhere. On execution, if the
+live checkout is not already fully on `integration/<profile>`, profile-bound
+metadata tests are temporarily materialized in detached worktrees; this keeps
+the developer's current checkout stable while making headers, source files, and
+test assets come from the intended profile.
 
 With `--materialize-profile`, selected profile metadata tests run from temporary
 detached worktrees built from the West manifest revisions plus the profile's
 patch files. For stacked profiles, base profiles are applied first. The live
 checkout is not switched, and stale `integration/<profile>` branches are not
 trusted for test assets. List mode never materializes worktrees.
+
+Use `west patch check --quality` for low-noise structural audit warnings that
+are not basic schema validity. `--strict-quality` turns those warnings into a
+failing gate. Current checks intentionally focus on patterns that caused false
+RED proofs in practice: XNU `system_kernel` runtime proofs without materialized
+darlingserver, and non-dyld tests that deploy dyld as an unrelated artifact.
 
 ## Problem
 
