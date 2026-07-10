@@ -23,6 +23,11 @@ if [ "${1:-}" = "--source-script-shebang-probe" ]; then
 	exit 0
 fi
 
+if [ "${1:-}" = "--self-contract-probe" ]; then
+	printf 'WEST_SELF_CONTRACT_SCRIPT_OK\n'
+	exit 0
+fi
+
 export PYTHONDONTWRITEBYTECODE=1
 tmp_profile="patches/__metadata_contract"
 tmp_invalid_profile="patches/__metadata_invalid_contract"
@@ -295,6 +300,21 @@ patches:
     script: tests/run-west-test-metadata-contract.sh
     args:
     - --source-contract-probe
+- path: test/self-contract-script.patch
+  module: darling-workspace
+  tests:
+  - name: west_self_contract_script_contract
+    kind: contract
+    runs: host
+    diag: bare
+    red: true
+    red-proof:
+      mode: self
+      why-self: Synthetic self-contained runner contract; the script owns its own negative and positive arms.
+    runner: self-contract-script
+    script: tests/run-west-test-metadata-contract.sh
+    args:
+    - --self-contract-probe
 - path: test/source-script-fixture.patch
   module: darling
   tests:
@@ -822,7 +842,7 @@ guest_command_fixture="$(
 printf '%s\n' "$guest_command_fixture" | grep -q \
 	'darling shell /bin/bash --login -c /usr/bin/true' ||
 	fail 'guest-command-fixture metadata did not resolve to a guest shell command'
-printf '%s\n' "$source_only_check" | grep -q 'test metadata: 17 covered (runtime 7, compile 3, host 6, model 1), 2 exceptions, 1 missing' ||
+printf '%s\n' "$source_only_check" | grep -q 'test metadata: 18 covered (runtime 7, compile 3, host 7, model 1), 2 exceptions, 1 missing' ||
 	fail 'coverage-tier summary did not classify runtime/host/compile/model coverage'
 
 invalid_guest_red_check="$(west patch check --profile __metadata_invalid_contract 2>&1)"
@@ -974,6 +994,8 @@ printf '%s\n' "$source_only_check" | grep -q 'HOST      test/source-build-fixtur
 	fail 'source-build-fixture patch was not reported as HOST'
 printf '%s\n' "$source_only_check" | grep -q 'HOST      test/source-contract-script.patch' ||
 	fail 'source-contract-script patch was not reported as HOST'
+printf '%s\n' "$source_only_check" | grep -q 'HOST      test/self-contract-script.patch' ||
+	fail 'self-contract-script patch was not reported as HOST'
 printf '%s\n' "$source_only_check" | grep -q 'HOST      test/source-script-fixture.patch' ||
 	fail 'source-script-fixture patch was not reported as HOST'
 printf '%s\n' "$source_only_check" | grep -q 'HOST      test/source-script-fixture-shebang.patch' ||
@@ -1005,6 +1027,23 @@ printf '%s\n' "$source_contract_script" | grep -q \
 west test --profile __metadata_contract \
 	--patch test/source-contract-script.patch >/dev/null ||
 	fail 'source-contract-script did not execute with source-env'
+
+self_contract_script="$(
+	west test --profile __metadata_contract \
+		--patch test/self-contract-script.patch \
+		--list
+)"
+
+printf '%s\n' "$self_contract_script" | grep -q \
+	'<self-contract-script> tests/run-west-test-metadata-contract.sh --self-contract-probe' ||
+	fail 'self-contract-script metadata did not resolve to a self contract command'
+west test --profile __metadata_contract \
+	--patch test/self-contract-script.patch >/dev/null ||
+	fail 'self-contract-script did not execute normally'
+west test --profile __metadata_contract \
+	--patch test/self-contract-script.patch \
+	--prove-red >/dev/null ||
+	fail 'self-contract-script did not execute as a self RED proof'
 
 source_script_fixture="$(
 	west test --profile __metadata_contract \

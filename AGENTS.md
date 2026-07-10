@@ -83,6 +83,9 @@ refs, PR drafts, and agent handoff.
   script introduced by the patch, because RED would only prove "file missing".
   Executable source scripts are run through their shebang; non-executable ones
   fall back to `sh`.
+  Use `runner: self-contract-script` for host scripts that contain explicit
+  bad/model and fixed/current arms and therefore prove RED through
+  `red-proof: {mode: self, why-self: ...}` without mutating source checkouts.
   Prefer `red-proof: {mode: source-base}` when a regression can be proven
   against the bad source tree. `red-proof: {mode: self}` must include
   `why-self:` and is only for tests with an explicit bad/good behavioral model,

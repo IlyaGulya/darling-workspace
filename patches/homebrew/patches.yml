@@ -2372,7 +2372,7 @@ patches:
       mode: self
       why-self: The script contains explicit no-reset and reset arms, so the negative case is self-contained and does not need checkout mutation.
       note: Script requires the no-reset arm to deadlock and the reset arm to pass.
-    runner: script
+    runner: self-contract-script
     script: tests/regression/run-glibc-fork-lock-reset.sh
     note: Host RED->GREEN model for resetting glibc loader locks after raw fork.
   pr-draft: pr-drafts/mldr-glibc-fork-reset.md
@@ -4406,7 +4406,7 @@ patches:
       mode: self
       why-self: The script contains explicit sched_yield-spin and futex-wait arms, so the bad and fixed cases are modeled in one test.
       note: Script first runs the old sched_yield spin model and requires it to fail, then runs the futex model and requires it to pass.
-    runner: script
+    runner: self-contract-script
     script: tests/regression/run-thread-create-checkin-wait.sh
     note: Host RED->GREEN model for replacing sched_yield busy-spin with bounded futex wait.
   github:
@@ -4437,7 +4437,7 @@ patches:
       mode: self
       why-self: The script contains explicit worker-handoff and inline-fastpath arms, so the bad and fixed cases are modeled in one test.
       note: Script first runs the per-message handoff model and requires it to fail, then runs the inline model and requires it to pass.
-    runner: script
+    runner: self-contract-script
     script: tests/run-server-inline-fastpath.sh
     note: Host RED->GREEN model for avoiding per-message worker handoff on cheap RPCs.
   github:
@@ -4468,7 +4468,7 @@ patches:
       mode: self
       why-self: The script contains explicit lock-held and release-before-suspend arms, so the deadlock oracle is self-contained.
       note: Script requires lock-held-across-suspend to deadlock and release-before-suspend to pass.
-    runner: script
+    runner: self-contract-script
     script: tests/run-inline-suspend-rwlock-deadlock.sh
     note: Host RED->GREEN model for not holding Process::_rwlock across suspending dtape calls.
   - name: checkin_exec_rwlock_runtime_trace
@@ -4548,7 +4548,7 @@ patches:
       mode: self
       why-self: The script contains explicit blocking-recv and adaptive-spin arms, so the latency regression oracle is self-contained.
       note: Script requires blocking recv to exceed the sleep budget and adaptive spin to pass.
-    runner: script
+    runner: self-contract-script
     script: src/startup/mldr/tests/run-perf3-recv-adaptive.sh
     note: Host RED->GREEN model for bounded spin before blocking RPC recv.
   github:
@@ -4665,7 +4665,7 @@ patches:
       mode: self
       why-self: The generator contract creates wrappers in a temporary tree and checks the bad source shape directly, so it does not need source checkout mutation.
       note: Script generates wrappers and asserts NO_REPLY calls omit receive/reply while normal calls still receive.
-    runner: script
+    runner: self-contract-script
     script: tests/no_reply_rpc_test.sh
     note: Source-level RED->GREEN generator contract for fire-and-forget RPC wrappers.
   github:
@@ -4696,7 +4696,7 @@ patches:
       mode: self
       why-self: The generator contract creates wrappers in a temporary tree and checks the receive-accounting source shape directly, so it does not need source checkout mutation.
       note: Script generates wrappers and asserts reply-bearing calls bracket receive accounting while NO_REPLY calls do not.
-    runner: script
+    runner: self-contract-script
     script: tests/rpc_sleep_account_test.sh
     note: Source-level RED->GREEN generator contract for per-callnum recv sleep accounting hooks.
   github:
@@ -5028,7 +5028,7 @@ patches:
       mode: self
       why-self: The script contains explicit release-before-republish and republish-before-release ASan arms, so the UAF oracle is self-contained.
       note: Script requires release-before-republish to trip ASan and republish-before-release to pass.
-    runner: script
+    runner: self-contract-script
     script: tests/run-checkin-retask-current-thread-uaf.sh
     note: Host ASan RED->GREEN model for publishing the new dtape thread before releasing the old one.
   - name: checkin_retask_current_thread_runtime_trace
@@ -5113,7 +5113,7 @@ patches:
       mode: self
       why-self: The script contains explicit nobind and bind arms, so the orphan-process lifetime oracle is self-contained.
       note: Script requires the nobind arm to reproduce an orphan and the bind arm to reap it.
-    runner: script
+    runner: self-contract-script
     script: tests/run-pot-lifetime-binding.sh
     note: Host RED->GREEN model for binding guest lifetime to darlingserver lifetime.
   - name: pot_lifetime_binding_runtime

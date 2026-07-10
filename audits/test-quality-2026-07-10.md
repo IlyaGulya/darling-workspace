@@ -7,7 +7,7 @@ Scope:
 
 Current raw metadata inventory after the `source-contract-script` migration:
 - 146 test rows total: 132 homebrew, 14 arch
-- runners: 51 `guest-c-fixture`, 35 `c-fixture`, 20 `source-contract-script`, 18 `script`, 10 `source-script-fixture`, 4 `object-symbol-fixture`, 3 `python`, 2 `west-build`, 1 each `darling-cmake-target-fixture`, `source-build-fixture`, `cmake-configure-fixture`, and 1 ctest-label shorthand row
+- runners: 51 `guest-c-fixture`, 35 `c-fixture`, 20 `source-contract-script`, 10 `source-script-fixture`, 9 `self-contract-script`, 9 `script`, 4 `object-symbol-fixture`, 3 `python`, 2 `west-build`, 1 each `darling-cmake-target-fixture`, `source-build-fixture`, `cmake-configure-fixture`, and 1 ctest-label shorthand row
 - env: recalculated by `west patch check` as behavioral coverage: homebrew 78 covered, arch 13 covered
 - red proof modes: 56 `source-base`, 22 `guest-runtime-deploy`, 10 `self`, 57 non-red/no proof rows, 1 compact shorthand row
 
@@ -41,6 +41,10 @@ Fixed by this audit:
   execute executable scripts directly through their shebang instead of forcing
   `/bin/sh`; this is required for source contracts that use bash features such
   as `set -o pipefail`.
+- Added `runner: self-contract-script` for host scripts whose RED proof is
+  self-contained in the script, and migrated 9 homebrew self-proof shell
+  contracts to it. This keeps the existing execution model but removes another
+  group from the generic script escape hatch.
 
 Current automated result:
 - `west patch check --profile homebrew --quality --strict-quality`: no quality warnings
@@ -51,7 +55,7 @@ Current automated result:
   migration and shebang fix.
 
 Remaining quality debt:
-- 18 tests still use `runner: script`. Some are acceptable thin wrappers, but this remains the largest source of ad hoc behavior. They should be migrated class-by-class into structured runners/profiles or explicitly documented as script-only exceptions.
+- 9 tests still use `runner: script`. Some are acceptable thin wrappers, but this remains the largest source of ad hoc behavior. They should be migrated class-by-class into structured runners/profiles or explicitly documented as script-only exceptions.
   Tracked as `dar-test-infra-sp5.11.15`.
 - Two XNU patches remain runtime-sensitive but compile-only in current metadata:
   - `xnu/fork-postfork-child.patch`
