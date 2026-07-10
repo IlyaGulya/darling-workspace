@@ -1,15 +1,14 @@
 diff --git a/CMakeLists.txt b/CMakeLists.txt
-index 4920879..66a25b2 100644
 --- a/CMakeLists.txt
 +++ b/CMakeLists.txt
-@@ -118,6 +118,7 @@ add_executable(darlingserver
- 	src/kqchan.cpp
- 	src/async-writer.cpp
- 	src/stack-pool.cpp
+@@ -113,6 +113,7 @@ add_executable(darlingserver
+ 	src/registry.cpp
+ 	src/logging.cpp
+ 	src/process.cpp
 +	src/test-diagnostics.cpp
- )
- 
- add_dependencies(darlingserver
+ 	src/thread.cpp
+ 	src/utility.cpp
+ 	src/kqchan.cpp
 diff --git a/internal-include/darlingserver/test-diagnostics.hpp b/internal-include/darlingserver/test-diagnostics.hpp
 new file mode 100644
 index 0000000..cb08439
