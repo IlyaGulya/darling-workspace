@@ -968,7 +968,8 @@ with tempfile.TemporaryDirectory() as temp:
     assert 'dump_file_sha prefix_dyld "$DPREFIX/usr/lib/dyld"' in generated, generated
     assert "WEST_GUEST_RPC_CLIENT_LOG_BEGIN" in generated, generated
     assert ": > /tmp/dserver-client-rpc.log" in generated, generated
-    assert 'DARLING_PREFIX="$DPREFIX"' in generated, generated
+    assert 'source "$guest_shell_helper"' in generated, generated
+    assert 'darling_guest_shell "$launch" "$DPREFIX" "$seconds"' in generated, generated
 
 with tempfile.TemporaryDirectory() as temp:
     tempdir = Path(temp)
