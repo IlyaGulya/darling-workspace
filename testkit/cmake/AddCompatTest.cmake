@@ -253,7 +253,8 @@ function(add_compat_test)
     if(env STREQUAL "darling" AND DARLING_TEST_PREFIX)
       set_property(TEST "${test_name}" APPEND PROPERTY ENVIRONMENT
         "DPREFIX=${DARLING_TEST_PREFIX}"
-        "DARLING_PREFIX=${DARLING_TEST_PREFIX}")
+        "DARLING_PREFIX=${DARLING_TEST_PREFIX}"
+        "DARLING_GUEST_TIMEOUT_SECONDS=${ACT_TIMEOUT}")
     endif()
 
     set(labels "env:${env}" "diag:${diag}")
