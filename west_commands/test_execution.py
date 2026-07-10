@@ -21,8 +21,8 @@ class ProcessResult:
 
     returncode: int
     timed_out: bool = False
-    stdout: str = ""
-    stderr: str = ""
+    stdout: str | bytes = ""
+    stderr: str | bytes = ""
 
 
 def run_bounded(
@@ -35,6 +35,7 @@ def run_bounded(
     stderr=None,
     text: bool | None = None,
     capture_output: bool = False,
+    input_data: str | bytes | None = None,
 ) -> ProcessResult:
     """Run ``args`` with a deadline and terminate its entire process group.
 
@@ -48,7 +49,8 @@ def run_bounded(
             raise ValueError("capture_output conflicts with stdout/stderr")
         stdout = subprocess.PIPE
         stderr = subprocess.PIPE
-        text = True
+        if text is None:
+            text = True
 
     process = subprocess.Popen(
         list(args),
@@ -56,12 +58,16 @@ def run_bounded(
         env=env,
         stdout=stdout,
         stderr=stderr,
+        stdin=subprocess.PIPE if input_data is not None else None,
         text=text,
         start_new_session=True,
     )
     try:
-        if capture_output:
-            captured_stdout, captured_stderr = process.communicate(timeout=timeout_seconds)
+        if capture_output or input_data is not None:
+            captured_stdout, captured_stderr = process.communicate(
+                input=input_data,
+                timeout=timeout_seconds,
+            )
             return ProcessResult(
                 process.returncode,
                 stdout=captured_stdout or "",
@@ -73,7 +79,7 @@ def run_bounded(
             os.killpg(process.pid, signal.SIGKILL)
         except ProcessLookupError:
             pass
-        if capture_output:
+        if capture_output or input_data is not None:
             captured_stdout, captured_stderr = process.communicate()
             return ProcessResult(
                 124,
