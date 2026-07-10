@@ -59,7 +59,17 @@ with tempfile.TemporaryDirectory() as temp:
     test._resolve_executor = lambda _executor: None
     test._resolve_darling_launcher = lambda _prefix: "/fake/darling"
     test._testkit_dir = lambda: root
-    test._ctest_runtime_profile_definitions = lambda: {}
+    test._ctest_runtime_profile_definitions = lambda: {
+        "extra": {
+            "source-profile": "homebrew",
+            "source-module": "darling/src/external/xnu",
+            "source-modules": ["darling"],
+            "runtime-artifacts": [{
+                "build-targets": ["system_kernel"],
+                "deploy": ["usr/lib/system/libsystem_kernel.dylib"],
+            }],
+        }
+    }
     test._configure_and_build = lambda *_args, **_kwargs: build
     test._prefix_cleanup_failed = False
     stale_failure_record = build / "Testing" / "Temporary" / "LastTestsFailed.log"
@@ -73,6 +83,14 @@ with tempfile.TemporaryDirectory() as temp:
         yield
 
     test._prefix_resource_context = prefix_context
+    runtime_contexts = []
+
+    @contextmanager
+    def runtime_context(profiles):
+        runtime_contexts.append(profiles)
+        yield
+
+    test._ctest_runtime_profile_context = runtime_context
     recorded = []
     original = test_module.run_bounded
     def bounded(args, **kwargs):
@@ -105,6 +123,7 @@ with tempfile.TemporaryDirectory() as temp:
             executor=None,
             red_only=False,
             prove_red=False,
+            with_runtime_profile=["extra"],
         )
         try:
             test.do_run(args, [])
@@ -116,6 +135,7 @@ with tempfile.TemporaryDirectory() as temp:
         test_module.run_bounded = original
 
     assert lifecycle == [True], lifecycle
+    assert runtime_contexts == [["extra"]], runtime_contexts
     assert len(recorded) == 2, recorded
     assert "--show-only=json-v1" in recorded[0][0], recorded
     assert recorded[1][0][0] == "ctest", recorded
