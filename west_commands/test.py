@@ -9,6 +9,8 @@ This command adds the three things CTest does not give for free in this repo:
   --changed   map changed submodules (from the west manifest + git diff) to the
               `submod:<name>` CTest labels, so a quick local cycle runs only the
               tests a PR could affect.
+  --submodule PATH
+              map an explicit West project path/name to `submod:<name>`.
   --bead ID   run the regression(s) attached to an issue (label `bead:<id>`),
               turning the beads graph into a live regression set.
   --executor  the darling-debug-runner binary used by the guarded/forensic
@@ -88,6 +90,13 @@ class DarlingTest(WestCommand):
             "--bead",
             metavar="ID",
             help="run tests attached to a bead (label bead:<ID>)",
+        )
+        parser.add_argument(
+            "--submodule",
+            action="append",
+            default=[],
+            metavar="PATH",
+            help="run CTest-backed tests labelled for a West project path/name",
         )
         parser.add_argument(
             "--profile",
@@ -4576,6 +4585,8 @@ fi
 
         if args.patch and not args.profile:
             self.die("--patch requires --profile")
+        if args.profile and args.submodule:
+            self.die("--submodule selects CTest suite tests; use --patch/--profile for patch metadata")
 
         if args.profile:
             selected, missing = self._metadata_tests(
@@ -4654,6 +4665,7 @@ fi
             diag=args.diag,
             label=args.label,
             changed_submodules=changed,
+            submodules=args.submodule,
         )
         ctest = ctest_command(
             build,

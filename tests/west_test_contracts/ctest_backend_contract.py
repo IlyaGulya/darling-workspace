@@ -10,9 +10,13 @@ from test_ctest import (
     ctest_label_args,
     ctest_label_display,
     ctest_selector_label_args,
+    ctest_submodule_label_name,
 )
 
 build = Path("/tmp/build dir")
+assert ctest_submodule_label_name("darling/src/external/xnu") == "xnu"
+assert ctest_submodule_label_name("xnu") == "xnu"
+
 assert ctest_label_args(build, "bead:dar-gwn.5") == [
     "ctest",
     "--test-dir",
@@ -31,6 +35,7 @@ labels = ctest_selector_label_args(
     diag="guarded",
     label="macos:15",
     changed_submodules=["xnu", "darlingserver"],
+    submodules=["darling/src/external/libplatform", "xnu"],
 )
 assert labels == [
     "-L",
@@ -42,7 +47,7 @@ assert labels == [
     "-L",
     "macos:15",
     "-L",
-    "submod:xnu|submod:darlingserver",
+    "submod:xnu|submod:darlingserver|submod:libplatform",
 ]
 
 command = ctest_command(

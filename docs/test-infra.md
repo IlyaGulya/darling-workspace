@@ -510,8 +510,10 @@ registration when the old source did not yet have the CTest entry.
 The CTest backend command construction is deliberately small and separate from
 patch/resource orchestration. `west_commands/test_ctest.py` owns `ctest`
 argument building for label-backed patch tests and top-level selectors
-(`--bead`, `--env`, `--diag`, `--label`, `--changed`, list mode, and passthrough
-args). `west_commands/test.py` decides what to run and when to configure the
+(`--bead`, `--submodule`, `--env`, `--diag`, `--label`, `--changed`, list mode,
+and passthrough args). `--submodule` accepts either a West project path
+(`darling/src/external/xnu`) or the CTest label basename (`xnu`) and maps it to
+`submod:xnu`. `west_commands/test.py` decides what to run and when to configure the
 testkit; it should not grow new ad hoc CTest command assembly.
 Source-repo CMake fixture execution lives in `west_commands/test_cmake.py`:
 generated superprojects, Darling CMake macro shims, fallback CTest
