@@ -208,6 +208,9 @@ refs, PR drafts, and agent handoff.
 - `tests/run-west-test-gc-contract.sh` is the focused GC contract for debug
   bundles and stale runtime proof scratch dirs; update it when changing
   `west test --gc`, proof scratch naming, or dry-run pruning behavior.
+- `tests/run-west-patch-verify-contract.sh` is the focused behavioral contract
+  for disposable worktrees used by `west patch verify`; update it when changing
+  patch applicability, temporary-worktree cleanup, or Git maintenance policy.
 - Do not run a noisy or long `west test --prove-red` foreground command through
   an output-limited transport: it can be killed before Python `finally` cleanup
   runs and create a false worktree leak. Send its output to a named log, start
