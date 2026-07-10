@@ -5,6 +5,7 @@ from __future__ import annotations
 import sys
 import tempfile
 import types
+import json
 from contextlib import contextmanager
 from pathlib import Path
 from types import SimpleNamespace
@@ -58,6 +59,7 @@ with tempfile.TemporaryDirectory() as temp:
     test._resolve_executor = lambda _executor: None
     test._resolve_darling_launcher = lambda _prefix: "/fake/darling"
     test._testkit_dir = lambda: root
+    test._ctest_runtime_profile_definitions = lambda: {}
     test._configure_and_build = lambda *_args, **_kwargs: build
     test._prefix_cleanup_failed = False
     lifecycle = []
@@ -70,9 +72,13 @@ with tempfile.TemporaryDirectory() as temp:
     test._prefix_resource_context = prefix_context
     recorded = []
     original = test_module.run_bounded
-    test_module.run_bounded = lambda args, **kwargs: (
-        recorded.append((args, kwargs)) or ProcessResult(0)
-    )
+    def bounded(args, **kwargs):
+        recorded.append((args, kwargs))
+        if "--show-only=json-v1" in args:
+            return ProcessResult(0, stdout=json.dumps({"tests": []}))
+        return ProcessResult(0)
+
+    test_module.run_bounded = bounded
     try:
         args = SimpleNamespace(
             bundle_root=str(root / "bundles"),
@@ -106,7 +112,112 @@ with tempfile.TemporaryDirectory() as temp:
         test_module.run_bounded = original
 
     assert lifecycle == [True], lifecycle
-    assert recorded and recorded[0][0][0] == "ctest", recorded
-    assert recorded[0][1]["timeout_seconds"] == 17, recorded
+    assert len(recorded) == 2, recorded
+    assert "--show-only=json-v1" in recorded[0][0], recorded
+    assert recorded[1][0][0] == "ctest", recorded
+    assert recorded[1][1]["timeout_seconds"] == 17, recorded
+
+
+with tempfile.TemporaryDirectory() as temp:
+    root = Path(temp)
+    test = DarlingTest.__new__(DarlingTest)
+    test._prefix = str(root / "prefix")
+    test._active_profile = None
+    test.inf = lambda _message: None
+    test.err = lambda _message: None
+    test.die = lambda message: (_ for _ in ()).throw(SystemExit(message))
+    test._ctest_runtime_profile_definitions = lambda: {
+        "homebrew": {
+            "source-profile": "homebrew",
+            "source-module": "darling/src/external/xnu",
+            "source-modules": [
+                "darling",
+                "darling/src/external/darlingserver",
+                "darling/src/external/xnu",
+            ],
+            "runtime-artifacts": [{"build-targets": ["system_kernel"]}],
+        }
+    }
+    events = []
+
+    @contextmanager
+    def source_forest(anchor, proof, *, omit_patch):
+        assert test._active_profile == "homebrew"
+        assert anchor["module"] == "darling/src/external/xnu"
+        assert proof["runtime-artifacts"][0]["build-targets"] == ["system_kernel"]
+        assert not omit_patch
+        events.append("source")
+        yield root / "source"
+
+    @contextmanager
+    def deployed(proof, build_root, prefix, *, label):
+        assert proof["source-modules"] == [
+            "darling",
+            "darling/src/external/darlingserver",
+            "darling/src/external/xnu",
+        ]
+        assert build_root == root / "build"
+        assert prefix == root / "prefix"
+        assert label == "CTest homebrew"
+        events.append("deploy")
+        yield
+        events.append("restore")
+
+    test._guest_runtime_source_forest = source_forest
+    test._runtime_red_build_artifacts = lambda *_args, **_kwargs: (events.append("build") or root / "build")
+    test._runtime_red_deployed_artifacts = deployed
+    with test._ctest_runtime_profile_context(["homebrew"]):
+        assert events == ["source", "build", "deploy"], events
+    assert events == ["source", "build", "deploy", "restore"], events
+    assert test._active_profile is None
+
+
+with tempfile.TemporaryDirectory() as temp:
+    root = Path(temp)
+    scratch = root / "preserved-scratch"
+    test = DarlingTest.__new__(DarlingTest)
+    test._prefix = str(root / "prefix")
+    test._active_profile = None
+    errors = []
+    test.inf = lambda _message: None
+    test.err = errors.append
+    test.die = lambda message: (_ for _ in ()).throw(SystemExit(message))
+    test._ctest_runtime_profile_definitions = lambda: {
+        "homebrew": {
+            "source-profile": "homebrew",
+            "source-module": "darling/src/external/xnu",
+            "source-modules": [
+                "darling",
+                "darling/src/external/darlingserver",
+                "darling/src/external/xnu",
+            ],
+            "runtime-artifacts": [{"build-targets": ["system_kernel"]}],
+        }
+    }
+
+    @contextmanager
+    def source_forest(_anchor, _proof, *, omit_patch):
+        assert not omit_patch
+        yield root / "source"
+
+    test._guest_runtime_source_forest = source_forest
+    test._runtime_red_build_artifacts = lambda *_args, **_kwargs: test.die("build failed")
+    original_mkdtemp = test_module.tempfile.mkdtemp
+
+    def make_scratch(**_kwargs):
+        scratch.mkdir()
+        return str(scratch)
+
+    test_module.tempfile.mkdtemp = make_scratch
+    try:
+        try:
+            with test._ctest_runtime_profile_context(["homebrew"]):
+                raise AssertionError("runtime build failure unexpectedly yielded")
+        except SystemExit as exc:
+            assert str(exc) == "build failed", exc
+    finally:
+        test_module.tempfile.mkdtemp = original_mkdtemp
+    assert scratch.is_dir(), scratch
+    assert errors == [f"preserving failed CTest runtime scratch for inspection: {scratch}"], errors
 
 print("PASS west-test-ctest-lifecycle-contract")

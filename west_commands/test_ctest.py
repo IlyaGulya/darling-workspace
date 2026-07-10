@@ -79,6 +79,22 @@ def ctest_command(
     return args
 
 
+def ctest_selection_command(build_dir: Path, *, label_args: list[str] | None = None) -> list[str]:
+    """Return the machine-readable discovery command for a CTest selection.
+
+    CTest owns filtering.  Consumers use this only to inspect properties of the
+    exact tests CTest will run; it must never reimplement the selector logic.
+    """
+
+    return [
+        "ctest",
+        "--test-dir",
+        str(build_dir),
+        "--show-only=json-v1",
+        *list(label_args or []),
+    ]
+
+
 def ctest_uses_prefix(*, env: str | None, list_only: bool) -> bool:
     """Whether a CTest selection owns a live Darling prefix lifecycle."""
 

@@ -52,6 +52,7 @@ from test_ctest import (
     ctest_command,
     ctest_label_args,
     ctest_label_display,
+    ctest_selection_command,
     ctest_selector_label_args,
     ctest_uses_prefix,
 )
@@ -79,6 +80,7 @@ from test_results import InvocationResult
 from test_selection import select_metadata_tests
 from test_runtime import (
     describe_runtime_deploy_plan,
+    load_ctest_runtime_profiles,
     runtime_build_targets,
     runtime_deploy_targets,
 )
@@ -249,7 +251,7 @@ class DarlingTest(WestCommand):
             type=float,
             default=24.0,
             metavar="HOURS",
-            help="with --gc, prune west-{red,green}-proof-runtime-* dirs older than this "
+            help="with --gc, prune stale west runtime/source-profile scratch dirs older than this "
             "(default 24)",
         )
         return parser
@@ -1365,6 +1367,103 @@ class DarlingTest(WestCommand):
 
     def _ctest_label_args(self, invocation) -> list[str]:
         return ctest_label_args(self._ensure_ctest_build(), invocation["ctest_label"])
+
+    def _ctest_runtime_profile_definitions(self) -> dict[str, dict]:
+        path = self._testkit_dir() / "runtime-profiles.yml"
+        try:
+            return load_ctest_runtime_profiles(path)
+        except (OSError, ValueError) as error:
+            self.die(f"invalid CTest runtime profile definitions at {path}: {error}")
+
+    def _selected_ctest_runtime_profiles(self, build: Path, label_args: list[str]) -> list[str]:
+        """Return runtime profiles declared by exactly the CTest-selected cases."""
+
+        discovery = run_bounded(
+            ctest_selection_command(build, label_args=label_args),
+            cwd=Path(self.topdir),
+            env=None,
+            timeout_seconds=30,
+            capture_output=True,
+        )
+        if discovery.returncode:
+            self._dump_command_tail("CTest runtime profile discovery", discovery)
+            self.die("could not discover CTest runtime profiles")
+        try:
+            payload = json.loads(discovery.stdout)
+        except json.JSONDecodeError as error:
+            self.die(f"CTest runtime profile discovery returned invalid JSON: {error}")
+        profiles: list[str] = []
+        for test in payload.get("tests", []):
+            for property_data in test.get("properties", []):
+                if property_data.get("name") != "LABELS":
+                    continue
+                for label in property_data.get("value", []):
+                    if not isinstance(label, str) or not label.startswith("runtime-profile:"):
+                        continue
+                    profile = label.removeprefix("runtime-profile:")
+                    if profile and profile not in profiles:
+                        profiles.append(profile)
+        definitions = self._ctest_runtime_profile_definitions()
+        unknown = [profile for profile in profiles if profile not in definitions]
+        if unknown:
+            self.die(f"CTest selected unknown runtime profile(s): {', '.join(unknown)}")
+        if len(profiles) > 1:
+            self.die(
+                "CTest selection needs incompatible runtime profiles: "
+                f"{', '.join(profiles)}; run each profile separately"
+            )
+        return profiles
+
+    @contextmanager
+    def _ctest_runtime_profile_context(self, profiles: list[str]):
+        """Build and temporarily deploy the runtime declared by selected CTest cases."""
+
+        if not profiles:
+            yield
+            return
+        prefix_text = getattr(self, "_prefix", None)
+        if not prefix_text:
+            self.die("CTest runtime profile requires a Darling prefix")
+        profile_name = profiles[0]
+        definition = self._ctest_runtime_profile_definitions()[profile_name]
+        source_profile = definition["source-profile"]
+        proof = {
+            "source-modules": definition["source-modules"],
+            "runtime-artifacts": definition["runtime-artifacts"],
+        }
+        anchor = {
+            "path": f"CTest runtime profile {profile_name}",
+            "module": definition["source-module"],
+        }
+        previous_profile = getattr(self, "_active_profile", None)
+        scratch = tempfile.mkdtemp(prefix=f"west-ctest-runtime-{profile_name}-")
+        keep_on_failure = False
+        self._active_profile = source_profile
+        try:
+            self.inf(f"CTest runtime profile: {profile_name} ({source_profile})")
+            with self._guest_runtime_source_forest(anchor, proof, omit_patch=False) as source_root:
+                build_root = self._runtime_red_build_artifacts(
+                    source_root,
+                    proof,
+                    Path(prefix_text),
+                    Path(scratch),
+                    label=f"CTest {profile_name}",
+                )
+                with self._runtime_red_deployed_artifacts(
+                    proof,
+                    build_root,
+                    Path(prefix_text),
+                    label=f"CTest {profile_name}",
+                ):
+                    yield
+        except BaseException:
+            keep_on_failure = True
+            self.err(f"preserving failed CTest runtime scratch for inspection: {scratch}")
+            raise
+        finally:
+            self._active_profile = previous_profile
+            if not keep_on_failure:
+                shutil.rmtree(scratch, ignore_errors=True)
 
     def _bad_revision(self, patch) -> str:
         if patch.get("source-base"):
@@ -3003,7 +3102,7 @@ class DarlingTest(WestCommand):
             )
             self._apply_profile_module_patches(profile, module, target)
             yield target
-        except Exception:
+        except BaseException:
             keep_on_failure = True
             self.err(f"preserving failed GREEN source tree for inspection: {temp}")
             raise
@@ -3109,7 +3208,7 @@ class DarlingTest(WestCommand):
                 check=True,
             )
             added.append((darling_repo, source_root))
-            if patch_module_is_darling_root:
+            if patch_module_is_darling_root or Path("darling") in materialized_modules:
                 if omit_patch:
                     self._apply_current_minus_profile(patch, proof, "darling", source_root)
                 else:
@@ -3172,7 +3271,7 @@ class DarlingTest(WestCommand):
                     os.symlink(repo, target, target_is_directory=True)
             yielded = True
             yield source_root
-        except Exception:
+        except BaseException:
             keep_on_failure = True
             suffix = " before yield" if not yielded else ""
             self.err(f"preserving failed runtime source forest{suffix} for inspection: {temp}")
@@ -3523,7 +3622,7 @@ class DarlingTest(WestCommand):
                         self.err(f"preserving failed GREEN runtime scratch for inspection: {temp}")
                         return 1
                     return 0
-        except Exception:
+        except BaseException:
             keep_on_failure = True
             self.err(f"preserving failed GREEN runtime scratch for inspection: {temp}")
             raise
@@ -3739,7 +3838,7 @@ class DarlingTest(WestCommand):
                         self.err(f"preserving failed RED runtime scratch for inspection: {temp}")
                         return 1
                     self.inf(f"  RED runtime failed as expected (rc={bad_result.returncode})")
-        except Exception:
+        except BaseException:
             keep_on_failure = True
             self.err(f"preserving failed RED runtime scratch for inspection: {temp}")
             raise
@@ -4221,7 +4320,12 @@ class DarlingTest(WestCommand):
             self.inf(f"no proof scratch root at {root}")
             return
         cutoff = time.time() - (max_age_hours * 3600)
-        patterns = ("west-red-proof-runtime-*", "west-green-proof-runtime-*")
+        patterns = (
+            "west-red-proof-runtime-*",
+            "west-green-proof-runtime-*",
+            "west-red-proof-source-*",
+            "west-ctest-runtime-*",
+        )
         scratch_dirs = sorted(
             {
                 path
@@ -4395,15 +4499,22 @@ class DarlingTest(WestCommand):
             passthrough=unknown,
         )
 
+        runtime_profiles = []
+        if not args.list:
+            runtime_profiles = self._selected_ctest_runtime_profiles(build, label_args)
         self.inf(f"running: {' '.join(ctest)}")
-        needs_prefix = ctest_uses_prefix(env=args.env, list_only=args.list)
+        needs_prefix = (
+            ctest_uses_prefix(env=args.env, list_only=args.list)
+            or bool(runtime_profiles)
+        )
         with self._prefix_resource_context(needs_prefix):
-            result = run_bounded(
-                ctest,
-                cwd=Path(self.topdir),
-                env=None,
-                timeout_seconds=int(args.ctest_timeout_seconds),
-            )
+            with self._ctest_runtime_profile_context(runtime_profiles):
+                result = run_bounded(
+                    ctest,
+                    cwd=Path(self.topdir),
+                    env=None,
+                    timeout_seconds=int(args.ctest_timeout_seconds),
+                )
         if result.timed_out:
             self.err(
                 "CTest selection timed out after "

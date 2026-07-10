@@ -5,6 +5,60 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
+import yaml
+
+
+def load_ctest_runtime_profiles(path: Path) -> dict[str, dict[str, Any]]:
+    """Load the explicit runtime deployments used by CTest guest entries."""
+
+    data = yaml.safe_load(path.read_text()) or {}
+    profiles = data.get("runtime-profiles")
+    if not isinstance(profiles, dict):
+        raise ValueError("runtime-profiles must be a mapping")
+    normalized: dict[str, dict[str, Any]] = {}
+    for name, profile in profiles.items():
+        if not isinstance(name, str) or not name or not isinstance(profile, dict):
+            raise ValueError("each runtime profile needs a non-empty name and mapping")
+        source_profile = profile.get("source-profile")
+        source_module = profile.get("source-module")
+        source_modules = profile.get("source-modules")
+        artifacts = profile.get("runtime-artifacts")
+        if not isinstance(source_profile, str) or not source_profile:
+            raise ValueError(f"runtime profile {name!r} needs source-profile")
+        if not isinstance(source_module, str) or not source_module:
+            raise ValueError(f"runtime profile {name!r} needs source-module")
+        if not isinstance(source_modules, list) or not all(
+            isinstance(module, str) and module for module in source_modules
+        ):
+            raise ValueError(f"runtime profile {name!r} needs source-modules")
+        if not isinstance(artifacts, list) or not artifacts:
+            raise ValueError(f"runtime profile {name!r} needs runtime-artifacts")
+        deploy_paths = {
+            deploy_path
+            for artifact in artifacts
+            if isinstance(artifact, dict)
+            for deploy_path in artifact.get("deploy", [])
+            if isinstance(deploy_path, str)
+        }
+        system_kernel_modules = {
+            "darling",
+            "darling/src/external/darlingserver",
+            "darling/src/external/xnu",
+        }
+        missing_system_kernel_modules = system_kernel_modules.difference(source_modules)
+        if "usr/lib/system/libsystem_kernel.dylib" in deploy_paths and missing_system_kernel_modules:
+            raise ValueError(
+                f"runtime profile {name!r} deploying system_kernel must materialize "
+                f"{', '.join(sorted(missing_system_kernel_modules))}"
+            )
+        normalized[name] = {
+            "source-profile": source_profile,
+            "source-module": source_module,
+            "source-modules": source_modules,
+            "runtime-artifacts": artifacts,
+        }
+    return normalized
+
 
 def runtime_build_targets(proof: dict[str, Any]) -> list[str]:
     """Return unique Ninja targets from runtime-artifacts in first-seen order."""

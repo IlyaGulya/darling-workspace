@@ -32,6 +32,7 @@ from west_commands.test import DarlingTest
 from west_commands.test_execution import ProcessResult
 from west_commands.test_runtime import (
     describe_runtime_deploy_plan,
+    load_ctest_runtime_profiles,
     runtime_build_targets,
     runtime_deploy_targets,
 )
@@ -124,6 +125,35 @@ assert runtime_deploy_targets(prefix_for_targets, "usr/lib/system/libsystem_kern
 assert runtime_deploy_targets(prefix_for_targets, "bin/darlingserver") == [
     prefix_for_targets / "bin/darlingserver",
 ]
+with tempfile.TemporaryDirectory() as temp:
+    profiles_path = Path(temp) / "runtime-profiles.yml"
+    profiles_path.write_text(
+        "runtime-profiles:\n"
+        "  homebrew:\n"
+        "    source-profile: homebrew\n"
+        "    source-module: darling/src/external/xnu\n"
+        "    source-modules:\n"
+        "    - darling\n"
+        "    - darling/src/external/darlingserver\n"
+        "    - darling/src/external/xnu\n"
+        "    runtime-artifacts:\n"
+        "    - build-targets: [system_kernel]\n"
+        "      deploy: [usr/lib/system/libsystem_kernel.dylib]\n"
+    )
+    assert load_ctest_runtime_profiles(profiles_path)["homebrew"]["source-modules"] == [
+        "darling",
+        "darling/src/external/darlingserver",
+        "darling/src/external/xnu",
+    ]
+    profiles_path.write_text(
+        profiles_path.read_text().replace("    - darling\n", "")
+    )
+    try:
+        load_ctest_runtime_profiles(profiles_path)
+    except ValueError as exc:
+        assert "must materialize darling" in str(exc), exc
+    else:
+        raise AssertionError("system_kernel runtime profile accepted mixed live darlingserver source")
 deploy_test = make_test()
 deploy_test._resolve_darling_launcher = (
     lambda _prefix: "/opt/darling-test/bin/darling"
@@ -1390,6 +1420,13 @@ with tempfile.TemporaryDirectory() as temp:
         subprocess.run(["git", "add", "base.txt"], cwd=repo, check=True)
         subprocess.run(["git", "commit", "-q", "-m", "base"], cwd=repo, check=True)
 
+    darling_base = subprocess.run(
+        ["git", "rev-parse", "HEAD"],
+        cwd=darling_repo,
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
     xnu_base = subprocess.run(
         ["git", "rev-parse", "HEAD"],
         cwd=xnu_repo,
@@ -1428,11 +1465,20 @@ with tempfile.TemporaryDirectory() as temp:
         return patch_text, commit
 
     skipped_patch, _ = patch_from(xnu_repo, xnu_base, "skipped.txt", "skipped\n", "skipped patch")
+    darling_patch, _ = patch_from(
+        darling_repo,
+        darling_base,
+        "root_profile.txt",
+        "profile root\n",
+        "profile root",
+    )
     dserver_patch, dserver_commit = patch_from(dserver_repo, dserver_base, "ring_abi.txt", "profile abi\n", "profile abi")
 
     profile_dir = tempdir / "patches/runtime"
+    (profile_dir / "darling").mkdir(parents=True)
     (profile_dir / "xnu").mkdir(parents=True)
     (profile_dir / "darlingserver").mkdir(parents=True)
+    (profile_dir / "darling/root-profile.patch").write_text(darling_patch)
     (profile_dir / "xnu/skipped.patch").write_text(skipped_patch)
     (profile_dir / "darlingserver/ring-abi.patch").write_text(dserver_patch)
 
@@ -1449,6 +1495,7 @@ with tempfile.TemporaryDirectory() as temp:
     test._profile_stack = lambda profile: [profile]
     test._load_profile = lambda _profile: {
         "patches": [
+            {"path": "darling/root-profile.patch", "module": "darling"},
             {"path": "xnu/skipped.patch", "module": "darling/src/external/xnu"},
             {
                 "path": "darlingserver/ring-abi.patch",
@@ -1468,10 +1515,11 @@ with tempfile.TemporaryDirectory() as temp:
         {
             "mode": "guest-runtime-deploy",
             "bad-profile": "current-minus-patch",
-            "source-modules": ["darling/src/external/darlingserver"],
+            "source-modules": ["darling", "darling/src/external/darlingserver"],
         },
         omit_patch=True,
     ) as source_root:
+        assert (source_root / "root_profile.txt").read_text() == "profile root\n"
         assert not (source_root / "src/external/xnu/skipped.txt").exists()
         assert (source_root / "src/external/darlingserver/ring_abi.txt").read_text() == "profile abi\n"
 

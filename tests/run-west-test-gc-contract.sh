@@ -12,10 +12,13 @@ trap 'rm -rf "$tmp"' EXIT
 mkdir -p \
 	"$tmp/west-red-proof-runtime-old/build" \
 	"$tmp/west-green-proof-runtime-old/build" \
-	"$tmp/west-red-proof-source-keep" \
+	"$tmp/west-red-proof-source-old/build" \
+	"$tmp/west-ctest-runtime-homebrew-old/build" \
 	"$tmp/not-west-red-proof-runtime"
 printf 'artifact\n' >"$tmp/west-red-proof-runtime-old/build/lib.dylib"
 printf 'artifact\n' >"$tmp/west-green-proof-runtime-old/build/lib.dylib"
+printf 'artifact\n' >"$tmp/west-red-proof-source-old/build/lib.dylib"
+printf 'artifact\n' >"$tmp/west-ctest-runtime-homebrew-old/build/lib.dylib"
 
 west test --gc \
 	--bundle-root "$tmp/bundles" \
@@ -29,6 +32,10 @@ test -d "$tmp/west-red-proof-runtime-old" ||
 	{ cat "$tmp/dry.out" >&2; exit 1; }
 test -d "$tmp/west-green-proof-runtime-old" ||
 	{ cat "$tmp/dry.out" >&2; exit 1; }
+test -d "$tmp/west-red-proof-source-old" ||
+	{ cat "$tmp/dry.out" >&2; exit 1; }
+test -d "$tmp/west-ctest-runtime-homebrew-old" ||
+	{ cat "$tmp/dry.out" >&2; exit 1; }
 
 west test --gc \
 	--bundle-root "$tmp/bundles" \
@@ -41,7 +48,9 @@ test ! -e "$tmp/west-red-proof-runtime-old" ||
 	{ cat "$tmp/gc.out" >&2; exit 1; }
 test ! -e "$tmp/west-green-proof-runtime-old" ||
 	{ cat "$tmp/gc.out" >&2; exit 1; }
-test -d "$tmp/west-red-proof-source-keep" ||
+test ! -e "$tmp/west-red-proof-source-old" ||
+	{ cat "$tmp/gc.out" >&2; exit 1; }
+test ! -e "$tmp/west-ctest-runtime-homebrew-old" ||
 	{ cat "$tmp/gc.out" >&2; exit 1; }
 test -d "$tmp/not-west-red-proof-runtime" ||
 	{ cat "$tmp/gc.out" >&2; exit 1; }

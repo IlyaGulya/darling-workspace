@@ -10,6 +10,7 @@ from test_ctest import (
     ctest_command,
     ctest_label_args,
     ctest_label_display,
+    ctest_selection_command,
     ctest_selector_label_args,
     ctest_submodule_label_name,
     ctest_uses_prefix,
@@ -31,6 +32,14 @@ assert ctest_label_args(build, "bead:dar-gwn.5") == [
 assert ctest_label_display(build, "bead:dar-gwn.5") == (
     "ctest --test-dir '/tmp/build dir' --output-on-failure -L bead:dar-gwn.5"
 )
+assert ctest_selection_command(build, label_args=["-L", "env:darling"]) == [
+    "ctest",
+    "--test-dir",
+    "/tmp/build dir",
+    "--show-only=json-v1",
+    "-L",
+    "env:darling",
+]
 
 labels = ctest_selector_label_args(
     bead="dar-gwn.5",
