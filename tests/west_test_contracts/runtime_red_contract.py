@@ -1107,12 +1107,22 @@ with tempfile.TemporaryDirectory() as temp:
         ]
     }
     test._profile_path = lambda profile: tempdir / "patches" / profile / "patches.yml"
-    test._apply_profile_module_patches(
-        "runtime",
-        "module",
-        target,
-        skip_patch_paths={"x/skipped.patch", "x/dependent.patch"},
-    )
+    trace = tempdir / "profile-apply-trace.json"
+    previous_trace = os.environ.get("GIT_TRACE2_EVENT")
+    os.environ["GIT_TRACE2_EVENT"] = str(trace)
+    try:
+        test._apply_profile_module_patches(
+            "runtime",
+            "module",
+            target,
+            skip_patch_paths={"x/skipped.patch", "x/dependent.patch"},
+        )
+    finally:
+        if previous_trace is None:
+            del os.environ["GIT_TRACE2_EVENT"]
+        else:
+            os.environ["GIT_TRACE2_EVENT"] = previous_trace
+    assert "maintenance run --auto" not in trace.read_text()
     assert (target / "file.txt").read_text() == "base\n"
     assert not (target / "dependent.txt").exists()
     assert (target / "other.txt").read_text() == "kept\n"
