@@ -758,7 +758,7 @@ printf '%s\n' "$bare" | grep -q 'diag:bare' ||
 bare_host_display="$(
 	printf '%s\n' "$bare" |
 		awk '
-			/psynch_return_contract \[red, env:host, diag:bare, kind:contract\]/ { getline; print; found=1 }
+		/psynch_return_contract \[red, env:host, diag:bare, kind:source-contract\]/ { getline; print; found=1 }
 			END { if (!found) exit 1 }
 		'
 )" || fail 'bare host metadata line was not found'

@@ -148,9 +148,10 @@ artifact profile.
 - `source`: source/text audit only. It is not behavioral coverage and must use
   `kind: source-contract`.
 
-If `coverage-tier` is omitted, `west patch check` derives a conservative tier
-from `kind`, `env`, and `runner`. New metadata should set it explicitly whenever
-the distinction matters, especially for `model`.
+If compact metadata omits `coverage-tier`, manifest normalization materializes
+one conservative value from `kind`, `env`, and `runner` before any checker or
+runner sees it. Set the field explicitly whenever the default would obscure an
+intentional distinction, especially for `model`.
 
 `red: true` does **not** mean the test should fail on the latest checkout.
 Normal `west test --profile ...` runs are regression runs and must pass on the

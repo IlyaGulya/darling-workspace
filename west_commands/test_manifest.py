@@ -81,6 +81,7 @@ def normalize_test(
     _expand_artifacts(merged, artifact_profiles, index=index)
     _expand_resources(merged, resource_profiles, index=index)
     _expand_fixtures(merged, fixture_profiles, index=index)
+    _default_coverage_tier(merged)
     _default_red_failure_phase(merged)
     return merged
 
@@ -122,6 +123,7 @@ def _resolve_test_profile(
     _expand_artifacts(merged, artifact_profiles)
     _expand_resources(merged, resource_profiles)
     _expand_fixtures(merged, fixture_profiles)
+    _default_coverage_tier(merged)
     _default_red_failure_phase(merged)
     stack.pop()
     return merged
@@ -217,6 +219,40 @@ def _default_red_failure_phase(test: dict[str, Any]) -> None:
         proof["expect-failure-phase"] = "compile" if tier == "compile" else "run"
     else:
         proof["expect-failure-phase"] = "script"
+
+
+def _default_coverage_tier(test: dict[str, Any]) -> None:
+    """Materialize one conservative coverage class in normalized metadata.
+
+    Compact manifests may omit a tier when it follows directly from their
+    structured runner.  Consumers never re-derive it: they receive the same
+    explicit normalized field regardless of whether it came from a test
+    profile, the test entry, or this schema default.
+    """
+
+    explicit_tier = test.get("coverage-tier")
+    if explicit_tier:
+        return
+    runner = test.get("runner")
+    source_runner = runner in {
+        "source-contract-script",
+        "source-profile-script",
+        "source-script-fixture",
+    }
+    if source_runner or test.get("kind") == "source-contract":
+        if source_runner:
+            test["kind"] = "source-contract"
+        test["coverage-tier"] = "source"
+    elif (
+        test.get("env") in {"darling", "macos"}
+        or test.get("kind") == "guest"
+        or runner == "guest-c-fixture"
+    ):
+        test["coverage-tier"] = "runtime"
+    elif runner in {"c-fixture", "object-symbol-fixture", "west-build"} or test.get("kind") == "build":
+        test["coverage-tier"] = "compile"
+    else:
+        test["coverage-tier"] = "host"
 
 
 def _expand_artifacts(
