@@ -123,6 +123,16 @@ class DarlingPatch(WestCommand):
                     action="store_true",
                     help="exit non-zero if a non-doc patch has no tests/exception",
                 )
+                command.add_argument(
+                    "--quality",
+                    action="store_true",
+                    help="also report low-noise test quality warnings",
+                )
+                command.add_argument(
+                    "--strict-quality",
+                    action="store_true",
+                    help="exit non-zero for test quality warnings; implies --quality",
+                )
         return parser
 
     def do_run(self, args, unknown):
@@ -164,7 +174,13 @@ class DarlingPatch(WestCommand):
         elif args.action == "status":
             self._status(profile_dir, patches, args.strict)
         elif args.action == "check":
-            self._check(profile_dir, patches, args.strict)
+            self._check(
+                profile_dir,
+                patches,
+                args.strict,
+                quality=args.quality or args.strict_quality,
+                strict_quality=args.strict_quality,
+            )
         elif args.action == "apply":
             self._apply(
                 args.profile,
@@ -1002,9 +1018,63 @@ class DarlingPatch(WestCommand):
         """
         return DarlingPatch._coverage_tier(test) != "source"
 
-    def _check(self, profile_dir: Path, patches, strict: bool):
+    @staticmethod
+    def _quality_warnings(patch) -> list[str]:
+        warnings = []
+        for index, test in enumerate(patch.get("tests") or [], start=1):
+            proof = test.get("red-proof")
+            if not isinstance(proof, dict):
+                continue
+            if proof.get("mode") != "guest-runtime-deploy":
+                continue
+
+            artifacts = proof.get("runtime-artifacts") or []
+            source_modules = set(proof.get("source-modules") or [])
+            builds_system_kernel = any(
+                isinstance(artifact, dict)
+                and artifact.get("module") == "darling/src/external/xnu"
+                and "system_kernel" in (artifact.get("build-targets") or [])
+                for artifact in artifacts
+            )
+            if (
+                builds_system_kernel
+                and "darling/src/external/darlingserver" not in source_modules
+            ):
+                warnings.append(
+                    f"tests[{index}] guest-runtime-deploy builds system_kernel; "
+                    "add red-proof.source-modules: [darling/src/external/darlingserver] "
+                    "so RPC-generated headers come from the same materialized profile"
+                )
+
+            test_name = str(test.get("name", "")).lower()
+            patch_path = str(patch.get("path", "")).lower()
+            dyld_is_subject = "dyld" in test_name or "dyld" in patch_path
+            if not dyld_is_subject:
+                for artifact_index, artifact in enumerate(artifacts):
+                    if not isinstance(artifact, dict):
+                        continue
+                    if artifact.get("module") != "darling/src/external/dyld":
+                        continue
+                    warnings.append(
+                        f"tests[{index}].red-proof.runtime-artifacts[{artifact_index}] "
+                        "deploys dyld although the patch/test is not dyld-scoped; "
+                        "remove the artifact or split the proof so unrelated dyld build "
+                        "failures cannot satisfy RED"
+                    )
+        return warnings
+
+    def _check(
+        self,
+        profile_dir: Path,
+        patches,
+        strict: bool,
+        *,
+        quality: bool = False,
+        strict_quality: bool = False,
+    ):
         missing = []
         invalid = []
+        quality_warnings = []
         covered_by_tier = {
             "runtime": 0,
             "compile": 0,
@@ -1017,6 +1087,10 @@ class DarlingPatch(WestCommand):
             if errors:
                 invalid.append((patch, errors))
                 continue
+            if quality:
+                warnings = self._quality_warnings(patch)
+                if warnings:
+                    quality_warnings.append((patch, warnings))
             tests = [
                 test
                 for test in (patch.get("tests") or [])
@@ -1072,6 +1146,9 @@ class DarlingPatch(WestCommand):
         for patch, errors in invalid:
             for error in errors:
                 self.err(f"INVALID   {patch['path']}: {error}")
+        for patch, warnings in quality_warnings:
+            for warning in warnings:
+                self.inf(f"QUALITY   {patch['path']}: {warning}")
         self.inf(
             "test metadata: "
             f"{sum(covered_by_tier.values())} covered "
@@ -1092,6 +1169,9 @@ class DarlingPatch(WestCommand):
             self.die(
                 f"{len(missing)} missing + {len(invalid)} invalid patch test metadata entries"
             )
+        if strict_quality and quality_warnings:
+            total = sum(len(warnings) for _, warnings in quality_warnings)
+            self.die(f"{total} patch test quality warning(s)")
 
     def _prepare(
         self, module: str, repo: Path, branch: str, parent: bool = False

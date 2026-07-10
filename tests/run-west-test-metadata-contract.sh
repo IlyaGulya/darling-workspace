@@ -10,7 +10,8 @@ tmp_invalid_profile="patches/__metadata_invalid_contract"
 tmp_runtime_red_profile="patches/__metadata_runtime_red_contract"
 guest_prefix=/tmp/west-test-guest-c-fixture-prefix
 source_script_marker=/tmp/west-source-script-fixture-second-case
-trap 'rm -rf "$tmp_profile" "$tmp_invalid_profile" "$tmp_runtime_red_profile" "$guest_prefix" "$source_script_marker"' EXIT
+quality_contract_output=/tmp/west-quality-contract.out
+trap 'rm -rf "$tmp_profile" "$tmp_invalid_profile" "$tmp_runtime_red_profile" "$guest_prefix" "$source_script_marker" "$quality_contract_output"' EXIT
 mkdir -p "$tmp_profile" "$tmp_invalid_profile" "$tmp_runtime_red_profile"
 cat >"$tmp_profile/patches.yml" <<'YAML'
 test-profiles:
@@ -716,6 +717,16 @@ printf '%s\n' "$source_only_check" | grep -q 'HOST      test/darling-cmake-targe
 	fail 'darling-cmake-target-fixture patch was not reported as HOST'
 printf '%s\n' "$source_only_check" | grep -q 'RUNTIME   test/eunion-prefix-resource.patch' ||
 	fail 'darling-eunion-prefix patch was not reported as RUNTIME'
+
+quality_check="$(west patch check --profile __metadata_contract --quality)"
+printf '%s\n' "$quality_check" | grep -q \
+	'QUALITY   test/compact-guest-runtime.patch: tests\[1\] guest-runtime-deploy builds system_kernel' ||
+	fail 'quality audit did not flag xnu runtime proof without materialized darlingserver'
+if west patch check --profile __metadata_contract --strict-quality >"$quality_contract_output" 2>&1; then
+	fail 'strict quality audit accepted a known quality warning'
+fi
+grep -q 'patch test quality warning' "$quality_contract_output" ||
+	fail 'strict quality audit did not report quality warning count'
 
 c_fixture="$(
 	west test --profile __metadata_contract \
