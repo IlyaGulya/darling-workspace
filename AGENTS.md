@@ -196,6 +196,10 @@ refs, PR drafts, and agent handoff.
   thin compatibility entrypoints only; do not grow them with embedded Python
   heredocs or large inline fixtures unless the test is intentionally exercising
   shell/CLI integration.
+- Do not use `python -m py_compile` for a working-tree syntax check: it leaves
+  ignored `__pycache__` artifacts. Use
+  `python3 -B scripts/check_python_syntax.py <paths...>` instead; it parses the
+  files with `compile()` and leaves the tree clean.
 - `tests/run-west-test-testkit-contract.sh` is the focused CLI contract for the
   local CTest/testkit bridge; update it when changing testkit registration or
   top-level CTest selectors.
