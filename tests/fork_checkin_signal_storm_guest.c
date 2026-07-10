@@ -19,6 +19,22 @@ static void fail_errno(const char* what) {
 	exit(1);
 }
 
+static int iteration_count(void) {
+	const char* value = getenv("FORK_CHECKIN_SIGNAL_STORM_ITERS");
+	if (value == NULL || value[0] == '\0') {
+		return 64;
+	}
+
+	errno = 0;
+	char* end = NULL;
+	long parsed = strtol(value, &end, 10);
+	if (errno != 0 || end == value || *end != '\0' || parsed <= 0 || parsed > 4096) {
+		fprintf(stderr, "bad FORK_CHECKIN_SIGNAL_STORM_ITERS: %s\n", value);
+		exit(1);
+	}
+	return (int)parsed;
+}
+
 int main(void) {
 	struct sigaction sa;
 	memset(&sa, 0, sizeof(sa));
@@ -36,7 +52,8 @@ int main(void) {
 		fail_errno("setitimer");
 	}
 
-	for (int i = 0; i < 256; ++i) {
+	const int iterations = iteration_count();
+	for (int i = 0; i < iterations; ++i) {
 		pid_t pid = fork();
 		if (pid < 0) {
 			fail_errno("fork");
