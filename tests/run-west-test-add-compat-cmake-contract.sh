@@ -21,6 +21,7 @@ add_compat_test(
   FUZZ
   STRESS
   DIAG bare
+  TIMEOUT 17
   OK_MARKER GUEST_ARG_CONTRACT_OK
   ARGS hello
 )
@@ -52,6 +53,8 @@ grep -q -- '--ok-marker.*GUEST_ARG_CONTRACT_OK' "$ctest_file" ||
 grep -q 'DPREFIX=/tmp/darling-prefix-contract' "$ctest_file" ||
 	{ cat "$ctest_file" >&2; exit 1; }
 grep -q 'DARLING_PREFIX=/tmp/darling-prefix-contract' "$ctest_file" ||
+	{ cat "$ctest_file" >&2; exit 1; }
+grep -q 'DARLING_GUEST_TIMEOUT_SECONDS=17' "$ctest_file" ||
 	{ cat "$ctest_file" >&2; exit 1; }
 grep -q 'fuzz:true' "$ctest_file" ||
 	{ cat "$ctest_file" >&2; exit 1; }
