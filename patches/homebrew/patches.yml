@@ -4378,7 +4378,7 @@ patches:
     diag: guarded
     runner: guest-c-fixture
     script: darling/src/libsystem_kernel/tests/abort_with_payload_no_group_broadcast.c
-    ok-marker: 'GREEN: abort_with_payload stayed local'
+    ok-marker: 'GREEN: abort_with_payload stayed local to the child; parent survived'
     timeout-seconds: 30
     requires:
     - darling-prefix

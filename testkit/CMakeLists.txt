@@ -107,6 +107,7 @@ if(EXISTS "${_abort_with_payload_guest}")
     BEAD       dar-cps
     SUBMODULES xnu
     TIMEOUT    30
+    OK_MARKER  "GREEN: abort_with_payload stayed local to the child; parent survived"
   )
 else()
   message(WARNING

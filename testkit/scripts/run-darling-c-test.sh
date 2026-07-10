@@ -6,6 +6,7 @@ source=
 guest_cc="${DARLING_GUEST_CC:-/Library/Developer/CommandLineTools/usr/bin/clang}"
 guest_cflags="${DARLING_GUEST_CFLAGS:--isysroot /Library/Developer/CommandLineTools/SDKs/MacOSX.sdk}"
 launcher="${DARLING_LAUNCHER:-}"
+ok_marker=
 args=()
 
 while (($#)); do
@@ -30,6 +31,10 @@ while (($#)); do
 			guest_cflags="$2"
 			shift 2
 			;;
+		--ok-marker)
+			ok_marker="$2"
+			shift 2
+			;;
 		--)
 			shift
 			args=("$@")
@@ -43,7 +48,7 @@ while (($#)); do
 done
 
 if [[ -z "$name" || -z "$source" ]]; then
-	echo "usage: run-darling-c-test.sh --name NAME --source PATH [--launcher PATH] [-- ARGS...]" >&2
+	echo "usage: run-darling-c-test.sh --name NAME --source PATH [--launcher PATH] [--ok-marker TEXT] [-- ARGS...]" >&2
 	exit 2
 fi
 if [[ -z "$launcher" ]]; then
@@ -56,17 +61,34 @@ if [[ ! -f "$source" ]]; then
 fi
 
 safe_name="${name//[^A-Za-z0-9_.-]/_}"
-guest_src="/tmp/${safe_name}.c"
-guest_bin="/tmp/${safe_name}"
+run_id="${WEST_GUEST_C_FIXTURE_ID:-$$.$RANDOM}"
+guest_src="/tmp/${safe_name}.${run_id}.c"
+guest_bin="/tmp/${safe_name}.${run_id}"
+output="$(mktemp "${TMPDIR:-/tmp}/west-ctest-guest-c.${safe_name}.XXXXXX")"
+trap 'rm -f "$output"' EXIT
 
 quoted_args=()
 for arg in "${args[@]}"; do
 	quoted_args+=("$(printf '%q' "$arg")")
 done
 
+set +e
 "$launcher" shell /bin/bash --login -c "
 set -euo pipefail
+cleanup() {
+  rm -f '$guest_src' '$guest_bin'
+}
+trap cleanup EXIT
 cat > '$guest_src'
 $guest_cc $guest_cflags -o '$guest_bin' '$guest_src'
 '$guest_bin' ${quoted_args[*]}
-" <"$source"
+" <"$source" >"$output" 2>&1
+rc=$?
+set -e
+cat "$output"
+
+if [ "$rc" -eq 0 ] && [ -n "$ok_marker" ]; then
+	grep -F -x -q -- "$ok_marker" "$output"
+fi
+
+exit "$rc"

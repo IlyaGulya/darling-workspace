@@ -53,8 +53,10 @@ from test_ctest import (
     ctest_label_args,
     ctest_label_display,
     ctest_selector_label_args,
+    ctest_uses_prefix,
 )
 from test_cmake import archive_source_to, run_darling_cmake_target_fixture
+from test_execution import run_bounded
 from test_manifest import ManifestError, load_test_profile
 from test_prefix import (
     darlingserver_pids_for_prefix,
@@ -184,6 +186,13 @@ class DarlingTest(WestCommand):
             "--list",
             action="store_true",
             help="list selected tests and exit (no run)",
+        )
+        parser.add_argument(
+            "--ctest-timeout-seconds",
+            type=int,
+            default=3600,
+            metavar="SECONDS",
+            help="outer deadline for one selected CTest invocation (default 3600)",
         )
         parser.add_argument(
             "--gc",
@@ -1467,13 +1476,17 @@ class DarlingTest(WestCommand):
                 die=self.die,
             )
         run_env = env if env is not None else invocation.get("env")
-        result = subprocess.run(
+        result = run_bounded(
             self._debug_runner_args(invocation),
             cwd=invocation["cwd"],
             env=run_env,
-            shell=False,
-            check=False,
+            timeout_seconds=int(invocation.get("timeout_seconds", 600)) + 15,
         )
+        if result.timed_out:
+            self.err(
+                f"{invocation['name']}: timed out after "
+                f"{invocation.get('timeout_seconds', 600)}s"
+            )
         rc = result.returncode
         if rc:
             return rc
@@ -1645,20 +1658,25 @@ class DarlingTest(WestCommand):
                     source_path = source_root / source_path
                 args.append(str(source_path))
             args.extend([str(invocation["script_path"]), "-o", str(binary)])
-            compile_rc = subprocess.run(
+            compile_result = run_bounded(
                 args,
                 cwd=invocation["cwd"],
                 env=run_env,
-                check=False,
-            ).returncode
-            if compile_rc:
-                return compile_rc
-            return subprocess.run(
+                timeout_seconds=int(invocation.get("timeout_seconds", 600)),
+            )
+            if compile_result.timed_out:
+                self.err(f"{invocation['name']}: compile timed out")
+            if compile_result.returncode:
+                return compile_result.returncode
+            run_result = run_bounded(
                 [str(binary)],
                 cwd=invocation["cwd"],
                 env=run_env,
-                check=False,
-            ).returncode
+                timeout_seconds=int(invocation.get("timeout_seconds", 600)),
+            )
+            if run_result.timed_out:
+                self.err(f"{invocation['name']}: test binary timed out")
+            return run_result.returncode
 
     def _run_object_symbol_fixture(self, invocation, env=None) -> int:
         if invocation.get("diag", "bare") != "bare":
@@ -1692,22 +1710,25 @@ class DarlingTest(WestCommand):
                         include_path = source_root / include_path
                     args.extend(["-I", str(include_path)])
                 args.extend([str(source_path), "-o", str(object_path)])
-                compile_rc = subprocess.run(
+                compile_result = run_bounded(
                     args,
                     cwd=invocation["cwd"],
                     env=run_env,
-                    check=False,
-                ).returncode
-                if compile_rc:
-                    return compile_rc
-                nm = subprocess.run(
+                    timeout_seconds=int(invocation.get("timeout_seconds", 600)),
+                )
+                if compile_result.timed_out:
+                    self.err(f"{invocation['name']}:{check['name']}: compile timed out")
+                if compile_result.returncode:
+                    return compile_result.returncode
+                nm = run_bounded(
                     ["nm", "-u", str(object_path)],
                     cwd=invocation["cwd"],
                     env=run_env,
-                    check=False,
+                    timeout_seconds=int(invocation.get("timeout_seconds", 600)),
                     capture_output=True,
-                    text=True,
                 )
+                if nm.timed_out:
+                    self.err(f"{invocation['name']}:{check['name']}: nm timed out")
                 if nm.returncode:
                     sys.stderr.write(nm.stdout)
                     sys.stderr.write(nm.stderr)
@@ -1726,14 +1747,15 @@ class DarlingTest(WestCommand):
                         self.err(f"{invocation['name']}:{check['name']}: unexpected undefined symbol {symbol}")
                         return 1
                 if check.get("present_defined_symbols") or check.get("absent_defined_symbols"):
-                    defined_nm = subprocess.run(
+                    defined_nm = run_bounded(
                         ["nm", "-g", str(object_path)],
                         cwd=invocation["cwd"],
                         env=run_env,
-                        check=False,
+                        timeout_seconds=int(invocation.get("timeout_seconds", 600)),
                         capture_output=True,
-                        text=True,
                     )
+                    if defined_nm.timed_out:
+                        self.err(f"{invocation['name']}:{check['name']}: nm timed out")
                     if defined_nm.returncode:
                         sys.stderr.write(defined_nm.stdout)
                         sys.stderr.write(defined_nm.stderr)
@@ -2409,6 +2431,16 @@ guest_shell() {{
 \treturn "$rc"
 }}
 
+cleanup_guest_artifacts() {{
+\t# A prepare-only RED phase deliberately leaves the compiled fixture for the
+\t# following bad-runtime run. Every other path must leave the guest /tmp clean.
+\tif [ "$prepare_only" = 1 ]; then
+\t\treturn
+\tfi
+\tguest_shell 10 "rm -f '$guest_src' '$guest_bin'" >/dev/null 2>&1 || true
+}}
+trap cleanup_guest_artifacts EXIT
+
 : > /tmp/dserver-client-rpc.log 2>/dev/null || true
 dump_runtime_file_state
 if [ "$run_only" != 1 ]; then
@@ -2448,7 +2480,7 @@ if [ "$rc" -ne 0 ] && [ "$host_trace_oracle" != 1 ]; then
 \texit "$rc"
 fi
 if [ "$host_trace_oracle" != 1 ]; then
-\tgrep -q "^$ok_marker" "$verdict"
+\tgrep -F -x -q -- "$ok_marker" "$verdict"
 \tgrep -q '^ORACLE_RC=0$' "$verdict"
 fi
 {trace_check}
@@ -4651,6 +4683,9 @@ fi
         self._materialize_profile = args.materialize_profile
         self._keep_prefix_running = args.keep_prefix_running
 
+        if args.ctest_timeout_seconds <= 0:
+            self.die("--ctest-timeout-seconds must be > 0")
+
         if args.gc:
             self._gc_bundles(
                 Path(args.bundle_root), args.keep_last, args.max_bundle_mb,
@@ -4790,4 +4825,20 @@ fi
         )
 
         self.inf(f"running: {' '.join(ctest)}")
-        raise SystemExit(subprocess.run(ctest, check=False).returncode)
+        needs_prefix = ctest_uses_prefix(env=args.env, list_only=args.list)
+        with self._prefix_resource_context(needs_prefix):
+            result = run_bounded(
+                ctest,
+                cwd=Path(self.topdir),
+                env=None,
+                timeout_seconds=int(args.ctest_timeout_seconds),
+            )
+        if result.timed_out:
+            self.err(
+                "CTest selection timed out after "
+                f"{args.ctest_timeout_seconds}s"
+            )
+        rc = result.returncode
+        if getattr(self, "_prefix_cleanup_failed", False):
+            rc = rc or 1
+        raise SystemExit(rc)
