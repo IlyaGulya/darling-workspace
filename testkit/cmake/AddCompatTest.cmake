@@ -79,7 +79,7 @@ set(DARLING_TEST_BUNDLE_ROOT "${DARLING_TEST_BUNDLE_ROOT}" CACHE PATH
 
 function(add_compat_test)
   set(options WILL_FAIL INSTALL FUZZ STRESS)
-  set(oneValue NAME SOURCE BEAD DIAG WORKDIR TIMEOUT MIN_VERSION MAX_VERSION)
+  set(oneValue NAME SOURCE BEAD DIAG WORKDIR TIMEOUT MIN_VERSION MAX_VERSION OK_MARKER)
   set(multiValue ENVS SUBMODULES EXTRA_SOURCES INCLUDES DEFINES LIBS RESOURCES ARGS)
   cmake_parse_arguments(ACT "${options}" "${oneValue}" "${multiValue}" ${ARGN})
 
@@ -168,11 +168,16 @@ function(add_compat_test)
       set(cmd "$<TARGET_FILE:${target}>" ${ACT_ARGS})
     elseif(env STREQUAL "darling")
       if(DARLING_LAUNCHER)
+        set(guest_marker_args)
+        if(ACT_OK_MARKER)
+          list(APPEND guest_marker_args --ok-marker "${ACT_OK_MARKER}")
+        endif()
         set(cmd
           "${_ADD_COMPAT_TEST_ROOT}/scripts/run-darling-c-test.sh"
           --name "${ACT_NAME}"
           --source "${ACT_SOURCE}"
           --launcher "${DARLING_LAUNCHER}"
+          ${guest_marker_args}
           -- ${ACT_ARGS})
       else()
         set(cmd
@@ -181,10 +186,16 @@ function(add_compat_test)
           -P "${_ADD_COMPAT_TEST_CMAKE_DIR}/MissingDarlingShell.cmake")
       endif()
     elseif(env STREQUAL "macos")
-      # TODO: macos currently aliases the host launch path (run the binary
-      # directly). When wired up as a real differential oracle it needs a
-      # remote/SSH indirection like darling gets via DARLING_SHELL.
-      set(cmd "$<TARGET_FILE:${target}>" ${ACT_ARGS})
+      if(APPLE)
+        set(cmd "$<TARGET_FILE:${target}>" ${ACT_ARGS})
+      else()
+        # A Linux-built binary is not a macOS oracle. Keep the registration
+        # discoverable, but fail plainly until a remote macOS transport exists.
+        set(cmd
+          "${CMAKE_COMMAND}"
+          "-DTEST_NAME=${test_name}"
+          -P "${_ADD_COMPAT_TEST_CMAKE_DIR}/MissingMacOSRunner.cmake")
+      endif()
     endif()
 
     # Resolve the diagnosis tier: explicit DIAG wins, else per-env default.

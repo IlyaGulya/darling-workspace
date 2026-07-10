@@ -4,6 +4,8 @@ set -euo pipefail
 repo="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$repo"
 
+tests/run-darling-c-test-contract.sh
+
 bead="dar-dar6x4-perf-5dq.1"
 
 list_by_bead="$(west test --bead "$bead" --list)"
