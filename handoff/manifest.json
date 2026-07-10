@@ -871,7 +871,7 @@
         },
         {
           "branch": "fix/psynch-negative-errno",
-          "head": "10096d1101c0685ad53adfc9b057892f9d6f3506",
+          "head": "8df32150517d967213e1a4e9a87fa315d50917b9",
           "upstream": "",
           "source_ref": "refs/heads/fix/psynch-negative-errno"
         },
