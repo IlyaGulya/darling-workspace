@@ -36,6 +36,12 @@ list_select_guest="$(west test --bead dar-q95.3 --env darling --list)"
 printf '%s\n' "$list_select_guest" | grep -q 'darling/select_fdset_guest' ||
 	{ printf '%s\n' "$list_select_guest" >&2; exit 1; }
 
+for bead in dar-q95.10 dar-q95.11; do
+	guest_list="$(west test --bead "$bead" --env darling --list)"
+	printf '%s\n' "$guest_list" | grep -q 'darling/' ||
+		{ printf '%s\n' "$guest_list" >&2; exit 1; }
+done
+
 list_eunion="$(west test --bead dar-test-infra-sp5.8.4.4 --env host --list)"
 printf '%s\n' "$list_eunion" | grep -q 'host/eunion_host_suite' ||
 	{ printf '%s\n' "$list_eunion" >&2; exit 1; }
