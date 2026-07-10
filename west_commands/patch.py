@@ -343,6 +343,7 @@ class DarlingPatch(WestCommand):
             runner = test.get("runner")
             if runner and runner not in {
                 "script",
+                "self-contract-script",
                 "source-contract-script",
                 "python",
                 "cmake-configure-fixture",
@@ -362,6 +363,7 @@ class DarlingPatch(WestCommand):
             if test.get("script") and runner not in {
                 None,
                 "script",
+                "self-contract-script",
                 "source-contract-script",
                 "python",
                 "c-fixture",
@@ -370,7 +372,7 @@ class DarlingPatch(WestCommand):
                 "source-build-fixture",
             }:
                 errors.append(
-                    f"tests[{index}] script requires runner: script, source-contract-script, python, c-fixture, guest-c-fixture, object-symbol-fixture, or source-build-fixture"
+                    f"tests[{index}] script requires runner: script, self-contract-script, source-contract-script, python, c-fixture, guest-c-fixture, object-symbol-fixture, or source-build-fixture"
                 )
             if test.get("script"):
                 repo_ref = test.get("repo", patch["module"])
@@ -490,6 +492,12 @@ class DarlingPatch(WestCommand):
                 if not proof.get("source-env") and not test.get("source-env"):
                     errors.append(
                         f"tests[{index}] source-contract-script requires source-env"
+                    )
+            if runner == "self-contract-script":
+                proof = test.get("red-proof") if isinstance(test.get("red-proof"), dict) else {}
+                if not test.get("red") or proof.get("mode") != "self":
+                    errors.append(
+                        f"tests[{index}] self-contract-script requires red: true and red-proof mode: self"
                     )
             if runner == "cmake-configure-fixture":
                 for key in ("configure-args", "marker-files"):
