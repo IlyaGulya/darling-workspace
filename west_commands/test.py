@@ -157,6 +157,13 @@ class DarlingTest(WestCommand):
             help="named Darling prefix shortcut (homebrew -> ~/work/darling-prefix-homebrew-test)",
         )
         parser.add_argument(
+            "--with-runtime-profile",
+            action="append",
+            default=[],
+            metavar="NAME",
+            help="add a declared CTest guest runtime provider without changing test selection; useful for reproducing artifact interactions",
+        )
+        parser.add_argument(
             "--keep-prefix-running",
             action="store_true",
             help="do not shut down a Darling prefix after prefix-backed metadata tests",
@@ -4519,6 +4526,15 @@ class DarlingTest(WestCommand):
         runtime_profiles = []
         if not args.list:
             runtime_profiles = self._selected_ctest_runtime_profiles(build, label_args)
+            for profile in args.with_runtime_profile:
+                if profile not in runtime_profiles:
+                    runtime_profiles.append(profile)
+            try:
+                compose_ctest_runtime_profiles(
+                    self._ctest_runtime_profile_definitions(), runtime_profiles
+                )
+            except ValueError as error:
+                self.die(f"invalid CTest runtime profile selection: {error}")
         self.inf(f"running: {' '.join(ctest)}")
         needs_prefix = (
             ctest_uses_prefix(env=args.env, list_only=args.list)
