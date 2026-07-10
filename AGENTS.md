@@ -201,6 +201,9 @@ refs, PR drafts, and agent handoff.
 - `tests/run-west-test-guarded-timeout-contract.sh` is the focused guarded
   timeout contract for the CTest/debug-runner bridge; update it when changing
   `DARLING_TEST_EXECUTOR`, bundle-root propagation, or timeout wrapping.
+- `tests/run-west-test-gc-contract.sh` is the focused GC contract for debug
+  bundles and stale runtime proof scratch dirs; update it when changing
+  `west test --gc`, proof scratch naming, or dry-run pruning behavior.
 - CTest `env=darling` entries are source-driven guest tests: `add_compat_test`
   must upload/compile/run the C source inside the selected Darling prefix via
   `testkit/scripts/run-darling-c-test.sh`. Do not run Linux host-built test

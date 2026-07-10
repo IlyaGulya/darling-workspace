@@ -215,6 +215,21 @@ class DarlingTest(WestCommand):
             action="store_true",
             help="with --gc, show what would be pruned without deleting",
         )
+        parser.add_argument(
+            "--proof-scratch-root",
+            metavar="DIR",
+            default=tempfile.gettempdir(),
+            help="with --gc, directory to scan for stale runtime proof scratch dirs "
+            f"(default {tempfile.gettempdir()})",
+        )
+        parser.add_argument(
+            "--proof-scratch-max-age-hours",
+            type=float,
+            default=24.0,
+            metavar="HOURS",
+            help="with --gc, prune west-{red,green}-proof-runtime-* dirs older than this "
+            "(default 24)",
+        )
         return parser
 
     # --- helpers ------------------------------------------------------------
@@ -4590,6 +4605,43 @@ fi
             f"gc: kept {kept}, {action} {freed // (1024 * 1024)}M from {root}"
         )
 
+    def _gc_runtime_proof_scratch(
+        self,
+        root: Path,
+        max_age_hours: float,
+        dry_run: bool = False,
+    ) -> None:
+        root = root.expanduser()
+        if max_age_hours < 0:
+            self.die("--proof-scratch-max-age-hours must be >= 0")
+        if not root.is_dir():
+            self.inf(f"no proof scratch root at {root}")
+            return
+        cutoff = time.time() - (max_age_hours * 3600)
+        patterns = ("west-red-proof-runtime-*", "west-green-proof-runtime-*")
+        scratch_dirs = sorted(
+            {
+                path
+                for pattern in patterns
+                for path in root.glob(pattern)
+                if path.is_dir() and path.stat().st_mtime <= cutoff
+            },
+            key=lambda path: path.stat().st_mtime,
+        )
+        freed = 0
+        verb = "would prune" if dry_run else "pruned"
+        for scratch in scratch_dirs:
+            size = self._dir_size(scratch)
+            freed += size
+            self.inf(f"{verb} proof scratch ({size // 1024}K): {scratch}")
+            if not dry_run:
+                shutil.rmtree(scratch, ignore_errors=True)
+        action = "would free" if dry_run else "freed"
+        self.inf(
+            "proof-scratch gc: "
+            f"{verb} {len(scratch_dirs)} dir(s), {action} {freed // 1024}K from {root}"
+        )
+
     # --- entrypoint ---------------------------------------------------------
 
     def do_run(self, args, unknown):
@@ -4602,6 +4654,11 @@ fi
         if args.gc:
             self._gc_bundles(
                 Path(args.bundle_root), args.keep_last, args.max_bundle_mb,
+                dry_run=args.dry_run,
+            )
+            self._gc_runtime_proof_scratch(
+                Path(args.proof_scratch_root),
+                args.proof_scratch_max_age_hours,
                 dry_run=args.dry_run,
             )
             return
