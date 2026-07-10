@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import os
 import sys
 import tempfile
+import time
 import types
 import json
 from contextlib import contextmanager
@@ -244,5 +246,31 @@ with tempfile.TemporaryDirectory() as temp:
         test_module.tempfile.mkdtemp = original_mkdtemp
     assert scratch.is_dir(), scratch
     assert errors == [f"preserving failed CTest runtime scratch for inspection: {scratch}"], errors
+
+
+with tempfile.TemporaryDirectory() as temp:
+    root = Path(temp)
+    old_output = root / "west-ctest-guest-c.old"
+    fresh_output = root / "west-ctest-guest-c.fresh"
+    output_dir = root / "west-ctest-guest-c.directory"
+    unrelated = root / "unrelated"
+    old_output.write_text("old\n")
+    fresh_output.write_text("fresh\n")
+    output_dir.mkdir()
+    unrelated.write_text("keep\n")
+    old_time = time.time() - 7200
+    os.utime(old_output, (old_time, old_time))
+
+    test = DarlingTest.__new__(DarlingTest)
+    messages = []
+    test.inf = messages.append
+    test.die = lambda message: (_ for _ in ()).throw(SystemExit(message))
+    test._gc_guest_runner_output(root, max_age_hours=1)
+
+    assert not old_output.exists(), old_output
+    assert fresh_output.exists(), fresh_output
+    assert output_dir.is_dir(), output_dir
+    assert unrelated.exists(), unrelated
+    assert any("guest-runner gc: pruned 1 file(s)" in message for message in messages), messages
 
 print("PASS west-test-ctest-lifecycle-contract")
