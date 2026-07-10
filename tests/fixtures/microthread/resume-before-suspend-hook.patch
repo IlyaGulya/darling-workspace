@@ -1,0 +1,26 @@
+diff --git a/src/thread.cpp b/src/thread.cpp
+index 03ab304..a55cc2f 100644
+--- a/src/thread.cpp
++++ b/src/thread.cpp
+@@ -23,6 +23,7 @@
+ #include <darlingserver/call.hpp>
+ #include <darlingserver/server.hpp>
+ #include <darlingserver/logging.hpp>
++#include <darlingserver/test-diagnostics.hpp>
+ #include <filesystem>
+ #include <fstream>
+ 
+@@ -596,6 +597,13 @@ void DarlingServer::Thread::suspend(std::function<void()> continuationCallback,
+ 	}
+ 
+ 	_rwlock.lock();
++	if (TestDiagnostics::consumeFault("microthread.resume_before_suspend")) {
++		TestDiagnostics::traceLine("microthread.suspend.inject_resume_before_suspend");
++		_rwlock.unlock();
++		resume();
++		_rwlock.lock();
++	}
++
+ 	_suspended = true;
+ 	_rwlock.unlock();
+ 
