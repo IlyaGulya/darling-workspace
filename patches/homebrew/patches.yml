@@ -1947,11 +1947,11 @@ patches:
       base: main
       state: local
 - path: xnu/psynch-negative-errno.patch
-  sha256sum: e60ddc60dc4ce881664ccfe95d47896f16bef77736cbae82509ed60a8823def3
+  sha256sum: 67415bc2519cc4ea0f2befdb240ca4dd8800726ba438cd34480610d57d9a62a3
   module: darling/src/external/xnu
   source-branch: fix/psynch-negative-errno
   source-base: 5f26a4c2365d9774b5a1e66ae7da20b61ab6d2db
-  source-commit: 10096d1101c0685ad53adfc9b057892f9d6f3506
+  source-commit: 8df32150517d967213e1a4e9a87fa315d50917b9
   bead: dar-q95.19
   publication-status: ready
   tests:
