@@ -1436,13 +1436,10 @@ patches:
     coverage-tier: compile
     runs: host
     diag: bare
-    red: true
-    red-proof:
-      mode: source-base
-      source-env: DSERVER_SRC_ROOT
     runner: c-fixture
     repo: darling-workspace
     script: tests/fatal_exception_reply_contract.c
+    source-env: DSERVER_SRC_ROOT
     cc: cc
     include-dirs:
     - duct-tape/internal-include
@@ -1451,7 +1448,7 @@ patches:
     - -Wall
     - -Wextra
     - -Werror
-    note: Compile contract for the production fatal-exception reply wait helper; old source has no bounded wait contract, fixed source maps fatal delivery to MACH_RCV_TIMEOUT and a 3000ms bound while preserving unbounded non-fatal waits.
+    note: Compile invariant for the production fatal-exception reply wait helper; runtime RED carries the behavioral proof because old source lacks the helper header and a source-base compile failure would only prove missing test assets.
   - name: fatal_exception_unreplying_handler_guest
     kind: guest
     coverage-tier: runtime
