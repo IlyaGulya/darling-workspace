@@ -11,6 +11,7 @@ from test_ctest import (
     ctest_label_display,
     ctest_selector_label_args,
     ctest_submodule_label_name,
+    ctest_uses_prefix,
 )
 
 build = Path("/tmp/build dir")
@@ -66,3 +67,7 @@ assert command[:4] == ["ctest", "--test-dir", "/tmp/build dir", "--output-on-fai
 assert command[4:4 + len(labels)] == labels
 assert command[4 + len(labels)] == "--show-only"
 assert command[-3:] == ["-j4", "--output-junit", "junit.xml"]
+
+assert ctest_uses_prefix(env="darling", list_only=False)
+assert not ctest_uses_prefix(env="darling", list_only=True)
+assert not ctest_uses_prefix(env="host", list_only=False)

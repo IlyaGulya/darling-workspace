@@ -77,3 +77,9 @@ def ctest_command(
         args.append("--show-only")
     args += list(passthrough or [])
     return args
+
+
+def ctest_uses_prefix(*, env: str | None, list_only: bool) -> bool:
+    """Whether a CTest selection owns a live Darling prefix lifecycle."""
+
+    return env == "darling" and not list_only
