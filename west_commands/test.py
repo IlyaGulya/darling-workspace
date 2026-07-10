@@ -1466,6 +1466,7 @@ class DarlingTest(WestCommand):
         proof = {
             "source-modules": definition["source-modules"],
             "runtime-artifacts": definition["runtime-artifacts"],
+            "cmake-defines": definition.get("cmake-defines", {}),
         }
         anchor = {
             "path": f"CTest runtime profile {profile_name}",

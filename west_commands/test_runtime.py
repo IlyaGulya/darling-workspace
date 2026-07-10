@@ -33,6 +33,17 @@ def load_ctest_runtime_profiles(path: Path) -> dict[str, dict[str, Any]]:
             raise ValueError(f"runtime profile {name!r} needs source-modules")
         if not isinstance(artifacts, list) or not artifacts:
             raise ValueError(f"runtime profile {name!r} needs runtime-artifacts")
+        cmake_defines = profile.get("cmake-defines", {})
+        if not isinstance(cmake_defines, dict) or not all(
+            isinstance(key, str)
+            and key
+            and isinstance(value, (str, int, float, bool, type(None)))
+            for key, value in cmake_defines.items()
+        ):
+            raise ValueError(
+                f"runtime profile {name!r} cmake-defines must map non-empty names "
+                "to scalar values"
+            )
         deploy_paths = {
             deploy_path
             for artifact in artifacts
@@ -56,6 +67,7 @@ def load_ctest_runtime_profiles(path: Path) -> dict[str, dict[str, Any]]:
             "source-module": source_module,
             "source-modules": source_modules,
             "runtime-artifacts": artifacts,
+            "cmake-defines": cmake_defines,
         }
     return normalized
 
@@ -86,6 +98,7 @@ def compose_ctest_runtime_profiles(
     source_modules: list[str] = []
     artifacts: list[dict[str, Any]] = []
     deployed: dict[str, dict[str, Any]] = {}
+    cmake_defines: dict[str, Any] = {}
     for name in selected:
         definition = definitions[name]
         for module in definition["source-modules"]:
@@ -109,13 +122,22 @@ def compose_ctest_runtime_profiles(
                 artifacts.append(artifact)
             for deploy_path in deploy_paths:
                 deployed[deploy_path] = artifact
-    return {
+        for key, value in definition.get("cmake-defines", {}).items():
+            if key in cmake_defines and cmake_defines[key] != value:
+                raise ValueError(
+                    f"runtime profile {name!r} conflicts on CMake definition {key}"
+                )
+            cmake_defines[key] = value
+    result = {
         "name": "+".join(selected),
         "source-profile": source_profiles.pop(),
         "source-module": definitions[selected[0]]["source-module"],
         "source-modules": source_modules,
         "runtime-artifacts": artifacts,
     }
+    if cmake_defines:
+        result["cmake-defines"] = cmake_defines
+    return result
 
 
 def partition_ctest_runtime_profiles(
