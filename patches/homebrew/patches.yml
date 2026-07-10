@@ -631,6 +631,7 @@ patches:
     red-proof:
       mode: source-base
       source-env: XNU_SRC_ROOT
+      expect-failure-phase: run
     runner: c-fixture
     script: tests/darwin_priority_contract.c
     include-dirs:
@@ -680,6 +681,7 @@ patches:
     red-proof:
       mode: source-base
       source-env: XNU_SRC_ROOT
+      expect-failure-phase: run
     runner: c-fixture
     script: tests/socket_siocgifconf_contract.c
     include-dirs:
