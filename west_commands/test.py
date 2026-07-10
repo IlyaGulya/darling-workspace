@@ -64,6 +64,7 @@ from test_prefix import (
     remove_stale_init_pid,
 )
 from test_resources import resource_context
+from test_selection import select_metadata_tests
 from test_runtime import (
     describe_runtime_deploy_plan,
     runtime_build_targets,
@@ -590,36 +591,18 @@ class DarlingTest(WestCommand):
         diag: str | None,
         red_only: bool,
     ):
-        data = self._load_profile(profile)
-        selected = []
-        missing = []
-        found_patch = False
-        for patch in data.get("patches", []):
-            if patch_path and patch["path"] != patch_path:
-                continue
-            found_patch = True
-            if bead and patch.get("bead") != bead:
-                continue
-            all_tests = [
-                test
-                for test in (patch.get("tests") or [])
-                if not test.get("blocked")
-            ]
-            tests = all_tests
-            if red_only:
-                tests = [test for test in tests if test.get("red")]
-            if env:
-                tests = [test for test in tests if test.get("env") == env]
-            if diag:
-                tests = [test for test in tests if self._resolved_diag(test) == diag]
-            if tests:
-                for test in tests:
-                    selected.append((patch, test))
-            elif not all_tests and not patch.get("test-exception"):
-                missing.append(patch)
-        if patch_path and not found_patch:
+        selection = select_metadata_tests(
+            self._load_profile(profile),
+            patch_path=patch_path,
+            bead=bead,
+            env=env,
+            diag=diag,
+            red_only=red_only,
+            resolved_diag=self._resolved_diag,
+        )
+        if patch_path and not selection.found_patch:
             self.die(f"{profile}: patch not found or has no selected tests: {patch_path}")
-        return selected, missing
+        return selection.selected, selection.missing
 
     def _test_invocation(self, patch, test):
         """Resolve structured patch metadata to a concrete local invocation.
