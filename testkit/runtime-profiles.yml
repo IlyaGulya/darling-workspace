@@ -37,6 +37,11 @@ runtime-profiles:
     source-modules:
     - darling
     - darling/src/external/darlingserver
+    cmake-defines:
+      # perf's generated heatmap calls the ring classification API. The
+      # server must therefore compile the ring interface even when a fixture
+      # itself exercises only the ordinary UDS fork path.
+      DSERVER_RING_TRANSPORT: true
     runtime-artifacts:
     - module: darling/src/external/darlingserver
       build-targets:
