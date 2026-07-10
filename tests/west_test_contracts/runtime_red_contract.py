@@ -27,6 +27,7 @@ sys.modules.setdefault("west", west_module)
 sys.modules.setdefault("west.commands", west_commands_module)
 
 import west_commands.test as west_test_module
+import west_commands.test_guest_c as guest_c_module
 from west_commands.test import DarlingTest
 from west_commands.test_execution import ProcessResult
 from west_commands.test_runtime import (
@@ -448,7 +449,7 @@ with tempfile.TemporaryDirectory() as temp:
     tempdir = Path(temp)
     test = make_test()
     invocation = {"name": "dcc_cache_timeout_contract", "timeout_seconds": 1}
-    old_run_bounded = west_test_module.run_bounded
+    old_run_bounded = guest_c_module.run_bounded
 
     def timed_out_dcc_command(args, **kwargs):
         assert list(args) == ["fake-dcc-builder"], args
@@ -902,7 +903,7 @@ with tempfile.TemporaryDirectory() as temp:
     launcher.chmod(0o755)
     test = make_test()
     test._prefix = str(prefix)
-    old_run_bounded = west_test_module.run_bounded
+    old_run_bounded = guest_c_module.run_bounded
     inspected = []
 
     def inspect_guest_c_runner(args, **kwargs):
@@ -912,7 +913,7 @@ with tempfile.TemporaryDirectory() as temp:
         assert kwargs["timeout_seconds"] == 31, kwargs
         return ProcessResult(0)
 
-    west_test_module.run_bounded = inspect_guest_c_runner
+    guest_c_module.run_bounded = inspect_guest_c_runner
     try:
         rc = test._run_guest_c_fixture(
             {
@@ -939,7 +940,7 @@ with tempfile.TemporaryDirectory() as temp:
             env={"DPREFIX": str(prefix), "DARLING_LAUNCHER": str(launcher)},
         )
     finally:
-        west_test_module.run_bounded = old_run_bounded
+        guest_c_module.run_bounded = old_run_bounded
     assert rc == 0, rc
     assert inspected, "guest-c runner was not generated"
     generated = inspected[0]
