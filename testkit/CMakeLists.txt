@@ -140,6 +140,34 @@ else()
     "workspace missing ${_select_fdset_guest}; skipping dar-q95.3")
 endif()
 
+set(_darwin_priority_guest "${_workspace_root}/tests/darwin_priority_guest.c")
+if(EXISTS "${_darwin_priority_guest}")
+  add_compat_test(
+    NAME       darwin_priority_guest
+    SOURCE     "${_darwin_priority_guest}"
+    ENVS       darling
+    BEAD       dar-q95.10
+    SUBMODULES xnu
+    RUNTIME_PROFILE homebrew
+    TIMEOUT    30
+    OK_MARKER  "DARWIN_PRIORITY_GUEST_OK"
+  )
+endif()
+
+set(_socket_siocgifconf_guest "${_workspace_root}/tests/socket_siocgifconf_guest.c")
+if(EXISTS "${_socket_siocgifconf_guest}")
+  add_compat_test(
+    NAME       socket_siocgifconf_guest
+    SOURCE     "${_socket_siocgifconf_guest}"
+    ENVS       darling
+    BEAD       dar-q95.11
+    SUBMODULES xnu
+    RUNTIME_PROFILE homebrew
+    TIMEOUT    30
+    OK_MARKER  "SOCKET_SIOCGIFCONF_GUEST_OK"
+  )
+endif()
+
 # ---------------------------------------------------------------------------
 # dar-gwn.5 — real regression for the mldr raw-fork glibc lock reset.
 #
