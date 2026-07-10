@@ -43,7 +43,8 @@ CMAKE
 
 cmake -S "$tmp" -B "$tmp/build-shell" -G Ninja \
   -DDARLING_LAUNCHER=/bin/echo \
-  -DDARLING_TEST_PREFIX=/tmp/darling-prefix-contract >/dev/null
+  -DDARLING_TEST_PREFIX=/tmp/darling-prefix-contract \
+  -DDARLING_TEST_NO_OVERLAYFS=ON >/dev/null
 
 ctest_file="$tmp/build-shell/CTestTestfile.cmake"
 grep -q 'run-darling-c-test.sh.*guest_arg_contract.*guest.c.*--launcher.*/bin/echo.*hello' "$ctest_file" ||
@@ -55,6 +56,8 @@ grep -q 'DPREFIX=/tmp/darling-prefix-contract' "$ctest_file" ||
 grep -q 'DARLING_PREFIX=/tmp/darling-prefix-contract' "$ctest_file" ||
 	{ cat "$ctest_file" >&2; exit 1; }
 grep -q 'DARLING_GUEST_TIMEOUT_SECONDS=17' "$ctest_file" ||
+	{ cat "$ctest_file" >&2; exit 1; }
+grep -q 'DARLING_NOOVERLAYFS=1' "$ctest_file" ||
 	{ cat "$ctest_file" >&2; exit 1; }
 grep -q 'fuzz:true' "$ctest_file" ||
 	{ cat "$ctest_file" >&2; exit 1; }

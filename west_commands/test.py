@@ -4133,6 +4133,8 @@ class DarlingTest(WestCommand):
             cfg.append(f"-DDARLING_LAUNCHER={darling_launcher}")
         if prefix:
             cfg.append(f"-DDARLING_TEST_PREFIX={prefix}")
+        if getattr(self, "_prefix_env", {}).get("DARLING_NOOVERLAYFS") == "1":
+            cfg.append("-DDARLING_TEST_NO_OVERLAYFS=ON")
         if bundle_root:
             cfg.append(f"-DDARLING_TEST_BUNDLE_ROOT={bundle_root}")
         self.inf(f"configuring: {testkit}")
