@@ -998,13 +998,10 @@ patches:
     coverage-tier: compile
     runs: host
     diag: bare
-    red: true
-    red-proof:
-      mode: source-base
-      source-env: DSERVER_SRC_ROOT
     runner: c-fixture
     repo: darling-workspace
     script: tests/wait_timer_cancel_contract.c
+    source-env: DSERVER_SRC_ROOT
     include-dirs:
     - duct-tape/internal-include
     compile-flags:
@@ -1012,7 +1009,7 @@ patches:
     - -Wall
     - -Wextra
     - -Werror
-    note: Compile contract for the production wait_timer cancellation helper; old source has no shared helper, fixed source clears armed timers and updates active-count accounting correctly.
+    note: Compile contract for the production wait_timer cancellation helper; the guest runtime proof carries the RED behavior for stale timeout delivery.
   - name: wait_timer_stale_guest
     kind: guest
     coverage-tier: runtime
