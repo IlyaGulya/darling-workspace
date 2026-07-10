@@ -1,0 +1,166 @@
+--- a/tools/dserverdbg.c
++++ b/tools/dserverdbg.c
+@@ -11,6 +11,7 @@
+ #include <signal.h>
+ #include <sys/un.h>
+ #include <sys/socket.h>
++#include <sys/time.h>
+ 
+ typedef uint32_t mach_port_type_t;
+ typedef uint32_t mach_port_right_t;
+@@ -47,6 +48,7 @@
+ 	dserverdbg_command_lsport,
+ 	dserverdbg_command_lspset,
+ 	dserverdbg_command_lsmsg,
++	dserverdbg_command_microthread_resume_before_suspend,
+ } dserverdbg_command_t;
+ 
+ struct sockaddr_un __dserver_socket_address_data = {0};
+@@ -193,6 +195,51 @@
+ 	return -1;
+ };
+ 
++
++static int set_receive_timeout(int fd, int seconds) {
++	struct timeval timeout = {
++		.tv_sec = seconds,
++		.tv_usec = 0,
++	};
++
++	if (setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &timeout, sizeof(timeout)) < 0) {
++		return errno;
++	}
++
++	return 0;
++}
++
++static int run_microthread_resume_before_suspend_oracle(void) {
++	uint64_t thread_state[128] = {};
++	uint64_t float_state[128] = {};
++	int status = 0;
++
++	status = set_receive_timeout(__dserver_main_thread_socket_fd, 3);
++	if (status != 0) {
++		fprintf(stderr, "DSERVERDBG_RECV_TIMEOUT_SETUP_RC=%d (%s)\n", status, strerror(status));
++		return 1;
++	}
++
++	status = dserver_rpc_checkin(false, NULL, -1);
++	printf("DSERVERDBG_CHECKIN_RC=%d\n", status);
++	if (status != 0) {
++		return 1;
++	}
++
++	status = dserver_rpc_thread_suspended((uint64_t)thread_state, (uint64_t)float_state);
++	printf("DSERVERDBG_THREAD_SUSPENDED_RC=%d\n", status);
++
++	if (status == 0) {
++		printf("DSERVERDBG_MICROTHREAD_RESUME_BEFORE_SUSPEND_OK\n");
++		return 0;
++	}
++	if (status == -EAGAIN) {
++		return 1;
++	}
++
++	return 1;
++}
++
+ // borrowed from `src/startup/darling.c`
+ static void missingSetuidRoot(void)
+ {
+@@ -209,6 +256,36 @@
+ 	fprintf(stderr, "Darling needs this in order to create mount and PID namespaces and to perform mounts.\n");
+ }
+ 
++
++static int run_direct_microthread_resume_before_suspend_command(uid_t original_uid) {
++	char* prefix_path = get_prefix_path(original_uid);
++	int status = 1;
++
++	if (!prefix_path) {
++		fprintf(stderr, "Failed to determine prefix path\n");
++		return 1;
++	}
++
++	__dserver_socket_address_data.sun_family = AF_UNIX;
++	snprintf(__dserver_socket_address_data.sun_path, sizeof(__dserver_socket_address_data.sun_path), "%s/.darlingserver.sock", prefix_path);
++
++	__dserver_main_thread_socket_fd = setup_socket();
++	if (__dserver_main_thread_socket_fd < 0) {
++		fprintf(stderr, "Failed to set up darlingserver client socket\n");
++		goto out;
++	}
++
++	status = run_microthread_resume_before_suspend_oracle();
++
++out:
++	if (__dserver_main_thread_socket_fd >= 0) {
++		close(__dserver_main_thread_socket_fd);
++		__dserver_main_thread_socket_fd = -1;
++	}
++	free(prefix_path);
++	return status;
++}
++
+ int main(int argc, char** argv) {
+ 	char* prefix_path = NULL;
+ 	dserverdbg_command_t command = dserverdbg_command_ps;
+@@ -225,6 +302,14 @@
+ 	pid_t pidInit = 0;
+ #endif
+ 
++	if (argc > 1 && strcmp(argv[1], "microthread-resume-before-suspend") == 0) {
++		if (argc > 2) {
++			fprintf(stderr, "Expected 1 argument (subcommand); got %d arguments\n", argc);
++			return 1;
++		}
++		return run_direct_microthread_resume_before_suspend_command(getuid());
++	}
++
+ 	if (geteuid() != 0) {
+ 		missingSetuidRoot();
+ 		return 1;
+@@ -266,6 +351,8 @@
+ 			command = dserverdbg_command_lspset;
+ 		} else if (strcmp(argv[1], "lsmsg") == 0) {
+ 			command = dserverdbg_command_lsmsg;
++		} else if (strcmp(argv[1], "microthread-resume-before-suspend") == 0) {
++			command = dserverdbg_command_microthread_resume_before_suspend;
+ 		} else {
+ 			fprintf(stderr, "Unknown subcommand: %s\n", argv[1]);
+ 			return 1;
+@@ -286,6 +373,12 @@
+ 			}
+ 			command_pid = atoi(argv[2]);
+ 			break;
++		case dserverdbg_command_microthread_resume_before_suspend:
++			if (argc > 2) {
++				fprintf(stderr, "Expected 1 argument (subcommand); got %d arguments\n", argc);
++				return 1;
++			}
++			break;
+ 		case dserverdbg_command_lspset:
+ 		case dserverdbg_command_lsmsg:
+ 			if (argc != 4) {
+@@ -314,6 +407,9 @@
+ 			status = dserver_rpc_debug_list_messages(command_pid, command_port, &count, &output_fd);
+ 			elmsize = sizeof(dserver_debug_message_t);
+ 			break;
++		case dserverdbg_command_microthread_resume_before_suspend:
++			status = run_microthread_resume_before_suspend_oracle();
++			goto out;
+ 	}
+ 
+ 	if (status != 0) {
+@@ -375,4 +471,11 @@
+ 	}
+ 
+ 	return 0;
++
++out:
++	if (prefix_path) {
++		free(prefix_path);
++	}
++
++	return status;
+ };

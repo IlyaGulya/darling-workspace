@@ -1,0 +1,13 @@
+diff --git a/src/call.cpp b/src/call.cpp
+index 393ec43..022409b 100644
+--- a/src/call.cpp
++++ b/src/call.cpp
+@@ -1118,7 +1118,7 @@ void DarlingServer::Call::ThreadSuspended::processCall() {
+ 	int code = 0;
+ 
+ 	if (auto thread = _thread.lock()) {
+-		thread->waitWhileUserSuspended(_body.thread_state, _body.float_state);
++		thread->suspend();
+ 	} else {
+ 		code = -ESRCH;
+ 	}
