@@ -11,11 +11,35 @@ sys.path.insert(0, str(ROOT))
 
 import west_commands.test_guest_execution as guest_execution
 from west_commands.test_execution import ProcessResult
-from west_commands.test_guest_execution import run_guest_command_fixture
+from west_commands.test_guest_execution import (
+    resolve_guest_execution,
+    run_guest_command_fixture,
+)
 
 
 def fail(message: str) -> None:
     raise AssertionError(message)
+
+
+resolved = resolve_guest_execution(
+    name="guest_resolution_contract",
+    env={"DPREFIX": "/explicit-prefix", "DARLING_LAUNCHER": "/explicit-launcher"},
+    fallback_prefix="/fallback-prefix",
+    resolve_launcher=lambda _prefix: (_ for _ in ()).throw(AssertionError("unexpected resolver")),
+    die=fail,
+)
+assert resolved.prefix == "/explicit-prefix"
+assert resolved.launcher == "/explicit-launcher"
+
+resolved = resolve_guest_execution(
+    name="guest_resolution_fallback_contract",
+    env={},
+    fallback_prefix="/fallback-prefix",
+    resolve_launcher=lambda prefix: f"{prefix}/bin/darling",
+    die=fail,
+)
+assert resolved.prefix == "/fallback-prefix"
+assert resolved.launcher == "/fallback-prefix/bin/darling"
 
 
 with tempfile.TemporaryDirectory() as temp:
