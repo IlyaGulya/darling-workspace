@@ -20,4 +20,8 @@ printf '%s\n' "$list_by_submodule" | grep -q 'host/mldr_thread_create_checkin_wa
 printf '%s\n' "$list_by_submodule" | grep -q 'host/mldr_thread_create_checkin_wait_spin_red' ||
 	{ printf '%s\n' "$list_by_submodule" >&2; exit 1; }
 
+list_guest="$(west test --bead dar-cps --env darling --list)"
+printf '%s\n' "$list_guest" | grep -q 'darling/abort_with_payload_no_group_broadcast' ||
+	{ printf '%s\n' "$list_guest" >&2; exit 1; }
+
 printf 'PASS west-test-testkit-contract\n'
