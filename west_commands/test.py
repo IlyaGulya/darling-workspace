@@ -741,7 +741,8 @@ class DarlingTest(WestCommand):
                     f"{repr(test.get('include-dirs', []))}:"
                     f"{repr(test.get('fixture-include-dirs', []))}:"
                     f"{repr(test.get('stub-headers', []))}:"
-                    f"{repr(sorted((test.get('generated-headers') or {}).keys()))}"
+                    f"{repr(sorted((test.get('generated-headers') or {}).keys()))}:"
+                    f"{repr(test.get('source-root-module', ''))}"
                 ),
                 "display": display,
                 "cwd": cwd,
@@ -765,6 +766,7 @@ class DarlingTest(WestCommand):
                 "source_files": [str(item) for item in test.get("source-files", [])],
                 "compile_flags": [str(item) for item in test.get("compile-flags", [])],
                 "source_root_env": source_env,
+                "source_root_module": str(test.get("source-root-module", "")),
                 "source_env": source_env,
                 "source_module": source_module,
                 "requires_resources": list(test.get("requires", [])),
@@ -1555,6 +1557,9 @@ class DarlingTest(WestCommand):
             self.die(f"{invocation['name']}: c-fixture currently supports diag:bare only")
         run_env = env if env is not None else invocation.get("env")
         source_root = invocation["cwd"]
+        source_root_module = invocation.get("source_root_module")
+        if source_root_module:
+            source_root = self._project_path(source_root_module)
         source_root_env = invocation.get("source_root_env")
         if source_root_env and run_env and run_env.get(source_root_env):
             source_root = Path(run_env[source_root_env])

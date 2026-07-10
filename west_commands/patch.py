@@ -379,6 +379,10 @@ class DarlingPatch(WestCommand):
                         for path, content in headers.items()
                     ):
                         errors.append(f"tests[{index}] generated-headers must be a string mapping")
+                if test.get("source-root-module") is not None and not isinstance(
+                    test.get("source-root-module"), str
+                ):
+                    errors.append(f"tests[{index}] source-root-module must be a string")
             if runner == "object-symbol-fixture":
                 if not test.get("source-file"):
                     errors.append(f"tests[{index}] object-symbol-fixture requires source-file")
