@@ -98,7 +98,12 @@ with tempfile.TemporaryDirectory() as temp:
     def bounded(args, **kwargs):
         recorded.append((args, kwargs))
         if "--show-only=json-v1" in args:
-            return ProcessResult(0, stdout=json.dumps({"tests": []}))
+            return ProcessResult(0, stdout=json.dumps({"tests": [{
+                "name": "darling/extra",
+                "properties": [{"name": "LABELS", "value": [
+                    "env:darling", "runtime-profile:extra",
+                ]}],
+            }]}))
         assert not stale_failure_record.exists(), stale_failure_record
         return ProcessResult(0)
 

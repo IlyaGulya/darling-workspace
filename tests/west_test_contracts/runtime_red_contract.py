@@ -34,6 +34,7 @@ from west_commands.test_runtime import (
     compose_ctest_runtime_profiles,
     describe_runtime_deploy_plan,
     load_ctest_runtime_profiles,
+    partition_ctest_runtime_profiles,
     runtime_build_targets,
     runtime_deploy_targets,
 )
@@ -198,6 +199,46 @@ except ValueError as exc:
     assert "incompatible runtime source profiles" in str(exc), exc
 else:
     raise AssertionError("incompatible runtime profiles were combined")
+
+groups = partition_ctest_runtime_profiles(
+    runtime_profiles,
+    [
+        {"name": "darling/kernel", "darling": True, "profiles": ["kernel"]},
+        {"name": "darling/server", "darling": True, "profiles": ["server"]},
+        {"name": "darling/perf", "darling": True, "profiles": ["other"]},
+        {"name": "host/plain", "darling": False, "profiles": []},
+    ],
+)
+assert [(group["source-profile"], group["profiles"], group["tests"]) for group in groups] == [
+    ("homebrew", ["kernel", "server"], ["darling/kernel", "darling/server"]),
+    ("arch", ["other"], ["darling/perf"]),
+    (None, [], ["host/plain"]),
+]
+groups = partition_ctest_runtime_profiles(
+    runtime_profiles,
+    [{"name": "darling/kernel", "darling": True, "profiles": ["kernel"]}],
+    ["server"],
+)
+assert groups[0]["profiles"] == ["kernel", "server"]
+try:
+    partition_ctest_runtime_profiles(
+        runtime_profiles,
+        [{"name": "darling/missing", "darling": True, "profiles": []}],
+    )
+except ValueError as exc:
+    assert "needs an explicit runtime-profile" in str(exc), exc
+else:
+    raise AssertionError("guest CTest test without a runtime provider was accepted")
+try:
+    partition_ctest_runtime_profiles(
+        runtime_profiles,
+        [{"name": "darling/kernel", "darling": True, "profiles": ["kernel"]}],
+        ["other"],
+    )
+except ValueError as exc:
+    assert "does not match any selected" in str(exc), exc
+else:
+    raise AssertionError("incompatible additional provider was accepted")
 deploy_test = make_test()
 deploy_test._resolve_darling_launcher = (
     lambda _prefix: "/opt/darling-test/bin/darling"

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from pathlib import Path
 from shlex import quote
 
@@ -79,7 +80,65 @@ def ctest_command(
     return args
 
 
-def ctest_selection_command(build_dir: Path, *, label_args: list[str] | None = None) -> list[str]:
+def ctest_test_name_regex(names: list[str]) -> str:
+    """Return an exact CTest regex for already-discovered test names."""
+
+    if not names:
+        raise ValueError("CTest runtime group needs at least one test name")
+    # CTest's regex implementation accepts ordinary grouping but not Python's
+    # non-capturing ``(?:...)`` syntax.
+    return "^(" + "|".join(re.escape(name) for name in names) + ")$"
+
+
+def ctest_runtime_group_passthrough(passthrough: list[str]) -> list[str]:
+    """Drop CTest selectors after discovery has frozen an exact test group.
+
+    Repeating ``-R`` is a union in CTest, so retaining a caller's selector
+    alongside the group's exact regex can run tests from another runtime
+    lifecycle. Labels, fixtures, and test ranges are likewise already reflected
+    in JSON discovery. Keep only execution/reporting options for the replay.
+    """
+
+    selectors_with_value = {
+        "-R",
+        "--tests-regex",
+        "-E",
+        "--exclude-regex",
+        "-I",
+        "--tests-information",
+        "-L",
+        "--label-regex",
+        "--fixture-exclude-any",
+        "--fixture-exclude-setup",
+        "--fixture-exclude-cleanup",
+        "--fixture-required",
+        "--fixture-setup",
+        "--fixture-cleanup",
+    }
+    selectors_without_value = {"--rerun-failed", "--union"}
+    result: list[str] = []
+    index = 0
+    while index < len(passthrough):
+        argument = passthrough[index]
+        if argument in selectors_without_value:
+            index += 1
+            continue
+        if argument in selectors_with_value:
+            if index + 1 >= len(passthrough):
+                raise ValueError(f"CTest selector {argument} needs a value")
+            index += 2
+            continue
+        result.append(argument)
+        index += 1
+    return result
+
+
+def ctest_selection_command(
+    build_dir: Path,
+    *,
+    label_args: list[str] | None = None,
+    passthrough: list[str] | None = None,
+) -> list[str]:
     """Return the machine-readable discovery command for a CTest selection.
 
     CTest owns filtering.  Consumers use this only to inspect properties of the
@@ -92,6 +151,7 @@ def ctest_selection_command(build_dir: Path, *, label_args: list[str] | None = N
         str(build_dir),
         "--show-only=json-v1",
         *list(label_args or []),
+        *list(passthrough or []),
     ]
 
 
