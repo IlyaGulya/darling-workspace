@@ -1,0 +1,151 @@
+--- a/tools/dserverdbg.c
++++ b/tools/dserverdbg.c
+@@ -11,6 +11,7 @@
+ #include <signal.h>
+ #include <sys/un.h>
+ #include <sys/socket.h>
++#include <sys/time.h>
+ 
+ typedef uint32_t mach_port_type_t;
+ typedef uint32_t mach_port_right_t;
+@@ -193,6 +194,87 @@
+ 	return -1;
+ };
+ 
++
++static int set_receive_timeout(int fd, int seconds) {
++	struct timeval timeout = {
++		.tv_sec = seconds,
++		.tv_usec = 0,
++	};
++
++	if (setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &timeout, sizeof(timeout)) < 0) {
++		return errno;
++	}
++
++	return 0;
++}
++
++static int run_pthread_cancel_state_oracle(void) {
++	int status = 0;
++	uint32_t thread_port = 0;
++
++	status = set_receive_timeout(__dserver_main_thread_socket_fd, 3);
++	if (status != 0) {
++		fprintf(stderr, "DSERVERDBG_RECV_TIMEOUT_SETUP_RC=%d (%s)\n", status, strerror(status));
++		return 1;
++	}
++
++	status = dserver_rpc_checkin(false, NULL, -1);
++	printf("DSERVERDBG_CHECKIN_RC=%d\n", status);
++	if (status != 0) {
++		return 1;
++	}
++
++	status = dserver_rpc_pthread_canceled(1);
++	printf("DSERVERDBG_PTHREAD_CANCELED_ACTION1_RC=%d\n", status);
++	if (status == -ENOSYS) {
++		printf("DSERVERDBG_PTHREAD_CANCEL_STUB_OK\n");
++		return 1;
++	}
++	if (status != 0) {
++		return 1;
++	}
++
++	status = dserver_rpc_pthread_canceled(2);
++	printf("DSERVERDBG_PTHREAD_CANCELED_ACTION2_RC=%d\n", status);
++	if (status != 0) {
++		return 1;
++	}
++
++	status = dserver_rpc_pthread_canceled(0);
++	printf("DSERVERDBG_PTHREAD_CANCELED_DISABLED_ACTION0_RC=%d\n", status);
++	if (status != -EINVAL) {
++		return 1;
++	}
++
++	status = dserver_rpc_thread_self_trap(&thread_port);
++	printf("DSERVERDBG_THREAD_SELF_RC=%d\n", status);
++	printf("DSERVERDBG_THREAD_SELF_PORT=%u\n", thread_port);
++	if (status != 0 || thread_port == 0) {
++		return 1;
++	}
++
++	status = dserver_rpc_pthread_markcancel(thread_port);
++	printf("DSERVERDBG_PTHREAD_MARKCANCEL_RC=%d\n", status);
++	if (status != 0) {
++		return 1;
++	}
++
++	status = dserver_rpc_pthread_canceled(1);
++	printf("DSERVERDBG_PTHREAD_CANCELED_ENABLE_RC=%d\n", status);
++	if (status != 0) {
++		return 1;
++	}
++
++	status = dserver_rpc_pthread_canceled(0);
++	printf("DSERVERDBG_PTHREAD_CANCELED_PENDING_ACTION0_RC=%d\n", status);
++	if (status != 0) {
++		return 1;
++	}
++
++	printf("DSERVERDBG_PTHREAD_CANCEL_STATE_OK\n");
++	return 0;
++}
++
+ // borrowed from `src/startup/darling.c`
+ static void missingSetuidRoot(void)
+ {
+@@ -209,6 +291,36 @@
+ 	fprintf(stderr, "Darling needs this in order to create mount and PID namespaces and to perform mounts.\n");
+ }
+ 
++
++static int run_direct_pthread_cancel_state_command(uid_t original_uid) {
++	char* prefix_path = get_prefix_path(original_uid);
++	int status = 1;
++
++	if (!prefix_path) {
++		fprintf(stderr, "Failed to determine prefix path\n");
++		return 1;
++	}
++
++	__dserver_socket_address_data.sun_family = AF_UNIX;
++	snprintf(__dserver_socket_address_data.sun_path, sizeof(__dserver_socket_address_data.sun_path), "%s/.darlingserver.sock", prefix_path);
++
++	__dserver_main_thread_socket_fd = setup_socket();
++	if (__dserver_main_thread_socket_fd < 0) {
++		fprintf(stderr, "Failed to set up darlingserver client socket\n");
++		goto out;
++	}
++
++	status = run_pthread_cancel_state_oracle();
++
++out:
++	if (__dserver_main_thread_socket_fd >= 0) {
++		close(__dserver_main_thread_socket_fd);
++		__dserver_main_thread_socket_fd = -1;
++	}
++	free(prefix_path);
++	return status;
++}
++
+ int main(int argc, char** argv) {
+ 	char* prefix_path = NULL;
+ 	dserverdbg_command_t command = dserverdbg_command_ps;
+@@ -225,6 +337,15 @@
+ 	pid_t pidInit = 0;
+ #endif
+ 
++
++	if (argc > 1 && strcmp(argv[1], "pthread-cancel-state") == 0) {
++		if (argc > 2) {
++			fprintf(stderr, "Expected 1 argument (subcommand); got %d arguments\n", argc);
++			return 1;
++		}
++		return run_direct_pthread_cancel_state_command(getuid());
++	}
++
+ 	if (geteuid() != 0) {
+ 		missingSetuidRoot();
+ 		return 1;
