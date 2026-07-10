@@ -199,6 +199,35 @@ except ValueError as exc:
     assert "incompatible runtime source profiles" in str(exc), exc
 else:
     raise AssertionError("incompatible runtime profiles were combined")
+configured_profiles = {
+    **runtime_profiles,
+    "configured": {
+        "source-profile": "homebrew",
+        "source-module": "darling/src/external/darlingserver",
+        "source-modules": ["darling", "darling/src/external/darlingserver"],
+        "runtime-artifacts": [{"build-targets": ["configured"], "deploy": ["bin/configured"]}],
+        "cmake-defines": {"DSERVER_RING_TRANSPORT": True},
+    },
+    "configured-conflict": {
+        "source-profile": "homebrew",
+        "source-module": "darling/src/external/darlingserver",
+        "source-modules": ["darling", "darling/src/external/darlingserver"],
+        "runtime-artifacts": [{"build-targets": ["other"], "deploy": ["bin/other"]}],
+        "cmake-defines": {"DSERVER_RING_TRANSPORT": False},
+    },
+}
+configured_runtime = compose_ctest_runtime_profiles(
+    configured_profiles, ["kernel", "configured"]
+)
+assert configured_runtime["cmake-defines"] == {"DSERVER_RING_TRANSPORT": True}
+try:
+    compose_ctest_runtime_profiles(
+        configured_profiles, ["configured", "configured-conflict"]
+    )
+except ValueError as exc:
+    assert "conflicts on CMake definition" in str(exc), exc
+else:
+    raise AssertionError("conflicting runtime CMake definitions were accepted")
 
 groups = partition_ctest_runtime_profiles(
     runtime_profiles,
