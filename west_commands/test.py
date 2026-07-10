@@ -2063,6 +2063,12 @@ class DarlingTest(WestCommand):
             tempdir = Path(temp)
             host_runner = tempdir / "run.sh"
             verdict = tempdir / "verdict.txt"
+            guest_shell_helper = (
+                Path(__file__).resolve().parents[1]
+                / "testkit/scripts/darling-guest-shell.sh"
+            )
+            if not guest_shell_helper.is_file():
+                self.die(f"missing shared guest shell helper: {guest_shell_helper}")
             name = invocation["name"]
             run_id = run_env.get("WEST_GUEST_C_FIXTURE_ID") or f"{os.getpid()}.{int(time.time() * 1000)}"
             guest_src = f"/tmp/{name}.{run_id}.c"
@@ -2310,6 +2316,7 @@ set -e
 set -euo pipefail
 : "${{DPREFIX:?set DPREFIX}}"
 launch={quote(str(launcher))}
+guest_shell_helper={quote(str(guest_shell_helper))}
 host_src={quote(str(invocation["script_path"]))}
 verdict={quote(str(verdict))}
 guest_src={quote(guest_src)}
@@ -2319,6 +2326,9 @@ ok_marker={quote(invocation["ok_marker"])}
 host_trace_oracle={quote("1" if invocation.get("host_trace_oracle") else "0")}
 prepare_only="${{WEST_GUEST_C_FIXTURE_PREPARE_ONLY:-0}}"
 run_only="${{WEST_GUEST_C_FIXTURE_RUN_ONLY:-0}}"
+
+# shellcheck source=darling-guest-shell.sh
+source "$guest_shell_helper"
 
 {trace_setup}
 {host_stat_setup}
@@ -2441,7 +2451,7 @@ guest_shell() {{
 \tesac
 \tclear_stale_init_pid
 \tns_log="$(mktemp /tmp/west-guest-shell-stderr.XXXXXX)"
-\ttimeout --kill-after=5 "$seconds" env DPREFIX="$DPREFIX" DARLING_PREFIX="$DPREFIX" "$launch" shell /bin/bash --login -c "$@" 2> "$ns_log"
+\tdarling_guest_shell "$launch" "$DPREFIX" "$seconds" "$@" 2> "$ns_log"
 \tlocal rc=$?
 \tcat "$ns_log" >&2 || true
 \tif [ "$rc" -ne 0 ] && grep -q 'Cannot open mnt namespace file' "$ns_log"; then
@@ -2449,7 +2459,7 @@ guest_shell() {{
 \t\tprintf 'WEST_GUEST_STAGE=namespace-retry\\n' >&2
 \t\t"$launch" shutdown >/dev/null 2>&1 || true
 \t\tclear_stale_init_pid
-\t\ttimeout --kill-after=5 "$seconds" env DPREFIX="$DPREFIX" DARLING_PREFIX="$DPREFIX" "$launch" shell /bin/bash --login -c "$@" 2> "$ns_log"
+\t\tdarling_guest_shell "$launch" "$DPREFIX" "$seconds" "$@" 2> "$ns_log"
 \t\trc=$?
 \t\tcat "$ns_log" >&2 || true
 \t\tif [ "$rc" -ne 0 ] && grep -q 'Cannot open mnt namespace file' "$ns_log"; then
