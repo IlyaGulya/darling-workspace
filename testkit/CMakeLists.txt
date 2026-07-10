@@ -130,6 +130,7 @@ if(EXISTS "${_select_fdset_guest}")
     ENVS       darling
     BEAD       dar-q95.3
     SUBMODULES xnu
+    RUNTIME_PROFILE homebrew
     TIMEOUT    30
     OK_MARKER  "SELECT_FDSET_GUEST_OK"
   )

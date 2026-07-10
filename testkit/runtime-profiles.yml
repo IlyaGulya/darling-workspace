@@ -1,0 +1,18 @@
+runtime-profiles:
+  # A runtime profile is a temporary deployment contract, not a patch manifest.
+  # CTest declares its name with RUNTIME_PROFILE; west materializes this source
+  # profile in disposable worktrees, builds these targets, deploys them under
+  # the prefix lock, runs CTest, then restores the prefix byte-for-byte.
+  homebrew:
+    source-profile: homebrew
+    source-module: darling/src/external/xnu
+    source-modules:
+    - darling
+    - darling/src/external/darlingserver
+    - darling/src/external/xnu
+    runtime-artifacts:
+    - module: darling/src/external/xnu
+      build-targets:
+      - system_kernel
+      deploy:
+      - usr/lib/system/libsystem_kernel.dylib
