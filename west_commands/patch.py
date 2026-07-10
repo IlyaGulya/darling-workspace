@@ -819,15 +819,15 @@ class DarlingPatch(WestCommand):
                         "guest-runtime-script",
                         "script",
                     }:
-                        errors.append(
-                            f"tests[{index}] red-proof guest-runtime-deploy requires runner: guest-c-fixture, guest-command-fixture, guest-runtime-script, or script"
-                        )
+                            errors.append(
+                                f"tests[{index}] red-proof guest-runtime-deploy requires runner: guest-c-fixture, guest-command-fixture, guest-runtime-script, or script"
+                            )
                     elif runner == "script" and not (
                         {"darling-prefix", "darling-eunion-prefix"} & set(required_resources)
                     ):
-                        errors.append(
-                            f"tests[{index}] red-proof guest-runtime-deploy script runner requires darling-prefix"
-                        )
+                            errors.append(
+                                f"tests[{index}] red-proof guest-runtime-deploy script runner requires darling-prefix"
+                            )
                     bad_profile = proof.get("bad-profile")
                     if bad_profile is not None and bad_profile != "current-minus-patch":
                         errors.append(
@@ -1009,6 +1009,29 @@ class DarlingPatch(WestCommand):
                                 errors.append(
                                     f"tests[{index}].red-proof.runtime-artifacts[{artifact_index}] needs deploy"
                                 )
+                if isinstance(proof, dict) and proof.get("expect-failure-phase") is not None:
+                    phases = proof.get("expect-failure-phase")
+                    if isinstance(phases, str):
+                        phases = [phases]
+                    allowed_phases = {
+                        "setup",
+                        "compile",
+                        "run",
+                        "inspect",
+                        "script",
+                        "build",
+                        "configure",
+                        "ctest",
+                        "runtime",
+                        "self",
+                    }
+                    if not isinstance(phases, list) or not phases or not all(
+                        isinstance(phase, str) and phase in allowed_phases
+                        for phase in phases
+                    ):
+                        errors.append(
+                            f"tests[{index}] red-proof expect-failure-phase must be one or more known phases"
+                        )
             env = test.get("env")
             if env and env not in {"host", "darling", "macos"}:
                 errors.append(f"tests[{index}] invalid env {env!r}")

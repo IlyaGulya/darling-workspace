@@ -283,6 +283,7 @@ patches:
     red: true
     red-proof:
       mode: self
+      expect-output-contains: 'RED->GREEN OK'
       why-self: |
         tests/run-ring-shm-validate.sh compiles explicit bad/stub arms and requires them to fail before running the real validator/datapath/allowlist/wake/lane gates.
     runner: script
@@ -384,6 +385,7 @@ patches:
     red: true
     red-proof:
       mode: self
+      expect-output-contains: 'RED->GREEN OK'
       why-self: |
         tests/run-ring-shm-validate.sh compiles postfork-reset bad arms for the shipped close(0) bug and missing -1 sentinel and requires both to fail before the fixed arm passes.
     runner: script
