@@ -17,6 +17,12 @@ if [ "${1:-}" = "--source-contract-probe" ]; then
 	exit 0
 fi
 
+if [ "${1:-}" = "--source-script-shebang-probe" ]; then
+	set -o pipefail
+	printf 'WEST_SOURCE_SCRIPT_SHEBANG_OK\n'
+	exit 0
+fi
+
 export PYTHONDONTWRITEBYTECODE=1
 tmp_profile="patches/__metadata_contract"
 tmp_invalid_profile="patches/__metadata_invalid_contract"
@@ -304,6 +310,19 @@ patches:
       stdout: ok
     - name: second-case
       args: [-q, /bin/sh, -c, "printf second >/tmp/west-source-script-fixture-second-case"]
+- path: test/source-script-fixture-shebang.patch
+  module: darling-workspace
+  tests:
+  - name: west_source_script_fixture_shebang_contract
+    kind: contract
+    runs: host
+    diag: bare
+    runner: source-script-fixture
+    source-script: tests/run-west-test-metadata-contract.sh
+    cases:
+    - name: bash-shebang
+      args: [--source-script-shebang-probe]
+      stdout: "WEST_SOURCE_SCRIPT_SHEBANG_OK\n"
 - path: test/cmake-configure-fixture.patch
   module: darling
   tests:
@@ -803,7 +822,7 @@ guest_command_fixture="$(
 printf '%s\n' "$guest_command_fixture" | grep -q \
 	'darling shell /bin/bash --login -c /usr/bin/true' ||
 	fail 'guest-command-fixture metadata did not resolve to a guest shell command'
-printf '%s\n' "$source_only_check" | grep -q 'test metadata: 16 covered (runtime 7, compile 3, host 5, model 1), 2 exceptions, 1 missing' ||
+printf '%s\n' "$source_only_check" | grep -q 'test metadata: 17 covered (runtime 7, compile 3, host 6, model 1), 2 exceptions, 1 missing' ||
 	fail 'coverage-tier summary did not classify runtime/host/compile/model coverage'
 
 invalid_guest_red_check="$(west patch check --profile __metadata_invalid_contract 2>&1)"
@@ -957,6 +976,8 @@ printf '%s\n' "$source_only_check" | grep -q 'HOST      test/source-contract-scr
 	fail 'source-contract-script patch was not reported as HOST'
 printf '%s\n' "$source_only_check" | grep -q 'HOST      test/source-script-fixture.patch' ||
 	fail 'source-script-fixture patch was not reported as HOST'
+printf '%s\n' "$source_only_check" | grep -q 'HOST      test/source-script-fixture-shebang.patch' ||
+	fail 'source-script-fixture shebang patch was not reported as HOST'
 printf '%s\n' "$source_only_check" | grep -q 'COMPILE   test/cmake-configure-fixture.patch' ||
 	fail 'cmake-configure-fixture patch was not reported as COMPILE'
 printf '%s\n' "$source_only_check" | grep -q 'HOST      test/darling-cmake-target-fixture.patch' ||
@@ -999,6 +1020,9 @@ west test --profile __metadata_contract \
 	--patch test/source-script-fixture.patch >/dev/null
 [ "$(cat "$source_script_marker" 2>/dev/null)" = second ] ||
 	fail 'source-script-fixture did not execute every declared case'
+west test --profile __metadata_contract \
+	--patch test/source-script-fixture-shebang.patch >/dev/null ||
+	fail 'source-script-fixture did not execute executable scripts through their shebang'
 
 cmake_configure_fixture="$(
 	west test --profile __metadata_contract \

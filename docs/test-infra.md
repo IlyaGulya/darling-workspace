@@ -389,6 +389,8 @@ Use `runner: source-script-fixture` only when the script itself belongs to the
 source tree under test and already exists in both the RED source base and the
 GREEN profile tree. Do not use it for shell scripts newly added by the patch:
 the RED result would prove only that the script file is missing.
+Executable source scripts run directly through their shebang; non-executable
+source scripts fall back to `sh`.
 
 Plain `runner: script` remains an escape hatch for tests with special process,
 trace, or runtime orchestration. New source-base shell contracts should use
