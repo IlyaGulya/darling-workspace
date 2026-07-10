@@ -385,6 +385,14 @@ the temporary bad/source-base worktree for `--prove-red`. This keeps
 workspace-hosted suites honest: the test asset can live in the workspace while
 the source under test still comes from the current profile tree.
 
+Use `runner: source-profile-script` when the shell contract is added by the
+patch/profile itself. In RED proof, `west test` materializes the fixed GREEN
+profile source tree first, runs the script from that tree, and points
+`red-proof.source-env` at the temporary bad/source-base worktree. The same
+profile-owned script is then run against the GREEN source tree. This proves the
+old behavior fails for the intended reason without mistaking "the new test file
+does not exist yet" for a regression.
+
 Use `runner: source-script-fixture` only when the script itself belongs to the
 source tree under test and already exists in both the RED source base and the
 GREEN profile tree. Do not use it for shell scripts newly added by the patch:
@@ -394,7 +402,7 @@ source scripts fall back to `sh`.
 
 Plain `runner: script` remains an escape hatch for tests with special process,
 trace, or runtime orchestration. New source-base shell contracts should use
-`source-contract-script` instead of generic `script`.
+`source-contract-script` or `source-profile-script` instead of generic `script`.
 
 Use `runner: self-contract-script` for host scripts whose RED proof is fully
 self-contained in the test itself: the script runs an explicit bad/model arm and
