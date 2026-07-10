@@ -90,7 +90,6 @@ run_id="${WEST_GUEST_C_FIXTURE_ID:-$$.$RANDOM}"
 guest_src="/tmp/${safe_name}.${run_id}.c"
 guest_bin="/tmp/${safe_name}.${run_id}"
 output="$(mktemp "${TMPDIR:-/tmp}/west-ctest-guest-c.${safe_name}.XXXXXX")"
-trap 'rm -f "$output"' EXIT
 
 quoted_args=()
 for arg in "${args[@]}"; do
@@ -120,7 +119,12 @@ cleanup_guest_artifacts() {
 	darling_guest_shell "$launcher" "$prefix" 10 \
 		"rm -f '$guest_src' '$guest_bin'" >/dev/null 2>&1 || true
 }
-trap cleanup_guest_artifacts EXIT
+
+cleanup() {
+	cleanup_guest_artifacts
+	rm -f "$output"
+}
+trap cleanup EXIT
 
 run_guest_stage() {
 	local stage="$1"

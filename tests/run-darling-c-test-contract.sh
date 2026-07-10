@@ -44,6 +44,10 @@ if find /tmp -maxdepth 1 -name "${name}.*" -print | grep -q .; then
 	find /tmp -maxdepth 1 -name "${name}.*" -print >&2
 	exit 1
 fi
+if find /tmp -maxdepth 1 -name "west-ctest-guest-c.${name}.*" -print | grep -q .; then
+	find /tmp -maxdepth 1 -name "west-ctest-guest-c.${name}.*" -print >&2
+	exit 1
+fi
 
 cat >"$tmp/compile-fail.c" <<'C'
 int main(void) { return this_does_not_compile; }
