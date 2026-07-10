@@ -63,6 +63,23 @@ if grep -F -x -q WEST_GUEST_STAGE=run "$tmp/compile-fail.out"; then
 	exit 1
 fi
 
+cat >"$tmp/hang.c" <<'C'
+#include <unistd.h>
+int main(void) {
+	sleep(30);
+	return 0;
+}
+C
+if DARLING_GUEST_TIMEOUT_SECONDS=1 DPREFIX="$tmp/prefix" \
+	"$repo/testkit/scripts/run-darling-c-test.sh" \
+	--name "${name}_timeout" --source "$tmp/hang.c" \
+	--launcher "$tmp/launcher" --cc cc --cflags '' >"$tmp/timeout.out" 2>&1; then
+	cat "$tmp/timeout.out" >&2
+	exit 1
+fi
+grep -F -x -q WEST_GUEST_STAGE=run "$tmp/timeout.out"
+grep -F -q 'WEST_GUEST_FILE_SHA256 launcher ' "$tmp/timeout.out"
+
 if DPREFIX="$tmp/prefix" "$repo/testkit/scripts/run-darling-c-test.sh" \
 	--name "$name" --source "$tmp/guest.c" --launcher "$tmp/launcher" \
 	--cc cc --cflags '' --ok-marker GUEST_C_EXACT_OK_EXTRA >"$tmp/bad.out" 2>&1; then
