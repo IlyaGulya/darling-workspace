@@ -34,7 +34,7 @@ import subprocess
 import sys
 import tempfile
 import time
-from contextlib import contextmanager
+from contextlib import ExitStack, contextmanager
 from pathlib import Path
 from shlex import quote, join as shell_join
 
@@ -70,6 +70,15 @@ from test_runtime import (
     runtime_deploy_targets,
 )
 from test_worktrees import prune_stale_west_temp_worktrees
+
+
+class InvocationResult:
+    """One captured test invocation, including its runner-owned failure stage."""
+
+    def __init__(self, returncode: int, output: str, failure_phase: str | None):
+        self.returncode = returncode
+        self.output = output
+        self.failure_phase = failure_phase
 
 
 class DarlingTest(WestCommand):
@@ -1466,7 +1475,7 @@ class DarlingTest(WestCommand):
         if invocation.get("cmake_configure_fixture"):
             return self._run_cmake_configure_fixture(invocation, env=env)
         if invocation.get("darling_cmake_target_fixture"):
-            return run_darling_cmake_target_fixture(
+            rc = run_darling_cmake_target_fixture(
                 invocation,
                 env=env,
                 executor=getattr(self, "_executor", None),
@@ -1475,6 +1484,9 @@ class DarlingTest(WestCommand):
                 err=self.err,
                 die=self.die,
             )
+            if rc:
+                self._record_failure_phase(invocation, "configure")
+            return rc
         run_env = env if env is not None else invocation.get("env")
         result = run_bounded(
             self._debug_runner_args(invocation),
@@ -1489,11 +1501,23 @@ class DarlingTest(WestCommand):
             )
         rc = result.returncode
         if rc:
+            self._record_failure_phase(
+                invocation,
+                "ctest" if invocation.get("ctest_label") else "script",
+            )
             return rc
         return self._check_host_traces(invocation, run_env)
 
-    def _run_invocation_captured(self, invocation, env=None) -> tuple[int, str]:
-        """Run an invocation while capturing subprocess stdout/stderr."""
+    def _record_failure_phase(self, invocation, phase: str) -> None:
+        """Record and report the runner stage that made an invocation fail."""
+
+        self._failure_phase = phase
+        print(f"WEST_TEST_FAILURE_PHASE={phase}", file=sys.stderr)
+
+    def _run_invocation_captured(self, invocation, env=None) -> InvocationResult:
+        """Run an invocation and return its output and structured failure phase."""
+        prior_phase = getattr(self, "_failure_phase", None)
+        self._failure_phase = None
         with tempfile.TemporaryFile(mode="w+", encoding="utf-8", errors="replace") as output:
             stdout_fd = os.dup(1)
             stderr_fd = os.dup(2)
@@ -1511,7 +1535,9 @@ class DarlingTest(WestCommand):
                 os.close(stdout_fd)
                 os.close(stderr_fd)
             output.seek(0)
-            return rc, output.read()
+            result = InvocationResult(rc, output.read(), self._failure_phase)
+        self._failure_phase = prior_phase
+        return result
 
     @contextmanager
     def _host_trace_context(self, invocation, env):
@@ -1667,6 +1693,7 @@ class DarlingTest(WestCommand):
             if compile_result.timed_out:
                 self.err(f"{invocation['name']}: compile timed out")
             if compile_result.returncode:
+                self._record_failure_phase(invocation, "compile")
                 return compile_result.returncode
             run_result = run_bounded(
                 [str(binary)],
@@ -1676,6 +1703,8 @@ class DarlingTest(WestCommand):
             )
             if run_result.timed_out:
                 self.err(f"{invocation['name']}: test binary timed out")
+            if run_result.returncode:
+                self._record_failure_phase(invocation, "run")
             return run_result.returncode
 
     def _run_object_symbol_fixture(self, invocation, env=None) -> int:
@@ -1719,6 +1748,7 @@ class DarlingTest(WestCommand):
                 if compile_result.timed_out:
                     self.err(f"{invocation['name']}:{check['name']}: compile timed out")
                 if compile_result.returncode:
+                    self._record_failure_phase(invocation, "compile")
                     return compile_result.returncode
                 nm = run_bounded(
                     ["nm", "-u", str(object_path)],
@@ -1732,6 +1762,7 @@ class DarlingTest(WestCommand):
                 if nm.returncode:
                     sys.stderr.write(nm.stdout)
                     sys.stderr.write(nm.stderr)
+                    self._record_failure_phase(invocation, "inspect")
                     return nm.returncode
                 symbols = {
                     line.split()[-1]
@@ -1741,10 +1772,12 @@ class DarlingTest(WestCommand):
                 for symbol in check.get("present_undefined_symbols", []):
                     if symbol not in symbols:
                         self.err(f"{invocation['name']}:{check['name']}: missing undefined symbol {symbol}")
+                        self._record_failure_phase(invocation, "inspect")
                         return 1
                 for symbol in check.get("absent_undefined_symbols", []):
                     if symbol in symbols:
                         self.err(f"{invocation['name']}:{check['name']}: unexpected undefined symbol {symbol}")
+                        self._record_failure_phase(invocation, "inspect")
                         return 1
                 if check.get("present_defined_symbols") or check.get("absent_defined_symbols"):
                     defined_nm = run_bounded(
@@ -1759,6 +1792,7 @@ class DarlingTest(WestCommand):
                     if defined_nm.returncode:
                         sys.stderr.write(defined_nm.stdout)
                         sys.stderr.write(defined_nm.stderr)
+                        self._record_failure_phase(invocation, "inspect")
                         return defined_nm.returncode
                     defined_symbols = set()
                     for line in defined_nm.stdout.splitlines():
@@ -1772,6 +1806,7 @@ class DarlingTest(WestCommand):
                     for symbol in check.get("present_defined_symbols", []):
                         if symbol not in defined_symbols:
                             self.err(f"{invocation['name']}:{check['name']}: missing defined symbol {symbol}")
+                            self._record_failure_phase(invocation, "inspect")
                             return 1
                     for symbol in check.get("absent_defined_symbols", []):
                         if symbol in defined_symbols:
@@ -1793,6 +1828,7 @@ class DarlingTest(WestCommand):
             source_root = Path(run_env[source_root_env])
         if not (source_root / "CMakeLists.txt").is_file():
             self.err(f"{invocation['name']}: CMakeLists.txt not found: {source_root}")
+            self._record_failure_phase(invocation, "setup")
             return 1
 
         with tempfile.TemporaryDirectory(prefix=f"west-cmake-configure-{invocation['name']}-") as temp:
@@ -1838,6 +1874,7 @@ class DarlingTest(WestCommand):
             )
             if result.timed_out:
                 self.err(f"{invocation['name']}: cmake configure timed out")
+                self._record_failure_phase(invocation, "configure")
                 return 124
             output = result.stdout + result.stderr
             def write_output_tail() -> None:
@@ -1850,9 +1887,11 @@ class DarlingTest(WestCommand):
             if rc_mode == "nonzero":
                 if result.returncode == 0:
                     self.err(f"{invocation['name']}: cmake configure succeeded unexpectedly")
+                    self._record_failure_phase(invocation, "configure")
                     return 1
             elif result.returncode != int(rc_mode):
                 write_output_tail()
+                self._record_failure_phase(invocation, "configure")
                 self.err(
                     f"{invocation['name']}: cmake configure rc {result.returncode}, "
                     f"want {rc_mode}"
@@ -1862,6 +1901,7 @@ class DarlingTest(WestCommand):
                 if str(needle) not in output:
                     write_output_tail()
                     self.err(f"{invocation['name']}: cmake output missing {needle!r}")
+                    self._record_failure_phase(invocation, "configure")
                     return 1
             for tool, checks in (expect.get("tool-args-contains") or {}).items():
                 log_path = tempdir / f"{tool}.log"
@@ -1884,6 +1924,7 @@ class DarlingTest(WestCommand):
         script_path = source_root / invocation["source_script"]
         if not script_path.is_file():
             self.err(f"{invocation['name']}: source script not found: {script_path}")
+            self._record_failure_phase(invocation, "setup")
             return 1
 
         timeout_seconds = int(invocation.get("timeout_seconds", 600))
@@ -1904,11 +1945,13 @@ class DarlingTest(WestCommand):
                     f"{invocation['name']}:{case['name']}: timed out after "
                     f"{timeout_seconds}s"
                 )
+                self._record_failure_phase(invocation, "script")
                 return 124
             expected_rc = case.get("returncode", 0)
             if result.returncode != expected_rc:
                 sys.stderr.write(result.stdout)
                 sys.stderr.write(result.stderr)
+                self._record_failure_phase(invocation, "script")
                 self.err(
                     f"{invocation['name']}:{case['name']}: rc {result.returncode}, "
                     f"want {expected_rc}"
@@ -1917,6 +1960,7 @@ class DarlingTest(WestCommand):
             expected_stdout = case.get("stdout")
             if expected_stdout is not None and result.stdout != expected_stdout:
                 sys.stderr.write(result.stderr)
+                self._record_failure_phase(invocation, "script")
                 self.err(
                     f"{invocation['name']}:{case['name']}: stdout "
                     f"{result.stdout!r}, want {expected_stdout!r}"
@@ -1990,8 +2034,16 @@ class DarlingTest(WestCommand):
                         f"  source-build-fixture timed out after "
                         f"{timeout_seconds}s: {command}"
                     )
+                    self._record_failure_phase(
+                        invocation,
+                        "build" if command in invocation.get("build_commands", []) else "run",
+                    )
                     return 124
                 if result.returncode:
+                    self._record_failure_phase(
+                        invocation,
+                        "build" if command in invocation.get("build_commands", []) else "run",
+                    )
                     return result.returncode
             return 0
 
@@ -3502,6 +3554,24 @@ fi
     @contextmanager
     def _source_base_green_source_tree(self, patch, module: str):
         """Materialize the fixed/profile source tree for source-base proofs."""
+        cache = getattr(self, "_source_base_green_cache", None)
+        key = (getattr(self, "_active_profile", None), module)
+        if cache is not None and key in cache:
+            yield cache[key]
+            return
+        if cache is not None:
+            tree = getattr(self, "_source_base_green_stack").enter_context(
+                self._materialize_source_base_green_tree(patch, module)
+            )
+            cache[key] = tree
+            yield tree
+            return
+        with self._materialize_source_base_green_tree(patch, module) as tree:
+            yield tree
+
+    @contextmanager
+    def _materialize_source_base_green_tree(self, patch, module: str):
+        """Create one disposable fixed source tree for a source-base proof."""
         profile = getattr(self, "_active_profile", None)
         if not profile:
             yield None
@@ -4121,6 +4191,25 @@ fi
             lacks = [lacks]
         return [str(item) for item in contains], [str(item) for item in lacks]
 
+    def _red_failure_phases(self, proof) -> list[str]:
+        phases = proof.get("expect-failure-phase", [])
+        if isinstance(phases, str):
+            phases = [phases]
+        return [str(phase) for phase in phases]
+
+    def _check_red_failure_phase(self, proof, invocation, observed: str | None) -> bool:
+        phases = self._red_failure_phases(proof)
+        if not phases:
+            return True
+        if observed in phases:
+            return True
+        self.err(
+            f"{invocation['name']}: RED failed in phase "
+            f"{observed or '<unclassified>'}, want "
+            f"{', '.join(phases)}"
+        )
+        return False
+
     def _check_red_output_expectations(self, proof, invocation, output: str, *, where: str) -> bool:
         contains, lacks = self._red_output_expectations(proof)
         for needle in contains:
@@ -4217,12 +4306,20 @@ fi
                     runtime_invocation = self._invocation_from_runtime_source(red_invocation, source_root)
                     with self._resource_context(runtime_invocation, bad_env) as resource_env:
                         red_started_at = time.time()
-                        bad_rc, bad_output = self._run_invocation_captured(
-                            runtime_invocation,
-                            env=resource_env,
-                        )
-                    if bad_rc == 0:
+                    bad_result = self._run_invocation_captured(
+                        runtime_invocation,
+                        env=resource_env,
+                    )
+                    if bad_result.returncode == 0:
                         self.err("  RED proof failed: deployed bad runtime unexpectedly passed")
+                        keep_on_failure = True
+                        self.err(f"preserving failed RED runtime scratch for inspection: {temp}")
+                        return 1
+                    if not self._check_red_failure_phase(
+                        proof,
+                        runtime_invocation,
+                        "runtime",
+                    ):
                         keep_on_failure = True
                         self.err(f"preserving failed RED runtime scratch for inspection: {temp}")
                         return 1
@@ -4230,12 +4327,12 @@ fi
                         proof,
                         runtime_invocation,
                         since=red_started_at,
-                        captured_output=bad_output,
+                        captured_output=bad_result.output,
                     ):
                         keep_on_failure = True
                         self.err(f"preserving failed RED runtime scratch for inspection: {temp}")
                         return 1
-                    self.inf(f"  RED runtime failed as expected (rc={bad_rc})")
+                    self.inf(f"  RED runtime failed as expected (rc={bad_result.returncode})")
         except Exception:
             keep_on_failure = True
             self.err(f"preserving failed RED runtime scratch for inspection: {temp}")
@@ -4290,18 +4387,24 @@ fi
                         bad_env.update(exec_env)
                     bad_env[source_env] = str(worktree)
                     self.inf(f"  RED source tree: {bad_revision} via {source_env}={worktree}")
-                    bad_rc, bad_output = self._run_invocation_captured(proof_invocation, env=bad_env)
-                    if bad_rc == 0:
+                    bad_result = self._run_invocation_captured(proof_invocation, env=bad_env)
+                    if bad_result.returncode == 0:
                         self.err("  RED proof failed: source-base run unexpectedly passed")
+                        return 1
+                    if not self._check_red_failure_phase(
+                        proof,
+                        proof_invocation,
+                        bad_result.failure_phase,
+                    ):
                         return 1
                     if not self._check_red_output_expectations(
                         proof,
                         proof_invocation,
-                        bad_output,
+                        bad_result.output,
                         where="in source-base RED output",
                     ):
                         return 1
-                    self.inf(f"  RED path failed as expected (rc={bad_rc})")
+                    self.inf(f"  RED path failed as expected (rc={bad_result.returncode})")
                 finally:
                     subprocess.run(
                         ["git", "worktree", "remove", "--force", str(worktree)],
@@ -4335,57 +4438,90 @@ fi
             self.die("metadata RED proofs do not accept raw ctest passthrough arguments")
         rc = 0
         seen_invocations: set[str] = set()
-        for patch, test in tests:
-            proof = test.get("red-proof")
-            name = test.get("name", "-")
-            if not proof:
-                self.die(
-                    f"{patch['path']}: {name} is marked red but has no red-proof metadata"
-                )
-            mode = proof.get("mode") if isinstance(proof, dict) else proof
-            invocation = self._test_invocation(patch, test)
-            self.inf(f"{patch['path']}: {name} RED proof [{mode}]")
-            self.inf(f"  {self._display_invocation(invocation)}")
-            if mode == "guest-runtime-deploy" and isinstance(proof, dict):
-                self.inf(f"  {self._display_guest_runtime_deploy_plan(proof)}")
-            if list_only:
-                continue
-            if mode not in {"self", "source-base", "guest-runtime-deploy"}:
-                self.die(
-                    f"{patch['path']}: RED proof mode {mode!r} is not implemented; "
-                    "use mode: self, source-base, or guest-runtime-deploy"
-                )
-            if mode == "source-base" and invocation.get("guest_c_fixture"):
-                self._reject_guest_source_base_red_proof(patch)
-            script_path = invocation.get("script_path")
-            if script_path is not None and not script_path.is_file():
-                self.die(f"{patch['path']}: test script not found: {script_path}")
-            missing_env = self._missing_requirements(invocation)
-            if missing_env:
-                self.die(
-                    f"{patch['path']}: missing required environment for {name}: "
-                    f"{', '.join(missing_env)}"
-                )
-            invocation_key = (
-                f"{patch['path']}:{invocation['key']}"
-                if mode == "source-base"
-                else invocation["key"]
-            )
-            if invocation_key in seen_invocations:
-                self.inf("  skipped duplicate invocation already run")
-                continue
-            seen_invocations.add(invocation_key)
-            with self._required_profile_context(patch, invocation):
-                if mode == "source-base":
-                    result_rc = self._run_source_base_proof(patch, proof, invocation)
-                elif mode == "guest-runtime-deploy":
-                    result_rc = self._run_guest_runtime_deploy_proof(patch, proof, invocation)
-                else:
-                    exec_env = self._execution_env(invocation)
-                    with self._resource_context(invocation, exec_env):
-                        result_rc = self._run_invocation(invocation, env=exec_env)
-            if result_rc:
-                rc = result_rc
+        self._prune_stale_west_temp_worktrees()
+        with ExitStack() as source_base_green_stack:
+            self._source_base_green_stack = source_base_green_stack
+            self._source_base_green_cache = {}
+            try:
+                for patch, test in tests:
+                    proof = test.get("red-proof")
+                    name = test.get("name", "-")
+                    if not proof:
+                        self.die(
+                            f"{patch['path']}: {name} is marked red but has no red-proof metadata"
+                        )
+                    mode = proof.get("mode") if isinstance(proof, dict) else proof
+                    invocation = self._test_invocation(patch, test)
+                    self.inf(f"{patch['path']}: {name} RED proof [{mode}]")
+                    self.inf(f"  {self._display_invocation(invocation)}")
+                    if mode == "guest-runtime-deploy" and isinstance(proof, dict):
+                        self.inf(f"  {self._display_guest_runtime_deploy_plan(proof)}")
+                    if list_only:
+                        continue
+                    if mode not in {"self", "source-base", "guest-runtime-deploy"}:
+                        self.die(
+                            f"{patch['path']}: RED proof mode {mode!r} is not implemented; "
+                            "use mode: self, source-base, or guest-runtime-deploy"
+                        )
+                    if not self._red_failure_phases(proof):
+                        self.die(
+                            f"{patch['path']}: {name} RED proof needs expect-failure-phase"
+                        )
+                    if (
+                        mode in {"self", "guest-runtime-deploy"}
+                        and not self._guest_runtime_red_has_positive_reason(proof)
+                    ):
+                        self.die(
+                            f"{patch['path']}: {name} RED proof needs expect-output-contains"
+                        )
+                    if mode == "source-base" and invocation.get("guest_c_fixture"):
+                        self._reject_guest_source_base_red_proof(patch)
+                    script_path = invocation.get("script_path")
+                    if script_path is not None and not script_path.is_file():
+                        self.die(f"{patch['path']}: test script not found: {script_path}")
+                    missing_env = self._missing_requirements(invocation)
+                    if missing_env:
+                        self.die(
+                            f"{patch['path']}: missing required environment for {name}: "
+                            f"{', '.join(missing_env)}"
+                        )
+                    invocation_key = (
+                        f"{patch['path']}:{invocation['key']}"
+                        if mode == "source-base"
+                        else invocation["key"]
+                    )
+                    if invocation_key in seen_invocations:
+                        self.inf("  skipped duplicate invocation already run")
+                        continue
+                    seen_invocations.add(invocation_key)
+                    with self._required_profile_context(patch, invocation):
+                        if mode == "source-base":
+                            result_rc = self._run_source_base_proof(patch, proof, invocation)
+                        elif mode == "guest-runtime-deploy":
+                            result_rc = self._run_guest_runtime_deploy_proof(patch, proof, invocation)
+                        else:
+                            exec_env = self._execution_env(invocation)
+                            with self._resource_context(invocation, exec_env):
+                                self_result = self._run_invocation_captured(invocation, env=exec_env)
+                            if self_result.returncode:
+                                result_rc = self_result.returncode
+                            elif not self._check_red_failure_phase(proof, invocation, "self"):
+                                result_rc = 1
+                            elif not self._check_red_output_expectations(
+                                proof,
+                                invocation,
+                                self_result.output,
+                                where="in self-contained RED output",
+                            ):
+                                result_rc = 1
+                            else:
+                                self.inf("  self-contained RED arm observed as expected")
+                                result_rc = 0
+                    if result_rc:
+                        rc = result_rc
+            finally:
+                del self._source_base_green_cache
+                del self._source_base_green_stack
         return rc
 
     def _reject_unsupported_red_proof_models(self, tests) -> None:
@@ -4406,18 +4542,27 @@ fi
                     f"{test.get('name', '-')}: {', '.join(missing)}"
                 )
 
-    def _runtime_red_reason_audit(self, tests) -> list[str]:
+    def _red_proof_audit(self, tests) -> list[str]:
+        """Return manifest gaps that would make a RED result ambiguous."""
         missing = []
         for patch, test in tests:
             proof = test.get("red-proof")
             if not isinstance(proof, dict):
                 continue
-            if proof.get("mode") != "guest-runtime-deploy":
+            mode = proof.get("mode")
+            if mode not in {"self", "source-base", "guest-runtime-deploy"}:
+                missing.append(
+                    f"{patch['path']}: {test.get('name', '-')} has unsupported RED mode {mode!r}"
+                )
                 continue
-            if not self._guest_runtime_red_has_positive_reason(proof):
+            if not self._red_failure_phases(proof):
+                missing.append(
+                    f"{patch['path']}: {test.get('name', '-')} RED proof needs expect-failure-phase"
+                )
+            if mode in {"self", "guest-runtime-deploy"} and not self._guest_runtime_red_has_positive_reason(proof):
                 missing.append(
                     f"{patch['path']}: {test.get('name', '-')} "
-                    "guest-runtime-deploy RED proof needs expect-output-contains"
+                    "RED proof needs expect-output-contains"
                 )
         return missing
 
@@ -4695,7 +4840,7 @@ fi
             selected, missing = self._metadata_tests(
                 profile, args.patch, args.bead, args.env, args.diag, red_only=False
             )
-            missing_reasons = self._runtime_red_reason_audit(selected)
+            missing_reasons = self._red_proof_audit(selected)
             for patch in missing:
                 self.inf(f"MISSING {patch['path']} [{patch.get('bead', '-')}]")
             for message in missing_reasons:
@@ -4703,7 +4848,7 @@ fi
             self.inf(f"red-audit: {len(missing)} patch(es) missing tests/exception")
             self.inf(
                 "red-audit: "
-                f"{len(missing_reasons)} guest-runtime-deploy proof(s) missing RED reason"
+                f"{len(missing_reasons)} RED proof contract gap(s)"
             )
             if missing or missing_reasons:
                 self.die("red-audit failed")

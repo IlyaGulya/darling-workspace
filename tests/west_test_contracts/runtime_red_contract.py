@@ -211,6 +211,21 @@ assert not test._guest_runtime_red_has_positive_reason({"expect-output-contains"
 assert not test._guest_runtime_red_has_positive_reason({"expect-output-contains": [""]})
 assert test._guest_runtime_red_has_positive_reason({"expect-output-contains": "old runtime symptom"})
 assert test._guest_runtime_red_has_positive_reason({"expect-output-contains": ["old runtime symptom"]})
+assert test._check_red_failure_phase(
+    {"expect-failure-phase": "compile"},
+    {"name": "phase_contract"},
+    "compile",
+)
+assert test._check_red_failure_phase(
+    {"expect-failure-phase": ["compile", "run"]},
+    {"name": "phase_contract"},
+    "run",
+)
+assert not test._check_red_failure_phase(
+    {"expect-failure-phase": "run"},
+    {"name": "phase_contract"},
+    "compile",
+)
 assert test._patch_subject_from_text(
     "From abc Mon Sep 17 00:00:00 2001\n"
     "Subject: [PATCH] thread/call/server: contain exceptions that can terminate the\n"
@@ -218,7 +233,7 @@ assert test._patch_subject_from_text(
     "\n"
     "body\n"
 ) == "thread/call/server: contain exceptions that can terminate the server"
-missing_reasons = test._runtime_red_reason_audit(
+missing_reasons = test._red_proof_audit(
     [
         (
             {"path": "xnu/missing.patch"},
@@ -233,6 +248,7 @@ missing_reasons = test._runtime_red_reason_audit(
                 "name": "with_reason",
                 "red-proof": {
                     "mode": "guest-runtime-deploy",
+                    "expect-failure-phase": "runtime",
                     "expect-output-contains": ["old runtime symptom"],
                 },
             },
@@ -248,7 +264,9 @@ missing_reasons = test._runtime_red_reason_audit(
 )
 assert missing_reasons == [
     "xnu/missing.patch: missing_reason "
-    "guest-runtime-deploy RED proof needs expect-output-contains"
+    "RED proof needs expect-failure-phase",
+    "xnu/missing.patch: missing_reason RED proof needs expect-output-contains",
+    "xnu/source_base.patch: source_base RED proof needs expect-failure-phase",
 ], missing_reasons
 
 test = make_test()

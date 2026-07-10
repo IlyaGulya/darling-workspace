@@ -81,6 +81,7 @@ def normalize_test(
     _expand_artifacts(merged, artifact_profiles, index=index)
     _expand_resources(merged, resource_profiles, index=index)
     _expand_fixtures(merged, fixture_profiles, index=index)
+    _default_red_failure_phase(merged)
     return merged
 
 
@@ -121,6 +122,7 @@ def _resolve_test_profile(
     _expand_artifacts(merged, artifact_profiles)
     _expand_resources(merged, resource_profiles)
     _expand_fixtures(merged, fixture_profiles)
+    _default_red_failure_phase(merged)
     stack.pop()
     return merged
 
@@ -177,6 +179,44 @@ def _expand_compact_axes(test: dict[str, Any], *, index: int = 0) -> None:
         raise ManifestError(
             f"{location}: red-proof must be source, runtime, self, none, or a mapping"
         )
+
+
+def _default_red_failure_phase(test: dict[str, Any]) -> None:
+    """Fill the deterministic failing stage implied by compact test axes.
+
+    A RED proof must not accept an arbitrary non-zero exit.  The runner emits
+    one of these stable stage markers only at the failing operation and checks
+    the expanded value before accepting RED.  Explicit manifest values always
+    win for unusual runners.
+    """
+
+    proof = test.get("red-proof")
+    if not isinstance(proof, dict) or proof.get("expect-failure-phase"):
+        return
+    mode = proof.get("mode")
+    if mode == "guest-runtime-deploy":
+        proof["expect-failure-phase"] = "runtime"
+        return
+    if mode == "self":
+        proof["expect-failure-phase"] = "self"
+        return
+    if mode != "source-base":
+        return
+
+    runner = test.get("runner")
+    tier = test.get("coverage-tier")
+    if runner == "object-symbol-fixture":
+        proof["expect-failure-phase"] = "inspect"
+    elif runner in {"source-contract-script", "source-profile-script", "source-script-fixture"}:
+        proof["expect-failure-phase"] = "script"
+    elif runner == "source-build-fixture":
+        proof["expect-failure-phase"] = "build" if tier == "compile" else "run"
+    elif runner in {"cmake-configure-fixture", "darling-cmake-target-fixture"}:
+        proof["expect-failure-phase"] = "configure" if tier != "compile" else "build"
+    elif runner == "c-fixture":
+        proof["expect-failure-phase"] = "compile" if tier == "compile" else "run"
+    else:
+        proof["expect-failure-phase"] = "script"
 
 
 def _expand_artifacts(

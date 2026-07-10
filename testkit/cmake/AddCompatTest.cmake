@@ -78,8 +78,8 @@ set(DARLING_TEST_BUNDLE_ROOT "${DARLING_TEST_BUNDLE_ROOT}" CACHE PATH
   "Debug bundle root passed to darling-debug-runner for guarded/forensic tests")
 
 function(add_compat_test)
-  set(options WILL_FAIL INSTALL FUZZ STRESS)
-  set(oneValue NAME SOURCE BEAD DIAG WORKDIR TIMEOUT MIN_VERSION MAX_VERSION OK_MARKER)
+  set(options INSTALL FUZZ STRESS)
+  set(oneValue NAME SOURCE BEAD DIAG WORKDIR TIMEOUT MIN_VERSION MAX_VERSION OK_MARKER EXPECT_FAILURE_MARKER)
   set(multiValue ENVS SUBMODULES EXTRA_SOURCES INCLUDES DEFINES LIBS RESOURCES ARGS)
   cmake_parse_arguments(ACT "${options}" "${oneValue}" "${multiValue}" ${ARGN})
 
@@ -100,6 +100,11 @@ function(add_compat_test)
   endif()
   if(NOT ACT_TIMEOUT)
     set(ACT_TIMEOUT 60)
+  endif()
+  if(ACT_WILL_FAIL)
+    message(FATAL_ERROR
+      "add_compat_test(${ACT_NAME}): WILL_FAIL is unsupported because it accepts "
+      "an arbitrary failure; use EXPECT_FAILURE_MARKER instead")
   endif()
 
   # One built executable per host/macos case (shared across those environments).
@@ -231,6 +236,16 @@ function(add_compat_test)
       endif()
     endif()
 
+    # CTest's WILL_FAIL only inverts the exit status. A RED case instead needs
+    # a specific observed symptom so unrelated launcher/build failures cannot
+    # be accepted as regression evidence.
+    if(ACT_EXPECT_FAILURE_MARKER)
+      set(cmd
+        "${_ADD_COMPAT_TEST_ROOT}/scripts/expect-failure.sh"
+        --marker "${ACT_EXPECT_FAILURE_MARKER}"
+        -- ${cmd})
+    endif()
+
     add_test(NAME "${test_name}" COMMAND ${cmd})
     if(ACT_WORKDIR)
       set_property(TEST "${test_name}" PROPERTY WORKING_DIRECTORY "${ACT_WORKDIR}")
@@ -267,8 +282,5 @@ function(add_compat_test)
 
     set_property(TEST "${test_name}" PROPERTY LABELS ${labels})
     set_property(TEST "${test_name}" PROPERTY TIMEOUT ${ACT_TIMEOUT})
-    if(ACT_WILL_FAIL)
-      set_property(TEST "${test_name}" PROPERTY WILL_FAIL TRUE)
-    endif()
   endforeach()
 endfunction()
