@@ -177,7 +177,11 @@ refs, PR drafts, and agent handoff.
 - Classify patch test evidence with `coverage-tier`: `runtime`, `compile`,
   `host`, `model`, or `source`. Any old-vs-fixed model must be explicit
   `coverage-tier: model`; source/text audits must be `coverage-tier: source`
-  and must not be counted as behavioral coverage.
+  and must not be counted as behavioral coverage. A `source-*` runner defaults
+  to `source` unless metadata explicitly declares a behavioral tier; do not
+  infer host/compile/runtime coverage from a source script. A source-only patch
+  needs either a behavioral test or `test-exception` with both `reason` and a
+  narrow `scope` naming the deferred behavioral owner.
 - Prefer shared test helpers over ad hoc shell boilerplate. Static contract
   scripts should use a local `contract-test-lib.sh`; Darling guest C verdict
   tests should prefer `runner: guest-c-fixture` so `west test` owns upload,
