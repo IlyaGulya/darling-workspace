@@ -81,6 +81,23 @@ for arg in "${args[@]}"; do
 	quoted_args+=("$(printf '%q' "$arg")")
 done
 
+dump_file_sha() {
+	local label="$1"
+	local path="$2"
+	if [[ -e "$path" ]]; then
+		sha256sum "$path" 2>/dev/null | sed "s#^#WEST_GUEST_FILE_SHA256 $label #; s#  # #g" >&2 || true
+	else
+		printf 'WEST_GUEST_FILE_MISSING %s %s\n' "$label" "$path" >&2
+	fi
+}
+
+dump_runtime_file_state() {
+	dump_file_sha launcher "$launcher"
+	dump_file_sha prefix_libsystem_kernel "$prefix/usr/lib/system/libsystem_kernel.dylib"
+	dump_file_sha prefix_nested_libsystem_kernel \
+		"$prefix/libexec/darling/usr/lib/system/libsystem_kernel.dylib"
+}
+
 set +e
 darling_guest_shell "$launcher" "$prefix" "${DARLING_GUEST_TIMEOUT_SECONDS:-60}" "
 set -euo pipefail
@@ -109,6 +126,10 @@ exit "\$run_rc"
 rc=$?
 set -e
 cat "$output"
+
+if [[ "$rc" -ne 0 ]]; then
+	dump_runtime_file_state
+fi
 
 if [ "$rc" -eq 0 ] && [ -n "$ok_marker" ]; then
 	grep -F -x -q -- "$ok_marker" "$output"

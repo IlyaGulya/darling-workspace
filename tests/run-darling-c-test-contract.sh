@@ -56,6 +56,8 @@ if DPREFIX="$tmp/prefix" "$repo/testkit/scripts/run-darling-c-test.sh" \
 fi
 grep -F -x -q WEST_GUEST_STAGE=compile "$tmp/compile-fail.out"
 grep -E -q '^ORACLE_RC=[1-9][0-9]*$' "$tmp/compile-fail.out"
+grep -F -q 'WEST_GUEST_FILE_SHA256 launcher ' "$tmp/compile-fail.out"
+grep -F -q 'WEST_GUEST_FILE_MISSING prefix_libsystem_kernel ' "$tmp/compile-fail.out"
 if grep -F -x -q WEST_GUEST_STAGE=run "$tmp/compile-fail.out"; then
 	cat "$tmp/compile-fail.out" >&2
 	exit 1
