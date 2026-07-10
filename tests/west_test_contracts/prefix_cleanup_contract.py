@@ -1,4 +1,7 @@
+import os
+import signal
 import tempfile
+import time
 import sys
 import types
 from argparse import Namespace
@@ -72,6 +75,55 @@ test._resolve_darling_launcher = lambda _prefix: None
 test._kill_dserver_for_prefix = lambda _prefix: None
 test._ps_entries = lambda: []
 assert test._shutdown_test_prefix()
+
+with tempfile.TemporaryDirectory() as temp:
+    prefix = Path(temp)
+    launcher = prefix / "fake-darling"
+    child_pid = prefix / "shutdown-child.pid"
+    launcher.write_text(
+        """#!/usr/bin/env bash
+set -euo pipefail
+(sleep 30) &
+echo "$!" > "${WEST_SHUTDOWN_CHILD_PID:?}"
+sleep 30
+"""
+    )
+    launcher.chmod(0o755)
+    test = make_test()
+    test._prefix = str(prefix)
+    test._keep_prefix_running = False
+    test._resolve_darling_launcher = lambda _prefix: str(launcher)
+    test._kill_dserver_for_prefix = lambda _prefix: None
+    test._ps_entries = lambda: []
+    old_timeout = os.environ.get("WEST_TEST_SHUTDOWN_TIMEOUT_SECONDS")
+    old_child_pid = os.environ.get("WEST_SHUTDOWN_CHILD_PID")
+    os.environ["WEST_TEST_SHUTDOWN_TIMEOUT_SECONDS"] = "1"
+    os.environ["WEST_SHUTDOWN_CHILD_PID"] = str(child_pid)
+    try:
+        started = time.monotonic()
+        assert test._shutdown_test_prefix()
+        assert time.monotonic() - started < 5
+        pid = int(child_pid.read_text())
+        for _ in range(20):
+            if not Path(f"/proc/{pid}").exists():
+                break
+            time.sleep(0.05)
+        assert not Path(f"/proc/{pid}").exists(), f"timed out shutdown child survived: {pid}"
+        assert any("shutdown timed out" in message for message in test.err_messages)
+    finally:
+        if old_timeout is None:
+            os.environ.pop("WEST_TEST_SHUTDOWN_TIMEOUT_SECONDS", None)
+        else:
+            os.environ["WEST_TEST_SHUTDOWN_TIMEOUT_SECONDS"] = old_timeout
+        if old_child_pid is None:
+            os.environ.pop("WEST_SHUTDOWN_CHILD_PID", None)
+        else:
+            os.environ["WEST_SHUTDOWN_CHILD_PID"] = old_child_pid
+        if child_pid.exists():
+            try:
+                os.kill(int(child_pid.read_text()), signal.SIGKILL)
+            except ProcessLookupError:
+                pass
 
 with tempfile.TemporaryDirectory() as temp:
     stale_prefix = Path(temp)

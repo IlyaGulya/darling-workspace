@@ -28,6 +28,7 @@ sys.modules.setdefault("west.commands", west_commands_module)
 
 import west_commands.test as west_test_module
 from west_commands.test import DarlingTest
+from west_commands.test_execution import ProcessResult
 from west_commands.test_runtime import (
     describe_runtime_deploy_plan,
     runtime_build_targets,
@@ -409,18 +410,17 @@ with tempfile.TemporaryDirectory() as temp:
     source_root = tempdir / "source"
     source_root.mkdir()
     calls = []
-    old_run = west_test_module.subprocess.run
+    old_run_bounded = west_test_module.run_bounded
 
     def quiet_success_run(args, **kwargs):
-        calls.append((list(args), kwargs.get("capture_output"), kwargs.get("text")))
-        return subprocess.CompletedProcess(
-            args,
+        calls.append((list(args), kwargs.get("capture_output"), kwargs.get("timeout_seconds")))
+        return ProcessResult(
             0,
             stdout="\n".join(f"noisy stdout {index}" for index in range(300)),
             stderr="\n".join(f"noisy stderr {index}" for index in range(300)),
         )
 
-    west_test_module.subprocess.run = quiet_success_run
+    west_test_module.run_bounded = quiet_success_run
     stderr = io.StringIO()
     try:
         with redirect_stderr(stderr):
@@ -437,12 +437,66 @@ with tempfile.TemporaryDirectory() as temp:
                 label="GREEN",
             )
     finally:
-        west_test_module.subprocess.run = old_run
+        west_test_module.run_bounded = old_run_bounded
     assert build_root == tempdir / "scratch/build"
     assert stderr.getvalue() == "", stderr.getvalue()
     assert len(calls) == 2, calls
-    assert calls[0][1:] == (True, True), calls
+    assert calls[0][1:] == (True, 1800), calls
     assert calls[1][0][-2:] == ["target-a", "target-b"], calls
+
+with tempfile.TemporaryDirectory() as temp:
+    tempdir = Path(temp)
+    test = make_test()
+    invocation = {"name": "dcc_cache_timeout_contract", "timeout_seconds": 1}
+    old_run_bounded = west_test_module.run_bounded
+
+    def timed_out_dcc_command(args, **kwargs):
+        assert list(args) == ["fake-dcc-builder"], args
+        assert kwargs["cwd"] == tempdir, kwargs
+        assert kwargs["timeout_seconds"] == 1, kwargs
+        return ProcessResult(124, timed_out=True, stderr="DCC_BUILDER_STUCK\n")
+
+    west_test_module.run_bounded = timed_out_dcc_command
+    try:
+        try:
+            test._run_dcc_cache_command(
+                invocation,
+                "build",
+                ["fake-dcc-builder"],
+                tempdir,
+            )
+            raise AssertionError("timed out DCC command unexpectedly succeeded")
+        except SystemExit as exc:
+            assert "DCC cache build failed with rc 124" in str(exc), exc
+    finally:
+        west_test_module.run_bounded = old_run_bounded
+    assert test._failure_phase == "setup", test._failure_phase
+    assert any("DCC cache build timed out after 1s" in message for message in test.err_messages)
+    assert any("DCC cache build failed with rc 124" in message for message in test.err_messages)
+
+with tempfile.TemporaryDirectory() as temp:
+    tempdir = Path(temp)
+    test = make_test()
+    test.topdir = str(tempdir)
+    old_run_bounded = west_test_module.run_bounded
+
+    def timed_out_testkit_command(args, **kwargs):
+        assert list(args) == ["cmake", "--build", "testkit-build"], args
+        assert kwargs["cwd"] == tempdir, kwargs
+        assert kwargs["timeout_seconds"] == 1800, kwargs
+        return ProcessResult(124, timed_out=True, stderr="TESTKIT_BUILD_STUCK\n")
+
+    west_test_module.run_bounded = timed_out_testkit_command
+    try:
+        try:
+            test._run_testkit_build_command("build", ["cmake", "--build", "testkit-build"])
+            raise AssertionError("timed out testkit command unexpectedly succeeded")
+        except SystemExit as exc:
+            assert "testkit build failed with rc 124" in str(exc), exc
+    finally:
+        west_test_module.run_bounded = old_run_bounded
+    assert any("testkit build timed out after 1800s" in message for message in test.err_messages)
+    assert any("testkit build failed with rc 124" in message for message in test.err_messages)
 
 with tempfile.TemporaryDirectory() as temp:
     tempdir = Path(temp)
@@ -784,6 +838,63 @@ with tempfile.TemporaryDirectory() as temp:
     tempdir = Path(temp)
     prefix = tempdir / "prefix"
     prefix.mkdir()
+    child_pid = tempdir / "guest-child.pid"
+    launcher = tempdir / "fake-darling-timeout"
+    launcher.write_text(
+        """#!/usr/bin/env bash
+set -euo pipefail
+if [ "${1:-}" = shutdown ]; then
+\texit 0
+fi
+(sleep 30) &
+echo "$!" > "${WEST_FAKE_TIMEOUT_CHILD_PID:?}"
+printf 'GUEST_TIMEOUT_STARTED\\n' >&2
+sleep 30
+"""
+    )
+    launcher.chmod(0o755)
+
+    test = make_test()
+    test._prefix = str(prefix)
+    invocation = {
+        "name": "guest_command_timeout_kills_group_contract",
+        "cwd": tempdir,
+        "guest_command_fixture": True,
+        "guest_command": "/usr/bin/true",
+        "guest_env_vars": {},
+        "timeout_seconds": 1,
+        "expect": {
+            "returncode": "timeout",
+            "output-contains": ["GUEST_TIMEOUT_STARTED"],
+        },
+    }
+    env = os.environ.copy()
+    env["DPREFIX"] = str(prefix)
+    env["DARLING_LAUNCHER"] = str(launcher)
+    env["WEST_FAKE_TIMEOUT_CHILD_PID"] = str(child_pid)
+    try:
+        started = time.monotonic()
+        rc = test._run_guest_command_fixture(invocation, env=env)
+        elapsed = time.monotonic() - started
+        assert rc == 0, (rc, test.err_messages)
+        assert elapsed < 5, elapsed
+        pid = int(child_pid.read_text())
+        for _ in range(20):
+            if not Path(f"/proc/{pid}").exists():
+                break
+            time.sleep(0.05)
+        assert not Path(f"/proc/{pid}").exists(), f"timed out guest child survived: {pid}"
+    finally:
+        if child_pid.exists():
+            try:
+                os.kill(int(child_pid.read_text()), signal.SIGKILL)
+            except ProcessLookupError:
+                pass
+
+with tempfile.TemporaryDirectory() as temp:
+    tempdir = Path(temp)
+    prefix = tempdir / "prefix"
+    prefix.mkdir()
     fixture = tempdir / "fixture.c"
     fixture.write_text('int main(void) { return 0; }\\n')
     launcher = tempdir / "fake-darling"
@@ -791,17 +902,17 @@ with tempfile.TemporaryDirectory() as temp:
     launcher.chmod(0o755)
     test = make_test()
     test._prefix = str(prefix)
-    old_run = west_test_module.subprocess.run
+    old_run_bounded = west_test_module.run_bounded
     inspected = []
 
     def inspect_guest_c_runner(args, **kwargs):
-        del kwargs
         runner = Path(args[-1])
         content = runner.read_text()
         inspected.append(content)
-        return subprocess.CompletedProcess(args, 0)
+        assert kwargs["timeout_seconds"] == 31, kwargs
+        return ProcessResult(0)
 
-    west_test_module.subprocess.run = inspect_guest_c_runner
+    west_test_module.run_bounded = inspect_guest_c_runner
     try:
         rc = test._run_guest_c_fixture(
             {
@@ -828,7 +939,7 @@ with tempfile.TemporaryDirectory() as temp:
             env={"DPREFIX": str(prefix), "DARLING_LAUNCHER": str(launcher)},
         )
     finally:
-        west_test_module.subprocess.run = old_run
+        west_test_module.run_bounded = old_run_bounded
     assert rc == 0, rc
     assert inspected, "guest-c runner was not generated"
     generated = inspected[0]

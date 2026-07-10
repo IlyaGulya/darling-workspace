@@ -48,4 +48,20 @@ result = run_bounded(
 assert result.returncode == 0 and not result.timed_out, result
 assert result.stdout == "BOUNDED_OUTPUT_OK\n", result
 
+result = run_bounded(
+    [
+        sys.executable,
+        "-c",
+        "import sys; sys.stdout.buffer.write(sys.stdin.buffer.read()[::-1])",
+    ],
+    cwd=Path.cwd(),
+    env=None,
+    timeout_seconds=1,
+    capture_output=True,
+    text=False,
+    input_data=b"guest-archive",
+)
+assert result.returncode == 0 and not result.timed_out, result
+assert result.stdout == b"evihcra-tseug", result
+
 print("PASS west-test-execution-contract")

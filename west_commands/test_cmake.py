@@ -9,33 +9,57 @@ import subprocess
 import sys
 import tempfile
 from pathlib import Path
-from typing import Callable
+from typing import Callable, Sequence
 
 from test_ctest import ctest_label_args
-from test_execution import run_bounded
+from test_execution import ProcessResult, run_bounded
 
 
 Reporter = Callable[[str], None]
 
 
-def archive_source_to(source_root: Path, destination: Path) -> int:
+def archive_git_tree_to(
+    source_root: Path,
+    destination: Path,
+    *,
+    revision: str = "HEAD",
+    paths: Sequence[str | Path] = (),
+    timeout_seconds: int = 600,
+) -> ProcessResult:
+    """Materialize a Git tree or subtree through bounded archive/extract processes."""
+
     destination.mkdir(parents=True, exist_ok=True)
-    archive = subprocess.Popen(
-        ["git", "archive", "--format=tar", "HEAD"],
+    archive = run_bounded(
+        ["git", "archive", "--format=tar", revision, *(str(path) for path in paths)],
         cwd=source_root,
-        stdout=subprocess.PIPE,
+        env=None,
+        timeout_seconds=timeout_seconds,
+        capture_output=True,
+        text=False,
     )
-    try:
-        tar = subprocess.run(
-            ["tar", "-C", str(destination), "-xf", "-"],
-            stdin=archive.stdout,
-            check=False,
-        )
-    finally:
-        if archive.stdout is not None:
-            archive.stdout.close()
-    archive_rc = archive.wait()
-    return archive_rc or tar.returncode
+    if archive.returncode:
+        return archive
+    if not isinstance(archive.stdout, bytes):
+        return ProcessResult(1, stderr="git archive did not return binary output")
+    return run_bounded(
+        ["tar", "-C", str(destination), "-xf", "-"],
+        cwd=destination,
+        env=None,
+        timeout_seconds=timeout_seconds,
+        capture_output=True,
+        text=False,
+        input_data=archive.stdout,
+    )
+
+
+def archive_source_to(source_root: Path, destination: Path, *, timeout_seconds: int = 600) -> int:
+    """Copy the current Git source tree and return a conventional process status."""
+
+    return archive_git_tree_to(
+        source_root,
+        destination,
+        timeout_seconds=timeout_seconds,
+    ).returncode
 
 
 def run_darling_cmake_target_fixture(
@@ -81,7 +105,7 @@ def run_darling_cmake_target_fixture(
         build_dir = tempdir / "build"
         bin_dir = tempdir / "bin"
         compile_log = tempdir / "compile-commands.jsonl"
-        rc = archive_source_to(source_root, source_copy)
+        rc = archive_source_to(source_root, source_copy, timeout_seconds=timeout_seconds)
         if rc:
             return rc
         for fixture in invocation.get("fixture_files", []):

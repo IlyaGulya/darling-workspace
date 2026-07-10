@@ -55,8 +55,9 @@ from test_ctest import (
     ctest_selector_label_args,
     ctest_uses_prefix,
 )
-from test_cmake import archive_source_to, run_darling_cmake_target_fixture
+from test_cmake import archive_git_tree_to, archive_source_to, run_darling_cmake_target_fixture
 from test_execution import run_bounded
+from test_guest_execution import run_guest_shell, shutdown_guest_prefix
 from test_manifest import ManifestError, load_test_profile
 from test_prefix import (
     darlingserver_pids_for_prefix,
@@ -2000,7 +2001,11 @@ class DarlingTest(WestCommand):
         with tempfile.TemporaryDirectory(prefix=f"west-source-build-{invocation['name']}-") as temp:
             tempdir = Path(temp)
             build_root = tempdir / "source"
-            rc = archive_source_to(source_root, build_root)
+            rc = archive_source_to(
+                source_root,
+                build_root,
+                timeout_seconds=int(invocation.get("timeout_seconds", 600)),
+            )
             if rc:
                 return rc
             build_fixture = build_root / relative_script
@@ -2534,13 +2539,18 @@ fi
                     "debug_timeout_seconds": int(invocation.get("timeout_seconds", 600)) + 15,
                 }
             )
-            result = subprocess.run(
+            result = run_bounded(
                 self._debug_runner_args(child),
                 cwd=invocation["cwd"],
                 env=run_env,
-                shell=False,
-                check=False,
+                timeout_seconds=int(child["debug_timeout_seconds"]) + 15,
             )
+            if result.timed_out:
+                self.err(
+                    f"{invocation['name']}: guest C fixture timed out after "
+                    f"{invocation.get('timeout_seconds', 600)}s"
+                )
+                self._record_failure_phase(invocation, "run")
             return result.returncode
 
     def _run_guest_command_fixture(self, invocation, env=None) -> int:
@@ -2570,20 +2580,6 @@ fi
 {invocation["guest_command"]}
 """
         timeout_seconds = int(invocation.get("timeout_seconds", 600))
-        command = [
-            "timeout",
-            "--kill-after=5",
-            str(timeout_seconds),
-            "env",
-            f"DPREFIX={prefix}",
-            f"DARLING_PREFIX={prefix}",
-            str(launcher),
-            "shell",
-            "/bin/bash",
-            "--login",
-            "-c",
-            guest_script,
-        ]
         with tempfile.TemporaryDirectory(prefix=f"west-guest-command-{invocation['name']}-") as temp:
             tempdir = Path(temp)
             stdout_path = tempdir / "stdout.log"
@@ -2591,42 +2587,16 @@ fi
             with stdout_path.open("w", encoding="utf-8") as stdout_file, stderr_path.open(
                 "w", encoding="utf-8"
             ) as stderr_file:
-                process = subprocess.Popen(
-                    command,
+                result = run_guest_shell(
+                    str(launcher),
+                    prefix,
+                    guest_script,
                     cwd=invocation["cwd"],
                     env=run_env,
+                    timeout_seconds=timeout_seconds,
                     stdout=stdout_file,
                     stderr=stderr_file,
-                    text=True,
-                    start_new_session=True,
                 )
-                try:
-                    returncode = process.wait(timeout=timeout_seconds + 15)
-                except subprocess.TimeoutExpired:
-                    try:
-                        os.killpg(process.pid, signal.SIGKILL)
-                    except ProcessLookupError:
-                        pass
-                    returncode = process.wait()
-                    stdout_file.flush()
-                    stderr_file.flush()
-                    output = stdout_path.read_text(errors="replace") + stderr_path.read_text(
-                        errors="replace"
-                    )
-                    if output:
-                        print(output, end="" if output.endswith("\n") else "\n")
-                    expect = invocation.get("expect") or {}
-                    if expect.get("returncode") == "timeout":
-                        for needle in expect.get("output-contains", []):
-                            if str(needle) not in output:
-                                self.err(f"{invocation['name']}: output missing {needle!r}")
-                                return 1
-                        return 0
-                    self.err(
-                        f"{invocation['name']}: guest command watchdog timed out after "
-                        f"{timeout_seconds + 15}s"
-                    )
-                    return 124
                 stdout_file.flush()
                 stderr_file.flush()
 
@@ -2636,6 +2606,20 @@ fi
         if output:
             print(output, end="" if output.endswith("\n") else "\n")
         expect = invocation.get("expect") or {}
+        if result.timed_out:
+            if expect.get("returncode") == "timeout":
+                for needle in expect.get("output-contains", []):
+                    if str(needle) not in output:
+                        self.err(f"{invocation['name']}: output missing {needle!r}")
+                        return 1
+                return 0
+            self.err(
+                f"{invocation['name']}: guest command watchdog timed out after "
+                f"{timeout_seconds}s"
+            )
+            self._record_failure_phase(invocation, "run")
+            return result.returncode
+        returncode = result.returncode
         rc_mode = expect.get("returncode", 0)
         if rc_mode == "timeout":
             self.err(f"{invocation['name']}: guest command returned before expected timeout")
@@ -2993,7 +2977,7 @@ fi
                 host_dir.mkdir(parents=True, exist_ok=False)
                 compile_args = ["gcc", "-O2", "-o", str(builder), str(builder_source)]
                 self.inf(f"  DCC cache builder: {' '.join(quote(str(arg)) for arg in compile_args)}")
-                subprocess.run(compile_args, cwd=tools_dir, check=True)
+                self._run_dcc_cache_command(invocation, "compile", compile_args, tools_dir)
                 build_args = [
                     str(builder),
                     str(install_root),
@@ -3004,7 +2988,7 @@ fi
                     f"  DCC cache build: {host_cache} "
                     f"(install-root={install_root})"
                 )
-                subprocess.run(build_args, cwd=tools_dir, check=True)
+                self._run_dcc_cache_command(invocation, "build", build_args, tools_dir)
                 if spec.get("stale"):
                     self._make_dcc_cache_stale(host_cache)
                 guest_env = dict(old_guest_env)
@@ -3018,6 +3002,28 @@ fi
             finally:
                 invocation["guest_env_vars"] = old_guest_env
                 shutil.rmtree(host_dir, ignore_errors=True)
+
+    def _run_dcc_cache_command(self, invocation, stage: str, args, cwd: Path) -> None:
+        """Run bounded host-side DCC preparation and preserve its failure tail."""
+
+        timeout_seconds = int(invocation.get("timeout_seconds", 600))
+        result = run_bounded(
+            args,
+            cwd=cwd,
+            env=None,
+            timeout_seconds=timeout_seconds,
+            capture_output=True,
+        )
+        if result.returncode == 0:
+            return
+        if result.timed_out:
+            self.err(
+                f"{invocation['name']}: DCC cache {stage} timed out after "
+                f"{timeout_seconds}s"
+            )
+        self._dump_command_tail(f"DCC cache {stage}", result)
+        self._record_failure_phase(invocation, "setup")
+        self.die(f"{invocation['name']}: DCC cache {stage} failed with rc {result.returncode}")
 
     def _dcc_cache_source_root(
         self,
@@ -3034,24 +3040,20 @@ fi
             repo = self._project_path(source_module)
             if repo is None:
                 self.die(f"{invocation['name']}: unknown dcc-cache source module {source_module}")
-            archive = subprocess.Popen(
-                ["git", "archive", "--format=tar", source_ref, tools_dir_name],
-                cwd=repo,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
+            result = archive_git_tree_to(
+                repo,
+                source_root,
+                revision=source_ref,
+                paths=[tools_dir_name],
+                timeout_seconds=int(invocation.get("timeout_seconds", 600)),
             )
-            assert archive.stdout is not None
-            extract = subprocess.run(
-                ["tar", "-C", str(source_root), "-xf", "-"],
-                stdin=archive.stdout,
-                stderr=subprocess.PIPE,
-                text=True,
-                check=False,
-            )
-            archive.stdout.close()
-            _, archive_stderr = archive.communicate()
-            if archive.returncode or extract.returncode:
-                detail = (archive_stderr or "") + (extract.stderr or "")
+            if result.returncode:
+                streams = (result.stdout, result.stderr)
+                detail = "".join(
+                    stream.decode(errors="replace") if isinstance(stream, bytes) else stream
+                    for stream in streams
+                    if stream
+                )
                 if detail:
                     sys.stderr.write(detail)
                 self.die(
@@ -3106,23 +3108,15 @@ fi
 
         child_env = dict(env or os.environ.copy())
         child_env.update(self._darling_prefix_env(prefix))
-        result = subprocess.run(
-            [
-                "timeout",
-                "--kill-after=5",
-                "15",
-                str(launcher),
-                "shell",
-                "/bin/bash",
-                "--login",
-                "-c",
-                ":",
-            ],
+        result = run_guest_shell(
+            str(launcher),
+            prefix,
+            ":",
+            cwd=Path.cwd(),
             env=child_env,
+            timeout_seconds=15,
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
-            text=True,
-            check=False,
         )
         if result.returncode != 0:
             self.die(
@@ -3210,23 +3204,15 @@ fi
         )
         output_path = lower_dir / "probe-output.txt"
         with output_path.open("w+") as output:
-            result = subprocess.run(
-                [
-                    "timeout",
-                    "--kill-after=5",
-                    "15",
-                    str(launcher),
-                    "shell",
-                    "/bin/bash",
-                    "--login",
-                    "-c",
-                    script,
-                ],
+            result = run_guest_shell(
+                str(launcher),
+                prefix,
+                script,
+                cwd=Path.cwd(),
                 env=child_env,
+                timeout_seconds=15,
                 stdout=output,
                 stderr=subprocess.STDOUT,
-                text=True,
-                check=False,
             )
         if result.returncode != 0:
             output = output_path.read_text(errors="replace").strip()
@@ -3848,31 +3834,32 @@ fi
     ) -> Path:
         targets = runtime_build_targets(proof)
         build_root = scratch_root / "build"
+        timeout_seconds = int(proof.get("build-timeout-seconds", 1800))
         self.inf(f"  {label} configure: {source_root} -> {build_root}")
-        configure = subprocess.run(
+        configure = run_bounded(
             ["cmake", "-S", str(source_root), "-B", str(build_root), *self._runtime_red_configure_args(proof, prefix)],
             cwd=self.topdir,
+            env=None,
+            timeout_seconds=timeout_seconds,
             capture_output=True,
-            text=True,
-            check=False,
         )
         if configure.returncode:
             self._dump_command_tail(f"{label} configure", configure)
-            configure.check_returncode()
+            self.die(f"{label} configure failed with rc {configure.returncode}")
         self.inf(f"  {label} build: {', '.join(targets)}")
-        build = subprocess.run(
+        build = run_bounded(
             ["ninja", "-C", str(build_root), *targets],
             cwd=self.topdir,
+            env=None,
+            timeout_seconds=timeout_seconds,
             capture_output=True,
-            text=True,
-            check=False,
         )
         if build.returncode:
             self._dump_command_tail(f"{label} build", build)
-            build.check_returncode()
+            self.die(f"{label} build failed with rc {build.returncode}")
         return build_root
 
-    def _dump_command_tail(self, label: str, result: subprocess.CompletedProcess) -> None:
+    def _dump_command_tail(self, label: str, result) -> None:
         streams = [stream for stream in (result.stdout, result.stderr) if stream]
         output = "\n".join(stream.rstrip("\n") for stream in streams)
         tail = "\n".join(output.splitlines()[-200:])
@@ -3992,16 +3979,15 @@ fi
         if launcher:
             env = os.environ.copy()
             env.update(self._darling_prefix_env(prefix))
-            try:
-                subprocess.run(
-                    [launcher, "shutdown"],
-                    env=env,
-                    stdout=subprocess.DEVNULL,
-                    stderr=subprocess.DEVNULL,
-                    check=False,
-                    timeout=int(os.environ.get("WEST_TEST_SHUTDOWN_TIMEOUT_SECONDS", "15")),
-                )
-            except subprocess.TimeoutExpired:
+            timeout_seconds = int(os.environ.get("WEST_TEST_SHUTDOWN_TIMEOUT_SECONDS", "15"))
+            result = shutdown_guest_prefix(
+                launcher,
+                prefix,
+                cwd=Path.cwd(),
+                env=env,
+                timeout_seconds=timeout_seconds,
+            )
+            if result.timed_out:
                 self.err(f"Darling prefix shutdown timed out for {prefix}; forcing cleanup")
         self._kill_dserver_for_prefix(prefix)
         leftovers = self._prefix_process_snapshot(prefix)
@@ -4565,13 +4551,16 @@ fi
             env = os.environ.copy()
             env.update(self._darling_prefix_env(prefix))
             self.inf(f"shutdown Darling prefix: {prefix}")
-            subprocess.run(
-                [launcher, "shutdown"],
+            timeout_seconds = int(os.environ.get("WEST_TEST_SHUTDOWN_TIMEOUT_SECONDS", "15"))
+            result = shutdown_guest_prefix(
+                launcher,
+                prefix,
+                cwd=Path.cwd(),
                 env=env,
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
-                check=False,
+                timeout_seconds=timeout_seconds,
             )
+            if result.timed_out:
+                self.err(f"Darling prefix shutdown timed out for {prefix}; forcing cleanup")
         self._kill_dserver_for_prefix(Path(prefix))
         leftovers = self._prefix_process_snapshot(Path(prefix))
         if not leftovers and self._cleanup_prefix_mounts(Path(prefix)):
@@ -4717,9 +4706,27 @@ fi
         if bundle_root:
             cfg.append(f"-DDARLING_TEST_BUNDLE_ROOT={bundle_root}")
         self.inf(f"configuring: {testkit}")
-        subprocess.run(cfg, check=True)
-        subprocess.run(["ninja", "-C", str(build)], check=True)
+        self._run_testkit_build_command("configure", cfg)
+        self._run_testkit_build_command("build", ["ninja", "-C", str(build)])
         return build
+
+    def _run_testkit_build_command(self, stage: str, args) -> None:
+        """Run a CTest suite build without letting toolchain hangs escape west."""
+
+        timeout_seconds = int(os.environ.get("WEST_TEST_BUILD_TIMEOUT_SECONDS", "1800"))
+        result = run_bounded(
+            args,
+            cwd=Path(self.topdir),
+            env=None,
+            timeout_seconds=timeout_seconds,
+            capture_output=True,
+        )
+        if result.returncode == 0:
+            return
+        if result.timed_out:
+            self.err(f"testkit {stage} timed out after {timeout_seconds}s")
+        self._dump_command_tail(f"testkit {stage}", result)
+        self.die(f"testkit {stage} failed with rc {result.returncode}")
 
     @staticmethod
     def _dir_size(path: Path) -> int:
