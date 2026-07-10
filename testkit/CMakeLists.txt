@@ -168,6 +168,24 @@ if(EXISTS "${_socket_siocgifconf_guest}")
   )
 endif()
 
+# dar-q95.4 changes libsystem_platform rather than libsystem_kernel.  Keep its
+# guest verdict in CTest, but select the dedicated provider so the test never
+# reads whichever platform dylib happened to be installed in the prefix.
+set(_bzero_return_register_guest
+  "${_workspace_root}/tests/bzero_return_register_guest.c")
+if(EXISTS "${_bzero_return_register_guest}")
+  add_compat_test(
+    NAME       bzero_return_register_guest
+    SOURCE     "${_bzero_return_register_guest}"
+    ENVS       darling
+    BEAD       dar-q95.4
+    SUBMODULES libplatform
+    RUNTIME_PROFILE homebrew-libplatform
+    TIMEOUT    30
+    OK_MARKER  "BZERO_RETURN_REGISTER_GUEST_OK"
+  )
+endif()
+
 set(_simple_xnu_guest_cases
   "dar-q95.20|sigexc_sa_restart_guest|tests/sigexc_sa_restart_guest.c|SIGEXC_SA_RESTART_GUEST_OK"
   "dar-gwn.6.4|sigexc_default_resend_self_guest|tests/sigexc_default_resend_self_guest.c|SIGEXC_DEFAULT_RESEND_SELF_GUEST_OK"
