@@ -61,6 +61,33 @@ else()
     "dar-dar6x4-perf-5dq.1")
 endif()
 set(_mldr "${DARLING_SRC}/src/startup/mldr")
+set(_libsystem_kernel_tests
+  "${DARLING_SRC}/src/external/xnu/darling/src/libsystem_kernel/tests")
+
+# ---------------------------------------------------------------------------
+# dar-cps — guest runtime regression for abort_with_payload().
+#
+# This must execute inside Darling: the oracle calls libSystem's
+# abort_with_payload() and verifies the child-local SIGABRT behavior. The CTest
+# entry is source-driven; add_compat_test uploads the source, compiles it with
+# the guest CLT, and runs the resulting guest binary through the selected
+# Darling prefix.
+# ---------------------------------------------------------------------------
+set(_abort_with_payload_guest
+  "${_libsystem_kernel_tests}/abort_with_payload_no_group_broadcast.c")
+if(EXISTS "${_abort_with_payload_guest}")
+  add_compat_test(
+    NAME       abort_with_payload_no_group_broadcast
+    SOURCE     "${_abort_with_payload_guest}"
+    ENVS       darling
+    BEAD       dar-cps
+    SUBMODULES xnu
+    TIMEOUT    30
+  )
+else()
+  message(WARNING
+    "xnu checkout missing ${_abort_with_payload_guest}; skipping dar-cps")
+endif()
 
 # ---------------------------------------------------------------------------
 # dar-gwn.5 — real regression for the mldr raw-fork glibc lock reset.

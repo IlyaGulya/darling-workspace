@@ -198,6 +198,10 @@ refs, PR drafts, and agent handoff.
 - `tests/run-west-test-add-compat-cmake-contract.sh` is the focused CMake
   contract for `add_compat_test()` command generation; update it when changing
   guest launch, argv, labels, or prefix environment behavior.
+- CTest `env=darling` entries are source-driven guest tests: `add_compat_test`
+  must upload/compile/run the C source inside the selected Darling prefix via
+  `testkit/scripts/run-darling-c-test.sh`. Do not run Linux host-built test
+  binaries through `darling shell` and count that as guest coverage.
 - Darling guest tests should prefer `requires: [darling-prefix]` over
   `requires-env: [DPREFIX]`; let `west test --prefix/--prefix-profile` provide
   `DPREFIX`.

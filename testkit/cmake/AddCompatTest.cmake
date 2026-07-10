@@ -58,11 +58,18 @@
 # Default DIAG by environment when unset: host/macos -> bare, darling -> guarded.
 # The executor binary is supplied at configure time via DARLING_TEST_EXECUTOR;
 # if a non-bare tier is requested but no executor is configured, the test falls
-# back to bare (with a warning) so the suite still runs.
+# back to bare (with a warning) so the suite still runs. Darling guest C tests
+# are SOURCE-driven: the local suite uploads the C source, compiles it with the
+# guest CLT inside the prefix, then runs the guest binary. Do not run Linux host
+# test binaries under `darling shell`.
 
 set(_ADD_COMPAT_TEST_CMAKE_DIR "${CMAKE_CURRENT_LIST_DIR}")
+get_filename_component(_ADD_COMPAT_TEST_ROOT
+  "${_ADD_COMPAT_TEST_CMAKE_DIR}/.." ABSOLUTE)
 set(DARLING_SHELL "${DARLING_SHELL}" CACHE STRING
-  "Command list used to launch a test binary inside Darling, e.g. /path/darling;shell")
+  "Deprecated command list for Darling shell; prefer DARLING_LAUNCHER")
+set(DARLING_LAUNCHER "${DARLING_LAUNCHER}" CACHE FILEPATH
+  "Path to the darling launcher used for env=darling CTest entries")
 set(DARLING_TEST_PREFIX "${DARLING_TEST_PREFIX}" CACHE PATH
   "Darling prefix exported to env=darling tests as DPREFIX/DARLING_PREFIX")
 
@@ -91,20 +98,33 @@ function(add_compat_test)
     set(ACT_TIMEOUT 60)
   endif()
 
-  # One built executable per case (shared across environments). EXTRA_SOURCES
-  # lets a case compile the REAL production code under test alongside its harness
-  # (e.g. src/startup/mldr/glibc_fork_reset.c) instead of a copy, so the test
-  # tracks the code it guards.
+  # One built executable per host/macos case (shared across those environments).
+  # env=darling is source-driven and compiles inside the guest prefix instead.
+  set(_needs_local_target FALSE)
+  foreach(env IN LISTS ACT_ENVS)
+    if(env STREQUAL "host" OR env STREQUAL "macos")
+      set(_needs_local_target TRUE)
+    endif()
+  endforeach()
   set(target "compat.${ACT_NAME}")
-  add_executable("${target}" "${ACT_SOURCE}" ${ACT_EXTRA_SOURCES})
-  if(ACT_INCLUDES)
-    target_include_directories("${target}" PRIVATE ${ACT_INCLUDES})
-  endif()
-  if(ACT_DEFINES)
-    target_compile_definitions("${target}" PRIVATE ${ACT_DEFINES})
-  endif()
-  if(ACT_LIBS)
-    target_link_libraries("${target}" PRIVATE ${ACT_LIBS})
+  if(_needs_local_target)
+    # EXTRA_SOURCES lets a case compile the REAL production code under test
+    # alongside its harness (e.g. mldr/glibc_fork_reset.c) instead of a copy, so
+    # the test tracks the code it guards.
+    add_executable("${target}" "${ACT_SOURCE}" ${ACT_EXTRA_SOURCES})
+    if(ACT_INCLUDES)
+      target_include_directories("${target}" PRIVATE ${ACT_INCLUDES})
+    endif()
+    if(ACT_DEFINES)
+      target_compile_definitions("${target}" PRIVATE ${ACT_DEFINES})
+    endif()
+    if(ACT_LIBS)
+      target_link_libraries("${target}" PRIVATE ${ACT_LIBS})
+    endif()
+  elseif(ACT_EXTRA_SOURCES OR ACT_INCLUDES OR ACT_DEFINES OR ACT_LIBS)
+    message(FATAL_ERROR
+      "add_compat_test(${ACT_NAME}): env=darling source-driven tests do not "
+      "support EXTRA_SOURCES/INCLUDES/DEFINES/LIBS yet")
   endif()
 
   # macOS version axis (build-once-run-many). MIN_VERSION sets the deployment
@@ -114,7 +134,7 @@ function(add_compat_test)
   # MIN_VERSION_MACOS_ABI_TARGET_SUPPORTED(min,max). MIN/MAX_VERSION become the
   # macos:<min>-<max> label; the live OS the test runs on is the comparison axis,
   # not a rebuild. (No-op off Apple platforms — host/darling ignore it.)
-  if(ACT_MIN_VERSION AND APPLE)
+  if(_needs_local_target AND ACT_MIN_VERSION AND APPLE)
     set_target_properties("${target}" PROPERTIES
       OSX_DEPLOYMENT_TARGET "${ACT_MIN_VERSION}")
   endif()
@@ -122,7 +142,7 @@ function(add_compat_test)
   # Tommy-compatible install layout: same DESTINATION names the upstream suite
   # uses (testcase/ + resource/), so a case authored here drops into a build
   # that is shipped to real macOS / Darling and run there. Opt-in via INSTALL.
-  if(ACT_INSTALL)
+  if(ACT_INSTALL AND _needs_local_target)
     if(NOT DEFINED INSTALL_DIR_TESTCASE)
       set(INSTALL_DIR_TESTCASE "testcase")  # match upstream default
     endif()
@@ -143,10 +163,13 @@ function(add_compat_test)
     if(env STREQUAL "host")
       set(cmd "$<TARGET_FILE:${target}>" ${ACT_ARGS})
     elseif(env STREQUAL "darling")
-      # Guest: run the Mach-O/host binary inside the prefix. The orchestrator
-      # supplies DARLING_SHELL (e.g. `darling shell`) at run time.
-      if(DARLING_SHELL)
-        set(cmd ${DARLING_SHELL} "$<TARGET_FILE:${target}>" ${ACT_ARGS})
+      if(DARLING_LAUNCHER)
+        set(cmd
+          "${_ADD_COMPAT_TEST_ROOT}/scripts/run-darling-c-test.sh"
+          --name "${ACT_NAME}"
+          --source "${ACT_SOURCE}"
+          --launcher "${DARLING_LAUNCHER}"
+          -- ${ACT_ARGS})
       else()
         set(cmd
           "${CMAKE_COMMAND}"

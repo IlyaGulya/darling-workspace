@@ -23,11 +23,11 @@ add_compat_test(
 CMAKE
 
 cmake -S "$tmp" -B "$tmp/build-shell" -G Ninja \
-  '-DDARLING_SHELL=/bin/echo;darling-shell' \
+  -DDARLING_LAUNCHER=/bin/echo \
   -DDARLING_TEST_PREFIX=/tmp/darling-prefix-contract >/dev/null
 
 ctest_file="$tmp/build-shell/CTestTestfile.cmake"
-grep -q '/bin/echo.*darling-shell.*guest_arg_contract.*hello' "$ctest_file" ||
+grep -q 'run-darling-c-test.sh.*guest_arg_contract.*guest.c.*--launcher.*/bin/echo.*hello' "$ctest_file" ||
 	{ cat "$ctest_file" >&2; exit 1; }
 grep -q 'DPREFIX=/tmp/darling-prefix-contract' "$ctest_file" ||
 	{ cat "$ctest_file" >&2; exit 1; }
@@ -41,7 +41,7 @@ if ctest --test-dir "$tmp/build-missing" --output-on-failure -L bead:dar-contrac
 	cat "$tmp/missing.out" >&2
 	exit 1
 fi
-grep -q 'DARLING_SHELL is unset' "$tmp/missing.out" ||
+grep -q 'DARLING_LAUNCHER is unset' "$tmp/missing.out" ||
 	{ cat "$tmp/missing.out" >&2; exit 1; }
 
 printf 'PASS west-test-add-compat-cmake-contract\n'

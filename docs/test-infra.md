@@ -664,9 +664,12 @@ add_compat_test(
 ```
 
 Labels emitted: `env:<env>`, `diag:<tier>`, `bead:<id>`, `submod:<name>`.
-`env=darling` launches the binary via `${DARLING_SHELL}`; `env=macos` is the
-native differential oracle; `env=host` runs directly (plain glibc HOST tests
-like the loader-reset regressions).
+`env=host` builds and runs a normal local executable (plain glibc HOST tests
+like the loader-reset regressions). `env=darling` is source-driven: CTest calls
+the shared `testkit/scripts/run-darling-c-test.sh` helper, which uploads the C
+source into the selected prefix, compiles it with the guest CLT, and runs the
+guest binary through `DARLING_LAUNCHER shell`; it must not run a Linux host
+binary under Darling. `env=macos` is the native differential oracle.
 
 ### Gap 2 — diagnosable execution of hangs, WITHOUT cost blowup
 
@@ -719,7 +722,9 @@ Sits beside `dw`/`patch`/`pr` in the existing control plane:
 west test --all                 # full suite (wire into `west pr check` before publish)
 west test --changed             # diff submodules vs manifest-rev -> -L submod:<changed>
 west test --bead dar-e1j        # -L bead:dar-e1j  (beads graph -> live regression set)
+west test --submodule xnu       # -L submod:xnu
 west test --env host            # restrict environment
+west test --env darling --prefix-profile homebrew
 west test --diag guarded        # restrict diagnosis tier
 west test --list                # show selection, no run
 west test --gc --keep-last 20 --max-bundle-mb 64   # prune debug bundles
