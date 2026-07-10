@@ -90,6 +90,7 @@ run_id="${WEST_GUEST_C_FIXTURE_ID:-$$.$RANDOM}"
 guest_src="/tmp/${safe_name}.${run_id}.c"
 guest_bin="/tmp/${safe_name}.${run_id}"
 output="$(mktemp "${TMPDIR:-/tmp}/west-ctest-guest-c.${safe_name}.XXXXXX")"
+state_dir="$(darling_guest_state_root)/${safe_name}.${run_id}"
 
 quoted_args=()
 for arg in "${args[@]}"; do
@@ -117,7 +118,7 @@ timeout_seconds="${DARLING_GUEST_TIMEOUT_SECONDS:-60}"
 
 cleanup_guest_artifacts() {
 	darling_guest_shell "$launcher" "$prefix" 10 \
-		"rm -f '$guest_src' '$guest_bin'" >/dev/null 2>&1 || true
+		"rm -rf '$state_dir'; rm -f '$guest_src' '$guest_bin'" >/dev/null 2>&1 || true
 }
 
 cleanup() {
@@ -130,12 +131,15 @@ run_guest_stage() {
 	local stage="$1"
 	local script="$2"
 	printf 'WEST_GUEST_STAGE=%s\n' "$stage" >>"$output"
-	darling_guest_shell "$launcher" "$prefix" "$timeout_seconds" "$script" \
+	darling_guest_execute_with_verdict "$launcher" "$prefix" "$timeout_seconds" \
+		"$state_dir/$stage" "$script" \
 		>>"$output" 2>&1
 }
 
+printf 'WEST_GUEST_STAGE=upload\n' >>"$output"
 set +e
-run_guest_stage upload "cat > '$guest_src'" <"$source"
+darling_guest_upload_file "$launcher" "$prefix" "$timeout_seconds" \
+	"$state_dir" "$source" "$guest_src" >>"$output" 2>&1
 rc=$?
 set -e
 if [ "$rc" -eq 0 ]; then
