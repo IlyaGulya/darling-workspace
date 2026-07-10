@@ -81,7 +81,7 @@ set(DARLING_TEST_BUNDLE_ROOT "${DARLING_TEST_BUNDLE_ROOT}" CACHE PATH
 
 function(add_compat_test)
   set(options INSTALL FUZZ STRESS)
-  set(oneValue NAME SOURCE BEAD DIAG WORKDIR TIMEOUT MIN_VERSION MAX_VERSION OK_MARKER EXPECT_FAILURE_MARKER)
+  set(oneValue NAME SOURCE BEAD DIAG WORKDIR TIMEOUT MIN_VERSION MAX_VERSION OK_MARKER EXPECT_FAILURE_MARKER RUNTIME_PROFILE)
   set(multiValue ENVS SUBMODULES EXTRA_SOURCES INCLUDES DEFINES LIBS RESOURCES ARGS)
   cmake_parse_arguments(ACT "${options}" "${oneValue}" "${multiValue}" ${ARGN})
 
@@ -266,6 +266,13 @@ function(add_compat_test)
     set(labels "env:${env}" "diag:${diag}")
     if(ACT_BEAD)
       list(APPEND labels "bead:${ACT_BEAD}")
+    endif()
+    if(ACT_RUNTIME_PROFILE)
+      if(NOT env STREQUAL "darling")
+        message(FATAL_ERROR
+          "add_compat_test(${ACT_NAME}): RUNTIME_PROFILE is only valid for ENVS darling")
+      endif()
+      list(APPEND labels "runtime-profile:${ACT_RUNTIME_PROFILE}")
     endif()
     foreach(sm IN LISTS ACT_SUBMODULES)
       list(APPEND labels "submod:${sm}")
