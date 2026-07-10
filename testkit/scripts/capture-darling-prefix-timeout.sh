@@ -9,7 +9,8 @@ if [[ -z "$prefix" ]]; then
 	exit 0
 fi
 
-ps_file="$BUNDLE/prefix-processes.txt"
+ps_file="$(mktemp "$BUNDLE/.prefix-ps.XXXXXX")"
+trap 'rm -f "$ps_file"' EXIT
 ps -eo pid=,ppid=,pgid=,sid=,stat=,wchan=,args= >"$ps_file"
 printf 'DARLING_PREFIX=%s\n' "$prefix" >"$BUNDLE/prefix-capture.txt"
 
@@ -43,5 +44,8 @@ for pid in "${seen[@]}"; do
 		cat "/proc/$pid/$item" >"$dir/$item.txt" 2>&1 || true
 	done
 done
+for pid in "${seen[@]}"; do
+	awk -v pid="$pid" '$1 == pid { print }' "$ps_file"
+done >"$BUNDLE/prefix-processes.txt"
 printf 'DARLING_PREFIX_CAPTURE: roots=%s pids=%s\n' \
 	"${roots[*]}" "${seen[*]}" >>"$BUNDLE/prefix-capture.txt"
