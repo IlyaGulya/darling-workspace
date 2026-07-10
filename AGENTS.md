@@ -205,6 +205,9 @@ refs, PR drafts, and agent handoff.
 - `tests/run-west-test-guarded-timeout-contract.sh` is the focused guarded
   timeout contract for the CTest/debug-runner bridge; update it when changing
   `DARLING_TEST_EXECUTOR`, bundle-root propagation, or timeout wrapping.
+- `tests/run-west-test-guest-command-contract.sh` is the focused behavioral
+  contract for normalized `guest-command-fixture` execution; update it when
+  changing guest command environment, timeout semantics, or result matching.
 - `tests/run-west-test-gc-contract.sh` is the focused GC contract for debug
   bundles and stale runtime proof scratch dirs; update it when changing
   `west test --gc`, proof scratch naming, or dry-run pruning behavior.
