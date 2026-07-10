@@ -2564,7 +2564,7 @@ patches:
     red-proof:
       mode: source-base
       source-env: XNU_SRC_ROOT
-    runner: script
+    runner: source-contract-script
     repo: darling-workspace
     script: experiments/e-union/run.sh
     note: Host hermetic RED->GREEN E-UNION suite; exercises the workspace two-layer vchroot fixture against this patchset source tree.
@@ -2659,7 +2659,7 @@ patches:
     red-proof:
       mode: source-base
       source-env: XNU_SRC_ROOT
-    runner: script
+    runner: source-contract-script
     repo: darling-workspace
     script: experiments/e-union/run.sh
     note: Host hermetic RED->GREEN E-UNION suite; exercises the workspace two-layer vchroot fixture against this patchset source tree.
@@ -2733,7 +2733,7 @@ patches:
     red-proof:
       mode: source-base
       source-env: XNU_SRC_ROOT
-    runner: script
+    runner: source-contract-script
     repo: darling-workspace
     script: experiments/e-union/run.sh
     note: Host hermetic RED->GREEN E-UNION suite; exercises the workspace two-layer vchroot fixture against this patchset source tree.
@@ -2764,7 +2764,7 @@ patches:
     red-proof:
       mode: source-base
       source-env: XNU_SRC_ROOT
-    runner: script
+    runner: source-contract-script
     repo: darling-workspace
     script: experiments/e-union/run.sh
     note: Host hermetic RED->GREEN E-UNION suite; exercises the workspace two-layer vchroot fixture against this patchset source tree.
@@ -2870,7 +2870,7 @@ patches:
     red-proof:
       mode: source-base
       source-env: XNU_SRC_ROOT
-    runner: script
+    runner: source-contract-script
     repo: darling-workspace
     script: experiments/e-union/run.sh
     note: Host hermetic RED->GREEN E-UNION suite; exercises the workspace two-layer vchroot fixture against this patchset source tree.
@@ -2901,7 +2901,7 @@ patches:
     red-proof:
       mode: source-base
       source-env: XNU_SRC_ROOT
-    runner: script
+    runner: source-contract-script
     repo: darling-workspace
     script: experiments/e-union/run.sh
     note: Host hermetic RED->GREEN E-UNION suite; exercises the workspace two-layer vchroot fixture against this patchset source tree.
@@ -2964,7 +2964,7 @@ patches:
     red-proof:
       mode: source-base
       source-env: XNU_SRC_ROOT
-    runner: script
+    runner: source-contract-script
     repo: darling-workspace
     script: experiments/e-union/run.sh
     note: Host hermetic RED->GREEN E-UNION suite; exercises the workspace two-layer vchroot fixture against this patchset source tree.
@@ -3073,7 +3073,7 @@ patches:
     red-proof:
       mode: source-base
       source-env: XNU_SRC_ROOT
-    runner: script
+    runner: source-contract-script
     repo: darling-workspace
     script: experiments/e-union/run.sh
     note: Host hermetic RED->GREEN E-UNION suite; exercises the workspace two-layer vchroot fixture against this patchset source tree.
@@ -3104,7 +3104,7 @@ patches:
     red-proof:
       mode: source-base
       source-env: XNU_SRC_ROOT
-    runner: script
+    runner: source-contract-script
     repo: darling-workspace
     script: experiments/e-union/run.sh
     note: Host hermetic RED->GREEN E-UNION suite; exercises the workspace two-layer vchroot fixture against this patchset source tree.
@@ -3167,7 +3167,7 @@ patches:
     red-proof:
       mode: source-base
       source-env: XNU_SRC_ROOT
-    runner: script
+    runner: source-contract-script
     repo: darling-workspace
     script: experiments/e-union/run.sh
     note: Host hermetic RED->GREEN E-UNION suite; exercises the workspace two-layer vchroot fixture against this patchset source tree.
@@ -3273,7 +3273,7 @@ patches:
     red-proof:
       mode: source-base
       source-env: XNU_SRC_ROOT
-    runner: script
+    runner: source-contract-script
     repo: darling-workspace
     script: experiments/e-union/run.sh
     note: Host hermetic RED->GREEN E-UNION suite; exercises the workspace two-layer vchroot fixture against this patchset source tree.
@@ -3347,7 +3347,7 @@ patches:
     red-proof:
       mode: source-base
       source-env: XNU_SRC_ROOT
-    runner: script
+    runner: source-contract-script
     repo: darling-workspace
     script: experiments/e-union/run.sh
     note: Host hermetic RED->GREEN E-UNION suite; exercises the workspace two-layer vchroot fixture against this patchset source tree.
@@ -3424,7 +3424,7 @@ patches:
     red-proof:
       mode: source-base
       source-env: XNU_SRC_ROOT
-    runner: script
+    runner: source-contract-script
     repo: darling-workspace
     script: experiments/e-union/run.sh
     note: Host hermetic RED->GREEN E-UNION suite; exercises the workspace two-layer vchroot fixture against this patchset source tree.
@@ -3501,7 +3501,7 @@ patches:
     red-proof:
       mode: source-base
       source-env: XNU_SRC_ROOT
-    runner: script
+    runner: source-contract-script
     repo: darling-workspace
     script: experiments/e-union/run.sh
     note: Host hermetic RED->GREEN E-UNION suite; exercises the workspace two-layer vchroot fixture against this patchset source tree.
@@ -3578,7 +3578,7 @@ patches:
     red-proof:
       mode: source-base
       source-env: XNU_SRC_ROOT
-    runner: script
+    runner: source-contract-script
     repo: darling-workspace
     script: experiments/e-union/run.sh
     note: Host hermetic RED->GREEN E-UNION suite; exercises the workspace two-layer vchroot fixture against this patchset source tree.
@@ -3609,7 +3609,7 @@ patches:
     red-proof:
       mode: source-base
       source-env: XNU_SRC_ROOT
-    runner: script
+    runner: source-contract-script
     repo: darling-workspace
     script: experiments/e-union/run.sh
     note: Host hermetic RED->GREEN E-UNION suite; exercises the workspace two-layer vchroot fixture against this patchset source tree.
@@ -3640,7 +3640,7 @@ patches:
     red-proof:
       mode: source-base
       source-env: XNU_SRC_ROOT
-    runner: script
+    runner: source-contract-script
     repo: darling-workspace
     script: experiments/e-union/run.sh
     note: Host hermetic RED->GREEN E-UNION suite; exercises the workspace two-layer vchroot fixture against this patchset source tree.
@@ -3721,7 +3721,7 @@ patches:
     red-proof:
       mode: source-base
       source-env: XNU_SRC_ROOT
-    runner: script
+    runner: source-contract-script
     repo: darling-workspace
     script: experiments/e-union/run.sh
     note: Host hermetic RED->GREEN E-UNION suite; exercises the workspace two-layer vchroot fixture against this patchset source tree.
@@ -3878,7 +3878,7 @@ patches:
     red-proof:
       mode: source-base
       source-env: XNU_SRC_ROOT
-    runner: script
+    runner: source-contract-script
     repo: darling-workspace
     script: experiments/e-union/run.sh
     note: Host hermetic RED->GREEN E-UNION suite; exercises the workspace two-layer vchroot fixture against this patchset source tree.
@@ -3973,7 +3973,7 @@ patches:
     red-proof:
       mode: source-base
       source-env: XNU_SRC_ROOT
-    runner: script
+    runner: source-contract-script
     repo: darling-workspace
     script: experiments/e-union/run.sh
     note: Host hermetic RED->GREEN E-UNION suite; exercises the workspace two-layer vchroot fixture against this patchset source tree.

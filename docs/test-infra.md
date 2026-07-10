@@ -63,7 +63,7 @@ and future destination, not a local blocker.
     red-proof:
       mode: self          # self|source-base; normal runs still expect GREEN
       why-self: The script contains explicit bad and fixed arms.
-    runner: script
+    runner: source-contract-script
     script: tests/run-example-contract.sh
     note: Fails on the parent commit, passes with this patch.
 ```
@@ -377,12 +377,22 @@ compile against the bad tree for RED and the current materialized profile for
 GREEN. `stub-headers` may list empty generated headers for isolated production
 `.c` unit tests that include project-local headers not needed by the fixture.
 
-Structured tests may also use `red-proof.source-env` with `runner: script` or
-`runner: python`. `west test` sets that environment variable to the selected
-profile's source tree for normal GREEN runs, including `--materialize-profile`,
-and overrides it with the temporary bad/source-base worktree for `--prove-red`.
-This keeps workspace-hosted suites honest: the test asset can live in the
-workspace while the source under test still comes from the current profile tree.
+Use `runner: source-contract-script` for workspace-hosted shell contracts that
+execute current test assets against a source tree selected by `source-env`.
+`west test` sets that environment variable to the selected profile's source tree
+for normal GREEN runs, including `--materialize-profile`, and overrides it with
+the temporary bad/source-base worktree for `--prove-red`. This keeps
+workspace-hosted suites honest: the test asset can live in the workspace while
+the source under test still comes from the current profile tree.
+
+Use `runner: source-script-fixture` only when the script itself belongs to the
+source tree under test and already exists in both the RED source base and the
+GREEN profile tree. Do not use it for shell scripts newly added by the patch:
+the RED result would prove only that the script file is missing.
+
+Plain `runner: script` remains an escape hatch for tests with special process,
+trace, or runtime orchestration. New source-base shell contracts should use
+`source-contract-script` instead of generic `script`.
 
 Use `runs: guest` for tests that execute inside Darling. The compact form
 expands to the low-level `requires: [darling-prefix]` envelope, and `west test`

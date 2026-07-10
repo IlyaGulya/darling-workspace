@@ -76,6 +76,11 @@ refs, PR drafts, and agent handoff.
   `west test --profile ... --prove-red` for explicit RED-proof mode. Do not
   fake source-base RED proofs with ad hoc shell; add shared runner support when
   a test needs current test assets executed against a bad/source-base tree.
+  Use `runner: source-contract-script` for workspace-hosted shell contracts
+  whose test asset stays fixed while `red-proof.source-env` switches the source
+  tree under test. Use `runner: source-script-fixture` only for scripts that
+  already belong to the source tree in both RED and GREEN; do not use it for a
+  script introduced by the patch, because RED would only prove "file missing".
   Prefer `red-proof: {mode: source-base}` when a regression can be proven
   against the bad source tree. `red-proof: {mode: self}` must include
   `why-self:` and is only for tests with an explicit bad/good behavioral model,
@@ -168,7 +173,9 @@ refs, PR drafts, and agent handoff.
   in-guest compilation, execution, timeout, verdict-marker checking, and prefix
   cleanup. Use a local `guest-verdict-test-lib.sh` only for corner cases the
   structured runner cannot express yet, and declare runtime prerequisites in
-  patch metadata.
+  patch metadata. Plain `runner: script` is an escape hatch for process/trace/
+  runtime orchestration that the framework cannot express yet, not the default
+  form for source-base contracts.
 - Framework-internal contracts belong in small Python modules under
   `tests/west_test_contracts/`. Keep `tests/run-west-test-*-contract.sh` as
   thin compatibility entrypoints only; do not grow them with embedded Python

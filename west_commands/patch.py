@@ -343,6 +343,7 @@ class DarlingPatch(WestCommand):
             runner = test.get("runner")
             if runner and runner not in {
                 "script",
+                "source-contract-script",
                 "python",
                 "cmake-configure-fixture",
                 "c-fixture",
@@ -361,6 +362,7 @@ class DarlingPatch(WestCommand):
             if test.get("script") and runner not in {
                 None,
                 "script",
+                "source-contract-script",
                 "python",
                 "c-fixture",
                 "guest-c-fixture",
@@ -368,7 +370,7 @@ class DarlingPatch(WestCommand):
                 "source-build-fixture",
             }:
                 errors.append(
-                    f"tests[{index}] script requires runner: script, python, c-fixture, guest-c-fixture, object-symbol-fixture, or source-build-fixture"
+                    f"tests[{index}] script requires runner: script, source-contract-script, python, c-fixture, guest-c-fixture, object-symbol-fixture, or source-build-fixture"
                 )
             if test.get("script"):
                 repo_ref = test.get("repo", patch["module"])
@@ -479,6 +481,16 @@ class DarlingPatch(WestCommand):
                     for case_index, case in enumerate(cases):
                         if case.get("args") is not None and not isinstance(case.get("args"), list):
                             errors.append(f"tests[{index}].cases[{case_index}] args must be a list")
+            if runner == "source-contract-script":
+                proof = test.get("red-proof") if isinstance(test.get("red-proof"), dict) else {}
+                if test.get("red") and proof.get("mode") != "source-base":
+                    errors.append(
+                        f"tests[{index}] red source-contract-script requires red-proof mode: source-base"
+                    )
+                if not proof.get("source-env") and not test.get("source-env"):
+                    errors.append(
+                        f"tests[{index}] source-contract-script requires source-env"
+                    )
             if runner == "cmake-configure-fixture":
                 for key in ("configure-args", "marker-files"):
                     if test.get(key) is not None and not isinstance(test.get(key), list):
