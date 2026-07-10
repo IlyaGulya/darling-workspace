@@ -171,6 +171,16 @@ class DarlingTest(WestCommand):
             "for a CI version row); passed through as ctest -L",
         )
         parser.add_argument(
+            "--fuzz",
+            action="store_true",
+            help="restrict CTest suite selection to tests labelled fuzz:*",
+        )
+        parser.add_argument(
+            "--stress",
+            action="store_true",
+            help="restrict CTest suite selection to tests labelled stress:*",
+        )
+        parser.add_argument(
             "--list",
             action="store_true",
             help="list selected tests and exit (no run)",
@@ -4598,6 +4608,8 @@ fi
             self.die("--patch requires --profile")
         if args.profile and args.submodule:
             self.die("--submodule selects CTest suite tests; use --patch/--profile for patch metadata")
+        if args.profile and (args.fuzz or args.stress):
+            self.die("--fuzz/--stress select CTest suite tests; use --patch/--profile for patch metadata")
 
         if args.profile:
             selected, missing = self._metadata_tests(
@@ -4686,6 +4698,8 @@ fi
             env=args.env,
             diag=args.diag,
             label=args.label,
+            fuzz=args.fuzz,
+            stress=args.stress,
             changed_submodules=changed,
             submodules=args.submodule,
         )

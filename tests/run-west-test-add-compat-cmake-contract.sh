@@ -17,6 +17,8 @@ add_compat_test(
   ENVS darling
   BEAD dar-contract
   SUBMODULES darling
+  FUZZ
+  STRESS
   DIAG bare
   ARGS hello
 )
@@ -32,6 +34,10 @@ grep -q 'run-darling-c-test.sh.*guest_arg_contract.*guest.c.*--launcher.*/bin/ec
 grep -q 'DPREFIX=/tmp/darling-prefix-contract' "$ctest_file" ||
 	{ cat "$ctest_file" >&2; exit 1; }
 grep -q 'DARLING_PREFIX=/tmp/darling-prefix-contract' "$ctest_file" ||
+	{ cat "$ctest_file" >&2; exit 1; }
+grep -q 'fuzz:true' "$ctest_file" ||
+	{ cat "$ctest_file" >&2; exit 1; }
+grep -q 'stress:true' "$ctest_file" ||
 	{ cat "$ctest_file" >&2; exit 1; }
 
 cmake -S "$tmp" -B "$tmp/build-missing" -G Ninja >/dev/null
