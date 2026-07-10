@@ -28,6 +28,10 @@ list_guest="$(west test --bead dar-cps --env darling --list)"
 printf '%s\n' "$list_guest" | grep -q 'darling/abort_with_payload_no_group_broadcast' ||
 	{ printf '%s\n' "$list_guest" >&2; exit 1; }
 
+list_select_guest="$(west test --bead dar-q95.3 --env darling --list)"
+printf '%s\n' "$list_select_guest" | grep -q 'darling/select_fdset_guest' ||
+	{ printf '%s\n' "$list_select_guest" >&2; exit 1; }
+
 list_eunion="$(west test --bead dar-test-infra-sp5.8.4.4 --env host --list)"
 printf '%s\n' "$list_eunion" | grep -q 'host/eunion_host_suite' ||
 	{ printf '%s\n' "$list_eunion" >&2; exit 1; }
