@@ -20,7 +20,6 @@ add_compat_test(
   SUBMODULES darling
   FUZZ
   STRESS
-  DIAG bare
   TIMEOUT 17
   OK_MARKER "GUEST; ARG CONTRACT OK"
   ARGS hello
@@ -65,6 +64,21 @@ grep -q 'fuzz:true' "$ctest_file" ||
 	{ cat "$ctest_file" >&2; exit 1; }
 grep -q 'stress:true' "$ctest_file" ||
 	{ cat "$ctest_file" >&2; exit 1; }
+grep -q 'TIMEOUT "27"' "$ctest_file" ||
+	{ cat "$ctest_file" >&2; exit 1; }
+
+cmake -S "$tmp" -B "$tmp/build-guarded" -G Ninja \
+	-DDARLING_LAUNCHER=/bin/echo \
+	-DDARLING_TEST_PREFIX=/tmp/darling-prefix-contract \
+	-DDARLING_TEST_EXECUTOR=/bin/echo >/dev/null
+
+guarded_ctest_file="$tmp/build-guarded/CTestTestfile.cmake"
+grep -q 'darling/guest_arg_contract.*"--timeout-seconds" "27"' "$guarded_ctest_file" ||
+	{ cat "$guarded_ctest_file" >&2; exit 1; }
+grep -q 'DARLING_GUEST_TIMEOUT_SECONDS=17' "$guarded_ctest_file" ||
+	{ cat "$guarded_ctest_file" >&2; exit 1; }
+grep -q 'TIMEOUT "27"' "$guarded_ctest_file" ||
+	{ cat "$guarded_ctest_file" >&2; exit 1; }
 
 cmake --build "$tmp/build-shell" >/dev/null
 ctest --test-dir "$tmp/build-shell" -V \

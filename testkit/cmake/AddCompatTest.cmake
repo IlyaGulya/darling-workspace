@@ -78,6 +78,12 @@ option(DARLING_TEST_NO_OVERLAYFS
   "Export DARLING_NOOVERLAYFS=1 to env=darling CTest entries" OFF)
 set(DARLING_TEST_BUNDLE_ROOT "${DARLING_TEST_BUNDLE_ROOT}" CACHE PATH
   "Debug bundle root passed to darling-debug-runner for guarded/forensic tests")
+set(DARLING_TEST_GUEST_C_CLEANUP_GRACE_SECONDS 10 CACHE STRING
+  "Seconds reserved after a guest C timeout for diagnostics and cleanup")
+if(NOT DARLING_TEST_GUEST_C_CLEANUP_GRACE_SECONDS MATCHES "^[0-9]+$")
+  message(FATAL_ERROR
+    "DARLING_TEST_GUEST_C_CLEANUP_GRACE_SECONDS must be a non-negative integer")
+endif()
 
 function(add_compat_test)
   set(options INSTALL FUZZ STRESS)
@@ -119,6 +125,10 @@ function(add_compat_test)
   endif()
   if(NOT ACT_TIMEOUT)
     set(ACT_TIMEOUT 60)
+  endif()
+  if(NOT ACT_TIMEOUT MATCHES "^[1-9][0-9]*$")
+    message(FATAL_ERROR
+      "add_compat_test(${ACT_NAME}): TIMEOUT must be a positive integer")
   endif()
   if(ACT_WILL_FAIL)
     message(FATAL_ERROR
@@ -186,6 +196,15 @@ function(add_compat_test)
 
   foreach(env IN LISTS ACT_ENVS)
     set(test_name "${env}/${ACT_NAME}")
+    # Guest source tests enforce ACT_TIMEOUT inside the Darling shell.  The
+    # outer watchdog needs a little longer so that the inner timeout can emit
+    # its stage, return code, and file diagnostics before cleanup.  Reusing
+    # the exact deadline here races those diagnostics and hides the cause.
+    set(test_timeout "${ACT_TIMEOUT}")
+    if(env STREQUAL "darling")
+      math(EXPR test_timeout
+        "${ACT_TIMEOUT} + ${DARLING_TEST_GUEST_C_CLEANUP_GRACE_SECONDS}")
+    endif()
 
     # Per-environment launch command.
     if(env STREQUAL "host")
@@ -237,7 +256,7 @@ function(add_compat_test)
     # degrade to bare so the suite still runs.
     if(NOT diag STREQUAL "bare")
       if(DARLING_TEST_EXECUTOR)
-        set(exec_args run --name "${test_name}" --timeout-seconds ${ACT_TIMEOUT})
+        set(exec_args run --name "${test_name}" --timeout-seconds ${test_timeout})
         if(DARLING_TEST_BUNDLE_ROOT)
           list(APPEND exec_args --bundle-root "${DARLING_TEST_BUNDLE_ROOT}")
         endif()
@@ -312,6 +331,6 @@ function(add_compat_test)
     endif()
 
     set_property(TEST "${test_name}" PROPERTY LABELS ${labels})
-    set_property(TEST "${test_name}" PROPERTY TIMEOUT ${ACT_TIMEOUT})
+    set_property(TEST "${test_name}" PROPERTY TIMEOUT ${test_timeout})
   endforeach()
 endfunction()
