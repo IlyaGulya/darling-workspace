@@ -4,6 +4,8 @@ set -euo pipefail
 repo="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$repo"
 
+export PYTHONDONTWRITEBYTECODE=1
+
 profile_root="patches/__export_preflight_contract"
 trap 'rm -rf "$profile_root"' EXIT
 rm -rf "$profile_root"

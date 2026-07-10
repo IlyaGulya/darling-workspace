@@ -4,6 +4,8 @@ set -euo pipefail
 repo="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$repo"
 
+export PYTHONDONTWRITEBYTECODE=1
+
 tmp="$(mktemp -d)"
 trap 'rm -rf "$tmp"' EXIT
 
