@@ -4,6 +4,19 @@ set -euo pipefail
 repo="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$repo"
 
+if [ "${1:-}" = "--source-contract-probe" ]; then
+	[ -n "${DARLING_SRC_ROOT:-}" ] || {
+		echo "DARLING_SRC_ROOT is not set" >&2
+		exit 1
+	}
+	[ -d "$DARLING_SRC_ROOT" ] || {
+		echo "DARLING_SRC_ROOT is not a directory: $DARLING_SRC_ROOT" >&2
+		exit 1
+	}
+	printf 'WEST_SOURCE_CONTRACT_SCRIPT_OK\n'
+	exit 0
+fi
+
 export PYTHONDONTWRITEBYTECODE=1
 tmp_profile="patches/__metadata_contract"
 tmp_invalid_profile="patches/__metadata_invalid_contract"
@@ -11,7 +24,9 @@ tmp_runtime_red_profile="patches/__metadata_runtime_red_contract"
 guest_prefix=/tmp/west-test-guest-c-fixture-prefix
 source_script_marker=/tmp/west-source-script-fixture-second-case
 quality_contract_output=/tmp/west-quality-contract.out
-trap 'rm -rf "$tmp_profile" "$tmp_invalid_profile" "$tmp_runtime_red_profile" "$guest_prefix" "$source_script_marker" "$quality_contract_output"' EXIT
+invalid_guest_red_output=/tmp/west-test-invalid-guest-red-proof.out
+guest_runtime_red_output=/tmp/west-test-guest-runtime-red-proof.out
+trap 'rm -rf "$tmp_profile" "$tmp_invalid_profile" "$tmp_runtime_red_profile" "$guest_prefix" "$source_script_marker" "$quality_contract_output" "$invalid_guest_red_output" "$guest_runtime_red_output"' EXIT
 mkdir -p "$tmp_profile" "$tmp_invalid_profile" "$tmp_runtime_red_profile"
 cat >"$tmp_profile/patches.yml" <<'YAML'
 test-profiles:
@@ -262,6 +277,18 @@ patches:
     script: tests/guest_c_fixture_contract.c
     build-commands: [":"]
     run-commands: [":"]
+- path: test/source-contract-script.patch
+  module: darling-workspace
+  tests:
+  - name: west_source_contract_script_contract
+    kind: contract
+    runs: host
+    diag: bare
+    source-env: DARLING_SRC_ROOT
+    runner: source-contract-script
+    script: tests/run-west-test-metadata-contract.sh
+    args:
+    - --source-contract-probe
 - path: test/source-script-fixture.patch
   module: darling
   tests:
@@ -776,7 +803,7 @@ guest_command_fixture="$(
 printf '%s\n' "$guest_command_fixture" | grep -q \
 	'darling shell /bin/bash --login -c /usr/bin/true' ||
 	fail 'guest-command-fixture metadata did not resolve to a guest shell command'
-printf '%s\n' "$source_only_check" | grep -q 'test metadata: 15 covered (runtime 7, compile 3, host 4, model 1), 2 exceptions, 1 missing' ||
+printf '%s\n' "$source_only_check" | grep -q 'test metadata: 16 covered (runtime 7, compile 3, host 5, model 1), 2 exceptions, 1 missing' ||
 	fail 'coverage-tier summary did not classify runtime/host/compile/model coverage'
 
 invalid_guest_red_check="$(west patch check --profile __metadata_invalid_contract 2>&1)"
@@ -871,22 +898,22 @@ west test --profile __metadata_contract \
 
 if west test --profile __metadata_invalid_contract \
 	--patch test/invalid-guest-red-proof.patch \
-	--prove-red >/tmp/west-test-invalid-guest-red-proof.out 2>&1
+	--prove-red >"$invalid_guest_red_output" 2>&1
 then
 	fail 'guest-c-fixture source-base red-proof execution unexpectedly passed'
 fi
 grep -q 'guest-c-fixture cannot use source-base RED proof' \
-	/tmp/west-test-invalid-guest-red-proof.out ||
+	"$invalid_guest_red_output" ||
 	fail 'guest-c-fixture source-base red-proof execution did not report the proof model error'
 
 if west test --profile __metadata_runtime_red_contract \
 	--patch test/guest-runtime-red-proof.patch \
-	--prove-red >/tmp/west-test-guest-runtime-red-proof.out 2>&1
+	--prove-red >"$guest_runtime_red_output" 2>&1
 then
 	fail 'guest-runtime-deploy RED proof unexpectedly passed without a prefix'
 fi
 grep -q 'missing required environment .*darling-prefix' \
-	/tmp/west-test-guest-runtime-red-proof.out ||
+	"$guest_runtime_red_output" ||
 	fail 'guest-runtime-deploy RED proof did not report missing prefix clearly'
 
 rm -rf "$guest_prefix"
@@ -926,6 +953,8 @@ printf '%s\n' "$source_only_check" | grep -q 'RUNTIME   test/guest-c-fixture.pat
 	fail 'guest-c-fixture patch was not reported as RUNTIME'
 printf '%s\n' "$source_only_check" | grep -q 'HOST      test/source-build-fixture.patch' ||
 	fail 'source-build-fixture patch was not reported as HOST'
+printf '%s\n' "$source_only_check" | grep -q 'HOST      test/source-contract-script.patch' ||
+	fail 'source-contract-script patch was not reported as HOST'
 printf '%s\n' "$source_only_check" | grep -q 'HOST      test/source-script-fixture.patch' ||
 	fail 'source-script-fixture patch was not reported as HOST'
 printf '%s\n' "$source_only_check" | grep -q 'COMPILE   test/cmake-configure-fixture.patch' ||
@@ -942,6 +971,19 @@ source_build_fixture="$(
 printf '%s\n' "$source_build_fixture" | grep -q \
 	'<archive-source> && : && :' ||
 	fail 'source-build-fixture metadata did not resolve to an archive/build/run command'
+
+source_contract_script="$(
+	west test --profile __metadata_contract \
+		--patch test/source-contract-script.patch \
+		--list
+)"
+
+printf '%s\n' "$source_contract_script" | grep -q \
+	'<source-contract-script> tests/run-west-test-metadata-contract.sh --source-contract-probe' ||
+	fail 'source-contract-script metadata did not resolve to a source contract command'
+west test --profile __metadata_contract \
+	--patch test/source-contract-script.patch >/dev/null ||
+	fail 'source-contract-script did not execute with source-env'
 
 source_script_fixture="$(
 	west test --profile __metadata_contract \
