@@ -232,7 +232,9 @@ refs, PR drafts, and agent handoff.
   ...`, then `status`/`wait` (or `cancel`); the state directory records command,
   PID identity, log, and final rc. Do not start a second prefix-backed run while
   that job is live, and inspect its log plus prefix/process cleanup only after
-  `wait` has returned.
+  `wait` has returned. To reproduce one selected guest case under an otherwise
+  combined runtime, append `--with-runtime-profile NAME` for each additional
+  declared provider; this changes deployment only, not CTest selection.
 - When creating Beads from a shell command, do not put unescaped backticks in
   `--description`: the shell treats them as command substitution. Use plain
   command text or safely single-quote/escape it, then verify the created ID.
