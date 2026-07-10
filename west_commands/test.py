@@ -79,6 +79,7 @@ from test_resources import resource_context
 from test_results import InvocationResult
 from test_selection import select_metadata_tests
 from test_runtime import (
+    compose_ctest_runtime_profiles,
     describe_runtime_deploy_plan,
     load_ctest_runtime_profiles,
     runtime_build_targets,
@@ -1403,15 +1404,12 @@ class DarlingTest(WestCommand):
                     profile = label.removeprefix("runtime-profile:")
                     if profile and profile not in profiles:
                         profiles.append(profile)
-        definitions = self._ctest_runtime_profile_definitions()
-        unknown = [profile for profile in profiles if profile not in definitions]
-        if unknown:
-            self.die(f"CTest selected unknown runtime profile(s): {', '.join(unknown)}")
-        if len(profiles) > 1:
-            self.die(
-                "CTest selection needs incompatible runtime profiles: "
-                f"{', '.join(profiles)}; run each profile separately"
+        try:
+            compose_ctest_runtime_profiles(
+                self._ctest_runtime_profile_definitions(), profiles
             )
+        except ValueError as error:
+            self.die(f"invalid CTest runtime profile selection: {error}")
         return profiles
 
     @contextmanager
@@ -1424,8 +1422,14 @@ class DarlingTest(WestCommand):
         prefix_text = getattr(self, "_prefix", None)
         if not prefix_text:
             self.die("CTest runtime profile requires a Darling prefix")
-        profile_name = profiles[0]
-        definition = self._ctest_runtime_profile_definitions()[profile_name]
+        try:
+            definition = compose_ctest_runtime_profiles(
+                self._ctest_runtime_profile_definitions(), profiles
+            )
+        except ValueError as error:
+            self.die(f"invalid CTest runtime profile selection: {error}")
+        assert definition is not None
+        profile_name = definition["name"]
         source_profile = definition["source-profile"]
         proof = {
             "source-modules": definition["source-modules"],

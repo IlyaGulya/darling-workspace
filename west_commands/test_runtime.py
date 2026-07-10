@@ -60,6 +60,64 @@ def load_ctest_runtime_profiles(path: Path) -> dict[str, dict[str, Any]]:
     return normalized
 
 
+def compose_ctest_runtime_profiles(
+    definitions: dict[str, dict[str, Any]], names: list[str]
+) -> dict[str, Any] | None:
+    """Merge compatible CTest runtime profiles into one deployment plan.
+
+    One guest CTest selection can need several independently owned artifacts,
+    such as libsystem_kernel and darlingserver.  They are safe to deploy in one
+    lifecycle only when they come from the same source patch profile and no two
+    declarations disagree about a deployed path.
+    """
+
+    selected = list(dict.fromkeys(names))
+    if not selected:
+        return None
+    unknown = [name for name in selected if name not in definitions]
+    if unknown:
+        raise ValueError(f"unknown runtime profile(s): {', '.join(unknown)}")
+    source_profiles = {definitions[name]["source-profile"] for name in selected}
+    if len(source_profiles) != 1:
+        raise ValueError(
+            "incompatible runtime source profiles: "
+            + ", ".join(f"{name}={definitions[name]['source-profile']}" for name in selected)
+        )
+    source_modules: list[str] = []
+    artifacts: list[dict[str, Any]] = []
+    deployed: dict[str, dict[str, Any]] = {}
+    for name in selected:
+        definition = definitions[name]
+        for module in definition["source-modules"]:
+            if module not in source_modules:
+                source_modules.append(module)
+        for artifact in definition["runtime-artifacts"]:
+            if not isinstance(artifact, dict):
+                raise ValueError(f"runtime profile {name!r} has invalid artifact")
+            deploy_paths = artifact.get("deploy", [])
+            conflicts = [
+                deploy_path
+                for deploy_path in deploy_paths
+                if deploy_path in deployed and deployed[deploy_path] != artifact
+            ]
+            if conflicts:
+                raise ValueError(
+                    f"runtime profile {name!r} conflicts on deploy path(s): "
+                    f"{', '.join(conflicts)}"
+                )
+            if artifact not in artifacts:
+                artifacts.append(artifact)
+            for deploy_path in deploy_paths:
+                deployed[deploy_path] = artifact
+    return {
+        "name": "+".join(selected),
+        "source-profile": source_profiles.pop(),
+        "source-module": definitions[selected[0]]["source-module"],
+        "source-modules": source_modules,
+        "runtime-artifacts": artifacts,
+    }
+
+
 def runtime_build_targets(proof: dict[str, Any]) -> list[str]:
     """Return unique Ninja targets from runtime-artifacts in first-seen order."""
 

@@ -196,6 +196,21 @@ foreach(_case IN LISTS _simple_xnu_guest_cases)
   endif()
 endforeach()
 
+set(_fork_checkin_signal_storm_guest
+  "${_workspace_root}/tests/fork_checkin_signal_storm_guest.c")
+if(EXISTS "${_fork_checkin_signal_storm_guest}")
+  add_compat_test(
+    NAME       fork_checkin_signal_storm_guest
+    SOURCE     "${_fork_checkin_signal_storm_guest}"
+    ENVS       darling
+    BEAD       dar-gwn.6.5
+    SUBMODULES darlingserver
+    RUNTIME_PROFILE homebrew-darlingserver
+    TIMEOUT    45
+    OK_MARKER  "FORK_CHECKIN_SIGNAL_STORM_OK"
+  )
+endif()
+
 # ---------------------------------------------------------------------------
 # dar-gwn.5 — real regression for the mldr raw-fork glibc lock reset.
 #
