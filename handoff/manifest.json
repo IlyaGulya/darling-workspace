@@ -7,111 +7,123 @@
       "branches": [
         {
           "branch": "backup/local-snapshot-20260609",
-          "head": "663a2d6b04115b5c580db7866d23ecc461b5ea5d",
+          "head": "2bfb9339a318c49c943b72d74be94743bd6f3a49",
           "upstream": "",
           "source_ref": "refs/heads/backup/local-snapshot-20260609"
         },
         {
           "branch": "exp/route2-nomount",
-          "head": "4c4f7c3134cdf3f55b2539282b78769e17a65f10",
+          "head": "15ccbb7609079ccb9cbc8e8344d66a57010a63ac",
           "upstream": "",
           "source_ref": "refs/heads/exp/route2-nomount"
         },
         {
+          "branch": "experiment/libressl-4.3.2",
+          "head": "983d6879b19c643a91953dcbb2e1579e4e4d1d9e",
+          "upstream": "",
+          "source_ref": "refs/heads/experiment/libressl-4.3.2"
+        },
+        {
           "branch": "fix/build-drift-gate",
-          "head": "fc45343a2a16394983500c7d16f885199d28f292",
+          "head": "d6774696a155a31e9bcc82542363c665b2937669",
           "upstream": "",
           "source_ref": "refs/heads/fix/build-drift-gate"
         },
         {
           "branch": "fix/commpage-map-fixed",
-          "head": "2ed457f76effbb46649408a3c2d0e84596aabf60",
+          "head": "acf345173c280ce1b607a0e4a80b9585ab4202d7",
           "upstream": "",
           "source_ref": "refs/heads/fix/commpage-map-fixed"
         },
         {
           "branch": "fix/homebrew-psynch-ruby-hang",
-          "head": "5fb98a598737725fc1a70f1b792e76d36c856369",
-          "upstream": "origin/fix/homebrew-psynch-ruby-hang",
+          "head": "6055abb3cbff012ab15fdc193ec20fba152c0af2",
+          "upstream": "",
           "source_ref": "refs/heads/fix/homebrew-psynch-ruby-hang"
         },
         {
+          "branch": "fix/libressl-283-nist-strict-aliasing",
+          "head": "983d6879b19c643a91953dcbb2e1579e4e4d1d9e",
+          "upstream": "",
+          "source_ref": "refs/heads/fix/libressl-283-nist-strict-aliasing"
+        },
+        {
           "branch": "fix/mldr-compact-fd-band",
-          "head": "0de8081a0a1c8a401bca7a43d2206ecabaecca80",
+          "head": "8a09d319413b29df4ba1ed08e25ff557dd0f8e51",
           "upstream": "",
           "source_ref": "refs/heads/fix/mldr-compact-fd-band"
         },
         {
           "branch": "fix/mldr-compact-fd-band-current",
-          "head": "e713e788b26d0332fb45f18bee6de920da85f092",
+          "head": "93ba455b8e3d8ee3d04c712b3579c3d5b5e78fb7",
           "upstream": "",
           "source_ref": "refs/heads/fix/mldr-compact-fd-band-current"
         },
         {
           "branch": "fix/mldr-glibc-fork-reset",
-          "head": "d90fe8f2a949bcf51f5d4a5aed6ce3fd3a7ef98f",
+          "head": "159d141cbff62c6ca8b1c2c24a40f44853c5fc5d",
           "upstream": "",
           "source_ref": "refs/heads/fix/mldr-glibc-fork-reset"
         },
         {
           "branch": "fix/mldr-recv-adaptive-spin",
-          "head": "a7d458546ed463a992d4b35b4ea95534f5a2f0a0",
+          "head": "3fd7a8ed87d7e187854f946b470885f6f660b205",
           "upstream": "",
           "source_ref": "refs/heads/fix/mldr-recv-adaptive-spin"
         },
         {
           "branch": "fix/mldr-stack-mmap-fallback",
-          "head": "f51f5a405f6a294cb13c505b6d14e5deb9feda51",
+          "head": "1618c856360ccf298629b8d602901a8e32308368",
           "upstream": "",
           "source_ref": "refs/heads/fix/mldr-stack-mmap-fallback"
         },
         {
           "branch": "fix/mldr-thread-create-futex-wait",
-          "head": "d87489f876d9582ac72fd36c50f1034cebcb5bf0",
+          "head": "dd6b42e57eed3cd4d1f576fcca8869b9b12efc21",
           "upstream": "",
           "source_ref": "refs/heads/fix/mldr-thread-create-futex-wait"
         },
         {
           "branch": "fix/sandbox-exec-pass-through",
-          "head": "c905b818c0f58554a15812bf81e39a56f067b942",
+          "head": "c44476a36ee892b73184ddde36b6e9a50fa2d2f6",
           "upstream": "",
           "source_ref": "refs/heads/fix/sandbox-exec-pass-through"
         },
         {
           "branch": "fix/sdk-homebrew-detection",
-          "head": "b8b186a6e31c2b1cf63f8946c7b170b4a75ae794",
+          "head": "b597d6855c64ee0d9bed23e4d518560170ec1c49",
           "upstream": "",
           "source_ref": "refs/heads/fix/sdk-homebrew-detection"
         },
         {
           "branch": "integration/arch",
-          "head": "0c1a02949972daf78b826a8d3d47659eddb123f4",
+          "head": "11377f458a659a3794a60c14b55f5588ce67eacf",
           "upstream": "",
           "source_ref": "refs/heads/integration/arch"
         },
         {
           "branch": "integration/homebrew",
-          "head": "c044c084aa4f4033b6e916b59358e7d7308b0911",
+          "head": "50b2e05dd9e21d9f39e35d947f830ae651aa3366",
           "upstream": "",
           "source_ref": "refs/heads/integration/homebrew"
         },
         {
           "branch": "integration/perf",
-          "head": "698e3c176922415675cead8f099599604d6bd939",
+          "head": "01eadab41dcf9c8693d9b720781aa6e59b58dcaf",
           "upstream": "",
           "source_ref": "refs/heads/integration/perf"
         },
         {
-          "branch": "experiment/libressl-4.3.2",
-          "head": "f880c0da12707273e6a7e38896ff1484fdfb0db7",
-          "upstream": "origin/experiment/libressl-4.3.2",
-          "source_ref": "refs/remotes/origin/experiment/libressl-4.3.2"
+          "branch": "master",
+          "head": "d014d57080972464a2baabfa299cc6e85041dd0e",
+          "upstream": "",
+          "source_ref": "refs/heads/master"
         },
         {
-          "branch": "fix/libressl-283-nist-strict-aliasing",
-          "head": "f880c0da12707273e6a7e38896ff1484fdfb0db7",
-          "upstream": "origin/fix/libressl-283-nist-strict-aliasing",
-          "source_ref": "refs/remotes/origin/fix/libressl-283-nist-strict-aliasing"
+          "branch": "preupstream/master",
+          "head": "d014d57080972464a2baabfa299cc6e85041dd0e",
+          "upstream": "",
+          "source_ref": "refs/heads/preupstream/master"
         }
       ]
     },
@@ -124,6 +136,18 @@
           "head": "f4530b5f635672a815eff0f344ec7c91bc1ec12b",
           "upstream": "",
           "source_ref": "refs/heads/backup/a0-hang-fixes-pre-homebrew-stack"
+        },
+        {
+          "branch": "backup/fix-a0-hang-fixes-pre-dar-zhlt-1",
+          "head": "32eb65ac4eb434ccc7432bbb76c7fffabb99d676",
+          "upstream": "",
+          "source_ref": "refs/heads/backup/fix-a0-hang-fixes-pre-dar-zhlt-1"
+        },
+        {
+          "branch": "backup/fix-perf18-server-ring-pre-dar-zhlt-1",
+          "head": "03cf98e489f6c7830d82e10b5ee2217d44b9a1ae",
+          "upstream": "",
+          "source_ref": "refs/heads/backup/fix-perf18-server-ring-pre-dar-zhlt-1"
         },
         {
           "branch": "backup/local-snapshot-20260609",
@@ -163,7 +187,7 @@
         },
         {
           "branch": "fix/a0-hang-fixes",
-          "head": "32eb65ac4eb434ccc7432bbb76c7fffabb99d676",
+          "head": "41ea4e4ea05eefd8fe5d4092b5a27ed35e510866",
           "upstream": "",
           "source_ref": "refs/heads/fix/a0-hang-fixes"
         },
@@ -175,37 +199,37 @@
         },
         {
           "branch": "fix/assert-wait-cancel-stale-timer",
-          "head": "10194531c37acd1ad5d1e79a9d1aa31353ed7158",
+          "head": "4c353baa640d2ea026c59ec08a0e0ccfce33e09a",
           "upstream": "",
           "source_ref": "refs/heads/fix/assert-wait-cancel-stale-timer"
         },
         {
           "branch": "fix/cancel-stale-wait-timer",
-          "head": "a22a5e8437cfa7a6c278a50e15eb55f96060ab9b",
+          "head": "33229e0c695e9467b68c1634213849d5f54d7f5d",
           "upstream": "",
           "source_ref": "refs/heads/fix/cancel-stale-wait-timer"
         },
         {
           "branch": "fix/checkin-retask-current-thread-uaf",
-          "head": "92049f05ceec9fa02b132b3882e264822586d91d",
+          "head": "24ae886e723cc37d41f472f210a216c36a3cd8e1",
           "upstream": "",
           "source_ref": "refs/heads/fix/checkin-retask-current-thread-uaf"
         },
         {
           "branch": "fix/checkin-rwlock-across-suspend",
-          "head": "b6d1c6d496d37226b2563ea9a0109e3e50eddb34",
+          "head": "496fe0259c42288bf21c6cb7e6d9340a67e32b29",
           "upstream": "",
           "source_ref": "refs/heads/fix/checkin-rwlock-across-suspend"
         },
         {
           "branch": "fix/dar-gwn-1-7-pushreply-pipe-leak",
-          "head": "3d4428d7ec9ec44aa9b7f9a71597dd0aeb463a03",
+          "head": "bb620a209a3a72d2a238b30102147438e58b35ef",
           "upstream": "",
           "source_ref": "refs/heads/fix/dar-gwn-1-7-pushreply-pipe-leak"
         },
         {
           "branch": "fix/darlingserver-progress-metrics",
-          "head": "5e43b68e43461d5fe12aa9d9f223c30ef162b9f6",
+          "head": "bd18a8bd71753b8321e513fe19cb724345f6b873",
           "upstream": "",
           "source_ref": "refs/heads/fix/darlingserver-progress-metrics"
         },
@@ -229,25 +253,25 @@
         },
         {
           "branch": "fix/eunion-runtime-prefix",
-          "head": "6856e3321a96583a5a9806082db520f6c7fb8315",
+          "head": "6340d81f5470c928e96a55ac8da402a3504e5698",
           "upstream": "",
           "source_ref": "refs/heads/fix/eunion-runtime-prefix"
         },
         {
           "branch": "fix/exc-fatal-reply-bound",
-          "head": "42f9910cbd4eaf45a361572f5019f3e0f63c5b77",
+          "head": "2c8db920a3fe6c003225012e44b0074afad50c19",
           "upstream": "",
           "source_ref": "refs/heads/fix/exc-fatal-reply-bound"
         },
         {
           "branch": "fix/fork-checkin-bound",
-          "head": "f00bc66c395f2c601c17376b9b64970fba675116",
+          "head": "daf32392e80071c7f43f45de5393bd128731e56d",
           "upstream": "origin/main",
           "source_ref": "refs/heads/fix/fork-checkin-bound"
         },
         {
           "branch": "fix/fork-checkin-sticky-flag",
-          "head": "04ae50129488b1d1943461e571f68b1939be1ecc",
+          "head": "c9a0107fe772be7a0a12f5dca75d26e1038446ee",
           "upstream": "",
           "source_ref": "refs/heads/fix/fork-checkin-sticky-flag"
         },
@@ -259,7 +283,7 @@
         },
         {
           "branch": "fix/ingest-error-reply",
-          "head": "418cf7fc07686bd78fbc69b1caac58ebbfc91a20",
+          "head": "2d7b59dac209ecdb8a9854a3030b758e8428e42b",
           "upstream": "",
           "source_ref": "refs/heads/fix/ingest-error-reply"
         },
@@ -271,31 +295,31 @@
         },
         {
           "branch": "fix/microthread-resume-race",
-          "head": "d2d76a9a16fdc8d05947b1acfb54285c062563b2",
+          "head": "a99d52248f437be96239a22c8ce5f58fbf32d221",
           "upstream": "origin/main",
           "source_ref": "refs/heads/fix/microthread-resume-race"
         },
         {
           "branch": "fix/perf18-server-ring",
-          "head": "03cf98e489f6c7830d82e10b5ee2217d44b9a1ae",
+          "head": "82f41e2e0dc352c18dd8910963d908395c94afda",
           "upstream": "",
           "source_ref": "refs/heads/fix/perf18-server-ring"
         },
         {
           "branch": "fix/pot-guest-lifetime-binding",
-          "head": "d0cfd7b6605dac15471240724dec03bb9b91231e",
+          "head": "b983a36ada0c2d13125ca6c5c62cc0d417c272dc",
           "upstream": "",
           "source_ref": "refs/heads/fix/pot-guest-lifetime-binding"
         },
         {
           "branch": "fix/processcall-exception-guard",
-          "head": "44fbb9f428da4f403f53a102b58a353ca6d2dddd",
+          "head": "f1566efa3cbf2754c48bc62e3f0b0479fff72ba0",
           "upstream": "",
           "source_ref": "refs/heads/fix/processcall-exception-guard"
         },
         {
           "branch": "fix/psynch-cvwait-balanced",
-          "head": "0404f605e87eddaf720b6d795d022c5add9b08ce",
+          "head": "0a1980bfc8cce7b24f86a300310eb72dab2e4141",
           "upstream": "origin/main",
           "source_ref": "refs/heads/fix/psynch-cvwait-balanced"
         },
@@ -307,13 +331,13 @@
         },
         {
           "branch": "fix/psynch-rpc-arg-trace",
-          "head": "bc82f1b871820b310ea46662ea453e9e48a311d1",
+          "head": "49319e1789d7f9e04b18530aa1239fb6eae99604",
           "upstream": "",
           "source_ref": "refs/heads/fix/psynch-rpc-arg-trace"
         },
         {
           "branch": "fix/pthread-canceled-xnu-semantics",
-          "head": "830e0fcd4f32a7594c83d3acb56c4c46caec3b22",
+          "head": "397a044024296c30d94c2f482b6365605ef3f310",
           "upstream": "",
           "source_ref": "refs/heads/fix/pthread-canceled-xnu-semantics"
         },
@@ -337,7 +361,7 @@
         },
         {
           "branch": "fix/server-inline-fastpath",
-          "head": "6144a4bb6b1182e635fb88dd737cd11fd71e6189",
+          "head": "3aa068c72bbcc622fcbec82986f4a716b28f1a0a",
           "upstream": "",
           "source_ref": "refs/heads/fix/server-inline-fastpath"
         },
@@ -349,7 +373,7 @@
         },
         {
           "branch": "fix/test-diagnostics-trace",
-          "head": "d1589fd450bb590a4d3a72fdabf0d19555b74b92",
+          "head": "6621f77c06cc847a6ff15009f0afe3e824d17ff1",
           "upstream": "",
           "source_ref": "refs/heads/fix/test-diagnostics-trace"
         },
@@ -379,19 +403,19 @@
         },
         {
           "branch": "perf/guest-per-callnum-sleep-account",
-          "head": "ee46485ef0bb7b5ab65e9a25417f52c4fdeb3072",
+          "head": "3ab48c982a7fc9d5410ebec219bd357b975a26ae",
           "upstream": "",
           "source_ref": "refs/heads/perf/guest-per-callnum-sleep-account"
         },
         {
           "branch": "perf/no-reply-fire-and-forget-rpcs",
-          "head": "96298b16269a3baf5919c6ff8f844e2b53bbb7cf",
+          "head": "82183e60cbcab3c9b3b7e627feb6019e598c6965",
           "upstream": "",
           "source_ref": "refs/heads/perf/no-reply-fire-and-forget-rpcs"
         },
         {
           "branch": "perf/per-call-rpc-metrics",
-          "head": "4c528d99c54bc4da04b017690195ca628e065526",
+          "head": "86cb8e34cc708eef1a26ae6a5287a00ef77aeca4",
           "upstream": "",
           "source_ref": "refs/heads/perf/per-call-rpc-metrics"
         },
@@ -457,7 +481,7 @@
         },
         {
           "branch": "fix/bzero-return-register",
-          "head": "36eb5d508032ef1c614d41e166bbca3064b6620c",
+          "head": "71d3d9e661ab85581e4ea5fb66af5e691df6f6b9",
           "upstream": "origin/fix/bzero-return-register",
           "source_ref": "refs/heads/fix/bzero-return-register"
         },
@@ -487,7 +511,7 @@
         },
         {
           "branch": "fix/psynch-kernel-return-helper",
-          "head": "0110e3ca3c5c45afbec375a03472f184b7fd19ad",
+          "head": "22aed109147ee29fec3cddf469f2ad1408de27f7",
           "upstream": "",
           "source_ref": "refs/heads/fix/psynch-kernel-return-helper"
         },
@@ -511,7 +535,7 @@
       "branches": [
         {
           "branch": "fix/libressl-283-nist-strict-aliasing",
-          "head": "75c81f4e3ede9bb653b2b90bcca2681eda9aecd8",
+          "head": "7599e3e01d3b1a742aa0293123290f267b6eb720",
           "upstream": "",
           "source_ref": "refs/heads/fix/libressl-283-nist-strict-aliasing"
         },
@@ -817,7 +841,7 @@
         },
         {
           "branch": "fix/getattrlist-shared-packer",
-          "head": "783b3a890940e9b9f40db35e0966f4754be5a04a",
+          "head": "ef2998176083f062fb034575912c5936c35e64db",
           "upstream": "",
           "source_ref": "refs/heads/fix/getattrlist-shared-packer"
         },
@@ -847,7 +871,7 @@
         },
         {
           "branch": "fix/psynch-negative-errno",
-          "head": "9ef96df95ff182283d1fc0cc9cb9faa7637e7d23",
+          "head": "10096d1101c0685ad53adfc9b057892f9d6f3506",
           "upstream": "",
           "source_ref": "refs/heads/fix/psynch-negative-errno"
         },
@@ -871,7 +895,7 @@
         },
         {
           "branch": "fix/select-pselect-fdset",
-          "head": "c7d851d90e13eb49ce484fd94679462a5345548c",
+          "head": "014ae062d051cfdd48a0095f3cc05b19900a20ca",
           "upstream": "origin/main",
           "source_ref": "refs/heads/fix/select-pselect-fdset"
         },
