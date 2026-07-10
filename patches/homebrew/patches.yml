@@ -62,7 +62,7 @@ patches:
     red-proof:
       mode: source-base
       source-env: DSERVER_SRC_ROOT
-    runner: script
+    runner: source-profile-script
     script: tests/psynch_cvwait_sequence_contract.sh
     note: Source-level RED->GREEN contract that balanced equal cvwait sequences are accepted and stale sequences still log context.
   pr-draft: pr-drafts/darlingserver-psynch-cvwait-balanced.md
@@ -455,7 +455,7 @@ patches:
     red-proof:
       mode: source-base
       source-env: XNU_SRC_ROOT
-    runner: script
+    runner: source-profile-script
     script: darling/src/libsystem_kernel/tests/psynch_cvsignal_args_contract.sh
     note: Source-level RED->GREEN contract for full-width cvsignal generations and cvbroad mutex argument placement.
   - name: psynch_cvsignal_args_guest
@@ -1997,7 +1997,7 @@ patches:
     red-proof:
       mode: source-base
       source-env: XNU_SRC_ROOT
-    runner: script
+    runner: source-profile-script
     script: darling/src/libsystem_kernel/tests/run-psynch-return-contract.sh
     note: >-
       Host contract for Darling's internal BSD syscall ABI: psynch wait helpers

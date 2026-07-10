@@ -30,6 +30,7 @@ fi
 
 export PYTHONDONTWRITEBYTECODE=1
 tmp_profile="patches/__metadata_contract"
+tmp_source_profile="patches/__metadata_source_profile_contract"
 tmp_invalid_profile="patches/__metadata_invalid_contract"
 tmp_runtime_red_profile="patches/__metadata_runtime_red_contract"
 guest_prefix=/tmp/west-test-guest-c-fixture-prefix
@@ -37,8 +38,34 @@ source_script_marker=/tmp/west-source-script-fixture-second-case
 quality_contract_output=/tmp/west-quality-contract.out
 invalid_guest_red_output=/tmp/west-test-invalid-guest-red-proof.out
 guest_runtime_red_output=/tmp/west-test-guest-runtime-red-proof.out
-trap 'rm -rf "$tmp_profile" "$tmp_invalid_profile" "$tmp_runtime_red_profile" "$guest_prefix" "$source_script_marker" "$quality_contract_output" "$invalid_guest_red_output" "$guest_runtime_red_output"' EXIT
-mkdir -p "$tmp_profile" "$tmp_invalid_profile" "$tmp_runtime_red_profile"
+source_profile_patch_scratch=
+trap 'rm -rf "$tmp_profile" "$tmp_source_profile" "$tmp_invalid_profile" "$tmp_runtime_red_profile" "$guest_prefix" "$source_script_marker" "$quality_contract_output" "$invalid_guest_red_output" "$guest_runtime_red_output" "$source_profile_patch_scratch"' EXIT
+mkdir -p "$tmp_profile" "$tmp_source_profile" "$tmp_invalid_profile" "$tmp_runtime_red_profile"
+mkdir -p "$tmp_source_profile/test"
+source_profile_patch_scratch="$(mktemp -d)"
+source_profile_base="$(git rev-parse HEAD)"
+git clone -q "$repo" "$source_profile_patch_scratch/workspace"
+(
+	cd "$source_profile_patch_scratch/workspace"
+	git config user.email test@example.invalid
+	git config user.name "west test"
+	mkdir -p tests
+	cat >tests/source_profile_contract.sh <<'SCRIPT'
+#!/usr/bin/env sh
+set -eu
+: "${DARLING_SRC_ROOT:?}"
+if [ ! -f "$DARLING_SRC_ROOT/tests/source_profile_marker" ]; then
+	printf 'WEST_SOURCE_PROFILE_SCRIPT_RED_MARKER_MISSING\n' >&2
+	exit 1
+fi
+printf 'WEST_SOURCE_PROFILE_SCRIPT_OK\n'
+SCRIPT
+	chmod +x tests/source_profile_contract.sh
+	printf 'fixed\n' >tests/source_profile_marker
+	git add tests/source_profile_contract.sh tests/source_profile_marker
+	git commit -q -m "test: add source profile script fixture"
+	git format-patch -1 --stdout >"$repo/$tmp_source_profile/test/source-profile-script.patch"
+)
 cat >"$tmp_profile/patches.yml" <<'YAML'
 test-profiles:
   guest-c-runtime-red:
@@ -386,6 +413,26 @@ patches:
     - name: default
       absent-undefined-symbols: [definitely_not_a_real_symbol]
       absent-defined-symbols: [definitely_not_a_real_symbol]
+YAML
+
+cat >"$tmp_source_profile/patches.yml" <<YAML
+patches:
+- path: test/source-profile-script.patch
+  module: darling-workspace
+  source-base: $source_profile_base
+  tests:
+  - name: west_source_profile_script_contract
+    kind: contract
+    runs: host
+    diag: bare
+    red: true
+    red-proof:
+      mode: source-base
+      source-env: DARLING_SRC_ROOT
+      expect-output-contains:
+      - WEST_SOURCE_PROFILE_SCRIPT_RED_MARKER_MISSING
+    runner: source-profile-script
+    script: tests/source_profile_contract.sh
 YAML
 
 cat >"$tmp_invalid_profile/patches.yml" <<'YAML'
@@ -1030,6 +1077,26 @@ printf '%s\n' "$source_contract_script" | grep -q \
 west test --profile __metadata_contract \
 	--patch test/source-contract-script.patch >/dev/null ||
 	fail 'source-contract-script did not execute with source-env'
+
+source_profile_check="$(west patch check --profile __metadata_source_profile_contract)"
+printf '%s\n' "$source_profile_check" | grep -q 'HOST      test/source-profile-script.patch' ||
+	fail 'source-profile-script patch was not reported as HOST'
+
+source_profile_script="$(
+	west test --profile __metadata_source_profile_contract \
+		--patch test/source-profile-script.patch \
+		--prove-red \
+		--list
+)"
+
+printf '%s\n' "$source_profile_script" | grep -q \
+	'<source-profile-script> tests/source_profile_contract.sh' ||
+	fail 'source-profile-script metadata did not resolve to a profile-owned source contract command'
+
+west test --profile __metadata_source_profile_contract \
+	--patch test/source-profile-script.patch \
+	--prove-red >/dev/null ||
+	fail 'source-profile-script did not execute as a source-base RED proof'
 
 self_contract_script="$(
 	west test --profile __metadata_contract \

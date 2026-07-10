@@ -635,6 +635,7 @@ class DarlingTest(WestCommand):
         if runner in {
             "script",
             "source-contract-script",
+            "source-profile-script",
             "self-contract-script",
             "guest-runtime-script",
         }:
@@ -651,6 +652,7 @@ class DarlingTest(WestCommand):
             display_args = " ".join(quote(arg) for arg in args)
             if runner in {
                 "source-contract-script",
+                "source-profile-script",
                 "self-contract-script",
                 "guest-runtime-script",
             }:
@@ -3915,6 +3917,16 @@ fi
         runtime_invocation["script_path"] = runtime_cwd / script
         return runtime_invocation
 
+    def _invocation_from_source_profile(self, invocation, source_root: Path):
+        """Run a profile-owned test script from a materialized source tree."""
+        script = invocation.get("script")
+        if not script:
+            return invocation
+        profile_invocation = dict(invocation)
+        profile_invocation["cwd"] = source_root
+        profile_invocation["script_path"] = source_root / script
+        return profile_invocation
+
     def _guest_runtime_red_invocation(self, patch, proof, invocation):
         red_runner = proof.get("red-runner")
         if red_runner is None:
@@ -4168,63 +4180,69 @@ fi
         source_env = proof.get("source-env")
         if not source_env:
             self.die(f"{patch['path']}: source-base proof needs red-proof.source-env")
-        script_path = invocation.get("script_path")
-        if script_path is not None and not script_path.is_file():
-            self.die(f"{patch['path']}: test script not found: {script_path}")
-
-        module_repo = self._project_path(proof.get("source-module", patch["module"]))
-        bad_revision = self._bad_revision(patch)
-        with tempfile.TemporaryDirectory(prefix="west-red-proof-") as temp:
-            worktree = Path(temp) / "source-base"
-            subprocess.run(
-                ["git", "worktree", "add", "--quiet", "--detach", str(worktree), bad_revision],
-                cwd=module_repo,
-                check=True,
-            )
-            try:
-                bad_env = os.environ.copy()
-                exec_env = self._execution_env(invocation)
-                if exec_env:
-                    bad_env.update(exec_env)
-                bad_env[source_env] = str(worktree)
-                self.inf(f"  RED source tree: {bad_revision} via {source_env}={worktree}")
-                bad_rc, bad_output = self._run_invocation_captured(invocation, env=bad_env)
-                if bad_rc == 0:
-                    self.err("  RED proof failed: source-base run unexpectedly passed")
-                    return 1
-                if not self._check_red_output_expectations(
-                    proof,
-                    invocation,
-                    bad_output,
-                    where="in source-base RED output",
-                ):
-                    return 1
-                self.inf(f"  RED path failed as expected (rc={bad_rc})")
-            finally:
-                subprocess.run(
-                    ["git", "worktree", "remove", "--force", str(worktree)],
-                    cwd=module_repo,
-                    check=False,
-                    stdout=subprocess.DEVNULL,
-                    stderr=subprocess.DEVNULL,
-                )
-
         module = proof.get("source-module", patch["module"])
         with self._source_base_green_source_tree(patch, module) as green_source:
-            green_env = self._execution_env(invocation)
-            if green_env is None:
-                green_env = os.environ.copy()
-            else:
-                green_env = dict(green_env)
             if green_source is not None:
                 green_source_env = green_source
                 self.inf(f"  GREEN profile source tree: {source_env}={green_source_env}")
             else:
                 green_source_env = self._project_path(module)
                 self.inf(f"  GREEN current tree: {source_env}={green_source_env}")
+
+            if invocation.get("runner") == "source-profile-script":
+                proof_invocation = self._invocation_from_source_profile(invocation, green_source_env)
+            else:
+                proof_invocation = invocation
+
+            script_path = proof_invocation.get("script_path")
+            if script_path is not None and not script_path.is_file():
+                self.die(f"{patch['path']}: test script not found: {script_path}")
+
+            module_repo = self._project_path(module)
+            bad_revision = self._bad_revision(patch)
+            with tempfile.TemporaryDirectory(prefix="west-red-proof-") as temp:
+                worktree = Path(temp) / "source-base"
+                subprocess.run(
+                    ["git", "worktree", "add", "--quiet", "--detach", str(worktree), bad_revision],
+                    cwd=module_repo,
+                    check=True,
+                )
+                try:
+                    bad_env = os.environ.copy()
+                    exec_env = self._execution_env(proof_invocation)
+                    if exec_env:
+                        bad_env.update(exec_env)
+                    bad_env[source_env] = str(worktree)
+                    self.inf(f"  RED source tree: {bad_revision} via {source_env}={worktree}")
+                    bad_rc, bad_output = self._run_invocation_captured(proof_invocation, env=bad_env)
+                    if bad_rc == 0:
+                        self.err("  RED proof failed: source-base run unexpectedly passed")
+                        return 1
+                    if not self._check_red_output_expectations(
+                        proof,
+                        proof_invocation,
+                        bad_output,
+                        where="in source-base RED output",
+                    ):
+                        return 1
+                    self.inf(f"  RED path failed as expected (rc={bad_rc})")
+                finally:
+                    subprocess.run(
+                        ["git", "worktree", "remove", "--force", str(worktree)],
+                        cwd=module_repo,
+                        check=False,
+                        stdout=subprocess.DEVNULL,
+                        stderr=subprocess.DEVNULL,
+                    )
+
+            green_env = self._execution_env(invocation)
+            if green_env is None:
+                green_env = os.environ.copy()
+            else:
+                green_env = dict(green_env)
             if source_env:
                 green_env[source_env] = str(green_source_env)
-            return self._run_invocation(invocation, env=green_env)
+            return self._run_invocation(proof_invocation, env=green_env)
 
     def _run_red_proofs(self, tests, list_only: bool, unknown: list[str]) -> int:
         """Run the proof that a regression test really distinguishes old/bad behavior.
