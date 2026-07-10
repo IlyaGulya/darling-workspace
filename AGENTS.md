@@ -227,6 +227,12 @@ refs, PR drafts, and agent handoff.
   it under `nohup setsid`, retain its PID and rc file, poll it to completion,
   then inspect the log tail and temporary worktree/process state. Never claim a
   cleanup failure while the recorded test PID is still live.
+- Treat a full guest CTest runtime selection the same way when the caller cannot
+  keep it attached. Use `scripts/west-job.sh start --state-dir DIR -- west test
+  ...`, then `status`/`wait` (or `cancel`); the state directory records command,
+  PID identity, log, and final rc. Do not start a second prefix-backed run while
+  that job is live, and inspect its log plus prefix/process cleanup only after
+  `wait` has returned.
 - When creating Beads from a shell command, do not put unescaped backticks in
   `--description`: the shell treats them as command substitution. Use plain
   command text or safely single-quote/escape it, then verify the created ID.
