@@ -28,7 +28,7 @@ get_filename_component(_workspace_root "${CMAKE_CURRENT_SOURCE_DIR}/.." ABSOLUTE
 # The original Darling regression script builds thread_create_checkin_wait.c,
 # proves the old sched_yield spin path fails, then runs the futex/adaptive wait
 # path. Register the same source in CTest directly: one normal GREEN entry and
-# one WILL_FAIL RED arm selected by argv `spin`.
+# one RED arm selected by argv `spin`, with its expected busy-spin symptom.
 # ---------------------------------------------------------------------------
 set(_thread_checkin_wait
   "${DARLING_SRC}/tests/regression/thread_create_checkin_wait.c")
@@ -54,7 +54,7 @@ if(EXISTS "${_thread_checkin_wait}")
     DIAG       bare
     TIMEOUT    5
     ARGS       spin
-    WILL_FAIL
+    EXPECT_FAILURE_MARKER "FAIL: creator burned"
   )
 else()
   message(WARNING

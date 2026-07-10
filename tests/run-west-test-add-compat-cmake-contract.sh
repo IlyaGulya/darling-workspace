@@ -11,6 +11,7 @@ project(add-compat-contract C)
 include(CTest)
 include("${repo}/testkit/cmake/AddCompatTest.cmake")
 file(WRITE "\${CMAKE_CURRENT_BINARY_DIR}/guest.c" "#include <stdio.h>\\nint main(void) { puts(\"GUEST_ARG_CONTRACT_OK\"); return 0; }\\n")
+file(WRITE "\${CMAKE_CURRENT_BINARY_DIR}/red.c" "#include <stdio.h>\\nint main(void) { fputs(\"EXPECTED_RED_SYMPTOM\\\\n\", stderr); return 7; }\\n")
 add_compat_test(
   NAME guest_arg_contract
   SOURCE "\${CMAKE_CURRENT_BINARY_DIR}/guest.c"
@@ -29,6 +30,13 @@ add_compat_test(
   ENVS macos
   BEAD dar-macos-contract
   DIAG bare
+)
+add_compat_test(
+  NAME expected_failure_contract
+  SOURCE "\${CMAKE_CURRENT_BINARY_DIR}/red.c"
+  ENVS host
+  DIAG bare
+  EXPECT_FAILURE_MARKER EXPECTED_RED_SYMPTOM
 )
 CMAKE
 
@@ -49,6 +57,13 @@ grep -q 'fuzz:true' "$ctest_file" ||
 	{ cat "$ctest_file" >&2; exit 1; }
 grep -q 'stress:true' "$ctest_file" ||
 	{ cat "$ctest_file" >&2; exit 1; }
+
+cmake --build "$tmp/build-shell" >/dev/null
+ctest --test-dir "$tmp/build-shell" -V \
+	-R '^host/expected_failure_contract$' >"$tmp/red.out" 2>&1 ||
+	{ cat "$tmp/red.out" >&2; exit 1; }
+grep -q 'WEST_TEST_RED_OK: EXPECTED_RED_SYMPTOM' "$tmp/red.out" ||
+	{ cat "$tmp/red.out" >&2; exit 1; }
 
 cmake -S "$tmp" -B "$tmp/build-missing" -G Ninja >/dev/null
 cmake --build "$tmp/build-missing" >/dev/null

@@ -564,6 +564,7 @@ patches:
     red-proof:
       mode: source-base
       source-env: XNU_SRC_ROOT
+      expect-failure-phase: compile
     runner: c-fixture
     script: tests/select_fdset_contract.c
     include-dirs:
@@ -724,6 +725,7 @@ patches:
     red-proof:
       mode: source-base
       source-env: XNU_SRC_ROOT
+      expect-failure-phase: run
     runner: c-fixture
     repo: darling-workspace
     script: tests/fork_postfork_child_contract.c
@@ -2087,6 +2089,7 @@ patches:
     red-proof:
       mode: source-base
       source-env: XNU_SRC_ROOT
+      expect-failure-phase: run
     runner: c-fixture
     repo: darling-workspace
     script: tests/sigexc_sa_restart_contract.c
@@ -2228,6 +2231,7 @@ patches:
     red-proof:
       mode: source-base
       source-env: XNU_SRC_ROOT
+      expect-failure-phase: run
     runner: c-fixture
     repo: darling-workspace
     script: tests/sigexc_default_resend_self_contract.c
@@ -2303,6 +2307,7 @@ patches:
     red-proof:
       mode: source-base
       source-env: XNU_SRC_ROOT
+      expect-failure-phase: run
     runner: c-fixture
     repo: darling-workspace
     script: tests/ulock_eintr_retry_contract.c
@@ -2384,6 +2389,7 @@ patches:
     red: true
     red-proof:
       mode: self
+      expect-output-contains: 'RESULT: PASS'
       why-self: The script contains explicit no-reset and reset arms, so the negative case is self-contained and does not need checkout mutation.
       note: Script requires the no-reset arm to deadlock and the reset arm to pass.
     runner: self-contract-script
@@ -2423,6 +2429,7 @@ patches:
     red-proof:
       mode: source-base
       source-env: DARLING_SRC_ROOT
+      expect-failure-phase: setup
     runner: source-script-fixture
     repo: darling
     source-script: src/sandbox/sandbox-exec.sh
@@ -2514,6 +2521,7 @@ patches:
     red-proof:
       mode: source-base
       source-env: XNU_SRC_ROOT
+      expect-failure-phase: run
     runner: c-fixture
     repo: darling-workspace
     script: tests/vchroot_pathnull_guard_contract.c
@@ -3806,6 +3814,7 @@ patches:
     red-proof:
       mode: source-base
       source-env: XNU_SRC_ROOT
+      expect-failure-phase: run
     runner: c-fixture
     repo: darling-workspace
     script: tests/chown_disabled_null_guard_contract.c
@@ -4190,6 +4199,7 @@ patches:
     red-proof:
       mode: source-base
       source-env: DARLING_SRC_ROOT
+      expect-failure-phase: run
     runner: c-fixture
     repo: darling-workspace
     script: tests/commpage_map_fixed_contract.c
@@ -4273,6 +4283,7 @@ patches:
     red-proof:
       mode: source-base
       source-env: XNU_SRC_ROOT
+      expect-failure-phase: run
     runner: c-fixture
     repo: darling-workspace
     script: tests/fd_guard_ebadf_contract.c
@@ -4327,6 +4338,7 @@ patches:
     red-proof:
       mode: source-base
       source-env: XNU_SRC_ROOT
+      expect-failure-phase: run
     runner: c-fixture
     repo: darling-workspace
     script: tests/abort_with_payload_self_signal_contract.c
@@ -4409,6 +4421,7 @@ patches:
     red: true
     red-proof:
       mode: self
+      expect-output-contains: 'GREEN: progress classifier maps all 6 cases correctly'
       why-self: The Python test enumerates bad, slow, wedged, idle, and progress samples directly; source-base proof would need injecting the old classifier implementation.
       note: Python test imports the real classifier and asserts the slow/wedged/idle/progress cases.
     runner: python
@@ -4431,6 +4444,7 @@ patches:
     red: true
     red-proof:
       mode: self
+      expect-output-contains: '(RED path failed as expected)'
       why-self: The script contains explicit sched_yield-spin and futex-wait arms, so the bad and fixed cases are modeled in one test.
       note: Script first runs the old sched_yield spin model and requires it to fail, then runs the futex model and requires it to pass.
     runner: self-contract-script
@@ -4462,6 +4476,7 @@ patches:
     red: true
     red-proof:
       mode: self
+      expect-output-contains: '(RED path failed as expected)'
       why-self: The script contains explicit worker-handoff and inline-fastpath arms, so the bad and fixed cases are modeled in one test.
       note: Script first runs the per-message handoff model and requires it to fail, then runs the inline model and requires it to pass.
     runner: self-contract-script
@@ -4493,6 +4508,7 @@ patches:
     red: true
     red-proof:
       mode: self
+      expect-output-contains: '(RED arm deadlocked as expected)'
       why-self: The script contains explicit lock-held and release-before-suspend arms, so the deadlock oracle is self-contained.
       note: Script requires lock-held-across-suspend to deadlock and release-before-suspend to pass.
     runner: self-contract-script
@@ -4573,6 +4589,7 @@ patches:
     red: true
     red-proof:
       mode: self
+      expect-output-contains: '(RED failed as expected)'
       why-self: The script contains explicit blocking-recv and adaptive-spin arms, so the latency regression oracle is self-contained.
       note: Script requires blocking recv to exceed the sleep budget and adaptive spin to pass.
     runner: self-contract-script
@@ -4690,6 +4707,7 @@ patches:
     red: true
     red-proof:
       mode: self
+      expect-output-contains: 'GREEN: NO_REPLY calls fire-and-forget'
       why-self: The generator contract creates wrappers in a temporary tree and checks the bad source shape directly, so it does not need source checkout mutation.
       note: Script generates wrappers and asserts NO_REPLY calls omit receive/reply while normal calls still receive.
     runner: self-contract-script
@@ -4721,6 +4739,7 @@ patches:
     red: true
     red-proof:
       mode: self
+      expect-output-contains: 'GREEN: reply-bearing wrappers bracket their receive'
       why-self: The generator contract creates wrappers in a temporary tree and checks the receive-accounting source shape directly, so it does not need source checkout mutation.
       note: Script generates wrappers and asserts reply-bearing calls bracket receive accounting while NO_REPLY calls do not.
     runner: self-contract-script
@@ -4833,6 +4852,7 @@ patches:
     red-proof:
       mode: source-base
       source-env: XNU_SRC_ROOT
+      expect-failure-phase: compile
     runner: object-symbol-fixture
     repo: darling-workspace
     source-file: darling/src/libsystem_kernel/emulation/src/linux_premigration/resources/rpc-sleep-account.c
@@ -4985,6 +5005,7 @@ patches:
     red-proof:
       mode: source-base
       source-env: XNU_SRC_ROOT
+      expect-failure-phase: run
     runner: c-fixture
     repo: darling-workspace
     script: tests/dylib_recv_adaptive_spin_contract.c
@@ -5053,6 +5074,7 @@ patches:
     red: true
     red-proof:
       mode: self
+      expect-output-contains: '(RED arm tripped the use-after-free as expected)'
       why-self: The script contains explicit release-before-republish and republish-before-release ASan arms, so the UAF oracle is self-contained.
       note: Script requires release-before-republish to trip ASan and republish-before-release to pass.
     runner: self-contract-script
@@ -5138,6 +5160,7 @@ patches:
     red: true
     red-proof:
       mode: self
+      expect-output-contains: 'dar-pot gate GREEN: RED(nobind) reproduces the orphan'
       why-self: The script contains explicit nobind and bind arms, so the orphan-process lifetime oracle is self-contained.
       note: Script requires the nobind arm to reproduce an orphan and the bind arm to reap it.
     runner: self-contract-script
