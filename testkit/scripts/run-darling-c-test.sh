@@ -98,33 +98,38 @@ dump_runtime_file_state() {
 		"$prefix/libexec/darling/usr/lib/system/libsystem_kernel.dylib"
 }
 
-set +e
-darling_guest_shell "$launcher" "$prefix" "${DARLING_GUEST_TIMEOUT_SECONDS:-60}" "
-set -euo pipefail
-cleanup() {
-  rm -f '$guest_src' '$guest_bin'
+timeout_seconds="${DARLING_GUEST_TIMEOUT_SECONDS:-60}"
+
+cleanup_guest_artifacts() {
+	darling_guest_shell "$launcher" "$prefix" 10 \
+		"rm -f '$guest_src' '$guest_bin'" >/dev/null 2>&1 || true
 }
-trap cleanup EXIT
-cat > '$guest_src'
-printf 'WEST_GUEST_STAGE=compile\n'
+trap cleanup_guest_artifacts EXIT
+
+run_guest_stage() {
+	local stage="$1"
+	local script="$2"
+	printf 'WEST_GUEST_STAGE=%s\n' "$stage" >>"$output"
+	darling_guest_shell "$launcher" "$prefix" "$timeout_seconds" "$script" \
+		>>"$output" 2>&1
+}
+
 set +e
-$guest_cc $guest_cflags -o '$guest_bin' '$guest_src'
-compile_rc=\$?
-set -e
-printf 'ORACLE_RC=%s\n' "\$compile_rc"
-if [ "\$compile_rc" -ne 0 ]; then
-  exit "\$compile_rc"
-fi
-printf 'WEST_GUEST_STAGE=run\n'
-set +e
-'$guest_bin' ${quoted_args[*]}
-run_rc=\$?
-set -e
-printf 'ORACLE_RC=%s\n' "\$run_rc"
-exit "\$run_rc"
-" <"$source" >"$output" 2>&1
+run_guest_stage upload "cat > '$guest_src'" <"$source"
 rc=$?
 set -e
+if [ "$rc" -eq 0 ]; then
+	set +e
+	run_guest_stage compile "set +e; $guest_cc $guest_cflags -o '$guest_bin' '$guest_src'; rc=\$?; printf 'ORACLE_RC=%s\\n' \"\$rc\"; exit \"\$rc\""
+	rc=$?
+	set -e
+fi
+if [ "$rc" -eq 0 ]; then
+	set +e
+	run_guest_stage run "set +e; '$guest_bin' ${quoted_args[*]}; rc=\$?; printf 'ORACLE_RC=%s\\n' \"\$rc\"; exit \"\$rc\""
+	rc=$?
+	set -e
+fi
 cat "$output"
 
 if [[ "$rc" -ne 0 ]]; then

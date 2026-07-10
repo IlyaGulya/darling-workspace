@@ -30,6 +30,21 @@ from west_commands.test_execution import ProcessResult
 
 
 with tempfile.TemporaryDirectory() as temp:
+    prefix = Path(temp) / "prefix"
+    prefix.mkdir()
+    context_test = DarlingTest.__new__(DarlingTest)
+    context_test._prefix = str(prefix)
+    context_test._keep_prefix_running = False
+    context_test._prefix_cleanup_failed = False
+    context_test.inf = lambda _message: None
+    shutdowns = []
+    context_test._shutdown_test_prefix = lambda: (shutdowns.append("shutdown") or True)
+    with context_test._prefix_resource_context(True):
+        assert shutdowns == ["shutdown"], shutdowns
+    assert shutdowns == ["shutdown", "shutdown"], shutdowns
+
+
+with tempfile.TemporaryDirectory() as temp:
     root = Path(temp)
     build = root / "build"
     build.mkdir()
