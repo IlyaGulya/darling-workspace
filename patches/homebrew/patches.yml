@@ -280,13 +280,10 @@ patches:
     coverage-tier: compile
     runs: host
     diag: bare
-    red: true
-    red-proof:
-      mode: source-base
-      source-env: DSERVER_SRC_ROOT
     runner: c-fixture
     repo: darling-workspace
     script: tests/fork_checkin_sticky_contract.cpp
+    source-env: DSERVER_SRC_ROOT
     cc: c++
     include-dirs:
     - internal-include
@@ -297,7 +294,7 @@ patches:
     - -Wall
     - -Wextra
     - -Werror
-    note: Compile contract for the production fork-checkin sticky state helper; old source loses checkins across interrupted/timed-out waits, fixed source consumes sticky checkins exactly once.
+    note: Compile contract for the production fork-checkin sticky state helper; the runtime dserverdbg oracle carries the RED proof for the old lost-checkin behavior.
   - name: fork_checkin_signal_storm_guest
     kind: guest
     coverage-tier: runtime
