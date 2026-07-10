@@ -27,7 +27,9 @@ sys.modules.setdefault("west.commands", west_commands_module)
 
 from west_commands.prefix_repair import (
     cleanup_prefix_mounts,
+    cleanup_prefix_processes_for_mounts,
     guest_c_fixture_prerequisite_problems,
+    _parse_fuser_pids,
     prefix_mount_targets,
     prefix_boot_prerequisite_problems,
     repair_prefix_prerequisites,
@@ -153,6 +155,69 @@ with tempfile.TemporaryDirectory() as temp:
     assert cleaned.success, cleaned
     assert len(calls) == 2, calls
     assert all(call[0] == ["umount", str(proc)] for call in calls), calls
+
+assert _parse_fuser_pids("/tmp/prefix-123/proc: 444209 444214c\n") == {444209, 444214}
+
+with tempfile.TemporaryDirectory() as temp:
+    prefix = Path(temp)
+    proc = prefix / "proc"
+    proc.mkdir()
+    mountinfo = prefix / "mountinfo"
+    mountinfo.write_text(f"10 1 0:1 / {proc} rw,relatime - proc proc rw\n")
+    runner_calls = []
+    kill_calls = []
+    alive = {444209}
+
+    def fake_runner(command, capture_output, text, check):
+        runner_calls.append(command)
+        if command[:2] == ["fuser", "-m"]:
+            return SimpleNamespace(returncode=0, stdout="", stderr=f"{command[2]}: 444209\n")
+        if command[0] == "umount":
+            if kill_calls:
+                mountinfo.write_text("")
+                return SimpleNamespace(returncode=0, stdout="", stderr="")
+            return SimpleNamespace(returncode=32, stdout="", stderr="target is busy")
+        raise AssertionError(command)
+
+    def fake_kill(pid, sig):
+        kill_calls.append((pid, sig))
+        if sig == 0:
+            if pid not in alive:
+                raise ProcessLookupError(pid)
+            return
+        alive.discard(pid)
+
+    cleaned = cleanup_prefix_mounts(
+        prefix,
+        runner=fake_runner,
+        mountinfo_path=mountinfo,
+        kill_func=fake_kill,
+        sleep_func=lambda _seconds: None,
+        argv_for_pid=lambda pid: ["/usr/libexec/darling/mldr", "/sbin/launchd"] if pid == 444209 else [],
+    )
+    assert cleaned.success, cleaned
+    assert ["fuser", "-m", str(proc)] in runner_calls, runner_calls
+    assert (444209, 15) in kill_calls, kill_calls
+    assert any("unmounted" in item and "after killing" in item for item in cleaned.changed), cleaned
+
+with tempfile.TemporaryDirectory() as temp:
+    prefix = Path(temp)
+    proc = prefix / "proc"
+    proc.mkdir()
+    cleaned = cleanup_prefix_processes_for_mounts(
+        [proc],
+        runner=lambda command, capture_output, text, check: SimpleNamespace(
+            returncode=0,
+            stdout="",
+            stderr=f"{command[2]}: 555\n",
+        ),
+        kill_func=lambda pid, sig: (_ for _ in ()).throw(AssertionError("non-Darling pid killed")),
+        sleep_func=lambda _seconds: None,
+        argv_for_pid=lambda _pid: ["/usr/bin/bash"],
+    )
+    assert cleaned.success, cleaned
+    assert cleaned.changed == [], cleaned
+    assert any("no Darling runtime processes" in item for item in cleaned.ok), cleaned
 
 print("PASS west-prefix-repair-contract")
 PY
