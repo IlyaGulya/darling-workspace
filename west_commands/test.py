@@ -54,6 +54,8 @@ from test_ctest import (
     ctest_label_display,
     ctest_selection_command,
     ctest_selector_label_args,
+    ctest_runtime_group_passthrough,
+    ctest_test_name_regex,
     ctest_uses_prefix,
 )
 from test_dispatch import dispatch_fixture_runner
@@ -82,6 +84,7 @@ from test_runtime import (
     compose_ctest_runtime_profiles,
     describe_runtime_deploy_plan,
     load_ctest_runtime_profiles,
+    partition_ctest_runtime_profiles,
     runtime_build_targets,
     runtime_deploy_targets,
 )
@@ -1383,11 +1386,19 @@ class DarlingTest(WestCommand):
         except (OSError, ValueError) as error:
             self.die(f"invalid CTest runtime profile definitions at {path}: {error}")
 
-    def _selected_ctest_runtime_profiles(self, build: Path, label_args: list[str]) -> list[str]:
-        """Return runtime profiles declared by exactly the CTest-selected cases."""
+    def _selected_ctest_runtime_groups(
+        self,
+        build: Path,
+        label_args: list[str],
+        passthrough: list[str],
+        additional_profiles: list[str],
+    ) -> list[dict]:
+        """Return lifecycle groups for exactly the CTest-selected cases."""
 
         discovery = run_bounded(
-            ctest_selection_command(build, label_args=label_args),
+            ctest_selection_command(
+                build, label_args=label_args, passthrough=passthrough
+            ),
             cwd=Path(self.topdir),
             env=None,
             timeout_seconds=30,
@@ -1400,24 +1411,38 @@ class DarlingTest(WestCommand):
             payload = json.loads(discovery.stdout)
         except json.JSONDecodeError as error:
             self.die(f"CTest runtime profile discovery returned invalid JSON: {error}")
-        profiles: list[str] = []
+        selections: list[dict] = []
         for test in payload.get("tests", []):
+            name = test.get("name")
+            labels: list[str] = []
             for property_data in test.get("properties", []):
                 if property_data.get("name") != "LABELS":
                     continue
-                for label in property_data.get("value", []):
-                    if not isinstance(label, str) or not label.startswith("runtime-profile:"):
-                        continue
-                    profile = label.removeprefix("runtime-profile:")
-                    if profile and profile not in profiles:
-                        profiles.append(profile)
+                labels.extend(
+                    label
+                    for label in property_data.get("value", [])
+                    if isinstance(label, str)
+                )
+            selections.append(
+                {
+                    "name": name,
+                    "darling": "env:darling" in labels,
+                    "profiles": [
+                        label.removeprefix("runtime-profile:")
+                        for label in labels
+                        if label.startswith("runtime-profile:")
+                        and label.removeprefix("runtime-profile:")
+                    ],
+                }
+            )
         try:
-            compose_ctest_runtime_profiles(
-                self._ctest_runtime_profile_definitions(), profiles
+            return partition_ctest_runtime_profiles(
+                self._ctest_runtime_profile_definitions(),
+                selections,
+                additional_profiles,
             )
         except ValueError as error:
             self.die(f"invalid CTest runtime profile selection: {error}")
-        return profiles
 
     @contextmanager
     def _ctest_runtime_profile_context(self, profiles: list[str]):
@@ -4573,38 +4598,52 @@ class DarlingTest(WestCommand):
             passthrough=unknown,
         )
 
-        runtime_profiles = []
+        runtime_groups: list[dict] = []
         if not args.list:
-            runtime_profiles = self._selected_ctest_runtime_profiles(build, label_args)
-            for profile in args.with_runtime_profile:
-                if profile not in runtime_profiles:
-                    runtime_profiles.append(profile)
-            try:
-                compose_ctest_runtime_profiles(
-                    self._ctest_runtime_profile_definitions(), runtime_profiles
-                )
-            except ValueError as error:
-                self.die(f"invalid CTest runtime profile selection: {error}")
-        self.inf(f"running: {' '.join(ctest)}")
+            runtime_groups = self._selected_ctest_runtime_groups(
+                build, label_args, unknown, args.with_runtime_profile
+            )
         needs_prefix = (
             ctest_uses_prefix(env=args.env, list_only=args.list)
-            or bool(runtime_profiles)
+            or any(group["profiles"] for group in runtime_groups)
         )
-        with self._prefix_resource_context(needs_prefix):
-            with self._ctest_runtime_profile_context(runtime_profiles):
-                self._clear_ctest_failure_record(build)
-                result = run_bounded(
-                    ctest,
-                    cwd=Path(self.topdir),
-                    env=None,
-                    timeout_seconds=int(args.ctest_timeout_seconds),
+        commands: list[tuple[list[str], list[str]]] = []
+        if args.list or not runtime_groups:
+            commands.append((ctest, []))
+        else:
+            for group in runtime_groups:
+                try:
+                    group_passthrough = ctest_runtime_group_passthrough(unknown)
+                except ValueError as error:
+                    self.die(f"invalid CTest passthrough selection: {error}")
+                group_ctest = ctest_command(
+                    build,
+                    passthrough=[
+                        *group_passthrough,
+                        "-R",
+                        ctest_test_name_regex(group["tests"]),
+                    ],
                 )
-        if result.timed_out:
-            self.err(
-                "CTest selection timed out after "
-                f"{args.ctest_timeout_seconds}s"
-            )
-        rc = result.returncode
+                commands.append((group_ctest, group["profiles"]))
+        with self._prefix_resource_context(needs_prefix):
+            self._clear_ctest_failure_record(build)
+            rc = 0
+            for command, profiles in commands:
+                profile_text = ", ".join(profiles) if profiles else "no runtime deployment"
+                self.inf(f"running ({profile_text}): {' '.join(command)}")
+                with self._ctest_runtime_profile_context(profiles):
+                    result = run_bounded(
+                        command,
+                        cwd=Path(self.topdir),
+                        env=None,
+                        timeout_seconds=int(args.ctest_timeout_seconds),
+                    )
+                if result.timed_out:
+                    self.err(
+                        "CTest selection timed out after "
+                        f"{args.ctest_timeout_seconds}s"
+                    )
+                rc = rc or result.returncode
         if getattr(self, "_prefix_cleanup_failed", False):
             rc = rc or 1
         raise SystemExit(rc)

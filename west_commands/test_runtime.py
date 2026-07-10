@@ -118,6 +118,95 @@ def compose_ctest_runtime_profiles(
     }
 
 
+def partition_ctest_runtime_profiles(
+    definitions: dict[str, dict[str, Any]],
+    selections: list[dict[str, Any]],
+    additional_profiles: list[str] | None = None,
+) -> list[dict[str, Any]]:
+    """Plan isolated CTest lifecycles for the exact selected tests.
+
+    A suite can contain guest cases whose artifacts are built from different
+    patch profiles. Those source trees cannot be combined, but their cases can
+    run predictably in separate deploy/restore lifecycles under one prefix
+    lock. Keeping this planner pure makes its validation independently testable.
+    """
+
+    extra = list(dict.fromkeys(additional_profiles or []))
+    unknown = [name for name in extra if name not in definitions]
+    if unknown:
+        raise ValueError(f"unknown runtime profile(s): {', '.join(unknown)}")
+
+    groups: dict[str | None, dict[str, Any]] = {}
+    for selection in selections:
+        name = selection.get("name")
+        profiles = list(dict.fromkeys(selection.get("profiles", [])))
+        darling = bool(selection.get("darling"))
+        if not isinstance(name, str) or not name:
+            raise ValueError("CTest runtime selection needs a non-empty test name")
+        unknown = [profile for profile in profiles if profile not in definitions]
+        if unknown:
+            raise ValueError(
+                f"CTest test {name!r} declares unknown runtime profile(s): "
+                + ", ".join(unknown)
+            )
+        if darling and not profiles:
+            raise ValueError(
+                f"Darling CTest test {name!r} needs an explicit runtime-profile label"
+            )
+        source_profile = None
+        if profiles:
+            sources = {definitions[profile]["source-profile"] for profile in profiles}
+            if len(sources) != 1:
+                raise ValueError(
+                    f"CTest test {name!r} declares incompatible runtime source profiles: "
+                    + ", ".join(
+                        f"{profile}={definitions[profile]['source-profile']}"
+                        for profile in profiles
+                    )
+                )
+            source_profile = sources.pop()
+        group = groups.setdefault(
+            source_profile,
+            {"source-profile": source_profile, "profiles": [], "tests": []},
+        )
+        group["tests"].append(name)
+        for profile in profiles:
+            if profile not in group["profiles"]:
+                group["profiles"].append(profile)
+
+    runtime_groups = [group for group in groups.values() if group["source-profile"]]
+    if extra:
+        if not runtime_groups:
+            raise ValueError(
+                "--with-runtime-profile needs at least one selected CTest runtime-profile"
+            )
+        extra_sources = {definitions[profile]["source-profile"] for profile in extra}
+        if len(extra_sources) != 1:
+            raise ValueError(
+                "--with-runtime-profile declarations must share one source profile: "
+                + ", ".join(
+                    f"{profile}={definitions[profile]['source-profile']}" for profile in extra
+                )
+            )
+        extra_source = extra_sources.pop()
+        matching = [group for group in runtime_groups if group["source-profile"] == extra_source]
+        if not matching:
+            raise ValueError(
+                "--with-runtime-profile source profile does not match any selected CTest runtime: "
+                + extra_source
+            )
+        for group in matching:
+            for profile in extra:
+                if profile not in group["profiles"]:
+                    group["profiles"].append(profile)
+
+    planned: list[dict[str, Any]] = []
+    for group in groups.values():
+        profiles = group["profiles"]
+        planned.append({**group, "definition": compose_ctest_runtime_profiles(definitions, profiles)})
+    return planned
+
+
 def runtime_build_targets(proof: dict[str, Any]) -> list[str]:
     """Return unique Ninja targets from runtime-artifacts in first-seen order."""
 
