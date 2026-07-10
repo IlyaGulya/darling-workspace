@@ -246,6 +246,9 @@ the behavior under test. Pair it with a concrete guest-visible
   use the compact axes. Do not introduce `needs`; use `artifacts` for
   build/deploy outputs, `resources` for caches/oracles/external services, and
   `fixtures` for setup/cleanup state.
+- For top-level product-suite selection, prefer `west test --submodule
+  <west-project-path-or-name>` over spelling raw `submod:*` regexes by hand.
+  Keep submodule label normalization in `west_commands/test_ctest.py`.
 - Use `runner: python` for non-executable Python test files; do not use
   `command:` just to spell `python3 path/to/test.py`.
 - `west patch export` must not create unrelated `patches.yml` formatting churn.

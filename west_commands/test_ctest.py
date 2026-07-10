@@ -6,6 +6,14 @@ from pathlib import Path
 from shlex import quote
 
 
+def ctest_submodule_label_name(submodule: str) -> str:
+    """Return the CTest submodule label suffix for a West project path/name."""
+    name = Path(submodule).name
+    if not name:
+        raise ValueError(f"empty submodule selector: {submodule!r}")
+    return name
+
+
 def ctest_label_args(build_dir: Path, label: str) -> list[str]:
     return [
         "ctest",
@@ -28,6 +36,7 @@ def ctest_selector_label_args(
     diag: str | None = None,
     label: str | None = None,
     changed_submodules: list[str] | None = None,
+    submodules: list[str] | None = None,
 ) -> list[str]:
     args: list[str] = []
     if bead:
@@ -38,8 +47,13 @@ def ctest_selector_label_args(
         args += ["-L", f"diag:{diag}"]
     if label:
         args += ["-L", label]
-    if changed_submodules:
-        alternation = "|".join(f"submod:{name}" for name in changed_submodules)
+    submodule_names: list[str] = []
+    for selector in [*(changed_submodules or []), *(submodules or [])]:
+        name = ctest_submodule_label_name(selector)
+        if name not in submodule_names:
+            submodule_names.append(name)
+    if submodule_names:
+        alternation = "|".join(f"submod:{name}" for name in submodule_names)
         args += ["-L", alternation]
     return args
 
