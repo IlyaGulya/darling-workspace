@@ -271,6 +271,10 @@ function(add_compat_test)
         if(DARLING_TEST_BUNDLE_ROOT)
           list(APPEND exec_args --bundle-root "${DARLING_TEST_BUNDLE_ROOT}")
         endif()
+        if(env STREQUAL "darling")
+          list(APPEND exec_args --capture-command
+            "'${_ADD_COMPAT_TEST_ROOT}/scripts/capture-darling-prefix-timeout.sh'")
+        endif()
         if(diag STREQUAL "forensic")
           # Full capture: gdb backtrace + whole process tree. Expensive/large;
           # opt-in only. (rpctrace stays off even here unless asked separately.)

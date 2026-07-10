@@ -77,6 +77,8 @@ grep -q 'darling/guest_arg_contract.*"--timeout-seconds" "17"' "$guarded_ctest_f
 	{ cat "$guarded_ctest_file" >&2; exit 1; }
 grep -q 'DARLING_GUEST_TIMEOUT_SECONDS=27' "$guarded_ctest_file" ||
 	{ cat "$guarded_ctest_file" >&2; exit 1; }
+grep -q 'capture-darling-prefix-timeout.sh' "$guarded_ctest_file" ||
+	{ cat "$guarded_ctest_file" >&2; exit 1; }
 grep -q 'TIMEOUT "27"' "$guarded_ctest_file" ||
 	{ cat "$guarded_ctest_file" >&2; exit 1; }
 
