@@ -1,5 +1,5 @@
 path	head	branch	origin	worktree
-.	e713e788b26d0332fb45f18bee6de920da85f092	fix/mldr-compact-fd-band-current	git@github.com:IlyaGulya/darling.git	dirty
+.	93ba455b8e3d8ee3d04c712b3579c3d5b5e78fb7	fix/mldr-compact-fd-band-current	git@github.com:IlyaGulya/darling.git	dirty
 src/external/AvailabilityVersions	e28c029a8fa46fa933cbf6d6d9a1c00978c5fad1	DETACHED	git@github.com:IlyaGulya/darling-AvailabilityVersions	clean
 src/external/BerkeleyDB	1411173f0eb71f96ab6134de4e052d16acb8c673	DETACHED	git@github.com:IlyaGulya/darling-BerkeleyDB.git	clean
 src/external/DSTools	e015256b16965ac032412f2277c608c7213c03b3	DETACHED	git@github.com:IlyaGulya/darling-DSTools.git	clean
@@ -52,7 +52,7 @@ src/external/csu	93b25cf0930a727b44fa50893bffd71056ad032f	DETACHED	git@github.co
 src/external/cups	51b7c251ef5ff81adc20284544394de8cc2e1315	DETACHED	git@github.com:IlyaGulya/darling-cups.git	clean
 src/external/curl	92f54fd7eceabed2c2382a4acc0f7293dedd92ff	DETACHED	git@github.com:IlyaGulya/darling-curl.git	clean
 src/external/darling-dmg	1a6de10c5886c40a414090701b2520bd0417ce29	DETACHED	git@github.com:IlyaGulya/darling-dmg.git	clean
-src/external/darlingserver	6856e3321a96583a5a9806082db520f6c7fb8315	fix/eunion-runtime-prefix	git@github.com:IlyaGulya/darlingserver.git	clean
+src/external/darlingserver	6340d81f5470c928e96a55ac8da402a3504e5698	fix/eunion-runtime-prefix	git@github.com:IlyaGulya/darlingserver.git	clean
 src/external/dbuskit	890e51fda949e4dd2c46765e39074f790c10ca18	DETACHED	git@github.com:IlyaGulya/darling-dbuskit.git	clean
 src/external/doc_cmds	60c6a2b858abe1f27b441f479aad2b0a9d0f9ba2	DETACHED	git@github.com:IlyaGulya/darling-doc_cmds.git	clean
 src/external/dtrace	4f52343b36756e32a81eb302242ac6472e9075fa	DETACHED	git@github.com:IlyaGulya/darling-dtrace.git	clean
@@ -90,13 +90,13 @@ src/external/liblzma	855ebc93f8208ae4b6e77a018d4ba4a4be4d2ab7	DETACHED	git@githu
 src/external/libmalloc	a57991e2651226a675654bd96e5d9ab6bec288c5	DETACHED	git@github.com:IlyaGulya/darling-libmalloc.git	clean
 src/external/libnetwork	56c5fad43f24a40d8ca7f8a1d0badedfeaf7e64e	DETACHED	git@github.com:IlyaGulya/darling-libnetwork.git	clean
 src/external/libnotify	98156d3f847a3ced6c5f52c12a889047bc4f9b20	DETACHED	git@github.com:IlyaGulya/darling-Libnotify.git	clean
-src/external/libplatform	6a71adae2108910bc6f77a05b2bff8947b049121	integration/homebrew	git@github.com:IlyaGulya/darling-libplatform.git	clean
-src/external/libpthread	7b0200bdf53551c6d4979eda8a7560b4b9572ab0	integration/homebrew	git@github.com:IlyaGulya/darling-libpthread.git	clean
+src/external/libplatform	71d3d9e661ab85581e4ea5fb66af5e691df6f6b9	fix/bzero-return-register	git@github.com:IlyaGulya/darling-libplatform.git	clean
+src/external/libpthread	22aed109147ee29fec3cddf469f2ad1408de27f7	fix/psynch-kernel-return-helper	git@github.com:IlyaGulya/darling-libpthread.git	clean
 src/external/libresolv	cf955392e5449efb269b8b3510c755085fd36a2d	DETACHED	git@github.com:IlyaGulya/darling-libresolv.git	clean
 src/external/libressl-2.2.9	c5e9edb9d82ccf5fde5d8ae32b162fec8fe11318	DETACHED	git@github.com:IlyaGulya/darling-libressl.git	clean
 src/external/libressl-2.5.5	1f663b5bdc9082178717c080e4728fe3e7084de4	DETACHED	git@github.com:IlyaGulya/darling-libressl.git	clean
 src/external/libressl-2.6.5	30826df38d7c0f416158a94e0112c928188e0327	DETACHED	git@github.com:IlyaGulya/darling-libressl.git	clean
-src/external/libressl-2.8.3	fb3669cee40467408716c7d96ec8f31f83bf7aeb	integration/homebrew	git@github.com:IlyaGulya/darling-libressl.git	clean
+src/external/libressl-2.8.3	7599e3e01d3b1a742aa0293123290f267b6eb720	fix/libressl-283-nist-strict-aliasing	git@github.com:IlyaGulya/darling-libressl.git	clean
 src/external/librpcsvc	0cc1d42e53c61446616719597e96b29aeda51eb3	DETACHED	git@github.com:IlyaGulya/darling-librpcsvc.git	clean
 src/external/libstdcxx	73eb757fe23170c372bef17d6de41787c1271c80	DETACHED	git@github.com:IlyaGulya/darling-libstdcxx.git	clean
 src/external/libsystem	08df454b6eb0df9400aa4c39839a7efd6efd2c3c	DETACHED	git@github.com:IlyaGulya/darling-Libsystem.git	clean
@@ -156,7 +156,7 @@ src/external/xar	887bd4f42eb4ac9139a7f621b5811065aa86f3e3	DETACHED	git@github.co
 src/external/xcbuild	a903c6952fc5617816113cbb7b551ac701dba2ff	DETACHED	git@github.com:IlyaGulya/xcbuild.git	clean
 src/external/xcbuild/ThirdParty/googletest	a2b8a8e07628e5fd60644b6dd99c1b5e7d7f1f47	DETACHED	git@github.com:IlyaGulya/googletest.git	clean
 src/external/xcbuild/ThirdParty/linenoise	c894b9e59f02203dbe4e2be657572cf88c4230c3	DETACHED	git@github.com:IlyaGulya/linenoise.git	clean
-src/external/xnu	a6bb8d7f2d446c2c2fca53a7ba3064e3d68d75d5	fix/eunion-mkdir-opaque-runtime	git@github.com:IlyaGulya/darling-xnu.git	clean
+src/external/xnu	014ae062d051cfdd48a0095f3cc05b19900a20ca	fix/select-pselect-fdset	git@github.com:IlyaGulya/darling-xnu.git	clean
 src/external/zip	caf41ebbc3ebab0250e4d13aa42221ef91a9802c	DETACHED	git@github.com:IlyaGulya/darling-zip.git	clean
 src/external/zlib	677de9b1c2bea1e428f56d8fc63300aa471eaf99	DETACHED	git@github.com:IlyaGulya/darling-zlib.git	clean
 src/external/zsh	4a7a6ebf6216395c7db698a4993db16e484aa54d	DETACHED	git@github.com:IlyaGulya/darling-zsh.git	clean
