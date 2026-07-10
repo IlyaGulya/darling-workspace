@@ -1829,17 +1829,14 @@ class DarlingTest(WestCommand):
                 str(build_dir),
                 *invocation.get("configure_args", []),
             ]
-            try:
-                result = subprocess.run(
-                    args,
-                    cwd=invocation["cwd"],
-                    env=child_env,
-                    capture_output=True,
-                    text=True,
-                    check=False,
-                    timeout=int(invocation.get("timeout_seconds", 600)),
-                )
-            except subprocess.TimeoutExpired:
+            result = run_bounded(
+                args,
+                cwd=invocation["cwd"],
+                env=child_env,
+                timeout_seconds=int(invocation.get("timeout_seconds", 600)),
+                capture_output=True,
+            )
+            if result.timed_out:
                 self.err(f"{invocation['name']}: cmake configure timed out")
                 return 124
             output = result.stdout + result.stderr
@@ -1895,17 +1892,14 @@ class DarlingTest(WestCommand):
                 args = [str(script_path), *case.get("args", [])]
             else:
                 args = ["sh", str(script_path), *case.get("args", [])]
-            try:
-                result = subprocess.run(
-                    args,
-                    cwd=source_root,
-                    env=run_env,
-                    capture_output=True,
-                    text=True,
-                    check=False,
-                    timeout=timeout_seconds,
-                )
-            except subprocess.TimeoutExpired:
+            result = run_bounded(
+                args,
+                cwd=source_root,
+                env=run_env,
+                timeout_seconds=timeout_seconds,
+                capture_output=True,
+            )
+            if result.timed_out:
                 self.err(
                     f"{invocation['name']}:{case['name']}: timed out after "
                     f"{timeout_seconds}s"
@@ -1985,15 +1979,13 @@ class DarlingTest(WestCommand):
             timeout_seconds = int(invocation.get("timeout_seconds", 600))
             for command in [*invocation.get("build_commands", []), *invocation.get("run_commands", [])]:
                 self.inf(f"  source-build-fixture: {command}")
-                try:
-                    result = subprocess.run(
-                        ["/bin/bash", "-lc", command],
-                        cwd=build_root,
-                        env=child_env,
-                        check=False,
-                        timeout=timeout_seconds,
-                    )
-                except subprocess.TimeoutExpired:
+                result = run_bounded(
+                    ["/bin/bash", "-lc", command],
+                    cwd=build_root,
+                    env=child_env,
+                    timeout_seconds=timeout_seconds,
+                )
+                if result.timed_out:
                     self.err(
                         f"  source-build-fixture timed out after "
                         f"{timeout_seconds}s: {command}"
