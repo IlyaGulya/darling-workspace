@@ -1979,8 +1979,11 @@ patches:
       mode: guest-runtime-deploy
       bad-profile: current-minus-patch
       expect-output-contains:
-      - 'semaphore_timedwait failed (internally): -111'
+      - PSYNCH_RETURN_CONTRACT_GUEST_OLD_POSITIVE_RETURN
       - WEST_GUEST_SHELL_RC=1
+      expect-output-lacks:
+      - WEST_GUEST_SHELL_RC=124
+      - WEST_GUEST_SHELL_RC=137
       source-modules:
       - darling/src/external/darlingserver
       - darling/src/external/libpthread
@@ -2004,15 +2007,9 @@ patches:
     repo: darling-workspace
     script: tests/psynch_return_contract_guest.c
     ok-marker: PSYNCH_RETURN_CONTRACT_GUEST_OK
-    timeout-seconds: 60
-    guest-prelude: export PTHREAD_MUTEX_USE_ULOCK=0
-    link-flags:
-    - -lpthread
+    timeout-seconds: 20
     requires:
     - darling-prefix
-    host-trace-files:
-    - env: DSERVER_PSYNCH_TRACE_FILE
-      prefix-relative-path: private/var/tmp/psynch-return-contract.trace
     note: >-
       Guest RED/GREEN runtime gate for the xnu syscall boundary: west builds
       current-minus-patch system_kernel with profile libpthread for RED, then
