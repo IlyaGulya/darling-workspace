@@ -16,6 +16,8 @@
 #     ENVS          host                     # host;darling;macos (one ctest entry each)
 #     BEAD          dar-gwn.5                # owning issue -> label bead:dar-gwn.5
 #     SUBMODULES    xnu                      # code this covers -> label submod:xnu
+#     FUZZ                                   # label fuzz:true
+#     STRESS                                 # label stress:true
 #     DIAG          guarded                  # bare|guarded|forensic (see below)
 #     TIMEOUT       60                       # per-test seconds (default 60)
 #     WILL_FAIL                              # negative case: non-zero == pass
@@ -74,7 +76,7 @@ set(DARLING_TEST_PREFIX "${DARLING_TEST_PREFIX}" CACHE PATH
   "Darling prefix exported to env=darling tests as DPREFIX/DARLING_PREFIX")
 
 function(add_compat_test)
-  set(options WILL_FAIL INSTALL)
+  set(options WILL_FAIL INSTALL FUZZ STRESS)
   set(oneValue NAME SOURCE BEAD DIAG WORKDIR TIMEOUT MIN_VERSION MAX_VERSION)
   set(multiValue ENVS SUBMODULES EXTRA_SOURCES INCLUDES DEFINES LIBS RESOURCES ARGS)
   cmake_parse_arguments(ACT "${options}" "${oneValue}" "${multiValue}" ${ARGN})
@@ -230,6 +232,12 @@ function(add_compat_test)
     foreach(sm IN LISTS ACT_SUBMODULES)
       list(APPEND labels "submod:${sm}")
     endforeach()
+    if(ACT_FUZZ)
+      list(APPEND labels "fuzz:true")
+    endif()
+    if(ACT_STRESS)
+      list(APPEND labels "stress:true")
+    endif()
     # Version-range label so `west test --label macos:13.0` (or a CI matrix row)
     # can select the slice a case applies to. Darling reports one fixed version
     # (its SystemVersion.plist), so its run is compared against the matching row.

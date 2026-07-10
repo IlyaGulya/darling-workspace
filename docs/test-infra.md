@@ -726,6 +726,8 @@ west test --submodule xnu       # -L submod:xnu
 west test --env host            # restrict environment
 west test --env darling --prefix-profile homebrew
 west test --diag guarded        # restrict diagnosis tier
+west test --fuzz                # restrict to fuzz:* labelled jobs
+west test --stress              # restrict to stress:* labelled jobs
 west test --list                # show selection, no run
 west test --gc --keep-last 20 --max-bundle-mb 64   # prune debug bundles
 west test ... -j8 --output-junit r.xml   # passthrough to ctest

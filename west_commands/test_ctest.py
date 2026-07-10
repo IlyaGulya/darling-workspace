@@ -35,6 +35,8 @@ def ctest_selector_label_args(
     env: str | None = None,
     diag: str | None = None,
     label: str | None = None,
+    fuzz: bool = False,
+    stress: bool = False,
     changed_submodules: list[str] | None = None,
     submodules: list[str] | None = None,
 ) -> list[str]:
@@ -47,6 +49,10 @@ def ctest_selector_label_args(
         args += ["-L", f"diag:{diag}"]
     if label:
         args += ["-L", label]
+    if fuzz:
+        args += ["-L", "fuzz:"]
+    if stress:
+        args += ["-L", "stress:"]
     submodule_names: list[str] = []
     for selector in [*(changed_submodules or []), *(submodules or [])]:
         name = ctest_submodule_label_name(selector)

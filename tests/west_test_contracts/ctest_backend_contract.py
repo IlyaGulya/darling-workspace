@@ -34,6 +34,8 @@ labels = ctest_selector_label_args(
     env="host",
     diag="guarded",
     label="macos:15",
+    fuzz=True,
+    stress=True,
     changed_submodules=["xnu", "darlingserver"],
     submodules=["darling/src/external/libplatform", "xnu"],
 )
@@ -46,6 +48,10 @@ assert labels == [
     "diag:guarded",
     "-L",
     "macos:15",
+    "-L",
+    "fuzz:",
+    "-L",
+    "stress:",
     "-L",
     "submod:xnu|submod:darlingserver|submod:libplatform",
 ]
