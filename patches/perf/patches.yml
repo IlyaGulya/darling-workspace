@@ -67,6 +67,11 @@ patches:
   - name: mldr_compact_fd_band_guest
     use: guest-c-runtime-red
     artifacts: mldr-runtime
+    red-proof:
+      mode: guest-runtime-deploy
+      bad-profile: current-minus-patch
+      expect-output-contains:
+      - unexpected guest NOFILE
     script: tests/mldr_compact_fd_band_guest.c
     ok-marker: WEST_MLDR_COMPACT_FD_BAND_OK
     timeout-seconds: 60
@@ -111,11 +116,8 @@ patches:
         - system_kernel
         deploy:
         - usr/lib/system/libsystem_kernel.dylib
-      - module: darling/src/external/dyld
-        build-targets:
-        - src/external/dyld/dyld
-        deploy:
-        - usr/lib/dyld
+      expect-output-contains:
+      - host stat delta too small for per_call.dserver_callnum_ring_attach.count
     runner: guest-c-fixture
     repo: darling-workspace
     script: tests/shmem_ring_mach_ops_guest.c
@@ -154,6 +156,11 @@ patches:
     use: guest-command-runtime-red
     artifacts: dyld-runtime
     resources: dcc6-smoke-cache
+    red-proof:
+      mode: guest-runtime-deploy
+      bad-profile: current-minus-patch
+      expect-output-contains:
+      - "output missing 'dyld[DCC2]: enabled'"
     timeout-seconds: 90
     guest-env-vars:
       DYLD_PRINT_SEGMENTS: '1'
@@ -183,6 +190,8 @@ patches:
         - src/external/dyld/dyld
         deploy:
         - usr/lib/dyld
+      expect-output-contains:
+      - "output missing 'DCC2: cache path unset'"
     runner: guest-command-fixture
     repo: darling-workspace
     guest-command: /usr/bin/true
@@ -210,6 +219,8 @@ patches:
         - src/external/dyld/dyld
         deploy:
         - usr/lib/dyld
+      expect-output-contains:
+      - "output missing 'DCC2: cache invalid/stale'"
     runner: guest-command-fixture
     repo: darling-workspace
     guest-command: /usr/bin/true
@@ -335,11 +346,8 @@ patches:
         - system_kernel
         deploy:
         - usr/lib/system/libsystem_kernel.dylib
-      - module: darling/src/external/dyld
-        build-targets:
-        - src/external/dyld/dyld
-        deploy:
-        - usr/lib/dyld
+      expect-output-contains:
+      - child stdin probe failed
     runner: guest-c-fixture
     repo: darling-workspace
     script: tests/j7e7_postfork_stdin_guest.c

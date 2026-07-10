@@ -190,6 +190,22 @@ with tempfile.TemporaryDirectory() as temp:
     )
 
 test = make_test()
+test._bundle_root = "/tmp/west-test-contract-no-bundles"
+invocation = {"name": "runtime_red_reason_without_bundle"}
+assert test._check_guest_runtime_red_failure(
+    {"expect-output-contains": ["captured old runtime symptom"]},
+    invocation,
+    since=time.time() - 10,
+    captured_output="runner stderr\ncaptured old runtime symptom\n",
+)
+assert not test._check_guest_runtime_red_failure(
+    {"expect-output-contains": ["different failure"]},
+    invocation,
+    since=time.time() - 10,
+    captured_output="runner stderr\ncaptured old runtime symptom\n",
+)
+
+test = make_test()
 assert not test._guest_runtime_red_has_positive_reason({})
 assert not test._guest_runtime_red_has_positive_reason({"expect-output-contains": []})
 assert not test._guest_runtime_red_has_positive_reason({"expect-output-contains": [""]})
@@ -488,7 +504,9 @@ with tempfile.TemporaryDirectory() as temp:
     test._runtime_red_build_artifacts = fake_build
     test._resource_context = fake_resource_context
     test._run_invocation = fake_run
-    test._check_guest_runtime_red_failure = lambda _proof, _invocation, *, since: True
+    test._check_guest_runtime_red_failure = (
+        lambda _proof, _invocation, *, since, captured_output=None: True
+    )
 
     patch = {"path": "xnu/example.patch", "module": "darling/src/external/xnu"}
     proof = {
