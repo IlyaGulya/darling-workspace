@@ -4,8 +4,10 @@ from __future__ import annotations
 
 import os
 import errno
+import signal
 import stat
 import subprocess
+import time
 from collections import Counter
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -157,11 +159,127 @@ def prefix_mount_targets(
     return targets
 
 
+def _parse_fuser_pids(output: str) -> set[int]:
+    pids: set[int] = set()
+    for token in output.replace(":", " ").split():
+        if "/" in token:
+            continue
+        digits = "".join(ch for ch in token if ch.isdigit())
+        if digits:
+            pids.add(int(digits))
+    return pids
+
+
+def _pid_argv(pid: int) -> list[str]:
+    try:
+        raw = (Path("/proc") / str(pid) / "cmdline").read_bytes()
+    except OSError:
+        return []
+    return [part.decode(errors="replace") for part in raw.split(b"\0") if part]
+
+
+def _is_darling_runtime_process(pid: int, *, argv: list[str] | None = None) -> bool:
+    if argv is None:
+        argv = _pid_argv(pid)
+    if not argv:
+        try:
+            name = (Path("/proc") / str(pid) / "comm").read_text(errors="replace").strip()
+        except OSError:
+            return False
+    else:
+        name = Path(argv[0]).name
+    return name in {"darling", "darlingserver", "mldr", "vchroot"}
+
+
+def _prefix_mount_holder_pids(
+    targets: list[Path],
+    *,
+    runner=subprocess.run,
+) -> set[int]:
+    pids: set[int] = set()
+    for target in targets:
+        completed = runner(
+            ["fuser", "-m", str(target)],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        if completed.returncode not in (0, 1):
+            continue
+        pids.update(_parse_fuser_pids(f"{completed.stdout}\n{completed.stderr}"))
+    return pids
+
+
+def _terminate_pids(
+    pids: set[int],
+    *,
+    result: PrefixRepairResult,
+    kill_func=os.kill,
+    sleep_func=time.sleep,
+) -> None:
+    if not pids:
+        return
+    for sig in (signal.SIGTERM, signal.SIGKILL):
+        live: set[int] = set()
+        for pid in sorted(pids):
+            try:
+                kill_func(pid, 0)
+                live.add(pid)
+            except ProcessLookupError:
+                continue
+            except PermissionError:
+                live.add(pid)
+        if not live:
+            return
+        for pid in sorted(live):
+            try:
+                kill_func(pid, sig)
+            except ProcessLookupError:
+                continue
+            except PermissionError as error:
+                result.problems.append(f"cannot kill Darling prefix process {pid}: {error}")
+        result.changed.append(
+            f"sent {signal.Signals(sig).name} to Darling prefix process(es): "
+            f"{', '.join(str(pid) for pid in sorted(live))}"
+        )
+        sleep_func(1)
+
+
+def cleanup_prefix_processes_for_mounts(
+    targets: list[Path],
+    *,
+    runner=subprocess.run,
+    kill_func=os.kill,
+    sleep_func=time.sleep,
+    argv_for_pid=_pid_argv,
+) -> PrefixRepairResult:
+    result = PrefixRepairResult()
+    holder_pids = _prefix_mount_holder_pids(targets, runner=runner)
+    darling_pids = {
+        pid
+        for pid in holder_pids
+        if _is_darling_runtime_process(pid, argv=argv_for_pid(pid))
+    }
+    if not darling_pids:
+        result.ok.append("no Darling runtime processes hold prefix mounts")
+        return result
+    _terminate_pids(
+        darling_pids,
+        result=result,
+        kill_func=kill_func,
+        sleep_func=sleep_func,
+    )
+    return result
+
+
 def cleanup_prefix_mounts(
     prefix: Path,
     *,
     runner=subprocess.run,
     mountinfo_path: Path = Path("/proc/self/mountinfo"),
+    kill_func=os.kill,
+    sleep_func=time.sleep,
+    argv_for_pid=_pid_argv,
 ) -> PrefixRepairResult:
     result = PrefixRepairResult()
     targets = prefix_mount_targets(prefix, mountinfo_path=mountinfo_path)
@@ -171,6 +289,8 @@ def cleanup_prefix_mounts(
 
     counts = Counter(targets)
     ordered_targets = sorted(counts, key=lambda item: len(item.parts), reverse=True)
+    failed_targets: list[Path] = []
+    failed_details: dict[Path, str] = {}
     for target in ordered_targets:
         unmounted = 0
         for _ in range(counts[target]):
@@ -193,17 +313,41 @@ def cleanup_prefix_mounts(
                 unmounted += 1
                 continue
             detail = completed.stderr.strip() or completed.stdout.strip() or f"rc={completed.returncode}"
-            result.problems.append(
-                f"failed to unmount {target} ({counts[target]} mount(s)): {detail}"
-            )
+            failed_targets.append(target)
+            failed_details[target] = detail
             break
         if unmounted == 1:
             result.changed.append(f"unmounted {target}")
         elif unmounted:
             result.changed.append(f"unmounted {target} ({unmounted} mount(s))")
+
+    if failed_targets:
+        process_cleanup = cleanup_prefix_processes_for_mounts(
+            failed_targets,
+            runner=runner,
+            kill_func=kill_func,
+            sleep_func=sleep_func,
+            argv_for_pid=argv_for_pid,
+        )
+        result.extend(process_cleanup)
+        if process_cleanup.changed:
+            for target in sorted(set(failed_targets), key=lambda item: len(item.parts), reverse=True):
+                completed = runner(
+                    ["umount", str(target)],
+                    capture_output=True,
+                    text=True,
+                    check=False,
+                )
+                if completed.returncode == 0:
+                    result.changed.append(f"unmounted {target} after killing Darling process(es)")
     remaining = prefix_mount_targets(prefix, mountinfo_path=mountinfo_path)
     if remaining:
         for target in remaining:
+            if target in failed_details:
+                result.problems.append(
+                    f"failed to unmount {target} ({counts[target]} mount(s)): "
+                    f"{failed_details[target]}"
+                )
             result.problems.append(f"still mounted under prefix: {target}")
     return result
 
