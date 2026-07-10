@@ -386,7 +386,16 @@ class DarlingTest(WestCommand):
                         patch_file = profile_dir / patch["path"]
                         self.inf(f"  apply {stacked}/{patch['path']}")
                         subprocess.run(
-                            ["git", "-c", "gc.auto=0", "am", "--3way", str(patch_file)],
+                            [
+                                "git",
+                                "-c",
+                                "gc.auto=0",
+                                "-c",
+                                "maintenance.auto=false",
+                                "am",
+                                "--3way",
+                                str(patch_file),
+                            ],
                             cwd=target,
                             check=True,
                         )
@@ -3299,6 +3308,8 @@ fi
                         "git",
                         "-c",
                         "gc.auto=0",
+                        "-c",
+                        "maintenance.auto=false",
                         "am",
                         "--3way",
                         "--committer-date-is-author-date",
