@@ -1824,7 +1824,10 @@ class DarlingTest(WestCommand):
 
         timeout_seconds = int(invocation.get("timeout_seconds", 600))
         for case in invocation.get("cases", []):
-            args = ["sh", str(script_path), *case.get("args", [])]
+            if os.access(script_path, os.X_OK):
+                args = [str(script_path), *case.get("args", [])]
+            else:
+                args = ["sh", str(script_path), *case.get("args", [])]
             try:
                 result = subprocess.run(
                     args,

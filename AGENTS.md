@@ -81,6 +81,8 @@ refs, PR drafts, and agent handoff.
   tree under test. Use `runner: source-script-fixture` only for scripts that
   already belong to the source tree in both RED and GREEN; do not use it for a
   script introduced by the patch, because RED would only prove "file missing".
+  Executable source scripts are run through their shebang; non-executable ones
+  fall back to `sh`.
   Prefer `red-proof: {mode: source-base}` when a regression can be proven
   against the bad source tree. `red-proof: {mode: self}` must include
   `why-self:` and is only for tests with an explicit bad/good behavioral model,
