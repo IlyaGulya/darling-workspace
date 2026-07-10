@@ -618,7 +618,7 @@ writing a bespoke framework:
 - **darling-testsuite** (the upstream Darling effort) already chose
   **CMake + CTest + Ninja** and ships its own loader-level test library
   (`darling-nostdlib`, `darling-directsyscall`, ObjC/CF assertions, XML report).
-  Cases are `add_test()` entries, negative cases use `WILL_FAIL`, test names are
+  Cases are `add_test()` entries; upstream negative cases can use `WILL_FAIL`, test names are
   hierarchical via `DARLING_PATH`/`DARLING_IDENTIFIER`. Cases are MIT-0 so they
   can also be compiled and run on real macOS.
   <https://github.com/darlinghq/darling-testsuite>
@@ -626,7 +626,7 @@ writing a bespoke framework:
 Takeaway: the runner = a thin layer over the build system's native test driver.
 For Darling that build system is CMake, so the native driver is **CTest** —
 isomorphic to gVisor-on-Bazel. CTest gives discovery (`--show-only=json-v1`),
-labels (`-L`), parallelism, `WILL_FAIL`, JUnit (`--output-junit`),
+labels (`-L`), parallelism, JUnit (`--output-junit`),
 `RESOURCE_LOCK` (serialise tests that share one prefix), and fixtures
 (setup/teardown) for free.
 
@@ -641,6 +641,12 @@ labels (`-L`), parallelism, `WILL_FAIL`, JUnit (`--output-junit`),
 
 CTest is the right backend even designing from scratch; that it matches the
 upstream choice is a bonus that removes politics, not the reason.
+
+Our testkit intentionally does **not** expose CTest `WILL_FAIL`: it accepts any
+non-zero exit, including an unrelated compiler, launcher, or timeout failure.
+Use `EXPECT_FAILURE_MARKER` on `add_compat_test()` instead. The shared wrapper
+requires both a non-zero exit and the declared fixed output marker before it
+returns success to CTest.
 
 ## Design
 
