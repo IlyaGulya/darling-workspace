@@ -192,6 +192,9 @@ refs, PR drafts, and agent handoff.
   thin compatibility entrypoints only; do not grow them with embedded Python
   heredocs or large inline fixtures unless the test is intentionally exercising
   shell/CLI integration.
+- `tests/run-west-test-testkit-contract.sh` is the focused CLI contract for the
+  local CTest/testkit bridge; update it when changing testkit registration or
+  top-level CTest selectors.
 - Darling guest tests should prefer `requires: [darling-prefix]` over
   `requires-env: [DPREFIX]`; let `west test --prefix/--prefix-profile` provide
   `DPREFIX`.

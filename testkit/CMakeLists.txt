@@ -20,6 +20,46 @@ if(NOT DEFINED DARLING_SRC)
   get_filename_component(_ws_parent "${CMAKE_CURRENT_SOURCE_DIR}/../.." ABSOLUTE)
   set(DARLING_SRC "${_ws_parent}/darling")
 endif()
+
+# ---------------------------------------------------------------------------
+# dar-dar6x4-perf-5dq.1 — shell-gate migration for the mldr checkin wait.
+#
+# The original Darling regression script builds thread_create_checkin_wait.c,
+# proves the old sched_yield spin path fails, then runs the futex/adaptive wait
+# path. Register the same source in CTest directly: one normal GREEN entry and
+# one WILL_FAIL RED arm selected by argv `spin`.
+# ---------------------------------------------------------------------------
+set(_thread_checkin_wait
+  "${DARLING_SRC}/tests/regression/thread_create_checkin_wait.c")
+if(EXISTS "${_thread_checkin_wait}")
+  add_compat_test(
+    NAME       mldr_thread_create_checkin_wait
+    SOURCE     "${_thread_checkin_wait}"
+    LIBS       Threads::Threads
+    ENVS       host
+    BEAD       dar-dar6x4-perf-5dq.1
+    SUBMODULES darling
+    DIAG       bare
+    TIMEOUT    5
+  )
+
+  add_compat_test(
+    NAME       mldr_thread_create_checkin_wait_spin_red
+    SOURCE     "${_thread_checkin_wait}"
+    LIBS       Threads::Threads
+    ENVS       host
+    BEAD       dar-dar6x4-perf-5dq.1
+    SUBMODULES darling
+    DIAG       bare
+    TIMEOUT    5
+    ARGS       spin
+    WILL_FAIL
+  )
+else()
+  message(WARNING
+    "darling checkout missing ${_thread_checkin_wait}; skipping "
+    "dar-dar6x4-perf-5dq.1")
+endif()
 set(_mldr "${DARLING_SRC}/src/startup/mldr")
 
 # ---------------------------------------------------------------------------
