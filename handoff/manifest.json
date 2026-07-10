@@ -97,7 +97,7 @@
         },
         {
           "branch": "integration/arch",
-          "head": "11377f458a659a3794a60c14b55f5588ce67eacf",
+          "head": "ef8429103cfd792e05449eeaf3607622838984b8",
           "upstream": "",
           "source_ref": "refs/heads/integration/arch"
         },
@@ -294,6 +294,12 @@
           "source_ref": "refs/heads/fix/j7e7-postfork-reset-gate"
         },
         {
+          "branch": "fix/message-ctrunc-reject",
+          "head": "d231a7cdacd1b643e1941b6dcde9f83f135484dc",
+          "upstream": "",
+          "source_ref": "refs/heads/fix/message-ctrunc-reject"
+        },
+        {
           "branch": "fix/microthread-resume-race",
           "head": "a99d52248f437be96239a22c8ce5f58fbf32d221",
           "upstream": "origin/main",
@@ -385,7 +391,7 @@
         },
         {
           "branch": "integration/arch",
-          "head": "fcb9f33f721772b358a2077dbe7da938b5474f3b",
+          "head": "d231a7cdacd1b643e1941b6dcde9f83f135484dc",
           "upstream": "",
           "source_ref": "refs/heads/integration/arch"
         },
