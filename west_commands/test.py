@@ -71,7 +71,7 @@ from test_runtime import (
     runtime_build_targets,
     runtime_deploy_targets,
 )
-from test_worktrees import prune_stale_west_temp_worktrees
+from test_worktrees import prune_stale_west_temp_worktrees, remove_temporary_worktree
 
 
 class InvocationResult:
@@ -400,16 +400,18 @@ class DarlingTest(WestCommand):
                 # /tmp; restore the caller's handler immediately afterwards.
                 previous_sigint = signal.signal(signal.SIGINT, signal.SIG_IGN)
                 try:
+                    cleanup_errors = []
                     for repo, target in reversed(added):
-                        subprocess.run(
-                            ["git", "worktree", "remove", "--force", str(target)],
-                            cwd=repo,
-                            check=False,
-                            stdout=subprocess.DEVNULL,
-                            stderr=subprocess.DEVNULL,
-                        )
+                        error = remove_temporary_worktree(repo, target)
+                        if error:
+                            cleanup_errors.append(error)
                 finally:
                     signal.signal(signal.SIGINT, previous_sigint)
+                if cleanup_errors:
+                    self.die(
+                        f"{profile}: failed to remove temporary profile worktree(s): "
+                        f"{'; '.join(cleanup_errors)}"
+                    )
 
     @contextmanager
     def _profile_checkout(self, profile: str):
@@ -3575,13 +3577,9 @@ fi
             raise
         finally:
             if not keep_on_failure:
-                subprocess.run(
-                    ["git", "worktree", "remove", "--force", str(target)],
-                    cwd=module_repo,
-                    check=False,
-                    stdout=subprocess.DEVNULL,
-                    stderr=subprocess.DEVNULL,
-                )
+                error = remove_temporary_worktree(module_repo, target)
+                if error:
+                    self.die(f"failed to remove GREEN source worktree: {error}")
                 shutil.rmtree(temp, ignore_errors=True)
 
     def _apply_red_source_patches(self, proof, module_label: str, target: Path) -> None:

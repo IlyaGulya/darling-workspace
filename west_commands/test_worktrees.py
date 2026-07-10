@@ -70,3 +70,24 @@ def prune_stale_west_temp_worktrees(
         )
         pruned.extend(stale)
     return pruned
+
+
+def remove_temporary_worktree(
+    repo: Path,
+    target: Path,
+    *,
+    runner: Runner = subprocess.run,
+) -> str | None:
+    """Remove one disposable worktree or return its actionable Git diagnostic."""
+
+    result = runner(
+        ["git", "worktree", "remove", "--force", str(target)],
+        cwd=repo,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if result.returncode == 0:
+        return None
+    detail = (result.stdout + result.stderr).strip()
+    return f"{target} (rc={result.returncode}){': ' + detail if detail else ''}"
