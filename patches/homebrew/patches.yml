@@ -1792,11 +1792,9 @@ patches:
     coverage-tier: compile
     runs: host
     diag: bare
-    red: true
-    red-proof:
-      mode: source-base
-      source-env: XNU_SRC_ROOT
     runner: c-fixture
+    requires-profile: homebrew
+    source-root-module: darling/src/external/xnu
     repo: darling-workspace
     script: tests/getattrlist_pack_contract.c
     include-dirs:
@@ -1829,17 +1827,14 @@ patches:
       expect-output-contains:
       - 'getattrlist: Invalid argument (22)'
       - ORACLE_RC=2
+      source-modules:
+      - darling/src/external/darlingserver
       runtime-artifacts:
       - module: darling/src/external/xnu
         build-targets:
         - system_kernel
         deploy:
         - usr/lib/system/libsystem_kernel.dylib
-      - module: darling/src/external/dyld
-        build-targets:
-        - src/external/dyld/dyld
-        deploy:
-        - usr/lib/dyld
     runner: guest-c-fixture
     repo: darling-workspace
     script: tests/getattrlist_name_objtype_guest.c
@@ -1873,11 +1868,9 @@ patches:
     coverage-tier: compile
     runs: host
     diag: bare
-    red: true
-    red-proof:
-      mode: source-base
-      source-env: XNU_SRC_ROOT
     runner: c-fixture
+    requires-profile: homebrew
+    source-root-module: darling/src/external/xnu
     repo: darling-workspace
     script: tests/getattrlist_pack_contract.c
     include-dirs:
@@ -1900,6 +1893,23 @@ patches:
     coverage-tier: runtime
     runs: guest
     diag: guarded
+    red: true
+    red-proof:
+      mode: guest-runtime-deploy
+      bad-profile: current-minus-patch
+      current-minus-skip-patches:
+      - xnu/getattrlist-shared-packer.patch
+      expect-output-contains:
+      - full count=-1
+      - ORACLE_RC=1
+      source-modules:
+      - darling/src/external/darlingserver
+      runtime-artifacts:
+      - module: darling/src/external/xnu
+        build-targets:
+        - system_kernel
+        deploy:
+        - usr/lib/system/libsystem_kernel.dylib
     runner: guest-c-fixture
     repo: darling-workspace
     script: tests/getattrlistbulk_guest.c

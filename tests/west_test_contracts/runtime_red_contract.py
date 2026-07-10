@@ -52,6 +52,44 @@ def make_test():
     return test
 
 
+with tempfile.TemporaryDirectory() as temp:
+    tempdir = Path(temp)
+    workspace = tempdir / "workspace"
+    source_module = tempdir / "source-module"
+    workspace.mkdir()
+    (source_module / "include").mkdir(parents=True)
+    (source_module / "include" / "module_contract.h").write_text(
+        "#pragma once\n#define WEST_SOURCE_ROOT_MODULE_VALUE 42\n"
+    )
+    script = workspace / "fixture.c"
+    script.write_text(
+        "#include <module_contract.h>\n"
+        "int main(void) { return WEST_SOURCE_ROOT_MODULE_VALUE == 42 ? 0 : 1; }\n"
+    )
+
+    source_root_test = make_test()
+    source_root_test._project_path = lambda ref: {
+        "workspace": workspace,
+        "source-module": source_module,
+    }[ref]
+    assert source_root_test._run_c_fixture(
+        {
+            "name": "source_root_module_contract",
+            "diag": "bare",
+            "cwd": workspace,
+            "script_path": script,
+            "cc": os.environ.get("CC", "cc"),
+            "compile_flags": ["-std=gnu11", "-Wall", "-Wextra", "-Werror"],
+            "fixture_include_dirs": [],
+            "include_dirs": ["include"],
+            "stub_headers": [],
+            "generated_headers": {},
+            "source_files": [],
+            "source_root_module": "source-module",
+        }
+    ) == 0
+
+
 proof_plan = {
     "bad-profile": "current-minus-patch",
     "source-modules": ["darling/src/external/darlingserver"],
