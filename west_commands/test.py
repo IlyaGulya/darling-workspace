@@ -632,7 +632,7 @@ class DarlingTest(WestCommand):
                 "source_env": source_env,
                 "source_module": source_module,
             }
-        if runner in {"script", "source-contract-script"}:
+        if runner in {"script", "source-contract-script", "self-contract-script"}:
             repo = test.get("repo", patch["module"])
             script = test["script"]
             script_args = [str(arg) for arg in test.get("args", [])]
@@ -644,8 +644,8 @@ class DarlingTest(WestCommand):
                     for key, value in test["env-vars"].items()
                 ) + " "
             display_args = " ".join(quote(arg) for arg in args)
-            if runner == "source-contract-script":
-                display = f"cd {quote(repo)} && <source-contract-script> {prefix}{display_args}"
+            if runner in {"source-contract-script", "self-contract-script"}:
+                display = f"cd {quote(repo)} && <{runner}> {prefix}{display_args}"
             else:
                 display = f"cd {quote(repo)} && {prefix}{display_args}"
             env = None

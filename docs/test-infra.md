@@ -396,6 +396,11 @@ Plain `runner: script` remains an escape hatch for tests with special process,
 trace, or runtime orchestration. New source-base shell contracts should use
 `source-contract-script` instead of generic `script`.
 
+Use `runner: self-contract-script` for host scripts whose RED proof is fully
+self-contained in the test itself: the script runs an explicit bad/model arm and
+requires it to fail, then runs the fixed/current arm and requires it to pass.
+These tests must declare `red: true` and `red-proof: {mode: self, why-self: ...}`.
+
 Use `runs: guest` for tests that execute inside Darling. The compact form
 expands to the low-level `requires: [darling-prefix]` envelope, and `west test`
 then supplies `DPREFIX` from `--prefix`, `--prefix existing:/path`,
