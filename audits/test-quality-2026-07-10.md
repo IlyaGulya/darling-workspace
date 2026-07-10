@@ -5,11 +5,11 @@ Scope:
 - `patches/arch/patches.yml`
 - normalized through `west_commands.test_manifest.load_test_profile`
 
-Current raw metadata inventory after the `source-contract-script` migration:
+Current raw metadata inventory after the structured runner migrations:
 - 146 test rows total: 132 homebrew, 14 arch
-- runners: 52 `guest-c-fixture`, 35 `c-fixture`, 21 `source-contract-script`, 10 `source-script-fixture`, 9 `self-contract-script`, 4 `guest-runtime-script`, 4 `object-symbol-fixture`, 3 `script`, 3 `python`, 2 `west-build`, 1 each `darling-cmake-target-fixture`, `source-build-fixture`, `cmake-configure-fixture`, and 1 ctest-label shorthand row
+- runners: 52 `guest-c-fixture`, 35 `c-fixture`, 21 `source-contract-script`, 10 `source-script-fixture`, 9 `self-contract-script`, 4 `guest-runtime-script`, 4 `object-symbol-fixture`, 3 `source-profile-script`, 3 `python`, 2 `west-build`, 1 `source-build-fixture`, 1 `cmake-configure-fixture`, and 1 ctest-label shorthand row
 - env: recalculated by `west patch check` as behavioral coverage: homebrew 78 covered, arch 13 covered
-- red proof modes: 56 `source-base`, 22 `guest-runtime-deploy`, 10 `self`, 57 non-red/no proof rows, 1 compact shorthand row
+- red proof modes: 56 `source-base`, 22 `guest-runtime-deploy`, 10 `self`, 58 non-red/no proof rows
 
 Implemented quality gates in this pass:
 - `west patch check --quality`
@@ -49,30 +49,47 @@ Fixed by this audit:
   made the first E-UNION guest C fixture explicitly `guest-c-fixture`, and
   added `runner: guest-runtime-script` for the remaining guest/runtime
   orchestration scripts that cannot yet be expressed as `guest-c-fixture`.
+- Added `runner: source-profile-script` for source-base shell contracts whose
+  test script is introduced by the patch/profile itself. This materializes the
+  GREEN profile source tree first, runs the profile-owned test asset from that
+  tree, and points `red-proof.source-env` at the bad/source-base tree for RED.
+  The final three generic main `runner: script` entries were migrated:
+  `darlingserver/psynch-cvwait-balanced.patch`,
+  `xnu/psynch-cvsignal-args.patch`, and
+  `xnu/psynch-negative-errno.patch`.
+- Reviewed the two runtime-sensitive compile-only XNU patches:
+  - `xnu/fork-postfork-child.patch`: keep as compile-tier. The invariant is
+    exact production `sys_fork()` child-path ordering (`__mldr_postfork_child`
+    before guard/socket refresh/checkin, and no child hooks on parent/error
+    paths). A guest smoke test would only observe indirect fork lifecycle
+    symptoms and would not prove the call-order regression more directly.
+    Broader deployed fork lifecycle validation belongs to dar-q95.29.9 /
+    dar-r7fc.2.1.
+  - `xnu/sigexc-debug-flood.patch`: keep as object-symbol compile-tier. The
+    regression is the default object depending on `__simple_kprintf`; the
+    contract proves default builds lack that dependency while `-DDEBUG_SIGEXC`
+    still enables it. A guest log/perf gate would be a noisy indirect oracle;
+    deployed kprintf/log-flood runtime coverage is tracked by
+    dar-sigexc-hotpath-kprintf-runtime-gate-9mpv.
 
 Current automated result:
 - `west patch check --profile homebrew --quality --strict-quality`: no quality warnings
 - `west patch check --profile arch --quality --strict-quality`: no quality warnings
-- `tests/run-west-test-metadata-contract.sh`: includes a synthetic bad profile proving `--strict-quality` rejects an XNU runtime proof that omits materialized darlingserver, and a `source-contract-script` probe proving the runner receives `source-env`.
+- `tests/run-west-test-metadata-contract.sh`: includes a synthetic bad profile proving `--strict-quality` rejects an XNU runtime proof that omits materialized darlingserver, a `source-contract-script` probe proving the runner receives `source-env`, and a real `source-profile-script` RED/GREEN proof where the profile-owned script is absent from the live checkout.
 - Focused E-UNION proof: `west test --profile homebrew --patch xnu/eunion-1-resolve.patch --prove-red` fails on the bad XNU source tree, then passes the GREEN materialized E-UNION suite (`228 tests, 0 failed`).
 - `west test --profile arch --env host`: passes after the arch source-script
   migration and shebang fix.
 
 Remaining quality debt:
-- 3 tests still use `runner: script`. These are patch-added source-base shell
-  assets whose files are absent from the live source checkout unless the patch
-  profile is materialized:
-  - `darlingserver/psynch-cvwait-balanced.patch`
-  - `xnu/psynch-cvsignal-args.patch`
-  - `xnu/psynch-negative-errno.patch`
-  They need either a source-asset materialization model or an explicit
-  exception/rationale; do not blindly convert them to `source-script-fixture`.
-  Tracked as `dar-test-infra-sp5.11.15`.
-- Two XNU patches remain runtime-sensitive but compile-only in current metadata:
-  - `xnu/fork-postfork-child.patch`
-  - `xnu/sigexc-debug-flood.patch`
-  These may be defensible as narrow compile/build contracts, but they need explicit review. If the behavior can be guest-tested without making the proof flaky or artificial, add guest coverage. Otherwise document why compile evidence is the correct tier.
-  Tracked as `dar-test-infra-sp5.11.16`.
+- Main patch metadata in `homebrew` and `arch` now has 0 generic
+  `runner: script` rows. Five nested runtime `red-runner` entries still use
+  `runner: script` as explicit dserverdbg/runtime oracles; these are runtime
+  escape hatches, not source-base contracts.
+- No additional guest tests were added for `xnu/fork-postfork-child.patch` or
+  `xnu/sigexc-debug-flood.patch` because their current compile/object contracts
+  are the direct RED proof. Add deployed guest coverage only when the broader
+  fork lifecycle or kprintf/log-flood tasks provide a stable runtime oracle that
+  fails for the intended reason.
 
 Not treated as current blockers:
 - Existing source-contract tests are source-tier and do not count as behavioral coverage.

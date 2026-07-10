@@ -739,7 +739,14 @@ patches:
     - -Wall
     - -Wextra
     - -Werror
-    note: Compiles production fork.c with fork/RPC stubs and checks the child path calls __mldr_postfork_child before guard/socket refresh/checkin while parent/error paths skip child hooks.
+    note: >-
+      Compiles production fork.c with fork/RPC stubs and checks the child path
+      calls __mldr_postfork_child before guard/socket refresh/checkin while
+      parent/error paths skip child hooks. This remains compile-tier by design:
+      the patch's invariant is the exact sys_fork child-path call ordering, and
+      a guest smoke test would only observe indirect fork lifecycle symptoms.
+      Broader deployed fork runtime validation is owned by the fork lifecycle
+      work (dar-q95.29.9 / dar-r7fc.2.1).
   pr-draft: pr-drafts/xnu-fork-postfork-child.md
   github:
     fork:
@@ -2168,7 +2175,14 @@ patches:
       - -DDEBUG_SIGEXC
       present-undefined-symbols:
       - __simple_kprintf
-    note: Compiles real sigexc.c and verifies the default build has no __simple_kprintf dependency while DEBUG_SIGEXC still enables the debug path.
+    note: >-
+      Compiles real sigexc.c and verifies the default build has no
+      __simple_kprintf dependency while DEBUG_SIGEXC still enables the debug
+      path. This is intentionally object-symbol/compile-tier: the regression is
+      an unconditional debug build dependency, and a guest runtime log/perf gate
+      would be an indirect noisy oracle. Broader deployed kprintf/log-flood
+      runtime coverage is tracked separately by
+      dar-sigexc-hotpath-kprintf-runtime-gate-9mpv.
   pr-draft: pr-drafts/xnu-sigexc-debug-flood.md
   github:
     fork:
