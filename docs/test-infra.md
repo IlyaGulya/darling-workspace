@@ -401,6 +401,12 @@ self-contained in the test itself: the script runs an explicit bad/model arm and
 requires it to fail, then runs the fixed/current arm and requires it to pass.
 These tests must declare `red: true` and `red-proof: {mode: self, why-self: ...}`.
 
+Use `runner: guest-runtime-script` only for guest/runtime orchestration that the
+structured guest fixture cannot express yet: multi-process gates, dserverdbg
+oracles, prefix trace-file checks, or process-lifetime probes. It must declare
+`runs: guest`; west still owns declared prefix resources, trace/temp files, and
+runtime RED deployment.
+
 Use `runs: guest` for tests that execute inside Darling. The compact form
 expands to the low-level `requires: [darling-prefix]` envelope, and `west test`
 then supplies `DPREFIX` from `--prefix`, `--prefix existing:/path`,

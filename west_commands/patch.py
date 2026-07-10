@@ -343,6 +343,7 @@ class DarlingPatch(WestCommand):
             runner = test.get("runner")
             if runner and runner not in {
                 "script",
+                "guest-runtime-script",
                 "self-contract-script",
                 "source-contract-script",
                 "python",
@@ -363,6 +364,7 @@ class DarlingPatch(WestCommand):
             if test.get("script") and runner not in {
                 None,
                 "script",
+                "guest-runtime-script",
                 "self-contract-script",
                 "source-contract-script",
                 "python",
@@ -372,7 +374,7 @@ class DarlingPatch(WestCommand):
                 "source-build-fixture",
             }:
                 errors.append(
-                    f"tests[{index}] script requires runner: script, self-contract-script, source-contract-script, python, c-fixture, guest-c-fixture, object-symbol-fixture, or source-build-fixture"
+                    f"tests[{index}] script requires runner: script, guest-runtime-script, self-contract-script, source-contract-script, python, c-fixture, guest-c-fixture, object-symbol-fixture, or source-build-fixture"
                 )
             if test.get("script"):
                 repo_ref = test.get("repo", patch["module"])
@@ -499,6 +501,10 @@ class DarlingPatch(WestCommand):
                     errors.append(
                         f"tests[{index}] self-contract-script requires red: true and red-proof mode: self"
                     )
+            if runner == "guest-runtime-script":
+                runs = test.get("runs") or test.get("env")
+                if runs not in {"guest", "darling"}:
+                    errors.append(f"tests[{index}] guest-runtime-script requires runs: guest")
             if runner == "cmake-configure-fixture":
                 for key in ("configure-args", "marker-files"):
                     if test.get(key) is not None and not isinstance(test.get(key), list):
@@ -596,8 +602,10 @@ class DarlingPatch(WestCommand):
             required_resources = test.get("requires") if isinstance(test.get("requires"), list) else []
             if test.get("host-trace-files") is not None:
                 traces = test.get("host-trace-files")
-                if runner not in {"guest-c-fixture", "script"}:
-                    errors.append(f"tests[{index}] host-trace-files requires runner: guest-c-fixture or script")
+                if runner not in {"guest-c-fixture", "guest-runtime-script", "script"}:
+                    errors.append(
+                        f"tests[{index}] host-trace-files requires runner: guest-c-fixture, guest-runtime-script, or script"
+                    )
                 elif not isinstance(traces, list) or not traces:
                     errors.append(f"tests[{index}] host-trace-files must be a non-empty list")
                 elif not all(isinstance(trace, dict) for trace in traces):
@@ -631,8 +639,10 @@ class DarlingPatch(WestCommand):
                             )
             if test.get("host-temp-files") is not None:
                 temps = test.get("host-temp-files")
-                if runner not in {"guest-c-fixture", "script"}:
-                    errors.append(f"tests[{index}] host-temp-files requires runner: guest-c-fixture or script")
+                if runner not in {"guest-c-fixture", "guest-runtime-script", "script"}:
+                    errors.append(
+                        f"tests[{index}] host-temp-files requires runner: guest-c-fixture, guest-runtime-script, or script"
+                    )
                 elif not isinstance(temps, list) or not temps:
                     errors.append(f"tests[{index}] host-temp-files must be a non-empty list")
                 elif not all(isinstance(temp_file, dict) for temp_file in temps):
@@ -689,8 +699,10 @@ class DarlingPatch(WestCommand):
                 files = test.get("eunion-template-files")
                 if "darling-eunion-prefix" not in required_resources:
                     errors.append(f"tests[{index}] eunion-template-files requires darling-eunion-prefix")
-                elif runner not in {"guest-c-fixture", "script"}:
-                    errors.append(f"tests[{index}] eunion-template-files requires runner: guest-c-fixture or script")
+                elif runner not in {"guest-c-fixture", "guest-runtime-script", "script"}:
+                    errors.append(
+                        f"tests[{index}] eunion-template-files requires runner: guest-c-fixture, guest-runtime-script, or script"
+                    )
                 elif not isinstance(files, list) or not files:
                     errors.append(f"tests[{index}] eunion-template-files must be a non-empty list")
                 elif not all(isinstance(item, dict) for item in files):
@@ -715,8 +727,10 @@ class DarlingPatch(WestCommand):
                 files = test.get("eunion-upper-files")
                 if "darling-eunion-prefix" not in required_resources:
                     errors.append(f"tests[{index}] eunion-upper-files requires darling-eunion-prefix")
-                elif runner not in {"guest-c-fixture", "script"}:
-                    errors.append(f"tests[{index}] eunion-upper-files requires runner: guest-c-fixture or script")
+                elif runner not in {"guest-c-fixture", "guest-runtime-script", "script"}:
+                    errors.append(
+                        f"tests[{index}] eunion-upper-files requires runner: guest-c-fixture, guest-runtime-script, or script"
+                    )
                 elif not isinstance(files, list) or not files:
                     errors.append(f"tests[{index}] eunion-upper-files must be a non-empty list")
                 elif not all(isinstance(item, dict) for item in files):
@@ -776,9 +790,14 @@ class DarlingPatch(WestCommand):
                                 errors.append(
                                     f"tests[{index}] red-proof {key} must be a string or list of strings"
                                 )
-                    if runner not in {"guest-c-fixture", "guest-command-fixture", "script"}:
+                    if runner not in {
+                        "guest-c-fixture",
+                        "guest-command-fixture",
+                        "guest-runtime-script",
+                        "script",
+                    }:
                         errors.append(
-                            f"tests[{index}] red-proof guest-runtime-deploy requires runner: guest-c-fixture, guest-command-fixture, or script"
+                            f"tests[{index}] red-proof guest-runtime-deploy requires runner: guest-c-fixture, guest-command-fixture, guest-runtime-script, or script"
                         )
                     elif runner == "script" and not (
                         {"darling-prefix", "darling-eunion-prefix"} & set(required_resources)

@@ -7,7 +7,7 @@ Scope:
 
 Current raw metadata inventory after the `source-contract-script` migration:
 - 146 test rows total: 132 homebrew, 14 arch
-- runners: 51 `guest-c-fixture`, 35 `c-fixture`, 20 `source-contract-script`, 10 `source-script-fixture`, 9 `self-contract-script`, 9 `script`, 4 `object-symbol-fixture`, 3 `python`, 2 `west-build`, 1 each `darling-cmake-target-fixture`, `source-build-fixture`, `cmake-configure-fixture`, and 1 ctest-label shorthand row
+- runners: 52 `guest-c-fixture`, 35 `c-fixture`, 21 `source-contract-script`, 10 `source-script-fixture`, 9 `self-contract-script`, 4 `guest-runtime-script`, 4 `object-symbol-fixture`, 3 `script`, 3 `python`, 2 `west-build`, 1 each `darling-cmake-target-fixture`, `source-build-fixture`, `cmake-configure-fixture`, and 1 ctest-label shorthand row
 - env: recalculated by `west patch check` as behavioral coverage: homebrew 78 covered, arch 13 covered
 - red proof modes: 56 `source-base`, 22 `guest-runtime-deploy`, 10 `self`, 57 non-red/no proof rows, 1 compact shorthand row
 
@@ -45,6 +45,10 @@ Fixed by this audit:
   self-contained in the script, and migrated 9 homebrew self-proof shell
   contracts to it. This keeps the existing execution model but removes another
   group from the generic script escape hatch.
+- Migrated one arch source-base shell contract to `source-contract-script`,
+  made the first E-UNION guest C fixture explicitly `guest-c-fixture`, and
+  added `runner: guest-runtime-script` for the remaining guest/runtime
+  orchestration scripts that cannot yet be expressed as `guest-c-fixture`.
 
 Current automated result:
 - `west patch check --profile homebrew --quality --strict-quality`: no quality warnings
@@ -55,7 +59,14 @@ Current automated result:
   migration and shebang fix.
 
 Remaining quality debt:
-- 9 tests still use `runner: script`. Some are acceptable thin wrappers, but this remains the largest source of ad hoc behavior. They should be migrated class-by-class into structured runners/profiles or explicitly documented as script-only exceptions.
+- 3 tests still use `runner: script`. These are patch-added source-base shell
+  assets whose files are absent from the live source checkout unless the patch
+  profile is materialized:
+  - `darlingserver/psynch-cvwait-balanced.patch`
+  - `xnu/psynch-cvsignal-args.patch`
+  - `xnu/psynch-negative-errno.patch`
+  They need either a source-asset materialization model or an explicit
+  exception/rationale; do not blindly convert them to `source-script-fixture`.
   Tracked as `dar-test-infra-sp5.11.15`.
 - Two XNU patches remain runtime-sensitive but compile-only in current metadata:
   - `xnu/fork-postfork-child.patch`
