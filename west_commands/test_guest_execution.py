@@ -3,9 +3,15 @@
 from __future__ import annotations
 
 import subprocess
+import tempfile
 from pathlib import Path
+from shlex import quote
+from typing import Callable
 
-from test_execution import ProcessResult, run_bounded
+try:
+    from .test_execution import ProcessResult, run_bounded
+except ImportError:  # Loaded as a West extension module, not a package.
+    from test_execution import ProcessResult, run_bounded
 
 
 def run_guest_shell(
@@ -64,3 +70,97 @@ def shutdown_guest_prefix(
         stdout=subprocess.DEVNULL,
         stderr=subprocess.DEVNULL,
     )
+
+
+def run_guest_command_fixture(
+    invocation: dict,
+    *,
+    env: dict[str, str],
+    prefix: str | None,
+    resolve_launcher: Callable[[str | None], str | None],
+    die: Callable[[str], None],
+    err: Callable[[str], None],
+    record_failure_phase: Callable[[dict, str], None],
+) -> int:
+    """Run a normalized guest command and validate its observable contract."""
+
+    resolved_prefix = env.get("DPREFIX") or prefix
+    if not resolved_prefix:
+        die(f"{invocation['name']}: guest-command-fixture needs DPREFIX")
+    launcher = (
+        env.get("DARLING_LAUNCHER")
+        or env.get("DARLING")
+        or resolve_launcher(resolved_prefix)
+    )
+    if not launcher:
+        die(f"{invocation['name']}: guest-command-fixture needs a Darling launcher")
+
+    guest_env_setup = "\n".join(
+        f"export {key}={quote(value)}"
+        for key, value in invocation.get("guest_env_vars", {}).items()
+    ) or ":"
+    guest_script = f"""set -u
+{guest_env_setup}
+{invocation["guest_command"]}
+"""
+    timeout_seconds = int(invocation.get("timeout_seconds", 600))
+    with tempfile.TemporaryDirectory(prefix=f"west-guest-command-{invocation['name']}-") as temp:
+        tempdir = Path(temp)
+        stdout_path = tempdir / "stdout.log"
+        stderr_path = tempdir / "stderr.log"
+        with stdout_path.open("w", encoding="utf-8") as stdout_file, stderr_path.open(
+            "w", encoding="utf-8"
+        ) as stderr_file:
+            result = run_guest_shell(
+                str(launcher),
+                resolved_prefix,
+                guest_script,
+                cwd=Path(invocation["cwd"]),
+                env=env,
+                timeout_seconds=timeout_seconds,
+                stdout=stdout_file,
+                stderr=stderr_file,
+            )
+            stdout_file.flush()
+            stderr_file.flush()
+
+        output = stdout_path.read_text(errors="replace") + stderr_path.read_text(
+            errors="replace"
+        )
+    if output:
+        print(output, end="" if output.endswith("\n") else "\n")
+    expect = invocation.get("expect") or {}
+    if result.timed_out:
+        if expect.get("returncode") == "timeout":
+            for needle in expect.get("output-contains", []):
+                if str(needle) not in output:
+                    err(f"{invocation['name']}: output missing {needle!r}")
+                    return 1
+            return 0
+        err(
+            f"{invocation['name']}: guest command watchdog timed out after "
+            f"{timeout_seconds}s"
+        )
+        record_failure_phase(invocation, "run")
+        return result.returncode
+
+    returncode = result.returncode
+    rc_mode = expect.get("returncode", 0)
+    if rc_mode == "timeout":
+        err(f"{invocation['name']}: guest command returned before expected timeout")
+        return 1
+    if rc_mode == "nonzero" and returncode == 0:
+        err(f"{invocation['name']}: guest command succeeded unexpectedly")
+        return 1
+    if rc_mode != "any" and rc_mode != "nonzero" and returncode != int(rc_mode):
+        err(f"{invocation['name']}: guest command rc {returncode}, want {rc_mode}")
+        return 1
+    for needle in expect.get("output-contains", []):
+        if str(needle) not in output:
+            err(f"{invocation['name']}: output missing {needle!r}")
+            return 1
+    for needle in expect.get("output-lacks", []):
+        if str(needle) in output:
+            err(f"{invocation['name']}: output unexpectedly contains {needle!r}")
+            return 1
+    return 0
