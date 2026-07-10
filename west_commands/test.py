@@ -393,14 +393,21 @@ class DarlingTest(WestCommand):
                 yield
             finally:
                 self._project_overrides = previous_overrides
-                for repo, target in reversed(added):
-                    subprocess.run(
-                        ["git", "worktree", "remove", "--force", str(target)],
-                        cwd=repo,
-                        check=False,
-                        stdout=subprocess.DEVNULL,
-                        stderr=subprocess.DEVNULL,
-                    )
+                # A Ctrl-C can arrive while the command is unwinding. Do not let
+                # it interrupt the worktree removals and leave a live profile in
+                # /tmp; restore the caller's handler immediately afterwards.
+                previous_sigint = signal.signal(signal.SIGINT, signal.SIG_IGN)
+                try:
+                    for repo, target in reversed(added):
+                        subprocess.run(
+                            ["git", "worktree", "remove", "--force", str(target)],
+                            cwd=repo,
+                            check=False,
+                            stdout=subprocess.DEVNULL,
+                            stderr=subprocess.DEVNULL,
+                        )
+                finally:
+                    signal.signal(signal.SIGINT, previous_sigint)
 
     @contextmanager
     def _profile_checkout(self, profile: str):
