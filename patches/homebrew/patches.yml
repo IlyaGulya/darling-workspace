@@ -483,11 +483,6 @@ patches:
         - system_kernel
         deploy:
         - usr/lib/system/libsystem_kernel.dylib
-      - module: darling/src/external/dyld
-        build-targets:
-        - src/external/dyld/dyld
-        deploy:
-        - usr/lib/dyld
     runner: guest-c-fixture
     repo: darling-workspace
     script: tests/psynch_cvsignal_args_guest.c
@@ -587,6 +582,8 @@ patches:
       expect-output-contains:
       - pselect high fd failed
       - errno=14
+      source-modules:
+      - darling/src/external/darlingserver
       runtime-artifacts:
       - module: darling/src/external/xnu
         build-targets:
@@ -774,6 +771,8 @@ patches:
       expect-output-contains:
       - ORACLE_RC=124
       - process.fork_wait result=timed_out
+      source-modules:
+      - darling/src/external/darlingserver
       runtime-artifacts:
       - module: darling/src/external/xnu
         build-targets:
@@ -4060,17 +4059,14 @@ patches:
       expect-output-contains:
       - 'mkdir /private/var/tmp/west-eunion-mkdir-opaque/recreate failed: File exists'
       - ORACLE_RC=1
+      source-modules:
+      - darling/src/external/darlingserver
       runtime-artifacts:
       - module: darling/src/external/xnu
         build-targets:
         - system_kernel
         deploy:
         - usr/lib/system/libsystem_kernel.dylib
-      - module: darling/src/external/dyld
-        build-targets:
-        - src/external/dyld/dyld
-        deploy:
-        - usr/lib/dyld
     runner: guest-c-fixture
     repo: darling-workspace
     script: tests/eunion_mkdir_opaque_guest.c
