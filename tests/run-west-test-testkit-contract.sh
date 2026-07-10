@@ -27,6 +27,10 @@ printf '%s\n' "$list_by_submodule" | grep -q 'host/mldr_thread_create_checkin_wa
 list_guest="$(west test --bead dar-cps --env darling --list)"
 printf '%s\n' "$list_guest" | grep -q 'darling/abort_with_payload_no_group_broadcast' ||
 	{ printf '%s\n' "$list_guest" >&2; exit 1; }
+dar_cps_json="$(ctest --test-dir testkit/build --show-only=json-v1 \
+	-L 'bead:dar-cps' -L 'env:darling')"
+printf '%s\n' "$dar_cps_json" | grep -q 'runtime-profile:homebrew' ||
+	{ printf '%s\n' "$dar_cps_json" >&2; exit 1; }
 
 list_select_guest="$(west test --bead dar-q95.3 --env darling --list)"
 printf '%s\n' "$list_select_guest" | grep -q 'darling/select_fdset_guest' ||

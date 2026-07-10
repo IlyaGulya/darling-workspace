@@ -81,9 +81,26 @@ set(DARLING_TEST_BUNDLE_ROOT "${DARLING_TEST_BUNDLE_ROOT}" CACHE PATH
 
 function(add_compat_test)
   set(options INSTALL FUZZ STRESS)
-  set(oneValue NAME SOURCE BEAD DIAG WORKDIR TIMEOUT MIN_VERSION MAX_VERSION OK_MARKER EXPECT_FAILURE_MARKER RUNTIME_PROFILE)
-  set(multiValue ENVS SUBMODULES EXTRA_SOURCES INCLUDES DEFINES LIBS RESOURCES ARGS)
+  set(oneValue NAME SOURCE BEAD DIAG WORKDIR TIMEOUT MIN_VERSION MAX_VERSION RUNTIME_PROFILE)
+  set(multiValue ENVS SUBMODULES EXTRA_SOURCES INCLUDES DEFINES LIBS RESOURCES ARGS OK_MARKER EXPECT_FAILURE_MARKER)
   cmake_parse_arguments(ACT "${options}" "${oneValue}" "${multiValue}" ${ARGN})
+
+  # CMake uses ';' as its list separator. Verdict lines are arbitrary product
+  # output and commonly contain it, so reconstruct marker values after parsing
+  # instead of forcing every test author to know CMake escaping rules.
+  string(JOIN ";" act_ok_marker ${ACT_OK_MARKER})
+  string(JOIN ";" act_expect_failure_marker ${ACT_EXPECT_FAILURE_MARKER})
+  set(marker_dir "${CMAKE_CURRENT_BINARY_DIR}/west-test-markers")
+  if(act_ok_marker)
+    file(MAKE_DIRECTORY "${marker_dir}")
+    set(ok_marker_file "${marker_dir}/${ACT_NAME}.ok")
+    file(WRITE "${ok_marker_file}" "${act_ok_marker}\n")
+  endif()
+  if(act_expect_failure_marker)
+    file(MAKE_DIRECTORY "${marker_dir}")
+    set(expect_failure_marker_file "${marker_dir}/${ACT_NAME}.red")
+    file(WRITE "${expect_failure_marker_file}" "${act_expect_failure_marker}\n")
+  endif()
 
   if(NOT ACT_NAME OR NOT ACT_SOURCE)
     message(FATAL_ERROR "add_compat_test: NAME and SOURCE are required")
@@ -176,8 +193,8 @@ function(add_compat_test)
     elseif(env STREQUAL "darling")
       if(DARLING_LAUNCHER)
         set(guest_marker_args)
-        if(ACT_OK_MARKER)
-          list(APPEND guest_marker_args --ok-marker "${ACT_OK_MARKER}")
+        if(act_ok_marker)
+          list(APPEND guest_marker_args --ok-marker-file "${ok_marker_file}")
         endif()
         set(cmd
           "${_ADD_COMPAT_TEST_ROOT}/scripts/run-darling-c-test.sh"
@@ -241,10 +258,10 @@ function(add_compat_test)
     # CTest's WILL_FAIL only inverts the exit status. A RED case instead needs
     # a specific observed symptom so unrelated launcher/build failures cannot
     # be accepted as regression evidence.
-    if(ACT_EXPECT_FAILURE_MARKER)
+    if(act_expect_failure_marker)
       set(cmd
         "${_ADD_COMPAT_TEST_ROOT}/scripts/expect-failure.sh"
-        --marker "${ACT_EXPECT_FAILURE_MARKER}"
+        --marker-file "${expect_failure_marker_file}"
         -- ${cmd})
     endif()
 

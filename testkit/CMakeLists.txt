@@ -106,6 +106,7 @@ if(EXISTS "${_abort_with_payload_guest}")
     ENVS       darling
     BEAD       dar-cps
     SUBMODULES xnu
+    RUNTIME_PROFILE homebrew
     TIMEOUT    30
     OK_MARKER  "GREEN: abort_with_payload stayed local to the child; parent survived"
   )
