@@ -1,0 +1,33 @@
+diff --git a/src/process.cpp b/src/process.cpp
+index 8ac0a59..bd3a9b7 100644
+--- a/src/process.cpp
++++ b/src/process.cpp
+@@ -24,6 +24,7 @@
+ #include <unistd.h>
+ #include <sys/uio.h>
+ #include <darlingserver/logging.hpp>
++#include <darlingserver/test-diagnostics.hpp>
+ 
+ #include <fstream>
+ #include <regex>
+@@ -375,7 +376,19 @@ void DarlingServer::Process::notifyCheckin(Architecture architecture) {
+ 		// notify the parent process (if we have one) that we've arrived
+ 		if (auto parent = _parentProcess.lock()) {
+ 			processLog.info() << *this << ": notifying fork parent " << *parent << " after checkin" << processLog.endLog;
+-			dtape_semaphore_up(parent->_dtapeForkWaitSemaphore);
++			TestDiagnostics::traceLine(
++				"process.checkin.fork_notify_parent child=" + std::to_string(nsid()) +
++				" parent=" + std::to_string(parent->nsid())
++			);
++			std::string targetedFault = "fork.skip_checkin_semaphore parent=" + std::to_string(parent->nsid());
++			if (TestDiagnostics::consumeFault(targetedFault.c_str())) {
++				TestDiagnostics::traceLine(
++					"process.checkin.fork_skip_semaphore child=" + std::to_string(nsid()) +
++					" parent=" + std::to_string(parent->nsid())
++				);
++			} else {
++				dtape_semaphore_up(parent->_dtapeForkWaitSemaphore);
++			}
+ 			parent->_notifyListeningKqchannels(NOTE_FORK, nsid());
+ 		} else {
+ 			processLog.info() << *this << ": checkin without registered fork parent" << processLog.endLog;

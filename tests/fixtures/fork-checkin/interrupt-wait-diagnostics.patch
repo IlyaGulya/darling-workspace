@@ -1,0 +1,18 @@
+diff --git a/src/process.cpp b/src/process.cpp
+index bd3a9b7..0dc8ab1 100644
+--- a/src/process.cpp
++++ b/src/process.cpp
+@@ -408,6 +408,13 @@ bool DarlingServer::Process::waitForChildAfterFork() {
+ 	processLog.info() << *this << ": waiting up to " << ForkCheckinWaitTimeoutSeconds
+ 			<< " seconds for fork child checkin" << processLog.endLog;
+ 
++	std::string interruptFault = "fork.interrupt_wait parent=" + std::to_string(nsid());
++	if (TestDiagnostics::consumeFault(interruptFault.c_str())) {
++		TestDiagnostics::traceLine(
++			"process.fork_wait.force_interrupted parent=" + std::to_string(nsid())
++		);
++		return false;
++	}
+ 	switch (waitForForkCheckin(_dtapeForkWaitSemaphore)) {
+ 		case ForkCheckinWaitResult::Observed:
+ 			processLog.info() << *this << ": fork child checkin observed" << processLog.endLog;
