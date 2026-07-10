@@ -65,6 +65,10 @@ patches:
     runner: source-profile-script
     script: tests/psynch_cvwait_sequence_contract.sh
     note: Source-level RED->GREEN contract that balanced equal cvwait sequences are accepted and stale sequences still log context.
+  test-exception:
+    reason: source-contract-only
+    scope: psynch-cvwait source shape; no isolated host or guest execution path exists
+    note: Keep the RED source differential as a drift guard, but do not count it as behavioral coverage until dar-q95.1 gains a direct psynch runtime oracle.
   pr-draft: pr-drafts/darlingserver-psynch-cvwait-balanced.md
   github:
     fork:
@@ -432,6 +436,7 @@ patches:
   publication-blocker: test-only runtime instrumentation; keep local until a supported upstream diagnostics interface is designed
   test-exception:
     reason: test-instrumentation
+    scope: opt-in DSERVER_PSYNCH_TRACE_FILE runtime diagnostic hook
     note: >-
       This patch adds an opt-in DSERVER_PSYNCH_TRACE_FILE hook used by
       xnu/psynch-cvsignal-args.patch's guest runtime proof. It is not product
@@ -3638,6 +3643,7 @@ patches:
   tests:
   - name: eunion_16_host_suite
     kind: unit
+    coverage-tier: host
     runs: host
     diag: bare
     red: true
@@ -3780,6 +3786,7 @@ patches:
   publication-blocker: E-UNION proof-of-concept. fchown/fchownat/lchown are entirely under #if 0 (return 0, no mutation) and so SAFE today, but un-stubbing any of them adds an instant template-corruption path — for a lower-only target the expanded path is the shared lower template, so the chown mutates ownership for ALL prefixes. Adds warning comments to each stub naming the required copy-up before re-enabling, and keeps the path-based NULL guards outside the disabled fchownat/lchown bodies so the full patchset still returns EFAULT for NULL paths instead of stub success. Covered by xnu/vchroot-pathnull-guard.patch's full-profile contract.
   test-exception:
     reason: covered-by-vchroot-pathnull-guard
+    scope: documentation-only E-UNION chown stub note
     note: The only executable change preserves the path-null EFAULT contract exercised by tests/vchroot_pathnull_guard_contract.c against the full applied profile.
   github:
     fork:
@@ -3938,6 +3945,7 @@ patches:
   publication-blocker: E-UNION proof-of-concept (comment-only). Centralizes a provenance/license header at the top of the EUNION region naming each borrowed-idea source with its license and URL — gVisor overlay (Apache-2.0) for the copy-up/whiteout/opaque/readdir-merge algorithms and the Linux overlayfs docs for semantics — and states that no third-party code is copied or translated (the new C is under this file's existing license) and that PRoot (GPL-2) was reviewed but contributes no code or design. Independent reimplementation of ideas only; Apache-2.0 imposes no attribution duty on reimplemented concepts, the credit is for auditability. Inside #ifdef EUNION so OFF builds stay byte-identical; hermetic suite 222/222 green. Local experiment under dar-test-infra-sp5.8.4.4.
   test-exception:
     reason: comment-only
+    scope: provenance and license header only
     note: Adds provenance/license comments inside the EUNION region only; no executable behavior changes.
   github:
     fork:
