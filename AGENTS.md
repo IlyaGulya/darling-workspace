@@ -86,6 +86,9 @@ refs, PR drafts, and agent handoff.
   Use `runner: self-contract-script` for host scripts that contain explicit
   bad/model and fixed/current arms and therefore prove RED through
   `red-proof: {mode: self, why-self: ...}` without mutating source checkouts.
+  Use `runner: guest-runtime-script` for guest/runtime orchestration that is not
+  expressible as `guest-c-fixture` yet, such as dserverdbg gates, trace-file
+  oracles, multi-process lifetime probes, or guarded A0-style acceptance gates.
   Prefer `red-proof: {mode: source-base}` when a regression can be proven
   against the bad source tree. `red-proof: {mode: self}` must include
   `why-self:` and is only for tests with an explicit bad/good behavioral model,
