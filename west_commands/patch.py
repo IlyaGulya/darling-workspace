@@ -23,6 +23,16 @@ import test_manifest
 DEFAULT_EXPORT_MAX_LINES = 200_000
 DEFAULT_EXPORT_MAX_GROWTH = 20
 
+# Patch applicability is checked in throwaway worktrees.  Applying a patch
+# creates short-lived loose objects there, so neither Git's legacy auto-gc nor
+# modern background maintenance should run for this disposable operation.
+TEMPORARY_PATCH_GIT_OPTIONS = (
+    "-c",
+    "gc.auto=0",
+    "-c",
+    "maintenance.auto=false",
+)
+
 
 class ExportPlan(NamedTuple):
     patch: dict
@@ -59,6 +69,22 @@ def git(
     env: dict[str, str] | None = None,
 ) -> str:
     return run(repo, "git", *args, capture=capture, check=check, env=env)
+
+
+def git_for_temporary_patch_application(
+    repo: Path,
+    *args: str,
+    capture: bool = False,
+    check: bool = True,
+) -> str:
+    """Run a Git command that applies a patch in a disposable worktree."""
+    return git(
+        repo,
+        *TEMPORARY_PATCH_GIT_OPTIONS,
+        *args,
+        capture=capture,
+        check=check,
+    )
 
 
 def format_patch_command(patch, commit: str) -> list[str]:
@@ -1702,7 +1728,7 @@ class DarlingPatch(WestCommand):
                 )
                 try:
                     for patch in module_patches:
-                        git(
+                        git_for_temporary_patch_application(
                             worktree,
                             "am",
                             "--3way",
