@@ -62,6 +62,9 @@ with tempfile.TemporaryDirectory() as temp:
     test._ctest_runtime_profile_definitions = lambda: {}
     test._configure_and_build = lambda *_args, **_kwargs: build
     test._prefix_cleanup_failed = False
+    stale_failure_record = build / "Testing" / "Temporary" / "LastTestsFailed.log"
+    stale_failure_record.parent.mkdir(parents=True)
+    stale_failure_record.write_text("darling/stale_failure\n")
     lifecycle = []
 
     @contextmanager
@@ -76,6 +79,7 @@ with tempfile.TemporaryDirectory() as temp:
         recorded.append((args, kwargs))
         if "--show-only=json-v1" in args:
             return ProcessResult(0, stdout=json.dumps({"tests": []}))
+        assert not stale_failure_record.exists(), stale_failure_record
         return ProcessResult(0)
 
     test_module.run_bounded = bounded
@@ -116,6 +120,7 @@ with tempfile.TemporaryDirectory() as temp:
     assert "--show-only=json-v1" in recorded[0][0], recorded
     assert recorded[1][0][0] == "ctest", recorded
     assert recorded[1][1]["timeout_seconds"] == 17, recorded
+    assert not stale_failure_record.exists(), stale_failure_record
 
 
 with tempfile.TemporaryDirectory() as temp:
