@@ -220,3 +220,98 @@ index 450021e69c3b3f1ffa3896124357d2f38509886b..aa3d29141d5129602d07c8e97d521d14
  #endif
  
  #ifndef DARLING
+
+From 7f98ce668fa0356b0b6efb6bec88581a66fd64d2 Mon Sep 17 00:00:00 2001
+From: Ilya Gulya <ilya@gulya.me>
+Date: Sat, 11 Jul 2026 10:20:45 +0000
+Subject: [PATCH] dyld: use raw write for rootless boot trace
+
+---
+ src/dyldInitialization.cpp | 40 ++++++++++++++++++++++++++++++--------
+ 1 file changed, 32 insertions(+), 8 deletions(-)
+
+diff --git a/src/dyldInitialization.cpp b/src/dyldInitialization.cpp
+index aa3d29141d5129602d07c8e97d521d141ddb60d5..f265ad11f5cfca84b9ea4276a800598952c3be5f 100644
+--- a/src/dyldInitialization.cpp
++++ b/src/dyldInitialization.cpp
+@@ -88,12 +88,36 @@ static int rootlessBootTraceFD(const char* const envp[])
+ 	return rootless ? fd : -1;
+ }
+ 
+-static void rootlessBootTrace(int fd, const char* stage)
++static void rootlessBootTrace(int fd, const char* stage, size_t stageLength)
+ {
+ 	if (fd < 0)
+ 		return;
+-	(void)::write(fd, stage, strlen(stage));
++
++#if defined(__x86_64__)
++	long result;
++	__asm__ volatile(
++		"syscall"
++		: "=a"(result)
++		: "a"(1L), "D"((long)fd), "S"(stage), "d"(stageLength)
++		: "rcx", "r11", "memory"
++	);
++	(void)result;
++#elif defined(__aarch64__)
++	register long x0 __asm__("x0") = fd;
++	register const char* x1 __asm__("x1") = stage;
++	register size_t x2 __asm__("x2") = stageLength;
++	register long x8 __asm__("x8") = 64;
++	__asm__ volatile("svc 0" : "+r"(x0) : "r"(x1), "r"(x2), "r"(x8) : "memory");
++#else
++	(void)stage;
++	(void)stageLength;
++#endif
+ }
++
++#define ROOTLESS_BOOT_TRACE(fd, stage) \
++	do { \
++		rootlessBootTrace((fd), (stage), sizeof(stage) - 1); \
++	} while (0)
+ #endif
+ 
+ 
+@@ -153,9 +177,9 @@ static void rebaseDyld(const dyld3::MachOLoaded* dyldMH)
+ 
+     // now that rebasing done, initialize mach/syscall layer
+ #ifdef DARLING
+-    rootlessBootTrace(rootlessTraceFD, "dyld mach-init-enter\n");
++    ROOTLESS_BOOT_TRACE(rootlessTraceFD, "dyld mach-init-enter\n");
+     mach_init(apple);
+-    rootlessBootTrace(rootlessTraceFD, "dyld mach-init-ready\n");
++    ROOTLESS_BOOT_TRACE(rootlessTraceFD, "dyld mach-init-ready\n");
+ #else
+     mach_init();
+ #endif
+@@ -190,7 +214,7 @@ uintptr_t start(const dyld3::MachOLoaded* appsMachHeader, int argc, const char*
+ 
+ #ifdef DARLING
+ 	const int rootlessTraceFD = rootlessBootTraceFD(envp);
+-	rootlessBootTrace(rootlessTraceFD, "dyld bootstrap-enter\n");
++	ROOTLESS_BOOT_TRACE(rootlessTraceFD, "dyld bootstrap-enter\n");
+ #endif
+ 
+ #ifndef DARLING
+@@ -205,9 +229,9 @@ uintptr_t start(const dyld3::MachOLoaded* appsMachHeader, int argc, const char*
+ 	++apple;
+ 
+ #ifdef DARLING
+-	rootlessBootTrace(rootlessTraceFD, "dyld rebase-enter\n");
++	ROOTLESS_BOOT_TRACE(rootlessTraceFD, "dyld rebase-enter\n");
+     rebaseDyld(dyldsMachHeader, apple, rootlessTraceFD);
+-	rootlessBootTrace(rootlessTraceFD, "dyld rebase-ready\n");
++	ROOTLESS_BOOT_TRACE(rootlessTraceFD, "dyld rebase-ready\n");
+ #endif
+ 
+ 	// set up random value for stack canary
+@@ -226,7 +250,7 @@ uintptr_t start(const dyld3::MachOLoaded* appsMachHeader, int argc, const char*
+ 	// now that we are done bootstrapping dyld, call dyld's main
+ 
+ #ifdef DARLING
+-	rootlessBootTrace(rootlessTraceFD, "dyld main-ready\n");
++	ROOTLESS_BOOT_TRACE(rootlessTraceFD, "dyld main-ready\n");
+ #endif
+ 	uintptr_t appsSlide = appsMachHeader->getSlide();
+ 	return dyld::_main((macho_header*)appsMachHeader, appsSlide, argc, argv, envp, apple, startGlue);
