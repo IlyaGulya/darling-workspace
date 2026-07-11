@@ -543,3 +543,45 @@ index e3e8f8a618165513bde831c9ba94fd287ea56d9a..ca02c2366e4bba963525d2f5ff7284b9
  	if (__put_user((user_long_t) 0, envp++))
  	{
  		fprintf(stderr, "Failed to null-terminate the environment variable pointer array\n");
+
+From 083f1859162cb605b7d198c9d0859d3d0b132b67 Mon Sep 17 00:00:00 2001
+From: Ilya Gulya <ilya.gulya@indriver.com>
+Date: Sat, 11 Jul 2026 03:22:30 +0000
+Subject: [PATCH] mldr: emit rootless guest boot trace
+
+---
+ src/startup/mldr/stack.c | 7 ++++++-
+ 1 file changed, 6 insertions(+), 1 deletion(-)
+
+diff --git a/src/startup/mldr/stack.c b/src/startup/mldr/stack.c
+index ca02c2366e4bba963525d2f5ff7284b9f64419b3..903c6101b9b34b6523425da84f0ec13f4786952c 100644
+--- a/src/startup/mldr/stack.c
++++ b/src/startup/mldr/stack.c
+@@ -43,6 +43,7 @@
+ 
+ #define EXECUTABLE_PATH "executable_path="
+ #define ROOTLESS_INIT_ENV "DARLING_ROOTLESS=1"
++#define ROOTLESS_TRACE_ENV "DARLING_BOOT_TRACE=/private/var/log/.west-rootless-boot.log"
+ 
+ #define __put_user(value, pointer) ({ \
+ 		__typeof__(value) _tmpval = (value); \
+@@ -71,7 +72,7 @@ void FUNCTION_NAME(const char* filepath, struct load_results* lr)
+ 	char __user* elfcalls_user;
+ 	char elfcalls[27];
+ 	char __user* applep_contents[4];
+-	const size_t rootless_envc = lr->rootless_init ? 1 : 0;
++	const size_t rootless_envc = lr->rootless_init ? 2 : 0;
+ 
+ #define user_long_count(_val) (((_val) + (sizeof(user_long_t) - 1)) / sizeof(user_long_t))
+ 
+@@ -195,6 +196,10 @@ void FUNCTION_NAME(const char* filepath, struct load_results* lr)
+ 			fprintf(stderr, "Failed to add the rootless init environment variable to the stack\n");
+ 			exit(1);
+ 		}
++		if (__put_user((user_long_t) ROOTLESS_TRACE_ENV, envp++)) {
++			fprintf(stderr, "Failed to add the rootless trace environment variable to the stack\n");
++			exit(1);
++		}
+ 	}
+ 	if (__put_user((user_long_t) 0, envp++))
+ 	{
