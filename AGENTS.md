@@ -21,6 +21,9 @@ refs, PR drafts, and agent handoff.
 - For shell assignments, conditionals, command substitution, or other compound
   shell syntax, use `rtk bash -c '...'`; `rtk NAME=value command` treats the
   assignment as a program name and produces a misleading host-side error.
+- When passing Bead free text through `rtk bash -c`, do not use shell backticks
+  in the title, description, or reason: Bash evaluates them before `west dw
+  beads` receives the text. Use plain command names or a file-backed argument.
 - In this execution transport, do not poll a long `west-job` through shell
   `sleep` (for example, `sleep 60; west-job.sh status ...`): the transport can
   detach the shell and leave the sleep process behind. Run short
