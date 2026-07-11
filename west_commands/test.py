@@ -594,6 +594,11 @@ class DarlingTest(WestCommand):
             candidate = Path(prefix).expanduser() / "bin" / "darling"
             if candidate.exists():
                 return str(candidate)
+            # An explicit prefix is a runtime identity, not just an artifact
+            # directory. Falling back to another prefix's launcher silently
+            # mixes launcher and DPREFIX, which can make a broken named prefix
+            # appear usable for one test lifecycle.
+            return None
         if os.environ.get("DARLING"):
             return os.environ["DARLING"]
         if os.environ.get("DARLING_LAUNCHER"):
@@ -4700,6 +4705,11 @@ class DarlingTest(WestCommand):
 
         launcher = self._resolve_darling_launcher(self._prefix)
         if args.env == "darling" and not launcher and not args.list:
+            if self._prefix:
+                self.die(
+                    "env:darling CTest runs need the selected prefix launcher: "
+                    f"{Path(self._prefix).expanduser() / 'bin' / 'darling'}"
+                )
             self.die(
                 "env:darling CTest runs need a Darling launcher; pass --prefix, "
                 "set DARLING/DARLING_LAUNCHER, or install ~/work/darling-prefix/bin/darling"

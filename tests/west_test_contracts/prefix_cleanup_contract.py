@@ -40,6 +40,35 @@ def make_test():
     return test
 
 
+with tempfile.TemporaryDirectory() as temp:
+    root = Path(temp)
+    fallback = root / "work" / "darling-prefix" / "bin" / "darling"
+    fallback.parent.mkdir(parents=True)
+    fallback.write_text("launcher\n")
+    explicit = root / "explicit-prefix"
+    old_home = os.environ.get("HOME")
+    old_darling = os.environ.pop("DARLING", None)
+    old_launcher = os.environ.pop("DARLING_LAUNCHER", None)
+    os.environ["HOME"] = str(root)
+    try:
+        test = make_test()
+        assert test._resolve_darling_launcher(str(explicit)) is None
+        explicit_launcher = explicit / "bin" / "darling"
+        explicit_launcher.parent.mkdir(parents=True)
+        explicit_launcher.write_text("launcher\n")
+        assert test._resolve_darling_launcher(str(explicit)) == str(explicit_launcher)
+        assert test._resolve_darling_launcher(None) == str(fallback)
+    finally:
+        if old_home is None:
+            os.environ.pop("HOME", None)
+        else:
+            os.environ["HOME"] = old_home
+        if old_darling is not None:
+            os.environ["DARLING"] = old_darling
+        if old_launcher is not None:
+            os.environ["DARLING_LAUNCHER"] = old_launcher
+
+
 test = make_test()
 prefix = Path("/tmp/west-test-prefix-contract")
 entries = [
