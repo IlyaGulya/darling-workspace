@@ -1654,9 +1654,14 @@ class DarlingTest(WestCommand):
                             Path(prefix_text)
                             / "private/var/tmp/.west-rootless-boot.log"
                         )
+                        guest_fd_trace = (
+                            Path(prefix_text) / ".west-rootless-guest-fd.log"
+                        )
                         boot_trace.unlink(missing_ok=True)
                         guest_boot_trace.unlink(missing_ok=True)
+                        guest_fd_trace.unlink(missing_ok=True)
                         runtime_env["DARLING_HOST_BOOT_TRACE"] = str(boot_trace)
+                        runtime_env["DARLING_GUEST_BOOT_TRACE"] = str(guest_fd_trace)
                     runtime_env.update(launcher_env)
                     yield RuntimeProfileDeployment(
                         name=profile_name,

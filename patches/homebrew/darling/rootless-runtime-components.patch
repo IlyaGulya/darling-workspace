@@ -85,3 +85,168 @@ index cfeb8197ffcf59ca2ea42f63e318acec2f3695dd..7aaefd6e346abbe3f8df55065e376162
  	if (!path || !*path)
  		return;
  	int fd = open(path, O_WRONLY | O_CREAT | O_APPEND | O_CLOEXEC, 0600);
+
+From d58de84ab9130147be462425b8bc53ec0de468b9 Mon Sep 17 00:00:00 2001
+From: Ilya Gulya <ilya.gulya@indriver.com>
+Date: Sat, 11 Jul 2026 06:14:57 +0000
+Subject: [PATCH] rootless: pass boot trace over inherited FD
+
+---
+ src/launchd/src/launchd.c | 27 +++++++++++++++++++++++----
+ src/startup/mldr/loader.h |  1 +
+ src/startup/mldr/mldr.c   | 28 ++++++++++++++++++++++++++++
+ src/startup/mldr/stack.c  | 12 +++++++++++-
+ 4 files changed, 63 insertions(+), 5 deletions(-)
+
+diff --git a/src/launchd/src/launchd.c b/src/launchd/src/launchd.c
+index 95fea13968e8120209d0d841e5cd5181573e10e4..89e87825c7a43159e90335ec4cf985d978ac5914 100644
+--- a/src/launchd/src/launchd.c
++++ b/src/launchd/src/launchd.c
+@@ -48,6 +48,7 @@
+ #include <signal.h>
+ #include <errno.h>
+ #include <libgen.h>
++#include <limits.h>
+ #include <stdio.h>
+ #include <stdlib.h>
+ #include <stdarg.h>
+@@ -130,15 +131,33 @@ rootless_bootstrap_environment(void)
+ static void
+ rootless_boot_trace(const char *stage)
+ {
+-	const char *path = getenv("DARLING_BOOT_TRACE");
+-	if (!rootless_mode_enabled() || path == NULL || *path == '\0') {
++	if (!rootless_mode_enabled()) {
+ 		return;
+ 	}
+ 
+-	int fd = open(path, O_WRONLY | O_CREAT | O_APPEND | O_CLOEXEC, 0600);
++	int fd = -1;
++	bool close_fd = false;
++	const char *fd_text = getenv("DARLING_BOOT_TRACE_FD");
++	if (fd_text != NULL && *fd_text != '\0') {
++		char *end = NULL;
++		long candidate = strtol(fd_text, &end, 10);
++		if (end != fd_text && *end == '\0' && candidate >= 0 && candidate <= INT_MAX) {
++			fd = (int)candidate;
++		}
++	}
++	if (fd < 0) {
++		const char *path = getenv("DARLING_BOOT_TRACE");
++		if (path == NULL || *path == '\0') {
++			return;
++		}
++		fd = open(path, O_WRONLY | O_CREAT | O_APPEND | O_CLOEXEC, 0600);
++		close_fd = true;
++	}
+ 	if (fd >= 0) {
+ 		dprintf(fd, "launchd pid=%d %s\n", getpid(), stage);
+-		close(fd);
++		if (close_fd) {
++			close(fd);
++		}
+ 	}
+ }
+ 
+diff --git a/src/startup/mldr/loader.h b/src/startup/mldr/loader.h
+index d1bd92c66c1966226e05632a8bfbd28c8defc676..b2d8870e0847e22b3c76bce61b361f8fb280c176 100644
+--- a/src/startup/mldr/loader.h
++++ b/src/startup/mldr/loader.h
+@@ -16,6 +16,7 @@ struct load_results {
+ 	unsigned long vm_addr_max;
+ 	bool _32on64;
+ 	bool rootless_init;
++	int rootless_trace_fd;
+ 	unsigned long base;
+ 	uint32_t bprefs[4];
+ 	char* root_path;
+diff --git a/src/startup/mldr/mldr.c b/src/startup/mldr/mldr.c
+index 7aaefd6e346abbe3f8df55065e376162be918c77..8bdec8158f6a58325d1ce36c5e113631c4b00372 100644
+--- a/src/startup/mldr/mldr.c
++++ b/src/startup/mldr/mldr.c
+@@ -76,6 +76,7 @@ static void load(const char* path, cpu_type_t cpu, bool expect_dylinker, char**
+ static int native_prot(int prot);
+ static void setup_space(struct load_results* lr, bool is_64_bit);
+ static void process_special_env(struct load_results* lr);
++static void open_rootless_guest_trace(struct load_results* lr);
+ static void start_thread(struct load_results* lr);
+ static bool is_kernel_at_least(int major, int minor);
+ static void* compatible_mmap(void *addr, size_t length, int prot, int flags, int fd, off_t offset);
+@@ -122,6 +123,32 @@ static void rootless_boot_trace(const char* stage)
+ 	}
+ }
+ 
++static void open_rootless_guest_trace(struct load_results* lr)
++{
++	lr->rootless_trace_fd = -1;
++	if (!lr->rootless_init) {
++		return;
++	}
++
++	const char* path = getenv("DARLING_GUEST_BOOT_TRACE");
++	if (path == NULL || *path == '\0') {
++		return;
++	}
++
++	int fd = open(path, O_WRONLY | O_CREAT | O_APPEND, 0600);
++	if (fd < 0) {
++		rootless_boot_trace("guest-trace-fd-open-failed");
++		return;
++	}
++
++	int flags = fcntl(fd, F_GETFD);
++	if (flags >= 0) {
++		(void)fcntl(fd, F_SETFD, flags & ~FD_CLOEXEC);
++	}
++	lr->rootless_trace_fd = fd;
++	rootless_boot_trace("guest-trace-fd-ready");
++}
++
+ int main(int argc, char** argv, char** envp)
+ {
+ 	void** sp;
+@@ -180,6 +207,7 @@ int main(int argc, char** argv, char** envp)
+ 	ptrace(PR_SET_PTRACER, PR_SET_PTRACER_ANY, 0, 0, 0);
+ 
+ 	process_special_env(&mldr_load_results);
++	open_rootless_guest_trace(&mldr_load_results);
+ 	rootless_boot_trace("environment-ready");
+ 
+ #ifdef __i386__
+diff --git a/src/startup/mldr/stack.c b/src/startup/mldr/stack.c
+index a6ada873303ec5d52aed54628c247d118b2be09b..7994ab62c476b889144cbe094d200b8842d46a1a 100644
+--- a/src/startup/mldr/stack.c
++++ b/src/startup/mldr/stack.c
+@@ -47,6 +47,7 @@
+  * Keep the trace in guest tmp: it is available and writable before launchd
+  * has initialized its usual logging directories. */
+ #define ROOTLESS_TRACE_ENV "DARLING_BOOT_TRACE=/private/var/tmp/.west-rootless-boot.log"
++#define ROOTLESS_TRACE_FD_ENV "DARLING_BOOT_TRACE_FD="
+ 
+ #define __put_user(value, pointer) ({ \
+ 		__typeof__(value) _tmpval = (value); \
+@@ -75,7 +76,8 @@ void FUNCTION_NAME(const char* filepath, struct load_results* lr)
+ 	char __user* elfcalls_user;
+ 	char elfcalls[27];
+ 	char __user* applep_contents[4];
+-	const size_t rootless_envc = lr->rootless_init ? 2 : 0;
++	const size_t rootless_envc = lr->rootless_init ? 2 + (lr->rootless_trace_fd >= 0) : 0;
++	static char rootless_trace_fd_env[64];
+ 
+ #define user_long_count(_val) (((_val) + (sizeof(user_long_t) - 1)) / sizeof(user_long_t))
+ 
+@@ -203,6 +205,14 @@ void FUNCTION_NAME(const char* filepath, struct load_results* lr)
+ 			fprintf(stderr, "Failed to add the rootless trace environment variable to the stack\n");
+ 			exit(1);
+ 		}
++		if (lr->rootless_trace_fd >= 0) {
++			snprintf(rootless_trace_fd_env, sizeof(rootless_trace_fd_env),
++				ROOTLESS_TRACE_FD_ENV "%d", lr->rootless_trace_fd);
++			if (__put_user((user_long_t) rootless_trace_fd_env, envp++)) {
++				fprintf(stderr, "Failed to add the rootless trace FD to the stack\n");
++				exit(1);
++			}
++		}
+ 	}
+ 	if (__put_user((user_long_t) 0, envp++))
+ 	{

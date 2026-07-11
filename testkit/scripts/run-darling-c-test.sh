@@ -123,6 +123,11 @@ dump_boot_trace() {
 		printf '%s\n' "--- rootless guest boot trace: $guest_trace ---" >&2
 		cat "$guest_trace" >&2 || true
 	fi
+	local guest_fd_trace="$prefix/.west-rootless-guest-fd.log"
+	if [[ -f "$guest_fd_trace" ]]; then
+		printf '%s\n' "--- rootless guest FD trace: $guest_fd_trace ---" >&2
+		cat "$guest_fd_trace" >&2 || true
+	fi
 }
 
 timeout_seconds="${DARLING_GUEST_TIMEOUT_SECONDS:-60}"
