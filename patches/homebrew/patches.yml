@@ -5377,11 +5377,11 @@ patches:
     reason: runtime-harness-pending
     scope: This submodule selection is valid only together with the rootless launcher and runtime artifacts it selects.
 - path: dyld/rootless-dyld-boot-trace.patch
-  sha256sum: 0b5ec8ec8b0f12ace17f45aa606a3be8e816cc877db18498531376d58ca9b84b
+  sha256sum: cf5d1f0e1930ab79f5db5db9a0dbd1d217ca659c07723307c4e40a8945bf3f15
   module: darling/src/external/dyld
   source-branch: fix/rootless-dyld-boot-trace
   source-base: aec6a4af4efaacbda31911aaf32d73495d4a7da1
-  source-commit: 7f98ce668fa0356b0b6efb6bec88581a66fd64d2
+  source-commit: 216a2ec8edcdfd8e6834a8437daccc6605de6bc7
   bead: dar-d2pm
   publication-status: blocked
   publication-blocker: Rootless dyld-to-launchd startup must be diagnosed with a real no-mount bootstrap before this diagnostic patch can be retired or productized.
