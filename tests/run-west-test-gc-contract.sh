@@ -55,4 +55,24 @@ test ! -e "$tmp/west-ctest-runtime-homebrew-old" ||
 test -d "$tmp/not-west-red-proof-runtime" ||
 	{ cat "$tmp/gc.out" >&2; exit 1; }
 
+mkdir -p \
+	"$tmp/west-red-proof-runtime-count-old/build" \
+	"$tmp/west-ctest-runtime-count-new/build"
+printf 'artifact\n' >"$tmp/west-red-proof-runtime-count-old/build/lib.dylib"
+printf 'artifact\n' >"$tmp/west-ctest-runtime-count-new/build/lib.dylib"
+touch -d '2 hours ago' "$tmp/west-red-proof-runtime-count-old"
+
+west test --gc \
+	--bundle-root "$tmp/bundles" \
+	--proof-scratch-root "$tmp" \
+	--proof-scratch-max-age-hours 9999 \
+	--proof-scratch-keep-last 1 >"$tmp/count.out"
+
+grep -q 'pruned proof scratch' "$tmp/count.out" ||
+	{ cat "$tmp/count.out" >&2; exit 1; }
+test ! -e "$tmp/west-red-proof-runtime-count-old" ||
+	{ cat "$tmp/count.out" >&2; exit 1; }
+test -d "$tmp/west-ctest-runtime-count-new" ||
+	{ cat "$tmp/count.out" >&2; exit 1; }
+
 printf 'PASS west-test-gc-contract\n'
