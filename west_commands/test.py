@@ -207,7 +207,7 @@ class DarlingTest(WestCommand):
         parser.add_argument(
             "--bootstrap-runtime-profile",
             metavar="NAME",
-            help="build and retain one declared runtime provider as the selected prefix baseline, then prove it with a bounded guest smoke",
+            help="with --prefix, --prefix-profile, or DPREFIX: build and retain one declared runtime provider as the selected prefix baseline, then prove it with a bounded guest smoke",
         )
         parser.add_argument(
             "--bootstrap-syscall-trace",
@@ -3727,7 +3727,10 @@ class DarlingTest(WestCommand):
 
         prefix_text = getattr(self, "_prefix", None)
         if not prefix_text:
-            self.die("--bootstrap-runtime-profile requires --prefix, --prefix-profile, or DPREFIX")
+            self.die(
+                "--bootstrap-runtime-profile requires --prefix, --prefix-profile, or DPREFIX "
+                "(for example: --prefix-profile homebrew)"
+            )
         if not profile_name:
             self.die("--bootstrap-runtime-profile needs a runtime provider name")
         definition = self._ctest_runtime_profile_definitions().get(profile_name)
