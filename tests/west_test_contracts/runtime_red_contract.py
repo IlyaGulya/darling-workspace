@@ -2280,4 +2280,63 @@ with tempfile.TemporaryDirectory() as temp:
     )
     shutil.rmtree(kept[0])
 
+with tempfile.TemporaryDirectory() as temp:
+    tempdir = Path(temp)
+    darling_repo = tempdir / "darling"
+    libsystem_repo = tempdir / "libsystem"
+    for repo in (darling_repo, libsystem_repo):
+        repo.mkdir()
+        subprocess.run(["git", "init", "-q"], cwd=repo, check=True)
+        subprocess.run(["git", "config", "user.email", "test@example.invalid"], cwd=repo, check=True)
+        subprocess.run(["git", "config", "user.name", "west test"], cwd=repo, check=True)
+        (repo / "base.txt").write_text("base\n")
+        subprocess.run(["git", "add", "base.txt"], cwd=repo, check=True)
+        subprocess.run(["git", "commit", "-q", "-m", "base"], cwd=repo, check=True)
+
+    libsystem_base = subprocess.run(
+        ["git", "rev-parse", "HEAD"], cwd=libsystem_repo, check=True, capture_output=True, text=True
+    ).stdout.strip()
+    (libsystem_repo / "profile-owner.txt").write_text("materialized profile owner\n")
+    subprocess.run(["git", "add", "profile-owner.txt"], cwd=libsystem_repo, check=True)
+    subprocess.run(["git", "commit", "-q", "-m", "profile libsystem"], cwd=libsystem_repo, check=True)
+    libsystem_patch = subprocess.run(
+        ["git", "format-patch", "-1", "--stdout"], cwd=libsystem_repo, check=True,
+        capture_output=True, text=True,
+    ).stdout
+    subprocess.run(["git", "reset", "--hard", "-q", libsystem_base], cwd=libsystem_repo, check=True)
+
+    profile_dir = tempdir / "patches/runtime/darling/src/external/libsystem"
+    profile_dir.mkdir(parents=True)
+    (profile_dir / "profile-owner.patch").write_text(libsystem_patch)
+    test = make_test()
+    test.manifest = types.SimpleNamespace(
+        repo_abspath=str(tempdir),
+        projects=[
+            types.SimpleNamespace(name="darling", path="darling", abspath=str(darling_repo), revision="HEAD"),
+            types.SimpleNamespace(
+                name="libsystem", path="darling/src/external/libsystem",
+                abspath=str(libsystem_repo), revision=libsystem_base,
+            ),
+        ],
+    )
+    test._active_profile = "runtime"
+    test._profile_stack = lambda profile: [profile]
+    test._load_profile = lambda _profile: {
+        "patches": [
+            {
+                "path": "darling/src/external/libsystem/profile-owner.patch",
+                "module": "darling/src/external/libsystem",
+            }
+        ]
+    }
+    test._profile_path = lambda _profile: tempdir / "patches/runtime/patches.yml"
+    with test._guest_runtime_source_forest(
+        {"path": "darling/example.patch", "module": "darling", "source-base": "HEAD"},
+        {"mode": "guest-runtime-deploy", "source-modules": ["darling", "darling/src/external/libsystem"]},
+        omit_patch=False,
+    ) as source_root:
+        materialized = source_root / "src/external/libsystem"
+        assert not materialized.is_symlink(), materialized
+        assert (materialized / "profile-owner.txt").read_text() == "materialized profile owner\n"
+
 print("PASS west-test-runtime-red-contract")
