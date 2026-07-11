@@ -316,57 +316,58 @@ index aa3d29141d5129602d07c8e97d521d141ddb60d5..f265ad11f5cfca84b9ea4276a8005989
  	uintptr_t appsSlide = appsMachHeader->getSlide();
  	return dyld::_main((macho_header*)appsMachHeader, appsSlide, argc, argv, envp, apple, startGlue);
 
-From c27503660ce4beae513ef452c7ee4acc73f0de2b Mon Sep 17 00:00:00 2001
+From 41b1da1909d3ba6252878cc1a124772adf09b9a6 Mon Sep 17 00:00:00 2001
 From: Ilya Gulya <ilya@gulya.me>
 Date: Sat, 11 Jul 2026 10:30:07 +0000
 Subject: [PATCH] dyld: initialize program vars before mach init
 
 ---
- src/dyldInitialization.cpp | 30 ++++++++++++++++++++++++++++--
- 1 file changed, 28 insertions(+), 2 deletions(-)
+ src/dyldInitialization.cpp | 31 +++++++++++++++++++++++++++++--
+ 1 file changed, 29 insertions(+), 2 deletions(-)
 
 diff --git a/src/dyldInitialization.cpp b/src/dyldInitialization.cpp
-index f265ad11f5cfca84b9ea4276a800598952c3be5f..03cd1ca2b432ba40331868dfe6f6594640cccb18 100644
+index f265ad11f5cfca84b9ea4276a800598952c3be5f..d6377705cc27b930554484b30ca2d7ca66144d8a 100644
 --- a/src/dyldInitialization.cpp
 +++ b/src/dyldInitialization.cpp
-@@ -39,6 +39,10 @@
+@@ -39,6 +39,7 @@
  // from libc.a
  #ifdef DARLING
  extern "C" void mach_init(const char* apple[]);
-+extern "C" void __program_vars_init(const ProgramVars* vars);
-+extern "C" int NXArgc;
-+extern "C" const char** NXArgv;
-+extern "C" const char* __progname;
++extern "C" void _program_vars_init(const ProgramVars* vars);
  #else
  extern "C" void mach_init();
  #endif
-@@ -118,6 +122,25 @@ static void rootlessBootTrace(int fd, const char* stage, size_t stageLength)
+@@ -118,6 +119,29 @@ static void rootlessBootTrace(int fd, const char* stage, size_t stageLength)
  	do { \
  		rootlessBootTrace((fd), (stage), sizeof(stage) - 1); \
  	} while (0)
++
++static int dyldBootstrapArgc;
++static const char** dyldBootstrapArgv;
++static const char** dyldBootstrapEnviron;
++static const char* dyldBootstrapProgname;
 +
 +static void initializeDyldProgramVars(const dyld3::MachOLoaded* dyldMH, int argc,
 +		const char* argv[], const char* envp[])
 +{
 +	ProgramVars vars = {
 +		dyldMH,
-+		&NXArgc,
-+		&NXArgv,
-+		// ProgramVars predates POSIX's mutable environ declaration.
-+		(const char***)&environ,
-+		&__progname,
++		&dyldBootstrapArgc,
++		&dyldBootstrapArgv,
++		&dyldBootstrapEnviron,
++		&dyldBootstrapProgname,
 +	};
 +
-+	NXArgc = argc;
-+	NXArgv = argv;
-+	environ = const_cast<char**>(envp);
-+	__progname = ((argv != NULL) && (argv[0] != NULL)) ? argv[0] : "";
-+	__program_vars_init(&vars);
++	dyldBootstrapArgc = argc;
++	dyldBootstrapArgv = argv;
++	dyldBootstrapEnviron = envp;
++	dyldBootstrapProgname = ((argv != NULL) && (argv[0] != NULL)) ? argv[0] : "";
++	_program_vars_init(&vars);
 +}
  #endif
  
  
-@@ -160,7 +183,9 @@ static void runDyldInitializers(int argc, const char* argv[], const char* envp[]
+@@ -160,7 +184,9 @@ static void runDyldInitializers(int argc, const char* argv[], const char* envp[]
  // They need to be fixed up to be real pointers to run.
  //
  #ifdef DARLING
@@ -377,7 +378,7 @@ index f265ad11f5cfca84b9ea4276a800598952c3be5f..03cd1ca2b432ba40331868dfe6f65946
  #else
  static void rebaseDyld(const dyld3::MachOLoaded* dyldMH)
  #endif
-@@ -177,6 +202,7 @@ static void rebaseDyld(const dyld3::MachOLoaded* dyldMH)
+@@ -177,6 +203,7 @@ static void rebaseDyld(const dyld3::MachOLoaded* dyldMH)
  
      // now that rebasing done, initialize mach/syscall layer
  #ifdef DARLING
@@ -385,7 +386,7 @@ index f265ad11f5cfca84b9ea4276a800598952c3be5f..03cd1ca2b432ba40331868dfe6f65946
      ROOTLESS_BOOT_TRACE(rootlessTraceFD, "dyld mach-init-enter\n");
      mach_init(apple);
      ROOTLESS_BOOT_TRACE(rootlessTraceFD, "dyld mach-init-ready\n");
-@@ -230,7 +256,7 @@ uintptr_t start(const dyld3::MachOLoaded* appsMachHeader, int argc, const char*
+@@ -230,7 +257,7 @@ uintptr_t start(const dyld3::MachOLoaded* appsMachHeader, int argc, const char*
  
  #ifdef DARLING
  	ROOTLESS_BOOT_TRACE(rootlessTraceFD, "dyld rebase-enter\n");
