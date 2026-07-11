@@ -972,6 +972,12 @@
           "source_ref": "refs/heads/fix/ring-committed-unknown-guest"
         },
         {
+          "branch": "fix/rootless-libkernel-init-trace",
+          "head": "41040ddd9f2a6353137a1f0a960d938f9d640d90",
+          "upstream": "",
+          "source_ref": "refs/heads/fix/rootless-libkernel-init-trace"
+        },
+        {
           "branch": "fix/rootless-no-mount-profile",
           "head": "52e2102938b8ca2385c62c00074a7c8fdd2d2eaf",
           "upstream": "",
