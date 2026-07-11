@@ -271,6 +271,7 @@ assert {
 baseline_provider = actual_runtime_profiles["homebrew-prefix-baseline"]
 assert baseline_provider["purpose"] == "prefix-baseline"
 assert baseline_provider["bootstrap"] == "rootless-no-mount"
+assert baseline_provider["bootstrap-smoke-timeout-seconds"] == 20
 assert baseline_provider["launcher-env"] == rootless_provider["launcher-env"]
 
 with tempfile.TemporaryDirectory() as temp:
@@ -313,6 +314,24 @@ with tempfile.TemporaryDirectory() as temp:
         assert "prefix-baseline must use rootless-no-mount" in str(exc), exc
     else:
         raise AssertionError("privileged prefix baseline was accepted")
+
+    profiles_path.write_text(
+        "runtime-profiles:\n"
+        "  invalid-timeout:\n"
+        "    source-profile: homebrew\n"
+        "    source-module: darling\n"
+        "    source-modules: [darling]\n"
+        "    bootstrap-smoke-timeout-seconds: 0\n"
+        "    runtime-artifacts:\n"
+        "    - build-targets: [darling]\n"
+        "      deploy: [bin/darling]\n"
+    )
+    try:
+        load_ctest_runtime_profiles(profiles_path)
+    except ValueError as exc:
+        assert "bootstrap-smoke-timeout-seconds must be a positive integer" in str(exc), exc
+    else:
+        raise AssertionError("zero bootstrap smoke timeout was accepted")
 
 try:
     partition_ctest_runtime_profiles(
