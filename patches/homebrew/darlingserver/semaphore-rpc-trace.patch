@@ -1,0 +1,187 @@
+From 9d5e7b6c29cdf74f43c73b41538a0dd86066e9ea Mon Sep 17 00:00:00 2001
+From: Ilya Gulya <ilya@gulya.me>
+Date: Sat, 11 Jul 2026 21:36:49 +0000
+Subject: [PATCH] test: trace semaphore RPC lifecycle
+
+---
+ internal-include/darlingserver/call.hpp       |  1 +
+ .../darlingserver/test-diagnostics.hpp        | 19 ++++++
+ scripts/generate-rpc-wrappers.py              | 35 +++++++++++
+ src/test-diagnostics.cpp                      | 58 +++++++++++++++++++
+ 4 files changed, 113 insertions(+)
+
+diff --git a/internal-include/darlingserver/call.hpp b/internal-include/darlingserver/call.hpp
+index 97140aa4c46e9d856ce988b3b7d993a40a2865e2..67ec2a4ea0f737ae66ab5d071619ff226be18d2d 100644
+--- a/internal-include/darlingserver/call.hpp
++++ b/internal-include/darlingserver/call.hpp
+@@ -26,6 +26,7 @@
+ #include <darlingserver/message.hpp>
+ #include <darlingserver/registry.hpp>
+ #include <darlingserver/logging.hpp>
++#include <darlingserver/test-diagnostics.hpp>
+ 
+ #include <memory>
+ 
+diff --git a/internal-include/darlingserver/test-diagnostics.hpp b/internal-include/darlingserver/test-diagnostics.hpp
+index de5a448b6802c8f8dbaf623e46e02a81070c5f5e..4ed03558773edf0fb1e48e3545857803b73fa495 100644
+--- a/internal-include/darlingserver/test-diagnostics.hpp
++++ b/internal-include/darlingserver/test-diagnostics.hpp
+@@ -7,5 +7,24 @@ namespace DarlingServer::TestDiagnostics {
+ bool enabled();
+ bool consumeFault(const char* name);
+ void traceLine(const std::string& line);
++void traceSemaphoreCallBegin(
++	const char* operation,
++	int pid,
++	int tid,
++	unsigned int waitName,
++	bool hasSignalName,
++	unsigned int signalName,
++	unsigned int sec,
++	unsigned int nsec
++);
++void traceSemaphoreCallReply(
++	const char* operation,
++	int pid,
++	int tid,
++	unsigned int waitName,
++	bool hasSignalName,
++	unsigned int signalName,
++	int resultCode
++);
+ 
+ }
+diff --git a/scripts/generate-rpc-wrappers.py b/scripts/generate-rpc-wrappers.py
+index 23655d0fc5c355f051dbf4bc51b074ab2a6b458e..adbff36d6a959472b8516f3d80419bee6a022b8c 100755
+--- a/scripts/generate-rpc-wrappers.py
++++ b/scripts/generate-rpc-wrappers.py
+@@ -972,6 +972,12 @@ for call in calls:
+ 	flags = call[3] if len(call) >= 4 else 0
+ 	camel_name = to_camel_case(call_name)
+ 	fd_count_in_reply = 0
++	semaphore_trace = call_name in (
++		'semaphore_signal',
++		'semaphore_wait_signal',
++		'semaphore_timedwait',
++		'semaphore_timedwait_signal',
++	)
+ 
+ 	internal_header.write(textwrap.indent(textwrap.dedent("""\
+ 		class Call::{1}: public Call, public std::enable_shared_from_this<Call::{1}> {{ \\
+@@ -999,6 +1005,23 @@ for call in calls:
+ 			continue
+ 
+ 		internal_header.write("\t\t\t_body." + param_name + " = requestMessage.extractDescriptorAtIndex(_body." + param_name + "); \\\n")
++	if semaphore_trace:
++		has_signal_name = call_name in ('semaphore_signal', 'semaphore_wait_signal', 'semaphore_timedwait_signal')
++		has_timeout = call_name in ('semaphore_timedwait', 'semaphore_timedwait_signal')
++		wait_name = '0' if call_name == 'semaphore_signal' else '_body.wait_name'
++		signal_name = '_body.signal_name'
++		sec = '_body.sec' if has_timeout else '0'
++		nsec = '_body.nsec' if has_timeout else '0'
++		internal_header.write(
++			"\t\t\tTestDiagnostics::traceSemaphoreCallBegin(\"{0}\", _header.pid, _header.tid, {1}, {2}, {3}, {4}, {5}); \\\n".format(
++				call_name,
++				wait_name,
++				'true' if has_signal_name else 'false',
++				signal_name if has_signal_name else '0',
++				sec,
++				nsec,
++			)
++		)
+ 	internal_header.write("\t\t}; \\\n")
+ 
+ 	internal_header.write("\t\t~" + camel_name + "() { \\\n")
+@@ -1079,6 +1102,18 @@ for call in calls:
+ 	if len(reply_parameters) == 0:
+ 		internal_header.write("\tpublic: \\\n")
+ 		internal_header.write("\t\tvoid sendBasicReply(int resultCode) override { \\\n")
++		if semaphore_trace:
++			has_signal_name = call_name in ('semaphore_signal', 'semaphore_wait_signal', 'semaphore_timedwait_signal')
++			wait_name = '0' if call_name == 'semaphore_signal' else '_body.wait_name'
++			signal_name = '_body.signal_name'
++			internal_header.write(
++				"\t\t\tTestDiagnostics::traceSemaphoreCallReply(\"{0}\", _header.pid, _header.tid, {1}, {2}, {3}, resultCode); \\\n".format(
++					call_name,
++					wait_name,
++					'true' if has_signal_name else 'false',
++					signal_name if has_signal_name else '0',
++				)
++			)
+ 		internal_header.write("\t\t\t_sendReply(resultCode); \\\n")
+ 		internal_header.write("\t\t}; \\\n")
+ 
+diff --git a/src/test-diagnostics.cpp b/src/test-diagnostics.cpp
+index 5ebb97766d84ae8e4816c3bd6fa4548be61a4e24..323be14434a3ca317d9a6851a70b7d46c5c7ca9b 100644
+--- a/src/test-diagnostics.cpp
++++ b/src/test-diagnostics.cpp
+@@ -13,6 +13,24 @@ static constexpr const char* TraceEnv = "DSERVER_TEST_TRACE_FILE";
+ static constexpr const char* FaultEnv = "DSERVER_TEST_FAULT_FILE";
+ static std::mutex traceMutex;
+ 
++static const char* semaphoreOutcome(int resultCode) {
++	switch (resultCode) {
++		case 0:
++			return "success";
++		case 14: // KERN_ABORTED
++			return "interrupted";
++		case 49: // KERN_OPERATION_TIMED_OUT
++			return "timeout";
++		default:
++			return "error";
++	}
++}
++
++static std::string semaphoreNames(unsigned int waitName, bool hasSignalName, unsigned int signalName) {
++	std::string names = " wait_name=" + std::to_string(waitName) + " signal_name=";
++	return names + (hasSignalName ? std::to_string(signalName) : "none");
++}
++
+ bool enabled() {
+ 	return std::getenv(TraceEnv) != nullptr;
+ }
+@@ -92,4 +110,44 @@ void traceLine(const std::string& line) {
+ 	close(fd);
+ }
+ 
++void traceSemaphoreCallBegin(
++	const char* operation,
++	int pid,
++	int tid,
++	unsigned int waitName,
++	bool hasSignalName,
++	unsigned int signalName,
++	unsigned int sec,
++	unsigned int nsec
++) {
++	traceLine(
++		std::string("rpc.semaphore.begin operation=") + operation +
++		" pid=" + std::to_string(pid) +
++		" tid=" + std::to_string(tid) +
++		semaphoreNames(waitName, hasSignalName, signalName) +
++		" sec=" + std::to_string(sec) +
++		" nsec=" + std::to_string(nsec)
++	);
++}
++
++void traceSemaphoreCallReply(
++	const char* operation,
++	int pid,
++	int tid,
++	unsigned int waitName,
++	bool hasSignalName,
++	unsigned int signalName,
++	int resultCode
++) {
++	traceLine(
++		std::string("rpc.semaphore.reply operation=") + operation +
++		" pid=" + std::to_string(pid) +
++		" tid=" + std::to_string(tid) +
++		semaphoreNames(waitName, hasSignalName, signalName) +
++		" code=" + std::to_string(resultCode) +
++		" outcome=" + semaphoreOutcome(resultCode) +
++		" terminal=reply-enqueued"
++	);
++}
++
+ }
