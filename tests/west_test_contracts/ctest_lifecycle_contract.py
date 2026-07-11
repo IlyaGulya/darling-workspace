@@ -431,6 +431,14 @@ with tempfile.TemporaryDirectory() as temp:
 
 
 with tempfile.TemporaryDirectory() as temp:
+    trace_dir = Path(temp)
+    (trace_dir / "bootstrap.123").write_text(
+        "12:00:00.000001 --- SIGSEGV {si_signo=SIGSEGV, si_code=SEGV_MAPERR, si_addr=0x18} ---\n"
+    )
+    assert test_module.bootstrap_trace_fatal_signal(trace_dir) == "SIGSEGV at 0x18"
+
+
+with tempfile.TemporaryDirectory() as temp:
     root = Path(temp)
     prefix = root / "prefix"
     prefix.mkdir()

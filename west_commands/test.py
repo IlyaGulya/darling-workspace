@@ -28,6 +28,7 @@ import argparse
 import fcntl
 import json
 import os
+import re
 import signal
 import shutil
 import subprocess
@@ -89,6 +90,26 @@ from test_runtime import (
     runtime_deploy_targets,
 )
 from test_worktrees import prune_stale_west_temp_worktrees, remove_temporary_worktree
+
+
+_BOOTSTRAP_FATAL_SIGNAL = re.compile(
+    r"--- (?P<signal>SIG(?:SEGV|BUS|ILL|ABRT)) \{(?P<details>[^}]*)\} ---"
+)
+
+
+def bootstrap_trace_fatal_signal(trace_dir: Path) -> str | None:
+    """Return a guest fault recorded by an opt-in bootstrap strace, if any."""
+
+    for trace in sorted(trace_dir.glob("bootstrap*")):
+        if not trace.is_file():
+            continue
+        match = _BOOTSTRAP_FATAL_SIGNAL.search(trace.read_text(errors="replace"))
+        if match is None:
+            continue
+        fault = re.search(r"si_addr=([^, }]+)", match.group("details"))
+        location = f" at {fault.group(1)}" if fault is not None else ""
+        return f"{match.group('signal')}{location}"
+    return None
 
 
 class RuntimeProfileDeployment:
@@ -3773,6 +3794,16 @@ class DarlingTest(WestCommand):
                     command_prefix=command_prefix,
                 )
                 output = f"{result.stdout}{result.stderr}"
+                trace_fault = (
+                    bootstrap_trace_fatal_signal(trace_dir)
+                    if trace_dir is not None
+                    else None
+                )
+                if trace_fault is not None:
+                    self.die(
+                        "prefix bootstrap guest smoke crashed before its verdict: "
+                        f"{trace_fault}; syscall trace: {trace_dir}"
+                    )
                 if result.timed_out:
                     trace_hint = f"; syscall trace: {trace_dir}" if trace_dir is not None else ""
                     self.die(
