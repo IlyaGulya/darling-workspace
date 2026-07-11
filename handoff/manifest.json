@@ -139,9 +139,15 @@
         },
         {
           "branch": "fix/rootless-shellspawn-scheduler",
-          "head": "595818af03685166f9193f089aa11420bfa3b932",
+          "head": "f6931b831d28989a449bdf8b70c3ed409eabf34c",
           "upstream": "",
           "source_ref": "refs/heads/fix/rootless-shellspawn-scheduler"
+        },
+        {
+          "branch": "fix/rootless-shellspawn-scheduler-clean",
+          "head": "daa667922e300ba7d692b3c835b40c65871ad990",
+          "upstream": "",
+          "source_ref": "refs/heads/fix/rootless-shellspawn-scheduler-clean"
         },
         {
           "branch": "fix/rootless-vchroot-argv",
@@ -547,7 +553,7 @@
         },
         {
           "branch": "fix/rootless-dyld-boot-trace",
-          "head": "41b1da1909d3ba6252878cc1a124772adf09b9a6",
+          "head": "7d5aa505140b3e65a8adf93e41b527136084799a",
           "upstream": "",
           "source_ref": "refs/heads/fix/rootless-dyld-boot-trace"
         },
@@ -667,9 +673,15 @@
       "branches": [
         {
           "branch": "fix/rootless-libsystem-init-trace",
-          "head": "3faa91ca306c70f1c52921e04f85f0561d37ad2e",
+          "head": "7604284ae893da6d83e2ac4cbff42db91eab798d",
           "upstream": "",
           "source_ref": "refs/heads/fix/rootless-libsystem-init-trace"
+        },
+        {
+          "branch": "fix/rootless-libsystem-init-trace-clean",
+          "head": "ad6e1ebc409ad33de60f7dd8a8a2ac92650dbf97",
+          "upstream": "",
+          "source_ref": "refs/heads/fix/rootless-libsystem-init-trace-clean"
         },
         {
           "branch": "perf/rpc-phase-mark-diagnostic",
