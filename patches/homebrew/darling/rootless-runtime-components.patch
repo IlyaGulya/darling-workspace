@@ -22,3 +22,29 @@ index 5f26a4c2365d9774b5a1e66ae7da20b61ab6d2db..52e2102938b8ca2385c62c00074a7c8f
 @@ -1 +1 @@
 -Subproject commit 5f26a4c2365d9774b5a1e66ae7da20b61ab6d2db
 +Subproject commit 52e2102938b8ca2385c62c00074a7c8fdd2d2eaf
+
+From 5aa9aa5a7bbc83914b5398cedcf800e2b3560301 Mon Sep 17 00:00:00 2001
+From: Ilya Gulya <ilya.gulya@indriver.com>
+Date: Sat, 11 Jul 2026 05:52:36 +0000
+Subject: [PATCH] mldr: write rootless guest trace to tmp
+
+---
+ src/startup/mldr/stack.c | 5 ++++-
+ 1 file changed, 4 insertions(+), 1 deletion(-)
+
+diff --git a/src/startup/mldr/stack.c b/src/startup/mldr/stack.c
+index 903c6101b9b34b6523425da84f0ec13f4786952c..a6ada873303ec5d52aed54628c247d118b2be09b 100644
+--- a/src/startup/mldr/stack.c
++++ b/src/startup/mldr/stack.c
+@@ -43,7 +43,10 @@
+ 
+ #define EXECUTABLE_PATH "executable_path="
+ #define ROOTLESS_INIT_ENV "DARLING_ROOTLESS=1"
+-#define ROOTLESS_TRACE_ENV "DARLING_BOOT_TRACE=/private/var/log/.west-rootless-boot.log"
++/* This environment is consumed after the handoff, inside the Darwin guest.
++ * Keep the trace in guest tmp: it is available and writable before launchd
++ * has initialized its usual logging directories. */
++#define ROOTLESS_TRACE_ENV "DARLING_BOOT_TRACE=/private/var/tmp/.west-rootless-boot.log"
+ 
+ #define __put_user(value, pointer) ({ \
+ 		__typeof__(value) _tmpval = (value); \
