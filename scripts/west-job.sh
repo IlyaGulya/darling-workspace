@@ -74,6 +74,18 @@ read_rc() {
 	printf '%s\n' "$rc"
 }
 
+wait_for_pid_exit() {
+	local pid="$1"
+	tail --pid="$pid" -f /dev/null >/dev/null 2>&1 || true
+}
+
+wait_for_pid_exit_or_timeout() {
+	local pid="$1"
+	local timeout_seconds="$2"
+	timeout --foreground "$timeout_seconds" \
+		tail --pid="$pid" -f /dev/null >/dev/null 2>&1 || true
+}
+
 start_job() {
 	if [[ -e "$state_dir" ]]; then
 		echo "west job state already exists: $state_dir" >&2
@@ -136,16 +148,13 @@ status_job() {
 }
 
 wait_job() {
-	while load_live_pid; do
-		sleep 1
-	done
-	for _ in $(seq 1 10); do
-		local rc
-		if rc="$(read_rc)"; then
-			exit "$rc"
-		fi
-		sleep 1
-	done
+	if load_live_pid; then
+		wait_for_pid_exit "$(<"$state_dir/pid")"
+	fi
+	local rc
+	if rc="$(read_rc)"; then
+		exit "$rc"
+	fi
 	echo "west job exited without recording rc: $state_dir" >&2
 	exit 1
 }
@@ -162,13 +171,11 @@ cancel_job() {
 		local command_pid
 		command_pid="$(<"$state_dir/command-pid")"
 		kill -INT "$command_pid"
-		for _ in $(seq 1 20); do
-			if ! load_live_command_pid; then
-				printf 'cancelling command-pid=%s state=%s\n' "$command_pid" "$state_dir"
-				return
-			fi
-			sleep 0.25
-		done
+		wait_for_pid_exit_or_timeout "$command_pid" 5
+		if ! load_live_command_pid; then
+			printf 'cancelling command-pid=%s state=%s\n' "$command_pid" "$state_dir"
+			return
+		fi
 		# A command that ignores SIGINT cannot run its cleanup. Preserve the
 		# existing escape hatch for generic jobs while reporting the escalation.
 		kill -TERM -- "-$pid"

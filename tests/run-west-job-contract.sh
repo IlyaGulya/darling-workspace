@@ -12,6 +12,19 @@ grep -F -x -q 'GREEN_JOB' "$tmp/green/log"
 test "$(<"$tmp/green/rc")" = 0
 "$job" status --state-dir "$tmp/green" | grep -F -x -q "completed rc=0 state=$tmp/green"
 
+"$job" start --state-dir "$tmp/wait" -- /usr/bin/python3 -c '
+import time
+time.sleep(0.3)
+'
+started_at="$(date +%s%N)"
+"$job" wait --state-dir "$tmp/wait"
+elapsed_ns="$(( $(date +%s%N) - started_at ))"
+if ((elapsed_ns < 150000000)); then
+	echo "wait returned before its live command finished: ${elapsed_ns}ns" >&2
+	exit 1
+fi
+test "$(<"$tmp/wait/rc")" = 0
+
 "$job" start --state-dir "$tmp/cancelled" -- /usr/bin/python3 -c '
 import signal
 import sys
@@ -26,23 +39,17 @@ print("COOPERATIVE_READY", flush=True)
 time.sleep(30)
 '
 pid="$(<"$tmp/cancelled/pid")"
-for _ in $(seq 1 20); do
-	if [[ -f "$tmp/cancelled/command-pid" ]]; then
-		break
+"$job" wait --state-dir "$tmp/cancelled" >/dev/null 2>&1 &
+wait_pid=$!
+while [[ ! -f "$tmp/cancelled/command-pid" ]] || ! grep -F -x -q 'COOPERATIVE_READY' "$tmp/cancelled/log"; do
+	if ! kill -0 "$wait_pid" 2>/dev/null; then
+		echo 'cancelled job exited before becoming ready' >&2
+		exit 1
 	fi
-	sleep 0.05
 done
-test -f "$tmp/cancelled/command-pid"
 command_pid="$(<"$tmp/cancelled/command-pid")"
-for _ in $(seq 1 20); do
-	if grep -F -x -q 'COOPERATIVE_READY' "$tmp/cancelled/log"; then
-		break
-	fi
-	sleep 0.05
-done
-grep -F -x -q 'COOPERATIVE_READY' "$tmp/cancelled/log"
 "$job" cancel --state-dir "$tmp/cancelled"
-if "$job" wait --state-dir "$tmp/cancelled"; then
+if wait "$wait_pid"; then
 	echo 'cancelled job unexpectedly succeeded' >&2
 	exit 1
 fi
