@@ -281,7 +281,14 @@ class DarlingTest(WestCommand):
         return Path(self.manifest.repo_abspath) / "testkit"
 
     def _require_runtime_scratch_space(self, profile_name: str) -> None:
-        minimum = int(os.environ.get("WEST_RUNTIME_MIN_FREE_BYTES", 8 * 1024**3))
+        configured_minimum = os.environ.get("WEST_RUNTIME_MIN_FREE_BYTES", str(8 * 1024**3))
+        try:
+            minimum = int(configured_minimum)
+        except ValueError:
+            self.die(
+                "WEST_RUNTIME_MIN_FREE_BYTES must be an integer number of bytes "
+                "greater than or equal to 0"
+            )
         if minimum < 0:
             self.die("WEST_RUNTIME_MIN_FREE_BYTES must be >= 0")
         scratch_root = Path(tempfile.gettempdir())

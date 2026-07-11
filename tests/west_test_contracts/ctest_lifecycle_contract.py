@@ -50,6 +50,19 @@ finally:
     test_module.shutil.disk_usage = original_disk_usage
     os.environ["WEST_RUNTIME_MIN_FREE_BYTES"] = original_minimum
 
+os.environ["WEST_RUNTIME_MIN_FREE_BYTES"] = "not-a-byte-count"
+try:
+    try:
+        test._require_runtime_scratch_space("contract")
+        raise AssertionError("invalid runtime scratch threshold unexpectedly passed")
+    except SystemExit as exc:
+        assert str(exc) == (
+            "WEST_RUNTIME_MIN_FREE_BYTES must be an integer number of bytes "
+            "greater than or equal to 0"
+        ), exc
+finally:
+    os.environ["WEST_RUNTIME_MIN_FREE_BYTES"] = original_minimum
+
 
 with tempfile.TemporaryDirectory() as temp:
     prefix = Path(temp) / "prefix"
