@@ -3975,6 +3975,7 @@ patches:
     coverage-tier: runtime
     runs: guest
     diag: bare
+    runtime-profile: homebrew-rootless-no-mount
     runner: guest-c-fixture
     repo: darling-workspace
     script: tests/eunion_mutation_guest.c

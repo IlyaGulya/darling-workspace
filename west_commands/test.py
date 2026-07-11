@@ -1496,23 +1496,29 @@ class DarlingTest(WestCommand):
                 continue
             seen_invocations.add(invocation["key"])
             with self._required_profile_context(patch, invocation):
-                proof = test.get("red-proof")
-                if (
-                    isinstance(proof, dict)
-                    and proof.get("mode") == "guest-runtime-deploy"
-                ):
-                    result_rc = self._run_guest_runtime_deploy_green(patch, proof, invocation)
-                else:
-                    exec_env = self._execution_env(invocation)
-                    with self._ctest_source_override_context(invocation) as run_invocation:
-                        with self._resource_context(run_invocation, exec_env) as resource_env:
-                            result_rc = self._run_invocation(run_invocation, env=resource_env)
+                with self._metadata_runtime_profile_context(patch, test) as runtime_env:
+                    proof = test.get("red-proof")
+                    if (
+                        isinstance(proof, dict)
+                        and proof.get("mode") == "guest-runtime-deploy"
+                    ):
+                        result_rc = self._run_guest_runtime_deploy_green(patch, proof, invocation)
+                    else:
+                        exec_env = self._execution_env(invocation)
+                        if runtime_env is not None:
+                            exec_env = dict(exec_env or {})
+                            exec_env.update(runtime_env)
+                        with self._ctest_source_override_context(invocation) as run_invocation:
+                            with self._resource_context(run_invocation, exec_env) as resource_env:
+                                result_rc = self._run_invocation(run_invocation, env=resource_env)
             if result_rc:
                 rc = result_rc
         return rc
 
     def _metadata_needs_prefix(self, tests) -> bool:
         for patch, test in tests:
+            if test.get("runtime-profile"):
+                return True
             invocation = self._test_invocation(patch, test)
             resources = set(invocation.get("requires_resources", []))
             if resources & {"darling-prefix", "darling-eunion-prefix"}:
@@ -1681,6 +1687,20 @@ class DarlingTest(WestCommand):
             return
         with self._runtime_profile_deployment_context(
             profiles, label_prefix="CTest", retain_deployment=False
+        ) as deployment:
+            yield deployment.env
+
+    @contextmanager
+    def _metadata_runtime_profile_context(self, patch, test):
+        """Temporarily deploy the typed runtime provider declared by metadata."""
+
+        profile_name = test.get("runtime-profile")
+        if not profile_name:
+            yield None
+            return
+        label = f"metadata {patch['path']}:{test.get('name', patch['path'])}"
+        with self._runtime_profile_deployment_context(
+            [profile_name], label_prefix=label, retain_deployment=False
         ) as deployment:
             yield deployment.env
 
@@ -2994,10 +3014,18 @@ class DarlingTest(WestCommand):
             cwd=Path.cwd(),
             env=child_env,
             timeout_seconds=15,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
+            capture_output=True,
         )
         if result.returncode != 0:
+            output = f"{result.stdout}{result.stderr}".strip()
+            if output:
+                self.err(f"{invocation['name']}: E-UNION prefix bootstrap output:\n{output}")
+            elif result.timed_out:
+                self.err(
+                    f"{invocation['name']}: E-UNION prefix bootstrap timed out after 15s "
+                    "without output"
+                )
+            self._record_failure_phase(invocation, "bootstrap")
             self.die(
                 f"{invocation['name']}: failed to boot Darling E-UNION prefix "
                 f"before fixture setup (rc={result.returncode})"

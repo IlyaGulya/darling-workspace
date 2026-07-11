@@ -646,6 +646,12 @@ class DarlingPatch(WestCommand):
                 timeout = test.get("timeout-seconds")
                 if not isinstance(timeout, int) or timeout <= 0:
                     errors.append(f"tests[{index}] timeout-seconds must be a positive integer")
+            runtime_profile = test.get("runtime-profile")
+            if runtime_profile is not None:
+                if not isinstance(runtime_profile, str) or not runtime_profile:
+                    errors.append(f"tests[{index}] runtime-profile must be a non-empty string")
+                elif test.get("env") != "darling":
+                    errors.append(f"tests[{index}] runtime-profile requires env: darling")
             if test.get("blocked") is not None and not isinstance(test.get("blocked"), bool):
                 errors.append(f"tests[{index}] blocked must be boolean")
             if test.get("requires-env") is not None:
