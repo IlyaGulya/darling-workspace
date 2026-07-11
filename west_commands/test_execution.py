@@ -25,6 +25,15 @@ class ProcessResult:
     stderr: str | bytes = ""
 
 
+def process_output_text(result: ProcessResult) -> str:
+    """Return captured process output as readable text, including timeout bytes."""
+
+    def decode(stream: str | bytes) -> str:
+        return stream.decode(errors="replace") if isinstance(stream, bytes) else stream
+
+    return decode(result.stdout) + decode(result.stderr)
+
+
 def _timeout_output(error: subprocess.TimeoutExpired, stream: str) -> str | bytes:
     """Return the partial captured stream carried by ``communicate``."""
 

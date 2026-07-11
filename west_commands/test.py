@@ -61,7 +61,7 @@ from test_ctest import (
 )
 from test_dispatch import dispatch_fixture_runner
 from test_cmake import archive_git_tree_to, archive_source_to, run_darling_cmake_target_fixture
-from test_execution import run_bounded
+from test_execution import process_output_text, run_bounded
 from test_guest_execution import (
     resolve_guest_execution,
     run_guest_command_fixture,
@@ -248,7 +248,7 @@ class DarlingTest(WestCommand):
         parser.add_argument(
             "--bootstrap-syscall-trace",
             metavar="DIR",
-            help="with --bootstrap-runtime-profile, save strace -ff output for the bounded guest smoke in DIR",
+            help="save strace -ff output for a bounded runtime bootstrap in DIR",
         )
         parser.add_argument(
             "--bootstrap-stack-sample",
@@ -3007,6 +3007,14 @@ class DarlingTest(WestCommand):
 
         child_env = dict(env or os.environ.copy())
         child_env.update(self._darling_prefix_env(prefix))
+        command_prefix: tuple[str, ...] = ()
+        trace_dir = getattr(self, "_bootstrap_syscall_trace", None)
+        if trace_dir is not None:
+            trace_dir = Path(trace_dir)
+            trace_dir.mkdir(parents=True, exist_ok=True)
+            trace_prefix = trace_dir / "eunion-bootstrap"
+            command_prefix = ("strace", "-ff", "-o", str(trace_prefix))
+            self.inf(f"{invocation['name']}: E-UNION bootstrap syscall trace: {trace_dir}")
         result = run_guest_shell(
             str(launcher),
             prefix,
@@ -3015,9 +3023,10 @@ class DarlingTest(WestCommand):
             env=child_env,
             timeout_seconds=15,
             capture_output=True,
+            command_prefix=command_prefix,
         )
         if result.returncode != 0:
-            output = f"{result.stdout}{result.stderr}".strip()
+            output = process_output_text(result).strip()
             if output:
                 self.err(f"{invocation['name']}: E-UNION prefix bootstrap output:\n{output}")
             elif result.timed_out:
@@ -4032,7 +4041,7 @@ class DarlingTest(WestCommand):
                     timeout_seconds=60,
                     capture_output=True,
                 )
-                doctor_output = f"{doctor.stdout}{doctor.stderr}"
+                doctor_output = process_output_text(doctor)
                 if doctor.timed_out:
                     self.die("prefix bootstrap doctor timed out after 60s")
                 if doctor.returncode != 0:
@@ -4081,7 +4090,7 @@ class DarlingTest(WestCommand):
                         captured_server_trace = diagnostic_dir / "darlingserver-rpc.log"
                         shutil.copy2(server_trace, captured_server_trace)
                         self.inf(f"prefix bootstrap server trace: {captured_server_trace}")
-                output = f"{result.stdout}{result.stderr}"
+                output = process_output_text(result)
                 trace_fault = (
                     bootstrap_trace_fatal_signal(trace_dir)
                     if trace_dir is not None
@@ -5135,6 +5144,7 @@ class DarlingTest(WestCommand):
         self._bundle_root = str(Path(args.bundle_root).expanduser())
         self._materialize_profile = args.materialize_profile
         self._keep_prefix_running = args.keep_prefix_running
+        self._bootstrap_syscall_trace = None
 
         if args.ctest_timeout_seconds <= 0:
             self.die("--ctest-timeout-seconds must be > 0")
@@ -5200,10 +5210,15 @@ class DarlingTest(WestCommand):
             self.die(
                 "--bootstrap-syscall-trace and --bootstrap-stack-sample are mutually exclusive"
             )
-        if (bootstrap_syscall_trace or bootstrap_stack_sample) and not bootstrap_runtime_profile:
+        if bootstrap_stack_sample and not bootstrap_runtime_profile:
             self.die(
-                "--bootstrap-syscall-trace and --bootstrap-stack-sample require "
+                "--bootstrap-stack-sample requires "
                 "--bootstrap-runtime-profile"
+            )
+        if bootstrap_syscall_trace and not bootstrap_runtime_profile and not args.profile:
+            self.die(
+                "--bootstrap-syscall-trace requires --bootstrap-runtime-profile "
+                "or a metadata --profile selection with a runtime-profile"
             )
         if bootstrap_runtime_profile:
             incompatible = []
@@ -5233,6 +5248,13 @@ class DarlingTest(WestCommand):
             selected, missing = self._metadata_tests(
                 args.profile, args.patch, args.bead, args.env, args.diag, args.red_only
             )
+            if bootstrap_syscall_trace and not bootstrap_runtime_profile:
+                if args.list or not any(test.get("runtime-profile") for _, test in selected):
+                    self.die(
+                        "--bootstrap-syscall-trace needs a selected metadata test "
+                        "with runtime-profile"
+                    )
+                self._bootstrap_syscall_trace = Path(bootstrap_syscall_trace)
             if args.prove_red:
                 selected = [
                     (patch, test)
@@ -5284,6 +5306,7 @@ class DarlingTest(WestCommand):
             finally:
                 self._materialize_profile = materialize_was_requested
                 self._active_profile = previous_active_profile
+                self._bootstrap_syscall_trace = None
 
         testkit = self._testkit_dir()
         if not testkit.exists():
