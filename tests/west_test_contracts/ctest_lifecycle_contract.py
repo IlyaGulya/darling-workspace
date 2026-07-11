@@ -249,7 +249,9 @@ with tempfile.TemporaryDirectory() as temp:
         assert runtime_env["DARLING"] == str(root / "prefix" / "bin" / "darling")
         assert runtime_env["DARLING_LAUNCHER"] == str(root / "prefix" / "bin" / "darling")
         assert runtime_env["DPREFIX"] == str(root / "prefix")
-        assert runtime_env["DARLING_BOOT_TRACE"] == str(root / "prefix" / ".west-rootless-boot.log")
+        assert runtime_env["DARLING_HOST_BOOT_TRACE"] == str(
+            root / "prefix" / ".west-rootless-boot.log"
+        )
         assert not host_trace.exists()
         assert not guest_trace.exists()
     assert events == ["preflight", "source", "build", "deploy", "restore"], events

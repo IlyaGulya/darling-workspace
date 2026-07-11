@@ -48,3 +48,40 @@ index 903c6101b9b34b6523425da84f0ec13f4786952c..a6ada873303ec5d52aed54628c247d11
  
  #define __put_user(value, pointer) ({ \
  		__typeof__(value) _tmpval = (value); \
+
+From f4613a436bccaf351032c3f78f689c81d151214f Mon Sep 17 00:00:00 2001
+From: Ilya Gulya <ilya.gulya@indriver.com>
+Date: Sat, 11 Jul 2026 06:04:04 +0000
+Subject: [PATCH] rootless: separate host and guest boot traces
+
+---
+ src/startup/darling.c   | 2 +-
+ src/startup/mldr/mldr.c | 2 +-
+ 2 files changed, 2 insertions(+), 2 deletions(-)
+
+diff --git a/src/startup/darling.c b/src/startup/darling.c
+index 4e05e51417337058cab0ac61ceee43bf10a433d5..32c109b20d3b8061f47f2c635777dfeb531ffe51 100644
+--- a/src/startup/darling.c
++++ b/src/startup/darling.c
+@@ -60,7 +60,7 @@ static bool rootlessModeEnabled(void)
+ 
+ static void rootlessBootTrace(const char* stage)
+ {
+-	const char* path = getenv("DARLING_BOOT_TRACE");
++	const char* path = getenv("DARLING_HOST_BOOT_TRACE");
+ 	if (!rootlessModeEnabled() || !path || !*path)
+ 		return;
+ 	int fd = open(path, O_WRONLY | O_CREAT | O_APPEND | O_CLOEXEC, 0600);
+diff --git a/src/startup/mldr/mldr.c b/src/startup/mldr/mldr.c
+index cfeb8197ffcf59ca2ea42f63e318acec2f3695dd..7aaefd6e346abbe3f8df55065e376162be918c77 100644
+--- a/src/startup/mldr/mldr.c
++++ b/src/startup/mldr/mldr.c
+@@ -112,7 +112,7 @@ void __mldr_postfork_child(void);
+ 
+ static void rootless_boot_trace(const char* stage)
+ {
+-	const char* path = getenv("DARLING_BOOT_TRACE");
++	const char* path = getenv("DARLING_HOST_BOOT_TRACE");
+ 	if (!path || !*path)
+ 		return;
+ 	int fd = open(path, O_WRONLY | O_CREAT | O_APPEND | O_CLOEXEC, 0600);
