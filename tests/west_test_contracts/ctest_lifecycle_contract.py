@@ -212,7 +212,8 @@ with tempfile.TemporaryDirectory() as temp:
     test = DarlingTest.__new__(DarlingTest)
     test._prefix = str(root / "prefix")
     test._active_profile = None
-    test._bootstrap_syscall_trace = root / "bootstrap-trace"
+    test._bootstrap_syscall_trace = None
+    test._bootstrap_stack_sample = root / "bootstrap-stack-sample"
     test.inf = lambda _message: None
     test.err = lambda _message: None
     test.die = lambda message: (_ for _ in ()).throw(SystemExit(message))
