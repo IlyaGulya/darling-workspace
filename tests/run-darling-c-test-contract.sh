@@ -53,6 +53,7 @@ cat >"$tmp/compile-fail.c" <<'C'
 int main(void) { return this_does_not_compile; }
 C
 printf 'darlingserver pid=42 exec-mldr\n' >"$tmp/rootless-boot.trace"
+printf 'launchd pid=43 runtime-loop\n' >"$tmp/prefix/.west-rootless-guest-fd.log"
 mkdir -p "$tmp/prefix/private/var/tmp"
 printf 'launchd pid=43 runtime-loop\n' >"$tmp/prefix/private/var/tmp/.west-rootless-boot.log"
 if DARLING_HOST_BOOT_TRACE="$tmp/rootless-boot.trace" DPREFIX="$tmp/prefix" \
@@ -70,6 +71,7 @@ grep -F -q -- '--- rootless host boot trace: ' "$tmp/compile-fail.out"
 grep -F -x -q 'darlingserver pid=42 exec-mldr' "$tmp/compile-fail.out"
 grep -F -q -- '--- rootless guest boot trace: ' "$tmp/compile-fail.out"
 grep -F -x -q 'launchd pid=43 runtime-loop' "$tmp/compile-fail.out"
+grep -F -q -- '--- rootless guest FD trace: ' "$tmp/compile-fail.out"
 if grep -F -x -q WEST_GUEST_STAGE=run "$tmp/compile-fail.out"; then
 	cat "$tmp/compile-fail.out" >&2
 	exit 1
