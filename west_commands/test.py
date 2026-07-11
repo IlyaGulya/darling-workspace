@@ -3888,7 +3888,7 @@ class DarlingTest(WestCommand):
                     if not self._check_red_failure_phase(
                         proof,
                         runtime_invocation,
-                        "runtime",
+                        bad_result.failure_phase,
                     ):
                         keep_on_failure = True
                         self.err(f"preserving failed RED runtime scratch for inspection: {temp}")
