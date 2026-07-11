@@ -1,17 +1,17 @@
-From af4953b4e6811a85a5f476622f90f32ff6f3ed9b Mon Sep 17 00:00:00 2001
+From 0a3a598b8a5e3e5c8a0f8f141e92f8619a68147e Mon Sep 17 00:00:00 2001
 From: Ilya Gulya <ilya.gulya@indriver.com>
 Date: Sat, 11 Jul 2026 15:35:48 +0000
 Subject: [PATCH] test: delay rootless shellspawn readiness
 
 ---
- src/shellspawn/shellspawn.c | 20 ++++++++++++++++++++
- 1 file changed, 20 insertions(+)
+ src/shellspawn/shellspawn.c | 46 +++++++++++++++++++++++++++++++++++++
+ 1 file changed, 46 insertions(+)
 
 diff --git a/src/shellspawn/shellspawn.c b/src/shellspawn/shellspawn.c
-index 5691d42b955418ea7b5da11e5ca80a3ce3f531a0..74dc7ce75625c1c52cddd959697b43740885db74 100644
+index 5691d42b955418ea7b5da11e5ca80a3ce3f531a0..0e276d3f05d3fdb129bc029cd06a8a58053506eb 100644
 --- a/src/shellspawn/shellspawn.c
 +++ b/src/shellspawn/shellspawn.c
-@@ -49,6 +49,25 @@ void setupSigchild(void);
+@@ -49,6 +49,50 @@ void setupSigchild(void);
  void restoreSigchild(void);
  void reapAll(void);
  
@@ -34,14 +34,40 @@ index 5691d42b955418ea7b5da11e5ca80a3ce3f531a0..74dc7ce75625c1c52cddd959697b4374
 +	poll(NULL, 0, (int)delay);
 +}
 +
++static void rootlessTestMarkSocketPending(void)
++{
++	const char* rootless = getenv("DARLING_ROOTLESS");
++	const char* delay = getenv("DARLING_TEST_SHELLSPAWN_READY_DELAY_MS");
++	const char* path = getenv("WEST_ROOTLESS_BOOTSTRAP_READY_FILE");
++	if (rootless == NULL || strcmp(rootless, "1") != 0 || delay == NULL || *delay == '\0'
++		|| path == NULL || *path == '\0')
++		return;
++
++	int fd = open(path, O_WRONLY | O_CREAT | O_TRUNC, 0600);
++	if (fd == -1)
++	{
++		perror("Opening rootless shellspawn readiness marker");
++		exit(EXIT_FAILURE);
++	}
++	const char marker[] = "shellspawn-pending\n";
++	if (write(fd, marker, sizeof(marker) - 1) != (ssize_t)(sizeof(marker) - 1))
++	{
++		perror("Writing rootless shellspawn readiness marker");
++		close(fd);
++		exit(EXIT_FAILURE);
++	}
++	close(fd);
++}
++
  static void rootlessBootTrace(const char* stage)
  {
  	const char* rootless = getenv("DARLING_ROOTLESS");
-@@ -72,6 +91,7 @@ int main(int argc, const char** argv)
+@@ -72,6 +116,8 @@ int main(int argc, const char** argv)
  	// restore the sigaction of SIGCHLD of the child shellspawn
  	rootlessBootTrace("entry");
  	setupSigchild();
 +	rootlessTestDelaySocketReady();
++	rootlessTestMarkSocketPending();
  	setupSocket();
  	rootlessBootTrace("socket-ready");
  	listenForConnections();

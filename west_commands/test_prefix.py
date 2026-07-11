@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import os
 import signal
+import stat
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -162,4 +163,18 @@ def remove_stale_init_pid(
     if pid_is_usable(pid):
         return False
     init_pid.unlink(missing_ok=True)
+    return True
+
+
+def remove_stale_server_socket(prefix: Path) -> bool:
+    """Remove the server socket after prefix shutdown has proven it is idle."""
+
+    server_socket = prefix / ".darlingserver.sock"
+    try:
+        mode = server_socket.lstat().st_mode
+    except FileNotFoundError:
+        return False
+    if not (stat.S_ISSOCK(mode) or stat.S_ISLNK(mode)):
+        return False
+    server_socket.unlink()
     return True
