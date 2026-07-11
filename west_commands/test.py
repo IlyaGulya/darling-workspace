@@ -189,6 +189,11 @@ class DarlingTest(WestCommand):
             help="build and retain one declared runtime provider as the selected prefix baseline, then prove it with a bounded guest smoke",
         )
         parser.add_argument(
+            "--bootstrap-syscall-trace",
+            metavar="DIR",
+            help="with --bootstrap-runtime-profile, save strace -ff output for the bounded guest smoke in DIR",
+        )
+        parser.add_argument(
             "--keep-prefix-running",
             action="store_true",
             help="do not shut down a Darling prefix after prefix-backed metadata tests",
@@ -3713,6 +3718,22 @@ class DarlingTest(WestCommand):
                 "bootstrap only accepts declared rootless baselines"
             )
         smoke_timeout_seconds = definition["bootstrap-smoke-timeout-seconds"]
+        trace_dir = getattr(self, "_bootstrap_syscall_trace", None)
+        command_prefix: tuple[str, ...] = ()
+        if trace_dir is not None:
+            if shutil.which("strace") is None:
+                self.die("--bootstrap-syscall-trace requires strace on the host")
+            trace_dir.mkdir(parents=True, exist_ok=True)
+            command_prefix = (
+                "strace",
+                "-ff",
+                "-tt",
+                "-s",
+                "160",
+                "-o",
+                str(trace_dir / "bootstrap"),
+            )
+            self.inf(f"prefix bootstrap syscall trace: {trace_dir}")
         with self._prefix_resource_context(True):
             with self._runtime_profile_deployment_context(
                 [profile_name], label_prefix="Prefix bootstrap", retain_deployment=True
@@ -3748,12 +3769,14 @@ class DarlingTest(WestCommand):
                     env=deployment.env,
                     timeout_seconds=smoke_timeout_seconds,
                     capture_output=True,
+                    command_prefix=command_prefix,
                 )
                 output = f"{result.stdout}{result.stderr}"
                 if result.timed_out:
+                    trace_hint = f"; syscall trace: {trace_dir}" if trace_dir is not None else ""
                     self.die(
                         "prefix bootstrap guest smoke timed out after "
-                        f"{smoke_timeout_seconds}s"
+                        f"{smoke_timeout_seconds}s{trace_hint}"
                     )
                 if result.returncode != 0:
                     self.die(
@@ -4778,6 +4801,9 @@ class DarlingTest(WestCommand):
         if args.profile and (args.fuzz or args.stress):
             self.die("--fuzz/--stress select CTest suite tests; use --patch/--profile for patch metadata")
         bootstrap_runtime_profile = getattr(args, "bootstrap_runtime_profile", None)
+        bootstrap_syscall_trace = getattr(args, "bootstrap_syscall_trace", None)
+        if bootstrap_syscall_trace and not bootstrap_runtime_profile:
+            self.die("--bootstrap-syscall-trace requires --bootstrap-runtime-profile")
         if bootstrap_runtime_profile:
             incompatible = []
             if args.profile or args.patch or args.prove_red or args.red_only or args.red_audit:
@@ -4791,10 +4817,14 @@ class DarlingTest(WestCommand):
                     "--bootstrap-runtime-profile is a prefix provisioning operation; "
                     "do not combine it with " + ", ".join(incompatible)
                 )
-            self._bootstrap_runtime_profile(bootstrap_runtime_profile)
-            if getattr(self, "_prefix_cleanup_failed", False):
-                raise SystemExit(1)
-            return
+            self._bootstrap_syscall_trace = Path(bootstrap_syscall_trace) if bootstrap_syscall_trace else None
+            try:
+                self._bootstrap_runtime_profile(bootstrap_runtime_profile)
+                if getattr(self, "_prefix_cleanup_failed", False):
+                    raise SystemExit(1)
+                return
+            finally:
+                self._bootstrap_syscall_trace = None
 
         if args.profile:
             selected, missing = self._metadata_tests(
