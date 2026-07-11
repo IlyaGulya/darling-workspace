@@ -1541,6 +1541,20 @@ class DarlingTest(WestCommand):
             required = invocation.get("requires_profile")
             if required and not self._profile_is_applied(required):
                 return True
+            # A source-bound host test must execute against the selected patch
+            # profile. Without a temporary profile worktree its source env
+            # resolves to whatever branch happens to be checked out locally.
+            active_profile = getattr(self, "_active_profile", None)
+            source_module = invocation.get("source_module")
+            source_project = self._project_path(source_module) if source_module else None
+            if (
+                invocation.get("source_env")
+                and active_profile
+                and source_module in self._profile_stack_modules(active_profile)
+                and source_project != Path(self.manifest.repo_abspath)
+                and not self._profile_is_applied(active_profile)
+            ):
+                return True
             script_path = invocation.get("script_path")
             if script_path is not None and not script_path.is_file():
                 return True
