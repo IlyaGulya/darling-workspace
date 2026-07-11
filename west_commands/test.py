@@ -1637,6 +1637,12 @@ class DarlingTest(WestCommand):
         ) as deployment:
             yield deployment.env
 
+    def _bootstrap_diagnostics_enabled(self) -> bool:
+        return (
+            getattr(self, "_bootstrap_syscall_trace", None) is not None
+            or getattr(self, "_bootstrap_stack_sample", None) is not None
+        )
+
     @contextmanager
     def _runtime_profile_deployment_context(
         self,
@@ -1728,7 +1734,7 @@ class DarlingTest(WestCommand):
                         guest_fd_trace.unlink(missing_ok=True)
                         runtime_env["DARLING_HOST_BOOT_TRACE"] = str(boot_trace)
                         runtime_env["DARLING_GUEST_BOOT_TRACE"] = str(guest_fd_trace)
-                        if getattr(self, "_bootstrap_syscall_trace", None) is not None:
+                        if self._bootstrap_diagnostics_enabled():
                             server_trace = (
                                 Path(prefix_text)
                                 / "private/var/log/dserver-rpc-trace.log"
