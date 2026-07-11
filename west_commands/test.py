@@ -343,8 +343,8 @@ class DarlingTest(WestCommand):
             "--proof-scratch-root",
             metavar="DIR",
             default=tempfile.gettempdir(),
-            help="with --gc, directory to scan for stale runtime scratch and guest "
-            f"runner output (default {tempfile.gettempdir()})",
+            help="with --gc, directory to scan for stale runtime, source-proof, and "
+            f"deploy-proof scratch plus guest runner output (default {tempfile.gettempdir()})",
         )
         parser.add_argument(
             "--proof-scratch-max-age-hours",
@@ -4916,6 +4916,7 @@ class DarlingTest(WestCommand):
             "west-red-proof-runtime-*",
             "west-green-proof-runtime-*",
             "west-red-proof-source-*",
+            "west-red-proof-deploy-*",
             "west-ctest-runtime-*",
             "west-runtime-*",
         )
