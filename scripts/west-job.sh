@@ -75,15 +75,15 @@ read_rc() {
 }
 
 wait_for_pid_exit() {
-	local pid="$1"
-	tail --pid="$pid" -f /dev/null >/dev/null 2>&1 || true
+	local pid_file="$1"
+	pidwait -F "$pid_file" >/dev/null 2>&1
 }
 
 wait_for_pid_exit_or_timeout() {
-	local pid="$1"
+	local pid_file="$1"
 	local timeout_seconds="$2"
 	timeout --foreground "$timeout_seconds" \
-		tail --pid="$pid" -f /dev/null >/dev/null 2>&1 || true
+		pidwait -F "$pid_file" >/dev/null 2>&1 || true
 }
 
 start_job() {
@@ -149,7 +149,7 @@ status_job() {
 
 wait_job() {
 	if load_live_pid; then
-		wait_for_pid_exit "$(<"$state_dir/pid")"
+		wait_for_pid_exit "$state_dir/pid"
 	fi
 	local rc
 	if rc="$(read_rc)"; then
@@ -171,7 +171,7 @@ cancel_job() {
 		local command_pid
 		command_pid="$(<"$state_dir/command-pid")"
 		kill -INT "$command_pid"
-		wait_for_pid_exit_or_timeout "$command_pid" 5
+		wait_for_pid_exit_or_timeout "$state_dir/command-pid" 5
 		if ! load_live_command_pid; then
 			printf 'cancelling command-pid=%s state=%s\n' "$command_pid" "$state_dir"
 			return
