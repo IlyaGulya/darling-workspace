@@ -5376,6 +5376,18 @@ patches:
   test-exception:
     reason: runtime-harness-pending
     scope: This submodule selection is valid only together with the rootless launcher and runtime artifacts it selects.
+- path: darling/rootless-vchroot-launchd-trace.patch
+  sha256sum: 5aeeaef663068f6dabd3ecdb0d6c0241ced7725f136fcf02ce799ed61c782e6b
+  module: darling
+  source-branch: fix/rootless-vchroot-argv
+  source-base: 5c435519e3070d442bb5a638694e5536753df0c7
+  source-commit: c82877b302c8318dafed286e98ea1df9bc2df3c8
+  bead: dar-d2pm
+  publication-status: blocked
+  publication-blocker: The trace is diagnostic evidence only until a full rootless bootstrap identifies and fixes the post-dyld failure.
+  test-exception:
+    reason: runtime-harness-pending
+    scope: The markers execute only across the real virtual vchroot-to-launchd handoff and are verified by the retained rootless bootstrap repro.
 - path: dyld/rootless-dyld-boot-trace.patch
   sha256sum: 074887ba2fa44d8197861b344d6411da1fa49963853e8fd4c916c3c9b225f9b5
   module: darling/src/external/dyld
