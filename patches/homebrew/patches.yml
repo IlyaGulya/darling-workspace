@@ -5388,6 +5388,18 @@ patches:
   test-exception:
     reason: runtime-harness-pending
     scope: The markers execute only across the real virtual vchroot-to-launchd handoff and are verified by the retained rootless bootstrap repro.
+- path: libsystem/rootless-initializer-trace.patch
+  sha256sum: 5f28de3728616551c55627af54b8f142a2aed9cad4ea76754afe60f3e11cd181
+  module: darling/src/external/libsystem
+  source-branch: fix/rootless-libsystem-init-trace
+  source-base: 08df454b6eb0df9400aa4c39839a7efd6efd2c3c
+  source-commit: c32cbcc7cbe266d9323e5a2964a05a7c97e3c79c
+  bead: dar-d2pm
+  publication-status: blocked
+  publication-blocker: The raw trace must determine whether the guest libSystem initializer establishes ProgramVars before a production fix is selected.
+  test-exception:
+    reason: runtime-harness-pending
+    scope: The contract is observable only during the real rootless guest bootstrap before libc has an initialized environment.
 - path: dyld/rootless-dyld-boot-trace.patch
   sha256sum: 074887ba2fa44d8197861b344d6411da1fa49963853e8fd4c916c3c9b225f9b5
   module: darling/src/external/dyld
