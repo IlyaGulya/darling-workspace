@@ -456,6 +456,12 @@
           "source_ref": "refs/heads/fix/pthread-canceled-xnu-semantics"
         },
         {
+          "branch": "fix/pthread-cancellation-trace",
+          "head": "98325d76d25f7dcb450e8005b2590910c8df52c7",
+          "upstream": "",
+          "source_ref": "refs/heads/fix/pthread-cancellation-trace"
+        },
+        {
           "branch": "fix/ring-committed-unknown-gate",
           "head": "ea28bd095742be30f96b3d73510321f7c8124a51",
           "upstream": "",
