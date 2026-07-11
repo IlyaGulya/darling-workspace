@@ -51,11 +51,13 @@ def make_test():
     test.wrn = lambda message: None
     test.err = lambda message: test.err_messages.append(message)
     test.die = lambda message: (_ for _ in ()).throw(SystemExit(message))
+    test._active_profile = "homebrew"
     test._resolve_darling_launcher = lambda _prefix: None
     test._kill_dserver_for_prefix = lambda _prefix: None
     test._prefix_process_snapshot = lambda _prefix: []
     test._missing_requirements = lambda _invocation: []
     test._execution_env = lambda _invocation: {"DPREFIX": test._prefix}
+    test._preflight_runtime_profile_stack = lambda *_args: None
     return test
 
 
@@ -526,6 +528,92 @@ with tempfile.TemporaryDirectory() as temp:
     assert green_labels == [
         "darling/example.patch: runtime_capacity_preflight GREEN"
     ], green_labels
+
+    profile_test = make_test()
+    profile_test._prefix = str(Path(temp) / "prefix")
+    profile_test._active_profile = "homebrew"
+    profile_test._require_runtime_scratch_space = lambda _label: None
+    profile_test._preflight_runtime_profile_stack = lambda *_args: profile_test.die(
+        "profile stack unavailable"
+    )
+    original_mkdtemp = west_test_module.tempfile.mkdtemp
+    west_test_module.tempfile.mkdtemp = lambda **_kwargs: (_ for _ in ()).throw(
+        AssertionError("runtime scratch was created before profile applicability preflight")
+    )
+    try:
+        try:
+            profile_test._run_guest_runtime_deploy_proof(
+                {"path": "darling/example.patch"},
+                {
+                    "mode": "guest-runtime-deploy",
+                    "expect-output-contains": ["expected old runtime symptom"],
+                },
+                {"name": "runtime_profile_preflight", "guest_c_fixture": True},
+            )
+        except SystemExit as exc:
+            assert str(exc) == "profile stack unavailable", exc
+        else:
+            raise AssertionError("runtime RED profile preflight unexpectedly passed")
+        try:
+            profile_test._run_guest_runtime_deploy_green(
+                {"path": "darling/example.patch"},
+                {"mode": "guest-runtime-deploy"},
+                {"name": "runtime_profile_preflight"},
+            )
+        except SystemExit as exc:
+            assert str(exc) == "profile stack unavailable", exc
+        else:
+            raise AssertionError("runtime GREEN profile preflight unexpectedly passed")
+    finally:
+        west_test_module.tempfile.mkdtemp = original_mkdtemp
+
+
+profile_test = make_test()
+profile_test._preflight_runtime_profile_stack = (
+    DarlingTest._preflight_runtime_profile_stack.__get__(profile_test, DarlingTest)
+)
+profile_test._profile_stack = lambda profile: ["homebrew", profile]
+profile_calls = []
+original_bounded = west_test_module.run_bounded
+west_test_module.run_bounded = lambda args, **kwargs: (
+    profile_calls.append((args, kwargs)) or ProcessResult(0)
+)
+try:
+    profile_test._preflight_runtime_profile_stack("arch", "contract runtime")
+    profile_test._preflight_runtime_profile_stack("arch", "contract runtime")
+finally:
+    west_test_module.run_bounded = original_bounded
+assert [call[0] for call in profile_calls] == [
+    ["west", "patch", "verify", "--profile", "homebrew"],
+    ["west", "patch", "verify", "--profile", "arch"],
+], profile_calls
+assert all(call[1]["timeout_seconds"] == 300 for call in profile_calls), profile_calls
+
+failed_profile_test = make_test()
+failed_profile_test._preflight_runtime_profile_stack = (
+    DarlingTest._preflight_runtime_profile_stack.__get__(failed_profile_test, DarlingTest)
+)
+failed_profile_test._profile_stack = lambda _profile: ["broken"]
+original_bounded = west_test_module.run_bounded
+west_test_module.run_bounded = lambda *_args, **_kwargs: ProcessResult(
+    1, stdout="git am conflict\n"
+)
+try:
+    try:
+        failed_profile_test._preflight_runtime_profile_stack(
+            "broken", "contract runtime"
+        )
+    except SystemExit as exc:
+        assert str(exc) == (
+            "Runtime deployment contract runtime cannot materialize source profile "
+            "stack 'broken': 'broken' failed patch applicability preflight. Repair "
+            "or rebase that profile with `west patch verify --profile broken` before "
+            "retrying; this is not a runtime test failure."
+        ), exc
+    else:
+        raise AssertionError("invalid runtime profile stack unexpectedly passed")
+finally:
+    west_test_module.run_bounded = original_bounded
 
 
 with tempfile.TemporaryDirectory() as temp:

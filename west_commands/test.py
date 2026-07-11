@@ -300,6 +300,58 @@ class DarlingTest(WestCommand):
                 "run west test --gc or free disk space before materializing the runtime source forest"
             )
 
+    def _preflight_runtime_profile_stack(
+        self, source_profile: str, deployment_name: str
+    ) -> None:
+        """Verify every layer of a runtime source stack before materializing it.
+
+        Runtime forests reconstruct a profile from manifest revisions, applying
+        its base profiles in order.  A broken intermediate layer otherwise
+        fails only after the runner has made a large disposable forest (and may
+        be mistaken for a runtime RED result).  Reuse ``west patch verify`` as
+        the single authority for patch integrity and applicability, and cache
+        successful stacks for the current invocation.
+        """
+
+        verified = getattr(self, "_verified_runtime_profile_stacks", set())
+        if source_profile in verified:
+            return
+        try:
+            stack = self._profile_stack(source_profile)
+        except SystemExit:
+            raise
+        except Exception as error:
+            self.die(
+                f"Runtime deployment {deployment_name} cannot resolve source profile "
+                f"{source_profile!r}: {error}"
+            )
+
+        for profile in stack:
+            self.inf(
+                f"  runtime profile preflight: {profile} "
+                f"for {deployment_name}"
+            )
+            result = run_bounded(
+                ["west", "patch", "verify", "--profile", profile],
+                cwd=Path(self.topdir),
+                env=None,
+                timeout_seconds=300,
+                capture_output=True,
+            )
+            if result.returncode:
+                self._dump_command_tail(
+                    f"Runtime profile {profile} preflight", result
+                )
+                self.die(
+                    f"Runtime deployment {deployment_name} cannot materialize "
+                    f"source profile stack {source_profile!r}: {profile!r} failed "
+                    "patch applicability preflight. Repair or rebase that profile "
+                    "with `west patch verify --profile "
+                    f"{profile}` before retrying; this is not a runtime test failure."
+                )
+        verified.add(source_profile)
+        self._verified_runtime_profile_stacks = verified
+
     def _profile_path(self, profile: str) -> Path:
         return Path(self.manifest.repo_abspath) / "patches" / profile / "patches.yml"
 
@@ -1514,6 +1566,9 @@ class DarlingTest(WestCommand):
         }
         previous_profile = getattr(self, "_active_profile", None)
         self._require_runtime_scratch_space(f"CTest profile {profile_name}")
+        self._preflight_runtime_profile_stack(
+            source_profile, f"CTest profile {profile_name}"
+        )
         scratch = tempfile.mkdtemp(prefix=f"west-ctest-runtime-{profile_name}-")
         keep_on_failure = False
         self._active_profile = source_profile
@@ -3650,6 +3705,10 @@ class DarlingTest(WestCommand):
         self._require_runtime_scratch_space(
             f"{patch['path']}: {invocation['name']} GREEN"
         )
+        self._preflight_runtime_profile_stack(
+            self._active_runtime_profile(patch),
+            f"{patch['path']}: {invocation['name']} GREEN",
+        )
         temp = tempfile.mkdtemp(prefix="west-green-proof-runtime-")
         keep_on_failure = False
         try:
@@ -3837,6 +3896,10 @@ class DarlingTest(WestCommand):
         prefix = Path(prefix_text)
         self._require_runtime_scratch_space(
             f"{patch['path']}: {invocation['name']} RED"
+        )
+        self._preflight_runtime_profile_stack(
+            self._active_runtime_profile(patch),
+            f"{patch['path']}: {invocation['name']} RED",
         )
         temp = tempfile.mkdtemp(prefix="west-red-proof-runtime-")
         keep_on_failure = False
