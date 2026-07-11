@@ -457,3 +457,89 @@ index bc6eeb343fee46be400fd8aa5d1d3760f6c3ac43..95fea13968e8120209d0d841e5cd5181
  	rootless_boot_trace("start");
  
  	/* This needs to be cleaned up. Currently, we risk tripping assumes() macros
+
+From d036a393e73e3f2e89e2c0c99103a5c5a2ab617d Mon Sep 17 00:00:00 2001
+From: Ilya Gulya <ilya.gulya@indriver.com>
+Date: Sat, 11 Jul 2026 03:16:28 +0000
+Subject: [PATCH] mldr: pass rootless init mode to guest stack
+
+---
+ src/startup/mldr/loader.h |  1 +
+ src/startup/mldr/mldr.c   |  4 +---
+ src/startup/mldr/stack.c  | 13 +++++++++++--
+ 3 files changed, 13 insertions(+), 5 deletions(-)
+
+diff --git a/src/startup/mldr/loader.h b/src/startup/mldr/loader.h
+index 4b534e0c9f425551428ff74a6f239937a5607b67..d1bd92c66c1966226e05632a8bfbd28c8defc676 100644
+--- a/src/startup/mldr/loader.h
++++ b/src/startup/mldr/loader.h
+@@ -15,6 +15,7 @@ struct load_results {
+ 
+ 	unsigned long vm_addr_max;
+ 	bool _32on64;
++	bool rootless_init;
+ 	unsigned long base;
+ 	uint32_t bprefs[4];
+ 	char* root_path;
+diff --git a/src/startup/mldr/mldr.c b/src/startup/mldr/mldr.c
+index afb5a31a9bd98488c85fbbfb167ba7a65cf3ed51..cfeb8197ffcf59ca2ea42f63e318acec2f3695dd 100644
+--- a/src/startup/mldr/mldr.c
++++ b/src/startup/mldr/mldr.c
+@@ -571,9 +571,7 @@ static void process_special_env(struct load_results* lr) {
+ 
+ 	str = getenv("__mldr_rootless_pid1");
+ 	if (str != NULL && strcmp(str, "1") == 0) {
+-		char hostPID[32];
+-		snprintf(hostPID, sizeof(hostPID), "%ld", (long)getpid());
+-		setenv("__darling_rootless_init_host_pid", hostPID, 1);
++		lr->rootless_init = true;
+ 	}
+ };
+ 
+diff --git a/src/startup/mldr/stack.c b/src/startup/mldr/stack.c
+index e3e8f8a618165513bde831c9ba94fd287ea56d9a..ca02c2366e4bba963525d2f5ff7284b9f64419b3 100644
+--- a/src/startup/mldr/stack.c
++++ b/src/startup/mldr/stack.c
+@@ -42,6 +42,7 @@
+ #define __user
+ 
+ #define EXECUTABLE_PATH "executable_path="
++#define ROOTLESS_INIT_ENV "DARLING_ROOTLESS=1"
+ 
+ #define __put_user(value, pointer) ({ \
+ 		__typeof__(value) _tmpval = (value); \
+@@ -70,6 +71,7 @@ void FUNCTION_NAME(const char* filepath, struct load_results* lr)
+ 	char __user* elfcalls_user;
+ 	char elfcalls[27];
+ 	char __user* applep_contents[4];
++	const size_t rootless_envc = lr->rootless_init ? 1 : 0;
+ 
+ #define user_long_count(_val) (((_val) + (sizeof(user_long_t) - 1)) / sizeof(user_long_t))
+ 
+@@ -110,10 +112,11 @@ void FUNCTION_NAME(const char* filepath, struct load_results* lr)
+ 	// 1 pointer for the mach header
+ 	// 1 user_long_t for the argument count
+ 	// `argc`-count pointers for arguments (+1 for NULL)
+-	// `envc`-count pointers for env vars (+1 for NULL)
++	// `envc`-count pointers for env vars, plus the rootless-init marker when
++	// mldr was invoked by the rootless bootstrap (+1 for NULL)
+ 	// `sizeof(applep_contents) / sizeof(*applep_contents)`-count pointers for applep arguments (already includes NULL)
+ 	// space for exepath, kernfd, and elfcalls
+-	sp -= 1 + 1 + (lr->argc + 1) + (lr->envc + 1) + (sizeof(applep_contents) / sizeof(*applep_contents)) + user_long_count(exepath_len + sizeof(EXECUTABLE_PATH) + sizeof(kernfd) + sizeof(elfcalls));
++	sp -= 1 + 1 + (lr->argc + 1) + (lr->envc + rootless_envc + 1) + (sizeof(applep_contents) / sizeof(*applep_contents)) + user_long_count(exepath_len + sizeof(EXECUTABLE_PATH) + sizeof(kernfd) + sizeof(elfcalls));
+ 
+ 	exepath_user = (char __user*) lr->stack_top - exepath_len - sizeof(EXECUTABLE_PATH);
+ 	memcpy(exepath_user, EXECUTABLE_PATH, sizeof(EXECUTABLE_PATH)-1);
+@@ -187,6 +190,12 @@ void FUNCTION_NAME(const char* filepath, struct load_results* lr)
+ 			exit(1);
+ 		}
+ 	}
++	if (lr->rootless_init) {
++		if (__put_user((user_long_t) ROOTLESS_INIT_ENV, envp++)) {
++			fprintf(stderr, "Failed to add the rootless init environment variable to the stack\n");
++			exit(1);
++		}
++	}
+ 	if (__put_user((user_long_t) 0, envp++))
+ 	{
+ 		fprintf(stderr, "Failed to null-terminate the environment variable pointer array\n");
