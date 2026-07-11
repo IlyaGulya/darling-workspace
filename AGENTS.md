@@ -21,6 +21,11 @@ refs, PR drafts, and agent handoff.
 - For shell assignments, conditionals, command substitution, or other compound
   shell syntax, use `rtk bash -c '...'`; `rtk NAME=value command` treats the
   assignment as a program name and produces a misleading host-side error.
+- In this execution transport, do not poll a long `west-job` through shell
+  `sleep` (for example, `sleep 60; west-job.sh status ...`): the transport can
+  detach the shell and leave the sleep process behind. Run short
+  `scripts/west-job.sh status --state-dir DIR` checks instead, record the PID
+  and log path, and treat any escaped monitor process as a tooling defect.
 - Use `west patch verify|apply|clean|list` for local integration profiles.
 - Use `west darling-prefix-repair --prefix <prefix>` when guest tests report
   missing prefix prerequisites such as `private/var/tmp`, canonical
