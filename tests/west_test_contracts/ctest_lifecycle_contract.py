@@ -437,6 +437,11 @@ with tempfile.TemporaryDirectory() as temp:
         observed_prefixes.append(kwargs["command_prefix"])
         server_trace.parent.mkdir(parents=True, exist_ok=True)
         server_trace.write_text("rpc.recv number=1 name=mldr_path\n")
+        (prefix / ".west-rootless-boot.log").write_text(
+            "launcher pid=1 waiting-for-shellspawn\n"
+        )
+        guest_fd_trace = prefix / ".west-rootless-guest-fd.log"
+        guest_fd_trace.write_text("launchd pid=2 shellspawn dispatch-start\n")
         return ProcessResult(124, timed_out=True, stdout="", stderr="")
 
     test_module.run_guest_shell = timed_out_guest
@@ -446,7 +451,11 @@ with tempfile.TemporaryDirectory() as temp:
             test._bootstrap_runtime_profile("homebrew-prefix-baseline")
             raise AssertionError("bootstrap unexpectedly accepted a timed-out syscall trace run")
         except SystemExit as exc:
-            assert str(exc) == f"prefix bootstrap guest smoke timed out after 60s; syscall trace: {trace_dir}", exc
+            assert str(exc) == (
+                f"prefix bootstrap guest smoke timed out after 60s; syscall trace: {trace_dir}; "
+                "progress: host=launcher pid=1 waiting-for-shellspawn | "
+                "guest-fd=launchd pid=2 shellspawn dispatch-start"
+            ), exc
     finally:
         test_module.run_guest_shell = original_run_guest_shell
         test_module.run_bounded = original_run_bounded
@@ -467,6 +476,25 @@ with tempfile.TemporaryDirectory() as temp:
         "12:00:00.000001 --- SIGSEGV {si_signo=SIGSEGV, si_code=SEGV_MAPERR, si_addr=0x18} ---\n"
     )
     assert test_module.bootstrap_trace_fatal_signal(trace_dir) == "SIGSEGV at 0x18"
+
+
+with tempfile.TemporaryDirectory() as temp:
+    prefix = Path(temp)
+    assert test_module.rootless_bootstrap_progress(prefix) is None
+    (prefix / ".west-rootless-boot.log").write_text(
+        "launcher pid=1 start\nlauncher pid=1 waiting-for-shellspawn\n"
+    )
+    guest_trace = prefix / "private/var/tmp/.west-rootless-boot.log"
+    guest_trace.parent.mkdir(parents=True)
+    guest_trace.write_text("launchd pid=2 entry\n")
+    (prefix / ".west-rootless-guest-fd.log").write_text(
+        "dyld bootstrap-enter\nlaunchd pid=2 shellspawn dispatch-start\n"
+    )
+    assert test_module.rootless_bootstrap_progress(prefix) == (
+        "host=launcher pid=1 waiting-for-shellspawn | "
+        "guest-path=launchd pid=2 entry | "
+        "guest-fd=launchd pid=2 shellspawn dispatch-start"
+    )
 
 
 with tempfile.TemporaryDirectory() as temp:
