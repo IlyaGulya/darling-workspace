@@ -217,7 +217,7 @@ with tempfile.TemporaryDirectory() as temp:
         yield root / "source"
 
     @contextmanager
-    def deployed(proof, build_root, prefix, *, label):
+    def deployed(proof, build_root, prefix, *, label, restore_deployment=True):
         assert proof["source-modules"] == [
             "darling",
             "darling/src/external/darlingserver",
@@ -226,6 +226,7 @@ with tempfile.TemporaryDirectory() as temp:
         assert build_root == root / "build"
         assert prefix == root / "prefix"
         assert label == "CTest homebrew"
+        assert restore_deployment is True
         events.append("deploy")
         yield
         events.append("restore")
@@ -296,6 +297,113 @@ with tempfile.TemporaryDirectory() as temp:
         test_module.tempfile.mkdtemp = original_mkdtemp
     assert scratch.is_dir(), scratch
     assert errors == [f"preserving failed CTest runtime scratch for inspection: {scratch}"], errors
+
+
+with tempfile.TemporaryDirectory() as temp:
+    root = Path(temp)
+    prefix = root / "prefix"
+    prefix.mkdir()
+    test = DarlingTest.__new__(DarlingTest)
+    test.topdir = str(root)
+    test._prefix = str(prefix)
+    test._prefix_cleanup_failed = False
+    test.inf = lambda _message: None
+    test.err = lambda _message: None
+    test.die = lambda message: (_ for _ in ()).throw(SystemExit(message))
+    test._ctest_runtime_profile_definitions = lambda: {
+        "homebrew-prefix-baseline": {"purpose": "prefix-baseline"}
+    }
+    events = []
+
+    @contextmanager
+    def prefix_context(enabled):
+        assert enabled is True
+        events.append("lock")
+        yield
+        events.append("cleanup")
+
+    @contextmanager
+    def deployment_context(profiles, *, label_prefix, retain_deployment):
+        assert profiles == ["homebrew-prefix-baseline"], profiles
+        assert label_prefix == "Prefix bootstrap", label_prefix
+        assert retain_deployment is True
+        events.append("deploy")
+        yield types.SimpleNamespace(
+            prefix=prefix,
+            build_root=root / "build",
+            env={"DARLING_LAUNCHER": "/fake/darling"},
+        )
+        events.append("retain")
+
+    test._prefix_resource_context = prefix_context
+    test._runtime_profile_deployment_context = deployment_context
+    original_run_guest_shell = test_module.run_guest_shell
+    original_run_bounded = test_module.run_bounded
+    test_module.run_guest_shell = lambda *_args, **kwargs: (
+        events.append("smoke") or ProcessResult(
+            0, stdout="WEST_PREFIX_BOOTSTRAP_OK\n", stderr=""
+        )
+    )
+    test_module.run_bounded = lambda *_args, **_kwargs: ProcessResult(0)
+    try:
+        test._bootstrap_runtime_profile("homebrew-prefix-baseline")
+    finally:
+        test_module.run_guest_shell = original_run_guest_shell
+        test_module.run_bounded = original_run_bounded
+    assert events == ["lock", "deploy", "smoke", "retain", "cleanup"], events
+
+
+with tempfile.TemporaryDirectory() as temp:
+    root = Path(temp)
+    prefix = root / "prefix"
+    prefix.mkdir()
+    test = DarlingTest.__new__(DarlingTest)
+    test.topdir = str(root)
+    test._prefix = str(prefix)
+    test._prefix_cleanup_failed = False
+    test.inf = lambda _message: None
+    test.err = lambda _message: None
+    test.die = lambda message: (_ for _ in ()).throw(SystemExit(message))
+    test._ctest_runtime_profile_definitions = lambda: {
+        "homebrew-prefix-baseline": {"purpose": "prefix-baseline"}
+    }
+    restored = []
+
+    @contextmanager
+    def prefix_context(_enabled):
+        yield
+
+    @contextmanager
+    def deployment_context(_profiles, *, label_prefix, retain_deployment):
+        assert label_prefix == "Prefix bootstrap"
+        assert retain_deployment is True
+        try:
+            yield types.SimpleNamespace(
+                prefix=prefix,
+                build_root=root / "build",
+                env={"DARLING_LAUNCHER": "/fake/darling"},
+            )
+        finally:
+            restored.append("restored")
+
+    test._prefix_resource_context = prefix_context
+    test._runtime_profile_deployment_context = deployment_context
+    original_run_guest_shell = test_module.run_guest_shell
+    original_run_bounded = test_module.run_bounded
+    test_module.run_guest_shell = lambda *_args, **kwargs: ProcessResult(
+        0, stdout="wrong marker\n", stderr=""
+    )
+    test_module.run_bounded = lambda *_args, **_kwargs: ProcessResult(0)
+    try:
+        try:
+            test._bootstrap_runtime_profile("homebrew-prefix-baseline")
+            raise AssertionError("bootstrap accepted a guest run without its verdict marker")
+        except SystemExit as exc:
+            assert str(exc) == "prefix bootstrap guest smoke returned without its verdict marker", exc
+    finally:
+        test_module.run_guest_shell = original_run_guest_shell
+        test_module.run_bounded = original_run_bounded
+    assert restored == ["restored"], restored
 
 
 with tempfile.TemporaryDirectory() as temp:
