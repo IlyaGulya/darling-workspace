@@ -948,6 +948,12 @@
           "source_ref": "refs/heads/fix/e-union-9-getdents-passthrough"
         },
         {
+          "branch": "fix/eunion-bind-symlink-parent",
+          "head": "d4034574702e0a0f65c272efe4e853cc0a584001",
+          "upstream": "",
+          "source_ref": "refs/heads/fix/eunion-bind-symlink-parent"
+        },
+        {
           "branch": "fix/eunion-fdpath-nested-lower",
           "head": "afeb053fa1bcdf3de819d403d6c1aacb244fa659",
           "upstream": "",
