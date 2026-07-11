@@ -5453,6 +5453,69 @@ patches:
       consumes the pending request. The exact daemon trace proves action and
       state transitions rather than inferring them from generic RPC numbers.
   sha256sum: 882cf34dab33311ef4384f6d630ea74d9f982c0fec5aaa246f97964528bad47c
+- path: darlingserver/eunion-exec-path-trace.patch
+  module: darling/src/external/darlingserver
+  source-branch: fix/eunion-exec-trace
+  source-base: 98325d76d25f7dcb450e8005b2590910c8df52c7
+  source-commit: c9f536170d32d5f7c0b89f4f83fae33c7e9bba6c
+  bead: dar-yfp4.3.2
+  publication-status: blocked
+  publication-blocker: Test-only execution-path diagnostics; retain locally until the E-UNION launchd service spawn loop has a product fix with a behavioral proof.
+  tests:
+  - name: eunion_exec_path_trace_guest
+    kind: guest
+    coverage-tier: runtime
+    runs: guest
+    diag: guarded
+    runtime-profile: homebrew-rootless-no-mount
+    red: true
+    red-proof:
+      mode: guest-runtime-deploy
+      bad-profile: current-minus-patch
+      expect-failure-phase: run
+      expect-output-contains:
+      - missing host trace content
+      - process.executable_path operation=set_executable_path
+      runtime-artifacts:
+      - module: darling/src/external/darlingserver
+        build-targets:
+        - darlingserver
+        deploy:
+        - bin/darlingserver
+    runner: guest-c-fixture
+    repo: darling-workspace
+    script: tests/eunion_exec_path_trace_guest.c
+    ok-marker: EUNION_EXEC_PATH_TRACE_GUEST_OK
+    timeout-seconds: 20
+    compile-flags:
+    - -std=gnu11
+    - -Wall
+    - -Wextra
+    - -Werror
+    requires:
+    - darling-prefix
+    host-trace-files:
+    - env: DSERVER_TEST_TRACE_FILE
+      prefix-relative-path: private/var/tmp/dserver-eunion-exec-path.trace
+      contains:
+      - process.executable_path operation=set_executable_path
+      - eunion_exec_path_trace_guest
+      - code=0 terminal=reply-enqueued
+    host-trace-oracle: true
+    runtime-artifacts:
+    - module: darling/src/external/darlingserver
+      build-targets:
+      - darlingserver
+      deploy:
+      - bin/darlingserver
+    note: >-
+      Real guest execution-path proof for the opt-in daemon trace. The fixture
+      is compiled and launched inside Darling, and the daemon must record the
+      successful set-executable-path RPC for that generated binary. The same
+      fixture remains runnable against the current-minus daemon, where the
+      missing trace event fails at the run oracle rather than at fixture upload
+      or compilation.
+  sha256sum: de34ab48e5fa4de1017b633db8991885e0e9919ff92e689d13ca55b295b0c78d
 - path: darlingserver/eunion-runtime-prefix.patch
   sha256sum: e32e0125b3521837389ddf3c6d5889becd9acba92f9d88d5e39c686181cf60b1
   module: darling/src/external/darlingserver
