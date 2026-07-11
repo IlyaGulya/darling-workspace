@@ -1799,6 +1799,9 @@ class DarlingTest(WestCommand):
             "--timeout-seconds",
             str(invocation.get("debug_timeout_seconds", invocation.get("timeout_seconds", 600))),
         ]
+        cwd = invocation.get("cwd")
+        if cwd is not None:
+            args.extend(["--cwd", str(cwd)])
         if diag == "forensic":
             args.extend(["--capture-gdb", "--capture-tree"])
         args.append("--")

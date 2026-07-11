@@ -33,6 +33,20 @@ from west_commands.test_execution import ProcessResult
 
 os.environ.setdefault("WEST_RUNTIME_MIN_FREE_BYTES", "0")
 
+debug_test = DarlingTest.__new__(DarlingTest)
+debug_test._executor = "/tmp/darling-debug-runner"
+debug_args = debug_test._debug_runner_args(
+    {
+        "name": "cwd_contract",
+        "diag": "guarded",
+        "cwd": Path("/tmp/workspace-owned-script"),
+        "args": ["tests/runtime.sh"],
+        "shell": False,
+        "timeout_seconds": 7,
+    }
+)
+assert debug_args[-4:] == ["--cwd", "/tmp/workspace-owned-script", "--", "tests/runtime.sh"], debug_args
+
 
 test = DarlingTest.__new__(DarlingTest)
 test.die = lambda message: (_ for _ in ()).throw(SystemExit(message))
