@@ -5324,11 +5324,11 @@ patches:
     reason: runtime-harness-pending
     scope: The proof requires a real init launch plus a guest fork so host PID propagation and child identity are exercised together.
 - path: darling/rootless-no-mount-launch.patch
-  sha256sum: 90415bd1690edc51a14c85596c674d9a7ce8138e929d2f3aab368dc668362718
+  sha256sum: c1d4ad8691993f81aba250866c25513ccb0ce557916b529d9da2ce7a1b782099
   module: darling
   source-branch: fix/rootless-no-mount-launch
   source-base: 492a00f4929e5aba60607d9fed3e868bc4a3aeba
-  source-commit: e2fdd11628890aa949af45877561ffa579bb06cd
+  source-commit: d9f401d16831d4a8c66171fdf632fbd3e6c444b1
   bead: dar-test-infra-sp5.8.4.5
   publication-status: blocked
   publication-blocker: Rootless no-mount runtime provider and guest lifecycle proof are not implemented yet.
