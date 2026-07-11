@@ -85,13 +85,13 @@
         },
         {
           "branch": "fix/rootless-no-mount-homebrew",
-          "head": "6aa5c0dcf7f1f5148fcbf0d7d94a5891b03cb296",
+          "head": "9262ce9d45a71db5c27ad292cca7e1dc35a05ca7",
           "upstream": "",
           "source_ref": "refs/heads/fix/rootless-no-mount-homebrew"
         },
         {
           "branch": "fix/rootless-no-mount-launch",
-          "head": "4f02d05fbd347b145b69882dd4b4e99a9c7e8c30",
+          "head": "e2fdd11628890aa949af45877561ffa579bb06cd",
           "upstream": "",
           "source_ref": "refs/heads/fix/rootless-no-mount-launch"
         },
@@ -109,7 +109,7 @@
         },
         {
           "branch": "fix/rootless-runtime-components",
-          "head": "6aa5c0dcf7f1f5148fcbf0d7d94a5891b03cb296",
+          "head": "253ecf0aa7ceb2d0dcc6f466700273642da8e324",
           "upstream": "",
           "source_ref": "refs/heads/fix/rootless-runtime-components"
         },
@@ -385,7 +385,7 @@
         },
         {
           "branch": "fix/rootless-no-mount-profile",
-          "head": "7c936149c57b9abddd4e0aa451e07a48e2a311f5",
+          "head": "fd105515af642df755296330265038ac2f70fae4",
           "upstream": "",
           "source_ref": "refs/heads/fix/rootless-no-mount-profile"
         },
@@ -931,7 +931,7 @@
         },
         {
           "branch": "fix/rootless-no-mount-profile",
-          "head": "3ff5a016214c3a52c09bd8371a2adcf26e6ea139",
+          "head": "52e2102938b8ca2385c62c00074a7c8fdd2d2eaf",
           "upstream": "",
           "source_ref": "refs/heads/fix/rootless-no-mount-profile"
         },

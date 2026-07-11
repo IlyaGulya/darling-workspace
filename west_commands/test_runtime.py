@@ -8,6 +8,19 @@ from typing import Any
 import yaml
 
 
+ROOTLESS_NO_MOUNT_DEPLOY_PATHS = frozenset(
+    {
+        "bin/darling",
+        "bin/darlingserver",
+        "usr/libexec/darling/mldr",
+        "usr/libexec/darling/launchd",
+        "usr/libexec/darling/vchroot",
+        "usr/lib/dyld",
+        "usr/lib/system/libsystem_kernel.dylib",
+    }
+)
+
+
 def load_ctest_runtime_profiles(path: Path) -> dict[str, dict[str, Any]]:
     """Load the explicit runtime deployments used by CTest guest entries."""
 
@@ -23,6 +36,7 @@ def load_ctest_runtime_profiles(path: Path) -> dict[str, dict[str, Any]]:
         source_module = profile.get("source-module")
         source_modules = profile.get("source-modules")
         artifacts = profile.get("runtime-artifacts")
+        bootstrap = profile.get("bootstrap")
         if not isinstance(source_profile, str) or not source_profile:
             raise ValueError(f"runtime profile {name!r} needs source-profile")
         if not isinstance(source_module, str) or not source_module:
@@ -33,6 +47,10 @@ def load_ctest_runtime_profiles(path: Path) -> dict[str, dict[str, Any]]:
             raise ValueError(f"runtime profile {name!r} needs source-modules")
         if not isinstance(artifacts, list) or not artifacts:
             raise ValueError(f"runtime profile {name!r} needs runtime-artifacts")
+        if bootstrap is not None and bootstrap != "rootless-no-mount":
+            raise ValueError(
+                f"runtime profile {name!r} has unknown bootstrap {bootstrap!r}"
+            )
         cmake_defines = profile.get("cmake-defines", {})
         if not isinstance(cmake_defines, dict) or not all(
             isinstance(key, str)
@@ -42,6 +60,17 @@ def load_ctest_runtime_profiles(path: Path) -> dict[str, dict[str, Any]]:
         ):
             raise ValueError(
                 f"runtime profile {name!r} cmake-defines must map non-empty names "
+                "to scalar values"
+            )
+        launcher_env = profile.get("launcher-env", {})
+        if not isinstance(launcher_env, dict) or not all(
+            isinstance(key, str)
+            and key
+            and isinstance(value, (str, int, float, bool, type(None)))
+            for key, value in launcher_env.items()
+        ):
+            raise ValueError(
+                f"runtime profile {name!r} launcher-env must map non-empty names "
                 "to scalar values"
             )
         deploy_paths = {
@@ -62,13 +91,26 @@ def load_ctest_runtime_profiles(path: Path) -> dict[str, dict[str, Any]]:
                 f"runtime profile {name!r} deploying system_kernel must materialize "
                 f"{', '.join(sorted(missing_system_kernel_modules))}"
             )
+        if bootstrap == "rootless-no-mount":
+            missing_bootstrap_paths = ROOTLESS_NO_MOUNT_DEPLOY_PATHS.difference(
+                deploy_paths
+            )
+            if missing_bootstrap_paths:
+                raise ValueError(
+                    f"runtime profile {name!r} rootless-no-mount is missing "
+                    "bootstrap deploy path(s): "
+                    + ", ".join(sorted(missing_bootstrap_paths))
+                )
         normalized[name] = {
             "source-profile": source_profile,
             "source-module": source_module,
             "source-modules": source_modules,
             "runtime-artifacts": artifacts,
             "cmake-defines": cmake_defines,
+            "launcher-env": launcher_env,
         }
+        if bootstrap is not None:
+            normalized[name]["bootstrap"] = bootstrap
     return normalized
 
 
@@ -99,6 +141,8 @@ def compose_ctest_runtime_profiles(
     artifacts: list[dict[str, Any]] = []
     deployed: dict[str, dict[str, Any]] = {}
     cmake_defines: dict[str, Any] = {}
+    launcher_env: dict[str, Any] = {}
+    bootstrap: str | None = None
     for name in selected:
         definition = definitions[name]
         for module in definition["source-modules"]:
@@ -128,6 +172,19 @@ def compose_ctest_runtime_profiles(
                     f"runtime profile {name!r} conflicts on CMake definition {key}"
                 )
             cmake_defines[key] = value
+        for key, value in definition.get("launcher-env", {}).items():
+            if key in launcher_env and launcher_env[key] != value:
+                raise ValueError(
+                    f"runtime profile {name!r} conflicts on launcher environment {key}"
+                )
+            launcher_env[key] = value
+        candidate_bootstrap = definition.get("bootstrap")
+        if candidate_bootstrap is not None:
+            if bootstrap is not None and bootstrap != candidate_bootstrap:
+                raise ValueError(
+                    f"runtime profile {name!r} conflicts on bootstrap {candidate_bootstrap}"
+                )
+            bootstrap = candidate_bootstrap
     result = {
         "name": "+".join(selected),
         "source-profile": source_profiles.pop(),
@@ -137,6 +194,10 @@ def compose_ctest_runtime_profiles(
     }
     if cmake_defines:
         result["cmake-defines"] = cmake_defines
+    if launcher_env:
+        result["launcher-env"] = launcher_env
+    if bootstrap is not None:
+        result["bootstrap"] = bootstrap
     return result
 
 

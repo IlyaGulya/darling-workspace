@@ -510,17 +510,17 @@ class DarlingTest(WestCommand):
         return None
 
     def _resolve_darling_launcher(self, prefix: str | None) -> str | None:
+        if prefix:
+            candidate = Path(prefix).expanduser() / "bin" / "darling"
+            if candidate.exists():
+                return str(candidate)
         if os.environ.get("DARLING"):
             return os.environ["DARLING"]
         if os.environ.get("DARLING_LAUNCHER"):
             return os.environ["DARLING_LAUNCHER"]
-        candidates = []
-        if prefix:
-            candidates.append(Path(prefix).expanduser() / "bin" / "darling")
-        candidates.append(Path("~/work/darling-prefix/bin/darling").expanduser())
-        for candidate in candidates:
-            if candidate.exists():
-                return str(candidate)
+        candidate = Path("~/work/darling-prefix/bin/darling").expanduser()
+        if candidate.exists():
+            return str(candidate)
         return None
 
     def _darling_prefix_env(self, prefix: str | Path) -> dict[str, str]:
@@ -1449,7 +1449,15 @@ class DarlingTest(WestCommand):
         """Build and temporarily deploy the runtime declared by selected CTest cases."""
 
         if not profiles:
-            yield
+            prefix_text = getattr(self, "_prefix", None)
+            runtime_env = os.environ.copy()
+            if prefix_text:
+                runtime_env.update(self._darling_prefix_env(prefix_text))
+                launcher = self._resolve_darling_launcher(prefix_text)
+                if launcher:
+                    runtime_env["DARLING"] = launcher
+                    runtime_env["DARLING_LAUNCHER"] = launcher
+            yield runtime_env
             return
         prefix_text = getattr(self, "_prefix", None)
         if not prefix_text:
@@ -1467,6 +1475,10 @@ class DarlingTest(WestCommand):
             "source-modules": definition["source-modules"],
             "runtime-artifacts": definition["runtime-artifacts"],
             "cmake-defines": definition.get("cmake-defines", {}),
+        }
+        launcher_env = {
+            key: str(value)
+            for key, value in definition.get("launcher-env", {}).items()
         }
         anchor = {
             "path": f"CTest runtime profile {profile_name}",
@@ -1492,7 +1504,22 @@ class DarlingTest(WestCommand):
                     Path(prefix_text),
                     label=f"CTest {profile_name}",
                 ):
-                    yield
+                    runtime_env = os.environ.copy()
+                    runtime_env.update(self._darling_prefix_env(prefix_text))
+                    runtime_launcher = Path(prefix_text) / "bin" / "darling"
+                    if not runtime_launcher.is_file():
+                        self.die(
+                            f"CTest runtime profile {profile_name} did not deploy "
+                            f"a launcher at {runtime_launcher}"
+                        )
+                    runtime_env["DARLING"] = str(runtime_launcher)
+                    runtime_env["DARLING_LAUNCHER"] = str(runtime_launcher)
+                    if definition.get("bootstrap") == "rootless-no-mount":
+                        boot_trace = Path(prefix_text) / ".west-rootless-boot.log"
+                        boot_trace.unlink(missing_ok=True)
+                        runtime_env["DARLING_BOOT_TRACE"] = str(boot_trace)
+                    runtime_env.update(launcher_env)
+                    yield runtime_env
         except BaseException:
             keep_on_failure = True
             self.err(f"preserving failed CTest runtime scratch for inspection: {scratch}")
@@ -3223,10 +3250,10 @@ class DarlingTest(WestCommand):
         try:
             root = Path(temp)
             source_root = root / "darling"
-            if patch_module_is_darling_root:
-                darling_ref = bad_revision if omit_patch else "HEAD"
+            if omit_patch and patch_module_is_darling_root:
+                darling_ref = bad_revision
             else:
-                darling_ref = "HEAD" if current_minus_patch else self._manifest_revision("darling")
+                darling_ref = self._manifest_revision("darling")
             bad_text = "current-minus-patch" if omit_patch else "profile-current"
             self.inf(
                 f"  runtime source forest: {patch_module_path}={bad_text} under {source_root}"
@@ -3335,21 +3362,15 @@ class DarlingTest(WestCommand):
                 return line.split("=", 1)[1]
         return None
 
-    def _runtime_build_install_prefix(self, proof, prefix: Path) -> Path:
-        for artifact in proof.get("runtime-artifacts", []):
-            if "bin/darlingserver" not in artifact.get("deploy", []):
-                continue
-            launcher = self._resolve_darling_launcher(str(prefix))
-            if launcher:
-                return Path(launcher).resolve().parent.parent
-        return prefix
-
     def _runtime_red_configure_args(self, proof, prefix: Path) -> list[str]:
         current_build = Path(
             os.environ.get("DARLING_BUILD_DIR", str(Path.home() / "work/darling-build"))
         )
         args = ["-G", self._cmake_cache_value(current_build, "CMAKE_GENERATOR") or "Ninja"]
-        for key in ("CMAKE_BUILD_TYPE", "CMAKE_C_COMPILER", "CMAKE_CXX_COMPILER"):
+        # A runtime proof is a clean test build, not a clone of the developer's
+        # active build. Darling's objc4 target requires a Debug configuration.
+        cmake_defines = {"CMAKE_BUILD_TYPE": "Debug", **(proof.get("cmake-defines") or {})}
+        for key in ("CMAKE_C_COMPILER", "CMAKE_CXX_COMPILER"):
             value = self._cmake_cache_value(current_build, key)
             if value:
                 args.append(f"-D{key}={value}")
@@ -3378,7 +3399,7 @@ class DarlingTest(WestCommand):
                     args.append(f"-D{key}={value}")
                 continue
             args.append(f"-D{key}=OFF")
-        for key, value in sorted((proof.get("cmake-defines") or {}).items()):
+        for key, value in sorted(cmake_defines.items()):
             if isinstance(value, bool):
                 value_text = "ON" if value else "OFF"
             elif value is None:
@@ -3386,7 +3407,7 @@ class DarlingTest(WestCommand):
             else:
                 value_text = str(value)
             args.append(f"-D{key}={value_text}")
-        args.append(f"-DCMAKE_INSTALL_PREFIX={self._runtime_build_install_prefix(proof, prefix)}")
+        args.append(f"-DCMAKE_INSTALL_PREFIX={prefix}")
         return args
 
     def _runtime_red_build_artifacts(
@@ -3428,7 +3449,14 @@ class DarlingTest(WestCommand):
     def _dump_command_tail(self, label: str, result) -> None:
         streams = [stream for stream in (result.stdout, result.stderr) if stream]
         output = "\n".join(stream.rstrip("\n") for stream in streams)
-        tail = "\n".join(output.splitlines()[-200:])
+        lines = output.splitlines()
+        tail = "\n".join(lines[-200:])
+        failed = [index for index, line in enumerate(lines) if line.startswith("FAILED:")]
+        if failed:
+            start = failed[-1]
+            excerpt = "\n".join(lines[start : start + 80])
+            if excerpt not in tail:
+                tail = f"Actionable failure:\n{excerpt}\n\nCommand tail:\n{tail}"
         if tail:
             sys.stderr.write(tail + "\n")
         self.err(f"{label} failed with rc {result.returncode}")
@@ -3448,38 +3476,9 @@ class DarlingTest(WestCommand):
 
     def _runtime_red_deploy_targets(self, prefix: Path, deploy_path: str) -> list[Path]:
         try:
-            targets = runtime_deploy_targets(prefix, deploy_path)
+            return runtime_deploy_targets(prefix, deploy_path)
         except ValueError:
             self.die(f"guest-runtime-deploy deploy path must be relative: {deploy_path}")
-        if deploy_path == "bin/darlingserver":
-            launcher = self._resolve_darling_launcher(str(prefix))
-            if launcher:
-                server = Path(launcher).with_name("darlingserver")
-                if server not in targets:
-                    targets.append(server)
-        if deploy_path in {
-            "usr/libexec/darling/mldr",
-            "usr/libexec/darling/mldr32",
-            "usr/lib/dyld",
-            "usr/lib/system/libsystem_kernel.dylib",
-        }:
-            targets.extend(
-                target
-                for target in self._runtime_red_launcher_install_targets(prefix, deploy_path)
-                if target not in targets
-            )
-        return targets
-
-    def _runtime_red_launcher_install_targets(self, prefix: Path, deploy_path: str) -> list[Path]:
-        launcher = self._resolve_darling_launcher(str(prefix))
-        if not launcher:
-            return []
-        install_root = Path(launcher).resolve().parent.parent
-        rel = Path(deploy_path)
-        return [
-            install_root / rel,
-            install_root / "libexec/darling" / rel,
-        ]
 
     def _runtime_replace_file(self, src: Path, dst: Path) -> None:
         dst.parent.mkdir(parents=True, exist_ok=True)
@@ -4270,8 +4269,6 @@ class DarlingTest(WestCommand):
         cfg = ["cmake", "-S", str(testkit), "-B", str(build), "-G", "Ninja"]
         if executor:
             cfg.append(f"-DDARLING_TEST_EXECUTOR={executor}")
-        if darling_launcher:
-            cfg.append(f"-DDARLING_LAUNCHER={darling_launcher}")
         if prefix:
             cfg.append(f"-DDARLING_TEST_PREFIX={prefix}")
         if getattr(self, "_prefix_env", {}).get("DARLING_NOOVERLAYFS") == "1":
@@ -4632,11 +4629,11 @@ class DarlingTest(WestCommand):
             for command, profiles in commands:
                 profile_text = ", ".join(profiles) if profiles else "no runtime deployment"
                 self.inf(f"running ({profile_text}): {' '.join(command)}")
-                with self._ctest_runtime_profile_context(profiles):
+                with self._ctest_runtime_profile_context(profiles) as runtime_env:
                     result = run_bounded(
                         command,
                         cwd=Path(self.topdir),
-                        env=None,
+                        env=runtime_env,
                         timeout_seconds=int(args.ctest_timeout_seconds),
                     )
                 if result.timed_out:

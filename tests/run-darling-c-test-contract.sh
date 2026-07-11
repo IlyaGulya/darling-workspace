@@ -52,7 +52,9 @@ fi
 cat >"$tmp/compile-fail.c" <<'C'
 int main(void) { return this_does_not_compile; }
 C
-if DPREFIX="$tmp/prefix" "$repo/testkit/scripts/run-darling-c-test.sh" \
+printf 'darlingserver pid=42 exec-mldr\n' >"$tmp/rootless-boot.trace"
+if DARLING_BOOT_TRACE="$tmp/rootless-boot.trace" DPREFIX="$tmp/prefix" \
+	"$repo/testkit/scripts/run-darling-c-test.sh" \
 	--name "${name}_compile_fail" --source "$tmp/compile-fail.c" \
 	--launcher "$tmp/launcher" --cc cc --cflags '' >"$tmp/compile-fail.out" 2>&1; then
 	cat "$tmp/compile-fail.out" >&2
@@ -62,6 +64,8 @@ grep -F -x -q WEST_GUEST_STAGE=compile "$tmp/compile-fail.out"
 grep -E -q '^ORACLE_RC=[1-9][0-9]*$' "$tmp/compile-fail.out"
 grep -F -q 'WEST_GUEST_FILE_SHA256 launcher ' "$tmp/compile-fail.out"
 grep -F -q 'WEST_GUEST_FILE_MISSING prefix_libsystem_kernel ' "$tmp/compile-fail.out"
+grep -F -q -- '--- rootless boot trace: ' "$tmp/compile-fail.out"
+grep -F -x -q 'darlingserver pid=42 exec-mldr' "$tmp/compile-fail.out"
 if grep -F -x -q WEST_GUEST_STAGE=run "$tmp/compile-fail.out"; then
 	cat "$tmp/compile-fail.out" >&2
 	exit 1

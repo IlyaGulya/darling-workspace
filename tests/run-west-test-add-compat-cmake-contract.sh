@@ -41,13 +41,16 @@ add_compat_test(
 CMAKE
 
 cmake -S "$tmp" -B "$tmp/build-shell" -G Ninja \
-  -DDARLING_LAUNCHER=/bin/echo \
   -DDARLING_TEST_PREFIX=/tmp/darling-prefix-contract \
   -DDARLING_TEST_NO_OVERLAYFS=ON >/dev/null
 
 ctest_file="$tmp/build-shell/CTestTestfile.cmake"
-grep -q 'run-darling-c-test.sh.*guest_arg_contract.*guest.c.*--launcher.*/bin/echo.*hello' "$ctest_file" ||
+grep -q 'run-darling-c-test.sh.*guest_arg_contract.*guest.c.*hello' "$ctest_file" ||
 	{ cat "$ctest_file" >&2; exit 1; }
+if grep -q -- '--launcher' "$ctest_file"; then
+	cat "$ctest_file" >&2
+	exit 1
+fi
 grep -q -- '--ok-marker-file.*guest_arg_contract.ok' "$ctest_file" ||
 	{ cat "$ctest_file" >&2; exit 1; }
 test "$(cat "$tmp/build-shell/west-test-markers/guest_arg_contract.ok")" = 'GUEST; ARG CONTRACT OK' ||
@@ -68,7 +71,6 @@ grep -q 'TIMEOUT "27"' "$ctest_file" ||
 	{ cat "$ctest_file" >&2; exit 1; }
 
 cmake -S "$tmp" -B "$tmp/build-guarded" -G Ninja \
-	-DDARLING_LAUNCHER=/bin/echo \
 	-DDARLING_TEST_PREFIX=/tmp/darling-prefix-contract \
 	-DDARLING_TEST_EXECUTOR=/bin/echo >/dev/null
 

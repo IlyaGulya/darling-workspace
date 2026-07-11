@@ -113,6 +113,13 @@ dump_runtime_file_state() {
 		"$prefix/libexec/darling/usr/lib/system/libsystem_kernel.dylib"
 }
 
+dump_boot_trace() {
+	if [[ -n "${DARLING_BOOT_TRACE:-}" && -f "$DARLING_BOOT_TRACE" ]]; then
+		printf '%s\n' "--- rootless boot trace: $DARLING_BOOT_TRACE ---" >&2
+		cat "$DARLING_BOOT_TRACE" >&2 || true
+	fi
+}
+
 timeout_seconds="${DARLING_GUEST_TIMEOUT_SECONDS:-60}"
 
 cleanup_guest_artifacts() {
@@ -154,6 +161,7 @@ cat "$output"
 
 if [[ "$rc" -ne 0 ]]; then
 	dump_runtime_file_state
+	dump_boot_trace
 fi
 
 if [ "$rc" -eq 0 ] && [ -n "$ok_marker" ]; then

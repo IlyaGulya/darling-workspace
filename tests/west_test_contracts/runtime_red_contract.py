@@ -177,6 +177,13 @@ runtime_profiles = {
         "source-modules": ["darling"],
         "runtime-artifacts": [{"build-targets": ["other"], "deploy": ["bin/other"]}],
     },
+    "rootless": {
+        "source-profile": "homebrew",
+        "source-module": "darling",
+        "source-modules": ["darling", "darling/src/external/darlingserver", "darling/src/external/xnu"],
+        "runtime-artifacts": [{"build-targets": ["darling"], "deploy": ["bin/darling"]}],
+        "launcher-env": {"DARLING_ROOTLESS": "1", "DARLING_NOOVERLAYFS": "1"},
+    },
 }
 combined_runtime = compose_ctest_runtime_profiles(runtime_profiles, ["kernel", "server", "kernel"])
 assert combined_runtime == {
@@ -228,6 +235,55 @@ except ValueError as exc:
     assert "conflicts on CMake definition" in str(exc), exc
 else:
     raise AssertionError("conflicting runtime CMake definitions were accepted")
+rootless_runtime = compose_ctest_runtime_profiles(runtime_profiles, ["rootless"])
+assert rootless_runtime["launcher-env"] == {
+    "DARLING_ROOTLESS": "1",
+    "DARLING_NOOVERLAYFS": "1",
+}
+
+actual_runtime_profiles = load_ctest_runtime_profiles(ROOT / "testkit/runtime-profiles.yml")
+rootless_provider = actual_runtime_profiles["homebrew-rootless-no-mount"]
+assert rootless_provider["bootstrap"] == "rootless-no-mount"
+assert rootless_provider["cmake-defines"] == {"DARLING_EUNION": True}
+assert rootless_provider["launcher-env"] == {
+    "DARLING_ROOTLESS": "1",
+    "DARLING_NOOVERLAYFS": "1",
+    "DARLING_EUNION": "1",
+}
+assert {
+    deploy_path
+    for artifact in rootless_provider["runtime-artifacts"]
+    for deploy_path in artifact["deploy"]
+} >= {
+    "bin/darling",
+    "bin/darlingserver",
+    "usr/libexec/darling/mldr",
+    "usr/libexec/darling/launchd",
+    "usr/libexec/darling/vchroot",
+    "usr/lib/dyld",
+    "usr/lib/system/libsystem_kernel.dylib",
+}
+
+with tempfile.TemporaryDirectory() as temp:
+    profiles_path = Path(temp) / "runtime-profiles.yml"
+    profiles_path.write_text(
+        "runtime-profiles:\n"
+        "  incomplete-rootless:\n"
+        "    source-profile: homebrew\n"
+        "    source-module: darling\n"
+        "    source-modules: [darling, darling/src/external/darlingserver, darling/src/external/xnu]\n"
+        "    bootstrap: rootless-no-mount\n"
+        "    runtime-artifacts:\n"
+        "    - build-targets: [darling]\n"
+        "      deploy: [bin/darling]\n"
+    )
+    try:
+        load_ctest_runtime_profiles(profiles_path)
+    except ValueError as exc:
+        assert "rootless-no-mount is missing bootstrap deploy path(s)" in str(exc), exc
+        assert "usr/libexec/darling/vchroot" in str(exc), exc
+    else:
+        raise AssertionError("incomplete rootless runtime provider was accepted")
 
 groups = partition_ctest_runtime_profiles(
     runtime_profiles,
@@ -269,15 +325,12 @@ except ValueError as exc:
 else:
     raise AssertionError("incompatible additional provider was accepted")
 deploy_test = make_test()
-deploy_test._resolve_darling_launcher = (
-    lambda _prefix: "/opt/darling-test/bin/darling"
-)
+deploy_test._resolve_darling_launcher = lambda _prefix: "/opt/darling-test/bin/darling"
 assert deploy_test._runtime_red_deploy_targets(
     prefix_for_targets,
     "bin/darlingserver",
 ) == [
     prefix_for_targets / "bin/darlingserver",
-    Path("/opt/darling-test/bin/darlingserver"),
 ]
 assert deploy_test._runtime_red_deploy_targets(
     prefix_for_targets,
@@ -285,8 +338,6 @@ assert deploy_test._runtime_red_deploy_targets(
 ) == [
     prefix_for_targets / "libexec/darling/usr/libexec/darling/mldr",
     prefix_for_targets / "usr/libexec/darling/mldr",
-    Path("/opt/darling-test/usr/libexec/darling/mldr"),
-    Path("/opt/darling-test/libexec/darling/usr/libexec/darling/mldr"),
 ]
 assert deploy_test._runtime_red_deploy_targets(
     prefix_for_targets,
@@ -294,8 +345,6 @@ assert deploy_test._runtime_red_deploy_targets(
 ) == [
     prefix_for_targets / "libexec/darling/usr/lib/dyld",
     prefix_for_targets / "usr/lib/dyld",
-    Path("/opt/darling-test/usr/lib/dyld"),
-    Path("/opt/darling-test/libexec/darling/usr/lib/dyld"),
 ]
 assert deploy_test._runtime_red_deploy_targets(
     prefix_for_targets,
@@ -303,8 +352,6 @@ assert deploy_test._runtime_red_deploy_targets(
 ) == [
     prefix_for_targets / "libexec/darling/usr/lib/system/libsystem_kernel.dylib",
     prefix_for_targets / "usr/lib/system/libsystem_kernel.dylib",
-    Path("/opt/darling-test/usr/lib/system/libsystem_kernel.dylib"),
-    Path("/opt/darling-test/libexec/darling/usr/lib/system/libsystem_kernel.dylib"),
 ]
 try:
     runtime_deploy_targets(prefix_for_targets, "/absolute/bad")
@@ -437,7 +484,7 @@ with tempfile.TemporaryDirectory() as temp:
         "\n".join(
             [
                 "CMAKE_GENERATOR:INTERNAL=Ninja",
-                "CMAKE_BUILD_TYPE:STRING=Debug",
+                "CMAKE_BUILD_TYPE:STRING=Release",
                 "CMAKE_C_COMPILER:FILEPATH=/usr/bin/clang",
                 "CMAKE_CXX_COMPILER:FILEPATH=/usr/bin/clang++",
                 "DARLING_EUNION:BOOL=ON",
@@ -491,6 +538,7 @@ with tempfile.TemporaryDirectory() as temp:
         else:
             os.environ["DARLING_BUILD_DIR"] = old_build_dir
     assert "-DDARLING_EUNION=ON" in args, args
+    assert "-DCMAKE_BUILD_TYPE=Debug" in args, args
     assert "-DDARLING_RING_TRANSPORT=OFF" in args, args
     assert "-DDARLING_RPC_SLEEP_ACCOUNT=OFF" in args, args
     assert "-DDARLING_GUEST_RECVSPIN=512" in args, args
@@ -498,7 +546,7 @@ with tempfile.TemporaryDirectory() as temp:
     assert "-DDARLING_RING_TRANSPORT=ON" in ring_args, ring_args
     assert "-DDSERVER_RING_TRANSPORT=ON" in ring_args, ring_args
     assert f"-DCMAKE_INSTALL_PREFIX={tempdir / 'prefix'}" in args, args
-    assert f"-DCMAKE_INSTALL_PREFIX={tempdir / 'install'}" in host_args, host_args
+    assert f"-DCMAKE_INSTALL_PREFIX={tempdir / 'prefix'}" in host_args, host_args
     assert "-DDSERVER_TOOLS=ON" in tool_args, tool_args
     assert "-DWEST_EMPTY_DEFINE=" in tool_args, tool_args
     assert "-DWEST_STRING_DEFINE=value" in tool_args, tool_args
@@ -661,6 +709,27 @@ with tempfile.TemporaryDirectory() as temp:
     assert "old stdout 70" in dumped, dumped
     assert "tail stderr 119" in dumped, dumped
     assert test.err_messages == ["RED build failed with rc 7"], test.err_messages
+
+    test.err_messages.clear()
+    result = subprocess.CompletedProcess(
+        ["fake"],
+        7,
+        stdout="\n".join(
+            [
+                "old output",
+                "FAILED: objc-runtime.mm.o",
+                "clang++ ...",
+                "objc-runtime.mm:128:2: error: mismatch in debug-ness macros",
+            ]
+            + [f"later output {index}" for index in range(250)]
+        ),
+    )
+    stderr = io.StringIO()
+    with redirect_stderr(stderr):
+        test._dump_command_tail("RED build", result)
+    dumped = stderr.getvalue()
+    assert "Actionable failure:" in dumped, dumped
+    assert "objc-runtime.mm:128:2: error" in dumped, dumped
 
 with tempfile.TemporaryDirectory() as temp:
     tempdir = Path(temp)

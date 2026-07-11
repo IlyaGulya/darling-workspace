@@ -1,4 +1,4 @@
-From 3ff5a016214c3a52c09bd8371a2adcf26e6ea139 Mon Sep 17 00:00:00 2001
+From 52e2102938b8ca2385c62c00074a7c8fdd2d2eaf Mon Sep 17 00:00:00 2001
 From: Ilya Gulya <ilya@gulya.me>
 Date: Fri, 10 Jul 2026 17:22:38 +0000
 Subject: [PATCH] libsystem_kernel: preserve rootless init identity
@@ -23,7 +23,7 @@ index 1dc520d427c8e584cd6572fea417e8a6456cb3f4..fb42b9152919f00317b9d370e9387f0a
  #define dserver_rpc_hooks_get_tid() ((int)LINUX_SYSCALL(__NR_gettid))
  
 diff --git a/darling/src/libsystem_kernel/emulation/src/linux_premigration/elfcalls_wrapper.c b/darling/src/libsystem_kernel/emulation/src/linux_premigration/elfcalls_wrapper.c
-index 7ee7b586832d9f4ce3528af285887e58a76b9c2d..5a721d1d05c07caddd7a25999f9b8ac479d3a2a4 100644
+index 7ee7b586832d9f4ce3528af285887e58a76b9c2d..f90075e33bf7318fd43abc2ec3cbecf96dafe03d 100644
 --- a/darling/src/libsystem_kernel/emulation/src/linux_premigration/elfcalls_wrapper.c
 +++ b/darling/src/libsystem_kernel/emulation/src/linux_premigration/elfcalls_wrapper.c
 @@ -4,6 +4,9 @@
@@ -42,11 +42,11 @@ index 7ee7b586832d9f4ce3528af285887e58a76b9c2d..5a721d1d05c07caddd7a25999f9b8ac4
  };
 +
 +int __darling_rootless_init_pid(void) {
-+	static pid_t initHostPID = -1;
++	static int initHostPID = -1;
 +
 +	if (initHostPID == -1) {
 +		const char* value = getenv("__darling_rootless_init_host_pid");
-+		pid_t parsed = 0;
++		int parsed = 0;
 +
 +		if (value == NULL || *value == '\0') {
 +			initHostPID = 0;
