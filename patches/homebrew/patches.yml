@@ -5421,6 +5421,18 @@ patches:
     reason: runtime-harness-pending
     scope: Markers run only in the real rootless launchd path and are checked by the bounded materialized bootstrap repro.
   sha256sum: 6810cfb0b2a1c1d08743a778ef6066d4357193998bdc42bfcc329da5ffe98e33
+- path: darling/rootless-shellspawn-client-trace.patch
+  module: darling
+  source-branch: fix/rootless-shellspawn-client-trace
+  source-base: daa667922e300ba7d692b3c835b40c65871ad990
+  source-commit: 894fc1e5e1a72b95f3b0791f7514228bf8bb1eb3
+  bead: dar-d2pm
+  publication-status: blocked
+  publication-blocker: Rootless diagnostic only; retain until the launcher-to-shellspawn protocol boundary has a product fix and a real guest GREEN proof.
+  test-exception:
+    reason: runtime-harness-pending
+    scope: Markers execute only in the real rootless launcher process and are verified by the bounded materialized bootstrap repro.
+  sha256sum: 89349805b947806ed3bd74454ea7b68ff72fd2d5c4c8dbc516ecfb63493d4c71
 - path: libsystem/rootless-initializer-trace.patch
   sha256sum: b3107f04e59f860982abacfe35714a4a2e18f3236a5724e7ece11eefb2327d89
   module: darling/src/external/libsystem

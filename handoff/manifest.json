@@ -138,6 +138,18 @@
           "source_ref": "refs/heads/fix/rootless-shellspawn-bootstrap-trace"
         },
         {
+          "branch": "fix/rootless-shellspawn-client-socket",
+          "head": "083f1859162cb605b7d198c9d0859d3d0b132b67",
+          "upstream": "",
+          "source_ref": "refs/heads/fix/rootless-shellspawn-client-socket"
+        },
+        {
+          "branch": "fix/rootless-shellspawn-client-trace",
+          "head": "894fc1e5e1a72b95f3b0791f7514228bf8bb1eb3",
+          "upstream": "",
+          "source_ref": "refs/heads/fix/rootless-shellspawn-client-trace"
+        },
+        {
           "branch": "fix/rootless-shellspawn-scheduler",
           "head": "f6931b831d28989a449bdf8b70c3ed409eabf34c",
           "upstream": "",
