@@ -250,6 +250,11 @@ class DarlingTest(WestCommand):
             help="with --bootstrap-runtime-profile, save strace -ff output for the bounded guest smoke in DIR",
         )
         parser.add_argument(
+            "--bootstrap-syscall-stack",
+            action="store_true",
+            help="with --bootstrap-syscall-trace, include native stack frames in its strace output",
+        )
+        parser.add_argument(
             "--keep-prefix-running",
             action="store_true",
             help="do not shut down a Darling prefix after prefix-backed metadata tests",
@@ -3891,17 +3896,13 @@ class DarlingTest(WestCommand):
             if shutil.which("strace") is None:
                 self.die("--bootstrap-syscall-trace requires strace on the host")
             trace_dir.mkdir(parents=True, exist_ok=True)
-            command_prefix = (
-                "strace",
-                "-ff",
-                "-i",
-                "-tt",
-                "-v",
-                "-s",
-                "160",
-                "-o",
-                str(trace_dir / "bootstrap"),
+            command_prefix_parts = ["strace", "-ff", "-i"]
+            if getattr(self, "_bootstrap_syscall_stack", False):
+                command_prefix_parts.append("-k")
+            command_prefix_parts.extend(
+                ("-tt", "-v", "-s", "160", "-o", str(trace_dir / "bootstrap"))
             )
+            command_prefix = tuple(command_prefix_parts)
             self.inf(f"prefix bootstrap syscall trace: {trace_dir}")
         with self._prefix_resource_context(True):
             with self._runtime_profile_deployment_context(
@@ -5000,6 +5001,9 @@ class DarlingTest(WestCommand):
             self.die("--fuzz/--stress select CTest suite tests; use --patch/--profile for patch metadata")
         bootstrap_runtime_profile = getattr(args, "bootstrap_runtime_profile", None)
         bootstrap_syscall_trace = getattr(args, "bootstrap_syscall_trace", None)
+        bootstrap_syscall_stack = getattr(args, "bootstrap_syscall_stack", False)
+        if bootstrap_syscall_stack and not bootstrap_syscall_trace:
+            self.die("--bootstrap-syscall-stack requires --bootstrap-syscall-trace")
         if bootstrap_syscall_trace and not bootstrap_runtime_profile:
             self.die("--bootstrap-syscall-trace requires --bootstrap-runtime-profile")
         if bootstrap_runtime_profile:
@@ -5016,6 +5020,7 @@ class DarlingTest(WestCommand):
                     "do not combine it with " + ", ".join(incompatible)
                 )
             self._bootstrap_syscall_trace = Path(bootstrap_syscall_trace) if bootstrap_syscall_trace else None
+            self._bootstrap_syscall_stack = bootstrap_syscall_stack
             try:
                 self._bootstrap_runtime_profile(bootstrap_runtime_profile)
                 if getattr(self, "_prefix_cleanup_failed", False):
@@ -5023,6 +5028,7 @@ class DarlingTest(WestCommand):
                 return
             finally:
                 self._bootstrap_syscall_trace = None
+                self._bootstrap_syscall_stack = False
 
         if args.profile:
             selected, missing = self._metadata_tests(
