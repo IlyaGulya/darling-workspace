@@ -20,7 +20,10 @@
 #include <locale.h>
 #include <errno.h>
 #include <fcntl.h>
+#include <stddef.h>
+#include <sys/socket.h>
 #include <sys/xattr.h>
+#include <sys/un.h>
 #include <unistd.h>
 /* Historical note (bead dar-test-infra-sp5.8.4.4.10, now FIXED): the translator's
  * EXIT_PATH check used strncasecmp_l(..., LC_C_LOCALE) with LC_C_LOCALE ==
@@ -53,6 +56,49 @@ int __simple_printf(const char* f, ...){(void)f;return 0;}
 #include <sys/wait.h>
 #include <sys/stat.h>
 #include <dirent.h>
+
+#include <darling/emulation/xnu_syscall/bsd/helper/network/duct.h>
+
+/*
+ * The bind implementation is compiled as a separate production source. These
+ * minimal fixture adapters model only the BSD-to-Linux AF_UNIX conversion that
+ * sys_bind consumes, then use the real vchroot translator under test.
+ */
+unsigned long sockaddr_fixup_size_from_bsd(const void* address, int length) {
+    (void)address;
+    (void)length;
+    return sizeof(struct sockaddr_fixup);
+}
+
+int sockaddr_fixup_from_bsd(struct sockaddr_fixup* out, const void* address, int length) {
+    const struct sockaddr_un* input = address;
+    struct vchroot_expand_args expansion;
+
+    if (length < (int)offsetof(struct sockaddr_un, sun_path) + 1 ||
+        input->sun_family != AF_UNIX)
+        return -EINVAL;
+    memset(out, 0, sizeof(*out));
+    out->linux_family = AF_UNIX;
+    strcpy(expansion.path, input->sun_path);
+    expansion.flags = VCHROOT_FOLLOW;
+    expansion.dfd = -100;
+    if (vchroot_expand(&expansion) < 0)
+        return -ENOENT;
+    strncpy(out->sun_path, expansion.path, sizeof(out->sun_path) - 1);
+    return (int)offsetof(struct sockaddr_fixup, sun_path) +
+        (int)strlen(out->sun_path) + 1;
+}
+
+int errno_linux_to_bsd(int error) {
+    return error;
+}
+
+long linux_syscall(long a1, long a2, long a3, long a4, long a5, long a6, int number) {
+    long result = syscall(number, a1, a2, a3, a4, a5, a6);
+    return result < 0 ? -errno : result;
+}
+
+long sys_bind(int fd, const void* name, int socklen);
 
 static int g_tests = 0, g_fail = 0;
 
@@ -218,6 +264,37 @@ int main(void) {
           must still fall back to the template. The hard mixed case. */
     snprintf(l, sizeof(l), "%s/usr/local/share/tool.conf", libexec);
     expect_resolves_to("/usr/local/share/tool.conf", l);
+
+    /*
+     * B1. sys_bind must use the create policy, not the file-write policy. The
+     * guest parent is a lower-only symlink. A naive copy-up leaves an upper
+     * symlink whose target does not exist, so the host bind either fails or
+     * writes through to the lower template. The real bind implementation must
+     * create the socket under the upper target and leave the lower untouched.
+     */
+    {
+        struct sockaddr_un address;
+        char upper_target[4096], lower_target[4096];
+        int fd;
+        long rv;
+
+        memset(&address, 0, sizeof(address));
+        address.sun_family = AF_UNIX;
+        strcpy(address.sun_path, "/var/bind_link/shellspawn.sock");
+        fd = socket(AF_UNIX, SOCK_STREAM, 0);
+        rv = fd < 0 ? -1 : sys_bind(fd, &address,
+            (int)offsetof(struct sockaddr_un, sun_path) + (int)strlen(address.sun_path) + 1);
+        if (fd >= 0)
+            close(fd);
+
+        snprintf(upper_target, sizeof(upper_target), "%s/var/bind_real/shellspawn.sock", prefix);
+        snprintf(lower_target, sizeof(lower_target), "%s/var/bind_real/shellspawn.sock", libexec);
+        check("B1 sys_bind through symlinked parent succeeds", rv == 0);
+        check("B1 socket is created in the upper target directory",
+              access(upper_target, F_OK) == 0);
+        check("B1 lower template remains socket-free", access(lower_target, F_OK) != 0);
+        unlink(upper_target);
+    }
 
     /* 7. absent in BOTH layers: must not falsely resolve to an existing host
           path (open() must end up ENOENT). */
