@@ -721,8 +721,11 @@ cores/traces). It also prunes stale runtime/source-profile scratch dirs older
 than `--proof-scratch-max-age-hours` and retains at most
 `--proof-scratch-keep-last N` fresh scratch dirs. The count cap matters after
 a string of recent build failures: preserved CTest source/build trees cannot
-silently fill the disk before the age threshold expires. Use `--dry-run` to
-inspect paths and sizes before deletion. Verified: a 77M scratch dir with an
+silently fill the disk before the age threshold expires. Each GC run reports
+every retained or pruned scratch directory with its path, size, age, and
+retention reason; symlinks are deliberately ignored, so cleanup cannot follow
+a matching name into a canonical worktree. Use `--dry-run` to inspect the plan
+without deletion. Verified: a 77M scratch dir with an
 80M "forensic" bundle pruned to 20K. This is the part neither CTest, gVisor,
 nor Wine offers, and the reason `west test` exists rather than bare
 `ninja test` — but it is metered, not free.

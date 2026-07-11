@@ -4342,7 +4342,20 @@ class DarlingTest(WestCommand):
 
     @staticmethod
     def _dir_size(path: Path) -> int:
-        return sum(f.stat().st_size for f in path.rglob("*") if f.is_file())
+        return sum(
+            entry.stat().st_size
+            for entry in path.rglob("*")
+            if entry.is_file() and not entry.is_symlink()
+        )
+
+    @staticmethod
+    def _format_size(size: int) -> str:
+        """Format a byte count compactly for cleanup diagnostics."""
+
+        for unit, scale in (("G", 1024**3), ("M", 1024**2), ("K", 1024)):
+            if size >= scale:
+                return f"{size / scale:.1f}{unit}"
+        return f"{size}B"
 
     def _gc_bundles(
         self, root: Path, keep_last: int, max_mb: int, dry_run: bool = False
@@ -4410,28 +4423,47 @@ class DarlingTest(WestCommand):
                 path
                 for pattern in patterns
                 for path in root.glob(pattern)
-                if path.is_dir()
+                if path.is_dir() and not path.is_symlink()
             },
             key=lambda path: path.stat().st_mtime,
             reverse=True,
         )
-        scratch_dirs = [
-            path
-            for index, path in enumerate(all_scratch_dirs)
-            if index >= keep_last or path.stat().st_mtime <= cutoff
-        ]
         freed = 0
+        retained = 0
+        pruned = 0
         verb = "would prune" if dry_run else "pruned"
-        for scratch in scratch_dirs:
+        now = time.time()
+        for index, scratch in enumerate(all_scratch_dirs):
             size = self._dir_size(scratch)
-            freed += size
-            self.inf(f"{verb} proof scratch ({size // 1024}K): {scratch}")
-            if not dry_run:
-                shutil.rmtree(scratch, ignore_errors=True)
+            age_hours = max(0.0, (now - scratch.stat().st_mtime) / 3600)
+            over_count = index >= keep_last
+            stale = scratch.stat().st_mtime <= cutoff
+            if over_count or stale:
+                if over_count and stale:
+                    reason = "count+age"
+                elif over_count:
+                    reason = "count"
+                else:
+                    reason = "age"
+                freed += size
+                pruned += 1
+                self.inf(
+                    f"{verb} proof scratch ({reason}, {self._format_size(size)}, "
+                    f"age {age_hours:.1f}h): {scratch}"
+                )
+                if not dry_run:
+                    shutil.rmtree(scratch, ignore_errors=True)
+            else:
+                retained += 1
+                self.inf(
+                    f"retained proof scratch (newest, {self._format_size(size)}, "
+                    f"age {age_hours:.1f}h): {scratch}"
+                )
         action = "would free" if dry_run else "freed"
         self.inf(
             "proof-scratch gc: "
-            f"{verb} {len(scratch_dirs)} dir(s), {action} {freed // 1024}K from {root}"
+            f"retained {retained}, {verb} {pruned} dir(s), "
+            f"{action} {self._format_size(freed)} from {root}"
         )
 
     def _gc_guest_runner_output(
