@@ -1,4 +1,4 @@
-From 253ecf0aa7ceb2d0dcc6f466700273642da8e324 Mon Sep 17 00:00:00 2001
+From 2d556d125febe27b5980c94918418323bcdc03ed Mon Sep 17 00:00:00 2001
 From: Ilya Gulya <ilya.gulya@indriver.com>
 Date: Fri, 10 Jul 2026 17:37:50 +0000
 Subject: [PATCH] build: select rootless runtime components
