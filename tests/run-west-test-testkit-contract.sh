@@ -36,6 +36,14 @@ list_select_guest="$(west test --bead dar-q95.3 --env darling --list)"
 printf '%s\n' "$list_select_guest" | grep -q 'darling/select_fdset_guest' ||
 	{ printf '%s\n' "$list_select_guest" >&2; exit 1; }
 
+list_getattrlist_guest="$(west test --bead dar-e1j --env darling --list)"
+printf '%s\n' "$list_getattrlist_guest" | grep -q 'darling/getattrlist_name_objtype_guest' ||
+	{ printf '%s\n' "$list_getattrlist_guest" >&2; exit 1; }
+getattrlist_json="$(ctest --test-dir testkit/build --show-only=json-v1 \
+	-L 'bead:dar-e1j' -L 'env:darling')"
+printf '%s\n' "$getattrlist_json" | grep -q 'runtime-profile:homebrew' ||
+	{ printf '%s\n' "$getattrlist_json" >&2; exit 1; }
+
 list_bzero_guest="$(west test --bead dar-q95.4 --env darling --list)"
 printf '%s\n' "$list_bzero_guest" | grep -q 'darling/bzero_return_register_guest' ||
 	{ printf '%s\n' "$list_bzero_guest" >&2; exit 1; }

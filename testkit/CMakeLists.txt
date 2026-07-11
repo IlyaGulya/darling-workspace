@@ -140,6 +140,30 @@ else()
     "workspace missing ${_select_fdset_guest}; skipping dar-q95.3")
 endif()
 
+# ---------------------------------------------------------------------------
+# dar-e1j — Ruby-style literal glob components depend on the public
+# getattrlist(NAME|OBJTYPE) ABI.  This fixture creates regular, directory, and
+# symlink entries in the guest, then verifies the packed names and vnode types;
+# it is the focused behavioral root cause behind the original Dir.glob report.
+# ---------------------------------------------------------------------------
+set(_getattrlist_name_objtype_guest
+  "${_workspace_root}/tests/getattrlist_name_objtype_guest.c")
+if(EXISTS "${_getattrlist_name_objtype_guest}")
+  add_compat_test(
+    NAME       getattrlist_name_objtype_guest
+    SOURCE     "${_getattrlist_name_objtype_guest}"
+    ENVS       darling
+    BEAD       dar-e1j
+    SUBMODULES xnu
+    RUNTIME_PROFILE homebrew
+    TIMEOUT    30
+    OK_MARKER  "GETATTRLIST_NAME_OBJTYPE_GUEST_OK"
+  )
+else()
+  message(WARNING
+    "workspace missing ${_getattrlist_name_objtype_guest}; skipping dar-e1j")
+endif()
+
 set(_darwin_priority_guest "${_workspace_root}/tests/darwin_priority_guest.c")
 if(EXISTS "${_darwin_priority_guest}")
   add_compat_test(
