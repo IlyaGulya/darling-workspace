@@ -4148,11 +4148,11 @@ patches:
       base: main
       state: local
 - path: darling/build-drift-gate.patch
-  sha256sum: b92318e304300dc55772e6ecde061dfe61fa9bf052c5ea68197cef442ff0015e
+  sha256sum: 75022cd5fb4e9ce0eca41c587fcb99a3df47a21f006979fbc0c85b3dec6611e6
   module: darling
-  source-branch: fix/build-drift-gate
+  source-branch: fix/build-drift-gate-profile2
   source-base: d014d57080972464a2baabfa299cc6e85041dd0e
-  source-commit: d6774696a155a31e9bcc82542363c665b2937669
+  source-commit: 06f98a4481ffcb2467f5ad8f269ed16a6a61571c
   bead: dar-gax
   publication-status: blocked
   publication-blocker: workspace-local build-process guard (runs `west patch status --strict` against patches.yml); depends on the west patch tooling + workspace layout, so not upstreamable as-is. Could be reshaped into an upstream-agnostic build hook later.

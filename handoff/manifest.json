@@ -30,6 +30,18 @@
           "source_ref": "refs/heads/fix/build-drift-gate"
         },
         {
+          "branch": "fix/build-drift-gate-profile",
+          "head": "8c17060759f3da38baab4fe50de384b9dc893765",
+          "upstream": "",
+          "source_ref": "refs/heads/fix/build-drift-gate-profile"
+        },
+        {
+          "branch": "fix/build-drift-gate-profile2",
+          "head": "06f98a4481ffcb2467f5ad8f269ed16a6a61571c",
+          "upstream": "",
+          "source_ref": "refs/heads/fix/build-drift-gate-profile2"
+        },
+        {
           "branch": "fix/ci-host-regression-tests",
           "head": "b41159e56b046772fe5d6a715e948e6ae94028cb",
           "upstream": "",

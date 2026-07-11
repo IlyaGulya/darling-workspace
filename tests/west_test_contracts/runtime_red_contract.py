@@ -682,6 +682,8 @@ with tempfile.TemporaryDirectory() as temp:
     assert "-DDARLING_RING_TRANSPORT=OFF" in args, args
     assert "-DDARLING_RPC_SLEEP_ACCOUNT=OFF" in args, args
     assert "-DDARLING_GUEST_RECVSPIN=512" in args, args
+    assert "-DDARLING_PATCH_PROFILE=homebrew" in args, args
+    assert "-DDARLING_SKIP_DRIFT_GATE=ON" not in args, args
     assert "-DDSERVER_RING_TRANSPORT=OFF" in args, args
     assert "-DDARLING_RING_TRANSPORT=ON" in ring_args, ring_args
     assert "-DDSERVER_RING_TRANSPORT=ON" in ring_args, ring_args
