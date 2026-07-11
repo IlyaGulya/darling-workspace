@@ -649,7 +649,7 @@
       "branches": [
         {
           "branch": "fix/rootless-libsystem-init-trace",
-          "head": "c32cbcc7cbe266d9323e5a2964a05a7c97e3c79c",
+          "head": "3faa91ca306c70f1c52921e04f85f0561d37ad2e",
           "upstream": "",
           "source_ref": "refs/heads/fix/rootless-libsystem-init-trace"
         },
