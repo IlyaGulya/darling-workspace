@@ -173,19 +173,24 @@ def run_guest_command_fixture(
     rc_mode = expect.get("returncode", 0)
     if rc_mode == "timeout":
         err(f"{invocation['name']}: guest command returned before expected timeout")
+        record_failure_phase(invocation, "run")
         return 1
     if rc_mode == "nonzero" and returncode == 0:
         err(f"{invocation['name']}: guest command succeeded unexpectedly")
+        record_failure_phase(invocation, "run")
         return 1
     if rc_mode != "any" and rc_mode != "nonzero" and returncode != int(rc_mode):
         err(f"{invocation['name']}: guest command rc {returncode}, want {rc_mode}")
+        record_failure_phase(invocation, "run")
         return 1
     for needle in expect.get("output-contains", []):
         if str(needle) not in output:
             err(f"{invocation['name']}: output missing {needle!r}")
+            record_failure_phase(invocation, "run")
             return 1
     for needle in expect.get("output-lacks", []):
         if str(needle) in output:
             err(f"{invocation['name']}: output unexpectedly contains {needle!r}")
+            record_failure_phase(invocation, "run")
             return 1
     return 0

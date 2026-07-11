@@ -470,6 +470,27 @@ patches:
     red: true
     red-proof:
       mode: guest-runtime-deploy
+- path: test/invalid-runtime-red-phase.patch
+  module: darling-workspace
+  tests:
+  - name: invalid_runtime_red_phase
+    kind: guest
+    runs: guest
+    diag: bare
+    runner: guest-command-fixture
+    guest-command: /usr/bin/false
+    red: true
+    red-proof:
+      mode: guest-runtime-deploy
+      expect-failure-phase: runtime
+      expect-output-contains:
+      - old runtime symptom
+      runtime-artifacts:
+      - module: darling
+        build-targets:
+        - shellspawn
+        deploy:
+        - usr/libexec/shellspawn
 - path: test/incomplete-guest-runtime-artifact.patch
   module: darling-workspace
   tests:
@@ -905,6 +926,9 @@ printf '%s\n' "$invalid_guest_red_check" | grep -q \
 printf '%s\n' "$invalid_guest_red_check" | grep -q \
 	'INVALID   test/invalid-guest-runtime-red-proof.patch: tests\[1\] red-proof guest-runtime-deploy needs runtime-artifacts' ||
 	fail 'guest-runtime-deploy metadata without runtime-artifacts was not rejected'
+printf '%s\n' "$invalid_guest_red_check" | grep -q \
+	"INVALID   test/invalid-runtime-red-phase.patch: tests\\[1\\] guest-runtime-deploy must name an exact failure phase, not 'runtime'" ||
+	fail 'guest-runtime-deploy generic runtime failure phase was not rejected'
 printf '%s\n' "$invalid_guest_red_check" | grep -q \
 	'INVALID   test/incomplete-guest-runtime-artifact.patch: tests\[1\].red-proof.runtime-artifacts\[0\] needs build-targets' ||
 	fail 'guest-runtime-deploy artifact without build-targets was not rejected'
