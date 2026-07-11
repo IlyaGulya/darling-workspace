@@ -5411,22 +5411,22 @@ patches:
     scope: The diagnostic markers execute only in the materialized rootless guest bootstrap and identify the launchd-to-shellspawn boundary before a product fix is selected.
 - path: darling/rootless-shellspawn-scheduler-trace.patch
   module: darling
-  source-branch: fix/rootless-shellspawn-scheduler
+  source-branch: fix/rootless-shellspawn-scheduler-clean
   source-base: d67907c65edcf0c90e35eaec58119ec57f18238b
-  source-commit: 307f8b168e0a837709646073ec14bab48a714d86
+  source-commit: daa667922e300ba7d692b3c835b40c65871ad990
   bead: dar-d2pm
   publication-status: blocked
   publication-blocker: Rootless diagnostic only; retain until launchd's shellspawn scheduling boundary has a product fix and a real guest GREEN proof.
   test-exception:
     reason: runtime-harness-pending
     scope: Markers run only in the real rootless launchd path and are checked by the bounded materialized bootstrap repro.
-  sha256sum: 74768d7df9fb44dc7bf99d510f37e3cbf34bb9ba48015c3299d2ad056908d656
+  sha256sum: 6810cfb0b2a1c1d08743a778ef6066d4357193998bdc42bfcc329da5ffe98e33
 - path: libsystem/rootless-initializer-trace.patch
-  sha256sum: d9088e9c12647ee480983fbca7f7baf8d69e606805a9d8da416f7029704b3e23
+  sha256sum: b3107f04e59f860982abacfe35714a4a2e18f3236a5724e7ece11eefb2327d89
   module: darling/src/external/libsystem
-  source-branch: fix/rootless-libsystem-init-trace
+  source-branch: fix/rootless-libsystem-init-trace-clean
   source-base: 08df454b6eb0df9400aa4c39839a7efd6efd2c3c
-  source-commit: 1407b300a8d7d1f3e9b0561ab27e879c32767339
+  source-commit: ad6e1ebc409ad33de60f7dd8a8a2ac92650dbf97
   bead: dar-d2pm
   publication-status: blocked
   publication-blocker: The raw trace must determine whether the guest libSystem initializer establishes ProgramVars before a production fix is selected.
@@ -5434,11 +5434,11 @@ patches:
     reason: runtime-harness-pending
     scope: The contract is observable only during the real rootless guest bootstrap before libc has an initialized environment.
 - path: dyld/rootless-dyld-boot-trace.patch
-  sha256sum: 074887ba2fa44d8197861b344d6411da1fa49963853e8fd4c916c3c9b225f9b5
+  sha256sum: 331b5fe16f9f69646cd00d942458c5614c9702b343891b830d24a940489b03fb
   module: darling/src/external/dyld
   source-branch: fix/rootless-dyld-boot-trace
   source-base: aec6a4af4efaacbda31911aaf32d73495d4a7da1
-  source-commit: 41b1da1909d3ba6252878cc1a124772adf09b9a6
+  source-commit: 7d5aa505140b3e65a8adf93e41b527136084799a
   bead: dar-d2pm
   publication-status: blocked
   publication-blocker: Rootless dyld-to-launchd startup must be diagnosed with a real no-mount bootstrap before this diagnostic patch can be retired or productized.
