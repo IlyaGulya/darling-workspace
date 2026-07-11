@@ -250,9 +250,9 @@ class DarlingTest(WestCommand):
             help="with --bootstrap-runtime-profile, save strace -ff output for the bounded guest smoke in DIR",
         )
         parser.add_argument(
-            "--bootstrap-syscall-stack",
-            action="store_true",
-            help="with --bootstrap-syscall-trace, capture lightweight process/crash stack frames instead of tracing every syscall",
+            "--bootstrap-stack-sample",
+            metavar="DIR",
+            help="with --bootstrap-runtime-profile, save a low-overhead perf stack sample for the bounded guest smoke in DIR",
         )
         parser.add_argument(
             "--keep-prefix-running",
@@ -3891,19 +3891,39 @@ class DarlingTest(WestCommand):
             )
         smoke_timeout_seconds = definition["bootstrap-smoke-timeout-seconds"]
         trace_dir = getattr(self, "_bootstrap_syscall_trace", None)
+        stack_sample_dir = getattr(self, "_bootstrap_stack_sample", None)
         command_prefix: tuple[str, ...] = ()
         if trace_dir is not None:
             if shutil.which("strace") is None:
                 self.die("--bootstrap-syscall-trace requires strace on the host")
             trace_dir.mkdir(parents=True, exist_ok=True)
-            command_prefix_parts = ["strace", "-ff", "-i"]
-            if getattr(self, "_bootstrap_syscall_stack", False):
-                command_prefix_parts.extend(("-k", "-e", "trace=process,signal"))
-            command_prefix_parts.extend(
-                ("-tt", "-v", "-s", "160", "-o", str(trace_dir / "bootstrap"))
+            command_prefix = (
+                "strace",
+                "-ff",
+                "-i",
+                "-tt",
+                "-v",
+                "-s",
+                "160",
+                "-o",
+                str(trace_dir / "bootstrap"),
             )
-            command_prefix = tuple(command_prefix_parts)
             self.inf(f"prefix bootstrap syscall trace: {trace_dir}")
+        elif stack_sample_dir is not None:
+            if shutil.which("perf") is None:
+                self.die("--bootstrap-stack-sample requires perf on the host")
+            stack_sample_dir.mkdir(parents=True, exist_ok=True)
+            command_prefix = (
+                "perf",
+                "record",
+                "--all-user",
+                "--call-graph",
+                "fp",
+                "--output",
+                str(stack_sample_dir / "bootstrap.perf.data"),
+                "--",
+            )
+            self.inf(f"prefix bootstrap stack sample: {stack_sample_dir}")
         with self._prefix_resource_context(True):
             with self._runtime_profile_deployment_context(
                 [profile_name], label_prefix="Prefix bootstrap", retain_deployment=True
@@ -3941,12 +3961,35 @@ class DarlingTest(WestCommand):
                     capture_output=True,
                     command_prefix=command_prefix,
                 )
-                if trace_dir is not None:
+                if stack_sample_dir is not None:
+                    sample_data = stack_sample_dir / "bootstrap.perf.data"
+                    if not sample_data.is_file():
+                        self.die(
+                            "prefix bootstrap stack sample was not written: "
+                            f"{sample_data}"
+                        )
+                    rendered_sample = run_bounded(
+                        ["perf", "script", "--input", str(sample_data)],
+                        cwd=Path(self.topdir),
+                        env=None,
+                        timeout_seconds=30,
+                        capture_output=True,
+                    )
+                    if rendered_sample.timed_out or rendered_sample.returncode != 0:
+                        self.die(
+                            "prefix bootstrap stack sample could not be rendered: "
+                            f"{sample_data}"
+                        )
+                    (stack_sample_dir / "bootstrap.perf.txt").write_text(
+                        f"{rendered_sample.stdout}{rendered_sample.stderr}"
+                    )
+                diagnostic_dir = trace_dir or stack_sample_dir
+                if diagnostic_dir is not None:
                     server_trace = (
                         deployment.prefix / "private/var/log/dserver-rpc-trace.log"
                     )
                     if server_trace.is_file():
-                        captured_server_trace = trace_dir / "darlingserver-rpc.log"
+                        captured_server_trace = diagnostic_dir / "darlingserver-rpc.log"
                         shutil.copy2(server_trace, captured_server_trace)
                         self.inf(f"prefix bootstrap server trace: {captured_server_trace}")
                 output = f"{result.stdout}{result.stderr}"
@@ -3961,12 +4004,17 @@ class DarlingTest(WestCommand):
                         f"{trace_fault}; syscall trace: {trace_dir}"
                     )
                 if result.timed_out:
-                    trace_hint = f"; syscall trace: {trace_dir}" if trace_dir is not None else ""
+                    if trace_dir is not None:
+                        diagnostic_hint = f"; syscall trace: {trace_dir}"
+                    elif stack_sample_dir is not None:
+                        diagnostic_hint = f"; stack sample: {stack_sample_dir}"
+                    else:
+                        diagnostic_hint = ""
                     progress = rootless_bootstrap_progress(deployment.prefix)
                     progress_hint = f"; progress: {progress}" if progress is not None else ""
                     self.die(
                         "prefix bootstrap guest smoke timed out after "
-                        f"{smoke_timeout_seconds}s{trace_hint}{progress_hint}"
+                        f"{smoke_timeout_seconds}s{diagnostic_hint}{progress_hint}"
                     )
                 if result.returncode != 0:
                     self.die(
@@ -5001,11 +5049,16 @@ class DarlingTest(WestCommand):
             self.die("--fuzz/--stress select CTest suite tests; use --patch/--profile for patch metadata")
         bootstrap_runtime_profile = getattr(args, "bootstrap_runtime_profile", None)
         bootstrap_syscall_trace = getattr(args, "bootstrap_syscall_trace", None)
-        bootstrap_syscall_stack = getattr(args, "bootstrap_syscall_stack", False)
-        if bootstrap_syscall_stack and not bootstrap_syscall_trace:
-            self.die("--bootstrap-syscall-stack requires --bootstrap-syscall-trace")
-        if bootstrap_syscall_trace and not bootstrap_runtime_profile:
-            self.die("--bootstrap-syscall-trace requires --bootstrap-runtime-profile")
+        bootstrap_stack_sample = getattr(args, "bootstrap_stack_sample", None)
+        if bootstrap_syscall_trace and bootstrap_stack_sample:
+            self.die(
+                "--bootstrap-syscall-trace and --bootstrap-stack-sample are mutually exclusive"
+            )
+        if (bootstrap_syscall_trace or bootstrap_stack_sample) and not bootstrap_runtime_profile:
+            self.die(
+                "--bootstrap-syscall-trace and --bootstrap-stack-sample require "
+                "--bootstrap-runtime-profile"
+            )
         if bootstrap_runtime_profile:
             incompatible = []
             if args.profile or args.patch or args.prove_red or args.red_only or args.red_audit:
@@ -5020,7 +5073,7 @@ class DarlingTest(WestCommand):
                     "do not combine it with " + ", ".join(incompatible)
                 )
             self._bootstrap_syscall_trace = Path(bootstrap_syscall_trace) if bootstrap_syscall_trace else None
-            self._bootstrap_syscall_stack = bootstrap_syscall_stack
+            self._bootstrap_stack_sample = Path(bootstrap_stack_sample) if bootstrap_stack_sample else None
             try:
                 self._bootstrap_runtime_profile(bootstrap_runtime_profile)
                 if getattr(self, "_prefix_cleanup_failed", False):
@@ -5028,7 +5081,7 @@ class DarlingTest(WestCommand):
                 return
             finally:
                 self._bootstrap_syscall_trace = None
-                self._bootstrap_syscall_stack = False
+                self._bootstrap_stack_sample = None
 
         if args.profile:
             selected, missing = self._metadata_tests(
