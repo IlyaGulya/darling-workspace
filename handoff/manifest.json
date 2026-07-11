@@ -115,7 +115,7 @@
         },
         {
           "branch": "fix/rootless-runtime-components",
-          "head": "253ecf0aa7ceb2d0dcc6f466700273642da8e324",
+          "head": "2d556d125febe27b5980c94918418323bcdc03ed",
           "upstream": "",
           "source_ref": "refs/heads/fix/rootless-runtime-components"
         },
