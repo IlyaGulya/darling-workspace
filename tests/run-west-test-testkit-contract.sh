@@ -8,6 +8,11 @@ export PYTHONDONTWRITEBYTECODE=1
 
 tests/run-darling-c-test-contract.sh
 
+# Exercise West's real extension loader.  It does not import command modules
+# like ordinary Python packages, so this catches loader-incompatible module
+# declarations before any CTest discovery runs.
+west test --help | grep -q -- '--bootstrap-runtime-profile NAME'
+
 bead="dar-dar6x4-perf-5dq.1"
 
 list_by_bead="$(west test --bead "$bead" --list)"

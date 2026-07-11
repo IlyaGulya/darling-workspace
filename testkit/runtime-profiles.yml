@@ -84,12 +84,59 @@ runtime-profiles:
       - darling
       - mldr
       - launchd
+      - shellspawn
       - vchroot
       - dyld
       deploy:
       - bin/darling
       - usr/libexec/darling/mldr
       - usr/libexec/darling/launchd
+      - usr/libexec/shellspawn
+      - usr/libexec/darling/vchroot
+      - usr/lib/dyld
+    - module: darling/src/external/darlingserver
+      build-targets:
+      - darlingserver
+      deploy:
+      - bin/darlingserver
+    - module: darling/src/external/xnu
+      build-targets:
+      - system_kernel
+      deploy:
+      - usr/lib/system/libsystem_kernel.dylib
+  homebrew-prefix-baseline:
+    # This is the explicit durable baseline for the named homebrew prefix.
+    # Unlike ordinary providers it is selected only through
+    # `west test --bootstrap-runtime-profile`; that command retains its
+    # deployment only after a bounded real guest smoke passes.
+    purpose: prefix-baseline
+    source-profile: homebrew
+    bootstrap: rootless-no-mount
+    source-module: darling
+    source-modules:
+    - darling
+    - darling/src/external/darlingserver
+    - darling/src/external/xnu
+    cmake-defines:
+      DARLING_EUNION: true
+    launcher-env:
+      DARLING_ROOTLESS: '1'
+      DARLING_NOOVERLAYFS: '1'
+      DARLING_EUNION: '1'
+    runtime-artifacts:
+    - module: darling
+      build-targets:
+      - darling
+      - mldr
+      - launchd
+      - shellspawn
+      - vchroot
+      - dyld
+      deploy:
+      - bin/darling
+      - usr/libexec/darling/mldr
+      - usr/libexec/darling/launchd
+      - usr/libexec/shellspawn
       - usr/libexec/darling/vchroot
       - usr/lib/dyld
     - module: darling/src/external/darlingserver

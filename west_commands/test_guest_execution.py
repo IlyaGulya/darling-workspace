@@ -52,6 +52,7 @@ def run_guest_shell(
     timeout_seconds: int,
     stdout=None,
     stderr=None,
+    capture_output: bool = False,
 ) -> ProcessResult:
     """Run one guest shell command with prefix identity and group cleanup."""
 
@@ -74,6 +75,7 @@ def run_guest_shell(
         stdout=stdout,
         stderr=stderr,
         text=True,
+        capture_output=capture_output,
     )
 
 

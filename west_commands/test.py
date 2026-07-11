@@ -91,6 +91,23 @@ from test_runtime import (
 from test_worktrees import prune_stale_west_temp_worktrees, remove_temporary_worktree
 
 
+class RuntimeProfileDeployment:
+    """One materialized runtime provider currently deployed under a prefix."""
+
+    def __init__(
+        self,
+        *,
+        name: str,
+        prefix: Path,
+        build_root: Path,
+        env: dict[str, str],
+    ):
+        self.name = name
+        self.prefix = prefix
+        self.build_root = build_root
+        self.env = env
+
+
 class DarlingTest(WestCommand):
     def __init__(self):
         super().__init__(
@@ -165,6 +182,11 @@ class DarlingTest(WestCommand):
             default=[],
             metavar="NAME",
             help="add a declared CTest guest runtime provider without changing test selection; useful for reproducing artifact interactions",
+        )
+        parser.add_argument(
+            "--bootstrap-runtime-profile",
+            metavar="NAME",
+            help="build and retain one declared runtime provider as the selected prefix baseline, then prove it with a bounded guest smoke",
         )
         parser.add_argument(
             "--keep-prefix-running",
@@ -1544,9 +1566,31 @@ class DarlingTest(WestCommand):
                     runtime_env["DARLING_LAUNCHER"] = launcher
             yield runtime_env
             return
+        with self._runtime_profile_deployment_context(
+            profiles, label_prefix="CTest", retain_deployment=False
+        ) as deployment:
+            yield deployment.env
+
+    @contextmanager
+    def _runtime_profile_deployment_context(
+        self,
+        profiles: list[str],
+        *,
+        label_prefix: str,
+        retain_deployment: bool,
+    ):
+        """Materialize, build, and deploy a declared runtime provider.
+
+        CTest uses the default transactional form and restores the prefix after
+        each selected group.  Explicit prefix bootstrap uses the same provider
+        plan but commits its deployment only after its caller's guest smoke
+        succeeds.  Keeping both paths here prevents bootstrap from becoming a
+        second, ad-hoc build/deploy implementation.
+        """
+
         prefix_text = getattr(self, "_prefix", None)
         if not prefix_text:
-            self.die("CTest runtime profile requires a Darling prefix")
+            self.die(f"{label_prefix} runtime profile requires a Darling prefix")
         try:
             definition = compose_ctest_runtime_profiles(
                 self._ctest_runtime_profile_definitions(), profiles
@@ -1566,39 +1610,40 @@ class DarlingTest(WestCommand):
             for key, value in definition.get("launcher-env", {}).items()
         }
         anchor = {
-            "path": f"CTest runtime profile {profile_name}",
+            "path": f"{label_prefix} runtime profile {profile_name}",
             "module": definition["source-module"],
         }
         previous_profile = getattr(self, "_active_profile", None)
-        self._require_runtime_scratch_space(f"CTest profile {profile_name}")
+        self._require_runtime_scratch_space(f"{label_prefix} profile {profile_name}")
         self._preflight_runtime_profile_stack(
-            source_profile, f"CTest profile {profile_name}"
+            source_profile, f"{label_prefix} profile {profile_name}"
         )
-        scratch = tempfile.mkdtemp(prefix=f"west-ctest-runtime-{profile_name}-")
+        scratch = tempfile.mkdtemp(prefix=f"west-runtime-{profile_name}-")
         keep_on_failure = False
         self._active_profile = source_profile
         try:
-            self.inf(f"CTest runtime profile: {profile_name} ({source_profile})")
+            self.inf(f"{label_prefix} runtime profile: {profile_name} ({source_profile})")
             with self._guest_runtime_source_forest(anchor, proof, omit_patch=False) as source_root:
                 build_root = self._runtime_red_build_artifacts(
                     source_root,
                     proof,
                     Path(prefix_text),
                     Path(scratch),
-                    label=f"CTest {profile_name}",
+                    label=f"{label_prefix} {profile_name}",
                 )
                 with self._runtime_red_deployed_artifacts(
                     proof,
                     build_root,
                     Path(prefix_text),
-                    label=f"CTest {profile_name}",
+                    label=f"{label_prefix} {profile_name}",
+                    restore_deployment=not retain_deployment,
                 ):
                     runtime_env = os.environ.copy()
                     runtime_env.update(self._darling_prefix_env(prefix_text))
                     runtime_launcher = Path(prefix_text) / "bin" / "darling"
                     if not runtime_launcher.is_file():
                         self.die(
-                            f"CTest runtime profile {profile_name} did not deploy "
+                            f"{label_prefix} runtime profile {profile_name} did not deploy "
                             f"a launcher at {runtime_launcher}"
                         )
                     runtime_env["DARLING"] = str(runtime_launcher)
@@ -1608,10 +1653,15 @@ class DarlingTest(WestCommand):
                         boot_trace.unlink(missing_ok=True)
                         runtime_env["DARLING_BOOT_TRACE"] = str(boot_trace)
                     runtime_env.update(launcher_env)
-                    yield runtime_env
+                    yield RuntimeProfileDeployment(
+                        name=profile_name,
+                        prefix=Path(prefix_text),
+                        build_root=build_root,
+                        env=runtime_env,
+                    )
         except BaseException:
             keep_on_failure = True
-            self.err(f"preserving failed CTest runtime scratch for inspection: {scratch}")
+            self.err(f"preserving failed {label_prefix} runtime scratch for inspection: {scratch}")
             raise
         finally:
             self._active_profile = previous_profile
@@ -3597,8 +3647,10 @@ class DarlingTest(WestCommand):
         prefix: Path,
         *,
         label: str = "RED",
+        restore_deployment: bool = True,
     ):
         backups: list[tuple[Path, Path | None]] = []
+        deployment_succeeded = False
         with tempfile.TemporaryDirectory(prefix="west-red-proof-deploy-") as temp:
             backup_root = Path(temp)
             if not self._shutdown_runtime_prefix(prefix):
@@ -3617,18 +3669,86 @@ class DarlingTest(WestCommand):
                             self._runtime_replace_file(src, dst)
                             self.inf(f"  {label} deploy: {src} -> {dst}")
                 yield
+                deployment_succeeded = True
             finally:
                 if not self._shutdown_runtime_prefix(prefix):
                     self.err(f"guest-runtime-deploy could not stop Darling prefix before restore: {prefix}")
-                for dst, backup in reversed(backups):
-                    if backup is None:
-                        try:
-                            dst.unlink()
-                        except FileNotFoundError:
-                            pass
-                    else:
-                        self._runtime_replace_file(backup, dst)
+                if restore_deployment or not deployment_succeeded:
+                    for dst, backup in reversed(backups):
+                        if backup is None:
+                            try:
+                                dst.unlink()
+                            except FileNotFoundError:
+                                pass
+                        else:
+                            self._runtime_replace_file(backup, dst)
+                elif backups:
+                    self.inf(f"  {label} deployment retained after successful smoke")
                 self._shutdown_runtime_prefix(prefix)
+
+    def _bootstrap_runtime_profile(self, profile_name: str) -> None:
+        """Retain one declared runtime provider only after a real guest smoke."""
+
+        prefix_text = getattr(self, "_prefix", None)
+        if not prefix_text:
+            self.die("--bootstrap-runtime-profile requires --prefix, --prefix-profile, or DPREFIX")
+        if not profile_name:
+            self.die("--bootstrap-runtime-profile needs a runtime provider name")
+        definition = self._ctest_runtime_profile_definitions().get(profile_name)
+        if definition is None:
+            self.die(f"unknown prefix baseline runtime profile: {profile_name}")
+        if definition.get("purpose") != "prefix-baseline":
+            self.die(
+                f"runtime profile {profile_name} is not a prefix-baseline; "
+                "bootstrap only accepts declared rootless baselines"
+            )
+        with self._prefix_resource_context(True):
+            with self._runtime_profile_deployment_context(
+                [profile_name], label_prefix="Prefix bootstrap", retain_deployment=True
+            ) as deployment:
+                doctor = run_bounded(
+                    [
+                        "west",
+                        "darling-doctor",
+                        "--prefix",
+                        str(deployment.prefix),
+                        "--build-dir",
+                        str(deployment.build_root),
+                        "--no-baseline-file",
+                    ],
+                    cwd=Path(self.topdir),
+                    env=None,
+                    timeout_seconds=60,
+                    capture_output=True,
+                )
+                doctor_output = f"{doctor.stdout}{doctor.stderr}"
+                if doctor.timed_out:
+                    self.die("prefix bootstrap doctor timed out after 60s")
+                if doctor.returncode != 0:
+                    self.die(
+                        "prefix bootstrap doctor failed "
+                        f"with rc {doctor.returncode}: {doctor_output[-1000:]}"
+                    )
+                result = run_guest_shell(
+                    deployment.env["DARLING_LAUNCHER"],
+                    prefix_text,
+                    "set -eu\nprintf '%s\\n' WEST_PREFIX_BOOTSTRAP_OK",
+                    cwd=Path(self.topdir),
+                    env=deployment.env,
+                    timeout_seconds=60,
+                    capture_output=True,
+                )
+                output = f"{result.stdout}{result.stderr}"
+                if result.timed_out:
+                    self.die("prefix bootstrap guest smoke timed out after 60s")
+                if result.returncode != 0:
+                    self.die(
+                        "prefix bootstrap guest smoke failed "
+                        f"with rc {result.returncode}: {output[-1000:]}"
+                    )
+                if "WEST_PREFIX_BOOTSTRAP_OK" not in output:
+                    self.die("prefix bootstrap guest smoke returned without its verdict marker")
+                self.inf(f"prefix bootstrap passed for {prefix_text}: {profile_name}")
 
     def _shutdown_runtime_prefix(self, prefix: Path) -> bool:
         launcher = self._resolve_darling_launcher(str(prefix))
@@ -4642,6 +4762,24 @@ class DarlingTest(WestCommand):
             self.die("--submodule selects CTest suite tests; use --patch/--profile for patch metadata")
         if args.profile and (args.fuzz or args.stress):
             self.die("--fuzz/--stress select CTest suite tests; use --patch/--profile for patch metadata")
+        bootstrap_runtime_profile = getattr(args, "bootstrap_runtime_profile", None)
+        if bootstrap_runtime_profile:
+            incompatible = []
+            if args.profile or args.patch or args.prove_red or args.red_only or args.red_audit:
+                incompatible.append("patch metadata selection")
+            if args.changed or args.bead or args.submodule or args.label or args.fuzz or args.stress:
+                incompatible.append("CTest selection")
+            if args.list or args.with_runtime_profile or unknown:
+                incompatible.append("CTest execution options")
+            if incompatible:
+                self.die(
+                    "--bootstrap-runtime-profile is a prefix provisioning operation; "
+                    "do not combine it with " + ", ".join(incompatible)
+                )
+            self._bootstrap_runtime_profile(bootstrap_runtime_profile)
+            if getattr(self, "_prefix_cleanup_failed", False):
+                raise SystemExit(1)
+            return
 
         if args.profile:
             selected, missing = self._metadata_tests(
