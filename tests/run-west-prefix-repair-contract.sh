@@ -221,3 +221,5 @@ with tempfile.TemporaryDirectory() as temp:
 
 print("PASS west-prefix-repair-contract")
 PY
+
+python3 -B tests/west_test_contracts/prefix_repair_socket_contract.py

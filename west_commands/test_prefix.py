@@ -12,9 +12,28 @@ from typing import Callable, Iterable
 
 ProcessEntry = tuple[int, int, str]
 
+# These are control-plane endpoints created by the rootless runtime itself.
+# They are not guest test fixtures and must not survive once the runner has
+# established that the prefix has no live runtime processes or mounts.
+_ROOTLESS_RUNTIME_SOCKET_PATHS = (
+    Path(".darlingserver.stat.sock"),
+    Path("var/run/shellspawn.sock"),
+    Path("var/tmp/launchd/sock"),
+)
+
 
 @dataclass
 class RootlessPrefixCleanupResult:
+    changed: list[str] = field(default_factory=list)
+    problems: list[str] = field(default_factory=list)
+
+    @property
+    def success(self) -> bool:
+        return not self.problems
+
+
+@dataclass
+class RootlessRuntimeSocketCleanupResult:
     changed: list[str] = field(default_factory=list)
     problems: list[str] = field(default_factory=list)
 
@@ -178,3 +197,39 @@ def remove_stale_server_socket(prefix: Path) -> bool:
         return False
     server_socket.unlink()
     return True
+
+
+def cleanup_rootless_runtime_sockets(prefix: Path) -> RootlessRuntimeSocketCleanupResult:
+    """Remove idle rootless control sockets without touching guest fixtures.
+
+    Callers must first prove that no process or mount still owns the prefix.
+    The fixed path allowlist intentionally excludes guest-created sockets such
+    as those under ``private/tmp``.  Resolve every candidate before unlinking
+    so a malformed prefix symlink cannot redirect cleanup outside the prefix.
+    """
+
+    result = RootlessRuntimeSocketCleanupResult()
+    resolved_prefix = prefix.resolve()
+    for relative_path in _ROOTLESS_RUNTIME_SOCKET_PATHS:
+        socket_path = prefix / relative_path
+        resolved_socket = socket_path.resolve(strict=False)
+        try:
+            resolved_socket.relative_to(resolved_prefix)
+        except ValueError:
+            result.problems.append(
+                "refusing to remove rootless runtime socket outside prefix: "
+                f"{socket_path} -> {resolved_socket}"
+            )
+            continue
+        try:
+            mode = socket_path.lstat().st_mode
+        except FileNotFoundError:
+            continue
+        if not stat.S_ISSOCK(mode):
+            result.problems.append(
+                f"rootless runtime socket path is not a socket: {socket_path}"
+            )
+            continue
+        socket_path.unlink()
+        result.changed.append(f"removed stale rootless runtime socket: {socket_path}")
+    return result

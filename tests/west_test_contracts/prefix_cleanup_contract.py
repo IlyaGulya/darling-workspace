@@ -27,6 +27,7 @@ sys.modules.setdefault("west.commands", west_commands_module)
 from west_commands.test import DarlingTest
 from west_commands.test_prefix import (
     cleanup_rootless_prefix_processes,
+    cleanup_rootless_runtime_sockets,
     darlingserver_pids_for_prefix,
     prefix_process_snapshot,
     remove_stale_init_pid,
@@ -260,6 +261,43 @@ with tempfile.TemporaryDirectory() as temp:
 
 with tempfile.TemporaryDirectory() as temp:
     prefix = Path(temp)
+    owned_paths = [
+        prefix / ".darlingserver.stat.sock",
+        prefix / "var/run/shellspawn.sock",
+        prefix / "var/tmp/launchd/sock",
+    ]
+    listeners = []
+    for socket_path in owned_paths:
+        socket_path.parent.mkdir(parents=True, exist_ok=True)
+        listener = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        listener.bind(str(socket_path))
+        listeners.append(listener)
+    fixture_socket = prefix / "private/tmp/guest-fixture.sock"
+    fixture_socket.parent.mkdir(parents=True)
+    fixture_listener = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    fixture_listener.bind(str(fixture_socket))
+    try:
+        result = cleanup_rootless_runtime_sockets(prefix)
+        assert result.success, result
+        assert len(result.changed) == len(owned_paths), result
+        assert all(not socket_path.exists() for socket_path in owned_paths)
+        assert fixture_socket.exists(), "cleanup removed a guest fixture socket"
+    finally:
+        for listener in [*listeners, fixture_listener]:
+            listener.close()
+
+with tempfile.TemporaryDirectory() as temp:
+    prefix = Path(temp)
+    socket_path = prefix / "var/run/shellspawn.sock"
+    socket_path.parent.mkdir(parents=True)
+    socket_path.write_text("not a socket")
+    result = cleanup_rootless_runtime_sockets(prefix)
+    assert not result.success, result
+    assert socket_path.exists(), "cleanup removed a non-socket artifact"
+    assert any("not a socket" in problem for problem in result.problems), result
+
+with tempfile.TemporaryDirectory() as temp:
+    prefix = Path(temp)
     stale_socket = prefix / ".darlingserver.sock"
     server = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
     server.bind(str(stale_socket))
@@ -271,6 +309,19 @@ with tempfile.TemporaryDirectory() as temp:
     test._remove_stale_init_pid = lambda _prefix: None
     assert test._shutdown_runtime_prefix(prefix)
     assert not stale_socket.exists()
+
+with tempfile.TemporaryDirectory() as temp:
+    prefix = Path(temp)
+    test = make_test()
+    order = []
+    test._kill_dserver_for_prefix = lambda _prefix: None
+    test._prefix_process_snapshot = lambda _prefix: []
+    test._cleanup_prefix_mounts = lambda _prefix: (order.append("mounts") or False)
+    test._remove_stale_init_pid = lambda _prefix: order.append("init")
+    test._remove_stale_server_socket = lambda _prefix: (order.append("server") or False)
+    test._cleanup_rootless_runtime_sockets = lambda _prefix: order.append("sockets")
+    assert not test._finalize_prefix_shutdown(prefix)
+    assert order == ["mounts"], order
 
 test = make_test()
 with tempfile.TemporaryDirectory() as temp:
