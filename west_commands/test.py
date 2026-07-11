@@ -841,6 +841,7 @@ class DarlingTest(WestCommand):
                 "shell": False,
                 "env": env,
                 "ctest_label": test["ctest-label"],
+                "ctest_source_override": test.get("ctest-source-override"),
                 "requires_resources": list(test.get("requires", [])),
                 "requires_env": list(test.get("requires-env", [])),
                 "requires_profile": test.get("requires-profile"),
@@ -1542,7 +1543,9 @@ class DarlingTest(WestCommand):
         build = self._testkit_dir() / "build"
         return ctest_label_display(build, label)
 
-    def _ensure_ctest_build(self) -> Path:
+    def _ensure_ctest_build(self, invocation=None) -> Path:
+        if invocation and invocation.get("ctest_build"):
+            return Path(invocation["ctest_build"])
         build = getattr(self, "_ctest_build", None)
         if build is not None:
             return build
@@ -1551,7 +1554,7 @@ class DarlingTest(WestCommand):
         return build
 
     def _ctest_label_args(self, invocation) -> list[str]:
-        build = self._ensure_ctest_build()
+        build = self._ensure_ctest_build(invocation)
         label_args = ctest_label_args(build, invocation["ctest_label"])
         discovery = run_bounded(
             ctest_selection_command(build, label_args=label_args[4:]),
@@ -4453,6 +4456,23 @@ class DarlingTest(WestCommand):
         if not source_env:
             self.die(f"{patch['path']}: source-base proof needs red-proof.source-env")
         module = proof.get("source-module", patch["module"])
+
+        def ctest_invocation_for(source_root: Path, build_root: Path):
+            override = invocation.get("ctest_source_override")
+            if not override:
+                return invocation
+            configured = dict(invocation)
+            configured["ctest_build"] = self._configure_and_build(
+                self._testkit_dir(),
+                self._executor,
+                darling_launcher=self._resolve_darling_launcher(self._prefix),
+                prefix=self._prefix,
+                bundle_root=str(getattr(self, "_bundle_root", "")),
+                build_dir=build_root,
+                cmake_defines={str(override): str(source_root)},
+            )
+            return configured
+
         with self._source_base_green_source_tree(patch, module) as green_source:
             if green_source is not None:
                 green_source_env = green_source
@@ -4485,8 +4505,11 @@ class DarlingTest(WestCommand):
                     if exec_env:
                         bad_env.update(exec_env)
                     bad_env[source_env] = str(worktree)
+                    red_invocation = ctest_invocation_for(
+                        worktree, Path(temp) / "ctest-build"
+                    )
                     self.inf(f"  RED source tree: {bad_revision} via {source_env}={worktree}")
-                    bad_result = self._run_invocation_captured(proof_invocation, env=bad_env)
+                    bad_result = self._run_invocation_captured(red_invocation, env=bad_env)
                     if bad_result.returncode == 0:
                         self.err("  RED proof failed: source-base run unexpectedly passed")
                         return 1
@@ -4520,7 +4543,11 @@ class DarlingTest(WestCommand):
                 green_env = dict(green_env)
             if source_env:
                 green_env[source_env] = str(green_source_env)
-            return self._run_invocation(proof_invocation, env=green_env)
+            with tempfile.TemporaryDirectory(prefix="west-green-proof-ctest-") as temp:
+                green_invocation = ctest_invocation_for(
+                    Path(green_source_env), Path(temp) / "build"
+                )
+                return self._run_invocation(green_invocation, env=green_env)
 
     def _run_red_proofs(self, tests, list_only: bool, unknown: list[str]) -> int:
         """Run the proof that a regression test really distinguishes old/bad behavior.
@@ -4817,9 +4844,13 @@ class DarlingTest(WestCommand):
         darling_launcher: str | None = None,
         prefix: str | None = None,
         bundle_root: str | None = None,
+        build_dir: Path | None = None,
+        cmake_defines: dict[str, str] | None = None,
     ) -> Path:
-        build = testkit / "build"
+        build = build_dir or testkit / "build"
         cfg = ["cmake", "-S", str(testkit), "-B", str(build), "-G", "Ninja"]
+        for name, value in sorted((cmake_defines or {}).items()):
+            cfg.append(f"-D{name}={value}")
         if executor:
             cfg.append(f"-DDARLING_TEST_EXECUTOR={executor}")
         if prefix:
