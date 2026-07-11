@@ -174,6 +174,12 @@
           "source_ref": "refs/heads/fix/rootless-shellspawn-test-delay"
         },
         {
+          "branch": "fix/rootless-shutdown-session",
+          "head": "7fef3093ef206abc2760940d0d386d443669ac6e",
+          "upstream": "",
+          "source_ref": "refs/heads/fix/rootless-shutdown-session"
+        },
+        {
           "branch": "fix/rootless-vchroot-argv",
           "head": "c82877b302c8318dafed286e98ea1df9bc2df3c8",
           "upstream": "",
@@ -952,6 +958,12 @@
           "head": "a6bb8d7f2d446c2c2fca53a7ba3064e3d68d75d5",
           "upstream": "",
           "source_ref": "refs/heads/fix/eunion-mkdir-opaque-runtime"
+        },
+        {
+          "branch": "fix/eunion-resolver-layer",
+          "head": "dc195f1178ec2fc0d0d4b59a3146ea497c767dc9",
+          "upstream": "",
+          "source_ref": "refs/heads/fix/eunion-resolver-layer"
         },
         {
           "branch": "fix/fd-guard-ebadf",
