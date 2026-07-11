@@ -30,6 +30,44 @@ ROOTLESS_NO_MOUNT_SOURCE_MODULES = frozenset(
     }
 )
 
+ROOTLESS_NO_MOUNT_RUNTIME_RESOURCES = frozenset({"system-closure"})
+
+# The launcher-side boot chain executes guest Mach-O binaries before it can
+# compile or run a fixture. Keep this resource list in the runtime layer so a
+# provider declares the domain requirement once instead of repeating dylib
+# paths in every rootless manifest.
+SYSTEM_CLOSURE_BASENAMES = (
+    "libcache.dylib", "libcommonCrypto.dylib", "libcompiler_rt.dylib",
+    "libcopyfile.dylib", "libcorecrypto.dylib", "libdispatch.dylib",
+    "libdyld.dylib", "libkeymgr.dylib", "libkxld.dylib", "liblaunch.dylib",
+    "libmacho.dylib", "libquarantine.dylib", "libremovefile.dylib",
+    "libsystem_asl.dylib", "libSystem.B.dylib", "libsystem_blocks.dylib",
+    "libsystem_c.dylib", "libsystem_configuration.dylib",
+    "libsystem_coreservices.dylib", "libsystem_coretls.dylib",
+    "libsystem_darwin.dylib", "libsystem_dnssd.dylib", "libsystem_duct.dylib",
+    "libsystem_info.dylib", "libsystem_kernel.dylib", "libsystem_malloc.dylib",
+    "libsystem_m.dylib", "libsystem_networkextension.dylib",
+    "libsystem_notify.dylib", "libsystem_platform.dylib",
+    "libsystem_pthread.dylib", "libsystem_sandbox.dylib",
+    "libsystem_trace.dylib", "libunwind.dylib", "libxpc.dylib",
+)
+
+
+def runtime_artifact_deploy_paths(artifact: dict[str, Any]) -> list[str]:
+    """Expand one typed runtime artifact into concrete prefix deploy paths."""
+
+    paths = list(artifact.get("deploy", []))
+    resource = artifact.get("resource")
+    if resource is None:
+        return paths
+    if resource != "system-closure":
+        raise ValueError(f"unknown runtime artifact resource {resource!r}")
+    paths.extend(
+        "usr/lib/" + name if name == "libSystem.B.dylib" else "usr/lib/system/" + name
+        for name in SYSTEM_CLOSURE_BASENAMES
+    )
+    return paths
+
 
 def load_ctest_runtime_profiles(path: Path) -> dict[str, dict[str, Any]]:
     """Load the explicit runtime deployments used by CTest guest entries."""
@@ -102,11 +140,12 @@ def load_ctest_runtime_profiles(path: Path) -> dict[str, dict[str, Any]]:
                 "to scalar values"
             )
         deploy_paths = {
-            deploy_path
-            for artifact in artifacts
-            if isinstance(artifact, dict)
-            for deploy_path in artifact.get("deploy", [])
+            deploy_path for artifact in artifacts if isinstance(artifact, dict)
+            for deploy_path in runtime_artifact_deploy_paths(artifact)
             if isinstance(deploy_path, str)
+        }
+        resources = {
+            artifact.get("resource") for artifact in artifacts if isinstance(artifact, dict)
         }
         system_kernel_modules = {
             "darling",
@@ -137,6 +176,12 @@ def load_ctest_runtime_profiles(path: Path) -> dict[str, dict[str, Any]]:
                     f"runtime profile {name!r} rootless-no-mount must materialize "
                     "bootstrap source module(s): "
                     + ", ".join(sorted(missing_bootstrap_modules))
+                )
+            missing_resources = ROOTLESS_NO_MOUNT_RUNTIME_RESOURCES.difference(resources)
+            if missing_resources:
+                raise ValueError(
+                    f"runtime profile {name!r} rootless-no-mount is missing "
+                    "runtime resource(s): " + ", ".join(sorted(missing_resources))
                 )
         normalized[name] = {
             "source-profile": source_profile,
@@ -190,7 +235,7 @@ def compose_ctest_runtime_profiles(
         for artifact in definition["runtime-artifacts"]:
             if not isinstance(artifact, dict):
                 raise ValueError(f"runtime profile {name!r} has invalid artifact")
-            deploy_paths = artifact.get("deploy", [])
+            deploy_paths = runtime_artifact_deploy_paths(artifact)
             conflicts = [
                 deploy_path
                 for deploy_path in deploy_paths
