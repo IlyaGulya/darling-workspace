@@ -86,6 +86,7 @@ from test_runtime import (
     describe_runtime_deploy_plan,
     load_ctest_runtime_profiles,
     partition_ctest_runtime_profiles,
+    runtime_artifact_deploy_paths,
     runtime_build_targets,
     runtime_deploy_targets,
 )
@@ -3693,7 +3694,7 @@ class DarlingTest(WestCommand):
                 self.die(f"guest-runtime-deploy could not stop Darling prefix before deploy: {prefix}")
             try:
                 for artifact in proof.get("runtime-artifacts", []):
-                    for deploy_path in artifact.get("deploy", []):
+                    for deploy_path in runtime_artifact_deploy_paths(artifact):
                         src = self._runtime_red_find_build_output(build_root, deploy_path)
                         for dst in self._runtime_red_deploy_targets(prefix, deploy_path):
                             backup = None

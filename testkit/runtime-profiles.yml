@@ -103,8 +103,7 @@ runtime-profiles:
     - module: darling/src/external/xnu
       build-targets:
       - system_kernel
-      deploy:
-      - usr/lib/system/libsystem_kernel.dylib
+      resource: system-closure
   homebrew-prefix-baseline:
     # This is the explicit durable baseline for the named homebrew prefix.
     # Unlike ordinary providers it is selected only through
@@ -150,5 +149,4 @@ runtime-profiles:
     - module: darling/src/external/xnu
       build-targets:
       - system_kernel
-      deploy:
-      - usr/lib/system/libsystem_kernel.dylib
+      resource: system-closure
