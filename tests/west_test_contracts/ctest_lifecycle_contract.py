@@ -31,6 +31,25 @@ import west_commands.test as test_module
 from west_commands.test import DarlingTest
 from west_commands.test_execution import ProcessResult
 
+os.environ.setdefault("WEST_RUNTIME_MIN_FREE_BYTES", "0")
+
+
+test = DarlingTest.__new__(DarlingTest)
+test.die = lambda message: (_ for _ in ()).throw(SystemExit(message))
+original_disk_usage = test_module.shutil.disk_usage
+original_minimum = os.environ["WEST_RUNTIME_MIN_FREE_BYTES"]
+test_module.shutil.disk_usage = lambda _path: SimpleNamespace(free=7)
+os.environ["WEST_RUNTIME_MIN_FREE_BYTES"] = "8"
+try:
+    try:
+        test._require_runtime_scratch_space("contract")
+        raise AssertionError("runtime scratch preflight unexpectedly passed")
+    except SystemExit as exc:
+        assert "profile contract needs at least 8 free bytes" in str(exc), exc
+finally:
+    test_module.shutil.disk_usage = original_disk_usage
+    os.environ["WEST_RUNTIME_MIN_FREE_BYTES"] = original_minimum
+
 
 with tempfile.TemporaryDirectory() as temp:
     prefix = Path(temp) / "prefix"

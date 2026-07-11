@@ -280,6 +280,19 @@ class DarlingTest(WestCommand):
     def _testkit_dir(self) -> Path:
         return Path(self.manifest.repo_abspath) / "testkit"
 
+    def _require_runtime_scratch_space(self, profile_name: str) -> None:
+        minimum = int(os.environ.get("WEST_RUNTIME_MIN_FREE_BYTES", 8 * 1024**3))
+        if minimum < 0:
+            self.die("WEST_RUNTIME_MIN_FREE_BYTES must be >= 0")
+        scratch_root = Path(tempfile.gettempdir())
+        available = shutil.disk_usage(scratch_root).free
+        if available < minimum:
+            self.die(
+                f"CTest runtime profile {profile_name} needs at least {minimum} free bytes "
+                f"under {scratch_root}, but only {available} are available; "
+                "run west test --gc or free disk space before materializing the runtime source forest"
+            )
+
     def _profile_path(self, profile: str) -> Path:
         return Path(self.manifest.repo_abspath) / "patches" / profile / "patches.yml"
 
@@ -1493,6 +1506,7 @@ class DarlingTest(WestCommand):
             "module": definition["source-module"],
         }
         previous_profile = getattr(self, "_active_profile", None)
+        self._require_runtime_scratch_space(profile_name)
         scratch = tempfile.mkdtemp(prefix=f"west-ctest-runtime-{profile_name}-")
         keep_on_failure = False
         self._active_profile = source_profile
