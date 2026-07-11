@@ -393,6 +393,7 @@ with tempfile.TemporaryDirectory() as temp:
     prefix = root / "prefix"
     trace_dir = root / "trace"
     prefix.mkdir()
+    trace_dir.mkdir()
     server_trace = prefix / "private/var/log/dserver-rpc-trace.log"
     server_trace.parent.mkdir(parents=True)
     server_trace.write_text("stale trace\n")
@@ -400,8 +401,8 @@ with tempfile.TemporaryDirectory() as temp:
     test.topdir = str(root)
     test._prefix = str(prefix)
     test._prefix_cleanup_failed = False
-    test._bootstrap_syscall_trace = trace_dir
-    test._bootstrap_syscall_stack = True
+    test._bootstrap_syscall_trace = None
+    test._bootstrap_stack_sample = trace_dir
     messages = []
     test.inf = messages.append
     test.err = lambda _message: None
@@ -436,6 +437,7 @@ with tempfile.TemporaryDirectory() as temp:
     original_run_bounded = test_module.run_bounded
     def timed_out_guest(*_args, **kwargs):
         observed_prefixes.append(kwargs["command_prefix"])
+        (trace_dir / "bootstrap.perf.data").write_text("perf data\n")
         server_trace.parent.mkdir(parents=True, exist_ok=True)
         server_trace.write_text("rpc.recv number=1 name=mldr_path\n")
         (prefix / ".west-rootless-boot.log").write_text(
@@ -446,14 +448,19 @@ with tempfile.TemporaryDirectory() as temp:
         return ProcessResult(124, timed_out=True, stdout="", stderr="")
 
     test_module.run_guest_shell = timed_out_guest
-    test_module.run_bounded = lambda *_args, **_kwargs: ProcessResult(0)
+    def completed_command(command, *_args, **_kwargs):
+        if tuple(command[:2]) == ("perf", "script"):
+            return ProcessResult(0, stdout="sampled stack\n", stderr="")
+        return ProcessResult(0)
+
+    test_module.run_bounded = completed_command
     try:
         try:
             test._bootstrap_runtime_profile("homebrew-prefix-baseline")
-            raise AssertionError("bootstrap unexpectedly accepted a timed-out syscall trace run")
+            raise AssertionError("bootstrap unexpectedly accepted a timed-out stack-sample run")
         except SystemExit as exc:
             assert str(exc) == (
-                f"prefix bootstrap guest smoke timed out after 60s; syscall trace: {trace_dir}; "
+                f"prefix bootstrap guest smoke timed out after 60s; stack sample: {trace_dir}; "
                 "progress: host=launcher pid=1 waiting-for-shellspawn | "
                 "guest-fd=launchd pid=2 shellspawn dispatch-start"
             ), exc
@@ -462,11 +469,12 @@ with tempfile.TemporaryDirectory() as temp:
         test_module.run_bounded = original_run_bounded
     assert trace_dir.is_dir(), trace_dir
     assert observed_prefixes == [
-        ("strace", "-ff", "-i", "-k", "-e", "trace=process,signal", "-tt", "-v", "-s", "160", "-o", str(trace_dir / "bootstrap"))
+        ("perf", "record", "--all-user", "--call-graph", "fp", "--output", str(trace_dir / "bootstrap.perf.data"), "--")
     ], observed_prefixes
+    assert (trace_dir / "bootstrap.perf.txt").read_text() == "sampled stack\n"
     assert (trace_dir / "darlingserver-rpc.log").read_text() == "rpc.recv number=1 name=mldr_path\n"
     assert messages == [
-        f"prefix bootstrap syscall trace: {trace_dir}",
+        f"prefix bootstrap stack sample: {trace_dir}",
         f"prefix bootstrap server trace: {trace_dir / 'darlingserver-rpc.log'}",
     ], messages
 
