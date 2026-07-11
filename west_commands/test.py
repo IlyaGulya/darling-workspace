@@ -3454,6 +3454,9 @@ class DarlingTest(WestCommand):
         # A runtime proof is a clean test build, not a clone of the developer's
         # active build. Darling's objc4 target requires a Debug configuration.
         cmake_defines = {"CMAKE_BUILD_TYPE": "Debug", **(proof.get("cmake-defines") or {})}
+        active_profile = getattr(self, "_active_profile", None)
+        if active_profile and "DARLING_PATCH_PROFILE" not in cmake_defines:
+            cmake_defines["DARLING_PATCH_PROFILE"] = active_profile
         for key in ("CMAKE_C_COMPILER", "CMAKE_CXX_COMPILER"):
             value = self._cmake_cache_value(current_build, key)
             if value:
@@ -3471,7 +3474,6 @@ class DarlingTest(WestCommand):
             "DARLING_EUNION",
             "DARLING_GUEST_RECVSPIN",
             "DARLING_RPC_SLEEP_ACCOUNT",
-            "DARLING_SKIP_DRIFT_GATE",
         ):
             value = self._cmake_cache_value(current_build, key)
             if value is not None:
