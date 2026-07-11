@@ -1696,6 +1696,14 @@ class DarlingTest(WestCommand):
                         guest_fd_trace.unlink(missing_ok=True)
                         runtime_env["DARLING_HOST_BOOT_TRACE"] = str(boot_trace)
                         runtime_env["DARLING_GUEST_BOOT_TRACE"] = str(guest_fd_trace)
+                        if getattr(self, "_bootstrap_syscall_trace", None) is not None:
+                            server_trace = (
+                                Path(prefix_text)
+                                / "private/var/log/dserver-auxlog.txt"
+                            )
+                            server_trace.parent.mkdir(parents=True, exist_ok=True)
+                            server_trace.unlink(missing_ok=True)
+                            runtime_env["DARLING_SERVER_AUXLOG"] = "1"
                     runtime_env.update(launcher_env)
                     yield RuntimeProfileDeployment(
                         name=profile_name,
@@ -3904,6 +3912,14 @@ class DarlingTest(WestCommand):
                     capture_output=True,
                     command_prefix=command_prefix,
                 )
+                if trace_dir is not None:
+                    server_trace = (
+                        deployment.prefix / "private/var/log/dserver-auxlog.txt"
+                    )
+                    if server_trace.is_file():
+                        captured_server_trace = trace_dir / "darlingserver-rpc.log"
+                        shutil.copy2(server_trace, captured_server_trace)
+                        self.inf(f"prefix bootstrap server trace: {captured_server_trace}")
                 output = f"{result.stdout}{result.stderr}"
                 trace_fault = (
                     bootstrap_trace_fatal_signal(trace_dir)
