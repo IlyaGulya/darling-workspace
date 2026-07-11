@@ -252,7 +252,7 @@ class DarlingTest(WestCommand):
         parser.add_argument(
             "--bootstrap-syscall-stack",
             action="store_true",
-            help="with --bootstrap-syscall-trace, include native stack frames in its strace output",
+            help="with --bootstrap-syscall-trace, capture lightweight process/crash stack frames instead of tracing every syscall",
         )
         parser.add_argument(
             "--keep-prefix-running",
@@ -3898,7 +3898,7 @@ class DarlingTest(WestCommand):
             trace_dir.mkdir(parents=True, exist_ok=True)
             command_prefix_parts = ["strace", "-ff", "-i"]
             if getattr(self, "_bootstrap_syscall_stack", False):
-                command_prefix_parts.append("-k")
+                command_prefix_parts.extend(("-k", "-e", "trace=process,signal"))
             command_prefix_parts.extend(
                 ("-tt", "-v", "-s", "160", "-o", str(trace_dir / "bootstrap"))
             )
