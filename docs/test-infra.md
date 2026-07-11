@@ -182,7 +182,8 @@ RED proof modes:
   intended model for guest/runtime tests whose RED proof requires building and
   deploying bad runtime artifacts into the selected Darling prefix, then running
   the same guest fixture against bad and fixed runtimes. Metadata validation
-  accepts this only for `runner: guest-c-fixture` and requires declared runtime
+  accepts `runner: guest-c-fixture`, `guest-command-fixture`, or the explicitly
+  lifecycle-oriented `guest-runtime-script`, and requires declared runtime
   artifacts. Each artifact must declare `module`, Ninja `build-targets`, and
   `deploy` paths so the runner knows which source tree to materialize, what to
   build, and which prefix files to swap. `--prove-red --list` prints the deploy
