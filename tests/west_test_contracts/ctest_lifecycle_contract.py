@@ -64,6 +64,19 @@ finally:
     os.environ["WEST_RUNTIME_MIN_FREE_BYTES"] = original_minimum
 
 
+bootstrap_test = DarlingTest.__new__(DarlingTest)
+bootstrap_test._prefix = None
+bootstrap_test.die = lambda message: (_ for _ in ()).throw(SystemExit(message))
+try:
+    bootstrap_test._bootstrap_runtime_profile("homebrew-prefix-baseline")
+    raise AssertionError("bootstrap accepted a missing prefix")
+except SystemExit as exc:
+    assert str(exc) == (
+        "--bootstrap-runtime-profile requires --prefix, --prefix-profile, or DPREFIX "
+        "(for example: --prefix-profile homebrew)"
+    ), exc
+
+
 with tempfile.TemporaryDirectory() as temp:
     prefix = Path(temp) / "prefix"
     prefix.mkdir()
