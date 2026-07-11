@@ -21,6 +21,13 @@ ROOTLESS_NO_MOUNT_DEPLOY_PATHS = frozenset(
     }
 )
 
+ROOTLESS_BOOTSTRAP_CLOSURE_RESOURCE = "rootless-bootstrap-closure"
+# Source owners whose patched revisions can provide Mach-O libraries in the
+# bootstrap closure. A materialized runtime forest must not leave them as live
+# symlinks, or it can build an unpatched provider while claiming profile parity.
+ROOTLESS_BOOTSTRAP_CLOSURE_SOURCE_MODULES = frozenset(
+    {"darling/src/external/libsystem"}
+)
 ROOTLESS_NO_MOUNT_SOURCE_MODULES = frozenset(
     {
         "darling",
@@ -28,9 +35,7 @@ ROOTLESS_NO_MOUNT_SOURCE_MODULES = frozenset(
         "darling/src/external/dyld",
         "darling/src/external/xnu",
     }
-)
-
-ROOTLESS_BOOTSTRAP_CLOSURE_RESOURCE = "rootless-bootstrap-closure"
+).union(ROOTLESS_BOOTSTRAP_CLOSURE_SOURCE_MODULES)
 ROOTLESS_NO_MOUNT_RUNTIME_RESOURCES = frozenset(
     {ROOTLESS_BOOTSTRAP_CLOSURE_RESOURCE}
 )
