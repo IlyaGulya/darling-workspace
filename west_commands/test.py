@@ -1503,13 +1503,13 @@ class DarlingTest(WestCommand):
                     if (
                         isinstance(proof, dict)
                         and proof.get("mode") == "guest-runtime-deploy"
+                        and not test.get("runtime-profile")
                     ):
                         result_rc = self._run_guest_runtime_deploy_green(patch, proof, invocation)
                     else:
-                        exec_env = self._execution_env(invocation)
-                        if runtime_env is not None:
-                            exec_env = dict(exec_env or {})
-                            exec_env.update(runtime_env)
+                        exec_env = self._runtime_profile_execution_env(
+                            invocation, runtime_env
+                        )
                         with self._ctest_source_override_context(invocation) as run_invocation:
                             with self._resource_context(run_invocation, exec_env) as resource_env:
                                 result_rc = self._run_invocation(run_invocation, env=resource_env)
@@ -1707,7 +1707,7 @@ class DarlingTest(WestCommand):
             yield deployment.env
 
     @contextmanager
-    def _metadata_runtime_profile_context(self, patch, test):
+    def _metadata_runtime_profile_context(self, patch, test, *, omit_patch=False):
         """Temporarily deploy the typed runtime provider declared by metadata."""
 
         profile_name = test.get("runtime-profile")
@@ -1716,9 +1716,22 @@ class DarlingTest(WestCommand):
             return
         label = f"metadata {patch['path']}:{test.get('name', patch['path'])}"
         with self._runtime_profile_deployment_context(
-            [profile_name], label_prefix=label, retain_deployment=False
+            [profile_name],
+            label_prefix=label,
+            retain_deployment=False,
+            patch=patch,
+            omit_patch=omit_patch,
         ) as deployment:
             yield deployment.env
+
+    def _runtime_profile_execution_env(self, invocation, runtime_env):
+        """Combine runner defaults with the selected provider's launcher contract."""
+        env = self._execution_env(invocation)
+        if runtime_env is None:
+            return env
+        merged = dict(env or {})
+        merged.update(runtime_env)
+        return merged
 
     def _bootstrap_diagnostics_enabled(self) -> bool:
         return (
@@ -1733,6 +1746,8 @@ class DarlingTest(WestCommand):
         *,
         label_prefix: str,
         retain_deployment: bool,
+        patch=None,
+        omit_patch=False,
     ):
         """Materialize, build, and deploy a declared runtime provider.
 
@@ -1760,11 +1775,15 @@ class DarlingTest(WestCommand):
             "runtime-artifacts": definition["runtime-artifacts"],
             "cmake-defines": definition.get("cmake-defines", {}),
         }
+        if omit_patch:
+            proof["bad-profile"] = "current-minus-patch"
         launcher_env = {
             key: str(value)
             for key, value in definition.get("launcher-env", {}).items()
         }
-        anchor = {
+        if omit_patch and patch is None:
+            self.die(f"{label_prefix} runtime profile cannot omit a patch without patch metadata")
+        anchor = patch or {
             "path": f"{label_prefix} runtime profile {profile_name}",
             "module": definition["source-module"],
         }
@@ -1778,7 +1797,9 @@ class DarlingTest(WestCommand):
         self._active_profile = source_profile
         try:
             self.inf(f"{label_prefix} runtime profile: {profile_name} ({source_profile})")
-            with self._guest_runtime_source_forest(anchor, proof, omit_patch=False) as source_root:
+            with self._guest_runtime_source_forest(
+                anchor, proof, omit_patch=omit_patch
+            ) as source_root:
                 build_root = self._runtime_red_build_artifacts(
                     source_root,
                     proof,
@@ -1992,7 +2013,10 @@ class DarlingTest(WestCommand):
                 "ctest" if invocation.get("ctest_label") else "script",
             )
             return rc
-        return self._check_host_traces(invocation, run_env)
+        trace_rc = self._check_host_traces(invocation, run_env)
+        if trace_rc:
+            self._record_failure_phase(invocation, "run")
+        return trace_rc
 
     def _record_failure_phase(self, invocation, phase: str) -> None:
         """Record and report the runner stage that made an invocation fail."""
@@ -4467,6 +4491,50 @@ class DarlingTest(WestCommand):
             isinstance(item, str) and item for item in contains
         )
 
+    def _run_metadata_runtime_profile_proof(self, patch, test, proof, invocation) -> int:
+        """Prove RED and GREEN through the metadata-declared runtime provider."""
+        if proof.get("source-patches") or proof.get("prepare-fixture-before-deploy"):
+            self.die(
+                f"{patch['path']}: runtime-profile guest-runtime-deploy does not support "
+                "source-patches or prepare-fixture-before-deploy"
+            )
+
+        red_invocation = self._guest_runtime_red_invocation(patch, proof, invocation)
+        with self._metadata_runtime_profile_context(
+            patch, test, omit_patch=True
+        ) as runtime_env:
+            red_env = self._runtime_profile_execution_env(red_invocation, runtime_env)
+            with self._ctest_source_override_context(red_invocation) as run_invocation:
+                with self._resource_context(run_invocation, red_env) as resource_env:
+                    red_started_at = time.time()
+                    red_result = self._run_invocation_captured(
+                        run_invocation, env=resource_env
+                    )
+            if red_result.returncode == 0:
+                self.err("  RED proof failed: current-minus runtime unexpectedly passed")
+                return 1
+            if not self._check_red_failure_phase(
+                proof, red_invocation, red_result.failure_phase
+            ):
+                return 1
+            if not self._check_guest_runtime_red_failure(
+                proof,
+                red_invocation,
+                since=red_started_at,
+                captured_output=red_result.output,
+            ):
+                return 1
+            self.inf(
+                f"  RED runtime provider failed as expected (rc={red_result.returncode})"
+            )
+
+        self.inf("  GREEN runtime provider")
+        with self._metadata_runtime_profile_context(patch, test) as runtime_env:
+            green_env = self._runtime_profile_execution_env(invocation, runtime_env)
+            with self._ctest_source_override_context(invocation) as run_invocation:
+                with self._resource_context(run_invocation, green_env) as resource_env:
+                    return self._run_invocation(run_invocation, env=resource_env)
+
     def _run_guest_runtime_deploy_proof(self, patch, proof, invocation) -> int:
         if (
             not invocation.get("guest_c_fixture")
@@ -4775,7 +4843,14 @@ class DarlingTest(WestCommand):
                         if mode == "source-base":
                             result_rc = self._run_source_base_proof(patch, proof, invocation)
                         elif mode == "guest-runtime-deploy":
-                            result_rc = self._run_guest_runtime_deploy_proof(patch, proof, invocation)
+                            if test.get("runtime-profile"):
+                                result_rc = self._run_metadata_runtime_profile_proof(
+                                    patch, test, proof, invocation
+                                )
+                            else:
+                                result_rc = self._run_guest_runtime_deploy_proof(
+                                    patch, proof, invocation
+                                )
                         else:
                             exec_env = self._execution_env(invocation)
                             with self._resource_context(invocation, exec_env):
