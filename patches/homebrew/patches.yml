@@ -4046,6 +4046,16 @@ patches:
   test-exception:
     reason: isolated-ctest-source-base-red-proof-pending
     scope: The colocated eunion_resolver_test is a real CTest host behavior test. dar-h5jl must configure an isolated full source forest for source-base RED and discover CTest labels from that forest; the current shared testkit build both produces a false RED pass and reports no matching tests as a false GREEN.
+  tests:
+  - name: eunion_resolver
+    kind: unit
+    coverage-tier: host
+    runs: host
+    diag: bare
+    ctest-label: eunion-host
+    ctest-source-override: DARLING_XNU_SRC
+    requires-profile: homebrew
+    note: CTest host behavior test using a real upper/lower filesystem fixture with whiteout and opaque xattrs; it compiles the production resolver from the selected XNU source tree.
   github:
     fork:
       repo: IlyaGulya/darling-xnu

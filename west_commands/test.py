@@ -1504,8 +1504,9 @@ class DarlingTest(WestCommand):
                     result_rc = self._run_guest_runtime_deploy_green(patch, proof, invocation)
                 else:
                     exec_env = self._execution_env(invocation)
-                    with self._resource_context(invocation, exec_env) as resource_env:
-                        result_rc = self._run_invocation(invocation, env=resource_env)
+                    with self._ctest_source_override_context(invocation) as run_invocation:
+                        with self._resource_context(run_invocation, exec_env) as resource_env:
+                            result_rc = self._run_invocation(run_invocation, env=resource_env)
             if result_rc:
                 rc = result_rc
         return rc
@@ -1576,6 +1577,27 @@ class DarlingTest(WestCommand):
                 "refusing a false GREEN"
             )
         return label_args
+
+    @contextmanager
+    def _ctest_source_override_context(self, invocation):
+        override = invocation.get("ctest_source_override")
+        if not override:
+            yield invocation
+            return
+        with tempfile.TemporaryDirectory(prefix="west-ctest-source-") as temp:
+            configured = dict(invocation)
+            configured["ctest_build"] = self._configure_and_build(
+                self._testkit_dir(),
+                self._executor,
+                darling_launcher=self._resolve_darling_launcher(self._prefix),
+                prefix=self._prefix,
+                bundle_root=str(getattr(self, "_bundle_root", "")),
+                build_dir=Path(temp) / "build",
+                cmake_defines={
+                    str(override): str(self._project_path(invocation["source_module"]))
+                },
+            )
+            yield configured
 
     def _ctest_runtime_profile_definitions(self) -> dict[str, dict]:
         path = self._testkit_dir() / "runtime-profiles.yml"
