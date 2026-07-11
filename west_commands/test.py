@@ -4531,7 +4531,16 @@ class DarlingTest(WestCommand):
                         worktree, Path(temp) / "ctest-build"
                     )
                     self.inf(f"  RED source tree: {bad_revision} via {source_env}={worktree}")
-                    bad_result = self._run_invocation_captured(red_invocation, env=bad_env)
+                    try:
+                        bad_result = self._run_invocation_captured(
+                            red_invocation, env=bad_env
+                        )
+                    except SystemExit as error:
+                        if not red_invocation.get("ctest_label"):
+                            raise
+                        bad_result = InvocationResult(
+                            1, str(error), "ctest-discovery"
+                        )
                     if bad_result.returncode == 0:
                         self.err("  RED proof failed: source-base run unexpectedly passed")
                         return 1
