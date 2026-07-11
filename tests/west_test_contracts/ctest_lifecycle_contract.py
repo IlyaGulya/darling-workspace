@@ -48,6 +48,28 @@ debug_args = debug_test._debug_runner_args(
 assert debug_args[-4:] == ["--cwd", "/tmp/workspace-owned-script", "--", "tests/runtime.sh"], debug_args
 
 
+with tempfile.TemporaryDirectory() as temp:
+    root = Path(temp)
+    empty_selection_test = DarlingTest.__new__(DarlingTest)
+    empty_selection_test.topdir = str(root)
+    empty_selection_test._ctest_build = root / "build"
+    empty_selection_test._ctest_build.mkdir()
+    empty_selection_test.die = lambda message: (_ for _ in ()).throw(SystemExit(message))
+    empty_selection_test._dump_command_tail = lambda *_args: None
+    original = test_module.run_bounded
+    test_module.run_bounded = lambda *_args, **_kwargs: ProcessResult(
+        0, stdout=json.dumps({"tests": []})
+    )
+    try:
+        try:
+            empty_selection_test._ctest_label_args({"ctest_label": "missing"})
+            raise AssertionError("empty CTest label selection unexpectedly passed")
+        except SystemExit as exc:
+            assert "refusing a false GREEN" in str(exc), exc
+    finally:
+        test_module.run_bounded = original
+
+
 test = DarlingTest.__new__(DarlingTest)
 test.die = lambda message: (_ for _ in ()).throw(SystemExit(message))
 original_disk_usage = test_module.shutil.disk_usage
