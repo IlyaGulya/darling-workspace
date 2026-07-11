@@ -4035,11 +4035,11 @@ patches:
       base: main
       state: local
 - path: xnu/eunion-resolver-layer.patch
-  sha256sum: 2348e663b73bb1527d559aafa7dc84f8e4aaf63484fd7f0ef1a78317ed52ad5f
+  sha256sum: 15e0af15b9378b01adcb9a6afbd3a50d5b3663d00d660df79057d9a25dcc75ba
   module: darling/src/external/xnu
   source-branch: fix/eunion-resolver-layer
   source-base: dc195f1178ec2fc0d0d4b59a3146ea497c767dc9
-  source-commit: 32a29e287170deb87770cf6429d778a7d4e0a436
+  source-commit: 0a27bc926c2c840d54487e375d923c747f652b50
   bead: dar-yfp4
   publication-status: blocked
   publication-blocker: E-UNION remains experimental until the complete resolver/copy-up policy is productized. This patch only establishes the resolver boundary and its CTest coverage.
