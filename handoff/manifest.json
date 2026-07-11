@@ -492,6 +492,12 @@
           "source_ref": "refs/heads/fix/rpc-uds-packed-correlation"
         },
         {
+          "branch": "fix/semaphore-rpc-trace",
+          "head": "9d5e7b6c29cdf74f43c73b41538a0dd86066e9ea",
+          "upstream": "",
+          "source_ref": "refs/heads/fix/semaphore-rpc-trace"
+        },
+        {
           "branch": "fix/server-inline-fastpath",
           "head": "3aa068c72bbcc622fcbec82986f4a716b28f1a0a",
           "upstream": "",
