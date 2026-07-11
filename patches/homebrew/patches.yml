@@ -5541,7 +5541,7 @@ patches:
   publication-blocker: Rootless shutdown lifecycle fix requires a materialized runtime deploy proof against the leaked launchd service session before publication.
   test-exception:
     reason: runtime-deploy-proof-pending
-    scope: The committed src/startup/tests/rootless_shutdown_session_test.c is a real host session-cleanup regression and is GREEN; the required product proof must build/deploy the launcher into a rootless prefix and verify shutdown leaves no prefix-owned service process.
+    scope: The committed src/startup/tests/rootless_shutdown_session_test.c is a real host session-cleanup regression and is GREEN; dar-xxtf must first repair guest-runtime-script output capture before the required launcher deploy RED-to-GREEN proof can be trusted.
   sha256sum: 01dea6be86173cae673d8fd5a97b4c1e14b65f502509699faf90bb0ec9ee8a88
 - path: libsystem/rootless-initializer-trace.patch
   sha256sum: b3107f04e59f860982abacfe35714a4a2e18f3236a5724e7ece11eefb2327d89
