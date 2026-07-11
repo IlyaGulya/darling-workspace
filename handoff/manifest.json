@@ -175,7 +175,7 @@
         },
         {
           "branch": "fix/rootless-shutdown-session",
-          "head": "7fef3093ef206abc2760940d0d386d443669ac6e",
+          "head": "2ce4136ab3550de34256751be0e7947518c07d3f",
           "upstream": "",
           "source_ref": "refs/heads/fix/rootless-shutdown-session"
         },
