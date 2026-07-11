@@ -4015,12 +4015,15 @@ patches:
     note: Guest runtime coverage for E-UNION copy-up, lower-only unlink whiteout, create under lower-only parent, recursive lower-dir rename, symlink-parent create, AF_UNIX bind parent copy-up, and post-test lower template protection.
   - name: eunion_22_host_suite
     kind: unit
+    coverage-tier: host
     runs: host
     diag: bare
     red: true
     red-proof:
       mode: source-base
       source-env: XNU_SRC_ROOT
+      expect-output-contains:
+      - 'FAIL  SP1 create through upper symlink succeeds (no ENOENT)'
     runner: source-contract-script
     repo: darling-workspace
     script: experiments/e-union/run.sh
@@ -4044,8 +4047,8 @@ patches:
   publication-status: blocked
   publication-blocker: E-UNION remains experimental until the complete resolver/copy-up policy is productized. This patch only establishes the resolver boundary and its CTest coverage.
   test-exception:
-    reason: isolated-ctest-source-base-red-proof-pending
-    scope: The colocated eunion_resolver_test is a real CTest host behavior test. dar-h5jl must configure an isolated full source forest for source-base RED and discover CTest labels from that forest; the current shared testkit build both produces a false RED pass and reports no matching tests as a false GREEN.
+    reason: introduced-ctest-target-no-source-base-red
+    scope: This boundary extraction introduces both the resolver API and its CTest target, so source-base cannot execute the same target without proving only a missing fixture. The preceding eunion_22_host_suite supplies the semantic source-base RED->GREEN proof, while this CTest runs the extracted production resolver against real upper/lower/xattr behavior on the selected current profile.
   tests:
   - name: eunion_resolver
     kind: unit
