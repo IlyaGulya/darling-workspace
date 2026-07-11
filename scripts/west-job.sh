@@ -10,7 +10,8 @@ usage:
   west-job.sh cancel --state-dir DIR
 
 Use this only when the caller cannot keep a long west command attached.  DIR
-contains command, log, pid, start-time, and rc; it is safe to inspect directly.
+contains command, job/command PIDs, start-times, log, and rc; it is safe to
+inspect directly.
 USAGE
 	exit 2
 }
@@ -55,6 +56,16 @@ load_live_pid() {
 	[[ "$(pid_start_time "$pid")" == "$start_time" ]]
 }
 
+load_live_command_pid() {
+	local pid start_time
+	[[ -f "$state_dir/command-pid" && -f "$state_dir/command-start-time" ]] || return 1
+	pid="$(<"$state_dir/command-pid")"
+	start_time="$(<"$state_dir/command-start-time")"
+	[[ "$pid" =~ ^[0-9]+$ ]] || return 1
+	kill -0 "$pid" 2>/dev/null || return 1
+	[[ "$(pid_start_time "$pid")" == "$start_time" ]]
+}
+
 read_rc() {
 	local rc
 	[[ -f "$state_dir/rc" ]] || return 1
@@ -79,12 +90,28 @@ start_job() {
 		state_dir="$1"
 		shift
 		finish() {
-			printf "%s\\n" "$1" >"$state_dir/rc.tmp"
+			local rc="$1"
+			if [[ -e "$state_dir/cancel-requested" ]]; then
+				rc=143
+			fi
+			printf "%s\\n" "$rc" >"$state_dir/rc.tmp"
 			mv "$state_dir/rc.tmp" "$state_dir/rc"
-			exit "$1"
+			exit "$rc"
 		}
-		trap "finish 143" TERM INT HUP
-		"$@"
+		forward_cancel() {
+			touch "$state_dir/cancel-requested"
+			if [[ -n "${command_pid:-}" ]] && kill -0 "$command_pid" 2>/dev/null; then
+				kill -INT "$command_pid" 2>/dev/null || true
+				wait "$command_pid" || true
+			fi
+			finish 143
+		}
+		trap forward_cancel TERM INT HUP
+		"$@" &
+		command_pid=$!
+		printf "%s\\n" "$command_pid" >"$state_dir/command-pid"
+		awk "{print \$22}" "/proc/$command_pid/stat" >"$state_dir/command-start-time"
+		wait "$command_pid"
 		finish "$?"
 	' bash "$state_dir" "${STATE_REST[@]}" \
 		>"$state_dir/log" 2>&1 < /dev/null &
@@ -130,8 +157,27 @@ cancel_job() {
 	fi
 	local pid
 	pid="$(<"$state_dir/pid")"
+	touch "$state_dir/cancel-requested"
+	if load_live_command_pid; then
+		local command_pid
+		command_pid="$(<"$state_dir/command-pid")"
+		kill -INT "$command_pid"
+		for _ in $(seq 1 20); do
+			if ! load_live_command_pid; then
+				printf 'cancelling command-pid=%s state=%s\n' "$command_pid" "$state_dir"
+				return
+			fi
+			sleep 0.25
+		done
+		# A command that ignores SIGINT cannot run its cleanup. Preserve the
+		# existing escape hatch for generic jobs while reporting the escalation.
+		kill -TERM -- "-$pid"
+		printf 'cancelling unresponsive command-pid=%s via job group=%s state=%s\n' \
+			"$command_pid" "$pid" "$state_dir"
+		return
+	fi
 	kill -TERM -- "-$pid"
-	printf 'cancelling pid=%s state=%s\n' "$pid" "$state_dir"
+	printf 'cancelling legacy job group=%s state=%s\n' "$pid" "$state_dir"
 }
 
 command="${1:-}"
