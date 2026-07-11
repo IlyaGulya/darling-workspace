@@ -1,0 +1,628 @@
+From 32a29e287170deb87770cf6429d778a7d4e0a436 Mon Sep 17 00:00:00 2001
+From: Ilya Gulya <ilya@gulya.me>
+Date: Sat, 11 Jul 2026 19:10:56 +0000
+Subject: [PATCH] xnu: extract E-UNION resolver
+
+---
+ .../libsystem_kernel/emulation/CMakeLists.txt |  14 +-
+ .../linux_premigration/eunion_resolver.h      |  48 +++++
+ .../src/linux_premigration/eunion_resolver.c  | 128 ++++++++++++++
+ .../linux_premigration/vchroot_userspace.c    | 150 ++++++----------
+ .../emulation/tests/eunion_resolver_test.c    | 165 ++++++++++++++++++
+ 5 files changed, 411 insertions(+), 94 deletions(-)
+ create mode 100644 darling/src/libsystem_kernel/emulation/include/linux_premigration/eunion_resolver.h
+ create mode 100644 darling/src/libsystem_kernel/emulation/src/linux_premigration/eunion_resolver.c
+ create mode 100644 darling/src/libsystem_kernel/emulation/tests/eunion_resolver_test.c
+
+diff --git a/darling/src/libsystem_kernel/emulation/CMakeLists.txt b/darling/src/libsystem_kernel/emulation/CMakeLists.txt
+index 4918aff9962999fd521c81251aebf0bd589ed993..3e845b5aca5ad877919e31c61137d1c76a0c37ba 100644
+--- a/darling/src/libsystem_kernel/emulation/CMakeLists.txt
++++ b/darling/src/libsystem_kernel/emulation/CMakeLists.txt
+@@ -85,10 +85,23 @@ set(linux_premigration_sources
+ 	src/linux_premigration/signal/sig_restorer.S
+ 	src/linux_premigration/signal/sigexc.c
+ 	src/linux_premigration/elfcalls_wrapper.c
++	src/linux_premigration/eunion_resolver.c
+ 	src/linux_premigration/linux-syscall.S
+ 	src/linux_premigration/vchroot_userspace.c
+ )
+ 
++if (BUILD_TESTING)
++	add_executable(eunion_resolver_test
++		tests/eunion_resolver_test.c
++		src/linux_premigration/eunion_resolver.c
++	)
++	target_include_directories(eunion_resolver_test PRIVATE
++		${CMAKE_CURRENT_SOURCE_DIR}/include
++	)
++	add_test(NAME eunion_resolver_test COMMAND eunion_resolver_test)
++	set_tests_properties(eunion_resolver_test PROPERTIES LABELS eunion-host)
++endif()
++
+ set(xnu_syscall_bsd_sources
+ 	src/xnu_syscall/bsd/bsd_syscall_table.c
+ 	src/xnu_syscall/bsd/bsd_syscall.S
+@@ -390,4 +403,3 @@ endif()
+ 
+ make_fat(emulation)
+ make_fat(emulation_dyld)
+-
+diff --git a/darling/src/libsystem_kernel/emulation/include/linux_premigration/eunion_resolver.h b/darling/src/libsystem_kernel/emulation/include/linux_premigration/eunion_resolver.h
+new file mode 100644
+index 0000000000000000000000000000000000000000..f6e703f78b69e0ac439516df1853ba2dfc1f579f
+--- /dev/null
++++ b/darling/src/libsystem_kernel/emulation/include/linux_premigration/eunion_resolver.h
+@@ -0,0 +1,48 @@
++#ifndef _EUNION_RESOLVER_H
++#define _EUNION_RESOLVER_H
++
++#include <stddef.h>
++
++#define EUNION_RESOLVER_PATH_MAX 4096
++
++enum eunion_resolver_layer {
++	EUNION_RESOLVER_UPPER,
++	EUNION_RESOLVER_LOWER,
++	EUNION_RESOLVER_WHITEOUT,
++	EUNION_RESOLVER_MISSING,
++	EUNION_RESOLVER_ERROR,
++};
++
++// Filesystem callbacks return zero for a present path, `missing_status` when
++// absent, and a negative domain error for every other failure. Marker callbacks
++// return one when present, zero when absent, or a negative domain error.
++struct eunion_resolver_ops {
++	int (*path_status)(void* context, const char* host_path);
++	int (*marker_status)(void* context, const char* host_path, const char* marker);
++};
++
++struct eunion_resolver {
++	const char* upper_root;
++	const char* lower_root;
++	const char* whiteout_marker;
++	const char* opaque_marker;
++	int missing_status;
++	void* context;
++	struct eunion_resolver_ops ops;
++};
++
++struct eunion_resolver_result {
++	enum eunion_resolver_layer layer;
++	int error;
++	char host_path[EUNION_RESOLVER_PATH_MAX];
++};
++
++// Resolve one absolute guest path component-wise. The caller supplies the
++// current guest prefix (for example, /System or /System/Library) and keeps
++// walking after an upper/lower result. Upper wins; whiteout is distinct from a
++// missing path so callers can stop before case-fold lookup; an opaque parent
++// hides lower; non-absence filesystem errors are returned without fallback.
++int eunion_resolve_path(const struct eunion_resolver* resolver,
++	const char* guest_path, struct eunion_resolver_result* result);
++
++#endif
+diff --git a/darling/src/libsystem_kernel/emulation/src/linux_premigration/eunion_resolver.c b/darling/src/libsystem_kernel/emulation/src/linux_premigration/eunion_resolver.c
+new file mode 100644
+index 0000000000000000000000000000000000000000..0b0e3b0e4092cb089a82e8fbece4ec4f3e43ac94
+--- /dev/null
++++ b/darling/src/libsystem_kernel/emulation/src/linux_premigration/eunion_resolver.c
+@@ -0,0 +1,128 @@
++#include <linux_premigration/eunion_resolver.h>
++
++#include <string.h>
++
++static int eunion_join(const char* root, const char* guest, char* out, size_t cap)
++{
++	size_t root_len = strlen(root);
++	size_t guest_len = strlen(guest);
++
++	if (root_len + guest_len + 1 > cap)
++		return -1;
++	memcpy(out, root, root_len);
++	memcpy(out + root_len, guest, guest_len + 1);
++	return 0;
++}
++
++static int eunion_parent(const char* guest, char* out, size_t cap)
++{
++	size_t length = strlen(guest);
++
++	while (length > 1 && guest[length - 1] != '/')
++		length--;
++	if (length <= 1)
++		return 0;
++	length--;
++	if (length + 1 > cap)
++		return -1;
++	memcpy(out, guest, length);
++	out[length] = '\0';
++	return 1;
++}
++
++int eunion_resolve_path(const struct eunion_resolver* resolver,
++	const char* guest_path, struct eunion_resolver_result* result)
++{
++	char upper[EUNION_RESOLVER_PATH_MAX];
++	char lower[EUNION_RESOLVER_PATH_MAX];
++	char parent[EUNION_RESOLVER_PATH_MAX];
++	int status;
++
++	if (!resolver || !guest_path || guest_path[0] != '/' || !result ||
++		!resolver->upper_root || !resolver->lower_root ||
++		!resolver->ops.path_status || !resolver->ops.marker_status)
++		return -1;
++	if (eunion_join(resolver->upper_root, guest_path, upper, sizeof(upper)) != 0 ||
++		eunion_join(resolver->lower_root, guest_path, lower, sizeof(lower)) != 0)
++		return -1;
++
++	status = resolver->ops.path_status(resolver->context, upper);
++	if (status == 0)
++	{
++		status = resolver->ops.marker_status(resolver->context, upper,
++			resolver->whiteout_marker);
++		if (status < 0)
++		{
++			result->layer = EUNION_RESOLVER_ERROR;
++			result->error = status;
++			strcpy(result->host_path, upper);
++			return 0;
++		}
++		if (status > 0)
++		{
++			result->layer = EUNION_RESOLVER_WHITEOUT;
++			strcpy(result->host_path, upper);
++			result->error = resolver->missing_status;
++			return 0;
++		}
++		result->layer = EUNION_RESOLVER_UPPER;
++		strcpy(result->host_path, upper);
++		result->error = 0;
++		return 0;
++	}
++	if (status != resolver->missing_status)
++	{
++		result->layer = EUNION_RESOLVER_ERROR;
++		result->error = status;
++		strcpy(result->host_path, upper);
++		return 0;
++	}
++
++	status = eunion_parent(guest_path, parent, sizeof(parent));
++	if (status < 0)
++		return -1;
++	if (status > 0)
++	{
++		char upper_parent[EUNION_RESOLVER_PATH_MAX];
++		if (eunion_join(resolver->upper_root, parent, upper_parent,
++			sizeof(upper_parent)) != 0)
++			return -1;
++		status = resolver->ops.marker_status(resolver->context, upper_parent,
++			resolver->opaque_marker);
++		if (status < 0)
++		{
++			result->layer = EUNION_RESOLVER_ERROR;
++			result->error = status;
++			strcpy(result->host_path, upper);
++			return 0;
++		}
++		if (status > 0)
++		{
++			result->layer = EUNION_RESOLVER_MISSING;
++			strcpy(result->host_path, upper);
++			result->error = resolver->missing_status;
++			return 0;
++		}
++	}
++
++	status = resolver->ops.path_status(resolver->context, lower);
++	if (status == 0)
++	{
++		result->layer = EUNION_RESOLVER_LOWER;
++		strcpy(result->host_path, lower);
++		result->error = 0;
++		return 0;
++	}
++	if (status == resolver->missing_status)
++	{
++		result->layer = EUNION_RESOLVER_MISSING;
++		strcpy(result->host_path, upper);
++		result->error = status;
++		return 0;
++	}
++
++	result->layer = EUNION_RESOLVER_ERROR;
++	result->error = status;
++	strcpy(result->host_path, lower);
++	return 0;
++}
+diff --git a/darling/src/libsystem_kernel/emulation/src/linux_premigration/vchroot_userspace.c b/darling/src/libsystem_kernel/emulation/src/linux_premigration/vchroot_userspace.c
+index 024ca655535df09af16e052c927001ac50484aff..a4481d4560f099fec9aa12ac8340e196740bb52f 100644
+--- a/darling/src/libsystem_kernel/emulation/src/linux_premigration/vchroot_userspace.c
++++ b/darling/src/libsystem_kernel/emulation/src/linux_premigration/vchroot_userspace.c
+@@ -1,5 +1,8 @@
+ 
+ #include <darling/emulation/linux_premigration/vchroot_expand.h>
++#ifdef EUNION
++#include <linux_premigration/eunion_resolver.h>
++#endif
+ #ifdef TEST
+ #	include <unistd.h>
+ #	include <sys/stat.h>
+@@ -11,15 +14,19 @@
+ #	include <errno.h>
+ #	include <dirent.h>
+ #	include <fcntl.h>
++#	include <stdint.h>
+ 
+ #	define LINUX_SYSCALL(...) ({ int __rv = syscall(__VA_ARGS__); if (__rv == -1) __rv = -errno; __rv; })
+ #	define LINUX_ENOENT ENOENT
++#	define LINUX_EEXIST EEXIST
+ #	define LINUX_ELOOP ELOOP
+ #	define LINUX_ENAMETOOLONG ENAMETOOLONG
++#	define LINUX_EPERM EPERM
+ 
+ #	define LINUX_S_IFMT S_IFMT
+ #	define LINUX_S_IFLNK S_IFLNK
+ 
++#	define LINUX_AT_FDCWD AT_FDCWD
+ #	define LINUX_O_RDONLY O_RDONLY
+ 
+ #	define __simple_sprintf sprintf
+@@ -223,7 +230,6 @@ static int eunion_mkparents_upper(const char* guest)
+ 	for (;;)
+ 	{
+ 		// find end of this component
+-		int start = i;
+ 		while (guest[i] && guest[i] != '/') i++;
+ 		if (guest[i] == '\0')
+ 			break; // reached the leaf; nothing more to create
+@@ -620,6 +626,20 @@ static int eunion_has_marker(const char* host, const char* name)
+ 	return (n >= 1 && val[0] == 'y');
+ }
+ 
++static int eunion_resolver_path_status(void* context, const char* host)
++{
++	stat_t st;
++	(void)context;
++	return eunion_lstat(host, &st);
++}
++
++static int eunion_resolver_marker_status(void* context, const char* host,
++	const char* marker)
++{
++	(void)context;
++	return eunion_has_marker(host, marker);
++}
++
+ static int eunion_set_marker(const char* host, const char* name)
+ {
+ 	#if defined(__NR_lsetxattr)
+@@ -1669,6 +1689,7 @@ int __darling_vchroot_expand(const char* path, char* out)
+ }
+ #endif
+ 
++#ifndef TEST
+ static void init_vchroot_path(void)
+ {
+ 	uint64_t tmp_len;
+@@ -1688,6 +1709,7 @@ static void init_vchroot_path(void)
+ 	__simple_printf("init_vchroot_path: %s\n", prefix_path);
+ #endif
+ }
++#endif
+ 
+ int vchroot_expand(struct vchroot_expand_args* args)
+ {
+@@ -1880,107 +1902,49 @@ static int vchroot_run(const char* input_path, struct context* ctxt)
+ 
+ 						if (relstart)
+ 						{
+-							char relbuf[4096];
+-							int rellen = (int)strlen(relstart);
+-							if (rellen + 1 <= (int)sizeof(relbuf))
+-							{
+-								memcpy(relbuf, relstart, rellen + 1);
+-
+-								// build the UPPER host path for this guest-rel path
+-								char upper[4096];
+-								int uok = (prefix_path_len + rellen + 1 <= (int)sizeof(upper));
+-								if (uok)
++								char relbuf[4096];
++								int rellen = (int)strlen(relstart);
++								if (rellen + 1 <= (int)sizeof(relbuf))
+ 								{
+-									memcpy(upper, prefix_path, prefix_path_len);
+-									memcpy(upper + prefix_path_len, relbuf, rellen + 1);
+-								}
+-
+-								// 1. UPPER layer wins. Stat the upper namesake.
+-								stat_t ust;
+-								int ustatus = uok
+-									? eunion_lstat(upper, &ust)
+-									: -LINUX_ENOENT;
+-
+-								if (ustatus == 0 && eunion_has_marker(upper, EUNION_WH_XATTR))
+-								{
+-									// upper object is a whiteout: the guest path is
+-									// deleted -> ENOENT, never fall through to lower.
+-									return -LINUX_ENOENT;
+-								}
+-
+-								if (ustatus == 0)
+-								{
+-									// present (non-whiteout) in the upper layer: adopt
+-									// the upper copy and root the walk at the prefix.
+-									memcpy(ctxt->current_path, upper, prefix_path_len + rellen + 1);
+-									ctxt->current_path_len = prefix_path_len + rellen;
+-									ctxt->current_root = prefix_path;
+-									ctxt->current_root_len = prefix_path_len;
+-									st = ust;
+-									status = 0;
+-								}
+-								else
+-								{
+-									// 2. Not in upper. Fall back to the LOWER template,
+-									// unless the parent UPPER dir is opaque (its lower
+-									// namesake is not merged).
+-									bool opaque_parent = false;
+-									if (rellen > 0)
++									struct eunion_resolver resolver = {
++										.upper_root = prefix_path,
++										.lower_root = libexec_path,
++										.whiteout_marker = EUNION_WH_XATTR,
++										.opaque_marker = EUNION_OPAQUE_XATTR,
++										.missing_status = -LINUX_ENOENT,
++										.ops = {
++											.path_status = eunion_resolver_path_status,
++											.marker_status = eunion_resolver_marker_status,
++										},
++									};
++									struct eunion_resolver_result resolution;
++									int root_len;
++
++									memcpy(relbuf, relstart, rellen + 1);
++									if (eunion_resolve_path(&resolver, relbuf, &resolution) != 0)
++										return -LINUX_ENAMETOOLONG;
++									if (resolution.layer == EUNION_RESOLVER_WHITEOUT)
++										return -LINUX_ENOENT;
++
++									if (resolution.layer == EUNION_RESOLVER_LOWER)
+ 									{
+-										// parent guest-rel = relbuf minus last comp
+-										int q = rellen;
+-										while (q > 0 && relbuf[q-1] != '/') q--;
+-										if (q > 1) // there is a real parent below root
+-										{
+-											char pupper[4096];
+-											int pl = prefix_path_len + (q - 1);
+-											if (pl + 1 <= (int)sizeof(pupper))
+-											{
+-												memcpy(pupper, prefix_path, prefix_path_len);
+-												memcpy(pupper + prefix_path_len, relbuf, q - 1);
+-												pupper[pl] = '\0';
+-												if (eunion_has_marker(pupper, EUNION_OPAQUE_XATTR))
+-													opaque_parent = true;
+-											}
+-										}
+-									}
+-
+-									char lower[4096];
+-									int lok = (libexec_path_len + rellen + 1 <= (int)sizeof(lower));
+-									int lstatus = -LINUX_ENOENT;
+-									if (!opaque_parent && lok)
+-									{
+-										memcpy(lower, libexec_path, libexec_path_len);
+-										memcpy(lower + libexec_path_len, relbuf, rellen + 1);
+-										lstatus = eunion_lstat(lower, &st);
+-									}
+-
+-									if (lstatus == 0 || (lstatus != -LINUX_ENOENT && !opaque_parent))
+-									{
+-										// found in (or definitively errored against)
+-										// the lower layer: adopt it and root at template.
+-										memcpy(ctxt->current_path, lower, libexec_path_len + rellen + 1);
+-										ctxt->current_path_len = libexec_path_len + rellen;
+ 										ctxt->current_root = libexec_path;
+ 										ctxt->current_root_len = libexec_path_len;
+-										status = lstatus;
+ 									}
+ 									else
+ 									{
+-										// absent in both: leave current_path rooted at
+-										// the UPPER layer so the case-insensitive search
+-										// below runs against the prefix as before.
+-										if (uok)
+-										{
+-											memcpy(ctxt->current_path, upper, prefix_path_len + rellen + 1);
+-											ctxt->current_path_len = prefix_path_len + rellen;
+-											ctxt->current_root = prefix_path;
+-											ctxt->current_root_len = prefix_path_len;
+-										}
+-										status = -LINUX_ENOENT;
++										ctxt->current_root = prefix_path;
++										ctxt->current_root_len = prefix_path_len;
+ 									}
++									root_len = (int)strlen(resolution.host_path);
++									memcpy(ctxt->current_path, resolution.host_path, root_len + 1);
++									ctxt->current_path_len = root_len;
++									status = resolution.layer == EUNION_RESOLVER_ERROR
++										? resolution.error
++										: resolution.layer == EUNION_RESOLVER_MISSING
++											? -LINUX_ENOENT
++											: eunion_lstat(resolution.host_path, &st);
+ 								}
+-							}
+ 						}
+ 					}
+ #endif
+diff --git a/darling/src/libsystem_kernel/emulation/tests/eunion_resolver_test.c b/darling/src/libsystem_kernel/emulation/tests/eunion_resolver_test.c
+new file mode 100644
+index 0000000000000000000000000000000000000000..5c64edfe95e771ee2ffe74799e71586eb639126f
+--- /dev/null
++++ b/darling/src/libsystem_kernel/emulation/tests/eunion_resolver_test.c
+@@ -0,0 +1,165 @@
++#include <linux_premigration/eunion_resolver.h>
++
++#include <errno.h>
++#include <fcntl.h>
++#include <dirent.h>
++#include <stdio.h>
++#include <stdlib.h>
++#include <string.h>
++#include <sys/stat.h>
++#include <sys/types.h>
++#include <sys/xattr.h>
++#include <unistd.h>
++
++static char fixture_root[] = "/tmp/eunion-resolver.XXXXXX";
++
++static void join(char* out, size_t cap, const char* root, const char* suffix);
++
++static void cleanup_tree(const char* path)
++{
++	DIR* directory = opendir(path);
++	struct dirent* entry;
++
++	if (!directory)
++		return;
++	while ((entry = readdir(directory)) != NULL)
++	{
++		char child[EUNION_RESOLVER_PATH_MAX];
++		struct stat st;
++
++		if ((entry->d_name[0] == '.' && entry->d_name[1] == '\0') ||
++			(entry->d_name[0] == '.' && entry->d_name[1] == '.' && entry->d_name[2] == '\0'))
++			continue;
++		join(child, sizeof(child), path, "/");
++		strncat(child, entry->d_name, sizeof(child) - strlen(child) - 1);
++		if (lstat(child, &st) != 0)
++			continue;
++		if (S_ISDIR(st.st_mode))
++			cleanup_tree(child);
++		else
++			unlink(child);
++	}
++	closedir(directory);
++	rmdir(path);
++}
++
++static void cleanup_fixture(void)
++{
++	cleanup_tree(fixture_root);
++}
++
++static void fail(const char* message)
++{
++	fprintf(stderr, "eunion_resolver_test: %s\n", message);
++	exit(1);
++}
++
++static int path_status(void* context, const char* path)
++{
++	struct stat st;
++	(void)context;
++	return lstat(path, &st) == 0 ? 0 : -errno;
++}
++
++static int marker_status(void* context, const char* path, const char* marker)
++{
++	char value[2];
++	ssize_t length;
++	(void)context;
++	length = lgetxattr(path, marker, value, sizeof(value));
++	if (length < 0)
++		return errno == ENODATA ? 0 : -errno;
++	return length > 0 && value[0] == 'y';
++}
++
++static void join(char* out, size_t cap, const char* root, const char* suffix)
++{
++	if (snprintf(out, cap, "%s%s", root, suffix) >= (int)cap)
++		fail("fixture path is too long");
++}
++
++static void make_dir(const char* path)
++{
++	if (mkdir(path, 0700) != 0)
++		fail("mkdir failed");
++}
++
++static void make_file(const char* path)
++{
++	int fd = open(path, O_CREAT | O_EXCL | O_WRONLY, 0600);
++	if (fd < 0 || write(fd, "x", 1) != 1 || close(fd) != 0)
++		fail("file fixture failed");
++}
++
++static void set_marker(const char* path, const char* marker)
++{
++	if (lsetxattr(path, marker, "y", 1, 0) != 0)
++		fail("xattr fixture failed");
++}
++
++static void expect(const struct eunion_resolver* resolver, const char* guest,
++	enum eunion_resolver_layer layer, const char* expected)
++{
++	struct eunion_resolver_result result;
++
++	if (eunion_resolve_path(resolver, guest, &result) != 0 || result.layer != layer ||
++		strcmp(result.host_path, expected) != 0)
++		fail("unexpected resolver result");
++}
++
++int main(void)
++{
++	char upper[EUNION_RESOLVER_PATH_MAX];
++	char lower[EUNION_RESOLVER_PATH_MAX];
++	char path[EUNION_RESOLVER_PATH_MAX];
++	struct eunion_resolver resolver;
++
++	if (!mkdtemp(fixture_root))
++		fail("mkdtemp failed");
++	if (atexit(cleanup_fixture) != 0)
++		fail("atexit failed");
++	join(upper, sizeof(upper), fixture_root, "/upper");
++	join(lower, sizeof(lower), fixture_root, "/lower");
++	make_dir(upper);
++	make_dir(lower);
++	join(path, sizeof(path), lower, "/lower-only");
++	make_file(path);
++	join(path, sizeof(path), lower, "/shared");
++	make_file(path);
++	join(path, sizeof(path), upper, "/shared");
++	make_file(path);
++	join(path, sizeof(path), lower, "/masked");
++	make_file(path);
++	join(path, sizeof(path), upper, "/masked");
++	make_file(path);
++	set_marker(path, "user.union.whiteout");
++	join(path, sizeof(path), lower, "/opaque");
++	make_dir(path);
++	join(path, sizeof(path), lower, "/opaque/hidden");
++	make_file(path);
++	join(path, sizeof(path), upper, "/opaque");
++	make_dir(path);
++	set_marker(path, "user.union.opaque");
++
++	resolver = (struct eunion_resolver){
++		.upper_root = upper,
++		.lower_root = lower,
++		.whiteout_marker = "user.union.whiteout",
++		.opaque_marker = "user.union.opaque",
++		.missing_status = -ENOENT,
++		.ops = { path_status, marker_status },
++	};
++	join(path, sizeof(path), lower, "/lower-only");
++	expect(&resolver, "/lower-only", EUNION_RESOLVER_LOWER, path);
++	join(path, sizeof(path), upper, "/shared");
++	expect(&resolver, "/shared", EUNION_RESOLVER_UPPER, path);
++	join(path, sizeof(path), upper, "/masked");
++	expect(&resolver, "/masked", EUNION_RESOLVER_WHITEOUT, path);
++	join(path, sizeof(path), upper, "/opaque/hidden");
++	expect(&resolver, "/opaque/hidden", EUNION_RESOLVER_MISSING, path);
++	join(path, sizeof(path), upper, "/absent");
++	expect(&resolver, "/absent", EUNION_RESOLVER_MISSING, path);
++
++	printf("EUNION_RESOLVER_OK\n");
++	return 0;
++}
