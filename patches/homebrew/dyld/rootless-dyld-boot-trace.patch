@@ -395,3 +395,95 @@ index f265ad11f5cfca84b9ea4276a800598952c3be5f..d6377705cc27b930554484b30ca2d7ca
  	ROOTLESS_BOOT_TRACE(rootlessTraceFD, "dyld rebase-ready\n");
  #endif
  
+
+From 7d5aa505140b3e65a8adf93e41b527136084799a Mon Sep 17 00:00:00 2001
+From: Ilya Gulya <ilya@gulya.me>
+Date: Sat, 11 Jul 2026 14:10:26 +0000
+Subject: [PATCH] dyld: trace rootless main handoff
+
+---
+ src/dyld2.cpp              | 12 +++++++++++-
+ src/dyldInitialization.cpp |  8 ++++----
+ 2 files changed, 15 insertions(+), 5 deletions(-)
+
+diff --git a/src/dyld2.cpp b/src/dyld2.cpp
+index dc98d32c2a4371821b8e90d5445433f2427b9dbe..0d0d5bddb3179d4ebfbde49e64a78db895a2aaaa 100644
+--- a/src/dyld2.cpp
++++ b/src/dyld2.cpp
+@@ -121,6 +121,10 @@ extern "C" int __fork();
+ 
+ 
+ #include "dyld2.h"
++#ifdef DARLING
++extern int darlingRootlessBootTraceFD(const char* const envp[]);
++extern void darlingRootlessBootTrace(int fd, const char* stage, size_t stageLength);
++#endif
+ #include "ImageLoader.h"
+ #include "ImageLoaderMachO.h"
+ #include "dyldLibSystemInterface.h"
+@@ -6558,6 +6562,10 @@ _main(const macho_header* mainExecutableMH, uintptr_t mainExecutableSlide,
+ 		int argc, const char* argv[], const char* envp[], const char* apple[], 
+ 		uintptr_t* startGlue)
+ {
++#ifdef DARLING
++	const int rootlessTraceFD = darlingRootlessBootTraceFD(envp);
++	darlingRootlessBootTrace(rootlessTraceFD, "dyld main-enter\n", sizeof("dyld main-enter\n") - 1);
++#endif
+ 	if (dyld3::kdebug_trace_dyld_enabled(DBG_DYLD_TIMING_LAUNCH_EXECUTABLE)) {
+ 		launchTraceID = dyld3::kdebug_trace_dyld_duration_start(DBG_DYLD_TIMING_LAUNCH_EXECUTABLE, (uint64_t)mainExecutableMH, 0, 0);
+ 	}
+@@ -7475,6 +7483,9 @@ reloadAllImages:
+ 		*startGlue = (uintptr_t)gLibSystemHelpers->startGlueToCallExit;
+ 	}
+ 
++#ifdef DARLING
++	darlingRootlessBootTrace(rootlessTraceFD, "dyld main-entry-ready\n", sizeof("dyld main-entry-ready\n") - 1);
++#endif
+ 	return result;
+ }
+ 
+@@ -7482,4 +7493,3 @@ reloadAllImages:
+ } // namespace
+ 
+ 
+-
+diff --git a/src/dyldInitialization.cpp b/src/dyldInitialization.cpp
+index d6377705cc27b930554484b30ca2d7ca66144d8a..6aa7d675acafdc6a54b503be12eb32725c9a470c 100644
+--- a/src/dyldInitialization.cpp
++++ b/src/dyldInitialization.cpp
+@@ -52,7 +52,7 @@ extern void syncProcessInfo();
+ const dyld::SyscallHelpers* gSyscallHelpers = NULL;
+ 
+ #ifdef DARLING
+-static int rootlessBootTraceFD(const char* const envp[])
++int darlingRootlessBootTraceFD(const char* const envp[])
+ {
+ 	static const char rootlessPrefix[] = "DARLING_ROOTLESS=1";
+ 	static const char tracePrefix[] = "DARLING_BOOT_TRACE_FD=";
+@@ -89,7 +89,7 @@ static int rootlessBootTraceFD(const char* const envp[])
+ 	return rootless ? fd : -1;
+ }
+ 
+-static void rootlessBootTrace(int fd, const char* stage, size_t stageLength)
++void darlingRootlessBootTrace(int fd, const char* stage, size_t stageLength)
+ {
+ 	if (fd < 0)
+ 		return;
+@@ -117,7 +117,7 @@ static void rootlessBootTrace(int fd, const char* stage, size_t stageLength)
+ 
+ #define ROOTLESS_BOOT_TRACE(fd, stage) \
+ 	do { \
+-		rootlessBootTrace((fd), (stage), sizeof(stage) - 1); \
++		darlingRootlessBootTrace((fd), (stage), sizeof(stage) - 1); \
+ 	} while (0)
+ 
+ static int dyldBootstrapArgc;
+@@ -240,7 +240,7 @@ uintptr_t start(const dyld3::MachOLoaded* appsMachHeader, int argc, const char*
+ 	const char** envp = &argv[argc+1];
+ 
+ #ifdef DARLING
+-	const int rootlessTraceFD = rootlessBootTraceFD(envp);
++	const int rootlessTraceFD = darlingRootlessBootTraceFD(envp);
+ 	ROOTLESS_BOOT_TRACE(rootlessTraceFD, "dyld bootstrap-enter\n");
+ #endif
+ 
