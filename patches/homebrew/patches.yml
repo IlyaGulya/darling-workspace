@@ -4170,8 +4170,11 @@ patches:
     repo: darling
     configure-args:
     - -DDARLING_SKIP_DRIFT_GATE=OFF
+    - -DDARLING_PATCH_PROFILE=arch
     marker-files:
     - path: ../darling-workspace/patches/homebrew/patches.yml
+      content: "patches: []\n"
+    - path: ../darling-workspace/patches/arch/patches.yml
       content: "patches: []\n"
     fake-tools:
       west:
@@ -4185,8 +4188,8 @@ patches:
       - fake drift from test west
       tool-args-contains:
         west:
-        - patch status --strict
-    note: Host RED->GREEN contract that CMake configure invokes west patch status --strict and fails with the drift-gate diagnostic.
+        - patch status --profile arch --strict
+    note: Host RED->GREEN contract that CMake configure invokes west patch status for the explicit runtime/build profile and fails with the drift-gate diagnostic.
   github:
     fork:
       repo: IlyaGulya/darling
