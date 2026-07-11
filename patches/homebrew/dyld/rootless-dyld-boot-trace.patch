@@ -179,3 +179,44 @@ index 1b38f4a43858debb980b86eab27d258dc57a4057..450021e69c3b3f1ffa3896124357d2f3
  
  } // end of namespace
 -
+
+From 0f67c93ffa718a13f928c27ffd04cca1af57321c Mon Sep 17 00:00:00 2001
+From: Ilya Gulya <ilya@gulya.me>
+Date: Sat, 11 Jul 2026 10:05:04 +0000
+Subject: [PATCH] dyld: enable rootless trace at bootstrap entry
+
+---
+ src/dyldInitialization.cpp | 5 ++++-
+ 1 file changed, 4 insertions(+), 1 deletion(-)
+
+diff --git a/src/dyldInitialization.cpp b/src/dyldInitialization.cpp
+index 450021e69c3b3f1ffa3896124357d2f38509886b..aa3d29141d5129602d07c8e97d521d141ddb60d5 100644
+--- a/src/dyldInitialization.cpp
++++ b/src/dyldInitialization.cpp
+@@ -53,7 +53,7 @@ const dyld::SyscallHelpers* gSyscallHelpers = NULL;
+ #ifdef DARLING
+ static int rootlessBootTraceFD(const char* const envp[])
+ {
+-	static const char rootlessPrefix[] = "DARLING_ROOTLESS_INIT=1";
++	static const char rootlessPrefix[] = "DARLING_ROOTLESS=1";
+ 	static const char tracePrefix[] = "DARLING_BOOT_TRACE_FD=";
+ 	bool rootless = false;
+ 	int fd = -1;
+@@ -180,14 +180,17 @@ uintptr_t start(const dyld3::MachOLoaded* appsMachHeader, int argc, const char*
+ 				const dyld3::MachOLoaded* dyldsMachHeader, uintptr_t* startGlue)
+ {
+ 
++#ifndef DARLING
+     // Emit kdebug tracepoint to indicate dyld bootstrap has started <rdar://46878536>
+     dyld3::kdebug_trace_dyld_marker(DBG_DYLD_TIMING_BOOTSTRAP_START, 0, 0, 0, 0);
++#endif
+ 
+ 	// kernel sets up env pointer to be just past end of agv array
+ 	const char** envp = &argv[argc+1];
+ 
+ #ifdef DARLING
+ 	const int rootlessTraceFD = rootlessBootTraceFD(envp);
++	rootlessBootTrace(rootlessTraceFD, "dyld bootstrap-enter\n");
+ #endif
+ 
+ #ifndef DARLING

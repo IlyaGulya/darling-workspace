@@ -523,7 +523,7 @@
         },
         {
           "branch": "fix/rootless-dyld-boot-trace",
-          "head": "22c516d4b4e1f98a1da8287afcd6c8b52c8c4b61",
+          "head": "0f67c93ffa718a13f928c27ffd04cca1af57321c",
           "upstream": "",
           "source_ref": "refs/heads/fix/rootless-dyld-boot-trace"
         },
