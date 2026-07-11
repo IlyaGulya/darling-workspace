@@ -190,11 +190,22 @@ echo "upper leaf"   > "$WORK/prefix/var/pc/leaf"
 mkdir -p "$WORK/libexec/var/sp_real"
 ln -s sp_real "$WORK/libexec/var/sp_link"
 
+sources=("$HERE/runner.c")
+include_dirs=("-I$SRCDIR" "-I$WORK/shim")
+
+# The resolver extraction comes after the historical E-UNION patch under test.
+# Keep the source-base RED arm on its old production closure, but link the
+# extracted resolver whenever the selected GREEN source tree provides it.
+if [ -f "$SRCDIR/eunion_resolver.c" ]; then
+	sources+=("$SRCDIR/eunion_resolver.c")
+	include_dirs+=("-I$INCDIR")
+fi
+
 gcc -Wall -Wno-format-truncation -Wno-unused-function \
     -DEUNION \
     -DEUNION_LIBEXEC_PATH="\"$WORK/libexec\"" \
-    -I"$SRCDIR" -I"$WORK/shim" \
-    -o "$WORK/runner" "$HERE/runner.c"
+    "${include_dirs[@]}" \
+    -o "$WORK/runner" "${sources[@]}"
 
 cd "$WORK"
 ./runner
