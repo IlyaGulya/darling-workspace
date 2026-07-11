@@ -78,6 +78,9 @@ refs, PR drafts, and agent handoff.
   Bead and updating the foundational review evidence.
 - Run `west dw handoff` before ending a session that changed Beads or private
   branches.
+- After `west dw handoff`, stage only the handoff files it actually changed;
+  never use `git add -A` as a shortcut, because unrelated in-progress fixes
+  would be misfiled in a handoff commit.
 - Never add workspace metadata, PR drafts, agent state, or Beads files to the
   Darling source repositories.
 - Do not push investigation branches unless explicitly requested.
