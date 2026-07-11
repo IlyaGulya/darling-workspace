@@ -3025,12 +3025,20 @@ class DarlingTest(WestCommand):
         child_env.update(self._darling_prefix_env(prefix))
         command_prefix: tuple[str, ...] = ()
         trace_dir = getattr(self, "_bootstrap_syscall_trace", None)
+        stack_sample_dir = getattr(self, "_bootstrap_stack_sample", None)
         if trace_dir is not None:
             trace_dir = Path(trace_dir)
             trace_dir.mkdir(parents=True, exist_ok=True)
             trace_prefix = trace_dir / "eunion-bootstrap"
             command_prefix = ("strace", "-ff", "-o", str(trace_prefix))
             self.inf(f"{invocation['name']}: E-UNION bootstrap syscall trace: {trace_dir}")
+        elif stack_sample_dir is not None:
+            stack_sample_dir = Path(stack_sample_dir)
+            command_prefix = self._bootstrap_stack_sample_command(
+                stack_sample_dir,
+                sample_name="eunion-bootstrap",
+                label=f"{invocation['name']}: E-UNION bootstrap",
+            )
         result = run_guest_shell(
             str(launcher),
             prefix,
@@ -3041,20 +3049,99 @@ class DarlingTest(WestCommand):
             capture_output=True,
             command_prefix=command_prefix,
         )
+        if stack_sample_dir is not None:
+            self._render_bootstrap_stack_sample(
+                stack_sample_dir,
+                sample_name="eunion-bootstrap",
+                label=f"{invocation['name']}: E-UNION bootstrap",
+            )
+        diagnostic_dir = trace_dir or stack_sample_dir
+        if diagnostic_dir is not None:
+            self._capture_bootstrap_server_trace(
+                prefix,
+                diagnostic_dir,
+                label=f"{invocation['name']}: E-UNION bootstrap",
+            )
         if result.returncode != 0:
             output = process_output_text(result).strip()
             if output:
                 self.err(f"{invocation['name']}: E-UNION prefix bootstrap output:\n{output}")
             elif result.timed_out:
+                diagnostic_hint = ""
+                if trace_dir is not None:
+                    diagnostic_hint = f"; syscall trace: {trace_dir}"
+                elif stack_sample_dir is not None:
+                    diagnostic_hint = f"; stack sample: {stack_sample_dir}"
+                progress = rootless_bootstrap_progress(prefix)
+                progress_hint = f"; progress: {progress}" if progress is not None else ""
                 self.err(
                     f"{invocation['name']}: E-UNION prefix bootstrap timed out after 15s "
-                    "without output"
+                    f"without output{diagnostic_hint}{progress_hint}"
                 )
             self._record_failure_phase(invocation, "bootstrap")
             self.die(
                 f"{invocation['name']}: failed to boot Darling E-UNION prefix "
                 f"before fixture setup (rc={result.returncode})"
             )
+
+    def _bootstrap_stack_sample_command(
+        self,
+        sample_dir: Path,
+        *,
+        sample_name: str,
+        label: str,
+    ) -> tuple[str, ...]:
+        if shutil.which("perf") is None:
+            self.die("--bootstrap-stack-sample requires perf on the host")
+        sample_dir.mkdir(parents=True, exist_ok=True)
+        self.inf(f"{label} stack sample: {sample_dir}")
+        return (
+            "perf",
+            "record",
+            "--all-user",
+            "--call-graph",
+            "fp",
+            "--output",
+            str(sample_dir / f"{sample_name}.perf.data"),
+            "--",
+        )
+
+    def _render_bootstrap_stack_sample(
+        self,
+        sample_dir: Path,
+        *,
+        sample_name: str,
+        label: str,
+    ) -> None:
+        sample_data = sample_dir / f"{sample_name}.perf.data"
+        if not sample_data.is_file():
+            self.die(f"{label} stack sample was not written: {sample_data}")
+        rendered_sample = run_bounded(
+            ["perf", "script", "--input", str(sample_data)],
+            cwd=Path(self.topdir),
+            env=None,
+            timeout_seconds=30,
+            capture_output=True,
+        )
+        if rendered_sample.timed_out or rendered_sample.returncode != 0:
+            self.die(f"{label} stack sample could not be rendered: {sample_data}")
+        (sample_dir / f"{sample_name}.perf.txt").write_text(
+            f"{rendered_sample.stdout}{rendered_sample.stderr}"
+        )
+
+    def _capture_bootstrap_server_trace(
+        self,
+        prefix: Path,
+        diagnostic_dir: Path,
+        *,
+        label: str,
+    ) -> None:
+        server_trace = prefix / "private/var/log/dserver-rpc-trace.log"
+        if not server_trace.is_file():
+            return
+        captured_server_trace = diagnostic_dir / "darlingserver-rpc.log"
+        shutil.copy2(server_trace, captured_server_trace)
+        self.inf(f"{label} server trace: {captured_server_trace}")
 
     def _parse_file_mode(self, invocation, field: str, index: int, value) -> int:
         try:
@@ -4024,20 +4111,11 @@ class DarlingTest(WestCommand):
             )
             self.inf(f"prefix bootstrap syscall trace: {trace_dir}")
         elif stack_sample_dir is not None:
-            if shutil.which("perf") is None:
-                self.die("--bootstrap-stack-sample requires perf on the host")
-            stack_sample_dir.mkdir(parents=True, exist_ok=True)
-            command_prefix = (
-                "perf",
-                "record",
-                "--all-user",
-                "--call-graph",
-                "fp",
-                "--output",
-                str(stack_sample_dir / "bootstrap.perf.data"),
-                "--",
+            command_prefix = self._bootstrap_stack_sample_command(
+                stack_sample_dir,
+                sample_name="bootstrap",
+                label="prefix bootstrap",
             )
-            self.inf(f"prefix bootstrap stack sample: {stack_sample_dir}")
         with self._prefix_resource_context(True):
             with self._runtime_profile_deployment_context(
                 [profile_name], label_prefix="Prefix bootstrap", retain_deployment=True
@@ -4076,36 +4154,18 @@ class DarlingTest(WestCommand):
                     command_prefix=command_prefix,
                 )
                 if stack_sample_dir is not None:
-                    sample_data = stack_sample_dir / "bootstrap.perf.data"
-                    if not sample_data.is_file():
-                        self.die(
-                            "prefix bootstrap stack sample was not written: "
-                            f"{sample_data}"
-                        )
-                    rendered_sample = run_bounded(
-                        ["perf", "script", "--input", str(sample_data)],
-                        cwd=Path(self.topdir),
-                        env=None,
-                        timeout_seconds=30,
-                        capture_output=True,
-                    )
-                    if rendered_sample.timed_out or rendered_sample.returncode != 0:
-                        self.die(
-                            "prefix bootstrap stack sample could not be rendered: "
-                            f"{sample_data}"
-                        )
-                    (stack_sample_dir / "bootstrap.perf.txt").write_text(
-                        f"{rendered_sample.stdout}{rendered_sample.stderr}"
+                    self._render_bootstrap_stack_sample(
+                        stack_sample_dir,
+                        sample_name="bootstrap",
+                        label="prefix bootstrap",
                     )
                 diagnostic_dir = trace_dir or stack_sample_dir
                 if diagnostic_dir is not None:
-                    server_trace = (
-                        deployment.prefix / "private/var/log/dserver-rpc-trace.log"
+                    self._capture_bootstrap_server_trace(
+                        deployment.prefix,
+                        diagnostic_dir,
+                        label="prefix bootstrap",
                     )
-                    if server_trace.is_file():
-                        captured_server_trace = diagnostic_dir / "darlingserver-rpc.log"
-                        shutil.copy2(server_trace, captured_server_trace)
-                        self.inf(f"prefix bootstrap server trace: {captured_server_trace}")
                 output = process_output_text(result)
                 trace_fault = (
                     bootstrap_trace_fatal_signal(trace_dir)
@@ -5173,6 +5233,7 @@ class DarlingTest(WestCommand):
         self._materialize_profile = args.materialize_profile
         self._keep_prefix_running = args.keep_prefix_running
         self._bootstrap_syscall_trace = None
+        self._bootstrap_stack_sample = None
 
         if args.ctest_timeout_seconds <= 0:
             self.die("--ctest-timeout-seconds must be > 0")
@@ -5238,10 +5299,10 @@ class DarlingTest(WestCommand):
             self.die(
                 "--bootstrap-syscall-trace and --bootstrap-stack-sample are mutually exclusive"
             )
-        if bootstrap_stack_sample and not bootstrap_runtime_profile:
+        if bootstrap_stack_sample and not bootstrap_runtime_profile and not args.profile:
             self.die(
-                "--bootstrap-stack-sample requires "
-                "--bootstrap-runtime-profile"
+                "--bootstrap-stack-sample requires --bootstrap-runtime-profile "
+                "or a metadata --profile selection with a runtime-profile"
             )
         if bootstrap_syscall_trace and not bootstrap_runtime_profile and not args.profile:
             self.die(
@@ -5283,6 +5344,13 @@ class DarlingTest(WestCommand):
                         "with runtime-profile"
                     )
                 self._bootstrap_syscall_trace = Path(bootstrap_syscall_trace)
+            if bootstrap_stack_sample and not bootstrap_runtime_profile:
+                if args.list or not any(test.get("runtime-profile") for _, test in selected):
+                    self.die(
+                        "--bootstrap-stack-sample needs a selected metadata test "
+                        "with runtime-profile"
+                    )
+                self._bootstrap_stack_sample = Path(bootstrap_stack_sample)
             if args.prove_red:
                 selected = [
                     (patch, test)
@@ -5335,6 +5403,7 @@ class DarlingTest(WestCommand):
                 self._materialize_profile = materialize_was_requested
                 self._active_profile = previous_active_profile
                 self._bootstrap_syscall_trace = None
+                self._bootstrap_stack_sample = None
 
         testkit = self._testkit_dir()
         if not testkit.exists():
