@@ -132,6 +132,12 @@
           "source_ref": "refs/heads/fix/rootless-runtime-components"
         },
         {
+          "branch": "fix/rootless-vchroot-argv",
+          "head": "c82877b302c8318dafed286e98ea1df9bc2df3c8",
+          "upstream": "",
+          "source_ref": "refs/heads/fix/rootless-vchroot-argv"
+        },
+        {
           "branch": "fix/sandbox-exec-pass-through",
           "head": "c44476a36ee892b73184ddde36b6e9a50fa2d2f6",
           "upstream": "",
@@ -641,6 +647,12 @@
       "path": "src/external/libsystem",
       "bundle": "src__external__libsystem.bundle",
       "branches": [
+        {
+          "branch": "fix/rootless-libsystem-init-trace",
+          "head": "c32cbcc7cbe266d9323e5a2964a05a7c97e3c79c",
+          "upstream": "",
+          "source_ref": "refs/heads/fix/rootless-libsystem-init-trace"
+        },
         {
           "branch": "perf/rpc-phase-mark-diagnostic",
           "head": "b74b11584e81161b459dd089adef3f4c22a00a11",
