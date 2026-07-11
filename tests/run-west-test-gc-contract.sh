@@ -19,6 +19,10 @@ printf 'artifact\n' >"$tmp/west-red-proof-runtime-old/build/lib.dylib"
 printf 'artifact\n' >"$tmp/west-green-proof-runtime-old/build/lib.dylib"
 printf 'artifact\n' >"$tmp/west-red-proof-source-old/build/lib.dylib"
 printf 'artifact\n' >"$tmp/west-ctest-runtime-homebrew-old/build/lib.dylib"
+mkdir -p "$tmp/canonical-worktree"
+printf 'outside artifact\n' >"$tmp/canonical-worktree/outside"
+ln -s "$tmp/canonical-worktree" "$tmp/west-ctest-runtime-symlink"
+ln -s "$tmp/canonical-worktree/outside" "$tmp/west-red-proof-runtime-old/build/outside-link"
 
 west test --gc \
 	--bundle-root "$tmp/bundles" \
@@ -54,6 +58,10 @@ test ! -e "$tmp/west-ctest-runtime-homebrew-old" ||
 	{ cat "$tmp/gc.out" >&2; exit 1; }
 test -d "$tmp/not-west-red-proof-runtime" ||
 	{ cat "$tmp/gc.out" >&2; exit 1; }
+test -L "$tmp/west-ctest-runtime-symlink" ||
+	{ cat "$tmp/gc.out" >&2; exit 1; }
+test -f "$tmp/canonical-worktree/outside" ||
+	{ cat "$tmp/gc.out" >&2; exit 1; }
 
 mkdir -p \
 	"$tmp/west-red-proof-runtime-count-old/build" \
@@ -69,6 +77,8 @@ west test --gc \
 	--proof-scratch-keep-last 1 >"$tmp/count.out"
 
 grep -q 'pruned proof scratch' "$tmp/count.out" ||
+	{ cat "$tmp/count.out" >&2; exit 1; }
+grep -q 'retained proof scratch' "$tmp/count.out" ||
 	{ cat "$tmp/count.out" >&2; exit 1; }
 test ! -e "$tmp/west-red-proof-runtime-count-old" ||
 	{ cat "$tmp/count.out" >&2; exit 1; }
