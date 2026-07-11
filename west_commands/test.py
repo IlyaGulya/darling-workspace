@@ -74,9 +74,11 @@ except ImportError:  # Loaded as a West extension module, not a package.
     from test_guest_c import run_guest_c_fixture
 from test_manifest import ManifestError, load_test_profile
 from test_prefix import (
+    cleanup_rootless_prefix_processes,
     darlingserver_pids_for_prefix,
     prefix_process_snapshot,
     remove_stale_init_pid,
+    rootless_prefix_process_snapshot,
 )
 from test_resources import resource_context
 from test_results import InvocationResult
@@ -3944,11 +3946,18 @@ class DarlingTest(WestCommand):
             if result.timed_out:
                 self.err(f"Darling prefix shutdown timed out for {prefix}; forcing cleanup")
         self._kill_dserver_for_prefix(prefix)
+        rootless_cleanup = cleanup_rootless_prefix_processes(prefix)
+        for message in rootless_cleanup.changed:
+            self.inf(f"cleanup rootless Darling prefix: {message}")
+        for message in rootless_cleanup.problems:
+            self.err(message)
         leftovers = self._prefix_process_snapshot(prefix)
         if leftovers:
             self.err(f"leftover Darling prefix process(es) for {prefix}:")
             for entry in leftovers:
                 self.err(f"  {entry}")
+            return False
+        if not rootless_cleanup.success:
             return False
         if not self._cleanup_prefix_mounts(prefix):
             return False
@@ -4571,7 +4580,9 @@ class DarlingTest(WestCommand):
         return entries
 
     def _prefix_process_snapshot(self, prefix: Path) -> list[str]:
-        return prefix_process_snapshot(prefix, self._ps_entries())
+        entries = prefix_process_snapshot(prefix, self._ps_entries())
+        entries.extend(rootless_prefix_process_snapshot(prefix))
+        return sorted(set(entries))
 
     def _kill_dserver_for_prefix(self, prefix: Path) -> None:
         pids = darlingserver_pids_for_prefix(prefix, self._ps_entries())
