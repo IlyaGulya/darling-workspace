@@ -3639,7 +3639,9 @@ class DarlingTest(WestCommand):
             sys.stderr.write(tail + "\n")
         self.err(f"{label} failed with rc {result.returncode}")
 
-    def _runtime_red_find_build_output(self, build_root: Path, deploy_path: str) -> Path:
+    def _runtime_red_find_build_output(
+        self, build_root: Path, deploy_path: str, *, allow_missing: bool = False
+    ) -> Path | None:
         name = Path(deploy_path).name
         best: tuple[float, Path] | None = None
         for path in build_root.rglob(name):
@@ -3649,6 +3651,8 @@ class DarlingTest(WestCommand):
             if best is None or mtime > best[0]:
                 best = (mtime, path)
         if best is None:
+            if allow_missing:
+                return None
             self.die(f"guest-runtime-deploy built artifact not found for {deploy_path}")
         return best[1]
 
@@ -3695,7 +3699,16 @@ class DarlingTest(WestCommand):
             try:
                 for artifact in proof.get("runtime-artifacts", []):
                     for deploy_path in runtime_artifact_deploy_paths(artifact):
-                        src = self._runtime_red_find_build_output(build_root, deploy_path)
+                        optional_closure_member = (
+                            artifact.get("resource") == "system-closure"
+                            and Path(deploy_path).name != "libSystem.B.dylib"
+                        )
+                        src = self._runtime_red_find_build_output(
+                            build_root, deploy_path, allow_missing=optional_closure_member
+                        )
+                        if src is None:
+                            self.inf(f"  {label} optional closure member not built: {deploy_path}")
+                            continue
                         for dst in self._runtime_red_deploy_targets(prefix, deploy_path):
                             backup = None
                             if dst.exists():
