@@ -22,6 +22,13 @@ if(NOT DEFINED DARLING_SRC)
 endif()
 get_filename_component(_workspace_root "${CMAKE_CURRENT_SOURCE_DIR}/.." ABSOLUTE)
 
+# Host-only XNU tests can be pointed at a materialized XNU worktree without
+# replacing the whole Darling checkout. West uses this to keep source-base RED
+# and profile GREEN builds isolated from the developer's current source tree.
+if(NOT DEFINED DARLING_XNU_SRC)
+  set(DARLING_XNU_SRC "${DARLING_SRC}/src/external/xnu")
+endif()
+
 # ---------------------------------------------------------------------------
 # dar-dar6x4-perf-5dq.1 — shell-gate migration for the mldr checkin wait.
 #
@@ -86,7 +93,28 @@ else()
 endif()
 set(_mldr "${DARLING_SRC}/src/startup/mldr")
 set(_libsystem_kernel_tests
-  "${DARLING_SRC}/src/external/xnu/darling/src/libsystem_kernel/tests")
+  "${DARLING_XNU_SRC}/darling/src/libsystem_kernel/tests")
+
+# dar-yfp4 — the E-UNION resolver is pure host filesystem policy. Compile the
+# production resolver plus its colocated C fixture as a regular CTest case;
+# the fixture creates real upper/lower trees and xattr markers, not a source
+# matcher or a model of vchroot.
+set(_eunion_resolver_dir
+  "${DARLING_XNU_SRC}/darling/src/libsystem_kernel/emulation")
+set(_eunion_resolver_source
+  "${_eunion_resolver_dir}/tests/eunion_resolver_test.c")
+set(_eunion_resolver_impl
+  "${_eunion_resolver_dir}/src/linux_premigration/eunion_resolver.c")
+if(EXISTS "${_eunion_resolver_source}" AND EXISTS "${_eunion_resolver_impl}")
+  add_executable(eunion_resolver_test
+    "${_eunion_resolver_source}"
+    "${_eunion_resolver_impl}")
+  target_include_directories(eunion_resolver_test PRIVATE
+    "${_eunion_resolver_dir}/include")
+  add_test(NAME host/eunion_resolver_test COMMAND eunion_resolver_test)
+  set_property(TEST host/eunion_resolver_test PROPERTY
+    LABELS "env:host;diag:bare;bead:dar-yfp4;submod:xnu;eunion-host")
+endif()
 
 # ---------------------------------------------------------------------------
 # dar-cps — guest runtime regression for abort_with_payload().
