@@ -1,0 +1,228 @@
+From 85bfc3acdc0801ed5af1b8fbb3219426e4c7f344 Mon Sep 17 00:00:00 2001
+From: Ilya Gulya <ilya.gulya@indriver.com>
+Date: Sat, 11 Jul 2026 03:59:51 +0000
+Subject: [PATCH] ci: add source-owned host regression stage
+
+---
+ ci/Jenkinsfile                            | 28 +++++++++++
+ tests/regression/CMakeLists.txt           | 57 +++++++++++++++++++++++
+ tests/regression/expect_failure_marker.sh | 23 +++++++++
+ 3 files changed, 108 insertions(+)
+ create mode 100644 tests/regression/CMakeLists.txt
+ create mode 100644 tests/regression/expect_failure_marker.sh
+
+diff --git a/ci/Jenkinsfile b/ci/Jenkinsfile
+index 16065af5e57d6fa35f37cbc2beb48494e8363388..afd19160c50c4eb1fe54342d7548971bc0e85bea 100644
+--- a/ci/Jenkinsfile
++++ b/ci/Jenkinsfile
+@@ -49,6 +49,34 @@ pipeline {
+ 			}
+ 		}
+ 
++		stage('Host Regression Tests') {
++			agent {
++				docker {
++					image 'registry.git.facekapow.dev/darling-build-image:latest'
++					registryUrl 'https://registry.git.facekapow.dev'
++					alwaysPull true
++					args '-u ci:ci -v ${WORKSPACE}/source:/src/mnt:rw -v ${CCACHE_DIR}:/ccache:rw'
++					label 'darling'
++					reuseNode true
++				}
++			}
++			environment {
++				CCACHE_DIR = '/ccache'
++				CCACHE_BASEDIR = '/src/mnt'
++			}
++			steps {
++				sh '''#!/bin/bash
++					set -euo pipefail
++					cmake -S /src/mnt/tests/regression -B /src/mnt/build-host-regressions -G Ninja
++					cmake --build /src/mnt/build-host-regressions --target \\
++						darling_host_thread_create_checkin_wait \\
++						darling_host_glibc_fork_lock_reset
++					ctest --test-dir /src/mnt/build-host-regressions --output-on-failure \\
++						-L '^env:host$'
++				'''
++			}
++		}
++
+ 		stage('Build Debian') {
+ 			when { expression { params.DEB } }
+ 			agent {
+diff --git a/tests/regression/CMakeLists.txt b/tests/regression/CMakeLists.txt
+new file mode 100644
+index 0000000000000000000000000000000000000000..45e98385d46e17d6f92f8117a85223c18e99564d
+--- /dev/null
++++ b/tests/regression/CMakeLists.txt
+@@ -0,0 +1,57 @@
++# Source-owned host regression targets.  This file also configures standalone
++# so the narrow suite can be developed without configuring all of Darling.
++if(CMAKE_SOURCE_DIR STREQUAL CMAKE_CURRENT_SOURCE_DIR)
++	cmake_minimum_required(VERSION 3.13)
++	project(darling-host-regressions C)
++	include(CTest)
++endif()
++
++find_package(Threads REQUIRED)
++
++add_executable(darling_host_thread_create_checkin_wait
++	thread_create_checkin_wait.c)
++target_link_libraries(darling_host_thread_create_checkin_wait PRIVATE Threads::Threads)
++
++add_test(
++	NAME host/mldr_thread_create_checkin_wait
++	COMMAND darling_host_thread_create_checkin_wait)
++set_tests_properties(host/mldr_thread_create_checkin_wait PROPERTIES
++	LABELS "env:host;diag:bare;bead:dar-dar6x4-perf-5dq.1;submod:darling"
++	TIMEOUT 5)
++
++# The same behavioral harness carries an explicit old-algorithm arm.  The
++# runner requires both the expected non-zero result and the busy-spin symptom.
++add_test(
++	NAME host/mldr_thread_create_checkin_wait_spin_red
++	COMMAND bash "${CMAKE_CURRENT_SOURCE_DIR}/expect_failure_marker.sh"
++		"FAIL: creator burned"
++		$<TARGET_FILE:darling_host_thread_create_checkin_wait> spin)
++set_tests_properties(host/mldr_thread_create_checkin_wait_spin_red PROPERTIES
++	LABELS "env:host;diag:bare;bead:dar-dar6x4-perf-5dq.1;submod:darling;red:true"
++	TIMEOUT 5)
++
++add_library(darling_host_glibc_fork_tls SHARED glibc_fork_lock_reset_tls.c)
++set_target_properties(darling_host_glibc_fork_tls PROPERTIES
++	PREFIX ""
++	OUTPUT_NAME "tls_mod"
++	LIBRARY_OUTPUT_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}")
++
++add_executable(darling_host_glibc_fork_lock_reset
++	glibc_fork_lock_reset.c
++	${CMAKE_CURRENT_SOURCE_DIR}/../../src/startup/mldr/glibc_fork_reset.c)
++target_compile_definitions(darling_host_glibc_fork_lock_reset
++	PRIVATE GLIBC_FORK_RESET_TEST_HOOKS)
++target_include_directories(darling_host_glibc_fork_lock_reset PRIVATE
++	${CMAKE_CURRENT_SOURCE_DIR}/../../src/startup/mldr)
++target_link_libraries(darling_host_glibc_fork_lock_reset PRIVATE
++	${CMAKE_DL_LIBS}
++	Threads::Threads)
++add_dependencies(darling_host_glibc_fork_lock_reset darling_host_glibc_fork_tls)
++
++add_test(
++	NAME host/glibc_fork_lock_reset
++	COMMAND darling_host_glibc_fork_lock_reset)
++set_tests_properties(host/glibc_fork_lock_reset PROPERTIES
++	LABELS "env:host;diag:bare;bead:dar-gwn.5;submod:darling"
++	TIMEOUT 20
++	WORKING_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}")
+diff --git a/tests/regression/expect_failure_marker.sh b/tests/regression/expect_failure_marker.sh
+new file mode 100644
+index 0000000000000000000000000000000000000000..70cac2eb7911273591d17385034fea70243e18b7
+--- /dev/null
++++ b/tests/regression/expect_failure_marker.sh
+@@ -0,0 +1,23 @@
++#!/usr/bin/env bash
++# Require a negative regression arm to fail for its documented reason.
++set -euo pipefail
++
++marker="$1"
++shift
++output="$(mktemp "${TMPDIR:-/tmp}/darling-regression-red.XXXXXX")"
++trap 'rm -f "$output"' EXIT
++
++set +e
++"$@" >"$output" 2>&1
++rc=$?
++set -e
++cat "$output"
++
++if [ "$rc" -eq 0 ]; then
++	echo "negative arm passed unexpectedly" >&2
++	exit 1
++fi
++if ! grep -F -q -- "$marker" "$output"; then
++	echo "negative arm did not report expected marker: $marker" >&2
++	exit 1
++fi
+
+From 3d22c6fd6a78c02e49c28f6eb89b1e1f89d9d390 Mon Sep 17 00:00:00 2001
+From: Ilya Gulya <ilya.gulya@indriver.com>
+Date: Sat, 11 Jul 2026 04:02:47 +0000
+Subject: [PATCH] test: share host regression runner
+
+---
+ ci/Jenkinsfile                           |  7 +----
+ tests/regression/run-host-regressions.sh | 34 ++++++++++++++++++++++++
+ 2 files changed, 35 insertions(+), 6 deletions(-)
+ create mode 100644 tests/regression/run-host-regressions.sh
+
+diff --git a/ci/Jenkinsfile b/ci/Jenkinsfile
+index afd19160c50c4eb1fe54342d7548971bc0e85bea..0a4a6107033d3e86d9d98901cc949a16e4d900f1 100644
+--- a/ci/Jenkinsfile
++++ b/ci/Jenkinsfile
+@@ -67,12 +67,7 @@ pipeline {
+ 			steps {
+ 				sh '''#!/bin/bash
+ 					set -euo pipefail
+-					cmake -S /src/mnt/tests/regression -B /src/mnt/build-host-regressions -G Ninja
+-					cmake --build /src/mnt/build-host-regressions --target \\
+-						darling_host_thread_create_checkin_wait \\
+-						darling_host_glibc_fork_lock_reset
+-					ctest --test-dir /src/mnt/build-host-regressions --output-on-failure \\
+-						-L '^env:host$'
++					bash /src/mnt/tests/regression/run-host-regressions.sh /src/mnt
+ 				'''
+ 			}
+ 		}
+diff --git a/tests/regression/run-host-regressions.sh b/tests/regression/run-host-regressions.sh
+new file mode 100644
+index 0000000000000000000000000000000000000000..5d9b324fdf68ae946ade6ae7ae1b59a80e9c15d2
+--- /dev/null
++++ b/tests/regression/run-host-regressions.sh
+@@ -0,0 +1,34 @@
++#!/usr/bin/env bash
++# Configure, build, and run the standalone source-owned host CTest suite.
++set -euo pipefail
++
++if [ "$#" -gt 1 ]; then
++	echo "usage: $0 [DARLING_SOURCE_ROOT]" >&2
++	exit 2
++fi
++
++script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
++source_root="${1:-${DARLING_SRC_ROOT:-$(cd "$script_dir/../.." && pwd)}}"
++suite_root="$source_root/tests/regression"
++if [ ! -f "$suite_root/CMakeLists.txt" ]; then
++	echo "host regression CMake suite is unavailable at $suite_root" >&2
++	exit 1
++fi
++
++build_root="${DARLING_HOST_REGRESSION_BUILD_DIR:-$(mktemp -d "${TMPDIR:-/tmp}/darling-host-regressions.XXXXXX")}"
++cleanup_build=0
++if [ -z "${DARLING_HOST_REGRESSION_BUILD_DIR:-}" ]; then
++	cleanup_build=1
++fi
++cleanup() {
++	if [ "$cleanup_build" -eq 1 ]; then
++		rm -rf "$build_root"
++	fi
++}
++trap cleanup EXIT
++
++cmake -S "$suite_root" -B "$build_root" -G Ninja
++cmake --build "$build_root" --target \
++	darling_host_thread_create_checkin_wait \
++	darling_host_glibc_fork_lock_reset
++ctest --test-dir "$build_root" --output-on-failure -L '^env:host$'
+
+From b41159e56b046772fe5d6a715e948e6ae94028cb Mon Sep 17 00:00:00 2001
+From: Ilya Gulya <ilya.gulya@indriver.com>
+Date: Sat, 11 Jul 2026 04:06:57 +0000
+Subject: [PATCH] test: mark host regression runner executable
+
+---
+ tests/regression/run-host-regressions.sh | 0
+ 1 file changed, 0 insertions(+), 0 deletions(-)
+ mode change 100644 => 100755 tests/regression/run-host-regressions.sh
+
+diff --git a/tests/regression/run-host-regressions.sh b/tests/regression/run-host-regressions.sh
+old mode 100644
+new mode 100755
