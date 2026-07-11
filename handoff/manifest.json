@@ -132,6 +132,12 @@
           "source_ref": "refs/heads/fix/rootless-runtime-components"
         },
         {
+          "branch": "fix/rootless-shellspawn-bootstrap-trace",
+          "head": "d67907c65edcf0c90e35eaec58119ec57f18238b",
+          "upstream": "",
+          "source_ref": "refs/heads/fix/rootless-shellspawn-bootstrap-trace"
+        },
+        {
           "branch": "fix/rootless-vchroot-argv",
           "head": "c82877b302c8318dafed286e98ea1df9bc2df3c8",
           "upstream": "",
