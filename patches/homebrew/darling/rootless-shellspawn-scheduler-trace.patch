@@ -113,3 +113,169 @@ index 3f3c42d281e20d06ad06bdb45e8dd87a7a57b0fb..b90576f666c1871e05a5da2eda26adc1
  	}
  }
  
+
+From 871fb1ac7f0c398c3053201a3c6791a73bcd1f0d Mon Sep 17 00:00:00 2001
+From: Ilya Gulya <ilya.gulya@indriver.com>
+Date: Sat, 11 Jul 2026 13:50:57 +0000
+Subject: [PATCH] launchd: trace rootless startup through native fd
+
+---
+ src/launchd/src/launchd.c | 125 +++++++++++++++++++++++++++-----------
+ 1 file changed, 88 insertions(+), 37 deletions(-)
+
+diff --git a/src/launchd/src/launchd.c b/src/launchd/src/launchd.c
+index b90576f666c1871e05a5da2eda26adc1371624cd..88d92e34495861fb6ca4fe0826a0aab3af5ebd04 100644
+--- a/src/launchd/src/launchd.c
++++ b/src/launchd/src/launchd.c
+@@ -104,6 +104,86 @@ static bool do_pid1_crash_diagnosis_mode2(const char *msg);
+ 
+ static void *update_thread(void *nothing);
+ 
++static int rootless_boot_trace_fd = -1;
++
++static int
++rootless_boot_trace_fd_from_environment(const char *const envp[])
++{
++	static const char rootless_prefix[] = "DARLING_ROOTLESS=1";
++	static const char trace_prefix[] = "DARLING_BOOT_TRACE_FD=";
++	bool rootless = false;
++	int trace_fd = -1;
++
++	for (const char *const *entry = envp; entry != NULL && *entry != NULL; ++entry) {
++		if (strcmp(*entry, rootless_prefix) == 0) {
++			rootless = true;
++			continue;
++		}
++		if (strncmp(*entry, trace_prefix, sizeof(trace_prefix) - 1) != 0) {
++			continue;
++		}
++
++		const char *value = *entry + sizeof(trace_prefix) - 1;
++		int parsed = 0;
++		if (*value == '\0') {
++			continue;
++		}
++		for (; *value != '\0'; ++value) {
++			if (*value < '0' || *value > '9') {
++				parsed = -1;
++				break;
++			}
++			int digit = *value - '0';
++			if (parsed > (INT_MAX - digit) / 10) {
++				parsed = -1;
++				break;
++			}
++			parsed = parsed * 10 + digit;
++		}
++		trace_fd = parsed;
++	}
++
++	return rootless ? trace_fd : -1;
++}
++
++static size_t
++rootless_boot_trace_length(const char *message)
++{
++	size_t length = 0;
++	while (message[length] != '\0') {
++		++length;
++	}
++	return length;
++}
++
++static void
++rootless_boot_trace_write(const char *message, size_t message_length)
++{
++	if (rootless_boot_trace_fd < 0) {
++		return;
++	}
++
++#if defined(__x86_64__)
++	long result;
++	__asm__ volatile(
++		"syscall"
++		: "=a"(result)
++		: "a"(1L), "D"((long)rootless_boot_trace_fd), "S"(message), "d"(message_length)
++		: "rcx", "r11", "memory"
++	);
++	(void)result;
++#elif defined(__aarch64__)
++	register long x0 __asm__("x0") = rootless_boot_trace_fd;
++	register const char *x1 __asm__("x1") = message;
++	register size_t x2 __asm__("x2") = message_length;
++	register long x8 __asm__("x8") = 64;
++	__asm__ volatile("svc 0" : "+r"(x0) : "r"(x1), "r"(x2), "r"(x8) : "memory");
++#else
++	(void)message;
++	(void)message_length;
++#endif
++}
++
+ static bool
+ rootless_mode_enabled(void)
+ {
+@@ -128,48 +208,17 @@ rootless_bootstrap_environment(void)
+ 	unsetenv("__mldr_rootless_pid1");
+ }
+ 
+-static bool
+-launchd_rootless_boot_trace_write(int fd, const char *stage)
+-{
+-	char message[256];
+-	int length = snprintf(message, sizeof(message), "launchd pid=%d %s\n", getpid(), stage);
+-	if (length <= 0 || (size_t)length >= sizeof(message)) {
+-		return false;
+-	}
+-
+-	return write(fd, message, (size_t)length) == length;
+-}
+-
+ void
+ launchd_rootless_boot_trace(const char *stage)
+ {
+-	int fd = -1;
+-	const char *fd_text = getenv("DARLING_BOOT_TRACE_FD");
+-	if (fd_text != NULL && *fd_text != '\0') {
+-		char *end = NULL;
+-		long candidate = strtol(fd_text, &end, 10);
+-		if (end != fd_text && *end == '\0' && candidate >= 0 && candidate <= INT_MAX) {
+-			fd = (int)candidate;
+-		}
+-	}
+-	if (fd >= 0 && launchd_rootless_boot_trace_write(fd, stage)) {
+-		return;
+-	}
+-
+-	if (!rootless_mode_enabled()) {
++	if (rootless_boot_trace_fd < 0) {
+ 		return;
+ 	}
+ 
+-	const char *path = getenv("DARLING_BOOT_TRACE");
+-	if (path == NULL || *path == '\0') {
+-		return;
+-	}
+-
+-	fd = open(path, O_WRONLY | O_CREAT | O_APPEND | O_CLOEXEC, 0600);
+-	if (fd >= 0) {
+-		(void)launchd_rootless_boot_trace_write(fd, stage);
+-		close(fd);
+-	}
++	static const char prefix[] = "launchd ";
++	rootless_boot_trace_write(prefix, sizeof(prefix) - 1);
++	rootless_boot_trace_write(stage, rootless_boot_trace_length(stage));
++	rootless_boot_trace_write("\n", 1);
+ }
+ 
+ static void *crash_addr;
+@@ -189,7 +238,9 @@ main(int argc, char *const *argv)
+ {
+ 	bool sflag = false;
+ 	int ch;
+-	/* The inherited FD is available before rootless environment repair. */
++	const char *const *envp = (const char *const *)&argv[argc + 1];
++	/* The inherited host FD bypasses the guest syscall layer before launchd starts. */
++	rootless_boot_trace_fd = rootless_boot_trace_fd_from_environment(envp);
+ 	launchd_rootless_boot_trace("entry");
+ 	rootless_bootstrap_environment();
+ 	launchd_rootless_boot_trace("start");
