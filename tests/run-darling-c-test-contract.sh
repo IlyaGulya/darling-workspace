@@ -55,7 +55,7 @@ C
 printf 'darlingserver pid=42 exec-mldr\n' >"$tmp/rootless-boot.trace"
 mkdir -p "$tmp/prefix/private/var/tmp"
 printf 'launchd pid=43 runtime-loop\n' >"$tmp/prefix/private/var/tmp/.west-rootless-boot.log"
-if DARLING_BOOT_TRACE="$tmp/rootless-boot.trace" DPREFIX="$tmp/prefix" \
+if DARLING_HOST_BOOT_TRACE="$tmp/rootless-boot.trace" DPREFIX="$tmp/prefix" \
 	"$repo/testkit/scripts/run-darling-c-test.sh" \
 	--name "${name}_compile_fail" --source "$tmp/compile-fail.c" \
 	--launcher "$tmp/launcher" --cc cc --cflags '' >"$tmp/compile-fail.out" 2>&1; then
@@ -66,7 +66,7 @@ grep -F -x -q WEST_GUEST_STAGE=compile "$tmp/compile-fail.out"
 grep -E -q '^ORACLE_RC=[1-9][0-9]*$' "$tmp/compile-fail.out"
 grep -F -q 'WEST_GUEST_FILE_SHA256 launcher ' "$tmp/compile-fail.out"
 grep -F -q 'WEST_GUEST_FILE_MISSING prefix_libsystem_kernel ' "$tmp/compile-fail.out"
-grep -F -q -- '--- rootless boot trace: ' "$tmp/compile-fail.out"
+grep -F -q -- '--- rootless host boot trace: ' "$tmp/compile-fail.out"
 grep -F -x -q 'darlingserver pid=42 exec-mldr' "$tmp/compile-fail.out"
 grep -F -q -- '--- rootless guest boot trace: ' "$tmp/compile-fail.out"
 grep -F -x -q 'launchd pid=43 runtime-loop' "$tmp/compile-fail.out"

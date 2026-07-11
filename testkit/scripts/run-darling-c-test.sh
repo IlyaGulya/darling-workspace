@@ -114,9 +114,9 @@ dump_runtime_file_state() {
 }
 
 dump_boot_trace() {
-	if [[ -n "${DARLING_BOOT_TRACE:-}" && -f "$DARLING_BOOT_TRACE" ]]; then
-		printf '%s\n' "--- rootless boot trace: $DARLING_BOOT_TRACE ---" >&2
-		cat "$DARLING_BOOT_TRACE" >&2 || true
+	if [[ -n "${DARLING_HOST_BOOT_TRACE:-}" && -f "$DARLING_HOST_BOOT_TRACE" ]]; then
+		printf '%s\n' "--- rootless host boot trace: $DARLING_HOST_BOOT_TRACE ---" >&2
+		cat "$DARLING_HOST_BOOT_TRACE" >&2 || true
 	fi
 	local guest_trace="$prefix/private/var/tmp/.west-rootless-boot.log"
 	if [[ -f "$guest_trace" ]]; then
