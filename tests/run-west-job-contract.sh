@@ -3,8 +3,17 @@ set -euo pipefail
 
 repo="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 tmp="$(mktemp -d)"
-trap 'rm -rf "$tmp"' EXIT
 job="$repo/scripts/west-job.sh"
+
+cleanup() {
+	local state
+	for state in "$tmp"/*; do
+		[[ -f "$state/pid" ]] || continue
+		WEST_JOB_CANCEL_GRACE_SECONDS=1 "$job" cancel --state-dir "$state" >/dev/null 2>&1 || true
+	done
+	rm -rf "$tmp"
+}
+trap cleanup EXIT
 
 wait_job() {
 	env -u CODEX_CI "$job" wait "$@"
@@ -39,9 +48,21 @@ PATH="$tmp/no-tail:$PATH" env -u CODEX_CI "$job" wait --state-dir "$tmp/no-tail-
 test "$(<"$tmp/no-tail-wait/rc")" = 0
 
 "$job" start --state-dir "$tmp/agent" -- /usr/bin/python3 -c '
+import signal
+import sys
 import time
+
+def cancelled(_signal, _frame):
+    print("AGENT_CANCELLED", flush=True)
+    sys.exit(0)
+
+signal.signal(signal.SIGINT, cancelled)
+print("AGENT_READY", flush=True)
 time.sleep(30)
 '
+while [[ ! -f "$tmp/agent/command-pid" ]] || ! grep -F -x -q 'AGENT_READY' "$tmp/agent/log"; do
+	:
+done
 if CODEX_CI=1 "$job" wait --state-dir "$tmp/agent" >"$tmp/agent.out" 2>"$tmp/agent.err"; then
 	echo 'agent-mode wait unexpectedly succeeded' >&2
 	exit 1
@@ -54,6 +75,7 @@ if wait_job --state-dir "$tmp/agent"; then
 	exit 1
 fi
 test "$(<"$tmp/agent/rc")" = 143
+grep -F -x -q 'AGENT_CANCELLED' "$tmp/agent/log"
 
 "$job" start --state-dir "$tmp/cancelled" -- /usr/bin/python3 -c '
 import signal
@@ -91,6 +113,40 @@ if kill -0 "$pid" 2>/dev/null; then
 fi
 if kill -0 "$command_pid" 2>/dev/null; then
 	echo "cancelled command is still alive: $command_pid" >&2
+	exit 1
+fi
+
+env WEST_JOB_CANCEL_GRACE_SECONDS=1 "$job" start --state-dir "$tmp/unresponsive" -- \
+	bash -c 'trap "" INT; printf "UNRESPONSIVE_READY\\n"; sleep 30'
+while [[ ! -f "$tmp/unresponsive/command-pid" ]] || ! grep -F -x -q 'UNRESPONSIVE_READY' "$tmp/unresponsive/log"; do
+	if ! kill -0 "$(<"$tmp/unresponsive/pid")" 2>/dev/null; then
+		echo 'unresponsive job exited before becoming ready' >&2
+		exit 1
+	fi
+done
+unresponsive_output="$(WEST_JOB_CANCEL_GRACE_SECONDS=1 "$job" cancel --state-dir "$tmp/unresponsive")"
+printf '%s\n' "$unresponsive_output" | grep -F -q 'cancelling unresponsive command-pid=' || {
+	printf '%s\n' "$unresponsive_output" >&2
+	exit 1
+}
+if wait_job --state-dir "$tmp/unresponsive"; then
+	echo 'unresponsive job unexpectedly succeeded' >&2
+	exit 1
+fi
+
+"$job" start --state-dir "$tmp/invalid-grace" -- bash -c 'sleep 30'
+while [[ ! -f "$tmp/invalid-grace/command-pid" ]]; do
+	:
+done
+if WEST_JOB_CANCEL_GRACE_SECONDS=zero "$job" cancel --state-dir "$tmp/invalid-grace" \
+	>"$tmp/invalid-grace.out" 2>"$tmp/invalid-grace.err"; then
+	echo 'invalid cancel grace unexpectedly succeeded' >&2
+	exit 1
+fi
+grep -F -x -q 'WEST_JOB_CANCEL_GRACE_SECONDS must be a positive integer' "$tmp/invalid-grace.err"
+WEST_JOB_CANCEL_GRACE_SECONDS=1 "$job" cancel --state-dir "$tmp/invalid-grace" >/dev/null
+if wait_job --state-dir "$tmp/invalid-grace"; then
+	echo 'invalid grace cleanup job unexpectedly succeeded' >&2
 	exit 1
 fi
 

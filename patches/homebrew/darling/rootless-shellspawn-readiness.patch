@@ -1,4 +1,4 @@
-From 685261061265dd489c1ee3c5c69a81f7dab419e0 Mon Sep 17 00:00:00 2001
+From 6ffa813bcb6c067b050bde189eac76e6e266b045 Mon Sep 17 00:00:00 2001
 From: Ilya Gulya <ilya.gulya@indriver.com>
 Date: Sat, 11 Jul 2026 15:26:34 +0000
 Subject: [PATCH] rootless: wait for shellspawn connection

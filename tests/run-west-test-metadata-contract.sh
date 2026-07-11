@@ -1207,9 +1207,22 @@ fi
 exit 64
 SH
 chmod +x "$fake_darling"
-mkdir -p /tmp/west-test-guest-c-fixture-prefix
-DARLING="$fake_darling" DPREFIX=/tmp/west-test-guest-c-fixture-prefix \
-	west test --profile __metadata_contract \
-		--patch test/guest-c-fixture.patch >/dev/null
+rm -rf "$guest_prefix"
+mkdir -p \
+	"$guest_prefix/bin" \
+	"$guest_prefix/private/var/tmp" \
+	"$guest_prefix/libexec/darling/private/var/tmp" \
+	"$guest_prefix/Library/Developer/CommandLineTools/usr/bin" \
+	"$guest_prefix/libexec/darling/Library/Developer/CommandLineTools/usr/bin" \
+	"$guest_prefix/Library/Developer/CommandLineTools/SDKs/MacOSX.sdk" \
+	"$guest_prefix/libexec/darling/Library/Developer/CommandLineTools/SDKs/MacOSX.sdk"
+chmod 1777 \
+	"$guest_prefix/private/var/tmp" \
+	"$guest_prefix/libexec/darling/private/var/tmp"
+: >"$guest_prefix/Library/Developer/CommandLineTools/usr/bin/clang"
+: >"$guest_prefix/libexec/darling/Library/Developer/CommandLineTools/usr/bin/clang"
+cp "$fake_darling" "$guest_prefix/bin/darling"
+west test --prefix "$guest_prefix" --profile __metadata_contract \
+	--patch test/guest-c-fixture.patch >/dev/null
 
 printf 'PASS west-test-metadata-contract\n'

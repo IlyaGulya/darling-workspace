@@ -66,6 +66,16 @@ load_live_command_pid() {
 	[[ "$(pid_start_time "$pid")" == "$start_time" ]]
 }
 
+load_live_runner_pid() {
+	local pid start_time
+	[[ -f "$state_dir/runner-pid" && -f "$state_dir/runner-start-time" ]] || return 1
+	pid="$(<"$state_dir/runner-pid")"
+	start_time="$(<"$state_dir/runner-start-time")"
+	[[ "$pid" =~ ^[0-9]+$ ]] || return 1
+	kill -0 "$pid" 2>/dev/null || return 1
+	[[ "$(pid_start_time "$pid")" == "$start_time" ]]
+}
+
 read_rc() {
 	local rc
 	[[ -f "$state_dir/rc" ]] || return 1
@@ -76,7 +86,10 @@ read_rc() {
 
 wait_for_pid_exit() {
 	local pid_file="$1"
-	pidwait -F "$pid_file" >/dev/null 2>&1
+	# pidwait can report no matching PID when the process exits in the small
+	# interval between the liveness check and its lookup. The recorded rc is
+	# authoritative after that race.
+	pidwait -F "$pid_file" >/dev/null 2>&1 || true
 }
 
 wait_for_pid_exit_or_timeout() {
@@ -84,6 +97,15 @@ wait_for_pid_exit_or_timeout() {
 	local timeout_seconds="$2"
 	timeout --foreground "$timeout_seconds" \
 		pidwait -F "$pid_file" >/dev/null 2>&1 || true
+}
+
+cancel_grace_seconds() {
+	local value="${WEST_JOB_CANCEL_GRACE_SECONDS:-30}"
+	if [[ ! "$value" =~ ^[1-9][0-9]*$ ]]; then
+		echo "WEST_JOB_CANCEL_GRACE_SECONDS must be a positive integer" >&2
+		exit 2
+	fi
+	printf '%s\n' "$value"
 }
 
 start_job() {
@@ -98,9 +120,11 @@ start_job() {
 	printf '%q ' "${STATE_REST[@]}" >"$state_dir/command"
 	printf '\n' >>"$state_dir/command"
 
-	nohup setsid bash -c '
+	nohup setsid --wait bash -c '
 		state_dir="$1"
 		shift
+		printf "%s\\n" "$$" >"$state_dir/runner-pid"
+		awk "{print \$22}" "/proc/$$/stat" >"$state_dir/runner-start-time"
 		finish() {
 			local rc="$1"
 			if [[ -e "$state_dir/cancel-requested" ]]; then
@@ -119,7 +143,10 @@ start_job() {
 			finish 143
 		}
 		trap forward_cancel TERM INT HUP
-		"$@" &
+		# Bash launches asynchronous commands with SIGINT ignored. Restore the
+		# default disposition before exec so cooperative cancellation reaches the
+		# command we are supervising.
+		bash -c "trap - INT; exec \"\$@\"" bash "$@" &
 		command_pid=$!
 		printf "%s\\n" "$command_pid" >"$state_dir/command-pid"
 		awk "{print \$22}" "/proc/$command_pid/stat" >"$state_dir/command-start-time"
@@ -168,27 +195,39 @@ cancel_job() {
 		status_job
 		return
 	fi
-	local pid
+	local pid grace_seconds
 	pid="$(<"$state_dir/pid")"
+	grace_seconds="$(cancel_grace_seconds)"
 	touch "$state_dir/cancel-requested"
 	if load_live_command_pid; then
 		local command_pid
 		command_pid="$(<"$state_dir/command-pid")"
-		kill -INT "$command_pid"
-		wait_for_pid_exit_or_timeout "$state_dir/command-pid" 5
-		if ! load_live_command_pid; then
+		kill -INT "$command_pid" 2>/dev/null || true
+		# The command may exit before its runner finishes resource cleanup. Wait
+		# for the session wrapper so a successful cooperative cancel guarantees
+		# that its cleanup handlers have completed.
+		wait_for_pid_exit_or_timeout "$state_dir/pid" "$grace_seconds"
+		if ! load_live_pid; then
 			printf 'cancelling command-pid=%s state=%s\n' "$command_pid" "$state_dir"
 			return
 		fi
-		# A command that ignores SIGINT cannot run its cleanup. Preserve the
-		# existing escape hatch for generic jobs while reporting the escalation.
-		kill -TERM -- "-$pid"
-		printf 'cancelling unresponsive command-pid=%s via job group=%s state=%s\n' \
-			"$command_pid" "$pid" "$state_dir"
+	fi
+	# A command that still ignores SIGINT after its declared cleanup grace
+	# cannot run its own cleanup. The runner is the session leader created by
+	# setsid; target only its process group, never the caller's group.
+	if load_live_runner_pid; then
+		local runner_pid
+		runner_pid="$(<"$state_dir/runner-pid")"
+		kill -TERM -- "-$runner_pid"
+		printf 'cancelling unresponsive command-pid=%s via runner group=%s state=%s\n' \
+		"${command_pid:-unknown}" "$runner_pid" "$state_dir"
 		return
 	fi
-	kill -TERM -- "-$pid"
-	printf 'cancelling legacy job group=%s state=%s\n' "$pid" "$state_dir"
+	# The session leader may have already exited while its outer waiter is
+	# still live. Signalling the waiter itself is safe and cannot affect the
+	# caller's process group.
+	kill -TERM "$pid" 2>/dev/null || true
+	printf 'cancelling runner waiter=%s state=%s\n' "$pid" "$state_dir"
 }
 
 command="${1:-}"

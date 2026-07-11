@@ -7,7 +7,12 @@ cd "$repo"
 export PYTHONDONTWRITEBYTECODE=1
 
 tmp="$(mktemp -d)"
-trap 'rm -rf "$tmp"' EXIT
+source_worktree="$tmp/west-red-proof-source-worktree/darling"
+cleanup() {
+	git -C ../darling worktree remove --force "$source_worktree" >/dev/null 2>&1 || true
+	rm -rf "$tmp"
+}
+trap cleanup EXIT
 
 mkdir -p \
 	"$tmp/west-red-proof-runtime-old/build" \
@@ -25,6 +30,7 @@ mkdir -p "$tmp/canonical-worktree"
 printf 'outside artifact\n' >"$tmp/canonical-worktree/outside"
 ln -s "$tmp/canonical-worktree" "$tmp/west-ctest-runtime-symlink"
 ln -s "$tmp/canonical-worktree/outside" "$tmp/west-red-proof-runtime-old/build/outside-link"
+git -C ../darling worktree add --quiet --detach "$source_worktree" HEAD
 
 west test --gc \
 	--bundle-root "$tmp/bundles" \
@@ -62,6 +68,12 @@ test ! -e "$tmp/west-ctest-runtime-homebrew-old" ||
 	{ cat "$tmp/gc.out" >&2; exit 1; }
 test ! -e "$tmp/west-runtime-homebrew-old" ||
 	{ cat "$tmp/gc.out" >&2; exit 1; }
+if git -C ../darling worktree list --porcelain |
+	grep -F -x -q "worktree $source_worktree"; then
+	cat "$tmp/gc.out" >&2
+	echo "gc left source-proof worktree metadata: $source_worktree" >&2
+	exit 1
+fi
 test -d "$tmp/not-west-red-proof-runtime" ||
 	{ cat "$tmp/gc.out" >&2; exit 1; }
 test -L "$tmp/west-ctest-runtime-symlink" ||
