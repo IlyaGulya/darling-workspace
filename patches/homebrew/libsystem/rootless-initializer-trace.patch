@@ -1,14 +1,14 @@
-From c32cbcc7cbe266d9323e5a2964a05a7c97e3c79c Mon Sep 17 00:00:00 2001
+From 3faa91ca306c70f1c52921e04f85f0561d37ad2e Mon Sep 17 00:00:00 2001
 From: Ilya Gulyagin <ilyagulya@users.noreply.github.com>
 Date: Sat, 11 Jul 2026 11:49:00 +0000
 Subject: [PATCH] libsystem: trace rootless initializer contract
 
 ---
- init.c | 73 ++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
- 1 file changed, 73 insertions(+)
+ init.c | 82 ++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+ 1 file changed, 82 insertions(+)
 
 diff --git a/init.c b/init.c
-index 961157a18712cc8b6731f884a8fc83c15723e0fb..d61aa0760a51c3a805b4d6510a09fd2f3bfd3292 100644
+index 961157a18712cc8b6731f884a8fc83c15723e0fb..d1ea90c00c2e980d9a254b39e75c01e37353dd57 100644
 --- a/init.c
 +++ b/init.c
 @@ -28,7 +28,9 @@
@@ -93,7 +93,7 @@ index 961157a18712cc8b6731f884a8fc83c15723e0fb..d61aa0760a51c3a805b4d6510a09fd2f
  #endif
  
  // system library initialisers
-@@ -228,6 +295,9 @@ libSystem_initializer(int argc,
+@@ -228,18 +295,33 @@ libSystem_initializer(int argc,
  	};
  	
  	_libSystem_ktrace0(ARIADNE_LIFECYCLE_libsystem_init | DBG_FUNC_START);
@@ -103,7 +103,21 @@ index 961157a18712cc8b6731f884a8fc83c15723e0fb..d61aa0760a51c3a805b4d6510a09fd2f
  
  	__libkernel_init(&libkernel_funcs, envp, apple, vars);
  	_libSystem_ktrace_init_func(KERNEL);
-@@ -240,6 +310,9 @@ libSystem_initializer(int argc,
++#ifdef DARLING
++	ROOTLESS_BOOT_TRACE(envp, "libsystem kernel-ready\n");
++#endif
+ 
+ 	__libplatform_init(NULL, envp, apple, vars);
+ 	_libSystem_ktrace_init_func(PLATFORM);
++#ifdef DARLING
++	ROOTLESS_BOOT_TRACE(envp, "libsystem platform-ready\n");
++#endif
+ 
+ 	__pthread_init(&libpthread_funcs, envp, apple, vars);
+ 	_libSystem_ktrace_init_func(PTHREAD);
++#ifdef DARLING
++	ROOTLESS_BOOT_TRACE(envp, "libsystem pthread-ready\n");
++#endif
  
  	_libc_initializer(&libc_funcs, envp, apple, vars);
  	_libSystem_ktrace_init_func(LIBC);

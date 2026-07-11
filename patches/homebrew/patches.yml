@@ -5389,11 +5389,11 @@ patches:
     reason: runtime-harness-pending
     scope: The markers execute only across the real virtual vchroot-to-launchd handoff and are verified by the retained rootless bootstrap repro.
 - path: libsystem/rootless-initializer-trace.patch
-  sha256sum: 5f28de3728616551c55627af54b8f142a2aed9cad4ea76754afe60f3e11cd181
+  sha256sum: ef9a283afc09ee841ac7103e6110bd1b47d845c072fced17b00fd6b8dda96191
   module: darling/src/external/libsystem
   source-branch: fix/rootless-libsystem-init-trace
   source-base: 08df454b6eb0df9400aa4c39839a7efd6efd2c3c
-  source-commit: c32cbcc7cbe266d9323e5a2964a05a7c97e3c79c
+  source-commit: 3faa91ca306c70f1c52921e04f85f0561d37ad2e
   bead: dar-d2pm
   publication-status: blocked
   publication-blocker: The raw trace must determine whether the guest libSystem initializer establishes ProgramVars before a production fix is selected.
