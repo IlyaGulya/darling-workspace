@@ -5339,11 +5339,11 @@ patches:
     reason: runtime-harness-pending
     scope: The launcher, launchd, and mldr changes need a real unprivileged prefix boot; a host-only source or compile test cannot prove the no-mount lifecycle.
 - path: darling/rootless-runtime-components.patch
-  sha256sum: ce68377a096d19344ca580ceb0b0107b054e1596a538777905328ad6ddd5dc65
+  sha256sum: fa1133cf8c8975b3ec9873ed05fc4ac406a9ff31a45a6e86156b89459f4c184b
   module: darling
   source-branch: fix/rootless-runtime-components
   source-base: 083f1859162cb605b7d198c9d0859d3d0b132b67
-  source-commit: 5aa9aa5a7bbc83914b5398cedcf800e2b3560301
+  source-commit: f4613a436bccaf351032c3f78f689c81d151214f
   bead: dar-test-infra-sp5.8.4.5
   publication-status: blocked
   publication-blocker: Rootless no-mount runtime provider and guest lifecycle proof are not implemented yet.

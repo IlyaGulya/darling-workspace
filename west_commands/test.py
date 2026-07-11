@@ -1656,7 +1656,7 @@ class DarlingTest(WestCommand):
                         )
                         boot_trace.unlink(missing_ok=True)
                         guest_boot_trace.unlink(missing_ok=True)
-                        runtime_env["DARLING_BOOT_TRACE"] = str(boot_trace)
+                        runtime_env["DARLING_HOST_BOOT_TRACE"] = str(boot_trace)
                     runtime_env.update(launcher_env)
                     yield RuntimeProfileDeployment(
                         name=profile_name,
