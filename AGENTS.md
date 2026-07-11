@@ -18,6 +18,9 @@ refs, PR drafts, and agent handoff.
 - `rtk find` intentionally rejects compound predicates/actions such as
   `-exec`; use `rtk proxy find ...` for those commands instead of retrying the
   same command shape.
+- For shell assignments, conditionals, command substitution, or other compound
+  shell syntax, use `rtk bash -c '...'`; `rtk NAME=value command` treats the
+  assignment as a program name and produces a misleading host-side error.
 - Use `west patch verify|apply|clean|list` for local integration profiles.
 - Use `west darling-prefix-repair --prefix <prefix>` when guest tests report
   missing prefix prerequisites such as `private/var/tmp`, canonical
