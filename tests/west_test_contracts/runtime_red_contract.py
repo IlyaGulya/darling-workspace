@@ -486,6 +486,16 @@ else:
     raise AssertionError("incompatible additional provider was accepted")
 deploy_test = make_test()
 deploy_test._resolve_darling_launcher = lambda _prefix: "/opt/darling-test/bin/darling"
+with tempfile.TemporaryDirectory() as temp:
+    closure_build = Path(temp)
+    libsystem = closure_build / "libSystem.B.dylib"
+    libsystem.write_text("closure anchor\n")
+    assert deploy_test._runtime_red_find_build_output(
+        closure_build, "usr/lib/libSystem.B.dylib"
+    ) == libsystem
+    assert deploy_test._runtime_red_find_build_output(
+        closure_build, "usr/lib/system/libkxld.dylib", allow_missing=True
+    ) is None
 assert deploy_test._runtime_red_deploy_targets(
     prefix_for_targets,
     "bin/darlingserver",
