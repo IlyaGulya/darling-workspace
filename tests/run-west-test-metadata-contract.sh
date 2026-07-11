@@ -31,6 +31,11 @@ fi
 export PYTHONDONTWRITEBYTECODE=1
 
 python3 tests/west_test_contracts/selection_contract.py
+python3 tests/west_test_contracts/metadata_runtime_profile_contract.py
+python3 tests/west_test_contracts/metadata_runtime_profile_red_contract.py
+python3 tests/west_test_contracts/runtime_profile_current_minus_contract.py
+python3 tests/west_test_contracts/host_trace_failure_phase_contract.py
+python3 tests/west_test_contracts/guest_trace_failure_phase_contract.py
 tmp_profile="patches/__metadata_contract"
 tmp_source_profile="patches/__metadata_source_profile_contract"
 tmp_invalid_profile="patches/__metadata_invalid_contract"
