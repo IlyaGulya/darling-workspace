@@ -279,3 +279,140 @@ index b90576f666c1871e05a5da2eda26adc1371624cd..88d92e34495861fb6ca4fe0826a0aab3
  	launchd_rootless_boot_trace("entry");
  	rootless_bootstrap_environment();
  	launchd_rootless_boot_trace("start");
+
+From 307f8b168e0a837709646073ec14bab48a714d86 Mon Sep 17 00:00:00 2001
+From: Ilya Gulya <ilya.gulya@indriver.com>
+Date: Sat, 11 Jul 2026 13:59:56 +0000
+Subject: [PATCH] launchd: use libsystem rootless trace provider
+
+---
+ src/launchd/src/launchd.c | 94 ++-------------------------------------
+ 1 file changed, 4 insertions(+), 90 deletions(-)
+
+diff --git a/src/launchd/src/launchd.c b/src/launchd/src/launchd.c
+index 88d92e34495861fb6ca4fe0826a0aab3af5ebd04..42ea578e40495ca2b7bfc3ec4e4733ca9c3a6de0 100644
+--- a/src/launchd/src/launchd.c
++++ b/src/launchd/src/launchd.c
+@@ -86,6 +86,7 @@
+ #define LAUNCHD_CONF ".launchd.conf"
+ 
+ extern char **environ;
++extern void __darling_rootless_boot_trace(const char *message, size_t message_length);
+ 
+ static void pfsystem_callback(void *, struct kevent *);
+ 
+@@ -104,86 +105,6 @@ static bool do_pid1_crash_diagnosis_mode2(const char *msg);
+ 
+ static void *update_thread(void *nothing);
+ 
+-static int rootless_boot_trace_fd = -1;
+-
+-static int
+-rootless_boot_trace_fd_from_environment(const char *const envp[])
+-{
+-	static const char rootless_prefix[] = "DARLING_ROOTLESS=1";
+-	static const char trace_prefix[] = "DARLING_BOOT_TRACE_FD=";
+-	bool rootless = false;
+-	int trace_fd = -1;
+-
+-	for (const char *const *entry = envp; entry != NULL && *entry != NULL; ++entry) {
+-		if (strcmp(*entry, rootless_prefix) == 0) {
+-			rootless = true;
+-			continue;
+-		}
+-		if (strncmp(*entry, trace_prefix, sizeof(trace_prefix) - 1) != 0) {
+-			continue;
+-		}
+-
+-		const char *value = *entry + sizeof(trace_prefix) - 1;
+-		int parsed = 0;
+-		if (*value == '\0') {
+-			continue;
+-		}
+-		for (; *value != '\0'; ++value) {
+-			if (*value < '0' || *value > '9') {
+-				parsed = -1;
+-				break;
+-			}
+-			int digit = *value - '0';
+-			if (parsed > (INT_MAX - digit) / 10) {
+-				parsed = -1;
+-				break;
+-			}
+-			parsed = parsed * 10 + digit;
+-		}
+-		trace_fd = parsed;
+-	}
+-
+-	return rootless ? trace_fd : -1;
+-}
+-
+-static size_t
+-rootless_boot_trace_length(const char *message)
+-{
+-	size_t length = 0;
+-	while (message[length] != '\0') {
+-		++length;
+-	}
+-	return length;
+-}
+-
+-static void
+-rootless_boot_trace_write(const char *message, size_t message_length)
+-{
+-	if (rootless_boot_trace_fd < 0) {
+-		return;
+-	}
+-
+-#if defined(__x86_64__)
+-	long result;
+-	__asm__ volatile(
+-		"syscall"
+-		: "=a"(result)
+-		: "a"(1L), "D"((long)rootless_boot_trace_fd), "S"(message), "d"(message_length)
+-		: "rcx", "r11", "memory"
+-	);
+-	(void)result;
+-#elif defined(__aarch64__)
+-	register long x0 __asm__("x0") = rootless_boot_trace_fd;
+-	register const char *x1 __asm__("x1") = message;
+-	register size_t x2 __asm__("x2") = message_length;
+-	register long x8 __asm__("x8") = 64;
+-	__asm__ volatile("svc 0" : "+r"(x0) : "r"(x1), "r"(x2), "r"(x8) : "memory");
+-#else
+-	(void)message;
+-	(void)message_length;
+-#endif
+-}
+-
+ static bool
+ rootless_mode_enabled(void)
+ {
+@@ -211,14 +132,10 @@ rootless_bootstrap_environment(void)
+ void
+ launchd_rootless_boot_trace(const char *stage)
+ {
+-	if (rootless_boot_trace_fd < 0) {
+-		return;
+-	}
+-
+ 	static const char prefix[] = "launchd ";
+-	rootless_boot_trace_write(prefix, sizeof(prefix) - 1);
+-	rootless_boot_trace_write(stage, rootless_boot_trace_length(stage));
+-	rootless_boot_trace_write("\n", 1);
++	__darling_rootless_boot_trace(prefix, sizeof(prefix) - 1);
++	__darling_rootless_boot_trace(stage, strlen(stage));
++	__darling_rootless_boot_trace("\n", 1);
+ }
+ 
+ static void *crash_addr;
+@@ -238,9 +155,6 @@ main(int argc, char *const *argv)
+ {
+ 	bool sflag = false;
+ 	int ch;
+-	const char *const *envp = (const char *const *)&argv[argc + 1];
+-	/* The inherited host FD bypasses the guest syscall layer before launchd starts. */
+-	rootless_boot_trace_fd = rootless_boot_trace_fd_from_environment(envp);
+ 	launchd_rootless_boot_trace("entry");
+ 	rootless_bootstrap_environment();
+ 	launchd_rootless_boot_trace("start");
