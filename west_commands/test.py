@@ -3869,6 +3869,7 @@ class DarlingTest(WestCommand):
                 "-ff",
                 "-i",
                 "-tt",
+                "-v",
                 "-s",
                 "160",
                 "-o",

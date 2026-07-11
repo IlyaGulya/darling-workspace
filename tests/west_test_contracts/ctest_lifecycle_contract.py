@@ -452,7 +452,7 @@ with tempfile.TemporaryDirectory() as temp:
         test_module.run_bounded = original_run_bounded
     assert trace_dir.is_dir(), trace_dir
     assert observed_prefixes == [
-        ("strace", "-ff", "-i", "-tt", "-s", "160", "-o", str(trace_dir / "bootstrap"))
+        ("strace", "-ff", "-i", "-tt", "-v", "-s", "160", "-o", str(trace_dir / "bootstrap"))
     ], observed_prefixes
     assert (trace_dir / "darlingserver-rpc.log").read_text() == "RECV call=1(mldr_path)\n"
     assert messages == [
