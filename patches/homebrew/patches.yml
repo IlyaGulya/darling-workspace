@@ -5317,6 +5317,76 @@ patches:
       hook. The script only launches a real guest process; west owns the host
       trace setup and oracle.
   sha256sum: 54ca6d9a63eac30339d710f2cf7a9f52b31ee852cc8cc4a85865c08d8a287081
+- path: darlingserver/semaphore-rpc-trace.patch
+  module: darling/src/external/darlingserver
+  source-branch: fix/semaphore-rpc-trace
+  source-base: 6621f77c06cc847a6ff15009f0afe3e824d17ff1
+  source-commit: 9d5e7b6c29cdf74f43c73b41538a0dd86066e9ea
+  bead: dar-test-infra-sp5.30
+  publication-status: blocked
+  publication-blocker: Test-only RPC diagnostics; retain locally until rootless E-UNION bootstrap has a product fix and a supported upstream diagnostic interface.
+  tests:
+  - name: semaphore_rpc_trace_guest
+    kind: guest
+    coverage-tier: runtime
+    runs: guest
+    diag: guarded
+    runtime-profile: homebrew-rootless-no-mount
+    red: true
+    red-proof:
+      mode: guest-runtime-deploy
+      bad-profile: current-minus-patch
+      expect-failure-phase: run
+      expect-output-contains:
+      - missing host trace content
+      - rpc.semaphore.begin operation=semaphore_timedwait
+      runtime-artifacts:
+      - module: darling/src/external/darlingserver
+        build-targets:
+        - darlingserver
+        deploy:
+        - bin/darlingserver
+    runner: guest-c-fixture
+    repo: darling-workspace
+    script: tests/semaphore_rpc_trace_guest.c
+    ok-marker: SEMAPHORE_RPC_TRACE_GUEST_OK
+    timeout-seconds: 20
+    compile-flags:
+    - -std=gnu11
+    - -Wall
+    - -Wextra
+    - -Werror
+    requires:
+    - darling-prefix
+    host-trace-files:
+    - env: DSERVER_TEST_TRACE_FILE
+      prefix-relative-path: private/var/tmp/dserver-semaphore-rpc.trace
+      contains:
+      - rpc.semaphore.begin operation=semaphore_timedwait
+      - sec=0 nsec=1000000
+      - rpc.semaphore.reply operation=semaphore_timedwait
+      - code=49 outcome=timeout terminal=reply-enqueued
+      - rpc.semaphore.begin operation=semaphore_signal
+      - rpc.semaphore.reply operation=semaphore_signal
+      - code=0 outcome=success terminal=reply-enqueued
+      - rpc.semaphore.begin operation=semaphore_timedwait_signal
+      - signal_name=
+      - rpc.semaphore.reply operation=semaphore_timedwait_signal
+    host-trace-oracle: true
+    runtime-artifacts:
+    - module: darling/src/external/darlingserver
+      build-targets:
+      - darlingserver
+      deploy:
+      - bin/darlingserver
+    note: >-
+      Real guest Mach semaphore lifecycle proof for the opt-in daemon trace.
+      The fixture performs timed wait timeout, ordinary signal, successful timed
+      wait, and timedwait-signal on distinct semaphores. The trace records the
+      decoded RPC arguments and the exact reply code. A missing reply after a
+      begin record remains observable as an unfinished handler, rather than
+      being converted into a fabricated transport result.
+  sha256sum: d7120654f779ccbb25bd229fd589dc58e8ccd8d5f2b086ab0dfa9129798ca720
 - path: darlingserver/eunion-runtime-prefix.patch
   sha256sum: e32e0125b3521837389ddf3c6d5889becd9acba92f9d88d5e39c686181cf60b1
   module: darling/src/external/darlingserver
