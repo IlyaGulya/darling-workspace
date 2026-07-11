@@ -5531,6 +5531,18 @@ patches:
       while its init remains alive, then runs the same guest command to its
       verdict marker.
   sha256sum: 266744e607fd6e269cff06b4118e1982f6a0e7ac51cc35b5d1335aaf69f28290
+- path: darling/rootless-shutdown-session.patch
+  module: darling
+  source-branch: fix/rootless-shutdown-session
+  source-base: 6ffa813bcb6c067b050bde189eac76e6e266b045
+  source-commit: 7fef3093ef206abc2760940d0d386d443669ac6e
+  bead: dar-04lg
+  publication-status: blocked
+  publication-blocker: Rootless shutdown lifecycle fix requires a materialized runtime deploy proof against the leaked launchd service session before publication.
+  test-exception:
+    reason: runtime-deploy-proof-pending
+    scope: The committed src/startup/tests/rootless_shutdown_session_test.c is a real host session-cleanup regression and is GREEN; the required product proof must build/deploy the launcher into a rootless prefix and verify shutdown leaves no prefix-owned service process.
+  sha256sum: 01dea6be86173cae673d8fd5a97b4c1e14b65f502509699faf90bb0ec9ee8a88
 - path: libsystem/rootless-initializer-trace.patch
   sha256sum: b3107f04e59f860982abacfe35714a4a2e18f3236a5724e7ece11eefb2327d89
   module: darling/src/external/libsystem
