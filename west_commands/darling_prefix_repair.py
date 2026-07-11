@@ -14,6 +14,10 @@ from prefix_repair import (
     prefix_mount_targets,
     repair_prefix_prerequisites,
 )
+from test_prefix import (
+    cleanup_rootless_runtime_sockets,
+    rootless_prefix_process_snapshot,
+)
 
 
 class DarlingPrefixRepair(WestCommand):
@@ -50,7 +54,7 @@ class DarlingPrefixRepair(WestCommand):
         parser.add_argument(
             "--cleanup-mounts",
             action="store_true",
-            help="also unmount stale filesystems under the prefix",
+            help="also unmount stale filesystems and remove idle rootless control sockets",
         )
         return parser
 
@@ -77,6 +81,21 @@ class DarlingPrefixRepair(WestCommand):
                         result.ok.append("no mounted filesystems under prefix")
                 else:
                     result.extend(cleanup_prefix_mounts(prefix))
+                    remaining_mounts = prefix_mount_targets(prefix)
+                    rootless_processes = rootless_prefix_process_snapshot(prefix)
+                    if remaining_mounts:
+                        result.problems.append(
+                            "refusing rootless runtime socket cleanup while prefix mounts remain"
+                        )
+                    elif rootless_processes:
+                        result.problems.append(
+                            "refusing rootless runtime socket cleanup while prefix process(es) remain: "
+                            + "; ".join(rootless_processes)
+                        )
+                    else:
+                        socket_cleanup = cleanup_rootless_runtime_sockets(prefix)
+                        result.changed.extend(socket_cleanup.changed)
+                        result.problems.extend(socket_cleanup.problems)
             for message in result.ok:
                 self.inf(f"  ok: {message}")
             for message in result.changed:
