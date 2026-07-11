@@ -243,12 +243,16 @@ refs, PR drafts, and agent handoff.
   cleanup failure while the recorded test PID is still live.
 - Treat a full guest CTest runtime selection the same way when the caller cannot
   keep it attached. Use `scripts/west-job.sh start --state-dir DIR -- west test
-  ...`, then `status`/`wait` (or `cancel`); the state directory records command,
-  PID identity, log, and final rc. Do not start a second prefix-backed run while
-  that job is live, and inspect its log plus prefix/process cleanup only after
-  `wait` has returned. To reproduce one selected guest case under an otherwise
-  combined runtime, append `--with-runtime-profile NAME` for each additional
-  declared provider; this changes deployment only, not CTest selection.
+  ...`, then poll `status` (or use `cancel`); the state directory records command,
+  PID identity, log, and final rc. In the agent execution transport `wait` is
+  deliberately rejected because the outer controller can report a detached wait
+  as complete while the job is still live. Do not start a second prefix-backed
+  run while `status` says the first is live, and inspect its log plus
+  prefix/process cleanup only after `status` reports a final rc. In an ordinary
+  attached shell, `wait` remains available. To reproduce one selected guest case
+  under an otherwise combined runtime, append `--with-runtime-profile NAME` for
+  each additional declared provider; this changes deployment only, not CTest
+  selection.
 - When creating Beads from a shell command, do not put unescaped backticks in
   `--description`: the shell treats them as command substitution. Use plain
   command text or safely single-quote/escape it, then verify the created ID.
