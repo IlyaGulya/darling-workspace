@@ -5437,19 +5437,19 @@ patches:
   module: darling
   source-branch: fix/rootless-shellspawn-test-delay
   source-base: 894fc1e5e1a72b95f3b0791f7514228bf8bb1eb3
-  source-commit: af4953b4e6811a85a5f476622f90f32ff6f3ed9b
+  source-commit: 0a3a598b8a5e3e5c8a0f8f141e92f8619a68147e
   bead: dar-d2pm
   publication-status: blocked
   publication-blocker: Test-only rootless readiness control; retain only while the deterministic launcher regression proof needs it.
   test-exception:
     reason: test-instrumentation
     scope: The hook is inert unless DARLING_TEST_SHELLSPAWN_READY_DELAY_MS is explicitly supplied by the rootless runtime regression proof below.
-  sha256sum: 6b4c7249500aa486c17db11156e4eba519b3a93da024df3389c671cacfbad950
+  sha256sum: 98208f18b26d8178a274213aa71b80cb7be046e7d3a69f415300b23a221a262e
 - path: darling/rootless-shellspawn-readiness.patch
   module: darling
   source-branch: fix/rootless-shellspawn-readiness
-  source-base: af4953b4e6811a85a5f476622f90f32ff6f3ed9b
-  source-commit: 685261061265dd489c1ee3c5c69a81f7dab419e0
+  source-base: 0a3a598b8a5e3e5c8a0f8f141e92f8619a68147e
+  source-commit: 6ffa813bcb6c067b050bde189eac76e6e266b045
   bead: dar-d2pm
   publication-status: blocked
   publication-blocker: Rootless startup is locally validated first; do not publish until the full runtime proof is stable and lifecycle cleanup is closed.
@@ -5513,6 +5513,10 @@ patches:
     timeout-seconds: 60
     requires:
     - darling-prefix
+    host-temp-files:
+    - env: WEST_ROOTLESS_BOOTSTRAP_READY_FILE
+      prefix-relative-path: private/var/tmp/west-rootless-bootstrap.ready
+      guest-path: true
     env-vars:
       DARLING_ROOTLESS: '1'
       DARLING_NOOVERLAYFS: '1'
@@ -5520,11 +5524,13 @@ patches:
       DARLING_TEST_SHELLSPAWN_READY_DELAY_MS: '20000'
     note: >-
       Real rootless lifecycle proof. A prerequisite test hook delays socket
-      readiness by 20 seconds in both runtime trees. The current-minus launcher
-      reaches the prior one-shot shellspawn connect and fails with ENOENT; the
-      fixed launcher retries only transient socket readiness errors while its
-      init remains alive, then runs the same guest command to its verdict marker.
-  sha256sum: 52b36b51a997e7a7458633a9ddd378b222c3157734249a7ac698edbd16509068
+      readiness by 20 seconds and then writes the framework-owned marker from
+      the live shellspawn process before it opens its socket. The current-minus
+      launcher reaches the prior one-shot shellspawn connect and fails with
+      ENOENT; the fixed launcher retries only transient socket readiness errors
+      while its init remains alive, then runs the same guest command to its
+      verdict marker.
+  sha256sum: 266744e607fd6e269cff06b4118e1982f6a0e7ac51cc35b5d1335aaf69f28290
 - path: libsystem/rootless-initializer-trace.patch
   sha256sum: b3107f04e59f860982abacfe35714a4a2e18f3236a5724e7ece11eefb2327d89
   module: darling/src/external/libsystem

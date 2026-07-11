@@ -715,6 +715,7 @@ class DarlingPatch(WestCommand):
                         env_name = temp_file.get("env")
                         rel_path = temp_file.get("prefix-relative-path")
                         contents = temp_file.get("contents", "")
+                        guest_path = temp_file.get("guest-path", False)
                         if not isinstance(env_name, str) or not re.match(r"^[A-Za-z_][A-Za-z0-9_]*$", env_name):
                             errors.append(
                                 f"tests[{index}].host-temp-files[{temp_index}] env must be a shell variable name"
@@ -730,6 +731,10 @@ class DarlingPatch(WestCommand):
                         if contents is not None and not isinstance(contents, str):
                             errors.append(
                                 f"tests[{index}].host-temp-files[{temp_index}] contents must be a string"
+                            )
+                        if not isinstance(guest_path, bool):
+                            errors.append(
+                                f"tests[{index}].host-temp-files[{temp_index}] guest-path must be a boolean"
                             )
             if test.get("host-stat-deltas") is not None:
                 deltas = test.get("host-stat-deltas")
@@ -963,6 +968,7 @@ class DarlingPatch(WestCommand):
                                         env_name = temp_file.get("env")
                                         rel_path = temp_file.get("prefix-relative-path")
                                         contents = temp_file.get("contents", "")
+                                        guest_path = temp_file.get("guest-path", False)
                                         if not isinstance(env_name, str) or not re.match(r"^[A-Za-z_][A-Za-z0-9_]*$", env_name):
                                             errors.append(
                                                 f"tests[{index}].red-proof.red-runner.host-temp-files[{temp_index}] env must be a shell variable name"
@@ -978,6 +984,10 @@ class DarlingPatch(WestCommand):
                                         if contents is not None and not isinstance(contents, str):
                                             errors.append(
                                                 f"tests[{index}].red-proof.red-runner.host-temp-files[{temp_index}] contents must be a string"
+                                            )
+                                        if not isinstance(guest_path, bool):
+                                            errors.append(
+                                                f"tests[{index}].red-proof.red-runner.host-temp-files[{temp_index}] guest-path must be a boolean"
                                             )
                             if red_runner.get("host-trace-files") is not None:
                                 traces = red_runner.get("host-trace-files")

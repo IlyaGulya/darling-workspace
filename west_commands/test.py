@@ -78,6 +78,7 @@ from test_prefix import (
     darlingserver_pids_for_prefix,
     prefix_process_snapshot,
     remove_stale_init_pid,
+    remove_stale_server_socket,
     rootless_prefix_process_snapshot,
 )
 from test_resources import resource_context
@@ -1992,6 +1993,7 @@ class DarlingTest(WestCommand):
                 self.die(f"{invocation['name']}: host-temp-files entries must be mappings")
             env_name = str(temp_file.get("env", ""))
             rel_path = str(temp_file.get("prefix-relative-path", ""))
+            guest_path = temp_file.get("guest-path", False)
             if not env_name or not rel_path:
                 self.die(
                     f"{invocation['name']}: host-temp-files[{index}] needs env "
@@ -2002,6 +2004,10 @@ class DarlingTest(WestCommand):
                     f"{invocation['name']}: host-temp-files[{index}] path must "
                     "be prefix-relative"
                 )
+            if not isinstance(guest_path, bool):
+                self.die(
+                    f"{invocation['name']}: host-temp-files[{index}] guest-path must be a boolean"
+                )
             temp_path = Path(prefix) / rel_path
             temp_path.parent.mkdir(parents=True, exist_ok=True)
             try:
@@ -2010,7 +2016,7 @@ class DarlingTest(WestCommand):
                 pass
             if "contents" in temp_file and temp_file["contents"] is not None:
                 temp_path.write_text(str(temp_file["contents"]))
-            temp_env[env_name] = str(temp_path)
+            temp_env[env_name] = f"/{rel_path}" if guest_path else str(temp_path)
             temp_paths.append(temp_path)
         invocation["_host_temp_paths"] = temp_paths
         try:
@@ -4046,6 +4052,10 @@ class DarlingTest(WestCommand):
             )
             if result.timed_out:
                 self.err(f"Darling prefix shutdown timed out for {prefix}; forcing cleanup")
+        return self._finalize_prefix_shutdown(prefix)
+
+    def _finalize_prefix_shutdown(self, prefix: Path) -> bool:
+        """Reclaim all runner-owned runtime state after launcher shutdown."""
         self._kill_dserver_for_prefix(prefix)
         rootless_cleanup = cleanup_rootless_prefix_processes(prefix)
         for message in rootless_cleanup.changed:
@@ -4054,7 +4064,7 @@ class DarlingTest(WestCommand):
             self.err(message)
         leftovers = self._prefix_process_snapshot(prefix)
         if leftovers:
-            self.err(f"leftover Darling prefix process(es) for {prefix}:")
+            self.err(f"leftover Darling prefix process(es) after cleanup for {prefix}:")
             for entry in leftovers:
                 self.err(f"  {entry}")
             return False
@@ -4063,6 +4073,8 @@ class DarlingTest(WestCommand):
         if not self._cleanup_prefix_mounts(prefix):
             return False
         self._remove_stale_init_pid(prefix)
+        if self._remove_stale_server_socket(prefix):
+            self.inf(f"removed stale Darling server socket for {prefix}")
         return True
 
     def _invocation_from_runtime_source(self, invocation, source_root: Path):
@@ -4127,29 +4139,32 @@ class DarlingTest(WestCommand):
         temp = tempfile.mkdtemp(prefix="west-green-proof-runtime-")
         keep_on_failure = False
         try:
-            scratch_root = Path(temp)
-            with self._guest_runtime_source_forest(patch, proof, omit_patch=False) as source_root:
-                build_root = self._runtime_red_build_artifacts(
-                    source_root,
-                    proof,
-                    prefix,
-                    scratch_root,
-                    label="GREEN",
-                )
-                with self._runtime_red_deployed_artifacts(
-                    proof,
-                    build_root,
-                    prefix,
-                    label="GREEN",
-                ):
-                    green_env = self._execution_env(invocation)
-                    if green_env is None:
-                        green_env = os.environ.copy()
-                    else:
-                        green_env = dict(green_env)
-                    green_env["WEST_RUNTIME_SOURCE_ROOT"] = str(source_root)
-                    runtime_invocation = self._invocation_from_runtime_source(invocation, source_root)
-                    with self._resource_context(runtime_invocation, green_env) as resource_env:
+            green_env = self._execution_env(invocation)
+            if green_env is None:
+                green_env = os.environ.copy()
+            else:
+                green_env = dict(green_env)
+            # A runtime test's resources describe its whole logical run, not
+            # merely its final script. In particular, clear any host-temp
+            # readiness marker before the costly source/build/deploy phase.
+            with self._resource_context(invocation, green_env) as resource_env:
+                scratch_root = Path(temp)
+                with self._guest_runtime_source_forest(patch, proof, omit_patch=False) as source_root:
+                    build_root = self._runtime_red_build_artifacts(
+                        source_root,
+                        proof,
+                        prefix,
+                        scratch_root,
+                        label="GREEN",
+                    )
+                    with self._runtime_red_deployed_artifacts(
+                        proof,
+                        build_root,
+                        prefix,
+                        label="GREEN",
+                    ):
+                        resource_env["WEST_RUNTIME_SOURCE_ROOT"] = str(source_root)
+                        runtime_invocation = self._invocation_from_runtime_source(invocation, source_root)
                         green_started_at = time.time()
                         green_rc = self._run_invocation(runtime_invocation, env=resource_env)
                     if green_rc != 0:
@@ -4645,17 +4660,7 @@ class DarlingTest(WestCommand):
             )
             if result.timed_out:
                 self.err(f"Darling prefix shutdown timed out for {prefix}; forcing cleanup")
-        self._kill_dserver_for_prefix(Path(prefix))
-        leftovers = self._prefix_process_snapshot(Path(prefix))
-        if not leftovers and self._cleanup_prefix_mounts(Path(prefix)):
-            self._remove_stale_init_pid(Path(prefix))
-            return True
-        if not leftovers:
-            return False
-        self.err(f"leftover Darling prefix process(es) after cleanup for {prefix}:")
-        for entry in leftovers:
-            self.err(f"  {entry}")
-        return False
+        return self._finalize_prefix_shutdown(Path(prefix))
 
     def _cleanup_prefix_mounts(self, prefix: Path) -> bool:
         result = cleanup_prefix_mounts(prefix)
@@ -4667,6 +4672,9 @@ class DarlingTest(WestCommand):
 
     def _remove_stale_init_pid(self, prefix: Path) -> None:
         remove_stale_init_pid(prefix, pid_is_usable=darling_init_pid_is_usable)
+
+    def _remove_stale_server_socket(self, prefix: Path) -> bool:
+        return remove_stale_server_socket(prefix)
 
     def _ps_entries(self) -> list[tuple[int, int, str]]:
         result = subprocess.run(
@@ -5027,6 +5035,11 @@ class DarlingTest(WestCommand):
                 args.proof_scratch_keep_last,
                 dry_run=args.dry_run,
             )
+            if not args.dry_run:
+                # Source-proof scratch can contain detached Git worktrees.
+                # Once its directory is removed, prune only the stale West
+                # entries from the owning project repositories.
+                self._prune_stale_west_temp_worktrees()
             self._gc_guest_runner_output(
                 Path(args.proof_scratch_root),
                 args.proof_scratch_max_age_hours,

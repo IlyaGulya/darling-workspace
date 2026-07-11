@@ -1,5 +1,6 @@
 import os
 import signal
+import socket
 import subprocess
 import tempfile
 import time
@@ -29,6 +30,7 @@ from west_commands.test_prefix import (
     darlingserver_pids_for_prefix,
     prefix_process_snapshot,
     remove_stale_init_pid,
+    remove_stale_server_socket,
     rootless_prefix_process_snapshot,
 )
 
@@ -155,8 +157,35 @@ with tempfile.TemporaryDirectory() as temp:
     test._kill_dserver_for_prefix = lambda _prefix: None
     test._cleanup_prefix_mounts = lambda _prefix: True
     test._remove_stale_init_pid = lambda _prefix: None
+    test._remove_stale_server_socket = lambda _prefix: False
     try:
         assert test._shutdown_runtime_prefix(prefix)
+        tagged.wait(timeout=3)
+    finally:
+        if tagged.poll() is None:
+            tagged.kill()
+            tagged.wait()
+
+with tempfile.TemporaryDirectory() as temp:
+    prefix = Path(temp)
+    tagged = subprocess.Popen(
+        [sys.executable, "-c", "import time; time.sleep(60)"],
+        env={
+            **os.environ,
+            "DARLING_PREFIX": str(prefix),
+            "DARLING_ROOTLESS": "1",
+        },
+    )
+    test = make_test()
+    test._prefix = str(prefix)
+    test._keep_prefix_running = False
+    test._resolve_darling_launcher = lambda _prefix: None
+    test._kill_dserver_for_prefix = lambda _prefix: None
+    test._cleanup_prefix_mounts = lambda _prefix: True
+    test._remove_stale_init_pid = lambda _prefix: None
+    test._remove_stale_server_socket = lambda _prefix: False
+    try:
+        assert test._shutdown_test_prefix()
         tagged.wait(timeout=3)
     finally:
         if tagged.poll() is None:
@@ -219,6 +248,29 @@ with tempfile.TemporaryDirectory() as temp:
     (stale_prefix / ".init.pid").write_text("999999999\n")
     test._remove_stale_init_pid(stale_prefix)
     assert not (stale_prefix / ".init.pid").exists()
+
+with tempfile.TemporaryDirectory() as temp:
+    stale_prefix = Path(temp)
+    stale_socket = stale_prefix / ".darlingserver.sock"
+    server = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    server.bind(str(stale_socket))
+    server.close()
+    assert remove_stale_server_socket(stale_prefix)
+    assert not stale_socket.exists()
+
+with tempfile.TemporaryDirectory() as temp:
+    prefix = Path(temp)
+    stale_socket = prefix / ".darlingserver.sock"
+    server = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    server.bind(str(stale_socket))
+    server.close()
+    test = make_test()
+    test._resolve_darling_launcher = lambda _prefix: None
+    test._kill_dserver_for_prefix = lambda _prefix: None
+    test._cleanup_prefix_mounts = lambda _prefix: True
+    test._remove_stale_init_pid = lambda _prefix: None
+    assert test._shutdown_runtime_prefix(prefix)
+    assert not stale_socket.exists()
 
 test = make_test()
 with tempfile.TemporaryDirectory() as temp:

@@ -886,6 +886,54 @@ with tempfile.TemporaryDirectory() as temp:
         west_test_module.tempfile.mkdtemp = original_mkdtemp
 
 
+with tempfile.TemporaryDirectory() as temp:
+    prefix = Path(temp) / "prefix"
+    readiness = prefix / "private/var/tmp/runtime-ready"
+    readiness.parent.mkdir(parents=True)
+    readiness.write_text("stale\n")
+    source_root = Path(temp) / "source"
+    source_root.mkdir()
+    resource_scope_test = make_test()
+    resource_scope_test._prefix = str(prefix)
+    resource_scope_test._require_runtime_scratch_space = lambda _label: None
+
+    @contextmanager
+    def source_forest(*_args, **_kwargs):
+        assert not readiness.exists(), "runtime resources started after source preparation"
+        yield source_root
+
+    @contextmanager
+    def deployed_artifacts(*_args, **_kwargs):
+        yield
+
+    resource_scope_test._guest_runtime_source_forest = source_forest
+    resource_scope_test._runtime_red_build_artifacts = lambda *_args, **_kwargs: Path(temp) / "build"
+    resource_scope_test._runtime_red_deployed_artifacts = deployed_artifacts
+
+    def run_runtime_invocation(_invocation, env):
+        assert env["WEST_READY_FILE"] == "/private/var/tmp/runtime-ready"
+        readiness.write_text("ready\n")
+        return 0
+
+    resource_scope_test._run_invocation = run_runtime_invocation
+    resource_scope_test._check_guest_runtime_green_success = lambda *_args, **_kwargs: True
+    assert resource_scope_test._run_guest_runtime_deploy_green(
+        {"path": "darling/example.patch"},
+        {"mode": "guest-runtime-deploy"},
+        {
+            "name": "runtime_resource_scope",
+            "host_temp_files": [
+                {
+                    "env": "WEST_READY_FILE",
+                    "prefix-relative-path": "private/var/tmp/runtime-ready",
+                    "guest-path": True,
+                }
+            ],
+        },
+    ) == 0
+    assert not readiness.exists(), "runtime resource cleanup did not remove readiness file"
+
+
 profile_test = make_test()
 profile_test._preflight_runtime_profile_stack = (
     DarlingTest._preflight_runtime_profile_stack.__get__(profile_test, DarlingTest)
