@@ -5300,11 +5300,11 @@ patches:
       base: main
       state: local
 - path: darlingserver/rootless-no-mount-startup.patch
-  sha256sum: cd70721de8086901b5faef41fd5e7cafe4f4a5a83c445df1e3271f9e3b5b361e
+  sha256sum: d708b540e240c9ec687000006117242be9c5523481bea2b2491b202b24b4aaae
   module: darling/src/external/darlingserver
   source-branch: fix/rootless-no-mount-profile
   source-base: 6340d81f5470c928e96a55ac8da402a3504e5698
-  source-commit: 7c936149c57b9abddd4e0aa451e07a48e2a311f5
+  source-commit: fd105515af642df755296330265038ac2f70fae4
   bead: dar-test-infra-sp5.8.4.5
   publication-status: blocked
   publication-blocker: Rootless no-mount runtime provider and guest lifecycle proof are not implemented yet.
@@ -5312,11 +5312,11 @@ patches:
     reason: runtime-harness-pending
     scope: Rootless startup crosses launcher, mldr, darlingserver, and libsystem_kernel; the test must build and deploy all four artifacts into an isolated unprivileged prefix.
 - path: xnu/rootless-init-identity.patch
-  sha256sum: 5e390026cc07045284053b84bd89b63c282769828dd22d8993ca4dd1e7383cab
+  sha256sum: b818ce3f8176641f8140320c1c2b3a8bff4bf5fc56cefddefccc218feeb38279
   module: darling/src/external/xnu
   source-branch: fix/rootless-no-mount-profile
   source-base: a6bb8d7f2d446c2c2fca53a7ba3064e3d68d75d5
-  source-commit: 3ff5a016214c3a52c09bd8371a2adcf26e6ea139
+  source-commit: 52e2102938b8ca2385c62c00074a7c8fdd2d2eaf
   bead: dar-test-infra-sp5.8.4.5
   publication-status: blocked
   publication-blocker: Rootless no-mount runtime provider and guest lifecycle proof are not implemented yet.
@@ -5324,11 +5324,11 @@ patches:
     reason: runtime-harness-pending
     scope: The proof requires a real init launch plus a guest fork so host PID propagation and child identity are exercised together.
 - path: darling/rootless-no-mount-launch.patch
-  sha256sum: d6287dd5b9a14cc2b9a69029a0b353f58157365d66f1f47203544341ad5c05a9
+  sha256sum: 90415bd1690edc51a14c85596c674d9a7ce8138e929d2f3aab368dc668362718
   module: darling
   source-branch: fix/rootless-no-mount-launch
   source-base: 492a00f4929e5aba60607d9fed3e868bc4a3aeba
-  source-commit: 4f02d05fbd347b145b69882dd4b4e99a9c7e8c30
+  source-commit: e2fdd11628890aa949af45877561ffa579bb06cd
   bead: dar-test-infra-sp5.8.4.5
   publication-status: blocked
   publication-blocker: Rootless no-mount runtime provider and guest lifecycle proof are not implemented yet.
@@ -5336,11 +5336,11 @@ patches:
     reason: runtime-harness-pending
     scope: The launcher, launchd, and mldr changes need a real unprivileged prefix boot; a host-only source or compile test cannot prove the no-mount lifecycle.
 - path: darling/rootless-runtime-components.patch
-  sha256sum: 9165b7cf53039bff17022e8f7d29e0d0453a7812d1306d858dcd3d4b8d885b0b
+  sha256sum: d2c3e281c1524738f73d807807146731ad517b34f3bda4a8f76447434fcbbf33
   module: darling
   source-branch: fix/rootless-runtime-components
   source-base: 4f02d05fbd347b145b69882dd4b4e99a9c7e8c30
-  source-commit: 6aa5c0dcf7f1f5148fcbf0d7d94a5891b03cb296
+  source-commit: 253ecf0aa7ceb2d0dcc6f466700273642da8e324
   bead: dar-test-infra-sp5.8.4.5
   publication-status: blocked
   publication-blocker: Rootless no-mount runtime provider and guest lifecycle proof are not implemented yet.

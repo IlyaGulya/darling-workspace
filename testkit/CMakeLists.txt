@@ -229,6 +229,21 @@ if(EXISTS "${_fork_checkin_signal_storm_guest}")
   )
 endif()
 
+set(_rootless_no_mount_guest
+  "${_workspace_root}/tests/rootless_no_mount_guest.c")
+if(EXISTS "${_rootless_no_mount_guest}")
+  add_compat_test(
+    NAME       rootless_no_mount_guest
+    SOURCE     "${_rootless_no_mount_guest}"
+    ENVS       darling
+    BEAD       dar-test-infra-sp5.8.4.5
+    SUBMODULES darling darlingserver xnu
+    RUNTIME_PROFILE homebrew-rootless-no-mount
+    TIMEOUT    45
+    OK_MARKER  "ROOTLESS_NO_MOUNT_GUEST_OK"
+  )
+endif()
+
 # ---------------------------------------------------------------------------
 # dar-gwn.5 — real regression for the mldr raw-fork glibc lock reset.
 #

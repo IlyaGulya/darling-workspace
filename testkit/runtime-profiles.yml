@@ -60,3 +60,45 @@ runtime-profiles:
       - platform
       deploy:
       - usr/lib/system/libsystem_platform.dylib
+  homebrew-rootless-no-mount:
+    # Run a real unprivileged bootstrap. The environment belongs to the runtime
+    # provider, so product fixtures never have to encode launcher policy.
+    source-profile: homebrew
+    bootstrap: rootless-no-mount
+    source-module: darling
+    source-modules:
+    - darling
+    - darling/src/external/darlingserver
+    - darling/src/external/xnu
+    cmake-defines:
+      # Rootless cannot use overlay or copy the shared template; its XNU and
+      # dserver artifacts must agree on the E-UNION runtime contract.
+      DARLING_EUNION: true
+    launcher-env:
+      DARLING_ROOTLESS: '1'
+      DARLING_NOOVERLAYFS: '1'
+      DARLING_EUNION: '1'
+    runtime-artifacts:
+    - module: darling
+      build-targets:
+      - darling
+      - mldr
+      - launchd
+      - vchroot
+      - dyld
+      deploy:
+      - bin/darling
+      - usr/libexec/darling/mldr
+      - usr/libexec/darling/launchd
+      - usr/libexec/darling/vchroot
+      - usr/lib/dyld
+    - module: darling/src/external/darlingserver
+      build-targets:
+      - darlingserver
+      deploy:
+      - bin/darlingserver
+    - module: darling/src/external/xnu
+      build-targets:
+      - system_kernel
+      deploy:
+      - usr/lib/system/libsystem_kernel.dylib

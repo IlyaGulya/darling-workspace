@@ -1,4 +1,4 @@
-From 6aa5c0dcf7f1f5148fcbf0d7d94a5891b03cb296 Mon Sep 17 00:00:00 2001
+From 253ecf0aa7ceb2d0dcc6f466700273642da8e324 Mon Sep 17 00:00:00 2001
 From: Ilya Gulya <ilya.gulya@indriver.com>
 Date: Fri, 10 Jul 2026 17:37:50 +0000
 Subject: [PATCH] build: select rootless runtime components
@@ -9,16 +9,16 @@ Subject: [PATCH] build: select rootless runtime components
  2 files changed, 2 insertions(+), 2 deletions(-)
 
 diff --git a/src/external/darlingserver b/src/external/darlingserver
-index 89751e64bc6c2082f7725061824ee0e33395b0de..7c936149c57b9abddd4e0aa451e07a48e2a311f5 160000
+index 89751e64bc6c2082f7725061824ee0e33395b0de..fd105515af642df755296330265038ac2f70fae4 160000
 --- a/src/external/darlingserver
 +++ b/src/external/darlingserver
 @@ -1 +1 @@
 -Subproject commit 89751e64bc6c2082f7725061824ee0e33395b0de
-+Subproject commit 7c936149c57b9abddd4e0aa451e07a48e2a311f5
++Subproject commit fd105515af642df755296330265038ac2f70fae4
 diff --git a/src/external/xnu b/src/external/xnu
-index 5f26a4c2365d9774b5a1e66ae7da20b61ab6d2db..3ff5a016214c3a52c09bd8371a2adcf26e6ea139 160000
+index 5f26a4c2365d9774b5a1e66ae7da20b61ab6d2db..52e2102938b8ca2385c62c00074a7c8fdd2d2eaf 160000
 --- a/src/external/xnu
 +++ b/src/external/xnu
 @@ -1 +1 @@
 -Subproject commit 5f26a4c2365d9774b5a1e66ae7da20b61ab6d2db
-+Subproject commit 3ff5a016214c3a52c09bd8371a2adcf26e6ea139
++Subproject commit 52e2102938b8ca2385c62c00074a7c8fdd2d2eaf

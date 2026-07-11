@@ -168,3 +168,243 @@ index 7ee672a1812ce61c9c0dfa58002fb685a8581571..6ceb3ee0582e95b96de3bba08fbe4f79
  };
  
  typedef struct socket_bitmap {
+
+From ec15d9380fd93422b507b932945f659db5437139 Mon Sep 17 00:00:00 2001
+From: Ilya Gulya <ilya.gulya@indriver.com>
+Date: Sat, 11 Jul 2026 02:45:17 +0000
+Subject: [PATCH] startup: trace rootless bootstrap milestones
+
+---
+ src/startup/darling.c   | 15 +++++++++++++++
+ src/startup/mldr/mldr.c | 13 +++++++++++++
+ 2 files changed, 28 insertions(+)
+
+diff --git a/src/startup/darling.c b/src/startup/darling.c
+index 3daf5061b51027307b1e386f670657839081577e..4e05e51417337058cab0ac61ceee43bf10a433d5 100644
+--- a/src/startup/darling.c
++++ b/src/startup/darling.c
+@@ -58,6 +58,18 @@ static bool rootlessModeEnabled(void)
+ 	return value != NULL && value[0] == '1' && value[1] == '\0';
+ }
+ 
++static void rootlessBootTrace(const char* stage)
++{
++	const char* path = getenv("DARLING_BOOT_TRACE");
++	if (!rootlessModeEnabled() || !path || !*path)
++		return;
++	int fd = open(path, O_WRONLY | O_CREAT | O_APPEND | O_CLOEXEC, 0600);
++	if (fd >= 0) {
++		dprintf(fd, "launcher pid=%d %s\n", getpid(), stage);
++		close(fd);
++	}
++}
++
+ int main(int argc, char ** argv)
+ {
+ 	pid_t pidInit;
+@@ -69,6 +81,7 @@ int main(int argc, char ** argv)
+ 	}
+ 
+ 	const bool rootless = rootlessModeEnabled();
++	rootlessBootTrace("start");
+ 
+ 	if (!rootless && geteuid() != 0)
+ 	{
+@@ -194,8 +207,10 @@ int main(int argc, char ** argv)
+ 		unlink(socketPath);
+ 		
+ 		setupWorkdir();
++		rootlessBootTrace("spawn-darlingserver");
+ 		pidInit = spawnInitProcess();
+ 		putInitPid(pidInit);
++		rootlessBootTrace("waiting-for-shellspawn");
+ 		
+ 		// Wait until shellspawn starts
+ 		for (int i = 0; i < 15; i++)
+diff --git a/src/startup/mldr/mldr.c b/src/startup/mldr/mldr.c
+index 6ceb3ee0582e95b96de3bba08fbe4f79692784b0..1ef8ceb059beda08d00379d0887824b69d18eb1f 100644
+--- a/src/startup/mldr/mldr.c
++++ b/src/startup/mldr/mldr.c
+@@ -110,6 +110,18 @@ static int kernel_minor = -1;
+ 
+ void __mldr_postfork_child(void);
+ 
++static void rootless_boot_trace(const char* stage)
++{
++	const char* path = getenv("DARLING_BOOT_TRACE");
++	if (!path || !*path)
++		return;
++	int fd = open(path, O_WRONLY | O_CREAT | O_APPEND | O_CLOEXEC, 0600);
++	if (fd >= 0) {
++		dprintf(fd, "mldr pid=%d %s\n", getpid(), stage);
++		close(fd);
++	}
++}
++
+ int main(int argc, char** argv, char** envp)
+ {
+ 	void** sp;
+@@ -118,6 +130,7 @@ int main(int argc, char** argv, char** envp)
+ 	size_t arg_strings_total_size_after = 0;
+ 	size_t orig_argv0_len = 0;
+ 	const char* orig_argv1 = NULL;
++	rootless_boot_trace("start");
+ 
+ 	mldr_load_results.kernfd = -1;
+ 	mldr_load_results.argc = argc;
+
+From 3edfef6f8b2ce6fc518b19a4472fbb56c03a798f Mon Sep 17 00:00:00 2001
+From: Ilya Gulya <ilya.gulya@indriver.com>
+Date: Sat, 11 Jul 2026 02:55:07 +0000
+Subject: [PATCH] startup: trace rootless loader milestones
+
+---
+ src/startup/mldr/mldr.c | 12 ++++++++++++
+ 1 file changed, 12 insertions(+)
+
+diff --git a/src/startup/mldr/mldr.c b/src/startup/mldr/mldr.c
+index 1ef8ceb059beda08d00379d0887824b69d18eb1f..afb5a31a9bd98488c85fbbfb167ba7a65cf3ed51 100644
+--- a/src/startup/mldr/mldr.c
++++ b/src/startup/mldr/mldr.c
+@@ -139,6 +139,7 @@ int main(int argc, char** argv, char** envp)
+ 	// Locate glibc's loader/stack-cache locks while still single-threaded, so the
+ 	// fork child can reset them and avoid an inherited-held-lock deadlock (dar-gwn.5).
+ 	__mldr_glibc_fork_reset_detect();
++	rootless_boot_trace("glibc-fork-reset-ready");
+ 
+ 	while (envp[mldr_load_results.envc] != NULL) {
+ 		++mldr_load_results.envc;
+@@ -171,6 +172,7 @@ int main(int argc, char** argv, char** envp)
+ 		filename = (char*) __builtin_alloca(strlen(argv[1])+1);
+ 		strcpy(filename, argv[1]);
+ 	}
++	rootless_boot_trace("target-resolved");
+ 
+ 	// allow any process to ptrace us
+ 	// the only process we really care about being able to do this is the server,
+@@ -178,12 +180,16 @@ int main(int argc, char** argv, char** envp)
+ 	ptrace(PR_SET_PTRACER, PR_SET_PTRACER_ANY, 0, 0, 0);
+ 
+ 	process_special_env(&mldr_load_results);
++	rootless_boot_trace("environment-ready");
+ 
+ #ifdef __i386__
++	rootless_boot_trace("load-target");
+ 	load(filename, CPU_TYPE_X86, false, argv, &mldr_load_results); // accept i386 only
+ #else
++	rootless_boot_trace("load-target");
+ 	load(filename, 0, false, argv, &mldr_load_results);
+ #endif
++	rootless_boot_trace("target-loaded");
+ 
+ 	// this was previously necessary when we were loading the binary from the LKM
+ 	// (presumably because the break was detected incorrectly)
+@@ -282,20 +288,26 @@ int main(int argc, char** argv, char** envp)
+ #else
+ 		abort();
+ #endif
++	rootless_boot_trace("stack-ready");
+ 
++	rootless_boot_trace("send-dyld-info");
+ 	int status = dserver_rpc_set_dyld_info(mldr_load_results.dyld_all_image_location, mldr_load_results.dyld_all_image_size);
+ 	if (status < 0) {
+ 		fprintf(stderr, "Failed to tell darlingserver about our dyld info\n");
+ 		exit(1);
+ 	}
++	rootless_boot_trace("dyld-info-sent");
+ 
++	rootless_boot_trace("send-executable-path");
+ 	if (dserver_rpc_set_executable_path(filename, strlen(filename)) < 0) {
+ 		fprintf(stderr, "Failed to tell darlingserver about our executable path\n");
+ 		exit(1);
+ 	}
++	rootless_boot_trace("executable-path-sent");
+ 
+ 	__mldr_main_stack_top = (void*)mldr_load_results.stack_top;
+ 
++	rootless_boot_trace("enter-target");
+ 	start_thread(&mldr_load_results);
+ 
+ 	__builtin_unreachable();
+
+From e2fdd11628890aa949af45877561ffa579bb06cd Mon Sep 17 00:00:00 2001
+From: Ilya Gulya <ilya.gulya@indriver.com>
+Date: Sat, 11 Jul 2026 03:01:36 +0000
+Subject: [PATCH] launchd: trace rootless bootstrap milestones
+
+---
+ src/launchd/src/launchd.c | 22 ++++++++++++++++++++++
+ 1 file changed, 22 insertions(+)
+
+diff --git a/src/launchd/src/launchd.c b/src/launchd/src/launchd.c
+index ff7dd462888975107eb98c2707804a6a8010ba0d..bc6eeb343fee46be400fd8aa5d1d3760f6c3ac43 100644
+--- a/src/launchd/src/launchd.c
++++ b/src/launchd/src/launchd.c
+@@ -110,6 +110,21 @@ rootless_mode_enabled(void)
+ 	return value != NULL && strcmp(value, "1") == 0;
+ }
+ 
++static void
++rootless_boot_trace(const char *stage)
++{
++	const char *path = getenv("DARLING_BOOT_TRACE");
++	if (!rootless_mode_enabled() || path == NULL || *path == '\0') {
++		return;
++	}
++
++	int fd = open(path, O_WRONLY | O_CREAT | O_APPEND | O_CLOEXEC, 0600);
++	if (fd >= 0) {
++		dprintf(fd, "launchd pid=%d %s\n", getpid(), stage);
++		close(fd);
++	}
++}
++
+ static void *crash_addr;
+ static pid_t crash_pid;
+ 
+@@ -127,6 +142,7 @@ main(int argc, char *const *argv)
+ {
+ 	bool sflag = false;
+ 	int ch;
++	rootless_boot_trace("start");
+ 
+ 	/* This needs to be cleaned up. Currently, we risk tripping assumes() macros
+ 	 * before we've properly set things like launchd's log database paths, the
+@@ -138,6 +154,7 @@ main(int argc, char *const *argv)
+ 	testfd_or_openfd(STDIN_FILENO, _PATH_DEVNULL, O_RDONLY);
+ 	testfd_or_openfd(STDOUT_FILENO, _PATH_DEVNULL, O_WRONLY);
+ 	testfd_or_openfd(STDERR_FILENO, _PATH_DEVNULL, O_WRONLY);
++	rootless_boot_trace("stdio-ready");
+ 
+ 	if (launchd_use_gmalloc) {
+ 		if (!getenv("DYLD_INSERT_LIBRARIES")) {
+@@ -173,8 +190,10 @@ bool darling_rootless = rootless_mode_enabled();
+ 		fprintf(stderr, "%s: This program is not meant to be run directly.\n", getprogname());
+ 		exit(EXIT_FAILURE);
+ 	}
++	rootless_boot_trace("identity-accepted");
+ 
+ 	launchd_runtime_init();
++	rootless_boot_trace("runtime-ready");
+ 
+ 	if (NULL == getenv("PATH")) {
+ 		setenv("PATH", _PATH_STDPATH, 1);
+@@ -182,6 +201,7 @@ bool darling_rootless = rootless_mode_enabled();
+ 
+ 	if (pid1_magic) {
+ 		pid1_magic_init();
++		rootless_boot_trace("pid1-ready");
+ 
+ 		int cfd = -1;
+ 		if ((cfd = open(_PATH_CONSOLE, O_WRONLY | O_NOCTTY)) != -1) {
+@@ -281,8 +301,10 @@ bool darling_rootless = rootless_mode_enabled();
+ 
+ 	monitor_networking_state();
+ 	jobmgr_init(sflag);
++	rootless_boot_trace("jobs-ready");
+ 
+ 	launchd_runtime_init2();
++	rootless_boot_trace("runtime-loop");
+ 	launchd_runtime();
+ }
+ 

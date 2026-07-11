@@ -60,18 +60,18 @@
 # Default DIAG by environment when unset: host/macos -> bare, darling -> guarded.
 # The executor binary is supplied at configure time via DARLING_TEST_EXECUTOR;
 # if a non-bare tier is requested but no executor is configured, the test falls
-# back to bare (with a warning) so the suite still runs. Darling guest C tests
-# are SOURCE-driven: the local suite uploads the C source, compiles it with the
-# guest CLT inside the prefix, then runs the guest binary. Do not run Linux host
-# test binaries under `darling shell`.
+# back to bare (with a warning) so the suite still runs. The Darling launcher is
+# resolved from the CTest process environment, never baked into CTest at CMake
+# configure time: a runtime provider can therefore replace it with its isolated
+# prefix launcher. Darling guest C tests are SOURCE-driven: the local suite
+# uploads the C source, compiles it with the guest CLT inside the prefix, then
+# runs the guest binary. Do not run Linux host test binaries under `darling shell`.
 
 set(_ADD_COMPAT_TEST_CMAKE_DIR "${CMAKE_CURRENT_LIST_DIR}")
 get_filename_component(_ADD_COMPAT_TEST_ROOT
   "${_ADD_COMPAT_TEST_CMAKE_DIR}/.." ABSOLUTE)
 set(DARLING_SHELL "${DARLING_SHELL}" CACHE STRING
   "Deprecated command list for Darling shell; prefer DARLING_LAUNCHER")
-set(DARLING_LAUNCHER "${DARLING_LAUNCHER}" CACHE FILEPATH
-  "Path to the darling launcher used for env=darling CTest entries")
 set(DARLING_TEST_PREFIX "${DARLING_TEST_PREFIX}" CACHE PATH
   "Darling prefix exported to env=darling tests as DPREFIX/DARLING_PREFIX")
 option(DARLING_TEST_NO_OVERLAYFS
@@ -212,24 +212,16 @@ function(add_compat_test)
     if(env STREQUAL "host")
       set(cmd "$<TARGET_FILE:${target}>" ${ACT_ARGS})
     elseif(env STREQUAL "darling")
-      if(DARLING_LAUNCHER)
-        set(guest_marker_args)
-        if(act_ok_marker)
-          list(APPEND guest_marker_args --ok-marker-file "${ok_marker_file}")
-        endif()
-        set(cmd
-          "${_ADD_COMPAT_TEST_ROOT}/scripts/run-darling-c-test.sh"
-          --name "${ACT_NAME}"
-          --source "${ACT_SOURCE}"
-          --launcher "${DARLING_LAUNCHER}"
-          ${guest_marker_args}
-          -- ${ACT_ARGS})
-      else()
-        set(cmd
-          "${CMAKE_COMMAND}"
-          "-DTEST_NAME=${test_name}"
-          -P "${_ADD_COMPAT_TEST_CMAKE_DIR}/MissingDarlingShell.cmake")
+      set(guest_marker_args)
+      if(act_ok_marker)
+        list(APPEND guest_marker_args --ok-marker-file "${ok_marker_file}")
       endif()
+      set(cmd
+        "${_ADD_COMPAT_TEST_ROOT}/scripts/run-darling-c-test.sh"
+        --name "${ACT_NAME}"
+        --source "${ACT_SOURCE}"
+        ${guest_marker_args}
+        -- ${ACT_ARGS})
     elseif(env STREQUAL "macos")
       if(APPLE)
         set(cmd "$<TARGET_FILE:${target}>" ${ACT_ARGS})
