@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable, Mapping
 from pathlib import Path
 from typing import Any
 
@@ -17,7 +18,6 @@ ROOTLESS_NO_MOUNT_DEPLOY_PATHS = frozenset(
         "usr/libexec/shellspawn",
         "usr/libexec/darling/vchroot",
         "usr/lib/dyld",
-        "usr/lib/system/libsystem_kernel.dylib",
     }
 )
 
@@ -30,28 +30,28 @@ ROOTLESS_NO_MOUNT_SOURCE_MODULES = frozenset(
     }
 )
 
-ROOTLESS_NO_MOUNT_RUNTIME_RESOURCES = frozenset({"system-closure"})
-
-# The launcher-side boot chain executes guest Mach-O binaries before it can
-# compile or run a fixture. Keep this resource list in the runtime layer so a
-# provider declares the domain requirement once instead of repeating dylib
-# paths in every rootless manifest. A build can legitimately omit unrelated
-# members, so the runner requires libSystem.B and deploys every other member
-# that the configured product build actually produced.
-SYSTEM_CLOSURE_BASENAMES = (
-    "libcache.dylib", "libcommonCrypto.dylib", "libcompiler_rt.dylib",
-    "libcopyfile.dylib", "libcorecrypto.dylib", "libdispatch.dylib",
-    "libdyld.dylib", "libkeymgr.dylib", "libkxld.dylib", "liblaunch.dylib",
-    "libmacho.dylib", "libquarantine.dylib", "libremovefile.dylib",
-    "libsystem_asl.dylib", "libSystem.B.dylib", "libsystem_blocks.dylib",
-    "libsystem_c.dylib", "libsystem_configuration.dylib",
-    "libsystem_coreservices.dylib", "libsystem_coretls.dylib",
-    "libsystem_darwin.dylib", "libsystem_dnssd.dylib", "libsystem_duct.dylib",
-    "libsystem_info.dylib", "libsystem_kernel.dylib", "libsystem_malloc.dylib",
-    "libsystem_m.dylib", "libsystem_networkextension.dylib",
-    "libsystem_notify.dylib", "libsystem_platform.dylib",
-    "libsystem_pthread.dylib", "libsystem_sandbox.dylib",
-    "libsystem_trace.dylib", "libunwind.dylib", "libxpc.dylib",
+ROOTLESS_BOOTSTRAP_CLOSURE_RESOURCE = "rootless-bootstrap-closure"
+ROOTLESS_NO_MOUNT_RUNTIME_RESOURCES = frozenset(
+    {ROOTLESS_BOOTSTRAP_CLOSURE_RESOURCE}
+)
+# These are CMake build roots, not a dylib inventory. The runner derives the
+# concrete deployment from their final Mach-O products and rejects any missing
+# transitive provider before guest execution.
+ROOTLESS_BOOTSTRAP_CLOSURE_BUILD_TARGETS = frozenset(
+    {"system_kernel", "objc", "resolv-darwin"}
+)
+_RUNTIME_RESOURCES = ROOTLESS_NO_MOUNT_RUNTIME_RESOURCES
+_MACHO_MAGICS = frozenset(
+    {
+        b"\xce\xfa\xed\xfe",
+        b"\xcf\xfa\xed\xfe",
+        b"\xfe\xed\xfa\xce",
+        b"\xfe\xed\xfa\xcf",
+        b"\xca\xfe\xba\xbe",
+        b"\xbe\xba\xfe\xca",
+        b"\xca\xfe\xba\xbf",
+        b"\xbf\xba\xfe\xca",
+    }
 )
 
 
@@ -62,13 +62,84 @@ def runtime_artifact_deploy_paths(artifact: dict[str, Any]) -> list[str]:
     resource = artifact.get("resource")
     if resource is None:
         return paths
-    if resource != "system-closure":
+    if resource not in _RUNTIME_RESOURCES:
         raise ValueError(f"unknown runtime artifact resource {resource!r}")
-    paths.extend(
-        "usr/lib/" + name if name == "libSystem.B.dylib" else "usr/lib/system/" + name
-        for name in SYSTEM_CLOSURE_BASENAMES
-    )
     return paths
+
+
+def runtime_artifact_has_resource(artifact: dict[str, Any], resource: str) -> bool:
+    """Return whether an artifact declares one named runtime resource."""
+
+    return artifact.get("resource") == resource
+
+
+def is_macho_binary(path: Path) -> bool:
+    """Return whether *path* starts with a supported thin or fat Mach-O magic."""
+
+    try:
+        with path.open("rb") as handle:
+            return handle.read(4) in _MACHO_MAGICS
+    except OSError:
+        return False
+
+
+def parse_macho_dylib_id(output: str) -> str | None:
+    """Extract the install name from ``llvm-objdump --macho --dylib-id`` output."""
+
+    for line in output.splitlines():
+        candidate = line.strip()
+        if candidate.startswith("/") and not candidate.endswith(":"):
+            return candidate
+    return None
+
+
+def parse_macho_dylib_dependencies(output: str) -> list[str]:
+    """Extract ordered install names from ``llvm-objdump --macho --dylibs-used``."""
+
+    dependencies: list[str] = []
+    for line in output.splitlines():
+        candidate = line.strip()
+        name, separator, _details = candidate.partition(" (")
+        if separator and name:
+            dependencies.append(name)
+    return dependencies
+
+
+def resolve_macho_runtime_closure(
+    roots: Mapping[str, Path],
+    providers: Mapping[str, Path],
+    dependencies_for: Callable[[Path], list[str]],
+) -> dict[str, Path]:
+    """Resolve guest-Mach-O dependencies from explicit roots to built providers.
+
+    Rootless startup has no host shared cache to hide an omitted dylib. The
+    manifest therefore declares a closure resource, while this function derives
+    its concrete members from the product binaries actually built for the run.
+    """
+
+    closure = dict(roots)
+    pending = list(roots)
+    while pending:
+        required_by = pending.pop(0)
+        source = closure[required_by]
+        for dependency in dependencies_for(source):
+            if dependency == required_by:
+                continue
+            if not dependency.startswith("/"):
+                raise ValueError(
+                    "rootless bootstrap closure cannot resolve non-absolute Mach-O "
+                    f"dependency {dependency!r} required by {required_by}"
+                )
+            provider = providers.get(dependency)
+            if provider is None:
+                raise ValueError(
+                    "rootless bootstrap closure has no built provider for Mach-O "
+                    f"dependency {dependency} required by {required_by}"
+                )
+            if dependency not in closure:
+                closure[dependency] = provider
+                pending.append(dependency)
+    return closure
 
 
 def load_ctest_runtime_profiles(path: Path) -> dict[str, dict[str, Any]]:
@@ -184,6 +255,24 @@ def load_ctest_runtime_profiles(path: Path) -> dict[str, dict[str, Any]]:
                 raise ValueError(
                     f"runtime profile {name!r} rootless-no-mount is missing "
                     "runtime resource(s): " + ", ".join(sorted(missing_resources))
+                )
+            closure_targets = {
+                target
+                for artifact in artifacts
+                if isinstance(artifact, dict)
+                and runtime_artifact_has_resource(
+                    artifact, ROOTLESS_BOOTSTRAP_CLOSURE_RESOURCE
+                )
+                for target in artifact.get("build-targets", [])
+                if isinstance(target, str)
+            }
+            missing_closure_targets = (
+                ROOTLESS_BOOTSTRAP_CLOSURE_BUILD_TARGETS.difference(closure_targets)
+            )
+            if missing_closure_targets:
+                raise ValueError(
+                    f"runtime profile {name!r} rootless-no-mount closure must build "
+                    "target(s): " + ", ".join(sorted(missing_closure_targets))
                 )
         normalized[name] = {
             "source-profile": source_profile,

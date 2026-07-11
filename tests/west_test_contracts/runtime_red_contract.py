@@ -33,11 +33,17 @@ from west_commands.test_execution import ProcessResult
 from west_commands.test_runtime import (
     compose_ctest_runtime_profiles,
     describe_runtime_deploy_plan,
+    is_macho_binary,
     load_ctest_runtime_profiles,
+    parse_macho_dylib_dependencies,
+    parse_macho_dylib_id,
     partition_ctest_runtime_profiles,
     runtime_artifact_deploy_paths,
+    runtime_artifact_has_resource,
     runtime_build_targets,
     runtime_deploy_targets,
+    ROOTLESS_BOOTSTRAP_CLOSURE_RESOURCE,
+    resolve_macho_runtime_closure,
 )
 
 os.environ.setdefault("WEST_RUNTIME_MIN_FREE_BYTES", "0")
@@ -267,10 +273,9 @@ assert {
     "usr/libexec/shellspawn",
     "usr/libexec/darling/vchroot",
     "usr/lib/dyld",
-    "usr/lib/system/libsystem_kernel.dylib",
 }
 assert any(
-    artifact.get("resource") == "system-closure"
+    runtime_artifact_has_resource(artifact, ROOTLESS_BOOTSTRAP_CLOSURE_RESOURCE)
     for artifact in rootless_provider["runtime-artifacts"]
 )
 assert "darling/src/external/dyld" in rootless_provider["source-modules"]
@@ -281,7 +286,7 @@ assert baseline_provider["bootstrap-smoke-timeout-seconds"] == 20
 assert baseline_provider["launcher-env"] == rootless_provider["launcher-env"]
 assert "darling/src/external/dyld" in baseline_provider["source-modules"]
 assert any(
-    artifact.get("resource") == "system-closure"
+    runtime_artifact_has_resource(artifact, ROOTLESS_BOOTSTRAP_CLOSURE_RESOURCE)
     for artifact in baseline_provider["runtime-artifacts"]
 )
 
@@ -351,47 +356,98 @@ with tempfile.TemporaryDirectory() as temp:
     try:
         load_ctest_runtime_profiles(profiles_path)
     except ValueError as exc:
-        assert "missing runtime resource(s): system-closure" in str(exc), exc
+        assert "missing runtime resource(s): rootless-bootstrap-closure" in str(exc), exc
     else:
         raise AssertionError("rootless runtime provider accepted without its system closure")
 
-assert runtime_artifact_deploy_paths({"resource": "system-closure"}) == [
-    "usr/lib/system/libcache.dylib",
-    "usr/lib/system/libcommonCrypto.dylib",
-    "usr/lib/system/libcompiler_rt.dylib",
-    "usr/lib/system/libcopyfile.dylib",
-    "usr/lib/system/libcorecrypto.dylib",
-    "usr/lib/system/libdispatch.dylib",
-    "usr/lib/system/libdyld.dylib",
-    "usr/lib/system/libkeymgr.dylib",
-    "usr/lib/system/libkxld.dylib",
-    "usr/lib/system/liblaunch.dylib",
-    "usr/lib/system/libmacho.dylib",
-    "usr/lib/system/libquarantine.dylib",
-    "usr/lib/system/libremovefile.dylib",
-    "usr/lib/system/libsystem_asl.dylib",
-    "usr/lib/libSystem.B.dylib",
-    "usr/lib/system/libsystem_blocks.dylib",
-    "usr/lib/system/libsystem_c.dylib",
-    "usr/lib/system/libsystem_configuration.dylib",
-    "usr/lib/system/libsystem_coreservices.dylib",
-    "usr/lib/system/libsystem_coretls.dylib",
-    "usr/lib/system/libsystem_darwin.dylib",
-    "usr/lib/system/libsystem_dnssd.dylib",
-    "usr/lib/system/libsystem_duct.dylib",
-    "usr/lib/system/libsystem_info.dylib",
-    "usr/lib/system/libsystem_kernel.dylib",
-    "usr/lib/system/libsystem_malloc.dylib",
-    "usr/lib/system/libsystem_m.dylib",
-    "usr/lib/system/libsystem_networkextension.dylib",
-    "usr/lib/system/libsystem_notify.dylib",
-    "usr/lib/system/libsystem_platform.dylib",
-    "usr/lib/system/libsystem_pthread.dylib",
-    "usr/lib/system/libsystem_sandbox.dylib",
-    "usr/lib/system/libsystem_trace.dylib",
-    "usr/lib/system/libunwind.dylib",
-    "usr/lib/system/libxpc.dylib",
-]
+assert runtime_artifact_deploy_paths(
+    {"resource": ROOTLESS_BOOTSTRAP_CLOSURE_RESOURCE}
+) == []
+try:
+    runtime_artifact_deploy_paths({"resource": "system-closure"})
+except ValueError as exc:
+    assert "unknown runtime artifact resource" in str(exc), exc
+else:
+    raise AssertionError("obsolete static system closure resource was accepted")
+
+with tempfile.TemporaryDirectory() as temp:
+    tempdir = Path(temp)
+    launchd = tempdir / "launchd"
+    libsystem = tempdir / "libSystem.B.dylib"
+    libobjc = tempdir / "libobjc.A.dylib"
+    for path in (launchd, libsystem, libobjc):
+        path.write_bytes(b"\xcf\xfa\xed\xfeMach-O fixture\n")
+    assert is_macho_binary(launchd)
+    assert not is_macho_binary(tempdir / "missing")
+    assert parse_macho_dylib_id(
+        "/tmp/build/libobjc.A.dylib:\n/usr/lib/libobjc.A.dylib\n"
+    ) == "/usr/lib/libobjc.A.dylib"
+    assert parse_macho_dylib_dependencies(
+        "fixture:\n\t/usr/lib/libSystem.B.dylib (compatibility version 1.0.0)\n"
+    ) == ["/usr/lib/libSystem.B.dylib"]
+    dependencies = {
+        launchd: ["/usr/lib/libSystem.B.dylib"],
+        libsystem: ["/usr/lib/libobjc.A.dylib"],
+        libobjc: ["/usr/lib/libobjc.A.dylib"],
+    }
+    closure = resolve_macho_runtime_closure(
+        {"/usr/libexec/darling/launchd": launchd},
+        {
+            "/usr/lib/libSystem.B.dylib": libsystem,
+            "/usr/lib/libobjc.A.dylib": libobjc,
+        },
+        dependencies.__getitem__,
+    )
+    assert closure == {
+        "/usr/libexec/darling/launchd": launchd,
+        "/usr/lib/libSystem.B.dylib": libsystem,
+        "/usr/lib/libobjc.A.dylib": libobjc,
+    }
+    try:
+        resolve_macho_runtime_closure(
+            {"/usr/libexec/darling/launchd": launchd},
+            {"/usr/lib/libSystem.B.dylib": libsystem},
+            dependencies.__getitem__,
+        )
+    except ValueError as exc:
+        assert "no built provider" in str(exc), exc
+        assert "libobjc.A.dylib" in str(exc), exc
+    else:
+        raise AssertionError("closure accepted an unresolved guest dylib")
+    try:
+        resolve_macho_runtime_closure(
+            {"/usr/libexec/darling/launchd": launchd},
+            {},
+            lambda _path: ["@rpath/libmissing.dylib"],
+        )
+    except ValueError as exc:
+        assert "non-absolute Mach-O dependency" in str(exc), exc
+    else:
+        raise AssertionError("closure accepted an unresolvable rpath dependency")
+
+with tempfile.TemporaryDirectory() as temp:
+    profiles_path = Path(temp) / "runtime-profiles.yml"
+    profiles_path.write_text(
+        "runtime-profiles:\n"
+        "  incomplete-closure-rootless:\n"
+        "    source-profile: homebrew\n"
+        "    source-module: darling\n"
+        "    source-modules: [darling, darling/src/external/darlingserver, darling/src/external/xnu, darling/src/external/dyld]\n"
+        "    bootstrap: rootless-no-mount\n"
+        "    runtime-artifacts:\n"
+        "    - build-targets: [darling]\n"
+        "      deploy: [bin/darling, usr/libexec/darling/mldr, usr/libexec/darling/launchd, usr/libexec/shellspawn, usr/libexec/darling/vchroot, usr/lib/dyld]\n"
+        "    - build-targets: [darlingserver]\n"
+        "      deploy: [bin/darlingserver]\n"
+        "    - build-targets: [system_kernel]\n"
+        "      resource: rootless-bootstrap-closure\n"
+    )
+    try:
+        load_ctest_runtime_profiles(profiles_path)
+    except ValueError as exc:
+        assert "closure must build target(s): objc, resolv-darwin" in str(exc), exc
+    else:
+        raise AssertionError("rootless closure accepted without its objc build target")
 
 with tempfile.TemporaryDirectory() as temp:
     profiles_path = Path(temp) / "runtime-profiles.yml"
@@ -493,9 +549,14 @@ with tempfile.TemporaryDirectory() as temp:
     assert deploy_test._runtime_red_find_build_output(
         closure_build, "usr/lib/libSystem.B.dylib"
     ) == libsystem
-    assert deploy_test._runtime_red_find_build_output(
-        closure_build, "usr/lib/system/libkxld.dylib", allow_missing=True
-    ) is None
+    try:
+        deploy_test._runtime_red_find_build_output(
+            closure_build, "usr/lib/system/libkxld.dylib"
+        )
+    except SystemExit as exc:
+        assert "built artifact not found" in str(exc), exc
+    else:
+        raise AssertionError("missing runtime deployment artifact was accepted")
 assert deploy_test._runtime_red_deploy_targets(
     prefix_for_targets,
     "bin/darlingserver",

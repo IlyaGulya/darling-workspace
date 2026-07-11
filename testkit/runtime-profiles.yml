@@ -100,10 +100,12 @@ runtime-profiles:
       - darlingserver
       deploy:
       - bin/darlingserver
-    - module: darling/src/external/xnu
+    - module: darling
       build-targets:
       - system_kernel
-      resource: system-closure
+      - objc
+      - resolv-darwin
+      resource: rootless-bootstrap-closure
   homebrew-prefix-baseline:
     # This is the explicit durable baseline for the named homebrew prefix.
     # Unlike ordinary providers it is selected only through
@@ -146,7 +148,9 @@ runtime-profiles:
       - darlingserver
       deploy:
       - bin/darlingserver
-    - module: darling/src/external/xnu
+    - module: darling
       build-targets:
       - system_kernel
-      resource: system-closure
+      - objc
+      - resolv-darwin
+      resource: rootless-bootstrap-closure
