@@ -69,28 +69,12 @@ else()
     "dar-dar6x4-perf-5dq.1")
 endif()
 
-# ---------------------------------------------------------------------------
-# dar-test-infra-sp5.8.4.4 — E-UNION host hermetic harness slice.
-#
-# This is intentionally HOST, not guest: it compiles the real XNU
-# vchroot_userspace.c in EUNION test mode and runs the two-layer resolver,
-# copy-up, whiteout, readdir, detranslation, and metadata assertions against a
-# fake prefix/template root. The heavier live route-2 guest validation remains a
-# separate runtime/profile concern.
-# ---------------------------------------------------------------------------
-set(_eunion_host_suite "${_workspace_root}/experiments/e-union/run.sh")
-if(EXISTS "${_eunion_host_suite}")
-  add_test(NAME host/eunion_host_suite
-    COMMAND /bin/bash "${_eunion_host_suite}")
-  set_property(TEST host/eunion_host_suite PROPERTY
-    LABELS "env:host;diag:bare;bead:dar-test-infra-sp5.8.4.4;submod:xnu")
-  set_property(TEST host/eunion_host_suite PROPERTY TIMEOUT 30)
-  set_property(TEST host/eunion_host_suite PROPERTY ENVIRONMENT
-    "XNU_SRC_ROOT=${DARLING_SRC}/src/external/xnu")
-else()
-  message(WARNING
-    "workspace missing ${_eunion_host_suite}; skipping E-UNION host suite")
-endif()
+# E-UNION's host harness executes the selected profile's XNU sources and
+# provides source-base RED proof. A static testkit configuration only knows
+# the current checkout, which may be a different profile. West therefore owns
+# this source-profile runner through patch metadata; registering it here would
+# make a generic CTest smoke test run a homebrew assertion against, for example,
+# integration/arch.
 set(_mldr "${DARLING_SRC}/src/startup/mldr")
 set(_libsystem_kernel_tests
   "${DARLING_XNU_SRC}/darling/src/libsystem_kernel/tests")
