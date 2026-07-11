@@ -5347,6 +5347,32 @@ patches:
   bead: dar-test-infra-sp5.8.4.5
   publication-status: blocked
   publication-blocker: Rootless no-mount runtime provider and guest lifecycle proof are not implemented yet.
+  tests:
+  - name: mldr_main_tsd_contract
+    kind: contract
+    coverage-tier: host
+    runs: host
+    diag: bare
+    red: true
+    red-proof:
+      mode: source-base
+      source-env: DARLING_SRC_ROOT
+      expect-failure-phase: compile
+    runner: c-fixture
+    repo: darling-workspace
+    script: tests/mldr_main_tsd_contract.c
+    requires-profile: homebrew
+    source-root-module: darling
+    source-files:
+    - src/startup/mldr/elfcalls/dthreads.c
+    include-dirs:
+    - .
+    compile-flags:
+    - -std=gnu11
+    - -Wall
+    - -Wextra
+    - -Werror
+    note: Executes mldr's x86_64 guest-TSD primitive, reads the real GS-backed pthread and Mach-thread slots, and restores the host GS base afterwards. The full rootless bootstrap remains the guest lifecycle proof for the mldr call site.
   test-exception:
     reason: runtime-harness-pending
     scope: This submodule selection is valid only together with the rootless launcher and runtime artifacts it selects.
