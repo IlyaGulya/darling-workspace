@@ -777,6 +777,27 @@ else:
     raise AssertionError("guest-runtime-deploy proof accepted without reason matcher")
 
 
+test = make_test()
+test._prefix = None
+try:
+    test._run_guest_runtime_deploy_proof(
+        {"path": "darling/bootstrap.patch"},
+        {
+            "mode": "guest-runtime-deploy",
+            "expect-output-contains": ["old bootstrap failure"],
+        },
+        {
+            "name": "runtime_script_runner",
+            "runner": "guest-runtime-script",
+            "requires_resources": ["darling-prefix"],
+        },
+    )
+except SystemExit as exc:
+    assert "guest-runtime-deploy needs a Darling prefix" in str(exc), exc
+else:
+    raise AssertionError("guest-runtime-script was rejected before runtime deployment")
+
+
 with tempfile.TemporaryDirectory() as temp:
     test = make_test()
     test._prefix = str(Path(temp) / "prefix")
@@ -1195,6 +1216,7 @@ with tempfile.TemporaryDirectory() as temp:
     test = make_test()
     test._prefix = str(prefix)
     calls = []
+    resource_context_state = {"open": False}
 
     @contextmanager
     def fake_source_forest(patch, proof, *, omit_patch):
@@ -1210,6 +1232,7 @@ with tempfile.TemporaryDirectory() as temp:
 
     def fake_run(invocation, env=None):
         env = env or {}
+        assert resource_context_state["open"], "runtime invocation escaped its prefix resource context"
         calls.append((
             "run",
             invocation["name"],
@@ -1223,7 +1246,11 @@ with tempfile.TemporaryDirectory() as temp:
     def fake_resource_context(invocation, env):
         merged = dict(env or {})
         merged["RESOURCE_CONTEXT_MARKER"] = invocation["name"]
-        yield merged
+        resource_context_state["open"] = True
+        try:
+            yield merged
+        finally:
+            resource_context_state["open"] = False
 
     test._guest_runtime_source_forest = fake_source_forest
     test._runtime_red_build_artifacts = fake_build

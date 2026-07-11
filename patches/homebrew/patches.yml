@@ -5433,6 +5433,98 @@ patches:
     reason: runtime-harness-pending
     scope: Markers execute only in the real rootless launcher process and are verified by the bounded materialized bootstrap repro.
   sha256sum: 89349805b947806ed3bd74454ea7b68ff72fd2d5c4c8dbc516ecfb63493d4c71
+- path: darling/rootless-shellspawn-test-delay.patch
+  module: darling
+  source-branch: fix/rootless-shellspawn-test-delay
+  source-base: 894fc1e5e1a72b95f3b0791f7514228bf8bb1eb3
+  source-commit: af4953b4e6811a85a5f476622f90f32ff6f3ed9b
+  bead: dar-d2pm
+  publication-status: blocked
+  publication-blocker: Test-only rootless readiness control; retain only while the deterministic launcher regression proof needs it.
+  test-exception:
+    reason: test-instrumentation
+    scope: The hook is inert unless DARLING_TEST_SHELLSPAWN_READY_DELAY_MS is explicitly supplied by the rootless runtime regression proof below.
+  sha256sum: 6b4c7249500aa486c17db11156e4eba519b3a93da024df3389c671cacfbad950
+- path: darling/rootless-shellspawn-readiness.patch
+  module: darling
+  source-branch: fix/rootless-shellspawn-readiness
+  source-base: af4953b4e6811a85a5f476622f90f32ff6f3ed9b
+  source-commit: 685261061265dd489c1ee3c5c69a81f7dab419e0
+  bead: dar-d2pm
+  publication-status: blocked
+  publication-blocker: Rootless startup is locally validated first; do not publish until the full runtime proof is stable and lifecycle cleanup is closed.
+  tests:
+  - name: rootless_shellspawn_readiness
+    kind: guest
+    coverage-tier: runtime
+    runs: guest
+    diag: guarded
+    red: true
+    red-proof:
+      mode: guest-runtime-deploy
+      bad-profile: current-minus-patch
+      expect-failure-phase: script
+      expect-output-contains:
+      - Error connecting to shellspawn in the container
+      - No such file or directory
+      source-modules:
+      - darling
+      - darling/src/external/darlingserver
+      - darling/src/external/xnu
+      - darling/src/external/dyld
+      - darling/src/external/libsystem
+      cmake-defines:
+        DARLING_EUNION: true
+      runtime-artifacts:
+      - module: darling
+        build-targets:
+        - darling
+        - mldr
+        - launchd
+        - shellspawn
+        - vchroot
+        - dyld
+        deploy:
+        - bin/darling
+        - usr/libexec/darling/mldr
+        - usr/libexec/darling/launchd
+        - usr/libexec/shellspawn
+        - usr/libexec/darling/vchroot
+        - usr/lib/dyld
+      - module: darling/src/external/darlingserver
+        build-targets:
+        - darlingserver
+        deploy:
+        - bin/darlingserver
+      - module: darling
+        build-targets:
+        - system_kernel
+        - objc
+        - resolv-darwin
+        deploy:
+        - usr/lib/system/libsystem_kernel.dylib
+        - usr/lib/libobjc.A.dylib
+        - usr/lib/libresolv.9.dylib
+        resource: rootless-bootstrap-closure
+    runner: guest-runtime-script
+    repo: darling-workspace
+    script: tests/run-rootless-bootstrap-smoke.sh
+    ok-marker: WEST_ROOTLESS_BOOTSTRAP_OK
+    timeout-seconds: 60
+    requires:
+    - darling-prefix
+    env-vars:
+      DARLING_ROOTLESS: '1'
+      DARLING_NOOVERLAYFS: '1'
+      DARLING_EUNION: '1'
+      DARLING_TEST_SHELLSPAWN_READY_DELAY_MS: '20000'
+    note: >-
+      Real rootless lifecycle proof. A prerequisite test hook delays socket
+      readiness by 20 seconds in both runtime trees. The current-minus launcher
+      reaches the prior one-shot shellspawn connect and fails with ENOENT; the
+      fixed launcher retries only transient socket readiness errors while its
+      init remains alive, then runs the same guest command to its verdict marker.
+  sha256sum: 52b36b51a997e7a7458633a9ddd378b222c3157734249a7ac698edbd16509068
 - path: libsystem/rootless-initializer-trace.patch
   sha256sum: b3107f04e59f860982abacfe35714a4a2e18f3236a5724e7ece11eefb2327d89
   module: darling/src/external/libsystem

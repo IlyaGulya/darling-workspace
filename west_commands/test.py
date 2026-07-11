@@ -4287,18 +4287,24 @@ class DarlingTest(WestCommand):
         if (
             not invocation.get("guest_c_fixture")
             and not invocation.get("guest_command_fixture")
-            and invocation.get("runner") != "script"
+            and invocation.get("runner") not in {"script", "guest-runtime-script"}
         ):
-            self.die(f"{patch['path']}: guest-runtime-deploy requires guest-c-fixture, guest-command-fixture, or script")
+            self.die(
+                f"{patch['path']}: guest-runtime-deploy requires guest-c-fixture, "
+                "guest-command-fixture, script, or guest-runtime-script"
+            )
         if not self._guest_runtime_red_has_positive_reason(proof):
             self.die(
                 f"{patch['path']}: {invocation['name']} guest-runtime-deploy "
                 "RED proof needs expect-output-contains"
             )
-        if invocation.get("runner") == "script":
+        if invocation.get("runner") in {"script", "guest-runtime-script"}:
             resources = set(invocation.get("requires_resources", []))
             if not resources & {"darling-prefix", "darling-eunion-prefix"}:
-                self.die(f"{patch['path']}: guest-runtime-deploy script runner requires darling-prefix")
+                self.die(
+                    f"{patch['path']}: guest-runtime-deploy script runner requires "
+                    "darling-prefix"
+                )
         missing_env = self._missing_requirements(invocation)
         if missing_env:
             self.die(
@@ -4360,10 +4366,10 @@ class DarlingTest(WestCommand):
                     runtime_invocation = self._invocation_from_runtime_source(red_invocation, source_root)
                     with self._resource_context(runtime_invocation, bad_env) as resource_env:
                         red_started_at = time.time()
-                    bad_result = self._run_invocation_captured(
-                        runtime_invocation,
-                        env=resource_env,
-                    )
+                        bad_result = self._run_invocation_captured(
+                            runtime_invocation,
+                            env=resource_env,
+                        )
                     if bad_result.returncode == 0:
                         self.err("  RED proof failed: deployed bad runtime unexpectedly passed")
                         keep_on_failure = True
@@ -5048,6 +5054,12 @@ class DarlingTest(WestCommand):
             return
 
         if args.patch and not args.profile:
+            if args.prefix_profile:
+                self.die(
+                    "--patch selects patch metadata and requires --profile; "
+                    "--prefix-profile selects only a Darling prefix "
+                    "(for example: --profile homebrew --prefix-profile homebrew)"
+                )
             self.die("--patch requires --profile")
         if args.profile and args.submodule:
             self.die("--submodule selects CTest suite tests; use --patch/--profile for patch metadata")
