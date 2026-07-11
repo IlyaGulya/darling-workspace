@@ -39,6 +39,7 @@ def load_ctest_runtime_profiles(path: Path) -> dict[str, dict[str, Any]]:
         artifacts = profile.get("runtime-artifacts")
         bootstrap = profile.get("bootstrap")
         purpose = profile.get("purpose", "runtime")
+        bootstrap_smoke_timeout = profile.get("bootstrap-smoke-timeout-seconds", 60)
         if not isinstance(source_profile, str) or not source_profile:
             raise ValueError(f"runtime profile {name!r} needs source-profile")
         if not isinstance(source_module, str) or not source_module:
@@ -60,6 +61,14 @@ def load_ctest_runtime_profiles(path: Path) -> dict[str, dict[str, Any]]:
         if purpose == "prefix-baseline" and bootstrap != "rootless-no-mount":
             raise ValueError(
                 f"runtime profile {name!r} prefix-baseline must use rootless-no-mount"
+            )
+        if (
+            type(bootstrap_smoke_timeout) is not int
+            or bootstrap_smoke_timeout <= 0
+        ):
+            raise ValueError(
+                f"runtime profile {name!r} bootstrap-smoke-timeout-seconds "
+                "must be a positive integer"
             )
         cmake_defines = profile.get("cmake-defines", {})
         if not isinstance(cmake_defines, dict) or not all(
@@ -119,6 +128,7 @@ def load_ctest_runtime_profiles(path: Path) -> dict[str, dict[str, Any]]:
             "cmake-defines": cmake_defines,
             "launcher-env": launcher_env,
             "purpose": purpose,
+            "bootstrap-smoke-timeout-seconds": bootstrap_smoke_timeout,
         }
         if bootstrap is not None:
             normalized[name]["bootstrap"] = bootstrap

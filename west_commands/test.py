@@ -3702,6 +3702,7 @@ class DarlingTest(WestCommand):
                 f"runtime profile {profile_name} is not a prefix-baseline; "
                 "bootstrap only accepts declared rootless baselines"
             )
+        smoke_timeout_seconds = definition["bootstrap-smoke-timeout-seconds"]
         with self._prefix_resource_context(True):
             with self._runtime_profile_deployment_context(
                 [profile_name], label_prefix="Prefix bootstrap", retain_deployment=True
@@ -3735,12 +3736,15 @@ class DarlingTest(WestCommand):
                     "set -eu\nprintf '%s\\n' WEST_PREFIX_BOOTSTRAP_OK",
                     cwd=Path(self.topdir),
                     env=deployment.env,
-                    timeout_seconds=60,
+                    timeout_seconds=smoke_timeout_seconds,
                     capture_output=True,
                 )
                 output = f"{result.stdout}{result.stderr}"
                 if result.timed_out:
-                    self.die("prefix bootstrap guest smoke timed out after 60s")
+                    self.die(
+                        "prefix bootstrap guest smoke timed out after "
+                        f"{smoke_timeout_seconds}s"
+                    )
                 if result.returncode != 0:
                     self.die(
                         "prefix bootstrap guest smoke failed "

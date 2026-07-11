@@ -311,7 +311,10 @@ with tempfile.TemporaryDirectory() as temp:
     test.err = lambda _message: None
     test.die = lambda message: (_ for _ in ()).throw(SystemExit(message))
     test._ctest_runtime_profile_definitions = lambda: {
-        "homebrew-prefix-baseline": {"purpose": "prefix-baseline"}
+        "homebrew-prefix-baseline": {
+            "purpose": "prefix-baseline",
+            "bootstrap-smoke-timeout-seconds": 60,
+        }
     }
     events = []
 
@@ -365,7 +368,10 @@ with tempfile.TemporaryDirectory() as temp:
     test.err = lambda _message: None
     test.die = lambda message: (_ for _ in ()).throw(SystemExit(message))
     test._ctest_runtime_profile_definitions = lambda: {
-        "homebrew-prefix-baseline": {"purpose": "prefix-baseline"}
+        "homebrew-prefix-baseline": {
+            "purpose": "prefix-baseline",
+            "bootstrap-smoke-timeout-seconds": 60,
+        }
     }
     restored = []
 
