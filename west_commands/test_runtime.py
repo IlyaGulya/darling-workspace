@@ -35,7 +35,9 @@ ROOTLESS_NO_MOUNT_RUNTIME_RESOURCES = frozenset({"system-closure"})
 # The launcher-side boot chain executes guest Mach-O binaries before it can
 # compile or run a fixture. Keep this resource list in the runtime layer so a
 # provider declares the domain requirement once instead of repeating dylib
-# paths in every rootless manifest.
+# paths in every rootless manifest. A build can legitimately omit unrelated
+# members, so the runner requires libSystem.B and deploys every other member
+# that the configured product build actually produced.
 SYSTEM_CLOSURE_BASENAMES = (
     "libcache.dylib", "libcommonCrypto.dylib", "libcompiler_rt.dylib",
     "libcopyfile.dylib", "libcorecrypto.dylib", "libdispatch.dylib",
