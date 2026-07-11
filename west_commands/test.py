@@ -103,6 +103,11 @@ from test_worktrees import prune_stale_west_temp_worktrees, remove_temporary_wor
 _BOOTSTRAP_FATAL_SIGNAL = re.compile(
     r"--- (?P<signal>SIG(?:SEGV|BUS|ILL|ABRT)) \{(?P<details>[^}]*)\} ---"
 )
+_ROOTLESS_BOOTSTRAP_TRACE_FILES = (
+    ("host", Path(".west-rootless-boot.log")),
+    ("guest-path", Path("private/var/tmp/.west-rootless-boot.log")),
+    ("guest-fd", Path(".west-rootless-guest-fd.log")),
+)
 
 
 def bootstrap_trace_fatal_signal(trace_dir: Path) -> str | None:
@@ -118,6 +123,28 @@ def bootstrap_trace_fatal_signal(trace_dir: Path) -> str | None:
         location = f" at {fault.group(1)}" if fault is not None else ""
         return f"{match.group('signal')}{location}"
     return None
+
+
+def rootless_bootstrap_progress(prefix: Path) -> str | None:
+    """Summarize the latest observable stage from each rootless boot trace."""
+
+    stages = []
+    for label, relative_path in _ROOTLESS_BOOTSTRAP_TRACE_FILES:
+        trace_path = prefix / relative_path
+        try:
+            with trace_path.open("rb") as trace:
+                trace.seek(0, os.SEEK_END)
+                start = max(0, trace.tell() - 4096)
+                trace.seek(start)
+                content = trace.read().decode(errors="replace")
+        except OSError:
+            continue
+        for line in reversed(content.splitlines()):
+            stage = line.strip()
+            if stage:
+                stages.append(f"{label}={stage[:512]}")
+                break
+    return " | ".join(stages) if stages else None
 
 
 class RuntimeProfileDeployment:
@@ -3934,9 +3961,11 @@ class DarlingTest(WestCommand):
                     )
                 if result.timed_out:
                     trace_hint = f"; syscall trace: {trace_dir}" if trace_dir is not None else ""
+                    progress = rootless_bootstrap_progress(deployment.prefix)
+                    progress_hint = f"; progress: {progress}" if progress is not None else ""
                     self.die(
                         "prefix bootstrap guest smoke timed out after "
-                        f"{smoke_timeout_seconds}s{trace_hint}"
+                        f"{smoke_timeout_seconds}s{trace_hint}{progress_hint}"
                     )
                 if result.returncode != 0:
                     self.die(
