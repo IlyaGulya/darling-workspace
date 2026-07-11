@@ -1699,11 +1699,11 @@ class DarlingTest(WestCommand):
                         if getattr(self, "_bootstrap_syscall_trace", None) is not None:
                             server_trace = (
                                 Path(prefix_text)
-                                / "private/var/log/dserver-auxlog.txt"
+                                / "private/var/log/dserver-rpc-trace.log"
                             )
                             server_trace.parent.mkdir(parents=True, exist_ok=True)
                             server_trace.unlink(missing_ok=True)
-                            runtime_env["DARLING_SERVER_AUXLOG"] = "1"
+                            runtime_env["DSERVER_TEST_TRACE_FILE"] = str(server_trace)
                     runtime_env.update(launcher_env)
                     yield RuntimeProfileDeployment(
                         name=profile_name,
@@ -3915,7 +3915,7 @@ class DarlingTest(WestCommand):
                 )
                 if trace_dir is not None:
                     server_trace = (
-                        deployment.prefix / "private/var/log/dserver-auxlog.txt"
+                        deployment.prefix / "private/var/log/dserver-rpc-trace.log"
                     )
                     if server_trace.is_file():
                         captured_server_trace = trace_dir / "darlingserver-rpc.log"
