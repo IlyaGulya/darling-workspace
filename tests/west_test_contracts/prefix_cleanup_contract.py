@@ -1,5 +1,6 @@
 import os
 import signal
+import subprocess
 import tempfile
 import time
 import sys
@@ -24,9 +25,11 @@ sys.modules.setdefault("west.commands", west_commands_module)
 
 from west_commands.test import DarlingTest
 from west_commands.test_prefix import (
+    cleanup_rootless_prefix_processes,
     darlingserver_pids_for_prefix,
     prefix_process_snapshot,
     remove_stale_init_pid,
+    rootless_prefix_process_snapshot,
 )
 
 
@@ -105,6 +108,60 @@ test._resolve_darling_launcher = lambda _prefix: None
 test._kill_dserver_for_prefix = lambda _prefix: None
 test._ps_entries = lambda: []
 assert test._shutdown_test_prefix()
+
+with tempfile.TemporaryDirectory() as temp:
+    prefix = Path(temp)
+    tagged = subprocess.Popen(
+        [sys.executable, "-c", "import time; time.sleep(60)"],
+        env={
+            **os.environ,
+            "DARLING_PREFIX": str(prefix),
+            "DARLING_ROOTLESS": "1",
+        },
+    )
+    unrelated = subprocess.Popen(
+        [sys.executable, "-c", "import time; time.sleep(60)"],
+        env={**os.environ, "DARLING_PREFIX": str(prefix)},
+    )
+    try:
+        for _ in range(20):
+            if any(entry.startswith(f"{tagged.pid} ") for entry in rootless_prefix_process_snapshot(prefix)):
+                break
+            time.sleep(0.05)
+        else:
+            raise AssertionError("tagged rootless process was not discovered")
+        result = cleanup_rootless_prefix_processes(prefix)
+        assert result.success and result.changed, result
+        tagged.wait(timeout=3)
+        assert unrelated.poll() is None, "cleanup matched an untagged prefix process"
+    finally:
+        for process in (tagged, unrelated):
+            if process.poll() is None:
+                process.kill()
+                process.wait()
+
+with tempfile.TemporaryDirectory() as temp:
+    prefix = Path(temp)
+    tagged = subprocess.Popen(
+        [sys.executable, "-c", "import time; time.sleep(60)"],
+        env={
+            **os.environ,
+            "DARLING_PREFIX": str(prefix),
+            "DARLING_ROOTLESS": "1",
+        },
+    )
+    test = make_test()
+    test._resolve_darling_launcher = lambda _prefix: None
+    test._kill_dserver_for_prefix = lambda _prefix: None
+    test._cleanup_prefix_mounts = lambda _prefix: True
+    test._remove_stale_init_pid = lambda _prefix: None
+    try:
+        assert test._shutdown_runtime_prefix(prefix)
+        tagged.wait(timeout=3)
+    finally:
+        if tagged.poll() is None:
+            tagged.kill()
+            tagged.wait()
 
 with tempfile.TemporaryDirectory() as temp:
     prefix = Path(temp)

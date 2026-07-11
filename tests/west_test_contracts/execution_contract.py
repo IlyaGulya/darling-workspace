@@ -38,6 +38,34 @@ with tempfile.TemporaryDirectory() as temp:
         time.sleep(0.05)
     assert not Path(f"/proc/{pid}").exists(), f"timed out child survived: {pid}"
 
+
+with tempfile.TemporaryDirectory() as temp:
+    tempdir = Path(temp)
+    escaped_pid = tempdir / "escaped.pid"
+    code = (
+        "import os, pathlib, sys, time; "
+        "pid = os.fork(); "
+        "exec('os.setsid(); pathlib.Path(sys.argv[1]).write_text(str(os.getpid())); time.sleep(60)') "
+        "if pid == 0 else time.sleep(60)"
+    )
+    started = time.monotonic()
+    result = run_bounded(
+        [sys.executable, "-c", code, str(escaped_pid)],
+        cwd=tempdir,
+        env=None,
+        timeout_seconds=1,
+        capture_output=True,
+    )
+    assert result.timed_out and result.returncode == 124, result
+    assert time.monotonic() - started < 5, "escaped stdout pipe made timeout unbounded"
+    pid = int(escaped_pid.read_text())
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        pass
+    else:
+        os.kill(pid, 9)
+
 result = run_bounded(
     [sys.executable, "-c", "print('BOUNDED_OUTPUT_OK')"],
     cwd=Path.cwd(),
