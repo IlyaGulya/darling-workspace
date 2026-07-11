@@ -265,6 +265,14 @@ class DarlingTest(WestCommand):
             help="with --gc, prune stale west runtime/source-profile scratch dirs older than this "
             "(default 24)",
         )
+        parser.add_argument(
+            "--proof-scratch-keep-last",
+            type=int,
+            default=2,
+            metavar="N",
+            help="with --gc, keep at most N newest west runtime/source-profile scratch dirs "
+            "regardless of age (default 2)",
+        )
         return parser
 
     # --- helpers ------------------------------------------------------------
@@ -4358,11 +4366,14 @@ class DarlingTest(WestCommand):
         self,
         root: Path,
         max_age_hours: float,
+        keep_last: int,
         dry_run: bool = False,
     ) -> None:
         root = root.expanduser()
         if max_age_hours < 0:
             self.die("--proof-scratch-max-age-hours must be >= 0")
+        if keep_last < 0:
+            self.die("--proof-scratch-keep-last must be >= 0")
         if not root.is_dir():
             self.inf(f"no proof scratch root at {root}")
             return
@@ -4373,15 +4384,21 @@ class DarlingTest(WestCommand):
             "west-red-proof-source-*",
             "west-ctest-runtime-*",
         )
-        scratch_dirs = sorted(
+        all_scratch_dirs = sorted(
             {
                 path
                 for pattern in patterns
                 for path in root.glob(pattern)
-                if path.is_dir() and path.stat().st_mtime <= cutoff
+                if path.is_dir()
             },
             key=lambda path: path.stat().st_mtime,
+            reverse=True,
         )
+        scratch_dirs = [
+            path
+            for index, path in enumerate(all_scratch_dirs)
+            if index >= keep_last or path.stat().st_mtime <= cutoff
+        ]
         freed = 0
         verb = "would prune" if dry_run else "pruned"
         for scratch in scratch_dirs:
@@ -4461,6 +4478,7 @@ class DarlingTest(WestCommand):
             self._gc_runtime_proof_scratch(
                 Path(args.proof_scratch_root),
                 args.proof_scratch_max_age_hours,
+                args.proof_scratch_keep_last,
                 dry_run=args.dry_run,
             )
             self._gc_guest_runner_output(
