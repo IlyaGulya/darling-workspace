@@ -148,6 +148,10 @@ status_job() {
 }
 
 wait_job() {
+	if [[ "${CODEX_CI:-}" == "1" ]]; then
+		echo 'west-job wait is unsafe under CODEX_CI; use west-job.sh status to poll the state directory' >&2
+		exit 2
+	fi
 	if load_live_pid; then
 		wait_for_pid_exit "$state_dir/pid"
 	fi
