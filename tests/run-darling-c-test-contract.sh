@@ -53,8 +53,8 @@ cat >"$tmp/compile-fail.c" <<'C'
 int main(void) { return this_does_not_compile; }
 C
 printf 'darlingserver pid=42 exec-mldr\n' >"$tmp/rootless-boot.trace"
-mkdir -p "$tmp/prefix/private/var/log"
-printf 'launchd pid=43 runtime-loop\n' >"$tmp/prefix/private/var/log/.west-rootless-boot.log"
+mkdir -p "$tmp/prefix/private/var/tmp"
+printf 'launchd pid=43 runtime-loop\n' >"$tmp/prefix/private/var/tmp/.west-rootless-boot.log"
 if DARLING_BOOT_TRACE="$tmp/rootless-boot.trace" DPREFIX="$tmp/prefix" \
 	"$repo/testkit/scripts/run-darling-c-test.sh" \
 	--name "${name}_compile_fail" --source "$tmp/compile-fail.c" \

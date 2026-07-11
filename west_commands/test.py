@@ -1650,7 +1650,12 @@ class DarlingTest(WestCommand):
                     runtime_env["DARLING_LAUNCHER"] = str(runtime_launcher)
                     if definition.get("bootstrap") == "rootless-no-mount":
                         boot_trace = Path(prefix_text) / ".west-rootless-boot.log"
+                        guest_boot_trace = (
+                            Path(prefix_text)
+                            / "private/var/tmp/.west-rootless-boot.log"
+                        )
                         boot_trace.unlink(missing_ok=True)
+                        guest_boot_trace.unlink(missing_ok=True)
                         runtime_env["DARLING_BOOT_TRACE"] = str(boot_trace)
                     runtime_env.update(launcher_env)
                     yield RuntimeProfileDeployment(

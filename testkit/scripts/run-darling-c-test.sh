@@ -118,7 +118,7 @@ dump_boot_trace() {
 		printf '%s\n' "--- rootless boot trace: $DARLING_BOOT_TRACE ---" >&2
 		cat "$DARLING_BOOT_TRACE" >&2 || true
 	fi
-	local guest_trace="$prefix/private/var/log/.west-rootless-boot.log"
+	local guest_trace="$prefix/private/var/tmp/.west-rootless-boot.log"
 	if [[ -f "$guest_trace" ]]; then
 		printf '%s\n' "--- rootless guest boot trace: $guest_trace ---" >&2
 		cat "$guest_trace" >&2 || true
