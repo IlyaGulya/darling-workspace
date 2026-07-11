@@ -91,7 +91,7 @@
         },
         {
           "branch": "fix/rootless-no-mount-launch",
-          "head": "d9f401d16831d4a8c66171fdf632fbd3e6c444b1",
+          "head": "083f1859162cb605b7d198c9d0859d3d0b132b67",
           "upstream": "",
           "source_ref": "refs/heads/fix/rootless-no-mount-launch"
         },
