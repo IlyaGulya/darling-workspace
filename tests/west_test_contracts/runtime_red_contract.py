@@ -42,6 +42,7 @@ from west_commands.test_runtime import (
     runtime_artifact_has_resource,
     runtime_build_targets,
     runtime_deploy_targets,
+    ROOTLESS_BOOTSTRAP_CLOSURE_SOURCE_MODULES,
     ROOTLESS_BOOTSTRAP_CLOSURE_RESOURCE,
     resolve_macho_runtime_closure,
 )
@@ -279,12 +280,18 @@ assert any(
     for artifact in rootless_provider["runtime-artifacts"]
 )
 assert "darling/src/external/dyld" in rootless_provider["source-modules"]
+assert ROOTLESS_BOOTSTRAP_CLOSURE_SOURCE_MODULES.issubset(
+    rootless_provider["source-modules"]
+)
 baseline_provider = actual_runtime_profiles["homebrew-prefix-baseline"]
 assert baseline_provider["purpose"] == "prefix-baseline"
 assert baseline_provider["bootstrap"] == "rootless-no-mount"
 assert baseline_provider["bootstrap-smoke-timeout-seconds"] == 20
 assert baseline_provider["launcher-env"] == rootless_provider["launcher-env"]
 assert "darling/src/external/dyld" in baseline_provider["source-modules"]
+assert ROOTLESS_BOOTSTRAP_CLOSURE_SOURCE_MODULES.issubset(
+    baseline_provider["source-modules"]
+)
 assert any(
     runtime_artifact_has_resource(artifact, ROOTLESS_BOOTSTRAP_CLOSURE_RESOURCE)
     for artifact in baseline_provider["runtime-artifacts"]
@@ -343,7 +350,7 @@ with tempfile.TemporaryDirectory() as temp:
         "  incomplete-resource-rootless:\n"
         "    source-profile: homebrew\n"
         "    source-module: darling\n"
-        "    source-modules: [darling, darling/src/external/darlingserver, darling/src/external/xnu, darling/src/external/dyld]\n"
+        "    source-modules: [darling, darling/src/external/darlingserver, darling/src/external/xnu, darling/src/external/dyld, darling/src/external/libsystem]\n"
         "    bootstrap: rootless-no-mount\n"
         "    runtime-artifacts:\n"
         "    - build-targets: [darling]\n"
@@ -432,7 +439,7 @@ with tempfile.TemporaryDirectory() as temp:
         "  incomplete-closure-rootless:\n"
         "    source-profile: homebrew\n"
         "    source-module: darling\n"
-        "    source-modules: [darling, darling/src/external/darlingserver, darling/src/external/xnu, darling/src/external/dyld]\n"
+        "    source-modules: [darling, darling/src/external/darlingserver, darling/src/external/xnu, darling/src/external/dyld, darling/src/external/libsystem]\n"
         "    bootstrap: rootless-no-mount\n"
         "    runtime-artifacts:\n"
         "    - build-targets: [darling]\n"
@@ -448,6 +455,30 @@ with tempfile.TemporaryDirectory() as temp:
         assert "closure must build target(s): objc, resolv-darwin" in str(exc), exc
     else:
         raise AssertionError("rootless closure accepted without its objc build target")
+
+with tempfile.TemporaryDirectory() as temp:
+    profiles_path = Path(temp) / "runtime-profiles.yml"
+    profiles_path.write_text(
+        "runtime-profiles:\n"
+        "  live-closure-owner-rootless:\n"
+        "    source-profile: homebrew\n"
+        "    source-module: darling\n"
+        "    source-modules: [darling, darling/src/external/darlingserver, darling/src/external/xnu, darling/src/external/dyld]\n"
+        "    bootstrap: rootless-no-mount\n"
+        "    runtime-artifacts:\n"
+        "    - build-targets: [darling]\n"
+        "      deploy: [bin/darling, usr/libexec/darling/mldr, usr/libexec/darling/launchd, usr/libexec/shellspawn, usr/libexec/darling/vchroot, usr/lib/dyld]\n"
+        "    - build-targets: [darlingserver]\n"
+        "      deploy: [bin/darlingserver]\n"
+        "    - build-targets: [system_kernel, objc, resolv-darwin]\n"
+        "      resource: rootless-bootstrap-closure\n"
+    )
+    try:
+        load_ctest_runtime_profiles(profiles_path)
+    except ValueError as exc:
+        assert "darling/src/external/libsystem" in str(exc), exc
+    else:
+        raise AssertionError("rootless closure accepted a live libsystem source")
 
 with tempfile.TemporaryDirectory() as temp:
     profiles_path = Path(temp) / "runtime-profiles.yml"
