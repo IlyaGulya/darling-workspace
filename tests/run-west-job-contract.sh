@@ -12,16 +12,48 @@ grep -F -x -q 'GREEN_JOB' "$tmp/green/log"
 test "$(<"$tmp/green/rc")" = 0
 "$job" status --state-dir "$tmp/green" | grep -F -x -q "completed rc=0 state=$tmp/green"
 
-"$job" start --state-dir "$tmp/cancelled" -- /bin/bash -c 'sleep 30'
+"$job" start --state-dir "$tmp/cancelled" -- /usr/bin/python3 -c '
+import signal
+import sys
+import time
+
+def cancelled(_signal, _frame):
+    print("COOPERATIVE_CANCEL", flush=True)
+    sys.exit(0)
+
+signal.signal(signal.SIGINT, cancelled)
+print("COOPERATIVE_READY", flush=True)
+time.sleep(30)
+'
 pid="$(<"$tmp/cancelled/pid")"
+for _ in $(seq 1 20); do
+	if [[ -f "$tmp/cancelled/command-pid" ]]; then
+		break
+	fi
+	sleep 0.05
+done
+test -f "$tmp/cancelled/command-pid"
+command_pid="$(<"$tmp/cancelled/command-pid")"
+for _ in $(seq 1 20); do
+	if grep -F -x -q 'COOPERATIVE_READY' "$tmp/cancelled/log"; then
+		break
+	fi
+	sleep 0.05
+done
+grep -F -x -q 'COOPERATIVE_READY' "$tmp/cancelled/log"
 "$job" cancel --state-dir "$tmp/cancelled"
 if "$job" wait --state-dir "$tmp/cancelled"; then
 	echo 'cancelled job unexpectedly succeeded' >&2
 	exit 1
 fi
 test "$(<"$tmp/cancelled/rc")" = 143
+grep -F -x -q 'COOPERATIVE_CANCEL' "$tmp/cancelled/log"
 if kill -0 "$pid" 2>/dev/null; then
 	echo "cancelled job is still alive: $pid" >&2
+	exit 1
+fi
+if kill -0 "$command_pid" 2>/dev/null; then
+	echo "cancelled command is still alive: $command_pid" >&2
 	exit 1
 fi
 
