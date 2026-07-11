@@ -75,10 +75,12 @@ except ImportError:  # Loaded as a West extension module, not a package.
 from test_manifest import ManifestError, load_test_profile
 from test_prefix import (
     cleanup_rootless_prefix_processes,
+    cleanup_rootless_runtime_sockets,
     darlingserver_pids_for_prefix,
     prefix_process_snapshot,
     remove_stale_init_pid,
     remove_stale_server_socket,
+    RootlessRuntimeSocketCleanupResult,
     rootless_prefix_process_snapshot,
 )
 from test_resources import resource_context
@@ -4175,6 +4177,13 @@ class DarlingTest(WestCommand):
         self._remove_stale_init_pid(prefix)
         if self._remove_stale_server_socket(prefix):
             self.inf(f"removed stale Darling server socket for {prefix}")
+        socket_cleanup = self._cleanup_rootless_runtime_sockets(prefix)
+        for message in socket_cleanup.changed:
+            self.inf(f"cleanup rootless Darling prefix: {message}")
+        for message in socket_cleanup.problems:
+            self.err(message)
+        if not socket_cleanup.success:
+            return False
         return True
 
     def _invocation_from_runtime_source(self, invocation, source_root: Path):
@@ -4808,6 +4817,11 @@ class DarlingTest(WestCommand):
 
     def _remove_stale_server_socket(self, prefix: Path) -> bool:
         return remove_stale_server_socket(prefix)
+
+    def _cleanup_rootless_runtime_sockets(
+        self, prefix: Path
+    ) -> RootlessRuntimeSocketCleanupResult:
+        return cleanup_rootless_runtime_sockets(prefix)
 
     def _ps_entries(self) -> list[tuple[int, int, str]]:
         result = subprocess.run(
