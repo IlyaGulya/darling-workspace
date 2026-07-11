@@ -72,9 +72,11 @@ for bead in dar-q95.10 dar-q95.11 dar-q95.20 dar-gwn.6.4 dar-gwn.6 dar-gwn.1.6 d
 		{ printf '%s\n' "$guest_list" >&2; exit 1; }
 done
 
-list_eunion="$(west test --bead dar-test-infra-sp5.8.4.4 --env host --list)"
-printf '%s\n' "$list_eunion" | grep -q 'host/eunion_host_suite' ||
-	{ printf '%s\n' "$list_eunion" >&2; exit 1; }
-west test --bead dar-test-infra-sp5.8.4.4 --env host
+# The E-UNION host suite has source-base RED proof and must run against a
+# materialized selected profile. It is intentionally not a generic CTest
+# testkit entry; its patch-local West run owns the source-profile selection.
+eunion_metadata="$(west test --profile homebrew --patch xnu/eunion-25-bind-symlink-parent.patch --env host --list)"
+printf '%s\n' "$eunion_metadata" | grep -q 'eunion_bind_symlink_parent_host' ||
+	{ printf '%s\n' "$eunion_metadata" >&2; exit 1; }
 
 printf 'PASS west-test-testkit-contract\n'
