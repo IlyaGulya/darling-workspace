@@ -5376,6 +5376,18 @@ patches:
   test-exception:
     reason: runtime-harness-pending
     scope: The markers execute only across the real virtual vchroot-to-launchd handoff and are verified by the retained rootless bootstrap repro.
+- path: darling/rootless-shellspawn-bootstrap-trace.patch
+  sha256sum: 90b00c4bcb466510a3320dbf010bd95839d4cf250316421517ad3cadfcce34f1
+  module: darling
+  source-branch: fix/rootless-shellspawn-bootstrap-trace
+  source-base: c82877b302c8318dafed286e98ea1df9bc2df3c8
+  source-commit: d67907c65edcf0c90e35eaec58119ec57f18238b
+  bead: dar-d2pm
+  publication-status: blocked
+  publication-blocker: Rootless no-mount bootstrap still needs a behavioral shellspawn launch proof.
+  test-exception:
+    reason: runtime-harness-pending
+    scope: The diagnostic markers execute only in the materialized rootless guest bootstrap and identify the launchd-to-shellspawn boundary before a product fix is selected.
 - path: libsystem/rootless-initializer-trace.patch
   sha256sum: ef9a283afc09ee841ac7103e6110bd1b47d845c072fced17b00fd6b8dda96191
   module: darling/src/external/libsystem
