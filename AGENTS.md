@@ -37,6 +37,12 @@ refs, PR drafts, and agent handoff.
 - Treat `integration/*` branches and profile `west.lock.yml` files as generated.
 - Never edit `integration/*`, open PRs from them, or edit generated locks.
 - Never edit a patch without refreshing its full source SHA and checksum.
+- Unified patch archives contain significant blank context lines encoded as a
+  single space, so `git diff --check` reports false trailing-whitespace errors
+  when it checks the archive as ordinary text. Run the whitespace check with
+  `':(exclude)patches/**/*.patch'`, then use `west patch export --check` and
+  `west patch verify` to validate the patch payload itself. Do not rewrite
+  those context lines or disable whitespace checks for source files.
 - Publish PRs only with `west pr`, one Bead at a time, from clean `fix/*`
   branches. Never publish generated, backup, or historical mega-branches.
 - Fork-local draft PRs are staging review objects, not private artifacts.
