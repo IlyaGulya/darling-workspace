@@ -202,7 +202,7 @@ with tempfile.TemporaryDirectory() as temp:
     host_trace = root / "prefix" / ".west-rootless-boot.log"
     guest_trace = root / "prefix" / "private/var/tmp/.west-rootless-boot.log"
     guest_fd_trace = root / "prefix" / ".west-rootless-guest-fd.log"
-    server_trace = root / "prefix" / "private/var/log/dserver-auxlog.txt"
+    server_trace = root / "prefix" / "private/var/log/dserver-rpc-trace.log"
     host_trace.write_text("stale host trace\n")
     guest_trace.parent.mkdir(parents=True)
     guest_trace.write_text("stale guest trace\n")
@@ -272,7 +272,7 @@ with tempfile.TemporaryDirectory() as temp:
             root / "prefix" / ".west-rootless-boot.log"
         )
         assert runtime_env["DARLING_GUEST_BOOT_TRACE"] == str(guest_fd_trace)
-        assert runtime_env["DARLING_SERVER_AUXLOG"] == "1"
+        assert runtime_env["DSERVER_TEST_TRACE_FILE"] == str(server_trace)
         assert not host_trace.exists()
         assert not guest_trace.exists()
         assert not guest_fd_trace.exists()
@@ -393,7 +393,7 @@ with tempfile.TemporaryDirectory() as temp:
     prefix = root / "prefix"
     trace_dir = root / "trace"
     prefix.mkdir()
-    server_trace = prefix / "private/var/log/dserver-auxlog.txt"
+    server_trace = prefix / "private/var/log/dserver-rpc-trace.log"
     server_trace.parent.mkdir(parents=True)
     server_trace.write_text("stale trace\n")
     test = DarlingTest.__new__(DarlingTest)
@@ -436,7 +436,7 @@ with tempfile.TemporaryDirectory() as temp:
     def timed_out_guest(*_args, **kwargs):
         observed_prefixes.append(kwargs["command_prefix"])
         server_trace.parent.mkdir(parents=True, exist_ok=True)
-        server_trace.write_text("RECV call=1(mldr_path)\n")
+        server_trace.write_text("rpc.recv number=1 name=mldr_path\n")
         return ProcessResult(124, timed_out=True, stdout="", stderr="")
 
     test_module.run_guest_shell = timed_out_guest
@@ -454,7 +454,7 @@ with tempfile.TemporaryDirectory() as temp:
     assert observed_prefixes == [
         ("strace", "-ff", "-i", "-tt", "-v", "-s", "160", "-o", str(trace_dir / "bootstrap"))
     ], observed_prefixes
-    assert (trace_dir / "darlingserver-rpc.log").read_text() == "RECV call=1(mldr_path)\n"
+    assert (trace_dir / "darlingserver-rpc.log").read_text() == "rpc.recv number=1 name=mldr_path\n"
     assert messages == [
         f"prefix bootstrap syscall trace: {trace_dir}",
         f"prefix bootstrap server trace: {trace_dir / 'darlingserver-rpc.log'}",

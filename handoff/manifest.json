@@ -432,6 +432,12 @@
           "source_ref": "refs/heads/fix/rootless-nomount"
         },
         {
+          "branch": "fix/rootless-rpc-trace",
+          "head": "e635652e555ea71b76e2d0afe2cd57392feeda4d",
+          "upstream": "",
+          "source_ref": "refs/heads/fix/rootless-rpc-trace"
+        },
+        {
           "branch": "fix/rpc-transport-interrupt-contract",
           "head": "9956c99a8228a7540a4cefd9da52517f245d06ad",
           "upstream": "",

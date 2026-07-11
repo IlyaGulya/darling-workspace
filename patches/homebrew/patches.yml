@@ -5314,6 +5314,27 @@ patches:
   test-exception:
     reason: runtime-harness-pending
     scope: Rootless startup crosses launcher, mldr, darlingserver, and libsystem_kernel; the test must build and deploy all four artifacts into an isolated unprivileged prefix.
+- path: darlingserver/rootless-rpc-trace.patch
+  module: darling/src/external/darlingserver
+  source-branch: fix/rootless-rpc-trace
+  source-base: fd105515af642df755296330265038ac2f70fae4
+  source-commit: e635652e555ea71b76e2d0afe2cd57392feeda4d
+  bead: dar-d2pm
+  publication-status: blocked
+  publication-blocker: Rootless bootstrap diagnosis only; retain until a real runtime trace identifies and fixes the remaining product boundary.
+  tests:
+  - name: west_test_ctest_lifecycle_contract
+    kind: contract
+    coverage-tier: host
+    runs: host
+    runner: python
+    script: tests/west_test_contracts/ctest_lifecycle_contract.py
+    ok-marker: PASS west-test-ctest-lifecycle-contract
+    note: >-
+      Proves trace-mode lifecycle removes stale RPC traces, passes the existing
+      TestDiagnostics file contract to darlingserver, and exports the captured
+      server trace with the syscall bundle.
+  sha256sum: 02f68e3e0fe1c0f3be97bfc891e549af533d96775bf87dfcabf6dd93fa66781d
 - path: darling/rootless-no-mount-launch.patch
   sha256sum: 0a3d87b8301aa68cee4c1e5d52477f62c391d2f8ae0031315f5f2ca71476adb0
   module: darling
