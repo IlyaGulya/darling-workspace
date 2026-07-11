@@ -408,3 +408,52 @@ index ff7dd462888975107eb98c2707804a6a8010ba0d..bc6eeb343fee46be400fd8aa5d1d3760
  	launchd_runtime();
  }
  
+
+From d9f401d16831d4a8c66171fdf632fbd3e6c444b1 Mon Sep 17 00:00:00 2001
+From: Ilya Gulya <ilya.gulya@indriver.com>
+Date: Sat, 11 Jul 2026 03:09:15 +0000
+Subject: [PATCH] launchd: inherit rootless bootstrap mode
+
+---
+ src/launchd/src/launchd.c | 18 ++++++++++++++++++
+ 1 file changed, 18 insertions(+)
+
+diff --git a/src/launchd/src/launchd.c b/src/launchd/src/launchd.c
+index bc6eeb343fee46be400fd8aa5d1d3760f6c3ac43..95fea13968e8120209d0d841e5cd5181573e10e4 100644
+--- a/src/launchd/src/launchd.c
++++ b/src/launchd/src/launchd.c
+@@ -107,9 +107,26 @@ static bool
+ rootless_mode_enabled(void)
+ {
+ 	const char *value = getenv("DARLING_ROOTLESS");
++	if (value != NULL && strcmp(value, "1") == 0) {
++		return true;
++	}
++
++	value = getenv("__mldr_rootless_pid1");
+ 	return value != NULL && strcmp(value, "1") == 0;
+ }
+ 
++static void
++rootless_bootstrap_environment(void)
++{
++	const char *marker = getenv("__mldr_rootless_pid1");
++	if (marker == NULL || strcmp(marker, "1") != 0) {
++		return;
++	}
++
++	setenv("DARLING_ROOTLESS", "1", 1);
++	unsetenv("__mldr_rootless_pid1");
++}
++
+ static void
+ rootless_boot_trace(const char *stage)
+ {
+@@ -142,6 +159,7 @@ main(int argc, char *const *argv)
+ {
+ 	bool sflag = false;
+ 	int ch;
++	rootless_bootstrap_environment();
+ 	rootless_boot_trace("start");
+ 
+ 	/* This needs to be cleaned up. Currently, we risk tripping assumes() macros
