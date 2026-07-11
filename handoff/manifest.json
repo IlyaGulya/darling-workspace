@@ -138,6 +138,12 @@
           "source_ref": "refs/heads/fix/rootless-shellspawn-bootstrap-trace"
         },
         {
+          "branch": "fix/rootless-shellspawn-scheduler",
+          "head": "595818af03685166f9193f089aa11420bfa3b932",
+          "upstream": "",
+          "source_ref": "refs/heads/fix/rootless-shellspawn-scheduler"
+        },
+        {
           "branch": "fix/rootless-vchroot-argv",
           "head": "c82877b302c8318dafed286e98ea1df9bc2df3c8",
           "upstream": "",
