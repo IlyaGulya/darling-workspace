@@ -37,3 +37,79 @@ index 16108aa468ef8700f28c8912517486e2f9673ef9..509665a510ae105815e8a63a23694db0
  	(void)job_assumes_zero(j, posix_spawnattr_init(&spattr));
  
  	job_setup_attributes(j);
+
+From d9f496590240e51a341f6d299af63d836088cf09 Mon Sep 17 00:00:00 2001
+From: Ilya Gulya <ilya.gulya@indriver.com>
+Date: Sat, 11 Jul 2026 13:40:31 +0000
+Subject: [PATCH] launchd: preserve rootless bootstrap trace fallback
+
+---
+ src/launchd/src/launchd.c | 42 +++++++++++++++++++++++++--------------
+ 1 file changed, 27 insertions(+), 15 deletions(-)
+
+diff --git a/src/launchd/src/launchd.c b/src/launchd/src/launchd.c
+index 3f3c42d281e20d06ad06bdb45e8dd87a7a57b0fb..b90576f666c1871e05a5da2eda26adc1371624cd 100644
+--- a/src/launchd/src/launchd.c
++++ b/src/launchd/src/launchd.c
+@@ -128,11 +128,22 @@ rootless_bootstrap_environment(void)
+ 	unsetenv("__mldr_rootless_pid1");
+ }
+ 
++static bool
++launchd_rootless_boot_trace_write(int fd, const char *stage)
++{
++	char message[256];
++	int length = snprintf(message, sizeof(message), "launchd pid=%d %s\n", getpid(), stage);
++	if (length <= 0 || (size_t)length >= sizeof(message)) {
++		return false;
++	}
++
++	return write(fd, message, (size_t)length) == length;
++}
++
+ void
+ launchd_rootless_boot_trace(const char *stage)
+ {
+ 	int fd = -1;
+-	bool close_fd = false;
+ 	const char *fd_text = getenv("DARLING_BOOT_TRACE_FD");
+ 	if (fd_text != NULL && *fd_text != '\0') {
+ 		char *end = NULL;
+@@ -141,22 +152,23 @@ launchd_rootless_boot_trace(const char *stage)
+ 			fd = (int)candidate;
+ 		}
+ 	}
+-	if (fd < 0) {
+-		if (!rootless_mode_enabled()) {
+-			return;
+-		}
+-		const char *path = getenv("DARLING_BOOT_TRACE");
+-		if (path == NULL || *path == '\0') {
+-			return;
+-		}
+-		fd = open(path, O_WRONLY | O_CREAT | O_APPEND | O_CLOEXEC, 0600);
+-		close_fd = true;
++	if (fd >= 0 && launchd_rootless_boot_trace_write(fd, stage)) {
++		return;
+ 	}
++
++	if (!rootless_mode_enabled()) {
++		return;
++	}
++
++	const char *path = getenv("DARLING_BOOT_TRACE");
++	if (path == NULL || *path == '\0') {
++		return;
++	}
++
++	fd = open(path, O_WRONLY | O_CREAT | O_APPEND | O_CLOEXEC, 0600);
+ 	if (fd >= 0) {
+-		dprintf(fd, "launchd pid=%d %s\n", getpid(), stage);
+-		if (close_fd) {
+-			close(fd);
+-		}
++		(void)launchd_rootless_boot_trace_write(fd, stage);
++		close(fd);
+ 	}
+ }
+ 

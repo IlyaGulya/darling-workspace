@@ -5413,14 +5413,14 @@ patches:
   module: darling
   source-branch: fix/rootless-shellspawn-scheduler
   source-base: d67907c65edcf0c90e35eaec58119ec57f18238b
-  source-commit: 595818af03685166f9193f089aa11420bfa3b932
+  source-commit: d9f496590240e51a341f6d299af63d836088cf09
   bead: dar-d2pm
   publication-status: blocked
   publication-blocker: Rootless diagnostic only; retain until launchd's shellspawn scheduling boundary has a product fix and a real guest GREEN proof.
   test-exception:
     reason: runtime-harness-pending
     scope: Markers run only in the real rootless launchd path and are checked by the bounded materialized bootstrap repro.
-  sha256sum: 2104f3f2d0db874b250018b02ab6d98dce724cb0def48cc5c1e7d1f10a91deb7
+  sha256sum: 2edc74ad2cc5824095e526012dd4d6fbb5ad66c241cfb317e3dfc1b39f5be9df
 - path: libsystem/rootless-initializer-trace.patch
   sha256sum: ef9a283afc09ee841ac7103e6110bd1b47d845c072fced17b00fd6b8dda96191
   module: darling/src/external/libsystem
