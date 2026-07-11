@@ -447,6 +447,15 @@ is checked against the same contract that guest metadata tests require. The
 prefix; `west test` runs the same cleanup after `darling shutdown` and fails the
 test run if mounts remain.
 
+Historical rootless debug prefixes are separate from test scratch and must not
+be removed with a broad `/tmp/darling-rootless-*` glob because that namespace
+also contains source worktrees. Use `west darling-rootless-debug-cleanup --path
+/tmp/darling-rootless-*-debug-* --dry-run` for one completed debug tree. It
+refuses non-debug paths, mounted filesystems, and live processes whose
+`DARLING_PREFIX` is inside the target. If ordinary removal reports an ownership
+failure, rerun the same explicit command with `--sudo`; it uses
+`rm --one-file-system` only after the same checks pass.
+
 For metadata tests that use `runs: guest`, `west test` also owns the resource
 lock and shutdown path. A real run takes `$DPREFIX/.west-test.lock` before
 launching the test, holds it through cleanup, calls `darling shutdown` for the
