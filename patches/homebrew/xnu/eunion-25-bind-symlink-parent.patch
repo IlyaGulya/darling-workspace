@@ -1,0 +1,51 @@
+From d4034574702e0a0f65c272efe4e853cc0a584001 Mon Sep 17 00:00:00 2001
+From: Ilya Gulya <ilya@gulya.me>
+Date: Sat, 11 Jul 2026 20:42:42 +0000
+Subject: [PATCH] xnu: create E-UNION UNIX socket parents
+
+---
+ .../src/xnu_syscall/bsd/impl/network/bind.c   | 24 ++++++-------------
+ 1 file changed, 7 insertions(+), 17 deletions(-)
+
+diff --git a/darling/src/libsystem_kernel/emulation/src/xnu_syscall/bsd/impl/network/bind.c b/darling/src/libsystem_kernel/emulation/src/xnu_syscall/bsd/impl/network/bind.c
+index 8155fde4971a12c47103ed02b495a54e278c77ec..1b78844d6511a7332e492892c31581bc49acf3c5 100644
+--- a/darling/src/libsystem_kernel/emulation/src/xnu_syscall/bsd/impl/network/bind.c
++++ b/darling/src/libsystem_kernel/emulation/src/xnu_syscall/bsd/impl/network/bind.c
+@@ -9,12 +9,6 @@
+ #include <darling/emulation/linux_premigration/linux-syscalls/linux.h>
+ #include <darling/emulation/xnu_syscall/bsd/helper/network/duct.h>
+ 
+-extern void *memcpy(void *dest, const void *src, __SIZE_TYPE__ n);
+-extern __SIZE_TYPE__ strlen(const char* src);
+-extern char* strcpy(char* dest, const char* src);
+-extern char *strncpy(char *dest, const char *src, __SIZE_TYPE__ n);
+-
+-// Must be included after strncpy
+ #include <darling/emulation/linux_premigration/vchroot_expand.h>
+ #include <darling/emulation/common/bsdthread/per_thread_wd.h>
+ 
+@@ -40,17 +34,13 @@ long sys_bind(int fd, const void* name, int socklen)
+ 			const char* p = ((const struct sockaddr_un*) name)->sun_path;
+ 			if (p[0] == '/')
+ 			{
+-				// copy-up the PARENT dir of the socket path
+-				char parent[4096];
+-				int n = (int) strlen(p);
+-				if (n > 0 && n < (int) sizeof(parent))
+-				{
+-					strcpy(parent, p);
+-					char* slash = parent;
+-					for (char* c = parent; *c; ++c)
+-						if (*c == '/') slash = c;
+-					if (slash != parent) { *slash = '\0'; vchroot_prepare_write(parent); }
+-				}
++				// A socket path is a create operation. Use the common create policy
++				// rather than copying its literal parent: the parent can itself be a
++				// lower-only symlink (for example /var/run), whose real target must
++				// also be materialized in the writable upper layer.
++				ret = vchroot_prepare_create(p);
++				if (ret < 0)
++					return errno_linux_to_bsd(ret);
+ 			}
+ 		}
+ 	}
