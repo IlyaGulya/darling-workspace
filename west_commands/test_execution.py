@@ -25,6 +25,26 @@ class ProcessResult:
     stderr: str | bytes = ""
 
 
+def _timeout_output(error: subprocess.TimeoutExpired, stream: str) -> str | bytes:
+    """Return the partial captured stream carried by ``communicate``."""
+
+    value = getattr(error, stream, None)
+    if value is None and stream == "stdout":
+        value = error.output
+    return value or ""
+
+
+def _close_process_streams(process: subprocess.Popen) -> None:
+    """Release inherited capture pipes after an escaped descendant keeps them open."""
+
+    for stream in (process.stdin, process.stdout, process.stderr):
+        if stream is not None:
+            try:
+                stream.close()
+            except OSError:
+                pass
+
+
 def run_bounded(
     args: Sequence[str],
     *,
@@ -80,7 +100,20 @@ def run_bounded(
         except ProcessLookupError:
             pass
         if capture_output or input_data is not None:
-            captured_stdout, captured_stderr = process.communicate()
+            try:
+                captured_stdout, captured_stderr = process.communicate(timeout=1)
+            except subprocess.TimeoutExpired as drain_error:
+                # A daemon can create a new session before the deadline. It then
+                # survives the process-group kill and keeps our output pipes
+                # open. Do not turn a bounded timeout into an unbounded drain.
+                captured_stdout = _timeout_output(drain_error, "stdout")
+                captured_stderr = _timeout_output(drain_error, "stderr")
+                _close_process_streams(process)
+                try:
+                    process.wait(timeout=1)
+                except subprocess.TimeoutExpired:
+                    process.kill()
+                    process.wait()
             return ProcessResult(
                 124,
                 timed_out=True,

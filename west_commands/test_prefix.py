@@ -2,10 +2,105 @@
 
 from __future__ import annotations
 
+import os
+import signal
+import time
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Callable, Iterable
 
 ProcessEntry = tuple[int, int, str]
+
+
+@dataclass
+class RootlessPrefixCleanupResult:
+    changed: list[str] = field(default_factory=list)
+    problems: list[str] = field(default_factory=list)
+
+    @property
+    def success(self) -> bool:
+        return not self.problems
+
+
+def rootless_prefix_process_snapshot(
+    prefix: Path,
+    *,
+    proc_root: Path = Path("/proc"),
+    current_pid: int | None = None,
+) -> list[str]:
+    """List rootless guest processes that explicitly belong to ``prefix``.
+
+    A rootless guest can re-parent itself to init and therefore disappear from
+    the darlingserver process tree. The launcher-provided environment remains
+    its stable ownership token, unlike a process name such as ``launchd``.
+    """
+
+    current_pid = os.getpid() if current_pid is None else current_pid
+    prefix_marker = f"DARLING_PREFIX={prefix}".encode()
+    rootless_marker = b"DARLING_ROOTLESS=1"
+    entries: list[str] = []
+    try:
+        process_dirs = sorted(proc_root.iterdir(), key=lambda path: int(path.name) if path.name.isdigit() else -1)
+    except OSError:
+        return entries
+    for process_dir in process_dirs:
+        if not process_dir.name.isdigit():
+            continue
+        pid = int(process_dir.name)
+        if pid == current_pid:
+            continue
+        try:
+            environment = set((process_dir / "environ").read_bytes().split(b"\0"))
+        except OSError:
+            continue
+        if prefix_marker not in environment or rootless_marker not in environment:
+            continue
+        try:
+            argv = [part.decode(errors="replace") for part in (process_dir / "cmdline").read_bytes().split(b"\0") if part]
+        except OSError:
+            argv = []
+        entries.append(f"{pid} {' '.join(argv) if argv else '[unknown]'}")
+    return entries
+
+
+def cleanup_rootless_prefix_processes(
+    prefix: Path,
+    *,
+    proc_root: Path = Path("/proc"),
+    current_pid: int | None = None,
+    kill_func=os.kill,
+    sleep_func=time.sleep,
+) -> RootlessPrefixCleanupResult:
+    """Terminate only rootless descendants carrying this prefix's env token."""
+
+    result = RootlessPrefixCleanupResult()
+    for sig in (signal.SIGTERM, signal.SIGKILL):
+        entries = rootless_prefix_process_snapshot(
+            prefix, proc_root=proc_root, current_pid=current_pid
+        )
+        pids = [int(entry.split(" ", 1)[0]) for entry in entries]
+        if not pids:
+            return result
+        for pid in pids:
+            try:
+                kill_func(pid, sig)
+            except ProcessLookupError:
+                continue
+            except PermissionError as error:
+                result.problems.append(
+                    f"cannot stop rootless Darling prefix process {pid}: {error}"
+                )
+        result.changed.append(
+            f"sent {signal.Signals(sig).name} to rootless Darling prefix process(es): "
+            f"{', '.join(str(pid) for pid in pids)}"
+        )
+        sleep_func(1)
+    leftovers = rootless_prefix_process_snapshot(
+        prefix, proc_root=proc_root, current_pid=current_pid
+    )
+    if leftovers:
+        result.problems.extend(f"rootless Darling prefix process survived: {entry}" for entry in leftovers)
+    return result
 
 
 def prefix_process_snapshot(prefix: Path, entries: Iterable[ProcessEntry]) -> list[str]:
