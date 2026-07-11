@@ -357,3 +357,31 @@ patches:
     - -Wno-sign-compare
     note: Host behavior contract for the real MessageQueue SCM_RIGHTS receive path; proves push_reply-sized fd messages survive SO_PASSCRED and oversized/truncated control data is not accepted.
   sha256sum: 8b9915b55966aec778ed8b730ef1d2f2a281733763da885464518616159339b6
+- path: darling/ci-host-regression-tests.patch
+  module: darling
+  source-branch: fix/ci-host-regression-tests
+  source-base: ef8429103cfd792e05449eeaf3607622838984b8
+  source-commit: b41159e56b046772fe5d6a715e948e6ae94028cb
+  bead: dar-test-infra-sp5.6.1
+  publication-status: blocked
+  publication-blocker: local Tier 0 CI/test transport; requires an actual clean Jenkins execution before publication review.
+  tests:
+  - name: host_regression_ctest
+    kind: contract
+    coverage-tier: host
+    runs: host
+    diag: bare
+    red: true
+    red-proof:
+      mode: source-base
+      source-env: DARLING_SRC_ROOT
+      note: The fixed profile provides the runner while the source-base tree lacks the standalone regression CMake entrypoint, so RED fails before CTest discovery and GREEN configures, builds, and runs all labeled host cases.
+    runner: source-profile-script
+    repo: darling
+    script: tests/regression/run-host-regressions.sh
+    timeout-seconds: 60
+    note: >-
+      Source-owned Tier 0 CTest suite builds the selected production mldr reset
+      source and the thread-checkin harness, verifies the explicit busy-spin RED
+      arm, and runs without a Darling prefix or Docker runtime.
+  sha256sum: 8055faccfc4adf20cef6f036f2fe8da5fa243ee9f0067e684fbcb0d09d340f8b
