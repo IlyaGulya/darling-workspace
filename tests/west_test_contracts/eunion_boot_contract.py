@@ -40,12 +40,13 @@ with tempfile.TemporaryDirectory() as temp:
     test._resolve_darling_launcher = lambda _prefix: "/fake/darling"
     test._record_failure_phase = lambda _invocation, phase: phases.append(phase)
     test._bootstrap_syscall_trace = trace_dir
+    test._bootstrap_timeout_seconds = 45
 
     original = test_module.run_guest_shell
 
     def failed_boot(*_args, **kwargs):
         assert kwargs["capture_output"] is True, kwargs
-        assert kwargs["timeout_seconds"] == 15, kwargs
+        assert kwargs["timeout_seconds"] == 45, kwargs
         assert kwargs["command_prefix"] == (
             "strace", "-ff", "-o", str(trace_dir / "eunion-bootstrap"),
         ), kwargs
@@ -77,6 +78,48 @@ with tempfile.TemporaryDirectory() as temp:
     ], messages
 
 with tempfile.TemporaryDirectory() as temp:
+    trace_dir = Path(temp) / "trace"
+    prefix = Path(temp) / "prefix"
+    test = DarlingTest.__new__(DarlingTest)
+    messages: list[str] = []
+    test.err = messages.append
+    test.inf = lambda _message: None
+    test.die = lambda message: (_ for _ in ()).throw(SystemExit(message))
+    test._darling_prefix_env = lambda value: {"DPREFIX": str(value)}
+    test._resolve_darling_launcher = lambda _prefix: "/fake/darling"
+    test._record_failure_phase = lambda _invocation, _phase: None
+    test._bootstrap_syscall_trace = trace_dir
+    test._bootstrap_timeout_seconds = 45
+
+    original = test_module.run_guest_shell
+
+    def timed_out_boot(*_args, **kwargs):
+        assert kwargs["timeout_seconds"] == 45, kwargs
+        return ProcessResult(124, timed_out=True, stdout="", stderr="")
+
+    test_module.run_guest_shell = timed_out_boot
+    try:
+        try:
+            test._boot_eunion_runtime_prefix(
+                {"name": "eunion_timeout_contract"},
+                {"DARLING": "/fake/darling"},
+                prefix,
+            )
+            raise AssertionError("timed out E-UNION bootstrap unexpectedly passed")
+        except SystemExit as exc:
+            assert str(exc) == (
+                "eunion_timeout_contract: failed to boot Darling E-UNION prefix "
+                "before fixture setup (rc=124)"
+            ), exc
+    finally:
+        test_module.run_guest_shell = original
+
+    assert messages == [
+        "eunion_timeout_contract: E-UNION prefix bootstrap timed out after 45s "
+        "without output; syscall trace: " + str(trace_dir)
+    ], messages
+
+with tempfile.TemporaryDirectory() as temp:
     root = Path(temp)
     prefix = root / "prefix"
     sample_dir = root / "stack-sample"
@@ -102,6 +145,7 @@ with tempfile.TemporaryDirectory() as temp:
     original_which = test_module.shutil.which
 
     def timed_out_boot(*_args, **kwargs):
+        assert kwargs["timeout_seconds"] == 15, kwargs
         assert kwargs["command_prefix"] == (
             "perf",
             "record",
