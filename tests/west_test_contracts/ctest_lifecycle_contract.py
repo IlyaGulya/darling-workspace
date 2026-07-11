@@ -233,13 +233,18 @@ with tempfile.TemporaryDirectory() as temp:
     test._guest_runtime_source_forest = source_forest
     test._runtime_red_build_artifacts = lambda *_args, **_kwargs: (events.append("build") or root / "build")
     test._runtime_red_deployed_artifacts = deployed
+    test._preflight_runtime_profile_stack = lambda profile, label: (
+        events.append("preflight"),
+        profile == "homebrew",
+        label == "CTest homebrew",
+    )
     with test._ctest_runtime_profile_context(["homebrew"]) as runtime_env:
-        assert events == ["source", "build", "deploy"], events
+        assert events == ["preflight", "source", "build", "deploy"], events
         assert runtime_env["DARLING"] == str(root / "prefix" / "bin" / "darling")
         assert runtime_env["DARLING_LAUNCHER"] == str(root / "prefix" / "bin" / "darling")
         assert runtime_env["DPREFIX"] == str(root / "prefix")
         assert runtime_env["DARLING_BOOT_TRACE"] == str(root / "prefix" / ".west-rootless-boot.log")
-    assert events == ["source", "build", "deploy", "restore"], events
+    assert events == ["preflight", "source", "build", "deploy", "restore"], events
     assert test._active_profile is None
 
 
@@ -273,6 +278,7 @@ with tempfile.TemporaryDirectory() as temp:
 
     test._guest_runtime_source_forest = source_forest
     test._runtime_red_build_artifacts = lambda *_args, **_kwargs: test.die("build failed")
+    test._preflight_runtime_profile_stack = lambda *_args: None
     original_mkdtemp = test_module.tempfile.mkdtemp
 
     def make_scratch(**_kwargs):
