@@ -25,17 +25,20 @@ sys.modules.setdefault("west", west_module)
 sys.modules.setdefault("west.commands", west_commands_module)
 
 from west_commands.patch import (
+    DarlingPatch,
+    PATCH_APPLICATION_GIT_OPTIONS,
     TEMPORARY_PATCH_GIT_OPTIONS,
     git_for_temporary_patch_application,
 )
 
 
-assert TEMPORARY_PATCH_GIT_OPTIONS == (
+assert PATCH_APPLICATION_GIT_OPTIONS == (
     "-c",
     "gc.auto=0",
     "-c",
     "maintenance.auto=false",
 )
+assert TEMPORARY_PATCH_GIT_OPTIONS == PATCH_APPLICATION_GIT_OPTIONS
 
 
 def git(repo: Path, *args: str) -> None:
@@ -75,6 +78,36 @@ with tempfile.TemporaryDirectory(prefix="west-patch-verify-contract-") as temp:
     os.environ["GIT_TRACE2_EVENT"] = str(trace)
     try:
         git_for_temporary_patch_application(repo, "am", "--3way", str(patch))
+    finally:
+        if previous_trace is None:
+            del os.environ["GIT_TRACE2_EVENT"]
+        else:
+            os.environ["GIT_TRACE2_EVENT"] = previous_trace
+
+    assert (repo / "fixture.txt").read_text() == "patched\n"
+    assert not (repo / ".git" / "gc.log").exists()
+    assert "maintenance run --auto" not in trace.read_text()
+
+    git(repo, "reset", "--hard", "--quiet", "HEAD~")
+    trace.unlink()
+    os.environ["GIT_TRACE2_EVENT"] = str(trace)
+    command = DarlingPatch.__new__(DarlingPatch)
+    command._base_profile = None
+    (repo / "west.lock.yml").write_text("manifest: contract\n")
+    command.manifest = types.SimpleNamespace(repo_abspath=repo)
+    command._group = lambda _patches: {"module": [{"path": "fixture.patch"}]}
+    command._require_base_applied = lambda _modules: None
+    command._ensure_generated_context = lambda *_args, **_kwargs: None
+    command._repo = lambda _module: repo
+    command._prepare = lambda *_args, **_kwargs: None
+    command._verify_patch = lambda *_args, **_kwargs: patch
+    command._record_integration = lambda *_args, **_kwargs: None
+    command._abort_am = lambda *_args, **_kwargs: None
+    command._reset = lambda *_args, **_kwargs: None
+    command.inf = lambda _message: None
+    command.die = lambda message: (_ for _ in ()).throw(AssertionError(message))
+    try:
+        command._apply("contract", repo, [{"path": "fixture.patch"}], "0", False)
     finally:
         if previous_trace is None:
             del os.environ["GIT_TRACE2_EVENT"]

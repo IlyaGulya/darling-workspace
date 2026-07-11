@@ -23,15 +23,19 @@ import test_manifest
 DEFAULT_EXPORT_MAX_LINES = 200_000
 DEFAULT_EXPORT_MAX_GROWTH = 20
 
-# Patch applicability is checked in throwaway worktrees.  Applying a patch
-# creates short-lived loose objects there, so neither Git's legacy auto-gc nor
-# modern background maintenance should run for this disposable operation.
-TEMPORARY_PATCH_GIT_OPTIONS = (
+# A controlled git am creates loose objects whether it runs in a disposable
+# verifier worktree or an integration branch.  Auto-gc/maintenance is unrelated
+# to patch applicability and can leave gc.log residue or hide the real failure,
+# so West leaves housekeeping explicit in both paths.
+PATCH_APPLICATION_GIT_OPTIONS = (
     "-c",
     "gc.auto=0",
     "-c",
     "maintenance.auto=false",
 )
+
+# Kept as an import-compatible name for the verifier contract and callers.
+TEMPORARY_PATCH_GIT_OPTIONS = PATCH_APPLICATION_GIT_OPTIONS
 
 
 class ExportPlan(NamedTuple):
@@ -71,20 +75,30 @@ def git(
     return run(repo, "git", *args, capture=capture, check=check, env=env)
 
 
+def git_for_patch_application(
+    repo: Path,
+    *args: str,
+    capture: bool = False,
+    check: bool = True,
+) -> str:
+    """Run a controlled Git patch application without background maintenance."""
+    return git(
+        repo,
+        *PATCH_APPLICATION_GIT_OPTIONS,
+        *args,
+        capture=capture,
+        check=check,
+    )
+
+
 def git_for_temporary_patch_application(
     repo: Path,
     *args: str,
     capture: bool = False,
     check: bool = True,
 ) -> str:
-    """Run a Git command that applies a patch in a disposable worktree."""
-    return git(
-        repo,
-        *TEMPORARY_PATCH_GIT_OPTIONS,
-        *args,
-        capture=capture,
-        check=check,
-    )
+    """Compatibility wrapper for temporary-worktree patch application."""
+    return git_for_patch_application(repo, *args, capture=capture, check=check)
 
 
 def format_patch_command(patch, commit: str) -> list[str]:
@@ -1918,7 +1932,7 @@ class DarlingPatch(WestCommand):
                     self._reset_submodule_index(repo)
                 for patch in module_patches:
                     path = self._verify_patch(profile_dir, patch)
-                    git(
+                    git_for_patch_application(
                         repo,
                         "am",
                         "--3way",
