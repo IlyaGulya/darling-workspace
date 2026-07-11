@@ -4034,6 +4034,27 @@ patches:
       repo: darlinghq/darling-xnu
       base: main
       state: local
+- path: xnu/eunion-resolver-layer.patch
+  sha256sum: 2348e663b73bb1527d559aafa7dc84f8e4aaf63484fd7f0ef1a78317ed52ad5f
+  module: darling/src/external/xnu
+  source-branch: fix/eunion-resolver-layer
+  source-base: dc195f1178ec2fc0d0d4b59a3146ea497c767dc9
+  source-commit: 32a29e287170deb87770cf6429d778a7d4e0a436
+  bead: dar-yfp4
+  publication-status: blocked
+  publication-blocker: E-UNION remains experimental until the complete resolver/copy-up policy is productized. This patch only establishes the resolver boundary and its CTest coverage.
+  test-exception:
+    reason: isolated-ctest-source-base-red-proof-pending
+    scope: The colocated eunion_resolver_test is a real CTest host behavior test. dar-h5jl must configure an isolated full source forest for source-base RED and discover CTest labels from that forest; the current shared testkit build both produces a false RED pass and reports no matching tests as a false GREEN.
+  github:
+    fork:
+      repo: IlyaGulya/darling-xnu
+      base: preupstream/main
+      state: local
+    upstream:
+      repo: darlinghq/darling-xnu
+      base: main
+      state: local
 - path: xnu/eunion-23-fdpath-nested-lower.patch
   sha256sum: ed3a071a498d27622ec0b29305e7317d00a3b1a4fb7a333382696a90b231cb9b
   module: darling/src/external/xnu
