@@ -30,6 +30,12 @@
           "source_ref": "refs/heads/fix/build-drift-gate"
         },
         {
+          "branch": "fix/ci-host-regression-tests",
+          "head": "ef8429103cfd792e05449eeaf3607622838984b8",
+          "upstream": "",
+          "source_ref": "refs/heads/fix/ci-host-regression-tests"
+        },
+        {
           "branch": "fix/commpage-map-fixed",
           "head": "acf345173c280ce1b607a0e4a80b9585ab4202d7",
           "upstream": "",
