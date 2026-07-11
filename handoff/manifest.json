@@ -151,7 +151,7 @@
         },
         {
           "branch": "fix/rootless-shellspawn-readiness",
-          "head": "685261061265dd489c1ee3c5c69a81f7dab419e0",
+          "head": "6ffa813bcb6c067b050bde189eac76e6e266b045",
           "upstream": "",
           "source_ref": "refs/heads/fix/rootless-shellspawn-readiness"
         },
@@ -169,7 +169,7 @@
         },
         {
           "branch": "fix/rootless-shellspawn-test-delay",
-          "head": "af4953b4e6811a85a5f476622f90f32ff6f3ed9b",
+          "head": "0a3a598b8a5e3e5c8a0f8f141e92f8619a68147e",
           "upstream": "",
           "source_ref": "refs/heads/fix/rootless-shellspawn-test-delay"
         },
