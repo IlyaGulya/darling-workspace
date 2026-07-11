@@ -1551,7 +1551,28 @@ class DarlingTest(WestCommand):
         return build
 
     def _ctest_label_args(self, invocation) -> list[str]:
-        return ctest_label_args(self._ensure_ctest_build(), invocation["ctest_label"])
+        build = self._ensure_ctest_build()
+        label_args = ctest_label_args(build, invocation["ctest_label"])
+        discovery = run_bounded(
+            ctest_selection_command(build, label_args=label_args[4:]),
+            cwd=Path(self.topdir),
+            env=None,
+            timeout_seconds=30,
+            capture_output=True,
+        )
+        if discovery.returncode:
+            self._dump_command_tail("CTest label discovery", discovery)
+            self.die(f"could not discover CTest label {invocation['ctest_label']!r}")
+        try:
+            selected = json.loads(discovery.stdout).get("tests", [])
+        except json.JSONDecodeError as error:
+            self.die(f"CTest label discovery returned invalid JSON: {error}")
+        if not selected:
+            self.die(
+                f"CTest label {invocation['ctest_label']!r} selected no tests in {build}; "
+                "refusing a false GREEN"
+            )
+        return label_args
 
     def _ctest_runtime_profile_definitions(self) -> dict[str, dict]:
         path = self._testkit_dir() / "runtime-profiles.yml"
