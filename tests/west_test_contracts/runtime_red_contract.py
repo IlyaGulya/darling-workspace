@@ -263,10 +263,15 @@ assert {
     "bin/darlingserver",
     "usr/libexec/darling/mldr",
     "usr/libexec/darling/launchd",
+    "usr/libexec/shellspawn",
     "usr/libexec/darling/vchroot",
     "usr/lib/dyld",
     "usr/lib/system/libsystem_kernel.dylib",
 }
+baseline_provider = actual_runtime_profiles["homebrew-prefix-baseline"]
+assert baseline_provider["purpose"] == "prefix-baseline"
+assert baseline_provider["bootstrap"] == "rootless-no-mount"
+assert baseline_provider["launcher-env"] == rootless_provider["launcher-env"]
 
 with tempfile.TemporaryDirectory() as temp:
     profiles_path = Path(temp) / "runtime-profiles.yml"
@@ -288,6 +293,40 @@ with tempfile.TemporaryDirectory() as temp:
         assert "usr/libexec/darling/vchroot" in str(exc), exc
     else:
         raise AssertionError("incomplete rootless runtime provider was accepted")
+
+with tempfile.TemporaryDirectory() as temp:
+    profiles_path = Path(temp) / "runtime-profiles.yml"
+    profiles_path.write_text(
+        "runtime-profiles:\n"
+        "  invalid-baseline:\n"
+        "    purpose: prefix-baseline\n"
+        "    source-profile: homebrew\n"
+        "    source-module: darling\n"
+        "    source-modules: [darling]\n"
+        "    runtime-artifacts:\n"
+        "    - build-targets: [darling]\n"
+        "      deploy: [bin/darling]\n"
+    )
+    try:
+        load_ctest_runtime_profiles(profiles_path)
+    except ValueError as exc:
+        assert "prefix-baseline must use rootless-no-mount" in str(exc), exc
+    else:
+        raise AssertionError("privileged prefix baseline was accepted")
+
+try:
+    partition_ctest_runtime_profiles(
+        actual_runtime_profiles,
+        [{
+            "name": "darling/invalid-baseline-use",
+            "darling": True,
+            "profiles": ["homebrew-prefix-baseline"],
+        }],
+    )
+except ValueError as exc:
+    assert "cannot select prefix-baseline" in str(exc), exc
+else:
+    raise AssertionError("CTest test accepted a durable prefix baseline provider")
 
 groups = partition_ctest_runtime_profiles(
     runtime_profiles,
@@ -363,6 +402,45 @@ except ValueError as exc:
     assert "must be relative" in str(exc)
 else:
     raise AssertionError("absolute deploy path was accepted")
+
+with tempfile.TemporaryDirectory() as temp:
+    root = Path(temp)
+    prefix = root / "prefix"
+    deployed = prefix / "bin" / "darling"
+    deployed.parent.mkdir(parents=True)
+    deployed.write_text("old launcher\n")
+    build_root = root / "build"
+    artifact = build_root / "src" / "startup" / "darling"
+    artifact.parent.mkdir(parents=True)
+    artifact.write_text("new launcher\n")
+    proof = {"runtime-artifacts": [{"deploy": ["bin/darling"]}]}
+
+    test = make_test()
+    test._shutdown_runtime_prefix = lambda _prefix: True
+    with test._runtime_red_deployed_artifacts(
+        proof, build_root, prefix, label="bootstrap", restore_deployment=False
+    ):
+        assert deployed.read_text() == "new launcher\n"
+    assert deployed.read_text() == "new launcher\n"
+
+    deployed.write_text("old launcher\n")
+    with test._runtime_red_deployed_artifacts(
+        proof, build_root, prefix, label="CTest", restore_deployment=True
+    ):
+        assert deployed.read_text() == "new launcher\n"
+    assert deployed.read_text() == "old launcher\n"
+
+    try:
+        with test._runtime_red_deployed_artifacts(
+            proof, build_root, prefix, label="failed bootstrap", restore_deployment=False
+        ):
+            assert deployed.read_text() == "new launcher\n"
+            raise RuntimeError("guest smoke failed")
+    except RuntimeError:
+        pass
+    else:
+        raise AssertionError("failed bootstrap deployment unexpectedly passed")
+    assert deployed.read_text() == "old launcher\n"
 
 with tempfile.TemporaryDirectory() as temp:
     bundle_root = Path(temp)

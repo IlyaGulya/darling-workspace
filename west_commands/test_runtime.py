@@ -14,6 +14,7 @@ ROOTLESS_NO_MOUNT_DEPLOY_PATHS = frozenset(
         "bin/darlingserver",
         "usr/libexec/darling/mldr",
         "usr/libexec/darling/launchd",
+        "usr/libexec/shellspawn",
         "usr/libexec/darling/vchroot",
         "usr/lib/dyld",
         "usr/lib/system/libsystem_kernel.dylib",
@@ -37,6 +38,7 @@ def load_ctest_runtime_profiles(path: Path) -> dict[str, dict[str, Any]]:
         source_modules = profile.get("source-modules")
         artifacts = profile.get("runtime-artifacts")
         bootstrap = profile.get("bootstrap")
+        purpose = profile.get("purpose", "runtime")
         if not isinstance(source_profile, str) or not source_profile:
             raise ValueError(f"runtime profile {name!r} needs source-profile")
         if not isinstance(source_module, str) or not source_module:
@@ -50,6 +52,14 @@ def load_ctest_runtime_profiles(path: Path) -> dict[str, dict[str, Any]]:
         if bootstrap is not None and bootstrap != "rootless-no-mount":
             raise ValueError(
                 f"runtime profile {name!r} has unknown bootstrap {bootstrap!r}"
+            )
+        if purpose not in {"runtime", "prefix-baseline"}:
+            raise ValueError(
+                f"runtime profile {name!r} has unknown purpose {purpose!r}"
+            )
+        if purpose == "prefix-baseline" and bootstrap != "rootless-no-mount":
+            raise ValueError(
+                f"runtime profile {name!r} prefix-baseline must use rootless-no-mount"
             )
         cmake_defines = profile.get("cmake-defines", {})
         if not isinstance(cmake_defines, dict) or not all(
@@ -108,6 +118,7 @@ def load_ctest_runtime_profiles(path: Path) -> dict[str, dict[str, Any]]:
             "runtime-artifacts": artifacts,
             "cmake-defines": cmake_defines,
             "launcher-env": launcher_env,
+            "purpose": purpose,
         }
         if bootstrap is not None:
             normalized[name]["bootstrap"] = bootstrap
@@ -235,6 +246,16 @@ def partition_ctest_runtime_profiles(
         if darling and not profiles:
             raise ValueError(
                 f"Darling CTest test {name!r} needs an explicit runtime-profile label"
+            )
+        baseline_profiles = [
+            profile
+            for profile in profiles
+            if definitions[profile].get("purpose") == "prefix-baseline"
+        ]
+        if baseline_profiles:
+            raise ValueError(
+                f"CTest test {name!r} cannot select prefix-baseline runtime profile(s): "
+                + ", ".join(baseline_profiles)
             )
         source_profile = None
         if profiles:
