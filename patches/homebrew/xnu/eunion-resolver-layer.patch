@@ -1,24 +1,32 @@
-From 32a29e287170deb87770cf6429d778a7d4e0a436 Mon Sep 17 00:00:00 2001
+From 0a27bc926c2c840d54487e375d923c747f652b50 Mon Sep 17 00:00:00 2001
 From: Ilya Gulya <ilya@gulya.me>
 Date: Sat, 11 Jul 2026 19:10:56 +0000
 Subject: [PATCH] xnu: extract E-UNION resolver
 
 ---
- .../libsystem_kernel/emulation/CMakeLists.txt |  14 +-
+ .../libsystem_kernel/emulation/CMakeLists.txt |  15 +-
  .../linux_premigration/eunion_resolver.h      |  48 +++++
  .../src/linux_premigration/eunion_resolver.c  | 128 ++++++++++++++
  .../linux_premigration/vchroot_userspace.c    | 150 ++++++----------
  .../emulation/tests/eunion_resolver_test.c    | 165 ++++++++++++++++++
- 5 files changed, 411 insertions(+), 94 deletions(-)
+ 5 files changed, 412 insertions(+), 94 deletions(-)
  create mode 100644 darling/src/libsystem_kernel/emulation/include/linux_premigration/eunion_resolver.h
  create mode 100644 darling/src/libsystem_kernel/emulation/src/linux_premigration/eunion_resolver.c
  create mode 100644 darling/src/libsystem_kernel/emulation/tests/eunion_resolver_test.c
 
 diff --git a/darling/src/libsystem_kernel/emulation/CMakeLists.txt b/darling/src/libsystem_kernel/emulation/CMakeLists.txt
-index 4918aff9962999fd521c81251aebf0bd589ed993..3e845b5aca5ad877919e31c61137d1c76a0c37ba 100644
+index 4918aff9962999fd521c81251aebf0bd589ed993..e81878f82e4a015fe614a636c680db9cb0e647e1 100644
 --- a/darling/src/libsystem_kernel/emulation/CMakeLists.txt
 +++ b/darling/src/libsystem_kernel/emulation/CMakeLists.txt
-@@ -85,10 +85,23 @@ set(linux_premigration_sources
+@@ -16,6 +16,7 @@ add_definitions(-DBSDTHREAD_WRAP_LINUX_PTHREAD
+ 
+ # include src/startup for rtsig.h
+ include_directories(
++	${CMAKE_CURRENT_SOURCE_DIR}/include
+ 	${CMAKE_BINARY_DIR}/src/startup
+ 	${CMAKE_BINARY_DIR}/src/external/xnu/darling/src/libsystem_kernel/libsyscall
+ 	${CMAKE_CURRENT_BINARY_DIR}/src/other
+@@ -85,10 +86,23 @@ set(linux_premigration_sources
  	src/linux_premigration/signal/sig_restorer.S
  	src/linux_premigration/signal/sigexc.c
  	src/linux_premigration/elfcalls_wrapper.c
@@ -42,7 +50,7 @@ index 4918aff9962999fd521c81251aebf0bd589ed993..3e845b5aca5ad877919e31c61137d1c7
  set(xnu_syscall_bsd_sources
  	src/xnu_syscall/bsd/bsd_syscall_table.c
  	src/xnu_syscall/bsd/bsd_syscall.S
-@@ -390,4 +403,3 @@ endif()
+@@ -390,4 +404,3 @@ endif()
  
  make_fat(emulation)
  make_fat(emulation_dyld)
