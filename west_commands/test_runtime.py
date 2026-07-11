@@ -21,6 +21,15 @@ ROOTLESS_NO_MOUNT_DEPLOY_PATHS = frozenset(
     }
 )
 
+ROOTLESS_NO_MOUNT_SOURCE_MODULES = frozenset(
+    {
+        "darling",
+        "darling/src/external/darlingserver",
+        "darling/src/external/dyld",
+        "darling/src/external/xnu",
+    }
+)
+
 
 def load_ctest_runtime_profiles(path: Path) -> dict[str, dict[str, Any]]:
     """Load the explicit runtime deployments used by CTest guest entries."""
@@ -119,6 +128,15 @@ def load_ctest_runtime_profiles(path: Path) -> dict[str, dict[str, Any]]:
                     f"runtime profile {name!r} rootless-no-mount is missing "
                     "bootstrap deploy path(s): "
                     + ", ".join(sorted(missing_bootstrap_paths))
+                )
+            missing_bootstrap_modules = ROOTLESS_NO_MOUNT_SOURCE_MODULES.difference(
+                source_modules
+            )
+            if missing_bootstrap_modules:
+                raise ValueError(
+                    f"runtime profile {name!r} rootless-no-mount must materialize "
+                    "bootstrap source module(s): "
+                    + ", ".join(sorted(missing_bootstrap_modules))
                 )
         normalized[name] = {
             "source-profile": source_profile,
