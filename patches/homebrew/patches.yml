@@ -5318,7 +5318,7 @@ patches:
   module: darling/src/external/darlingserver
   source-branch: fix/rootless-rpc-trace
   source-base: fd105515af642df755296330265038ac2f70fae4
-  source-commit: e635652e555ea71b76e2d0afe2cd57392feeda4d
+  source-commit: ac261ed247f3122b3000390261b958c470893a7b
   bead: dar-d2pm
   publication-status: blocked
   publication-blocker: Rootless bootstrap diagnosis only; retain until a real runtime trace identifies and fixes the remaining product boundary.
@@ -5334,7 +5334,7 @@ patches:
       Proves trace-mode lifecycle removes stale RPC traces, passes the existing
       TestDiagnostics file contract to darlingserver, and exports the captured
       server trace with the syscall bundle.
-  sha256sum: 02f68e3e0fe1c0f3be97bfc891e549af533d96775bf87dfcabf6dd93fa66781d
+  sha256sum: c826a4b36f87b8ed6c129fb10bd0ff2b04addf9d8cf50fb22e5488d248ffb801
 - path: darling/rootless-no-mount-launch.patch
   sha256sum: 0a3d87b8301aa68cee4c1e5d52477f62c391d2f8ae0031315f5f2ca71476adb0
   module: darling

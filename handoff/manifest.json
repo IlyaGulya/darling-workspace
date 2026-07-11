@@ -433,7 +433,7 @@
         },
         {
           "branch": "fix/rootless-rpc-trace",
-          "head": "e635652e555ea71b76e2d0afe2cd57392feeda4d",
+          "head": "ac261ed247f3122b3000390261b958c470893a7b",
           "upstream": "",
           "source_ref": "refs/heads/fix/rootless-rpc-trace"
         },
