@@ -5535,14 +5535,36 @@ patches:
   module: darling
   source-branch: fix/rootless-shutdown-session
   source-base: 6ffa813bcb6c067b050bde189eac76e6e266b045
-  source-commit: 7fef3093ef206abc2760940d0d386d443669ac6e
+  source-commit: 2ce4136ab3550de34256751be0e7947518c07d3f
   bead: dar-04lg
   publication-status: blocked
   publication-blocker: Rootless shutdown lifecycle fix requires a materialized runtime deploy proof against the leaked launchd service session before publication.
-  test-exception:
-    reason: runtime-deploy-proof-pending
-    scope: The committed src/startup/tests/rootless_shutdown_session_test.c is a real host session-cleanup regression and is GREEN; dar-xxtf must first repair guest-runtime-script output capture before the required launcher deploy RED-to-GREEN proof can be trusted.
-  sha256sum: 01dea6be86173cae673d8fd5a97b4c1e14b65f502509699faf90bb0ec9ee8a88
+  tests:
+  - name: rootless_shutdown_session
+    kind: guest
+    coverage-tier: runtime
+    runs: guest
+    diag: guarded
+    red: true
+    red-proof:
+      mode: guest-runtime-deploy
+      bad-profile: current-minus-patch
+      expect-failure-phase: script
+      expect-output-contains: [rootless shutdown left prefix-owned process(es)]
+      source-modules: [darling, darling/src/external/darlingserver, darling/src/external/xnu, darling/src/external/dyld, darling/src/external/libsystem]
+      cmake-defines: {DARLING_EUNION: true}
+      runtime-artifacts:
+      - module: darling
+        build-targets: [darling]
+        deploy: [bin/darling]
+    runner: guest-runtime-script
+    repo: darling-workspace
+    script: tests/run-rootless-shutdown-session.sh
+    ok-marker: WEST_ROOTLESS_SHUTDOWN_SESSION_OK
+    timeout-seconds: 60
+    requires: [darling-prefix]
+    env-vars: {DARLING_ROOTLESS: '1', DARLING_NOOVERLAYFS: '1', DARLING_EUNION: '1'}
+  sha256sum: 876421147cb6fac5e275cd5583ee2fdbd3af8f84ad44b8223816ae8861361da6
 - path: libsystem/rootless-initializer-trace.patch
   sha256sum: b3107f04e59f860982abacfe35714a4a2e18f3236a5724e7ece11eefb2327d89
   module: darling/src/external/libsystem
