@@ -3727,6 +3727,7 @@ class DarlingTest(WestCommand):
             command_prefix = (
                 "strace",
                 "-ff",
+                "-i",
                 "-tt",
                 "-s",
                 "160",
