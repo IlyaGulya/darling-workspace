@@ -1,0 +1,77 @@
+From e635652e555ea71b76e2d0afe2cd57392feeda4d Mon Sep 17 00:00:00 2001
+From: Ilya Gulya <ilya@gulya.me>
+Date: Sat, 11 Jul 2026 13:14:55 +0000
+Subject: [PATCH] darlingserver: trace bootstrap RPC lifecycle
+
+---
+ src/call.cpp   | 15 +++++++++++++++
+ src/thread.cpp | 16 ++++++++++++++++
+ 2 files changed, 31 insertions(+)
+
+diff --git a/src/call.cpp b/src/call.cpp
+index a23173ba8ab1593af68be6fd71252c1cd73e9c8d..720363327c14232cf2b4a5cf8b10dc83b3c05a17 100644
+--- a/src/call.cpp
++++ b/src/call.cpp
+@@ -158,6 +158,14 @@ std::shared_ptr<DarlingServer::Call> DarlingServer::Call::callFromMessage(Messag
+ 	auto pidString = (process) ? (std::to_string(process->id()) + " (" + std::to_string(process->nsid()) + ")") : (std::to_string(header->pid) + " (-1)");
+ 	auto tidString = (thread) ? (std::to_string(thread->id()) + " (" + std::to_string(thread->nsid()) + ")") : (std::to_string(header->tid) + " (-1)");
+ 	callLog.debug() << "Received call #" << header->number << " (" << dserver_callnum_to_string(header->number) << ") from PID " << pidString << ", TID " << tidString << callLog.endLog;
++	if (TestDiagnostics::enabled()) {
++		TestDiagnostics::traceLine(
++			"rpc.recv number=" + std::to_string(header->number) +
++			" name=" + dserver_callnum_to_string(header->number) +
++			" pid=" + std::to_string(header->pid) +
++			" tid=" + std::to_string(header->tid)
++		);
++	}
+ 
+ 	if (header->number == dserver_callnum_s2c) {
+ 		// this is an S2C reply
+@@ -359,6 +367,13 @@ bool DarlingServer::Call::isBSDTrap() const {
+ };
+ 
+ void DarlingServer::Call::sendReply(Message&& reply) {
++	if (TestDiagnostics::enabled() && reply.data().size() >= sizeof(dserver_rpc_replyhdr_t)) {
++		auto* header = reinterpret_cast<const dserver_rpc_replyhdr_t*>(reply.data().data());
++		TestDiagnostics::traceLine(
++			"rpc.reply.send number=" + std::to_string(header->number) +
++			" code=" + std::to_string(header->code)
++		);
++	}
+ 	Server::sharedInstance().sendMessage(std::move(reply));
+ };
+ 
+diff --git a/src/thread.cpp b/src/thread.cpp
+index 9a54079a2de9e73d78c4e003c0c4074dda37f094..886e521384ad345c1117bc577976bedabc294684 100644
+--- a/src/thread.cpp
++++ b/src/thread.cpp
+@@ -1448,6 +1448,15 @@ void DarlingServer::Thread::pushCallReply(std::shared_ptr<Call> expectedCall, Me
+ 		_deactivateCallLocked(expectedCall);
+ 	}
+ 
++	if (TestDiagnostics::enabled() && reply.data().size() >= sizeof(dserver_rpc_replyhdr_t)) {
++		auto* header = reinterpret_cast<const dserver_rpc_replyhdr_t*>(reply.data().data());
++		const char* disposition = _interruptedForSignal ? "saved" : _deferReplyForS2C ? "deferred" : _dead ? "dropped-dead" : "send";
++		TestDiagnostics::traceLine(
++			"rpc.reply.disposition number=" + std::to_string(header->number) +
++			" state=" + disposition
++		);
++	}
++
+ 	if (_interruptedForSignal) {
+ 		if (_interrupts.top().savedReply) {
+ 			throw std::runtime_error("New reply would overwrite existing saved reply");
+@@ -1457,6 +1466,13 @@ void DarlingServer::Thread::pushCallReply(std::shared_ptr<Call> expectedCall, Me
+ 	} else if (_deferReplyForS2C) {
+ 		_deferredReply = std::move(reply);
+ 	} else if (!_dead) {
++		if (TestDiagnostics::enabled() && reply.data().size() >= sizeof(dserver_rpc_replyhdr_t)) {
++			auto* header = reinterpret_cast<const dserver_rpc_replyhdr_t*>(reply.data().data());
++			TestDiagnostics::traceLine(
++				"rpc.reply.send number=" + std::to_string(header->number) +
++				" code=" + std::to_string(header->code)
++			);
++		}
+ 		Server::sharedInstance().sendMessage(std::move(reply));
+ 	}
+ };
