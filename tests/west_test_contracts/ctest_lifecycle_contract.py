@@ -202,13 +202,17 @@ with tempfile.TemporaryDirectory() as temp:
     host_trace = root / "prefix" / ".west-rootless-boot.log"
     guest_trace = root / "prefix" / "private/var/tmp/.west-rootless-boot.log"
     guest_fd_trace = root / "prefix" / ".west-rootless-guest-fd.log"
+    server_trace = root / "prefix" / "private/var/log/dserver-auxlog.txt"
     host_trace.write_text("stale host trace\n")
     guest_trace.parent.mkdir(parents=True)
     guest_trace.write_text("stale guest trace\n")
     guest_fd_trace.write_text("stale guest FD trace\n")
+    server_trace.parent.mkdir(parents=True)
+    server_trace.write_text("stale server trace\n")
     test = DarlingTest.__new__(DarlingTest)
     test._prefix = str(root / "prefix")
     test._active_profile = None
+    test._bootstrap_syscall_trace = root / "bootstrap-trace"
     test.inf = lambda _message: None
     test.err = lambda _message: None
     test.die = lambda message: (_ for _ in ()).throw(SystemExit(message))
@@ -268,9 +272,11 @@ with tempfile.TemporaryDirectory() as temp:
             root / "prefix" / ".west-rootless-boot.log"
         )
         assert runtime_env["DARLING_GUEST_BOOT_TRACE"] == str(guest_fd_trace)
+        assert runtime_env["DARLING_SERVER_AUXLOG"] == "1"
         assert not host_trace.exists()
         assert not guest_trace.exists()
         assert not guest_fd_trace.exists()
+        assert not server_trace.exists()
     assert events == ["preflight", "source", "build", "deploy", "restore"], events
     assert test._active_profile is None
 
@@ -387,6 +393,9 @@ with tempfile.TemporaryDirectory() as temp:
     prefix = root / "prefix"
     trace_dir = root / "trace"
     prefix.mkdir()
+    server_trace = prefix / "private/var/log/dserver-auxlog.txt"
+    server_trace.parent.mkdir(parents=True)
+    server_trace.write_text("stale trace\n")
     test = DarlingTest.__new__(DarlingTest)
     test.topdir = str(root)
     test._prefix = str(prefix)
@@ -407,6 +416,8 @@ with tempfile.TemporaryDirectory() as temp:
     def prefix_context(_enabled):
         yield
 
+    deployment_env = {"DARLING_LAUNCHER": "/fake/darling"}
+
     @contextmanager
     def deployment_context(_profiles, *, label_prefix, retain_deployment):
         assert label_prefix == "Prefix bootstrap"
@@ -414,7 +425,7 @@ with tempfile.TemporaryDirectory() as temp:
         yield types.SimpleNamespace(
             prefix=prefix,
             build_root=root / "build",
-            env={"DARLING_LAUNCHER": "/fake/darling"},
+            env=deployment_env,
         )
 
     observed_prefixes = []
@@ -422,10 +433,13 @@ with tempfile.TemporaryDirectory() as temp:
     test._runtime_profile_deployment_context = deployment_context
     original_run_guest_shell = test_module.run_guest_shell
     original_run_bounded = test_module.run_bounded
-    test_module.run_guest_shell = lambda *_args, **kwargs: (
+    def timed_out_guest(*_args, **kwargs):
         observed_prefixes.append(kwargs["command_prefix"])
-        or ProcessResult(124, timed_out=True, stdout="", stderr="")
-    )
+        server_trace.parent.mkdir(parents=True, exist_ok=True)
+        server_trace.write_text("RECV call=1(mldr_path)\n")
+        return ProcessResult(124, timed_out=True, stdout="", stderr="")
+
+    test_module.run_guest_shell = timed_out_guest
     test_module.run_bounded = lambda *_args, **_kwargs: ProcessResult(0)
     try:
         try:
@@ -440,7 +454,11 @@ with tempfile.TemporaryDirectory() as temp:
     assert observed_prefixes == [
         ("strace", "-ff", "-i", "-tt", "-s", "160", "-o", str(trace_dir / "bootstrap"))
     ], observed_prefixes
-    assert messages == [f"prefix bootstrap syscall trace: {trace_dir}"], messages
+    assert (trace_dir / "darlingserver-rpc.log").read_text() == "RECV call=1(mldr_path)\n"
+    assert messages == [
+        f"prefix bootstrap syscall trace: {trace_dir}",
+        f"prefix bootstrap server trace: {trace_dir / 'darlingserver-rpc.log'}",
+    ], messages
 
 
 with tempfile.TemporaryDirectory() as temp:
