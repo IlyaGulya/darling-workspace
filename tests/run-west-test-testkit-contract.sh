@@ -13,6 +13,15 @@ tests/run-darling-c-test-contract.sh
 # declarations before any CTest discovery runs.
 west test --help | grep -q -- '--bootstrap-runtime-profile NAME'
 
+if patch_profile_error="$(west test --patch darling/rootless-shellspawn-readiness.patch \
+	--prefix-profile homebrew --list 2>&1)"; then
+	printf '%s\n' "$patch_profile_error" >&2
+	exit 1
+fi
+printf '%s\n' "$patch_profile_error" | grep -F -q -- \
+	'--patch selects patch metadata and requires --profile; --prefix-profile selects only a Darling prefix' ||
+	{ printf '%s\n' "$patch_profile_error" >&2; exit 1; }
+
 bead="dar-dar6x4-perf-5dq.1"
 
 list_by_bead="$(west test --bead "$bead" --list)"

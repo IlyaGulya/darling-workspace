@@ -1,0 +1,206 @@
+From 685261061265dd489c1ee3c5c69a81f7dab419e0 Mon Sep 17 00:00:00 2001
+From: Ilya Gulya <ilya.gulya@indriver.com>
+Date: Sat, 11 Jul 2026 15:26:34 +0000
+Subject: [PATCH] rootless: wait for shellspawn connection
+
+---
+ src/startup/darling.c | 92 ++++++++++++++++++++++++++++---------------
+ src/startup/darling.h |  6 +--
+ 2 files changed, 64 insertions(+), 34 deletions(-)
+
+diff --git a/src/startup/darling.c b/src/startup/darling.c
+index 6a75a36bcd381960b4121724555d1e1b867f7da4..8172426acab5f56c6eddfad3c462084d881bc357 100644
+--- a/src/startup/darling.c
++++ b/src/startup/darling.c
+@@ -201,7 +201,6 @@ int main(int argc, char ** argv)
+ 	if (pidInit == 0)
+ 	{
+ 		char socketPath[4096];
+-		bool shellspawnReady = false;
+ 		
+ 		snprintf(socketPath, sizeof(socketPath), "%s"  SHELLSPAWN_SOCKPATH, prefix);
+ 		
+@@ -211,18 +210,16 @@ int main(int argc, char ** argv)
+ 		rootlessBootTrace("spawn-darlingserver");
+ 		pidInit = spawnInitProcess();
+ 		putInitPid(pidInit);
+-		rootlessBootTrace("waiting-for-shellspawn");
+-		
+-		// Wait until shellspawn starts
+-		for (int i = 0; i < 15; i++)
++		if (!rootless)
+ 		{
+-			if (access(socketPath, F_OK) == 0) {
+-				shellspawnReady = true;
+-				break;
++			// The namespace-based launcher keeps its existing bounded startup wait.
++			for (int i = 0; i < 15; i++)
++			{
++				if (access(socketPath, F_OK) == 0)
++					break;
++				sleep(1);
+ 			}
+-			sleep(1);
+ 		}
+-		rootlessBootTrace(shellspawnReady ? "shellspawn-ready" : "shellspawn-wait-expired");
+ 	}
+ 
+ #if USE_LINUX_4_11_HACK
+@@ -237,9 +234,9 @@ int main(int argc, char ** argv)
+ 	{
+ 		// Spawn the shell
+ 		if (argc > 2)
+-			spawnShell((const char**) &argv[2]);
++			spawnShell(pidInit, (const char**) &argv[2]);
+ 		else
+-			spawnShell(NULL);
++			spawnShell(pidInit, NULL);
+ 	}
+ 	else
+ 	{
+@@ -269,9 +266,9 @@ int main(int argc, char ** argv)
+ 		argv[argvIndex] = fullPath;
+ 
+ 		if (doExec)
+-			spawnBinary(argv[argvIndex], (const char**) &argv[argvIndex]);
++			spawnBinary(pidInit, argv[argvIndex], (const char**) &argv[argvIndex]);
+ 		else
+-			spawnShell((const char**) &argv[argvIndex]);
++			spawnShell(pidInit, (const char**) &argv[argvIndex]);
+ 	}
+ 
+ 	return 0;
+@@ -588,10 +585,21 @@ static size_t escapeQuotes(char *dest, const char *src)
+ 	return len;
+ }
+ 
+-int connectToShellspawn(void)
++static bool rootlessInitIsRunning(pid_t pidInit)
++{
++	if (pidInit <= 0)
++		return false;
++
++	if (kill(pidInit, 0) == 0)
++		return true;
++
++	return errno == EPERM;
++}
++
++int connectToShellspawn(pid_t pidInit)
+ {
+ 	struct sockaddr_un addr;
+-	int sockfd;
++	bool waitingForShellspawn = false;
+ 
+ 	// Connect to the shellspawn daemon in the container
+ 	addr.sun_family = AF_UNIX;
+@@ -605,21 +613,43 @@ int connectToShellspawn(void)
+ #endif
+ 
+ 	rootlessBootTrace("shellspawn-connect-enter");
+-	sockfd = socket(AF_UNIX, SOCK_STREAM, 0);
+-	if (sockfd == -1)
++	for (;;)
+ 	{
+-		fprintf(stderr, "Error creating a unix domain socket: %s\n", strerror(errno));
+-		exit(1);
+-	}
++		int sockfd = socket(AF_UNIX, SOCK_STREAM, 0);
++		if (sockfd == -1)
++		{
++			fprintf(stderr, "Error creating a unix domain socket: %s\n", strerror(errno));
++			exit(1);
++		}
+ 
+-	if (connect(sockfd, (struct sockaddr*) &addr, sizeof(addr)) == -1)
+-	{
+-		fprintf(stderr, "Error connecting to shellspawn in the container (%s): %s\n", addr.sun_path, strerror(errno));
+-		exit(1);
++		if (connect(sockfd, (struct sockaddr*) &addr, sizeof(addr)) == 0)
++		{
++			rootlessBootTrace("shellspawn-connect-ready");
++			return sockfd;
++		}
++
++		int error = errno;
++		close(sockfd);
++		if (!rootlessModeEnabled() || (error != ENOENT && error != ECONNREFUSED))
++		{
++			fprintf(stderr, "Error connecting to shellspawn in the container (%s): %s\n", addr.sun_path, strerror(error));
++			exit(1);
++		}
++
++		if (!rootlessInitIsRunning(pidInit))
++		{
++			fprintf(stderr, "Rootless init process %d exited before shellspawn became ready (%s)\n", pidInit, addr.sun_path);
++			exit(1);
++		}
++
++		if (!waitingForShellspawn)
++		{
++			rootlessBootTrace("shellspawn-connect-pending");
++			waitingForShellspawn = true;
++		}
++		poll(NULL, 0, 100);
+ 	}
+-	rootlessBootTrace("shellspawn-connect-ready");
+ 
+-	return sockfd;
+ }
+ 
+ void setupShellspawnEnv(int sockfd)
+@@ -720,7 +750,7 @@ void spawnGo(int sockfd, int fds[3], int master)
+ 	close(sockfd);
+ }
+ 
+-void spawnShell(const char** argv)
++void spawnShell(pid_t pidInit, const char** argv)
+ {
+ 	size_t total_len = 0;
+ 	int count;
+@@ -748,7 +778,7 @@ void spawnShell(const char** argv)
+ 	else
+ 		buffer = NULL;
+ 
+-	sockfd = connectToShellspawn();
++	sockfd = connectToShellspawn(pidInit);
+ 
+ 	setupShellspawnEnv(sockfd);
+ 
+@@ -767,12 +797,12 @@ void spawnShell(const char** argv)
+ 	spawnGo(sockfd, fds, master);
+ }
+ 
+-void spawnBinary(const char* binary, const char** argv)
++void spawnBinary(pid_t pidInit, const char* binary, const char** argv)
+ {
+ 	int fds[3], master;
+ 	int sockfd;
+ 
+-	sockfd = connectToShellspawn();
++	sockfd = connectToShellspawn(pidInit);
+ 	setupShellspawnEnv(sockfd);
+ 
+ 	pushShellspawnCommand(sockfd, SHELLSPAWN_SETEXEC, binary);
+diff --git a/src/startup/darling.h b/src/startup/darling.h
+index 1a49e2f50a7a674966fd9170580e294a1735b556..b6d7a7d802473762f9129c6bb000941fd186c87c 100644
+--- a/src/startup/darling.h
++++ b/src/startup/darling.h
+@@ -40,14 +40,14 @@ int checkPrefixDir(void);
+ // Creates the given directory, exit()ing if not possible
+ void createDir(const char* path);
+ 
+-int connectToShellspawn(void);
++int connectToShellspawn(pid_t pidInit);
+ void setupShellspawnEnv(int shellspawnFD);
+ void setupWorkingDir(int shellspawnFD);
+ void setupIDs(int shellspawnFD);
+ void setupFDs(int fds[3], int* master);
+ void spawnGo(int shellspawnFD, int fds[3], int master);
+-void spawnShell(const char** argv);
+-void spawnBinary(const char* binary, const char** argv);
++void spawnShell(pid_t pidInit, const char** argv);
++void spawnBinary(pid_t pidInit, const char* binary, const char** argv);
+ 
+ // Set up some environment variables
+ // As well as the working directory
