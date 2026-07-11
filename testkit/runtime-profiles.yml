@@ -70,6 +70,7 @@ runtime-profiles:
     - darling
     - darling/src/external/darlingserver
     - darling/src/external/xnu
+    - darling/src/external/dyld
     cmake-defines:
       # Rootless cannot use overlay or copy the shared template; its XNU and
       # dserver artifacts must agree on the E-UNION runtime contract.
@@ -118,6 +119,7 @@ runtime-profiles:
     - darling
     - darling/src/external/darlingserver
     - darling/src/external/xnu
+    - darling/src/external/dyld
     cmake-defines:
       DARLING_EUNION: true
     launcher-env:

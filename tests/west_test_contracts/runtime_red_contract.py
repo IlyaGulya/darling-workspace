@@ -268,11 +268,13 @@ assert {
     "usr/lib/dyld",
     "usr/lib/system/libsystem_kernel.dylib",
 }
+assert "darling/src/external/dyld" in rootless_provider["source-modules"]
 baseline_provider = actual_runtime_profiles["homebrew-prefix-baseline"]
 assert baseline_provider["purpose"] == "prefix-baseline"
 assert baseline_provider["bootstrap"] == "rootless-no-mount"
 assert baseline_provider["bootstrap-smoke-timeout-seconds"] == 20
 assert baseline_provider["launcher-env"] == rootless_provider["launcher-env"]
+assert "darling/src/external/dyld" in baseline_provider["source-modules"]
 
 with tempfile.TemporaryDirectory() as temp:
     profiles_path = Path(temp) / "runtime-profiles.yml"
@@ -294,6 +296,31 @@ with tempfile.TemporaryDirectory() as temp:
         assert "usr/libexec/darling/vchroot" in str(exc), exc
     else:
         raise AssertionError("incomplete rootless runtime provider was accepted")
+
+with tempfile.TemporaryDirectory() as temp:
+    profiles_path = Path(temp) / "runtime-profiles.yml"
+    profiles_path.write_text(
+        "runtime-profiles:\n"
+        "  mixed-rootless:\n"
+        "    source-profile: homebrew\n"
+        "    source-module: darling\n"
+        "    source-modules: [darling, darling/src/external/darlingserver, darling/src/external/xnu]\n"
+        "    bootstrap: rootless-no-mount\n"
+        "    runtime-artifacts:\n"
+        "    - build-targets: [darling]\n"
+        "      deploy: [bin/darling, usr/libexec/darling/mldr, usr/libexec/darling/launchd, usr/libexec/shellspawn, usr/libexec/darling/vchroot, usr/lib/dyld]\n"
+        "    - build-targets: [darlingserver]\n"
+        "      deploy: [bin/darlingserver]\n"
+        "    - build-targets: [system_kernel]\n"
+        "      deploy: [usr/lib/system/libsystem_kernel.dylib]\n"
+    )
+    try:
+        load_ctest_runtime_profiles(profiles_path)
+    except ValueError as exc:
+        assert "must materialize bootstrap source module(s)" in str(exc), exc
+        assert "darling/src/external/dyld" in str(exc), exc
+    else:
+        raise AssertionError("rootless runtime provider accepted a live dyld source")
 
 with tempfile.TemporaryDirectory() as temp:
     profiles_path = Path(temp) / "runtime-profiles.yml"
