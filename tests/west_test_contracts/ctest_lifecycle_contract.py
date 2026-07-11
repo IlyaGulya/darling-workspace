@@ -188,9 +188,11 @@ with tempfile.TemporaryDirectory() as temp:
     (root / "prefix" / "bin" / "darling").write_text("launcher\n")
     host_trace = root / "prefix" / ".west-rootless-boot.log"
     guest_trace = root / "prefix" / "private/var/tmp/.west-rootless-boot.log"
+    guest_fd_trace = root / "prefix" / ".west-rootless-guest-fd.log"
     host_trace.write_text("stale host trace\n")
     guest_trace.parent.mkdir(parents=True)
     guest_trace.write_text("stale guest trace\n")
+    guest_fd_trace.write_text("stale guest FD trace\n")
     test = DarlingTest.__new__(DarlingTest)
     test._prefix = str(root / "prefix")
     test._active_profile = None
@@ -252,8 +254,10 @@ with tempfile.TemporaryDirectory() as temp:
         assert runtime_env["DARLING_HOST_BOOT_TRACE"] == str(
             root / "prefix" / ".west-rootless-boot.log"
         )
+        assert runtime_env["DARLING_GUEST_BOOT_TRACE"] == str(guest_fd_trace)
         assert not host_trace.exists()
         assert not guest_trace.exists()
+        assert not guest_fd_trace.exists()
     assert events == ["preflight", "source", "build", "deploy", "restore"], events
     assert test._active_profile is None
 
