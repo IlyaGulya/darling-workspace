@@ -7,7 +7,7 @@ import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 from shlex import quote
-from typing import Callable
+from typing import Callable, Sequence
 
 try:
     from .test_execution import ProcessResult, run_bounded
@@ -53,12 +53,18 @@ def run_guest_shell(
     stdout=None,
     stderr=None,
     capture_output: bool = False,
+    command_prefix: Sequence[str] = (),
 ) -> ProcessResult:
-    """Run one guest shell command with prefix identity and group cleanup."""
+    """Run one guest shell command with prefix identity and group cleanup.
+
+    ``command_prefix`` is a host-side observer such as ``strace``.  It wraps
+    the launcher process without changing the guest command or its environment.
+    """
 
     prefix_text = str(prefix)
     return run_bounded(
         [
+            *command_prefix,
             "env",
             f"DPREFIX={prefix_text}",
             f"DARLING_PREFIX={prefix_text}",

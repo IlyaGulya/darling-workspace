@@ -372,6 +372,67 @@ with tempfile.TemporaryDirectory() as temp:
 with tempfile.TemporaryDirectory() as temp:
     root = Path(temp)
     prefix = root / "prefix"
+    trace_dir = root / "trace"
+    prefix.mkdir()
+    test = DarlingTest.__new__(DarlingTest)
+    test.topdir = str(root)
+    test._prefix = str(prefix)
+    test._prefix_cleanup_failed = False
+    test._bootstrap_syscall_trace = trace_dir
+    messages = []
+    test.inf = messages.append
+    test.err = lambda _message: None
+    test.die = lambda message: (_ for _ in ()).throw(SystemExit(message))
+    test._ctest_runtime_profile_definitions = lambda: {
+        "homebrew-prefix-baseline": {
+            "purpose": "prefix-baseline",
+            "bootstrap-smoke-timeout-seconds": 60,
+        }
+    }
+
+    @contextmanager
+    def prefix_context(_enabled):
+        yield
+
+    @contextmanager
+    def deployment_context(_profiles, *, label_prefix, retain_deployment):
+        assert label_prefix == "Prefix bootstrap"
+        assert retain_deployment is True
+        yield types.SimpleNamespace(
+            prefix=prefix,
+            build_root=root / "build",
+            env={"DARLING_LAUNCHER": "/fake/darling"},
+        )
+
+    observed_prefixes = []
+    test._prefix_resource_context = prefix_context
+    test._runtime_profile_deployment_context = deployment_context
+    original_run_guest_shell = test_module.run_guest_shell
+    original_run_bounded = test_module.run_bounded
+    test_module.run_guest_shell = lambda *_args, **kwargs: (
+        observed_prefixes.append(kwargs["command_prefix"])
+        or ProcessResult(124, timed_out=True, stdout="", stderr="")
+    )
+    test_module.run_bounded = lambda *_args, **_kwargs: ProcessResult(0)
+    try:
+        try:
+            test._bootstrap_runtime_profile("homebrew-prefix-baseline")
+            raise AssertionError("bootstrap unexpectedly accepted a timed-out syscall trace run")
+        except SystemExit as exc:
+            assert str(exc) == f"prefix bootstrap guest smoke timed out after 60s; syscall trace: {trace_dir}", exc
+    finally:
+        test_module.run_guest_shell = original_run_guest_shell
+        test_module.run_bounded = original_run_bounded
+    assert trace_dir.is_dir(), trace_dir
+    assert observed_prefixes == [
+        ("strace", "-ff", "-tt", "-s", "160", "-o", str(trace_dir / "bootstrap"))
+    ], observed_prefixes
+    assert messages == [f"prefix bootstrap syscall trace: {trace_dir}"], messages
+
+
+with tempfile.TemporaryDirectory() as temp:
+    root = Path(temp)
+    prefix = root / "prefix"
     prefix.mkdir()
     test = DarlingTest.__new__(DarlingTest)
     test.topdir = str(root)
