@@ -151,7 +151,7 @@
         },
         {
           "branch": "fix/rootless-shellspawn-readiness",
-          "head": "7647d5643295c90cc7e8772343b8190e1d0d4c33",
+          "head": "685261061265dd489c1ee3c5c69a81f7dab419e0",
           "upstream": "",
           "source_ref": "refs/heads/fix/rootless-shellspawn-readiness"
         },
@@ -166,6 +166,12 @@
           "head": "daa667922e300ba7d692b3c835b40c65871ad990",
           "upstream": "",
           "source_ref": "refs/heads/fix/rootless-shellspawn-scheduler-clean"
+        },
+        {
+          "branch": "fix/rootless-shellspawn-test-delay",
+          "head": "af4953b4e6811a85a5f476622f90f32ff6f3ed9b",
+          "upstream": "",
+          "source_ref": "refs/heads/fix/rootless-shellspawn-test-delay"
         },
         {
           "branch": "fix/rootless-vchroot-argv",
