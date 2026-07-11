@@ -140,6 +140,7 @@ assert compact["script"] == "tests/compact_guest.c", compact
 assert compact["ok-marker"] == "COMPACT_OK", compact
 assert compact["timeout-seconds"] == 45, compact
 assert compact["red-proof"]["mode"] == "guest-runtime-deploy", compact
+assert compact["red-proof"]["expect-failure-phase"] == "run", compact
 assert compact["red-proof"]["bad-profile"] == "current-minus-patch", compact
 assert compact["red-proof"]["current-minus-skip-patches"] == ["xnu/downstream.patch"], compact
 assert compact["red-proof"]["expect-output-contains"] == ["old runtime failure"], compact

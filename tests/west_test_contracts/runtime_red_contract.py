@@ -441,7 +441,7 @@ missing_reasons = test._red_proof_audit(
                 "name": "with_reason",
                 "red-proof": {
                     "mode": "guest-runtime-deploy",
-                    "expect-failure-phase": "runtime",
+                    "expect-failure-phase": "run",
                     "expect-output-contains": ["old runtime symptom"],
                 },
             },

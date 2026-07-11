@@ -1072,6 +1072,10 @@ class DarlingPatch(WestCommand):
                         errors.append(
                             f"tests[{index}] red-proof expect-failure-phase must be one or more known phases"
                         )
+                    elif proof.get("mode") == "guest-runtime-deploy" and "runtime" in phases:
+                        errors.append(
+                            f"tests[{index}] guest-runtime-deploy must name an exact failure phase, not 'runtime'"
+                        )
             env = test.get("env")
             if env and env not in {"host", "darling", "macos"}:
                 errors.append(f"tests[{index}] invalid env {env!r}")

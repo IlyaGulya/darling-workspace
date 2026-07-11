@@ -122,4 +122,27 @@ with tempfile.TemporaryDirectory() as temp:
     assert phases == ["run"], phases
     assert errors == ["guest_command_contract: guest command watchdog timed out after 3s"]
 
+    mismatch_phases = []
+    errors = []
+    guest_execution.run_guest_shell = successful_shell
+    try:
+        mismatch_invocation = {
+            **invocation,
+            "expect": {"returncode": 134},
+        }
+        assert run_guest_command_fixture(
+            mismatch_invocation,
+            env={"DPREFIX": "/prefix", "DARLING_LAUNCHER": "/launcher"},
+            prefix="/prefix",
+            resolve_launcher=lambda _prefix: None,
+            die=fail,
+            err=errors.append,
+            record_failure_phase=lambda _invocation, phase: mismatch_phases.append(phase),
+        ) == 1
+    finally:
+        guest_execution.run_guest_shell = original
+
+    assert mismatch_phases == ["run"], mismatch_phases
+    assert errors == ["guest_command_contract: guest command rc 0, want 134"]
+
 print("PASS west-test-guest-command-contract")
