@@ -258,6 +258,12 @@ class DarlingTest(WestCommand):
             help="with --bootstrap-runtime-profile, save a low-overhead perf stack sample for the bounded guest smoke in DIR",
         )
         parser.add_argument(
+            "--bootstrap-timeout-seconds",
+            type=int,
+            metavar="SECONDS",
+            help="override the bounded runtime-bootstrap deadline (E-UNION default: 15; maximum: 600)",
+        )
+        parser.add_argument(
             "--keep-prefix-running",
             action="store_true",
             help="do not shut down a Darling prefix after prefix-backed metadata tests",
@@ -3047,6 +3053,7 @@ class DarlingTest(WestCommand):
 
         child_env = dict(env or os.environ.copy())
         child_env.update(self._darling_prefix_env(prefix))
+        timeout_seconds = getattr(self, "_bootstrap_timeout_seconds", None) or 15
         command_prefix: tuple[str, ...] = ()
         trace_dir = getattr(self, "_bootstrap_syscall_trace", None)
         stack_sample_dir = getattr(self, "_bootstrap_stack_sample", None)
@@ -3069,7 +3076,7 @@ class DarlingTest(WestCommand):
             ":",
             cwd=Path.cwd(),
             env=child_env,
-            timeout_seconds=15,
+            timeout_seconds=timeout_seconds,
             capture_output=True,
             command_prefix=command_prefix,
         )
@@ -3099,7 +3106,7 @@ class DarlingTest(WestCommand):
                 progress = rootless_bootstrap_progress(prefix)
                 progress_hint = f"; progress: {progress}" if progress is not None else ""
                 self.err(
-                    f"{invocation['name']}: E-UNION prefix bootstrap timed out after 15s "
+                    f"{invocation['name']}: E-UNION prefix bootstrap timed out after {timeout_seconds}s "
                     f"without output{diagnostic_hint}{progress_hint}"
                 )
             self._record_failure_phase(invocation, "bootstrap")
@@ -4114,7 +4121,10 @@ class DarlingTest(WestCommand):
                 f"runtime profile {profile_name} is not a prefix-baseline; "
                 "bootstrap only accepts declared rootless baselines"
             )
-        smoke_timeout_seconds = definition["bootstrap-smoke-timeout-seconds"]
+        smoke_timeout_seconds = (
+            getattr(self, "_bootstrap_timeout_seconds", None)
+            or definition["bootstrap-smoke-timeout-seconds"]
+        )
         trace_dir = getattr(self, "_bootstrap_syscall_trace", None)
         stack_sample_dir = getattr(self, "_bootstrap_stack_sample", None)
         command_prefix: tuple[str, ...] = ()
@@ -5309,9 +5319,14 @@ class DarlingTest(WestCommand):
         self._keep_prefix_running = args.keep_prefix_running
         self._bootstrap_syscall_trace = None
         self._bootstrap_stack_sample = None
+        self._bootstrap_timeout_seconds = None
 
         if args.ctest_timeout_seconds <= 0:
             self.die("--ctest-timeout-seconds must be > 0")
+        if args.bootstrap_timeout_seconds is not None:
+            if not 1 <= args.bootstrap_timeout_seconds <= 600:
+                self.die("--bootstrap-timeout-seconds must be between 1 and 600")
+            self._bootstrap_timeout_seconds = args.bootstrap_timeout_seconds
 
         if args.gc:
             self._gc_bundles(
@@ -5407,6 +5422,7 @@ class DarlingTest(WestCommand):
             finally:
                 self._bootstrap_syscall_trace = None
                 self._bootstrap_stack_sample = None
+                self._bootstrap_timeout_seconds = None
 
         if args.profile:
             selected, missing = self._metadata_tests(
@@ -5479,6 +5495,7 @@ class DarlingTest(WestCommand):
                 self._active_profile = previous_active_profile
                 self._bootstrap_syscall_trace = None
                 self._bootstrap_stack_sample = None
+                self._bootstrap_timeout_seconds = None
 
         testkit = self._testkit_dir()
         if not testkit.exists():
