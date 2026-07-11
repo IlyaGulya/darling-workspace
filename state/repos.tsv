@@ -1,5 +1,5 @@
 path	head	branch	origin	worktree
-.	8b40e1ed6bd3d4647a1c1ad561c394fc40ad172b	integration/arch	git@github.com:IlyaGulya/darling.git	dirty
+.	ca7410866640f3a2f5289e27bf705dc6fc13a957	integration/arch	git@github.com:IlyaGulya/darling.git	dirty
 src/external/AvailabilityVersions	e28c029a8fa46fa933cbf6d6d9a1c00978c5fad1	DETACHED	git@github.com:IlyaGulya/darling-AvailabilityVersions	clean
 src/external/BerkeleyDB	1411173f0eb71f96ab6134de4e052d16acb8c673	DETACHED	git@github.com:IlyaGulya/darling-BerkeleyDB.git	clean
 src/external/DSTools	e015256b16965ac032412f2277c608c7213c03b3	DETACHED	git@github.com:IlyaGulya/darling-DSTools.git	clean

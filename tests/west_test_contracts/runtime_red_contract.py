@@ -39,6 +39,8 @@ from west_commands.test_runtime import (
     runtime_deploy_targets,
 )
 
+os.environ.setdefault("WEST_RUNTIME_MIN_FREE_BYTES", "0")
+
 
 def make_test():
     test = DarlingTest.__new__(DarlingTest)
@@ -474,6 +476,56 @@ except SystemExit as exc:
     assert "guest-runtime-deploy RED proof needs expect-output-contains" in str(exc)
 else:
     raise AssertionError("guest-runtime-deploy proof accepted without reason matcher")
+
+
+with tempfile.TemporaryDirectory() as temp:
+    test = make_test()
+    test._prefix = str(Path(temp) / "prefix")
+    preflight_labels = []
+    test._require_runtime_scratch_space = lambda label: (
+        preflight_labels.append(label), test.die("runtime scratch unavailable")
+    )[1]
+    original_mkdtemp = west_test_module.tempfile.mkdtemp
+    west_test_module.tempfile.mkdtemp = lambda **_kwargs: (_ for _ in ()).throw(
+        AssertionError("runtime RED scratch was created before capacity preflight")
+    )
+    try:
+        try:
+            test._run_guest_runtime_deploy_proof(
+                {"path": "darling/example.patch"},
+                {
+                    "mode": "guest-runtime-deploy",
+                    "expect-output-contains": ["expected old runtime symptom"],
+                },
+                {"name": "runtime_capacity_preflight", "guest_c_fixture": True},
+            )
+        except SystemExit as exc:
+            assert str(exc) == "runtime scratch unavailable", exc
+        else:
+            raise AssertionError("runtime RED capacity preflight unexpectedly passed")
+    finally:
+        west_test_module.tempfile.mkdtemp = original_mkdtemp
+    assert preflight_labels == [
+        "darling/example.patch: runtime_capacity_preflight RED"
+    ], preflight_labels
+
+    green_labels = []
+    test._require_runtime_scratch_space = lambda label: (
+        green_labels.append(label), test.die("runtime scratch unavailable")
+    )[1]
+    try:
+        test._run_guest_runtime_deploy_green(
+            {"path": "darling/example.patch"},
+            {"mode": "guest-runtime-deploy"},
+            {"name": "runtime_capacity_preflight"},
+        )
+    except SystemExit as exc:
+        assert str(exc) == "runtime scratch unavailable", exc
+    else:
+        raise AssertionError("runtime GREEN capacity preflight unexpectedly passed")
+    assert green_labels == [
+        "darling/example.patch: runtime_capacity_preflight GREEN"
+    ], green_labels
 
 
 with tempfile.TemporaryDirectory() as temp:

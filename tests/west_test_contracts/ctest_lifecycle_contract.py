@@ -45,7 +45,7 @@ try:
         test._require_runtime_scratch_space("contract")
         raise AssertionError("runtime scratch preflight unexpectedly passed")
     except SystemExit as exc:
-        assert "profile contract needs at least 8 free bytes" in str(exc), exc
+        assert "Runtime deployment contract needs at least 8 free bytes" in str(exc), exc
 finally:
     test_module.shutil.disk_usage = original_disk_usage
     os.environ["WEST_RUNTIME_MIN_FREE_BYTES"] = original_minimum
