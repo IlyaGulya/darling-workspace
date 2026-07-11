@@ -36,6 +36,7 @@ def make_test():
     test.wrn = lambda *args, **kwargs: None
     test.err_messages = []
     test.err = lambda message: test.err_messages.append(message)
+    test.die = lambda message: (_ for _ in ()).throw(SystemExit(message))
     return test
 
 
@@ -137,8 +138,13 @@ test = make_test()
 with tempfile.TemporaryDirectory() as temp:
     test._prefix = temp
     test._shutdown_test_prefix = lambda: False
-    with test._prefix_resource_context(True):
-        pass
+    try:
+        with test._prefix_resource_context(True):
+            raise AssertionError("failed prefix reset unexpectedly yielded")
+    except SystemExit as exc:
+        assert str(exc) == f"could not reset Darling prefix before test run: {temp}", exc
+    else:
+        raise AssertionError("failed prefix reset unexpectedly passed")
     assert test._prefix_cleanup_failed
 
 test = make_test()

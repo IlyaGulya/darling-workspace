@@ -186,7 +186,10 @@ RED proof modes:
   artifacts. Each artifact must declare `module`, Ninja `build-targets`, and
   `deploy` paths so the runner knows which source tree to materialize, what to
   build, and which prefix files to swap. `--prove-red --list` prints the deploy
-  plan. Execution creates a temporary bad source forest and CMake/Ninja build
+  plan. Before allocating a runtime source forest, west validates every layer
+  of the selected `base-profile` stack with `west patch verify`; an invalid
+  layer is a profile applicability error, never a runtime RED result. Execution
+  then creates a temporary bad source forest and CMake/Ninja build
   dir, shuts down the selected prefix, backs up the declared deploy paths,
   copies bad artifacts, requires the guest fixture to fail, restores the
   original artifacts, then runs GREEN on the current prefix. Do not substitute
