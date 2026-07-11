@@ -4617,6 +4617,7 @@ class DarlingTest(WestCommand):
             "west-green-proof-runtime-*",
             "west-red-proof-source-*",
             "west-ctest-runtime-*",
+            "west-runtime-*",
         )
         all_scratch_dirs = sorted(
             {
