@@ -29,6 +29,11 @@ west-commands:
       - name: darling-prefix-repair
         class: DarlingPrefixRepair
         help: Repair Darling prefix boot and guest-test prerequisites
+  - file: west_commands/darling_rootless_debug_cleanup.py
+    commands:
+      - name: darling-rootless-debug-cleanup
+        class: DarlingRootlessDebugCleanup
+        help: Safely remove completed rootless Darling debug trees
   - file: west_commands/darling_build.py
     commands:
       - name: darling-build

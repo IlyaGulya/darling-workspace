@@ -37,6 +37,11 @@ refs, PR drafts, and agent handoff.
   confirming no Darling processes are left. Do not ignore prefix mount tails;
   either clean them through tooling or keep the owning Bead open with the exact
   repro.
+- Never glob-delete `/tmp/darling-rootless-*`: active source worktrees use that
+  prefix. For one completed historical debug prefix use `west
+  darling-rootless-debug-cleanup --path /tmp/darling-rootless-*-debug-* --dry-run`
+  first. The command refuses non-debug paths, live `DARLING_PREFIX` owners, and
+  mounts; add `--sudo` only after that inspection reports an ownership failure.
 - Treat clean `fix/*` branches as canonical editable source.
 - Treat patch files and `patches.yml` as portable integration artifacts.
 - Treat `integration/*` branches and profile `west.lock.yml` files as generated.
