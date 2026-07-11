@@ -522,6 +522,12 @@
           "source_ref": "refs/heads/fix/homebrew-psynch-ruby-hang"
         },
         {
+          "branch": "fix/rootless-dyld-boot-trace",
+          "head": "19be1512d016b72cef0fb4316b0fbbec6562682d",
+          "upstream": "",
+          "source_ref": "refs/heads/fix/rootless-dyld-boot-trace"
+        },
+        {
           "branch": "integration/perf",
           "head": "aec6a4af4efaacbda31911aaf32d73495d4a7da1",
           "upstream": "",
