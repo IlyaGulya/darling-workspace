@@ -5413,20 +5413,20 @@ patches:
   module: darling
   source-branch: fix/rootless-shellspawn-scheduler
   source-base: d67907c65edcf0c90e35eaec58119ec57f18238b
-  source-commit: 871fb1ac7f0c398c3053201a3c6791a73bcd1f0d
+  source-commit: 307f8b168e0a837709646073ec14bab48a714d86
   bead: dar-d2pm
   publication-status: blocked
   publication-blocker: Rootless diagnostic only; retain until launchd's shellspawn scheduling boundary has a product fix and a real guest GREEN proof.
   test-exception:
     reason: runtime-harness-pending
     scope: Markers run only in the real rootless launchd path and are checked by the bounded materialized bootstrap repro.
-  sha256sum: dbfda7e6e5c308c8a47157bf18469215544feb2c37273777fa78d64f2965a858
+  sha256sum: 74768d7df9fb44dc7bf99d510f37e3cbf34bb9ba48015c3299d2ad056908d656
 - path: libsystem/rootless-initializer-trace.patch
-  sha256sum: ef9a283afc09ee841ac7103e6110bd1b47d845c072fced17b00fd6b8dda96191
+  sha256sum: d9088e9c12647ee480983fbca7f7baf8d69e606805a9d8da416f7029704b3e23
   module: darling/src/external/libsystem
   source-branch: fix/rootless-libsystem-init-trace
   source-base: 08df454b6eb0df9400aa4c39839a7efd6efd2c3c
-  source-commit: 3faa91ca306c70f1c52921e04f85f0561d37ad2e
+  source-commit: 1407b300a8d7d1f3e9b0561ab27e879c32767339
   bead: dar-d2pm
   publication-status: blocked
   publication-blocker: The raw trace must determine whether the guest libSystem initializer establishes ProgramVars before a production fix is selected.

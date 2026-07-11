@@ -127,3 +127,78 @@ index 961157a18712cc8b6731f884a8fc83c15723e0fb..d1ea90c00c2e980d9a254b39e75c01e3
  
  	// TODO: Move __malloc_init before __libc_init after breaking malloc's upward link to Libc
  	// Note that __malloc_init() will also initialize ASAN when it is present
+
+From 1407b300a8d7d1f3e9b0561ab27e879c32767339 Mon Sep 17 00:00:00 2001
+From: Ilya Gulya <ilya@gulya.me>
+Date: Sat, 11 Jul 2026 13:59:56 +0000
+Subject: [PATCH] libsystem: retain rootless bootstrap trace provider
+
+---
+ init.c | 29 ++++++++++++++++++++++++-----
+ 1 file changed, 24 insertions(+), 5 deletions(-)
+
+diff --git a/init.c b/init.c
+index d1ea90c00c2e980d9a254b39e75c01e37353dd57..807127b6f883fbc2404db81470de3c79fcb965b3 100644
+--- a/init.c
++++ b/init.c
+@@ -52,8 +52,11 @@
+ #ifdef DARLING
+ extern int _dyld_func_lookup(const char* name, void** address);
+ 
+-static void
+-rootless_boot_trace(const char* envp[], const char* message, size_t message_length)
++int __darling_rootless_boot_trace_fd = -1;
++static bool rootless_boot_trace_initialized;
++
++static int
++rootless_boot_trace_fd_from_environment(const char* envp[])
+ {
+ 	static const char rootless_prefix[] = "DARLING_ROOTLESS=1";
+ 	static const char trace_prefix[] = "DARLING_BOOT_TRACE_FD=";
+@@ -89,7 +92,13 @@ rootless_boot_trace(const char* envp[], const char* message, size_t message_leng
+ 		trace_fd = parsed;
+ 	}
+ 
+-	if (!rootless || trace_fd < 0) {
++	return rootless ? trace_fd : -1;
++}
++
++void
++__darling_rootless_boot_trace(const char* message, size_t message_length)
++{
++	if (__darling_rootless_boot_trace_fd < 0) {
+ 		return;
+ 	}
+ 
+@@ -98,12 +107,12 @@ rootless_boot_trace(const char* envp[], const char* message, size_t message_leng
+ 	__asm__ volatile(
+ 		"syscall"
+ 		: "=a"(result)
+-		: "a"(1L), "D"((long)trace_fd), "S"(message), "d"(message_length)
++		: "a"(1L), "D"((long)__darling_rootless_boot_trace_fd), "S"(message), "d"(message_length)
+ 		: "rcx", "r11", "memory"
+ 	);
+ 	(void)result;
+ #elif defined(__aarch64__)
+-	register long x0 __asm__("x0") = trace_fd;
++	register long x0 __asm__("x0") = __darling_rootless_boot_trace_fd;
+ 	register const char* x1 __asm__("x1") = message;
+ 	register size_t x2 __asm__("x2") = message_length;
+ 	register long x8 __asm__("x8") = 64;
+@@ -114,6 +123,16 @@ rootless_boot_trace(const char* envp[], const char* message, size_t message_leng
+ #endif
+ }
+ 
++static void
++rootless_boot_trace(const char* envp[], const char* message, size_t message_length)
++{
++	if (!rootless_boot_trace_initialized) {
++		__darling_rootless_boot_trace_fd = rootless_boot_trace_fd_from_environment(envp);
++		rootless_boot_trace_initialized = true;
++	}
++	__darling_rootless_boot_trace(message, message_length);
++}
++
+ #define ROOTLESS_BOOT_TRACE(envp, message) \
+ 	rootless_boot_trace((envp), (message), sizeof(message) - 1)
+ #endif
