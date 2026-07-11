@@ -251,7 +251,7 @@ index a6ada873303ec5d52aed54628c247d118b2be09b..7994ab62c476b889144cbe094d200b88
  	if (__put_user((user_long_t) 0, envp++))
  	{
 
-From 116d63606d6bfc3b538d52c43a2be4d8c4ffb439 Mon Sep 17 00:00:00 2001
+From 5c435519e3070d442bb5a638694e5536753df0c7 Mon Sep 17 00:00:00 2001
 From: Ilya Gulya <ilya.gulya@indriver.com>
 Date: Sat, 11 Jul 2026 09:36:39 +0000
 Subject: [PATCH] mldr: initialize main thread TSD before dyld
@@ -259,11 +259,11 @@ Subject: [PATCH] mldr: initialize main thread TSD before dyld
 ---
  src/startup/mldr/CMakeLists.txt      |  1 +
  src/startup/mldr/elfcalls/dthreads.c | 92 ++++++++++++++++++++++++++++
- src/startup/mldr/elfcalls/dthreads.h |  5 ++
+ src/startup/mldr/elfcalls/dthreads.h |  6 ++
  src/startup/mldr/elfcalls/threads.c  | 46 ++++----------
  src/startup/mldr/elfcalls/threads.h  |  4 +-
  src/startup/mldr/mldr.c              | 14 +++++
- 6 files changed, 128 insertions(+), 34 deletions(-)
+ 6 files changed, 129 insertions(+), 34 deletions(-)
  create mode 100644 src/startup/mldr/elfcalls/dthreads.c
 
 diff --git a/src/startup/mldr/CMakeLists.txt b/src/startup/mldr/CMakeLists.txt
@@ -280,7 +280,7 @@ index 87ae9af791ccf07b92777228c9282359d813070d..e1f93647d2a7a38b1ba9cf07ee3b4ce6
  
 diff --git a/src/startup/mldr/elfcalls/dthreads.c b/src/startup/mldr/elfcalls/dthreads.c
 new file mode 100644
-index 0000000000000000000000000000000000000000..1b844bb2c9a8722baf1dc5eb4b96c5dd1a6c6147
+index 0000000000000000000000000000000000000000..52937c948d55efe063dce537c344afbcda392bb2
 --- /dev/null
 +++ b/src/startup/mldr/elfcalls/dthreads.c
 @@ -0,0 +1,92 @@
@@ -312,7 +312,7 @@ index 0000000000000000000000000000000000000000..1b844bb2c9a8722baf1dc5eb4b96c5dd
 +	dthread->tsd[DTHREAD_TSD_SLOT_PTHREAD_SELF] = dthread;
 +	dthread->tsd[DTHREAD_TSD_SLOT_ERRNO] = &dthread->err_no;
 +	dthread->tsd[DTHREAD_TSD_SLOT_PTHREAD_QOS_CLASS] =
-+		(void*)(uintptr_t)DTHREAD_DEFAULT_PRIORITY;
++		(void*)(uintptr_t)(DTHREAD_DEFAULT_PRIORITY);
 +	dthread->tsd[DTHREAD_TSD_SLOT_PTR_MUNGE] = 0;
 +	dthread->tl_has_custom_stack = 0;
 +	dthread->lock = (darwin_os_unfair_lock){0};
@@ -377,18 +377,19 @@ index 0000000000000000000000000000000000000000..1b844bb2c9a8722baf1dc5eb4b96c5dd
 +#endif
 +}
 diff --git a/src/startup/mldr/elfcalls/dthreads.h b/src/startup/mldr/elfcalls/dthreads.h
-index 5be5be34315fb2dd3da3ab8e8292cd2acc63b250..c8a5e9918d2a397e3cfbf5d042ee7e4055992684 100644
+index 5be5be34315fb2dd3da3ab8e8292cd2acc63b250..1bbc2629142fdc5ddb4e3b074742d8b219005cb9 100644
 --- a/src/startup/mldr/elfcalls/dthreads.h
 +++ b/src/startup/mldr/elfcalls/dthreads.h
-@@ -5,6 +5,7 @@
+@@ -5,6 +5,8 @@
  // also: "dwq" stands for "Darwin workqueue"
  
  #include <stdint.h>
 +#include <stddef.h>
++#include <stdbool.h>
  
  #define DARWIN_TAILQ_ENTRY(type)      \
  	struct {                            \
-@@ -127,4 +128,8 @@ typedef struct _dthread {
+@@ -127,4 +129,8 @@ typedef struct _dthread {
  	void* tsd[DARWIN_EXTERNAL_POSIX_THREAD_KEYS_MAX + DARWIN_INTERNAL_POSIX_THREAD_KEYS_MAX];
  }* dthread_t;
  
