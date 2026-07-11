@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import json
 import os
+import re
+import sys
 import tempfile
 import time
 from pathlib import Path
@@ -15,6 +17,31 @@ try:
 except ImportError:  # Loaded as a West extension module, not a package.
     from test_execution import run_bounded
     from test_guest_execution import resolve_guest_execution
+
+
+def failure_phase_from_debug_bundle(output: str) -> str | None:
+    """Classify a guest fixture failure from the runner bundle's own stage markers."""
+    match = re.search(r"^BUNDLE=(.+)$", output, flags=re.MULTILINE)
+    if match is None:
+        return None
+    log_path = Path(match.group(1)) / "stderr.log"
+    try:
+        content = log_path.read_text(errors="replace")
+    except OSError:
+        return None
+    if "WEST_GUEST_TRACE_ORACLE_FAILED" in content:
+        return "run"
+    stages = re.findall(r"^WEST_GUEST_STAGE=([a-z-]+)$", content, flags=re.MULTILINE)
+    if not stages:
+        return None
+    return {
+        "compile": "compile",
+        "run": "run",
+        "upload": "setup",
+        "cleanup": "setup",
+        "namespace-retry": "setup",
+    }.get(stages[-1])
+
 
 def run_guest_c_fixture(command, invocation, env=None) -> int:
     run_env = env if env is not None else invocation.get("env")
@@ -143,13 +170,22 @@ def run_guest_c_fixture(command, invocation, env=None) -> int:
                 [
                     f"if [ ! -f \"${trace_var}\" ]; then",
                     f"\tprintf 'missing host trace file: %s\\n' \"${trace_var}\" >&2",
+                    "\tprintf '%s\\n' 'WEST_GUEST_TRACE_ORACLE_FAILED' >&2",
                     "\texit 1",
                     "fi",
                     f"cat \"${trace_var}\"",
                 ]
             )
             for expected in contains:
-                trace_check_lines.append(f"grep -F -q {quote(expected)} \"${trace_var}\"")
+                trace_check_lines.extend(
+                    [
+                        f"if ! grep -F -q {quote(expected)} \"${trace_var}\"; then",
+                        f"\tprintf 'missing host trace content: %s\\n' {quote(expected)} >&2",
+                        "\tprintf '%s\\n' 'WEST_GUEST_TRACE_ORACLE_FAILED' >&2",
+                        "\texit 1",
+                        "fi",
+                    ]
+                )
         trace_setup = "\n".join(trace_setup_lines) or ":"
         trace_check = "\n".join(trace_check_lines) or ":"
         trace_dump = "\n".join(trace_dump_lines) or ":"
@@ -527,11 +563,19 @@ fi
             cwd=invocation["cwd"],
             env=run_env,
             timeout_seconds=int(child["debug_timeout_seconds"]) + 15,
+            capture_output=True,
         )
+        output = result.stdout + result.stderr
+        if output:
+            sys.stdout.write(output)
         if result.timed_out:
             command.err(
                 f"{invocation['name']}: guest C fixture timed out after "
                 f"{invocation.get('timeout_seconds', 600)}s"
             )
             command._record_failure_phase(invocation, "run")
+        elif result.returncode:
+            phase = failure_phase_from_debug_bundle(output)
+            if phase is not None:
+                command._record_failure_phase(invocation, phase)
         return result.returncode

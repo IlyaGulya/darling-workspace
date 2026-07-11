@@ -58,12 +58,14 @@ def resource_passthrough(_selected, env):
 
 test._resource_context = resource_passthrough
 
-deployments: list[tuple[list[str], str, bool]] = []
+deployments: list[tuple[list[str], str, bool, dict, bool]] = []
 
 
 @contextmanager
-def runtime_profile_context(profiles, *, label_prefix, retain_deployment):
-    deployments.append((profiles, label_prefix, retain_deployment))
+def runtime_profile_context(
+    profiles, *, label_prefix, retain_deployment, patch=None, omit_patch=False
+):
+    deployments.append((profiles, label_prefix, retain_deployment, patch, omit_patch))
     yield SimpleNamespace(env={"DARLING": "runtime", "DARLING_ROOTLESS": "1"})
 
 
@@ -84,6 +86,8 @@ assert test._run_metadata_tests([(patch, metadata)], False, []) == 0
 assert deployments == [(
     ["homebrew-rootless-no-mount"],
     "metadata xnu/example.patch:runtime_profile_guest",
+    False,
+    patch,
     False,
 )], deployments
 assert observed == [{"BASE": "1", "DARLING": "runtime", "DARLING_ROOTLESS": "1"}], observed
