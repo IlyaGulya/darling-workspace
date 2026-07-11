@@ -1,0 +1,123 @@
+From 19be1512d016b72cef0fb4316b0fbbec6562682d Mon Sep 17 00:00:00 2001
+From: Ilya Gulya <ilya@gulya.me>
+Date: Sat, 11 Jul 2026 06:29:03 +0000
+Subject: [PATCH] dyld: trace rootless bootstrap over inherited FD
+
+---
+ src/dyldInitialization.cpp | 66 ++++++++++++++++++++++++++++++++++----
+ 1 file changed, 60 insertions(+), 6 deletions(-)
+
+diff --git a/src/dyldInitialization.cpp b/src/dyldInitialization.cpp
+index 961e9a37fe23d406dd9e5f85462a5386ce382a9e..1b38f4a43858debb980b86eab27d258dc57a4057 100644
+--- a/src/dyldInitialization.cpp
++++ b/src/dyldInitialization.cpp
+@@ -25,6 +25,7 @@
+ #define __STDC_LIMIT_MACROS
+ #include <stdint.h>
+ #include <stddef.h>
++#include <limits.h>
+ #include <string.h>
+ #include <stdlib.h>
+ #include <sys/mman.h>
+@@ -49,6 +50,52 @@ extern void syncProcessInfo();
+ 
+ const dyld::SyscallHelpers* gSyscallHelpers = NULL;
+ 
++#ifdef DARLING
++static int rootlessBootTraceFD(const char* const envp[])
++{
++	static const char rootlessPrefix[] = "DARLING_ROOTLESS_INIT=1";
++	static const char tracePrefix[] = "DARLING_BOOT_TRACE_FD=";
++	bool rootless = false;
++	int fd = -1;
++
++	for (const char* const* entry = envp; *entry != NULL; ++entry) {
++		if (strcmp(*entry, rootlessPrefix) == 0) {
++			rootless = true;
++			continue;
++		}
++		if (strncmp(*entry, tracePrefix, sizeof(tracePrefix) - 1) == 0) {
++			const char* value = *entry + sizeof(tracePrefix) - 1;
++			int parsed = 0;
++
++			if (*value == '\0')
++				continue;
++			for (; *value != '\0'; ++value) {
++				if ((*value < '0') || (*value > '9')) {
++					parsed = -1;
++					break;
++				}
++				const int digit = *value - '0';
++				if (parsed > ((INT_MAX - digit) / 10)) {
++					parsed = -1;
++					break;
++				}
++				parsed = parsed * 10 + digit;
++			}
++			fd = parsed;
++		}
++	}
++
++	return rootless ? fd : -1;
++}
++
++static void rootlessBootTrace(int fd, const char* stage)
++{
++	if (fd < 0)
++		return;
++	(void)::write(fd, stage, strlen(stage));
++}
++#endif
++
+ 
+ //
+ //  Code to bootstrap dyld into a runnable state
+@@ -134,14 +181,18 @@ uintptr_t start(const dyld3::MachOLoaded* appsMachHeader, int argc, const char*
+     // Emit kdebug tracepoint to indicate dyld bootstrap has started <rdar://46878536>
+     dyld3::kdebug_trace_dyld_marker(DBG_DYLD_TIMING_BOOTSTRAP_START, 0, 0, 0, 0);
+ 
++	// kernel sets up env pointer to be just past end of agv array
++	const char** envp = &argv[argc+1];
++
++#ifdef DARLING
++	int rootlessTraceFD = -1;
++#endif
++
+ #ifndef DARLING
+ 	// if kernel had to slide dyld, we need to fix up load sensitive locations
+ 	// we have to do this before using any global variables
+     rebaseDyld(dyldsMachHeader);
+ #endif
+-
+-	// kernel sets up env pointer to be just past end of agv array
+-	const char** envp = &argv[argc+1];
+ 	
+ 	// kernel sets up apple pointer to be just past end of envp array
+ 	const char** apple = envp;
+@@ -150,6 +201,8 @@ uintptr_t start(const dyld3::MachOLoaded* appsMachHeader, int argc, const char*
+ 
+ #ifdef DARLING
+     rebaseDyld(dyldsMachHeader, apple);
++	rootlessTraceFD = rootlessBootTraceFD(envp);
++	rootlessBootTrace(rootlessTraceFD, "dyld rebase-ready\n");
+ #endif
+ 
+ 	// set up random value for stack canary
+@@ -166,6 +219,10 @@ uintptr_t start(const dyld3::MachOLoaded* appsMachHeader, int argc, const char*
+ 	_subsystem_init(apple);
+ 
+ 	// now that we are done bootstrapping dyld, call dyld's main
++
++#ifdef DARLING
++	rootlessBootTrace(rootlessTraceFD, "dyld main-ready\n");
++#endif
+ 	uintptr_t appsSlide = appsMachHeader->getSlide();
+ 	return dyld::_main((macho_header*)appsMachHeader, appsSlide, argc, argv, envp, apple, startGlue);
+ }
+@@ -204,6 +261,3 @@ uintptr_t start_sim(int argc, const char* argv[], const char* envp[], const char
+ 
+ } // end of namespace
+ 
+-
+-
+-
