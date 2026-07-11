@@ -26,6 +26,13 @@ trap 'rm -rf "$WORK"' EXIT
 mkdir -p "$WORK/shim/darling/emulation/linux_premigration"
 cp "$INCDIR/linux_premigration/vchroot_expand.h" \
    "$WORK/shim/darling/emulation/linux_premigration/"
+mkdir -p "$WORK/shim/darling/emulation/common/bsdthread"
+cp "$HERE/shim/darling/emulation/common/bsdthread/per_thread_wd.h" \
+   "$WORK/shim/darling/emulation/common/bsdthread/"
+# Additional production units retain their normal public include prefix. Keep
+# that layout available independently of the one-header vchroot test shim.
+mkdir -p "$WORK/include/darling"
+ln -s "$INCDIR" "$WORK/include/darling/emulation"
 
 # build the two-layer fixture: prefix (upper) + libexec (lower)
 mkdir -p "$WORK/prefix/usr/bin" "$WORK/prefix/var/tmp" "$WORK/prefix/usr/local"
@@ -123,6 +130,11 @@ chmod 0644 "$WORK/prefix/var/tmp/fdmeta_upper"
 #    NOT by an earlier test (RN1) that copies up a shared fixture. Must be a dir
 #    that no other test touches.
 mkdir -p "$WORK/libexec/var/createparent"
+# The real shellspawn path is under /var/run. Model its symlinked parent with
+# a lower-only target directory. A correct bind preflight must materialize both
+# the link and its target in the upper layer, never write the lower template.
+mkdir -p "$WORK/libexec/var/bind_real"
+ln -s bind_real "$WORK/libexec/var/bind_link"
 # whiteout #9: DEDICATED pristine lower-only files for the whiteout assertions, so
 #    a whiteout no-op is caught (the earlier W1/W2/W4 reused /usr/bin/{ls,sh} which
 #    the copy-up tests had already mutated, so expect_absent passed for the wrong
@@ -190,8 +202,11 @@ echo "upper leaf"   > "$WORK/prefix/var/pc/leaf"
 mkdir -p "$WORK/libexec/var/sp_real"
 ln -s sp_real "$WORK/libexec/var/sp_link"
 
-sources=("$HERE/runner.c")
-include_dirs=("-I$SRCDIR" "-I$WORK/shim")
+sources=(
+	"$HERE/runner.c"
+	"$XNU/src/xnu_syscall/bsd/impl/network/bind.c"
+)
+include_dirs=("-I$SRCDIR" "-I$WORK/shim" "-I$WORK/include")
 
 # The resolver extraction comes after the historical E-UNION patch under test.
 # Keep the source-base RED arm on its old production closure, but link the
