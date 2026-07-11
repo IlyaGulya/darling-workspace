@@ -1,0 +1,156 @@
+From 3d1eb2e44307a76cc87541205f0a2d9c0ce35227 Mon Sep 17 00:00:00 2001
+From: Ilya Gulya <ilya.gulya@indriver.com>
+Date: Sat, 11 Jul 2026 04:18:36 +0000
+Subject: [PATCH] shellspawn: preserve signal exit status
+
+---
+ src/shellspawn/shellspawn.c               | 11 ++++--
+ src/shellspawn/wait_status.h              | 18 +++++++++
+ tests/regression/CMakeLists.txt           | 12 ++++++
+ tests/regression/run-host-regressions.sh  |  3 +-
+ tests/regression/shellspawn_exit_status.c | 46 +++++++++++++++++++++++
+ 5 files changed, 85 insertions(+), 5 deletions(-)
+ create mode 100644 src/shellspawn/wait_status.h
+ create mode 100644 tests/regression/shellspawn_exit_status.c
+
+diff --git a/src/shellspawn/shellspawn.c b/src/shellspawn/shellspawn.c
+index f5ba615bbc9c2a74c801ef5178fd2e4fd7b4a75f..8d99486bdd046449fa6b20ce6618765343003091 100644
+--- a/src/shellspawn/shellspawn.c
++++ b/src/shellspawn/shellspawn.c
+@@ -35,6 +35,7 @@ along with Darling.  If not, see <http://www.gnu.org/licenses/>.
+ #include <signal.h>
+ #include "shellspawn.h"
+ #include "duct_signals.h"
++#include "wait_status.h"
+ 
+ #define DBG 0
+ 
+@@ -402,14 +403,16 @@ void spawnShell(int fd)
+ 
+ 	// Reap the child
+ 	int wstatus;
++	int exit_status = 1;
+ 	if (waitpid(shell_pid, &wstatus, 0) != shell_pid)
+ 		perror("waitpid");
+-	wstatus = WEXITSTATUS(wstatus);
+-	
++	else
++		exit_status = shellspawn_exit_code_from_wait_status(wstatus);
++
+ 	// Report exit code back to the client
+-	write(fd, &wstatus, sizeof(int));
++	write(fd, &exit_status, sizeof(int));
+ 
+-	if (DBG) printf("Shell terminated with exit code %d\n", wstatus);
++	if (DBG) printf("Shell terminated with exit code %d\n", exit_status);
+ 	close(fd);
+ 
+ 	reapAll();
+diff --git a/src/shellspawn/wait_status.h b/src/shellspawn/wait_status.h
+new file mode 100644
+index 0000000000000000000000000000000000000000..56919ddceafb3d5b0b5e7d17a436af537b0298e7
+--- /dev/null
++++ b/src/shellspawn/wait_status.h
+@@ -0,0 +1,18 @@
++/*
++ * Shared exit-status boundary for shellspawn and its host regression test.
++ */
++#ifndef DARLING_SHELLSPAWN_WAIT_STATUS_H
++#define DARLING_SHELLSPAWN_WAIT_STATUS_H
++
++#include <sys/wait.h>
++
++static inline int shellspawn_exit_code_from_wait_status(int status)
++{
++	if (WIFEXITED(status))
++		return WEXITSTATUS(status);
++	if (WIFSIGNALED(status))
++		return 128 + WTERMSIG(status);
++	return 1;
++}
++
++#endif
+diff --git a/tests/regression/CMakeLists.txt b/tests/regression/CMakeLists.txt
+index 45e98385d46e17d6f92f8117a85223c18e99564d..28a52014ab636d417b055ee6634f12d5d81829f5 100644
+--- a/tests/regression/CMakeLists.txt
++++ b/tests/regression/CMakeLists.txt
+@@ -55,3 +55,15 @@ set_tests_properties(host/glibc_fork_lock_reset PROPERTIES
+ 	LABELS "env:host;diag:bare;bead:dar-gwn.5;submod:darling"
+ 	TIMEOUT 20
+ 	WORKING_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}")
++
++add_executable(darling_host_shellspawn_exit_status
++	shellspawn_exit_status.c)
++target_include_directories(darling_host_shellspawn_exit_status PRIVATE
++	${CMAKE_CURRENT_SOURCE_DIR}/../../src/shellspawn)
++
++add_test(
++	NAME host/shellspawn_exit_status
++	COMMAND darling_host_shellspawn_exit_status)
++set_tests_properties(host/shellspawn_exit_status PROPERTIES
++	LABELS "env:host;diag:bare;bead:dar-mu8f;submod:darling"
++	TIMEOUT 5)
+diff --git a/tests/regression/run-host-regressions.sh b/tests/regression/run-host-regressions.sh
+index 5d9b324fdf68ae946ade6ae7ae1b59a80e9c15d2..fc37a001aaf5f62ed978b68b17defe3f428bb138 100755
+--- a/tests/regression/run-host-regressions.sh
++++ b/tests/regression/run-host-regressions.sh
+@@ -30,5 +30,6 @@ trap cleanup EXIT
+ cmake -S "$suite_root" -B "$build_root" -G Ninja
+ cmake --build "$build_root" --target \
+ 	darling_host_thread_create_checkin_wait \
+-	darling_host_glibc_fork_lock_reset
++	darling_host_glibc_fork_lock_reset \
++	darling_host_shellspawn_exit_status
+ ctest --test-dir "$build_root" --output-on-failure -L '^env:host$'
+diff --git a/tests/regression/shellspawn_exit_status.c b/tests/regression/shellspawn_exit_status.c
+new file mode 100644
+index 0000000000000000000000000000000000000000..979b3cc1f5148876ee42a5f24e8d98b5f769690f
+--- /dev/null
++++ b/tests/regression/shellspawn_exit_status.c
+@@ -0,0 +1,46 @@
++#include <signal.h>
++#include <stdio.h>
++#include <sys/wait.h>
++#include <unistd.h>
++
++#include "wait_status.h"
++
++static int child_exit_status(void)
++{
++	pid_t child = fork();
++	int status;
++
++	if (child == 0)
++		_exit(42);
++	if (child < 0 || waitpid(child, &status, 0) != child)
++		return 1;
++	return shellspawn_exit_code_from_wait_status(status) == 42 ? 0 : 1;
++}
++
++static int child_signal_status(void)
++{
++	pid_t child = fork();
++	int status;
++
++	if (child == 0) {
++		raise(SIGABRT);
++		_exit(1);
++	}
++	if (child < 0 || waitpid(child, &status, 0) != child)
++		return 1;
++	return shellspawn_exit_code_from_wait_status(status) == 128 + SIGABRT ? 0 : 1;
++}
++
++int main(void)
++{
++	if (child_exit_status() != 0) {
++		fprintf(stderr, "normal child exit was not preserved\n");
++		return 1;
++	}
++	if (child_signal_status() != 0) {
++		fprintf(stderr, "signal child did not map to 128 + signal\n");
++		return 1;
++	}
++	puts("SHELLSPAWN_EXIT_STATUS_OK");
++	return 0;
++}

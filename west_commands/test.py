@@ -280,7 +280,7 @@ class DarlingTest(WestCommand):
     def _testkit_dir(self) -> Path:
         return Path(self.manifest.repo_abspath) / "testkit"
 
-    def _require_runtime_scratch_space(self, profile_name: str) -> None:
+    def _require_runtime_scratch_space(self, deployment_name: str) -> None:
         configured_minimum = os.environ.get("WEST_RUNTIME_MIN_FREE_BYTES", str(8 * 1024**3))
         try:
             minimum = int(configured_minimum)
@@ -295,7 +295,7 @@ class DarlingTest(WestCommand):
         available = shutil.disk_usage(scratch_root).free
         if available < minimum:
             self.die(
-                f"CTest runtime profile {profile_name} needs at least {minimum} free bytes "
+                f"Runtime deployment {deployment_name} needs at least {minimum} free bytes "
                 f"under {scratch_root}, but only {available} are available; "
                 "run west test --gc or free disk space before materializing the runtime source forest"
             )
@@ -1513,7 +1513,7 @@ class DarlingTest(WestCommand):
             "module": definition["source-module"],
         }
         previous_profile = getattr(self, "_active_profile", None)
-        self._require_runtime_scratch_space(profile_name)
+        self._require_runtime_scratch_space(f"CTest profile {profile_name}")
         scratch = tempfile.mkdtemp(prefix=f"west-ctest-runtime-{profile_name}-")
         keep_on_failure = False
         self._active_profile = source_profile
@@ -3647,6 +3647,9 @@ class DarlingTest(WestCommand):
         if not prefix_text:
             self.die(f"{patch['path']}: guest-runtime-deploy needs a Darling prefix")
         prefix = Path(prefix_text)
+        self._require_runtime_scratch_space(
+            f"{patch['path']}: {invocation['name']} GREEN"
+        )
         temp = tempfile.mkdtemp(prefix="west-green-proof-runtime-")
         keep_on_failure = False
         try:
@@ -3832,6 +3835,9 @@ class DarlingTest(WestCommand):
         if not prefix_text:
             self.die(f"{patch['path']}: guest-runtime-deploy needs a Darling prefix")
         prefix = Path(prefix_text)
+        self._require_runtime_scratch_space(
+            f"{patch['path']}: {invocation['name']} RED"
+        )
         temp = tempfile.mkdtemp(prefix="west-red-proof-runtime-")
         keep_on_failure = False
         try:
