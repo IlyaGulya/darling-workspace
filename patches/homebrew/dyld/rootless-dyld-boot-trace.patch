@@ -121,3 +121,61 @@ index 961e9a37fe23d406dd9e5f85462a5386ce382a9e..1b38f4a43858debb980b86eab27d258d
 -
 -
 -
+
+From 22c516d4b4e1f98a1da8287afcd6c8b52c8c4b61 Mon Sep 17 00:00:00 2001
+From: Ilya Gulya <ilya@gulya.me>
+Date: Sat, 11 Jul 2026 09:55:05 +0000
+Subject: [PATCH] dyld: trace rootless mach init boundary
+
+---
+ src/dyldInitialization.cpp | 11 ++++++-----
+ 1 file changed, 6 insertions(+), 5 deletions(-)
+
+diff --git a/src/dyldInitialization.cpp b/src/dyldInitialization.cpp
+index 1b38f4a43858debb980b86eab27d258dc57a4057..450021e69c3b3f1ffa3896124357d2f38509886b 100644
+--- a/src/dyldInitialization.cpp
++++ b/src/dyldInitialization.cpp
+@@ -136,7 +136,7 @@ static void runDyldInitializers(int argc, const char* argv[], const char* envp[]
+ // They need to be fixed up to be real pointers to run.
+ //
+ #ifdef DARLING
+-static void rebaseDyld(const dyld3::MachOLoaded* dyldMH, const char* apple[])
++static void rebaseDyld(const dyld3::MachOLoaded* dyldMH, const char* apple[], int rootlessTraceFD)
+ #else
+ static void rebaseDyld(const dyld3::MachOLoaded* dyldMH)
+ #endif
+@@ -153,7 +153,9 @@ static void rebaseDyld(const dyld3::MachOLoaded* dyldMH)
+ 
+     // now that rebasing done, initialize mach/syscall layer
+ #ifdef DARLING
++    rootlessBootTrace(rootlessTraceFD, "dyld mach-init-enter\n");
+     mach_init(apple);
++    rootlessBootTrace(rootlessTraceFD, "dyld mach-init-ready\n");
+ #else
+     mach_init();
+ #endif
+@@ -185,7 +187,7 @@ uintptr_t start(const dyld3::MachOLoaded* appsMachHeader, int argc, const char*
+ 	const char** envp = &argv[argc+1];
+ 
+ #ifdef DARLING
+-	int rootlessTraceFD = -1;
++	const int rootlessTraceFD = rootlessBootTraceFD(envp);
+ #endif
+ 
+ #ifndef DARLING
+@@ -200,8 +202,8 @@ uintptr_t start(const dyld3::MachOLoaded* appsMachHeader, int argc, const char*
+ 	++apple;
+ 
+ #ifdef DARLING
+-    rebaseDyld(dyldsMachHeader, apple);
+-	rootlessTraceFD = rootlessBootTraceFD(envp);
++	rootlessBootTrace(rootlessTraceFD, "dyld rebase-enter\n");
++    rebaseDyld(dyldsMachHeader, apple, rootlessTraceFD);
+ 	rootlessBootTrace(rootlessTraceFD, "dyld rebase-ready\n");
+ #endif
+ 
+@@ -260,4 +262,3 @@ uintptr_t start_sim(int argc, const char* argv[], const char* envp[], const char
+ 
+ 
+ } // end of namespace
+-
