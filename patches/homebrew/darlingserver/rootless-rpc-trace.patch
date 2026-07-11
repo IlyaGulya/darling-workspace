@@ -1,15 +1,15 @@
-From e635652e555ea71b76e2d0afe2cd57392feeda4d Mon Sep 17 00:00:00 2001
+From ac261ed247f3122b3000390261b958c470893a7b Mon Sep 17 00:00:00 2001
 From: Ilya Gulya <ilya@gulya.me>
 Date: Sat, 11 Jul 2026 13:14:55 +0000
 Subject: [PATCH] darlingserver: trace bootstrap RPC lifecycle
 
 ---
- src/call.cpp   | 15 +++++++++++++++
+ src/call.cpp   | 21 +++++++++++++++++++++
  src/thread.cpp | 16 ++++++++++++++++
- 2 files changed, 31 insertions(+)
+ 2 files changed, 37 insertions(+)
 
 diff --git a/src/call.cpp b/src/call.cpp
-index a23173ba8ab1593af68be6fd71252c1cd73e9c8d..720363327c14232cf2b4a5cf8b10dc83b3c05a17 100644
+index a23173ba8ab1593af68be6fd71252c1cd73e9c8d..63438cf85257a9775ccba201ea00b96efebc1b38 100644
 --- a/src/call.cpp
 +++ b/src/call.cpp
 @@ -158,6 +158,14 @@ std::shared_ptr<DarlingServer::Call> DarlingServer::Call::callFromMessage(Messag
@@ -41,6 +41,19 @@ index a23173ba8ab1593af68be6fd71252c1cd73e9c8d..720363327c14232cf2b4a5cf8b10dc83
  	Server::sharedInstance().sendMessage(std::move(reply));
  };
  
+@@ -769,6 +784,12 @@ void DarlingServer::Call::PthreadCanceled::processCall() {
+ 	if (auto thread = _thread.lock()) {
+ 		code = -dtape_thread_canceled(thread->_dtapeThread, _body.action);
+ 	}
++	if (TestDiagnostics::enabled()) {
++		TestDiagnostics::traceLine(
++			"rpc.pthread_canceled action=" + std::to_string(_body.action) +
++			" code=" + std::to_string(code)
++		);
++	}
+ 
+ 	_sendReply(code);
+ };
 diff --git a/src/thread.cpp b/src/thread.cpp
 index 9a54079a2de9e73d78c4e003c0c4074dda37f094..886e521384ad345c1117bc577976bedabc294684 100644
 --- a/src/thread.cpp
