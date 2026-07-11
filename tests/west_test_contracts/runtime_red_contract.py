@@ -35,6 +35,7 @@ from west_commands.test_runtime import (
     describe_runtime_deploy_plan,
     load_ctest_runtime_profiles,
     partition_ctest_runtime_profiles,
+    runtime_artifact_deploy_paths,
     runtime_build_targets,
     runtime_deploy_targets,
 )
@@ -257,7 +258,7 @@ assert rootless_provider["launcher-env"] == {
 assert {
     deploy_path
     for artifact in rootless_provider["runtime-artifacts"]
-    for deploy_path in artifact["deploy"]
+    for deploy_path in runtime_artifact_deploy_paths(artifact)
 } >= {
     "bin/darling",
     "bin/darlingserver",
@@ -268,6 +269,10 @@ assert {
     "usr/lib/dyld",
     "usr/lib/system/libsystem_kernel.dylib",
 }
+assert any(
+    artifact.get("resource") == "system-closure"
+    for artifact in rootless_provider["runtime-artifacts"]
+)
 assert "darling/src/external/dyld" in rootless_provider["source-modules"]
 baseline_provider = actual_runtime_profiles["homebrew-prefix-baseline"]
 assert baseline_provider["purpose"] == "prefix-baseline"
@@ -275,6 +280,10 @@ assert baseline_provider["bootstrap"] == "rootless-no-mount"
 assert baseline_provider["bootstrap-smoke-timeout-seconds"] == 20
 assert baseline_provider["launcher-env"] == rootless_provider["launcher-env"]
 assert "darling/src/external/dyld" in baseline_provider["source-modules"]
+assert any(
+    artifact.get("resource") == "system-closure"
+    for artifact in baseline_provider["runtime-artifacts"]
+)
 
 with tempfile.TemporaryDirectory() as temp:
     profiles_path = Path(temp) / "runtime-profiles.yml"
@@ -321,6 +330,68 @@ with tempfile.TemporaryDirectory() as temp:
         assert "darling/src/external/dyld" in str(exc), exc
     else:
         raise AssertionError("rootless runtime provider accepted a live dyld source")
+
+with tempfile.TemporaryDirectory() as temp:
+    profiles_path = Path(temp) / "runtime-profiles.yml"
+    profiles_path.write_text(
+        "runtime-profiles:\n"
+        "  incomplete-resource-rootless:\n"
+        "    source-profile: homebrew\n"
+        "    source-module: darling\n"
+        "    source-modules: [darling, darling/src/external/darlingserver, darling/src/external/xnu, darling/src/external/dyld]\n"
+        "    bootstrap: rootless-no-mount\n"
+        "    runtime-artifacts:\n"
+        "    - build-targets: [darling]\n"
+        "      deploy: [bin/darling, usr/libexec/darling/mldr, usr/libexec/darling/launchd, usr/libexec/shellspawn, usr/libexec/darling/vchroot, usr/lib/dyld]\n"
+        "    - build-targets: [darlingserver]\n"
+        "      deploy: [bin/darlingserver]\n"
+        "    - build-targets: [system_kernel]\n"
+        "      deploy: [usr/lib/system/libsystem_kernel.dylib]\n"
+    )
+    try:
+        load_ctest_runtime_profiles(profiles_path)
+    except ValueError as exc:
+        assert "missing runtime resource(s): system-closure" in str(exc), exc
+    else:
+        raise AssertionError("rootless runtime provider accepted without its system closure")
+
+assert runtime_artifact_deploy_paths({"resource": "system-closure"}) == [
+    "usr/lib/system/libcache.dylib",
+    "usr/lib/system/libcommonCrypto.dylib",
+    "usr/lib/system/libcompiler_rt.dylib",
+    "usr/lib/system/libcopyfile.dylib",
+    "usr/lib/system/libcorecrypto.dylib",
+    "usr/lib/system/libdispatch.dylib",
+    "usr/lib/system/libdyld.dylib",
+    "usr/lib/system/libkeymgr.dylib",
+    "usr/lib/system/libkxld.dylib",
+    "usr/lib/system/liblaunch.dylib",
+    "usr/lib/system/libmacho.dylib",
+    "usr/lib/system/libquarantine.dylib",
+    "usr/lib/system/libremovefile.dylib",
+    "usr/lib/system/libsystem_asl.dylib",
+    "usr/lib/libSystem.B.dylib",
+    "usr/lib/system/libsystem_blocks.dylib",
+    "usr/lib/system/libsystem_c.dylib",
+    "usr/lib/system/libsystem_configuration.dylib",
+    "usr/lib/system/libsystem_coreservices.dylib",
+    "usr/lib/system/libsystem_coretls.dylib",
+    "usr/lib/system/libsystem_darwin.dylib",
+    "usr/lib/system/libsystem_dnssd.dylib",
+    "usr/lib/system/libsystem_duct.dylib",
+    "usr/lib/system/libsystem_info.dylib",
+    "usr/lib/system/libsystem_kernel.dylib",
+    "usr/lib/system/libsystem_malloc.dylib",
+    "usr/lib/system/libsystem_m.dylib",
+    "usr/lib/system/libsystem_networkextension.dylib",
+    "usr/lib/system/libsystem_notify.dylib",
+    "usr/lib/system/libsystem_platform.dylib",
+    "usr/lib/system/libsystem_pthread.dylib",
+    "usr/lib/system/libsystem_sandbox.dylib",
+    "usr/lib/system/libsystem_trace.dylib",
+    "usr/lib/system/libunwind.dylib",
+    "usr/lib/system/libxpc.dylib",
+]
 
 with tempfile.TemporaryDirectory() as temp:
     profiles_path = Path(temp) / "runtime-profiles.yml"
