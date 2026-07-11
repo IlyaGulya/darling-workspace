@@ -1,0 +1,282 @@
+From 98325d76d25f7dcb450e8005b2590910c8df52c7 Mon Sep 17 00:00:00 2001
+From: Ilya Gulya <ilya@gulya.me>
+Date: Sat, 11 Jul 2026 22:33:49 +0000
+Subject: [PATCH] test: trace pthread cancellation RPC state
+
+---
+ duct-tape/include/darlingserver/duct-tape.h   | 12 +++
+ duct-tape/src/thread.c                        |  9 ++
+ .../darlingserver/test-diagnostics.hpp        | 26 ++++++
+ src/call.cpp                                  | 52 +++++++++++
+ src/test-diagnostics.cpp                      | 86 +++++++++++++++++++
+ 5 files changed, 185 insertions(+)
+
+diff --git a/duct-tape/include/darlingserver/duct-tape.h b/duct-tape/include/darlingserver/duct-tape.h
+index eded9a65abc5b4995056b310dfa9c413be4dd27c..2a8768ca8692bedf8ff87790d6e7c9121754b4be 100644
+--- a/duct-tape/include/darlingserver/duct-tape.h
++++ b/duct-tape/include/darlingserver/duct-tape.h
+@@ -62,6 +62,18 @@ void dtape_semaphore_destroy(dtape_semaphore_t* semaphore);
+ void dtape_thread_entering(dtape_thread_t* thread);
+ void dtape_thread_exiting(dtape_thread_t* thread);
+ void dtape_thread_set_handles(dtape_thread_t* thread, uintptr_t pthread_handle, uintptr_t dispatch_qaddr);
++
++typedef struct dtape_thread_cancel_state_snapshot {
++	bool disabled;
++	bool pending;
++	bool canceled;
++} dtape_thread_cancel_state_snapshot_t;
++
++// Captures the cancellation state for diagnostics without changing it.
++void dtape_thread_cancel_state_snapshot(
++	const dtape_thread_t* thread,
++	dtape_thread_cancel_state_snapshot_t* snapshot
++);
+ /**
+  * Implements __pthread_canceled(action) for the current thread. See dar-gwn.6.3.
+  * Returns the XNU-style code (0 or EINVAL); the caller negates it for the guest.
+diff --git a/duct-tape/src/thread.c b/duct-tape/src/thread.c
+index f9d1186729b163e1762b7c2a5d18d2261db08ed9..52ea596cd12f3b781f7ef4ed96c5972710cc5019 100644
+--- a/duct-tape/src/thread.c
++++ b/duct-tape/src/thread.c
+@@ -182,6 +182,15 @@ void dtape_thread_set_handles(dtape_thread_t* thread, uintptr_t pthread_handle,
+ 	thread_unlock(&thread->xnu_thread);
+ };
+ 
++void dtape_thread_cancel_state_snapshot(
++	const dtape_thread_t* thread,
++	dtape_thread_cancel_state_snapshot_t* snapshot
++) {
++	snapshot->disabled = thread->cancel.disable;
++	snapshot->pending = thread->cancel.pending;
++	snapshot->canceled = thread->cancel.canceled;
++}
++
+ // Implements XNU's __pthread_canceled(action) (bsd/kern/kern_sig.c) on the
+ // duct-tape thread's cancellation bits. Operates on the *current* thread (the
+ // caller of the syscall), exactly like the XNU version which uses
+diff --git a/internal-include/darlingserver/test-diagnostics.hpp b/internal-include/darlingserver/test-diagnostics.hpp
+index 4ed03558773edf0fb1e48e3545857803b73fa495..a6a503475f5ec227712926a2cd25654605b8ec63 100644
+--- a/internal-include/darlingserver/test-diagnostics.hpp
++++ b/internal-include/darlingserver/test-diagnostics.hpp
+@@ -26,5 +26,31 @@ void traceSemaphoreCallReply(
+ 	unsigned int signalName,
+ 	int resultCode
+ );
++void tracePthreadCanceled(
++	int pid,
++	int tid,
++	int action,
++	bool stateKnown,
++	bool disabledBefore,
++	bool pendingBefore,
++	bool canceledBefore,
++	bool disabledAfter,
++	bool pendingAfter,
++	bool canceledAfter,
++	int resultCode
++);
++void tracePthreadMarkcancel(
++	int pid,
++	int tid,
++	unsigned int targetPort,
++	bool targetKnown,
++	bool disabledBefore,
++	bool pendingBefore,
++	bool canceledBefore,
++	bool disabledAfter,
++	bool pendingAfter,
++	bool canceledAfter,
++	int resultCode
++);
+ 
+ }
+diff --git a/src/call.cpp b/src/call.cpp
+index f279dd92931c675b2135232c4c8ed58d99f32e6d..2589facc1e720a785517be93cc1e945448d194e5 100644
+--- a/src/call.cpp
++++ b/src/call.cpp
+@@ -763,11 +763,37 @@ void DarlingServer::Call::PthreadCanceled::processCall() {
+ 	// broke libpthread's cancellation handshake and made cancelable syscalls
+ 	// (brew's portable-ruby) livelock re-issuing this call ~670x/sec.
+ 	int code = -ESRCH;
++	dtape_thread_cancel_state_snapshot_t before = {};
++	dtape_thread_cancel_state_snapshot_t after = {};
++	bool stateKnown = false;
++	const bool trace = TestDiagnostics::enabled();
+ 
+ 	if (auto thread = _thread.lock()) {
++		stateKnown = true;
++		if (trace) {
++			dtape_thread_cancel_state_snapshot(thread->_dtapeThread, &before);
++		}
+ 		code = -dtape_thread_canceled(thread->_dtapeThread, _body.action);
++		if (trace) {
++			dtape_thread_cancel_state_snapshot(thread->_dtapeThread, &after);
++		}
+ 	}
+ 
++	if (trace) {
++		TestDiagnostics::tracePthreadCanceled(
++			_header.pid,
++			_header.tid,
++			_body.action,
++			stateKnown,
++			before.disabled,
++			before.pending,
++			before.canceled,
++			after.disabled,
++			after.pending,
++			after.canceled,
++			code
++		);
++	}
+ 	_sendReply(code);
+ };
+ 
+@@ -775,13 +801,39 @@ void DarlingServer::Call::PthreadMarkcancel::processCall() {
+ 	// Implements XNU __pthread_markcancel(thread_port): arm the cancel-pending
+ 	// bit on the target thread (the kernel side of pthread_cancel). dar-gwn.6.3.
+ 	int code = 0;
++	dtape_thread_cancel_state_snapshot_t before = {};
++	dtape_thread_cancel_state_snapshot_t after = {};
++	bool targetKnown = false;
++	const bool trace = TestDiagnostics::enabled();
+ 
+ 	if (auto targetThread = Thread::threadForPort(_body.thread_port)) {
++		targetKnown = true;
++		if (trace) {
++			dtape_thread_cancel_state_snapshot(targetThread->_dtapeThread, &before);
++		}
+ 		code = -dtape_thread_markcancel(targetThread->_dtapeThread);
++		if (trace) {
++			dtape_thread_cancel_state_snapshot(targetThread->_dtapeThread, &after);
++		}
+ 	} else {
+ 		code = -ESRCH;
+ 	}
+ 
++	if (trace) {
++		TestDiagnostics::tracePthreadMarkcancel(
++			_header.pid,
++			_header.tid,
++			_body.thread_port,
++			targetKnown,
++			before.disabled,
++			before.pending,
++			before.canceled,
++			after.disabled,
++			after.pending,
++			after.canceled,
++			code
++		);
++	}
+ 	_sendReply(code);
+ };
+ 
+diff --git a/src/test-diagnostics.cpp b/src/test-diagnostics.cpp
+index 323be14434a3ca317d9a6851a70b7d46c5c7ca9b..c8d65e1b55e713e9b4ac45d8e77ab8463310dc9d 100644
+--- a/src/test-diagnostics.cpp
++++ b/src/test-diagnostics.cpp
+@@ -1,5 +1,6 @@
+ #include <darlingserver/test-diagnostics.hpp>
+ 
++#include <cerrno>
+ #include <cstdlib>
+ #include <cstring>
+ #include <mutex>
+@@ -31,6 +32,31 @@ static std::string semaphoreNames(unsigned int waitName, bool hasSignalName, uns
+ 	return names + (hasSignalName ? std::to_string(signalName) : "none");
+ }
+ 
++static std::string cancellationState(
++	bool known,
++	bool disabled,
++	bool pending,
++	bool canceled
++) {
++	if (!known) {
++		return "unavailable";
++	}
++	return std::to_string(disabled) + ":" + std::to_string(pending) + ":" + std::to_string(canceled);
++}
++
++static const char* pthreadCancelOutcome(int resultCode) {
++	if (resultCode == 0) {
++		return "success";
++	}
++	if (resultCode == -EINVAL) {
++		return "not-canceled";
++	}
++	if (resultCode == -ESRCH) {
++		return "missing-thread";
++	}
++	return "error";
++}
++
+ bool enabled() {
+ 	return std::getenv(TraceEnv) != nullptr;
+ }
+@@ -150,4 +176,64 @@ void traceSemaphoreCallReply(
+ 	);
+ }
+ 
++void tracePthreadCanceled(
++	int pid,
++	int tid,
++	int action,
++	bool stateKnown,
++	bool disabledBefore,
++	bool pendingBefore,
++	bool canceledBefore,
++	bool disabledAfter,
++	bool pendingAfter,
++	bool canceledAfter,
++	int resultCode
++) {
++	traceLine(
++		"rpc.pthread_canceled operation=pthread_canceled" +
++		std::string(" pid=") + std::to_string(pid) +
++		" tid=" + std::to_string(tid) +
++		" action=" + std::to_string(action) +
++		" state_before=" + cancellationState(
++			stateKnown, disabledBefore, pendingBefore, canceledBefore
++		) +
++		" state_after=" + cancellationState(
++			stateKnown, disabledAfter, pendingAfter, canceledAfter
++		) +
++		" code=" + std::to_string(resultCode) +
++		" outcome=" + pthreadCancelOutcome(resultCode) +
++		" terminal=reply-enqueued"
++	);
++}
++
++void tracePthreadMarkcancel(
++	int pid,
++	int tid,
++	unsigned int targetPort,
++	bool targetKnown,
++	bool disabledBefore,
++	bool pendingBefore,
++	bool canceledBefore,
++	bool disabledAfter,
++	bool pendingAfter,
++	bool canceledAfter,
++	int resultCode
++) {
++	traceLine(
++		"rpc.pthread_canceled operation=pthread_markcancel" +
++		std::string(" pid=") + std::to_string(pid) +
++		" tid=" + std::to_string(tid) +
++		" target_port=" + std::to_string(targetPort) +
++		" state_before=" + cancellationState(
++			targetKnown, disabledBefore, pendingBefore, canceledBefore
++		) +
++		" state_after=" + cancellationState(
++			targetKnown, disabledAfter, pendingAfter, canceledAfter
++		) +
++		" code=" + std::to_string(resultCode) +
++		" outcome=" + pthreadCancelOutcome(resultCode) +
++		" terminal=reply-enqueued"
++	);
++}
++
+ }
