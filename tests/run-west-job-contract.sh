@@ -25,6 +25,15 @@ if ((elapsed_ns < 150000000)); then
 fi
 test "$(<"$tmp/wait/rc")" = 0
 
+mkdir "$tmp/no-tail"
+ln -s /usr/bin/false "$tmp/no-tail/tail"
+"$job" start --state-dir "$tmp/no-tail-wait" -- /usr/bin/python3 -c '
+import time
+time.sleep(0.3)
+'
+PATH="$tmp/no-tail:$PATH" "$job" wait --state-dir "$tmp/no-tail-wait"
+test "$(<"$tmp/no-tail-wait/rc")" = 0
+
 "$job" start --state-dir "$tmp/cancelled" -- /usr/bin/python3 -c '
 import signal
 import sys
