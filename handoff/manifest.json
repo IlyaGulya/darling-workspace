@@ -961,7 +961,7 @@
         },
         {
           "branch": "fix/eunion-resolver-layer",
-          "head": "dc195f1178ec2fc0d0d4b59a3146ea497c767dc9",
+          "head": "32a29e287170deb87770cf6429d778a7d4e0a436",
           "upstream": "",
           "source_ref": "refs/heads/fix/eunion-resolver-layer"
         },
