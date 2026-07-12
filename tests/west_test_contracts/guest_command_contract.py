@@ -14,6 +14,7 @@ from west_commands.test_execution import ProcessResult
 from west_commands.test_guest_execution import (
     resolve_guest_execution,
     run_guest_argv,
+    run_guest_argv_fixture,
     run_guest_shell,
     run_guest_command_fixture,
 )
@@ -219,5 +220,41 @@ with tempfile.TemporaryDirectory() as temp:
 
     assert mismatch_phases == ["run"], mismatch_phases
     assert errors == ["guest_command_contract: guest command rc 0, want 134"]
+
+    argv_calls = []
+
+    def successful_argv(*args, **kwargs):
+        argv_calls.append((args, kwargs))
+        kwargs["stdout"].write("ARGV_OK\n")
+        return ProcessResult(0)
+
+    original_argv = guest_execution.run_guest_argv
+    guest_execution.run_guest_argv = successful_argv
+    try:
+        argv_invocation = {
+            "name": "guest_argv_contract",
+            "cwd": root,
+            "guest_argv": ("/usr/bin/true",),
+            "timeout_seconds": 3,
+            "expect": {"returncode": 0, "output-contains": ["ARGV_OK"]},
+        }
+        assert run_guest_argv_fixture(
+            argv_invocation,
+            env={"DPREFIX": "/prefix", "DARLING_LAUNCHER": "/launcher"},
+            prefix="/prefix",
+            resolve_launcher=lambda _prefix: None,
+            die=fail,
+            err=fail,
+            record_failure_phase=lambda _invocation, phase: phases.append(phase),
+        ) == 0
+    finally:
+        guest_execution.run_guest_argv = original_argv
+
+    assert argv_calls and argv_calls[0][0][:3] == (
+        "/launcher",
+        "/prefix",
+        ("/usr/bin/true",),
+    )
+
 
 print("PASS west-test-guest-command-contract")

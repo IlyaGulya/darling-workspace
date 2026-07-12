@@ -220,9 +220,73 @@ def run_guest_command_fixture(
         output = stdout_path.read_text(errors="replace") + stderr_path.read_text(
             errors="replace"
         )
+    return _validate_guest_fixture_result(
+        invocation, result, output, err=err, record_failure_phase=record_failure_phase
+    )
+
+
+def run_guest_argv_fixture(
+    invocation: dict,
+    *,
+    env: dict[str, str],
+    prefix: str | None,
+    resolve_launcher: Callable[[str | None], str | None],
+    die: Callable[[str], None],
+    err: Callable[[str], None],
+    record_failure_phase: Callable[[dict, str], None],
+) -> int:
+    """Run an explicit guest argv directly through `darling exec`."""
+
+    guest = resolve_guest_execution(
+        name=invocation["name"],
+        env=env,
+        fallback_prefix=prefix,
+        resolve_launcher=resolve_launcher,
+        die=die,
+    )
+    timeout_seconds = int(invocation.get("timeout_seconds", 600))
+    with tempfile.TemporaryDirectory(prefix=f"west-guest-argv-{invocation['name']}-") as temp:
+        tempdir = Path(temp)
+        stdout_path = tempdir / "stdout.log"
+        stderr_path = tempdir / "stderr.log"
+        with stdout_path.open("w", encoding="utf-8") as stdout_file, stderr_path.open(
+            "w", encoding="utf-8"
+        ) as stderr_file:
+            result = run_guest_argv(
+                guest.launcher,
+                guest.prefix,
+                invocation["guest_argv"],
+                cwd=Path(invocation["cwd"]),
+                env=env,
+                timeout_seconds=timeout_seconds,
+                stdout=stdout_file,
+                stderr=stderr_file,
+            )
+            stdout_file.flush()
+            stderr_file.flush()
+
+        output = stdout_path.read_text(errors="replace") + stderr_path.read_text(
+            errors="replace"
+        )
+    return _validate_guest_fixture_result(
+        invocation, result, output, err=err, record_failure_phase=record_failure_phase
+    )
+
+
+def _validate_guest_fixture_result(
+    invocation: dict,
+    result: ProcessResult,
+    output: str,
+    *,
+    err: Callable[[str], None],
+    record_failure_phase: Callable[[dict, str], None],
+) -> int:
+    """Apply the shared guest completion and output contract."""
+
     if output:
         print(output, end="" if output.endswith("\n") else "\n")
     expect = invocation.get("expect") or {}
+    timeout_seconds = int(invocation.get("timeout_seconds", 600))
     if result.timed_out:
         if expect.get("returncode") == "timeout":
             for needle in expect.get("output-contains", []):
