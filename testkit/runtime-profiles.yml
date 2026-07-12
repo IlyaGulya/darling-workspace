@@ -92,7 +92,7 @@ runtime-profiles:
       deploy:
       - bin/darling
       - usr/libexec/darling/mldr
-      - usr/libexec/darling/launchd
+      - sbin/launchd
       - usr/libexec/shellspawn
       - usr/libexec/darling/vchroot
       - usr/lib/dyld
@@ -141,7 +141,7 @@ runtime-profiles:
       deploy:
       - bin/darling
       - usr/libexec/darling/mldr
-      - usr/libexec/darling/launchd
+      - sbin/launchd
       - usr/libexec/shellspawn
       - usr/libexec/darling/vchroot
       - usr/lib/dyld
