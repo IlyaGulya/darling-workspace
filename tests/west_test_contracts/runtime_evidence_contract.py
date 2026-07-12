@@ -58,6 +58,16 @@ with tempfile.TemporaryDirectory() as temp:
             (source_worktree / "source.c").write_text("broken\n")
             session.build_root.mkdir(parents=True)
             (session.build_root / "build.ninja").write_text("build all: phony\n")
+            trace = Path(temp) / "rootless-boot.trace"
+            trace.write_text("dyld main-entry-ready\n")
+            session.record_failure_detail(
+                phase="bootstrap",
+                summary="E-UNION login shell did not reach a verdict",
+                returncode=124,
+                command=["darling", "shell", "/bin/bash", "--login", "-c", ":"],
+                output="semaphore_timedwait failed (internally): -111\n",
+                artifacts=[trace],
+            )
             raise RuntimeError("shellspawn readiness did not complete")
     except RuntimeError:
         pass
@@ -77,6 +87,20 @@ with tempfile.TemporaryDirectory() as temp:
     assert (entry / manifest["paths"]["source"] / "source.c").read_text() == "broken\n"
     assert (entry / manifest["paths"]["build"] / "build.ninja").is_file()
     assert manifest["worktrees"] == [{"repo": str(repo), "path": "source/darling"}], manifest
+    assert manifest["diagnostics"] == [
+        {
+            "phase": "bootstrap",
+            "summary": "E-UNION login shell did not reach a verdict",
+            "returncode": 124,
+            "command": ["darling", "shell", "/bin/bash", "--login", "-c", ":"],
+            "output": "diagnostics/0-output.log",
+            "artifacts": ["diagnostics/0-rootless-boot.trace"],
+        }
+    ], manifest
+    assert (entry / "diagnostics/0-output.log").read_text() == (
+        "semaphore_timedwait failed (internally): -111\n"
+    )
+    assert (entry / "diagnostics/0-rootless-boot.trace").read_text() == "dyld main-entry-ready\n"
     worktree_listing = subprocess.run(
         ["git", "worktree", "list", "--porcelain"], cwd=repo, check=True, capture_output=True, text=True
     ).stdout

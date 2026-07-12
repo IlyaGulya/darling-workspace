@@ -1992,6 +1992,8 @@ class DarlingTest(WestCommand):
         )
         scratch = evidence.directory
         evidence_failure = None
+        previous_evidence = getattr(self, "_active_runtime_evidence", None)
+        self._active_runtime_evidence = evidence
         self._active_profile = source_profile
         try:
             self.inf(f"{label_prefix} runtime profile: {profile_name} ({source_profile})")
@@ -2067,6 +2069,7 @@ class DarlingTest(WestCommand):
             raise
         finally:
             self._active_profile = previous_profile
+            self._active_runtime_evidence = previous_evidence
             retained = evidence_store.finish(evidence, evidence_failure)
             if retained is not None:
                 self.err(f"preserved failed {label_prefix} runtime evidence: {retained}")
@@ -3334,6 +3337,27 @@ class DarlingTest(WestCommand):
             )
         if result.returncode != 0:
             output = process_output_text(result).strip()
+            evidence = getattr(self, "_active_runtime_evidence", None)
+            if evidence is not None:
+                evidence.record_failure_detail(
+                    phase="bootstrap",
+                    summary="E-UNION login shell did not reach a verdict",
+                    returncode=result.returncode,
+                    command=[
+                        str(launcher),
+                        "shell",
+                        "/bin/bash",
+                        "--login",
+                        "-c",
+                        ":",
+                    ],
+                    output=output,
+                    artifacts=[
+                        Path(prefix) / ".west-rootless-boot.log",
+                        Path(prefix) / "private/var/tmp/.west-rootless-boot.log",
+                        Path(prefix) / ".west-rootless-guest-fd.log",
+                    ],
+                )
             if output:
                 self.err(f"{invocation['name']}: E-UNION prefix bootstrap output:\n{output}")
             elif result.timed_out:
