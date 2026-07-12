@@ -1416,9 +1416,10 @@ with tempfile.TemporaryDirectory() as temp:
     resource_context_state = {"open": False}
 
     @contextmanager
-    def fake_source_forest(patch, proof, *, omit_patch):
+    def fake_source_forest(patch, proof, *, omit_patch, root, evidence_session):
         calls.append(("source", patch["module"], proof["mode"], omit_patch))
-        yield tempdir / "source/darling"
+        assert root.parent == evidence_session.directory
+        yield root / "darling"
 
     def fake_build(
         source_root, proof, build_prefix, scratch_root, *, label="RED", allow_failure=False
@@ -1602,7 +1603,7 @@ with tempfile.TemporaryDirectory() as temp:
         "RED\n",
         "RED\n",
     ), calls
-    assert calls[2][5] == str(tempdir / "source/darling"), calls
+    assert calls[2][5].endswith("/source/darling"), calls
     assert calls[2][6] is None, calls
     assert "darling-prefix" in calls[2][7], calls
     assert calls[2][8] == "runtime_red_contract_red", calls
@@ -1610,6 +1611,7 @@ with tempfile.TemporaryDirectory() as temp:
     assert calls[4][0] == "build" and calls[4][4] == "GREEN", calls
     assert calls[5][0:3] == ("run", "runtime_red_contract", None), calls
     assert calls[5][3:5] == ("GREEN\n", "GREEN\n"), calls
+    assert calls[5][5].endswith("/source/darling"), calls
 
     symlink_parent = tempdir / "forest/darling/src/external/parent"
     symlink_parent.parent.mkdir(parents=True)
@@ -1857,12 +1859,13 @@ with tempfile.TemporaryDirectory() as temp:
     prefix.mkdir()
     test = make_test()
     test._prefix = str(prefix)
-    before = set(Path(tempfile.gettempdir()).glob("west-red-proof-runtime-*"))
+    test._runtime_evidence_root = tempdir / "evidence"
 
     @contextmanager
-    def fake_source_forest(_patch, _proof, *, omit_patch):
+    def fake_source_forest(_patch, _proof, *, omit_patch, root, evidence_session):
         assert omit_patch is True
-        yield tempdir / "source/darling"
+        assert root.parent == evidence_session.directory
+        yield root / "darling"
 
     def failing_build(
         _source_root, _proof, _build_prefix, scratch_root, *, label="RED", allow_failure=False
@@ -1890,11 +1893,10 @@ with tempfile.TemporaryDirectory() as temp:
     else:
         raise AssertionError("forced runtime-red build failure unexpectedly passed")
 
-    after = set(Path(tempfile.gettempdir()).glob("west-red-proof-runtime-*"))
-    kept = list(after - before)
+    kept = list(test._runtime_evidence_root.glob("runtime-evidence-*"))
     assert len(kept) == 1, kept
     assert (kept[0] / "diagnostic.txt").read_text() == "kept\n"
-    shutil.rmtree(kept[0])
+    assert (kept[0] / "manifest.json").is_file()
 
 with tempfile.TemporaryDirectory() as temp:
     tempdir = Path(temp)
