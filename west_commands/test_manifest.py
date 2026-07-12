@@ -197,7 +197,12 @@ def _default_red_failure_phase(test: dict[str, Any]) -> None:
         return
     mode = proof.get("mode")
     if mode == "guest-runtime-deploy":
-        runner = test.get("runner")
+        red_runner = proof.get("red-runner")
+        runner = (
+            red_runner.get("runner")
+            if isinstance(red_runner, dict)
+            else test.get("runner")
+        )
         if runner in {"guest-c-fixture", "guest-command-fixture"}:
             proof["expect-failure-phase"] = "run"
         else:

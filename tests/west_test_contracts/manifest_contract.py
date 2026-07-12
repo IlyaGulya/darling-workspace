@@ -178,6 +178,30 @@ assert (
     and "runs" not in compact
 )
 
+mixed_red_runner = normalize_test(
+    {
+        "name": "mixed_red_runner",
+        "kind": "guest",
+        "runner": "guest-c-fixture",
+        "script": "tests/current.c",
+        "red": True,
+        "red-proof": {
+            "mode": "guest-runtime-deploy",
+            "red-runner": {"runner": "script", "script": "tests/old.sh"},
+            "runtime-artifacts": [
+                {
+                    "module": "darling/src/external/darlingserver",
+                    "build-targets": ["darlingserver"],
+                    "deploy": ["bin/darlingserver"],
+                }
+            ],
+        },
+    },
+    {},
+    {},
+)
+assert mixed_red_runner["red-proof"]["expect-failure-phase"] == "script", mixed_red_runner
+
 ctest_alias = tests[1]
 assert ctest_alias["coverage-tier"] == "host", ctest_alias
 assert ctest_alias["ctest-label"] == "bead:dar-q95.6", ctest_alias
