@@ -56,9 +56,10 @@ with tempfile.TemporaryDirectory() as temp:
     test._bootstrap_syscall_trace = trace_dir
     test._bootstrap_timeout_seconds = 45
 
-    original = test_module.run_guest_shell
+    original = test_module.run_guest_argv
 
     def failed_boot(*_args, **kwargs):
+        assert _args[2] == ["/usr/bin/true"], _args
         assert kwargs["capture_output"] is True, kwargs
         assert kwargs["timeout_seconds"] == 45, kwargs
         assert kwargs["command_prefix"] == (
@@ -66,7 +67,7 @@ with tempfile.TemporaryDirectory() as temp:
         ), kwargs
         return ProcessResult(1, stdout=b"boot stdout\n", stderr=b"boot stderr\n")
 
-    test_module.run_guest_shell = failed_boot
+    test_module.run_guest_argv = failed_boot
     try:
         try:
             test._boot_eunion_runtime_prefix(
@@ -81,7 +82,7 @@ with tempfile.TemporaryDirectory() as temp:
                 "before fixture setup (rc=1)"
             ), exc
     finally:
-        test_module.run_guest_shell = original
+        test_module.run_guest_argv = original
 
     assert phases == ["bootstrap"], phases
     assert infos == [
@@ -105,13 +106,14 @@ with tempfile.TemporaryDirectory() as temp:
     test._bootstrap_syscall_trace = trace_dir
     test._bootstrap_timeout_seconds = 45
 
-    original = test_module.run_guest_shell
+    original = test_module.run_guest_argv
 
     def timed_out_boot(*_args, **kwargs):
+        assert _args[2] == ["/usr/bin/true"], _args
         assert kwargs["timeout_seconds"] == 45, kwargs
         return ProcessResult(124, timed_out=True, stdout="", stderr="")
 
-    test_module.run_guest_shell = timed_out_boot
+    test_module.run_guest_argv = timed_out_boot
     try:
         try:
             test._boot_eunion_runtime_prefix(
@@ -126,10 +128,10 @@ with tempfile.TemporaryDirectory() as temp:
                 "before fixture setup (rc=124)"
             ), exc
     finally:
-        test_module.run_guest_shell = original
+        test_module.run_guest_argv = original
 
     assert messages == [
-        "eunion_timeout_contract: E-UNION prefix bootstrap timed out after 45s "
+        "eunion_timeout_contract: E-UNION runtime readiness timed out after 45s "
         "without output; syscall trace: " + str(trace_dir)
     ], messages
 
@@ -154,11 +156,12 @@ with tempfile.TemporaryDirectory() as temp:
     test._bootstrap_syscall_trace = None
     test._bootstrap_stack_sample = sample_dir
 
-    original_guest_shell = test_module.run_guest_shell
+    original_guest_argv = test_module.run_guest_argv
     original_bounded = test_module.run_bounded
     original_which = test_module.shutil.which
 
     def timed_out_boot(*_args, **kwargs):
+        assert _args[2] == ["/usr/bin/true"], _args
         assert kwargs["timeout_seconds"] == 15, kwargs
         assert kwargs["command_prefix"] == (
             "perf",
@@ -182,7 +185,7 @@ with tempfile.TemporaryDirectory() as temp:
         ], command
         return ProcessResult(0, stdout="stack frame\n", stderr="")
 
-    test_module.run_guest_shell = timed_out_boot
+    test_module.run_guest_argv = timed_out_boot
     test_module.run_bounded = render_stack
     test_module.shutil.which = lambda name: "/usr/bin/perf" if name == "perf" else None
     try:
@@ -199,7 +202,7 @@ with tempfile.TemporaryDirectory() as temp:
                 "before fixture setup (rc=124)"
             ), exc
     finally:
-        test_module.run_guest_shell = original_guest_shell
+        test_module.run_guest_argv = original_guest_argv
         test_module.run_bounded = original_bounded
         test_module.shutil.which = original_which
 
