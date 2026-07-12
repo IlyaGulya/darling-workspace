@@ -63,6 +63,7 @@ from test_ctest import (
 from test_dispatch import dispatch_fixture_runner
 from test_cmake import archive_git_tree_to, archive_source_to, run_darling_cmake_target_fixture
 from test_execution import process_output_text, run_bounded
+from fresh_prefix import create_fresh_prefix, remove_fresh_prefix
 from test_guest_execution import (
     resolve_guest_execution,
     run_guest_argv,
@@ -298,6 +299,11 @@ class DarlingTest(WestCommand):
             "--prefix-profile",
             metavar="NAME",
             help="named Darling prefix shortcut (homebrew -> ~/work/darling-prefix-homebrew-test)",
+        )
+        parser.add_argument(
+            "--fresh-prefix-from",
+            metavar="BASELINE",
+            help="copy BASELINE into an isolated disposable prefix for this test run",
         )
         parser.add_argument(
             "--with-runtime-profile",
@@ -5567,7 +5573,36 @@ class DarlingTest(WestCommand):
 
     # --- entrypoint ---------------------------------------------------------
 
+    @contextmanager
+    def _fresh_prefix_context(self, args):
+        baseline = getattr(args, "fresh_prefix_from", None)
+        if not baseline:
+            yield
+            return
+        if args.prefix or args.prefix_profile:
+            self.die("--fresh-prefix-from cannot be combined with --prefix or --prefix-profile")
+        result = create_fresh_prefix(Path(baseline))
+        for message in result.changed:
+            self.inf(f"fresh prefix: {message}")
+        if not result.success or result.path is None:
+            self.die("fresh prefix: " + "; ".join(result.problems))
+        args.prefix = str(result.path)
+        try:
+            yield
+        finally:
+            cleanup = remove_fresh_prefix(result.path)
+            for message in cleanup.changed:
+                self.inf(f"fresh prefix: {message}")
+            for message in cleanup.problems:
+                self.err(f"fresh prefix: {message}")
+            if not cleanup.success:
+                self._prefix_cleanup_failed = True
+
     def do_run(self, args, unknown):
+        with self._fresh_prefix_context(args):
+            return self._do_run(args, unknown)
+
+    def _do_run(self, args, unknown):
         self._prefix = self._resolve_prefix(args)
         self._executor = self._resolve_executor(args.executor)
         self._bundle_root = str(Path(args.bundle_root).expanduser())
