@@ -52,11 +52,14 @@ deployments: list[bool] = []
 @contextmanager
 def runtime_context(_patch, _metadata, *, omit_patch=False):
     deployments.append(omit_patch)
-    yield {
-        "DARLING": "rootless-launcher",
-        "DARLING_ROOTLESS": "1",
-        "DARLING_NOOVERLAYFS": "1",
-    }
+    yield types.SimpleNamespace(
+        env={
+            "DARLING": "rootless-launcher",
+            "DARLING_ROOTLESS": "1",
+            "DARLING_NOOVERLAYFS": "1",
+        },
+        diagnostic_trace_paths=(),
+    )
 
 
 test._metadata_runtime_profile_context = runtime_context
