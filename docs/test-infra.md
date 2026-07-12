@@ -1,7 +1,25 @@
 # Darling test infrastructure — design RFC
 
-Status: local productized foundation; migration and CI rollout still open.
+Status: local productized foundation with three-tier CI definitions; publication
+and first remote matrix execution remain external rollout actions.
 Owner: ilyagulya.
+
+## CI execution contract
+
+`.github/workflows/test-infra.yml` keeps privilege and trust boundaries explicit:
+
+- every pull request runs changed-only host tests on a hosted Linux runner;
+- pushes and manual trusted runs use a secretless self-hosted runner labelled
+  `darling-rootless` for the `smoke:true` guest slice;
+- nightly/manual runs execute the full rootless guest suite;
+- one `macos-14` job builds and installs the native testcase bundle, then
+  `macos-14`, `macos-15`, and `macos-26` run that identical artifact.
+
+`ci/run-test-tier.sh` is the sole tier entrypoint. `ci/bootstrap-west.sh`
+materializes a clean checkout before Linux tiers. Native macOS transport uses
+the generated `compat-install-manifest.tsv`; `ci/run-macos-installed-tests.sh`
+executes every installed testcase and validates its exact marker. Docker is
+not part of the guest execution contract.
 
 ## 2026-07-08 Audit Refresh
 

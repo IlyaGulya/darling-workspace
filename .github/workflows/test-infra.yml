@@ -1,0 +1,86 @@
+name: Darling compatibility tests
+
+on:
+  pull_request:
+  push:
+  schedule:
+    - cron: '17 3 * * *'
+  workflow_dispatch:
+
+jobs:
+  host:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          path: darling-dev/darling-workspace
+      - name: Install West
+        run: python3 -m pip install west
+      - name: Materialize Darling workspace
+        run: darling-dev/darling-workspace/ci/bootstrap-west.sh
+      - name: Run host compatibility tests
+        run: darling-dev/darling-workspace/ci/run-test-tier.sh host --changed
+
+  guest-smoke:
+    if: github.event_name == 'push' || github.event_name == 'workflow_dispatch'
+    runs-on: [self-hosted, linux, x64, darling-rootless]
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          path: darling-dev/darling-workspace
+      - name: Materialize Darling workspace
+        run: darling-dev/darling-workspace/ci/bootstrap-west.sh
+      - name: Run rootless guest smoke
+        run: darling-dev/darling-workspace/ci/run-test-tier.sh guest-smoke
+      - name: Cleanup test state
+        if: always()
+        working-directory: darling-dev/darling-workspace
+        run: west test --gc
+
+  guest-full:
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    runs-on: [self-hosted, linux, x64, darling-rootless]
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          path: darling-dev/darling-workspace
+      - name: Materialize Darling workspace
+        run: darling-dev/darling-workspace/ci/bootstrap-west.sh
+      - name: Run full rootless guest suite
+        run: darling-dev/darling-workspace/ci/run-test-tier.sh guest-full
+      - name: Cleanup test state
+        if: always()
+        working-directory: darling-dev/darling-workspace
+        run: west test --gc
+
+  macos-package:
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build installable native oracle bundle
+        run: ci/run-test-tier.sh macos-package "$RUNNER_TEMP/oracle"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: macos-oracle
+          path: ${{ runner.temp }}/oracle
+
+  macos:
+    needs: macos-package
+    strategy:
+      fail-fast: false
+      matrix:
+        runner: [macos-14, macos-15, macos-26]
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: macos-oracle
+          path: ${{ runner.temp }}/oracle
+      - name: Run identical native macOS oracle bundle
+        run: ci/run-test-tier.sh macos-installed "$RUNNER_TEMP/oracle"
