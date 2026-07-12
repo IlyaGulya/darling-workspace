@@ -1845,6 +1845,28 @@ with tempfile.TemporaryDirectory() as temp:
         capture_output=True,
         text=True,
     ).stdout
+    subprocess.run(["git", "reset", "--hard", "-q", base_rev], cwd=target, check=True)
+    (target / "file.txt").write_text("base\nskipped\n")
+    subprocess.run(["git", "add", "file.txt"], cwd=target, check=True)
+    equivalent_commit_env = {
+        **os.environ,
+        "GIT_AUTHOR_DATE": "2001-01-01T00:00:00+0000",
+        "GIT_COMMITTER_DATE": "2001-01-01T00:00:00+0000",
+    }
+    subprocess.run(
+        ["git", "commit", "-q", "-m", "equivalent skipped patch"],
+        cwd=target,
+        env=equivalent_commit_env,
+        check=True,
+    )
+    equivalent_skipped_rev = subprocess.run(
+        ["git", "rev-parse", "HEAD"],
+        cwd=target,
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
+    assert equivalent_skipped_rev != skipped_rev
 
     profile_dir = tempdir / "patches/runtime"
     skipped_patch_file = profile_dir / "x/skipped.patch"
@@ -1866,7 +1888,7 @@ with tempfile.TemporaryDirectory() as temp:
             {
                 "path": "x/skipped.patch",
                 "module": "module",
-                "source-commit": skipped_rev,
+                "source-commit": equivalent_skipped_rev,
             },
             {
                 "path": "x/rerolled-subject.patch",
@@ -1896,6 +1918,7 @@ with tempfile.TemporaryDirectory() as temp:
     trace_text = trace.read_text()
     assert "maintenance run --auto" not in trace_text
     assert '"--patch"' not in trace_text
+    assert '"--cherry-mark"' in trace_text
     assert (target / "file.txt").read_text() == "base\n"
     assert not (target / "dependent.txt").exists()
     assert (target / "rerolled.txt").read_text() == "rerolled\n"
@@ -1910,7 +1933,7 @@ with tempfile.TemporaryDirectory() as temp:
             {
                 "path": "x/skipped.patch",
                 "module": "module",
-                "source-commit": skipped_rev,
+                "source-commit": equivalent_skipped_rev,
             },
             {
                 "path": "x/rerolled-subject.patch",
@@ -1922,6 +1945,8 @@ with tempfile.TemporaryDirectory() as temp:
         ]
     }
     test._profile_path = lambda profile: tempdir / "patches" / profile / "patches.yml"
+    assert not test._commit_is_ancestor(target, equivalent_skipped_rev)
+    assert test._commit_has_equivalent_patch(target, equivalent_skipped_rev)
     test._apply_profile_module_patches("runtime", "module", target)
     assert (target / "file.txt").read_text() == "base\nskipped\n"
     assert (target / "rerolled.txt").read_text() == "rerolled\n"
