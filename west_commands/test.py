@@ -3661,7 +3661,15 @@ class DarlingTest(WestCommand):
 
 
     @contextmanager
-    def _guest_runtime_source_forest(self, patch, proof, *, omit_patch: bool):
+    def _guest_runtime_source_forest(
+        self,
+        patch,
+        proof,
+        *,
+        omit_patch: bool,
+        root: Path | None = None,
+        evidence_session=None,
+    ):
         """Create a temporary Darling source forest for a runtime build.
 
         The top-level Darling tree and every nested gitlink are detached local
@@ -3672,7 +3680,11 @@ class DarlingTest(WestCommand):
         one coherent source root.
         """
         with self._runtime_source_materializer().guest_runtime_source_forest(
-            patch, proof, omit_patch=omit_patch
+            patch,
+            proof,
+            omit_patch=omit_patch,
+            root=root,
+            evidence_session=evidence_session,
         ) as source_root:
             yield source_root
 

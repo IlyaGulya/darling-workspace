@@ -100,4 +100,46 @@ with tempfile.TemporaryDirectory() as temp:
     }
     assert test._active_profile == "outer-profile"
 
+
+# The deployment context must be able to bind a source forest to one durable
+# evidence unit. Exercise the real DarlingTest facade here: mocking the facade
+# itself above would otherwise miss a stale forwarding signature.
+facade_test = DarlingTest.__new__(DarlingTest)
+forwarded: dict[str, object] = {}
+
+
+class SourceMaterializer:
+    @contextmanager
+    def guest_runtime_source_forest(
+        self, patch, proof, *, omit_patch, root, evidence_session
+    ):
+        forwarded.update(
+            patch=patch,
+            proof=proof,
+            omit_patch=omit_patch,
+            root=root,
+            evidence_session=evidence_session,
+        )
+        yield root / "darling"
+
+
+facade_test._runtime_source_materializer = lambda: SourceMaterializer()
+evidence_root = Path("/tmp/runtime-evidence-contract")
+evidence_session = object()
+with facade_test._guest_runtime_source_forest(
+    {"path": "darling/example.patch"},
+    {"bad-profile": "current-minus-patch"},
+    omit_patch=True,
+    root=evidence_root,
+    evidence_session=evidence_session,
+) as source_root:
+    assert source_root == evidence_root / "darling"
+assert forwarded == {
+    "patch": {"path": "darling/example.patch"},
+    "proof": {"bad-profile": "current-minus-patch"},
+    "omit_patch": True,
+    "root": evidence_root,
+    "evidence_session": evidence_session,
+}
+
 print("PASS runtime-profile-current-minus-contract")
