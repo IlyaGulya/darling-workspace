@@ -848,9 +848,14 @@ class DarlingPatch(WestCommand):
             proof = test.get("red-proof")
             if isinstance(proof, dict) and proof.get("source-revision") is not None:
                 source_revision = proof.get("source-revision")
-                if proof.get("mode") != "source-base":
+                source_revision_is_guest_baseline = (
+                    proof.get("mode") == "guest-runtime-deploy"
+                    and proof.get("bad-profile") == "current-minus-patch"
+                )
+                if proof.get("mode") != "source-base" and not source_revision_is_guest_baseline:
                     errors.append(
-                        f"tests[{index}] red-proof source-revision requires mode: source-base"
+                        f"tests[{index}] red-proof source-revision requires mode: source-base "
+                        "or guest-runtime-deploy with bad-profile: current-minus-patch"
                     )
                 elif not isinstance(source_revision, str) or not source_revision.strip():
                     errors.append(

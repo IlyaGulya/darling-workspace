@@ -1303,9 +1303,15 @@
         },
         {
           "branch": "repack/eunion-hardening",
-          "head": "f223ee035651e9b9f7d3952c654bb0d0dc238d34",
+          "head": "cb2cf623d9cd641ed4f9e899a0187acdedc423ea",
           "upstream": "",
           "source_ref": "refs/heads/repack/eunion-hardening"
+        },
+        {
+          "branch": "test/eunion-hardening-guest-red",
+          "head": "edb1a027728388bce05615ff336dcdce650935c0",
+          "upstream": "",
+          "source_ref": "refs/heads/test/eunion-hardening-guest-red"
         },
         {
           "branch": "test/eunion-hardening-red",

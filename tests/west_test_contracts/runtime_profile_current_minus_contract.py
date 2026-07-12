@@ -86,6 +86,10 @@ with tempfile.TemporaryDirectory() as temp:
         retain_deployment=False,
         patch=patch,
         omit_patch=True,
+        red_proof={
+            "source-revision": "old-runtime-commit",
+            "current-minus-skip-patches": ["darling/downstream.patch"],
+        },
     ) as deployment:
         assert deployment.env["DARLING"] == str(launcher)
         assert deployment.env["DARLING_ROOTLESS"] == "1"
@@ -97,6 +101,8 @@ with tempfile.TemporaryDirectory() as temp:
         "runtime-artifacts": [],
         "cmake-defines": {"DARLING_GUEST_RECVSPIN": "0"},
         "bad-profile": "current-minus-patch",
+        "source-revision": "old-runtime-commit",
+        "current-minus-skip-patches": ["darling/downstream.patch"],
     }
     assert test._active_profile == "outer-profile"
 
