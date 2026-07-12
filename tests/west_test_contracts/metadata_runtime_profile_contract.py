@@ -66,7 +66,10 @@ def runtime_profile_context(
     profiles, *, label_prefix, retain_deployment, patch=None, omit_patch=False
 ):
     deployments.append((profiles, label_prefix, retain_deployment, patch, omit_patch))
-    yield SimpleNamespace(env={"DARLING": "runtime", "DARLING_ROOTLESS": "1"})
+    yield SimpleNamespace(
+        env={"DARLING": "runtime", "DARLING_ROOTLESS": "1"},
+        diagnostic_trace_paths=(),
+    )
 
 
 test._runtime_profile_deployment_context = runtime_profile_context
