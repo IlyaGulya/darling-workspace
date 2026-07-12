@@ -114,6 +114,28 @@ except SystemExit as exc:
 
 
 with tempfile.TemporaryDirectory() as temp:
+    trace_dir = Path(temp)
+    (trace_dir / "bootstrap.101").write_text(
+        'execve("/prefix/usr/libexec/shellspawn", ["shellspawn"], []) = 0\n'
+        'recvmsg(7, {msg_namelen=0}, MSG_DONTWAIT) = -1 EAGAIN (Resource temporarily unavailable)\n'
+    )
+    (trace_dir / "bootstrap.102").write_text(
+        'execve("/prefix/bin/darling", ["darling"], []) = 0\n'
+        'poll([{fd=3, events=POLLIN}], 1, -1\n'
+    )
+    (trace_dir / "bootstrap.103").write_text(
+        'execve("/prefix/usr/libexec/opendirectoryd", ["opendirectoryd"], []) = 0\n'
+        'recvmsg(7, {msg_namelen=0}, MSG_DONTWAIT) = -1 EAGAIN (Resource temporarily unavailable)\n'
+        '+++ exited with 0 +++\n'
+    )
+    summary = test_module.bootstrap_syscall_stall_summary(trace_dir)
+    assert summary == (
+        "shellspawn[101]: spinning on empty RPC receive | "
+        "darling[102]: waiting for a socket event"
+    ), summary
+
+
+with tempfile.TemporaryDirectory() as temp:
     prefix = Path(temp) / "prefix"
     prefix.mkdir()
     context_test = DarlingTest.__new__(DarlingTest)
