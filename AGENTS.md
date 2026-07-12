@@ -24,11 +24,13 @@ refs, PR drafts, and agent handoff.
 - When passing Bead free text through `rtk bash -c`, do not use shell backticks
   in the title, description, or reason: Bash evaluates them before `west dw
   beads` receives the text. Use plain command names or a file-backed argument.
-- In this execution transport, do not poll a long `west-job` through shell
-  `sleep` (for example, `sleep 60; west-job.sh status ...`): the transport can
-  detach the shell and leave the sleep process behind. Run short
-  `scripts/west-job.sh status --state-dir DIR` checks instead, record the PID
-  and log path, and treat any escaped monitor process as a tooling defect.
+- In this execution transport, start long work with `scripts/west-job.sh start`,
+  then remain attached with `scripts/west-job.sh follow --state-dir DIR`.
+  `follow` streams progress and validates the registered PID identity without
+  creating a detached monitor process. Use `--timeout-seconds N` only to bound
+  the observer; timeout leaves the job running and a later `follow` resumes it.
+  Use `status` for recovery after a transport interruption. Do not poll through
+  shell `sleep`, and treat any escaped monitor process as a tooling defect.
 - Run long contract scripts that invoke `west test` internally (notably
   `tests/run-west-test-metadata-contract.sh`) through `scripts/west-job.sh
   start` and inspect the recorded state. In `CODEX_CI` that contract refuses a
@@ -264,8 +266,8 @@ refs, PR drafts, and agent handoff.
   deliberately rejected because the outer controller can report a detached wait
   as complete while the job is still live. Do not start a second prefix-backed
   run while `status` says the first is live, and inspect its log plus
-  prefix/process cleanup only after `status` reports a final rc. In an ordinary
-  attached shell, `wait` remains available. To reproduce one selected guest case
+  prefix/process cleanup only after `follow` or `status` reports a final rc. In
+  an ordinary attached shell, `wait` remains available. To reproduce one selected guest case
   under an otherwise combined runtime, append `--with-runtime-profile NAME` for
   each additional declared provider; this changes deployment only, not CTest
   selection.
