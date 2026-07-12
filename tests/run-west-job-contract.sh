@@ -68,6 +68,19 @@ if wait_job --state-dir "$tmp/live-west-test"; then
 fi
 "$job" assert-no-live-west-test --state-root "$tmp"
 
+# The cleanup audit must only trust states registered by west-job itself.  A
+# live, lookalike directory under the same shared parent is not a west job and
+# must not block cleanup or be read as one.
+mkdir -p "$tmp/unregistered-west-test"
+sleep 30 &
+unregistered_pid=$!
+printf 'west test\n' >"$tmp/unregistered-west-test/command"
+printf '%s\n' "$unregistered_pid" >"$tmp/unregistered-west-test/pid"
+awk '{print $22}' "/proc/$unregistered_pid/stat" >"$tmp/unregistered-west-test/start-time"
+"$job" assert-no-live-west-test --state-root "$tmp"
+kill "$unregistered_pid"
+wait "$unregistered_pid" 2>/dev/null || true
+
 "$job" start --state-dir "$tmp/wait" -- /usr/bin/python3 -c '
 import time
 time.sleep(0.3)

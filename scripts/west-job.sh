@@ -19,6 +19,54 @@ USAGE
 
 state_dir=
 
+write_command_record() {
+	local target="$1"
+	printf '%q ' "${STATE_REST[@]}" >"$target"
+	printf '\n' >>"$target"
+}
+
+registry_dir_for_state_root() {
+	printf '%s/.west-job-registry\n' "$1"
+}
+
+registry_entry_name() {
+	printf '%s' "$state_dir" | cksum | awk '{print $1 "-" $2}'
+}
+
+prepare_job_registry() {
+	local state_root registry_dir
+	state_root="$(dirname "$state_dir")"
+	registry_dir="$(registry_dir_for_state_root "$state_root")"
+	if [[ -L "$registry_dir" ]] || { [[ -e "$registry_dir" ]] && [[ ! -d "$registry_dir" ]]; }; then
+		echo "west job registry is not a directory: $registry_dir" >&2
+		exit 2
+	fi
+	mkdir -p -m 700 "$registry_dir"
+	if [[ "$(stat -c '%u' "$registry_dir")" != "$(id -u)" ]]; then
+		echo "west job registry is not owned by this user: $registry_dir" >&2
+		exit 2
+	fi
+	REGISTRY_DIR="$registry_dir"
+}
+
+reserve_job_registry_entry() {
+	local entry
+	prepare_job_registry
+	entry="$REGISTRY_DIR/$(registry_entry_name)"
+	if ! mkdir "$entry" 2>/dev/null; then
+		echo "west job registry entry already exists: $entry" >&2
+		exit 2
+	fi
+	printf '%s\n' "$state_dir" >"$entry/state-dir"
+	write_command_record "$entry/command"
+	REGISTRY_ENTRY="$entry"
+}
+
+record_job_registry_identity() {
+	printf '%s\n' "$(<"$state_dir/pid")" >"$REGISTRY_ENTRY/pid"
+	printf '%s\n' "$(<"$state_dir/start-time")" >"$REGISTRY_ENTRY/start-time"
+}
+
 parse_state_dir() {
 	while (($#)); do
 		case "$1" in
@@ -133,9 +181,9 @@ start_job() {
 	if ((${#STATE_REST[@]} == 0)); then
 		usage
 	fi
+	reserve_job_registry_entry
 	mkdir -p "$state_dir"
-	printf '%q ' "${STATE_REST[@]}" >"$state_dir/command"
-	printf '\n' >>"$state_dir/command"
+	write_command_record "$state_dir/command"
 
 	nohup setsid --wait bash -c '
 		state_dir="$1"
@@ -176,6 +224,7 @@ start_job() {
 	local pid=$!
 	printf '%s\n' "$pid" >"$state_dir/pid"
 	pid_start_time "$pid" >"$state_dir/start-time"
+	record_job_registry_identity
 	printf 'started pid=%s state=%s log=%s\n' "$pid" "$state_dir" "$state_dir/log"
 }
 
@@ -250,19 +299,31 @@ cancel_job() {
 }
 
 live_west_test_state() {
-	local original_state_dir="$state_dir"
-	local candidate
+	local registry_dir entry candidate_state candidate_pid candidate_start_time
+	registry_dir="$(registry_dir_for_state_root "$STATE_ROOT")"
+	[[ -d "$registry_dir" && ! -L "$registry_dir" ]] || return 1
 	shopt -s nullglob
-	for candidate in "$STATE_ROOT"/*; do
-		[[ -d "$candidate" && -f "$candidate/command" ]] || continue
-		state_dir="$candidate"
-		if load_live_pid && grep -Eq '(^|[[:space:]/])west[[:space:]]+test([[:space:]]|$)' "$candidate/command"; then
-			state_dir="$original_state_dir"
-			printf '%s\n' "$candidate"
+	for entry in "$registry_dir"/*; do
+		[[ -d "$entry" && ! -L "$entry" ]] || continue
+		for required in state-dir pid start-time command; do
+			[[ -f "$entry/$required" && ! -L "$entry/$required" ]] || continue 2
+		done
+		candidate_state="$(<"$entry/state-dir")"
+		candidate_pid="$(<"$entry/pid")"
+		candidate_start_time="$(<"$entry/start-time")"
+		if [[ ! "$candidate_pid" =~ ^[0-9]+$ ]] || [[ ! "$candidate_start_time" =~ ^[0-9]+$ ]]; then
+			rm -rf "$entry"
+			continue
+		fi
+		if ! kill -0 "$candidate_pid" 2>/dev/null || [[ "$(pid_start_time "$candidate_pid")" != "$candidate_start_time" ]]; then
+			rm -rf "$entry"
+			continue
+		fi
+		if grep -Eq '(^|[[:space:]/])west[[:space:]]+test([[:space:]]|$)' "$entry/command"; then
+			printf '%s\n' "$candidate_state"
 			return 0
 		fi
 	done
-	state_dir="$original_state_dir"
 	return 1
 }
 
