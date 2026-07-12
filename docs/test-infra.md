@@ -433,8 +433,13 @@ patch introduces the API under test, a source-base proof may set
 the same source repository. `west test --prove-red` uses that revision only for
 the RED arm; `source-base` remains the patch's real parent for patch ordering
 and integration. This lets RED exercise the old behavior instead of merely
-proving that a new symbol is absent. The revision must be reviewable and local
-to the module; do not use a floating branch name.
+proving that a new symbol is absent. The same field is allowed for a
+`guest-runtime-deploy` proof with `bad-profile: current-minus-patch`, where it
+selects the known-buildable old runtime baseline. If that baseline predates
+dependent profile patches, list those patches in
+`red-proof.current-minus-skip-patches`; the skip is an explicit dependency
+boundary, not an ignored application failure. The revision must be reviewable
+and local to the module; do not use a floating branch name.
 
 Use `runner: self-contract-script` for host scripts whose RED proof is fully
 self-contained in the test itself: the script runs an explicit bad/model arm and
@@ -794,6 +799,13 @@ Ordinary `west test --gc` never deletes those units. Removal is deliberate:
 `west test --gc --gc-runtime-evidence` applies the configured proof-scratch
 age/count policy and first removes only the worktrees listed by that unit's
 manifest. A path is reported as preserved only after this manifest exists.
+
+Long configure/build commands use the same bounded process runner but emit a
+30-second heartbeat while their output is captured for failure diagnostics.
+This keeps large targets such as `rootless_bootstrap` visibly alive without
+turning compiler output into an unreviewable stream. If the caller is
+interrupted, the next `west test --gc --gc-runtime-evidence` pass removes an
+unlocked orphan `.inflight-*` unit and its recorded worktrees.
 
 ### Orchestrator — `west test` (`west_commands/test.py`)
 

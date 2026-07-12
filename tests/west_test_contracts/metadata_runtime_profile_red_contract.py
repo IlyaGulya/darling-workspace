@@ -46,12 +46,12 @@ def resource_passthrough(_invocation, env):
 
 
 test._resource_context = resource_passthrough
-deployments: list[bool] = []
+deployments: list[tuple[bool, dict | None]] = []
 
 
 @contextmanager
-def runtime_context(_patch, _metadata, *, omit_patch=False):
-    deployments.append(omit_patch)
+def runtime_context(_patch, _metadata, *, omit_patch=False, red_proof=None):
+    deployments.append((omit_patch, red_proof))
     yield types.SimpleNamespace(
         env={
             "DARLING": "rootless-launcher",
@@ -88,13 +88,18 @@ patch = {"path": "darlingserver/provider.patch"}
 metadata = {"name": "provider_guest", "runtime-profile": "homebrew-rootless-no-mount"}
 proof = {
     "mode": "guest-runtime-deploy",
+    "source-revision": "old-runtime-commit",
+    "current-minus-skip-patches": ["xnu/downstream.patch"],
     "expect-failure-phase": "run",
     "expect-output-contains": ["missing host trace content"],
 }
 invocation = {"name": "provider_green", "diag": "guarded"}
 
 assert test._run_metadata_runtime_profile_proof(patch, metadata, proof, invocation) == 0
-assert deployments == [True, False], deployments
+assert deployments == [
+    (True, proof),
+    (False, None),
+], deployments
 assert seen == [
     (
         "provider_red",

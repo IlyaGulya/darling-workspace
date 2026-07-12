@@ -200,6 +200,11 @@ mkfifo "$WORK/libexec/var/log/special_fifo"
 mkdir -p "$WORK/libexec/var/recreate"
 echo "stale a" > "$WORK/libexec/var/recreate/stale_a"
 echo "stale b" > "$WORK/libexec/var/recreate/stale_b"
+# Guest-runtime parity fixture: exercise the public mkdir/rmdir adapters at the
+# same /private/var/tmp path used by the real Darling fixture.
+mkdir -p "$WORK/libexec/private/var/tmp/west-eunion-mkdir-opaque/recreate"
+echo "stale a" > "$WORK/libexec/private/var/tmp/west-eunion-mkdir-opaque/recreate/stale_a.txt"
+echo "stale b" > "$WORK/libexec/private/var/tmp/west-eunion-mkdir-opaque/recreate/stale_b.txt"
 # .7c dirent d_type/d_ino (G4): a dir containing a known SUBDIR and a known FILE
 #    so the paged merge can be checked for a valid d_type (DT_DIR/DT_REG) and a
 #    real d_ino instead of the hardcoded DT_UNKNOWN/1.
@@ -244,6 +249,7 @@ sources=(
 	"$HERE/runner.c"
 	"$HERE/whiteout_hook_fallback.c"
 	"$XNU/src/xnu_syscall/bsd/helper/misc/common_at.c"
+	"$XNU/src/xnu_syscall/bsd/impl/stat/mkdir.c"
 	"$XNU/src/xnu_syscall/bsd/impl/stat/mkdirat.c"
 	"$XNU/src/xnu_syscall/bsd/impl/stat/rmdir.c"
 	"$XNU/src/xnu_syscall/bsd/impl/unistd/renameat.c"

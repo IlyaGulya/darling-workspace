@@ -114,6 +114,7 @@ long linux_syscall(long a1, long a2, long a3, long a4, long a5, long a6, int num
 
 long sys_bind(int fd, const void* name, int socklen);
 long sys_mkdirat(int fd, const char* path, unsigned int mode);
+long sys_mkdir(const char* path, unsigned int mode);
 long sys_rmdir(const char* path);
 long sys_renameat(int oldfd, const char* oldpath, int newfd, const char* newpath);
 long sys_unlinkat(int fd, const char* path, int flag);
@@ -719,6 +720,25 @@ int main(void) {
             check("CM2 atime is preserved independently of mtime",
                   before_ok && upper_ok && upper_stat.st_atime == before.st_atime &&
                   upper_stat.st_atime != upper_stat.st_mtime);
+        }
+
+        /* MK3. The guest runtime uses this exact absolute path. Exercise the
+           public mkdir/rmdir adapters, not only the internal helper calls. */
+        {
+            const char* g = "/private/var/tmp/west-eunion-mkdir-opaque/recreate";
+            char lower_dir[4096], upper_dir[4096], lower_child[4096];
+            snprintf(lower_dir, sizeof(lower_dir), "%s%s", libexec, g);
+            snprintf(upper_dir, sizeof(upper_dir), "%s%s", prefix, g);
+            snprintf(lower_child, sizeof(lower_child), "%s/stale_a.txt", lower_dir);
+            check("MK3 guest-path lower recreate fixture is present",
+                  access(lower_child, F_OK) == 0);
+            check("MK3 sys_rmdir absolute guest path succeeds", sys_rmdir(g) == 0);
+            check("MK3 lower recreate fixture remains intact", access(lower_child, F_OK) == 0);
+            int mkdir_rv = (int)sys_mkdir(g, 0755);
+            check("MK3 sys_mkdir absolute guest path succeeds", mkdir_rv == 0);
+            struct stat mk3st;
+            check("MK3 recreated directory is published in upper",
+                  stat(upper_dir, &mk3st) == 0 && S_ISDIR(mk3st.st_mode));
         }
     }
 

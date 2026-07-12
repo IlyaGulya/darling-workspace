@@ -105,6 +105,17 @@ result = run_bounded(
 assert result.returncode == 0 and not result.timed_out, result
 assert result.stdout == "BOUNDED_OUTPUT_OK\n", result
 
+heartbeats = []
+result = run_bounded(
+    [sys.executable, "-c", "import time; time.sleep(0.15)"],
+    cwd=Path.cwd(),
+    env=None,
+    timeout_seconds=1,
+    heartbeat_seconds=0.03,
+    heartbeat=heartbeats.append,
+)
+assert result.returncode == 0 and heartbeats, (result, heartbeats)
+
 result = run_bounded(
     [
         sys.executable,

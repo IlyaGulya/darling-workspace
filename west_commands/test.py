@@ -1776,7 +1776,9 @@ class DarlingTest(WestCommand):
             yield deployment.env
 
     @contextmanager
-    def _metadata_runtime_profile_context(self, patch, test, *, omit_patch=False):
+    def _metadata_runtime_profile_context(
+        self, patch, test, *, omit_patch=False, red_proof=None
+    ):
         """Temporarily deploy the typed runtime provider declared by metadata."""
 
         profile_name = test.get("runtime-profile")
@@ -1784,12 +1786,17 @@ class DarlingTest(WestCommand):
             yield None
             return
         label = f"metadata {patch['path']}:{test.get('name', patch['path'])}"
+        deployment_args = {
+            "label_prefix": label,
+            "retain_deployment": False,
+            "patch": patch,
+            "omit_patch": omit_patch,
+        }
+        if red_proof is not None:
+            deployment_args["red_proof"] = red_proof
         with self._runtime_profile_deployment_context(
             [profile_name],
-            label_prefix=label,
-            retain_deployment=False,
-            patch=patch,
-            omit_patch=omit_patch,
+            **deployment_args,
         ) as deployment:
             yield deployment
 
@@ -1827,6 +1834,7 @@ class DarlingTest(WestCommand):
         retain_deployment: bool,
         patch=None,
         omit_patch=False,
+        red_proof=None,
     ):
         """Materialize, build, and deploy a declared runtime provider.
 
@@ -1863,6 +1871,10 @@ class DarlingTest(WestCommand):
         }
         if omit_patch:
             proof["bad-profile"] = "current-minus-patch"
+            if isinstance(red_proof, dict):
+                for key in ("source-revision", "current-minus-skip-patches"):
+                    if key in red_proof:
+                        proof[key] = red_proof[key]
         launcher_env = {
             key: str(value)
             for key, value in definition.get("launcher-env", {}).items()
@@ -4142,7 +4154,7 @@ class DarlingTest(WestCommand):
             error=self.err,
         )
         with self._metadata_runtime_profile_context(
-            patch, test, omit_patch=True
+            patch, test, omit_patch=True, red_proof=proof
         ) as deployment:
             runtime_env = deployment.env if deployment is not None else None
             runtime_invocation = self._with_runtime_diagnostics(
