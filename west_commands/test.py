@@ -78,14 +78,11 @@ except ImportError:  # Loaded as a West extension module, not a package.
     from test_guest_c import run_guest_c_fixture
 from test_manifest import ManifestError, load_test_profile
 from test_prefix import (
-    cleanup_rootless_prefix_processes,
     cleanup_rootless_runtime_sockets,
-    darlingserver_pids_for_prefix,
-    prefix_process_snapshot,
+    PrefixLifecycleOwner,
     remove_stale_init_pid,
     remove_stale_server_socket,
     RootlessRuntimeSocketCleanupResult,
-    rootless_prefix_process_snapshot,
 )
 from test_resources import resource_context
 from test_results import InvocationResult, RuntimeBuildFailure, RuntimeRedProven
@@ -4128,51 +4125,10 @@ class DarlingTest(WestCommand):
                 )
 
     def _shutdown_runtime_prefix(self, prefix: Path) -> bool:
-        launcher = self._resolve_darling_launcher(str(prefix))
-        if launcher:
-            env = os.environ.copy()
-            env.update(self._darling_prefix_env(prefix))
-            timeout_seconds = int(os.environ.get("WEST_TEST_SHUTDOWN_TIMEOUT_SECONDS", "15"))
-            result = shutdown_guest_prefix(
-                launcher,
-                prefix,
-                cwd=Path.cwd(),
-                env=env,
-                timeout_seconds=timeout_seconds,
-            )
-            if result.timed_out:
-                self.err(f"Darling prefix shutdown timed out for {prefix}; forcing cleanup")
-        return self._finalize_prefix_shutdown(prefix)
+        return self._prefix_lifecycle_owner().shutdown(prefix)
 
     def _finalize_prefix_shutdown(self, prefix: Path) -> bool:
-        """Reclaim all runner-owned runtime state after launcher shutdown."""
-        self._kill_dserver_for_prefix(prefix)
-        rootless_cleanup = cleanup_rootless_prefix_processes(prefix)
-        for message in rootless_cleanup.changed:
-            self.inf(f"cleanup rootless Darling prefix: {message}")
-        for message in rootless_cleanup.problems:
-            self.err(message)
-        leftovers = self._prefix_process_snapshot(prefix)
-        if leftovers:
-            self.err(f"leftover Darling prefix process(es) after cleanup for {prefix}:")
-            for entry in leftovers:
-                self.err(f"  {entry}")
-            return False
-        if not rootless_cleanup.success:
-            return False
-        if not self._cleanup_prefix_mounts(prefix):
-            return False
-        self._remove_stale_init_pid(prefix)
-        if self._remove_stale_server_socket(prefix):
-            self.inf(f"removed stale Darling server socket for {prefix}")
-        socket_cleanup = self._cleanup_rootless_runtime_sockets(prefix)
-        for message in socket_cleanup.changed:
-            self.inf(f"cleanup rootless Darling prefix: {message}")
-        for message in socket_cleanup.problems:
-            self.err(message)
-        if not socket_cleanup.success:
-            return False
-        return True
+        return self._prefix_lifecycle_owner().finalize(prefix)
 
     def _invocation_from_runtime_source(self, invocation, source_root: Path):
         repo = invocation.get("repo")
@@ -4875,24 +4831,23 @@ class DarlingTest(WestCommand):
 
     def _shutdown_test_prefix(self) -> bool:
         prefix = getattr(self, "_prefix", None)
-        if not prefix or getattr(self, "_keep_prefix_running", False):
+        if not prefix:
             return True
-        launcher = self._resolve_darling_launcher(prefix)
-        if launcher:
-            env = os.environ.copy()
-            env.update(self._darling_prefix_env(prefix))
-            self.inf(f"shutdown Darling prefix: {prefix}")
-            timeout_seconds = int(os.environ.get("WEST_TEST_SHUTDOWN_TIMEOUT_SECONDS", "15"))
-            result = shutdown_guest_prefix(
-                launcher,
-                prefix,
-                cwd=Path.cwd(),
-                env=env,
-                timeout_seconds=timeout_seconds,
-            )
-            if result.timed_out:
-                self.err(f"Darling prefix shutdown timed out for {prefix}; forcing cleanup")
-        return self._finalize_prefix_shutdown(Path(prefix))
+        return self._prefix_lifecycle_owner().shutdown(
+            Path(prefix), keep_running=getattr(self, "_keep_prefix_running", False)
+        )
+
+    def _prefix_lifecycle_owner(self) -> PrefixLifecycleOwner:
+        return PrefixLifecycleOwner(
+            resolve_launcher=self._resolve_darling_launcher,
+            prefix_env=self._darling_prefix_env,
+            cleanup_mounts=cleanup_prefix_mounts,
+            init_pid_is_usable=darling_init_pid_is_usable,
+            inf=self.inf,
+            err=getattr(self, "err", lambda _message: None),
+            wrn=getattr(self, "wrn", lambda _message: None),
+            process_entries=self._ps_entries,
+        )
 
     def _cleanup_prefix_mounts(self, prefix: Path) -> bool:
         result = cleanup_prefix_mounts(prefix)
@@ -4922,41 +4877,16 @@ class DarlingTest(WestCommand):
         )
         entries = []
         for line in result.stdout.splitlines():
-            line = line.strip()
-            if not line:
-                continue
-            parts = line.split(None, 2)
-            if len(parts) < 3 or not parts[0].isdigit() or not parts[1].isdigit():
-                continue
-            entries.append((int(parts[0]), int(parts[1]), parts[2]))
+            parts = line.strip().split(None, 2)
+            if len(parts) == 3 and parts[0].isdigit() and parts[1].isdigit():
+                entries.append((int(parts[0]), int(parts[1]), parts[2]))
         return entries
 
     def _prefix_process_snapshot(self, prefix: Path) -> list[str]:
-        entries = prefix_process_snapshot(prefix, self._ps_entries())
-        entries.extend(rootless_prefix_process_snapshot(prefix))
-        return sorted(set(entries))
+        return self._prefix_lifecycle_owner().process_snapshot(prefix)
 
     def _kill_dserver_for_prefix(self, prefix: Path) -> None:
-        pids = darlingserver_pids_for_prefix(prefix, self._ps_entries())
-        if not pids:
-            return
-        self.wrn(f"stopping live darlingserver for {prefix}: pids={pids}")
-        for sig in (signal.SIGTERM, signal.SIGKILL):
-            live = []
-            for pid in pids:
-                try:
-                    os.kill(pid, 0)
-                    live.append(pid)
-                except ProcessLookupError:
-                    pass
-            if not live:
-                return
-            for pid in live:
-                try:
-                    os.kill(pid, sig)
-                except ProcessLookupError:
-                    pass
-            time.sleep(1)
+        self._prefix_lifecycle_owner()._kill_server(prefix)
 
     @contextmanager
     def _prefix_resource_context(self, enabled: bool):
@@ -4965,11 +4895,7 @@ class DarlingTest(WestCommand):
             yield
             return
 
-        lock_path = Path(prefix).expanduser() / ".west-test.lock"
-        lock_path.parent.mkdir(parents=True, exist_ok=True)
-        with lock_path.open("a+") as lock:
-            self.inf(f"lock Darling prefix: {prefix}")
-            fcntl.flock(lock.fileno(), fcntl.LOCK_EX)
+        with self._prefix_lifecycle_owner().locked(Path(prefix).expanduser()):
             self._prefix_cleanup_failed = False
             try:
                 if not self._shutdown_test_prefix():
@@ -4979,11 +4905,8 @@ class DarlingTest(WestCommand):
                     )
                 yield
             finally:
-                try:
-                    if not self._shutdown_test_prefix():
-                        self._prefix_cleanup_failed = True
-                finally:
-                    fcntl.flock(lock.fileno(), fcntl.LOCK_UN)
+                if not self._shutdown_test_prefix():
+                    self._prefix_cleanup_failed = True
 
     def _changed_submodules(self) -> list[str]:
         """Submodules whose checkout differs from their manifest revision.
