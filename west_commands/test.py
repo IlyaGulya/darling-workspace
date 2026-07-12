@@ -89,6 +89,7 @@ from test_prefix import (
 )
 from test_resources import resource_context
 from test_results import InvocationResult, RuntimeBuildFailure, RuntimeRedProven
+from test_runtime_build import RuntimeBuildService
 from test_runtime_source import RuntimeSourceMaterializer
 from test_selection import select_metadata_tests
 from test_runtime import (
@@ -3609,64 +3610,12 @@ class DarlingTest(WestCommand):
 
 
     def _cmake_cache_value(self, build_dir: Path, key: str) -> str | None:
-        cache = build_dir / "CMakeCache.txt"
-        if not cache.exists():
-            return None
-        prefix = f"{key}:"
-        for line in cache.read_text(errors="replace").splitlines():
-            if line.startswith(prefix):
-                return line.split("=", 1)[1]
-        return None
+        return RuntimeBuildService.cmake_cache_value(build_dir, key)
+
 
     def _runtime_red_configure_args(self, proof, prefix: Path) -> list[str]:
-        current_build = Path(
-            os.environ.get("DARLING_BUILD_DIR", str(Path.home() / "work/darling-build"))
-        )
-        args = ["-G", self._cmake_cache_value(current_build, "CMAKE_GENERATOR") or "Ninja"]
-        # A runtime proof is a clean test build, not a clone of the developer's
-        # active build. Darling's objc4 target requires a Debug configuration.
-        cmake_defines = {"CMAKE_BUILD_TYPE": "Debug", **(proof.get("cmake-defines") or {})}
-        active_profile = getattr(self, "_active_profile", None)
-        if active_profile and "DARLING_PATCH_PROFILE" not in cmake_defines:
-            cmake_defines["DARLING_PATCH_PROFILE"] = active_profile
-        for key in ("CMAKE_C_COMPILER", "CMAKE_CXX_COMPILER"):
-            value = self._cmake_cache_value(current_build, key)
-            if value:
-                args.append(f"-D{key}={value}")
-        inherited_feature_flags = set(proof.get("inherit-cmake-cache", []))
-        if "all" in inherited_feature_flags:
-            inherited_feature_flags.update(
-                {
-                    "DARLING_RING_TRANSPORT",
-                    "DSERVER_RING_TRANSPORT",
-                }
-            )
-        for key in (
-            "DARLING_COREDUMP_SANITIZE",
-            "DARLING_EUNION",
-            "DARLING_GUEST_RECVSPIN",
-            "DARLING_RPC_SLEEP_ACCOUNT",
-        ):
-            value = self._cmake_cache_value(current_build, key)
-            if value is not None:
-                args.append(f"-D{key}={value}")
-        for key in ("DARLING_RING_TRANSPORT", "DSERVER_RING_TRANSPORT"):
-            if key in inherited_feature_flags:
-                value = self._cmake_cache_value(current_build, key)
-                if value is not None:
-                    args.append(f"-D{key}={value}")
-                continue
-            args.append(f"-D{key}=OFF")
-        for key, value in sorted(cmake_defines.items()):
-            if isinstance(value, bool):
-                value_text = "ON" if value else "OFF"
-            elif value is None:
-                value_text = ""
-            else:
-                value_text = str(value)
-            args.append(f"-D{key}={value_text}")
-        args.append(f"-DCMAKE_INSTALL_PREFIX={prefix}")
-        return args
+        return RuntimeBuildService(self).configure_args(proof, prefix)
+
 
     def _runtime_red_build_artifacts(
         self,
@@ -3678,78 +3627,29 @@ class DarlingTest(WestCommand):
         label: str = "RED",
         allow_failure: bool = False,
     ) -> Path:
-        targets = runtime_build_targets(proof)
-        build_root = scratch_root / "build"
-        timeout_seconds = int(proof.get("build-timeout-seconds", 1800))
-        configure_started = time.monotonic()
-        self.inf(f"  runtime phase start: {label} configure")
-        self.inf(f"  {label} configure: {source_root} -> {build_root}")
-        configure = run_bounded(
-            ["cmake", "-S", str(source_root), "-B", str(build_root), *self._runtime_red_configure_args(proof, prefix)],
-            cwd=self.topdir,
-            env=None,
-            timeout_seconds=timeout_seconds,
-            capture_output=True,
+        return RuntimeBuildService(self).build_artifacts(
+            source_root,
+            proof,
+            prefix,
+            scratch_root,
+            label=label,
+            allow_failure=allow_failure,
+            configure_args=self._runtime_red_configure_args,
+            dump_command_tail=self._dump_command_tail,
+            runner=run_bounded,
         )
-        if configure.returncode:
-            self._dump_command_tail(f"{label} configure", configure)
-            if allow_failure:
-                raise RuntimeBuildFailure("configure", configure)
-            self.die(f"{label} configure failed with rc {configure.returncode}")
-        self.inf(
-            f"  runtime phase complete: {label} configure "
-            f"({time.monotonic() - configure_started:.1f}s)"
-        )
-        build_started = time.monotonic()
-        self.inf(f"  runtime phase start: {label} build")
-        self.inf(f"  {label} build: {', '.join(targets)}")
-        build = run_bounded(
-            ["ninja", "-C", str(build_root), *targets],
-            cwd=self.topdir,
-            env=None,
-            timeout_seconds=timeout_seconds,
-            capture_output=True,
-        )
-        if build.returncode:
-            self._dump_command_tail(f"{label} build", build)
-            if allow_failure:
-                raise RuntimeBuildFailure("build", build)
-            self.die(f"{label} build failed with rc {build.returncode}")
-        self.inf(
-            f"  runtime phase complete: {label} build "
-            f"({time.monotonic() - build_started:.1f}s)"
-        )
-        return build_root
+
 
     def _dump_command_tail(self, label: str, result) -> None:
-        streams = [stream for stream in (result.stdout, result.stderr) if stream]
-        output = "\n".join(stream.rstrip("\n") for stream in streams)
-        lines = output.splitlines()
-        tail = "\n".join(lines[-200:])
-        failed = [index for index, line in enumerate(lines) if line.startswith("FAILED:")]
-        if failed:
-            start = failed[-1]
-            excerpt = "\n".join(lines[start : start + 80])
-            if excerpt not in tail:
-                tail = f"Actionable failure:\n{excerpt}\n\nCommand tail:\n{tail}"
-        if tail:
-            sys.stderr.write(tail + "\n")
-        self.err(f"{label} failed with rc {result.returncode}")
+        RuntimeBuildService(self).dump_command_tail(label, result)
+        return
+
 
     def _runtime_red_find_build_output(
         self, build_root: Path, deploy_path: str
     ) -> Path:
-        name = Path(deploy_path).name
-        best: tuple[float, Path] | None = None
-        for path in build_root.rglob(name):
-            if not path.is_file() or "CMakeFiles" in path.parts:
-                continue
-            mtime = path.stat().st_mtime
-            if best is None or mtime > best[0]:
-                best = (mtime, path)
-        if best is None:
-            self.die(f"guest-runtime-deploy built artifact not found for {deploy_path}")
-        return best[1]
+        return RuntimeBuildService(self).find_build_output(build_root, deploy_path)
+
 
     def _runtime_macho_inspect(self, path: Path, flag: str) -> str:
         command = ["llvm-objdump", "--macho", flag, str(path)]
