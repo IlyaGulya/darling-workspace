@@ -65,6 +65,7 @@ from test_execution import process_output_text, run_bounded
 from test_guest_execution import (
     resolve_guest_execution,
     run_guest_argv,
+    run_guest_argv_fixture,
     run_guest_command_fixture,
     run_guest_shell,
     shutdown_guest_prefix,
@@ -1063,6 +1064,7 @@ class DarlingTest(WestCommand):
                 "diag": self._resolved_diag(test),
                 "name": test.get("name", patch["path"]),
                 "timeout_seconds": int(test.get("timeout-seconds", 600)),
+                "host_trace_files": list(test.get("host-trace-files", [])),
             }
         if runner == "object-symbol-fixture":
             repo = test.get("repo", patch["module"])
@@ -1489,6 +1491,39 @@ class DarlingTest(WestCommand):
                 "diag": self._resolved_diag(test),
                 "name": test.get("name", patch["path"]),
                 "timeout_seconds": int(test.get("timeout-seconds", 600)),
+            }
+        if runner == "guest-argv-fixture":
+            repo = test.get("repo", patch["module"])
+            cwd = self._project_path(repo)
+            env = None
+            if test.get("env-vars"):
+                env = os.environ.copy()
+                env.update({str(k): str(v) for k, v in test["env-vars"].items()})
+            resources = set(test.get("requires", []))
+            resources.add("darling-prefix")
+            guest_argv = tuple(str(arg) for arg in test["guest-argv"])
+            expect = test.get("expect", {})
+            display = f"cd {quote(repo)} && darling exec {' '.join(quote(arg) for arg in guest_argv)}"
+            return {
+                "key": f"guest-argv-fixture:{repo}:{repr(guest_argv)}:{repr(expect)}",
+                "display": display,
+                "cwd": cwd,
+                "args": None,
+                "shell": False,
+                "runner": "guest-argv-fixture",
+                "env": env,
+                "guest_argv_fixture": True,
+                "guest_argv": guest_argv,
+                "expect": expect,
+                "source_env": source_env,
+                "source_module": source_module,
+                "requires_resources": sorted(resources),
+                "requires_env": list(test.get("requires-env", [])),
+                "requires_profile": test.get("requires-profile"),
+                "diag": self._resolved_diag(test),
+                "name": test.get("name", patch["path"]),
+                "timeout_seconds": int(test.get("timeout-seconds", 600)),
+                "host_trace_files": list(test.get("host-trace-files", [])),
             }
 
         self.die(f"{patch['path']}: unsupported test runner {runner!r}")
@@ -1976,6 +2011,8 @@ class DarlingTest(WestCommand):
     def _display_invocation(self, invocation) -> str:
         if invocation.get("darling_cmake_target_fixture"):
             return invocation["display"]
+        if invocation.get("guest_argv_fixture"):
+            return invocation["display"]
         if invocation.get("diag", "bare") == "bare":
             return invocation["display"]
         if invocation.get("guest_c_fixture"):
@@ -2004,6 +2041,7 @@ class DarlingTest(WestCommand):
             runners=(
                 ("guest_c_fixture", self._run_guest_c_fixture),
                 ("guest_command_fixture", self._run_guest_command_fixture),
+                ("guest_argv_fixture", self._run_guest_argv_fixture),
                 ("c_fixture", self._run_c_fixture),
                 ("object_symbol_fixture", self._run_object_symbol_fixture),
                 ("source_build_fixture", self._run_source_build_fixture),
@@ -2611,6 +2649,22 @@ class DarlingTest(WestCommand):
         if not run_env:
             run_env = os.environ.copy()
         return run_guest_command_fixture(
+            invocation,
+            env=run_env,
+            prefix=getattr(self, "_prefix", None),
+            resolve_launcher=self._resolve_darling_launcher,
+            die=self.die,
+            err=self.err,
+            record_failure_phase=self._record_failure_phase,
+        )
+
+    def _run_guest_argv_fixture(self, invocation, env=None) -> int:
+        run_env = env if env is not None else invocation.get("env")
+        if not run_env:
+            run_env = self._execution_env(invocation)
+        if not run_env:
+            run_env = os.environ.copy()
+        return run_guest_argv_fixture(
             invocation,
             env=run_env,
             prefix=getattr(self, "_prefix", None),
@@ -4595,11 +4649,12 @@ class DarlingTest(WestCommand):
         if (
             not invocation.get("guest_c_fixture")
             and not invocation.get("guest_command_fixture")
+            and not invocation.get("guest_argv_fixture")
             and invocation.get("runner") not in {"script", "guest-runtime-script"}
         ):
             self.die(
                 f"{patch['path']}: guest-runtime-deploy requires guest-c-fixture, "
-                "guest-command-fixture, script, or guest-runtime-script"
+                "guest-command-fixture, guest-argv-fixture, script, or guest-runtime-script"
             )
         if not self._guest_runtime_red_has_positive_reason(proof):
             self.die(
