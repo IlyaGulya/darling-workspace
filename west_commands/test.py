@@ -168,7 +168,13 @@ def rootless_bootstrap_progress(prefix: Path) -> str | None:
 
 
 def bootstrap_syscall_stall_summary(trace_dir: Path) -> str | None:
-    """Summarize the terminal syscall state of processes in a bootstrap trace."""
+    """Summarize observed terminal syscall states without inferring a lost RPC.
+
+    ``MSG_DONTWAIT`` naturally produces bursts of ``EAGAIN`` between a guest
+    request and its reply.  A trace tail alone cannot distinguish that normal
+    polling from a dropped reply, so report the ordering of the last request
+    and delivered reply instead of calling either case a spin.
+    """
 
     states = []
     for trace_path in sorted(trace_dir.glob("bootstrap.*")):
@@ -185,14 +191,38 @@ def bootstrap_syscall_stall_summary(trace_dir: Path) -> str | None:
         lines = content.splitlines()
         if lines and lines[-1].startswith("+++ exited with "):
             continue
-        tail = "\n".join(lines[-128:])
-        if "recvmsg(" in tail and "MSG_DONTWAIT" in tail and "EAGAIN" in tail:
-            state = "spinning on empty RPC receive"
-        elif "sched_yield(" in tail:
+        tail = lines[-128:]
+        has_empty_rpc_receive = any(
+            "recvmsg(" in line and "MSG_DONTWAIT" in line and "EAGAIN" in line
+            for line in tail
+        )
+        last_rpc_send = max(
+            (index for index, line in enumerate(lines) if "sendmsg(" in line),
+            default=-1,
+        )
+        last_delivered_reply = max(
+            (
+                index
+                for index, line in enumerate(lines)
+                if "recvmsg(" in line
+                and "MSG_DONTWAIT" in line
+                and "EAGAIN" not in line
+                and " = " in line
+            ),
+            default=-1,
+        )
+        if has_empty_rpc_receive:
+            if last_rpc_send > last_delivered_reply:
+                state = "awaiting reply to most recent RPC"
+            elif last_delivered_reply >= 0:
+                state = "polling after a delivered RPC reply"
+            else:
+                state = "polling empty RPC receive without a request"
+        elif any("sched_yield(" in line for line in tail):
             state = "spinning while waiting for a thread checkin"
-        elif "epoll_wait(" in tail:
+        elif any("epoll_wait(" in line for line in tail):
             state = "waiting for an epoll event"
-        elif "poll(" in tail and ", -1" in tail:
+        elif any("poll(" in line and ", -1" in line for line in tail):
             state = "waiting for a socket event"
         else:
             continue

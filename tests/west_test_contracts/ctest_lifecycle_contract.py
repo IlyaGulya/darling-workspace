@@ -128,10 +128,23 @@ with tempfile.TemporaryDirectory() as temp:
         'recvmsg(7, {msg_namelen=0}, MSG_DONTWAIT) = -1 EAGAIN (Resource temporarily unavailable)\n'
         '+++ exited with 0 +++\n'
     )
+    (trace_dir / "bootstrap.104").write_text(
+        'execve("/prefix/sbin/launchd", ["launchd"], []) = 0\n'
+        'sendmsg(7, {msg_name={sa_family=AF_UNIX}}, 0) = 20\n'
+        'recvmsg(7, {msg_namelen=0}, MSG_DONTWAIT) = 8\n'
+        'recvmsg(7, {msg_namelen=0}, MSG_DONTWAIT) = -1 EAGAIN (Resource temporarily unavailable)\n'
+    )
+    (trace_dir / "bootstrap.105").write_text(
+        'execve("/prefix/sbin/iokitd", ["iokitd"], []) = 0\n'
+        'sendmsg(7, {msg_name={sa_family=AF_UNIX}}, 0) = 20\n'
+        'recvmsg(7, {msg_namelen=0}, MSG_DONTWAIT) = -1 EAGAIN (Resource temporarily unavailable)\n'
+    )
     summary = test_module.bootstrap_syscall_stall_summary(trace_dir)
     assert summary == (
-        "shellspawn[101]: spinning on empty RPC receive | "
-        "darling[102]: waiting for a socket event"
+        "shellspawn[101]: polling empty RPC receive without a request | "
+        "darling[102]: waiting for a socket event | "
+        "launchd[104]: polling after a delivered RPC reply | "
+        "iokitd[105]: awaiting reply to most recent RPC"
     ), summary
 
 
