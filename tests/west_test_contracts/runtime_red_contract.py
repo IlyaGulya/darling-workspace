@@ -766,13 +766,6 @@ assert not test._check_red_failure_phase(
     {"name": "phase_contract"},
     "compile",
 )
-assert test._patch_subject_from_text(
-    "From abc Mon Sep 17 00:00:00 2001\n"
-    "Subject: [PATCH] thread/call/server: contain exceptions that can terminate the\n"
-    " server\n"
-    "\n"
-    "body\n"
-) == "thread/call/server: contain exceptions that can terminate the server"
 missing_reasons = test._red_proof_audit(
     [
         (
@@ -1870,7 +1863,11 @@ with tempfile.TemporaryDirectory() as temp:
     test._profile_stack = lambda profile: [profile]
     test._load_profile = lambda _profile: {
         "patches": [
-            {"path": "x/skipped.patch", "module": "module"},
+            {
+                "path": "x/skipped.patch",
+                "module": "module",
+                "source-commit": skipped_rev,
+            },
             {
                 "path": "x/rerolled-subject.patch",
                 "module": "module",
@@ -1896,9 +1893,12 @@ with tempfile.TemporaryDirectory() as temp:
             del os.environ["GIT_TRACE2_EVENT"]
         else:
             os.environ["GIT_TRACE2_EVENT"] = previous_trace
-    assert "maintenance run --auto" not in trace.read_text()
+    trace_text = trace.read_text()
+    assert "maintenance run --auto" not in trace_text
+    assert '"--patch"' not in trace_text
     assert (target / "file.txt").read_text() == "base\n"
     assert not (target / "dependent.txt").exists()
+    assert (target / "rerolled.txt").read_text() == "rerolled\n"
     assert (target / "other.txt").read_text() == "kept\n"
 
     subprocess.run(["git", "reset", "--hard", "-q", skipped_rev], cwd=target, check=True)
@@ -1907,7 +1907,11 @@ with tempfile.TemporaryDirectory() as temp:
     test._profile_stack = lambda profile: [profile]
     test._load_profile = lambda _profile: {
         "patches": [
-            {"path": "x/skipped.patch", "module": "module"},
+            {
+                "path": "x/skipped.patch",
+                "module": "module",
+                "source-commit": skipped_rev,
+            },
             {
                 "path": "x/rerolled-subject.patch",
                 "module": "module",
@@ -1920,7 +1924,7 @@ with tempfile.TemporaryDirectory() as temp:
     test._profile_path = lambda profile: tempdir / "patches" / profile / "patches.yml"
     test._apply_profile_module_patches("runtime", "module", target)
     assert (target / "file.txt").read_text() == "base\nskipped\n"
-    assert not (target / "rerolled.txt").exists()
+    assert (target / "rerolled.txt").read_text() == "rerolled\n"
     assert (target / "dependent.txt").read_text() == "dependent\n"
     assert (target / "other.txt").read_text() == "kept\n"
 
@@ -2163,6 +2167,45 @@ with tempfile.TemporaryDirectory() as temp:
         subprocess.run(["git", "add", "base.txt"], cwd=repo, check=True)
         subprocess.run(["git", "commit", "-q", "-m", "base"], cwd=repo, check=True)
 
+    subprocess.run(
+        [
+            "git",
+            "-c",
+            "protocol.file.allow=always",
+            "submodule",
+            "add",
+            "--quiet",
+            f"file://{xnu_repo}",
+            "src/external/xnu",
+        ],
+        cwd=darling_repo,
+        check=True,
+    )
+    subprocess.run(
+        [
+            "git",
+            "-c",
+            "protocol.file.allow=always",
+            "submodule",
+            "add",
+            "--quiet",
+            f"file://{dserver_repo}",
+            "src/external/darlingserver",
+        ],
+        cwd=darling_repo,
+        check=True,
+    )
+    subprocess.run(
+        ["git", "add", ".gitmodules", "src/external/xnu", "src/external/darlingserver"],
+        cwd=darling_repo,
+        check=True,
+    )
+    subprocess.run(
+        ["git", "commit", "-q", "-m", "nested source modules"],
+        cwd=darling_repo,
+        check=True,
+    )
+
     darling_base = subprocess.run(
         ["git", "rev-parse", "HEAD"],
         cwd=darling_repo,
@@ -2350,6 +2393,26 @@ with tempfile.TemporaryDirectory() as temp:
         capture_output=True, text=True,
     ).stdout
     subprocess.run(["git", "reset", "--hard", "-q", libsystem_base], cwd=libsystem_repo, check=True)
+
+    subprocess.run(
+        [
+            "git",
+            "-c",
+            "protocol.file.allow=always",
+            "submodule",
+            "add",
+            "--quiet",
+            f"file://{libsystem_repo}",
+            "src/external/libsystem",
+        ],
+        cwd=darling_repo,
+        check=True,
+    )
+    subprocess.run(
+        ["git", "commit", "-qam", "nested libsystem"],
+        cwd=darling_repo,
+        check=True,
+    )
 
     profile_dir = tempdir / "patches/runtime/darling/src/external/libsystem"
     profile_dir.mkdir(parents=True)

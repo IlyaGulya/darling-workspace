@@ -88,6 +88,7 @@ from test_prefix import (
 from test_resources import resource_context
 from test_results import InvocationResult
 from test_selection import select_metadata_tests
+from source_worktree import SourceWorktreeError, prepare_source_worktree
 from test_runtime import (
     compose_ctest_runtime_profiles,
     describe_runtime_deploy_plan,
@@ -3527,7 +3528,7 @@ class DarlingTest(WestCommand):
                     self.inf(f"  skip {stacked}/{patch['path']} for current-minus-patch")
                     continue
                 patch_file = profile_dir / patch["path"]
-                if self._patch_already_in_history(target, patch_file, patch):
+                if self._profile_patch_is_already_applied(target, patch_file, patch):
                     self.inf(f"  skip {stacked}/{patch['path']} already in {module}")
                     continue
                 self.inf(f"  apply {stacked}/{patch['path']} -> {module}")
@@ -3546,57 +3547,6 @@ class DarlingTest(WestCommand):
                     cwd=target,
                     check=True,
                 )
-
-    def _patch_ids_from_text(self, patch_text: str, *, cwd: Path | None = None) -> set[str]:
-        result = subprocess.run(
-            ["git", "patch-id", "--stable"],
-            input=patch_text,
-            cwd=cwd,
-            capture_output=True,
-            text=True,
-            check=False,
-        )
-        if result.returncode:
-            return set()
-        return {
-            line.split()[0]
-            for line in result.stdout.splitlines()
-            if line.split()
-        }
-
-    def _history_patch_ids(self, repo: Path) -> set[str]:
-        head = subprocess.run(
-            ["git", "rev-parse", "HEAD"],
-            cwd=repo,
-            capture_output=True,
-            text=True,
-            check=True,
-        ).stdout.strip()
-        cache = getattr(self, "_history_patch_id_cache", None)
-        if cache is None:
-            cache = {}
-            self._history_patch_id_cache = cache
-        key = (str(repo), head)
-        if key in cache:
-            return cache[key]
-        history = subprocess.run(
-            [
-                "git",
-                "log",
-                "--patch",
-                "--no-ext-diff",
-                "--no-color",
-                "--format=email",
-            ],
-            cwd=repo,
-            capture_output=True,
-            text=True,
-            errors="replace",
-            check=True,
-        )
-        ids = self._patch_ids_from_text(history.stdout, cwd=repo)
-        cache[key] = ids
-        return ids
 
     def _commit_is_ancestor(self, repo: Path, commit: str) -> bool:
         if not commit:
@@ -3618,61 +3568,23 @@ class DarlingTest(WestCommand):
             check=False,
         ).returncode == 0
 
-    def _patch_subject_from_text(self, patch_text: str) -> str | None:
-        lines = patch_text.splitlines()
-        for index, line in enumerate(lines):
-            if not line.startswith("Subject: "):
-                continue
-            subject = line.removeprefix("Subject: ").strip()
-            for continuation in lines[index + 1:]:
-                if continuation.startswith((" ", "\t")):
-                    subject = f"{subject} {continuation.strip()}".strip()
-                    continue
-                break
-            if subject.startswith("[PATCH"):
-                _, _, subject = subject.partition("]")
-                subject = subject.strip()
-            return subject or None
-        return None
-
-    def _history_subjects(self, repo: Path) -> set[str]:
-        head = subprocess.run(
-            ["git", "rev-parse", "HEAD"],
-            cwd=repo,
-            capture_output=True,
-            text=True,
-            check=True,
-        ).stdout.strip()
-        cache = getattr(self, "_history_subject_cache", None)
-        if cache is None:
-            cache = {}
-            self._history_subject_cache = cache
-        key = (str(repo), head)
-        if key in cache:
-            return cache[key]
-        history = subprocess.run(
-            ["git", "log", "--format=%s"],
-            cwd=repo,
-            capture_output=True,
-            text=True,
-            errors="replace",
-            check=True,
+    def _profile_patch_is_already_applied(
+        self, repo: Path, patch_file: Path, patch: dict
+    ) -> bool:
+        """Identify a profile patch by declared commit or its current tree effect."""
+        source_commit = str(patch.get("source-commit", ""))
+        if source_commit and self._commit_is_ancestor(repo, source_commit):
+            return True
+        return (
+            subprocess.run(
+                ["git", "apply", "--reverse", "--check", str(patch_file)],
+                cwd=repo,
+                capture_output=True,
+                text=True,
+                check=False,
+            ).returncode
+            == 0
         )
-        subjects = {line.strip() for line in history.stdout.splitlines() if line.strip()}
-        cache[key] = subjects
-        return subjects
-
-    def _patch_already_in_history(self, repo: Path, patch_file: Path, patch=None) -> bool:
-        patch_text = patch_file.read_text(errors="replace")
-        patch_ids = self._patch_ids_from_text(patch_text, cwd=repo)
-        if patch_ids and patch_ids <= self._history_patch_ids(repo):
-            return True
-        if patch and self._commit_is_ancestor(repo, str(patch.get("source-commit", ""))):
-            return True
-        if not patch or not patch.get("source-commit"):
-            return False
-        subject = self._patch_subject_from_text(patch_text)
-        return bool(subject and subject in self._history_subjects(repo))
 
     def _current_minus_skip_patch_paths(self, patch, proof) -> set[str]:
         return {
@@ -3798,9 +3710,8 @@ class DarlingTest(WestCommand):
     def _guest_runtime_source_forest(self, patch, proof, *, omit_patch: bool):
         """Create a temporary Darling source forest for a runtime build.
 
-        The top-level Darling tree is a detached worktree. Nested West projects
-        are symlinked to the current checkout unless the proof needs them
-        materialized. When omit_patch is true, the target patch and explicit
+        The top-level Darling tree and every nested gitlink are detached local
+        worktrees. When omit_patch is true, the target patch and explicit
         current-minus skips are removed to build the RED runtime. Otherwise the
         full active profile is materialized to build the GREEN runtime. This
         keeps live checkouts and the caller's prefix stable while giving CMake
@@ -3850,6 +3761,33 @@ class DarlingTest(WestCommand):
                 check=True,
             )
             added.append((darling_repo, source_root))
+
+            def nested_revision(relative_path: Path, tree_revision: str) -> str:
+                project_path = Path("darling") / relative_path
+                if project_path not in materialized_modules:
+                    return tree_revision
+                revision, _uses_profile_source_commit = self._guest_runtime_source_revision(
+                    patch,
+                    project_path,
+                    patch_module_path,
+                    omit_patch,
+                    bad_revision,
+                )
+                return revision
+
+            try:
+                nested_entries = prepare_source_worktree(
+                    source_root,
+                    darling_repo,
+                    revision_for=nested_revision,
+                )
+            except SourceWorktreeError as error:
+                self.die(f"{patch['path']}: cannot hydrate runtime source forest: {error}")
+            added.extend(
+                (Path(entry.canonical_repo), source_root / entry.relative_path)
+                for entry in nested_entries
+                if entry.created
+            )
             if patch_module_is_darling_root or Path("darling") in materialized_modules:
                 if omit_patch:
                     self._apply_current_minus_profile(patch, proof, "darling", source_root)
@@ -3867,16 +3805,6 @@ class DarlingTest(WestCommand):
                 except ValueError:
                     continue
                 target = source_root / rel
-                if self._has_symlink_parent(target, source_root):
-                    if project_path == patch_module_path:
-                        self.die(
-                            f"{patch['path']}: cannot materialize nested patch module "
-                            f"{project_path} inside a symlinked parent source tree"
-                        )
-                    continue
-                target.parent.mkdir(parents=True, exist_ok=True)
-                if target.exists() or target.is_symlink():
-                    self._remove_path_for_materialize(target)
                 if project_path in materialized_modules:
                     module_text = str(project_path)
                     revision, uses_profile_source_commit = (
@@ -3888,20 +3816,11 @@ class DarlingTest(WestCommand):
                             bad_revision,
                         )
                     )
-                    subprocess.run(
-                        [
-                            "git",
-                            "worktree",
-                            "add",
-                            "--quiet",
-                            "--detach",
-                            str(target),
-                            revision,
-                        ],
-                        cwd=repo,
-                        check=True,
-                    )
-                    added.append((repo, target))
+                    if not target.is_dir() or target.is_symlink():
+                        self.die(
+                            f"{patch['path']}: hydrated runtime source is missing "
+                            f"nested module {project_path}"
+                        )
                     if not uses_profile_source_commit:
                         if omit_patch:
                             self._apply_current_minus_profile(patch, proof, module_text, target)
@@ -3909,8 +3828,6 @@ class DarlingTest(WestCommand):
                             self._apply_full_runtime_profile(patch, module_text, target)
                     if omit_patch:
                         self._apply_red_source_patches(proof, module_text, target)
-                else:
-                    os.symlink(repo, target, target_is_directory=True)
             yielded = True
             yield source_root
         except BaseException:
