@@ -25,11 +25,9 @@ selection, profile materialization, resource provisioning, and diagnostics.
 from __future__ import annotations
 
 import argparse
-import fcntl
 import json
 import os
 import re
-import signal
 import shutil
 import subprocess
 import sys
@@ -95,22 +93,15 @@ from test_selection import select_metadata_tests
 from test_runtime import (
     compose_ctest_runtime_profiles,
     describe_runtime_deploy_plan,
-    is_fat_macho_binary,
-    is_macho_binary,
-    load_rootless_bootstrap_manifest,
     load_ctest_runtime_profiles,
     merge_runtime_cmake_define_overrides,
-    parse_macho_dylib_dependencies,
-    parse_macho_dylib_id,
     parse_runtime_cmake_define_overrides,
     partition_ctest_runtime_profiles,
-    runtime_artifact_deploy_paths,
     runtime_build_targets,
     runtime_deploy_targets,
     ROOTLESS_BOOTSTRAP_RESOURCE,
-    resolve_macho_runtime_closure,
 )
-from test_worktrees import prune_stale_west_temp_worktrees, remove_temporary_worktree
+from test_worktrees import prune_stale_west_temp_worktrees
 
 
 _BOOTSTRAP_FATAL_SIGNAL = re.compile(
@@ -638,83 +629,10 @@ class DarlingTest(WestCommand):
 
     @contextmanager
     def _profile_worktree_checkout(self, profile: str):
-        projects = self._projects()
-        modules = sorted(
-            self._profile_stack_modules(profile),
-            key=lambda module: (len(Path(module).parts), module),
-        )
-        repos = [(module, projects[module]) for module in modules]
+        with self._runtime_source_materializer().profile_worktree_checkout(profile):
+            yield
+        return
 
-        previous_overrides = getattr(self, "_project_overrides", {})
-        added: list[tuple[Path, Path]] = []
-        with tempfile.TemporaryDirectory(prefix=f"west-profile-{profile}-") as temp:
-            root = Path(temp)
-            overrides = dict(previous_overrides)
-            try:
-                for module, repo in repos:
-                    target = root / module
-                    if target.exists() or target.is_symlink():
-                        if target.is_dir() and not target.is_symlink():
-                            shutil.rmtree(target)
-                        else:
-                            target.unlink()
-                    target.parent.mkdir(parents=True, exist_ok=True)
-                    revision = self._manifest_revision(module)
-                    self.inf(f"  materialize {module}: {revision} -> {target}")
-                    subprocess.run(
-                        ["git", "worktree", "add", "--quiet", "--detach", str(target), revision],
-                        cwd=repo,
-                        check=True,
-                    )
-                    added.append((repo, target))
-                    for ref, project_path in projects.items():
-                        if project_path == repo:
-                            overrides[ref] = target
-                    overrides[module] = target
-                self._project_overrides = overrides
-                for stacked in self._profile_stack(profile):
-                    data = self._load_profile(stacked)
-                    profile_dir = Path(self.manifest.repo_abspath) / "patches" / stacked
-                    for patch in data.get("patches", []):
-                        target = overrides.get(patch["module"])
-                        if target is None:
-                            continue
-                        patch_file = profile_dir / patch["path"]
-                        self.inf(f"  apply {stacked}/{patch['path']}")
-                        subprocess.run(
-                            [
-                                "git",
-                                "-c",
-                                "gc.auto=0",
-                                "-c",
-                                "maintenance.auto=false",
-                                "am",
-                                "--3way",
-                                str(patch_file),
-                            ],
-                            cwd=target,
-                            check=True,
-                        )
-                yield
-            finally:
-                self._project_overrides = previous_overrides
-                # A Ctrl-C can arrive while the command is unwinding. Do not let
-                # it interrupt the worktree removals and leave a live profile in
-                # /tmp; restore the caller's handler immediately afterwards.
-                previous_sigint = signal.signal(signal.SIGINT, signal.SIG_IGN)
-                try:
-                    cleanup_errors = []
-                    for repo, target in reversed(added):
-                        error = remove_temporary_worktree(repo, target)
-                        if error:
-                            cleanup_errors.append(error)
-                finally:
-                    signal.signal(signal.SIGINT, previous_sigint)
-                if cleanup_errors:
-                    self.die(
-                        f"{profile}: failed to remove temporary profile worktree(s): "
-                        f"{'; '.join(cleanup_errors)}"
-                    )
 
     @contextmanager
     def _profile_checkout(self, profile: str):
@@ -4473,16 +4391,11 @@ class DarlingTest(WestCommand):
             if script_path is not None and not script_path.is_file():
                 self.die(f"{patch['path']}: test script not found: {script_path}")
 
-            module_repo = self._project_path(module)
             bad_revision = self._bad_revision(patch)
-            with tempfile.TemporaryDirectory(prefix="west-red-proof-") as temp:
-                worktree = Path(temp) / "source-base"
-                subprocess.run(
-                    ["git", "worktree", "add", "--quiet", "--detach", str(worktree), bad_revision],
-                    cwd=module_repo,
-                    check=True,
-                )
-                try:
+            with self._runtime_source_materializer().bad_source_tree(
+                module, bad_revision
+            ) as worktree:
+                with tempfile.TemporaryDirectory(prefix="west-red-proof-ctest-") as temp:
                     bad_env = os.environ.copy()
                     exec_env = self._execution_env(proof_invocation)
                     if exec_env:
@@ -4519,14 +4432,6 @@ class DarlingTest(WestCommand):
                     ):
                         return 1
                     self.inf(f"  RED path failed as expected (rc={bad_result.returncode})")
-                finally:
-                    subprocess.run(
-                        ["git", "worktree", "remove", "--force", str(worktree)],
-                        cwd=module_repo,
-                        check=False,
-                        stdout=subprocess.DEVNULL,
-                        stderr=subprocess.DEVNULL,
-                    )
 
             green_env = self._execution_env(invocation)
             if green_env is None:
