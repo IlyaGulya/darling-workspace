@@ -1,4 +1,4 @@
-From 4819397c0afc0c8ad92b0bf39dc6bd67e3edbe2b Mon Sep 17 00:00:00 2001
+From f8aa7404f19979d0ec4b54573238194b98de385a Mon Sep 17 00:00:00 2001
 From: Ilya Gulya <ilya.gulya@indriver.com>
 Date: Sat, 11 Jul 2026 15:35:48 +0000
 Subject: [PATCH] test: delay rootless shellspawn readiness
