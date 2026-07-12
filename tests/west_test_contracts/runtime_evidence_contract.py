@@ -101,6 +101,16 @@ with tempfile.TemporaryDirectory() as temp:
         "semaphore_timedwait failed (internally): -111\n"
     )
     assert (entry / "diagnostics/0-rootless-boot.trace").read_text() == "dyld main-entry-ready\n"
+    assert store.resolve(entry.name) == entry
+    assert store.resolve(entry.name.rsplit("-", 1)[1]) == entry
+    assert store.manifest(entry) == manifest
+    replay = store.replay_report(entry.name.rsplit("-", 1)[1])
+    assert replay["unit"] == entry.name, replay
+    assert replay["diagnostics"] == manifest["diagnostics"], replay
+    assert replay["attachments"] == [
+        {"path": "diagnostics/0-output.log", "bytes": 46},
+        {"path": "diagnostics/0-rootless-boot.trace", "bytes": 22},
+    ], replay
     worktree_listing = subprocess.run(
         ["git", "worktree", "list", "--porcelain"], cwd=repo, check=True, capture_output=True, text=True
     ).stdout

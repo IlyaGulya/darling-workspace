@@ -117,13 +117,6 @@ from test_worktrees import prune_stale_west_temp_worktrees, remove_temporary_wor
 _BOOTSTRAP_FATAL_SIGNAL = re.compile(
     r"--- (?P<signal>SIG(?:SEGV|BUS|ILL|ABRT)) \{(?P<details>[^}]*)\} ---"
 )
-_ROOTLESS_BOOTSTRAP_TRACE_FILES = (
-    ("host", Path(".west-rootless-boot.log")),
-    ("guest-path", Path("private/var/tmp/.west-rootless-boot.log")),
-    ("guest-fd", Path(".west-rootless-guest-fd.log")),
-)
-
-
 def bootstrap_trace_fatal_signal(trace_dir: Path) -> str | None:
     """Return a guest fault recorded by an opt-in bootstrap strace, if any."""
 
@@ -137,35 +130,6 @@ def bootstrap_trace_fatal_signal(trace_dir: Path) -> str | None:
         location = f" at {fault.group(1)}" if fault is not None else ""
         return f"{match.group('signal')}{location}"
     return None
-
-
-def rootless_bootstrap_progress(prefix: Path) -> str | None:
-    """Summarize the latest observable stage from each rootless boot trace."""
-
-    stages = []
-    shellspawn_stage = None
-    for label, relative_path in _ROOTLESS_BOOTSTRAP_TRACE_FILES:
-        trace_path = prefix / relative_path
-        try:
-            with trace_path.open("rb") as trace:
-                trace.seek(0, os.SEEK_END)
-                start = max(0, trace.tell() - 4096)
-                trace.seek(start)
-                content = trace.read().decode(errors="replace")
-        except OSError:
-            continue
-        for line in content.splitlines():
-            stage = line.strip()
-            if stage.startswith("shellspawn "):
-                shellspawn_stage = stage
-        for line in reversed(content.splitlines()):
-            stage = line.strip()
-            if stage:
-                stages.append(f"{label}={stage[:512]}")
-                break
-    if shellspawn_stage is not None:
-        stages.append(f"shellspawn={shellspawn_stage[:512]}")
-    return " | ".join(stages) if stages else None
 
 
 def bootstrap_syscall_stall_summary(trace_dir: Path) -> str | None:
@@ -461,6 +425,16 @@ class DarlingTest(WestCommand):
             default=".west-test/runtime-evidence",
             help="durable root for failed runtime source/build evidence units "
             "(default .west-test/runtime-evidence)",
+        )
+        parser.add_argument(
+            "--runtime-evidence",
+            choices=("list", "show", "replay"),
+            help="list, inspect, or validate a retained runtime evidence unit",
+        )
+        parser.add_argument(
+            "--runtime-evidence-id",
+            metavar="ID",
+            help="unit name or unique trailing ID for --runtime-evidence show/replay",
         )
         parser.add_argument(
             "--gc-runtime-evidence",
@@ -2030,24 +2004,6 @@ class DarlingTest(WestCommand):
                     runtime_env["DARLING"] = str(runtime_launcher)
                     runtime_env["DARLING_LAUNCHER"] = str(runtime_launcher)
                     if definition.get("bootstrap") == "rootless-no-mount":
-                        boot_trace = Path(prefix_text) / ".west-rootless-boot.log"
-                        guest_boot_trace = (
-                            Path(prefix_text)
-                            / "private/var/tmp/.west-rootless-boot.log"
-                        )
-                        guest_fd_trace = (
-                            Path(prefix_text) / ".west-rootless-guest-fd.log"
-                        )
-                        boot_trace.unlink(missing_ok=True)
-                        guest_boot_trace.unlink(missing_ok=True)
-                        guest_fd_trace.unlink(missing_ok=True)
-                        diagnostic_trace_paths = (
-                            boot_trace,
-                            guest_boot_trace,
-                            guest_fd_trace,
-                        )
-                        runtime_env["DARLING_HOST_BOOT_TRACE"] = str(boot_trace)
-                        runtime_env["DARLING_GUEST_BOOT_TRACE"] = str(guest_fd_trace)
                         if self._bootstrap_diagnostics_enabled():
                             server_trace = (
                                 Path(prefix_text)
@@ -2056,6 +2012,7 @@ class DarlingTest(WestCommand):
                             server_trace.parent.mkdir(parents=True, exist_ok=True)
                             server_trace.unlink(missing_ok=True)
                             runtime_env["DSERVER_TEST_TRACE_FILE"] = str(server_trace)
+                            diagnostic_trace_paths = (server_trace,)
                     runtime_env.update(launcher_env)
                     yield RuntimeProfileDeployment(
                         name=profile_name,
@@ -3363,11 +3320,9 @@ class DarlingTest(WestCommand):
                     diagnostic_hint = f"; syscall trace: {trace_dir}"
                 elif stack_sample_dir is not None:
                     diagnostic_hint = f"; stack sample: {stack_sample_dir}"
-                progress = rootless_bootstrap_progress(prefix)
-                progress_hint = f"; progress: {progress}" if progress is not None else ""
                 self.err(
                     f"{invocation['name']}: E-UNION runtime readiness timed out after {timeout_seconds}s "
-                    f"without output{diagnostic_hint}{progress_hint}"
+                    f"without output{diagnostic_hint}"
                 )
             self._record_failure_phase(invocation, "bootstrap")
             self.die(
@@ -4143,8 +4098,6 @@ class DarlingTest(WestCommand):
                         diagnostic_hint = f"; stack sample: {stack_sample_dir}"
                     else:
                         diagnostic_hint = ""
-                    progress = rootless_bootstrap_progress(deployment.prefix)
-                    progress_hint = f"; progress: {progress}" if progress is not None else ""
                     stall = (
                         bootstrap_syscall_stall_summary(trace_dir)
                         if trace_dir is not None
@@ -4156,7 +4109,7 @@ class DarlingTest(WestCommand):
                     )
                     self.die(
                         "prefix bootstrap guest smoke timed out after "
-                        f"{smoke_timeout_seconds}s{diagnostic_hint}{progress_hint}{stall_hint}"
+                        f"{smoke_timeout_seconds}s{diagnostic_hint}{stall_hint}"
                     )
                 if result.returncode != 0:
                     record_bootstrap_failure("prefix bootstrap guest smoke returned non-zero")
@@ -5358,6 +5311,40 @@ class DarlingTest(WestCommand):
             if not 1 <= bootstrap_timeout_seconds <= 600:
                 self.die("--bootstrap-timeout-seconds must be between 1 and 600")
             self._bootstrap_timeout_seconds = bootstrap_timeout_seconds
+
+        evidence_action = getattr(args, "runtime_evidence", None)
+        evidence_id = getattr(args, "runtime_evidence_id", None)
+        if evidence_action:
+            store = self._runtime_evidence_store()
+            if evidence_action == "list":
+                if evidence_id:
+                    self.die("--runtime-evidence list does not accept --runtime-evidence-id")
+                for entry in store.entries():
+                    manifest = store.manifest(entry)
+                    diagnostics = manifest.get("diagnostics", [])
+                    cause = (
+                        diagnostics[-1].get("summary", "-")
+                        if diagnostics and isinstance(diagnostics[-1], dict)
+                        else manifest.get("failure", {}).get("message", "-")
+                    )
+                    self.inf(
+                        f"{entry.name}\t{manifest.get('label', '-')}\t"
+                        f"{cause}"
+                    )
+            else:
+                if not evidence_id:
+                    self.die(
+                        f"--runtime-evidence {evidence_action} requires --runtime-evidence-id"
+                    )
+                payload = (
+                    store.manifest(store.resolve(evidence_id))
+                    if evidence_action == "show"
+                    else store.replay_report(evidence_id)
+                )
+                self.inf(json.dumps(payload, indent=2, sort_keys=True))
+            return
+        if evidence_id:
+            self.die("--runtime-evidence-id requires --runtime-evidence show or replay")
 
         if args.gc:
             self._gc_bundles(
