@@ -194,8 +194,12 @@ int main(void) {
     char cwd[4096];
     getcwd(cwd, sizeof(cwd));
     char prefix[4096], libexec[4096];
+    const char* nested_lower_root = getenv("EUNION_NESTED_LOWER_ROOT");
     snprintf(prefix,  sizeof(prefix),  "%s/prefix",  cwd);
-    snprintf(libexec, sizeof(libexec), "%s/libexec", cwd);
+    if (nested_lower_root && strcmp(nested_lower_root, "1") == 0)
+        snprintf(libexec, sizeof(libexec), "%s/libexec/darling", prefix);
+    else
+        snprintf(libexec, sizeof(libexec), "%s/libexec", cwd);
 
     char p[4096], l[4096];
 
