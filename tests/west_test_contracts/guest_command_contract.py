@@ -13,6 +13,8 @@ import west_commands.test_guest_execution as guest_execution
 from west_commands.test_execution import ProcessResult
 from west_commands.test_guest_execution import (
     resolve_guest_execution,
+    run_guest_argv,
+    run_guest_shell,
     run_guest_command_fixture,
 )
 
@@ -40,6 +42,79 @@ resolved = resolve_guest_execution(
 )
 assert resolved.prefix == "/fallback-prefix"
 assert resolved.launcher == "/fallback-prefix/bin/darling"
+
+
+calls = []
+original_bounded = guest_execution.run_bounded
+
+
+def bounded(args, **kwargs):
+    calls.append((args, kwargs))
+    return ProcessResult(0)
+
+
+guest_execution.run_bounded = bounded
+try:
+    assert run_guest_argv(
+        "/launcher",
+        "/prefix",
+        ("/usr/bin/true",),
+        cwd=Path("/workspace"),
+        env={"EXAMPLE": "1"},
+        timeout_seconds=7,
+        capture_output=True,
+    ).returncode == 0
+finally:
+    guest_execution.run_bounded = original_bounded
+
+assert calls == [
+    (
+        [
+            "env",
+            "DPREFIX=/prefix",
+            "DARLING_PREFIX=/prefix",
+            "/launcher",
+            "exec",
+            "/usr/bin/true",
+        ],
+        {
+            "cwd": Path("/workspace"),
+            "env": {"EXAMPLE": "1"},
+            "timeout_seconds": 7,
+            "stdout": None,
+            "stderr": None,
+            "text": True,
+            "capture_output": True,
+        },
+    )
+], calls
+
+calls = []
+guest_execution.run_bounded = bounded
+try:
+    assert run_guest_shell(
+        "/launcher",
+        "/prefix",
+        "printf shell",
+        cwd=Path("/workspace"),
+        env={"EXAMPLE": "1"},
+        timeout_seconds=7,
+        capture_output=True,
+    ).returncode == 0
+finally:
+    guest_execution.run_bounded = original_bounded
+
+assert calls[0][0] == [
+    "env",
+    "DPREFIX=/prefix",
+    "DARLING_PREFIX=/prefix",
+    "/launcher",
+    "shell",
+    "/bin/bash",
+    "--login",
+    "-c",
+    "printf shell",
+], calls
 
 
 with tempfile.TemporaryDirectory() as temp:
