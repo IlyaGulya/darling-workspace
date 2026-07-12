@@ -170,6 +170,7 @@ if(EXISTS "${_getattrlist_name_objtype_guest}")
     ENVS       darling macos
     BEAD       dar-e1j
     SUBMODULES xnu
+    RUNTIME_PROFILE homebrew-rootless-no-mount
     INSTALL
     SMOKE
     TIMEOUT    30

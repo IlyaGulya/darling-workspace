@@ -9,12 +9,13 @@ case "${1:-}" in
 		exec west test --env host "${@:2}"
 		;;
 	guest-smoke)
-		exec west test --profile homebrew --env darling --label 'smoke:true' \
+		exec west test --env darling --label 'smoke:true' \
 			--prefix-profile homebrew "${@:2}"
 		;;
 	guest-full)
-		exec west test --profile homebrew --env darling \
+		west test --profile homebrew --env darling \
 			--prefix-profile homebrew "${@:2}"
+		exec west test --env darling --prefix-profile homebrew "${@:2}"
 		;;
 	macos)
 		build="${DARLING_TESTKIT_BUILD:-$root/.west-test/macos-build}"
