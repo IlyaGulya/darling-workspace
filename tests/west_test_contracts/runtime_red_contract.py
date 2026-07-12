@@ -35,6 +35,7 @@ from west_commands.test_runtime import (
     compose_ctest_runtime_profiles,
     describe_runtime_deploy_plan,
     is_macho_binary,
+    is_fat_macho_binary,
     load_rootless_bootstrap_manifest,
     load_ctest_runtime_profiles,
     merge_runtime_cmake_define_overrides,
@@ -392,6 +393,7 @@ with tempfile.TemporaryDirectory() as temp:
     for path in (launchd, libsystem, libobjc):
         path.write_bytes(b"\xcf\xfa\xed\xfeMach-O fixture\n")
     assert is_macho_binary(launchd)
+    assert not is_fat_macho_binary(launchd)
     assert not is_macho_binary(tempdir / "missing")
     assert parse_macho_dylib_id(
         "/tmp/build/libobjc.A.dylib:\n/usr/lib/libobjc.A.dylib\n"
@@ -438,6 +440,31 @@ with tempfile.TemporaryDirectory() as temp:
         assert "non-absolute Mach-O dependency" in str(exc), exc
     else:
         raise AssertionError("closure accepted an unresolvable rpath dependency")
+
+with tempfile.TemporaryDirectory() as temp:
+    build_root = Path(temp)
+    framework = build_root / "CoreFoundation"
+    thin_framework = build_root / "CoreFoundation_x86_64"
+    executable = build_root / "launchd"
+    for path, magic in (
+        (framework, b"\xca\xfe\xba\xbe"),
+        (thin_framework, b"\xcf\xfa\xed\xfe"),
+        (executable, b"\xcf\xfa\xed\xfe"),
+    ):
+        path.write_bytes(magic + b"Mach-O fixture\n")
+    assert is_fat_macho_binary(framework)
+    provider_test = make_test()
+    install_names = {
+        framework: "/System/Library/Frameworks/CoreFoundation.framework/Versions/A/CoreFoundation",
+        thin_framework: "/System/Library/Frameworks/CoreFoundation.framework/Versions/A/CoreFoundation",
+        executable: None,
+    }
+    provider_test._runtime_macho_inspect = lambda path, _mode: (
+        f"{path}:\n{install_names[path]}\n" if install_names[path] else f"{path}:\n"
+    )
+    assert provider_test._runtime_macho_dylib_providers(build_root) == {
+        "/System/Library/Frameworks/CoreFoundation.framework/Versions/A/CoreFoundation": framework
+    }
 
 with tempfile.TemporaryDirectory() as temp:
     build_root = Path(temp) / "build"
