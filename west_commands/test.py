@@ -3925,6 +3925,11 @@ class DarlingTest(WestCommand):
             )
             yielded = True
             yield source_root
+        except RuntimeRedProven:
+            # This private control-flow signal means the declared RED failure
+            # was already verified. It is a successful proof, not evidence to
+            # retain as a failed materialized source forest.
+            raise
         except BaseException:
             keep_on_failure = True
             suffix = " before yield" if not yielded else ""
