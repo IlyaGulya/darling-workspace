@@ -4194,8 +4194,16 @@ class DarlingTest(WestCommand):
             self._active_runtime_profile(patch),
             f"{patch['path']}: {invocation['name']} GREEN",
         )
-        temp = tempfile.mkdtemp(prefix="west-green-proof-runtime-")
-        keep_on_failure = False
+        evidence_store = self._runtime_evidence_store()
+        evidence = evidence_store.start(
+            f"{patch['path']}: {invocation['name']} GREEN runtime",
+            {
+                "patch": patch["path"],
+                "phase": "green",
+                "source-profile": self._active_runtime_profile(patch),
+            },
+        )
+        evidence_failure = None
         try:
             green_env = self._execution_env(invocation)
             if green_env is None:
@@ -4206,8 +4214,14 @@ class DarlingTest(WestCommand):
             # merely its final script. In particular, clear any host-temp
             # readiness marker before the costly source/build/deploy phase.
             with self._resource_context(invocation, green_env) as resource_env:
-                scratch_root = Path(temp)
-                with self._guest_runtime_source_forest(patch, proof, omit_patch=False) as source_root:
+                scratch_root = evidence.directory
+                with self._guest_runtime_source_forest(
+                    patch,
+                    proof,
+                    omit_patch=False,
+                    root=evidence.source_root,
+                    evidence_session=evidence,
+                ) as source_root:
                     build_root = self._runtime_red_build_artifacts(
                         source_root,
                         proof,
@@ -4226,24 +4240,22 @@ class DarlingTest(WestCommand):
                         green_started_at = time.time()
                         green_rc = self._run_invocation(runtime_invocation, env=resource_env)
                     if green_rc != 0:
-                        keep_on_failure = True
-                        self.err(f"preserving failed GREEN runtime scratch for inspection: {temp}")
+                        evidence.preserve(RuntimeError(f"guest GREEN returned {green_rc}"))
                         return green_rc
                     if not self._check_guest_runtime_green_success(
                         runtime_invocation,
                         since=green_started_at,
                     ):
-                        keep_on_failure = True
-                        self.err(f"preserving failed GREEN runtime scratch for inspection: {temp}")
+                        evidence.preserve(RuntimeError("guest GREEN completion oracle failed"))
                         return 1
                     return 0
-        except BaseException:
-            keep_on_failure = True
-            self.err(f"preserving failed GREEN runtime scratch for inspection: {temp}")
+        except BaseException as error:
+            evidence_failure = error
             raise
         finally:
-            if not keep_on_failure:
-                shutil.rmtree(temp, ignore_errors=True)
+            retained = evidence_store.finish(evidence, evidence_failure)
+            if retained is not None:
+                self.err(f"preserved failed GREEN runtime evidence: {retained}")
 
     def _check_guest_runtime_green_success(self, invocation, *, since: float) -> bool:
         if invocation.get("host_trace_oracle"):
@@ -4447,11 +4459,25 @@ class DarlingTest(WestCommand):
             self._active_runtime_profile(patch),
             f"{patch['path']}: {invocation['name']} RED",
         )
-        temp = tempfile.mkdtemp(prefix="west-red-proof-runtime-")
-        keep_on_failure = False
+        evidence_store = self._runtime_evidence_store()
+        evidence = evidence_store.start(
+            f"{patch['path']}: {invocation['name']} RED runtime",
+            {
+                "patch": patch["path"],
+                "phase": "red",
+                "source-profile": self._active_runtime_profile(patch),
+            },
+        )
+        evidence_failure = None
         try:
-            scratch_root = Path(temp)
-            with self._guest_runtime_source_forest(patch, proof, omit_patch=True) as source_root:
+            scratch_root = evidence.directory
+            with self._guest_runtime_source_forest(
+                patch,
+                proof,
+                omit_patch=True,
+                root=evidence.source_root,
+                evidence_session=evidence,
+            ) as source_root:
                 try:
                     build_root = self._runtime_red_build_artifacts(
                         source_root,
@@ -4471,8 +4497,7 @@ class DarlingTest(WestCommand):
                         since=red_started_at,
                         captured_output=process_output_text(failure.result),
                     ):
-                        keep_on_failure = True
-                        self.err(f"preserving failed RED runtime scratch for inspection: {temp}")
+                        evidence.preserve(RuntimeError("RED runtime build failed for an unexpected reason"))
                         return 1
                     self.inf(
                         "  RED runtime build failed as expected "
@@ -4494,8 +4519,7 @@ class DarlingTest(WestCommand):
                     with self._resource_context(prepare_invocation, prepare_env) as resource_env:
                         prepare_rc = self._run_invocation(prepare_invocation, env=resource_env)
                     if prepare_rc != 0:
-                        keep_on_failure = True
-                        self.err(f"preserving failed RED runtime scratch for inspection: {temp}")
+                        evidence.preserve(RuntimeError(f"RED guest fixture preparation returned {prepare_rc}"))
                         return prepare_rc
                 with self._runtime_red_deployed_artifacts(proof, build_root, prefix, label="RED"):
                     red_invocation = self._guest_runtime_red_invocation(patch, proof, invocation)
@@ -4517,16 +4541,14 @@ class DarlingTest(WestCommand):
                         )
                     if bad_result.returncode == 0:
                         self.err("  RED proof failed: deployed bad runtime unexpectedly passed")
-                        keep_on_failure = True
-                        self.err(f"preserving failed RED runtime scratch for inspection: {temp}")
+                        evidence.preserve(RuntimeError("deployed bad runtime unexpectedly passed"))
                         return 1
                     if not self._check_red_failure_phase(
                         proof,
                         runtime_invocation,
                         bad_result.failure_phase,
                     ):
-                        keep_on_failure = True
-                        self.err(f"preserving failed RED runtime scratch for inspection: {temp}")
+                        evidence.preserve(RuntimeError("RED runtime failed in an unexpected phase"))
                         return 1
                     if not self._check_guest_runtime_red_failure(
                         proof,
@@ -4534,19 +4556,18 @@ class DarlingTest(WestCommand):
                         since=red_started_at,
                         captured_output=bad_result.output,
                     ):
-                        keep_on_failure = True
-                        self.err(f"preserving failed RED runtime scratch for inspection: {temp}")
+                        evidence.preserve(RuntimeError("RED runtime output missed its domain oracle"))
                         return 1
                     self.inf(f"  RED runtime failed as expected (rc={bad_result.returncode})")
         except RuntimeRedProven:
             pass
-        except BaseException:
-            keep_on_failure = True
-            self.err(f"preserving failed RED runtime scratch for inspection: {temp}")
+        except BaseException as error:
+            evidence_failure = error
             raise
         finally:
-            if not keep_on_failure:
-                shutil.rmtree(temp, ignore_errors=True)
+            retained = evidence_store.finish(evidence, evidence_failure)
+            if retained is not None:
+                self.err(f"preserved failed RED runtime evidence: {retained}")
         self.inf("  GREEN profile runtime")
         if not self._shutdown_runtime_prefix(prefix):
             self.die(f"guest-runtime-deploy could not clean Darling prefix before GREEN runtime: {prefix}")
