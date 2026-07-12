@@ -32,6 +32,7 @@ from west_commands.test_prefix import (
     prefix_process_snapshot,
     remove_stale_init_pid,
     remove_stale_server_socket,
+    PrefixLifecycleOwner,
     rootless_prefix_process_snapshot,
 )
 from west_commands.prefix_repair import repair_prefix_boot_prerequisites
@@ -313,15 +314,20 @@ with tempfile.TemporaryDirectory() as temp:
 
 with tempfile.TemporaryDirectory() as temp:
     prefix = Path(temp)
-    test = make_test()
     order = []
-    test._kill_dserver_for_prefix = lambda _prefix: None
-    test._prefix_process_snapshot = lambda _prefix: []
-    test._cleanup_prefix_mounts = lambda _prefix: (order.append("mounts") or False)
-    test._remove_stale_init_pid = lambda _prefix: order.append("init")
-    test._remove_stale_server_socket = lambda _prefix: (order.append("server") or False)
-    test._cleanup_rootless_runtime_sockets = lambda _prefix: order.append("sockets")
-    assert not test._finalize_prefix_shutdown(prefix)
+    owner = PrefixLifecycleOwner(
+        resolve_launcher=lambda _prefix: None,
+        prefix_env=lambda _prefix: {},
+        cleanup_mounts=lambda _prefix: types.SimpleNamespace(
+            changed=[], problems=["busy"], success=False
+        ),
+        init_pid_is_usable=lambda _pid: False,
+        inf=lambda _message: None,
+        err=lambda message: order.append("mounts") if "leftover Darling prefix mount" in message else None,
+        wrn=lambda _message: None,
+        process_entries=lambda: [],
+    )
+    assert not owner.finalize(prefix)
     assert order == ["mounts"], order
 
 test = make_test()

@@ -3,12 +3,20 @@
 from __future__ import annotations
 
 import os
+import fcntl
 import signal
 import stat
+import subprocess
 import time
+from contextlib import contextmanager
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Callable, Iterable
+from typing import Callable, Iterable, Iterator
+
+try:
+    from .test_guest_execution import shutdown_guest_prefix
+except ImportError:
+    from test_guest_execution import shutdown_guest_prefix
 
 ProcessEntry = tuple[int, int, str]
 
@@ -233,3 +241,128 @@ def cleanup_rootless_runtime_sockets(prefix: Path) -> RootlessRuntimeSocketClean
         socket_path.unlink()
         result.changed.append(f"removed stale rootless runtime socket: {socket_path}")
     return result
+
+
+@dataclass
+class PrefixLifecycleOwner:
+    """Own the complete lifecycle of one runner-managed Darling prefix."""
+
+    resolve_launcher: Callable[[str], str | None]
+    prefix_env: Callable[[str | Path], dict[str, str]]
+    cleanup_mounts: Callable[[Path], object]
+    init_pid_is_usable: Callable[[int], bool]
+    inf: Callable[[str], None]
+    err: Callable[[str], None]
+    wrn: Callable[[str], None]
+    process_entries: Callable[[], list[ProcessEntry]] | None = None
+
+    def ps_entries(self) -> list[ProcessEntry]:
+        if self.process_entries is not None:
+            return self.process_entries()
+        result = subprocess.run(
+            ["ps", "-eo", "pid=,ppid=,args="],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        entries = []
+        for line in result.stdout.splitlines():
+            parts = line.strip().split(None, 2)
+            if len(parts) == 3 and parts[0].isdigit() and parts[1].isdigit():
+                entries.append((int(parts[0]), int(parts[1]), parts[2]))
+        return entries
+
+    def process_snapshot(self, prefix: Path) -> list[str]:
+        entries = prefix_process_snapshot(prefix, self.ps_entries())
+        entries.extend(rootless_prefix_process_snapshot(prefix))
+        return sorted(set(entries))
+
+    def _kill_server(self, prefix: Path) -> None:
+        pids = darlingserver_pids_for_prefix(prefix, self.ps_entries())
+        if not pids:
+            return
+        self.wrn(f"stopping live darlingserver for {prefix}: pids={pids}")
+        for sig in (signal.SIGTERM, signal.SIGKILL):
+            live = []
+            for pid in pids:
+                try:
+                    os.kill(pid, 0)
+                    live.append(pid)
+                except ProcessLookupError:
+                    continue
+                except PermissionError:
+                    continue
+            if not live:
+                return
+            for pid in live:
+                try:
+                    os.kill(pid, sig)
+                except ProcessLookupError:
+                    continue
+                except PermissionError as error:
+                    self.err(f"cannot stop darlingserver {pid} for {prefix}: {error}")
+            time.sleep(1)
+
+    def finalize(self, prefix: Path) -> bool:
+        self._kill_server(prefix)
+        rootless_cleanup = cleanup_rootless_prefix_processes(prefix)
+        for message in rootless_cleanup.changed:
+            self.inf(f"cleanup rootless Darling prefix: {message}")
+        for message in rootless_cleanup.problems:
+            self.err(message)
+        leftovers = self.process_snapshot(prefix)
+        if leftovers:
+            self.err(f"leftover Darling prefix process(es) after cleanup for {prefix}:")
+            for entry in leftovers:
+                self.err(f"  {entry}")
+            return False
+        if not rootless_cleanup.success:
+            return False
+        mount_cleanup = self.cleanup_mounts(prefix)
+        for message in mount_cleanup.changed:
+            self.inf(f"cleanup Darling prefix mount: {message}")
+        for message in mount_cleanup.problems:
+            self.err(f"leftover Darling prefix mount for {prefix}: {message}")
+        if not mount_cleanup.success:
+            return False
+        remove_stale_init_pid(prefix, pid_is_usable=self.init_pid_is_usable)
+        if remove_stale_server_socket(prefix):
+            self.inf(f"removed stale Darling server socket for {prefix}")
+        socket_cleanup = cleanup_rootless_runtime_sockets(prefix)
+        for message in socket_cleanup.changed:
+            self.inf(f"cleanup rootless Darling prefix: {message}")
+        for message in socket_cleanup.problems:
+            self.err(message)
+        return socket_cleanup.success
+
+    def shutdown(self, prefix: Path, *, keep_running: bool = False) -> bool:
+        if keep_running:
+            return True
+        launcher = self.resolve_launcher(str(prefix))
+        if launcher:
+            env = os.environ.copy()
+            env.update(self.prefix_env(prefix))
+            self.inf(f"shutdown Darling prefix: {prefix}")
+            timeout_seconds = int(os.environ.get("WEST_TEST_SHUTDOWN_TIMEOUT_SECONDS", "15"))
+            result = shutdown_guest_prefix(
+                launcher,
+                prefix,
+                cwd=Path.cwd(),
+                env=env,
+                timeout_seconds=timeout_seconds,
+            )
+            if result.timed_out:
+                self.err(f"Darling prefix shutdown timed out for {prefix}; forcing cleanup")
+        return self.finalize(prefix)
+
+    @contextmanager
+    def locked(self, prefix: Path) -> Iterator[None]:
+        lock_path = prefix / ".west-test.lock"
+        lock_path.parent.mkdir(parents=True, exist_ok=True)
+        with lock_path.open("a+") as lock:
+            self.inf(f"lock Darling prefix: {prefix}")
+            fcntl.flock(lock.fileno(), fcntl.LOCK_EX)
+            try:
+                yield
+            finally:
+                fcntl.flock(lock.fileno(), fcntl.LOCK_UN)
