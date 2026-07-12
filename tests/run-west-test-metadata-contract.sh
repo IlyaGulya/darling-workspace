@@ -46,6 +46,7 @@ python3 tests/west_test_contracts/metadata_runtime_profile_contract.py
 python3 tests/west_test_contracts/metadata_runtime_profile_red_contract.py
 python3 tests/west_test_contracts/metadata_source_profile_contract.py
 python3 tests/west_test_contracts/runtime_profile_current_minus_contract.py
+PYTHONDONTWRITEBYTECODE=1 python3 -B tests/west_test_contracts/runtime_evidence_contract.py
 python3 tests/west_test_contracts/host_trace_failure_phase_contract.py
 python3 tests/west_test_contracts/guest_trace_failure_phase_contract.py
 python3 tests/west_test_contracts/eunion_boot_contract.py

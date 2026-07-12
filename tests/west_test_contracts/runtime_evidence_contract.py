@@ -45,6 +45,55 @@ with tempfile.TemporaryDirectory() as temp:
     subprocess.run(["git", "add", "source.c"], cwd=repo, check=True)
     subprocess.run(["git", "commit", "-q", "-m", "base"], cwd=repo, check=True)
 
+    active = store.start("active materialization", {"provider": "homebrew"})
+    assert store.gc(max_age_hours=0, keep_last=0, dry_run=False) == []
+    assert active.directory.is_dir()
+    active.discard()
+
+    orphan = root / ".inflight-orphan"
+    orphan_worktree = orphan / "source/darling"
+    orphan_worktree.parent.mkdir(parents=True)
+    subprocess.run(
+        ["git", "worktree", "add", "--quiet", "--detach", str(orphan_worktree), "HEAD"],
+        cwd=repo,
+        check=True,
+    )
+    (orphan / ".worktrees.json").write_text(
+        json.dumps([{"repo": str(repo), "path": "source/darling"}]) + "\n"
+    )
+    before_dry_run = sorted(path.relative_to(orphan) for path in orphan.rglob("*"))
+    assert store.gc(max_age_hours=0, keep_last=0, dry_run=True) == [orphan]
+    assert sorted(path.relative_to(orphan) for path in orphan.rglob("*")) == before_dry_run
+    assert store.gc(max_age_hours=0, keep_last=0, dry_run=False) == [orphan]
+    assert not orphan.exists()
+    worktree_listing = subprocess.run(
+        ["git", "worktree", "list", "--porcelain"],
+        cwd=repo,
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout
+    assert f"worktree {orphan_worktree}" not in worktree_listing, worktree_listing
+
+    legacy_orphan = root / ".inflight-legacy"
+    legacy_worktree = legacy_orphan / "source/darling"
+    legacy_worktree.parent.mkdir(parents=True)
+    subprocess.run(
+        ["git", "worktree", "add", "--quiet", "--detach", str(legacy_worktree), "HEAD"],
+        cwd=repo,
+        check=True,
+    )
+    assert store.gc(max_age_hours=0, keep_last=0, dry_run=False) == [legacy_orphan]
+    assert not legacy_orphan.exists()
+    worktree_listing = subprocess.run(
+        ["git", "worktree", "list", "--porcelain"],
+        cwd=repo,
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout
+    assert f"worktree {legacy_worktree}" not in worktree_listing, worktree_listing
+
     try:
         with store.session("rootless bootstrap", {"provider": "homebrew-rootless-no-mount"}) as session:
             source_worktree = session.source_root / "darling"
