@@ -3953,6 +3953,8 @@ class DarlingTest(WestCommand):
         targets = runtime_build_targets(proof)
         build_root = scratch_root / "build"
         timeout_seconds = int(proof.get("build-timeout-seconds", 1800))
+        configure_started = time.monotonic()
+        self.inf(f"  runtime phase start: {label} configure")
         self.inf(f"  {label} configure: {source_root} -> {build_root}")
         configure = run_bounded(
             ["cmake", "-S", str(source_root), "-B", str(build_root), *self._runtime_red_configure_args(proof, prefix)],
@@ -3964,6 +3966,12 @@ class DarlingTest(WestCommand):
         if configure.returncode:
             self._dump_command_tail(f"{label} configure", configure)
             self.die(f"{label} configure failed with rc {configure.returncode}")
+        self.inf(
+            f"  runtime phase complete: {label} configure "
+            f"({time.monotonic() - configure_started:.1f}s)"
+        )
+        build_started = time.monotonic()
+        self.inf(f"  runtime phase start: {label} build")
         self.inf(f"  {label} build: {', '.join(targets)}")
         build = run_bounded(
             ["ninja", "-C", str(build_root), *targets],
@@ -3975,6 +3983,10 @@ class DarlingTest(WestCommand):
         if build.returncode:
             self._dump_command_tail(f"{label} build", build)
             self.die(f"{label} build failed with rc {build.returncode}")
+        self.inf(
+            f"  runtime phase complete: {label} build "
+            f"({time.monotonic() - build_started:.1f}s)"
+        )
         return build_root
 
     def _dump_command_tail(self, label: str, result) -> None:
