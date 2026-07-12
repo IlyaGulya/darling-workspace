@@ -281,7 +281,9 @@ with tempfile.TemporaryDirectory() as temp:
     server_trace.parent.mkdir(parents=True)
     server_trace.write_text("stale server trace\n")
     test = DarlingTest.__new__(DarlingTest)
+    test.topdir = str(root)
     test._prefix = str(root / "prefix")
+    test._runtime_evidence_root = root / "evidence"
     test._active_profile = None
     test._bootstrap_syscall_trace = None
     test._bootstrap_stack_sample = root / "bootstrap-stack-sample"
@@ -303,14 +305,18 @@ with tempfile.TemporaryDirectory() as temp:
     }
     events = []
 
+    source_roots = []
+
     @contextmanager
-    def source_forest(anchor, proof, *, omit_patch):
+    def source_forest(anchor, proof, *, omit_patch, root, evidence_session):
         assert test._active_profile == "homebrew"
         assert anchor["module"] == "darling/src/external/xnu"
         assert proof["runtime-artifacts"][0]["build-targets"] == ["system_kernel"]
         assert not omit_patch
+        assert root.parent == evidence_session.directory
         events.append("source")
-        yield root / "source"
+        source_roots.append(root / "darling")
+        yield source_roots[-1]
 
     @contextmanager
     def deployed(proof, build_root, prefix, *, label, restore_deployment=True):
@@ -319,7 +325,7 @@ with tempfile.TemporaryDirectory() as temp:
             "darling/src/external/darlingserver",
             "darling/src/external/xnu",
         ]
-        assert build_root == root / "build"
+        assert build_root == source_roots[-1].parent.parent / "build"
         assert prefix == root / "prefix"
         assert label == "CTest homebrew"
         assert restore_deployment is True
@@ -328,7 +334,9 @@ with tempfile.TemporaryDirectory() as temp:
         events.append("restore")
 
     test._guest_runtime_source_forest = source_forest
-    test._runtime_red_build_artifacts = lambda *_args, **_kwargs: (events.append("build") or root / "build")
+    test._runtime_red_build_artifacts = lambda _source, _proof, _prefix, scratch, **_kwargs: (
+        events.append("build") or scratch / "build"
+    )
     test._runtime_red_deployed_artifacts = deployed
     test._preflight_runtime_profile_stack = lambda profile, label: (
         events.append("preflight"),
@@ -355,9 +363,10 @@ with tempfile.TemporaryDirectory() as temp:
 
 with tempfile.TemporaryDirectory() as temp:
     root = Path(temp)
-    scratch = root / "preserved-scratch"
     test = DarlingTest.__new__(DarlingTest)
+    test.topdir = str(root)
     test._prefix = str(root / "prefix")
+    test._runtime_evidence_root = root / "evidence"
     test._active_profile = None
     errors = []
     test.inf = lambda _message: None
@@ -377,30 +386,23 @@ with tempfile.TemporaryDirectory() as temp:
     }
 
     @contextmanager
-    def source_forest(_anchor, _proof, *, omit_patch):
+    def source_forest(_anchor, _proof, *, omit_patch, root, evidence_session):
         assert not omit_patch
-        yield root / "source"
+        assert root.parent == evidence_session.directory
+        yield root / "darling"
 
     test._guest_runtime_source_forest = source_forest
     test._runtime_red_build_artifacts = lambda *_args, **_kwargs: test.die("build failed")
     test._preflight_runtime_profile_stack = lambda *_args: None
-    original_mkdtemp = test_module.tempfile.mkdtemp
-
-    def make_scratch(**_kwargs):
-        scratch.mkdir()
-        return str(scratch)
-
-    test_module.tempfile.mkdtemp = make_scratch
     try:
-        try:
-            with test._ctest_runtime_profile_context(["homebrew"]):
-                raise AssertionError("runtime build failure unexpectedly yielded")
-        except SystemExit as exc:
-            assert str(exc) == "build failed", exc
-    finally:
-        test_module.tempfile.mkdtemp = original_mkdtemp
-    assert scratch.is_dir(), scratch
-    assert errors == [f"preserving failed CTest runtime scratch for inspection: {scratch}"], errors
+        with test._ctest_runtime_profile_context(["homebrew"]):
+            raise AssertionError("runtime build failure unexpectedly yielded")
+    except SystemExit as exc:
+        assert str(exc) == "build failed", exc
+    entries = list(test._runtime_evidence_root.glob("runtime-evidence-*"))
+    assert len(entries) == 1, entries
+    assert (entries[0] / "manifest.json").is_file()
+    assert errors == [f"preserved failed CTest runtime evidence: {entries[0]}"], errors
 
 
 with tempfile.TemporaryDirectory() as temp:
