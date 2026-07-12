@@ -379,11 +379,12 @@ class DarlingPatch(WestCommand):
                 or test.get("source-file")
                 or test.get("target")
                 or test.get("guest-command")
+                or test.get("guest-argv")
                 or test.get("runner") == "cmake-configure-fixture"
                 or test.get("runner") == "darling-cmake-target-fixture"
             ):
                 errors.append(
-                    f"tests[{index}] needs script, source-script, source-file, target, ctest-label, or command override"
+                    f"tests[{index}] needs script, source-script, source-file, target, ctest-label, guest command, or command override"
                 )
             runner = test.get("runner")
             if runner and runner not in {
@@ -398,6 +399,7 @@ class DarlingPatch(WestCommand):
                 "darling-cmake-target-fixture",
                 "guest-c-fixture",
                 "guest-command-fixture",
+                "guest-argv-fixture",
                 "object-symbol-fixture",
                 "source-script-fixture",
                 "source-build-fixture",
@@ -430,6 +432,8 @@ class DarlingPatch(WestCommand):
                     errors.append(f"tests[{index}] unknown test repo {repo_ref!r}")
             if test.get("guest-command") and runner != "guest-command-fixture":
                 errors.append(f"tests[{index}] guest-command requires runner: guest-command-fixture")
+            if test.get("guest-argv") and runner != "guest-argv-fixture":
+                errors.append(f"tests[{index}] guest-argv requires runner: guest-argv-fixture")
             if runner == "object-symbol-fixture":
                 repo_ref = test.get("repo", patch["module"])
                 repo_path = self._project_path(repo_ref)
@@ -489,9 +493,18 @@ class DarlingPatch(WestCommand):
                 for key in ("compile-flags", "link-flags", "run-args"):
                     if test.get(key) is not None and not isinstance(test.get(key), list):
                         errors.append(f"tests[{index}] {key} must be a list")
-            if runner == "guest-command-fixture":
-                if not isinstance(test.get("guest-command"), str) or not test.get("guest-command"):
-                    errors.append(f"tests[{index}] guest-command-fixture requires guest-command")
+            if runner in {"guest-command-fixture", "guest-argv-fixture"}:
+                if runner == "guest-command-fixture":
+                    if not isinstance(test.get("guest-command"), str) or not test.get("guest-command"):
+                        errors.append(f"tests[{index}] guest-command-fixture requires guest-command")
+                else:
+                    guest_argv = test.get("guest-argv")
+                    if not isinstance(guest_argv, list) or not guest_argv:
+                        errors.append(f"tests[{index}] guest-argv-fixture requires a non-empty guest-argv list")
+                    elif not all(isinstance(arg, str) and arg for arg in guest_argv):
+                        errors.append(f"tests[{index}] guest-argv must contain non-empty strings")
+                    elif not guest_argv[0].startswith("/"):
+                        errors.append(f"tests[{index}] guest-argv executable must be an absolute guest path")
                 if test.get("expect") is not None:
                     expect = test.get("expect")
                     if not isinstance(expect, dict):
@@ -671,9 +684,9 @@ class DarlingPatch(WestCommand):
             required_resources = test.get("requires") if isinstance(test.get("requires"), list) else []
             if test.get("host-trace-files") is not None:
                 traces = test.get("host-trace-files")
-                if runner not in {"guest-c-fixture", "guest-runtime-script", "script"}:
+                if runner not in {"guest-c-fixture", "guest-argv-fixture", "guest-runtime-script", "script"}:
                     errors.append(
-                        f"tests[{index}] host-trace-files requires runner: guest-c-fixture, guest-runtime-script, or script"
+                        f"tests[{index}] host-trace-files requires runner: guest-c-fixture, guest-argv-fixture, guest-runtime-script, or script"
                     )
                 elif not isinstance(traces, list) or not traces:
                     errors.append(f"tests[{index}] host-trace-files must be a non-empty list")
@@ -867,11 +880,12 @@ class DarlingPatch(WestCommand):
                     if runner not in {
                         "guest-c-fixture",
                         "guest-command-fixture",
+                        "guest-argv-fixture",
                         "guest-runtime-script",
                         "script",
                     }:
                             errors.append(
-                                f"tests[{index}] red-proof guest-runtime-deploy requires runner: guest-c-fixture, guest-command-fixture, guest-runtime-script, or script"
+                                f"tests[{index}] red-proof guest-runtime-deploy requires runner: guest-c-fixture, guest-command-fixture, guest-argv-fixture, guest-runtime-script, or script"
                             )
                     elif runner == "script" and not (
                         {"darling-prefix", "darling-eunion-prefix"} & set(required_resources)
