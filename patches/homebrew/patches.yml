@@ -5695,40 +5695,15 @@ patches:
       - darling/src/external/darlingserver
       - darling/src/external/xnu
       - darling/src/external/dyld
+      - darling/src/external/corefoundation
       - darling/src/external/libsystem
       cmake-defines:
         DARLING_EUNION: true
       runtime-artifacts:
       - module: darling
         build-targets:
-        - darling
-        - mldr
-        - launchd
-        - shellspawn
-        - vchroot
-        - dyld
-        deploy:
-        - bin/darling
-        - usr/libexec/darling/mldr
-        - usr/libexec/darling/launchd
-        - usr/libexec/shellspawn
-        - usr/libexec/darling/vchroot
-        - usr/lib/dyld
-      - module: darling/src/external/darlingserver
-        build-targets:
-        - darlingserver
-        deploy:
-        - bin/darlingserver
-      - module: darling
-        build-targets:
-        - system_kernel
-        - objc
-        - resolv-darwin
-        deploy:
-        - usr/lib/system/libsystem_kernel.dylib
-        - usr/lib/libobjc.A.dylib
-        - usr/lib/libresolv.9.dylib
-        resource: rootless-bootstrap-closure
+        - rootless_bootstrap
+        resource: rootless-bootstrap
     runner: guest-runtime-script
     repo: darling-workspace
     script: tests/run-rootless-bootstrap-smoke.sh
@@ -5844,3 +5819,55 @@ patches:
       kqueue watcher, returns EBADF, and loses the launcher completion result.
       The fix reaps through the same poll loop that handles launcher signals.
   sha256sum: 69299ef39edf7d182e42c98b05917fcb47d570c43261e843af8c4c4c55eb1a13
+- path: darling/rootless-bootstrap-component.patch
+  module: darling
+  source-branch: fix/rootless-bootstrap-component
+  source-base: a55b22508c46561104a4c57204128a029c4a3721
+  source-commit: 71af0c631642f4fc70f472f1b570cce89a19ad12
+  bead: dar-test-infra-sp5.3.4
+  publication-status: blocked
+  publication-blocker: Rootless bootstrap remains local-only until a fresh-prefix runtime RED/GREEN proof and cleanup audit pass.
+  tests:
+  - name: rootless_bootstrap_component
+    kind: guest
+    coverage-tier: runtime
+    runs: guest
+    diag: guarded
+    red: true
+    red-proof:
+      mode: guest-runtime-deploy
+      bad-profile: current-minus-patch
+      expect-failure-phase: build
+      expect-output-contains:
+      - unknown target 'rootless_bootstrap'
+      source-modules:
+      - darling
+      - darling/src/external/darlingserver
+      - darling/src/external/xnu
+      - darling/src/external/dyld
+      - darling/src/external/corefoundation
+      - darling/src/external/libsystem
+      cmake-defines:
+        DARLING_EUNION: true
+      runtime-artifacts:
+      - module: darling
+        build-targets:
+        - rootless_bootstrap
+        resource: rootless-bootstrap
+    runner: guest-runtime-script
+    repo: darling-workspace
+    script: tests/run-rootless-bootstrap-smoke.sh
+    ok-marker: WEST_ROOTLESS_BOOTSTRAP_OK
+    timeout-seconds: 60
+    requires:
+    - darling-prefix
+    env-vars:
+      DARLING_ROOTLESS: '1'
+      DARLING_NOOVERLAYFS: '1'
+      DARLING_EUNION: '1'
+    note: >-
+      CMake owns the entrypoint set and their guest paths. The minus-patch
+      build cannot name rootless_bootstrap; with the patch West consumes the
+      generated manifest, deploys its Mach-O closure, and runs the same real
+      rootless guest smoke.
+  sha256sum: 23dab512242a6eddb5c71cbeadafd2026c0e28218d1fcfb88526db6bdd31dd20
