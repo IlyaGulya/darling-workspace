@@ -29,8 +29,8 @@ sys.modules.setdefault("west.commands", west_commands_module)
 
 import west_commands.test as west_test_module
 import west_commands.test_guest_c as guest_c_module
-from west_commands.test import DarlingTest
-from west_commands.test_execution import ProcessResult
+from west_commands.test import DarlingTest, RuntimeBuildFailure
+from west_commands.test_execution import ProcessResult, process_output_text
 from west_commands.test_runtime import (
     compose_ctest_runtime_profiles,
     describe_runtime_deploy_plan,
@@ -1224,6 +1224,37 @@ with tempfile.TemporaryDirectory() as temp:
 with tempfile.TemporaryDirectory() as temp:
     tempdir = Path(temp)
     test = make_test()
+    test.topdir = str(tempdir)
+    source_root = tempdir / "source"
+    source_root.mkdir()
+    results = iter(
+        [
+            ProcessResult(0),
+            ProcessResult(1, stderr="ninja: error: unknown target 'rootless_bootstrap'\n"),
+        ]
+    )
+    old_run_bounded = west_test_module.run_bounded
+    west_test_module.run_bounded = lambda *_args, **_kwargs: next(results)
+    try:
+        try:
+            test._runtime_red_build_artifacts(
+                source_root,
+                {"runtime-artifacts": [{"build-targets": ["rootless_bootstrap"]}]},
+                tempdir / "prefix",
+                tempdir / "scratch",
+                allow_failure=True,
+            )
+        except RuntimeBuildFailure as exc:
+            assert exc.phase == "build", exc.phase
+            assert "unknown target 'rootless_bootstrap'" in process_output_text(exc.result)
+        else:
+            raise AssertionError("runtime RED build failure was not captured")
+    finally:
+        west_test_module.run_bounded = old_run_bounded
+
+with tempfile.TemporaryDirectory() as temp:
+    tempdir = Path(temp)
+    test = make_test()
     invocation = {"name": "dcc_cache_timeout_contract", "timeout_seconds": 1}
     old_run_bounded = guest_c_module.run_bounded
 
@@ -1347,7 +1378,10 @@ with tempfile.TemporaryDirectory() as temp:
         calls.append(("source", patch["module"], proof["mode"], omit_patch))
         yield tempdir / "source/darling"
 
-    def fake_build(source_root, proof, build_prefix, scratch_root, *, label="RED"):
+    def fake_build(
+        source_root, proof, build_prefix, scratch_root, *, label="RED", allow_failure=False
+    ):
+        assert allow_failure is (label == "RED")
         calls.append(("build", source_root, build_prefix, scratch_root.exists(), label))
         output = scratch_root / "build/xnu/libsystem_kernel.dylib"
         output.parent.mkdir(parents=True)
@@ -1788,8 +1822,11 @@ with tempfile.TemporaryDirectory() as temp:
         assert omit_patch is True
         yield tempdir / "source/darling"
 
-    def failing_build(_source_root, _proof, _build_prefix, scratch_root, *, label="RED"):
+    def failing_build(
+        _source_root, _proof, _build_prefix, scratch_root, *, label="RED", allow_failure=False
+    ):
         assert label == "RED"
+        assert allow_failure is True
         (scratch_root / "diagnostic.txt").write_text("kept\n")
         raise RuntimeError("forced build failure")
 
