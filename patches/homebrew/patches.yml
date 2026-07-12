@@ -53,8 +53,7 @@ patches:
   source-branch: fix/psynch-cvwait-balanced
   source-commit: 0a1980bfc8cce7b24f86a300310eb72dab2e4141
   bead: dar-q95.1
-  publication-status: provisional
-  publication-blocker: direct psynch generation invariant tests under dar-q95.29.6
+  publication-status: ready
   tests:
   - name: psynch_cvwait_sequence_contract
     kind: contract
@@ -67,10 +66,36 @@ patches:
     runner: source-profile-script
     script: tests/psynch_cvwait_sequence_contract.sh
     note: Source-level RED->GREEN contract that balanced equal cvwait sequences are accepted and stale sequences still log context.
-  test-exception:
-    reason: source-contract-only
-    scope: psynch-cvwait source shape; no isolated host or guest execution path exists
-    note: Keep the RED source differential as a drift guard, but do not count it as behavioral coverage until dar-q95.1 gains a direct psynch runtime oracle.
+  - name: psynch_cvwait_balanced_guest
+    kind: guest
+    coverage-tier: runtime
+    runs: guest
+    diag: guarded
+    runtime-profile: homebrew-rootless-no-mount
+    red: true
+    red-proof:
+      mode: guest-runtime-deploy
+      bad-profile: current-minus-patch
+      expect-output-contains:
+      - PSYNCH_CVWAIT_BALANCED_OLD_EQUAL_REJECTED errno=22
+      - WEST_GUEST_SHELL_RC=1
+      runtime-artifacts:
+      - module: darling/src/external/darlingserver
+        build-targets:
+        - darlingserver
+        deploy:
+        - bin/darlingserver
+    runner: guest-c-fixture
+    repo: darling-workspace
+    script: tests/psynch_cvwait_balanced_guest.c
+    ok-marker: PSYNCH_CVWAIT_BALANCED_GUEST_OK
+    timeout-seconds: 30
+    requires:
+    - darling-prefix
+    note: >-
+      Direct guest ABI proof for the equal-generation boundary. The bad
+      darlingserver rejects csgen == lockseq with EINVAL; the fixed runtime
+      enters the bounded wait and returns ETIMEDOUT.
   pr-draft: pr-drafts/darlingserver-psynch-cvwait-balanced.md
   github:
     fork:
