@@ -717,6 +717,18 @@ assert not test._check_guest_runtime_red_failure(
     captured_output="runner stderr\ncaptured old runtime symptom\n",
 )
 
+with tempfile.TemporaryDirectory() as temp:
+    trace = Path(temp) / "shellspawn.trace"
+    trace.write_text("shellspawn-error errno=9\n")
+    test = make_test()
+    test._bundle_root = "/tmp/west-test-contract-no-bundles"
+    assert test._check_guest_runtime_red_failure(
+        {"expect-output-contains": ["shellspawn-error errno=9"]},
+        {"name": "runtime_red_host_trace", "_host_trace_paths": [trace]},
+        since=time.time() - 10,
+        captured_output="runner stderr\n",
+    )
+
 test = make_test()
 assert not test._guest_runtime_red_has_positive_reason({})
 assert not test._guest_runtime_red_has_positive_reason({"expect-output-contains": []})
