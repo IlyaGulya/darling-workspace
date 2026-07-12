@@ -162,6 +162,40 @@ def rootless_bootstrap_progress(prefix: Path) -> str | None:
     return " | ".join(stages) if stages else None
 
 
+def bootstrap_syscall_stall_summary(trace_dir: Path) -> str | None:
+    """Summarize the terminal syscall state of processes in a bootstrap trace."""
+
+    states = []
+    for trace_path in sorted(trace_dir.glob("bootstrap.*")):
+        if not trace_path.is_file():
+            continue
+        try:
+            content = trace_path.read_text(errors="replace")
+        except OSError:
+            continue
+        exec_match = re.search(r'execve\("(?P<program>[^"]+)', content)
+        if exec_match is None:
+            continue
+        program = Path(exec_match.group("program")).name
+        lines = content.splitlines()
+        if lines and lines[-1].startswith("+++ exited with "):
+            continue
+        tail = "\n".join(lines[-128:])
+        if "recvmsg(" in tail and "MSG_DONTWAIT" in tail and "EAGAIN" in tail:
+            state = "spinning on empty RPC receive"
+        elif "sched_yield(" in tail:
+            state = "spinning while waiting for a thread checkin"
+        elif "epoll_wait(" in tail:
+            state = "waiting for an epoll event"
+        elif "poll(" in tail and ", -1" in tail:
+            state = "waiting for a socket event"
+        else:
+            continue
+        pid = trace_path.name.removeprefix("bootstrap.")
+        states.append(f"{program}[{pid}]: {state}")
+    return " | ".join(states[:8]) if states else None
+
+
 class RuntimeProfileDeployment:
     """One materialized runtime provider currently deployed under a prefix."""
 
@@ -4337,9 +4371,15 @@ class DarlingTest(WestCommand):
                         diagnostic_hint = ""
                     progress = rootless_bootstrap_progress(deployment.prefix)
                     progress_hint = f"; progress: {progress}" if progress is not None else ""
+                    stall = (
+                        bootstrap_syscall_stall_summary(trace_dir)
+                        if trace_dir is not None
+                        else None
+                    )
+                    stall_hint = f"; syscall state: {stall}" if stall is not None else ""
                     self.die(
                         "prefix bootstrap guest smoke timed out after "
-                        f"{smoke_timeout_seconds}s{diagnostic_hint}{progress_hint}"
+                        f"{smoke_timeout_seconds}s{diagnostic_hint}{progress_hint}{stall_hint}"
                     )
                 if result.returncode != 0:
                     self.die(
