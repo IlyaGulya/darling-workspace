@@ -42,6 +42,79 @@ def resolve_guest_execution(
     return GuestExecution(prefix=prefix, launcher=launcher)
 
 
+def _run_guest_launcher(
+    launcher: str,
+    prefix: str | Path,
+    launcher_action: str,
+    guest_argv: Sequence[str],
+    *,
+    cwd: Path,
+    env: dict[str, str] | None,
+    timeout_seconds: int,
+    stdout=None,
+    stderr=None,
+    capture_output: bool = False,
+    command_prefix: Sequence[str] = (),
+) -> ProcessResult:
+    """Run one launcher action with prefix identity and group cleanup.
+
+    ``command_prefix`` is a host-side observer such as ``strace``.  It wraps
+    the launcher process without changing the guest command or its environment.
+    """
+
+    if not guest_argv:
+        raise ValueError("guest command needs an executable")
+    prefix_text = str(prefix)
+    return run_bounded(
+        [
+            *command_prefix,
+            "env",
+            f"DPREFIX={prefix_text}",
+            f"DARLING_PREFIX={prefix_text}",
+            launcher,
+            launcher_action,
+            *guest_argv,
+        ],
+        cwd=cwd,
+        env=env,
+        timeout_seconds=timeout_seconds,
+        stdout=stdout,
+        stderr=stderr,
+        text=True,
+        capture_output=capture_output,
+    )
+
+
+def run_guest_argv(
+    launcher: str,
+    prefix: str | Path,
+    guest_argv: Sequence[str],
+    *,
+    cwd: Path,
+    env: dict[str, str] | None,
+    timeout_seconds: int,
+    stdout=None,
+    stderr=None,
+    capture_output: bool = False,
+    command_prefix: Sequence[str] = (),
+) -> ProcessResult:
+    """Run one explicit guest executable through the launcher's exec mode."""
+
+    return _run_guest_launcher(
+        launcher,
+        prefix,
+        "exec",
+        guest_argv,
+        cwd=cwd,
+        env=env,
+        timeout_seconds=timeout_seconds,
+        stdout=stdout,
+        stderr=stderr,
+        capture_output=capture_output,
+        command_prefix=command_prefix,
+    )
+
+
 def run_guest_shell(
     launcher: str,
     prefix: str | Path,
@@ -55,33 +128,20 @@ def run_guest_shell(
     capture_output: bool = False,
     command_prefix: Sequence[str] = (),
 ) -> ProcessResult:
-    """Run one guest shell command with prefix identity and group cleanup.
+    """Run one login-shell command through the shared guest argv runner."""
 
-    ``command_prefix`` is a host-side observer such as ``strace``.  It wraps
-    the launcher process without changing the guest command or its environment.
-    """
-
-    prefix_text = str(prefix)
-    return run_bounded(
-        [
-            *command_prefix,
-            "env",
-            f"DPREFIX={prefix_text}",
-            f"DARLING_PREFIX={prefix_text}",
-            launcher,
-            "shell",
-            "/bin/bash",
-            "--login",
-            "-c",
-            script,
-        ],
+    return _run_guest_launcher(
+        launcher,
+        prefix,
+        "shell",
+        ("/bin/bash", "--login", "-c", script),
         cwd=cwd,
         env=env,
         timeout_seconds=timeout_seconds,
         stdout=stdout,
         stderr=stderr,
-        text=True,
         capture_output=capture_output,
+        command_prefix=command_prefix,
     )
 
 
