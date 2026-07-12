@@ -52,12 +52,31 @@ prepare_job_registry() {
 }
 
 reserve_job_registry_entry() {
-	local entry
+	local entry candidate_pid candidate_start_time
 	prepare_job_registry
+	exec {REGISTRY_LOCK_FD}>"$REGISTRY_DIR/.lock"
+	flock "$REGISTRY_LOCK_FD"
 	entry="$REGISTRY_DIR/$(registry_entry_name)"
 	if ! mkdir "$entry" 2>/dev/null; then
-		echo "west job registry entry already exists: $entry" >&2
-		exit 2
+		if [[ -d "$entry" && ! -L "$entry" && -f "$entry/state-dir" ]] &&
+			[[ "$(<"$entry/state-dir")" == "$state_dir" ]] &&
+			[[ ! -e "$state_dir" ]] &&
+			[[ -f "$entry/pid" && -f "$entry/start-time" ]]; then
+			candidate_pid="$(<"$entry/pid")"
+			candidate_start_time="$(<"$entry/start-time")"
+			if [[ "$candidate_pid" =~ ^[0-9]+$ && "$candidate_start_time" =~ ^[0-9]+$ ]] &&
+				{ ! kill -0 "$candidate_pid" 2>/dev/null ||
+				  [[ "$(pid_start_time "$candidate_pid")" != "$candidate_start_time" ]]; }; then
+				rm -rf "$entry"
+				mkdir "$entry"
+			else
+				echo "west job registry entry is still live: $entry" >&2
+				exit 2
+			fi
+		else
+			echo "west job registry entry already exists: $entry" >&2
+			exit 2
+		fi
 	fi
 	printf '%s\n' "$state_dir" >"$entry/state-dir"
 	write_command_record "$entry/command"
@@ -67,6 +86,8 @@ reserve_job_registry_entry() {
 record_job_registry_identity() {
 	printf '%s\n' "$(<"$state_dir/pid")" >"$REGISTRY_ENTRY/pid"
 	printf '%s\n' "$(<"$state_dir/start-time")" >"$REGISTRY_ENTRY/start-time"
+	flock -u "$REGISTRY_LOCK_FD"
+	exec {REGISTRY_LOCK_FD}>&-
 }
 
 parse_state_dir() {
