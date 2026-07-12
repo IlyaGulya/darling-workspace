@@ -6,6 +6,7 @@ usage() {
 usage:
   west-job.sh start --state-dir DIR -- west test ...
   west-job.sh status --state-dir DIR
+  west-job.sh follow --state-dir DIR [--timeout-seconds N]
   west-job.sh wait --state-dir DIR
   west-job.sh cancel --state-dir DIR
   west-job.sh assert-no-live-west-test [--state-root DIR]
@@ -18,6 +19,7 @@ USAGE
 }
 
 state_dir=
+follow_timeout_seconds=0
 
 write_command_record() {
 	local target="$1"
@@ -87,6 +89,25 @@ parse_state_dir() {
 		usage
 	fi
 	STATE_REST=("$@")
+}
+
+parse_follow() {
+	while (($#)); do
+		case "$1" in
+			--state-dir)
+				state_dir="$2"
+				shift 2
+				;;
+			--timeout-seconds)
+				follow_timeout_seconds="$2"
+				shift 2
+				;;
+			*) usage ;;
+		esac
+	done
+	if [[ -z "$state_dir" ]] || [[ ! "$follow_timeout_seconds" =~ ^[0-9]+$ ]]; then
+		usage
+	fi
 }
 
 parse_state_root() {
@@ -242,6 +263,50 @@ status_job() {
 	exit 1
 }
 
+follow_job() {
+	local started_at now next_line=1 next_heartbeat rc line_count
+	started_at="$(date +%s)"
+	next_heartbeat="$started_at"
+	while true; do
+		if [[ -f "$state_dir/log" ]]; then
+			line_count="$(wc -l <"$state_dir/log")"
+			if ((line_count >= next_line)); then
+				sed -n "${next_line},${line_count}p" "$state_dir/log"
+				next_line=$((line_count + 1))
+			fi
+		fi
+		if rc="$(read_rc)"; then
+			printf 'completed rc=%s state=%s\n' "$rc" "$state_dir"
+			exit "$rc"
+		fi
+		if ! load_live_pid; then
+			# The runner publishes rc atomically as its final action. It can exit in
+			# the narrow interval between the read_rc and identity checks; give that
+			# publication one bounded foreground turn before declaring corruption.
+			wait_for_pid_exit_or_timeout "$state_dir/pid" 1
+			if rc="$(read_rc)"; then
+				printf 'completed rc=%s state=%s\n' "$rc" "$state_dir"
+				exit "$rc"
+			fi
+			echo "west job has no live process or recorded exit status: $state_dir" >&2
+			exit 1
+		fi
+		now="$(date +%s)"
+		if ((follow_timeout_seconds > 0 && now - started_at >= follow_timeout_seconds)); then
+			printf 'follow timed out; job remains running pid=%s state=%s\n' \
+				"$(<"$state_dir/pid")" "$state_dir" >&2
+			exit 124
+		fi
+		if ((now >= next_heartbeat)); then
+			printf 'following pid=%s state=%s\n' "$(<"$state_dir/pid")" "$state_dir"
+			next_heartbeat=$((now + 10))
+		fi
+		# This is a bounded foreground wait on the registered PID, not a detached
+		# monitor. A live job wakes us after one second; an exit wakes us at once.
+		wait_for_pid_exit_or_timeout "$state_dir/pid" 1
+	done
+}
+
 wait_job() {
 	if [[ "${CODEX_CI:-}" == "1" ]]; then
 		echo 'west-job wait is unsafe under CODEX_CI; use west-job.sh status to poll the state directory' >&2
@@ -343,6 +408,10 @@ case "$command" in
 	start|status|wait|cancel)
 		parse_state_dir "$@"
 		"${command}_job"
+		;;
+	follow)
+		parse_follow "$@"
+		follow_job
 		;;
 	assert-no-live-west-test)
 		parse_state_root "$@"

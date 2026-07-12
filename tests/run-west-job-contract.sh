@@ -26,6 +26,44 @@ grep -F -x -q 'GREEN_JOB' "$tmp/green/log"
 test "$(<"$tmp/green/rc")" = 0
 "$job" status --state-dir "$tmp/green" | grep -F -x -q "completed rc=0 state=$tmp/green"
 
+"$job" start --state-dir "$tmp/follow" -- /usr/bin/python3 -c '
+import time
+print("FOLLOW_FIRST", flush=True)
+time.sleep(0.2)
+print("FOLLOW_LAST", flush=True)
+'
+"$job" follow --state-dir "$tmp/follow" >"$tmp/follow.out"
+grep -F -x -q 'FOLLOW_FIRST' "$tmp/follow.out"
+grep -F -x -q 'FOLLOW_LAST' "$tmp/follow.out"
+grep -F -x -q "completed rc=0 state=$tmp/follow" "$tmp/follow.out"
+
+"$job" start --state-dir "$tmp/follow-failure" -- /bin/bash -c \
+	'printf "FOLLOW_FAILURE\n"; exit 7'
+set +e
+"$job" follow --state-dir "$tmp/follow-failure" >"$tmp/follow-failure.out"
+follow_failure_rc=$?
+set -e
+test "$follow_failure_rc" = 7
+grep -F -x -q 'FOLLOW_FAILURE' "$tmp/follow-failure.out"
+grep -F -x -q "completed rc=7 state=$tmp/follow-failure" "$tmp/follow-failure.out"
+
+"$job" start --state-dir "$tmp/follow-resume" -- /usr/bin/python3 -c '
+import time
+print("FOLLOW_RESUME_READY", flush=True)
+time.sleep(2)
+'
+set +e
+"$job" follow --state-dir "$tmp/follow-resume" --timeout-seconds 1 \
+	>"$tmp/follow-timeout.out" 2>"$tmp/follow-timeout.err"
+follow_rc=$?
+set -e
+test "$follow_rc" = 124
+grep -F -x -q 'FOLLOW_RESUME_READY' "$tmp/follow-timeout.out"
+grep -F -q 'follow timed out; job remains running pid=' "$tmp/follow-timeout.err"
+"$job" status --state-dir "$tmp/follow-resume" | grep -F -q 'running pid='
+"$job" follow --state-dir "$tmp/follow-resume" >"$tmp/follow-resume.out"
+grep -F -x -q "completed rc=0 state=$tmp/follow-resume" "$tmp/follow-resume.out"
+
 if CODEX_CI=1 env -u WEST_JOB_ACTIVE -u WEST_JOB_STATE_DIR "$metadata_contract" \
 	>"$tmp/direct-contract.out" 2>"$tmp/direct-contract.err"; then
 	echo 'direct metadata contract unexpectedly ran in CODEX_CI' >&2
