@@ -5833,6 +5833,18 @@ patches:
     requires: [darling-prefix]
     env-vars: {DARLING_ROOTLESS: '1', DARLING_NOOVERLAYFS: '1', DARLING_EUNION: '1'}
   sha256sum: 876421147cb6fac5e275cd5583ee2fdbd3af8f84ad44b8223816ae8861361da6
+- path: darling/rootless-shellspawn-command-trace.patch
+  module: darling
+  source-branch: fix/rootless-shellspawn-command-trace
+  source-base: 2ce4136ab3550de34256751be0e7947518c07d3f
+  source-commit: 4b5d3e74b1a8f951fe3bb78327a6a551bf0a4aaf
+  bead: dar-yfp4.3.2.3
+  publication-status: blocked
+  publication-blocker: Rootless E-UNION remains blocked before the product fixture; this diagnostic must identify the post-handoff boundary before a product fix is selected.
+  test-exception:
+    reason: runtime-harness-pending
+    scope: The markers run only in the materialized rootless shellspawn protocol path. The current bootstrap cannot reach a guest fixture to prove them as a normal RED-to-GREEN runtime regression; the bounded repro and its last trace stage are the diagnostic oracle.
+  sha256sum: 9ebe6846913534d1be263ab9ecc9f7e231b5b2b42bdd4063e7c159e831017ba1
 - path: libsystem/rootless-initializer-trace.patch
   sha256sum: b3107f04e59f860982abacfe35714a4a2e18f3236a5724e7ece11eefb2327d89
   module: darling/src/external/libsystem
