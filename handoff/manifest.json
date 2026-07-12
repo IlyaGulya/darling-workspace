@@ -138,6 +138,12 @@
           "source_ref": "refs/heads/fix/rootless-shellspawn-bootstrap-trace"
         },
         {
+          "branch": "fix/rootless-shellspawn-child-lifecycle",
+          "head": "bd94eb37dee3eae8d7ce5fe76b9d485b8ea23024",
+          "upstream": "",
+          "source_ref": "refs/heads/fix/rootless-shellspawn-child-lifecycle"
+        },
+        {
           "branch": "fix/rootless-shellspawn-client-socket",
           "head": "083f1859162cb605b7d198c9d0859d3d0b132b67",
           "upstream": "",
