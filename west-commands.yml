@@ -29,6 +29,11 @@ west-commands:
       - name: darling-prefix-repair
         class: DarlingPrefixRepair
         help: Repair Darling prefix boot and guest-test prerequisites
+  - file: west_commands/darling_fresh_prefix.py
+    commands:
+      - name: darling-fresh-prefix
+        class: DarlingFreshPrefix
+        help: Create or remove an isolated disposable Darling prefix
   - file: west_commands/darling_rootless_debug_cleanup.py
     commands:
       - name: darling-rootless-debug-cleanup
