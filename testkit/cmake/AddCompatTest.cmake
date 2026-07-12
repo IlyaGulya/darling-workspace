@@ -78,6 +78,8 @@ option(DARLING_TEST_NO_OVERLAYFS
   "Export DARLING_NOOVERLAYFS=1 to env=darling CTest entries" OFF)
 set(DARLING_TEST_BUNDLE_ROOT "${DARLING_TEST_BUNDLE_ROOT}" CACHE PATH
   "Debug bundle root passed to darling-debug-runner for guarded/forensic tests")
+set(DARLING_TEST_DEFAULT_RUNTIME_PROFILE "homebrew" CACHE STRING
+  "Runtime provider assigned to env=darling tests without a product-specific override")
 set(DARLING_TEST_GUARDED_CLEANUP_GRACE_SECONDS 10 CACHE STRING
   "Seconds reserved after a guarded timeout for diagnostics and cleanup")
 if(NOT DARLING_TEST_GUARDED_CLEANUP_GRACE_SECONDS MATCHES "^[0-9]+$")
@@ -313,12 +315,25 @@ function(add_compat_test)
     if(ACT_BEAD)
       list(APPEND labels "bead:${ACT_BEAD}")
     endif()
-    if(ACT_RUNTIME_PROFILE)
-      if(NOT env STREQUAL "darling")
-        message(FATAL_ERROR
-          "add_compat_test(${ACT_NAME}): RUNTIME_PROFILE is only valid for ENVS darling")
+    if(env STREQUAL "darling")
+      # Most guest cases run against the ordinary product runtime.  Keep that
+      # deployment decision in the framework instead of repeating it in every
+      # product test.  RUNTIME_PROFILE remains a narrow override for a case
+      # whose subject is a distinct runtime variant (for example rootless or
+      # a perf-only darlingserver build).
+      set(runtime_profile "${ACT_RUNTIME_PROFILE}")
+      if(NOT runtime_profile)
+        set(runtime_profile "${DARLING_TEST_DEFAULT_RUNTIME_PROFILE}")
       endif()
-      list(APPEND labels "runtime-profile:${ACT_RUNTIME_PROFILE}")
+      if(NOT runtime_profile)
+        message(FATAL_ERROR
+          "add_compat_test(${ACT_NAME}): env=darling needs a runtime provider; "
+          "set DARLING_TEST_DEFAULT_RUNTIME_PROFILE or RUNTIME_PROFILE")
+      endif()
+      list(APPEND labels "runtime-profile:${runtime_profile}")
+    elseif(ACT_RUNTIME_PROFILE)
+      message(FATAL_ERROR
+        "add_compat_test(${ACT_NAME}): RUNTIME_PROFILE is only valid for ENVS darling")
     endif()
     foreach(sm IN LISTS ACT_SUBMODULES)
       list(APPEND labels "submod:${sm}")

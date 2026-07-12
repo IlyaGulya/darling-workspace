@@ -700,6 +700,14 @@ source into the selected prefix, compiles it with the guest CLT, and runs the
 guest binary through `DARLING_LAUNCHER shell`; it must not run a Linux host
 binary under Darling. `env=macos` is the native differential oracle.
 
+Every `env=darling` registration receives the framework-owned
+`runtime-profile:homebrew` label by default. Product tests therefore do not
+name libraries, deploy paths, or an ordinary provider: west resolves that
+provider's source profile, build targets, Mach-O closure, deployment and
+restore transaction. `RUNTIME_PROFILE` is an override only when the test's
+subject is a different product runtime, such as the rootless E-UNION variant
+or a perf-only `darlingserver` build. It is not a general dependency list.
+
 ### Gap 2 — diagnosable execution of hangs, WITHOUT cost blowup
 
 The naive "wrap everything in the debug runner" is a trap on two axes:
