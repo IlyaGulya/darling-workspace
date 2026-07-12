@@ -13,7 +13,7 @@ tests/run-darling-c-test-contract.sh
 # declarations before any CTest discovery runs.
 west test --help | grep -q -- '--bootstrap-runtime-profile NAME'
 
-if patch_profile_error="$(west test --patch darling/rootless-shellspawn-readiness.patch \
+if patch_profile_error="$(west test --patch darling/rootless-shellspawn-lifecycle.patch \
 	--prefix-profile homebrew --list 2>&1)"; then
 	printf '%s\n' "$patch_profile_error" >&2
 	exit 1
@@ -75,7 +75,7 @@ done
 # The E-UNION host suite has source-base RED proof and must run against a
 # materialized selected profile. It is intentionally not a generic CTest
 # testkit entry; its patch-local West run owns the source-profile selection.
-eunion_metadata="$(west test --profile homebrew --patch xnu/eunion-25-bind-symlink-parent.patch --env host --list)"
+eunion_metadata="$(west test --profile homebrew --patch xnu/eunion-hardening.patch --env host --list)"
 printf '%s\n' "$eunion_metadata" | grep -q 'eunion_bind_symlink_parent_host' ||
 	{ printf '%s\n' "$eunion_metadata" >&2; exit 1; }
 

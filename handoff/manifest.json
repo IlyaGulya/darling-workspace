@@ -300,10 +300,22 @@
           "source_ref": "refs/heads/preupstream/master"
         },
         {
+          "branch": "repack/rootless-lifecycle",
+          "head": "ce80621ca527c7a82e7201f7dab13b5c80f193f3",
+          "upstream": "",
+          "source_ref": "refs/heads/repack/rootless-lifecycle"
+        },
+        {
           "branch": "repack/rootless-runtime-integration",
           "head": "88a1b9b1260e58266e9b6b687831065271ec4b90",
           "upstream": "",
           "source_ref": "refs/heads/repack/rootless-runtime-integration"
+        },
+        {
+          "branch": "repack/rootless-shellspawn-delay",
+          "head": "f8aa7404f19979d0ec4b54573238194b98de385a",
+          "upstream": "",
+          "source_ref": "refs/heads/repack/rootless-shellspawn-delay"
         }
       ]
     },

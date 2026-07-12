@@ -1358,7 +1358,6 @@ patches:
       - darlingserver/checkin-retask-current-thread-uaf.patch
       - darlingserver/pot-guest-lifetime-binding.patch
       - darlingserver/test-diagnostics-trace.patch
-      - darlingserver/eunion-runtime-prefix.patch
       expect-output-contains:
       - DSERVERDBG_PUSHREPLY_PIPE_TIMEOUT=1
       - push_reply pipe did not close after bad pointer
@@ -4288,26 +4287,30 @@ patches:
       repo: darlinghq/darling
       base: main
       state: local
-- path: darling/rootless-shellspawn-test-delay.patch
+- path: darling/rootless-shellspawn-delay.patch
+  sha256sum: 03436bef636b0a3957efe5252a5beaa508d0aa26d8d35cb9d28fae4553f3b85e
   module: darling
-  source-branch: fix/rootless-shellspawn-test-delay-product
-  source-base: a0982ff79f673974c0d36ad042f26a06830ffce2
-  source-commit: 4819397c0afc0c8ad92b0bf39dc6bd67e3edbe2b
-  bead: dar-d2pm
+  source-branch: repack/rootless-shellspawn-delay
+  source-base: 88a1b9b1260e58266e9b6b687831065271ec4b90
+  source-commit: f8aa7404f19979d0ec4b54573238194b98de385a
+  bead: dar-7zvt.4
   publication-status: blocked
-  publication-blocker: Test-only rootless readiness control; retain only while the deterministic launcher regression proof needs it.
+  publication-blocker: Test-only rootless readiness control remains local until the lifecycle regression suite is portable.
   test-exception:
     reason: test-instrumentation
-    scope: The hook is inert unless DARLING_TEST_SHELLSPAWN_READY_DELAY_MS is explicitly supplied by the rootless runtime regression proof below.
-  sha256sum: ed5d9fe4a26268263ff6678738e63e4e18cccc9c3bfa0f4f7673a4c3d8dd3d77
-- path: darling/rootless-shellspawn-readiness.patch
+    scope: The hook is inert unless DARLING_TEST_SHELLSPAWN_READY_DELAY_MS is explicitly supplied by the rootless lifecycle proof.
+- path: darling/rootless-shellspawn-lifecycle.patch
+  sha256sum: 8055d2bd45faf86e471c18d18b2d95e20b100feaa2e1599abe05c534386ac24d
   module: darling
-  source-branch: fix/rootless-shellspawn-readiness-product
-  source-base: 4819397c0afc0c8ad92b0bf39dc6bd67e3edbe2b
-  source-commit: 8266a160200b29c107b0caaf12a6558c3ad04bc8
-  bead: dar-d2pm
+  source-branch: repack/rootless-lifecycle
+  source-base: f8aa7404f19979d0ec4b54573238194b98de385a
+  source-commit: ce80621ca527c7a82e7201f7dab13b5c80f193f3
+  bead: dar-7zvt.4
   publication-status: blocked
-  publication-blocker: Rootless startup is locally validated first; do not publish until the full runtime proof is stable and lifecycle cleanup is closed.
+  publication-blocker: Rootless lifecycle remains local until the fresh-prefix guest and cleanup audit is complete.
+  test-exception:
+    reason: integration-runtime-provider
+    scope: Structured shellspawn result errors are exercised by the adjacent fast-exit guest proof; a protocol-only minus-patch invocation cannot produce a meaningful standalone guest verdict.
   tests:
   - name: rootless_shellspawn_readiness
     kind: guest
@@ -4353,23 +4356,8 @@ patches:
       DARLING_EUNION: '1'
       DARLING_TEST_SHELLSPAWN_READY_DELAY_MS: '20000'
     note: >-
-      Real rootless lifecycle proof. A prerequisite test hook delays socket
-      readiness by 20 seconds and then writes the framework-owned marker from
-      the live shellspawn process before it opens its socket. The current-minus
-      launcher reaches the prior one-shot shellspawn connect and fails with
-      ENOENT; the fixed launcher retries only transient socket readiness errors
-      while its init remains alive, then runs the same guest command to its
-      verdict marker.
-  sha256sum: 6dd6e68dcf40e9ee58d949eb23ce0489621c8cabb49ee15a9a804a00210bf724
-- path: darling/rootless-shutdown-session.patch
-  module: darling
-  source-branch: fix/rootless-shutdown-session-product
-  source-base: 8266a160200b29c107b0caaf12a6558c3ad04bc8
-  source-commit: 595b1f666b2f1806aa45fdab70a2ad702b5cf960
-  bead: dar-04lg
-  publication-status: blocked
-  publication-blocker: Rootless shutdown lifecycle fix requires a materialized runtime deploy proof against the leaked launchd service session before publication.
-  tests:
+      Rootless readiness behavior: transient shellspawn socket absence is retried
+      until the live init publishes the guest verdict.
   - name: rootless_shutdown_session
     kind: guest
     coverage-tier: runtime
@@ -4380,42 +4368,33 @@ patches:
       mode: guest-runtime-deploy
       bad-profile: current-minus-patch
       expect-failure-phase: script
-      expect-output-contains: [rootless shutdown left prefix-owned process(es)]
-      source-modules: [darling, darling/src/external/darlingserver, darling/src/external/xnu, darling/src/external/dyld, darling/src/external/libsystem]
-      cmake-defines: {DARLING_EUNION: true}
+      expect-output-contains:
+      - rootless shutdown left prefix-owned process(es)
+      source-modules:
+      - darling
+      - darling/src/external/darlingserver
+      - darling/src/external/xnu
+      - darling/src/external/dyld
+      - darling/src/external/libsystem
+      cmake-defines:
+        DARLING_EUNION: true
       runtime-artifacts:
       - module: darling
-        build-targets: [darling]
-        deploy: [bin/darling]
+        build-targets:
+        - darling
+        deploy:
+        - bin/darling
     runner: guest-runtime-script
     repo: darling-workspace
     script: tests/run-rootless-shutdown-session.sh
     ok-marker: WEST_ROOTLESS_SHUTDOWN_SESSION_OK
     timeout-seconds: 60
-    requires: [darling-prefix]
-    env-vars: {DARLING_ROOTLESS: '1', DARLING_NOOVERLAYFS: '1', DARLING_EUNION: '1'}
-  sha256sum: 32a5e02e357407a10e6acb46cb0a7de1620187b0144e61ceee5879873e960513
-- path: darling/rootless-shellspawn-result-protocol.patch
-  module: darling
-  source-branch: fix/rootless-shellspawn-result-protocol-base
-  source-base: 595b1f666b2f1806aa45fdab70a2ad702b5cf960
-  source-commit: 77ca89df79e22837aa70eb65a50fb3ca9577b7a7
-  bead: dar-test-infra-sp5.8.4.6
-  publication-status: blocked
-  publication-blocker: Runtime proof is local-only; no publication is requested.
-  test-exception:
-    reason: integration-runtime-provider
-    scope: The protocol's error arm is exercised by the adjacent fast-exit current-minus runtime proof, which preserves the old shellspawn error while requiring the structured errno verdict.
-  sha256sum: 3eea9853373e2f029c73fbec06f480a88da5ec047ade2cd94b289c6b0560a8cc
-- path: darling/rootless-shellspawn-fast-exit.patch
-  module: darling
-  source-branch: fix/rootless-shellspawn-fast-exit-product
-  source-base: 77ca89df79e22837aa70eb65a50fb3ca9577b7a7
-  source-commit: 94640b25883c66252b9c3783fa6479d238bcf1e2
-  bead: dar-yfp4.3.2.5
-  publication-status: blocked
-  publication-blocker: Rootless E-UNION remains experimental until the direct-exec lifecycle regression and the separate post-dyld shell stall are both proven on a stable runtime provider.
-  tests:
+    requires:
+    - darling-prefix
+    env-vars:
+      DARLING_ROOTLESS: '1'
+      DARLING_NOOVERLAYFS: '1'
+      DARLING_EUNION: '1'
   - name: rootless_shellspawn_fast_direct_exit
     kind: guest
     coverage-tier: runtime
@@ -4445,61 +4424,4 @@ patches:
     timeout-seconds: 20
     requires:
     - darling-prefix
-    note: >-
-      The guest process is intentionally fast. Before the fix, execve succeeds
-      and exits 0, but shellspawn races the exited child while registering its
-      kqueue watcher, returns EBADF, and loses the launcher completion result.
-      The fix reaps through the same poll loop that handles launcher signals.
-  sha256sum: 69299ef39edf7d182e42c98b05917fcb47d570c43261e843af8c4c4c55eb1a13
-- path: darling/rootless-bootstrap-component.patch
-  module: darling
-  source-branch: fix/rootless-bootstrap-component
-  source-base: a55b22508c46561104a4c57204128a029c4a3721
-  source-commit: 71af0c631642f4fc70f472f1b570cce89a19ad12
-  bead: dar-test-infra-sp5.3.4
-  publication-status: blocked
-  publication-blocker: Rootless bootstrap remains local-only until a fresh-prefix runtime RED/GREEN proof and cleanup audit pass.
-  tests:
-  - name: rootless_bootstrap_component
-    kind: guest
-    coverage-tier: runtime
-    runs: guest
-    diag: guarded
-    red: true
-    red-proof:
-      mode: guest-runtime-deploy
-      bad-profile: current-minus-patch
-      expect-failure-phase: build
-      expect-output-contains:
-      - unknown target 'rootless_bootstrap'
-      source-modules:
-      - darling
-      - darling/src/external/darlingserver
-      - darling/src/external/xnu
-      - darling/src/external/dyld
-      - darling/src/external/corefoundation
-      - darling/src/external/libsystem
-      cmake-defines:
-        DARLING_EUNION: true
-      runtime-artifacts:
-      - module: darling
-        build-targets:
-        - rootless_bootstrap
-        resource: rootless-bootstrap
-    runner: guest-runtime-script
-    repo: darling-workspace
-    script: tests/run-rootless-bootstrap-smoke.sh
-    ok-marker: WEST_ROOTLESS_BOOTSTRAP_OK
-    timeout-seconds: 60
-    requires:
-    - darling-prefix
-    env-vars:
-      DARLING_ROOTLESS: '1'
-      DARLING_NOOVERLAYFS: '1'
-      DARLING_EUNION: '1'
-    note: >-
-      CMake owns the entrypoint set and their guest paths. The minus-patch
-      build cannot name rootless_bootstrap; with the patch West consumes the
-      generated manifest, deploys its Mach-O closure, and runs the same real
-      rootless guest smoke.
-  sha256sum: 23dab512242a6eddb5c71cbeadafd2026c0e28218d1fcfb88526db6bdd31dd20
+    note: Fast guest exit must still produce a structured shellspawn completion verdict.
