@@ -1,0 +1,312 @@
+From 4ed5bd6e6266886f00637595b19838a14b740967 Mon Sep 17 00:00:00 2001
+From: Ilya Gulya <ilya@gulya.me>
+Date: Sun, 12 Jul 2026 04:47:40 +0000
+Subject: [PATCH] xnu: resolve nested E-UNION lower roots
+
+---
+ .../linux_premigration/eunion_resolver.h      |   7 +
+ .../src/linux_premigration/eunion_resolver.c  |  45 ++++++
+ .../linux_premigration/vchroot_userspace.c    | 153 +++++++++---------
+ .../emulation/tests/eunion_resolver_test.c    |  20 +++
+ 4 files changed, 145 insertions(+), 80 deletions(-)
+
+diff --git a/darling/src/libsystem_kernel/emulation/include/linux_premigration/eunion_resolver.h b/darling/src/libsystem_kernel/emulation/include/linux_premigration/eunion_resolver.h
+index f6e703f78b69e0ac439516df1853ba2dfc1f579f..e0986fb78de35629ad733592cab2598a3ea423d7 100644
+--- a/darling/src/libsystem_kernel/emulation/include/linux_premigration/eunion_resolver.h
++++ b/darling/src/libsystem_kernel/emulation/include/linux_premigration/eunion_resolver.h
+@@ -45,4 +45,11 @@ struct eunion_resolver_result {
+ int eunion_resolve_path(const struct eunion_resolver* resolver,
+ 	const char* guest_path, struct eunion_resolver_result* result);
+ 
++// Convert a host path rooted in either union layer back to its guest path. If
++// roots are nested, the longest matching root wins so a lower path is never
++// mistaken for a path inside the upper layer. Returns zero on success, one when
++// the host path is outside both roots, or -1 for invalid/oversized input.
++int eunion_guest_path_from_host(const struct eunion_resolver* resolver,
++	const char* host_path, char* guest_path, size_t guest_path_cap);
++
+ #endif
+diff --git a/darling/src/libsystem_kernel/emulation/src/linux_premigration/eunion_resolver.c b/darling/src/libsystem_kernel/emulation/src/linux_premigration/eunion_resolver.c
+index 0b0e3b0e4092cb089a82e8fbece4ec4f3e43ac94..31c89e838880310f4d07e6f8e447a60d8f67a5ab 100644
+--- a/darling/src/libsystem_kernel/emulation/src/linux_premigration/eunion_resolver.c
++++ b/darling/src/libsystem_kernel/emulation/src/linux_premigration/eunion_resolver.c
+@@ -30,6 +30,51 @@ static int eunion_parent(const char* guest, char* out, size_t cap)
+ 	return 1;
+ }
+ 
++int eunion_guest_path_from_host(const struct eunion_resolver* resolver,
++	const char* host_path, char* guest_path, size_t guest_path_cap)
++{
++	const char* roots[2];
++	const char* selected = NULL;
++	size_t selected_len = 0;
++
++	if (!resolver || !host_path || !guest_path || guest_path_cap == 0 ||
++		!resolver->upper_root)
++		return -1;
++	roots[0] = resolver->upper_root;
++	roots[1] = resolver->lower_root;
++	for (size_t index = 0; index < sizeof(roots) / sizeof(roots[0]); ++index)
++	{
++		if (!roots[index])
++			continue;
++		size_t root_len = strlen(roots[index]);
++		if (root_len == 0 || strncmp(host_path, roots[index], root_len) != 0)
++			continue;
++		if (host_path[root_len] != '\0' && host_path[root_len] != '/')
++			continue;
++		if (root_len > selected_len)
++		{
++			selected = roots[index];
++			selected_len = root_len;
++		}
++	}
++	if (!selected)
++		return 1;
++
++	const char* suffix = host_path + selected_len;
++	if (*suffix == '\0')
++	{
++		if (guest_path_cap < 2)
++			return -1;
++		guest_path[0] = '/';
++		guest_path[1] = '\0';
++		return 0;
++	}
++	if (strlen(suffix) + 1 > guest_path_cap)
++		return -1;
++	strcpy(guest_path, suffix);
++	return 0;
++}
++
+ int eunion_resolve_path(const struct eunion_resolver* resolver,
+ 	const char* guest_path, struct eunion_resolver_result* result)
+ {
+diff --git a/darling/src/libsystem_kernel/emulation/src/linux_premigration/vchroot_userspace.c b/darling/src/libsystem_kernel/emulation/src/linux_premigration/vchroot_userspace.c
+index 84859e18ed4c70b8d5a493128a2f9cd82e94b50b..0b762086db163d6a7830421fb7119cf8f820cd02 100644
+--- a/darling/src/libsystem_kernel/emulation/src/linux_premigration/vchroot_userspace.c
++++ b/darling/src/libsystem_kernel/emulation/src/linux_premigration/vchroot_userspace.c
+@@ -640,6 +640,21 @@ static int eunion_resolver_marker_status(void* context, const char* host,
+ 	return eunion_has_marker(host, marker);
+ }
+ 
++static struct eunion_resolver eunion_current_resolver(void)
++{
++	return (struct eunion_resolver) {
++		.upper_root = prefix_path,
++		.lower_root = libexec_path_len > 0 ? libexec_path : NULL,
++		.whiteout_marker = EUNION_WH_XATTR,
++		.opaque_marker = EUNION_OPAQUE_XATTR,
++		.missing_status = -LINUX_ENOENT,
++		.ops = {
++			.path_status = eunion_resolver_path_status,
++			.marker_status = eunion_resolver_marker_status,
++		},
++	};
++}
++
+ static int eunion_set_marker(const char* host, const char* name)
+ {
+ 	#if defined(__NR_lsetxattr)
+@@ -1910,60 +1925,42 @@ static int vchroot_run(const char* input_path, struct context* ctxt)
+ 					// exactly as the baseline resolved it).
+ 					if (libexec_path_len > 0)
+ 					{
+-						// derive the guest-relative suffix from whichever union root
+-						// current_path currently sits under.
+-						const char* relstart = 0;
+-						if (strncmp(ctxt->current_path, prefix_path, prefix_path_len) == 0)
+-							relstart = ctxt->current_path + prefix_path_len;
+-						else if (strncmp(ctxt->current_path, libexec_path, libexec_path_len) == 0)
+-							relstart = ctxt->current_path + libexec_path_len;
+-
+-						if (relstart)
++						struct eunion_resolver resolver = eunion_current_resolver();
++						char relbuf[4096];
++						int guest_path_status = eunion_guest_path_from_host(
++							&resolver, ctxt->current_path, relbuf, sizeof(relbuf));
++
++						if (guest_path_status == 0)
+ 						{
+-								char relbuf[4096];
+-								int rellen = (int)strlen(relstart);
+-								if (rellen + 1 <= (int)sizeof(relbuf))
+-								{
+-									struct eunion_resolver resolver = {
+-										.upper_root = prefix_path,
+-										.lower_root = libexec_path,
+-										.whiteout_marker = EUNION_WH_XATTR,
+-										.opaque_marker = EUNION_OPAQUE_XATTR,
+-										.missing_status = -LINUX_ENOENT,
+-										.ops = {
+-											.path_status = eunion_resolver_path_status,
+-											.marker_status = eunion_resolver_marker_status,
+-										},
+-									};
+-									struct eunion_resolver_result resolution;
+-									int root_len;
+-
+-									memcpy(relbuf, relstart, rellen + 1);
+-									if (eunion_resolve_path(&resolver, relbuf, &resolution) != 0)
+-										return -LINUX_ENAMETOOLONG;
+-									if (resolution.layer == EUNION_RESOLVER_WHITEOUT)
+-										return -LINUX_ENOENT;
+-
+-									if (resolution.layer == EUNION_RESOLVER_LOWER)
+-									{
+-										ctxt->current_root = libexec_path;
+-										ctxt->current_root_len = libexec_path_len;
+-									}
+-									else
+-									{
+-										ctxt->current_root = prefix_path;
+-										ctxt->current_root_len = prefix_path_len;
+-									}
+-									root_len = (int)strlen(resolution.host_path);
+-									memcpy(ctxt->current_path, resolution.host_path, root_len + 1);
+-									ctxt->current_path_len = root_len;
+-									status = resolution.layer == EUNION_RESOLVER_ERROR
+-										? resolution.error
+-										: resolution.layer == EUNION_RESOLVER_MISSING
+-											? -LINUX_ENOENT
+-											: eunion_lstat(resolution.host_path, &st);
+-								}
++							struct eunion_resolver_result resolution;
++							int root_len;
++
++							if (eunion_resolve_path(&resolver, relbuf, &resolution) != 0)
++								return -LINUX_ENAMETOOLONG;
++							if (resolution.layer == EUNION_RESOLVER_WHITEOUT)
++								return -LINUX_ENOENT;
++
++							if (resolution.layer == EUNION_RESOLVER_LOWER)
++							{
++								ctxt->current_root = libexec_path;
++								ctxt->current_root_len = libexec_path_len;
++							}
++							else
++							{
++								ctxt->current_root = prefix_path;
++								ctxt->current_root_len = prefix_path_len;
++							}
++							root_len = (int)strlen(resolution.host_path);
++							memcpy(ctxt->current_path, resolution.host_path, root_len + 1);
++							ctxt->current_path_len = root_len;
++							status = resolution.layer == EUNION_RESOLVER_ERROR
++								? resolution.error
++								: resolution.layer == EUNION_RESOLVER_MISSING
++									? -LINUX_ENOENT
++									: eunion_lstat(resolution.host_path, &st);
+ 						}
++						else if (guest_path_status < 0)
++							return -LINUX_ENAMETOOLONG;
+ 					}
+ #endif
+ 
+@@ -2136,22 +2133,18 @@ int vchroot_fdpath(struct vchroot_fdpath_args* args)
+ 	link[rv] = '\0';
+ 
+ #ifdef EUNION
+-	// E-UNION: a fd may resolve into the read-only LOWER template, which lives
+-	// at libexec_path. In route-2 prefixes the lower template is nested under
+-	// the writable prefix (`$prefix/libexec/darling`), so this check MUST run
+-	// before the generic prefix_path case below; otherwise F_GETPATH returns
+-	// `/libexec/darling/...` instead of the guest path.
+-	if (libexec_path_len > 0 && rv >= libexec_path_len
+-	         && strncmp(link, libexec_path, libexec_path_len) == 0
+-	         && (link[libexec_path_len] == '/' || link[libexec_path_len] == '\0'))
++	char guest_path[sizeof(link)];
++	struct eunion_resolver resolver = eunion_current_resolver();
++	int guest_path_status = eunion_guest_path_from_host(&resolver,
++		link, guest_path, sizeof(guest_path));
++	if (guest_path_status == 0)
+ 	{
+-		if (args->maxlen-1 < rv - libexec_path_len)
++		if (args->maxlen <= strlen(guest_path))
+ 			return -LINUX_ENAMETOOLONG;
+-		strcpy(args->path, link + libexec_path_len);
+-
+-		if (args->path[0] == '\0')
+-			strcpy(args->path, "/");
++		strcpy(args->path, guest_path);
+ 	}
++	else if (guest_path_status < 0)
++		return -LINUX_ENAMETOOLONG;
+ 	else
+ #endif
+ 	if (rv >= prefix_path_len && strncmp(link, prefix_path, prefix_path_len) == 0)
+@@ -2181,6 +2174,21 @@ int vchroot_fdpath(struct vchroot_fdpath_args* args)
+ 
+ int vchroot_unexpand(struct vchroot_unexpand_args* args)
+ {
++#ifdef EUNION
++	char guest_path[sizeof(args->path)];
++	struct eunion_resolver resolver = eunion_current_resolver();
++	int guest_path_status = eunion_guest_path_from_host(&resolver,
++		args->path, guest_path, sizeof(guest_path));
++	if (guest_path_status == 0)
++	{
++		strcpy(args->path, guest_path);
++	}
++	else if (guest_path_status < 0)
++	{
++		return -LINUX_ENAMETOOLONG;
++	}
++	else
++#endif
+ 	if (memcmp(args->path, prefix_path, prefix_path_len) == 0)
+ 	{
+ 		int bytes = strlen(args->path + prefix_path_len) + 1;
+@@ -2189,21 +2197,6 @@ int vchroot_unexpand(struct vchroot_unexpand_args* args)
+ 		if (args->path[0] == '\0')
+ 			strcpy(args->path, "/");
+ 	}
+-#ifdef EUNION
+-	// E-UNION: a host path under the read-only LOWER template detranslates to the
+-	// guest path too (see vchroot_fdpath). Without this it escapes through
+-	// EXIT_PATH to a bogus /Volumes/SystemRoot/<template-path> guest path.
+-	else if (libexec_path_len > 0
+-	         && memcmp(args->path, libexec_path, libexec_path_len) == 0
+-	         && (args->path[libexec_path_len] == '/' || args->path[libexec_path_len] == '\0'))
+-	{
+-		int bytes = strlen(args->path + libexec_path_len) + 1;
+-		memmove(args->path, args->path + libexec_path_len, bytes);
+-
+-		if (args->path[0] == '\0')
+-			strcpy(args->path, "/");
+-	}
+-#endif
+ 	else
+ 	{
+ 		int bytes = strlen(args->path) + 1;
+diff --git a/darling/src/libsystem_kernel/emulation/tests/eunion_resolver_test.c b/darling/src/libsystem_kernel/emulation/tests/eunion_resolver_test.c
+index 5c64edfe95e771ee2ffe74799e71586eb639126f..18f9f5ddf01db5b9b548c5184dfeb19e8e833982 100644
+--- a/darling/src/libsystem_kernel/emulation/tests/eunion_resolver_test.c
++++ b/darling/src/libsystem_kernel/emulation/tests/eunion_resolver_test.c
+@@ -159,6 +159,26 @@ int main(void)
+ 	expect(&resolver, "/opaque/hidden", EUNION_RESOLVER_MISSING, path);
+ 	join(path, sizeof(path), upper, "/absent");
+ 	expect(&resolver, "/absent", EUNION_RESOLVER_MISSING, path);
++	{
++		char nested_lower[EUNION_RESOLVER_PATH_MAX];
++		char guest[EUNION_RESOLVER_PATH_MAX];
++
++		join(nested_lower, sizeof(nested_lower), upper, "/libexec");
++		make_dir(nested_lower);
++		join(nested_lower, sizeof(nested_lower), upper, "/libexec/darling");
++		make_dir(nested_lower);
++		join(path, sizeof(path), nested_lower, "/usr");
++		make_dir(path);
++		join(path, sizeof(path), nested_lower, "/usr/lib");
++		make_dir(path);
++		join(path, sizeof(path), nested_lower, "/usr/lib/libSystem.B.dylib");
++		make_file(path);
++
++		resolver.lower_root = nested_lower;
++		if (eunion_guest_path_from_host(&resolver, path, guest, sizeof(guest)) != 0 ||
++			strcmp(guest, "/usr/lib/libSystem.B.dylib") != 0)
++			fail("nested lower root was not converted to its guest path");
++	}
+ 
+ 	printf("EUNION_RESOLVER_OK\n");
+ 	return 0;

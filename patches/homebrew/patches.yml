@@ -4212,6 +4212,45 @@ patches:
       repo: IlyaGulya/darling-xnu
       base: preupstream/main
       state: local
+  upstream:
+    repo: darlinghq/darling-xnu
+    base: main
+    state: local
+- path: xnu/eunion-nested-lower-root.patch
+  module: darling/src/external/xnu
+  source-branch: fix/eunion-nested-lower-root-resolution
+  source-base: c10896a28d935c5c4cff2ea5b1e33aa72b356f61
+  source-commit: 4ed5bd6e6266886f00637595b19838a14b740967
+  bead: dar-test-infra-sp5.8.4.7
+  publication-status: blocked
+  publication-blocker: Rootless E-UNION runtime proof is local-only until bootstrap and lifecycle evidence are green on a fresh prefix.
+  tests:
+  - name: eunion_nested_lower_root_host_suite
+    kind: unit
+    coverage-tier: host
+    runs: host
+    diag: bare
+    red: true
+    red-proof:
+      mode: source-base
+      source-env: XNU_SRC_ROOT
+      expect-output-contains:
+      - 'FAIL  F4 unexpand lower host path -> guest path'
+    runner: source-contract-script
+    repo: darling-workspace
+    script: experiments/e-union/run-nested-lower-root.sh
+    note: >-
+      Behavioral RED-to-GREEN contract for the rootless layout where the lower
+      E-UNION template is physically nested below the writable prefix. It drives
+      production vchroot path walking, fd-path translation and unexpand; the
+      source-base must report the lower-host-path F4 failure, while the fix makes
+      the complete nested suite pass.
+  sha256sum: 64de0a94d6f68094dd349966c42f5e68c622f37f7e6c90861c421792edd4025d
+  github:
+    fork:
+      repo: IlyaGulya/darling-xnu
+      base: preupstream/main
+      state: local
     upstream:
       repo: darlinghq/darling-xnu
       base: main
