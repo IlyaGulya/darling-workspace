@@ -23,6 +23,7 @@ class RuntimeEvidenceSession:
         self._directory = Path(tempfile.mkdtemp(prefix=".inflight-", dir=root))
         self._retained = False
         self._worktrees: list[dict[str, str]] = []
+        self._diagnostics: list[dict[str, Any]] = []
         self._requested_failure: BaseException | None = None
 
     @property
@@ -63,6 +64,46 @@ class RuntimeEvidenceSession:
         if self._requested_failure is None:
             self._requested_failure = failure
 
+    def record_failure_detail(
+        self,
+        *,
+        phase: str,
+        summary: str,
+        returncode: int | None = None,
+        command: list[str] | None = None,
+        output: str | None = None,
+        artifacts: list[Path] | None = None,
+    ) -> None:
+        """Attach a bounded domain failure record before cleanup removes it."""
+
+        if not phase:
+            raise ValueError("runtime evidence diagnostic phase must be non-empty")
+        if not summary:
+            raise ValueError("runtime evidence diagnostic summary must be non-empty")
+        index = len(self._diagnostics)
+        diagnostics_root = self._directory / "diagnostics"
+        entry: dict[str, Any] = {"phase": phase, "summary": summary}
+        if returncode is not None:
+            entry["returncode"] = returncode
+        if command:
+            entry["command"] = list(command)
+        if output:
+            output_path = diagnostics_root / f"{index}-output.log"
+            output_path.parent.mkdir(parents=True, exist_ok=True)
+            output_path.write_text(output[-64 * 1024 :])
+            entry["output"] = str(output_path.relative_to(self._directory))
+        copied_artifacts: list[str] = []
+        for artifact in artifacts or []:
+            if not artifact.is_file() or artifact.is_symlink():
+                continue
+            artifact_path = diagnostics_root / f"{index}-{artifact.name}"
+            artifact_path.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copyfile(artifact, artifact_path)
+            copied_artifacts.append(str(artifact_path.relative_to(self._directory)))
+        if copied_artifacts:
+            entry["artifacts"] = copied_artifacts
+        self._diagnostics.append(entry)
+
     def retain(self, failure: BaseException) -> Path:
         """Finalize this in-flight unit as inspectable failure evidence."""
 
@@ -93,6 +134,8 @@ class RuntimeEvidenceSession:
             "paths": {"source": "source/darling", "build": "build"},
             "worktrees": self._worktrees,
         }
+        if self._diagnostics:
+            manifest["diagnostics"] = self._diagnostics
         manifest_path = target / "manifest.json"
         temporary = manifest_path.with_suffix(".tmp")
         temporary.write_text(json.dumps(manifest, indent=2, sort_keys=True) + "\n")
