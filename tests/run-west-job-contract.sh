@@ -26,6 +26,35 @@ grep -F -x -q 'GREEN_JOB' "$tmp/green/log"
 test "$(<"$tmp/green/rc")" = 0
 "$job" status --state-dir "$tmp/green" | grep -F -x -q "completed rc=0 state=$tmp/green"
 
+# A caller may remove completed state while the registry persists. The next
+# start for that exact path must reclaim only the dead registration.
+rm -rf "$tmp/green"
+"$job" start --state-dir "$tmp/green" -- /bin/bash -c 'printf GREEN_RESTARTED\\n'
+wait_job --state-dir "$tmp/green"
+grep -F -x -q 'GREEN_RESTARTED' "$tmp/green/log"
+
+# Never reclaim an absent-state registration whose recorded process identity
+# is still live.
+live_state="$tmp/live-registry-only"
+entry_name="$(printf '%s' "$live_state" | cksum | awk '{print $1 "-" $2}')"
+live_entry="$tmp/.west-job-registry/$entry_name"
+sleep 30 &
+live_registry_pid=$!
+mkdir "$live_entry"
+printf '%s\n' "$live_state" >"$live_entry/state-dir"
+printf '%s\n' "$live_registry_pid" >"$live_entry/pid"
+awk '{print $22}' "/proc/$live_registry_pid/stat" >"$live_entry/start-time"
+printf 'west test\n' >"$live_entry/command"
+if "$job" start --state-dir "$live_state" -- /bin/true \
+	>"$tmp/live-registry.out" 2>"$tmp/live-registry.err"; then
+	echo 'live registry entry was unexpectedly stolen' >&2
+	exit 1
+fi
+grep -F -q 'west job registry entry is still live:' "$tmp/live-registry.err"
+kill "$live_registry_pid"
+wait "$live_registry_pid" 2>/dev/null || true
+rm -rf "$live_entry"
+
 "$job" start --state-dir "$tmp/follow" -- /usr/bin/python3 -c '
 import time
 print("FOLLOW_FIRST", flush=True)
