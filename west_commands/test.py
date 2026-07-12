@@ -4114,7 +4114,7 @@ class DarlingTest(WestCommand):
         )
 
     def _runtime_macho_dylib_providers(self, build_root: Path) -> dict[str, Path]:
-        providers: dict[str, Path] = {}
+        candidates: dict[str, list[Path]] = {}
         for path in build_root.rglob("*"):
             if not path.is_file() or "CMakeFiles" in path.parts:
                 continue
@@ -4127,18 +4127,20 @@ class DarlingTest(WestCommand):
             )
             if install_name is None:
                 continue
-            existing = providers.get(install_name)
-            if existing is not None and existing != path:
-                if is_fat_macho_binary(path) and not is_fat_macho_binary(existing):
-                    providers[install_name] = path
-                    continue
-                if is_fat_macho_binary(existing) and not is_fat_macho_binary(path):
-                    continue
+            candidates.setdefault(install_name, []).append(path)
+
+        providers: dict[str, Path] = {}
+        for install_name, paths in candidates.items():
+            universal = [path for path in paths if is_fat_macho_binary(path)]
+            if len(universal) == 1:
+                providers[install_name] = universal[0]
+                continue
+            if len(universal) > 1 or len(paths) > 1:
                 self.die(
                     "guest-runtime-deploy found multiple built providers for "
-                    f"{install_name}: {existing}, {path}"
+                    f"{install_name}: {', '.join(str(path) for path in paths)}"
                 )
-            providers[install_name] = path
+            providers[install_name] = paths[0]
         return providers
 
     def _runtime_rootless_bootstrap_closure(
