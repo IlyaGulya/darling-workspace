@@ -1,0 +1,123 @@
+From 77ca89df79e22837aa70eb65a50fb3ca9577b7a7 Mon Sep 17 00:00:00 2001
+From: Ilya Gulya <ilya.gulya@indriver.com>
+Date: Sun, 12 Jul 2026 04:02:01 +0000
+Subject: [PATCH] rootless: report shellspawn protocol failures
+
+---
+ src/shellspawn/shellspawn.c | 19 ++++++++++++++++---
+ src/shellspawn/shellspawn.h | 12 +++++++++++-
+ src/startup/darling.c       | 17 ++++++++++++-----
+ 3 files changed, 39 insertions(+), 9 deletions(-)
+
+diff --git a/src/shellspawn/shellspawn.c b/src/shellspawn/shellspawn.c
+index 040635bd67086567aebbfc99104136bc30ce347c..c9ae226e928c08a3a78f3885967179bb9ff64ef5 100644
+--- a/src/shellspawn/shellspawn.c
++++ b/src/shellspawn/shellspawn.c
+@@ -179,6 +179,10 @@ void spawnShell(int fd)
+ 	struct iovec iov;
+ 	char cmsgbuf[CMSG_SPACE(sizeof(int)) * 3];
+ 	int kq;
++	int wstatus;
++	int error;
++	struct shellspawn_result result;
++	struct shellspawn_result failure;
+ 
+ 	bool read_cmds = true;
+ 
+@@ -446,13 +450,16 @@ void spawnShell(int fd)
+ 	}
+ 
+ 	// Reap the child
+-	int wstatus;
+ 	if (waitpid(shell_pid, &wstatus, 0) != shell_pid)
+ 		perror("waitpid");
+ 	wstatus = WEXITSTATUS(wstatus);
+ 	
+-	// Report exit code back to the client
+-	write(fd, &wstatus, sizeof(int));
++	// Report the child outcome through the versioned result frame.
++	result = (struct shellspawn_result){
++		.kind = SHELLSPAWN_RESULT_EXIT,
++		.value = wstatus,
++	};
++	write(fd, &result, sizeof(result));
+ 
+ 	if (DBG) printf("Shell terminated with exit code %d\n", wstatus);
+ 	close(fd);
+@@ -460,6 +467,7 @@ void spawnShell(int fd)
+ 	reapAll();
+ 	return;
+ err:
++	error = errno;
+ 	if (DBG) fprintf(stderr, "Error spawning shell: %s\n", strerror(errno));
+ 
+ 	for (int i = 0; i < 3; i++)
+@@ -471,6 +479,11 @@ err:
+ 	if (shell_pid != -1)
+ 		kill(shell_pid, SIGKILL);
+ 
++	failure = (struct shellspawn_result){
++		.kind = SHELLSPAWN_RESULT_ERROR,
++		.value = error,
++	};
++	write(fd, &failure, sizeof(failure));
+ 	close(fd);
+ 	reapAll();
+ }
+diff --git a/src/shellspawn/shellspawn.h b/src/shellspawn/shellspawn.h
+index c9eb396e62d6e75726913f047854ac77e6d6b6a7..659a151723294545dc3368c19ed214648559f232 100644
+--- a/src/shellspawn/shellspawn.h
++++ b/src/shellspawn/shellspawn.h
+@@ -38,6 +38,11 @@ enum {
+ 	SHELLSPAWN_SETEXEC, // set the executable to spawn (instead of a shell). must be given before any ADDARG commands.
+ };
+ 
++enum shellspawn_result_kind {
++	SHELLSPAWN_RESULT_EXIT = 1,
++	SHELLSPAWN_RESULT_ERROR,
++};
++
+ struct __attribute__((packed)) shellspawn_cmd
+ {
+ 	shellspawn_cmd_type_t cmd;
+@@ -45,5 +50,10 @@ struct __attribute__((packed)) shellspawn_cmd
+ 	char data[];
+ };
+ 
+-#endif
++struct __attribute__((packed)) shellspawn_result
++{
++	unsigned short kind;
++	int value;
++};
+ 
++#endif
+diff --git a/src/startup/darling.c b/src/startup/darling.c
+index 1682ce80af93de473b1ce1faff55bdfadf049cd1..8bdaf57ddb841bcbde16c468edaf3a1069b5ccf1 100644
+--- a/src/startup/darling.c
++++ b/src/startup/darling.c
+@@ -486,12 +486,19 @@ static void shellLoop(int sockfd, int master)
+ 
+ 		if (pfds[0].revents & (POLLHUP | POLLIN))
+ 		{
+-			int exitStatus;
+-			
+-			if (read(sockfd, &exitStatus, sizeof(int)) == sizeof(int))
+-				exit(exitStatus);
+-			else
++			struct shellspawn_result result;
++			if (read(sockfd, &result, sizeof(result)) != sizeof(result))
+ 				exit(1);
++			if (result.kind == SHELLSPAWN_RESULT_EXIT)
++				exit(result.value);
++			if (result.kind == SHELLSPAWN_RESULT_ERROR)
++			{
++				fprintf(stderr, "shellspawn failed (errno=%d): %s\n", result.value,
++					strerror(result.value));
++				exit(1);
++			}
++		fprintf(stderr, "shellspawn returned an unknown result kind: %u\n", result.kind);
++		exit(1);
+ 		}
+ 	}
+ }

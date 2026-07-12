@@ -1,16 +1,16 @@
-From 2ce4136ab3550de34256751be0e7947518c07d3f Mon Sep 17 00:00:00 2001
+From 595b1f666b2f1806aa45fdab70a2ad702b5cf960 Mon Sep 17 00:00:00 2001
 From: Ilya Gulya <ilya.gulya@indriver.com>
 Date: Sat, 11 Jul 2026 17:59:54 +0000
 Subject: [PATCH] rootless: stop the full shutdown session
 
 ---
  src/startup/CMakeLists.txt                    |  7 +-
- src/startup/darling.c                         | 26 +++++-
+ src/startup/darling.c                         | 25 +++++-
  src/startup/darling.h                         |  2 +
  src/startup/rootless_shutdown.c               | 84 +++++++++++++++++++
  src/startup/rootless_shutdown.h               |  8 ++
  .../tests/rootless_shutdown_session_test.c    | 58 +++++++++++++
- 6 files changed, 183 insertions(+), 2 deletions(-)
+ 6 files changed, 182 insertions(+), 2 deletions(-)
  create mode 100644 src/startup/rootless_shutdown.c
  create mode 100644 src/startup/rootless_shutdown.h
  create mode 100644 src/startup/tests/rootless_shutdown_session_test.c
@@ -37,11 +37,11 @@ index 817f2453afefc56148741aeb5cc5a08c10268192..f28b61a32e667fb0f22d4a07b0fcc1ea
  
  install(TARGETS darling DESTINATION bin
 diff --git a/src/startup/darling.c b/src/startup/darling.c
-index 8172426acab5f56c6eddfad3c462084d881bc357..ac8ef84bd8a72107a48a976d65d08e431b7ccfa0 100644
+index 1bb412280c2350bd3a3dcf843d4214bfd3f24234..1682ce80af93de473b1ce1faff55bdfadf049cd1 100644
 --- a/src/startup/darling.c
 +++ b/src/startup/darling.c
-@@ -70,6 +70,20 @@ static void rootlessBootTrace(const char* stage)
- 	}
+@@ -60,6 +60,19 @@ static bool rootlessModeEnabled(void)
+ 	return value != NULL && value[0] == '1' && value[1] == '\0';
  }
  
 +static void removeRuntimeStateFiles(void)
@@ -57,11 +57,10 @@ index 8172426acab5f56c6eddfad3c462084d881bc357..ac8ef84bd8a72107a48a976d65d08e43
 +	unlink(shellspawnSocketPath);
 +	unlink(darlingserverSocketPath);
 +}
-+
  int main(int argc, char ** argv)
  {
  	pid_t pidInit;
-@@ -192,8 +206,18 @@ int main(int argc, char ** argv)
+@@ -181,8 +194,18 @@ int main(int argc, char ** argv)
  		}
  		fclose(file);
  

@@ -1,52 +1,56 @@
-From 6ffa813bcb6c067b050bde189eac76e6e266b045 Mon Sep 17 00:00:00 2001
+From 8266a160200b29c107b0caaf12a6558c3ad04bc8 Mon Sep 17 00:00:00 2001
 From: Ilya Gulya <ilya.gulya@indriver.com>
 Date: Sat, 11 Jul 2026 15:26:34 +0000
 Subject: [PATCH] rootless: wait for shellspawn connection
 
 ---
- src/startup/darling.c | 92 ++++++++++++++++++++++++++++---------------
- src/startup/darling.h |  6 +--
- 2 files changed, 64 insertions(+), 34 deletions(-)
+ src/startup/darling.c | 100 +++++++++++++++++++++++++++++++-----------
+ src/startup/darling.h |   6 +--
+ 2 files changed, 78 insertions(+), 28 deletions(-)
 
 diff --git a/src/startup/darling.c b/src/startup/darling.c
-index 6a75a36bcd381960b4121724555d1e1b867f7da4..8172426acab5f56c6eddfad3c462084d881bc357 100644
+index 3daf5061b51027307b1e386f670657839081577e..1bb412280c2350bd3a3dcf843d4214bfd3f24234 100644
 --- a/src/startup/darling.c
 +++ b/src/startup/darling.c
-@@ -201,7 +201,6 @@ int main(int argc, char ** argv)
- 	if (pidInit == 0)
- 	{
- 		char socketPath[4096];
--		bool shellspawnReady = false;
- 		
- 		snprintf(socketPath, sizeof(socketPath), "%s"  SHELLSPAWN_SOCKPATH, prefix);
- 		
-@@ -211,18 +210,16 @@ int main(int argc, char ** argv)
- 		rootlessBootTrace("spawn-darlingserver");
+@@ -33,6 +33,7 @@ along with Darling.  If not, see <http://www.gnu.org/licenses/>.
+ #include <sys/poll.h>
+ #include <sys/socket.h>
+ #include <sys/un.h>
++#include <time.h>
+ #include <getopt.h>
+ #include <termios.h>
+ #include <pty.h>
+@@ -46,6 +47,7 @@ along with Darling.  If not, see <http://www.gnu.org/licenses/>.
+ // created in a different mount namespace or under overlayfs
+ // (dunno which one is really responsible for this).
+ #define USE_LINUX_4_11_HACK 1
++#define ROOTLESS_SHELLSPAWN_READY_TIMEOUT_MS 30000
+ 
+ char *prefix;
+ uid_t g_originalUid, g_originalGid;
+@@ -196,13 +198,15 @@ int main(int argc, char ** argv)
+ 		setupWorkdir();
  		pidInit = spawnInitProcess();
  		putInitPid(pidInit);
--		rootlessBootTrace("waiting-for-shellspawn");
 -		
 -		// Wait until shellspawn starts
 -		for (int i = 0; i < 15; i++)
 +		if (!rootless)
  		{
--			if (access(socketPath, F_OK) == 0) {
--				shellspawnReady = true;
+-			if (access(socketPath, F_OK) == 0)
 -				break;
+-			sleep(1);
 +			// The namespace-based launcher keeps its existing bounded startup wait.
 +			for (int i = 0; i < 15; i++)
 +			{
 +				if (access(socketPath, F_OK) == 0)
 +					break;
 +				sleep(1);
- 			}
--			sleep(1);
++			}
  		}
--		rootlessBootTrace(shellspawnReady ? "shellspawn-ready" : "shellspawn-wait-expired");
  	}
  
- #if USE_LINUX_4_11_HACK
-@@ -237,9 +234,9 @@ int main(int argc, char ** argv)
+@@ -218,9 +222,9 @@ int main(int argc, char ** argv)
  	{
  		// Spawn the shell
  		if (argc > 2)
@@ -58,7 +62,7 @@ index 6a75a36bcd381960b4121724555d1e1b867f7da4..8172426acab5f56c6eddfad3c462084d
  	}
  	else
  	{
-@@ -269,9 +266,9 @@ int main(int argc, char ** argv)
+@@ -250,9 +254,9 @@ int main(int argc, char ** argv)
  		argv[argvIndex] = fullPath;
  
  		if (doExec)
@@ -70,7 +74,7 @@ index 6a75a36bcd381960b4121724555d1e1b867f7da4..8172426acab5f56c6eddfad3c462084d
  	}
  
  	return 0;
-@@ -588,10 +585,21 @@ static size_t escapeQuotes(char *dest, const char *src)
+@@ -569,10 +573,21 @@ static size_t escapeQuotes(char *dest, const char *src)
  	return len;
  }
  
@@ -90,19 +94,28 @@ index 6a75a36bcd381960b4121724555d1e1b867f7da4..8172426acab5f56c6eddfad3c462084d
  {
  	struct sockaddr_un addr;
 -	int sockfd;
-+	bool waitingForShellspawn = false;
++	struct timespec started;
  
  	// Connect to the shellspawn daemon in the container
  	addr.sun_family = AF_UNIX;
-@@ -605,21 +613,43 @@ int connectToShellspawn(void)
+@@ -584,21 +599,56 @@ int connectToShellspawn(void)
+ #else
+ 	snprintf(addr.sun_path, sizeof(addr.sun_path), "%s"  SHELLSPAWN_SOCKPATH, prefix);
  #endif
- 
- 	rootlessBootTrace("shellspawn-connect-enter");
+-
 -	sockfd = socket(AF_UNIX, SOCK_STREAM, 0);
 -	if (sockfd == -1)
-+	for (;;)
++	if (clock_gettime(CLOCK_MONOTONIC, &started) != 0)
  	{
 -		fprintf(stderr, "Error creating a unix domain socket: %s\n", strerror(errno));
++		fprintf(stderr, "Unable to start rootless shellspawn readiness timer: %s\n", strerror(errno));
+ 		exit(1);
+ 	}
+ 
+-	if (connect(sockfd, (struct sockaddr*) &addr, sizeof(addr)) == -1)
++	for (;;)
+ 	{
+-		fprintf(stderr, "Error connecting to shellspawn in the container (%s): %s\n", addr.sun_path, strerror(errno));
 -		exit(1);
 -	}
 +		int sockfd = socket(AF_UNIX, SOCK_STREAM, 0);
@@ -111,17 +124,13 @@ index 6a75a36bcd381960b4121724555d1e1b867f7da4..8172426acab5f56c6eddfad3c462084d
 +			fprintf(stderr, "Error creating a unix domain socket: %s\n", strerror(errno));
 +			exit(1);
 +		}
- 
--	if (connect(sockfd, (struct sockaddr*) &addr, sizeof(addr)) == -1)
--	{
--		fprintf(stderr, "Error connecting to shellspawn in the container (%s): %s\n", addr.sun_path, strerror(errno));
--		exit(1);
++
 +		if (connect(sockfd, (struct sockaddr*) &addr, sizeof(addr)) == 0)
 +		{
-+			rootlessBootTrace("shellspawn-connect-ready");
 +			return sockfd;
 +		}
-+
+ 
+-	return sockfd;
 +		int error = errno;
 +		close(sockfd);
 +		if (!rootlessModeEnabled() || (error != ENOENT && error != ECONNREFUSED))
@@ -136,20 +145,26 @@ index 6a75a36bcd381960b4121724555d1e1b867f7da4..8172426acab5f56c6eddfad3c462084d
 +			exit(1);
 +		}
 +
-+		if (!waitingForShellspawn)
++		struct timespec now;
++		if (clock_gettime(CLOCK_MONOTONIC, &now) != 0)
 +		{
-+			rootlessBootTrace("shellspawn-connect-pending");
-+			waitingForShellspawn = true;
++			fprintf(stderr, "Unable to read rootless shellspawn readiness timer: %s\n", strerror(errno));
++			exit(1);
++		}
++		long elapsed_ms = (now.tv_sec - started.tv_sec) * 1000L
++			+ (now.tv_nsec - started.tv_nsec) / 1000000L;
++		if (elapsed_ms >= ROOTLESS_SHELLSPAWN_READY_TIMEOUT_MS)
++		{
++			fprintf(stderr, "Rootless shellspawn did not become ready within %dms (%s)\n",
++				ROOTLESS_SHELLSPAWN_READY_TIMEOUT_MS, addr.sun_path);
++			exit(1);
 +		}
 +		poll(NULL, 0, 100);
- 	}
--	rootlessBootTrace("shellspawn-connect-ready");
- 
--	return sockfd;
++	}
  }
  
  void setupShellspawnEnv(int sockfd)
-@@ -720,7 +750,7 @@ void spawnGo(int sockfd, int fds[3], int master)
+@@ -698,7 +748,7 @@ void spawnGo(int sockfd, int fds[3], int master)
  	close(sockfd);
  }
  
@@ -158,7 +173,7 @@ index 6a75a36bcd381960b4121724555d1e1b867f7da4..8172426acab5f56c6eddfad3c462084d
  {
  	size_t total_len = 0;
  	int count;
-@@ -748,7 +778,7 @@ void spawnShell(const char** argv)
+@@ -726,7 +776,7 @@ void spawnShell(const char** argv)
  	else
  		buffer = NULL;
  
@@ -167,7 +182,7 @@ index 6a75a36bcd381960b4121724555d1e1b867f7da4..8172426acab5f56c6eddfad3c462084d
  
  	setupShellspawnEnv(sockfd);
  
-@@ -767,12 +797,12 @@ void spawnShell(const char** argv)
+@@ -745,12 +795,12 @@ void spawnShell(const char** argv)
  	spawnGo(sockfd, fds, master);
  }
  

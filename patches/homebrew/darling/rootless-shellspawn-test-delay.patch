@@ -1,17 +1,17 @@
-From 0a3a598b8a5e3e5c8a0f8f141e92f8619a68147e Mon Sep 17 00:00:00 2001
+From 4819397c0afc0c8ad92b0bf39dc6bd67e3edbe2b Mon Sep 17 00:00:00 2001
 From: Ilya Gulya <ilya.gulya@indriver.com>
 Date: Sat, 11 Jul 2026 15:35:48 +0000
 Subject: [PATCH] test: delay rootless shellspawn readiness
 
 ---
- src/shellspawn/shellspawn.c | 46 +++++++++++++++++++++++++++++++++++++
- 1 file changed, 46 insertions(+)
+ src/shellspawn/shellspawn.c | 45 +++++++++++++++++++++++++++++++++++++
+ 1 file changed, 45 insertions(+)
 
 diff --git a/src/shellspawn/shellspawn.c b/src/shellspawn/shellspawn.c
-index 5691d42b955418ea7b5da11e5ca80a3ce3f531a0..0e276d3f05d3fdb129bc029cd06a8a58053506eb 100644
+index f5ba615bbc9c2a74c801ef5178fd2e4fd7b4a75f..040635bd67086567aebbfc99104136bc30ce347c 100644
 --- a/src/shellspawn/shellspawn.c
 +++ b/src/shellspawn/shellspawn.c
-@@ -49,6 +49,50 @@ void setupSigchild(void);
+@@ -48,6 +48,49 @@ void setupSigchild(void);
  void restoreSigchild(void);
  void reapAll(void);
  
@@ -58,16 +58,15 @@ index 5691d42b955418ea7b5da11e5ca80a3ce3f531a0..0e276d3f05d3fdb129bc029cd06a8a58
 +	}
 +	close(fd);
 +}
-+
- static void rootlessBootTrace(const char* stage)
+ int main(int argc, const char** argv)
  {
- 	const char* rootless = getenv("DARLING_ROOTLESS");
-@@ -72,6 +116,8 @@ int main(int argc, const char** argv)
+ 	// shellspawn (daemon) --fork()--> shellspawn (child) --fork()--> exec /bin/bash
+@@ -55,6 +98,8 @@ int main(int argc, const char** argv)
+ 	// we have to allow it to become a zombie, therefore we need to
  	// restore the sigaction of SIGCHLD of the child shellspawn
- 	rootlessBootTrace("entry");
  	setupSigchild();
 +	rootlessTestDelaySocketReady();
 +	rootlessTestMarkSocketPending();
  	setupSocket();
- 	rootlessBootTrace("socket-ready");
  	listenForConnections();
+ 
