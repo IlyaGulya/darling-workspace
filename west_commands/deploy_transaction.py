@@ -68,7 +68,7 @@ class DeploymentTransaction:
             backup.parent.mkdir(parents=True, exist_ok=True)
             shutil.copy2(destination, backup)
         destination.parent.mkdir(parents=True, exist_ok=True)
-        shutil.copy2(source, destination)
+        self._replace_file(source, destination)
         entry = DeploymentEntry(
             destination=str(destination),
             backup=str(backup) if backup is not None else None,
@@ -130,7 +130,7 @@ class DeploymentTransaction:
             backup = Path(entry.backup)
             if not backup.is_file() or sha256_file(backup) != entry.previous_sha256:
                 raise DeploymentTransactionError(f"deploy backup is invalid: {backup}")
-            shutil.copy2(backup, destination)
+            self._replace_file(backup, destination)
             if sha256_file(destination) != entry.previous_sha256:
                 raise DeploymentTransactionError(f"restored checksum mismatch: {destination}")
 
@@ -139,6 +139,19 @@ class DeploymentTransaction:
             raise DeploymentTransactionError(
                 f"deploy manifest destination escapes allowed prefixes: {destination}"
             )
+
+    @staticmethod
+    def _replace_file(source: Path, destination: Path) -> None:
+        descriptor, temporary = tempfile.mkstemp(
+            prefix=f".{destination.name}.deploy-", dir=destination.parent
+        )
+        os.close(descriptor)
+        temporary_path = Path(temporary)
+        try:
+            shutil.copy2(source, temporary_path)
+            os.replace(temporary_path, destination)
+        finally:
+            temporary_path.unlink(missing_ok=True)
 
     def _write(self, state: str) -> None:
         self.manifest_path.parent.mkdir(parents=True, exist_ok=True)

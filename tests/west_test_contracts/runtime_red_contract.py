@@ -52,6 +52,7 @@ from west_commands.test_runtime import (
     ROOTLESS_BOOTSTRAP_TARGET,
     resolve_macho_runtime_closure,
 )
+from west_commands.test_runtime_deploy import RuntimeDeploymentService
 
 os.environ.setdefault("WEST_RUNTIME_MIN_FREE_BYTES", "0")
 
@@ -465,10 +466,11 @@ with tempfile.TemporaryDirectory() as temp:
         thin_framework: "/System/Library/Frameworks/CoreFoundation.framework/Versions/A/CoreFoundation",
         executable: None,
     }
-    provider_test._runtime_macho_inspect = lambda path, _mode: (
+    deployment_service = RuntimeDeploymentService(provider_test)
+    deployment_service.macho_inspect = lambda path, _mode: (
         f"{path}:\n{install_names[path]}\n" if install_names[path] else f"{path}:\n"
     )
-    assert provider_test._runtime_macho_dylib_providers(build_root) == {
+    assert deployment_service.macho_dylib_providers(build_root) == {
         "/System/Library/Frameworks/CoreFoundation.framework/Versions/A/CoreFoundation": framework
     }
 
