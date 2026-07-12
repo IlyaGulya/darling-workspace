@@ -818,6 +818,7 @@ class DarlingTest(WestCommand):
         bead: str | None,
         env: str | None,
         diag: str | None,
+        label: str | None,
         red_only: bool,
     ):
         selection = select_metadata_tests(
@@ -826,6 +827,7 @@ class DarlingTest(WestCommand):
             bead=bead,
             env=env,
             diag=diag,
+            label=label,
             red_only=red_only,
             resolved_diag=self._resolved_diag,
         )
@@ -5075,7 +5077,7 @@ class DarlingTest(WestCommand):
         if args.red_audit:
             profile = args.profile or "homebrew"
             selected, missing = self._metadata_tests(
-                profile, args.patch, args.bead, args.env, args.diag, red_only=False
+                profile, args.patch, args.bead, args.env, args.diag, args.label, red_only=False
             )
             missing_reasons = self._red_proof_audit(selected)
             for patch in missing:
@@ -5155,7 +5157,7 @@ class DarlingTest(WestCommand):
 
         if args.profile:
             selected, missing = self._metadata_tests(
-                args.profile, args.patch, args.bead, args.env, args.diag, args.red_only
+                args.profile, args.patch, args.bead, args.env, args.diag, args.label, args.red_only
             )
             if bootstrap_syscall_trace and not bootstrap_runtime_profile:
                 if args.list or not any(test.get("runtime-profile") for _, test in selected):
