@@ -1604,8 +1604,11 @@ class DarlingTest(WestCommand):
             for project in projects
             if getattr(project, "name", None) != "manifest"
         ]
-        for path in prune_stale_west_temp_worktrees(repos):
-            self.inf(f"  pruned stale west temp worktree metadata: {path}")
+        pruned = prune_stale_west_temp_worktrees(repos)
+        if pruned:
+            self.inf(
+                f"  pruned stale west temp worktree metadata: {len(pruned)} entry(s)"
+            )
 
     def _metadata_needs_profile_worktree(self, tests) -> bool:
         for patch, test in tests:
@@ -3568,13 +3571,44 @@ class DarlingTest(WestCommand):
             check=False,
         ).returncode == 0
 
+    def _commit_has_equivalent_patch(self, repo: Path, commit: str) -> bool:
+        """Return whether *commit*'s patch is already reachable from ``HEAD``."""
+        result = subprocess.run(
+            [
+                "git",
+                "log",
+                "--cherry-mark",
+                "--right-only",
+                "--no-merges",
+                "--format=%m%x00%H",
+                f"HEAD...{commit}",
+                "--not",
+                f"{commit}^",
+            ],
+            cwd=repo,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        if result.returncode:
+            return False
+        return any(
+            marker == "=" and candidate == commit
+            for marker, separator, candidate in (
+                line.partition("\0") for line in result.stdout.splitlines()
+            )
+            if separator
+        )
+
     def _profile_patch_is_already_applied(
         self, repo: Path, patch_file: Path, patch: dict
     ) -> bool:
         """Identify a profile patch by declared commit or its current tree effect."""
         source_commit = str(patch.get("source-commit", ""))
-        if source_commit and self._commit_is_ancestor(repo, source_commit):
-            return True
+        if source_commit:
+            return self._commit_is_ancestor(repo, source_commit) or self._commit_has_equivalent_patch(
+                repo, source_commit
+            )
         return (
             subprocess.run(
                 ["git", "apply", "--reverse", "--check", str(patch_file)],
