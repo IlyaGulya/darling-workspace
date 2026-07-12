@@ -48,6 +48,7 @@ from prefix_repair import (
     eunion_prefix_prerequisite_problems,
     guest_c_fixture_prerequisite_problems,
     prefix_boot_prerequisite_problems,
+    repair_prefix_boot_prerequisites,
 )
 from test_ctest import (
     ctest_command,
@@ -4293,6 +4294,14 @@ class DarlingTest(WestCommand):
             with self._runtime_profile_deployment_context(
                 [profile_name], label_prefix="Prefix bootstrap", retain_deployment=True
             ) as deployment:
+                provision = repair_prefix_boot_prerequisites(deployment.prefix)
+                if not provision.success:
+                    self.die(
+                        "prefix bootstrap prerequisite provisioning failed: "
+                        + "; ".join(provision.problems)
+                    )
+                for changed in provision.changed:
+                    self.inf(f"prefix bootstrap provision: {changed}")
                 doctor = run_bounded(
                     [
                         "west",

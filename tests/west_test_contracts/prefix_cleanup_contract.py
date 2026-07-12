@@ -34,6 +34,7 @@ from west_commands.test_prefix import (
     remove_stale_server_socket,
     rootless_prefix_process_snapshot,
 )
+from west_commands.prefix_repair import repair_prefix_boot_prerequisites
 
 
 def make_test():
@@ -352,6 +353,17 @@ with tempfile.TemporaryDirectory() as temp:
     assert all("libexec/darling/private/var/tmp" not in item for item in problems), problems
 
     (prefix / "private/var/tmp").chmod(0o1777)
+    assert test._prefix_boot_prerequisite_problems(prefix) == []
+
+
+with tempfile.TemporaryDirectory() as temp:
+    prefix = Path(temp)
+    result = repair_prefix_boot_prerequisites(prefix)
+    assert result.success, result.problems
+    assert result.changed == [
+        "created private/var/tmp with mode 1777",
+        "created libexec/darling/private/var/tmp with mode 1777",
+    ], result.changed
     assert test._prefix_boot_prerequisite_problems(prefix) == []
 
     problems = test._guest_c_fixture_prerequisite_problems(
