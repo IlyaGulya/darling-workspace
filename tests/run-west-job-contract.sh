@@ -4,6 +4,7 @@ set -euo pipefail
 repo="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 tmp="$(mktemp -d)"
 job="$repo/scripts/west-job.sh"
+metadata_contract="$repo/tests/run-west-test-metadata-contract.sh"
 
 cleanup() {
 	local state
@@ -24,6 +25,18 @@ wait_job --state-dir "$tmp/green"
 grep -F -x -q 'GREEN_JOB' "$tmp/green/log"
 test "$(<"$tmp/green/rc")" = 0
 "$job" status --state-dir "$tmp/green" | grep -F -x -q "completed rc=0 state=$tmp/green"
+
+if CODEX_CI=1 env -u WEST_JOB_ACTIVE -u WEST_JOB_STATE_DIR "$metadata_contract" \
+	>"$tmp/direct-contract.out" 2>"$tmp/direct-contract.err"; then
+	echo 'direct metadata contract unexpectedly ran in CODEX_CI' >&2
+	exit 1
+fi
+grep -F -x -q 'metadata contract requires scripts/west-job.sh in CODEX_CI' \
+	"$tmp/direct-contract.err"
+"$job" start --state-dir "$tmp/metadata-contract" -- \
+	"$metadata_contract" --transport-gate-probe
+wait_job --state-dir "$tmp/metadata-contract"
+grep -F -x -q 'WEST_METADATA_TRANSPORT_GATE_OK' "$tmp/metadata-contract/log"
 
 mkdir -p "$tmp/bin"
 cat >"$tmp/bin/west" <<'SCRIPT'

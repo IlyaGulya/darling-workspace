@@ -140,6 +140,8 @@ start_job() {
 	nohup setsid --wait bash -c '
 		state_dir="$1"
 		shift
+		export WEST_JOB_ACTIVE=1
+		export WEST_JOB_STATE_DIR="$state_dir"
 		printf "%s\\n" "$$" >"$state_dir/runner-pid"
 		awk "{print \$22}" "/proc/$$/stat" >"$state_dir/runner-start-time"
 		finish() {
