@@ -1,0 +1,219 @@
+From 4b5d3e74b1a8f951fe3bb78327a6a551bf0a4aaf Mon Sep 17 00:00:00 2001
+From: Ilya Gulya <ilya.gulya@indriver.com>
+Date: Sun, 12 Jul 2026 00:23:07 +0000
+Subject: [PATCH] rootless: trace shellspawn command lifecycle
+
+---
+ src/shellspawn/shellspawn.c | 100 ++++++++++++++++++++++++++++++++----
+ 1 file changed, 90 insertions(+), 10 deletions(-)
+
+diff --git a/src/shellspawn/shellspawn.c b/src/shellspawn/shellspawn.c
+index 0e276d3f05d3fdb129bc029cd06a8a58053506eb..052204f21b45565bd1fbf6a91a2f5fa8b3c50039 100644
+--- a/src/shellspawn/shellspawn.c
++++ b/src/shellspawn/shellspawn.c
+@@ -49,6 +49,44 @@ void setupSigchild(void);
+ void restoreSigchild(void);
+ void reapAll(void);
+ 
++static int rootlessBootTraceFd(void)
++{
++	const char* rootless = getenv("DARLING_ROOTLESS");
++	const char* fdText = getenv("DARLING_BOOT_TRACE_FD");
++	if (rootless == NULL || strcmp(rootless, "1") != 0 || fdText == NULL || *fdText == '\0')
++		return -1;
++
++	char* end = NULL;
++	long candidate = strtol(fdText, &end, 10);
++	if (end == fdText || *end != '\0' || candidate < 0 || candidate > INT_MAX)
++		return -1;
++
++	return (int)candidate;
++}
++
++static const char* shellspawnCommandName(shellspawn_cmd_type_t command)
++{
++	switch (command)
++	{
++		case SHELLSPAWN_ADDARG:
++			return "addarg";
++		case SHELLSPAWN_SETENV:
++			return "setenv";
++		case SHELLSPAWN_CHDIR:
++			return "chdir";
++		case SHELLSPAWN_GO:
++			return "go";
++		case SHELLSPAWN_SIGNAL:
++			return "signal";
++		case SHELLSPAWN_SETUIDGID:
++			return "setuidgid";
++		case SHELLSPAWN_SETEXEC:
++			return "setexec";
++		default:
++			return "unknown";
++	}
++}
++
+ static void rootlessTestDelaySocketReady(void)
+ {
+ 	const char* rootless = getenv("DARLING_ROOTLESS");
+@@ -95,17 +133,30 @@ static void rootlessTestMarkSocketPending(void)
+ 
+ static void rootlessBootTrace(const char* stage)
+ {
+-	const char* rootless = getenv("DARLING_ROOTLESS");
+-	const char* fdText = getenv("DARLING_BOOT_TRACE_FD");
+-	if (rootless == NULL || strcmp(rootless, "1") != 0 || fdText == NULL || *fdText == '\0')
+-		return;
++	int saved_errno = errno;
++	int fd = rootlessBootTraceFd();
++	if (fd != -1)
++		dprintf(fd, "shellspawn pid=%d %s\n", getpid(), stage);
++	errno = saved_errno;
++}
+ 
+-	char* end = NULL;
+-	long candidate = strtol(fdText, &end, 10);
+-	if (end == fdText || *end != '\0' || candidate < 0 || candidate > INT_MAX)
+-		return;
++static void rootlessBootTraceCommand(const char* stage, shellspawn_cmd_type_t command)
++{
++	int saved_errno = errno;
++	int fd = rootlessBootTraceFd();
++	if (fd != -1)
++		dprintf(fd, "shellspawn pid=%d %s command=%s\n", getpid(), stage,
++			shellspawnCommandName(command));
++	errno = saved_errno;
++}
+ 
+-	dprintf((int)candidate, "shellspawn pid=%d %s\n", getpid(), stage);
++static void rootlessBootTraceErrno(const char* stage)
++{
++	int saved_errno = errno;
++	int fd = rootlessBootTraceFd();
++	if (fd != -1)
++		dprintf(fd, "shellspawn pid=%d %s errno=%d\n", getpid(), stage, saved_errno);
++	errno = saved_errno;
+ }
+ 
+ int main(int argc, const char** argv)
+@@ -169,10 +220,16 @@ void listenForConnections(void)
+ 	{
+ 		sock = accept(g_serverSocket, (struct sockaddr*) &addr, &len);
+ 		if (sock == -1)
++		{
++			rootlessBootTraceErrno("client-accept-failed");
+ 			break;
++		}
++		rootlessBootTrace("client-accepted");
+ 
+-		if (fork() == 0)
++		pid_t client_pid = fork();
++		if (client_pid == 0)
+ 		{
++			rootlessBootTrace("client-dispatched");
+ 			restoreSigchild();
+ 			fcntl(sock, F_SETFD, FD_CLOEXEC);
+ 			spawnShell(sock);
+@@ -180,6 +237,8 @@ void listenForConnections(void)
+ 		}
+ 		else
+ 		{
++			if (client_pid == -1)
++				rootlessBootTraceErrno("client-fork-failed");
+ 			close(sock);
+ 		}
+ 	}
+@@ -225,14 +284,19 @@ void spawnShell(int fd)
+ 		if (recvmsg(fd, &msg, 0) != sizeof(cmd))
+ 		{
+ 			if (DBG) puts("bad recvmsg");
++			rootlessBootTraceErrno("command-recv-failed");
+ 			goto err;
+ 		}
++		rootlessBootTraceCommand("command-received", cmd.cmd);
+ 
+ 		if (cmd.data_length != 0)
+ 		{
+ 			param = (char*) malloc(cmd.data_length + 1);
+ 			if (read(fd, param, cmd.data_length) != cmd.data_length)
++			{
++				rootlessBootTraceErrno("command-payload-read-failed");
+ 				goto err;
++			}
+ 			param[cmd.data_length] = '\0';
+ 		}
+ 
+@@ -275,23 +339,27 @@ void spawnShell(int fd)
+ 				if (cmptr == NULL)
+ 				{
+ 					if (DBG) puts("bad cmptr");
++					rootlessBootTrace("command-go-missing-rights");
+ 					goto err;
+ 				}
+ 				if (cmptr->cmsg_level != SOL_SOCKET
+ 						|| cmptr->cmsg_type != SCM_RIGHTS)
+ 				{
+ 					if (DBG) puts("bad cmsg level/type");
++					rootlessBootTrace("command-go-invalid-rights");
+ 					goto err;
+ 				}
+ 				if (cmptr->cmsg_len != CMSG_LEN(sizeof(int) * 3))
+ 				{
+ 					if (DBG) printf("bad cmsg_len: %d\n", cmptr->cmsg_len);
++					rootlessBootTrace("command-go-invalid-fd-count");
+ 					goto err;
+ 				}
+ 
+ 				memcpy(shellfd, CMSG_DATA(cmptr), sizeof(int) * 3);
+ 
+ 				if (DBG) printf("go, fds={ %d, %d, %d }\n", shellfd[0], shellfd[1], shellfd[2]);
++				rootlessBootTrace("command-go");
+ 				free(param);
+ 				read_cmds = false;
+ 				break;
+@@ -327,7 +395,10 @@ void spawnShell(int fd)
+ 	argv[argc] = NULL;
+ 
+ 	if (pipe(pipefd) == -1)
++	{
++		rootlessBootTraceErrno("shell-pipe-failed");
+ 		goto err;
++	}
+ 
+ 	setsid();
+ 	setpgrp();
+@@ -345,6 +416,7 @@ void spawnShell(int fd)
+ 	shell_pid = fork();
+ 	if (shell_pid == 0)
+ 	{
++		rootlessBootTrace("guest-exec-enter");
+ 		close(fd);
+ 
+ 		fcntl(pipefd[1], F_SETFD, FD_CLOEXEC);
+@@ -354,11 +426,18 @@ void spawnShell(int fd)
+ 		execv(alloc_exec ? alloc_exec : "/bin/bash", argv);
+ 
+ 		rv = errno;
++		rootlessBootTraceErrno("guest-exec-failed");
+ 		write(pipefd[1], &rv, sizeof(rv));
+ 		close(pipefd[1]);
+ 
+ 		exit(EXIT_FAILURE);
+ 	}
++	if (shell_pid == -1)
++	{
++		rootlessBootTraceErrno("guest-fork-failed");
++		goto err;
++	}
++	rootlessBootTrace("guest-exec-started");
+ 
+ 	if (alloc_exec)
+ 	{
+@@ -479,6 +558,7 @@ void spawnShell(int fd)
+ 	reapAll();
+ 	return;
+ err:
++	rootlessBootTraceErrno("shellspawn-error");
+ 	if (DBG) fprintf(stderr, "Error spawning shell: %s\n", strerror(errno));
+ 
+ 	for (int i = 0; i < 3; i++)
