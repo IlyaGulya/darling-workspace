@@ -729,6 +729,22 @@ with tempfile.TemporaryDirectory() as temp:
         captured_output="runner stderr\n",
     )
 
+with tempfile.TemporaryDirectory() as temp:
+    trace = Path(temp) / "guest-fd.trace"
+    trace.write_text("shellspawn-error errno=9\n")
+    test = make_test()
+    test._bundle_root = "/tmp/west-test-contract-no-bundles"
+    invocation = test._with_runtime_diagnostics(
+        {"name": "runtime_red_guest_fd_trace"},
+        types.SimpleNamespace(diagnostic_trace_paths=(trace,)),
+    )
+    assert test._check_guest_runtime_red_failure(
+        {"expect-output-contains": ["shellspawn-error errno=9"]},
+        invocation,
+        since=time.time() - 10,
+        captured_output="runner stderr\n",
+    )
+
 test = make_test()
 assert not test._guest_runtime_red_has_positive_reason({})
 assert not test._guest_runtime_red_has_positive_reason({"expect-output-contains": []})
