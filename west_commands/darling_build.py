@@ -36,6 +36,14 @@ from contextlib import contextmanager
 from pathlib import Path
 
 from west.commands import WestCommand
+try:
+    from .deploy_transaction import DeploymentTransaction, DeploymentTransactionError
+    from .prefix_repair import prefix_mount_targets
+    from .test_prefix import rootless_prefix_process_snapshot
+except ImportError:
+    from deploy_transaction import DeploymentTransaction, DeploymentTransactionError
+    from prefix_repair import prefix_mount_targets
+    from test_prefix import rootless_prefix_process_snapshot
 
 # the 35 closure dylib basenames + libSystem.B, matched by find under the build dir.
 # dyld itself is handled separately (its target path is fixed).
@@ -92,6 +100,10 @@ class DarlingBuild(WestCommand):
                        help="ninja targets to build (default: dyld + all closure dylibs)")
         p.add_argument("--deploy", action="store_true",
                        help="after building, deploy selected runtime artifacts into the prefix (backs up first)")
+        p.add_argument("--deploy-manifest", metavar="PATH",
+                       help="record a transactional deploy manifest at PATH (requires --deploy)")
+        p.add_argument("--restore-deploy", metavar="PATH",
+                       help="restore one deploy manifest without building")
         p.add_argument("--deploy-extra-prefix", action="append", default=[], metavar="PREFIX",
                        help="with --deploy, also copy closure dylibs into this additional prefix root (repeatable)")
         p.add_argument("--deploy-closure-names", nargs="*", default=None, metavar="BASENAME",
@@ -124,7 +136,15 @@ class DarlingBuild(WestCommand):
         build_dir = Path(args.build_dir)
         prefix = Path(args.prefix)
 
+        if args.deploy and args.restore_deploy:
+            self.die("--deploy and --restore-deploy are mutually exclusive")
+        if args.deploy_manifest and not args.deploy:
+            self.die("--deploy-manifest requires --deploy")
+
         with self._build_dir_lock(build_dir):
+            if args.restore_deploy:
+                self._restore_deploy(Path(args.restore_deploy), prefix)
+                return
             self._run_locked(args, topdir, build_dir, prefix)
 
     def _run_locked(self, args, topdir, build_dir, prefix):
@@ -196,27 +216,47 @@ class DarlingBuild(WestCommand):
             extra_prefixes = [Path(p) for p in args.deploy_extra_prefix]
             if args.shutdown_before_deploy:
                 self._shutdown_prefixes(prefix, extra_prefixes)
-            self._deploy(
-                build_dir,
-                prefix,
-                closure_names=deploy_closure_names,
-                deploy_dyld=deploy_dyld,
-                deploy_darlingserver=args.deploy_darlingserver,
-                deploy_launcher=args.deploy_launcher,
-                deploy_mldr=args.deploy_mldr,
-                deploy_shellspawn=args.deploy_shellspawn,
-                deploy_bootchain=args.deploy_bootchain,
-                extra_prefixes=extra_prefixes,
-            )
-            # ---- 4. post-deploy doctor ----
-            if args.skip_post_doctor:
-                self.wrn("skipping post-deploy doctor (--skip-post-doctor)")
-            else:
-                self.inf("== post-deploy doctor ==")
-                rc = self._doctor(topdir, build_dir=build_dir, prefix=prefix, extra_prefixes=extra_prefixes)
-                if rc != 0:
-                    self.err("post-deploy doctor FAILED — the deploy may be inconsistent. Investigate.")
-                    raise SystemExit(1)
+            transaction = None
+            if args.deploy_manifest:
+                try:
+                    transaction = DeploymentTransaction(
+                        Path(args.deploy_manifest), prefix, extra_prefixes
+                    )
+                except DeploymentTransactionError as error:
+                    self.die(str(error))
+            try:
+                self._deploy(
+                    build_dir,
+                    prefix,
+                    closure_names=deploy_closure_names,
+                    deploy_dyld=deploy_dyld,
+                    deploy_darlingserver=args.deploy_darlingserver,
+                    deploy_launcher=args.deploy_launcher,
+                    deploy_mldr=args.deploy_mldr,
+                    deploy_shellspawn=args.deploy_shellspawn,
+                    deploy_bootchain=args.deploy_bootchain,
+                    extra_prefixes=extra_prefixes,
+                    transaction=transaction,
+                )
+                # ---- 4. post-deploy doctor ----
+                if args.skip_post_doctor:
+                    self.wrn("skipping post-deploy doctor (--skip-post-doctor)")
+                else:
+                    self.inf("== post-deploy doctor ==")
+                    rc = self._doctor(topdir, build_dir=build_dir, prefix=prefix, extra_prefixes=extra_prefixes)
+                    if rc != 0:
+                        self.err("post-deploy doctor FAILED — rolling back the transaction.")
+                        raise SystemExit(1)
+                if transaction is not None:
+                    transaction.commit()
+                    self.inf(f"transactional deploy manifest: {transaction.manifest_path}")
+            except BaseException:
+                if transaction is not None:
+                    try:
+                        transaction.rollback()
+                    except DeploymentTransactionError as error:
+                        self.err(f"transaction rollback failed: {error}")
+                raise
         else:
             self.inf("(not deployed; pass --deploy to copy into the prefix)")
 
@@ -319,6 +359,41 @@ class DarlingBuild(WestCommand):
         if live:
             time.sleep(0.25)
 
+    def _restore_deploy(self, manifest_path, prefix):
+        try:
+            roots = DeploymentTransaction.manifest_roots(manifest_path, prefix)
+            for root in roots:
+                self._assert_prefix_idle(root)
+            DeploymentTransaction.restore(manifest_path, prefix)
+        except (DeploymentTransactionError, OSError, ValueError) as error:
+            self.die(f"cannot restore deploy transaction: {error}")
+        self.inf(f"restored deploy transaction: {manifest_path}")
+
+    def _assert_prefix_idle(self, prefix):
+        mounts = prefix_mount_targets(prefix)
+        if mounts:
+            self.die(
+                "refusing deploy restore while prefix has mounted filesystems: "
+                + ", ".join(str(path) for path in mounts)
+            )
+        processes = rootless_prefix_process_snapshot(prefix)
+        listing = subprocess.run(
+            ["ps", "-eo", "pid=,args="], capture_output=True, text=True, check=False
+        )
+        prefix_text = str(prefix.resolve())
+        for line in listing.stdout.splitlines():
+            pid, separator, args = line.strip().partition(" ")
+            if not separator or not pid.isdigit() or prefix_text not in args:
+                continue
+            name = Path(args.split()[0]).name
+            if name in {"darling", "darlingserver", "mldr", "launchd", "shellspawn", "vchroot"}:
+                processes.append(f"{pid} {args}")
+        if processes:
+            self.die(
+                "refusing deploy restore while prefix owns Darling process(es): "
+                + "; ".join(sorted(set(processes)))
+            )
+
     def _closure_targets(self, build_dir, names=None):
         """Resolve each closure basename to its newest built artifact path (relative to build_dir)."""
         targets = []
@@ -350,7 +425,7 @@ class DarlingBuild(WestCommand):
     def _deploy(self, build_dir, prefix, closure_names=None, deploy_dyld=True,
                 deploy_darlingserver=False, deploy_launcher=False, deploy_mldr=False,
                 deploy_shellspawn=False, deploy_bootchain=False,
-                extra_prefixes=None):
+                extra_prefixes=None, transaction=None):
         base = prefix / "libexec/darling"
         roots = [prefix] + list(extra_prefixes or [])
         dyld_src = build_dir / _DYLD_TARGET
@@ -449,39 +524,40 @@ class DarlingBuild(WestCommand):
 
         resolved = self._closure_targets(build_dir, closure_names)
         name_to_path = {Path(t).name: build_dir / t for t in resolved}
+        copy_deployed_file = transaction.replace if transaction is not None else shutil.copy2
         for tree in [base] + roots:
             if deploy_dyld:
-                shutil.copy2(dyld_src, tree / "usr/lib/dyld")
+                copy_deployed_file(dyld_src, tree / "usr/lib/dyld")
             for name, src in name_to_path.items():
                 if name == "libSystem.B.dylib":
-                    shutil.copy2(src, tree / "usr/lib/libSystem.B.dylib")
+                    copy_deployed_file(src, tree / "usr/lib/libSystem.B.dylib")
                 else:
-                    shutil.copy2(src, tree / "usr/lib/system" / name)
+                    copy_deployed_file(src, tree / "usr/lib/system" / name)
         if deploy_darlingserver:
             for root in roots:
                 dst = root / "bin/darlingserver"
                 dst.parent.mkdir(parents=True, exist_ok=True)
-                shutil.copy2(dserver_src, dst)
+                copy_deployed_file(dserver_src, dst)
         if deploy_launcher:
             for root in roots:
                 dst = root / "bin/darling"
                 dst.parent.mkdir(parents=True, exist_ok=True)
-                shutil.copy2(launcher_src, dst)
+                copy_deployed_file(launcher_src, dst)
         if deploy_mldr:
             for src_rel, dst_rel in _MLDR_DEPLOYS:
                 dst = prefix / dst_rel
                 dst.parent.mkdir(parents=True, exist_ok=True)
-                shutil.copy2(build_dir / src_rel, dst)
+                copy_deployed_file(build_dir / src_rel, dst)
         if deploy_shellspawn:
             src_rel, dst_rel = _SHELLSPAWN_DEPLOY
             dst = prefix / dst_rel
             dst.parent.mkdir(parents=True, exist_ok=True)
-            shutil.copy2(build_dir / src_rel, dst)
+            copy_deployed_file(build_dir / src_rel, dst)
         if deploy_bootchain:
             for src_rel, dst_rel in _BOOTCHAIN_DEPLOYS:
                 dst = prefix / dst_rel
                 dst.parent.mkdir(parents=True, exist_ok=True)
-                shutil.copy2(build_dir / src_rel, dst)
+                copy_deployed_file(build_dir / src_rel, dst)
         dyld_note = "dyld + " if deploy_dyld else ""
         target_count = 1 + len(roots)
         dserver_note = " + darlingserver" if deploy_darlingserver else ""
