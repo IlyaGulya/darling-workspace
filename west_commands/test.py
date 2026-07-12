@@ -2008,6 +2008,13 @@ class DarlingTest(WestCommand):
                 parts.append(path.read_text(errors="replace"))
         return "".join(parts)
 
+    def _host_trace_output(self, invocation) -> str:
+        parts = []
+        for path in invocation.get("_host_trace_paths", []):
+            if path.is_file():
+                parts.append(path.read_text(errors="replace"))
+        return "".join(parts)
+
     def _display_invocation(self, invocation) -> str:
         if invocation.get("darling_cmake_target_fixture"):
             return invocation["display"]
@@ -4524,14 +4531,15 @@ class DarlingTest(WestCommand):
         if not contains and not lacks:
             return True
 
+        observed_output = (captured_output or "") + self._host_trace_output(invocation)
         bundle = self._latest_debug_bundle(invocation, since=since)
         if bundle is None:
-            if captured_output is not None:
+            if observed_output:
                 return self._check_red_output_expectations(
                     proof,
                     invocation,
-                    captured_output,
-                    where="in captured RED output",
+                    observed_output,
+                    where="in captured RED output and host trace",
                 )
             self.err(
                 f"{invocation['name']}: RED failure output requested, "
@@ -4539,7 +4547,7 @@ class DarlingTest(WestCommand):
             )
             return False
 
-        output = self._debug_bundle_output(bundle)
+        output = self._debug_bundle_output(bundle) + observed_output
         return self._check_red_output_expectations(
             proof,
             invocation,
