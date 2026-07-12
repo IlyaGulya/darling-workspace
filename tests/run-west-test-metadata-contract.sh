@@ -31,6 +31,16 @@ fi
 
 export PYTHONDONTWRITEBYTECODE=1
 
+if [[ "${CODEX_CI:-}" == "1" && "${WEST_JOB_ACTIVE:-}" != "1" ]]; then
+	echo 'metadata contract requires scripts/west-job.sh in CODEX_CI' >&2
+	exit 2
+fi
+
+if [ "${1:-}" = "--transport-gate-probe" ]; then
+	printf 'WEST_METADATA_TRANSPORT_GATE_OK\n'
+	exit 0
+fi
+
 python3 tests/west_test_contracts/selection_contract.py
 python3 tests/west_test_contracts/metadata_runtime_profile_contract.py
 python3 tests/west_test_contracts/metadata_runtime_profile_red_contract.py
