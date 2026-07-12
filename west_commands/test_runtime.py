@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import re
 from collections.abc import Callable, Mapping
 from pathlib import Path
@@ -10,25 +11,17 @@ from typing import Any
 import yaml
 
 
-ROOTLESS_NO_MOUNT_DEPLOY_PATHS = frozenset(
-    {
-        "bin/darling",
-        "bin/darlingserver",
-        "bin/launchctl",
-        "sbin/launchd",
-        "usr/libexec/darling/mldr",
-        "usr/libexec/shellspawn",
-        "usr/libexec/darling/vchroot",
-        "usr/lib/dyld",
-    }
-)
-
-ROOTLESS_BOOTSTRAP_CLOSURE_RESOURCE = "rootless-bootstrap-closure"
+ROOTLESS_BOOTSTRAP_RESOURCE = "rootless-bootstrap"
+ROOTLESS_BOOTSTRAP_TARGET = "rootless_bootstrap"
+ROOTLESS_BOOTSTRAP_MANIFEST = "darling-rootless-bootstrap.json"
 # Source owners whose patched revisions can provide Mach-O libraries in the
 # bootstrap closure. A materialized runtime forest must not leave them as live
 # symlinks, or it can build an unpatched provider while claiming profile parity.
 ROOTLESS_BOOTSTRAP_CLOSURE_SOURCE_MODULES = frozenset(
-    {"darling/src/external/libsystem"}
+    {
+        "darling/src/external/corefoundation",
+        "darling/src/external/libsystem",
+    }
 )
 ROOTLESS_NO_MOUNT_SOURCE_MODULES = frozenset(
     {
@@ -39,13 +32,7 @@ ROOTLESS_NO_MOUNT_SOURCE_MODULES = frozenset(
     }
 ).union(ROOTLESS_BOOTSTRAP_CLOSURE_SOURCE_MODULES)
 ROOTLESS_NO_MOUNT_RUNTIME_RESOURCES = frozenset(
-    {ROOTLESS_BOOTSTRAP_CLOSURE_RESOURCE}
-)
-# These are CMake build roots, not a dylib inventory. The runner derives the
-# concrete deployment from their final Mach-O products and rejects any missing
-# transitive provider before guest execution.
-ROOTLESS_BOOTSTRAP_CLOSURE_BUILD_TARGETS = frozenset(
-    {"system_kernel", "objc", "resolv-darwin"}
+    {ROOTLESS_BOOTSTRAP_RESOURCE}
 )
 _RUNTIME_RESOURCES = ROOTLESS_NO_MOUNT_RUNTIME_RESOURCES
 _MACHO_MAGICS = frozenset(
@@ -128,6 +115,72 @@ def is_macho_binary(path: Path) -> bool:
             return handle.read(4) in _MACHO_MAGICS
     except OSError:
         return False
+
+
+def load_rootless_bootstrap_manifest(build_root: Path) -> dict[str, Path]:
+    """Load CMake's rootless entrypoints and validate their deployment boundary.
+
+    CMake owns the component's target-to-guest-path mapping. West only consumes
+    its generated product metadata and refuses paths that escape the disposable
+    build tree or fail to name a built executable. Some entrypoints, including
+    the host-side ``darling`` launcher and ``mldr``, are ELF; the deployment
+    manifest carries both host and guest executables. The runtime closure code
+    separately selects only Mach-O entries as dylib-dependency roots.
+    """
+
+    manifest_path = build_root / ROOTLESS_BOOTSTRAP_MANIFEST
+    try:
+        data = json.loads(manifest_path.read_text())
+    except OSError as exc:
+        raise ValueError(f"cannot read rootless bootstrap manifest {manifest_path}: {exc}") from exc
+    except json.JSONDecodeError as exc:
+        raise ValueError(f"invalid rootless bootstrap manifest {manifest_path}: {exc.msg}") from exc
+    if not isinstance(data, dict) or data.get("schema") != 1:
+        raise ValueError("rootless bootstrap manifest must have schema 1")
+    entries = data.get("entrypoints")
+    if not isinstance(entries, list) or not entries:
+        raise ValueError("rootless bootstrap manifest needs non-empty entrypoints")
+
+    resolved_root = build_root.resolve()
+    deployments: dict[str, Path] = {}
+    for index, entry in enumerate(entries):
+        if not isinstance(entry, dict):
+            raise ValueError(f"rootless bootstrap manifest entry {index} must be a mapping")
+        target = entry.get("target")
+        guest_path = entry.get("guest_path")
+        host_path = entry.get("host_path")
+        if not all(isinstance(value, str) and value for value in (target, guest_path, host_path)):
+            raise ValueError(
+                f"rootless bootstrap manifest entry {index} needs target, guest_path, and host_path"
+            )
+        guest = Path(guest_path)
+        if not guest.is_absolute() or ".." in guest.parts:
+            raise ValueError(
+                f"rootless bootstrap manifest entry {target!r} has invalid guest path {guest_path!r}"
+            )
+        relative_guest_path = guest_path.removeprefix("/")
+        if not relative_guest_path:
+            raise ValueError(f"rootless bootstrap manifest entry {target!r} cannot deploy at /")
+        source = Path(host_path)
+        if not source.is_absolute():
+            raise ValueError(
+                f"rootless bootstrap manifest entry {target!r} has non-absolute host path {host_path!r}"
+            )
+        resolved_source = source.resolve()
+        if not resolved_source.is_relative_to(resolved_root):
+            raise ValueError(
+                f"rootless bootstrap manifest entry {target!r} escapes build root: {host_path}"
+            )
+        if not resolved_source.is_file() or not resolved_source.stat().st_mode & 0o111:
+            raise ValueError(
+                f"rootless bootstrap manifest entry {target!r} is not a built executable: {host_path}"
+            )
+        if relative_guest_path in deployments:
+            raise ValueError(
+                f"rootless bootstrap manifest has duplicate guest path {guest_path!r}"
+            )
+        deployments[relative_guest_path] = resolved_source
+    return deployments
 
 
 def parse_macho_dylib_id(output: str) -> str | None:
@@ -279,15 +332,6 @@ def load_ctest_runtime_profiles(path: Path) -> dict[str, dict[str, Any]]:
                 f"{', '.join(sorted(missing_system_kernel_modules))}"
             )
         if bootstrap == "rootless-no-mount":
-            missing_bootstrap_paths = ROOTLESS_NO_MOUNT_DEPLOY_PATHS.difference(
-                deploy_paths
-            )
-            if missing_bootstrap_paths:
-                raise ValueError(
-                    f"runtime profile {name!r} rootless-no-mount is missing "
-                    "bootstrap deploy path(s): "
-                    + ", ".join(sorted(missing_bootstrap_paths))
-                )
             missing_bootstrap_modules = ROOTLESS_NO_MOUNT_SOURCE_MODULES.difference(
                 source_modules
             )
@@ -303,23 +347,27 @@ def load_ctest_runtime_profiles(path: Path) -> dict[str, dict[str, Any]]:
                     f"runtime profile {name!r} rootless-no-mount is missing "
                     "runtime resource(s): " + ", ".join(sorted(missing_resources))
                 )
-            closure_targets = {
-                target
+            bootstrap_artifacts = [
+                artifact
                 for artifact in artifacts
                 if isinstance(artifact, dict)
-                and runtime_artifact_has_resource(
-                    artifact, ROOTLESS_BOOTSTRAP_CLOSURE_RESOURCE
-                )
-                for target in artifact.get("build-targets", [])
-                if isinstance(target, str)
-            }
-            missing_closure_targets = (
-                ROOTLESS_BOOTSTRAP_CLOSURE_BUILD_TARGETS.difference(closure_targets)
-            )
-            if missing_closure_targets:
+                and runtime_artifact_has_resource(artifact, ROOTLESS_BOOTSTRAP_RESOURCE)
+            ]
+            if len(bootstrap_artifacts) != 1:
                 raise ValueError(
-                    f"runtime profile {name!r} rootless-no-mount closure must build "
-                    "target(s): " + ", ".join(sorted(missing_closure_targets))
+                    f"runtime profile {name!r} rootless-no-mount needs exactly one "
+                    f"{ROOTLESS_BOOTSTRAP_RESOURCE!r} resource"
+                )
+            bootstrap_artifact = bootstrap_artifacts[0]
+            if bootstrap_artifact.get("build-targets") != [ROOTLESS_BOOTSTRAP_TARGET]:
+                raise ValueError(
+                    f"runtime profile {name!r} rootless-no-mount resource must build "
+                    f"only {ROOTLESS_BOOTSTRAP_TARGET!r}"
+                )
+            if runtime_artifact_deploy_paths(bootstrap_artifact):
+                raise ValueError(
+                    f"runtime profile {name!r} rootless-no-mount resource must not "
+                    "declare deploy paths; CMake owns them"
                 )
         normalized[name] = {
             "source-profile": source_profile,

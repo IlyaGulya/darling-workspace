@@ -41,6 +41,42 @@ assert PATCH_APPLICATION_GIT_OPTIONS == (
 assert TEMPORARY_PATCH_GIT_OPTIONS == PATCH_APPLICATION_GIT_OPTIONS
 
 
+def runtime_patch(artifact):
+    return {
+        "module": "darling",
+        "tests": [
+            {
+                "name": "rootless_bootstrap_resource_contract",
+                "runs": "guest",
+                "runner": "guest-runtime-script",
+                "script": "tests/west_test_contracts/patch_verify_contract.py",
+                "red-proof": {
+                    "mode": "guest-runtime-deploy",
+                    "runtime-artifacts": [artifact],
+                }
+            }
+        ]
+    }
+
+
+metadata_command = DarlingPatch.__new__(DarlingPatch)
+metadata_command._project_path = lambda _repo: ROOT
+rootless_artifact = {
+    "module": "darling",
+    "build-targets": ["rootless_bootstrap"],
+    "resource": "rootless-bootstrap",
+}
+rootless_errors = metadata_command._validate_test_metadata(runtime_patch(rootless_artifact))
+assert rootless_errors == [], rootless_errors
+for invalid_artifact, expected in (
+    ({**rootless_artifact, "deploy": ["bin/darling"]}, "must not declare deploy paths"),
+    ({**rootless_artifact, "build-targets": ["darling"]}, "must build only"),
+    ({**rootless_artifact, "resource": "unknown"}, "has unknown resource"),
+):
+    errors = metadata_command._validate_test_metadata(runtime_patch(invalid_artifact))
+    assert any(expected in error for error in errors), errors
+
+
 def git(repo: Path, *args: str) -> None:
     subprocess.run(["git", *args], cwd=repo, check=True, stdout=subprocess.DEVNULL)
 
