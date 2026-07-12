@@ -1183,6 +1183,10 @@ with tempfile.TemporaryDirectory() as temp:
     assert len(calls) == 2, calls
     assert calls[0][1:] == (True, 1800), calls
     assert calls[1][0][-2:] == ["target-a", "target-b"], calls
+    assert any(message == "  runtime phase start: GREEN configure" for message in test.inf_messages)
+    assert any(message.startswith("  runtime phase complete: GREEN configure (") for message in test.inf_messages)
+    assert any(message == "  runtime phase start: GREEN build" for message in test.inf_messages)
+    assert any(message.startswith("  runtime phase complete: GREEN build (") for message in test.inf_messages)
 
 with tempfile.TemporaryDirectory() as temp:
     tempdir = Path(temp)
