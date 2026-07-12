@@ -1,0 +1,1483 @@
+From 5c3019fca1d85533f34735bf40c97156c87b6d4f Mon Sep 17 00:00:00 2001
+From: Ilya Gulya <ilya@gulya.me>
+Date: Sun, 12 Jul 2026 15:46:12 +0000
+Subject: [PATCH] xnu: establish E-UNION core filesystem semantics
+
+Consolidate path resolution, copy-up, whiteout and opaque-directory handling, merged directory enumeration, activation, and foundational path detranslation into one reviewable block.
+
+The colocated behavioral fixtures and resolver test remain part of this block.
+---
+ .../libsystem_kernel/emulation/CMakeLists.txt |  12 +
+ .../linux_premigration/vchroot_expand.h       |  21 +
+ .../linux_premigration/vchroot_userspace.c    | 936 ++++++++++++++++++
+ .../bsd/impl/dirent/getdirentries.c           |  13 +
+ .../src/xnu_syscall/bsd/impl/fcntl/openat.c   |  14 +
+ .../src/xnu_syscall/bsd/impl/network/bind.c   |  31 +
+ .../src/xnu_syscall/bsd/impl/stat/mkdirat.c   |   9 +-
+ .../src/xnu_syscall/bsd/impl/stat/mkfifo.c    |   7 +-
+ .../src/xnu_syscall/bsd/impl/stat/rmdir.c     |   7 +
+ .../src/xnu_syscall/bsd/impl/time/utimes.c    |  11 +-
+ .../bsd/impl/unistd/chmod_extended.c          |   9 +
+ .../src/xnu_syscall/bsd/impl/unistd/close.c   |  12 +
+ .../xnu_syscall/bsd/impl/unistd/fchmodat.c    |  10 +
+ .../src/xnu_syscall/bsd/impl/unistd/linkat.c  |  14 +
+ .../src/xnu_syscall/bsd/impl/unistd/mknod.c   |   6 +-
+ .../xnu_syscall/bsd/impl/unistd/renameat.c    |  23 +
+ .../xnu_syscall/bsd/impl/unistd/symlinkat.c   |   8 +-
+ .../xnu_syscall/bsd/impl/unistd/truncate.c    |  11 +-
+ .../xnu_syscall/bsd/impl/unistd/unlinkat.c    |   7 +
+ 19 files changed, 1155 insertions(+), 6 deletions(-)
+
+diff --git a/darling/src/libsystem_kernel/emulation/CMakeLists.txt b/darling/src/libsystem_kernel/emulation/CMakeLists.txt
+index 5b2e765dfba7f1ff923dd87728447739a418e4c9..4918aff9962999fd521c81251aebf0bd589ed993 100644
+--- a/darling/src/libsystem_kernel/emulation/CMakeLists.txt
++++ b/darling/src/libsystem_kernel/emulation/CMakeLists.txt
+@@ -376,6 +376,18 @@ set_target_properties(emulation_dyld PROPERTIES COMPILE_FLAGS "-ffunction-sectio
+ add_dependencies(emulation rtsig_h generate_dserver_rpc_wrappers)
+ add_dependencies(emulation_dyld rtsig_h generate_dserver_rpc_wrappers)
+ 
++# E-UNION (dar-test-infra-sp5.8.4.4): union-by-path-translation in vchroot.
++# OFF by default -> the emulation builds byte-identical to baseline. When ON,
++# define EUNION (activates the #ifdef EUNION code) and EUNION_LIBEXEC_PATH (the
++# shared read-only template, == darlingserver's LIBEXEC_PATH).
++option(DARLING_EUNION "Enable E-UNION union-in-vchroot prefix assembly (experimental)" OFF)
++if (DARLING_EUNION)
++	target_compile_definitions(emulation PRIVATE
++		EUNION EUNION_LIBEXEC_PATH="${CMAKE_INSTALL_PREFIX}/libexec/darling")
++	target_compile_definitions(emulation_dyld PRIVATE
++		EUNION EUNION_LIBEXEC_PATH="${CMAKE_INSTALL_PREFIX}/libexec/darling")
++endif()
++
+ make_fat(emulation)
+ make_fat(emulation_dyld)
+ 
+diff --git a/darling/src/libsystem_kernel/emulation/include/linux_premigration/vchroot_expand.h b/darling/src/libsystem_kernel/emulation/include/linux_premigration/vchroot_expand.h
+index ae8485394af27f756a5c7847489d3aa3f31aa345..89519268259e4017349aab0c999c29410a86bfe0 100644
+--- a/darling/src/libsystem_kernel/emulation/include/linux_premigration/vchroot_expand.h
++++ b/darling/src/libsystem_kernel/emulation/include/linux_premigration/vchroot_expand.h
+@@ -25,4 +25,25 @@ int vchroot_expand(struct vchroot_expand_args* args);
+ int vchroot_unexpand(struct vchroot_unexpand_args* args);
+ int vchroot_fdpath(struct vchroot_fdpath_args* args);
+ 
++#ifdef EUNION
++// E-UNION: writable-upper / read-only-lower union by path translation.
++// Copy-up / whiteout / opaque / merged-readdir primitives.
++int vchroot_copyup(const char* guest);
++int vchroot_whiteout(const char* guest);
++int vchroot_unwhiteout(const char* guest);
++int vchroot_set_opaque(const char* guest);
++int vchroot_readdir_merge(const char* guest, char* out, int cap);
++// Paged merged getdents for getdirentries (per-fd state); vchroot_dir_closed
++// MUST be called from close()/closedir() so the per-fd state is freed.
++int vchroot_getdents_merge(int fd, char* out, int cap);
++void vchroot_dir_closed(int fd);
++// Thin policy helpers the syscall-emulation sites call (see vchroot_userspace.c):
++//   vchroot_prepare_write(guest) BEFORE a write/mutate (expand then hits upper);
++//   vchroot_post_unlink(guest)   AFTER a successful unlink/rmdir;
++//   vchroot_pre_mkdir(guest)     BEFORE re-creating a possibly-deleted name.
++int vchroot_prepare_write(const char* guest);
++int vchroot_post_unlink(const char* guest);
++int vchroot_pre_mkdir(const char* guest);
++#endif // EUNION
++
+ #endif // _VCHROOT_EXPAND_H
+diff --git a/darling/src/libsystem_kernel/emulation/src/linux_premigration/vchroot_userspace.c b/darling/src/libsystem_kernel/emulation/src/linux_premigration/vchroot_userspace.c
+index 2b72ad9d330c60bed3d3185531a0ffc615f84ab1..b1e0fcde8f3ac4e12a2ac19013999fcd54aff6bc 100644
+--- a/darling/src/libsystem_kernel/emulation/src/linux_premigration/vchroot_userspace.c
++++ b/darling/src/libsystem_kernel/emulation/src/linux_premigration/vchroot_userspace.c
+@@ -76,6 +76,803 @@ static bool next_component(const char* from, const char** end);
+ static char prefix_path[4096] = {0}; // MUST NOT end with '/'
+ static int prefix_path_len = -1;
+ 
++#ifdef EUNION
++// E-UNION (dar-test-infra-sp5.8.4.4): shared read-only system template that
++// the writable per-prefix layer (prefix_path) is unioned over. When a guest
++// path is absent in prefix_path it falls back to libexec_path. Empty/unset
++// (len <= 0) disables the union and the resolver behaves exactly as before.
++static char libexec_path[4096] = {0}; // MUST NOT end with '/'
++static int libexec_path_len = -1;
++
++static void set_libexec_path(const char* p)
++{
++	if (!p || !*p)
++	{
++		libexec_path[0] = '\0';
++		libexec_path_len = 0;
++		return;
++	}
++	strcpy(libexec_path, p);
++	libexec_path_len = (int)strlen(libexec_path);
++}
++#define HAVE_LIBEXEC_SETTER 1
++
++// The shared template path baked in at build time (== darlingserver's
++// LIBEXEC_PATH). Provided to the emulation build as a compile definition; the
++// fallback below keeps the hermetic unit build (which sets the template itself)
++// and any build that forgets the define from breaking.
++#ifndef EUNION_LIBEXEC_PATH
++#define EUNION_LIBEXEC_PATH ""
++#endif
++
++static int eunion_lstat(const char* host, stat_t* st); // defined below
++
++// Activate the union for this prefix iff the server provisioned it in E-UNION
++// mode, signalled by the presence of the copy-up staging dir `$prefix/.union-work`
++// (the server creates it instead of copying the 7GB template). If the marker is
++// absent (route 1 / copy-mode), the template path is left unset so libexec_path_len
++// stays <= 0 and every E-UNION code path is inert -- behaviour identical to
++// baseline. `prefix` must already be set in prefix_path. Idempotent.
++static void eunion_init_from_prefix(void)
++{
++	if (libexec_path_len > 0) // already initialised
++		return;
++	if (prefix_path_len <= 0)
++		return;
++
++	char marker[4096];
++	int n = prefix_path_len;
++	if (n + (int)sizeof("/.union-work") > (int)sizeof(marker))
++		return;
++	memcpy(marker, prefix_path, n);
++	strcpy(marker + n, "/.union-work");
++
++	stat_t st;
++	if (eunion_lstat(marker, &st) != 0)
++		return; // not provisioned for union -> stay inert (copy-mode)
++
++	set_libexec_path(EUNION_LIBEXEC_PATH);
++}
++
++// -------- E-UNION copy-on-write ------------------------------------------
++//
++// When a guest path that exists only in the read-only lower template is about
++// to be mutated (open-for-write, truncate, chmod, rename source, create child,
++// ...), it must first be materialized ("copied up") into the writable upper
++// layer so the shared template is never modified. Modeled on gVisor overlay
++// copy_up.go, with the cross-process safety the gVisor in-process copyMu lacks:
++//
++//   * recursive parent copy-up first (a lower-only parent dir is recreated up);
++//   * copy into UPPER/.union-work/<tid>.<seq> fully (data+mode), then atomic
++//     rename() into place -- so a concurrent reader never sees a half file;
++//   * winner-takes-all: a rename/EEXIST race just means someone else copied it
++//     up first, which is success (idempotent).
++//
++// This is the shared CoW core that both the pure-union and hardlink layering
++// strategies build on (see the bead).
++
++#ifndef LINUX_O_WRONLY
++#define LINUX_O_WRONLY 01
++#endif
++#ifndef LINUX_O_CREAT
++#define LINUX_O_CREAT 0100
++#endif
++#ifndef LINUX_O_EXCL
++#define LINUX_O_EXCL 0200
++#endif
++#ifndef LINUX_S_IFDIR
++#define LINUX_S_IFDIR 0040000
++#endif
++#ifndef LINUX_S_IFREG
++#define LINUX_S_IFREG 0100000
++#endif
++
++extern int __simple_sprintf(char* str, const char* fmt, ...);
++
++// Build the host path for `guest` (a guest-absolute path, no symlink follow)
++// under `root` (prefix_path or libexec_path). Returns length, or -1 on overflow.
++static int eunion_host_path(const char* root, int root_len, const char* guest, char* out, int cap)
++{
++	int glen = (int)strlen(guest);
++	if (root_len + glen + 1 > cap)
++		return -1;
++	memcpy(out, root, root_len);
++	memcpy(out + root_len, guest, glen + 1);
++	return root_len + glen;
++}
++
++static int eunion_lstat(const char* host, stat_t* st)
++{
++	#if defined(__NR_lstat)
++		return LINUX_SYSCALL(__NR_lstat, host, st);
++	#elif defined(__NR_newfstatat)
++		return LINUX_SYSCALL(__NR_newfstatat, LINUX_AT_FDCWD, host, st, LINUX_AT_SYMLINK_NOFOLLOW);
++	#else
++		return LINUX_SYSCALL(__NR_fstatat64, LINUX_AT_FDCWD, host, st, LINUX_AT_SYMLINK_NOFOLLOW);
++	#endif
++}
++
++static int eunion_mkdir(const char* host, unsigned int mode)
++{
++	#if defined(__NR_mkdir)
++		return LINUX_SYSCALL(__NR_mkdir, host, mode);
++	#else
++		return LINUX_SYSCALL(__NR_mkdirat, LINUX_AT_FDCWD, host, mode);
++	#endif
++}
++
++// Ensure every parent component of guest path `guest` exists in the upper
++// layer, recreating lower-only dirs with their lower mode. `guest` includes the
++// leaf; only its ancestors are created here.
++static int eunion_mkparents_upper(const char* guest)
++{
++	char up[4096], lo[4096];
++	// walk components, creating each ancestor dir in the upper layer
++	int i = 0;
++	while (guest[i] == '/') i++;
++	for (;;)
++	{
++		// find end of this component
++		int start = i;
++		while (guest[i] && guest[i] != '/') i++;
++		if (guest[i] == '\0')
++			break; // reached the leaf; nothing more to create
++		// ancestor guest path = guest[0..i)
++		char anc[4096];
++		memcpy(anc, guest, i);
++		anc[i] = '\0';
++
++		if (eunion_host_path(prefix_path, prefix_path_len, anc, up, sizeof(up)) < 0)
++			return -LINUX_ENAMETOOLONG;
++
++		stat_t st;
++		if (eunion_lstat(up, &st) == 0)
++		{
++			// already in upper; descend
++		}
++		else
++		{
++			// take the lower mode if available, else default 0755
++			unsigned int mode = 0755;
++			if (eunion_host_path(libexec_path, libexec_path_len, anc, lo, sizeof(lo)) >= 0)
++			{
++				stat_t ls;
++				if (eunion_lstat(lo, &ls) == 0)
++					mode = ls.st_mode & 07777;
++			}
++			int r = eunion_mkdir(up, mode);
++			if (r < 0 && r != -LINUX_EEXIST)
++				return r;
++		}
++
++		while (guest[i] == '/') i++;
++	}
++	return 0;
++}
++
++// Atomic copy of a regular file from `src_host` to upper `dst_host`, preserving
++// mode. Copies via UPPER/.union-work/<unique> + rename so a concurrent reader
++// never sees a partial file. A rename/EEXIST race == someone else won == ok.
++static int eunion_copy_regular(const char* src_host, const char* dst_host, unsigned int mode)
++{
++	int sfd = LINUX_SYSCALL(__NR_openat, LINUX_AT_FDCWD, src_host, LINUX_O_RDONLY, 0);
++	if (sfd < 0)
++		return sfd;
++
++	// staging path in the upper work dir
++	char work[4096];
++	__simple_sprintf(work, "%s/.union-work", prefix_path);
++	eunion_mkdir(work, 0700); // best-effort; EEXIST ok
++
++	char tmp[4096];
++	static unsigned long seq = 0;
++	int tid = (int)LINUX_SYSCALL(__NR_gettid);
++	__simple_sprintf(tmp, "%s/.union-work/cu.%d.%lu", prefix_path, tid, (unsigned long)(seq++));
++
++	int dfd = LINUX_SYSCALL(__NR_openat, LINUX_AT_FDCWD, tmp,
++		LINUX_O_WRONLY | LINUX_O_CREAT | LINUX_O_EXCL, mode & 07777);
++	if (dfd < 0)
++	{
++		LINUX_SYSCALL(__NR_close, sfd);
++		return dfd;
++	}
++
++	char buf[65536];
++	int rv = 0;
++	for (;;)
++	{
++		int n = LINUX_SYSCALL(__NR_read, sfd, buf, sizeof(buf));
++		if (n < 0) { rv = n; break; }
++		if (n == 0) break;
++		int off = 0;
++		while (off < n)
++		{
++			int w = LINUX_SYSCALL(__NR_write, dfd, buf + off, n - off);
++			if (w < 0) { rv = w; goto done; }
++			off += w;
++		}
++	}
++done:
++	LINUX_SYSCALL(__NR_close, sfd);
++	LINUX_SYSCALL(__NR_close, dfd);
++
++	if (rv < 0)
++	{
++		LINUX_SYSCALL(__NR_unlink, tmp);
++		return rv;
++	}
++
++	// publish atomically
++	#if defined(__NR_rename)
++		rv = LINUX_SYSCALL(__NR_rename, tmp, dst_host);
++	#else
++		rv = LINUX_SYSCALL(__NR_renameat, LINUX_AT_FDCWD, tmp, LINUX_AT_FDCWD, dst_host);
++	#endif
++	if (rv < 0)
++	{
++		// a racer may have created dst_host first; that is success
++		LINUX_SYSCALL(__NR_unlink, tmp);
++		stat_t st;
++		if (eunion_lstat(dst_host, &st) == 0)
++			return 0;
++		return rv;
++	}
++	return 0;
++}
++
++// Copy up `guest` (a guest-absolute path) from the lower template into the
++// upper layer if it lives only in the lower layer. Returns 0 if the object is
++// (now) present in the upper layer, a negative Linux errno otherwise.
++int vchroot_copyup(const char* guest)
++{
++	if (libexec_path_len <= 0 || prefix_path_len < 0)
++		return -LINUX_ENOENT;
++
++	char up[4096], lo[4096];
++	if (eunion_host_path(prefix_path, prefix_path_len, guest, up, sizeof(up)) < 0)
++		return -LINUX_ENAMETOOLONG;
++
++	stat_t ust;
++	if (eunion_lstat(up, &ust) == 0)
++		return 0; // already in upper layer
++
++	if (eunion_host_path(libexec_path, libexec_path_len, guest, lo, sizeof(lo)) < 0)
++		return -LINUX_ENAMETOOLONG;
++
++	stat_t lst;
++	if (eunion_lstat(lo, &lst) != 0)
++		return -LINUX_ENOENT; // absent in both layers
++
++	// materialize ancestor dirs in the upper layer
++	int r = eunion_mkparents_upper(guest);
++	if (r < 0)
++		return r;
++
++	unsigned int fmt = lst.st_mode & LINUX_S_IFMT;
++	if (fmt == LINUX_S_IFDIR)
++	{
++		// a lower-only directory: recreate (empty) in upper with same mode;
++		// merge of contents is handled lazily by the union resolver + readdir.
++		r = eunion_mkdir(up, lst.st_mode & 07777);
++		if (r < 0 && r != -LINUX_EEXIST)
++			return r;
++		return 0;
++	}
++	else if (fmt == LINUX_S_IFREG)
++	{
++		return eunion_copy_regular(lo, up, lst.st_mode);
++	}
++	else if (fmt == LINUX_S_IFLNK)
++	{
++		char link[4096];
++		#if defined(__NR_readlink)
++			int n = LINUX_SYSCALL(__NR_readlink, lo, link, sizeof(link) - 1);
++		#else
++			int n = LINUX_SYSCALL(__NR_readlinkat, LINUX_AT_FDCWD, lo, link, sizeof(link) - 1);
++		#endif
++		if (n < 0)
++			return n;
++		link[n] = '\0';
++		#if defined(__NR_symlink)
++			r = LINUX_SYSCALL(__NR_symlink, link, up);
++		#else
++			r = LINUX_SYSCALL(__NR_symlinkat, link, LINUX_AT_FDCWD, up);
++		#endif
++		if (r < 0 && r != -LINUX_EEXIST)
++			return r;
++		return 0;
++	}
++
++	// FIFO/socket/device: gVisor returns EPERM for fifo/socket. Keep it simple
++	// for the PoC and refuse copy-up of special files.
++	return -LINUX_EPERM;
++}
++
++// -------- E-UNION whiteout + opaque markers ------------------------------
++//
++// The translator runs as uid 0 INSIDE the container but is NOT real host root,
++// so the overlayfs/gVisor default encodings are unavailable to us:
++//   * char-dev(0,0) whiteouts need CAP_MKNOD;
++//   * trusted.overlay.* xattrs need CAP_SYS_ADMIN.
++// gVisor hit the same wall and falls back to user.overlay.* (its `userxattr`
++// mode). We do the same, unprivileged:
++//   * whiteout = an empty placeholder REGULAR file at the upper path carrying
++//     the xattr `user.union.whiteout=y`. A guest path whose upper object is a
++//     whiteout reads as ENOENT and does NOT fall through to the lower layer.
++//   * opaque  = the xattr `user.union.opaque=y` on an upper directory; its
++//     lower namesake is not merged in.
++// user.* xattrs are settable by the file owner without privilege on ext4.
++
++static const char EUNION_WH_XATTR[]     = "user.union.whiteout";
++static const char EUNION_OPAQUE_XATTR[] = "user.union.opaque";
++
++#ifndef LINUX_O_DIRECTORY
++#define LINUX_O_DIRECTORY 0200000
++#endif
++
++// returns 1 if host path `host` carries xattr `name` == "y", else 0
++static int eunion_has_marker(const char* host, const char* name)
++{
++	char val[4];
++	#if defined(__NR_lgetxattr)
++		int n = LINUX_SYSCALL(__NR_lgetxattr, host, name, val, sizeof(val));
++	#else
++		int n = LINUX_SYSCALL(__NR_getxattr, host, name, val, sizeof(val));
++	#endif
++	return (n >= 1 && val[0] == 'y');
++}
++
++static int eunion_set_marker(const char* host, const char* name)
++{
++	#if defined(__NR_lsetxattr)
++		return LINUX_SYSCALL(__NR_lsetxattr, host, name, "y", 1, 0);
++	#else
++		return LINUX_SYSCALL(__NR_setxattr, host, name, "y", 1, 0);
++	#endif
++}
++
++// Is the guest path whited-out in the upper layer? (upper object exists and
++// carries the whiteout marker.)
++static int eunion_is_whiteout(const char* guest)
++{
++	char up[4096];
++	if (eunion_host_path(prefix_path, prefix_path_len, guest, up, sizeof(up)) < 0)
++		return 0;
++	stat_t st;
++	if (eunion_lstat(up, &st) != 0)
++		return 0;
++	return eunion_has_marker(up, EUNION_WH_XATTR);
++}
++
++// Record deletion of a guest path: leave an empty placeholder regular file in
++// the upper layer carrying the whiteout xattr, so the lower object stays hidden.
++int vchroot_whiteout(const char* guest)
++{
++	if (prefix_path_len < 0)
++		return -LINUX_ENOENT;
++
++	int r = eunion_mkparents_upper(guest);
++	if (r < 0)
++		return r;
++
++	char up[4096];
++	if (eunion_host_path(prefix_path, prefix_path_len, guest, up, sizeof(up)) < 0)
++		return -LINUX_ENAMETOOLONG;
++
++	// If an upper object already exists (e.g. a copied-up file), replace it with
++	// the placeholder. Try to create exclusively; if it exists, unlink + retry.
++	// NOTE: the placeholder must be owner-writable -- the kernel refuses to set
++	// a user.* xattr on a mode-0000 file (EACCES). The placeholder is never
++	// exposed to the guest (the resolver maps it to ENOENT), so its mode is
++	// irrelevant beyond letting us attach the marker.
++	int fd = LINUX_SYSCALL(__NR_openat, LINUX_AT_FDCWD, up,
++		LINUX_O_WRONLY | LINUX_O_CREAT | LINUX_O_EXCL, 0600);
++	if (fd == -LINUX_EEXIST)
++	{
++		LINUX_SYSCALL(__NR_unlink, up);
++		fd = LINUX_SYSCALL(__NR_openat, LINUX_AT_FDCWD, up,
++			LINUX_O_WRONLY | LINUX_O_CREAT | LINUX_O_EXCL, 0600);
++	}
++	if (fd < 0)
++		return fd;
++	LINUX_SYSCALL(__NR_close, fd);
++
++	int mr = eunion_set_marker(up, EUNION_WH_XATTR);
++	if (mr < 0)
++	{
++		// roll back the placeholder so a failed whiteout doesn't masquerade as
++		// an empty file
++		LINUX_SYSCALL(__NR_unlink, up);
++		return mr;
++	}
++	return 0;
++}
++
++// Remove a whiteout marker (the path is being recreated). Removes the
++// placeholder file entirely so a subsequent copy-up / create can take its place.
++int vchroot_unwhiteout(const char* guest)
++{
++	char up[4096];
++	if (eunion_host_path(prefix_path, prefix_path_len, guest, up, sizeof(up)) < 0)
++		return -LINUX_ENAMETOOLONG;
++	if (!eunion_is_whiteout(guest))
++		return 0; // nothing to do
++	int r = LINUX_SYSCALL(__NR_unlink, up);
++	if (r < 0 && r != -LINUX_ENOENT)
++		return r;
++	return 0;
++}
++
++// Mark an upper directory opaque so its lower namesake is not merged.
++int vchroot_set_opaque(const char* guest)
++{
++	int r = vchroot_copyup(guest); // ensure the dir exists in the upper layer
++	if (r < 0)
++		return r;
++	char up[4096];
++	if (eunion_host_path(prefix_path, prefix_path_len, guest, up, sizeof(up)) < 0)
++		return -LINUX_ENAMETOOLONG;
++	return eunion_set_marker(up, EUNION_OPAQUE_XATTR);
++}
++
++// -------- E-UNION write-op wiring helpers --------------------------------
++//
++// These are the thin entrypoints the syscall-emulation sites call so the union
++// policy stays in one place. The pattern at a mutating site is:
++//   vchroot_prepare_write(guest);   // BEFORE vchroot_expand -> expand hits upper
++//   ... vchroot_expand(); real syscall ...
++//   vchroot_post_unlink(guest);     // AFTER a successful unlink/rmdir
++// All take an ABSOLUTE guest path (the shared template is addressed absolutely:
++// /usr, /System, ...). A relative or out-of-prefix path is a no-op success --
++// such writes never touch the read-only template, so there is nothing to do.
++
++// Is this a guest path we union-manage? (absolute, and a prefix is configured)
++static int eunion_manage(const char* guest)
++{
++	return libexec_path_len > 0 && prefix_path_len >= 0
++		&& guest && guest[0] == '/';
++}
++
++// Before a write/mutate: ensure the target lives in the writable upper layer so
++// the real syscall never mutates the shared template. If the path is lower-only
++// it is copied up; if it carries a whiteout the marker is cleared first (an
++// O_CREAT-style write resurrects a deleted name); absent-in-both and
++// already-upper are both no-op successes (the create lands in the upper).
++int vchroot_prepare_write(const char* guest)
++{
++	if (!eunion_manage(guest))
++		return 0;
++
++	// a whiteout means the name was deleted; writing it resurrects it
++	if (eunion_is_whiteout(guest))
++	{
++		int r = vchroot_unwhiteout(guest);
++		if (r < 0)
++			return r;
++		// fall through: nothing to copy up (it was deleted), create-in-upper
++		return 0;
++	}
++
++	int r = vchroot_copyup(guest);
++	if (r == -LINUX_ENOENT)
++		return 0; // absent in both layers: a create will make it fresh in upper
++	return r; // 0 if copied up or already upper; negative on real error
++}
++
++// After a successful unlink/rmdir of the upper object: if the name still exists
++// in the lower template, drop a whiteout so it stays deleted. If it was
++// upper-only (absent from lower), do nothing -- the unlink already removed it.
++int vchroot_post_unlink(const char* guest)
++{
++	if (!eunion_manage(guest))
++		return 0;
++
++	char lo[4096];
++	if (eunion_host_path(libexec_path, libexec_path_len, guest, lo, sizeof(lo)) < 0)
++		return -LINUX_ENAMETOOLONG;
++
++	stat_t lst;
++	if (eunion_lstat(lo, &lst) != 0)
++		return 0; // not in the template: nothing to hide
++
++	return vchroot_whiteout(guest);
++}
++
++// Before re-creating a name (mkdir/create over a previously deleted name): clear
++// any whiteout marker so the new object is visible. No-op if not whited out.
++int vchroot_pre_mkdir(const char* guest)
++{
++	if (!eunion_manage(guest))
++		return 0;
++	if (!eunion_is_whiteout(guest))
++		return 0;
++	return vchroot_unwhiteout(guest);
++}
++
++// helper: append `name` to a NUL-separated out buffer if it fits and is not a
++// duplicate of an already-appended name. Returns 1 if appended, 0 if dup, <0 on
++// overflow.
++static int eunion_emit_name(char* out, int cap, int* used, int* count, const char* name)
++{
++	// dedup against already-emitted names
++	const char* p = out;
++	for (int i = 0; i < *count; i++)
++	{
++		if (strcmp(p, name) == 0)
++			return 0;
++		p += strlen(p) + 1;
++	}
++	int nlen = (int)strlen(name) + 1;
++	if (*used + nlen > cap)
++		return -LINUX_ENAMETOOLONG;
++	memcpy(out + *used, name, nlen);
++	*used += nlen;
++	(*count)++;
++	return 1;
++}
++
++// is `name` present in a NUL-separated set of `n` names?
++static int name_in_set(const char* buf, int n, const char* name)
++{
++	const char* p = buf;
++	for (int i = 0; i < n; i++)
++	{
++		if (strcmp(p, name) == 0)
++			return 1;
++		p += strlen(p) + 1;
++	}
++	return 0;
++}
++
++// Produce the merged directory listing for guest dir `guest` as a NUL-separated
++// list of names in `out`. Upper layer wins on name clash; whiteouts hide the
++// lower namesake; an opaque upper dir is not merged with the lower. Returns the
++// number of names, or a negative Linux errno.
++int vchroot_readdir_merge(const char* guest, char* out, int cap)
++{
++	if (prefix_path_len < 0)
++		return -LINUX_ENOENT;
++
++	int used = 0, count = 0;
++
++	char up[4096], lo[4096];
++	int have_upper = (eunion_host_path(prefix_path, prefix_path_len, guest, up, sizeof(up)) >= 0);
++
++	// 1. upper layer: emit non-whiteout names; record whiteout names so the
++	//    lower namesake is suppressed (tracked in a separate seen-set).
++	char whbuf[4096]; int whused = 0, whcount = 0;
++	if (have_upper)
++	{
++		int dfd = LINUX_SYSCALL(__NR_openat, LINUX_AT_FDCWD, up, LINUX_O_RDONLY | LINUX_O_DIRECTORY, 0);
++		if (dfd >= 0)
++		{
++			char dirents[8192];
++			int len;
++			while ((len = LINUX_SYSCALL(__NR_getdents64, dfd, dirents, sizeof(dirents))) > 0)
++			{
++				int pos = 0;
++				while (pos < len)
++				{
++					struct linux_dirent64* de = (struct linux_dirent64*) &dirents[pos];
++					pos += de->d_reclen;
++					const char* nm = de->d_name;
++					if (nm[0] == '.' && (nm[1] == '\0' || (nm[1] == '.' && nm[2] == '\0')))
++						continue;
++
++					char child[4096];
++					int hl = (int)strlen(up), nl = (int)strlen(nm);
++					if (hl + 1 + nl + 1 > (int)sizeof(child))
++						continue;
++					memcpy(child, up, hl); child[hl] = '/'; memcpy(child + hl + 1, nm, nl + 1);
++
++					if (eunion_has_marker(child, EUNION_WH_XATTR))
++						eunion_emit_name(whbuf, sizeof(whbuf), &whused, &whcount, nm); // hidden
++					else
++						eunion_emit_name(out, cap, &used, &count, nm); // visible upper entry
++				}
++			}
++			LINUX_SYSCALL(__NR_close, dfd);
++		}
++
++		// 2. opaque upper dir -> do not merge lower
++		if (eunion_has_marker(up, EUNION_OPAQUE_XATTR))
++			return count;
++	}
++
++	// 3. lower layer: emit names not already visible (upper wins) and not
++	//    whited-out.
++	if (libexec_path_len > 0 && eunion_host_path(libexec_path, libexec_path_len, guest, lo, sizeof(lo)) >= 0)
++	{
++		int dfd = LINUX_SYSCALL(__NR_openat, LINUX_AT_FDCWD, lo, LINUX_O_RDONLY | LINUX_O_DIRECTORY, 0);
++		if (dfd >= 0)
++		{
++			char dirents[8192];
++			int len;
++			while ((len = LINUX_SYSCALL(__NR_getdents64, dfd, dirents, sizeof(dirents))) > 0)
++			{
++				int pos = 0;
++				while (pos < len)
++				{
++					struct linux_dirent64* de = (struct linux_dirent64*) &dirents[pos];
++					pos += de->d_reclen;
++					const char* nm = de->d_name;
++					if (nm[0] == '.' && (nm[1] == '\0' || (nm[1] == '.' && nm[2] == '\0')))
++						continue;
++					// suppressed by a whiteout in the upper?
++					if (name_in_set(whbuf, whcount, nm))
++						continue;
++					eunion_emit_name(out, cap, &used, &count, nm);
++				}
++			}
++			LINUX_SYSCALL(__NR_close, dfd);
++		}
++	}
++
++	return count;
++}
++
++// -------- E-UNION paged getdents merge (per-fd state) --------------------
++//
++// getdirentries works on an fd and streams the directory in pages; the kernel
++// tracks the offset for the UPPER fd only. To present a MERGED view (upper wins,
++// lower merged in, whiteouts subtracted, opaque honoured) across an arbitrary
++// number of pages WITHOUT the getdents64 rewind hazards, we materialize the full
++// merged name list ONCE per open dir fd (reusing the proven vchroot_readdir_merge
++// enumeration) into a small per-fd buffer, then hand it back page by page. The
++// emulation site calls:
++//   vchroot_getdents_merge(fd, out, cap)  instead of raw getdents64(fd, ...)
++//   vchroot_dir_closed(fd)                from close()/closedir() teardown
++// rewinddir (lseek(fd,0)) is detected by the emulation, which calls
++// vchroot_dir_closed(fd) so the next getdents re-materializes from the start.
++
++#define EUNION_MAXDIRS  256
++#define EUNION_NAMEBUF  65536  // per-dir merged name list (NUL-separated)
++
++struct eunion_dir_state
++{
++	int  fd;                    // upper fd this state tracks (-1 = free slot)
++	int  ready;                 // names[] materialized?
++	int  count;                 // number of names
++	int  cursor;                // byte offset of the next name to emit
++	int  used;                  // bytes used in names[]
++	char names[EUNION_NAMEBUF]; // NUL-separated merged listing
++};
++
++static struct eunion_dir_state eunion_dirs[EUNION_MAXDIRS];
++static int eunion_dirs_inited = 0;
++
++static void eunion_dirs_init(void)
++{
++	if (eunion_dirs_inited)
++		return;
++	for (int i = 0; i < EUNION_MAXDIRS; i++)
++		eunion_dirs[i].fd = -1;
++	eunion_dirs_inited = 1;
++}
++
++static struct eunion_dir_state* eunion_dir_find(int fd)
++{
++	eunion_dirs_init();
++	for (int i = 0; i < EUNION_MAXDIRS; i++)
++		if (eunion_dirs[i].fd == fd)
++			return &eunion_dirs[i];
++	return 0;
++}
++
++// Free per-fd merge state (call from close()/closedir() and on rewinddir).
++// Idempotent.
++void vchroot_dir_closed(int fd)
++{
++	struct eunion_dir_state* s = eunion_dir_find(fd);
++	if (!s)
++		return;
++	s->fd = -1;
++	s->ready = 0;
++}
++
++static struct eunion_dir_state* eunion_dir_alloc(int fd)
++{
++	struct eunion_dir_state* s = eunion_dir_find(fd);
++	if (!s)
++	{
++		for (int i = 0; i < EUNION_MAXDIRS; i++)
++			if (eunion_dirs[i].fd == -1) { s = &eunion_dirs[i]; break; }
++	}
++	if (!s)
++		return 0; // table full: caller degrades to plain upper stream
++	s->fd = fd;
++	s->ready = 0;
++	s->count = s->cursor = s->used = 0;
++	return s;
++}
++
++// append one linux_dirent64 record for `name` into out; returns bytes used or
++// 0 if it would not fit (caller stops this page). The ON-WIRE header is the
++// fields up to d_name (NOT sizeof(struct), which may be inflated by a fixed
++// d_name[] in some copies of the struct in scope).
++static int eunion_emit_dirent(char* out, int cap, int used, const char* name)
++{
++	int nl = (int)strlen(name) + 1;
++	int hdr = (int)__builtin_offsetof(struct linux_dirent64, d_name);
++	int reclen = hdr + nl;
++	reclen = (reclen + 7) & ~7; // 8-byte align like the kernel
++	if (used + reclen > cap)
++		return 0;
++	struct linux_dirent64* de = (struct linux_dirent64*) (out + used);
++	de->d_ino = 1;          // synthetic; getdirentries does not require real ino
++	de->d_off = 0;
++	de->d_reclen = (unsigned short) reclen;
++	de->d_type = 0;         // DT_UNKNOWN: portable, callers stat if they care
++	memcpy(de->d_name, name, nl);
++	return reclen;
++}
++
++// Paged merged getdents. `fd` is the UPPER directory fd already opened by the
++// emulation. Returns bytes written into out (>0), 0 at end of the merged
++// stream, or a negative Linux errno. On first call it materializes the full
++// merged listing; subsequent calls page it out.
++int vchroot_getdents_merge(int fd, char* out, int cap)
++{
++	if (prefix_path_len < 0)
++		return -LINUX_ENOENT;
++
++	// Union inactive (no template configured for this prefix): pass straight
++	// through to the real getdents64 so callers see the kernel's true d_ino /
++	// d_type. The merge path synthesizes those (d_ino=1, DT_UNKNOWN), which is
++	// fine for a merged listing but must NOT be imposed when there is nothing to
++	// merge -- otherwise an EUNION build regresses every readdir even with the
++	// union switched off.
++	if (libexec_path_len <= 0)
++		return LINUX_SYSCALL(__NR_getdents64, fd, out, cap);
++
++	struct eunion_dir_state* s = eunion_dir_find(fd);
++	if (!s)
++	{
++		s = eunion_dir_alloc(fd);
++		if (!s) // table full: degrade gracefully to plain upper stream
++			return LINUX_SYSCALL(__NR_getdents64, fd, out, cap);
++	}
++
++	if (!s->ready)
++	{
++		// recover the guest dir path from the upper fd, then materialize the
++		// merged listing once.
++		char guest[4096];
++		struct vchroot_fdpath_args fp;
++		fp.fd = fd; fp.path = guest; fp.maxlen = sizeof(guest);
++		if (vchroot_fdpath(&fp) < 0) // not under the prefix: no merge to do
++			return LINUX_SYSCALL(__NR_getdents64, fd, out, cap);
++
++		int n = vchroot_readdir_merge(guest, s->names, sizeof(s->names));
++		if (n < 0) // fall back to the raw stream on any merge error
++			return LINUX_SYSCALL(__NR_getdents64, fd, out, cap);
++
++		s->count = n;
++		s->cursor = 0;
++		s->used = 0;
++		// compute total bytes for cursor walking
++		const char* p = s->names;
++		for (int i = 0; i < n; i++)
++			p += strlen(p) + 1;
++		s->used = (int)(p - s->names);
++		s->ready = 1;
++	}
++
++	// page out from cursor
++	int written = 0;
++	while (s->cursor < s->used)
++	{
++		const char* name = s->names + s->cursor;
++		int w = eunion_emit_dirent(out, cap, written, name);
++		if (!w)
++			break; // page full; resume here next call
++		written += w;
++		s->cursor += (int)strlen(name) + 1;
++	}
++	return written; // 0 when cursor reaches used -> end of merged stream
++}
++#endif
++
+ static const char EXIT_PATH[] = "/Volumes/SystemRoot";
+ 
+ #ifndef TEST
+@@ -131,6 +928,10 @@ int __darling_vchroot(int dfd)
+ 	prefix_path[rv] = '\0';
+ 	prefix_path_len = rv;
+ 
++#ifdef EUNION
++	eunion_init_from_prefix();
++#endif
++
+ 	return 0;
+ }
+ 
+@@ -163,6 +964,10 @@ static void init_vchroot_path(void)
+ 
+ 	prefix_path_len = (int)tmp_len;
+ 
++#ifdef EUNION
++	eunion_init_from_prefix();
++#endif
++
+ #ifndef TEST
+ 	__simple_printf("init_vchroot_path: %s\n", prefix_path);
+ #endif
+@@ -333,6 +1138,101 @@ static int vchroot_run(const char* input_path, struct context* ctxt)
+ 						#endif
+ 					#endif
+ 
++#ifdef EUNION
++					// E-UNION whiteout: if the component exists in the upper
++					// layer but is a whiteout marker, the path is deleted -- report
++					// ENOENT and DO NOT fall back to the lower layer. We detect the
++					// marker only when rooted at the upper layer.
++					if (status == 0
++						&& libexec_path_len > 0
++						&& ctxt->current_root_len == prefix_path_len
++						&& strncmp(ctxt->current_path, prefix_path, prefix_path_len) == 0
++						&& eunion_has_marker(ctxt->current_path, EUNION_WH_XATTR))
++					{
++						// The guest path is deleted. Report ENOENT to the caller --
++						// the whiteout placeholder must never be opened/statted as a
++						// real object, and the lower namesake must stay hidden.
++						return -LINUX_ENOENT;
++					}
++
++					// E-UNION lower-layer fallback: the component does not exist
++					// in the writable upper layer (prefix_path). If we are still
++					// rooted at the upper layer and a shared read-only template
++					// (libexec_path) is configured, retry the SAME guest-relative
++					// path against the template. The guest-relative suffix is
++					// everything past current_root_len; we swap only the host root
++					// prefix so the rest of the resolver is layer-agnostic.
++					//
++					// Suppressed when the parent upper directory is opaque (lower
++					// namesake not merged). (Whiteouts already returned ENOENT above.)
++					bool eunion_opaque_parent = false;
++					if (status == -LINUX_ENOENT
++						&& libexec_path_len > 0
++						&& ctxt->current_root_len == prefix_path_len
++						&& strncmp(ctxt->current_path, prefix_path, prefix_path_len) == 0)
++					{
++						// parent upper dir = current_path with the last component
++						// (and its leading slash) stripped.
++						char parent[4096];
++						int plen = prevlen - 1; // drop the '/' before the component
++						if (plen <= prefix_path_len)
++							plen = prefix_path_len; // parent is the upper root itself
++						memcpy(parent, ctxt->current_path, plen);
++						parent[plen] = '\0';
++						if (plen > prefix_path_len && eunion_has_marker(parent, EUNION_OPAQUE_XATTR))
++							eunion_opaque_parent = true;
++					}
++
++					if (status == -LINUX_ENOENT
++						&& !eunion_opaque_parent
++						&& libexec_path_len > 0
++						&& ctxt->current_root_len == prefix_path_len
++						&& strncmp(ctxt->current_path, prefix_path, prefix_path_len) == 0)
++					{
++						char relbuf[4096];
++						const int rellen = ctxt->current_path_len - prefix_path_len;
++						if (libexec_path_len + rellen + 1 <= (int)sizeof(ctxt->current_path))
++						{
++							// stash the guest-relative suffix, rebuild under libexec
++							memcpy(relbuf, ctxt->current_path + prefix_path_len, rellen);
++							relbuf[rellen] = '\0';
++
++							memcpy(ctxt->current_path, libexec_path, libexec_path_len);
++							memcpy(ctxt->current_path + libexec_path_len, relbuf, rellen + 1);
++							ctxt->current_path_len = libexec_path_len + rellen;
++
++							#if defined(__NR_lstat)
++								int lstatus = LINUX_SYSCALL(__NR_lstat, ctxt->current_path, &st);
++							#else
++								#if __NR_newfstatat
++									int lstatus = LINUX_SYSCALL(__NR_newfstatat, LINUX_AT_FDCWD, ctxt->current_path, &st, LINUX_AT_SYMLINK_NOFOLLOW);
++								#else
++									int lstatus = LINUX_SYSCALL(__NR_fstatat64, LINUX_AT_FDCWD, ctxt->current_path, &st, LINUX_AT_SYMLINK_NOFOLLOW);
++								#endif
++							#endif
++
++							if (lstatus == 0 || lstatus != -LINUX_ENOENT)
++							{
++								// Found in (or definitively errored against) the
++								// lower layer: commit the switch to the template
++								// root and adopt the lower-layer stat result.
++								ctxt->current_root = libexec_path;
++								ctxt->current_root_len = libexec_path_len;
++								status = lstatus;
++							}
++							else
++							{
++								// Not in lower layer either: restore the upper-layer
++								// path so the case-insensitive search below runs
++								// against prefix_path as it did originally.
++								memcpy(ctxt->current_path, prefix_path, prefix_path_len);
++								memcpy(ctxt->current_path + prefix_path_len, relbuf, rellen + 1);
++								ctxt->current_path_len = prefix_path_len + rellen;
++							}
++						}
++					}
++#endif
++
+ 					if (icase_enabled && status == -LINUX_ENOENT)
+ 					{
+ 						// Case insensitive search
+@@ -507,6 +1407,27 @@ int vchroot_fdpath(struct vchroot_fdpath_args* args)
+ 		if (args->path[0] == '\0')
+ 			strcpy(args->path, "/");
+ 	}
++#ifdef EUNION
++	// E-UNION: a fd may resolve into the read-only LOWER template, which lives
++	// OUTSIDE the prefix (at libexec_path). Detranslate it to the guest path too
++	// -- otherwise it falls through to the EXIT_PATH escape hatch and yields a
++	// bogus /Volumes/SystemRoot/<host-template-path> guest path. launchctl uses
++	// F_GETPATH on the System/Library/LaunchDaemons dir fd (which resolves to the
++	// lower template) to build child plist paths; the escape-hatch path makes
++	// every plist lookup fail, so no daemons load and `bootstrap -S System`
++	// stalls on services that never check in.
++	else if (libexec_path_len > 0 && rv >= libexec_path_len
++	         && strncmp(link, libexec_path, libexec_path_len) == 0
++	         && (link[libexec_path_len] == '/' || link[libexec_path_len] == '\0'))
++	{
++		if (args->maxlen-1 < rv - libexec_path_len)
++			return -LINUX_ENAMETOOLONG;
++		strcpy(args->path, link + libexec_path_len);
++
++		if (args->path[0] == '\0')
++			strcpy(args->path, "/");
++	}
++#endif
+ 	else
+ 	{
+ 		if (args->maxlen < sizeof(EXIT_PATH) + rv)
+@@ -533,6 +1454,21 @@ int vchroot_unexpand(struct vchroot_unexpand_args* args)
+ 		if (args->path[0] == '\0')
+ 			strcpy(args->path, "/");
+ 	}
++#ifdef EUNION
++	// E-UNION: a host path under the read-only LOWER template detranslates to the
++	// guest path too (see vchroot_fdpath). Without this it escapes through
++	// EXIT_PATH to a bogus /Volumes/SystemRoot/<template-path> guest path.
++	else if (libexec_path_len > 0
++	         && memcmp(args->path, libexec_path, libexec_path_len) == 0
++	         && (args->path[libexec_path_len] == '/' || args->path[libexec_path_len] == '\0'))
++	{
++		int bytes = strlen(args->path + libexec_path_len) + 1;
++		memmove(args->path, args->path + libexec_path_len, bytes);
++
++		if (args->path[0] == '\0')
++			strcpy(args->path, "/");
++	}
++#endif
+ 	else
+ 	{
+ 		int bytes = strlen(args->path) + 1;
+diff --git a/darling/src/libsystem_kernel/emulation/src/xnu_syscall/bsd/impl/dirent/getdirentries.c b/darling/src/libsystem_kernel/emulation/src/xnu_syscall/bsd/impl/dirent/getdirentries.c
+index 0a7e492793eed79485e5e97bf0c02fe10541efdc..e82030aad710ff22073d21ee4a43778cb75df99a 100644
+--- a/darling/src/libsystem_kernel/emulation/src/xnu_syscall/bsd/impl/dirent/getdirentries.c
++++ b/darling/src/libsystem_kernel/emulation/src/xnu_syscall/bsd/impl/dirent/getdirentries.c
+@@ -6,6 +6,9 @@
+ #include <darling/emulation/conversion/dirent/getdirentries.h>
+ #include <darling/emulation/conversion/errno.h>
+ #include <darling/emulation/linux_premigration/linux-syscalls/linux.h>
++#ifdef EUNION
++#include <darling/emulation/linux_premigration/vchroot_expand.h>
++#endif
+ 
+ #define LINUX_SEEK_SET 0
+ #define LINUX_SEEK_CUR 1
+@@ -48,7 +51,13 @@ long sys_getdirentries(int fd, char* ibuf, unsigned int len, long* basep)
+ 	if (basep)
+ 		*basep = 0;
+ 
++#ifdef EUNION
++	// E-UNION: merged listing (upper + lower template, whiteouts subtracted,
++	// opaque honoured). Per-fd state is freed by close() via vchroot_dir_closed.
++	ret = vchroot_getdents_merge(fd, buf, sizeof(buf));
++#else
+ 	ret = LINUX_SYSCALL(__NR_getdents64, fd, buf, sizeof(buf));
++#endif
+ 	if (ret < 0)
+ 		return errno_linux_to_bsd(ret);
+ 
+@@ -98,7 +107,11 @@ long sys_getdirentries64(int fd, char* ibuf, unsigned int len, long* basep)
+ 	if (basep)
+ 		*basep = 0;
+ 
++#ifdef EUNION
++	ret = vchroot_getdents_merge(fd, buf, sizeof(buf));
++#else
+ 	ret = LINUX_SYSCALL(__NR_getdents64, fd, buf, sizeof(buf));
++#endif
+ 	if (ret < 0)
+ 		return errno_linux_to_bsd(ret);
+ 
+diff --git a/darling/src/libsystem_kernel/emulation/src/xnu_syscall/bsd/impl/fcntl/openat.c b/darling/src/libsystem_kernel/emulation/src/xnu_syscall/bsd/impl/fcntl/openat.c
+index 0ad74ed2bb94441a8386f57b0d308f20bf16a419..2649e350e19787482530dd8e571016d205642b94 100644
+--- a/darling/src/libsystem_kernel/emulation/src/xnu_syscall/bsd/impl/fcntl/openat.c
++++ b/darling/src/libsystem_kernel/emulation/src/xnu_syscall/bsd/impl/fcntl/openat.c
+@@ -65,6 +65,20 @@ long sys_openat_nocancel(int fd, const char* filename, int flags, unsigned int m
+ 		return ret;
+ 	}
+ 
++#ifdef EUNION
++	// E-UNION: if this open writes/creates/truncates, materialize the target in
++	// the writable upper layer BEFORE expand so the real syscall never mutates the
++	// shared read-only template. Absolute guest paths only; relative/out-of-prefix
++	// is a no-op inside the helper. (Read-only opens are left alone.)
++	if (filename[0] == '/' &&
++	    ((flags & 0x3) == BSD_O_WRONLY || (flags & 0x3) == BSD_O_RDWR ||
++	     (flags & BSD_O_CREAT) || (flags & BSD_O_TRUNC))) {
++		int wr = vchroot_prepare_write(filename);
++		if (wr < 0)
++			return errno_linux_to_bsd(wr);
++	}
++#endif
++
+ 	struct vchroot_expand_args vc;
+ 	vc.flags = (flags & BSD_O_SYMLINK || flags & BSD_O_NOFOLLOW) ? 0 : VCHROOT_FOLLOW;
+ 	vc.dfd = atfd(fd);
+diff --git a/darling/src/libsystem_kernel/emulation/src/xnu_syscall/bsd/impl/network/bind.c b/darling/src/libsystem_kernel/emulation/src/xnu_syscall/bsd/impl/network/bind.c
+index 62d9db04ced2a137e3b79287ce9d3b9fe233a780..8155fde4971a12c47103ed02b495a54e278c77ec 100644
+--- a/darling/src/libsystem_kernel/emulation/src/xnu_syscall/bsd/impl/network/bind.c
++++ b/darling/src/libsystem_kernel/emulation/src/xnu_syscall/bsd/impl/network/bind.c
+@@ -2,6 +2,7 @@
+ 
+ #include <sys/errno.h>
+ #include <sys/socket.h>
++#include <sys/un.h>
+ 
+ #include <darling/emulation/common/base.h>
+ #include <darling/emulation/conversion/errno.h>
+@@ -25,6 +26,36 @@ long sys_bind(int fd, const void* name, int socklen)
+ 	if (socklen > 512)
+ 		return -EINVAL;
+ 
++#ifdef EUNION
++	// E-UNION: binding an AF_UNIX socket CREATES a filesystem object. Its parent
++	// directory must live in the writable upper layer, or the bind lands in (or
++	// fails against) the read-only template -- e.g. launchd binding
++	// /var/run/shellspawn.sock, whose /var/run exists only in the template until
++	// copied up. Materialize the parent before the path is expanded+bound.
++	{
++		const struct sockaddr* sa = (const struct sockaddr*) name;
++		// AF_UNIX == 1 on both BSD and Linux family numbering used here
++		if (sa && socklen > 2 && sa->sa_family == 1)
++		{
++			const char* p = ((const struct sockaddr_un*) name)->sun_path;
++			if (p[0] == '/')
++			{
++				// copy-up the PARENT dir of the socket path
++				char parent[4096];
++				int n = (int) strlen(p);
++				if (n > 0 && n < (int) sizeof(parent))
++				{
++					strcpy(parent, p);
++					char* slash = parent;
++					for (char* c = parent; *c; ++c)
++						if (*c == '/') slash = c;
++					if (slash != parent) { *slash = '\0'; vchroot_prepare_write(parent); }
++				}
++			}
++		}
++	}
++#endif
++
+ 	fixed = __builtin_alloca(sockaddr_fixup_size_from_bsd(name, socklen));
+ 	ret = socklen = sockaddr_fixup_from_bsd(fixed, name, socklen);
+ 	if (ret < 0)
+diff --git a/darling/src/libsystem_kernel/emulation/src/xnu_syscall/bsd/impl/stat/mkdirat.c b/darling/src/libsystem_kernel/emulation/src/xnu_syscall/bsd/impl/stat/mkdirat.c
+index e16d09fae2c55d583247653e862e55a0f572caf2..b0746e7bd404762ec22dc0a3a52dce36f0abcb5d 100644
+--- a/darling/src/libsystem_kernel/emulation/src/xnu_syscall/bsd/impl/stat/mkdirat.c
++++ b/darling/src/libsystem_kernel/emulation/src/xnu_syscall/bsd/impl/stat/mkdirat.c
+@@ -22,7 +22,14 @@ long sys_mkdirat(int fd, const char* path, unsigned int mode)
+ 
+ 	vc.flags = 0;
+ 	vc.dfd = atfd(fd);
+-	
++
++#ifdef EUNION
++	// mkdir over a previously-deleted name must clear its whiteout so the new
++	// dir is visible in the merged view.
++	if (path[0] == '/')
++		vchroot_pre_mkdir(path);
++#endif
++
+ 	strcpy(vc.path, path);
+ 
+ 	ret = vchroot_expand(&vc);
+diff --git a/darling/src/libsystem_kernel/emulation/src/xnu_syscall/bsd/impl/stat/mkfifo.c b/darling/src/libsystem_kernel/emulation/src/xnu_syscall/bsd/impl/stat/mkfifo.c
+index fc2cdb753c9086e8cfc8f529c4889069b573e2f6..3e043b3f73bcf8a8246fae0a3d5d0c4354d8a637 100644
+--- a/darling/src/libsystem_kernel/emulation/src/xnu_syscall/bsd/impl/stat/mkfifo.c
++++ b/darling/src/libsystem_kernel/emulation/src/xnu_syscall/bsd/impl/stat/mkfifo.c
+@@ -22,7 +22,12 @@ long sys_mkfifo(const char* path, unsigned int mode)
+ 
+ 	vc.flags = 0;
+ 	vc.dfd = get_perthread_wd();
+-	
++
++#ifdef EUNION
++	if (path[0] == '/')
++		vchroot_pre_mkdir(path); // clear any whiteout at the new name
++#endif
++
+ 	strcpy(vc.path, path);
+ 
+ 	ret = vchroot_expand(&vc);
+diff --git a/darling/src/libsystem_kernel/emulation/src/xnu_syscall/bsd/impl/stat/rmdir.c b/darling/src/libsystem_kernel/emulation/src/xnu_syscall/bsd/impl/stat/rmdir.c
+index dd9f2324489428e41647bfe4165922728ec9b4e9..b0aad3b43198e30a44a8f465458feec12482b87f 100644
+--- a/darling/src/libsystem_kernel/emulation/src/xnu_syscall/bsd/impl/stat/rmdir.c
++++ b/darling/src/libsystem_kernel/emulation/src/xnu_syscall/bsd/impl/stat/rmdir.c
+@@ -34,5 +34,12 @@ long sys_rmdir(const char* path)
+ 	if (ret < 0)
+ 		return errno_linux_to_bsd(ret);
+ 
++#ifdef EUNION
++	// the upper dir was removed; if the lower template still has it, whiteout so
++	// the merged view keeps it deleted instead of resurrecting the template dir.
++	if (path[0] == '/')
++		vchroot_post_unlink(path);
++#endif
++
+ 	return 0;
+ }
+diff --git a/darling/src/libsystem_kernel/emulation/src/xnu_syscall/bsd/impl/time/utimes.c b/darling/src/libsystem_kernel/emulation/src/xnu_syscall/bsd/impl/time/utimes.c
+index 8f861021336415aef29a308d3af07377b0bf46c4..fab46ded33f00a2a11c424521c4f9a5c4c22badb 100644
+--- a/darling/src/libsystem_kernel/emulation/src/xnu_syscall/bsd/impl/time/utimes.c
++++ b/darling/src/libsystem_kernel/emulation/src/xnu_syscall/bsd/impl/time/utimes.c
+@@ -24,10 +24,19 @@ long sys_utimes(const char* path, struct bsd_timeval* tv)
+ 
+ 	vc.flags = VCHROOT_FOLLOW;
+ 	vc.dfd = get_perthread_wd();
+-	
++
+ 	if (!path)
+ 		return -EFAULT;
+ 
++#ifdef EUNION
++	// utimes mutates metadata: copy up first so the change lands on the upper copy.
++	if (path[0] == '/') {
++		int wr = vchroot_prepare_write(path);
++		if (wr < 0)
++			return errno_linux_to_bsd(wr);
++	}
++#endif
++
+ 	strcpy(vc.path, path);
+ 
+ 	ret = vchroot_expand(&vc);
+diff --git a/darling/src/libsystem_kernel/emulation/src/xnu_syscall/bsd/impl/unistd/chmod_extended.c b/darling/src/libsystem_kernel/emulation/src/xnu_syscall/bsd/impl/unistd/chmod_extended.c
+index 986f6d3ea6b6085b99d4ecc024ddca58a426c874..43ac837cd158364a2f819aa293f0aeadad96fd97 100644
+--- a/darling/src/libsystem_kernel/emulation/src/xnu_syscall/bsd/impl/unistd/chmod_extended.c
++++ b/darling/src/libsystem_kernel/emulation/src/xnu_syscall/bsd/impl/unistd/chmod_extended.c
+@@ -18,6 +18,15 @@ long sys_chmod_extended(const char* path, int uid, int gid, int mode, void* xsec
+ 	if (!path)
+ 		return -EFAULT;
+ 
++#ifdef EUNION
++	// chmod+chown mutate metadata: copy up first so the change lands on the upper.
++	if (path[0] == '/') {
++		int wr = vchroot_prepare_write(path);
++		if (wr < 0)
++			return errno_linux_to_bsd(wr);
++	}
++#endif
++
+ 	strcpy(vc.path, path);
+ 	ret = vchroot_expand(&vc);
+ 	if (ret < 0)
+diff --git a/darling/src/libsystem_kernel/emulation/src/xnu_syscall/bsd/impl/unistd/close.c b/darling/src/libsystem_kernel/emulation/src/xnu_syscall/bsd/impl/unistd/close.c
+index 6fad87f42894a193a20778679e00e10e30e8f810..6162e04008c31f81c46d8299944305a8cde05652 100644
+--- a/darling/src/libsystem_kernel/emulation/src/xnu_syscall/bsd/impl/unistd/close.c
++++ b/darling/src/libsystem_kernel/emulation/src/xnu_syscall/bsd/impl/unistd/close.c
+@@ -7,6 +7,9 @@
+ #include <darling/emulation/other/mach/lkm.h>
+ #include <darling/emulation/common/simple.h>
+ #include <darling/emulation/common/guarded/table.h>
++#ifdef EUNION
++#include <darling/emulation/linux_premigration/vchroot_expand.h>
++#endif
+ 
+ __attribute__((weak))
+ __attribute__((visibility("default")))
+@@ -38,6 +41,11 @@ long sys_close_nocancel(int fd)
+ 		return 0;
+ 	}
+ 
++#ifdef EUNION
++	// release any per-fd directory-merge state before the fd number is recycled
++	vchroot_dir_closed(fd);
++#endif
++
+ 	ret = LINUX_SYSCALL1(__NR_close, fd);
+ 	if (ret < 0)
+ 		ret = errno_linux_to_bsd(ret);
+@@ -51,6 +59,10 @@ long close_internal(int fd)
+ {
+ 	int ret;
+ 
++#ifdef EUNION
++	vchroot_dir_closed(fd);
++#endif
++
+ 	ret = LINUX_SYSCALL1(__NR_close, fd);
+ 	if (ret < 0)
+ 		ret = errno_linux_to_bsd(ret);
+diff --git a/darling/src/libsystem_kernel/emulation/src/xnu_syscall/bsd/impl/unistd/fchmodat.c b/darling/src/libsystem_kernel/emulation/src/xnu_syscall/bsd/impl/unistd/fchmodat.c
+index d749ef6f4cfeeeb69b7f15d9a9c961e14ec89b4c..78a9de0cb8e0de207c8e1998c575a7af2ae181df 100644
+--- a/darling/src/libsystem_kernel/emulation/src/xnu_syscall/bsd/impl/unistd/fchmodat.c
++++ b/darling/src/libsystem_kernel/emulation/src/xnu_syscall/bsd/impl/unistd/fchmodat.c
+@@ -69,6 +69,16 @@ long sys_fchmodat(int fd, const char* path, int mode, int flag)
+ 	if (!path)
+ 		return -EFAULT;
+ 
++#ifdef EUNION
++	// chmod mutates metadata: copy up from the template first so the change lands
++	// on the per-prefix upper copy, not the shared lower file.
++	if (path[0] == '/') {
++		int wr = vchroot_prepare_write(path);
++		if (wr < 0)
++			return errno_linux_to_bsd(wr);
++	}
++#endif
++
+ 	strcpy(vc.path, path);
+ 
+ 	ret = vchroot_expand(&vc);
+diff --git a/darling/src/libsystem_kernel/emulation/src/xnu_syscall/bsd/impl/unistd/linkat.c b/darling/src/libsystem_kernel/emulation/src/xnu_syscall/bsd/impl/unistd/linkat.c
+index dcc0dc73c2ef43967cc57d289737e9d2826ad96e..77d08a120085aa549e7b743115e024acf9088b02 100644
+--- a/darling/src/libsystem_kernel/emulation/src/xnu_syscall/bsd/impl/unistd/linkat.c
++++ b/darling/src/libsystem_kernel/emulation/src/xnu_syscall/bsd/impl/unistd/linkat.c
+@@ -29,6 +29,20 @@ long sys_linkat(int fd, const char* path, int fdlink, const char* link, int flag
+ 
+ 	strcpy(vc2.path, link);
+ 
++#ifdef EUNION
++	// hardlink: the source must live in the writable upper layer (you cannot link
++	// a file out of the read-only template into it), and the new name must clear
++	// any whiteout. Note: copy-up breaks link identity (st_nlink resets) -- same
++	// behaviour as gVisor; documented in DESIGN.md.
++	if (path[0] == '/') {
++		int wr = vchroot_prepare_write(path);
++		if (wr < 0)
++			return errno_linux_to_bsd(wr);
++	}
++	if (link[0] == '/')
++		vchroot_pre_mkdir(link);
++#endif
++
+ 	ret = vchroot_expand(&vc);
+ 	if (ret < 0)
+ 		return errno_linux_to_bsd(ret);
+diff --git a/darling/src/libsystem_kernel/emulation/src/xnu_syscall/bsd/impl/unistd/mknod.c b/darling/src/libsystem_kernel/emulation/src/xnu_syscall/bsd/impl/unistd/mknod.c
+index bd15136d7a9f0134ffa417e9392371484a5eec76..82736c196d6c03881563f13748abcfbd639ce21a 100644
+--- a/darling/src/libsystem_kernel/emulation/src/xnu_syscall/bsd/impl/unistd/mknod.c
++++ b/darling/src/libsystem_kernel/emulation/src/xnu_syscall/bsd/impl/unistd/mknod.c
+@@ -15,10 +15,14 @@ long sys_mknod(const char* path, int mode, int dev)
+ 
+ 	vc.flags = 0;
+ 	vc.dfd = get_perthread_wd();
+-	
+ 	if (!path)
+ 		return -EFAULT;
+ 
++#ifdef EUNION
++	if (path[0] == '/')
++		vchroot_pre_mkdir(path); // clear any whiteout at the new name
++#endif
++
+ 	strcpy(vc.path, path);
+ 
+ 	ret = vchroot_expand(&vc);
+diff --git a/darling/src/libsystem_kernel/emulation/src/xnu_syscall/bsd/impl/unistd/renameat.c b/darling/src/libsystem_kernel/emulation/src/xnu_syscall/bsd/impl/unistd/renameat.c
+index 23a1912a9f63c3cd5d446f8ef788d61cb2c4e429..ee0e02869804fd89a7eeaa400b08f97064725f1c 100644
+--- a/darling/src/libsystem_kernel/emulation/src/xnu_syscall/bsd/impl/unistd/renameat.c
++++ b/darling/src/libsystem_kernel/emulation/src/xnu_syscall/bsd/impl/unistd/renameat.c
+@@ -26,6 +26,24 @@ long sys_renameat(int oldfd, const char* oldpath, int newfd, const char* newpath
+ 
+ 	strcpy(vc2.path, newpath);
+ 
++#ifdef EUNION
++	// rename across the union: the source must be in the writable upper layer
++	// (rename cannot move out of the read-only template), and the destination
++	// name must clear any whiteout. After a successful rename the source name is
++	// gone from upper -- if the template still has it, whiteout the origin so it
++	// does not resurrect from the lower layer.
++	// PoC limitation: a lower-only *directory* source only copies up its top dir
++	// here, not its descendants (gVisor F.3 recursion); files and empty dirs are
++	// correct. Tracked in DESIGN.md.
++	if (oldpath[0] == '/') {
++		int wr = vchroot_prepare_write(oldpath);
++		if (wr < 0)
++			return errno_linux_to_bsd(wr);
++	}
++	if (newpath[0] == '/')
++		vchroot_pre_mkdir(newpath);
++#endif
++
+ 	ret = vchroot_expand(&vc);
+ 	if (ret < 0)
+ 		return errno_linux_to_bsd(ret);
+@@ -38,5 +56,10 @@ long sys_renameat(int oldfd, const char* oldpath, int newfd, const char* newpath
+ 	if (ret < 0)
+ 		return errno_linux_to_bsd(ret);
+ 
++#ifdef EUNION
++	if (oldpath[0] == '/')
++		vchroot_post_unlink(oldpath);
++#endif
++
+ 	return 0;
+ }
+diff --git a/darling/src/libsystem_kernel/emulation/src/xnu_syscall/bsd/impl/unistd/symlinkat.c b/darling/src/libsystem_kernel/emulation/src/xnu_syscall/bsd/impl/unistd/symlinkat.c
+index f194d162c7f30c6e820fd47f276bd5ec3f11382d..b668f0945471fbfef22220ec7eb8bad6b93030a6 100644
+--- a/darling/src/libsystem_kernel/emulation/src/xnu_syscall/bsd/impl/unistd/symlinkat.c
++++ b/darling/src/libsystem_kernel/emulation/src/xnu_syscall/bsd/impl/unistd/symlinkat.c
+@@ -17,7 +17,13 @@ long sys_symlinkat(const char* path, int fd, const char* link)
+ 
+ 	vc.flags = 0;
+ 	vc.dfd = get_perthread_wd();
+-	
++
++#ifdef EUNION
++	// creating a symlink at `link`: clear any whiteout so the new name is visible.
++	if (link[0] == '/')
++		vchroot_pre_mkdir(link);
++#endif
++
+ 	strcpy(vc.path, link);
+ 
+ 	ret = vchroot_expand(&vc);
+diff --git a/darling/src/libsystem_kernel/emulation/src/xnu_syscall/bsd/impl/unistd/truncate.c b/darling/src/libsystem_kernel/emulation/src/xnu_syscall/bsd/impl/unistd/truncate.c
+index 9d9ada0e8e0e20aa1fff7a9924743fb09589a515..96e1afe2d3a3392cf1600a97ddfba3a3d740d999 100644
+--- a/darling/src/libsystem_kernel/emulation/src/xnu_syscall/bsd/impl/unistd/truncate.c
++++ b/darling/src/libsystem_kernel/emulation/src/xnu_syscall/bsd/impl/unistd/truncate.c
+@@ -15,10 +15,19 @@ long sys_truncate(const char* path, long long length)
+ 
+ 	vc.flags = VCHROOT_FOLLOW;
+ 	vc.dfd = get_perthread_wd();
+-	
++
+ 	if (!path)
+ 		return -EFAULT;
+ 
++#ifdef EUNION
++	// truncate mutates file contents: copy up from the read-only template first.
++	if (path[0] == '/') {
++		int wr = vchroot_prepare_write(path);
++		if (wr < 0)
++			return errno_linux_to_bsd(wr);
++	}
++#endif
++
+ 	strcpy(vc.path, path);
+ 
+ 	ret = vchroot_expand(&vc);
+diff --git a/darling/src/libsystem_kernel/emulation/src/xnu_syscall/bsd/impl/unistd/unlinkat.c b/darling/src/libsystem_kernel/emulation/src/xnu_syscall/bsd/impl/unistd/unlinkat.c
+index f5e922ab58c2dcc1b47a9182bf08d473a9588baa..b4d3d2aecf492dae98000adea3bb5e852c336023 100644
+--- a/darling/src/libsystem_kernel/emulation/src/xnu_syscall/bsd/impl/unistd/unlinkat.c
++++ b/darling/src/libsystem_kernel/emulation/src/xnu_syscall/bsd/impl/unistd/unlinkat.c
+@@ -38,5 +38,12 @@ long sys_unlinkat(int fd, const char* path, int flag)
+ 	if (ret < 0)
+ 		ret = errno_linux_to_bsd(ret);
+ 
++#ifdef EUNION
++	// the upper object was removed; if the name still exists in the lower
++	// template, drop a whiteout so the merged view keeps it deleted.
++	if (ret == 0 && path[0] == '/')
++		vchroot_post_unlink(path);
++#endif
++
+ 	return ret;
+ }
