@@ -227,6 +227,60 @@ class RuntimeEvidenceStore:
                 entries.append(entry)
         return sorted(entries, key=lambda entry: entry.stat().st_mtime, reverse=True)
 
+    def resolve(self, identifier: str) -> Path:
+        """Resolve an exact unit name or an unambiguous trailing identifier."""
+
+        if not identifier or "/" in identifier or identifier in {".", ".."}:
+            raise ValueError(f"invalid runtime evidence identifier: {identifier!r}")
+        matches = [
+            entry
+            for entry in self.entries()
+            if entry.name == identifier or entry.name.endswith(f"-{identifier}")
+        ]
+        if not matches:
+            raise ValueError(f"runtime evidence not found: {identifier}")
+        if len(matches) != 1:
+            raise ValueError(f"runtime evidence identifier is ambiguous: {identifier}")
+        return matches[0]
+
+    @staticmethod
+    def manifest(entry: Path) -> dict[str, Any]:
+        manifest = json.loads((entry / "manifest.json").read_text())
+        if not isinstance(manifest, dict) or manifest.get("schema") != 1:
+            raise ValueError(f"unsupported runtime evidence manifest: {entry}")
+        return manifest
+
+    def replay_report(self, identifier: str) -> dict[str, Any]:
+        """Validate retained references and return a portable diagnostic report."""
+
+        entry = self.resolve(identifier)
+        manifest = self.manifest(entry)
+        referenced = []
+        for diagnostic in manifest.get("diagnostics", []):
+            if not isinstance(diagnostic, dict):
+                raise ValueError(f"invalid runtime evidence diagnostic: {entry}")
+            for key in ("output",):
+                if key in diagnostic:
+                    referenced.append(diagnostic[key])
+            referenced.extend(diagnostic.get("artifacts", []))
+        checked = []
+        for relative_text in referenced:
+            relative = Path(str(relative_text))
+            if relative.is_absolute() or ".." in relative.parts:
+                raise ValueError(f"unsafe runtime evidence attachment: {relative_text}")
+            attachment = entry / relative
+            if not attachment.is_file() or attachment.is_symlink():
+                raise ValueError(f"missing runtime evidence attachment: {relative_text}")
+            checked.append({"path": str(relative), "bytes": attachment.stat().st_size})
+        return {
+            "unit": entry.name,
+            "label": manifest.get("label"),
+            "context": manifest.get("context", {}),
+            "failure": manifest.get("failure", {}),
+            "diagnostics": manifest.get("diagnostics", []),
+            "attachments": checked,
+        }
+
     def gc(self, *, max_age_hours: float, keep_last: int, dry_run: bool) -> list[Path]:
         if max_age_hours < 0:
             raise ValueError("runtime evidence max age must be >= 0")
