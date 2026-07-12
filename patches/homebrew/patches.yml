@@ -5845,6 +5845,53 @@ patches:
     reason: runtime-harness-pending
     scope: The markers run only in the materialized rootless shellspawn protocol path. The current bootstrap cannot reach a guest fixture to prove them as a normal RED-to-GREEN runtime regression; the bounded repro and its last trace stage are the diagnostic oracle.
   sha256sum: 9ebe6846913534d1be263ab9ecc9f7e231b5b2b42bdd4063e7c159e831017ba1
+- path: darling/rootless-shellspawn-fast-exit.patch
+  module: darling
+  source-branch: fix/rootless-shellspawn-child-lifecycle
+  source-base: 4b5d3e74b1a8f951fe3bb78327a6a551bf0a4aaf
+  source-commit: bd94eb37dee3eae8d7ce5fe76b9d485b8ea23024
+  bead: dar-yfp4.3.2.5
+  publication-status: blocked
+  publication-blocker: Rootless E-UNION remains experimental until the direct-exec lifecycle regression and the separate post-dyld shell stall are both proven on a stable runtime provider.
+  tests:
+  - name: rootless_shellspawn_fast_direct_exit
+    kind: guest
+    coverage-tier: runtime
+    runs: guest
+    diag: guarded
+    red: true
+    red-proof:
+      mode: guest-runtime-deploy
+      bad-profile: current-minus-patch
+      expect-failure-phase: run
+      expect-output-contains:
+      - shellspawn-error errno=9
+      source-modules:
+      - darling
+      runtime-artifacts:
+      - module: darling
+        build-targets:
+        - shellspawn
+        deploy:
+        - usr/libexec/shellspawn
+    runner: guest-argv-fixture
+    guest-argv:
+    - /usr/bin/true
+    expect:
+      returncode: 0
+    runtime-profile: homebrew-rootless-no-mount
+    timeout-seconds: 20
+    requires:
+    - darling-prefix
+    host-trace-files:
+    - env: DARLING_HOST_BOOT_TRACE
+      prefix-relative-path: .west-rootless-shellspawn-fast-exit.trace
+    note: >-
+      The guest process is intentionally fast. Before the fix, execve succeeds
+      and exits 0, but shellspawn races the exited child while registering its
+      kqueue watcher, returns EBADF, and loses the launcher completion result.
+      The fix reaps through the same poll loop that handles launcher signals.
+  sha256sum: 99c378d4f111a1555b324c34866998ef577157e5af75bae098a795606526a2a4
 - path: libsystem/rootless-initializer-trace.patch
   sha256sum: b3107f04e59f860982abacfe35714a4a2e18f3236a5724e7ece11eefb2327d89
   module: darling/src/external/libsystem
