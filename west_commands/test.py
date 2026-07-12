@@ -3770,6 +3770,7 @@ class DarlingTest(WestCommand):
         temp = tempfile.mkdtemp(prefix="west-red-proof-source-")
         yielded = False
         keep_on_failure = False
+        source_started = time.monotonic()
         try:
             root = Path(temp)
             source_root = root / "darling"
@@ -3822,6 +3823,12 @@ class DarlingTest(WestCommand):
                 for entry in nested_entries
                 if entry.created
             )
+            self.inf(
+                f"  runtime phase complete: source hydration "
+                f"({len(nested_entries)} gitlink(s), {time.monotonic() - source_started:.1f}s)"
+            )
+            profile_started = time.monotonic()
+            self.inf("  runtime phase start: profile materialization")
             if patch_module_is_darling_root or Path("darling") in materialized_modules:
                 if omit_patch:
                     self._apply_current_minus_profile(patch, proof, "darling", source_root)
@@ -3862,6 +3869,10 @@ class DarlingTest(WestCommand):
                             self._apply_full_runtime_profile(patch, module_text, target)
                     if omit_patch:
                         self._apply_red_source_patches(proof, module_text, target)
+            self.inf(
+                f"  runtime phase complete: profile materialization "
+                f"({time.monotonic() - profile_started:.1f}s)"
+            )
             yielded = True
             yield source_root
         except BaseException:
@@ -4144,6 +4155,8 @@ class DarlingTest(WestCommand):
     ):
         backups: list[tuple[Path, Path | None]] = []
         deployment_succeeded = False
+        deploy_started = time.monotonic()
+        self.inf(f"  runtime phase start: {label} deploy")
         with tempfile.TemporaryDirectory(prefix="west-red-proof-deploy-") as temp:
             backup_root = Path(temp)
             if not self._shutdown_runtime_prefix(prefix):
@@ -4170,6 +4183,10 @@ class DarlingTest(WestCommand):
                             backups.append((dst, backup))
                             self._runtime_replace_file(src, dst)
                             self.inf(f"  {label} deploy: {src} -> {dst}")
+                self.inf(
+                    f"  runtime phase complete: {label} deploy "
+                    f"({time.monotonic() - deploy_started:.1f}s)"
+                )
                 yield
                 deployment_succeeded = True
             finally:
