@@ -447,9 +447,9 @@ with tempfile.TemporaryDirectory() as temp:
     thin_framework = build_root / "CoreFoundation_x86_64"
     executable = build_root / "launchd"
     for path, magic in (
-        (framework, b"\xca\xfe\xba\xbe"),
         (thin_framework, b"\xcf\xfa\xed\xfe"),
         (executable, b"\xcf\xfa\xed\xfe"),
+        (framework, b"\xca\xfe\xba\xbe"),
     ):
         path.write_bytes(magic + b"Mach-O fixture\n")
     assert is_fat_macho_binary(framework)
