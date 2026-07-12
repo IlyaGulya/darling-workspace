@@ -157,6 +157,9 @@ assert runtime_deploy_targets(prefix_for_targets, "usr/lib/system/libsystem_kern
 assert runtime_deploy_targets(prefix_for_targets, "bin/darlingserver") == [
     prefix_for_targets / "bin/darlingserver",
 ]
+assert runtime_deploy_targets(prefix_for_targets, "sbin/launchd") == [
+    prefix_for_targets / "sbin/launchd",
+]
 with tempfile.TemporaryDirectory() as temp:
     profiles_path = Path(temp) / "runtime-profiles.yml"
     profiles_path.write_text(
@@ -287,8 +290,8 @@ assert {
 } >= {
     "bin/darling",
     "bin/darlingserver",
+    "sbin/launchd",
     "usr/libexec/darling/mldr",
-    "usr/libexec/darling/launchd",
     "usr/libexec/shellspawn",
     "usr/libexec/darling/vchroot",
     "usr/lib/dyld",
@@ -347,7 +350,7 @@ with tempfile.TemporaryDirectory() as temp:
         "    bootstrap: rootless-no-mount\n"
         "    runtime-artifacts:\n"
         "    - build-targets: [darling]\n"
-        "      deploy: [bin/darling, usr/libexec/darling/mldr, usr/libexec/darling/launchd, usr/libexec/shellspawn, usr/libexec/darling/vchroot, usr/lib/dyld]\n"
+        "      deploy: [bin/darling, usr/libexec/darling/mldr, sbin/launchd, usr/libexec/shellspawn, usr/libexec/darling/vchroot, usr/lib/dyld]\n"
         "    - build-targets: [darlingserver]\n"
         "      deploy: [bin/darlingserver]\n"
         "    - build-targets: [system_kernel]\n"
@@ -372,7 +375,7 @@ with tempfile.TemporaryDirectory() as temp:
         "    bootstrap: rootless-no-mount\n"
         "    runtime-artifacts:\n"
         "    - build-targets: [darling]\n"
-        "      deploy: [bin/darling, usr/libexec/darling/mldr, usr/libexec/darling/launchd, usr/libexec/shellspawn, usr/libexec/darling/vchroot, usr/lib/dyld]\n"
+        "      deploy: [bin/darling, usr/libexec/darling/mldr, sbin/launchd, usr/libexec/shellspawn, usr/libexec/darling/vchroot, usr/lib/dyld]\n"
         "    - build-targets: [darlingserver]\n"
         "      deploy: [bin/darlingserver]\n"
         "    - build-targets: [system_kernel]\n"
@@ -461,7 +464,7 @@ with tempfile.TemporaryDirectory() as temp:
         "    bootstrap: rootless-no-mount\n"
         "    runtime-artifacts:\n"
         "    - build-targets: [darling]\n"
-        "      deploy: [bin/darling, usr/libexec/darling/mldr, usr/libexec/darling/launchd, usr/libexec/shellspawn, usr/libexec/darling/vchroot, usr/lib/dyld]\n"
+        "      deploy: [bin/darling, usr/libexec/darling/mldr, sbin/launchd, usr/libexec/shellspawn, usr/libexec/darling/vchroot, usr/lib/dyld]\n"
         "    - build-targets: [darlingserver]\n"
         "      deploy: [bin/darlingserver]\n"
         "    - build-targets: [system_kernel]\n"
@@ -485,7 +488,7 @@ with tempfile.TemporaryDirectory() as temp:
         "    bootstrap: rootless-no-mount\n"
         "    runtime-artifacts:\n"
         "    - build-targets: [darling]\n"
-        "      deploy: [bin/darling, usr/libexec/darling/mldr, usr/libexec/darling/launchd, usr/libexec/shellspawn, usr/libexec/darling/vchroot, usr/lib/dyld]\n"
+        "      deploy: [bin/darling, usr/libexec/darling/mldr, sbin/launchd, usr/libexec/shellspawn, usr/libexec/darling/vchroot, usr/lib/dyld]\n"
         "    - build-targets: [darlingserver]\n"
         "      deploy: [bin/darlingserver]\n"
         "    - build-targets: [system_kernel, objc, resolv-darwin]\n"
