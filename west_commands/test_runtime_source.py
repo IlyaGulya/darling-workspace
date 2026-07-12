@@ -11,6 +11,7 @@ from __future__ import annotations
 import fcntl
 import json
 import os
+import signal
 import shutil
 import subprocess
 import tempfile
@@ -44,6 +45,92 @@ class RuntimeSourceMaterializer:
         if not result.is_file():
             self._host.die(f"red-proof source patch not found: {result}")
         return result
+
+    @contextmanager
+    def profile_worktree_checkout(self, profile: str) -> Iterator[None]:
+        projects = self._host._projects()
+        modules = sorted(
+            self._host._profile_stack_modules(profile),
+            key=lambda module: (len(Path(module).parts), module),
+        )
+        repos = [(module, projects[module]) for module in modules]
+        previous_overrides = getattr(self._host, "_project_overrides", {})
+        added: list[tuple[Path, Path]] = []
+        with tempfile.TemporaryDirectory(prefix=f"west-profile-{profile}-") as temp:
+            root = Path(temp)
+            overrides = dict(previous_overrides)
+            try:
+                for module, repo in repos:
+                    target = root / module
+                    if target.exists() or target.is_symlink():
+                        if target.is_dir() and not target.is_symlink():
+                            shutil.rmtree(target)
+                        else:
+                            target.unlink()
+                    target.parent.mkdir(parents=True, exist_ok=True)
+                    revision = self._host._manifest_revision(module)
+                    self._host.inf(f"  materialize {module}: {revision} -> {target}")
+                    subprocess.run(
+                        ["git", "worktree", "add", "--quiet", "--detach", str(target), revision],
+                        cwd=repo,
+                        check=True,
+                    )
+                    added.append((repo, target))
+                    for ref, project_path in projects.items():
+                        if project_path == repo:
+                            overrides[ref] = target
+                    overrides[module] = target
+                self._host._project_overrides = overrides
+                for stacked in self._host._profile_stack(profile):
+                    data = self._host._load_profile(stacked)
+                    profile_dir = Path(self._host.manifest.repo_abspath) / "patches" / stacked
+                    for patch in data.get("patches", []):
+                        target = overrides.get(patch["module"])
+                        if target is None:
+                            continue
+                        self._host.inf(f"  apply {stacked}/{patch['path']}")
+                        subprocess.run(
+                            [
+                                "git", "-c", "gc.auto=0", "-c", "maintenance.auto=false",
+                                "am", "--3way", str(profile_dir / patch["path"]),
+                            ],
+                            cwd=target,
+                            check=True,
+                        )
+                yield
+            finally:
+                self._host._project_overrides = previous_overrides
+                previous_sigint = signal.signal(signal.SIGINT, signal.SIG_IGN)
+                try:
+                    errors = []
+                    for repo, target in reversed(added):
+                        error = remove_temporary_worktree(repo, target)
+                        if error:
+                            errors.append(error)
+                finally:
+                    signal.signal(signal.SIGINT, previous_sigint)
+                if errors:
+                    self._host.die(
+                        f"{profile}: failed to remove temporary profile worktree(s): "
+                        f"{'; '.join(errors)}"
+                    )
+
+    @contextmanager
+    def bad_source_tree(self, module: str, revision: str) -> Iterator[Path]:
+        repo = self._host._project_path(module)
+        with tempfile.TemporaryDirectory(prefix="west-red-proof-") as temp:
+            worktree = Path(temp) / "source-base"
+            subprocess.run(
+                ["git", "worktree", "add", "--quiet", "--detach", str(worktree), revision],
+                cwd=repo,
+                check=True,
+            )
+            try:
+                yield worktree
+            finally:
+                error = remove_temporary_worktree(repo, worktree)
+                if error:
+                    self._host.die(f"failed to remove RED source worktree: {error}")
 
     def project_manifest_path(self, ref: str) -> Path:
         for project in self._host.manifest.projects:
