@@ -36,6 +36,7 @@ with tempfile.TemporaryDirectory() as temp:
     test = DarlingTest.__new__(DarlingTest)
     test._prefix = str(prefix)
     test._active_profile = "outer-profile"
+    test._runtime_cmake_define_overrides = {"DARLING_GUEST_RECVSPIN": "0"}
     test.inf = lambda _message: None
     test.err = lambda _message: None
     test.die = lambda message: (_ for _ in ()).throw(AssertionError(message))
@@ -91,7 +92,7 @@ with tempfile.TemporaryDirectory() as temp:
     assert captured["proof"] == {
         "source-modules": ["darling"],
         "runtime-artifacts": [],
-        "cmake-defines": {},
+        "cmake-defines": {"DARLING_GUEST_RECVSPIN": "0"},
         "bad-profile": "current-minus-patch",
     }
     assert test._active_profile == "outer-profile"

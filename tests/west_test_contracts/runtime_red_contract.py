@@ -35,8 +35,10 @@ from west_commands.test_runtime import (
     describe_runtime_deploy_plan,
     is_macho_binary,
     load_ctest_runtime_profiles,
+    merge_runtime_cmake_define_overrides,
     parse_macho_dylib_dependencies,
     parse_macho_dylib_id,
+    parse_runtime_cmake_define_overrides,
     partition_ctest_runtime_profiles,
     runtime_artifact_deploy_paths,
     runtime_artifact_has_resource,
@@ -67,6 +69,22 @@ def make_test():
     test._execution_env = lambda _invocation: {"DPREFIX": test._prefix}
     test._preflight_runtime_profile_stack = lambda *_args: None
     return test
+
+
+assert parse_runtime_cmake_define_overrides(
+    ["DARLING_GUEST_RECVSPIN=0", "DSERVER_TOOLS=ON"]
+) == {"DARLING_GUEST_RECVSPIN": "0", "DSERVER_TOOLS": "ON"}
+assert merge_runtime_cmake_define_overrides(
+    {"DARLING_EUNION": True, "DARLING_GUEST_RECVSPIN": 512},
+    {"DARLING_GUEST_RECVSPIN": "0"},
+) == {"DARLING_EUNION": True, "DARLING_GUEST_RECVSPIN": "0"}
+for invalid in ("DARLING_GUEST_RECVSPIN", "BAD-NAME=0", "DARLING_PATCH_PROFILE=perf"):
+    try:
+        parse_runtime_cmake_define_overrides([invalid])
+    except ValueError:
+        pass
+    else:
+        raise AssertionError(f"invalid runtime CMake override accepted: {invalid}")
 
 
 with tempfile.TemporaryDirectory() as temp:
