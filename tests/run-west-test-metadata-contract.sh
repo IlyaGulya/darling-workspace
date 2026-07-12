@@ -3,6 +3,7 @@ set -euo pipefail
 
 repo="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$repo"
+"$repo/scripts/west-job.sh" assert-no-live-west-test --state-root "${TMPDIR:-/tmp}"
 
 if [ "${1:-}" = "--source-contract-probe" ]; then
 	[ -n "${DARLING_SRC_ROOT:-}" ] || {

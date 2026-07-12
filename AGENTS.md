@@ -29,6 +29,11 @@ refs, PR drafts, and agent handoff.
   detach the shell and leave the sleep process behind. Run short
   `scripts/west-job.sh status --state-dir DIR` checks instead, record the PID
   and log path, and treat any escaped monitor process as a tooling defect.
+- Run long contract scripts that invoke `west test` internally (notably
+  `tests/run-west-test-metadata-contract.sh`) through `scripts/west-job.sh
+  start` and inspect the recorded state. A direct transport invocation can
+  detach its nested test process; keep `dar-test-infra-sp5.33` open until the
+  runner itself prevents that escape.
 - Use `west patch verify|apply|clean|list` for local integration profiles.
 - Use `west darling-prefix-repair --prefix <prefix>` when guest tests report
   missing prefix prerequisites such as `private/var/tmp`, canonical
