@@ -16,7 +16,7 @@ profile = {
             "bead": "dar-a",
             "tests": [
                 {"name": "host-red", "env": "host", "red": True, "diag": "bare"},
-                {"name": "guest-green", "env": "darling", "red": False, "diag": "guarded"},
+                {"name": "guest-green", "env": "darling", "red": False, "diag": "guarded", "smoke": True},
             ],
         },
         {"path": "b.patch", "bead": "dar-b", "tests": []},
@@ -30,6 +30,7 @@ all_selected = select_metadata_tests(
     bead=None,
     env=None,
     diag=None,
+    label=None,
     red_only=False,
     resolved_diag=lambda test: test["diag"],
 )
@@ -42,6 +43,7 @@ red_host = select_metadata_tests(
     bead="dar-a",
     env="host",
     diag="bare",
+    label=None,
     red_only=True,
     resolved_diag=lambda test: test["diag"],
 )
@@ -54,9 +56,34 @@ absent = select_metadata_tests(
     bead=None,
     env=None,
     diag=None,
+    label=None,
     red_only=False,
     resolved_diag=lambda test: test["diag"],
 )
 assert not absent.found_patch
+
+smoke = select_metadata_tests(
+    profile,
+    patch_path=None,
+    bead=None,
+    env="darling",
+    diag=None,
+    label="smoke:true",
+    red_only=False,
+    resolved_diag=lambda test: test["diag"],
+)
+assert [test["name"] for _, test in smoke.selected] == ["guest-green"]
+
+no_stress = select_metadata_tests(
+    profile,
+    patch_path=None,
+    bead=None,
+    env=None,
+    diag=None,
+    label="stress:true",
+    red_only=False,
+    resolved_diag=lambda test: test["diag"],
+)
+assert no_stress.selected == []
 
 print("PASS west-test-selection-contract")
