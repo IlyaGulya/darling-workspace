@@ -85,6 +85,7 @@ from test_prefix import (
     RootlessRuntimeSocketCleanupResult,
 )
 from test_resources import resource_context
+from test_runtime_proof import ProofObservation, RedOracle, RuntimeProofStateMachine
 from test_results import InvocationResult, RuntimeBuildFailure, RuntimeRedProven
 from test_runtime_build import RuntimeBuildService
 from test_runtime_evidence import RuntimeEvidenceStore
@@ -4286,29 +4287,27 @@ class DarlingTest(WestCommand):
         if not contains and not lacks:
             return True
 
-        observed_output = (captured_output or "") + self._runtime_diagnostic_output(invocation)
-        bundle = self._latest_debug_bundle(invocation, since=since)
-        if bundle is None:
-            if observed_output:
-                return self._check_red_output_expectations(
-                    proof,
-                    invocation,
-                    observed_output,
-                    where="in captured RED output and host trace",
-                )
+        output = self._guest_runtime_red_output(
+            invocation, since=since, captured_output=captured_output
+        )
+        if output is None:
             self.err(
                 f"{invocation['name']}: RED failure output requested, "
                 f"but no recent debug bundle was found under {self._debug_bundle_root()}"
             )
             return False
-
-        output = self._debug_bundle_output(bundle) + observed_output
         return self._check_red_output_expectations(
-            proof,
-            invocation,
-            output,
-            where=f"in {bundle}",
+            proof, invocation, output, where="in captured RED evidence"
         )
+
+    def _guest_runtime_red_output(
+        self, invocation, *, since: float, captured_output: str | None = None
+    ) -> str | None:
+        observed_output = (captured_output or "") + self._runtime_diagnostic_output(invocation)
+        bundle = self._latest_debug_bundle(invocation, since=since)
+        if bundle is None:
+            return observed_output or None
+        return self._debug_bundle_output(bundle) + observed_output
 
     def _red_output_expectations(self, proof) -> tuple[list[str], list[str]]:
         contains = proof.get("expect-output-contains", [])
@@ -4373,6 +4372,11 @@ class DarlingTest(WestCommand):
             )
 
         red_invocation = self._guest_runtime_red_invocation(patch, proof, invocation)
+        machine = RuntimeProofStateMachine(
+            name=red_invocation["name"],
+            oracle=RedOracle.from_manifest(proof),
+            error=self.err,
+        )
         with self._metadata_runtime_profile_context(
             patch, test, omit_patch=True
         ) as deployment:
@@ -4387,32 +4391,41 @@ class DarlingTest(WestCommand):
                     red_result = self._run_invocation_captured(
                         run_invocation, env=resource_env
                     )
-            if red_result.returncode == 0:
-                self.err("  RED proof failed: current-minus runtime unexpectedly passed")
-                return 1
-            if not self._check_red_failure_phase(
-                proof, red_invocation, red_result.failure_phase
-            ):
-                return 1
-            if not self._check_guest_runtime_red_failure(
-                proof,
+            observation_output = red_result.output
+            diagnostic_output = self._guest_runtime_red_output(
                 run_invocation,
                 since=red_started_at,
                 captured_output=red_result.output,
+            )
+            if diagnostic_output is None and machine.oracle.output_contains:
+                self.err(
+                    f"{run_invocation['name']}: RED domain output is unavailable"
+                )
+                return 1
+            observation_output = diagnostic_output or observation_output
+            if not machine.validate_red(
+                ProofObservation(
+                    red_result.returncode,
+                    observation_output,
+                    red_result.failure_phase,
+                )
             ):
                 return 1
             self.inf(
                 f"  RED runtime provider failed as expected (rc={red_result.returncode})"
             )
 
-        self.inf("  GREEN runtime provider")
-        with self._metadata_runtime_profile_context(patch, test) as deployment:
-            runtime_env = deployment.env if deployment is not None else None
-            runtime_invocation = self._with_runtime_diagnostics(invocation, deployment)
-            green_env = self._runtime_profile_execution_env(runtime_invocation, runtime_env)
-            with self._ctest_source_override_context(runtime_invocation) as run_invocation:
-                with self._resource_context(run_invocation, green_env) as resource_env:
-                    return self._run_invocation(run_invocation, env=resource_env)
+        def run_green() -> int:
+            self.inf("  GREEN runtime provider")
+            with self._metadata_runtime_profile_context(patch, test) as deployment:
+                runtime_env = deployment.env if deployment is not None else None
+                runtime_invocation = self._with_runtime_diagnostics(invocation, deployment)
+                green_env = self._runtime_profile_execution_env(runtime_invocation, runtime_env)
+                with self._ctest_source_override_context(runtime_invocation) as run_invocation:
+                    with self._resource_context(run_invocation, green_env) as resource_env:
+                        return self._run_invocation(run_invocation, env=resource_env)
+
+        return machine.run_green(run_green)
 
     def _run_guest_runtime_deploy_proof(self, patch, proof, invocation) -> int:
         if (
@@ -4447,6 +4460,11 @@ class DarlingTest(WestCommand):
         if not prefix_text:
             self.die(f"{patch['path']}: guest-runtime-deploy needs a Darling prefix")
         prefix = Path(prefix_text)
+        machine = RuntimeProofStateMachine(
+            name=invocation["name"],
+            oracle=RedOracle.from_manifest(proof),
+            error=self.err,
+        )
         self._require_runtime_scratch_space(
             f"{patch['path']}: {invocation['name']} RED"
         )
@@ -4483,14 +4501,12 @@ class DarlingTest(WestCommand):
                         allow_failure=True,
                     )
                 except RuntimeBuildFailure as failure:
-                    red_started_at = time.time()
-                    if not self._check_red_failure_phase(
-                        proof, invocation, failure.phase
-                    ) or not self._check_guest_runtime_red_failure(
-                        proof,
-                        invocation,
-                        since=red_started_at,
-                        captured_output=process_output_text(failure.result),
+                    if not machine.validate_red(
+                        ProofObservation(
+                            failure.result.returncode,
+                            process_output_text(failure.result),
+                            failure.phase,
+                        )
                     ):
                         evidence.preserve(RuntimeError("RED runtime build failed for an unexpected reason"))
                         return 1
@@ -4534,22 +4550,21 @@ class DarlingTest(WestCommand):
                             runtime_invocation,
                             env=resource_env,
                         )
-                    if bad_result.returncode == 0:
-                        self.err("  RED proof failed: deployed bad runtime unexpectedly passed")
-                        evidence.preserve(RuntimeError("deployed bad runtime unexpectedly passed"))
-                        return 1
-                    if not self._check_red_failure_phase(
-                        proof,
-                        runtime_invocation,
-                        bad_result.failure_phase,
-                    ):
-                        evidence.preserve(RuntimeError("RED runtime failed in an unexpected phase"))
-                        return 1
-                    if not self._check_guest_runtime_red_failure(
-                        proof,
+                    red_output = self._guest_runtime_red_output(
                         runtime_invocation,
                         since=red_started_at,
                         captured_output=bad_result.output,
+                    )
+                    if red_output is None and machine.oracle.output_contains:
+                        self.err(f"{runtime_invocation['name']}: RED domain output is unavailable")
+                        evidence.preserve(RuntimeError("RED runtime output is unavailable"))
+                        return 1
+                    if not machine.validate_red(
+                        ProofObservation(
+                            bad_result.returncode,
+                            red_output or bad_result.output,
+                            bad_result.failure_phase,
+                        )
                     ):
                         evidence.preserve(RuntimeError("RED runtime output missed its domain oracle"))
                         return 1
@@ -4563,10 +4578,15 @@ class DarlingTest(WestCommand):
             retained = evidence_store.finish(evidence, evidence_failure)
             if retained is not None:
                 self.err(f"preserved failed RED runtime evidence: {retained}")
-        self.inf("  GREEN profile runtime")
-        if not self._shutdown_runtime_prefix(prefix):
-            self.die(f"guest-runtime-deploy could not clean Darling prefix before GREEN runtime: {prefix}")
-        return self._run_guest_runtime_deploy_green(patch, proof, invocation)
+        def run_green() -> int:
+            self.inf("  GREEN profile runtime")
+            if not self._shutdown_runtime_prefix(prefix):
+                self.die(
+                    f"guest-runtime-deploy could not clean Darling prefix before GREEN runtime: {prefix}"
+                )
+            return self._run_guest_runtime_deploy_green(patch, proof, invocation)
+
+        return machine.run_green(run_green)
 
     def _run_source_base_proof(self, patch, proof, invocation) -> int:
         if invocation["shell"]:
