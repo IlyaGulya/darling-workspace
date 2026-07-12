@@ -217,6 +217,19 @@ class RuntimeProfileDeployment:
         self.diagnostic_trace_paths = diagnostic_trace_paths
 
 
+class RuntimeBuildFailure(RuntimeError):
+    """One bounded configure or build failure captured for a runtime RED proof."""
+
+    def __init__(self, phase: str, result) -> None:
+        super().__init__(f"runtime {phase} failed with rc {result.returncode}")
+        self.phase = phase
+        self.result = result
+
+
+class RuntimeRedProven(Exception):
+    """Stop a RED deployment after its declared build-stage failure is proven."""
+
+
 class DarlingTest(WestCommand):
     def __init__(self):
         super().__init__(
@@ -3996,6 +4009,7 @@ class DarlingTest(WestCommand):
         scratch_root: Path,
         *,
         label: str = "RED",
+        allow_failure: bool = False,
     ) -> Path:
         targets = runtime_build_targets(proof)
         build_root = scratch_root / "build"
@@ -4012,6 +4026,8 @@ class DarlingTest(WestCommand):
         )
         if configure.returncode:
             self._dump_command_tail(f"{label} configure", configure)
+            if allow_failure:
+                raise RuntimeBuildFailure("configure", configure)
             self.die(f"{label} configure failed with rc {configure.returncode}")
         self.inf(
             f"  runtime phase complete: {label} configure "
@@ -4029,6 +4045,8 @@ class DarlingTest(WestCommand):
         )
         if build.returncode:
             self._dump_command_tail(f"{label} build", build)
+            if allow_failure:
+                raise RuntimeBuildFailure("build", build)
             self.die(f"{label} build failed with rc {build.returncode}")
         self.inf(
             f"  runtime phase complete: {label} build "
@@ -4794,13 +4812,33 @@ class DarlingTest(WestCommand):
         try:
             scratch_root = Path(temp)
             with self._guest_runtime_source_forest(patch, proof, omit_patch=True) as source_root:
-                build_root = self._runtime_red_build_artifacts(
-                    source_root,
-                    proof,
-                    prefix,
-                    scratch_root,
-                    label="RED",
-                )
+                try:
+                    build_root = self._runtime_red_build_artifacts(
+                        source_root,
+                        proof,
+                        prefix,
+                        scratch_root,
+                        label="RED",
+                        allow_failure=True,
+                    )
+                except RuntimeBuildFailure as failure:
+                    red_started_at = time.time()
+                    if not self._check_red_failure_phase(
+                        proof, invocation, failure.phase
+                    ) or not self._check_guest_runtime_red_failure(
+                        proof,
+                        invocation,
+                        since=red_started_at,
+                        captured_output=process_output_text(failure.result),
+                    ):
+                        keep_on_failure = True
+                        self.err(f"preserving failed RED runtime scratch for inspection: {temp}")
+                        return 1
+                    self.inf(
+                        "  RED runtime build failed as expected "
+                        f"(phase={failure.phase}, rc={failure.result.returncode})"
+                    )
+                    raise RuntimeRedProven()
                 fixture_id = f"{invocation['name']}.{os.getpid()}.{int(time.time() * 1000)}"
                 if invocation.get("guest_c_fixture") and proof.get("prepare-fixture-before-deploy"):
                     prepare_env = self._execution_env(invocation)
@@ -4860,6 +4898,8 @@ class DarlingTest(WestCommand):
                         self.err(f"preserving failed RED runtime scratch for inspection: {temp}")
                         return 1
                     self.inf(f"  RED runtime failed as expected (rc={bad_result.returncode})")
+        except RuntimeRedProven:
+            pass
         except BaseException:
             keep_on_failure = True
             self.err(f"preserving failed RED runtime scratch for inspection: {temp}")
