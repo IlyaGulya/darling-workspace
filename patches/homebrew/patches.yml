@@ -5571,59 +5571,26 @@ patches:
       base: main
       state: local
 - path: darlingserver/rootless-no-mount-startup.patch
-  sha256sum: d708b540e240c9ec687000006117242be9c5523481bea2b2491b202b24b4aaae
+  sha256sum: 8f8516361205483ca0aaad5629f1b1a934f86002736e834e65df70ecb279ead3
   module: darling/src/external/darlingserver
-  source-branch: fix/rootless-no-mount-profile
+  source-branch: fix/rootless-no-mount-server-product
   source-base: 6340d81f5470c928e96a55ac8da402a3504e5698
-  source-commit: fd105515af642df755296330265038ac2f70fae4
+  source-commit: 044364ee983828570e4b8d11cc5fcadf20d70524
   bead: dar-test-infra-sp5.8.4.5
   publication-status: blocked
-  publication-blocker: Rootless no-mount runtime provider and guest lifecycle proof are not implemented yet.
+  publication-blocker: Runtime proof is local-only; no publication is requested.
   test-exception:
-    reason: runtime-harness-pending
-    scope: Rootless startup crosses launcher, mldr, darlingserver, and libsystem_kernel; the test must build and deploy all four artifacts into an isolated unprivileged prefix.
-- path: darlingserver/rootless-rpc-trace.patch
-  module: darling/src/external/darlingserver
-  source-branch: fix/rootless-rpc-trace
-  source-base: fd105515af642df755296330265038ac2f70fae4
-  source-commit: ac261ed247f3122b3000390261b958c470893a7b
-  bead: dar-d2pm
-  publication-status: blocked
-  publication-blocker: Rootless bootstrap diagnosis only; retain until a real runtime trace identifies and fixes the remaining product boundary.
-  tests:
-  - name: west_test_ctest_lifecycle_contract
-    kind: contract
-    coverage-tier: host
-    runs: host
-    runner: python
-    script: tests/west_test_contracts/ctest_lifecycle_contract.py
-    ok-marker: PASS west-test-ctest-lifecycle-contract
-    note: >-
-      Proves trace-mode lifecycle removes stale RPC traces, passes the existing
-      TestDiagnostics file contract to darlingserver, and exports the captured
-      server trace with the syscall bundle.
-  sha256sum: c826a4b36f87b8ed6c129fb10bd0ff2b04addf9d8cf50fb22e5488d248ffb801
+    reason: integration-runtime-provider
+    scope: The server startup change is exercised by the rootless_shellspawn_readiness runtime provider together with the launcher, mldr, XNU and dyld artifacts; its standalone server minus-patch outcome is not a meaningful guest verdict.
 - path: darling/rootless-no-mount-launch.patch
-  sha256sum: 0a3d87b8301aa68cee4c1e5d52477f62c391d2f8ae0031315f5f2ca71476adb0
+  sha256sum: 61b0d0091e5a95b65b7cc7c7a9cc0041eaa6f76955d5ac942a0d9144890d2380
   module: darling
-  source-branch: fix/rootless-no-mount-launch
+  source-branch: fix/rootless-product-foundation
   source-base: 492a00f4929e5aba60607d9fed3e868bc4a3aeba
-  source-commit: 083f1859162cb605b7d198c9d0859d3d0b132b67
-  bead: dar-test-infra-sp5.8.4.5
+  source-commit: a0982ff79f673974c0d36ad042f26a06830ffce2
+  bead: dar-test-infra-sp5.8.4.6
   publication-status: blocked
-  publication-blocker: Rootless no-mount runtime provider and guest lifecycle proof are not implemented yet.
-  test-exception:
-    reason: runtime-harness-pending
-    scope: The launcher, launchd, and mldr changes need a real unprivileged prefix boot; a host-only source or compile test cannot prove the no-mount lifecycle.
-- path: darling/rootless-runtime-components.patch
-  sha256sum: 97ef346ca3bd0488eb07a52bcc153d4c8973a39dbb241b17560282a0db98db02
-  module: darling
-  source-branch: fix/rootless-runtime-components
-  source-base: 083f1859162cb605b7d198c9d0859d3d0b132b67
-  source-commit: 5c435519e3070d442bb5a638694e5536753df0c7
-  bead: dar-test-infra-sp5.8.4.5
-  publication-status: blocked
-  publication-blocker: Rootless no-mount runtime provider and guest lifecycle proof are not implemented yet.
+  publication-blocker: Runtime proof is local-only; no publication is requested.
   tests:
   - name: mldr_main_tsd_contract
     kind: contract
@@ -5649,75 +5616,24 @@ patches:
     - -Wall
     - -Wextra
     - -Werror
-    note: Executes mldr's x86_64 guest-TSD primitive, reads the real GS-backed pthread and Mach-thread slots, and restores the host GS base afterwards. The full rootless bootstrap remains the guest lifecycle proof for the mldr call site.
-  test-exception:
-    reason: runtime-harness-pending
-    scope: This submodule selection is valid only together with the rootless launcher and runtime artifacts it selects.
-- path: darling/rootless-vchroot-launchd-trace.patch
-  sha256sum: 5aeeaef663068f6dabd3ecdb0d6c0241ced7725f136fcf02ce799ed61c782e6b
-  module: darling
-  source-branch: fix/rootless-vchroot-argv
-  source-base: 5c435519e3070d442bb5a638694e5536753df0c7
-  source-commit: c82877b302c8318dafed286e98ea1df9bc2df3c8
-  bead: dar-d2pm
-  publication-status: blocked
-  publication-blocker: The trace is diagnostic evidence only until a full rootless bootstrap identifies and fixes the post-dyld failure.
-  test-exception:
-    reason: runtime-harness-pending
-    scope: The markers execute only across the real virtual vchroot-to-launchd handoff and are verified by the retained rootless bootstrap repro.
-- path: darling/rootless-shellspawn-bootstrap-trace.patch
-  sha256sum: 90b00c4bcb466510a3320dbf010bd95839d4cf250316421517ad3cadfcce34f1
-  module: darling
-  source-branch: fix/rootless-shellspawn-bootstrap-trace
-  source-base: c82877b302c8318dafed286e98ea1df9bc2df3c8
-  source-commit: d67907c65edcf0c90e35eaec58119ec57f18238b
-  bead: dar-d2pm
-  publication-status: blocked
-  publication-blocker: Rootless no-mount bootstrap still needs a behavioral shellspawn launch proof.
-  test-exception:
-    reason: runtime-harness-pending
-    scope: The diagnostic markers execute only in the materialized rootless guest bootstrap and identify the launchd-to-shellspawn boundary before a product fix is selected.
-- path: darling/rootless-shellspawn-scheduler-trace.patch
-  module: darling
-  source-branch: fix/rootless-shellspawn-scheduler-clean
-  source-base: d67907c65edcf0c90e35eaec58119ec57f18238b
-  source-commit: daa667922e300ba7d692b3c835b40c65871ad990
-  bead: dar-d2pm
-  publication-status: blocked
-  publication-blocker: Rootless diagnostic only; retain until launchd's shellspawn scheduling boundary has a product fix and a real guest GREEN proof.
-  test-exception:
-    reason: runtime-harness-pending
-    scope: Markers run only in the real rootless launchd path and are checked by the bounded materialized bootstrap repro.
-  sha256sum: 6810cfb0b2a1c1d08743a778ef6066d4357193998bdc42bfcc329da5ffe98e33
-- path: darling/rootless-shellspawn-client-trace.patch
-  module: darling
-  source-branch: fix/rootless-shellspawn-client-trace
-  source-base: daa667922e300ba7d692b3c835b40c65871ad990
-  source-commit: 894fc1e5e1a72b95f3b0791f7514228bf8bb1eb3
-  bead: dar-d2pm
-  publication-status: blocked
-  publication-blocker: Rootless diagnostic only; retain until the launcher-to-shellspawn protocol boundary has a product fix and a real guest GREEN proof.
-  test-exception:
-    reason: runtime-harness-pending
-    scope: Markers execute only in the real rootless launcher process and are verified by the bounded materialized bootstrap repro.
-  sha256sum: 89349805b947806ed3bd74454ea7b68ff72fd2d5c4c8dbc516ecfb63493d4c71
+    note: Executes the real mldr guest-TSD primitive; the colocated readiness and lifecycle runtime proofs cover its rootless integration.
 - path: darling/rootless-shellspawn-test-delay.patch
   module: darling
-  source-branch: fix/rootless-shellspawn-test-delay
-  source-base: 894fc1e5e1a72b95f3b0791f7514228bf8bb1eb3
-  source-commit: 0a3a598b8a5e3e5c8a0f8f141e92f8619a68147e
+  source-branch: fix/rootless-shellspawn-test-delay-product
+  source-base: a0982ff79f673974c0d36ad042f26a06830ffce2
+  source-commit: 4819397c0afc0c8ad92b0bf39dc6bd67e3edbe2b
   bead: dar-d2pm
   publication-status: blocked
   publication-blocker: Test-only rootless readiness control; retain only while the deterministic launcher regression proof needs it.
   test-exception:
     reason: test-instrumentation
     scope: The hook is inert unless DARLING_TEST_SHELLSPAWN_READY_DELAY_MS is explicitly supplied by the rootless runtime regression proof below.
-  sha256sum: 98208f18b26d8178a274213aa71b80cb7be046e7d3a69f415300b23a221a262e
+  sha256sum: ed5d9fe4a26268263ff6678738e63e4e18cccc9c3bfa0f4f7673a4c3d8dd3d77
 - path: darling/rootless-shellspawn-readiness.patch
   module: darling
-  source-branch: fix/rootless-shellspawn-readiness
-  source-base: 0a3a598b8a5e3e5c8a0f8f141e92f8619a68147e
-  source-commit: 6ffa813bcb6c067b050bde189eac76e6e266b045
+  source-branch: fix/rootless-shellspawn-readiness-product
+  source-base: 4819397c0afc0c8ad92b0bf39dc6bd67e3edbe2b
+  source-commit: 8266a160200b29c107b0caaf12a6558c3ad04bc8
   bead: dar-d2pm
   publication-status: blocked
   publication-blocker: Rootless startup is locally validated first; do not publish until the full runtime proof is stable and lifecycle cleanup is closed.
@@ -5798,12 +5714,12 @@ patches:
       ENOENT; the fixed launcher retries only transient socket readiness errors
       while its init remains alive, then runs the same guest command to its
       verdict marker.
-  sha256sum: 266744e607fd6e269cff06b4118e1982f6a0e7ac51cc35b5d1335aaf69f28290
+  sha256sum: 6dd6e68dcf40e9ee58d949eb23ce0489621c8cabb49ee15a9a804a00210bf724
 - path: darling/rootless-shutdown-session.patch
   module: darling
-  source-branch: fix/rootless-shutdown-session
-  source-base: 6ffa813bcb6c067b050bde189eac76e6e266b045
-  source-commit: 2ce4136ab3550de34256751be0e7947518c07d3f
+  source-branch: fix/rootless-shutdown-session-product
+  source-base: 8266a160200b29c107b0caaf12a6558c3ad04bc8
+  source-commit: 595b1f666b2f1806aa45fdab70a2ad702b5cf960
   bead: dar-04lg
   publication-status: blocked
   publication-blocker: Rootless shutdown lifecycle fix requires a materialized runtime deploy proof against the leaked launchd service session before publication.
@@ -5832,24 +5748,24 @@ patches:
     timeout-seconds: 60
     requires: [darling-prefix]
     env-vars: {DARLING_ROOTLESS: '1', DARLING_NOOVERLAYFS: '1', DARLING_EUNION: '1'}
-  sha256sum: 876421147cb6fac5e275cd5583ee2fdbd3af8f84ad44b8223816ae8861361da6
-- path: darling/rootless-shellspawn-command-trace.patch
+  sha256sum: 32a5e02e357407a10e6acb46cb0a7de1620187b0144e61ceee5879873e960513
+- path: darling/rootless-shellspawn-result-protocol.patch
   module: darling
-  source-branch: fix/rootless-shellspawn-command-trace
-  source-base: 2ce4136ab3550de34256751be0e7947518c07d3f
-  source-commit: 4b5d3e74b1a8f951fe3bb78327a6a551bf0a4aaf
-  bead: dar-yfp4.3.2.3
+  source-branch: fix/rootless-shellspawn-result-protocol-base
+  source-base: 595b1f666b2f1806aa45fdab70a2ad702b5cf960
+  source-commit: 77ca89df79e22837aa70eb65a50fb3ca9577b7a7
+  bead: dar-test-infra-sp5.8.4.6
   publication-status: blocked
-  publication-blocker: Rootless E-UNION remains blocked before the product fixture; this diagnostic must identify the post-handoff boundary before a product fix is selected.
+  publication-blocker: Runtime proof is local-only; no publication is requested.
   test-exception:
-    reason: runtime-harness-pending
-    scope: The markers run only in the materialized rootless shellspawn protocol path. The current bootstrap cannot reach a guest fixture to prove them as a normal RED-to-GREEN runtime regression; the bounded repro and its last trace stage are the diagnostic oracle.
-  sha256sum: 9ebe6846913534d1be263ab9ecc9f7e231b5b2b42bdd4063e7c159e831017ba1
+    reason: integration-runtime-provider
+    scope: The protocol's error arm is exercised by the adjacent fast-exit current-minus runtime proof, which preserves the old shellspawn error while requiring the structured errno verdict.
+  sha256sum: 3eea9853373e2f029c73fbec06f480a88da5ec047ade2cd94b289c6b0560a8cc
 - path: darling/rootless-shellspawn-fast-exit.patch
   module: darling
-  source-branch: fix/rootless-shellspawn-child-lifecycle
-  source-base: 4b5d3e74b1a8f951fe3bb78327a6a551bf0a4aaf
-  source-commit: bd94eb37dee3eae8d7ce5fe76b9d485b8ea23024
+  source-branch: fix/rootless-shellspawn-fast-exit-product
+  source-base: 77ca89df79e22837aa70eb65a50fb3ca9577b7a7
+  source-commit: 94640b25883c66252b9c3783fa6479d238bcf1e2
   bead: dar-yfp4.3.2.5
   publication-status: blocked
   publication-blocker: Rootless E-UNION remains experimental until the direct-exec lifecycle regression and the separate post-dyld shell stall are both proven on a stable runtime provider.
@@ -5865,7 +5781,7 @@ patches:
       bad-profile: current-minus-patch
       expect-failure-phase: run
       expect-output-contains:
-      - shellspawn-error errno=9
+      - shellspawn failed (errno=9)
       source-modules:
       - darling
       runtime-artifacts:
@@ -5883,36 +5799,9 @@ patches:
     timeout-seconds: 20
     requires:
     - darling-prefix
-    host-trace-files:
-    - env: DARLING_HOST_BOOT_TRACE
-      prefix-relative-path: .west-rootless-shellspawn-fast-exit.trace
     note: >-
       The guest process is intentionally fast. Before the fix, execve succeeds
       and exits 0, but shellspawn races the exited child while registering its
       kqueue watcher, returns EBADF, and loses the launcher completion result.
       The fix reaps through the same poll loop that handles launcher signals.
-  sha256sum: 99c378d4f111a1555b324c34866998ef577157e5af75bae098a795606526a2a4
-- path: libsystem/rootless-initializer-trace.patch
-  sha256sum: b3107f04e59f860982abacfe35714a4a2e18f3236a5724e7ece11eefb2327d89
-  module: darling/src/external/libsystem
-  source-branch: fix/rootless-libsystem-init-trace-clean
-  source-base: 08df454b6eb0df9400aa4c39839a7efd6efd2c3c
-  source-commit: ad6e1ebc409ad33de60f7dd8a8a2ac92650dbf97
-  bead: dar-d2pm
-  publication-status: blocked
-  publication-blocker: The raw trace must determine whether the guest libSystem initializer establishes ProgramVars before a production fix is selected.
-  test-exception:
-    reason: runtime-harness-pending
-    scope: The contract is observable only during the real rootless guest bootstrap before libc has an initialized environment.
-- path: dyld/rootless-dyld-boot-trace.patch
-  sha256sum: 331b5fe16f9f69646cd00d942458c5614c9702b343891b830d24a940489b03fb
-  module: darling/src/external/dyld
-  source-branch: fix/rootless-dyld-boot-trace
-  source-base: aec6a4af4efaacbda31911aaf32d73495d4a7da1
-  source-commit: 7d5aa505140b3e65a8adf93e41b527136084799a
-  bead: dar-d2pm
-  publication-status: blocked
-  publication-blocker: Rootless dyld-to-launchd startup must be diagnosed with a real no-mount bootstrap before this diagnostic patch can be retired or productized.
-  test-exception:
-    reason: runtime-harness-pending
-    scope: The hook executes only during a real rootless dyld bootstrap and must be verified by the retained prefix-baseline runtime repro.
+  sha256sum: 69299ef39edf7d182e42c98b05917fcb47d570c43261e843af8c4c4c55eb1a13
