@@ -115,4 +115,34 @@ with tempfile.TemporaryDirectory() as temp:
     ).stdout
     assert f"worktree {entry / 'source/darling'}" not in worktree_listing, worktree_listing
 
+    try:
+        with store.session("already pruned worktree", {"provider": "homebrew"}) as session:
+            source_worktree = session.source_root / "darling"
+            source_worktree.parent.mkdir(parents=True)
+            subprocess.run(
+                ["git", "worktree", "add", "--quiet", "--detach", str(source_worktree), "HEAD"],
+                cwd=repo,
+                check=True,
+            )
+            session.record_worktrees([(repo, source_worktree)])
+            raise RuntimeError("retain evidence for stale-registration GC")
+    except RuntimeError:
+        pass
+    else:
+        raise AssertionError("forced stale-registration failure unexpectedly passed")
+
+    stale_entry = store.entries()[0]
+    stale_worktree = stale_entry / "source/darling"
+    parked_worktree = Path(temp) / "parked-worktree"
+    stale_worktree.rename(parked_worktree)
+    subprocess.run(["git", "worktree", "prune"], cwd=repo, check=True)
+    parked_worktree.rename(stale_worktree)
+    worktree_listing = subprocess.run(
+        ["git", "worktree", "list", "--porcelain"], cwd=repo, check=True, capture_output=True, text=True
+    ).stdout
+    assert f"worktree {stale_worktree}" not in worktree_listing, worktree_listing
+
+    assert store.gc(max_age_hours=0, keep_last=0, dry_run=False) == [stale_entry]
+    assert not stale_entry.exists()
+
 print("PASS runtime-evidence-contract")
