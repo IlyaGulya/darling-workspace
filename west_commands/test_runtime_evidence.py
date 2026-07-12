@@ -252,6 +252,25 @@ class RuntimeEvidenceStore:
             if not repo.is_dir() or relative_path.is_absolute() or ".." in relative_path.parts:
                 raise ValueError(f"unsafe runtime evidence worktree entry: {entry}")
             target = entry / relative_path
+            listing = subprocess.run(
+                ["git", "worktree", "list", "--porcelain"],
+                cwd=repo,
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            if listing.returncode:
+                detail = (listing.stderr or listing.stdout).strip()
+                raise RuntimeError(
+                    f"could not inspect runtime evidence worktrees for {repo}: {detail}"
+                )
+            registered = {
+                Path(line.removeprefix("worktree ")).resolve()
+                for line in listing.stdout.splitlines()
+                if line.startswith("worktree ")
+            }
+            if target.resolve() not in registered:
+                continue
             result = subprocess.run(
                 ["git", "worktree", "remove", "--force", str(target)],
                 cwd=repo,
