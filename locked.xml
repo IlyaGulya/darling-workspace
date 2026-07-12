@@ -125,7 +125,7 @@
   <project name="darling-nghttp2" path="darling/src/external/nghttp2" revision="1a1853837b4350d4393bd25e1e4cb6018ab2d918" />
   <project name="mruby" path="darling/src/external/nghttp2/third-party/mruby" revision="7c91efc1ffda769a5f1a872c646c82b00698f1b8" />
   <project name="neverbleed" path="darling/src/external/nghttp2/third-party/neverbleed" revision="b967ca054f48a36f82d8fcdd32e54ec5144f2751" />
-  <project name="darling-objc4" path="darling/src/external/objc4" revision="1a12df76d12bfc9fdfffadb290f7742763568765" />
+  <project name="darling-objc4" path="darling/src/external/objc4" revision="53342cec3dcc9cde6dd1aa935bbe26d88c3e5aa8" />
   <project name="openjdk" path="darling/src/external/openjdk" revision="5a541c1844a9508e48b3addaf2d38775683abb38" />
   <project name="darling-openpam" path="darling/src/external/openpam" revision="8362545bac04032fcf59287cd66e6f4662a3692b" />
   <project name="darling-pam_modules" path="darling/src/external/openpam/darling/submodules/pam_modules" revision="241bbee0da845d1dfebc747b16a62aaed22f165b" />
