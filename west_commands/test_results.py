@@ -16,7 +16,7 @@ class RuntimeBuildFailure(RuntimeError):
     """A declared RED runtime build failed at one observable build phase."""
 
     def __init__(self, phase: str, result):
-        super().__init__(f"runtime {phase} failed")
+        super().__init__(f"runtime {phase} failed with rc {result.returncode}")
         self.phase = phase
         self.result = result
 
