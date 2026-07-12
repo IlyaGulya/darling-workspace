@@ -431,8 +431,13 @@ def compose_ctest_runtime_profiles(
     cmake_defines: dict[str, Any] = {}
     launcher_env: dict[str, Any] = {}
     bootstrap: str | None = None
+    bootstrap_smoke_timeout = 0
     for name in selected:
         definition = definitions[name]
+        bootstrap_smoke_timeout = max(
+            bootstrap_smoke_timeout,
+            definition.get("bootstrap-smoke-timeout-seconds", 60),
+        )
         for module in definition["source-modules"]:
             if module not in source_modules:
                 source_modules.append(module)
@@ -479,6 +484,7 @@ def compose_ctest_runtime_profiles(
         "source-module": definitions[selected[0]]["source-module"],
         "source-modules": source_modules,
         "runtime-artifacts": artifacts,
+        "bootstrap-smoke-timeout-seconds": bootstrap_smoke_timeout,
     }
     if cmake_defines:
         result["cmake-defines"] = cmake_defines

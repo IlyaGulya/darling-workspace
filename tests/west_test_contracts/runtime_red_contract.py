@@ -236,6 +236,7 @@ assert combined_runtime == {
         {"build-targets": ["system_kernel"], "deploy": ["usr/lib/system/libsystem_kernel.dylib"]},
         {"build-targets": ["darlingserver"], "deploy": ["bin/darlingserver"]},
     ],
+    "bootstrap-smoke-timeout-seconds": 60,
 }
 try:
     compose_ctest_runtime_profiles(runtime_profiles, ["kernel", "other"])
@@ -281,6 +282,11 @@ assert rootless_runtime["launcher-env"] == {
 actual_runtime_profiles = load_ctest_runtime_profiles(ROOT / "testkit/runtime-profiles.yml")
 rootless_provider = actual_runtime_profiles["homebrew-rootless-no-mount"]
 assert rootless_provider["bootstrap"] == "rootless-no-mount"
+rootless_composed = compose_ctest_runtime_profiles(
+    actual_runtime_profiles, ["homebrew-rootless-no-mount"]
+)
+assert rootless_composed is not None
+assert rootless_composed["bootstrap-smoke-timeout-seconds"] == 60
 assert rootless_provider["cmake-defines"] == {"DARLING_EUNION": True}
 assert rootless_provider["launcher-env"] == {
     "DARLING_ROOTLESS": "1",
