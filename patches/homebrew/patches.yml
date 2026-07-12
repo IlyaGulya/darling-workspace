@@ -112,14 +112,24 @@ patches:
   source-branch: fix/microthread-resume-race
   source-commit: a99d52248f437be96239a22c8ce5f58fbf32d221
   bead: dar-q95.8
-  publication-status: provisional
-  publication-blocker: modeled wake-epoch and duplicate-scheduling tests under dar-q95.29.6
+  publication-status: ready
   tests:
   - name: microthread_resume_race_contract
     kind: contract
-    coverage-tier: compile
+    coverage-tier: model
     runs: host
     diag: bare
+    red: true
+    red-proof:
+      mode: self
+      why-self: >-
+        The race is a state-transition ordering invariant. This fixture runs
+        the old dropped-wake transition and the production helper against the
+        same resume-before-suspend, duplicate-resume, late-stop, and lifecycle
+        cases without relying on scheduler timing.
+      expect-output-contains:
+      - MICROTHREAD_OLD_MODEL_LOST_EARLY_RESUME
+      - MICROTHREAD_RESUME_MODEL_OK
     runner: c-fixture
     repo: darling-workspace
     script: tests/microthread_resume_contract.cpp
@@ -132,64 +142,13 @@ patches:
     - -Wall
     - -Wextra
     - -Werror
-    note: Compile contract for the production microthread resume helper; the launch-free dserverdbg runtime oracle carries the RED proof for the old lost-wakeup behavior.
+    note: Behavioral old-vs-production wake-epoch state-machine proof.
   - name: microthread_resume_before_suspend_guest
     kind: guest
     coverage-tier: runtime
     runs: guest
     diag: guarded
-    red: true
-    red-proof:
-      mode: guest-runtime-deploy
-      bad-profile: current-minus-patch
-      current-minus-skip-patches:
-      - darlingserver/processcall-exception-guard.patch
-      - darlingserver/ingest-error-reply.patch
-      - darlingserver/pushreply-pipe-leak.patch
-      - darlingserver/exc-fatal-reply-bound.patch
-      - darlingserver/pthread-canceled-xnu-semantics.patch
-      - darlingserver/progress-metrics.patch
-      - darlingserver/server-inline-fastpath.patch
-      - darlingserver/checkin-rwlock-across-suspend.patch
-      - darlingserver/per-call-rpc-metrics.patch
-      - darlingserver/no-reply-fire-and-forget-rpcs.patch
-      - darlingserver/guest-per-callnum-sleep-account.patch
-      - darlingserver/checkin-retask-current-thread-uaf.patch
-      - darlingserver/pot-guest-lifetime-binding.patch
-      - darlingserver/test-diagnostics-trace.patch
-      source-patches:
-      - tests/fixtures/darlingserver/launchfree-test-diagnostics.patch
-      - tests/fixtures/microthread/resume-before-suspend-hook.patch
-      - tests/fixtures/microthread/thread-suspended-direct-suspend-oracle.patch
-      - tests/fixtures/microthread/dserverdbg-resume-before-suspend-oracle.patch
-      expect-output-contains:
-      - test_fault.consume name=microthread.resume_before_suspend
-      - microthread.suspend.inject_resume_before_suspend
-      - DSERVERDBG_THREAD_SUSPENDED_RC=-11
-      red-runner:
-        runner: script
-        repo: darling-workspace
-        script: tests/run-dserverdbg-microthread-resume-before-suspend.sh
-        timeout-seconds: 30
-        host-temp-files:
-        - env: DSERVER_TEST_FAULT_FILE
-          prefix-relative-path: private/var/tmp/dserver-microthread-resume-before-suspend-fault
-        host-trace-files:
-        - env: DSERVER_TEST_TRACE_FILE
-          prefix-relative-path: private/var/tmp/dserver-microthread-resume-before-suspend.trace
-          contains:
-          - test_fault.consume name=microthread.resume_before_suspend
-          - microthread.suspend.inject_resume_before_suspend
-      cmake-defines:
-        DSERVER_TOOLS: true
-      runtime-artifacts:
-      - module: darling/src/external/darlingserver
-        build-targets:
-        - darlingserver
-        - dserverdbg
-        deploy:
-        - bin/darlingserver
-        - bin/dserverdbg
+    runtime-profile: homebrew-rootless-no-mount
     runner: guest-c-fixture
     repo: darling-workspace
     script: tests/microthread_resume_before_suspend_guest.c

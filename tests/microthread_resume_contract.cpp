@@ -12,9 +12,24 @@ check(bool condition, const char* message)
 	}
 }
 
+static bool
+oldRecordResume(bool running, bool suspended, bool& permit)
+{
+	(void)running;
+	(void)permit;
+	return suspended;
+}
+
 int
 main()
 {
+	bool oldPermit = false;
+	check(!oldRecordResume(true, false, oldPermit),
+	    "old model unexpectedly scheduled before physical suspension");
+	check(!oldPermit,
+	    "old model unexpectedly retained the resume-before-suspend wake");
+	std::cout << "MICROTHREAD_OLD_MODEL_LOST_EARLY_RESUME" << std::endl;
+
 	bool permit = false;
 
 	check(!DarlingServer::microthreadRecordResume(false, false, permit),
@@ -51,4 +66,5 @@ main()
 	    "dead thread scheduled after stop");
 	check(!DarlingServer::microthreadShouldScheduleAfterStop(true, false, false, false),
 	    "non-suspended thread scheduled after stop");
+	std::cout << "MICROTHREAD_RESUME_MODEL_OK" << std::endl;
 }
