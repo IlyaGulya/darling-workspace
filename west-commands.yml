@@ -39,3 +39,8 @@ west-commands:
       - name: darling-build
         class: DarlingBuild
         help: Doctor-gated ninja build of dyld + closure, with opt-in deploy
+  - file: west_commands/darling_source_worktree.py
+    commands:
+      - name: darling-source-worktree
+        class: DarlingSourceWorktree
+        help: Materialize exact nested source worktrees from local canonical refs
