@@ -25,6 +25,12 @@ add_compat_test(
   ARGS hello
 )
 add_compat_test(
+  NAME guest_runtime_override_contract
+  SOURCE "\${CMAKE_CURRENT_BINARY_DIR}/guest.c"
+  ENVS darling
+  RUNTIME_PROFILE specialist-runtime
+)
+add_compat_test(
   NAME macos_contract
   SOURCE "\${CMAKE_CURRENT_BINARY_DIR}/guest.c"
   ENVS macos
@@ -66,6 +72,10 @@ grep -q 'DARLING_NOOVERLAYFS=1' "$ctest_file" ||
 grep -q 'fuzz:true' "$ctest_file" ||
 	{ cat "$ctest_file" >&2; exit 1; }
 grep -q 'stress:true' "$ctest_file" ||
+	{ cat "$ctest_file" >&2; exit 1; }
+grep -q 'runtime-profile:homebrew' "$ctest_file" ||
+	{ cat "$ctest_file" >&2; exit 1; }
+grep -q 'runtime-profile:specialist-runtime' "$ctest_file" ||
 	{ cat "$ctest_file" >&2; exit 1; }
 grep -q 'TIMEOUT "27"' "$ctest_file" ||
 	{ cat "$ctest_file" >&2; exit 1; }
