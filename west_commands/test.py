@@ -94,6 +94,7 @@ from test_runtime import (
     compose_ctest_runtime_profiles,
     describe_runtime_deploy_plan,
     is_macho_binary,
+    load_rootless_bootstrap_manifest,
     load_ctest_runtime_profiles,
     merge_runtime_cmake_define_overrides,
     parse_macho_dylib_dependencies,
@@ -103,7 +104,7 @@ from test_runtime import (
     runtime_artifact_deploy_paths,
     runtime_build_targets,
     runtime_deploy_targets,
-    ROOTLESS_BOOTSTRAP_CLOSURE_RESOURCE,
+    ROOTLESS_BOOTSTRAP_RESOURCE,
     resolve_macho_runtime_closure,
 )
 from test_worktrees import prune_stale_west_temp_worktrees, remove_temporary_worktree
@@ -4129,7 +4130,7 @@ class DarlingTest(WestCommand):
             for artifact in proof.get("runtime-artifacts", [])
             if isinstance(artifact, dict)
         }
-        if ROOTLESS_BOOTSTRAP_CLOSURE_RESOURCE not in resources:
+        if ROOTLESS_BOOTSTRAP_RESOURCE not in resources:
             return {}
         roots = {
             "/" + deploy_path: source
@@ -4200,14 +4201,41 @@ class DarlingTest(WestCommand):
                 deployments: dict[str, Path] = {}
                 for artifact in proof.get("runtime-artifacts", []):
                     for deploy_path in runtime_artifact_deploy_paths(artifact):
+                        if deploy_path in deployments:
+                            self.die(
+                                "guest-runtime-deploy has duplicate explicit deploy path: "
+                                f"{deploy_path}"
+                            )
                         deployments[deploy_path] = self._runtime_red_find_build_output(
                             build_root, deploy_path
                         )
-                deployments.update(
-                    self._runtime_rootless_bootstrap_closure(
-                        proof, build_root, deployments
-                    )
+                resources = {
+                    artifact.get("resource")
+                    for artifact in proof.get("runtime-artifacts", [])
+                    if isinstance(artifact, dict)
+                }
+                if ROOTLESS_BOOTSTRAP_RESOURCE in resources:
+                    try:
+                        bootstrap_deployments = load_rootless_bootstrap_manifest(build_root)
+                    except ValueError as exc:
+                        self.die(f"guest-runtime-deploy {exc}")
+                    conflicts = set(deployments).intersection(bootstrap_deployments)
+                    if conflicts:
+                        self.die(
+                            "guest-runtime-deploy rootless bootstrap manifest conflicts "
+                            "with explicit deploy path(s): " + ", ".join(sorted(conflicts))
+                        )
+                    deployments.update(bootstrap_deployments)
+                closure = self._runtime_rootless_bootstrap_closure(
+                    proof, build_root, deployments
                 )
+                conflicts = set(deployments).intersection(closure)
+                if conflicts:
+                    self.die(
+                        "guest-runtime-deploy rootless bootstrap closure conflicts with "
+                        "entrypoint path(s): " + ", ".join(sorted(conflicts))
+                    )
+                deployments.update(closure)
                 for deploy_path, src in deployments.items():
                     for dst in self._runtime_red_deploy_targets(prefix, deploy_path):
                             backup = None

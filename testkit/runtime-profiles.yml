@@ -71,6 +71,7 @@ runtime-profiles:
     - darling/src/external/darlingserver
     - darling/src/external/xnu
     - darling/src/external/dyld
+    - darling/src/external/corefoundation
     - darling/src/external/libsystem
     cmake-defines:
       # Rootless cannot use overlay or copy the shared template; its XNU and
@@ -83,32 +84,8 @@ runtime-profiles:
     runtime-artifacts:
     - module: darling
       build-targets:
-      - darling
-      - mldr
-      - launchd
-      - launchctl
-      - shellspawn
-      - vchroot
-      - dyld
-      deploy:
-      - bin/darling
-      - usr/libexec/darling/mldr
-      - sbin/launchd
-      - bin/launchctl
-      - usr/libexec/shellspawn
-      - usr/libexec/darling/vchroot
-      - usr/lib/dyld
-    - module: darling/src/external/darlingserver
-      build-targets:
-      - darlingserver
-      deploy:
-      - bin/darlingserver
-    - module: darling
-      build-targets:
-      - system_kernel
-      - objc
-      - resolv-darwin
-      resource: rootless-bootstrap-closure
+      - rootless_bootstrap
+      resource: rootless-bootstrap
   homebrew-prefix-baseline:
     # This is the explicit durable baseline for the named homebrew prefix.
     # Unlike ordinary providers it is selected only through
@@ -124,6 +101,7 @@ runtime-profiles:
     - darling/src/external/darlingserver
     - darling/src/external/xnu
     - darling/src/external/dyld
+    - darling/src/external/corefoundation
     - darling/src/external/libsystem
     cmake-defines:
       DARLING_EUNION: true
@@ -134,29 +112,5 @@ runtime-profiles:
     runtime-artifacts:
     - module: darling
       build-targets:
-      - darling
-      - mldr
-      - launchd
-      - launchctl
-      - shellspawn
-      - vchroot
-      - dyld
-      deploy:
-      - bin/darling
-      - usr/libexec/darling/mldr
-      - sbin/launchd
-      - bin/launchctl
-      - usr/libexec/shellspawn
-      - usr/libexec/darling/vchroot
-      - usr/lib/dyld
-    - module: darling/src/external/darlingserver
-      build-targets:
-      - darlingserver
-      deploy:
-      - bin/darlingserver
-    - module: darling
-      build-targets:
-      - system_kernel
-      - objc
-      - resolv-darwin
-      resource: rootless-bootstrap-closure
+      - rootless_bootstrap
+      resource: rootless-bootstrap

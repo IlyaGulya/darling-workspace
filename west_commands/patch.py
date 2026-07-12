@@ -18,6 +18,7 @@ from west.commands import WestCommand
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import test_manifest
+from test_runtime import ROOTLESS_BOOTSTRAP_RESOURCE, ROOTLESS_BOOTSTRAP_TARGET
 
 
 DEFAULT_EXPORT_MAX_LINES = 200_000
@@ -1072,13 +1073,36 @@ class DarlingPatch(WestCommand):
                                 errors.append(
                                     f"tests[{index}].red-proof.runtime-artifacts[{artifact_index}] needs build-targets"
                                 )
-                            deploy = artifact.get("deploy")
-                            if not isinstance(deploy, list) or not deploy or not all(
-                                isinstance(path, str) and path for path in deploy
-                            ):
+                            resource = artifact.get("resource")
+                            if resource is None:
+                                deploy = artifact.get("deploy")
+                                if not isinstance(deploy, list) or not deploy or not all(
+                                    isinstance(path, str) and path for path in deploy
+                                ):
+                                    errors.append(
+                                        f"tests[{index}].red-proof.runtime-artifacts[{artifact_index}] needs deploy"
+                                    )
+                            elif resource != ROOTLESS_BOOTSTRAP_RESOURCE:
                                 errors.append(
-                                    f"tests[{index}].red-proof.runtime-artifacts[{artifact_index}] needs deploy"
+                                    f"tests[{index}].red-proof.runtime-artifacts[{artifact_index}] "
+                                    f"has unknown resource {resource!r}"
                                 )
+                            else:
+                                if artifact.get("module") != "darling":
+                                    errors.append(
+                                        f"tests[{index}].red-proof.runtime-artifacts[{artifact_index}] "
+                                        "rootless-bootstrap must belong to darling"
+                                    )
+                                if build_targets != [ROOTLESS_BOOTSTRAP_TARGET]:
+                                    errors.append(
+                                        f"tests[{index}].red-proof.runtime-artifacts[{artifact_index}] "
+                                        "rootless-bootstrap must build only rootless_bootstrap"
+                                    )
+                                if "deploy" in artifact:
+                                    errors.append(
+                                        f"tests[{index}].red-proof.runtime-artifacts[{artifact_index}] "
+                                        "rootless-bootstrap must not declare deploy paths"
+                                    )
                 if isinstance(proof, dict) and proof.get("expect-failure-phase") is not None:
                     phases = proof.get("expect-failure-phase")
                     if isinstance(phases, str):

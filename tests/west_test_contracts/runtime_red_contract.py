@@ -1,6 +1,7 @@
 import sys
 import os
 import io
+import json
 import signal
 import shutil
 import subprocess
@@ -34,6 +35,7 @@ from west_commands.test_runtime import (
     compose_ctest_runtime_profiles,
     describe_runtime_deploy_plan,
     is_macho_binary,
+    load_rootless_bootstrap_manifest,
     load_ctest_runtime_profiles,
     merge_runtime_cmake_define_overrides,
     parse_macho_dylib_dependencies,
@@ -45,7 +47,8 @@ from west_commands.test_runtime import (
     runtime_build_targets,
     runtime_deploy_targets,
     ROOTLESS_BOOTSTRAP_CLOSURE_SOURCE_MODULES,
-    ROOTLESS_BOOTSTRAP_CLOSURE_RESOURCE,
+    ROOTLESS_BOOTSTRAP_RESOURCE,
+    ROOTLESS_BOOTSTRAP_TARGET,
     resolve_macho_runtime_closure,
 )
 
@@ -283,24 +286,17 @@ assert rootless_provider["launcher-env"] == {
     "DARLING_NOOVERLAYFS": "1",
     "DARLING_EUNION": "1",
 }
-assert {
-    deploy_path
-    for artifact in rootless_provider["runtime-artifacts"]
-    for deploy_path in runtime_artifact_deploy_paths(artifact)
-} >= {
-    "bin/darling",
-    "bin/darlingserver",
-    "bin/launchctl",
-    "sbin/launchd",
-    "usr/libexec/darling/mldr",
-    "usr/libexec/shellspawn",
-    "usr/libexec/darling/vchroot",
-    "usr/lib/dyld",
-}
 assert any(
-    runtime_artifact_has_resource(artifact, ROOTLESS_BOOTSTRAP_CLOSURE_RESOURCE)
+    runtime_artifact_has_resource(artifact, ROOTLESS_BOOTSTRAP_RESOURCE)
     for artifact in rootless_provider["runtime-artifacts"]
 )
+assert rootless_provider["runtime-artifacts"] == [
+    {
+        "module": "darling",
+        "build-targets": [ROOTLESS_BOOTSTRAP_TARGET],
+        "resource": ROOTLESS_BOOTSTRAP_RESOURCE,
+    }
+]
 assert "darling/src/external/dyld" in rootless_provider["source-modules"]
 assert ROOTLESS_BOOTSTRAP_CLOSURE_SOURCE_MODULES.issubset(
     rootless_provider["source-modules"]
@@ -315,7 +311,7 @@ assert ROOTLESS_BOOTSTRAP_CLOSURE_SOURCE_MODULES.issubset(
     baseline_provider["source-modules"]
 )
 assert any(
-    runtime_artifact_has_resource(artifact, ROOTLESS_BOOTSTRAP_CLOSURE_RESOURCE)
+    runtime_artifact_has_resource(artifact, ROOTLESS_BOOTSTRAP_RESOURCE)
     for artifact in baseline_provider["runtime-artifacts"]
 )
 
@@ -326,17 +322,15 @@ with tempfile.TemporaryDirectory() as temp:
         "  incomplete-rootless:\n"
         "    source-profile: homebrew\n"
         "    source-module: darling\n"
-        "    source-modules: [darling, darling/src/external/darlingserver, darling/src/external/xnu]\n"
+        "    source-modules: [darling, darling/src/external/darlingserver, darling/src/external/xnu, darling/src/external/dyld, darling/src/external/corefoundation, darling/src/external/libsystem]\n"
         "    bootstrap: rootless-no-mount\n"
         "    runtime-artifacts:\n"
         "    - build-targets: [darling]\n"
-        "      deploy: [bin/darling]\n"
     )
     try:
         load_ctest_runtime_profiles(profiles_path)
     except ValueError as exc:
-        assert "rootless-no-mount is missing bootstrap deploy path(s)" in str(exc), exc
-        assert "usr/libexec/darling/vchroot" in str(exc), exc
+        assert "missing runtime resource(s): rootless-bootstrap" in str(exc), exc
     else:
         raise AssertionError("incomplete rootless runtime provider was accepted")
 
@@ -347,15 +341,11 @@ with tempfile.TemporaryDirectory() as temp:
         "  mixed-rootless:\n"
         "    source-profile: homebrew\n"
         "    source-module: darling\n"
-        "    source-modules: [darling, darling/src/external/darlingserver, darling/src/external/xnu]\n"
+        "    source-modules: [darling, darling/src/external/darlingserver, darling/src/external/xnu, darling/src/external/corefoundation, darling/src/external/libsystem]\n"
         "    bootstrap: rootless-no-mount\n"
         "    runtime-artifacts:\n"
-        "    - build-targets: [darling]\n"
-        "      deploy: [bin/darling, usr/libexec/darling/mldr, sbin/launchd, bin/launchctl, usr/libexec/shellspawn, usr/libexec/darling/vchroot, usr/lib/dyld]\n"
-        "    - build-targets: [darlingserver]\n"
-        "      deploy: [bin/darlingserver]\n"
-        "    - build-targets: [system_kernel]\n"
-        "      deploy: [usr/lib/system/libsystem_kernel.dylib]\n"
+        "    - build-targets: [rootless_bootstrap]\n"
+        "      resource: rootless-bootstrap\n"
     )
     try:
         load_ctest_runtime_profiles(profiles_path)
@@ -372,25 +362,20 @@ with tempfile.TemporaryDirectory() as temp:
         "  incomplete-resource-rootless:\n"
         "    source-profile: homebrew\n"
         "    source-module: darling\n"
-        "    source-modules: [darling, darling/src/external/darlingserver, darling/src/external/xnu, darling/src/external/dyld, darling/src/external/libsystem]\n"
+        "    source-modules: [darling, darling/src/external/darlingserver, darling/src/external/xnu, darling/src/external/dyld, darling/src/external/corefoundation, darling/src/external/libsystem]\n"
         "    bootstrap: rootless-no-mount\n"
         "    runtime-artifacts:\n"
         "    - build-targets: [darling]\n"
-        "      deploy: [bin/darling, usr/libexec/darling/mldr, sbin/launchd, bin/launchctl, usr/libexec/shellspawn, usr/libexec/darling/vchroot, usr/lib/dyld]\n"
-        "    - build-targets: [darlingserver]\n"
-        "      deploy: [bin/darlingserver]\n"
-        "    - build-targets: [system_kernel]\n"
-        "      deploy: [usr/lib/system/libsystem_kernel.dylib]\n"
     )
     try:
         load_ctest_runtime_profiles(profiles_path)
     except ValueError as exc:
-        assert "missing runtime resource(s): rootless-bootstrap-closure" in str(exc), exc
+        assert "missing runtime resource(s): rootless-bootstrap" in str(exc), exc
     else:
         raise AssertionError("rootless runtime provider accepted without its system closure")
 
 assert runtime_artifact_deploy_paths(
-    {"resource": ROOTLESS_BOOTSTRAP_CLOSURE_RESOURCE}
+    {"resource": ROOTLESS_BOOTSTRAP_RESOURCE}
 ) == []
 try:
     runtime_artifact_deploy_paths({"resource": "system-closure"})
@@ -455,26 +440,74 @@ with tempfile.TemporaryDirectory() as temp:
         raise AssertionError("closure accepted an unresolvable rpath dependency")
 
 with tempfile.TemporaryDirectory() as temp:
+    build_root = Path(temp) / "build"
+    output = build_root / "bin" / "darling"
+    output.parent.mkdir(parents=True)
+    output.write_bytes(b"\xcf\xfa\xed\xfeMach-O fixture\n")
+    output.chmod(0o755)
+    manifest_path = build_root / "darling-rootless-bootstrap.json"
+
+    def write_bootstrap_manifest(entries):
+        manifest_path.write_text(json.dumps({"schema": 1, "entrypoints": entries}))
+
+    entry = {
+        "target": "darling",
+        "guest_path": "/bin/darling",
+        "host_path": str(output),
+    }
+    write_bootstrap_manifest([entry])
+    assert load_rootless_bootstrap_manifest(build_root) == {"bin/darling": output}
+
+    write_bootstrap_manifest([entry, entry])
+    try:
+        load_rootless_bootstrap_manifest(build_root)
+    except ValueError as exc:
+        assert "duplicate guest path" in str(exc), exc
+    else:
+        raise AssertionError("rootless bootstrap manifest accepted duplicate guest paths")
+
+    escaped = {**entry, "host_path": str(Path(temp) / "outside")}
+    write_bootstrap_manifest([escaped])
+    try:
+        load_rootless_bootstrap_manifest(build_root)
+    except ValueError as exc:
+        assert "escapes build root" in str(exc), exc
+    else:
+        raise AssertionError("rootless bootstrap manifest accepted an escaping host path")
+
+    host_launcher = build_root / "bin" / "host-launcher"
+    host_launcher.write_text("not a Mach-O binary\n")
+    host_launcher.chmod(0o755)
+    write_bootstrap_manifest([{**entry, "host_path": str(host_launcher)}])
+    assert load_rootless_bootstrap_manifest(build_root) == {"bin/darling": host_launcher}
+
+    non_executable = build_root / "bin" / "not-executable"
+    non_executable.write_text("not executable\n")
+    write_bootstrap_manifest([{**entry, "host_path": str(non_executable)}])
+    try:
+        load_rootless_bootstrap_manifest(build_root)
+    except ValueError as exc:
+        assert "not a built executable" in str(exc), exc
+    else:
+        raise AssertionError("rootless bootstrap manifest accepted a non-executable product")
+
+with tempfile.TemporaryDirectory() as temp:
     profiles_path = Path(temp) / "runtime-profiles.yml"
     profiles_path.write_text(
         "runtime-profiles:\n"
         "  incomplete-closure-rootless:\n"
         "    source-profile: homebrew\n"
         "    source-module: darling\n"
-        "    source-modules: [darling, darling/src/external/darlingserver, darling/src/external/xnu, darling/src/external/dyld, darling/src/external/libsystem]\n"
+        "    source-modules: [darling, darling/src/external/darlingserver, darling/src/external/xnu, darling/src/external/dyld, darling/src/external/corefoundation, darling/src/external/libsystem]\n"
         "    bootstrap: rootless-no-mount\n"
         "    runtime-artifacts:\n"
         "    - build-targets: [darling]\n"
-        "      deploy: [bin/darling, usr/libexec/darling/mldr, sbin/launchd, bin/launchctl, usr/libexec/shellspawn, usr/libexec/darling/vchroot, usr/lib/dyld]\n"
-        "    - build-targets: [darlingserver]\n"
-        "      deploy: [bin/darlingserver]\n"
-        "    - build-targets: [system_kernel]\n"
-        "      resource: rootless-bootstrap-closure\n"
+        "      resource: rootless-bootstrap\n"
     )
     try:
         load_ctest_runtime_profiles(profiles_path)
     except ValueError as exc:
-        assert "closure must build target(s): objc, resolv-darwin" in str(exc), exc
+        assert "resource must build only 'rootless_bootstrap'" in str(exc), exc
     else:
         raise AssertionError("rootless closure accepted without its objc build target")
 
@@ -485,20 +518,16 @@ with tempfile.TemporaryDirectory() as temp:
         "  live-closure-owner-rootless:\n"
         "    source-profile: homebrew\n"
         "    source-module: darling\n"
-        "    source-modules: [darling, darling/src/external/darlingserver, darling/src/external/xnu, darling/src/external/dyld]\n"
+        "    source-modules: [darling, darling/src/external/darlingserver, darling/src/external/xnu, darling/src/external/dyld, darling/src/external/libsystem]\n"
         "    bootstrap: rootless-no-mount\n"
         "    runtime-artifacts:\n"
-        "    - build-targets: [darling]\n"
-        "      deploy: [bin/darling, usr/libexec/darling/mldr, sbin/launchd, bin/launchctl, usr/libexec/shellspawn, usr/libexec/darling/vchroot, usr/lib/dyld]\n"
-        "    - build-targets: [darlingserver]\n"
-        "      deploy: [bin/darlingserver]\n"
-        "    - build-targets: [system_kernel, objc, resolv-darwin]\n"
-        "      resource: rootless-bootstrap-closure\n"
+        "    - build-targets: [rootless_bootstrap]\n"
+        "      resource: rootless-bootstrap\n"
     )
     try:
         load_ctest_runtime_profiles(profiles_path)
     except ValueError as exc:
-        assert "darling/src/external/libsystem" in str(exc), exc
+        assert "darling/src/external/corefoundation" in str(exc), exc
     else:
         raise AssertionError("rootless closure accepted a live libsystem source")
 
