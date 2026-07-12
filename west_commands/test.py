@@ -3312,10 +3312,10 @@ class DarlingTest(WestCommand):
                 sample_name="eunion-bootstrap",
                 label=f"{invocation['name']}: E-UNION bootstrap",
             )
-        result = run_guest_shell(
+        result = run_guest_argv(
             str(launcher),
             prefix,
-            ":",
+            ["/usr/bin/true"],
             cwd=Path.cwd(),
             env=child_env,
             timeout_seconds=timeout_seconds,
@@ -3341,15 +3341,12 @@ class DarlingTest(WestCommand):
             if evidence is not None:
                 evidence.record_failure_detail(
                     phase="bootstrap",
-                    summary="E-UNION login shell did not reach a verdict",
+                    summary="E-UNION runtime readiness executable did not reach a verdict",
                     returncode=result.returncode,
                     command=[
                         str(launcher),
-                        "shell",
-                        "/bin/bash",
-                        "--login",
-                        "-c",
-                        ":",
+                        "exec",
+                        "/usr/bin/true",
                     ],
                     output=output,
                     artifacts=[
@@ -3369,7 +3366,7 @@ class DarlingTest(WestCommand):
                 progress = rootless_bootstrap_progress(prefix)
                 progress_hint = f"; progress: {progress}" if progress is not None else ""
                 self.err(
-                    f"{invocation['name']}: E-UNION prefix bootstrap timed out after {timeout_seconds}s "
+                    f"{invocation['name']}: E-UNION runtime readiness timed out after {timeout_seconds}s "
                     f"without output{diagnostic_hint}{progress_hint}"
                 )
             self._record_failure_phase(invocation, "bootstrap")
