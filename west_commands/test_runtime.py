@@ -14,6 +14,7 @@ ROOTLESS_NO_MOUNT_DEPLOY_PATHS = frozenset(
     {
         "bin/darling",
         "bin/darlingserver",
+        "bin/launchctl",
         "sbin/launchd",
         "usr/libexec/darling/mldr",
         "usr/libexec/shellspawn",
