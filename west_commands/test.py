@@ -3295,7 +3295,7 @@ class DarlingTest(WestCommand):
 
         child_env = dict(env or os.environ.copy())
         child_env.update(self._darling_prefix_env(prefix))
-        timeout_seconds = getattr(self, "_bootstrap_timeout_seconds", None) or 15
+        timeout_seconds = self._eunion_bootstrap_timeout_seconds(invocation)
         command_prefix: tuple[str, ...] = ()
         trace_dir = getattr(self, "_bootstrap_syscall_trace", None)
         stack_sample_dir = getattr(self, "_bootstrap_stack_sample", None)
@@ -3377,6 +3377,17 @@ class DarlingTest(WestCommand):
                 f"{invocation['name']}: failed to boot Darling E-UNION prefix "
                 f"before fixture setup (rc={result.returncode})"
             )
+
+    def _eunion_bootstrap_timeout_seconds(self, invocation) -> int:
+        override = getattr(self, "_bootstrap_timeout_seconds", None)
+        if override is not None:
+            return override
+        profile_name = invocation.get("runtime-profile")
+        if profile_name:
+            definition = self._ctest_runtime_profile_definitions().get(profile_name)
+            if definition is not None:
+                return int(definition["bootstrap-smoke-timeout-seconds"])
+        return 15
 
     def _bootstrap_stack_sample_command(
         self,
