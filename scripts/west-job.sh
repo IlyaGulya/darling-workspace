@@ -8,6 +8,7 @@ usage:
   west-job.sh status --state-dir DIR
   west-job.sh wait --state-dir DIR
   west-job.sh cancel --state-dir DIR
+  west-job.sh assert-no-live-west-test [--state-root DIR]
 
 Use this only when the caller cannot keep a long west command attached.  DIR
 contains command, job/command PIDs, start-times, log, and rc; it is safe to
@@ -38,6 +39,22 @@ parse_state_dir() {
 		usage
 	fi
 	STATE_REST=("$@")
+}
+
+parse_state_root() {
+	state_root="${TMPDIR:-/tmp}"
+	while (($#)); do
+		case "$1" in
+			--state-root)
+				state_root="$2"
+				shift 2
+				;;
+			*)
+				usage
+				;;
+		esac
+	done
+	STATE_ROOT="$state_root"
 }
 
 pid_start_time() {
@@ -230,15 +247,43 @@ cancel_job() {
 	printf 'cancelling runner waiter=%s state=%s\n' "$pid" "$state_dir"
 }
 
+live_west_test_state() {
+	local original_state_dir="$state_dir"
+	local candidate
+	shopt -s nullglob
+	for candidate in "$STATE_ROOT"/*; do
+		[[ -d "$candidate" && -f "$candidate/command" ]] || continue
+		state_dir="$candidate"
+		if load_live_pid && grep -Eq '(^|[[:space:]/])west[[:space:]]+test([[:space:]]|$)' "$candidate/command"; then
+			state_dir="$original_state_dir"
+			printf '%s\n' "$candidate"
+			return 0
+		fi
+	done
+	state_dir="$original_state_dir"
+	return 1
+}
+
+assert_no_live_west_test() {
+	local live_state
+	if live_state="$(live_west_test_state)"; then
+		echo "cleanup audit blocked by live west test job: $live_state" >&2
+		exit 2
+	fi
+}
+
 command="${1:-}"
 [[ -n "$command" ]] || usage
 shift
-parse_state_dir "$@"
 
 case "$command" in
-	start) start_job ;;
-	status) status_job ;;
-	wait) wait_job ;;
-	cancel) cancel_job ;;
+	start|status|wait|cancel)
+		parse_state_dir "$@"
+		"${command}_job"
+		;;
+	assert-no-live-west-test)
+		parse_state_root "$@"
+		assert_no_live_west_test
+		;;
 	*) usage ;;
 esac

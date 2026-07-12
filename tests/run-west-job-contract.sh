@@ -25,6 +25,36 @@ grep -F -x -q 'GREEN_JOB' "$tmp/green/log"
 test "$(<"$tmp/green/rc")" = 0
 "$job" status --state-dir "$tmp/green" | grep -F -x -q "completed rc=0 state=$tmp/green"
 
+mkdir -p "$tmp/bin"
+cat >"$tmp/bin/west" <<'SCRIPT'
+#!/usr/bin/env bash
+set -euo pipefail
+test "${1:-}" = test
+printf 'WEST_TEST_JOB_READY\n'
+exec sleep 30
+SCRIPT
+chmod +x "$tmp/bin/west"
+"$job" start --state-dir "$tmp/live-west-test" -- \
+	env "PATH=$tmp/bin:$PATH" west test
+while [[ ! -f "$tmp/live-west-test/command-pid" ]] || \
+	! grep -F -x -q 'WEST_TEST_JOB_READY' "$tmp/live-west-test/log"; do
+	:
+done
+if "$job" assert-no-live-west-test --state-root "$tmp" \
+	>"$tmp/live-west-test.out" 2>"$tmp/live-west-test.err"; then
+	echo 'cleanup audit guard unexpectedly allowed a live west test job' >&2
+	exit 1
+fi
+grep -F -x -q \
+	"cleanup audit blocked by live west test job: $tmp/live-west-test" \
+	"$tmp/live-west-test.err"
+"$job" cancel --state-dir "$tmp/live-west-test" >/dev/null
+if wait_job --state-dir "$tmp/live-west-test"; then
+	echo 'live west test job unexpectedly succeeded after cancellation' >&2
+	exit 1
+fi
+"$job" assert-no-live-west-test --state-root "$tmp"
+
 "$job" start --state-dir "$tmp/wait" -- /usr/bin/python3 -c '
 import time
 time.sleep(0.3)
