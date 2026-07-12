@@ -21,6 +21,10 @@ refs, PR drafts, and agent handoff.
 - For shell assignments, conditionals, command substitution, or other compound
   shell syntax, use `rtk bash -c '...'`; `rtk NAME=value command` treats the
   assignment as a program name and produces a misleading host-side error.
+- For searches across a full materialized Darling forest or multiple large
+  source roots, use `scripts/west-search.py PATTERN ROOT...`. It bounds the
+  search and reaps the whole process group on timeout; direct `rg` remains
+  appropriate for focused repository-local searches.
 - When passing Bead free text through `rtk bash -c`, do not use shell backticks
   in the title, description, or reason: Bash evaluates them before `west dw
   beads` receives the text. Use plain command names or a file-backed argument.
