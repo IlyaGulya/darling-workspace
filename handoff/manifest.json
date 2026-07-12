@@ -150,6 +150,12 @@
           "source_ref": "refs/heads/fix/rootless-shellspawn-client-trace"
         },
         {
+          "branch": "fix/rootless-shellspawn-command-trace",
+          "head": "4b5d3e74b1a8f951fe3bb78327a6a551bf0a4aaf",
+          "upstream": "",
+          "source_ref": "refs/heads/fix/rootless-shellspawn-command-trace"
+        },
+        {
           "branch": "fix/rootless-shellspawn-readiness",
           "head": "6ffa813bcb6c067b050bde189eac76e6e266b045",
           "upstream": "",
