@@ -29,7 +29,7 @@ sys.modules.setdefault("west.commands", west_commands_module)
 
 import west_commands.test as west_test_module
 import west_commands.test_guest_c as guest_c_module
-from west_commands.test import DarlingTest, RuntimeBuildFailure
+from west_commands.test import DarlingTest, RuntimeBuildFailure, RuntimeRedProven
 from west_commands.test_execution import ProcessResult, process_output_text
 from west_commands.test_runtime import (
     compose_ctest_runtime_profiles,
@@ -2494,6 +2494,20 @@ with tempfile.TemporaryDirectory() as temp:
         check=True,
     )
     shutil.rmtree(kept[0])
+
+    before = set(Path(tempfile.gettempdir()).glob("west-red-proof-source-*"))
+    try:
+        with test._guest_runtime_source_forest(
+            {"path": "darling/example.patch", "module": "darling", "source-base": base_rev},
+            {"mode": "guest-runtime-deploy", "bad-profile": "current-minus-patch"},
+            omit_patch=True,
+        ):
+            raise RuntimeRedProven()
+    except RuntimeRedProven:
+        pass
+    else:
+        raise AssertionError("expected runtime RED control flow was swallowed")
+    assert set(Path(tempfile.gettempdir()).glob("west-red-proof-source-*")) == before
 
 with tempfile.TemporaryDirectory() as temp:
     tempdir = Path(temp)
