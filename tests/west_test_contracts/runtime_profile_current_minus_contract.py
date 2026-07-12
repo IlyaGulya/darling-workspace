@@ -34,7 +34,9 @@ with tempfile.TemporaryDirectory() as temp:
     launcher.write_text("launcher")
 
     test = DarlingTest.__new__(DarlingTest)
+    test.topdir = str(root)
     test._prefix = str(prefix)
+    test._runtime_evidence_root = root / "evidence"
     test._active_profile = "outer-profile"
     test._runtime_cmake_define_overrides = {"DARLING_GUEST_RECVSPIN": "0"}
     test.inf = lambda _message: None
@@ -56,11 +58,12 @@ with tempfile.TemporaryDirectory() as temp:
     captured: dict[str, object] = {}
 
     @contextmanager
-    def source_forest(anchor, proof, *, omit_patch):
+    def source_forest(anchor, proof, *, omit_patch, root, evidence_session):
         captured["anchor"] = anchor
         captured["proof"] = proof
         captured["omit_patch"] = omit_patch
-        yield root / "source"
+        assert root.parent == evidence_session.directory
+        yield root / "darling"
 
     @contextmanager
     def deployed(_proof, _build_root, _prefix, *, label, restore_deployment):
