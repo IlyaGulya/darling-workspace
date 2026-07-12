@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import fcntl
 import shutil
 import subprocess
 import tempfile
@@ -21,6 +22,8 @@ class RuntimeEvidenceSession:
         self._label = label
         self._context = context
         self._directory = Path(tempfile.mkdtemp(prefix=".inflight-", dir=root))
+        self._lock_file = (self._directory / ".lock").open("w")
+        fcntl.flock(self._lock_file, fcntl.LOCK_EX)
         self._retained = False
         self._worktrees: list[dict[str, str]] = []
         self._diagnostics: list[dict[str, Any]] = []
@@ -49,6 +52,18 @@ class RuntimeEvidenceSession:
                 raise ValueError(f"evidence worktree escapes its unit: {target}") from error
             records.append({"repo": str(repo), "path": str(relative_target)})
         self._worktrees = records
+        self._write_json(".worktrees.json", records)
+
+    def _write_json(self, name: str, value: Any) -> None:
+        target = self._directory / name
+        temporary = target.with_suffix(".tmp")
+        temporary.write_text(json.dumps(value, indent=2, sort_keys=True) + "\n")
+        temporary.replace(target)
+
+    def _release_lock(self) -> None:
+        if not self._lock_file.closed:
+            fcntl.flock(self._lock_file, fcntl.LOCK_UN)
+            self._lock_file.close()
 
     @property
     def retention_requested(self) -> bool:
@@ -147,6 +162,7 @@ class RuntimeEvidenceSession:
         temporary.write_text(json.dumps(manifest, indent=2, sort_keys=True) + "\n")
         temporary.replace(manifest_path)
         self._retained = True
+        self._release_lock()
         return target
 
     def _relocate_worktrees(self, target: Path) -> None:
@@ -173,6 +189,7 @@ class RuntimeEvidenceSession:
 
     def discard(self) -> None:
         if not self._retained:
+            self._release_lock()
             shutil.rmtree(self._directory, ignore_errors=True)
 
 
@@ -292,25 +309,86 @@ class RuntimeEvidenceStore:
             stale = entry.stat().st_mtime <= cutoff
             if index >= keep_last or stale:
                 selected.append(entry)
+        selected.extend(self._orphan_inflight_entries(cutoff))
         if not dry_run:
             for entry in selected:
-                self._remove_worktrees(entry)
+                if entry.name.startswith(".inflight-"):
+                    self._remove_inflight_worktrees(entry)
+                else:
+                    self._remove_worktrees(entry)
                 shutil.rmtree(entry)
         return selected
 
+    def _orphan_inflight_entries(self, cutoff: float) -> list[Path]:
+        if not self._root.is_dir():
+            return []
+        orphans = []
+        for entry in self._root.iterdir():
+            if (
+                not entry.name.startswith(".inflight-")
+                or not entry.is_dir()
+                or entry.is_symlink()
+                or entry.stat().st_mtime > cutoff
+            ):
+                continue
+            lock_path = entry / ".lock"
+            if lock_path.exists() and (not lock_path.is_file() or lock_path.is_symlink()):
+                raise ValueError(f"unsafe runtime evidence session lock: {entry}")
+            if lock_path.exists():
+                lock_file = lock_path.open("r+")
+            else:
+                # Sessions created before locking was introduced are necessarily
+                # orphaned after the command that created them has exited.
+                lock_file = None
+            if lock_file is not None:
+                try:
+                    fcntl.flock(lock_file, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                except BlockingIOError:
+                    lock_file.close()
+                    continue
+                fcntl.flock(lock_file, fcntl.LOCK_UN)
+                lock_file.close()
+            orphans.append(entry)
+        return sorted(orphans, key=lambda entry: entry.stat().st_mtime)
+
     @staticmethod
-    def _remove_worktrees(entry: Path) -> None:
-        manifest = json.loads((entry / "manifest.json").read_text())
-        worktrees = manifest.get("worktrees", [])
+    def _remove_inflight_worktrees(entry: Path) -> None:
+        journal = entry / ".worktrees.json"
+        if journal.is_file() and not journal.is_symlink():
+            records = json.loads(journal.read_text())
+            RuntimeEvidenceStore._remove_worktree_records(entry, records)
+            return
+        git_markers = sorted(entry.rglob(".git"), key=lambda path: len(path.parts), reverse=True)
+        for marker in git_markers:
+            if not marker.is_file() or marker.is_symlink():
+                continue
+            target = marker.parent
+            common = subprocess.run(
+                ["git", "-C", str(target), "rev-parse", "--path-format=absolute", "--git-common-dir"],
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            if common.returncode:
+                continue
+            common_dir = Path(common.stdout.strip())
+            repo = common_dir.parent if common_dir.name == ".git" else common_dir
+            RuntimeEvidenceStore._remove_worktree_records(
+                entry,
+                [{"repo": str(repo), "path": str(target.relative_to(entry))}],
+            )
+
+    @staticmethod
+    def _remove_worktree_records(entry: Path, worktrees: Any) -> None:
         if not isinstance(worktrees, list):
-            raise ValueError(f"invalid runtime evidence worktree manifest: {entry}")
+            raise ValueError(f"invalid runtime evidence worktree journal: {entry}")
         for worktree in reversed(worktrees):
             if not isinstance(worktree, dict):
-                raise ValueError(f"invalid runtime evidence worktree entry: {entry}")
+                raise ValueError(f"invalid runtime evidence worktree journal entry: {entry}")
             repo = Path(str(worktree.get("repo", "")))
             relative_path = Path(str(worktree.get("path", "")))
             if not repo.is_dir() or relative_path.is_absolute() or ".." in relative_path.parts:
-                raise ValueError(f"unsafe runtime evidence worktree entry: {entry}")
+                raise ValueError(f"unsafe runtime evidence worktree journal entry: {entry}")
             target = entry / relative_path
             listing = subprocess.run(
                 ["git", "worktree", "list", "--porcelain"],
@@ -321,9 +399,7 @@ class RuntimeEvidenceStore:
             )
             if listing.returncode:
                 detail = (listing.stderr or listing.stdout).strip()
-                raise RuntimeError(
-                    f"could not inspect runtime evidence worktrees for {repo}: {detail}"
-                )
+                raise RuntimeError(f"could not inspect runtime evidence worktrees for {repo}: {detail}")
             registered = {
                 Path(line.removeprefix("worktree ")).resolve()
                 for line in listing.stdout.splitlines()
@@ -340,6 +416,9 @@ class RuntimeEvidenceStore:
             )
             if result.returncode:
                 detail = (result.stderr or result.stdout).strip()
-                raise RuntimeError(
-                    f"could not remove runtime evidence worktree {target}: {detail}"
-                )
+                raise RuntimeError(f"could not remove runtime evidence worktree {target}: {detail}")
+
+    @staticmethod
+    def _remove_worktrees(entry: Path) -> None:
+        manifest = json.loads((entry / "manifest.json").read_text())
+        RuntimeEvidenceStore._remove_worktree_records(entry, manifest.get("worktrees", []))
