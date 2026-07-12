@@ -66,6 +66,35 @@ with tempfile.TemporaryDirectory() as temp:
     else:
         os.kill(pid, 9)
 
+with tempfile.TemporaryDirectory() as temp:
+    tempdir = Path(temp)
+    escaped_pid = tempdir / "successful-escaped.pid"
+    code = (
+        "import os, pathlib, sys, time; "
+        "pid = os.fork(); "
+        "exec('os.setsid(); pathlib.Path(sys.argv[1]).write_text(str(os.getpid())); "
+        "print(\\\"child inherited output\\\", flush=True); time.sleep(60)') "
+        "if pid == 0 else print('PARENT_OK', flush=True)"
+    )
+    started = time.monotonic()
+    result = run_bounded(
+        [sys.executable, "-c", code, str(escaped_pid)],
+        cwd=tempdir,
+        env=None,
+        timeout_seconds=5,
+        capture_output=True,
+    )
+    assert result.returncode == 0 and not result.timed_out, result
+    assert time.monotonic() - started < 2, "escaped output fd delayed successful parent completion"
+    assert "PARENT_OK" in result.stdout, result
+    pid = int(escaped_pid.read_text())
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        pass
+    else:
+        os.kill(pid, 9)
+
 result = run_bounded(
     [sys.executable, "-c", "print('BOUNDED_OUTPUT_OK')"],
     cwd=Path.cwd(),

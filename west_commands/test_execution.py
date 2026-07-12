@@ -10,6 +10,7 @@ from __future__ import annotations
 import os
 import signal
 import subprocess
+import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Sequence
@@ -34,24 +35,11 @@ def process_output_text(result: ProcessResult) -> str:
     return decode(result.stdout) + decode(result.stderr)
 
 
-def _timeout_output(error: subprocess.TimeoutExpired, stream: str) -> str | bytes:
-    """Return the partial captured stream carried by ``communicate``."""
-
-    value = getattr(error, stream, None)
-    if value is None and stream == "stdout":
-        value = error.output
-    return value or ""
-
-
-def _close_process_streams(process: subprocess.Popen) -> None:
-    """Release inherited capture pipes after an escaped descendant keeps them open."""
-
-    for stream in (process.stdin, process.stdout, process.stderr):
-        if stream is not None:
-            try:
-                stream.close()
-            except OSError:
-                pass
+def _read_capture(stream, *, text: bool | None) -> str | bytes:
+    stream.flush()
+    stream.seek(0)
+    value = stream.read()
+    return value.decode(errors="replace") if text is not False else value
 
 
 def run_bounded(
@@ -73,13 +61,14 @@ def run_bounded(
     command gets a new session and a timeout kills the complete group.
     """
 
+    capture_streams = None
     if capture_output:
         if stdout is not None or stderr is not None:
             raise ValueError("capture_output conflicts with stdout/stderr")
-        stdout = subprocess.PIPE
-        stderr = subprocess.PIPE
         if text is None:
             text = True
+        capture_streams = (tempfile.TemporaryFile(), tempfile.TemporaryFile())
+        stdout, stderr = capture_streams
 
     process = subprocess.Popen(
         list(args),
@@ -93,14 +82,14 @@ def run_bounded(
     )
     try:
         if capture_output or input_data is not None:
-            captured_stdout, captured_stderr = process.communicate(
+            process.communicate(
                 input=input_data,
                 timeout=timeout_seconds,
             )
             return ProcessResult(
                 process.returncode,
-                stdout=captured_stdout or "",
-                stderr=captured_stderr or "",
+                stdout=_read_capture(capture_streams[0], text=text) if capture_streams else "",
+                stderr=_read_capture(capture_streams[1], text=text) if capture_streams else "",
             )
         return ProcessResult(process.wait(timeout=timeout_seconds))
     except subprocess.TimeoutExpired:
@@ -110,24 +99,19 @@ def run_bounded(
             pass
         if capture_output or input_data is not None:
             try:
-                captured_stdout, captured_stderr = process.communicate(timeout=1)
-            except subprocess.TimeoutExpired as drain_error:
-                # A daemon can create a new session before the deadline. It then
-                # survives the process-group kill and keeps our output pipes
-                # open. Do not turn a bounded timeout into an unbounded drain.
-                captured_stdout = _timeout_output(drain_error, "stdout")
-                captured_stderr = _timeout_output(drain_error, "stderr")
-                _close_process_streams(process)
-                try:
-                    process.wait(timeout=1)
-                except subprocess.TimeoutExpired:
-                    process.kill()
-                    process.wait()
+                process.communicate(timeout=1)
+            except subprocess.TimeoutExpired:
+                process.kill()
+                process.wait()
             return ProcessResult(
                 124,
                 timed_out=True,
-                stdout=captured_stdout or "",
-                stderr=captured_stderr or "",
+                stdout=_read_capture(capture_streams[0], text=text) if capture_streams else "",
+                stderr=_read_capture(capture_streams[1], text=text) if capture_streams else "",
             )
         process.wait()
         return ProcessResult(124, timed_out=True)
+    finally:
+        if capture_streams is not None:
+            capture_streams[0].close()
+            capture_streams[1].close()
