@@ -8,6 +8,9 @@ profile patch application and worktree cleanup stay together here.
 
 from __future__ import annotations
 
+import fcntl
+import json
+import os
 import shutil
 import subprocess
 import tempfile
@@ -151,9 +154,23 @@ class RuntimeSourceMaterializer:
     ) -> bool:
         source_commit = str(patch.get("source-commit", ""))
         if source_commit:
-            return self.commit_is_ancestor(repo, source_commit) or self.commit_has_equivalent_patch(
+            head = subprocess.run(
+                ["git", "rev-parse", "HEAD"],
+                cwd=repo,
+                capture_output=True,
+                text=True,
+                check=True,
+            ).stdout.strip()
+            key = f"{head}:{source_commit}"
+            cached = self._patch_identity_cache_get(key)
+            if cached is not None:
+                self._host.inf(f"  patch identity cache hit: {source_commit[:12]}")
+                return cached
+            result = self.commit_is_ancestor(
                 repo, source_commit
-            )
+            ) or self.commit_has_equivalent_patch(repo, source_commit)
+            self._patch_identity_cache_put(key, result)
+            return result
         return (
             subprocess.run(
                 ["git", "apply", "--reverse", "--check", str(patch_file)],
@@ -164,6 +181,37 @@ class RuntimeSourceMaterializer:
             ).returncode
             == 0
         )
+
+    def _patch_identity_cache_path(self) -> Path:
+        return Path(self._host.manifest.repo_abspath) / ".west-test/cache/patch-identity-v1.json"
+
+    def _patch_identity_cache_get(self, key: str) -> bool | None:
+        cache_path = self._patch_identity_cache_path()
+        try:
+            payload = json.loads(cache_path.read_text())
+        except (FileNotFoundError, json.JSONDecodeError, OSError):
+            return None
+        value = payload.get("entries", {}).get(key)
+        return value if isinstance(value, bool) else None
+
+    def _patch_identity_cache_put(self, key: str, value: bool) -> None:
+        cache_path = self._patch_identity_cache_path()
+        cache_path.parent.mkdir(parents=True, exist_ok=True)
+        lock_path = cache_path.with_suffix(".lock")
+        with lock_path.open("a+") as lock:
+            fcntl.flock(lock.fileno(), fcntl.LOCK_EX)
+            try:
+                try:
+                    payload = json.loads(cache_path.read_text())
+                except (FileNotFoundError, json.JSONDecodeError, OSError):
+                    payload = {"schema": 1, "entries": {}}
+                entries = payload.setdefault("entries", {})
+                entries[key] = value
+                temporary = cache_path.with_suffix(f".tmp-{os.getpid()}")
+                temporary.write_text(json.dumps(payload, sort_keys=True) + "\n")
+                os.replace(temporary, cache_path)
+            finally:
+                fcntl.flock(lock.fileno(), fcntl.LOCK_UN)
 
     @staticmethod
     def _current_minus_skip_patch_paths(patch: dict, proof: dict) -> set[str]:
