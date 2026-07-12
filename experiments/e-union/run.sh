@@ -30,6 +30,17 @@ cp "$INCDIR/linux_premigration/vchroot_expand.h" \
 mkdir -p "$WORK/shim/darling/emulation/common/bsdthread"
 cp "$HERE/shim/darling/emulation/common/bsdthread/per_thread_wd.h" \
    "$WORK/shim/darling/emulation/common/bsdthread/"
+mkdir -p "$WORK/shim/darling/emulation/common/guarded"
+cp "$HERE/shim/darling/emulation/common/guarded/table.h" \
+   "$WORK/shim/darling/emulation/common/guarded/"
+mkdir -p "$WORK/shim/darling/emulation/other/mach"
+cp "$HERE/shim/darling/emulation/other/mach/lkm.h" \
+   "$WORK/shim/darling/emulation/other/mach/"
+mkdir -p "$WORK/shim/darlingserver"
+cp "$HERE/shim/darlingserver/rpc.h" "$WORK/shim/darlingserver/"
+mkdir -p "$WORK/shim/darling/emulation/xnu_syscall/bsd/helper/bsdthread"
+cp "$HERE/shim/darling/emulation/xnu_syscall/bsd/helper/bsdthread/cancelable.h" \
+   "$WORK/shim/darling/emulation/xnu_syscall/bsd/helper/bsdthread/"
 # Additional production units retain their normal public include prefix. Keep
 # that layout available independently of the one-header vchroot test shim.
 mkdir -p "$WORK/include/darling"
@@ -39,12 +50,15 @@ ln -s "$INCDIR" "$WORK/include/darling/emulation"
 mkdir -p "$WORK/prefix/usr/bin" "$WORK/prefix/var/tmp" "$WORK/prefix/usr/local"
 mkdir -p "$WORK/libexec/usr/bin" "$WORK/libexec/System/Library/LaunchDaemons"
 mkdir -p "$WORK/libexec/usr/lib/system" "$WORK/libexec/usr/local/share"
+mkdir -p "$WORK/libexec/var/non_dir_shadow"
+echo "lower child" > "$WORK/libexec/var/non_dir_shadow/child"
 echo "prefix-only echo"       > "$WORK/prefix/usr/bin/myecho"
 echo "libexec-only ls"        > "$WORK/libexec/usr/bin/ls"
 echo "<<launchd plist>>"      > "$WORK/libexec/System/Library/LaunchDaemons/com.apple.test.plist"
 echo "shared but in prefix"   > "$WORK/prefix/usr/bin/sh"
 echo "shared but in libexec"  > "$WORK/libexec/usr/bin/sh"
 echo "deep lower dylib"       > "$WORK/libexec/usr/lib/system/libsystem_c.dylib"
+echo "upper non-directory"    > "$WORK/prefix/var/non_dir_shadow"
 echo "lower-only conf"        > "$WORK/libexec/usr/local/share/tool.conf"
 chmod 0755 "$WORK/libexec/usr/bin/ls"  # exercise mode preservation on copy-up
 # large lower-only file to widen the copy-up race window (C7)
@@ -108,9 +122,23 @@ echo "the target" > "$WORK/libexec/usr/lib/target_file"
 # #1 unlink policy (U-tests): dedicated UNTOUCHED fixtures so the prepare_unlink
 #    assertions are not contaminated by earlier copy-up/whiteout tests.
 mkdir -p "$WORK/libexec/var/log" "$WORK/prefix/var/tmp"
+mkdir -p "$WORK/prefix/var/log"
 echo "del me lower" > "$WORK/libexec/var/log/ulnk_lower"     # lower-only victim
 echo "del me upper" > "$WORK/prefix/var/tmp/ulnk_upper"      # upper-only victim
 mkdir -p "$WORK/libexec/var/empty_lowerdir"                   # lower-only empty dir
+# Relative mutation fixture: AT_FDCWD must be canonicalized through the guest
+# cwd before copy-up, otherwise the write path can still target the shared lower.
+echo "relative lower victim" > "$WORK/libexec/var/log/relative_lower"
+echo "syscall unlink victim" > "$WORK/libexec/var/log/syscall_unlink"
+mkdir -p "$WORK/libexec/var/log/syscall_rmdir"
+echo "rmdir child" > "$WORK/libexec/var/log/syscall_rmdir/child"
+mkdir -p "$WORK/libexec/var/syscall_mkdir_parent"
+echo "rename source" > "$WORK/libexec/var/log/syscall_rename_source"
+echo "rename destination" > "$WORK/libexec/var/log/syscall_rename_destination"
+echo "open existing" > "$WORK/libexec/var/log/syscall_open_existing"
+echo "whiteout lower" > "$WORK/libexec/var/log/syscall_whiteout_fail"
+echo "whiteout upper" > "$WORK/prefix/var/log/syscall_whiteout_fail"
+mkdir -p "$WORK/libexec/var/syscall_open_parent"
 # #2 rename-dest: a lower-only victim the rename destination will overwrite.
 echo "rename victim" > "$WORK/libexec/var/log/ren_victim"
 # #4 fd-metadata: a lower-only file opened O_RDONLY then chmod'd via fd.
@@ -160,6 +188,11 @@ echo "0123456789abcdef this content must survive in the template" > "$WORK/libex
 #    setxattr copy-up test targets, touched ONLY by XS1 so "materialized in upper"
 #    can only be caused by XS1's own prepare_write (not an earlier copy-up).
 echo "xattr victim" > "$WORK/libexec/var/log/xattr_lower"
+echo "metadata times" > "$WORK/libexec/var/log/metadata_times"
+touch -a -d "2002-02-02 02:02:02" "$WORK/libexec/var/log/metadata_times"
+touch -m -d "2001-01-01 01:01:01" "$WORK/libexec/var/log/metadata_times"
+echo "xattr error" > "$WORK/libexec/var/log/xattr_error"
+mkfifo "$WORK/libexec/var/log/special_fifo"
 # .6 mkdir-opaque delete-recreate (MK1): a DEDICATED lower-only POPULATED dir,
 #    present ONLY in the lower layer and touched ONLY by the MK test. After
 #    rmdir+mkdir of this name the merged view must be EMPTY (the stale children
@@ -202,9 +235,23 @@ echo "upper leaf"   > "$WORK/prefix/var/pc/leaf"
 #    which leaves a later open(O_CREAT) with ENOENT. Touched ONLY by the SP test.
 mkdir -p "$WORK/libexec/var/sp_real"
 ln -s sp_real "$WORK/libexec/var/sp_link"
+# symlink containment: a relative target with .. must not make copy-up or a
+# create escape the writable prefix into the harness work root.
+ln -s ../../escape-target "$WORK/libexec/var/escape_link"
+echo "outside sentinel" > "$WORK/escape-target"
 
 sources=(
 	"$HERE/runner.c"
+	"$HERE/whiteout_hook_fallback.c"
+	"$XNU/src/xnu_syscall/bsd/helper/misc/common_at.c"
+	"$XNU/src/xnu_syscall/bsd/impl/stat/mkdirat.c"
+	"$XNU/src/xnu_syscall/bsd/impl/stat/rmdir.c"
+	"$XNU/src/xnu_syscall/bsd/impl/unistd/renameat.c"
+	"$XNU/src/xnu_syscall/bsd/impl/unistd/unlinkat.c"
+	"$XNU/src/xnu_syscall/bsd/impl/fcntl/openat.c"
+	"$XNU/src/xnu_syscall/bsd/impl/unistd/dup.c"
+	"$XNU/src/xnu_syscall/bsd/impl/unistd/lseek.c"
+	"$XNU/src/conversion/fcntl/open.c"
 	"$XNU/src/xnu_syscall/bsd/impl/network/bind.c"
 )
 
@@ -228,6 +275,7 @@ fi
 
 gcc -Wall -Wno-format-truncation -Wno-unused-function \
     -DEUNION \
+    -DEFAULT=14 \
     -DEUNION_LIBEXEC_PATH="\"$WORK/libexec\"" \
     "${include_dirs[@]}" \
     -o "$WORK/runner" "${sources[@]}"

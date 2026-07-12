@@ -1950,7 +1950,9 @@ class DarlingTest(WestCommand):
             if retained is not None:
                 self.err(f"preserved failed {label_prefix} runtime evidence: {retained}")
 
-    def _bad_revision(self, patch) -> str:
+    def _bad_revision(self, patch, proof=None) -> str:
+        if isinstance(proof, dict) and proof.get("source-revision"):
+            return str(proof["source-revision"])
         if patch.get("source-base"):
             return patch["source-base"]
         source_commit = patch.get("source-commit")
@@ -4393,7 +4395,7 @@ class DarlingTest(WestCommand):
             if script_path is not None and not script_path.is_file():
                 self.die(f"{patch['path']}: test script not found: {script_path}")
 
-            bad_revision = self._bad_revision(patch)
+            bad_revision = self._bad_revision(patch, proof)
             with self._runtime_source_materializer().bad_source_tree(
                 module, bad_revision
             ) as worktree:

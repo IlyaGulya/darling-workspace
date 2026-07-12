@@ -76,6 +76,36 @@ for invalid_artifact, expected in (
     errors = metadata_command._validate_test_metadata(runtime_patch(invalid_artifact))
     assert any(expected in error for error in errors), errors
 
+source_revision_patch = {
+    "module": "darling/src/external/xnu",
+    "tests": [
+        {
+            "name": "source_revision_contract",
+            "runs": "host",
+            "runner": "source-contract-script",
+            "script": "tests/source_revision_contract.sh",
+            "red": True,
+            "red-proof": {
+                "mode": "source-base",
+                "source-env": "XNU_SRC_ROOT",
+                "source-revision": "deadbeef",
+            },
+        }
+    ],
+}
+source_revision_errors = metadata_command._validate_test_metadata(source_revision_patch)
+assert source_revision_errors == [], source_revision_errors
+for invalid_proof, expected in (
+    ({"mode": "self", "source-revision": "deadbeef"}, "requires mode: source-base"),
+    ({"mode": "source-base", "source-revision": ""}, "non-empty revision"),
+):
+    invalid_patch = {
+        **source_revision_patch,
+        "tests": [{**source_revision_patch["tests"][0], "red-proof": invalid_proof}],
+    }
+    errors = metadata_command._validate_test_metadata(invalid_patch)
+    assert any(expected in error for error in errors), errors
+
 
 def git(repo: Path, *args: str) -> None:
     subprocess.run(["git", *args], cwd=repo, check=True, stdout=subprocess.DEVNULL)

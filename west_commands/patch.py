@@ -845,8 +845,18 @@ class DarlingPatch(WestCommand):
                 errors.append(f"tests[{index}] requires-profile must be a string")
             if test.get("red") and test.get("red-proof") is None:
                 errors.append(f"tests[{index}] red test needs red-proof")
+            proof = test.get("red-proof")
+            if isinstance(proof, dict) and proof.get("source-revision") is not None:
+                source_revision = proof.get("source-revision")
+                if proof.get("mode") != "source-base":
+                    errors.append(
+                        f"tests[{index}] red-proof source-revision requires mode: source-base"
+                    )
+                elif not isinstance(source_revision, str) or not source_revision.strip():
+                    errors.append(
+                        f"tests[{index}] red-proof source-revision must be a non-empty revision"
+                    )
             if test.get("red-proof") is not None:
-                proof = test.get("red-proof")
                 if not isinstance(proof, dict):
                     errors.append(f"tests[{index}] red-proof must be a mapping")
                 elif proof.get("mode") not in {"self", "source-base", "guest-runtime-deploy"}:

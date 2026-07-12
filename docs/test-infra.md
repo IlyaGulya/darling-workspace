@@ -427,6 +427,15 @@ Plain `runner: script` remains an escape hatch for tests with special process,
 trace, or runtime orchestration. New source-base shell contracts should use
 `source-contract-script` or `source-profile-script` instead of generic `script`.
 
+When the patch parent in `source-base` cannot build the fixture because the
+patch introduces the API under test, a source-base proof may set
+`red-proof.source-revision` to an immutable earlier implementation commit in
+the same source repository. `west test --prove-red` uses that revision only for
+the RED arm; `source-base` remains the patch's real parent for patch ordering
+and integration. This lets RED exercise the old behavior instead of merely
+proving that a new symbol is absent. The revision must be reviewable and local
+to the module; do not use a floating branch name.
+
 Use `runner: self-contract-script` for host scripts whose RED proof is fully
 self-contained in the test itself: the script runs an explicit bad/model arm and
 requires it to fail, then runs the fixed/current arm and requires it to pass.

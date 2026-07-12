@@ -441,7 +441,7 @@ class RuntimeSourceMaterializer:
         current_minus_patch = proof.get("bad-profile") == "current-minus-patch"
         if omit_patch and not current_minus_patch:
             self._host.die(f"{patch['path']}: only current-minus-patch runtime proofs are supported")
-        bad_revision = self._host._bad_revision(patch) if omit_patch else None
+        bad_revision = self._host._bad_revision(patch, proof) if omit_patch else None
         added: list[tuple[Path, Path]] = []
         owns_root = root is None
         temp = Path(tempfile.mkdtemp(prefix="west-red-proof-source-")) if owns_root else root
