@@ -501,6 +501,14 @@ def _repair_tmp_dirs(prefix: Path, result: PrefixRepairResult, *, check: bool) -
         result.changed.append(f"created {rel} with mode 1777")
 
 
+def repair_prefix_boot_prerequisites(prefix: Path) -> PrefixRepairResult:
+    """Provision only the directories required before a rootless boot."""
+
+    result = PrefixRepairResult()
+    _repair_tmp_dirs(prefix, result, check=False)
+    return result
+
+
 def _repair_clt_for_root(
     root_name: str,
     root: Path,
@@ -596,7 +604,9 @@ def repair_prefix_prerequisites(
 ) -> PrefixRepairResult:
     result = PrefixRepairResult()
     _repair_stale_init_pid(prefix, result, check=check)
-    _repair_tmp_dirs(prefix, result, check=check)
+    result.extend(repair_prefix_boot_prerequisites(prefix) if not check else PrefixRepairResult())
+    if check:
+        _repair_tmp_dirs(prefix, result, check=True)
     for root_name, root in prefix_roots(prefix):
         fallback_root = prefix if root != prefix else None
         _repair_clt_for_root(root_name, root, result, check=check, fallback_root=fallback_root)

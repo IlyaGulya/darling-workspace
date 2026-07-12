@@ -431,6 +431,10 @@ with tempfile.TemporaryDirectory() as temp:
 
     test._prefix_resource_context = prefix_context
     test._runtime_profile_deployment_context = deployment_context
+    original_repair = test_module.repair_prefix_boot_prerequisites
+    test_module.repair_prefix_boot_prerequisites = lambda _prefix: (
+        events.append("provision") or types.SimpleNamespace(success=True, changed=[], problems=[])
+    )
     original_run_guest_shell = test_module.run_guest_shell
     original_run_bounded = test_module.run_bounded
     test_module.run_guest_shell = lambda *_args, **kwargs: (
@@ -442,9 +446,10 @@ with tempfile.TemporaryDirectory() as temp:
     try:
         test._bootstrap_runtime_profile("homebrew-prefix-baseline")
     finally:
+        test_module.repair_prefix_boot_prerequisites = original_repair
         test_module.run_guest_shell = original_run_guest_shell
         test_module.run_bounded = original_run_bounded
-    assert events == ["lock", "deploy", "smoke", "retain", "cleanup"], events
+    assert events == ["lock", "deploy", "provision", "smoke", "retain", "cleanup"], events
 
 
 with tempfile.TemporaryDirectory() as temp:
@@ -534,6 +539,8 @@ with tempfile.TemporaryDirectory() as temp:
     assert (trace_dir / "darlingserver-rpc.log").read_text() == "rpc.recv number=1 name=mldr_path\n"
     assert messages == [
         f"prefix bootstrap stack sample: {trace_dir}",
+        "prefix bootstrap provision: created private/var/tmp with mode 1777",
+        "prefix bootstrap provision: created libexec/darling/private/var/tmp with mode 1777",
         f"prefix bootstrap server trace: {trace_dir / 'darlingserver-rpc.log'}",
     ], messages
 
