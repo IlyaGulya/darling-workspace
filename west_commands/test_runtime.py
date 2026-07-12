@@ -47,6 +47,14 @@ _MACHO_MAGICS = frozenset(
         b"\xbf\xba\xfe\xca",
     }
 )
+_MACHO_FAT_MAGICS = frozenset(
+    {
+        b"\xca\xfe\xba\xbe",
+        b"\xbe\xba\xfe\xca",
+        b"\xca\xfe\xba\xbf",
+        b"\xbf\xba\xfe\xca",
+    }
+)
 _CMAKE_DEFINE_NAME = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 _RUNTIME_CMAKE_DEFINE_RESERVED = frozenset(
     {"CMAKE_BUILD_TYPE", "CMAKE_INSTALL_PREFIX", "DARLING_PATCH_PROFILE"}
@@ -113,6 +121,16 @@ def is_macho_binary(path: Path) -> bool:
     try:
         with path.open("rb") as handle:
             return handle.read(4) in _MACHO_MAGICS
+    except OSError:
+        return False
+
+
+def is_fat_macho_binary(path: Path) -> bool:
+    """Return whether *path* is a universal Mach-O product."""
+
+    try:
+        with path.open("rb") as handle:
+            return handle.read(4) in _MACHO_FAT_MAGICS
     except OSError:
         return False
 

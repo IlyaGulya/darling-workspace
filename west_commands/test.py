@@ -93,6 +93,7 @@ from source_worktree import SourceWorktreeError, prepare_source_worktree
 from test_runtime import (
     compose_ctest_runtime_profiles,
     describe_runtime_deploy_plan,
+    is_fat_macho_binary,
     is_macho_binary,
     load_rootless_bootstrap_manifest,
     load_ctest_runtime_profiles,
@@ -4114,7 +4115,7 @@ class DarlingTest(WestCommand):
 
     def _runtime_macho_dylib_providers(self, build_root: Path) -> dict[str, Path]:
         providers: dict[str, Path] = {}
-        for path in build_root.rglob("*.dylib"):
+        for path in build_root.rglob("*"):
             if not path.is_file() or "CMakeFiles" in path.parts:
                 continue
             # These are deliberately intermediate circular-link products, not
@@ -4125,11 +4126,14 @@ class DarlingTest(WestCommand):
                 self._runtime_macho_inspect(path, "--dylib-id")
             )
             if install_name is None:
-                self.die(
-                    f"guest-runtime-deploy built dylib has no Mach-O install name: {path}"
-                )
+                continue
             existing = providers.get(install_name)
             if existing is not None and existing != path:
+                if is_fat_macho_binary(path) and not is_fat_macho_binary(existing):
+                    providers[install_name] = path
+                    continue
+                if is_fat_macho_binary(existing) and not is_fat_macho_binary(path):
+                    continue
                 self.die(
                     "guest-runtime-deploy found multiple built providers for "
                     f"{install_name}: {existing}, {path}"
