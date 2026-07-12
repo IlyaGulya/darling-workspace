@@ -18,6 +18,7 @@ from typing import Any, Iterator
 
 from source_worktree import SourceWorktreeError, prepare_source_worktree
 from test_results import RuntimeRedProven
+from test_runtime_evidence import RuntimeEvidenceSession
 from test_worktrees import remove_temporary_worktree
 
 
@@ -281,7 +282,13 @@ class RuntimeSourceMaterializer:
 
     @contextmanager
     def guest_runtime_source_forest(
-        self, patch: dict, proof: dict, *, omit_patch: bool
+        self,
+        patch: dict,
+        proof: dict,
+        *,
+        omit_patch: bool,
+        root: Path | None = None,
+        evidence_session: RuntimeEvidenceSession | None = None,
     ) -> Iterator[Path]:
         """Create a coherent, disposable Darling source forest for one runtime build."""
 
@@ -301,13 +308,14 @@ class RuntimeSourceMaterializer:
             self._host.die(f"{patch['path']}: only current-minus-patch runtime proofs are supported")
         bad_revision = self._host._bad_revision(patch) if omit_patch else None
         added: list[tuple[Path, Path]] = []
-        temp = tempfile.mkdtemp(prefix="west-red-proof-source-")
+        owns_root = root is None
+        temp = Path(tempfile.mkdtemp(prefix="west-red-proof-source-")) if owns_root else root
+        temp.mkdir(parents=True, exist_ok=True)
         yielded = False
         keep_on_failure = False
         source_started = time.monotonic()
         try:
-            root = Path(temp)
-            source_root = root / "darling"
+            source_root = temp / "darling"
             darling_ref = bad_revision if omit_patch and patch_module_is_darling_root else self._host._manifest_revision("darling")
             bad_text = "current-minus-patch" if omit_patch else "profile-current"
             self._host.inf(f"  runtime source forest: {patch_module_path}={bad_text} under {source_root}")
@@ -387,10 +395,16 @@ class RuntimeSourceMaterializer:
             raise
         except BaseException:
             keep_on_failure = True
-            suffix = " before yield" if not yielded else ""
-            self._host.err(f"preserving failed runtime source forest{suffix} for inspection: {temp}")
+            if evidence_session is not None:
+                evidence_session.record_worktrees(added)
+            elif owns_root:
+                suffix = " before yield" if not yielded else ""
+                self._host.err(f"preserving failed runtime source forest{suffix} for inspection: {temp}")
             raise
         finally:
+            if evidence_session is not None and evidence_session.retention_requested:
+                keep_on_failure = True
+                evidence_session.record_worktrees(added)
             if not keep_on_failure:
                 for repo, target in reversed(added):
                     subprocess.run(
@@ -400,4 +414,5 @@ class RuntimeSourceMaterializer:
                         stdout=subprocess.DEVNULL,
                         stderr=subprocess.DEVNULL,
                     )
-                shutil.rmtree(temp, ignore_errors=True)
+                if owns_root:
+                    shutil.rmtree(temp, ignore_errors=True)

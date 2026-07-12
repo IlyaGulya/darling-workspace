@@ -15,3 +15,4 @@ workspace.env
 __pycache__/
 *.py[co]
 testkit/build/
+.west-test/

@@ -760,6 +760,14 @@ without deletion. Verified: a 77M scratch dir with an
 nor Wine offers, and the reason `west test` exists rather than bare
 `ninja test` — but it is metered, not free.
 
+A failed runtime source/build is not ordinary scratch. It is retained as one
+manifested unit under `.west-test/runtime-evidence`, with its source tree,
+build directory, failure reason, provider context and owned Git worktrees.
+Ordinary `west test --gc` never deletes those units. Removal is deliberate:
+`west test --gc --gc-runtime-evidence` applies the configured proof-scratch
+age/count policy and first removes only the worktrees listed by that unit's
+manifest. A path is reported as preserved only after this manifest exists.
+
 ### Orchestrator — `west test` (`west_commands/test.py`)
 
 Sits beside `dw`/`patch`/`pr` in the existing control plane:

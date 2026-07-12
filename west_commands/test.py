@@ -90,6 +90,7 @@ from test_prefix import (
 from test_resources import resource_context
 from test_results import InvocationResult, RuntimeBuildFailure, RuntimeRedProven
 from test_runtime_build import RuntimeBuildService
+from test_runtime_evidence import RuntimeEvidenceStore
 from test_runtime_source import RuntimeSourceMaterializer
 from test_selection import select_metadata_tests
 from test_runtime import (
@@ -455,6 +456,18 @@ class DarlingTest(WestCommand):
             f"deploy-proof scratch plus guest runner output (default {tempfile.gettempdir()})",
         )
         parser.add_argument(
+            "--runtime-evidence-root",
+            metavar="DIR",
+            default=".west-test/runtime-evidence",
+            help="durable root for failed runtime source/build evidence units "
+            "(default .west-test/runtime-evidence)",
+        )
+        parser.add_argument(
+            "--gc-runtime-evidence",
+            action="store_true",
+            help="with --gc, explicitly prune durable runtime evidence units using the proof scratch age/count limits",
+        )
+        parser.add_argument(
             "--proof-scratch-max-age-hours",
             type=float,
             default=24.0,
@@ -476,6 +489,22 @@ class DarlingTest(WestCommand):
 
     def _testkit_dir(self) -> Path:
         return Path(self.manifest.repo_abspath) / "testkit"
+
+    def _runtime_evidence_store(self) -> RuntimeEvidenceStore:
+        configured = getattr(self, "_runtime_evidence_root", None)
+        manifest = getattr(self, "manifest", None)
+        default_workspace = getattr(self, "topdir", Path.cwd())
+        workspace = Path(
+            getattr(manifest, "repo_abspath", default_workspace)
+        )
+        root = (
+            Path(configured)
+            if configured
+            else workspace / ".west-test/runtime-evidence"
+        )
+        if not root.is_absolute():
+            root = workspace / root
+        return RuntimeEvidenceStore(root)
 
     def _require_runtime_scratch_space(self, deployment_name: str) -> None:
         configured_minimum = os.environ.get("WEST_RUNTIME_MIN_FREE_BYTES", str(8 * 1024**3))
@@ -1956,13 +1985,22 @@ class DarlingTest(WestCommand):
         self._preflight_runtime_profile_stack(
             source_profile, f"{label_prefix} profile {profile_name}"
         )
-        scratch = tempfile.mkdtemp(prefix=f"west-runtime-{profile_name}-")
-        keep_on_failure = False
+        evidence_store = self._runtime_evidence_store()
+        evidence = evidence_store.start(
+            f"{label_prefix} runtime profile {profile_name}",
+            {"provider": profile_name, "source-profile": source_profile},
+        )
+        scratch = evidence.directory
+        evidence_failure = None
         self._active_profile = source_profile
         try:
             self.inf(f"{label_prefix} runtime profile: {profile_name} ({source_profile})")
             with self._guest_runtime_source_forest(
-                anchor, proof, omit_patch=omit_patch
+                anchor,
+                proof,
+                omit_patch=omit_patch,
+                root=evidence.source_root,
+                evidence_session=evidence,
             ) as source_root:
                 build_root = self._runtime_red_build_artifacts(
                     source_root,
@@ -2024,14 +2062,14 @@ class DarlingTest(WestCommand):
                         env=runtime_env,
                         diagnostic_trace_paths=diagnostic_trace_paths,
                     )
-        except BaseException:
-            keep_on_failure = True
-            self.err(f"preserving failed {label_prefix} runtime scratch for inspection: {scratch}")
+        except BaseException as error:
+            evidence_failure = error
             raise
         finally:
             self._active_profile = previous_profile
-            if not keep_on_failure:
-                shutil.rmtree(scratch, ignore_errors=True)
+            retained = evidence_store.finish(evidence, evidence_failure)
+            if retained is not None:
+                self.err(f"preserved failed {label_prefix} runtime evidence: {retained}")
 
     def _bad_revision(self, patch) -> str:
         if patch.get("source-base"):
@@ -5191,6 +5229,9 @@ class DarlingTest(WestCommand):
         self._prefix = self._resolve_prefix(args)
         self._executor = self._resolve_executor(args.executor)
         self._bundle_root = str(Path(args.bundle_root).expanduser())
+        self._runtime_evidence_root = Path(
+            getattr(args, "runtime_evidence_root", ".west-test/runtime-evidence")
+        ).expanduser()
         self._materialize_profile = args.materialize_profile
         self._keep_prefix_running = args.keep_prefix_running
         self._bootstrap_syscall_trace = None
@@ -5232,7 +5273,20 @@ class DarlingTest(WestCommand):
                 args.proof_scratch_max_age_hours,
                 dry_run=args.dry_run,
             )
+            if getattr(args, "gc_runtime_evidence", False):
+                evidence_store = self._runtime_evidence_store()
+                entries = evidence_store.gc(
+                    max_age_hours=args.proof_scratch_max_age_hours,
+                    keep_last=args.proof_scratch_keep_last,
+                    dry_run=args.dry_run,
+                )
+                verb = "would prune" if args.dry_run else "pruned"
+                for entry in entries:
+                    self.inf(f"{verb} runtime evidence: {entry}")
             return
+
+        if getattr(args, "gc_runtime_evidence", False):
+            self.die("--gc-runtime-evidence requires --gc")
 
         if args.red_audit:
             profile = args.profile or "homebrew"
