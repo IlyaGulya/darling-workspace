@@ -118,7 +118,6 @@ if(EXISTS "${_abort_with_payload_guest}")
     ENVS       darling
     BEAD       dar-cps
     SUBMODULES xnu
-    RUNTIME_PROFILE homebrew
     TIMEOUT    30
     OK_MARKER  "GREEN: abort_with_payload stayed local to the child; parent survived"
   )
@@ -143,7 +142,6 @@ if(EXISTS "${_select_fdset_guest}")
     ENVS       darling
     BEAD       dar-q95.3
     SUBMODULES xnu
-    RUNTIME_PROFILE homebrew
     TIMEOUT    30
     OK_MARKER  "SELECT_FDSET_GUEST_OK"
   )
@@ -167,7 +165,6 @@ if(EXISTS "${_getattrlist_name_objtype_guest}")
     ENVS       darling
     BEAD       dar-e1j
     SUBMODULES xnu
-    RUNTIME_PROFILE homebrew
     TIMEOUT    30
     OK_MARKER  "GETATTRLIST_NAME_OBJTYPE_GUEST_OK"
   )
@@ -184,7 +181,6 @@ if(EXISTS "${_darwin_priority_guest}")
     ENVS       darling
     BEAD       dar-q95.10
     SUBMODULES xnu
-    RUNTIME_PROFILE homebrew
     TIMEOUT    30
     OK_MARKER  "DARWIN_PRIORITY_GUEST_OK"
   )
@@ -198,7 +194,6 @@ if(EXISTS "${_socket_siocgifconf_guest}")
     ENVS       darling
     BEAD       dar-q95.11
     SUBMODULES xnu
-    RUNTIME_PROFILE homebrew
     TIMEOUT    30
     OK_MARKER  "SOCKET_SIOCGIFCONF_GUEST_OK"
   )
@@ -243,7 +238,6 @@ foreach(_case IN LISTS _simple_xnu_guest_cases)
       ENVS       darling
       BEAD       "${_case_bead}"
       SUBMODULES xnu
-      RUNTIME_PROFILE homebrew
       TIMEOUT    30
       OK_MARKER  "${_case_marker}"
     )

@@ -59,7 +59,8 @@ quality_contract_output=/tmp/west-quality-contract.out
 invalid_guest_red_output=/tmp/west-test-invalid-guest-red-proof.out
 guest_runtime_red_output=/tmp/west-test-guest-runtime-red-proof.out
 source_profile_patch_scratch=
-trap 'rm -rf "$tmp_profile" "$tmp_source_profile" "$tmp_invalid_profile" "$tmp_runtime_red_profile" "$guest_prefix" "$source_script_marker" "$quality_contract_output" "$invalid_guest_red_output" "$guest_runtime_red_output" "$source_profile_patch_scratch"' EXIT
+temp_worktree_baseline=
+trap 'rm -rf "$tmp_profile" "$tmp_source_profile" "$tmp_invalid_profile" "$tmp_runtime_red_profile" "$guest_prefix" "$source_script_marker" "$quality_contract_output" "$invalid_guest_red_output" "$guest_runtime_red_output" "$source_profile_patch_scratch" "$temp_worktree_baseline"' EXIT
 mkdir -p "$tmp_profile" "$tmp_source_profile" "$tmp_invalid_profile" "$tmp_runtime_red_profile"
 mkdir -p "$tmp_source_profile/test"
 source_profile_patch_scratch="$(mktemp -d)"
@@ -760,20 +761,41 @@ branch_of() {
 	git -C "$1" branch --show-current
 }
 
-assert_no_temp_worktrees() {
-	local repo_path
+snapshot_temp_worktrees() {
+	local output=$1 repo_path
+	: >"$output"
 	for repo_path in \
 		../darling \
 		../darling/src/external/darlingserver \
 		../darling/src/external/libpthread \
 		../darling/src/external/xnu
 	do
-		if git -C "$repo_path" worktree list --porcelain |
-			grep -Eq 'west-profile-|west-red-proof-'; then
-			fail "temporary worktree leaked for $repo_path"
-		fi
+		git -C "$repo_path" worktree list --porcelain |
+			awk -v repo_path="$repo_path" '
+				$1 == "worktree" && $2 ~ /(west-profile-|west-red-proof-)/ {
+					print repo_path ":" $2
+				}
+			' >>"$output"
 	done
+	sort -u -o "$output" "$output"
 }
+
+assert_no_temp_worktrees() {
+	local current
+	current="$(mktemp)"
+	snapshot_temp_worktrees "$current"
+	if ! diff -u "$temp_worktree_baseline" "$current"; then
+		rm -f "$current"
+		fail 'temporary worktree leaked by metadata contract'
+	fi
+	rm -f "$current"
+}
+
+# Retained runtime evidence belongs to its own registry and can predate this
+# contract. This test owns only worktrees it creates, so compare against an
+# initial snapshot instead of treating unrelated retained evidence as a leak.
+temp_worktree_baseline="$(mktemp)"
+snapshot_temp_worktrees "$temp_worktree_baseline"
 
 guarded="$(
 	west test --profile homebrew \
