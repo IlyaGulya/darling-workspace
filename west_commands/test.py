@@ -86,6 +86,7 @@ from test_prefix import (
 )
 from test_resources import resource_context
 from test_runtime_proof import ProofObservation, RedOracle, RuntimeProofStateMachine
+from test_runtime_deploy import RuntimeDeploymentService
 from test_results import InvocationResult, RuntimeBuildFailure, RuntimeRedProven
 from test_runtime_build import RuntimeBuildService
 from test_runtime_evidence import RuntimeEvidenceStore
@@ -3717,62 +3718,13 @@ class DarlingTest(WestCommand):
 
 
     def _runtime_macho_inspect(self, path: Path, flag: str) -> str:
-        command = ["llvm-objdump", "--macho", flag, str(path)]
-        try:
-            result = subprocess.run(
-                command,
-                check=False,
-                capture_output=True,
-                text=True,
-            )
-        except FileNotFoundError:
-            self.die(
-                "guest-runtime-deploy rootless bootstrap closure requires llvm-objdump"
-            )
-        if result.returncode:
-            detail = result.stderr.strip() or result.stdout.strip()
-            self.die(
-                f"guest-runtime-deploy could not inspect Mach-O {path}: "
-                f"{detail or f'rc {result.returncode}'}"
-            )
-        return result.stdout
+        return RuntimeDeploymentService(self).macho_inspect(path, flag)
 
     def _runtime_macho_dependencies(self, path: Path) -> list[str]:
-        if not is_macho_binary(path):
-            return []
-        return parse_macho_dylib_dependencies(
-            self._runtime_macho_inspect(path, "--dylibs-used")
-        )
+        return RuntimeDeploymentService(self).macho_dependencies(path)
 
     def _runtime_macho_dylib_providers(self, build_root: Path) -> dict[str, Path]:
-        candidates: dict[str, list[Path]] = {}
-        for path in build_root.rglob("*"):
-            if not path.is_file() or "CMakeFiles" in path.parts:
-                continue
-            # These are deliberately intermediate circular-link products, not
-            # deployable guest runtime libraries.
-            if path.name.endswith("_firstpass.dylib") or not is_macho_binary(path):
-                continue
-            install_name = parse_macho_dylib_id(
-                self._runtime_macho_inspect(path, "--dylib-id")
-            )
-            if install_name is None:
-                continue
-            candidates.setdefault(install_name, []).append(path)
-
-        providers: dict[str, Path] = {}
-        for install_name, paths in candidates.items():
-            universal = [path for path in paths if is_fat_macho_binary(path)]
-            if len(universal) == 1:
-                providers[install_name] = universal[0]
-                continue
-            if len(universal) > 1 or len(paths) > 1:
-                self.die(
-                    "guest-runtime-deploy found multiple built providers for "
-                    f"{install_name}: {', '.join(str(path) for path in paths)}"
-                )
-            providers[install_name] = paths[0]
-        return providers
+        return RuntimeDeploymentService(self).macho_dylib_providers(build_root)
 
     def _runtime_rootless_bootstrap_closure(
         self,
@@ -3780,35 +3732,9 @@ class DarlingTest(WestCommand):
         build_root: Path,
         explicit_deployments: dict[str, Path],
     ) -> dict[str, Path]:
-        resources = {
-            artifact.get("resource")
-            for artifact in proof.get("runtime-artifacts", [])
-            if isinstance(artifact, dict)
-        }
-        if ROOTLESS_BOOTSTRAP_RESOURCE not in resources:
-            return {}
-        roots = {
-            "/" + deploy_path: source
-            for deploy_path, source in explicit_deployments.items()
-            if is_macho_binary(source)
-        }
-        if not roots:
-            self.die(
-                "guest-runtime-deploy rootless bootstrap closure has no Mach-O roots"
-            )
-        try:
-            closure = resolve_macho_runtime_closure(
-                roots,
-                self._runtime_macho_dylib_providers(build_root),
-                self._runtime_macho_dependencies,
-            )
-        except ValueError as exc:
-            self.die(f"guest-runtime-deploy {exc}")
-        return {
-            guest_path.removeprefix("/"): source
-            for guest_path, source in closure.items()
-            if guest_path.removeprefix("/") not in explicit_deployments
-        }
+        return RuntimeDeploymentService(self).rootless_bootstrap_closure(
+            proof, build_root, explicit_deployments
+        )
 
     def _runtime_red_deploy_targets(self, prefix: Path, deploy_path: str) -> list[Path]:
         try:
@@ -3817,22 +3743,8 @@ class DarlingTest(WestCommand):
             self.die(f"guest-runtime-deploy deploy path must be relative: {deploy_path}")
 
     def _runtime_replace_file(self, src: Path, dst: Path) -> None:
-        dst.parent.mkdir(parents=True, exist_ok=True)
-        with tempfile.NamedTemporaryFile(
-            prefix=f".{dst.name}.west-deploy-",
-            dir=dst.parent,
-            delete=False,
-        ) as handle:
-            temp_path = Path(handle.name)
-        try:
-            shutil.copy2(src, temp_path)
-            os.replace(temp_path, dst)
-        except Exception:
-            try:
-                temp_path.unlink()
-            except FileNotFoundError:
-                pass
-            raise
+        from deploy_transaction import DeploymentTransaction
+        DeploymentTransaction._replace_file(src, dst)
 
     @contextmanager
     def _runtime_red_deployed_artifacts(
@@ -3844,84 +3756,14 @@ class DarlingTest(WestCommand):
         label: str = "RED",
         restore_deployment: bool = True,
     ):
-        backups: list[tuple[Path, Path | None]] = []
-        deployment_succeeded = False
-        deploy_started = time.monotonic()
-        self.inf(f"  runtime phase start: {label} deploy")
-        with tempfile.TemporaryDirectory(prefix="west-red-proof-deploy-") as temp:
-            backup_root = Path(temp)
-            if not self._shutdown_runtime_prefix(prefix):
-                self.die(f"guest-runtime-deploy could not stop Darling prefix before deploy: {prefix}")
-            try:
-                deployments: dict[str, Path] = {}
-                for artifact in proof.get("runtime-artifacts", []):
-                    for deploy_path in runtime_artifact_deploy_paths(artifact):
-                        if deploy_path in deployments:
-                            self.die(
-                                "guest-runtime-deploy has duplicate explicit deploy path: "
-                                f"{deploy_path}"
-                            )
-                        deployments[deploy_path] = self._runtime_red_find_build_output(
-                            build_root, deploy_path
-                        )
-                resources = {
-                    artifact.get("resource")
-                    for artifact in proof.get("runtime-artifacts", [])
-                    if isinstance(artifact, dict)
-                }
-                if ROOTLESS_BOOTSTRAP_RESOURCE in resources:
-                    try:
-                        bootstrap_deployments = load_rootless_bootstrap_manifest(build_root)
-                    except ValueError as exc:
-                        self.die(f"guest-runtime-deploy {exc}")
-                    conflicts = set(deployments).intersection(bootstrap_deployments)
-                    if conflicts:
-                        self.die(
-                            "guest-runtime-deploy rootless bootstrap manifest conflicts "
-                            "with explicit deploy path(s): " + ", ".join(sorted(conflicts))
-                        )
-                    deployments.update(bootstrap_deployments)
-                closure = self._runtime_rootless_bootstrap_closure(
-                    proof, build_root, deployments
-                )
-                conflicts = set(deployments).intersection(closure)
-                if conflicts:
-                    self.die(
-                        "guest-runtime-deploy rootless bootstrap closure conflicts with "
-                        "entrypoint path(s): " + ", ".join(sorted(conflicts))
-                    )
-                deployments.update(closure)
-                for deploy_path, src in deployments.items():
-                    for dst in self._runtime_red_deploy_targets(prefix, deploy_path):
-                            backup = None
-                            if dst.exists():
-                                backup = backup_root / str(len(backups))
-                                backup.parent.mkdir(parents=True, exist_ok=True)
-                                shutil.copy2(dst, backup)
-                            backups.append((dst, backup))
-                            self._runtime_replace_file(src, dst)
-                            self.inf(f"  {label} deploy: {src} -> {dst}")
-                self.inf(
-                    f"  runtime phase complete: {label} deploy "
-                    f"({time.monotonic() - deploy_started:.1f}s)"
-                )
-                yield
-                deployment_succeeded = True
-            finally:
-                if not self._shutdown_runtime_prefix(prefix):
-                    self.err(f"guest-runtime-deploy could not stop Darling prefix before restore: {prefix}")
-                if restore_deployment or not deployment_succeeded:
-                    for dst, backup in reversed(backups):
-                        if backup is None:
-                            try:
-                                dst.unlink()
-                            except FileNotFoundError:
-                                pass
-                        else:
-                            self._runtime_replace_file(backup, dst)
-                elif backups:
-                    self.inf(f"  {label} deployment retained after successful smoke")
-                self._shutdown_runtime_prefix(prefix)
+        with RuntimeDeploymentService(self).deployed(
+            proof,
+            build_root,
+            prefix,
+            label=label,
+            restore_deployment=restore_deployment,
+        ):
+            yield
 
     def _bootstrap_runtime_profile(
         self, profile_name: str, *, executable: str | None = None
