@@ -23,10 +23,10 @@ Fixed by this audit:
 - Added `red-proof.source-modules: [darling/src/external/darlingserver]` to the remaining XNU `system_kernel` runtime proofs that lacked it:
   - `xnu/select-pselect-fdset.patch`
   - `xnu/fork-wait-timeout-parent.patch`
-  - `xnu/eunion-24-mkdir-upper-create.patch`
+  - `xnu/eunion-hardening.patch` (the former mkdir-upper-create slice)
 - Removed unrelated dyld runtime artifacts from non-dyld proofs:
   - `xnu/psynch-cvsignal-args.patch`
-  - `xnu/eunion-24-mkdir-upper-create.patch`
+  - `xnu/eunion-hardening.patch` (the former mkdir-upper-create slice)
 - Documented the runtime source-forest rule in `AGENTS.md` and `docs/test-infra.md`.
 - Added `runner: source-contract-script` for workspace-hosted shell contracts
   that execute fixed test assets against a source tree selected by
@@ -76,7 +76,7 @@ Current automated result:
 - `west patch check --profile homebrew --quality --strict-quality`: no quality warnings
 - `west patch check --profile arch --quality --strict-quality`: no quality warnings
 - `tests/run-west-test-metadata-contract.sh`: includes a synthetic bad profile proving `--strict-quality` rejects an XNU runtime proof that omits materialized darlingserver, a `source-contract-script` probe proving the runner receives `source-env`, and a real `source-profile-script` RED/GREEN proof where the profile-owned script is absent from the live checkout.
-- Focused E-UNION proof: `west test --profile homebrew --patch xnu/eunion-1-resolve.patch --prove-red` fails on the bad XNU source tree, then passes the GREEN materialized E-UNION suite (`228 tests, 0 failed`).
+- Focused E-UNION proof: `west test --profile homebrew --patch xnu/eunion-core.patch --prove-red` fails on the bad XNU source tree, then passes the GREEN materialized E-UNION suite (`228 tests, 0 failed`).
 - `west test --profile arch --env host`: passes after the arch source-script
   migration and shebang fix.
 
