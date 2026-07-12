@@ -1466,6 +1466,9 @@ with tempfile.TemporaryDirectory() as temp:
     test._check_guest_runtime_red_failure = (
         lambda _proof, _invocation, *, since, captured_output=None: True
     )
+    test._guest_runtime_red_output = (
+        lambda _invocation, *, since, captured_output=None: "old runtime symptom\n"
+    )
 
     patch = {"path": "xnu/example.patch", "module": "darling/src/external/xnu"}
     proof = {
