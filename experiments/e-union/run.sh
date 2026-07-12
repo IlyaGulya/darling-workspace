@@ -21,6 +21,7 @@ fi
 
 WORK="$(mktemp -d /tmp/eunion-tdd.XXXXXX)"
 trap 'rm -rf "$WORK"' EXIT
+NESTED_LOWER_ROOT="${EUNION_NESTED_LOWER_ROOT:-0}"
 
 # shim so <darling/emulation/linux_premigration/vchroot_expand.h> resolves
 mkdir -p "$WORK/shim/darling/emulation/linux_premigration"
@@ -206,6 +207,15 @@ sources=(
 	"$HERE/runner.c"
 	"$XNU/src/xnu_syscall/bsd/impl/network/bind.c"
 )
+
+# The rootless runtime keeps its immutable template beneath the writable
+# prefix. Exercise that layout on demand: it exposes host-to-guest path
+# conversion errors which sibling-layer fixtures cannot reach.
+if [ "$NESTED_LOWER_ROOT" = "1" ]; then
+    mkdir -p "$WORK/prefix/libexec"
+    mv "$WORK/libexec" "$WORK/prefix/libexec/darling"
+fi
+
 include_dirs=("-I$SRCDIR" "-I$WORK/shim" "-I$WORK/include")
 
 # The resolver extraction comes after the historical E-UNION patch under test.
