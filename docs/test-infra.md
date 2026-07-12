@@ -587,6 +587,15 @@ patch files. For stacked profiles, base profiles are applied first. The live
 checkout is not switched, and stale `integration/<profile>` branches are not
 trusted for test assets. List mode never materializes worktrees.
 
+For a bounded diagnostic A/B of a declared runtime provider, use
+`--runtime-cmake-define NAME=VALUE`. The override is applied only to the
+disposable runtime source/build/deploy transaction and is shown in its CMake
+configuration; the profile remains the owner of required artifacts, source
+modules, launcher environment, and cleanup. The option is for feature flags
+such as `DARLING_GUEST_RECVSPIN=0`, not for changing framework-owned build
+identity (`DARLING_PATCH_PROFILE`, install prefix, or build type). It must not
+be committed into a profile merely to make a diagnosis pass.
+
 Use `west patch check --quality` for low-noise structural audit warnings that
 are not basic schema validity. `--strict-quality` turns those warnings into a
 failing gate. Current checks intentionally focus on patterns that caused false
