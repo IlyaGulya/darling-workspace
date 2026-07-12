@@ -298,6 +298,12 @@
           "head": "d014d57080972464a2baabfa299cc6e85041dd0e",
           "upstream": "",
           "source_ref": "refs/heads/preupstream/master"
+        },
+        {
+          "branch": "repack/rootless-runtime-integration",
+          "head": "88a1b9b1260e58266e9b6b687831065271ec4b90",
+          "upstream": "",
+          "source_ref": "refs/heads/repack/rootless-runtime-integration"
         }
       ]
     },
@@ -646,6 +652,12 @@
           "head": "6c65f7dcd833f1761f3c115f90ad77528948b081",
           "upstream": "",
           "source_ref": "refs/heads/perf/shmem-ring-abi-validator"
+        },
+        {
+          "branch": "repack/rootless-runtime-integration",
+          "head": "aeb4e184d9ee31bff62812e54d8d44bc9ae70d65",
+          "upstream": "",
+          "source_ref": "refs/heads/repack/rootless-runtime-integration"
         },
         {
           "branch": "wip/z27x7-sigprocess-fold",

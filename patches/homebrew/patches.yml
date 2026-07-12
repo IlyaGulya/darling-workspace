@@ -4148,21 +4148,25 @@ patches:
       missing trace event fails at the run oracle rather than at fixture upload
       or compilation.
   sha256sum: de34ab48e5fa4de1017b633db8991885e0e9919ff92e689d13ca55b295b0c78d
-- path: darlingserver/eunion-runtime-prefix.patch
-  sha256sum: e32e0125b3521837389ddf3c6d5889becd9acba92f9d88d5e39c686181cf60b1
+- path: darlingserver/rootless-runtime-integration.patch
+  sha256sum: d09c826d178aa6e15c1cb6de39db73b88a931110302b85e309c65f71a1044170
   module: darling/src/external/darlingserver
-  source-branch: fix/eunion-runtime-prefix
+  source-branch: repack/rootless-runtime-integration
   source-base: 1ca29fe8e8c2c5f784522f9144809057918c4c36
-  source-commit: 6340d81f5470c928e96a55ac8da402a3504e5698
-  bead: dar-r7fc.4.1.1
+  source-commit: aeb4e184d9ee31bff62812e54d8d44bc9ae70d65
+  bead: dar-7zvt.3
   publication-status: blocked
-  publication-blocker: E-UNION proof-of-concept runtime provisioning; local route-2 no-overlay test path only until the E-UNION patchset is productized.
+  publication-blocker: Rootless runtime integration is a local architectural consolidation; publication remains blocked until the complete lifecycle stack passes its fresh-prefix guest audit.
+  test-exception:
+    reason: integration-runtime-provider
+    scope: The server startup and E-UNION runtime-prefix behavior are exercised by the rootless bootstrap provider together with the top-level launcher, mldr, XNU and dyld artifacts; a server-only minus-patch verdict is not meaningful.
   tests:
   - name: eunion_activation_guest_smoke
     kind: guest
     coverage-tier: runtime
     runs: guest
-    diag: bare
+    diag: guarded
+    runtime-profile: homebrew-rootless-no-mount
     runner: guest-c-fixture
     repo: darling-workspace
     script: tests/eunion_prefix_smoke_guest.c
@@ -4189,10 +4193,7 @@ patches:
     - guest-path: /private/var/tmp/west-eunion-smoke/shadow.txt
       contents: |
         UPPER_SHADOW
-    note: >-
-      Guest runtime smoke for active E-UNION provisioning: west boots the prefix,
-      then prepares lower-template and upper fixtures and verifies lower fallback,
-      upper-only visibility, and upper-over-lower shadowing through Darling.
+    note: Guest smoke for active E-UNION prefix provisioning through the integrated rootless server mode.
   github:
     fork:
       repo: IlyaGulya/darlingserver
@@ -4202,27 +4203,15 @@ patches:
       repo: darlinghq/darlingserver
       base: main
       state: local
-- path: darlingserver/rootless-no-mount-startup.patch
-  sha256sum: 8f8516361205483ca0aaad5629f1b1a934f86002736e834e65df70ecb279ead3
-  module: darling/src/external/darlingserver
-  source-branch: fix/rootless-no-mount-server-product
-  source-base: 6340d81f5470c928e96a55ac8da402a3504e5698
-  source-commit: 044364ee983828570e4b8d11cc5fcadf20d70524
-  bead: dar-test-infra-sp5.8.4.5
-  publication-status: blocked
-  publication-blocker: Runtime proof is local-only; no publication is requested.
-  test-exception:
-    reason: integration-runtime-provider
-    scope: The server startup change is exercised by the rootless_shellspawn_readiness runtime provider together with the launcher, mldr, XNU and dyld artifacts; its standalone server minus-patch outcome is not a meaningful guest verdict.
-- path: darling/rootless-no-mount-launch.patch
-  sha256sum: 61b0d0091e5a95b65b7cc7c7a9cc0041eaa6f76955d5ac942a0d9144890d2380
+- path: darling/rootless-runtime-integration.patch
+  sha256sum: 41511d905fd5d6649c44dccc35ebb50632aa9796939b91d541cd7c42e8cd1800
   module: darling
-  source-branch: fix/rootless-product-foundation
+  source-branch: repack/rootless-runtime-integration
   source-base: 492a00f4929e5aba60607d9fed3e868bc4a3aeba
-  source-commit: a0982ff79f673974c0d36ad042f26a06830ffce2
-  bead: dar-test-infra-sp5.8.4.6
+  source-commit: 88a1b9b1260e58266e9b6b687831065271ec4b90
+  bead: dar-7zvt.3
   publication-status: blocked
-  publication-blocker: Runtime proof is local-only; no publication is requested.
+  publication-blocker: Rootless runtime integration is a local architectural consolidation; publication remains blocked until the complete lifecycle stack passes its fresh-prefix guest audit.
   tests:
   - name: mldr_main_tsd_contract
     kind: contract
@@ -4248,7 +4237,57 @@ patches:
     - -Wall
     - -Wextra
     - -Werror
-    note: Executes the real mldr guest-TSD primitive; the colocated readiness and lifecycle runtime proofs cover its rootless integration.
+    note: Host contract for the real mldr guest-TSD primitive used by the rootless launch path.
+  - name: rootless_bootstrap_component
+    kind: guest
+    coverage-tier: runtime
+    runs: guest
+    diag: guarded
+    red: true
+    red-proof:
+      mode: guest-runtime-deploy
+      bad-profile: current-minus-patch
+      expect-failure-phase: build
+      expect-output-contains:
+      - unknown target 'rootless_bootstrap'
+      source-modules:
+      - darling
+      - darling/src/external/darlingserver
+      - darling/src/external/xnu
+      - darling/src/external/dyld
+      - darling/src/external/corefoundation
+      - darling/src/external/libsystem
+      cmake-defines:
+        DARLING_EUNION: true
+      runtime-artifacts:
+      - module: darling
+        build-targets:
+        - rootless_bootstrap
+        resource: rootless-bootstrap
+    runner: guest-runtime-script
+    repo: darling-workspace
+    script: tests/run-rootless-bootstrap-smoke.sh
+    ok-marker: WEST_ROOTLESS_BOOTSTRAP_OK
+    timeout-seconds: 60
+    requires:
+    - darling-prefix
+    env-vars:
+      DARLING_ROOTLESS: '1'
+      DARLING_NOOVERLAYFS: '1'
+      DARLING_EUNION: '1'
+    note: >-
+      The integrated runtime owns rootless_bootstrap publication and guest
+      materialization. The current-minus block cannot name the target; the
+      fixed block builds, deploys and runs the real rootless bootstrap smoke.
+  github:
+    fork:
+      repo: IlyaGulya/darling
+      base: preupstream/main
+      state: local
+    upstream:
+      repo: darlinghq/darling
+      base: main
+      state: local
 - path: darling/rootless-shellspawn-test-delay.patch
   module: darling
   source-branch: fix/rootless-shellspawn-test-delay-product
