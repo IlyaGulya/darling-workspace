@@ -12,6 +12,11 @@ project(darling-testkit C)
 include(CTest)
 include("${CMAKE_CURRENT_SOURCE_DIR}/cmake/AddCompatTest.cmake")
 
+set(DARLING_COMPAT_INSTALL_MANIFEST
+  "${CMAKE_CURRENT_BINARY_DIR}/compat-install-manifest.tsv")
+file(WRITE "${DARLING_COMPAT_INSTALL_MANIFEST}" "")
+install(FILES "${DARLING_COMPAT_INSTALL_MANIFEST}" DESTINATION ".")
+
 find_package(Threads REQUIRED)
 
 # Locate the darling source checkout. Defaults to the sibling layout
@@ -162,9 +167,11 @@ if(EXISTS "${_getattrlist_name_objtype_guest}")
   add_compat_test(
     NAME       getattrlist_name_objtype_guest
     SOURCE     "${_getattrlist_name_objtype_guest}"
-    ENVS       darling
+    ENVS       darling macos
     BEAD       dar-e1j
     SUBMODULES xnu
+    INSTALL
+    SMOKE
     TIMEOUT    30
     OK_MARKER  "GETATTRLIST_NAME_OBJTYPE_GUEST_OK"
   )
