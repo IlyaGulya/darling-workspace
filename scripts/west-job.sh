@@ -215,6 +215,32 @@ cancel_grace_seconds() {
 	printf '%s\n' "$value"
 }
 
+snapshot_descendants() {
+	local root_pid="$1" output="$2" current child
+	: >"$output"
+	local -a queue=("$root_pid")
+	while ((${#queue[@]})); do
+		current="${queue[0]}"
+		queue=("${queue[@]:1}")
+		while read -r child; do
+			[[ "$child" =~ ^[0-9]+$ ]] || continue
+			printf '%s %s\n' "$child" "$(pid_start_time "$child")" >>"$output"
+			queue+=("$child")
+		done < <(pgrep -P "$current" 2>/dev/null || true)
+	done
+}
+
+signal_snapshotted_descendants() {
+	local snapshot="$1" signal="$2" pid start_time
+	[[ -f "$snapshot" ]] || return
+	while read -r pid start_time; do
+		[[ "$pid" =~ ^[0-9]+$ && "$start_time" =~ ^[0-9]+$ ]] || continue
+		if kill -0 "$pid" 2>/dev/null && [[ "$(pid_start_time "$pid")" == "$start_time" ]]; then
+			kill -"$signal" "$pid" 2>/dev/null || true
+		fi
+	done <"$snapshot"
+}
+
 start_job() {
 	if [[ -e "$state_dir" ]]; then
 		echo "west job state already exists: $state_dir" >&2
@@ -356,6 +382,7 @@ cancel_job() {
 	if load_live_command_pid; then
 		local command_pid
 		command_pid="$(<"$state_dir/command-pid")"
+		snapshot_descendants "$command_pid" "$state_dir/cancel-descendants"
 		kill -INT "$command_pid" 2>/dev/null || true
 		# The command may exit before its runner finishes resource cleanup. Wait
 		# for the session wrapper so a successful cooperative cancel guarantees
@@ -366,6 +393,12 @@ cancel_job() {
 			return
 		fi
 	fi
+	# Bounded subprocesses may intentionally create their own sessions. They
+	# escape a process-group-only fallback, so terminate the exact identities
+	# captured while they were still descendants of the registered command.
+	signal_snapshotted_descendants "$state_dir/cancel-descendants" TERM
+	wait_for_pid_exit_or_timeout "$state_dir/pid" 2
+	signal_snapshotted_descendants "$state_dir/cancel-descendants" KILL
 	# A command that still ignores SIGINT after its declared cleanup grace
 	# cannot run its own cleanup. The runner is the session leader created by
 	# setsid; target only its process group, never the caller's group.

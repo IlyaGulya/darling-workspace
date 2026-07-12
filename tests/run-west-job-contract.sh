@@ -257,6 +257,28 @@ if wait_job --state-dir "$tmp/unresponsive"; then
 	exit 1
 fi
 
+env WEST_JOB_CANCEL_GRACE_SECONDS=1 "$job" start \
+	--state-dir "$tmp/nested-session" -- bash -c '
+		setsid sh -c "echo \\\$\\$ > \"$1\"; exec sleep 30" &
+		printf "NESTED_SESSION_READY\\n"
+		wait
+	' bash "$tmp/nested-session-pid"
+while [[ ! -s "$tmp/nested-session-pid" ]] || \
+	! grep -F -x -q 'NESTED_SESSION_READY' "$tmp/nested-session/log"; do
+	:
+done
+nested_session_pid="$(<"$tmp/nested-session-pid")"
+WEST_JOB_CANCEL_GRACE_SECONDS=1 "$job" cancel \
+	--state-dir "$tmp/nested-session" >/dev/null
+if wait_job --state-dir "$tmp/nested-session"; then
+	echo 'nested-session job unexpectedly succeeded' >&2
+	exit 1
+fi
+if kill -0 "$nested_session_pid" 2>/dev/null; then
+	echo "nested session survived cancellation: $nested_session_pid" >&2
+	exit 1
+fi
+
 "$job" start --state-dir "$tmp/invalid-grace" -- bash -c 'sleep 30'
 while [[ ! -f "$tmp/invalid-grace/command-pid" ]]; do
 	:
