@@ -1205,6 +1205,21 @@ with tempfile.TemporaryDirectory() as temp:
 
 with tempfile.TemporaryDirectory() as temp:
     tempdir = Path(temp)
+    baseline = tempdir / "baseline"
+    (baseline / "bin").mkdir(parents=True)
+    (baseline / "bin" / "darling").write_text("baseline\n")
+    test = make_test()
+    args = types.SimpleNamespace(
+        fresh_prefix_from=str(baseline), prefix=None, prefix_profile=None
+    )
+    with test._fresh_prefix_context(args):
+        fresh = Path(args.prefix)
+        assert fresh.name.startswith("darling-fresh-prefix-")
+        assert (fresh / "bin" / "darling").read_text() == "baseline\n"
+    assert not fresh.exists()
+
+with tempfile.TemporaryDirectory() as temp:
+    tempdir = Path(temp)
     test = make_test()
     test.topdir = str(tempdir)
     source_root = tempdir / "source"
