@@ -27,6 +27,20 @@ from west_commands.test import DarlingTest
 from west_commands.test_execution import ProcessResult
 
 
+profiled = DarlingTest.__new__(DarlingTest)
+profiled._bootstrap_timeout_seconds = None
+profiled._ctest_runtime_profile_definitions = lambda: {
+    "rootless": {"bootstrap-smoke-timeout-seconds": 60}
+}
+assert profiled._eunion_bootstrap_timeout_seconds(
+    {"runtime-profile": "rootless"}
+) == 60
+profiled._bootstrap_timeout_seconds = 45
+assert profiled._eunion_bootstrap_timeout_seconds(
+    {"runtime-profile": "rootless"}
+) == 45
+
+
 with tempfile.TemporaryDirectory() as temp:
     trace_dir = Path(temp) / "trace"
     test = DarlingTest.__new__(DarlingTest)
