@@ -33,6 +33,7 @@ class PreparedGitlink:
 
 
 RevisionResolver = Callable[[Path, str], str]
+_GITLINK_CACHE: dict[tuple[str, str], tuple[tuple[str, str], ...]] = {}
 
 
 def _git(repo: Path, *args: str, capture: bool = False) -> str:
@@ -56,6 +57,11 @@ def _git(repo: Path, *args: str, capture: bool = False) -> str:
 def _gitlinks(repo: Path, revision: str) -> list[tuple[str, str]]:
     """Return direct ``(name, sha)`` gitlinks in *revision*."""
 
+    key = (str(repo.resolve()), revision)
+    cached = _GITLINK_CACHE.get(key)
+    if cached is not None:
+        return list(cached)
+
     output = _git(repo, "ls-tree", "-r", "-z", revision, capture=True)
     entries: list[tuple[str, str]] = []
     for record in output.split("\0"):
@@ -74,6 +80,7 @@ def _gitlinks(repo: Path, revision: str) -> list[tuple[str, str]]:
         mode, _kind, sha = fields
         if mode == "160000":
             entries.append((name, sha))
+    _GITLINK_CACHE[key] = tuple(entries)
     return entries
 
 
