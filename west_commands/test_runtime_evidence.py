@@ -93,13 +93,19 @@ class RuntimeEvidenceSession:
             output_path.write_text(output[-64 * 1024 :])
             entry["output"] = str(output_path.relative_to(self._directory))
         copied_artifacts: list[str] = []
+        copied_bytes = 0
+        artifact_budget = 64 * 1024 * 1024
         for artifact in artifacts or []:
             if not artifact.is_file() or artifact.is_symlink():
+                continue
+            artifact_size = artifact.stat().st_size
+            if artifact_size > artifact_budget - copied_bytes:
                 continue
             artifact_path = diagnostics_root / f"{index}-{artifact.name}"
             artifact_path.parent.mkdir(parents=True, exist_ok=True)
             shutil.copyfile(artifact, artifact_path)
             copied_artifacts.append(str(artifact_path.relative_to(self._directory)))
+            copied_bytes += artifact_size
         if copied_artifacts:
             entry["artifacts"] = copied_artifacts
         self._diagnostics.append(entry)

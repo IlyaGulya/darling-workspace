@@ -482,6 +482,10 @@ with tempfile.TemporaryDirectory() as temp:
     test._prefix_cleanup_failed = False
     test._bootstrap_syscall_trace = None
     test._bootstrap_stack_sample = trace_dir
+    recorded_failures = []
+    test._active_runtime_evidence = types.SimpleNamespace(
+        record_failure_detail=lambda **detail: recorded_failures.append(detail)
+    )
     messages = []
     test.inf = messages.append
     test.err = lambda _message: None
@@ -552,6 +556,24 @@ with tempfile.TemporaryDirectory() as temp:
     ], observed_prefixes
     assert (trace_dir / "bootstrap.perf.txt").read_text() == "sampled stack\n"
     assert (trace_dir / "darlingserver-rpc.log").read_text() == "rpc.recv number=1 name=mldr_path\n"
+    assert len(recorded_failures) == 1, recorded_failures
+    failure = recorded_failures[0]
+    assert failure["phase"] == "bootstrap", failure
+    assert failure["summary"] == "prefix bootstrap guest smoke timed out after 60s", failure
+    assert failure["returncode"] == 124, failure
+    assert failure["command"] == [
+        "/fake/darling",
+        "shell",
+        "set -eu\nprintf '%s\\n' WEST_PREFIX_BOOTSTRAP_OK",
+    ], failure
+    assert failure["output"] == "", failure
+    assert failure["artifacts"] == [
+        trace_dir / "bootstrap.perf.data",
+        trace_dir / "bootstrap.perf.txt",
+        trace_dir / "darlingserver-rpc.log",
+        prefix / ".west-rootless-boot.log",
+        prefix / ".west-rootless-guest-fd.log",
+    ], failure
     assert messages == [
         f"prefix bootstrap stack sample: {trace_dir}",
         "prefix bootstrap provision: created private/var/tmp with mode 1777",

@@ -115,6 +115,21 @@ with tempfile.TemporaryDirectory() as temp:
     ).stdout
     assert f"worktree {entry / 'source/darling'}" not in worktree_listing, worktree_listing
 
+    oversized = Path(temp) / "oversized.trace"
+    with oversized.open("wb") as handle:
+        handle.truncate(64 * 1024 * 1024 + 1)
+    with store.session("bounded diagnostics", {"provider": "homebrew"}) as session:
+        session.record_failure_detail(
+            phase="bootstrap",
+            summary="bounded artifact retention",
+            artifacts=[oversized],
+        )
+        session.preserve(RuntimeError("retain bounded diagnostics"))
+    bounded_entry = store.entries()[0]
+    bounded_manifest = json.loads((bounded_entry / "manifest.json").read_text())
+    assert "artifacts" not in bounded_manifest["diagnostics"][0], bounded_manifest
+    store.gc(max_age_hours=0, keep_last=0, dry_run=False)
+
     try:
         with store.session("already pruned worktree", {"provider": "homebrew"}) as session:
             source_worktree = session.source_root / "darling"
