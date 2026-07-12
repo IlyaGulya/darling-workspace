@@ -270,14 +270,7 @@ with tempfile.TemporaryDirectory() as temp:
     root = Path(temp)
     (root / "prefix" / "bin").mkdir(parents=True)
     (root / "prefix" / "bin" / "darling").write_text("launcher\n")
-    host_trace = root / "prefix" / ".west-rootless-boot.log"
-    guest_trace = root / "prefix" / "private/var/tmp/.west-rootless-boot.log"
-    guest_fd_trace = root / "prefix" / ".west-rootless-guest-fd.log"
     server_trace = root / "prefix" / "private/var/log/dserver-rpc-trace.log"
-    host_trace.write_text("stale host trace\n")
-    guest_trace.parent.mkdir(parents=True)
-    guest_trace.write_text("stale guest trace\n")
-    guest_fd_trace.write_text("stale guest FD trace\n")
     server_trace.parent.mkdir(parents=True)
     server_trace.write_text("stale server trace\n")
     test = DarlingTest.__new__(DarlingTest)
@@ -348,14 +341,7 @@ with tempfile.TemporaryDirectory() as temp:
         assert runtime_env["DARLING"] == str(root / "prefix" / "bin" / "darling")
         assert runtime_env["DARLING_LAUNCHER"] == str(root / "prefix" / "bin" / "darling")
         assert runtime_env["DPREFIX"] == str(root / "prefix")
-        assert runtime_env["DARLING_HOST_BOOT_TRACE"] == str(
-            root / "prefix" / ".west-rootless-boot.log"
-        )
-        assert runtime_env["DARLING_GUEST_BOOT_TRACE"] == str(guest_fd_trace)
         assert runtime_env["DSERVER_TEST_TRACE_FILE"] == str(server_trace)
-        assert not host_trace.exists()
-        assert not guest_trace.exists()
-        assert not guest_fd_trace.exists()
         assert not server_trace.exists()
     assert events == ["preflight", "source", "build", "deploy", "restore"], events
     assert test._active_profile is None
@@ -543,9 +529,7 @@ with tempfile.TemporaryDirectory() as temp:
             raise AssertionError("bootstrap unexpectedly accepted a timed-out stack-sample run")
         except SystemExit as exc:
             assert str(exc) == (
-                f"prefix bootstrap guest smoke timed out after 60s; stack sample: {trace_dir}; "
-                "progress: host=launcher pid=1 waiting-for-shellspawn | "
-                "guest-fd=launchd pid=2 shellspawn dispatch-start"
+                f"prefix bootstrap guest smoke timed out after 60s; stack sample: {trace_dir}"
             ), exc
     finally:
         test_module.run_guest_shell = original_run_guest_shell
@@ -588,40 +572,6 @@ with tempfile.TemporaryDirectory() as temp:
         "12:00:00.000001 --- SIGSEGV {si_signo=SIGSEGV, si_code=SEGV_MAPERR, si_addr=0x18} ---\n"
     )
     assert test_module.bootstrap_trace_fatal_signal(trace_dir) == "SIGSEGV at 0x18"
-
-
-with tempfile.TemporaryDirectory() as temp:
-    prefix = Path(temp)
-    assert test_module.rootless_bootstrap_progress(prefix) is None
-    (prefix / ".west-rootless-boot.log").write_text(
-        "launcher pid=1 start\nlauncher pid=1 waiting-for-shellspawn\n"
-    )
-    guest_trace = prefix / "private/var/tmp/.west-rootless-boot.log"
-    guest_trace.parent.mkdir(parents=True)
-    guest_trace.write_text("launchd pid=2 entry\n")
-    (prefix / ".west-rootless-guest-fd.log").write_text(
-        "dyld bootstrap-enter\nlaunchd pid=2 shellspawn dispatch-start\n"
-    )
-    assert test_module.rootless_bootstrap_progress(prefix) == (
-        "host=launcher pid=1 waiting-for-shellspawn | "
-        "guest-path=launchd pid=2 entry | "
-        "guest-fd=launchd pid=2 shellspawn dispatch-start"
-    )
-
-
-with tempfile.TemporaryDirectory() as temp:
-    prefix = Path(temp)
-    guest_trace = prefix / ".west-rootless-guest-fd.log"
-    guest_trace.write_text(
-        "shellspawn pid=3 client-accepted\n"
-        "shellspawn pid=4 command-go\n"
-        "shellspawn pid=5 guest-exec-enter\n"
-        "dyld main-entry-ready\n"
-    )
-    assert test_module.rootless_bootstrap_progress(prefix) == (
-        "guest-fd=dyld main-entry-ready | "
-        "shellspawn=shellspawn pid=5 guest-exec-enter"
-    )
 
 
 with tempfile.TemporaryDirectory() as temp:
