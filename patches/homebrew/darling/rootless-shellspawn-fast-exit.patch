@@ -1,17 +1,17 @@
-From bd94eb37dee3eae8d7ce5fe76b9d485b8ea23024 Mon Sep 17 00:00:00 2001
+From 94640b25883c66252b9c3783fa6479d238bcf1e2 Mon Sep 17 00:00:00 2001
 From: Ilya Gulya <ilya.gulya@indriver.com>
 Date: Sun, 12 Jul 2026 01:31:28 +0000
 Subject: [PATCH] rootless: handle fast shellspawn child exit
 
 ---
- src/shellspawn/shellspawn.c | 248 +++++++++++++++++++++---------------
- 1 file changed, 145 insertions(+), 103 deletions(-)
+ src/shellspawn/shellspawn.c | 246 +++++++++++++++++++++---------------
+ 1 file changed, 143 insertions(+), 103 deletions(-)
 
 diff --git a/src/shellspawn/shellspawn.c b/src/shellspawn/shellspawn.c
-index 052204f21b45565bd1fbf6a91a2f5fa8b3c50039..b0015a264ed63c4209f13bfb5ce05056c53a66b7 100644
+index c9ae226e928c08a3a78f3885967179bb9ff64ef5..8e7be9aa7c0758928a57799df70d5081bf20b577 100644
 --- a/src/shellspawn/shellspawn.c
 +++ b/src/shellspawn/shellspawn.c
-@@ -31,7 +31,6 @@ along with Darling.  If not, see <http://www.gnu.org/licenses/>.
+@@ -30,7 +30,6 @@ along with Darling.  If not, see <http://www.gnu.org/licenses/>.
  #include <sys/poll.h>
  #include <sys/types.h>
  #include <sys/wait.h>
@@ -19,7 +19,7 @@ index 052204f21b45565bd1fbf6a91a2f5fa8b3c50039..b0015a264ed63c4209f13bfb5ce05056
  #include <sys/ioctl.h>
  #include <signal.h>
  #include "shellspawn.h"
-@@ -49,6 +48,13 @@ void setupSigchild(void);
+@@ -48,6 +47,123 @@ void setupSigchild(void);
  void restoreSigchild(void);
  void reapAll(void);
  
@@ -30,13 +30,6 @@ index 052204f21b45565bd1fbf6a91a2f5fa8b3c50039..b0015a264ed63c4209f13bfb5ce05056
 +	SHELL_WAIT_ERROR,
 +};
 +
- static int rootlessBootTraceFd(void)
- {
- 	const char* rootless = getenv("DARLING_ROOTLESS");
-@@ -87,6 +93,117 @@ static const char* shellspawnCommandName(shellspawn_cmd_type_t command)
- 	}
- }
- 
 +static void closeShellFds(int shellfd[3])
 +{
 +	for (int i = 0; i < 3; i++)
@@ -147,11 +140,10 @@ index 052204f21b45565bd1fbf6a91a2f5fa8b3c50039..b0015a264ed63c4209f13bfb5ce05056
 +		}
 +	}
 +}
-+
  static void rootlessTestDelaySocketReady(void)
  {
  	const char* rootless = getenv("DARLING_ROOTLESS");
-@@ -248,15 +365,14 @@ void spawnShell(int fd)
+@@ -170,15 +286,13 @@ void spawnShell(int fd)
  {
  	pid_t shell_pid = -1;
  	int shellfd[3] = { -1, -1, -1 };
@@ -165,11 +157,10 @@ index 052204f21b45565bd1fbf6a91a2f5fa8b3c50039..b0015a264ed63c4209f13bfb5ce05056
  	struct iovec iov;
  	char cmsgbuf[CMSG_SPACE(sizeof(int)) * 3];
 -	int kq;
-+	int wstatus;
- 
- 	bool read_cmds = true;
- 
-@@ -446,111 +562,39 @@ void spawnShell(int fd)
+ 	int wstatus;
+ 	int error;
+ 	struct shellspawn_result result;
+@@ -352,114 +466,42 @@ void spawnShell(int fd)
  	}
  
  	// Check that exec succeeded
@@ -276,8 +267,8 @@ index 052204f21b45565bd1fbf6a91a2f5fa8b3c50039..b0015a264ed63c4209f13bfb5ce05056
 -					goto err;
 -			}
 -		}
--	}
--
+ 	}
+ 
 -	// Kill the child process in case it's still running
 -	kill(shell_pid, SIGKILL);
 -
@@ -286,25 +277,28 @@ index 052204f21b45565bd1fbf6a91a2f5fa8b3c50039..b0015a264ed63c4209f13bfb5ce05056
 -	{
 -		if (shellfd[i] != -1)
 -			close(shellfd[0]);
- 	}
- 
+-	}
+-
 -	// Reap the child
--	int wstatus;
 -	if (waitpid(shell_pid, &wstatus, 0) != shell_pid)
 -		perror("waitpid");
 -	wstatus = WEXITSTATUS(wstatus);
 -	
--	// Report exit code back to the client
--	write(fd, &wstatus, sizeof(int));
+-	// Report the child outcome through the versioned result frame.
 +	closeShellFds(shellfd);
-+	int exit_code = shellExitCode(wstatus);
+ 	result = (struct shellspawn_result){
+ 		.kind = SHELLSPAWN_RESULT_EXIT,
+-		.value = wstatus,
++		.value = shellExitCode(wstatus),
+ 	};
+-	write(fd, &result, sizeof(result));
 +	if (wait_result == SHELL_WAIT_EXITED)
-+		write(fd, &exit_code, sizeof(exit_code));
++		write(fd, &result, sizeof(result));
  
  	if (DBG) printf("Shell terminated with exit code %d\n", wstatus);
  	close(fd);
-@@ -561,11 +605,9 @@ err:
- 	rootlessBootTraceErrno("shellspawn-error");
+@@ -470,11 +512,9 @@ err:
+ 	error = errno;
  	if (DBG) fprintf(stderr, "Error spawning shell: %s\n", strerror(errno));
  
 -	for (int i = 0; i < 3; i++)

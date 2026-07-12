@@ -126,6 +126,18 @@
           "source_ref": "refs/heads/fix/rootless-nomount"
         },
         {
+          "branch": "fix/rootless-product-foundation",
+          "head": "a0982ff79f673974c0d36ad042f26a06830ffce2",
+          "upstream": "",
+          "source_ref": "refs/heads/fix/rootless-product-foundation"
+        },
+        {
+          "branch": "fix/rootless-product-stack",
+          "head": "fa0f87db367470c61bf09b2b98a40dcf7958de7d",
+          "upstream": "",
+          "source_ref": "refs/heads/fix/rootless-product-stack"
+        },
+        {
           "branch": "fix/rootless-runtime-components",
           "head": "5c435519e3070d442bb5a638694e5536753df0c7",
           "upstream": "",
@@ -162,10 +174,34 @@
           "source_ref": "refs/heads/fix/rootless-shellspawn-command-trace"
         },
         {
+          "branch": "fix/rootless-shellspawn-fast-exit-product",
+          "head": "94640b25883c66252b9c3783fa6479d238bcf1e2",
+          "upstream": "",
+          "source_ref": "refs/heads/fix/rootless-shellspawn-fast-exit-product"
+        },
+        {
           "branch": "fix/rootless-shellspawn-readiness",
           "head": "6ffa813bcb6c067b050bde189eac76e6e266b045",
           "upstream": "",
           "source_ref": "refs/heads/fix/rootless-shellspawn-readiness"
+        },
+        {
+          "branch": "fix/rootless-shellspawn-readiness-product",
+          "head": "8266a160200b29c107b0caaf12a6558c3ad04bc8",
+          "upstream": "",
+          "source_ref": "refs/heads/fix/rootless-shellspawn-readiness-product"
+        },
+        {
+          "branch": "fix/rootless-shellspawn-result-protocol",
+          "head": "94640b25883c66252b9c3783fa6479d238bcf1e2",
+          "upstream": "",
+          "source_ref": "refs/heads/fix/rootless-shellspawn-result-protocol"
+        },
+        {
+          "branch": "fix/rootless-shellspawn-result-protocol-base",
+          "head": "77ca89df79e22837aa70eb65a50fb3ca9577b7a7",
+          "upstream": "",
+          "source_ref": "refs/heads/fix/rootless-shellspawn-result-protocol-base"
         },
         {
           "branch": "fix/rootless-shellspawn-scheduler",
@@ -186,10 +222,22 @@
           "source_ref": "refs/heads/fix/rootless-shellspawn-test-delay"
         },
         {
+          "branch": "fix/rootless-shellspawn-test-delay-product",
+          "head": "4819397c0afc0c8ad92b0bf39dc6bd67e3edbe2b",
+          "upstream": "",
+          "source_ref": "refs/heads/fix/rootless-shellspawn-test-delay-product"
+        },
+        {
           "branch": "fix/rootless-shutdown-session",
           "head": "2ce4136ab3550de34256751be0e7947518c07d3f",
           "upstream": "",
           "source_ref": "refs/heads/fix/rootless-shutdown-session"
+        },
+        {
+          "branch": "fix/rootless-shutdown-session-product",
+          "head": "595b1f666b2f1806aa45fdab70a2ad702b5cf960",
+          "upstream": "",
+          "source_ref": "refs/heads/fix/rootless-shutdown-session-product"
         },
         {
           "branch": "fix/rootless-vchroot-argv",
@@ -490,6 +538,12 @@
           "head": "fd105515af642df755296330265038ac2f70fae4",
           "upstream": "",
           "source_ref": "refs/heads/fix/rootless-no-mount-profile"
+        },
+        {
+          "branch": "fix/rootless-no-mount-server-product",
+          "head": "044364ee983828570e4b8d11cc5fcadf20d70524",
+          "upstream": "",
+          "source_ref": "refs/heads/fix/rootless-no-mount-server-product"
         },
         {
           "branch": "fix/rootless-nomount",
