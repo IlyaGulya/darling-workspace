@@ -1272,6 +1272,18 @@
           "source_ref": "refs/heads/perf/shmem-ring-guest"
         },
         {
+          "branch": "repack/eunion-core",
+          "head": "5c3019fca1d85533f34735bf40c97156c87b6d4f",
+          "upstream": "",
+          "source_ref": "refs/heads/repack/eunion-core"
+        },
+        {
+          "branch": "repack/eunion-hardening",
+          "head": "f033c5773992dfa57b6657f10f53f719664a5f18",
+          "upstream": "",
+          "source_ref": "refs/heads/repack/eunion-hardening"
+        },
+        {
           "branch": "wip/z27x7-sigprocess-fold",
           "head": "fd3c4a4b71ee66c88d31cd2ac67b0f4f825827b9",
           "upstream": "",

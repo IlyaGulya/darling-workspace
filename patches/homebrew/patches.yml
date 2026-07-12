@@ -2561,18 +2561,19 @@ patches:
       repo: darlinghq/darling-xnu
       base: main
       state: local
-- path: xnu/eunion-1-resolve.patch
-  sha256sum: 788430703b3f6a61f659f50ca4641821ecdcfba5ffa7e4d667023140369aa13f
+- path: xnu/eunion-core.patch
+  sha256sum: a79b122967cd452603057f07c72b3b1a80086683153632557ad3b8a84ff8a081
   module: darling/src/external/xnu
-  source-branch: fix/e-union-1-resolve
+  source-branch: repack/eunion-core
   source-base: aad62153c971cb93f0953490b2513b5b1aeeeaff
-  source-commit: d8973410c831710d8f28ee881123d2844b1dbd9d
-  bead: dar-test-infra-sp5.8.4.4
+  source-commit: 5c3019fca1d85533f34735bf40c97156c87b6d4f
+  bead: dar-7zvt.1
   publication-status: blocked
-  publication-blocker: E-UNION proof-of-concept; not built/verified end-to-end in route 2. Local experiment under dar-test-infra-sp5.8.4.4. Depends on the route2-nomount experiment base, not on upstream.
+  publication-blocker: E-UNION core is a local architectural consolidation; publication remains blocked until the repackaged rootless stack passes its full guest audit.
   tests:
-  - name: eunion_1_host_suite
+  - name: eunion_core_host_suite
     kind: unit
+    coverage-tier: host
     runs: host
     diag: bare
     red: true
@@ -2582,24 +2583,20 @@ patches:
     runner: source-contract-script
     repo: darling-workspace
     script: experiments/e-union/run.sh
-    note: Host hermetic RED->GREEN E-UNION suite; exercises the workspace two-layer vchroot fixture against this patchset source tree.
+    note: Host behavioral RED-to-GREEN suite for the E-UNION core filesystem model.
   - name: eunion_path_direnum_guest
     use: eunion-guest-c-runtime
     fixtures: eunion-overlay
     kind: guest
     coverage-tier: runtime
     runs: guest
-    diag: bare
+    diag: guarded
+    runtime-profile: homebrew-rootless-no-mount
     runner: guest-c-fixture
     repo: darling-workspace
     script: tests/eunion_path_direnum_guest.c
     ok-marker: WEST_EUNION_PATH_DIRENUM_OK
     timeout-seconds: 20
-    compile-flags:
-    - -std=gnu11
-    - -Wall
-    - -Wextra
-    - -Werror
     requires:
     - darling-eunion-prefix
     eunion-template-files:
@@ -2616,401 +2613,20 @@ patches:
     - guest-path: /private/var/tmp/west-eunion-direnum/shadow.txt
       contents: |
         UPPER_SHADOW
-    note: Guest runtime coverage for E-UNION path resolution, upper-over-lower shadowing, directory merge enumeration, and F_GETPATH guest path detranslation.
-  github:
-    fork:
-      repo: IlyaGulya/darling-xnu
-      base: preupstream/main
-      state: local
-    upstream:
-      repo: darlinghq/darling-xnu
-      base: main
-      state: local
-- path: xnu/eunion-2-copyup.patch
-  sha256sum: a431d83abefacde03a90cdf586b7e514a8dd61175199542632b0b8b95814a909
-  module: darling/src/external/xnu
-  source-branch: fix/e-union-2-copyup
-  source-base: d8973410c831710d8f28ee881123d2844b1dbd9d
-  source-commit: b63a1f4ff1cc8de6e23cdbf8ab73b1b55032fa56
-  bead: dar-test-infra-sp5.8.4.4
-  publication-status: blocked
-  publication-blocker: E-UNION proof-of-concept; race-safe copy-up depends on the resolve patch. Local experiment under dar-test-infra-sp5.8.4.4.
-  tests:
-  - name: eunion_mutation_guest
-    kind: guest
-    coverage-tier: runtime
-    runs: guest
-    diag: bare
-    runner: guest-c-fixture
-    repo: darling-workspace
-    script: tests/eunion_mutation_guest.c
-    ok-marker: WEST_EUNION_MUTATION_OK
-    timeout-seconds: 30
-    compile-flags:
-    - -std=gnu11
-    - -Wall
-    - -Wextra
-    - -Werror
-    requires:
-    - darling-eunion-prefix
-    eunion-cleanup-dirs:
-    - /private/var/tmp/west-eunion-mutate
-    eunion-verify-template-files-after: true
-    eunion-template-files:
-    - guest-path: /private/var/tmp/west-eunion-mutate/copy.txt
-      contents: |
-        LOWER_COPY
-    - guest-path: /private/var/tmp/west-eunion-mutate/delete.txt
-      contents: |
-        DELETE_ME
-    - guest-path: /private/var/tmp/west-eunion-mutate/create_parent/.keep
-      contents: |
-        keep
-    - guest-path: /private/var/tmp/west-eunion-mutate/rename_src/child.txt
-      contents: |
-        RENAME_CHILD
-    - guest-path: /private/var/tmp/west-eunion-mutate/sp_real/.keep
-      contents: |
-        keep
-    - guest-path: /private/var/tmp/west-eunion-mutate/bind_parent/.keep
-      contents: |
-        keep
-    eunion-template-symlinks:
-    - guest-path: /private/var/tmp/west-eunion-mutate/sp_link
-      target: sp_real
-    note: Guest runtime coverage for E-UNION copy-up, lower-only unlink whiteout, create under lower-only parent, recursive lower-dir rename, symlink-parent create, AF_UNIX bind parent copy-up, and post-test lower template protection.
-  - name: eunion_2_host_suite
-    kind: unit
-    runs: host
-    diag: bare
-    red: true
-    red-proof:
-      mode: source-base
-      source-env: XNU_SRC_ROOT
-    runner: source-contract-script
-    repo: darling-workspace
-    script: experiments/e-union/run.sh
-    note: Host hermetic RED->GREEN E-UNION suite; exercises the workspace two-layer vchroot fixture against this patchset source tree.
-  github:
-    fork:
-      repo: IlyaGulya/darling-xnu
-      base: preupstream/main
-      state: local
-    upstream:
-      repo: darlinghq/darling-xnu
-      base: main
-      state: local
-- path: xnu/eunion-3-whiteout-opaque.patch
-  sha256sum: 217de672bcd2117d859edd4cac26e8cd3e9fb5476c5e761111e0c5e3ef22ccad
-  module: darling/src/external/xnu
-  source-branch: fix/e-union-3-whiteout-opaque
-  source-base: b63a1f4ff1cc8de6e23cdbf8ab73b1b55032fa56
-  source-commit: a61f3e6a718bf2082d54d1134fed58fa3026c4b2
-  bead: dar-test-infra-sp5.8.4.4
-  publication-status: blocked
-  publication-blocker: E-UNION proof-of-concept; unprivileged whiteout/opaque encoding. Local experiment under dar-test-infra-sp5.8.4.4.
-  tests:
-  - name: eunion_mutation_guest
-    kind: guest
-    coverage-tier: runtime
-    runs: guest
-    diag: bare
-    runner: guest-c-fixture
-    repo: darling-workspace
-    script: tests/eunion_mutation_guest.c
-    ok-marker: WEST_EUNION_MUTATION_OK
-    timeout-seconds: 30
-    compile-flags:
-    - -std=gnu11
-    - -Wall
-    - -Wextra
-    - -Werror
-    requires:
-    - darling-eunion-prefix
-    eunion-cleanup-dirs:
-    - /private/var/tmp/west-eunion-mutate
-    eunion-verify-template-files-after: true
-    eunion-template-files:
-    - guest-path: /private/var/tmp/west-eunion-mutate/copy.txt
-      contents: |
-        LOWER_COPY
-    - guest-path: /private/var/tmp/west-eunion-mutate/delete.txt
-      contents: |
-        DELETE_ME
-    - guest-path: /private/var/tmp/west-eunion-mutate/create_parent/.keep
-      contents: |
-        keep
-    - guest-path: /private/var/tmp/west-eunion-mutate/rename_src/child.txt
-      contents: |
-        RENAME_CHILD
-    - guest-path: /private/var/tmp/west-eunion-mutate/sp_real/.keep
-      contents: |
-        keep
-    - guest-path: /private/var/tmp/west-eunion-mutate/bind_parent/.keep
-      contents: |
-        keep
-    eunion-template-symlinks:
-    - guest-path: /private/var/tmp/west-eunion-mutate/sp_link
-      target: sp_real
-    note: Guest runtime coverage for E-UNION copy-up, lower-only unlink whiteout, create under lower-only parent, recursive lower-dir rename, symlink-parent create, AF_UNIX bind parent copy-up, and post-test lower template protection.
-  - name: eunion_3_host_suite
-    kind: unit
-    runs: host
-    diag: bare
-    red: true
-    red-proof:
-      mode: source-base
-      source-env: XNU_SRC_ROOT
-    runner: source-contract-script
-    repo: darling-workspace
-    script: experiments/e-union/run.sh
-    note: Host hermetic RED->GREEN E-UNION suite; exercises the workspace two-layer vchroot fixture against this patchset source tree.
-  github:
-    fork:
-      repo: IlyaGulya/darling-xnu
-      base: preupstream/main
-      state: local
-    upstream:
-      repo: darlinghq/darling-xnu
-      base: main
-      state: local
-- path: xnu/eunion-4-readdir-merge.patch
-  sha256sum: e11e4a578f7db5a82b41725cf7386403b7c79e471cba4e84ff99ea8a0011c654
-  module: darling/src/external/xnu
-  source-branch: fix/e-union-4-readdir-merge
-  source-base: a61f3e6a718bf2082d54d1134fed58fa3026c4b2
-  source-commit: 17c86b8fdfc8efe6b614ad4546a9cfbeea81c90b
-  bead: dar-test-infra-sp5.8.4.4
-  publication-status: blocked
-  publication-blocker: E-UNION proof-of-concept; readdir name-merge. Local experiment under dar-test-infra-sp5.8.4.4.
-  tests:
-  - name: eunion_4_host_suite
-    kind: unit
-    runs: host
-    diag: bare
-    red: true
-    red-proof:
-      mode: source-base
-      source-env: XNU_SRC_ROOT
-    runner: source-contract-script
-    repo: darling-workspace
-    script: experiments/e-union/run.sh
-    note: Host hermetic RED->GREEN E-UNION suite; exercises the workspace two-layer vchroot fixture against this patchset source tree.
-  - name: eunion_path_direnum_guest
-    kind: guest
-    coverage-tier: runtime
-    runs: guest
-    diag: bare
-    runner: guest-c-fixture
-    repo: darling-workspace
-    script: tests/eunion_path_direnum_guest.c
-    ok-marker: WEST_EUNION_PATH_DIRENUM_OK
-    timeout-seconds: 20
-    compile-flags:
-    - -std=gnu11
-    - -Wall
-    - -Wextra
-    - -Werror
-    requires:
-    - darling-eunion-prefix
-    eunion-template-files:
-    - guest-path: /private/var/tmp/west-eunion-direnum/lower-only.txt
-      contents: |
-        LOWER_ONLY
-    - guest-path: /private/var/tmp/west-eunion-direnum/shadow.txt
-      contents: |
-        LOWER_SHADOW
-    eunion-upper-files:
-    - guest-path: /private/var/tmp/west-eunion-direnum/upper-only.txt
-      contents: |
-        UPPER_ONLY
-    - guest-path: /private/var/tmp/west-eunion-direnum/shadow.txt
-      contents: |
-        UPPER_SHADOW
-    note: Guest runtime coverage for E-UNION path resolution, upper-over-lower shadowing, directory merge enumeration, and F_GETPATH guest path detranslation.
-  github:
-    fork:
-      repo: IlyaGulya/darling-xnu
-      base: preupstream/main
-      state: local
-    upstream:
-      repo: darlinghq/darling-xnu
-      base: main
-      state: local
-- path: xnu/eunion-5-writeop-wiring.patch
-  sha256sum: c4e8ce1758e892420fbaba0ede435f7f9e9aa93d03ceb5f3dd36e4b9a248f33b
-  module: darling/src/external/xnu
-  source-branch: fix/e-union-5-writeop-wiring
-  source-base: 17c86b8fdfc8efe6b614ad4546a9cfbeea81c90b
-  source-commit: 1b9117db4c288378a7cd0bcb4d6a20ef62340473
-  bead: dar-test-infra-sp5.8.4.4
-  publication-status: blocked
-  publication-blocker: E-UNION proof-of-concept; wires copy-up/whiteout into 13 write-op emulation sites. Local experiment under dar-test-infra-sp5.8.4.4.
-  tests:
-  - name: eunion_mutation_guest
-    kind: guest
-    coverage-tier: runtime
-    runs: guest
-    diag: bare
-    runner: guest-c-fixture
-    repo: darling-workspace
-    script: tests/eunion_mutation_guest.c
-    ok-marker: WEST_EUNION_MUTATION_OK
-    timeout-seconds: 30
-    compile-flags:
-    - -std=gnu11
-    - -Wall
-    - -Wextra
-    - -Werror
-    requires:
-    - darling-eunion-prefix
-    eunion-cleanup-dirs:
-    - /private/var/tmp/west-eunion-mutate
-    eunion-verify-template-files-after: true
-    eunion-template-files:
-    - guest-path: /private/var/tmp/west-eunion-mutate/copy.txt
-      contents: |
-        LOWER_COPY
-    - guest-path: /private/var/tmp/west-eunion-mutate/delete.txt
-      contents: |
-        DELETE_ME
-    - guest-path: /private/var/tmp/west-eunion-mutate/create_parent/.keep
-      contents: |
-        keep
-    - guest-path: /private/var/tmp/west-eunion-mutate/rename_src/child.txt
-      contents: |
-        RENAME_CHILD
-    - guest-path: /private/var/tmp/west-eunion-mutate/sp_real/.keep
-      contents: |
-        keep
-    - guest-path: /private/var/tmp/west-eunion-mutate/bind_parent/.keep
-      contents: |
-        keep
-    eunion-template-symlinks:
-    - guest-path: /private/var/tmp/west-eunion-mutate/sp_link
-      target: sp_real
-    note: Guest runtime coverage for E-UNION copy-up, lower-only unlink whiteout, create under lower-only parent, recursive lower-dir rename, symlink-parent create, AF_UNIX bind parent copy-up, and post-test lower template protection.
-  - name: eunion_5_host_suite
-    kind: unit
-    runs: host
-    diag: bare
-    red: true
-    red-proof:
-      mode: source-base
-      source-env: XNU_SRC_ROOT
-    runner: source-contract-script
-    repo: darling-workspace
-    script: experiments/e-union/run.sh
-    note: Host hermetic RED->GREEN E-UNION suite; exercises the workspace two-layer vchroot fixture against this patchset source tree.
-  github:
-    fork:
-      repo: IlyaGulya/darling-xnu
-      base: preupstream/main
-      state: local
-    upstream:
-      repo: darlinghq/darling-xnu
-      base: main
-      state: local
-- path: xnu/eunion-6-getdirentries.patch
-  sha256sum: 53b93e0644b8ced958e162d5cb699b0af8b5b8093b6cd1184b657b4a3054044e
-  module: darling/src/external/xnu
-  source-branch: fix/e-union-6-getdirentries
-  source-base: 1b9117db4c288378a7cd0bcb4d6a20ef62340473
-  source-commit: aa0dcaa44e2f6b2726d6e71f80f04c1be35c5f71
-  bead: dar-test-infra-sp5.8.4.4
-  publication-status: blocked
-  publication-blocker: E-UNION proof-of-concept; routes getdirentries through the paged merge. Local experiment under dar-test-infra-sp5.8.4.4.
-  tests:
-  - name: eunion_6_host_suite
-    kind: unit
-    runs: host
-    diag: bare
-    red: true
-    red-proof:
-      mode: source-base
-      source-env: XNU_SRC_ROOT
-    runner: source-contract-script
-    repo: darling-workspace
-    script: experiments/e-union/run.sh
-    note: Host hermetic RED->GREEN E-UNION suite; exercises the workspace two-layer vchroot fixture against this patchset source tree.
-  - name: eunion_path_direnum_guest
-    kind: guest
-    coverage-tier: runtime
-    runs: guest
-    diag: bare
-    runner: guest-c-fixture
-    repo: darling-workspace
-    script: tests/eunion_path_direnum_guest.c
-    ok-marker: WEST_EUNION_PATH_DIRENUM_OK
-    timeout-seconds: 20
-    compile-flags:
-    - -std=gnu11
-    - -Wall
-    - -Wextra
-    - -Werror
-    requires:
-    - darling-eunion-prefix
-    eunion-template-files:
-    - guest-path: /private/var/tmp/west-eunion-direnum/lower-only.txt
-      contents: |
-        LOWER_ONLY
-    - guest-path: /private/var/tmp/west-eunion-direnum/shadow.txt
-      contents: |
-        LOWER_SHADOW
-    eunion-upper-files:
-    - guest-path: /private/var/tmp/west-eunion-direnum/upper-only.txt
-      contents: |
-        UPPER_ONLY
-    - guest-path: /private/var/tmp/west-eunion-direnum/shadow.txt
-      contents: |
-        UPPER_SHADOW
-    note: Guest runtime coverage for E-UNION path resolution, upper-over-lower shadowing, directory merge enumeration, and F_GETPATH guest path detranslation.
-  github:
-    fork:
-      repo: IlyaGulya/darling-xnu
-      base: preupstream/main
-      state: local
-    upstream:
-      repo: darlinghq/darling-xnu
-      base: main
-      state: local
-- path: xnu/eunion-7-activation.patch
-  sha256sum: 65b7356528d90449104a5bf28e369c9833465e42486d436952ba9b009f462956
-  module: darling/src/external/xnu
-  source-branch: fix/e-union-7-activation
-  source-base: aa0dcaa44e2f6b2726d6e71f80f04c1be35c5f71
-  source-commit: ac73b9f1e1e0441ff2456f4b4de6ac998acdddd6
-  bead: dar-test-infra-sp5.8.4.4
-  publication-status: blocked
-  publication-blocker: E-UNION proof-of-concept; activates the union at translator startup via the $prefix/.union-work marker + the DARLING_EUNION build switch. Local experiment under dar-test-infra-sp5.8.4.4.
-  tests:
-  - name: eunion_7_host_suite
-    kind: unit
-    runs: host
-    diag: bare
-    red: true
-    red-proof:
-      mode: source-base
-      source-env: XNU_SRC_ROOT
-    runner: source-contract-script
-    repo: darling-workspace
-    script: experiments/e-union/run.sh
-    note: Host hermetic RED->GREEN E-UNION suite; exercises the workspace two-layer vchroot fixture against this patchset source tree.
+    note: Guest behavior for lower/upper resolution, shadowing, merged directory enumeration, getdirentries and guest-path detranslation.
   - name: eunion_activation_guest_smoke
+    use: eunion-guest-c-runtime
+    fixtures: eunion-overlay
     kind: guest
     coverage-tier: runtime
     runs: guest
-    diag: bare
+    diag: guarded
+    runtime-profile: homebrew-rootless-no-mount
     runner: guest-c-fixture
     repo: darling-workspace
     script: tests/eunion_prefix_smoke_guest.c
     ok-marker: WEST_EUNION_PREFIX_SMOKE_OK
     timeout-seconds: 20
-    compile-flags:
-    - -std=gnu11
-    - -Wall
-    - -Wextra
-    - -Werror
     requires:
     - darling-eunion-prefix
     eunion-template-files:
@@ -3027,10 +2643,7 @@ patches:
     - guest-path: /private/var/tmp/west-eunion-smoke/shadow.txt
       contents: |
         UPPER_SHADOW
-    note: >-
-      Guest runtime smoke for active E-UNION provisioning: west boots the prefix,
-      then prepares lower-template and upper fixtures and verifies lower fallback,
-      upper-only visibility, and upper-over-lower shadowing through Darling.
+    note: Guest behavior for activation, lower fallback, upper-only visibility and upper-over-lower shadowing.
   github:
     fork:
       repo: IlyaGulya/darling-xnu
@@ -3040,965 +2653,26 @@ patches:
       repo: darlinghq/darling-xnu
       base: main
       state: local
-- path: xnu/eunion-8-bind-copyup.patch
-  sha256sum: 4413d28a85584afc7ad1a05f9ddbce76e8de1b8d27ee07d8f48cf1f50b2f0d28
+- path: xnu/eunion-hardening.patch
+  sha256sum: b48d5a4b0042b605eeb72da7119d1f2692be674170b80062a48dfb73cd6cf21e
   module: darling/src/external/xnu
-  source-branch: fix/e-union-8-bind-copyup
-  source-base: ac73b9f1e1e0441ff2456f4b4de6ac998acdddd6
-  source-commit: 98c1723ced7401e308dc8895a090a24b2104bdb0
-  bead: dar-test-infra-sp5.8.4.4
+  source-branch: repack/eunion-hardening
+  source-base: 5c3019fca1d85533f34735bf40c97156c87b6d4f
+  source-commit: f033c5773992dfa57b6657f10f53f719664a5f18
+  bead: dar-7zvt.2
   publication-status: blocked
-  publication-blocker: E-UNION proof-of-concept; copies up the parent dir on AF_UNIX bind so socket creation lands in the writable upper. Local experiment under dar-test-infra-sp5.8.4.4.
+  publication-blocker: E-UNION syscall coverage and hardening are a local architectural consolidation; publication remains blocked until the repackaged rootless stack passes its full guest audit.
   tests:
-  - name: eunion_mutation_guest
-    kind: guest
-    coverage-tier: runtime
-    runs: guest
-    diag: bare
-    runner: guest-c-fixture
-    repo: darling-workspace
-    script: tests/eunion_mutation_guest.c
-    ok-marker: WEST_EUNION_MUTATION_OK
-    timeout-seconds: 30
-    compile-flags:
-    - -std=gnu11
-    - -Wall
-    - -Wextra
-    - -Werror
-    requires:
-    - darling-eunion-prefix
-    eunion-cleanup-dirs:
-    - /private/var/tmp/west-eunion-mutate
-    eunion-verify-template-files-after: true
-    eunion-template-files:
-    - guest-path: /private/var/tmp/west-eunion-mutate/copy.txt
-      contents: |
-        LOWER_COPY
-    - guest-path: /private/var/tmp/west-eunion-mutate/delete.txt
-      contents: |
-        DELETE_ME
-    - guest-path: /private/var/tmp/west-eunion-mutate/create_parent/.keep
-      contents: |
-        keep
-    - guest-path: /private/var/tmp/west-eunion-mutate/rename_src/child.txt
-      contents: |
-        RENAME_CHILD
-    - guest-path: /private/var/tmp/west-eunion-mutate/sp_real/.keep
-      contents: |
-        keep
-    - guest-path: /private/var/tmp/west-eunion-mutate/bind_parent/.keep
-      contents: |
-        keep
-    eunion-template-symlinks:
-    - guest-path: /private/var/tmp/west-eunion-mutate/sp_link
-      target: sp_real
-    note: Guest runtime coverage for E-UNION copy-up, lower-only unlink whiteout, create under lower-only parent, recursive lower-dir rename, symlink-parent create, AF_UNIX bind parent copy-up, and post-test lower template protection.
-  - name: eunion_8_host_suite
-    kind: unit
-    runs: host
-    diag: bare
-    red: true
-    red-proof:
-      mode: source-base
-      source-env: XNU_SRC_ROOT
-    runner: source-contract-script
-    repo: darling-workspace
-    script: experiments/e-union/run.sh
-    note: Host hermetic RED->GREEN E-UNION suite; exercises the workspace two-layer vchroot fixture against this patchset source tree.
-  github:
-    fork:
-      repo: IlyaGulya/darling-xnu
-      base: preupstream/main
-      state: local
-    upstream:
-      repo: darlinghq/darling-xnu
-      base: main
-      state: local
-- path: xnu/eunion-9-getdents-passthrough.patch
-  sha256sum: cc247c3fe5351122b8c4307f267a2babdd6e9d0d1d039f848c3d12fb3a10b073
-  module: darling/src/external/xnu
-  source-branch: fix/e-union-9-getdents-passthrough
-  source-base: 98c1723ced7401e308dc8895a090a24b2104bdb0
-  source-commit: 2530b9eea87b8a9c78284fae70b5e47033fcacd6
-  bead: dar-test-infra-sp5.8.4.4
-  publication-status: blocked
-  publication-blocker: E-UNION proof-of-concept; passes getdents64 through raw when the union is inactive. Local experiment under dar-test-infra-sp5.8.4.4.
-  tests:
-  - name: eunion_9_host_suite
-    kind: unit
-    runs: host
-    diag: bare
-    red: true
-    red-proof:
-      mode: source-base
-      source-env: XNU_SRC_ROOT
-    runner: source-contract-script
-    repo: darling-workspace
-    script: experiments/e-union/run.sh
-    note: Host hermetic RED->GREEN E-UNION suite; exercises the workspace two-layer vchroot fixture against this patchset source tree.
-  - name: eunion_path_direnum_guest
-    kind: guest
-    coverage-tier: runtime
-    runs: guest
-    diag: bare
-    runner: guest-c-fixture
-    repo: darling-workspace
-    script: tests/eunion_path_direnum_guest.c
-    ok-marker: WEST_EUNION_PATH_DIRENUM_OK
-    timeout-seconds: 20
-    compile-flags:
-    - -std=gnu11
-    - -Wall
-    - -Wextra
-    - -Werror
-    requires:
-    - darling-eunion-prefix
-    eunion-template-files:
-    - guest-path: /private/var/tmp/west-eunion-direnum/lower-only.txt
-      contents: |
-        LOWER_ONLY
-    - guest-path: /private/var/tmp/west-eunion-direnum/shadow.txt
-      contents: |
-        LOWER_SHADOW
-    eunion-upper-files:
-    - guest-path: /private/var/tmp/west-eunion-direnum/upper-only.txt
-      contents: |
-        UPPER_ONLY
-    - guest-path: /private/var/tmp/west-eunion-direnum/shadow.txt
-      contents: |
-        UPPER_SHADOW
-    note: Guest runtime coverage for E-UNION path resolution, upper-over-lower shadowing, directory merge enumeration, and F_GETPATH guest path detranslation.
-  github:
-    fork:
-      repo: IlyaGulya/darling-xnu
-      base: preupstream/main
-      state: local
-    upstream:
-      repo: darlinghq/darling-xnu
-      base: main
-      state: local
-- path: xnu/eunion-10-fdpath-detranslate.patch
-  sha256sum: 54b8c0e0ba99ce845b30281b764249c070a39b9ed28ad4208664b869cee61081
-  module: darling/src/external/xnu
-  source-branch: fix/e-union-10-fdpath-detranslate
-  source-base: 2530b9eea87b8a9c78284fae70b5e47033fcacd6
-  source-commit: 9daa9a4ff2fe30e250b97658d4ebfb8db7f0c2ce
-  bead: dar-test-infra-sp5.8.4.4
-  publication-status: blocked
-  publication-blocker: E-UNION proof-of-concept; detranslates lower-template fds/paths to guest paths in vchroot_fdpath/unexpand (fixes the launchctl-bootstrap stall; full guest pipeline boots zero-copy in default docker). Local experiment under dar-test-infra-sp5.8.4.4.
-  tests:
-  - name: eunion_10_host_suite
-    kind: unit
-    runs: host
-    diag: bare
-    red: true
-    red-proof:
-      mode: source-base
-      source-env: XNU_SRC_ROOT
-    runner: source-contract-script
-    repo: darling-workspace
-    script: experiments/e-union/run.sh
-    note: Host hermetic RED->GREEN E-UNION suite; exercises the workspace two-layer vchroot fixture against this patchset source tree.
-  - name: eunion_path_direnum_guest
-    kind: guest
-    coverage-tier: runtime
-    runs: guest
-    diag: bare
-    runner: guest-c-fixture
-    repo: darling-workspace
-    script: tests/eunion_path_direnum_guest.c
-    ok-marker: WEST_EUNION_PATH_DIRENUM_OK
-    timeout-seconds: 20
-    compile-flags:
-    - -std=gnu11
-    - -Wall
-    - -Wextra
-    - -Werror
-    requires:
-    - darling-eunion-prefix
-    eunion-template-files:
-    - guest-path: /private/var/tmp/west-eunion-direnum/lower-only.txt
-      contents: |
-        LOWER_ONLY
-    - guest-path: /private/var/tmp/west-eunion-direnum/shadow.txt
-      contents: |
-        LOWER_SHADOW
-    eunion-upper-files:
-    - guest-path: /private/var/tmp/west-eunion-direnum/upper-only.txt
-      contents: |
-        UPPER_ONLY
-    - guest-path: /private/var/tmp/west-eunion-direnum/shadow.txt
-      contents: |
-        UPPER_SHADOW
-    note: Guest runtime coverage for E-UNION path resolution, upper-over-lower shadowing, directory merge enumeration, and F_GETPATH guest path detranslation.
-  github:
-    fork:
-      repo: IlyaGulya/darling-xnu
-      base: preupstream/main
-      state: local
-    upstream:
-      repo: darlinghq/darling-xnu
-      base: main
-      state: local
-- path: xnu/eunion-11-hardening.patch
-  sha256sum: d7b22b460cc6bfb6dbd0b52fe419415561bdf8eef9d7979dcfe4134a1614a3b9
-  module: darling/src/external/xnu
-  source-branch: fix/e-union-11-hardening
-  source-base: 9daa9a4ff2fe30e250b97658d4ebfb8db7f0c2ce
-  source-commit: 121ae98d08e3e0c303abfeecb1d19d9f1845782e
-  bead: dar-test-infra-sp5.8.4.4
-  publication-status: blocked
-  publication-blocker: E-UNION proof-of-concept; hardening — recursive copy-up on dir rename, *at()-relative copy-up (sys_openat), setid-strip + xattr-preserve on copy-up. Local experiment under dar-test-infra-sp5.8.4.4.
-  tests:
-  - name: eunion_mutation_guest
-    kind: guest
-    coverage-tier: runtime
-    runs: guest
-    diag: bare
-    runner: guest-c-fixture
-    repo: darling-workspace
-    script: tests/eunion_mutation_guest.c
-    ok-marker: WEST_EUNION_MUTATION_OK
-    timeout-seconds: 30
-    compile-flags:
-    - -std=gnu11
-    - -Wall
-    - -Wextra
-    - -Werror
-    requires:
-    - darling-eunion-prefix
-    eunion-cleanup-dirs:
-    - /private/var/tmp/west-eunion-mutate
-    eunion-verify-template-files-after: true
-    eunion-template-files:
-    - guest-path: /private/var/tmp/west-eunion-mutate/copy.txt
-      contents: |
-        LOWER_COPY
-    - guest-path: /private/var/tmp/west-eunion-mutate/delete.txt
-      contents: |
-        DELETE_ME
-    - guest-path: /private/var/tmp/west-eunion-mutate/create_parent/.keep
-      contents: |
-        keep
-    - guest-path: /private/var/tmp/west-eunion-mutate/rename_src/child.txt
-      contents: |
-        RENAME_CHILD
-    - guest-path: /private/var/tmp/west-eunion-mutate/sp_real/.keep
-      contents: |
-        keep
-    - guest-path: /private/var/tmp/west-eunion-mutate/bind_parent/.keep
-      contents: |
-        keep
-    eunion-template-symlinks:
-    - guest-path: /private/var/tmp/west-eunion-mutate/sp_link
-      target: sp_real
-    note: Guest runtime coverage for E-UNION copy-up, lower-only unlink whiteout, create under lower-only parent, recursive lower-dir rename, symlink-parent create, AF_UNIX bind parent copy-up, and post-test lower template protection.
-  - name: eunion_11_host_suite
-    kind: unit
-    runs: host
-    diag: bare
-    red: true
-    red-proof:
-      mode: source-base
-      source-env: XNU_SRC_ROOT
-    runner: source-contract-script
-    repo: darling-workspace
-    script: experiments/e-union/run.sh
-    note: Host hermetic RED->GREEN E-UNION suite; exercises the workspace two-layer vchroot fixture against this patchset source tree.
-  github:
-    fork:
-      repo: IlyaGulya/darling-xnu
-      base: preupstream/main
-      state: local
-    upstream:
-      repo: darlinghq/darling-xnu
-      base: main
-      state: local
-- path: xnu/eunion-12-template-protect.patch
-  sha256sum: b64d436510748f3632e194212e9a887d0138f7de730ebb7ee0bf9597ed508025
-  module: darling/src/external/xnu
-  source-branch: fix/e-union-12-template-protect
-  source-base: 121ae98d08e3e0c303abfeecb1d19d9f1845782e
-  source-commit: f03bea64366c3662d444e2e6f850b2774d9cd63b
-  bead: dar-test-infra-sp5.8.4.4
-  publication-status: blocked
-  publication-blocker: E-UNION proof-of-concept; template-protection primitives (prepare_unlink/rename_dest/create/write_fd) + site wiring so delete/rename/create/fd-meta never mutate the shared lower template. The lower template is a shared live directory, not a RO mount. Local experiment under dar-test-infra-sp5.8.4.4 (.1/.2/.3).
-  tests:
-  - name: eunion_mutation_guest
-    kind: guest
-    coverage-tier: runtime
-    runs: guest
-    diag: bare
-    runner: guest-c-fixture
-    repo: darling-workspace
-    script: tests/eunion_mutation_guest.c
-    ok-marker: WEST_EUNION_MUTATION_OK
-    timeout-seconds: 30
-    compile-flags:
-    - -std=gnu11
-    - -Wall
-    - -Wextra
-    - -Werror
-    requires:
-    - darling-eunion-prefix
-    eunion-cleanup-dirs:
-    - /private/var/tmp/west-eunion-mutate
-    eunion-verify-template-files-after: true
-    eunion-template-files:
-    - guest-path: /private/var/tmp/west-eunion-mutate/copy.txt
-      contents: |
-        LOWER_COPY
-    - guest-path: /private/var/tmp/west-eunion-mutate/delete.txt
-      contents: |
-        DELETE_ME
-    - guest-path: /private/var/tmp/west-eunion-mutate/create_parent/.keep
-      contents: |
-        keep
-    - guest-path: /private/var/tmp/west-eunion-mutate/rename_src/child.txt
-      contents: |
-        RENAME_CHILD
-    - guest-path: /private/var/tmp/west-eunion-mutate/sp_real/.keep
-      contents: |
-        keep
-    - guest-path: /private/var/tmp/west-eunion-mutate/bind_parent/.keep
-      contents: |
-        keep
-    eunion-template-symlinks:
-    - guest-path: /private/var/tmp/west-eunion-mutate/sp_link
-      target: sp_real
-    note: Guest runtime coverage for E-UNION copy-up, lower-only unlink whiteout, create under lower-only parent, recursive lower-dir rename, symlink-parent create, AF_UNIX bind parent copy-up, and post-test lower template protection.
-  - name: eunion_12_host_suite
-    kind: unit
-    runs: host
-    diag: bare
-    red: true
-    red-proof:
-      mode: source-base
-      source-env: XNU_SRC_ROOT
-    runner: source-contract-script
-    repo: darling-workspace
-    script: experiments/e-union/run.sh
-    note: Host hermetic RED->GREEN E-UNION suite; exercises the workspace two-layer vchroot fixture against this patchset source tree.
-  github:
-    fork:
-      repo: IlyaGulya/darling-xnu
-      base: preupstream/main
-      state: local
-    upstream:
-      repo: darlinghq/darling-xnu
-      base: main
-      state: local
-- path: xnu/eunion-13-setid-cap-strip.patch
-  sha256sum: f8fc82e0db9168d7b7df57f8d140f2b64339b75c714d01583d2e10c4cd4782d0
-  module: darling/src/external/xnu
-  source-branch: fix/e-union-13-setid-cap-strip
-  source-base: f03bea64366c3662d444e2e6f850b2774d9cd63b
-  source-commit: 788646ddc5621ae31008b8ab91cc1a2295646106
-  bead: dar-test-infra-sp5.8.4.4
-  publication-status: blocked
-  publication-blocker: E-UNION proof-of-concept; make the copy-up privilege-strip load-bearing — explicit fchmod(mode & 0777) setid strip (FS-independent) + drop security.capability (setuid-equivalent) on copy-up. Found by mutation-testing the hermetic suite. Local experiment under dar-test-infra-sp5.8.4.4.9.
-  tests:
-  - name: eunion_metadata_guest
-    kind: guest
-    coverage-tier: runtime
-    runs: guest
-    diag: bare
-    runner: guest-c-fixture
-    repo: darling-workspace
-    script: tests/eunion_metadata_guest.c
-    ok-marker: WEST_EUNION_METADATA_OK
-    timeout-seconds: 30
-    compile-flags:
-    - -std=gnu11
-    - -Wall
-    - -Wextra
-    - -Werror
-    requires:
-    - darling-eunion-prefix
-    eunion-cleanup-dirs:
-    - /private/var/tmp/west-eunion-meta
-    eunion-verify-template-files-after: true
-    eunion-template-files:
-    - guest-path: /private/var/tmp/west-eunion-meta/setid.txt
-      mode: "4755"
-      xattrs:
-        user.test.tag: hello
-      contents: |
-        SETID_CONTENT
-    - guest-path: /private/var/tmp/west-eunion-meta/fdmeta.txt
-      mode: "0644"
-      contents: |
-        FDMETA_CONTENT
-    - guest-path: /private/var/tmp/west-eunion-meta/fdxattr.txt
-      absent-xattrs:
-      - user.test.fd
-      contents: |
-        FDXATTR_CONTENT
-    - guest-path: /private/var/tmp/west-eunion-meta/pathxattr.txt
-      absent-xattrs:
-      - user.test.path
-      - user.union.whiteout
-      contents: |
-        PATHXATTR_CONTENT
-    - guest-path: /private/var/tmp/west-eunion-meta/ftrunc.txt
-      contents: |
-        FTRUNC_CONTENT_LONG
-    note: Guest runtime coverage for E-UNION setid stripping and xattr preservation on copy-up, fd metadata retargeting, path/fd xattr copy-up and marker rejection, ftruncate guest-visible template protection, plus post-test lower mode/xattr/content assertions.
-  - name: eunion_13_host_suite
-    kind: unit
-    runs: host
-    diag: bare
-    red: true
-    red-proof:
-      mode: source-base
-      source-env: XNU_SRC_ROOT
-    runner: source-contract-script
-    repo: darling-workspace
-    script: experiments/e-union/run.sh
-    note: Host hermetic RED->GREEN E-UNION suite; exercises the workspace two-layer vchroot fixture against this patchset source tree.
-  github:
-    fork:
-      repo: IlyaGulya/darling-xnu
-      base: preupstream/main
-      state: local
-    upstream:
-      repo: darlinghq/darling-xnu
-      base: main
-      state: local
-- path: xnu/eunion-14-fd-metadata.patch
-  sha256sum: 6d0529d31ed339d77d6a6b2c423fca366ff692c74f6937c2e38e7fdfd7f9d17b
-  module: darling/src/external/xnu
-  source-branch: fix/e-union-14-fd-metadata
-  source-base: 788646ddc5621ae31008b8ab91cc1a2295646106
-  source-commit: 20e7422962b4d99224e6d7dee5270b053ae3f2a6
-  bead: dar-test-infra-sp5.8.4.4
-  publication-status: blocked
-  publication-blocker: E-UNION proof-of-concept; protect the shared template on fd-metadata syscalls (fchmod/fchmod_extended/futimes/fsetxattr/fremovexattr) by copying up + re-opening the upper copy (vchroot_fd_for_meta_write); also fixes the EXIT_PATH escape detection in vchroot_prepare_write_fd. Local experiment under dar-test-infra-sp5.8.4.4.4.
-  tests:
-  - name: eunion_metadata_guest
-    kind: guest
-    coverage-tier: runtime
-    runs: guest
-    diag: bare
-    runner: guest-c-fixture
-    repo: darling-workspace
-    script: tests/eunion_metadata_guest.c
-    ok-marker: WEST_EUNION_METADATA_OK
-    timeout-seconds: 30
-    compile-flags:
-    - -std=gnu11
-    - -Wall
-    - -Wextra
-    - -Werror
-    requires:
-    - darling-eunion-prefix
-    eunion-cleanup-dirs:
-    - /private/var/tmp/west-eunion-meta
-    eunion-verify-template-files-after: true
-    eunion-template-files:
-    - guest-path: /private/var/tmp/west-eunion-meta/setid.txt
-      mode: "4755"
-      xattrs:
-        user.test.tag: hello
-      contents: |
-        SETID_CONTENT
-    - guest-path: /private/var/tmp/west-eunion-meta/fdmeta.txt
-      mode: "0644"
-      contents: |
-        FDMETA_CONTENT
-    - guest-path: /private/var/tmp/west-eunion-meta/fdxattr.txt
-      absent-xattrs:
-      - user.test.fd
-      contents: |
-        FDXATTR_CONTENT
-    - guest-path: /private/var/tmp/west-eunion-meta/pathxattr.txt
-      absent-xattrs:
-      - user.test.path
-      - user.union.whiteout
-      contents: |
-        PATHXATTR_CONTENT
-    - guest-path: /private/var/tmp/west-eunion-meta/ftrunc.txt
-      contents: |
-        FTRUNC_CONTENT_LONG
-    note: Guest runtime coverage for E-UNION setid stripping and xattr preservation on copy-up, fd metadata retargeting, path/fd xattr copy-up and marker rejection, ftruncate guest-visible template protection, plus post-test lower mode/xattr/content assertions.
-  - name: eunion_14_host_suite
-    kind: unit
-    runs: host
-    diag: bare
-    red: true
-    red-proof:
-      mode: source-base
-      source-env: XNU_SRC_ROOT
-    runner: source-contract-script
-    repo: darling-workspace
-    script: experiments/e-union/run.sh
-    note: Host hermetic RED->GREEN E-UNION suite; exercises the workspace two-layer vchroot fixture against this patchset source tree.
-  github:
-    fork:
-      repo: IlyaGulya/darling-xnu
-      base: preupstream/main
-      state: local
-    upstream:
-      repo: darlinghq/darling-xnu
-      base: main
-      state: local
-- path: xnu/eunion-15-xattr-isolation.patch
-  sha256sum: 003b697e36f0ea04c9f3bf6be8b2d824a11ad0ae9cfa87fd2c6af5a31ab59794
-  module: darling/src/external/xnu
-  source-branch: fix/e-union-15-xattr-isolation
-  source-base: 20e7422962b4d99224e6d7dee5270b053ae3f2a6
-  source-commit: a698e01440be1934fe3f896f5817d7b97479ad84
-  bead: dar-test-infra-sp5.8.4.4
-  publication-status: blocked
-  publication-blocker: E-UNION proof-of-concept; path-based setxattr/removexattr never expanded the guest path (pre-EUNION bug) and had no copy-up, so an xattr write on a lower-only object would mutate the shared template; listxattr listed the un-expanded path. Add vchroot_xattr_is_marker (reserved user.union.* namespace) and wire all four xattr sites — set/remove reject marker forging (EPERM) + copy up + operate on the upper path; get hides markers (ENOATTR); list uses the expanded path and filters markers. Mutation-verified (XM1-XM4, XS1). Local experiment under dar-test-infra-sp5.8.4.4.5.
-  tests:
-  - name: eunion_metadata_guest
-    kind: guest
-    coverage-tier: runtime
-    runs: guest
-    diag: bare
-    runner: guest-c-fixture
-    repo: darling-workspace
-    script: tests/eunion_metadata_guest.c
-    ok-marker: WEST_EUNION_METADATA_OK
-    timeout-seconds: 30
-    compile-flags:
-    - -std=gnu11
-    - -Wall
-    - -Wextra
-    - -Werror
-    requires:
-    - darling-eunion-prefix
-    eunion-cleanup-dirs:
-    - /private/var/tmp/west-eunion-meta
-    eunion-verify-template-files-after: true
-    eunion-template-files:
-    - guest-path: /private/var/tmp/west-eunion-meta/setid.txt
-      mode: "4755"
-      xattrs:
-        user.test.tag: hello
-      contents: |
-        SETID_CONTENT
-    - guest-path: /private/var/tmp/west-eunion-meta/fdmeta.txt
-      mode: "0644"
-      contents: |
-        FDMETA_CONTENT
-    - guest-path: /private/var/tmp/west-eunion-meta/fdxattr.txt
-      absent-xattrs:
-      - user.test.fd
-      contents: |
-        FDXATTR_CONTENT
-    - guest-path: /private/var/tmp/west-eunion-meta/pathxattr.txt
-      absent-xattrs:
-      - user.test.path
-      - user.union.whiteout
-      contents: |
-        PATHXATTR_CONTENT
-    - guest-path: /private/var/tmp/west-eunion-meta/ftrunc.txt
-      contents: |
-        FTRUNC_CONTENT_LONG
-    note: Guest runtime coverage for E-UNION setid stripping and xattr preservation on copy-up, fd metadata retargeting, path/fd xattr copy-up and marker rejection, ftruncate guest-visible template protection, plus post-test lower mode/xattr/content assertions.
-  - name: eunion_15_host_suite
-    kind: unit
-    runs: host
-    diag: bare
-    red: true
-    red-proof:
-      mode: source-base
-      source-env: XNU_SRC_ROOT
-    runner: source-contract-script
-    repo: darling-workspace
-    script: experiments/e-union/run.sh
-    note: Host hermetic RED->GREEN E-UNION suite; exercises the workspace two-layer vchroot fixture against this patchset source tree.
-  github:
-    fork:
-      repo: IlyaGulya/darling-xnu
-      base: preupstream/main
-      state: local
-    upstream:
-      repo: darlinghq/darling-xnu
-      base: main
-      state: local
-- path: xnu/eunion-16-mkdir-opaque.patch
-  sha256sum: ec10cdddc354c42bbf3606888aedbb79511fa5311b119d6b97d6229aac7ecbd6
-  module: darling/src/external/xnu
-  source-branch: fix/e-union-16-mkdir-opaque
-  source-base: a698e01440be1934fe3f896f5817d7b97479ad84
-  source-commit: 3a76b3646111cf8f0283490337c3920b1b81812c
-  bead: dar-test-infra-sp5.8.4.4
-  publication-status: blocked
-  publication-blocker: E-UNION proof-of-concept; delete-recreate of a populated lower-only dir resurrected its old children — rmdir dropped a whiteout but the subsequent mkdir never marked the recreated upper dir opaque, so readdir re-merged the stale lower children. Add vchroot_post_mkdir (set opaque when the new name shadows a lower directory) and wire it in mkdirat after the host mkdir succeeds. vchroot_set_opaque previously had zero callers. Mutation-verified (MK1 positive, MK2 negative). Local experiment under dar-test-infra-sp5.8.4.4.6.
-  tests:
-  - name: eunion_16_host_suite
+  - name: eunion_resolver
     kind: unit
     coverage-tier: host
     runs: host
     diag: bare
-    red: true
-    red-proof:
-      mode: source-base
-      source-env: XNU_SRC_ROOT
-    runner: source-contract-script
-    repo: darling-workspace
-    script: experiments/e-union/run.sh
-    note: Host hermetic RED->GREEN E-UNION suite; exercises the workspace two-layer vchroot fixture against this patchset source tree.
-  github:
-    fork:
-      repo: IlyaGulya/darling-xnu
-      base: preupstream/main
-      state: local
-    upstream:
-      repo: darlinghq/darling-xnu
-      base: main
-      state: local
-- path: xnu/eunion-17-percomponent-meta-dirent.patch
-  sha256sum: d7b957c828521e3b99f1d01df181674af11ed4f7bd3a0921b247b80b143800ae
-  module: darling/src/external/xnu
-  source-branch: fix/e-union-17-percomponent-meta-dirent
-  source-base: 3a76b3646111cf8f0283490337c3920b1b81812c
-  source-commit: d87aa6d5d23b81cc434464a09ff7093a3649a564
-  bead: dar-test-infra-sp5.8.4.4
-  publication-status: blocked
-  publication-blocker: E-UNION proof-of-concept; three union-path fixes. (a) Per-component two-layer resolution — vchroot_run committed current_root to the template after the first lower-only component and gated whiteout/opaque/upper checks on being upper-rooted, so an upper object under a lower-committed walk was invisible; rewritten to recompute upper-wins-then-lower from the guest-relative suffix at every component (literal case unreachable via the union's own writes, pinned by white-box test PC3). (b) eunion_copy_regular preserves mtime/uid/gid on copy-up (overlay parity; resetting mtime breaks make/ninja/ccache). (c) eunion_emit_dirent emits a valid d_type and real d_ino instead of DT_UNKNOWN/1. Mutation-verified (PC3, CM, G4). Local experiment under dar-test-infra-sp5.8.4.4.7.
-  tests:
-  - name: eunion_17_host_suite
-    kind: unit
-    runs: host
-    diag: bare
-    red: true
-    red-proof:
-      mode: source-base
-      source-env: XNU_SRC_ROOT
-    runner: source-contract-script
-    repo: darling-workspace
-    script: experiments/e-union/run.sh
-    note: Host hermetic RED->GREEN E-UNION suite; exercises the workspace two-layer vchroot fixture against this patchset source tree.
-  - name: eunion_path_direnum_guest
-    kind: guest
-    coverage-tier: runtime
-    runs: guest
-    diag: bare
-    runner: guest-c-fixture
-    repo: darling-workspace
-    script: tests/eunion_path_direnum_guest.c
-    ok-marker: WEST_EUNION_PATH_DIRENUM_OK
-    timeout-seconds: 20
-    compile-flags:
-    - -std=gnu11
-    - -Wall
-    - -Wextra
-    - -Werror
-    requires:
-    - darling-eunion-prefix
-    eunion-template-files:
-    - guest-path: /private/var/tmp/west-eunion-direnum/lower-only.txt
-      contents: |
-        LOWER_ONLY
-    - guest-path: /private/var/tmp/west-eunion-direnum/shadow.txt
-      contents: |
-        LOWER_SHADOW
-    eunion-upper-files:
-    - guest-path: /private/var/tmp/west-eunion-direnum/upper-only.txt
-      contents: |
-        UPPER_ONLY
-    - guest-path: /private/var/tmp/west-eunion-direnum/shadow.txt
-      contents: |
-        UPPER_SHADOW
-    note: Guest runtime coverage for E-UNION path resolution, upper-over-lower shadowing, directory merge enumeration, and F_GETPATH guest path detranslation.
-  github:
-    fork:
-      repo: IlyaGulya/darling-xnu
-      base: preupstream/main
-      state: local
-    upstream:
-      repo: darlinghq/darling-xnu
-      base: main
-      state: local
-- path: xnu/eunion-18-exitpath-locale.patch
-  sha256sum: 6ff06baed9149f736af2bfa2c8322f4916e31897b3b1599a1599019c1c6e7796
-  module: darling/src/external/xnu
-  source-branch: fix/e-union-18-exitpath-locale
-  source-base: d87aa6d5d23b81cc434464a09ff7093a3649a564
-  source-commit: 7c4af0d829b603a28ff0e326e3cf38ca33514f78
-  bead: dar-test-infra-sp5.8.4.4
-  publication-status: blocked
-  publication-blocker: BASELINE fix (outside #ifdef EUNION) surfaced by the E-UNION harness. The EXIT_PATH escape-hatch check used strncasecmp_l(current_path+current_root_len, EXIT_PATH, ..., LC_C_LOCALE) where LC_C_LOCALE is ((locale_t)NULL); glibc's strncasecmp_l dereferences the locale the instant the bytes match, so a NULL locale SEGVs precisely when a guest path equals EXIT_PATH ("/Volumes/SystemRoot") — exactly when the escape hatch fires (gcc warns -Wnonnull). EXIT_PATH is pure ASCII, so the case-fold needs no locale; replaced with a locale-free ASCII comparator (eunion_ascii_ncasecmp) and removed the dead locale_t/LC_C_LOCALE/strncasecmp_l decls. Mutation-verified (EP1-EP4 — always-equal, no-fold, asymmetric-fold all caught). Local experiment under dar-test-infra-sp5.8.4.4.10.
-  tests:
-  - name: eunion_exitpath_systemroot_guest
-    kind: guest
-    coverage-tier: runtime
-    runs: guest
-    diag: bare
-    runner: guest-c-fixture
-    repo: darling-workspace
-    script: tests/eunion_exitpath_systemroot_guest.c
-    ok-marker: WEST_EUNION_EXITPATH_SYSTEMROOT_OK
-    timeout-seconds: 20
-    compile-flags:
-    - -std=gnu11
-    - -Wall
-    - -Wextra
-    - -Werror
-    requires:
-    - darling-prefix
-    note: Guest runtime gate for the /Volumes/SystemRoot EXIT_PATH escape hatch and its ASCII case-folded spelling.
-  - name: eunion_18_host_suite
-    kind: unit
-    runs: host
-    diag: bare
-    red: true
-    red-proof:
-      mode: source-base
-      source-env: XNU_SRC_ROOT
-    runner: source-contract-script
-    repo: darling-workspace
-    script: experiments/e-union/run.sh
-    note: Host hermetic RED->GREEN E-UNION suite; exercises the workspace two-layer vchroot fixture against this patchset source tree.
-  github:
-    fork:
-      repo: IlyaGulya/darling-xnu
-      base: preupstream/main
-      state: local
-    upstream:
-      repo: darlinghq/darling-xnu
-      base: main
-      state: local
-- path: xnu/eunion-19-chown-stub-doc.patch
-  sha256sum: 408809321422c115c2de7aa6b21fe6f427b176e7ec47ab1a5cc4c4a3144aa608
-  module: darling/src/external/xnu
-  source-branch: fix/e-union-19-chown-stub-doc
-  source-base: 7c4af0d829b603a28ff0e326e3cf38ca33514f78
-  source-commit: 559d6bf31f36f0c28ef609c73346ca1734961fc4
-  bead: dar-test-infra-sp5.8.4.4
-  publication-status: blocked
-  publication-blocker: E-UNION proof-of-concept. fchown/fchownat/lchown are entirely under #if 0 (return 0, no mutation) and so SAFE today, but un-stubbing any of them adds an instant template-corruption path — for a lower-only target the expanded path is the shared lower template, so the chown mutates ownership for ALL prefixes. Adds warning comments to each stub naming the required copy-up before re-enabling, and keeps the path-based NULL guards outside the disabled fchownat/lchown bodies so the full patchset still returns EFAULT for NULL paths instead of stub success. Covered by xnu/vchroot-pathnull-guard.patch's full-profile contract.
-  test-exception:
-    reason: covered-by-vchroot-pathnull-guard
-    scope: documentation-only E-UNION chown stub note
-    note: The only executable change preserves the path-null EFAULT contract exercised by tests/vchroot_pathnull_guard_contract.c against the full applied profile.
-  github:
-    fork:
-      repo: IlyaGulya/darling-xnu
-      base: preupstream/main
-      state: local
-    upstream:
-      repo: darlinghq/darling-xnu
-      base: main
-      state: local
-- path: xnu/chown-disabled-null-guard.patch
-  sha256sum: 5e62dae9facde57badb825a2ad067e04c6a6a0959f6b504bcbb7d8dc6e82f88a
-  module: darling/src/external/xnu
-  source-branch: fix/chown-disabled-null-guard
-  source-base: 559d6bf31f36f0c28ef609c73346ca1734961fc4
-  source-commit: b9e995ad224e566db505072a166f70423225ea51
-  bead: dar-gyvb
-  publication-status: blocked
-  publication-blocker: >-
-    Local correctness follow-up to the disabled chown stubs documented by
-    eunion-19. fchown/fchownat/lchown must not report success when ownership
-    mutation is deliberately disabled for E-UNION template-safety reasons;
-    return ENOTSUP for the disabled operation and EFAULT for NULL path inputs.
-    Keep blocked until the broader ownership mutation policy is reviewed.
-  tests:
-  - name: chown_disabled_null_guard_contract
-    kind: contract
-    coverage-tier: compile
-    runs: host
-    diag: bare
-    red: true
-    red-proof:
-      mode: source-base
-      source-env: XNU_SRC_ROOT
-      expect-failure-phase: run
-    runner: c-fixture
-    repo: darling-workspace
-    script: tests/chown_disabled_null_guard_contract.c
-    source-files:
-    - darling/src/libsystem_kernel/emulation/src/xnu_syscall/bsd/impl/unistd/fchown.c
-    - darling/src/libsystem_kernel/emulation/src/xnu_syscall/bsd/impl/unistd/fchownat.c
-    - darling/src/libsystem_kernel/emulation/src/xnu_syscall/bsd/impl/unistd/lchown.c
-    - darling/src/libsystem_kernel/emulation/src/xnu_syscall/bsd/impl/unistd/chown.c
-    fixture-include-dirs:
-    - tests/fixtures/chown-disabled/include
-    compile-flags:
-    - -std=gnu11
-    - -Wall
-    - -Wextra
-    - -Werror
-    - -Wno-unused-parameter
-    note: Compiles production fchown/chown/fchownat/lchown stubs and verifies disabled ownership changes return ENOTSUP while NULL path inputs return EFAULT before vchroot/Linux fallback.
-  - name: chown_disabled_null_guard_guest
-    kind: contract
-    runs: guest
-    diag: guarded
-    runner: guest-c-fixture
-    repo: darling-workspace
-    script: tests/chown_disabled_null_guard_guest.c
-    ok-marker: CHOWN_DISABLED_NULL_GUARD_GUEST_OK
-    note: "Guest runtime gate for disabled chown-family syscall returns: NULL paths report EFAULT and disabled ownership mutations report ENOTSUP instead of false success."
-  github:
-    fork:
-      repo: IlyaGulya/darling-xnu
-      base: preupstream/main
-      state: local
-    upstream:
-      repo: darlinghq/darling-xnu
-      base: main
-      state: local
-- path: xnu/eunion-20-ftruncate-fd-copyup.patch
-  sha256sum: 4b8fb45a20e330cf78e7f9c0b4a81a2210bc957504eb763182cebf7c81a2925e
-  module: darling/src/external/xnu
-  source-branch: fix/e-union-20-ftruncate-fd-copyup
-  source-base: 559d6bf31f36f0c28ef609c73346ca1734961fc4
-  source-commit: d5e8efb03497030714126778058ac24778f4ed2c
-  bead: dar-test-infra-sp5.8.4.4
-  publication-status: blocked
-  publication-blocker: E-UNION proof-of-concept; a full 216-file write-op audit of vchroot template protection found one unprotected mutating site — sys_ftruncate hit __NR_ftruncate on the raw fd with no copy-up. ftruncate mutates CONTENT by descriptor, the same class as the fd-metadata syscalls protected in .4 but omitted from that set; a writable fd on a lower-only (shared template) inode would shrink the template for ALL prefixes. Unlike fchmod/utimensat/fsetxattr (which work on the .4 meta-write helper's O_RDONLY fd), ftruncate REQUIRES a writable fd, so this adds a sibling helper vchroot_fd_for_content_write (same copy-up, re-opens the upper copy O_RDWR) and wires sys_ftruncate to it under #ifdef EUNION (#else = original, OFF byte-identical). The .4 helper is left untouched. Mutation-verified (FT — content helper opening O_RDONLY drives EINVAL/no-truncate RED; stub no-copy-up drives different-fd + template-safety RED). Local experiment under dar-test-infra-sp5.8.4.4.11.
-  tests:
-  - name: eunion_metadata_guest
-    kind: guest
-    coverage-tier: runtime
-    runs: guest
-    diag: bare
-    runner: guest-c-fixture
-    repo: darling-workspace
-    script: tests/eunion_metadata_guest.c
-    ok-marker: WEST_EUNION_METADATA_OK
-    timeout-seconds: 30
-    compile-flags:
-    - -std=gnu11
-    - -Wall
-    - -Wextra
-    - -Werror
-    requires:
-    - darling-eunion-prefix
-    eunion-cleanup-dirs:
-    - /private/var/tmp/west-eunion-meta
-    eunion-verify-template-files-after: true
-    eunion-template-files:
-    - guest-path: /private/var/tmp/west-eunion-meta/setid.txt
-      mode: "4755"
-      xattrs:
-        user.test.tag: hello
-      contents: |
-        SETID_CONTENT
-    - guest-path: /private/var/tmp/west-eunion-meta/fdmeta.txt
-      mode: "0644"
-      contents: |
-        FDMETA_CONTENT
-    - guest-path: /private/var/tmp/west-eunion-meta/fdxattr.txt
-      absent-xattrs:
-      - user.test.fd
-      contents: |
-        FDXATTR_CONTENT
-    - guest-path: /private/var/tmp/west-eunion-meta/pathxattr.txt
-      absent-xattrs:
-      - user.test.path
-      - user.union.whiteout
-      contents: |
-        PATHXATTR_CONTENT
-    - guest-path: /private/var/tmp/west-eunion-meta/ftrunc.txt
-      contents: |
-        FTRUNC_CONTENT_LONG
-    note: Guest runtime coverage for E-UNION setid stripping and xattr preservation on copy-up, fd metadata retargeting, path/fd xattr copy-up and marker rejection, ftruncate guest-visible template protection, plus post-test lower mode/xattr/content assertions.
-  - name: eunion_20_host_suite
-    kind: unit
-    runs: host
-    diag: bare
-    red: true
-    red-proof:
-      mode: source-base
-      source-env: XNU_SRC_ROOT
-    runner: source-contract-script
-    repo: darling-workspace
-    script: experiments/e-union/run.sh
-    note: Host hermetic RED->GREEN E-UNION suite; exercises the workspace two-layer vchroot fixture against this patchset source tree.
-  github:
-    fork:
-      repo: IlyaGulya/darling-xnu
-      base: preupstream/main
-      state: local
-    upstream:
-      repo: darlinghq/darling-xnu
-      base: main
-      state: local
-- path: xnu/eunion-21-provenance-header.patch
-  sha256sum: c6c2f9691d8f92fc9b9bec921dbf93b15f31c480b4c531ce57355d1f5d551d1d
-  module: darling/src/external/xnu
-  source-branch: fix/e-union-21-provenance-header
-  source-base: d5e8efb03497030714126778058ac24778f4ed2c
-  source-commit: 2c9fa529b58d2868633b038e9263b3140e7d76f5
-  bead: dar-test-infra-sp5.8.4.4
-  publication-status: blocked
-  publication-blocker: E-UNION proof-of-concept (comment-only). Centralizes a provenance/license header at the top of the EUNION region naming each borrowed-idea source with its license and URL — gVisor overlay (Apache-2.0) for the copy-up/whiteout/opaque/readdir-merge algorithms and the Linux overlayfs docs for semantics — and states that no third-party code is copied or translated (the new C is under this file's existing license) and that PRoot (GPL-2) was reviewed but contributes no code or design. Independent reimplementation of ideas only; Apache-2.0 imposes no attribution duty on reimplemented concepts, the credit is for auditability. Inside #ifdef EUNION so OFF builds stay byte-identical; hermetic suite 222/222 green. Local experiment under dar-test-infra-sp5.8.4.4.
-  test-exception:
-    reason: comment-only
-    scope: provenance and license header only
-    note: Adds provenance/license comments inside the EUNION region only; no executable behavior changes.
-  github:
-    fork:
-      repo: IlyaGulya/darling-xnu
-      base: preupstream/main
-      state: local
-    upstream:
-      repo: darlinghq/darling-xnu
-      base: main
-      state: local
-- path: xnu/eunion-22-symlink-parent-copyup.patch
-  sha256sum: 5825df3dfe1270f46bb23c4ed61aed11cfd48a7737e7163b85c5530214b2cd4c
-  module: darling/src/external/xnu
-  source-branch: fix/e-union-22-symlink-parent-copyup
-  source-base: 2c9fa529b58d2868633b038e9263b3140e7d76f5
-  source-commit: dc195f1178ec2fc0d0d4b59a3146ea497c767dc9
-  bead: dar-test-infra-sp5.8.4.4
-  publication-status: blocked
-  publication-blocker: E-UNION proof-of-concept. A create through a symlinked lower-only parent dir failed ENOENT under EUNION — surfaced by a live  smoke test where  failed because /tmp is a symlink (to private/tmp) and eunion_copyup_parent copied up the symlink pointing at a target dir never materialized in the upper layer, so open(O_CREAT) followed the upper symlink into an absent directory. Fix adds eunion_copyup_dir_resolved (materializes the parent dir while following any final-component symlink to its real target, relative+absolute targets, bounded chains) and rewires eunion_copyup_parent to it. EUNION-only (copy-mode copies the whole template so no bug); all new code inside the file #ifdef EUNION so OFF byte-identical (verified via non-EUNION preprocessed diff). Hermetic SP1 (6 asserts) RED before, GREEN after, mutation-verified 2/2; suite 222 to 228. Live-verified  now works. Local experiment under dar-test-infra-sp5.8.4.4.
-  tests:
-  - name: eunion_mutation_guest
-    kind: guest
-    coverage-tier: runtime
-    runs: guest
-    diag: bare
-    runtime-profile: homebrew-rootless-no-mount
-    runner: guest-c-fixture
-    repo: darling-workspace
-    script: tests/eunion_mutation_guest.c
-    ok-marker: WEST_EUNION_MUTATION_OK
-    timeout-seconds: 30
-    compile-flags:
-    - -std=gnu11
-    - -Wall
-    - -Wextra
-    - -Werror
-    requires:
-    - darling-eunion-prefix
-    eunion-cleanup-dirs:
-    - /private/var/tmp/west-eunion-mutate
-    eunion-verify-template-files-after: true
-    eunion-template-files:
-    - guest-path: /private/var/tmp/west-eunion-mutate/copy.txt
-      contents: |
-        LOWER_COPY
-    - guest-path: /private/var/tmp/west-eunion-mutate/delete.txt
-      contents: |
-        DELETE_ME
-    - guest-path: /private/var/tmp/west-eunion-mutate/create_parent/.keep
-      contents: |
-        keep
-    - guest-path: /private/var/tmp/west-eunion-mutate/rename_src/child.txt
-      contents: |
-        RENAME_CHILD
-    - guest-path: /private/var/tmp/west-eunion-mutate/sp_real/.keep
-      contents: |
-        keep
-    - guest-path: /private/var/tmp/west-eunion-mutate/bind_parent/.keep
-      contents: |
-        keep
-    eunion-template-symlinks:
-    - guest-path: /private/var/tmp/west-eunion-mutate/sp_link
-      target: sp_real
-    note: Guest runtime coverage for E-UNION copy-up, lower-only unlink whiteout, create under lower-only parent, recursive lower-dir rename, symlink-parent create, AF_UNIX bind parent copy-up, and post-test lower template protection.
-  - name: eunion_22_host_suite
+    ctest-label: eunion-host
+    ctest-source-override: DARLING_XNU_SRC
+    requires-profile: homebrew
+    note: CTest host behavior test compiling the production resolver against real upper/lower fixtures, whiteout and opaque metadata.
+  - name: eunion_hardening_host_suite
     kind: unit
     coverage-tier: host
     runs: host
@@ -4012,113 +2686,96 @@ patches:
     runner: source-contract-script
     repo: darling-workspace
     script: experiments/e-union/run.sh
-    note: Host hermetic RED->GREEN E-UNION suite; exercises the workspace two-layer vchroot fixture against this patchset source tree.
-  github:
-    fork:
-      repo: IlyaGulya/darling-xnu
-      base: preupstream/main
-      state: local
-    upstream:
-      repo: darlinghq/darling-xnu
-      base: main
-      state: local
-- path: xnu/eunion-resolver-layer.patch
-  sha256sum: 15e0af15b9378b01adcb9a6afbd3a50d5b3663d00d660df79057d9a25dcc75ba
-  module: darling/src/external/xnu
-  source-branch: fix/eunion-resolver-layer
-  source-base: dc195f1178ec2fc0d0d4b59a3146ea497c767dc9
-  source-commit: 0a27bc926c2c840d54487e375d923c747f652b50
-  bead: dar-yfp4
-  publication-status: blocked
-  publication-blocker: E-UNION remains experimental until the complete resolver/copy-up policy is productized. This patch only establishes the resolver boundary and its CTest coverage.
-  test-exception:
-    reason: introduced-ctest-target-no-source-base-red
-    scope: This boundary extraction introduces both the resolver API and its CTest target, so source-base cannot execute the same target without proving only a missing fixture. The preceding eunion_22_host_suite supplies the semantic source-base RED->GREEN proof, while this CTest runs the extracted production resolver against real upper/lower/xattr behavior on the selected current profile.
-  tests:
-  - name: eunion_resolver
-    kind: unit
-    coverage-tier: host
-    runs: host
-    diag: bare
-    ctest-label: eunion-host
-    ctest-source-override: DARLING_XNU_SRC
-    requires-profile: homebrew
-    note: CTest host behavior test using a real upper/lower filesystem fixture with whiteout and opaque xattrs; it compiles the production resolver from the selected XNU source tree.
-  github:
-    fork:
-      repo: IlyaGulya/darling-xnu
-      base: preupstream/main
-      state: local
-    upstream:
-      repo: darlinghq/darling-xnu
-      base: main
-      state: local
-- path: xnu/eunion-23-fdpath-nested-lower.patch
-  sha256sum: ed3a071a498d27622ec0b29305e7317d00a3b1a4fb7a333382696a90b231cb9b
-  module: darling/src/external/xnu
-  source-branch: fix/eunion-fdpath-nested-lower
-  source-base: 9159de2e2b985d24c57df445a44ee75afefbcdcc
-  source-commit: afeb053fa1bcdf3de819d403d6c1aacb244fa659
-  bead: dar-r7fc.4.2
-  publication-status: blocked
-  publication-blocker: E-UNION proof-of-concept follow-up; fdpath detranslation for route-2 lower nested under prefix, local until the E-UNION patchset is productized.
-  tests:
-  - name: eunion_path_direnum_guest
+    note: Host behavioral RED-to-GREEN suite for syscall-site copy-up, template protection and nested path handling.
+  - name: eunion_mutation_guest
+    use: eunion-guest-c-runtime
     kind: guest
     coverage-tier: runtime
     runs: guest
-    diag: bare
+    diag: guarded
+    runtime-profile: homebrew-rootless-no-mount
     runner: guest-c-fixture
     repo: darling-workspace
-    script: tests/eunion_path_direnum_guest.c
-    ok-marker: WEST_EUNION_PATH_DIRENUM_OK
-    timeout-seconds: 20
-    compile-flags:
-    - -std=gnu11
-    - -Wall
-    - -Wextra
-    - -Werror
+    script: tests/eunion_mutation_guest.c
+    ok-marker: WEST_EUNION_MUTATION_OK
+    timeout-seconds: 30
     requires:
     - darling-eunion-prefix
+    eunion-cleanup-dirs:
+    - /private/var/tmp/west-eunion-mutate
+    eunion-verify-template-files-after: true
     eunion-template-files:
-    - guest-path: /private/var/tmp/west-eunion-direnum/lower-only.txt
+    - guest-path: /private/var/tmp/west-eunion-mutate/copy.txt
       contents: |
-        LOWER_ONLY
-    - guest-path: /private/var/tmp/west-eunion-direnum/shadow.txt
+        LOWER_COPY
+    - guest-path: /private/var/tmp/west-eunion-mutate/delete.txt
       contents: |
-        LOWER_SHADOW
-    eunion-upper-files:
-    - guest-path: /private/var/tmp/west-eunion-direnum/upper-only.txt
+        DELETE_ME
+    - guest-path: /private/var/tmp/west-eunion-mutate/create_parent/.keep
       contents: |
-        UPPER_ONLY
-    - guest-path: /private/var/tmp/west-eunion-direnum/shadow.txt
+        keep
+    - guest-path: /private/var/tmp/west-eunion-mutate/rename_src/child.txt
       contents: |
-        UPPER_SHADOW
-    note: Guest runtime coverage for E-UNION path resolution, upper-over-lower shadowing, directory merge enumeration, and F_GETPATH guest path detranslation.
-  github:
-    fork:
-      repo: IlyaGulya/darling-xnu
-      base: preupstream/main
-      state: local
-    upstream:
-      repo: darlinghq/darling-xnu
-      base: main
-      state: local
-- path: xnu/eunion-24-mkdir-upper-create.patch
-  sha256sum: 75e2701f45f9ece4c40b665021beb70166b09c6f07d88506d2be37821a88d36f
-  module: darling/src/external/xnu
-  source-branch: fix/eunion-mkdir-opaque-runtime
-  source-base: afeb053fa1bcdf3de819d403d6c1aacb244fa659
-  source-commit: a6bb8d7f2d446c2c2fca53a7ba3064e3d68d75d5
-  bead: dar-ivax
-  publication-status: blocked
-  publication-blocker: E-UNION proof-of-concept follow-up; mkdir/create over a lower namesake must target the writable upper path after create preparation, not resolve back to the lower template.
-  tests:
+        RENAME_CHILD
+    - guest-path: /private/var/tmp/west-eunion-mutate/sp_real/.keep
+      contents: |
+        keep
+    - guest-path: /private/var/tmp/west-eunion-mutate/bind_parent/.keep
+      contents: |
+        keep
+    eunion-template-symlinks:
+    - guest-path: /private/var/tmp/west-eunion-mutate/sp_link
+      target: sp_real
+    note: Guest behavior for copy-up, whiteout, lower-only mutation, recursive rename, symlink-parent creation, bind and template protection.
+  - name: eunion_metadata_guest
+    use: eunion-guest-c-runtime
+    kind: guest
+    coverage-tier: runtime
+    runs: guest
+    diag: guarded
+    runtime-profile: homebrew-rootless-no-mount
+    runner: guest-c-fixture
+    repo: darling-workspace
+    script: tests/eunion_metadata_guest.c
+    ok-marker: WEST_EUNION_METADATA_OK
+    timeout-seconds: 30
+    requires:
+    - darling-eunion-prefix
+    eunion-cleanup-dirs:
+    - /private/var/tmp/west-eunion-meta
+    eunion-verify-template-files-after: true
+    eunion-template-files:
+    - guest-path: /private/var/tmp/west-eunion-meta/setid.txt
+      mode: "4755"
+      xattrs:
+        user.test.tag: hello
+      contents: |
+        SETID_CONTENT
+    - guest-path: /private/var/tmp/west-eunion-meta/fdmeta.txt
+      mode: "0644"
+      contents: |
+        FDMETA_CONTENT
+    - guest-path: /private/var/tmp/west-eunion-meta/fdxattr.txt
+      absent-xattrs:
+      - user.test.fd
+      contents: |
+        FDXATTR_CONTENT
+    - guest-path: /private/var/tmp/west-eunion-meta/pathxattr.txt
+      absent-xattrs:
+      - user.test.path
+      - user.union.whiteout
+      contents: |
+        PATHXATTR_CONTENT
+    - guest-path: /private/var/tmp/west-eunion-meta/ftrunc.txt
+      contents: |
+        FTRUNC_CONTENT_LONG
+    note: Guest behavior for setid/capability policy, fd/path metadata copy-up, xattr marker isolation and ftruncate content protection.
   - name: eunion_mkdir_opaque_guest
     kind: guest
     coverage-tier: runtime
     runs: guest
     diag: guarded
+    runtime-profile: homebrew-rootless-no-mount
     red: true
     red-proof:
       mode: guest-runtime-deploy
@@ -4139,11 +2796,6 @@ patches:
     script: tests/eunion_mkdir_opaque_guest.c
     ok-marker: WEST_EUNION_MKDIR_OPAQUE_OK
     timeout-seconds: 30
-    compile-flags:
-    - -std=gnu11
-    - -Wall
-    - -Wextra
-    - -Werror
     requires:
     - darling-eunion-prefix
     eunion-cleanup-dirs:
@@ -4156,26 +2808,7 @@ patches:
     - guest-path: /private/var/tmp/west-eunion-mkdir-opaque/recreate/stale_b.txt
       contents: |
         STALE_B
-    note: Guest runtime regression for mkdir over an rmdir-whiteouted lower directory; stale lower children must not resurrect and the lower template must remain intact.
-  github:
-    fork:
-      repo: IlyaGulya/darling-xnu
-      base: preupstream/main
-      state: local
-    upstream:
-      repo: darlinghq/darling-xnu
-      base: main
-      state: local
-- path: xnu/eunion-25-bind-symlink-parent.patch
-  sha256sum: 159f631b770f910ff6b7a1872fcc780c2c45688e1811e72f1fa6e5c0aae29624
-  module: darling/src/external/xnu
-  source-branch: fix/eunion-bind-symlink-parent
-  source-base: a6bb8d7f2d446c2c2fca53a7ba3064e3d68d75d5
-  source-commit: d4034574702e0a0f65c272efe4e853cc0a584001
-  bead: dar-yfp4.3
-  publication-status: blocked
-  publication-blocker: E-UNION remains experimental until the rootless guest bootstrap reaches shellspawn and the mutation fixture can execute. This fix prevents AF_UNIX bind through a symlinked lower-only parent from bypassing the writable upper layer.
-  tests:
+    note: Guest regression for mkdir over an rmdir-whiteouted lower directory and lower-template preservation.
   - name: eunion_bind_symlink_parent_host_suite
     kind: unit
     coverage-tier: host
@@ -4190,25 +2823,7 @@ patches:
     runner: source-contract-script
     repo: darling-workspace
     script: experiments/e-union/run.sh
-    note: 'Host behavioral regression: executes production sys_bind against a two-layer E-UNION fixture where the AF_UNIX parent is a lower-only symlink, then proves the socket is created in the upper target and never in the lower template.'
-  github:
-    fork:
-      repo: IlyaGulya/darling-xnu
-      base: preupstream/main
-      state: local
-  upstream:
-    repo: darlinghq/darling-xnu
-    base: main
-    state: local
-- path: xnu/eunion-nested-lower-root.patch
-  module: darling/src/external/xnu
-  source-branch: fix/eunion-nested-lower-root-resolution
-  source-base: c10896a28d935c5c4cff2ea5b1e33aa72b356f61
-  source-commit: 4ed5bd6e6266886f00637595b19838a14b740967
-  bead: dar-test-infra-sp5.8.4.7
-  publication-status: blocked
-  publication-blocker: Rootless E-UNION runtime proof is local-only until bootstrap and lifecycle evidence are green on a fresh prefix.
-  tests:
+    note: Host behavior for AF_UNIX bind through a lower-only symlinked parent.
   - name: eunion_nested_lower_root_host_suite
     kind: unit
     coverage-tier: host
@@ -4223,13 +2838,7 @@ patches:
     runner: source-contract-script
     repo: darling-workspace
     script: experiments/e-union/run-nested-lower-root.sh
-    note: >-
-      Behavioral RED-to-GREEN contract for the rootless layout where the lower
-      E-UNION template is physically nested below the writable prefix. It drives
-      production vchroot path walking, fd-path translation and unexpand; the
-      source-base must report the lower-host-path F4 failure, while the fix makes
-      the complete nested suite pass.
-  sha256sum: 64de0a94d6f68094dd349966c42f5e68c622f37f7e6c90861c421792edd4025d
+    note: Host behavior for nested lower-template roots and fd-path unexpand.
   github:
     fork:
       repo: IlyaGulya/darling-xnu
