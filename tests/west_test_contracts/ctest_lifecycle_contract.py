@@ -616,6 +616,61 @@ with tempfile.TemporaryDirectory() as temp:
 
 with tempfile.TemporaryDirectory() as temp:
     root = Path(temp)
+    prefix = root / "prefix"
+    prefix.mkdir()
+    test = DarlingTest.__new__(DarlingTest)
+    test.topdir = str(root)
+    test._prefix = str(prefix)
+    test._prefix_cleanup_failed = False
+    test.inf = lambda _message: None
+    test.err = lambda _message: None
+    test.die = lambda message: (_ for _ in ()).throw(SystemExit(message))
+    test._ctest_runtime_profile_definitions = lambda: {
+        "homebrew-prefix-baseline": {
+            "purpose": "prefix-baseline",
+            "bootstrap-smoke-timeout-seconds": 60,
+        }
+    }
+
+    @contextmanager
+    def prefix_context(_enabled):
+        yield
+
+    @contextmanager
+    def deployment_context(_profiles, *, label_prefix, retain_deployment):
+        assert label_prefix == "Prefix bootstrap"
+        assert retain_deployment is True
+        yield types.SimpleNamespace(
+            prefix=prefix,
+            build_root=root / "build",
+            env={"DARLING_LAUNCHER": "/fake/darling"},
+        )
+
+    test._prefix_resource_context = prefix_context
+    test._runtime_profile_deployment_context = deployment_context
+    calls = []
+    original_run_guest_argv = test_module.run_guest_argv
+    original_run_bounded = test_module.run_bounded
+
+    def successful_executable(*args, **kwargs):
+        calls.append((args, kwargs))
+        return ProcessResult(0, stdout="", stderr="")
+
+    test_module.run_guest_argv = successful_executable
+    test_module.run_bounded = lambda *_args, **_kwargs: ProcessResult(0)
+    try:
+        test._bootstrap_runtime_profile(
+            "homebrew-prefix-baseline", executable="/usr/bin/true"
+        )
+    finally:
+        test_module.run_guest_argv = original_run_guest_argv
+        test_module.run_bounded = original_run_bounded
+
+    assert calls and calls[0][0][2] == ("/usr/bin/true",), calls
+
+
+with tempfile.TemporaryDirectory() as temp:
+    root = Path(temp)
     old_output = root / "west-ctest-guest-c.old"
     fresh_output = root / "west-ctest-guest-c.fresh"
     output_dir = root / "west-ctest-guest-c.directory"

@@ -64,6 +64,7 @@ from test_cmake import archive_git_tree_to, archive_source_to, run_darling_cmake
 from test_execution import process_output_text, run_bounded
 from test_guest_execution import (
     resolve_guest_execution,
+    run_guest_argv,
     run_guest_command_fixture,
     run_guest_shell,
     shutdown_guest_prefix,
@@ -278,6 +279,11 @@ class DarlingTest(WestCommand):
             type=int,
             metavar="SECONDS",
             help="override the bounded runtime-bootstrap deadline (E-UNION default: 15; maximum: 600)",
+        )
+        parser.add_argument(
+            "--bootstrap-executable",
+            metavar="GUEST_PATH",
+            help="with --bootstrap-runtime-profile, run one absolute guest executable instead of the default login-shell verdict",
         )
         parser.add_argument(
             "--keep-prefix-running",
@@ -4125,7 +4131,9 @@ class DarlingTest(WestCommand):
                     self.inf(f"  {label} deployment retained after successful smoke")
                 self._shutdown_runtime_prefix(prefix)
 
-    def _bootstrap_runtime_profile(self, profile_name: str) -> None:
+    def _bootstrap_runtime_profile(
+        self, profile_name: str, *, executable: str | None = None
+    ) -> None:
         """Retain one declared runtime provider only after a real guest smoke."""
 
         prefix_text = getattr(self, "_prefix", None)
@@ -4200,16 +4208,28 @@ class DarlingTest(WestCommand):
                         "prefix bootstrap doctor failed "
                         f"with rc {doctor.returncode}: {doctor_output[-1000:]}"
                     )
-                result = run_guest_shell(
-                    deployment.env["DARLING_LAUNCHER"],
-                    prefix_text,
-                    "set -eu\nprintf '%s\\n' WEST_PREFIX_BOOTSTRAP_OK",
-                    cwd=Path(self.topdir),
-                    env=deployment.env,
-                    timeout_seconds=smoke_timeout_seconds,
-                    capture_output=True,
-                    command_prefix=command_prefix,
-                )
+                if executable is None:
+                    result = run_guest_shell(
+                        deployment.env["DARLING_LAUNCHER"],
+                        prefix_text,
+                        "set -eu\nprintf '%s\\n' WEST_PREFIX_BOOTSTRAP_OK",
+                        cwd=Path(self.topdir),
+                        env=deployment.env,
+                        timeout_seconds=smoke_timeout_seconds,
+                        capture_output=True,
+                        command_prefix=command_prefix,
+                    )
+                else:
+                    result = run_guest_argv(
+                        deployment.env["DARLING_LAUNCHER"],
+                        prefix_text,
+                        (executable,),
+                        cwd=Path(self.topdir),
+                        env=deployment.env,
+                        timeout_seconds=smoke_timeout_seconds,
+                        capture_output=True,
+                        command_prefix=command_prefix,
+                    )
                 if stack_sample_dir is not None:
                     self._render_bootstrap_stack_sample(
                         stack_sample_dir,
@@ -4252,9 +4272,12 @@ class DarlingTest(WestCommand):
                         "prefix bootstrap guest smoke failed "
                         f"with rc {result.returncode}: {output[-1000:]}"
                     )
-                if "WEST_PREFIX_BOOTSTRAP_OK" not in output:
+                if executable is None and "WEST_PREFIX_BOOTSTRAP_OK" not in output:
                     self.die("prefix bootstrap guest smoke returned without its verdict marker")
-                self.inf(f"prefix bootstrap passed for {prefix_text}: {profile_name}")
+                target = executable or "login shell"
+                self.inf(
+                    f"prefix bootstrap passed for {prefix_text}: {profile_name} ({target})"
+                )
 
     def _shutdown_runtime_prefix(self, prefix: Path) -> bool:
         launcher = self._resolve_darling_launcher(str(prefix))
@@ -5413,6 +5436,7 @@ class DarlingTest(WestCommand):
         if args.profile and (args.fuzz or args.stress):
             self.die("--fuzz/--stress select CTest suite tests; use --patch/--profile for patch metadata")
         bootstrap_runtime_profile = getattr(args, "bootstrap_runtime_profile", None)
+        bootstrap_executable = getattr(args, "bootstrap_executable", None)
         bootstrap_syscall_trace = getattr(args, "bootstrap_syscall_trace", None)
         bootstrap_stack_sample = getattr(args, "bootstrap_stack_sample", None)
         if bootstrap_syscall_trace and bootstrap_stack_sample:
@@ -5442,10 +5466,14 @@ class DarlingTest(WestCommand):
                     "--bootstrap-runtime-profile is a prefix provisioning operation; "
                     "do not combine it with " + ", ".join(incompatible)
                 )
+            if bootstrap_executable and not Path(bootstrap_executable).is_absolute():
+                self.die("--bootstrap-executable must be an absolute guest path")
             self._bootstrap_syscall_trace = Path(bootstrap_syscall_trace) if bootstrap_syscall_trace else None
             self._bootstrap_stack_sample = Path(bootstrap_stack_sample) if bootstrap_stack_sample else None
             try:
-                self._bootstrap_runtime_profile(bootstrap_runtime_profile)
+                self._bootstrap_runtime_profile(
+                    bootstrap_runtime_profile, executable=bootstrap_executable
+                )
                 if getattr(self, "_prefix_cleanup_failed", False):
                     raise SystemExit(1)
                 return
@@ -5453,6 +5481,9 @@ class DarlingTest(WestCommand):
                 self._bootstrap_syscall_trace = None
                 self._bootstrap_stack_sample = None
                 self._bootstrap_timeout_seconds = None
+
+        if bootstrap_executable:
+            self.die("--bootstrap-executable requires --bootstrap-runtime-profile")
 
         if args.profile:
             selected, missing = self._metadata_tests(
