@@ -39,7 +39,18 @@
 #define LINUX_EEXIST EEXIST
 #define LINUX_EPERM  EPERM
 #define LINUX_AT_FDCWD AT_FDCWD
+#define LINUX_ENOTDIR ENOTDIR
+#define LINUX_EIO EIO
+#define LINUX_EMFILE EMFILE
+#define BSD_AT_FDCWD (-2)
+#define BSD_O_WRONLY 1
+#define BSD_O_RDWR 2
+#define BSD_O_CREAT 0x200
+#define BSD_O_TRUNC 0x400
+#define BSD_O_EXCL 0x800
 #define LINUX_AT_SYMLINK_NOFOLLOW AT_SYMLINK_NOFOLLOW
+
+int eunion_test_perthread_wd = -100;
 
 /* stubs for symbols init_vchroot_path() references but never calls in TEST */
 int dserver_rpc_vchroot_path(char* a, unsigned long b, uint64_t* c){(void)a;(void)b;(void)c;return -1;}
@@ -50,6 +61,9 @@ int __simple_printf(const char* f, ...){(void)f;return 0;}
 #define main vchroot_unit_main
 #include "vchroot_userspace.c"
 #undef main
+
+extern int eunion_test_fail_whiteout;
+extern int eunion_test_fail_xattr;
 
 #include <stdio.h>
 #include <string.h>
@@ -99,6 +113,14 @@ long linux_syscall(long a1, long a2, long a3, long a4, long a5, long a6, int num
 }
 
 long sys_bind(int fd, const void* name, int socklen);
+long sys_mkdirat(int fd, const char* path, unsigned int mode);
+long sys_rmdir(const char* path);
+long sys_renameat(int oldfd, const char* oldpath, int newfd, const char* newpath);
+long sys_unlinkat(int fd, const char* path, int flag);
+long sys_openat(int fd, const char* path, int flags, unsigned int mode);
+long sys_dup(int fd);
+long long sys_lseek(int fd, long long offset, int whence);
+void kqueue_dup(int oldfd, int newfd) { (void)oldfd; (void)newfd; }
 
 static int g_tests = 0, g_fail = 0;
 
@@ -373,6 +395,15 @@ int main(void) {
               !ctxt.unknown_component);
     }
 
+    /* RESOLVE1. An upper non-directory shadows the whole lower subtree. The
+       resolver must return ENOTDIR instead of falling through to lower/child. */
+    {
+        struct vchroot_expand_args shadow = { .dfd = -100, .flags = 0 };
+        strcpy(shadow.path, "/var/non_dir_shadow/child");
+        int rv = vchroot_expand(&shadow);
+        check("RESOLVE1 upper non-directory blocks lower directory", rv == -LINUX_ENOTDIR);
+    }
+
     printf("\n== E-UNION copy-up tests ==\n");
 
     char ub[256], lb[256];
@@ -433,6 +464,28 @@ int main(void) {
     {
         int rv = vchroot_copyup("/usr/bin/nonesuch");
         check("C6 copyup of absent path returns nonzero", rv != 0);
+    }
+
+    /* C8. Unsupported special files are explicit, never silently converted to
+           regular files or allowed to mutate the lower template. */
+    {
+        int rv = vchroot_copyup("/var/log/special_fifo");
+        snprintf(p, sizeof(p), "%s/var/log/special_fifo", prefix);
+        check("C8 special-file copyup returns explicit EPERM", rv == -LINUX_EPERM);
+        check("C8 special-file copyup does not publish an upper object", access(p, F_OK) != 0);
+    }
+
+    /* C9. Metadata copy is part of the copy-up transaction. A failed xattr
+           transfer must fail the operation and remove staging output, instead
+           of publishing a data copy with incomplete metadata. */
+    {
+        snprintf(p, sizeof(p), "%s/var/log/xattr_error", prefix);
+        unlink(p);
+        eunion_test_fail_xattr = 1;
+        int rv = vchroot_copyup("/var/log/xattr_error");
+        eunion_test_fail_xattr = 0;
+        check("C9 metadata transfer error reaches copyup caller", rv == -LINUX_EIO);
+        check("C9 failed metadata copy is not published", access(p, F_OK) != 0);
     }
 
     /* C7. CONCURRENT copy-up across SEPARATE PROCESSES sharing one upper layer
@@ -649,6 +702,24 @@ int main(void) {
             ssize_t xn = lgetxattr(updir, "user.union.opaque", xv, sizeof(xv));
             check("OM1 upper dir carries user.union.opaque marker", xn >= 1);
         }
+
+        /* CM2. atime and mtime are independent overlay metadata. Copy-up must
+               preserve both source timestamps; using mtime for atime changes
+               observable file metadata and breaks tools that rely on atime. */
+        {
+            snprintf(l, sizeof(l), "%s/var/log/metadata_times", libexec);
+            snprintf(p, sizeof(p), "%s/var/log/metadata_times", prefix);
+            unlink(p);
+            struct stat before, upper_stat;
+            int before_ok = stat(l, &before) == 0;
+            int rv = vchroot_copyup("/var/log/metadata_times");
+            int upper_ok = stat(p, &upper_stat) == 0;
+            check("CM2 timestamp fixture is present", before_ok);
+            check("CM2 timestamp copyup succeeds", rv == 0);
+            check("CM2 atime is preserved independently of mtime",
+                  before_ok && upper_ok && upper_stat.st_atime == before.st_atime &&
+                  upper_stat.st_atime != upper_stat.st_mtime);
+        }
     }
 
     printf("\n== E-UNION readdir-merge tests ==\n");
@@ -712,6 +783,189 @@ int main(void) {
         check("P1 prepare_write(lower-only) returns 0", rv == 0);
         check("P1 file now materialized in upper", access(p, F_OK) == 0);
         expect_resolves_to("/usr/local/share/tool.conf", p);
+    }
+
+    /* RPATH1. AT_FDCWD relative mutation must resolve the guest cwd before the
+       union policy runs. The old helper returned success without copy-up when
+       dfd was AT_FDCWD, so the real relative openat/mkdirat path could still
+       reach the shared lower template. */
+    {
+        const char* guest = "/var/log/relative_lower";
+        char saved_cwd[4096];
+        char upper_path[4096];
+        char lower_path[4096];
+        getcwd(saved_cwd, sizeof(saved_cwd));
+        snprintf(upper_path, sizeof(upper_path), "%s%s", prefix, guest);
+        snprintf(lower_path, sizeof(lower_path), "%s%s", libexec, guest);
+        unlink(upper_path);
+        check("RPATH1 lower relative fixture is pristine", access(lower_path, F_OK) == 0);
+        check("RPATH1 chdir to the guest prefix succeeds", chdir(prefix) == 0);
+        int rv = vchroot_prepare_write_at(AT_FDCWD, "var/log/relative_lower");
+        check("RPATH1 relative AT_FDCWD prepare_write returns 0", rv == 0);
+        check("RPATH1 relative mutation materializes the upper copy",
+              access(upper_path, F_OK) == 0);
+        check("RPATH1 relative mutation leaves the lower template intact",
+              access(lower_path, F_OK) == 0);
+        check("RPATH1 restore host cwd succeeds", chdir(saved_cwd) == 0);
+    }
+
+    /* RSITE1. Exercise the real unlinkat adapter with a lower dirfd. The old
+       site only applied E-UNION policy to absolute strings, so Linux unlinkat
+       deleted the shared lower inode. */
+    {
+        char lower_dir[4096], lower_file[4096], upper_file[4096], marker[2];
+        snprintf(lower_dir, sizeof(lower_dir), "%s/var/log", libexec);
+        snprintf(lower_file, sizeof(lower_file), "%s/syscall_unlink", lower_dir);
+        snprintf(upper_file, sizeof(upper_file), "%s/var/log/syscall_unlink", prefix);
+        int dirfd = open(lower_dir, O_RDONLY | O_DIRECTORY);
+        int rv = dirfd >= 0 ? (int)sys_unlinkat(dirfd, "syscall_unlink", 0) : -1;
+        check("RSITE1 lower dirfd opens", dirfd >= 0);
+        check("RSITE1 unlinkat(relative) succeeds", rv == 0);
+        check("RSITE1 lower unlink target remains intact", access(lower_file, F_OK) == 0);
+        marker[0] = '\0';
+        ssize_t marker_len = lgetxattr(upper_file, "user.union.whiteout", marker, sizeof(marker));
+        check("RSITE1 unlinkat creates an upper whiteout", marker_len == 1 && marker[0] == 'y');
+        if (dirfd >= 0)
+            close(dirfd);
+    }
+
+    /* RSITE2. rmdir has no explicit fd in its BSD ABI, so its relative path is
+       resolved against the per-thread working directory. Make that directory a
+       lower fd to exercise the same real runtime shape. */
+    {
+        char lower_dir[4096], lower_target[4096], upper_target[4096], marker[2];
+        snprintf(lower_dir, sizeof(lower_dir), "%s/var/log", libexec);
+        snprintf(lower_target, sizeof(lower_target), "%s/syscall_rmdir", lower_dir);
+        snprintf(upper_target, sizeof(upper_target), "%s/var/log/syscall_rmdir", prefix);
+        int dirfd = open(lower_dir, O_RDONLY | O_DIRECTORY);
+        eunion_test_perthread_wd = dirfd;
+        int rv = dirfd >= 0 ? (int)sys_rmdir("syscall_rmdir") : -1;
+        check("RSITE2 rmdir working dir opens", dirfd >= 0);
+        check("RSITE2 rmdir(relative) succeeds", rv == 0);
+        check("RSITE2 lower rmdir target remains intact", access(lower_target, F_OK) == 0);
+        marker[0] = '\0';
+        ssize_t marker_len = lgetxattr(upper_target, "user.union.whiteout", marker, sizeof(marker));
+        check("RSITE2 rmdir creates an upper whiteout", marker_len == 1 && marker[0] == 'y');
+        if (dirfd >= 0)
+            close(dirfd);
+        eunion_test_perthread_wd = -100;
+    }
+
+    /* RSITE3. BSD AT_FDCWD is translated to the per-thread working directory.
+       A relative mkdir must copy the lower parent and create only in upper. */
+    {
+        char lower_dir[4096], lower_parent[4096], upper_parent[4096], lower_created[4096];
+        char upper_created[4096];
+        snprintf(lower_dir, sizeof(lower_dir), "%s/var/syscall_mkdir_parent", libexec);
+        snprintf(lower_parent, sizeof(lower_parent), "%s", lower_dir);
+        snprintf(upper_parent, sizeof(upper_parent), "%s/var/syscall_mkdir_parent", prefix);
+        snprintf(lower_created, sizeof(lower_created), "%s/created", lower_parent);
+        snprintf(upper_created, sizeof(upper_created), "%s/created", upper_parent);
+        int dirfd = open(lower_dir, O_RDONLY | O_DIRECTORY);
+        eunion_test_perthread_wd = dirfd;
+        int rv = dirfd >= 0 ? (int)sys_mkdirat(BSD_AT_FDCWD, "created", 0700) : -1;
+        check("RSITE3 mkdir working dir opens", dirfd >= 0);
+        check("RSITE3 mkdirat(AT_FDCWD, relative) succeeds", rv == 0);
+        check("RSITE3 mkdir parent materializes in upper", access(upper_parent, F_OK) == 0);
+        check("RSITE3 mkdir target lands in upper", access(upper_created, F_OK) == 0);
+        check("RSITE3 lower mkdir target remains absent", access(lower_created, F_OK) != 0);
+        if (dirfd >= 0)
+            close(dirfd);
+        eunion_test_perthread_wd = -100;
+    }
+
+    /* RSITE4. A relative rename must copy the source, publish the destination
+       in upper, and leave both lower template names unchanged. */
+    {
+        char lower_dir[4096], lower_source[4096], lower_dest[4096];
+        char upper_source[4096], upper_dest[4096], content[64], marker[2];
+        snprintf(lower_dir, sizeof(lower_dir), "%s/var/log", libexec);
+        snprintf(lower_source, sizeof(lower_source), "%s/syscall_rename_source", lower_dir);
+        snprintf(lower_dest, sizeof(lower_dest), "%s/syscall_rename_destination", lower_dir);
+        snprintf(upper_source, sizeof(upper_source), "%s/var/log/syscall_rename_source", prefix);
+        snprintf(upper_dest, sizeof(upper_dest), "%s/var/log/syscall_rename_destination", prefix);
+        int dirfd = open(lower_dir, O_RDONLY | O_DIRECTORY);
+        int rv = dirfd >= 0 ? (int)sys_renameat(dirfd, "syscall_rename_source", dirfd,
+                                               "syscall_rename_destination") : -1;
+        check("RSITE4 rename working dir opens", dirfd >= 0);
+        check("RSITE4 renameat(relative) succeeds", rv == 0);
+        check("RSITE4 lower source remains intact", access(lower_source, F_OK) == 0);
+        check("RSITE4 lower destination remains intact", access(lower_dest, F_OK) == 0);
+        int content_fd = open(upper_dest, O_RDONLY);
+        ssize_t content_len = content_fd >= 0 ? read(content_fd, content, sizeof(content) - 1) : -1;
+        if (content_fd >= 0)
+            close(content_fd);
+        if (content_len >= 0)
+            content[content_len] = '\0';
+        check("RSITE4 rename destination is materialized in upper",
+              content_len >= 0 && strcmp(content, "rename source\n") == 0);
+        marker[0] = '\0';
+        ssize_t marker_len = lgetxattr(upper_source, "user.union.whiteout", marker, sizeof(marker));
+        check("RSITE4 rename source is whiteouted in upper", marker_len == 1 && marker[0] == 'y');
+        if (dirfd >= 0)
+            close(dirfd);
+    }
+
+    /* RSITE5. openat must copy an existing lower file before O_TRUNC/write and
+       must create a new O_CREAT target in the upper parent when the path is
+       relative to BSD AT_FDCWD. */
+    {
+        char lower_dir[4096], lower_existing[4096], upper_existing[4096];
+        char lower_parent[4096], lower_created[4096], upper_parent[4096], upper_created[4096];
+        snprintf(lower_dir, sizeof(lower_dir), "%s/var/log", libexec);
+        snprintf(lower_existing, sizeof(lower_existing), "%s/syscall_open_existing", lower_dir);
+        snprintf(upper_existing, sizeof(upper_existing), "%s/var/log/syscall_open_existing", prefix);
+        int dirfd = open(lower_dir, O_RDONLY | O_DIRECTORY);
+        int existing_fd = dirfd >= 0 ? (int)sys_openat(dirfd, "syscall_open_existing",
+                                                       BSD_O_WRONLY | BSD_O_TRUNC, 0600) : -1;
+        ssize_t written = existing_fd >= 0 ? write(existing_fd, "upper write\n", 12) : -1;
+        if (existing_fd >= 0)
+            close(existing_fd);
+        check("RSITE5 openat lower working dir opens", dirfd >= 0);
+        check("RSITE5 openat(relative existing, write/truncate) succeeds", existing_fd >= 0);
+        check("RSITE5 openat writes to the upper copy", written == 12 && access(upper_existing, F_OK) == 0);
+        check("RSITE5 openat leaves existing lower file intact", access(lower_existing, F_OK) == 0);
+        if (dirfd >= 0)
+            close(dirfd);
+
+        snprintf(lower_parent, sizeof(lower_parent), "%s/var/syscall_open_parent", libexec);
+        snprintf(lower_created, sizeof(lower_created), "%s/created", lower_parent);
+        snprintf(upper_parent, sizeof(upper_parent), "%s/var/syscall_open_parent", prefix);
+        snprintf(upper_created, sizeof(upper_created), "%s/created", upper_parent);
+        dirfd = open(lower_parent, O_RDONLY | O_DIRECTORY);
+        eunion_test_perthread_wd = dirfd;
+        int created_fd = dirfd >= 0 ? (int)sys_openat(BSD_AT_FDCWD, "created",
+                                                      BSD_O_WRONLY | BSD_O_CREAT | BSD_O_EXCL, 0600) : -1;
+        written = created_fd >= 0 ? write(created_fd, "new upper\n", 10) : -1;
+        if (created_fd >= 0)
+            close(created_fd);
+        check("RSITE5 openat AT_FDCWD working dir opens", dirfd >= 0);
+        check("RSITE5 openat(AT_FDCWD, relative O_CREAT) succeeds", created_fd >= 0);
+        check("RSITE5 openat creates only in upper", written == 10 && access(upper_created, F_OK) == 0);
+        check("RSITE5 openat does not create in lower", access(lower_created, F_OK) != 0);
+        if (dirfd >= 0)
+            close(dirfd);
+        eunion_test_perthread_wd = -100;
+    }
+
+    /* RSITE6. The host unlink may succeed while the lower namesake still needs
+       a whiteout. Inject that marker failure in TEST mode and require the
+       syscall adapter to return it instead of reporting a false success. */
+    {
+        char lower_dir[4096], lower_file[4096], upper_file[4096];
+        snprintf(lower_dir, sizeof(lower_dir), "%s/var/log", libexec);
+        snprintf(lower_file, sizeof(lower_file), "%s/syscall_whiteout_fail", lower_dir);
+        snprintf(upper_file, sizeof(upper_file), "%s/var/log/syscall_whiteout_fail", prefix);
+        int dirfd = open(lower_dir, O_RDONLY | O_DIRECTORY);
+        eunion_test_fail_whiteout = 1;
+        int rv = dirfd >= 0 ? (int)sys_unlinkat(dirfd, "syscall_whiteout_fail", 0) : -1;
+        eunion_test_fail_whiteout = 0;
+        check("RSITE6 whiteout failure fixture opens", dirfd >= 0);
+        check("RSITE6 post-unlink whiteout error reaches caller", rv == -LINUX_EIO);
+        check("RSITE6 lower namesake remains intact after marker failure", access(lower_file, F_OK) == 0);
+        check("RSITE6 upper object was deleted before marker failure", access(upper_file, F_OK) != 0);
+        if (dirfd >= 0)
+            close(dirfd);
     }
 
     /* P2. prepare_write on an already-upper file is a no-op success (no second
@@ -935,6 +1189,118 @@ int main(void) {
         check("G4 file entry has a real inode (not synthetic 1)", ino_file > 1);
     }
 
+    /* G5. Exhaust the per-process directory-view state deliberately. A merged
+       directory must fail explicitly when state capacity is exhausted; falling
+       back to raw upper getdents silently drops lower-only entries. Releasing
+       the states must make the capacity reusable. */
+    {
+        char host[4096], page[256];
+        int holders[256];
+        int holder_count = 0;
+        expand("/bigmerge", host);
+        for (int i = 0; i < 256; i++) {
+            holders[i] = open(host, O_RDONLY | O_DIRECTORY);
+            if (holders[i] < 0)
+                break;
+            vchroot_getdents_merge(holders[i], page, sizeof(page));
+            holder_count++;
+        }
+        int overflow = open(host, O_RDONLY | O_DIRECTORY);
+        int overflow_rv = overflow >= 0
+            ? vchroot_getdents_merge(overflow, page, sizeof(page))
+            : -1;
+        check("G5 fills directory-view capacity", holder_count == 256);
+        check("G5 exhausted capacity returns EMFILE, not raw partial view",
+              overflow_rv == -LINUX_EMFILE);
+        if (overflow >= 0)
+            close(overflow);
+        for (int i = 0; i < holder_count; i++) {
+            vchroot_dir_closed(holders[i]);
+            close(holders[i]);
+        }
+        int reused = open(host, O_RDONLY | O_DIRECTORY);
+        int reused_rv = reused >= 0
+            ? vchroot_getdents_merge(reused, page, sizeof(page))
+            : -1;
+        check("G5 released directory-view capacity is reusable", reused_rv > 0);
+        if (reused >= 0) {
+            vchroot_dir_closed(reused);
+            close(reused);
+        }
+    }
+
+    /* G6. Rewinding a directory fd through the production lseek adapter must
+       rewind the merged cursor as well, not only the kernel fd offset. */
+    {
+        char host[4096], first[256], second[256];
+        expand("/bigmerge", host);
+        int fd = open(host, O_RDONLY | O_DIRECTORY);
+        int first_n = fd >= 0 ? vchroot_getdents_merge(fd, first, sizeof(first)) : -1;
+        int rewind_rv = fd >= 0 ? (int)sys_lseek(fd, 0, 0) : -1;
+        int second_n = fd >= 0 ? vchroot_getdents_merge(fd, second, sizeof(second)) : -1;
+        const char* first_name = first_n > 0 ? ((struct linux_dirent64*)first)->d_name : "";
+        const char* second_name = second_n > 0 ? ((struct linux_dirent64*)second)->d_name : "";
+        check("G6 lseek rewind succeeds", fd >= 0 && rewind_rv == 0);
+        check("G6 rewind resets merged cursor", first_n > 0 && second_n > 0 &&
+              strcmp(first_name, second_name) == 0);
+        if (fd >= 0) {
+            vchroot_dir_closed(fd);
+            close(fd);
+        }
+    }
+
+    /* G7. dup() shares the directory-view cursor with the original fd. */
+    {
+        char host[4096], first[256], duplicate_page[256];
+        expand("/bigmerge", host);
+        int fd = open(host, O_RDONLY | O_DIRECTORY);
+        int first_n = fd >= 0 ? vchroot_getdents_merge(fd, first, sizeof(first)) : -1;
+        int dupfd = fd >= 0 ? (int)sys_dup(fd) : -1;
+        int duplicate_n = dupfd >= 0
+            ? vchroot_getdents_merge(dupfd, duplicate_page, sizeof(duplicate_page)) : -1;
+        const char* first_name = first_n > 0 ? ((struct linux_dirent64*)first)->d_name : "";
+        const char* duplicate_name = duplicate_n > 0
+            ? ((struct linux_dirent64*)duplicate_page)->d_name : "";
+        check("G7 dup directory fd succeeds", dupfd >= 0);
+        check("G7 dup shares merged cursor", first_n > 0 && duplicate_n > 0 &&
+              strcmp(first_name, duplicate_name) != 0);
+        if (dupfd >= 0) {
+            vchroot_dir_closed(dupfd);
+            close(dupfd);
+        }
+        if (fd >= 0) {
+            vchroot_dir_closed(fd);
+            close(fd);
+        }
+    }
+
+    /* G8. A forked child inherits a valid snapshot of the directory-view state
+       and can continue reading it without corrupting the parent's state. */
+    {
+        char host[4096], page[256];
+        expand("/bigmerge", host);
+        int fd = open(host, O_RDONLY | O_DIRECTORY);
+        int first_n = fd >= 0 ? vchroot_getdents_merge(fd, page, sizeof(page)) : -1;
+        pid_t child = first_n > 0 ? fork() : -1;
+        if (child == 0) {
+            int child_n = vchroot_getdents_merge(fd, page, sizeof(page));
+            _exit(child_n > 0 ? 0 : 1);
+        }
+        int child_ok = 0;
+        if (child > 0) {
+            int status;
+            waitpid(child, &status, 0);
+            child_ok = WIFEXITED(status) && WEXITSTATUS(status) == 0;
+        }
+        int parent_n = fd >= 0 ? vchroot_getdents_merge(fd, page, sizeof(page)) : -1;
+        check("G8 forked child continues merged directory stream", child_ok);
+        check("G8 parent directory state remains readable after fork", parent_n > 0);
+        if (fd >= 0) {
+            vchroot_dir_closed(fd);
+            close(fd);
+        }
+    }
+
     #undef DRAIN_INTO
 
     printf("\n== E-UNION fd/path detranslation (lower template -> guest path) ==\n");
@@ -1013,8 +1379,6 @@ int main(void) {
 
     printf("\n== E-UNION hardening (dyra #1..#5) ==\n");
     {
-        char got[4096];
-
         /* H4. copy-up STRIPS setid and PRESERVES xattrs.
                Lower /usr/bin/suid_tool is mode 4755 with user.test.tag=hello. */
         {
@@ -1253,6 +1617,26 @@ int main(void) {
         /* template target dir untouched (no newfile leaked into the template) */
         snprintf(l, sizeof(l), "%s/var/sp_real/newfile", libexec);
         check("SP1 template target dir untouched (no leak)", access(l, F_OK) != 0);
+    }
+
+    /* SAFE1. A lower symlink containing .. must not let a mutating open escape
+       the upper root. The sentinel lives beside prefix, where a raw joined path
+       such as prefix/var/../../escape-target would reach it. */
+    {
+        char work_root[4096], outside[4096], upper_target[4096];
+        snprintf(work_root, sizeof(work_root), "%s", prefix);
+        char* slash = strrchr(work_root, '/');
+        if (slash)
+            *slash = '\0';
+        snprintf(outside, sizeof(outside), "%s/escape-target", work_root);
+        snprintf(upper_target, sizeof(upper_target), "%s/escape-target", prefix);
+        int fd = (int)sys_openat(BSD_AT_FDCWD, "/var/escape_link/created",
+                                 BSD_O_WRONLY | BSD_O_CREAT | BSD_O_EXCL, 0600);
+        check("SAFE1 symlink .. mutation is rejected", fd < 0);
+        if (fd >= 0)
+            close(fd);
+        check("SAFE1 outside sentinel remains intact", access(outside, F_OK) == 0);
+        check("SAFE1 no escaped upper target was created", access(upper_target, F_OK) != 0);
     }
 
     printf("\n== E-UNION mkdir over a removed lower dir must be opaque (.6) ==\n");

@@ -2653,11 +2653,11 @@ patches:
       base: main
       state: local
 - path: xnu/eunion-hardening.patch
-  sha256sum: b48d5a4b0042b605eeb72da7119d1f2692be674170b80062a48dfb73cd6cf21e
+  sha256sum: f1c3f6d14d632141bfe548861e2847644d2eb2118ce16590cda436f61ec2e2d9
   module: darling/src/external/xnu
   source-branch: repack/eunion-hardening
   source-base: 5c3019fca1d85533f34735bf40c97156c87b6d4f
-  source-commit: f033c5773992dfa57b6657f10f53f719664a5f18
+  source-commit: f223ee035651e9b9f7d3952c654bb0d0dc238d34
   bead: dar-7zvt.2
   publication-status: blocked
   publication-blocker: E-UNION syscall coverage and hardening are a local architectural consolidation; publication remains blocked until the repackaged rootless stack passes its full guest audit.
@@ -2680,12 +2680,13 @@ patches:
     red-proof:
       mode: source-base
       source-env: XNU_SRC_ROOT
+      source-revision: f033c5773992dfa57b6657f10f53f719664a5f18
       expect-output-contains:
-      - 'FAIL  SP1 create through upper symlink succeeds (no ENOENT)'
+      - 'FAIL  RESOLVE1 upper non-directory blocks lower directory'
     runner: source-contract-script
     repo: darling-workspace
     script: experiments/e-union/run.sh
-    note: Host behavioral RED-to-GREEN suite for syscall-site copy-up, template protection and nested path handling.
+    note: Host behavioral RED-to-GREEN suite for syscall-site copy-up, template protection, nested path handling, metadata/error policy and directory-view lifecycle; baseline RED is reproducible and the fixed source passes 288 assertions.
   - name: eunion_mutation_guest
     use: eunion-guest-c-runtime
     kind: guest
@@ -2808,21 +2809,6 @@ patches:
       contents: |
         STALE_B
     note: Guest regression for mkdir over an rmdir-whiteouted lower directory and lower-template preservation.
-  - name: eunion_bind_symlink_parent_host_suite
-    kind: unit
-    coverage-tier: host
-    runs: host
-    diag: bare
-    red: true
-    red-proof:
-      mode: source-base
-      source-env: XNU_SRC_ROOT
-      expect-output-contains:
-      - 'FAIL  B1 sys_bind through symlinked parent succeeds'
-    runner: source-contract-script
-    repo: darling-workspace
-    script: experiments/e-union/run.sh
-    note: Host behavior for AF_UNIX bind through a lower-only symlinked parent.
   - name: eunion_nested_lower_root_host_suite
     kind: unit
     coverage-tier: host
@@ -2832,8 +2818,9 @@ patches:
     red-proof:
       mode: source-base
       source-env: XNU_SRC_ROOT
+      source-revision: f033c5773992dfa57b6657f10f53f719664a5f18
       expect-output-contains:
-      - 'FAIL  F4 unexpand lower host path -> guest path'
+      - 'FAIL  RESOLVE1 upper non-directory blocks lower directory'
     runner: source-contract-script
     repo: darling-workspace
     script: experiments/e-union/run-nested-lower-root.sh
@@ -2980,11 +2967,11 @@ patches:
       base: master
       state: local
 - path: xnu/fd-guard-ebadf.patch
-  sha256sum: a146f9b7930cf1f12737f2e6a023c122a6ae3824a5df96de48bc8835f6c54a90
+  sha256sum: 5c1d60ef3303ac0b52012133a4b1f42c6405fab6690c27a43ddc623fd30a6ed5
   module: darling/src/external/xnu
   source-branch: fix/fd-guard-ebadf
-  source-base: 44cf90665c86a454bad1839b7a6895b669d48be3
-  source-commit: 8b01cc14b39c5fc1589191132682a419383ddb54
+  source-base: f223ee035651e9b9f7d3952c654bb0d0dc238d34
+  source-commit: cc677cf3cbda2e41d1ae5a82f0afe452d7f7d544
   bead: dar-6x4.1
   publication-status: blocked
   publication-blocker: returns EBADF on guarded-fd dup2/dup/fcntl instead of aborting; correct vs macOS and validated (gnulib fd tests + libunistring make check GREEN) but the guarded-fd-as-out-of-range contract wants a second reviewer before upstreaming. See dar-6x4.1.

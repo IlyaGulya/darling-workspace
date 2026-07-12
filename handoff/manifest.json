@@ -1099,7 +1099,7 @@
         },
         {
           "branch": "fix/fd-guard-ebadf",
-          "head": "8b01cc14b39c5fc1589191132682a419383ddb54",
+          "head": "cc677cf3cbda2e41d1ae5a82f0afe452d7f7d544",
           "upstream": "",
           "source_ref": "refs/heads/fix/fd-guard-ebadf"
         },
@@ -1303,9 +1303,15 @@
         },
         {
           "branch": "repack/eunion-hardening",
-          "head": "f033c5773992dfa57b6657f10f53f719664a5f18",
+          "head": "f223ee035651e9b9f7d3952c654bb0d0dc238d34",
           "upstream": "",
           "source_ref": "refs/heads/repack/eunion-hardening"
+        },
+        {
+          "branch": "test/eunion-hardening-red",
+          "head": "f033c5773992dfa57b6657f10f53f719664a5f18",
+          "upstream": "",
+          "source_ref": "refs/heads/test/eunion-hardening-red"
         },
         {
           "branch": "wip/z27x7-sigprocess-fold",
