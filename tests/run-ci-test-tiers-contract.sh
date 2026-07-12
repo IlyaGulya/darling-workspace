@@ -28,8 +28,9 @@ DARLING_TESTKIT_BUILD="$tmp/package-build" \
 	"$repo/ci/run-test-tier.sh" macos-package "$tmp/oracle"
 
 grep -F -x -q 'west test --env host --changed' "$tmp/commands"
-grep -F -x -q "west test --profile homebrew --env darling --label smoke:true --prefix-profile homebrew" "$tmp/commands"
+grep -F -x -q "west test --env darling --label smoke:true --prefix-profile homebrew" "$tmp/commands"
 grep -F -x -q 'west test --profile homebrew --env darling --prefix-profile homebrew' "$tmp/commands"
+grep -F -x -q 'west test --env darling --prefix-profile homebrew' "$tmp/commands"
 grep -F -x -q "cmake -S testkit -B $tmp/macos-build -DBUILD_TESTING=ON" "$tmp/commands"
 grep -F -x -q "ctest --test-dir $tmp/macos-build --output-on-failure -L env:macos" "$tmp/commands"
 grep -F -x -q "cmake --install $tmp/package-build" "$tmp/commands"
