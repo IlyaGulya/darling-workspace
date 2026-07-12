@@ -4091,12 +4091,47 @@ class DarlingTest(WestCommand):
                         label="prefix bootstrap",
                     )
                 output = process_output_text(result)
+                bootstrap_command = [
+                    deployment.env["DARLING_LAUNCHER"],
+                    "exec" if executable is not None else "shell",
+                    executable or "set -eu\nprintf '%s\\n' WEST_PREFIX_BOOTSTRAP_OK",
+                ]
+                bootstrap_artifacts = []
+                if diagnostic_dir is not None:
+                    bootstrap_artifacts = sorted(
+                        path for path in Path(diagnostic_dir).iterdir() if path.is_file()
+                    )
+                bootstrap_artifacts.extend(
+                    path
+                    for path in (
+                        deployment.prefix / ".west-rootless-boot.log",
+                        deployment.prefix / "private/var/tmp/.west-rootless-boot.log",
+                        deployment.prefix / ".west-rootless-guest-fd.log",
+                    )
+                    if path.is_file()
+                )
+
+                def record_bootstrap_failure(summary: str) -> None:
+                    evidence = getattr(self, "_active_runtime_evidence", None)
+                    if evidence is not None:
+                        evidence.record_failure_detail(
+                            phase="bootstrap",
+                            summary=summary,
+                            returncode=result.returncode,
+                            command=bootstrap_command,
+                            output=output,
+                            artifacts=bootstrap_artifacts,
+                        )
+
                 trace_fault = (
                     bootstrap_trace_fatal_signal(trace_dir)
                     if trace_dir is not None
                     else None
                 )
                 if trace_fault is not None:
+                    record_bootstrap_failure(
+                        f"prefix bootstrap guest smoke crashed before its verdict: {trace_fault}"
+                    )
                     self.die(
                         "prefix bootstrap guest smoke crashed before its verdict: "
                         f"{trace_fault}; syscall trace: {trace_dir}"
@@ -4116,16 +4151,23 @@ class DarlingTest(WestCommand):
                         else None
                     )
                     stall_hint = f"; syscall state: {stall}" if stall is not None else ""
+                    record_bootstrap_failure(
+                        f"prefix bootstrap guest smoke timed out after {smoke_timeout_seconds}s"
+                    )
                     self.die(
                         "prefix bootstrap guest smoke timed out after "
                         f"{smoke_timeout_seconds}s{diagnostic_hint}{progress_hint}{stall_hint}"
                     )
                 if result.returncode != 0:
+                    record_bootstrap_failure("prefix bootstrap guest smoke returned non-zero")
                     self.die(
                         "prefix bootstrap guest smoke failed "
                         f"with rc {result.returncode}: {output[-1000:]}"
                     )
                 if executable is None and "WEST_PREFIX_BOOTSTRAP_OK" not in output:
+                    record_bootstrap_failure(
+                        "prefix bootstrap guest smoke returned without its verdict marker"
+                    )
                     self.die("prefix bootstrap guest smoke returned without its verdict marker")
                 target = executable or "login shell"
                 self.inf(
