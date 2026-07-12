@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import shutil
+import stat
 import uuid
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -53,6 +54,30 @@ def prefix_tree_size(path: Path) -> int:
     return total
 
 
+def _ignore_prefix_transients(source: Path):
+    """Return a copytree callback that excludes live runtime-only entries."""
+
+    def ignore(directory: str, names: list[str]) -> set[str]:
+        current = Path(directory)
+        relative = current.relative_to(source)
+        ignored: set[str] = set()
+        # Test sandboxes and stale sockets under private/tmp are never part of
+        # the boot template; the factory recreates the required tmp roots.
+        if relative == Path("private"):
+            ignored.add("tmp")
+        for name in names:
+            try:
+                mode = (current / name).lstat().st_mode
+            except OSError:
+                ignored.add(name)
+                continue
+            if stat.S_ISSOCK(mode) or stat.S_ISFIFO(mode) or stat.S_ISCHR(mode) or stat.S_ISBLK(mode):
+                ignored.add(name)
+        return ignored
+
+    return ignore
+
+
 def create_fresh_prefix(
     baseline: Path,
     *,
@@ -80,7 +105,17 @@ def create_fresh_prefix(
                 f"but only {available} are available"
             ]
         )
-    shutil.copytree(source, target, symlinks=True, copy_function=shutil.copy2)
+    try:
+        shutil.copytree(
+            source,
+            target,
+            symlinks=True,
+            copy_function=shutil.copy2,
+            ignore=_ignore_prefix_transients(source),
+        )
+    except (OSError, shutil.Error) as error:
+        shutil.rmtree(target, ignore_errors=True)
+        return FreshPrefixResult(problems=[f"failed to copy baseline {source}: {error}"])
     result = FreshPrefixResult(path=target, changed=[f"copied baseline {source} -> {target}"])
     result_provision = repair_prefix_boot_prerequisites(target)
     result.changed.extend(result_provision.changed)

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import sys
+import socket
 import tempfile
 from pathlib import Path
 
@@ -19,6 +20,10 @@ with tempfile.TemporaryDirectory() as temp:
     (baseline / "bin").mkdir()
     original = baseline / "bin" / "darling"
     original.write_text("baseline launcher\n")
+    (baseline / "private" / "tmp").mkdir(parents=True)
+    transient = baseline / "private" / "tmp" / "stale.sock"
+    server = socket.socket(socket.AF_UNIX)
+    server.bind(str(transient))
     target = root / "darling-fresh-prefix-contract"
 
     created = create_fresh_prefix(
@@ -32,8 +37,10 @@ with tempfile.TemporaryDirectory() as temp:
     copied = target / "bin" / "darling"
     assert copied.read_text() == "baseline launcher\n"
     assert copied.stat().st_ino != original.stat().st_ino
+    assert not (target / "private" / "tmp" / "stale.sock").exists()
     copied.write_text("fresh launcher\n")
     assert original.read_text() == "baseline launcher\n"
+    server.close()
 
     removed = remove_fresh_prefix(target, temp_root=root)
     assert removed.success, removed.problems
