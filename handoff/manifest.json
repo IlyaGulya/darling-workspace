@@ -360,6 +360,12 @@
           "source_ref": "refs/heads/fix/duct-tape-fail-closed-stubs"
         },
         {
+          "branch": "fix/eunion-exec-trace",
+          "head": "c9f536170d32d5f7c0b89f4f83fae33c7e9bba6c",
+          "upstream": "",
+          "source_ref": "refs/heads/fix/eunion-exec-trace"
+        },
+        {
           "branch": "fix/eunion-runtime-prefix",
           "head": "6340d81f5470c928e96a55ac8da402a3504e5698",
           "upstream": "",
