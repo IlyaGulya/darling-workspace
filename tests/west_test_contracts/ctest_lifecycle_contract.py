@@ -544,6 +544,21 @@ with tempfile.TemporaryDirectory() as temp:
 
 
 with tempfile.TemporaryDirectory() as temp:
+    prefix = Path(temp)
+    guest_trace = prefix / ".west-rootless-guest-fd.log"
+    guest_trace.write_text(
+        "shellspawn pid=3 client-accepted\n"
+        "shellspawn pid=4 command-go\n"
+        "shellspawn pid=5 guest-exec-enter\n"
+        "dyld main-entry-ready\n"
+    )
+    assert test_module.rootless_bootstrap_progress(prefix) == (
+        "guest-fd=dyld main-entry-ready | "
+        "shellspawn=shellspawn pid=5 guest-exec-enter"
+    )
+
+
+with tempfile.TemporaryDirectory() as temp:
     root = Path(temp)
     prefix = root / "prefix"
     prefix.mkdir()

@@ -134,6 +134,7 @@ def rootless_bootstrap_progress(prefix: Path) -> str | None:
     """Summarize the latest observable stage from each rootless boot trace."""
 
     stages = []
+    shellspawn_stage = None
     for label, relative_path in _ROOTLESS_BOOTSTRAP_TRACE_FILES:
         trace_path = prefix / relative_path
         try:
@@ -144,11 +145,17 @@ def rootless_bootstrap_progress(prefix: Path) -> str | None:
                 content = trace.read().decode(errors="replace")
         except OSError:
             continue
+        for line in content.splitlines():
+            stage = line.strip()
+            if stage.startswith("shellspawn "):
+                shellspawn_stage = stage
         for line in reversed(content.splitlines()):
             stage = line.strip()
             if stage:
                 stages.append(f"{label}={stage[:512]}")
                 break
+    if shellspawn_stage is not None:
+        stages.append(f"shellspawn={shellspawn_stage[:512]}")
     return " | ".join(stages) if stages else None
 
 
@@ -5338,17 +5345,18 @@ class DarlingTest(WestCommand):
         self._bootstrap_timeout_seconds = None
         try:
             self._runtime_cmake_define_overrides = parse_runtime_cmake_define_overrides(
-                args.runtime_cmake_define
+                getattr(args, "runtime_cmake_define", [])
             )
         except ValueError as error:
             self.die(f"invalid --runtime-cmake-define: {error}")
 
         if args.ctest_timeout_seconds <= 0:
             self.die("--ctest-timeout-seconds must be > 0")
-        if args.bootstrap_timeout_seconds is not None:
-            if not 1 <= args.bootstrap_timeout_seconds <= 600:
+        bootstrap_timeout_seconds = getattr(args, "bootstrap_timeout_seconds", None)
+        if bootstrap_timeout_seconds is not None:
+            if not 1 <= bootstrap_timeout_seconds <= 600:
                 self.die("--bootstrap-timeout-seconds must be between 1 and 600")
-            self._bootstrap_timeout_seconds = args.bootstrap_timeout_seconds
+            self._bootstrap_timeout_seconds = bootstrap_timeout_seconds
 
         if args.gc:
             self._gc_bundles(
