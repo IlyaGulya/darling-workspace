@@ -171,11 +171,13 @@ class RuntimeProfileDeployment:
         prefix: Path,
         build_root: Path,
         env: dict[str, str],
+        diagnostic_trace_paths: tuple[Path, ...] = (),
     ):
         self.name = name
         self.prefix = prefix
         self.build_root = build_root
         self.env = env
+        self.diagnostic_trace_paths = diagnostic_trace_paths
 
 
 class DarlingTest(WestCommand):
@@ -1561,7 +1563,11 @@ class DarlingTest(WestCommand):
                 continue
             seen_invocations.add(invocation["key"])
             with self._required_profile_context(patch, invocation):
-                with self._metadata_runtime_profile_context(patch, test) as runtime_env:
+                with self._metadata_runtime_profile_context(patch, test) as deployment:
+                    runtime_env = deployment.env if deployment is not None else None
+                    runtime_invocation = self._with_runtime_diagnostics(
+                        invocation, deployment
+                    )
                     proof = test.get("red-proof")
                     if (
                         isinstance(proof, dict)
@@ -1571,9 +1577,9 @@ class DarlingTest(WestCommand):
                         result_rc = self._run_guest_runtime_deploy_green(patch, proof, invocation)
                     else:
                         exec_env = self._runtime_profile_execution_env(
-                            invocation, runtime_env
+                            runtime_invocation, runtime_env
                         )
-                        with self._ctest_source_override_context(invocation) as run_invocation:
+                        with self._ctest_source_override_context(runtime_invocation) as run_invocation:
                             with self._resource_context(run_invocation, exec_env) as resource_env:
                                 result_rc = self._run_invocation(run_invocation, env=resource_env)
             if result_rc:
@@ -1785,7 +1791,17 @@ class DarlingTest(WestCommand):
             patch=patch,
             omit_patch=omit_patch,
         ) as deployment:
-            yield deployment.env
+            yield deployment
+
+    @staticmethod
+    def _with_runtime_diagnostics(invocation, deployment):
+        """Bind provider-owned trace files to the invocation they diagnose."""
+
+        if deployment is None or not deployment.diagnostic_trace_paths:
+            return invocation
+        configured = dict(invocation)
+        configured["_runtime_diagnostic_trace_paths"] = deployment.diagnostic_trace_paths
+        return configured
 
     def _runtime_profile_execution_env(self, invocation, runtime_env):
         """Combine runner defaults with the selected provider's launcher contract."""
@@ -1885,6 +1901,7 @@ class DarlingTest(WestCommand):
                     restore_deployment=not retain_deployment,
                 ):
                     runtime_env = os.environ.copy()
+                    diagnostic_trace_paths: tuple[Path, ...] = ()
                     runtime_env.update(self._darling_prefix_env(prefix_text))
                     runtime_launcher = Path(prefix_text) / "bin" / "darling"
                     if not runtime_launcher.is_file():
@@ -1906,6 +1923,11 @@ class DarlingTest(WestCommand):
                         boot_trace.unlink(missing_ok=True)
                         guest_boot_trace.unlink(missing_ok=True)
                         guest_fd_trace.unlink(missing_ok=True)
+                        diagnostic_trace_paths = (
+                            boot_trace,
+                            guest_boot_trace,
+                            guest_fd_trace,
+                        )
                         runtime_env["DARLING_HOST_BOOT_TRACE"] = str(boot_trace)
                         runtime_env["DARLING_GUEST_BOOT_TRACE"] = str(guest_fd_trace)
                         if self._bootstrap_diagnostics_enabled():
@@ -1922,6 +1944,7 @@ class DarlingTest(WestCommand):
                         prefix=Path(prefix_text),
                         build_root=build_root,
                         env=runtime_env,
+                        diagnostic_trace_paths=diagnostic_trace_paths,
                     )
         except BaseException:
             keep_on_failure = True
@@ -2008,9 +2031,19 @@ class DarlingTest(WestCommand):
                 parts.append(path.read_text(errors="replace"))
         return "".join(parts)
 
-    def _host_trace_output(self, invocation) -> str:
+    def _runtime_diagnostic_output(self, invocation) -> str:
+        """Read trace files owned by the invocation and its runtime provider."""
+
         parts = []
-        for path in invocation.get("_host_trace_paths", []):
+        seen_paths = set()
+        for path in (
+            *invocation.get("_host_trace_paths", []),
+            *invocation.get("_runtime_diagnostic_trace_paths", []),
+        ):
+            path = Path(path)
+            if path in seen_paths:
+                continue
+            seen_paths.add(path)
             if path.is_file():
                 parts.append(path.read_text(errors="replace"))
         return "".join(parts)
@@ -4531,7 +4564,7 @@ class DarlingTest(WestCommand):
         if not contains and not lacks:
             return True
 
-        observed_output = (captured_output or "") + self._host_trace_output(invocation)
+        observed_output = (captured_output or "") + self._runtime_diagnostic_output(invocation)
         bundle = self._latest_debug_bundle(invocation, since=since)
         if bundle is None:
             if observed_output:
@@ -4620,9 +4653,13 @@ class DarlingTest(WestCommand):
         red_invocation = self._guest_runtime_red_invocation(patch, proof, invocation)
         with self._metadata_runtime_profile_context(
             patch, test, omit_patch=True
-        ) as runtime_env:
-            red_env = self._runtime_profile_execution_env(red_invocation, runtime_env)
-            with self._ctest_source_override_context(red_invocation) as run_invocation:
+        ) as deployment:
+            runtime_env = deployment.env if deployment is not None else None
+            runtime_invocation = self._with_runtime_diagnostics(
+                red_invocation, deployment
+            )
+            red_env = self._runtime_profile_execution_env(runtime_invocation, runtime_env)
+            with self._ctest_source_override_context(runtime_invocation) as run_invocation:
                 with self._resource_context(run_invocation, red_env) as resource_env:
                     red_started_at = time.time()
                     red_result = self._run_invocation_captured(
@@ -4637,7 +4674,7 @@ class DarlingTest(WestCommand):
                 return 1
             if not self._check_guest_runtime_red_failure(
                 proof,
-                red_invocation,
+                run_invocation,
                 since=red_started_at,
                 captured_output=red_result.output,
             ):
@@ -4647,9 +4684,11 @@ class DarlingTest(WestCommand):
             )
 
         self.inf("  GREEN runtime provider")
-        with self._metadata_runtime_profile_context(patch, test) as runtime_env:
-            green_env = self._runtime_profile_execution_env(invocation, runtime_env)
-            with self._ctest_source_override_context(invocation) as run_invocation:
+        with self._metadata_runtime_profile_context(patch, test) as deployment:
+            runtime_env = deployment.env if deployment is not None else None
+            runtime_invocation = self._with_runtime_diagnostics(invocation, deployment)
+            green_env = self._runtime_profile_execution_env(runtime_invocation, runtime_env)
+            with self._ctest_source_override_context(runtime_invocation) as run_invocation:
                 with self._resource_context(run_invocation, green_env) as resource_env:
                     return self._run_invocation(run_invocation, env=resource_env)
 
