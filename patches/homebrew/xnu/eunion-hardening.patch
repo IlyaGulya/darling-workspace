@@ -3799,3 +3799,413 @@ index 18f9f5ddf01db5b9b548c5184dfeb19e8e833982..102ef8c70f9ef09dea1e9b3d850e2c85
  	join(path, sizeof(path), upper, "/absent");
  	expect(&resolver, "/absent", EUNION_RESOLVER_MISSING, path);
  	{
+
+From cfd2f9ed13cb33f2b9edcefe33709be4d90cb1db Mon Sep 17 00:00:00 2001
+From: Ilya Gulya <ilya@gulya.me>
+Date: Sun, 12 Jul 2026 18:00:27 +0000
+Subject: [PATCH] fix: use the SDK string declaration in rmdir
+
+---
+ .../emulation/src/xnu_syscall/bsd/impl/stat/rmdir.c            | 3 +--
+ 1 file changed, 1 insertion(+), 2 deletions(-)
+
+diff --git a/darling/src/libsystem_kernel/emulation/src/xnu_syscall/bsd/impl/stat/rmdir.c b/darling/src/libsystem_kernel/emulation/src/xnu_syscall/bsd/impl/stat/rmdir.c
+index c3a1b5e71adef3fac99fd7d98a8902154c239f95..9d77e65f42e74c687321c64473da12a1ed218ab3 100644
+--- a/darling/src/libsystem_kernel/emulation/src/xnu_syscall/bsd/impl/stat/rmdir.c
++++ b/darling/src/libsystem_kernel/emulation/src/xnu_syscall/bsd/impl/stat/rmdir.c
+@@ -1,6 +1,7 @@
+ #include <darling/emulation/xnu_syscall/bsd/impl/stat/rmdir.h>
+ 
+ #include <sys/errno.h>
++#include <string.h>
+ 
+ #include <darling/emulation/conversion/stat/common.h>
+ #include <darling/emulation/common/base.h>
+@@ -12,8 +13,6 @@
+ 
+ #define LINUX_AT_REMOVEDIR	0x200
+ 
+-extern char* strcpy(char* dst, const char* src);
+-
+ long sys_rmdir(const char* path)
+ {
+ 	int ret;
+
+From b103905f2e700269815f870f3dd78f3c0604ec63 Mon Sep 17 00:00:00 2001
+From: Ilya Gulya <ilya@gulya.me>
+Date: Sun, 12 Jul 2026 18:28:32 +0000
+Subject: [PATCH] fix: allow union create paths to cross whiteouts
+
+---
+ .../linux_premigration/vchroot_expand.h       |  4 ++
+ .../linux_premigration/vchroot_userspace.c    | 64 ++++++++++++++++++-
+ .../src/xnu_syscall/bsd/impl/fcntl/openat.c   | 10 +--
+ .../src/xnu_syscall/bsd/impl/stat/mkdirat.c   |  5 +-
+ .../xnu_syscall/bsd/impl/unistd/renameat.c    |  5 +-
+ .../xnu_syscall/bsd/impl/unistd/unlinkat.c    |  3 +-
+ 6 files changed, 78 insertions(+), 13 deletions(-)
+
+diff --git a/darling/src/libsystem_kernel/emulation/include/linux_premigration/vchroot_expand.h b/darling/src/libsystem_kernel/emulation/include/linux_premigration/vchroot_expand.h
+index 1f306fd30ddd1dd3ecc2295505ba264a3837e1e9..07d67e862d63fd80617f55aaf09b927b5096d7b1 100644
+--- a/darling/src/libsystem_kernel/emulation/include/linux_premigration/vchroot_expand.h
++++ b/darling/src/libsystem_kernel/emulation/include/linux_premigration/vchroot_expand.h
+@@ -63,6 +63,10 @@ int vchroot_prepare_write(const char* guest);
+ // guest path. Returns 0 for a path inside the union, 1 for an unmanaged path,
+ // or a negative Linux errno. The caller owns `out`.
+ int vchroot_canonical_guest_path(int dfd, const char* path, char* out, int cap);
++// Create-path variant: like vchroot_canonical_guest_path(), but permits a
++// missing or whiteouted leaf so create/recreate operations can remove the
++// marker and publish the new upper object.
++int vchroot_canonical_guest_create_path(int dfd, const char* path, char* out, int cap);
+ // *at() variant: resolve a dirfd-relative target to a guest-absolute path via
+ // the dirfd, then prepare_write. For openat/mkdirat/etc. with a relative path.
+ int vchroot_prepare_write_at(int dfd, const char* rel);
+diff --git a/darling/src/libsystem_kernel/emulation/src/linux_premigration/vchroot_userspace.c b/darling/src/libsystem_kernel/emulation/src/linux_premigration/vchroot_userspace.c
+index 29ca74b893917a225d6e9590af771710a954a2c1..20c64598fd994321ca249b1b26860addcaeb0dc9 100644
+--- a/darling/src/libsystem_kernel/emulation/src/linux_premigration/vchroot_userspace.c
++++ b/darling/src/libsystem_kernel/emulation/src/linux_premigration/vchroot_userspace.c
+@@ -49,13 +49,13 @@ typedef struct stat stat_t;
+ #	include <darling/emulation/conversion/stat/common.h>
+ #	include <darling/emulation/xnu_syscall/bsd/impl/dirent/getdirentries.h>
+ #	include <darling/emulation/conversion/common_at.h>
++#	include <string.h>
+ 
+ #include <darlingserver/rpc.h>
+ 
+ typedef struct linux_stat stat_t;
+ 
+ extern __SIZE_TYPE__ strlen(const char* s);
+-extern char* strcpy(char* dest, const char* src);
+ extern int strcmp(const char* str1, const char* str2);
+ extern int strncmp(const char* str1, const char* str2, __SIZE_TYPE__ n);
+ extern int strcasecmp(const char* str1, const char* str2);
+@@ -970,6 +970,68 @@ int vchroot_canonical_guest_path(int dfd, const char* path, char* out, int cap)
+ 	return status;
+ }
+ 
++int vchroot_canonical_guest_create_path(int dfd, const char* path, char* out, int cap)
++{
++	int status = vchroot_canonical_guest_path(dfd, path, out, cap);
++	if (status != -LINUX_ENOENT)
++		return status;
++
++	// A whiteouted absolute leaf cannot be expanded through the resolver. The
++	// guest spelling is still the canonical create target; prepare_create() will
++	// clear its marker after the parent policy has been applied.
++	if (path[0] == '/')
++	{
++		if (eunion_guest_path_safe(path) < 0)
++			return -LINUX_EINVAL;
++		if ((int)strlen(path) + 1 > cap)
++			return -LINUX_ENAMETOOLONG;
++		memcpy(out, path, strlen(path) + 1);
++		return eunion_manage(path) ? 0 : 1;
++	}
++
++	// For a relative target, canonicalize the parent and append the leaf. This
++	// preserves dirfd semantics while allowing only the final component to be
++	// absent or whiteouted.
++	int length = (int)strlen(path);
++	int last_slash = -1;
++	for (int index = 0; index < length; index++)
++		if (path[index] == '/')
++			last_slash = index;
++	char parent[4096];
++	char leaf[4096];
++	if (last_slash < 0)
++	{
++		memcpy(parent, ".", 2);
++		memcpy(leaf, path, length + 1);
++	}
++	else
++	{
++		if (last_slash >= (int)sizeof(parent) ||
++			length - last_slash > (int)sizeof(leaf))
++			return -LINUX_ENAMETOOLONG;
++		memcpy(parent, path, last_slash);
++		parent[last_slash] = '\0';
++		memcpy(leaf, path + last_slash + 1, length - last_slash);
++	}
++	char canonical_parent[4096];
++	status = vchroot_canonical_guest_path(dfd, parent,
++		canonical_parent, sizeof(canonical_parent));
++	if (status != 0)
++		return status;
++	int parent_length = (int)strlen(canonical_parent);
++	int leaf_length = (int)strlen(leaf);
++	int separator = parent_length > 1 ? 1 : 0;
++	if (parent_length + separator + leaf_length + 1 > cap)
++		return -LINUX_ENAMETOOLONG;
++	memcpy(out, canonical_parent, parent_length);
++	if (separator)
++		out[parent_length++] = '/';
++	memcpy(out + parent_length, leaf, leaf_length + 1);
++	if (eunion_guest_path_safe(out) < 0)
++		return -LINUX_EINVAL;
++	return eunion_manage(out) ? 0 : 1;
++}
++
+ // *at() variant: the mutating target is addressed RELATIVE to a directory fd
+ // (openat/mkdirat/...). The plain vchroot_prepare_write only acts on absolute
+ // guest paths, so a dirfd-relative write into a lower-only dir would otherwise
+diff --git a/darling/src/libsystem_kernel/emulation/src/xnu_syscall/bsd/impl/fcntl/openat.c b/darling/src/libsystem_kernel/emulation/src/xnu_syscall/bsd/impl/fcntl/openat.c
+index c0d95188aa9f1504d76c1eff8072d4b1061cbea6..c436d847a80ef60902780818abd2556e2abc9648 100644
+--- a/darling/src/libsystem_kernel/emulation/src/xnu_syscall/bsd/impl/fcntl/openat.c
++++ b/darling/src/libsystem_kernel/emulation/src/xnu_syscall/bsd/impl/fcntl/openat.c
+@@ -1,6 +1,7 @@
+ #include <darling/emulation/xnu_syscall/bsd/impl/fcntl/openat.h>
+ 
+ #include <sys/fcntl.h>
++#include <string.h>
+ 
+ #include <darling/emulation/xnu_syscall/bsd/impl/fcntl/open.h>
+ #include <darling/emulation/common/base.h>
+@@ -25,8 +26,6 @@
+ #endif
+ 
+ extern int strcmp(const char *s1, const char *s2);
+-extern char* strcpy(char* dst, const char* src);
+-
+ long sys_openat(int fd, const char* filename, int flags, unsigned int mode)
+ {
+ 	CANCELATION_POINT();
+@@ -80,8 +79,11 @@ long sys_openat_nocancel(int fd, const char* filename, int flags, unsigned int m
+ 	int mutating = ((flags & 0x3) == BSD_O_WRONLY || (flags & 0x3) == BSD_O_RDWR ||
+ 		(flags & BSD_O_CREAT) || (flags & BSD_O_TRUNC));
+ 	if (mutating || filename[0] != '/') {
+-		union_path = vchroot_canonical_guest_path(atfd(fd), filename,
+-			guest_path, sizeof(guest_path));
++	union_path = (flags & BSD_O_CREAT)
++		? vchroot_canonical_guest_create_path(atfd(fd), filename,
++			guest_path, sizeof(guest_path))
++		: vchroot_canonical_guest_path(atfd(fd), filename,
++		guest_path, sizeof(guest_path));
+ 		if (union_path < 0)
+ 			return errno_linux_to_bsd(union_path);
+ 	}
+diff --git a/darling/src/libsystem_kernel/emulation/src/xnu_syscall/bsd/impl/stat/mkdirat.c b/darling/src/libsystem_kernel/emulation/src/xnu_syscall/bsd/impl/stat/mkdirat.c
+index 8eaf3f0b81f4e719198010e3cf2e133f7a9c7253..e800f88bd767cf611435a4745dfe192202adcbec 100644
+--- a/darling/src/libsystem_kernel/emulation/src/xnu_syscall/bsd/impl/stat/mkdirat.c
++++ b/darling/src/libsystem_kernel/emulation/src/xnu_syscall/bsd/impl/stat/mkdirat.c
+@@ -1,6 +1,7 @@
+ #include <darling/emulation/xnu_syscall/bsd/impl/stat/mkdirat.h>
+ 
+ #include <sys/errno.h>
++#include <string.h>
+ 
+ #include <darling/emulation/conversion/stat/common.h>
+ #include <darling/emulation/common/base.h>
+@@ -10,8 +11,6 @@
+ #include <darling/emulation/linux_premigration/vchroot_expand.h>
+ #include <darling/emulation/other/mach/lkm.h>
+ 
+-extern char* strcpy(char* dst, const char* src);
+-
+ long sys_mkdirat(int fd, const char* path, unsigned int mode)
+ {
+ 	int ret;
+@@ -29,7 +28,7 @@ long sys_mkdirat(int fd, const char* path, unsigned int mode)
+ 	// previously-deleted name resurrects it).
+ 	int prepared_create_path = 0;
+ 	char guest_path[4096];
+-	int union_path = vchroot_canonical_guest_path(vc.dfd, path,
++	int union_path = vchroot_canonical_guest_create_path(vc.dfd, path,
+ 		guest_path, sizeof(guest_path));
+ 	if (union_path < 0)
+ 		return errno_linux_to_bsd(union_path);
+diff --git a/darling/src/libsystem_kernel/emulation/src/xnu_syscall/bsd/impl/unistd/renameat.c b/darling/src/libsystem_kernel/emulation/src/xnu_syscall/bsd/impl/unistd/renameat.c
+index 1ad00c9b1421ed335559a89afc14c39bfd013e86..14fb02f50b5234ae4de0398d874994fb16165217 100644
+--- a/darling/src/libsystem_kernel/emulation/src/xnu_syscall/bsd/impl/unistd/renameat.c
++++ b/darling/src/libsystem_kernel/emulation/src/xnu_syscall/bsd/impl/unistd/renameat.c
+@@ -1,6 +1,7 @@
+ #include <darling/emulation/xnu_syscall/bsd/impl/unistd/renameat.h>
+ 
+ #include <sys/errno.h>
++#include <string.h>
+ 
+ #include <darling/emulation/other/mach/lkm.h>
+ #include <darling/emulation/common/base.h>
+@@ -9,8 +10,6 @@
+ #include <darling/emulation/conversion/common_at.h>
+ #include <darling/emulation/linux_premigration/vchroot_expand.h>
+ 
+-extern char* strcpy(char* dst, const char* src);
+-
+ long sys_renameat(int oldfd, const char* oldpath, int newfd, const char* newpath)
+ {
+ 	int ret;
+@@ -42,7 +41,7 @@ long sys_renameat(int oldfd, const char* oldpath, int newfd, const char* newpath
+ 	int new_path_prepared = 0;
+ 	int old_union = vchroot_canonical_guest_path(vc.dfd, oldpath,
+ 		old_guest_path, sizeof(old_guest_path));
+-	int new_union = vchroot_canonical_guest_path(vc2.dfd, newpath,
++	int new_union = vchroot_canonical_guest_create_path(vc2.dfd, newpath,
+ 		new_guest_path, sizeof(new_guest_path));
+ 	if (old_union < 0)
+ 		return errno_linux_to_bsd(old_union);
+diff --git a/darling/src/libsystem_kernel/emulation/src/xnu_syscall/bsd/impl/unistd/unlinkat.c b/darling/src/libsystem_kernel/emulation/src/xnu_syscall/bsd/impl/unistd/unlinkat.c
+index 17add5e370e4ebbabccff99b91905c259d30eeca..a41c9c0e061e4d68ad6785dfae30e1f61d5ad0ad 100644
+--- a/darling/src/libsystem_kernel/emulation/src/xnu_syscall/bsd/impl/unistd/unlinkat.c
++++ b/darling/src/libsystem_kernel/emulation/src/xnu_syscall/bsd/impl/unistd/unlinkat.c
+@@ -1,6 +1,7 @@
+ #include <darling/emulation/xnu_syscall/bsd/impl/unistd/unlinkat.h>
+ 
+ #include <sys/errno.h>
++#include <string.h>
+ 
+ #include <darling/emulation/other/mach/lkm.h>
+ #include <darling/emulation/common/base.h>
+@@ -10,8 +11,6 @@
+ #include <darling/emulation/linux_premigration/vchroot_expand.h>
+ 
+ 
+-extern char* strcpy(char* dst, const char* src);
+-
+ long sys_unlinkat(int fd, const char* path, int flag)
+ {
+ 	int ret;
+
+From 82847c96f24a804cf6a7949cf4543872a860f612 Mon Sep 17 00:00:00 2001
+From: Ilya Gulya <ilya@gulya.me>
+Date: Sun, 12 Jul 2026 18:34:06 +0000
+Subject: [PATCH] fix: use SDK string declarations in vchroot
+
+---
+ .../src/linux_premigration/vchroot_userspace.c        | 11 +----------
+ 1 file changed, 1 insertion(+), 10 deletions(-)
+
+diff --git a/darling/src/libsystem_kernel/emulation/src/linux_premigration/vchroot_userspace.c b/darling/src/libsystem_kernel/emulation/src/linux_premigration/vchroot_userspace.c
+index 20c64598fd994321ca249b1b26860addcaeb0dc9..3e7026b4cde61f0f6fe1b8d579716a9e91e9f3aa 100644
+--- a/darling/src/libsystem_kernel/emulation/src/linux_premigration/vchroot_userspace.c
++++ b/darling/src/libsystem_kernel/emulation/src/linux_premigration/vchroot_userspace.c
+@@ -11,6 +11,7 @@
+ #	include <stdbool.h>
+ #	include <stdlib.h>
+ #	include <string.h>
++#	include <strings.h>
+ #	include <errno.h>
+ #	include <dirent.h>
+ #	include <fcntl.h>
+@@ -55,16 +56,6 @@ typedef struct stat stat_t;
+ 
+ typedef struct linux_stat stat_t;
+ 
+-extern __SIZE_TYPE__ strlen(const char* s);
+-extern int strcmp(const char* str1, const char* str2);
+-extern int strncmp(const char* str1, const char* str2, __SIZE_TYPE__ n);
+-extern int strcasecmp(const char* str1, const char* str2);
+-extern char* strcat(char* dest, const char* src);
+-extern char *strchr(const char *s, int c);
+-extern void *memcpy(void *dest, const void *src, __SIZE_TYPE__ n);
+-extern void* memmove(void* dest, const void* src, __SIZE_TYPE__ n);
+-extern int memcmp(const void* dest, const void* src, __SIZE_TYPE__ n);
+-
+ #define LINUX_S_IFMT 00170000
+ #define LINUX_S_IFLNK 0120000
+ 
+
+From cb2cf623d9cd641ed4f9e899a0187acdedc423ea Mon Sep 17 00:00:00 2001
+From: Ilya Gulya <ilya@gulya.me>
+Date: Sun, 12 Jul 2026 18:35:15 +0000
+Subject: [PATCH] fix: remove manual string declarations from eunion adapters
+
+---
+ .../emulation/src/xnu_syscall/bsd/impl/fcntl/openat.c        | 1 -
+ .../emulation/src/xnu_syscall/bsd/impl/unistd/fchownat.c     | 3 +--
+ .../emulation/src/xnu_syscall/bsd/impl/xattr/getxattr.c      | 3 +--
+ .../emulation/src/xnu_syscall/bsd/impl/xattr/listxattr.c     | 5 +----
+ .../emulation/src/xnu_syscall/bsd/impl/xattr/removexattr.c   | 3 +--
+ .../emulation/src/xnu_syscall/bsd/impl/xattr/setxattr.c      | 3 +--
+ 6 files changed, 5 insertions(+), 13 deletions(-)
+
+diff --git a/darling/src/libsystem_kernel/emulation/src/xnu_syscall/bsd/impl/fcntl/openat.c b/darling/src/libsystem_kernel/emulation/src/xnu_syscall/bsd/impl/fcntl/openat.c
+index c436d847a80ef60902780818abd2556e2abc9648..36e5764079197900d973bbca52a711210c101524 100644
+--- a/darling/src/libsystem_kernel/emulation/src/xnu_syscall/bsd/impl/fcntl/openat.c
++++ b/darling/src/libsystem_kernel/emulation/src/xnu_syscall/bsd/impl/fcntl/openat.c
+@@ -25,7 +25,6 @@
+ #	define O_DIRECTORY 0x100000
+ #endif
+ 
+-extern int strcmp(const char *s1, const char *s2);
+ long sys_openat(int fd, const char* filename, int flags, unsigned int mode)
+ {
+ 	CANCELATION_POINT();
+diff --git a/darling/src/libsystem_kernel/emulation/src/xnu_syscall/bsd/impl/unistd/fchownat.c b/darling/src/libsystem_kernel/emulation/src/xnu_syscall/bsd/impl/unistd/fchownat.c
+index a56eef0f52ff7a64c6d29207d4b2077261f14c71..7416f08677b8921e8bdcf1be04f146a724154b54 100644
+--- a/darling/src/libsystem_kernel/emulation/src/xnu_syscall/bsd/impl/unistd/fchownat.c
++++ b/darling/src/libsystem_kernel/emulation/src/xnu_syscall/bsd/impl/unistd/fchownat.c
+@@ -1,6 +1,7 @@
+ #include <darling/emulation/xnu_syscall/bsd/impl/unistd/fchownat.h>
+ 
+ #include <sys/errno.h>
++#include <string.h>
+ 
+ #include <darling/emulation/other/mach/lkm.h>
+ #include <darling/emulation/xnu_syscall/bsd/impl/unistd/chown.h>
+@@ -10,8 +11,6 @@
+ #include <darling/emulation/conversion/common_at.h>
+ #include <darling/emulation/linux_premigration/vchroot_expand.h>
+ 
+-extern char* strcpy(char* dst, const char* src);
+-
+ long sys_fchownat(int fd, const char* path, int uid, int gid, int flag)
+ {
+ 	// E-UNION HAZARD (dar-test-infra-sp5.8.4.4.8): this stub is SAFE only because
+diff --git a/darling/src/libsystem_kernel/emulation/src/xnu_syscall/bsd/impl/xattr/getxattr.c b/darling/src/libsystem_kernel/emulation/src/xnu_syscall/bsd/impl/xattr/getxattr.c
+index acdbd856638d1a25e944cf9a372ec57c63f8469d..0c8bcd1619316c81128fc6508bfc17dace6a5a23 100644
+--- a/darling/src/libsystem_kernel/emulation/src/xnu_syscall/bsd/impl/xattr/getxattr.c
++++ b/darling/src/libsystem_kernel/emulation/src/xnu_syscall/bsd/impl/xattr/getxattr.c
+@@ -1,8 +1,7 @@
+ #include <darling/emulation/xnu_syscall/bsd/impl/xattr/getxattr.h>
+ 
+ #include <sys/errno.h>
+-
+-extern char* strcpy(char* dst, const char* src);
++#include <string.h>
+ 
+ #include <darling/emulation/common/base.h>
+ #include <darling/emulation/conversion/errno.h>
+diff --git a/darling/src/libsystem_kernel/emulation/src/xnu_syscall/bsd/impl/xattr/listxattr.c b/darling/src/libsystem_kernel/emulation/src/xnu_syscall/bsd/impl/xattr/listxattr.c
+index df240ba1d117de0f52281f0acfb59dbb0c5ed7ef..fb4e071cc950aad0a764b87558a85843adfffa76 100644
+--- a/darling/src/libsystem_kernel/emulation/src/xnu_syscall/bsd/impl/xattr/listxattr.c
++++ b/darling/src/libsystem_kernel/emulation/src/xnu_syscall/bsd/impl/xattr/listxattr.c
+@@ -1,10 +1,7 @@
+ #include <darling/emulation/xnu_syscall/bsd/impl/xattr/listxattr.h>
+ 
+ #include <sys/errno.h>
+-
+-#ifdef EUNION
+-extern void* memmove(void* dest, const void* src, __SIZE_TYPE__ n);
+-#endif
++#include <string.h>
+ 
+ #include <darling/emulation/common/base.h>
+ #include <darling/emulation/conversion/errno.h>
+diff --git a/darling/src/libsystem_kernel/emulation/src/xnu_syscall/bsd/impl/xattr/removexattr.c b/darling/src/libsystem_kernel/emulation/src/xnu_syscall/bsd/impl/xattr/removexattr.c
+index 0c97d8cc42514e2c255450d23273a08f57d257db..65ff94db559d2fff4936bdb3af4dcb80a9c523ca 100644
+--- a/darling/src/libsystem_kernel/emulation/src/xnu_syscall/bsd/impl/xattr/removexattr.c
++++ b/darling/src/libsystem_kernel/emulation/src/xnu_syscall/bsd/impl/xattr/removexattr.c
+@@ -1,8 +1,7 @@
+ #include <darling/emulation/xnu_syscall/bsd/impl/xattr/removexattr.h>
+ 
+ #include <sys/errno.h>
+-
+-extern char* strcpy(char* dst, const char* src);
++#include <string.h>
+ 
+ #include <darling/emulation/common/base.h>
+ #include <darling/emulation/conversion/errno.h>
+diff --git a/darling/src/libsystem_kernel/emulation/src/xnu_syscall/bsd/impl/xattr/setxattr.c b/darling/src/libsystem_kernel/emulation/src/xnu_syscall/bsd/impl/xattr/setxattr.c
+index ee84b44992295cfef7521cf831fc3f200283c89b..e007a71cd4ebafa8c0f3722efc3b9725404a4cbc 100644
+--- a/darling/src/libsystem_kernel/emulation/src/xnu_syscall/bsd/impl/xattr/setxattr.c
++++ b/darling/src/libsystem_kernel/emulation/src/xnu_syscall/bsd/impl/xattr/setxattr.c
+@@ -1,8 +1,7 @@
+ #include <darling/emulation/xnu_syscall/bsd/impl/xattr/setxattr.h>
+ 
+ #include <sys/errno.h>
+-
+-extern char* strcpy(char* dst, const char* src);
++#include <string.h>
+ 
+ #include <darling/emulation/common/base.h>
+ #include <darling/emulation/conversion/errno.h>

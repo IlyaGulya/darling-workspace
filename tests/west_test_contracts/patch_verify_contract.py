@@ -95,8 +95,39 @@ source_revision_patch = {
 }
 source_revision_errors = metadata_command._validate_test_metadata(source_revision_patch)
 assert source_revision_errors == [], source_revision_errors
+guest_source_revision_patch = {
+    "module": "darling/src/external/xnu",
+    "tests": [
+        {
+            "name": "guest_source_revision_contract",
+            "runs": "guest",
+            "runner": "guest-c-fixture",
+            "script": "tests/eunion_mkdir_opaque_guest.c",
+            "ok-marker": "WEST_EUNION_MKDIR_OPAQUE_OK",
+            "red": True,
+            "requires": ["darling-prefix"],
+            "red-proof": {
+                "mode": "guest-runtime-deploy",
+                "bad-profile": "current-minus-patch",
+                "source-revision": "deadbeef",
+                "runtime-artifacts": [
+                    {
+                        "module": "darling/src/external/xnu",
+                        "build-targets": ["system_kernel"],
+                        "deploy": ["usr/lib/system/libsystem_kernel.dylib"],
+                    }
+                ],
+            },
+        }
+    ],
+}
+guest_source_revision_errors = metadata_command._validate_test_metadata(guest_source_revision_patch)
+assert guest_source_revision_errors == [], guest_source_revision_errors
 for invalid_proof, expected in (
-    ({"mode": "self", "source-revision": "deadbeef"}, "requires mode: source-base"),
+    (
+        {"mode": "self", "source-revision": "deadbeef"},
+        "requires mode: source-base or guest-runtime-deploy",
+    ),
     ({"mode": "source-base", "source-revision": ""}, "non-empty revision"),
 ):
     invalid_patch = {

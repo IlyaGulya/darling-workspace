@@ -2653,11 +2653,11 @@ patches:
       base: main
       state: local
 - path: xnu/eunion-hardening.patch
-  sha256sum: f1c3f6d14d632141bfe548861e2847644d2eb2118ce16590cda436f61ec2e2d9
+  sha256sum: 230a7f709f80b7a02ff8cb9d2230a8e745e9dcd32b80f1ff71b329965f90ad05
   module: darling/src/external/xnu
   source-branch: repack/eunion-hardening
   source-base: 5c3019fca1d85533f34735bf40c97156c87b6d4f
-  source-commit: f223ee035651e9b9f7d3952c654bb0d0dc238d34
+  source-commit: cb2cf623d9cd641ed4f9e899a0187acdedc423ea
   bead: dar-7zvt.2
   publication-status: blocked
   publication-blocker: E-UNION syscall coverage and hardening are a local architectural consolidation; publication remains blocked until the repackaged rootless stack passes its full guest audit.
@@ -2780,8 +2780,11 @@ patches:
     red-proof:
       mode: guest-runtime-deploy
       bad-profile: current-minus-patch
+      source-revision: edb1a02
+      current-minus-skip-patches:
+      - xnu/fd-guard-ebadf.patch
       expect-output-contains:
-      - 'mkdir /private/var/tmp/west-eunion-mkdir-opaque/recreate failed: File exists'
+      - 'mkdir /private/var/tmp/west-eunion-mkdir-opaque/recreate failed: No such file or directory'
       - ORACLE_RC=1
       source-modules:
       - darling/src/external/darlingserver

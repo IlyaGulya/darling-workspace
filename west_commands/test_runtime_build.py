@@ -109,7 +109,14 @@ class RuntimeBuildService:
         self._host.inf(f"  {label} configure: {source_root} -> {build_root}")
         configured = runner(
             ["cmake", "-S", str(source_root), "-B", str(build_root), *configure_args(proof, prefix)],
-            cwd=Path(self._host.topdir), env=None, timeout_seconds=timeout, capture_output=True,
+            cwd=Path(self._host.topdir),
+            env=None,
+            timeout_seconds=timeout,
+            capture_output=True,
+            heartbeat_seconds=30,
+            heartbeat=lambda elapsed: self._host.inf(
+                f"  runtime heartbeat: {label} configure still running ({elapsed:.0f}s)"
+            ),
         )
         if configured.returncode:
             dump_command_tail(f"{label} configure", configured)
@@ -122,7 +129,14 @@ class RuntimeBuildService:
         self._host.inf(f"  {label} build: {', '.join(targets)}")
         built = runner(
             ["ninja", "-C", str(build_root), *targets],
-            cwd=Path(self._host.topdir), env=None, timeout_seconds=timeout, capture_output=True,
+            cwd=Path(self._host.topdir),
+            env=None,
+            timeout_seconds=timeout,
+            capture_output=True,
+            heartbeat_seconds=30,
+            heartbeat=lambda elapsed: self._host.inf(
+                f"  runtime heartbeat: {label} build still running ({elapsed:.0f}s)"
+            ),
         )
         if built.returncode:
             dump_command_tail(f"{label} build", built)
