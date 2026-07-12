@@ -86,6 +86,7 @@ runtime-profiles:
       - darling
       - mldr
       - launchd
+      - launchctl
       - shellspawn
       - vchroot
       - dyld
@@ -93,6 +94,7 @@ runtime-profiles:
       - bin/darling
       - usr/libexec/darling/mldr
       - sbin/launchd
+      - bin/launchctl
       - usr/libexec/shellspawn
       - usr/libexec/darling/vchroot
       - usr/lib/dyld
@@ -135,6 +137,7 @@ runtime-profiles:
       - darling
       - mldr
       - launchd
+      - launchctl
       - shellspawn
       - vchroot
       - dyld
@@ -142,6 +145,7 @@ runtime-profiles:
       - bin/darling
       - usr/libexec/darling/mldr
       - sbin/launchd
+      - bin/launchctl
       - usr/libexec/shellspawn
       - usr/libexec/darling/vchroot
       - usr/lib/dyld
