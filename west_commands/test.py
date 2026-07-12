@@ -91,8 +91,10 @@ from test_runtime import (
     describe_runtime_deploy_plan,
     is_macho_binary,
     load_ctest_runtime_profiles,
+    merge_runtime_cmake_define_overrides,
     parse_macho_dylib_dependencies,
     parse_macho_dylib_id,
+    parse_runtime_cmake_define_overrides,
     partition_ctest_runtime_profiles,
     runtime_artifact_deploy_paths,
     runtime_build_targets,
@@ -241,6 +243,13 @@ class DarlingTest(WestCommand):
             default=[],
             metavar="NAME",
             help="add a declared CTest guest runtime provider without changing test selection; useful for reproducing artifact interactions",
+        )
+        parser.add_argument(
+            "--runtime-cmake-define",
+            action="append",
+            default=[],
+            metavar="NAME=VALUE",
+            help="override one feature CMake definition for a disposable runtime deployment",
         )
         parser.add_argument(
             "--bootstrap-runtime-profile",
@@ -1776,10 +1785,17 @@ class DarlingTest(WestCommand):
         assert definition is not None
         profile_name = definition["name"]
         source_profile = definition["source-profile"]
+        try:
+            cmake_defines = merge_runtime_cmake_define_overrides(
+                definition.get("cmake-defines", {}),
+                getattr(self, "_runtime_cmake_define_overrides", {}),
+            )
+        except ValueError as error:
+            self.die(f"invalid runtime CMake override: {error}")
         proof = {
             "source-modules": definition["source-modules"],
             "runtime-artifacts": definition["runtime-artifacts"],
-            "cmake-defines": definition.get("cmake-defines", {}),
+            "cmake-defines": cmake_defines,
         }
         if omit_patch:
             proof["bad-profile"] = "current-minus-patch"
@@ -4680,8 +4696,8 @@ class DarlingTest(WestCommand):
         def ctest_invocation_for(source_root: Path, build_root: Path):
             override = invocation.get("ctest_source_override")
             if not override:
-                return invocation
-            configured = dict(invocation)
+                return proof_invocation
+            configured = dict(proof_invocation)
             configured["ctest_build"] = self._configure_and_build(
                 self._testkit_dir(),
                 self._executor,
@@ -5320,6 +5336,12 @@ class DarlingTest(WestCommand):
         self._bootstrap_syscall_trace = None
         self._bootstrap_stack_sample = None
         self._bootstrap_timeout_seconds = None
+        try:
+            self._runtime_cmake_define_overrides = parse_runtime_cmake_define_overrides(
+                args.runtime_cmake_define
+            )
+        except ValueError as error:
+            self.die(f"invalid --runtime-cmake-define: {error}")
 
         if args.ctest_timeout_seconds <= 0:
             self.die("--ctest-timeout-seconds must be > 0")

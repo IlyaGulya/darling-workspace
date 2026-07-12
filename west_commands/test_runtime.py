@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from collections.abc import Callable, Mapping
 from pathlib import Path
 from typing import Any
@@ -58,6 +59,46 @@ _MACHO_MAGICS = frozenset(
         b"\xbf\xba\xfe\xca",
     }
 )
+_CMAKE_DEFINE_NAME = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
+_RUNTIME_CMAKE_DEFINE_RESERVED = frozenset(
+    {"CMAKE_BUILD_TYPE", "CMAKE_INSTALL_PREFIX", "DARLING_PATCH_PROFILE"}
+)
+
+
+def parse_runtime_cmake_define_overrides(values: list[str]) -> dict[str, str]:
+    """Parse explicit feature overrides for a disposable runtime deployment."""
+
+    overrides: dict[str, str] = {}
+    for value in values:
+        name, separator, definition = value.partition("=")
+        if not separator or not _CMAKE_DEFINE_NAME.fullmatch(name):
+            raise ValueError(
+                "runtime CMake overrides must have the form NAME=VALUE; "
+                f"got {value!r}"
+            )
+        if name in _RUNTIME_CMAKE_DEFINE_RESERVED:
+            raise ValueError(
+                f"runtime CMake override {name!r} is owned by the runtime framework"
+            )
+        if "\n" in definition or "\r" in definition:
+            raise ValueError(
+                f"runtime CMake override {name!r} must be one line"
+            )
+        previous = overrides.get(name)
+        if previous is not None and previous != definition:
+            raise ValueError(
+                f"runtime CMake override {name!r} was specified with conflicting values"
+            )
+        overrides[name] = definition
+    return overrides
+
+
+def merge_runtime_cmake_define_overrides(
+    declared: Mapping[str, Any], overrides: Mapping[str, str]
+) -> dict[str, Any]:
+    """Apply intentional diagnostic feature overrides to one provider plan."""
+
+    return {**declared, **overrides}
 
 
 def runtime_artifact_deploy_paths(artifact: dict[str, Any]) -> list[str]:
