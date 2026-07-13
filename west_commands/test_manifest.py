@@ -449,6 +449,8 @@ def _extend_list_field(
         return
     if not isinstance(values, list):
         raise ManifestError(f"{location}: {field} profile data must be a list")
+    if not values:
+        return
     existing = test.get(field, [])
     if existing and not isinstance(existing, list):
         raise ManifestError(f"{location}: {field} must be a list")
