@@ -47,7 +47,7 @@ printf 'sample\tcompat.sample\tSAMPLE_OK\n' >"$tmp/installed/compat-install-mani
 
 : >"$tmp/commands"
 CI_WEST_TOPDIR_RC=1 "$repo/ci/bootstrap-west.sh"
-grep -F -q 'west init -l ' "$tmp/commands"
+grep -F -x -q "west init -l $repo" "$tmp/commands"
 grep -F -x -q 'west update' "$tmp/commands"
 
 printf 'PASS ci-test-tiers-contract\n'
