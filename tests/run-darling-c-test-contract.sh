@@ -14,6 +14,15 @@ exec "$@"
 SH
 chmod +x "$tmp/launcher"
 
+cat >"$tmp/no-stdin-launcher" <<'SH'
+#!/usr/bin/env bash
+set -euo pipefail
+[ "$1" = shell ] || exit 64
+shift
+exec "$@" </dev/null
+SH
+chmod +x "$tmp/no-stdin-launcher"
+
 cat >"$tmp/guest.c" <<'C'
 #include <stdio.h>
 int main(void) {
@@ -39,6 +48,17 @@ grep -F -x -q WEST_GUEST_STAGE=compile "$tmp/green.out"
 grep -F -x -q WEST_GUEST_STAGE=run "$tmp/green.out"
 grep -F -x -q ORACLE_RC=0 "$tmp/green.out"
 grep -F -x -q GUEST_C_EXACT_OK "$tmp/green.out"
+
+# A real Darling launcher does not promise to preserve stdin for `shell -c`.
+# The fixture must therefore remain green when the transport drops stdin.
+DPREFIX="$tmp/prefix" "$repo/testkit/scripts/run-darling-c-test.sh" \
+	--name "${name}_no_stdin" --source "$tmp/guest.c" \
+	--launcher "$tmp/no-stdin-launcher" --cc cc --cflags '' \
+	--ok-marker GUEST_C_EXACT_OK >"$tmp/no-stdin.out" 2>&1
+grep -F -x -q WEST_GUEST_STAGE=upload "$tmp/no-stdin.out"
+grep -F -x -q WEST_GUEST_STAGE=compile "$tmp/no-stdin.out"
+grep -F -x -q WEST_GUEST_STAGE=run "$tmp/no-stdin.out"
+grep -F -x -q GUEST_C_EXACT_OK "$tmp/no-stdin.out"
 
 if find /tmp -maxdepth 1 -name "${name}.*" -print | grep -q .; then
 	find /tmp -maxdepth 1 -name "${name}.*" -print >&2
