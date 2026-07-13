@@ -23,7 +23,7 @@ jobs:
 
   guest-smoke:
     if: github.event_name == 'push' || github.event_name == 'workflow_dispatch'
-    runs-on: [self-hosted, linux, x64, darling-rootless]
+    runs-on: ubuntu-latest
     permissions:
       contents: read
     steps:
@@ -41,7 +41,7 @@ jobs:
 
   guest-full:
     if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
-    runs-on: [self-hosted, linux, x64, darling-rootless]
+    runs-on: ubuntu-latest
     permissions:
       contents: read
     steps:
