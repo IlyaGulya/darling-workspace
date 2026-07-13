@@ -38,6 +38,8 @@ grep -F -x -q "cmake --install $tmp/package-build" "$tmp/commands"
 
 fuse_install='sudo apt-get install --yes --no-install-recommends libfuse-dev'
 [ "$(grep -F -c "$fuse_install" "$repo/.github/workflows/test-infra.yml")" -ge 2 ]
+x11_install='sudo apt-get install --yes --no-install-recommends libfuse-dev libx11-dev'
+[ "$(grep -F -c "$x11_install" "$repo/.github/workflows/test-infra.yml")" -ge 2 ]
 
 mkdir -p "$tmp/installed/testcase"
 cat >"$tmp/installed/testcase/compat.sample" <<'SAMPLE'
