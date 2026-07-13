@@ -20,14 +20,15 @@ done
 export PATH="$tmp/bin:$PATH"
 export CI_CONTRACT_LOG="$tmp/commands"
 
-"$repo/ci/run-test-tier.sh" host --changed
+"$repo/ci/run-test-tier.sh" host
 "$repo/ci/run-test-tier.sh" guest-smoke
 "$repo/ci/run-test-tier.sh" guest-full
 DARLING_TESTKIT_BUILD="$tmp/macos-build" "$repo/ci/run-test-tier.sh" macos
 DARLING_TESTKIT_BUILD="$tmp/package-build" \
 	"$repo/ci/run-test-tier.sh" macos-package "$tmp/oracle"
 
-grep -F -x -q 'west test --env host --changed' "$tmp/commands"
+grep -F -x -q 'west test --profile homebrew --env host --materialize-profile' "$tmp/commands"
+grep -F -x -q 'west test --prefix-profile homebrew --bootstrap-runtime-profile homebrew-prefix-baseline' "$tmp/commands"
 grep -F -x -q "west test --env darling --label smoke:true --prefix-profile homebrew" "$tmp/commands"
 grep -F -x -q 'west test --profile homebrew --env darling --prefix-profile homebrew' "$tmp/commands"
 grep -F -x -q 'west test --env darling --prefix-profile homebrew' "$tmp/commands"

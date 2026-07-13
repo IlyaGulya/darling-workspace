@@ -931,7 +931,10 @@ test by hand (3 lines × 282 files) — the wrapper addresses that exact pain.
   as a submodule, the fix PR moves the submodule pointer (`west pr` already
   moves submodule pointers — see `dar-9h7`).
 - CI tiering (decouples the SUID-in-container worry from getting value now):
-  - Tier 0 (per PR, seconds): HOST regressions + reuse/lint, no prefix needed.
+  - Tier 0 (per PR, seconds): metadata-selected HOST regressions + reuse/lint.
+    Host CTest cases are run through `west test --profile homebrew --materialize-profile`
+    so source-bound cases compile against an isolated
+    patched worktree rather than silently testing manifest-base sources.
   - Tier 1 (submodule PR, minutes): build full Darling at the new submodule
     pointer, compare active West projects against their local `manifest-rev`
     refs plus dirty worktrees, normalize changed labels to project path
