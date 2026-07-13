@@ -70,3 +70,25 @@ index 62c0a2a6ae352a8459acb7beade40038fbe4d204..edf52473fe0410c37d33b2b17ebeee20
  
  	#if defined(__NR_dup2)
  		ret = LINUX_SYSCALL2(__NR_dup2, fd_from, fd_to);
+
+From ecc6d9ed939f80de3f1c06bff549e1e9bc94c0d0 Mon Sep 17 00:00:00 2001
+From: Ilya Gulya <ilya@gulya.me>
+Date: Mon, 13 Jul 2026 09:29:01 +0000
+Subject: [PATCH] fix: include errno for guarded dup2
+
+---
+ .../emulation/src/xnu_syscall/bsd/impl/unistd/dup2.c             | 1 +
+ 1 file changed, 1 insertion(+)
+
+diff --git a/darling/src/libsystem_kernel/emulation/src/xnu_syscall/bsd/impl/unistd/dup2.c b/darling/src/libsystem_kernel/emulation/src/xnu_syscall/bsd/impl/unistd/dup2.c
+index edf52473fe0410c37d33b2b17ebeee20970777eb..b6ee2bc42cfe462d54d1664adac9739e22fb267f 100644
+--- a/darling/src/libsystem_kernel/emulation/src/xnu_syscall/bsd/impl/unistd/dup2.c
++++ b/darling/src/libsystem_kernel/emulation/src/xnu_syscall/bsd/impl/unistd/dup2.c
+@@ -3,6 +3,7 @@
+ #include <darling/emulation/common/base.h>
+ #include <darling/emulation/conversion/errno.h>
+ #include <darling/emulation/linux_premigration/linux-syscalls/linux.h>
++#include <sys/errno.h>
+ #include <darling/emulation/conversion/duct_errno.h>
+ #include <darling/emulation/other/mach/lkm.h>
+ #include <darling/emulation/common/simple.h>

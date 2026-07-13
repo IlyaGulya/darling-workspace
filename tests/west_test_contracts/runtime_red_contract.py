@@ -1057,8 +1057,8 @@ try:
 finally:
     west_test_module.run_bounded = original_bounded
 assert [call[0] for call in profile_calls] == [
-    ["west", "patch", "verify", "--profile", "homebrew"],
-    ["west", "patch", "verify", "--profile", "arch"],
+    ["west", "patch", "verify", "--profile", "homebrew", "--applicability-only"],
+    ["west", "patch", "verify", "--profile", "arch", "--applicability-only"],
 ], profile_calls
 assert all(call[1]["timeout_seconds"] == 300 for call in profile_calls), profile_calls
 
