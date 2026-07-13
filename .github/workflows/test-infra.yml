@@ -10,6 +10,8 @@ on:
 jobs:
   host:
     runs-on: ubuntu-latest
+    env:
+      DARLING_WEST_UPDATE_JOBS: 8
     steps:
       - uses: actions/checkout@v4
         with:
@@ -24,12 +26,16 @@ jobs:
   guest-smoke:
     if: github.event_name == 'push' || github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
+    env:
+      DARLING_WEST_UPDATE_JOBS: 8
     permissions:
       contents: read
     steps:
       - uses: actions/checkout@v4
         with:
           path: darling-dev/darling-workspace
+      - name: Install West
+        run: python3 -m pip install west
       - name: Materialize Darling workspace
         run: darling-dev/darling-workspace/ci/bootstrap-west.sh
       - name: Run rootless guest smoke
@@ -42,12 +48,16 @@ jobs:
   guest-full:
     if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
+    env:
+      DARLING_WEST_UPDATE_JOBS: 8
     permissions:
       contents: read
     steps:
       - uses: actions/checkout@v4
         with:
           path: darling-dev/darling-workspace
+      - name: Install West
+        run: python3 -m pip install west
       - name: Materialize Darling workspace
         run: darling-dev/darling-workspace/ci/bootstrap-west.sh
       - name: Run full rootless guest suite

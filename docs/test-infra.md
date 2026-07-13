@@ -16,7 +16,12 @@ Owner: ilyagulya.
   `macos-14`, `macos-15`, and `macos-26` run that identical artifact.
 
 `ci/run-test-tier.sh` is the sole tier entrypoint. `ci/bootstrap-west.sh`
-materializes a clean checkout before Linux tiers. Native macOS transport uses
+materializes a clean checkout before Linux tiers. Hosted Linux jobs set
+`DARLING_WEST_UPDATE_JOBS=8`; `ci/west-update-parallel.sh` groups projects by
+path depth, completes parents before descendants, and delegates independent
+projects within each level to West through one bounded worker pool. It prints
+the complete failing project logs. Setting `DARLING_WEST_UPDATE_JOBS=1` selects
+West's native sequential update path for debugging. Native macOS transport uses
 the generated `compat-install-manifest.tsv`; `ci/run-macos-installed-tests.sh`
 executes every installed testcase and validates its exact marker. Docker is
 not part of the guest execution contract.
