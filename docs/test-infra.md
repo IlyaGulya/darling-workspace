@@ -797,8 +797,9 @@ the shared `testkit/scripts/run-darling-c-test.sh` helper, which uploads the C
 source into the selected prefix, compiles it with the guest CLT, and runs the
 guest binary through `DARLING_LAUNCHER shell`; it must not run a Linux host
 binary under Darling. Upload is an explicit guest `printf` command rather than
-an assumption that `shell -c` preserves host stdin. `env=macos` is the native
-differential oracle.
+an assumption that `shell -c` preserves host stdin; staged files live under
+prefix-owned `/private/var/tmp` because guest `/tmp` may be recreated for each
+launcher invocation. `env=macos` is the native differential oracle.
 
 Every `env=darling` registration receives the framework-owned
 `runtime-profile:homebrew` label by default. Product tests therefore do not
