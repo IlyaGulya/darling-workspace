@@ -312,6 +312,11 @@ assert rootless_provider["runtime-artifacts"] == [
         "deploy": ["bin/bash"],
     },
     {
+        "module": "darling/src/external/installer",
+        "build-targets": ["installer"],
+        "deploy": ["bin/installer"],
+    },
+    {
         "module": "darling",
         "build-targets": [ROOTLESS_BOOTSTRAP_TARGET],
         "resource": ROOTLESS_BOOTSTRAP_RESOURCE,
@@ -319,6 +324,7 @@ assert rootless_provider["runtime-artifacts"] == [
 ]
 assert "darling/src/external/dyld" in rootless_provider["source-modules"]
 assert "darling/src/external/bash" in rootless_provider["source-modules"]
+assert "darling/src/external/installer" in rootless_provider["source-modules"]
 assert ROOTLESS_BOOTSTRAP_CLOSURE_SOURCE_MODULES.issubset(
     rootless_provider["source-modules"]
 )
@@ -340,6 +346,12 @@ assert {
     "build-targets": ["bash"],
     "deploy": ["bin/bash"],
 } in baseline_provider["runtime-artifacts"]
+assert {
+    "module": "darling/src/external/installer",
+    "build-targets": ["installer"],
+    "deploy": ["bin/installer"],
+} in baseline_provider["runtime-artifacts"]
+assert "darling/src/external/installer" in baseline_provider["source-modules"]
 assert any(
     runtime_artifact_has_resource(artifact, ROOTLESS_BOOTSTRAP_RESOURCE)
     for artifact in baseline_provider["runtime-artifacts"]
