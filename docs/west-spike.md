@@ -10,7 +10,8 @@ profile and branch migration are complete.
 - Parent Darling and nested submodule paths can be updated together.
 - `west status`, `west diff`, and `west forall` work across that layout.
 - `west manifest --freeze` produces a reproducible manifest.
-- Private projects such as `darling-debug-runner` update over SSH.
+- Private projects such as `darling-debug-runner` update from the
+  `darling-next` organization and require read credentials.
 - Existing handoff bundles can be restored after `west update`.
 - A west extension can replace the remaining useful `dw` commands.
 

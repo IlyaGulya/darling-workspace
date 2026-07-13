@@ -58,12 +58,12 @@ def main() -> None:
         {
             "name": "darling-debug-runner",
             "path": "darling-debug-runner",
-            "remote": "ilya",
+            "remote": "darling-next",
             "revision": args.runner_revision,
             "groups": ["private", "debug-tools"],
             "userdata": {
                 "kind": "workspace-tool",
-                "owner": "IlyaGulya",
+                "owner": "darling-next",
             },
         }
     )
@@ -79,6 +79,10 @@ def main() -> None:
                 {
                     "name": "ilya",
                     "url-base": "git@github.com:IlyaGulya",
+                },
+                {
+                    "name": "darling-next",
+                    "url-base": "https://github.com/darling-next",
                 },
             ],
             "projects": projects,

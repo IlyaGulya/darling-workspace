@@ -1135,7 +1135,7 @@ manifest:
       kind: darling-source
       upstream-repository: darling-zsh
   - name: darling-debug-runner
-    url: git@github.com:IlyaGulya/darling-debug-runner
+    url: https://github.com/darling-next/darling-debug-runner
     revision: c85f1bd1ed7238a74c0b30a8e5c0daf3ee933a52
     path: darling-debug-runner
     groups:
@@ -1143,7 +1143,7 @@ manifest:
     - debug-tools
     userdata:
       kind: workspace-tool
-      owner: IlyaGulya
+      owner: darling-next
   self:
     path: darling-workspace
     west-commands: west-commands.yml
