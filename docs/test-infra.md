@@ -844,7 +844,10 @@ configure output and throttled Ninja progress milestones live while retaining
 the complete output for failure diagnostics. A heartbeat is emitted only every
 30 seconds when no output arrives. This keeps large targets such as
 `rootless_bootstrap` visibly alive without turning compiler output into an
-unreviewable stream. If the caller is
+unreviewable stream. The rootless prefix bootstrap smoke uses the same live
+guest executor: guest stdout/stderr is forwarded as it arrives, and every
+heartbeat includes the pre-cleanup process, socket, resource-limit, and runtime
+path snapshot. If the caller is
 interrupted, the next `west test --gc --gc-runtime-evidence` pass removes an
 unlocked orphan `.inflight-*` unit and its recorded worktrees.
 
