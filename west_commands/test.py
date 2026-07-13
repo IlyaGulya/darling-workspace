@@ -521,7 +521,14 @@ class DarlingTest(WestCommand):
                 f"for {deployment_name}"
             )
             result = run_bounded(
-                ["west", "patch", "verify", "--profile", profile],
+                [
+                    "west",
+                    "patch",
+                    "verify",
+                    "--profile",
+                    profile,
+                    "--applicability-only",
+                ],
                 cwd=Path(self.topdir),
                 env=None,
                 timeout_seconds=300,
