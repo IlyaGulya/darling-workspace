@@ -72,6 +72,18 @@ with tempfile.TemporaryDirectory() as temp:
 
 test = DarlingTest.__new__(DarlingTest)
 test.die = lambda message: (_ for _ in ()).throw(SystemExit(message))
+assert test._ctest_cmake_defines(
+    {"ctest_label": "eunion-host", "source_module": "darling/src/external/xnu"},
+    source_override="DARLING_XNU_SRC",
+    source_root=Path("/tmp/materialized-xnu"),
+) == {
+    "DARLING_ENABLE_EUNION_HOST_SUITE": "ON",
+    "DARLING_XNU_SRC": "/tmp/materialized-xnu",
+}
+assert test._ctest_cmake_defines(
+    {"ctest_label": "env:darling", "source_module": "darling/src/external/xnu"}
+) == {}
+
 original_disk_usage = test_module.shutil.disk_usage
 original_minimum = os.environ["WEST_RUNTIME_MIN_FREE_BYTES"]
 test_module.shutil.disk_usage = lambda _path: SimpleNamespace(free=7)
