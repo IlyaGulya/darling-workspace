@@ -317,6 +317,12 @@ class DarlingTest(WestCommand):
             help="override the bounded runtime-bootstrap deadline (E-UNION default: 15; maximum: 600)",
         )
         parser.add_argument(
+            "--runtime-build-timeout-seconds",
+            type=int,
+            metavar="SECONDS",
+            help="override the per-phase runtime source/build deadline (useful for bounded diagnostics)",
+        )
+        parser.add_argument(
             "--bootstrap-executable",
             metavar="GUEST_PATH",
             help="with --bootstrap-runtime-profile, run one absolute guest executable instead of the default login-shell verdict",
@@ -3724,6 +3730,7 @@ class DarlingTest(WestCommand):
             configure_args=self._runtime_red_configure_args,
             dump_command_tail=self._dump_command_tail,
             runner=run_bounded,
+            timeout_seconds=getattr(self, "_runtime_build_timeout_seconds", None),
         )
 
 
@@ -5162,6 +5169,7 @@ class DarlingTest(WestCommand):
         self._bootstrap_syscall_trace = None
         self._bootstrap_stack_sample = None
         self._bootstrap_timeout_seconds = None
+        self._runtime_build_timeout_seconds = None
         try:
             self._runtime_cmake_define_overrides = parse_runtime_cmake_define_overrides(
                 getattr(args, "runtime_cmake_define", [])
@@ -5176,6 +5184,11 @@ class DarlingTest(WestCommand):
             if not 1 <= bootstrap_timeout_seconds <= 600:
                 self.die("--bootstrap-timeout-seconds must be between 1 and 600")
             self._bootstrap_timeout_seconds = bootstrap_timeout_seconds
+        runtime_build_timeout_seconds = getattr(args, "runtime_build_timeout_seconds", None)
+        if runtime_build_timeout_seconds is not None:
+            if runtime_build_timeout_seconds <= 0:
+                self.die("--runtime-build-timeout-seconds must be > 0")
+            self._runtime_build_timeout_seconds = runtime_build_timeout_seconds
 
         evidence_action = getattr(args, "runtime_evidence", None)
         evidence_id = getattr(args, "runtime_evidence_id", None)
@@ -5324,6 +5337,7 @@ class DarlingTest(WestCommand):
                 self._bootstrap_syscall_trace = None
                 self._bootstrap_stack_sample = None
                 self._bootstrap_timeout_seconds = None
+                self._runtime_build_timeout_seconds = None
 
         if bootstrap_executable:
             self.die("--bootstrap-executable requires --bootstrap-runtime-profile")
@@ -5400,6 +5414,7 @@ class DarlingTest(WestCommand):
                 self._bootstrap_syscall_trace = None
                 self._bootstrap_stack_sample = None
                 self._bootstrap_timeout_seconds = None
+                self._runtime_build_timeout_seconds = None
 
         testkit = self._testkit_dir()
         if not testkit.exists():

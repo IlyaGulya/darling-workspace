@@ -252,6 +252,13 @@ refs, PR drafts, and agent handoff.
 - `tests/run-west-test-guest-command-contract.sh` is the focused behavioral
   contract for normalized `guest-command-fixture` execution; update it when
   changing guest command environment, timeout semantics, or result matching.
+- `tests/run-darling-c-test-contract.sh` is the focused behavioral contract for
+  source-driven guest CTest fixtures; update it when changing guest source
+  transport, in-guest compilation, execution, or verdict matching. Source is
+  sent by an explicit guest command, not by relying on `shell -c` stdin.
+- `tests/run-west-test-runtime-build-contract.sh` covers runtime source/build
+  timeout forwarding; use `--runtime-build-timeout-seconds` to bound a
+  diagnostic rebuild without changing normal profile deadlines.
 - `west_commands/test_guest_c.py` owns metadata `guest-c-fixture` generation
   and execution. Keep `DarlingTest._run_guest_c_fixture()` as its thin West
   facade; do not move guest-C shell/diagnostic behavior back into `test.py`.

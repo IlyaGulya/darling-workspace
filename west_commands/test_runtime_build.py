@@ -117,10 +117,17 @@ class RuntimeBuildService:
         configure_args: Callable[[dict, Path], list[str]],
         dump_command_tail: Callable[[str, Any], None],
         runner: Callable[..., Any] = run_bounded,
+        timeout_seconds: int | None = None,
     ) -> Path:
         targets = runtime_build_targets(proof)
         build_root = scratch_root / "build"
-        timeout = int(proof.get("build-timeout-seconds", 1800))
+        timeout = int(
+            timeout_seconds
+            if timeout_seconds is not None
+            else proof.get("build-timeout-seconds", 1800)
+        )
+        if timeout <= 0:
+            raise ValueError("runtime build timeout must be greater than zero")
         configured_at = time.monotonic()
         self._host.inf(f"  runtime phase start: {label} configure")
         self._host.inf(f"  {label} configure: {source_root} -> {build_root}")
