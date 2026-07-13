@@ -356,6 +356,9 @@ the behavior under test. Pair it with a concrete guest-visible
   census captures, handoff notes, and build-output logs. Keep those in the
   diagnostic archive, not in a product patch; `west patch check --quality`
   reports existing violations and `west patch verify` refuses to apply them.
+  Export and verify also reject legacy `Co-Authored-By` trailers naming Claude
+  or Codex; preserve real authorship and remove automation trailers from local
+  commit messages before exporting a patch.
   Use `west patch export --profile <profile> --patch <path>` for focused
   checks/exports of a single profile entry; full-profile export remains the
   default when no patch selector is given.

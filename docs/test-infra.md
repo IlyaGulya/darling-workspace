@@ -652,6 +652,9 @@ belong in a diagnostic archive, not in a product branch or review patch.
 when its source tree contains real product code/tests and the explicit
 `--allow-large-output` override is reviewed; the override never permits
 generated evidence.
+The same gate rejects legacy `Co-Authored-By` trailers naming Claude or Codex;
+those automation trailers must be removed from local commit messages before
+export, while real authorship and unrelated trailers remain intact.
 
 Some gates need a consistent patch profile rather than the developer's current
 mixture of fix branches. Mark those with `requires-profile: arch` (or another
