@@ -26,6 +26,7 @@ jobs:
   guest-smoke:
     if: github.event_name == 'push' || github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     env:
       DARLING_WEST_UPDATE_JOBS: 8
     permissions:
@@ -50,6 +51,7 @@ jobs:
   guest-full:
     if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     env:
       DARLING_WEST_UPDATE_JOBS: 8
     permissions:

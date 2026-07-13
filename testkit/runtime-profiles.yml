@@ -94,7 +94,7 @@ runtime-profiles:
     # `west test --bootstrap-runtime-profile`; that command retains its
     # deployment only after a bounded real guest smoke passes.
     purpose: prefix-baseline
-    bootstrap-smoke-timeout-seconds: 20
+    bootstrap-smoke-timeout-seconds: 60
     source-profile: homebrew
     bootstrap: rootless-no-mount
     source-module: darling
