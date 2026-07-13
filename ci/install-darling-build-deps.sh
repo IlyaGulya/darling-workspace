@@ -42,6 +42,7 @@ packages=(
 	llvm-dev
 	ninja-build
 	pkg-config
+	strace
 )
 
 sudo apt-get update
