@@ -41,6 +41,8 @@ deps_script='darling-dev/darling-workspace/ci/install-darling-build-deps.sh'
 [ "$(grep -F -c 'timeout-minutes: 30' "$repo/.github/workflows/test-infra.yml")" -ge 2 ]
 [ "$(grep -F -c 'actions/checkout@v7' "$repo/.github/workflows/test-infra.yml")" -ge 5 ]
 [ "$(grep -F -c 'actions/upload-artifact@v7' "$repo/.github/workflows/test-infra.yml")" -ge 2 ]
+[ "$(grep -F -c 'actions/cache@v4' "$repo/.github/workflows/test-infra.yml")" -ge 2 ]
+[ "$(grep -F -c 'darling-command-line-tools-v1-${{ runner.os }}' "$repo/.github/workflows/test-infra.yml")" -ge 2 ]
 [ "$(grep -F -c 'ci/collect-rootless-diagnostics.sh .west-test/rootless-diagnostics' "$repo/.github/workflows/test-infra.yml")" -ge 2 ]
 [ "$(grep -F -c 'timeout --foreground --kill-after=15s 300s' "$repo/.github/workflows/test-infra.yml")" -ge 2 ]
 [ "$(grep -F -c -- '--runtime-build-timeout-seconds 180' "$repo/.github/workflows/test-infra.yml")" -ge 2 ]

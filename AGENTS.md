@@ -46,6 +46,11 @@ refs, PR drafts, and agent handoff.
   `CommandLineTools`, or `DarlingCLT` clang links. Do not repair those by
   undocumented manual `mkdir`/`ln` sequences unless the command itself is what
   you are debugging.
+- Guest CTest cases compile inside Darling. Their runtime profile must declare
+  `guest-toolchain: darling-command-line-tools`; `west test` provisions the
+  official CommandLineTools packages through Darling's guest `installer` when
+  the prefix does not already contain them. The package cache is external to
+  patchsets; never commit CLT payloads or generated snapshots.
 - If a Darling guest run leaves mounted filesystems under a prefix, use
   `west darling-prefix-repair --prefix <prefix> --cleanup-mounts` after
   confirming no Darling processes are left. Do not ignore prefix mount tails;

@@ -8,6 +8,7 @@ runtime-profiles:
   homebrew:
     source-profile: homebrew
     source-module: darling/src/external/xnu
+    guest-toolchain: darling-command-line-tools
     source-modules:
     - darling
     - darling/src/external/darlingserver
@@ -21,6 +22,7 @@ runtime-profiles:
   homebrew-darlingserver:
     source-profile: homebrew
     source-module: darling/src/external/darlingserver
+    guest-toolchain: darling-command-line-tools
     source-modules:
     - darling
     - darling/src/external/darlingserver
@@ -36,6 +38,7 @@ runtime-profiles:
     # west partitions this lifecycle from ordinary homebrew guest tests.
     source-profile: perf
     source-module: darling/src/external/darlingserver
+    guest-toolchain: darling-command-line-tools
     source-modules:
     - darling
     - darling/src/external/darlingserver
@@ -53,6 +56,7 @@ runtime-profiles:
   homebrew-libplatform:
     source-profile: homebrew
     source-module: darling/src/external/libplatform
+    guest-toolchain: darling-command-line-tools
     source-modules:
     - darling
     - darling/src/external/libplatform
@@ -68,6 +72,7 @@ runtime-profiles:
     source-profile: homebrew
     bootstrap: rootless-no-mount
     source-module: darling
+    guest-toolchain: darling-command-line-tools
     source-modules:
     - darling
     - darling/src/external/darlingserver
@@ -104,6 +109,7 @@ runtime-profiles:
     source-profile: homebrew
     bootstrap: rootless-no-mount
     source-module: darling
+    guest-toolchain: darling-command-line-tools
     source-modules:
     - darling
     - darling/src/external/darlingserver
