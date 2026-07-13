@@ -15,6 +15,7 @@ from pathlib import Path
 
 PREFIX_ROOTS = ("", "libexec/darling")
 TMP_RELS = ("private/var/tmp", "libexec/darling/private/var/tmp")
+ROOTLESS_RUNTIME_DIR_RELS = ("var", "var/run", "var/tmp")
 CANONICAL_CLT_REL = Path("Library/Developer/CommandLineTools")
 DARLING_CLT_CLANG_REL = Path("Library/Developer/DarlingCLT/usr/bin/clang")
 DARLING_CLT_CLANG_TARGET = Path("../../../CommandLineTools/usr/bin/clang")
@@ -64,6 +65,9 @@ def prefix_boot_prerequisite_problems(prefix: Path) -> list[str]:
         mode = path.stat().st_mode & 0o7777
         if mode != 0o1777:
             problems.append(f"{rel} mode {mode:o}, expected 1777")
+    for rel in ROOTLESS_RUNTIME_DIR_RELS:
+        if not (prefix / rel).is_dir():
+            problems.append(f"{rel} missing in Darling prefix")
     return problems
 
 
@@ -501,11 +505,33 @@ def _repair_tmp_dirs(prefix: Path, result: PrefixRepairResult, *, check: bool) -
         result.changed.append(f"created {rel} with mode 1777")
 
 
+def _repair_rootless_runtime_dirs(
+    prefix: Path, result: PrefixRepairResult, *, check: bool
+) -> None:
+    """Ensure an existing prefix has the directories used before launchd starts."""
+
+    for rel in ROOTLESS_RUNTIME_DIR_RELS:
+        path = prefix / rel
+        if path.is_dir():
+            result.ok.append(f"{rel} exists")
+            continue
+        if path.exists():
+            result.problems.append(f"{rel} exists but is not a directory")
+            continue
+        if check:
+            result.problems.append(f"{rel} missing")
+            continue
+        path.mkdir(parents=True, exist_ok=True)
+        path.chmod(0o755)
+        result.changed.append(f"created {rel} with mode 755")
+
+
 def repair_prefix_boot_prerequisites(prefix: Path) -> PrefixRepairResult:
     """Provision only the directories required before a rootless boot."""
 
     result = PrefixRepairResult()
     _repair_tmp_dirs(prefix, result, check=False)
+    _repair_rootless_runtime_dirs(prefix, result, check=False)
     return result
 
 
@@ -607,6 +633,7 @@ def repair_prefix_prerequisites(
     result.extend(repair_prefix_boot_prerequisites(prefix) if not check else PrefixRepairResult())
     if check:
         _repair_tmp_dirs(prefix, result, check=True)
+        _repair_rootless_runtime_dirs(prefix, result, check=True)
     for root_name, root in prefix_roots(prefix):
         fallback_root = prefix if root != prefix else None
         _repair_clt_for_root(root_name, root, result, check=check, fallback_root=fallback_root)
