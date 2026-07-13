@@ -36,6 +36,9 @@ grep -F -x -q "cmake -S testkit -B $tmp/macos-build -DBUILD_TESTING=ON" "$tmp/co
 grep -F -x -q "ctest --test-dir $tmp/macos-build --output-on-failure -L env:macos" "$tmp/commands"
 grep -F -x -q "cmake --install $tmp/package-build" "$tmp/commands"
 
+fuse_install='sudo apt-get install --yes --no-install-recommends libfuse-dev'
+[ "$(grep -F -c "$fuse_install" "$repo/.github/workflows/test-infra.yml")" -ge 2 ]
+
 mkdir -p "$tmp/installed/testcase"
 cat >"$tmp/installed/testcase/compat.sample" <<'SAMPLE'
 #!/usr/bin/env bash
