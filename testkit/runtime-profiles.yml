@@ -111,6 +111,7 @@ runtime-profiles:
       DARLING_ROOTLESS: '1'
       DARLING_NOOVERLAYFS: '1'
       DARLING_EUNION: '1'
+      DARLING_ROOTLESS_SHELLSPAWN_READY_TIMEOUT_MS: '60000'
     runtime-artifacts:
     - module: darling
       build-targets:
