@@ -3226,7 +3226,7 @@ class DarlingTest(WestCommand):
             trace_dir = self._resolve_bootstrap_diagnostic_dir(trace_dir)
             trace_dir.mkdir(parents=True, exist_ok=True)
             trace_prefix = trace_dir / "eunion-bootstrap"
-            command_prefix = ("strace", "-ff", "-o", str(trace_prefix))
+            command_prefix = ("strace", "-D", "-ff", "-o", str(trace_prefix))
             self.inf(f"{invocation['name']}: E-UNION bootstrap syscall trace: {trace_dir}")
         elif stack_sample_dir is not None:
             stack_sample_dir = Path(stack_sample_dir)
@@ -3805,6 +3805,7 @@ class DarlingTest(WestCommand):
             trace_dir.mkdir(parents=True, exist_ok=True)
             command_prefix = (
                 "strace",
+                "-D",
                 "-ff",
                 "-i",
                 "-tt",

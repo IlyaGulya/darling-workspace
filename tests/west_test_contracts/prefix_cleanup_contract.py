@@ -359,6 +359,8 @@ with tempfile.TemporaryDirectory() as temp:
     assert all("libexec/darling/private/var/tmp" not in item for item in problems), problems
 
     (prefix / "private/var/tmp").chmod(0o1777)
+    (prefix / "private/var/db").mkdir(parents=True)
+    (prefix / "private/var/db/launchd.db/com.apple.launchd").mkdir(parents=True)
     (prefix / "var/run").mkdir(parents=True)
     (prefix / "var/tmp").mkdir(parents=True)
     assert test._prefix_boot_prerequisite_problems(prefix) == []
@@ -371,6 +373,9 @@ with tempfile.TemporaryDirectory() as temp:
     assert result.changed == [
         "created private/var/tmp with mode 1777",
         "created libexec/darling/private/var/tmp with mode 1777",
+        "created private/var/db with mode 755",
+        "created private/var/db/launchd.db with mode 755",
+        "created private/var/db/launchd.db/com.apple.launchd with mode 755",
         "created var with mode 755",
         "created var/run with mode 755",
         "created var/tmp with mode 755",

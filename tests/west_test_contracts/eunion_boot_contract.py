@@ -67,7 +67,7 @@ with tempfile.TemporaryDirectory() as temp:
         assert kwargs["capture_output"] is True, kwargs
         assert kwargs["timeout_seconds"] == 45, kwargs
         assert kwargs["command_prefix"] == (
-            "strace", "-ff", "-o", str(trace_dir / "eunion-bootstrap"),
+            "strace", "-D", "-ff", "-o", str(trace_dir / "eunion-bootstrap"),
         ), kwargs
         return ProcessResult(1, stdout=b"boot stdout\n", stderr=b"boot stderr\n")
 

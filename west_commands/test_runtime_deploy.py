@@ -180,7 +180,9 @@ class RuntimeDeploymentService:
                 f"guest-runtime-deploy could not stop Darling prefix before deploy: {prefix}"
             )
         with tempfile.TemporaryDirectory(prefix="west-red-proof-deploy-") as temp:
-            transaction = DeploymentTransaction(Path(temp) / "manifest.json", prefix)
+            transaction = DeploymentTransaction(
+                Path(temp) / "manifest.json", prefix, normalize_modes=True
+            )
             try:
                 for source, destination in self.deployment_plan(proof, build_root, prefix):
                     transaction.replace(source, destination)

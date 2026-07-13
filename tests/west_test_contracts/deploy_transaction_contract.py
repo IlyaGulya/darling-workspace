@@ -33,6 +33,46 @@ with tempfile.TemporaryDirectory() as temp:
 with tempfile.TemporaryDirectory() as temp:
     root = Path(temp)
     prefix = root / "prefix"
+    destination = prefix / "libexec/darling/System/Library/LaunchDaemons/job.plist"
+    destination.parent.mkdir(parents=True)
+    destination.parent.chmod(0o775)
+    destination.write_bytes(b"old plist\n")
+    destination.chmod(0o664)
+    source = root / "job.plist"
+    source.write_bytes(b"new plist\n")
+    source.chmod(0o664)
+    manifest = root / "transaction.json"
+
+    transaction = DeploymentTransaction(manifest, prefix, normalize_modes=True)
+    transaction.replace(source, destination)
+    assert destination.stat().st_mode & 0o777 == 0o644
+    assert destination.parent.stat().st_mode & 0o777 == 0o755
+    transaction.commit()
+    DeploymentTransaction.restore(manifest, prefix)
+    assert destination.read_bytes() == b"old plist\n"
+    assert destination.stat().st_mode & 0o777 == 0o664
+    assert destination.parent.stat().st_mode & 0o777 == 0o775
+
+with tempfile.TemporaryDirectory() as temp:
+    root = Path(temp)
+    prefix = root / "prefix"
+    destination = prefix / "libexec/darling/System/Library/LaunchDaemons/job.plist"
+    source = root / "job.plist"
+    source.write_bytes(b"new plist\n")
+    source.chmod(0o664)
+    manifest = root / "transaction.json"
+
+    transaction = DeploymentTransaction(manifest, prefix, normalize_modes=True)
+    transaction.replace(source, destination)
+    (prefix / "libexec/darling/private/var/tmp").mkdir(parents=True)
+    transaction.commit()
+    DeploymentTransaction.restore(manifest, prefix)
+    assert not destination.exists()
+    assert (prefix / "libexec/darling/private/var/tmp").is_dir()
+
+with tempfile.TemporaryDirectory() as temp:
+    root = Path(temp)
+    prefix = root / "prefix"
     destination = prefix / "libexec/darling/usr/libexec/shellspawn"
     destination.parent.mkdir(parents=True)
     destination.write_bytes(b"old\n")

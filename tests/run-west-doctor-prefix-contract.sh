@@ -51,6 +51,8 @@ with tempfile.TemporaryDirectory() as temp:
     (prefix / "libexec/darling/private/var/tmp").mkdir(parents=True)
     (prefix / "private/var/tmp").chmod(0o1777)
     (prefix / "libexec/darling/private/var/tmp").chmod(0o1777)
+    (prefix / "private/var/db").mkdir(parents=True)
+    (prefix / "private/var/db/launchd.db/com.apple.launchd").mkdir(parents=True)
     (prefix / "var/run").mkdir(parents=True)
     (prefix / "var/tmp").mkdir(parents=True)
 
