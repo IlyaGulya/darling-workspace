@@ -10,7 +10,14 @@ cat >"$tmp/launcher" <<'SH'
 set -euo pipefail
 [ "$1" = shell ] || exit 64
 shift
-exec "$@"
+command="$4"
+command="${command//\/private\/var\/tmp/$DPREFIX\/private\/var\/tmp}"
+"$1" "$2" "$3" "$command"
+rc=$?
+# Model a real launcher namespace: guest /tmp is not persistent between shell
+# invocations, while the prefix-owned private/var/tmp directory is.
+rm -f /tmp/west_guest_c_contract_*
+exit "$rc"
 SH
 chmod +x "$tmp/launcher"
 
@@ -19,7 +26,12 @@ cat >"$tmp/no-stdin-launcher" <<'SH'
 set -euo pipefail
 [ "$1" = shell ] || exit 64
 shift
-exec "$@" </dev/null
+command="$4"
+command="${command//\/private\/var\/tmp/$DPREFIX\/private\/var\/tmp}"
+"$1" "$2" "$3" "$command" </dev/null
+rc=$?
+rm -f /tmp/west_guest_c_contract_*
+exit "$rc"
 SH
 chmod +x "$tmp/no-stdin-launcher"
 
@@ -32,7 +44,7 @@ int main(void) {
 C
 
 name="west_guest_c_contract_${RANDOM}_$$"
-mkdir -p "$tmp/prefix"
+mkdir -p "$tmp/prefix/private/var/tmp"
 if env -u DPREFIX -u DARLING_PREFIX "$repo/testkit/scripts/run-darling-c-test.sh" \
 	--name "$name" --source "$tmp/guest.c" --launcher "$tmp/launcher" \
 	--cc cc --cflags '' >"$tmp/missing-prefix.out" 2>&1; then
@@ -60,12 +72,16 @@ grep -F -x -q WEST_GUEST_STAGE=compile "$tmp/no-stdin.out"
 grep -F -x -q WEST_GUEST_STAGE=run "$tmp/no-stdin.out"
 grep -F -x -q GUEST_C_EXACT_OK "$tmp/no-stdin.out"
 
-if find /tmp -maxdepth 1 -name "${name}.*" -print | grep -q .; then
-	find /tmp -maxdepth 1 -name "${name}.*" -print >&2
+if compgen -G "/tmp/${name}.*" >/dev/null; then
+	compgen -G "/tmp/${name}.*" >&2
 	exit 1
 fi
-if find /tmp -maxdepth 1 -name "west-ctest-guest-c.${name}.*" -print | grep -q .; then
-	find /tmp -maxdepth 1 -name "west-ctest-guest-c.${name}.*" -print >&2
+if compgen -G "$tmp/prefix/private/var/tmp/${name}.*" >/dev/null; then
+	compgen -G "$tmp/prefix/private/var/tmp/${name}.*" >&2
+	exit 1
+fi
+if compgen -G "/tmp/west-ctest-guest-c.${name}.*" >/dev/null; then
+	compgen -G "/tmp/west-ctest-guest-c.${name}.*" >&2
 	exit 1
 fi
 
@@ -125,8 +141,12 @@ grep -F -x -q GUEST_C_EXACT_OK "$tmp/bad.out" || {
 	exit 1
 }
 
-if find /tmp -maxdepth 1 -name "${name}.*" -print | grep -q .; then
-	find /tmp -maxdepth 1 -name "${name}.*" -print >&2
+if compgen -G "/tmp/${name}.*" >/dev/null; then
+	compgen -G "/tmp/${name}.*" >&2
+	exit 1
+fi
+if compgen -G "$tmp/prefix/private/var/tmp/${name}.*" >/dev/null; then
+	compgen -G "$tmp/prefix/private/var/tmp/${name}.*" >&2
 	exit 1
 fi
 
