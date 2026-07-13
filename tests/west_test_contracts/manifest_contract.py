@@ -269,6 +269,30 @@ assert source_behavior_override["coverage-tier"] == "host", source_behavior_over
 verbose = tests[2]
 assert verbose == profile["patches"][0]["tests"][2], verbose
 
+empty_fixture_profile = normalize_test(
+    {
+        "name": "empty_fixture_profile",
+        "kind": "guest",
+        "runner": "guest-c-fixture",
+        "script": "tests/empty_fixture_profile.c",
+        "fixtures": ["empty-overlay"],
+    },
+    {},
+    {},
+    {},
+    {"empty-overlay": {"kind": "eunion-overlay"}},
+)
+assert empty_fixture_profile["requires"] == ["darling-eunion-prefix"], empty_fixture_profile
+for field in (
+    "eunion-template-files",
+    "eunion-template-symlinks",
+    "eunion-upper-files",
+    "eunion-cleanup-dirs",
+    "eunion-forbid-template-paths",
+    "eunion-require-upper-paths",
+):
+    assert field not in empty_fixture_profile, (field, empty_fixture_profile)
+
 try:
     normalize_test_profile(
         {
