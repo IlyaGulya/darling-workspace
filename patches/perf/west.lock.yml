@@ -862,12 +862,13 @@ manifest:
       kind: darling-source
       upstream-repository: mruby
   - name: darling-src-external-nghttp2-third-party-neverbleed
-    url: https://github.com/h2o/neverbleed
+    url: https://github.com/darling-next/neverbleed
     revision: b967ca054f48a36f82d8fcdd32e54ec5144f2751
     path: darling/src/external/nghttp2/third-party/neverbleed
     userdata:
       kind: darling-source
       upstream-repository: neverbleed
+      fetch-override-reason: darling-next-public-mirror-preserves-pin
   - name: darling-src-external-objc4
     url: https://github.com/darlinghq/darling-objc4
     revision: 1a12df76d12bfc9fdfffadb290f7742763568765

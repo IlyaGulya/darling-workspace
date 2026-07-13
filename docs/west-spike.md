@@ -23,9 +23,10 @@ contains Darling's historical base `2a56b36`. The fork preserves that base.
 The local `75c81f4` fix is applied by the Homebrew patch profile instead of
 being hidden in the manifest revision.
 
-The four third-party pins that were previously routed through unavailable
-`darlinghq` mirrors use their canonical public repositories: `mruby/mruby`,
-`h2o/neverbleed`, `google/googletest`, and `antirez/linenoise`.
+The `mruby`, `googletest`, and `linenoise` pins use their canonical public
+repositories. The historical `neverbleed` pin is kept in the public
+`darling-next/neverbleed` mirror because the same commit is no longer
+reachable from `h2o/neverbleed` through anonymous Git fetch.
 
 ## Local spike
 
