@@ -9,8 +9,8 @@ Owner: ilyagulya.
 `.github/workflows/test-infra.yml` keeps privilege and trust boundaries explicit:
 
 - every pull request runs changed-only host tests on a hosted Linux runner;
-- pushes and manual trusted runs use a secretless self-hosted runner labelled
-  `darling-rootless` for the `smoke:true` guest slice;
+- pushes and manual trusted runs use the official GitHub-hosted `ubuntu-latest`
+  runner for the `smoke:true` guest slice;
 - nightly/manual runs execute the full rootless guest suite;
 - one `macos-14` job builds and installs the native testcase bundle, then
   `macos-14`, `macos-15`, and `macos-26` run that identical artifact.
