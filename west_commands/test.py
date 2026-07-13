@@ -3856,6 +3856,11 @@ class DarlingTest(WestCommand):
                         "prefix bootstrap doctor failed "
                         f"with rc {doctor.returncode}: {doctor_output[-1000:]}"
                     )
+                target = executable or "login shell"
+                self.inf(
+                    f"prefix bootstrap phase start: guest {target} "
+                    f"(timeout {smoke_timeout_seconds}s)"
+                )
                 if executable is None:
                     result = run_guest_shell(
                         deployment.env["DARLING_LAUNCHER"],
@@ -3866,6 +3871,13 @@ class DarlingTest(WestCommand):
                         timeout_seconds=smoke_timeout_seconds,
                         capture_output=True,
                         command_prefix=command_prefix,
+                        heartbeat_seconds=30,
+                        heartbeat=lambda elapsed: self._emit_bootstrap_heartbeat(
+                            deployment.prefix, target, elapsed
+                        ),
+                        output_line=lambda stream, line: self.inf(
+                            f"prefix bootstrap guest {stream}: {line}"
+                        ),
                     )
                 else:
                     result = run_guest_argv(
@@ -3877,6 +3889,13 @@ class DarlingTest(WestCommand):
                         timeout_seconds=smoke_timeout_seconds,
                         capture_output=True,
                         command_prefix=command_prefix,
+                        heartbeat_seconds=30,
+                        heartbeat=lambda elapsed: self._emit_bootstrap_heartbeat(
+                            deployment.prefix, target, elapsed
+                        ),
+                        output_line=lambda stream, line: self.inf(
+                            f"prefix bootstrap guest {stream}: {line}"
+                        ),
                     )
                 if stack_sample_dir is not None:
                     self._render_bootstrap_stack_sample(
@@ -3973,10 +3992,22 @@ class DarlingTest(WestCommand):
                         "prefix bootstrap guest smoke returned without its verdict marker"
                     )
                     self.die("prefix bootstrap guest smoke returned without its verdict marker")
-                target = executable or "login shell"
+                self.inf(f"prefix bootstrap phase complete: guest {target}")
                 self.inf(
                     f"prefix bootstrap passed for {prefix_text}: {profile_name} ({target})"
                 )
+
+    def _emit_bootstrap_heartbeat(
+        self, prefix: Path, target: str, elapsed: float
+    ) -> None:
+        """Publish live guest progress before cleanup destroys runtime state."""
+
+        self.inf(
+            f"prefix bootstrap heartbeat: guest {target} still running "
+            f"({elapsed:.0f}s)"
+        )
+        for line in self._bootstrap_runtime_state(prefix).splitlines():
+            self.inf(f"  {line}")
 
     def _shutdown_runtime_prefix(self, prefix: Path) -> bool:
         return self._prefix_lifecycle_owner().shutdown(prefix)

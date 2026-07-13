@@ -399,7 +399,8 @@ with tempfile.TemporaryDirectory() as temp:
     test.topdir = str(root)
     test._prefix = str(prefix)
     test._prefix_cleanup_failed = False
-    test.inf = lambda _message: None
+    bootstrap_messages = []
+    test.inf = bootstrap_messages.append
     test.err = lambda _message: None
     test.die = lambda message: (_ for _ in ()).throw(SystemExit(message))
     test._ctest_runtime_profile_definitions = lambda: {
@@ -438,11 +439,14 @@ with tempfile.TemporaryDirectory() as temp:
     )
     original_run_guest_shell = test_module.run_guest_shell
     original_run_bounded = test_module.run_bounded
-    test_module.run_guest_shell = lambda *_args, **kwargs: (
-        events.append("smoke") or ProcessResult(
-            0, stdout="WEST_PREFIX_BOOTSTRAP_OK\n", stderr=""
-        )
-    )
+    def successful_smoke(*_args, **kwargs):
+        events.append("smoke")
+        assert kwargs["heartbeat_seconds"] == 30, kwargs
+        kwargs["output_line"]("stderr", "guest output")
+        kwargs["heartbeat"](30)
+        return ProcessResult(0, stdout="WEST_PREFIX_BOOTSTRAP_OK\n", stderr="")
+
+    test_module.run_guest_shell = successful_smoke
     test_module.run_bounded = lambda *_args, **_kwargs: ProcessResult(0)
     try:
         test._bootstrap_runtime_profile("homebrew-prefix-baseline")
@@ -451,6 +455,10 @@ with tempfile.TemporaryDirectory() as temp:
         test_module.run_guest_shell = original_run_guest_shell
         test_module.run_bounded = original_run_bounded
     assert events == ["lock", "deploy", "provision", "smoke", "retain", "cleanup"], events
+    assert "prefix bootstrap guest stderr: guest output" in bootstrap_messages
+    assert "prefix bootstrap phase start: guest login shell (timeout 60s)" in bootstrap_messages
+    assert "prefix bootstrap heartbeat: guest login shell still running (30s)" in bootstrap_messages
+    assert any(message.startswith("  RLIMIT_NOFILE soft=") for message in bootstrap_messages)
 
 
 with tempfile.TemporaryDirectory() as temp:
@@ -565,6 +573,7 @@ with tempfile.TemporaryDirectory() as temp:
         f"prefix bootstrap stack sample: {trace_dir}",
         "prefix bootstrap provision: created private/var/tmp with mode 1777",
         "prefix bootstrap provision: created libexec/darling/private/var/tmp with mode 1777",
+        "prefix bootstrap phase start: guest login shell (timeout 60s)",
         f"prefix bootstrap server trace: {trace_dir / 'darlingserver-rpc.log'}",
     ], messages
 
