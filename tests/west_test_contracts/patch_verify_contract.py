@@ -24,7 +24,11 @@ west_commands_module.WestCommand = WestCommand
 sys.modules.setdefault("west", west_module)
 sys.modules.setdefault("west.commands", west_commands_module)
 
-from west_commands.patch import DarlingPatch, generated_patch_artifacts
+from west_commands.patch import (
+    DarlingPatch,
+    generated_patch_artifacts,
+    legacy_automation_trailers,
+)
 from west_commands.patch_git import (
     PATCH_APPLICATION_GIT_OPTIONS,
     TEMPORARY_PATCH_GIT_OPTIONS,
@@ -104,6 +108,23 @@ deleted_snapshot_patch = snapshot_patch.replace(
 )
 assert generated_patch_artifacts(deleted_snapshot_patch) == []
 
+legacy_trailer_patch = b"""From 0123456789abcdef Mon Sep 17 00:00:00 2001
+Subject: [PATCH] fixture
+
+Behavioral explanation.
+
+Co-Authored-By: Claude Example <claude@example.invalid>
+---
+ file.c | 1 +
+ 1 file changed, 1 insertion(+)
+"""
+assert legacy_automation_trailers(legacy_trailer_patch) == [
+    "Co-Authored-By: Claude Example <claude@example.invalid>"
+]
+assert legacy_automation_trailers(
+    b"+Co-Authored-By: Claude Example <claude@example.invalid>\n"
+) == []
+
 artifact_command = DarlingPatch.__new__(DarlingPatch)
 artifact_command.die = lambda message: (_ for _ in ()).throw(AssertionError(message))
 try:
@@ -115,6 +136,15 @@ except AssertionError as exc:
     assert "PERF18-lanes-snapshot.json" in str(exc), exc
 else:
     raise AssertionError("patch export accepted a generated snapshot artifact")
+
+try:
+    artifact_command._check_export_artifacts(
+        {"path": "test/legacy-trailer.patch"}, legacy_trailer_patch
+    )
+except AssertionError as exc:
+    assert "legacy automation trailer" in str(exc), exc
+else:
+    raise AssertionError("patch export accepted a legacy automation trailer")
 
 source_revision_patch = {
     "module": "darling/src/external/xnu",
