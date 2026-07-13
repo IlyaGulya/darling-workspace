@@ -4419,11 +4419,11 @@ patches:
       base: main
       state: local
 - path: darling/rootless-bootstrapper-ordering.patch
-  sha256sum: 9349193559767d048a88966ae03554a75375c621cdbdb29af225b60d953dc429
+  sha256sum: b0937e03b4cfde362340d68e54778f8c23d6c9db468d23e03fd1f0bcdbfa452b
   module: darling
   source-branch: fix/rootless-bootstrapper-ordering
   source-base: 72006d6a61504c5123b463f8369a8e09bc4b23cf
-  source-commit: 703541414e9f7305840e349a8eea563e76035299
+  source-commit: 38d47a35ce0a0718718c31705fb642aa1833dfcc
   bead: dar-test-infra-sp5.45
   publication-status: blocked
   publication-blocker: Rootless bootstrapper ordering remains local until fresh-prefix guest CI is stable across repeated runs.
@@ -4431,9 +4431,10 @@ patches:
     reason: integration-runtime-provider
     scope: The fix changes launchd's rootless system bootstrap scheduling; its contract is exercised by the existing fresh-prefix rootless guest bootstrap smoke rather than a source-only launchd unit.
   note: >-
-    Rootless launchd now dispatches the system bootstrapper after the root job
-    manager has created its system domain. This prevents an early launchctl
-    request from reaching a partially assembled manager on loaded hosts.
+    Rootless launchd defers the system bootstrapper until runtime setup has
+    completed, then dispatches it from a one-shot kqueue callback. This keeps
+    launchctl IPC out of launchd startup and prevents a startup fork race on
+    loaded hosts.
 - path: darling/rootless-shellspawn-delay.patch
   sha256sum: 03436bef636b0a3957efe5252a5beaa508d0aa26d8d35cb9d28fae4553f3b85e
   module: darling
