@@ -36,10 +36,11 @@ grep -F -x -q "cmake -S testkit -B $tmp/macos-build -DBUILD_TESTING=ON" "$tmp/co
 grep -F -x -q "ctest --test-dir $tmp/macos-build --output-on-failure -L env:macos" "$tmp/commands"
 grep -F -x -q "cmake --install $tmp/package-build" "$tmp/commands"
 
-fuse_install='sudo apt-get install --yes --no-install-recommends libfuse-dev'
-[ "$(grep -F -c "$fuse_install" "$repo/.github/workflows/test-infra.yml")" -ge 2 ]
-x11_install='sudo apt-get install --yes --no-install-recommends libfuse-dev libx11-dev'
-[ "$(grep -F -c "$x11_install" "$repo/.github/workflows/test-infra.yml")" -ge 2 ]
+deps_script='darling-dev/darling-workspace/ci/install-darling-build-deps.sh'
+[ "$(grep -F -c "run: $deps_script" "$repo/.github/workflows/test-infra.yml")" -ge 2 ]
+for package in libfuse-dev libx11-dev libcairo2-dev libxrandr-dev libfreetype6-dev; do
+	grep -F -q "$package" "$repo/ci/install-darling-build-deps.sh"
+done
 
 mkdir -p "$tmp/installed/testcase"
 cat >"$tmp/installed/testcase/compat.sample" <<'SAMPLE'
