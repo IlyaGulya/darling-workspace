@@ -105,6 +105,38 @@ result = run_bounded(
 assert result.returncode == 0 and not result.timed_out, result
 assert result.stdout == "BOUNDED_OUTPUT_OK\n", result
 
+with tempfile.TemporaryDirectory() as temp:
+    tempdir = Path(temp)
+    seen = tempdir / "live-line-seen"
+    code = (
+        "import pathlib, time\n"
+        "print('LIVE_BUILD_LINE', flush=True)\n"
+        "deadline = time.monotonic() + 1\n"
+        f"while not pathlib.Path({str(seen)!r}).exists():\n"
+        "    assert time.monotonic() < deadline\n"
+        "    time.sleep(0.01)\n"
+        "print('BUILD_DONE', flush=True)\n"
+    )
+    lines = []
+
+    def forward_line(stream, line):
+        lines.append((stream, line))
+        if line == "LIVE_BUILD_LINE":
+            seen.touch()
+
+    result = run_bounded(
+        [sys.executable, "-c", code],
+        cwd=tempdir,
+        env=None,
+        timeout_seconds=2,
+        capture_output=True,
+        output_line=forward_line,
+    )
+    assert result.returncode == 0 and not result.timed_out, result
+    assert ("stdout", "LIVE_BUILD_LINE") in lines, lines
+    assert ("stdout", "BUILD_DONE") in lines, lines
+    assert result.stdout == "LIVE_BUILD_LINE\nBUILD_DONE\n", result
+
 heartbeats = []
 result = run_bounded(
     [sys.executable, "-c", "import time; time.sleep(0.15)"],
