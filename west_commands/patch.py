@@ -17,34 +17,17 @@ import yaml
 from west.commands import WestCommand
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
+from patch_git import (
+    git,
+    git_for_patch_application,
+    git_for_temporary_patch_application,
+)
 import test_manifest
 from test_runtime import ROOTLESS_BOOTSTRAP_RESOURCE, ROOTLESS_BOOTSTRAP_TARGET
 
 
 DEFAULT_EXPORT_MAX_LINES = 200_000
 DEFAULT_EXPORT_MAX_GROWTH = 20
-
-# A controlled git am creates loose objects whether it runs in a disposable
-# verifier worktree or an integration branch.  Auto-gc/maintenance is unrelated
-# to patch applicability and can leave gc.log residue or hide the real failure,
-# so West leaves housekeeping explicit in both paths.
-PATCH_APPLICATION_GIT_OPTIONS = (
-    "-c",
-    "gc.auto=0",
-    "-c",
-    "maintenance.auto=false",
-)
-
-# Disposable worktrees may run on a clean CI runner with no user config. Keep
-# this identity out of persistent integration branches: it is only for commits
-# created while checking or materializing a patch profile temporarily.
-TEMPORARY_PATCH_GIT_OPTIONS = (
-    *PATCH_APPLICATION_GIT_OPTIONS,
-    "-c",
-    "user.name=West Test",
-    "-c",
-    "user.email=west-test@example.invalid",
-)
 
 
 class ExportPlan(NamedTuple):
@@ -54,66 +37,6 @@ class ExportPlan(NamedTuple):
     exported: bytes
     checksum: str
     patch_changed: bool
-
-
-def run(
-    repo: Path,
-    *args: str,
-    capture: bool = False,
-    check: bool = True,
-    env: dict[str, str] | None = None,
-) -> str:
-    result = subprocess.run(
-        args,
-        cwd=repo,
-        check=check,
-        text=True,
-        stdout=subprocess.PIPE if capture else None,
-        env=env,
-    )
-    return result.stdout.strip() if capture else ""
-
-
-def git(
-    repo: Path,
-    *args: str,
-    capture: bool = False,
-    check: bool = True,
-    env: dict[str, str] | None = None,
-) -> str:
-    return run(repo, "git", *args, capture=capture, check=check, env=env)
-
-
-def git_for_patch_application(
-    repo: Path,
-    *args: str,
-    capture: bool = False,
-    check: bool = True,
-) -> str:
-    """Run a controlled Git patch application without background maintenance."""
-    return git(
-        repo,
-        *PATCH_APPLICATION_GIT_OPTIONS,
-        *args,
-        capture=capture,
-        check=check,
-    )
-
-
-def git_for_temporary_patch_application(
-    repo: Path,
-    *args: str,
-    capture: bool = False,
-    check: bool = True,
-) -> str:
-    """Apply a patch in a disposable worktree with deterministic identity."""
-    return git(
-        repo,
-        *TEMPORARY_PATCH_GIT_OPTIONS,
-        *args,
-        capture=capture,
-        check=check,
-    )
 
 
 def format_patch_command(patch, commit: str) -> list[str]:

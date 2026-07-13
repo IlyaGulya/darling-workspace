@@ -24,12 +24,13 @@ west_commands_module.WestCommand = WestCommand
 sys.modules.setdefault("west", west_module)
 sys.modules.setdefault("west.commands", west_commands_module)
 
-from west_commands.patch import (
-    DarlingPatch,
+from west_commands.patch import DarlingPatch
+from west_commands.patch_git import (
     PATCH_APPLICATION_GIT_OPTIONS,
     TEMPORARY_PATCH_GIT_OPTIONS,
     git_for_temporary_patch_application,
 )
+from west_commands.test_runtime_source import RuntimeSourceMaterializer
 
 
 assert PATCH_APPLICATION_GIT_OPTIONS == (
@@ -45,6 +46,8 @@ assert TEMPORARY_PATCH_GIT_OPTIONS == (
     "-c",
     "user.email=west-test@example.invalid",
 )
+
+
 def runtime_patch(artifact):
     return {
         "module": "darling",
@@ -226,6 +229,29 @@ with tempfile.TemporaryDirectory(prefix="west-patch-verify-contract-") as temp:
     assert (repo / "fixture.txt").read_text() == "patched\n"
     assert not (repo / ".git" / "gc.log").exists()
     assert "maintenance run --auto" not in trace.read_text()
+
+    git(repo, "reset", "--hard", "--quiet", "HEAD~")
+    runtime_host = types.SimpleNamespace(
+        manifest=types.SimpleNamespace(repo_abspath=repo),
+        _profile_stack=lambda _profile: ["contract"],
+        _load_profile=lambda _profile: {
+            "patches": [{"module": "module", "path": "fixture.patch"}]
+        },
+        _profile_path=lambda _profile: repo / "profile.yml",
+        inf=lambda _message: None,
+    )
+    previous_global_config = os.environ.get("GIT_CONFIG_GLOBAL")
+    os.environ["GIT_CONFIG_GLOBAL"] = os.devnull
+    try:
+        RuntimeSourceMaterializer(runtime_host).apply_profile_module_patches(
+            "contract", "module", repo
+        )
+    finally:
+        if previous_global_config is None:
+            del os.environ["GIT_CONFIG_GLOBAL"]
+        else:
+            os.environ["GIT_CONFIG_GLOBAL"] = previous_global_config
+    assert (repo / "fixture.txt").read_text() == "patched\n"
 
 
 print("PASS west-patch-verify-contract")
