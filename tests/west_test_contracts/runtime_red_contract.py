@@ -313,7 +313,10 @@ baseline_provider = actual_runtime_profiles["homebrew-prefix-baseline"]
 assert baseline_provider["purpose"] == "prefix-baseline"
 assert baseline_provider["bootstrap"] == "rootless-no-mount"
 assert baseline_provider["bootstrap-smoke-timeout-seconds"] == 60
-assert baseline_provider["launcher-env"] == rootless_provider["launcher-env"]
+assert baseline_provider["launcher-env"] == {
+    **rootless_provider["launcher-env"],
+    "DARLING_ROOTLESS_SHELLSPAWN_READY_TIMEOUT_MS": "60000",
+}
 assert "darling/src/external/dyld" in baseline_provider["source-modules"]
 assert ROOTLESS_BOOTSTRAP_CLOSURE_SOURCE_MODULES.issubset(
     baseline_provider["source-modules"]
