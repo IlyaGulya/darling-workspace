@@ -839,10 +839,12 @@ Ordinary `west test --gc` never deletes those units. Removal is deliberate:
 age/count policy and first removes only the worktrees listed by that unit's
 manifest. A path is reported as preserved only after this manifest exists.
 
-Long configure/build commands use the same bounded process runner but emit a
-30-second heartbeat while their output is captured for failure diagnostics.
-This keeps large targets such as `rootless_bootstrap` visibly alive without
-turning compiler output into an unreviewable stream. If the caller is
+Long configure/build commands use the same bounded process runner, forwarding
+configure output and throttled Ninja progress milestones live while retaining
+the complete output for failure diagnostics. A heartbeat is emitted only every
+30 seconds when no output arrives. This keeps large targets such as
+`rootless_bootstrap` visibly alive without turning compiler output into an
+unreviewable stream. If the caller is
 interrupted, the next `west test --gc --gc-runtime-evidence` pass removes an
 unlocked orphan `.inflight-*` unit and its recorded worktrees.
 

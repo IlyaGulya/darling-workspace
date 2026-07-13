@@ -96,7 +96,8 @@ def _run_with_live_capture(
             wait_for = min(remaining, 0.25, max(0.0, next_heartbeat - elapsed))
             events = selector.select(wait_for)
             if not events:
-                if heartbeat is not None:
+                elapsed = time.monotonic() - started_at
+                if heartbeat is not None and elapsed >= next_heartbeat:
                     heartbeat(time.monotonic() - started_at)
                     next_heartbeat += heartbeat_seconds or timeout_seconds
                 continue
