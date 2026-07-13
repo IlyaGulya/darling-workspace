@@ -509,9 +509,12 @@ west darling-prefix-repair --prefix "$HOME/work/darling-prefix" --check
 west darling-prefix-repair --prefix "$HOME/work/darling-prefix" --cleanup-mounts
 ```
 
-The repair command creates the required `private/var/tmp` directories with mode
-`1777` and restores canonical `CommandLineTools`/`DarlingCLT` clang links from
-the versioned CLT already installed in the prefix. `west test` and
+The repair command creates the required rootless runtime directories (`var`,
+`var/run`, and `var/tmp`) plus the `private/var/tmp` directories. The latter
+keep mode `1777`; the runtime parents are created with mode `755` and are then
+owned by Darling's normal launchd bootstrap. It also restores canonical
+`CommandLineTools`/`DarlingCLT` clang links from the versioned CLT already
+installed in the prefix. `west test` and
 `west darling-doctor` share the same prerequisite checks, so a repaired prefix
 is checked against the same contract that guest metadata tests require. The
 `--cleanup-mounts` mode unmounts stale filesystems left under an otherwise idle

@@ -45,11 +45,14 @@ with tempfile.TemporaryDirectory() as temp:
     assert doctor.fail == 1
     assert any("private/var/tmp missing" in text for _, text in doctor.messages), doctor.messages
     assert any("libexec/darling/private/var/tmp missing" in text for _, text in doctor.messages), doctor.messages
+    assert any("var/run missing" in text for _, text in doctor.messages), doctor.messages
 
     (prefix / "private/var/tmp").mkdir(parents=True)
     (prefix / "libexec/darling/private/var/tmp").mkdir(parents=True)
     (prefix / "private/var/tmp").chmod(0o1777)
     (prefix / "libexec/darling/private/var/tmp").chmod(0o1777)
+    (prefix / "var/run").mkdir(parents=True)
+    (prefix / "var/tmp").mkdir(parents=True)
 
     doctor = make_doctor()
     doctor._check_prefix_boot_prereqs(args)
