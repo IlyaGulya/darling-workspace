@@ -28,6 +28,18 @@ from test_runtime import ROOTLESS_BOOTSTRAP_RESOURCE, ROOTLESS_BOOTSTRAP_TARGET
 
 DEFAULT_EXPORT_MAX_LINES = 200_000
 DEFAULT_EXPORT_MAX_GROWTH = 20
+DEFAULT_EXPORT_MAX_BYTES = 1_000_000
+
+_GENERATED_ARTIFACT_PATHS = (
+    re.compile(
+        r"(^|/)tests/[^/]*"
+        r"(?:snapshot|stat-(?:before|after)|smaps|census|handoff)"
+        r"[^/]*\.(?:json|jsonl|txt|md)$",
+        re.IGNORECASE,
+    ),
+    re.compile(r"(^|/)tools/.*/(?:BUILD|DCC).*-OUT\.txt$", re.IGNORECASE),
+    re.compile(r"(^|/)tools/.*/audit/[^/]+\.txt$", re.IGNORECASE),
+)
 
 
 class ExportPlan(NamedTuple):
@@ -60,6 +72,47 @@ def format_patch_command(patch, commit: str) -> list[str]:
         command.append("-1")
     command.append(revision)
     return command
+
+
+def generated_patch_artifacts(exported: bytes) -> list[str]:
+    """Return generated evidence files carried by an exported patch.
+
+    The patch format gives us a structured file boundary. Inspecting those
+    paths catches committed snapshots and capture output without matching
+    arbitrary source text or rejecting real test programs.
+    """
+
+    artifacts: list[str] = []
+    current_path: str | None = None
+    deleted = False
+
+    def finish() -> None:
+        if current_path is None or deleted:
+            return
+        if any(
+            pattern.search(current_path) for pattern in _GENERATED_ARTIFACT_PATHS
+        ):
+            if current_path not in artifacts:
+                artifacts.append(current_path)
+
+    for line in exported.decode(errors="replace").splitlines():
+        match = re.match(r"^diff --git a/(.+) b/(.+)$", line)
+        if match:
+            finish()
+            current_path = match.group(2)
+            deleted = False
+        elif current_path is not None and line.startswith("deleted file mode "):
+            deleted = True
+    finish()
+    return artifacts
+
+
+def describe_generated_patch_artifacts(artifacts: list[str]) -> str:
+    return (
+        "generated evidence artifact(s): "
+        + ", ".join(artifacts)
+        + "; remove snapshots/capture output from the source branch before export"
+    )
 
 
 class DarlingPatch(WestCommand):
@@ -1323,6 +1376,14 @@ class DarlingPatch(WestCommand):
                 continue
             if quality:
                 warnings = self._quality_warnings(patch)
+                patch_path = profile_dir / patch["path"]
+                if patch_path.is_file():
+                    artifacts = generated_patch_artifacts(patch_path.read_bytes())
+                    if artifacts:
+                        warnings.append(
+                            "patch contains "
+                            + describe_generated_patch_artifacts(artifacts)
+                        )
                 if warnings:
                     quality_warnings.append((patch, warnings))
             tests = [
@@ -1450,7 +1511,13 @@ class DarlingPatch(WestCommand):
 
     def _verify_patch(self, profile_dir: Path, patch):
         path = profile_dir / patch["path"]
-        actual = hashlib.sha256(path.read_bytes()).hexdigest()
+        content = path.read_bytes()
+        artifacts = generated_patch_artifacts(content)
+        if artifacts:
+            raise RuntimeError(
+                f"{path}: patch contains {describe_generated_patch_artifacts(artifacts)}"
+            )
+        actual = hashlib.sha256(content).hexdigest()
         expected = patch["sha256sum"]
         if actual != expected:
             raise RuntimeError(
@@ -1645,6 +1712,7 @@ class DarlingPatch(WestCommand):
                 or patch.get("sha256sum") != checksum
                 or current_content != exported
             )
+            self._check_export_artifacts(patch, exported)
             if not allow_large_output:
                 self._check_export_size(patch, exported, current_content)
             plans.append(
@@ -1780,20 +1848,37 @@ class DarlingPatch(WestCommand):
         max_growth = int(
             os.environ.get("WEST_PATCH_EXPORT_MAX_GROWTH", DEFAULT_EXPORT_MAX_GROWTH)
         )
+        max_bytes = int(
+            os.environ.get("WEST_PATCH_EXPORT_MAX_BYTES", DEFAULT_EXPORT_MAX_BYTES)
+        )
         exported_lines = exported.count(b"\n")
-        if exported_lines <= max_lines:
+        exported_bytes = len(exported)
+        if exported_lines <= max_lines and exported_bytes <= max_bytes:
             return
         current_lines = current_content.count(b"\n") if current_content is not None else 0
-        grew_too_much = current_lines == 0 or exported_lines > current_lines * max_growth
-        if grew_too_much:
+        current_bytes = len(current_content) if current_content is not None else 0
+        grew_too_much = (
+            current_content is None
+            or exported_lines > current_lines * max_growth
+            or exported_bytes > current_bytes * max_growth
+        )
+        if current_content is None or exported == current_content or grew_too_much:
             baseline = (
-                f"{current_lines} current lines"
+                f"{current_lines} current lines/{current_bytes} bytes"
                 if current_content is not None
                 else "no current file"
             )
             self.die(
-                f"{patch['path']}: exported patch has {exported_lines} lines "
+                f"{patch['path']}: exported patch has {exported_lines} lines/{exported_bytes} bytes "
                 f"({baseline}); pass --allow-large-output to write it"
+            )
+
+    def _check_export_artifacts(self, patch, exported: bytes) -> None:
+        artifacts = generated_patch_artifacts(exported)
+        if artifacts:
+            self.die(
+                f"{patch['path']}: exported patch contains "
+                f"{describe_generated_patch_artifacts(artifacts)}"
             )
 
     def _update_profile_metadata(
