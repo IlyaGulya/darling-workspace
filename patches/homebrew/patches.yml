@@ -4374,9 +4374,10 @@ patches:
     red-proof:
       mode: guest-runtime-deploy
       bad-profile: current-minus-patch
-      expect-failure-phase: build
+      source-revision: ad76a654cf71cf3d2dbd4ca321015659cceabf5e
+      expect-failure-phase: script
       expect-output-contains:
-      - unknown target 'rootless_bootstrap'
+      - ROOTLESS_LAUNCHD_RESOURCE_MISSING
       source-modules:
       - darling
       - darling/src/external/darlingserver
@@ -4403,9 +4404,11 @@ patches:
       DARLING_NOOVERLAYFS: '1'
       DARLING_EUNION: '1'
     note: >-
-      The integrated runtime owns rootless_bootstrap publication and guest
-      materialization. The current-minus block cannot name the target; the
-      fixed block builds, deploys and runs the real rootless bootstrap smoke.
+      RED uses the known-buildable integration commit immediately before the
+      resource publication commit from the coherent integration history. That
+      keeps rootless_bootstrap available and isolates the missing LaunchDaemons
+      resource that caused the CI timeout.
+      GREEN builds, deploys and runs the real rootless bootstrap smoke.
   github:
     fork:
       repo: IlyaGulya/darling
