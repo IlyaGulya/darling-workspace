@@ -47,7 +47,7 @@ jobs:
         if: failure()
         continue-on-error: true
         working-directory: darling-dev/darling-workspace
-        run: west test --prefix-profile homebrew --bootstrap-runtime-profile homebrew-prefix-baseline --bootstrap-syscall-trace .west-test/bootstrap-failure-trace
+        run: west test --prefix-profile homebrew --bootstrap-runtime-profile homebrew-prefix-baseline --bootstrap-timeout-seconds 75 --bootstrap-syscall-trace .west-test/bootstrap-failure-trace
       - name: Collect guest runtime diagnostics
         if: always()
         working-directory: darling-dev/darling-workspace
@@ -93,7 +93,7 @@ jobs:
         if: failure()
         continue-on-error: true
         working-directory: darling-dev/darling-workspace
-        run: west test --prefix-profile homebrew --bootstrap-runtime-profile homebrew-prefix-baseline --bootstrap-syscall-trace .west-test/bootstrap-failure-trace
+        run: west test --prefix-profile homebrew --bootstrap-runtime-profile homebrew-prefix-baseline --bootstrap-timeout-seconds 75 --bootstrap-syscall-trace .west-test/bootstrap-failure-trace
       - name: Collect guest runtime diagnostics
         if: always()
         working-directory: darling-dev/darling-workspace
