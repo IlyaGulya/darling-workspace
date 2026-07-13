@@ -686,13 +686,13 @@ manifest:
       kind: darling-source
       upstream-repository: darling-libressl
   - name: darling-src-external-libressl-2-8-3
-    url: git@github.com:IlyaGulya/darling-libressl
+    url: https://github.com/darling-next/darling-libressl
     revision: fb3669cee40467408716c7d96ec8f31f83bf7aeb
     path: darling/src/external/libressl-2.8.3
     userdata:
       kind: darling-source
       upstream-repository: darling-libressl
-      fetch-override-reason: upstream-pruned-pin
+      fetch-override-reason: darling-next-public-fork-preserves-pin
   - name: darling-src-external-librpcsvc
     url: https://github.com/darlinghq/darling-librpcsvc
     revision: 0cc1d42e53c61446616719597e96b29aeda51eb3
@@ -855,14 +855,14 @@ manifest:
       kind: darling-source
       upstream-repository: darling-nghttp2
   - name: darling-src-external-nghttp2-third-party-mruby
-    url: https://github.com/darlinghq/mruby
+    url: https://github.com/mruby/mruby
     revision: 7c91efc1ffda769a5f1a872c646c82b00698f1b8
     path: darling/src/external/nghttp2/third-party/mruby
     userdata:
       kind: darling-source
       upstream-repository: mruby
   - name: darling-src-external-nghttp2-third-party-neverbleed
-    url: https://github.com/darlinghq/neverbleed
+    url: https://github.com/h2o/neverbleed
     revision: b967ca054f48a36f82d8fcdd32e54ec5144f2751
     path: darling/src/external/nghttp2/third-party/neverbleed
     userdata:
@@ -1093,14 +1093,14 @@ manifest:
       kind: darling-source
       upstream-repository: xcbuild
   - name: darling-src-external-xcbuild-thirdparty-googletest
-    url: https://github.com/darlinghq/googletest
+    url: https://github.com/google/googletest
     revision: a2b8a8e07628e5fd60644b6dd99c1b5e7d7f1f47
     path: darling/src/external/xcbuild/ThirdParty/googletest
     userdata:
       kind: darling-source
       upstream-repository: googletest
   - name: darling-src-external-xcbuild-thirdparty-linenoise
-    url: https://github.com/darlinghq/linenoise
+    url: https://github.com/antirez/linenoise
     revision: c894b9e59f02203dbe4e2be657572cf88c4230c3
     path: darling/src/external/xcbuild/ThirdParty/linenoise
     userdata:

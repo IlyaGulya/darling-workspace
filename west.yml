@@ -3,10 +3,16 @@ manifest:
   remotes:
   - name: darling
     url-base: https://github.com/darlinghq
-  - name: ilya
-    url-base: git@github.com:IlyaGulya
   - name: darling-next
     url-base: https://github.com/darling-next
+  - name: mruby-upstream
+    url-base: https://github.com/mruby
+  - name: h2o-upstream
+    url-base: https://github.com/h2o
+  - name: google-upstream
+    url-base: https://github.com/google
+  - name: antirez-upstream
+    url-base: https://github.com/antirez
   projects:
   - name: darling
     repo-path: darling
@@ -795,12 +801,12 @@ manifest:
   - name: darling-src-external-libressl-2-8-3
     repo-path: darling-libressl
     path: darling/src/external/libressl-2.8.3
-    remote: ilya
+    remote: darling-next
     revision: 2a56b36b77a00573c53ccd8e6932eb136172c950
     userdata:
       kind: darling-source
       upstream-repository: darling-libressl
-      fetch-override-reason: upstream-pruned-pin
+      fetch-override-reason: darling-next-public-fork-preserves-pin
   - name: darling-src-external-librpcsvc
     repo-path: darling-librpcsvc
     path: darling/src/external/librpcsvc
@@ -988,19 +994,21 @@ manifest:
   - name: darling-src-external-nghttp2-third-party-mruby
     repo-path: mruby
     path: darling/src/external/nghttp2/third-party/mruby
-    remote: darling
+    remote: mruby-upstream
     revision: 7c91efc1ffda769a5f1a872c646c82b00698f1b8
     userdata:
       kind: darling-source
       upstream-repository: mruby
+      fetch-override-reason: third-party-upstream
   - name: darling-src-external-nghttp2-third-party-neverbleed
     repo-path: neverbleed
     path: darling/src/external/nghttp2/third-party/neverbleed
-    remote: darling
+    remote: h2o-upstream
     revision: b967ca054f48a36f82d8fcdd32e54ec5144f2751
     userdata:
       kind: darling-source
       upstream-repository: neverbleed
+      fetch-override-reason: third-party-upstream
   - name: darling-src-external-objc4
     repo-path: darling-objc4
     path: darling/src/external/objc4
@@ -1260,19 +1268,21 @@ manifest:
   - name: darling-src-external-xcbuild-thirdparty-googletest
     repo-path: googletest
     path: darling/src/external/xcbuild/ThirdParty/googletest
-    remote: darling
+    remote: google-upstream
     revision: a2b8a8e07628e5fd60644b6dd99c1b5e7d7f1f47
     userdata:
       kind: darling-source
       upstream-repository: googletest
+      fetch-override-reason: third-party-upstream
   - name: darling-src-external-xcbuild-thirdparty-linenoise
     repo-path: linenoise
     path: darling/src/external/xcbuild/ThirdParty/linenoise
-    remote: darling
+    remote: antirez-upstream
     revision: c894b9e59f02203dbe4e2be657572cf88c4230c3
     userdata:
       kind: darling-source
       upstream-repository: linenoise
+      fetch-override-reason: third-party-upstream
   - name: darling-src-external-xnu
     repo-path: darling-xnu
     path: darling/src/external/xnu

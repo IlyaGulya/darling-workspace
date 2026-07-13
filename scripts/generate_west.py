@@ -13,10 +13,30 @@ import yaml
 FETCH_OVERRIDES = {
     # The upstream v2.8.3 ref no longer contains Darling's pinned commit.
     "darling/src/external/libressl-2.8.3": {
-        "remote": "ilya",
+        "remote": "darling-next",
         "repo-path": "darling-libressl",
         "revision": "2a56b36b77a00573c53ccd8e6932eb136172c950",
-        "reason": "upstream-pruned-pin",
+        "reason": "darling-next-public-fork-preserves-pin",
+    },
+    "darling/src/external/nghttp2/third-party/mruby": {
+        "remote": "mruby-upstream",
+        "repo-path": "mruby",
+        "reason": "third-party-upstream",
+    },
+    "darling/src/external/nghttp2/third-party/neverbleed": {
+        "remote": "h2o-upstream",
+        "repo-path": "neverbleed",
+        "reason": "third-party-upstream",
+    },
+    "darling/src/external/xcbuild/ThirdParty/googletest": {
+        "remote": "google-upstream",
+        "repo-path": "googletest",
+        "reason": "third-party-upstream",
+    },
+    "darling/src/external/xcbuild/ThirdParty/linenoise": {
+        "remote": "antirez-upstream",
+        "repo-path": "linenoise",
+        "reason": "third-party-upstream",
     },
 }
 
@@ -77,12 +97,24 @@ def main() -> None:
                     "url-base": "https://github.com/darlinghq",
                 },
                 {
-                    "name": "ilya",
-                    "url-base": "git@github.com:IlyaGulya",
-                },
-                {
                     "name": "darling-next",
                     "url-base": "https://github.com/darling-next",
+                },
+                {
+                    "name": "mruby-upstream",
+                    "url-base": "https://github.com/mruby",
+                },
+                {
+                    "name": "h2o-upstream",
+                    "url-base": "https://github.com/h2o",
+                },
+                {
+                    "name": "google-upstream",
+                    "url-base": "https://github.com/google",
+                },
+                {
+                    "name": "antirez-upstream",
+                    "url-base": "https://github.com/antirez",
                 },
             ],
             "projects": projects,
