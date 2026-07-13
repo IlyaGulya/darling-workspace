@@ -5,6 +5,8 @@ manifest:
     url-base: https://github.com/darlinghq
   - name: ilya
     url-base: git@github.com:IlyaGulya
+  - name: darling-next
+    url-base: https://github.com/darling-next
   projects:
   - name: darling
     repo-path: darling
@@ -1305,14 +1307,14 @@ manifest:
       upstream-repository: darling-zsh
   - name: darling-debug-runner
     path: darling-debug-runner
-    remote: ilya
+    remote: darling-next
     revision: dbcd8ebfbb63a94e5f3f21fb6df570b831425b33
     groups:
     - private
     - debug-tools
     userdata:
       kind: workspace-tool
-      owner: IlyaGulya
+      owner: darling-next
   self:
     path: darling-workspace
     west-commands: west-commands.yml
