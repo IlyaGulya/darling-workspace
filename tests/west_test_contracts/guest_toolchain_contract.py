@@ -3,8 +3,8 @@
 from __future__ import annotations
 
 import hashlib
-import io
 import json
+import struct
 import tempfile
 from pathlib import Path
 
@@ -47,9 +47,11 @@ def main() -> None:
         package_payloads = {}
         package_entries = []
         for index, package_id in enumerate(COMMAND_LINE_TOOLS_PACKAGE_IDS):
-            payload = f"pkg-{index}".encode()
+            payload = struct.pack(
+                ">4sHHQQI", b"xar!", 28, 1, 1, 1, 1
+            ) + f"pkg-{index}".encode()
             digest = hashlib.sha1(payload).hexdigest()
-            url = f"https://example.test/{index}.pkg"
+            url = f"https://swcdn.apple.com/{index}.pkg"
             package_payloads[url] = payload
             package_entries.append(
                 {
@@ -59,6 +61,7 @@ def main() -> None:
                     "digest": digest,
                 }
             )
+        package_entries[0]["digest"] = "0" * 40
         manifest = json.dumps([{"packages": package_entries}]).encode()
 
         def opener(url, **_):
@@ -67,6 +70,7 @@ def main() -> None:
             return Response(package_payloads[url])
 
         calls = []
+        logs = []
 
         def guest_runner(launcher, runner_prefix, argv, **_):
             calls.append((launcher, runner_prefix, tuple(argv)))
@@ -88,7 +92,7 @@ def main() -> None:
             cache_dir=cache,
             opener=opener,
             guest_runner=guest_runner,
-            log=lambda _: None,
+            log=logs.append,
         )
         assert changed == list(COMMAND_LINE_TOOLS_PACKAGE_IDS), changed
         assert len(calls) == len(COMMAND_LINE_TOOLS_PACKAGE_IDS), calls
@@ -99,6 +103,7 @@ def main() -> None:
             "-isysroot /Library/Developer/CommandLineTools/SDKs/MacOSX.sdk",
         )
         assert len(list(cache.glob("*.pkg"))) == len(COMMAND_LINE_TOOLS_PACKAGE_IDS)
+        assert any("API SHA-1 mismatch" in line for line in logs), logs
 
         def unexpected_runner(*_args, **_kwargs):
             raise AssertionError("idempotent provider attempted a second install")
