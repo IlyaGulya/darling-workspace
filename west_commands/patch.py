@@ -40,6 +40,10 @@ _GENERATED_ARTIFACT_PATHS = (
     re.compile(r"(^|/)tools/.*/(?:BUILD|DCC).*-OUT\.txt$", re.IGNORECASE),
     re.compile(r"(^|/)tools/.*/audit/[^/]+\.txt$", re.IGNORECASE),
 )
+_LEGACY_AUTOMATION_TRAILER = re.compile(
+    r"^Co-Authored-By:\s*(?:Claude|Codex)\b.*$",
+    re.IGNORECASE,
+)
 
 
 class ExportPlan(NamedTuple):
@@ -112,6 +116,23 @@ def describe_generated_patch_artifacts(artifacts: list[str]) -> str:
         "generated evidence artifact(s): "
         + ", ".join(artifacts)
         + "; remove snapshots/capture output from the source branch before export"
+    )
+
+
+def legacy_automation_trailers(exported: bytes) -> list[str]:
+    """Return forbidden Claude/Codex trailers from patch-mail metadata."""
+
+    return [
+        line
+        for line in exported.decode(errors="replace").splitlines()
+        if _LEGACY_AUTOMATION_TRAILER.match(line)
+    ]
+
+
+def describe_legacy_automation_trailers(trailers: list[str]) -> str:
+    return (
+        f"legacy automation trailer(s): {len(trailers)} Claude/Codex "
+        "Co-Authored-By line(s); rewrite the local commit messages before export"
     )
 
 
@@ -1378,11 +1399,18 @@ class DarlingPatch(WestCommand):
                 warnings = self._quality_warnings(patch)
                 patch_path = profile_dir / patch["path"]
                 if patch_path.is_file():
-                    artifacts = generated_patch_artifacts(patch_path.read_bytes())
+                    patch_content = patch_path.read_bytes()
+                    artifacts = generated_patch_artifacts(patch_content)
                     if artifacts:
                         warnings.append(
                             "patch contains "
                             + describe_generated_patch_artifacts(artifacts)
+                        )
+                    trailers = legacy_automation_trailers(patch_content)
+                    if trailers:
+                        warnings.append(
+                            "patch contains "
+                            + describe_legacy_automation_trailers(trailers)
                         )
                 if warnings:
                     quality_warnings.append((patch, warnings))
@@ -1512,6 +1540,11 @@ class DarlingPatch(WestCommand):
     def _verify_patch(self, profile_dir: Path, patch):
         path = profile_dir / patch["path"]
         content = path.read_bytes()
+        trailers = legacy_automation_trailers(content)
+        if trailers:
+            raise RuntimeError(
+                f"{path}: patch contains {describe_legacy_automation_trailers(trailers)}"
+            )
         artifacts = generated_patch_artifacts(content)
         if artifacts:
             raise RuntimeError(
@@ -1874,6 +1907,12 @@ class DarlingPatch(WestCommand):
             )
 
     def _check_export_artifacts(self, patch, exported: bytes) -> None:
+        trailers = legacy_automation_trailers(exported)
+        if trailers:
+            self.die(
+                f"{patch['path']}: exported patch contains "
+                f"{describe_legacy_automation_trailers(trailers)}"
+            )
         artifacts = generated_patch_artifacts(exported)
         if artifacts:
             self.die(
