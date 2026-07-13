@@ -4428,11 +4428,11 @@ patches:
     reason: test-instrumentation
     scope: The hook is inert unless DARLING_TEST_SHELLSPAWN_READY_DELAY_MS is explicitly supplied by the rootless lifecycle proof.
 - path: darling/rootless-shellspawn-lifecycle.patch
-  sha256sum: 8055d2bd45faf86e471c18d18b2d95e20b100feaa2e1599abe05c534386ac24d
+  sha256sum: f89d2aae579fd0491df3e4b6871d543d2e404ac9dcad64b61e7fb6b49567e11e
   module: darling
-  source-branch: repack/rootless-lifecycle
+  source-branch: fix/rootless-shellspawn-timeout-ci
   source-base: f8aa7404f19979d0ec4b54573238194b98de385a
-  source-commit: ce80621ca527c7a82e7201f7dab13b5c80f193f3
+  source-commit: 0d817c9f105d90048de1a592277455d54a85fb96
   bead: dar-7zvt.4
   publication-status: blocked
   publication-blocker: Rootless lifecycle remains local until the fresh-prefix guest and cleanup audit is complete.
@@ -4482,10 +4482,12 @@ patches:
       DARLING_ROOTLESS: '1'
       DARLING_NOOVERLAYFS: '1'
       DARLING_EUNION: '1'
-      DARLING_TEST_SHELLSPAWN_READY_DELAY_MS: '20000'
+      DARLING_ROOTLESS_SHELLSPAWN_READY_TIMEOUT_MS: '60000'
+      DARLING_TEST_SHELLSPAWN_READY_DELAY_MS: '40000'
     note: >-
-      Rootless readiness behavior: transient shellspawn socket absence is retried
-      until the live init publishes the guest verdict.
+      Rootless readiness behavior: a 40-second transient shellspawn socket absence
+      is retried under the explicit 60-second readiness budget until the live init
+      publishes the guest verdict.
   - name: rootless_shutdown_session
     kind: guest
     coverage-tier: runtime
