@@ -55,6 +55,9 @@ def _run_guest_launcher(
     stderr=None,
     capture_output: bool = False,
     command_prefix: Sequence[str] = (),
+    heartbeat_seconds: float | None = None,
+    heartbeat: Callable[[float], None] | None = None,
+    output_line: Callable[[str, str], None] | None = None,
 ) -> ProcessResult:
     """Run one launcher action with prefix identity and group cleanup.
 
@@ -82,6 +85,9 @@ def _run_guest_launcher(
         stderr=stderr,
         text=True,
         capture_output=capture_output,
+        heartbeat_seconds=heartbeat_seconds,
+        heartbeat=heartbeat,
+        output_line=output_line,
     )
 
 
@@ -97,6 +103,9 @@ def run_guest_argv(
     stderr=None,
     capture_output: bool = False,
     command_prefix: Sequence[str] = (),
+    heartbeat_seconds: float | None = None,
+    heartbeat: Callable[[float], None] | None = None,
+    output_line: Callable[[str, str], None] | None = None,
 ) -> ProcessResult:
     """Run one explicit guest executable through the launcher's exec mode."""
 
@@ -112,6 +121,9 @@ def run_guest_argv(
         stderr=stderr,
         capture_output=capture_output,
         command_prefix=command_prefix,
+        heartbeat_seconds=heartbeat_seconds,
+        heartbeat=heartbeat,
+        output_line=output_line,
     )
 
 
@@ -127,6 +139,9 @@ def run_guest_shell(
     stderr=None,
     capture_output: bool = False,
     command_prefix: Sequence[str] = (),
+    heartbeat_seconds: float | None = None,
+    heartbeat: Callable[[float], None] | None = None,
+    output_line: Callable[[str, str], None] | None = None,
 ) -> ProcessResult:
     """Run one login-shell command through the shared guest argv runner."""
 
@@ -142,6 +157,9 @@ def run_guest_shell(
         stderr=stderr,
         capture_output=capture_output,
         command_prefix=command_prefix,
+        heartbeat_seconds=heartbeat_seconds,
+        heartbeat=heartbeat,
+        output_line=output_line,
     )
 
 

@@ -86,6 +86,9 @@ assert calls == [
             "stderr": None,
             "text": True,
             "capture_output": True,
+            "heartbeat_seconds": None,
+            "heartbeat": None,
+            "output_line": None,
         },
     )
 ], calls
@@ -116,6 +119,30 @@ assert calls[0][0] == [
     "-c",
     "printf shell",
 ], calls
+
+heartbeat = lambda _elapsed: None
+output_line = lambda _stream, _line: None
+calls = []
+guest_execution.run_bounded = bounded
+try:
+    assert run_guest_shell(
+        "/launcher",
+        "/prefix",
+        "printf shell",
+        cwd=Path("/workspace"),
+        env={"EXAMPLE": "1"},
+        timeout_seconds=7,
+        capture_output=True,
+        heartbeat_seconds=30,
+        heartbeat=heartbeat,
+        output_line=output_line,
+    ).returncode == 0
+finally:
+    guest_execution.run_bounded = original_bounded
+
+assert calls[0][1]["heartbeat_seconds"] == 30, calls
+assert calls[0][1]["heartbeat"] is heartbeat, calls
+assert calls[0][1]["output_line"] is output_line, calls
 
 
 with tempfile.TemporaryDirectory() as temp:
