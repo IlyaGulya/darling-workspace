@@ -165,6 +165,13 @@ assert runtime_deploy_targets(prefix_for_targets, "bin/darlingserver") == [
 assert runtime_deploy_targets(prefix_for_targets, "sbin/launchd") == [
     prefix_for_targets / "sbin/launchd",
 ]
+assert runtime_deploy_targets(
+    prefix_for_targets,
+    "System/Library/LaunchDaemons/org.darlinghq.shellspawn.plist",
+) == [
+    prefix_for_targets
+    / "libexec/darling/System/Library/LaunchDaemons/org.darlinghq.shellspawn.plist",
+]
 with tempfile.TemporaryDirectory() as temp:
     profiles_path = Path(temp) / "runtime-profiles.yml"
     profiles_path.write_text(
@@ -485,8 +492,11 @@ with tempfile.TemporaryDirectory() as temp:
     output.chmod(0o755)
     manifest_path = build_root / "darling-rootless-bootstrap.json"
 
-    def write_bootstrap_manifest(entries):
-        manifest_path.write_text(json.dumps({"schema": 1, "entrypoints": entries}))
+    def write_bootstrap_manifest(entries, resources=None):
+        data = {"schema": 1, "entrypoints": entries}
+        if resources is not None:
+            data["resources"] = resources
+        manifest_path.write_text(json.dumps(data))
 
     entry = {
         "target": "darling",
@@ -495,6 +505,23 @@ with tempfile.TemporaryDirectory() as temp:
     }
     write_bootstrap_manifest([entry])
     assert load_rootless_bootstrap_manifest(build_root) == {"bin/darling": output}
+
+    launchd_plist = build_root / (
+        "rootless-bootstrap-resources/System/Library/LaunchDaemons/"
+        "org.darlinghq.shellspawn.plist"
+    )
+    launchd_plist.parent.mkdir(parents=True)
+    launchd_plist.write_text("<?xml version=\"1.0\"?><plist/>\n")
+    resource = {
+        "target": "shellspawn_launchd_plist",
+        "guest_path": "/System/Library/LaunchDaemons/org.darlinghq.shellspawn.plist",
+        "host_path": str(launchd_plist),
+    }
+    write_bootstrap_manifest([entry], [resource])
+    assert load_rootless_bootstrap_manifest(build_root) == {
+        "bin/darling": output,
+        "System/Library/LaunchDaemons/org.darlinghq.shellspawn.plist": launchd_plist,
+    }
 
     write_bootstrap_manifest([entry, entry])
     try:
