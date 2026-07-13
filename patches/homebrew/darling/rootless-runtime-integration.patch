@@ -1,7 +1,7 @@
 From 88a1b9b1260e58266e9b6b687831065271ec4b90 Mon Sep 17 00:00:00 2001
 From: Ilya Gulya <ilya@gulya.me>
 Date: Sun, 12 Jul 2026 15:54:11 +0000
-Subject: [PATCH] darling: integrate rootless no-mount runtime
+Subject: [PATCH 1/2] darling: integrate rootless no-mount runtime
 
 Consolidate startup, launchd bootstrap propagation, mldr argument/TSD setup, runtime component selection and the rootless bootstrap component.
 ---
@@ -23,7 +23,7 @@ Consolidate startup, launchd bootstrap propagation, mldr argument/TSD setup, run
  create mode 100644 src/startup/mldr/elfcalls/dthreads.c
 
 diff --git a/CMakeLists.txt b/CMakeLists.txt
-index b77875f6c138e43e4b05bbc36752fcdfe76887ff..19c6df1ede0377073168d44c5836e4db275304a7 100644
+index b77875f6c..19c6df1ed 100644
 --- a/CMakeLists.txt
 +++ b/CMakeLists.txt
 @@ -256,6 +256,49 @@ if(TARGET drift_gate)
@@ -77,21 +77,21 @@ index b77875f6c138e43e4b05bbc36752fcdfe76887ff..19c6df1ede0377073168d44c5836e4db
  install(DIRECTORY DESTINATION libexec/darling/private/etc)
  install(DIRECTORY DESTINATION libexec/darling/private/var)
 diff --git a/src/external/darlingserver b/src/external/darlingserver
-index 89751e64bc6c2082f7725061824ee0e33395b0de..fd105515af642df755296330265038ac2f70fae4 160000
+index 89751e64b..fd105515a 160000
 --- a/src/external/darlingserver
 +++ b/src/external/darlingserver
 @@ -1 +1 @@
 -Subproject commit 89751e64bc6c2082f7725061824ee0e33395b0de
 +Subproject commit fd105515af642df755296330265038ac2f70fae4
 diff --git a/src/external/xnu b/src/external/xnu
-index 5f26a4c2365d9774b5a1e66ae7da20b61ab6d2db..52e2102938b8ca2385c62c00074a7c8fdd2d2eaf 160000
+index 5f26a4c23..52e210293 160000
 --- a/src/external/xnu
 +++ b/src/external/xnu
 @@ -1 +1 @@
 -Subproject commit 5f26a4c2365d9774b5a1e66ae7da20b61ab6d2db
 +Subproject commit 52e2102938b8ca2385c62c00074a7c8fdd2d2eaf
 diff --git a/src/launchd/src/launchd.c b/src/launchd/src/launchd.c
-index cd2cdfec9d3d00cc068db1f3d772cc388a936ff6..db52709d80dcdef3a2520576fa73c80bcd637adf 100644
+index cd2cdfec9..db52709d8 100644
 --- a/src/launchd/src/launchd.c
 +++ b/src/launchd/src/launchd.c
 @@ -103,6 +103,29 @@ static bool do_pid1_crash_diagnosis_mode2(const char *msg);
@@ -144,7 +144,7 @@ index cd2cdfec9d3d00cc068db1f3d772cc388a936ff6..db52709d80dcdef3a2520576fa73c80b
  		exit(EXIT_FAILURE);
  	}
 diff --git a/src/launchd/src/runtime.c b/src/launchd/src/runtime.c
-index 245489ab650bf397434a9dd48a52c779275e9c4d..9dfe93da01b107ebba6e278d7e5efb25fb69dfaf 100644
+index 245489ab6..9dfe93da0 100644
 --- a/src/launchd/src/runtime.c
 +++ b/src/launchd/src/runtime.c
 @@ -1386,7 +1386,8 @@ do_file_init(void)
@@ -158,7 +158,7 @@ index 245489ab650bf397434a9dd48a52c779275e9c4d..9dfe93da01b107ebba6e278d7e5efb25
  	}
  
 diff --git a/src/startup/darling.c b/src/startup/darling.c
-index a3f27fbf3858ec9ac29bc6f17ad28c9a27fc3aef..3daf5061b51027307b1e386f670657839081577e 100644
+index a3f27fbf3..3daf5061b 100644
 --- a/src/startup/darling.c
 +++ b/src/startup/darling.c
 @@ -29,6 +29,7 @@ along with Darling.  If not, see <http://www.gnu.org/licenses/>.
@@ -248,7 +248,7 @@ index a3f27fbf3858ec9ac29bc6f17ad28c9a27fc3aef..3daf5061b51027307b1e386f67065783
  
  	pid = fork();
 diff --git a/src/startup/mldr/CMakeLists.txt b/src/startup/mldr/CMakeLists.txt
-index 87ae9af791ccf07b92777228c9282359d813070d..e1f93647d2a7a38b1ba9cf07ee3b4ce621441767 100644
+index 87ae9af79..e1f93647d 100644
 --- a/src/startup/mldr/CMakeLists.txt
 +++ b/src/startup/mldr/CMakeLists.txt
 @@ -21,6 +21,7 @@ set(mldr_sources
@@ -261,7 +261,7 @@ index 87ae9af791ccf07b92777228c9282359d813070d..e1f93647d2a7a38b1ba9cf07ee3b4ce6
  
 diff --git a/src/startup/mldr/elfcalls/dthreads.c b/src/startup/mldr/elfcalls/dthreads.c
 new file mode 100644
-index 0000000000000000000000000000000000000000..52937c948d55efe063dce537c344afbcda392bb2
+index 000000000..52937c948
 --- /dev/null
 +++ b/src/startup/mldr/elfcalls/dthreads.c
 @@ -0,0 +1,92 @@
@@ -358,7 +358,7 @@ index 0000000000000000000000000000000000000000..52937c948d55efe063dce537c344afbc
 +#endif
 +}
 diff --git a/src/startup/mldr/elfcalls/dthreads.h b/src/startup/mldr/elfcalls/dthreads.h
-index 5be5be34315fb2dd3da3ab8e8292cd2acc63b250..1bbc2629142fdc5ddb4e3b074742d8b219005cb9 100644
+index 5be5be343..1bbc26291 100644
 --- a/src/startup/mldr/elfcalls/dthreads.h
 +++ b/src/startup/mldr/elfcalls/dthreads.h
 @@ -5,6 +5,8 @@
@@ -380,7 +380,7 @@ index 5be5be34315fb2dd3da3ab8e8292cd2acc63b250..1bbc2629142fdc5ddb4e3b074742d8b2
 +
  #endif // _ELFLOADER_DTHREADS_H_
 diff --git a/src/startup/mldr/elfcalls/threads.c b/src/startup/mldr/elfcalls/threads.c
-index c1dbd8b591602167027bfde1a8f0a6a637ac1eb4..c8a62466b14a75a98d1d9d6b581aaa289e052d60 100644
+index c1dbd8b59..c8a62466b 100644
 --- a/src/startup/mldr/elfcalls/threads.c
 +++ b/src/startup/mldr/elfcalls/threads.c
 @@ -94,38 +94,6 @@ static inline void *align_16(uintptr_t ptr) {
@@ -446,7 +446,7 @@ index c1dbd8b591602167027bfde1a8f0a6a637ac1eb4..c8a62466b14a75a98d1d9d6b581aaa28
  				void* entry_point, uintptr_t real_entry_point,
  				uintptr_t arg1, uintptr_t arg2, uintptr_t arg3,
 diff --git a/src/startup/mldr/elfcalls/threads.h b/src/startup/mldr/elfcalls/threads.h
-index dd0a4af747508564b7a7555706b90de86d0c4270..105046a2b756b8043fb63761cf905103867bcadf 100644
+index dd0a4af74..105046a2b 100644
 --- a/src/startup/mldr/elfcalls/threads.h
 +++ b/src/startup/mldr/elfcalls/threads.h
 @@ -19,6 +19,7 @@ along with Darling.  If not, see <http://www.gnu.org/licenses/>.
@@ -471,7 +471,7 @@ index dd0a4af747508564b7a7555706b90de86d0c4270..105046a2b756b8043fb63761cf905103
  #endif
 -
 diff --git a/src/startup/mldr/loader.h b/src/startup/mldr/loader.h
-index 4b534e0c9f425551428ff74a6f239937a5607b67..d1bd92c66c1966226e05632a8bfbd28c8defc676 100644
+index 4b534e0c9..d1bd92c66 100644
 --- a/src/startup/mldr/loader.h
 +++ b/src/startup/mldr/loader.h
 @@ -15,6 +15,7 @@ struct load_results {
@@ -483,7 +483,7 @@ index 4b534e0c9f425551428ff74a6f239937a5607b67..d1bd92c66c1966226e05632a8bfbd28c
  	uint32_t bprefs[4];
  	char* root_path;
 diff --git a/src/startup/mldr/mldr.c b/src/startup/mldr/mldr.c
-index 7ee672a1812ce61c9c0dfa58002fb685a8581571..5438259c76326143bbd13692ac9cd4438148a22a 100644
+index 7ee672a18..5438259c7 100644
 --- a/src/startup/mldr/mldr.c
 +++ b/src/startup/mldr/mldr.c
 @@ -36,6 +36,7 @@ along with Darling.  If not, see <http://www.gnu.org/licenses/>.
@@ -532,7 +532,7 @@ index 7ee672a1812ce61c9c0dfa58002fb685a8581571..5438259c76326143bbd13692ac9cd443
  
  typedef struct socket_bitmap {
 diff --git a/src/startup/mldr/stack.c b/src/startup/mldr/stack.c
-index e3e8f8a618165513bde831c9ba94fd287ea56d9a..ca02c2366e4bba963525d2f5ff7284b9f64419b3 100644
+index e3e8f8a61..ca02c2366 100644
 --- a/src/startup/mldr/stack.c
 +++ b/src/startup/mldr/stack.c
 @@ -42,6 +42,7 @@
@@ -579,17 +579,18 @@ index e3e8f8a618165513bde831c9ba94fd287ea56d9a..ca02c2366e4bba963525d2f5ff7284b9
  	{
  		fprintf(stderr, "Failed to null-terminate the environment variable pointer array\n");
 
-From 72006d6a61504c5123b463f8369a8e09bc4b23cf Mon Sep 17 00:00:00 2001
+From d0a7ccde59fed3c8493ed3b4180be71b1ff3569f Mon Sep 17 00:00:00 2001
 From: Ilya Gulya <ilya.gulya@indriver.com>
 Date: Mon, 13 Jul 2026 13:39:05 +0000
-Subject: [PATCH] build: publish rootless launchd resource manifest
+Subject: [PATCH 2/2] build: publish rootless launchd resource manifest
 
 ---
- CMakeLists.txt | 38 +++++++++++++++++++++++++-------------
- 1 file changed, 25 insertions(+), 13 deletions(-)
+ CMakeLists.txt            | 38 +++++++++++++++++++++++++-------------
+ src/launchd/src/launchd.c |  3 ++-
+ 2 files changed, 27 insertions(+), 14 deletions(-)
 
 diff --git a/CMakeLists.txt b/CMakeLists.txt
-index 19c6df1ede0377073168d44c5836e4db275304a7..6ea0acecebc18e2a4ec52597f58002fa7d6d46bf 100644
+index 19c6df1ed..6ea0acece 100644
 --- a/CMakeLists.txt
 +++ b/CMakeLists.txt
 @@ -280,23 +280,35 @@ foreach(_bootstrap_target IN LISTS DARLING_ROOTLESS_BOOTSTRAP_TARGETS)
@@ -641,3 +642,24 @@ index 19c6df1ede0377073168d44c5836e4db275304a7..6ea0acecebc18e2a4ec52597f58002fa
  )
  
  install(DIRECTORY DESTINATION libexec/darling/private)
+diff --git a/src/launchd/src/launchd.c b/src/launchd/src/launchd.c
+index db52709d8..201482578 100644
+--- a/src/launchd/src/launchd.c
++++ b/src/launchd/src/launchd.c
+@@ -137,6 +137,7 @@ bool network_up;
+ uid_t launchd_uid;
+ FILE *launchd_console = NULL;
+ int32_t launchd_sync_frequency = 30;
++bool darling_rootless;
+ 
+ int
+ main(int argc, char *const *argv)
+@@ -184,7 +185,7 @@ main(int argc, char *const *argv)
+ 		}
+ 	}
+ 
+-bool darling_rootless = rootless_mode_enabled();
++darling_rootless = rootless_mode_enabled();
+ 
+ 	if (!darling_rootless && getpid() != 1 && getppid() != 1) {
+ 		fprintf(stderr, "%s: This program is not meant to be run directly.\n", getprogname());
