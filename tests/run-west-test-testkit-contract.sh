@@ -4,6 +4,9 @@ set -euo pipefail
 repo="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$repo"
 
+scope_build="$(mktemp -d)"
+trap 'rm -rf "$scope_build"' EXIT
+
 export PYTHONDONTWRITEBYTECODE=1
 
 tests/run-darling-c-test-contract.sh
@@ -13,6 +16,18 @@ tests/run-darling-c-test-contract.sh
 # declarations before any CTest discovery runs.
 west test --help | grep -q -- '--bootstrap-runtime-profile NAME'
 west patch verify --help | grep -q -- '--applicability-only'
+
+# Guest CTest builds configure the unpatched West source tree before a runtime
+# profile is materialized. The source-bound E-UNION host harness must therefore
+# stay out of the default build; metadata eunion-host invocations enable it in
+# their separate source-override build.
+cmake -S testkit -B "$scope_build" -G Ninja \
+	-DDARLING_ENABLE_EUNION_HOST_SUITE=OFF >/dev/null
+if ctest --test-dir "$scope_build" --show-only=json-v1 2>/dev/null |
+	grep -F -q 'host/eunion_hardening_host_suite'; then
+	printf 'E-UNION host suite leaked into the default guest build\n' >&2
+	exit 1
+fi
 
 if patch_profile_error="$(west test --patch darling/rootless-shellspawn-lifecycle.patch \
 	--prefix-profile homebrew --list 2>&1)"; then

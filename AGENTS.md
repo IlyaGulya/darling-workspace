@@ -239,6 +239,10 @@ refs, PR drafts, and agent handoff.
 - `tests/run-west-test-testkit-contract.sh` is the focused CLI contract for the
   local CTest/testkit bridge; update it when changing testkit registration or
   top-level CTest selectors.
+- The E-UNION host CTest suite is source-bound and opt-in through
+  `DARLING_ENABLE_EUNION_HOST_SUITE=ON`. Keep it disabled in the default
+  testkit build; West enables it only in the separate `eunion-host` materialized
+  source build, so guest runs do not compile against an unpatched checkout.
 - `tests/run-west-test-add-compat-cmake-contract.sh` is the focused CMake
   contract for `add_compat_test()` command generation; update it when changing
   guest launch, argv, labels, or prefix environment behavior.

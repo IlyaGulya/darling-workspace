@@ -1684,6 +1684,22 @@ class DarlingTest(WestCommand):
             )
         return label_args
 
+    def _ctest_cmake_defines(
+        self, invocation, *, source_override=None, source_root=None
+    ) -> dict[str, str]:
+        """Return CMake inputs needed by a source-bound CTest invocation."""
+
+        defines: dict[str, str] = {}
+        if source_override:
+            defines[str(source_override)] = str(
+                source_root
+                if source_root is not None
+                else self._project_path(invocation["source_module"])
+            )
+        if invocation.get("ctest_label") == "eunion-host":
+            defines["DARLING_ENABLE_EUNION_HOST_SUITE"] = "ON"
+        return defines
+
     @contextmanager
     def _ctest_source_override_context(self, invocation):
         override = invocation.get("ctest_source_override")
@@ -1699,9 +1715,9 @@ class DarlingTest(WestCommand):
                 prefix=self._prefix,
                 bundle_root=str(getattr(self, "_bundle_root", "")),
                 build_dir=Path(temp) / "build",
-                cmake_defines={
-                    str(override): str(self._project_path(invocation["source_module"]))
-                },
+                cmake_defines=self._ctest_cmake_defines(
+                    invocation, source_override=override
+                ),
             )
             yield configured
 
@@ -4495,7 +4511,9 @@ class DarlingTest(WestCommand):
                 prefix=self._prefix,
                 bundle_root=str(getattr(self, "_bundle_root", "")),
                 build_dir=build_root,
-                cmake_defines={str(override): str(source_root)},
+                cmake_defines=self._ctest_cmake_defines(
+                    proof_invocation, source_override=override, source_root=source_root
+                ),
             )
             return configured
 
