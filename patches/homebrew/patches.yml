@@ -4331,11 +4331,11 @@ patches:
       base: main
       state: local
 - path: darling/rootless-runtime-integration.patch
-  sha256sum: cd78af09b7d034b126c09888ae7521abea071a25649c9691b6da0bbf53615443
+  sha256sum: 7c82b32d09b1ca2783ef3514dc879cf29a311034b90377a7b2173e27af3ce22f
   module: darling
   source-branch: repack/rootless-runtime-integration
   source-base: 492a00f4929e5aba60607d9fed3e868bc4a3aeba
-  source-commit: 72006d6a61504c5123b463f8369a8e09bc4b23cf
+  source-commit: d0a7ccde59fed3c8493ed3b4180be71b1ff3569f
   bead: dar-7zvt.3
   publication-status: blocked
   publication-blocker: Rootless runtime integration is a local architectural consolidation; publication remains blocked until the complete lifecycle stack passes its fresh-prefix guest audit.
@@ -4418,6 +4418,22 @@ patches:
       repo: darlinghq/darling
       base: main
       state: local
+- path: darling/rootless-bootstrapper-ordering.patch
+  sha256sum: 9349193559767d048a88966ae03554a75375c621cdbdb29af225b60d953dc429
+  module: darling
+  source-branch: fix/rootless-bootstrapper-ordering
+  source-base: 72006d6a61504c5123b463f8369a8e09bc4b23cf
+  source-commit: 703541414e9f7305840e349a8eea563e76035299
+  bead: dar-test-infra-sp5.45
+  publication-status: blocked
+  publication-blocker: Rootless bootstrapper ordering remains local until fresh-prefix guest CI is stable across repeated runs.
+  test-exception:
+    reason: integration-runtime-provider
+    scope: The fix changes launchd's rootless system bootstrap scheduling; its contract is exercised by the existing fresh-prefix rootless guest bootstrap smoke rather than a source-only launchd unit.
+  note: >-
+    Rootless launchd now dispatches the system bootstrapper after the root job
+    manager has created its system domain. This prevents an early launchctl
+    request from reaching a partially assembled manager on loaded hosts.
 - path: darling/rootless-shellspawn-delay.patch
   sha256sum: 03436bef636b0a3957efe5252a5beaa508d0aa26d8d35cb9d28fae4553f3b85e
   module: darling
