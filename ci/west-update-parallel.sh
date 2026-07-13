@@ -37,8 +37,8 @@ trap 'rm -rf "$state_dir"' EXIT
 mkdir -p "$state_dir/logs" "$state_dir/status"
 
 project_list="$state_dir/projects.tsv"
-west list -f '{name}\t{path}' |
-	awk -F '\t' '$1 != "manifest"' >"$project_list"
+west list -f '{name}|{path}' |
+	awk -F '|' '$1 != "manifest"' >"$project_list"
 if [[ ! -s "$project_list" ]]; then
 	echo 'west manifest has no active projects' >&2
 	exit 2
@@ -51,7 +51,7 @@ update_status=0
 run_batch() {
 	local depth="$1"
 	mapfile -t projects < <(
-		awk -F '\t' -v wanted_depth="$depth" '
+		awk -F '|' -v wanted_depth="$depth" '
 			{
 				project_depth = split($2, components, "/")
 				if (project_depth == wanted_depth) print $1
@@ -70,7 +70,7 @@ run_batch() {
 	return "$update_status"
 }
 
-depths="$(awk -F '\t' '{print split($2, components, "/")}' \
+depths="$(awk -F '|' '{print split($2, components, "/")}' \
 	"$project_list" | sort -nu)"
 for depth in $depths; do
 	if ! run_batch "$depth"; then

@@ -12,10 +12,10 @@ set -euo pipefail
 
 case "${1:-}" in
 	list)
-		printf 'manifest\tworkspace\n'
-		printf 'one\tone\n'
-		printf 'two\ttwo\n'
-		printf 'three\ttwo/three\n'
+		printf 'manifest|workspace\n'
+		printf 'one|one\n'
+		printf 'two|two\n'
+		printf 'three|two/three\n'
 		;;
 	update)
 		printf 'update %s\n' "${2:-all}" >>"$WEST_LOG"
@@ -49,8 +49,8 @@ set -euo pipefail
 
 case "${1:-}" in
 	list)
-		printf 'good\tgood\n'
-		printf 'bad\tbad\n'
+		printf 'good|good\n'
+		printf 'bad|bad\n'
 		;;
 	update)
 		printf 'update %s\n' "${2:-all}" >>"$WEST_LOG"
