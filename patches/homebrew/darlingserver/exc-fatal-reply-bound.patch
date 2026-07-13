@@ -1,4 +1,4 @@
-From 2c8db920a3fe6c003225012e44b0074afad50c19 Mon Sep 17 00:00:00 2001
+From 8ee1bb6a5adcb8139ae96deade0e062f9b1069f9 Mon Sep 17 00:00:00 2001
 From: Ilya Gulya <ilya.gulya@indriver.com>
 Date: Wed, 24 Jun 2026 01:03:22 +0000
 Subject: [PATCH] duct-tape: bound the reply wait for fatal EXC_BAD_ACCESS
@@ -38,8 +38,6 @@ exception types (EXC_BAD_INSTRUCTION / EXC_ARITHMETIC / EXC_BREAKPOINT) have
 legitimate catch-and-resume handlers in real workloads (debuggers; the
 brew/Ruby download path raises and recovers from SIGILL) that must not be
 timed out and turned into a forced termination.
-
-Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
 ---
  .../duct-tape/fatal-exception-reply.h         | 42 +++++++++++++++++++
  .../darlingserver/duct-tape/thread.h          | 16 +++++++

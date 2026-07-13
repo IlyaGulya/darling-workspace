@@ -1,4 +1,4 @@
-From bd18a8bd71753b8321e513fe19cb724345f6b873 Mon Sep 17 00:00:00 2001
+From 1cd32102de88fbbff5aef764c7e084aea0e93f4e Mon Sep 17 00:00:00 2001
 From: Ilya Gulya <ilya@gulya.me>
 Date: Sun, 28 Jun 2026 01:17:33 +0000
 Subject: [PATCH] darlingserver: progress + timing metrics over an abstract
@@ -48,8 +48,6 @@ darling-stat returns a full snapshot; darling-progress-watch reports PROGRESSING
 throughout a fork-heavy guest workload (+~4000 rpc/iv, fork p50 16us).
 
 Bead: dar-dar6x4-perf-5dq.6
-
-Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
 ---
  CMakeLists.txt                             |   1 +
  internal-include/darlingserver/metrics.hpp | 167 +++++++++++++++++++++

@@ -1,4 +1,4 @@
-From ff9c627c57cd9f5498930a5bc346a3a54e4a601a Mon Sep 17 00:00:00 2001
+From 83363b29c4d0984703035f693966c9d76b70fa2e Mon Sep 17 00:00:00 2001
 From: Ilya Gulya <ilya@gulya.me>
 Date: Fri, 26 Jun 2026 09:44:39 +0000
 Subject: [PATCH] call/duct-tape: implement __pthread_canceled and
@@ -26,8 +26,6 @@ The XNU code is negated to the guest's BSD-errno convention at the call
 layer (reply 0 == "canceled", -EINVAL == "not canceled").
 
 dar-gwn.6.3
-
-Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
 ---
  duct-tape/include/darlingserver/duct-tape.h   | 10 ++++
  .../darlingserver/duct-tape/thread.h          | 15 ++++++
@@ -188,7 +186,7 @@ index c8dfe293110a9f5c4f20c3108e729b8e617e6f62..d4825d9b54a849cb890a0be5b34c45bf
  		code = -ESRCH;
  	}
 
-From 397a044024296c30d94c2f482b6365605ef3f310 Mon Sep 17 00:00:00 2001
+From ec379950edcf9710f81f1d0fcffc5287f996a0a2 Mon Sep 17 00:00:00 2001
 From: Ilya Gulya <ilya@gulya.me>
 Date: Wed, 8 Jul 2026 14:55:59 +0000
 Subject: [PATCH] duct-tape: isolate pthread cancel state transitions

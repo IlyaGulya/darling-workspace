@@ -1,4 +1,4 @@
-From 418735dd756af673211439ac7900a839e2e619db Mon Sep 17 00:00:00 2001
+From fe9c25a3d440921d4dc82248a5f3f0940b6aae8a Mon Sep 17 00:00:00 2001
 From: Ilya Gulya <ilya@gulya.me>
 Date: Fri, 3 Jul 2026 16:44:13 +0000
 Subject: [PATCH] =?UTF-8?q?A0-ARCH:=20task=20spec=20=E2=80=94=20wake/wait?=
@@ -9,7 +9,6 @@ MIME-Version: 1.0
 Content-Type: text/plain; charset=UTF-8
 Content-Transfer-Encoding: 8bit
 
-Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
 ---
  tests/A0-ARCH-REDESIGN-SPEC.md | 148 +++++++++++++++++++++++++++++++++
  1 file changed, 148 insertions(+)
@@ -170,7 +169,7 @@ index 0000000000000000000000000000000000000000..8d5fc5f4318fded1910787d84a9e4b0b
 +3. deploy-baseline.md5 bumped per landed stage; manifest handoff refreshed.
 +4. Stage 4: measurement + go/no-go writeup even if not implemented.
 
-From 2037e2417f0cdf94b6da6125974b2a67266829de Mon Sep 17 00:00:00 2001
+From 48d92adf2fd31f3c41ea340cafe47262ba202ef6 Mon Sep 17 00:00:00 2001
 From: Ilya Gulya <ilya@gulya.me>
 Date: Fri, 3 Jul 2026 17:17:38 +0000
 Subject: [PATCH] A0-ARCH stage 0: scheduling-order fuzzer (DSERVER_SCHED_FUZZ)
@@ -188,8 +187,6 @@ while all normal legs stay GREEN -- proof the A0 patches close the measured
 faces but not the CLASS, which is what the A0-ARCH redesign is for. Legs are
 non-gating until stage 1-3 land (A0_FUZZ_GATING=1 to gate; stage acceptance
 runs them gating).
-
-Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
 ---
  src/thread.cpp            | 71 +++++++++++++++++++++++++++++++++++++++
  tests/a0-repro/a0-gate.sh | 31 ++++++++++++++++-
@@ -341,7 +338,7 @@ index e952bafa144d96c3aaafe4f63f7a75d3fd06d88c..329fa70415f56b65fd109e8572f6d9bf
  	# 3. real brew ------------------------------------------------------------
  	i=1; while [ $i -le "$BREW_RUNS" ]; do run_brew "brew-xz-$i" xz 600 120 1; i=$((i+1)); done
 
-From ef1454fc3b18cdcb93252b59dd246fcc8faab81e Mon Sep 17 00:00:00 2001
+From 80e8f944c0148e93f2b6f0a1501b8de7e8a3aa47 Mon Sep 17 00:00:00 2001
 From: Ilya Gulya <ilya@gulya.me>
 Date: Fri, 3 Jul 2026 17:23:16 +0000
 Subject: [PATCH] A0-ARCH stage 1: typed wake tokens replace the untyped resume
@@ -372,8 +369,6 @@ Kinds: Xnu, Raw, UserSuspension, Kick, Abort; one armed wait + one pending
 wake per kind (they nest: an XNU wait stays armed while the thread raw-parks
 on a kwq lock with interrupts stacking on top). All state under _rwlock,
 fixed arrays, no allocation on the hot path.
-
-Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
 ---
  .../include/darlingserver/duct-tape/hooks.h   |  37 +++-
  .../darlingserver/duct-tape/locks.h           |   6 +
@@ -1060,7 +1055,7 @@ index 449e9b202161b0135395e16ab9735d55cbdb2dc2..8d6e32262fe99ef0f92b20dd74dee6cc
  
  	self->_didSyscallReturnDuringInterrupt = false;
 
-From fc69f197adfcb74131a4f4c2136111524b70e0fe Mon Sep 17 00:00:00 2001
+From 02c692b9e8f22ff3a3749c80011c3afcb338832b Mon Sep 17 00:00:00 2001
 From: Ilya Gulya <ilya@gulya.me>
 Date: Fri, 3 Jul 2026 18:34:52 +0000
 Subject: [PATCH] A0-ARCH stage 1b: save the interrupted context's ucontext at
@@ -1080,8 +1075,6 @@ Nested interrupts get the right copy per level by construction.
 This kills the single-slot clobber shape of #114; the abandoned-frame stack
 lifetime shape (stacked interrupt freeing a suspended interrupt fiber's
 stack) remains for stage 3.
-
-Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
 ---
  internal-include/darlingserver/thread.hpp |  9 ++++++++-
  src/thread.cpp                            | 13 ++++++++++---
@@ -1156,13 +1149,12 @@ index 8d6e32262fe99ef0f92b20dd74dee6cc07fb5602..06fe5285b4e5008e7192c14fda1b160e
  	} else if (self->_handlingInterruptedCall) {
  #if DSERVER_ASAN
 
-From 27649c89ccb599ccfb423eba7c02649d0fcc545c Mon Sep 17 00:00:00 2001
+From 8da0d3776eea64fe531e904cb2ccccffff7cf5bf Mon Sep 17 00:00:00 2001
 From: Ilya Gulya <ilya@gulya.me>
 Date: Fri, 3 Jul 2026 19:50:35 +0000
 Subject: [PATCH] A0-ARCH: build darlingserver with -g (keep -O2 codegen;
  inline frames + line numbers for live crash triage)
 
-Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
 ---
  CMakeLists.txt | 2 ++
  1 file changed, 2 insertions(+)
@@ -1181,7 +1173,7 @@ index a7c02fde98945a5072f1864845fd1571d5f33673..4fd913b3c050aebb2b60aad03b18ddd2
  target_link_options(darlingserver PRIVATE
  	-pthread
 
-From 7ae5e05ad13aedd6984e4d49e3051eb91d8949e5 Mon Sep 17 00:00:00 2001
+From 4cd635f3103e38da53ade66cf39e585fc42e8c12 Mon Sep 17 00:00:00 2001
 From: Ilya Gulya <ilya@gulya.me>
 Date: Fri, 3 Jul 2026 19:56:11 +0000
 Subject: [PATCH] A0-ARCH stage 1c: survive interrupt-stack desync
@@ -1207,8 +1199,6 @@ Defensive layer, all sites loud in the log and only reachable under desync:
 The reply-stream desync itself (order-based UDS matching + EAGAIN retries)
 is a transport-protocol hole tracked for a later stage; this commit makes
 the server SURVIVE it instead of corrupting interrupt state.
-
-Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
 ---
  src/call.cpp   | 10 ++++++++
  src/thread.cpp | 65 +++++++++++++++++++++++++++++++++++++++++++-------
@@ -1371,13 +1361,12 @@ index 06fe5285b4e5008e7192c14fda1b160eb8629760..fffcc41cf0782ac62662f18a42b7f169
  
  	dtape_thread_sigexc_enter2(self->_dtapeThread);
 
-From a9881f966f968129e3a6df705117dffd6c81cfd9 Mon Sep 17 00:00:00 2001
+From 6f4347e09553797534458129f74eabb65d4d87ca Mon Sep 17 00:00:00 2001
 From: Ilya Gulya <ilya@gulya.me>
 Date: Fri, 3 Jul 2026 19:57:49 +0000
 Subject: [PATCH] A0-ARCH: stage 0-1 progress note (fuzzer baseline, token
  design, desync chain root-cause)
 
-Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
 ---
  tests/A0-ARCH-STAGE1.md | 75 +++++++++++++++++++++++++++++++++++++++++
  1 file changed, 75 insertions(+)
@@ -1465,13 +1454,12 @@ index 0000000000000000000000000000000000000000..ff9dece507161806e5407e956447f9cb
 +- Perf A/B vs 886d13af baselines: pending (after synth green).
 +- Full gate (brew legs): pending — stage-1 landing criterion.
 
-From 9926b97f5c284378c13b3c096a8265adc11bac50 Mon Sep 17 00:00:00 2001
+From 0d58797fcef041f7f87a84a4154b482c598c492a Mon Sep 17 00:00:00 2001
 From: Ilya Gulya <ilya@gulya.me>
 Date: Fri, 3 Jul 2026 20:06:31 +0000
 Subject: [PATCH] A0-ARCH stage 1: synth gate ALL GREEN (13/13 gating) + perf
  A/B no-regression on d5daa0ed
 
-Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
 ---
  tests/A0-ARCH-STAGE1.md | 12 +++++++++---
  1 file changed, 9 insertions(+), 3 deletions(-)
@@ -1497,13 +1485,12 @@ index ff9dece507161806e5407e956447f9cb9b3dc5ea..1261cca075ec89a3f64b1b5ac0a1880b
 +  under the 3% stop threshold); 300× /usr/bin/true = 2s (identical).
 +- Full gate (brew xz strict + wget no-freeze): RUNNING — stage-1 landing criterion.
 
-From 44722879196543488d3d0c8f4766075c25e3f955 Mon Sep 17 00:00:00 2001
+From db6f911d5f3c695e07feacaa5f66259f295da4ae Mon Sep 17 00:00:00 2001
 From: Ilya Gulya <ilya@gulya.me>
 Date: Fri, 3 Jul 2026 20:31:18 +0000
 Subject: [PATCH] A0-ARCH: wake-drop/re-arm telemetry at info level (rare
  events; freeze triage needs them without debug-log flood)
 
-Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
 ---
  src/thread.cpp | 10 +++++-----
  1 file changed, 5 insertions(+), 5 deletions(-)
@@ -1557,13 +1544,12 @@ index fffcc41cf0782ac62662f18a42b7f169a7d93341..49d77a4d5e479106ae86f94e3a6a3272
  				return;
  			}
 
-From 128021943a16ad39416045c485aac7c2748c18eb Mon Sep 17 00:00:00 2001
+From 5c6c7fba8c2426a1916c2000df496e4f5d117854 Mon Sep 17 00:00:00 2001
 From: Ilya Gulya <ilya@gulya.me>
 Date: Fri, 3 Jul 2026 20:48:08 +0000
 Subject: [PATCH] A0-ARCH stage 1: full-gate 17/18 (one wget freeze), zero
  token drops over 3 wget runs, baseline freeze-rate A/B in progress
 
-Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
 ---
  tests/A0-ARCH-STAGE1.md | 15 ++++++++++++++-
  1 file changed, 14 insertions(+), 1 deletion(-)
@@ -1592,7 +1578,7 @@ index 1261cca075ec89a3f64b1b5ac0a1880ba31db536..2a6e01fb97024445e78e45f07f4ad69e
 +  target) and stage 1 is no-worse; if baseline is 4/4 clean, suspicion returns to stage 1
 +  and the hunt continues with the RPC auxlog.
 
-From 2b27bf2fc9ab163e6b728f59e74f4b5e670725ad Mon Sep 17 00:00:00 2001
+From 2baae98eb7196dcc16f26115c78f77ef2561d44a Mon Sep 17 00:00:00 2001
 From: Ilya Gulya <ilya@gulya.me>
 Date: Fri, 3 Jul 2026 22:25:17 +0000
 Subject: [PATCH] =?UTF-8?q?A0-ARCH=20stages=200-1=20LANDED:=20A/B=20verdic?=
@@ -1610,8 +1596,6 @@ In the captured stage-1c freeze: zero token drops, zero desync-guard fires,
 interrupts balanced. Stage 1 is no-worse on every axis and strictly better on
 fuzz survival + crash classes. Deployed a889e85f = new doctor baseline.
 WGET-RESIDUAL-FREEZE documented as a tracked known issue for stages 2/3.
-
-Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
 ---
  tests/A0-ARCH-STAGE1.md | 29 ++++++++++++++++++++++++-----
  1 file changed, 24 insertions(+), 5 deletions(-)
@@ -1660,7 +1644,7 @@ index 2a6e01fb97024445e78e45f07f4ad69e43641640..919ad6743a028832c6b92c2252859e13
 +fire (wait-timer cancel/arm race — Part-2 family); (c) who owes ruby's cvwait signal.
 +gdb microthread state walker ready: job tmp thread_state_walker.py (needs the -g build).
 
-From a58457bbcd4f486fb98c2bd1196aadeefe15bd71 Mon Sep 17 00:00:00 2001
+From ac3e4d84384c5fce3242d4f73324f4063632074f Mon Sep 17 00:00:00 2001
 From: Ilya Gulya <ilya@gulya.me>
 Date: Sat, 4 Jul 2026 03:19:22 +0000
 Subject: [PATCH] A0-ARCH stage 2a: shadow MicroState machine + per-thread
@@ -1681,8 +1665,6 @@ as events on a 32-entry per-thread ring tape.
   all synth legs log at err level and grep the server log for MSTATE VIOLATION
 
 Task #116, spec tests/A0-ARCH-REDESIGN-SPEC.md stage 2.
-
-Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>
 ---
  .../include/darlingserver/duct-tape/hooks.h   |   4 +
  duct-tape/src/stubs.c                         |   6 +
@@ -2287,13 +2269,12 @@ index 329fa70415f56b65fd109e8572f6d9bfe1eb6ce8..fcab3c25f1a0a8ac60a290fe09d439cb
  }
  
 
-From a6ce93e50e8cfbe6f924121dfc0cc7d43d2feff4 Mon Sep 17 00:00:00 2001
+From 8dd320d3e15a1fd5d47400941b6119d40372b2d9 Mon Sep 17 00:00:00 2001
 From: Ilya Gulya <ilya@gulya.me>
 Date: Sat, 4 Jul 2026 03:21:39 +0000
 Subject: [PATCH] A0-ARCH stage 2: progress doc (2a shadow machine design +
  gate wiring)
 
-Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>
 ---
  tests/A0-ARCH-STAGE2.md | 76 +++++++++++++++++++++++++++++++++++++++++
  1 file changed, 76 insertions(+)
@@ -2382,7 +2363,7 @@ index 0000000000000000000000000000000000000000..a1784af75e7fe7c2b8a129c69e176329
 +
 +(pending — -DDSERVER_ASAN=ON build of 2a through a short synth battery)
 
-From 1b42195150a16d78dee070c12d2d410d8cb42058 Mon Sep 17 00:00:00 2001
+From 2842587e9aa9bf45896b5e0b561227451a6c9971 Mon Sep 17 00:00:00 2001
 From: Ilya Gulya <ilya@gulya.me>
 Date: Sat, 4 Jul 2026 03:29:55 +0000
 Subject: [PATCH] A0-ARCH stage 2a: legalize the no-op-dispatch repark edges
@@ -2394,8 +2375,6 @@ thread reparks Running->Parked (or ->Ready if a wake landed during the window)
 without re-traversing Parking, because suspend() never ran and the park was
 never un-committed. Legalize those two edges; the tape dump pinned this in one
 read (the exact workflow the spec wanted from this stage).
-
-Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>
 ---
  src/thread.cpp          | 10 +++++++++-
  tests/A0-ARCH-STAGE2.md | 15 ++++++++++++++-
@@ -2449,13 +2428,12 @@ index a1784af75e7fe7c2b8a129c69e17632977e660b0..69a9c25f6ca1a876886cf7114eeba6ad
  ## 2b — flip authority (planned)
  
 
-From 8789066d3ae3cd8290ce7274c2cb13525e836c26 Mon Sep 17 00:00:00 2001
+From adfb76515a9e5427ee7cf7804212bd5b105de5c4 Mon Sep 17 00:00:00 2001
 From: Ilya Gulya <ilya@gulya.me>
 Date: Sat, 4 Jul 2026 03:33:04 +0000
 Subject: [PATCH] A0-ARCH stage 2a: probe results -- zero violations under
  fuzz+storm; EDEADLK face catalogued
 
-Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>
 ---
  tests/A0-ARCH-STAGE2.md | 19 +++++++++++++++++--
  1 file changed, 17 insertions(+), 2 deletions(-)
@@ -2491,13 +2469,12 @@ index 69a9c25f6ca1a876886cf7114eeba6adbcadd171..c7db21c03e1e2129516eaa6d7a33a668
  ## 2b — flip authority (planned)
  
 
-From 490367ac98c114bd39b3e11a08b236d0bb3dbd9b Mon Sep 17 00:00:00 2001
+From c28191b38219f432c40396ea63caf0d5e4987c0f Mon Sep 17 00:00:00 2001
 From: Ilya Gulya <ilya@gulya.me>
 Date: Sat, 4 Jul 2026 03:43:52 +0000
 Subject: [PATCH] A0-ARCH stage 2a: acceptance quick gate 15/15 GREEN, zero
  violations incl. brew
 
-Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>
 ---
  tests/A0-ARCH-STAGE2.md | 9 +++++++++
  1 file changed, 9 insertions(+)
@@ -2523,13 +2500,12 @@ index c7db21c03e1e2129516eaa6d7a33a66860440990..af1cebb90dd3ac6fcb7271b3566a89b8
  
  - `_running`/`_suspended` become derived views (accessors over `_microState`);
 
-From 3f3933af642e37e570c71b8865d1b603e8af72c2 Mon Sep 17 00:00:00 2001
+From 1c6659986aa1624f1ccb0f90c754b614d2089896 Mon Sep 17 00:00:00 2001
 From: Ilya Gulya <ilya@gulya.me>
 Date: Sat, 4 Jul 2026 03:47:54 +0000
 Subject: [PATCH] A0-ARCH stage 2a: perf A/B no-regression; ASAN leg boots with
  FSUAR off
 
-Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>
 ---
  tests/A0-ARCH-STAGE2.md | 16 +++++++++++++++-
  1 file changed, 15 insertions(+), 1 deletion(-)
@@ -2559,7 +2535,7 @@ index af1cebb90dd3ac6fcb7271b3566a89b85f0ac78b..2c82efa934f1a380e48fcad22693eda8
 +the 3609–3692 historical spread); 300x /usr/bin/true = 2s (identical).
 +**No regression** — the tape writes are free at RPC granularity.
 
-From c6a64401449b93922f755746ef79a29a7cc5ae22 Mon Sep 17 00:00:00 2001
+From 0b5d729c442ffa70cc53fb9530c912e92cfde166 Mon Sep 17 00:00:00 2001
 From: Ilya Gulya <ilya@gulya.me>
 Date: Sat, 4 Jul 2026 03:55:52 +0000
 Subject: [PATCH] A0-ARCH stage 2a LANDED: deployed e50a3450 = new baseline;
@@ -2570,8 +2546,6 @@ survival identical to stage-1c (deaths = pre-existing classes, now tape-
 separable from model gaps); perf A/B no regression; ASAN battery green on all
 gating legs (needs ASAN_OPTIONS=detect_stack_use_after_return=0 -- fake stack
 vs fiber switches; noted in the gate header). Stage-0 ASAN debt paid.
-
-Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>
 ---
  tests/A0-ARCH-STAGE2.md   | 13 +++++++++++--
  tests/a0-repro/a0-gate.sh |  6 ++++++
@@ -2625,7 +2599,7 @@ index fcab3c25f1a0a8ac60a290fe09d439cbcfaecd21..b336a2177f8b8e46ef29b78560170515
  set -u
  
 
-From 3acb4126ff9fe07c17d4f9429161d1b929015013 Mon Sep 17 00:00:00 2001
+From 1b48f1544e65595edf944bdea7bf9406fc0591cf Mon Sep 17 00:00:00 2001
 From: Ilya Gulya <ilya@gulya.me>
 Date: Sat, 4 Jul 2026 04:04:27 +0000
 Subject: [PATCH] A0-ARCH stage 2b: flip run-state authority to MicroState
@@ -2644,8 +2618,6 @@ consistency asserts are gone (tautological now) -- the legality table is the
 contract.
 
 Boot smoke green, zero violations. Task #116 stage 2b.
-
-Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>
 ---
  internal-include/darlingserver/thread.hpp |  18 ++-
  src/thread.cpp                            | 133 +++++++++++-----------
@@ -3088,7 +3060,7 @@ index 7311830a8a924a2337a734f181a20c2bd450b0b6..f91c72ae5f9fd2ef0e0e8c33ee8eab51
  
  DarlingServer::Thread::RunState DarlingServer::Thread::getRunState() const {
 
-From 49eaae2a32cb36a92148a7f9f85fd456db5354e7 Mon Sep 17 00:00:00 2001
+From 28164bf2c32c0e666200a977179dc6f9471ec1b0 Mon Sep 17 00:00:00 2001
 From: Ilya Gulya <ilya@gulya.me>
 Date: Sat, 4 Jul 2026 04:20:38 +0000
 Subject: [PATCH] A0-ARCH stage 2b fix: a no-op dispatch must REPARK an
@@ -3104,8 +3076,6 @@ boot; tape[255..257] on the wedged launchd named the exact sequence).
 doWork now records parkedContextIntact at the no-op-dispatch goto and
 doneWorking reparks (Parked/Ready) instead of idling. Fuzz boots green again
 (seed 2's remaining failure is the documented pre-existing UDS desync).
-
-Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>
 ---
  src/thread.cpp | 27 ++++++++++++++++++++-------
  1 file changed, 20 insertions(+), 7 deletions(-)
@@ -3165,7 +3135,7 @@ index f91c72ae5f9fd2ef0e0e8c33ee8eab5169ba2c69..4953a5afbbe2ce39542027e87fe3a49e
  	// A wake can arrive after suspend()'s final permit check but before it
  	// physically switches back here. Now that the running view is clear, rescheduling
 
-From 33e7c2ff2a99308b5286510751c2af815990f8f3 Mon Sep 17 00:00:00 2001
+From 59c2d5852c89ab09cb35f250576b2f8e3e2b13ec Mon Sep 17 00:00:00 2001
 From: Ilya Gulya <ilya@gulya.me>
 Date: Sat, 4 Jul 2026 04:35:20 +0000
 Subject: [PATCH] =?UTF-8?q?A0-ARCH=20stage=202b:=20doc=20=E2=80=94=20repar?=
@@ -3174,7 +3144,6 @@ MIME-Version: 1.0
 Content-Type: text/plain; charset=UTF-8
 Content-Transfer-Encoding: 8bit
 
-Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>
 ---
  tests/A0-ARCH-STAGE2.md | 41 +++++++++++++++++++++++++++++++++++------
  1 file changed, 35 insertions(+), 6 deletions(-)
@@ -3232,7 +3201,7 @@ index 830ff013158e714b36015bda0228edac41e48da0..8e2cb180ce538689a1e53eee55be2913
  ## 2c — XNU side becomes derived (planned)
  
 
-From f53ca93770401167153239156c02ea93b397d4a4 Mon Sep 17 00:00:00 2001
+From 043b87f0a4963041340edaa65f072ea5e7d63d80 Mon Sep 17 00:00:00 2001
 From: Ilya Gulya <ilya@gulya.me>
 Date: Sat, 4 Jul 2026 05:52:37 +0000
 Subject: [PATCH] A0-ARCH stage 2b LANDED: deployed 47ac175d = new baseline
@@ -3240,8 +3209,6 @@ Subject: [PATCH] A0-ARCH stage 2b LANDED: deployed 47ac175d = new baseline
 Quick gate 15/15 gating green (brew xz 2/2 strict), zero mstate violations;
 perf A/B in the baseline corridor (nestwait 3626/3674/3644, 300x true 2s);
 teardown-death watch item did not recur (8/8 gdb reruns + 4/4 in the gate).
-
-Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>
 ---
  tests/A0-ARCH-STAGE2.md | 12 +++++++++---
  1 file changed, 9 insertions(+), 3 deletions(-)
@@ -3276,7 +3243,7 @@ index 8e2cb180ce538689a1e53eee55be291335f69698..2ff06d22654af299343739d8c30c07aa
  ## 2c — XNU side becomes derived (planned)
  
 
-From 5cf608153ff6b0a4de9bcb596d7757bc2b2259c5 Mon Sep 17 00:00:00 2001
+From d2805d7607ca44ee0c4ea7e12781e5f5a5cff9d1 Mon Sep 17 00:00:00 2001
 From: Ilya Gulya <ilya@gulya.me>
 Date: Sat, 4 Jul 2026 06:26:11 +0000
 Subject: [PATCH] A0-ARCH stage 2c: route all XNU wait-state writes through one
@@ -3305,8 +3272,6 @@ lock). Birth init in dtape_thread_create stays outside the funnel (owning Thread
 mid-construction).
 
 Task #116 stage 2c per tests/A0-ARCH-REDESIGN-SPEC.md; gate running.
-
-Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>
 ---
  duct-tape/include/darlingserver/duct-tape.h   |  10 +-
  .../include/darlingserver/duct-tape/hooks.h   |   9 ++
@@ -3824,13 +3789,12 @@ index 4953a5afbbe2ce39542027e87fe3a49efc111475..9c76aa9464d0d31c628712a5d4f5e139
  	std::unique_lock lock(_rwlock);
  	uint64_t gen = ++_wakeGenCounter;
 
-From 9127c02d9f124f62692903988d3480e48187947f Mon Sep 17 00:00:00 2001
+From a51f53fc203f0666eb0eead03e4d00746cbf1378 Mon Sep 17 00:00:00 2001
 From: Ilya Gulya <ilya@gulya.me>
 Date: Sat, 4 Jul 2026 06:43:29 +0000
 Subject: [PATCH] A0-ARCH stage 2c LANDED: gate 19/19 green, zero violations,
  perf in corridor (doc)
 
-Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>
 ---
  tests/A0-ARCH-STAGE2.md | 72 ++++++++++++++++++++++++++++++++++++-----
  1 file changed, 64 insertions(+), 8 deletions(-)
@@ -3925,13 +3889,12 @@ index 2ff06d22654af299343739d8c30c07aa81227f62..c47e0787f75e0bb722ae442e11832139
  ## ASAN leg (stage-0 leftover, folded in here)
  
 
-From 7de64feb07fecff1e075cad022a18c87b56b1f77 Mon Sep 17 00:00:00 2001
+From 57bfbd7d2285adab0fbfac30b9806ffbacea38cf Mon Sep 17 00:00:00 2001
 From: Ilya Gulya <ilya@gulya.me>
 Date: Sat, 4 Jul 2026 06:48:35 +0000
 Subject: [PATCH] A0-ARCH stage 3 design: interrupt as cancellation through
  normal dispatch (no stack borrowing)
 
-Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>
 ---
  tests/A0-ARCH-STAGE3.md | 94 +++++++++++++++++++++++++++++++++++++++++
  1 file changed, 94 insertions(+)
@@ -4038,7 +4001,7 @@ index 0000000000000000000000000000000000000000..f25f940edb7bcdfbbaa7e4275362ab73
 +4. Gate ladder: build -> boot smoke -> synth+fuzz (abort-on-violation) -> probe ->
 +   quick + perf -> then the acceptance run `A0_STRICT=1 full` (storm legs gating).
 
-From 78d7f7be9fe7573550760726f0c7d8fabdd2e60f Mon Sep 17 00:00:00 2001
+From 0fd790883eb602c88ce7ec857370eba9b356e561 Mon Sep 17 00:00:00 2001
 From: Ilya Gulya <ilya@gulya.me>
 Date: Sat, 4 Jul 2026 07:00:32 +0000
 Subject: [PATCH] A0-ARCH stage 3: interrupt as cancellation -- no stack
@@ -4071,8 +4034,6 @@ cancellationArmed||replyOwed; sigexc_enter2 moved before the unwind (benign
 order inversion, documented).
 
 Task #116 stage 3 per tests/A0-ARCH-STAGE3.md; closes-#114 candidate, gate ladder running.
-
-Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>
 ---
  internal-include/darlingserver/thread.hpp |  43 +--
  src/call.cpp                              |  22 +-
@@ -4649,7 +4610,7 @@ index 9c76aa9464d0d31c628712a5d4f5e13949ff4240..99dd1a7bcae038d8e1709db843707120
 +	return true;
  };
 
-From 2d2cd370be97d62de389b0497dd465b7e9c90aaf Mon Sep 17 00:00:00 2001
+From 78ac2d8f05aab3979a04a85c6ed88974f1039b3d Mon Sep 17 00:00:00 2001
 From: Ilya Gulya <ilya@gulya.me>
 Date: Sat, 4 Jul 2026 07:10:15 +0000
 Subject: [PATCH] A0-ARCH stage 3 fix 1: don't consume a pending wake for a
@@ -4662,8 +4623,6 @@ fires no replacement, so the restored context parks forever (nestwait storm
 wedge: jobs frozen, storm_hits growing, zero violations). Consume only when no
 pending call is in the way; the wake survives in its pending slot and dispatches
 the restored context after the nested enter completes.
-
-Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>
 ---
  src/thread.cpp | 11 ++++++++++-
  1 file changed, 10 insertions(+), 1 deletion(-)
@@ -4691,7 +4650,7 @@ index 99dd1a7bcae038d8e1709db843707120d54d1ee3..540717da3ece4bcbbe087b8896345391
  		hadResumePermit = true;
  	}
 
-From ccbe517fa20fbf877c2d6291cf53f85e0996613e Mon Sep 17 00:00:00 2001
+From 91b0dd24677c3660b1779dd6ea48c2252fc84bbf Mon Sep 17 00:00:00 2001
 From: Ilya Gulya <ilya@gulya.me>
 Date: Sat, 4 Jul 2026 07:25:14 +0000
 Subject: [PATCH] A0-ARCH stage 3 fix 2: psynch mtx/rw continuations honor a
@@ -4708,8 +4667,6 @@ handoff wedges every later waiter (cvstorm2-throttled HANG, jobs frozen,
 walker showing all threads cleanly parked in fresh waits with empty frames).
 Honor the committed grant exactly like the cv path (reset error, return the
 grant bits).
-
-Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>
 ---
  duct-tape/pthread/kern_synch.c | 16 ++++++++++++++++
  1 file changed, 16 insertions(+)
@@ -4749,7 +4706,7 @@ index 961f9a7434d58f2d52ec94445b89f91d8c50a310..0e38f89692c9e1f33e61f9ef7a243784
  	} else {
  		pthread_kern->uthread_set_returnval(uth, kwe->kwe_psynchretval);
 
-From 5020b3f978d743436c57b4ed508650cd3e2f302a Mon Sep 17 00:00:00 2001
+From ab03f8aac53e378e8cd5403e3d4ac1c053244a09 Mon Sep 17 00:00:00 2001
 From: Ilya Gulya <ilya@gulya.me>
 Date: Sat, 4 Jul 2026 07:58:20 +0000
 Subject: [PATCH] A0-ARCH stage 3 fix 3: reset _currentTimerDeadline when the
@@ -4765,8 +4722,6 @@ latching to the 5s ring-duplex fail-closed metronome (storm at ~2/s instead of
 ~750/s), starving the storm and wedging the workload. Pre-existing hole; stage
 3's wider windows made it a deterministic hit. Also adds TIMER-ARM/-SKIP/-FIRED
 rpctrace lines (env-gated, zero cost when AUXLOG is off).
-
-Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>
 ---
  src/server.cpp | 17 +++++++++++++++++
  1 file changed, 17 insertions(+)
@@ -4810,7 +4765,7 @@ index cd12736ddc35d74053ea944d073b089fb788f478..9093871232ae05fa04e6ec6a133c1062
  				// we don't need to lock anymore (and the following call might need to arm the timer again)
  				lock.unlock();
 
-From 1789d62e0f84fe70c87e8b142e1b7bd59aed0f6c Mon Sep 17 00:00:00 2001
+From 852f5bbf887eda03fa5a2bdc4090c7509dbb479a Mon Sep 17 00:00:00 2001
 From: Ilya Gulya <ilya@gulya.me>
 Date: Sat, 4 Jul 2026 08:03:00 +0000
 Subject: [PATCH] Revert "A0-ARCH stage 3 fix 2: psynch mtx/rw continuations
@@ -4823,8 +4778,6 @@ retval is deliberate -- honoring it delivers the same grant twice and desyncs
 the mutex seq protocol (captured live: consumer cycling EINTR mutexwait retries
 at storm rate against a mutex nobody owns, producer parked forever). The wedge
 that motivated fix 2 was actually the timerfd stale-deadline bug (fix 3).
-
-Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>
 ---
  duct-tape/pthread/kern_synch.c | 16 ----------------
  1 file changed, 16 deletions(-)
@@ -4864,7 +4817,7 @@ index 0e38f89692c9e1f33e61f9ef7a2437840780d104..961f9a7434d58f2d52ec94445b89f91d
  	} else {
  		pthread_kern->uthread_set_returnval(uth, kwe->kwe_psynchretval);
 
-From e66aeeeff5c93c72d1a593996294789d7354ad17 Mon Sep 17 00:00:00 2001
+From f3c6bbc793ba0b99956593d58bde7e050da80f53 Mon Sep 17 00:00:00 2001
 From: Ilya Gulya <ilya@gulya.me>
 Date: Sat, 4 Jul 2026 08:14:15 +0000
 Subject: [PATCH] A0-ARCH stage 3 fix 4: consume the resume permit atomically
@@ -4886,8 +4839,6 @@ branch: a dispatch consumes a wake if and only if it resumes; otherwise the
 wake survives for the post-restore dispatch. Section-1 transition reasons
 become dispatch-fresh/dispatch-onto-parked (the resume fact is on the tape as
 wake-consumed).
-
-Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>
 ---
  src/thread.cpp | 31 +++++++++++++++++--------------
  1 file changed, 17 insertions(+), 14 deletions(-)
@@ -4943,13 +4894,12 @@ index 540717da3ece4bcbbe087b8896345391d217585a..506373eb90f59e5d6d525e3b753b6e45
  		// real wake (permit consumed above) or an explicit override; a permit-less dispatch of a
  		// suspended thread is stale and falls through to the else-branch, which parks it again
 
-From beec67c031615826656da6811acac27a00bf1b8e Mon Sep 17 00:00:00 2001
+From 523f6b1254794ca337d516c2a47cb1b61ccce21d Mon Sep 17 00:00:00 2001
 From: Ilya Gulya <ilya@gulya.me>
 Date: Sat, 4 Jul 2026 08:18:17 +0000
 Subject: [PATCH] A0-ARCH stage 3: debugging chronicle (fixes 1/3/4, fix-2
  revert rationale) + landing handoff
 
-Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>
 ---
  tests/A0-ARCH-STAGE3.md | 78 ++++++++++++++++++++++++++++++++++++++++-
  1 file changed, 77 insertions(+), 1 deletion(-)
@@ -5047,12 +4997,11 @@ index f25f940edb7bcdfbbaa7e4275362ab73e3b5cfd6..70709879b63fbb8ecf792ebbbbc0bc45
 +   #114 with a pointer here.
 +6. Then stage 4 measurement (single-runner go/no-go writeup) or stop per spec.
 
-From a80ec1b0805d68637270ba574d6a33f9e7047b09 Mon Sep 17 00:00:00 2001
+From fac155de1166b5223b86f5e9c3d9f0273de57d39 Mon Sep 17 00:00:00 2001
 From: Ilya Gulya <ilya@gulya.me>
 Date: Sat, 4 Jul 2026 08:19:49 +0000
 Subject: [PATCH] A0-ARCH stage 3 doc: correct revert/fix-4 hashes
 
-Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>
 ---
  tests/A0-ARCH-STAGE3.md | 4 ++--
  1 file changed, 2 insertions(+), 2 deletions(-)
@@ -5079,7 +5028,7 @@ index 70709879b63fbb8ecf792ebbbbc0bc4550de077d..9a38ac0b7d1b39170ecab14303102e76
    unlike the cv path, the mutex/rw DROP side compensates a KERN_NOT_WAITING signal
    itself (`_kwq_mark_interruped_wakeup` "interrupt post" / the firstfit redrive in
 
-From 618b9819b799fffdd2d6e48d31b243fed673ce6c Mon Sep 17 00:00:00 2001
+From 7c3b931c0acdee9b5e7d2ca90dfa8ff53d16b6b8 Mon Sep 17 00:00:00 2001
 From: Ilya Gulya <ilya@gulya.me>
 Date: Sat, 4 Jul 2026 08:46:22 +0000
 Subject: [PATCH] A0-ARCH stage 3 doc: instrument validation + harness
@@ -5094,8 +5043,6 @@ Subject: [PATCH] A0-ARCH stage 3 doc: instrument validation + harness
   wedged); walking+killing at stall=2 destroys RESULT and walks a healthy server.
 - Two #114 grains: cvstorm2-throttled 12/12 OK on d81b5cf1 (solid);
   cvstorm2-flood under verdict test. Both gate hard only under A0_STRICT=1.
-
-Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
 ---
  tests/A0-ARCH-STAGE3.md | 30 ++++++++++++++++++++++++++++++
  1 file changed, 30 insertions(+)
@@ -5142,7 +5089,7 @@ index 9a38ac0b7d1b39170ecab14303102e76a0a1194a..0a7f44e53e05b9023b8b95184c080a7e
  
  Deployed binary d81b5cf1 (= fixes 1+3+4, fix-2 reverted) passed: boot smoke,
 
-From 963905b73234ddb28b8ff21cc34bfbbdef955063 Mon Sep 17 00:00:00 2001
+From 319f0593812b91a6d3ca278275a0e3d4cdd25897 Mon Sep 17 00:00:00 2001
 From: Ilya Gulya <ilya@gulya.me>
 Date: Sat, 4 Jul 2026 09:09:25 +0000
 Subject: [PATCH] A0-ARCH stage 3: flood A/B settled -- landing unblocked
@@ -5162,8 +5109,6 @@ periodic ~1s rescan (auxlog: perfect 1.000s non-override TIMER-ARM cadence).
 Landing decision: stage 3 met its goal (SEGV stack-borrowing crash class
 eliminated, throttled grain solid) and is safe to land; the flood
 throughput-starvation HANG is orthogonal/pre-existing (#118).
-
-Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
 ---
  tests/A0-ARCH-STAGE3.md | 50 +++++++++++++++++++++++++++++++++++------
  1 file changed, 43 insertions(+), 7 deletions(-)
@@ -5230,7 +5175,7 @@ index 0a7f44e53e05b9023b8b95184c080a7e76f3110a..eb088e850733aec9fde2928921d32185
  ## Today's flow (what dies)
  
 
-From 4b3d6db567ac1d6ca20cfb0f709abe8d321e7f89 Mon Sep 17 00:00:00 2001
+From 4de451eed3a9473aa24872f6bc05252a026658aa Mon Sep 17 00:00:00 2001
 From: Ilya Gulya <ilya@gulya.me>
 Date: Sat, 4 Jul 2026 09:17:28 +0000
 Subject: [PATCH] A0-ARCH stage 3 doc: synth gate GREEN on d81b5cf1 (landing
@@ -5238,8 +5183,6 @@ Subject: [PATCH] A0-ARCH stage 3 doc: synth gate GREEN on d81b5cf1 (landing
 
 PASS=16 FAIL=0, zero mstate/xwait violations, zero SEGV; fuzz reds all
 pre-existing UDS-desync class. Quick/brew gate in progress (final check).
-
-Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
 ---
  tests/A0-ARCH-STAGE3.md | 9 +++++++++
  1 file changed, 9 insertions(+)
@@ -5265,7 +5208,7 @@ index eb088e850733aec9fde2928921d32185093a7d46..e5a913e7c5ba6f9a384d99139bb3ff36
  the flood-KNOWNLIMIT leg will still coin-flip RED under A0_STRICT=1 as a HANG (not
  a crash) -- that is the pre-existing starvation bug, not a stage-3 failure. Land
 
-From c5f47e79db75f3533c8ee584e82d99de2bc98cb3 Mon Sep 17 00:00:00 2001
+From 51c5e71551cb9a219efce1aa82605f6846fa7095 Mon Sep 17 00:00:00 2001
 From: Ilya Gulya <ilya@gulya.me>
 Date: Sat, 4 Jul 2026 09:45:14 +0000
 Subject: [PATCH] A0-ARCH stage 3 doc: -111 nestwait flake is pre-existing
@@ -5276,8 +5219,6 @@ Quick gate 1st run RED on 2 nestwait legs with semaphore_timedwait -111
 vs stage3 (8 each) = 0 on both; 20-iter stage3 repro = 0. ~1/44 stage3 runs
 (~2%), seen pre-stage-3 historically (PERF25A census). Rare pre-existing flake,
 NOT a stage-3 regression. Landing signal = a clean confirmatory quick gate.
-
-Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
 ---
  tests/A0-ARCH-STAGE3.md | 21 ++++++++++++++++++++-
  1 file changed, 20 insertions(+), 1 deletion(-)
@@ -5315,7 +5256,7 @@ index e5a913e7c5ba6f9a384d99139bb3ff368a1a7c08..9bee186fe5f48e4c6a8bb06df8a46f51
  Acceptance (original): `A0_STRICT=1 tests/a0-repro/a0-gate.sh full` GREEN. NOTE:
  the flood-KNOWNLIMIT leg will still coin-flip RED under A0_STRICT=1 as a HANG (not
 
-From e29e62fff550496c7258744d85c6b1703c690918 Mon Sep 17 00:00:00 2001
+From 1bcb53b2ecc7bfcc29848147bb8a356f41ee2c26 Mon Sep 17 00:00:00 2001
 From: Ilya Gulya <ilya@gulya.me>
 Date: Sat, 4 Jul 2026 09:56:21 +0000
 Subject: [PATCH] A0-ARCH stage 3 LANDED: interrupt-as-cancellation, #114 SEGV
@@ -5331,8 +5272,6 @@ stack-borrowing crash class is gone.
 Two pre-existing non-blockers re-scoped out (proven NOT stage-3 regressions via
 A/B vs 7692d9f6): cvstorm2-flood dispatch-starvation HANG -> #118; rare ~2%
 nestwait semaphore_timedwait -111 flake (seen pre-stage-3).
-
-Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
 ---
  tests/A0-ARCH-STAGE3.md | 19 +++++++++++++++----
  1 file changed, 15 insertions(+), 4 deletions(-)
@@ -5367,7 +5306,7 @@ index 9bee186fe5f48e4c6a8bb06df8a46f51e230c914..2eeb075f182b91c9d938cc936b4bb44d
  ### FLOOD A/B SETTLED (2026-07-04, 2nd session pass) -- landing unblocked
  
 
-From 49892fe3b9411b1705eb223af6031c4311ee2505 Mon Sep 17 00:00:00 2001
+From 6ad1bb2703a3e1f99af9313ab632ad9cc94f6138 Mon Sep 17 00:00:00 2001
 From: Ilya Gulya <ilya@gulya.me>
 Date: Sat, 4 Jul 2026 10:13:12 +0000
 Subject: [PATCH] A0-ARCH stage 4 (single-runner): MEASURED -> NO-GO; #116
@@ -5385,8 +5324,6 @@ expected value. Stage 4 declined on evidence.
 redesign) was achieved by stages 0-3 (LANDED, d81b5cf1 = doctor baseline).
 Remaining darlingserver hardening lives in #118 (flood starvation) and #119
 (nestwait -111 flake).
-
-Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
 ---
  tests/A0-ARCH-STAGE3.md | 51 +++++++++++++++++++++++++++++++++++++++--
  1 file changed, 49 insertions(+), 2 deletions(-)
@@ -5458,7 +5395,7 @@ index 2eeb075f182b91c9d938cc936b4bb44dbdf0b129..3a14a31477b6d919569b7e55db405289
 +tickets: #118 (flood dispatch-starvation), #119 (nestwait -111 flake), plus the
 +post-stage-2 UDS correlation-ID transport backlog.
 
-From 93c70498f3c97f8933af56b6308a8780bbaa5f26 Mon Sep 17 00:00:00 2001
+From 3b5d17af7c671707000cc3bd09fd34889bba281d Mon Sep 17 00:00:00 2001
 From: Ilya Gulya <ilya@gulya.me>
 Date: Sat, 4 Jul 2026 10:35:29 +0000
 Subject: [PATCH] A0-ARCH stage 3: perf A/B (the skipped check) -- NO
@@ -5468,8 +5405,6 @@ nestwait NO_STORM d81b5cf1 mean 3590 vs 2c 7692d9f6 mean 3606 = -0.4%, inside
 2c's own +/-2% run spread; 300x true 1s vs 2s. fix 4 (moved consume, no locking)
 is perf-neutral. The baseline was bumped before this A/B ran -- the check is
 clean but the ordering was wrong; noted for next time.
-
-Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
 ---
  tests/A0-ARCH-STAGE3.md | 11 +++++++++++
  1 file changed, 11 insertions(+)
