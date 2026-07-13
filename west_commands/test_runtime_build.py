@@ -117,6 +117,9 @@ class RuntimeBuildService:
             heartbeat=lambda elapsed: self._host.inf(
                 f"  runtime heartbeat: {label} configure still running ({elapsed:.0f}s)"
             ),
+            output_line=lambda stream, line: self._host.inf(
+                f"  runtime {label} configure {stream}: {line}"
+            ),
         )
         if configured.returncode:
             dump_command_tail(f"{label} configure", configured)
@@ -136,6 +139,9 @@ class RuntimeBuildService:
             heartbeat_seconds=30,
             heartbeat=lambda elapsed: self._host.inf(
                 f"  runtime heartbeat: {label} build still running ({elapsed:.0f}s)"
+            ),
+            output_line=lambda stream, line: self._host.inf(
+                f"  runtime {label} build {stream}: {line}"
             ),
         )
         if built.returncode:

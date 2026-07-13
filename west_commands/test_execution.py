@@ -8,6 +8,7 @@ cleanup rule: a timed out parent must not leave its children behind.
 from __future__ import annotations
 
 import os
+import selectors
 import signal
 import subprocess
 import tempfile
@@ -43,6 +44,126 @@ def _read_capture(stream, *, text: bool | None) -> str | bytes:
     return value.decode(errors="replace") if text is not False else value
 
 
+def _kill_process_group(process: subprocess.Popen) -> None:
+    try:
+        os.killpg(process.pid, signal.SIGKILL)
+    except ProcessLookupError:
+        pass
+
+
+def _run_with_live_capture(
+    process: subprocess.Popen,
+    capture_streams: tuple,
+    *,
+    timeout_seconds: int,
+    text: bool | None,
+    heartbeat_seconds: float | None,
+    heartbeat: Callable[[float], None] | None,
+    output_line: Callable[[str, str], None],
+) -> ProcessResult:
+    """Capture output while forwarding complete lines to a diagnostic sink."""
+
+    selector = selectors.DefaultSelector()
+    registered = set()
+    pending = {"stdout": b"", "stderr": b""}
+    streams = {
+        "stdout": (process.stdout, capture_streams[0]),
+        "stderr": (process.stderr, capture_streams[1]),
+    }
+    for name, (stream, _) in streams.items():
+        assert stream is not None
+        selector.register(stream, selectors.EVENT_READ, name)
+        registered.add(stream)
+
+    started_at = time.monotonic()
+    next_heartbeat = heartbeat_seconds or timeout_seconds
+    try:
+        while selector.get_map():
+            elapsed = time.monotonic() - started_at
+            remaining = timeout_seconds - elapsed
+            if remaining <= 0:
+                raise subprocess.TimeoutExpired(list(process.args), timeout_seconds)
+            if process.poll() is not None:
+                for name, data in pending.items():
+                    if data:
+                        output_line(name, data.decode(errors="replace"))
+                        pending[name] = b""
+                for stream in list(registered):
+                    selector.unregister(stream)
+                    registered.discard(stream)
+                    stream.close()
+                break
+            wait_for = min(remaining, 0.25, max(0.0, next_heartbeat - elapsed))
+            events = selector.select(wait_for)
+            if not events:
+                if heartbeat is not None:
+                    heartbeat(time.monotonic() - started_at)
+                    next_heartbeat += heartbeat_seconds or timeout_seconds
+                continue
+
+            for key, _ in events:
+                name = key.data
+                stream, capture = streams[name]
+                assert stream is not None
+                chunk = os.read(stream.fileno(), 65536)
+                if not chunk:
+                    if pending[name]:
+                        output_line(name, pending[name].decode(errors="replace"))
+                        pending[name] = b""
+                    selector.unregister(stream)
+                    registered.discard(stream)
+                    stream.close()
+                    continue
+                capture.write(chunk)
+                pending[name] += chunk
+                lines = pending[name].split(b"\n")
+                pending[name] = lines.pop()
+                for line in lines:
+                    output_line(name, line.decode(errors="replace"))
+
+            if heartbeat is not None and time.monotonic() - started_at >= next_heartbeat:
+                heartbeat(time.monotonic() - started_at)
+                next_heartbeat += heartbeat_seconds or timeout_seconds
+
+            # Do not wait for an escaped descendant to close inherited pipes after
+            # the supervised command has already produced its exit status.
+            if process.poll() is not None:
+                for name, data in pending.items():
+                    if data:
+                        output_line(name, data.decode(errors="replace"))
+                        pending[name] = b""
+                for stream in list(registered):
+                    selector.unregister(stream)
+                    registered.discard(stream)
+                    stream.close()
+                break
+
+        return ProcessResult(
+            process.wait(),
+            stdout=_read_capture(capture_streams[0], text=text),
+            stderr=_read_capture(capture_streams[1], text=text),
+        )
+    except subprocess.TimeoutExpired:
+        _kill_process_group(process)
+        try:
+            process.wait(timeout=1)
+        except subprocess.TimeoutExpired:
+            process.kill()
+            process.wait()
+        return ProcessResult(
+            124,
+            timed_out=True,
+            stdout=_read_capture(capture_streams[0], text=text),
+            stderr=_read_capture(capture_streams[1], text=text),
+        )
+    except BaseException:
+        _kill_process_group(process)
+        process.wait()
+        raise
+    finally:
+        selector.close()
+
+
 def run_bounded(
     args: Sequence[str],
     *,
@@ -56,6 +177,7 @@ def run_bounded(
     input_data: str | bytes | None = None,
     heartbeat_seconds: float | None = None,
     heartbeat: Callable[[float], None] | None = None,
+    output_line: Callable[[str, str], None] | None = None,
 ) -> ProcessResult:
     """Run ``args`` with a deadline and terminate its entire process group.
 
@@ -68,6 +190,10 @@ def run_bounded(
         raise ValueError("heartbeat_seconds must be positive when heartbeat is set")
     if heartbeat is not None and input_data is not None:
         raise ValueError("heartbeat cannot be combined with input_data")
+    if output_line is not None and not capture_output:
+        raise ValueError("output_line requires capture_output")
+    if output_line is not None and input_data is not None:
+        raise ValueError("output_line cannot be combined with input_data")
 
     capture_streams = None
     if capture_output:
@@ -82,13 +208,24 @@ def run_bounded(
         list(args),
         cwd=cwd,
         env=env,
-        stdout=stdout,
-        stderr=stderr,
+        stdout=subprocess.PIPE if output_line is not None else stdout,
+        stderr=subprocess.PIPE if output_line is not None else stderr,
         stdin=subprocess.PIPE if input_data is not None else None,
-        text=text,
+        text=False if output_line is not None else text,
         start_new_session=True,
     )
     try:
+        if output_line is not None:
+            assert capture_streams is not None
+            return _run_with_live_capture(
+                process,
+                capture_streams,
+                timeout_seconds=timeout_seconds,
+                text=text,
+                heartbeat_seconds=heartbeat_seconds,
+                heartbeat=heartbeat,
+                output_line=output_line,
+            )
         if capture_output or input_data is not None:
             if heartbeat is None:
                 process.communicate(
@@ -125,10 +262,7 @@ def run_bounded(
             except subprocess.TimeoutExpired:
                 heartbeat(time.monotonic() - started_at)
     except subprocess.TimeoutExpired:
-        try:
-            os.killpg(process.pid, signal.SIGKILL)
-        except ProcessLookupError:
-            pass
+        _kill_process_group(process)
         if capture_output or input_data is not None:
             try:
                 process.communicate(timeout=1)
