@@ -7,8 +7,6 @@ manifest:
     url-base: https://github.com/darling-next
   - name: mruby-upstream
     url-base: https://github.com/mruby
-  - name: h2o-upstream
-    url-base: https://github.com/h2o
   - name: google-upstream
     url-base: https://github.com/google
   - name: antirez-upstream
@@ -1003,12 +1001,12 @@ manifest:
   - name: darling-src-external-nghttp2-third-party-neverbleed
     repo-path: neverbleed
     path: darling/src/external/nghttp2/third-party/neverbleed
-    remote: h2o-upstream
+    remote: darling-next
     revision: b967ca054f48a36f82d8fcdd32e54ec5144f2751
     userdata:
       kind: darling-source
       upstream-repository: neverbleed
-      fetch-override-reason: third-party-upstream
+      fetch-override-reason: darling-next-public-mirror-preserves-pin
   - name: darling-src-external-objc4
     repo-path: darling-objc4
     path: darling/src/external/objc4
