@@ -13,6 +13,10 @@ mkdir -p "$output_dir/prefix-files"
 	printf 'runner: %s\n' "${RUNNER_NAME:-unknown}"
 	printf '\n[ulimit]\n'
 	ulimit -a || true
+	printf 'open-files-soft: '
+	ulimit -Sn || true
+	printf 'open-files-hard: '
+	ulimit -Hn || true
 	if [[ -r /proc/sys/fs/nr_open ]]; then
 		printf '\n[/proc/sys/fs/nr_open]\n'
 		cat /proc/sys/fs/nr_open

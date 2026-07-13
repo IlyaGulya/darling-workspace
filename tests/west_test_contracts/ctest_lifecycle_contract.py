@@ -472,6 +472,9 @@ with tempfile.TemporaryDirectory() as temp:
     test._active_runtime_evidence = types.SimpleNamespace(
         record_failure_detail=lambda **detail: recorded_failures.append(detail)
     )
+    runtime_state = test._bootstrap_runtime_state(prefix)
+    assert "RLIMIT_NOFILE soft=" in runtime_state, runtime_state
+    assert ".darlingserver.stat.sock: absent" in runtime_state, runtime_state
     messages = []
     test.inf = messages.append
     test.err = lambda _message: None

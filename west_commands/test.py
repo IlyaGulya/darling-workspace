@@ -28,7 +28,9 @@ import argparse
 import json
 import os
 import re
+import resource
 import shutil
+import stat
 import subprocess
 import sys
 import tempfile
@@ -81,6 +83,7 @@ from test_prefix import (
     remove_stale_init_pid,
     remove_stale_server_socket,
     RootlessRuntimeSocketCleanupResult,
+    rootless_prefix_process_snapshot,
 )
 from test_resources import resource_context
 from test_runtime_proof import ProofObservation, RedOracle, RuntimeProofStateMachine
@@ -3903,12 +3906,17 @@ class DarlingTest(WestCommand):
                 def record_bootstrap_failure(summary: str) -> None:
                     evidence = getattr(self, "_active_runtime_evidence", None)
                     if evidence is not None:
+                        diagnostic_output = output
+                        if getattr(evidence, "directory", None) is not None:
+                            diagnostic_output = (
+                                f"{output.rstrip()}\n\n" if output else ""
+                            ) + self._bootstrap_runtime_state(deployment.prefix)
                         evidence.record_failure_detail(
                             phase="bootstrap",
                             summary=summary,
                             returncode=result.returncode,
                             command=bootstrap_command,
-                            output=output,
+                            output=diagnostic_output,
                             artifacts=bootstrap_artifacts,
                         )
 
@@ -4727,6 +4735,38 @@ class DarlingTest(WestCommand):
 
     def _prefix_process_snapshot(self, prefix: Path) -> list[str]:
         return self._prefix_lifecycle_owner().process_snapshot(prefix)
+
+    @staticmethod
+    def _bootstrap_runtime_state(prefix: Path) -> str:
+        """Capture rootless state before prefix cleanup removes the evidence."""
+
+        lines = ["--- bootstrap runtime state ---", "rootless processes:"]
+        processes = rootless_prefix_process_snapshot(prefix)
+        lines.extend(processes or ["<none>"])
+        soft, hard = resource.getrlimit(resource.RLIMIT_NOFILE)
+        lines.extend((f"RLIMIT_NOFILE soft={soft} hard={hard}",))
+        nr_open = Path("/proc/sys/fs/nr_open")
+        if nr_open.is_file():
+            lines.append(f"/proc/sys/fs/nr_open={nr_open.read_text().strip()}")
+        lines.append("runtime paths:")
+        for relative in (
+            ".darlingserver.stat.sock",
+            "var/run/shellspawn.sock",
+            "var/tmp/launchd/sock",
+            ".west-rootless-boot.log",
+            ".west-rootless-guest-fd.log",
+            "private/var/tmp/.west-rootless-boot.log",
+            "private/var/log/dserver-rpc-trace.log",
+        ):
+            path = prefix / relative
+            try:
+                mode = path.lstat().st_mode
+            except FileNotFoundError:
+                lines.append(f"{relative}: absent")
+                continue
+            kind = "socket" if stat.S_ISSOCK(mode) else "file"
+            lines.append(f"{relative}: {kind} mode={oct(stat.S_IMODE(mode))}")
+        return "\n".join(lines)
 
     def _kill_dserver_for_prefix(self, prefix: Path) -> None:
         self._prefix_lifecycle_owner()._kill_server(prefix)
