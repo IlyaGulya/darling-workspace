@@ -21,7 +21,7 @@ from pathlib import Path
 from typing import Any, Iterator
 
 from source_worktree import SourceWorktreeError, prepare_source_worktree
-from patch import TEMPORARY_PATCH_GIT_OPTIONS
+from patch_git import git_for_temporary_patch_application
 from test_results import RuntimeRedProven
 from test_runtime_evidence import RuntimeEvidenceSession
 from test_worktrees import remove_temporary_worktree
@@ -90,14 +90,11 @@ class RuntimeSourceMaterializer:
                         if target is None:
                             continue
                         self._host.inf(f"  apply {stacked}/{patch['path']}")
-                        subprocess.run(
-                            [
-                                "git",
-                                *TEMPORARY_PATCH_GIT_OPTIONS,
-                                "am", "--3way", str(profile_dir / patch["path"]),
-                            ],
-                            cwd=target,
-                            check=True,
+                        git_for_temporary_patch_application(
+                            target,
+                            "am",
+                            "--3way",
+                            str(profile_dir / patch["path"]),
                         )
                 yield
             finally:
@@ -170,20 +167,12 @@ class RuntimeSourceMaterializer:
                     self._host.inf(f"  skip {stacked}/{patch['path']} already in {module}")
                     continue
                 self._host.inf(f"  apply {stacked}/{patch['path']} -> {module}")
-                subprocess.run(
-                    [
-                        "git",
-                        "-c",
-                        "gc.auto=0",
-                        "-c",
-                        "maintenance.auto=false",
-                        "am",
-                        "--3way",
-                        "--committer-date-is-author-date",
-                        str(patch_file),
-                    ],
-                    cwd=target,
-                    check=True,
+                git_for_temporary_patch_application(
+                    target,
+                    "am",
+                    "--3way",
+                    "--committer-date-is-author-date",
+                    str(patch_file),
                 )
 
     @staticmethod

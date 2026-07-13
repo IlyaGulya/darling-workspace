@@ -3108,11 +3108,11 @@ patches:
       base: master
       state: local
 - path: xnu/fd-guard-ebadf.patch
-  sha256sum: 5c1d60ef3303ac0b52012133a4b1f42c6405fab6690c27a43ddc623fd30a6ed5
+  sha256sum: e6613d41bc368ab8ee4751e7f93d09e7faebe9256e07152a9022152273717568
   module: darling/src/external/xnu
-  source-branch: fix/fd-guard-ebadf
+  source-branch: fix/fd-guard-ebadf-errno
   source-base: f223ee035651e9b9f7d3952c654bb0d0dc238d34
-  source-commit: cc677cf3cbda2e41d1ae5a82f0afe452d7f7d544
+  source-commit: ecc6d9ed939f80de3f1c06bff549e1e9bc94c0d0
   bead: dar-6x4.1
   publication-status: blocked
   publication-blocker: returns EBADF on guarded-fd dup2/dup/fcntl instead of aborting; correct vs macOS and validated (gnulib fd tests + libunistring make check GREEN) but the guarded-fd-as-out-of-range contract wants a second reviewer before upstreaming. See dar-6x4.1.
@@ -3155,7 +3155,7 @@ patches:
     note: Guest runtime gate for dup/dup2/fcntl on the Darling guarded fd boundary returning EBADF instead of aborting.
   github:
     fork:
-      repo: IlyaGulya/darling-xnu
+      repo: darling-next/darling-xnu
       base: preupstream/main
       state: local
     upstream:
