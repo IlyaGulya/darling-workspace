@@ -35,8 +35,16 @@ PATCH_APPLICATION_GIT_OPTIONS = (
     "maintenance.auto=false",
 )
 
-# Kept as an import-compatible name for the verifier contract and callers.
-TEMPORARY_PATCH_GIT_OPTIONS = PATCH_APPLICATION_GIT_OPTIONS
+# Disposable worktrees may run on a clean CI runner with no user config. Keep
+# this identity out of persistent integration branches: it is only for commits
+# created while checking or materializing a patch profile temporarily.
+TEMPORARY_PATCH_GIT_OPTIONS = (
+    *PATCH_APPLICATION_GIT_OPTIONS,
+    "-c",
+    "user.name=West Test",
+    "-c",
+    "user.email=west-test@example.invalid",
+)
 
 
 class ExportPlan(NamedTuple):
@@ -98,8 +106,14 @@ def git_for_temporary_patch_application(
     capture: bool = False,
     check: bool = True,
 ) -> str:
-    """Compatibility wrapper for temporary-worktree patch application."""
-    return git_for_patch_application(repo, *args, capture=capture, check=check)
+    """Apply a patch in a disposable worktree with deterministic identity."""
+    return git(
+        repo,
+        *TEMPORARY_PATCH_GIT_OPTIONS,
+        *args,
+        capture=capture,
+        check=check,
+    )
 
 
 def format_patch_command(patch, commit: str) -> list[str]:
@@ -137,6 +151,12 @@ class DarlingPatch(WestCommand):
         for action in ("list", "verify", "export", "apply", "clean", "status", "check"):
             command = subparsers.add_parser(action)
             command.add_argument("--profile", default="homebrew")
+            if action == "verify":
+                command.add_argument(
+                    "--applicability-only",
+                    action="store_true",
+                    help="verify patch files and applicability at manifest revisions without requiring local source branches",
+                )
             if action == "export":
                 command.add_argument(
                     "--patch",
@@ -206,7 +226,11 @@ class DarlingPatch(WestCommand):
         if args.action == "list":
             self._list(patches)
         elif args.action == "verify":
-            self._verify(profile_dir, patches)
+            self._verify(
+                profile_dir,
+                patches,
+                require_source_branches=not args.applicability_only,
+            )
         elif args.action == "export":
             self._export(
                 profile_path,
@@ -1511,7 +1535,13 @@ class DarlingPatch(WestCommand):
             )
         return path
 
-    def _verify(self, profile_dir: Path, patches):
+    def _verify(
+        self,
+        profile_dir: Path,
+        patches,
+        *,
+        require_source_branches: bool = True,
+    ):
         manifest_repo = Path(self.manifest.repo_abspath)
         bead_ids = {
             json.loads(line)["id"]
@@ -1543,25 +1573,27 @@ class DarlingPatch(WestCommand):
                 )
 
             repo = self._repo(patch["module"])
-            source_branch = patch["source-branch"]
-            if not self._branch_exists(repo, source_branch):
-                self.die(f"{patch['module']}: missing source branch {source_branch}")
-            branch_head = git(repo, "rev-parse", source_branch, capture=True)
-            if branch_head != source_commit:
-                self.die(
-                    f"{patch['module']}: {source_branch} drifted "
-                    f"({branch_head} != {source_commit})"
-                )
+            if require_source_branches:
+                source_branch = patch["source-branch"]
+                if not self._branch_exists(repo, source_branch):
+                    self.die(f"{patch['module']}: missing source branch {source_branch}")
+                branch_head = git(repo, "rev-parse", source_branch, capture=True)
+                if branch_head != source_commit:
+                    self.die(
+                        f"{patch['module']}: {source_branch} drifted "
+                        f"({branch_head} != {source_commit})"
+                    )
 
             path = self._verify_patch(profile_dir, patch)
-            exported = subprocess.run(
-                format_patch_command(patch, source_commit),
-                cwd=repo,
-                check=True,
-                stdout=subprocess.PIPE,
-            ).stdout
-            if hashlib.sha256(exported).hexdigest() != patch["sha256sum"]:
-                self.die(f"{patch['path']}: patch export drifted")
+            if require_source_branches:
+                exported = subprocess.run(
+                    format_patch_command(patch, source_commit),
+                    cwd=repo,
+                    check=True,
+                    stdout=subprocess.PIPE,
+                ).stdout
+                if hashlib.sha256(exported).hexdigest() != patch["sha256sum"]:
+                    self.die(f"{patch['path']}: patch export drifted")
 
             bead = patch.get("bead")
             if bead and bead not in bead_ids:

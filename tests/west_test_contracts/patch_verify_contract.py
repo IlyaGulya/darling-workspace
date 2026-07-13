@@ -38,9 +38,13 @@ assert PATCH_APPLICATION_GIT_OPTIONS == (
     "-c",
     "maintenance.auto=false",
 )
-assert TEMPORARY_PATCH_GIT_OPTIONS == PATCH_APPLICATION_GIT_OPTIONS
-
-
+assert TEMPORARY_PATCH_GIT_OPTIONS == (
+    *PATCH_APPLICATION_GIT_OPTIONS,
+    "-c",
+    "user.name=West Test",
+    "-c",
+    "user.email=west-test@example.invalid",
+)
 def runtime_patch(artifact):
     return {
         "module": "darling",
@@ -172,10 +176,18 @@ with tempfile.TemporaryDirectory(prefix="west-patch-verify-contract-") as temp:
 
     trace = repo / "trace.json"
     previous_trace = os.environ.get("GIT_TRACE2_EVENT")
+    git(repo, "config", "--unset", "user.email")
+    git(repo, "config", "--unset", "user.name")
+    previous_global_config = os.environ.get("GIT_CONFIG_GLOBAL")
+    os.environ["GIT_CONFIG_GLOBAL"] = os.devnull
     os.environ["GIT_TRACE2_EVENT"] = str(trace)
     try:
         git_for_temporary_patch_application(repo, "am", "--3way", str(patch))
     finally:
+        if previous_global_config is None:
+            del os.environ["GIT_CONFIG_GLOBAL"]
+        else:
+            os.environ["GIT_CONFIG_GLOBAL"] = previous_global_config
         if previous_trace is None:
             del os.environ["GIT_TRACE2_EVENT"]
         else:
