@@ -37,9 +37,7 @@ jobs:
       - name: Install West
         run: python3 -m pip install west
       - name: Install Darling build dependencies
-        run: |
-          sudo apt-get update
-          sudo apt-get install --yes --no-install-recommends libfuse-dev libx11-dev
+        run: darling-dev/darling-workspace/ci/install-darling-build-deps.sh
       - name: Materialize Darling workspace
         run: darling-dev/darling-workspace/ci/bootstrap-west.sh
       - name: Run rootless guest smoke
@@ -63,9 +61,7 @@ jobs:
       - name: Install West
         run: python3 -m pip install west
       - name: Install Darling build dependencies
-        run: |
-          sudo apt-get update
-          sudo apt-get install --yes --no-install-recommends libfuse-dev libx11-dev
+        run: darling-dev/darling-workspace/ci/install-darling-build-deps.sh
       - name: Materialize Darling workspace
         run: darling-dev/darling-workspace/ci/bootstrap-west.sh
       - name: Run full rootless guest suite
