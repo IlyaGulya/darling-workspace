@@ -5,7 +5,9 @@
 # and runs the union-resolver assertions against a freshly built two-layer
 # fake guest root. No Darling runtime, no mount/fuse/userns -- pure userspace.
 #
-# Usage: ./run.sh
+# Usage:
+#   ./run.sh                    # build the harness and run it
+#   ./run.sh --prepare-fixture DIR  # create only the reusable CTest fixture
 set -euo pipefail
 
 HERE="$(cd "$(dirname "$0")" && pwd)"
@@ -14,13 +16,40 @@ XNU="$XNU_SRC_ROOT/darling/src/libsystem_kernel/emulation"
 SRCDIR="$XNU/src/linux_premigration"
 INCDIR="$XNU/include"
 
+prepare_only=0
+if [ "${1:-}" = "--prepare-fixture" ]; then
+	if [ "$#" -ne 2 ]; then
+		echo "usage: $0 --prepare-fixture ABSOLUTE_DIR" >&2
+		exit 2
+	fi
+	WORK="$2"
+	case "$WORK" in
+		/*) ;;
+		*) echo "fixture directory must be absolute: $WORK" >&2; exit 2 ;;
+	esac
+	if [ "$WORK" = "/" ]; then
+		echo "refusing to prepare the filesystem root" >&2
+		exit 2
+	fi
+	prepare_only=1
+	owned_work=0
+	rm -rf -- "$WORK"
+else
+	WORK="$(mktemp -d /tmp/eunion-tdd.XXXXXX)"
+	owned_work=1
+fi
+
 if [ ! -f "$SRCDIR/vchroot_userspace.c" ]; then
 	echo "missing vchroot_userspace.c under XNU_SRC_ROOT=$XNU_SRC_ROOT" >&2
 	exit 1
 fi
 
-WORK="$(mktemp -d /tmp/eunion-tdd.XXXXXX)"
-trap 'rm -rf "$WORK"' EXIT
+cleanup() {
+	if [ "$owned_work" -eq 1 ]; then
+		rm -rf -- "$WORK"
+	fi
+}
+trap cleanup EXIT
 NESTED_LOWER_ROOT="${EUNION_NESTED_LOWER_ROOT:-0}"
 
 # shim so <darling/emulation/linux_premigration/vchroot_expand.h> resolves
@@ -267,6 +296,10 @@ sources=(
 if [ "$NESTED_LOWER_ROOT" = "1" ]; then
     mkdir -p "$WORK/prefix/libexec"
     mv "$WORK/libexec" "$WORK/prefix/libexec/darling"
+fi
+
+if [ "$prepare_only" -eq 1 ]; then
+	exit 0
 fi
 
 include_dirs=("-I$SRCDIR" "-I$WORK/shim" "-I$WORK/include")

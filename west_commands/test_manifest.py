@@ -218,6 +218,8 @@ def _default_red_failure_phase(test: dict[str, Any]) -> None:
     tier = test.get("coverage-tier")
     if runner == "object-symbol-fixture":
         proof["expect-failure-phase"] = "inspect"
+    elif runner == "ctest" or (test.get("ctest-label") and not runner):
+        proof["expect-failure-phase"] = "ctest"
     elif runner in {"source-contract-script", "source-profile-script", "source-script-fixture"}:
         proof["expect-failure-phase"] = "script"
     elif runner == "source-build-fixture":
