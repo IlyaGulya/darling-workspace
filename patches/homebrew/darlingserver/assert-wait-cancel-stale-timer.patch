@@ -1,4 +1,4 @@
-From 4c353baa640d2ea026c59ec08a0e0ccfce33e09a Mon Sep 17 00:00:00 2001
+From 69715cc293f08a15f76c223f7e43571949aa585f Mon Sep 17 00:00:00 2001
 From: Ilya Gulya <ilya.gulya@indriver.com>
 Date: Wed, 24 Jun 2026 15:15:58 +0000
 Subject: [PATCH] duct-tape: cancel stale wait_timer when entering a new wait
@@ -33,8 +33,6 @@ Complements (does not replace) the thread_unblock() cancel; that handles
 the common case, this closes the residual leak it cannot reach.
 
 Refs dar-gwn.1.9.
-
-Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
 ---
  .../darlingserver/duct-tape/wait-timer.h         |  4 ++++
  duct-tape/xnu/osfmk/kern/waitq.c                 | 16 ++++++++++++++++

@@ -26,7 +26,7 @@ index e4c6115746f67ce86bdc7c5c81bb67ba9b32b505..0cac88eaa24f3b606ca675f8c6d81d11
  )
 -
 
-From b352871fcbd92fe27cd0f56064047206803df361 Mon Sep 17 00:00:00 2001
+From cfc0647df7467bb120194b56ebfbfc4944340d56 Mon Sep 17 00:00:00 2001
 From: Ilya Gulya <ilya@gulya.me>
 Date: Wed, 1 Jul 2026 13:22:37 +0000
 Subject: [PATCH] perf#24c2e: WIP DCC2 reader on dyld2 classic path (durability
@@ -53,8 +53,6 @@ launches through. Guarded by DARLING_DYLD_DCC2.
 WIP: 2-dylib live smoke still crashes in instantiateFromCache (scattered
 LINKEDIT pointer math) — task #91 open. Committed for durability so the
 work survives checkout/handoff; NOT yet exported to a patch profile.
-
-Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
 ---
  CMakeLists.txt                     |   1 +
  dyld3/DCC2Reader.cpp               | 258 +++++++++++++++++++++++++++++
@@ -792,7 +790,7 @@ index 371087075e31f7d74d4c23fcc37b34b2c3f56ae9..dc98d32c2a4371821b8e90d5445433f2
  		// check main executable is not too new for this OS
  		{
 
-From a50d76098d6ead090c8297f395e802babcac78b9 Mon Sep 17 00:00:00 2001
+From 3b880d6cf92eb007e23da7109c2b22f660046461 Mon Sep 17 00:00:00 2001
 From: Ilya Gulya <ilya@gulya.me>
 Date: Wed, 1 Jul 2026 15:03:05 +0000
 Subject: [PATCH] =?UTF-8?q?perf#24c2e:=20fix=20DCC2=20crash=20=E2=80=94=20?=
@@ -824,8 +822,6 @@ each, rebase() fires with isDCC2=1, applyAllFixupsOnce applies all 55 fixups
 (50 rebase + 5 bind) once for the whole cache with NO crash, and /usr/bin/true
 runs to completion returning exit 0. No SIGSEGV/halt in dserver.log. Prod dyld
 restored byte-identical (79b22273 both copies); instrumentation logs removed.
-
-Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
 ---
  src/ImageLoaderMachO.cpp | 15 +++++++++++++++
  1 file changed, 15 insertions(+)
@@ -864,7 +860,7 @@ index 9242278a2285b15dc929e325d7d33f72ce9359e5..8d6892ac1df9384994db4b4e19d783f3
  	if ( this->usablePrebinding(context) ) {
  		// skip rebasing because prebinding is valid
 
-From 02696ac730f4057bd1a21a91805df37c91a5ac0e Mon Sep 17 00:00:00 2001
+From 2d46a6bc1e761a31250deb853507cb18886966d5 Mon Sep 17 00:00:00 2001
 From: Ilya Gulya <ilya@gulya.me>
 Date: Wed, 1 Jul 2026 15:53:33 +0000
 Subject: [PATCH] =?UTF-8?q?perf#24c2d:=20DCC2=20reader=20=E2=80=94=20handl?=
@@ -880,8 +876,6 @@ faults. New fixup kind DCC2_FIX_BIND_EXTERN_LAZY (3): applyAllFixupsOnce /
 applyFixups try resolveExtern and, if not found, write a sentinel (0) instead
 of hard-failing (as plain DCC2_FIX_BIND_EXTERN still does). Kept in sync with
 tools/closure-cache/dcc2-format.h.
-
-Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
 ---
  dyld3/DCC2Reader.cpp | 18 ++++++++++++++++++
  dyld3/DCC2Reader.h   |  1 +
@@ -936,7 +930,7 @@ index ebcc997d885d5bf52c612e1e4011fb3724efc776..696265ee55c5dc5f8c6c653d813409e6
  struct DCC2Region { uint64_t file_off, size, vm_base; uint32_t prot, _pad; };
  struct DCC2Seg    { char name[16]; uint64_t vmaddr, vmsize, region_off, filesize; uint32_t region_idx, prot; };
 
-From bcf77af2cafd5a80beb0d043bd9ac608cbbc87c4 Mon Sep 17 00:00:00 2001
+From 5daee283321b7167d44f6dc93abf615736a9545a Mon Sep 17 00:00:00 2001
 From: Ilya Gulya <ilya@gulya.me>
 Date: Thu, 2 Jul 2026 05:04:55 +0000
 Subject: [PATCH] perf#24f: point DCC2Reader at DCC5 cache (3-region +
@@ -960,8 +954,6 @@ bytes, so mapping RX and executing it "just works" with no reader logic change.
 
 Offline gates for the DCC5 builder are all green (darlingserver PERF24F). Live
 smoke is the next step. Not deployed; prod dyld untouched.
-
-Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
 ---
  dyld3/DCC2Reader.cpp |  7 +++++--
  dyld3/DCC2Reader.h   | 15 ++++++++++++++-
@@ -1021,7 +1013,7 @@ index 696265ee55c5dc5f8c6c653d813409e6727269be..44a84c7ad54fe0eb98bfe3d9eb736967
  
  //
 
-From 7a93752e3d996a355ba3a8a4d00e2b70015ee40c Mon Sep 17 00:00:00 2001
+From 9d2e9812c1adbe219f517e8fe446a4fe0c4b9ccf Mon Sep 17 00:00:00 2001
 From: Ilya Gulya <ilya@gulya.me>
 Date: Thu, 2 Jul 2026 09:57:15 +0000
 Subject: [PATCH] perf#24f-fix-elfcalls-handoff (#104): run __dyld func-lookup
@@ -1051,8 +1043,6 @@ NOTE: this advances DCC5-ON boot past elfcalls; a separate, later data-fixup
 crash remains (libsystem_c _flockfile deref of a bad FILE* whose bytes read as
 the string "m_pthrea") — tracked as a follow-up bead, out of scope for the
 elfcalls handoff.
-
-Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
 ---
  src/ImageLoaderMachOCompressed.cpp | 19 +++++++++++++++++++
  1 file changed, 19 insertions(+)
@@ -1095,7 +1085,7 @@ index 04f13cc19c35599e4caeb741533bdfc9b1e50ff4..f3b41d8d75f3cbe4a388cd2222a15ffd
  			return;
  		}
 
-From aec6a4af4efaacbda31911aaf32d73495d4a7da1 Mon Sep 17 00:00:00 2001
+From ef9bcd0085cfa3f4ea62c556a764803c59d93d45 Mon Sep 17 00:00:00 2001
 From: Ilya Gulya <ilya@gulya.me>
 Date: Thu, 2 Jul 2026 12:13:44 +0000
 Subject: [PATCH] perf#24f (#107): translate DCC exported-symbol addresses via
@@ -1119,8 +1109,6 @@ Verified live (DCC6 cache): env /usr/bin/true=0, /usr/bin/false=1, sh/bash no
 longer crash in _flockfile, shellspawn pipeline/loops/subshells OK, clang -c
 1-file produces a valid Mach-O .o. DCC substitution + single arena + 0 staleness
 intact. RED arm: old DCC5 cache => bad magic (need DCC6) => clean hard fail.
-
-Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
 ---
  dyld3/DCC2Reader.cpp               | 30 +++++++++++++++++++++++--
  dyld3/DCC2Reader.h                 | 16 +++++++++++++-

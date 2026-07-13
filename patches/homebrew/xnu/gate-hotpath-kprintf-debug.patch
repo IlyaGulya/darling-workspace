@@ -1,4 +1,4 @@
-From 0984b9b441e4c01e3c4f3e8ef36aef99d9bcb9e6 Mon Sep 17 00:00:00 2001
+From 3ddcd29a21b5dd9c10d44fe369beb7c7c5a8781a Mon Sep 17 00:00:00 2001
 From: Ilya Gulya <ilya@gulya.me>
 Date: Sun, 28 Jun 2026 09:13:07 +0000
 Subject: [PATCH] perf: gate hot-path kprintf debug traces (removes ~14.5% of
@@ -32,8 +32,6 @@ comes from dyld, so dyld must be rebuilt+redeployed too, not just the dylib.
 
 RED->GREEN: tests/hotpath_kprintf_gated_test.sh asserts each trace is routed through its
 gate and no longer a bare __simple_kprintf. Proven RED before the fix (exit 1), GREEN after.
-
-Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
 ---
  .../emulation/include/common/simple.h         | 17 +++++
  .../src/linux_premigration/signal/sigexc.c    |  7 +-

@@ -1,4 +1,4 @@
-From e513bdb07eb5292a2b608a3f2daf77cb2e6bf424 Mon Sep 17 00:00:00 2001
+From 2bdf7f8ebad792928ef42ef360157e570fafe2dc Mon Sep 17 00:00:00 2001
 From: Ilya Gulya <ilya@gulya.me>
 Date: Mon, 29 Jun 2026 06:30:14 +0000
 Subject: [PATCH] perf#18 P3: guest-side shared-memory ring transport
@@ -35,8 +35,6 @@ trip + the latency A/B require a coordinated dylib+dyld+server deploy (not done)
 VERIFIED: dserver-ring.c / mach_traps.c / fork.c compile clean flag ON and OFF
 in the dyld target. Nothing deployed/pushed; matching server side is
 darlingserver perf/shmem-ring-abi-validator @5a73f80.
-
-Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
 ---
  .../libsystem_kernel/emulation/CMakeLists.txt |  15 ++
  .../resources/dserver-ring.h                  |  44 ++++
@@ -422,7 +420,7 @@ index ba01503995e02e6545525c462c7b3f47629a9e6b..d60c2735aa6cee6079025f23297bbc35
  		port_name = MACH_PORT_NULL;
  	}
 
-From b049a59bb553a8e7fb3c7181238021d21d9cdd55 Mon Sep 17 00:00:00 2001
+From f93f3d364ecca27bae3929bad4e9c0dfdeebd30a Mon Sep 17 00:00:00 2001
 From: Ilya Gulya <ilya@gulya.me>
 Date: Mon, 29 Jun 2026 06:43:22 +0000
 Subject: [PATCH] perf#18 P3: ride mach_reply_port over the guest ring
@@ -441,8 +439,6 @@ Folds to static-inline stubs unless built with -DDARLING_RING_TRANSPORT (default
 flag-OFF guest TUs unchanged. Both emulation and emulation_dyld TUs compile clean
 flag ON and OFF. Server-side allowlist + RED->GREEN gate land in the darlingserver
 commit.
-
-Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
 ---
  .../resources/dserver-ring.h                  | 14 +++++++----
  .../resources/dserver-ring.c                  | 23 +++++++++++++++----
@@ -561,7 +557,7 @@ index d60c2735aa6cee6079025f23297bbc35515ac38f..9bea7af29dc6e87f517ba63d5e4b9786
  		port_name = MACH_PORT_NULL;
  	}
 
-From 5b2248ab1c5b281e24b1eb77c28a901c31670806 Mon Sep 17 00:00:00 2001
+From bb3c7098c1eccb6674249bcfb4801d47eb97f76d Mon Sep 17 00:00:00 2001
 From: Ilya Gulya <ilya@gulya.me>
 Date: Mon, 29 Jun 2026 07:53:45 +0000
 Subject: [PATCH] perf#18 .33 P4 (guest): conditional doorbell + waiter-bit
@@ -586,8 +582,6 @@ publishes ACTIVE_POLLING) and s2c_waiters=0. The control block now matches ABI v
 Live A/B (deployed locally, NOT pushed): mach_reply_port ~4.4-5.4us (~6x over UDS),
 95% spin-serviced server-side, 97% of replies needed no FUTEX_WAKE; fork-storm build
 3/3 DONE. See the darlingserver-side commit for the full wake-model design + gate.
-
-Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
 ---
  .../resources/dserver-ring.c                  | 36 ++++++++++++++++---
  1 file changed, 32 insertions(+), 4 deletions(-)
@@ -669,7 +663,7 @@ index c181de941197a8ca97d08f471a3f8ec8c10b1602..e25b2169179b8575722d3bf3a9adb900
  
  // Shared fast path for the no-arg, single-uint32-port-reply traps (task_self_trap,
 
-From 51893ca27b5d52dc49ad9fdba5c0412e7297bbb1 Mon Sep 17 00:00:00 2001
+From 1f4aaffd98b6f0ec476f51c98d02d2d2c1f7f10c Mon Sep 17 00:00:00 2001
 From: Ilya Gulya <ilya@gulya.me>
 Date: Mon, 29 Jun 2026 08:24:10 +0000
 Subject: [PATCH] perf#18 P6 (dar-aw2): gated rdtsc phase-prof for the hot ring
@@ -686,8 +680,6 @@ MEASURED (hot mach_reply_port, TSC 1.9962GHz): submit ~510ns, roundtrip ~4196ns 
 server Mach work ~3236ns, pure wakeup ~960ns), observe ~17ns => guest total ~4.7us. The
 transport (submit+observe ~527ns) is negligible; the floor is server-side. See the
 darlingserver-side commit for the full 6-phase table + the opcode-fast-path conclusion.
-
-Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
 ---
  .../resources/dserver-ring.c                  | 47 +++++++++++++++++++
  1 file changed, 47 insertions(+)
@@ -777,7 +769,7 @@ index e25b2169179b8575722d3bf3a9adb90033125bba..9e661b3fc94c93ec180569e74215fd2e
  }
  
 
-From 99e7f2dabe2e5bc6cdf724f03f3d941469ef3b45 Mon Sep 17 00:00:00 2001
+From bf14ce898766b91a470b4569c316078698500ae0 Mon Sep 17 00:00:00 2001
 From: Ilya Gulya <ilya@gulya.me>
 Date: Mon, 29 Jun 2026 11:51:29 +0000
 Subject: [PATCH] perf#18 P5 (dar-1il): guest ring path for mach_port_mod_refs
@@ -804,8 +796,6 @@ the darlingserver repo on perf/shmem-ring-abi-validator).
 Validated end-to-end with the server half: byte-identical kern_return_t across
 all 14 mach_port_mod_refs edges ring-vs-UDS, ~4.9x faster (UDS p50 ~12.9us ->
 ring p50 ~2.6us).
-
-Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
 ---
  .../resources/dserver-ring.h                  |  7 ++
  .../resources/dserver-ring.c                  | 91 +++++++++++++++++++
@@ -961,7 +951,7 @@ index 9bea7af29dc6e87f517ba63d5e4b9786498a9639..f1cbc4a364f4fb34a07ace32df24c864
  	if (code < 0) {
  		__simple_printf("mach_port_deallocate failed (internally): %d\n", code);
 
-From cd62bf3951c493f472474901d80c9bd8e5ac36e2 Mon Sep 17 00:00:00 2001
+From cd9e7cc704f52385e0cd0e5dfe14bf2e3121f51e Mon Sep 17 00:00:00 2001
 From: Ilya Gulya <ilya@gulya.me>
 Date: Mon, 29 Jun 2026 13:12:20 +0000
 Subject: [PATCH] perf#18 P5-bulk (dar-1il.1): guest ring path for
@@ -982,8 +972,6 @@ DSERVER_RING_C2S_OPCODES, darlingserver rpc-supplement.h.)
 OFF-build is byte-identical (everything gated behind DARLING_RING_TRANSPORT; OFF
 stubs return -1). Validated: 14-edge byte-identical kern_return ring-vs-true-UDS;
 allocate ~5.1x / insert_right ~6.4x over UDS p50; boot + fork-storm 3/3 clean.
-
-Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
 ---
  .../resources/dserver-ring.h                  | 12 +++++
  .../resources/dserver-ring.c                  | 44 +++++++++++++++++++
@@ -1120,7 +1108,7 @@ index f1cbc4a364f4fb34a07ace32df24c8649e349c12..6fd5cc8f7fc90d3a2bb72fb54b199b27
  	if (code < 0) {
  		__simple_printf("mach_port_insert_right failed (internally): %d\n", code);
 
-From 412e15c9c6920fdca8d72c1b22bdf24714bfcbbc Mon Sep 17 00:00:00 2001
+From 41c8d2d2957e5baa9a674d8ce5fb467dd91836dc Mon Sep 17 00:00:00 2001
 From: Ilya Gulya <ilya@gulya.me>
 Date: Mon, 29 Jun 2026 14:01:06 +0000
 Subject: [PATCH] perf#18 dar-1il.2: guest side -- mod_refs UDS-only + publish
@@ -1140,8 +1128,6 @@ first divergent op.
 
 Server side, ABI bump, and RED->GREEN gates: darlingserver @6f9cbe8.
 Local only; nothing pushed.
-
-Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
 ---
  .../resources/dserver-ring.h                  | 24 +++++------
  .../resources/dserver-ring.c                  | 42 +++++++++----------
@@ -1288,7 +1274,7 @@ index 6fd5cc8f7fc90d3a2bb72fb54b199b27ae82553b..98831b4bea412826e7e32f4b3f4ba01e
  	}
  
 
-From 0c0f0e65d0199f82381f827b05650e78a844b61b Mon Sep 17 00:00:00 2001
+From 1b1deba0069c4cf1a3908b83fe41ca1049e9937d Mon Sep 17 00:00:00 2001
 From: Ilya Gulya <ilya@gulya.me>
 Date: Mon, 29 Jun 2026 15:46:56 +0000
 Subject: [PATCH] perf#18 Phase B Stage 1: default DARLING_RING_TRANSPORT ON
@@ -1301,8 +1287,6 @@ no duplex. Frozen ring set only; destroy-capable ops stay UDS.
 
 Rollback: this default back to OFF + rebuild. Release/prod packaging policy unchanged. Full
 gate/smoke/perf matrix verified on the flip (see the darlingserver Stage-1 commit message).
-
-Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
 ---
  darling/src/libsystem_kernel/emulation/CMakeLists.txt | 7 +++++--
  1 file changed, 5 insertions(+), 2 deletions(-)
@@ -1326,7 +1310,7 @@ index a693177a7b7e719fbaf4997febda51650ab6c6bf..7ceed28fbff5e9b305932553aa48aa49
  	target_compile_definitions(emulation PRIVATE DARLING_RING_TRANSPORT)
  	target_compile_definitions(emulation_dyld PRIVATE DARLING_RING_TRANSPORT)
 
-From 4d9ece875a9d248223f4ab323b63a5ae502be7de Mon Sep 17 00:00:00 2001
+From 8f1f7cdf77a6be3e3b69fcb83769ad87e57845d4 Mon Sep 17 00:00:00 2001
 From: Ilya Gulya <ilya@gulya.me>
 Date: Tue, 30 Jun 2026 03:22:27 +0000
 Subject: [PATCH] perf#18 P8 D3 (dar-1il.3.1.1): guest duplex wait-pump +
@@ -1357,8 +1341,6 @@ mach_traps.c: call the one-shot driver from task_self_trap_impl (early, ring att
 LIVE: booted guest prints
   [dring-duplex-selftest] PASS rc=0 arg=0xC0FFEE42 result=0x9AA5B418 expect=0x9AA5B418
 (echo = arg ^ 0x5A5A5A5A). Pairs with the server commit (sentinel + _drainDuplexReply).
-
-Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
 ---
  .../resources/dserver-ring.h                  |  20 ++
  .../resources/dserver-ring.c                  | 215 ++++++++++++++++++
@@ -1650,7 +1632,7 @@ index 98831b4bea412826e7e32f4b3f4ba01e8ebe68f6..2b50f09f34b769ff9fd371073c946d5f
  
  /*
 
-From bd208c6ad5b07fba65a8273d8db3fdeff3bcc377 Mon Sep 17 00:00:00 2001
+From dfcbe9923500d879e9cc4c1fb05d18e9ec77488d Mon Sep 17 00:00:00 2001
 From: Ilya Gulya <ilya@gulya.me>
 Date: Tue, 30 Jun 2026 05:19:39 +0000
 Subject: [PATCH] perf#18 P8 D4 (dar-1il.3.2.1): guest -- mach_port_deallocate
@@ -1676,8 +1658,6 @@ Live A/B (warm boot): deallocate rides the duplex lane (server ring_duplex_paren
 byte-identical to UDS, no wedge, fork-storm 3/3, isolation holds. mach_port_deallocate does not
 drive a munmap S2C in Darling (mach_make_memory_entry_64 stubbed), so the deadlock-cure case is N/A
 for this op; default-OFF. See the server commit for the full disposition.
-
-Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
 ---
  .../resources/dserver-ring.h                  |  11 ++
  .../resources/dserver-ring.c                  | 137 ++++++++++++++++++
@@ -1903,7 +1883,7 @@ index 2b50f09f34b769ff9fd371073c946d5f9f26d6d2..7e4cd5f7cecc4c62ff7dfb94ba6be31e
  	if (code < 0) {
  		__simple_printf("mach_port_deallocate failed (internally): %d\n", code);
 
-From b412c285245695a9a004e2c99319f2cb5e950db4 Mon Sep 17 00:00:00 2001
+From 7144b56d220fbff6b9d821d71cbf1ae24c4cd187 Mon Sep 17 00:00:00 2001
 From: Ilya Gulya <ilya@gulya.me>
 Date: Tue, 30 Jun 2026 07:46:37 +0000
 Subject: [PATCH] perf#18 P8 D6 (dar-1il.3.2.x): caller-S2C duplex SIDEBAND --
@@ -1936,8 +1916,6 @@ mod_refs/deallocate resurrection, no simple-ring op-set expansion, no
 launchd-global duplex, no fabricated success.
 
 Pairs with darlingserver D6 commit. NOTHING PUSHED.
-
-Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
 ---
  .../resources/dserver-ring.h                  |  18 ++
  .../resources/dserver-ring.c                  | 238 ++++++++++++++++++
@@ -2275,7 +2253,7 @@ index 7e4cd5f7cecc4c62ff7dfb94ba6be31ed05170cb..5e4503d3832a463bb6e6587a054aae03
  }
  
 
-From f3d42a7a9538ff6f2a3c612dce8a5ae60b888c22 Mon Sep 17 00:00:00 2001
+From 97e0e6cfbbfc91f1387779632436d9cc0340fcb0 Mon Sep 17 00:00:00 2001
 From: Ilya Gulya <ilya@gulya.me>
 Date: Tue, 30 Jun 2026 10:12:39 +0000
 Subject: [PATCH] perf#18 P8 D10 (dar-1il.5): migrate thread_self_trap +
@@ -2299,8 +2277,6 @@ LIVE (homebrew-test, D10 dylib+server): both ops moved 100% UDS -> mostly-ring
 (opcode-hash auto-includes the new ops -> skewed guest rejected at attach -> all-UDS, proven
 live + by the ring_attach_check gate). Server side committed separately in darlingserver.
 Prod dylib restored after. NOTHING PUSHED.
-
-Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
 ---
  .../linux_premigration/resources/dserver-ring.h      |  8 ++++++++
  .../src/linux_premigration/resources/dserver-ring.c  | 12 ++++++++++++
@@ -2386,7 +2362,7 @@ index 5e4503d3832a463bb6e6587a054aae03ef2731b2..eb2d48b5f4e96762593f1791955954e8
  		port_name = MACH_PORT_NULL;
  	}
 
-From e148c878a8b4e9aed2ba45fd2936287fee2440d9 Mon Sep 17 00:00:00 2001
+From bd10efc5418e61c00753ea9de3285b1e54b7bd46 Mon Sep 17 00:00:00 2001
 From: Ilya Gulya <ilya@gulya.me>
 Date: Tue, 30 Jun 2026 11:08:26 +0000
 Subject: [PATCH] perf#18 P8 D11 (dar-1il.6): migrate uidgid +
@@ -2414,8 +2390,6 @@ These are NOT no-fiber ops (Tier-1 generic fiber); no change to ringFastPathElig
 Live A/B proved byte-identical state ring-vs-UDS and fork-storm 3/3 clean -- see the
 darlingserver commit for the full measurement. Routes over the ring iff each op is in
 DSERVER_RING_C2S_OPCODES; on any miss the caller UDS-falls-back.
-
-Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
 ---
  .../resources/dserver-ring.h                  |  17 +++
  .../resources/dserver-ring.c                  | 143 ++++++++++++++++++
@@ -2814,7 +2788,7 @@ index c8e3bd753e8edf671a8a3096f3f2327c9a0b42a5..0db3553b999662336149892cd96cda5f
  		if (uid >= 0) {
  			stored_uid = uid;
 
-From 7981ce8949292431b85bd4f116b8a8883097952a Mon Sep 17 00:00:00 2001
+From b4e7110a777e5859ff8dfaff6348c14fc84a17ca Mon Sep 17 00:00:00 2001
 From: Ilya Gulya <ilya@gulya.me>
 Date: Tue, 30 Jun 2026 12:11:02 +0000
 Subject: [PATCH] perf#18 D13 (dar-1il.8): migrate mldr_path + vchroot_path to
@@ -2837,8 +2811,6 @@ NO arena, no variable payload.
 set_executable_path NOT migrated (pre-attach mldr-only + NO_REPLY). Pairs with
 darlingserver @88f2727. Built clean, symbols present, live A/B GREEN, fork-storm 3/3.
 NOT pushed.
-
-Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
 ---
  .../resources/dserver-ring.h                  |  9 +++++
  .../resources/dserver-ring.c                  | 38 +++++++++++++++++++
@@ -2988,7 +2960,7 @@ index b9859120cdb6d463041ac3923ede4e786482b474..e45e09f8bc110ae4b978d994969aa15c
  		return errno_linux_to_bsd(ret);
  	}
 
-From 76541a7d32310f58502cae200360e86d4ac46af9 Mon Sep 17 00:00:00 2001
+From 1c33a0e3294d3157af8cf8a111aa12aec133a06e Mon Sep 17 00:00:00 2001
 From: Ilya Gulya <ilya@gulya.me>
 Date: Tue, 30 Jun 2026 14:30:12 +0000
 Subject: [PATCH] perf#18 D16 (dar-dar6x4-perf-5dq / dar-1il.11): per-thread
@@ -3030,8 +3002,6 @@ The server was ALREADY per-thread (_ringThreads / _drainRings / per-thread RingA
 Live A/B (matched dyld+dylib+server, same warm workload): post_attach_eligible_UDS
 1533 -> 231 (-85%); heatmap ring-share ~100% on the eligible ops; fork-storm 3/3;
 ring health all-0; no wedge. Prod binaries restored + md5-verified.
-
-Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
 ---
  .../resources/dserver-ring.c                  | 325 ++++++++++++------
  1 file changed, 220 insertions(+), 105 deletions(-)
@@ -3713,7 +3683,7 @@ index 1670c3ff512d7cb00f199f2e4f508bc21c5cc212..e31cd8672409dbbd302fe617f4c3aca1
  }
  
 
-From a1425a0886eea4da31e014da5d657afa7e8112d2 Mon Sep 17 00:00:00 2001
+From 4368016ed1f2e825493b9db4aad8367b3b7da2e7 Mon Sep 17 00:00:00 2001
 From: Ilya Gulya <ilya@gulya.me>
 Date: Tue, 30 Jun 2026 14:54:12 +0000
 Subject: [PATCH] perf#18 D17 (dar-dar6x4-perf-5dq / dar-1il.12): guest
@@ -3730,8 +3700,6 @@ Live (matched build): every leaf process reports acquired=1 exhausted=0 reclaime
 
 No behavior change: the counters are pure stats, the dump is no-op unless armed, and nothing on
 the hot path is touched. ABI v5 unchanged.
-
-Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
 ---
  .../resources/dserver-ring.h                  |  6 ++
  .../resources/dserver-ring.c                  | 72 +++++++++++++++++++
@@ -3895,7 +3863,7 @@ index 1304fd123ff99fd5994f5c4ced206ded4ec46409..e0b0326fb58d7a28a6324493901c2201
  	native_exit(status);
  
 
-From caddc2b7ef7718e60318f98ec39dab7d40df38ca Mon Sep 17 00:00:00 2001
+From 88dcbf670cd4d1c000dd7f7d95324784bafb0dca Mon Sep 17 00:00:00 2001
 From: Ilya Gulya <ilya@gulya.me>
 Date: Wed, 1 Jul 2026 00:53:01 +0000
 Subject: [PATCH] perf#18 D18a follow-through (task #69): default GR_MAX_LANES
@@ -3923,8 +3891,6 @@ Verification (default build, no -D override):
   - health counters all 0 (ring_fast_fail/s2c_full/fast_suspend/clients_blocked/attach_rejects)
   - ring-OFF: inert (define inside #ifdef DARLING_RING_TRANSPORT)
 Prod restored + md5-verified. NOT pushed.
-
-Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
 ---
  .../src/linux_premigration/resources/dserver-ring.c      | 9 ++++++++-
  1 file changed, 8 insertions(+), 1 deletion(-)

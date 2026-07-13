@@ -1,4 +1,4 @@
-From bb620a209a3a72d2a238b30102147438e58b35ef Mon Sep 17 00:00:00 2001
+From 9158f95de70c397304ec87f901dd3e86eb3567f0 Mon Sep 17 00:00:00 2001
 From: Ilya Gulya <ilya.gulya@indriver.com>
 Date: Tue, 23 Jun 2026 02:24:36 +0000
 Subject: [PATCH] call: never strand the push_reply synchronization pipe on a
@@ -34,8 +34,6 @@ Fix it two ways:
    drop the pushed reply -- that reply IS the reply to the interrupted call
    and the client is still waiting for it. Send it straight back to the
    client so the call completes instead of hanging.
-
-Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
 ---
  .../darlingserver/push-reply-sync-pipe.hpp    | 49 +++++++++++++++++++
  src/call.cpp                                  | 49 ++++++++++++++-----

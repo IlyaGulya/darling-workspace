@@ -1,4 +1,4 @@
-From 757bb94c2e9fe43dfbab708f7dd7a0f4f0d56e70 Mon Sep 17 00:00:00 2001
+From 1354dd5531a48205d86327453125924d2865cf5a Mon Sep 17 00:00:00 2001
 From: Ilya Gulya <ilya@gulya.me>
 Date: Sat, 4 Jul 2026 14:36:25 +0000
 Subject: [PATCH] dar-j7e7: gate __dserver_ring_postfork_reset()
@@ -17,8 +17,6 @@ and restores the -1 sentinel. GREEN = ownership-gated (the fix). RED arms:
 Wired into run-ring-shm-validate.sh after the multilane gate. Full ring suite green.
 
 Pairs with the guest fix in xnu (fix/j7e7-lane-wakefd-sentinel, commit 8d554c2).
-
-Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
 ---
  tests/ring_postfork_reset_gate_test.c | 175 ++++++++++++++++++++++++++
  tests/run-ring-shm-validate.sh        |  38 ++++++

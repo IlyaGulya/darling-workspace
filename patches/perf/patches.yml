@@ -83,11 +83,11 @@ patches:
       internal service fds sit in [3584,4096), ordinary guest opens stay below
       the protected band, and fork/exec still works.
 - path: xnu/shmem-ring-guest.patch
-  sha256sum: 8b6aeb9acc982955db48cffec4d6b333de874d81e444a3e699acc03ba75966c9
+  sha256sum: feac8a48b313020f3b769e431891d26e538162dddddbfb60bc1a5460dbd562fd
   module: darling/src/external/xnu
   source-branch: perf/shmem-ring-guest
-  source-base: 1169ebe2d99cf0c7ba36c1f2613fcf66a9cbbb1c
-  source-commit: caddc2b7ef7718e60318f98ec39dab7d40df38ca
+  source-base: e1db4266f50415c013371fc57e8f38a0423493ec
+  source-commit: 88dcbf670cd4d1c000dd7f7d95324784bafb0dca
   bead: dar-1il.12
   publication-status: blocked
   publication-blocker: perf#18 guest shared-memory ring transport (D3..D18a staircase) is an EXPERIMENTAL transport, flag-gated behind DARLING_RING_TRANSPORT / DARLING_SERVER_FAST_OPS. It has a residual RPC-loss failure mode under heavy concurrent fork/exec/exit (see perf#25a-hang, bead dar A0). Not default-on, not proposed upstream. Base is 1169ebe (perf#7-generalize recv-spin), already exported by the homebrew profile as xnu/generalize-recv-spin-guest, so this patch carries ONLY the 17 ring-specific commits on top of it.
@@ -143,11 +143,11 @@ patches:
       current-minus RED runtime removes this guest patch, so the workload can
       fall back to UDS but cannot issue the ring_attach RPC.
 - path: dyld/dcc2-reader.patch
-  sha256sum: bc1acc8ba1a4c969d216391f022111eb14239c96c6fedb0707bb75ff5953f6a5
+  sha256sum: 699488ee11966cfaad96ca70ce59b38398d3875fa1be3dc6c5a494416be44761
   module: darling/src/external/dyld
   source-branch: fix/dyld-dcc2-reader
   source-base: 63f667cf06d7ed59553adebb0c8d70a117135ac9
-  source-commit: aec6a4af4efaacbda31911aaf32d73495d4a7da1
+  source-commit: ef9bcd0085cfa3f4ea62c556a764803c59d93d45
   bead: dar-dar6x4-perf-5dq.26
   publication-status: blocked
   publication-blocker: perf#24 DCC6 packed-shared-cache dyld reader (3-region + TEXT RIP-relative rewrite + precomputed fixup table). CLOSED as a functionally-proven, kernel-measured PROTOTYPE that is FLAG-GATED (DARLING_DYLD_DCC2=1 + DARLING_DYLD_DCC2_PATH) and NOT default-on; productization needs separate hardening (cache-build/staleness deploy, coverage beyond the 40-dylib closure, cache ABI-version discipline). See tests/PERF24-DCC6-FINAL.md. Base is 63f667cf (manifest dyld revision).
@@ -321,11 +321,11 @@ patches:
     note: |
       Bounded deployed-guest zero-hang gate from the patch: boot smoke plus nestwait, forkwait, and cvstorm2 synthetic repros under west-owned prefix/launcher cleanup. Full brew legs remain a slow manual/guarded acceptance run.
 - path: xnu/j7e7-lane-wakefd-sentinel.patch
-  sha256sum: 6883cbd4cd27fb6a4dd1ebd433fc769b1d8fa87adddb0587b28d5fa5b44d0b65
+  sha256sum: c835c5628e29b50f858f38a71c501f6be1681b0151b13447fcdf5d698224ca2a
   module: darling/src/external/xnu
   source-branch: fix/j7e7-lane-wakefd-sentinel
-  source-base: caddc2b7ef7718e60318f98ec39dab7d40df38ca
-  source-commit: 8d554c2b67e809cb580692f19199a4fafcf1372a
+  source-base: 88dcbf670cd4d1c000dd7f7d95324784bafb0dca
+  source-commit: f41fdd69e26d08af690dcfe9987efc04c670aa19
   bead: dar-j7e7
   publication-status: blocked
   publication-blocker: 'dar-j7e7 regression fix for the D16 per-thread ring lanes (guest): __dserver_ring_postfork_reset() freed each lane on wake_fd>=0, but the static (zero-init) lane table has wake_fd==0 on un-attached lanes, so the fork child ran close(0) once per untouched lane -> broken stdin -> brew "cannot duplicate fd 0". Frees now gated on the ownership marker (active==1); wake_fd=-1 sentinel restored at claim+reset; FD_CLOEXEC set on the received wake_fd. Stacks on xnu/shmem-ring-guest.patch (base caddc2b). Same experimental ring transport gating; not upstream-proposed until the ring itself is. See dar-j7e7.'
@@ -368,11 +368,11 @@ patches:
       parent payload. The pre-fix postfork_reset path closes fd 0 for untouched
       zero-initialized lanes, so the RED runtime loses child stdin.
 - path: darlingserver/j7e7-postfork-reset-gate.patch
-  sha256sum: ed025dd0c30f5429c45cdd3001a38712500d3649c3006d2cbf223b6d6a743f10
+  sha256sum: 4e38de8a24d5c0cfa7374022d5371c7b860fe24cd3623f8e6363e465e89e4d0a
   module: darling/src/external/darlingserver
   source-branch: fix/j7e7-postfork-reset-gate
   source-base: 03cf98e489f6c7830d82e10b5ee2217d44b9a1ae
-  source-commit: 757bb94c2e9fe43dfbab708f7dd7a0f4f0d56e70
+  source-commit: 1354dd5531a48205d86327453125924d2865cf5a
   bead: dar-j7e7
   publication-status: blocked
   publication-blocker: 'dar-j7e7 test coverage: hermetic host gate ring_postfork_reset_gate_test.c pinning __dserver_ring_postfork_reset()''s resource-ownership predicate (the D16 multilane gate covered active/generation races but NOT what postfork_reset frees per lane -- the gap that let the close(0) regression ship). RED arms reproduce the shipped bug + a dropped sentinel; wired into run-ring-shm-validate.sh. Stacks on darlingserver/perf18-server-ring.patch (base 03cf98e). Pairs with xnu/j7e7-lane-wakefd-sentinel.patch. Same ring-experimental gating. See dar-j7e7.'

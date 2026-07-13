@@ -1,4 +1,4 @@
-From 8d554c2b67e809cb580692f19199a4fafcf1372a Mon Sep 17 00:00:00 2001
+From f41fdd69e26d08af690dcfe9987efc04c670aa19 Mon Sep 17 00:00:00 2001
 From: Ilya Gulya <ilya@gulya.me>
 Date: Sat, 4 Jul 2026 14:35:12 +0000
 Subject: [PATCH] dar-j7e7: postfork_reset frees by ownership marker, not fd
@@ -23,8 +23,6 @@ Fix (architectural, keyed off the existing lifecycle marker, not a value-shape g
 Verified: unit gate ring_postfork_reset_gate_test RED->GREEN; fork+exec fd probe
 (child stdin survives, matches pre-D16 baseline); real 'brew reinstall xz' completes
 rc=0 (was the reproducible failure). Full perf#18 ring gate suite green.
-
-Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
 ---
  .../resources/dserver-ring.c                  | 32 ++++++++++++++++---
  1 file changed, 27 insertions(+), 5 deletions(-)
