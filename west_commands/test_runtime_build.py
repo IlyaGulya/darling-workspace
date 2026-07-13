@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import re
 import sys
 import time
 from pathlib import Path
@@ -88,6 +89,22 @@ class RuntimeBuildService:
             sys.stderr.write(tail + "\n")
         self._host.err(f"{label} failed with rc {result.returncode}")
 
+    def _forward_runtime_line(self, label: str, phase: str, stream: str, line: str) -> None:
+        if phase == "configure":
+            self._host.inf(f"  runtime {label} configure {stream}: {line}")
+            return
+        progress = re.match(r"^\[(\d+)/(\d+)\]", line)
+        if progress:
+            current, total = (int(value) for value in progress.groups())
+            if current not in {1, total} and current % 25:
+                return
+        elif not any(
+            marker in line
+            for marker in ("FAILED:", "error:", "Error:", "ninja:")
+        ):
+            return
+        self._host.inf(f"  runtime {label} build {stream}: {line}")
+
     def build_artifacts(
         self,
         source_root: Path,
@@ -117,8 +134,8 @@ class RuntimeBuildService:
             heartbeat=lambda elapsed: self._host.inf(
                 f"  runtime heartbeat: {label} configure still running ({elapsed:.0f}s)"
             ),
-            output_line=lambda stream, line: self._host.inf(
-                f"  runtime {label} configure {stream}: {line}"
+            output_line=lambda stream, line: self._forward_runtime_line(
+                label, "configure", stream, line
             ),
         )
         if configured.returncode:
@@ -140,8 +157,8 @@ class RuntimeBuildService:
             heartbeat=lambda elapsed: self._host.inf(
                 f"  runtime heartbeat: {label} build still running ({elapsed:.0f}s)"
             ),
-            output_line=lambda stream, line: self._host.inf(
-                f"  runtime {label} build {stream}: {line}"
+            output_line=lambda stream, line: self._forward_runtime_line(
+                label, "build", stream, line
             ),
         )
         if built.returncode:
