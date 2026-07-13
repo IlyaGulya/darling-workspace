@@ -1435,6 +1435,12 @@ class DarlingTest(WestCommand):
                 "eunion_template_symlinks": list(test.get("eunion-template-symlinks", [])),
                 "eunion_upper_files": list(test.get("eunion-upper-files", [])),
                 "eunion_cleanup_dirs": list(test.get("eunion-cleanup-dirs", [])),
+                "eunion_forbid_template_paths": list(
+                    test.get("eunion-forbid-template-paths", [])
+                ),
+                "eunion_require_upper_paths": list(
+                    test.get("eunion-require-upper-paths", [])
+                ),
                 "eunion_verify_template_files_after": bool(
                     test.get("eunion-verify-template-files-after", False)
                 ),
@@ -2823,6 +2829,8 @@ class DarlingTest(WestCommand):
         created_upper_dirs: list[Path] = []
         cleanup_dirs: list[tuple[Path, Path]] = []
         template_assertions: list[dict] = []
+        forbidden_template_paths = list(invocation.get("eunion_forbid_template_paths", []))
+        required_upper_paths = list(invocation.get("eunion_require_upper_paths", []))
         probe_dirs: list[tuple[Path, Path]] = []
         blocked_upper_files: list[Path] = []
 
@@ -2943,10 +2951,14 @@ class DarlingTest(WestCommand):
                         f"{invocation['name']}: eunion-template-symlinks[{index}] needs "
                         "an absolute guest-path without '..'"
                     )
-                if not target or target.startswith("/") or ".." in Path(target).parts:
+                allow_parent_target = bool(spec.get("allow-parent-target", False))
+                if not target or target.startswith("/") or (
+                    not allow_parent_target and ".." in Path(target).parts
+                ):
                     self.die(
                         f"{invocation['name']}: eunion-template-symlinks[{index}] needs "
-                        "a non-empty relative target without '..'"
+                        "a non-empty relative target without '..' unless "
+                        "allow-parent-target is true"
                     )
                 rel = Path(guest_path.lstrip("/"))
                 upper_path = prefix / rel
@@ -2985,12 +2997,24 @@ class DarlingTest(WestCommand):
         try:
             yield
         finally:
-            self._shutdown_runtime_prefix(prefix)
             try:
-                if invocation.get("eunion_verify_template_files_after"):
-                    self._verify_eunion_template_files_after(invocation, template_assertions)
+                self._verify_eunion_forbidden_template_paths_after(
+                    invocation,
+                    prefix,
+                    forbidden_template_paths,
+                )
+                self._verify_eunion_upper_paths_after(
+                    invocation,
+                    prefix,
+                    required_upper_paths,
+                )
             finally:
-                cleanup_fixture_state()
+                self._shutdown_runtime_prefix(prefix)
+                try:
+                    if invocation.get("eunion_verify_template_files_after"):
+                        self._verify_eunion_template_files_after(invocation, template_assertions)
+                finally:
+                    cleanup_fixture_state()
 
     @contextmanager
     def _dcc_cache_context(self, invocation, env):
@@ -3379,6 +3403,36 @@ class DarlingTest(WestCommand):
                 self.die(
                     f"{invocation['name']}: E-UNION template fixture xattr was added: "
                     f"{path} {name}={got_value!r}"
+                )
+
+    def _verify_eunion_forbidden_template_paths_after(
+        self,
+        invocation,
+        prefix: Path,
+        guest_paths: list[str],
+    ) -> None:
+        for guest_path in guest_paths:
+            rel = Path(str(guest_path).lstrip("/"))
+            lower_path = prefix / "libexec/darling" / rel
+            if os.path.lexists(lower_path):
+                self.die(
+                    f"{invocation['name']}: forbidden E-UNION template path was created: "
+                    f"{guest_path} ({lower_path})"
+                )
+
+    def _verify_eunion_upper_paths_after(
+        self,
+        invocation,
+        prefix: Path,
+        guest_paths: list[str],
+    ) -> None:
+        for guest_path in guest_paths:
+            rel = Path(str(guest_path).lstrip("/"))
+            upper_path = prefix / rel
+            if not os.path.lexists(upper_path):
+                self.die(
+                    f"{invocation['name']}: required E-UNION upper path is missing: "
+                    f"{guest_path} ({upper_path})"
                 )
 
     def _verify_eunion_runtime_prefix(self, invocation, env, prefix: Path, probe_dirs) -> None:

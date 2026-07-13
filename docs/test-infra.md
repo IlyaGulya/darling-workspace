@@ -120,7 +120,25 @@ source-base RED runs select
 the `eunion-host` label; only `DARLING_XNU_SRC` changes between them. Guest
 E-UNION cases remain `guest-c-fixture` metadata tests because their lower and
 upper trees must be staged inside an isolated Darling prefix by the typed
-`darling-eunion-prefix` provider.
+`darling-eunion-prefix` provider. The `eunion-overlay` fixture profile keeps
+that setup declarative:
+
+- `template-files`, `template-symlinks`, and `upper-files` describe the lower
+  template and any pre-existing upper entries;
+- `cleanup-dirs` bounds per-test state to `/private/var/tmp/west-*` paths;
+- `forbid-template-paths` asserts that a mutating guest operation did not write
+  into the immutable template;
+- `require-upper-paths` asserts that the expected object was materialized in
+  the writable upper layer;
+- `verify-template-files-after` checks template contents, modes, and xattrs
+  after the runtime is shut down.
+
+The first two oracle lists are checked while Darling is still alive, because
+runtime shutdown removes its private sockets and other runtime-created nodes.
+Template-file assertions run after shutdown and before fixture cleanup. A
+template symlink target containing `..` is rejected by default; use the
+explicit `allow-parent-target: true` only for a test whose purpose is to check
+symlink containment or rejected escape behavior.
 
 ```yaml
 test-profiles:
