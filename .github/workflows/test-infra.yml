@@ -39,7 +39,7 @@ jobs:
       - name: Install Darling build dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install --yes --no-install-recommends libfuse-dev
+          sudo apt-get install --yes --no-install-recommends libfuse-dev libx11-dev
       - name: Materialize Darling workspace
         run: darling-dev/darling-workspace/ci/bootstrap-west.sh
       - name: Run rootless guest smoke
@@ -65,7 +65,7 @@ jobs:
       - name: Install Darling build dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install --yes --no-install-recommends libfuse-dev
+          sudo apt-get install --yes --no-install-recommends libfuse-dev libx11-dev
       - name: Materialize Darling workspace
         run: darling-dev/darling-workspace/ci/bootstrap-west.sh
       - name: Run full rootless guest suite
