@@ -117,6 +117,12 @@ New manifests should use the explicit compact axes:
 Do not introduce `needs`; it is too broad. Use `artifacts`, `resources`, and
 `fixtures` so the manifest says what kind of dependency is involved.
 
+Runtime preflight uses `west patch verify --applicability-only`: on a clean CI
+runner the fork's local `source-branch` refs are intentionally absent, so this
+mode checks patch integrity and application to the pinned manifest revisions
+without confusing missing developer branches with a runtime failure. Full
+`west patch verify` still checks source-branch/export drift for publishing.
+
 E-UNION host behavior follows the same rule. `testkit/CMakeLists.txt` builds
 the production XNU sources and the workspace harness as a CTest target, while
 the fixture setup is a CTest fixture prepared by

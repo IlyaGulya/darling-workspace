@@ -12,6 +12,7 @@ tests/run-darling-c-test-contract.sh
 # like ordinary Python packages, so this catches loader-incompatible module
 # declarations before any CTest discovery runs.
 west test --help | grep -q -- '--bootstrap-runtime-profile NAME'
+west patch verify --help | grep -q -- '--applicability-only'
 
 if patch_profile_error="$(west test --patch darling/rootless-shellspawn-lifecycle.patch \
 	--prefix-profile homebrew --list 2>&1)"; then

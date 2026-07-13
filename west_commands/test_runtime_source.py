@@ -21,6 +21,7 @@ from pathlib import Path
 from typing import Any, Iterator
 
 from source_worktree import SourceWorktreeError, prepare_source_worktree
+from patch import TEMPORARY_PATCH_GIT_OPTIONS
 from test_results import RuntimeRedProven
 from test_runtime_evidence import RuntimeEvidenceSession
 from test_worktrees import remove_temporary_worktree
@@ -91,7 +92,8 @@ class RuntimeSourceMaterializer:
                         self._host.inf(f"  apply {stacked}/{patch['path']}")
                         subprocess.run(
                             [
-                                "git", "-c", "gc.auto=0", "-c", "maintenance.auto=false",
+                                "git",
+                                *TEMPORARY_PATCH_GIT_OPTIONS,
                                 "am", "--3way", str(profile_dir / patch["path"]),
                             ],
                             cwd=target,
