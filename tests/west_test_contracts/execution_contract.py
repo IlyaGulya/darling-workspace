@@ -148,6 +148,17 @@ result = run_bounded(
 )
 assert result.returncode == 0 and heartbeats, (result, heartbeats)
 
+heartbeats = []
+result = run_bounded(
+    [sys.executable, "-c", "import time; time.sleep(1.1)"],
+    cwd=Path.cwd(),
+    env=None,
+    timeout_seconds=2,
+    heartbeat_seconds=30,
+    heartbeat=heartbeats.append,
+)
+assert result.returncode == 0 and len(heartbeats) == 0, (result, heartbeats)
+
 result = run_bounded(
     [
         sys.executable,

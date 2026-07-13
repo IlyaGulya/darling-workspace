@@ -3223,7 +3223,7 @@ class DarlingTest(WestCommand):
         trace_dir = getattr(self, "_bootstrap_syscall_trace", None)
         stack_sample_dir = getattr(self, "_bootstrap_stack_sample", None)
         if trace_dir is not None:
-            trace_dir = Path(trace_dir)
+            trace_dir = self._resolve_bootstrap_diagnostic_dir(trace_dir)
             trace_dir.mkdir(parents=True, exist_ok=True)
             trace_prefix = trace_dir / "eunion-bootstrap"
             command_prefix = ("strace", "-ff", "-o", str(trace_prefix))
@@ -3306,6 +3306,14 @@ class DarlingTest(WestCommand):
             if definition is not None:
                 return int(definition["bootstrap-smoke-timeout-seconds"])
         return 15
+
+    def _resolve_bootstrap_diagnostic_dir(self, value: str | Path) -> Path:
+        """Resolve diagnostic output like the command's configured working tree."""
+
+        path = Path(value).expanduser()
+        if not path.is_absolute():
+            path = Path(getattr(self, "topdir", Path.cwd())) / path
+        return path.resolve()
 
     def _bootstrap_stack_sample_command(
         self,
@@ -3793,6 +3801,7 @@ class DarlingTest(WestCommand):
         if trace_dir is not None:
             if shutil.which("strace") is None:
                 self.die("--bootstrap-syscall-trace requires strace on the host")
+            trace_dir = self._resolve_bootstrap_diagnostic_dir(trace_dir)
             trace_dir.mkdir(parents=True, exist_ok=True)
             command_prefix = (
                 "strace",
