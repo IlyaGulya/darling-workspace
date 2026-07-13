@@ -37,6 +37,11 @@ jobs:
           path: darling-dev/darling-workspace
       - name: Install West
         run: python3 -m pip install west
+      - name: Restore guest CommandLineTools cache
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/west/darling-command-line-tools
+          key: darling-command-line-tools-v1-${{ runner.os }}
       - name: Install Darling build dependencies
         run: darling-dev/darling-workspace/ci/install-darling-build-deps.sh
       - name: Materialize Darling workspace
@@ -89,6 +94,11 @@ jobs:
           path: darling-dev/darling-workspace
       - name: Install West
         run: python3 -m pip install west
+      - name: Restore guest CommandLineTools cache
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/west/darling-command-line-tools
+          key: darling-command-line-tools-v1-${{ runner.os }}
       - name: Install Darling build dependencies
         run: darling-dev/darling-workspace/ci/install-darling-build-deps.sh
       - name: Materialize Darling workspace

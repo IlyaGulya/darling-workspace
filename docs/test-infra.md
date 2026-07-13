@@ -526,7 +526,14 @@ The nested database directories are provisioned explicitly because launchctl's
 one-level metadata repair cannot create missing parents in a clean rootless
 prefix. It also restores canonical
 `CommandLineTools`/`DarlingCLT` clang links from the versioned CLT already
-installed in the prefix. `west test` and
+installed in the prefix. Runtime profiles that run source-driven guest CTest
+cases additionally declare `guest-toolchain: darling-command-line-tools`.
+The typed West provider checks the default compiler and SDK, downloads the
+official package set from Darling's existing CommandLineTools distribution
+endpoint only when they are absent, installs each package through the guest
+`/usr/bin/installer`, verifies SHA-1 and size before installation, and removes
+the prefix-owned staging files afterward. Package bytes stay in the external
+West cache rather than in patch metadata or JSON snapshots. `west test` and
 `west darling-doctor` share the same prerequisite checks, so a repaired prefix
 is checked against the same contract that guest metadata tests require. The
 `--cleanup-mounts` mode unmounts stale filesystems left under an otherwise idle

@@ -14,6 +14,7 @@ import yaml
 ROOTLESS_BOOTSTRAP_RESOURCE = "rootless-bootstrap"
 ROOTLESS_BOOTSTRAP_TARGET = "rootless_bootstrap"
 ROOTLESS_BOOTSTRAP_MANIFEST = "darling-rootless-bootstrap.json"
+GUEST_TOOLCHAIN_RESOURCE = "darling-command-line-tools"
 # Source owners whose patched revisions can provide Mach-O libraries in the
 # bootstrap closure. A materialized runtime forest must not leave them as live
 # symlinks, or it can build an unpatched provider while claiming profile parity.
@@ -295,6 +296,7 @@ def load_ctest_runtime_profiles(path: Path) -> dict[str, dict[str, Any]]:
         source_modules = profile.get("source-modules")
         artifacts = profile.get("runtime-artifacts")
         bootstrap = profile.get("bootstrap")
+        guest_toolchain = profile.get("guest-toolchain")
         purpose = profile.get("purpose", "runtime")
         bootstrap_smoke_timeout = profile.get("bootstrap-smoke-timeout-seconds", 60)
         if not isinstance(source_profile, str) or not source_profile:
@@ -310,6 +312,11 @@ def load_ctest_runtime_profiles(path: Path) -> dict[str, dict[str, Any]]:
         if bootstrap is not None and bootstrap != "rootless-no-mount":
             raise ValueError(
                 f"runtime profile {name!r} has unknown bootstrap {bootstrap!r}"
+            )
+        if guest_toolchain is not None and guest_toolchain != GUEST_TOOLCHAIN_RESOURCE:
+            raise ValueError(
+                f"runtime profile {name!r} has unknown guest-toolchain "
+                f"{guest_toolchain!r}"
             )
         if purpose not in {"runtime", "prefix-baseline"}:
             raise ValueError(
@@ -418,6 +425,8 @@ def load_ctest_runtime_profiles(path: Path) -> dict[str, dict[str, Any]]:
         }
         if bootstrap is not None:
             normalized[name]["bootstrap"] = bootstrap
+        if guest_toolchain is not None:
+            normalized[name]["guest-toolchain"] = guest_toolchain
     return normalized
 
 
@@ -449,6 +458,7 @@ def compose_ctest_runtime_profiles(
     deployed: dict[str, dict[str, Any]] = {}
     cmake_defines: dict[str, Any] = {}
     launcher_env: dict[str, Any] = {}
+    guest_toolchain: str | None = None
     bootstrap: str | None = None
     bootstrap_smoke_timeout = 0
     for name in selected:
@@ -497,6 +507,14 @@ def compose_ctest_runtime_profiles(
                     f"runtime profile {name!r} conflicts on bootstrap {candidate_bootstrap}"
                 )
             bootstrap = candidate_bootstrap
+        candidate_toolchain = definition.get("guest-toolchain")
+        if candidate_toolchain is not None:
+            if guest_toolchain is not None and guest_toolchain != candidate_toolchain:
+                raise ValueError(
+                    f"runtime profile {name!r} conflicts on guest toolchain "
+                    f"{candidate_toolchain}"
+                )
+            guest_toolchain = candidate_toolchain
     result = {
         "name": "+".join(selected),
         "source-profile": source_profiles.pop(),
@@ -511,6 +529,8 @@ def compose_ctest_runtime_profiles(
         result["launcher-env"] = launcher_env
     if bootstrap is not None:
         result["bootstrap"] = bootstrap
+    if guest_toolchain is not None:
+        result["guest-toolchain"] = guest_toolchain
     return result
 
 
