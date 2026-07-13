@@ -65,6 +65,8 @@ def metadata_test_labels(
         f"env:{test.get('env', 'host')}",
         f"diag:{resolved_diag(test)}",
     }
+    if test.get("name"):
+        labels.add(f"name:{test['name']}")
     if patch.get("bead"):
         labels.add(f"bead:{patch['bead']}")
     modules = test.get("submodules") or [patch.get("module")]

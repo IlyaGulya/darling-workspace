@@ -34,9 +34,9 @@ this refresh was `ce56358` (2026-07-05). It uses `add_test()`, CTest
 The patch-profile audit found the real gap is not the choice of backend, but
 test normalization and discoverability. Across `arch`, `homebrew`, and `perf`
 there are 97 patch files with mixed proof styles: shell gates, raw C/C++ unit
-tests, CMake/CTest targets, markdown acceptance notes, and the E-UNION
-experiment runner. Many non-documentation fixes still have no committed red
-test in their patch profile; `dar-r7z7` tracks that inventory.
+tests, CMake/CTest targets, markdown acceptance notes, and a few legacy source
+adapters. Many non-documentation fixes still have no committed red test in
+their patch profile; `dar-r7z7` tracks that inventory.
 
 Product direction:
 
@@ -111,6 +111,16 @@ New manifests should use the explicit compact axes:
 
 Do not introduce `needs`; it is too broad. Use `artifacts`, `resources`, and
 `fixtures` so the manifest says what kind of dependency is involved.
+
+E-UNION host behavior follows the same rule. `testkit/CMakeLists.txt` builds
+the production XNU sources and the workspace harness as a CTest target, while
+the fixture setup is a CTest fixture prepared by
+`experiments/e-union/run.sh --prepare-fixture DIR`. Both normal GREEN runs and
+source-base RED runs select
+the `eunion-host` label; only `DARLING_XNU_SRC` changes between them. Guest
+E-UNION cases remain `guest-c-fixture` metadata tests because their lower and
+upper trees must be staged inside an isolated Darling prefix by the typed
+`darling-eunion-prefix` provider.
 
 ```yaml
 test-profiles:

@@ -214,6 +214,18 @@ assert ctest_alias["red-proof"] == {
 assert ctest_alias["target"] == "darling_ec_tls_regress", ctest_alias
 assert "ctest" not in ctest_alias and "build-target" not in ctest_alias
 
+ctest_label = normalize_test(
+    {
+        "name": "ctest_label",
+        "ctest-label": "eunion-host",
+        "red": True,
+        "red-proof": {"mode": "source-base"},
+    },
+    {},
+    {},
+)
+assert ctest_label["red-proof"]["expect-failure-phase"] == "ctest", ctest_label
+
 source_default = normalize_test(
     {
         "kind": "contract",

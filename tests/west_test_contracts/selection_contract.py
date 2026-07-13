@@ -74,6 +74,18 @@ smoke = select_metadata_tests(
 )
 assert [test["name"] for _, test in smoke.selected] == ["guest-green"]
 
+named = select_metadata_tests(
+    profile,
+    patch_path=None,
+    bead=None,
+    env=None,
+    diag=None,
+    label="name:guest-green",
+    red_only=False,
+    resolved_diag=lambda test: test["diag"],
+)
+assert [test["name"] for _, test in named.selected] == ["guest-green"]
+
 no_stress = select_metadata_tests(
     profile,
     patch_path=None,

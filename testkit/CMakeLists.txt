@@ -74,12 +74,10 @@ else()
     "dar-dar6x4-perf-5dq.1")
 endif()
 
-# E-UNION's host harness executes the selected profile's XNU sources and
-# provides source-base RED proof. A static testkit configuration only knows
-# the current checkout, which may be a different profile. West therefore owns
-# this source-profile runner through patch metadata; registering it here would
-# make a generic CTest smoke test run a homebrew assertion against, for example,
-# integration/arch.
+# E-UNION host tests compile the selected profile's XNU sources as ordinary
+# CTest targets. The source-base RED proof uses the same targets after West
+# configures this project with a temporary XNU worktree, so a failure cannot be
+# accepted merely because a separate shell runner behaved differently.
 set(_mldr "${DARLING_SRC}/src/startup/mldr")
 set(_libsystem_kernel_tests
   "${DARLING_XNU_SRC}/darling/src/libsystem_kernel/tests")
@@ -103,6 +101,97 @@ if(EXISTS "${_eunion_resolver_source}" AND EXISTS "${_eunion_resolver_impl}")
   add_test(NAME host/eunion_resolver_test COMMAND eunion_resolver_test)
   set_property(TEST host/eunion_resolver_test PROPERTY
     LABELS "env:host;diag:bare;bead:dar-yfp4;submod:xnu;eunion-host")
+endif()
+
+set(_eunion_harness_dir
+  "${DARLING_XNU_SRC}/darling/src/libsystem_kernel/emulation")
+set(_eunion_include_root "${CMAKE_CURRENT_BINARY_DIR}/eunion-includes")
+set(_eunion_harness_sources
+  "${_workspace_root}/experiments/e-union/runner.c"
+  "${_workspace_root}/experiments/e-union/whiteout_hook_fallback.c"
+  "${_eunion_harness_dir}/src/xnu_syscall/bsd/helper/misc/common_at.c"
+  "${_eunion_harness_dir}/src/xnu_syscall/bsd/impl/stat/mkdir.c"
+  "${_eunion_harness_dir}/src/xnu_syscall/bsd/impl/stat/mkdirat.c"
+  "${_eunion_harness_dir}/src/xnu_syscall/bsd/impl/stat/rmdir.c"
+  "${_eunion_harness_dir}/src/xnu_syscall/bsd/impl/unistd/renameat.c"
+  "${_eunion_harness_dir}/src/xnu_syscall/bsd/impl/unistd/unlinkat.c"
+  "${_eunion_harness_dir}/src/xnu_syscall/bsd/impl/fcntl/openat.c"
+  "${_eunion_harness_dir}/src/xnu_syscall/bsd/impl/unistd/dup.c"
+  "${_eunion_harness_dir}/src/xnu_syscall/bsd/impl/unistd/lseek.c"
+  "${_eunion_harness_dir}/src/conversion/fcntl/open.c"
+  "${_eunion_harness_dir}/src/xnu_syscall/bsd/impl/network/bind.c")
+set(_eunion_harness_include_dirs
+  "${_eunion_harness_dir}/src/linux_premigration"
+  "${_workspace_root}/experiments/e-union/shim"
+  "${_eunion_include_root}"
+  "${_workspace_root}/experiments/e-union")
+if(EXISTS "${_eunion_resolver_impl}")
+  list(APPEND _eunion_harness_sources "${_eunion_resolver_impl}")
+  list(APPEND _eunion_harness_include_dirs "${_eunion_harness_dir}/include")
+endif()
+set(_eunion_harness_ready TRUE)
+foreach(_source IN LISTS _eunion_harness_sources)
+  if(NOT EXISTS "${_source}")
+    set(_eunion_harness_ready FALSE)
+  endif()
+endforeach()
+
+if(EXISTS "${_eunion_harness_dir}/src/linux_premigration/vchroot_userspace.c"
+   AND _eunion_harness_ready)
+  # Production headers use the upstream <darling/emulation/...> prefix while
+  # the XNU checkout stores the contents directly below emulation/include.
+  # Recreate the same include shape as the standalone harness without copying
+  # headers into the build tree.
+  file(MAKE_DIRECTORY "${_eunion_include_root}/darling")
+  if(NOT EXISTS "${_eunion_include_root}/darling/emulation")
+    file(CREATE_LINK "${_eunion_harness_dir}/include"
+      "${_eunion_include_root}/darling/emulation" SYMBOLIC)
+  endif()
+
+  function(_add_eunion_harness target test_name fixture_root libexec_path fixture_name)
+    add_executable("${target}" ${_eunion_harness_sources})
+    target_compile_definitions("${target}" PRIVATE
+      TEST=1
+      _GNU_SOURCE=1
+      EUNION
+      EFAULT=14
+      "EUNION_LIBEXEC_PATH=\"${libexec_path}\"")
+    target_compile_options("${target}" PRIVATE
+      -Wall -Wno-format-truncation -Wno-unused-function)
+    target_include_directories("${target}" PRIVATE
+      ${_eunion_harness_include_dirs})
+
+    add_test(NAME "${test_name}" COMMAND "${target}")
+    set_property(TEST "${test_name}" PROPERTY
+      WORKING_DIRECTORY "${fixture_root}")
+    set_property(TEST "${test_name}" PROPERTY
+      FIXTURES_REQUIRED "${fixture_name}")
+    set_property(TEST "${test_name}" PROPERTY
+      LABELS "env:host;diag:bare;bead:dar-yfp4;submod:xnu;eunion-host")
+    set_property(TEST "${test_name}" PROPERTY TIMEOUT 60)
+  endfunction()
+
+  set(_eunion_fixture_root
+    "${CMAKE_CURRENT_BINARY_DIR}/eunion-harness-fixture")
+  add_test(NAME host/eunion_hardening_fixture
+    COMMAND /bin/bash "${_workspace_root}/experiments/e-union/run.sh"
+      --prepare-fixture "${_eunion_fixture_root}")
+  set_property(TEST host/eunion_hardening_fixture PROPERTY
+    ENVIRONMENT "XNU_SRC_ROOT=${DARLING_XNU_SRC}")
+  set_property(TEST host/eunion_hardening_fixture PROPERTY
+    FIXTURES_SETUP eunion_hardening_fixture)
+
+  _add_eunion_harness(
+    eunion_hardening_harness
+    host/eunion_hardening_host_suite
+    "${_eunion_fixture_root}"
+    "${_eunion_fixture_root}/libexec"
+    eunion_hardening_fixture)
+
+else()
+  message(WARNING
+    "XNU checkout is missing the E-UNION host harness sources; skipping "
+    "dar-yfp4 host suite")
 endif()
 
 # ---------------------------------------------------------------------------
