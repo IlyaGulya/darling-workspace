@@ -72,6 +72,11 @@ from test_guest_execution import (
     run_guest_shell,
     shutdown_guest_prefix,
 )
+from guest_toolchain import (
+    COMMAND_LINE_TOOLS_RESOURCE,
+    ensure_command_line_tools,
+    GuestToolchainError,
+)
 try:
     from .test_guest_c import run_guest_c_fixture
 except ImportError:  # Loaded as a West extension module, not a package.
@@ -1963,11 +1968,17 @@ class DarlingTest(WestCommand):
                     runtime_env = os.environ.copy()
                     diagnostic_trace_paths: tuple[Path, ...] = ()
                     runtime_env.update(self._darling_prefix_env(prefix_text))
+                    runtime_env.update(launcher_env)
                     runtime_launcher = Path(prefix_text) / "bin" / "darling"
                     if not runtime_launcher.is_file():
                         self.die(
                             f"{label_prefix} runtime profile {profile_name} did not deploy "
                             f"a launcher at {runtime_launcher}"
+                        )
+                    guest_toolchain = definition.get("guest-toolchain")
+                    if guest_toolchain == COMMAND_LINE_TOOLS_RESOURCE:
+                        self._ensure_guest_toolchain(
+                            Path(prefix_text), runtime_launcher, runtime_env
                         )
                     runtime_env["DARLING"] = str(runtime_launcher)
                     runtime_env["DARLING_LAUNCHER"] = str(runtime_launcher)
@@ -1981,7 +1992,6 @@ class DarlingTest(WestCommand):
                             server_trace.unlink(missing_ok=True)
                             runtime_env["DSERVER_TEST_TRACE_FILE"] = str(server_trace)
                             diagnostic_trace_paths = (server_trace,)
-                    runtime_env.update(launcher_env)
                     yield RuntimeProfileDeployment(
                         name=profile_name,
                         prefix=Path(prefix_text),
@@ -1998,6 +2008,31 @@ class DarlingTest(WestCommand):
             retained = evidence_store.finish(evidence, evidence_failure)
             if retained is not None:
                 self.err(f"preserved failed {label_prefix} runtime evidence: {retained}")
+
+    def _ensure_guest_toolchain(
+        self, prefix: Path, launcher: Path, env: dict[str, str]
+    ) -> None:
+        """Materialize profile-declared guest tools before CTest or smoke."""
+
+        toolchain_env = dict(env)
+        toolchain_env.update(self._darling_prefix_env(prefix))
+        toolchain_env["DARLING"] = str(launcher)
+        toolchain_env["DARLING_LAUNCHER"] = str(launcher)
+        try:
+            changed = ensure_command_line_tools(
+                prefix=prefix,
+                launcher=str(launcher),
+                cwd=Path(self.topdir),
+                env=toolchain_env,
+                timeout_seconds=int(
+                    os.environ.get("WEST_GUEST_TOOLCHAIN_TIMEOUT_SECONDS", "900")
+                ),
+                log=self.inf,
+            )
+        except GuestToolchainError as error:
+            self.die(f"guest toolchain {COMMAND_LINE_TOOLS_RESOURCE} failed: {error}")
+        for item in changed:
+            self.inf(f"guest toolchain: {item}")
 
     def _bad_revision(self, patch, proof=None) -> str:
         if isinstance(proof, dict) and proof.get("source-revision"):
