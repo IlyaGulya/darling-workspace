@@ -136,14 +136,13 @@ def is_fat_macho_binary(path: Path) -> bool:
 
 
 def load_rootless_bootstrap_manifest(build_root: Path) -> dict[str, Path]:
-    """Load CMake's rootless entrypoints and validate their deployment boundary.
+    """Load CMake's rootless products and validate their deployment boundary.
 
     CMake owns the component's target-to-guest-path mapping. West only consumes
     its generated product metadata and refuses paths that escape the disposable
-    build tree or fail to name a built executable. Some entrypoints, including
-    the host-side ``darling`` launcher and ``mldr``, are ELF; the deployment
-    manifest carries both host and guest executables. The runtime closure code
-    separately selects only Mach-O entries as dylib-dependency roots.
+    build tree. ``entrypoints`` name built executables; ``resources`` name
+    source-owned runtime files such as launchd plists. The runtime closure code
+    separately selects only Mach-O entrypoints as dylib-dependency roots.
     """
 
     manifest_path = build_root / ROOTLESS_BOOTSTRAP_MANIFEST
@@ -158,46 +157,66 @@ def load_rootless_bootstrap_manifest(build_root: Path) -> dict[str, Path]:
     entries = data.get("entrypoints")
     if not isinstance(entries, list) or not entries:
         raise ValueError("rootless bootstrap manifest needs non-empty entrypoints")
+    resources = data.get("resources", [])
+    if not isinstance(resources, list):
+        raise ValueError("rootless bootstrap manifest resources must be a list")
 
     resolved_root = build_root.resolve()
     deployments: dict[str, Path] = {}
-    for index, entry in enumerate(entries):
-        if not isinstance(entry, dict):
-            raise ValueError(f"rootless bootstrap manifest entry {index} must be a mapping")
-        target = entry.get("target")
-        guest_path = entry.get("guest_path")
-        host_path = entry.get("host_path")
-        if not all(isinstance(value, str) and value for value in (target, guest_path, host_path)):
-            raise ValueError(
-                f"rootless bootstrap manifest entry {index} needs target, guest_path, and host_path"
-            )
-        guest = Path(guest_path)
-        if not guest.is_absolute() or ".." in guest.parts:
-            raise ValueError(
-                f"rootless bootstrap manifest entry {target!r} has invalid guest path {guest_path!r}"
-            )
-        relative_guest_path = guest_path.removeprefix("/")
-        if not relative_guest_path:
-            raise ValueError(f"rootless bootstrap manifest entry {target!r} cannot deploy at /")
-        source = Path(host_path)
-        if not source.is_absolute():
-            raise ValueError(
-                f"rootless bootstrap manifest entry {target!r} has non-absolute host path {host_path!r}"
-            )
-        resolved_source = source.resolve()
-        if not resolved_source.is_relative_to(resolved_root):
-            raise ValueError(
-                f"rootless bootstrap manifest entry {target!r} escapes build root: {host_path}"
-            )
-        if not resolved_source.is_file() or not resolved_source.stat().st_mode & 0o111:
-            raise ValueError(
-                f"rootless bootstrap manifest entry {target!r} is not a built executable: {host_path}"
-            )
-        if relative_guest_path in deployments:
-            raise ValueError(
-                f"rootless bootstrap manifest has duplicate guest path {guest_path!r}"
-            )
-        deployments[relative_guest_path] = resolved_source
+
+    def load_entries(items: list[Any], kind: str, *, executable: bool) -> None:
+        for index, entry in enumerate(items):
+            label = "entry" if kind == "entrypoints" else "resource"
+            if not isinstance(entry, dict):
+                raise ValueError(
+                    f"rootless bootstrap manifest {label} {index} must be a mapping"
+                )
+            target = entry.get("target")
+            guest_path = entry.get("guest_path")
+            host_path = entry.get("host_path")
+            if not all(
+                isinstance(value, str) and value for value in (target, guest_path, host_path)
+            ):
+                raise ValueError(
+                    f"rootless bootstrap manifest {label} {index} needs target, guest_path, and host_path"
+                )
+            guest = Path(guest_path)
+            if not guest.is_absolute() or ".." in guest.parts:
+                raise ValueError(
+                    f"rootless bootstrap manifest {label} {target!r} has invalid guest path {guest_path!r}"
+                )
+            relative_guest_path = guest_path.removeprefix("/")
+            if not relative_guest_path:
+                raise ValueError(
+                    f"rootless bootstrap manifest {label} {target!r} cannot deploy at /"
+                )
+            source = Path(host_path)
+            if not source.is_absolute():
+                raise ValueError(
+                    f"rootless bootstrap manifest {label} {target!r} has non-absolute host path {host_path!r}"
+                )
+            resolved_source = source.resolve()
+            if not resolved_source.is_relative_to(resolved_root):
+                raise ValueError(
+                    f"rootless bootstrap manifest {label} {target!r} escapes build root: {host_path}"
+                )
+            if not resolved_source.is_file():
+                requirement = "built executable" if executable else "regular resource file"
+                raise ValueError(
+                    f"rootless bootstrap manifest {label} {target!r} is not a {requirement}: {host_path}"
+                )
+            if executable and not resolved_source.stat().st_mode & 0o111:
+                raise ValueError(
+                    f"rootless bootstrap manifest entry {target!r} is not a built executable: {host_path}"
+                )
+            if relative_guest_path in deployments:
+                raise ValueError(
+                    f"rootless bootstrap manifest has duplicate guest path {guest_path!r}"
+                )
+            deployments[relative_guest_path] = resolved_source
+
+    load_entries(entries, "entrypoints", executable=True)
+    load_entries(resources, "resources", executable=False)
     return deployments
 
 
@@ -619,6 +638,11 @@ def runtime_deploy_targets(prefix: Path, deploy_path: str) -> list[Path]:
         raise ValueError(f"guest-runtime-deploy deploy path must be relative: {deploy_path}")
     if rel.parts and rel.parts[0] == "usr":
         return [prefix / "libexec/darling" / rel, prefix / rel]
+    if rel.parts and rel.parts[0] == "System":
+        # CMake installs launchd resources in the lower Darling template. Do
+        # not create an upper copy: that would change union precedence and
+        # diverge from the official install tree.
+        return [prefix / "libexec/darling" / rel]
     return [prefix / rel]
 
 
