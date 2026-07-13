@@ -24,7 +24,7 @@ west_commands_module.WestCommand = WestCommand
 sys.modules.setdefault("west", west_module)
 sys.modules.setdefault("west.commands", west_commands_module)
 
-from west_commands.patch import DarlingPatch
+from west_commands.patch import DarlingPatch, generated_patch_artifacts
 from west_commands.patch_git import (
     PATCH_APPLICATION_GIT_OPTIONS,
     TEMPORARY_PATCH_GIT_OPTIONS,
@@ -82,6 +82,39 @@ for invalid_artifact, expected in (
 ):
     errors = metadata_command._validate_test_metadata(runtime_patch(invalid_artifact))
     assert any(expected in error for error in errors), errors
+
+snapshot_patch = b"""diff --git a/tests/PERF18-lanes-snapshot.json b/tests/PERF18-lanes-snapshot.json
+new file mode 100644
+--- /dev/null
++++ b/tests/PERF18-lanes-snapshot.json
+@@ -0,0 +1 @@
++{\"lanes\": 128}
+diff --git a/tests/ring_census_gate_test.cpp b/tests/ring_census_gate_test.cpp
+new file mode 100644
+--- /dev/null
++++ b/tests/ring_census_gate_test.cpp
+@@ -0,0 +1 @@
++int main() { return 0; }
+"""
+assert generated_patch_artifacts(snapshot_patch) == [
+    "tests/PERF18-lanes-snapshot.json"
+]
+deleted_snapshot_patch = snapshot_patch.replace(
+    b"new file mode 100644", b"deleted file mode 100644", 1
+)
+assert generated_patch_artifacts(deleted_snapshot_patch) == []
+
+artifact_command = DarlingPatch.__new__(DarlingPatch)
+artifact_command.die = lambda message: (_ for _ in ()).throw(AssertionError(message))
+try:
+    artifact_command._check_export_artifacts(
+        {"path": "test/artifact.patch"}, snapshot_patch
+    )
+except AssertionError as exc:
+    assert "generated evidence artifact" in str(exc), exc
+    assert "PERF18-lanes-snapshot.json" in str(exc), exc
+else:
+    raise AssertionError("patch export accepted a generated snapshot artifact")
 
 source_revision_patch = {
     "module": "darling/src/external/xnu",
