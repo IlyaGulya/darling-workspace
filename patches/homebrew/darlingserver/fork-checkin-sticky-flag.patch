@@ -1,4 +1,4 @@
-From c9a0107fe772be7a0a12f5dca75d26e1038446ee Mon Sep 17 00:00:00 2001
+From 5d91d3ea50bce1839cb04007b47cf7ebeee711b7 Mon Sep 17 00:00:00 2001
 From: Ilya Gulya <ilya@gulya.me>
 Date: Sat, 27 Jun 2026 00:17:31 +0000
 Subject: [PATCH] process: fix lost fork-child checkin under signal-aborted
@@ -34,8 +34,6 @@ Validated with a deterministic SIGCHLD-driven fork-storm repro (RED ->
 GREEN, 400/400 rounds) and end-to-end: `brew reinstall wget` no longer
 stalls building libunistring (0 fork-checkin timeouts, the make phase
 advances normally).
-
-Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
 ---
  .../darlingserver/fork-checkin.hpp            | 41 +++++++++++++++++++
  internal-include/darlingserver/process.hpp    |  2 +

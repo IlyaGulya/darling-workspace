@@ -1,4 +1,4 @@
-From 1169ebe2d99cf0c7ba36c1f2613fcf66a9cbbb1c Mon Sep 17 00:00:00 2001
+From e1db4266f50415c013371fc57e8f38a0423493ec Mon Sep 17 00:00:00 2001
 From: Ilya Gulya <ilya@gulya.me>
 Date: Sun, 28 Jun 2026 11:04:28 +0000
 Subject: [PATCH] perf #7-generalize: adaptive recv-spin in the GUEST RPC
@@ -37,8 +37,6 @@ DARLING_GUEST_RECVSPIN, ordered before the blocking recv, with a pause between
 polls and EAGAIN-vs-real-error handling. RED 5/5 fail pre-fix, GREEN post-fix.
 
 bead: dar-dar6x4-perf-5dq.14
-
-Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
 ---
  .../libsystem_kernel/emulation/CMakeLists.txt | 17 ++++
  .../resources/dserver-rpc-defs.h              | 62 ++++++++++++++

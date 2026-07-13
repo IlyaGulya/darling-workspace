@@ -288,10 +288,10 @@ patches:
       base: main
       state: local
 - path: darlingserver/fork-checkin-sticky-flag.patch
-  sha256sum: 420f9a7f7d4c39de6fb3bba5dde65557f83aea931213bc37372fd8766727cc05
+  sha256sum: 43e767e34b9e1245fa945dbd921a3cfe5bab755e430c1027e08bed6bc53358c7
   module: darling/src/external/darlingserver
   source-branch: fix/fork-checkin-sticky-flag
-  source-commit: c9a0107fe772be7a0a12f5dca75d26e1038446ee
+  source-commit: 5d91d3ea50bce1839cb04007b47cf7ebeee711b7
   bead: dar-gwn.6.5
   publication-status: blocked
   publication-blocker: needs review of the sticky-flag vs the underlying duct-tape sigexc-forced-clear_wait semaphore handoff/abort race; the real defect is that a signal-aborted semaphore wait loses a handed-off up(). The sticky flag is a correct, minimal fix at the fork-checkin layer but a broader duct-tape fix may be preferable upstream. Validated locally (RED->GREEN forkstorm2 + brew libunistring past the make stall).
@@ -1304,10 +1304,10 @@ patches:
       base: main
       state: local
 - path: darlingserver/pushreply-pipe-leak.patch
-  sha256sum: 4bc22ec44c151e2fe325b4d4cb29f740ad7296d863300eaca7d3eeea348c64f3
+  sha256sum: 72bf80b9c7d7c6edcba61a0407b446a427dda9bc78715cf61d6b78628a652036
   module: darling/src/external/darlingserver
   source-branch: fix/dar-gwn-1-7-pushreply-pipe-leak
-  source-commit: bb620a209a3a72d2a238b30102147438e58b35ef
+  source-commit: 9158f95de70c397304ec87f901dd3e86eb3567f0
   bead: dar-gwn.1.7
   publication-status: blocked
   publication-blocker: |-
@@ -1404,10 +1404,10 @@ patches:
       base: main
       state: local
 - path: darlingserver/exc-fatal-reply-bound.patch
-  sha256sum: e8ce8561665fee0bc5e86be2bb00db5b29642f28bd03b12d7259d7cf11f97998
+  sha256sum: 548e9558f540e7369c791831726624866fc5373ce2101cc932196743a078dce3
   module: darling/src/external/darlingserver
   source-branch: fix/exc-fatal-reply-bound
-  source-commit: 2c8db920a3fe6c003225012e44b0074afad50c19
+  source-commit: 8ee1bb6a5adcb8139ae96deade0e062f9b1069f9
   bead: dar-gwn.1.10
   publication-status: blocked
   publication-blocker: |-
@@ -1492,10 +1492,10 @@ patches:
       base: main
       state: local
 - path: darlingserver/assert-wait-cancel-stale-timer.patch
-  sha256sum: 0bf32c0b8639a0406991c3c027abce2884f7ed834fc18c2e4bc037bfbd77f128
+  sha256sum: fd319351bac8e28fa8bde99f90699ddfd5139dc3ee49d1daea7b07ed9f014266
   module: darling/src/external/darlingserver
   source-branch: fix/assert-wait-cancel-stale-timer
-  source-commit: 4c353baa640d2ea026c59ec08a0e0ccfce33e09a
+  source-commit: 69715cc293f08a15f76c223f7e43571949aa585f
   bead: dar-gwn.1.9
   publication-status: blocked
   publication-blocker: |-
@@ -1603,11 +1603,11 @@ patches:
       base: main
       state: local
 - path: darlingserver/pthread-canceled-xnu-semantics.patch
-  sha256sum: f18615a310b37560b9de598bda5144198edac8f870c05649f22aa6fb652a2498
+  sha256sum: 083622c4d24fbcfaed07c4e1d2024f7e93c24c174294e5c7f1c947da1249a50d
   module: darling/src/external/darlingserver
   source-branch: fix/pthread-canceled-xnu-semantics
-  source-base: 4c353baa640d2ea026c59ec08a0e0ccfce33e09a
-  source-commit: 397a044024296c30d94c2f482b6365605ef3f310
+  source-base: 69715cc293f08a15f76c223f7e43571949aa585f
+  source-commit: ec379950edcf9710f81f1d0fcffc5287f996a0a2
   bead: dar-gwn.6.3
   publication-status: blocked
   publication-blocker: |-
@@ -2127,10 +2127,10 @@ patches:
       base: main
       state: local
 - path: xnu/sigexc-debug-flood.patch
-  sha256sum: 2d11517f4eca08f51470794de34ed9478c9641ca711330ee48340eb86b02dcb0
+  sha256sum: 7083f3936c65c9c61c5c7c55241bab355a5d30a4a49ef7c8621844f7799e5e8a
   module: darling/src/external/xnu
   source-branch: fix/sigexc-debug-flood
-  source-commit: 7268517f76d64438042918537facb53a9be2d68d
+  source-commit: 2d63bfc1a6cd24d5d961e15bc29b7b1d9299c3a0
   bead: dar-gwn.1.9
   publication-status: ready
   tests:
@@ -2189,10 +2189,10 @@ patches:
       base: main
       state: local
 - path: xnu/sigexc-default-resend-self.patch
-  sha256sum: 4649d491f7a3e1afbc350811d40a26a8d297dbcadff1bb4c600c31eaf14a90a1
+  sha256sum: 76491ade81c3731f2e63f764af9fb7d32a1cd4fef3cef0fd3bb97d929bddf183
   module: darling/src/external/xnu
   source-branch: fix/sigexc-default-resend-self
-  source-commit: 362aafc1cbc28b00d7ec53827b6d94550a72ce79
+  source-commit: a07f3001fb5fdfea471ac30bb79ef1b510cae29b
   bead: dar-gwn.6.4
   publication-status: blocked
   publication-blocker: |-
@@ -2268,10 +2268,10 @@ patches:
       base: main
       state: local
 - path: xnu/ulock-wait-eintr-retry.patch
-  sha256sum: ea82c6717b64340f18f2beb8bd5b11f4b5f8c67be166f5fa2c66a91021a29d18
+  sha256sum: 2a59ec5789b5c9c554b6bd36fb11c7dd2cc050b73f0cfdd810be6e7a0511bedd
   module: darling/src/external/xnu
   source-branch: fix/ulock-wait-eintr-retry
-  source-commit: 9d5c22289dc701e0875226827bed26d4c0ec0099
+  source-commit: b78ebea327517adcae316f6a85c98d50f0c3e5bf
   bead: dar-gwn.6
   publication-status: blocked
   publication-blocker: >-
@@ -3110,9 +3110,9 @@ patches:
 - path: xnu/fd-guard-ebadf.patch
   sha256sum: e6613d41bc368ab8ee4751e7f93d09e7faebe9256e07152a9022152273717568
   module: darling/src/external/xnu
-  source-branch: fix/fd-guard-ebadf-errno
+  source-branch: fix/fd-guard-ebadf
   source-base: f223ee035651e9b9f7d3952c654bb0d0dc238d34
-  source-commit: ecc6d9ed939f80de3f1c06bff549e1e9bc94c0d0
+  source-commit: cc677cf3cbda2e41d1ae5a82f0afe452d7f7d544
   bead: dar-6x4.1
   publication-status: blocked
   publication-blocker: returns EBADF on guarded-fd dup2/dup/fcntl instead of aborting; correct vs macOS and validated (gnulib fd tests + libunistring make check GREEN) but the guarded-fd-as-out-of-range contract wants a second reviewer before upstreaming. See dar-6x4.1.
@@ -3248,11 +3248,11 @@ patches:
       base: main
       state: local
 - path: darlingserver/progress-metrics.patch
-  sha256sum: 1f09174ce2b52d497d5d9cb16c7d8670485af847a811e33b06912a40d53bb368
+  sha256sum: b16e065edd20bd658d12dc04780c6e05d369979f6962e4d31576b0c66a399f15
   module: darling/src/external/darlingserver
   source-branch: fix/darlingserver-progress-metrics
-  source-base: 397a044024296c30d94c2f482b6365605ef3f310
-  source-commit: bd18a8bd71753b8321e513fe19cb724345f6b873
+  source-base: ec379950edcf9710f81f1d0fcffc5287f996a0a2
+  source-commit: 1cd32102de88fbbff5aef764c7e084aea0e93f4e
   bead: dar-dar6x4-perf-5dq.6
   publication-status: blocked
   publication-blocker: new observability surface (abstract stat socket + JSON metrics) added for the dar-6x4 perf epic; reachable host-side because the net namespace is shared while mnt is not. Validated live (darling-stat snapshot + darling-progress-watch reports PROGRESSING under a fork-heavy workload) and RED->GREEN by tests/metrics_histogram_test.cpp + tests/progress_classifier_test.py, but wants design review of the socket surface before upstreaming. See dar-dar6x4-perf-5dq.6.
@@ -3598,11 +3598,11 @@ patches:
       base: master
       state: local
 - path: xnu/cache-task-self-trap.patch
-  sha256sum: cd45b694fdefc503508df625e4f36af821b74674ffbcaa582ca96448a1e16456
+  sha256sum: 14126f3d2fd1d1c7a7abebe3c111c573673d953f88795164bae8056d29ffdd46
   module: darling/src/external/xnu
   source-branch: perf/cache-task-self-trap
   source-base: a0328833b5ea96dd0055a16bf0c55bbafa227dd0
-  source-commit: b3e857add3d2ba316ec04a6dfe8f69dff5036ad2
+  source-commit: 8a0fd576e28a44dffbced8cb09bd1afb5db67f9e
   bead: dar-dar6x4-perf-5dq.18
   publication-status: blocked
   publication-blocker: caches the immutable task self port guest-side (header-only dependency-injected cache in cached_self_ports.h + mach_traps.c) so task_self_trap stops doing an RPC on every call; reset on fork via mach_init_doit. Only task_self_trap is cacheable (mach_task_self_ is never deallocated); host_self/thread_self return caller-deallocated send rights and are deliberately NOT cached. Measured task_self_trap 6162->4109 (-33%, -4.4% total build RPCs) -- modest, which is why the effort moved to volume reduction (kprintf .20) and recv-spin generalization (.14). RED->GREEN tests/cached_self_ports_test.c. Wants a clean-host measurement + review of the fork-reset coverage before upstreaming. See dar-dar6x4-perf-5dq.18.
@@ -3632,11 +3632,11 @@ patches:
       base: main
       state: local
 - path: xnu/guest-per-callnum-sleep-account.patch
-  sha256sum: 26ef12fef44170a9584d4f0d093363f80ad0deb224905b0248589d19f66d6218
+  sha256sum: 841f0e728578b194e1f5d840d0d96a4f92600c0d36990d3410a9d220a316da48
   module: darling/src/external/xnu
   source-branch: perf/guest-per-callnum-sleep-account
-  source-base: b3e857add3d2ba316ec04a6dfe8f69dff5036ad2
-  source-commit: 2b28548ca817c805cf45634fd7ac371598130c0c
+  source-base: 8a0fd576e28a44dffbced8cb09bd1afb5db67f9e
+  source-commit: 54b093a396bd9c0706fdeb533bd57a7b7820613a
   bead: dar-dar6x4-perf-5dq.19
   publication-status: blocked
   publication-blocker: libsystem_kernel half of the guest-side recvmsg-sleep accountant (paired with the darlingserver generator commit). Single shared per-callnum table + rdtsc timing + per-process exit dump, behind option DARLING_RPC_SLEEP_ACCOUNT (default OFF -> emulation byte-identical to baseline, zero diagnostic symbols/strings). Design forced by the libc-free below-libSystem RPC path -- rdtsc not clock_gettime (the clock syscall in the send/recv atomic region wedges the guest), stack-local start stamp not __thread (TLS aborts pre-pthread), dump from sys_exit not a destructor (dyld rejects initializers in this image), one .c compiled once (the generated rpc.c is in two object libs). Validated ON build boots + make -j8 300/300. Diagnostic instrumentation; stays local. Stacks on cache-task-self-trap. See dar-dar6x4-perf-5dq.19.
@@ -3721,11 +3721,11 @@ patches:
       base: main
       state: local
 - path: xnu/gate-hotpath-kprintf-debug.patch
-  sha256sum: 0b2927128f3259f51d72b81819ba530885c73fc51cbb1eaf893971724545572a
+  sha256sum: 35d822a313ef973f4462f8b39e42586548a75f020b0b8895f2dc14b364210a4a
   module: darling/src/external/xnu
   source-branch: perf/gate-hotpath-kprintf-debug
-  source-base: 2b28548ca817c805cf45634fd7ac371598130c0c
-  source-commit: 0984b9b441e4c01e3c4f3e8ef36aef99d9bcb9e6
+  source-base: 54b093a396bd9c0706fdeb533bd57a7b7820613a
+  source-commit: 3ddcd29a21b5dd9c10d44fe369beb7c7c5a8781a
   bead: dar-dar6x4-perf-5dq.20
   publication-status: blocked
   publication-blocker: gates three UNCONDITIONAL hot-path kprintf debug traces that perf #9-decompose measured at 14.5% of a clean build's recvmsg reply-wait, each being a full synchronous RPC round-trip with no build value. execve.c "execve expand" (every exec), filio.c "dtype for fd" (hot ioctl), sigexc.c "darling_sigexc_self()" (every process startup). New hotpath_kdebug() macro (common/simple.h) compiles to nothing unless -DDARLING_HOTPATH_KPRINTF_DEBUG (still type-checks args via if(0)); execve/filio use it, sigexc routes through its existing kern_printf/DEBUG_SIGEXC gate. Genuine error/guard kprintf left intact. NOTE -- these traces are compiled into BOTH libsystem_kernel.dylib AND dyld (dyld statically links VARIANT_DYLD sigexc.c) so dyld must be rebuilt+redeployed too. Validated -- server kprintf log over a real build 144->0, guest breakdown drops kprintf entirely, build 100/100. RED->GREEN tests/hotpath_kprintf_gate_contract.sh covers hotpath_kdebug semantics plus compiled execve/filio object behavior; a real sigexc runtime/build gate is tracked separately as dar-sigexc-hotpath-kprintf-runtime-gate-9mpv. This one is plausibly upstreamable (pure debug-noise removal) but wants review of the macro choice first. Stacks on guest-per-callnum-sleep-account. See dar-dar6x4-perf-5dq.20.
@@ -3830,11 +3830,11 @@ patches:
       base: main
       state: local
 - path: xnu/generalize-recv-spin-guest.patch
-  sha256sum: a2473f79a2e9b89c3e2c4341e0787dd4d83c2432c10f50add19432104a3ec011
+  sha256sum: 829e1c3dfa1efc8e4b53e87913409505d00a256ce3975fd4058266e5f9df3d5a
   module: darling/src/external/xnu
   source-branch: perf/generalize-recv-spin-guest
-  source-base: 0984b9b441e4c01e3c4f3e8ef36aef99d9bcb9e6
-  source-commit: 1169ebe2d99cf0c7ba36c1f2613fcf66a9cbbb1c
+  source-base: 3ddcd29a21b5dd9c10d44fe369beb7c7c5a8781a
+  source-commit: e1db4266f50415c013371fc57e8f38a0423493ec
   bead: dar-dar6x4-perf-5dq.14
   publication-status: blocked
   publication-blocker: ports perf #3's bounded recv-spin (which only ever landed in mldr's copy of dserver-rpc-defs.h) into libsystem_kernel.dylib's RPC receive hook, so the guest build processes (clang/make/sh) also grab a fast RPC reply before sleeping instead of always blocking in recvmsg. Attacks the perf #6 57% __skb_wait reply-wait for the guest's OWN reply-bearing RPCs (mach_msg_overwrite 19% + mach_reply_port 8.7% + mach_port_deallocate 8.4% + self-traps -- perf #9-decompose). Bounded LINUX_MSG_DONTWAIT poll with a CPU pause then a blocking recvmsg fallback; never busy-waits unboundedly (symmetric to perf #1/#3). libc-free (raw syscall + ia32_pause, no env/TLS in the signal-blocked atomic region). Budget is compile-time DARLING_GUEST_RECVSPIN (default 512) -- CMake cache var lets A/B set 0 to disable. NOTE -- the hook is compiled into BOTH the dylib AND dyld so both must be rebuilt+redeployed. RED to GREEN tests/dylib_recv_adaptive_spin_test.sh. Correctness validated (clean boot + 200/200 fork-heavy build) before the prefix env degraded. Wall-clock A/B inconclusive (boot-noise-dominated for a few-percent RPC change, as perf #6 predicted) AND blocked by a separate env issue -- the prefix server lacks the dar-6x4 checkin-suspend crash fix 5e5d688 and segfaults under fork storms. Stacks on gate-hotpath-kprintf-debug. See dar-dar6x4-perf-5dq.14.

@@ -1,4 +1,4 @@
-From 2b28548ca817c805cf45634fd7ac371598130c0c Mon Sep 17 00:00:00 2001
+From 54b093a396bd9c0706fdeb533bd57a7b7820613a Mon Sep 17 00:00:00 2001
 From: Ilya Gulya <ilya@gulya.me>
 Date: Sun, 28 Jun 2026 08:44:19 +0000
 Subject: [PATCH] perf #9-decompose: libsystem_kernel guest-side recvmsg-sleep
@@ -29,8 +29,6 @@ Design forced by this being the libc-free, below-libSystem RPC path:
 Validated: ON build boots + real make -j8 300/300, dumps a clean per-callnum breakdown
 (mach_msg_overwrite 19%, kprintf 14.5%, fork_wait_for_child 12.6%, ...). OFF build boots
 clean with zero diagnostic output and no diagnostic strings/symbols in the dylib.
-
-Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
 ---
  .../libsystem_kernel/emulation/CMakeLists.txt | 13 +++
  .../resources/dserver-rpc-defs.h              |  4 +

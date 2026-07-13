@@ -1,4 +1,4 @@
-From b3e857add3d2ba316ec04a6dfe8f69dff5036ad2 Mon Sep 17 00:00:00 2001
+From 8a0fd576e28a44dffbced8cb09bd1afb5db67f9e Mon Sep 17 00:00:00 2001
 From: Ilya Gulya <ilya@gulya.me>
 Date: Sun, 28 Jun 2026 07:42:16 +0000
 Subject: [PATCH] libsystem_kernel: cache the immutable task self port (perf
@@ -32,8 +32,6 @@ links only the header, asserts (1) N gets => 1 real trap (suppression), (2) rese
 forces a fresh trap and adopts the new value (fork-safety), (3) a failed trap is not
 cached so the next get retries. Proven RED with a non-caching stub, GREEN with the
 real header.
-
-Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
 ---
  .../xnu_syscall/mach/impl/cached_self_ports.h | 68 ++++++++++++++++
  .../src/xnu_syscall/mach/impl/mach_traps.c    | 25 +++++-

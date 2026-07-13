@@ -1,4 +1,4 @@
-From 9d5c22289dc701e0875226827bed26d4c0ec0099 Mon Sep 17 00:00:00 2001
+From b78ebea327517adcae316f6a85c98d50f0c3e5bf Mon Sep 17 00:00:00 2001
 From: Ilya Gulya <ilya@gulya.me>
 Date: Wed, 24 Jun 2026 16:15:56 +0000
 Subject: [PATCH] libsystem_kernel: retry ulock_wait on EINTR instead of
@@ -29,8 +29,6 @@ handing a spurious errno to the corruption-abort path. Also drop the bogus
 `0x800` mask in ulock_wake for the same reason.
 
 Bead: dar-gwn.6
-
-Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
 ---
  .../xnu_syscall/bsd/impl/psynch/ulock_wait.c  | 33 +++++++++++++++----
  .../xnu_syscall/bsd/impl/psynch/ulock_wake.c  |  7 ++--

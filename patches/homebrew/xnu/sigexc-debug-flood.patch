@@ -1,4 +1,4 @@
-From 7268517f76d64438042918537facb53a9be2d68d Mon Sep 17 00:00:00 2001
+From 2d63bfc1a6cd24d5d961e15bc29b7b1d9299c3a0 Mon Sep 17 00:00:00 2001
 From: Ilya Gulya <ilya@gulya.me>
 Date: Tue, 23 Jun 2026 09:31:51 +0000
 Subject: [PATCH] sigexc: don't enable DEBUG_SIGEXC by default (RPC log flood)
@@ -23,8 +23,6 @@ once-per-process darling_sigexc_self() boot marker is left as-is.
 
 DEBUG_SIGEXC can still be enabled via the build when actively debugging
 the signal/exception machinery.
-
-Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
 ---
  .../emulation/src/linux_premigration/signal/sigexc.c   | 10 ++++++++--
  1 file changed, 8 insertions(+), 2 deletions(-)

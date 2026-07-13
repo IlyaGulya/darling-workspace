@@ -1,4 +1,4 @@
-From 362aafc1cbc28b00d7ec53827b6d94550a72ce79 Mon Sep 17 00:00:00 2001
+From a07f3001fb5fdfea471ac30bb79ef1b510cae29b Mon Sep 17 00:00:00 2001
 From: Ilya Gulya <ilya@gulya.me>
 Date: Fri, 26 Jun 2026 13:04:13 +0000
 Subject: [PATCH] sigexc: re-raise fatal default signal to self thread, not the
@@ -22,8 +22,6 @@ Re-raise to THIS thread with tgkill(getpid(), gettid(), sig) (raise()
 semantics) so the default action affects only this process.
 
 Fixes dar-gwn.1.5 / dar-gwn.6.4 parent-kill cascade.
-
-Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
 ---
  .../src/linux_premigration/signal/sigexc.c         | 14 ++++++++++++--
  1 file changed, 12 insertions(+), 2 deletions(-)
