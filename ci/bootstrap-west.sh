@@ -13,4 +13,4 @@ if ! west topdir >/dev/null 2>&1; then
 	west init -l "$manifest"
 fi
 cd "$top"
-west update
+"$manifest/ci/west-update-parallel.sh"
