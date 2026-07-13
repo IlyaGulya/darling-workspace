@@ -87,8 +87,12 @@ fi
 
 safe_name="${name//[^A-Za-z0-9_.-]/_}"
 run_id="${WEST_GUEST_C_FIXTURE_ID:-$$.$RANDOM}"
-guest_src="/tmp/${safe_name}.${run_id}.c"
-guest_bin="/tmp/${safe_name}.${run_id}"
+# Each `darling shell` invocation can have a fresh guest /tmp namespace. Keep
+# the staged fixture in the prefix-owned persistent temp directory so upload,
+# compile, and run observe the same file across their separate invocations.
+guest_tmpdir="/private/var/tmp"
+guest_src="${guest_tmpdir}/${safe_name}.${run_id}.c"
+guest_bin="${guest_tmpdir}/${safe_name}.${run_id}"
 output="$(mktemp "${TMPDIR:-/tmp}/west-ctest-guest-c.${safe_name}.XXXXXX")"
 # darling shell does not guarantee that stdin reaches the guest command. Keep
 # the fixture transport explicit so real and fake launchers have identical
