@@ -403,6 +403,18 @@ def _merge_typed_fixture(
         _extend_list_field(test, "eunion-template-symlinks", body.get("template-symlinks", []), location)
         _extend_list_field(test, "eunion-upper-files", body.get("upper-files", []), location)
         _extend_list_field(test, "eunion-cleanup-dirs", body.get("cleanup-dirs", []), location)
+        _extend_list_field(
+            test,
+            "eunion-forbid-template-paths",
+            body.get("forbid-template-paths", []),
+            location,
+        )
+        _extend_list_field(
+            test,
+            "eunion-require-upper-paths",
+            body.get("require-upper-paths", []),
+            location,
+        )
         if body.get("verify-template-files-after") is not None:
             test["eunion-verify-template-files-after"] = bool(
                 body["verify-template-files-after"]
