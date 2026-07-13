@@ -15,7 +15,14 @@ from pathlib import Path
 
 PREFIX_ROOTS = ("", "libexec/darling")
 TMP_RELS = ("private/var/tmp", "libexec/darling/private/var/tmp")
-ROOTLESS_RUNTIME_DIR_RELS = ("var", "var/run", "var/tmp")
+ROOTLESS_RUNTIME_DIR_RELS = (
+    "private/var/db",
+    "private/var/db/launchd.db",
+    "private/var/db/launchd.db/com.apple.launchd",
+    "var",
+    "var/run",
+    "var/tmp",
+)
 CANONICAL_CLT_REL = Path("Library/Developer/CommandLineTools")
 DARLING_CLT_CLANG_REL = Path("Library/Developer/DarlingCLT/usr/bin/clang")
 DARLING_CLT_CLANG_TARGET = Path("../../../CommandLineTools/usr/bin/clang")

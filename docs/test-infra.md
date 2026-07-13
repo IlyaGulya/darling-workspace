@@ -509,10 +509,17 @@ west darling-prefix-repair --prefix "$HOME/work/darling-prefix" --check
 west darling-prefix-repair --prefix "$HOME/work/darling-prefix" --cleanup-mounts
 ```
 
-The repair command creates the required rootless runtime directories (`var`,
-`var/run`, and `var/tmp`) plus the `private/var/tmp` directories. The latter
-keep mode `1777`; the runtime parents are created with mode `755` and are then
-owned by Darling's normal launchd bootstrap. It also restores canonical
+The repair command creates the required rootless runtime directories
+(`private/var/db`, `private/var/db/launchd.db`,
+`private/var/db/launchd.db/com.apple.launchd`, `var`, `var/run`, and `var/tmp`) plus the
+`private/var/tmp` directories. The latter keep mode `1777`; the runtime
+parents are created with mode `755` and are then owned by Darling's normal
+launchd bootstrap. `private/var/db` is required because launchd and launchctl
+create their overrides database below
+`private/var/db/launchd.db/com.apple.launchd` during the first system bootstrap.
+The nested database directories are provisioned explicitly because launchctl's
+one-level metadata repair cannot create missing parents in a clean rootless
+prefix. It also restores canonical
 `CommandLineTools`/`DarlingCLT` clang links from the versioned CLT already
 installed in the prefix. `west test` and
 `west darling-doctor` share the same prerequisite checks, so a repaired prefix
@@ -793,6 +800,28 @@ provider's source profile, build targets, Mach-O closure, deployment and
 restore transaction. `RUNTIME_PROFILE` is an override only when the test's
 subject is a different product runtime, such as the rootless E-UNION variant
 or a perf-only `darlingserver` build. It is not a general dependency list.
+
+The rootless provider also declares the guest shell it needs to execute a
+guest test: `darling/src/external/bash` builds and deploys `/bin/bash`. The
+prefix-baseline provider uses the same declaration, so a clean hosted runner
+does not depend on an accidentally pre-populated prefix. This belongs in the
+runtime profile because `shellspawn` executes `/bin/bash` inside the guest;
+installing a host binary or adding an ad-hoc CI copy would hide a broken
+runtime deployment.
+
+Runtime deployment also applies the guest-safe permission policy at the
+transaction boundary: deployed files lose group/world write bits and all
+parents used by the deployment lose group/world write bits. This is required
+for launchctl's plist validation when a build runs with a cooperative host
+umask. The transaction records every changed directory mode and restores it
+alongside file contents, so a failed or temporary runtime proof still leaves
+the prefix unchanged.
+
+The optional bootstrap syscall trace uses `strace -D`: tracing runs detached
+from the launcher wait path, so long-lived launchd/shellspawn daemons cannot
+make a completed guest command look hung. The trace still records their
+syscalls in the diagnostic directory and the lifecycle cleanup remains owned
+by West.
 
 ### Gap 2 — diagnosable execution of hangs, WITHOUT cost blowup
 
