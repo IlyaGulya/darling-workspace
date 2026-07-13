@@ -2703,6 +2703,10 @@ patches:
     eunion-cleanup-dirs:
     - /private/var/tmp/west-eunion-mutate
     eunion-verify-template-files-after: true
+    eunion-forbid-template-paths:
+    - /private/var/tmp/west-eunion-mutate/bind_parent/sock
+    eunion-require-upper-paths:
+    - /private/var/tmp/west-eunion-mutate/bind_parent/sock
     eunion-template-files:
     - guest-path: /private/var/tmp/west-eunion-mutate/copy.txt
       contents: |
@@ -2797,6 +2801,113 @@ patches:
       contents: |
         RENAMEAT_CHILD
     note: Guest behavior for openat, mkdirat, unlinkat and renameat relative to a directory fd, including lower-template preservation.
+  - name: eunion_nested_bind_guest
+    use: eunion-guest-c-runtime
+    fixtures: eunion-overlay
+    diag: guarded
+    runtime-profile: homebrew-rootless-no-mount
+    script: tests/eunion_nested_bind_guest.c
+    ok-marker: WEST_EUNION_NESTED_BIND_OK
+    timeout-seconds: 30
+    eunion-cleanup-dirs:
+    - /private/var/tmp/west-b
+    eunion-verify-template-files-after: true
+    eunion-forbid-template-paths:
+    - /private/var/tmp/west-b/d/s
+    - /private/var/tmp/west-b/l/s
+    eunion-require-upper-paths:
+    - /private/var/tmp/west-b/d/s
+    - /private/var/tmp/west-b/r/s
+    eunion-template-files:
+    - guest-path: /private/var/tmp/west-b/r/t
+      contents: |
+        LOWER_BIND_TEMPLATE
+    - guest-path: /private/var/tmp/west-b/d/t
+      contents: |
+        LOWER_DIRECT_TEMPLATE
+    eunion-template-symlinks:
+    - guest-path: /private/var/tmp/west-b/l
+      target: r
+    note: Guest regression proving bind through a lower symlinked parent creates the socket in upper and never in the immutable template.
+  - name: eunion_xattr_policy_guest
+    use: eunion-guest-c-runtime
+    fixtures: eunion-overlay
+    diag: guarded
+    runtime-profile: homebrew-rootless-no-mount
+    script: tests/eunion_xattr_policy_guest.c
+    ok-marker: WEST_EUNION_XATTR_POLICY_OK
+    timeout-seconds: 30
+    eunion-cleanup-dirs:
+    - /private/var/tmp/west-eunion-xattr
+    eunion-verify-template-files-after: true
+    eunion-template-files:
+    - guest-path: /private/var/tmp/west-eunion-xattr/opaque/.lower
+      contents: |
+        LOWER_OPAQUE_CHILD
+    - guest-path: /private/var/tmp/west-eunion-xattr/path_remove.txt
+      xattrs:
+        user.test.remove: REMOVE_ME
+      contents: |
+        PATH_REMOVE
+    - guest-path: /private/var/tmp/west-eunion-xattr/fd_remove.txt
+      xattrs:
+        user.test.fdremove: FD_REMOVE_ME
+      contents: |
+        FD_REMOVE
+    note: Guest policy for opaque marker hiding, marker removal rejection, and path/fd xattr removal without mutating lower.
+  - name: eunion_special_create_guest
+    use: eunion-guest-c-runtime
+    fixtures: eunion-overlay
+    diag: guarded
+    runtime-profile: homebrew-rootless-no-mount
+    script: tests/eunion_special_create_guest.c
+    ok-marker: WEST_EUNION_SPECIAL_CREATE_OK
+    timeout-seconds: 30
+    eunion-cleanup-dirs:
+    - /private/var/tmp/west-eunion-special
+    eunion-verify-template-files-after: true
+    eunion-forbid-template-paths:
+    - /private/var/tmp/west-eunion-special/link_parent/new-link
+    - /private/var/tmp/west-eunion-special/link_parent/new-fifo
+    - /private/var/tmp/west-eunion-special/link_parent/new-node
+    eunion-require-upper-paths:
+    - /private/var/tmp/west-eunion-special/real/new-link
+    - /private/var/tmp/west-eunion-special/real/new-fifo
+    - /private/var/tmp/west-eunion-special/real/new-node
+    eunion-template-files:
+    - guest-path: /private/var/tmp/west-eunion-special/real/.keep
+      contents: |
+        LOWER_SPECIAL_TEMPLATE
+    eunion-template-symlinks:
+    - guest-path: /private/var/tmp/west-eunion-special/link_parent
+      target: real
+    note: Guest create-path coverage for symlinkat, mkfifo and mknod through a lower symlinked parent.
+  - name: eunion_path_errors_guest
+    use: eunion-guest-c-runtime
+    fixtures: eunion-overlay
+    diag: guarded
+    runtime-profile: homebrew-rootless-no-mount
+    script: tests/eunion_path_errors_guest.c
+    ok-marker: WEST_EUNION_PATH_ERRORS_OK
+    timeout-seconds: 30
+    eunion-cleanup-dirs:
+    - /private/var/tmp/west-eunion-path-errors
+    eunion-verify-template-files-after: true
+    eunion-forbid-template-paths:
+    - /private/var/tmp/west-eunion-path-errors/escape_link/new.txt
+    eunion-template-files:
+    - guest-path: /private/var/tmp/west-eunion-path-errors/shadow_dir/lower.txt
+      contents: |
+        LOWER_SHADOW_CHILD
+    eunion-template-symlinks:
+    - guest-path: /private/var/tmp/west-eunion-path-errors/escape_link
+      target: ../../../../../escape-target
+      allow-parent-target: true
+    eunion-upper-files:
+    - guest-path: /private/var/tmp/west-eunion-path-errors/shadow_dir
+      contents: |
+        UPPER_NON_DIRECTORY
+    note: Guest error policy for upper non-directory shadowing, symlink containment and rejected escape writes.
   - name: eunion_mkdir_opaque_guest
     kind: guest
     coverage-tier: runtime

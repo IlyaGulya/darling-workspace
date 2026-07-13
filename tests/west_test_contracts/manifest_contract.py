@@ -80,7 +80,15 @@ profile = {
                     "contents": "UPPER\n",
                 }
             ],
+            "template-symlinks": [
+                {
+                    "guest-path": "/private/var/tmp/link",
+                    "target": "target",
+                }
+            ],
             "cleanup-dirs": ["/private/var/tmp/eunion-contract"],
+            "forbid-template-paths": ["/private/var/tmp/created.txt"],
+            "require-upper-paths": ["/private/var/tmp/created-upper.txt"],
             "verify-template-files-after": True,
         },
     },
@@ -166,7 +174,14 @@ assert compact["eunion-template-files"] == [
 assert compact["eunion-upper-files"] == [
     {"guest-path": "/private/var/tmp/upper.txt", "contents": "UPPER\n"}
 ], compact
+assert compact["eunion-template-symlinks"] == [
+    {"guest-path": "/private/var/tmp/link", "target": "target"}
+], compact
 assert compact["eunion-cleanup-dirs"] == ["/private/var/tmp/eunion-contract"], compact
+assert compact["eunion-forbid-template-paths"] == ["/private/var/tmp/created.txt"], compact
+assert compact["eunion-require-upper-paths"] == [
+    "/private/var/tmp/created-upper.txt"
+], compact
 assert compact["eunion-verify-template-files-after"] is True, compact
 assert "darling-eunion-prefix" in compact["requires"], compact
 assert (

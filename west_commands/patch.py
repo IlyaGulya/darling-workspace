@@ -839,6 +839,106 @@ class DarlingPatch(WestCommand):
                             errors.append(
                                 f"tests[{index}].eunion-upper-files[{file_index}] contents must be a string"
                             )
+            if test.get("eunion-template-symlinks") is not None:
+                symlinks = test.get("eunion-template-symlinks")
+                if "darling-eunion-prefix" not in required_resources:
+                    errors.append(
+                        f"tests[{index}] eunion-template-symlinks requires darling-eunion-prefix"
+                    )
+                elif runner not in {"guest-c-fixture", "guest-runtime-script", "script"}:
+                    errors.append(
+                        f"tests[{index}] eunion-template-symlinks requires runner: "
+                        "guest-c-fixture, guest-runtime-script, or script"
+                    )
+                elif not isinstance(symlinks, list) or not symlinks:
+                    errors.append(
+                        f"tests[{index}] eunion-template-symlinks must be a non-empty list"
+                    )
+                elif not all(isinstance(item, dict) for item in symlinks):
+                    errors.append(
+                        f"tests[{index}] eunion-template-symlinks entries must be mappings"
+                    )
+                else:
+                    for symlink_index, item in enumerate(symlinks):
+                        guest_path = item.get("guest-path")
+                        target = item.get("target")
+                        allow_parent_target = item.get("allow-parent-target", False)
+                        if (
+                            not isinstance(guest_path, str)
+                            or not guest_path.startswith("/")
+                            or ".." in Path(guest_path).parts
+                        ):
+                            errors.append(
+                                f"tests[{index}].eunion-template-symlinks[{symlink_index}] "
+                                "guest-path must be absolute without '..'"
+                            )
+                        if not isinstance(target, str) or not target or target.startswith("/"):
+                            errors.append(
+                                f"tests[{index}].eunion-template-symlinks[{symlink_index}] "
+                                "target must be a non-empty relative path"
+                            )
+                        elif not allow_parent_target and ".." in Path(target).parts:
+                            errors.append(
+                                f"tests[{index}].eunion-template-symlinks[{symlink_index}] "
+                                "target contains '..' without allow-parent-target"
+                            )
+                        if not isinstance(allow_parent_target, bool):
+                            errors.append(
+                                f"tests[{index}].eunion-template-symlinks[{symlink_index}] "
+                                "allow-parent-target must be boolean"
+                            )
+            if test.get("eunion-forbid-template-paths") is not None:
+                paths = test.get("eunion-forbid-template-paths")
+                if "darling-eunion-prefix" not in required_resources:
+                    errors.append(
+                        f"tests[{index}] eunion-forbid-template-paths requires darling-eunion-prefix"
+                    )
+                elif runner not in {"guest-c-fixture", "guest-runtime-script", "script"}:
+                    errors.append(
+                        f"tests[{index}] eunion-forbid-template-paths requires runner: "
+                        "guest-c-fixture, guest-runtime-script, or script"
+                    )
+                elif not isinstance(paths, list) or not paths:
+                    errors.append(
+                        f"tests[{index}] eunion-forbid-template-paths must be a non-empty list"
+                    )
+                else:
+                    for path_index, guest_path in enumerate(paths):
+                        if (
+                            not isinstance(guest_path, str)
+                            or not guest_path.startswith("/")
+                            or ".." in Path(guest_path).parts
+                        ):
+                            errors.append(
+                                f"tests[{index}].eunion-forbid-template-paths[{path_index}] "
+                                "must be absolute without '..'"
+                            )
+            if test.get("eunion-require-upper-paths") is not None:
+                paths = test.get("eunion-require-upper-paths")
+                if "darling-eunion-prefix" not in required_resources:
+                    errors.append(
+                        f"tests[{index}] eunion-require-upper-paths requires darling-eunion-prefix"
+                    )
+                elif runner not in {"guest-c-fixture", "guest-runtime-script", "script"}:
+                    errors.append(
+                        f"tests[{index}] eunion-require-upper-paths requires runner: "
+                        "guest-c-fixture, guest-runtime-script, or script"
+                    )
+                elif not isinstance(paths, list) or not paths:
+                    errors.append(
+                        f"tests[{index}] eunion-require-upper-paths must be a non-empty list"
+                    )
+                else:
+                    for path_index, guest_path in enumerate(paths):
+                        if (
+                            not isinstance(guest_path, str)
+                            or not guest_path.startswith("/")
+                            or ".." in Path(guest_path).parts
+                        ):
+                            errors.append(
+                                f"tests[{index}].eunion-require-upper-paths[{path_index}] "
+                                "must be absolute without '..'"
+                            )
             if test.get("requires-profile") is not None and not isinstance(
                 test.get("requires-profile"), str
             ):
