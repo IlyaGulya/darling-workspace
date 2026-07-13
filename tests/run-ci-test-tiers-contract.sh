@@ -40,7 +40,10 @@ deps_script='darling-dev/darling-workspace/ci/install-darling-build-deps.sh'
 [ "$(grep -F -c "run: $deps_script" "$repo/.github/workflows/test-infra.yml")" -ge 2 ]
 [ "$(grep -F -c 'timeout-minutes: 30' "$repo/.github/workflows/test-infra.yml")" -ge 2 ]
 [ "$(grep -F -c 'actions/checkout@v7' "$repo/.github/workflows/test-infra.yml")" -ge 5 ]
+[ "$(grep -F -c 'actions/upload-artifact@v7' "$repo/.github/workflows/test-infra.yml")" -ge 2 ]
+[ "$(grep -F -c 'ci/collect-rootless-diagnostics.sh .west-test/rootless-diagnostics' "$repo/.github/workflows/test-infra.yml")" -ge 2 ]
 ! grep -F -q 'actions/checkout@v4' "$repo/.github/workflows/test-infra.yml"
+! grep -F -q 'actions/upload-artifact@v4' "$repo/.github/workflows/test-infra.yml"
 for package in libfuse-dev libx11-dev libcairo2-dev libxrandr-dev libfreetype6-dev; do
 	grep -F -q "$package" "$repo/ci/install-darling-build-deps.sh"
 done
