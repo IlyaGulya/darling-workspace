@@ -6,13 +6,19 @@ cd "$root"
 
 case "${1:-}" in
 	host)
-		exec west test --env host "${@:2}"
+		# Source-bound host cases must be selected through metadata so west can
+		# materialize the patch profile before CMake compiles the real source.
+		exec west test --profile homebrew --env host --materialize-profile "${@:2}"
 		;;
 	guest-smoke)
+		west test --prefix-profile homebrew \
+			--bootstrap-runtime-profile homebrew-prefix-baseline
 		exec west test --env darling --label 'smoke:true' \
 			--prefix-profile homebrew "${@:2}"
 		;;
 	guest-full)
+		west test --prefix-profile homebrew \
+			--bootstrap-runtime-profile homebrew-prefix-baseline
 		west test --profile homebrew --env darling \
 			--prefix-profile homebrew "${@:2}"
 		exec west test --env darling --prefix-profile homebrew "${@:2}"
