@@ -352,6 +352,10 @@ the behavior under test. Pair it with a concrete guest-visible
   If it reports stale `source-base`/`source-commit` metadata or suspiciously
   large output, repair the metadata/tooling first; use `--allow-large-output`
   only for a reviewed intentional large patch.
+  Export also rejects committed generated evidence such as JSON snapshots,
+  census captures, handoff notes, and build-output logs. Keep those in the
+  diagnostic archive, not in a product patch; `west patch check --quality`
+  reports existing violations and `west patch verify` refuses to apply them.
   Use `west patch export --profile <profile> --patch <path>` for focused
   checks/exports of a single profile entry; full-profile export remains the
   default when no patch selector is given.

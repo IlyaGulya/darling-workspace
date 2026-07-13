@@ -644,6 +644,15 @@ unless `--allow-large-output` is passed deliberately. Use
 exports of one entry; the selector uses the exact `patches.yml` path and does
 not write unrelated patch files or metadata entries.
 
+The export gate also rejects generated evidence files in a patch: JSON
+snapshots, census/stat captures, handoff notes, and build-output logs. These
+belong in a diagnostic archive, not in a product branch or review patch.
+`west patch check --quality` reports existing violations, while
+`west patch verify` and export refuse them. A large patch is acceptable only
+when its source tree contains real product code/tests and the explicit
+`--allow-large-output` override is reviewed; the override never permits
+generated evidence.
+
 Some gates need a consistent patch profile rather than the developer's current
 mixture of fix branches. Mark those with `requires-profile: arch` (or another
 profile name). `west test` will list those tests anywhere. On execution, if the
