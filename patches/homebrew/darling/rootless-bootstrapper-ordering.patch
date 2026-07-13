@@ -1,19 +1,17 @@
-From 703541414e9f7305840e349a8eea563e76035299 Mon Sep 17 00:00:00 2001
+From 38d47a35ce0a0718718c31705fb642aa1833dfcc Mon Sep 17 00:00:00 2001
 From: Ilya Gulya <ilya@gulya.me>
 Date: Mon, 13 Jul 2026 16:56:14 +0000
 Subject: [PATCH] launchd: defer rootless system bootstrapper
 
-The rootless system bootstrapper was dispatched while the root job manager
-was still being assembled. On a loaded host, launchctl could reach that
-partially initialized manager and wait forever without loading the system
-LaunchDaemons. Dispatch it after the root manager's system domain exists.
 ---
- src/launchd/src/core.c    | 14 +++++++++++++-
+ src/launchd/src/core.c    | 28 +++++++++++++++++++++++++++-
+ src/launchd/src/core.h    |  1 +
+ src/launchd/src/launchd.c |  1 +
  src/launchd/src/launchd.h |  1 +
- 2 files changed, 14 insertions(+), 1 deletion(-)
+ 4 files changed, 30 insertions(+), 1 deletion(-)
 
 diff --git a/src/launchd/src/core.c b/src/launchd/src/core.c
-index a68739ff0..fbfe7d402 100644
+index a68739ff0..ca866805f 100644
 --- a/src/launchd/src/core.c
 +++ b/src/launchd/src/core.c
 @@ -436,6 +436,7 @@ struct jobmgr_s {
@@ -24,14 +22,27 @@ index a68739ff0..fbfe7d402 100644
  
  #define jobmgr_assumes(jm, e) os_assumes_ctx(jobmgr_log_bug, jm, (e))
  #define jobmgr_assumes_zero(jm, e) os_assumes_zero_ctx(jobmgr_log_bug, jm, (e))
-@@ -6926,7 +6927,13 @@ jobmgr_new(jobmgr_t jm, mach_port_t requestorport, mach_port_t transfer_port, bo
+@@ -4309,6 +4310,12 @@ jobmgr_callback(void *obj, struct kevent *kev)
+ 	case EVFILT_TIMER:
+ 		if (kev->ident == (uintptr_t)&sorted_calendar_events) {
+ 			calendarinterval_callback();
++		} else if (kev->ident == (uintptr_t)&_rootless_system_bootstrapper) {
++			job_t bootstrapper = _rootless_system_bootstrapper;
++			_rootless_system_bootstrapper = NULL;
++			if (bootstrapper != NULL) {
++				(void)jobmgr_assumes(jm, job_dispatch(bootstrapper, true) != NULL);
++			}
+ 		} else if (kev->ident == (uintptr_t)jm) {
+ 			jobmgr_log(jm, LOG_DEBUG, "Shutdown timer firing.");
+ 			jobmgr_still_alive_with_check(jm);
+@@ -6926,7 +6933,13 @@ jobmgr_new(jobmgr_t jm, mach_port_t requestorport, mach_port_t transfer_port, bo
  		bootstrapper->asport = asport;
  
  		jobmgr_log(jmr, LOG_DEBUG, "Bootstrapping new job manager with audit session %u", asport);
 -		(void)jobmgr_assumes(jmr, job_dispatch(bootstrapper, true) != NULL);
 +		if (darling_rootless && jmr == root_jobmgr &&
 +			name != NULL && strcmp(name, VPROCMGR_SESSION_SYSTEM) == 0) {
-+			/* The rootless system manager is still assembling its ports here. */
++			/* The rootless system manager is still assembling its runtime here. */
 +			_rootless_system_bootstrapper = bootstrapper;
 +		} else {
 +			(void)jobmgr_assumes(jmr, job_dispatch(bootstrapper, true) != NULL);
@@ -39,18 +50,50 @@ index a68739ff0..fbfe7d402 100644
  	} else {
  		jmr->req_asport = asport;
  	}
-@@ -11784,6 +11791,11 @@ jobmgr_init(bool sflag)
- 	_s_xpc_system_domain->req_asid = launchd_audit_session;
- 	_s_xpc_system_domain->req_asport = launchd_audit_port;
- 	_s_xpc_system_domain->shortdesc = "system";
-+	if (darling_rootless && _rootless_system_bootstrapper != NULL) {
-+		job_t bootstrapper = _rootless_system_bootstrapper;
-+		_rootless_system_bootstrapper = NULL;
-+		(void)jobmgr_assumes(root_jobmgr, job_dispatch(bootstrapper, true) != NULL);
+@@ -11798,6 +11811,19 @@ jobmgr_init(bool sflag)
+ 	s_no_hang_fd = _fd(s_no_hang_fd);
+ }
+ 
++void
++jobmgr_schedule_rootless_bootstrapper(void)
++{
++	if (!darling_rootless || _rootless_system_bootstrapper == NULL) {
++		return;
 +	}
- 	if (pid1_magic) {
- 		root_jobmgr->monitor_shutdown = true;
- 	}
++
++	/* Let launchd finish runtime setup before the bootstrapper can submit jobs. */
++	(void)jobmgr_assumes_zero_p(root_jobmgr, kevent_mod(
++			(uintptr_t)&_rootless_system_bootstrapper,
++			EVFILT_TIMER, EV_ADD | EV_ONESHOT, NOTE_USECONDS, 1, root_jobmgr));
++}
++
+ size_t
+ our_strhash(const char *s)
+ {
+diff --git a/src/launchd/src/core.h b/src/launchd/src/core.h
+index b8267c5ae..1a8dacb85 100644
+--- a/src/launchd/src/core.h
++++ b/src/launchd/src/core.h
+@@ -36,6 +36,7 @@ extern bool launchd_flat_mach_namespace;
+ extern bool launchd_embedded_handofgod;
+ 
+ void jobmgr_init(bool);
++void jobmgr_schedule_rootless_bootstrapper(void);
+ jobmgr_t jobmgr_shutdown(jobmgr_t jm);
+ void jobmgr_dispatch_all_semaphores(jobmgr_t jm);
+ void jobmgr_dispatch_all_interested(jobmgr_t jm, job_t j);
+diff --git a/src/launchd/src/launchd.c b/src/launchd/src/launchd.c
+index db52709d8..e66f0ab2a 100644
+--- a/src/launchd/src/launchd.c
++++ b/src/launchd/src/launchd.c
+@@ -300,6 +300,7 @@ bool darling_rootless = rootless_mode_enabled();
+ 	jobmgr_init(sflag);
+ 
+ 	launchd_runtime_init2();
++	jobmgr_schedule_rootless_bootstrapper();
+ 	launchd_runtime();
+ }
+ 
 diff --git a/src/launchd/src/launchd.h b/src/launchd/src/launchd.h
 index d16d6a859..6a77d81f8 100644
 --- a/src/launchd/src/launchd.h
@@ -65,3 +108,4 @@ index d16d6a859..6a77d81f8 100644
  extern bool network_up;
 -- 
 2.43.0
+
