@@ -2676,6 +2676,8 @@ patches:
     coverage-tier: host
     runs: host
     diag: bare
+    ctest-label: eunion-host
+    ctest-source-override: DARLING_XNU_SRC
     red: true
     red-proof:
       mode: source-base
@@ -2683,10 +2685,7 @@ patches:
       source-revision: f033c5773992dfa57b6657f10f53f719664a5f18
       expect-output-contains:
       - 'FAIL  RESOLVE1 upper non-directory blocks lower directory'
-    runner: source-contract-script
-    repo: darling-workspace
-    script: experiments/e-union/run.sh
-    note: Host behavioral RED-to-GREEN suite for syscall-site copy-up, template protection, nested path handling, metadata/error policy and directory-view lifecycle; baseline RED is reproducible and the fixed source passes 288 assertions.
+    note: Host behavioral RED-to-GREEN suite for syscall-site copy-up, template protection, nested path handling, metadata/error policy and directory-view lifecycle; the selected XNU source is compiled and run through the eunion-host CTest label and the fixed source passes 293 assertions.
   - name: eunion_mutation_guest
     use: eunion-guest-c-runtime
     kind: guest
@@ -2770,6 +2769,34 @@ patches:
       contents: |
         FTRUNC_CONTENT_LONG
     note: Guest behavior for setid/capability policy, fd/path metadata copy-up, xattr marker isolation and ftruncate content protection.
+  - name: eunion_relative_at_guest
+    use: eunion-guest-c-runtime
+    kind: guest
+    coverage-tier: runtime
+    runs: guest
+    diag: guarded
+    runtime-profile: homebrew-rootless-no-mount
+    runner: guest-c-fixture
+    repo: darling-workspace
+    script: tests/eunion_relative_at_guest.c
+    ok-marker: WEST_EUNION_RELATIVE_AT_OK
+    timeout-seconds: 30
+    requires:
+    - darling-eunion-prefix
+    eunion-cleanup-dirs:
+    - /private/var/tmp/west-eunion-relative-at
+    eunion-verify-template-files-after: true
+    eunion-template-files:
+    - guest-path: /private/var/tmp/west-eunion-relative-at/open_existing.txt
+      contents: |
+        OPENAT_EXISTING
+    - guest-path: /private/var/tmp/west-eunion-relative-at/unlink.txt
+      contents: |
+        LOWER_UNLINK
+    - guest-path: /private/var/tmp/west-eunion-relative-at/rename_src/child.txt
+      contents: |
+        RENAMEAT_CHILD
+    note: Guest behavior for openat, mkdirat, unlinkat and renameat relative to a directory fd, including lower-template preservation.
   - name: eunion_mkdir_opaque_guest
     kind: guest
     coverage-tier: runtime
@@ -2827,7 +2854,7 @@ patches:
     runner: source-contract-script
     repo: darling-workspace
     script: experiments/e-union/run-nested-lower-root.sh
-    note: Host behavior for nested lower-template roots and fd-path unexpand.
+    note: Host behavior for nested lower-template roots and fd-path unexpand; kept as a dedicated source contract because the full profile currently exposes a separate nested bind regression.
   github:
     fork:
       repo: IlyaGulya/darling-xnu

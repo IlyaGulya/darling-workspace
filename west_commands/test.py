@@ -347,8 +347,7 @@ class DarlingTest(WestCommand):
         parser.add_argument(
             "--label",
             metavar="REGEX",
-            help="restrict to tests whose CTest label matches (e.g. 'macos:15' "
-            "for a CI version row); passed through as ctest -L",
+            help="restrict metadata/CTest labels (e.g. 'name:case' or 'macos:15')",
         )
         parser.add_argument(
             "--fuzz",
