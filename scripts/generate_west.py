@@ -24,9 +24,9 @@ FETCH_OVERRIDES = {
         "reason": "third-party-upstream",
     },
     "darling/src/external/nghttp2/third-party/neverbleed": {
-        "remote": "h2o-upstream",
+        "remote": "darling-next",
         "repo-path": "neverbleed",
-        "reason": "third-party-upstream",
+        "reason": "darling-next-public-mirror-preserves-pin",
     },
     "darling/src/external/xcbuild/ThirdParty/googletest": {
         "remote": "google-upstream",
@@ -103,10 +103,6 @@ def main() -> None:
                 {
                     "name": "mruby-upstream",
                     "url-base": "https://github.com/mruby",
-                },
-                {
-                    "name": "h2o-upstream",
-                    "url-base": "https://github.com/h2o",
                 },
                 {
                     "name": "google-upstream",
