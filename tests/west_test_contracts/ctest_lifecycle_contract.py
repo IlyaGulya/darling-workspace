@@ -573,6 +573,12 @@ with tempfile.TemporaryDirectory() as temp:
         f"prefix bootstrap stack sample: {trace_dir}",
         "prefix bootstrap provision: created private/var/tmp with mode 1777",
         "prefix bootstrap provision: created libexec/darling/private/var/tmp with mode 1777",
+        "prefix bootstrap provision: created private/var/db with mode 755",
+        "prefix bootstrap provision: created private/var/db/launchd.db with mode 755",
+        "prefix bootstrap provision: created private/var/db/launchd.db/com.apple.launchd with mode 755",
+        "prefix bootstrap provision: created var with mode 755",
+        "prefix bootstrap provision: created var/run with mode 755",
+        "prefix bootstrap provision: created var/tmp with mode 755",
         "prefix bootstrap phase start: guest login shell (timeout 60s)",
         f"prefix bootstrap server trace: {trace_dir / 'darlingserver-rpc.log'}",
     ], messages

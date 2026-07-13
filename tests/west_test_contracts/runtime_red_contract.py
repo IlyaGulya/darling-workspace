@@ -307,12 +307,18 @@ assert any(
 )
 assert rootless_provider["runtime-artifacts"] == [
     {
+        "module": "darling/src/external/bash",
+        "build-targets": ["bash"],
+        "deploy": ["bin/bash"],
+    },
+    {
         "module": "darling",
         "build-targets": [ROOTLESS_BOOTSTRAP_TARGET],
         "resource": ROOTLESS_BOOTSTRAP_RESOURCE,
     }
 ]
 assert "darling/src/external/dyld" in rootless_provider["source-modules"]
+assert "darling/src/external/bash" in rootless_provider["source-modules"]
 assert ROOTLESS_BOOTSTRAP_CLOSURE_SOURCE_MODULES.issubset(
     rootless_provider["source-modules"]
 )
@@ -325,9 +331,15 @@ assert baseline_provider["launcher-env"] == {
     "DARLING_ROOTLESS_SHELLSPAWN_READY_TIMEOUT_MS": "60000",
 }
 assert "darling/src/external/dyld" in baseline_provider["source-modules"]
+assert "darling/src/external/bash" in baseline_provider["source-modules"]
 assert ROOTLESS_BOOTSTRAP_CLOSURE_SOURCE_MODULES.issubset(
     baseline_provider["source-modules"]
 )
+assert {
+    "module": "darling/src/external/bash",
+    "build-targets": ["bash"],
+    "deploy": ["bin/bash"],
+} in baseline_provider["runtime-artifacts"]
 assert any(
     runtime_artifact_has_resource(artifact, ROOTLESS_BOOTSTRAP_RESOURCE)
     for artifact in baseline_provider["runtime-artifacts"]
@@ -743,7 +755,9 @@ with tempfile.TemporaryDirectory() as temp:
     prefix = root / "prefix"
     deployed = prefix / "bin" / "darling"
     deployed.parent.mkdir(parents=True)
+    deployed.parent.chmod(0o775)
     deployed.write_text("old launcher\n")
+    deployed.chmod(0o664)
     build_root = root / "build"
     artifact = build_root / "src" / "startup" / "darling"
     artifact.parent.mkdir(parents=True)
@@ -756,14 +770,20 @@ with tempfile.TemporaryDirectory() as temp:
         proof, build_root, prefix, label="bootstrap", restore_deployment=False
     ):
         assert deployed.read_text() == "new launcher\n"
+        assert deployed.stat().st_mode & 0o777 == 0o644
+        assert deployed.parent.stat().st_mode & 0o777 == 0o755
     assert deployed.read_text() == "new launcher\n"
 
     deployed.write_text("old launcher\n")
+    deployed.chmod(0o664)
+    deployed.parent.chmod(0o775)
     with test._runtime_red_deployed_artifacts(
         proof, build_root, prefix, label="CTest", restore_deployment=True
     ):
         assert deployed.read_text() == "new launcher\n"
     assert deployed.read_text() == "old launcher\n"
+    assert deployed.stat().st_mode & 0o777 == 0o664
+    assert deployed.parent.stat().st_mode & 0o777 == 0o775
 
     try:
         with test._runtime_red_deployed_artifacts(

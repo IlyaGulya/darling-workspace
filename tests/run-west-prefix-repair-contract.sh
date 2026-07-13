@@ -67,6 +67,12 @@ with tempfile.TemporaryDirectory() as temp:
     assert any(".init.pid points to stale pid 999999999" in item for item in check.problems), check
     assert any(".darlingserver.sock is stale" in item for item in check.problems), check
     assert any("private/var/tmp missing" in item for item in check.problems), check
+    assert any("private/var/db missing" in item for item in check.problems), check
+    assert any("private/var/db/launchd.db missing" in item for item in check.problems), check
+    assert any(
+        "private/var/db/launchd.db/com.apple.launchd missing" in item
+        for item in check.problems
+    ), check
     assert any("canonical Library/Developer/CommandLineTools symlink missing" in item for item in check.problems), check
     assert any("DarlingCLT clang link missing" in item for item in check.problems), check
 
