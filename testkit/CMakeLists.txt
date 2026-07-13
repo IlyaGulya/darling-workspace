@@ -86,13 +86,28 @@ set(_libsystem_kernel_tests
 # production resolver plus its colocated C fixture as a regular CTest case;
 # the fixture creates real upper/lower trees and xattr markers, not a source
 # matcher or a model of vchroot.
+#
+# This host-only suite is opt-in. A guest CTest build still configures this
+# project, but its default source checkout is the unpatched West project while
+# the runtime provider is built from a materialized profile forest. Compiling
+# the E-UNION harness unconditionally would therefore mix those two source
+# identities and fail before CTest can select guest tests. Metadata invocations
+# that select `eunion-host` enable this explicitly alongside their source
+# override.
+option(DARLING_ENABLE_EUNION_HOST_SUITE
+  "Build the source-bound E-UNION host CTest suite" OFF)
+
 set(_eunion_resolver_dir
   "${DARLING_XNU_SRC}/darling/src/libsystem_kernel/emulation")
 set(_eunion_resolver_source
   "${_eunion_resolver_dir}/tests/eunion_resolver_test.c")
 set(_eunion_resolver_impl
   "${_eunion_resolver_dir}/src/linux_premigration/eunion_resolver.c")
-if(EXISTS "${_eunion_resolver_source}" AND EXISTS "${_eunion_resolver_impl}")
+set(_eunion_host_sources_available FALSE)
+if(DARLING_ENABLE_EUNION_HOST_SUITE
+   AND EXISTS "${_eunion_resolver_source}"
+   AND EXISTS "${_eunion_resolver_impl}")
+  set(_eunion_host_sources_available TRUE)
   add_executable(eunion_resolver_test
     "${_eunion_resolver_source}"
     "${_eunion_resolver_impl}")
@@ -136,7 +151,8 @@ foreach(_source IN LISTS _eunion_harness_sources)
   endif()
 endforeach()
 
-if(EXISTS "${_eunion_harness_dir}/src/linux_premigration/vchroot_userspace.c"
+if(_eunion_host_sources_available
+   AND EXISTS "${_eunion_harness_dir}/src/linux_premigration/vchroot_userspace.c"
    AND _eunion_harness_ready)
   # Production headers use the upstream <darling/emulation/...> prefix while
   # the XNU checkout stores the contents directly below emulation/include.
@@ -188,6 +204,10 @@ if(EXISTS "${_eunion_harness_dir}/src/linux_premigration/vchroot_userspace.c"
     "${_eunion_fixture_root}/libexec"
     eunion_hardening_fixture)
 
+elseif(NOT DARLING_ENABLE_EUNION_HOST_SUITE)
+  message(STATUS
+    "E-UNION host suite disabled; enable DARLING_ENABLE_EUNION_HOST_SUITE "
+    "for a source-bound eunion-host CTest build")
 else()
   message(WARNING
     "XNU checkout is missing the E-UNION host harness sources; skipping "

@@ -128,7 +128,12 @@ the production XNU sources and the workspace harness as a CTest target, while
 the fixture setup is a CTest fixture prepared by
 `experiments/e-union/run.sh --prepare-fixture DIR`. Both normal GREEN runs and
 source-base RED runs select
-the `eunion-host` label; only `DARLING_XNU_SRC` changes between them. Guest
+the `eunion-host` label; only `DARLING_XNU_SRC` changes between them. The
+source-bound host suite is opt-in through
+`-DDARLING_ENABLE_EUNION_HOST_SUITE=ON`; West supplies that flag only for the
+separate materialized source build. The default testkit build keeps it off, so
+guest CTest selection cannot compile an E-UNION harness against the unpatched
+checkout before runtime-profile deployment. Guest
 E-UNION cases remain `guest-c-fixture` metadata tests because their lower and
 upper trees must be staged inside an isolated Darling prefix by the typed
 `darling-eunion-prefix` provider. The `eunion-overlay` fixture profile keeps
