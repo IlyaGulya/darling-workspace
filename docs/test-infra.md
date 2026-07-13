@@ -531,9 +531,13 @@ cases additionally declare `guest-toolchain: darling-command-line-tools`.
 The typed West provider checks the default compiler and SDK, downloads the
 official package set from Darling's existing CommandLineTools distribution
 endpoint only when they are absent, installs each package through the guest
-`/usr/bin/installer`, verifies SHA-1 and size before installation, and removes
-the prefix-owned staging files afterward. Package bytes stay in the external
-West cache rather than in patch metadata or JSON snapshots. `west test` and
+`/usr/bin/installer`, verifies the official HTTPS host, package size, and XAR
+envelope before installation, and removes the prefix-owned staging files
+afterward. The distribution API's historical SHA-1 field is logged and used
+for cache identity, but treated as advisory because Apple has republished
+these old package URLs without updating Darling's metadata. Package bytes stay
+in the external West cache rather than in patch metadata or JSON snapshots.
+`west test` and
 `west darling-doctor` share the same prerequisite checks, so a repaired prefix
 is checked against the same contract that guest metadata tests require. The
 `--cleanup-mounts` mode unmounts stale filesystems left under an otherwise idle
