@@ -796,7 +796,9 @@ like the loader-reset regressions). `env=darling` is source-driven: CTest calls
 the shared `testkit/scripts/run-darling-c-test.sh` helper, which uploads the C
 source into the selected prefix, compiles it with the guest CLT, and runs the
 guest binary through `DARLING_LAUNCHER shell`; it must not run a Linux host
-binary under Darling. `env=macos` is the native differential oracle.
+binary under Darling. Upload is an explicit guest `printf` command rather than
+an assumption that `shell -c` preserves host stdin. `env=macos` is the native
+differential oracle.
 
 Every `env=darling` registration receives the framework-owned
 `runtime-profile:homebrew` label by default. Product tests therefore do not
@@ -899,6 +901,12 @@ heartbeat includes the pre-cleanup process, socket, resource-limit, and runtime
 path snapshot. If the caller is
 interrupted, the next `west test --gc --gc-runtime-evidence` pass removes an
 unlocked orphan `.inflight-*` unit and its recorded worktrees.
+
+Failure diagnostics that rebuild a runtime can pass
+`--runtime-build-timeout-seconds` to override the profile deadline for each
+configure/build phase. CI combines that framework-level limit with an outer
+five-minute command deadline, so a diagnostic retry cannot consume the whole
+job after the original test has already failed.
 
 ### Orchestrator — `west test` (`west_commands/test.py`)
 

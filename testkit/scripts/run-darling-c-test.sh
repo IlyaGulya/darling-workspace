@@ -90,6 +90,11 @@ run_id="${WEST_GUEST_C_FIXTURE_ID:-$$.$RANDOM}"
 guest_src="/tmp/${safe_name}.${run_id}.c"
 guest_bin="/tmp/${safe_name}.${run_id}"
 output="$(mktemp "${TMPDIR:-/tmp}/west-ctest-guest-c.${safe_name}.XXXXXX")"
+# darling shell does not guarantee that stdin reaches the guest command. Keep
+# the fixture transport explicit so real and fake launchers have identical
+# semantics, including on source files containing shell metacharacters.
+source_literal="$(printf '%q' "$(<"$source")")"
+guest_src_literal="$(printf '%q' "$guest_src")"
 
 quoted_args=()
 for arg in "${args[@]}"; do
@@ -152,7 +157,7 @@ run_guest_stage() {
 }
 
 set +e
-run_guest_stage upload "cat > '$guest_src'" <"$source"
+run_guest_stage upload "umask 077; printf '%s' $source_literal > $guest_src_literal"
 rc=$?
 set -e
 if [ "$rc" -eq 0 ]; then
