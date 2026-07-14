@@ -3,6 +3,8 @@ name: Darling compatibility tests
 on:
   pull_request:
   push:
+  # Scheduled run intentionally covers host plus guest-full. CLT provisioning
+  # and native macOS tiers remain manual and independently selectable.
   schedule:
     - cron: '17 3 * * *'
   workflow_dispatch:
@@ -109,7 +111,7 @@ jobs:
         run: darling-dev/darling-workspace/ci/bootstrap-west.sh
       - name: Build guarded test executor
         run: cargo build --release --locked --manifest-path darling-dev/darling-debug-runner/Cargo.toml
-      - name: Run full rootless regression with CLT
+      - name: Run full rootless regression (blocked pending prebuilt corpus)
         id: rootless_regression
         run: darling-dev/darling-workspace/ci/run-test-tier.sh guest-full
       - name: Capture rootless bootstrap syscall trace
