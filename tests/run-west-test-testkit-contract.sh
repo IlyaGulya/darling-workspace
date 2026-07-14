@@ -31,6 +31,57 @@ if ctest --test-dir "$scope_build" --show-only=json-v1 2>/dev/null |
 	exit 1
 fi
 
+# This is the semantic boundary of the CLT-backed rootless regression tier.
+# Keep the exact set here so a broad label or CMake conditional cannot silently
+# turn the full job into a one-test smoke.
+ctest --test-dir "$scope_build" --show-only=json-v1 -L 'env:darling' |
+	python3 -c '
+import json
+import sys
+from pathlib import Path
+
+payload = json.load(sys.stdin)
+expected = [
+    "darling/abort_with_payload_no_group_broadcast",
+    "darling/select_fdset_guest",
+    "darling/getattrlist_name_objtype_guest",
+    "darling/darwin_priority_guest",
+    "darling/socket_siocgifconf_guest",
+    "darling/bzero_return_register_guest",
+    "darling/sigexc_sa_restart_guest",
+    "darling/sigexc_default_resend_self_guest",
+    "darling/ulock_eintr_retry_guest",
+    "darling/vchroot_pathnull_guard_guest",
+    "darling/chown_disabled_null_guard_guest",
+    "darling/fd_guard_ebadf_guest",
+    "darling/fork_checkin_signal_storm_guest",
+    "darling/rootless_no_mount_guest",
+]
+tests = payload.get("tests", [])
+actual = [test["name"] for test in tests]
+assert actual == expected, (actual, expected)
+profiles = {}
+for test in tests:
+    labels = next(
+        item["value"]
+        for item in test.get("properties", [])
+        if item.get("name") == "LABELS"
+    )
+    profiles[test["name"]] = next(
+        label.removeprefix("runtime-profile:")
+        for label in labels
+        if label.startswith("runtime-profile:")
+    )
+assert len(profiles) == 14
+runtime_profiles = __import__("yaml").safe_load(
+    Path("testkit/runtime-profiles.yml").read_text()
+)["runtime-profiles"]
+for profile in {"homebrew", "homebrew-libplatform", "perf-darlingserver", "homebrew-rootless-no-mount"}:
+    assert runtime_profiles[profile]["guest-toolchain"] == "darling-command-line-tools"
+assert "guest-toolchain" not in runtime_profiles["homebrew-rootless-bootstrap-minimal"]
+print("PASS rootless-regression-selection-contract")
+'
+
 if patch_profile_error="$(west test --patch darling/rootless-shellspawn-lifecycle.patch \
 	--prefix-profile homebrew --list 2>&1)"; then
 	printf '%s\n' "$patch_profile_error" >&2

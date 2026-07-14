@@ -159,6 +159,10 @@ assert runtime_deploy_targets(prefix_for_targets, "usr/lib/system/libsystem_kern
     prefix_for_targets / "libexec/darling/usr/lib/system/libsystem_kernel.dylib",
     prefix_for_targets / "usr/lib/system/libsystem_kernel.dylib",
 ]
+assert runtime_deploy_targets(prefix_for_targets, "usr/bin/installer") == [
+    prefix_for_targets / "libexec/darling/usr/bin/installer",
+    prefix_for_targets / "usr/bin/installer",
+]
 assert runtime_deploy_targets(prefix_for_targets, "bin/darlingserver") == [
     prefix_for_targets / "bin/darlingserver",
 ]
@@ -171,6 +175,16 @@ assert runtime_deploy_targets(
 ) == [
     prefix_for_targets
     / "libexec/darling/System/Library/LaunchDaemons/org.darlinghq.shellspawn.plist",
+]
+assert runtime_deploy_targets(
+    prefix_for_targets,
+    "System/Library/Frameworks/CoreFoundation.framework/Versions/A/CoreFoundation",
+    rootless_no_mount=True,
+) == [
+    prefix_for_targets
+    / "libexec/darling/System/Library/Frameworks/CoreFoundation.framework/Versions/A/CoreFoundation",
+    prefix_for_targets
+    / "System/Library/Frameworks/CoreFoundation.framework/Versions/A/CoreFoundation",
 ]
 with tempfile.TemporaryDirectory() as temp:
     profiles_path = Path(temp) / "runtime-profiles.yml"
@@ -307,16 +321,6 @@ assert any(
 )
 assert rootless_provider["runtime-artifacts"] == [
     {
-        "module": "darling/src/external/bash",
-        "build-targets": ["bash"],
-        "deploy": ["bin/bash"],
-    },
-    {
-        "module": "darling/src/external/installer",
-        "build-targets": ["installer"],
-        "deploy": ["bin/installer"],
-    },
-    {
         "module": "darling",
         "build-targets": [ROOTLESS_BOOTSTRAP_TARGET],
         "resource": ROOTLESS_BOOTSTRAP_RESOURCE,
@@ -324,14 +328,21 @@ assert rootless_provider["runtime-artifacts"] == [
 ]
 assert "darling/src/external/dyld" in rootless_provider["source-modules"]
 assert "darling/src/external/bash" in rootless_provider["source-modules"]
-assert "darling/src/external/installer" in rootless_provider["source-modules"]
+for toolchain_module in (
+    "darling/src/external/installer",
+    "darling/src/external/perl",
+    "darling/src/external/cfnetwork",
+    "darling/src/external/security",
+    "darling/src/external/coretls",
+):
+    assert toolchain_module not in rootless_provider["source-modules"]
+assert "darling/src/external/corefoundation" in rootless_provider["source-modules"]
 assert ROOTLESS_BOOTSTRAP_CLOSURE_SOURCE_MODULES.issubset(
     rootless_provider["source-modules"]
 )
 baseline_provider = actual_runtime_profiles["homebrew-prefix-baseline"]
-assert baseline_provider["purpose"] == "prefix-baseline"
+assert baseline_provider["purpose"] == "guest-toolchain-provisioning"
 assert baseline_provider["bootstrap"] == "rootless-no-mount"
-assert baseline_provider["bootstrap-smoke-timeout-seconds"] == 180
 assert baseline_provider["launcher-env"] == {
     **rootless_provider["launcher-env"],
     "DARLING_ROOTLESS_SHELLSPAWN_READY_TIMEOUT_MS": "60000",
@@ -341,19 +352,29 @@ assert "darling/src/external/bash" in baseline_provider["source-modules"]
 assert ROOTLESS_BOOTSTRAP_CLOSURE_SOURCE_MODULES.issubset(
     baseline_provider["source-modules"]
 )
-assert {
-    "module": "darling/src/external/bash",
-    "build-targets": ["bash"],
-    "deploy": ["bin/bash"],
-} in baseline_provider["runtime-artifacts"]
-assert {
-    "module": "darling/src/external/installer",
-    "build-targets": ["installer"],
-    "deploy": ["bin/installer"],
-} in baseline_provider["runtime-artifacts"]
+assert baseline_provider["runtime-artifacts"] == [
+    {
+        "module": "darling",
+        "build-targets": [ROOTLESS_BOOTSTRAP_TARGET],
+        "resource": ROOTLESS_BOOTSTRAP_RESOURCE,
+    },
+    {
+        "module": "darling",
+        "build-targets": ["rootless_toolchain"],
+        "resource": "rootless-toolchain",
+    },
+]
 assert "darling/src/external/installer" in baseline_provider["source-modules"]
+assert "darling/src/external/perl" in baseline_provider["source-modules"]
+assert "darling/src/external/cfnetwork" in baseline_provider["source-modules"]
+assert "darling/src/external/security" in baseline_provider["source-modules"]
+assert "darling/src/external/coretls" in baseline_provider["source-modules"]
 assert any(
     runtime_artifact_has_resource(artifact, ROOTLESS_BOOTSTRAP_RESOURCE)
+    for artifact in baseline_provider["runtime-artifacts"]
+)
+assert any(
+    runtime_artifact_has_resource(artifact, "rootless-toolchain")
     for artifact in baseline_provider["runtime-artifacts"]
 )
 
@@ -364,7 +385,7 @@ with tempfile.TemporaryDirectory() as temp:
         "  incomplete-rootless:\n"
         "    source-profile: homebrew\n"
         "    source-module: darling\n"
-        "    source-modules: [darling, darling/src/external/darlingserver, darling/src/external/xnu, darling/src/external/dyld, darling/src/external/corefoundation, darling/src/external/libsystem]\n"
+        "    source-modules: [darling, darling/src/external/darlingserver, darling/src/external/xnu, darling/src/external/dyld, darling/src/external/corefoundation, darling/src/external/libsystem, darling/src/external/bash]\n"
         "    bootstrap: rootless-no-mount\n"
         "    runtime-artifacts:\n"
         "    - build-targets: [darling]\n"
@@ -383,7 +404,7 @@ with tempfile.TemporaryDirectory() as temp:
         "  mixed-rootless:\n"
         "    source-profile: homebrew\n"
         "    source-module: darling\n"
-        "    source-modules: [darling, darling/src/external/darlingserver, darling/src/external/xnu, darling/src/external/corefoundation, darling/src/external/libsystem]\n"
+        "    source-modules: [darling, darling/src/external/darlingserver, darling/src/external/xnu, darling/src/external/corefoundation, darling/src/external/libsystem, darling/src/external/bash]\n"
         "    bootstrap: rootless-no-mount\n"
         "    runtime-artifacts:\n"
         "    - build-targets: [rootless_bootstrap]\n"
@@ -404,7 +425,7 @@ with tempfile.TemporaryDirectory() as temp:
         "  incomplete-resource-rootless:\n"
         "    source-profile: homebrew\n"
         "    source-module: darling\n"
-        "    source-modules: [darling, darling/src/external/darlingserver, darling/src/external/xnu, darling/src/external/dyld, darling/src/external/corefoundation, darling/src/external/libsystem]\n"
+        "    source-modules: [darling, darling/src/external/darlingserver, darling/src/external/xnu, darling/src/external/dyld, darling/src/external/corefoundation, darling/src/external/libsystem, darling/src/external/bash]\n"
         "    bootstrap: rootless-no-mount\n"
         "    runtime-artifacts:\n"
         "    - build-targets: [darling]\n"
@@ -486,9 +507,11 @@ with tempfile.TemporaryDirectory() as temp:
     build_root = Path(temp)
     framework = build_root / "CoreFoundation"
     thin_framework = build_root / "CoreFoundation_x86_64"
+    firstpass_framework = build_root / "CoreFoundation_firstpass"
     executable = build_root / "launchd"
     for path, magic in (
         (thin_framework, b"\xcf\xfa\xed\xfe"),
+        (firstpass_framework, b"\xca\xfe\xba\xbe"),
         (executable, b"\xcf\xfa\xed\xfe"),
         (framework, b"\xca\xfe\xba\xbe"),
     ):
@@ -498,15 +521,40 @@ with tempfile.TemporaryDirectory() as temp:
     install_names = {
         framework: "/System/Library/Frameworks/CoreFoundation.framework/Versions/A/CoreFoundation",
         thin_framework: "/System/Library/Frameworks/CoreFoundation.framework/Versions/A/CoreFoundation",
+        firstpass_framework: "/System/Library/Frameworks/CoreFoundation.framework/Versions/A/CoreFoundation",
         executable: None,
     }
     deployment_service = RuntimeDeploymentService(provider_test)
+    shutdown_envs = []
+    provider_test._shutdown_runtime_prefix = (
+        lambda _prefix, *, extra_env=None: shutdown_envs.append(dict(extra_env or {}))
+        or True
+    )
     deployment_service.macho_inspect = lambda path, _mode: (
         f"{path}:\n{install_names[path]}\n" if install_names[path] else f"{path}:\n"
     )
     assert deployment_service.macho_dylib_providers(build_root) == {
         "/System/Library/Frameworks/CoreFoundation.framework/Versions/A/CoreFoundation": framework
     }
+
+    retained_prefix = build_root / "retained-prefix"
+    retained_prefix.mkdir()
+    (retained_prefix / "stale-runtime-state").write_text("must remain\n")
+    isolated = deployment_service.create_empty_prefix(retained_prefix)
+    assert isolated.prefix.is_dir()
+    assert list(isolated.prefix.iterdir()) == []
+    assert (retained_prefix / "stale-runtime-state").read_text() == "must remain\n"
+    assert deployment_service.cleanup_empty_prefix(
+        isolated, lifecycle_env={"DARLING_ROOTLESS": "1"}
+    )
+    assert shutdown_envs[-1] == {"DARLING_ROOTLESS": "1"}, shutdown_envs
+    assert not isolated.root.exists()
+
+    provider_test._shutdown_runtime_prefix = lambda _prefix, *, extra_env=None: False
+    isolated = deployment_service.create_empty_prefix(retained_prefix)
+    assert not deployment_service.cleanup_empty_prefix(isolated)
+    assert isolated.root.is_dir(), isolated.root
+    shutil.rmtree(isolated.root)
 
 with tempfile.TemporaryDirectory() as temp:
     build_root = Path(temp) / "build"
@@ -587,7 +635,7 @@ with tempfile.TemporaryDirectory() as temp:
         "  incomplete-closure-rootless:\n"
         "    source-profile: homebrew\n"
         "    source-module: darling\n"
-        "    source-modules: [darling, darling/src/external/darlingserver, darling/src/external/xnu, darling/src/external/dyld, darling/src/external/corefoundation, darling/src/external/libsystem]\n"
+        "    source-modules: [darling, darling/src/external/darlingserver, darling/src/external/xnu, darling/src/external/dyld, darling/src/external/corefoundation, darling/src/external/libsystem, darling/src/external/bash]\n"
         "    bootstrap: rootless-no-mount\n"
         "    runtime-artifacts:\n"
         "    - build-targets: [darling]\n"
@@ -607,7 +655,7 @@ with tempfile.TemporaryDirectory() as temp:
         "  live-closure-owner-rootless:\n"
         "    source-profile: homebrew\n"
         "    source-module: darling\n"
-        "    source-modules: [darling, darling/src/external/darlingserver, darling/src/external/xnu, darling/src/external/dyld, darling/src/external/libsystem]\n"
+        "    source-modules: [darling, darling/src/external/darlingserver, darling/src/external/xnu, darling/src/external/dyld, darling/src/external/libsystem, darling/src/external/bash]\n"
         "    bootstrap: rootless-no-mount\n"
         "    runtime-artifacts:\n"
         "    - build-targets: [rootless_bootstrap]\n"
@@ -668,9 +716,9 @@ try:
         }],
     )
 except ValueError as exc:
-    assert "cannot select prefix-baseline" in str(exc), exc
+    assert "cannot select bootstrap-only" in str(exc), exc
 else:
-    raise AssertionError("CTest test accepted a durable prefix baseline provider")
+    raise AssertionError("CTest test accepted a bootstrap-only provider")
 
 groups = partition_ctest_runtime_profiles(
     runtime_profiles,
@@ -777,7 +825,7 @@ with tempfile.TemporaryDirectory() as temp:
     proof = {"runtime-artifacts": [{"deploy": ["bin/darling"]}]}
 
     test = make_test()
-    test._shutdown_runtime_prefix = lambda _prefix: True
+    test._shutdown_runtime_prefix = lambda _prefix, *, extra_env=None: True
     with test._runtime_red_deployed_artifacts(
         proof, build_root, prefix, label="bootstrap", restore_deployment=False
     ):

@@ -1078,6 +1078,9 @@ grep -q 'missing required environment .*darling-prefix' \
 
 rm -rf "$guest_prefix"
 mkdir -p \
+	"$guest_prefix/private/var/db/launchd.db/com.apple.launchd" \
+	"$guest_prefix/var/run" \
+	"$guest_prefix/var/tmp" \
 	"$guest_prefix/private/var/tmp" \
 	"$guest_prefix/libexec/darling/private/var/tmp" \
 	"$guest_prefix/Library/Developer/CommandLineTools/usr/bin" \
@@ -1237,6 +1240,9 @@ fake_darling="$(mktemp)"
 cat >"$fake_darling" <<'SH'
 #!/usr/bin/env bash
 set -euo pipefail
+if [ "$1" = shutdown ]; then
+	exit 0
+fi
 if [ "$1" = shell ]; then
 	shift
 	if [ -n "${WEST_GUEST_TRACE_FILE:-}" ]; then
@@ -1251,6 +1257,9 @@ chmod +x "$fake_darling"
 rm -rf "$guest_prefix"
 mkdir -p \
 	"$guest_prefix/bin" \
+	"$guest_prefix/private/var/db/launchd.db/com.apple.launchd" \
+	"$guest_prefix/var/run" \
+	"$guest_prefix/var/tmp" \
 	"$guest_prefix/private/var/tmp" \
 	"$guest_prefix/libexec/darling/private/var/tmp" \
 	"$guest_prefix/Library/Developer/CommandLineTools/usr/bin" \

@@ -11,6 +11,10 @@ WEST_TEMP_WORKTREE_PREFIXES = (
     "west-red-proof-source-",
     "west-green-proof-source-",
     "west-profile-",
+    # Runtime evidence owns disposable source worktrees too. Their parent
+    # directory is retained only while the evidence unit is live/inspectable.
+    ".inflight-",
+    "runtime-evidence-",
 )
 
 

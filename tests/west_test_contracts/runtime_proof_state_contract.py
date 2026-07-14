@@ -37,6 +37,22 @@ assert machine.state is ProofState.GREEN
 assert green_calls == ["green"]
 assert not errors
 
+provider_machine = RuntimeProofStateMachine(
+    name="provider contract",
+    oracle=RedOracle.from_manifest(
+        {
+            "expect-failure-phase": "provider",
+            "expect-output-contains": ["PROVIDER_RUNTIME_BROKEN"],
+        }
+    ),
+    error=errors.append,
+)
+assert provider_machine.validate_red(
+    ProofObservation(1, "PROVIDER_RUNTIME_BROKEN\n", "provider")
+)
+assert provider_machine.run_green(lambda: 0) == 0
+assert provider_machine.state is ProofState.GREEN
+
 for observation, expected in (
     (ProofObservation(0, "", None), "unexpectedly passed"),
     (ProofObservation(1, "OLD_RUNTIME_BROKEN", "compile"), "failed in phase"),

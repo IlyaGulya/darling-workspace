@@ -79,6 +79,15 @@ rootless_artifact = {
 }
 rootless_errors = metadata_command._validate_test_metadata(runtime_patch(rootless_artifact))
 assert rootless_errors == [], rootless_errors
+bootstrap_test = runtime_patch(rootless_artifact)
+bootstrap_test["tests"][0]["red"] = True
+bootstrap_test["tests"][0]["red-proof"] = {
+    "mode": "guest-runtime-deploy",
+    "expect-failure-phase": "bootstrap",
+    "expect-output-contains": ["Rootless shellspawn did not become ready"],
+    "runtime-artifacts": [rootless_artifact],
+}
+assert metadata_command._validate_test_metadata(bootstrap_test) == []
 for invalid_artifact, expected in (
     ({**rootless_artifact, "deploy": ["bin/darling"]}, "must not declare deploy paths"),
     ({**rootless_artifact, "build-targets": ["darling"]}, "must build only"),
@@ -86,6 +95,22 @@ for invalid_artifact, expected in (
 ):
     errors = metadata_command._validate_test_metadata(runtime_patch(invalid_artifact))
     assert any(expected in error for error in errors), errors
+
+provider_test = runtime_patch(rootless_artifact)
+provider_test["tests"][0]["red"] = True
+provider_test["tests"][0]["red-proof"] = {
+    "mode": "guest-runtime-deploy",
+    "expect-failure-phase": "provider",
+    "expect-output-contains": ["installer failed"],
+    "runtime-artifacts": [rootless_artifact],
+}
+errors = metadata_command._validate_test_metadata(provider_test)
+assert any("provider failure requires" in error for error in errors), errors
+provider_test["tests"][0]["red-proof"]["provider-under-test"] = True
+assert metadata_command._validate_test_metadata(provider_test) == []
+provider_test["tests"][0]["red-proof"]["expect-failure-phase"] = "run"
+errors = metadata_command._validate_test_metadata(provider_test)
+assert any("provider-under-test requires" in error for error in errors), errors
 
 snapshot_patch = b"""diff --git a/tests/PERF18-lanes-snapshot.json b/tests/PERF18-lanes-snapshot.json
 new file mode 100644

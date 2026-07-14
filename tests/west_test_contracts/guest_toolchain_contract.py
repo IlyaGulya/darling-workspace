@@ -5,17 +5,43 @@ from __future__ import annotations
 import hashlib
 import json
 import struct
+import sys
 import tempfile
 from pathlib import Path
 
+ROOT = Path(__file__).resolve().parents[2]
+sys.path.insert(0, str(ROOT / "west_commands"))
+
+import guest_toolchain as guest_toolchain_module
 from guest_toolchain import (
     COMMAND_LINE_TOOLS_MANIFEST_URL,
     COMMAND_LINE_TOOLS_PACKAGE_IDS,
     GuestToolchainError,
     ensure_command_line_tools,
+    guest_toolchain_provisioning_forbidden,
+    require_guest_toolchain_provisioning_allowed,
 )
 from test_execution import ProcessResult
 from prefix_repair import guest_c_fixture_prerequisite_problems
+
+
+assert not guest_toolchain_provisioning_forbidden({}), "CLT provisioning was unexpectedly forbidden"
+assert guest_toolchain_provisioning_forbidden(
+    {"WEST_TEST_FORBID_GUEST_TOOLCHAIN": "1"}
+), "no-CLT policy did not reject guest toolchain provisioning"
+assert not guest_toolchain_provisioning_forbidden(
+    {"WEST_TEST_FORBID_GUEST_TOOLCHAIN": "0"}
+), "no-CLT policy accepted an unrelated value"
+require_guest_toolchain_provisioning_allowed({})
+try:
+    require_guest_toolchain_provisioning_allowed(
+        {"WEST_TEST_FORBID_GUEST_TOOLCHAIN": "1"}
+    )
+except GuestToolchainError as error:
+    assert error.kind == "policy", error.kind
+    assert "no-CLT" in str(error), error
+else:
+    raise AssertionError("no-CLT policy allowed guest toolchain provisioning")
 
 
 class Response:
@@ -61,6 +87,13 @@ def main() -> None:
                     "digest": digest,
                 }
             )
+        reviewed_digests = dict(guest_toolchain_module.REVIEWED_COMMAND_LINE_TOOLS_SHA256)
+        guest_toolchain_module.REVIEWED_COMMAND_LINE_TOOLS_SHA256.update(
+            {
+                package_id: hashlib.sha256(package_payloads[f"https://swcdn.apple.com/{index}.pkg"]).hexdigest()
+                for index, package_id in enumerate(COMMAND_LINE_TOOLS_PACKAGE_IDS)
+            }
+        )
         package_entries[0]["digest"] = "0" * 40
         manifest = json.dumps([{"packages": package_entries}]).encode()
 
@@ -136,6 +169,25 @@ def main() -> None:
             assert "missing package" in str(error), error
         else:
             raise AssertionError("incomplete package manifest was accepted")
+
+        bad_package = root / "bad.pkg"
+        bad_package.write_bytes(package_payloads["https://swcdn.apple.com/0.pkg"] + b"tampered")
+        package = guest_toolchain_module.CommandLineToolsPackage(
+            COMMAND_LINE_TOOLS_PACKAGE_IDS[0],
+            "https://swcdn.apple.com/0.pkg",
+            bad_package.stat().st_size,
+            hashlib.sha1(bad_package.read_bytes()).hexdigest(),
+        )
+        try:
+            guest_toolchain_module._verify_package(bad_package, package, logs.append)
+        except GuestToolchainError as error:
+            assert error.kind == "download", error.kind
+            assert "unreviewed SHA-256" in str(error), error
+        else:
+            raise AssertionError("tampered CommandLineTools payload was accepted")
+
+        guest_toolchain_module.REVIEWED_COMMAND_LINE_TOOLS_SHA256.clear()
+        guest_toolchain_module.REVIEWED_COMMAND_LINE_TOOLS_SHA256.update(reviewed_digests)
 
     print("PASS guest-toolchain-contract")
 

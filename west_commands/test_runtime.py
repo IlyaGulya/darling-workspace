@@ -14,6 +14,9 @@ import yaml
 ROOTLESS_BOOTSTRAP_RESOURCE = "rootless-bootstrap"
 ROOTLESS_BOOTSTRAP_TARGET = "rootless_bootstrap"
 ROOTLESS_BOOTSTRAP_MANIFEST = "darling-rootless-bootstrap.json"
+ROOTLESS_TOOLCHAIN_RESOURCE = "rootless-toolchain"
+ROOTLESS_TOOLCHAIN_TARGET = "rootless_toolchain"
+ROOTLESS_TOOLCHAIN_MANIFEST = "darling-rootless-toolchain.json"
 GUEST_TOOLCHAIN_RESOURCE = "darling-command-line-tools"
 # Source owners whose patched revisions can provide Mach-O libraries in the
 # bootstrap closure. A materialized runtime forest must not leave them as live
@@ -30,12 +33,16 @@ ROOTLESS_NO_MOUNT_SOURCE_MODULES = frozenset(
         "darling/src/external/darlingserver",
         "darling/src/external/dyld",
         "darling/src/external/xnu",
+        "darling/src/external/bash",
     }
 ).union(ROOTLESS_BOOTSTRAP_CLOSURE_SOURCE_MODULES)
 ROOTLESS_NO_MOUNT_RUNTIME_RESOURCES = frozenset(
     {ROOTLESS_BOOTSTRAP_RESOURCE}
 )
-_RUNTIME_RESOURCES = ROOTLESS_NO_MOUNT_RUNTIME_RESOURCES
+ROOTLESS_TOOLCHAIN_RUNTIME_RESOURCES = frozenset(
+    {ROOTLESS_BOOTSTRAP_RESOURCE, ROOTLESS_TOOLCHAIN_RESOURCE}
+)
+_RUNTIME_RESOURCES = ROOTLESS_TOOLCHAIN_RUNTIME_RESOURCES
 _MACHO_MAGICS = frozenset(
     {
         b"\xce\xfa\xed\xfe",
@@ -136,8 +143,10 @@ def is_fat_macho_binary(path: Path) -> bool:
         return False
 
 
-def load_rootless_bootstrap_manifest(build_root: Path) -> dict[str, Path]:
-    """Load CMake's rootless products and validate their deployment boundary.
+def load_runtime_component_manifest(
+    build_root: Path, resource: str = ROOTLESS_BOOTSTRAP_RESOURCE
+) -> dict[str, Path]:
+    """Load one CMake-owned runtime component and validate its boundary.
 
     CMake owns the component's target-to-guest-path mapping. West only consumes
     its generated product metadata and refuses paths that escape the disposable
@@ -146,21 +155,33 @@ def load_rootless_bootstrap_manifest(build_root: Path) -> dict[str, Path]:
     separately selects only Mach-O entrypoints as dylib-dependency roots.
     """
 
-    manifest_path = build_root / ROOTLESS_BOOTSTRAP_MANIFEST
+    manifest_names = {
+        ROOTLESS_BOOTSTRAP_RESOURCE: ROOTLESS_BOOTSTRAP_MANIFEST,
+        ROOTLESS_TOOLCHAIN_RESOURCE: ROOTLESS_TOOLCHAIN_MANIFEST,
+    }
+    try:
+        manifest_name = manifest_names[resource]
+    except KeyError as exc:
+        raise ValueError(f"unknown runtime component resource {resource!r}") from exc
+    manifest_path = build_root / manifest_name
     try:
         data = json.loads(manifest_path.read_text())
     except OSError as exc:
-        raise ValueError(f"cannot read rootless bootstrap manifest {manifest_path}: {exc}") from exc
+        raise ValueError(
+            f"cannot read runtime component manifest {manifest_path}: {exc}"
+        ) from exc
     except json.JSONDecodeError as exc:
-        raise ValueError(f"invalid rootless bootstrap manifest {manifest_path}: {exc.msg}") from exc
+        raise ValueError(
+            f"invalid runtime component manifest {manifest_path}: {exc.msg}"
+        ) from exc
     if not isinstance(data, dict) or data.get("schema") != 1:
-        raise ValueError("rootless bootstrap manifest must have schema 1")
+        raise ValueError(f"runtime component {resource!r} manifest must have schema 1")
     entries = data.get("entrypoints")
     if not isinstance(entries, list) or not entries:
-        raise ValueError("rootless bootstrap manifest needs non-empty entrypoints")
+        raise ValueError(f"runtime component {resource!r} needs non-empty entrypoints")
     resources = data.get("resources", [])
     if not isinstance(resources, list):
-        raise ValueError("rootless bootstrap manifest resources must be a list")
+        raise ValueError(f"runtime component {resource!r} resources must be a list")
 
     resolved_root = build_root.resolve()
     deployments: dict[str, Path] = {}
@@ -170,7 +191,7 @@ def load_rootless_bootstrap_manifest(build_root: Path) -> dict[str, Path]:
             label = "entry" if kind == "entrypoints" else "resource"
             if not isinstance(entry, dict):
                 raise ValueError(
-                    f"rootless bootstrap manifest {label} {index} must be a mapping"
+                    f"runtime component {resource!r} {label} {index} must be a mapping"
                 )
             target = entry.get("target")
             guest_path = entry.get("guest_path")
@@ -179,46 +200,52 @@ def load_rootless_bootstrap_manifest(build_root: Path) -> dict[str, Path]:
                 isinstance(value, str) and value for value in (target, guest_path, host_path)
             ):
                 raise ValueError(
-                    f"rootless bootstrap manifest {label} {index} needs target, guest_path, and host_path"
+                    f"runtime component {resource!r} {label} {index} needs target, guest_path, and host_path"
                 )
             guest = Path(guest_path)
             if not guest.is_absolute() or ".." in guest.parts:
                 raise ValueError(
-                    f"rootless bootstrap manifest {label} {target!r} has invalid guest path {guest_path!r}"
+                    f"runtime component {resource!r} {label} {target!r} has invalid guest path {guest_path!r}"
                 )
             relative_guest_path = guest_path.removeprefix("/")
             if not relative_guest_path:
                 raise ValueError(
-                    f"rootless bootstrap manifest {label} {target!r} cannot deploy at /"
+                    f"runtime component {resource!r} {label} {target!r} cannot deploy at /"
                 )
             source = Path(host_path)
             if not source.is_absolute():
                 raise ValueError(
-                    f"rootless bootstrap manifest {label} {target!r} has non-absolute host path {host_path!r}"
+                    f"runtime component {resource!r} {label} {target!r} has non-absolute host path {host_path!r}"
                 )
             resolved_source = source.resolve()
             if not resolved_source.is_relative_to(resolved_root):
                 raise ValueError(
-                    f"rootless bootstrap manifest {label} {target!r} escapes build root: {host_path}"
+                    f"runtime component {resource!r} {label} {target!r} escapes build root: {host_path}"
                 )
             if not resolved_source.is_file():
                 requirement = "built executable" if executable else "regular resource file"
                 raise ValueError(
-                    f"rootless bootstrap manifest {label} {target!r} is not a {requirement}: {host_path}"
+                    f"runtime component {resource!r} {label} {target!r} is not a {requirement}: {host_path}"
                 )
             if executable and not resolved_source.stat().st_mode & 0o111:
                 raise ValueError(
-                    f"rootless bootstrap manifest entry {target!r} is not a built executable: {host_path}"
+                    f"runtime component {resource!r} entry {target!r} is not a built executable: {host_path}"
                 )
             if relative_guest_path in deployments:
                 raise ValueError(
-                    f"rootless bootstrap manifest has duplicate guest path {guest_path!r}"
+                    f"runtime component {resource!r} has duplicate guest path {guest_path!r}"
                 )
             deployments[relative_guest_path] = resolved_source
 
     load_entries(entries, "entrypoints", executable=True)
     load_entries(resources, "resources", executable=False)
     return deployments
+
+
+def load_rootless_bootstrap_manifest(build_root: Path) -> dict[str, Path]:
+    """Load the source-owned minimal rootless bootstrap component."""
+
+    return load_runtime_component_manifest(build_root, ROOTLESS_BOOTSTRAP_RESOURCE)
 
 
 def parse_macho_dylib_id(output: str) -> str | None:
@@ -318,7 +345,7 @@ def load_ctest_runtime_profiles(path: Path) -> dict[str, dict[str, Any]]:
                 f"runtime profile {name!r} has unknown guest-toolchain "
                 f"{guest_toolchain!r}"
             )
-        if purpose not in {"runtime", "prefix-baseline"}:
+        if purpose not in {"runtime", "prefix-baseline", "guest-toolchain-provisioning"}:
             raise ValueError(
                 f"runtime profile {name!r} has unknown purpose {purpose!r}"
             )
@@ -326,6 +353,16 @@ def load_ctest_runtime_profiles(path: Path) -> dict[str, dict[str, Any]]:
             raise ValueError(
                 f"runtime profile {name!r} prefix-baseline must use rootless-no-mount"
             )
+        if purpose == "guest-toolchain-provisioning":
+            if bootstrap != "rootless-no-mount":
+                raise ValueError(
+                    f"runtime profile {name!r} guest-toolchain-provisioning must use rootless-no-mount"
+                )
+            if guest_toolchain != GUEST_TOOLCHAIN_RESOURCE:
+                raise ValueError(
+                    f"runtime profile {name!r} guest-toolchain-provisioning needs "
+                    f"guest-toolchain: {GUEST_TOOLCHAIN_RESOURCE}"
+                )
         if (
             type(bootstrap_smoke_timeout) is not int
             or bootstrap_smoke_timeout <= 0
@@ -413,6 +450,29 @@ def load_ctest_runtime_profiles(path: Path) -> dict[str, dict[str, Any]]:
                     f"runtime profile {name!r} rootless-no-mount resource must not "
                     "declare deploy paths; CMake owns them"
                 )
+            if purpose == "guest-toolchain-provisioning":
+                toolchain_artifacts = [
+                    artifact
+                    for artifact in artifacts
+                    if isinstance(artifact, dict)
+                    and runtime_artifact_has_resource(artifact, ROOTLESS_TOOLCHAIN_RESOURCE)
+                ]
+                if len(toolchain_artifacts) != 1:
+                    raise ValueError(
+                        f"runtime profile {name!r} guest-toolchain-provisioning needs exactly one "
+                        f"{ROOTLESS_TOOLCHAIN_RESOURCE!r} resource"
+                    )
+                toolchain_artifact = toolchain_artifacts[0]
+                if toolchain_artifact.get("build-targets") != [ROOTLESS_TOOLCHAIN_TARGET]:
+                    raise ValueError(
+                        f"runtime profile {name!r} {ROOTLESS_TOOLCHAIN_RESOURCE} resource must build "
+                        f"only {ROOTLESS_TOOLCHAIN_TARGET!r}"
+                    )
+                if runtime_artifact_deploy_paths(toolchain_artifact):
+                    raise ValueError(
+                        f"runtime profile {name!r} {ROOTLESS_TOOLCHAIN_RESOURCE} resource must not "
+                        "declare deploy paths; CMake owns them"
+                    )
         normalized[name] = {
             "source-profile": source_profile,
             "source-module": source_module,
@@ -569,15 +629,16 @@ def partition_ctest_runtime_profiles(
             raise ValueError(
                 f"Darling CTest test {name!r} needs an explicit runtime-profile label"
             )
-        baseline_profiles = [
+        bootstrap_only_profiles = [
             profile
             for profile in profiles
-            if definitions[profile].get("purpose") == "prefix-baseline"
+            if definitions[profile].get("purpose")
+            in {"prefix-baseline", "guest-toolchain-provisioning"}
         ]
-        if baseline_profiles:
+        if bootstrap_only_profiles:
             raise ValueError(
-                f"CTest test {name!r} cannot select prefix-baseline runtime profile(s): "
-                + ", ".join(baseline_profiles)
+                f"CTest test {name!r} cannot select bootstrap-only runtime profile(s): "
+                + ", ".join(bootstrap_only_profiles)
             )
         source_profile = None
         if profiles:
@@ -644,13 +705,17 @@ def runtime_build_targets(proof: dict[str, Any]) -> list[str]:
     return targets
 
 
-def runtime_deploy_targets(prefix: Path, deploy_path: str) -> list[Path]:
+def runtime_deploy_targets(
+    prefix: Path, deploy_path: str, *, rootless_no_mount: bool = False
+) -> list[Path]:
     """Return prefix file targets for one runtime artifact deploy path.
 
     Darling system paths under ``usr`` exist in both the guest-visible prefix
     root and the base root under ``libexec/darling``. Runtime proof deploys must
     swap both copies so the next guest launch cannot accidentally run stale
-    code from the other view.
+    code from the other view. A rootless no-mount prefix has the same two-view
+    requirement for ``System`` paths because it cannot rely on the overlay to
+    expose the lower template to the guest loader.
     """
 
     rel = Path(deploy_path)
@@ -659,10 +724,10 @@ def runtime_deploy_targets(prefix: Path, deploy_path: str) -> list[Path]:
     if rel.parts and rel.parts[0] == "usr":
         return [prefix / "libexec/darling" / rel, prefix / rel]
     if rel.parts and rel.parts[0] == "System":
-        # CMake installs launchd resources in the lower Darling template. Do
-        # not create an upper copy: that would change union precedence and
-        # diverge from the official install tree.
-        return [prefix / "libexec/darling" / rel]
+        targets = [prefix / "libexec/darling" / rel]
+        if rootless_no_mount:
+            targets.append(prefix / rel)
+        return targets
     return [prefix / rel]
 
 

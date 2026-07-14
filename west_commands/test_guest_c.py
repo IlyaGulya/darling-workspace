@@ -29,6 +29,10 @@ def failure_phase_from_debug_bundle(output: str) -> str | None:
         content = log_path.read_text(errors="replace")
     except OSError:
         return None
+    if "Rootless shellspawn did not become ready" in content:
+        return "bootstrap"
+    if "E-UNION runtime readiness" in content:
+        return "bootstrap"
     if "WEST_GUEST_TRACE_ORACLE_FAILED" in content:
         return "run"
     stages = re.findall(r"^WEST_GUEST_STAGE=([a-z-]+)$", content, flags=re.MULTILINE)

@@ -12,12 +12,19 @@ sys.path.insert(0, str(ROOT))
 import west_commands.test_guest_execution as guest_execution
 from west_commands.test_execution import ProcessResult
 from west_commands.test_guest_execution import (
+    failure_phase_from_output,
     resolve_guest_execution,
     run_guest_argv,
     run_guest_argv_fixture,
+    run_guest_shell_argv,
     run_guest_shell,
     run_guest_command_fixture,
 )
+
+assert failure_phase_from_output(
+    "Rootless shellspawn did not become ready within 60000ms\n"
+) == "bootstrap"
+assert failure_phase_from_output("guest script failed\n") is None
 
 
 def fail(message: str) -> None:
@@ -143,6 +150,25 @@ finally:
 assert calls[0][1]["heartbeat_seconds"] == 30, calls
 assert calls[0][1]["heartbeat"] is heartbeat, calls
 assert calls[0][1]["output_line"] is output_line, calls
+
+calls = []
+guest_execution.run_bounded = bounded
+try:
+    assert run_guest_shell_argv(
+        "/launcher",
+        "/prefix",
+        ("/usr/bin/installer", "-pkg", "/private/var/tmp/package file.pkg", "-target", "/"),
+        cwd=Path("/workspace"),
+        env={"EXAMPLE": "1"},
+        timeout_seconds=7,
+        capture_output=True,
+    ).returncode == 0
+finally:
+    guest_execution.run_bounded = original_bounded
+
+assert calls[0][0][-1] == (
+    "exec /usr/bin/installer -pkg '/private/var/tmp/package file.pkg' -target /"
+), calls
 
 
 with tempfile.TemporaryDirectory() as temp:

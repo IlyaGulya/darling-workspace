@@ -197,7 +197,10 @@ class RuntimeEvidenceStore:
     """Own only declared runtime evidence, separate from disposable scratch."""
 
     def __init__(self, root: Path):
-        self._root = root.expanduser()
+        # Git resolves a relative worktree target against the canonical repo's
+        # cwd, not the West workspace. Make every evidence path absolute before
+        # it reaches source/worktree orchestration.
+        self._root = root.expanduser().resolve()
 
     @property
     def root(self) -> Path:

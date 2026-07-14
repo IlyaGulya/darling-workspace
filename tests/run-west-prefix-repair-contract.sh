@@ -51,6 +51,13 @@ def prepare_root_versioned_clt(prefix: Path):
     (clt / "usr/bin/clang").write_text("#!/bin/sh\n")
 
 
+def prepare_root_canonical_clt(prefix: Path):
+    clt = prefix / "Library/Developer/CommandLineTools"
+    (clt / "usr/bin").mkdir(parents=True)
+    (clt / "SDKs/MacOSX.sdk").mkdir(parents=True)
+    (clt / "usr/bin/clang").write_text("#!/bin/sh\n")
+
+
 with tempfile.TemporaryDirectory() as temp:
     prefix = Path(temp)
     prepare_versioned_clt(prefix)
@@ -67,8 +74,6 @@ with tempfile.TemporaryDirectory() as temp:
     assert any(".init.pid points to stale pid 999999999" in item for item in check.problems), check
     assert any(".darlingserver.sock is stale" in item for item in check.problems), check
     assert any("private/var/tmp missing" in item for item in check.problems), check
-    assert any("private/var/db missing" in item for item in check.problems), check
-    assert any("private/var/db/launchd.db missing" in item for item in check.problems), check
     assert any(
         "private/var/db/launchd.db/com.apple.launchd missing" in item
         for item in check.problems
@@ -81,6 +86,19 @@ with tempfile.TemporaryDirectory() as temp:
     assert repaired.changed, repaired
     assert not stale_pid.exists(), repaired
     assert not stale_socket.exists(), repaired
+    assert any("private/var/tmp missing" in item for item in prefix_boot_prerequisite_problems(prefix))
+    for rel in (
+        "private/var/db/launchd.db/com.apple.launchd",
+        "var/run",
+        "var/tmp",
+        "private/tmp",
+        "private/var/tmp",
+        "tmp",
+    ):
+        path = prefix / rel
+        path.mkdir(parents=True, exist_ok=True)
+        if rel.endswith(("tmp", "var/tmp")) or rel in {"private/tmp", "tmp"}:
+            path.chmod(0o1777)
     assert prefix_boot_prerequisite_problems(prefix) == []
     assert guest_c_fixture_prerequisite_problems(
         prefix,
@@ -131,6 +149,24 @@ with tempfile.TemporaryDirectory() as temp:
     base_candidate = prefix / "libexec/darling/Library/Developer/CommandLineTools.apple-clt-15.3"
     assert base_candidate.is_symlink(), base_candidate
     assert (base_candidate / "usr/bin/clang").exists(), base_candidate
+    assert guest_c_fixture_prerequisite_problems(
+        prefix,
+        "/Library/Developer/CommandLineTools/usr/bin/clang",
+        "-isysroot /Library/Developer/CommandLineTools/SDKs/MacOSX.sdk",
+    ) == []
+
+with tempfile.TemporaryDirectory() as temp:
+    prefix = Path(temp)
+    prepare_root_canonical_clt(prefix)
+    repaired = repair_prefix_prerequisites(prefix)
+    assert repaired.success, repaired
+    base_clt = prefix / "libexec/darling/Library/Developer/CommandLineTools"
+    assert base_clt.is_symlink(), base_clt
+    assert base_clt.resolve() == prefix / "Library/Developer/CommandLineTools"
+    for root in (prefix, prefix / "libexec/darling"):
+        clang = root / "Library/Developer/DarlingCLT/usr/bin/clang"
+        assert clang.is_symlink(), clang
+        assert clang.exists(), clang
     assert guest_c_fixture_prerequisite_problems(
         prefix,
         "/Library/Developer/CommandLineTools/usr/bin/clang",
