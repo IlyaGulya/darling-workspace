@@ -115,6 +115,18 @@ deps_script='darling-dev/darling-workspace/ci/install-darling-build-deps.sh'
 [ "$(grep -F -c 'cargo build --release --locked --manifest-path darling-dev/darling-debug-runner/Cargo.toml' "$repo/.github/workflows/test-infra.yml")" -eq 3 ]
 [ "$(grep -F -c "github.event_name == 'pull_request'" "$repo/.github/workflows/test-infra.yml")" -ge 1 ]
 [ "$(grep -F -c 'Run full rootless regression (blocked pending prebuilt corpus)' "$repo/.github/workflows/test-infra.yml")" -eq 1 ]
+grep -F -q 'Scheduled run intentionally covers host plus guest-full.' "$repo/.github/workflows/test-infra.yml"
+grep -F -q 'description: Run exactly one test tier' "$repo/.github/workflows/test-infra.yml"
+for tier in host guest-smoke guest-full guest-toolchain macos; do
+	grep -F -q -- "- $tier" "$repo/.github/workflows/test-infra.yml" || {
+		echo "workflow_dispatch is missing tier option: $tier" >&2
+		exit 1
+	}
+done
+grep -F -q "github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && inputs.tier == 'guest-full')" "$repo/.github/workflows/test-infra.yml"
+grep -F -q "github.event_name == 'workflow_dispatch' && inputs.tier == 'guest-toolchain'" "$repo/.github/workflows/test-infra.yml"
+grep -F -q "github.event_name == 'workflow_dispatch' && inputs.tier == 'macos'" "$repo/.github/workflows/test-infra.yml"
+! grep -F -q "github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'" "$repo/.github/workflows/test-infra.yml"
 ! grep -F -q 'actions/checkout@v4' "$repo/.github/workflows/test-infra.yml"
 ! grep -F -q 'actions/upload-artifact@v4' "$repo/.github/workflows/test-infra.yml"
 ! grep -F -q $'\t\texec west test --profile homebrew --patch' "$repo/ci/run-test-tier.sh"
