@@ -11,7 +11,7 @@ Subject: [PATCH] launchd: defer rootless system bootstrapper
  4 files changed, 30 insertions(+), 1 deletion(-)
 
 diff --git a/src/launchd/src/core.c b/src/launchd/src/core.c
-index a68739ff0..ca866805f 100644
+index a68739ff0d5857fb3b8f62ec7e032d55110f1be9..ca866805fb697af8ad5282efbb0b0795073f6f97 100644
 --- a/src/launchd/src/core.c
 +++ b/src/launchd/src/core.c
 @@ -436,6 +436,7 @@ struct jobmgr_s {
@@ -71,7 +71,7 @@ index a68739ff0..ca866805f 100644
  our_strhash(const char *s)
  {
 diff --git a/src/launchd/src/core.h b/src/launchd/src/core.h
-index b8267c5ae..1a8dacb85 100644
+index b8267c5ae8407857ab37cfb03476fd876039149a..1a8dacb85088ca407484247073d1e417a9574210 100644
 --- a/src/launchd/src/core.h
 +++ b/src/launchd/src/core.h
 @@ -36,6 +36,7 @@ extern bool launchd_flat_mach_namespace;
@@ -83,7 +83,7 @@ index b8267c5ae..1a8dacb85 100644
  void jobmgr_dispatch_all_semaphores(jobmgr_t jm);
  void jobmgr_dispatch_all_interested(jobmgr_t jm, job_t j);
 diff --git a/src/launchd/src/launchd.c b/src/launchd/src/launchd.c
-index db52709d8..e66f0ab2a 100644
+index db52709d80dcdef3a2520576fa73c80bcd637adf..e66f0ab2a889458617e0796d997fb7688b5d8788 100644
 --- a/src/launchd/src/launchd.c
 +++ b/src/launchd/src/launchd.c
 @@ -300,6 +300,7 @@ bool darling_rootless = rootless_mode_enabled();
@@ -95,7 +95,7 @@ index db52709d8..e66f0ab2a 100644
  }
  
 diff --git a/src/launchd/src/launchd.h b/src/launchd/src/launchd.h
-index d16d6a859..6a77d81f8 100644
+index d16d6a859c7ec889b62bcd23397fe5c92c791940..6a77d81f806b27803e3915b7d596f7a0f501f5a5 100644
 --- a/src/launchd/src/launchd.h
 +++ b/src/launchd/src/launchd.h
 @@ -31,6 +31,7 @@ struct kevent;
@@ -106,6 +106,34 @@ index d16d6a859..6a77d81f8 100644
  extern bool launchd_shutting_down;
  extern bool fake_launchd_shutting_down;
  extern bool network_up;
--- 
-2.43.0
 
+From e257950104da34ec0646f2faeb5a23e1e80c05d4 Mon Sep 17 00:00:00 2001
+From: Ilya Gulya <ilya.gulya@indriver.com>
+Date: Tue, 14 Jul 2026 08:49:59 +0000
+Subject: [PATCH] fix: expose rootless state to bootstrapper ordering
+
+---
+ src/launchd/src/launchd.c | 3 ++-
+ 1 file changed, 2 insertions(+), 1 deletion(-)
+
+diff --git a/src/launchd/src/launchd.c b/src/launchd/src/launchd.c
+index e66f0ab2a889458617e0796d997fb7688b5d8788..461b787cc0b56ccfb1b4afd5c1b427bd71a093ae 100644
+--- a/src/launchd/src/launchd.c
++++ b/src/launchd/src/launchd.c
+@@ -137,6 +137,7 @@ bool network_up;
+ uid_t launchd_uid;
+ FILE *launchd_console = NULL;
+ int32_t launchd_sync_frequency = 30;
++bool darling_rootless;
+ 
+ int
+ main(int argc, char *const *argv)
+@@ -184,7 +185,7 @@ main(int argc, char *const *argv)
+ 		}
+ 	}
+ 
+-bool darling_rootless = rootless_mode_enabled();
++darling_rootless = rootless_mode_enabled();
+ 
+ 	if (!darling_rootless && getpid() != 1 && getppid() != 1) {
+ 		fprintf(stderr, "%s: This program is not meant to be run directly.\n", getprogname());
