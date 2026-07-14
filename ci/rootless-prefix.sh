@@ -16,11 +16,19 @@ rootless_prefix_trusted_root() {
 		return 2
 	}
 	case "$root" in
-		"$HOME"|"$HOME"/*|"$repo"|"$repo"/*)
+		"$HOME"|"$repo"|"$repo"/*)
 			rootless_prefix_die "trusted root is unsafe: $root" || return
 			return 2
 			;;
 	esac
+	if [[ -z "${RUNNER_TEMP:-}" ]]; then
+		case "$root" in
+			"$HOME"/*)
+				rootless_prefix_die "trusted root is unsafe without RUNNER_TEMP: $root" || return
+				return 2
+				;;
+		esac
+	fi
 	printf '%s\n' "$root"
 }
 
@@ -43,7 +51,7 @@ rootless_prefix_validate_path() {
 		return 2
 	}
 	case "$prefix" in
-		"/"|"$HOME"|"$HOME"/*|"$repo"|"$repo"/*)
+		"/"|"$HOME"|"$repo"|"$repo"/*)
 			rootless_prefix_die "refusing a dangerous prefix path: $prefix"
 			return 2
 			;;
