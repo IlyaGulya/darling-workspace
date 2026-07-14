@@ -3,6 +3,83 @@ set -euo pipefail
 
 root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$root"
+runtime_build_timeout_seconds="${WEST_RUNTIME_BUILD_TIMEOUT_SECONDS:-600}"
+ROOTLESS_TIER_REPO="$root"
+. "$root/ci/rootless-prefix.sh"
+
+rootless_guest_regression_test_names() {
+	cat <<'EOF'
+darling/abort_with_payload_no_group_broadcast
+darling/select_fdset_guest
+darling/getattrlist_name_objtype_guest
+darling/darwin_priority_guest
+darling/socket_siocgifconf_guest
+darling/bzero_return_register_guest
+darling/sigexc_sa_restart_guest
+darling/sigexc_default_resend_self_guest
+darling/ulock_eintr_retry_guest
+darling/vchroot_pathnull_guard_guest
+darling/chown_disabled_null_guard_guest
+darling/fd_guard_ebadf_guest
+darling/fork_checkin_signal_storm_guest
+darling/rootless_no_mount_guest
+EOF
+}
+
+assert_rootless_guest_regression_test_set() {
+	local actual
+	actual="$(west test --env darling --prefix "$prefix" --list |
+		awk '/^  Test +#[0-9]+: / { sub(/^.*: /, ""); print }')"
+	if ! diff -u \
+		<(rootless_guest_regression_test_names) \
+		<(printf '%s\n' "$actual"); then
+		echo "unexpected rootless guest regression selection" >&2
+		return 1
+	fi
+}
+
+cleanup_rootless_tier() {
+	local test_rc="$1"
+	local cleanup_rc=0
+	local gc_rc=0
+	local jobs_rc=0
+	set +e
+	if [[ -d "$prefix" ]]; then
+		if (( test_rc == 0 )); then
+			case "$tier_kind" in
+				smoke)
+					rootless_prefix_assert_no_guest_toolchain "$tier_kind" "$prefix" || cleanup_rc=1
+					;;
+				toolchain)
+					rootless_prefix_assert_guest_toolchain "$tier_kind" "$prefix" || cleanup_rc=1
+					;;
+			esac
+		fi
+		west test --prefix "$prefix" --cleanup-prefix
+		cleanup_command_rc=$?
+		(( cleanup_command_rc == 0 )) || cleanup_rc=1
+	else
+		cleanup_rc=1
+		echo "rootless tier prefix disappeared before cleanup: $prefix" >&2
+	fi
+	west test --gc --gc-runtime-evidence
+	gc_rc=$?
+	"$root/scripts/west-job.sh" assert-no-live-west-test --state-root "${TMPDIR:-/tmp}"
+	jobs_rc=$?
+	if (( test_rc == 0 && cleanup_rc == 0 && gc_rc == 0 && jobs_rc == 0 )); then
+		rootless_prefix_remove "$tier_kind" "$prefix"
+		cleanup_rc=$?
+	else
+		echo "preserving rootless tier prefix for diagnostics: $prefix" >&2
+	fi
+	if (( test_rc != 0 )); then
+		exit "$test_rc"
+	fi
+	if (( cleanup_rc != 0 || gc_rc != 0 || jobs_rc != 0 )); then
+		exit 1
+	fi
+	exit 0
+}
 
 case "${1:-}" in
 	host)
@@ -11,17 +88,52 @@ case "${1:-}" in
 		exec west test --profile homebrew --env host --materialize-profile "${@:2}"
 		;;
 	guest-smoke)
-		west test --prefix-profile homebrew \
-			--bootstrap-runtime-profile homebrew-prefix-baseline
-		exec west test --env darling --label 'smoke:true' \
-			--prefix-profile homebrew "${@:2}"
+		tier_kind=smoke
+		prefix="$(rootless_prefix_create "$tier_kind" DARLING_SMOKE_PREFIX)"
+		rootless_prefix_export_output prefix "$prefix"
+		trap 'cleanup_rootless_tier "$?"' EXIT
+		WEST_TEST_FORBID_GUEST_TOOLCHAIN=1 west test --prefix "$prefix" \
+			--bootstrap-runtime-profile homebrew-rootless-bootstrap-minimal \
+			--runtime-build-timeout-seconds "$runtime_build_timeout_seconds"
+		WEST_TEST_FORBID_GUEST_TOOLCHAIN=1 west test \
+			--profile homebrew --patch darling/rootless-prefix-initialization.patch \
+			--env darling --label 'name:rootless_prefix_initialization_guest' \
+			--reuse-prefix-runtime \
+			--prefix "$prefix" "${@:2}"
+		WEST_TEST_FORBID_GUEST_TOOLCHAIN=1 west test \
+			--profile homebrew --patch darling/rootless-prefix-initialization.patch \
+			--env darling --label 'name:rootless_prebuilt_macho_regression' \
+			--reuse-prefix-runtime \
+			--prefix "$prefix" "${@:2}"
 		;;
 	guest-full)
-		west test --prefix-profile homebrew \
-			--bootstrap-runtime-profile homebrew-prefix-baseline
-		west test --profile homebrew --env darling \
-			--prefix-profile homebrew "${@:2}"
-		exec west test --env darling --prefix-profile homebrew "${@:2}"
+		tier_kind=regression
+		prefix="$(rootless_prefix_create "$tier_kind" DARLING_REGRESSION_PREFIX)"
+		rootless_prefix_export_output prefix "$prefix"
+		trap 'cleanup_rootless_tier "$?"' EXIT
+		west test --prefix "$prefix" \
+			--bootstrap-runtime-profile homebrew-guest-toolchain-provisioning \
+			--runtime-build-timeout-seconds "$runtime_build_timeout_seconds"
+		# This is the honest CLT-backed regression tier. Keep the selection
+		# explicit so a label/configuration change cannot silently shrink it.
+		assert_rootless_guest_regression_test_set
+		west test --env darling --prefix "$prefix" "${@:2}"
+		;;
+	guest-toolchain)
+		tier_kind=toolchain
+		prefix="$(rootless_prefix_create "$tier_kind" DARLING_TOOLCHAIN_PREFIX)"
+		rootless_prefix_export_output prefix "$prefix"
+		trap 'cleanup_rootless_tier "$?"' EXIT
+		west test --prefix "$prefix" \
+			--bootstrap-runtime-profile homebrew-guest-toolchain-provisioning \
+			--runtime-build-timeout-seconds "$runtime_build_timeout_seconds"
+		# Select the patch-owned script explicitly. A broad CTest smoke label can
+		# select unrelated regressions and still omit this acceptance proof.
+		west test --profile homebrew \
+			--patch darling/rootless-prefix-initialization.patch \
+			--env darling --label 'name:rootless_guest_toolchain_compile_execute' \
+			--reuse-prefix-runtime \
+			--prefix "$prefix" "${@:2}"
 		;;
 	macos)
 		build="${DARLING_TESTKIT_BUILD:-$root/.west-test/macos-build}"
@@ -42,7 +154,7 @@ case "${1:-}" in
 			"${2:?macos-installed requires an installed bundle}"
 		;;
 	*)
-		echo "usage: $0 host|guest-smoke|guest-full|macos|macos-package|macos-installed" >&2
+		echo "usage: $0 host|guest-smoke|guest-full|guest-toolchain|macos|macos-package|macos-installed" >&2
 		exit 2
 		;;
 esac
