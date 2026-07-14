@@ -3107,6 +3107,71 @@ patches:
       repo: darlinghq/darling
       base: master
       state: local
+- path: xnu/chown-disabled-null-guard.patch
+  sha256sum: 4d034a7b33e23d1d81a53c8fbbac5c17b5d8fcce3d781942628b0d185d33a5f1
+  module: darling/src/external/xnu
+  source-branch: fix/chown-disabled-null-guard-after-eunion
+  source-base: cb2cf623d9cd641ed4f9e899a0187acdedc423ea
+  source-commit: 50db68ce8504da6c9c8f24ddfd31d737b1f1db23
+  bead: dar-gyvb
+  publication-status: blocked
+  publication-blocker: The disabled ownership API behavior is fixed locally; publication waits for review against the current E-UNION stack.
+  tests:
+  - name: chown_disabled_null_guard_contract
+    kind: contract
+    coverage-tier: compile
+    runs: host
+    diag: bare
+    red: true
+    red-proof:
+      mode: source-base
+      source-env: XNU_SRC_ROOT
+      expect-failure-phase: run
+    runner: c-fixture
+    repo: darling-workspace
+    script: tests/chown_disabled_null_guard_contract.c
+    source-files:
+    - darling/src/libsystem_kernel/emulation/src/xnu_syscall/bsd/impl/unistd/chown.c
+    - darling/src/libsystem_kernel/emulation/src/xnu_syscall/bsd/impl/unistd/fchown.c
+    - darling/src/libsystem_kernel/emulation/src/xnu_syscall/bsd/impl/unistd/fchownat.c
+    - darling/src/libsystem_kernel/emulation/src/xnu_syscall/bsd/impl/unistd/lchown.c
+    fixture-include-dirs:
+    - tests/fixtures/chown-disabled/include
+    compile-flags:
+    - -std=gnu11
+    - -w
+    - -Ulinux
+    note: >-
+      Host RED->GREEN contract for the complete disabled ownership-stub class:
+      NULL paths return EFAULT and non-NULL chown operations return ENOTSUP
+      without entering vchroot or Linux syscall fallbacks.
+  - name: chown_disabled_null_guard_guest
+    kind: guest
+    coverage-tier: runtime
+    runs: guest
+    diag: guarded
+    runtime-profile: homebrew
+    runner: guest-c-fixture
+    repo: darling-workspace
+    script: tests/chown_disabled_null_guard_guest.c
+    ok-marker: CHOWN_DISABLED_NULL_GUARD_GUEST_OK
+    timeout-seconds: 30
+    requires:
+    - darling-prefix
+    note: >-
+      Guest behavior proof that the deployed libsystem_kernel does not report
+      false success for disabled ownership changes and preserves EFAULT for
+      invalid path pointers.
+  pr-draft: pr-drafts/xnu-chown-disabled-null-guard.md
+  github:
+    fork:
+      repo: IlyaGulya/darling-xnu
+      base: preupstream/main
+      state: local
+    upstream:
+      repo: darlinghq/darling-xnu
+      base: main
+      state: local
 - path: xnu/fd-guard-ebadf.patch
   sha256sum: e6613d41bc368ab8ee4751e7f93d09e7faebe9256e07152a9022152273717568
   module: darling/src/external/xnu
