@@ -1,0 +1,59 @@
+From 25b9dbfe954faa04991a8152519b155d9df6e2a8 Mon Sep 17 00:00:00 2001
+From: Ilya Gulya <ilya@gulya.me>
+Date: Tue, 14 Jul 2026 00:14:27 +0000
+Subject: [PATCH] fix: normalize installer payload paths
+
+---
+ src/pkg/Installer.cpp | 32 ++++++++++++++++++++++++++++++++
+ 1 file changed, 32 insertions(+)
+
+diff --git a/src/pkg/Installer.cpp b/src/pkg/Installer.cpp
+index da2b1b6d2ee9a810b115a33c176d2ab9cf303dbb..561ceb49bcfd63d8975097fc355462c95dc7c19d 100644
+--- a/src/pkg/Installer.cpp
++++ b/src/pkg/Installer.cpp
+@@ -178,6 +178,37 @@ void Installer::mkParentDirs(const char *fileName, mode_t mode)
+ 	free(path);
+ }
+ 
++static std::string normalizeArchivePath(const std::string& archivePath)
++{
++	if (!archivePath.empty() && archivePath[0] == '/')
++		throw std::runtime_error("Invalid absolute archive path");
++
++	std::string normalized;
++	size_t componentStart = 0;
++	while (componentStart <= archivePath.length())
++	{
++		size_t slash = archivePath.find('/', componentStart);
++		std::string component = archivePath.substr(
++			componentStart,
++			slash == std::string::npos ? std::string::npos : slash - componentStart);
++
++		if (component == "..")
++			throw std::runtime_error("Invalid parent archive path");
++		if (!component.empty() && component != ".")
++		{
++			if (!normalized.empty())
++				normalized += '/';
++			normalized += component;
++		}
++
++		if (slash == std::string::npos)
++			break;
++		componentStart = slash + 1;
++	}
++
++	return normalized;
++}
++
+ void Installer::extractPayload(const char* payloadFileName, std::string destinationDir)
+ {
+ 	std::string path, name;
+@@ -209,6 +240,7 @@ void Installer::extractPayload(const char* payloadFileName, std::string destinat
+ 	{
+ 		// The final path is a concatenation of target, pkgInfo->installLocation()
+ 		// and name.
++		name = normalizeArchivePath(name);
+ 		path.resize(basePathLen);
+ 		path += name;
+ 		

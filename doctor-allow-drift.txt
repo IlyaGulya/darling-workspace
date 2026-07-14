@@ -20,6 +20,7 @@
 darling                              # superproject: perf#21b mldr + homebrew integration ahead of base manifest
 darling-src-external-darlingserver   # perf#18 ring + perf#21b/24c2* dev (server side)
 darling-src-external-dyld            # perf#24c2* DCC2 reader work (+ uncommitted edits)
+darling-src-external-installer       # homebrew integration profile (guest installer path fix)
 darling-src-external-libplatform     # homebrew integration profile
 darling-src-external-libpthread      # homebrew integration profile (psynch)
 darling-src-external-libressl-2-8-3  # homebrew integration profile

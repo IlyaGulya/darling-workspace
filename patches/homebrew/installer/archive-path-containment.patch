@@ -1,0 +1,362 @@
+From 6d1ca457645e06ea6181899bc8beed322154c520 Mon Sep 17 00:00:00 2001
+From: Ilya Gulya <ilya@gulya.me>
+Date: Tue, 14 Jul 2026 03:33:19 +0000
+Subject: [PATCH] installer: test archive path containment
+
+---
+ CMakeLists.txt                  |  7 +++
+ src/archive/ArchivePath.cpp     | 87 +++++++++++++++++++++++++++++++++
+ src/archive/ArchivePath.h       | 15 ++++++
+ src/archive/ArchivePathTest.cpp | 59 ++++++++++++++++++++++
+ src/pkg/Installer.cpp           | 61 ++---------------------
+ 5 files changed, 171 insertions(+), 58 deletions(-)
+ create mode 100644 src/archive/ArchivePath.cpp
+ create mode 100644 src/archive/ArchivePath.h
+ create mode 100644 src/archive/ArchivePathTest.cpp
+
+diff --git a/CMakeLists.txt b/CMakeLists.txt
+index 47ea608f93135367845232b28e9b919b000f9496..53e68f8c581792e8d536dfc42ddf0acabd8aadc8 100644
+--- a/CMakeLists.txt
++++ b/CMakeLists.txt
+@@ -19,6 +19,7 @@ include(darling_exe)
+ include(InstallSymlink)
+ 
+ add_darling_executable(installer
++	src/archive/ArchivePath.cpp
+ 	src/archive/FileReader.cpp
+ 	src/archive/XARArchive.cpp
+ 	src/archive/SubReader.cpp
+@@ -44,6 +45,12 @@ add_darling_executable(installer
+ target_link_libraries(installer z lzma bz2 xml2 cxx CoreFoundation Foundation)
+ install(TARGETS installer RUNTIME DESTINATION libexec/darling/usr/bin)
+ 
++add_darling_executable(installer_archive_path_test
++	src/archive/ArchivePath.cpp
++	src/archive/ArchivePathTest.cpp
++)
++install(TARGETS installer_archive_path_test RUNTIME DESTINATION libexec/darling/usr/libexec)
++
+ set(BINARY_PACKAGING_MODE ON)
+ InstallSymlink(installer libexec/darling/usr/bin/uninstaller)
+ InstallSymlink(installer libexec/darling/usr/bin/pkgutil)
+diff --git a/src/archive/ArchivePath.cpp b/src/archive/ArchivePath.cpp
+new file mode 100644
+index 0000000000000000000000000000000000000000..d9366023cd75fd2e7192ead700341d6fea90f12c
+--- /dev/null
++++ b/src/archive/ArchivePath.cpp
+@@ -0,0 +1,87 @@
++#include "ArchivePath.h"
++
++#include <cerrno>
++#include <cstring>
++#include <sstream>
++#include <stdexcept>
++#include <sys/stat.h>
++#include <unistd.h>
++
++namespace installer_archive
++{
++
++std::string normalizePath(const std::string& archivePath)
++{
++	if (!archivePath.empty() && archivePath[0] == '/')
++		throw std::runtime_error("Invalid absolute archive path");
++
++	std::string normalized;
++	size_t componentStart = 0;
++	while (componentStart <= archivePath.length())
++	{
++		size_t slash = archivePath.find('/', componentStart);
++		std::string component = archivePath.substr(
++			componentStart,
++			slash == std::string::npos ? std::string::npos : slash - componentStart);
++
++		if (component == "..")
++			throw std::runtime_error("Invalid parent archive path");
++		if (!component.empty() && component != ".")
++		{
++			if (!normalized.empty())
++				normalized += '/';
++			normalized += component;
++		}
++
++		if (slash == std::string::npos)
++			break;
++		componentStart = slash + 1;
++	}
++
++	return normalized;
++}
++
++static void ensureDirectory(const char* path, mode_t mode)
++{
++	struct stat st;
++	if (::lstat(path, &st) == 0)
++	{
++		if (S_ISLNK(st.st_mode) || !S_ISDIR(st.st_mode))
++		{
++			std::stringstream ss;
++			ss << "Archive parent is not a directory: " << path;
++			throw std::runtime_error(ss.str());
++		}
++		return;
++	}
++
++	if (errno != ENOENT || (::mkdir(path, mode) != 0 && errno != EEXIST))
++	{
++		std::stringstream ss;
++		ss << "Cannot mkdir " << path << ": " << strerror(errno);
++		throw std::runtime_error(ss.str());
++	}
++
++	if (::lstat(path, &st) != 0 || S_ISLNK(st.st_mode) || !S_ISDIR(st.st_mode))
++	{
++		std::stringstream ss;
++		ss << "Archive parent is not a directory: " << path;
++		throw std::runtime_error(ss.str());
++	}
++}
++
++void ensureParentDirectories(const std::string& fileName, mode_t mode)
++{
++	std::string path = fileName;
++	for (size_t pos = path.find('/'); pos != std::string::npos;
++		pos = path.find('/', pos + 1))
++	{
++		if (pos == 0)
++			continue;
++
++		std::string parent = path.substr(0, pos);
++		ensureDirectory(parent.c_str(), mode);
++	}
++}
++
++}
+diff --git a/src/archive/ArchivePath.h b/src/archive/ArchivePath.h
+new file mode 100644
+index 0000000000000000000000000000000000000000..8ec55b86264783da2956371dc786005f817ff533
+--- /dev/null
++++ b/src/archive/ArchivePath.h
+@@ -0,0 +1,15 @@
++#ifndef ARCHIVEPATH_H
++#define ARCHIVEPATH_H
++
++#include <string>
++#include <sys/types.h>
++
++namespace installer_archive
++{
++
++std::string normalizePath(const std::string& archivePath);
++void ensureParentDirectories(const std::string& fileName, mode_t mode);
++
++}
++
++#endif
+diff --git a/src/archive/ArchivePathTest.cpp b/src/archive/ArchivePathTest.cpp
+new file mode 100644
+index 0000000000000000000000000000000000000000..d96d86e0ec6e3e8c05bfb671c955b4bbb42e95cb
+--- /dev/null
++++ b/src/archive/ArchivePathTest.cpp
+@@ -0,0 +1,59 @@
++#include "ArchivePath.h"
++
++#include <cassert>
++#include <cstdio>
++#include <cstdlib>
++#include <cstring>
++#include <stdexcept>
++#include <string>
++#include <sys/stat.h>
++#include <unistd.h>
++
++static bool rejects(const std::string& path)
++{
++	try
++	{
++		installer_archive::normalizePath(path);
++	}
++	catch (const std::runtime_error&)
++	{
++		return true;
++	}
++	return false;
++}
++
++int main()
++{
++	assert(installer_archive::normalizePath("./Library//Developer") == "Library/Developer");
++	assert(rejects("/Library/Developer"));
++	assert(rejects("Library/../../outside"));
++
++	char temporary[] = "/tmp/installer-archive-path-XXXXXX";
++	const char* root = ::mkdtemp(temporary);
++	assert(root != nullptr);
++	std::string safe = std::string(root) + "/safe";
++	std::string outside = std::string(root) + "/outside";
++	assert(::mkdir(safe.c_str(), 0755) == 0);
++	assert(::mkdir(outside.c_str(), 0755) == 0);
++
++	std::string nested = safe + "/created/file";
++	installer_archive::ensureParentDirectories(nested, 0755);
++	struct stat st;
++	assert(::stat((safe + "/created").c_str(), &st) == 0);
++	assert(S_ISDIR(st.st_mode));
++
++	std::string link = safe + "/link";
++	assert(::symlink(outside.c_str(), link.c_str()) == 0);
++	try
++	{
++		installer_archive::ensureParentDirectories(link + "/escaped/file", 0755);
++		assert(false && "archive parent symlink was accepted");
++	}
++	catch (const std::runtime_error&)
++	{
++	}
++	assert(::access((outside + "/escaped").c_str(), F_OK) != 0);
++
++	std::printf("ARCHIVE_PATH_TEST_OK\n");
++	return 0;
++}
+diff --git a/src/pkg/Installer.cpp b/src/pkg/Installer.cpp
+index 561ceb49bcfd63d8975097fc355462c95dc7c19d..b5671c745e34430918be74d2bbdbe37e9cc5c4ad 100644
+--- a/src/pkg/Installer.cpp
++++ b/src/pkg/Installer.cpp
+@@ -15,6 +15,7 @@
+ #include "archive/GzipReader.h"
+ #include "archive/PbzxReader.h"
+ #include "archive/CPIOArchive.h"
++#include "archive/ArchivePath.h"
+ #include "DistributionXml.h"
+ #include "PackageInfoXml.h"
+ #include "ReceiptsDb.h"
+@@ -150,63 +151,7 @@ std::string Installer::getInstallLocation()
+ 
+ void Installer::mkParentDirs(const char *fileName, mode_t mode)
+ {
+-	// Create directories so that it's possible to create the specified file,
+-	// in a manner similiar to `mkdir -p`
+-
+-	char *path = strdup(fileName);
+-
+-	for (char *pos = path; pos != nullptr; pos = strchr(pos + 1, '/'))
+-	{
+-		if (pos == path)
+-			continue;
+-
+-		*pos = '\0';
+-
+-		if (::mkdir(path, mode) != 0)
+-		{
+-			if (errno != EEXIST)
+-			{
+-				std::stringstream ss;
+-				ss << "Cannot mkdir " << path << ": " << strerror(errno);
+-				throw std::runtime_error(ss.str());
+-			}
+-		}
+-
+-		*pos = '/';
+-	}
+-
+-	free(path);
+-}
+-
+-static std::string normalizeArchivePath(const std::string& archivePath)
+-{
+-	if (!archivePath.empty() && archivePath[0] == '/')
+-		throw std::runtime_error("Invalid absolute archive path");
+-
+-	std::string normalized;
+-	size_t componentStart = 0;
+-	while (componentStart <= archivePath.length())
+-	{
+-		size_t slash = archivePath.find('/', componentStart);
+-		std::string component = archivePath.substr(
+-			componentStart,
+-			slash == std::string::npos ? std::string::npos : slash - componentStart);
+-
+-		if (component == "..")
+-			throw std::runtime_error("Invalid parent archive path");
+-		if (!component.empty() && component != ".")
+-		{
+-			if (!normalized.empty())
+-				normalized += '/';
+-			normalized += component;
+-		}
+-
+-		if (slash == std::string::npos)
+-			break;
+-		componentStart = slash + 1;
+-	}
+-
+-	return normalized;
++	installer_archive::ensureParentDirectories(fileName, mode);
+ }
+ 
+ void Installer::extractPayload(const char* payloadFileName, std::string destinationDir)
+@@ -240,7 +185,7 @@ void Installer::extractPayload(const char* payloadFileName, std::string destinat
+ 	{
+ 		// The final path is a concatenation of target, pkgInfo->installLocation()
+ 		// and name.
+-		name = normalizeArchivePath(name);
++		name = installer_archive::normalizePath(name);
+ 		path.resize(basePathLen);
+ 		path += name;
+ 		
+
+From 0cd5a2c2d38371cb456427457d285b371e7757ac Mon Sep 17 00:00:00 2001
+From: Ilya Gulya <ilya@gulya.me>
+Date: Tue, 14 Jul 2026 04:24:10 +0000
+Subject: [PATCH] build: link archive path behavior test
+
+---
+ CMakeLists.txt | 1 +
+ 1 file changed, 1 insertion(+)
+
+diff --git a/CMakeLists.txt b/CMakeLists.txt
+index 53e68f8c581792e8d536dfc42ddf0acabd8aadc8..75c3fea74e872f53eb0874729ca62a1ef7e3e3fc 100644
+--- a/CMakeLists.txt
++++ b/CMakeLists.txt
+@@ -49,6 +49,7 @@ add_darling_executable(installer_archive_path_test
+ 	src/archive/ArchivePath.cpp
+ 	src/archive/ArchivePathTest.cpp
+ )
++target_link_libraries(installer_archive_path_test cxx)
+ install(TARGETS installer_archive_path_test RUNTIME DESTINATION libexec/darling/usr/libexec)
+ 
+ set(BINARY_PACKAGING_MODE ON)
+
+From 825fde7532045c27263ad041e47cdadb2b5bd3b7 Mon Sep 17 00:00:00 2001
+From: Ilya Gulya <ilya@gulya.me>
+Date: Tue, 14 Jul 2026 06:11:17 +0000
+Subject: [PATCH] test: keep archive path fixture out of install
+
+---
+ CMakeLists.txt | 13 +++++++------
+ 1 file changed, 7 insertions(+), 6 deletions(-)
+
+diff --git a/CMakeLists.txt b/CMakeLists.txt
+index 75c3fea74e872f53eb0874729ca62a1ef7e3e3fc..7b4e68d7c37cd7b4f27fa7ddfa8934830475ec99 100644
+--- a/CMakeLists.txt
++++ b/CMakeLists.txt
+@@ -45,12 +45,13 @@ add_darling_executable(installer
+ target_link_libraries(installer z lzma bz2 xml2 cxx CoreFoundation Foundation)
+ install(TARGETS installer RUNTIME DESTINATION libexec/darling/usr/bin)
+ 
+-add_darling_executable(installer_archive_path_test
+-	src/archive/ArchivePath.cpp
+-	src/archive/ArchivePathTest.cpp
+-)
+-target_link_libraries(installer_archive_path_test cxx)
+-install(TARGETS installer_archive_path_test RUNTIME DESTINATION libexec/darling/usr/libexec)
++if(BUILD_TESTING)
++	add_darling_executable(installer_archive_path_test
++		src/archive/ArchivePath.cpp
++		src/archive/ArchivePathTest.cpp
++	)
++	target_link_libraries(installer_archive_path_test cxx)
++endif()
+ 
+ set(BINARY_PACKAGING_MODE ON)
+ InstallSymlink(installer libexec/darling/usr/bin/uninstaller)
