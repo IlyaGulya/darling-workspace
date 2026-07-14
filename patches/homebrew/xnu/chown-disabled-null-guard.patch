@@ -1,16 +1,16 @@
-From b9e995ad224e566db505072a166f70423225ea51 Mon Sep 17 00:00:00 2001
+From 50db68ce8504da6c9c8f24ddfd31d737b1f1db23 Mon Sep 17 00:00:00 2001
 From: Ilya Gulya <ilya@gulya.me>
-Date: Wed, 8 Jul 2026 16:54:50 +0000
+Date: Tue, 14 Jul 2026 10:38:39 +0000
 Subject: [PATCH] chown stubs: report disabled ownership changes
 
 ---
- .../src/xnu_syscall/bsd/impl/unistd/fchown.c  | 16 ++++++------
- .../xnu_syscall/bsd/impl/unistd/fchownat.c    | 25 ++++++++++---------
- .../src/xnu_syscall/bsd/impl/unistd/lchown.c  | 24 +++++++++---------
- 3 files changed, 34 insertions(+), 31 deletions(-)
+ .../src/xnu_syscall/bsd/impl/unistd/fchown.c          |  7 +++++--
+ .../src/xnu_syscall/bsd/impl/unistd/fchownat.c        | 11 ++++++-----
+ .../src/xnu_syscall/bsd/impl/unistd/lchown.c          | 11 ++++++-----
+ 3 files changed, 17 insertions(+), 12 deletions(-)
 
 diff --git a/darling/src/libsystem_kernel/emulation/src/xnu_syscall/bsd/impl/unistd/fchown.c b/darling/src/libsystem_kernel/emulation/src/xnu_syscall/bsd/impl/unistd/fchown.c
-index c8f7dba8fa840443351170c0670be4ded22c14a9..0587a067dbb4ef2eb4f330c24d7ab76d92a75eb6 100644
+index c8f7dba8fa840443351170c0670be4ded22c14a9..963d7b513fb6b4c3ef93b0b08eb4ff1d087fa679 100644
 --- a/darling/src/libsystem_kernel/emulation/src/xnu_syscall/bsd/impl/unistd/fchown.c
 +++ b/darling/src/libsystem_kernel/emulation/src/xnu_syscall/bsd/impl/unistd/fchown.c
 @@ -1,5 +1,7 @@
@@ -21,26 +21,17 @@ index c8f7dba8fa840443351170c0670be4ded22c14a9..0587a067dbb4ef2eb4f330c24d7ab76d
  #include <darling/emulation/common/base.h>
  #include <darling/emulation/conversion/errno.h>
  #include <darling/emulation/linux_premigration/linux-syscalls/linux.h>
-@@ -7,12 +9,12 @@
+@@ -7,7 +9,8 @@
  long sys_fchown(int fd, int uid, int gid)
  {
  	// E-UNION HAZARD (dar-test-infra-sp5.8.4.4.8): this stub is SAFE only because
 -	// it is disabled (returns 0, no mutation). If it is ever un-stubbed, it becomes
--	// an immediate template-corruption path: fchown() on an fd that still points at
--	// a shared LOWER-template file mutates ownership in the template for ALL
--	// prefixes. Before re-enabling, the fd MUST be copied up first --
--	// vchroot_prepare_write_fd(fd) -- and the chown applied to the returned UPPER
--	// fd, exactly as the fd-metadata syscalls (e.g. fchmod) already do under EUNION.
 +	// it is disabled (returns ENOTSUP, no mutation). If it is ever un-stubbed, it
-+	// becomes an immediate template-corruption path: fchown() on an fd that still
-+	// points at a shared LOWER-template file mutates ownership in the template for
-+	// ALL prefixes. Before re-enabling, the fd MUST be copied up first --
-+	// vchroot_prepare_write_fd(fd) -- and the chown applied to the returned UPPER fd,
-+	// exactly as the fd-metadata syscalls (e.g. fchmod) already do under EUNION.
- #if 0
- 	int ret;
- 
-@@ -26,6 +28,6 @@ long sys_fchown(int fd, int uid, int gid)
++	// becomes
+ 	// an immediate template-corruption path: fchown() on an fd that still points at
+ 	// a shared LOWER-template file mutates ownership in the template for ALL
+ 	// prefixes. Before re-enabling, the fd MUST be copied up first --
+@@ -26,6 +29,6 @@ long sys_fchown(int fd, int uid, int gid)
  
  	return ret;
  #else
@@ -49,10 +40,10 @@ index c8f7dba8fa840443351170c0670be4ded22c14a9..0587a067dbb4ef2eb4f330c24d7ab76d
  #endif
  }
 diff --git a/darling/src/libsystem_kernel/emulation/src/xnu_syscall/bsd/impl/unistd/fchownat.c b/darling/src/libsystem_kernel/emulation/src/xnu_syscall/bsd/impl/unistd/fchownat.c
-index a56eef0f52ff7a64c6d29207d4b2077261f14c71..2f99127704ab9f975c70873cb2337aa238281b2e 100644
+index 7416f08677b8921e8bdcf1be04f146a724154b54..9ab34ea87ea2fb344c2f130b6facf366cff874d8 100644
 --- a/darling/src/libsystem_kernel/emulation/src/xnu_syscall/bsd/impl/unistd/fchownat.c
 +++ b/darling/src/libsystem_kernel/emulation/src/xnu_syscall/bsd/impl/unistd/fchownat.c
-@@ -14,15 +14,19 @@ extern char* strcpy(char* dst, const char* src);
+@@ -13,8 +13,12 @@
  
  long sys_fchownat(int fd, const char* path, int uid, int gid, int flag)
  {
@@ -61,26 +52,12 @@ index a56eef0f52ff7a64c6d29207d4b2077261f14c71..2f99127704ab9f975c70873cb2337aa2
 +
  	// E-UNION HAZARD (dar-test-infra-sp5.8.4.4.8): this stub is SAFE only because
 -	// it is disabled (returns 0, no mutation). If it is ever un-stubbed, it becomes
--	// an immediate template-corruption path: the body below vchroot_expand()s the
--	// guest path and chowns it -- but for a lower-only target that expanded path is
--	// the shared LOWER template, so the chown mutates ownership for ALL prefixes.
--	// Before re-enabling, copy the target up first -- vchroot_prepare_write(path)
--	// (path-based copy-up, as the path-based write syscalls already do under EUNION)
--	// -- so vchroot_expand resolves to the writable UPPER copy. Mind AT_SYMLINK_*
--	// flags: copy up the link itself vs its target consistently with `flag`.
 +	// it is disabled (returns ENOTSUP, no mutation). If it is ever un-stubbed, it
-+	// becomes an immediate template-corruption path: the body below
-+	// vchroot_expand()s the guest path and chowns it -- but for a lower-only target
-+	// that expanded path is the shared LOWER template, so the chown mutates
-+	// ownership for ALL prefixes. Before re-enabling, copy the target up first --
-+	// vchroot_prepare_write(path) (path-based copy-up, as the path-based write
-+	// syscalls already do under EUNION) -- so vchroot_expand resolves to the
-+	// writable UPPER copy. Mind AT_SYMLINK_* flags: copy up the link itself vs its
-+	// target consistently with `flag`.
- #if 0
- 	int ret;
- 	struct vchroot_expand_args vc;
-@@ -31,9 +35,6 @@ long sys_fchownat(int fd, const char* path, int uid, int gid, int flag)
++	// becomes
+ 	// an immediate template-corruption path: the body below vchroot_expand()s the
+ 	// guest path and chowns it -- but for a lower-only target that expanded path is
+ 	// the shared LOWER template, so the chown mutates ownership for ALL prefixes.
+@@ -30,9 +34,6 @@ long sys_fchownat(int fd, const char* path, int uid, int gid, int flag)
  	vc.flags = VCHROOT_FOLLOW;
  	vc.dfd = atfd(fd);
  	
@@ -90,7 +67,7 @@ index a56eef0f52ff7a64c6d29207d4b2077261f14c71..2f99127704ab9f975c70873cb2337aa2
  	strcpy(vc.path, path);
  
  	ret = vchroot_expand(&vc);
-@@ -51,6 +52,6 @@ long sys_fchownat(int fd, const char* path, int uid, int gid, int flag)
+@@ -50,6 +51,6 @@ long sys_fchownat(int fd, const char* path, int uid, int gid, int flag)
  
  	return ret;
  #else
@@ -99,10 +76,10 @@ index a56eef0f52ff7a64c6d29207d4b2077261f14c71..2f99127704ab9f975c70873cb2337aa2
  #endif
  }
 diff --git a/darling/src/libsystem_kernel/emulation/src/xnu_syscall/bsd/impl/unistd/lchown.c b/darling/src/libsystem_kernel/emulation/src/xnu_syscall/bsd/impl/unistd/lchown.c
-index d013dec465337555dc5a281e3a6a56d8b100a2f1..d9df31073d66cdff0e7357b754acd54de8428690 100644
+index d013dec465337555dc5a281e3a6a56d8b100a2f1..ef804b3f84bff98d674553f4ffe4717dd593a46e 100644
 --- a/darling/src/libsystem_kernel/emulation/src/xnu_syscall/bsd/impl/unistd/lchown.c
 +++ b/darling/src/libsystem_kernel/emulation/src/xnu_syscall/bsd/impl/unistd/lchown.c
-@@ -10,15 +10,18 @@
+@@ -10,8 +10,12 @@
  
  long sys_lchown(const char* path, int uid, int gid)
  {
@@ -111,25 +88,12 @@ index d013dec465337555dc5a281e3a6a56d8b100a2f1..d9df31073d66cdff0e7357b754acd54d
 +
  	// E-UNION HAZARD (dar-test-infra-sp5.8.4.4.8): this stub is SAFE only because
 -	// it is disabled (returns 0, no mutation). If it is ever un-stubbed, it becomes
--	// an immediate template-corruption path: the body below vchroot_expand()s the
--	// guest path and lchowns it -- but for a lower-only target that expanded path is
--	// the shared LOWER template, so the chown mutates ownership for ALL prefixes.
--	// Before re-enabling, copy the target up first -- vchroot_prepare_write(path)
--	// (path-based copy-up). Because lchown operates on the symlink itself (no
--	// follow), the copy-up must materialize the LINK in the upper layer, not its
--	// target.
 +	// it is disabled (returns ENOTSUP, no mutation). If it is ever un-stubbed, it
-+	// becomes an immediate template-corruption path: the body below
-+	// vchroot_expand()s the guest path and lchowns it -- but for a lower-only target
-+	// that expanded path is the shared LOWER template, so the chown mutates
-+	// ownership for ALL prefixes. Before re-enabling, copy the target up first --
-+	// vchroot_prepare_write(path) (path-based copy-up). Because lchown operates on
-+	// the symlink itself (no follow), the copy-up must materialize the LINK in the
-+	// upper layer, not its target.
- #if 0
- 	int ret;
- 	struct vchroot_expand_args vc;
-@@ -26,9 +29,6 @@ long sys_lchown(const char* path, int uid, int gid)
++	// becomes
+ 	// an immediate template-corruption path: the body below vchroot_expand()s the
+ 	// guest path and lchowns it -- but for a lower-only target that expanded path is
+ 	// the shared LOWER template, so the chown mutates ownership for ALL prefixes.
+@@ -26,9 +30,6 @@ long sys_lchown(const char* path, int uid, int gid)
  	vc.flags = 0;
  	vc.dfd = get_perthread_wd();
  	
@@ -139,7 +103,7 @@ index d013dec465337555dc5a281e3a6a56d8b100a2f1..d9df31073d66cdff0e7357b754acd54d
  	strcpy(vc.path, path);
  
  	ret = vchroot_expand(&vc);
-@@ -45,6 +45,6 @@ long sys_lchown(const char* path, int uid, int gid)
+@@ -45,6 +46,6 @@ long sys_lchown(const char* path, int uid, int gid)
  
  	return ret;
  #else
