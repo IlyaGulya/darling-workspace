@@ -108,6 +108,12 @@
           "source_ref": "refs/heads/fix/rootless-bootstrap-component"
         },
         {
+          "branch": "fix/rootless-bootstrapper-ordering",
+          "head": "e257950104da34ec0646f2faeb5a23e1e80c05d4",
+          "upstream": "",
+          "source_ref": "refs/heads/fix/rootless-bootstrapper-ordering"
+        },
+        {
           "branch": "fix/rootless-no-mount-homebrew",
           "head": "9262ce9d45a71db5c27ad292cca7e1dc35a05ca7",
           "upstream": "",
@@ -130,6 +136,12 @@
           "head": "340f418d411f7b680ffeb9ea204586d29a2ef15e",
           "upstream": "",
           "source_ref": "refs/heads/fix/rootless-nomount"
+        },
+        {
+          "branch": "fix/rootless-prefix-initialization",
+          "head": "b5cbf7b8fdb3ca43befab5ca212a5008a3aa9c43",
+          "upstream": "",
+          "source_ref": "refs/heads/fix/rootless-prefix-initialization"
         },
         {
           "branch": "fix/rootless-product-foundation",
@@ -234,6 +246,12 @@
           "source_ref": "refs/heads/fix/rootless-shellspawn-test-delay-product"
         },
         {
+          "branch": "fix/rootless-shellspawn-timeout-ci",
+          "head": "0d817c9f105d90048de1a592277455d54a85fb96",
+          "upstream": "",
+          "source_ref": "refs/heads/fix/rootless-shellspawn-timeout-ci"
+        },
+        {
           "branch": "fix/rootless-shutdown-session",
           "head": "2ce4136ab3550de34256751be0e7947518c07d3f",
           "upstream": "",
@@ -307,7 +325,7 @@
         },
         {
           "branch": "repack/rootless-runtime-integration",
-          "head": "88a1b9b1260e58266e9b6b687831065271ec4b90",
+          "head": "72006d6a61504c5123b463f8369a8e09bc4b23cf",
           "upstream": "",
           "source_ref": "refs/heads/repack/rootless-runtime-integration"
         },
@@ -355,7 +373,7 @@
         },
         {
           "branch": "fix/a0-arch-redesign",
-          "head": "93c70498f3c97f8933af56b6308a8780bbaa5f26",
+          "head": "3b5d17af7c671707000cc3bd09fd34889bba281d",
           "upstream": "",
           "source_ref": "refs/heads/fix/a0-arch-redesign"
         },
@@ -391,7 +409,7 @@
         },
         {
           "branch": "fix/assert-wait-cancel-stale-timer",
-          "head": "4c353baa640d2ea026c59ec08a0e0ccfce33e09a",
+          "head": "69715cc293f08a15f76c223f7e43571949aa585f",
           "upstream": "",
           "source_ref": "refs/heads/fix/assert-wait-cancel-stale-timer"
         },
@@ -415,13 +433,13 @@
         },
         {
           "branch": "fix/dar-gwn-1-7-pushreply-pipe-leak",
-          "head": "bb620a209a3a72d2a238b30102147438e58b35ef",
+          "head": "9158f95de70c397304ec87f901dd3e86eb3567f0",
           "upstream": "",
           "source_ref": "refs/heads/fix/dar-gwn-1-7-pushreply-pipe-leak"
         },
         {
           "branch": "fix/darlingserver-progress-metrics",
-          "head": "bd18a8bd71753b8321e513fe19cb724345f6b873",
+          "head": "1cd32102de88fbbff5aef764c7e084aea0e93f4e",
           "upstream": "",
           "source_ref": "refs/heads/fix/darlingserver-progress-metrics"
         },
@@ -457,7 +475,7 @@
         },
         {
           "branch": "fix/exc-fatal-reply-bound",
-          "head": "2c8db920a3fe6c003225012e44b0074afad50c19",
+          "head": "8ee1bb6a5adcb8139ae96deade0e062f9b1069f9",
           "upstream": "",
           "source_ref": "refs/heads/fix/exc-fatal-reply-bound"
         },
@@ -469,7 +487,7 @@
         },
         {
           "branch": "fix/fork-checkin-sticky-flag",
-          "head": "c9a0107fe772be7a0a12f5dca75d26e1038446ee",
+          "head": "5d91d3ea50bce1839cb04007b47cf7ebeee711b7",
           "upstream": "",
           "source_ref": "refs/heads/fix/fork-checkin-sticky-flag"
         },
@@ -487,7 +505,7 @@
         },
         {
           "branch": "fix/j7e7-postfork-reset-gate",
-          "head": "757bb94c2e9fe43dfbab708f7dd7a0f4f0d56e70",
+          "head": "1354dd5531a48205d86327453125924d2865cf5a",
           "upstream": "",
           "source_ref": "refs/heads/fix/j7e7-postfork-reset-gate"
         },
@@ -541,7 +559,7 @@
         },
         {
           "branch": "fix/pthread-canceled-xnu-semantics",
-          "head": "397a044024296c30d94c2f482b6365605ef3f310",
+          "head": "ec379950edcf9710f81f1d0fcffc5287f996a0a2",
           "upstream": "",
           "source_ref": "refs/heads/fix/pthread-canceled-xnu-semantics"
         },
@@ -666,6 +684,18 @@
           "source_ref": "refs/heads/perf/shmem-ring-abi-validator"
         },
         {
+          "branch": "repack/a0-hang-fixes-clean",
+          "head": "c7614402c1f1eb3b0ae2093edfe348eeacf30ca3",
+          "upstream": "",
+          "source_ref": "refs/heads/repack/a0-hang-fixes-clean"
+        },
+        {
+          "branch": "repack/perf18-server-ring-clean",
+          "head": "8ac04638f57658d2a3f93023b18c754bcdefd24d",
+          "upstream": "",
+          "source_ref": "refs/heads/repack/perf18-server-ring-clean"
+        },
+        {
           "branch": "repack/rootless-runtime-integration",
           "head": "aeb4e184d9ee31bff62812e54d8d44bc9ae70d65",
           "upstream": "",
@@ -685,7 +715,7 @@
       "branches": [
         {
           "branch": "fix/dyld-dcc2-reader",
-          "head": "aec6a4af4efaacbda31911aaf32d73495d4a7da1",
+          "head": "ef9bcd0085cfa3f4ea62c556a764803c59d93d45",
           "upstream": "",
           "source_ref": "refs/heads/fix/dyld-dcc2-reader"
         },
@@ -706,6 +736,24 @@
           "head": "aec6a4af4efaacbda31911aaf32d73495d4a7da1",
           "upstream": "",
           "source_ref": "refs/heads/integration/perf"
+        }
+      ]
+    },
+    {
+      "path": "src/external/installer",
+      "bundle": "src__external__installer.bundle",
+      "branches": [
+        {
+          "branch": "fix/normalize-payload-paths",
+          "head": "825fde7532045c27263ad041e47cdadb2b5bd3b7",
+          "upstream": "",
+          "source_ref": "refs/heads/fix/normalize-payload-paths"
+        },
+        {
+          "branch": "fix/normalize-payload-paths-base",
+          "head": "25b9dbfe954faa04991a8152519b155d9df6e2a8",
+          "upstream": "",
+          "source_ref": "refs/heads/fix/normalize-payload-paths-base"
         }
       ]
     },
@@ -930,6 +978,18 @@
           "source_ref": "refs/heads/fix/chown-disabled-null-guard"
         },
         {
+          "branch": "fix/chown-disabled-null-guard-after-eunion",
+          "head": "50db68ce8504da6c9c8f24ddfd31d737b1f1db23",
+          "upstream": "",
+          "source_ref": "refs/heads/fix/chown-disabled-null-guard-after-eunion"
+        },
+        {
+          "branch": "fix/chown-disabled-null-guard-after-vchroot",
+          "head": "aad62153c971cb93f0953490b2513b5b1aeeeaff",
+          "upstream": "",
+          "source_ref": "refs/heads/fix/chown-disabled-null-guard-after-vchroot"
+        },
+        {
           "branch": "fix/darwin-priority",
           "head": "d021cbe8dac2e47e56f5321021246331edae55ff",
           "upstream": "origin/main",
@@ -1104,6 +1164,12 @@
           "source_ref": "refs/heads/fix/fd-guard-ebadf"
         },
         {
+          "branch": "fix/fd-guard-ebadf-errno",
+          "head": "ecc6d9ed939f80de3f1c06bff549e1e9bc94c0d0",
+          "upstream": "origin/fix/fd-guard-ebadf-errno",
+          "source_ref": "refs/heads/fix/fd-guard-ebadf-errno"
+        },
+        {
           "branch": "fix/fork-postfork-child",
           "head": "86cb1cf68d174a5255e075528ec8679abebb4b20",
           "upstream": "origin/main",
@@ -1147,7 +1213,7 @@
         },
         {
           "branch": "fix/j7e7-lane-wakefd-sentinel",
-          "head": "8d554c2b67e809cb580692f19199a4fafcf1372a",
+          "head": "f41fdd69e26d08af690dcfe9987efc04c670aa19",
           "upstream": "",
           "source_ref": "refs/heads/fix/j7e7-lane-wakefd-sentinel"
         },
@@ -1207,13 +1273,13 @@
         },
         {
           "branch": "fix/sigexc-debug-flood",
-          "head": "7268517f76d64438042918537facb53a9be2d68d",
+          "head": "2d63bfc1a6cd24d5d961e15bc29b7b1d9299c3a0",
           "upstream": "origin/preupstream/main",
           "source_ref": "refs/heads/fix/sigexc-debug-flood"
         },
         {
           "branch": "fix/sigexc-default-resend-self",
-          "head": "362aafc1cbc28b00d7ec53827b6d94550a72ce79",
+          "head": "a07f3001fb5fdfea471ac30bb79ef1b510cae29b",
           "upstream": "",
           "source_ref": "refs/heads/fix/sigexc-default-resend-self"
         },
@@ -1231,7 +1297,7 @@
         },
         {
           "branch": "fix/ulock-wait-eintr-retry",
-          "head": "9d5c22289dc701e0875226827bed26d4c0ec0099",
+          "head": "b78ebea327517adcae316f6a85c98d50f0c3e5bf",
           "upstream": "origin/preupstream/main",
           "source_ref": "refs/heads/fix/ulock-wait-eintr-retry"
         },
@@ -1261,25 +1327,25 @@
         },
         {
           "branch": "perf/cache-task-self-trap",
-          "head": "b3e857add3d2ba316ec04a6dfe8f69dff5036ad2",
+          "head": "8a0fd576e28a44dffbced8cb09bd1afb5db67f9e",
           "upstream": "",
           "source_ref": "refs/heads/perf/cache-task-self-trap"
         },
         {
           "branch": "perf/gate-hotpath-kprintf-debug",
-          "head": "0984b9b441e4c01e3c4f3e8ef36aef99d9bcb9e6",
+          "head": "3ddcd29a21b5dd9c10d44fe369beb7c7c5a8781a",
           "upstream": "",
           "source_ref": "refs/heads/perf/gate-hotpath-kprintf-debug"
         },
         {
           "branch": "perf/generalize-recv-spin-guest",
-          "head": "1169ebe2d99cf0c7ba36c1f2613fcf66a9cbbb1c",
+          "head": "e1db4266f50415c013371fc57e8f38a0423493ec",
           "upstream": "",
           "source_ref": "refs/heads/perf/generalize-recv-spin-guest"
         },
         {
           "branch": "perf/guest-per-callnum-sleep-account",
-          "head": "2b28548ca817c805cf45634fd7ac371598130c0c",
+          "head": "54b093a396bd9c0706fdeb533bd57a7b7820613a",
           "upstream": "",
           "source_ref": "refs/heads/perf/guest-per-callnum-sleep-account"
         },
@@ -1291,7 +1357,7 @@
         },
         {
           "branch": "perf/shmem-ring-guest",
-          "head": "caddc2b7ef7718e60318f98ec39dab7d40df38ca",
+          "head": "88dcbf670cd4d1c000dd7f7d95324784bafb0dca",
           "upstream": "",
           "source_ref": "refs/heads/perf/shmem-ring-guest"
         },

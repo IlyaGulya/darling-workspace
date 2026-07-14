@@ -74,7 +74,7 @@
   <project name="darling-grep" path="darling/src/external/grep" revision="62d70fada3a01de87aff927a86b8df0f7f2a837a" />
   <project name="darling-groff" path="darling/src/external/groff" revision="10dd5a6be4915a99065bc15dfc6b6b1e9e1a2714" />
   <project name="darling-icu" path="darling/src/external/icu" revision="6b609b2b0ce9a620543f357de4e549f09afec4ea" />
-  <project name="darling-installer" path="darling/src/external/installer" revision="88764e6149f92f1747442c27ab00231f40de278c" />
+  <project name="darling-installer" path="darling/src/external/installer" revision="825fde7532045c27263ad041e47cdadb2b5bd3b7" />
   <project name="darling-iokitd" path="darling/src/external/iokitd" revision="5549ac4cd2db923c256f016a1381b3bfb716730a" />
   <project name="darling-keymgr" path="darling/src/external/keymgr" revision="43b4230aec2e9018b0ffd3069b8b23a34ba257fb" />
   <project name="darling-less" path="darling/src/external/less" revision="a6bc77c8e72aaa35da92b903172a70eaa4ef78fa" />
