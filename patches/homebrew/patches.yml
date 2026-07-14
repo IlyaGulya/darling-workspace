@@ -4396,11 +4396,11 @@ patches:
       base: main
       state: local
 - path: darling/rootless-runtime-integration.patch
-  sha256sum: 7c82b32d09b1ca2783ef3514dc879cf29a311034b90377a7b2173e27af3ce22f
+  sha256sum: cd78af09b7d034b126c09888ae7521abea071a25649c9691b6da0bbf53615443
   module: darling
   source-branch: repack/rootless-runtime-integration
   source-base: 492a00f4929e5aba60607d9fed3e868bc4a3aeba
-  source-commit: d0a7ccde59fed3c8493ed3b4180be71b1ff3569f
+  source-commit: 72006d6a61504c5123b463f8369a8e09bc4b23cf
   bead: dar-7zvt.3
   publication-status: blocked
   publication-blocker: Rootless runtime integration is a local architectural consolidation; publication remains blocked until the complete lifecycle stack passes its fresh-prefix guest audit.
@@ -4484,11 +4484,11 @@ patches:
       base: main
       state: local
 - path: darling/rootless-bootstrapper-ordering.patch
-  sha256sum: b0937e03b4cfde362340d68e54778f8c23d6c9db468d23e03fd1f0bcdbfa452b
+  sha256sum: f72fef7d42246264bb75bca9faee0c36dcf2041984d81041fb7bc5ce7ce71aaa
   module: darling
   source-branch: fix/rootless-bootstrapper-ordering
   source-base: 72006d6a61504c5123b463f8369a8e09bc4b23cf
-  source-commit: 38d47a35ce0a0718718c31705fb642aa1833dfcc
+  source-commit: e257950104da34ec0646f2faeb5a23e1e80c05d4
   bead: dar-test-infra-sp5.45
   publication-status: blocked
   publication-blocker: Rootless bootstrapper ordering remains local until fresh-prefix guest CI is stable across repeated runs.
@@ -4500,6 +4500,113 @@ patches:
     completed, then dispatches it from a one-shot kqueue callback. This keeps
     launchctl IPC out of launchd startup and prevents a startup fork race on
     loaded hosts.
+- path: darling/rootless-prefix-initialization.patch
+  sha256sum: ec7a94be23ea0cccbe1ecaf9715014970f50a081c3d0b1fd8c81d8bacc88325a
+  module: darling
+  source-branch: fix/rootless-prefix-initialization
+  source-base: 38d47a35ce0a0718718c31705fb642aa1833dfcc
+  source-commit: b5cbf7b8fdb3ca43befab5ca212a5008a3aa9c43
+  bead: dar-test-infra-sp5.45.9
+  publication-status: blocked
+  publication-blocker: Product-owned rootless initialization is local until the fresh-prefix three-path CI audit is complete.
+  tests:
+  - name: rootless_prefix_initialization_guest
+    kind: guest
+    coverage-tier: runtime
+    runs: guest
+    diag: guarded
+    runtime-profile: homebrew-rootless-bootstrap-minimal
+    red: true
+    red-proof:
+      mode: guest-runtime-deploy
+      bad-profile: current-minus-patch
+      clean-prefix: true
+      source-revision: d0a7ccde59fed3c8493ed3b4180be71b1ff3569f
+      current-minus-skip-patches:
+      - darling/build-drift-gate.patch
+      expect-failure-phase: bootstrap
+      expect-output-contains:
+      - Rootless shellspawn did not become ready
+      source-modules:
+      - darling
+      - darling/src/external/darlingserver
+      - darling/src/external/xnu
+      - darling/src/external/dyld
+      - darling/src/external/corefoundation
+      - darling/src/external/libsystem
+      - darling/src/external/bash
+      cmake-defines:
+        DARLING_EUNION: true
+      runtime-artifacts:
+      - module: darling
+        build-targets:
+        - rootless_bootstrap
+        resource: rootless-bootstrap
+    runner: guest-runtime-script
+    repo: darling-workspace
+    script: tests/run-rootless-prefix-init-smoke.sh
+    ok-marker: ROOTLESS_PREFIX_INIT_GUEST_OK
+    timeout-seconds: 60
+    requires:
+    - darling-prefix
+    env-vars:
+      DARLING_ROOTLESS: '1'
+      DARLING_NOOVERLAYFS: '1'
+      DARLING_EUNION: '1'
+    note: >-
+      The RED run uses the immediately preceding runtime patchset and an empty
+      prefix; the old runtime fails before shellspawn becomes ready because the
+      product-owned rootless directory contract is absent. GREEN passes only
+      when launchd initializes that contract and the guest probe can execute.
+  - name: rootless_prebuilt_macho_regression
+    kind: guest
+    coverage-tier: runtime
+    runs: guest
+    diag: guarded
+    runtime-profile: homebrew-rootless-bootstrap-minimal
+    runner: guest-command-fixture
+    repo: darling-workspace
+    guest-command: >-
+      test -x /bin/bash &&
+      test ! -e /Library/Developer/CommandLineTools/usr/bin/clang &&
+      /bin/bash -c '
+        set -eu;
+        probe=/private/var/tmp/west-rootless-prebuilt-macho;
+        printf "%s\\n" ROOTLESS_PREBUILT_MACHO_DATA > "$probe";
+        test -f "$probe";
+        IFS= read -r value < "$probe";
+        test "$value" = ROOTLESS_PREBUILT_MACHO_DATA;
+        printf "%s\\n" ROOTLESS_PREBUILT_MACHO_OK
+      '
+    expect:
+      returncode: 0
+      output-contains:
+      - ROOTLESS_PREBUILT_MACHO_OK
+    timeout-seconds: 30
+    requires:
+    - darling-prefix
+    note: >-
+      Ordinary rootless regression boundary: execute the source-owned,
+      prebuilt /bin/bash Mach-O from the minimal component, exercise guest file
+      I/O, and prove that this path does not depend on a provisioned guest CLT.
+  - name: rootless_guest_toolchain_compile_execute
+    kind: guest
+    coverage-tier: runtime
+    runs: guest
+    diag: guarded
+    runtime-profile: homebrew-guest-toolchain-provisioning
+    runner: guest-runtime-script
+    repo: darling-workspace
+    script: tests/run-guest-toolchain-proof.sh
+    ok-marker: GUEST_TOOLCHAIN_PROOF_OK
+    timeout-seconds: 120
+    verify-clean-shutdown: true
+    requires:
+    - darling-prefix
+    note: >-
+      Scheduled/manual provider acceptance: a fresh prefix must expose the
+      reviewed CLT, report clang --version, compile and execute a guest Mach-O,
+      then shut down cleanly.
 - path: darling/rootless-shellspawn-delay.patch
   sha256sum: 03436bef636b0a3957efe5252a5beaa508d0aa26d8d35cb9d28fae4553f3b85e
   module: darling
@@ -4513,7 +4620,7 @@ patches:
     reason: test-instrumentation
     scope: The hook is inert unless DARLING_TEST_SHELLSPAWN_READY_DELAY_MS is explicitly supplied by the rootless lifecycle proof.
 - path: darling/rootless-shellspawn-lifecycle.patch
-  sha256sum: f89d2aae579fd0491df3e4b6871d543d2e404ac9dcad64b61e7fb6b49567e11e
+  sha256sum: 5ed663590e5fa496fe66f6313bc896df11b8e0752524102547516879825d8542
   module: darling
   source-branch: fix/rootless-shellspawn-timeout-ci
   source-base: f8aa7404f19979d0ec4b54573238194b98de385a

@@ -1,7 +1,7 @@
 From ce80621ca527c7a82e7201f7dab13b5c80f193f3 Mon Sep 17 00:00:00 2001
 From: Ilya Gulya <ilya@gulya.me>
 Date: Sun, 12 Jul 2026 16:00:05 +0000
-Subject: [PATCH 1/2] darling: complete rootless shellspawn lifecycle
+Subject: [PATCH] darling: complete rootless shellspawn lifecycle
 
 Consolidate readiness retry, full-session shutdown, structured protocol failure reporting and fast-exit completion handling while keeping the readiness delay hook as a separate test-only patch.
 ---
@@ -19,7 +19,7 @@ Consolidate readiness retry, full-session shutdown, structured protocol failure 
  create mode 100644 src/startup/tests/rootless_shutdown_session_test.c
 
 diff --git a/src/shellspawn/shellspawn.c b/src/shellspawn/shellspawn.c
-index 040635bd6..8e7be9aa7 100644
+index 040635bd67086567aebbfc99104136bc30ce347c..8e7be9aa7c0758928a57799df70d5081bf20b577 100644
 --- a/src/shellspawn/shellspawn.c
 +++ b/src/shellspawn/shellspawn.c
 @@ -30,7 +30,6 @@ along with Darling.  If not, see <http://www.gnu.org/licenses/>.
@@ -340,7 +340,7 @@ index 040635bd6..8e7be9aa7 100644
  	reapAll();
  }
 diff --git a/src/shellspawn/shellspawn.h b/src/shellspawn/shellspawn.h
-index c9eb396e6..659a15172 100644
+index c9eb396e62d6e75726913f047854ac77e6d6b6a7..659a151723294545dc3368c19ed214648559f232 100644
 --- a/src/shellspawn/shellspawn.h
 +++ b/src/shellspawn/shellspawn.h
 @@ -38,6 +38,11 @@ enum {
@@ -368,7 +368,7 @@ index c9eb396e6..659a15172 100644
  
 +#endif
 diff --git a/src/startup/CMakeLists.txt b/src/startup/CMakeLists.txt
-index 817f2453a..f28b61a32 100644
+index 817f2453afefc56148741aeb5cc5a08c10268192..f28b61a32e667fb0f22d4a07b0fcc1eac01a3b11 100644
 --- a/src/startup/CMakeLists.txt
 +++ b/src/startup/CMakeLists.txt
 @@ -14,10 +14,15 @@ set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -std=c++11")
@@ -389,7 +389,7 @@ index 817f2453a..f28b61a32 100644
  
  install(TARGETS darling DESTINATION bin
 diff --git a/src/startup/darling.c b/src/startup/darling.c
-index 3daf5061b..8bdaf57dd 100644
+index 3daf5061b51027307b1e386f670657839081577e..8bdaf57ddb841bcbde16c468edaf3a1069b5ccf1 100644
 --- a/src/startup/darling.c
 +++ b/src/startup/darling.c
 @@ -33,6 +33,7 @@ along with Darling.  If not, see <http://www.gnu.org/licenses/>.
@@ -643,7 +643,7 @@ index 3daf5061b..8bdaf57dd 100644
  
  	pushShellspawnCommand(sockfd, SHELLSPAWN_SETEXEC, binary);
 diff --git a/src/startup/darling.h b/src/startup/darling.h
-index 1a49e2f50..371968929 100644
+index 1a49e2f50a7a674966fd9170580e294a1735b556..371968929e7b74d164bf197b8ab9faea92895867 100644
 --- a/src/startup/darling.h
 +++ b/src/startup/darling.h
 @@ -40,14 +40,14 @@ int checkPrefixDir(void);
@@ -673,7 +673,7 @@ index 1a49e2f50..371968929 100644
  #endif
 diff --git a/src/startup/rootless_shutdown.c b/src/startup/rootless_shutdown.c
 new file mode 100644
-index 000000000..6e1d7969e
+index 0000000000000000000000000000000000000000..6e1d7969e3de4465d3a63f7dbe3809827654d341
 --- /dev/null
 +++ b/src/startup/rootless_shutdown.c
 @@ -0,0 +1,84 @@
@@ -763,7 +763,7 @@ index 000000000..6e1d7969e
 +}
 diff --git a/src/startup/rootless_shutdown.h b/src/startup/rootless_shutdown.h
 new file mode 100644
-index 000000000..f14bf54bd
+index 0000000000000000000000000000000000000000..f14bf54bdda6d3102e76538ef57511993ee31ce8
 --- /dev/null
 +++ b/src/startup/rootless_shutdown.h
 @@ -0,0 +1,8 @@
@@ -777,7 +777,7 @@ index 000000000..f14bf54bd
 +#endif
 diff --git a/src/startup/tests/rootless_shutdown_session_test.c b/src/startup/tests/rootless_shutdown_session_test.c
 new file mode 100644
-index 000000000..66805c5e3
+index 0000000000000000000000000000000000000000..66805c5e3cb37827962ae7926b68fa061ebde2b1
 --- /dev/null
 +++ b/src/startup/tests/rootless_shutdown_session_test.c
 @@ -0,0 +1,58 @@
@@ -843,14 +843,14 @@ index 000000000..66805c5e3
 From 0d817c9f105d90048de1a592277455d54a85fb96 Mon Sep 17 00:00:00 2001
 From: Ilya Gulya <ilya.gulya@indriver.com>
 Date: Mon, 13 Jul 2026 10:37:40 +0000
-Subject: [PATCH 2/2] darling: configure rootless shellspawn readiness timeout
+Subject: [PATCH] darling: configure rootless shellspawn readiness timeout
 
 ---
  src/startup/darling.c | 24 +++++++++++++++++++++---
  1 file changed, 21 insertions(+), 3 deletions(-)
 
 diff --git a/src/startup/darling.c b/src/startup/darling.c
-index 8bdaf57dd..ae80b78dc 100644
+index 8bdaf57ddb841bcbde16c468edaf3a1069b5ccf1..ae80b78dc23aa19372a25878bb5cc95fe67dd34b 100644
 --- a/src/startup/darling.c
 +++ b/src/startup/darling.c
 @@ -60,6 +60,23 @@ static bool rootlessModeEnabled(void)
