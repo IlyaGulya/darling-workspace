@@ -58,7 +58,9 @@ jobs:
           DIAGNOSTIC_PREFIX: ${{ steps.rootless_smoke_diagnostic.outputs.prefix }}
         run: |
           set -euo pipefail
-          ci/collect-rootless-diagnostics.sh .west-test/rootless-diagnostics/tier "$TIER_PREFIX"
+          if [[ -n "$TIER_PREFIX" ]]; then
+            ci/collect-rootless-diagnostics.sh .west-test/rootless-diagnostics/tier "$TIER_PREFIX"
+          fi
           if [[ -n "$DIAGNOSTIC_PREFIX" ]]; then
             ci/collect-rootless-diagnostics.sh .west-test/rootless-diagnostics/bootstrap "$DIAGNOSTIC_PREFIX"
           fi
@@ -120,7 +122,9 @@ jobs:
           DIAGNOSTIC_PREFIX: ${{ steps.rootless_regression_diagnostic.outputs.prefix }}
         run: |
           set -euo pipefail
-          ci/collect-rootless-diagnostics.sh .west-test/rootless-diagnostics/tier "$TIER_PREFIX"
+          if [[ -n "$TIER_PREFIX" ]]; then
+            ci/collect-rootless-diagnostics.sh .west-test/rootless-diagnostics/tier "$TIER_PREFIX"
+          fi
           if [[ -n "$DIAGNOSTIC_PREFIX" ]]; then
             ci/collect-rootless-diagnostics.sh .west-test/rootless-diagnostics/bootstrap "$DIAGNOSTIC_PREFIX"
           fi
@@ -178,7 +182,10 @@ jobs:
         working-directory: darling-dev/darling-workspace
         env:
           TIER_PREFIX: ${{ steps.rootless_toolchain.outputs.prefix }}
-        run: ci/collect-rootless-diagnostics.sh .west-test/rootless-toolchain-diagnostics "$TIER_PREFIX"
+        run: |
+          if [[ -n "$TIER_PREFIX" ]]; then
+            ci/collect-rootless-diagnostics.sh .west-test/rootless-toolchain-diagnostics "$TIER_PREFIX"
+          fi
       - name: Upload guest toolchain evidence
         if: always()
         uses: actions/upload-artifact@v7

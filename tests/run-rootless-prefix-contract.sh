@@ -29,6 +29,15 @@ if RUNNER_TEMP=/ rootless_prefix_trusted_root >/dev/null 2>&1; then
 	echo 'filesystem root was accepted as trusted root' >&2
 	exit 1
 fi
+
+# GitHub-hosted Linux runners place RUNNER_TEMP below /home/runner. Accept that
+# explicit runner contract while retaining the direct-child/name/owner guards.
+mkdir -p "$tmp/home/work/_temp"
+created="$(HOME="$tmp/home" RUNNER_TEMP="$tmp/home/work/_temp" \
+	rootless_prefix_create smoke UNUSED_VARIABLE)"
+HOME="$tmp/home" RUNNER_TEMP="$tmp/home/work/_temp" \
+	rootless_prefix_remove smoke "$created"
+
 if DARLING_SMOKE_PREFIX="$HOME" rootless_prefix_create smoke DARLING_SMOKE_PREFIX >/dev/null 2>&1; then
 	echo 'HOME was accepted as a removable prefix' >&2
 	exit 1
