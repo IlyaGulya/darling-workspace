@@ -1,6 +1,17 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+case "${1:-}" in
+	guest-full)
+		cat >&2 <<'EOF'
+guest-full is blocked: the no-CLT prebuilt regression corpus is not implemented.
+The existing 14 guest tests compile fixtures inside Darling and cannot be
+advertised as a prebuilt regression tier until their artifacts are materialized.
+EOF
+		exit 78
+		;;
+esac
+
 root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$root"
 runtime_build_timeout_seconds="${WEST_RUNTIME_BUILD_TIMEOUT_SECONDS:-600}"
@@ -74,21 +85,6 @@ case "${1:-}" in
 			--env darling --label 'name:rootless_prebuilt_macho_regression' \
 			--reuse-prefix-runtime \
 			--prefix "$prefix" "${@:2}"
-		;;
-	guest-full)
-		tier_kind=regression
-		prefix="$(rootless_prefix_create "$tier_kind" DARLING_REGRESSION_PREFIX)"
-		rootless_prefix_export_output prefix "$prefix"
-		trap 'cleanup_rootless_tier "$?"' EXIT
-		WEST_TEST_FORBID_GUEST_TOOLCHAIN=1 west test --prefix "$prefix" \
-			--bootstrap-runtime-profile homebrew-rootless-bootstrap-minimal \
-			--runtime-build-timeout-seconds "$runtime_build_timeout_seconds"
-		cat >&2 <<'EOF'
-guest-full is blocked: the no-CLT prebuilt regression corpus is not implemented.
-The existing 14 guest tests compile fixtures inside Darling and cannot be
-advertised as a prebuilt regression tier until their artifacts are materialized.
-EOF
-		exit 78
 		;;
 	guest-toolchain)
 		tier_kind=toolchain

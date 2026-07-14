@@ -3,8 +3,8 @@ name: Darling compatibility tests
 on:
   pull_request:
   push:
-  # Scheduled run intentionally covers host plus guest-full. CLT provisioning
-  # and native macOS tiers remain manual and independently selectable.
+  # Scheduled run intentionally covers host only. Rootless smoke, CLT
+  # provisioning, and native macOS tiers remain independently selectable.
   schedule:
     - cron: '17 3 * * *'
   workflow_dispatch:
@@ -16,7 +16,6 @@ on:
         options:
           - host
           - guest-smoke
-          - guest-full
           - guest-toolchain
           - macos
 
@@ -101,72 +100,6 @@ jobs:
         run: |
           ci/cleanup-rootless-prefixes.sh \
             smoke "$TIER_PREFIX" \
-            diagnostic "$DIAGNOSTIC_PREFIX"
-
-  guest-full:
-    if: github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && inputs.tier == 'guest-full')
-    runs-on: ubuntu-latest
-    timeout-minutes: 30
-    env:
-      DARLING_WEST_UPDATE_JOBS: 8
-    permissions:
-      contents: read
-    steps:
-      - uses: actions/checkout@v7
-        with:
-          path: darling-dev/darling-workspace
-      - name: Install West
-        run: python3 -m pip install west
-      - name: Install Darling build dependencies
-        run: darling-dev/darling-workspace/ci/install-darling-build-deps.sh
-      - name: Materialize Darling workspace
-        run: darling-dev/darling-workspace/ci/bootstrap-west.sh
-      - name: Build guarded test executor
-        run: cargo build --release --locked --manifest-path darling-dev/darling-debug-runner/Cargo.toml
-      - name: Run full rootless regression (blocked pending prebuilt corpus)
-        id: rootless_regression
-        run: darling-dev/darling-workspace/ci/run-test-tier.sh guest-full
-      - name: Capture rootless bootstrap syscall trace
-        if: failure()
-        continue-on-error: true
-        id: rootless_regression_diagnostic
-        working-directory: darling-dev/darling-workspace
-        run: ci/run-rootless-bootstrap-diagnostic.sh .west-test/bootstrap-failure-trace
-      - name: Collect guest runtime diagnostics
-        if: always()
-        working-directory: darling-dev/darling-workspace
-        env:
-          TIER_PREFIX: ${{ steps.rootless_regression.outputs.prefix }}
-          DIAGNOSTIC_PREFIX: ${{ steps.rootless_regression_diagnostic.outputs.prefix }}
-        run: |
-          set -euo pipefail
-          if [[ -n "$TIER_PREFIX" ]]; then
-            ci/collect-rootless-diagnostics.sh .west-test/rootless-diagnostics/tier "$TIER_PREFIX"
-          fi
-          if [[ -n "$DIAGNOSTIC_PREFIX" ]]; then
-            ci/collect-rootless-diagnostics.sh .west-test/rootless-diagnostics/bootstrap "$DIAGNOSTIC_PREFIX"
-          fi
-      - name: Upload guest runtime evidence
-        if: always()
-        uses: actions/upload-artifact@v7
-        with:
-          name: guest-full-runtime-evidence
-          if-no-files-found: ignore
-          retention-days: 7
-          path: |
-            darling-dev/darling-workspace/.west-test/rootless-diagnostics
-            darling-dev/darling-workspace/.west-test/bootstrap-failure-trace
-            darling-dev/darling-workspace/.west-test/runtime-evidence/**/manifest.json
-            darling-dev/darling-workspace/.west-test/runtime-evidence/**/diagnostics/**
-      - name: Cleanup test state and runtime evidence
-        if: always()
-        working-directory: darling-dev/darling-workspace
-        env:
-          TIER_PREFIX: ${{ steps.rootless_regression.outputs.prefix }}
-          DIAGNOSTIC_PREFIX: ${{ steps.rootless_regression_diagnostic.outputs.prefix }}
-        run: |
-          ci/cleanup-rootless-prefixes.sh \
-            regression "$TIER_PREFIX" \
             diagnostic "$DIAGNOSTIC_PREFIX"
 
   guest-toolchain-provisioning:
