@@ -70,7 +70,16 @@ export DARLING_REGRESSION_PREFIX="$tmp/runner/darling-rootless-regression"
 
 "$repo/ci/run-test-tier.sh" host
 "$repo/ci/run-test-tier.sh" guest-smoke
-"$repo/ci/run-test-tier.sh" guest-full
+if "$repo/ci/run-test-tier.sh" guest-full; then
+	echo 'guest-full unexpectedly passed without a prebuilt regression corpus' >&2
+	exit 1
+else
+	full_rc=$?
+	[ "$full_rc" -eq 78 ] || {
+		echo "guest-full returned $full_rc instead of blocker rc 78" >&2
+		exit 1
+	}
+fi
 DARLING_TOOLCHAIN_PREFIX="$tmp/runner/darling-rootless-toolchain" \
 	"$repo/ci/run-test-tier.sh" guest-toolchain
 DARLING_TESTKIT_BUILD="$tmp/macos-build" "$repo/ci/run-test-tier.sh" macos
@@ -81,18 +90,13 @@ grep -F -x -q 'west test --profile homebrew --env host --materialize-profile' "$
 grep -F -x -q "west test --prefix $tmp/runner/darling-rootless-smoke --bootstrap-runtime-profile homebrew-rootless-bootstrap-minimal --runtime-build-timeout-seconds 600" "$tmp/commands"
 grep -F -x -q "west test --profile homebrew --patch darling/rootless-prefix-initialization.patch --env darling --label name:rootless_prefix_initialization_guest --reuse-prefix-runtime --prefix $tmp/runner/darling-rootless-smoke" "$tmp/commands"
 grep -F -x -q "west test --profile homebrew --patch darling/rootless-prefix-initialization.patch --env darling --label name:rootless_prebuilt_macho_regression --reuse-prefix-runtime --prefix $tmp/runner/darling-rootless-smoke" "$tmp/commands"
-grep -F -x -q "west test --prefix $tmp/runner/darling-rootless-regression --bootstrap-runtime-profile homebrew-guest-toolchain-provisioning --runtime-build-timeout-seconds 600" "$tmp/commands"
-grep -F -x -q "west test --env darling --prefix $tmp/runner/darling-rootless-regression" "$tmp/commands"
-if [ "$(grep -F -c 'name:rootless_prebuilt_macho_regression' "$tmp/commands")" -ne 1 ]; then
-	echo 'prebuilt no-CLT fixture was not isolated to smoke' >&2
+grep -F -x -q "west test --prefix $tmp/runner/darling-rootless-regression --bootstrap-runtime-profile homebrew-rootless-bootstrap-minimal --runtime-build-timeout-seconds 600" "$tmp/commands"
+if grep -F -x -q "west test --env darling --prefix $tmp/runner/darling-rootless-regression" "$tmp/commands"; then
+	echo 'blocked guest-full unexpectedly selected a regression command' >&2
 	exit 1
 fi
 grep -F -x -q "west test --prefix $tmp/runner/darling-rootless-toolchain --bootstrap-runtime-profile homebrew-guest-toolchain-provisioning --runtime-build-timeout-seconds 600" "$tmp/commands"
 grep -F -x -q "west test --profile homebrew --patch darling/rootless-prefix-initialization.patch --env darling --label name:rootless_guest_toolchain_compile_execute --reuse-prefix-runtime --prefix $tmp/runner/darling-rootless-toolchain" "$tmp/commands"
-if grep -F -x -q "west test --profile homebrew --env darling --prefix $tmp/runner/darling-rootless-toolchain" "$tmp/commands"; then
-	echo "toolchain tier unexpectedly duplicated the full guest regression" >&2
-	exit 1
-fi
 grep -F -x -q "cmake -S testkit -B $tmp/macos-build -DBUILD_TESTING=ON" "$tmp/commands"
 grep -F -x -q "ctest --test-dir $tmp/macos-build --output-on-failure -L env:macos" "$tmp/commands"
 grep -F -x -q "cmake --install $tmp/package-build" "$tmp/commands"
@@ -110,7 +114,7 @@ deps_script='darling-dev/darling-workspace/ci/install-darling-build-deps.sh'
 [ "$(grep -F -c 'ci/cleanup-rootless-prefixes.sh' "$repo/.github/workflows/test-infra.yml")" -ge 3 ]
 [ "$(grep -F -c 'cargo build --release --locked --manifest-path darling-dev/darling-debug-runner/Cargo.toml' "$repo/.github/workflows/test-infra.yml")" -eq 3 ]
 [ "$(grep -F -c "github.event_name == 'pull_request'" "$repo/.github/workflows/test-infra.yml")" -ge 1 ]
-[ "$(grep -F -c 'Run full no-CLT CTest' "$repo/.github/workflows/test-infra.yml")" -eq 0 ]
+[ "$(grep -F -c 'Run full rootless regression (blocked pending prebuilt corpus)' "$repo/.github/workflows/test-infra.yml")" -eq 1 ]
 ! grep -F -q 'actions/checkout@v4' "$repo/.github/workflows/test-infra.yml"
 ! grep -F -q 'actions/upload-artifact@v4' "$repo/.github/workflows/test-infra.yml"
 ! grep -F -q $'\t\texec west test --profile homebrew --patch' "$repo/ci/run-test-tier.sh"
