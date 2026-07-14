@@ -2,7 +2,7 @@
 set -euo pipefail
 
 output_dir="${1:?diagnostic output directory is required}"
-prefix="${2:-${DARLING_TEST_PREFIX:-$HOME/work/darling-prefix-homebrew-test}}"
+prefix="${2:?the tier-owned Darling prefix is required}"
 
 mkdir -p "$output_dir/prefix-files"
 
