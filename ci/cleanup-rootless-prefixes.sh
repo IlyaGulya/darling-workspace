@@ -17,6 +17,10 @@ for ((index = 1; index <= $#; index += 2)); do
 	prefix_index=$((index + 1))
 	prefix="${!prefix_index}"
 	[[ -n "$prefix" ]] || continue
+	owner="${prefix}.west-tier-owner"
+	if [[ ! -e "$prefix" && ! -L "$prefix" && ! -e "$owner" && ! -L "$owner" ]]; then
+		continue
+	fi
 	if ! rootless_prefix_assert_owned "$kind" "$prefix"; then
 		echo "refusing to clean an unowned rootless prefix: $prefix" >&2
 		status=1

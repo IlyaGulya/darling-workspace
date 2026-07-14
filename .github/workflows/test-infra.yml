@@ -41,6 +41,8 @@ jobs:
         run: darling-dev/darling-workspace/ci/install-darling-build-deps.sh
       - name: Materialize Darling workspace
         run: darling-dev/darling-workspace/ci/bootstrap-west.sh
+      - name: Build guarded test executor
+        run: cargo build --release --locked --manifest-path darling-dev/darling-debug-runner/Cargo.toml
       - name: Run rootless guest smoke
         id: rootless_smoke
         run: darling-dev/darling-workspace/ci/run-test-tier.sh guest-smoke
@@ -105,6 +107,8 @@ jobs:
         run: darling-dev/darling-workspace/ci/install-darling-build-deps.sh
       - name: Materialize Darling workspace
         run: darling-dev/darling-workspace/ci/bootstrap-west.sh
+      - name: Build guarded test executor
+        run: cargo build --release --locked --manifest-path darling-dev/darling-debug-runner/Cargo.toml
       - name: Run full rootless regression with CLT
         id: rootless_regression
         run: darling-dev/darling-workspace/ci/run-test-tier.sh guest-full
@@ -174,6 +178,8 @@ jobs:
         run: darling-dev/darling-workspace/ci/install-darling-build-deps.sh
       - name: Materialize Darling workspace
         run: darling-dev/darling-workspace/ci/bootstrap-west.sh
+      - name: Build guarded test executor
+        run: cargo build --release --locked --manifest-path darling-dev/darling-debug-runner/Cargo.toml
       - name: Provision CLT and compile and execute a guest binary
         id: rootless_toolchain
         run: darling-dev/darling-workspace/ci/run-test-tier.sh guest-toolchain
