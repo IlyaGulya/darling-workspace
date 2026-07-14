@@ -4640,3 +4640,76 @@ patches:
     requires:
     - darling-prefix
     note: Fast guest exit must still produce a structured shellspawn completion verdict.
+- path: installer/normalize-payload-paths.patch
+  sha256sum: f8d7c0b5e13e94c6af756c5806c4ace4154dd7402fac34c6b9a9ceddb06221d3
+  module: darling/src/external/installer
+  source-branch: fix/normalize-payload-paths-base
+  source-commit: 25b9dbfe954faa04991a8152519b155d9df6e2a8
+  bead: dar-test-infra-sp5.45
+  publication-status: provisional
+  publication-blocker: Guest installer behavior is green locally; fork publication waits for the complete runtime-provider CI audit.
+  tests:
+  - name: command_line_tools_installer_guest
+    kind: guest
+    coverage-tier: runtime
+    runs: guest
+    diag: guarded
+    red: true
+    red-proof:
+      mode: guest-runtime-deploy
+      bad-profile: current-minus-patch
+      expect-failure-phase: provider
+      provider-under-test: true
+      expect-output-contains:
+      - 'Cannot mkdir /./Library/Developer/CommandLineTools/SDKs: Invalid argument'
+      source-modules:
+      - darling/src/external/installer
+      runtime-artifacts:
+      - module: darling/src/external/installer
+        build-targets:
+        - installer
+        deploy:
+        - usr/bin/installer
+    runner: guest-command-fixture
+    guest-command: >-
+      test -x /Library/Developer/CommandLineTools/usr/bin/clang &&
+      test -d /Library/Developer/CommandLineTools/SDKs/MacOSX.sdk &&
+      /Library/Developer/CommandLineTools/usr/bin/clang --version >/dev/null 2>&1
+    expect:
+      returncode: 0
+    runtime-profile: homebrew-guest-toolchain-provisioning
+    smoke: true
+    timeout-seconds: 120
+    requires:
+    - darling-prefix
+    note: >-
+      Guest behavior proof for the declared CommandLineTools provider. RED runs
+      the real Apple package installer against the unpatched installer and
+      requires its path-layer failure; GREEN installs the same packages and
+      verifies the guest compiler and SDK are usable.
+- path: installer/archive-path-containment.patch
+  sha256sum: dde22310d3ccdbac6dd7ac21781f9fc1313975b2460770a7e4d55d3b7bd27daf
+  module: darling/src/external/installer
+  source-branch: fix/normalize-payload-paths
+  source-base: 25b9dbfe954faa04991a8152519b155d9df6e2a8
+  source-commit: 825fde7532045c27263ad041e47cdadb2b5bd3b7
+  bead: dar-test-infra-sp5.45.9
+  publication-status: blocked
+  publication-blocker: Installer archive containment remains local until the fresh-prefix three-path CI audit is complete.
+  tests:
+  - name: installer_archive_path_containment
+    kind: contract
+    coverage-tier: host
+    runs: host
+    diag: bare
+    runner: source-build-fixture
+    repo: darling/src/external/installer
+    script: src/archive/ArchivePathTest.cpp
+    build-commands:
+    - c++ -std=c++11 -Wall -Wextra -Werror -I src/archive src/archive/ArchivePath.cpp src/archive/ArchivePathTest.cpp -o "$WEST_TEST_TMP/installer-archive-path-test"
+    run-commands:
+    - "$WEST_TEST_TMP/installer-archive-path-test"
+    timeout-seconds: 60
+    note: >-
+      Source-owned behavior test for normalized archive traversal rejection and
+      intermediate symlink containment; it is independent of the CLT provider.
