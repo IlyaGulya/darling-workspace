@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 import subprocess
 import tempfile
 from dataclasses import dataclass
@@ -13,6 +14,17 @@ try:
     from .test_execution import ProcessResult, run_bounded
 except ImportError:  # Loaded as a West extension module, not a package.
     from test_execution import ProcessResult, run_bounded
+
+
+def failure_phase_from_output(output: str) -> str | None:
+    """Classify launcher readiness failures before a guest script can start."""
+
+    if re.search(
+        r"(?:Rootless shellspawn did not become ready|E-UNION runtime readiness)",
+        output,
+    ):
+        return "bootstrap"
+    return None
 
 
 @dataclass(frozen=True)
@@ -127,6 +139,49 @@ def run_guest_argv(
     )
 
 
+def run_guest_shell_argv(
+    launcher: str,
+    prefix: str | Path,
+    guest_argv: Sequence[str],
+    *,
+    cwd: Path,
+    env: dict[str, str] | None,
+    timeout_seconds: int,
+    stdout=None,
+    stderr=None,
+    capture_output: bool = False,
+    command_prefix: Sequence[str] = (),
+    heartbeat_seconds: float | None = None,
+    heartbeat: Callable[[float], None] | None = None,
+    output_line: Callable[[str, str], None] | None = None,
+) -> ProcessResult:
+    """Run an argv vector through the guest shell with shell-safe quoting.
+
+    Darling's ``exec`` action resolves its input with the host ``realpath``
+    call. Guest-only paths such as ``/usr/bin/installer`` therefore belong in
+    the guest shell path, where the union filesystem resolves them correctly.
+    """
+
+    if not guest_argv:
+        raise ValueError("guest command needs an executable")
+    script = "exec " + " ".join(quote(argument) for argument in guest_argv)
+    return run_guest_shell(
+        launcher,
+        prefix,
+        script,
+        cwd=cwd,
+        env=env,
+        timeout_seconds=timeout_seconds,
+        stdout=stdout,
+        stderr=stderr,
+        capture_output=capture_output,
+        command_prefix=command_prefix,
+        heartbeat_seconds=heartbeat_seconds,
+        heartbeat=heartbeat,
+        output_line=output_line,
+    )
+
+
 def run_guest_shell(
     launcher: str,
     prefix: str | Path,
@@ -181,8 +236,8 @@ def shutdown_guest_prefix(
         cwd=cwd,
         env=shutdown_env,
         timeout_seconds=timeout_seconds,
-        stdout=subprocess.DEVNULL,
-        stderr=subprocess.DEVNULL,
+        text=True,
+        capture_output=True,
     )
 
 

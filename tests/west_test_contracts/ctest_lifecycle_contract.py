@@ -28,6 +28,7 @@ sys.modules.setdefault("west", west_module)
 sys.modules.setdefault("west.commands", west_commands_module)
 
 import west_commands.test as test_module
+import test_bootstrap as bootstrap_module
 from west_commands.test import DarlingTest
 from west_commands.test_execution import ProcessResult
 
@@ -151,7 +152,7 @@ with tempfile.TemporaryDirectory() as temp:
         'sendmsg(7, {msg_name={sa_family=AF_UNIX}}, 0) = 20\n'
         'recvmsg(7, {msg_namelen=0}, MSG_DONTWAIT) = -1 EAGAIN (Resource temporarily unavailable)\n'
     )
-    summary = test_module.bootstrap_syscall_stall_summary(trace_dir)
+    summary = bootstrap_module.bootstrap_syscall_stall_summary(trace_dir)
     assert summary == (
         "shellspawn[101]: polling empty RPC receive without a request | "
         "darling[102]: waiting for a socket event | "
@@ -407,6 +408,8 @@ with tempfile.TemporaryDirectory() as temp:
     root = Path(temp)
     prefix = root / "prefix"
     prefix.mkdir()
+    (prefix / "bin").mkdir()
+    (prefix / "bin" / "darling").write_text("launcher\n")
     test = DarlingTest.__new__(DarlingTest)
     test.topdir = str(root)
     test._prefix = str(prefix)
@@ -418,7 +421,9 @@ with tempfile.TemporaryDirectory() as temp:
     test._ctest_runtime_profile_definitions = lambda: {
         "homebrew-prefix-baseline": {
             "purpose": "prefix-baseline",
+            "source-profile": "homebrew",
             "bootstrap-smoke-timeout-seconds": 60,
+            "guest-toolchain": "darling-command-line-tools",
         }
     }
     events = []
@@ -431,10 +436,13 @@ with tempfile.TemporaryDirectory() as temp:
         events.append("cleanup")
 
     @contextmanager
-    def deployment_context(profiles, *, label_prefix, retain_deployment):
+    def deployment_context(
+        profiles, *, label_prefix, retain_deployment, provision_guest_toolchain
+    ):
         assert profiles == ["homebrew-prefix-baseline"], profiles
         assert label_prefix == "Prefix bootstrap", label_prefix
         assert retain_deployment is True
+        assert provision_guest_toolchain is False
         events.append("deploy")
         yield types.SimpleNamespace(
             prefix=prefix,
@@ -445,12 +453,9 @@ with tempfile.TemporaryDirectory() as temp:
 
     test._prefix_resource_context = prefix_context
     test._runtime_profile_deployment_context = deployment_context
-    original_repair = test_module.repair_prefix_boot_prerequisites
-    test_module.repair_prefix_boot_prerequisites = lambda _prefix: (
-        events.append("provision") or types.SimpleNamespace(success=True, changed=[], problems=[])
-    )
-    original_run_guest_shell = test_module.run_guest_shell
-    original_run_bounded = test_module.run_bounded
+    test._ensure_guest_toolchain = lambda *_args: events.append("toolchain")
+    original_run_guest_shell = bootstrap_module.run_guest_shell
+    original_run_bounded = bootstrap_module.run_bounded
     def successful_smoke(*_args, **kwargs):
         events.append("smoke")
         assert kwargs["heartbeat_seconds"] == 30, kwargs
@@ -458,15 +463,21 @@ with tempfile.TemporaryDirectory() as temp:
         kwargs["heartbeat"](30)
         return ProcessResult(0, stdout="WEST_PREFIX_BOOTSTRAP_OK\n", stderr="")
 
-    test_module.run_guest_shell = successful_smoke
-    test_module.run_bounded = lambda *_args, **_kwargs: ProcessResult(0)
+    bootstrap_module.run_guest_shell = successful_smoke
+    bootstrap_module.run_bounded = lambda *_args, **_kwargs: ProcessResult(0)
     try:
         test._bootstrap_runtime_profile("homebrew-prefix-baseline")
     finally:
-        test_module.repair_prefix_boot_prerequisites = original_repair
-        test_module.run_guest_shell = original_run_guest_shell
-        test_module.run_bounded = original_run_bounded
-    assert events == ["lock", "deploy", "provision", "smoke", "retain", "cleanup"], events
+        bootstrap_module.run_guest_shell = original_run_guest_shell
+        bootstrap_module.run_bounded = original_run_bounded
+    assert events == [
+        "lock",
+        "deploy",
+        "smoke",
+        "toolchain",
+        "retain",
+        "cleanup",
+    ], events
     assert "prefix bootstrap guest stderr: guest output" in bootstrap_messages
     assert "prefix bootstrap phase start: guest login shell (timeout 60s)" in bootstrap_messages
     assert "prefix bootstrap heartbeat: guest login shell still running (30s)" in bootstrap_messages
@@ -502,6 +513,7 @@ with tempfile.TemporaryDirectory() as temp:
     test._ctest_runtime_profile_definitions = lambda: {
         "homebrew-prefix-baseline": {
             "purpose": "prefix-baseline",
+            "source-profile": "homebrew",
             "bootstrap-smoke-timeout-seconds": 60,
         }
     }
@@ -513,7 +525,9 @@ with tempfile.TemporaryDirectory() as temp:
     deployment_env = {"DARLING_LAUNCHER": "/fake/darling"}
 
     @contextmanager
-    def deployment_context(_profiles, *, label_prefix, retain_deployment):
+    def deployment_context(
+        _profiles, *, label_prefix, retain_deployment, provision_guest_toolchain
+    ):
         assert label_prefix == "Prefix bootstrap"
         assert retain_deployment is True
         yield types.SimpleNamespace(
@@ -525,8 +539,9 @@ with tempfile.TemporaryDirectory() as temp:
     observed_prefixes = []
     test._prefix_resource_context = prefix_context
     test._runtime_profile_deployment_context = deployment_context
-    original_run_guest_shell = test_module.run_guest_shell
-    original_run_bounded = test_module.run_bounded
+    original_run_guest_shell = bootstrap_module.run_guest_shell
+    original_run_bounded = bootstrap_module.run_bounded
+    original_facade_run_bounded = test_module.run_bounded
     def timed_out_guest(*_args, **kwargs):
         observed_prefixes.append(kwargs["command_prefix"])
         (trace_dir / "bootstrap.perf.data").write_text("perf data\n")
@@ -539,12 +554,13 @@ with tempfile.TemporaryDirectory() as temp:
         guest_fd_trace.write_text("launchd pid=2 shellspawn dispatch-start\n")
         return ProcessResult(124, timed_out=True, stdout="", stderr="")
 
-    test_module.run_guest_shell = timed_out_guest
+    bootstrap_module.run_guest_shell = timed_out_guest
     def completed_command(command, *_args, **_kwargs):
         if tuple(command[:2]) == ("perf", "script"):
             return ProcessResult(0, stdout="sampled stack\n", stderr="")
         return ProcessResult(0)
 
+    bootstrap_module.run_bounded = completed_command
     test_module.run_bounded = completed_command
     try:
         try:
@@ -555,8 +571,9 @@ with tempfile.TemporaryDirectory() as temp:
                 f"prefix bootstrap guest smoke timed out after 60s; stack sample: {trace_dir}"
             ), exc
     finally:
-        test_module.run_guest_shell = original_run_guest_shell
-        test_module.run_bounded = original_run_bounded
+        bootstrap_module.run_guest_shell = original_run_guest_shell
+        bootstrap_module.run_bounded = original_run_bounded
+        test_module.run_bounded = original_facade_run_bounded
     assert trace_dir.is_dir(), trace_dir
     assert observed_prefixes == [
         ("perf", "record", "--all-user", "--call-graph", "fp", "--output", str(trace_dir / "bootstrap.perf.data"), "--")
@@ -583,14 +600,6 @@ with tempfile.TemporaryDirectory() as temp:
     ], failure
     assert messages == [
         f"prefix bootstrap stack sample: {trace_dir}",
-        "prefix bootstrap provision: created private/var/tmp with mode 1777",
-        "prefix bootstrap provision: created libexec/darling/private/var/tmp with mode 1777",
-        "prefix bootstrap provision: created private/var/db with mode 755",
-        "prefix bootstrap provision: created private/var/db/launchd.db with mode 755",
-        "prefix bootstrap provision: created private/var/db/launchd.db/com.apple.launchd with mode 755",
-        "prefix bootstrap provision: created var with mode 755",
-        "prefix bootstrap provision: created var/run with mode 755",
-        "prefix bootstrap provision: created var/tmp with mode 755",
         "prefix bootstrap phase start: guest login shell (timeout 60s)",
         f"prefix bootstrap server trace: {trace_dir / 'darlingserver-rpc.log'}",
     ], messages
@@ -601,13 +610,15 @@ with tempfile.TemporaryDirectory() as temp:
     (trace_dir / "bootstrap.123").write_text(
         "12:00:00.000001 --- SIGSEGV {si_signo=SIGSEGV, si_code=SEGV_MAPERR, si_addr=0x18} ---\n"
     )
-    assert test_module.bootstrap_trace_fatal_signal(trace_dir) == "SIGSEGV at 0x18"
+    assert bootstrap_module.bootstrap_trace_fatal_signal(trace_dir) == "SIGSEGV at 0x18"
 
 
 with tempfile.TemporaryDirectory() as temp:
     root = Path(temp)
     prefix = root / "prefix"
     prefix.mkdir()
+    (prefix / "bin").mkdir()
+    (prefix / "bin" / "darling").write_text("launcher\n")
     test = DarlingTest.__new__(DarlingTest)
     test.topdir = str(root)
     test._prefix = str(prefix)
@@ -618,6 +629,7 @@ with tempfile.TemporaryDirectory() as temp:
     test._ctest_runtime_profile_definitions = lambda: {
         "homebrew-prefix-baseline": {
             "purpose": "prefix-baseline",
+            "source-profile": "homebrew",
             "bootstrap-smoke-timeout-seconds": 60,
         }
     }
@@ -628,7 +640,9 @@ with tempfile.TemporaryDirectory() as temp:
         yield
 
     @contextmanager
-    def deployment_context(_profiles, *, label_prefix, retain_deployment):
+    def deployment_context(
+        _profiles, *, label_prefix, retain_deployment, provision_guest_toolchain
+    ):
         assert label_prefix == "Prefix bootstrap"
         assert retain_deployment is True
         try:
@@ -642,12 +656,12 @@ with tempfile.TemporaryDirectory() as temp:
 
     test._prefix_resource_context = prefix_context
     test._runtime_profile_deployment_context = deployment_context
-    original_run_guest_shell = test_module.run_guest_shell
-    original_run_bounded = test_module.run_bounded
-    test_module.run_guest_shell = lambda *_args, **kwargs: ProcessResult(
+    original_run_guest_shell = bootstrap_module.run_guest_shell
+    original_run_bounded = bootstrap_module.run_bounded
+    bootstrap_module.run_guest_shell = lambda *_args, **kwargs: ProcessResult(
         0, stdout="wrong marker\n", stderr=""
     )
-    test_module.run_bounded = lambda *_args, **_kwargs: ProcessResult(0)
+    bootstrap_module.run_bounded = lambda *_args, **_kwargs: ProcessResult(0)
     try:
         try:
             test._bootstrap_runtime_profile("homebrew-prefix-baseline")
@@ -655,8 +669,8 @@ with tempfile.TemporaryDirectory() as temp:
         except SystemExit as exc:
             assert str(exc) == "prefix bootstrap guest smoke returned without its verdict marker", exc
     finally:
-        test_module.run_guest_shell = original_run_guest_shell
-        test_module.run_bounded = original_run_bounded
+        bootstrap_module.run_guest_shell = original_run_guest_shell
+        bootstrap_module.run_bounded = original_run_bounded
     assert restored == ["restored"], restored
 
 
@@ -664,6 +678,8 @@ with tempfile.TemporaryDirectory() as temp:
     root = Path(temp)
     prefix = root / "prefix"
     prefix.mkdir()
+    (prefix / "bin").mkdir()
+    (prefix / "bin" / "darling").write_text("launcher\n")
     test = DarlingTest.__new__(DarlingTest)
     test.topdir = str(root)
     test._prefix = str(prefix)
@@ -674,6 +690,7 @@ with tempfile.TemporaryDirectory() as temp:
     test._ctest_runtime_profile_definitions = lambda: {
         "homebrew-prefix-baseline": {
             "purpose": "prefix-baseline",
+            "source-profile": "homebrew",
             "bootstrap-smoke-timeout-seconds": 60,
         }
     }
@@ -683,7 +700,9 @@ with tempfile.TemporaryDirectory() as temp:
         yield
 
     @contextmanager
-    def deployment_context(_profiles, *, label_prefix, retain_deployment):
+    def deployment_context(
+        _profiles, *, label_prefix, retain_deployment, provision_guest_toolchain
+    ):
         assert label_prefix == "Prefix bootstrap"
         assert retain_deployment is True
         yield types.SimpleNamespace(
@@ -695,22 +714,22 @@ with tempfile.TemporaryDirectory() as temp:
     test._prefix_resource_context = prefix_context
     test._runtime_profile_deployment_context = deployment_context
     calls = []
-    original_run_guest_argv = test_module.run_guest_argv
-    original_run_bounded = test_module.run_bounded
+    original_run_guest_argv = bootstrap_module.run_guest_argv
+    original_run_bounded = bootstrap_module.run_bounded
 
     def successful_executable(*args, **kwargs):
         calls.append((args, kwargs))
         return ProcessResult(0, stdout="", stderr="")
 
-    test_module.run_guest_argv = successful_executable
-    test_module.run_bounded = lambda *_args, **_kwargs: ProcessResult(0)
+    bootstrap_module.run_guest_argv = successful_executable
+    bootstrap_module.run_bounded = lambda *_args, **_kwargs: ProcessResult(0)
     try:
         test._bootstrap_runtime_profile(
             "homebrew-prefix-baseline", executable="/usr/bin/true"
         )
     finally:
-        test_module.run_guest_argv = original_run_guest_argv
-        test_module.run_bounded = original_run_bounded
+        bootstrap_module.run_guest_argv = original_run_guest_argv
+        bootstrap_module.run_bounded = original_run_bounded
 
     assert calls and calls[0][0][2] == ("/usr/bin/true",), calls
 

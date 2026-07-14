@@ -11,12 +11,14 @@ import time
 from contextlib import contextmanager
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Callable, Iterable, Iterator
+from typing import Callable, Iterable, Iterator, Mapping
 
 try:
     from .test_guest_execution import shutdown_guest_prefix
+    from .test_execution import process_output_text
 except ImportError:
     from test_guest_execution import shutdown_guest_prefix
+    from test_execution import process_output_text
 
 ProcessEntry = tuple[int, int, str]
 
@@ -66,6 +68,7 @@ def rootless_prefix_process_snapshot(
     current_pid = os.getpid() if current_pid is None else current_pid
     prefix_marker = f"DARLING_PREFIX={prefix}".encode()
     rootless_marker = b"DARLING_ROOTLESS=1"
+    resolved_prefix = prefix.resolve(strict=False)
     entries: list[str] = []
     try:
         process_dirs = sorted(proc_root.iterdir(), key=lambda path: int(path.name) if path.name.isdigit() else -1)
@@ -81,7 +84,19 @@ def rootless_prefix_process_snapshot(
             environment = set((process_dir / "environ").read_bytes().split(b"\0"))
         except OSError:
             continue
-        if prefix_marker not in environment or rootless_marker not in environment:
+        if rootless_marker not in environment:
+            continue
+        owns_prefix = prefix_marker in environment
+        if not owns_prefix:
+            for proc_link in (process_dir / "cwd", process_dir / "exe"):
+                try:
+                    proc_target = proc_link.resolve(strict=False)
+                    proc_target.relative_to(resolved_prefix)
+                except (OSError, ValueError):
+                    continue
+                owns_prefix = True
+                break
+        if not owns_prefix:
             continue
         try:
             argv = [part.decode(errors="replace") for part in (process_dir / "cmdline").read_bytes().split(b"\0") if part]
@@ -335,25 +350,68 @@ class PrefixLifecycleOwner:
             self.err(message)
         return socket_cleanup.success
 
-    def shutdown(self, prefix: Path, *, keep_running: bool = False) -> bool:
+    def shutdown(
+        self,
+        prefix: Path,
+        *,
+        keep_running: bool = False,
+        extra_env: Mapping[str, str] | None = None,
+    ) -> bool:
         if keep_running:
             return True
+        shutdown_ok = True
         launcher = self.resolve_launcher(str(prefix))
         if launcher:
             env = os.environ.copy()
             env.update(self.prefix_env(prefix))
+            if extra_env:
+                env.update({str(key): str(value) for key, value in extra_env.items()})
             self.inf(f"shutdown Darling prefix: {prefix}")
             timeout_seconds = int(os.environ.get("WEST_TEST_SHUTDOWN_TIMEOUT_SECONDS", "15"))
-            result = shutdown_guest_prefix(
-                launcher,
-                prefix,
-                cwd=Path.cwd(),
-                env=env,
-                timeout_seconds=timeout_seconds,
-            )
-            if result.timed_out:
-                self.err(f"Darling prefix shutdown timed out for {prefix}; forcing cleanup")
-        return self.finalize(prefix)
+            try:
+                attempts = max(1, int(os.environ.get("WEST_TEST_SHUTDOWN_ATTEMPTS", "2")))
+            except ValueError:
+                attempts = 2
+            for attempt in range(1, attempts + 1):
+                result = shutdown_guest_prefix(
+                    launcher,
+                    prefix,
+                    cwd=Path.cwd(),
+                    env=env,
+                    timeout_seconds=timeout_seconds,
+                )
+                if result.returncode == 0 and not result.timed_out:
+                    shutdown_ok = True
+                    break
+                detail = process_output_text(result).strip()
+                if (
+                    result.returncode != 0
+                    and not result.timed_out
+                    and "Darling container is not running" in detail
+                ):
+                    self.inf(f"Darling prefix already stopped: {prefix}")
+                    shutdown_ok = True
+                    break
+                if result.timed_out:
+                    self.err(f"Darling prefix shutdown timed out for {prefix}; forcing cleanup")
+                else:
+                    self.err(
+                        f"Darling prefix shutdown failed for {prefix} with rc {result.returncode}"
+                    )
+                if detail:
+                    self.err(f"Darling prefix shutdown output: {detail[-4096:]}")
+                shutdown_ok = False
+                if result.timed_out or attempt == attempts:
+                    break
+                self.inf(
+                    f"retry Darling prefix shutdown for {prefix} "
+                    f"({attempt + 1}/{attempts})"
+                )
+                time.sleep(1)
+        # Always run the host-side cleanup oracle. A failed launcher shutdown
+        # remains a failure, but skipping cleanup would leave diagnostics dirty.
+        final_ok = self.finalize(prefix)
+        return shutdown_ok and final_ok
 
     @contextmanager
     def locked(self, prefix: Path) -> Iterator[None]:

@@ -100,6 +100,7 @@ with tempfile.TemporaryDirectory() as temp:
         "source-modules": ["darling"],
         "runtime-artifacts": [],
         "cmake-defines": {"DARLING_GUEST_RECVSPIN": "0"},
+        "launcher-env": {"DARLING_ROOTLESS": "1"},
         "bad-profile": "current-minus-patch",
         "source-revision": "old-runtime-commit",
         "current-minus-skip-patches": ["darling/downstream.patch"],

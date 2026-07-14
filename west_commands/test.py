@@ -65,6 +65,7 @@ from test_cmake import archive_git_tree_to, archive_source_to, run_darling_cmake
 from test_execution import process_output_text, run_bounded
 from fresh_prefix import create_fresh_prefix, remove_fresh_prefix
 from test_guest_execution import (
+    failure_phase_from_output,
     resolve_guest_execution,
     run_guest_argv,
     run_guest_argv_fixture,
@@ -76,11 +77,12 @@ from guest_toolchain import (
     COMMAND_LINE_TOOLS_RESOURCE,
     ensure_command_line_tools,
     GuestToolchainError,
+    require_guest_toolchain_provisioning_allowed,
 )
 try:
-    from .test_guest_c import run_guest_c_fixture
+    from .test_guest_c import failure_phase_from_debug_bundle, run_guest_c_fixture
 except ImportError:  # Loaded as a West extension module, not a package.
-    from test_guest_c import run_guest_c_fixture
+    from test_guest_c import failure_phase_from_debug_bundle, run_guest_c_fixture
 from test_manifest import ManifestError, load_test_profile
 from test_prefix import (
     cleanup_rootless_runtime_sockets,
@@ -97,6 +99,7 @@ from test_results import InvocationResult, RuntimeBuildFailure, RuntimeRedProven
 from test_runtime_build import RuntimeBuildService
 from test_runtime_evidence import RuntimeEvidenceStore
 from test_runtime_source import RuntimeSourceMaterializer
+from test_runtime_identity import runtime_identity
 from test_selection import select_metadata_tests
 from test_runtime import (
     compose_ctest_runtime_profiles,
@@ -110,110 +113,17 @@ from test_runtime import (
     ROOTLESS_BOOTSTRAP_RESOURCE,
 )
 from test_worktrees import prune_stale_west_temp_worktrees
-
-
-_BOOTSTRAP_FATAL_SIGNAL = re.compile(
-    r"--- (?P<signal>SIG(?:SEGV|BUS|ILL|ABRT)) \{(?P<details>[^}]*)\} ---"
+from test_bootstrap import (
+    BootstrapRuntimeProfileMixin,
+    RuntimeProfileDeployment,
+    RuntimeProviderFailure,
+    RETAINED_RUNTIME_PROFILE_MARKER,
+    bootstrap_syscall_stall_summary,
+    bootstrap_trace_fatal_signal,
 )
-def bootstrap_trace_fatal_signal(trace_dir: Path) -> str | None:
-    """Return a guest fault recorded by an opt-in bootstrap strace, if any."""
-
-    for trace in sorted(trace_dir.glob("bootstrap*")):
-        if not trace.is_file():
-            continue
-        match = _BOOTSTRAP_FATAL_SIGNAL.search(trace.read_text(errors="replace"))
-        if match is None:
-            continue
-        fault = re.search(r"si_addr=([^, }]+)", match.group("details"))
-        location = f" at {fault.group(1)}" if fault is not None else ""
-        return f"{match.group('signal')}{location}"
-    return None
 
 
-def bootstrap_syscall_stall_summary(trace_dir: Path) -> str | None:
-    """Summarize observed terminal syscall states without inferring a lost RPC.
-
-    ``MSG_DONTWAIT`` naturally produces bursts of ``EAGAIN`` between a guest
-    request and its reply.  A trace tail alone cannot distinguish that normal
-    polling from a dropped reply, so report the ordering of the last request
-    and delivered reply instead of calling either case a spin.
-    """
-
-    states = []
-    for trace_path in sorted(trace_dir.glob("bootstrap.*")):
-        if not trace_path.is_file():
-            continue
-        try:
-            content = trace_path.read_text(errors="replace")
-        except OSError:
-            continue
-        exec_match = re.search(r'execve\("(?P<program>[^"]+)', content)
-        if exec_match is None:
-            continue
-        program = Path(exec_match.group("program")).name
-        lines = content.splitlines()
-        if lines and lines[-1].startswith("+++ exited with "):
-            continue
-        tail = lines[-128:]
-        has_empty_rpc_receive = any(
-            "recvmsg(" in line and "MSG_DONTWAIT" in line and "EAGAIN" in line
-            for line in tail
-        )
-        last_rpc_send = max(
-            (index for index, line in enumerate(lines) if "sendmsg(" in line),
-            default=-1,
-        )
-        last_delivered_reply = max(
-            (
-                index
-                for index, line in enumerate(lines)
-                if "recvmsg(" in line
-                and "MSG_DONTWAIT" in line
-                and "EAGAIN" not in line
-                and " = " in line
-            ),
-            default=-1,
-        )
-        if has_empty_rpc_receive:
-            if last_rpc_send > last_delivered_reply:
-                state = "awaiting reply to most recent RPC"
-            elif last_delivered_reply >= 0:
-                state = "polling after a delivered RPC reply"
-            else:
-                state = "polling empty RPC receive without a request"
-        elif any("sched_yield(" in line for line in tail):
-            state = "spinning while waiting for a thread checkin"
-        elif any("epoll_wait(" in line for line in tail):
-            state = "waiting for an epoll event"
-        elif any("poll(" in line and ", -1" in line for line in tail):
-            state = "waiting for a socket event"
-        else:
-            continue
-        pid = trace_path.name.removeprefix("bootstrap.")
-        states.append(f"{program}[{pid}]: {state}")
-    return " | ".join(states[:8]) if states else None
-
-
-class RuntimeProfileDeployment:
-    """One materialized runtime provider currently deployed under a prefix."""
-
-    def __init__(
-        self,
-        *,
-        name: str,
-        prefix: Path,
-        build_root: Path,
-        env: dict[str, str],
-        diagnostic_trace_paths: tuple[Path, ...] = (),
-    ):
-        self.name = name
-        self.prefix = prefix
-        self.build_root = build_root
-        self.env = env
-        self.diagnostic_trace_paths = diagnostic_trace_paths
-
-
-class DarlingTest(WestCommand):
+class DarlingTest(BootstrapRuntimeProfileMixin, WestCommand):
     def __init__(self):
         super().__init__(
             "test",
@@ -306,6 +216,11 @@ class DarlingTest(WestCommand):
             help="with --prefix, --prefix-profile, or DPREFIX: build and retain one declared runtime provider as the selected prefix baseline, then prove it with a bounded guest smoke",
         )
         parser.add_argument(
+            "--reuse-prefix-runtime",
+            action="store_true",
+            help="with --profile and --prefix, run metadata guest tests against the provider retained by an earlier bootstrap",
+        )
+        parser.add_argument(
             "--bootstrap-syscall-trace",
             metavar="DIR",
             help="save strace -ff output for a bounded runtime bootstrap in DIR",
@@ -389,6 +304,11 @@ class DarlingTest(WestCommand):
             "--gc",
             action="store_true",
             help="prune old debug bundles (keep-last + size cap) and exit",
+        )
+        parser.add_argument(
+            "--cleanup-prefix",
+            action="store_true",
+            help="shutdown and verify one prefix, then exit without running tests",
         )
         parser.add_argument(
             "--keep-last",
@@ -709,22 +629,46 @@ class DarlingTest(WestCommand):
             self._prefix_env["DARLING_NOOVERLAYFS"] = "1"
         if args.prefix and args.prefix_profile:
             self.die("--prefix and --prefix-profile are mutually exclusive")
+        prefix = None
         if args.prefix:
             prefix = args.prefix
             if prefix.startswith("existing:"):
                 prefix = prefix.removeprefix("existing:")
-            return str(Path(prefix).expanduser())
-        if args.prefix_profile:
+        elif args.prefix_profile:
             profiles = {
                 "homebrew": "~/work/darling-prefix-homebrew-test",
                 "smoke": "~/work/darling-prefix-smoke",
             }
             if args.prefix_profile == "homebrew":
                 self._prefix_env["DARLING_NOOVERLAYFS"] = "1"
-            return str(Path(profiles.get(args.prefix_profile, args.prefix_profile)).expanduser())
-        if os.environ.get("DPREFIX"):
-            return os.environ["DPREFIX"]
-        return None
+            prefix = profiles.get(args.prefix_profile, args.prefix_profile)
+        elif os.environ.get("DPREFIX"):
+            prefix = os.environ["DPREFIX"]
+        if prefix is None:
+            return None
+        resolved = str(Path(prefix).expanduser())
+        self._load_retained_prefix_env(Path(resolved))
+        return resolved
+
+    def _load_retained_prefix_env(self, prefix: Path) -> None:
+        """Restore provider flags before a separate process resets a prefix."""
+
+        marker_path = prefix / RETAINED_RUNTIME_PROFILE_MARKER
+        try:
+            marker = json.loads(marker_path.read_text())
+        except (OSError, json.JSONDecodeError):
+            return
+        if not isinstance(marker, dict) or marker.get("schema") != 2:
+            return
+        profile_name = marker.get("profile")
+        if not isinstance(profile_name, str) or not profile_name:
+            return
+        definition = self._ctest_runtime_profile_definitions().get(profile_name)
+        if definition is None or marker.get("source-profile") != definition.get("source-profile"):
+            return
+        self._prefix_env.update(
+            {key: str(value) for key, value in definition.get("launcher-env", {}).items()}
+        )
 
     def _resolve_darling_launcher(self, prefix: str | None) -> str | None:
         if prefix:
@@ -1605,6 +1549,9 @@ class DarlingTest(WestCommand):
                         with self._ctest_source_override_context(runtime_invocation) as run_invocation:
                             with self._resource_context(run_invocation, exec_env) as resource_env:
                                 result_rc = self._run_invocation(run_invocation, env=resource_env)
+                    if result_rc == 0 and test.get("verify-clean-shutdown"):
+                        if not self._verify_prefix_idle():
+                            result_rc = 1
             if result_rc:
                 rc = result_rc
         return rc
@@ -1618,6 +1565,15 @@ class DarlingTest(WestCommand):
             if resources & {"darling-prefix", "darling-eunion-prefix"}:
                 return True
         return False
+
+    def _verify_prefix_idle(self) -> bool:
+        """Run the host-side idle oracle after a guest test claims shutdown."""
+
+        prefix = getattr(self, "_prefix", None)
+        if not prefix:
+            self.err("clean-shutdown verification needs a selected Darling prefix")
+            return False
+        return self._prefix_lifecycle_owner().finalize(Path(prefix))
 
     def _prune_stale_west_temp_worktrees(self) -> None:
         projects = getattr(self.manifest, "projects", [])
@@ -1827,6 +1783,14 @@ class DarlingTest(WestCommand):
         if not profile_name:
             yield None
             return
+        if getattr(self, "_reuse_prefix_runtime", False):
+            if omit_patch:
+                self.die(
+                    "--reuse-prefix-runtime cannot be used for RED proofs; "
+                    "RED requires an isolated runtime deployment"
+                )
+            yield self._retained_runtime_profile(profile_name)
+            return
         label = f"metadata {patch['path']}:{test.get('name', patch['path'])}"
         deployment_args = {
             "label_prefix": label,
@@ -1841,6 +1805,67 @@ class DarlingTest(WestCommand):
             **deployment_args,
         ) as deployment:
             yield deployment
+
+    def _retained_runtime_profile(self, profile_name: str) -> RuntimeProfileDeployment:
+        """Use a provider retained by ``--bootstrap-runtime-profile``.
+
+        The marker is an identity check, not a source snapshot. It prevents a
+        follow-up metadata run from silently using a prefix provisioned for a
+        different runtime profile.
+        """
+
+        prefix_text = getattr(self, "_prefix", None)
+        if not prefix_text:
+            self.die("--reuse-prefix-runtime requires --prefix or DPREFIX")
+        prefix = Path(prefix_text)
+        marker_path = prefix / RETAINED_RUNTIME_PROFILE_MARKER
+        try:
+            marker = json.loads(marker_path.read_text())
+        except (OSError, json.JSONDecodeError) as error:
+            self.die(
+                "--reuse-prefix-runtime needs a retained provider marker at "
+                f"{marker_path}: {error}; run --bootstrap-runtime-profile first"
+            )
+        definition = self._ctest_runtime_profile_definitions().get(profile_name)
+        if definition is None:
+            self.die(f"unknown retained runtime profile: {profile_name}")
+        launcher = prefix / "bin" / "darling"
+        if not launcher.is_file():
+            self.die(
+                "--reuse-prefix-runtime retained prefix has no launcher: "
+                f"{launcher}"
+            )
+        expected_fingerprint = runtime_identity(
+            topdir=Path(self.topdir),
+            profile_name=profile_name,
+            definition=definition,
+            launcher=launcher,
+        )
+        if (
+            not isinstance(marker, dict)
+            or marker.get("schema") != 2
+            or marker.get("profile") != profile_name
+            or marker.get("source-profile") != definition.get("source-profile")
+            or marker.get("fingerprint") != expected_fingerprint
+        ):
+            actual = marker.get("profile") if isinstance(marker, dict) else None
+            self.die(
+                "--reuse-prefix-runtime retained provider fingerprint mismatch: selected "
+                f"{profile_name!r}, retained {actual!r}; bootstrap the selected profile again"
+            )
+        runtime_env = os.environ.copy()
+        runtime_env.update(self._darling_prefix_env(prefix))
+        runtime_env.update(
+            {key: str(value) for key, value in definition.get("launcher-env", {}).items()}
+        )
+        runtime_env["DARLING"] = str(launcher)
+        runtime_env["DARLING_LAUNCHER"] = str(launcher)
+        return RuntimeProfileDeployment(
+            name=profile_name,
+            prefix=prefix,
+            build_root=prefix,
+            env=runtime_env,
+        )
 
     @staticmethod
     def _with_runtime_diagnostics(invocation, deployment):
@@ -1874,6 +1899,7 @@ class DarlingTest(WestCommand):
         *,
         label_prefix: str,
         retain_deployment: bool,
+        provision_guest_toolchain: bool = True,
         patch=None,
         omit_patch=False,
         red_proof=None,
@@ -1921,6 +1947,7 @@ class DarlingTest(WestCommand):
             key: str(value)
             for key, value in definition.get("launcher-env", {}).items()
         }
+        proof["launcher-env"] = launcher_env
         if omit_patch and patch is None:
             self.die(f"{label_prefix} runtime profile cannot omit a patch without patch metadata")
         anchor = patch or {
@@ -1976,10 +2003,32 @@ class DarlingTest(WestCommand):
                             f"a launcher at {runtime_launcher}"
                         )
                     guest_toolchain = definition.get("guest-toolchain")
-                    if guest_toolchain == COMMAND_LINE_TOOLS_RESOURCE:
-                        self._ensure_guest_toolchain(
-                            Path(prefix_text), runtime_launcher, runtime_env
-                        )
+                    if (
+                        provision_guest_toolchain
+                        and guest_toolchain == COMMAND_LINE_TOOLS_RESOURCE
+                    ):
+                        try:
+                            require_guest_toolchain_provisioning_allowed()
+                        except GuestToolchainError as error:
+                            self.die(f"{label_prefix}: {error}")
+                        try:
+                            self._ensure_guest_toolchain(
+                                Path(prefix_text), runtime_launcher, runtime_env
+                            )
+                        except GuestToolchainError as error:
+                            if (
+                                omit_patch
+                                and isinstance(red_proof, dict)
+                                and red_proof.get("provider-under-test") is True
+                                and error.kind == "install"
+                            ):
+                                raise RuntimeProviderFailure(
+                                    str(error), kind=error.kind
+                                ) from error
+                            self.die(
+                                f"guest toolchain {COMMAND_LINE_TOOLS_RESOURCE} failed: "
+                                f"{error}"
+                            )
                     runtime_env["DARLING"] = str(runtime_launcher)
                     runtime_env["DARLING_LAUNCHER"] = str(runtime_launcher)
                     if definition.get("bootstrap") == "rootless-no-mount":
@@ -2018,19 +2067,16 @@ class DarlingTest(WestCommand):
         toolchain_env.update(self._darling_prefix_env(prefix))
         toolchain_env["DARLING"] = str(launcher)
         toolchain_env["DARLING_LAUNCHER"] = str(launcher)
-        try:
-            changed = ensure_command_line_tools(
-                prefix=prefix,
-                launcher=str(launcher),
-                cwd=Path(self.topdir),
-                env=toolchain_env,
-                timeout_seconds=int(
-                    os.environ.get("WEST_GUEST_TOOLCHAIN_TIMEOUT_SECONDS", "900")
-                ),
-                log=self.inf,
-            )
-        except GuestToolchainError as error:
-            self.die(f"guest toolchain {COMMAND_LINE_TOOLS_RESOURCE} failed: {error}")
+        changed = ensure_command_line_tools(
+            prefix=prefix,
+            launcher=str(launcher),
+            cwd=Path(self.topdir),
+            env=toolchain_env,
+            timeout_seconds=int(
+                os.environ.get("WEST_GUEST_TOOLCHAIN_TIMEOUT_SECONDS", "900")
+            ),
+            log=self.inf,
+        )
         for item in changed:
             self.inf(f"guest toolchain: {item}")
 
@@ -2134,6 +2180,8 @@ class DarlingTest(WestCommand):
             return invocation["display"]
         if invocation.get("guest_argv_fixture"):
             return invocation["display"]
+        if invocation.get("guest_command_fixture"):
+            return invocation["display"]
         if invocation.get("diag", "bare") == "bare":
             return invocation["display"]
         if invocation.get("guest_c_fixture"):
@@ -2222,6 +2270,7 @@ class DarlingTest(WestCommand):
         """Run an invocation and return its output and structured failure phase."""
         prior_phase = getattr(self, "_failure_phase", None)
         self._failure_phase = None
+        started_at = time.time()
         with tempfile.TemporaryFile(mode="w+", encoding="utf-8", errors="replace") as output:
             stdout_fd = os.dup(1)
             stderr_fd = os.dup(2)
@@ -2240,6 +2289,21 @@ class DarlingTest(WestCommand):
                 os.close(stderr_fd)
             output.seek(0)
             result = InvocationResult(rc, output.read(), self._failure_phase)
+            derived_phase = failure_phase_from_output(result.output)
+            if (
+                result.returncode
+                and derived_phase is not None
+                and result.failure_phase in {None, "script"}
+            ):
+                result.failure_phase = derived_phase
+            if result.returncode and result.failure_phase in {None, "script"}:
+                bundle = self._latest_debug_bundle(invocation, since=started_at)
+                if bundle is not None:
+                    bundle_phase = failure_phase_from_debug_bundle(
+                        f"BUNDLE={bundle}\n"
+                    )
+                    if bundle_phase is not None:
+                        result.failure_phase = bundle_phase
         self._failure_phase = prior_phase
         return result
 
@@ -2844,7 +2908,6 @@ class DarlingTest(WestCommand):
                     "prefix/bin/darling, or ~/work/darling-prefix/bin/darling)"
                 )
             if prefix:
-                missing.extend(self._prefix_boot_prerequisite_problems(Path(prefix)))
                 if invocation.get("guest_c_fixture"):
                     missing.extend(
                         self._guest_c_fixture_prerequisite_problems(
@@ -3818,6 +3881,7 @@ class DarlingTest(WestCommand):
         *,
         label: str = "RED",
         restore_deployment: bool = True,
+        lifecycle_env: dict[str, str] | None = None,
     ):
         with RuntimeDeploymentService(self).deployed(
             proof,
@@ -3825,236 +3889,9 @@ class DarlingTest(WestCommand):
             prefix,
             label=label,
             restore_deployment=restore_deployment,
+            lifecycle_env=lifecycle_env,
         ):
             yield
-
-    def _bootstrap_runtime_profile(
-        self, profile_name: str, *, executable: str | None = None
-    ) -> None:
-        """Retain one declared runtime provider only after a real guest smoke."""
-
-        prefix_text = getattr(self, "_prefix", None)
-        if not prefix_text:
-            self.die(
-                "--bootstrap-runtime-profile requires --prefix, --prefix-profile, or DPREFIX "
-                "(for example: --prefix-profile homebrew)"
-            )
-        if not profile_name:
-            self.die("--bootstrap-runtime-profile needs a runtime provider name")
-        definition = self._ctest_runtime_profile_definitions().get(profile_name)
-        if definition is None:
-            self.die(f"unknown prefix baseline runtime profile: {profile_name}")
-        if definition.get("purpose") != "prefix-baseline":
-            self.die(
-                f"runtime profile {profile_name} is not a prefix-baseline; "
-                "bootstrap only accepts declared rootless baselines"
-            )
-        smoke_timeout_seconds = (
-            getattr(self, "_bootstrap_timeout_seconds", None)
-            or definition["bootstrap-smoke-timeout-seconds"]
-        )
-        trace_dir = getattr(self, "_bootstrap_syscall_trace", None)
-        stack_sample_dir = getattr(self, "_bootstrap_stack_sample", None)
-        command_prefix: tuple[str, ...] = ()
-        if trace_dir is not None:
-            if shutil.which("strace") is None:
-                self.die("--bootstrap-syscall-trace requires strace on the host")
-            trace_dir = self._resolve_bootstrap_diagnostic_dir(trace_dir)
-            trace_dir.mkdir(parents=True, exist_ok=True)
-            command_prefix = (
-                "strace",
-                "-D",
-                "-ff",
-                "-i",
-                "-tt",
-                "-v",
-                "-s",
-                "160",
-                "-o",
-                str(trace_dir / "bootstrap"),
-            )
-            self.inf(f"prefix bootstrap syscall trace: {trace_dir}")
-        elif stack_sample_dir is not None:
-            command_prefix = self._bootstrap_stack_sample_command(
-                stack_sample_dir,
-                sample_name="bootstrap",
-                label="prefix bootstrap",
-            )
-        with self._prefix_resource_context(True):
-            with self._runtime_profile_deployment_context(
-                [profile_name], label_prefix="Prefix bootstrap", retain_deployment=True
-            ) as deployment:
-                provision = repair_prefix_boot_prerequisites(deployment.prefix)
-                if not provision.success:
-                    self.die(
-                        "prefix bootstrap prerequisite provisioning failed: "
-                        + "; ".join(provision.problems)
-                    )
-                for changed in provision.changed:
-                    self.inf(f"prefix bootstrap provision: {changed}")
-                doctor = run_bounded(
-                    [
-                        "west",
-                        "darling-doctor",
-                        "--prefix",
-                        str(deployment.prefix),
-                        "--build-dir",
-                        str(deployment.build_root),
-                        "--no-baseline-file",
-                    ],
-                    cwd=Path(self.topdir),
-                    env=None,
-                    timeout_seconds=60,
-                    capture_output=True,
-                )
-                doctor_output = process_output_text(doctor)
-                if doctor.timed_out:
-                    self.die("prefix bootstrap doctor timed out after 60s")
-                if doctor.returncode != 0:
-                    self.die(
-                        "prefix bootstrap doctor failed "
-                        f"with rc {doctor.returncode}: {doctor_output[-1000:]}"
-                    )
-                target = executable or "login shell"
-                self.inf(
-                    f"prefix bootstrap phase start: guest {target} "
-                    f"(timeout {smoke_timeout_seconds}s)"
-                )
-                if executable is None:
-                    result = run_guest_shell(
-                        deployment.env["DARLING_LAUNCHER"],
-                        prefix_text,
-                        "set -eu\nprintf '%s\\n' WEST_PREFIX_BOOTSTRAP_OK",
-                        cwd=Path(self.topdir),
-                        env=deployment.env,
-                        timeout_seconds=smoke_timeout_seconds,
-                        capture_output=True,
-                        command_prefix=command_prefix,
-                        heartbeat_seconds=30,
-                        heartbeat=lambda elapsed: self._emit_bootstrap_heartbeat(
-                            deployment.prefix, target, elapsed
-                        ),
-                        output_line=lambda stream, line: self.inf(
-                            f"prefix bootstrap guest {stream}: {line}"
-                        ),
-                    )
-                else:
-                    result = run_guest_argv(
-                        deployment.env["DARLING_LAUNCHER"],
-                        prefix_text,
-                        (executable,),
-                        cwd=Path(self.topdir),
-                        env=deployment.env,
-                        timeout_seconds=smoke_timeout_seconds,
-                        capture_output=True,
-                        command_prefix=command_prefix,
-                        heartbeat_seconds=30,
-                        heartbeat=lambda elapsed: self._emit_bootstrap_heartbeat(
-                            deployment.prefix, target, elapsed
-                        ),
-                        output_line=lambda stream, line: self.inf(
-                            f"prefix bootstrap guest {stream}: {line}"
-                        ),
-                    )
-                if stack_sample_dir is not None:
-                    self._render_bootstrap_stack_sample(
-                        stack_sample_dir,
-                        sample_name="bootstrap",
-                        label="prefix bootstrap",
-                    )
-                diagnostic_dir = trace_dir or stack_sample_dir
-                if diagnostic_dir is not None:
-                    self._capture_bootstrap_server_trace(
-                        deployment.prefix,
-                        diagnostic_dir,
-                        label="prefix bootstrap",
-                    )
-                output = process_output_text(result)
-                bootstrap_command = [
-                    deployment.env["DARLING_LAUNCHER"],
-                    "exec" if executable is not None else "shell",
-                    executable or "set -eu\nprintf '%s\\n' WEST_PREFIX_BOOTSTRAP_OK",
-                ]
-                bootstrap_artifacts = []
-                if diagnostic_dir is not None:
-                    bootstrap_artifacts = sorted(
-                        path for path in Path(diagnostic_dir).iterdir() if path.is_file()
-                    )
-                bootstrap_artifacts.extend(
-                    path
-                    for path in (
-                        deployment.prefix / ".west-rootless-boot.log",
-                        deployment.prefix / "private/var/tmp/.west-rootless-boot.log",
-                        deployment.prefix / ".west-rootless-guest-fd.log",
-                    )
-                    if path.is_file()
-                )
-
-                def record_bootstrap_failure(summary: str) -> None:
-                    evidence = getattr(self, "_active_runtime_evidence", None)
-                    if evidence is not None:
-                        diagnostic_output = output
-                        if getattr(evidence, "directory", None) is not None:
-                            diagnostic_output = (
-                                f"{output.rstrip()}\n\n" if output else ""
-                            ) + self._bootstrap_runtime_state(deployment.prefix)
-                        evidence.record_failure_detail(
-                            phase="bootstrap",
-                            summary=summary,
-                            returncode=result.returncode,
-                            command=bootstrap_command,
-                            output=diagnostic_output,
-                            artifacts=bootstrap_artifacts,
-                        )
-
-                trace_fault = (
-                    bootstrap_trace_fatal_signal(trace_dir)
-                    if trace_dir is not None
-                    else None
-                )
-                if trace_fault is not None:
-                    record_bootstrap_failure(
-                        f"prefix bootstrap guest smoke crashed before its verdict: {trace_fault}"
-                    )
-                    self.die(
-                        "prefix bootstrap guest smoke crashed before its verdict: "
-                        f"{trace_fault}; syscall trace: {trace_dir}"
-                    )
-                if result.timed_out:
-                    if trace_dir is not None:
-                        diagnostic_hint = f"; syscall trace: {trace_dir}"
-                    elif stack_sample_dir is not None:
-                        diagnostic_hint = f"; stack sample: {stack_sample_dir}"
-                    else:
-                        diagnostic_hint = ""
-                    stall = (
-                        bootstrap_syscall_stall_summary(trace_dir)
-                        if trace_dir is not None
-                        else None
-                    )
-                    stall_hint = f"; syscall state: {stall}" if stall is not None else ""
-                    record_bootstrap_failure(
-                        f"prefix bootstrap guest smoke timed out after {smoke_timeout_seconds}s"
-                    )
-                    self.die(
-                        "prefix bootstrap guest smoke timed out after "
-                        f"{smoke_timeout_seconds}s{diagnostic_hint}{stall_hint}"
-                    )
-                if result.returncode != 0:
-                    record_bootstrap_failure("prefix bootstrap guest smoke returned non-zero")
-                    self.die(
-                        "prefix bootstrap guest smoke failed "
-                        f"with rc {result.returncode}: {output[-1000:]}"
-                    )
-                if executable is None and "WEST_PREFIX_BOOTSTRAP_OK" not in output:
-                    record_bootstrap_failure(
-                        "prefix bootstrap guest smoke returned without its verdict marker"
-                    )
-                    self.die("prefix bootstrap guest smoke returned without its verdict marker")
-                self.inf(f"prefix bootstrap phase complete: guest {target}")
-                self.inf(
-                    f"prefix bootstrap passed for {prefix_text}: {profile_name} ({target})"
-                )
 
     def _emit_bootstrap_heartbeat(
         self, prefix: Path, target: str, elapsed: float
@@ -4068,8 +3905,11 @@ class DarlingTest(WestCommand):
         for line in self._bootstrap_runtime_state(prefix).splitlines():
             self.inf(f"  {line}")
 
-    def _shutdown_runtime_prefix(self, prefix: Path) -> bool:
-        return self._prefix_lifecycle_owner().shutdown(prefix)
+    def _shutdown_runtime_prefix(
+        self, prefix: Path, *, extra_env: dict[str, str] | None = None
+    ) -> bool:
+        self._load_retained_prefix_env(Path(prefix))
+        return self._prefix_lifecycle_owner().shutdown(prefix, extra_env=extra_env)
 
     def _finalize_prefix_shutdown(self, prefix: Path) -> bool:
         return self._prefix_lifecycle_owner().finalize(prefix)
@@ -4173,6 +4013,7 @@ class DarlingTest(WestCommand):
                         build_root,
                         prefix,
                         label="GREEN",
+                        lifecycle_env=resource_env,
                     ):
                         resource_env["WEST_RUNTIME_SOURCE_ROOT"] = str(source_root)
                         runtime_invocation = self._invocation_from_runtime_source(invocation, source_root)
@@ -4320,43 +4161,81 @@ class DarlingTest(WestCommand):
             oracle=RedOracle.from_manifest(proof),
             error=self.err,
         )
-        with self._metadata_runtime_profile_context(
-            patch, test, omit_patch=True, red_proof=proof
-        ) as deployment:
-            runtime_env = deployment.env if deployment is not None else None
-            runtime_invocation = self._with_runtime_diagnostics(
-                red_invocation, deployment
-            )
-            red_env = self._runtime_profile_execution_env(runtime_invocation, runtime_env)
-            with self._ctest_source_override_context(runtime_invocation) as run_invocation:
-                with self._resource_context(run_invocation, red_env) as resource_env:
-                    red_started_at = time.time()
-                    red_result = self._run_invocation_captured(
-                        run_invocation, env=resource_env
-                    )
-            observation_output = red_result.output
-            diagnostic_output = self._guest_runtime_red_output(
-                run_invocation,
-                since=red_started_at,
-                captured_output=red_result.output,
-            )
-            if diagnostic_output is None and machine.oracle.output_contains:
-                self.err(
-                    f"{run_invocation['name']}: RED domain output is unavailable"
+        original_prefix_text = getattr(self, "_prefix", None)
+        if proof.get("clean-prefix") is True and not original_prefix_text:
+            self.die(f"{patch['path']}: runtime-profile RED proof needs a prefix")
+        runtime_deployment = RuntimeDeploymentService(self)
+        isolated_prefix = None
+        cleanup_error = None
+        lifecycle_env = self._execution_env(red_invocation) or {}
+        try:
+            if proof.get("clean-prefix") is True:
+                isolated_prefix = runtime_deployment.create_empty_prefix(
+                    Path(original_prefix_text)
                 )
-                return 1
-            observation_output = diagnostic_output or observation_output
-            if not machine.validate_red(
-                ProofObservation(
+                self._prefix = str(isolated_prefix.prefix)
+            with self._metadata_runtime_profile_context(
+                patch, test, omit_patch=True, red_proof=proof
+            ) as deployment:
+                runtime_env = deployment.env if deployment is not None else None
+                runtime_invocation = self._with_runtime_diagnostics(
+                    red_invocation, deployment
+                )
+                red_env = self._runtime_profile_execution_env(
+                    runtime_invocation, runtime_env
+                )
+                with self._ctest_source_override_context(runtime_invocation) as run_invocation:
+                    with self._resource_context(run_invocation, red_env) as resource_env:
+                        red_started_at = time.time()
+                        red_result = self._run_invocation_captured(
+                            run_invocation, env=resource_env
+                        )
+                observation_output = red_result.output
+                diagnostic_output = self._guest_runtime_red_output(
+                    run_invocation,
+                    since=red_started_at,
+                    captured_output=red_result.output,
+                )
+                if diagnostic_output is None and machine.oracle.output_contains:
+                    self.err(
+                        f"{run_invocation['name']}: RED domain output is unavailable"
+                    )
+                    return 1
+                observation = ProofObservation(
                     red_result.returncode,
-                    observation_output,
+                    diagnostic_output or observation_output,
                     red_result.failure_phase,
                 )
-            ):
-                return 1
-            self.inf(
-                f"  RED runtime provider failed as expected (rc={red_result.returncode})"
-            )
+        except RuntimeProviderFailure as failure:
+            if proof.get("provider-under-test") is not True:
+                self.die(
+                    f"{patch['path']}: provider failure requires "
+                    "red-proof.provider-under-test: true"
+                )
+            if failure.kind in {"download", "cache", "setup"}:
+                self.die(
+                    f"{patch['path']}: provider RED cannot accept {failure.kind} failure: "
+                    f"{failure}"
+                )
+            observation = ProofObservation(1, str(failure), "provider")
+        finally:
+            if isolated_prefix is not None:
+                self._prefix = original_prefix_text
+                if not runtime_deployment.cleanup_empty_prefix(
+                    isolated_prefix, lifecycle_env=lifecycle_env
+                ):
+                    cleanup_error = RuntimeError(
+                        "guest-runtime-deploy isolated RED prefix cleanup failed"
+                    )
+
+        if cleanup_error is not None:
+            return 1
+
+        if not machine.validate_red(observation):
+            return 1
+        self.inf(
+            f"  RED runtime provider failed as expected (rc={observation.returncode})"
+        )
 
         def run_green() -> int:
             self.inf("  GREEN runtime provider")
@@ -4425,7 +4304,16 @@ class DarlingTest(WestCommand):
             },
         )
         evidence_failure = None
+        runtime_deployment = RuntimeDeploymentService(self)
+        original_prefix = prefix
+        original_prefix_text = self._prefix
+        isolated_prefix = None
+        lifecycle_env = self._execution_env(invocation) or {}
         try:
+            if proof.get("clean-prefix") is True:
+                isolated_prefix = runtime_deployment.create_empty_prefix(prefix)
+                prefix = isolated_prefix.prefix
+                self._prefix = str(prefix)
             scratch_root = evidence.directory
             with self._guest_runtime_source_forest(
                 patch,
@@ -4475,8 +4363,15 @@ class DarlingTest(WestCommand):
                     if prepare_rc != 0:
                         evidence.preserve(RuntimeError(f"RED guest fixture preparation returned {prepare_rc}"))
                         return prepare_rc
-                with self._runtime_red_deployed_artifacts(proof, build_root, prefix, label="RED"):
-                    red_invocation = self._guest_runtime_red_invocation(patch, proof, invocation)
+                red_invocation = self._guest_runtime_red_invocation(patch, proof, invocation)
+                lifecycle_env = self._execution_env(red_invocation) or {}
+                with self._runtime_red_deployed_artifacts(
+                    proof,
+                    build_root,
+                    prefix,
+                    label="RED",
+                    lifecycle_env=lifecycle_env,
+                ):
                     bad_env = self._execution_env(red_invocation)
                     if bad_env is None:
                         bad_env = os.environ.copy()
@@ -4518,6 +4413,19 @@ class DarlingTest(WestCommand):
             evidence_failure = error
             raise
         finally:
+            cleanup_error = None
+            if isolated_prefix is not None:
+                self._prefix = original_prefix_text
+                prefix = original_prefix
+                if not runtime_deployment.cleanup_empty_prefix(
+                    isolated_prefix, lifecycle_env=lifecycle_env
+                ):
+                    cleanup_error = RuntimeError(
+                        "guest-runtime-deploy isolated RED prefix cleanup failed"
+                    )
+            if cleanup_error is not None and evidence_failure is None:
+                evidence_failure = cleanup_error
+                raise cleanup_error
             retained = evidence_store.finish(evidence, evidence_failure)
             if retained is not None:
                 self.err(f"preserved failed RED runtime evidence: {retained}")
@@ -4785,6 +4693,7 @@ class DarlingTest(WestCommand):
         prefix = getattr(self, "_prefix", None)
         if not prefix:
             return True
+        self._load_retained_prefix_env(Path(prefix))
         return self._prefix_lifecycle_owner().shutdown(
             Path(prefix), keep_running=getattr(self, "_keep_prefix_running", False)
         )
@@ -5201,6 +5110,7 @@ class DarlingTest(WestCommand):
         ).expanduser()
         self._materialize_profile = args.materialize_profile
         self._keep_prefix_running = args.keep_prefix_running
+        self._reuse_prefix_runtime = bool(getattr(args, "reuse_prefix_runtime", False))
         self._bootstrap_syscall_trace = None
         self._bootstrap_stack_sample = None
         self._bootstrap_timeout_seconds = None
@@ -5259,6 +5169,23 @@ class DarlingTest(WestCommand):
         if evidence_id:
             self.die("--runtime-evidence-id requires --runtime-evidence show or replay")
 
+        if getattr(args, "cleanup_prefix", False):
+            incompatible = []
+            if args.profile or args.patch or args.env or args.label or args.changed:
+                incompatible.append("test selection")
+            if args.prove_red or args.red_only or args.red_audit or args.list:
+                incompatible.append("metadata/list mode")
+            if incompatible:
+                self.die(
+                    "--cleanup-prefix is a lifecycle operation; do not combine it with "
+                    + ", ".join(incompatible)
+                )
+            if not self._prefix:
+                self.die("--cleanup-prefix requires --prefix, --prefix-profile, or DPREFIX")
+            if not self._shutdown_test_prefix():
+                self.die(f"could not cleanly shutdown Darling prefix: {self._prefix}")
+            return
+
         if args.gc:
             self._gc_bundles(
                 Path(args.bundle_root), args.keep_last, args.max_bundle_mb,
@@ -5290,6 +5217,10 @@ class DarlingTest(WestCommand):
                 verb = "would prune" if args.dry_run else "pruned"
                 for entry in entries:
                     self.inf(f"{verb} runtime evidence: {entry}")
+                # Runtime evidence GC can remove the last directory reference
+                # to a source worktree. Prune its now-stale Git metadata too.
+                if not args.dry_run:
+                    self._prune_stale_west_temp_worktrees()
             return
 
         if getattr(args, "gc_runtime_evidence", False):
@@ -5327,6 +5258,7 @@ class DarlingTest(WestCommand):
         if args.profile and (args.fuzz or args.stress):
             self.die("--fuzz/--stress select CTest suite tests; use --patch/--profile for patch metadata")
         bootstrap_runtime_profile = getattr(args, "bootstrap_runtime_profile", None)
+        reuse_prefix_runtime = bool(getattr(args, "reuse_prefix_runtime", False))
         bootstrap_executable = getattr(args, "bootstrap_executable", None)
         bootstrap_syscall_trace = getattr(args, "bootstrap_syscall_trace", None)
         bootstrap_stack_sample = getattr(args, "bootstrap_stack_sample", None)
@@ -5350,7 +5282,7 @@ class DarlingTest(WestCommand):
                 incompatible.append("patch metadata selection")
             if args.changed or args.bead or args.submodule or args.label or args.fuzz or args.stress:
                 incompatible.append("CTest selection")
-            if args.list or args.with_runtime_profile or unknown:
+            if args.list or args.with_runtime_profile or reuse_prefix_runtime or unknown:
                 incompatible.append("CTest execution options")
             if incompatible:
                 self.die(
@@ -5373,6 +5305,13 @@ class DarlingTest(WestCommand):
                 self._bootstrap_stack_sample = None
                 self._bootstrap_timeout_seconds = None
                 self._runtime_build_timeout_seconds = None
+
+        if reuse_prefix_runtime and not args.profile:
+            self.die("--reuse-prefix-runtime requires --profile metadata selection")
+        if reuse_prefix_runtime and (args.prove_red or args.red_only or args.red_audit):
+            self.die(
+                "--reuse-prefix-runtime cannot be combined with RED or red-audit modes"
+            )
 
         if bootstrap_executable:
             self.die("--bootstrap-executable requires --bootstrap-runtime-profile")

@@ -2,19 +2,22 @@
 
 from __future__ import annotations
 
+import shutil
 import subprocess
 import tempfile
 import time
 from contextlib import contextmanager
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Iterator
 
 from deploy_transaction import DeploymentTransaction, DeploymentTransactionError
 from test_runtime import (
     ROOTLESS_BOOTSTRAP_RESOURCE,
+    ROOTLESS_TOOLCHAIN_RESOURCE,
     is_fat_macho_binary,
     is_macho_binary,
-    load_rootless_bootstrap_manifest,
+    load_runtime_component_manifest,
     parse_macho_dylib_dependencies,
     parse_macho_dylib_id,
     resolve_macho_runtime_closure,
@@ -23,11 +26,89 @@ from test_runtime import (
 )
 
 
+@dataclass(frozen=True)
+class IsolatedEmptyPrefix:
+    """A disposable empty prefix owned by one runtime proof."""
+
+    root: Path
+    prefix: Path
+
+
 class RuntimeDeploymentService:
     """Own closure resolution, atomic deployment, and rollback."""
 
     def __init__(self, host: Any):
         self._host = host
+
+    def create_empty_prefix(self, requested_prefix: Path) -> IsolatedEmptyPrefix:
+        """Create a clean prefix beside, rather than inside, the selected prefix.
+
+        RED proofs must not mutate a retained provider prefix.  The temporary
+        root is created by ``mkdtemp`` and is the only path this service later
+        removes, so a metadata value cannot turn cleanup into arbitrary
+        recursive deletion.
+        """
+
+        requested = requested_prefix.expanduser()
+        if requested.is_symlink():
+            self._host.die(
+                "guest-runtime-deploy clean-prefix cannot use a symlink: "
+                f"{requested}"
+            )
+        resolved = requested.resolve(strict=False)
+        if resolved == resolved.parent or resolved.parent == Path("/"):
+            self._host.die(
+                "guest-runtime-deploy clean-prefix needs a non-root prefix parent: "
+                f"{requested}"
+            )
+        if not resolved.parent.is_dir():
+            self._host.die(
+                "guest-runtime-deploy clean-prefix parent is not a directory: "
+                f"{resolved.parent}"
+            )
+        root = Path(
+            tempfile.mkdtemp(
+                prefix=f".{resolved.name}.west-red-clean-",
+                dir=resolved.parent,
+            )
+        ).resolve()
+        prefix = root / "prefix"
+        prefix.mkdir()
+        self._host.inf(f"  runtime RED: created empty prefix {prefix}")
+        return IsolatedEmptyPrefix(root=root, prefix=prefix)
+
+    def cleanup_empty_prefix(
+        self,
+        isolated: IsolatedEmptyPrefix,
+        *,
+        lifecycle_env: dict[str, str] | None = None,
+    ) -> bool:
+        """Stop and remove a proof-owned empty prefix after the RED run."""
+
+        if not self._host._shutdown_runtime_prefix(
+            isolated.prefix, extra_env=lifecycle_env
+        ):
+            self._host.err(
+                "guest-runtime-deploy could not cleanly shutdown isolated RED "
+                f"prefix; preserving it for diagnostics: {isolated.prefix}"
+            )
+            return False
+        if (
+            isolated.root.name.find(".west-red-clean-") == -1
+            or isolated.root.is_symlink()
+            or not isolated.root.is_dir()
+            or isolated.prefix.parent != isolated.root
+            or isolated.prefix.is_symlink()
+            or not isolated.prefix.is_dir()
+        ):
+            self._host.err(
+                "guest-runtime-deploy refused to remove an unexpected isolated "
+                f"RED prefix layout: {isolated.root}"
+            )
+            return False
+        shutil.rmtree(isolated.root)
+        self._host.inf(f"  runtime RED: removed empty prefix {isolated.prefix}")
+        return True
 
     def macho_inspect(self, path: Path, flag: str) -> str:
         try:
@@ -60,7 +141,7 @@ class RuntimeDeploymentService:
             if (
                 not path.is_file()
                 or "CMakeFiles" in path.parts
-                or path.name.endswith("_firstpass.dylib")
+                or path.name.endswith(("_firstpass", "_firstpass.dylib"))
                 or not is_macho_binary(path)
             ):
                 continue
@@ -87,7 +168,11 @@ class RuntimeDeploymentService:
             for artifact in proof.get("runtime-artifacts", [])
             if isinstance(artifact, dict)
         }
-        if ROOTLESS_BOOTSTRAP_RESOURCE not in resources:
+        component_resources = resources & {
+            ROOTLESS_BOOTSTRAP_RESOURCE,
+            ROOTLESS_TOOLCHAIN_RESOURCE,
+        }
+        if not component_resources:
             return {}
         roots = {
             "/" + deploy_path: source
@@ -131,15 +216,20 @@ class RuntimeDeploymentService:
             for artifact in proof.get("runtime-artifacts", [])
             if isinstance(artifact, dict)
         }
-        if ROOTLESS_BOOTSTRAP_RESOURCE in resources:
+        for resource in (
+            ROOTLESS_BOOTSTRAP_RESOURCE,
+            ROOTLESS_TOOLCHAIN_RESOURCE,
+        ):
+            if resource not in resources:
+                continue
             try:
-                component = load_rootless_bootstrap_manifest(build_root)
+                component = load_runtime_component_manifest(build_root, resource)
             except ValueError as error:
                 self._host.die(f"guest-runtime-deploy {error}")
             conflicts = set(deployments).intersection(component)
             if conflicts:
                 self._host.die(
-                    "guest-runtime-deploy rootless bootstrap manifest conflicts "
+                    f"guest-runtime-deploy {resource} manifest conflicts "
                     "with explicit deploy path(s): " + ", ".join(sorted(conflicts))
                 )
             deployments.update(component)
@@ -151,10 +241,16 @@ class RuntimeDeploymentService:
                 "entrypoint path(s): " + ", ".join(sorted(conflicts))
             )
         deployments.update(closure)
+        rootless_no_mount = bool(
+            resources
+            & {ROOTLESS_BOOTSTRAP_RESOURCE, ROOTLESS_TOOLCHAIN_RESOURCE}
+        )
         plan = []
         for deploy_path, source in deployments.items():
             try:
-                targets = runtime_deploy_targets(prefix, deploy_path)
+                targets = runtime_deploy_targets(
+                    prefix, deploy_path, rootless_no_mount=rootless_no_mount
+                )
             except ValueError:
                 self._host.die(
                     f"guest-runtime-deploy deploy path must be relative: {deploy_path}"
@@ -171,11 +267,13 @@ class RuntimeDeploymentService:
         *,
         label: str,
         restore_deployment: bool,
+        lifecycle_env: dict[str, str] | None = None,
     ) -> Iterator[None]:
         succeeded = False
         started = time.monotonic()
         self._host.inf(f"  runtime phase start: {label} deploy")
-        if not self._host._shutdown_runtime_prefix(prefix):
+        shutdown_env = lifecycle_env or self._proof_lifecycle_env(proof)
+        if not self._host._shutdown_runtime_prefix(prefix, extra_env=shutdown_env):
             self._host.die(
                 f"guest-runtime-deploy could not stop Darling prefix before deploy: {prefix}"
             )
@@ -198,7 +296,9 @@ class RuntimeDeploymentService:
             except DeploymentTransactionError as error:
                 self._host.die(f"guest-runtime-deploy transaction failed: {error}")
             finally:
-                if not self._host._shutdown_runtime_prefix(prefix):
+                if not self._host._shutdown_runtime_prefix(
+                    prefix, extra_env=shutdown_env
+                ):
                     self._host.err(
                         "guest-runtime-deploy could not stop Darling prefix before restore: "
                         f"{prefix}"
@@ -210,4 +310,15 @@ class RuntimeDeploymentService:
                         self._host.die(f"guest-runtime-deploy rollback failed: {error}")
                 elif transaction.entries:
                     self._host.inf(f"  {label} deployment retained after successful smoke")
-                self._host._shutdown_runtime_prefix(prefix)
+                self._host._shutdown_runtime_prefix(prefix, extra_env=shutdown_env)
+
+    @staticmethod
+    def _proof_lifecycle_env(proof: dict) -> dict[str, str]:
+        launcher_env = proof.get("launcher-env", {})
+        if not isinstance(launcher_env, dict):
+            return {}
+        return {
+            str(key): str(value)
+            for key, value in launcher_env.items()
+            if isinstance(key, str) and key
+        }

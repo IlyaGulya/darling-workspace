@@ -24,5 +24,10 @@ with tempfile.TemporaryDirectory() as temp:
     (bundle / "stderr.log").write_text("WEST_GUEST_STAGE=upload\n")
     assert failure_phase_from_debug_bundle(f"BUNDLE={bundle}\n") == "setup"
 
+    (bundle / "stderr.log").write_text(
+        "Rootless shellspawn did not become ready within 60000ms\n"
+    )
+    assert failure_phase_from_debug_bundle(f"BUNDLE={bundle}\n") == "bootstrap"
+
 assert failure_phase_from_debug_bundle("RESULT=failed\n") is None
 print("PASS guest-trace-failure-phase-contract")

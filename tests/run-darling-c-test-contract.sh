@@ -16,7 +16,6 @@ command="${command//\/private\/var\/tmp/$DPREFIX\/private\/var\/tmp}"
 rc=$?
 # Model a real launcher namespace: guest /tmp is not persistent between shell
 # invocations, while the prefix-owned private/var/tmp directory is.
-rm -f /tmp/west_guest_c_contract_*
 exit "$rc"
 SH
 chmod +x "$tmp/launcher"
@@ -30,7 +29,6 @@ command="$4"
 command="${command//\/private\/var\/tmp/$DPREFIX\/private\/var\/tmp}"
 "$1" "$2" "$3" "$command" </dev/null
 rc=$?
-rm -f /tmp/west_guest_c_contract_*
 exit "$rc"
 SH
 chmod +x "$tmp/no-stdin-launcher"
@@ -148,6 +146,25 @@ fi
 if compgen -G "$tmp/prefix/private/var/tmp/${name}.*" >/dev/null; then
 	compgen -G "$tmp/prefix/private/var/tmp/${name}.*" >&2
 	exit 1
+fi
+
+if [[ "${WEST_GUEST_C_CONTRACT_CHILD:-}" != 1 ]]; then
+	parallel_a="$tmp/parallel-a.out"
+	parallel_b="$tmp/parallel-b.out"
+	set +e
+	WEST_GUEST_C_CONTRACT_CHILD=1 "$0" >"$parallel_a" 2>&1 &
+	parallel_a_pid=$!
+	WEST_GUEST_C_CONTRACT_CHILD=1 "$0" >"$parallel_b" 2>&1 &
+	parallel_b_pid=$!
+	wait "$parallel_a_pid"
+	parallel_a_rc=$?
+	wait "$parallel_b_pid"
+	parallel_b_rc=$?
+	set -e
+	if (( parallel_a_rc != 0 || parallel_b_rc != 0 )); then
+		cat "$parallel_a" "$parallel_b" >&2
+		exit 1
+	fi
 fi
 
 printf 'PASS darling-c-test-contract\n'
