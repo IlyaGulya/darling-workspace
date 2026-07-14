@@ -8,9 +8,21 @@ on:
   schedule:
     - cron: '17 3 * * *'
   workflow_dispatch:
+    inputs:
+      tier:
+        description: Run exactly one test tier
+        required: true
+        type: choice
+        options:
+          - host
+          - guest-smoke
+          - guest-full
+          - guest-toolchain
+          - macos
 
 jobs:
   host:
+    if: github.event_name != 'workflow_dispatch' || inputs.tier == 'host'
     runs-on: ubuntu-latest
     env:
       DARLING_WEST_UPDATE_JOBS: 8
@@ -26,7 +38,7 @@ jobs:
         run: darling-dev/darling-workspace/ci/run-test-tier.sh host
 
   guest-smoke:
-    if: github.event_name == 'pull_request' || github.event_name == 'push' || github.event_name == 'workflow_dispatch'
+    if: github.event_name == 'pull_request' || github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && inputs.tier == 'guest-smoke')
     runs-on: ubuntu-latest
     timeout-minutes: 30
     env:
@@ -92,7 +104,7 @@ jobs:
             diagnostic "$DIAGNOSTIC_PREFIX"
 
   guest-full:
-    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    if: github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && inputs.tier == 'guest-full')
     runs-on: ubuntu-latest
     timeout-minutes: 30
     env:
@@ -158,7 +170,7 @@ jobs:
             diagnostic "$DIAGNOSTIC_PREFIX"
 
   guest-toolchain-provisioning:
-    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    if: github.event_name == 'workflow_dispatch' && inputs.tier == 'guest-toolchain'
     runs-on: ubuntu-latest
     timeout-minutes: 45
     env:
@@ -213,7 +225,7 @@ jobs:
         run: ci/cleanup-rootless-prefixes.sh toolchain "$TIER_PREFIX"
 
   macos-package:
-    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    if: github.event_name == 'workflow_dispatch' && inputs.tier == 'macos'
     runs-on: macos-14
     steps:
       - uses: actions/checkout@v7
@@ -226,6 +238,7 @@ jobs:
 
   macos:
     needs: macos-package
+    if: github.event_name == 'workflow_dispatch' && inputs.tier == 'macos'
     strategy:
       fail-fast: false
       matrix:
