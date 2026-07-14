@@ -14,6 +14,10 @@ sys.path.insert(0, str(ROOT))
 from west_commands.test_runtime_evidence import RuntimeEvidenceStore
 
 
+relative_store = RuntimeEvidenceStore(Path("relative-runtime-evidence"))
+assert relative_store.root.is_absolute(), relative_store.root
+
+
 with tempfile.TemporaryDirectory() as temp:
     root = Path(temp) / "evidence"
     store = RuntimeEvidenceStore(root)

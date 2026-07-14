@@ -14,12 +14,11 @@ from pathlib import Path
 
 
 PREFIX_ROOTS = ("", "libexec/darling")
-TMP_RELS = ("private/var/tmp", "libexec/darling/private/var/tmp")
+TMP_RELS = ("private/var/tmp",)
+PRIVATE_TMP_RELS = ("private/tmp",)
+ROOT_TMP_RELS = ("tmp",)
 ROOTLESS_RUNTIME_DIR_RELS = (
-    "private/var/db",
-    "private/var/db/launchd.db",
     "private/var/db/launchd.db/com.apple.launchd",
-    "var",
     "var/run",
     "var/tmp",
 )
@@ -64,7 +63,7 @@ def prefix_roots(prefix: Path) -> list[tuple[str, Path]]:
 
 def prefix_boot_prerequisite_problems(prefix: Path) -> list[str]:
     problems = []
-    for rel in TMP_RELS:
+    for rel in (*TMP_RELS, *PRIVATE_TMP_RELS, *ROOT_TMP_RELS):
         path = prefix / rel
         if not path.is_dir():
             problems.append(f"{rel} missing in Darling prefix")
@@ -489,7 +488,7 @@ def _candidate_clt_dirs(root: Path) -> list[Path]:
 
 
 def _repair_tmp_dirs(prefix: Path, result: PrefixRepairResult, *, check: bool) -> None:
-    for rel in TMP_RELS:
+    for rel in (*TMP_RELS, *PRIVATE_TMP_RELS, *ROOT_TMP_RELS):
         path = prefix / rel
         if path.is_dir():
             mode = path.stat().st_mode & 0o7777
@@ -512,33 +511,11 @@ def _repair_tmp_dirs(prefix: Path, result: PrefixRepairResult, *, check: bool) -
         result.changed.append(f"created {rel} with mode 1777")
 
 
-def _repair_rootless_runtime_dirs(
-    prefix: Path, result: PrefixRepairResult, *, check: bool
-) -> None:
-    """Ensure an existing prefix has the directories used before launchd starts."""
-
-    for rel in ROOTLESS_RUNTIME_DIR_RELS:
-        path = prefix / rel
-        if path.is_dir():
-            result.ok.append(f"{rel} exists")
-            continue
-        if path.exists():
-            result.problems.append(f"{rel} exists but is not a directory")
-            continue
-        if check:
-            result.problems.append(f"{rel} missing")
-            continue
-        path.mkdir(parents=True, exist_ok=True)
-        path.chmod(0o755)
-        result.changed.append(f"created {rel} with mode 755")
-
-
 def repair_prefix_boot_prerequisites(prefix: Path) -> PrefixRepairResult:
-    """Provision only the directories required before a rootless boot."""
+    """Leave rootless boot initialization to Darling's launchd product code."""
 
     result = PrefixRepairResult()
-    _repair_tmp_dirs(prefix, result, check=False)
-    _repair_rootless_runtime_dirs(prefix, result, check=False)
+    result.ok.append("rootless boot directories are initialized by Darling launchd")
     return result
 
 
@@ -582,6 +559,25 @@ def _repair_clt_for_root(
             local_candidate.symlink_to(relative)
             result.changed.append(f"{root_name}: linked {local_candidate.relative_to(root)}")
             candidates = [local_candidate]
+        else:
+            fallback_canonical = fallback_root / CANONICAL_CLT_REL
+            if (
+                fallback_canonical.is_dir()
+                and (fallback_canonical / "usr/bin/clang").exists()
+            ):
+                if check:
+                    result.problems.append(
+                        f"{root_name}: canonical {CANONICAL_CLT_REL} symlink missing"
+                    )
+                    return
+                developer = root / "Library/Developer"
+                developer.mkdir(parents=True, exist_ok=True)
+                relative = os.path.relpath(fallback_canonical, start=developer)
+                link.symlink_to(relative)
+                result.changed.append(
+                    f"{root_name}: linked {CANONICAL_CLT_REL} -> {relative}"
+                )
+                return
     if not candidates:
         result.problems.append(
             f"{root_name}: no CommandLineTools.apple-clt-* candidate under Library/Developer"
@@ -640,7 +636,9 @@ def repair_prefix_prerequisites(
     result.extend(repair_prefix_boot_prerequisites(prefix) if not check else PrefixRepairResult())
     if check:
         _repair_tmp_dirs(prefix, result, check=True)
-        _repair_rootless_runtime_dirs(prefix, result, check=True)
+        for rel in ROOTLESS_RUNTIME_DIR_RELS:
+            if not (prefix / rel).is_dir():
+                result.problems.append(f"{rel} missing")
     for root_name, root in prefix_roots(prefix):
         fallback_root = prefix if root != prefix else None
         _repair_clt_for_root(root_name, root, result, check=check, fallback_root=fallback_root)

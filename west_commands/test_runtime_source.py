@@ -426,6 +426,7 @@ class RuntimeSourceMaterializer:
         darling_repo = projects_by_path.get(Path("darling"))
         if darling_repo is None:
             self._host.die("guest-runtime-deploy needs a West project at path 'darling'")
+        darling_repo = darling_repo.resolve()
         patch_module_path = self.project_manifest_path(patch["module"])
         materialized_modules = self._guest_runtime_source_modules(patch, proof)
         patch_module_is_darling_root = patch_module_path == Path("darling")
@@ -435,13 +436,17 @@ class RuntimeSourceMaterializer:
         bad_revision = self._host._bad_revision(patch, proof) if omit_patch else None
         added: list[tuple[Path, Path]] = []
         owns_root = root is None
-        temp = Path(tempfile.mkdtemp(prefix="west-red-proof-source-")) if owns_root else root
+        temp = (
+            Path(tempfile.mkdtemp(prefix="west-red-proof-source-")).resolve()
+            if owns_root
+            else Path(root).expanduser().resolve()
+        )
         temp.mkdir(parents=True, exist_ok=True)
         yielded = False
         keep_on_failure = False
         source_started = time.monotonic()
         try:
-            source_root = temp / "darling"
+            source_root = (temp / "darling").resolve()
             darling_ref = bad_revision if omit_patch and patch_module_is_darling_root else self._host._manifest_revision("darling")
             bad_text = "current-minus-patch" if omit_patch else "profile-current"
             self._host.inf(f"  runtime source forest: {patch_module_path}={bad_text} under {source_root}")
@@ -450,6 +455,24 @@ class RuntimeSourceMaterializer:
                 cwd=darling_repo,
                 check=True,
             )
+            registered_root = subprocess.run(
+                ["git", "-C", str(source_root), "rev-parse", "--show-toplevel"],
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            if (
+                registered_root.returncode
+                or Path(registered_root.stdout.strip()).resolve() != source_root
+            ):
+                cleanup_error = remove_temporary_worktree(darling_repo, source_root)
+                detail = registered_root.stderr.strip() or registered_root.stdout.strip()
+                if cleanup_error:
+                    detail = f"{detail}; cleanup: {cleanup_error}".strip("; ")
+                self._host.die(
+                    f"{patch['path']}: Git registered runtime source at an unexpected path; "
+                    f"expected {source_root}, observed {detail or 'unknown'}"
+                )
             added.append((darling_repo, source_root))
 
             def nested_revision(relative_path: Path, tree_revision: str) -> str:

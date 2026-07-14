@@ -16,6 +16,8 @@ from west_commands.test_worktrees import (
 assert path_has_west_temp_component(Path("/tmp/west-red-proof-source-abcd/darling"))
 assert path_has_west_temp_component(Path("/tmp/west-green-proof-source-abcd/darling"))
 assert path_has_west_temp_component(Path("/tmp/west-profile-homebrew-abcd/darling"))
+assert path_has_west_temp_component(Path("/tmp/.inflight-abcd/source/darling"))
+assert path_has_west_temp_component(Path("/tmp/runtime-evidence-abcd/source/darling"))
 assert not path_has_west_temp_component(Path("/tmp/west-manual-micro-bad"))
 
 

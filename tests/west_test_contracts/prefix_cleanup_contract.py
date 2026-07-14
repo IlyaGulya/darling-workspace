@@ -35,6 +35,7 @@ from west_commands.test_prefix import (
     PrefixLifecycleOwner,
     rootless_prefix_process_snapshot,
 )
+import test_prefix as prefix_module
 from west_commands.prefix_repair import repair_prefix_boot_prerequisites
 
 
@@ -147,6 +148,37 @@ with tempfile.TemporaryDirectory() as temp:
 
 with tempfile.TemporaryDirectory() as temp:
     prefix = Path(temp)
+    orphaned_shellspawn = subprocess.Popen(
+        [sys.executable, "-c", "import time; time.sleep(60)"],
+        cwd=prefix,
+        env={
+            **os.environ,
+            "DARLING_ROOTLESS": "1",
+        },
+    )
+    try:
+        for _ in range(20):
+            discovered = rootless_prefix_process_snapshot(prefix)
+            if any(
+                entry.startswith(f"{orphaned_shellspawn.pid} ")
+                for entry in discovered
+            ):
+                break
+            time.sleep(0.05)
+        else:
+            raise AssertionError(
+                "rootless process with prefix cwd but no DARLING_PREFIX was not discovered"
+            )
+        result = cleanup_rootless_prefix_processes(prefix)
+        assert result.success and result.changed, result
+        orphaned_shellspawn.wait(timeout=3)
+    finally:
+        if orphaned_shellspawn.poll() is None:
+            orphaned_shellspawn.kill()
+            orphaned_shellspawn.wait()
+
+with tempfile.TemporaryDirectory() as temp:
+    prefix = Path(temp)
     tagged = subprocess.Popen(
         [sys.executable, "-c", "import time; time.sleep(60)"],
         env={
@@ -220,7 +252,7 @@ sleep 30
     os.environ["WEST_SHUTDOWN_CHILD_PID"] = str(child_pid)
     try:
         started = time.monotonic()
-        assert test._shutdown_test_prefix()
+        assert not test._shutdown_test_prefix()
         assert time.monotonic() - started < 5
         pid = int(child_pid.read_text())
         for _ in range(20):
@@ -243,6 +275,57 @@ sleep 30
                 os.kill(int(child_pid.read_text()), signal.SIGKILL)
             except ProcessLookupError:
                 pass
+
+with tempfile.TemporaryDirectory() as temp:
+    prefix = Path(temp)
+    calls = []
+    original_shutdown = prefix_module.shutdown_guest_prefix
+
+    def flaky_shutdown(*_args, **_kwargs):
+        calls.append(True)
+        return types.SimpleNamespace(
+            returncode=1 if len(calls) == 1 else 0,
+            timed_out=False,
+            stdout="",
+            stderr="transient shutdown race\n" if len(calls) == 1 else "",
+        )
+
+    prefix_module.shutdown_guest_prefix = flaky_shutdown
+    test = make_test()
+    test._resolve_darling_launcher = lambda _prefix: "/fake/darling"
+    test._kill_dserver_for_prefix = lambda _prefix: None
+    test._ps_entries = lambda: []
+    old_attempts = os.environ.get("WEST_TEST_SHUTDOWN_ATTEMPTS")
+    os.environ["WEST_TEST_SHUTDOWN_ATTEMPTS"] = "2"
+    try:
+        assert test._prefix_lifecycle_owner().shutdown(prefix), test.err_messages
+        assert len(calls) == 2, calls
+        assert any("transient shutdown race" in message for message in test.err_messages)
+    finally:
+        prefix_module.shutdown_guest_prefix = original_shutdown
+        if old_attempts is None:
+            os.environ.pop("WEST_TEST_SHUTDOWN_ATTEMPTS", None)
+        else:
+            os.environ["WEST_TEST_SHUTDOWN_ATTEMPTS"] = old_attempts
+
+with tempfile.TemporaryDirectory() as temp:
+    prefix = Path(temp)
+    original_shutdown = prefix_module.shutdown_guest_prefix
+    prefix_module.shutdown_guest_prefix = lambda *_args, **_kwargs: types.SimpleNamespace(
+        returncode=1,
+        timed_out=False,
+        stdout="",
+        stderr="Darling container is not running\n",
+    )
+    test = make_test()
+    test._resolve_darling_launcher = lambda _prefix: "/fake/darling"
+    test._kill_dserver_for_prefix = lambda _prefix: None
+    test._ps_entries = lambda: []
+    try:
+        assert test._prefix_lifecycle_owner().shutdown(prefix)
+        assert not test.err_messages
+    finally:
+        prefix_module.shutdown_guest_prefix = original_shutdown
 
 with tempfile.TemporaryDirectory() as temp:
     stale_prefix = Path(temp)
@@ -348,17 +431,17 @@ with tempfile.TemporaryDirectory() as temp:
     prefix = Path(temp)
     problems = test._prefix_boot_prerequisite_problems(prefix)
     assert "private/var/tmp missing in Darling prefix" in problems, problems
-    assert "libexec/darling/private/var/tmp missing in Darling prefix" in problems, problems
 
     (prefix / "private/var/tmp").mkdir(parents=True)
-    (prefix / "libexec/darling/private/var/tmp").mkdir(parents=True)
     (prefix / "private/var/tmp").chmod(0o755)
-    (prefix / "libexec/darling/private/var/tmp").chmod(0o1777)
     problems = test._prefix_boot_prerequisite_problems(prefix)
     assert "private/var/tmp mode 755, expected 1777" in problems, problems
-    assert all("libexec/darling/private/var/tmp" not in item for item in problems), problems
 
     (prefix / "private/var/tmp").chmod(0o1777)
+    (prefix / "private/tmp").mkdir(parents=True)
+    (prefix / "tmp").mkdir(parents=True)
+    (prefix / "private/tmp").chmod(0o1777)
+    (prefix / "tmp").chmod(0o1777)
     (prefix / "private/var/db").mkdir(parents=True)
     (prefix / "private/var/db/launchd.db/com.apple.launchd").mkdir(parents=True)
     (prefix / "var/run").mkdir(parents=True)
@@ -370,17 +453,11 @@ with tempfile.TemporaryDirectory() as temp:
     prefix = Path(temp)
     result = repair_prefix_boot_prerequisites(prefix)
     assert result.success, result.problems
-    assert result.changed == [
-        "created private/var/tmp with mode 1777",
-        "created libexec/darling/private/var/tmp with mode 1777",
-        "created private/var/db with mode 755",
-        "created private/var/db/launchd.db with mode 755",
-        "created private/var/db/launchd.db/com.apple.launchd with mode 755",
-        "created var with mode 755",
-        "created var/run with mode 755",
-        "created var/tmp with mode 755",
-    ], result.changed
-    assert test._prefix_boot_prerequisite_problems(prefix) == []
+    assert result.changed == [], result.changed
+    assert any(
+        "private/var/db/launchd.db/com.apple.launchd missing" in item
+        for item in test._prefix_boot_prerequisite_problems(prefix)
+    )
 
     problems = test._guest_c_fixture_prerequisite_problems(
         prefix,

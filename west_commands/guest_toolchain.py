@@ -10,7 +10,7 @@ import struct
 import urllib.request
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Callable
+from typing import Callable, Mapping
 
 try:
     from .prefix_repair import (
@@ -18,14 +18,14 @@ try:
         repair_prefix_prerequisites,
     )
     from .test_execution import ProcessResult
-    from .test_guest_execution import run_guest_argv
+    from .test_guest_execution import run_guest_shell_argv
 except ImportError:  # Loaded as a West extension module, not a package.
     from prefix_repair import (
         guest_c_fixture_prerequisite_problems,
         repair_prefix_prerequisites,
     )
     from test_execution import ProcessResult
-    from test_guest_execution import run_guest_argv
+    from test_guest_execution import run_guest_shell_argv
 
 
 COMMAND_LINE_TOOLS_RESOURCE = "darling-command-line-tools"
@@ -39,6 +39,22 @@ COMMAND_LINE_TOOLS_PACKAGE_IDS = (
     "com.apple.pkg.CLTools_SDK_macOS1013",
     "com.apple.pkg.CLTools_Executables",
 )
+# Reviewed payload digests for the exact CLT package set used by this fork.
+# The API SHA-1 remains useful for URL/cache provenance, but it is not an
+# acceptance signal because the historical Apple endpoint has republished
+# bytes without updating that field.
+REVIEWED_COMMAND_LINE_TOOLS_SHA256 = {
+    "com.apple.pkg.CLTools_SDK_OSX1012":
+        "b1257b424bc743bfd17348f93bb0a1823a1455e3a3982db2176cc51a27180285",
+    "com.apple.pkg.DevSDK_OSX1012":
+        "30ea9857e79adb7ed03d089015e6cdd72407ed3307780ecf58038db33419b88f",
+    "com.apple.pkg.CLTools_SDK_macOSSDK":
+        "27678b01141739175992a9b027c875b4c4ffe704de95f743c1f3b90374029f49",
+    "com.apple.pkg.CLTools_SDK_macOS1013":
+        "6320cc77a7e2e9b429c21c2dcc82fee91992a9ecfb2ebaca870a4b96e759ccc8",
+    "com.apple.pkg.CLTools_Executables":
+        "95df96bfc8369bbd9ecf9acccd36b4020e2885777524a97b3aa288f660be5d32",
+}
 DEFAULT_GUEST_CC = "/Library/Developer/CommandLineTools/usr/bin/clang"
 DEFAULT_GUEST_CFLAGS = (
     "-isysroot /Library/Developer/CommandLineTools/SDKs/MacOSX.sdk"
@@ -47,6 +63,31 @@ DEFAULT_GUEST_CFLAGS = (
 
 class GuestToolchainError(RuntimeError):
     """Raised when a declared guest toolchain cannot be made usable."""
+
+    def __init__(self, message: str, *, kind: str = "setup"):
+        super().__init__(message)
+        self.kind = kind
+
+
+def guest_toolchain_provisioning_forbidden(
+    environ: Mapping[str, str] | None = None,
+) -> bool:
+    """Return whether the caller explicitly requires a no-CLT execution path."""
+
+    values = os.environ if environ is None else environ
+    return values.get("WEST_TEST_FORBID_GUEST_TOOLCHAIN") == "1"
+
+
+def require_guest_toolchain_provisioning_allowed(
+    environ: Mapping[str, str] | None = None,
+) -> None:
+    """Reject guest toolchain provisioning in an explicitly no-CLT tier."""
+
+    if guest_toolchain_provisioning_forbidden(environ):
+        raise GuestToolchainError(
+            "guest toolchain provisioning is forbidden in a no-CLT tier",
+            kind="policy",
+        )
 
 
 @dataclass(frozen=True)
@@ -110,6 +151,12 @@ def command_line_tools_packages(payload: object) -> tuple[CommandLineToolsPackag
                 f"CommandLineTools manifest repeats package {package.package_id}"
             )
         package_ids.add(package.package_id)
+        if package.package_id not in REVIEWED_COMMAND_LINE_TOOLS_SHA256:
+            raise GuestToolchainError(
+                f"CommandLineTools package is not in the reviewed SHA-256 allowlist: "
+                f"{package.package_id}",
+                kind="setup",
+            )
         packages.append(package)
     missing = [
         package_id
@@ -128,11 +175,21 @@ def _read_manifest(*, opener: Callable[..., object] = urllib.request.urlopen) ->
         with opener(COMMAND_LINE_TOOLS_MANIFEST_URL, timeout=30) as response:
             return json.loads(response.read())
     except Exception as error:
-        raise GuestToolchainError(f"cannot read CommandLineTools manifest: {error}") from error
+        raise GuestToolchainError(
+            f"cannot read CommandLineTools manifest: {error}", kind="setup"
+        ) from error
 
 
 def _sha1(path: Path) -> str:
     digest = hashlib.sha1()
+    with path.open("rb") as stream:
+        for chunk in iter(lambda: stream.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def _sha256(path: Path) -> str:
+    digest = hashlib.sha256()
     with path.open("rb") as stream:
         for chunk in iter(lambda: stream.read(1024 * 1024), b""):
             digest.update(chunk)
@@ -170,6 +227,14 @@ def _validate_xar(path: Path, package: CommandLineToolsPackage) -> str:
 
 def _verify_package(path: Path, package: CommandLineToolsPackage, log: Callable[[str], None]) -> None:
     actual_sha1 = _validate_xar(path, package)
+    actual_sha256 = _sha256(path)
+    expected_sha256 = REVIEWED_COMMAND_LINE_TOOLS_SHA256[package.package_id]
+    if actual_sha256 != expected_sha256:
+        raise GuestToolchainError(
+            f"downloaded {package.package_id} has unreviewed SHA-256 "
+            f"{actual_sha256}, expected {expected_sha256}",
+            kind="download",
+        )
     if actual_sha1 != package.sha1:
         # Apple has republished these historical package URLs without updating
         # Darling's distribution API digest. Keep provenance strict (HTTPS,
@@ -177,8 +242,7 @@ def _verify_package(path: Path, package: CommandLineToolsPackage, log: Callable[
         # of rejecting the official package or accepting arbitrary bytes.
         log(
             f"guest toolchain: API SHA-1 mismatch for {package.package_id}: "
-            f"declared {package.sha1}, downloaded {actual_sha1}; "
-            "using the verified Apple XAR payload"
+            f"declared {package.sha1}, downloaded {actual_sha1}"
         )
 
 
@@ -227,7 +291,7 @@ def _cached_package(
     except Exception as error:
         partial.unlink(missing_ok=True)
         raise GuestToolchainError(
-            f"cannot download {package.package_id}: {error}"
+            f"cannot download {package.package_id}: {error}", kind="download"
         ) from error
 
 
@@ -240,7 +304,7 @@ def ensure_command_line_tools(
     cache_dir: Path | None = None,
     timeout_seconds: int = 900,
     opener: Callable[..., object] = urllib.request.urlopen,
-    guest_runner: Callable[..., ProcessResult] = run_guest_argv,
+    guest_runner: Callable[..., ProcessResult] = run_guest_shell_argv,
     log: Callable[[str], None] = print,
 ) -> list[str]:
     """Make the default guest C compiler and SDK available in *prefix*.
@@ -290,7 +354,8 @@ def ensure_command_line_tools(
                 raise GuestToolchainError(
                     f"guest installer failed for {package.package_id} "
                     f"(rc={result.returncode}, timed_out={result.timed_out}): "
-                    f"{detail[-1000:]}"
+                    f"{detail[-1000:]}",
+                    kind="install",
                 )
             changed.append(package.package_id)
             staged.unlink(missing_ok=True)
@@ -302,7 +367,8 @@ def ensure_command_line_tools(
     if repair.problems:
         raise GuestToolchainError(
             "CommandLineTools installed but prefix repair failed: "
-            + "; ".join(repair.problems)
+            + "; ".join(repair.problems),
+            kind="setup",
         )
     remaining = guest_c_fixture_prerequisite_problems(
         prefix, DEFAULT_GUEST_CC, DEFAULT_GUEST_CFLAGS
@@ -310,7 +376,8 @@ def ensure_command_line_tools(
     if remaining:
         raise GuestToolchainError(
             "CommandLineTools installation did not satisfy guest C contract: "
-            + "; ".join(remaining)
+            + "; ".join(remaining),
+            kind="setup",
         )
     return changed
 

@@ -1245,6 +1245,7 @@ class DarlingPatch(WestCommand):
                         phases = [phases]
                     allowed_phases = {
                         "setup",
+                        "bootstrap",
                         "compile",
                         "run",
                         "inspect",
@@ -1252,6 +1253,7 @@ class DarlingPatch(WestCommand):
                         "build",
                         "configure",
                         "ctest",
+                        "provider",
                         "runtime",
                         "self",
                     }
@@ -1265,6 +1267,23 @@ class DarlingPatch(WestCommand):
                     elif proof.get("mode") == "guest-runtime-deploy" and "runtime" in phases:
                         errors.append(
                             f"tests[{index}] guest-runtime-deploy must name an exact failure phase, not 'runtime'"
+                        )
+                    provider_under_test = proof.get("provider-under-test")
+                    if provider_under_test is not None and not isinstance(
+                        provider_under_test, bool
+                    ):
+                        errors.append(
+                            f"tests[{index}] red-proof provider-under-test must be boolean"
+                        )
+                    if "provider" in phases and provider_under_test is not True:
+                        errors.append(
+                            f"tests[{index}] provider failure requires "
+                            "red-proof.provider-under-test: true"
+                        )
+                    if provider_under_test is True and "provider" not in phases:
+                        errors.append(
+                            f"tests[{index}] provider-under-test requires "
+                            "expect-failure-phase: provider"
                         )
             env = test.get("env")
             if env and env not in {"host", "darling", "macos"}:

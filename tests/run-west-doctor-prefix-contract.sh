@@ -44,23 +44,23 @@ with tempfile.TemporaryDirectory() as temp:
     doctor._check_prefix_boot_prereqs(args)
     assert doctor.fail == 1
     assert any("private/var/tmp missing" in text for _, text in doctor.messages), doctor.messages
-    assert any("libexec/darling/private/var/tmp missing" in text for _, text in doctor.messages), doctor.messages
     assert any("var/run missing" in text for _, text in doctor.messages), doctor.messages
 
     (prefix / "private/var/tmp").mkdir(parents=True)
-    (prefix / "libexec/darling/private/var/tmp").mkdir(parents=True)
     (prefix / "private/var/tmp").chmod(0o1777)
-    (prefix / "libexec/darling/private/var/tmp").chmod(0o1777)
-    (prefix / "private/var/db").mkdir(parents=True)
     (prefix / "private/var/db/launchd.db/com.apple.launchd").mkdir(parents=True)
+    (prefix / "private/tmp").mkdir(parents=True)
+    (prefix / "private/tmp").chmod(0o1777)
+    (prefix / "tmp").mkdir(parents=True)
+    (prefix / "tmp").chmod(0o1777)
     (prefix / "var/run").mkdir(parents=True)
     (prefix / "var/tmp").mkdir(parents=True)
+    (prefix / "var/tmp").chmod(0o1777)
 
     doctor = make_doctor()
     doctor._check_prefix_boot_prereqs(args)
     assert doctor.fail == 0
     assert any("private/var/tmp exists with mode 1777" in text for _, text in doctor.messages), doctor.messages
-    assert any("libexec/darling/private/var/tmp exists with mode 1777" in text for _, text in doctor.messages), doctor.messages
 
 print("PASS west-doctor-prefix-contract")
 PY
