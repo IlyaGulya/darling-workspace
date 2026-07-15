@@ -14,6 +14,7 @@ tests/run-west-test-runtime-build-contract.sh
 tests/run-west-guest-toolchain-contract.sh
 tests/run-west-guest-toolchain-cache-contract.sh
 tests/run-west-guest-toolchain-ccache-contract.sh
+tests/run-west-guest-macho-contract.sh
 
 # Exercise West's real extension loader.  It does not import command modules
 # like ordinary Python packages, so this catches loader-incompatible module
