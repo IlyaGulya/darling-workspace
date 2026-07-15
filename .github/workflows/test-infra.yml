@@ -19,6 +19,14 @@ on:
           - guest-toolchain
           - clt-integrity
           - macos
+      ccache_mode:
+        description: ccache mode for guest-toolchain only; other tiers ignore this input
+        required: false
+        default: warm
+        type: choice
+        options:
+          - warm
+          - cold
 
 jobs:
   host:
@@ -124,6 +132,25 @@ jobs:
           key: darling-command-line-tools-reviewed-v1-${{ runner.os }}
       - name: Install Darling build dependencies
         run: darling-dev/darling-workspace/ci/install-darling-build-deps.sh
+      - name: Install guest-toolchain ccache
+        run: sudo apt-get install --yes --no-install-recommends ccache
+      - name: Configure guest-toolchain ccache
+        id: guest_ccache
+        working-directory: darling-dev/darling-workspace
+        env:
+          CCACHE_MODE: ${{ inputs.ccache_mode }}
+        run: ci/guest-toolchain-ccache.sh prepare "$CCACHE_MODE"
+      - name: Restore guest-toolchain ccache
+        id: guest_ccache_restore
+        if: inputs.ccache_mode == 'warm'
+        uses: actions/cache/restore@v4
+        with:
+          path: ${{ steps.guest_ccache.outputs.cache_dir }}
+          key: ${{ steps.guest_ccache.outputs.primary_key }}
+          restore-keys: |
+            ${{ steps.guest_ccache.outputs.restore_prefix }}
+      - name: Reset guest-toolchain ccache statistics
+        run: ccache --zero-stats
       - name: Materialize Darling workspace
         run: darling-dev/darling-workspace/ci/bootstrap-west.sh
       - name: Build guarded test executor
@@ -157,6 +184,24 @@ jobs:
         env:
           TIER_PREFIX: ${{ steps.rootless_toolchain.outputs.prefix }}
         run: ci/cleanup-rootless-prefixes.sh toolchain "$TIER_PREFIX"
+      - name: Collect guest-toolchain ccache statistics
+        if: always() && steps.guest_ccache.outcome == 'success'
+        working-directory: darling-dev/darling-workspace
+        run: ci/guest-toolchain-ccache.sh stats "$RUNNER_TEMP/guest-toolchain-ccache-evidence"
+      - name: Upload guest-toolchain ccache statistics
+        if: always() && steps.guest_ccache.outcome == 'success'
+        uses: actions/upload-artifact@v7
+        with:
+          name: guest-toolchain-ccache-statistics
+          if-no-files-found: ignore
+          retention-days: 7
+          path: ${{ runner.temp }}/guest-toolchain-ccache-evidence
+      - name: Save guest-toolchain ccache
+        if: success() && inputs.ccache_mode == 'warm' && steps.guest_ccache_restore.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: ${{ steps.guest_ccache.outputs.cache_dir }}
+          key: ${{ steps.guest_ccache.outputs.primary_key }}
 
   clt-integrity:
     if: github.event_name == 'workflow_dispatch' && inputs.tier == 'clt-integrity'

@@ -18,6 +18,7 @@ ROOTLESS_TOOLCHAIN_RESOURCE = "rootless-toolchain"
 ROOTLESS_TOOLCHAIN_TARGET = "rootless_toolchain"
 ROOTLESS_TOOLCHAIN_MANIFEST = "darling-rootless-toolchain.json"
 GUEST_TOOLCHAIN_RESOURCE = "darling-command-line-tools"
+COMPILER_LAUNCHERS = frozenset({"ccache"})
 # Source owners whose patched revisions can provide Mach-O libraries in the
 # bootstrap closure. A materialized runtime forest must not leave them as live
 # symlinks, or it can build an unpatched provider while claiming profile parity.
@@ -324,6 +325,7 @@ def load_ctest_runtime_profiles(path: Path) -> dict[str, dict[str, Any]]:
         artifacts = profile.get("runtime-artifacts")
         bootstrap = profile.get("bootstrap")
         guest_toolchain = profile.get("guest-toolchain")
+        compiler_launcher = profile.get("compiler-launcher")
         purpose = profile.get("purpose", "runtime")
         bootstrap_smoke_timeout = profile.get("bootstrap-smoke-timeout-seconds", 60)
         if not isinstance(source_profile, str) or not source_profile:
@@ -345,6 +347,21 @@ def load_ctest_runtime_profiles(path: Path) -> dict[str, dict[str, Any]]:
                 f"runtime profile {name!r} has unknown guest-toolchain "
                 f"{guest_toolchain!r}"
             )
+        if compiler_launcher is not None:
+            if (
+                not isinstance(compiler_launcher, str)
+                or compiler_launcher not in COMPILER_LAUNCHERS
+            ):
+                raise ValueError(
+                    f"runtime profile {name!r} has unsupported compiler-launcher "
+                    f"{compiler_launcher!r}; allowed values: "
+                    + ", ".join(sorted(COMPILER_LAUNCHERS))
+                )
+            if purpose != "guest-toolchain-provisioning":
+                raise ValueError(
+                    f"runtime profile {name!r} may use compiler-launcher only for "
+                    "guest-toolchain-provisioning"
+                )
         if purpose not in {"runtime", "prefix-baseline", "guest-toolchain-provisioning"}:
             raise ValueError(
                 f"runtime profile {name!r} has unknown purpose {purpose!r}"
@@ -487,6 +504,8 @@ def load_ctest_runtime_profiles(path: Path) -> dict[str, dict[str, Any]]:
             normalized[name]["bootstrap"] = bootstrap
         if guest_toolchain is not None:
             normalized[name]["guest-toolchain"] = guest_toolchain
+        if compiler_launcher is not None:
+            normalized[name]["compiler-launcher"] = compiler_launcher
     return normalized
 
 
@@ -519,6 +538,7 @@ def compose_ctest_runtime_profiles(
     cmake_defines: dict[str, Any] = {}
     launcher_env: dict[str, Any] = {}
     guest_toolchain: str | None = None
+    compiler_launcher: str | None = None
     bootstrap: str | None = None
     bootstrap_smoke_timeout = 0
     for name in selected:
@@ -575,6 +595,14 @@ def compose_ctest_runtime_profiles(
                     f"{candidate_toolchain}"
                 )
             guest_toolchain = candidate_toolchain
+        candidate_launcher = definition.get("compiler-launcher")
+        if candidate_launcher is not None:
+            if compiler_launcher is not None and compiler_launcher != candidate_launcher:
+                raise ValueError(
+                    f"runtime profile {name!r} conflicts on compiler launcher "
+                    f"{candidate_launcher}"
+                )
+            compiler_launcher = candidate_launcher
     result = {
         "name": "+".join(selected),
         "source-profile": source_profiles.pop(),
@@ -591,6 +619,8 @@ def compose_ctest_runtime_profiles(
         result["bootstrap"] = bootstrap
     if guest_toolchain is not None:
         result["guest-toolchain"] = guest_toolchain
+    if compiler_launcher is not None:
+        result["compiler-launcher"] = compiler_launcher
     return result
 
 

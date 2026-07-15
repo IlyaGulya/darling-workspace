@@ -126,6 +126,7 @@ runtime-profiles:
     # Scheduled/manual only. This is intentionally separate from all ordinary
     # guest regressions because it downloads and installs Apple's CLT packages.
     purpose: guest-toolchain-provisioning
+    compiler-launcher: ccache
     bootstrap-smoke-timeout-seconds: 180
     source-profile: homebrew
     bootstrap: rootless-no-mount
