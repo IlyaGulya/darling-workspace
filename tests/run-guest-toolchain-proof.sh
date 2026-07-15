@@ -11,9 +11,10 @@ source=/private/var/tmp/west-clt-proof.c
 binary=/private/var/tmp/west-clt-proof
 version=/private/var/tmp/west-clt-proof.clang-version
 origin=/private/var/tmp/west-clt-proof.clang-origin
-"$cc" --version > "$version"
+clang_version="$("$cc" --version)"
+printf "%s\n" "$clang_version" > "$version"
 printf "%s\n" "execution-context=guest" "executable=$cc" > "$origin"
-cat "$version"
+printf "%s\n" "$clang_version"
 printf "%s\n" "int main(void) { return 0; }" > "$source"
 "$cc" -isysroot "$sdk" "$source" -o "$binary"
 "$binary"
