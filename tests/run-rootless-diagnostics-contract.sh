@@ -37,9 +37,11 @@ grep -F -x -q \
 proof="$repo/tests/run-guest-toolchain-proof.sh"
 grep -F -q 'cc=/Library/Developer/CommandLineTools/usr/bin/clang' "$proof"
 grep -F -q 'version=/private/var/tmp/west-clt-proof.clang-version' "$proof"
-grep -F -q '"$cc" --version > "$version"' "$proof"
-if grep -F -q '$(clang --version)' "$proof"; then
-	echo 'guest clang proof unexpectedly used host command substitution' >&2
+grep -F -q 'clang_version="$("$cc" --version)"' "$proof"
+grep -F -q 'printf "%s\n" "$clang_version" > "$version"' "$proof"
+grep -F -q 'printf "%s\n" "$clang_version"' "$proof"
+if grep -Eq '(^|[[:space:]])cat([[:space:]]|$)' "$proof"; then
+	echo 'guest clang proof unexpectedly used external cat' >&2
 	exit 1
 fi
 
