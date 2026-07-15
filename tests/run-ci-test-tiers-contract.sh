@@ -98,7 +98,11 @@ if grep -F -q "$DARLING_REGRESSION_PREFIX" "$tmp/commands"; then
 	echo 'blocked guest-full unexpectedly invoked West with the regression prefix' >&2
 	exit 1
 fi
-grep -F -x -q "west test --prefix $tmp/runner/darling-rootless-toolchain --bootstrap-runtime-profile homebrew-guest-toolchain-provisioning --runtime-build-timeout-seconds 600" "$tmp/commands"
+grep -F -x -q "west test --prefix $tmp/runner/darling-rootless-toolchain --bootstrap-runtime-profile homebrew-guest-toolchain-provisioning --runtime-build-timeout-seconds 1200" "$tmp/commands"
+if grep -F -q "west test --prefix $tmp/runner/darling-rootless-toolchain --bootstrap-runtime-profile homebrew-guest-toolchain-provisioning --runtime-build-timeout-seconds 600" "$tmp/commands"; then
+	echo 'guest-toolchain unexpectedly used the smoke runtime build timeout' >&2
+	exit 1
+fi
 grep -F -x -q "west test --profile homebrew --patch darling/rootless-prefix-initialization.patch --env darling --label name:rootless_guest_toolchain_compile_execute --reuse-prefix-runtime --prefix $tmp/runner/darling-rootless-toolchain" "$tmp/commands"
 grep -F -x -q "cmake -S testkit -B $tmp/macos-build -DBUILD_TESTING=ON" "$tmp/commands"
 grep -F -x -q "ctest --test-dir $tmp/macos-build --output-on-failure -L env:macos" "$tmp/commands"
