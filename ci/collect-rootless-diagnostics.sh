@@ -47,6 +47,21 @@ fi
 } >"$output_dir/prefix-processes.txt"
 
 if [[ -d "$prefix" ]]; then
+	for evidence in \
+		private/var/tmp/west-clt-proof.clang-version \
+		private/var/tmp/west-clt-proof.clang-origin; do
+		file="$prefix/$evidence"
+		[[ -f "$file" && ! -L "$file" ]] || continue
+		case "$evidence" in
+			private/var/tmp/west-clt-proof.clang-version)
+				cp -- "$file" "$output_dir/guest-clang-version.txt"
+				;;
+			private/var/tmp/west-clt-proof.clang-origin)
+				cp -- "$file" "$output_dir/guest-clang-origin.txt"
+				;;
+		esac
+	done
+
 	find "$prefix/var/run" -maxdepth 3 -printf '%M %p\n' \
 		>"$output_dir/prefix-runtime-tree.txt" 2>&1 || true
 	find "$prefix/private/var/tmp" -maxdepth 2 -type f -printf '%p\n' \

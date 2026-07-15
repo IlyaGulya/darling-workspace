@@ -9,7 +9,11 @@ cc=/Library/Developer/CommandLineTools/usr/bin/clang
 sdk=/Library/Developer/CommandLineTools/SDKs/MacOSX.sdk
 source=/private/var/tmp/west-clt-proof.c
 binary=/private/var/tmp/west-clt-proof
-"$cc" --version
+version=/private/var/tmp/west-clt-proof.clang-version
+origin=/private/var/tmp/west-clt-proof.clang-origin
+"$cc" --version > "$version"
+printf "%s\n" "execution-context=guest" "executable=$cc" > "$origin"
+cat "$version"
 printf "%s\n" "int main(void) { return 0; }" > "$source"
 "$cc" -isysroot "$sdk" "$source" -o "$binary"
 "$binary"
