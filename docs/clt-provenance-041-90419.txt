@@ -1,0 +1,49 @@
+Darling CommandLineTools reviewed provenance
+============================================
+
+review_status: reviewed
+review_date_utc: 2026-07-15
+evidence_run: 29384636308
+product_id: 041-90419
+catalog_source: Darling catalog mirror (not Apple metadata)
+catalog_url: https://swdistcache.darlinghq.org/api/v1/products/by-tag?tag=DTCommandLineTools
+apple_download_host: swcdn.apple.com
+runner_evidence: macos-14 and macos-15 produced identical payload bytes
+signature_check: pkgutil --check-signature reported signed Apple Software with a trusted timestamp for every package
+certificate_chain: Software Update; Apple Software Update Certification Authority; Apple Root CA
+certificate_fingerprints_sha256: e074d204ac2498e9dc904a7bc7ced8464119b79d05668028920583b1e896ebb4;1299e9bfe776a29ff452f8c4f5e55f3b4dfd2934349dd1850b8274f35c71745c;b0b1730ecbc7ff4505142c49f1295e6eda6bcaed7e2c68c5be91b5a11001f024
+
+[package: com.apple.pkg.CLTools_SDK_OSX1012]
+url: https://swcdn.apple.com/content/downloads/33/36/041-90419-A_7JJ4H9ZHO2/xs88ob5wjz6riz7g6764twblnvksusg4ps/CLTools_macOS_SDK_Remove_1012.pkg
+size: 17758
+actual_sha1: e0202fd16251348dcfc65ee534ce02eb701b6241
+actual_sha256: b1257b424bc743bfd17348f93bb0a1823a1455e3a3982db2176cc51a27180285
+certificate_fingerprints_sha256: e074d204ac2498e9dc904a7bc7ced8464119b79d05668028920583b1e896ebb4;1299e9bfe776a29ff452f8c4f5e55f3b4dfd2934349dd1850b8274f35c71745c;b0b1730ecbc7ff4505142c49f1295e6eda6bcaed7e2c68c5be91b5a11001f024
+
+[package: com.apple.pkg.DevSDK_OSX1012]
+url: https://swcdn.apple.com/content/downloads/33/36/041-90419-A_7JJ4H9ZHO2/xs88ob5wjz6riz7g6764twblnvksusg4ps/DevSDK_OSX1012.pkg
+size: 21460323
+actual_sha1: 6aba19378b38648a00e7c167a39a9ea86caa25c2
+actual_sha256: 30ea9857e79adb7ed03d089015e6cdd72407ed3307780ecf58038db33419b88f
+certificate_fingerprints_sha256: e074d204ac2498e9dc904a7bc7ced8464119b79d05668028920583b1e896ebb4;1299e9bfe776a29ff452f8c4f5e55f3b4dfd2934349dd1850b8274f35c71745c;b0b1730ecbc7ff4505142c49f1295e6eda6bcaed7e2c68c5be91b5a11001f024
+
+[package: com.apple.pkg.CLTools_SDK_macOSSDK]
+url: https://swcdn.apple.com/content/downloads/33/36/041-90419-A_7JJ4H9ZHO2/xs88ob5wjz6riz7g6764twblnvksusg4ps/CLTools_SDK_macOS1013.pkg
+size: 28071275
+actual_sha1: bf8bc218d2137162e7955346b50d542b648a461f
+actual_sha256: 27678b01141739175992a9b027c875b4c4ffe704de95f743c1f3b90374029f49
+certificate_fingerprints_sha256: e074d204ac2498e9dc904a7bc7ced8464119b79d05668028920583b1e896ebb4;1299e9bfe776a29ff452f8c4f5e55f3b4dfd2934349dd1850b8274f35c71745c;b0b1730ecbc7ff4505142c49f1295e6eda6bcaed7e2c68c5be91b5a11001f024
+
+[package: com.apple.pkg.CLTools_SDK_macOS1013]
+url: https://swcdn.apple.com/content/downloads/33/36/041-90419-A_7JJ4H9ZHO2/xs88ob5wjz6riz7g6764twblnvksusg4ps/CLTools_macOS_SDK_Remove_1013.pkg
+size: 17758
+actual_sha1: 35c51a9164220e4cb64397cdd4fa43d2377cacf7
+actual_sha256: 6320cc77a7e2e9b429c21c2dcc82fee91992a9ecfb2ebaca870a4b96e759ccc8
+certificate_fingerprints_sha256: e074d204ac2498e9dc904a7bc7ced8464119b79d05668028920583b1e896ebb4;1299e9bfe776a29ff452f8c4f5e55f3b4dfd2934349dd1850b8274f35c71745c;b0b1730ecbc7ff4505142c49f1295e6eda6bcaed7e2c68c5be91b5a11001f024
+
+[package: com.apple.pkg.CLTools_Executables]
+url: https://swcdn.apple.com/content/downloads/33/36/041-90419-A_7JJ4H9ZHO2/xs88ob5wjz6riz7g6764twblnvksusg4ps/CLTools_Executables.pkg
+size: 137430440
+actual_sha1: b4b71a784c02b277889bfb6ae561c0d1e5c2fabf
+actual_sha256: 95df96bfc8369bbd9ecf9acccd36b4020e2885777524a97b3aa288f660be5d32
+certificate_fingerprints_sha256: e074d204ac2498e9dc904a7bc7ced8464119b79d05668028920583b1e896ebb4;1299e9bfe776a29ff452f8c4f5e55f3b4dfd2934349dd1850b8274f35c71745c;b0b1730ecbc7ff4505142c49f1295e6eda6bcaed7e2c68c5be91b5a11001f024
