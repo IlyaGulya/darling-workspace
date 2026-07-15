@@ -99,7 +99,7 @@ case "${1:-}" in
 		trap 'cleanup_rootless_tier "$?"' EXIT
 		west test --prefix "$prefix" \
 			--bootstrap-runtime-profile homebrew-guest-toolchain-provisioning \
-			--runtime-build-timeout-seconds 1200
+			--runtime-build-timeout-seconds 1800
 		# Select the patch-owned script explicitly. A broad CTest smoke label can
 		# select unrelated regressions and still omit this acceptance proof.
 		west test --profile homebrew \

@@ -76,7 +76,7 @@ case "$command_name" in
 			printf 'clangxx_fingerprint=%s\n' "$clangxx_fingerprint"
 			"$clang_path" --version
 			"$clangxx_path" --version
-		} | sha256sum | cut -c1-16)"
+		} | sha256sum | cut -d' ' -f1)"
 		ccache_version="$(ccache --version | sed -n '1s/.*version //p')"
 		[[ -n "$ccache_version" ]] || {
 			echo "could not determine ccache compatibility version" >&2
@@ -108,7 +108,8 @@ case "$command_name" in
 		{
 			printf 'CCACHE_DIR=%s\n' "$cache_dir"
 			printf 'CCACHE_HASHDIR=true\n'
-			printf 'CCACHE_COMPILERCHECK=content\n'
+			printf 'CCACHE_COMPILERCHECK=string:%s\n' "$compiler_fingerprint"
+			printf 'CCACHE_COMPILER_FINGERPRINT=%s\n' "$compiler_fingerprint"
 			printf 'CCACHE_MAXSIZE=2G\n'
 			printf 'CCACHE_CLANG_PATH=%s\n' "$clang_path"
 			printf 'CCACHE_CLANGXX_PATH=%s\n' "$clangxx_path"
