@@ -119,7 +119,7 @@ deps_script='darling-dev/darling-workspace/ci/install-darling-build-deps.sh'
 [ "$(grep -F -c "github.event_name == 'pull_request'" "$repo/.github/workflows/test-infra.yml")" -ge 1 ]
 grep -F -q 'Scheduled run intentionally covers host only.' "$repo/.github/workflows/test-infra.yml"
 grep -F -q 'description: Run exactly one test tier' "$repo/.github/workflows/test-infra.yml"
-for tier in host guest-smoke guest-toolchain macos; do
+for tier in host guest-smoke guest-toolchain clt-integrity macos; do
 	grep -F -q -- "- $tier" "$repo/.github/workflows/test-infra.yml" || {
 		echo "workflow_dispatch is missing tier option: $tier" >&2
 		exit 1
@@ -130,7 +130,30 @@ if grep -F -q 'guest-full' "$repo/.github/workflows/test-infra.yml"; then
 	exit 1
 fi
 grep -F -q "github.event_name == 'workflow_dispatch' && inputs.tier == 'guest-toolchain'" "$repo/.github/workflows/test-infra.yml"
+grep -F -q "github.event_name == 'workflow_dispatch' && inputs.tier == 'clt-integrity'" "$repo/.github/workflows/test-infra.yml"
 grep -F -q "github.event_name == 'workflow_dispatch' && inputs.tier == 'macos'" "$repo/.github/workflows/test-infra.yml"
+grep -F -q 'ci/verify-clt-provenance.sh "$RUNNER_TEMP/clt-provenance"' "$repo/.github/workflows/test-infra.yml"
+grep -F -q 'ci/compare-clt-provenance.sh "$RUNNER_TEMP/clt-provenance-runs"' "$repo/.github/workflows/test-infra.yml"
+grep -F -q 'runner: [macos-14, macos-15]' "$repo/.github/workflows/test-infra.yml"
+grep -F -q 'pattern: clt-provenance-*' "$repo/.github/workflows/test-infra.yml"
+grep -F -q 'actions/upload-artifact@v7' "$repo/.github/workflows/test-infra.yml"
+clt_integrity_workflow="$(sed -n '/^  clt-integrity:/,/^  macos-package:/p' "$repo/.github/workflows/test-infra.yml")"
+if printf '%s\n' "$clt_integrity_workflow" | grep -F -q 'actions/cache@'; then
+	echo 'CLT integrity job unexpectedly restores a cache' >&2
+	exit 1
+fi
+for evidence_path in provenance.txt provenance.tsv darling-catalog-response.json darling-catalog-http-headers.txt http-headers signatures; do
+	printf '%s\n' "$clt_integrity_workflow" | grep -F -q "/clt-provenance/$evidence_path" || {
+		echo "CLT integrity artifact omits $evidence_path" >&2
+		exit 1
+	}
+done
+if printf '%s\n' "$clt_integrity_workflow" | grep -F -q '/clt-provenance/packages'; then
+	echo 'CLT integrity artifact must not contain downloaded packages' >&2
+	exit 1
+fi
+! grep -F -q 'status = "PASS"' "$repo/ci/verify_clt_provenance.py"
+! grep -F -q 'return "PASS"' "$repo/ci/verify_clt_provenance.py"
 ! grep -F -q "github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'" "$repo/.github/workflows/test-infra.yml"
 ! grep -F -q 'actions/checkout@v4' "$repo/.github/workflows/test-infra.yml"
 ! grep -F -q 'actions/upload-artifact@v4' "$repo/.github/workflows/test-infra.yml"
@@ -151,6 +174,7 @@ printf 'sample\tcompat.sample\tSAMPLE_OK\n' >"$tmp/installed/compat-install-mani
 
 "$repo/tests/run-rootless-prefix-contract.sh"
 "$repo/tests/run-rootless-cleanup-contract.sh"
+"$repo/tests/run-clt-provenance-contract.sh"
 
 : >"$tmp/commands"
 CI_WEST_TOPDIR_RC=1 "$repo/ci/bootstrap-west.sh"
