@@ -116,6 +116,8 @@ deps_script='darling-dev/darling-workspace/ci/install-darling-build-deps.sh'
 [ "$(grep -F -c 'actions/cache@v4' "$repo/.github/workflows/test-infra.yml")" -ge 1 ]
 [ "$(grep -F -c 'darling-command-line-tools-reviewed-v1-${{ runner.os }}' "$repo/.github/workflows/test-infra.yml")" -ge 1 ]
 [ "$(grep -F -c 'ci/collect-rootless-diagnostics.sh .west-test/rootless-diagnostics/tier' "$repo/.github/workflows/test-infra.yml")" -ge 1 ]
+grep -F -q 'guest-clang-version.txt' "$repo/ci/collect-rootless-diagnostics.sh"
+grep -F -q 'guest-clang-origin.txt' "$repo/ci/collect-rootless-diagnostics.sh"
 [ "$(grep -F -c 'ci/run-rootless-bootstrap-diagnostic.sh' "$repo/.github/workflows/test-infra.yml")" -ge 1 ]
 [ "$(grep -F -c -- '--runtime-build-timeout-seconds 600' "$repo/ci/run-rootless-bootstrap-diagnostic.sh")" -ge 1 ]
 [ "$(grep -F -c 'ci/cleanup-rootless-prefixes.sh' "$repo/.github/workflows/test-infra.yml")" -ge 2 ]
