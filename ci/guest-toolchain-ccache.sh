@@ -24,14 +24,55 @@ case "$command_name" in
 		command -v clang++ >/dev/null
 		mkdir -p -- "$cache_dir"
 
-		clang_path="$(readlink -f -- "$(command -v clang)")"
-		clangxx_path="$(readlink -f -- "$(command -v clang++)")"
-		clang_fingerprint="$(sha256sum -- "$clang_path" | cut -d' ' -f1)"
-		clangxx_fingerprint="$(sha256sum -- "$clangxx_path" | cut -d' ' -f1)"
+		compiler_invocation_path() {
+			local compiler="$1"
+			local path
+			path="$(command -v "$compiler")"
+			[[ "$path" = /* ]] || {
+				echo "compiler path is not absolute: $compiler -> $path" >&2
+				exit 1
+			}
+			[[ -f "$path" && -x "$path" ]] || {
+				echo "compiler invocation path is not executable: $path" >&2
+				exit 1
+			}
+			printf '%s\n' "$path"
+		}
+		compiler_resolved_path() {
+			local invocation_path="$1"
+			local path
+			path="$(readlink -f -- "$invocation_path")"
+			[[ "$path" = /* && -f "$path" && -x "$path" ]] || {
+				echo "compiler resolved target is not executable: $invocation_path -> $path" >&2
+				exit 1
+			}
+			printf '%s\n' "$path"
+		}
+
+		clang_path="$(compiler_invocation_path clang)"
+		clangxx_path="$(compiler_invocation_path clang++)"
+		clang_resolved_path="$(compiler_resolved_path "$clang_path")"
+		clangxx_resolved_path="$(compiler_resolved_path "$clangxx_path")"
+		clang_fingerprint="$(sha256sum -- "$clang_resolved_path" | cut -d' ' -f1)"
+		clangxx_fingerprint="$(sha256sum -- "$clangxx_resolved_path" | cut -d' ' -f1)"
+		probe_dir="$(mktemp -d "${RUNNER_TEMP:-/tmp}/darling-ccache-compiler-probe.XXXXXX")"
+		trap 'rm -rf -- "$probe_dir"' EXIT
+		printf '%s\n' \
+			'#include <string>' \
+			'int main() {' \
+			'  const std::string value = "darling";' \
+			'  return value == "darling" ? 0 : 1;' \
+			'}' >"$probe_dir/probe.cpp"
+		"$clangxx_path" -std=c++11 "$probe_dir/probe.cpp" -o "$probe_dir/probe"
+		"$probe_dir/probe"
+		rm -rf -- "$probe_dir"
+		trap - EXIT
 		compiler_fingerprint="$({
 			printf 'clang_path=%s\n' "$clang_path"
+			printf 'clang_resolved_path=%s\n' "$clang_resolved_path"
 			printf 'clang_fingerprint=%s\n' "$clang_fingerprint"
 			printf 'clangxx_path=%s\n' "$clangxx_path"
+			printf 'clangxx_resolved_path=%s\n' "$clangxx_resolved_path"
 			printf 'clangxx_fingerprint=%s\n' "$clangxx_fingerprint"
 			"$clang_path" --version
 			"$clangxx_path" --version
@@ -71,6 +112,8 @@ case "$command_name" in
 			printf 'CCACHE_MAXSIZE=2G\n'
 			printf 'CCACHE_CLANG_PATH=%s\n' "$clang_path"
 			printf 'CCACHE_CLANGXX_PATH=%s\n' "$clangxx_path"
+			printf 'CCACHE_CLANG_RESOLVED_PATH=%s\n' "$clang_resolved_path"
+			printf 'CCACHE_CLANGXX_RESOLVED_PATH=%s\n' "$clangxx_resolved_path"
 			printf 'CCACHE_CLANG_FINGERPRINT=%s\n' "$clang_fingerprint"
 			printf 'CCACHE_CLANGXX_FINGERPRINT=%s\n' "$clangxx_fingerprint"
 		} >>"${GITHUB_ENV:?GITHUB_ENV is required}"
@@ -82,6 +125,8 @@ case "$command_name" in
 			printf 'compiler_fingerprint=%s\n' "$compiler_fingerprint"
 			printf 'clang_path=%s\n' "$clang_path"
 			printf 'clangxx_path=%s\n' "$clangxx_path"
+			printf 'clang_resolved_path=%s\n' "$clang_resolved_path"
+			printf 'clangxx_resolved_path=%s\n' "$clangxx_resolved_path"
 			printf 'clang_fingerprint=%s\n' "$clang_fingerprint"
 			printf 'clangxx_fingerprint=%s\n' "$clangxx_fingerprint"
 			printf 'ccache_compatibility=%s\n' "$ccache_compatibility"

@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import os
 import shutil
+import subprocess
 import sys
 import tempfile
 import types
@@ -78,14 +79,19 @@ def assert_profile_contract() -> None:
 
 
 def assert_build_contract() -> None:
-    def compiler_identity() -> dict[str, str]:
+    def compiler_identity(links_root: Path) -> dict[str, str]:
         result = {}
+        links_root.mkdir()
+        shared_target = Path(shutil.which("clang")).resolve(strict=True)
         for command, variable in (
             ("clang", "CLANG"),
             ("clang++", "CLANGXX"),
         ):
-            resolved = Path(shutil.which(command)).resolve(strict=True)
-            result[f"CCACHE_{variable}_PATH"] = str(resolved)
+            invocation = links_root / command
+            invocation.symlink_to(shared_target)
+            resolved = invocation.resolve(strict=True)
+            result[f"CCACHE_{variable}_PATH"] = str(invocation)
+            result[f"CCACHE_{variable}_RESOLVED_PATH"] = str(resolved)
             result[f"CCACHE_{variable}_FINGERPRINT"] = hashlib.sha256(
                 resolved.read_bytes()
             ).hexdigest()
@@ -100,7 +106,11 @@ def assert_build_contract() -> None:
             "CMAKE_C_COMPILER:FILEPATH=/usr/bin/clang\n"
             "CMAKE_CXX_COMPILER:FILEPATH=/usr/bin/clang++\n"
         )
-        identity = compiler_identity()
+        identity = compiler_identity(root / "compiler-links")
+        assert identity["CCACHE_CLANG_RESOLVED_PATH"] == identity[
+            "CCACHE_CLANGXX_RESOLVED_PATH"
+        ]
+        assert identity["CCACHE_CLANG_PATH"] != identity["CCACHE_CLANGXX_PATH"]
         with patch.dict(os.environ, identity, clear=False):
             os.environ.pop("DARLING_BUILD_DIR", None)
             host = Host(current_build)
@@ -163,8 +173,10 @@ def assert_build_contract() -> None:
 
         non_clang = {}
         for command, variable in (("gcc", "CLANG"), ("g++", "CLANGXX")):
-            resolved = Path(shutil.which(command)).resolve(strict=True)
-            non_clang[f"CCACHE_{variable}_PATH"] = str(resolved)
+            invocation = Path(shutil.which(command)).absolute()
+            resolved = invocation.resolve(strict=True)
+            non_clang[f"CCACHE_{variable}_PATH"] = str(invocation)
+            non_clang[f"CCACHE_{variable}_RESOLVED_PATH"] = str(resolved)
             non_clang[f"CCACHE_{variable}_FINGERPRINT"] = hashlib.sha256(
                 resolved.read_bytes()
             ).hexdigest()
@@ -189,6 +201,53 @@ def assert_build_contract() -> None:
             assert "-DCMAKE_C_COMPILER=/usr/bin/gcc" in ordinary_args
             assert "-DCMAKE_CXX_COMPILER=/usr/bin/g++" in ordinary_args
             assert service.build_environment({}, root / "scratch") is None
+
+
+def assert_prepare_probe_contract() -> None:
+    with tempfile.TemporaryDirectory(prefix="west-ccache-prepare-contract-") as raw:
+        root = Path(raw)
+        env = {
+            **os.environ,
+            "GITHUB_ENV": str(root / "github-env"),
+            "GITHUB_OUTPUT": str(root / "github-output"),
+            "GITHUB_SHA": "contract",
+            "RUNNER_ARCH": "X64",
+            "RUNNER_OS": "Linux",
+            "RUNNER_TEMP": str(root),
+        }
+        result = subprocess.run(
+            [str(ROOT / "ci/guest-toolchain-ccache.sh"), "prepare", "cold"],
+            cwd=ROOT,
+            env=env,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        assert result.returncode == 0, result.stderr
+        output = (root / "github-output").read_text()
+        values = dict(line.split("=", 1) for line in output.splitlines())
+        for name in (
+            "clang_path",
+            "clangxx_path",
+            "clang_resolved_path",
+            "clangxx_resolved_path",
+        ):
+            assert Path(values[name]).is_absolute(), name
+        assert values["clang_resolved_path"] == str(
+            Path(values["clang_path"]).resolve(strict=True)
+        )
+        assert values["clangxx_resolved_path"] == str(
+            Path(values["clangxx_path"]).resolve(strict=True)
+        )
+        assert values["clang_fingerprint"] == hashlib.sha256(
+            Path(values["clang_resolved_path"]).read_bytes()
+        ).hexdigest()
+        assert values["clangxx_fingerprint"] == hashlib.sha256(
+            Path(values["clangxx_resolved_path"]).read_bytes()
+        ).hexdigest()
+
+        if values["clang_resolved_path"] == values["clangxx_resolved_path"]:
+            assert values["clang_path"] != values["clangxx_path"]
 
 
 def assert_workflow_contract() -> None:
@@ -222,11 +281,16 @@ def assert_workflow_contract() -> None:
     for variable in (
         "CCACHE_CLANG_PATH",
         "CCACHE_CLANGXX_PATH",
+        "CCACHE_CLANG_RESOLVED_PATH",
+        "CCACHE_CLANGXX_RESOLVED_PATH",
         "CCACHE_CLANG_FINGERPRINT",
         "CCACHE_CLANGXX_FINGERPRINT",
     ):
         assert f"printf '{variable}=%s\\n'" in helper
     assert "readlink -f" in helper
+    assert 'path="$(command -v "$compiler")"' in helper
+    assert '"$clangxx_path" -std=c++11' in helper
+    assert "std::string" in helper
     assert "RUNNER_OS" in helper
     assert "RUNNER_ARCH" in helper
     assert "compiler_fingerprint" in helper
@@ -241,5 +305,6 @@ def assert_workflow_contract() -> None:
 
 assert_profile_contract()
 assert_build_contract()
+assert_prepare_probe_contract()
 assert_workflow_contract()
 print("PASS guest-toolchain-ccache-contract")
