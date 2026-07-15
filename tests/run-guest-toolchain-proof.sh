@@ -11,6 +11,7 @@ source=/private/var/tmp/west-clt-proof.c
 binary=/private/var/tmp/west-clt-proof
 version=/private/var/tmp/west-clt-proof.clang-version
 origin=/private/var/tmp/west-clt-proof.clang-origin
+marker=/private/var/tmp/west-clt-proof.marker
 clang_version="$("$cc" --version)"
 printf "%s\n" "$clang_version" > "$version"
 printf "%s\n" "execution-context=guest" "executable=$cc" > "$origin"
@@ -18,6 +19,7 @@ printf "%s\n" "$clang_version"
 printf "%s\n" "int main(void) { return 0; }" > "$source"
 "$cc" -isysroot "$sdk" "$source" -o "$binary"
 "$binary"
+printf "%s\n" GUEST_TOOLCHAIN_PROOF_OK > "$marker"
 '
 
 # Shutdown is a host-side launcher operation.  The guest shell must not be
