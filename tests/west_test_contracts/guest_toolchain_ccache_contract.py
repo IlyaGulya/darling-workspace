@@ -81,6 +81,7 @@ def assert_profile_contract() -> None:
 def assert_build_contract() -> None:
     def compiler_identity(links_root: Path) -> dict[str, str]:
         result = {}
+        records = []
         links_root.mkdir()
         shared_target = Path(shutil.which("clang")).resolve(strict=True)
         for command, variable in (
@@ -95,6 +96,30 @@ def assert_build_contract() -> None:
             result[f"CCACHE_{variable}_FINGERPRINT"] = hashlib.sha256(
                 resolved.read_bytes()
             ).hexdigest()
+            version = subprocess.run(
+                [str(invocation), "--version"],
+                capture_output=True,
+                text=True,
+                check=True,
+            )
+            records.append(
+                {
+                    "name": "CLANGXX" if variable == "CLANGXX" else "CLANG",
+                    "path": str(invocation),
+                    "resolved_path": str(resolved),
+                    "fingerprint": result[f"CCACHE_{variable}_FINGERPRINT"],
+                    "version_stdout": version.stdout,
+                }
+            )
+        payload = "".join(
+            f"{record['name'].lower()}_path={record['path']}\n"
+            f"{record['name'].lower()}_resolved_path={record['resolved_path']}\n"
+            f"{record['name'].lower()}_fingerprint={record['fingerprint']}\n"
+            for record in records
+        ) + "".join(record["version_stdout"] for record in records)
+        result["CCACHE_COMPILER_FINGERPRINT"] = hashlib.sha256(
+            payload.encode()
+        ).hexdigest()
         return result
 
     with tempfile.TemporaryDirectory(prefix="west-ccache-build-contract-") as raw:
@@ -157,7 +182,9 @@ def assert_build_contract() -> None:
             environment = service.build_environment(proof, scratch)
             assert environment["CCACHE_BASEDIR"] == str(scratch)
             assert environment["CCACHE_HASHDIR"] == "true"
-            assert environment["CCACHE_COMPILERCHECK"] == "content"
+            assert environment["CCACHE_COMPILERCHECK"] == (
+                f"string:{identity['CCACHE_COMPILER_FINGERPRINT']}"
+            )
             assert "CCACHE_LOGFILE" not in environment
 
         with patch.dict(os.environ, {}, clear=False):
@@ -245,6 +272,18 @@ def assert_prepare_probe_contract() -> None:
         assert values["clangxx_fingerprint"] == hashlib.sha256(
             Path(values["clangxx_resolved_path"]).read_bytes()
         ).hexdigest()
+        assert len(values["compiler_fingerprint"]) == 64
+        assert set(values["compiler_fingerprint"]) <= set("0123456789abcdef")
+        env_values = dict(
+            line.split("=", 1)
+            for line in (root / "github-env").read_text().splitlines()
+        )
+        assert env_values["CCACHE_COMPILER_FINGERPRINT"] == values[
+            "compiler_fingerprint"
+        ]
+        assert env_values["CCACHE_COMPILERCHECK"] == (
+            f"string:{values['compiler_fingerprint']}"
+        )
 
         if values["clang_resolved_path"] == values["clangxx_resolved_path"]:
             assert values["clang_path"] != values["clangxx_path"]
@@ -287,6 +326,9 @@ def assert_workflow_contract() -> None:
         "CCACHE_CLANGXX_FINGERPRINT",
     ):
         assert f"printf '{variable}=%s\\n'" in helper
+    assert "CCACHE_COMPILERCHECK=string:%s" in helper
+    assert "CCACHE_COMPILER_FINGERPRINT=%s" in helper
+    assert "} | sha256sum | cut -d' ' -f1)" in helper
     assert "readlink -f" in helper
     assert 'path="$(command -v "$compiler")"' in helper
     assert '"$clangxx_path" -std=c++11' in helper
@@ -301,6 +343,15 @@ def assert_workflow_contract() -> None:
     assert "CCACHE_DIR=$HOME" not in helper
     assert "darling-guest-toolchain-ccache" in helper
     assert "${RUNNER_TEMP:" in helper
+
+    tiers = (ROOT / "ci/run-test-tier.sh").read_text()
+    smoke = tiers.split("guest-smoke)", 1)[1].split("guest-toolchain)", 1)[0]
+    toolchain = tiers.split("guest-toolchain)", 1)[1].split("macos)", 1)[0]
+    assert "--runtime-build-timeout-seconds 600" in smoke
+    assert "--runtime-build-timeout-seconds 1200" not in smoke
+    assert "--runtime-build-timeout-seconds 1800" in toolchain
+    assert "--runtime-build-timeout-seconds 1200" not in toolchain
+    assert "timeout-minutes: 45" in workflow
 
 
 assert_profile_contract()

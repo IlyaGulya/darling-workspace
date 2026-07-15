@@ -54,6 +54,7 @@ class RuntimeBuildService:
     @classmethod
     def _ccache_compiler_identity(cls) -> dict[str, str]:
         identity = {}
+        records = []
         for name, path_name, fingerprint_name in (
             ("clang", "CCACHE_CLANG_PATH", "CCACHE_CLANG_FINGERPRINT"),
             ("clang++", "CCACHE_CLANGXX_PATH", "CCACHE_CLANGXX_FINGERPRINT"),
@@ -126,6 +127,45 @@ class RuntimeBuildService:
             if version.returncode or "clang" not in version_text:
                 raise ValueError(f"ccache compiler is not Clang: {path}")
             identity[name] = str(path)
+            records.append(
+                {
+                    "name": "clangxx" if name == "clang++" else name,
+                    "path": str(path),
+                    "resolved_path": str(resolved_path),
+                    "fingerprint": expected_fingerprint,
+                    "version_stdout": version.stdout,
+                }
+            )
+
+        expected_identity_fingerprint = os.environ.get(
+            "CCACHE_COMPILER_FINGERPRINT"
+        )
+        if not expected_identity_fingerprint:
+            raise ValueError(
+                "ccache compiler identity is incomplete; missing "
+                "CCACHE_COMPILER_FINGERPRINT"
+            )
+        if not re.fullmatch(r"[0-9a-f]{64}", expected_identity_fingerprint):
+            raise ValueError(
+                "ccache compiler identity fingerprint is not SHA-256: "
+                "CCACHE_COMPILER_FINGERPRINT"
+            )
+        identity_payload = "".join(
+            f"{record['name']}_path={record['path']}\n"
+            f"{record['name']}_resolved_path={record['resolved_path']}\n"
+            f"{record['name']}_fingerprint={record['fingerprint']}\n"
+            for record in records
+        ) + "".join(record["version_stdout"] for record in records)
+        actual_identity_fingerprint = hashlib.sha256(
+            identity_payload.encode()
+        ).hexdigest()
+        if actual_identity_fingerprint != expected_identity_fingerprint:
+            raise ValueError(
+                "ccache compiler identity fingerprint mismatch: "
+                f"expected {expected_identity_fingerprint}, "
+                f"actual {actual_identity_fingerprint}"
+            )
+        identity["compiler_fingerprint"] = expected_identity_fingerprint
         return identity
 
     def configure_args(
@@ -210,13 +250,15 @@ class RuntimeBuildService:
 
         if self._compiler_launcher(proof) is None:
             return None
-        self._ccache_compiler_identity()
+        compiler_identity = self._ccache_compiler_identity()
         environment = os.environ.copy()
         environment.update(
             {
                 "CCACHE_BASEDIR": str(scratch_root),
                 "CCACHE_HASHDIR": "true",
-                "CCACHE_COMPILERCHECK": "content",
+                "CCACHE_COMPILERCHECK": (
+                    f"string:{compiler_identity['compiler_fingerprint']}"
+                ),
             }
         )
         environment.pop("CCACHE_LOGFILE", None)
