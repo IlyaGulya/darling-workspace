@@ -49,7 +49,8 @@ fi
 if [[ -d "$prefix" ]]; then
 	for evidence in \
 		private/var/tmp/west-clt-proof.clang-version \
-		private/var/tmp/west-clt-proof.clang-origin; do
+		private/var/tmp/west-clt-proof.clang-origin \
+		private/var/tmp/west-clt-proof.marker; do
 		file="$prefix/$evidence"
 		[[ -f "$file" && ! -L "$file" ]] || continue
 		case "$evidence" in
@@ -58,6 +59,9 @@ if [[ -d "$prefix" ]]; then
 				;;
 			private/var/tmp/west-clt-proof.clang-origin)
 				cp -- "$file" "$output_dir/guest-clang-origin.txt"
+				;;
+			private/var/tmp/west-clt-proof.marker)
+				cp -- "$file" "$output_dir/guest-toolchain-proof-marker.txt"
 				;;
 		esac
 	done
