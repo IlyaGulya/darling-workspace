@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import hashlib
 import os
 import re
+import subprocess
 import sys
 import time
 from pathlib import Path
@@ -12,7 +14,7 @@ from typing import Any
 
 from test_execution import run_bounded
 from test_results import RuntimeBuildFailure
-from test_runtime import runtime_build_targets
+from test_runtime import COMPILER_LAUNCHERS, runtime_build_targets
 
 
 class RuntimeBuildService:
@@ -32,19 +34,116 @@ class RuntimeBuildService:
                 return line.split("=", 1)[1]
         return None
 
-    def configure_args(self, proof: dict, prefix: Path) -> list[str]:
+    @staticmethod
+    def _compiler_launcher(proof: dict) -> str | None:
+        launcher = proof.get("compiler-launcher")
+        if launcher is None:
+            return None
+        if not isinstance(launcher, str) or launcher not in COMPILER_LAUNCHERS:
+            raise ValueError(f"unsupported runtime compiler launcher: {launcher!r}")
+        return launcher
+
+    @staticmethod
+    def _compiler_file_sha256(path: Path) -> str:
+        digest = hashlib.sha256()
+        with path.open("rb") as stream:
+            for chunk in iter(lambda: stream.read(1024 * 1024), b""):
+                digest.update(chunk)
+        return digest.hexdigest()
+
+    @classmethod
+    def _ccache_compiler_identity(cls) -> dict[str, str]:
+        identity = {}
+        for name, path_name, fingerprint_name in (
+            ("clang", "CCACHE_CLANG_PATH", "CCACHE_CLANG_FINGERPRINT"),
+            ("clang++", "CCACHE_CLANGXX_PATH", "CCACHE_CLANGXX_FINGERPRINT"),
+        ):
+            raw_path = os.environ.get(path_name)
+            expected_fingerprint = os.environ.get(fingerprint_name)
+            if not raw_path or not expected_fingerprint:
+                raise ValueError(
+                    "ccache compiler identity is incomplete; missing "
+                    f"{path_name} or {fingerprint_name}"
+                )
+            path = Path(raw_path)
+            if not path.is_absolute() or path.resolve(strict=True) != path:
+                raise ValueError(
+                    f"ccache compiler path must be canonical: {path}"
+                )
+            if not path.is_file() or not os.access(path, os.X_OK):
+                raise ValueError(f"ccache compiler path is not executable: {path}")
+            if not re.fullmatch(r"[0-9a-f]{64}", expected_fingerprint):
+                raise ValueError(
+                    f"ccache compiler fingerprint is not SHA-256: {fingerprint_name}"
+                )
+            actual_fingerprint = cls._compiler_file_sha256(path)
+            if actual_fingerprint != expected_fingerprint:
+                raise ValueError(
+                    f"ccache compiler fingerprint mismatch for {name}: {path}"
+                )
+            try:
+                version = subprocess.run(
+                    [str(path), "--version"],
+                    capture_output=True,
+                    text=True,
+                    check=False,
+                    timeout=10,
+                )
+            except (OSError, subprocess.SubprocessError) as error:
+                raise ValueError(f"could not verify ccache compiler {path}: {error}") from error
+            version_text = f"{version.stdout}\n{version.stderr}".lower()
+            if version.returncode or "clang" not in version_text:
+                raise ValueError(f"ccache compiler is not Clang: {path}")
+            identity[name] = str(path)
+        return identity
+
+    def configure_args(
+        self, proof: dict, prefix: Path, scratch_root: Path | None = None
+    ) -> list[str]:
+        launcher = self._compiler_launcher(proof)
+        compiler_paths = {}
         current_build = Path(
             os.environ.get("DARLING_BUILD_DIR", str(Path.home() / "work/darling-build"))
         )
+        if launcher is not None:
+            compiler_paths = self._ccache_compiler_identity()
         args = ["-G", self.cmake_cache_value(current_build, "CMAKE_GENERATOR") or "Ninja"]
         cmake_defines = {"CMAKE_BUILD_TYPE": "Debug", **(proof.get("cmake-defines") or {})}
         active_profile = getattr(self._host, "_active_profile", None)
         if active_profile and "DARLING_PATCH_PROFILE" not in cmake_defines:
             cmake_defines["DARLING_PATCH_PROFILE"] = active_profile
-        for key in ("CMAKE_C_COMPILER", "CMAKE_CXX_COMPILER"):
-            value = self.cmake_cache_value(current_build, key)
-            if value:
-                args.append(f"-D{key}={value}")
+        if launcher is None:
+            for key in ("CMAKE_C_COMPILER", "CMAKE_CXX_COMPILER"):
+                value = self.cmake_cache_value(current_build, key)
+                if value:
+                    compiler_paths[key] = value
+                    args.append(f"-D{key}={value}")
+        else:
+            args.extend(
+                [
+                    f"-DCMAKE_C_COMPILER={compiler_paths['clang']}",
+                    f"-DCMAKE_CXX_COMPILER={compiler_paths['clang++']}",
+                ]
+            )
+        if launcher is not None:
+            if scratch_root is None:
+                raise ValueError(
+                    "ccache runtime builds need their per-run scratch root"
+                )
+            flags = [
+                f"-fdebug-prefix-map={scratch_root}=.",
+                f"-ffile-prefix-map={scratch_root}=.",
+            ]
+            flags.append("-fdebug-compilation-dir=.")
+            for key in ("CMAKE_C_FLAGS", "CMAKE_CXX_FLAGS"):
+                current = str(cmake_defines.get(key, "")).strip()
+                cmake_defines[key] = " ".join((current, *flags)).strip()
+            args.extend(
+                [
+                    f"-DCMAKE_C_COMPILER_LAUNCHER={launcher}",
+                    f"-DCMAKE_CXX_COMPILER_LAUNCHER={launcher}",
+                ]
+            )
         inherited = set(proof.get("inherit-cmake-cache", []))
         if "all" in inherited:
             inherited.update({"DARLING_RING_TRANSPORT", "DSERVER_RING_TRANSPORT"})
@@ -74,6 +173,23 @@ class RuntimeBuildService:
             args.append(f"-D{key}={value}")
         args.append(f"-DCMAKE_INSTALL_PREFIX={prefix}")
         return args
+
+    def build_environment(self, proof: dict, scratch_root: Path) -> dict[str, str] | None:
+        """Return per-run ccache state without changing the runtime layout."""
+
+        if self._compiler_launcher(proof) is None:
+            return None
+        self._ccache_compiler_identity()
+        environment = os.environ.copy()
+        environment.update(
+            {
+                "CCACHE_BASEDIR": str(scratch_root),
+                "CCACHE_HASHDIR": "true",
+                "CCACHE_COMPILERCHECK": "content",
+            }
+        )
+        environment.pop("CCACHE_LOGFILE", None)
+        return environment
 
     def dump_command_tail(self, label: str, result) -> None:
         streams = [stream for stream in (result.stdout, result.stderr) if stream]
@@ -114,7 +230,7 @@ class RuntimeBuildService:
         *,
         label: str,
         allow_failure: bool,
-        configure_args: Callable[[dict, Path], list[str]],
+        configure_args: Callable[[dict, Path, Path], list[str]],
         dump_command_tail: Callable[[str, Any], None],
         runner: Callable[..., Any] = run_bounded,
         timeout_seconds: int | None = None,
@@ -128,13 +244,21 @@ class RuntimeBuildService:
         )
         if timeout <= 0:
             raise ValueError("runtime build timeout must be greater than zero")
+        build_environment = self.build_environment(proof, scratch_root)
         configured_at = time.monotonic()
         self._host.inf(f"  runtime phase start: {label} configure")
         self._host.inf(f"  {label} configure: {source_root} -> {build_root}")
         configured = runner(
-            ["cmake", "-S", str(source_root), "-B", str(build_root), *configure_args(proof, prefix)],
+            [
+                "cmake",
+                "-S",
+                str(source_root),
+                "-B",
+                str(build_root),
+                *configure_args(proof, prefix, scratch_root),
+            ],
             cwd=Path(self._host.topdir),
-            env=None,
+            env=build_environment,
             timeout_seconds=timeout,
             capture_output=True,
             heartbeat_seconds=30,
@@ -157,7 +281,7 @@ class RuntimeBuildService:
         built = runner(
             ["ninja", "-C", str(build_root), *targets],
             cwd=Path(self._host.topdir),
-            env=None,
+            env=build_environment,
             timeout_seconds=timeout,
             capture_output=True,
             heartbeat_seconds=30,
