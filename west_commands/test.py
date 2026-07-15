@@ -1781,6 +1781,8 @@ class DarlingTest(ProfileOperationsMixin, BootstrapRuntimeProfileMixin, WestComm
             "runtime-artifacts": definition["runtime-artifacts"],
             "cmake-defines": cmake_defines,
         }
+        if definition.get("compiler-launcher") is not None:
+            proof["compiler-launcher"] = definition["compiler-launcher"]
         if omit_patch:
             proof["bad-profile"] = "current-minus-patch"
             if isinstance(red_proof, dict):
@@ -3648,8 +3650,10 @@ class DarlingTest(ProfileOperationsMixin, BootstrapRuntimeProfileMixin, WestComm
         return RuntimeBuildService.cmake_cache_value(build_dir, key)
 
 
-    def _runtime_red_configure_args(self, proof, prefix: Path) -> list[str]:
-        return RuntimeBuildService(self).configure_args(proof, prefix)
+    def _runtime_red_configure_args(
+        self, proof, prefix: Path, scratch_root: Path | None = None
+    ) -> list[str]:
+        return RuntimeBuildService(self).configure_args(proof, prefix, scratch_root)
 
 
     def _runtime_red_build_artifacts(

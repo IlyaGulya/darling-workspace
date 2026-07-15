@@ -49,7 +49,7 @@ with tempfile.TemporaryDirectory() as temp:
         root / "scratch",
         label="DIAGNOSTIC",
         allow_failure=False,
-        configure_args=lambda _proof, _prefix: [],
+        configure_args=lambda _proof, _prefix, _scratch: [],
         dump_command_tail=lambda *_args: None,
         runner=runner,
         timeout_seconds=7,
