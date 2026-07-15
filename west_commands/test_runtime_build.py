@@ -59,27 +59,58 @@ class RuntimeBuildService:
             ("clang++", "CCACHE_CLANGXX_PATH", "CCACHE_CLANGXX_FINGERPRINT"),
         ):
             raw_path = os.environ.get(path_name)
+            resolved_path_name = (
+                "CCACHE_CLANG_RESOLVED_PATH"
+                if name == "clang"
+                else "CCACHE_CLANGXX_RESOLVED_PATH"
+            )
+            raw_resolved_path = os.environ.get(resolved_path_name)
             expected_fingerprint = os.environ.get(fingerprint_name)
-            if not raw_path or not expected_fingerprint:
+            if not raw_path or not raw_resolved_path or not expected_fingerprint:
                 raise ValueError(
                     "ccache compiler identity is incomplete; missing "
-                    f"{path_name} or {fingerprint_name}"
+                    f"{path_name}, {resolved_path_name}, or {fingerprint_name}"
                 )
             path = Path(raw_path)
-            if not path.is_absolute() or path.resolve(strict=True) != path:
+            resolved_path = Path(raw_resolved_path)
+            if not path.is_absolute():
                 raise ValueError(
-                    f"ccache compiler path must be canonical: {path}"
+                    f"ccache compiler invocation path must be absolute: {path}"
                 )
             if not path.is_file() or not os.access(path, os.X_OK):
-                raise ValueError(f"ccache compiler path is not executable: {path}")
+                raise ValueError(
+                    f"ccache compiler invocation path is not executable: {path}"
+                )
+            try:
+                actual_resolved_path = path.resolve(strict=True)
+                declared_resolved_path = resolved_path.resolve(strict=True)
+            except OSError as error:
+                raise ValueError(
+                    "ccache compiler path cannot be resolved: "
+                    f"{path} -> {resolved_path}"
+                ) from error
+            if (
+                not resolved_path.is_absolute()
+                or declared_resolved_path != resolved_path
+                or actual_resolved_path != resolved_path
+            ):
+                raise ValueError(
+                    f"ccache compiler resolved path mismatch: {path} -> "
+                    f"{resolved_path} (actual {actual_resolved_path})"
+                )
+            if not resolved_path.is_file() or not os.access(resolved_path, os.X_OK):
+                raise ValueError(
+                    f"ccache compiler resolved target is not executable: {resolved_path}"
+                )
             if not re.fullmatch(r"[0-9a-f]{64}", expected_fingerprint):
                 raise ValueError(
                     f"ccache compiler fingerprint is not SHA-256: {fingerprint_name}"
                 )
-            actual_fingerprint = cls._compiler_file_sha256(path)
+            actual_fingerprint = cls._compiler_file_sha256(resolved_path)
             if actual_fingerprint != expected_fingerprint:
                 raise ValueError(
-                    f"ccache compiler fingerprint mismatch for {name}: {path}"
+                    "ccache compiler fingerprint mismatch for "
+                    f"{name}: {resolved_path}"
                 )
             try:
                 version = subprocess.run(
