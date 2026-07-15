@@ -13,8 +13,10 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "ci"))
+sys.path.insert(0, str(ROOT / "west_commands"))
 
 import compare_clt_provenance
+import guest_toolchain
 import verify_clt_provenance
 from verify_clt_provenance import (
     MAX_XAR_TOC_COMPRESSED,
@@ -99,7 +101,29 @@ def write_xar(path: Path, toc: bytes, declared_size: int | None = None) -> None:
     )
 
 
+def read_reviewed_provenance() -> dict[str, dict[str, str]]:
+    path = ROOT / "docs/clt-provenance-041-90419.txt"
+    packages: dict[str, dict[str, str]] = {}
+    current: dict[str, str] | None = None
+    for line in path.read_text(encoding="utf-8").splitlines():
+        if line.startswith("[package: ") and line.endswith("]"):
+            package_id = line[len("[package: ") : -1]
+            current = {}
+            packages[package_id] = current
+        elif current is not None and ": " in line:
+            key, value = line.split(": ", 1)
+            current[key] = value
+    return packages
+
+
 def main() -> None:
+    reviewed = read_reviewed_provenance()
+    assert set(reviewed) == set(guest_toolchain.REVIEWED_COMMAND_LINE_TOOLS_SHA256)
+    assert {
+        package_id: values["actual_sha256"]
+        for package_id, values in reviewed.items()
+    } == guest_toolchain.REVIEWED_COMMAND_LINE_TOOLS_SHA256
+
     assert normalize_download_url(
         "http://swcdn.apple.com/path/pkg"
     ) == "https://swcdn.apple.com/path/pkg"
