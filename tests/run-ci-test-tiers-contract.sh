@@ -104,6 +104,64 @@ if grep -F -q "west test --prefix $tmp/runner/darling-rootless-toolchain --boots
 	exit 1
 fi
 grep -F -x -q "west test --profile homebrew --patch darling/rootless-prefix-initialization.patch --env darling --label name:rootless_guest_toolchain_compile_execute --reuse-prefix-runtime --prefix $tmp/runner/darling-rootless-toolchain" "$tmp/commands"
+lifecycle_repo="$tmp/lifecycle-repo"
+lifecycle_bin="$tmp/lifecycle-bin"
+lifecycle_log="$tmp/lifecycle.log"
+lifecycle_prefix="$tmp/lifecycle-runner/darling-rootless-toolchain"
+mkdir -p "$lifecycle_repo/ci" "$lifecycle_repo/scripts" "$lifecycle_bin"
+cp "$repo/ci/run-test-tier.sh" "$lifecycle_repo/ci/run-test-tier.sh"
+cp "$repo/ci/rootless-prefix.sh" "$lifecycle_repo/ci/rootless-prefix.sh"
+cat >"$lifecycle_bin/west" <<'WEST'
+#!/usr/bin/env bash
+set -euo pipefail
+if [[ "$*" == *"--bootstrap-runtime-profile homebrew-guest-toolchain-provisioning"* ]]; then
+	prefix=""
+	while (($#)); do
+		if [[ "$1" == --prefix && $# -ge 2 ]]; then
+			prefix="$2"
+			break
+		fi
+		shift
+	done
+	mkdir -p \
+		"$prefix/Library/Developer/CommandLineTools/usr/bin" \
+		"$prefix/Library/Developer/CommandLineTools/SDKs/MacOSX.sdk"
+	touch "$prefix/Library/Developer/CommandLineTools/usr/bin/clang"
+	chmod +x "$prefix/Library/Developer/CommandLineTools/usr/bin/clang"
+fi
+if [[ "$*" == *"--cleanup-prefix"* ]]; then
+	printf '%s\n' cleanup >>"$LIFECYCLE_LOG"
+fi
+WEST
+chmod +x "$lifecycle_bin/west"
+cat >"$lifecycle_repo/ci/collect-rootless-diagnostics.sh" <<'COLLECTOR'
+#!/usr/bin/env bash
+set -euo pipefail
+output="$1"
+prefix="$2"
+[[ -d "$prefix" ]] || exit 1
+mkdir -p "$output"
+printf '%s\n' evidence >>"$LIFECYCLE_LOG"
+printf 'guest evidence\n' >"$output/collector-ran"
+COLLECTOR
+chmod +x "$lifecycle_repo/ci/collect-rootless-diagnostics.sh"
+cat >"$lifecycle_repo/scripts/west-job.sh" <<'JOB'
+#!/usr/bin/env bash
+set -euo pipefail
+exit 0
+JOB
+chmod +x "$lifecycle_repo/scripts/west-job.sh"
+PATH="$lifecycle_bin:$PATH" \
+	RUNNER_TEMP="$tmp/lifecycle-runner" \
+	DARLING_TOOLCHAIN_PREFIX="$lifecycle_prefix" \
+	LIFECYCLE_LOG="$lifecycle_log" \
+	"$lifecycle_repo/ci/run-test-tier.sh" guest-toolchain
+evidence_line="$(grep -n -m 1 '^evidence$' "$lifecycle_log" | cut -d: -f1)"
+cleanup_line="$(grep -n -m 1 '^cleanup$' "$lifecycle_log" | cut -d: -f1)"
+[ -n "$evidence_line" ] && [ -n "$cleanup_line" ]
+[ "$evidence_line" -lt "$cleanup_line" ]
+[ -f "$lifecycle_repo/.west-test/rootless-toolchain-diagnostics/collector-ran" ]
+[ ! -e "$lifecycle_prefix" ]
 grep -F -x -q "cmake -S testkit -B $tmp/macos-build -DBUILD_TESTING=ON" "$tmp/commands"
 grep -F -x -q "ctest --test-dir $tmp/macos-build --output-on-failure -L env:macos" "$tmp/commands"
 grep -F -x -q "cmake --install $tmp/package-build" "$tmp/commands"
