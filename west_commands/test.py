@@ -73,6 +73,10 @@ from test_guest_execution import (
     run_guest_shell,
     shutdown_guest_prefix,
 )
+try:
+    from .test_guest_macho import run_guest_macho_fixture
+except ImportError:  # Loaded as a West extension module, not a package.
+    from test_guest_macho import run_guest_macho_fixture
 from guest_toolchain import (
     COMMAND_LINE_TOOLS_RESOURCE,
     ensure_command_line_tools,
@@ -1339,6 +1343,42 @@ class DarlingTest(ProfileOperationsMixin, BootstrapRuntimeProfileMixin, WestComm
                 "host_trace_files": list(test.get("host-trace-files", [])),
             }
 
+        if runner == "guest-macho-fixture":
+            if test.get("runtime-profile"):
+                self.die(
+                    f"{patch['path']}: guest-macho-fixture cannot declare a runtime-profile"
+                )
+            repo = test.get("repo", patch["module"])
+            cwd = self._project_path(repo)
+            env = None
+            if test.get("env-vars"):
+                env = os.environ.copy()
+                env.update({str(k): str(v) for k, v in test["env-vars"].items()})
+            resources = set(test.get("requires", []))
+            resources.add("darling-prefix")
+            return {
+                "key": f"guest-macho-fixture:{repo}:{test['corpus']}:{test['fixture']}",
+                "display": (
+                    f"cd {quote(repo)} && <guest-macho-fixture> "
+                    f"{quote(str(test['corpus']))} {quote(str(test['fixture']))}"
+                ),
+                "cwd": cwd,
+                "args": None,
+                "shell": False,
+                "runner": "guest-macho-fixture",
+                "env": env,
+                "guest_macho_fixture": True,
+                "corpus": str(test["corpus"]),
+                "fixture": str(test["fixture"]),
+                "runtime_profile": test.get("runtime-profile"),
+                "requires_resources": sorted(resources),
+                "requires_env": list(test.get("requires-env", [])),
+                "requires_profile": test.get("requires-profile"),
+                "diag": self._resolved_diag(test),
+                "name": test.get("name", patch["path"]),
+                "timeout_seconds": int(test.get("timeout-seconds", 600)),
+            }
+
         self.die(f"{patch['path']}: unsupported test runner {runner!r}")
 
     def _run_metadata_tests(self, tests, list_only: bool, unknown: list[str]) -> int:
@@ -2026,6 +2066,8 @@ class DarlingTest(ProfileOperationsMixin, BootstrapRuntimeProfileMixin, WestComm
             return invocation["display"]
         if invocation.get("guest_argv_fixture"):
             return invocation["display"]
+        if invocation.get("guest_macho_fixture"):
+            return invocation["display"]
         if invocation.get("guest_command_fixture"):
             return invocation["display"]
         if invocation.get("diag", "bare") == "bare":
@@ -2055,6 +2097,7 @@ class DarlingTest(ProfileOperationsMixin, BootstrapRuntimeProfileMixin, WestComm
             env,
             runners=(
                 ("guest_c_fixture", self._run_guest_c_fixture),
+                ("guest_macho_fixture", self._run_guest_macho_fixture),
                 ("guest_command_fixture", self._run_guest_command_fixture),
                 ("guest_argv_fixture", self._run_guest_argv_fixture),
                 ("c_fixture", self._run_c_fixture),
@@ -2672,6 +2715,9 @@ class DarlingTest(ProfileOperationsMixin, BootstrapRuntimeProfileMixin, WestComm
 
     def _run_guest_c_fixture(self, invocation, env=None) -> int:
         return run_guest_c_fixture(self, invocation, env)
+
+    def _run_guest_macho_fixture(self, invocation, env=None) -> int:
+        return run_guest_macho_fixture(self, invocation, env)
 
     def _run_guest_command_fixture(self, invocation, env=None) -> int:
         run_env = env if env is not None else invocation.get("env")
