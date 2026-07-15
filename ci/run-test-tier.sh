@@ -14,7 +14,6 @@ esac
 
 root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$root"
-runtime_build_timeout_seconds="${WEST_RUNTIME_BUILD_TIMEOUT_SECONDS:-600}"
 ROOTLESS_TIER_REPO="$root"
 . "$root/ci/rootless-prefix.sh"
 
@@ -74,7 +73,7 @@ case "${1:-}" in
 		trap 'cleanup_rootless_tier "$?"' EXIT
 		WEST_TEST_FORBID_GUEST_TOOLCHAIN=1 west test --prefix "$prefix" \
 			--bootstrap-runtime-profile homebrew-rootless-bootstrap-minimal \
-			--runtime-build-timeout-seconds "$runtime_build_timeout_seconds"
+			--runtime-build-timeout-seconds 600
 		WEST_TEST_FORBID_GUEST_TOOLCHAIN=1 west test \
 			--profile homebrew --patch darling/rootless-prefix-initialization.patch \
 			--env darling --label 'name:rootless_prefix_initialization_guest' \
@@ -93,7 +92,7 @@ case "${1:-}" in
 		trap 'cleanup_rootless_tier "$?"' EXIT
 		west test --prefix "$prefix" \
 			--bootstrap-runtime-profile homebrew-guest-toolchain-provisioning \
-			--runtime-build-timeout-seconds "$runtime_build_timeout_seconds"
+			--runtime-build-timeout-seconds 1200
 		# Select the patch-owned script explicitly. A broad CTest smoke label can
 		# select unrelated regressions and still omit this acceptance proof.
 		west test --profile homebrew \
