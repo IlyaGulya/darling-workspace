@@ -17,6 +17,7 @@ on:
           - host
           - guest-smoke
           - guest-toolchain
+          - clt-integrity
           - macos
 
 jobs:
@@ -156,6 +157,58 @@ jobs:
         env:
           TIER_PREFIX: ${{ steps.rootless_toolchain.outputs.prefix }}
         run: ci/cleanup-rootless-prefixes.sh toolchain "$TIER_PREFIX"
+
+  clt-integrity:
+    if: github.event_name == 'workflow_dispatch' && inputs.tier == 'clt-integrity'
+    strategy:
+      fail-fast: false
+      matrix:
+        runner: [macos-14, macos-15]
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 15
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          path: darling-dev/darling-workspace
+      - name: Download and verify CLT provenance without cache
+        working-directory: darling-dev/darling-workspace
+        run: ci/verify-clt-provenance.sh "$RUNNER_TEMP/clt-provenance"
+      - name: Upload CLT provenance
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: clt-provenance-${{ matrix.runner }}
+          if-no-files-found: error
+          retention-days: 14
+          path: |
+            ${{ runner.temp }}/clt-provenance/provenance.txt
+            ${{ runner.temp }}/clt-provenance/provenance.tsv
+            ${{ runner.temp }}/clt-provenance/darling-catalog-response.json
+            ${{ runner.temp }}/clt-provenance/darling-catalog-http-headers.txt
+            ${{ runner.temp }}/clt-provenance/http-headers
+            ${{ runner.temp }}/clt-provenance/signatures
+
+  clt-integrity-compare:
+    needs: clt-integrity
+    if: github.event_name == 'workflow_dispatch' && inputs.tier == 'clt-integrity'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          path: darling-dev/darling-workspace
+      - name: Download both clean-runner provenance artifacts
+        uses: actions/download-artifact@v4
+        with:
+          pattern: clt-provenance-*
+          path: ${{ runner.temp }}/clt-provenance-runs
+          merge-multiple: false
+      - name: Compare stable provenance fields
+        working-directory: darling-dev/darling-workspace
+        run: ci/compare-clt-provenance.sh "$RUNNER_TEMP/clt-provenance-runs"
 
   macos-package:
     if: github.event_name == 'workflow_dispatch' && inputs.tier == 'macos'
