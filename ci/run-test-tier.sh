@@ -22,6 +22,7 @@ cleanup_rootless_tier() {
 	local cleanup_rc=0
 	local gc_rc=0
 	local jobs_rc=0
+	local evidence_rc=0
 	set +e
 	if [[ -d "$prefix" ]]; then
 		if (( test_rc == 0 )); then
@@ -33,6 +34,12 @@ cleanup_rootless_tier() {
 					rootless_prefix_assert_guest_toolchain "$tier_kind" "$prefix" || cleanup_rc=1
 					;;
 			esac
+		fi
+		if (( test_rc == 0 )) && [[ "$tier_kind" == toolchain ]]; then
+			"$root/ci/collect-rootless-diagnostics.sh" \
+				"$root/.west-test/rootless-toolchain-diagnostics" "$prefix"
+			evidence_rc=$?
+			(( evidence_rc == 0 )) || cleanup_rc=1
 		fi
 		west test --prefix "$prefix" --cleanup-prefix
 		cleanup_command_rc=$?
