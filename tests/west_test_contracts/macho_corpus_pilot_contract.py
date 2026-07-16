@@ -94,6 +94,13 @@ def write_run(root: Path, name: str, payload: bytes = b"pilot") -> None:
     )
     (run / "guest-marker.txt").write_text("SELECT_FDSET_GUEST_OK\n")
     (run / "guest-build.log").write_text("SELECT_FDSET_GUEST_OK\n")
+    (run / "pilot-state.tsv").write_text(
+        "field\tvalue\n"
+        "schema\t1\n"
+        "variant\ta\n"
+        "phase\tcomplete\n"
+        "status\tCOMPLETE\n"
+    )
     (run / "file.txt").write_text("Mach-O 64-bit executable x86_64\n")
     (run / "private-header.txt").write_text("private header\n")
     (run / "dylibs-used.txt").write_text("dylibs\n")
@@ -172,6 +179,29 @@ assert "LC_ALL=C wc -c" in builder_text
 assert "socket_path_bytes > 107" in builder_text
 assert 'dirname -- "$prefix")" == "$trusted_root"' in rootless_prefix_text
 assert '"$output/failure-summary.txt"' in builder_text
+assert '"$output/pilot-state.tsv"' in builder_text
+assert '. "$root/testkit/scripts/darling-guest-shell.sh"' in builder_text
+assert "guest_output=" not in builder_text
+assert "| tee" not in builder_text
+assert '"$prefix/bin/darling" shell' not in builder_text
+assert 'darling_guest_shell "$prefix/bin/darling" "$prefix" 120' in builder_text
+assert '>"$output/guest-build.log" 2>&1' in builder_text
+assert 'west test --prefix "$prefix" --cleanup-prefix' in builder_text
+guest_invocation = builder_text.index(
+    'darling_guest_shell "$prefix/bin/darling" "$prefix" 120'
+)
+host_shutdown = builder_text.index(
+    'west test --prefix "$prefix" --cleanup-prefix', guest_invocation
+)
+assert host_shutdown > guest_invocation
+assert "guest_rc != 0" in builder_text
+assert "shutdown_rc != 0" in builder_text
+assert "grep -Fxq 'SELECT_FDSET_GUEST_OK'" in builder_text
+assert 'marker_file="$stage/select_fdset_guest.marker"' in builder_text
+assert 'file --brief -- "$artifact"' in builder_text
+assert "write_pilot_state startup RUNNING" in builder_text
+assert "set_pilot_state guest-invocation RUNNING" in builder_text
+assert "write_pilot_state complete COMPLETE" in builder_text
 assert "homebrew-guest-toolchain-provisioning" in builder_text
 assert "DARLING_CLT_CACHE=" in builder_text
 assert 'output="$(realpath -m -- "$1")"' in builder_text
@@ -199,6 +229,7 @@ assert ".pkg" not in upload_job
 assert "clt-cache" not in upload_job
 assert ".work" not in upload_job
 assert "failure-summary.txt" in upload_job
+assert "pilot-state.tsv" in upload_job
 assert "path: " + "${{ runner.temp }}/macho-corpus-pilot/${{ matrix.variant }}" not in upload_job
 
 with tempfile.TemporaryDirectory(prefix="macho-corpus-runner-temp-", dir="/tmp") as raw:
@@ -252,6 +283,17 @@ with tempfile.TemporaryDirectory(prefix="macho-corpus-pilot-contract-") as raw:
         check=False,
     )
     assert matched.returncode == 0, matched.stderr
+
+    state = root / "macho-corpus-pilot-b/pilot-state.tsv"
+    state.write_text(state.read_text().replace("status\tCOMPLETE", "status\tRUNNING"))
+    incomplete_state = subprocess.run(
+        ["python3", str(COMPARE), str(root)],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert incomplete_state.returncode != 0, incomplete_state
+    write_run(root, "macho-corpus-pilot-b")
 
     (root / "macho-corpus-pilot-b/private-header.txt").unlink()
     missing_evidence = subprocess.run(
