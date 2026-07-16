@@ -1,0 +1,136 @@
+schema: 1
+corpus:
+  name: guest-macho
+  version: v1
+  pilot: select_fdset_guest
+  acceptance:
+    workflow: Darling compatibility tests
+    hosted-run: 29476139812
+    commit: 0972c9dba45523e02f995846a339f7c43660c85e
+    compare-job: 87555452302
+    compare-result: MACHO_CORPUS_PILOT_MATCH
+    binary-sha256: de9e7097a60f7f0aaf31bc6be0bac760bccf9f6d2a412d5b16aa14ec5685eab6
+    expected-marker: SELECT_FDSET_GUEST_OK
+    expected-returncode: 0
+    cleanup: both matrix build jobs completed their prefix and West cleanup steps successfully
+    artifact-policy: no CLT package, prefix, or cache was published
+
+toolchain:
+  product-id: 041-90419
+  provenance: testkit/fixtures/guest-macho/v1/clt-provenance.txt
+  provenance-sha256: dbb8ff9911b8bac76a968560fc685df66f625a60d7d1f6d3317961e3172611b4
+  review-status: reviewed
+  review-date-utc: 2026-07-15
+  evidence-run: 29384636308
+  catalog-source: Darling catalog mirror (not Apple metadata)
+  catalog-url: https://swdistcache.darlinghq.org/api/v1/products/by-tag?tag=DTCommandLineTools
+  apple-download-host: swcdn.apple.com
+  runner-evidence: macos-14 and macos-15 produced identical payload bytes
+  signature-check: pkgutil --check-signature reported signed Apple Software with a trusted timestamp for every package
+  certificate-chain:
+  - Software Update
+  - Apple Software Update Certification Authority
+  - Apple Root CA
+  certificate-fingerprints-sha256:
+  - e074d204ac2498e9dc904a7bc7ced8464119b79d05668028920583b1e896ebb4
+  - 1299e9bfe776a29ff452f8c4f5e55f3b4dfd2934349dd1850b8274f35c71745c
+  - b0b1730ecbc7ff4505142c49f1295e6eda6bcaed7e2c68c5be91b5a11001f024
+  package-sha256:
+    com.apple.pkg.CLTools_SDK_OSX1012: b1257b424bc743bfd17348f93bb0a1823a1455e3a3982db2176cc51a27180285
+    com.apple.pkg.DevSDK_OSX1012: 30ea9857e79adb7ed03d089015e6cdd72407ed3307780ecf58038db33419b88f
+    com.apple.pkg.CLTools_SDK_macOSSDK: 27678b01141739175992a9b027c875b4c4ffe704de95f743c1f3b90374029f49
+    com.apple.pkg.CLTools_SDK_macOS1013: 6320cc77a7e2e9b429c21c2dcc82fee91992a9ecfb2ebaca870a4b96e759ccc8
+    com.apple.pkg.CLTools_Executables: 95df96bfc8369bbd9ecf9acccd36b4020e2885777524a97b3aa288f660be5d32
+  packages:
+  - id: com.apple.pkg.CLTools_SDK_OSX1012
+    url: https://swcdn.apple.com/content/downloads/33/36/041-90419-A_7JJ4H9ZHO2/xs88ob5wjz6riz7g6764twblnvksusg4ps/CLTools_macOS_SDK_Remove_1012.pkg
+    size: 17758
+    actual-sha1: e0202fd16251348dcfc65ee534ce02eb701b6241
+    actual-sha256: b1257b424bc743bfd17348f93bb0a1823a1455e3a3982db2176cc51a27180285
+  - id: com.apple.pkg.DevSDK_OSX1012
+    url: https://swcdn.apple.com/content/downloads/33/36/041-90419-A_7JJ4H9ZHO2/xs88ob5wjz6riz7g6764twblnvksusg4ps/DevSDK_OSX1012.pkg
+    size: 21460323
+    actual-sha1: 6aba19378b38648a00e7c167a39a9ea86caa25c2
+    actual-sha256: 30ea9857e79adb7ed03d089015e6cdd72407ed3307780ecf58038db33419b88f
+  - id: com.apple.pkg.CLTools_SDK_macOSSDK
+    url: https://swcdn.apple.com/content/downloads/33/36/041-90419-A_7JJ4H9ZHO2/xs88ob5wjz6riz7g6764twblnvksusg4ps/CLTools_SDK_macOS1013.pkg
+    size: 28071275
+    actual-sha1: bf8bc218d2137162e7955346b50d542b648a461f
+    actual-sha256: 27678b01141739175992a9b027c875b4c4ffe704de95f743c1f3b90374029f49
+  - id: com.apple.pkg.CLTools_SDK_macOS1013
+    url: https://swcdn.apple.com/content/downloads/33/36/041-90419-A_7JJ4H9ZHO2/xs88ob5wjz6riz7g6764twblnvksusg4ps/CLTools_macOS_SDK_Remove_1013.pkg
+    size: 17758
+    actual-sha1: 35c51a9164220e4cb64397cdd4fa43d2377cacf7
+    actual-sha256: 6320cc77a7e2e9b429c21c2dcc82fee91992a9ecfb2ebaca870a4b96e759ccc8
+  - id: com.apple.pkg.CLTools_Executables
+    url: https://swcdn.apple.com/content/downloads/33/36/041-90419-A_7JJ4H9ZHO2/xs88ob5wjz6riz7g6764twblnvksusg4ps/CLTools_Executables.pkg
+    size: 137430440
+    actual-sha1: b4b71a784c02b277889bfb6ae561c0d1e5c2fabf
+    actual-sha256: 95df96bfc8369bbd9ecf9acccd36b4020e2885777524a97b3aa288f660be5d32
+
+fixtures:
+  select_fdset_guest:
+    source: tests/select_fdset_guest.c
+    source-sha256: ed64b81c8643e46e1bcb49ee4c93b558476b57a73021beed8d36cdf893b11e5f
+    artifact: testkit/fixtures/guest-macho/v1/bin/select_fdset_guest
+    artifact-sha256: de9e7097a60f7f0aaf31bc6be0bac760bccf9f6d2a412d5b16aa14ec5685eab6
+    build:
+      compiler-path: /Library/Developer/CommandLineTools/usr/bin/clang
+      compiler-sha256: 0758d5e64ad7a1808727472007506ad270dc7e471d4b73d9b46b923747630a31
+      compiler-version: >-
+        Apple LLVM version 9.0.0 (clang-900.0.39.2) Target:
+        x86_64-apple-darwin20.6.0 Thread model: posix InstalledDir:
+        /Library/Developer/CommandLineTools/usr/bin
+      compiler-origin: execution-context=guest;executable=/Library/Developer/CommandLineTools/usr/bin/clang
+      flags:
+      - -isysroot
+      - /Library/Developer/CommandLineTools/SDKs/MacOSX.sdk
+      - -std=gnu11
+      - -Wall
+      - -Wextra
+      - -Werror
+      clt-product-id: 041-90419
+      clt-provenance-sha256: dbb8ff9911b8bac76a968560fc685df66f625a60d7d1f6d3317961e3172611b4
+    independent-builds:
+    - name: a
+      hosted-run: 29476139812
+      job-id: 87549420367
+      artifact-id: 8367316020
+      artifact-archive-sha256: 3ab58b9a20b16b633bb09406c507022f5672cd2162ef6255e19ca142aa2d45e8
+      artifact-sha256: de9e7097a60f7f0aaf31bc6be0bac760bccf9f6d2a412d5b16aa14ec5685eab6
+      provenance-document-sha256: 5fb9b8bcc60bf0bdcac362652f6261b3a08ec5172f4edb9065c44f142fd37912
+      clt-provenance-sha256: dbb8ff9911b8bac76a968560fc685df66f625a60d7d1f6d3317961e3172611b4
+      private-header-sha256: f314cb7caef14f9d35c5d28b72d709a6005f6c2db361de91711f12ed24a7c5ea
+      dylibs-report-sha256: f24e441b5a64d0ca08451d9c3b35ff10890e539a2279b9a80e443868625e2401
+      macho-summary-sha256: 6ccae5e0fbf32cd6b05f0579bc9db071071c20c318bdd16d3d64e58cdf3532af
+      compiler-path: /Library/Developer/CommandLineTools/usr/bin/clang
+      flags: [-isysroot, /Library/Developer/CommandLineTools/SDKs/MacOSX.sdk, -std=gnu11, -Wall, -Wextra, -Werror]
+    - name: b
+      hosted-run: 29476139812
+      job-id: 87549420376
+      artifact-id: 8367345923
+      artifact-archive-sha256: 2c0950388df49201c18f4823a545940bf2531eaadf0ff46f768efc0fcdca962c
+      artifact-sha256: de9e7097a60f7f0aaf31bc6be0bac760bccf9f6d2a412d5b16aa14ec5685eab6
+      provenance-document-sha256: 70b054a760304d91b87d3abe8c1e73c5331e5ffc9bf7d2af286d480c2aff3431
+      clt-provenance-sha256: dbb8ff9911b8bac76a968560fc685df66f625a60d7d1f6d3317961e3172611b4
+      private-header-sha256: f314cb7caef14f9d35c5d28b72d709a6005f6c2db361de91711f12ed24a7c5ea
+      dylibs-report-sha256: 13bf32c47b382deb1671f967eff70c8177df6ead29e725b721c980fafabac7d4
+      macho-summary-sha256: 6ccae5e0fbf32cd6b05f0579bc9db071071c20c318bdd16d3d64e58cdf3532af
+      compiler-path: /Library/Developer/CommandLineTools/usr/bin/clang
+      flags: [-isysroot, /Library/Developer/CommandLineTools/SDKs/MacOSX.sdk, -std=gnu11, -Wall, -Wextra, -Werror]
+    macho:
+      magic: MH_MAGIC_64
+      architecture: x86_64
+      filetype: MH_EXECUTE
+      dylib-load-commands:
+      - command: LC_LOAD_DYLIB
+        name: /usr/lib/libSystem.B.dylib
+      rpath-load-commands: []
+    expected:
+      returncode: 0
+      stdout-contains:
+      - SELECT_FDSET_GUEST_OK
+    runtime:
+      rootless: true
+      guest-toolchain: forbidden
+      prefix: tier-owned-fresh

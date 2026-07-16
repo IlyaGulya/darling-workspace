@@ -19,6 +19,36 @@ from guest_toolchain import REVIEWED_COMMAND_LINE_TOOLS_SHA256
 from test_execution import ProcessResult
 
 
+production_corpus = ROOT / "testkit/fixtures/guest-macho/v1/corpus.yml"
+production_fixture = module.load_guest_macho_fixture(
+    ROOT, "testkit/fixtures/guest-macho/v1/corpus.yml", "select_fdset_guest"
+)
+assert production_fixture.artifact_sha256 == (
+    "de9e7097a60f7f0aaf31bc6be0bac760bccf9f6d2a412d5b16aa14ec5685eab6"
+)
+assert production_fixture.expected_returncode == 0
+assert production_fixture.expected_stdout == ("SELECT_FDSET_GUEST_OK",)
+production_document = yaml.safe_load(production_corpus.read_text())
+assert production_document["corpus"]["acceptance"]["hosted-run"] == 29476139812
+assert production_document["corpus"]["acceptance"]["compare-job"] == 87555452302
+assert len(production_document["fixtures"]["select_fdset_guest"]["independent-builds"]) == 2
+assert production_document["toolchain"]["evidence-run"] == 29384636308
+assert production_document["toolchain"]["package-sha256"] == dict(
+    REVIEWED_COMMAND_LINE_TOOLS_SHA256
+)
+homebrew = yaml.safe_load((ROOT / "patches/homebrew/patches.yml").read_text())["patches"]
+select_patch = next(
+    item for item in homebrew if item.get("path") == "xnu/select-pselect-fdset.patch"
+)
+typed_tests = [
+    test
+    for test in select_patch["tests"]
+    if test.get("runner") == "guest-macho-fixture"
+]
+assert [test["name"] for test in typed_tests] == ["select_fdset_guest_prebuilt"]
+assert any(test.get("name") == "select_fdset_guest" for test in select_patch["tests"])
+
+
 def make_macho(path: Path) -> None:
     dylib = b"/usr/lib/libSystem.B.dylib\0"
     dylib_size = (24 + len(dylib) + 7) & ~7
