@@ -253,6 +253,7 @@ jobs:
             ${{ runner.temp }}/macho-corpus-pilot/${{ matrix.variant }}/macho-manifest.json
             ${{ runner.temp }}/macho-corpus-pilot/${{ matrix.variant }}/macho-summary.tsv
             ${{ runner.temp }}/macho-corpus-pilot/${{ matrix.variant }}/private-header.txt
+            ${{ runner.temp }}/macho-corpus-pilot/${{ matrix.variant }}/pilot-state.tsv
             ${{ runner.temp }}/macho-corpus-pilot/${{ matrix.variant }}/provenance.tsv
             ${{ runner.temp }}/macho-corpus-pilot/${{ matrix.variant }}/provenance.txt
             ${{ runner.temp }}/macho-corpus-pilot/${{ matrix.variant }}/failure-summary.txt
