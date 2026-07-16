@@ -10,6 +10,9 @@ for tool in west cmake ctest; do
 	cat >"$tmp/bin/$tool" <<'TOOL'
 #!/usr/bin/env bash
 printf '%s %s\n' "$(basename "$0")" "$*" >>"$CI_CONTRACT_LOG"
+if [ "$(basename "$0")" = west ] && [ -n "${ROOTLESS_TIER_REPO_CHILD_OUTPUT:-}" ]; then
+	printf '%s\n' "${ROOTLESS_TIER_REPO-}" >>"$ROOTLESS_TIER_REPO_CHILD_OUTPUT"
+fi
 if [ "$(basename "$0")" = west ] && [ "${1:-}" = topdir ]; then
 	exit "${CI_WEST_TOPDIR_RC:-0}"
 fi
@@ -69,10 +72,15 @@ export RUNNER_TEMP="$tmp/runner"
 export DARLING_SMOKE_PREFIX="$tmp/runner/darling-rootless-smoke"
 export DARLING_REGRESSION_PREFIX="$tmp/runner/darling-rootless-regression"
 export DARLING_CORPUS_PREFIX="$tmp/runner/darling-rootless-corpus"
+export ROOTLESS_TIER_REPO_CHILD_OUTPUT="$tmp/rootless-tier-repo-child"
+: >"$ROOTLESS_TIER_REPO_CHILD_OUTPUT"
+unset ROOTLESS_TIER_REPO
 
 "$repo/ci/run-test-tier.sh" host
 "$repo/ci/run-test-tier.sh" guest-smoke
 "$repo/ci/run-test-tier.sh" guest-macho-validation
+[ -s "$ROOTLESS_TIER_REPO_CHILD_OUTPUT" ]
+grep -F -x -q "$repo" "$ROOTLESS_TIER_REPO_CHILD_OUTPUT"
 if "$repo/ci/run-test-tier.sh" guest-full; then
 	echo 'guest-full unexpectedly passed without a prebuilt regression corpus' >&2
 	exit 1
