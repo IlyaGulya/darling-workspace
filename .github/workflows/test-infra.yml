@@ -20,6 +20,7 @@ on:
           - clt-integrity
           - macos
           - macho-corpus-pilot
+          - macho-corpus-validation
       ccache_mode:
         description: ccache mode for guest-toolchain only; other tiers ignore this input
         required: false
@@ -203,6 +204,56 @@ jobs:
         with:
           path: ${{ steps.guest_ccache.outputs.cache_dir }}
           key: ${{ steps.guest_ccache.outputs.primary_key }}
+
+  macho-corpus-validation:
+    if: github.event_name == 'workflow_dispatch' && inputs.tier == 'macho-corpus-validation'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      DARLING_WEST_UPDATE_JOBS: 8
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          path: darling-dev/darling-workspace
+      - name: Install West
+        run: python3 -m pip install west
+      - name: Install Darling build dependencies
+        run: darling-dev/darling-workspace/ci/install-darling-build-deps.sh
+      - name: Materialize Darling workspace
+        run: darling-dev/darling-workspace/ci/bootstrap-west.sh
+      - name: Build guarded test executor
+        run: cargo build --release --locked --manifest-path darling-dev/darling-debug-runner/Cargo.toml
+      - name: Run reviewed prebuilt Mach-O without CLT
+        id: rootless_corpus
+        run: darling-dev/darling-workspace/ci/run-test-tier.sh guest-macho-validation
+      - name: Collect guest Mach-O runtime diagnostics
+        if: always()
+        working-directory: darling-dev/darling-workspace
+        env:
+          TIER_PREFIX: ${{ steps.rootless_corpus.outputs.prefix }}
+        run: |
+          if [[ -n "$TIER_PREFIX" ]]; then
+            ci/collect-rootless-diagnostics.sh .west-test/guest-macho-validation-diagnostics "$TIER_PREFIX"
+          fi
+      - name: Upload guest Mach-O validation evidence
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: guest-macho-validation-runtime-evidence
+          if-no-files-found: ignore
+          retention-days: 14
+          path: |
+            darling-dev/darling-workspace/.west-test/guest-macho-validation-diagnostics
+            darling-dev/darling-workspace/.west-test/runtime-evidence/**/manifest.json
+            darling-dev/darling-workspace/.west-test/runtime-evidence/**/diagnostics/**
+      - name: Cleanup guest Mach-O validation prefix and West state
+        if: always()
+        working-directory: darling-dev/darling-workspace
+        env:
+          TIER_PREFIX: ${{ steps.rootless_corpus.outputs.prefix }}
+        run: ci/cleanup-rootless-prefixes.sh corpus "$TIER_PREFIX"
 
   macho-corpus-pilot-build:
     if: github.event_name == 'workflow_dispatch' && inputs.tier == 'macho-corpus-pilot'
