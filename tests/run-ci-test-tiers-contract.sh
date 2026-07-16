@@ -194,7 +194,7 @@ grep -F -q 'guest-clang-origin.txt' "$repo/ci/collect-rootless-diagnostics.sh"
 [ "$(grep -F -c 'ci/cleanup-rootless-prefixes.sh' "$repo/.github/workflows/test-infra.yml")" -ge 2 ]
 [ "$(grep -F -c 'cargo build --release --locked --manifest-path darling-dev/darling-debug-runner/Cargo.toml' "$repo/.github/workflows/test-infra.yml")" -eq 3 ]
 [ "$(grep -F -c 'ci/run-test-tier.sh guest-macho-validation' "$repo/.github/workflows/test-infra.yml")" -eq 1 ]
-validation_workflow="$(sed -n '/^  macho-corpus-validation:/,/^  macho-corpus-pilot-build:/p' "$repo/.github/workflows/test-infra.yml")"
+validation_workflow="$(sed -n '/^  macho-corpus-validation:/,/^  macho-corpus-batch-build:/p' "$repo/.github/workflows/test-infra.yml")"
 printf '%s\n' "$validation_workflow" | grep -F -q "github.event_name == 'workflow_dispatch' && inputs.tier == 'macho-corpus-validation'"
 printf '%s\n' "$validation_workflow" | grep -F -q 'guest-macho-validation-runtime-evidence'
 if printf '%s\n' "$validation_workflow" | grep -F -q 'homebrew-guest-toolchain-provisioning'; then
