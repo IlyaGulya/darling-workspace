@@ -1349,7 +1349,8 @@ class DarlingTest(ProfileOperationsMixin, BootstrapRuntimeProfileMixin, WestComm
                     f"{patch['path']}: guest-macho-fixture cannot declare a runtime-profile"
                 )
             repo = test.get("repo", patch["module"])
-            cwd = self._project_path(repo)
+            repo_root = self._project_path(repo)
+            cwd = repo_root
             env = None
             if test.get("env-vars"):
                 env = os.environ.copy()
@@ -1363,6 +1364,7 @@ class DarlingTest(ProfileOperationsMixin, BootstrapRuntimeProfileMixin, WestComm
                     f"{quote(str(test['corpus']))} {quote(str(test['fixture']))}"
                 ),
                 "cwd": cwd,
+                "repo_root": repo_root,
                 "args": None,
                 "shell": False,
                 "runner": "guest-macho-fixture",
