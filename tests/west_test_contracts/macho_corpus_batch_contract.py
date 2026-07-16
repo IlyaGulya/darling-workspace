@@ -6,6 +6,7 @@ import hashlib
 import importlib.util
 import json
 import os
+import re
 import shlex
 import shutil
 import struct
@@ -21,6 +22,7 @@ ROOT = Path(__file__).resolve().parents[2]
 BUILDER = ROOT / "ci/build-guest-macho-batch.sh"
 COMPARE = ROOT / "ci/compare-guest-macho-batch.py"
 TSV_FIELD_HELPER = ROOT / "ci/read-tsv-field.py"
+GUEST_SCRIPT_GENERATOR = ROOT / "ci/emit-guest-macho-batch-script.py"
 WORKFLOW = ROOT / ".github/workflows/test-infra.yml"
 SPECS_MODULE = ROOT / "ci/guest_macho_batch_specs.py"
 REVIEWED_XNU_PATCH = ROOT / "patches/homebrew/xnu/abort-with-payload-no-group-broadcast.patch"
@@ -299,15 +301,19 @@ assert builder_text.count("--bootstrap-runtime-profile") == 1
 assert builder_text.count("rootless_prefix_assert_guest_toolchain") == 1
 assert "compile-status.tsv" in builder_text
 assert "runtime-mode\\tcompile-only" in builder_text
-assert 'printf \' %q\' "${compile_flags[@]}"' in builder_text
-assert 'printf \' %q\' "${link_flags[@]}"' in builder_text
-assert '"$anchor_binary" >' in builder_text
+assert "guest-compile" in builder_text
+assert "batch-guest-manifest.tsv" in builder_text
 assert '"$guest_binary" >' not in builder_text
 assert "CHOWN_DISABLED_NULL_GUARD_GUEST_OK" not in builder_text
 assert "MACHO_CORPUS_BATCH_EVIDENCE_COMPLETE" in builder_text
 assert "read-tsv-field.py" in builder_text
+assert "emit-guest-macho-batch-script.py" in builder_text
+assert "batch-guest.log" in builder_text
+assert "guest control evidence missing" in builder_text
 assert '\\"compile-status\\"' not in builder_text
 assert '\\"runtime-exit-code\\"' not in builder_text
+assert '"$anchor_binary"' not in builder_text
+assert 'sdk=$(printf' not in builder_text
 
 build_job = workflow_text.split("  macho-corpus-batch-build:", 1)[1].split(
     "  macho-corpus-batch-compare:", 1
@@ -326,6 +332,7 @@ upload_job = build_job.split("      - name: Upload batch evidence only", 1)[1].s
 )[0]
 assert "actions/upload-artifact@v7" in upload_job
 assert "fixtures/**" in upload_job
+assert "batch-guest.log" in upload_job
 assert ".pkg" not in upload_job
 assert ".work" not in upload_job
 assert "clt-cache" not in upload_job
@@ -428,6 +435,76 @@ with tempfile.TemporaryDirectory(prefix="macho-corpus-batch-contract-") as raw:
     missing = root / "missing.tsv"
     missing.write_text("field\tvalue\nfixture\tmissing\n")
     assert helper_field(missing, "compile-status").returncode != 0
+
+    fake_compiler = root / "fake-clang"
+    fake_compiler.write_text(
+        "#!/bin/sh\n"
+        "set -eu\n"
+        "if [ \"${1:-}\" = --version ]; then\n"
+        "  printf '%s\\n' 'fake guest clang'\n"
+        "  exit 0\n"
+        "fi\n"
+        "output=\n"
+        "previous=\n"
+        "for argument in \"$@\"; do\n"
+        "  if [ \"$previous\" = -o ]; then output=\"$argument\"; previous=; continue; fi\n"
+        "  if [ \"$argument\" = -o ]; then previous=-o; fi\n"
+        "done\n"
+        "[ -n \"$output\" ]\n"
+        "printf '%s\\n' '#!/bin/sh' 'printf \"%s\\n\" SELECT_FDSET_GUEST_OK' > \"$output\"\n"
+        "chmod 0755 \"$output\"\n"
+    )
+    fake_compiler.chmod(0o755)
+    fake_sources = root / "fake-sources"
+    fake_sources.mkdir()
+    fake_manifest = root / "fake-guest-manifest.tsv"
+    fake_rows = []
+    for name in ("fake_fixture", "select_fdset_guest"):
+        source = fake_sources / f"{name}.c"
+        source.write_text("int main(void) { return 0; }\n")
+        fake_rows.append(
+            "\t".join(
+                (
+                    name,
+                    str(source),
+                    str(root / name),
+                    str(root / f"{name}.clang-version"),
+                    str(root / f"{name}.clang-origin"),
+                    "[]",
+                    "[]",
+                )
+            )
+        )
+    fake_manifest.write_text(
+        "name\tguest-source\tguest-binary\tversion\torigin\tcompile-flags\tlink-flags\n"
+        + "\n".join(fake_rows)
+        + "\n"
+    )
+    generated_script = root / "generated-batch-guest.sh"
+    generated = subprocess.run(
+        [sys.executable, str(GUEST_SCRIPT_GENERATOR), str(generated_script), str(fake_compiler), str(fake_manifest)],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert generated.returncode == 0, generated.stderr
+    generated_text = generated_script.read_text()
+    references = set(re.findall(r"\$([A-Za-z_][A-Za-z0-9_]*)", generated_text))
+    assert references <= {"compile_failed", "anchor_compile_rc", "compile_rc", "runtime_rc"}
+    assert "$anchor_binary" not in generated_text
+    executed = subprocess.run(
+        [str(generated_script)],
+        capture_output=True,
+        text=True,
+        check=False,
+        env=os.environ.copy(),
+    )
+    assert executed.returncode == 0, executed.stderr
+    anchor_status = root / "select_fdset_guest.runtime-status.tsv"
+    assert helper_field(anchor_status, "runtime-exit-code").stdout.strip() == "0"
+    assert (root / "select_fdset_guest.runtime.log").read_text() == "SELECT_FDSET_GUEST_OK\n"
+    assert helper_field(root / "fake_fixture.compile-status.tsv", "compile-status").stdout.strip() == "PASS"
+    assert helper_field(root / "select_fdset_guest.compile-status.tsv", "compile-status").stdout.strip() == "PASS"
 
     matched = compare(root)
     assert matched.returncode == 0, matched.stderr

@@ -295,6 +295,7 @@ jobs:
             ${{ runner.temp }}/macho-corpus-batch/${{ matrix.variant }}/batch-manifest.tsv
             ${{ runner.temp }}/macho-corpus-batch/${{ matrix.variant }}/batch-state.tsv
             ${{ runner.temp }}/macho-corpus-batch/${{ matrix.variant }}/failure-summary.txt
+            ${{ runner.temp }}/macho-corpus-batch/${{ matrix.variant }}/batch-guest.log
             ${{ runner.temp }}/macho-corpus-batch/${{ matrix.variant }}/fixtures/**
       - name: Cleanup batch prefix and West state
         if: always()
