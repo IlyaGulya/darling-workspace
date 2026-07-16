@@ -26,7 +26,14 @@ from test_guest_macho import GuestMachoFixtureError, _macho_header  # noqa: E402
 
 
 RUN_NAMES = ("macho-corpus-batch-a", "macho-corpus-batch-b")
-ROOT_FILES = ("batch-manifest.tsv", "batch-state.tsv", "failure-summary.txt", "fixtures")
+ROOT_FILES = (
+    "batch-manifest.tsv",
+    "batch-state.tsv",
+    "failure-summary.txt",
+    "batch-guest.log",
+    "fixtures",
+)
+MAX_BATCH_GUEST_LOG_BYTES = 1024 * 1024
 FIXTURE_FILES = (
     "artifact.sha256",
     "clang-origin.txt",
@@ -250,6 +257,18 @@ def read_batch_manifest(path: Path) -> dict[str, dict[str, str]]:
     return {row["fixture"]: row for row in rows}
 
 
+def read_batch_guest_log(run: Path) -> None:
+    path = run / "batch-guest.log"
+    if path.is_symlink():
+        raise ValueError(f"{path}: diagnostic log must not be a symlink")
+    if not path.is_file():
+        raise ValueError(f"{path}: diagnostic log is not a regular file")
+    if path.stat().st_size > MAX_BATCH_GUEST_LOG_BYTES:
+        raise ValueError(
+            f"{path}: diagnostic log exceeds {MAX_BATCH_GUEST_LOG_BYTES} byte limit"
+        )
+
+
 def read_provenance(path: Path, spec_name: str) -> dict[str, str]:
     values = read_key_value_tsv(path)
     missing = [field for field in REQUIRED_FIELDS if not values.get(field)]
@@ -424,6 +443,7 @@ def read_run(root: Path, name: str):
         raise ValueError(f"{run}: fixture set has missing or extra fixtures")
     read_batch_state(run / "batch-state.tsv")
     read_failure_summary(run / "failure-summary.txt")
+    read_batch_guest_log(run)
     batch = read_batch_manifest(run / "batch-manifest.tsv")
     records = {name: read_fixture(run, name) for name in expected_names()}
     for name, row in batch.items():
