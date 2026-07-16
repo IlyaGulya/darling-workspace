@@ -5,6 +5,8 @@ from __future__ import annotations
 import hashlib
 import importlib.util
 import json
+import os
+import shlex
 import shutil
 import struct
 import subprocess
@@ -20,6 +22,9 @@ BUILDER = ROOT / "ci/build-guest-macho-batch.sh"
 COMPARE = ROOT / "ci/compare-guest-macho-batch.py"
 WORKFLOW = ROOT / ".github/workflows/test-infra.yml"
 SPECS_MODULE = ROOT / "ci/guest_macho_batch_specs.py"
+REVIEWED_XNU_PATCH = ROOT / "patches/homebrew/xnu/abort-with-payload-no-group-broadcast.patch"
+REVIEWED_XNU_SOURCE_PATH = "darling/src/libsystem_kernel/tests/abort_with_payload_no_group_broadcast.c"
+WORKSPACE_ABORT_SOURCE = ROOT / "tests/abort_with_payload_no_group_broadcast.c"
 sys.path.insert(0, str(ROOT / "ci"))
 import guest_macho_batch_specs as specs_module
 
@@ -53,6 +58,38 @@ def synthetic_binary(payload: bytes) -> bytes:
         "<IiiIIIII", 0xFEEDFACF, 0x01000007, 3, 2, 2, len(commands), 0, 0
     ) + commands
     return header + payload
+
+
+def extract_added_file(patch: Path, path: str) -> bytes:
+    lines = patch.read_bytes().splitlines(keepends=True)
+    header = f"diff --git a/{path} b/{path}\n".encode()
+    try:
+        start = lines.index(header)
+    except ValueError as error:
+        raise AssertionError(f"reviewed patch lacks diff for {path}") from error
+    end = next(
+        (index for index in range(start + 1, len(lines)) if lines[index].startswith(b"diff --git ")),
+        len(lines),
+    )
+    section = lines[start:end]
+    assert b"new file mode 100644\n" in section
+    assert b"--- /dev/null\n" in section
+    assert f"+++ b/{path}\n".encode() in section
+    try:
+        hunk = next(index for index, line in enumerate(section) if line.startswith(b"@@ -0,0 +1,"))
+    except StopIteration as error:
+        raise AssertionError(f"reviewed patch lacks new-file hunk for {path}") from error
+    content = bytearray()
+    for line in section[hunk + 1 :]:
+        if line.startswith(b"@@"):
+            break
+        if line.startswith(b"+"):
+            content.extend(line[1:])
+        elif line.startswith(b"\\ No newline at end of file"):
+            continue
+        else:
+            raise AssertionError(f"reviewed new-file hunk contains non-added content for {path}")
+    return bytes(content)
 
 
 def write_run(root: Path, name: str) -> None:
@@ -242,6 +279,10 @@ specs_module.validate_specs()
 assert len(FIXTURE_SPECS) == 14
 assert any("-pthread" in spec.compile_flags for spec in FIXTURE_SPECS)
 assert next(spec for spec in FIXTURE_SPECS if spec.name == "ulock_eintr_retry_guest").compile_flags[-1] == "-pthread"
+abort_spec = next(spec for spec in FIXTURE_SPECS if spec.name == "abort_with_payload_no_group_broadcast")
+assert abort_spec.source_project == "darling-workspace"
+assert abort_spec.source_path == "tests/abort_with_payload_no_group_broadcast.c"
+assert extract_added_file(REVIEWED_XNU_PATCH, REVIEWED_XNU_SOURCE_PATH) == WORKSPACE_ABORT_SOURCE.read_bytes()
 assert "macho-corpus-pilot" not in workflow_text
 assert "testkit/fixtures/guest-macho/v1/corpus.yml" not in BUILDER.read_text()
 assert "../darling" not in SPECS_MODULE.read_text()
@@ -287,6 +328,69 @@ assert "clt-cache" not in upload_job
 compare_job = workflow_text.split("  macho-corpus-batch-compare:", 1)[1]
 assert "needs: macho-corpus-batch-build" in compare_job
 assert "ci/compare-guest-macho-batch.sh" in compare_job
+
+with tempfile.TemporaryDirectory(prefix="macho-corpus-batch-startup-contract-") as raw:
+    root = Path(raw)
+    fake_bin = root / "bin"
+    fake_bin.mkdir()
+    missing_spec = FIXTURE_SPECS[0]
+    header = (
+        "name\tsource_project\tsource_path\tsource_sha256\tcompile_flags\t"
+        "link_flags\texpected_marker\truntime_profile\tpatch_path\tpatch_sha256"
+    )
+    row = "\t".join(
+        (
+            missing_spec.name,
+            missing_spec.source_project,
+            "tests/phase3b-missing-source.c",
+            missing_spec.source_sha256,
+            json.dumps(missing_spec.compile_flags, separators=(",", ":")),
+            json.dumps(missing_spec.link_flags, separators=(",", ":")),
+            missing_spec.expected_marker,
+            missing_spec.runtime_profile,
+            missing_spec.patch_path,
+            missing_spec.patch_sha256,
+        )
+    )
+    python_wrapper = fake_bin / "python3"
+    python_wrapper.write_text(
+        "#!/bin/sh\n"
+        "case \"$*\" in\n"
+        "  *guest_macho_batch_specs.py*--emit-tsv*)\n"
+        f"    printf '%s\\n' {shlex.quote(header)}\n"
+        f"    printf '%s\\n' {shlex.quote(row)}\n"
+        "    exit 0\n"
+        "    ;;\n"
+        "esac\n"
+        f"exec {shlex.quote(sys.executable)} \"$@\"\n"
+    )
+    python_wrapper.chmod(0o755)
+    output = root / "batch-output"
+    env = os.environ.copy()
+    env["PATH"] = f"{fake_bin}{os.pathsep}{env['PATH']}"
+    env["RUNNER_TEMP"] = str(root / "runner-temp")
+    result = subprocess.run(
+        [str(BUILDER), str(output), "a"],
+        cwd=ROOT,
+        env=env,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert result.returncode != 0
+    state = dict(
+        line.split("\t", 1)
+        for line in (output / "batch-state.tsv").read_text().splitlines()[1:]
+    )
+    assert state["status"] == "FAILED"
+    assert state["phase"] == "source-validation"
+    summary = dict(
+        line.split(": ", 1)
+        for line in (output / "failure-summary.txt").read_text().splitlines()
+    )
+    assert summary["status"] == "failure"
+    assert int(summary["exit-code"]) != 0
+    assert summary["phase"] == "source-validation"
 
 with tempfile.TemporaryDirectory(prefix="macho-corpus-batch-contract-") as raw:
     root = Path(raw)
