@@ -20,6 +20,7 @@ import yaml
 ROOT = Path(__file__).resolve().parents[2]
 BUILDER = ROOT / "ci/build-guest-macho-batch.sh"
 COMPARE = ROOT / "ci/compare-guest-macho-batch.py"
+TSV_FIELD_HELPER = ROOT / "ci/read-tsv-field.py"
 WORKFLOW = ROOT / ".github/workflows/test-infra.yml"
 SPECS_MODULE = ROOT / "ci/guest_macho_batch_specs.py"
 REVIEWED_XNU_PATCH = ROOT / "patches/homebrew/xnu/abort-with-payload-no-group-broadcast.patch"
@@ -304,6 +305,9 @@ assert '"$anchor_binary" >' in builder_text
 assert '"$guest_binary" >' not in builder_text
 assert "CHOWN_DISABLED_NULL_GUARD_GUEST_OK" not in builder_text
 assert "MACHO_CORPUS_BATCH_EVIDENCE_COMPLETE" in builder_text
+assert "read-tsv-field.py" in builder_text
+assert '\\"compile-status\\"' not in builder_text
+assert '\\"runtime-exit-code\\"' not in builder_text
 
 build_job = workflow_text.split("  macho-corpus-batch-build:", 1)[1].split(
     "  macho-corpus-batch-compare:", 1
@@ -396,6 +400,35 @@ with tempfile.TemporaryDirectory(prefix="macho-corpus-batch-contract-") as raw:
     root = Path(raw)
     write_run(root, "macho-corpus-batch-a")
     write_run(root, "macho-corpus-batch-b")
+    compile_status = root / "macho-corpus-batch-a/fixtures/abort_with_payload_no_group_broadcast/compile-status.tsv"
+    anchor_runtime_status = root / ".anchor-runtime-status.tsv"
+    anchor_runtime_status.write_text(
+        "field\tvalue\n"
+        "fixture\tselect_fdset_guest\n"
+        "runtime-status\tEXECUTED\n"
+        "runtime-exit-code\t0\n"
+    )
+
+    def helper_field(path: Path, field: str) -> subprocess.CompletedProcess[str]:
+        return subprocess.run(
+            [sys.executable, str(TSV_FIELD_HELPER), str(path), field],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+
+    assert helper_field(compile_status, "compile-status").stdout.strip() == "PASS"
+    assert helper_field(anchor_runtime_status, "runtime-exit-code").stdout.strip() == "0"
+    malformed = root / "malformed.tsv"
+    malformed.write_text("field\tvalue\ncompile-status\tPASS\textra\n")
+    assert helper_field(malformed, "compile-status").returncode != 0
+    duplicate = root / "duplicate.tsv"
+    duplicate.write_text("field\tvalue\ncompile-status\tPASS\ncompile-status\tPASS\n")
+    assert helper_field(duplicate, "compile-status").returncode != 0
+    missing = root / "missing.tsv"
+    missing.write_text("field\tvalue\nfixture\tmissing\n")
+    assert helper_field(missing, "compile-status").returncode != 0
+
     matched = compare(root)
     assert matched.returncode == 0, matched.stderr
 

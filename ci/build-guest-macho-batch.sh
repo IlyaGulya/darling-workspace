@@ -430,7 +430,8 @@ for index in "${!fixture_names[@]}"; do
 		printf 'RUNTIME_NOT_RUN_COMPILE_ONLY\n' >"$fixture_dir/runtime.log"
 		printf 'field\tvalue\nfixture\t%s\nruntime-mode\tcompile-only\nruntime-status\tNOT_RUN\nruntime-exit-code\tNOT_RUN\nobserved-marker\tNOT_OBSERVED\n' "$name" >"$fixture_dir/runtime-evidence.tsv"
 	fi
-	compile_status_value="$(PYTHONPATH="$root/ci" python3 -B -c 'from pathlib import Path; import sys; print(dict(line.split("\t",1) for line in Path(sys.argv[1]).read_text().splitlines()[1:])[\"compile-status\"])' "$fixture_dir/compile-status.tsv")"
+	compile_status_value="$(python3 -B "$root/ci/read-tsv-field.py" \
+		"$fixture_dir/compile-status.tsv" compile-status)"
 	if [[ "$compile_status_value" == "PASS" ]]; then
 		[[ -x "$prefix$guest_binary" ]] || {
 			echo "compile status says PASS but binary is missing: $name" >&2
@@ -457,7 +458,8 @@ for index in "${!fixture_names[@]}"; do
 		guest_rc=1
 	fi
 	if [[ "$name" == "select_fdset_guest" ]]; then
-		runtime_exit="$(PYTHONPATH="$root/ci" python3 -B -c 'from pathlib import Path; import sys; print(dict(line.split("\t",1) for line in Path(sys.argv[1]).read_text().splitlines()[1:])[\"runtime-exit-code\"])' "$fixture_dir/.anchor-runtime-status.tsv")"
+		runtime_exit="$(python3 -B "$root/ci/read-tsv-field.py" \
+			"$fixture_dir/.anchor-runtime-status.tsv" runtime-exit-code)"
 		if [[ "$runtime_exit" == "0" ]] && grep -Fxq "$marker" "$fixture_dir/runtime.log"; then
 			runtime_mode="anchor"
 			runtime_status_value="OBSERVED"
