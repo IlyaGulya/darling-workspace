@@ -14,7 +14,7 @@ esac
 
 root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$root"
-ROOTLESS_TIER_REPO="$root"
+export ROOTLESS_TIER_REPO="$root"
 . "$root/ci/rootless-prefix.sh"
 
 cleanup_rootless_tier() {
