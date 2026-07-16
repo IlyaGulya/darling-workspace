@@ -27,7 +27,7 @@ cleanup_rootless_tier() {
 	if [[ -d "$prefix" ]]; then
 		if (( test_rc == 0 )); then
 			case "$tier_kind" in
-				smoke|regression)
+				smoke|regression|corpus)
 					rootless_prefix_assert_no_guest_toolchain "$tier_kind" "$prefix" || cleanup_rc=1
 					;;
 				toolchain)
@@ -92,6 +92,26 @@ case "${1:-}" in
 			--reuse-prefix-runtime \
 			--prefix "$prefix" "${@:2}"
 		;;
+	guest-macho-validation)
+		tier_kind=corpus
+		prefix="$(rootless_prefix_create "$tier_kind" DARLING_CORPUS_PREFIX)"
+		rootless_prefix_export_output prefix "$prefix"
+		trap 'cleanup_rootless_tier "$?"' EXIT
+		export DARLING_ROOTLESS=1
+		export DARLING_NOOVERLAYFS=1
+		export DARLING_EUNION=1
+		export WEST_TEST_FORBID_GUEST_TOOLCHAIN=1
+		WEST_TEST_FORBID_GUEST_TOOLCHAIN=1 west test --prefix "$prefix" \
+			--bootstrap-runtime-profile homebrew-rootless-bootstrap-minimal \
+			--runtime-build-timeout-seconds 600
+		WEST_TEST_FORBID_GUEST_TOOLCHAIN=1 west test \
+			--profile homebrew \
+			--patch xnu/select-pselect-fdset.patch \
+			--env darling \
+			--label 'name:select_fdset_guest_prebuilt' \
+			--reuse-prefix-runtime \
+			--prefix "$prefix" "${@:2}"
+		;;
 	guest-toolchain)
 		tier_kind=toolchain
 		prefix="$(rootless_prefix_create "$tier_kind" DARLING_TOOLCHAIN_PREFIX)"
@@ -127,7 +147,7 @@ case "${1:-}" in
 			"${2:?macos-installed requires an installed bundle}"
 		;;
 	*)
-		echo "usage: $0 host|guest-smoke|guest-full|guest-toolchain|macos|macos-package|macos-installed" >&2
+		echo "usage: $0 host|guest-smoke|guest-macho-validation|guest-full|guest-toolchain|macos|macos-package|macos-installed" >&2
 		exit 2
 		;;
 esac

@@ -404,6 +404,7 @@ class DarlingPatch(WestCommand):
                 or test.get("guest-argv")
                 or test.get("runner") == "cmake-configure-fixture"
                 or test.get("runner") == "darling-cmake-target-fixture"
+                or test.get("runner") == "guest-macho-fixture"
             ):
                 errors.append(
                     f"tests[{index}] needs script, source-script, source-file, target, ctest-label, guest command, or command override"
@@ -422,6 +423,7 @@ class DarlingPatch(WestCommand):
                 "guest-c-fixture",
                 "guest-command-fixture",
                 "guest-argv-fixture",
+                "guest-macho-fixture",
                 "object-symbol-fixture",
                 "source-script-fixture",
                 "source-build-fixture",
@@ -456,6 +458,14 @@ class DarlingPatch(WestCommand):
                 errors.append(f"tests[{index}] guest-command requires runner: guest-command-fixture")
             if test.get("guest-argv") and runner != "guest-argv-fixture":
                 errors.append(f"tests[{index}] guest-argv requires runner: guest-argv-fixture")
+            if runner == "guest-macho-fixture":
+                for field in ("corpus", "fixture"):
+                    if not isinstance(test.get(field), str) or not test.get(field):
+                        errors.append(f"tests[{index}] guest-macho-fixture requires {field}")
+                if test.get("runtime-profile") is not None:
+                    errors.append(
+                        f"tests[{index}] guest-macho-fixture cannot declare runtime-profile"
+                    )
             if runner == "object-symbol-fixture":
                 repo_ref = test.get("repo", patch["module"])
                 repo_path = self._project_path(repo_ref)

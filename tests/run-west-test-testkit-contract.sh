@@ -122,6 +122,9 @@ printf '%s\n' "$dar_cps_json" | grep -q 'runtime-profile:homebrew' ||
 list_select_guest="$(west test --bead dar-q95.3 --env darling --list)"
 printf '%s\n' "$list_select_guest" | grep -q 'darling/select_fdset_guest' ||
 	{ printf '%s\n' "$list_select_guest" >&2; exit 1; }
+list_select_prebuilt="$(west test --profile homebrew --patch xnu/select-pselect-fdset.patch --env darling --label 'name:select_fdset_guest_prebuilt' --list)"
+printf '%s\n' "$list_select_prebuilt" | grep -q 'select_fdset_guest_prebuilt' ||
+	{ printf '%s\n' "$list_select_prebuilt" >&2; exit 1; }
 
 list_getattrlist_guest="$(west test --bead dar-e1j --env darling --list)"
 printf '%s\n' "$list_getattrlist_guest" | grep -q 'darling/getattrlist_name_objtype_guest' ||

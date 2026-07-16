@@ -590,6 +590,28 @@ patches:
     requires:
     - darling-prefix
     note: Guest runtime gate that select and pselect observe readiness on fd numbers above 32.
+  - name: select_fdset_guest_prebuilt
+    kind: guest
+    coverage-tier: runtime
+    runs: guest
+    diag: guarded
+    runner: guest-macho-fixture
+    repo: darling-workspace
+    corpus: testkit/fixtures/guest-macho/v1/corpus.yml
+    fixture: select_fdset_guest
+    timeout-seconds: 30
+    requires:
+    - darling-prefix
+    env-vars:
+      DARLING_ROOTLESS: '1'
+      DARLING_NOOVERLAYFS: '1'
+      DARLING_EUNION: '1'
+      WEST_TEST_FORBID_GUEST_TOOLCHAIN: '1'
+    note: >-
+      Manual Phase 3A no-CLT validation of the reviewed select_fdset_guest
+      Mach-O. The source-driven case above remains the rebuild/toolchain path;
+      this runner only executes the checked-in artifact in a tier-owned fresh
+      rootless prefix.
   pr-draft: pr-drafts/xnu-select-pselect-fdset.md
   github:
     fork:
