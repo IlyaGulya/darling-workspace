@@ -45,6 +45,20 @@ export DARLING_CLT_CACHE="$work/clt-cache"
 . "$root/testkit/scripts/darling-guest-shell.sh"
 
 batch_phase=startup
+active_prefix=""
+declare -a fixture_names=()
+declare -a fixture_projects=()
+declare -a fixture_paths=()
+declare -a fixture_source_hashes=()
+declare -a fixture_compile_json=()
+declare -a fixture_link_json=()
+declare -a fixture_markers=()
+declare -a fixture_profiles=()
+declare -a fixture_patch_paths=()
+declare -a fixture_patch_hashes=()
+declare -a fixture_source_files=()
+declare -a fixture_source_revisions=()
+
 write_batch_state() {
 	local phase="$1"
 	local status="$2"
@@ -67,22 +81,26 @@ set_batch_state() {
 	write_batch_state "$1" "$2"
 }
 
+startup_failure() {
+	local rc="$?"
+	set +e
+	write_batch_state "${batch_phase:-source-validation}" FAILED
+	{
+		printf 'status: failure\n'
+		printf 'variant: %s\n' "$variant"
+		printf 'fixture-count: %s\n' "${#fixture_names[@]}"
+		printf 'exit-code: %s\n' "$rc"
+		printf 'phase: %s\n' "${batch_phase:-source-validation}"
+	} >"$output/failure-summary.txt"
+	exit "$rc"
+}
+
 write_batch_state startup RUNNING
+set_batch_state source-validation RUNNING
+trap startup_failure EXIT INT TERM
 
 source_rows="$(PYTHONDONTWRITEBYTECODE=1 python3 -B \
 	"$root/ci/guest_macho_batch_specs.py" --emit-tsv)"
-declare -a fixture_names=()
-declare -a fixture_projects=()
-declare -a fixture_paths=()
-declare -a fixture_source_hashes=()
-declare -a fixture_compile_json=()
-declare -a fixture_link_json=()
-declare -a fixture_markers=()
-declare -a fixture_profiles=()
-declare -a fixture_patch_paths=()
-declare -a fixture_patch_hashes=()
-declare -a fixture_source_files=()
-declare -a fixture_source_revisions=()
 
 west_project_root() {
 	local project="$1"
@@ -164,7 +182,6 @@ done <<<"$source_rows"
 	exit 1
 }
 
-active_prefix=""
 cleanup_prefix() {
 	local original_rc="$1"
 	local cleanup_rc=0

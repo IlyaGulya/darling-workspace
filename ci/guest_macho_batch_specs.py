@@ -72,8 +72,8 @@ def _spec(
 FIXTURE_SPECS = (
     _spec(
         "abort_with_payload_no_group_broadcast",
-        "darling-src-external-xnu",
-        "darling/src/libsystem_kernel/tests/abort_with_payload_no_group_broadcast.c",
+        "darling-workspace",
+        "tests/abort_with_payload_no_group_broadcast.c",
         "2a793010639a128f92228a32e1d708a5dd95554238547b11eac835f32fca50cd",
         "GREEN: abort_with_payload stayed local to the child; parent survived",
         "homebrew",
