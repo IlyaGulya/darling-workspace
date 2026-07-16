@@ -293,6 +293,19 @@ assert "macho-corpus-pilot" not in workflow_text
 assert "testkit/fixtures/guest-macho/v1/corpus.yml" not in BUILDER.read_text()
 assert "../darling" not in SPECS_MODULE.read_text()
 builder_text = BUILDER.read_text()
+provenance_block_start = builder_text.rindex("\t\tprintf 'field\\tvalue\\n'")
+provenance_block_end = builder_text.index(
+    '\t} >"$fixture_dir/provenance.tsv"', provenance_block_start
+)
+builder_provenance_fields = re.findall(
+    r"^\s*printf '([a-z][a-z0-9-]*)\\t",
+    builder_text[provenance_block_start:provenance_block_end],
+    re.MULTILINE,
+)
+assert builder_provenance_fields[0] == "field"
+builder_provenance_fields = builder_provenance_fields[1:]
+assert len(builder_provenance_fields) == len(set(builder_provenance_fields))
+assert set(builder_provenance_fields) == set(compare_module.REQUIRED_FIELDS)
 assert "source_project" in builder_text
 assert "west_project_root" in builder_text
 assert "git -C \"$project_root\" rev-parse HEAD" in builder_text

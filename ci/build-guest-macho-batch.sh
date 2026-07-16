@@ -452,6 +452,10 @@ for index in "${!fixture_names[@]}"; do
 	private_header_sha256="$(sha256sum -- "$fixture_dir/private-header.txt" | cut -d' ' -f1)"
 	dylibs_sha256="$(sha256sum -- "$fixture_dir/dylibs-used.txt" | cut -d' ' -f1)"
 	summary_sha256="$(sha256sum -- "$fixture_dir/macho-summary.tsv" | cut -d' ' -f1)"
+	compile_status_sha256="$(sha256sum -- "$fixture_dir/compile-status.tsv" | cut -d' ' -f1)"
+	compile_log_sha256="$(sha256sum -- "$fixture_dir/compile.log" | cut -d' ' -f1)"
+	runtime_evidence_sha256="$(sha256sum -- "$fixture_dir/runtime-evidence.tsv" | cut -d' ' -f1)"
+	runtime_log_sha256="$(sha256sum -- "$fixture_dir/runtime.log" | cut -d' ' -f1)"
 	clt_hash="$(sha256sum -- "$fixture_dir/clt-provenance.txt" | cut -d' ' -f1)"
 	{
 		printf 'status: REVIEWED_PROVENANCE\n'
@@ -486,6 +490,10 @@ for index in "${!fixture_names[@]}"; do
 		printf 'clt-provenance-sha256\t%s\n' "$clt_hash"
 		printf 'provenance-document-sha256\t%s\n' "$provenance_document_sha256"
 		printf 'artifact-sha256\t%s\n' "$artifact_sha256"
+		printf 'compile-status-sha256\t%s\n' "$compile_status_sha256"
+		printf 'compile-log-sha256\t%s\n' "$compile_log_sha256"
+		printf 'runtime-evidence-sha256\t%s\n' "$runtime_evidence_sha256"
+		printf 'runtime-log-sha256\t%s\n' "$runtime_log_sha256"
 		printf 'private-header-sha256\t%s\n' "$private_header_sha256"
 		printf 'dylibs-report-sha256\t%s\n' "$dylibs_sha256"
 		printf 'macho-summary-sha256\t%s\n' "$summary_sha256"
