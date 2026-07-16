@@ -304,67 +304,27 @@ rootless_prefix_assert_guest_toolchain corpus "$prefix"
 
 set_batch_state guest-compile RUNNING
 compiler_path="/Library/Developer/CommandLineTools/usr/bin/clang"
-sdk_path="/Library/Developer/CommandLineTools/SDKs/MacOSX.sdk"
 batch_guest_script="$work/batch-guest.sh"
-{
-	printf '%s\n' 'set -u'
-	printf '%s\n' "cc=$(printf '%q' "$compiler_path")"
-	printf '%s\n' "sdk=$(printf '%q' "$sdk_path")"
-	printf '%s\n' 'compile_failed=0'
-	printf '%s\n' 'anchor_compile_rc=1'
-	for index in "${!fixture_names[@]}"; do
-		name="${fixture_names[$index]}"
-		compile_flags=()
-		while IFS= read -r flag; do
-			compile_flags+=("$flag")
-		done < <(python3 -c 'import json,sys; print("\n".join(json.loads(sys.argv[1])))' "${fixture_compile_json[$index]}")
-		link_flags=()
-		while IFS= read -r flag; do
-			link_flags+=("$flag")
-		done < <(python3 -c 'import json,sys; print("\n".join(json.loads(sys.argv[1])))' "${fixture_link_json[$index]}")
-		if [[ "$name" == "select_fdset_guest" ]]; then
-			guest_source="/private/var/tmp/select_fdset_guest.c"
-			guest_binary="/private/var/tmp/select_fdset_guest"
-		else
-			guest_source="/private/var/tmp/guest-macho-batch/$name/$name.c"
-			guest_binary="/private/var/tmp/guest-macho-batch/$name/$name"
-		fi
-		version="${guest_binary}.clang-version"
-		origin="${guest_binary}.clang-origin"
-		compile_log="${guest_binary}.compile.log"
-		compile_status="${guest_binary}.compile-status.tsv"
-		printf '"$cc" --version > %q\n' "$version"
-		printf 'printf "%%s\\n" %q %q > %q\n' 'execution-context=guest' "executable=$compiler_path" "$origin"
-		printf '"$cc"'
-		printf ' %q' "${compile_flags[@]}"
-		printf ' %q' "$guest_source"
-		printf ' %q' "${link_flags[@]}"
-		printf ' -o %q > %q 2>&1\n' "$guest_binary" "$compile_log"
-		printf 'compile_rc=$?\n'
-		printf 'if (( compile_rc == 0 )); then\n'
-		printf '  printf "field\\tvalue\\nfixture\\t%%s\\ncompile-status\\tPASS\\ncompile-exit-code\\t0\\n" %q > %q\n' "$name" "$compile_status"
-		printf 'else\n'
-		printf '  compile_failed=1\n'
-		printf '  printf "field\\tvalue\\nfixture\\t%%s\\ncompile-status\\tFAILED\\ncompile-exit-code\\t%%s\\n" %q "$compile_rc" > %q\n' "$name" "$compile_status"
-		printf 'fi\n'
-		if [[ "$name" == "select_fdset_guest" ]]; then
-			printf 'anchor_compile_rc=$compile_rc\n'
-		fi
-	done
-	anchor_binary="/private/var/tmp/select_fdset_guest"
-	anchor_log="/private/var/tmp/select_fdset_guest.runtime.log"
-	anchor_runtime_status="/private/var/tmp/select_fdset_guest.runtime-status.tsv"
-	printf 'runtime_rc=125\n'
-	printf 'if (( anchor_compile_rc == 0 )); then\n'
-	printf '  runtime_rc=0\n'
-	printf '  "$anchor_binary" > %q 2>&1 || runtime_rc=$?\n' "$anchor_log"
-	printf '  printf "field\\tvalue\\nfixture\\tselect_fdset_guest\\nruntime-status\\tEXECUTED\\nruntime-exit-code\\t%%s\\n" "$runtime_rc" > %q\n' "$anchor_runtime_status"
-	printf 'else\n'
-	printf '  printf "field\\tvalue\\nfixture\\tselect_fdset_guest\\nruntime-status\\tNOT_RUN\\nruntime-exit-code\\tNOT_RUN\\n" > %q\n' "$anchor_runtime_status"
-	printf 'fi\n'
-	printf 'if (( compile_failed != 0 )); then exit 1; fi\n'
-	printf 'exit "$runtime_rc"\n'
-} >"$batch_guest_script"
+batch_guest_manifest="$work/batch-guest-manifest.tsv"
+printf 'name\tguest-source\tguest-binary\tversion\torigin\tcompile-flags\tlink-flags\n' >"$batch_guest_manifest"
+for index in "${!fixture_names[@]}"; do
+	name="${fixture_names[$index]}"
+	if [[ "$name" == "select_fdset_guest" ]]; then
+		guest_source="/private/var/tmp/select_fdset_guest.c"
+		guest_binary="/private/var/tmp/select_fdset_guest"
+	else
+		guest_source="/private/var/tmp/guest-macho-batch/$name/$name.c"
+		guest_binary="/private/var/tmp/guest-macho-batch/$name/$name"
+	fi
+	printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
+		"$name" "$guest_source" "$guest_binary" \
+		"${guest_binary}.clang-version" "${guest_binary}.clang-origin" \
+		"${fixture_compile_json[$index]}" "${fixture_link_json[$index]}" \
+		>>"$batch_guest_manifest"
+done
+PYTHONDONTWRITEBYTECODE=1 python3 -B \
+	"$root/ci/emit-guest-macho-batch-script.py" \
+	"$batch_guest_script" "$compiler_path" "$batch_guest_manifest"
 guest_script="$(<"$batch_guest_script")"
 guest_rc=0
 DARLING_ROOTLESS=1 \
@@ -372,6 +332,7 @@ DARLING_ROOTLESS=1 \
 	DARLING_EUNION=1 \
 	darling_guest_shell "$prefix/bin/darling" "$prefix" 600 "$guest_script" \
 	>"$work/batch-guest.log" 2>&1 || guest_rc=$?
+cp -- "$work/batch-guest.log" "$output/batch-guest.log"
 
 shutdown_rc=0
 DARLING_ROOTLESS=1 \
@@ -424,6 +385,11 @@ for index in "${!fixture_names[@]}"; do
 	cp -- "$prefix${guest_binary}.clang-origin" "$fixture_dir/clang-origin.txt"
 	cp -- "$clt_provenance" "$fixture_dir/clt-provenance.txt"
 	if [[ "$name" == "select_fdset_guest" ]]; then
+		if [[ ! -f "$prefix$runtime_status" ]]; then
+			echo "guest control evidence missing for $name: expected runtime-status file $runtime_status; inspect batch-guest.log" >&2
+			guest_rc=1
+			continue
+		fi
 		cp -- "$prefix$runtime_status" "$fixture_dir/.anchor-runtime-status.tsv"
 		cp -- "$prefix$runtime_log" "$fixture_dir/runtime.log"
 	else
