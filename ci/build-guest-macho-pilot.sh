@@ -36,6 +36,31 @@ export TMPDIR="$work"
 export DARLING_CLT_CACHE="$work/clt-cache"
 : "${RUNNER_TEMP:?pilot requires the official RUNNER_TEMP directory}"
 . "$root/ci/rootless-prefix.sh"
+. "$root/testkit/scripts/darling-guest-shell.sh"
+
+pilot_phase=startup
+write_pilot_state() {
+	local phase="$1"
+	local status="$2"
+	local temporary
+	temporary="$(mktemp "$output/.pilot-state.XXXXXX")"
+	{
+		printf 'field\tvalue\n'
+		printf 'schema\t1\n'
+		printf 'variant\t%s\n' "$variant"
+		printf 'phase\t%s\n' "$phase"
+		printf 'status\t%s\n' "$status"
+	} >"$temporary"
+	chmod 0644 "$temporary"
+	mv -f -- "$temporary" "$output/pilot-state.tsv"
+}
+
+set_pilot_state() {
+	pilot_phase="$1"
+	write_pilot_state "$1" "$2"
+}
+
+write_pilot_state startup RUNNING
 
 source_sha256="$(sha256sum -- "$source_file" | cut -d' ' -f1)"
 compiler_path="/Library/Developer/CommandLineTools/usr/bin/clang"
@@ -105,6 +130,11 @@ on_exit() {
 	if (( rc == 0 && cleanup_rc != 0 )); then
 		rc="$cleanup_rc"
 	fi
+	if (( rc == 0 )); then
+		write_pilot_state complete COMPLETE
+	else
+		write_pilot_state "${pilot_phase:-startup}" FAILED
+	fi
 	write_failure_summary "$rc"
 	exit "$rc"
 }
@@ -128,7 +158,7 @@ set -a
 . "$ccache_env"
 set +a
 
-pilot_phase=prefix-create
+set_pilot_state prefix-create RUNNING
 prefix="$(rootless_prefix_create corpus CORPUS_PREFIX)"
 active_prefix="$prefix"
 printf '%s\n' "$prefix" > "$output/.prefix-path"
@@ -147,14 +177,14 @@ stage="$prefix/private/var/tmp"
 mkdir -p -- "$stage"
 cp -- "$source_file" "$stage/select_fdset_guest.c"
 
-pilot_phase=runtime-bootstrap
+set_pilot_state runtime-bootstrap RUNNING
 echo "bootstrap with reviewed guest CommandLineTools (pilot $variant)"
 west test --prefix "$prefix" \
 	--bootstrap-runtime-profile homebrew-guest-toolchain-provisioning \
 	--runtime-build-timeout-seconds 1800
 rootless_prefix_assert_guest_toolchain corpus "$prefix"
 
-pilot_phase=guest-compile-execute
+set_pilot_state guest-invocation RUNNING
 guest_script='set -eu
 cc=/Library/Developer/CommandLineTools/usr/bin/clang
 sdk=/Library/Developer/CommandLineTools/SDKs/MacOSX.sdk
@@ -170,28 +200,53 @@ printf "%s\n" "execution-context=guest" "executable=$cc" > "$origin"
 printf "%s\n" SELECT_FDSET_GUEST_OK > "$marker"'
 
 echo "compile and execute select_fdset_guest inside Darling"
-guest_output="$({
-	env \
-		DARLING_ROOTLESS=1 \
-		DARLING_NOOVERLAYFS=1 \
-		DARLING_EUNION=1 \
-		DPREFIX="$prefix" \
-		DARLING_PREFIX="$prefix" \
-		"$prefix/bin/darling" shell /bin/bash --login -c "$guest_script"
-} | tee "$output/guest-build.log")"
-case "$guest_output" in
-	*SELECT_FDSET_GUEST_OK*) ;;
-	*)
-		echo "guest pilot did not emit SELECT_FDSET_GUEST_OK" >&2
-		exit 1
-		;;
-esac
+guest_rc=0
+DARLING_ROOTLESS=1 \
+	DARLING_NOOVERLAYFS=1 \
+	DARLING_EUNION=1 \
+	darling_guest_shell "$prefix/bin/darling" "$prefix" 120 "$guest_script" \
+	>"$output/guest-build.log" 2>&1 || guest_rc=$?
+
+shutdown_rc=0
+DARLING_ROOTLESS=1 \
+	DARLING_NOOVERLAYFS=1 \
+	DARLING_EUNION=1 \
+	DPREFIX="$prefix" \
+	DARLING_PREFIX="$prefix" \
+	west test --prefix "$prefix" --cleanup-prefix || shutdown_rc=$?
+
+if (( guest_rc != 0 )); then
+	echo "guest pilot invocation failed with rc $guest_rc" >&2
+	exit "$guest_rc"
+fi
+if (( shutdown_rc != 0 )); then
+	echo "host-side Darling shutdown failed with rc $shutdown_rc" >&2
+	exit "$shutdown_rc"
+fi
+if ! grep -Fxq 'SELECT_FDSET_GUEST_OK' "$output/guest-build.log"; then
+	echo "guest pilot did not emit the exact SELECT_FDSET_GUEST_OK marker" >&2
+	exit 1
+fi
+marker_file="$stage/select_fdset_guest.marker"
+if [[ ! -f "$marker_file" ]] || ! grep -Fxq 'SELECT_FDSET_GUEST_OK' "$marker_file"; then
+	echo "guest pilot marker file is missing or not exact" >&2
+	exit 1
+fi
 
 artifact="$stage/select_fdset_guest"
 [[ -x "$artifact" ]] || {
 	echo "guest pilot did not produce an executable Mach-O: $artifact" >&2
 	exit 1
 }
+artifact_description="$(file --brief -- "$artifact")"
+case "$artifact_description" in
+	Mach-O\ 64-bit*x86_64*executable*)
+		;;
+	*)
+		echo "guest pilot produced a non-x86_64 executable Mach-O: $artifact_description" >&2
+		exit 1
+		;;
+esac
 cp -- "$artifact" "$output/select_fdset_guest"
 cp -- "$stage/select_fdset_guest.clang-version" "$output/clang-version.txt"
 cp -- "$stage/select_fdset_guest.clang-origin" "$output/clang-origin.txt"

@@ -32,6 +32,7 @@ REQUIRED_FILES = (
     "macho-manifest.json",
     "macho-summary.tsv",
     "private-header.txt",
+    "pilot-state.tsv",
     "provenance.tsv",
     "provenance.txt",
 )
@@ -137,6 +138,23 @@ def read_summary(path: Path) -> dict[str, str]:
     return result
 
 
+def read_pilot_state(path: Path) -> dict[str, str]:
+    rows = path.read_text(encoding="utf-8").splitlines()
+    if not rows or rows[0] != "field\tvalue":
+        raise ValueError(f"{path}: invalid pilot state header")
+    result: dict[str, str] = {}
+    for line in rows[1:]:
+        fields = line.split("\t", 1)
+        if len(fields) != 2 or not fields[0] or fields[0] in result:
+            raise ValueError(f"{path}: malformed or duplicate pilot state field")
+        result[fields[0]] = fields[1]
+    if result.get("schema") != "1":
+        raise ValueError(f"{path}: unsupported pilot state schema")
+    if result.get("status") != "COMPLETE" or result.get("phase") != "complete":
+        raise ValueError(f"{path}: pilot did not complete successfully")
+    return result
+
+
 def expected_summary(manifest: dict[str, Any]) -> dict[str, str]:
     return {
         "schema": str(manifest["schema"]),
@@ -165,6 +183,7 @@ def read_run(root: Path, name: str) -> tuple[dict[str, str], dict[str, Any], str
         raise ValueError(f"{run}: missing evidence files {missing}")
 
     binary = run / "select_fdset_guest"
+    read_pilot_state(run / "pilot-state.tsv")
     provenance = read_provenance(run / "provenance.tsv")
     actual_hash = sha256(binary)
     if provenance["artifact-sha256"] != actual_hash:
