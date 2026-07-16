@@ -225,6 +225,7 @@ def expected_summary(manifest: dict[str, Any]) -> dict[str, str]:
 
 
 def read_batch_state(path: Path) -> None:
+    # batch-state records the final lifecycle state after evidence collection.
     values = read_key_value_tsv(path)
     if values.get("schema") != "1" or values.get("fixture-count") != "14":
         raise ValueError(f"{path}: invalid batch state")
@@ -233,6 +234,7 @@ def read_batch_state(path: Path) -> None:
 
 
 def read_failure_summary(path: Path) -> None:
+    # failure-summary records the last operational phase before lifecycle cleanup.
     values = {}
     for line in path.read_text(encoding="utf-8").splitlines():
         key, separator, value = line.partition(": ")
@@ -243,7 +245,7 @@ def read_failure_summary(path: Path) -> None:
         "status": "success",
         "fixture-count": "14",
         "exit-code": "0",
-        "phase": "complete",
+        "phase": "evidence",
     }
     if any(values.get(key) != value for key, value in expected.items()):
         raise ValueError(f"{path}: batch failure summary is not successful")

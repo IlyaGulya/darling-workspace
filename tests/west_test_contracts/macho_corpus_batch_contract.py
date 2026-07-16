@@ -260,7 +260,7 @@ def write_run(root: Path, name: str) -> None:
         f"variant: {name.rsplit('-', 1)[-1]}\n"
         "fixture-count: 14\n"
         "exit-code: 0\n"
-        "phase: complete\n"
+        "phase: evidence\n"
     )
     (run / "batch-guest.log").write_text("Warning: guest diagnostic output\n")
 
@@ -607,7 +607,12 @@ with tempfile.TemporaryDirectory(prefix="macho-corpus-batch-contract-") as raw:
     write_run(root, "macho-corpus-batch-b")
 
     summary = root / "macho-corpus-batch-b/failure-summary.txt"
-    summary.write_text(summary.read_text().replace("phase: complete", "phase: guest-compile"))
+    summary.write_text(summary.read_text().replace("phase: evidence", "phase: complete"))
+    assert compare(root).returncode != 0
+    write_run(root, "macho-corpus-batch-b")
+
+    state = root / "macho-corpus-batch-b/batch-state.tsv"
+    state.write_text(state.read_text().replace("phase\tcomplete", "phase\tevidence"))
     assert compare(root).returncode != 0
     write_run(root, "macho-corpus-batch-b")
 
