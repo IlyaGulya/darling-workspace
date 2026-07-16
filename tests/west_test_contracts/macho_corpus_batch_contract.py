@@ -41,6 +41,8 @@ FIXTURE_SPECS = specs_module.FIXTURE_SPECS
 ANCHOR_SHA256 = specs_module.ANCHOR_ARTIFACT_SHA256
 BATCH_BOOTSTRAP_PROFILE = specs_module.BATCH_BOOTSTRAP_PROFILE
 FIXTURE_FILES = set(compare_module.FIXTURE_FILES)
+ROOT_FILES = set(compare_module.ROOT_FILES)
+MAX_BATCH_GUEST_LOG_BYTES = compare_module.MAX_BATCH_GUEST_LOG_BYTES
 
 
 def sha256(path: Path) -> str:
@@ -260,6 +262,7 @@ def write_run(root: Path, name: str) -> None:
         "exit-code: 0\n"
         "phase: complete\n"
     )
+    (run / "batch-guest.log").write_text("Warning: guest diagnostic output\n")
 
 
 def compare(root: Path) -> subprocess.CompletedProcess[str]:
@@ -508,6 +511,29 @@ with tempfile.TemporaryDirectory(prefix="macho-corpus-batch-contract-") as raw:
 
     matched = compare(root)
     assert matched.returncode == 0, matched.stderr
+
+    assert {path.name for path in (root / "macho-corpus-batch-a").iterdir()} == ROOT_FILES
+
+    (root / "macho-corpus-batch-a/batch-guest.log").unlink()
+    assert compare(root).returncode != 0
+    write_run(root, "macho-corpus-batch-a")
+
+    (root / "macho-corpus-batch-a/unexpected-root-file").write_text("unexpected\n")
+    assert compare(root).returncode != 0
+    write_run(root, "macho-corpus-batch-a")
+
+    (root / "macho-corpus-batch-a/batch-guest.log").unlink()
+    (root / "macho-corpus-batch-a/batch-guest.log").symlink_to(
+        root / "macho-corpus-batch-b/batch-guest.log"
+    )
+    assert compare(root).returncode != 0
+    write_run(root, "macho-corpus-batch-a")
+
+    (root / "macho-corpus-batch-a/batch-guest.log").write_bytes(
+        b"x" * (MAX_BATCH_GUEST_LOG_BYTES + 1)
+    )
+    assert compare(root).returncode != 0
+    write_run(root, "macho-corpus-batch-a")
 
     shutil.rmtree(root / "macho-corpus-batch-b/fixtures/select_fdset_guest")
     assert compare(root).returncode != 0
