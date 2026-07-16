@@ -31,12 +31,10 @@ source_file="$root/tests/select_fdset_guest.c"
 mkdir -p -- "$output"
 
 work="$output/.work"
-runner_temp="$work/runner-temp"
-mkdir -p -- "$runner_temp"
 export ROOTLESS_TIER_REPO="$root"
-export RUNNER_TEMP="$runner_temp"
 export TMPDIR="$work"
 export DARLING_CLT_CACHE="$work/clt-cache"
+: "${RUNNER_TEMP:?pilot requires the official RUNNER_TEMP directory}"
 . "$root/ci/rootless-prefix.sh"
 
 source_sha256="$(sha256sum -- "$source_file" | cut -d' ' -f1)"
@@ -83,16 +81,40 @@ cleanup_prefix() {
 	return $((cleanup_rc || gc_rc || jobs_rc || remove_rc))
 }
 
+write_failure_summary() {
+	local rc="$1"
+	local status=success
+	(( rc == 0 )) || status=failure
+	{
+		printf 'status: %s\n' "$status"
+		printf 'variant: %s\n' "$variant"
+		printf 'exit_code: %s\n' "$rc"
+		printf 'phase: %s\n' "${pilot_phase:-startup}"
+		if [[ -n "${active_prefix:-}" ]]; then
+			printf 'prefix: %s\n' "$active_prefix"
+		fi
+	} >"$output/failure-summary.txt"
+}
+
 on_exit() {
 	local rc="$?"
-	cleanup_prefix "$rc" || rc=$?
+	local cleanup_rc
+	set +e
+	cleanup_prefix "$rc"
+	cleanup_rc=$?
+	if (( rc == 0 && cleanup_rc != 0 )); then
+		rc="$cleanup_rc"
+	fi
+	write_failure_summary "$rc"
 	exit "$rc"
 }
 trap on_exit EXIT INT TERM
 
 ccache_env="$work/ccache.env"
 ccache_output="$work/ccache.output"
+ccache_runner_temp="$work/ccache-runner-temp"
 mkdir -p -- "$work"
+mkdir -p -- "$ccache_runner_temp"
 : > "$ccache_env"
 : > "$ccache_output"
 GITHUB_ENV="$ccache_env" \
@@ -100,24 +122,39 @@ GITHUB_OUTPUT="$ccache_output" \
 GITHUB_SHA="local-macho-corpus-$variant" \
 RUNNER_ARCH=X64 \
 RUNNER_OS=Linux \
+RUNNER_TEMP="$ccache_runner_temp" \
 	"$root/ci/guest-toolchain-ccache.sh" prepare cold
 set -a
 . "$ccache_env"
 set +a
 
+pilot_phase=prefix-create
 prefix="$(rootless_prefix_create corpus CORPUS_PREFIX)"
 active_prefix="$prefix"
 printf '%s\n' "$prefix" > "$output/.prefix-path"
+
+for socket_path in \
+	"$prefix/var/run/shellspawn.sock" \
+	"$prefix/.darlingserver.sock"; do
+	socket_path_bytes="$(printf '%s' "$socket_path" | LC_ALL=C wc -c)"
+	if (( socket_path_bytes > 107 )); then
+		echo "pilot socket path exceeds AF_UNIX budget: $socket_path ($socket_path_bytes bytes)" >&2
+		exit 1
+	fi
+done
+
 stage="$prefix/private/var/tmp"
 mkdir -p -- "$stage"
 cp -- "$source_file" "$stage/select_fdset_guest.c"
 
+pilot_phase=runtime-bootstrap
 echo "bootstrap with reviewed guest CommandLineTools (pilot $variant)"
 west test --prefix "$prefix" \
 	--bootstrap-runtime-profile homebrew-guest-toolchain-provisioning \
 	--runtime-build-timeout-seconds 1800
 rootless_prefix_assert_guest_toolchain corpus "$prefix"
 
+pilot_phase=guest-compile-execute
 guest_script='set -eu
 cc=/Library/Developer/CommandLineTools/usr/bin/clang
 sdk=/Library/Developer/CommandLineTools/SDKs/MacOSX.sdk
