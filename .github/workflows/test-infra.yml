@@ -255,6 +255,7 @@ jobs:
             ${{ runner.temp }}/macho-corpus-pilot/${{ matrix.variant }}/private-header.txt
             ${{ runner.temp }}/macho-corpus-pilot/${{ matrix.variant }}/provenance.tsv
             ${{ runner.temp }}/macho-corpus-pilot/${{ matrix.variant }}/provenance.txt
+            ${{ runner.temp }}/macho-corpus-pilot/${{ matrix.variant }}/failure-summary.txt
       - name: Cleanup pilot prefix and West state
         if: always()
         working-directory: darling-dev/darling-workspace
@@ -263,12 +264,10 @@ jobs:
         run: |
           set +e
           status=0
-          runner_temp="$PILOT_OUTPUT/.work/runner-temp"
-          mkdir -p -- "$runner_temp"
           if [[ -f "$PILOT_OUTPUT/.prefix-path" ]]; then
             prefix="$(<"$PILOT_OUTPUT/.prefix-path")"
             if [[ -n "$prefix" ]]; then
-              RUNNER_TEMP="$runner_temp" ci/cleanup-rootless-prefixes.sh corpus "$prefix" || status=1
+              ci/cleanup-rootless-prefixes.sh corpus "$prefix" || status=1
             fi
           fi
           TMPDIR="$PILOT_OUTPUT/.work" west test --gc --gc-runtime-evidence || status=1

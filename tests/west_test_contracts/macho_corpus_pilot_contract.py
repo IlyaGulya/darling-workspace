@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import shutil
 import struct
 import subprocess
@@ -16,6 +17,7 @@ import yaml
 ROOT = Path(__file__).resolve().parents[2]
 BUILDER = ROOT / "ci/build-guest-macho-pilot.sh"
 COMPARE = ROOT / "ci/compare-guest-macho-pilot.py"
+ROOTLESS_PREFIX = ROOT / "ci/rootless-prefix.sh"
 WORKFLOW = ROOT / ".github/workflows/test-infra.yml"
 STABLE_FIELDS = (
     "schema",
@@ -154,12 +156,22 @@ choices = triggers["workflow_dispatch"]["inputs"]["tier"]["options"]
 assert "macho-corpus-pilot" in choices, choices
 
 builder_text = BUILDER.read_text()
+rootless_prefix_text = ROOTLESS_PREFIX.read_text()
 assert "testkit/corpus" not in builder_text
 assert "corpus.yml" not in builder_text
 assert "independent-a" not in builder_text
 assert "independent-b" not in builder_text
 assert "testkit/corpus" not in workflow_text
 assert "rootless_prefix_create corpus CORPUS_PREFIX" in builder_text
+assert 'export RUNNER_TEMP=' not in builder_text
+assert 'RUNNER_TEMP="$runner_temp"' not in workflow_text
+assert 'RUNNER_TEMP="$ccache_runner_temp"' in builder_text
+assert '"$prefix/var/run/shellspawn.sock"' in builder_text
+assert '"$prefix/.darlingserver.sock"' in builder_text
+assert "LC_ALL=C wc -c" in builder_text
+assert "socket_path_bytes > 107" in builder_text
+assert 'dirname -- "$prefix")" == "$trusted_root"' in rootless_prefix_text
+assert '"$output/failure-summary.txt"' in builder_text
 assert "homebrew-guest-toolchain-provisioning" in builder_text
 assert "DARLING_CLT_CACHE=" in builder_text
 assert 'output="$(realpath -m -- "$1")"' in builder_text
@@ -186,7 +198,37 @@ assert "actions/upload-artifact@v7" in upload_job
 assert ".pkg" not in upload_job
 assert "clt-cache" not in upload_job
 assert ".work" not in upload_job
+assert "failure-summary.txt" in upload_job
 assert "path: " + "${{ runner.temp }}/macho-corpus-pilot/${{ matrix.variant }}" not in upload_job
+
+with tempfile.TemporaryDirectory(prefix="macho-corpus-runner-temp-", dir="/tmp") as raw:
+    runner_temp = Path(raw).resolve()
+    env = os.environ.copy()
+    env["RUNNER_TEMP"] = str(runner_temp)
+    env["ROOTLESS_TIER_REPO"] = str(ROOT)
+    prefix_probe = subprocess.run(
+        [
+            "bash",
+            "-c",
+            "source ci/rootless-prefix.sh; "
+            "prefix=$(rootless_prefix_create corpus CORPUS_PREFIX); "
+            "printf '%s\\n' \"$prefix\"; "
+            "rootless_prefix_remove corpus \"$prefix\"",
+        ],
+        cwd=ROOT,
+        env=env,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert prefix_probe.returncode == 0, prefix_probe.stderr
+    created_prefix = Path(prefix_probe.stdout.strip())
+    assert created_prefix.parent == runner_temp
+    for socket_path in (
+        created_prefix / "var/run/shellspawn.sock",
+        created_prefix / ".darlingserver.sock",
+    ):
+        assert len(os.fsencode(socket_path)) <= 107
 
 compare_job = workflow_text.split("  macho-corpus-pilot-compare:", 1)[1]
 assert "needs: macho-corpus-pilot-build" in compare_job
