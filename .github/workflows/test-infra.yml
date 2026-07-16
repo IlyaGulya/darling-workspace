@@ -19,7 +19,7 @@ on:
           - guest-toolchain
           - clt-integrity
           - macos
-          - macho-corpus-pilot
+          - macho-corpus-batch
           - macho-corpus-validation
       ccache_mode:
         description: ccache mode for guest-toolchain only; other tiers ignore this input
@@ -255,14 +255,14 @@ jobs:
           TIER_PREFIX: ${{ steps.rootless_corpus.outputs.prefix }}
         run: ci/cleanup-rootless-prefixes.sh corpus "$TIER_PREFIX"
 
-  macho-corpus-pilot-build:
-    if: github.event_name == 'workflow_dispatch' && inputs.tier == 'macho-corpus-pilot'
+  macho-corpus-batch-build:
+    if: github.event_name == 'workflow_dispatch' && inputs.tier == 'macho-corpus-batch'
     strategy:
       fail-fast: false
       matrix:
         variant: [a, b]
     runs-on: ubuntu-latest
-    timeout-minutes: 45
+    timeout-minutes: 55
     permissions:
       contents: read
     steps:
@@ -273,62 +273,50 @@ jobs:
         run: python3 -m pip install west
       - name: Install Darling build dependencies
         run: darling-dev/darling-workspace/ci/install-darling-build-deps.sh
-      - name: Install pilot Mach-O inspection tools
+      - name: Install batch Mach-O inspection tools
         run: sudo apt-get install --yes --no-install-recommends llvm
       - name: Install guest-toolchain ccache
         run: sudo apt-get install --yes --no-install-recommends ccache
       - name: Materialize Darling workspace
         run: darling-dev/darling-workspace/ci/bootstrap-west.sh
-      - name: Build one isolated Mach-O pilot
+      - name: Build fixed Phase 3B Mach-O batch
         working-directory: darling-dev/darling-workspace
         env:
-          PILOT_OUTPUT: ${{ runner.temp }}/macho-corpus-pilot/${{ matrix.variant }}
-        run: ci/build-guest-macho-pilot.sh "$PILOT_OUTPUT" "${{ matrix.variant }}"
-      - name: Upload pilot evidence only
+          BATCH_OUTPUT: ${{ runner.temp }}/macho-corpus-batch/${{ matrix.variant }}
+        run: ci/build-guest-macho-batch.sh "$BATCH_OUTPUT" "${{ matrix.variant }}"
+      - name: Upload batch evidence only
         if: always()
         uses: actions/upload-artifact@v7
         with:
-          name: macho-corpus-pilot-${{ matrix.variant }}
+          name: macho-corpus-batch-${{ matrix.variant }}
           if-no-files-found: ignore
           retention-days: 14
           path: |
-            ${{ runner.temp }}/macho-corpus-pilot/${{ matrix.variant }}/select_fdset_guest
-            ${{ runner.temp }}/macho-corpus-pilot/${{ matrix.variant }}/artifact.sha256
-            ${{ runner.temp }}/macho-corpus-pilot/${{ matrix.variant }}/clang-version.txt
-            ${{ runner.temp }}/macho-corpus-pilot/${{ matrix.variant }}/clang-origin.txt
-            ${{ runner.temp }}/macho-corpus-pilot/${{ matrix.variant }}/clt-provenance.txt
-            ${{ runner.temp }}/macho-corpus-pilot/${{ matrix.variant }}/dylibs-used.txt
-            ${{ runner.temp }}/macho-corpus-pilot/${{ matrix.variant }}/file.txt
-            ${{ runner.temp }}/macho-corpus-pilot/${{ matrix.variant }}/guest-build.log
-            ${{ runner.temp }}/macho-corpus-pilot/${{ matrix.variant }}/guest-marker.txt
-            ${{ runner.temp }}/macho-corpus-pilot/${{ matrix.variant }}/macho-manifest.json
-            ${{ runner.temp }}/macho-corpus-pilot/${{ matrix.variant }}/macho-summary.tsv
-            ${{ runner.temp }}/macho-corpus-pilot/${{ matrix.variant }}/private-header.txt
-            ${{ runner.temp }}/macho-corpus-pilot/${{ matrix.variant }}/pilot-state.tsv
-            ${{ runner.temp }}/macho-corpus-pilot/${{ matrix.variant }}/provenance.tsv
-            ${{ runner.temp }}/macho-corpus-pilot/${{ matrix.variant }}/provenance.txt
-            ${{ runner.temp }}/macho-corpus-pilot/${{ matrix.variant }}/failure-summary.txt
-      - name: Cleanup pilot prefix and West state
+            ${{ runner.temp }}/macho-corpus-batch/${{ matrix.variant }}/batch-manifest.tsv
+            ${{ runner.temp }}/macho-corpus-batch/${{ matrix.variant }}/batch-state.tsv
+            ${{ runner.temp }}/macho-corpus-batch/${{ matrix.variant }}/failure-summary.txt
+            ${{ runner.temp }}/macho-corpus-batch/${{ matrix.variant }}/fixtures/**
+      - name: Cleanup batch prefix and West state
         if: always()
         working-directory: darling-dev/darling-workspace
         env:
-          PILOT_OUTPUT: ${{ runner.temp }}/macho-corpus-pilot/${{ matrix.variant }}
+          BATCH_OUTPUT: ${{ runner.temp }}/macho-corpus-batch/${{ matrix.variant }}
         run: |
           set +e
           status=0
-          if [[ -f "$PILOT_OUTPUT/.prefix-path" ]]; then
-            prefix="$(<"$PILOT_OUTPUT/.prefix-path")"
+          if [[ -f "$BATCH_OUTPUT/.prefix-path" ]]; then
+            prefix="$(<"$BATCH_OUTPUT/.prefix-path")"
             if [[ -n "$prefix" ]]; then
               ci/cleanup-rootless-prefixes.sh corpus "$prefix" || status=1
             fi
           fi
-          TMPDIR="$PILOT_OUTPUT/.work" west test --gc --gc-runtime-evidence || status=1
-          TMPDIR="$PILOT_OUTPUT/.work" scripts/west-job.sh assert-no-live-west-test --state-root "$PILOT_OUTPUT/.work" || status=1
+          TMPDIR="$BATCH_OUTPUT/.work" west test --gc --gc-runtime-evidence || status=1
+          TMPDIR="$BATCH_OUTPUT/.work" scripts/west-job.sh assert-no-live-west-test --state-root "$BATCH_OUTPUT/.work" || status=1
           exit "$status"
 
-  macho-corpus-pilot-compare:
-    needs: macho-corpus-pilot-build
-    if: needs.macho-corpus-pilot-build.result == 'success' && github.event_name == 'workflow_dispatch' && inputs.tier == 'macho-corpus-pilot'
+  macho-corpus-batch-compare:
+    needs: macho-corpus-batch-build
+    if: needs.macho-corpus-batch-build.result == 'success' && github.event_name == 'workflow_dispatch' && inputs.tier == 'macho-corpus-batch'
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -336,15 +324,15 @@ jobs:
       - uses: actions/checkout@v7
         with:
           path: darling-dev/darling-workspace
-      - name: Download both pilot evidence artifacts
+      - name: Download both batch evidence artifacts
         uses: actions/download-artifact@v4
         with:
-          pattern: macho-corpus-pilot-*
-          path: ${{ runner.temp }}/macho-corpus-pilot-runs
+          pattern: macho-corpus-batch-*
+          path: ${{ runner.temp }}/macho-corpus-batch-runs
           merge-multiple: false
-      - name: Compare pilot binaries and stable provenance
+      - name: Compare batch binaries and stable provenance
         working-directory: darling-dev/darling-workspace
-        run: ci/compare-guest-macho-pilot.sh "$RUNNER_TEMP/macho-corpus-pilot-runs"
+        run: ci/compare-guest-macho-batch.sh "$RUNNER_TEMP/macho-corpus-batch-runs"
 
   clt-integrity:
     if: github.event_name == 'workflow_dispatch' && inputs.tier == 'clt-integrity'
