@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import os
+import shutil
 import struct
 import sys
 import tempfile
@@ -258,6 +259,7 @@ with tempfile.TemporaryDirectory(prefix="west-guest-macho-contract-") as raw:
         "name": "select_fdset_guest_prebuilt",
         "corpus": "corpus.yml",
         "fixture": "select_fdset_guest",
+        "repo_root": str(root),
         "requires_resources": ["darling-prefix"],
         "requires_profile": None,
         "runtime_profile": None,
@@ -310,6 +312,23 @@ with tempfile.TemporaryDirectory(prefix="west-guest-macho-contract-") as raw:
     assert not (prefix / "private/var/tmp/west-macho-select_fdset_guest").exists()
     assert not list((prefix / "private/var/tmp").glob(".west-macho-select_fdset_guest.*.tmp"))
 
+    nested_topdir = root / "darling-dev"
+    nested_repo = nested_topdir / "darling-workspace"
+    nested_repo.mkdir(parents=True)
+    for name in ("corpus.yml", "source.c", "fixture", "provenance.txt"):
+        shutil.copy2(root / name, nested_repo / name)
+
+    class NestedCommand(Command):
+        topdir = str(nested_topdir)
+
+    nested_invocation = {**invocation, "repo_root": str(nested_repo)}
+    module.run_guest_shell = fake_guest_shell
+    try:
+        assert module.run_guest_macho_fixture(NestedCommand(), nested_invocation, env) == 0
+    finally:
+        module.run_guest_shell = original
+    assert calls[-1][1]["cwd"] == nested_topdir
+
     (prefix / "Library/Developer/CommandLineTools/usr/bin").mkdir(parents=True)
     try:
         module.run_guest_macho_fixture(
@@ -321,5 +340,22 @@ with tempfile.TemporaryDirectory(prefix="west-guest-macho-contract-") as raw:
         assert "CommandLineTools" in str(error), error
     else:
         raise AssertionError("typed runner accepted a prefix containing CLT")
+
+    outside = root / "outside-repo"
+    outside.mkdir()
+    for value in ("../outside-repo/corpus.yml", str(outside / "corpus.yml")):
+        try:
+            module._safe_repo_path(nested_repo, value, "corpus")
+        except module.GuestMachoFixtureError:
+            pass
+        else:
+            raise AssertionError(f"repository path escape was accepted: {value}")
+    (nested_repo / "escape-link").symlink_to(outside, target_is_directory=True)
+    try:
+        module._safe_repo_path(nested_repo, "escape-link/corpus.yml", "corpus")
+    except module.GuestMachoFixtureError:
+        pass
+    else:
+        raise AssertionError("symlink repository path escape was accepted")
 
 print("PASS guest-macho-contract")

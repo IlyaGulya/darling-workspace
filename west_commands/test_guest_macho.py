@@ -451,7 +451,13 @@ def run_guest_macho_fixture(command: Any, invocation: dict, env: dict[str, str] 
     if invocation.get("requires_profile") or invocation.get("runtime_profile"):
         command.die(f"{invocation['name']}: guest Mach-O runner cannot use a provisioning profile")
 
-    fixture = load_guest_macho_fixture(Path(command.topdir), invocation["corpus"], invocation["fixture"])
+    repo_root_value = invocation.get("repo_root")
+    if not repo_root_value:
+        command.die(f"{invocation['name']}: guest Mach-O runner needs a repository root")
+    repo_root = Path(repo_root_value)
+    if not repo_root.is_absolute():
+        command.die(f"{invocation['name']}: guest Mach-O repository root must be absolute")
+    fixture = load_guest_macho_fixture(repo_root, invocation["corpus"], invocation["fixture"])
     prefix_text = run_env.get("DPREFIX") or getattr(command, "_prefix", None)
     if not prefix_text:
         command.die(f"{invocation['name']}: guest Mach-O runner needs a prefix")
