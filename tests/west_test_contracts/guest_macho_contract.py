@@ -31,6 +31,15 @@ ACCEPTED_RUN = 29516601154
 ACCEPTED_COMPARE_JOB = 87691198694
 ACCEPTED_RESULT = "MACHO_CORPUS_BATCH_MATCH"
 EXPECTED_NAMES = [spec.name for spec in FIXTURE_SPECS]
+EXPECTED_GROUPS = {
+    name: ("perf" if name == "fork_checkin_signal_storm_guest" else "homebrew")
+    for name in EXPECTED_NAMES
+}
+EXPECTED_TIMEOUTS = {
+    **{name: 30 for name in EXPECTED_NAMES if name != "fork_checkin_signal_storm_guest"},
+    "fork_checkin_signal_storm_guest": 45,
+    "rootless_no_mount_guest": 45,
+}
 ACCEPTED_ARTIFACT_SHA256 = {
     "abort_with_payload_no_group_broadcast": "b3dff938f460202c26ed4b71a5c95817ed438c4216046b0183f09e71cbd0a2d8",
     "select_fdset_guest": "de9e7097a60f7f0aaf31bc6be0bac760bccf9f6d2a412d5b16aa14ec5685eab6",
@@ -137,16 +146,56 @@ for name in EXPECTED_NAMES:
         assert runtime["observed-marker"] == "NOT_OBSERVED"
 
 homebrew = yaml.safe_load((ROOT / "patches/homebrew/patches.yml").read_text())["patches"]
-select_patch = next(
-    item for item in homebrew if item.get("path") == "xnu/select-pselect-fdset.patch"
-)
+patches_by_path = {item["path"]: item for item in homebrew}
 typed_tests = [
-    test
-    for test in select_patch["tests"]
+    (patch, test)
+    for patch in homebrew
+    for test in patch.get("tests", [])
     if test.get("runner") == "guest-macho-fixture"
 ]
-assert [test["name"] for test in typed_tests] == ["select_fdset_guest_prebuilt"]
-assert any(test.get("name") == "select_fdset_guest" for test in select_patch["tests"])
+assert len(typed_tests) == 14
+assert [test["name"] for _, test in typed_tests] == [
+    f"{test['fixture']}_prebuilt" for _, test in typed_tests
+]
+assert {test["fixture"] for _, test in typed_tests} == set(EXPECTED_NAMES)
+assert {test["validation-group"] for _, test in typed_tests} == {"homebrew", "perf"}
+assert sum(test["validation-group"] == "homebrew" for _, test in typed_tests) == 13
+assert sum(test["validation-group"] == "perf" for _, test in typed_tests) == 1
+required_env = {
+    "DARLING_ROOTLESS": "1",
+    "DARLING_NOOVERLAYFS": "1",
+    "DARLING_EUNION": "1",
+    "WEST_TEST_FORBID_GUEST_TOOLCHAIN": "1",
+}
+for patch, test in typed_tests:
+    fixture = test["fixture"]
+    spec = specs[fixture]
+    assert patch["path"] == spec.patch_path.removeprefix("patches/homebrew/")
+    assert test["name"] == f"{fixture}_prebuilt"
+    assert test["corpus"] == "testkit/fixtures/guest-macho/v1/corpus.yml"
+    assert test["source-profile"] == EXPECTED_GROUPS[fixture]
+    assert test["validation-group"] == EXPECTED_GROUPS[fixture]
+    assert test["timeout-seconds"] == EXPECTED_TIMEOUTS[fixture]
+    assert test["requires"] == ["darling-prefix"]
+    assert test["env-vars"] == required_env
+    assert "ok-marker" not in test
+    assert "runtime-profile" not in test
+    if fixture != "rootless_no_mount_guest":
+        assert any(
+            item.get("name") in {fixture, f"{fixture}_guest"}
+            and item.get("runner") == "guest-c-fixture"
+            for item in patch.get("tests", [])
+        ), fixture
+assert "rootless_no_mount_guest" in (ROOT / "testkit/CMakeLists.txt").read_text()
+profiles = yaml.safe_load((ROOT / "testkit/runtime-profiles.yml").read_text())["runtime-profiles"]
+assert profiles["homebrew-rootless-bootstrap-minimal"]["source-profile"] == "homebrew"
+assert profiles["perf-rootless-bootstrap-minimal"]["source-profile"] == "perf"
+assert profiles["perf-rootless-bootstrap-minimal"]["cmake-defines"] == {
+    "DARLING_EUNION": True,
+    "DSERVER_RING_TRANSPORT": True,
+}
+assert "guest-toolchain" not in profiles["homebrew-rootless-bootstrap-minimal"]
+assert "guest-toolchain" not in profiles["perf-rootless-bootstrap-minimal"]
 
 
 def make_macho(path: Path) -> None:

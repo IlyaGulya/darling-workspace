@@ -14,6 +14,7 @@ tests/run-west-test-runtime-build-contract.sh
 tests/run-west-guest-toolchain-contract.sh
 tests/run-west-guest-toolchain-cache-contract.sh
 tests/run-west-guest-toolchain-ccache-contract.sh
+python3 tests/west_test_contracts/guest_macho_validation_contract.py
 tests/run-west-guest-macho-contract.sh
 tests/run-west-macho-corpus-batch-contract.sh
 
@@ -21,6 +22,8 @@ tests/run-west-macho-corpus-batch-contract.sh
 # like ordinary Python packages, so this catches loader-incompatible module
 # declarations before any CTest discovery runs.
 west test --help | grep -q -- '--bootstrap-runtime-profile NAME'
+west test --help | grep -q -- '--guest-macho-validation-group {homebrew,perf}'
+west test --help | grep -q -- '--guest-macho-evidence-dir DIR'
 west patch verify --help | grep -q -- '--applicability-only'
 
 # Guest CTest builds configure the unpatched West source tree before a runtime
@@ -125,6 +128,25 @@ printf '%s\n' "$list_select_guest" | grep -q 'darling/select_fdset_guest' ||
 list_select_prebuilt="$(west test --profile homebrew --patch xnu/select-pselect-fdset.patch --env darling --label 'name:select_fdset_guest_prebuilt' --list)"
 printf '%s\n' "$list_select_prebuilt" | grep -q 'select_fdset_guest_prebuilt' ||
 	{ printf '%s\n' "$list_select_prebuilt" >&2; exit 1; }
+list_macho_homebrew="$(west test --profile homebrew --env darling --guest-macho-validation-group homebrew --list)"
+[ "$(printf '%s\n' "$list_macho_homebrew" | grep -F -c '_prebuilt')" -eq 13 ] ||
+	{ printf '%s\n' "$list_macho_homebrew" >&2; exit 1; }
+list_macho_perf="$(west test --profile homebrew --env darling --guest-macho-validation-group perf --list)"
+[ "$(printf '%s\n' "$list_macho_perf" | grep -F -c '_prebuilt')" -eq 1 ] ||
+	{ printf '%s\n' "$list_macho_perf" >&2; exit 1; }
+printf '%s\n' "$list_macho_perf" | grep -q 'fork_checkin_signal_storm_guest_prebuilt' ||
+	{ printf '%s\n' "$list_macho_perf" >&2; exit 1; }
+if west test --profile homebrew --env darling --guest-macho-validation-group invalid --list >/dev/null 2>&1; then
+	echo 'guest Mach-O selector accepted an invalid group' >&2
+	exit 1
+fi
+if group_without_profile="$(west test --env darling --guest-macho-validation-group homebrew --list 2>&1)"; then
+	echo 'guest Mach-O selector accepted a group without its metadata profile' >&2
+	exit 1
+fi
+printf '%s\n' "$group_without_profile" | grep -F -q -- \
+	'--guest-macho-validation-group requires --profile homebrew' ||
+	{ printf '%s\n' "$group_without_profile" >&2; exit 1; }
 
 list_getattrlist_guest="$(west test --bead dar-e1j --env darling --list)"
 printf '%s\n' "$list_getattrlist_guest" | grep -q 'darling/getattrlist_name_objtype_guest' ||

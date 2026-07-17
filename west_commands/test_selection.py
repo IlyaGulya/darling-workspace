@@ -25,8 +25,12 @@ def select_metadata_tests(
     label: str | None,
     red_only: bool,
     resolved_diag: Callable[[dict], str],
+    validation_group: str | None = None,
 ) -> MetadataSelection:
     """Select normalized metadata without depending on a West command object."""
+
+    if validation_group is not None and validation_group not in {"homebrew", "perf"}:
+        raise ValueError(f"unknown guest Mach-O validation group: {validation_group}")
 
     selected = []
     missing = []
@@ -43,6 +47,13 @@ def select_metadata_tests(
             tests = [test for test in tests if test.get("red")]
         if env:
             tests = [test for test in tests if test.get("env") == env]
+        if validation_group:
+            tests = [
+                test
+                for test in tests
+                if test.get("runner") == "guest-macho-fixture"
+                and test.get("validation-group") == validation_group
+            ]
         if diag:
             tests = [test for test in tests if resolved_diag(test) == diag]
         if label:
@@ -67,6 +78,8 @@ def metadata_test_labels(
     }
     if test.get("name"):
         labels.add(f"name:{test['name']}")
+    if test.get("validation-group"):
+        labels.add(f"guest-macho-group:{test['validation-group']}")
     if patch.get("bead"):
         labels.add(f"bead:{patch['bead']}")
     modules = test.get("submodules") or [patch.get("module")]

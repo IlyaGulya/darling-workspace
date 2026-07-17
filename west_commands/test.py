@@ -104,7 +104,14 @@ from test_runtime_build import RuntimeBuildService
 from test_runtime_evidence import RuntimeEvidenceStore
 from test_runtime_source import RuntimeSourceMaterializer
 from test_runtime_identity import runtime_identity
-from test_selection import select_metadata_tests
+from guest_macho_validation import (
+    add_cli_arguments,
+    capture_invocation,
+    finalize_guest_macho_evidence,
+    select_metadata_tests_for_command,
+    validate_cli_selection,
+    validate_selected_group,
+)
 from test_runtime import (
     compose_ctest_runtime_profiles,
     describe_runtime_deploy_plan,
@@ -282,6 +289,7 @@ class DarlingTest(ProfileOperationsMixin, BootstrapRuntimeProfileMixin, WestComm
             metavar="REGEX",
             help="restrict metadata/CTest labels (e.g. 'name:case' or 'macos:15')",
         )
+        add_cli_arguments(parser)
         parser.add_argument(
             "--fuzz",
             action="store_true",
@@ -622,30 +630,6 @@ class DarlingTest(ProfileOperationsMixin, BootstrapRuntimeProfileMixin, WestComm
         if path.exists():
             return path
         self.die(f"unknown West project or path: {ref}")
-
-    def _metadata_tests(
-        self,
-        profile: str,
-        patch_path: str | None,
-        bead: str | None,
-        env: str | None,
-        diag: str | None,
-        label: str | None,
-        red_only: bool,
-    ):
-        selection = select_metadata_tests(
-            self._load_profile(profile),
-            patch_path=patch_path,
-            bead=bead,
-            env=env,
-            diag=diag,
-            label=label,
-            red_only=red_only,
-            resolved_diag=self._resolved_diag,
-        )
-        if patch_path and not selection.found_patch:
-            self.die(f"{profile}: patch not found or has no selected tests: {patch_path}")
-        return selection.selected, selection.missing
 
     def _test_invocation(self, patch, test):
         """Resolve structured patch metadata to a concrete local invocation.
@@ -1373,6 +1357,8 @@ class DarlingTest(ProfileOperationsMixin, BootstrapRuntimeProfileMixin, WestComm
                 "corpus": str(test["corpus"]),
                 "fixture": str(test["fixture"]),
                 "runtime_profile": test.get("runtime-profile"),
+                "source_profile": test.get("source-profile"),
+                "validation_group": test.get("validation-group"),
                 "requires_resources": sorted(resources),
                 "requires_env": list(test.get("requires-env", [])),
                 "requires_profile": test.get("requires-profile"),
@@ -1434,12 +1420,20 @@ class DarlingTest(ProfileOperationsMixin, BootstrapRuntimeProfileMixin, WestComm
                         )
                         with self._ctest_source_override_context(runtime_invocation) as run_invocation:
                             with self._resource_context(run_invocation, exec_env) as resource_env:
-                                result_rc = self._run_invocation(run_invocation, env=resource_env)
+                                if getattr(self, "_guest_macho_evidence_dir", None):
+                                    result_rc = capture_invocation(
+                                        self, run_invocation, resource_env,
+                                        self._guest_macho_evidence_dir,
+                                    )
+                                else:
+                                    result_rc = self._run_invocation(
+                                        run_invocation, env=resource_env
+                                    )
                     if result_rc == 0 and test.get("verify-clean-shutdown"):
                         if not self._verify_prefix_idle():
                             result_rc = 1
             if result_rc:
-                rc = result_rc
+                rc = result_rc if rc == 0 else rc
         return rc
 
     def _metadata_needs_prefix(self, tests) -> bool:
@@ -3630,7 +3624,6 @@ class DarlingTest(ProfileOperationsMixin, BootstrapRuntimeProfileMixin, WestComm
     def _apply_full_runtime_profile(self, patch, module: str, target: Path) -> None:
         self._runtime_source_materializer().apply_full_runtime_profile(patch, module, target)
 
-
     def _remove_path_for_materialize(self, path: Path) -> None:
         if path.is_symlink() or path.is_file():
             path.unlink()
@@ -3644,7 +3637,6 @@ class DarlingTest(ProfileOperationsMixin, BootstrapRuntimeProfileMixin, WestComm
                 return True
             current = current.parent
         return False
-
 
     @contextmanager
     def _source_base_green_source_tree(self, patch, module: str):
@@ -5122,10 +5114,16 @@ class DarlingTest(ProfileOperationsMixin, BootstrapRuntimeProfileMixin, WestComm
         if getattr(args, "gc_runtime_evidence", False):
             self.die("--gc-runtime-evidence requires --gc")
 
+        try:
+            validate_cli_selection(args)
+        except ValueError as error:
+            self.die(str(error))
         if args.red_audit:
             profile = args.profile or "homebrew"
-            selected, missing = self._metadata_tests(
-                profile, args.patch, args.bead, args.env, args.diag, args.label, red_only=False
+            selected, missing = select_metadata_tests_for_command(
+                self,
+                profile, args.patch, args.bead, args.env, args.diag, args.label,
+                red_only=False, validation_group=args.guest_macho_validation_group
             )
             missing_reasons = self._red_proof_audit(selected)
             for patch in missing:
@@ -5213,9 +5211,23 @@ class DarlingTest(ProfileOperationsMixin, BootstrapRuntimeProfileMixin, WestComm
             self.die("--bootstrap-executable requires --bootstrap-runtime-profile")
 
         if args.profile:
-            selected, missing = self._metadata_tests(
-                args.profile, args.patch, args.bead, args.env, args.diag, args.label, args.red_only
+            selected, missing = select_metadata_tests_for_command(
+                self,
+                args.profile, args.patch, args.bead, args.env, args.diag, args.label,
+                args.red_only, validation_group=args.guest_macho_validation_group
             )
+            if args.guest_macho_validation_group:
+                try:
+                    validate_selected_group(
+                        selected, args.guest_macho_validation_group
+                    )
+                except ValueError as error:
+                    self.die(str(error))
+                self._guest_macho_evidence_dir = (
+                    Path(args.guest_macho_evidence_dir)
+                    if args.guest_macho_evidence_dir
+                    else None
+                )
             if bootstrap_syscall_trace and not bootstrap_runtime_profile:
                 if args.list or not any(test.get("runtime-profile") for _, test in selected):
                     self.die(
@@ -5272,6 +5284,8 @@ class DarlingTest(ProfileOperationsMixin, BootstrapRuntimeProfileMixin, WestComm
                             raise SystemExit(result)
                         with self._prefix_resource_context(needs_prefix):
                             result = self._run_metadata_tests(selected, args.list, unknown)
+                        if getattr(self, "_guest_macho_evidence_dir", None):
+                            result |= finalize_guest_macho_evidence(self._guest_macho_evidence_dir, args.guest_macho_validation_group, [test["fixture"] for _, test in selected])
                         if getattr(self, "_prefix_cleanup_failed", False):
                             result = result or 1
                         raise SystemExit(result)

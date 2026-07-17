@@ -122,6 +122,35 @@ runtime-profiles:
       build-targets:
       - rootless_bootstrap
       resource: rootless-bootstrap
+  perf-rootless-bootstrap-minimal:
+    # The perf prebuilt group gets the same no-CLT rootless baseline as smoke,
+    # but its source profile enables the darlingserver ring transport contract.
+    purpose: prefix-baseline
+    bootstrap-smoke-timeout-seconds: 180
+    source-profile: perf
+    bootstrap: rootless-no-mount
+    source-module: darling
+    source-modules:
+    - darling
+    - darling/src/external/darlingserver
+    - darling/src/external/xnu
+    - darling/src/external/dyld
+    - darling/src/external/corefoundation
+    - darling/src/external/libsystem
+    - darling/src/external/bash
+    cmake-defines:
+      DARLING_EUNION: true
+      DSERVER_RING_TRANSPORT: true
+    launcher-env:
+      DARLING_ROOTLESS: '1'
+      DARLING_NOOVERLAYFS: '1'
+      DARLING_EUNION: '1'
+      DARLING_ROOTLESS_SHELLSPAWN_READY_TIMEOUT_MS: '60000'
+    runtime-artifacts:
+    - module: darling
+      build-targets:
+      - rootless_bootstrap
+      resource: rootless-bootstrap
   homebrew-guest-toolchain-provisioning:
     # Scheduled/manual only. This is intentionally separate from all ordinary
     # guest regressions because it downloads and installs Apple's CLT packages.

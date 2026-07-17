@@ -520,7 +520,8 @@ def run_guest_macho_fixture(command: Any, invocation: dict, env: dict[str, str] 
                 f"got {result.returncode}"
             )
             return result.returncode or 1
-        missing = [marker for marker in fixture.expected_stdout if marker not in output]
+        output_lines = output.splitlines()
+        missing = [marker for marker in fixture.expected_stdout if marker not in output_lines]
         if missing:
             command._record_failure_phase(invocation, "run")
             command.err(f"{invocation['name']}: missing guest output marker(s): {', '.join(missing)}")
