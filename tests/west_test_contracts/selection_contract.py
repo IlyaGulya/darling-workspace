@@ -98,4 +98,21 @@ no_stress = select_metadata_tests(
 )
 assert no_stress.selected == []
 
+try:
+    select_metadata_tests(
+        profile,
+        patch_path=None,
+        bead=None,
+        env="darling",
+        diag=None,
+        label=None,
+        red_only=False,
+        resolved_diag=lambda test: test["diag"],
+        validation_group="invalid",
+    )
+except ValueError as error:
+    assert "unknown guest Mach-O validation group" in str(error)
+else:
+    raise AssertionError("metadata selector accepted an invalid guest Mach-O group")
+
 print("PASS west-test-selection-contract")
