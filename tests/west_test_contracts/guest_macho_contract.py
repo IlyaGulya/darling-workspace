@@ -14,29 +14,128 @@ import yaml
 
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "west_commands"))
+sys.path.insert(0, str(ROOT / "ci"))
 
 import test_guest_macho as module
+from guest_macho_batch_specs import FIXTURE_SPECS
 from guest_toolchain import REVIEWED_COMMAND_LINE_TOOLS_SHA256
 from test_execution import ProcessResult
 
 
-production_corpus = ROOT / "testkit/fixtures/guest-macho/v1/corpus.yml"
-production_fixture = module.load_guest_macho_fixture(
-    ROOT, "testkit/fixtures/guest-macho/v1/corpus.yml", "select_fdset_guest"
+PRODUCTION_CORPUS = ROOT / "testkit/fixtures/guest-macho/v1/corpus.yml"
+CORPUS_ROOT = PRODUCTION_CORPUS.parent
+ANCHOR = "select_fdset_guest"
+ACCEPTED_COMMIT = "a53ec8109829fc8da743bcd97d0b14c92b3ca7c6"
+ACCEPTED_SOURCE_REVISION = "a53ec8109829fc8da743bcd97d0b14c92b3ca7c6"
+ACCEPTED_RUN = 29516601154
+ACCEPTED_COMPARE_JOB = 87691198694
+ACCEPTED_RESULT = "MACHO_CORPUS_BATCH_MATCH"
+EXPECTED_NAMES = [spec.name for spec in FIXTURE_SPECS]
+ACCEPTED_ARTIFACT_SHA256 = {
+    "abort_with_payload_no_group_broadcast": "b3dff938f460202c26ed4b71a5c95817ed438c4216046b0183f09e71cbd0a2d8",
+    "select_fdset_guest": "de9e7097a60f7f0aaf31bc6be0bac760bccf9f6d2a412d5b16aa14ec5685eab6",
+    "getattrlist_name_objtype_guest": "b434c9f96613ea10399b433abf2ab38accc3c5b9bad7629904d71414cbc53819",
+    "darwin_priority_guest": "fbca0bf42014f48b8118b0bdfe22e0b77b4bef5480d4af648d91c1a9505eb2d6",
+    "socket_siocgifconf_guest": "3f04493aa574afe1df50d1c6c381ae56be8ec1ea444fdb2f61d2e28bd062efd5",
+    "bzero_return_register_guest": "7d355056e48392d956b4fc4715d11c4cb46bf2076dbe3f2801bfe3d3dc83a213",
+    "sigexc_sa_restart_guest": "f14b28c69cff49c5f605c0964f51181f381e1e7ba03c3bba55f6200a3c23c538",
+    "sigexc_default_resend_self_guest": "8666cac78eeb32c50bf400d457879e79c98ef1afe9af731216cb7f888b735c5f",
+    "ulock_eintr_retry_guest": "aa721051fac815b9e3d462b9b54d4f57ec0db9135a3953a61616f9c6a55cffc5",
+    "vchroot_pathnull_guard_guest": "45fe9ce0b90de6bc185df3d1abc286422406929586bf915dbd21c3293d23cb9f",
+    "chown_disabled_null_guard_guest": "86279359ef05a93badbc21137a6a7140732c60059d54f2d94c70dd3ee62ac07a",
+    "fd_guard_ebadf_guest": "59bb4d1d8f23c90e5a0bda37ff95fffafbca44aaad64746fbd3cdc1a79be68c0",
+    "fork_checkin_signal_storm_guest": "295a0f3a0f006baa5870014b9114a97133064a97910be6b057b7863422f15233",
+    "rootless_no_mount_guest": "81f6d4d14ab7645ff8212cf129c58d6326bc1366f1c603f8de5608f0f68071da",
+}
+
+document = yaml.safe_load(PRODUCTION_CORPUS.read_text())
+acceptance = document["corpus"]["acceptance"]
+assert len(ACCEPTED_COMMIT) == 40 and all(
+    character in "0123456789abcdef" for character in ACCEPTED_COMMIT
 )
-assert production_fixture.artifact_sha256 == (
-    "de9e7097a60f7f0aaf31bc6be0bac760bccf9f6d2a412d5b16aa14ec5685eab6"
-)
-assert production_fixture.expected_returncode == 0
-assert production_fixture.expected_stdout == ("SELECT_FDSET_GUEST_OK",)
-production_document = yaml.safe_load(production_corpus.read_text())
-assert production_document["corpus"]["acceptance"]["hosted-run"] == 29476139812
-assert production_document["corpus"]["acceptance"]["compare-job"] == 87555452302
-assert len(production_document["fixtures"]["select_fdset_guest"]["independent-builds"]) == 2
-assert production_document["toolchain"]["evidence-run"] == 29384636308
-assert production_document["toolchain"]["package-sha256"] == dict(
-    REVIEWED_COMMAND_LINE_TOOLS_SHA256
-)
+assert list(document["fixtures"]) == EXPECTED_NAMES
+assert len(document["fixtures"]) == 14
+assert acceptance["phase"] == "3B batch acceptance"
+assert acceptance["hosted-run"] == ACCEPTED_RUN
+assert acceptance["commit"] == ACCEPTED_COMMIT
+assert acceptance["compare-job"] == ACCEPTED_COMPARE_JOB
+assert acceptance["compare-result"] == ACCEPTED_RESULT
+assert acceptance["fixture-count"] == 14
+assert acceptance["anchor"] == ANCHOR
+assert acceptance["anchor-sha256"] == ACCEPTED_ARTIFACT_SHA256[ANCHOR]
+
+assert set(path.name for path in CORPUS_ROOT.iterdir()) == {"bin", "corpus.yml", "clt-provenance.txt"}
+bin_dir = CORPUS_ROOT / "bin"
+assert {path.name for path in bin_dir.iterdir()} == set(EXPECTED_NAMES)
+assert all(path.is_file() and not path.is_symlink() for path in bin_dir.iterdir())
+assert all((path.stat().st_mode & 0o777) == 0o755 for path in bin_dir.iterdir())
+
+assert document["toolchain"]["evidence-run"] == 29384636308
+assert document["toolchain"]["package-sha256"] == dict(REVIEWED_COMMAND_LINE_TOOLS_SHA256)
+assert document["toolchain"]["review-status"] == "reviewed"
+
+specs = {spec.name: spec for spec in FIXTURE_SPECS}
+for name in EXPECTED_NAMES:
+    spec = specs[name]
+    entry = document["fixtures"][name]
+    fixture = module.load_guest_macho_fixture(ROOT, "testkit/fixtures/guest-macho/v1/corpus.yml", name)
+    assert fixture.header == module._macho_header(fixture.artifact_path)
+    assert fixture.artifact_sha256 == ACCEPTED_ARTIFACT_SHA256[name]
+    assert entry["artifact-sha256"] == ACCEPTED_ARTIFACT_SHA256[name]
+    assert entry["source-project"] == spec.source_project
+    assert entry["source"] == spec.source_path
+    assert entry["source-revision"] == ACCEPTED_SOURCE_REVISION
+    assert entry["source-sha256"] == spec.source_sha256
+    assert module._sha256(ROOT / spec.source_path) == spec.source_sha256
+    assert entry["patch"]["path"] == spec.patch_path
+    assert entry["patch"]["sha256"] == spec.patch_sha256
+    assert module._sha256(ROOT / spec.patch_path) == spec.patch_sha256
+    assert entry["build"]["flags"] == list(spec.compile_flags)
+    assert entry["build"]["link-flags"] == list(spec.link_flags)
+    assert entry["runtime"]["profile"] == spec.runtime_profile
+    assert entry["expected"]["returncode"] == 0
+    assert entry["expected"]["stdout-contains"] == [spec.expected_marker]
+
+    builds = entry["independent-builds"]
+    assert [build["name"] for build in builds] == ["a", "b"]
+    assert all(
+        set(build)
+        == {
+            "name",
+            "hosted-run",
+            "job-id",
+            "artifact-id",
+            "artifact-archive-sha256",
+            "artifact-sha256",
+            "compiler-path",
+            "flags",
+            "link-flags",
+            "runtime-mode",
+            "runtime-status",
+            "observed-marker",
+        }
+        for build in builds
+    )
+    assert all(build["hosted-run"] == ACCEPTED_RUN for build in builds)
+    assert all(build["artifact-sha256"] == ACCEPTED_ARTIFACT_SHA256[name] for build in builds)
+    assert all(build["flags"] == list(spec.compile_flags) for build in builds)
+    assert all(build["link-flags"] == list(spec.link_flags) for build in builds)
+    assert builds[0]["artifact-sha256"] == builds[1]["artifact-sha256"]
+
+    runtime = entry["runtime"]
+    for build in builds:
+        assert build["runtime-mode"] == runtime["mode"]
+        assert build["runtime-status"] == runtime["status"]
+        assert build["observed-marker"] == runtime["observed-marker"]
+    if name == ANCHOR:
+        assert runtime["mode"] == "anchor"
+        assert runtime["status"] == "OBSERVED"
+        assert runtime["observed-marker"] == spec.expected_marker
+    else:
+        assert runtime["mode"] == "compile-only"
+        assert runtime["status"] == "NOT_RUN"
+        assert runtime["observed-marker"] == "NOT_OBSERVED"
+
 homebrew = yaml.safe_load((ROOT / "patches/homebrew/patches.yml").read_text())["patches"]
 select_patch = next(
     item for item in homebrew if item.get("path") == "xnu/select-pselect-fdset.patch"
