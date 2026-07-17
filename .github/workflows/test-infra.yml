@@ -16,6 +16,7 @@ on:
         options:
           - host
           - guest-smoke
+          - guest-full
           - guest-toolchain
           - clt-integrity
           - macos
@@ -112,6 +113,58 @@ jobs:
           ci/cleanup-rootless-prefixes.sh \
             smoke "$TIER_PREFIX" \
             diagnostic "$DIAGNOSTIC_PREFIX"
+
+  guest-full:
+    if: github.event_name == 'workflow_dispatch' && inputs.tier == 'guest-full'
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    env:
+      DARLING_WEST_UPDATE_JOBS: 8
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          path: darling-dev/darling-workspace
+      - name: Install West
+        run: python3 -m pip install west
+      - name: Install Darling build dependencies
+        run: darling-dev/darling-workspace/ci/install-darling-build-deps.sh
+      - name: Materialize Darling workspace
+        run: darling-dev/darling-workspace/ci/bootstrap-west.sh
+      - name: Build guarded test executor
+        run: cargo build --release --locked --manifest-path darling-dev/darling-debug-runner/Cargo.toml
+      - name: Run full prebuilt Mach-O regression without CLT
+        id: rootless_full
+        run: darling-dev/darling-workspace/ci/run-test-tier.sh guest-full
+      - name: Collect guest-full runtime diagnostics
+        if: always()
+        working-directory: darling-dev/darling-workspace
+        env:
+          TIER_PREFIX: ${{ steps.rootless_full.outputs.prefix }}
+        run: |
+          if [[ -n "$TIER_PREFIX" ]]; then
+            ci/collect-rootless-diagnostics.sh \
+              ".west-test/guest-full-diagnostics/failure" \
+              "$TIER_PREFIX"
+          fi
+      - name: Upload guest-full evidence
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: guest-full-runtime-evidence
+          if-no-files-found: ignore
+          retention-days: 14
+          path: |
+            darling-dev/darling-workspace/.west-test/guest-full-diagnostics
+            darling-dev/darling-workspace/.west-test/runtime-evidence/**/manifest.json
+            darling-dev/darling-workspace/.west-test/runtime-evidence/**/diagnostics/**
+      - name: Cleanup guest-full prefix and West state
+        if: always()
+        working-directory: darling-dev/darling-workspace
+        env:
+          TIER_PREFIX: ${{ steps.rootless_full.outputs.prefix }}
+        run: ci/cleanup-rootless-prefixes.sh regression "$TIER_PREFIX"
 
   guest-toolchain-provisioning:
     if: github.event_name == 'workflow_dispatch' && inputs.tier == 'guest-toolchain'

@@ -1,17 +1,6 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-case "${1:-}" in
-	guest-full)
-		cat >&2 <<'EOF'
-guest-full is blocked: the no-CLT prebuilt regression corpus is not implemented.
-The existing 14 guest tests compile fixtures inside Darling and cannot be
-advertised as a prebuilt regression tier until their artifacts are materialized.
-EOF
-		exit 78
-		;;
-esac
-
 root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$root"
 export ROOTLESS_TIER_REPO="$root"
@@ -43,9 +32,10 @@ cleanup_rootless_tier() {
 		west test --prefix "$prefix" --cleanup-prefix
 		cleanup_command_rc=$?
 		(( cleanup_command_rc == 0 )) || cleanup_rc=1
-		if [[ "$tier_kind" == corpus && -n "${validation_group:-}" ]]; then
+		if [[ "$tier_kind" == corpus || "$tier_kind" == regression ]] && \
+			[[ -n "${validation_group:-}" && -n "${diagnostics_dir:-}" ]]; then
 			"$root/ci/collect-rootless-diagnostics.sh" \
-				"$root/.west-test/guest-macho-validation-diagnostics/$validation_group" \
+				"$diagnostics_dir" \
 				"$prefix"
 			diagnostics_rc=$?
 			(( diagnostics_rc == 0 )) || cleanup_rc=1
@@ -74,6 +64,39 @@ cleanup_rootless_tier() {
 	exit 0
 }
 
+run_guest_macho_regression_tier() {
+	local requested_tier_kind="$1"
+	local prefix_variable="$2"
+	local diagnostics_relative_path="$3"
+	if [[ "$#" -ne 3 ]]; then
+		echo "run_guest_macho_regression_tier expects tier kind, prefix variable, and diagnostics path" >&2
+		exit 2
+	fi
+	tier_kind="$requested_tier_kind"
+	validation_group=homebrew
+	diagnostics_dir="$root/$diagnostics_relative_path"
+	prefix="$(rootless_prefix_create "$tier_kind" "$prefix_variable")"
+	rootless_prefix_export_output prefix "$prefix"
+	trap 'cleanup_rootless_tier "$?"' EXIT
+	rootless_prefix_assert_no_guest_toolchain "$tier_kind" "$prefix"
+	rm -rf -- "$diagnostics_dir"
+	mkdir -p -- "$diagnostics_dir"
+	export DARLING_ROOTLESS=1
+	export DARLING_NOOVERLAYFS=1
+	export DARLING_EUNION=1
+	export WEST_TEST_FORBID_GUEST_TOOLCHAIN=1
+	WEST_TEST_FORBID_GUEST_TOOLCHAIN=1 west test --prefix "$prefix" \
+		--bootstrap-runtime-profile homebrew-rootless-bootstrap-minimal \
+		--runtime-build-timeout-seconds 600
+	WEST_TEST_FORBID_GUEST_TOOLCHAIN=1 west test \
+		--profile homebrew \
+		--env darling \
+		--guest-macho-validation-group "$validation_group" \
+		--guest-macho-evidence-dir "$diagnostics_dir/fixtures" \
+		--reuse-prefix-runtime \
+		--prefix "$prefix"
+}
+
 case "${1:-}" in
 	host)
 		# Source-bound host cases must be selected through metadata so west can
@@ -99,35 +122,21 @@ case "${1:-}" in
 			--reuse-prefix-runtime \
 			--prefix "$prefix" "${@:2}"
 		;;
+	guest-full)
+		if [[ -n "${2:-}" ]]; then
+			echo "guest-full does not accept additional test selectors" >&2
+			exit 2
+		fi
+		run_guest_macho_regression_tier regression DARLING_REGRESSION_PREFIX \
+			.west-test/guest-full-diagnostics
+		;;
 	guest-macho-validation)
 		if [[ -n "${2:-}" ]]; then
 			echo "guest-macho-validation does not accept a validation group" >&2
 			exit 2
 		fi
-		validation_group=homebrew
-		bootstrap_profile=homebrew-rootless-bootstrap-minimal
-		tier_kind=corpus
-		prefix="$(rootless_prefix_create "$tier_kind" DARLING_CORPUS_PREFIX)"
-		rootless_prefix_export_output prefix "$prefix"
-		trap 'cleanup_rootless_tier "$?"' EXIT
-		rootless_prefix_assert_no_guest_toolchain "$tier_kind" "$prefix"
-		evidence_dir="$root/.west-test/guest-macho-validation-diagnostics/$validation_group"
-		rm -rf -- "$evidence_dir"
-		mkdir -p -- "$evidence_dir"
-		export DARLING_ROOTLESS=1
-		export DARLING_NOOVERLAYFS=1
-		export DARLING_EUNION=1
-		export WEST_TEST_FORBID_GUEST_TOOLCHAIN=1
-		WEST_TEST_FORBID_GUEST_TOOLCHAIN=1 west test --prefix "$prefix" \
-			--bootstrap-runtime-profile "$bootstrap_profile" \
-			--runtime-build-timeout-seconds 600
-		WEST_TEST_FORBID_GUEST_TOOLCHAIN=1 west test \
-			--profile homebrew \
-			--env darling \
-			--guest-macho-validation-group "$validation_group" \
-			--guest-macho-evidence-dir "$evidence_dir/fixtures" \
-			--reuse-prefix-runtime \
-			--prefix "$prefix" "${@:2}"
+		run_guest_macho_regression_tier corpus DARLING_CORPUS_PREFIX \
+			.west-test/guest-macho-validation-diagnostics/homebrew
 		;;
 	guest-toolchain)
 		tier_kind=toolchain

@@ -2,8 +2,8 @@ schema: 1
 corpus:
   name: guest-macho
   version: v1
-  promotion: phase-3c1
-  acceptance:
+  promotion: phase-3c3
+  build-evidence:
     phase: 3B batch acceptance
     workflow: Darling compatibility tests
     hosted-run: 29516601154
@@ -13,9 +13,23 @@ corpus:
     fixture-count: 14
     anchor: select_fdset_guest
     anchor-sha256: de9e7097a60f7f0aaf31bc6be0bac760bccf9f6d2a412d5b16aa14ec5685eab6
-    runtime-coverage: Only select_fdset_guest has observed runtime evidence; the other 13 are compile-only and NOT_OBSERVED.
+    runtime-coverage: Phase 3B build evidence only; runtime validation is recorded separately below.
     artifact-policy: Variant A binaries only; no CLT package, prefix, cache, logs, or build evidence are promoted.
     cleanup: Both matrix builds and compare completed successfully with clean prefix-owned process checks.
+  runtime-validation:
+    phase: 3C2 homebrew prebuilt validation
+    workflow: Darling compatibility tests
+    hosted-run: 29565242551
+    job-id: 87836268116
+    artifact-id: 8401106853
+    artifact-name: guest-macho-validation-runtime-evidence
+    validation-commit: 6440adfe1c627bf4cf2368a2c1e03eef2f5a2927
+    group: homebrew
+    fixture-count: 14
+    status: PASS
+    no-clt: true
+    prefix-processes: empty
+    cleanup: green
 toolchain:
   product-id: 041-90419
   provenance: testkit/fixtures/guest-macho/v1/clt-provenance.txt
@@ -149,9 +163,13 @@ fixtures:
       guest-toolchain: forbidden
       prefix: tier-owned-fresh
       profile: homebrew
-      mode: compile-only
-      status: NOT_RUN
-      observed-marker: NOT_OBSERVED
+      mode: prebuilt-validation
+      status: OBSERVED
+      observed-marker: 'GREEN: abort_with_payload stayed local to the child; parent survived'
+      hosted-run: 29565242551
+      job-id: 87836268116
+      artifact-id: 8401106853
+      validation-commit: 6440adfe1c627bf4cf2368a2c1e03eef2f5a2927
   select_fdset_guest:
     source: tests/select_fdset_guest.c
     source-project: darling-workspace
@@ -232,9 +250,13 @@ fixtures:
       guest-toolchain: forbidden
       prefix: tier-owned-fresh
       profile: homebrew
-      mode: anchor
+      mode: prebuilt-validation
       status: OBSERVED
       observed-marker: SELECT_FDSET_GUEST_OK
+      hosted-run: 29565242551
+      job-id: 87836268116
+      artifact-id: 8401106853
+      validation-commit: 6440adfe1c627bf4cf2368a2c1e03eef2f5a2927
   getattrlist_name_objtype_guest:
     source: tests/getattrlist_name_objtype_guest.c
     source-project: darling-workspace
@@ -314,10 +336,14 @@ fixtures:
       rootless: true
       guest-toolchain: forbidden
       prefix: tier-owned-fresh
-      profile: homebrew-rootless-no-mount
-      mode: compile-only
-      status: NOT_RUN
-      observed-marker: NOT_OBSERVED
+      profile: homebrew
+      mode: prebuilt-validation
+      status: OBSERVED
+      observed-marker: GETATTRLIST_NAME_OBJTYPE_GUEST_OK
+      hosted-run: 29565242551
+      job-id: 87836268116
+      artifact-id: 8401106853
+      validation-commit: 6440adfe1c627bf4cf2368a2c1e03eef2f5a2927
   darwin_priority_guest:
     source: tests/darwin_priority_guest.c
     source-project: darling-workspace
@@ -398,9 +424,13 @@ fixtures:
       guest-toolchain: forbidden
       prefix: tier-owned-fresh
       profile: homebrew
-      mode: compile-only
-      status: NOT_RUN
-      observed-marker: NOT_OBSERVED
+      mode: prebuilt-validation
+      status: OBSERVED
+      observed-marker: DARWIN_PRIORITY_GUEST_OK
+      hosted-run: 29565242551
+      job-id: 87836268116
+      artifact-id: 8401106853
+      validation-commit: 6440adfe1c627bf4cf2368a2c1e03eef2f5a2927
   socket_siocgifconf_guest:
     source: tests/socket_siocgifconf_guest.c
     source-project: darling-workspace
@@ -481,9 +511,13 @@ fixtures:
       guest-toolchain: forbidden
       prefix: tier-owned-fresh
       profile: homebrew
-      mode: compile-only
-      status: NOT_RUN
-      observed-marker: NOT_OBSERVED
+      mode: prebuilt-validation
+      status: OBSERVED
+      observed-marker: SOCKET_SIOCGIFCONF_GUEST_OK
+      hosted-run: 29565242551
+      job-id: 87836268116
+      artifact-id: 8401106853
+      validation-commit: 6440adfe1c627bf4cf2368a2c1e03eef2f5a2927
   bzero_return_register_guest:
     source: tests/bzero_return_register_guest.c
     source-project: darling-workspace
@@ -563,10 +597,14 @@ fixtures:
       rootless: true
       guest-toolchain: forbidden
       prefix: tier-owned-fresh
-      profile: homebrew-libplatform
-      mode: compile-only
-      status: NOT_RUN
-      observed-marker: NOT_OBSERVED
+      profile: homebrew
+      mode: prebuilt-validation
+      status: OBSERVED
+      observed-marker: BZERO_RETURN_REGISTER_GUEST_OK
+      hosted-run: 29565242551
+      job-id: 87836268116
+      artifact-id: 8401106853
+      validation-commit: 6440adfe1c627bf4cf2368a2c1e03eef2f5a2927
   sigexc_sa_restart_guest:
     source: tests/sigexc_sa_restart_guest.c
     source-project: darling-workspace
@@ -647,9 +685,13 @@ fixtures:
       guest-toolchain: forbidden
       prefix: tier-owned-fresh
       profile: homebrew
-      mode: compile-only
-      status: NOT_RUN
-      observed-marker: NOT_OBSERVED
+      mode: prebuilt-validation
+      status: OBSERVED
+      observed-marker: SIGEXC_SA_RESTART_GUEST_OK
+      hosted-run: 29565242551
+      job-id: 87836268116
+      artifact-id: 8401106853
+      validation-commit: 6440adfe1c627bf4cf2368a2c1e03eef2f5a2927
   sigexc_default_resend_self_guest:
     source: tests/sigexc_default_resend_self_guest.c
     source-project: darling-workspace
@@ -730,9 +772,13 @@ fixtures:
       guest-toolchain: forbidden
       prefix: tier-owned-fresh
       profile: homebrew
-      mode: compile-only
-      status: NOT_RUN
-      observed-marker: NOT_OBSERVED
+      mode: prebuilt-validation
+      status: OBSERVED
+      observed-marker: SIGEXC_DEFAULT_RESEND_SELF_GUEST_OK
+      hosted-run: 29565242551
+      job-id: 87836268116
+      artifact-id: 8401106853
+      validation-commit: 6440adfe1c627bf4cf2368a2c1e03eef2f5a2927
   ulock_eintr_retry_guest:
     source: tests/ulock_eintr_retry_guest.c
     source-project: darling-workspace
@@ -816,9 +862,13 @@ fixtures:
       guest-toolchain: forbidden
       prefix: tier-owned-fresh
       profile: homebrew
-      mode: compile-only
-      status: NOT_RUN
-      observed-marker: NOT_OBSERVED
+      mode: prebuilt-validation
+      status: OBSERVED
+      observed-marker: ULOCK_EINTR_RETRY_GUEST_OK
+      hosted-run: 29565242551
+      job-id: 87836268116
+      artifact-id: 8401106853
+      validation-commit: 6440adfe1c627bf4cf2368a2c1e03eef2f5a2927
   vchroot_pathnull_guard_guest:
     source: tests/vchroot_pathnull_guard_guest.c
     source-project: darling-workspace
@@ -899,9 +949,13 @@ fixtures:
       guest-toolchain: forbidden
       prefix: tier-owned-fresh
       profile: homebrew
-      mode: compile-only
-      status: NOT_RUN
-      observed-marker: NOT_OBSERVED
+      mode: prebuilt-validation
+      status: OBSERVED
+      observed-marker: VCHROOT_PATHNULL_GUARD_GUEST_OK
+      hosted-run: 29565242551
+      job-id: 87836268116
+      artifact-id: 8401106853
+      validation-commit: 6440adfe1c627bf4cf2368a2c1e03eef2f5a2927
   chown_disabled_null_guard_guest:
     source: tests/chown_disabled_null_guard_guest.c
     source-project: darling-workspace
@@ -982,9 +1036,13 @@ fixtures:
       guest-toolchain: forbidden
       prefix: tier-owned-fresh
       profile: homebrew
-      mode: compile-only
-      status: NOT_RUN
-      observed-marker: NOT_OBSERVED
+      mode: prebuilt-validation
+      status: OBSERVED
+      observed-marker: CHOWN_DISABLED_NULL_GUARD_GUEST_OK
+      hosted-run: 29565242551
+      job-id: 87836268116
+      artifact-id: 8401106853
+      validation-commit: 6440adfe1c627bf4cf2368a2c1e03eef2f5a2927
   fd_guard_ebadf_guest:
     source: tests/fd_guard_ebadf_guest.c
     source-project: darling-workspace
@@ -1065,9 +1123,13 @@ fixtures:
       guest-toolchain: forbidden
       prefix: tier-owned-fresh
       profile: homebrew
-      mode: compile-only
-      status: NOT_RUN
-      observed-marker: NOT_OBSERVED
+      mode: prebuilt-validation
+      status: OBSERVED
+      observed-marker: FD_GUARD_EBADF_GUEST_OK
+      hosted-run: 29565242551
+      job-id: 87836268116
+      artifact-id: 8401106853
+      validation-commit: 6440adfe1c627bf4cf2368a2c1e03eef2f5a2927
   fork_checkin_signal_storm_guest:
     source: tests/fork_checkin_signal_storm_guest.c
     source-project: darling-workspace
@@ -1147,10 +1209,14 @@ fixtures:
       rootless: true
       guest-toolchain: forbidden
       prefix: tier-owned-fresh
-      profile: perf-darlingserver
-      mode: compile-only
-      status: NOT_RUN
-      observed-marker: NOT_OBSERVED
+      profile: homebrew
+      mode: prebuilt-validation
+      status: OBSERVED
+      observed-marker: FORK_CHECKIN_SIGNAL_STORM_OK
+      hosted-run: 29565242551
+      job-id: 87836268116
+      artifact-id: 8401106853
+      validation-commit: 6440adfe1c627bf4cf2368a2c1e03eef2f5a2927
   rootless_no_mount_guest:
     source: tests/rootless_no_mount_guest.c
     source-project: darling-workspace
@@ -1230,7 +1296,11 @@ fixtures:
       rootless: true
       guest-toolchain: forbidden
       prefix: tier-owned-fresh
-      profile: homebrew-rootless-no-mount
-      mode: compile-only
-      status: NOT_RUN
-      observed-marker: NOT_OBSERVED
+      profile: homebrew
+      mode: prebuilt-validation
+      status: OBSERVED
+      observed-marker: ROOTLESS_NO_MOUNT_GUEST_OK
+      hosted-run: 29565242551
+      job-id: 87836268116
+      artifact-id: 8401106853
+      validation-commit: 6440adfe1c627bf4cf2368a2c1e03eef2f5a2927

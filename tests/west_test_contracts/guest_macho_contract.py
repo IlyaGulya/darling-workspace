@@ -30,6 +30,10 @@ ACCEPTED_SOURCE_REVISION = "a53ec8109829fc8da743bcd97d0b14c92b3ca7c6"
 ACCEPTED_RUN = 29516601154
 ACCEPTED_COMPARE_JOB = 87691198694
 ACCEPTED_RESULT = "MACHO_CORPUS_BATCH_MATCH"
+RUNTIME_VALIDATION_RUN = 29565242551
+RUNTIME_VALIDATION_JOB = 87836268116
+RUNTIME_VALIDATION_ARTIFACT = 8401106853
+RUNTIME_VALIDATION_COMMIT = "6440adfe1c627bf4cf2368a2c1e03eef2f5a2927"
 EXPECTED_NAMES = [spec.name for spec in FIXTURE_SPECS]
 EXPECTED_GROUPS = {name: "homebrew" for name in EXPECTED_NAMES}
 EXPECTED_TIMEOUTS = {
@@ -55,20 +59,39 @@ ACCEPTED_ARTIFACT_SHA256 = {
 }
 
 document = yaml.safe_load(PRODUCTION_CORPUS.read_text())
-acceptance = document["corpus"]["acceptance"]
+build_evidence = document["corpus"]["build-evidence"]
+runtime_validation = document["corpus"]["runtime-validation"]
 assert len(ACCEPTED_COMMIT) == 40 and all(
     character in "0123456789abcdef" for character in ACCEPTED_COMMIT
 )
+assert len(RUNTIME_VALIDATION_COMMIT) == 40 and all(
+    character in "0123456789abcdef" for character in RUNTIME_VALIDATION_COMMIT
+)
 assert list(document["fixtures"]) == EXPECTED_NAMES
 assert len(document["fixtures"]) == 14
-assert acceptance["phase"] == "3B batch acceptance"
-assert acceptance["hosted-run"] == ACCEPTED_RUN
-assert acceptance["commit"] == ACCEPTED_COMMIT
-assert acceptance["compare-job"] == ACCEPTED_COMPARE_JOB
-assert acceptance["compare-result"] == ACCEPTED_RESULT
-assert acceptance["fixture-count"] == 14
-assert acceptance["anchor"] == ANCHOR
-assert acceptance["anchor-sha256"] == ACCEPTED_ARTIFACT_SHA256[ANCHOR]
+assert build_evidence["phase"] == "3B batch acceptance"
+assert build_evidence["hosted-run"] == ACCEPTED_RUN
+assert build_evidence["commit"] == ACCEPTED_COMMIT
+assert build_evidence["compare-job"] == ACCEPTED_COMPARE_JOB
+assert build_evidence["compare-result"] == ACCEPTED_RESULT
+assert build_evidence["fixture-count"] == 14
+assert build_evidence["anchor"] == ANCHOR
+assert build_evidence["anchor-sha256"] == ACCEPTED_ARTIFACT_SHA256[ANCHOR]
+assert runtime_validation == {
+    "phase": "3C2 homebrew prebuilt validation",
+    "workflow": "Darling compatibility tests",
+    "hosted-run": RUNTIME_VALIDATION_RUN,
+    "job-id": RUNTIME_VALIDATION_JOB,
+    "artifact-id": RUNTIME_VALIDATION_ARTIFACT,
+    "artifact-name": "guest-macho-validation-runtime-evidence",
+    "validation-commit": RUNTIME_VALIDATION_COMMIT,
+    "group": "homebrew",
+    "fixture-count": 14,
+    "status": "PASS",
+    "no-clt": True,
+    "prefix-processes": "empty",
+    "cleanup": "green",
+}
 
 assert set(path.name for path in CORPUS_ROOT.iterdir()) == {"bin", "corpus.yml", "clt-provenance.txt"}
 bin_dir = CORPUS_ROOT / "bin"
@@ -98,7 +121,6 @@ for name in EXPECTED_NAMES:
     assert module._sha256(ROOT / spec.patch_path) == spec.patch_sha256
     assert entry["build"]["flags"] == list(spec.compile_flags)
     assert entry["build"]["link-flags"] == list(spec.link_flags)
-    assert entry["runtime"]["profile"] == spec.runtime_profile
     assert entry["expected"]["returncode"] == 0
     assert entry["expected"]["stdout-contains"] == [spec.expected_marker]
 
@@ -129,18 +151,39 @@ for name in EXPECTED_NAMES:
     assert builds[0]["artifact-sha256"] == builds[1]["artifact-sha256"]
 
     runtime = entry["runtime"]
+    expected_build_runtime = (
+        ("anchor", "OBSERVED", spec.expected_marker)
+        if name == ANCHOR
+        else ("compile-only", "NOT_RUN", "NOT_OBSERVED")
+    )
     for build in builds:
-        assert build["runtime-mode"] == runtime["mode"]
-        assert build["runtime-status"] == runtime["status"]
-        assert build["observed-marker"] == runtime["observed-marker"]
-    if name == ANCHOR:
-        assert runtime["mode"] == "anchor"
-        assert runtime["status"] == "OBSERVED"
-        assert runtime["observed-marker"] == spec.expected_marker
-    else:
-        assert runtime["mode"] == "compile-only"
-        assert runtime["status"] == "NOT_RUN"
-        assert runtime["observed-marker"] == "NOT_OBSERVED"
+        assert (
+            build["runtime-mode"],
+            build["runtime-status"],
+            build["observed-marker"],
+        ) == expected_build_runtime
+    assert runtime["rootless"] is True
+    assert runtime["guest-toolchain"] == "forbidden"
+    assert runtime["prefix"] == "tier-owned-fresh"
+    assert runtime["profile"] == "homebrew"
+    assert runtime["mode"] == "prebuilt-validation"
+    assert runtime["status"] == "OBSERVED"
+    assert runtime["observed-marker"] == spec.expected_marker
+    assert runtime["observed-marker"] == entry["expected"]["stdout-contains"][0]
+    assert runtime["hosted-run"] == RUNTIME_VALIDATION_RUN
+    assert runtime["job-id"] == RUNTIME_VALIDATION_JOB
+    assert runtime["artifact-id"] == RUNTIME_VALIDATION_ARTIFACT
+    assert runtime["validation-commit"] == RUNTIME_VALIDATION_COMMIT
+
+assert sum(
+    entry["runtime"]["mode"] == "prebuilt-validation"
+    and entry["runtime"]["status"] == "OBSERVED"
+    for entry in document["fixtures"].values()
+) == 14
+assert {
+    entry["runtime"]["observed-marker"]
+    for entry in document["fixtures"].values()
+} == {spec.expected_marker for spec in FIXTURE_SPECS}
 
 homebrew = yaml.safe_load((ROOT / "patches/homebrew/patches.yml").read_text())["patches"]
 patches_by_path = {item["path"]: item for item in homebrew}
