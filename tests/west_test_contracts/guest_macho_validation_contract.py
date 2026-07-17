@@ -8,6 +8,7 @@ ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "west_commands"))
 
 from guest_macho_validation import (
+    VALIDATION_GROUP_FIXTURES,
     expected_marker_from_corpus,
     finalize_guest_macho_evidence,
     write_guest_macho_evidence,
@@ -105,24 +106,30 @@ with tempfile.TemporaryDirectory(prefix="west-guest-macho-validation-contract-")
         "SELECT_FDSET_GUEST_OK",
     )
     assert finalize_guest_macho_evidence(
-        group_dir, "perf", ["select_fdset_guest"]
+        group_dir, "homebrew", ["select_fdset_guest"]
     ) == 1
     assert "FAILED" in (group_dir / "group-result.tsv").read_text()
 
-    perf_dir = evidence_dir / "perf"
-    perf_invocation = {
-        "fixture": "fork_checkin_signal_storm_guest",
-        "name": "fork_checkin_signal_storm_guest_prebuilt",
-    }
-    write_guest_macho_evidence(
-        perf_dir,
-        perf_invocation,
-        type("Result", (), {"returncode": 0, "output": "FORK_CHECKIN_SIGNAL_STORM_OK\n"})(),
-        "FORK_CHECKIN_SIGNAL_STORM_OK",
-    )
+    homebrew_dir = evidence_dir / "homebrew"
+    for fixture in sorted(VALIDATION_GROUP_FIXTURES["homebrew"]):
+        marker = expected_marker_from_corpus(
+            {
+                "repo_root": str(ROOT),
+                "corpus": "testkit/fixtures/guest-macho/v1/corpus.yml",
+                "fixture": fixture,
+            }
+        )
+        write_guest_macho_evidence(
+            homebrew_dir,
+            {"fixture": fixture, "name": f"{fixture}_prebuilt"},
+            type("Result", (), {"returncode": 0, "output": f"{marker}\n"})(),
+            marker,
+        )
     assert finalize_guest_macho_evidence(
-        perf_dir, "perf", ["fork_checkin_signal_storm_guest"]
+        homebrew_dir, "homebrew", sorted(VALIDATION_GROUP_FIXTURES["homebrew"])
     ) == 0
-    assert "perf\tPASS\t1\tall fixtures passed" in (perf_dir / "group-result.tsv").read_text()
+    assert "homebrew\tPASS\t14\tall fixtures passed" in (
+        homebrew_dir / "group-result.tsv"
+    ).read_text()
 
 print("PASS guest-macho-validation-contract")
