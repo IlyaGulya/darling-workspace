@@ -90,20 +90,7 @@ if "$repo/ci/run-test-tier.sh" guest-macho-validation invalid; then
 fi
 [ -s "$ROOTLESS_TIER_REPO_CHILD_OUTPUT" ]
 grep -F -x -q "$repo" "$ROOTLESS_TIER_REPO_CHILD_OUTPUT"
-if "$repo/ci/run-test-tier.sh" guest-full; then
-	echo 'guest-full unexpectedly passed without a prebuilt regression corpus' >&2
-	exit 1
-else
-		full_rc=$?
-		[ "$full_rc" -eq 78 ] || {
-			echo "guest-full returned $full_rc instead of blocker rc 78" >&2
-			exit 1
-		}
-	fi
-[ ! -e "$DARLING_REGRESSION_PREFIX" ] || {
-	echo 'guest-full created a prefix before reporting its blocker' >&2
-	exit 1
-}
+"$repo/ci/run-test-tier.sh" guest-full
 DARLING_TOOLCHAIN_PREFIX="$tmp/runner/darling-rootless-toolchain" \
 	"$repo/ci/run-test-tier.sh" guest-toolchain
 DARLING_TESTKIT_BUILD="$tmp/macos-build" "$repo/ci/run-test-tier.sh" macos
@@ -116,17 +103,31 @@ grep -F -x -q "west test --profile homebrew --patch darling/rootless-prefix-init
 grep -F -x -q "west test --profile homebrew --patch darling/rootless-prefix-initialization.patch --env darling --label name:rootless_prebuilt_macho_regression --reuse-prefix-runtime --prefix $tmp/runner/darling-rootless-smoke" "$tmp/commands"
 grep -F -x -q "west test --prefix $tmp/runner/darling-rootless-corpus --bootstrap-runtime-profile homebrew-rootless-bootstrap-minimal --runtime-build-timeout-seconds 600" "$tmp/commands"
 grep -F -q "west test --profile homebrew --env darling --guest-macho-validation-group homebrew --guest-macho-evidence-dir $repo/.west-test/guest-macho-validation-diagnostics/homebrew/fixtures --reuse-prefix-runtime --prefix $tmp/runner/darling-rootless-corpus" "$tmp/commands"
+grep -F -x -q "west test --prefix $tmp/runner/darling-rootless-regression --bootstrap-runtime-profile homebrew-rootless-bootstrap-minimal --runtime-build-timeout-seconds 600" "$tmp/commands"
+grep -F -q "west test --profile homebrew --env darling --guest-macho-validation-group homebrew --guest-macho-evidence-dir $repo/.west-test/guest-full-diagnostics/fixtures --reuse-prefix-runtime --prefix $tmp/runner/darling-rootless-regression" "$tmp/commands"
+full_commands="$(grep -F "$DARLING_REGRESSION_PREFIX" "$tmp/commands")"
+if printf '%s\n' "$full_commands" | grep -F -q -- '--patch'; then
+	echo 'guest-full unexpectedly selected a patch-owned source test' >&2
+	exit 1
+fi
+for forbidden in guest-c-fixture clang CommandLineTools rootless_prebuilt_macho_regression; do
+	if printf '%s\n' "$full_commands" | grep -F -q -- "$forbidden"; then
+		echo "guest-full unexpectedly referenced $forbidden" >&2
+		exit 1
+	fi
+done
+if [ -e "$DARLING_REGRESSION_PREFIX" ]; then
+	echo 'guest-full did not remove its successful fresh prefix' >&2
+	exit 1
+fi
 if grep -F -q 'perf-rootless-bootstrap-minimal' "$tmp/commands"; then
 	echo 'guest Mach-O validation unexpectedly used a perf bootstrap profile' >&2
 	exit 1
 fi
 grep -F -q 'rootless_prefix_assert_no_guest_toolchain "$tier_kind" "$prefix"' "$repo/ci/run-test-tier.sh"
+[[ "$(grep -F -c $'\t\trun_guest_macho_regression_tier' "$repo/ci/run-test-tier.sh")" -eq 2 ]]
 grep -F -q 'guest Mach-O fixture ran more than once' "$repo/west_commands/guest_macho_validation.py"
 grep -F -q 'prefix-processes.txt' "$repo/ci/collect-rootless-diagnostics.sh"
-if grep -F -q "$DARLING_REGRESSION_PREFIX" "$tmp/commands"; then
-	echo 'blocked guest-full unexpectedly invoked West with the regression prefix' >&2
-	exit 1
-fi
 grep -F -x -q "west test --prefix $tmp/runner/darling-rootless-toolchain --bootstrap-runtime-profile homebrew-guest-toolchain-provisioning --runtime-build-timeout-seconds 1800" "$tmp/commands"
 if grep -F -q "west test --prefix $tmp/runner/darling-rootless-toolchain --bootstrap-runtime-profile homebrew-guest-toolchain-provisioning --runtime-build-timeout-seconds 600" "$tmp/commands"; then
 	echo 'guest-toolchain unexpectedly used the smoke runtime build timeout' >&2
@@ -208,8 +209,9 @@ grep -F -q 'guest-clang-origin.txt' "$repo/ci/collect-rootless-diagnostics.sh"
 [ "$(grep -F -c 'ci/run-rootless-bootstrap-diagnostic.sh' "$repo/.github/workflows/test-infra.yml")" -ge 1 ]
 [ "$(grep -F -c -- '--runtime-build-timeout-seconds 600' "$repo/ci/run-rootless-bootstrap-diagnostic.sh")" -ge 1 ]
 [ "$(grep -F -c 'ci/cleanup-rootless-prefixes.sh' "$repo/.github/workflows/test-infra.yml")" -ge 2 ]
-[ "$(grep -F -c 'cargo build --release --locked --manifest-path darling-dev/darling-debug-runner/Cargo.toml' "$repo/.github/workflows/test-infra.yml")" -eq 3 ]
+[ "$(grep -F -c 'cargo build --release --locked --manifest-path darling-dev/darling-debug-runner/Cargo.toml' "$repo/.github/workflows/test-infra.yml")" -eq 4 ]
 [ "$(grep -F -c 'ci/run-test-tier.sh guest-macho-validation' "$repo/.github/workflows/test-infra.yml")" -eq 1 ]
+[ "$(grep -F -c 'ci/run-test-tier.sh guest-full' "$repo/.github/workflows/test-infra.yml")" -eq 1 ]
 validation_workflow="$(sed -n '/^  macho-corpus-validation:/,/^  macho-corpus-batch-build:/p' "$repo/.github/workflows/test-infra.yml")"
 printf '%s\n' "$validation_workflow" | grep -F -q "github.event_name == 'workflow_dispatch' && inputs.tier == 'macho-corpus-validation'"
 printf '%s\n' "$validation_workflow" | grep -F -q 'timeout-minutes: 45'
@@ -236,14 +238,24 @@ printf '%s\n' "$smoke_workflow" | grep -F -q 'timeout-minutes: 30'
 [ "$(grep -F -c "github.event_name == 'pull_request'" "$repo/.github/workflows/test-infra.yml")" -ge 1 ]
 grep -F -q 'Scheduled run intentionally covers host only.' "$repo/.github/workflows/test-infra.yml"
 grep -F -q 'description: Run exactly one test tier' "$repo/.github/workflows/test-infra.yml"
-for tier in host guest-smoke guest-toolchain macho-corpus-validation clt-integrity macos; do
+for tier in host guest-smoke guest-full guest-toolchain macho-corpus-validation clt-integrity macos; do
 	grep -F -q -- "- $tier" "$repo/.github/workflows/test-infra.yml" || {
 		echo "workflow_dispatch is missing tier option: $tier" >&2
 		exit 1
 	}
 done
-if grep -F -q 'guest-full' "$repo/.github/workflows/test-infra.yml"; then
-	echo 'workflow unexpectedly exposes the blocked guest-full tier' >&2
+guest_full_workflow="$(sed -n '/^  guest-full:/,/^  guest-toolchain-provisioning:/p' "$repo/.github/workflows/test-infra.yml")"
+printf '%s\n' "$guest_full_workflow" | grep -F -q "github.event_name == 'workflow_dispatch' && inputs.tier == 'guest-full'"
+printf '%s\n' "$guest_full_workflow" | grep -F -q 'timeout-minutes: 45'
+printf '%s\n' "$guest_full_workflow" | grep -F -q 'ci/run-test-tier.sh guest-full'
+printf '%s\n' "$guest_full_workflow" | grep -F -q 'guest-full-runtime-evidence'
+if printf '%s\n' "$guest_full_workflow" | grep -E -q 'guest-c-fixture|CommandLineTools|clang'; then
+	echo 'guest-full workflow exposes a source/toolchain test path' >&2
+	exit 1
+fi
+schedule_workflow="$(sed -n '/^  schedule:/,/^  workflow_dispatch:/p' "$repo/.github/workflows/test-infra.yml")"
+if printf '%s\n' "$schedule_workflow" | grep -F -q 'guest-full'; then
+	echo 'schedule unexpectedly includes guest-full' >&2
 	exit 1
 fi
 grep -F -q "github.event_name == 'workflow_dispatch' && inputs.tier == 'guest-toolchain'" "$repo/.github/workflows/test-infra.yml"
