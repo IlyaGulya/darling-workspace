@@ -100,19 +100,12 @@ case "${1:-}" in
 			--prefix "$prefix" "${@:2}"
 		;;
 	guest-macho-validation)
-		validation_group="${2:-}"
-		case "$validation_group" in
-			homebrew)
-				bootstrap_profile=homebrew-rootless-bootstrap-minimal
-				;;
-			perf)
-				bootstrap_profile=perf-rootless-bootstrap-minimal
-				;;
-			*)
-				echo "guest-macho-validation requires group homebrew or perf" >&2
-				exit 2
-				;;
-		 esac
+		if [[ -n "${2:-}" ]]; then
+			echo "guest-macho-validation does not accept a validation group" >&2
+			exit 2
+		fi
+		validation_group=homebrew
+		bootstrap_profile=homebrew-rootless-bootstrap-minimal
 		tier_kind=corpus
 		prefix="$(rootless_prefix_create "$tier_kind" DARLING_CORPUS_PREFIX)"
 		rootless_prefix_export_output prefix "$prefix"
@@ -134,7 +127,7 @@ case "${1:-}" in
 			--guest-macho-validation-group "$validation_group" \
 			--guest-macho-evidence-dir "$evidence_dir/fixtures" \
 			--reuse-prefix-runtime \
-			--prefix "$prefix" "${@:3}"
+			--prefix "$prefix" "${@:2}"
 		;;
 	guest-toolchain)
 		tier_kind=toolchain
@@ -171,7 +164,7 @@ case "${1:-}" in
 			"${2:?macos-installed requires an installed bundle}"
 		;;
 	*)
-		echo "usage: $0 host|guest-smoke|guest-macho-validation (homebrew|perf)|guest-full|guest-toolchain|macos|macos-package|macos-installed" >&2
+		echo "usage: $0 host|guest-smoke|guest-macho-validation|guest-full|guest-toolchain|macos|macos-package|macos-installed" >&2
 		exit 2
 		;;
 esac

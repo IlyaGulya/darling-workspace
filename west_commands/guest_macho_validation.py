@@ -28,10 +28,10 @@ VALIDATION_GROUP_FIXTURES = {
             "vchroot_pathnull_guard_guest",
             "chown_disabled_null_guard_guest",
             "fd_guard_ebadf_guest",
+            "fork_checkin_signal_storm_guest",
             "rootless_no_mount_guest",
         }
     ),
-    "perf": frozenset({"fork_checkin_signal_storm_guest"}),
 }
 FIXTURE_RESULTS_HEADER = "fixture\tname\trc\tmarker\texpected-marker"
 GROUP_RESULT_HEADER = "group\tstatus\tfixture-count\tdetail"
@@ -42,7 +42,7 @@ def add_cli_arguments(parser) -> None:
 
     parser.add_argument(
         "--guest-macho-validation-group",
-        choices=("homebrew", "perf"),
+        choices=("homebrew",),
         help="select one exact manual guest Mach-O validation group",
     )
     parser.add_argument(

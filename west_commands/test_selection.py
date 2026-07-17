@@ -29,7 +29,7 @@ def select_metadata_tests(
 ) -> MetadataSelection:
     """Select normalized metadata without depending on a West command object."""
 
-    if validation_group is not None and validation_group not in {"homebrew", "perf"}:
+    if validation_group is not None and validation_group not in {"homebrew"}:
         raise ValueError(f"unknown guest Mach-O validation group: {validation_group}")
 
     selected = []
