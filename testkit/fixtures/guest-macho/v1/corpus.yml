@@ -2,19 +2,20 @@ schema: 1
 corpus:
   name: guest-macho
   version: v1
-  pilot: select_fdset_guest
+  promotion: phase-3c1
   acceptance:
+    phase: 3B batch acceptance
     workflow: Darling compatibility tests
-    hosted-run: 29476139812
-    commit: 0972c9dba45523e02f995846a339f7c43660c85e
-    compare-job: 87555452302
-    compare-result: MACHO_CORPUS_PILOT_MATCH
-    binary-sha256: de9e7097a60f7f0aaf31bc6be0bac760bccf9f6d2a412d5b16aa14ec5685eab6
-    expected-marker: SELECT_FDSET_GUEST_OK
-    expected-returncode: 0
-    cleanup: both matrix build jobs completed their prefix and West cleanup steps successfully
-    artifact-policy: no CLT package, prefix, or cache was published
-
+    hosted-run: 29516601154
+    commit: a53ec8109829fc8da743bcd97d0b14c92b3ca7c6
+    compare-job: 87691198694
+    compare-result: MACHO_CORPUS_BATCH_MATCH
+    fixture-count: 14
+    anchor: select_fdset_guest
+    anchor-sha256: de9e7097a60f7f0aaf31bc6be0bac760bccf9f6d2a412d5b16aa14ec5685eab6
+    runtime-coverage: Only select_fdset_guest has observed runtime evidence; the other 13 are compile-only and NOT_OBSERVED.
+    artifact-policy: Variant A binaries only; no CLT package, prefix, cache, logs, or build evidence are promoted.
+    cleanup: Both matrix builds and compare completed successfully with clean prefix-owned process checks.
 toolchain:
   product-id: 041-90419
   provenance: testkit/fixtures/guest-macho/v1/clt-provenance.txt
@@ -67,21 +68,25 @@ toolchain:
     size: 137430440
     actual-sha1: b4b71a784c02b277889bfb6ae561c0d1e5c2fabf
     actual-sha256: 95df96bfc8369bbd9ecf9acccd36b4020e2885777524a97b3aa288f660be5d32
-
 fixtures:
-  select_fdset_guest:
-    source: tests/select_fdset_guest.c
-    source-sha256: ed64b81c8643e46e1bcb49ee4c93b558476b57a73021beed8d36cdf893b11e5f
-    artifact: testkit/fixtures/guest-macho/v1/bin/select_fdset_guest
-    artifact-sha256: de9e7097a60f7f0aaf31bc6be0bac760bccf9f6d2a412d5b16aa14ec5685eab6
+  abort_with_payload_no_group_broadcast:
+    source: tests/abort_with_payload_no_group_broadcast.c
+    source-project: darling-workspace
+    source-revision: a53ec8109829fc8da743bcd97d0b14c92b3ca7c6
+    source-sha256: 2a793010639a128f92228a32e1d708a5dd95554238547b11eac835f32fca50cd
+    patch:
+      path: patches/homebrew/xnu/abort-with-payload-no-group-broadcast.patch
+      sha256: b33d7f380e66dfb239a44ed1852d395589dfdbf4b60b049658856ea1995b0f08
+    artifact: testkit/fixtures/guest-macho/v1/bin/abort_with_payload_no_group_broadcast
+    artifact-sha256: b3dff938f460202c26ed4b71a5c95817ed438c4216046b0183f09e71cbd0a2d8
     build:
       compiler-path: /Library/Developer/CommandLineTools/usr/bin/clang
       compiler-sha256: 0758d5e64ad7a1808727472007506ad270dc7e471d4b73d9b46b923747630a31
-      compiler-version: >-
-        Apple LLVM version 9.0.0 (clang-900.0.39.2) Target:
-        x86_64-apple-darwin20.6.0 Thread model: posix InstalledDir:
-        /Library/Developer/CommandLineTools/usr/bin
+      compiler-version: 'Apple LLVM version 9.0.0 (clang-900.0.39.2) Target: x86_64-apple-darwin20.6.0 Thread model: posix
+        InstalledDir: /Library/Developer/CommandLineTools/usr/bin'
       compiler-origin: execution-context=guest;executable=/Library/Developer/CommandLineTools/usr/bin/clang
+      clt-product-id: 041-90419
+      clt-provenance-sha256: dbb8ff9911b8bac76a968560fc685df66f625a60d7d1f6d3317961e3172611b4
       flags:
       - -isysroot
       - /Library/Developer/CommandLineTools/SDKs/MacOSX.sdk
@@ -89,35 +94,127 @@ fixtures:
       - -Wall
       - -Wextra
       - -Werror
-      clt-product-id: 041-90419
-      clt-provenance-sha256: dbb8ff9911b8bac76a968560fc685df66f625a60d7d1f6d3317961e3172611b4
+      link-flags: []
     independent-builds:
     - name: a
-      hosted-run: 29476139812
-      job-id: 87549420367
-      artifact-id: 8367316020
-      artifact-archive-sha256: 3ab58b9a20b16b633bb09406c507022f5672cd2162ef6255e19ca142aa2d45e8
-      artifact-sha256: de9e7097a60f7f0aaf31bc6be0bac760bccf9f6d2a412d5b16aa14ec5685eab6
-      provenance-document-sha256: 5fb9b8bcc60bf0bdcac362652f6261b3a08ec5172f4edb9065c44f142fd37912
-      clt-provenance-sha256: dbb8ff9911b8bac76a968560fc685df66f625a60d7d1f6d3317961e3172611b4
-      private-header-sha256: f314cb7caef14f9d35c5d28b72d709a6005f6c2db361de91711f12ed24a7c5ea
-      dylibs-report-sha256: f24e441b5a64d0ca08451d9c3b35ff10890e539a2279b9a80e443868625e2401
-      macho-summary-sha256: 6ccae5e0fbf32cd6b05f0579bc9db071071c20c318bdd16d3d64e58cdf3532af
+      hosted-run: 29516601154
+      job-id: 87683094873
+      artifact-id: 8383882613
+      artifact-archive-sha256: 6dc8e789f7fda094e82e5bb4672ba26be17506b809d9a06933118750bac5ce27
+      artifact-sha256: b3dff938f460202c26ed4b71a5c95817ed438c4216046b0183f09e71cbd0a2d8
+      flags:
+      - -isysroot
+      - /Library/Developer/CommandLineTools/SDKs/MacOSX.sdk
+      - -std=gnu11
+      - -Wall
+      - -Wextra
+      - -Werror
+      link-flags: []
+      runtime-mode: compile-only
+      runtime-status: NOT_RUN
+      observed-marker: NOT_OBSERVED
       compiler-path: /Library/Developer/CommandLineTools/usr/bin/clang
-      flags: [-isysroot, /Library/Developer/CommandLineTools/SDKs/MacOSX.sdk, -std=gnu11, -Wall, -Wextra, -Werror]
     - name: b
-      hosted-run: 29476139812
-      job-id: 87549420376
-      artifact-id: 8367345923
-      artifact-archive-sha256: 2c0950388df49201c18f4823a545940bf2531eaadf0ff46f768efc0fcdca962c
-      artifact-sha256: de9e7097a60f7f0aaf31bc6be0bac760bccf9f6d2a412d5b16aa14ec5685eab6
-      provenance-document-sha256: 70b054a760304d91b87d3abe8c1e73c5331e5ffc9bf7d2af286d480c2aff3431
-      clt-provenance-sha256: dbb8ff9911b8bac76a968560fc685df66f625a60d7d1f6d3317961e3172611b4
-      private-header-sha256: f314cb7caef14f9d35c5d28b72d709a6005f6c2db361de91711f12ed24a7c5ea
-      dylibs-report-sha256: 13bf32c47b382deb1671f967eff70c8177df6ead29e725b721c980fafabac7d4
-      macho-summary-sha256: 6ccae5e0fbf32cd6b05f0579bc9db071071c20c318bdd16d3d64e58cdf3532af
+      hosted-run: 29516601154
+      job-id: 87683094999
+      artifact-id: 8383769899
+      artifact-archive-sha256: 27deea27517772611c7d6eb6c68caa22eac48d59087e741919a2564cd167529f
+      artifact-sha256: b3dff938f460202c26ed4b71a5c95817ed438c4216046b0183f09e71cbd0a2d8
+      flags:
+      - -isysroot
+      - /Library/Developer/CommandLineTools/SDKs/MacOSX.sdk
+      - -std=gnu11
+      - -Wall
+      - -Wextra
+      - -Werror
+      link-flags: []
+      runtime-mode: compile-only
+      runtime-status: NOT_RUN
+      observed-marker: NOT_OBSERVED
       compiler-path: /Library/Developer/CommandLineTools/usr/bin/clang
-      flags: [-isysroot, /Library/Developer/CommandLineTools/SDKs/MacOSX.sdk, -std=gnu11, -Wall, -Wextra, -Werror]
+    macho:
+      magic: MH_MAGIC_64
+      architecture: x86_64
+      filetype: MH_EXECUTE
+      dylib-load-commands:
+      - command: LC_LOAD_DYLIB
+        name: /usr/lib/libSystem.B.dylib
+      rpath-load-commands: []
+    expected:
+      returncode: 0
+      stdout-contains:
+      - 'GREEN: abort_with_payload stayed local to the child; parent survived'
+    runtime:
+      rootless: true
+      guest-toolchain: forbidden
+      prefix: tier-owned-fresh
+      profile: homebrew
+      mode: compile-only
+      status: NOT_RUN
+      observed-marker: NOT_OBSERVED
+  select_fdset_guest:
+    source: tests/select_fdset_guest.c
+    source-project: darling-workspace
+    source-revision: a53ec8109829fc8da743bcd97d0b14c92b3ca7c6
+    source-sha256: ed64b81c8643e46e1bcb49ee4c93b558476b57a73021beed8d36cdf893b11e5f
+    patch:
+      path: patches/homebrew/xnu/select-pselect-fdset.patch
+      sha256: 06c677b73f4db5a5abd020247869f6baee991b035f2e0a46a253a7d666ee4bba
+    artifact: testkit/fixtures/guest-macho/v1/bin/select_fdset_guest
+    artifact-sha256: de9e7097a60f7f0aaf31bc6be0bac760bccf9f6d2a412d5b16aa14ec5685eab6
+    build:
+      compiler-path: /Library/Developer/CommandLineTools/usr/bin/clang
+      compiler-sha256: 0758d5e64ad7a1808727472007506ad270dc7e471d4b73d9b46b923747630a31
+      compiler-version: 'Apple LLVM version 9.0.0 (clang-900.0.39.2) Target: x86_64-apple-darwin20.6.0 Thread model: posix
+        InstalledDir: /Library/Developer/CommandLineTools/usr/bin'
+      compiler-origin: execution-context=guest;executable=/Library/Developer/CommandLineTools/usr/bin/clang
+      clt-product-id: 041-90419
+      clt-provenance-sha256: dbb8ff9911b8bac76a968560fc685df66f625a60d7d1f6d3317961e3172611b4
+      flags:
+      - -isysroot
+      - /Library/Developer/CommandLineTools/SDKs/MacOSX.sdk
+      - -std=gnu11
+      - -Wall
+      - -Wextra
+      - -Werror
+      link-flags: []
+    independent-builds:
+    - name: a
+      hosted-run: 29516601154
+      job-id: 87683094873
+      artifact-id: 8383882613
+      artifact-archive-sha256: 6dc8e789f7fda094e82e5bb4672ba26be17506b809d9a06933118750bac5ce27
+      artifact-sha256: de9e7097a60f7f0aaf31bc6be0bac760bccf9f6d2a412d5b16aa14ec5685eab6
+      flags:
+      - -isysroot
+      - /Library/Developer/CommandLineTools/SDKs/MacOSX.sdk
+      - -std=gnu11
+      - -Wall
+      - -Wextra
+      - -Werror
+      link-flags: []
+      runtime-mode: anchor
+      runtime-status: OBSERVED
+      observed-marker: SELECT_FDSET_GUEST_OK
+      compiler-path: /Library/Developer/CommandLineTools/usr/bin/clang
+    - name: b
+      hosted-run: 29516601154
+      job-id: 87683094999
+      artifact-id: 8383769899
+      artifact-archive-sha256: 27deea27517772611c7d6eb6c68caa22eac48d59087e741919a2564cd167529f
+      artifact-sha256: de9e7097a60f7f0aaf31bc6be0bac760bccf9f6d2a412d5b16aa14ec5685eab6
+      flags:
+      - -isysroot
+      - /Library/Developer/CommandLineTools/SDKs/MacOSX.sdk
+      - -std=gnu11
+      - -Wall
+      - -Wextra
+      - -Werror
+      link-flags: []
+      runtime-mode: anchor
+      runtime-status: OBSERVED
+      observed-marker: SELECT_FDSET_GUEST_OK
+      compiler-path: /Library/Developer/CommandLineTools/usr/bin/clang
     macho:
       magic: MH_MAGIC_64
       architecture: x86_64
@@ -134,3 +231,1006 @@ fixtures:
       rootless: true
       guest-toolchain: forbidden
       prefix: tier-owned-fresh
+      profile: homebrew
+      mode: anchor
+      status: OBSERVED
+      observed-marker: SELECT_FDSET_GUEST_OK
+  getattrlist_name_objtype_guest:
+    source: tests/getattrlist_name_objtype_guest.c
+    source-project: darling-workspace
+    source-revision: a53ec8109829fc8da743bcd97d0b14c92b3ca7c6
+    source-sha256: ec5182ffdb57cf9651023216d08bed23df1030525e60737aeeede666de4aad1e
+    patch:
+      path: patches/homebrew/xnu/getattrlist-name-objtype.patch
+      sha256: 984225243c3aa2b9e1874fa3f6be83bbad29ac1fd34cabbfb44a0eb407b7c996
+    artifact: testkit/fixtures/guest-macho/v1/bin/getattrlist_name_objtype_guest
+    artifact-sha256: b434c9f96613ea10399b433abf2ab38accc3c5b9bad7629904d71414cbc53819
+    build:
+      compiler-path: /Library/Developer/CommandLineTools/usr/bin/clang
+      compiler-sha256: 0758d5e64ad7a1808727472007506ad270dc7e471d4b73d9b46b923747630a31
+      compiler-version: 'Apple LLVM version 9.0.0 (clang-900.0.39.2) Target: x86_64-apple-darwin20.6.0 Thread model: posix
+        InstalledDir: /Library/Developer/CommandLineTools/usr/bin'
+      compiler-origin: execution-context=guest;executable=/Library/Developer/CommandLineTools/usr/bin/clang
+      clt-product-id: 041-90419
+      clt-provenance-sha256: dbb8ff9911b8bac76a968560fc685df66f625a60d7d1f6d3317961e3172611b4
+      flags:
+      - -isysroot
+      - /Library/Developer/CommandLineTools/SDKs/MacOSX.sdk
+      - -std=gnu11
+      - -Wall
+      - -Wextra
+      - -Werror
+      link-flags: []
+    independent-builds:
+    - name: a
+      hosted-run: 29516601154
+      job-id: 87683094873
+      artifact-id: 8383882613
+      artifact-archive-sha256: 6dc8e789f7fda094e82e5bb4672ba26be17506b809d9a06933118750bac5ce27
+      artifact-sha256: b434c9f96613ea10399b433abf2ab38accc3c5b9bad7629904d71414cbc53819
+      flags:
+      - -isysroot
+      - /Library/Developer/CommandLineTools/SDKs/MacOSX.sdk
+      - -std=gnu11
+      - -Wall
+      - -Wextra
+      - -Werror
+      link-flags: []
+      runtime-mode: compile-only
+      runtime-status: NOT_RUN
+      observed-marker: NOT_OBSERVED
+      compiler-path: /Library/Developer/CommandLineTools/usr/bin/clang
+    - name: b
+      hosted-run: 29516601154
+      job-id: 87683094999
+      artifact-id: 8383769899
+      artifact-archive-sha256: 27deea27517772611c7d6eb6c68caa22eac48d59087e741919a2564cd167529f
+      artifact-sha256: b434c9f96613ea10399b433abf2ab38accc3c5b9bad7629904d71414cbc53819
+      flags:
+      - -isysroot
+      - /Library/Developer/CommandLineTools/SDKs/MacOSX.sdk
+      - -std=gnu11
+      - -Wall
+      - -Wextra
+      - -Werror
+      link-flags: []
+      runtime-mode: compile-only
+      runtime-status: NOT_RUN
+      observed-marker: NOT_OBSERVED
+      compiler-path: /Library/Developer/CommandLineTools/usr/bin/clang
+    macho:
+      magic: MH_MAGIC_64
+      architecture: x86_64
+      filetype: MH_EXECUTE
+      dylib-load-commands:
+      - command: LC_LOAD_DYLIB
+        name: /usr/lib/libSystem.B.dylib
+      rpath-load-commands: []
+    expected:
+      returncode: 0
+      stdout-contains:
+      - GETATTRLIST_NAME_OBJTYPE_GUEST_OK
+    runtime:
+      rootless: true
+      guest-toolchain: forbidden
+      prefix: tier-owned-fresh
+      profile: homebrew-rootless-no-mount
+      mode: compile-only
+      status: NOT_RUN
+      observed-marker: NOT_OBSERVED
+  darwin_priority_guest:
+    source: tests/darwin_priority_guest.c
+    source-project: darling-workspace
+    source-revision: a53ec8109829fc8da743bcd97d0b14c92b3ca7c6
+    source-sha256: f00656f78d6d82489323b95548205e0148922c2c8598a124b87f1a05bca50e66
+    patch:
+      path: patches/homebrew/xnu/darwin-priority.patch
+      sha256: 917f3a5b31dba3febd90107dcc26eb00f2c275cd4325e2db2cff05dc8cca0aeb
+    artifact: testkit/fixtures/guest-macho/v1/bin/darwin_priority_guest
+    artifact-sha256: fbca0bf42014f48b8118b0bdfe22e0b77b4bef5480d4af648d91c1a9505eb2d6
+    build:
+      compiler-path: /Library/Developer/CommandLineTools/usr/bin/clang
+      compiler-sha256: 0758d5e64ad7a1808727472007506ad270dc7e471d4b73d9b46b923747630a31
+      compiler-version: 'Apple LLVM version 9.0.0 (clang-900.0.39.2) Target: x86_64-apple-darwin20.6.0 Thread model: posix
+        InstalledDir: /Library/Developer/CommandLineTools/usr/bin'
+      compiler-origin: execution-context=guest;executable=/Library/Developer/CommandLineTools/usr/bin/clang
+      clt-product-id: 041-90419
+      clt-provenance-sha256: dbb8ff9911b8bac76a968560fc685df66f625a60d7d1f6d3317961e3172611b4
+      flags:
+      - -isysroot
+      - /Library/Developer/CommandLineTools/SDKs/MacOSX.sdk
+      - -std=gnu11
+      - -Wall
+      - -Wextra
+      - -Werror
+      link-flags: []
+    independent-builds:
+    - name: a
+      hosted-run: 29516601154
+      job-id: 87683094873
+      artifact-id: 8383882613
+      artifact-archive-sha256: 6dc8e789f7fda094e82e5bb4672ba26be17506b809d9a06933118750bac5ce27
+      artifact-sha256: fbca0bf42014f48b8118b0bdfe22e0b77b4bef5480d4af648d91c1a9505eb2d6
+      flags:
+      - -isysroot
+      - /Library/Developer/CommandLineTools/SDKs/MacOSX.sdk
+      - -std=gnu11
+      - -Wall
+      - -Wextra
+      - -Werror
+      link-flags: []
+      runtime-mode: compile-only
+      runtime-status: NOT_RUN
+      observed-marker: NOT_OBSERVED
+      compiler-path: /Library/Developer/CommandLineTools/usr/bin/clang
+    - name: b
+      hosted-run: 29516601154
+      job-id: 87683094999
+      artifact-id: 8383769899
+      artifact-archive-sha256: 27deea27517772611c7d6eb6c68caa22eac48d59087e741919a2564cd167529f
+      artifact-sha256: fbca0bf42014f48b8118b0bdfe22e0b77b4bef5480d4af648d91c1a9505eb2d6
+      flags:
+      - -isysroot
+      - /Library/Developer/CommandLineTools/SDKs/MacOSX.sdk
+      - -std=gnu11
+      - -Wall
+      - -Wextra
+      - -Werror
+      link-flags: []
+      runtime-mode: compile-only
+      runtime-status: NOT_RUN
+      observed-marker: NOT_OBSERVED
+      compiler-path: /Library/Developer/CommandLineTools/usr/bin/clang
+    macho:
+      magic: MH_MAGIC_64
+      architecture: x86_64
+      filetype: MH_EXECUTE
+      dylib-load-commands:
+      - command: LC_LOAD_DYLIB
+        name: /usr/lib/libSystem.B.dylib
+      rpath-load-commands: []
+    expected:
+      returncode: 0
+      stdout-contains:
+      - DARWIN_PRIORITY_GUEST_OK
+    runtime:
+      rootless: true
+      guest-toolchain: forbidden
+      prefix: tier-owned-fresh
+      profile: homebrew
+      mode: compile-only
+      status: NOT_RUN
+      observed-marker: NOT_OBSERVED
+  socket_siocgifconf_guest:
+    source: tests/socket_siocgifconf_guest.c
+    source-project: darling-workspace
+    source-revision: a53ec8109829fc8da743bcd97d0b14c92b3ca7c6
+    source-sha256: 1522c74a503508f6dddfb7f9b3d0572ef34e7d8cb571b28b3e4bad2c957b5a64
+    patch:
+      path: patches/homebrew/xnu/socket-siocgifconf.patch
+      sha256: 31ec7e354c7b298c3df3614670031b6ab047dc43eaad87d5bffbd1eec02e5f59
+    artifact: testkit/fixtures/guest-macho/v1/bin/socket_siocgifconf_guest
+    artifact-sha256: 3f04493aa574afe1df50d1c6c381ae56be8ec1ea444fdb2f61d2e28bd062efd5
+    build:
+      compiler-path: /Library/Developer/CommandLineTools/usr/bin/clang
+      compiler-sha256: 0758d5e64ad7a1808727472007506ad270dc7e471d4b73d9b46b923747630a31
+      compiler-version: 'Apple LLVM version 9.0.0 (clang-900.0.39.2) Target: x86_64-apple-darwin20.6.0 Thread model: posix
+        InstalledDir: /Library/Developer/CommandLineTools/usr/bin'
+      compiler-origin: execution-context=guest;executable=/Library/Developer/CommandLineTools/usr/bin/clang
+      clt-product-id: 041-90419
+      clt-provenance-sha256: dbb8ff9911b8bac76a968560fc685df66f625a60d7d1f6d3317961e3172611b4
+      flags:
+      - -isysroot
+      - /Library/Developer/CommandLineTools/SDKs/MacOSX.sdk
+      - -std=gnu11
+      - -Wall
+      - -Wextra
+      - -Werror
+      link-flags: []
+    independent-builds:
+    - name: a
+      hosted-run: 29516601154
+      job-id: 87683094873
+      artifact-id: 8383882613
+      artifact-archive-sha256: 6dc8e789f7fda094e82e5bb4672ba26be17506b809d9a06933118750bac5ce27
+      artifact-sha256: 3f04493aa574afe1df50d1c6c381ae56be8ec1ea444fdb2f61d2e28bd062efd5
+      flags:
+      - -isysroot
+      - /Library/Developer/CommandLineTools/SDKs/MacOSX.sdk
+      - -std=gnu11
+      - -Wall
+      - -Wextra
+      - -Werror
+      link-flags: []
+      runtime-mode: compile-only
+      runtime-status: NOT_RUN
+      observed-marker: NOT_OBSERVED
+      compiler-path: /Library/Developer/CommandLineTools/usr/bin/clang
+    - name: b
+      hosted-run: 29516601154
+      job-id: 87683094999
+      artifact-id: 8383769899
+      artifact-archive-sha256: 27deea27517772611c7d6eb6c68caa22eac48d59087e741919a2564cd167529f
+      artifact-sha256: 3f04493aa574afe1df50d1c6c381ae56be8ec1ea444fdb2f61d2e28bd062efd5
+      flags:
+      - -isysroot
+      - /Library/Developer/CommandLineTools/SDKs/MacOSX.sdk
+      - -std=gnu11
+      - -Wall
+      - -Wextra
+      - -Werror
+      link-flags: []
+      runtime-mode: compile-only
+      runtime-status: NOT_RUN
+      observed-marker: NOT_OBSERVED
+      compiler-path: /Library/Developer/CommandLineTools/usr/bin/clang
+    macho:
+      magic: MH_MAGIC_64
+      architecture: x86_64
+      filetype: MH_EXECUTE
+      dylib-load-commands:
+      - command: LC_LOAD_DYLIB
+        name: /usr/lib/libSystem.B.dylib
+      rpath-load-commands: []
+    expected:
+      returncode: 0
+      stdout-contains:
+      - SOCKET_SIOCGIFCONF_GUEST_OK
+    runtime:
+      rootless: true
+      guest-toolchain: forbidden
+      prefix: tier-owned-fresh
+      profile: homebrew
+      mode: compile-only
+      status: NOT_RUN
+      observed-marker: NOT_OBSERVED
+  bzero_return_register_guest:
+    source: tests/bzero_return_register_guest.c
+    source-project: darling-workspace
+    source-revision: a53ec8109829fc8da743bcd97d0b14c92b3ca7c6
+    source-sha256: 2abb7c2368d54a88edf1636efce579c73f06fc80cf83fab071aa2530580accfd
+    patch:
+      path: patches/homebrew/libplatform/bzero-return-register.patch
+      sha256: d4eb3e7be7e5091c1af9e287f7c4d38d1f18ba3a92da0df91d9d4d1e6c623eff
+    artifact: testkit/fixtures/guest-macho/v1/bin/bzero_return_register_guest
+    artifact-sha256: 7d355056e48392d956b4fc4715d11c4cb46bf2076dbe3f2801bfe3d3dc83a213
+    build:
+      compiler-path: /Library/Developer/CommandLineTools/usr/bin/clang
+      compiler-sha256: 0758d5e64ad7a1808727472007506ad270dc7e471d4b73d9b46b923747630a31
+      compiler-version: 'Apple LLVM version 9.0.0 (clang-900.0.39.2) Target: x86_64-apple-darwin20.6.0 Thread model: posix
+        InstalledDir: /Library/Developer/CommandLineTools/usr/bin'
+      compiler-origin: execution-context=guest;executable=/Library/Developer/CommandLineTools/usr/bin/clang
+      clt-product-id: 041-90419
+      clt-provenance-sha256: dbb8ff9911b8bac76a968560fc685df66f625a60d7d1f6d3317961e3172611b4
+      flags:
+      - -isysroot
+      - /Library/Developer/CommandLineTools/SDKs/MacOSX.sdk
+      - -std=gnu11
+      - -Wall
+      - -Wextra
+      - -Werror
+      link-flags: []
+    independent-builds:
+    - name: a
+      hosted-run: 29516601154
+      job-id: 87683094873
+      artifact-id: 8383882613
+      artifact-archive-sha256: 6dc8e789f7fda094e82e5bb4672ba26be17506b809d9a06933118750bac5ce27
+      artifact-sha256: 7d355056e48392d956b4fc4715d11c4cb46bf2076dbe3f2801bfe3d3dc83a213
+      flags:
+      - -isysroot
+      - /Library/Developer/CommandLineTools/SDKs/MacOSX.sdk
+      - -std=gnu11
+      - -Wall
+      - -Wextra
+      - -Werror
+      link-flags: []
+      runtime-mode: compile-only
+      runtime-status: NOT_RUN
+      observed-marker: NOT_OBSERVED
+      compiler-path: /Library/Developer/CommandLineTools/usr/bin/clang
+    - name: b
+      hosted-run: 29516601154
+      job-id: 87683094999
+      artifact-id: 8383769899
+      artifact-archive-sha256: 27deea27517772611c7d6eb6c68caa22eac48d59087e741919a2564cd167529f
+      artifact-sha256: 7d355056e48392d956b4fc4715d11c4cb46bf2076dbe3f2801bfe3d3dc83a213
+      flags:
+      - -isysroot
+      - /Library/Developer/CommandLineTools/SDKs/MacOSX.sdk
+      - -std=gnu11
+      - -Wall
+      - -Wextra
+      - -Werror
+      link-flags: []
+      runtime-mode: compile-only
+      runtime-status: NOT_RUN
+      observed-marker: NOT_OBSERVED
+      compiler-path: /Library/Developer/CommandLineTools/usr/bin/clang
+    macho:
+      magic: MH_MAGIC_64
+      architecture: x86_64
+      filetype: MH_EXECUTE
+      dylib-load-commands:
+      - command: LC_LOAD_DYLIB
+        name: /usr/lib/libSystem.B.dylib
+      rpath-load-commands: []
+    expected:
+      returncode: 0
+      stdout-contains:
+      - BZERO_RETURN_REGISTER_GUEST_OK
+    runtime:
+      rootless: true
+      guest-toolchain: forbidden
+      prefix: tier-owned-fresh
+      profile: homebrew-libplatform
+      mode: compile-only
+      status: NOT_RUN
+      observed-marker: NOT_OBSERVED
+  sigexc_sa_restart_guest:
+    source: tests/sigexc_sa_restart_guest.c
+    source-project: darling-workspace
+    source-revision: a53ec8109829fc8da743bcd97d0b14c92b3ca7c6
+    source-sha256: 6255cd066dfe494d06205f6a6da6d00716d82589a13214800e5ac89b9637c7e8
+    patch:
+      path: patches/homebrew/xnu/sigexc-sa-restart.patch
+      sha256: 3aeffa895490f07679d529e76546f12f74b79e59bc59b824a2aa88e91393f912
+    artifact: testkit/fixtures/guest-macho/v1/bin/sigexc_sa_restart_guest
+    artifact-sha256: f14b28c69cff49c5f605c0964f51181f381e1e7ba03c3bba55f6200a3c23c538
+    build:
+      compiler-path: /Library/Developer/CommandLineTools/usr/bin/clang
+      compiler-sha256: 0758d5e64ad7a1808727472007506ad270dc7e471d4b73d9b46b923747630a31
+      compiler-version: 'Apple LLVM version 9.0.0 (clang-900.0.39.2) Target: x86_64-apple-darwin20.6.0 Thread model: posix
+        InstalledDir: /Library/Developer/CommandLineTools/usr/bin'
+      compiler-origin: execution-context=guest;executable=/Library/Developer/CommandLineTools/usr/bin/clang
+      clt-product-id: 041-90419
+      clt-provenance-sha256: dbb8ff9911b8bac76a968560fc685df66f625a60d7d1f6d3317961e3172611b4
+      flags:
+      - -isysroot
+      - /Library/Developer/CommandLineTools/SDKs/MacOSX.sdk
+      - -std=gnu11
+      - -Wall
+      - -Wextra
+      - -Werror
+      link-flags: []
+    independent-builds:
+    - name: a
+      hosted-run: 29516601154
+      job-id: 87683094873
+      artifact-id: 8383882613
+      artifact-archive-sha256: 6dc8e789f7fda094e82e5bb4672ba26be17506b809d9a06933118750bac5ce27
+      artifact-sha256: f14b28c69cff49c5f605c0964f51181f381e1e7ba03c3bba55f6200a3c23c538
+      flags:
+      - -isysroot
+      - /Library/Developer/CommandLineTools/SDKs/MacOSX.sdk
+      - -std=gnu11
+      - -Wall
+      - -Wextra
+      - -Werror
+      link-flags: []
+      runtime-mode: compile-only
+      runtime-status: NOT_RUN
+      observed-marker: NOT_OBSERVED
+      compiler-path: /Library/Developer/CommandLineTools/usr/bin/clang
+    - name: b
+      hosted-run: 29516601154
+      job-id: 87683094999
+      artifact-id: 8383769899
+      artifact-archive-sha256: 27deea27517772611c7d6eb6c68caa22eac48d59087e741919a2564cd167529f
+      artifact-sha256: f14b28c69cff49c5f605c0964f51181f381e1e7ba03c3bba55f6200a3c23c538
+      flags:
+      - -isysroot
+      - /Library/Developer/CommandLineTools/SDKs/MacOSX.sdk
+      - -std=gnu11
+      - -Wall
+      - -Wextra
+      - -Werror
+      link-flags: []
+      runtime-mode: compile-only
+      runtime-status: NOT_RUN
+      observed-marker: NOT_OBSERVED
+      compiler-path: /Library/Developer/CommandLineTools/usr/bin/clang
+    macho:
+      magic: MH_MAGIC_64
+      architecture: x86_64
+      filetype: MH_EXECUTE
+      dylib-load-commands:
+      - command: LC_LOAD_DYLIB
+        name: /usr/lib/libSystem.B.dylib
+      rpath-load-commands: []
+    expected:
+      returncode: 0
+      stdout-contains:
+      - SIGEXC_SA_RESTART_GUEST_OK
+    runtime:
+      rootless: true
+      guest-toolchain: forbidden
+      prefix: tier-owned-fresh
+      profile: homebrew
+      mode: compile-only
+      status: NOT_RUN
+      observed-marker: NOT_OBSERVED
+  sigexc_default_resend_self_guest:
+    source: tests/sigexc_default_resend_self_guest.c
+    source-project: darling-workspace
+    source-revision: a53ec8109829fc8da743bcd97d0b14c92b3ca7c6
+    source-sha256: 25fc4aa2838d56a3f0a153e55a431d6eedcd1e28962f9e91c29f8ae529ff39f0
+    patch:
+      path: patches/homebrew/xnu/sigexc-default-resend-self.patch
+      sha256: 76491ade81c3731f2e63f764af9fb7d32a1cd4fef3cef0fd3bb97d929bddf183
+    artifact: testkit/fixtures/guest-macho/v1/bin/sigexc_default_resend_self_guest
+    artifact-sha256: 8666cac78eeb32c50bf400d457879e79c98ef1afe9af731216cb7f888b735c5f
+    build:
+      compiler-path: /Library/Developer/CommandLineTools/usr/bin/clang
+      compiler-sha256: 0758d5e64ad7a1808727472007506ad270dc7e471d4b73d9b46b923747630a31
+      compiler-version: 'Apple LLVM version 9.0.0 (clang-900.0.39.2) Target: x86_64-apple-darwin20.6.0 Thread model: posix
+        InstalledDir: /Library/Developer/CommandLineTools/usr/bin'
+      compiler-origin: execution-context=guest;executable=/Library/Developer/CommandLineTools/usr/bin/clang
+      clt-product-id: 041-90419
+      clt-provenance-sha256: dbb8ff9911b8bac76a968560fc685df66f625a60d7d1f6d3317961e3172611b4
+      flags:
+      - -isysroot
+      - /Library/Developer/CommandLineTools/SDKs/MacOSX.sdk
+      - -std=gnu11
+      - -Wall
+      - -Wextra
+      - -Werror
+      link-flags: []
+    independent-builds:
+    - name: a
+      hosted-run: 29516601154
+      job-id: 87683094873
+      artifact-id: 8383882613
+      artifact-archive-sha256: 6dc8e789f7fda094e82e5bb4672ba26be17506b809d9a06933118750bac5ce27
+      artifact-sha256: 8666cac78eeb32c50bf400d457879e79c98ef1afe9af731216cb7f888b735c5f
+      flags:
+      - -isysroot
+      - /Library/Developer/CommandLineTools/SDKs/MacOSX.sdk
+      - -std=gnu11
+      - -Wall
+      - -Wextra
+      - -Werror
+      link-flags: []
+      runtime-mode: compile-only
+      runtime-status: NOT_RUN
+      observed-marker: NOT_OBSERVED
+      compiler-path: /Library/Developer/CommandLineTools/usr/bin/clang
+    - name: b
+      hosted-run: 29516601154
+      job-id: 87683094999
+      artifact-id: 8383769899
+      artifact-archive-sha256: 27deea27517772611c7d6eb6c68caa22eac48d59087e741919a2564cd167529f
+      artifact-sha256: 8666cac78eeb32c50bf400d457879e79c98ef1afe9af731216cb7f888b735c5f
+      flags:
+      - -isysroot
+      - /Library/Developer/CommandLineTools/SDKs/MacOSX.sdk
+      - -std=gnu11
+      - -Wall
+      - -Wextra
+      - -Werror
+      link-flags: []
+      runtime-mode: compile-only
+      runtime-status: NOT_RUN
+      observed-marker: NOT_OBSERVED
+      compiler-path: /Library/Developer/CommandLineTools/usr/bin/clang
+    macho:
+      magic: MH_MAGIC_64
+      architecture: x86_64
+      filetype: MH_EXECUTE
+      dylib-load-commands:
+      - command: LC_LOAD_DYLIB
+        name: /usr/lib/libSystem.B.dylib
+      rpath-load-commands: []
+    expected:
+      returncode: 0
+      stdout-contains:
+      - SIGEXC_DEFAULT_RESEND_SELF_GUEST_OK
+    runtime:
+      rootless: true
+      guest-toolchain: forbidden
+      prefix: tier-owned-fresh
+      profile: homebrew
+      mode: compile-only
+      status: NOT_RUN
+      observed-marker: NOT_OBSERVED
+  ulock_eintr_retry_guest:
+    source: tests/ulock_eintr_retry_guest.c
+    source-project: darling-workspace
+    source-revision: a53ec8109829fc8da743bcd97d0b14c92b3ca7c6
+    source-sha256: 8c8c24aabb8052e061f4c5022048089403bd8aab5a4f770a763471223e46e63a
+    patch:
+      path: patches/homebrew/xnu/ulock-wait-eintr-retry.patch
+      sha256: 2a59ec5789b5c9c554b6bd36fb11c7dd2cc050b73f0cfdd810be6e7a0511bedd
+    artifact: testkit/fixtures/guest-macho/v1/bin/ulock_eintr_retry_guest
+    artifact-sha256: aa721051fac815b9e3d462b9b54d4f57ec0db9135a3953a61616f9c6a55cffc5
+    build:
+      compiler-path: /Library/Developer/CommandLineTools/usr/bin/clang
+      compiler-sha256: 0758d5e64ad7a1808727472007506ad270dc7e471d4b73d9b46b923747630a31
+      compiler-version: 'Apple LLVM version 9.0.0 (clang-900.0.39.2) Target: x86_64-apple-darwin20.6.0 Thread model: posix
+        InstalledDir: /Library/Developer/CommandLineTools/usr/bin'
+      compiler-origin: execution-context=guest;executable=/Library/Developer/CommandLineTools/usr/bin/clang
+      clt-product-id: 041-90419
+      clt-provenance-sha256: dbb8ff9911b8bac76a968560fc685df66f625a60d7d1f6d3317961e3172611b4
+      flags:
+      - -isysroot
+      - /Library/Developer/CommandLineTools/SDKs/MacOSX.sdk
+      - -std=gnu11
+      - -Wall
+      - -Wextra
+      - -Werror
+      - -pthread
+      link-flags: []
+    independent-builds:
+    - name: a
+      hosted-run: 29516601154
+      job-id: 87683094873
+      artifact-id: 8383882613
+      artifact-archive-sha256: 6dc8e789f7fda094e82e5bb4672ba26be17506b809d9a06933118750bac5ce27
+      artifact-sha256: aa721051fac815b9e3d462b9b54d4f57ec0db9135a3953a61616f9c6a55cffc5
+      flags:
+      - -isysroot
+      - /Library/Developer/CommandLineTools/SDKs/MacOSX.sdk
+      - -std=gnu11
+      - -Wall
+      - -Wextra
+      - -Werror
+      - -pthread
+      link-flags: []
+      runtime-mode: compile-only
+      runtime-status: NOT_RUN
+      observed-marker: NOT_OBSERVED
+      compiler-path: /Library/Developer/CommandLineTools/usr/bin/clang
+    - name: b
+      hosted-run: 29516601154
+      job-id: 87683094999
+      artifact-id: 8383769899
+      artifact-archive-sha256: 27deea27517772611c7d6eb6c68caa22eac48d59087e741919a2564cd167529f
+      artifact-sha256: aa721051fac815b9e3d462b9b54d4f57ec0db9135a3953a61616f9c6a55cffc5
+      flags:
+      - -isysroot
+      - /Library/Developer/CommandLineTools/SDKs/MacOSX.sdk
+      - -std=gnu11
+      - -Wall
+      - -Wextra
+      - -Werror
+      - -pthread
+      link-flags: []
+      runtime-mode: compile-only
+      runtime-status: NOT_RUN
+      observed-marker: NOT_OBSERVED
+      compiler-path: /Library/Developer/CommandLineTools/usr/bin/clang
+    macho:
+      magic: MH_MAGIC_64
+      architecture: x86_64
+      filetype: MH_EXECUTE
+      dylib-load-commands:
+      - command: LC_LOAD_DYLIB
+        name: /usr/lib/libSystem.B.dylib
+      rpath-load-commands: []
+    expected:
+      returncode: 0
+      stdout-contains:
+      - ULOCK_EINTR_RETRY_GUEST_OK
+    runtime:
+      rootless: true
+      guest-toolchain: forbidden
+      prefix: tier-owned-fresh
+      profile: homebrew
+      mode: compile-only
+      status: NOT_RUN
+      observed-marker: NOT_OBSERVED
+  vchroot_pathnull_guard_guest:
+    source: tests/vchroot_pathnull_guard_guest.c
+    source-project: darling-workspace
+    source-revision: a53ec8109829fc8da743bcd97d0b14c92b3ca7c6
+    source-sha256: 439d82ad19feff8d975adbbc6bebf0ff96652dcd843db06349d14721e186e5c1
+    patch:
+      path: patches/homebrew/xnu/vchroot-pathnull-guard.patch
+      sha256: dd725f8da36618197320e485b561c64cef3926cd7e691d069e74ca2ead9771b2
+    artifact: testkit/fixtures/guest-macho/v1/bin/vchroot_pathnull_guard_guest
+    artifact-sha256: 45fe9ce0b90de6bc185df3d1abc286422406929586bf915dbd21c3293d23cb9f
+    build:
+      compiler-path: /Library/Developer/CommandLineTools/usr/bin/clang
+      compiler-sha256: 0758d5e64ad7a1808727472007506ad270dc7e471d4b73d9b46b923747630a31
+      compiler-version: 'Apple LLVM version 9.0.0 (clang-900.0.39.2) Target: x86_64-apple-darwin20.6.0 Thread model: posix
+        InstalledDir: /Library/Developer/CommandLineTools/usr/bin'
+      compiler-origin: execution-context=guest;executable=/Library/Developer/CommandLineTools/usr/bin/clang
+      clt-product-id: 041-90419
+      clt-provenance-sha256: dbb8ff9911b8bac76a968560fc685df66f625a60d7d1f6d3317961e3172611b4
+      flags:
+      - -isysroot
+      - /Library/Developer/CommandLineTools/SDKs/MacOSX.sdk
+      - -std=gnu11
+      - -Wall
+      - -Wextra
+      - -Werror
+      link-flags: []
+    independent-builds:
+    - name: a
+      hosted-run: 29516601154
+      job-id: 87683094873
+      artifact-id: 8383882613
+      artifact-archive-sha256: 6dc8e789f7fda094e82e5bb4672ba26be17506b809d9a06933118750bac5ce27
+      artifact-sha256: 45fe9ce0b90de6bc185df3d1abc286422406929586bf915dbd21c3293d23cb9f
+      flags:
+      - -isysroot
+      - /Library/Developer/CommandLineTools/SDKs/MacOSX.sdk
+      - -std=gnu11
+      - -Wall
+      - -Wextra
+      - -Werror
+      link-flags: []
+      runtime-mode: compile-only
+      runtime-status: NOT_RUN
+      observed-marker: NOT_OBSERVED
+      compiler-path: /Library/Developer/CommandLineTools/usr/bin/clang
+    - name: b
+      hosted-run: 29516601154
+      job-id: 87683094999
+      artifact-id: 8383769899
+      artifact-archive-sha256: 27deea27517772611c7d6eb6c68caa22eac48d59087e741919a2564cd167529f
+      artifact-sha256: 45fe9ce0b90de6bc185df3d1abc286422406929586bf915dbd21c3293d23cb9f
+      flags:
+      - -isysroot
+      - /Library/Developer/CommandLineTools/SDKs/MacOSX.sdk
+      - -std=gnu11
+      - -Wall
+      - -Wextra
+      - -Werror
+      link-flags: []
+      runtime-mode: compile-only
+      runtime-status: NOT_RUN
+      observed-marker: NOT_OBSERVED
+      compiler-path: /Library/Developer/CommandLineTools/usr/bin/clang
+    macho:
+      magic: MH_MAGIC_64
+      architecture: x86_64
+      filetype: MH_EXECUTE
+      dylib-load-commands:
+      - command: LC_LOAD_DYLIB
+        name: /usr/lib/libSystem.B.dylib
+      rpath-load-commands: []
+    expected:
+      returncode: 0
+      stdout-contains:
+      - VCHROOT_PATHNULL_GUARD_GUEST_OK
+    runtime:
+      rootless: true
+      guest-toolchain: forbidden
+      prefix: tier-owned-fresh
+      profile: homebrew
+      mode: compile-only
+      status: NOT_RUN
+      observed-marker: NOT_OBSERVED
+  chown_disabled_null_guard_guest:
+    source: tests/chown_disabled_null_guard_guest.c
+    source-project: darling-workspace
+    source-revision: a53ec8109829fc8da743bcd97d0b14c92b3ca7c6
+    source-sha256: 407fe1640a395e4918417960c3f0d0b2f164374745ad1599742d533324c0a418
+    patch:
+      path: patches/homebrew/xnu/chown-disabled-null-guard.patch
+      sha256: 4d034a7b33e23d1d81a53c8fbbac5c17b5d8fcce3d781942628b0d185d33a5f1
+    artifact: testkit/fixtures/guest-macho/v1/bin/chown_disabled_null_guard_guest
+    artifact-sha256: 86279359ef05a93badbc21137a6a7140732c60059d54f2d94c70dd3ee62ac07a
+    build:
+      compiler-path: /Library/Developer/CommandLineTools/usr/bin/clang
+      compiler-sha256: 0758d5e64ad7a1808727472007506ad270dc7e471d4b73d9b46b923747630a31
+      compiler-version: 'Apple LLVM version 9.0.0 (clang-900.0.39.2) Target: x86_64-apple-darwin20.6.0 Thread model: posix
+        InstalledDir: /Library/Developer/CommandLineTools/usr/bin'
+      compiler-origin: execution-context=guest;executable=/Library/Developer/CommandLineTools/usr/bin/clang
+      clt-product-id: 041-90419
+      clt-provenance-sha256: dbb8ff9911b8bac76a968560fc685df66f625a60d7d1f6d3317961e3172611b4
+      flags:
+      - -isysroot
+      - /Library/Developer/CommandLineTools/SDKs/MacOSX.sdk
+      - -std=gnu11
+      - -Wall
+      - -Wextra
+      - -Werror
+      link-flags: []
+    independent-builds:
+    - name: a
+      hosted-run: 29516601154
+      job-id: 87683094873
+      artifact-id: 8383882613
+      artifact-archive-sha256: 6dc8e789f7fda094e82e5bb4672ba26be17506b809d9a06933118750bac5ce27
+      artifact-sha256: 86279359ef05a93badbc21137a6a7140732c60059d54f2d94c70dd3ee62ac07a
+      flags:
+      - -isysroot
+      - /Library/Developer/CommandLineTools/SDKs/MacOSX.sdk
+      - -std=gnu11
+      - -Wall
+      - -Wextra
+      - -Werror
+      link-flags: []
+      runtime-mode: compile-only
+      runtime-status: NOT_RUN
+      observed-marker: NOT_OBSERVED
+      compiler-path: /Library/Developer/CommandLineTools/usr/bin/clang
+    - name: b
+      hosted-run: 29516601154
+      job-id: 87683094999
+      artifact-id: 8383769899
+      artifact-archive-sha256: 27deea27517772611c7d6eb6c68caa22eac48d59087e741919a2564cd167529f
+      artifact-sha256: 86279359ef05a93badbc21137a6a7140732c60059d54f2d94c70dd3ee62ac07a
+      flags:
+      - -isysroot
+      - /Library/Developer/CommandLineTools/SDKs/MacOSX.sdk
+      - -std=gnu11
+      - -Wall
+      - -Wextra
+      - -Werror
+      link-flags: []
+      runtime-mode: compile-only
+      runtime-status: NOT_RUN
+      observed-marker: NOT_OBSERVED
+      compiler-path: /Library/Developer/CommandLineTools/usr/bin/clang
+    macho:
+      magic: MH_MAGIC_64
+      architecture: x86_64
+      filetype: MH_EXECUTE
+      dylib-load-commands:
+      - command: LC_LOAD_DYLIB
+        name: /usr/lib/libSystem.B.dylib
+      rpath-load-commands: []
+    expected:
+      returncode: 0
+      stdout-contains:
+      - CHOWN_DISABLED_NULL_GUARD_GUEST_OK
+    runtime:
+      rootless: true
+      guest-toolchain: forbidden
+      prefix: tier-owned-fresh
+      profile: homebrew
+      mode: compile-only
+      status: NOT_RUN
+      observed-marker: NOT_OBSERVED
+  fd_guard_ebadf_guest:
+    source: tests/fd_guard_ebadf_guest.c
+    source-project: darling-workspace
+    source-revision: a53ec8109829fc8da743bcd97d0b14c92b3ca7c6
+    source-sha256: 042dab4cb0b1dfb7320ba66096b14c90669eb05d4046dd86c9e200fbd40fb02f
+    patch:
+      path: patches/homebrew/xnu/fd-guard-ebadf.patch
+      sha256: e6613d41bc368ab8ee4751e7f93d09e7faebe9256e07152a9022152273717568
+    artifact: testkit/fixtures/guest-macho/v1/bin/fd_guard_ebadf_guest
+    artifact-sha256: 59bb4d1d8f23c90e5a0bda37ff95fffafbca44aaad64746fbd3cdc1a79be68c0
+    build:
+      compiler-path: /Library/Developer/CommandLineTools/usr/bin/clang
+      compiler-sha256: 0758d5e64ad7a1808727472007506ad270dc7e471d4b73d9b46b923747630a31
+      compiler-version: 'Apple LLVM version 9.0.0 (clang-900.0.39.2) Target: x86_64-apple-darwin20.6.0 Thread model: posix
+        InstalledDir: /Library/Developer/CommandLineTools/usr/bin'
+      compiler-origin: execution-context=guest;executable=/Library/Developer/CommandLineTools/usr/bin/clang
+      clt-product-id: 041-90419
+      clt-provenance-sha256: dbb8ff9911b8bac76a968560fc685df66f625a60d7d1f6d3317961e3172611b4
+      flags:
+      - -isysroot
+      - /Library/Developer/CommandLineTools/SDKs/MacOSX.sdk
+      - -std=gnu11
+      - -Wall
+      - -Wextra
+      - -Werror
+      link-flags: []
+    independent-builds:
+    - name: a
+      hosted-run: 29516601154
+      job-id: 87683094873
+      artifact-id: 8383882613
+      artifact-archive-sha256: 6dc8e789f7fda094e82e5bb4672ba26be17506b809d9a06933118750bac5ce27
+      artifact-sha256: 59bb4d1d8f23c90e5a0bda37ff95fffafbca44aaad64746fbd3cdc1a79be68c0
+      flags:
+      - -isysroot
+      - /Library/Developer/CommandLineTools/SDKs/MacOSX.sdk
+      - -std=gnu11
+      - -Wall
+      - -Wextra
+      - -Werror
+      link-flags: []
+      runtime-mode: compile-only
+      runtime-status: NOT_RUN
+      observed-marker: NOT_OBSERVED
+      compiler-path: /Library/Developer/CommandLineTools/usr/bin/clang
+    - name: b
+      hosted-run: 29516601154
+      job-id: 87683094999
+      artifact-id: 8383769899
+      artifact-archive-sha256: 27deea27517772611c7d6eb6c68caa22eac48d59087e741919a2564cd167529f
+      artifact-sha256: 59bb4d1d8f23c90e5a0bda37ff95fffafbca44aaad64746fbd3cdc1a79be68c0
+      flags:
+      - -isysroot
+      - /Library/Developer/CommandLineTools/SDKs/MacOSX.sdk
+      - -std=gnu11
+      - -Wall
+      - -Wextra
+      - -Werror
+      link-flags: []
+      runtime-mode: compile-only
+      runtime-status: NOT_RUN
+      observed-marker: NOT_OBSERVED
+      compiler-path: /Library/Developer/CommandLineTools/usr/bin/clang
+    macho:
+      magic: MH_MAGIC_64
+      architecture: x86_64
+      filetype: MH_EXECUTE
+      dylib-load-commands:
+      - command: LC_LOAD_DYLIB
+        name: /usr/lib/libSystem.B.dylib
+      rpath-load-commands: []
+    expected:
+      returncode: 0
+      stdout-contains:
+      - FD_GUARD_EBADF_GUEST_OK
+    runtime:
+      rootless: true
+      guest-toolchain: forbidden
+      prefix: tier-owned-fresh
+      profile: homebrew
+      mode: compile-only
+      status: NOT_RUN
+      observed-marker: NOT_OBSERVED
+  fork_checkin_signal_storm_guest:
+    source: tests/fork_checkin_signal_storm_guest.c
+    source-project: darling-workspace
+    source-revision: a53ec8109829fc8da743bcd97d0b14c92b3ca7c6
+    source-sha256: e97046e766633260192d870a3864dac12d26c1f4c39cbaf92550749f1c4df504
+    patch:
+      path: patches/homebrew/darlingserver/fork-checkin-sticky-flag.patch
+      sha256: 43e767e34b9e1245fa945dbd921a3cfe5bab755e430c1027e08bed6bc53358c7
+    artifact: testkit/fixtures/guest-macho/v1/bin/fork_checkin_signal_storm_guest
+    artifact-sha256: 295a0f3a0f006baa5870014b9114a97133064a97910be6b057b7863422f15233
+    build:
+      compiler-path: /Library/Developer/CommandLineTools/usr/bin/clang
+      compiler-sha256: 0758d5e64ad7a1808727472007506ad270dc7e471d4b73d9b46b923747630a31
+      compiler-version: 'Apple LLVM version 9.0.0 (clang-900.0.39.2) Target: x86_64-apple-darwin20.6.0 Thread model: posix
+        InstalledDir: /Library/Developer/CommandLineTools/usr/bin'
+      compiler-origin: execution-context=guest;executable=/Library/Developer/CommandLineTools/usr/bin/clang
+      clt-product-id: 041-90419
+      clt-provenance-sha256: dbb8ff9911b8bac76a968560fc685df66f625a60d7d1f6d3317961e3172611b4
+      flags:
+      - -isysroot
+      - /Library/Developer/CommandLineTools/SDKs/MacOSX.sdk
+      - -std=gnu11
+      - -Wall
+      - -Wextra
+      - -Werror
+      link-flags: []
+    independent-builds:
+    - name: a
+      hosted-run: 29516601154
+      job-id: 87683094873
+      artifact-id: 8383882613
+      artifact-archive-sha256: 6dc8e789f7fda094e82e5bb4672ba26be17506b809d9a06933118750bac5ce27
+      artifact-sha256: 295a0f3a0f006baa5870014b9114a97133064a97910be6b057b7863422f15233
+      flags:
+      - -isysroot
+      - /Library/Developer/CommandLineTools/SDKs/MacOSX.sdk
+      - -std=gnu11
+      - -Wall
+      - -Wextra
+      - -Werror
+      link-flags: []
+      runtime-mode: compile-only
+      runtime-status: NOT_RUN
+      observed-marker: NOT_OBSERVED
+      compiler-path: /Library/Developer/CommandLineTools/usr/bin/clang
+    - name: b
+      hosted-run: 29516601154
+      job-id: 87683094999
+      artifact-id: 8383769899
+      artifact-archive-sha256: 27deea27517772611c7d6eb6c68caa22eac48d59087e741919a2564cd167529f
+      artifact-sha256: 295a0f3a0f006baa5870014b9114a97133064a97910be6b057b7863422f15233
+      flags:
+      - -isysroot
+      - /Library/Developer/CommandLineTools/SDKs/MacOSX.sdk
+      - -std=gnu11
+      - -Wall
+      - -Wextra
+      - -Werror
+      link-flags: []
+      runtime-mode: compile-only
+      runtime-status: NOT_RUN
+      observed-marker: NOT_OBSERVED
+      compiler-path: /Library/Developer/CommandLineTools/usr/bin/clang
+    macho:
+      magic: MH_MAGIC_64
+      architecture: x86_64
+      filetype: MH_EXECUTE
+      dylib-load-commands:
+      - command: LC_LOAD_DYLIB
+        name: /usr/lib/libSystem.B.dylib
+      rpath-load-commands: []
+    expected:
+      returncode: 0
+      stdout-contains:
+      - FORK_CHECKIN_SIGNAL_STORM_OK
+    runtime:
+      rootless: true
+      guest-toolchain: forbidden
+      prefix: tier-owned-fresh
+      profile: perf-darlingserver
+      mode: compile-only
+      status: NOT_RUN
+      observed-marker: NOT_OBSERVED
+  rootless_no_mount_guest:
+    source: tests/rootless_no_mount_guest.c
+    source-project: darling-workspace
+    source-revision: a53ec8109829fc8da743bcd97d0b14c92b3ca7c6
+    source-sha256: 9017235080c86914b475f94586581dce707218f8fc70fab5b7cfd115e8e19d2c
+    patch:
+      path: patches/homebrew/xnu/eunion-core.patch
+      sha256: a79b122967cd452603057f07c72b3b1a80086683153632557ad3b8a84ff8a081
+    artifact: testkit/fixtures/guest-macho/v1/bin/rootless_no_mount_guest
+    artifact-sha256: 81f6d4d14ab7645ff8212cf129c58d6326bc1366f1c603f8de5608f0f68071da
+    build:
+      compiler-path: /Library/Developer/CommandLineTools/usr/bin/clang
+      compiler-sha256: 0758d5e64ad7a1808727472007506ad270dc7e471d4b73d9b46b923747630a31
+      compiler-version: 'Apple LLVM version 9.0.0 (clang-900.0.39.2) Target: x86_64-apple-darwin20.6.0 Thread model: posix
+        InstalledDir: /Library/Developer/CommandLineTools/usr/bin'
+      compiler-origin: execution-context=guest;executable=/Library/Developer/CommandLineTools/usr/bin/clang
+      clt-product-id: 041-90419
+      clt-provenance-sha256: dbb8ff9911b8bac76a968560fc685df66f625a60d7d1f6d3317961e3172611b4
+      flags:
+      - -isysroot
+      - /Library/Developer/CommandLineTools/SDKs/MacOSX.sdk
+      - -std=gnu11
+      - -Wall
+      - -Wextra
+      - -Werror
+      link-flags: []
+    independent-builds:
+    - name: a
+      hosted-run: 29516601154
+      job-id: 87683094873
+      artifact-id: 8383882613
+      artifact-archive-sha256: 6dc8e789f7fda094e82e5bb4672ba26be17506b809d9a06933118750bac5ce27
+      artifact-sha256: 81f6d4d14ab7645ff8212cf129c58d6326bc1366f1c603f8de5608f0f68071da
+      flags:
+      - -isysroot
+      - /Library/Developer/CommandLineTools/SDKs/MacOSX.sdk
+      - -std=gnu11
+      - -Wall
+      - -Wextra
+      - -Werror
+      link-flags: []
+      runtime-mode: compile-only
+      runtime-status: NOT_RUN
+      observed-marker: NOT_OBSERVED
+      compiler-path: /Library/Developer/CommandLineTools/usr/bin/clang
+    - name: b
+      hosted-run: 29516601154
+      job-id: 87683094999
+      artifact-id: 8383769899
+      artifact-archive-sha256: 27deea27517772611c7d6eb6c68caa22eac48d59087e741919a2564cd167529f
+      artifact-sha256: 81f6d4d14ab7645ff8212cf129c58d6326bc1366f1c603f8de5608f0f68071da
+      flags:
+      - -isysroot
+      - /Library/Developer/CommandLineTools/SDKs/MacOSX.sdk
+      - -std=gnu11
+      - -Wall
+      - -Wextra
+      - -Werror
+      link-flags: []
+      runtime-mode: compile-only
+      runtime-status: NOT_RUN
+      observed-marker: NOT_OBSERVED
+      compiler-path: /Library/Developer/CommandLineTools/usr/bin/clang
+    macho:
+      magic: MH_MAGIC_64
+      architecture: x86_64
+      filetype: MH_EXECUTE
+      dylib-load-commands:
+      - command: LC_LOAD_DYLIB
+        name: /usr/lib/libSystem.B.dylib
+      rpath-load-commands: []
+    expected:
+      returncode: 0
+      stdout-contains:
+      - ROOTLESS_NO_MOUNT_GUEST_OK
+    runtime:
+      rootless: true
+      guest-toolchain: forbidden
+      prefix: tier-owned-fresh
+      profile: homebrew-rootless-no-mount
+      mode: compile-only
+      status: NOT_RUN
+      observed-marker: NOT_OBSERVED
