@@ -31,10 +31,7 @@ ACCEPTED_RUN = 29516601154
 ACCEPTED_COMPARE_JOB = 87691198694
 ACCEPTED_RESULT = "MACHO_CORPUS_BATCH_MATCH"
 EXPECTED_NAMES = [spec.name for spec in FIXTURE_SPECS]
-EXPECTED_GROUPS = {
-    name: ("perf" if name == "fork_checkin_signal_storm_guest" else "homebrew")
-    for name in EXPECTED_NAMES
-}
+EXPECTED_GROUPS = {name: "homebrew" for name in EXPECTED_NAMES}
 EXPECTED_TIMEOUTS = {
     **{name: 30 for name in EXPECTED_NAMES if name != "fork_checkin_signal_storm_guest"},
     "fork_checkin_signal_storm_guest": 45,
@@ -158,9 +155,9 @@ assert [test["name"] for _, test in typed_tests] == [
     f"{test['fixture']}_prebuilt" for _, test in typed_tests
 ]
 assert {test["fixture"] for _, test in typed_tests} == set(EXPECTED_NAMES)
-assert {test["validation-group"] for _, test in typed_tests} == {"homebrew", "perf"}
-assert sum(test["validation-group"] == "homebrew" for _, test in typed_tests) == 13
-assert sum(test["validation-group"] == "perf" for _, test in typed_tests) == 1
+assert {test["validation-group"] for _, test in typed_tests} == {"homebrew"}
+assert sum(test["validation-group"] == "homebrew" for _, test in typed_tests) == 14
+assert all(test["validation-group"] != "perf" for _, test in typed_tests)
 required_env = {
     "DARLING_ROOTLESS": "1",
     "DARLING_NOOVERLAYFS": "1",
@@ -189,13 +186,15 @@ for patch, test in typed_tests:
 assert "rootless_no_mount_guest" in (ROOT / "testkit/CMakeLists.txt").read_text()
 profiles = yaml.safe_load((ROOT / "testkit/runtime-profiles.yml").read_text())["runtime-profiles"]
 assert profiles["homebrew-rootless-bootstrap-minimal"]["source-profile"] == "homebrew"
-assert profiles["perf-rootless-bootstrap-minimal"]["source-profile"] == "perf"
-assert profiles["perf-rootless-bootstrap-minimal"]["cmake-defines"] == {
-    "DARLING_EUNION": True,
-    "DSERVER_RING_TRANSPORT": True,
-}
 assert "guest-toolchain" not in profiles["homebrew-rootless-bootstrap-minimal"]
-assert "guest-toolchain" not in profiles["perf-rootless-bootstrap-minimal"]
+assert "perf-rootless-bootstrap-minimal" not in profiles
+fork_registration = next(
+    test
+    for patch, test in typed_tests
+    if test["fixture"] == "fork_checkin_signal_storm_guest"
+)
+assert "owning homebrew product stack" in fork_registration["note"]
+assert "perf source-driven case" in fork_registration["note"]
 
 
 def make_macho(path: Path) -> None:

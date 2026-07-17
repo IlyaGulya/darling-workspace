@@ -348,11 +348,14 @@ patches:
     repo: darling-workspace
     corpus: testkit/fixtures/guest-macho/v1/corpus.yml
     fixture: fork_checkin_signal_storm_guest
-    source-profile: perf
-    validation-group: perf
+    source-profile: homebrew
+    validation-group: homebrew
     timeout-seconds: 45
     requires:
     - darling-prefix
+    note: >-
+      Prebuilt regular regression validates the owning homebrew product stack;
+      the perf source-driven case remains a separate experimental runtime gate.
     env-vars:
       DARLING_ROOTLESS: '1'
       DARLING_NOOVERLAYFS: '1'

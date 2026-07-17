@@ -18,7 +18,6 @@ if [ "$(basename "$0")" = west ] && [ "${1:-}" = topdir ]; then
 fi
 if [ "$(basename "$0")" = west ] && {
 	[[ "$*" == *"--bootstrap-runtime-profile homebrew-rootless-bootstrap-minimal"* ]] ||
-	[[ "$*" == *"--bootstrap-runtime-profile perf-rootless-bootstrap-minimal"* ]] ||
 	[[ "$*" == *"name:rootless_prefix_initialization_guest"* ]] ||
 	[[ "$*" == *"name:rootless_prebuilt_macho_regression"* ]] ||
 	[[ "$*" == *"name:select_fdset_guest_prebuilt"* ]] ||
@@ -80,8 +79,11 @@ unset ROOTLESS_TIER_REPO
 
 "$repo/ci/run-test-tier.sh" host
 "$repo/ci/run-test-tier.sh" guest-smoke
-"$repo/ci/run-test-tier.sh" guest-macho-validation homebrew
-"$repo/ci/run-test-tier.sh" guest-macho-validation perf
+"$repo/ci/run-test-tier.sh" guest-macho-validation
+if "$repo/ci/run-test-tier.sh" guest-macho-validation perf; then
+	echo 'guest Mach-O validation accepted the removed perf group' >&2
+	exit 1
+fi
 if "$repo/ci/run-test-tier.sh" guest-macho-validation invalid; then
 	echo 'guest Mach-O validation accepted an invalid group' >&2
 	exit 1
@@ -113,9 +115,11 @@ grep -F -x -q "west test --prefix $tmp/runner/darling-rootless-smoke --bootstrap
 grep -F -x -q "west test --profile homebrew --patch darling/rootless-prefix-initialization.patch --env darling --label name:rootless_prefix_initialization_guest --reuse-prefix-runtime --prefix $tmp/runner/darling-rootless-smoke" "$tmp/commands"
 grep -F -x -q "west test --profile homebrew --patch darling/rootless-prefix-initialization.patch --env darling --label name:rootless_prebuilt_macho_regression --reuse-prefix-runtime --prefix $tmp/runner/darling-rootless-smoke" "$tmp/commands"
 grep -F -x -q "west test --prefix $tmp/runner/darling-rootless-corpus --bootstrap-runtime-profile homebrew-rootless-bootstrap-minimal --runtime-build-timeout-seconds 600" "$tmp/commands"
-grep -F -x -q "west test --prefix $tmp/runner/darling-rootless-corpus --bootstrap-runtime-profile perf-rootless-bootstrap-minimal --runtime-build-timeout-seconds 600" "$tmp/commands"
 grep -F -q "west test --profile homebrew --env darling --guest-macho-validation-group homebrew --guest-macho-evidence-dir $repo/.west-test/guest-macho-validation-diagnostics/homebrew/fixtures --reuse-prefix-runtime --prefix $tmp/runner/darling-rootless-corpus" "$tmp/commands"
-grep -F -q "west test --profile homebrew --env darling --guest-macho-validation-group perf --guest-macho-evidence-dir $repo/.west-test/guest-macho-validation-diagnostics/perf/fixtures --reuse-prefix-runtime --prefix $tmp/runner/darling-rootless-corpus" "$tmp/commands"
+if grep -F -q 'perf-rootless-bootstrap-minimal' "$tmp/commands"; then
+	echo 'guest Mach-O validation unexpectedly used a perf bootstrap profile' >&2
+	exit 1
+fi
 grep -F -q 'rootless_prefix_assert_no_guest_toolchain "$tier_kind" "$prefix"' "$repo/ci/run-test-tier.sh"
 grep -F -q 'guest Mach-O fixture ran more than once' "$repo/west_commands/guest_macho_validation.py"
 grep -F -q 'prefix-processes.txt' "$repo/ci/collect-rootless-diagnostics.sh"
@@ -209,9 +213,20 @@ grep -F -q 'guest-clang-origin.txt' "$repo/ci/collect-rootless-diagnostics.sh"
 validation_workflow="$(sed -n '/^  macho-corpus-validation:/,/^  macho-corpus-batch-build:/p' "$repo/.github/workflows/test-infra.yml")"
 printf '%s\n' "$validation_workflow" | grep -F -q "github.event_name == 'workflow_dispatch' && inputs.tier == 'macho-corpus-validation'"
 printf '%s\n' "$validation_workflow" | grep -F -q 'timeout-minutes: 45'
-printf '%s\n' "$validation_workflow" | grep -F -q 'group: [homebrew, perf]'
-printf '%s\n' "$validation_workflow" | grep -F -q 'macho-corpus-validation-${{ matrix.group }}'
-printf '%s\n' "$validation_workflow" | grep -F -q 'guest-macho-validation-${{ matrix.group }}-runtime-evidence'
+if printf '%s\n' "$validation_workflow" | grep -F -q 'matrix:'; then
+	echo 'guest Mach-O validation unexpectedly uses a matrix' >&2
+	exit 1
+fi
+if printf '%s\n' "$validation_workflow" | grep -F -q 'matrix.group'; then
+	echo 'guest Mach-O validation unexpectedly references a matrix group' >&2
+	exit 1
+fi
+printf '%s\n' "$validation_workflow" | grep -F -q 'name: macho-corpus-validation'
+printf '%s\n' "$validation_workflow" | grep -F -q 'guest-macho-validation-runtime-evidence'
+if printf '%s\n' "$validation_workflow" | grep -F -q 'perf-rootless-bootstrap-minimal'; then
+	echo 'guest Mach-O validation workflow exposes a perf bootstrap profile' >&2
+	exit 1
+fi
 if printf '%s\n' "$validation_workflow" | grep -F -q 'homebrew-guest-toolchain-provisioning'; then
 	echo 'no-CLT validation workflow unexpectedly provisions guest toolchain' >&2
 	exit 1
