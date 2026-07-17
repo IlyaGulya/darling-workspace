@@ -339,6 +339,25 @@ patches:
       an explicit downstream skip closure, but this workload passed on the bad
       runtime; keep it as a GREEN gate until dar-r7fc.2.1 has a stronger
       deterministic RED repro.
+  - name: fork_checkin_signal_storm_guest_prebuilt
+    kind: guest
+    coverage-tier: runtime
+    runs: guest
+    diag: guarded
+    runner: guest-macho-fixture
+    repo: darling-workspace
+    corpus: testkit/fixtures/guest-macho/v1/corpus.yml
+    fixture: fork_checkin_signal_storm_guest
+    source-profile: perf
+    validation-group: perf
+    timeout-seconds: 45
+    requires:
+    - darling-prefix
+    env-vars:
+      DARLING_ROOTLESS: '1'
+      DARLING_NOOVERLAYFS: '1'
+      DARLING_EUNION: '1'
+      WEST_TEST_FORBID_GUEST_TOOLCHAIN: '1'
   - name: fork_checkin_direct_sticky_oracle
     kind: guest
     coverage-tier: runtime
@@ -599,6 +618,8 @@ patches:
     repo: darling-workspace
     corpus: testkit/fixtures/guest-macho/v1/corpus.yml
     fixture: select_fdset_guest
+    source-profile: homebrew
+    validation-group: homebrew
     timeout-seconds: 30
     requires:
     - darling-prefix
@@ -662,6 +683,25 @@ patches:
     requires:
     - darling-prefix
     note: Guest runtime gate for PRIO_DARWIN_THREAD/PROCESS success and invalid-case raw -EINVAL through the deployed libsystem_kernel/dyld path. RED is carried by the compile contract because source-base guest RED would require rebuilding/deploying the old libsystem_kernel into an isolated prefix. Full Darwin priority semantics remain blocked by dar-q95.29.4.3.
+  - name: darwin_priority_guest_prebuilt
+    kind: guest
+    coverage-tier: runtime
+    runs: guest
+    diag: guarded
+    runner: guest-macho-fixture
+    repo: darling-workspace
+    corpus: testkit/fixtures/guest-macho/v1/corpus.yml
+    fixture: darwin_priority_guest
+    source-profile: homebrew
+    validation-group: homebrew
+    timeout-seconds: 30
+    requires:
+    - darling-prefix
+    env-vars:
+      DARLING_ROOTLESS: '1'
+      DARLING_NOOVERLAYFS: '1'
+      DARLING_EUNION: '1'
+      WEST_TEST_FORBID_GUEST_TOOLCHAIN: '1'
   pr-draft: pr-drafts/xnu-darwin-priority.md
   github:
     fork:
@@ -712,6 +752,25 @@ patches:
     requires:
     - darling-prefix
     note: Guest runtime gate for SIOCGIFCONF empty-list success and NULL EFAULT behavior.
+  - name: socket_siocgifconf_guest_prebuilt
+    kind: guest
+    coverage-tier: runtime
+    runs: guest
+    diag: guarded
+    runner: guest-macho-fixture
+    repo: darling-workspace
+    corpus: testkit/fixtures/guest-macho/v1/corpus.yml
+    fixture: socket_siocgifconf_guest
+    source-profile: homebrew
+    validation-group: homebrew
+    timeout-seconds: 30
+    requires:
+    - darling-prefix
+    env-vars:
+      DARLING_ROOTLESS: '1'
+      DARLING_NOOVERLAYFS: '1'
+      DARLING_EUNION: '1'
+      WEST_TEST_FORBID_GUEST_TOOLCHAIN: '1'
   pr-draft: pr-drafts/xnu-socket-siocgifconf.md
   github:
     fork:
@@ -881,6 +940,25 @@ patches:
     requires:
     - darling-prefix
     note: Guest runtime ABI gate for ___bzero preserving the original destination pointer in the return register while zeroing the buffer. RED is carried by the compile contract because source-base guest RED would require rebuilding/deploying old libplatform into an isolated prefix.
+  - name: bzero_return_register_guest_prebuilt
+    kind: guest
+    coverage-tier: runtime
+    runs: guest
+    diag: guarded
+    runner: guest-macho-fixture
+    repo: darling-workspace
+    corpus: testkit/fixtures/guest-macho/v1/corpus.yml
+    fixture: bzero_return_register_guest
+    source-profile: homebrew
+    validation-group: homebrew
+    timeout-seconds: 30
+    requires:
+    - darling-prefix
+    env-vars:
+      DARLING_ROOTLESS: '1'
+      DARLING_NOOVERLAYFS: '1'
+      DARLING_EUNION: '1'
+      WEST_TEST_FORBID_GUEST_TOOLCHAIN: '1'
   pr-draft: pr-drafts/libplatform-bzero-return-register.md
   merge-pr: https://github.com/darlinghq/darling-libplatform/pull/5
   github:
@@ -1866,6 +1944,25 @@ patches:
     - darling-prefix
     note: |
       Guest runtime gate for public getattrlist(ATTR_CMN_NAME|ATTR_CMN_OBJTYPE): creates file, directory, and symlink entries inside Darling and verifies packed basename references plus VREG/VDIR/VLNK object types.
+  - name: getattrlist_name_objtype_guest_prebuilt
+    kind: guest
+    coverage-tier: runtime
+    runs: guest
+    diag: guarded
+    runner: guest-macho-fixture
+    repo: darling-workspace
+    corpus: testkit/fixtures/guest-macho/v1/corpus.yml
+    fixture: getattrlist_name_objtype_guest
+    source-profile: homebrew
+    validation-group: homebrew
+    timeout-seconds: 30
+    requires:
+    - darling-prefix
+    env-vars:
+      DARLING_ROOTLESS: '1'
+      DARLING_NOOVERLAYFS: '1'
+      DARLING_EUNION: '1'
+      WEST_TEST_FORBID_GUEST_TOOLCHAIN: '1'
   pr-draft: pr-drafts/xnu-getattrlist-name-objtype.md
   github:
     fork:
@@ -2138,6 +2235,25 @@ patches:
     requires:
     - darling-prefix
     note: Guest runtime gate that read(2) returns EINTR without SA_RESTART and resumes with SA_RESTART after a handled signal.
+  - name: sigexc_sa_restart_guest_prebuilt
+    kind: guest
+    coverage-tier: runtime
+    runs: guest
+    diag: guarded
+    runner: guest-macho-fixture
+    repo: darling-workspace
+    corpus: testkit/fixtures/guest-macho/v1/corpus.yml
+    fixture: sigexc_sa_restart_guest
+    source-profile: homebrew
+    validation-group: homebrew
+    timeout-seconds: 30
+    requires:
+    - darling-prefix
+    env-vars:
+      DARLING_ROOTLESS: '1'
+      DARLING_NOOVERLAYFS: '1'
+      DARLING_EUNION: '1'
+      WEST_TEST_FORBID_GUEST_TOOLCHAIN: '1'
   pr-draft: pr-drafts/xnu-sigexc-sa-restart.md
   github:
     fork:
@@ -2279,6 +2395,25 @@ patches:
     requires:
     - darling-prefix
     note: Guest runtime gate that a child taking default SIGSEGV does not broadcast SIGSEGV to its parent process group.
+  - name: sigexc_default_resend_self_guest_prebuilt
+    kind: guest
+    coverage-tier: runtime
+    runs: guest
+    diag: guarded
+    runner: guest-macho-fixture
+    repo: darling-workspace
+    corpus: testkit/fixtures/guest-macho/v1/corpus.yml
+    fixture: sigexc_default_resend_self_guest
+    source-profile: homebrew
+    validation-group: homebrew
+    timeout-seconds: 30
+    requires:
+    - darling-prefix
+    env-vars:
+      DARLING_ROOTLESS: '1'
+      DARLING_NOOVERLAYFS: '1'
+      DARLING_EUNION: '1'
+      WEST_TEST_FORBID_GUEST_TOOLCHAIN: '1'
   pr-draft: pr-drafts/xnu-sigexc-default-resend-self.md
   github:
     fork:
@@ -2377,6 +2512,25 @@ patches:
     requires:
     - darling-prefix
     note: Guest runtime gate that an untimed __ulock_wait survives a handled signal and returns only after a later __ulock_wake.
+  - name: ulock_eintr_retry_guest_prebuilt
+    kind: guest
+    coverage-tier: runtime
+    runs: guest
+    diag: guarded
+    runner: guest-macho-fixture
+    repo: darling-workspace
+    corpus: testkit/fixtures/guest-macho/v1/corpus.yml
+    fixture: ulock_eintr_retry_guest
+    source-profile: homebrew
+    validation-group: homebrew
+    timeout-seconds: 30
+    requires:
+    - darling-prefix
+    env-vars:
+      DARLING_ROOTLESS: '1'
+      DARLING_NOOVERLAYFS: '1'
+      DARLING_EUNION: '1'
+      WEST_TEST_FORBID_GUEST_TOOLCHAIN: '1'
   pr-draft: pr-drafts/xnu-ulock-wait-eintr-retry.md
   github:
     fork:
@@ -2572,6 +2726,25 @@ patches:
     requires:
     - darling-prefix
     note: Guest runtime gate that active NULL path inputs return EFAULT through Darling instead of crashing in vchroot path expansion; fchownat/lchown disabled-stub semantics are tracked in dar-gyvb.
+  - name: vchroot_pathnull_guard_guest_prebuilt
+    kind: guest
+    coverage-tier: runtime
+    runs: guest
+    diag: guarded
+    runner: guest-macho-fixture
+    repo: darling-workspace
+    corpus: testkit/fixtures/guest-macho/v1/corpus.yml
+    fixture: vchroot_pathnull_guard_guest
+    source-profile: homebrew
+    validation-group: homebrew
+    timeout-seconds: 30
+    requires:
+    - darling-prefix
+    env-vars:
+      DARLING_ROOTLESS: '1'
+      DARLING_NOOVERLAYFS: '1'
+      DARLING_EUNION: '1'
+      WEST_TEST_FORBID_GUEST_TOOLCHAIN: '1'
   pr-draft: pr-drafts/xnu-vchroot-pathnull-guard.md
   github:
     fork:
@@ -2665,6 +2838,25 @@ patches:
       contents: |
         UPPER_SHADOW
     note: Guest behavior for activation, lower fallback, upper-only visibility and upper-over-lower shadowing.
+  - name: rootless_no_mount_guest_prebuilt
+    kind: guest
+    coverage-tier: runtime
+    runs: guest
+    diag: guarded
+    runner: guest-macho-fixture
+    repo: darling-workspace
+    corpus: testkit/fixtures/guest-macho/v1/corpus.yml
+    fixture: rootless_no_mount_guest
+    source-profile: homebrew
+    validation-group: homebrew
+    timeout-seconds: 45
+    requires:
+    - darling-prefix
+    env-vars:
+      DARLING_ROOTLESS: '1'
+      DARLING_NOOVERLAYFS: '1'
+      DARLING_EUNION: '1'
+      WEST_TEST_FORBID_GUEST_TOOLCHAIN: '1'
   github:
     fork:
       repo: IlyaGulya/darling-xnu
@@ -3184,6 +3376,25 @@ patches:
       Guest behavior proof that the deployed libsystem_kernel does not report
       false success for disabled ownership changes and preserves EFAULT for
       invalid path pointers.
+  - name: chown_disabled_null_guard_guest_prebuilt
+    kind: guest
+    coverage-tier: runtime
+    runs: guest
+    diag: guarded
+    runner: guest-macho-fixture
+    repo: darling-workspace
+    corpus: testkit/fixtures/guest-macho/v1/corpus.yml
+    fixture: chown_disabled_null_guard_guest
+    source-profile: homebrew
+    validation-group: homebrew
+    timeout-seconds: 30
+    requires:
+    - darling-prefix
+    env-vars:
+      DARLING_ROOTLESS: '1'
+      DARLING_NOOVERLAYFS: '1'
+      DARLING_EUNION: '1'
+      WEST_TEST_FORBID_GUEST_TOOLCHAIN: '1'
   pr-draft: pr-drafts/xnu-chown-disabled-null-guard.md
   github:
     fork:
@@ -3240,6 +3451,25 @@ patches:
     requires:
     - darling-prefix
     note: Guest runtime gate for dup/dup2/fcntl on the Darling guarded fd boundary returning EBADF instead of aborting.
+  - name: fd_guard_ebadf_guest_prebuilt
+    kind: guest
+    coverage-tier: runtime
+    runs: guest
+    diag: guarded
+    runner: guest-macho-fixture
+    repo: darling-workspace
+    corpus: testkit/fixtures/guest-macho/v1/corpus.yml
+    fixture: fd_guard_ebadf_guest
+    source-profile: homebrew
+    validation-group: homebrew
+    timeout-seconds: 30
+    requires:
+    - darling-prefix
+    env-vars:
+      DARLING_ROOTLESS: '1'
+      DARLING_NOOVERLAYFS: '1'
+      DARLING_EUNION: '1'
+      WEST_TEST_FORBID_GUEST_TOOLCHAIN: '1'
   github:
     fork:
       repo: darling-next/darling-xnu
@@ -3325,6 +3555,25 @@ patches:
     requires:
     - darling-prefix
     note: Guest runtime gate that abort_with_payload kills only the aborting child and does not broadcast SIGABRT to its process group.
+  - name: abort_with_payload_no_group_broadcast_prebuilt
+    kind: guest
+    coverage-tier: runtime
+    runs: guest
+    diag: guarded
+    runner: guest-macho-fixture
+    repo: darling-workspace
+    corpus: testkit/fixtures/guest-macho/v1/corpus.yml
+    fixture: abort_with_payload_no_group_broadcast
+    source-profile: homebrew
+    validation-group: homebrew
+    timeout-seconds: 30
+    requires:
+    - darling-prefix
+    env-vars:
+      DARLING_ROOTLESS: '1'
+      DARLING_NOOVERLAYFS: '1'
+      DARLING_EUNION: '1'
+      WEST_TEST_FORBID_GUEST_TOOLCHAIN: '1'
   github:
     fork:
       repo: IlyaGulya/darling-xnu

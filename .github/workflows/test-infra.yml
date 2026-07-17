@@ -207,8 +207,13 @@ jobs:
 
   macho-corpus-validation:
     if: github.event_name == 'workflow_dispatch' && inputs.tier == 'macho-corpus-validation'
+    strategy:
+      fail-fast: false
+      matrix:
+        group: [homebrew, perf]
+    name: macho-corpus-validation-${{ matrix.group }}
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 45
     env:
       DARLING_WEST_UPDATE_JOBS: 8
     permissions:
@@ -227,7 +232,7 @@ jobs:
         run: cargo build --release --locked --manifest-path darling-dev/darling-debug-runner/Cargo.toml
       - name: Run reviewed prebuilt Mach-O without CLT
         id: rootless_corpus
-        run: darling-dev/darling-workspace/ci/run-test-tier.sh guest-macho-validation
+        run: darling-dev/darling-workspace/ci/run-test-tier.sh guest-macho-validation "${{ matrix.group }}"
       - name: Collect guest Mach-O runtime diagnostics
         if: always()
         working-directory: darling-dev/darling-workspace
@@ -235,13 +240,15 @@ jobs:
           TIER_PREFIX: ${{ steps.rootless_corpus.outputs.prefix }}
         run: |
           if [[ -n "$TIER_PREFIX" ]]; then
-            ci/collect-rootless-diagnostics.sh .west-test/guest-macho-validation-diagnostics "$TIER_PREFIX"
+            ci/collect-rootless-diagnostics.sh \
+              ".west-test/guest-macho-validation-diagnostics/${{ matrix.group }}-failure" \
+              "$TIER_PREFIX"
           fi
       - name: Upload guest Mach-O validation evidence
         if: always()
         uses: actions/upload-artifact@v7
         with:
-          name: guest-macho-validation-runtime-evidence
+          name: guest-macho-validation-${{ matrix.group }}-runtime-evidence
           if-no-files-found: ignore
           retention-days: 14
           path: |
