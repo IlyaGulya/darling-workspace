@@ -1,0 +1,19 @@
+schema_version: 2
+project:
+  name: darling
+  path: .
+upstream:
+  url: https://github.com/darlinghq/darling.git
+  base_commit: ef8429103cfd792e05449eeaf3607622838984b8
+mirror:
+  url: https://github.com/darling-next/darling.git
+  base_ref: refs/tags/patch-stack/v1/bases/ef8429103cfd792e05449eeaf3607622838984b8
+  base_oid: ef8429103cfd792e05449eeaf3607622838984b8
+  source_ref: refs/tags/patch-stack/v1/sources/b41159e56b046772fe5d6a715e948e6ae94028cb
+  source_oid: b41159e56b046772fe5d6a715e948e6ae94028cb
+source_commit: b41159e56b046772fe5d6a715e948e6ae94028cb
+ordered_commits:
+  - 85bfc3acdc0801ed5af1b8fbb3219426e4c7f344
+  - 3d22c6fd6a78c02e49c28f6eb89b1e1f89d9d390
+  - b41159e56b046772fe5d6a715e948e6ae94028cb
+expected_tree: e694cb8e1d69d837f9857ee2e72d2ffc1e69ad59

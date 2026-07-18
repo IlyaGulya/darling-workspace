@@ -78,6 +78,12 @@ export ROOTLESS_TIER_REPO_CHILD_OUTPUT="$tmp/rootless-tier-repo-child"
 unset ROOTLESS_TIER_REPO
 
 "$repo/ci/run-test-tier.sh" host
+host_tier="$(sed -n '/^\thost)/,/^\tguest-smoke)/p' "$repo/ci/run-test-tier.sh")"
+printf '%s\n' "$host_tier" | grep -F -q 'tests/run-patch-stack-migration-inventory-contract.sh'
+[[ "${host_tier%%exec west test*}" == *'tests/run-patch-stack-migration-inventory-contract.sh'* ]] || {
+	echo 'host tier does not run inventory contract before west test' >&2
+	exit 1
+}
 "$repo/ci/run-test-tier.sh" guest-smoke
 "$repo/ci/run-test-tier.sh" guest-macho-validation
 if "$repo/ci/run-test-tier.sh" guest-macho-validation perf; then
