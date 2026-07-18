@@ -12,9 +12,9 @@ set of `From <OID>` headers. The inventory contract rejects duplicate YAML
 keys and verifies exact metadata/artifact correspondence and available-object
 linearity.
 
-This is a post-migration snapshot: 13 `READY`, 76 `RECOVERABLE_LOCAL`, and 5 `ALREADY_MIGRATED`
-(the XNU and LibreSSL pilots plus the three first-batch
-series).
+This is a post-migration snapshot: 9 `READY`, 76 `RECOVERABLE_LOCAL`, and 9 `ALREADY_MIGRATED`
+(the XNU and LibreSSL pilots, the three first-batch series, and batch 2's four
+Darling series).
 No source was approximated. The recoverable entries have exact metadata in a
 trusted worktree but their frozen bundle lacks a standalone clean-object
 closure; they are not publication candidates until recovered independently.
@@ -36,3 +36,14 @@ The existing protected `refs/tags/patch-stack/v1/bases/3d22c6fd6a78c02e49c28f6eb
 is a retained noncanonical legacy tag: no lock references it. The canonical
 CI base is the create-only
 `refs/tags/patch-stack/v1/bases/ef8429103cfd792e05449eeaf3607622838984b8`.
+
+Batch 2 uses the existing canonical Darling base
+`d014d57080972464a2baabfa299cc6e85041dd0e`. Its source tags are
+`sources/c44476a36ee892b73184ddde36b6e9a50fa2d2f6` (sandbox exec, one
+commit), `sources/b597d6855c64ee0d9bed23e4d518560170ec1c49` (SDK Homebrew
+detection, two commits), `sources/06f98a4481ffcb2467f5ad8f269ed16a6a61571c`
+(build drift gate, two commits), and
+`sources/acf345173c280ce1b607a0e4a80b9585ab4202d7` (commpage map, one
+commit). Each was independently fetched into a clean object database, passed
+foreign-CWD preflight and fsck, and produced identical two-run format-patch
+output.
