@@ -1056,10 +1056,11 @@ stacks:
   expected_tree: 9c6a6c6750b31b3e42ff62efedf9d124d8836cd5
   artifact_count: 1
   commit_count: 1
-  object_closure: frozen_bundle_clean_odb
+  object_closure: hosted_immutable_clean_odb
   linearity: verified
-  classification: READY
-  reason: exact one-commit closure and metadata verified from frozen bundle
+  classification: ALREADY_MIGRATED
+  reason: canonical immutable base/source tags verified in clean ODB
+  lock: locks/patch-stack/darling-sandbox-exec-pass-through-v1.yml
 - profile: homebrew
   patch: darling/sdk-homebrew-detection.patch
   artifact: patches/homebrew/darling/sdk-homebrew-detection.patch
@@ -1075,10 +1076,11 @@ stacks:
   expected_tree: 95f98a00af338a6235b3de876fe835d03fc66b62
   artifact_count: 1
   commit_count: 2
-  object_closure: frozen_bundle_clean_odb
+  object_closure: hosted_immutable_clean_odb
   linearity: verified
-  classification: READY
-  reason: exact one-commit closure and metadata verified from frozen bundle
+  classification: ALREADY_MIGRATED
+  reason: canonical immutable base/source tags verified in clean ODB
+  lock: locks/patch-stack/darling-sdk-homebrew-detection-v1.yml
 - profile: homebrew
   patch: xnu/vchroot-pathnull-guard.patch
   artifact: patches/homebrew/xnu/vchroot-pathnull-guard.patch
@@ -1156,10 +1158,11 @@ stacks:
   expected_tree: 613465aae6b72f019e800553bb778edf1cb1649d
   artifact_count: 1
   commit_count: 2
-  object_closure: frozen_bundle_clean_odb
+  object_closure: hosted_immutable_clean_odb
   linearity: verified
-  classification: READY
-  reason: exact one-commit closure and metadata verified from frozen bundle
+  classification: ALREADY_MIGRATED
+  reason: canonical immutable base/source tags verified in clean ODB
+  lock: locks/patch-stack/darling-build-drift-gate-v1.yml
 - profile: homebrew
   patch: darling/commpage-map-fixed.patch
   artifact: patches/homebrew/darling/commpage-map-fixed.patch
@@ -1174,10 +1177,11 @@ stacks:
   expected_tree: 3ae50d9ae105795f092c8164a1e50087fe34ff57
   artifact_count: 1
   commit_count: 1
-  object_closure: frozen_bundle_clean_odb
+  object_closure: hosted_immutable_clean_odb
   linearity: verified
-  classification: READY
-  reason: exact one-commit closure and metadata verified from frozen bundle
+  classification: ALREADY_MIGRATED
+  reason: canonical immutable base/source tags verified in clean ODB
+  lock: locks/patch-stack/darling-commpage-map-fixed-v1.yml
 - profile: homebrew
   patch: darling/mldr-stack-mmap-fallback.patch
   artifact: patches/homebrew/darling/mldr-stack-mmap-fallback.patch
@@ -1912,6 +1916,6 @@ stacks:
   reason: exact source/base/tree available only from trusted worktree after incomplete
     bundle closure
 summary:
-  READY: 13
+  READY: 9
   RECOVERABLE_LOCAL: 76
-  ALREADY_MIGRATED: 5
+  ALREADY_MIGRATED: 9
