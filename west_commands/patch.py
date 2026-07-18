@@ -23,6 +23,7 @@ from patch_git import (
     git_for_temporary_patch_application,
 )
 import test_manifest
+import patch_stack_preflight
 from test_runtime import ROOTLESS_BOOTSTRAP_RESOURCE, ROOTLESS_BOOTSTRAP_TARGET
 
 
@@ -145,7 +146,7 @@ class DarlingPatch(WestCommand):
     def do_add_parser(self, parser_adder):
         parser = parser_adder.add_parser(self.name, description=self.description)
         subparsers = parser.add_subparsers(dest="action", required=True)
-        for action in ("list", "verify", "export", "apply", "clean", "status", "check"):
+        for action in ("list", "verify", "export", "apply", "clean", "status", "check", "preflight"):
             command = subparsers.add_parser(action)
             command.add_argument("--profile", default="homebrew")
             if action == "verify":
@@ -179,6 +180,10 @@ class DarlingPatch(WestCommand):
                     action="store_true",
                     help="exit non-zero if any patch is MISSING or CONFLICT",
                 )
+            if action == "preflight":
+                command.add_argument("--repo", required=True)
+                command.add_argument("--lock", required=True)
+                command.add_argument("--json", action="store_true")
             if action == "check":
                 command.add_argument(
                     "--strict",
@@ -202,6 +207,26 @@ class DarlingPatch(WestCommand):
             self.die(f"unknown arguments: {' '.join(unknown)}")
 
         manifest_repo = Path(self.manifest.repo_abspath)
+        if args.action == "preflight":
+            try:
+                result = patch_stack_preflight.inspect(Path(args.repo), Path(args.lock))
+            except Exception as error:
+                result = patch_stack_preflight._result(
+                    {"repo": args.repo, "lock": args.lock, "schema_version": patch_stack_preflight.SCHEMA_VERSION},
+                    None,
+                    [patch_stack_preflight._check("internal", "FAIL", detail=str(error))],
+                    "ERROR",
+                    patch_stack_preflight.EXIT_TOOL,
+                )
+            if args.json:
+                self.inf(json.dumps(result, sort_keys=True, indent=2))
+            else:
+                self.inf(f"patch-stack preflight: {result['overall_verdict']}")
+                for check in result["checks"]:
+                    self.inf(f"{check['status']:7} {check['name']} {check['detail']}")
+            if result["exit_code"]:
+                self.die(f"preflight {result['overall_verdict']}", exit_code=result["exit_code"])
+            return
         profile_dir = manifest_repo / "patches" / args.profile
         profile_path = profile_dir / "patches.yml"
         if not profile_path.is_file():
