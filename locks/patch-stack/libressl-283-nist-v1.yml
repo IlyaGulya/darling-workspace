@@ -1,0 +1,17 @@
+schema_version: 2
+project:
+  name: darling-src-external-libressl-2-8-3
+  path: .
+upstream:
+  url: https://github.com/darlinghq/darling-libressl.git
+  base_commit: 2a56b36b77a00573c53ccd8e6932eb136172c950
+mirror:
+  url: https://github.com/darling-next/darling-libressl.git
+  base_ref: refs/tags/patch-stack/v1/bases/2a56b36b77a00573c53ccd8e6932eb136172c950
+  base_oid: 2a56b36b77a00573c53ccd8e6932eb136172c950
+  source_ref: refs/tags/patch-stack/v1/sources/7599e3e01d3b1a742aa0293123290f267b6eb720
+  source_oid: 7599e3e01d3b1a742aa0293123290f267b6eb720
+source_commit: 7599e3e01d3b1a742aa0293123290f267b6eb720
+ordered_commits:
+  - 7599e3e01d3b1a742aa0293123290f267b6eb720
+expected_tree: c8ba46eeec25cfc71d0642c253e4ebe18c2898ae
