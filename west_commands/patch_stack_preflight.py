@@ -17,7 +17,10 @@ import yaml
 
 SCHEMA_VERSION = 1
 EXIT_VALID, EXIT_INVALID, EXIT_MISSING, EXIT_DIRTY, EXIT_TOOL = range(0, 5)
-SCHEMA_PATH = Path(__file__).resolve().parents[1] / "schemas" / "patch-stack-lock-v1.schema.json"
+SCHEMA_PATHS = {
+    1: Path(__file__).resolve().parents[1] / "schemas" / "patch-stack-lock-v1.schema.json",
+    2: Path(__file__).resolve().parents[1] / "schemas" / "patch-stack-lock-v2.schema.json",
+}
 
 
 class GitToolError(RuntimeError):
@@ -52,37 +55,76 @@ def _required_git(repo: Path, *args: str) -> str:
     return stdout
 
 
+def _validate_schema(value: Any, schema: dict[str, Any], path: str = "<root>") -> None:
+    """Validate the Draft 2020-12 keywords used by checked-in lock schemas.
+
+    West extensions run in West's own Python environment, where an optional
+    ``jsonschema`` package is not guaranteed. Keeping this deliberately small
+    validator here still validates the versioned JSON Schema files themselves
+    rather than duplicating their shape in ad-hoc lock checks.
+    """
+    expected_type = schema.get("type")
+    types = {"object": dict, "array": list, "string": str}
+    if expected_type and (expected_type not in types or not isinstance(value, types[expected_type])):
+        raise ValueError(f"lock does not satisfy schema: {path}: expected {expected_type}")
+    if "const" in schema and value != schema["const"]:
+        raise ValueError(f"lock does not satisfy schema: {path}: must equal {schema['const']!r}")
+    if isinstance(value, str):
+        if len(value) < schema.get("minLength", 0):
+            raise ValueError(f"lock does not satisfy schema: {path}: string is too short")
+        if "pattern" in schema and not re.fullmatch(schema["pattern"], value):
+            raise ValueError(f"lock does not satisfy schema: {path}: does not match required pattern")
+    if isinstance(value, list):
+        if len(value) < schema.get("minItems", 0):
+            raise ValueError(f"lock does not satisfy schema: {path}: array has too few items")
+        if "items" in schema:
+            for index, item in enumerate(value):
+                _validate_schema(item, schema["items"], f"{path}[{index}]")
+    if isinstance(value, dict):
+        required = schema.get("required", [])
+        missing = [key for key in required if key not in value]
+        if missing:
+            raise ValueError(f"lock does not satisfy schema: {path}: missing {', '.join(missing)}")
+        properties = schema.get("properties", {})
+        if schema.get("additionalProperties") is False:
+            unexpected = sorted(set(value) - set(properties))
+            if unexpected:
+                raise ValueError(f"lock does not satisfy schema: {path}: unexpected {', '.join(unexpected)}")
+        for key, child_schema in properties.items():
+            if key in value:
+                _validate_schema(value[key], child_schema, f"{path}.{key}")
+
+
 def load_lock(path: Path) -> dict[str, Any]:
     value = yaml.safe_load(path.read_text())
-    # Validate the checked-in v1 JSON Schema without a runtime dependency.
-    # This mirrors its closed-object, required-field, const and SHA patterns.
-    json.loads(SCHEMA_PATH.read_text())
-    required = {"schema_version", "project", "upstream", "mirror", "source_commit", "ordered_commits", "expected_tree"}
-    if not isinstance(value, dict) or set(value) != required or value.get("schema_version") != SCHEMA_VERSION:
-        raise ValueError("lock does not satisfy patch-stack-lock-v1 schema")
+    if not isinstance(value, dict) or not isinstance(value.get("schema_version"), int):
+        raise ValueError("lock must declare an integer schema_version")
+    version = value["schema_version"]
+    schema_path = SCHEMA_PATHS.get(version)
+    if schema_path is None:
+        raise ValueError(f"unsupported patch-stack lock schema_version: {version}")
+    schema = json.loads(schema_path.read_text())
+    _validate_schema(value, schema)
     oid = re.compile(r"^[0-9a-f]{40}$")
     if not all(oid.fullmatch(value[key]) for key in ("source_commit", "expected_tree")) or not all(oid.fullmatch(item) for item in value["ordered_commits"]):
         raise ValueError("commit and tree OIDs must be full lowercase SHA-1")
-    if not oid.fullmatch(value["upstream"]["base_commit"]) or not oid.fullmatch(value["mirror"]["immutable_oid"]):
-        raise ValueError("commit and tree OIDs must be full lowercase SHA-1")
-    expected_ref = f"refs/patch-stack/v1/sources/{value['source_commit']}"
-    if value["mirror"]["immutable_ref"] != expected_ref:
-        raise ValueError(f"mirror.immutable_ref must equal {expected_ref}")
-    if value["mirror"]["immutable_oid"] != value["source_commit"]:
-        raise ValueError("mirror.immutable_oid must equal source_commit")
-    if not isinstance(value["project"], dict) or not isinstance(value["upstream"], dict) or not isinstance(value["mirror"], dict):
-        raise ValueError("project, upstream, and mirror must be mappings")
-    for key in ("name", "path"):
-        if not isinstance(value["project"].get(key), str) or not value["project"][key]:
-            raise ValueError(f"project.{key} must be a non-empty string")
-    for section, keys in (("upstream", ("url", "base_commit")), ("mirror", ("url", "immutable_ref", "immutable_oid"))):
-        for key in keys:
-            if not isinstance(value[section].get(key), str) or not value[section][key]:
-                raise ValueError(f"{section}.{key} must be a non-empty string")
-    if not all(isinstance(value[k], str) and value[k] for k in ("source_commit", "expected_tree")):
-        raise ValueError("source_commit and expected_tree must be non-empty strings")
-    if not isinstance(value["ordered_commits"], list) or not value["ordered_commits"] or not all(isinstance(x, str) and x for x in value["ordered_commits"]):
-        raise ValueError("ordered_commits must be a non-empty string list")
+    if not oid.fullmatch(value["upstream"]["base_commit"]):
+        raise ValueError("upstream.base_commit must be a full lowercase SHA-1")
+    mirror = value["mirror"]
+    if version == 1:
+        expected_ref = f"refs/patch-stack/v1/sources/{value['source_commit']}"
+        if mirror["immutable_ref"] != expected_ref:
+            raise ValueError(f"mirror.immutable_ref must equal {expected_ref}")
+        if mirror["immutable_oid"] != value["source_commit"]:
+            raise ValueError("mirror.immutable_oid must equal source_commit")
+    else:
+        base = value["upstream"]["base_commit"]
+        expected_base_ref = f"refs/tags/patch-stack/v1/bases/{base}"
+        expected_source_ref = f"refs/tags/patch-stack/v1/sources/{value['source_commit']}"
+        if mirror["base_ref"] != expected_base_ref or mirror["source_ref"] != expected_source_ref:
+            raise ValueError("v2 mirror tag refs must have exact content-addressed suffixes")
+        if mirror["base_oid"] != base or mirror["source_oid"] != value["source_commit"]:
+            raise ValueError("v2 mirror OIDs must equal upstream.base_commit and source_commit")
     return value
 
 
@@ -94,11 +136,29 @@ def inspect(repo: Path, lock_path: Path) -> dict[str, Any]:
         return _result(inputs, None, [_check("git_tool", "FAIL", detail=str(exc))], "ERROR", EXIT_TOOL)
 
 
+def _missing_ref(rc: int, stderr: str) -> bool:
+    diagnostic = stderr.lower()
+    return rc in (1, 128) and any(
+        marker in diagnostic
+        for marker in ("needed a single revision", "unknown revision", "not a valid object name", "ambiguous argument")
+    )
+
+
+def _tag_ref_check(repo: Path, name: str, ref: str, expected: str) -> dict[str, Any]:
+    rc, resolved, ref_err = _git(repo, "rev-parse", "--verify", f"{ref}^{{commit}}")
+    if rc == 0:
+        return _check(name, "PASS" if resolved == expected else "FAIL", resolved, expected)
+    if _missing_ref(rc, ref_err):
+        return _check(name, "INCOMPLETE", None, expected, "tag ref is locally unavailable")
+    raise GitToolError(f"git rev-parse {name} failed ({rc}): {ref_err}")
+
+
 def _inspect(repo: Path, lock_path: Path) -> dict[str, Any]:
     checks: list[dict[str, Any]] = []
     inputs = {"repo": str(repo), "lock": str(lock_path), "schema_version": SCHEMA_VERSION}
     try:
         lock = load_lock(lock_path)
+        inputs["schema_version"] = lock["schema_version"]
         checks.append(_check("lock_schema", "PASS"))
     except (OSError, json.JSONDecodeError) as exc:
         checks.append(_check("lock_schema", "FAIL", detail=str(exc)))
@@ -113,6 +173,15 @@ def _inspect(repo: Path, lock_path: Path) -> dict[str, Any]:
     except OSError as exc:
         checks.append(_check("repository", "FAIL", detail=str(exc)))
         return _result(inputs, lock, checks, "ERROR", EXIT_TOOL)
+    # v2 locks define project.path as the root supplied through --repo, rather
+    # than as a path relative to this process' CWD.  Keep v1's historical
+    # project-path interpretation unchanged.
+    if lock["schema_version"] == 2:
+        top_level = _required_git(repo, "rev-parse", "--show-toplevel")
+        repo_is_top_level = repo.resolve() == Path(top_level).resolve()
+        checks.append(_check("repository_top_level", "PASS" if repo_is_top_level else "FAIL", str(repo.resolve()), str(Path(top_level).resolve())))
+        if not repo_is_top_level:
+            return _result(inputs, lock, checks, "INVALID", EXIT_INVALID)
     head = _required_git(repo, "rev-parse", "HEAD")
     rc_ref, branch, ref_err = _git(repo, "symbolic-ref", "--short", "-q", "HEAD")
     if rc_ref not in (0, 1):
@@ -131,18 +200,21 @@ def _inspect(repo: Path, lock_path: Path) -> dict[str, Any]:
     partial = bool(config_value)
     checks.append(_check("shallow_clone", "FAIL" if shallow else "PASS", shallow))
     checks.append(_check("partial_clone", "FAIL" if partial else "PASS", partial))
-    expected_path = Path(lock["project"]["path"])
+    expected_path = repo if lock["schema_version"] == 2 and lock["project"]["path"] == "." else Path(lock["project"]["path"])
     checks.append(_check("project_path", "PASS" if repo.resolve() == expected_path.resolve() else "FAIL", str(repo.resolve()), str(expected_path.resolve())))
-    declared = [lock["upstream"]["base_commit"], lock["source_commit"], *lock["ordered_commits"], lock["mirror"]["immutable_oid"]]
+    if lock["schema_version"] == 1:
+        declared = [lock["upstream"]["base_commit"], lock["source_commit"], *lock["ordered_commits"], lock["mirror"]["immutable_oid"]]
+    else:
+        declared = [lock["upstream"]["base_commit"], lock["source_commit"], *lock["ordered_commits"], lock["mirror"]["base_oid"], lock["mirror"]["source_oid"]]
     missing = [oid for oid in dict.fromkeys(declared) if not _exists(repo, oid)]
     checks.append(_check("declared_objects", "PASS" if not missing else "UNKNOWN", missing, [], "no fetch attempted"))
     if missing:
         return _result(inputs, lock, checks, "INCOMPLETE", EXIT_MISSING)
-    ref = lock["mirror"]["immutable_ref"]
-    rc, resolved, ref_err = _git(repo, "rev-parse", "--verify", f"{ref}^{{commit}}")
-    if rc not in (0, 128):
-        raise GitToolError(f"git rev-parse immutable ref failed ({rc}): {ref_err}")
-    checks.append(_check("immutable_ref", "PASS" if rc == 0 and resolved == lock["mirror"]["immutable_oid"] else ("INCOMPLETE" if rc else "FAIL"), resolved if rc == 0 else None, lock["mirror"]["immutable_oid"]))
+    if lock["schema_version"] == 1:
+        checks.append(_tag_ref_check(repo, "immutable_ref", lock["mirror"]["immutable_ref"], lock["mirror"]["immutable_oid"]))
+    else:
+        checks.append(_tag_ref_check(repo, "immutable_base_tag", lock["mirror"]["base_ref"], lock["mirror"]["base_oid"]))
+        checks.append(_tag_ref_check(repo, "immutable_source_tag", lock["mirror"]["source_ref"], lock["mirror"]["source_oid"]))
     ordered = lock["ordered_commits"]
     linear = ordered[-1] == lock["source_commit"] and _required_git(repo, "rev-list", "--count", f"{lock['upstream']['base_commit']}..{lock['source_commit']}") == str(len(ordered))
     for parent, child in zip([lock["upstream"]["base_commit"], *ordered], ordered):
@@ -166,7 +238,7 @@ def _inspect(repo: Path, lock_path: Path) -> dict[str, Any]:
 
 
 def _result(inputs: dict[str, Any], lock: dict[str, Any] | None, checks: list[dict[str, Any]], verdict: str, code: int) -> dict[str, Any]:
-    return {"schema_version": SCHEMA_VERSION, "inputs": inputs, "lock": lock, "checks": checks, "overall_verdict": verdict, "next_safe_action": "proceed only when VALID; otherwise inspect evidence or repair explicitly outside this command", "exit_code": code}
+    return {"schema_version": lock["schema_version"] if lock else SCHEMA_VERSION, "inputs": inputs, "lock": lock, "checks": checks, "overall_verdict": verdict, "next_safe_action": "proceed only when VALID; otherwise inspect evidence or repair explicitly outside this command", "exit_code": code}
 
 
 def main(argv: list[str] | None = None) -> int:

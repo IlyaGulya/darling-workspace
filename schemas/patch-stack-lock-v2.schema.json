@@ -1,0 +1,33 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "project", "upstream", "mirror", "source_commit", "ordered_commits", "expected_tree"],
+  "properties": {
+    "schema_version": {"const": 2},
+    "project": {
+      "type": "object", "additionalProperties": false,
+      "required": ["name", "path"],
+      "properties": {"name": {"type": "string", "minLength": 1}, "path": {"const": "."}}
+    },
+    "upstream": {
+      "type": "object", "additionalProperties": false,
+      "required": ["url", "base_commit"],
+      "properties": {"url": {"type": "string", "minLength": 1}, "base_commit": {"type": "string", "pattern": "^[0-9a-f]{40}$"}}
+    },
+    "mirror": {
+      "type": "object", "additionalProperties": false,
+      "required": ["url", "base_ref", "base_oid", "source_ref", "source_oid"],
+      "properties": {
+        "url": {"type": "string", "minLength": 1},
+        "base_ref": {"type": "string", "pattern": "^refs/tags/patch-stack/v1/bases/[0-9a-f]{40}$"},
+        "base_oid": {"type": "string", "pattern": "^[0-9a-f]{40}$"},
+        "source_ref": {"type": "string", "pattern": "^refs/tags/patch-stack/v1/sources/[0-9a-f]{40}$"},
+        "source_oid": {"type": "string", "pattern": "^[0-9a-f]{40}$"}
+      }
+    },
+    "source_commit": {"type": "string", "pattern": "^[0-9a-f]{40}$"},
+    "ordered_commits": {"type": "array", "minItems": 1, "items": {"type": "string", "pattern": "^[0-9a-f]{40}$"}},
+    "expected_tree": {"type": "string", "pattern": "^[0-9a-f]{40}$"}
+  }
+}
