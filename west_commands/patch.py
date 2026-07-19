@@ -24,6 +24,7 @@ from patch_git import (
 )
 import test_manifest
 import patch_stack_preflight
+import patch_stack_materialize
 from test_runtime import ROOTLESS_BOOTSTRAP_RESOURCE, ROOTLESS_BOOTSTRAP_TARGET
 
 
@@ -146,7 +147,7 @@ class DarlingPatch(WestCommand):
     def do_add_parser(self, parser_adder):
         parser = parser_adder.add_parser(self.name, description=self.description)
         subparsers = parser.add_subparsers(dest="action", required=True)
-        for action in ("list", "verify", "export", "apply", "clean", "status", "check", "preflight"):
+        for action in ("list", "verify", "export", "apply", "clean", "status", "check", "preflight", "materialize-lock"):
             command = subparsers.add_parser(action)
             command.add_argument("--profile", default="homebrew")
             if action == "verify":
@@ -183,6 +184,12 @@ class DarlingPatch(WestCommand):
             if action == "preflight":
                 command.add_argument("--repo", required=True)
                 command.add_argument("--lock", required=True)
+                command.add_argument("--json", action="store_true")
+            if action == "materialize-lock":
+                command.add_argument("--repo", required=True)
+                command.add_argument("--lock", required=True)
+                command.add_argument("--result-ref")
+                command.add_argument("--evidence")
                 command.add_argument("--json", action="store_true")
             if action == "check":
                 command.add_argument(
@@ -226,6 +233,19 @@ class DarlingPatch(WestCommand):
                     self.inf(f"{check['status']:7} {check['name']} {check['detail']}")
             if result["exit_code"]:
                 self.die(f"preflight {result['overall_verdict']}", exit_code=result["exit_code"])
+            return
+        if args.action == "materialize-lock":
+            try:
+                result = patch_stack_materialize.materialize(
+                    Path(args.repo), Path(args.lock), args.result_ref,
+                    Path(args.evidence) if args.evidence else None,
+                )
+            except Exception as error:
+                self.die(f"materialize-lock failed: {error}", exit_code=1)
+            if args.json:
+                self.inf(json.dumps(result, sort_keys=True, indent=2))
+            else:
+                self.inf(f"materialize-lock: {result['result_ref']} {result['resulting_tree']}")
             return
         profile_dir = manifest_repo / "patches" / args.profile
         profile_path = profile_dir / "patches.yml"
