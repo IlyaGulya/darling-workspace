@@ -1682,10 +1682,11 @@ stacks:
   expected_tree: beab23c25745954b0eb810a0c3e0b4a20a91dd6f
   artifact_count: 1
   commit_count: 3
-  object_closure: frozen_bundle_clean_odb
+  object_closure: hosted_immutable_clean_odb
   linearity: verified
-  classification: READY
-  reason: exact frozen-bundle closure and metadata verified
+  classification: ALREADY_MIGRATED
+  reason: branch-series source tags verified; effective materialization is separately audited
+  lock: locks/patch-stack/darling-rootless-prefix-initialization-v1.yml
 - profile: homebrew
   patch: darling/rootless-shellspawn-delay.patch
   artifact: patches/homebrew/darling/rootless-shellspawn-delay.patch
@@ -1918,6 +1919,6 @@ stacks:
   reason: exact source/base/tree available only from trusted worktree after incomplete
     bundle closure
 summary:
-  READY: 7
+  READY: 6
   RECOVERABLE_LOCAL: 76
-  ALREADY_MIGRATED: 11
+  ALREADY_MIGRATED: 12
