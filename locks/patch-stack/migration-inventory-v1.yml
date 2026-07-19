@@ -79,11 +79,11 @@ stacks:
   expected_tree: b479b8fd55afa5be6ca5867f0ae8c301f3a9b137
   artifact_count: 1
   commit_count: 1
-  object_closure: trusted_worktree_only
+  object_closure: hosted_immutable_clean_odb
   linearity: verified
-  classification: RECOVERABLE_LOCAL
-  reason: exact source/base/tree available only from trusted worktree after incomplete
-    bundle closure
+  classification: ALREADY_MIGRATED
+  reason: exact objects recovered from trusted XNU worktree into an isolated clean ODB
+  lock: locks/patch-stack/darling-xnu-ring-committed-unknown-guest-v1.yml
 - profile: arch
   patch: xnu/rpc-interruptible-disconnect-status.patch
   artifact: patches/arch/xnu/rpc-interruptible-disconnect-status.patch
@@ -98,11 +98,11 @@ stacks:
   expected_tree: 4131382a0e38188ad7c64e4e26c7ba57401af322
   artifact_count: 1
   commit_count: 1
-  object_closure: trusted_worktree_only
+  object_closure: hosted_immutable_clean_odb
   linearity: verified
-  classification: RECOVERABLE_LOCAL
-  reason: exact source/base/tree available only from trusted worktree after incomplete
-    bundle closure
+  classification: ALREADY_MIGRATED
+  reason: exact objects recovered from trusted XNU worktree into an isolated clean ODB
+  lock: locks/patch-stack/darling-xnu-rpc-interruptible-disconnect-status-v1.yml
 - profile: arch
   patch: xnu/rpc-disconnect-status-contract-test.patch
   artifact: patches/arch/xnu/rpc-disconnect-status-contract-test.patch
@@ -117,11 +117,11 @@ stacks:
   expected_tree: 5179fad45bea6eba22d78b251c71defed9faa0e3
   artifact_count: 1
   commit_count: 1
-  object_closure: trusted_worktree_only
+  object_closure: hosted_immutable_clean_odb
   linearity: verified
-  classification: RECOVERABLE_LOCAL
-  reason: exact source/base/tree available only from trusted worktree after incomplete
-    bundle closure
+  classification: ALREADY_MIGRATED
+  reason: exact objects recovered from trusted XNU worktree into an isolated clean ODB
+  lock: locks/patch-stack/darling-xnu-rpc-disconnect-status-contract-test-v1.yml
 - profile: arch
   patch: darlingserver/a0-arch-redesign.patch
   artifact: patches/arch/darlingserver/a0-arch-redesign.patch
@@ -539,11 +539,11 @@ stacks:
   expected_tree: 1958a7f3990399f2cfd550dbe7b2a8fc7a7b04da
   artifact_count: 1
   commit_count: 1
-  object_closure: trusted_worktree_only
+  object_closure: hosted_immutable_clean_odb
   linearity: verified
-  classification: RECOVERABLE_LOCAL
-  reason: exact source/base/tree available only from trusted worktree after incomplete
-    bundle closure
+  classification: ALREADY_MIGRATED
+  reason: exact objects recovered from trusted XNU worktree into an isolated clean ODB
+  lock: locks/patch-stack/darling-xnu-psynch-cvsignal-args-v1.yml
 - profile: homebrew
   patch: xnu/fstatfs-missing-proc-mounts.patch
   artifact: patches/homebrew/xnu/fstatfs-missing-proc-mounts.patch
@@ -558,11 +558,11 @@ stacks:
   expected_tree: 29130d56ce739039d6eeb0a33fa550d208d9ee3e
   artifact_count: 1
   commit_count: 1
-  object_closure: trusted_worktree_only
+  object_closure: hosted_immutable_clean_odb
   linearity: verified
-  classification: RECOVERABLE_LOCAL
-  reason: exact source/base/tree available only from trusted worktree after incomplete
-    bundle closure
+  classification: ALREADY_MIGRATED
+  reason: exact objects recovered from trusted XNU worktree into an isolated clean ODB
+  lock: locks/patch-stack/darling-xnu-fstatfs-missing-proc-mounts-v1.yml
 - profile: homebrew
   patch: xnu/select-pselect-fdset.patch
   artifact: patches/homebrew/xnu/select-pselect-fdset.patch
@@ -577,11 +577,11 @@ stacks:
   expected_tree: 49d0f8b2af7e84fd6d877adf193928ad5527f5ee
   artifact_count: 1
   commit_count: 1
-  object_closure: trusted_worktree_only
+  object_closure: hosted_immutable_clean_odb
   linearity: verified
-  classification: RECOVERABLE_LOCAL
-  reason: exact source/base/tree available only from trusted worktree after incomplete
-    bundle closure
+  classification: ALREADY_MIGRATED
+  reason: exact objects recovered from trusted XNU worktree into an isolated clean ODB
+  lock: locks/patch-stack/darling-xnu-select-pselect-fdset-v1.yml
 - profile: homebrew
   patch: xnu/darwin-priority.patch
   artifact: patches/homebrew/xnu/darwin-priority.patch
@@ -596,11 +596,11 @@ stacks:
   expected_tree: 7415af40c42f612105a729ea87faef5ed9116202
   artifact_count: 1
   commit_count: 1
-  object_closure: trusted_worktree_only
+  object_closure: hosted_immutable_clean_odb
   linearity: verified
-  classification: RECOVERABLE_LOCAL
-  reason: exact source/base/tree available only from trusted worktree after incomplete
-    bundle closure
+  classification: ALREADY_MIGRATED
+  reason: exact objects recovered from trusted XNU worktree into an isolated clean ODB
+  lock: locks/patch-stack/darling-xnu-darwin-priority-v1.yml
 - profile: homebrew
   patch: xnu/socket-siocgifconf.patch
   artifact: patches/homebrew/xnu/socket-siocgifconf.patch
@@ -615,11 +615,11 @@ stacks:
   expected_tree: c7dc4b23ae4d443548eb7e07339f7f6f1e7d0a2d
   artifact_count: 1
   commit_count: 1
-  object_closure: trusted_worktree_only
+  object_closure: hosted_immutable_clean_odb
   linearity: verified
-  classification: RECOVERABLE_LOCAL
-  reason: exact source/base/tree available only from trusted worktree after incomplete
-    bundle closure
+  classification: ALREADY_MIGRATED
+  reason: exact objects recovered from trusted XNU worktree into an isolated clean ODB
+  lock: locks/patch-stack/darling-xnu-socket-siocgifconf-v1.yml
 - profile: homebrew
   patch: xnu/fork-postfork-child.patch
   artifact: patches/homebrew/xnu/fork-postfork-child.patch
@@ -634,11 +634,11 @@ stacks:
   expected_tree: 73f057a7d292638cfe2e00dba0a21c731229d014
   artifact_count: 1
   commit_count: 1
-  object_closure: trusted_worktree_only
+  object_closure: hosted_immutable_clean_odb
   linearity: verified
-  classification: RECOVERABLE_LOCAL
-  reason: exact source/base/tree available only from trusted worktree after incomplete
-    bundle closure
+  classification: ALREADY_MIGRATED
+  reason: exact objects recovered from trusted XNU worktree into an isolated clean ODB
+  lock: locks/patch-stack/darling-xnu-fork-postfork-child-v1.yml
 - profile: homebrew
   patch: xnu/fork-wait-timeout-parent.patch
   artifact: patches/homebrew/xnu/fork-wait-timeout-parent.patch
@@ -653,11 +653,11 @@ stacks:
   expected_tree: ba9f02e552cecdc7f90085de6a66da9c693d4417
   artifact_count: 1
   commit_count: 1
-  object_closure: trusted_worktree_only
+  object_closure: hosted_immutable_clean_odb
   linearity: verified
-  classification: RECOVERABLE_LOCAL
-  reason: exact source/base/tree available only from trusted worktree after incomplete
-    bundle closure
+  classification: ALREADY_MIGRATED
+  reason: exact objects recovered from trusted XNU worktree into an isolated clean ODB
+  lock: locks/patch-stack/darling-xnu-fork-wait-timeout-parent-v1.yml
 - profile: homebrew
   patch: libplatform/bzero-return-register.patch
   artifact: patches/homebrew/libplatform/bzero-return-register.patch
@@ -884,11 +884,11 @@ stacks:
   expected_tree: 33c6f9e43c196e91d871d737ce9fe3b07ac0cfdd
   artifact_count: 1
   commit_count: 1
-  object_closure: trusted_worktree_only
+  object_closure: hosted_immutable_clean_odb
   linearity: verified
-  classification: RECOVERABLE_LOCAL
-  reason: exact source/base/tree available only from trusted worktree after incomplete
-    bundle closure
+  classification: ALREADY_MIGRATED
+  reason: exact objects recovered from trusted XNU worktree into an isolated clean ODB
+  lock: locks/patch-stack/darling-xnu-getattrlist-name-objtype-v1.yml
 - profile: homebrew
   patch: xnu/getattrlistbulk.patch
   artifact: patches/homebrew/xnu/getattrlistbulk.patch
@@ -903,11 +903,11 @@ stacks:
   expected_tree: 0cc67c6dde9f5949002afe827564179632d1afd8
   artifact_count: 1
   commit_count: 1
-  object_closure: trusted_worktree_only
+  object_closure: hosted_immutable_clean_odb
   linearity: verified
-  classification: RECOVERABLE_LOCAL
-  reason: exact source/base/tree available only from trusted worktree after incomplete
-    bundle closure
+  classification: ALREADY_MIGRATED
+  reason: exact objects recovered from trusted XNU worktree into an isolated clean ODB
+  lock: locks/patch-stack/darling-xnu-getattrlistbulk-v1.yml
 - profile: homebrew
   patch: xnu/getattrlist-shared-packer.patch
   artifact: patches/homebrew/xnu/getattrlist-shared-packer.patch
@@ -922,11 +922,11 @@ stacks:
   expected_tree: f3fb5b48f187956a36d9f6cf3d7cb312fd5b1f5b
   artifact_count: 1
   commit_count: 1
-  object_closure: trusted_worktree_only
+  object_closure: hosted_immutable_clean_odb
   linearity: verified
-  classification: RECOVERABLE_LOCAL
-  reason: exact source/base/tree available only from trusted worktree after incomplete
-    bundle closure
+  classification: ALREADY_MIGRATED
+  reason: exact objects recovered from trusted XNU worktree into an isolated clean ODB
+  lock: locks/patch-stack/darling-xnu-getattrlist-shared-packer-v1.yml
 - profile: homebrew
   patch: xnu/psynch-negative-errno.patch
   artifact: patches/homebrew/xnu/psynch-negative-errno.patch
@@ -942,11 +942,11 @@ stacks:
   expected_tree: 7386eaa0452205adf7170a0c854bd5deae055c0f
   artifact_count: 1
   commit_count: 2
-  object_closure: trusted_worktree_only
+  object_closure: hosted_immutable_clean_odb
   linearity: verified
-  classification: RECOVERABLE_LOCAL
-  reason: exact source/base/tree available only from trusted worktree after incomplete
-    bundle closure
+  classification: ALREADY_MIGRATED
+  reason: exact objects recovered from trusted XNU worktree into an isolated clean ODB
+  lock: locks/patch-stack/darling-xnu-psynch-negative-errno-v1.yml
 - profile: homebrew
   patch: xnu/sigexc-sa-restart.patch
   artifact: patches/homebrew/xnu/sigexc-sa-restart.patch
@@ -961,11 +961,11 @@ stacks:
   expected_tree: 7bb86e94e22eda4a64ec54a98a40c602c0f7ebb3
   artifact_count: 1
   commit_count: 1
-  object_closure: trusted_worktree_only
+  object_closure: hosted_immutable_clean_odb
   linearity: verified
-  classification: RECOVERABLE_LOCAL
-  reason: exact source/base/tree available only from trusted worktree after incomplete
-    bundle closure
+  classification: ALREADY_MIGRATED
+  reason: exact objects recovered from trusted XNU worktree into an isolated clean ODB
+  lock: locks/patch-stack/darling-xnu-sigexc-sa-restart-v1.yml
 - profile: homebrew
   patch: xnu/sigexc-debug-flood.patch
   artifact: patches/homebrew/xnu/sigexc-debug-flood.patch
@@ -980,11 +980,11 @@ stacks:
   expected_tree: 0b6feb122f55a5a43720e72b51bc09f96146815e
   artifact_count: 1
   commit_count: 1
-  object_closure: trusted_worktree_only
+  object_closure: hosted_immutable_clean_odb
   linearity: verified
-  classification: RECOVERABLE_LOCAL
-  reason: exact source/base/tree available only from trusted worktree after incomplete
-    bundle closure
+  classification: ALREADY_MIGRATED
+  reason: exact objects recovered from trusted XNU worktree into an isolated clean ODB
+  lock: locks/patch-stack/darling-xnu-sigexc-debug-flood-v1.yml
 - profile: homebrew
   patch: xnu/sigexc-default-resend-self.patch
   artifact: patches/homebrew/xnu/sigexc-default-resend-self.patch
@@ -999,11 +999,11 @@ stacks:
   expected_tree: 9e63a4c0b9fe2875201728e175b172c18d8f1242
   artifact_count: 1
   commit_count: 1
-  object_closure: trusted_worktree_only
+  object_closure: hosted_immutable_clean_odb
   linearity: verified
-  classification: RECOVERABLE_LOCAL
-  reason: exact source/base/tree available only from trusted worktree after incomplete
-    bundle closure
+  classification: ALREADY_MIGRATED
+  reason: exact objects recovered from trusted XNU worktree into an isolated clean ODB
+  lock: locks/patch-stack/darling-xnu-sigexc-default-resend-self-v1.yml
 - profile: homebrew
   patch: xnu/ulock-wait-eintr-retry.patch
   artifact: patches/homebrew/xnu/ulock-wait-eintr-retry.patch
@@ -1018,11 +1018,11 @@ stacks:
   expected_tree: b8bc594a31e8cf0e6031351fff5c51dc2168edf1
   artifact_count: 1
   commit_count: 1
-  object_closure: trusted_worktree_only
+  object_closure: hosted_immutable_clean_odb
   linearity: verified
-  classification: RECOVERABLE_LOCAL
-  reason: exact source/base/tree available only from trusted worktree after incomplete
-    bundle closure
+  classification: ALREADY_MIGRATED
+  reason: exact objects recovered from trusted XNU worktree into an isolated clean ODB
+  lock: locks/patch-stack/darling-xnu-ulock-wait-eintr-retry-v1.yml
 - profile: homebrew
   patch: darling/mldr-glibc-fork-reset.patch
   artifact: patches/homebrew/darling/mldr-glibc-fork-reset.patch
@@ -1095,11 +1095,11 @@ stacks:
   expected_tree: 1898194fabae53390409ec8775291ec72613a4e6
   artifact_count: 1
   commit_count: 1
-  object_closure: trusted_worktree_only
+  object_closure: hosted_immutable_clean_odb
   linearity: verified
-  classification: RECOVERABLE_LOCAL
-  reason: exact source/base/tree available only from trusted worktree after incomplete
-    bundle closure
+  classification: ALREADY_MIGRATED
+  reason: exact objects recovered from trusted XNU worktree into an isolated clean ODB
+  lock: locks/patch-stack/darling-xnu-vchroot-pathnull-guard-v1.yml
 - profile: homebrew
   patch: xnu/eunion-core.patch
   artifact: patches/homebrew/xnu/eunion-core.patch
@@ -1114,11 +1114,11 @@ stacks:
   expected_tree: cdd32678be83747c4ecec12e37bb2d2389eed2e4
   artifact_count: 1
   commit_count: 1
-  object_closure: trusted_worktree_only
+  object_closure: hosted_immutable_clean_odb
   linearity: verified
-  classification: RECOVERABLE_LOCAL
-  reason: exact source/base/tree available only from trusted worktree after incomplete
-    bundle closure
+  classification: ALREADY_MIGRATED
+  reason: exact objects recovered from trusted XNU worktree into an isolated clean ODB
+  lock: locks/patch-stack/darling-xnu-eunion-core-v1.yml
 - profile: homebrew
   patch: xnu/eunion-hardening.patch
   artifact: patches/homebrew/xnu/eunion-hardening.patch
@@ -1138,11 +1138,11 @@ stacks:
   expected_tree: 135291022a32950236a2bce17943102f44fb8e57
   artifact_count: 1
   commit_count: 6
-  object_closure: trusted_worktree_only
+  object_closure: hosted_immutable_clean_odb
   linearity: verified
-  classification: RECOVERABLE_LOCAL
-  reason: exact source/base/tree available only from trusted worktree after incomplete
-    bundle closure
+  classification: ALREADY_MIGRATED
+  reason: exact objects recovered from trusted XNU worktree into an isolated clean ODB
+  lock: locks/patch-stack/darling-xnu-eunion-hardening-v1.yml
 - profile: homebrew
   patch: darling/build-drift-gate.patch
   artifact: patches/homebrew/darling/build-drift-gate.patch
@@ -1216,11 +1216,11 @@ stacks:
   expected_tree: 05b23c98f9455b1b94c788c6b030d5ce286064c5
   artifact_count: 1
   commit_count: 1
-  object_closure: trusted_worktree_only
+  object_closure: hosted_immutable_clean_odb
   linearity: verified
-  classification: RECOVERABLE_LOCAL
-  reason: exact source/base/tree available only from trusted worktree after incomplete
-    bundle closure
+  classification: ALREADY_MIGRATED
+  reason: exact objects recovered from trusted XNU worktree into an isolated clean ODB
+  lock: locks/patch-stack/darling-xnu-chown-disabled-null-guard-v1.yml
 - profile: homebrew
   patch: xnu/fd-guard-ebadf.patch
   artifact: patches/homebrew/xnu/fd-guard-ebadf.patch
@@ -1236,11 +1236,11 @@ stacks:
   expected_tree: 777ee7789091da584e8cae655be62648f0b31f6e
   artifact_count: 1
   commit_count: 2
-  object_closure: trusted_worktree_only
+  object_closure: hosted_immutable_clean_odb
   linearity: verified
-  classification: RECOVERABLE_LOCAL
-  reason: exact source/base/tree available only from trusted worktree after incomplete
-    bundle closure
+  classification: ALREADY_MIGRATED
+  reason: exact objects recovered from trusted XNU worktree into an isolated clean ODB
+  lock: locks/patch-stack/darling-xnu-fd-guard-ebadf-v1.yml
 - profile: homebrew
   patch: xnu/abort-with-payload-no-group-broadcast.patch
   artifact: patches/homebrew/xnu/abort-with-payload-no-group-broadcast.patch
@@ -1255,11 +1255,11 @@ stacks:
   expected_tree: feb840752f2c58175349a6cfb471029962115b5e
   artifact_count: 1
   commit_count: 1
-  object_closure: trusted_worktree_only
+  object_closure: hosted_immutable_clean_odb
   linearity: verified
-  classification: RECOVERABLE_LOCAL
-  reason: exact source/base/tree available only from trusted worktree after incomplete
-    bundle closure
+  classification: ALREADY_MIGRATED
+  reason: exact objects recovered from trusted XNU worktree into an isolated clean ODB
+  lock: locks/patch-stack/darling-xnu-abort-with-payload-no-group-broadcast-v1.yml
 - profile: homebrew
   patch: darlingserver/progress-metrics.patch
   artifact: patches/homebrew/darlingserver/progress-metrics.patch
@@ -1426,11 +1426,11 @@ stacks:
   expected_tree: af763b7424d19dda977ae761ca4a32fb8ad6eb4e
   artifact_count: 1
   commit_count: 1
-  object_closure: trusted_worktree_only
+  object_closure: hosted_immutable_clean_odb
   linearity: verified
-  classification: RECOVERABLE_LOCAL
-  reason: exact source/base/tree available only from trusted worktree after incomplete
-    bundle closure
+  classification: ALREADY_MIGRATED
+  reason: exact objects recovered from trusted XNU worktree into an isolated clean ODB
+  lock: locks/patch-stack/darling-xnu-cache-task-self-trap-v1.yml
 - profile: homebrew
   patch: xnu/guest-per-callnum-sleep-account.patch
   artifact: patches/homebrew/xnu/guest-per-callnum-sleep-account.patch
@@ -1445,11 +1445,11 @@ stacks:
   expected_tree: d89d758c29b700ac0838e0d2eb266bd7ea37a254
   artifact_count: 1
   commit_count: 1
-  object_closure: trusted_worktree_only
+  object_closure: hosted_immutable_clean_odb
   linearity: verified
-  classification: RECOVERABLE_LOCAL
-  reason: exact source/base/tree available only from trusted worktree after incomplete
-    bundle closure
+  classification: ALREADY_MIGRATED
+  reason: exact objects recovered from trusted XNU worktree into an isolated clean ODB
+  lock: locks/patch-stack/darling-xnu-guest-per-callnum-sleep-account-v1.yml
 - profile: homebrew
   patch: xnu/gate-hotpath-kprintf-debug.patch
   artifact: patches/homebrew/xnu/gate-hotpath-kprintf-debug.patch
@@ -1464,11 +1464,11 @@ stacks:
   expected_tree: e1b250ad04623224b132d1ddca84a7bb3f3840be
   artifact_count: 1
   commit_count: 1
-  object_closure: trusted_worktree_only
+  object_closure: hosted_immutable_clean_odb
   linearity: verified
-  classification: RECOVERABLE_LOCAL
-  reason: exact source/base/tree available only from trusted worktree after incomplete
-    bundle closure
+  classification: ALREADY_MIGRATED
+  reason: exact objects recovered from trusted XNU worktree into an isolated clean ODB
+  lock: locks/patch-stack/darling-xnu-gate-hotpath-kprintf-debug-v1.yml
 - profile: homebrew
   patch: xnu/generalize-recv-spin-guest.patch
   artifact: patches/homebrew/xnu/generalize-recv-spin-guest.patch
@@ -1483,11 +1483,11 @@ stacks:
   expected_tree: ea159c296033103130454cb3faa6bdc8e0d0bac1
   artifact_count: 1
   commit_count: 1
-  object_closure: trusted_worktree_only
+  object_closure: hosted_immutable_clean_odb
   linearity: verified
-  classification: RECOVERABLE_LOCAL
-  reason: exact source/base/tree available only from trusted worktree after incomplete
-    bundle closure
+  classification: ALREADY_MIGRATED
+  reason: exact objects recovered from trusted XNU worktree into an isolated clean ODB
+  lock: locks/patch-stack/darling-xnu-generalize-recv-spin-guest-v1.yml
 - profile: homebrew
   patch: darlingserver/checkin-retask-current-thread-uaf.patch
   artifact: patches/homebrew/darlingserver/checkin-retask-current-thread-uaf.patch
@@ -1900,11 +1900,11 @@ stacks:
   expected_tree: a8711917965222c61af251b1467e7598f4d1b24f
   artifact_count: 1
   commit_count: 1
-  object_closure: trusted_worktree_only
+  object_closure: hosted_immutable_clean_odb
   linearity: verified
-  classification: RECOVERABLE_LOCAL
-  reason: exact source/base/tree available only from trusted worktree after incomplete
-    bundle closure
+  classification: ALREADY_MIGRATED
+  reason: exact objects recovered from trusted XNU worktree into an isolated clean ODB
+  lock: locks/patch-stack/darling-xnu-j7e7-lane-wakefd-sentinel-v1.yml
 - profile: perf
   patch: darlingserver/j7e7-postfork-reset-gate.patch
   artifact: patches/perf/darlingserver/j7e7-postfork-reset-gate.patch
@@ -1926,5 +1926,5 @@ stacks:
     bundle closure
 summary:
   READY: 0
-  RECOVERABLE_LOCAL: 76
-  ALREADY_MIGRATED: 18
+  RECOVERABLE_LOCAL: 47
+  ALREADY_MIGRATED: 47
