@@ -12,9 +12,10 @@ set of `From <OID>` headers. The inventory contract rejects duplicate YAML
 keys and verifies exact metadata/artifact correspondence and available-object
 linearity.
 
-This is a post-migration snapshot: 7 `READY`, 76 `RECOVERABLE_LOCAL`, and 11 `ALREADY_MIGRATED`
+This is a post-migration snapshot: 6 `READY`, 76 `RECOVERABLE_LOCAL`, and 12 `ALREADY_MIGRATED`
 (the XNU and LibreSSL pilots, the three first-batch series, and batch 2's four
-Darling series, plus Batch 3's two dependent rootless series).
+Darling series, Batch 3's two dependent rootless series, and Batch 4's
+rootless-prefix-initialization branch series).
 
 Batch 3 proves dependent publication: immutable
 `bases/492a00f4929e5aba60607d9fed3e868bc4a3aeba` and
@@ -23,6 +24,12 @@ two-commit series, while that source is also the second series' immutable base
 and leads to `sources/e257950104da34ec0646f2faeb5a23e1e80c05d4`. A fresh
 combined object database proves the four ordered commits and final tree
 `b1eed46329d3d6e1065c58c2d9456d71ea453bbb`.
+
+The rootless-prefix-initialization series is a branch from `38d47a…`, not a
+continuation of bootstrapper tip `e257950…`: its canonical source tree is
+`beab23c25745954b0eb810a0c3e0b4a20a91dd6f`. Applying its mbox through the
+normal Git-am materialization mechanism on effective tip `e257950…` instead
+produces reproducible materialized tree `357e507ffb908cb37ac04d38479ebf3fa12f9b28`.
 No source was approximated. The recoverable entries have exact metadata in a
 trusted worktree but their frozen bundle lacks a standalone clean-object
 closure; they are not publication candidates until recovered independently.
