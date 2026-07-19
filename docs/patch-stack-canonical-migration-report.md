@@ -12,9 +12,17 @@ set of `From <OID>` headers. The inventory contract rejects duplicate YAML
 keys and verifies exact metadata/artifact correspondence and available-object
 linearity.
 
-This is a post-migration snapshot: 9 `READY`, 76 `RECOVERABLE_LOCAL`, and 9 `ALREADY_MIGRATED`
+This is a post-migration snapshot: 7 `READY`, 76 `RECOVERABLE_LOCAL`, and 11 `ALREADY_MIGRATED`
 (the XNU and LibreSSL pilots, the three first-batch series, and batch 2's four
-Darling series).
+Darling series, plus Batch 3's two dependent rootless series).
+
+Batch 3 proves dependent publication: immutable
+`bases/492a00f4929e5aba60607d9fed3e868bc4a3aeba` and
+`sources/72006d6a61504c5123b463f8369a8e09bc4b23cf` materialize the first
+two-commit series, while that source is also the second series' immutable base
+and leads to `sources/e257950104da34ec0646f2faeb5a23e1e80c05d4`. A fresh
+combined object database proves the four ordered commits and final tree
+`b1eed46329d3d6e1065c58c2d9456d71ea453bbb`.
 No source was approximated. The recoverable entries have exact metadata in a
 trusted worktree but their frozen bundle lacks a standalone clean-object
 closure; they are not publication candidates until recovered independently.
