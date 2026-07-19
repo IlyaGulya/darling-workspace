@@ -12,14 +12,34 @@ set of `From <OID>` headers. The inventory contract rejects duplicate YAML
 keys and verifies exact metadata/artifact correspondence and available-object
 linearity.
 
-This is a post-migration snapshot: 0 `READY`, 47 `RECOVERABLE_LOCAL`, and 47 `ALREADY_MIGRATED`
+This is a post-migration snapshot: 0 `READY`, 7 `RECOVERABLE_LOCAL`, and 87 `ALREADY_MIGRATED`
 (the XNU and LibreSSL pilots, the three first-batch series, and batch 2's four
 Darling series, Batch 3's two dependent rootless series, and Batch 4's
 rootless-prefix-initialization branch series, plus Batch 5's remaining six
-Darling series, plus the recovered XNU series). The `READY` backlog is
-exhausted. Recovery remains incomplete: 47 independently verified
-`RECOVERABLE_LOCAL` series in other repositories still need a standalone
+Darling series, plus the recovered XNU series and 40 recovered Darlingserver
+series). The `READY` backlog is exhausted. Recovery remains incomplete: seven
+remaining `RECOVERABLE_LOCAL` series in other repositories still need a standalone
 closure, and must not be published merely because XNU recovery completed.
+
+Darlingserver repository-scoped recovery moved all 40 of its formerly
+`RECOVERABLE_LOCAL` series to `ALREADY_MIGRATED`. The exact mbox chains include
+the 40-commit `a0-arch-redesign` series without collapse, 11 other `arch`
+series, 25 `homebrew` series, and three `perf` series. Exact base/source,
+ordered-parent topology, trees, and author/committer metadata were audited
+read-only from the active Darlingserver object database, then copied without
+replacement commits or alternates into an isolated bare repository. Every
+series passed a separate clean-ODB preflight, fsck and deterministic two-run
+`format-patch` check first against the isolated closure and then against the
+hosted-only canonical tags.
+
+Darlingserver ruleset `19165720` is active, has no bypass actors, covers
+`refs/tags/patch-stack/v1/**/*`, and blocks both update and deletion. Its
+sacrificial probe rejected both operations with `GH013`; 80 create-only
+base/source refs (40 unique bases and 40 unique sources) were then published
+and a repeat create-only push was idempotent. Forty schema-v2 YAML locks now
+record the individual series. The remaining seven recovery candidates belong
+to other repositories; neither this recovery nor its ruleset changes their
+classification.
 
 Batch 3 proves dependent publication: immutable
 `bases/492a00f4929e5aba60607d9fed3e868bc4a3aeba` and
