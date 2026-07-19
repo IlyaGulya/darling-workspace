@@ -12,10 +12,13 @@ set of `From <OID>` headers. The inventory contract rejects duplicate YAML
 keys and verifies exact metadata/artifact correspondence and available-object
 linearity.
 
-This is a post-migration snapshot: 6 `READY`, 76 `RECOVERABLE_LOCAL`, and 12 `ALREADY_MIGRATED`
+This is a post-migration snapshot: 0 `READY`, 76 `RECOVERABLE_LOCAL`, and 18 `ALREADY_MIGRATED`
 (the XNU and LibreSSL pilots, the three first-batch series, and batch 2's four
 Darling series, Batch 3's two dependent rootless series, and Batch 4's
-rootless-prefix-initialization branch series).
+rootless-prefix-initialization branch series, plus Batch 5's remaining six
+Darling series). The `READY` backlog is exhausted; the next phase is recovery
+of independently verified `RECOVERABLE_LOCAL` objects, not publication of
+objects without a standalone closure.
 
 Batch 3 proves dependent publication: immutable
 `bases/492a00f4929e5aba60607d9fed3e868bc4a3aeba` and
@@ -33,6 +36,21 @@ produces reproducible materialized tree `357e507ffb908cb37ac04d38479ebf3fa12f9b2
 No source was approximated. The recoverable entries have exact metadata in a
 trusted worktree but their frozen bundle lacks a standalone clean-object
 closure; they are not publication candidates until recovered independently.
+
+Batch 5 publishes the remaining six verified Darling series: two-commit
+`mldr-stack-mmap-fallback` (`f018846…` to `1618c856…`), one-commit
+`mldr-thread-create-futex-wait` (`73a11f…` to `dd6b42…`), one-commit
+`mldr-recv-adaptive-spin` (`67f40c…` to `3fd7a8…`), one-commit
+`rootless-shellspawn-delay` (`88a1b9…` to `f8aa74…`), two-commit
+`rootless-shellspawn-lifecycle` (`f8aa74…` to `0d817c…`), and one-commit
+`mldr-compact-fd-band` (`50b2e0…` to `93ba45…`). Each has distinct immutable
+base/source tags and a v2 lock, then passed foreign-CWD preflight, fsck, and
+two byte-identical `format-patch` exports in a fresh object database.
+
+The shellspawn dependency is deliberately limited to
+`88a1b9… → f8aa74… → ce8062… → 0d817c…`: `f8aa74…` is both delay's source and
+lifecycle's base. `72006d…` is a different child of `88a1b9…`, outside this
+chain; it must not be described as a Batch 3 continuation.
 
 The first batch contains three now-`ALREADY_MIGRATED` series, all in
 `darling-next/darling`: `ci-host-regression-tests` (three commits from
