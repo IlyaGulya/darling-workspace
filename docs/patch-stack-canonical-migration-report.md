@@ -12,13 +12,14 @@ set of `From <OID>` headers. The inventory contract rejects duplicate YAML
 keys and verifies exact metadata/artifact correspondence and available-object
 linearity.
 
-This is a post-migration snapshot: 0 `READY`, 76 `RECOVERABLE_LOCAL`, and 18 `ALREADY_MIGRATED`
+This is a post-migration snapshot: 0 `READY`, 47 `RECOVERABLE_LOCAL`, and 47 `ALREADY_MIGRATED`
 (the XNU and LibreSSL pilots, the three first-batch series, and batch 2's four
 Darling series, Batch 3's two dependent rootless series, and Batch 4's
 rootless-prefix-initialization branch series, plus Batch 5's remaining six
-Darling series). The `READY` backlog is exhausted; the next phase is recovery
-of independently verified `RECOVERABLE_LOCAL` objects, not publication of
-objects without a standalone closure.
+Darling series, plus the recovered XNU series). The `READY` backlog is
+exhausted. Recovery remains incomplete: 47 independently verified
+`RECOVERABLE_LOCAL` series in other repositories still need a standalone
+closure, and must not be published merely because XNU recovery completed.
 
 Batch 3 proves dependent publication: immutable
 `bases/492a00f4929e5aba60607d9fed3e868bc4a3aeba` and
@@ -51,6 +52,17 @@ The shellspawn dependency is deliberately limited to
 `88a1b9… → f8aa74… → ce8062… → 0d817c…`: `f8aa74…` is both delay's source and
 lifecycle's base. `72006d…` is a different child of `88a1b9…`, outside this
 chain; it must not be described as a Batch 3 continuation.
+
+The XNU repository-scoped recovery copied exact objects for all 29 formerly
+recoverable `darling-next/darling-xnu` series from the trusted XNU worktree to
+an isolated bare object database without alternates or replacement commits.
+Every base/source/ordered commit, tree and author/committer record was checked
+before publication; each series then passed a separate fresh-clone preflight,
+fsck and two byte-identical `format-patch` exports. The active no-bypass XNU
+tag ruleset `19137295` was retained unchanged. The topology includes the
+three-series RPC chain, the four-node E-UNION path, the four-node perf path,
+and twelve independent branch tips from `5f26a4…`; `j7e7-lane-wakefd-sentinel`
+starts at existing pilot source `88dcbf…` but does not alter the pilot.
 
 The first batch contains three now-`ALREADY_MIGRATED` series, all in
 `darling-next/darling`: `ci-host-regression-tests` (three commits from

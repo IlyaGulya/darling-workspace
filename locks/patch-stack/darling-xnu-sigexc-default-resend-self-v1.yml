@@ -1,0 +1,12 @@
+schema_version: 2
+project: {name: darling-xnu, path: .}
+upstream: {url: https://github.com/darlinghq/darling-xnu.git, base_commit: 888621605c704d973c22741c2544c16bb2e760dc}
+mirror:
+  url: https://github.com/darling-next/darling-xnu.git
+  base_ref: refs/tags/patch-stack/v1/bases/888621605c704d973c22741c2544c16bb2e760dc
+  base_oid: 888621605c704d973c22741c2544c16bb2e760dc
+  source_ref: refs/tags/patch-stack/v1/sources/a07f3001fb5fdfea471ac30bb79ef1b510cae29b
+  source_oid: a07f3001fb5fdfea471ac30bb79ef1b510cae29b
+source_commit: a07f3001fb5fdfea471ac30bb79ef1b510cae29b
+ordered_commits: [a07f3001fb5fdfea471ac30bb79ef1b510cae29b]
+expected_tree: 9e63a4c0b9fe2875201728e175b172c18d8f1242
