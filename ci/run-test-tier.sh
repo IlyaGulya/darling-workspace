@@ -101,6 +101,7 @@ case "${1:-}" in
 	host)
 		# Source-bound host cases must be selected through metadata so west can
 		# materialize the patch profile before CMake compiles the real source.
+		tests/run-west-patch-stack-materialize-contract.sh
 		tests/run-patch-stack-migration-inventory-contract.sh
 		exec west test --profile homebrew --env host --materialize-profile "${@:2}"
 		;;
