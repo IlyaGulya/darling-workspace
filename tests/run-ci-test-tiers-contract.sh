@@ -82,15 +82,18 @@ export PATCH_STACK_MATERIALIZE_CONTRACT_SKIP_WEST_SUBPROCESS=1
 unset PATCH_STACK_MATERIALIZE_CONTRACT_SKIP_WEST_SUBPROCESS
 host_tier="$(sed -n '/^\thost)/,/^\tguest-smoke)/p' "$repo/ci/run-test-tier.sh")"
 printf '%s\n' "$host_tier" | grep -F -q 'tests/run-west-patch-stack-materialize-contract.sh'
+printf '%s\n' "$host_tier" | grep -F -q 'tests/run-west-patch-stack-shadow-contract.sh'
 printf '%s\n' "$host_tier" | grep -F -q 'tests/run-patch-stack-migration-inventory-contract.sh'
 host_before_west="${host_tier%%exec west test*}"
 [[ "$host_before_west" == *'tests/run-west-patch-stack-materialize-contract.sh'* &&
+	"$host_before_west" == *'tests/run-west-patch-stack-shadow-contract.sh'* &&
 	"$host_before_west" == *'tests/run-patch-stack-migration-inventory-contract.sh'* ]] || {
 	echo 'host tier does not run patch-stack contracts before west test' >&2
 	exit 1
 }
-[[ "${host_before_west%%tests/run-patch-stack-migration-inventory-contract.sh*}" == *'tests/run-west-patch-stack-materialize-contract.sh'* ]] || {
-	echo 'host tier does not run materialize contract before inventory contract' >&2
+[[ "${host_before_west%%tests/run-west-patch-stack-shadow-contract.sh*}" == *'tests/run-west-patch-stack-materialize-contract.sh'* &&
+	"${host_before_west%%tests/run-patch-stack-migration-inventory-contract.sh*}" == *'tests/run-west-patch-stack-shadow-contract.sh'* ]] || {
+	echo 'host tier does not order materialize, shadow, inventory contracts' >&2
 	exit 1
 }
 "$repo/ci/run-test-tier.sh" guest-smoke
