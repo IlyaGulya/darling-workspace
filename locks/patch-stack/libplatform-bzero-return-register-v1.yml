@@ -1,0 +1,12 @@
+schema_version: 2
+project: {name: darling-libplatform, path: .}
+upstream: {url: https://github.com/darlinghq/darling-libplatform.git, base_commit: 5a3e5b529d25c70257dcfa97e94f1826e71e9f40}
+mirror:
+  url: https://github.com/darling-next/darling-libplatform.git
+  base_ref: refs/tags/patch-stack/v1/bases/5a3e5b529d25c70257dcfa97e94f1826e71e9f40
+  base_oid: 5a3e5b529d25c70257dcfa97e94f1826e71e9f40
+  source_ref: refs/tags/patch-stack/v1/sources/71d3d9e661ab85581e4ea5fb66af5e691df6f6b9
+  source_oid: 71d3d9e661ab85581e4ea5fb66af5e691df6f6b9
+source_commit: 71d3d9e661ab85581e4ea5fb66af5e691df6f6b9
+ordered_commits: [71d3d9e661ab85581e4ea5fb66af5e691df6f6b9]
+expected_tree: aa23756779ff852be148fc08dec34f6ee371b08e

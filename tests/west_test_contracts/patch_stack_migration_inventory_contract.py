@@ -45,9 +45,9 @@ def main() -> None:
     rows = {(row["profile"], row["patch"]): row for row in inventory["stacks"]}
     assert len(rows) == len(inventory["stacks"]) == 94, "entries must be exact and unique"
     actual_summary = {name: sum(row["classification"] == name for row in rows.values()) for name in ("READY", "RECOVERABLE_LOCAL", "ALREADY_MIGRATED")}
-    assert inventory["summary"] == actual_summary == {"READY": 0, "RECOVERABLE_LOCAL": 7, "ALREADY_MIGRATED": 87}
+    assert inventory["summary"] == actual_summary == {"READY": 0, "RECOVERABLE_LOCAL": 0, "ALREADY_MIGRATED": 94}
     report = (ROOT / "docs/patch-stack-canonical-migration-report.md").read_text()
-    for count, name in ((0, "READY"), (7, "RECOVERABLE_LOCAL"), (87, "ALREADY_MIGRATED")):
+    for count, name in ((0, "READY"), (0, "RECOVERABLE_LOCAL"), (94, "ALREADY_MIGRATED")):
         assert f"{count} `{name}`" in report, f"report summary missing {count} {name}"
     expected = {}
     for profile in ("arch", "homebrew", "perf"):

@@ -1,0 +1,12 @@
+schema_version: 2
+project: {name: darling-libpthread, path: .}
+upstream: {url: https://github.com/darlinghq/darling-libpthread.git, base_commit: f07f265bfbcf071c1adfc808de971e053ea5edc5}
+mirror:
+  url: https://github.com/darling-next/darling-libpthread.git
+  base_ref: refs/tags/patch-stack/v1/bases/f07f265bfbcf071c1adfc808de971e053ea5edc5
+  base_oid: f07f265bfbcf071c1adfc808de971e053ea5edc5
+  source_ref: refs/tags/patch-stack/v1/sources/22aed109147ee29fec3cddf469f2ad1408de27f7
+  source_oid: 22aed109147ee29fec3cddf469f2ad1408de27f7
+source_commit: 22aed109147ee29fec3cddf469f2ad1408de27f7
+ordered_commits: [de1599e9ec0fba41a6c7748625a22d332ac2017f, 4a35dcecfce4cd223e1099a1ed0254d9f431b8bb, 22aed109147ee29fec3cddf469f2ad1408de27f7]
+expected_tree: addb3f6964e54573b34c189b7eeb5c54f3b34f5e
