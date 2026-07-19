@@ -25,6 +25,7 @@ from patch_git import (
 import test_manifest
 import patch_stack_preflight
 import patch_stack_materialize
+import patch_stack_shadow
 from test_runtime import ROOTLESS_BOOTSTRAP_RESOURCE, ROOTLESS_BOOTSTRAP_TARGET
 
 
@@ -173,6 +174,15 @@ class DarlingPatch(WestCommand):
                 )
             if action == "apply":
                 command.add_argument("--roll-back", action="store_true")
+                command.add_argument(
+                    "--shadow-lock",
+                    action="store_true",
+                    help="opt in to canonical shadow comparison for an approved series",
+                )
+                command.add_argument(
+                    "--shadow-evidence",
+                    help="write shadow JSON evidence to this explicit path",
+                )
             if action == "clean":
                 command.add_argument("--force", action="store_true")
             if action == "status":
@@ -300,6 +310,8 @@ class DarlingPatch(WestCommand):
                 patches,
                 profile["integration-date"],
                 args.roll_back,
+                args.shadow_lock,
+                args.shadow_evidence,
             )
         else:
             self._clean(args.profile, patches, args.force)
@@ -2225,10 +2237,24 @@ class DarlingPatch(WestCommand):
         patches,
         integration_date: str,
         roll_back: bool,
+        shadow_lock: bool = False,
+        shadow_evidence: str | None = None,
     ):
         lock_source = Path(self.manifest.repo_abspath) / "west.lock.yml"
         if not lock_source.is_file():
             self.die(f"frozen manifest not found: {lock_source}")
+        if shadow_evidence and not shadow_lock:
+            self.die("--shadow-evidence requires --shadow-lock")
+
+        # This is deliberately before generated-context preparation, branch
+        # creation, or `git am`: malformed typed metadata must not mutate a
+        # production worktree.
+        shadow_plan = None
+        if shadow_lock:
+            try:
+                shadow_plan = patch_stack_shadow.plan(profile, patches)
+            except patch_stack_shadow.ShadowError as error:
+                self.die(str(error))
 
         branch = f"integration/{profile}"
         grouped = self._group(patches)
@@ -2244,6 +2270,7 @@ class DarlingPatch(WestCommand):
                 self.die(str(error))
 
         touched = []
+        shadow_runs = 0
         try:
             for module, module_patches in grouped.items():
                 repo = self._repo(module)
@@ -2265,13 +2292,37 @@ class DarlingPatch(WestCommand):
                         "--committer-date-is-author-date",
                         str(path),
                     )
+                    if shadow_plan and module == shadow_plan["module"] and patch["path"] == shadow_plan["patch"]:
+                        evidence = Path(shadow_evidence) if shadow_evidence else None
+                        shadow = patch_stack_shadow.run_shadow(
+                            shadow_plan=shadow_plan,
+                            legacy_patch=path,
+                            evidence_path=evidence,
+                        )
+                        shadow_runs += 1
+                        self.inf(f"shadow {patch['path']}: {shadow['legacy_resulting_tree']} == {shadow['canonical_resulting_tree']}")
                 self.inf(f"{module}: applied {len(module_patches)} patches")
+            if shadow_plan and shadow_runs != 1:
+                raise RuntimeError("shadow plan was not invoked exactly once")
             lock = self._record_integration(profile, grouped, integration_date)
             self.inf(f"wrote {lock}")
+        except KeyboardInterrupt:
+            # A SIGINT can arrive after legacy git-am but while the isolated
+            # shadow comparison is running.  It must not leave that partial
+            # integration branch behind.  Preserve ordinary no-shadow SIGINT
+            # behavior, and never turn the interrupt into `die()` output.
+            if shadow_lock:
+                try:
+                    for repo in touched:
+                        self._abort_am(repo)
+                    self._reset(profile, grouped, force=True)
+                finally:
+                    raise
+            raise
         except Exception as error:
             for repo in touched:
                 self._abort_am(repo)
-            if roll_back:
+            if roll_back or shadow_lock:
                 self._reset(profile, grouped, force=True)
             self.die(str(error))
 
