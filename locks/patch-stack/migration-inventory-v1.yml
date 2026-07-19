@@ -1197,10 +1197,11 @@ stacks:
   expected_tree: 13f3c46f5dcfe993262ef4f0236d4c095ac44538
   artifact_count: 1
   commit_count: 2
-  object_closure: frozen_bundle_clean_odb
+  object_closure: hosted_immutable_clean_odb
   linearity: verified
-  classification: READY
-  reason: exact frozen-bundle closure and metadata verified
+  classification: ALREADY_MIGRATED
+  reason: canonical immutable base/source tags verified in clean ODB
+  lock: locks/patch-stack/darling-mldr-stack-mmap-fallback-v1.yml
 - profile: homebrew
   patch: xnu/chown-disabled-null-guard.patch
   artifact: patches/homebrew/xnu/chown-disabled-null-guard.patch
@@ -1292,10 +1293,11 @@ stacks:
   expected_tree: 7cf4111a4da803c8b92fdc6e81448f5f9fca06e2
   artifact_count: 1
   commit_count: 1
-  object_closure: frozen_bundle_clean_odb
+  object_closure: hosted_immutable_clean_odb
   linearity: verified
-  classification: READY
-  reason: exact one-commit closure and metadata verified from frozen bundle
+  classification: ALREADY_MIGRATED
+  reason: canonical immutable base/source tags verified in clean ODB
+  lock: locks/patch-stack/darling-mldr-thread-create-futex-wait-v1.yml
 - profile: homebrew
   patch: darlingserver/server-inline-fastpath.patch
   artifact: patches/homebrew/darlingserver/server-inline-fastpath.patch
@@ -1348,10 +1350,11 @@ stacks:
   expected_tree: 13db4f7584a6856e9de326440ae2cc506b5d282d
   artifact_count: 1
   commit_count: 1
-  object_closure: frozen_bundle_clean_odb
+  object_closure: hosted_immutable_clean_odb
   linearity: verified
-  classification: READY
-  reason: exact one-commit closure and metadata verified from frozen bundle
+  classification: ALREADY_MIGRATED
+  reason: canonical immutable base/source tags verified in clean ODB
+  lock: locks/patch-stack/darling-mldr-recv-adaptive-spin-v1.yml
 - profile: homebrew
   patch: darlingserver/per-call-rpc-metrics.patch
   artifact: patches/homebrew/darlingserver/per-call-rpc-metrics.patch
@@ -1701,10 +1704,11 @@ stacks:
   expected_tree: f8ca146c54b1d392fb412b6070b8f0814d02c2ef
   artifact_count: 1
   commit_count: 1
-  object_closure: frozen_bundle_clean_odb
+  object_closure: hosted_immutable_clean_odb
   linearity: verified
-  classification: READY
-  reason: exact one-commit closure and metadata verified from frozen bundle
+  classification: ALREADY_MIGRATED
+  reason: canonical immutable base/source tags verified in clean ODB
+  lock: locks/patch-stack/darling-rootless-shellspawn-delay-v1.yml
 - profile: homebrew
   patch: darling/rootless-shellspawn-lifecycle.patch
   artifact: patches/homebrew/darling/rootless-shellspawn-lifecycle.patch
@@ -1720,10 +1724,11 @@ stacks:
   expected_tree: cd2bf43f402e720da841b379d694acf1c33ec24e
   artifact_count: 1
   commit_count: 2
-  object_closure: frozen_bundle_clean_odb
+  object_closure: hosted_immutable_clean_odb
   linearity: verified
-  classification: READY
-  reason: exact frozen-bundle closure and metadata verified
+  classification: ALREADY_MIGRATED
+  reason: canonical immutable base/source tags verified in clean ODB
+  lock: locks/patch-stack/darling-rootless-shellspawn-lifecycle-v1.yml
 - profile: homebrew
   patch: installer/normalize-payload-paths.patch
   artifact: patches/homebrew/installer/normalize-payload-paths.patch
@@ -1778,10 +1783,11 @@ stacks:
   expected_tree: 1fce0600b329d7f866872082268c8a9a98fbb8b9
   artifact_count: 1
   commit_count: 1
-  object_closure: frozen_bundle_clean_odb
+  object_closure: hosted_immutable_clean_odb
   linearity: verified
-  classification: READY
-  reason: exact one-commit closure and metadata verified from frozen bundle
+  classification: ALREADY_MIGRATED
+  reason: canonical immutable base/source tags verified in clean ODB
+  lock: locks/patch-stack/darling-mldr-compact-fd-band-v1.yml
 - profile: perf
   patch: xnu/shmem-ring-guest.patch
   artifact: patches/perf/xnu/shmem-ring-guest.patch
@@ -1919,6 +1925,6 @@ stacks:
   reason: exact source/base/tree available only from trusted worktree after incomplete
     bundle closure
 summary:
-  READY: 6
+  READY: 0
   RECOVERABLE_LOCAL: 76
-  ALREADY_MIGRATED: 12
+  ALREADY_MIGRATED: 18
