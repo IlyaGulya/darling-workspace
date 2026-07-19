@@ -83,3 +83,36 @@ canonical expected tree.  The legacy patch remains mandatory as the review and
 fallback artifact.  Only after repeated equal shadow results should a narrowly
 scoped profile flag select the lock path for that single entry; no manifest,
 profile default, or legacy artifact is changed by this proposal.
+
+## Phase 3 opt-in shadow pilot
+
+`west patch apply --profile homebrew --shadow-lock` is an opt-in comparison
+only. It first constructs a plan from typed
+`locks/patch-stack/shadow-series-v1.yml` metadata (`profile`, `module`, patch
+path, and contained lock filename); `patch.py` has no series-name allowlist.
+The selected profile must have exactly one metadata entry and that exact
+module/path pair must occur exactly once in the profile's actual patch list.
+Missing or duplicate entries fail before preparation or `git am`. The lock
+filename must be relative to `locks/patch-stack`, contain no `..`, and resolve
+there without a symlink escape. The ordinary `git am --3way` path remains the
+only authoritative materialization path and writes the same integration ref
+whether the flag is absent or present.
+
+At the selected mbox application point, shadow creates two independent
+disposable clean-ODB repositories. Both seed their base only by fetching the
+lock's immutable mirror `base_ref`, then verify the resulting base OID; no
+upstream URL/raw-SHA seed is used. One applies the same legacy `git am --3way`
+mbox, observing its complete `From <OID>` chain, count, fetched base, and
+resulting tree. The other invokes the schema-v2 canonical materializer from
+immutable mirror refs. Those observed legacy values must equal the lock, and
+both resulting trees must equal its expected tree. Any mismatch,
+preflight/fetch error, or cleanup failure fails the apply. Its JSON evidence
+contains only OIDs, trees, lock SHA-256, verdict and cleanup state; clones,
+objects, bundles and result refs disappear with the transaction. By default
+evidence is transaction-addressed; `--shadow-evidence PATH` is the explicit
+alternative for a caller-selected published file.
+
+Phase 3B hosted acceptance should remain manual-only: run the flag once in a
+fresh homebrew materialization clone, preserve the JSON evidence, compare the
+unchanged `integration/homebrew` ref to a no-flag run, and require a reviewer
+to inspect both trees before considering any broader opt-in.

@@ -1,0 +1,6 @@
+schema_version: 1
+series:
+  - profile: homebrew
+    module: darling
+    patch: darling/sandbox-exec-pass-through.patch
+    lock: darling-sandbox-exec-pass-through-v1.yml
