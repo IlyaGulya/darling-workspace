@@ -1200,7 +1200,7 @@ stacks:
   object_closure: frozen_bundle_clean_odb
   linearity: verified
   classification: READY
-  reason: exact one-commit closure and metadata verified from frozen bundle
+  reason: exact frozen-bundle closure and metadata verified
 - profile: homebrew
   patch: xnu/chown-disabled-null-guard.patch
   artifact: patches/homebrew/xnu/chown-disabled-null-guard.patch
@@ -1641,10 +1641,11 @@ stacks:
   expected_tree: ce502b9e662cf4800d26f5d15a9924ca02d1a3d8
   artifact_count: 1
   commit_count: 2
-  object_closure: frozen_bundle_clean_odb
+  object_closure: hosted_immutable_clean_odb
   linearity: verified
-  classification: READY
-  reason: exact one-commit closure and metadata verified from frozen bundle
+  classification: ALREADY_MIGRATED
+  reason: canonical immutable base/source tags verified in clean ODB
+  lock: locks/patch-stack/darling-rootless-runtime-integration-v1.yml
 - profile: homebrew
   patch: darling/rootless-bootstrapper-ordering.patch
   artifact: patches/homebrew/darling/rootless-bootstrapper-ordering.patch
@@ -1660,10 +1661,11 @@ stacks:
   expected_tree: b1eed46329d3d6e1065c58c2d9456d71ea453bbb
   artifact_count: 1
   commit_count: 2
-  object_closure: frozen_bundle_clean_odb
+  object_closure: hosted_immutable_clean_odb
   linearity: verified
-  classification: READY
-  reason: exact one-commit closure and metadata verified from frozen bundle
+  classification: ALREADY_MIGRATED
+  reason: canonical immutable base/source tags verified in clean ODB
+  lock: locks/patch-stack/darling-rootless-bootstrapper-ordering-v1.yml
 - profile: homebrew
   patch: darling/rootless-prefix-initialization.patch
   artifact: patches/homebrew/darling/rootless-prefix-initialization.patch
@@ -1683,7 +1685,7 @@ stacks:
   object_closure: frozen_bundle_clean_odb
   linearity: verified
   classification: READY
-  reason: exact one-commit closure and metadata verified from frozen bundle
+  reason: exact frozen-bundle closure and metadata verified
 - profile: homebrew
   patch: darling/rootless-shellspawn-delay.patch
   artifact: patches/homebrew/darling/rootless-shellspawn-delay.patch
@@ -1720,7 +1722,7 @@ stacks:
   object_closure: frozen_bundle_clean_odb
   linearity: verified
   classification: READY
-  reason: exact one-commit closure and metadata verified from frozen bundle
+  reason: exact frozen-bundle closure and metadata verified
 - profile: homebrew
   patch: installer/normalize-payload-paths.patch
   artifact: patches/homebrew/installer/normalize-payload-paths.patch
@@ -1916,6 +1918,6 @@ stacks:
   reason: exact source/base/tree available only from trusted worktree after incomplete
     bundle closure
 summary:
-  READY: 9
+  READY: 7
   RECOVERABLE_LOCAL: 76
-  ALREADY_MIGRATED: 9
+  ALREADY_MIGRATED: 11
