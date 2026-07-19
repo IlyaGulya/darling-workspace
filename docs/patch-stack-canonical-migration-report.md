@@ -12,14 +12,13 @@ set of `From <OID>` headers. The inventory contract rejects duplicate YAML
 keys and verifies exact metadata/artifact correspondence and available-object
 linearity.
 
-This is a post-migration snapshot: 0 `READY`, 7 `RECOVERABLE_LOCAL`, and 87 `ALREADY_MIGRATED`
+This is a post-migration snapshot: 0 `READY`, 0 `RECOVERABLE_LOCAL`, and 94 `ALREADY_MIGRATED`
 (the XNU and LibreSSL pilots, the three first-batch series, and batch 2's four
 Darling series, Batch 3's two dependent rootless series, and Batch 4's
 rootless-prefix-initialization branch series, plus Batch 5's remaining six
 Darling series, plus the recovered XNU series and 40 recovered Darlingserver
-series). The `READY` backlog is exhausted. Recovery remains incomplete: seven
-remaining `RECOVERABLE_LOCAL` series in other repositories still need a standalone
-closure, and must not be published merely because XNU recovery completed.
+series, plus the final seven external recovery series). All 94 frozen patch
+series now have standalone hosted immutable object closure.
 
 Darlingserver repository-scoped recovery moved all 40 of its formerly
 `RECOVERABLE_LOCAL` series to `ALREADY_MIGRATED`. The exact mbox chains include
@@ -37,9 +36,19 @@ Darlingserver ruleset `19165720` is active, has no bypass actors, covers
 sacrificial probe rejected both operations with `GH013`; 80 create-only
 base/source refs (40 unique bases and 40 unique sources) were then published
 and a repeat create-only push was idempotent. Forty schema-v2 YAML locks now
-record the individual series. The remaining seven recovery candidates belong
-to other repositories; neither this recovery nor its ruleset changes their
-classification.
+record the individual series.
+
+The final external recovery batch covers libunwind, libplatform, Perl,
+libpthread, Installer and dyld. All seven series were recovered from exact
+trusted-worktree objects into six separate isolated bare repositories. Six
+new active no-bypass tag rulesets protect the canonical namespace: libunwind
+`19166835`, libplatform `19166838`, Perl `19166841`, libpthread `19166843`,
+Installer `19166845`, and dyld `19166846`. Each repository's single
+sacrificial probe rejected update and deletion with `GH013`. Fourteen
+create-only base/source tags and seven v2 locks then passed hosted-only clean
+ODB preflight, fsck and deterministic `format-patch` verification. Installer
+explicitly preserves `88764e… → 25b9db… → 6d1ca4… → 0cd5a2… → 825fde…`, with
+`25b9db…` published in both base and source namespaces.
 
 Batch 3 proves dependent publication: immutable
 `bases/492a00f4929e5aba60607d9fed3e868bc4a3aeba` and
@@ -54,9 +63,9 @@ continuation of bootstrapper tip `e257950…`: its canonical source tree is
 `beab23c25745954b0eb810a0c3e0b4a20a91dd6f`. Applying its mbox through the
 normal Git-am materialization mechanism on effective tip `e257950…` instead
 produces reproducible materialized tree `357e507ffb908cb37ac04d38479ebf3fa12f9b28`.
-No source was approximated. The recoverable entries have exact metadata in a
-trusted worktree but their frozen bundle lacks a standalone clean-object
-closure; they are not publication candidates until recovered independently.
+No source was approximated. All series that were formerly recoverable have
+now been restored from exact trusted-worktree objects and have a standalone
+hosted immutable clean-ODB closure.
 
 Batch 5 publishes the remaining six verified Darling series: two-commit
 `mldr-stack-mmap-fallback` (`f018846…` to `1618c856…`), one-commit

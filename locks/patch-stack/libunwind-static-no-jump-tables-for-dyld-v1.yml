@@ -1,0 +1,12 @@
+schema_version: 2
+project: {name: darling-libunwind, path: .}
+upstream: {url: https://github.com/darlinghq/darling-libunwind.git, base_commit: a91da1a0e262e04eb601152a84228ff733e48422}
+mirror:
+  url: https://github.com/darling-next/darling-libunwind.git
+  base_ref: refs/tags/patch-stack/v1/bases/a91da1a0e262e04eb601152a84228ff733e48422
+  base_oid: a91da1a0e262e04eb601152a84228ff733e48422
+  source_ref: refs/tags/patch-stack/v1/sources/d5fbc8180ea2e06efa693ee03a768e532a98671f
+  source_oid: d5fbc8180ea2e06efa693ee03a768e532a98671f
+source_commit: d5fbc8180ea2e06efa693ee03a768e532a98671f
+ordered_commits: [d5fbc8180ea2e06efa693ee03a768e532a98671f]
+expected_tree: 43270a8f66b98e0e07a9f8705e21550791884400

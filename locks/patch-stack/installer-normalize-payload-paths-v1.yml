@@ -1,0 +1,12 @@
+schema_version: 2
+project: {name: darling-installer, path: .}
+upstream: {url: https://github.com/darlinghq/darling-installer.git, base_commit: 88764e6149f92f1747442c27ab00231f40de278c}
+mirror:
+  url: https://github.com/darling-next/darling-installer.git
+  base_ref: refs/tags/patch-stack/v1/bases/88764e6149f92f1747442c27ab00231f40de278c
+  base_oid: 88764e6149f92f1747442c27ab00231f40de278c
+  source_ref: refs/tags/patch-stack/v1/sources/25b9dbfe954faa04991a8152519b155d9df6e2a8
+  source_oid: 25b9dbfe954faa04991a8152519b155d9df6e2a8
+source_commit: 25b9dbfe954faa04991a8152519b155d9df6e2a8
+ordered_commits: [25b9dbfe954faa04991a8152519b155d9df6e2a8]
+expected_tree: a9006cc5d62875c93b868d34c5a05361f663805b
