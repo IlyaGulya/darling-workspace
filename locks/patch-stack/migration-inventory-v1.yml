@@ -44,7 +44,8 @@ repositories:
 - repository: darling-next/darlingserver
   exists: true
   tag_ruleset:
-    state: absent
+    state: active
+    id: 19165720
 stacks:
 - profile: arch
   patch: libunwind/static-no-jump-tables-for-dyld.patch
@@ -175,11 +176,11 @@ stacks:
   expected_tree: d415bb9218bd066f36bc54d6d6fb4abb5508dfc5
   artifact_count: 1
   commit_count: 40
-  object_closure: trusted_worktree_only
+  object_closure: hosted_immutable_clean_odb
   linearity: verified
-  classification: RECOVERABLE_LOCAL
-  reason: exact source/base/tree available only from trusted worktree after incomplete
-    bundle closure
+  classification: ALREADY_MIGRATED
+  reason: exact objects recovered from trusted Darlingserver worktree into an isolated clean ODB
+  lock: locks/patch-stack/darlingserver-a0-arch-redesign-v1.yml
 - profile: arch
   patch: darlingserver/standard-signal-coalescing.patch
   artifact: patches/arch/darlingserver/standard-signal-coalescing.patch
@@ -194,11 +195,11 @@ stacks:
   expected_tree: c45fcf50c8b2c63867e56487d7823632cb722d43
   artifact_count: 1
   commit_count: 1
-  object_closure: trusted_worktree_only
+  object_closure: hosted_immutable_clean_odb
   linearity: verified
-  classification: RECOVERABLE_LOCAL
-  reason: exact source/base/tree available only from trusted worktree after incomplete
-    bundle closure
+  classification: ALREADY_MIGRATED
+  reason: exact objects recovered from trusted Darlingserver worktree into an isolated clean ODB
+  lock: locks/patch-stack/darlingserver-standard-signal-coalescing-v1.yml
 - profile: arch
   patch: darlingserver/a0-gate-shellspawn-retry.patch
   artifact: patches/arch/darlingserver/a0-gate-shellspawn-retry.patch
@@ -213,11 +214,11 @@ stacks:
   expected_tree: 86a7a09b18d7a4b82671481ca40919280ba1c38e
   artifact_count: 1
   commit_count: 1
-  object_closure: trusted_worktree_only
+  object_closure: hosted_immutable_clean_odb
   linearity: verified
-  classification: RECOVERABLE_LOCAL
-  reason: exact source/base/tree available only from trusted worktree after incomplete
-    bundle closure
+  classification: ALREADY_MIGRATED
+  reason: exact objects recovered from trusted Darlingserver worktree into an isolated clean ODB
+  lock: locks/patch-stack/darlingserver-a0-gate-shellspawn-retry-v1.yml
 - profile: arch
   patch: darlingserver/ring-committed-unknown-gate.patch
   artifact: patches/arch/darlingserver/ring-committed-unknown-gate.patch
@@ -232,11 +233,11 @@ stacks:
   expected_tree: 9e3d33cfcd57247f46a8b070ebabe89cb47bbc88
   artifact_count: 1
   commit_count: 1
-  object_closure: trusted_worktree_only
+  object_closure: hosted_immutable_clean_odb
   linearity: verified
-  classification: RECOVERABLE_LOCAL
-  reason: exact source/base/tree available only from trusted worktree after incomplete
-    bundle closure
+  classification: ALREADY_MIGRATED
+  reason: exact objects recovered from trusted Darlingserver worktree into an isolated clean ODB
+  lock: locks/patch-stack/darlingserver-ring-committed-unknown-gate-v1.yml
 - profile: arch
   patch: darlingserver/duct-tape-fail-closed-stubs.patch
   artifact: patches/arch/darlingserver/duct-tape-fail-closed-stubs.patch
@@ -251,11 +252,11 @@ stacks:
   expected_tree: f8b97974b66900ff81b1cb76475d2a77bec18204
   artifact_count: 1
   commit_count: 1
-  object_closure: trusted_worktree_only
+  object_closure: hosted_immutable_clean_odb
   linearity: verified
-  classification: RECOVERABLE_LOCAL
-  reason: exact source/base/tree available only from trusted worktree after incomplete
-    bundle closure
+  classification: ALREADY_MIGRATED
+  reason: exact objects recovered from trusted Darlingserver worktree into an isolated clean ODB
+  lock: locks/patch-stack/darlingserver-duct-tape-fail-closed-stubs-v1.yml
 - profile: arch
   patch: darlingserver/rpc-uds-packed-correlation.patch
   artifact: patches/arch/darlingserver/rpc-uds-packed-correlation.patch
@@ -270,11 +271,11 @@ stacks:
   expected_tree: 945a8a61340add4a49aaef9ce304b8e0a741787e
   artifact_count: 1
   commit_count: 1
-  object_closure: trusted_worktree_only
+  object_closure: hosted_immutable_clean_odb
   linearity: verified
-  classification: RECOVERABLE_LOCAL
-  reason: exact source/base/tree available only from trusted worktree after incomplete
-    bundle closure
+  classification: ALREADY_MIGRATED
+  reason: exact objects recovered from trusted Darlingserver worktree into an isolated clean ODB
+  lock: locks/patch-stack/darlingserver-rpc-uds-packed-correlation-v1.yml
 - profile: arch
   patch: darlingserver/a0-gate-client-rpc-log.patch
   artifact: patches/arch/darlingserver/a0-gate-client-rpc-log.patch
@@ -289,11 +290,11 @@ stacks:
   expected_tree: 11fac3bb316e7fe21ee113e3c8194f9863aeb481
   artifact_count: 1
   commit_count: 1
-  object_closure: trusted_worktree_only
+  object_closure: hosted_immutable_clean_odb
   linearity: verified
-  classification: RECOVERABLE_LOCAL
-  reason: exact source/base/tree available only from trusted worktree after incomplete
-    bundle closure
+  classification: ALREADY_MIGRATED
+  reason: exact objects recovered from trusted Darlingserver worktree into an isolated clean ODB
+  lock: locks/patch-stack/darlingserver-a0-gate-client-rpc-log-v1.yml
 - profile: arch
   patch: darlingserver/rpc-interruptible-disconnect-eintr.patch
   artifact: patches/arch/darlingserver/rpc-interruptible-disconnect-eintr.patch
@@ -308,11 +309,11 @@ stacks:
   expected_tree: 45f490cab453542c3ee2bea9748da5bfa50d1f14
   artifact_count: 1
   commit_count: 1
-  object_closure: trusted_worktree_only
+  object_closure: hosted_immutable_clean_odb
   linearity: verified
-  classification: RECOVERABLE_LOCAL
-  reason: exact source/base/tree available only from trusted worktree after incomplete
-    bundle closure
+  classification: ALREADY_MIGRATED
+  reason: exact objects recovered from trusted Darlingserver worktree into an isolated clean ODB
+  lock: locks/patch-stack/darlingserver-rpc-interruptible-disconnect-eintr-v1.yml
 - profile: arch
   patch: darlingserver/stack-pool-empty-stack-handle.patch
   artifact: patches/arch/darlingserver/stack-pool-empty-stack-handle.patch
@@ -327,11 +328,11 @@ stacks:
   expected_tree: 6e6a9c45746ac3e8a5195e6a03ca42a01254cea3
   artifact_count: 1
   commit_count: 1
-  object_closure: trusted_worktree_only
+  object_closure: hosted_immutable_clean_odb
   linearity: verified
-  classification: RECOVERABLE_LOCAL
-  reason: exact source/base/tree available only from trusted worktree after incomplete
-    bundle closure
+  classification: ALREADY_MIGRATED
+  reason: exact objects recovered from trusted Darlingserver worktree into an isolated clean ODB
+  lock: locks/patch-stack/darlingserver-stack-pool-empty-stack-handle-v1.yml
 - profile: arch
   patch: darlingserver/a0-gate-focused-synth-markers.patch
   artifact: patches/arch/darlingserver/a0-gate-focused-synth-markers.patch
@@ -346,11 +347,11 @@ stacks:
   expected_tree: a7ec070c7d8f769767ea80fa13c1af6c9a90e2fa
   artifact_count: 1
   commit_count: 1
-  object_closure: trusted_worktree_only
+  object_closure: hosted_immutable_clean_odb
   linearity: verified
-  classification: RECOVERABLE_LOCAL
-  reason: exact source/base/tree available only from trusted worktree after incomplete
-    bundle closure
+  classification: ALREADY_MIGRATED
+  reason: exact objects recovered from trusted Darlingserver worktree into an isolated clean ODB
+  lock: locks/patch-stack/darlingserver-a0-gate-focused-synth-markers-v1.yml
 - profile: arch
   patch: darlingserver/recent-signal-rpc-contract-tests.patch
   artifact: patches/arch/darlingserver/recent-signal-rpc-contract-tests.patch
@@ -365,11 +366,11 @@ stacks:
   expected_tree: 88305be01d1bfd46c8fc5123e92c8c43f2abf979
   artifact_count: 1
   commit_count: 1
-  object_closure: trusted_worktree_only
+  object_closure: hosted_immutable_clean_odb
   linearity: verified
-  classification: RECOVERABLE_LOCAL
-  reason: exact source/base/tree available only from trusted worktree after incomplete
-    bundle closure
+  classification: ALREADY_MIGRATED
+  reason: exact objects recovered from trusted Darlingserver worktree into an isolated clean ODB
+  lock: locks/patch-stack/darlingserver-recent-signal-rpc-contract-tests-v1.yml
 - profile: arch
   patch: darlingserver/message-ctrunc-reject.patch
   artifact: patches/arch/darlingserver/message-ctrunc-reject.patch
@@ -384,11 +385,11 @@ stacks:
   expected_tree: e56f439ddc07d5bda68360bffcef1cfcafed1354
   artifact_count: 1
   commit_count: 1
-  object_closure: trusted_worktree_only
+  object_closure: hosted_immutable_clean_odb
   linearity: verified
-  classification: RECOVERABLE_LOCAL
-  reason: exact source/base/tree available only from trusted worktree after incomplete
-    bundle closure
+  classification: ALREADY_MIGRATED
+  reason: exact objects recovered from trusted Darlingserver worktree into an isolated clean ODB
+  lock: locks/patch-stack/darlingserver-message-ctrunc-reject-v1.yml
 - profile: arch
   patch: darling/ci-host-regression-tests.patch
   artifact: patches/arch/darling/ci-host-regression-tests.patch
@@ -444,11 +445,11 @@ stacks:
   expected_tree: 5561bf4e737e0f300bf6ab18d7d2a639a8902962
   artifact_count: 1
   commit_count: 1
-  object_closure: trusted_worktree_only
+  object_closure: hosted_immutable_clean_odb
   linearity: verified
-  classification: RECOVERABLE_LOCAL
-  reason: exact source/base/tree available only from trusted worktree after incomplete
-    bundle closure
+  classification: ALREADY_MIGRATED
+  reason: exact objects recovered from trusted Darlingserver worktree into an isolated clean ODB
+  lock: locks/patch-stack/darlingserver-psynch-cvwait-balanced-v1.yml
 - profile: homebrew
   patch: darlingserver/microthread-resume-race.patch
   artifact: patches/homebrew/darlingserver/microthread-resume-race.patch
@@ -463,11 +464,11 @@ stacks:
   expected_tree: 26266dcfa7d771db879c97b74b35002c18904ce6
   artifact_count: 1
   commit_count: 1
-  object_closure: trusted_worktree_only
+  object_closure: hosted_immutable_clean_odb
   linearity: verified
-  classification: RECOVERABLE_LOCAL
-  reason: exact source/base/tree available only from trusted worktree after incomplete
-    bundle closure
+  classification: ALREADY_MIGRATED
+  reason: exact objects recovered from trusted Darlingserver worktree into an isolated clean ODB
+  lock: locks/patch-stack/darlingserver-microthread-resume-race-v1.yml
 - profile: homebrew
   patch: darlingserver/fork-checkin-bound.patch
   artifact: patches/homebrew/darlingserver/fork-checkin-bound.patch
@@ -482,11 +483,11 @@ stacks:
   expected_tree: 3f094fd3582c5fa18e8e50e8b33079f2e26954f0
   artifact_count: 1
   commit_count: 1
-  object_closure: trusted_worktree_only
+  object_closure: hosted_immutable_clean_odb
   linearity: verified
-  classification: RECOVERABLE_LOCAL
-  reason: exact source/base/tree available only from trusted worktree after incomplete
-    bundle closure
+  classification: ALREADY_MIGRATED
+  reason: exact objects recovered from trusted Darlingserver worktree into an isolated clean ODB
+  lock: locks/patch-stack/darlingserver-fork-checkin-bound-v1.yml
 - profile: homebrew
   patch: darlingserver/fork-checkin-sticky-flag.patch
   artifact: patches/homebrew/darlingserver/fork-checkin-sticky-flag.patch
@@ -501,11 +502,11 @@ stacks:
   expected_tree: 78ffaf5350a936223b080dcf0af90cd759857a9e
   artifact_count: 1
   commit_count: 1
-  object_closure: trusted_worktree_only
+  object_closure: hosted_immutable_clean_odb
   linearity: verified
-  classification: RECOVERABLE_LOCAL
-  reason: exact source/base/tree available only from trusted worktree after incomplete
-    bundle closure
+  classification: ALREADY_MIGRATED
+  reason: exact objects recovered from trusted Darlingserver worktree into an isolated clean ODB
+  lock: locks/patch-stack/darlingserver-fork-checkin-sticky-flag-v1.yml
 - profile: homebrew
   patch: darlingserver/psynch-rpc-arg-trace.patch
   artifact: patches/homebrew/darlingserver/psynch-rpc-arg-trace.patch
@@ -520,11 +521,11 @@ stacks:
   expected_tree: 6b56a4ace7b01069f2fbac70ba83e9760b91102b
   artifact_count: 1
   commit_count: 1
-  object_closure: trusted_worktree_only
+  object_closure: hosted_immutable_clean_odb
   linearity: verified
-  classification: RECOVERABLE_LOCAL
-  reason: exact source/base/tree available only from trusted worktree after incomplete
-    bundle closure
+  classification: ALREADY_MIGRATED
+  reason: exact objects recovered from trusted Darlingserver worktree into an isolated clean ODB
+  lock: locks/patch-stack/darlingserver-psynch-rpc-arg-trace-v1.yml
 - profile: homebrew
   patch: xnu/psynch-cvsignal-args.patch
   artifact: patches/homebrew/xnu/psynch-cvsignal-args.patch
@@ -729,11 +730,11 @@ stacks:
   expected_tree: 0f836f2bc08bcf2f156892df0dc9be1b4c76a737
   artifact_count: 1
   commit_count: 1
-  object_closure: trusted_worktree_only
+  object_closure: hosted_immutable_clean_odb
   linearity: verified
-  classification: RECOVERABLE_LOCAL
-  reason: exact source/base/tree available only from trusted worktree after incomplete
-    bundle closure
+  classification: ALREADY_MIGRATED
+  reason: exact objects recovered from trusted Darlingserver worktree into an isolated clean ODB
+  lock: locks/patch-stack/darlingserver-cancel-stale-wait-timer-v1.yml
 - profile: homebrew
   patch: darlingserver/processcall-exception-guard.patch
   artifact: patches/homebrew/darlingserver/processcall-exception-guard.patch
@@ -748,11 +749,11 @@ stacks:
   expected_tree: 59006561d2dc4cb845e2892a2f646d06382df376
   artifact_count: 1
   commit_count: 1
-  object_closure: trusted_worktree_only
+  object_closure: hosted_immutable_clean_odb
   linearity: verified
-  classification: RECOVERABLE_LOCAL
-  reason: exact source/base/tree available only from trusted worktree after incomplete
-    bundle closure
+  classification: ALREADY_MIGRATED
+  reason: exact objects recovered from trusted Darlingserver worktree into an isolated clean ODB
+  lock: locks/patch-stack/darlingserver-processcall-exception-guard-v1.yml
 - profile: homebrew
   patch: darlingserver/ingest-error-reply.patch
   artifact: patches/homebrew/darlingserver/ingest-error-reply.patch
@@ -767,11 +768,11 @@ stacks:
   expected_tree: 66312fb647d18b60d5ccc0a95033f35e9c829f58
   artifact_count: 1
   commit_count: 1
-  object_closure: trusted_worktree_only
+  object_closure: hosted_immutable_clean_odb
   linearity: verified
-  classification: RECOVERABLE_LOCAL
-  reason: exact source/base/tree available only from trusted worktree after incomplete
-    bundle closure
+  classification: ALREADY_MIGRATED
+  reason: exact objects recovered from trusted Darlingserver worktree into an isolated clean ODB
+  lock: locks/patch-stack/darlingserver-ingest-error-reply-v1.yml
 - profile: homebrew
   patch: darlingserver/pushreply-pipe-leak.patch
   artifact: patches/homebrew/darlingserver/pushreply-pipe-leak.patch
@@ -786,11 +787,11 @@ stacks:
   expected_tree: 2bd67d0a4d486315d93e72acdae2290dbde2bbd5
   artifact_count: 1
   commit_count: 1
-  object_closure: trusted_worktree_only
+  object_closure: hosted_immutable_clean_odb
   linearity: verified
-  classification: RECOVERABLE_LOCAL
-  reason: exact source/base/tree available only from trusted worktree after incomplete
-    bundle closure
+  classification: ALREADY_MIGRATED
+  reason: exact objects recovered from trusted Darlingserver worktree into an isolated clean ODB
+  lock: locks/patch-stack/darlingserver-pushreply-pipe-leak-v1.yml
 - profile: homebrew
   patch: darlingserver/exc-fatal-reply-bound.patch
   artifact: patches/homebrew/darlingserver/exc-fatal-reply-bound.patch
@@ -805,11 +806,11 @@ stacks:
   expected_tree: 9b7a068c96f471000645d6692c3e1bfdfbbb12ba
   artifact_count: 1
   commit_count: 1
-  object_closure: trusted_worktree_only
+  object_closure: hosted_immutable_clean_odb
   linearity: verified
-  classification: RECOVERABLE_LOCAL
-  reason: exact source/base/tree available only from trusted worktree after incomplete
-    bundle closure
+  classification: ALREADY_MIGRATED
+  reason: exact objects recovered from trusted Darlingserver worktree into an isolated clean ODB
+  lock: locks/patch-stack/darlingserver-exc-fatal-reply-bound-v1.yml
 - profile: homebrew
   patch: darlingserver/assert-wait-cancel-stale-timer.patch
   artifact: patches/homebrew/darlingserver/assert-wait-cancel-stale-timer.patch
@@ -824,11 +825,11 @@ stacks:
   expected_tree: 42867b08ce888b47f8a3c03ccef77928e3cd7153
   artifact_count: 1
   commit_count: 1
-  object_closure: trusted_worktree_only
+  object_closure: hosted_immutable_clean_odb
   linearity: verified
-  classification: RECOVERABLE_LOCAL
-  reason: exact source/base/tree available only from trusted worktree after incomplete
-    bundle closure
+  classification: ALREADY_MIGRATED
+  reason: exact objects recovered from trusted Darlingserver worktree into an isolated clean ODB
+  lock: locks/patch-stack/darlingserver-assert-wait-cancel-stale-timer-v1.yml
 - profile: homebrew
   patch: darlingserver/pthread-canceled-xnu-semantics.patch
   artifact: patches/homebrew/darlingserver/pthread-canceled-xnu-semantics.patch
@@ -844,11 +845,11 @@ stacks:
   expected_tree: 885275fe43add5996f717f70e4396f7c1fef2dc6
   artifact_count: 1
   commit_count: 2
-  object_closure: trusted_worktree_only
+  object_closure: hosted_immutable_clean_odb
   linearity: verified
-  classification: RECOVERABLE_LOCAL
-  reason: exact source/base/tree available only from trusted worktree after incomplete
-    bundle closure
+  classification: ALREADY_MIGRATED
+  reason: exact objects recovered from trusted Darlingserver worktree into an isolated clean ODB
+  lock: locks/patch-stack/darlingserver-pthread-canceled-xnu-semantics-v1.yml
 - profile: homebrew
   patch: libpthread/psynch-kernel-return-helper.patch
   artifact: patches/homebrew/libpthread/psynch-kernel-return-helper.patch
@@ -1274,11 +1275,11 @@ stacks:
   expected_tree: 45ed2ea863d27a33bacebe7134c0a5ab513033b3
   artifact_count: 1
   commit_count: 1
-  object_closure: trusted_worktree_only
+  object_closure: hosted_immutable_clean_odb
   linearity: verified
-  classification: RECOVERABLE_LOCAL
-  reason: exact source/base/tree available only from trusted worktree after incomplete
-    bundle closure
+  classification: ALREADY_MIGRATED
+  reason: exact objects recovered from trusted Darlingserver worktree into an isolated clean ODB
+  lock: locks/patch-stack/darlingserver-progress-metrics-v1.yml
 - profile: homebrew
   patch: darling/mldr-thread-create-futex-wait.patch
   artifact: patches/homebrew/darling/mldr-thread-create-futex-wait.patch
@@ -1312,11 +1313,11 @@ stacks:
   expected_tree: 017aba7c84f48950e3b049c793431b929eabb8ac
   artifact_count: 1
   commit_count: 1
-  object_closure: trusted_worktree_only
+  object_closure: hosted_immutable_clean_odb
   linearity: verified
-  classification: RECOVERABLE_LOCAL
-  reason: exact source/base/tree available only from trusted worktree after incomplete
-    bundle closure
+  classification: ALREADY_MIGRATED
+  reason: exact objects recovered from trusted Darlingserver worktree into an isolated clean ODB
+  lock: locks/patch-stack/darlingserver-server-inline-fastpath-v1.yml
 - profile: homebrew
   patch: darlingserver/checkin-rwlock-across-suspend.patch
   artifact: patches/homebrew/darlingserver/checkin-rwlock-across-suspend.patch
@@ -1331,11 +1332,11 @@ stacks:
   expected_tree: 9199d6cd86fc1d7b79376650c35a162bc1cff9df
   artifact_count: 1
   commit_count: 1
-  object_closure: trusted_worktree_only
+  object_closure: hosted_immutable_clean_odb
   linearity: verified
-  classification: RECOVERABLE_LOCAL
-  reason: exact source/base/tree available only from trusted worktree after incomplete
-    bundle closure
+  classification: ALREADY_MIGRATED
+  reason: exact objects recovered from trusted Darlingserver worktree into an isolated clean ODB
+  lock: locks/patch-stack/darlingserver-checkin-rwlock-across-suspend-v1.yml
 - profile: homebrew
   patch: darling/mldr-recv-adaptive-spin.patch
   artifact: patches/homebrew/darling/mldr-recv-adaptive-spin.patch
@@ -1369,11 +1370,11 @@ stacks:
   expected_tree: 4e11ed24eb3b9171f36ad6c6e4dfdcb0db94b6b2
   artifact_count: 1
   commit_count: 1
-  object_closure: trusted_worktree_only
+  object_closure: hosted_immutable_clean_odb
   linearity: verified
-  classification: RECOVERABLE_LOCAL
-  reason: exact source/base/tree available only from trusted worktree after incomplete
-    bundle closure
+  classification: ALREADY_MIGRATED
+  reason: exact objects recovered from trusted Darlingserver worktree into an isolated clean ODB
+  lock: locks/patch-stack/darlingserver-per-call-rpc-metrics-v1.yml
 - profile: homebrew
   patch: darlingserver/no-reply-fire-and-forget-rpcs.patch
   artifact: patches/homebrew/darlingserver/no-reply-fire-and-forget-rpcs.patch
@@ -1388,11 +1389,11 @@ stacks:
   expected_tree: 1f570cdb5521f483abd828d5dfd5afdcd181907a
   artifact_count: 1
   commit_count: 1
-  object_closure: trusted_worktree_only
+  object_closure: hosted_immutable_clean_odb
   linearity: verified
-  classification: RECOVERABLE_LOCAL
-  reason: exact source/base/tree available only from trusted worktree after incomplete
-    bundle closure
+  classification: ALREADY_MIGRATED
+  reason: exact objects recovered from trusted Darlingserver worktree into an isolated clean ODB
+  lock: locks/patch-stack/darlingserver-no-reply-fire-and-forget-rpcs-v1.yml
 - profile: homebrew
   patch: darlingserver/guest-per-callnum-sleep-account.patch
   artifact: patches/homebrew/darlingserver/guest-per-callnum-sleep-account.patch
@@ -1407,11 +1408,11 @@ stacks:
   expected_tree: 2614c0b29d55a6b068e1a343cadd5f784a26f43f
   artifact_count: 1
   commit_count: 1
-  object_closure: trusted_worktree_only
+  object_closure: hosted_immutable_clean_odb
   linearity: verified
-  classification: RECOVERABLE_LOCAL
-  reason: exact source/base/tree available only from trusted worktree after incomplete
-    bundle closure
+  classification: ALREADY_MIGRATED
+  reason: exact objects recovered from trusted Darlingserver worktree into an isolated clean ODB
+  lock: locks/patch-stack/darlingserver-guest-per-callnum-sleep-account-v1.yml
 - profile: homebrew
   patch: xnu/cache-task-self-trap.patch
   artifact: patches/homebrew/xnu/cache-task-self-trap.patch
@@ -1502,11 +1503,11 @@ stacks:
   expected_tree: 39d8f254fa199915bb03c062d39f03a3436236be
   artifact_count: 1
   commit_count: 1
-  object_closure: trusted_worktree_only
+  object_closure: hosted_immutable_clean_odb
   linearity: verified
-  classification: RECOVERABLE_LOCAL
-  reason: exact source/base/tree available only from trusted worktree after incomplete
-    bundle closure
+  classification: ALREADY_MIGRATED
+  reason: exact objects recovered from trusted Darlingserver worktree into an isolated clean ODB
+  lock: locks/patch-stack/darlingserver-checkin-retask-current-thread-uaf-v1.yml
 - profile: homebrew
   patch: darlingserver/pot-guest-lifetime-binding.patch
   artifact: patches/homebrew/darlingserver/pot-guest-lifetime-binding.patch
@@ -1521,11 +1522,11 @@ stacks:
   expected_tree: d0464991603d967fb36365f192747d92e6f7cc5f
   artifact_count: 1
   commit_count: 1
-  object_closure: trusted_worktree_only
+  object_closure: hosted_immutable_clean_odb
   linearity: verified
-  classification: RECOVERABLE_LOCAL
-  reason: exact source/base/tree available only from trusted worktree after incomplete
-    bundle closure
+  classification: ALREADY_MIGRATED
+  reason: exact objects recovered from trusted Darlingserver worktree into an isolated clean ODB
+  lock: locks/patch-stack/darlingserver-pot-guest-lifetime-binding-v1.yml
 - profile: homebrew
   patch: darlingserver/test-diagnostics-trace.patch
   artifact: patches/homebrew/darlingserver/test-diagnostics-trace.patch
@@ -1548,11 +1549,11 @@ stacks:
   expected_tree: 1ad45d62da49785a180954fa499168e20e57ff1b
   artifact_count: 1
   commit_count: 9
-  object_closure: trusted_worktree_only
+  object_closure: hosted_immutable_clean_odb
   linearity: verified
-  classification: RECOVERABLE_LOCAL
-  reason: exact source/base/tree available only from trusted worktree after incomplete
-    bundle closure
+  classification: ALREADY_MIGRATED
+  reason: exact objects recovered from trusted Darlingserver worktree into an isolated clean ODB
+  lock: locks/patch-stack/darlingserver-test-diagnostics-trace-v1.yml
 - profile: homebrew
   patch: darlingserver/semaphore-rpc-trace.patch
   artifact: patches/homebrew/darlingserver/semaphore-rpc-trace.patch
@@ -1567,11 +1568,11 @@ stacks:
   expected_tree: 544e194e92f3ad0255f7d3ce13b93dc47b8db3da
   artifact_count: 1
   commit_count: 1
-  object_closure: trusted_worktree_only
+  object_closure: hosted_immutable_clean_odb
   linearity: verified
-  classification: RECOVERABLE_LOCAL
-  reason: exact source/base/tree available only from trusted worktree after incomplete
-    bundle closure
+  classification: ALREADY_MIGRATED
+  reason: exact objects recovered from trusted Darlingserver worktree into an isolated clean ODB
+  lock: locks/patch-stack/darlingserver-semaphore-rpc-trace-v1.yml
 - profile: homebrew
   patch: darlingserver/pthread-cancellation-rpc-trace.patch
   artifact: patches/homebrew/darlingserver/pthread-cancellation-rpc-trace.patch
@@ -1586,11 +1587,11 @@ stacks:
   expected_tree: 60b8eb18a84276ed4c22136d4170398395191c0f
   artifact_count: 1
   commit_count: 1
-  object_closure: trusted_worktree_only
+  object_closure: hosted_immutable_clean_odb
   linearity: verified
-  classification: RECOVERABLE_LOCAL
-  reason: exact source/base/tree available only from trusted worktree after incomplete
-    bundle closure
+  classification: ALREADY_MIGRATED
+  reason: exact objects recovered from trusted Darlingserver worktree into an isolated clean ODB
+  lock: locks/patch-stack/darlingserver-pthread-cancellation-rpc-trace-v1.yml
 - profile: homebrew
   patch: darlingserver/eunion-exec-path-trace.patch
   artifact: patches/homebrew/darlingserver/eunion-exec-path-trace.patch
@@ -1605,11 +1606,11 @@ stacks:
   expected_tree: 0b306c52f1d719f2f8363fec055f4e1139a4f74d
   artifact_count: 1
   commit_count: 1
-  object_closure: trusted_worktree_only
+  object_closure: hosted_immutable_clean_odb
   linearity: verified
-  classification: RECOVERABLE_LOCAL
-  reason: exact source/base/tree available only from trusted worktree after incomplete
-    bundle closure
+  classification: ALREADY_MIGRATED
+  reason: exact objects recovered from trusted Darlingserver worktree into an isolated clean ODB
+  lock: locks/patch-stack/darlingserver-eunion-exec-path-trace-v1.yml
 - profile: homebrew
   patch: darlingserver/rootless-runtime-integration.patch
   artifact: patches/homebrew/darlingserver/rootless-runtime-integration.patch
@@ -1624,11 +1625,11 @@ stacks:
   expected_tree: e6f9f96624964c34d744b32899b2704ca77e2e45
   artifact_count: 1
   commit_count: 1
-  object_closure: trusted_worktree_only
+  object_closure: hosted_immutable_clean_odb
   linearity: verified
-  classification: RECOVERABLE_LOCAL
-  reason: exact source/base/tree available only from trusted worktree after incomplete
-    bundle closure
+  classification: ALREADY_MIGRATED
+  reason: exact objects recovered from trusted Darlingserver worktree into an isolated clean ODB
+  lock: locks/patch-stack/darlingserver-rootless-runtime-integration-v1.yml
 - profile: homebrew
   patch: darling/rootless-runtime-integration.patch
   artifact: patches/homebrew/darling/rootless-runtime-integration.patch
@@ -1862,11 +1863,11 @@ stacks:
   expected_tree: b2707df06504eeb63d850ad9a534d59a6d5ecc3d
   artifact_count: 1
   commit_count: 1
-  object_closure: trusted_worktree_only
+  object_closure: hosted_immutable_clean_odb
   linearity: verified
-  classification: RECOVERABLE_LOCAL
-  reason: exact source/base/tree available only from trusted worktree after incomplete
-    bundle closure
+  classification: ALREADY_MIGRATED
+  reason: exact objects recovered from trusted Darlingserver worktree into an isolated clean ODB
+  lock: locks/patch-stack/darlingserver-perf18-server-ring-v1.yml
 - profile: perf
   patch: darlingserver/a0-hang-fixes.patch
   artifact: patches/perf/darlingserver/a0-hang-fixes.patch
@@ -1881,11 +1882,11 @@ stacks:
   expected_tree: 83dd1cf34776e25123573165f5c22029b9cf5ab3
   artifact_count: 1
   commit_count: 1
-  object_closure: trusted_worktree_only
+  object_closure: hosted_immutable_clean_odb
   linearity: verified
-  classification: RECOVERABLE_LOCAL
-  reason: exact source/base/tree available only from trusted worktree after incomplete
-    bundle closure
+  classification: ALREADY_MIGRATED
+  reason: exact objects recovered from trusted Darlingserver worktree into an isolated clean ODB
+  lock: locks/patch-stack/darlingserver-a0-hang-fixes-v1.yml
 - profile: perf
   patch: xnu/j7e7-lane-wakefd-sentinel.patch
   artifact: patches/perf/xnu/j7e7-lane-wakefd-sentinel.patch
@@ -1919,12 +1920,12 @@ stacks:
   expected_tree: b4f458fb4b033e60deaa4828b909886830233535
   artifact_count: 1
   commit_count: 1
-  object_closure: trusted_worktree_only
+  object_closure: hosted_immutable_clean_odb
   linearity: verified
-  classification: RECOVERABLE_LOCAL
-  reason: exact source/base/tree available only from trusted worktree after incomplete
-    bundle closure
+  classification: ALREADY_MIGRATED
+  reason: exact objects recovered from trusted Darlingserver worktree into an isolated clean ODB
+  lock: locks/patch-stack/darlingserver-j7e7-postfork-reset-gate-v1.yml
 summary:
   READY: 0
-  RECOVERABLE_LOCAL: 47
-  ALREADY_MIGRATED: 47
+  RECOVERABLE_LOCAL: 7
+  ALREADY_MIGRATED: 87
