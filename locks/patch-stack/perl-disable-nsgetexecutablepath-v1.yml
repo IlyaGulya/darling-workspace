@@ -1,0 +1,12 @@
+schema_version: 2
+project: {name: darling-perl, path: .}
+upstream: {url: https://github.com/darlinghq/darling-perl.git, base_commit: a65d68be2146d85928e511aabc8f3a2b05e564ba}
+mirror:
+  url: https://github.com/darling-next/darling-perl.git
+  base_ref: refs/tags/patch-stack/v1/bases/a65d68be2146d85928e511aabc8f3a2b05e564ba
+  base_oid: a65d68be2146d85928e511aabc8f3a2b05e564ba
+  source_ref: refs/tags/patch-stack/v1/sources/b37ac3179fae9e090104d93a218c835452e17c21
+  source_oid: b37ac3179fae9e090104d93a218c835452e17c21
+source_commit: b37ac3179fae9e090104d93a218c835452e17c21
+ordered_commits: [b37ac3179fae9e090104d93a218c835452e17c21]
+expected_tree: 4f1f2a7a7818800a8e39d1cddbcf7832c246e375
