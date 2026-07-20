@@ -23,7 +23,82 @@ def must_fail(function, *args) -> None:
     raise AssertionError("acceptance unexpectedly passed")
 
 
+def run(*args: str, cwd: Path | None = None) -> None:
+    subprocess.run(args, cwd=cwd, check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+
+
+def parent_clean_fixtures(root: Path) -> None:
+    """Exercise parent_clean() against real Git status and repositories."""
+    parent, source = root / "parent", root / "source"
+    run("git", "init", "-q", str(source)); run("git", "-C", str(source), "config", "user.name", "Test"); run("git", "-C", str(source), "config", "user.email", "test@example.invalid")
+    (source / "x").write_text("x\n"); run("git", "-C", str(source), "add", "x"); run("git", "-C", str(source), "commit", "-qm", "base")
+    run("git", "init", "-q", str(parent)); run("git", "-C", str(parent), "config", "user.name", "Test"); run("git", "-C", str(parent), "config", "user.email", "test@example.invalid")
+    run("git", "-C", str(parent), "-c", "protocol.file.allow=always", "submodule", "add", "-q", str(source), "child"); run("git", "-C", str(parent), "commit", "-qm", "submodule")
+    child = parent / "child"; (child / "x").write_text("changed\n"); run("git", "-C", str(child), "commit", "-am", "advance")
+    nested = {"child": {"path": child}}
+    assert acceptance.parent_clean(parent, nested) == [{"xy": " M", "path": "child", "kind": "modified_gitlink"}]
+    run("git", "-C", str(parent), "add", "child"); must_fail(acceptance.parent_clean, parent, nested)
+    run("git", "-C", str(parent), "reset", "--hard", "-q", "HEAD"); run("git", "-C", str(child), "reset", "--hard", "-q", "HEAD~1")
+    untracked = parent / "nested"; run("git", "init", "-q", str(untracked)); run("git", "-C", str(untracked), "config", "user.name", "Test"); run("git", "-C", str(untracked), "config", "user.email", "test@example.invalid"); (untracked / "x").write_text("x\n"); run("git", "-C", str(untracked), "add", "x"); run("git", "-C", str(untracked), "commit", "-qm", "nested")
+    assert acceptance.parent_clean(parent, {"nested": {"path": untracked}}) == [{"xy": "??", "path": "nested/", "kind": "untracked_nested_repo"}]
+    (parent / "extra").write_text("x"); must_fail(acceptance.parent_clean, parent, {"nested": {"path": untracked}})
+    (parent / "extra").unlink(); (untracked / "x").write_text("dirty"); must_fail(acceptance.parent_clean, parent, {"nested": {"path": untracked}})
+    (untracked / "x").write_text("x\n"); run("git", "-C", str(untracked), "checkout", "--", "x")
+    # Exact path and exact child top-level are required: a managed-looking
+    # directory and a repository rooted elsewhere are not enough.
+    must_fail(acceptance.parent_clean, parent, {"nested": {"path": root}})
+    (parent / "nested").rename(parent / "other"); must_fail(acceptance.parent_clean, parent, {"nested": {"path": parent / "nested"}})
+    (parent / "other").rename(parent / "nested"); (parent / "nested").rename(parent / "target"); (parent / "nested").symlink_to("target", target_is_directory=True); must_fail(acceptance.parent_clean, parent, {"nested": {"path": parent / "nested"}})
+    (parent / "nested").unlink(); (parent / "target").rename(parent / "nested")
+    # An unmanaged directory/file, and an untracked nested path with a wrong
+    # Git top-level, all fail before any status normalization.
+    (parent / "unmanaged").mkdir(); (parent / "unmanaged/x").write_text("x\n"); must_fail(acceptance.parent_clean, parent, {"nested": {"path": untracked}}); (parent / "unmanaged/x").unlink(); (parent / "unmanaged").rmdir()
+    (parent / "file").write_text("x\n"); must_fail(acceptance.parent_clean, parent, {"nested": {"path": untracked}}); (parent / "file").unlink()
+    (parent / "plain").write_text("plain\n"); run("git", "-C", str(parent), "add", "plain"); run("git", "-C", str(parent), "commit", "-qm", "plain")
+    (parent / "plain").unlink(); must_fail(acceptance.parent_clean, parent, {"nested": {"path": untracked}}); run("git", "-C", str(parent), "checkout", "--", "plain")
+    (parent / "plain").rename(parent / "renamed"); run("git", "-C", str(parent), "add", "-A"); must_fail(acceptance.parent_clean, parent, {"nested": {"path": untracked}})
+    run("git", "-C", str(parent), "reset", "--hard", "-q", "HEAD"); (parent / "copy").write_text((parent / "plain").read_text()); run("git", "-C", str(parent), "add", "copy"); must_fail(acceptance.parent_clean, parent, {"nested": {"path": untracked}})
+    run("git", "-C", str(parent), "reset", "--hard", "-q", "HEAD")
+    wrong_top = parent / "wrong-top"; wrong_top.mkdir(); (wrong_top / "child").mkdir(); (wrong_top / "child/x").write_text("x\n")
+    must_fail(acceptance.parent_clean, parent, {"wrong-top": {"path": wrong_top / "child"}})
+    original_raw = acceptance.git_raw
+    acceptance.git_raw = lambda *_args: (_ for _ in ()).throw(acceptance.AcceptanceError("forced git failure"))
+    try:
+        must_fail(acceptance.parent_clean, parent, {"nested": {"path": untracked}})
+    finally:
+        acceptance.git_raw = original_raw
+
+
+def capture_git_failure_fixture(root: Path) -> None:
+    """A failed `git show HEAD:west.lock.yml` is an AcceptanceError."""
+    workspace = root / "capture"; (workspace / "patches/homebrew").mkdir(parents=True)
+    (workspace / "patches/homebrew/patches.yml").write_text("patches: []\n")
+    (workspace / "patches/homebrew/west.lock.yml").write_text("projects: {}\n")
+    (workspace / "west.lock.yml").write_text("manifest: {}\n")
+    original_command, original_raw = acceptance.command, acceptance.git_raw
+    acceptance.command = lambda _workspace, *args: str(workspace) if args == ("west", "topdir") else "darling\tdarling"
+    def show_fails(_repo: Path, *args: str) -> bytes:
+        if args == ("status", "--porcelain=v1", "-z", "--untracked-files=all"):
+            return b" M patches/homebrew/west.lock.yml\0"
+        if args == ("show", "HEAD:west.lock.yml"):
+            raise acceptance.AcceptanceError("forced git show failure")
+        raise AssertionError(f"unexpected git_raw call: {args}")
+    acceptance.git_raw = show_fails
+    try:
+        must_fail(acceptance.capture, workspace, "homebrew", root / "modules.json", root / "manifest.json")
+    finally:
+        acceptance.command, acceptance.git_raw = original_command, original_raw
+
+
 def main() -> None:
+    generated = "patches/homebrew/west.lock.yml"
+    assert acceptance.allowed_generated_status(acceptance.parse_porcelain(f" M {generated}\0".encode()), "homebrew")
+    assert not acceptance.allowed_generated_status(acceptance.parse_porcelain(f"M  {generated}\0".encode()), "homebrew")
+    for raw in (b" M patches/homebrew/west.lock.yml\0 M extra\0", b"?? patches/homebrew/west.lock.yml\0", b" D patches/homebrew/west.lock.yml\0", b"R  old\0new\0", b"C  old\0new\0", b"broken\0"):
+        try:
+            assert not acceptance.allowed_generated_status(acceptance.parse_porcelain(raw), "homebrew")
+        except acceptance.AcceptanceError:
+            pass
     workflow = (ROOT / ".github/workflows/patch-stack-shadow.yml").read_text()
     assert "on:\n  workflow_dispatch:" in workflow
     assert "push:" not in workflow and "schedule:" not in workflow
@@ -77,6 +152,8 @@ def main() -> None:
     try:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
+            parent_clean_fixtures(root / "parent-clean")
+            capture_git_failure_fixture(root / "capture-git-failure")
             # West project names are normalized independently from their
             # manifest paths.  patches.yml must select by the latter.
             acceptance.command = lambda _workspace, *args: str(root) if args == ("west", "topdir") else "darling\tdarling\ndarling-src-external-xnu\tdarling/src/external/xnu"
