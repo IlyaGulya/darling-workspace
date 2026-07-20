@@ -34,11 +34,24 @@ def main() -> None:
     assert "SHADOW_ROOT: ${{ runner.temp }}" not in workflow
     assert workflow.index("- name: Configure disposable paths") < workflow.index("- uses: actions/checkout@v7")
     assert "printf 'SHADOW_ROOT=%s\\n' \"$RUNNER_TEMP/patch-stack-shadow\" >>\"$GITHUB_ENV\"" in workflow
+    assert "printf 'SHADOW_TOOLS=%s\\n' \"$RUNNER_TEMP/patch-stack-shadow-tools\" >>\"$GITHUB_ENV\"" in workflow
     assert "printf 'TMPDIR=%s\\n' \"$RUNNER_TEMP\" >>\"$GITHUB_ENV\"" in workflow
+    assert "python3 -m venv \"$SHADOW_TOOLS\"" in workflow
+    assert "\"$SHADOW_TOOLS/bin/pip\" install west" in workflow
+    assert "\"$SHADOW_TOOLS/bin\" >>\"$GITHUB_PATH\"" in workflow
+    assert workflow.count("HOME=\"$home\" west --version") == 1
+    assert workflow.count("HOME=\"$home\" \"$SHADOW_TOOLS/bin/python\" -c 'import west'") == 1
+    assert workflow.count("git -C \"$project\" config user.name 'West Shadow Acceptance'") == 2
+    assert workflow.count("git -C \"$project\" config user.email west-shadow@example.invalid") == 2
+    assert workflow.count("git -C \"$project\" config --local user.name") == 2
+    assert workflow.count("git -C \"$project\" config --local user.email") == 2
     assert workflow.count('SHADOW_ROOT="${SHADOW_ROOT:-$RUNNER_TEMP/patch-stack-shadow}"') >= 3
     assert 'mkdir -p "$SHADOW_ROOT/evidence"' in workflow
     assert "\\( -name .git -type d -o -name .git -type f \\)" in workflow
     assert "west-patch-shadow-* west-lock-materialize-*" in workflow
+    assert 'SHADOW_TOOLS="${SHADOW_TOOLS:-$RUNNER_TEMP/patch-stack-shadow-tools}"' in workflow
+    assert 'rm -rf -- "$SHADOW_ROOT/control" "$SHADOW_ROOT/shadow" "$SHADOW_TOOLS"' in workflow
+    assert '[[ ! -e "$SHADOW_TOOLS" ]] || status=1' in workflow
     assert 'git -C "$worktree" rev-parse --git-path rebase-apply' in workflow
     assert 'git -C "$worktree" am --abort' in workflow
     assert workflow.count("west patch apply --profile homebrew\n") == 1
