@@ -4,6 +4,31 @@ This repository contains private coordination state, not Darling source code.
 It is the source of truth for workspace manifests, tasks, unpublished branch
 refs, PR drafts, and agent handoff.
 
+## Project tool environment
+
+- `mise.toml` is the canonical host-side CLI environment for this workspace.
+  On a fresh checkout, review it, run `mise trust`, then run `mise install`
+  from `darling-workspace`; from the West workspace root use
+  `mise -C darling-workspace trust` and `mise -C darling-workspace install`.
+- Run pinned project CLIs through mise: `mise exec -- west ...` and
+  `mise exec -- uv ...`. From the West workspace root, add
+  `-C darling-workspace`, for example
+  `mise -C darling-workspace exec -- west status`.
+- Every bare `west` or `uv` example below is shorthand for that mise-managed
+  invocation unless the current shell is already activated by this config.
+- Do not depend on globally selected mise shims or a user-global `uv`/`west`.
+  A bare command is acceptable only inside a shell already activated by this
+  project's mise configuration.
+- Do not use `python3 -m venv` or `ensurepip` for automation. Some supported
+  hosts intentionally ship Python without `ensurepip`. Create isolated
+  environments with `mise exec -- uv venv <path>` and install packages with
+  `mise exec -- uv pip install --python <path>/bin/python ...`.
+- A clean isolated West environment uses the pinned versions, for example:
+  `mise exec -- uv venv <path>` followed by
+  `mise exec -- uv pip install --python <path>/bin/python west==1.5.0`.
+  Do not install tools into the system Python or mutate the user's global
+  Python environment.
+
 - Canonical fix source: the clean `fix/*` branch.
 - Portable integration source: patch files and `patches.yml`.
 - Canonical PR text: `pr-drafts/*.md`.
