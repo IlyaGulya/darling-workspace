@@ -16,4 +16,7 @@ assert "git clone --no-local --no-hardlinks" in workflow and "fetch-depth: 0" in
 assert "cleanup_status=" in workflow and "if: always()" in workflow
 assert "west-patch-shadow-* west-lock-materialize-* west-patch-lock-first-*" in workflow
 assert "patch-stack-lock-first-acceptance" in workflow
+acceptance = (ROOT / "ci/patch_stack_shadow_acceptance.py").read_text()
+assert '"lock-first-evidence.json"' in acceptance
+assert 'evidence.parent.glob(f"{evidence.stem}*{evidence.suffix}")' in acceptance
 print("patch-stack lock-first hosted-workflow contract: PASS")
