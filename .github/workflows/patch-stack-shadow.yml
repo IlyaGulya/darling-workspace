@@ -2,18 +2,13 @@ name: Manual patch-stack shadow acceptance
 
 on:
   workflow_dispatch:
-  push:
-    branches:
-      - rewrite/rootless-ci-series
-    paths:
-      - .github/workflows/patch-stack-shadow.yml
 
 permissions:
   contents: read
 
 jobs:
   patch-stack-shadow:
-    if: github.event_name == 'workflow_dispatch' || github.event_name == 'push'
+    if: github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
     timeout-minutes: 25
     env:
