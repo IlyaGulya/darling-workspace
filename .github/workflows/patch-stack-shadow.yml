@@ -13,9 +13,11 @@ jobs:
     timeout-minutes: 25
     env:
       DARLING_WEST_UPDATE_JOBS: 8
-      SHADOW_ROOT: ${{ runner.temp }}/patch-stack-shadow
-      TMPDIR: ${{ runner.temp }}
     steps:
+      - name: Configure disposable paths
+        run: |
+          printf 'SHADOW_ROOT=%s\n' "$RUNNER_TEMP/patch-stack-shadow" >>"$GITHUB_ENV"
+          printf 'TMPDIR=%s\n' "$RUNNER_TEMP" >>"$GITHUB_ENV"
       - uses: actions/checkout@v7
         with:
           path: darling-dev/darling-workspace
@@ -65,6 +67,7 @@ jobs:
         working-directory: ${{ github.workspace }}/darling-dev/darling-workspace
         run: |
           set -euo pipefail
+          SHADOW_ROOT="${SHADOW_ROOT:-$RUNNER_TEMP/patch-stack-shadow}"
           python3 ci/patch_stack_shadow_acceptance.py compare \
             --control "$SHADOW_ROOT/evidence/control-modules.json" \
             --shadow "$SHADOW_ROOT/evidence/shadow-modules.json" \
@@ -80,6 +83,7 @@ jobs:
         run: |
           set +e
           status=0
+          SHADOW_ROOT="${SHADOW_ROOT:-$RUNNER_TEMP/patch-stack-shadow}"
           mkdir -p "$SHADOW_ROOT/evidence" || status=1
           for repo in "$SHADOW_ROOT"/{control,shadow}/darling-workspace; do
             if [[ -d "$repo" ]]; then
@@ -108,7 +112,9 @@ jobs:
       - name: Stage and validate artifact
         if: always()
         working-directory: ${{ github.workspace }}/darling-dev/darling-workspace
-        run: python3 ci/patch_stack_shadow_acceptance.py stage --source "$SHADOW_ROOT/evidence" --artifact "$SHADOW_ROOT/artifact"
+        run: |
+          SHADOW_ROOT="${SHADOW_ROOT:-$RUNNER_TEMP/patch-stack-shadow}"
+          python3 ci/patch_stack_shadow_acceptance.py stage --source "$SHADOW_ROOT/evidence" --artifact "$SHADOW_ROOT/artifact"
       - name: Upload shadow acceptance evidence
         if: always()
         uses: actions/upload-artifact@v7

@@ -30,7 +30,12 @@ def main() -> None:
     assert "runs-on: ubuntu-latest" in workflow and "timeout-minutes: 25" in workflow
     assert "fetch-depth: 0" in workflow and "--no-local --no-hardlinks" in workflow
     assert "actions/cache@" not in workflow and "XDG_CACHE_HOME:" in workflow
-    assert "TMPDIR: ${{ runner.temp }}" in workflow
+    assert "TMPDIR: ${{ runner.temp }}" not in workflow
+    assert "SHADOW_ROOT: ${{ runner.temp }}" not in workflow
+    assert workflow.index("- name: Configure disposable paths") < workflow.index("- uses: actions/checkout@v7")
+    assert "printf 'SHADOW_ROOT=%s\\n' \"$RUNNER_TEMP/patch-stack-shadow\" >>\"$GITHUB_ENV\"" in workflow
+    assert "printf 'TMPDIR=%s\\n' \"$RUNNER_TEMP\" >>\"$GITHUB_ENV\"" in workflow
+    assert workflow.count('SHADOW_ROOT="${SHADOW_ROOT:-$RUNNER_TEMP/patch-stack-shadow}"') >= 3
     assert 'mkdir -p "$SHADOW_ROOT/evidence"' in workflow
     assert "\\( -name .git -type d -o -name .git -type f \\)" in workflow
     assert "west-patch-shadow-* west-lock-materialize-*" in workflow
