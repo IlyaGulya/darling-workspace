@@ -27,6 +27,7 @@ ARTIFACT_ALLOWLIST = {
     "acceptance-result.json",
     "cleanup.txt",
     "diagnostics.txt",
+    "capture-diagnostics.json",
 }
 MAX_ARTIFACT_BYTES = 1_000_000
 MAX_GENERATED_LOCK_BYTES = 1_000_000
@@ -37,6 +38,13 @@ def git(repo: Path, *args: str) -> str:
     if result.returncode:
         raise AcceptanceError(f"{repo}: git {' '.join(args)} failed: {result.stderr.strip()}")
     return result.stdout.strip()
+
+
+def git_raw(repo: Path, *args: str) -> bytes:
+    result = subprocess.run(["git", *args], cwd=repo, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    if result.returncode:
+        raise AcceptanceError(f"{repo}: git {' '.join(args)} failed: {result.stderr.decode(errors='replace').strip()}")
+    return result.stdout
 
 
 def git_optional(repo: Path, *args: str) -> str:
@@ -53,14 +61,16 @@ def command(workspace: Path, *args: str) -> str:
     return result.stdout.strip()
 
 
-def projects(workspace: Path) -> dict[str, dict[str, Any]]:
+def projects(workspace: Path, top: Path | None = None) -> dict[str, dict[str, Any]]:
     """Index West projects by manifest path, not their display name.
 
     Patches.yml refers to module paths (for example
     ``darling/src/external/xnu``), while West's project name is separately
     normalized (``darling-src-external-xnu``).
     """
-    top = Path(command(workspace, "west", "topdir"))
+    # Capture obtains this once and passes it here.  Keep the optional form
+    # for the standalone transaction-state checker.
+    top = top or Path(command(workspace, "west", "topdir"))
     result = {}
     for line in command(workspace, "west", "list", "-f", "{name}\t{path}").splitlines():
         name, relative = line.split("\t", 1)
@@ -90,40 +100,81 @@ def touched_projects(profile_data: dict[str, Any], available: dict[str, dict[str
     return modules
 
 
+def parse_porcelain(raw: bytes) -> list[tuple[str, str]]:
+    entries = []
+    for item in raw.split(b"\0"):
+        if not item:
+            continue
+        fail(len(item) >= 4 and item[2:3] == b" ", f"malformed porcelain entry: {item!r}")
+        entries.append((item[:2].decode(), item[3:].decode()))
+    return entries
+
+
+def allowed_generated_status(entries: list[tuple[str, str]], profile: str) -> bool:
+    return len(entries) == 1 and entries[0][1] == f"patches/{profile}/west.lock.yml" and entries[0][0] == " M"
+
+
+def parent_clean(repo: Path, nested: dict[str, dict[str, Any]]) -> list[dict[str, str]]:
+    approved = []
+    for xy, path in parse_porcelain(git_raw(repo, "status", "--porcelain=v1", "-z", "--untracked-files=all")):
+        child = nested.get(path.rstrip("/"))
+        if xy == " M" and child and git(repo, "ls-files", "-s", "--", path).startswith("160000 "):
+            approved.append({"xy": xy, "path": path, "kind": "modified_gitlink"}); continue
+        if xy == "??" and path.endswith("/") and child and child["path"].is_dir() and not child["path"].is_symlink() and git(child["path"], "rev-parse", "--show-toplevel") == str(child["path"]) and git(child["path"], "status", "--porcelain") == "":
+            assert_clean_odb(child["path"]); approved.append({"xy": xy, "path": path, "kind": "untracked_nested_repo"}); continue
+        raise AcceptanceError(f"dirty parent entry: {(xy, path)}")
+    return approved
+
+
 def capture(workspace: Path, profile: str, modules_path: Path, manifest_path: Path) -> None:
     profile_data = yaml.safe_load((workspace / "patches" / profile / "patches.yml").read_text())
-    available = projects(workspace)
+    top = Path(command(workspace, "west", "topdir"))
+    available = projects(workspace, top)
     modules = touched_projects(profile_data, available)
     # The run is only trustworthy if every materialized project has an
     # independent complete object database and the production workspace is
     # clean, not merely the modules that happen to receive mbox patches.
     generated = workspace / "patches" / profile / "west.lock.yml"
+    status_raw = git_raw(workspace, "status", "--porcelain=v1", "-z", "--untracked-files=all")
+    entries = parse_porcelain(status_raw)
+    generated_bytes = generated.read_bytes() if generated.is_file() and not generated.is_symlink() else b""
+    frozen = workspace / "west.lock.yml"
+    # git_raw deliberately converts a missing/broken Git object lookup into
+    # AcceptanceError; do not turn that failure into a false cleanliness bit.
+    frozen_ok = frozen.read_bytes() == git_raw(workspace, "show", "HEAD:west.lock.yml")
+    diagnostic = {"phase": "capture", "manifest_status_entries": [{"xy": xy, "path": path} for xy, path in entries], "generated_lock": {"exists": generated.exists(), "regular_file": generated.is_file() and not generated.is_symlink(), "size": len(generated_bytes), "sha256": hashlib.sha256(generated_bytes).hexdigest() if generated_bytes else None}, "frozen_lock_unchanged": frozen_ok}
+    (manifest_path.parent / "capture-diagnostics.json").write_text(json.dumps(diagnostic, sort_keys=True, indent=2) + "\n")
     fail(generated.is_file() and not generated.is_symlink(), "generated profile lock is not a regular file")
-    generated_bytes = generated.read_bytes()
     fail(len(generated_bytes) <= MAX_GENERATED_LOCK_BYTES, "generated profile lock is too large")
     try:
         fail(isinstance(yaml.safe_load(generated_bytes), dict), "generated profile lock is not YAML mapping")
     except yaml.YAMLError as error:
         raise AcceptanceError(f"generated profile lock is invalid YAML: {error}") from error
-    root_status = git(workspace, "status", "--porcelain", "--ignore-submodules=none")
-    fail(root_status == f" M patches/{profile}/west.lock.yml", "manifest repo has changes other than generated profile lock")
-    frozen = workspace / "west.lock.yml"
-    fail(frozen.read_bytes() == subprocess.run(["git", "show", "HEAD:west.lock.yml"], cwd=workspace, stdout=subprocess.PIPE, check=True).stdout, "frozen root manifest changed")
+    expected = f"patches/{profile}/west.lock.yml"
+    fail(allowed_generated_status(entries, profile), f"manifest repo has invalid changes: {entries}")
+    fail(frozen_ok, "frozen root manifest changed")
+    validated_parents = {}
     for project in available.values():
         repo = project["path"]
         assert_clean_odb(repo)
-        if repo != workspace:
+        nested = {str(p["path"].relative_to(repo)): p for p in available.values() if p["path"] != repo and p["path"].is_relative_to(repo)}
+        if repo != workspace and nested:
+            validated_parents[str(repo.relative_to(top))] = parent_clean(repo, nested)
+        elif repo != workspace:
             fail(git(repo, "status", "--porcelain", "--ignore-submodules=none") == "", f"dirty workspace project: {repo}")
     rows = []
     for module in sorted(modules):
         project = available[module]
         repo = project["path"]
         status = git(repo, "status", "--porcelain", "--ignore-submodules=none")
+        relative = str(repo.relative_to(top))
+        if relative in validated_parents:
+            status = ""
         ref = f"refs/heads/integration/{profile}"
         rows.append({
             "module": module,
             "west_name": project["name"],
-            "path": str(repo.relative_to(Path(command(workspace, "west", "topdir")))),
+            "path": relative,
             "integration_oid": git(repo, "rev-parse", ref),
             "tree": git(repo, "rev-parse", f"{ref}^{{tree}}"),
             "status": status,
@@ -133,6 +184,7 @@ def capture(workspace: Path, profile: str, modules_path: Path, manifest_path: Pa
         "workspace_commit": git(workspace, "rev-parse", "HEAD"),
         "frozen_manifest_sha256": hashlib.sha256((workspace / "west.lock.yml").read_bytes()).hexdigest(),
         "generated_profile_lock": {"sha256": hashlib.sha256(generated_bytes).hexdigest(), "size": len(generated_bytes)},
+        "validated_nested_children": validated_parents,
     }, sort_keys=True, indent=2) + "\n")
 
 
