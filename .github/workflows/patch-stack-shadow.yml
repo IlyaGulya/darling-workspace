@@ -1,0 +1,119 @@
+name: Manual patch-stack shadow acceptance
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  patch-stack-shadow:
+    if: github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    env:
+      DARLING_WEST_UPDATE_JOBS: 8
+      SHADOW_ROOT: ${{ runner.temp }}/patch-stack-shadow
+      TMPDIR: ${{ runner.temp }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          path: darling-dev/darling-workspace
+          fetch-depth: 0
+      - name: Install West
+        run: python3 -m pip install west
+      - name: Create identical frozen-manifest workspaces
+        run: |
+          set -euo pipefail
+          mkdir -p "$SHADOW_ROOT/evidence"
+          for side in control shadow; do
+            git clone --no-local --no-hardlinks \
+              "$GITHUB_WORKSPACE/darling-dev/darling-workspace" \
+              "$SHADOW_ROOT/$side/darling-workspace"
+            git -C "$SHADOW_ROOT/$side/darling-workspace" checkout --detach "$GITHUB_SHA"
+            test "$(git -C "$SHADOW_ROOT/$side/darling-workspace" rev-parse HEAD)" = "$GITHUB_SHA"
+          done
+      - name: Control legacy materialization
+        working-directory: ${{ runner.temp }}/patch-stack-shadow/control/darling-workspace
+        env:
+          HOME: ${{ runner.temp }}/patch-stack-shadow/control-home
+          XDG_CACHE_HOME: ${{ runner.temp }}/patch-stack-shadow/control-cache
+        run: |
+          set -euo pipefail
+          ci/bootstrap-west.sh
+          west patch apply --profile homebrew
+          python3 ci/patch_stack_shadow_acceptance.py capture \
+            --workspace "$PWD" --profile homebrew \
+            --modules "$SHADOW_ROOT/evidence/control-modules.json" \
+            --manifest "$SHADOW_ROOT/evidence/control-manifest.json"
+      - name: Shadow canonical comparison
+        working-directory: ${{ runner.temp }}/patch-stack-shadow/shadow/darling-workspace
+        env:
+          HOME: ${{ runner.temp }}/patch-stack-shadow/shadow-home
+          XDG_CACHE_HOME: ${{ runner.temp }}/patch-stack-shadow/shadow-cache
+        run: |
+          set -euo pipefail
+          ci/bootstrap-west.sh
+          west patch apply --profile homebrew --shadow-lock \
+            --shadow-evidence "$SHADOW_ROOT/evidence/shadow-evidence.json"
+          python3 ci/patch_stack_shadow_acceptance.py capture \
+            --workspace "$PWD" --profile homebrew \
+            --modules "$SHADOW_ROOT/evidence/shadow-modules.json" \
+            --manifest "$SHADOW_ROOT/evidence/shadow-manifest.json"
+      - name: Compare control and shadow evidence
+        if: always()
+        working-directory: ${{ github.workspace }}/darling-dev/darling-workspace
+        run: |
+          set -euo pipefail
+          python3 ci/patch_stack_shadow_acceptance.py compare \
+            --control "$SHADOW_ROOT/evidence/control-modules.json" \
+            --shadow "$SHADOW_ROOT/evidence/shadow-modules.json" \
+            --control-manifest "$SHADOW_ROOT/evidence/control-manifest.json" \
+            --shadow-manifest "$SHADOW_ROOT/evidence/shadow-manifest.json" \
+            --evidence "$SHADOW_ROOT/evidence/shadow-evidence.json" \
+            --lock locks/patch-stack/darling-sandbox-exec-pass-through-v1.yml \
+            --control-workspace "$SHADOW_ROOT/control/darling-workspace" \
+            --shadow-workspace "$SHADOW_ROOT/shadow/darling-workspace" \
+            --result "$SHADOW_ROOT/evidence/acceptance-result.json"
+      - name: Cleanup shadow workspaces
+        if: always()
+        run: |
+          set +e
+          status=0
+          mkdir -p "$SHADOW_ROOT/evidence" || status=1
+          for repo in "$SHADOW_ROOT"/{control,shadow}/darling-workspace; do
+            if [[ -d "$repo" ]]; then
+              while IFS= read -r gitdir; do
+                worktree="$(dirname "$gitdir")"
+                am_path="$(git -C "$worktree" rev-parse --git-path rebase-apply 2>/dev/null)" || {
+                  status=1
+                  continue
+                }
+                [[ "$am_path" = /* ]] || am_path="$worktree/$am_path"
+                if [[ -e "$am_path" ]] && ! git -C "$worktree" am --abort >/dev/null 2>&1; then
+                  status=1
+                fi
+              done < <(find "$repo/.." \( -name .git -type d -o -name .git -type f \) -print 2>/dev/null)
+            fi
+          done
+          rm -rf -- "$SHADOW_ROOT/control" "$SHADOW_ROOT/shadow" || status=1
+          for pattern in west-patch-shadow-* west-lock-materialize-*; do
+            find "$RUNNER_TEMP" -maxdepth 1 -name "$pattern" -print -quit | grep -q . && status=1
+          done
+          "$GITHUB_WORKSPACE/darling-dev/darling-workspace/scripts/west-job.sh" \
+            assert-no-live-west-test --state-root "$RUNNER_TEMP" || status=1
+          printf 'cleanup_status=%s\n' "$status" >"$SHADOW_ROOT/evidence/cleanup.txt"
+          printf 'hosted shadow tier: control/shadow roots removed; no live West jobs checked\n' >"$SHADOW_ROOT/evidence/diagnostics.txt"
+          exit "$status"
+      - name: Stage and validate artifact
+        if: always()
+        working-directory: ${{ github.workspace }}/darling-dev/darling-workspace
+        run: python3 ci/patch_stack_shadow_acceptance.py stage --source "$SHADOW_ROOT/evidence" --artifact "$SHADOW_ROOT/artifact"
+      - name: Upload shadow acceptance evidence
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: patch-stack-shadow-acceptance
+          if-no-files-found: warn
+          retention-days: 14
+          path: ${{ runner.temp }}/patch-stack-shadow/artifact
