@@ -1,0 +1,142 @@
+name: Manual patch-stack lock-first acceptance
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  patch-stack-lock-first:
+    if: github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    env:
+      DARLING_WEST_UPDATE_JOBS: 8
+    steps:
+      - name: Configure disposable paths
+        run: |
+          printf 'LOCK_FIRST_ROOT=%s\n' "$RUNNER_TEMP/patch-stack-lock-first" >>"$GITHUB_ENV"
+          printf 'LOCK_FIRST_TOOLS=%s\n' "$RUNNER_TEMP/patch-stack-lock-first-tools" >>"$GITHUB_ENV"
+          printf 'TMPDIR=%s\n' "$RUNNER_TEMP" >>"$GITHUB_ENV"
+      - uses: actions/checkout@v7
+        with:
+          path: darling-dev/darling-workspace
+          fetch-depth: 0
+      - name: Install isolated West
+        run: |
+          set -euo pipefail
+          python3 -m venv "$LOCK_FIRST_TOOLS"
+          "$LOCK_FIRST_TOOLS/bin/pip" install west
+          printf '%s\n' "$LOCK_FIRST_TOOLS/bin" >>"$GITHUB_PATH"
+      - name: Create identical frozen-manifest workspaces
+        run: |
+          set -euo pipefail
+          mkdir -p "$LOCK_FIRST_ROOT/evidence"
+          for side in control lock-first; do
+            git clone --no-local --no-hardlinks \
+              "$GITHUB_WORKSPACE/darling-dev/darling-workspace" \
+              "$LOCK_FIRST_ROOT/$side/darling-workspace"
+            git -C "$LOCK_FIRST_ROOT/$side/darling-workspace" checkout --detach "$GITHUB_SHA"
+            test "$(git -C "$LOCK_FIRST_ROOT/$side/darling-workspace" rev-parse HEAD)" = "$GITHUB_SHA"
+          done
+      - name: Verify isolated West under empty homes
+        run: |
+          set -euo pipefail
+          for side in control lock-first; do
+            home="$LOCK_FIRST_ROOT/$side-home"
+            mkdir -p "$home"
+            HOME="$home" west --version
+            HOME="$home" "$LOCK_FIRST_TOOLS/bin/python" -c 'import west'
+          done
+      - name: Configure repository-local identity
+        run: |
+          set -euo pipefail
+          for side in control lock-first; do
+            workspace="$LOCK_FIRST_ROOT/$side/darling-workspace"
+            (cd "$workspace" && HOME="$LOCK_FIRST_ROOT/$side-home" ci/bootstrap-west.sh)
+            while IFS= read -r project; do
+              git -C "$project" config user.name 'West Lock-first Acceptance'
+              git -C "$project" config user.email west-lock-first@example.invalid
+            done < <(cd "$workspace" && HOME="$LOCK_FIRST_ROOT/$side-home" west list -f '{abspath}')
+          done
+      - name: Control legacy materialization
+        working-directory: ${{ runner.temp }}/patch-stack-lock-first/control/darling-workspace
+        env:
+          HOME: ${{ runner.temp }}/patch-stack-lock-first/control-home
+          XDG_CACHE_HOME: ${{ runner.temp }}/patch-stack-lock-first/control-cache
+        run: |
+          set -euo pipefail
+          west patch apply --profile homebrew
+          python3 ci/patch_stack_shadow_acceptance.py capture \
+            --workspace "$PWD" --profile homebrew \
+            --modules "$LOCK_FIRST_ROOT/evidence/control-modules.json" \
+            --manifest "$LOCK_FIRST_ROOT/evidence/control-manifest.json"
+      - name: Canonical lock-first materialization
+        working-directory: ${{ runner.temp }}/patch-stack-lock-first/lock-first/darling-workspace
+        env:
+          HOME: ${{ runner.temp }}/patch-stack-lock-first/lock-first-home
+          XDG_CACHE_HOME: ${{ runner.temp }}/patch-stack-lock-first/lock-first-cache
+        run: |
+          set -euo pipefail
+          west patch apply --profile homebrew --lock-first \
+            --lock-first-evidence "$LOCK_FIRST_ROOT/evidence/lock-first-evidence.json"
+          python3 ci/patch_stack_shadow_acceptance.py capture \
+            --workspace "$PWD" --profile homebrew \
+            --modules "$LOCK_FIRST_ROOT/evidence/lock-first-modules.json" \
+            --manifest "$LOCK_FIRST_ROOT/evidence/lock-first-manifest.json"
+      - name: Compare control and lock-first evidence
+        if: always()
+        working-directory: ${{ github.workspace }}/darling-dev/darling-workspace
+        run: |
+          set -euo pipefail
+          LOCK_FIRST_ROOT="${LOCK_FIRST_ROOT:-$RUNNER_TEMP/patch-stack-lock-first}"
+          python3 ci/patch_stack_shadow_acceptance.py compare \
+            --control "$LOCK_FIRST_ROOT/evidence/control-modules.json" \
+            --shadow "$LOCK_FIRST_ROOT/evidence/lock-first-modules.json" \
+            --control-manifest "$LOCK_FIRST_ROOT/evidence/control-manifest.json" \
+            --shadow-manifest "$LOCK_FIRST_ROOT/evidence/lock-first-manifest.json" \
+            --evidence "$LOCK_FIRST_ROOT/evidence/lock-first-evidence.json" \
+            --lock locks/patch-stack/darling-sandbox-exec-pass-through-v1.yml \
+            --control-workspace "$LOCK_FIRST_ROOT/control/darling-workspace" \
+            --shadow-workspace "$LOCK_FIRST_ROOT/lock-first/darling-workspace" \
+            --result "$LOCK_FIRST_ROOT/evidence/acceptance-result.json"
+      - name: Cleanup lock-first workspaces
+        if: always()
+        run: |
+          set +e
+          status=0
+          LOCK_FIRST_ROOT="${LOCK_FIRST_ROOT:-$RUNNER_TEMP/patch-stack-lock-first}"
+          LOCK_FIRST_TOOLS="${LOCK_FIRST_TOOLS:-$RUNNER_TEMP/patch-stack-lock-first-tools}"
+          mkdir -p "$LOCK_FIRST_ROOT/evidence" || status=1
+          for repo in "$LOCK_FIRST_ROOT"/{control,lock-first}/darling-workspace; do
+            [[ -d "$repo" ]] || continue
+            while IFS= read -r gitdir; do
+              worktree="$(dirname "$gitdir")"
+              am_path="$(git -C "$worktree" rev-parse --git-path rebase-apply 2>/dev/null)" || { status=1; continue; }
+              [[ "$am_path" = /* ]] || am_path="$worktree/$am_path"
+              [[ ! -e "$am_path" ]] || git -C "$worktree" am --abort >/dev/null 2>&1 || status=1
+            done < <(find "$repo/.." \( -name .git -type d -o -name .git -type f \) -print 2>/dev/null)
+          done
+          rm -rf -- "$LOCK_FIRST_ROOT/control" "$LOCK_FIRST_ROOT/lock-first" "$LOCK_FIRST_TOOLS" || status=1
+          [[ ! -e "$LOCK_FIRST_TOOLS" ]] || status=1
+          for pattern in west-patch-shadow-* west-lock-materialize-* west-patch-lock-first-*; do
+            find "$RUNNER_TEMP" -maxdepth 1 -name "$pattern" -print -quit | grep -q . && status=1
+          done
+          "$GITHUB_WORKSPACE/darling-dev/darling-workspace/scripts/west-job.sh" assert-no-live-west-test --state-root "$RUNNER_TEMP" || status=1
+          printf 'cleanup_status=%s\n' "$status" >"$LOCK_FIRST_ROOT/evidence/cleanup.txt"
+          exit "$status"
+      - name: Stage and validate artifact
+        if: always()
+        working-directory: ${{ github.workspace }}/darling-dev/darling-workspace
+        run: |
+          LOCK_FIRST_ROOT="${LOCK_FIRST_ROOT:-$RUNNER_TEMP/patch-stack-lock-first}"
+          python3 ci/patch_stack_shadow_acceptance.py stage --source "$LOCK_FIRST_ROOT/evidence" --artifact "$LOCK_FIRST_ROOT/artifact"
+      - name: Upload lock-first acceptance evidence
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: patch-stack-lock-first-acceptance
+          if-no-files-found: warn
+          retention-days: 14
+          path: ${{ runner.temp }}/patch-stack-lock-first/artifact

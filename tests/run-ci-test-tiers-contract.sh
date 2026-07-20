@@ -83,20 +83,26 @@ unset PATCH_STACK_MATERIALIZE_CONTRACT_SKIP_WEST_SUBPROCESS
 host_tier="$(sed -n '/^\thost)/,/^\tguest-smoke)/p' "$repo/ci/run-test-tier.sh")"
 printf '%s\n' "$host_tier" | grep -F -q 'tests/run-west-patch-stack-materialize-contract.sh'
 printf '%s\n' "$host_tier" | grep -F -q 'tests/run-west-patch-stack-shadow-contract.sh'
+printf '%s\n' "$host_tier" | grep -F -q 'tests/run-west-patch-stack-lock-first-contract.sh'
+printf '%s\n' "$host_tier" | grep -F -q 'tests/run-patch-stack-lock-first-hosted-workflow-contract.sh'
 printf '%s\n' "$host_tier" | grep -F -q 'tests/run-patch-stack-shadow-hosted-workflow-contract.sh'
 printf '%s\n' "$host_tier" | grep -F -q 'tests/run-patch-stack-migration-inventory-contract.sh'
 host_before_west="${host_tier%%exec west test*}"
 [[ "$host_before_west" == *'tests/run-west-patch-stack-materialize-contract.sh'* &&
 	"$host_before_west" == *'tests/run-west-patch-stack-shadow-contract.sh'* &&
+	"$host_before_west" == *'tests/run-west-patch-stack-lock-first-contract.sh'* &&
+	"$host_before_west" == *'tests/run-patch-stack-lock-first-hosted-workflow-contract.sh'* &&
 	"$host_before_west" == *'tests/run-patch-stack-shadow-hosted-workflow-contract.sh'* &&
 	"$host_before_west" == *'tests/run-patch-stack-migration-inventory-contract.sh'* ]] || {
 	echo 'host tier does not run patch-stack contracts before west test' >&2
 	exit 1
 }
 [[ "${host_before_west%%tests/run-west-patch-stack-shadow-contract.sh*}" == *'tests/run-west-patch-stack-materialize-contract.sh'* &&
-	"${host_before_west%%tests/run-patch-stack-shadow-hosted-workflow-contract.sh*}" == *'tests/run-west-patch-stack-shadow-contract.sh'* &&
+	"${host_before_west%%tests/run-west-patch-stack-lock-first-contract.sh*}" == *'tests/run-west-patch-stack-shadow-contract.sh'* &&
+	"${host_before_west%%tests/run-patch-stack-lock-first-hosted-workflow-contract.sh*}" == *'tests/run-west-patch-stack-lock-first-contract.sh'* &&
+	"${host_before_west%%tests/run-patch-stack-shadow-hosted-workflow-contract.sh*}" == *'tests/run-patch-stack-lock-first-hosted-workflow-contract.sh'* &&
 	"${host_before_west%%tests/run-patch-stack-migration-inventory-contract.sh*}" == *'tests/run-patch-stack-shadow-hosted-workflow-contract.sh'* ]] || {
-	echo 'host tier does not order materialize, shadow, hosted-workflow, inventory contracts' >&2
+	echo 'host tier does not order materialize, shadow, lock-first, hosted-workflow, inventory contracts' >&2
 	exit 1
 }
 "$repo/ci/run-test-tier.sh" guest-smoke

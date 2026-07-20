@@ -26,6 +26,7 @@ import test_manifest
 import patch_stack_preflight
 import patch_stack_materialize
 import patch_stack_shadow
+import patch_stack_lock_first
 from test_runtime import ROOTLESS_BOOTSTRAP_RESOURCE, ROOTLESS_BOOTSTRAP_TARGET
 
 
@@ -175,6 +176,15 @@ class DarlingPatch(WestCommand):
             if action == "apply":
                 command.add_argument("--roll-back", action="store_true")
                 command.add_argument(
+                    "--lock-first",
+                    action="store_true",
+                    help="opt in to canonical immutable-lock materialization for an approved series",
+                )
+                command.add_argument(
+                    "--lock-first-evidence",
+                    help="write independent legacy/canonical oracle evidence to this explicit path",
+                )
+                command.add_argument(
                     "--shadow-lock",
                     action="store_true",
                     help="opt in to canonical shadow comparison for an approved series",
@@ -312,6 +322,8 @@ class DarlingPatch(WestCommand):
                 args.roll_back,
                 args.shadow_lock,
                 args.shadow_evidence,
+                args.lock_first,
+                args.lock_first_evidence,
             )
         else:
             self._clean(args.profile, patches, args.force)
@@ -2239,12 +2251,18 @@ class DarlingPatch(WestCommand):
         roll_back: bool,
         shadow_lock: bool = False,
         shadow_evidence: str | None = None,
+        lock_first: bool = False,
+        lock_first_evidence: str | None = None,
     ):
         lock_source = Path(self.manifest.repo_abspath) / "west.lock.yml"
         if not lock_source.is_file():
             self.die(f"frozen manifest not found: {lock_source}")
         if shadow_evidence and not shadow_lock:
             self.die("--shadow-evidence requires --shadow-lock")
+        if lock_first_evidence and not lock_first:
+            self.die("--lock-first-evidence requires --lock-first")
+        if shadow_lock and lock_first:
+            self.die("--shadow-lock and --lock-first are mutually exclusive")
 
         # This is deliberately before generated-context preparation, branch
         # creation, or `git am`: malformed typed metadata must not mutate a
@@ -2254,6 +2272,12 @@ class DarlingPatch(WestCommand):
             try:
                 shadow_plan = patch_stack_shadow.plan(profile, patches)
             except patch_stack_shadow.ShadowError as error:
+                self.die(str(error))
+        lock_first_plan = None
+        if lock_first:
+            try:
+                lock_first_plan = patch_stack_lock_first.plan(profile, patches)
+            except patch_stack_lock_first.LockFirstError as error:
                 self.die(str(error))
 
         branch = f"integration/{profile}"
@@ -2271,6 +2295,7 @@ class DarlingPatch(WestCommand):
 
         touched = []
         shadow_runs = 0
+        lock_first_runs = 0
         try:
             for module, module_patches in grouped.items():
                 repo = self._repo(module)
@@ -2285,13 +2310,21 @@ class DarlingPatch(WestCommand):
                     self._reset_submodule_index(repo)
                 for patch in module_patches:
                     path = self._verify_patch(profile_dir, patch)
-                    git_for_patch_application(
-                        repo,
-                        "am",
-                        "--3way",
-                        "--committer-date-is-author-date",
-                        str(path),
-                    )
+                    if lock_first_plan and module == lock_first_plan["module"] and patch["path"] == lock_first_plan["patch"]:
+                        canonical = patch_stack_lock_first.materialize_into(
+                            repo, lock_first_plan, path,
+                            Path(lock_first_evidence) if lock_first_evidence else None,
+                        )
+                        lock_first_runs += 1
+                        self.inf(f"lock-first {patch['path']}: {canonical['tree']}")
+                    else:
+                        git_for_patch_application(
+                            repo,
+                            "am",
+                            "--3way",
+                            "--committer-date-is-author-date",
+                            str(path),
+                        )
                     if shadow_plan and module == shadow_plan["module"] and patch["path"] == shadow_plan["patch"]:
                         evidence = Path(shadow_evidence) if shadow_evidence else None
                         shadow = patch_stack_shadow.run_shadow(
@@ -2304,6 +2337,8 @@ class DarlingPatch(WestCommand):
                 self.inf(f"{module}: applied {len(module_patches)} patches")
             if shadow_plan and shadow_runs != 1:
                 raise RuntimeError("shadow plan was not invoked exactly once")
+            if lock_first_plan and lock_first_runs != 1:
+                raise RuntimeError("lock-first plan was not invoked exactly once")
             lock = self._record_integration(profile, grouped, integration_date)
             self.inf(f"wrote {lock}")
         except KeyboardInterrupt:
@@ -2311,7 +2346,7 @@ class DarlingPatch(WestCommand):
             # shadow comparison is running.  It must not leave that partial
             # integration branch behind.  Preserve ordinary no-shadow SIGINT
             # behavior, and never turn the interrupt into `die()` output.
-            if shadow_lock:
+            if shadow_lock or lock_first:
                 try:
                     for repo in touched:
                         self._abort_am(repo)
@@ -2322,7 +2357,7 @@ class DarlingPatch(WestCommand):
         except Exception as error:
             for repo in touched:
                 self._abort_am(repo)
-            if roll_back or shadow_lock:
+            if roll_back or shadow_lock or lock_first:
                 self._reset(profile, grouped, force=True)
             self.die(str(error))
 
