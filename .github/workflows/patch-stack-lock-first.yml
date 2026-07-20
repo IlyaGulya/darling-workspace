@@ -17,18 +17,30 @@ jobs:
       - name: Configure disposable paths
         run: |
           printf 'LOCK_FIRST_ROOT=%s\n' "$RUNNER_TEMP/patch-stack-lock-first" >>"$GITHUB_ENV"
-          printf 'LOCK_FIRST_TOOLS=%s\n' "$RUNNER_TEMP/patch-stack-lock-first-tools" >>"$GITHUB_ENV"
+          printf 'MISE_DATA_DIR=%s\n' "$RUNNER_TEMP/patch-stack-lock-first-mise-data" >>"$GITHUB_ENV"
           printf 'TMPDIR=%s\n' "$RUNNER_TEMP" >>"$GITHUB_ENV"
       - uses: actions/checkout@v7
         with:
           path: darling-dev/darling-workspace
           fetch-depth: 0
-      - name: Install isolated West
+      - name: Install project-pinned tools with mise
+        uses: jdx/mise-action@5228313ee0372e111a38da051671ca30fc5a96db # v3.6.3
+        with:
+          working_directory: darling-dev/darling-workspace
+          mise_dir: ${{ runner.temp }}/patch-stack-lock-first-mise-data
+          cache: false
+          cache_save: false
+      - name: Record project tool provenance
+        working-directory: ${{ github.workspace }}/darling-dev/darling-workspace
         run: |
           set -euo pipefail
-          python3 -m venv "$LOCK_FIRST_TOOLS"
-          "$LOCK_FIRST_TOOLS/bin/pip" install west
-          printf '%s\n' "$LOCK_FIRST_TOOLS/bin" >>"$GITHUB_PATH"
+          mkdir -p "$LOCK_FIRST_ROOT/evidence"
+          {
+            printf 'mise_version='; mise --version
+            printf 'uv_version='; mise exec -- uv --version
+            printf 'west_version='; mise exec -- west --version
+            printf 'mise_toml_sha256='; sha256sum mise.toml | awk '{print $1}'
+          } >"$LOCK_FIRST_ROOT/evidence/diagnostics.txt"
       - name: Create identical frozen-manifest workspaces
         run: |
           set -euo pipefail
@@ -46,19 +58,19 @@ jobs:
           for side in control lock-first; do
             home="$LOCK_FIRST_ROOT/$side-home"
             mkdir -p "$home"
-            HOME="$home" west --version
-            HOME="$home" "$LOCK_FIRST_TOOLS/bin/python" -c 'import west'
+            HOME="$home" mise exec -- west --version
+            HOME="$home" mise exec -- python3 -c 'import west'
           done
       - name: Configure repository-local identity
         run: |
           set -euo pipefail
           for side in control lock-first; do
             workspace="$LOCK_FIRST_ROOT/$side/darling-workspace"
-            (cd "$workspace" && HOME="$LOCK_FIRST_ROOT/$side-home" ci/bootstrap-west.sh)
+            (cd "$workspace" && HOME="$LOCK_FIRST_ROOT/$side-home" mise exec -- ci/bootstrap-west.sh)
             while IFS= read -r project; do
               git -C "$project" config user.name 'West Lock-first Acceptance'
               git -C "$project" config user.email west-lock-first@example.invalid
-            done < <(cd "$workspace" && HOME="$LOCK_FIRST_ROOT/$side-home" west list -f '{abspath}')
+          done < <(cd "$workspace" && HOME="$LOCK_FIRST_ROOT/$side-home" mise exec -- west list -f '{abspath}')
           done
       - name: Control legacy materialization
         working-directory: ${{ runner.temp }}/patch-stack-lock-first/control/darling-workspace
@@ -67,7 +79,7 @@ jobs:
           XDG_CACHE_HOME: ${{ runner.temp }}/patch-stack-lock-first/control-cache
         run: |
           set -euo pipefail
-          west patch apply --profile homebrew
+          mise exec -- west patch apply --profile homebrew
           python3 ci/patch_stack_shadow_acceptance.py capture \
             --workspace "$PWD" --profile homebrew \
             --modules "$LOCK_FIRST_ROOT/evidence/control-modules.json" \
@@ -79,7 +91,7 @@ jobs:
           XDG_CACHE_HOME: ${{ runner.temp }}/patch-stack-lock-first/lock-first-cache
         run: |
           set -euo pipefail
-          west patch apply --profile homebrew --lock-first \
+          mise exec -- west patch apply --profile homebrew --lock-first \
             --lock-first-evidence "$LOCK_FIRST_ROOT/evidence/lock-first-evidence.json"
           python3 ci/patch_stack_shadow_acceptance.py capture \
             --workspace "$PWD" --profile homebrew \
@@ -107,7 +119,7 @@ jobs:
           set +e
           status=0
           LOCK_FIRST_ROOT="${LOCK_FIRST_ROOT:-$RUNNER_TEMP/patch-stack-lock-first}"
-          LOCK_FIRST_TOOLS="${LOCK_FIRST_TOOLS:-$RUNNER_TEMP/patch-stack-lock-first-tools}"
+          MISE_DATA_DIR="${MISE_DATA_DIR:-$RUNNER_TEMP/patch-stack-lock-first-mise-data}"
           mkdir -p "$LOCK_FIRST_ROOT/evidence" || status=1
           for repo in "$LOCK_FIRST_ROOT"/{control,lock-first}/darling-workspace; do
             [[ -d "$repo" ]] || continue
@@ -118,8 +130,8 @@ jobs:
               [[ ! -e "$am_path" ]] || git -C "$worktree" am --abort >/dev/null 2>&1 || status=1
             done < <(find "$repo/.." \( -name .git -type d -o -name .git -type f \) -print 2>/dev/null)
           done
-          rm -rf -- "$LOCK_FIRST_ROOT/control" "$LOCK_FIRST_ROOT/lock-first" "$LOCK_FIRST_TOOLS" || status=1
-          [[ ! -e "$LOCK_FIRST_TOOLS" ]] || status=1
+          rm -rf -- "$LOCK_FIRST_ROOT/control" "$LOCK_FIRST_ROOT/lock-first" "$MISE_DATA_DIR" || status=1
+          [[ ! -e "$MISE_DATA_DIR" ]] || status=1
           for pattern in west-patch-shadow-* west-lock-materialize-* west-patch-lock-first-*; do
             find "$RUNNER_TEMP" -maxdepth 1 -name "$pattern" -print -quit | grep -q . && status=1
           done
