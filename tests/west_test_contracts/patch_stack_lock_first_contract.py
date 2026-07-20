@@ -43,6 +43,8 @@ def main() -> None:
         git(work, "tag", f"patch-stack/v1/bases/{base}", base); git(work, "tag", f"patch-stack/v1/sources/{source}", source)
         git(work, "push", "-q", "origin", "HEAD:refs/heads/main", "--tags"); git(bare, "symbolic-ref", "HEAD", "refs/heads/main")
         git(root, "clone", "-q", str(bare), str(production))
+        git(production, "config", "user.name", "Test")
+        git(production, "config", "user.email", "test@example.invalid")
         git(production, "reset", "--hard", "-q", base)
         lock = {"schema_version": 2, "project": {"name": "synthetic", "path": "."},
                 "upstream": {"url": bare.as_uri(), "base_commit": base},
