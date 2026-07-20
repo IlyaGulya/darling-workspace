@@ -29,6 +29,7 @@ ARTIFACT_ALLOWLIST = {
     "diagnostics.txt",
 }
 MAX_ARTIFACT_BYTES = 1_000_000
+MAX_GENERATED_LOCK_BYTES = 1_000_000
 
 
 def git(repo: Path, *args: str) -> str:
@@ -96,10 +97,23 @@ def capture(workspace: Path, profile: str, modules_path: Path, manifest_path: Pa
     # The run is only trustworthy if every materialized project has an
     # independent complete object database and the production workspace is
     # clean, not merely the modules that happen to receive mbox patches.
+    generated = workspace / "patches" / profile / "west.lock.yml"
+    fail(generated.is_file() and not generated.is_symlink(), "generated profile lock is not a regular file")
+    generated_bytes = generated.read_bytes()
+    fail(len(generated_bytes) <= MAX_GENERATED_LOCK_BYTES, "generated profile lock is too large")
+    try:
+        fail(isinstance(yaml.safe_load(generated_bytes), dict), "generated profile lock is not YAML mapping")
+    except yaml.YAMLError as error:
+        raise AcceptanceError(f"generated profile lock is invalid YAML: {error}") from error
+    root_status = git(workspace, "status", "--porcelain", "--ignore-submodules=none")
+    fail(root_status == f" M patches/{profile}/west.lock.yml", "manifest repo has changes other than generated profile lock")
+    frozen = workspace / "west.lock.yml"
+    fail(frozen.read_bytes() == subprocess.run(["git", "show", "HEAD:west.lock.yml"], cwd=workspace, stdout=subprocess.PIPE, check=True).stdout, "frozen root manifest changed")
     for project in available.values():
         repo = project["path"]
         assert_clean_odb(repo)
-        fail(git(repo, "status", "--porcelain", "--ignore-submodules=none") == "", f"dirty workspace project: {repo}")
+        if repo != workspace:
+            fail(git(repo, "status", "--porcelain", "--ignore-submodules=none") == "", f"dirty workspace project: {repo}")
     rows = []
     for module in sorted(modules):
         project = available[module]
@@ -118,6 +132,7 @@ def capture(workspace: Path, profile: str, modules_path: Path, manifest_path: Pa
     manifest_path.write_text(json.dumps({
         "workspace_commit": git(workspace, "rev-parse", "HEAD"),
         "frozen_manifest_sha256": hashlib.sha256((workspace / "west.lock.yml").read_bytes()).hexdigest(),
+        "generated_profile_lock": {"sha256": hashlib.sha256(generated_bytes).hexdigest(), "size": len(generated_bytes)},
     }, sort_keys=True, indent=2) + "\n")
 
 
@@ -146,6 +161,8 @@ def compare(control: Path, shadow: Path, control_manifest: Path, shadow_manifest
     control_map, shadow_map = load(control), load(shadow)
     fail(control_map == shadow_map, "control and shadow module maps differ")
     fail(load(control_manifest) == load(shadow_manifest), "control and shadow frozen manifests differ")
+    generated = load(control_manifest).get("generated_profile_lock", {})
+    fail(isinstance(generated.get("sha256"), str) and len(generated["sha256"]) == 64 and isinstance(generated.get("size"), int), "generated profile lock evidence is incomplete")
     rows = control_map.get("modules")
     fail(isinstance(rows, list) and rows, "module map is incomplete")
     for row in rows:

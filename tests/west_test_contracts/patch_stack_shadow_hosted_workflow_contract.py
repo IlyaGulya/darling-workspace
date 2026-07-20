@@ -91,7 +91,7 @@ def main() -> None:
             manifest = root / "manifest.json"; other_manifest = root / "other-manifest.json"
             value = {"profile": "homebrew", "modules": [row]}
             control.write_text(json.dumps(value)); shadow.write_text(json.dumps(value))
-            manifest.write_text(json.dumps({"workspace_commit": "c" * 40, "frozen_manifest_sha256": "d" * 64}))
+            manifest.write_text(json.dumps({"workspace_commit": "c" * 40, "frozen_manifest_sha256": "d" * 64, "generated_profile_lock": {"sha256": "e" * 64, "size": 12}}))
             other_manifest.write_text(manifest.read_text())
             evidence_path = root / "shadow-evidence.json"; evidence_path.write_text(json.dumps(evidence))
             result = root / "result.json"
