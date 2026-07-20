@@ -24,6 +24,7 @@ ARTIFACT_ALLOWLIST = {
     "shadow-manifest.json",
     "shadow-modules.json",
     "shadow-evidence.json",
+    "lock-first-evidence.json",
     "acceptance-result.json",
     "cleanup.txt",
     "diagnostics.txt",
@@ -221,8 +222,8 @@ def compare(control: Path, shadow: Path, control_manifest: Path, shadow_manifest
         fail(row.get("status") == "", f"dirty module: {row.get('module')}")
         fail(isinstance(row.get("integration_oid"), str) and len(row["integration_oid"]) == 40, "missing integration ref")
         fail(isinstance(row.get("tree"), str) and len(row["tree"]) == 40, "missing resulting tree")
-    candidates = list(evidence.parent.glob("shadow-evidence*.json"))
-    fail(candidates == [evidence], "shadow evidence is missing or duplicated")
+    candidates = list(evidence.parent.glob(f"{evidence.stem}*{evidence.suffix}"))
+    fail(candidates == [evidence], "acceptance evidence is missing or duplicated")
     value = load(evidence)
     lock = yaml.safe_load(lock_path.read_text())
     fail(value.get("verdict") == "VALID", "shadow verdict is not VALID")

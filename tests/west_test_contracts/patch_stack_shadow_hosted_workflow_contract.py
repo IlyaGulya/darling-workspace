@@ -183,6 +183,13 @@ def main() -> None:
             must_fail(acceptance.compare, control, shadow, manifest, other_manifest, root / "missing.json", args[5], root, root, result)
             duplicate = root / "shadow-evidence-extra.json"; duplicate.write_text("{}")
             must_fail(acceptance.compare, *args); duplicate.unlink()
+            # The lock-first tier uses the same fail-closed comparison helper
+            # with a distinct explicitly named evidence file.
+            lock_evidence = root / "lock-first-evidence.json"; lock_evidence.write_text(json.dumps(evidence))
+            lock_args = (control, shadow, manifest, other_manifest, lock_evidence, args[5], root, root, result)
+            acceptance.compare(*lock_args)
+            lock_duplicate = root / "lock-first-evidence-extra.json"; lock_duplicate.write_text("{}")
+            must_fail(acceptance.compare, *lock_args); lock_duplicate.unlink()
             bad = dict(value); bad["modules"] = [dict(row, tree="0" * 40)]
             shadow.write_text(json.dumps(bad)); must_fail(acceptance.compare, *args); shadow.write_text(json.dumps(value))
             bad["modules"] = [dict(row, integration_oid="0" * 40)]
