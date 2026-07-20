@@ -8,8 +8,20 @@ assert "on:\n  workflow_dispatch:" in workflow
 assert "push:" not in workflow and "schedule:" not in workflow
 assert "if: github.event_name == 'workflow_dispatch'" in workflow
 assert "runs-on: ubuntu-latest" in workflow and "timeout-minutes: 25" in workflow
-assert workflow.count("west patch apply --profile homebrew\n") == 1
-assert workflow.count("west patch apply --profile homebrew --lock-first") == 1
+assert "jdx/mise-action@5228313ee0372e111a38da051671ca30fc5a96db" in workflow
+assert "working_directory: darling-dev/darling-workspace" in workflow
+assert "cache: false" in workflow and "cache_save: false" in workflow
+assert "actions/cache" not in workflow and "MISE_CACHE_DIR" not in workflow
+assert "mise exec -- west patch apply --profile homebrew\n" in workflow
+assert "mise exec -- west patch apply --profile homebrew --lock-first" in workflow
+assert "mise exec -- uv --version" in workflow
+assert "mise exec -- west --version" in workflow
+assert "mise_toml_sha256=" in workflow and "sha256sum mise.toml" in workflow
+assert "python3 -m venv" not in workflow and "pip install west" not in workflow
+assert "LOCK_FIRST_TOOLS" not in workflow
+for line in workflow.splitlines():
+    stripped = line.strip()
+    assert not (stripped.startswith("west ") or " west " in stripped and "mise exec -- west" not in stripped), line
 assert "--lock-first-evidence \"$LOCK_FIRST_ROOT/evidence/lock-first-evidence.json\"" in workflow
 assert "--shadow-lock" not in workflow
 assert "git clone --no-local --no-hardlinks" in workflow and "fetch-depth: 0" in workflow
