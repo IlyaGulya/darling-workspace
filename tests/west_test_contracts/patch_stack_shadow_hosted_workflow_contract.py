@@ -34,7 +34,12 @@ def parent_clean_fixtures(root: Path) -> None:
     (source / "x").write_text("x\n"); run("git", "-C", str(source), "add", "x"); run("git", "-C", str(source), "commit", "-qm", "base")
     run("git", "init", "-q", str(parent)); run("git", "-C", str(parent), "config", "user.name", "Test"); run("git", "-C", str(parent), "config", "user.email", "test@example.invalid")
     run("git", "-C", str(parent), "-c", "protocol.file.allow=always", "submodule", "add", "-q", str(source), "child"); run("git", "-C", str(parent), "commit", "-qm", "submodule")
-    child = parent / "child"; (child / "x").write_text("changed\n"); run("git", "-C", str(child), "commit", "-am", "advance")
+    child = parent / "child"
+    # A submodule clone does not inherit source-local identity.  Configure
+    # the real fixture clone explicitly so this is portable to clean CI.
+    run("git", "-C", str(child), "config", "user.name", "Test")
+    run("git", "-C", str(child), "config", "user.email", "test@example.invalid")
+    (child / "x").write_text("changed\n"); run("git", "-C", str(child), "commit", "-am", "advance")
     nested = {"child": {"path": child}}
     assert acceptance.parent_clean(parent, nested) == [{"xy": " M", "path": "child", "kind": "modified_gitlink"}]
     run("git", "-C", str(parent), "add", "child"); must_fail(acceptance.parent_clean, parent, nested)
