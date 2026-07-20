@@ -1,0 +1,3 @@
+[tools]
+uv = "0.8.17"
+"pipx:west" = { version = "1.5.0", depends = ["uv"] }
