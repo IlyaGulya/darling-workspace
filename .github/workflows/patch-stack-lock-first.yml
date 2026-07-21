@@ -2,13 +2,18 @@ name: Manual patch-stack lock-first acceptance
 
 on:
   workflow_dispatch:
+  push:
+    branches:
+      - rewrite/rootless-ci-series
+    paths:
+      - .github/workflows/patch-stack-lock-first.yml
 
 permissions:
   contents: read
 
 jobs:
   patch-stack-lock-first:
-    if: github.event_name == 'workflow_dispatch'
+    if: github.event_name == 'workflow_dispatch' || (github.event_name == 'push' && github.ref == 'refs/heads/rewrite/rootless-ci-series')
     runs-on: ubuntu-latest
     timeout-minutes: 25
     env:
