@@ -57,41 +57,40 @@ jobs:
           set -euo pipefail
           for side in control lock-first; do
             home="$LOCK_FIRST_ROOT/$side-home"
+            workspace="$LOCK_FIRST_ROOT/$side/darling-workspace"
             mkdir -p "$home"
-            HOME="$home" mise exec -- west --version
-            HOME="$home" mise exec -- python3 -c 'import west'
+            mise -C "$workspace" exec -- env HOME="$home" west --version
           done
       - name: Configure repository-local identity
         run: |
           set -euo pipefail
           for side in control lock-first; do
             workspace="$LOCK_FIRST_ROOT/$side/darling-workspace"
-            (cd "$workspace" && HOME="$LOCK_FIRST_ROOT/$side-home" mise exec -- ci/bootstrap-west.sh)
+            home="$LOCK_FIRST_ROOT/$side-home"
+            mise -C "$workspace" exec -- env HOME="$home" ci/bootstrap-west.sh
             while IFS= read -r project; do
               git -C "$project" config user.name 'West Lock-first Acceptance'
               git -C "$project" config user.email west-lock-first@example.invalid
-          done < <(cd "$workspace" && HOME="$LOCK_FIRST_ROOT/$side-home" mise exec -- west list -f '{abspath}')
+          done < <(mise -C "$workspace" exec -- env HOME="$home" west list -f '{abspath}')
           done
       - name: Control legacy materialization
         working-directory: ${{ runner.temp }}/patch-stack-lock-first/control/darling-workspace
-        env:
-          HOME: ${{ runner.temp }}/patch-stack-lock-first/control-home
-          XDG_CACHE_HOME: ${{ runner.temp }}/patch-stack-lock-first/control-cache
         run: |
           set -euo pipefail
-          mise exec -- west patch apply --profile homebrew
+          workspace="$PWD"
+          mise -C "$workspace" exec -- env HOME="$LOCK_FIRST_ROOT/control-home" \
+            XDG_CACHE_HOME="$LOCK_FIRST_ROOT/control-cache" west patch apply --profile homebrew
           python3 ci/patch_stack_shadow_acceptance.py capture \
             --workspace "$PWD" --profile homebrew \
             --modules "$LOCK_FIRST_ROOT/evidence/control-modules.json" \
             --manifest "$LOCK_FIRST_ROOT/evidence/control-manifest.json"
       - name: Canonical lock-first materialization
         working-directory: ${{ runner.temp }}/patch-stack-lock-first/lock-first/darling-workspace
-        env:
-          HOME: ${{ runner.temp }}/patch-stack-lock-first/lock-first-home
-          XDG_CACHE_HOME: ${{ runner.temp }}/patch-stack-lock-first/lock-first-cache
         run: |
           set -euo pipefail
-          mise exec -- west patch apply --profile homebrew --lock-first \
+          workspace="$PWD"
+          mise -C "$workspace" exec -- env HOME="$LOCK_FIRST_ROOT/lock-first-home" \
+            XDG_CACHE_HOME="$LOCK_FIRST_ROOT/lock-first-cache" west patch apply --profile homebrew --lock-first \
             --lock-first-evidence "$LOCK_FIRST_ROOT/evidence/lock-first-evidence.json"
           python3 ci/patch_stack_shadow_acceptance.py capture \
             --workspace "$PWD" --profile homebrew \
