@@ -102,15 +102,16 @@ jobs:
         run: |
           set -euo pipefail
           LOCK_FIRST_ROOT="${LOCK_FIRST_ROOT:-$RUNNER_TEMP/patch-stack-lock-first}"
-          python3 ci/patch_stack_shadow_acceptance.py compare \
+          python3 ci/patch_stack_lock_first_acceptance.py compare-lock-first \
             --control "$LOCK_FIRST_ROOT/evidence/control-modules.json" \
-            --shadow "$LOCK_FIRST_ROOT/evidence/lock-first-modules.json" \
+            --lock-first "$LOCK_FIRST_ROOT/evidence/lock-first-modules.json" \
             --control-manifest "$LOCK_FIRST_ROOT/evidence/control-manifest.json" \
-            --shadow-manifest "$LOCK_FIRST_ROOT/evidence/lock-first-manifest.json" \
+            --lock-first-manifest "$LOCK_FIRST_ROOT/evidence/lock-first-manifest.json" \
             --evidence "$LOCK_FIRST_ROOT/evidence/lock-first-evidence.json" \
-            --lock locks/patch-stack/darling-sandbox-exec-pass-through-v1.yml \
+            --mapping locks/patch-stack/lock-first-series-v1.yml \
             --control-workspace "$LOCK_FIRST_ROOT/control/darling-workspace" \
-            --shadow-workspace "$LOCK_FIRST_ROOT/lock-first/darling-workspace" \
+            --lock-first-workspace "$LOCK_FIRST_ROOT/lock-first/darling-workspace" \
+            --transaction-root "$RUNNER_TEMP" \
             --result "$LOCK_FIRST_ROOT/evidence/acceptance-result.json"
       - name: Cleanup lock-first workspaces
         if: always()

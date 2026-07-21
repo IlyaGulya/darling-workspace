@@ -4,3 +4,23 @@ series:
     module: darling
     patch: darling/sandbox-exec-pass-through.patch
     lock: darling-sandbox-exec-pass-through-v1.yml
+  - profile: homebrew
+    module: darling
+    patch: darling/sdk-homebrew-detection.patch
+    lock: darling-sdk-homebrew-detection-v1.yml
+  - profile: homebrew
+    module: darling
+    patch: darling/build-drift-gate.patch
+    lock: darling-build-drift-gate-v1.yml
+  - profile: homebrew
+    module: darling
+    patch: darling/commpage-map-fixed.patch
+    lock: darling-commpage-map-fixed-v1.yml
+  - profile: homebrew
+    module: darling
+    patch: darling/mldr-stack-mmap-fallback.patch
+    lock: darling-mldr-stack-mmap-fallback-v1.yml
+  - profile: homebrew
+    module: darling
+    patch: darling/mldr-thread-create-futex-wait.patch
+    lock: darling-mldr-thread-create-futex-wait-v1.yml
