@@ -2261,6 +2261,10 @@ class DarlingPatch(WestCommand):
             self.die("--shadow-evidence requires --shadow-lock")
         if lock_first_evidence and not lock_first:
             self.die("--lock-first-evidence requires --lock-first")
+        if lock_first_evidence:
+            evidence_path = Path(lock_first_evidence)
+            if evidence_path.exists() or evidence_path.is_symlink():
+                self.die("--lock-first-evidence must name a new regular output path")
         if shadow_lock and lock_first:
             self.die("--shadow-lock and --lock-first are mutually exclusive")
 
@@ -2295,7 +2299,8 @@ class DarlingPatch(WestCommand):
 
         touched = []
         shadow_runs = 0
-        lock_first_runs = 0
+        lock_first_runs: list[str] = []
+        lock_first_results = []
         try:
             for module, module_patches in grouped.items():
                 repo = self._repo(module)
@@ -2310,13 +2315,14 @@ class DarlingPatch(WestCommand):
                     self._reset_submodule_index(repo)
                 for patch in module_patches:
                     path = self._verify_patch(profile_dir, patch)
-                    if lock_first_plan and module == lock_first_plan["module"] and patch["path"] == lock_first_plan["patch"]:
+                    lock_first_entry = next((entry for entry in (lock_first_plan or []) if module == entry["module"] and patch["path"] == entry["patch"]), None)
+                    if lock_first_entry:
                         canonical = patch_stack_lock_first.materialize_into(
-                            repo, lock_first_plan, path,
-                            Path(lock_first_evidence) if lock_first_evidence else None,
+                            repo, lock_first_entry, path,
                         )
-                        lock_first_runs += 1
-                        self.inf(f"lock-first {patch['path']}: {canonical['tree']}")
+                        lock_first_runs.append(patch["path"])
+                        lock_first_results.append({key: canonical[key] for key in ("patch", "base", "source", "canonical_tree", "applied_commit", "applied_tree", "verdict")})
+                        self.inf(f"lock-first {patch['path']}: {canonical['canonical_tree']}")
                     else:
                         git_for_patch_application(
                             repo,
@@ -2337,9 +2343,13 @@ class DarlingPatch(WestCommand):
                 self.inf(f"{module}: applied {len(module_patches)} patches")
             if shadow_plan and shadow_runs != 1:
                 raise RuntimeError("shadow plan was not invoked exactly once")
-            if lock_first_plan and lock_first_runs != 1:
-                raise RuntimeError("lock-first plan was not invoked exactly once")
+            if lock_first_plan:
+                expected = [entry["patch"] for entry in lock_first_plan]
+                if lock_first_runs != expected:
+                    raise RuntimeError("lock-first batch was not invoked exactly once in profile order")
             lock = self._record_integration(profile, grouped, integration_date)
+            if lock_first_plan and lock_first_evidence:
+                patch_stack_lock_first.write_batch_evidence(Path(lock_first_evidence), lock_first_results, expected)
             self.inf(f"wrote {lock}")
         except KeyboardInterrupt:
             # A SIGINT can arrive after legacy git-am but while the isolated
