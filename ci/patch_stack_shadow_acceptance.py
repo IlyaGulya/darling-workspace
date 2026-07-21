@@ -21,6 +21,8 @@ class AcceptanceError(RuntimeError):
 ARTIFACT_ALLOWLIST = {
     "control-manifest.json",
     "control-modules.json",
+    "lock-first-manifest.json",
+    "lock-first-modules.json",
     "shadow-manifest.json",
     "shadow-modules.json",
     "shadow-evidence.json",
