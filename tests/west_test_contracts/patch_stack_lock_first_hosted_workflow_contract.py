@@ -12,16 +12,26 @@ assert "jdx/mise-action@5228313ee0372e111a38da051671ca30fc5a96db" in workflow
 assert "working_directory: darling-dev/darling-workspace" in workflow
 assert "cache: false" in workflow and "cache_save: false" in workflow
 assert "actions/cache" not in workflow and "MISE_CACHE_DIR" not in workflow
-assert "mise exec -- west patch apply --profile homebrew\n" in workflow
-assert "mise exec -- west patch apply --profile homebrew --lock-first" in workflow
+assert workflow.count("west patch apply --profile homebrew") == 2
+assert "west patch apply --profile homebrew --lock-first" in workflow
 assert "mise exec -- uv --version" in workflow
 assert "mise exec -- west --version" in workflow
 assert "mise_toml_sha256=" in workflow and "sha256sum mise.toml" in workflow
 assert "python3 -m venv" not in workflow and "pip install west" not in workflow
+assert "python3 -c 'import west'" not in workflow
 assert "LOCK_FIRST_TOOLS" not in workflow
 for line in workflow.splitlines():
     stripped = line.strip()
-    assert not (stripped.startswith("west ") or " west " in stripped and "mise exec -- west" not in stripped), line
+    assert not stripped.startswith("west "), line
+assert '\n            HOME="$home" west ' not in workflow
+assert 'HOME="$home" mise exec' not in workflow
+verification = workflow.split("- name: Verify isolated West under empty homes", 1)[1].split("- name: Configure repository-local identity", 1)[0]
+assert 'mise -C "$workspace" exec -- env HOME="$home" west --version' in verification
+assert "mise exec --" not in verification, "verification may not launch outside project mise.toml"
+assert 'mise -C "$workspace" exec -- env HOME="$home" ci/bootstrap-west.sh' in workflow
+assert 'mise -C "$workspace" exec -- env HOME="$home" west list' in workflow
+assert 'mise -C "$workspace" exec -- env HOME="$LOCK_FIRST_ROOT/control-home"' in workflow
+assert 'mise -C "$workspace" exec -- env HOME="$LOCK_FIRST_ROOT/lock-first-home"' in workflow
 assert "--lock-first-evidence \"$LOCK_FIRST_ROOT/evidence/lock-first-evidence.json\"" in workflow
 assert "--shadow-lock" not in workflow
 assert "git clone --no-local --no-hardlinks" in workflow and "fetch-depth: 0" in workflow
