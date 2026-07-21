@@ -109,8 +109,8 @@ jobs:
             --lock-first-manifest "$LOCK_FIRST_ROOT/evidence/lock-first-manifest.json" \
             --evidence "$LOCK_FIRST_ROOT/evidence/lock-first-evidence.json" \
             --mapping locks/patch-stack/lock-first-series-v1.yml \
-            --control-workspace "$LOCK_FIRST_ROOT/control/darling-workspace" \
-            --lock-first-workspace "$LOCK_FIRST_ROOT/lock-first/darling-workspace" \
+            --control-workspace "$LOCK_FIRST_ROOT/control" \
+            --lock-first-workspace "$LOCK_FIRST_ROOT/lock-first" \
             --transaction-root "$RUNNER_TEMP" \
             --result "$LOCK_FIRST_ROOT/evidence/acceptance-result.json"
       - name: Cleanup lock-first workspaces

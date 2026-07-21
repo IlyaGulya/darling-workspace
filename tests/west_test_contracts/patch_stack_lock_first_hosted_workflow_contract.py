@@ -186,7 +186,10 @@ assert "--lock-first-evidence \"$LOCK_FIRST_ROOT/evidence/lock-first-evidence.js
 assert "--shadow-lock" not in workflow
 assert "patch_stack_lock_first_acceptance.py compare-lock-first" in workflow
 assert "--mapping locks/patch-stack/lock-first-series-v1.yml" in workflow
-assert "--lock-first-workspace \"$LOCK_FIRST_ROOT/lock-first/darling-workspace\"" in workflow
+assert "--control-workspace \"$LOCK_FIRST_ROOT/control\"" in workflow
+assert "--lock-first-workspace \"$LOCK_FIRST_ROOT/lock-first\"" in workflow
+compare_args = workflow.split("patch_stack_lock_first_acceptance.py compare-lock-first", 1)[1].split("--result", 1)[0]
+assert "/darling-workspace" not in compare_args
 assert "--transaction-root \"$RUNNER_TEMP\"" in workflow
 assert "patch_stack_shadow_acceptance.py compare" not in workflow
 assert "git clone --no-local --no-hardlinks" in workflow and "fetch-depth: 0" in workflow
@@ -197,5 +200,8 @@ compare_source = (ROOT / "ci/patch_stack_lock_first_acceptance.py").read_text()
 assert "BATCH_SIZE = 6" in compare_source
 assert "refs/west/patch-stack-lock-first/" in compare_source
 assert "west-patch-lock-first-*" in compare_source
+shadow_acceptance = (ROOT / "ci/patch_stack_shadow_acceptance.py").read_text()
+assert '"lock-first-modules.json"' in shadow_acceptance
+assert '"lock-first-manifest.json"' in shadow_acceptance
 synthetic_compare_contract()
 print("patch-stack lock-first hosted-workflow contract: PASS")
