@@ -2349,7 +2349,13 @@ class DarlingPatch(WestCommand):
                     raise RuntimeError("lock-first batch was not invoked exactly once in profile order")
             lock = self._record_integration(profile, grouped, integration_date)
             if lock_first_plan and lock_first_evidence:
-                patch_stack_lock_first.write_batch_evidence(Path(lock_first_evidence), lock_first_results, expected)
+                if not isinstance(lock_first_plan, patch_stack_lock_first.LockFirstPlan):
+                    raise RuntimeError("lock-first planner did not return typed batch metadata")
+                batch = lock_first_plan.batch
+                patch_stack_lock_first.write_batch_evidence(
+                    Path(lock_first_evidence), lock_first_results,
+                    batch,
+                )
             self.inf(f"wrote {lock}")
         except KeyboardInterrupt:
             # A SIGINT can arrive after legacy git-am but while the isolated

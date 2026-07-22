@@ -28,6 +28,11 @@ def git(repo: Path, *args: str) -> str:
     return subprocess.run(["git", *args], cwd=repo, check=True, text=True, stdout=subprocess.PIPE).stdout.strip()
 
 
+def mapping_doc(series, *, profile="homebrew", batch_id="synthetic-batch", expected_count=None):
+    return {"schema_version": 2, "profile": profile, "batch_id": batch_id,
+            "expected_count": len(series) if expected_count is None else expected_count, "series": series}
+
+
 def main() -> None:
     with tempfile.TemporaryDirectory() as directory:
         root = Path(directory)
@@ -53,40 +58,72 @@ def main() -> None:
                            "source_ref": f"refs/tags/patch-stack/v1/sources/{source}", "source_oid": source},
                 "source_commit": source, "ordered_commits": [source], "expected_tree": tree}
         lock_path = root / "one.yml"; lock_path.write_text(yaml.safe_dump(lock, sort_keys=False))
-        mapping = root / "lock-first.yml"; mapping.write_text(yaml.safe_dump({"schema_version": 1, "series": [{"profile": "homebrew", "module": "darling", "patch": "darling/sandbox-exec-pass-through.patch", "lock": "one.yml"}]}, sort_keys=False))
+        mapping = root / "lock-first.yml"; mapping.write_text(yaml.safe_dump(mapping_doc([{"profile": "homebrew", "module": "darling", "patch": "darling/sandbox-exec-pass-through.patch", "lock": "one.yml"}]), sort_keys=False))
         patches = [{"module": "darling", "path": "darling/sandbox-exec-pass-through.patch"}]
         selected = lock_first.plan("homebrew", patches, mapping)
         assert len(selected) == 1
         # Batch metadata accepts an ordered 6-series slice and fails closed
         # for empty, duplicate, missing, reordered, or incompatible entries.
         batch_patches = [{"module": "darling", "path": f"darling/p{index}.patch"} for index in range(6)]
-        batch_series = [{"profile": "homebrew", "module": "darling", "patch": item["path"], "lock": "one.yml"} for item in batch_patches]
+        batch_series = []
+        for index, item in enumerate(batch_patches):
+            lock_name = f"one-{index}.yml"
+            (root / lock_name).write_text(lock_path.read_text())
+            batch_series.append({"profile": "homebrew", "module": "darling", "patch": item["path"], "lock": lock_name})
         batch_mapping = root / "batch.yml"
-        batch_mapping.write_text(yaml.safe_dump({"schema_version": 1, "series": batch_series}, sort_keys=False))
+        batch_mapping.write_text(yaml.safe_dump(mapping_doc(batch_series, batch_id="six-series"), sort_keys=False))
         batch = lock_first.plan("homebrew", batch_patches, batch_mapping)
         assert [entry["patch"] for entry in batch] == [item["path"] for item in batch_patches]
+        # v1 is only a migration input; execution accepts the explicit v2
+        # shape.  The count remains data, including 1/6/12 exact batches.
+        migrated = lock_first.migrate_mapping_v1({"schema_version": 1, "series": batch_series}, batch_id="migrated")
+        assert migrated["schema_version"] == 2 and migrated["expected_count"] == len(batch_series)
+        for exact_count in (1, 6, 12):
+            exact_patches = [{"module": "darling", "path": f"darling/exact-{index}.patch"} for index in range(exact_count)]
+            exact_series = []
+            for index, item in enumerate(exact_patches):
+                lock_name = f"exact-{exact_count}-{index}.yml"
+                (root / lock_name).write_text(lock_path.read_text())
+                exact_series.append({"profile": "homebrew", "module": "darling", "patch": item["path"], "lock": lock_name})
+            exact_mapping = root / f"exact-{exact_count}.yml"
+            exact_mapping.write_text(yaml.safe_dump(mapping_doc(exact_series, batch_id=f"exact-{exact_count}"), sort_keys=False))
+            assert len(lock_first.plan("homebrew", exact_patches, exact_mapping)) == exact_count
         def must_fail(fn, *args):
             try: fn(*args)
             except lock_first.LockFirstError: return
             raise AssertionError("lock-first accepted invalid metadata")
-        empty = root / "empty.yml"; empty.write_text(yaml.safe_dump({"schema_version": 1, "series": []}))
+        empty = root / "empty.yml"; empty.write_text(yaml.safe_dump(mapping_doc([], expected_count=0)))
         must_fail(lock_first.plan, "homebrew", batch_patches, empty)
-        duplicate = root / "duplicate.yml"; duplicate.write_text(yaml.safe_dump({"schema_version": 1, "series": batch_series + [batch_series[0]]}))
+        duplicate = root / "duplicate.yml"; duplicate.write_text(yaml.safe_dump(mapping_doc(batch_series + [batch_series[0]], batch_id="duplicate")))
         must_fail(lock_first.plan, "homebrew", batch_patches, duplicate)
-        missing = root / "missing.yml"; missing.write_text(yaml.safe_dump({"schema_version": 1, "series": [dict(batch_series[0], patch="darling/missing.patch")]}))
+        missing = root / "missing.yml"; missing.write_text(yaml.safe_dump(mapping_doc([dict(batch_series[0], patch="darling/missing.patch")], batch_id="missing")))
         must_fail(lock_first.plan, "homebrew", batch_patches, missing)
-        reordered = root / "reordered.yml"; reordered.write_text(yaml.safe_dump({"schema_version": 1, "series": list(reversed(batch_series))}))
+        reordered = root / "reordered.yml"; reordered.write_text(yaml.safe_dump(mapping_doc(list(reversed(batch_series),), batch_id="reordered")))
         must_fail(lock_first.plan, "homebrew", batch_patches, reordered)
         incompatible_lock = dict(lock); incompatible_lock["mirror"] = dict(lock["mirror"], base_oid="0" * 40)
         (root / "incompatible.yml").write_text(yaml.safe_dump(incompatible_lock, sort_keys=False))
-        incompatible = root / "incompatible-map.yml"; incompatible.write_text(yaml.safe_dump({"schema_version": 1, "series": [dict(batch_series[0], lock="incompatible.yml")]}))
+        incompatible = root / "incompatible-map.yml"; incompatible.write_text(yaml.safe_dump(mapping_doc([dict(batch_series[0], lock="incompatible.yml")], batch_id="incompatible")))
         must_fail(lock_first.plan, "homebrew", batch_patches, incompatible)
+        wrong_count = root / "wrong-count.yml"; wrong_count.write_text(yaml.safe_dump(mapping_doc(batch_series, expected_count=len(batch_series) - 1)))
+        must_fail(lock_first.plan, "homebrew", batch_patches, wrong_count)
+        wrong_profile = root / "wrong-profile.yml"; wrong_profile.write_text(yaml.safe_dump(mapping_doc(batch_series, profile="perf")))
+        must_fail(lock_first.plan, "homebrew", batch_patches, wrong_profile)
+        wrong_batch = root / "wrong-batch.yml"; wrong_batch.write_text(yaml.safe_dump(dict(mapping_doc(batch_series), batch_id="")))
+        must_fail(lock_first.plan, "homebrew", batch_patches, wrong_batch)
+        malformed_scalar = root / "malformed-scalar.yml"; malformed_scalar.write_text(yaml.safe_dump(mapping_doc([dict(batch_series[0], lock=None)])))
+        must_fail(lock_first.plan, "homebrew", batch_patches, malformed_scalar)
+        duplicate_lock = root / "duplicate-lock.yml"; duplicate_lock.write_text(yaml.safe_dump(mapping_doc([batch_series[0], dict(batch_series[1], lock=batch_series[0]["lock"])])))
+        must_fail(lock_first.plan, "homebrew", batch_patches, duplicate_lock)
+        linked = root / "linked"; linked.symlink_to(root, target_is_directory=True)
+        intermediate_symlink = root / "intermediate-symlink.yml"; intermediate_symlink.write_text(yaml.safe_dump(mapping_doc([dict(batch_series[0], lock="linked/one.yml")])))
+        must_fail(lock_first.plan, "homebrew", batch_patches, intermediate_symlink)
         evidence = root / "batch-evidence.json"
         valid_entry = {"patch": "darling/p0.patch", "base": base, "source": source, "canonical_tree": tree, "applied_commit": source, "applied_tree": tree, "verdict": "VALID"}
-        lock_first.write_batch_evidence(evidence, [valid_entry], ["darling/p0.patch"])
+        one_batch = {"batch_id": "one", "expected_count": 1, "patches": ["darling/p0.patch"]}
+        lock_first.write_batch_evidence(evidence, [valid_entry], one_batch)
         assert yaml.safe_load(evidence.read_text())["verdict"] == "VALID"
         blocked = root / "blocked"; blocked.write_text("not a directory")
-        must_fail(lock_first.write_batch_evidence, blocked / "evidence.json", [], [])
+        must_fail(lock_first.write_batch_evidence, blocked / "evidence.json", [], {"batch_id": "empty", "expected_count": 0, "patches": []})
         for bad, expected in (
             ([], []),
             ([dict(valid_entry, patch="darling/extra.patch")], ["darling/p0.patch"]),
@@ -100,7 +137,7 @@ def main() -> None:
             ([valid_entry, valid_entry], ["darling/p0.patch", "darling/p0.patch"]),
         ):
             candidate = root / f"bad-evidence-{len(list(root.glob('bad-evidence-*')))}.json"
-            must_fail(lock_first.write_batch_evidence, candidate, bad, expected)
+            must_fail(lock_first.write_batch_evidence, candidate, bad, {"batch_id": "bad", "expected_count": len(expected), "patches": expected})
             assert not candidate.exists()
         assert not list(root.glob("*.tmp"))
         assert lock_first.materialize_into(production, selected[0], patch)["canonical_tree"] == tree
@@ -173,7 +210,8 @@ def main() -> None:
             batch_output = root / "orchestration-evidence.json"
             command._apply("homebrew", root, batch_patches, "0", False, False, None, True, str(batch_output))
             assert calls == [item["path"] for item in batch_patches]
-            assert len(json.loads(batch_output.read_text())["series"]) == 6
+            payload = json.loads(batch_output.read_text())
+            assert payload["expected_count"] == len(batch_patches) and len(payload["series"]) == len(batch_patches)
             # Integration recording happens before evidence publication. Both
             # failure paths roll back and leave no successful evidence behind.
             resets.clear()
@@ -194,28 +232,37 @@ def main() -> None:
             else: raise AssertionError("writer failure was accepted")
             assert resets and not writer_output.exists()
             patch_command.patch_stack_lock_first.write_batch_evidence = old_writer
-            middle = {"count": 0}
-            def interrupting(_repo, entry, *_args):
-                middle["count"] += 1
-                if middle["count"] == 3: raise KeyboardInterrupt()
-                return {"patch": entry["patch"], "base": base, "source": source, "canonical_tree": tree, "applied_commit": source, "applied_tree": tree, "verdict": "VALID"}
-            patch_command.patch_stack_lock_first.materialize_into = interrupting
-            try: command._apply("homebrew", root, batch_patches, "0", False, False, None, True)
-            except KeyboardInterrupt: pass
-            else: raise AssertionError("middle SIGINT swallowed")
-            assert resets
-            resets.clear()
-            failure = {"count": 0}
-            def failing_third(*_args):
-                failure["count"] += 1
-                if failure["count"] == 3: raise lock_first.LockFirstError("middle failure")
-                return {"patch": "ok", "base": base, "source": source, "canonical_tree": tree, "applied_commit": source, "applied_tree": tree, "verdict": "VALID"}
-            patch_command.patch_stack_lock_first.materialize_into = failing_third
-            try: command._apply("homebrew", root, batch_patches, "0", False, False, None, True)
+            # Evidence publication accepts only the typed planner result; a
+            # list with equivalent entries is not metadata.
+            resets.clear(); plain_output = root / "plain-plan-evidence.json"
+            patch_command.patch_stack_lock_first.plan = lambda *_args: list(batch)
+            patch_command.patch_stack_lock_first.materialize_into = lambda _repo, entry, *_args: {"patch": entry["patch"], "base": base, "source": source, "canonical_tree": tree, "applied_commit": source, "applied_tree": tree, "verdict": "VALID"}
+            try: command._apply("homebrew", root, batch_patches, "0", False, False, None, True, str(plain_output))
             except RuntimeError: pass
-            else: raise AssertionError("middle failure was accepted")
-            assert failure["count"] == 3
-            assert resets
+            else: raise AssertionError("untyped lock-first plan was accepted")
+            assert resets and not plain_output.exists()
+            patch_command.patch_stack_lock_first.plan = lambda *_args: batch
+            for position in (1, (len(batch_patches) + 1) // 2, len(batch_patches)):
+                resets.clear(); interrupted = {"count": 0}
+                def interrupting(_repo, entry, *_args):
+                    interrupted["count"] += 1
+                    if interrupted["count"] == position: raise KeyboardInterrupt()
+                    return {"patch": entry["patch"], "base": base, "source": source, "canonical_tree": tree, "applied_commit": source, "applied_tree": tree, "verdict": "VALID"}
+                patch_command.patch_stack_lock_first.materialize_into = interrupting
+                try: command._apply("homebrew", root, batch_patches, "0", False, False, None, True)
+                except KeyboardInterrupt: pass
+                else: raise AssertionError("SIGINT was swallowed")
+                assert interrupted["count"] == position and resets
+                resets.clear(); failure = {"count": 0}
+                def failing_at(*_args):
+                    failure["count"] += 1
+                    if failure["count"] == position: raise lock_first.LockFirstError("series failure")
+                    return {"patch": "ok", "base": base, "source": source, "canonical_tree": tree, "applied_commit": source, "applied_tree": tree, "verdict": "VALID"}
+                patch_command.patch_stack_lock_first.materialize_into = failing_at
+                try: command._apply("homebrew", root, batch_patches, "0", False, False, None, True)
+                except RuntimeError: pass
+                else: raise AssertionError("series failure was accepted")
+                assert failure["count"] == position and resets
             prepared.clear()
             patch_command.patch_stack_lock_first.plan = lambda *_args: (_ for _ in ()).throw(lock_first.LockFirstError("bad mapping"))
             try: command._apply("homebrew", root, patches, "0", False, False, None, True)

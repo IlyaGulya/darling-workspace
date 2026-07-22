@@ -1,0 +1,53 @@
+schema_version: 2
+profile: homebrew
+batch_id: darling-homebrew-lock-first-batch-2
+expected_count: 12
+series:
+  - profile: homebrew
+    module: darling
+    patch: darling/sandbox-exec-pass-through.patch
+    lock: darling-sandbox-exec-pass-through-v1.yml
+  - profile: homebrew
+    module: darling
+    patch: darling/sdk-homebrew-detection.patch
+    lock: darling-sdk-homebrew-detection-v1.yml
+  - profile: homebrew
+    module: darling
+    patch: darling/build-drift-gate.patch
+    lock: darling-build-drift-gate-v1.yml
+  - profile: homebrew
+    module: darling
+    patch: darling/commpage-map-fixed.patch
+    lock: darling-commpage-map-fixed-v1.yml
+  - profile: homebrew
+    module: darling
+    patch: darling/mldr-stack-mmap-fallback.patch
+    lock: darling-mldr-stack-mmap-fallback-v1.yml
+  - profile: homebrew
+    module: darling
+    patch: darling/mldr-thread-create-futex-wait.patch
+    lock: darling-mldr-thread-create-futex-wait-v1.yml
+  - profile: homebrew
+    module: darling
+    patch: darling/mldr-recv-adaptive-spin.patch
+    lock: darling-mldr-recv-adaptive-spin-v1.yml
+  - profile: homebrew
+    module: darling
+    patch: darling/rootless-runtime-integration.patch
+    lock: darling-rootless-runtime-integration-v1.yml
+  - profile: homebrew
+    module: darling
+    patch: darling/rootless-bootstrapper-ordering.patch
+    lock: darling-rootless-bootstrapper-ordering-v1.yml
+  - profile: homebrew
+    module: darling
+    patch: darling/rootless-prefix-initialization.patch
+    lock: darling-rootless-prefix-initialization-v1.yml
+  - profile: homebrew
+    module: darling
+    patch: darling/rootless-shellspawn-delay.patch
+    lock: darling-rootless-shellspawn-delay-v1.yml
+  - profile: homebrew
+    module: darling
+    patch: darling/rootless-shellspawn-lifecycle.patch
+    lock: darling-rootless-shellspawn-lifecycle-v1.yml

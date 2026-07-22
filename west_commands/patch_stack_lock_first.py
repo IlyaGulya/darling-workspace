@@ -1,7 +1,7 @@
-"""Typed, opt-in canonical replacement for one legacy patch application.
+"""Typed, opt-in canonical materialization for an ordered legacy batch.
 
 This module deliberately contains no profile or patch-name literals.  The
-allowlist is data in ``locks/patch-stack/lock-first-series-v1.yml`` and is
+allowlist is data in ``locks/patch-stack/lock-first-series-v2.yml`` and is
 validated before the normal patch lifecycle mutates a worktree.
 """
 from __future__ import annotations
@@ -18,14 +18,24 @@ from typing import Any
 
 import patch_stack_materialize
 import patch_stack_shadow
+import yaml
 
 
 class LockFirstError(RuntimeError):
     pass
 
 
+class LockFirstPlan(list[dict[str, str]]):
+    """Ordered plan carrying the typed batch identity used for evidence."""
+
+    def __init__(self, entries: list[dict[str, str]], metadata: dict[str, Any]):
+        super().__init__(entries)
+        self.batch = {"batch_id": metadata["batch_id"], "expected_count": metadata["expected_count"],
+                      "patches": [entry["patch"] for entry in entries]}
+
+
 ROOT = Path(__file__).resolve().parents[1]
-MAPPING = ROOT / "locks" / "patch-stack" / "lock-first-series-v1.yml"
+MAPPING = ROOT / "locks" / "patch-stack" / "lock-first-series-v2.yml"
 
 
 def _cherry_pick(repo: Path, commit: str) -> None:
@@ -57,18 +67,73 @@ def _cherry_pick(repo: Path, commit: str) -> None:
             Path(mbox).unlink(missing_ok=True)
 
 
-def plan(profile: str, patches: list[dict[str, Any]], mapping_path: Path = MAPPING) -> list[dict[str, str]]:
-    """Return an ordered, uniquely matched batch before any mutation."""
+_MAPPING_FIELDS = {"schema_version", "profile", "batch_id", "expected_count", "series"}
+_SERIES_FIELDS = {"profile", "module", "patch", "lock"}
+
+
+def migrate_mapping_v1(data: object, *, batch_id: str = "migrated-v1") -> dict[str, Any]:
+    """Return the explicit schema-v2 form of a legacy single-profile mapping.
+
+    Runtime use is schema-v2 only; this small, pure helper makes migration
+    reviewable and lets contracts prove that no count is embedded in code.
+    """
+    if (not isinstance(data, dict) or set(data) != {"schema_version", "series"}
+            or data.get("schema_version") != 1 or not isinstance(data.get("series"), list)):
+        raise LockFirstError("lock-first v1 mapping is malformed")
+    if not isinstance(batch_id, str) or not batch_id:
+        raise LockFirstError("lock-first migration batch_id is invalid")
+    series = data["series"]
+    if not series:
+        raise LockFirstError("lock-first v1 mapping must contain entries")
+    profiles: set[str] = set()
+    for index, entry in enumerate(series):
+        if not isinstance(entry, dict) or set(entry) != _SERIES_FIELDS:
+            raise LockFirstError(f"lock-first v1 mapping entry {index} is malformed")
+        if not all(isinstance(entry[field], str) and entry[field] for field in _SERIES_FIELDS):
+            raise LockFirstError(f"lock-first v1 mapping entry {index} has an empty scalar")
+        profiles.add(entry["profile"])
+    if len(profiles) != 1:
+        raise LockFirstError("lock-first v1 mapping must contain one non-empty profile")
+    return {"schema_version": 2, "profile": profiles.pop(), "batch_id": batch_id,
+            "expected_count": len(series), "series": series}
+
+
+def load_mapping(mapping_path: Path = MAPPING, profile: str | None = None) -> dict[str, Any]:
     try:
-        entries = [entry for entry in patch_stack_shadow._mapping(mapping_path) if entry["profile"] == profile]
-    except patch_stack_shadow.ShadowError as error:
-        raise LockFirstError(str(error)) from error
-    if not entries:
-        raise LockFirstError(f"{profile}: requires at least one typed lock-first entry")
+        data = yaml.safe_load(mapping_path.read_text())
+    except (OSError, yaml.YAMLError) as error:
+        raise LockFirstError(f"invalid lock-first mapping: {error}") from error
+    if not isinstance(data, dict) or set(data) != _MAPPING_FIELDS or data.get("schema_version") != 2:
+        raise LockFirstError("lock-first mapping must use exact schema_version 2")
+    mapping_profile, batch_id, expected_count, series = (data["profile"], data["batch_id"], data["expected_count"], data["series"])
+    if not isinstance(mapping_profile, str) or not mapping_profile or not isinstance(batch_id, str) or not batch_id:
+        raise LockFirstError("lock-first mapping profile or batch_id is invalid")
+    if profile is not None and mapping_profile != profile:
+        raise LockFirstError(f"lock-first mapping profile differs: {mapping_profile}")
+    if not isinstance(expected_count, int) or isinstance(expected_count, bool) or expected_count < 1:
+        raise LockFirstError("lock-first mapping expected_count is invalid")
+    if not isinstance(series, list) or expected_count != len(series):
+        raise LockFirstError("lock-first mapping expected_count differs from series length")
+    for index, entry in enumerate(series):
+        if not isinstance(entry, dict) or set(entry) != _SERIES_FIELDS or entry.get("profile") != mapping_profile:
+            raise LockFirstError(f"lock-first mapping entry {index} is invalid")
+        if not all(isinstance(entry[field], str) and entry[field] for field in _SERIES_FIELDS):
+            raise LockFirstError(f"lock-first mapping entry {index} has an empty scalar")
+    return data
+
+
+def plan(profile: str, patches: list[dict[str, Any]], mapping_path: Path = MAPPING) -> LockFirstPlan:
+    """Return an ordered, uniquely matched batch before any mutation."""
+    metadata = load_mapping(mapping_path, profile)
+    entries = metadata["series"]
     seen: set[tuple[str, str]] = set()
     positions: list[int] = []
     locks_root = mapping_path.parent.resolve()
+    for component in (mapping_path.parent.absolute(),):
+        if component.is_symlink():
+            raise LockFirstError("lock-first mapping root may not be a symlink")
     resolved: list[dict[str, str]] = []
+    resolved_locks: set[Path] = set()
     for entry in entries:
         key = (entry["module"], entry["patch"])
         if key in seen:
@@ -82,9 +147,17 @@ def plan(profile: str, patches: list[dict[str, Any]], mapping_path: Path = MAPPI
         if relative.is_absolute() or ".." in relative.parts:
             raise LockFirstError("lock-first lock must be a contained relative path")
         candidate = locks_root / relative
+        current = locks_root
+        for component in relative.parts:
+            current /= component
+            if current.is_symlink():
+                raise LockFirstError("lock-first lock may not contain a symlink")
         lock_path = candidate.resolve()
         if locks_root not in lock_path.parents or candidate.is_symlink() or not lock_path.is_file():
             raise LockFirstError("lock-first lock escapes locks/patch-stack")
+        if lock_path in resolved_locks:
+            raise LockFirstError("lock-first mapping resolves duplicate lock files")
+        resolved_locks.add(lock_path)
         try:
             lock = patch_stack_materialize.load_lock(lock_path)
         except (OSError, ValueError, patch_stack_materialize.MaterializeError) as error:
@@ -94,19 +167,26 @@ def plan(profile: str, patches: list[dict[str, Any]], mapping_path: Path = MAPPI
         resolved.append({**entry, "lock_path": str(lock_path), "profile_index": str(matches[0])})
     if positions != sorted(positions):
         raise LockFirstError(f"{profile}: lock-first entries are not in profile order")
-    return resolved
+    return LockFirstPlan(resolved, metadata)
 
 
 _OID = re.compile(r"^[0-9a-f]{40}$")
 _EVIDENCE_FIELDS = {"patch", "base", "source", "canonical_tree", "applied_commit", "applied_tree", "verdict"}
 
 
-def write_batch_evidence(path: Path, results: list[dict[str, Any]], expected_patches: list[str]) -> None:
+def write_batch_evidence(path: Path, results: list[dict[str, Any]], batch: dict[str, Any]) -> None:
     """Publish aggregate per-series evidence atomically, or leave no temp file."""
     if path.exists() or path.is_symlink():
         raise LockFirstError("lock-first evidence output already exists")
-    if not isinstance(expected_patches, list) or not expected_patches:
-        raise LockFirstError("lock-first evidence requires a non-empty expected batch")
+    if not isinstance(batch, dict):
+        raise LockFirstError("lock-first evidence requires typed batch metadata")
+    batch_id, expected_count, expected_patches = batch.get("batch_id"), batch.get("expected_count"), batch.get("patches")
+    if not isinstance(batch_id, str) or not batch_id:
+        raise LockFirstError("lock-first evidence batch_id is invalid")
+    if not isinstance(expected_count, int) or isinstance(expected_count, bool) or expected_count < 1:
+        raise LockFirstError("lock-first evidence expected_count is invalid")
+    if not isinstance(expected_patches, list) or expected_count != len(expected_patches):
+        raise LockFirstError("lock-first evidence expected_count differs from ordered batch")
     if any(not isinstance(patch, str) or not patch for patch in expected_patches) or len(set(expected_patches)) != len(expected_patches):
         raise LockFirstError("lock-first evidence expected patches are invalid or duplicate")
     if not isinstance(results, list) or not results:
@@ -125,7 +205,8 @@ def write_batch_evidence(path: Path, results: list[dict[str, Any]], expected_pat
             for key in ("base", "source", "canonical_tree", "applied_commit", "applied_tree")
         ):
             raise LockFirstError("lock-first evidence entry has invalid OID or verdict")
-    payload = {"verdict": "VALID", "series": results}
+    payload = {"verdict": "VALID", "batch_id": batch_id, "expected_count": expected_count,
+               "patches": expected_patches, "series": results}
     temporary = path.with_name(path.name + f".{uuid.uuid4().hex}.tmp")
     try:
         path.parent.mkdir(parents=True, exist_ok=True)
