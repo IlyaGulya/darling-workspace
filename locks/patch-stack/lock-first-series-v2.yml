@@ -1,8 +1,12 @@
 schema_version: 2
 profile: homebrew
-batch_id: darling-homebrew-lock-first-batch-2
-expected_count: 12
+batch_id: darling-homebrew-lock-first-batch-3
+expected_count: 13
 series:
+  - profile: homebrew
+    module: darling
+    patch: darling/mldr-glibc-fork-reset.patch
+    lock: darling-mldr-glibc-fork-reset-v1.yml
   - profile: homebrew
     module: darling
     patch: darling/sandbox-exec-pass-through.patch
