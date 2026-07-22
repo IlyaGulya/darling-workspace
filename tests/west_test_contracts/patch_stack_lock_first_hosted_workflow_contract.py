@@ -46,14 +46,35 @@ def synthetic_compare_contract() -> None:
             commits.append(git(source, "rev-parse", "HEAD"))
         bare = root / "source.git"
         git(root, "clone", "--bare", "-q", str(source), str(bare))
+        # This repository deliberately has no ancestry relation to `source`.
+        # A successful compare below therefore proves cross-repository
+        # ancestry is not required for the first libplatform series.
+        external = root / "external-source"
+        git(root, "init", "-q", str(external))
+        git(external, "config", "user.name", "Contract")
+        git(external, "config", "user.email", "contract@example.invalid")
+        (external / "base").write_text("external base\n")
+        git(external, "add", "base")
+        git(external, "commit", "-qm", "external base")
+        external_base = git(external, "rev-parse", "HEAD")
+        (external / "series").write_text("external series\n")
+        git(external, "add", "series")
+        git(external, "commit", "-qm", "external series")
+        external_commit = git(external, "rev-parse", "HEAD")
+        external_tree = git(external, "rev-parse", "HEAD^{tree}")
+        external_bare = root / "external.git"
+        git(root, "clone", "--bare", "-q", str(external), str(external_bare))
         control_workspace, lock_workspace = root / "control", root / "lock-first"
         for workspace in (control_workspace, lock_workspace):
             workspace.mkdir()
             git(workspace, "clone", "-q", str(bare), "darling")
             git(workspace / "darling", "update-ref", "refs/heads/integration/homebrew", commits[-1])
+            git(workspace, "clone", "-q", str(external_bare), "libplatform")
+            git(workspace / "libplatform", "update-ref", "refs/heads/integration/homebrew", external_commit)
         integration_tree = git(source, "rev-parse", "HEAD^{tree}")
         row = {"module": "darling", "west_name": "darling", "path": "darling", "integration_oid": commits[-1], "tree": integration_tree, "status": ""}
-        modules = {"profile": "homebrew", "modules": [row]}
+        external_row = {"module": "darling/src/external/libplatform", "west_name": "darling-libplatform", "path": "libplatform", "integration_oid": external_commit, "tree": external_tree, "status": ""}
+        modules = {"profile": "homebrew", "modules": [external_row, row]}
         manifest = {"frozen_manifest_sha256": "a" * 64, "generated_profile_lock": {"sha256": "b" * 64, "size": 1}}
         control_map, lock_map = root / "control-modules.json", root / "lock-first-modules.json"
         control_manifest, lock_manifest = root / "control-manifest.json", root / "lock-first-manifest.json"
@@ -64,35 +85,49 @@ def synthetic_compare_contract() -> None:
         for index, commit in enumerate(commits):
             patch = f"darling/series-{index}.patch"
             lock_name = f"series-{index}.yml"
-            tree = git(source, "rev-parse", f"{commit}^{{tree}}")
+            module = "darling/src/external/libplatform" if index == 0 else "darling"
+            patch = f"libplatform/series-{index}.patch" if index == 0 else patch
+            lock_base = external_base if index == 0 else base
+            lock_commit = external_commit if index == 0 else commit
+            lock_tree = external_tree if index == 0 else git(source, "rev-parse", f"{commit}^{{tree}}")
             (locks / lock_name).write_text(json.dumps({
                 "schema_version": 2,
                 "project": {"name": "darling", "path": "."},
-                "upstream": {"url": "https://example.invalid/upstream.git", "base_commit": base},
+                "upstream": {"url": "https://example.invalid/upstream.git", "base_commit": lock_base},
                 "mirror": {
                     "url": "https://example.invalid/mirror.git",
-                    "base_ref": f"refs/tags/patch-stack/v1/bases/{base}", "base_oid": base,
-                    "source_ref": f"refs/tags/patch-stack/v1/sources/{commit}", "source_oid": commit,
+                    "base_ref": f"refs/tags/patch-stack/v1/bases/{lock_base}", "base_oid": lock_base,
+                    "source_ref": f"refs/tags/patch-stack/v1/sources/{lock_commit}", "source_oid": lock_commit,
                 },
-                "source_commit": commit, "ordered_commits": [commit], "expected_tree": tree,
+                "source_commit": lock_commit, "ordered_commits": [lock_commit], "expected_tree": lock_tree,
             }))
-            mapping_entries.append({"profile": "homebrew", "module": "darling", "patch": patch, "lock": lock_name})
-            series.append({"patch": patch, "base": base, "source": commit, "canonical_tree": tree, "applied_commit": commit, "applied_tree": tree, "verdict": "VALID"})
+            mapping_entries.append({"profile": "homebrew", "module": module, "patch": patch, "lock": lock_name})
+            series.append({"module": module, "patch": patch, "base": lock_base, "source": lock_commit, "canonical_tree": lock_tree, "applied_commit": lock_commit, "applied_tree": lock_tree, "verdict": "VALID"})
         mapping = locks / "lock-first-series-v2.yml"
         mapping.write_text(json.dumps({"schema_version": 2, "profile": "homebrew", "batch_id": "synthetic-six", "expected_count": len(mapping_entries), "series": mapping_entries}))
         evidence = root / "lock-first-evidence.json"
-        evidence.write_text(json.dumps({"verdict": "VALID", "batch_id": "synthetic-six", "expected_count": len(series), "patches": [entry["patch"] for entry in mapping_entries], "series": series}))
+        evidence.write_text(json.dumps({
+            "evidence_schema_version": 2, "verdict": "VALID", "batch_id": "synthetic-six", "expected_count": len(series),
+            "module_order": ["darling/src/external/libplatform", "darling"],
+            "series_order": [{"module": entry["module"], "patch": entry["patch"]} for entry in mapping_entries],
+            "series": series,
+        }))
         result = root / "result.json"
         transaction_root = root / "transactions"; transaction_root.mkdir()
         args = (control_map, lock_map, control_manifest, lock_manifest, evidence, mapping, control_workspace, lock_workspace, transaction_root, result)
         acceptance.compare_lock_first(*args)
-        assert json.loads(result.read_text())["verdict"] == "VALID"
+        result_payload = json.loads(result.read_text())
+        assert result_payload["verdict"] == "VALID" and result_payload["evidence_schema_version"] == 2
+        assert result_payload["batch_id"] == "synthetic-six" and result_payload["expected_count"] == len(series)
+        assert result_payload["module_order"] == ["darling/src/external/libplatform", "darling"]
         for mutate in (
             lambda value: value["series"].pop(),
             lambda value: value["series"].append(dict(value["series"][0])),
             lambda value: value["series"].__setitem__(1, dict(value["series"][0], patch=value["series"][1]["patch"])),
             lambda value: value.__setitem__("series", list(reversed(value["series"]))),
             lambda value: value["series"][0].__setitem__("canonical_tree", "0" * 40),
+            lambda value: value.__setitem__("module_order", list(reversed(value["module_order"]))),
+            lambda value: value.__setitem__("series_order", list(reversed(value["series_order"]))),
         ):
             candidate = json.loads(evidence.read_text())
             mutate(candidate)
@@ -101,6 +136,31 @@ def synthetic_compare_contract() -> None:
             negative_result = root / f"negative-result-{negative.stem}.json"
             must_fail(acceptance.compare_lock_first, control_map, lock_map, control_manifest, lock_manifest, negative, mapping, control_workspace, lock_workspace, transaction_root, negative_result)
             assert not negative_result.exists()
+        for name, mutate in (
+            ("missing-version", lambda value: value.pop("evidence_schema_version")),
+            ("wrong-version", lambda value: value.__setitem__("evidence_schema_version", 1)),
+        ):
+            candidate = json.loads(evidence.read_text())
+            mutate(candidate)
+            negative = root / f"{name}.json"
+            negative.write_text(json.dumps(candidate))
+            negative_result = root / f"{name}-result.json"
+            try:
+                acceptance.compare_lock_first(control_map, lock_map, control_manifest, lock_manifest, negative, mapping, control_workspace, lock_workspace, transaction_root, negative_result)
+            except acceptance.AcceptanceError as error:
+                assert "schema version mismatch" in str(error)
+            else:
+                raise AssertionError("lock-first compare accepted incompatible evidence schema")
+            assert not negative_result.exists()
+        # Both applied commits are valid objects in the darling repository, but
+        # reversing their applied history must be rejected per module.
+        reversed_ancestry = json.loads(evidence.read_text())
+        left, right = reversed_ancestry["series"][1], reversed_ancestry["series"][2]
+        left["applied_commit"], right["applied_commit"] = right["applied_commit"], left["applied_commit"]
+        left["applied_tree"], right["applied_tree"] = right["applied_tree"], left["applied_tree"]
+        reversed_path = root / "reversed-ancestry.json"
+        reversed_path.write_text(json.dumps(reversed_ancestry))
+        must_fail(acceptance.compare_lock_first, control_map, lock_map, control_manifest, lock_manifest, reversed_path, mapping, control_workspace, lock_workspace, transaction_root, root / "reversed-ancestry-result.json")
         # The mapping and every referenced schema-v2 lock are independently
         # fail-closed, including containment before any resolve() operation.
         original_mapping = mapping.read_text()
