@@ -1,7 +1,7 @@
 schema_version: 2
 profile: homebrew
-batch_id: darling-homebrew-lock-first-batch-4
-expected_count: 16
+batch_id: darling-homebrew-lock-first-batch-5
+expected_count: 19
 series:
   - profile: homebrew
     module: darling/src/external/libplatform
@@ -15,6 +15,10 @@ series:
     module: darling/src/external/libressl-2.8.3
     patch: libressl/libressl-283-nist-strict-aliasing.patch
     lock: libressl-283-nist-v1.yml
+  - profile: homebrew
+    module: darling/src/external/libpthread
+    patch: libpthread/psynch-kernel-return-helper.patch
+    lock: libpthread-psynch-kernel-return-helper-v1.yml
   - profile: homebrew
     module: darling
     patch: darling/mldr-glibc-fork-reset.patch
@@ -67,3 +71,11 @@ series:
     module: darling
     patch: darling/rootless-shellspawn-lifecycle.patch
     lock: darling-rootless-shellspawn-lifecycle-v1.yml
+  - profile: homebrew
+    module: darling/src/external/installer
+    patch: installer/normalize-payload-paths.patch
+    lock: installer-normalize-payload-paths-v1.yml
+  - profile: homebrew
+    module: darling/src/external/installer
+    patch: installer/archive-path-containment.patch
+    lock: installer-archive-path-containment-v1.yml
