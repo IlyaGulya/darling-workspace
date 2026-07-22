@@ -1,22 +1,23 @@
 # Canonical lock-first transition
 
-`west patch apply` remains legacy-mbox-first by default.  Phase 1 adds a
-strict opt-in only for the typed entry in
-`locks/patch-stack/lock-first-series-v2.yml`: homebrew's
-`darling/sandbox-exec-pass-through.patch`.
+`west patch apply` remains legacy-mbox-first by default. Lock-first is a
+strict opt-in for the typed homebrew batch in
+`locks/patch-stack/lock-first-series-v2.yml`.
 
 ```
 west patch apply --profile homebrew --lock-first \
   --lock-first-evidence /absolute/path/lock-first-oracle.json
 ```
 
-Before any integration worktree mutation, the command validates that exactly
-one metadata entry is approved and that the profile contains that patch exactly
-once.  It independently applies the retained mbox in a clean disposable object
-database and compares it to the schema-v2 immutable lock.  It then uses the
-lock materializer to fetch and validate the exact immutable graph and advances
-only that module to its canonical source commit.  Every other homebrew patch
-still goes through the existing `git am --3way` lifecycle.
+Before any integration worktree mutation, the command validates the complete
+typed batch against the profile's actual grouped execution order: module order
+from `_group()`, followed by profile order within each module. A series is
+identified by `(module, patch)`, not patch path alone. It independently applies
+the retained mbox in a clean disposable object database and compares it to the
+schema-v2 immutable lock. It then uses the lock materializer to fetch and
+validate the exact immutable graph and advances only allowlisted modules to
+their canonical source commits. Every other homebrew patch still goes through
+the existing `git am --3way` lifecycle.
 
 The mbox is neither deleted nor an input to canonical graph construction: it is
 the independent equivalence oracle and fallback.  Lock-first is mutually
@@ -26,9 +27,18 @@ uses the normal forced rollback lifecycle; no partially applied integration
 branch is retained.  The materializer's transaction result ref is removed
 before the apply returns.
 
-Phase 1 acceptance compares a no-flag control and a lock-first run from the
-same frozen manifest.  Their integration trees and generated
+Acceptance compares a no-flag control and a lock-first run from the same frozen
+manifest. Their integration trees and generated
 `patches/homebrew/west.lock.yml` must be byte-identical.  The manual hosted
 tier is intentionally separate from default CI and must run exactly once before
 expanding the allowlist.  No profile default, legacy archive, or other series
 is changed by this phase.
+
+Aggregate lock-first evidence uses `evidence_schema_version: 2`. It records
+`batch_id`, `expected_count`, exact `module_order`, exact `(module, patch)`
+`series_order`, and a per-series module field. Applied-commit ancestry is
+checked only within each module/repository; cross-repository ancestry is neither
+meaningful nor required. Batch 1--3 artifacts have implicit legacy evidence v1
+and are intentionally incompatible with the v2 compare protocol. OIDs and
+generated-lock hashes are compared only within a single control/lock-first run,
+because committer identity can make them differ across environments.

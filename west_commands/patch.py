@@ -2277,15 +2277,18 @@ class DarlingPatch(WestCommand):
                 shadow_plan = patch_stack_shadow.plan(profile, patches)
             except patch_stack_shadow.ShadowError as error:
                 self.die(str(error))
+        # Lock-first is ordered exactly as the real application loop: module
+        # insertion order from _group(), then profile order within each module.
+        # Build it before any generated context, ref, or worktree mutation.
+        grouped = self._group(patches)
         lock_first_plan = None
         if lock_first:
             try:
-                lock_first_plan = patch_stack_lock_first.plan(profile, patches)
+                lock_first_plan = patch_stack_lock_first.plan(profile, patches, patch_stack_lock_first.MAPPING, grouped)
             except patch_stack_lock_first.LockFirstError as error:
                 self.die(str(error))
 
         branch = f"integration/{profile}"
-        grouped = self._group(patches)
         # A stacked profile requires its base profile to be applied first.
         self._require_base_applied(list(grouped))
         modules = list(grouped)
@@ -2299,7 +2302,7 @@ class DarlingPatch(WestCommand):
 
         touched = []
         shadow_runs = 0
-        lock_first_runs: list[str] = []
+        lock_first_runs: list[tuple[str, str]] = []
         lock_first_results = []
         try:
             for module, module_patches in grouped.items():
@@ -2320,8 +2323,8 @@ class DarlingPatch(WestCommand):
                         canonical = patch_stack_lock_first.materialize_into(
                             repo, lock_first_entry, path,
                         )
-                        lock_first_runs.append(patch["path"])
-                        lock_first_results.append({key: canonical[key] for key in ("patch", "base", "source", "canonical_tree", "applied_commit", "applied_tree", "verdict")})
+                        lock_first_runs.append((module, patch["path"]))
+                        lock_first_results.append({key: canonical[key] for key in ("module", "patch", "base", "source", "canonical_tree", "applied_commit", "applied_tree", "verdict")})
                         self.inf(f"lock-first {patch['path']}: {canonical['canonical_tree']}")
                     else:
                         git_for_patch_application(
@@ -2344,9 +2347,9 @@ class DarlingPatch(WestCommand):
             if shadow_plan and shadow_runs != 1:
                 raise RuntimeError("shadow plan was not invoked exactly once")
             if lock_first_plan:
-                expected = [entry["patch"] for entry in lock_first_plan]
+                expected = [(entry["module"], entry["patch"]) for entry in lock_first_plan]
                 if lock_first_runs != expected:
-                    raise RuntimeError("lock-first batch was not invoked exactly once in profile order")
+                    raise RuntimeError("lock-first batch was not invoked exactly once in grouped execution order")
             lock = self._record_integration(profile, grouped, integration_date)
             if lock_first_plan and lock_first_evidence:
                 if not isinstance(lock_first_plan, patch_stack_lock_first.LockFirstPlan):
