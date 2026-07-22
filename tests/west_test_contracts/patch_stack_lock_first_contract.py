@@ -209,6 +209,99 @@ def main() -> None:
         for commit in commits: lock_first._cherry_pick(canonical, commit)
         assert git(legacy, "rev-list", "--reverse", f"{fixture_base}..HEAD") == git(canonical, "rev-list", "--reverse", f"{fixture_base}..HEAD")
         assert git(legacy, "show", "-s", "--format=raw", "HEAD") == git(canonical, "show", "-s", "--format=raw", "HEAD")
+        # Exercise the real lock-first replay through _apply(), rather than
+        # treating a series-level mock as proof of a mid-series failure.  The
+        # first two immutable commits must reach the production repository;
+        # the third then raises the injected original exception.  _apply()
+        # owns the rollback of that partially replayed integration branch.
+        git(work, "reset", "--hard", "-q", base)
+        multi_commits = []
+        for index in range(1, 4):
+            (work / f"replay-{index}").write_text(f"replay {index}\n")
+            git(work, "add", f"replay-{index}")
+            git(work, "commit", "-qm", f"replay {index}")
+            multi_commits.append(git(work, "rev-parse", "HEAD"))
+        multi_source, multi_tree = multi_commits[-1], git(work, "rev-parse", "HEAD^{tree}")
+        git(work, "tag", f"patch-stack/v1/sources/{multi_source}", multi_source)
+        # The synthetic stack deliberately forks from the original one-commit
+        # fixture, so only its immutable source tag is needed by the mirror.
+        git(work, "push", "-q", "origin", "--tags")
+        multi_patch = root / "multi.patch"
+        multi_patch.write_text(subprocess.run(
+            ["git", "format-patch", "--stdout", f"{base}..{multi_source}"],
+            cwd=work, check=True, text=True, stdout=subprocess.PIPE,
+        ).stdout)
+        multi_lock = {
+            "schema_version": 2, "project": {"name": "synthetic", "path": "."},
+            "upstream": {"url": bare.as_uri(), "base_commit": base},
+            "mirror": {
+                "url": bare.as_uri(),
+                "base_ref": f"refs/tags/patch-stack/v1/bases/{base}", "base_oid": base,
+                "source_ref": f"refs/tags/patch-stack/v1/sources/{multi_source}", "source_oid": multi_source,
+            },
+            "source_commit": multi_source, "ordered_commits": multi_commits,
+            "expected_tree": multi_tree,
+        }
+        multi_lock_path = root / "multi.yml"
+        multi_lock_path.write_text(yaml.safe_dump(multi_lock, sort_keys=False))
+        multi_mapping = root / "multi-map.yml"
+        multi_patches = [{"module": "darling", "path": "darling/multi.patch"}]
+        multi_mapping.write_text(yaml.safe_dump(mapping_doc([
+            {"profile": "homebrew", "module": "darling", "patch": "darling/multi.patch", "lock": "multi.yml"},
+        ], batch_id="real-three-commit"), sort_keys=False))
+        real_command = patch_command.DarlingPatch.__new__(patch_command.DarlingPatch)
+        real_command._base_profile = None
+        real_command.manifest = types.SimpleNamespace(repo_abspath=root)
+        real_command._group = lambda _patches: {"darling": multi_patches}
+        real_command._require_base_applied = lambda _modules: None
+        real_command._ensure_generated_context = lambda *_args: None
+        real_command._base_revision = lambda _module: base
+        real_command._repo = lambda _module: production
+        real_command._reset_submodule_index = lambda _repo: None
+        real_command._verify_patch = lambda _profile_dir, _patch: multi_patch
+        real_command._record_integration = lambda *_args: (_ for _ in ()).throw(AssertionError("record must not run"))
+        real_command.inf = lambda _message: None
+        real_command.die = lambda message, **_kwargs: (_ for _ in ()).throw(RuntimeError(message))
+        old_mapping, old_cherry_pick = lock_first.MAPPING, lock_first._cherry_pick
+        temporary_root = Path(tempfile.gettempdir())
+        patterns = ("west-lock-materialize-*", "west-patch-lock-first-*", "west-patch-shadow-*")
+        try:
+            lock_first.MAPPING = multi_mapping
+            for injected in (lock_first.LockFirstError("third replay failure"), KeyboardInterrupt()):
+                git(production, "reset", "--hard", "-q", base)
+                subprocess.run(["git", "branch", "-D", "integration/homebrew"], cwd=production, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+                before_roots = {path.resolve() for pattern in patterns for path in temporary_root.glob(pattern)}
+                replayed = []
+                def fail_third(repo, commit):
+                    if repo == production:
+                        replayed.append(commit)
+                        if commit == multi_commits[2]:
+                            raise injected
+                    return old_cherry_pick(repo, commit)
+                lock_first._cherry_pick = fail_third
+                evidence_path = root / f"real-three-{type(injected).__name__}.json"
+                try:
+                    real_command._apply("homebrew", root, multi_patches, "0", False, False, None, True, str(evidence_path))
+                except KeyboardInterrupt:
+                    assert isinstance(injected, KeyboardInterrupt)
+                except RuntimeError as error:
+                    assert isinstance(injected, lock_first.LockFirstError)
+                    assert str(error) == "third replay failure", error
+                else:
+                    raise AssertionError("third replay failure was accepted")
+                assert replayed == multi_commits
+                assert git(production, "rev-parse", "HEAD") == base
+                assert git(production, "rev-parse", "HEAD^{tree}") == git(work, "rev-parse", f"{base}^{{tree}}")
+                assert not (production / git(production, "rev-parse", "--git-path", "rebase-apply")).exists()
+                refs = git(production, "for-each-ref", "--format=%(refname)")
+                assert "refs/west/patch-stack-materialize/" not in refs
+                assert "refs/west/patch-stack-lock-first/" not in refs
+                assert "refs/west/patch-stack-results/" not in refs
+                assert not evidence_path.exists()
+                assert {path.resolve() for pattern in patterns for path in temporary_root.glob(pattern)} == before_roots
+                assert "west-lock-materialize-" not in git(production, "worktree", "list", "--porcelain")
+        finally:
+            lock_first.MAPPING, lock_first._cherry_pick = old_mapping, old_cherry_pick
         # Production orchestration: no flag never invokes canonical code; the
         # typed plan is built before _prepare and failures roll back/SIGINT.
         command = patch_command.DarlingPatch.__new__(patch_command.DarlingPatch)
@@ -299,21 +392,28 @@ def main() -> None:
                 else: raise AssertionError("series failure was accepted")
                 assert failure["count"] == position and resets
             # Multi-module failure handling is keyed by the real grouped
-            # execution order.  The three external pilot entries run before
-            # Darling, so failure/SIGINT at each external position must abort
-            # every repository touched up to that point and reset the entire
-            # profile transaction without publishing aggregate evidence.
+            # execution order. Batch 5 places libpthread before Darling and
+            # both ordered Installer series after it. Model immutable commit
+            # replay inside each series, so the final case is genuinely the
+            # third commit in archive-path-containment, not merely a failure
+            # before that series starts. Every case must reset the touched
+            # transaction without publishing aggregate evidence.
             external_patches = [
                 {"module": "darling/src/external/libplatform", "path": "libplatform/bzero-return-register.patch"},
                 {"module": "darling/src/external/perl", "path": "perl/disable-nsgetexecutablepath.patch"},
                 {"module": "darling/src/external/libressl-2.8.3", "path": "libressl/libressl-283-nist-strict-aliasing.patch"},
+                {"module": "darling/src/external/libpthread", "path": "libpthread/psynch-kernel-return-helper.patch"},
                 {"module": "darling", "path": "darling/p0.patch"},
+                {"module": "darling/src/external/installer", "path": "installer/normalize-payload-paths.patch"},
+                {"module": "darling/src/external/installer", "path": "installer/archive-path-containment.patch"},
             ]
             external_grouped = {
                 external_patches[0]["module"]: [external_patches[0]],
                 external_patches[1]["module"]: [external_patches[1]],
                 external_patches[2]["module"]: [external_patches[2]],
-                "darling": [external_patches[3]],
+                external_patches[3]["module"]: [external_patches[3]],
+                "darling": [external_patches[4]],
+                external_patches[5]["module"]: [external_patches[5], external_patches[6]],
             }
             external_plan = lock_first.LockFirstPlan(
                 [{"profile": "homebrew", "module": item["module"], "patch": item["path"], "lock": "unused.yml", "lock_path": str(lock_path)} for item in external_patches],
@@ -324,18 +424,29 @@ def main() -> None:
             command._repo = lambda module: repositories[module]
             command._prepare = lambda *_args, **_kwargs: None
             patch_command.patch_stack_lock_first.plan = lambda *_args: external_plan
-            for position in (1, 2, 3):
+            scenarios = (
+                ("first-new", "libpthread/psynch-kernel-return-helper.patch", 1),
+                ("between-installer-series", "installer/archive-path-containment.patch", 1),
+                ("last-installer-commit", "installer/archive-path-containment.patch", 3),
+            )
+            commit_counts = {
+                "libpthread/psynch-kernel-return-helper.patch": 3,
+                "installer/archive-path-containment.patch": 3,
+            }
+            for name, failing_patch, failing_commit in scenarios:
                 for interrupt in (False, True):
-                    attempts, aborted = {"count": 0}, []
+                    attempts, aborted, replayed = {"count": 0}, [], []
                     command._abort_am = lambda repo: aborted.append(repo)
                     resets.clear()
-                    evidence_path = root / f"external-{position}-{interrupt}.json"
+                    evidence_path = root / f"external-{name}-{interrupt}.json"
                     def fail_external(_repo, _entry, *_args):
                         attempts["count"] += 1
-                        if attempts["count"] == position:
-                            if interrupt:
-                                raise KeyboardInterrupt()
-                            raise lock_first.LockFirstError("external series failure")
+                        for commit_index in range(1, commit_counts.get(_entry["patch"], 1) + 1):
+                            replayed.append((_entry["patch"], commit_index))
+                            if _entry["patch"] == failing_patch and commit_index == failing_commit:
+                                if interrupt:
+                                    raise KeyboardInterrupt()
+                                raise lock_first.LockFirstError("external commit replay failure")
                         return {"module": _entry["module"], "patch": _entry["patch"], "base": base, "source": source, "canonical_tree": tree, "applied_commit": source, "applied_tree": tree, "verdict": "VALID"}
                     patch_command.patch_stack_lock_first.materialize_into = fail_external
                     try:
@@ -346,8 +457,11 @@ def main() -> None:
                         assert not interrupt
                     else:
                         raise AssertionError("external failure was accepted")
-                    assert attempts["count"] == position and resets and not evidence_path.exists()
-                    assert aborted == [repositories[item["module"]] for item in external_patches[:position]]
+                    assert resets and not evidence_path.exists()
+                    failing_position = next(index for index, item in enumerate(external_patches) if item["path"] == failing_patch)
+                    expected_aborted = list(dict.fromkeys(repositories[item["module"]] for item in external_patches[:failing_position + 1]))
+                    assert aborted == expected_aborted
+                    assert replayed[-1] == (failing_patch, failing_commit)
             prepared.clear()
             patch_command.patch_stack_lock_first.plan = lambda *_args: (_ for _ in ()).throw(lock_first.LockFirstError("bad mapping"))
             try: command._apply("homebrew", root, patches, "0", False, False, None, True)
