@@ -108,7 +108,7 @@ jobs:
             --control-manifest "$LOCK_FIRST_ROOT/evidence/control-manifest.json" \
             --lock-first-manifest "$LOCK_FIRST_ROOT/evidence/lock-first-manifest.json" \
             --evidence "$LOCK_FIRST_ROOT/evidence/lock-first-evidence.json" \
-            --mapping locks/patch-stack/lock-first-series-v1.yml \
+            --mapping locks/patch-stack/lock-first-series-v2.yml \
             --control-workspace "$LOCK_FIRST_ROOT/control" \
             --lock-first-workspace "$LOCK_FIRST_ROOT/lock-first" \
             --transaction-root "$RUNNER_TEMP" \

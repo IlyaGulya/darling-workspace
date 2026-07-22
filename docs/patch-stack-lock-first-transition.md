@@ -2,7 +2,7 @@
 
 `west patch apply` remains legacy-mbox-first by default.  Phase 1 adds a
 strict opt-in only for the typed entry in
-`locks/patch-stack/lock-first-series-v1.yml`: homebrew's
+`locks/patch-stack/lock-first-series-v2.yml`: homebrew's
 `darling/sandbox-exec-pass-through.patch`.
 
 ```
