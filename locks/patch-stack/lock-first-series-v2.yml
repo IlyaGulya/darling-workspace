@@ -1,8 +1,20 @@
 schema_version: 2
 profile: homebrew
-batch_id: darling-homebrew-lock-first-batch-3
-expected_count: 13
+batch_id: darling-homebrew-lock-first-batch-4
+expected_count: 16
 series:
+  - profile: homebrew
+    module: darling/src/external/libplatform
+    patch: libplatform/bzero-return-register.patch
+    lock: libplatform-bzero-return-register-v1.yml
+  - profile: homebrew
+    module: darling/src/external/perl
+    patch: perl/disable-nsgetexecutablepath.patch
+    lock: perl-disable-nsgetexecutablepath-v1.yml
+  - profile: homebrew
+    module: darling/src/external/libressl-2.8.3
+    patch: libressl/libressl-283-nist-strict-aliasing.patch
+    lock: libressl-283-nist-v1.yml
   - profile: homebrew
     module: darling
     patch: darling/mldr-glibc-fork-reset.patch

@@ -30,8 +30,13 @@ class LockFirstPlan(list[dict[str, str]]):
 
     def __init__(self, entries: list[dict[str, str]], metadata: dict[str, Any]):
         super().__init__(entries)
-        self.batch = {"batch_id": metadata["batch_id"], "expected_count": metadata["expected_count"],
-                      "patches": [entry["patch"] for entry in entries]}
+        series = [{"module": entry["module"], "patch": entry["patch"]} for entry in entries]
+        self.batch = {
+            "batch_id": metadata["batch_id"],
+            "expected_count": metadata["expected_count"],
+            "series_order": series,
+            "module_order": list(dict.fromkeys(entry["module"] for entry in entries)),
+        }
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -122,11 +127,25 @@ def load_mapping(mapping_path: Path = MAPPING, profile: str | None = None) -> di
     return data
 
 
-def plan(profile: str, patches: list[dict[str, Any]], mapping_path: Path = MAPPING) -> LockFirstPlan:
+def plan(
+    profile: str,
+    patches: list[dict[str, Any]],
+    mapping_path: Path = MAPPING,
+    grouped: dict[str, list[dict[str, Any]]] | None = None,
+) -> LockFirstPlan:
     """Return an ordered, uniquely matched batch before any mutation."""
     metadata = load_mapping(mapping_path, profile)
     entries = metadata["series"]
     seen: set[tuple[str, str]] = set()
+    if grouped is None:
+        grouped = {}
+        for patch in patches:
+            grouped.setdefault(patch["module"], []).append(patch)
+    execution_order = [
+        (module, patch["path"])
+        for module, module_patches in grouped.items()
+        for patch in module_patches
+    ]
     positions: list[int] = []
     locks_root = mapping_path.parent.resolve()
     for component in (mapping_path.parent.absolute(),):
@@ -139,7 +158,7 @@ def plan(profile: str, patches: list[dict[str, Any]], mapping_path: Path = MAPPI
         if key in seen:
             raise LockFirstError(f"{profile}: duplicate typed lock-first entry: {entry['patch']}")
         seen.add(key)
-        matches = [index for index, patch in enumerate(patches) if (patch.get("module"), patch.get("path")) == key]
+        matches = [index for index, candidate in enumerate(execution_order) if candidate == key]
         if len(matches) != 1:
             raise LockFirstError(f"{profile}: allowlisted lock-first patch must occur exactly once: {entry['patch']}")
         positions.append(matches[0])
@@ -164,14 +183,15 @@ def plan(profile: str, patches: list[dict[str, Any]], mapping_path: Path = MAPPI
             raise LockFirstError(f"{entry['patch']}: invalid immutable lock: {error}") from error
         if lock["source_commit"] != lock["mirror"]["source_oid"] or lock["upstream"]["base_commit"] != lock["mirror"]["base_oid"]:
             raise LockFirstError(f"{entry['patch']}: incompatible immutable lock")
-        resolved.append({**entry, "lock_path": str(lock_path), "profile_index": str(matches[0])})
+        resolved.append({**entry, "lock_path": str(lock_path), "execution_index": str(matches[0])})
     if positions != sorted(positions):
-        raise LockFirstError(f"{profile}: lock-first entries are not in profile order")
+        raise LockFirstError(f"{profile}: lock-first entries are not in grouped execution order")
     return LockFirstPlan(resolved, metadata)
 
 
 _OID = re.compile(r"^[0-9a-f]{40}$")
-_EVIDENCE_FIELDS = {"patch", "base", "source", "canonical_tree", "applied_commit", "applied_tree", "verdict"}
+EVIDENCE_SCHEMA_VERSION = 2
+_EVIDENCE_FIELDS = {"module", "patch", "base", "source", "canonical_tree", "applied_commit", "applied_tree", "verdict"}
 
 
 def write_batch_evidence(path: Path, results: list[dict[str, Any]], batch: dict[str, Any]) -> None:
@@ -180,33 +200,41 @@ def write_batch_evidence(path: Path, results: list[dict[str, Any]], batch: dict[
         raise LockFirstError("lock-first evidence output already exists")
     if not isinstance(batch, dict):
         raise LockFirstError("lock-first evidence requires typed batch metadata")
-    batch_id, expected_count, expected_patches = batch.get("batch_id"), batch.get("expected_count"), batch.get("patches")
+    batch_id, expected_count, expected_series, module_order = (
+        batch.get("batch_id"), batch.get("expected_count"), batch.get("series_order"), batch.get("module_order")
+    )
     if not isinstance(batch_id, str) or not batch_id:
         raise LockFirstError("lock-first evidence batch_id is invalid")
     if not isinstance(expected_count, int) or isinstance(expected_count, bool) or expected_count < 1:
         raise LockFirstError("lock-first evidence expected_count is invalid")
-    if not isinstance(expected_patches, list) or expected_count != len(expected_patches):
+    if not isinstance(expected_series, list) or expected_count != len(expected_series):
         raise LockFirstError("lock-first evidence expected_count differs from ordered batch")
-    if any(not isinstance(patch, str) or not patch for patch in expected_patches) or len(set(expected_patches)) != len(expected_patches):
-        raise LockFirstError("lock-first evidence expected patches are invalid or duplicate")
+    if not isinstance(module_order, list) or not module_order or any(not isinstance(module, str) or not module for module in module_order):
+        raise LockFirstError("lock-first evidence module order is invalid")
+    if any(not isinstance(entry, dict) or set(entry) != {"module", "patch"} or not all(isinstance(entry.get(field), str) and entry[field] for field in ("module", "patch")) for entry in expected_series):
+        raise LockFirstError("lock-first evidence expected series are invalid")
+    expected_keys = [(entry["module"], entry["patch"]) for entry in expected_series]
+    if len(set(expected_keys)) != len(expected_keys) or list(dict.fromkeys(module for module, _ in expected_keys)) != module_order:
+        raise LockFirstError("lock-first evidence expected series are duplicate or have invalid module order")
     if not isinstance(results, list) or not results:
         raise LockFirstError("lock-first evidence requires a non-empty result batch")
     if any(not isinstance(entry, dict) for entry in results):
         raise LockFirstError("lock-first evidence entry is not an object")
-    if [entry.get("patch") for entry in results] != expected_patches:
-        raise LockFirstError("lock-first evidence patches do not exactly match the ordered batch")
-    seen: set[str] = set()
+    if [(entry.get("module"), entry.get("patch")) for entry in results] != expected_keys:
+        raise LockFirstError("lock-first evidence series do not exactly match the grouped ordered batch")
+    seen: set[tuple[str, str]] = set()
     for entry in results:
-        if set(entry) != _EVIDENCE_FIELDS or entry["patch"] in seen:
-            raise LockFirstError("lock-first evidence entry has invalid fields or duplicate patch")
-        seen.add(entry["patch"])
+        key = (entry.get("module"), entry.get("patch"))
+        if set(entry) != _EVIDENCE_FIELDS or key in seen or not all(isinstance(value, str) and value for value in key):
+            raise LockFirstError("lock-first evidence entry has invalid fields or duplicate module+patch")
+        seen.add(key)
         if entry["verdict"] != "VALID" or not all(
             isinstance(entry[key], str) and _OID.fullmatch(entry[key])
             for key in ("base", "source", "canonical_tree", "applied_commit", "applied_tree")
         ):
             raise LockFirstError("lock-first evidence entry has invalid OID or verdict")
-    payload = {"verdict": "VALID", "batch_id": batch_id, "expected_count": expected_count,
-               "patches": expected_patches, "series": results}
+    payload = {"evidence_schema_version": EVIDENCE_SCHEMA_VERSION, "verdict": "VALID", "batch_id": batch_id, "expected_count": expected_count,
+               "module_order": module_order, "series_order": expected_series, "series": results}
     temporary = path.with_name(path.name + f".{uuid.uuid4().hex}.tmp")
     try:
         path.parent.mkdir(parents=True, exist_ok=True)
@@ -282,6 +310,7 @@ def materialize_into(
         for commit in result["ordered_commits"]:
             _cherry_pick(repo, commit)
         return {
+            "module": lock_first_plan["module"],
             "patch": lock_first_plan["patch"],
             "base": lock["upstream"]["base_commit"],
             "source": source,

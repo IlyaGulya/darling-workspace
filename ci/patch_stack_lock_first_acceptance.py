@@ -3,7 +3,7 @@
 
 This intentionally does not replace ``patch_stack_shadow_acceptance.py``:
 that helper remains the single-series legacy-shadow oracle.  This module
-validates the distinct Batch 1 aggregate evidence against every declared
+validates versioned aggregate evidence against every declared
 schema-v2 lock and against the actual lock-first Git worktree.
 """
 from __future__ import annotations
@@ -26,7 +26,8 @@ import patch_stack_materialize
 
 
 OID = re.compile(r"^[0-9a-f]{40}$")
-ENTRY_FIELDS = {"patch", "base", "source", "canonical_tree", "applied_commit", "applied_tree", "verdict"}
+EVIDENCE_SCHEMA_VERSION = 2
+ENTRY_FIELDS = {"module", "patch", "base", "source", "canonical_tree", "applied_commit", "applied_tree", "verdict"}
 MAPPING_FIELDS = {"schema_version", "profile", "batch_id", "expected_count", "series"}
 SERIES_FIELDS = {"profile", "module", "patch", "lock"}
 
@@ -85,7 +86,7 @@ def load_batch(mapping_path: Path, available_modules: set[str]) -> dict[str, Any
     fail(isinstance(expected_count, int) and not isinstance(expected_count, bool) and expected_count > 0, "lock-first mapping expected_count is invalid")
     fail(isinstance(series, list) and expected_count == len(series), "lock-first mapping expected_count differs from series length")
     root = mapping_path.parent.resolve()
-    patches: set[str] = set()
+    series_keys: set[tuple[str, str]] = set()
     locks: set[str] = set()
     batch: list[dict[str, str]] = []
     for index, entry in enumerate(series):
@@ -93,8 +94,9 @@ def load_batch(mapping_path: Path, available_modules: set[str]) -> dict[str, Any
         fail(all(isinstance(entry[field], str) and entry[field] for field in SERIES_FIELDS), f"mapping entry {index}: invalid value")
         fail(entry["profile"] == profile, f"mapping entry {index}: profile must match mapping")
         fail(entry["module"] in available_modules, f"mapping entry {index}: module is not present in module maps")
-        fail(entry["patch"] not in patches, f"mapping entry {index}: duplicate patch")
-        patches.add(entry["patch"])
+        key = (entry["module"], entry["patch"])
+        fail(key not in series_keys, f"mapping entry {index}: duplicate module+patch")
+        series_keys.add(key)
         relative = Path(entry["lock"])
         fail(not relative.is_absolute() and ".." not in relative.parts, f"mapping entry {index}: lock escapes mapping root")
         path = contained(root, entry["lock"], f"mapping entry {index} lock")
@@ -102,7 +104,9 @@ def load_batch(mapping_path: Path, available_modules: set[str]) -> dict[str, Any
         fail(str(path) not in locks, f"mapping entry {index}: duplicate lock")
         locks.add(str(path))
         batch.append({**entry, "lock_path": str(path)})
-    return {"profile": profile, "batch_id": batch_id, "expected_count": expected_count, "series": batch}
+    module_order = list(dict.fromkeys(entry["module"] for entry in batch))
+    return {"profile": profile, "batch_id": batch_id, "expected_count": expected_count,
+            "module_order": module_order, "series": batch}
 
 
 def lock_values(entry: dict[str, str]) -> dict[str, str]:
@@ -204,21 +208,27 @@ def compare_lock_first(
     batch_metadata = load_batch(mapping_path, set(rows))
     batch = batch_metadata["series"]
     evidence = load_json(evidence_path)
-    fail(set(evidence) == {"verdict", "batch_id", "expected_count", "patches", "series"} and evidence.get("verdict") == "VALID", "lock-first evidence has invalid top-level fields")
+    observed_version = evidence.get("evidence_schema_version")
+    fail(
+        observed_version == EVIDENCE_SCHEMA_VERSION,
+        f"lock-first evidence schema version mismatch: expected {EVIDENCE_SCHEMA_VERSION}, got {observed_version!r}",
+    )
+    fail(set(evidence) == {"evidence_schema_version", "verdict", "batch_id", "expected_count", "module_order", "series_order", "series"} and evidence.get("verdict") == "VALID", "lock-first evidence v2 has invalid top-level fields")
     series = evidence.get("series")
     fail(evidence.get("batch_id") == batch_metadata["batch_id"], "lock-first evidence batch_id differs from mapping")
     fail(evidence.get("expected_count") == batch_metadata["expected_count"], "lock-first evidence expected_count differs from mapping")
     fail(isinstance(series, list) and len(series) == batch_metadata["expected_count"], "lock-first evidence does not contain expected_count entries")
-    expected_patches = [entry["patch"] for entry in batch]
-    fail(evidence.get("patches") == expected_patches, "lock-first evidence patches differ from mapping")
-    observed_patches = []
-    previous: tuple[Path, str] | None = None
+    expected_series = [{"module": entry["module"], "patch": entry["patch"]} for entry in batch]
+    fail(evidence.get("module_order") == batch_metadata["module_order"], "lock-first evidence module order differs from mapping")
+    fail(evidence.get("series_order") == expected_series, "lock-first evidence series order differs from mapping")
+    observed_series: list[dict[str, str]] = []
+    previous: dict[str, tuple[Path, str]] = {}
     for mapping, observed in zip(batch, series, strict=True):
         fail(isinstance(observed, dict) and set(observed) == ENTRY_FIELDS, f"{mapping['patch']}: evidence fields are invalid")
         fail(observed.get("verdict") == "VALID", f"{mapping['patch']}: evidence verdict is not VALID")
-        patch = observed.get("patch")
-        fail(isinstance(patch, str), f"{mapping['patch']}: evidence patch invalid")
-        observed_patches.append(patch)
+        module, patch = observed.get("module"), observed.get("patch")
+        fail(module == mapping["module"] and isinstance(patch, str), f"{mapping['patch']}: evidence module+patch invalid")
+        observed_series.append({"module": module, "patch": patch})
         expected = lock_values(mapping)
         for field, expected_value in expected.items():
             fail(observed.get(field) == expected_value, f"{mapping['patch']}: {field} differs from schema-v2 lock")
@@ -231,15 +241,24 @@ def compare_lock_first(
         fail(git(repo, "rev-parse", f"{applied_commit}^{{tree}}") == applied_tree, f"{mapping['patch']}: applied tree is not the commit tree")
         integration = row["integration_oid"]
         fail(is_ancestor(repo, applied_commit, integration), f"{mapping['patch']}: applied commit is not an ancestor of integration")
-        if previous is not None:
-            previous_repo, previous_commit = previous
-            fail(previous_repo == repo and is_ancestor(repo, previous_commit, applied_commit), f"{mapping['patch']}: applied commits are not in ancestry order")
-        previous = (repo, applied_commit)
-    fail(observed_patches == expected_patches, "lock-first evidence patches do not exactly match the ordered batch")
-    fail(len(set(observed_patches)) == batch_metadata["expected_count"], "lock-first evidence contains duplicate patches")
+        if module in previous:
+            previous_repo, previous_commit = previous[module]
+            fail(previous_repo == repo and is_ancestor(repo, previous_commit, applied_commit), f"{mapping['patch']}: applied commits are not in per-module ancestry order")
+        previous[module] = (repo, applied_commit)
+    fail(observed_series == expected_series, "lock-first evidence series do not exactly match the grouped ordered batch")
+    observed_keys = [(entry["module"], entry["patch"]) for entry in observed_series]
+    fail(len(set(observed_keys)) == batch_metadata["expected_count"], "lock-first evidence contains duplicate module+patch")
     assert_no_transaction_state(control_workspace, rows, transaction_root, "control")
     assert_no_transaction_state(lock_first_workspace, rows, transaction_root, "lock-first")
-    result_path.write_text(json.dumps({"verdict": "VALID", "module_count": len(rows), "lock_first_evidence": evidence_path.name}, sort_keys=True, indent=2) + "\n")
+    result_path.write_text(json.dumps({
+        "verdict": "VALID",
+        "evidence_schema_version": EVIDENCE_SCHEMA_VERSION,
+        "batch_id": batch_metadata["batch_id"],
+        "expected_count": batch_metadata["expected_count"],
+        "module_order": batch_metadata["module_order"],
+        "module_count": len(rows),
+        "lock_first_evidence": evidence_path.name,
+    }, sort_keys=True, indent=2) + "\n")
 
 
 def main() -> None:
