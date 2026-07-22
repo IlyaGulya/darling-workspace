@@ -27,7 +27,7 @@ def must_fail(fn, *args) -> None:
 
 
 def synthetic_compare_contract() -> None:
-    """Exercise the typed six-lock comparison without West or hosted state."""
+    """Exercise the typed batch comparison without West or hosted state."""
     with tempfile.TemporaryDirectory(prefix="lock-first-compare-contract-") as temporary:
         root = Path(temporary)
         source = root / "source"
@@ -78,10 +78,10 @@ def synthetic_compare_contract() -> None:
             }))
             mapping_entries.append({"profile": "homebrew", "module": "darling", "patch": patch, "lock": lock_name})
             series.append({"patch": patch, "base": base, "source": commit, "canonical_tree": tree, "applied_commit": commit, "applied_tree": tree, "verdict": "VALID"})
-        mapping = locks / "lock-first-series-v1.yml"
-        mapping.write_text(json.dumps({"schema_version": 1, "series": mapping_entries}))
+        mapping = locks / "lock-first-series-v2.yml"
+        mapping.write_text(json.dumps({"schema_version": 2, "profile": "homebrew", "batch_id": "synthetic-six", "expected_count": len(mapping_entries), "series": mapping_entries}))
         evidence = root / "lock-first-evidence.json"
-        evidence.write_text(json.dumps({"verdict": "VALID", "series": series}))
+        evidence.write_text(json.dumps({"verdict": "VALID", "batch_id": "synthetic-six", "expected_count": len(series), "patches": [entry["patch"] for entry in mapping_entries], "series": series}))
         result = root / "result.json"
         transaction_root = root / "transactions"; transaction_root.mkdir()
         args = (control_map, lock_map, control_manifest, lock_manifest, evidence, mapping, control_workspace, lock_workspace, transaction_root, result)
@@ -185,7 +185,7 @@ assert 'mise -C "$workspace" exec -- env HOME="$LOCK_FIRST_ROOT/lock-first-home"
 assert "--lock-first-evidence \"$LOCK_FIRST_ROOT/evidence/lock-first-evidence.json\"" in workflow
 assert "--shadow-lock" not in workflow
 assert "patch_stack_lock_first_acceptance.py compare-lock-first" in workflow
-assert "--mapping locks/patch-stack/lock-first-series-v1.yml" in workflow
+assert "--mapping locks/patch-stack/lock-first-series-v2.yml" in workflow
 assert "--control-workspace \"$LOCK_FIRST_ROOT/control\"" in workflow
 assert "--lock-first-workspace \"$LOCK_FIRST_ROOT/lock-first\"" in workflow
 compare_args = workflow.split("patch_stack_lock_first_acceptance.py compare-lock-first", 1)[1].split("--result", 1)[0]
@@ -197,7 +197,8 @@ assert "cleanup_status=" in workflow and "if: always()" in workflow
 assert "west-patch-shadow-* west-lock-materialize-* west-patch-lock-first-*" in workflow
 assert "patch-stack-lock-first-acceptance" in workflow
 compare_source = (ROOT / "ci/patch_stack_lock_first_acceptance.py").read_text()
-assert "BATCH_SIZE = 6" in compare_source
+assert "BATCH_SIZE" not in compare_source
+assert '"batch_id"' in compare_source and '"expected_count"' in compare_source
 assert "refs/west/patch-stack-lock-first/" in compare_source
 assert "west-patch-lock-first-*" in compare_source
 shadow_acceptance = (ROOT / "ci/patch_stack_shadow_acceptance.py").read_text()

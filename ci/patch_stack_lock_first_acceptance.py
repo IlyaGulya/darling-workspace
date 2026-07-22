@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Typed, fail-closed comparison for the six-series lock-first acceptance.
+"""Typed, fail-closed comparison for lock-first batch acceptance.
 
 This intentionally does not replace ``patch_stack_shadow_acceptance.py``:
 that helper remains the single-series legacy-shadow oracle.  This module
@@ -27,8 +27,8 @@ import patch_stack_materialize
 
 OID = re.compile(r"^[0-9a-f]{40}$")
 ENTRY_FIELDS = {"patch", "base", "source", "canonical_tree", "applied_commit", "applied_tree", "verdict"}
-MAPPING_FIELDS = {"profile", "module", "patch", "lock"}
-BATCH_SIZE = 6
+MAPPING_FIELDS = {"schema_version", "profile", "batch_id", "expected_count", "series"}
+SERIES_FIELDS = {"profile", "module", "patch", "lock"}
 
 
 def fail(condition: bool, message: str) -> None:
@@ -73,22 +73,25 @@ def contained(root: Path, relative: object, label: str) -> Path:
     return candidate
 
 
-def load_batch(mapping_path: Path, available_modules: set[str]) -> list[dict[str, str]]:
+def load_batch(mapping_path: Path, available_modules: set[str]) -> dict[str, Any]:
     try:
         data = yaml.safe_load(mapping_path.read_text())
     except (OSError, yaml.YAMLError) as error:
         raise AcceptanceError(f"invalid lock-first mapping {mapping_path}: {error}") from error
-    fail(isinstance(data, dict) and data.get("schema_version") == 1, "lock-first mapping schema_version must be 1")
-    series = data.get("series")
-    fail(isinstance(series, list) and len(series) == BATCH_SIZE, f"lock-first mapping must contain exactly {BATCH_SIZE} entries")
+    fail(isinstance(data, dict) and set(data) == MAPPING_FIELDS and data.get("schema_version") == 2, "lock-first mapping must use exact schema_version 2")
+    profile, batch_id, expected_count, series = data.get("profile"), data.get("batch_id"), data.get("expected_count"), data.get("series")
+    fail(isinstance(profile, str) and profile == "homebrew", "lock-first mapping profile must be homebrew")
+    fail(isinstance(batch_id, str) and batch_id, "lock-first mapping batch_id is invalid")
+    fail(isinstance(expected_count, int) and not isinstance(expected_count, bool) and expected_count > 0, "lock-first mapping expected_count is invalid")
+    fail(isinstance(series, list) and expected_count == len(series), "lock-first mapping expected_count differs from series length")
     root = mapping_path.parent.resolve()
     patches: set[str] = set()
     locks: set[str] = set()
     batch: list[dict[str, str]] = []
     for index, entry in enumerate(series):
-        fail(isinstance(entry, dict) and set(entry) == MAPPING_FIELDS, f"mapping entry {index}: invalid fields")
-        fail(all(isinstance(entry[field], str) and entry[field] for field in MAPPING_FIELDS), f"mapping entry {index}: invalid value")
-        fail(entry["profile"] == "homebrew", f"mapping entry {index}: profile must be homebrew")
+        fail(isinstance(entry, dict) and set(entry) == SERIES_FIELDS, f"mapping entry {index}: invalid fields")
+        fail(all(isinstance(entry[field], str) and entry[field] for field in SERIES_FIELDS), f"mapping entry {index}: invalid value")
+        fail(entry["profile"] == profile, f"mapping entry {index}: profile must match mapping")
         fail(entry["module"] in available_modules, f"mapping entry {index}: module is not present in module maps")
         fail(entry["patch"] not in patches, f"mapping entry {index}: duplicate patch")
         patches.add(entry["patch"])
@@ -99,7 +102,7 @@ def load_batch(mapping_path: Path, available_modules: set[str]) -> list[dict[str
         fail(str(path) not in locks, f"mapping entry {index}: duplicate lock")
         locks.add(str(path))
         batch.append({**entry, "lock_path": str(path)})
-    return batch
+    return {"profile": profile, "batch_id": batch_id, "expected_count": expected_count, "series": batch}
 
 
 def lock_values(entry: dict[str, str]) -> dict[str, str]:
@@ -198,12 +201,16 @@ def compare_lock_first(
     verify_actual_maps(control_workspace, rows, profile, "control")
     verify_actual_maps(lock_first_workspace, rows, profile, "lock-first")
 
-    batch = load_batch(mapping_path, set(rows))
+    batch_metadata = load_batch(mapping_path, set(rows))
+    batch = batch_metadata["series"]
     evidence = load_json(evidence_path)
-    fail(set(evidence) == {"verdict", "series"} and evidence.get("verdict") == "VALID", "lock-first evidence has invalid top-level fields")
+    fail(set(evidence) == {"verdict", "batch_id", "expected_count", "patches", "series"} and evidence.get("verdict") == "VALID", "lock-first evidence has invalid top-level fields")
     series = evidence.get("series")
-    fail(isinstance(series, list) and len(series) == BATCH_SIZE, "lock-first evidence does not contain exactly six entries")
+    fail(evidence.get("batch_id") == batch_metadata["batch_id"], "lock-first evidence batch_id differs from mapping")
+    fail(evidence.get("expected_count") == batch_metadata["expected_count"], "lock-first evidence expected_count differs from mapping")
+    fail(isinstance(series, list) and len(series) == batch_metadata["expected_count"], "lock-first evidence does not contain expected_count entries")
     expected_patches = [entry["patch"] for entry in batch]
+    fail(evidence.get("patches") == expected_patches, "lock-first evidence patches differ from mapping")
     observed_patches = []
     previous: tuple[Path, str] | None = None
     for mapping, observed in zip(batch, series, strict=True):
@@ -229,7 +236,7 @@ def compare_lock_first(
             fail(previous_repo == repo and is_ancestor(repo, previous_commit, applied_commit), f"{mapping['patch']}: applied commits are not in ancestry order")
         previous = (repo, applied_commit)
     fail(observed_patches == expected_patches, "lock-first evidence patches do not exactly match the ordered batch")
-    fail(len(set(observed_patches)) == BATCH_SIZE, "lock-first evidence contains duplicate patches")
+    fail(len(set(observed_patches)) == batch_metadata["expected_count"], "lock-first evidence contains duplicate patches")
     assert_no_transaction_state(control_workspace, rows, transaction_root, "control")
     assert_no_transaction_state(lock_first_workspace, rows, transaction_root, "lock-first")
     result_path.write_text(json.dumps({"verdict": "VALID", "module_count": len(rows), "lock_first_evidence": evidence_path.name}, sort_keys=True, indent=2) + "\n")
