@@ -7,7 +7,6 @@ validated before the normal patch lifecycle mutates a worktree.
 from __future__ import annotations
 
 import shutil
-import os
 import subprocess
 import tempfile
 import uuid
@@ -17,7 +16,6 @@ from pathlib import Path
 from typing import Any
 
 import patch_stack_materialize
-import patch_stack_shadow
 import yaml
 
 
@@ -250,89 +248,102 @@ def write_batch_evidence(path: Path, results: list[dict[str, Any]], batch: dict[
         raise LockFirstError(f"lock-first evidence write failed: {error}") from error
 
 
-def materialize_into(
-    repo: Path,
-    lock_first_plan: dict[str, str],
-    legacy_patch: Path,
-    oracle_evidence: Path | None = None,
-) -> dict[str, Any]:
-    """Verify both canonical and legacy inputs, then advance ``repo`` to source.
+def materialize_batch_into(repo: Path, entries: list[dict[str, str]]) -> tuple[list[dict[str, Any]], dict[str, int]]:
+    """Validate and replay one module's immutable series in one transaction.
 
-    ``patch_stack_materialize`` proves the immutable graph in this repository.
-    The independent shadow runner is the legacy-mbox equivalence oracle; it
-    never accesses the integration worktree.  The temporary result ref is
-    removed before returning, so lock-first leaves no canonical publication
-    state behind in a production checkout.
+    A fresh disposable ODB receives the union of the module's declared base
+    and source refs in one fetch. All locks are proven before the integration
+    worktree is changed; commits are then replayed in exact typed order using
+    native ``format-patch`` and ``git am``. The caller owns profile rollback.
     """
-    lock_path = Path(lock_first_plan["lock_path"])
-    lock = patch_stack_materialize.load_lock(lock_path)
+    if not entries or len({entry["module"] for entry in entries}) != 1:
+        raise LockFirstError("lock-first batch must contain one non-empty module")
+    locks: list[tuple[dict[str, str], dict[str, Any]]] = []
+    mirrors: set[str] = set()
+    for entry in entries:
+        try:
+            lock = patch_stack_materialize.load_lock(Path(entry["lock_path"]))
+        except (OSError, ValueError, patch_stack_materialize.MaterializeError) as error:
+            raise LockFirstError(f"{entry['patch']}: invalid immutable lock: {error}") from error
+        locks.append((entry, lock))
+        mirrors.add(lock["mirror"]["url"])
+    if len(mirrors) != 1:
+        raise LockFirstError("lock-first module entries use different immutable mirrors")
     transaction = uuid.uuid4().hex
-    result_ref = f"refs/west/patch-stack-results/lock-first/{transaction}"
-    fetched_ref = f"refs/west/patch-stack-lock-first/{transaction}"
-    evidence = oracle_evidence or Path(tempfile.gettempdir()) / f"west-patch-lock-first-{transaction}.json"
-    source: str | None = None
     root = Path(tempfile.gettempdir()) / f"west-patch-lock-first-{transaction}"
+    fetched_prefix = f"refs/west/patch-stack-lock-first/{transaction}"
+    fetched_refs: list[str] = []
+    results: list[dict[str, Any]] = []
+    stats = {"immutable_fetch_transactions": 0, "temporary_contexts": 1, "validated_locks": 0, "replayed_commits": 0}
     try:
-        oracle = patch_stack_shadow.run_shadow(
-            shadow_plan=lock_first_plan,
-            legacy_patch=legacy_patch,
-            evidence_path=evidence,
-        )
-        # The production Darling parent can legitimately report an untracked
-        # nested West project.  Do not weaken materializer cleanliness for
-        # that layout: validate in a fresh independent object database.
         root.mkdir()
         canonical = root / "canonical"
         patch_stack_materialize._git(root, "init", "-q", str(canonical))
-        patch_stack_materialize._git(canonical, "remote", "add", "immutable", lock["mirror"]["url"])
+        patch_stack_materialize._git(canonical, "remote", "add", "immutable", next(iter(mirrors)))
+        canonical_specs: list[str] = []
+        production_specs: list[str] = []
+        refs: list[tuple[str, str]] = []
+        for index, (_, lock) in enumerate(locks):
+            for kind in ("base", "source"):
+                remote_ref = lock["mirror"][f"{kind}_ref"]
+                canonical_ref = f"refs/west/lock-first-input/{transaction}/{index}/{kind}"
+                production_ref = f"{fetched_prefix}/{index}/{kind}"
+                canonical_specs.append(f"{remote_ref}:{canonical_ref}")
+                production_specs.append(f"{remote_ref}:{production_ref}")
+                refs.append((canonical_ref, production_ref))
+                fetched_refs.append(production_ref)
+        patch_stack_materialize._git(canonical, "fetch", "--no-tags", "immutable", *canonical_specs)
+        stats["immutable_fetch_transactions"] += 1
+        validated: list[tuple[dict[str, str], dict[str, Any], dict[str, Any]]] = []
+        for index, (entry, lock) in enumerate(locks):
+            proof = patch_stack_materialize.validate_fetched_lock(canonical, lock, refs[index * 2][0], refs[index * 2 + 1][0])
+            validated.append((entry, lock, proof))
+            stats["validated_locks"] += 1
+        # The immutable remote is contacted once for this module.  The second
+        # transfer is from this transaction's disposable ODB, never an
+        # alternate/shared object store or persistent cache.
         patch_stack_materialize._git(
-            canonical, "fetch", "--no-tags", "immutable",
-            f"{lock['mirror']['base_ref']}:refs/heads/seed",
+            repo, "fetch", "--no-tags", "--no-recurse-submodules", str(canonical),
+            *(f"{canonical_ref}:{production_ref}" for canonical_ref, production_ref in refs),
         )
-        patch_stack_materialize._git(canonical, "checkout", "--detach", "refs/heads/seed")
-        result = patch_stack_materialize.materialize(
-            canonical, lock_path, result_ref=result_ref,
-        )
-        source = result["fetched"]["source_oid"]
-        if result["verdict"] != "VALID" or result["resulting_tree"] != oracle["legacy_resulting_tree"]:
-            raise LockFirstError("canonical materialization and legacy oracle differ")
-        patch_stack_materialize._git(
-            repo, "fetch", "--no-tags", "--no-recurse-submodules", lock["mirror"]["url"],
-            f"{lock['mirror']['source_ref']}:{fetched_ref}",
-        )
-        if patch_stack_materialize._oid(repo, fetched_ref) != source:
-            raise LockFirstError("production immutable source fetch differs from validated source")
-        # The profile can intentionally apply a retained patch onto a newer
-        # effective base than the lock's historical upstream base.  Preserve
-        # that lifecycle by replaying the immutable, validated commits with
-        # ordinary Git rather than resetting the production checkout to the
-        # historical source tip (which would discard intervening upstream).
-        for commit in result["ordered_commits"]:
-            _cherry_pick(repo, commit)
-        return {
-            "module": lock_first_plan["module"],
-            "patch": lock_first_plan["patch"],
-            "base": lock["upstream"]["base_commit"],
-            "source": source,
-            "canonical_tree": result["resulting_tree"],
-            "applied_commit": patch_stack_materialize._oid(repo, "HEAD"),
-            "applied_tree": patch_stack_materialize._git(repo, "rev-parse", "HEAD^{tree}"),
-            "verdict": "VALID",
-            "oracle": oracle,
-        }
-    except (patch_stack_shadow.ShadowError, patch_stack_materialize.MaterializeError) as error:
+        for index, (_, _, proof) in enumerate(validated):
+            if patch_stack_materialize._oid(repo, refs[index * 2 + 1][1]) != proof["source_oid"]:
+                raise LockFirstError("production immutable source fetch differs from validated source")
+        for entry, lock, proof in validated:
+            for commit in proof["ordered_commits"]:
+                _cherry_pick(repo, commit)
+                stats["replayed_commits"] += 1
+            results.append({"module": entry["module"], "patch": entry["patch"],
+                            "base": lock["upstream"]["base_commit"], "source": proof["source_oid"],
+                            "canonical_tree": proof["resulting_tree"],
+                            "applied_commit": patch_stack_materialize._oid(repo, "HEAD"),
+                            "applied_tree": patch_stack_materialize._git(repo, "rev-parse", "HEAD^{tree}"), "verdict": "VALID"})
+        return results, stats
+    except patch_stack_materialize.MaterializeError as error:
         raise LockFirstError(str(error)) from error
     finally:
-        # Never remove an existing/concurrently replaced ref: only delete the
-        # exact transaction result created by this invocation.
+        failures: list[str] = []
+        for ref in fetched_refs:
+            try:
+                patch_stack_materialize._delete_ref(repo, ref)
+            except patch_stack_materialize.MaterializeError as error:
+                failures.append(str(error))
         try:
-            if source is not None:
-                outcome = patch_stack_materialize._rollback_result(root / "canonical", result_ref, source)
-                if outcome not in ("removed", "already-absent"):
-                    raise LockFirstError(f"lock-first result-ref cleanup failed: {outcome}")
-            patch_stack_materialize._delete_ref(repo, fetched_ref)
             if root.exists():
                 shutil.rmtree(root)
-        finally:
-            if oracle_evidence is None:
-                evidence.unlink(missing_ok=True)
+        except OSError as error:
+            failures.append(str(error))
+        if failures:
+            raise LockFirstError("lock-first batch cleanup failed: " + "; ".join(failures))
+
+
+def materialize_into(repo: Path, lock_first_plan: dict[str, str], legacy_patch: Path, oracle_evidence: Path | None = None) -> dict[str, Any]:
+    """Compatibility shim for focused single-series tests.
+
+    Production invokes :func:`materialize_batch_into`; retained legacy patches
+    remain an independent oracle in dedicated shadow/differential contracts,
+    rather than forcing a clean-ODB oracle transaction for every series.
+    """
+    del legacy_patch, oracle_evidence
+    results, _ = materialize_batch_into(repo, [lock_first_plan])
+    return results[0]

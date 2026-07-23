@@ -149,12 +149,14 @@ def main() -> None:
         patch_command.patch_stack_shadow.plan = lambda _profile, _patches: target_plan
         patch_command.patch_stack_shadow.run_shadow = lambda **kwargs: calls.append(kwargs) or {"legacy_resulting_tree": tree, "canonical_resulting_tree": tree}
         try:
-            command._apply("homebrew", root, patches_for_apply, "0", False, False)
-            no_flag_tree = recorded[-1]
-            no_flag_ref = git(work, "rev-parse", "refs/heads/integration/homebrew")
+            # The default cutover makes homebrew canonical. This shadow-only
+            # contract deliberately exercises the retained legacy baseline.
+            command._apply("homebrew", root, patches_for_apply, "0", False, legacy_mbox=True)
+            legacy_tree = recorded[-1]
+            legacy_ref = git(work, "rev-parse", "refs/heads/integration/homebrew")
             command._apply("homebrew", root, patches_for_apply, "0", False, True)
-            assert len(calls) == 1 and recorded[-1] == no_flag_tree == tree
-            assert git(work, "rev-parse", "refs/heads/integration/homebrew") == no_flag_ref
+            assert len(calls) == 1 and recorded[-1] == legacy_tree == tree
+            assert git(work, "rev-parse", "refs/heads/integration/homebrew") == legacy_ref
             # A typed-plan rejection occurs before _prepare (and therefore
             # before any production mutation).
             prepared: list[bool] = []

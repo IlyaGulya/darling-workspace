@@ -147,6 +147,34 @@ def _fetchable_preflight(preflight: dict[str, Any]) -> bool:
     return saw_incomplete
 
 
+def validate_fetched_lock(repo: Path, lock: dict[str, Any], base_ref: str, source_ref: str) -> dict[str, Any]:
+    """Validate one schema-v2 lock against immutable refs already fetched.
+
+    Batch callers deliberately fetch a union of immutable refs once per
+    repository.  Keeping this graph/metadata/tree proof here prevents that
+    optimization from weakening the single-lock materializer's invariants.
+    """
+    if lock.get("schema_version") != 2:
+        raise MaterializeError("materialize-lock accepts schema_version 2 only")
+    base, source = _oid(repo, base_ref), _oid(repo, source_ref)
+    if base != lock["upstream"]["base_commit"] or source != lock["source_commit"]:
+        raise MaterializeError("fetched immutable ref OID differs from lock")
+    ordered = _git(repo, "rev-list", "--reverse", f"{base}..{source}").splitlines()
+    if ordered != lock["ordered_commits"]:
+        raise MaterializeError("ordered commits are not the exact linear range")
+    for index, commit in enumerate(ordered):
+        parents = _git(repo, "show", "-s", "--format=%P", commit).split()
+        if parents != ([base] if index == 0 else [ordered[index - 1]]):
+            raise MaterializeError("merge or nonlinear ordered stack")
+        metadata = _git(repo, "show", "-s", "--format=%an%x00%ae%x00%aI%x00%cn%x00%ce%x00%cI", commit).split("\x00")
+        if len(metadata) != 6 or not all(metadata):
+            raise MaterializeError("incomplete author/committer metadata")
+    tree = _git(repo, "show", "-s", "--format=%T", source)
+    if tree != lock["expected_tree"]:
+        raise MaterializeError("expected tree differs from source commit")
+    return {"base_oid": base, "source_oid": source, "ordered_commits": ordered, "resulting_tree": tree}
+
+
 def materialize(repo: Path, lock_path: Path, result_ref: str | None = None, evidence_path: Path | None = None) -> dict[str, Any]:
     """Materialize a canonical graph without applying mbox patches or touching HEAD.
 
@@ -188,23 +216,10 @@ def materialize(repo: Path, lock_path: Path, result_ref: str | None = None, evid
             raise MaterializeError(f"pre-fetch preflight {preflight['overall_verdict']}")
         mirror = lock["mirror"]
         _git(repo, "fetch", "--no-tags", mirror["url"], f"{mirror['base_ref']}:{base_ref}", f"{mirror['source_ref']}:{source_ref}")
-        base, fetched = _oid(repo, base_ref), _oid(repo, source_ref)
+        validated = validate_fetched_lock(repo, lock, base_ref, source_ref)
+        base, fetched = validated["base_oid"], validated["source_oid"]
+        ordered, tree = validated["ordered_commits"], validated["resulting_tree"]
         evidence["fetched"] = {"base_oid": base, "source_oid": fetched}
-        if base != lock["upstream"]["base_commit"] or fetched != source:
-            raise MaterializeError("fetched immutable ref OID differs from lock")
-        ordered = _git(repo, "rev-list", "--reverse", f"{base}..{fetched}").splitlines()
-        if ordered != lock["ordered_commits"]:
-            raise MaterializeError("ordered commits are not the exact linear range")
-        for index, commit in enumerate(ordered):
-            parents = _git(repo, "show", "-s", "--format=%P", commit).split()
-            if parents != ([base] if index == 0 else [ordered[index - 1]]):
-                raise MaterializeError("merge or nonlinear ordered stack")
-            metadata = _git(repo, "show", "-s", "--format=%an%x00%ae%x00%aI%x00%cn%x00%ce%x00%cI", commit).split("\x00")
-            if len(metadata) != 6 or not all(metadata):
-                raise MaterializeError("incomplete author/committer metadata")
-        tree = _git(repo, "show", "-s", "--format=%T", fetched)
-        if tree != lock["expected_tree"]:
-            raise MaterializeError("expected tree differs from source commit")
         # The root is recoverable from transaction_id without globbing over
         # other concurrent materializers' disposable worktrees.
         root = Path(tempfile.gettempdir()) / f"west-lock-materialize-{transaction}"
