@@ -178,11 +178,16 @@ class DarlingPatch(WestCommand):
                 command.add_argument(
                     "--lock-first",
                     action="store_true",
-                    help="opt in to canonical immutable-lock materialization for an approved series",
+                    help="use canonical immutable-lock materialization (the homebrew default)",
                 )
                 command.add_argument(
                     "--lock-first-evidence",
                     help="write independent legacy/canonical oracle evidence to this explicit path",
+                )
+                command.add_argument(
+                    "--legacy-mbox",
+                    action="store_true",
+                    help="use retained legacy git am --3way materialization instead of homebrew lock-first",
                 )
                 command.add_argument(
                     "--shadow-lock",
@@ -324,6 +329,7 @@ class DarlingPatch(WestCommand):
                 args.shadow_evidence,
                 args.lock_first,
                 args.lock_first_evidence,
+                args.legacy_mbox,
             )
         else:
             self._clean(args.profile, patches, args.force)
@@ -2242,6 +2248,53 @@ class DarlingPatch(WestCommand):
             == 0
         )
 
+    def _generated_lock_snapshot(self, profile: str) -> tuple[Path, bytes | None]:
+        """Capture the generated profile lock before a canonical transaction.
+
+        The profile lock is a generated manifest-repository artifact rather
+        than an integration ref.  A failure after `_record_integration()` must
+        not leave a newly written lock behind when all module branches were
+        rolled back.
+        """
+        output = Path(self.manifest.repo_abspath) / "patches" / profile / "west.lock.yml"
+        if output.is_symlink():
+            raise RuntimeError(f"generated profile lock may not be a symlink: {output}")
+        if output.exists() and not output.is_file():
+            raise RuntimeError(f"generated profile lock is not a regular file: {output}")
+        return output, output.read_bytes() if output.exists() else None
+
+    def _restore_generated_lock(self, snapshot: tuple[Path, bytes | None]) -> None:
+        """Restore the pre-transaction generated lock without following links."""
+        output, contents = snapshot
+        if output.is_symlink():
+            raise RuntimeError(f"generated profile lock became a symlink: {output}")
+        if contents is None:
+            output.unlink(missing_ok=True)
+            return
+        output.parent.mkdir(parents=True, exist_ok=True)
+        output.write_bytes(contents)
+
+    def _rollback_canonical_apply(self, profile, grouped, touched, snapshot) -> None:
+        """Best-effort rollback that preserves the original apply exception."""
+        cleanup_errors = []
+        try:
+            for repo in touched:
+                try:
+                    self._abort_am(repo)
+                except Exception as error:  # retain the triggering failure
+                    cleanup_errors.append(f"abort {repo}: {error}")
+            try:
+                self._reset(profile, grouped, force=True)
+            except Exception as error:
+                cleanup_errors.append(f"reset: {error}")
+        finally:
+            try:
+                self._restore_generated_lock(snapshot)
+            except Exception as error:
+                cleanup_errors.append(f"generated lock restore: {error}")
+        for error in cleanup_errors:
+            self.err(f"canonical lock-first cleanup failed: {error}")
+
     def _apply(
         self,
         profile: str,
@@ -2253,14 +2306,23 @@ class DarlingPatch(WestCommand):
         shadow_evidence: str | None = None,
         lock_first: bool = False,
         lock_first_evidence: str | None = None,
+        legacy_mbox: bool = False,
     ):
         lock_source = Path(self.manifest.repo_abspath) / "west.lock.yml"
         if not lock_source.is_file():
             self.die(f"frozen manifest not found: {lock_source}")
+        if legacy_mbox and (lock_first or lock_first_evidence or shadow_lock or shadow_evidence):
+            self.die("--legacy-mbox is mutually exclusive with --lock-first, --lock-first-evidence, --shadow-lock, and --shadow-evidence")
         if shadow_evidence and not shadow_lock:
             self.die("--shadow-evidence requires --shadow-lock")
-        if lock_first_evidence and not lock_first:
-            self.die("--lock-first-evidence requires --lock-first")
+        # Homebrew has completed its Batch 7 canonical migration.  Keep the
+        # opt-in spelling as a compatibility alias, but make the canonical
+        # path the normal mode.  Shadow remains a diagnostic legacy/oracle
+        # mode and must not silently become a second canonical replay.
+        canonical_default = profile == "homebrew" and not legacy_mbox and not shadow_lock
+        use_lock_first = canonical_default or lock_first
+        if lock_first_evidence and not use_lock_first:
+            self.die("--lock-first-evidence requires canonical lock-first mode")
         if lock_first_evidence:
             evidence_path = Path(lock_first_evidence)
             if evidence_path.exists() or evidence_path.is_symlink():
@@ -2282,11 +2344,15 @@ class DarlingPatch(WestCommand):
         # Build it before any generated context, ref, or worktree mutation.
         grouped = self._group(patches)
         lock_first_plan = None
-        if lock_first:
+        if use_lock_first:
             try:
                 lock_first_plan = patch_stack_lock_first.plan(profile, patches, patch_stack_lock_first.MAPPING, grouped)
             except patch_stack_lock_first.LockFirstError as error:
                 self.die(str(error))
+
+        # The snapshot occurs only after the fail-closed planner has accepted
+        # the exact Batch mapping and before any lifecycle mutation.
+        generated_lock_snapshot = self._generated_lock_snapshot(profile) if use_lock_first else None
 
         branch = f"integration/{profile}"
         # A stacked profile requires its base profile to be applied first.
@@ -2316,17 +2382,28 @@ class DarlingPatch(WestCommand):
                     # dirty-index guard; parked submodule gitlinks trip it even
                     # though the patches only touch real files. See helper.
                     self._reset_submodule_index(repo)
+                module_lock_first = [
+                    entry for entry in (lock_first_plan or []) if entry["module"] == module
+                ]
+                verified_paths = {
+                    patch["path"]: self._verify_patch(profile_dir, patch)
+                    for patch in module_patches
+                }
+                if module_lock_first:
+                    canonical_results, stats = patch_stack_lock_first.materialize_batch_into(
+                        repo, module_lock_first,
+                    )
+                    lock_first_runs.extend((entry["module"], entry["patch"]) for entry in module_lock_first)
+                    lock_first_results.extend(canonical_results)
+                    self.inf(
+                        f"lock-first {module}: {stats['validated_locks']} locks, "
+                        f"{stats['immutable_fetch_transactions']} immutable fetch transaction, "
+                        f"{stats['replayed_commits']} replayed commits"
+                    )
                 for patch in module_patches:
-                    path = self._verify_patch(profile_dir, patch)
-                    lock_first_entry = next((entry for entry in (lock_first_plan or []) if module == entry["module"] and patch["path"] == entry["patch"]), None)
-                    if lock_first_entry:
-                        canonical = patch_stack_lock_first.materialize_into(
-                            repo, lock_first_entry, path,
-                        )
-                        lock_first_runs.append((module, patch["path"]))
-                        lock_first_results.append({key: canonical[key] for key in ("module", "patch", "base", "source", "canonical_tree", "applied_commit", "applied_tree", "verdict")})
-                        self.inf(f"lock-first {patch['path']}: {canonical['canonical_tree']}")
-                    else:
+                    path = verified_paths[patch["path"]]
+                    lock_first_entry = next((entry for entry in module_lock_first if patch["path"] == entry["patch"]), None)
+                    if not lock_first_entry:
                         git_for_patch_application(
                             repo,
                             "am",
@@ -2365,7 +2442,12 @@ class DarlingPatch(WestCommand):
             # shadow comparison is running.  It must not leave that partial
             # integration branch behind.  Preserve ordinary no-shadow SIGINT
             # behavior, and never turn the interrupt into `die()` output.
-            if shadow_lock or lock_first:
+            if use_lock_first:
+                try:
+                    self._rollback_canonical_apply(profile, grouped, touched, generated_lock_snapshot)
+                finally:
+                    raise
+            if shadow_lock:
                 try:
                     for repo in touched:
                         self._abort_am(repo)
@@ -2374,9 +2456,12 @@ class DarlingPatch(WestCommand):
                     raise
             raise
         except Exception as error:
-            for repo in touched:
-                self._abort_am(repo)
-            if roll_back or shadow_lock or lock_first:
+            if use_lock_first:
+                self._rollback_canonical_apply(profile, grouped, touched, generated_lock_snapshot)
+            else:
+                for repo in touched:
+                    self._abort_am(repo)
+            if not use_lock_first and (roll_back or shadow_lock):
                 self._reset(profile, grouped, force=True)
             self.die(str(error))
 

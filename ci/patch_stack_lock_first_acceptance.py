@@ -192,8 +192,12 @@ def compare_lock_first(
     lock_first_workspace: Path,
     transaction_root: Path,
     result_path: Path,
+    control_mode: str = "legacy-mbox",
+    candidate_mode: str = "default-lock-first",
 ) -> None:
     fail(not result_path.exists() and not result_path.is_symlink(), "compare result path already exists")
+    fail(control_mode == "legacy-mbox", "control mode must be legacy-mbox")
+    fail(candidate_mode == "default-lock-first", "candidate mode must be default-lock-first")
     control, lock_first = load_json(control_path), load_json(lock_first_path)
     control_manifest, lock_first_manifest = load_json(control_manifest_path), load_json(lock_first_manifest_path)
     fail(control == lock_first, "control and lock-first module maps differ")
@@ -257,6 +261,8 @@ def compare_lock_first(
         "expected_count": batch_metadata["expected_count"],
         "module_order": batch_metadata["module_order"],
         "module_count": len(rows),
+        "control_mode": control_mode,
+        "candidate_mode": candidate_mode,
         "lock_first_evidence": evidence_path.name,
     }, sort_keys=True, indent=2) + "\n")
 
@@ -267,9 +273,11 @@ def main() -> None:
     compare = sub.add_parser("compare-lock-first")
     for name in ("control", "lock-first", "control-manifest", "lock-first-manifest", "evidence", "mapping", "control-workspace", "lock-first-workspace", "transaction-root", "result"):
         compare.add_argument(f"--{name}", type=Path, required=True)
+    compare.add_argument("--control-mode", required=True)
+    compare.add_argument("--candidate-mode", required=True)
     args = parser.parse_args()
     try:
-        compare_lock_first(args.control, args.lock_first, args.control_manifest, args.lock_first_manifest, args.evidence, args.mapping, args.control_workspace, args.lock_first_workspace, args.transaction_root, args.result)
+        compare_lock_first(args.control, args.lock_first, args.control_manifest, args.lock_first_manifest, args.evidence, args.mapping, args.control_workspace, args.lock_first_workspace, args.transaction_root, args.result, args.control_mode, args.candidate_mode)
     except AcceptanceError as error:
         print(f"patch-stack lock-first acceptance: ERROR: {error}", file=sys.stderr)
         raise SystemExit(1)
