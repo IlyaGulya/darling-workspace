@@ -217,7 +217,7 @@ workflow = (ROOT / ".github/workflows/patch-stack-lock-first.yml").read_text()
 assert "on:\n  workflow_dispatch:" in workflow
 assert "push:" not in workflow and "schedule:" not in workflow
 assert "if: github.event_name == 'workflow_dispatch'" in workflow
-assert "runs-on: ubuntu-latest" in workflow and "timeout-minutes: 60" in workflow
+assert "runs-on: ubuntu-latest" in workflow and "timeout-minutes: 75" in workflow
 assert "jdx/mise-action@5228313ee0372e111a38da051671ca30fc5a96db" in workflow
 assert "working_directory: darling-dev/darling-workspace" in workflow
 assert "cache: false" in workflow and "cache_save: false" in workflow

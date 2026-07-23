@@ -1,7 +1,7 @@
 schema_version: 2
 profile: homebrew
-batch_id: darling-homebrew-lock-first-batch-6
-expected_count: 44
+batch_id: darling-homebrew-lock-first-batch-7
+expected_count: 69
 series:
   - profile: homebrew
     module: darling/src/external/darlingserver
@@ -103,6 +103,106 @@ series:
     module: darling/src/external/darlingserver
     patch: darlingserver/rootless-runtime-integration.patch
     lock: darlingserver-rootless-runtime-integration-v1.yml
+  - profile: homebrew
+    module: darling/src/external/xnu
+    patch: xnu/psynch-cvsignal-args.patch
+    lock: darling-xnu-psynch-cvsignal-args-v1.yml
+  - profile: homebrew
+    module: darling/src/external/xnu
+    patch: xnu/fstatfs-missing-proc-mounts.patch
+    lock: darling-xnu-fstatfs-missing-proc-mounts-v1.yml
+  - profile: homebrew
+    module: darling/src/external/xnu
+    patch: xnu/select-pselect-fdset.patch
+    lock: darling-xnu-select-pselect-fdset-v1.yml
+  - profile: homebrew
+    module: darling/src/external/xnu
+    patch: xnu/darwin-priority.patch
+    lock: darling-xnu-darwin-priority-v1.yml
+  - profile: homebrew
+    module: darling/src/external/xnu
+    patch: xnu/socket-siocgifconf.patch
+    lock: darling-xnu-socket-siocgifconf-v1.yml
+  - profile: homebrew
+    module: darling/src/external/xnu
+    patch: xnu/fork-postfork-child.patch
+    lock: darling-xnu-fork-postfork-child-v1.yml
+  - profile: homebrew
+    module: darling/src/external/xnu
+    patch: xnu/fork-wait-timeout-parent.patch
+    lock: darling-xnu-fork-wait-timeout-parent-v1.yml
+  - profile: homebrew
+    module: darling/src/external/xnu
+    patch: xnu/getattrlist-name-objtype.patch
+    lock: darling-xnu-getattrlist-name-objtype-v1.yml
+  - profile: homebrew
+    module: darling/src/external/xnu
+    patch: xnu/getattrlistbulk.patch
+    lock: darling-xnu-getattrlistbulk-v1.yml
+  - profile: homebrew
+    module: darling/src/external/xnu
+    patch: xnu/getattrlist-shared-packer.patch
+    lock: darling-xnu-getattrlist-shared-packer-v1.yml
+  - profile: homebrew
+    module: darling/src/external/xnu
+    patch: xnu/psynch-negative-errno.patch
+    lock: darling-xnu-psynch-negative-errno-v1.yml
+  - profile: homebrew
+    module: darling/src/external/xnu
+    patch: xnu/sigexc-sa-restart.patch
+    lock: darling-xnu-sigexc-sa-restart-v1.yml
+  - profile: homebrew
+    module: darling/src/external/xnu
+    patch: xnu/sigexc-debug-flood.patch
+    lock: darling-xnu-sigexc-debug-flood-v1.yml
+  - profile: homebrew
+    module: darling/src/external/xnu
+    patch: xnu/sigexc-default-resend-self.patch
+    lock: darling-xnu-sigexc-default-resend-self-v1.yml
+  - profile: homebrew
+    module: darling/src/external/xnu
+    patch: xnu/ulock-wait-eintr-retry.patch
+    lock: darling-xnu-ulock-wait-eintr-retry-v1.yml
+  - profile: homebrew
+    module: darling/src/external/xnu
+    patch: xnu/vchroot-pathnull-guard.patch
+    lock: darling-xnu-vchroot-pathnull-guard-v1.yml
+  - profile: homebrew
+    module: darling/src/external/xnu
+    patch: xnu/eunion-core.patch
+    lock: darling-xnu-eunion-core-v1.yml
+  - profile: homebrew
+    module: darling/src/external/xnu
+    patch: xnu/eunion-hardening.patch
+    lock: darling-xnu-eunion-hardening-v1.yml
+  - profile: homebrew
+    module: darling/src/external/xnu
+    patch: xnu/chown-disabled-null-guard.patch
+    lock: darling-xnu-chown-disabled-null-guard-v1.yml
+  - profile: homebrew
+    module: darling/src/external/xnu
+    patch: xnu/fd-guard-ebadf.patch
+    lock: darling-xnu-fd-guard-ebadf-v1.yml
+  - profile: homebrew
+    module: darling/src/external/xnu
+    patch: xnu/abort-with-payload-no-group-broadcast.patch
+    lock: darling-xnu-abort-with-payload-no-group-broadcast-v1.yml
+  - profile: homebrew
+    module: darling/src/external/xnu
+    patch: xnu/cache-task-self-trap.patch
+    lock: darling-xnu-cache-task-self-trap-v1.yml
+  - profile: homebrew
+    module: darling/src/external/xnu
+    patch: xnu/guest-per-callnum-sleep-account.patch
+    lock: darling-xnu-guest-per-callnum-sleep-account-v1.yml
+  - profile: homebrew
+    module: darling/src/external/xnu
+    patch: xnu/gate-hotpath-kprintf-debug.patch
+    lock: darling-xnu-gate-hotpath-kprintf-debug-v1.yml
+  - profile: homebrew
+    module: darling/src/external/xnu
+    patch: xnu/generalize-recv-spin-guest.patch
+    lock: darling-xnu-generalize-recv-spin-guest-v1.yml
   - profile: homebrew
     module: darling/src/external/libplatform
     patch: libplatform/bzero-return-register.patch
