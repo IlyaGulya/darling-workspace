@@ -296,7 +296,9 @@ def main() -> None:
             })
             assert not candidate.exists()
         assert not list(root.glob("*.tmp"))
-        assert lock_first.materialize_into(production, selected[0], patch)["canonical_tree"] == tree
+        batch_results, batch_stats = lock_first.materialize_batch_into(production, list(selected))
+        assert batch_results[0]["canonical_tree"] == tree
+        assert batch_stats == {"immutable_fetch_transactions": 1, "temporary_contexts": 1, "validated_locks": 1, "replayed_commits": 1}
         assert git(production, "rev-parse", "HEAD^{tree}") == tree
         assert not git(production, "for-each-ref", "refs/west/patch-stack-results/lock-first")
         # Existing canonical result refs are exercised by the materializer
@@ -501,7 +503,7 @@ def main() -> None:
                 assert "west-lock-materialize-" not in git(eunion_production, "worktree", "list", "--porcelain")
         finally:
             lock_first.MAPPING, lock_first._cherry_pick = old_mapping, old_cherry_pick
-        # Production orchestration: no flag never invokes canonical code; the
+        # Production orchestration: homebrew defaults to canonical code; the
         # typed plan is built before _prepare and failures roll back/SIGINT.
         command = patch_command.DarlingPatch.__new__(patch_command.DarlingPatch)
         command._base_profile = None; command.manifest = types.SimpleNamespace(repo_abspath=root)
@@ -513,11 +515,15 @@ def main() -> None:
         command._record_integration = lambda *_args: root / "generated.lock"; command._abort_am = lambda _repo: None
         resets: list[bool] = []; command._reset = lambda *_args, **_kwargs: resets.append(True)
         command.inf = lambda _message: None; command.die = lambda message, **_kwargs: (_ for _ in ()).throw(RuntimeError(message))
-        old_plan, old_into = patch_command.patch_stack_lock_first.plan, patch_command.patch_stack_lock_first.materialize_into
+        old_plan, old_into, old_batch = patch_command.patch_stack_lock_first.plan, patch_command.patch_stack_lock_first.materialize_into, patch_command.patch_stack_lock_first.materialize_batch_into
         old_writer = patch_command.patch_stack_lock_first.write_batch_evidence
         calls: list[object] = []
         patch_command.patch_stack_lock_first.plan = lambda *_args: selected
         patch_command.patch_stack_lock_first.materialize_into = lambda _repo, entry, *_args: calls.append(entry["patch"]) or {"module": entry["module"], "patch": entry["patch"], "base": base, "source": source, "canonical_tree": tree, "applied_commit": source, "applied_tree": tree, "verdict": "VALID"}
+        def fake_batch(_repo, entries):
+            results = [patch_command.patch_stack_lock_first.materialize_into(_repo, entry) for entry in entries]
+            return results, {"immutable_fetch_transactions": 1, "validated_locks": len(entries), "replayed_commits": len(entries), "temporary_contexts": 1}
+        patch_command.patch_stack_lock_first.materialize_batch_into = fake_batch
         try:
             existing_evidence = root / "existing-evidence.json"; existing_evidence.write_text("old\n")
             try: command._apply("homebrew", root, patches, "0", False, False, None, True, str(existing_evidence))
@@ -526,7 +532,8 @@ def main() -> None:
             assert not prepared and existing_evidence.read_text() == "old\n"
             existing_evidence.unlink()
             command._apply("homebrew", root, patches, "0", False, False, None, False)
-            assert not calls, "normal no-flag apply invoked lock-first"
+            assert calls == ["darling/sandbox-exec-pass-through.patch"], "normal homebrew apply did not invoke lock-first"
+            calls.clear()
             command._apply("homebrew", root, patches, "0", False, False, None, True)
             assert calls == ["darling/sandbox-exec-pass-through.patch"]
             # Every selected series is run once in profile order. Failure and
@@ -758,7 +765,7 @@ def main() -> None:
             else: raise AssertionError("SIGINT swallowed")
             assert resets
         finally:
-            patch_command.patch_stack_lock_first.plan, patch_command.patch_stack_lock_first.materialize_into = old_plan, old_into
+            patch_command.patch_stack_lock_first.plan, patch_command.patch_stack_lock_first.materialize_into, patch_command.patch_stack_lock_first.materialize_batch_into = old_plan, old_into, old_batch
             patch_command.patch_stack_lock_first.write_batch_evidence = old_writer
     print("patch-stack lock-first contract: PASS")
 

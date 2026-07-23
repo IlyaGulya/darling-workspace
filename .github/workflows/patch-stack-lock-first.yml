@@ -73,24 +73,24 @@ jobs:
               git -C "$project" config user.email west-lock-first@example.invalid
           done < <(mise -C "$workspace" exec -- env HOME="$home" west list -f '{abspath}')
           done
-      - name: Control legacy materialization
+      - name: Control legacy-mbox materialization
         working-directory: ${{ runner.temp }}/patch-stack-lock-first/control/darling-workspace
         run: |
           set -euo pipefail
           workspace="$PWD"
           mise -C "$workspace" exec -- env HOME="$LOCK_FIRST_ROOT/control-home" \
-            XDG_CACHE_HOME="$LOCK_FIRST_ROOT/control-cache" west patch apply --profile homebrew
+            XDG_CACHE_HOME="$LOCK_FIRST_ROOT/control-cache" west patch apply --profile homebrew --legacy-mbox
           python3 ci/patch_stack_shadow_acceptance.py capture \
             --workspace "$PWD" --profile homebrew \
             --modules "$LOCK_FIRST_ROOT/evidence/control-modules.json" \
             --manifest "$LOCK_FIRST_ROOT/evidence/control-manifest.json"
-      - name: Canonical lock-first materialization
+      - name: Candidate default-lock-first materialization
         working-directory: ${{ runner.temp }}/patch-stack-lock-first/lock-first/darling-workspace
         run: |
           set -euo pipefail
           workspace="$PWD"
           mise -C "$workspace" exec -- env HOME="$LOCK_FIRST_ROOT/lock-first-home" \
-            XDG_CACHE_HOME="$LOCK_FIRST_ROOT/lock-first-cache" west patch apply --profile homebrew --lock-first \
+            XDG_CACHE_HOME="$LOCK_FIRST_ROOT/lock-first-cache" west patch apply --profile homebrew \
             --lock-first-evidence "$LOCK_FIRST_ROOT/evidence/lock-first-evidence.json"
           python3 ci/patch_stack_shadow_acceptance.py capture \
             --workspace "$PWD" --profile homebrew \
@@ -112,6 +112,8 @@ jobs:
             --control-workspace "$LOCK_FIRST_ROOT/control" \
             --lock-first-workspace "$LOCK_FIRST_ROOT/lock-first" \
             --transaction-root "$RUNNER_TEMP" \
+            --control-mode legacy-mbox \
+            --candidate-mode default-lock-first \
             --result "$LOCK_FIRST_ROOT/evidence/acceptance-result.json"
       - name: Cleanup lock-first workspaces
         if: always()

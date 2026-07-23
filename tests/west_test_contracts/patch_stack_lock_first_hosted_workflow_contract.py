@@ -223,7 +223,10 @@ assert "working_directory: darling-dev/darling-workspace" in workflow
 assert "cache: false" in workflow and "cache_save: false" in workflow
 assert "actions/cache" not in workflow and "MISE_CACHE_DIR" not in workflow
 assert workflow.count("west patch apply --profile homebrew") == 2
-assert "west patch apply --profile homebrew --lock-first" in workflow
+assert "west patch apply --profile homebrew --legacy-mbox" in workflow
+assert "west patch apply --profile homebrew --lock-first" not in workflow
+assert "Control legacy-mbox materialization" in workflow
+assert "Candidate default-lock-first materialization" in workflow
 assert "mise exec -- uv --version" in workflow
 assert "mise exec -- west --version" in workflow
 assert "mise_toml_sha256=" in workflow and "sha256sum mise.toml" in workflow
@@ -251,6 +254,8 @@ assert "--lock-first-workspace \"$LOCK_FIRST_ROOT/lock-first\"" in workflow
 compare_args = workflow.split("patch_stack_lock_first_acceptance.py compare-lock-first", 1)[1].split("--result", 1)[0]
 assert "/darling-workspace" not in compare_args
 assert "--transaction-root \"$RUNNER_TEMP\"" in workflow
+assert "--control-mode legacy-mbox" in workflow
+assert "--candidate-mode default-lock-first" in workflow
 assert "patch_stack_shadow_acceptance.py compare" not in workflow
 assert "git clone --no-local --no-hardlinks" in workflow and "fetch-depth: 0" in workflow
 assert "cleanup_status=" in workflow and "if: always()" in workflow
