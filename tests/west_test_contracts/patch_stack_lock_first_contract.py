@@ -63,26 +63,37 @@ def main() -> None:
         patches = [{"module": "darling", "path": "darling/sandbox-exec-pass-through.patch"}]
         selected = lock_first.plan("homebrew", patches, mapping)
         assert len(selected) == 1
-        # Batch 6 is the exact grouped homebrew selection: 25 Darlingserver
-        # series first, then the retained Batch 5 modules.  This binds the
-        # data mapping to the real profile order before an apply can mutate.
+        # Batch 7 is the exact grouped homebrew selection: 25 Darlingserver
+        # series, then the complete 25-series XNU group, followed by the
+        # retained Batch 6 modules. This binds the data mapping to the real
+        # profile order before an apply can mutate.
         homebrew = yaml.safe_load((ROOT / "patches/homebrew/patches.yml").read_text())
         homebrew_patches = homebrew["patches"]
         homebrew_grouped = OrderedDict()
         for entry in homebrew_patches:
             homebrew_grouped.setdefault(entry["module"], []).append(entry)
-        batch_six = lock_first.plan("homebrew", homebrew_patches, lock_first.MAPPING, homebrew_grouped)
+        batch_seven = lock_first.plan("homebrew", homebrew_patches, lock_first.MAPPING, homebrew_grouped)
         expected_darlingserver = [
             entry["path"] for entry in homebrew_patches
             if entry["module"] == "darling/src/external/darlingserver"
         ]
         observed_darlingserver = [
-            entry["patch"] for entry in batch_six
+            entry["patch"] for entry in batch_seven
             if entry["module"] == "darling/src/external/darlingserver"
         ]
-        assert len(batch_six) == 44 and batch_six.batch["expected_count"] == 44
-        assert batch_six.batch["module_order"] == [
+        expected_xnu = [
+            entry["path"] for entry in homebrew_patches
+            if entry["module"] == "darling/src/external/xnu"
+        ]
+        observed_xnu = [
+            entry["patch"] for entry in batch_seven
+            if entry["module"] == "darling/src/external/xnu"
+        ]
+        assert len(batch_seven) == 69 and batch_seven.batch["expected_count"] == 69
+        assert batch_seven.batch["batch_id"] == "darling-homebrew-lock-first-batch-7"
+        assert batch_seven.batch["module_order"] == [
             "darling/src/external/darlingserver",
+            "darling/src/external/xnu",
             "darling/src/external/libplatform",
             "darling/src/external/perl",
             "darling/src/external/libressl-2.8.3",
@@ -92,6 +103,35 @@ def main() -> None:
         ]
         assert len(expected_darlingserver) == 25
         assert observed_darlingserver == expected_darlingserver
+        assert len(expected_xnu) == 25
+        assert observed_xnu == expected_xnu
+        assert observed_xnu == [
+            "xnu/psynch-cvsignal-args.patch",
+            "xnu/fstatfs-missing-proc-mounts.patch",
+            "xnu/select-pselect-fdset.patch",
+            "xnu/darwin-priority.patch",
+            "xnu/socket-siocgifconf.patch",
+            "xnu/fork-postfork-child.patch",
+            "xnu/fork-wait-timeout-parent.patch",
+            "xnu/getattrlist-name-objtype.patch",
+            "xnu/getattrlistbulk.patch",
+            "xnu/getattrlist-shared-packer.patch",
+            "xnu/psynch-negative-errno.patch",
+            "xnu/sigexc-sa-restart.patch",
+            "xnu/sigexc-debug-flood.patch",
+            "xnu/sigexc-default-resend-self.patch",
+            "xnu/ulock-wait-eintr-retry.patch",
+            "xnu/vchroot-pathnull-guard.patch",
+            "xnu/eunion-core.patch",
+            "xnu/eunion-hardening.patch",
+            "xnu/chown-disabled-null-guard.patch",
+            "xnu/fd-guard-ebadf.patch",
+            "xnu/abort-with-payload-no-group-broadcast.patch",
+            "xnu/cache-task-self-trap.patch",
+            "xnu/guest-per-callnum-sleep-account.patch",
+            "xnu/gate-hotpath-kprintf-debug.patch",
+            "xnu/generalize-recv-spin-guest.patch",
+        ]
         # The planner validates the real apply order, not the flat YAML
         # order: _group() executes all patches of the first module before a
         # later profile entry in the next module.
@@ -150,6 +190,57 @@ def main() -> None:
             try: fn(*args)
             except lock_first.LockFirstError: return
             raise AssertionError("lock-first accepted invalid metadata")
+        # The complete XNU group is typed data, not an implicit prefix. Its
+        # exact 25-entry profile order is required before _prepare(), and all
+        # missing/extra/duplicate/reordered/wrong-module/wrong-lock variants
+        # fail before a production repository can be touched.
+        xnu_series = [
+            entry for entry in yaml.safe_load(lock_first.MAPPING.read_text())["series"]
+            if entry["module"] == "darling/src/external/xnu"
+        ]
+        for entry in xnu_series:
+            (root / entry["lock"]).write_text((lock_first.MAPPING.parent / entry["lock"]).read_text())
+        xnu_mapping = root / "xnu-complete.yml"
+        xnu_mapping.write_text(yaml.safe_dump(mapping_doc(xnu_series, batch_id="xnu-complete"), sort_keys=False))
+        assert len(lock_first.plan("homebrew", [{"module": "darling/src/external/xnu", "path": path} for path in expected_xnu], xnu_mapping)) == 25
+        def require_exact_xnu(entries):
+            assert [(entry.get("module"), entry.get("patch")) for entry in entries] == [
+                ("darling/src/external/xnu", path) for path in expected_xnu
+            ], "Batch 7 XNU mapping is not the exact profile group"
+        xnu_missing = root / "xnu-missing.yml"
+        xnu_missing.write_text(yaml.safe_dump(mapping_doc(xnu_series[:-1], batch_id="xnu-missing"), sort_keys=False))
+        try: require_exact_xnu(xnu_series[:-1])
+        except AssertionError: pass
+        else: raise AssertionError("Batch 7 accepted missing XNU entry")
+        xnu_extra = root / "xnu-extra.yml"
+        xnu_extra.write_text(yaml.safe_dump(mapping_doc(xnu_series + [dict(xnu_series[0], patch="xnu/extra.patch")], batch_id="xnu-extra"), sort_keys=False))
+        try: require_exact_xnu(xnu_series + [dict(xnu_series[0], patch="xnu/extra.patch")])
+        except AssertionError: pass
+        else: raise AssertionError("Batch 7 accepted extra XNU entry")
+        xnu_duplicate = root / "xnu-duplicate.yml"
+        xnu_duplicate.write_text(yaml.safe_dump(mapping_doc(xnu_series + [xnu_series[0]], batch_id="xnu-duplicate"), sort_keys=False))
+        try: require_exact_xnu(xnu_series + [xnu_series[0]])
+        except AssertionError: pass
+        else: raise AssertionError("Batch 7 accepted duplicate XNU entry")
+        must_fail(lock_first.plan, "homebrew", [{"module": "darling/src/external/xnu", "path": path} for path in expected_xnu], xnu_duplicate)
+        xnu_reordered = root / "xnu-reordered.yml"
+        xnu_reordered.write_text(yaml.safe_dump(mapping_doc(list(reversed(xnu_series)), batch_id="xnu-reordered"), sort_keys=False))
+        try: require_exact_xnu(list(reversed(xnu_series)))
+        except AssertionError: pass
+        else: raise AssertionError("Batch 7 accepted reordered XNU entries")
+        must_fail(lock_first.plan, "homebrew", [{"module": "darling/src/external/xnu", "path": path} for path in expected_xnu], xnu_reordered)
+        xnu_wrong_module = root / "xnu-wrong-module.yml"
+        xnu_wrong_module.write_text(yaml.safe_dump(mapping_doc([dict(xnu_series[0], module="darling")], batch_id="xnu-wrong-module"), sort_keys=False))
+        try: require_exact_xnu([dict(xnu_series[0], module="darling")])
+        except AssertionError: pass
+        else: raise AssertionError("Batch 7 accepted wrong XNU module")
+        must_fail(lock_first.plan, "homebrew", [{"module": "darling/src/external/xnu", "path": path} for path in expected_xnu], xnu_wrong_module)
+        xnu_wrong_lock = root / "xnu-wrong-lock.yml"
+        malformed_xnu_lock = yaml.safe_load((root / xnu_series[0]["lock"]).read_text())
+        malformed_xnu_lock["mirror"]["source_oid"] = "0" * 40
+        (root / "xnu-incompatible.yml").write_text(yaml.safe_dump(malformed_xnu_lock, sort_keys=False))
+        xnu_wrong_lock.write_text(yaml.safe_dump(mapping_doc([dict(xnu_series[0], lock="xnu-incompatible.yml")], batch_id="xnu-wrong-lock"), sort_keys=False))
+        must_fail(lock_first.plan, "homebrew", [{"module": "darling/src/external/xnu", "path": path} for path in expected_xnu], xnu_wrong_lock)
         empty = root / "empty.yml"; empty.write_text(yaml.safe_dump(mapping_doc([], expected_count=0)))
         must_fail(lock_first.plan, "homebrew", batch_patches, empty)
         duplicate = root / "duplicate.yml"; duplicate.write_text(yaml.safe_dump(mapping_doc(batch_series + [batch_series[0]], batch_id="duplicate")))
@@ -332,6 +423,84 @@ def main() -> None:
                 assert "west-lock-materialize-" not in git(production, "worktree", "list", "--porcelain")
         finally:
             lock_first.MAPPING, lock_first._cherry_pick = old_mapping, old_cherry_pick
+        # Real Batch 7 internal-commit rollback: eunion-hardening is the
+        # longest XNU schema-v2 series (six immutable commits). This calls
+        # production materialize_into, lets the first three commits replay,
+        # then injects the original failure at the fourth production replay.
+        # It is deliberately not a series-level mock.
+        eunion_lock_path = ROOT / "locks/patch-stack/darling-xnu-eunion-hardening-v1.yml"
+        eunion_lock = yaml.safe_load(eunion_lock_path.read_text())
+        eunion_ordered = eunion_lock["ordered_commits"]
+        assert len(eunion_ordered) == 6
+        eunion_mapping_root = root / "eunion-locks"; eunion_mapping_root.mkdir()
+        eunion_copy = eunion_mapping_root / eunion_lock_path.name
+        eunion_copy.write_text(eunion_lock_path.read_text())
+        eunion_mapping = eunion_mapping_root / "mapping.yml"
+        eunion_patch_entry = {"module": "darling/src/external/xnu", "path": "xnu/eunion-hardening.patch"}
+        eunion_mapping.write_text(yaml.safe_dump(mapping_doc([
+            {"profile": "homebrew", "module": eunion_patch_entry["module"], "patch": eunion_patch_entry["path"], "lock": eunion_copy.name},
+        ], batch_id="real-eunion-hardening"), sort_keys=False))
+        eunion_production = root / "eunion-production"
+        git(root, "init", "-q", str(eunion_production))
+        git(eunion_production, "remote", "add", "immutable", eunion_lock["mirror"]["url"])
+        git(eunion_production, "fetch", "--no-tags", "immutable",
+            f"{eunion_lock['mirror']['base_ref']}:{eunion_lock['mirror']['base_ref']}",
+            f"{eunion_lock['mirror']['source_ref']}:{eunion_lock['mirror']['source_ref']}")
+        eunion_base = eunion_lock["upstream"]["base_commit"]
+        git(eunion_production, "checkout", "-q", "--detach", eunion_lock["mirror"]["base_ref"])
+        git(eunion_production, "config", "user.name", "Test")
+        git(eunion_production, "config", "user.email", "test@example.invalid")
+        eunion_command = patch_command.DarlingPatch.__new__(patch_command.DarlingPatch)
+        eunion_command._base_profile = None
+        eunion_command.manifest = types.SimpleNamespace(repo_abspath=root)
+        eunion_command._group = lambda _patches: {eunion_patch_entry["module"]: [eunion_patch_entry]}
+        eunion_command._require_base_applied = lambda _modules: None
+        eunion_command._ensure_generated_context = lambda *_args: None
+        eunion_command._base_revision = lambda _module: eunion_base
+        eunion_command._repo = lambda _module: eunion_production
+        eunion_command._reset_submodule_index = lambda _repo: None
+        eunion_command._verify_patch = lambda _profile_dir, _patch: ROOT / "patches/homebrew/xnu/eunion-hardening.patch"
+        eunion_command._record_integration = lambda *_args: (_ for _ in ()).throw(AssertionError("record must not run"))
+        eunion_command.inf = lambda _message: None
+        eunion_command.die = lambda message, **_kwargs: (_ for _ in ()).throw(RuntimeError(message))
+        old_mapping, old_cherry_pick = lock_first.MAPPING, lock_first._cherry_pick
+        try:
+            lock_first.MAPPING = eunion_mapping
+            for injected in (lock_first.LockFirstError("eunion internal replay failure"), KeyboardInterrupt()):
+                git(eunion_production, "reset", "--hard", "-q", eunion_base)
+                subprocess.run(["git", "branch", "-D", "integration/homebrew"], cwd=eunion_production, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+                before_roots = {path.resolve() for pattern in patterns for path in temporary_root.glob(pattern)}
+                replayed = []
+                def fail_eunion(repo, commit):
+                    if repo == eunion_production:
+                        replayed.append(commit)
+                        if commit == eunion_ordered[3]:
+                            raise injected
+                    return old_cherry_pick(repo, commit)
+                lock_first._cherry_pick = fail_eunion
+                evidence_path = root / f"eunion-{type(injected).__name__}.json"
+                try:
+                    eunion_command._apply("homebrew", root, [eunion_patch_entry], "0", False, False, None, True, str(evidence_path))
+                except KeyboardInterrupt:
+                    assert isinstance(injected, KeyboardInterrupt)
+                except RuntimeError as error:
+                    assert isinstance(injected, lock_first.LockFirstError)
+                    assert str(error) == "eunion internal replay failure", error
+                else:
+                    raise AssertionError("eunion internal replay failure was accepted")
+                assert replayed == eunion_ordered[:4]
+                assert git(eunion_production, "rev-parse", "HEAD") == eunion_base
+                assert git(eunion_production, "rev-parse", "HEAD^{tree}") == git(eunion_production, "rev-parse", f"{eunion_base}^{{tree}}")
+                assert not (eunion_production / git(eunion_production, "rev-parse", "--git-path", "rebase-apply")).exists()
+                refs = git(eunion_production, "for-each-ref", "--format=%(refname)")
+                assert "refs/west/patch-stack-materialize/" not in refs
+                assert "refs/west/patch-stack-lock-first/" not in refs
+                assert "refs/west/patch-stack-results/" not in refs
+                assert not evidence_path.exists()
+                assert {path.resolve() for pattern in patterns for path in temporary_root.glob(pattern)} == before_roots
+                assert "west-lock-materialize-" not in git(eunion_production, "worktree", "list", "--porcelain")
+        finally:
+            lock_first.MAPPING, lock_first._cherry_pick = old_mapping, old_cherry_pick
         # Production orchestration: no flag never invokes canonical code; the
         # typed plan is built before _prepare and failures roll back/SIGINT.
         command = patch_command.DarlingPatch.__new__(patch_command.DarlingPatch)
@@ -492,7 +661,7 @@ def main() -> None:
                     expected_aborted = list(dict.fromkeys(repositories[item["module"]] for item in external_patches[:failing_position + 1]))
                     assert aborted == expected_aborted
                     assert replayed[-1] == (failing_patch, failing_commit)
-            # The Batch 6 Darlingserver portion is a single module batch. The
+            # The Batch 7 Darlingserver portion is a single module batch. The
             # existing real three-commit fixture above proves commit-level
             # rollback; this orchestration-only fixture proves the first,
             # middle and final actual profile entries take the normal _apply
@@ -532,6 +701,47 @@ def main() -> None:
                         assert not interrupt
                     else:
                         raise AssertionError("Darlingserver failure was accepted")
+                    assert attempts["count"] == position and resets and not evidence_path.exists()
+                    assert aborted == [production]
+            # XNU is the other complete Batch 7 module. Exercise first,
+            # middle, and final series failures through the same production
+            # rollback lifecycle. This is orchestration coverage; the real
+            # eunion-hardening internal-commit rollback follows below.
+            xnu_patches = [
+                {"module": "darling/src/external/xnu", "path": path}
+                for path in expected_xnu
+            ]
+            xnu_grouped = {"darling/src/external/xnu": xnu_patches}
+            xnu_plan = lock_first.LockFirstPlan(
+                [{"profile": "homebrew", "module": item["module"], "patch": item["path"], "lock": "unused.yml", "lock_path": str(lock_path)} for item in xnu_patches],
+                {"batch_id": "xnu-batch", "expected_count": len(xnu_patches)},
+            )
+            command._group = lambda _patches: xnu_grouped
+            command._repo = lambda _module: production
+            command._prepare = lambda *_args, **_kwargs: None
+            patch_command.patch_stack_lock_first.plan = lambda *_args: xnu_plan
+            for position in (1, (len(xnu_patches) + 1) // 2, len(xnu_patches)):
+                for interrupt in (False, True):
+                    attempts, aborted = {"count": 0}, []
+                    command._abort_am = lambda repo: aborted.append(repo)
+                    resets.clear()
+                    evidence_path = root / f"xnu-{position}-{interrupt}.json"
+                    def fail_xnu(_repo, entry, *_args):
+                        attempts["count"] += 1
+                        if attempts["count"] == position:
+                            if interrupt:
+                                raise KeyboardInterrupt()
+                            raise lock_first.LockFirstError("XNU series failure")
+                        return {"module": entry["module"], "patch": entry["patch"], "base": base, "source": source, "canonical_tree": tree, "applied_commit": source, "applied_tree": tree, "verdict": "VALID"}
+                    patch_command.patch_stack_lock_first.materialize_into = fail_xnu
+                    try:
+                        command._apply("homebrew", root, xnu_patches, "0", False, False, None, True, str(evidence_path))
+                    except KeyboardInterrupt:
+                        assert interrupt
+                    except RuntimeError:
+                        assert not interrupt
+                    else:
+                        raise AssertionError("XNU failure was accepted")
                     assert attempts["count"] == position and resets and not evidence_path.exists()
                     assert aborted == [production]
             prepared.clear()
