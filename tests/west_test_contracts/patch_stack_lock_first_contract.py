@@ -7,6 +7,7 @@ import sys
 import tempfile
 import types
 import json
+from collections import OrderedDict
 from pathlib import Path
 
 import yaml
@@ -62,6 +63,35 @@ def main() -> None:
         patches = [{"module": "darling", "path": "darling/sandbox-exec-pass-through.patch"}]
         selected = lock_first.plan("homebrew", patches, mapping)
         assert len(selected) == 1
+        # Batch 6 is the exact grouped homebrew selection: 25 Darlingserver
+        # series first, then the retained Batch 5 modules.  This binds the
+        # data mapping to the real profile order before an apply can mutate.
+        homebrew = yaml.safe_load((ROOT / "patches/homebrew/patches.yml").read_text())
+        homebrew_patches = homebrew["patches"]
+        homebrew_grouped = OrderedDict()
+        for entry in homebrew_patches:
+            homebrew_grouped.setdefault(entry["module"], []).append(entry)
+        batch_six = lock_first.plan("homebrew", homebrew_patches, lock_first.MAPPING, homebrew_grouped)
+        expected_darlingserver = [
+            entry["path"] for entry in homebrew_patches
+            if entry["module"] == "darling/src/external/darlingserver"
+        ]
+        observed_darlingserver = [
+            entry["patch"] for entry in batch_six
+            if entry["module"] == "darling/src/external/darlingserver"
+        ]
+        assert len(batch_six) == 44 and batch_six.batch["expected_count"] == 44
+        assert batch_six.batch["module_order"] == [
+            "darling/src/external/darlingserver",
+            "darling/src/external/libplatform",
+            "darling/src/external/perl",
+            "darling/src/external/libressl-2.8.3",
+            "darling/src/external/libpthread",
+            "darling",
+            "darling/src/external/installer",
+        ]
+        assert len(expected_darlingserver) == 25
+        assert observed_darlingserver == expected_darlingserver
         # The planner validates the real apply order, not the flat YAML
         # order: _group() executes all patches of the first module before a
         # later profile entry in the next module.
@@ -245,14 +275,14 @@ def main() -> None:
         multi_lock_path = root / "multi.yml"
         multi_lock_path.write_text(yaml.safe_dump(multi_lock, sort_keys=False))
         multi_mapping = root / "multi-map.yml"
-        multi_patches = [{"module": "darling", "path": "darling/multi.patch"}]
+        multi_patches = [{"module": "darling/src/external/darlingserver", "path": "darlingserver/test-diagnostics-trace.patch"}]
         multi_mapping.write_text(yaml.safe_dump(mapping_doc([
-            {"profile": "homebrew", "module": "darling", "patch": "darling/multi.patch", "lock": "multi.yml"},
+            {"profile": "homebrew", "module": "darling/src/external/darlingserver", "patch": "darlingserver/test-diagnostics-trace.patch", "lock": "multi.yml"},
         ], batch_id="real-three-commit"), sort_keys=False))
         real_command = patch_command.DarlingPatch.__new__(patch_command.DarlingPatch)
         real_command._base_profile = None
         real_command.manifest = types.SimpleNamespace(repo_abspath=root)
-        real_command._group = lambda _patches: {"darling": multi_patches}
+        real_command._group = lambda _patches: {"darling/src/external/darlingserver": multi_patches}
         real_command._require_base_applied = lambda _modules: None
         real_command._ensure_generated_context = lambda *_args: None
         real_command._base_revision = lambda _module: base
@@ -462,6 +492,48 @@ def main() -> None:
                     expected_aborted = list(dict.fromkeys(repositories[item["module"]] for item in external_patches[:failing_position + 1]))
                     assert aborted == expected_aborted
                     assert replayed[-1] == (failing_patch, failing_commit)
+            # The Batch 6 Darlingserver portion is a single module batch. The
+            # existing real three-commit fixture above proves commit-level
+            # rollback; this orchestration-only fixture proves the first,
+            # middle and final actual profile entries take the normal _apply
+            # rollback path without claiming that the mock replays commits.
+            darlingserver_patches = [
+                {"module": "darling/src/external/darlingserver", "path": path}
+                for path in expected_darlingserver
+            ]
+            darlingserver_grouped = {"darling/src/external/darlingserver": darlingserver_patches}
+            darlingserver_plan = lock_first.LockFirstPlan(
+                [{"profile": "homebrew", "module": item["module"], "patch": item["path"], "lock": "unused.yml", "lock_path": str(lock_path)} for item in darlingserver_patches],
+                {"batch_id": "darlingserver-batch", "expected_count": len(darlingserver_patches)},
+            )
+            command._group = lambda _patches: darlingserver_grouped
+            command._repo = lambda _module: production
+            command._prepare = lambda *_args, **_kwargs: None
+            patch_command.patch_stack_lock_first.plan = lambda *_args: darlingserver_plan
+            for position in (1, (len(darlingserver_patches) + 1) // 2, len(darlingserver_patches)):
+                for interrupt in (False, True):
+                    attempts, aborted = {"count": 0}, []
+                    command._abort_am = lambda repo: aborted.append(repo)
+                    resets.clear()
+                    evidence_path = root / f"darlingserver-{position}-{interrupt}.json"
+                    def fail_darlingserver(_repo, entry, *_args):
+                        attempts["count"] += 1
+                        if attempts["count"] == position:
+                            if interrupt:
+                                raise KeyboardInterrupt()
+                            raise lock_first.LockFirstError("Darlingserver series failure")
+                        return {"module": entry["module"], "patch": entry["patch"], "base": base, "source": source, "canonical_tree": tree, "applied_commit": source, "applied_tree": tree, "verdict": "VALID"}
+                    patch_command.patch_stack_lock_first.materialize_into = fail_darlingserver
+                    try:
+                        command._apply("homebrew", root, darlingserver_patches, "0", False, False, None, True, str(evidence_path))
+                    except KeyboardInterrupt:
+                        assert interrupt
+                    except RuntimeError:
+                        assert not interrupt
+                    else:
+                        raise AssertionError("Darlingserver failure was accepted")
+                    assert attempts["count"] == position and resets and not evidence_path.exists()
+                    assert aborted == [production]
             prepared.clear()
             patch_command.patch_stack_lock_first.plan = lambda *_args: (_ for _ in ()).throw(lock_first.LockFirstError("bad mapping"))
             try: command._apply("homebrew", root, patches, "0", False, False, None, True)

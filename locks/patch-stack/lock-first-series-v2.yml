@@ -1,8 +1,108 @@
 schema_version: 2
 profile: homebrew
-batch_id: darling-homebrew-lock-first-batch-5
-expected_count: 19
+batch_id: darling-homebrew-lock-first-batch-6
+expected_count: 44
 series:
+  - profile: homebrew
+    module: darling/src/external/darlingserver
+    patch: darlingserver/psynch-cvwait-balanced.patch
+    lock: darlingserver-psynch-cvwait-balanced-v1.yml
+  - profile: homebrew
+    module: darling/src/external/darlingserver
+    patch: darlingserver/microthread-resume-race.patch
+    lock: darlingserver-microthread-resume-race-v1.yml
+  - profile: homebrew
+    module: darling/src/external/darlingserver
+    patch: darlingserver/fork-checkin-bound.patch
+    lock: darlingserver-fork-checkin-bound-v1.yml
+  - profile: homebrew
+    module: darling/src/external/darlingserver
+    patch: darlingserver/fork-checkin-sticky-flag.patch
+    lock: darlingserver-fork-checkin-sticky-flag-v1.yml
+  - profile: homebrew
+    module: darling/src/external/darlingserver
+    patch: darlingserver/psynch-rpc-arg-trace.patch
+    lock: darlingserver-psynch-rpc-arg-trace-v1.yml
+  - profile: homebrew
+    module: darling/src/external/darlingserver
+    patch: darlingserver/cancel-stale-wait-timer.patch
+    lock: darlingserver-cancel-stale-wait-timer-v1.yml
+  - profile: homebrew
+    module: darling/src/external/darlingserver
+    patch: darlingserver/processcall-exception-guard.patch
+    lock: darlingserver-processcall-exception-guard-v1.yml
+  - profile: homebrew
+    module: darling/src/external/darlingserver
+    patch: darlingserver/ingest-error-reply.patch
+    lock: darlingserver-ingest-error-reply-v1.yml
+  - profile: homebrew
+    module: darling/src/external/darlingserver
+    patch: darlingserver/pushreply-pipe-leak.patch
+    lock: darlingserver-pushreply-pipe-leak-v1.yml
+  - profile: homebrew
+    module: darling/src/external/darlingserver
+    patch: darlingserver/exc-fatal-reply-bound.patch
+    lock: darlingserver-exc-fatal-reply-bound-v1.yml
+  - profile: homebrew
+    module: darling/src/external/darlingserver
+    patch: darlingserver/assert-wait-cancel-stale-timer.patch
+    lock: darlingserver-assert-wait-cancel-stale-timer-v1.yml
+  - profile: homebrew
+    module: darling/src/external/darlingserver
+    patch: darlingserver/pthread-canceled-xnu-semantics.patch
+    lock: darlingserver-pthread-canceled-xnu-semantics-v1.yml
+  - profile: homebrew
+    module: darling/src/external/darlingserver
+    patch: darlingserver/progress-metrics.patch
+    lock: darlingserver-progress-metrics-v1.yml
+  - profile: homebrew
+    module: darling/src/external/darlingserver
+    patch: darlingserver/server-inline-fastpath.patch
+    lock: darlingserver-server-inline-fastpath-v1.yml
+  - profile: homebrew
+    module: darling/src/external/darlingserver
+    patch: darlingserver/checkin-rwlock-across-suspend.patch
+    lock: darlingserver-checkin-rwlock-across-suspend-v1.yml
+  - profile: homebrew
+    module: darling/src/external/darlingserver
+    patch: darlingserver/per-call-rpc-metrics.patch
+    lock: darlingserver-per-call-rpc-metrics-v1.yml
+  - profile: homebrew
+    module: darling/src/external/darlingserver
+    patch: darlingserver/no-reply-fire-and-forget-rpcs.patch
+    lock: darlingserver-no-reply-fire-and-forget-rpcs-v1.yml
+  - profile: homebrew
+    module: darling/src/external/darlingserver
+    patch: darlingserver/guest-per-callnum-sleep-account.patch
+    lock: darlingserver-guest-per-callnum-sleep-account-v1.yml
+  - profile: homebrew
+    module: darling/src/external/darlingserver
+    patch: darlingserver/checkin-retask-current-thread-uaf.patch
+    lock: darlingserver-checkin-retask-current-thread-uaf-v1.yml
+  - profile: homebrew
+    module: darling/src/external/darlingserver
+    patch: darlingserver/pot-guest-lifetime-binding.patch
+    lock: darlingserver-pot-guest-lifetime-binding-v1.yml
+  - profile: homebrew
+    module: darling/src/external/darlingserver
+    patch: darlingserver/test-diagnostics-trace.patch
+    lock: darlingserver-test-diagnostics-trace-v1.yml
+  - profile: homebrew
+    module: darling/src/external/darlingserver
+    patch: darlingserver/semaphore-rpc-trace.patch
+    lock: darlingserver-semaphore-rpc-trace-v1.yml
+  - profile: homebrew
+    module: darling/src/external/darlingserver
+    patch: darlingserver/pthread-cancellation-rpc-trace.patch
+    lock: darlingserver-pthread-cancellation-rpc-trace-v1.yml
+  - profile: homebrew
+    module: darling/src/external/darlingserver
+    patch: darlingserver/eunion-exec-path-trace.patch
+    lock: darlingserver-eunion-exec-path-trace-v1.yml
+  - profile: homebrew
+    module: darling/src/external/darlingserver
+    patch: darlingserver/rootless-runtime-integration.patch
+    lock: darlingserver-rootless-runtime-integration-v1.yml
   - profile: homebrew
     module: darling/src/external/libplatform
     patch: libplatform/bzero-return-register.patch
