@@ -43,8 +43,12 @@ and are intentionally incompatible with the v2 compare protocol. OIDs and
 generated-lock hashes are compared only within a single control/lock-first run,
 because committer identity can make them differ across environments.
 
-The `patch-stack-lock-first` workflow job has a scoped 60-minute timeout. A
-fresh Batch 6 local control/lock-first critical path measured about 43 minutes,
-so a 45-minute limit leaves no safe operational margin for hosted network
-variance, the mandatory `always()` cleanup, and artifact upload. This exception
-does not alter any other workflow timeout.
+The `patch-stack-lock-first` workflow job has a scoped 75-minute timeout. A
+fresh Batch 6 local control/lock-first critical path measured about 43 minutes.
+The audited 69-series Batch 7 forecast is 54.34 minutes: it adds all 25 XNU
+series (32 immutable commits) without cache, alternates, shared ODB, bootstrap
+reuse, or parallel replay. A 60-minute limit leaves no safe margin for hosted
+network variance, the mandatory `always()` cleanup, and artifact upload; 75
+minutes preserves roughly 20 minutes of operational margin. Splitting XNU
+would duplicate the two fresh West bootstraps and does not address that
+bottleneck. This exception does not alter any other workflow timeout.
