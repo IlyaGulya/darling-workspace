@@ -104,3 +104,19 @@ the existing profile-wide rollback. It introduces no persistent cache,
 alternates, shared ODB, or concurrent replay. Production default is gated on a
 fresh measured post-bootstrap run of at most 180 seconds (target 120); regular
 CI timeouts must not be increased to hide a regression.
+
+## Observation protocol
+
+Every `west patch apply` reports one selected mode as a machine-readable
+`PATCH_STACK_MODE=` marker: `default-lock-first`, `explicit-lock-first`,
+`legacy-mbox`, or `shadow-lock`. A successful typed canonical batch then
+reports one `PATCH_STACK_REPLAY` record with batch ID, expected/applied series
+counts, module count, elapsed replay seconds, and `verdict=VALID`. It is
+emitted only after integration recording and optional evidence publication
+succeed; failure or SIGINT emits no success verdict. Markers omit credentials,
+remote URLs, temporary paths, and evidence payloads.
+
+For homebrew, explicit `--legacy-mbox` remains functional but emits a
+deprecation warning. Legacy-default profiles do not receive that warning. The
+host tier invokes no-flag homebrew materialization; the manual two-sided
+workflow is the sole hosted `--legacy-mbox` control/oracle.

@@ -5,6 +5,7 @@ from __future__ import annotations
 import sys
 import tempfile
 import types
+import re
 from pathlib import Path
 
 
@@ -63,7 +64,10 @@ def main() -> None:
         command._verify_patch = lambda *_args: patch_path
         command._record_integration = lambda *_args: root / "patches/homebrew/west.lock.yml"
         command._abort_am = lambda _repo: None
-        command.inf = lambda _message: None
+        messages: list[str] = []
+        warnings: list[str] = []
+        command.inf = messages.append
+        command.err = warnings.append
         command.die = fail
 
         prepared: list[str] = []
@@ -105,26 +109,36 @@ def main() -> None:
             # the same canonical path; neither calls legacy git am.
             command._apply("homebrew", root, patches, "0", False)
             assert canonical == ["darling/one.patch"] and not legacy
-            canonical.clear(); prepared.clear()
+            assert "PATCH_STACK_MODE=default-lock-first" in messages
+            success = next(message for message in messages if message.startswith("PATCH_STACK_REPLAY "))
+            assert re.fullmatch(r"PATCH_STACK_REPLAY batch_id=cutover expected_series=1 applied_series=1 module_count=1 elapsed_replay_seconds=\d+\.\d{3} verdict=VALID", success)
+            canonical.clear(); prepared.clear(); messages.clear()
             command._apply("homebrew", root, patches, "0", False, lock_first=True)
             assert canonical == ["darling/one.patch"] and not legacy
+            assert "PATCH_STACK_MODE=explicit-lock-first" in messages
 
             # The fallback is explicit and uses only the retained git-am path.
-            canonical.clear(); prepared.clear()
+            canonical.clear(); prepared.clear(); messages.clear()
             command._apply("homebrew", root, patches, "0", False, legacy_mbox=True)
             assert not canonical and len(legacy) == 1 and prepared == ["darling"]
+            assert "PATCH_STACK_MODE=legacy-mbox" in messages
+            assert warnings == ["warning: --legacy-mbox is deprecated for homebrew; default-lock-first is the supported mode"]
 
             # Shadow retains its established diagnostic/legacy behavior.
-            legacy.clear(); shadows.clear(); canonical.clear()
+            legacy.clear(); shadows.clear(); canonical.clear(); messages.clear()
             command._apply("homebrew", root, patches, "0", False, shadow_lock=True)
             assert not canonical and len(legacy) == 1 and shadows == ["run"]
+            assert "PATCH_STACK_MODE=shadow-lock" in messages
 
             # Other profiles remain legacy by default. --legacy-mbox is an
             # explicit no-op spelling of that mode, avoiding ambiguous state.
-            legacy.clear(); canonical.clear()
+            legacy.clear(); canonical.clear(); messages.clear()
             command._apply("perf", root, patches, "0", False)
             command._apply("perf", root, patches, "0", False, legacy_mbox=True)
             assert len(legacy) == 2 and not canonical
+            assert len(warnings) == 1, "other-profile legacy must not emit a false deprecation warning"
+            assert messages.count("PATCH_STACK_MODE=legacy-mbox") == 2
+            assert not any(message.startswith("PATCH_STACK_REPLAY ") for message in messages)
 
             # Invalid combinations reject before plan construction, prepare,
             # fetch, branch, or worktree mutation.
@@ -143,6 +157,7 @@ def main() -> None:
             patch_command.patch_stack_lock_first.plan = lambda *_args: (_ for _ in ()).throw(lock_first.LockFirstError("mapping incomplete"))
             expect_failure(lambda: command._apply("homebrew", root, patches, "0", False), "mapping incomplete")
             assert not prepared and not canonical and not legacy
+            assert not any(message.startswith("PATCH_STACK_REPLAY ") for message in messages)
 
             # Default mode permits optional explicit evidence, but an existing
             # regular file/symlink is rejected before prepare. This is the same
