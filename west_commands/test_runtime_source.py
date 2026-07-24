@@ -16,12 +16,14 @@ import shutil
 import subprocess
 import tempfile
 import time
+from collections import OrderedDict
 from contextlib import contextmanager
 from pathlib import Path
 from typing import Any, Iterator
 
 from source_worktree import SourceWorktreeError, prepare_source_worktree
 from patch_git import git_for_temporary_patch_application
+import patch_stack_lock_first
 from test_results import RuntimeRedProven
 from test_runtime_evidence import RuntimeEvidenceSession
 from test_worktrees import remove_temporary_worktree
@@ -47,6 +49,67 @@ class RuntimeSourceMaterializer:
             self._host.die(f"red-proof source patch not found: {result}")
         return result
 
+    def _materialize_canonical_homebrew(self, overrides: dict[str, Path]) -> None:
+        """Replay the exact Batch 7 graph into lifecycle-owned worktrees.
+
+        This intentionally does not use a patch archive or publish integration
+        refs/generated locks.  The worktree context owns all resulting commits
+        and removes them when its caller exits.
+        """
+        grouped: OrderedDict[str, list[dict[str, Any]]] = OrderedDict()
+        patches: list[dict[str, Any]] = []
+        for stacked in self._host._profile_stack("homebrew"):
+            for patch in self._host._load_profile(stacked).get("patches", []):
+                grouped.setdefault(patch["module"], []).append(patch)
+                patches.append(patch)
+        try:
+            plan = patch_stack_lock_first.plan(
+                "homebrew", patches, patch_stack_lock_first.MAPPING, grouped
+            )
+        except patch_stack_lock_first.LockFirstError:
+            raise
+        batch = plan.batch
+        expected_modules = [
+            "darling/src/external/darlingserver",
+            "darling/src/external/xnu",
+            "darling/src/external/libplatform",
+            "darling/src/external/perl",
+            "darling/src/external/libressl-2.8.3",
+            "darling/src/external/libpthread",
+            "darling",
+            "darling/src/external/installer",
+        ]
+        if (batch["batch_id"] != "darling-homebrew-lock-first-batch-7"
+                or batch["expected_count"] != 69
+                or batch["module_order"] != expected_modules):
+            raise patch_stack_lock_first.LockFirstError(
+                "runtime-source homebrew requires exact Batch 7 (69 series, 8 modules)"
+            )
+        self._host.inf("PATCH_STACK_MODE=default-lock-first materializer=runtime-source")
+        started = time.monotonic()
+        results: list[dict[str, Any]] = []
+        for module in batch["module_order"]:
+            target = overrides.get(module)
+            if target is None:
+                raise patch_stack_lock_first.LockFirstError(
+                    f"runtime-source canonical target missing for {module}"
+                )
+            entries = [entry for entry in plan if entry["module"] == module]
+            module_results, _stats = patch_stack_lock_first.materialize_batch_into(
+                target, entries
+            )
+            results.extend(module_results)
+        if len(results) != batch["expected_count"]:
+            raise patch_stack_lock_first.LockFirstError(
+                "runtime-source canonical applied series count differs from Batch 7"
+            )
+        self._host.inf(
+            "PATCH_STACK_REPLAY "
+            f"batch={batch['batch_id']} expected={batch['expected_count']} "
+            f"applied={len(results)} modules={len(batch['module_order'])} "
+            f"elapsed_seconds={time.monotonic() - started:.3f} verdict=VALID"
+        )
+
     @contextmanager
     def profile_worktree_checkout(self, profile: str) -> Iterator[None]:
         projects = self._host._projects()
@@ -60,6 +123,7 @@ class RuntimeSourceMaterializer:
         with tempfile.TemporaryDirectory(prefix=f"west-profile-{profile}-") as temp:
             root = Path(temp)
             overrides = dict(previous_overrides)
+            primary_error: BaseException | None = None
             try:
                 for module, repo in repos:
                     target = root / module
@@ -82,21 +146,29 @@ class RuntimeSourceMaterializer:
                             overrides[ref] = target
                     overrides[module] = target
                 self._host._project_overrides = overrides
-                for stacked in self._host._profile_stack(profile):
-                    data = self._host._load_profile(stacked)
-                    profile_dir = Path(self._host.manifest.repo_abspath) / "patches" / stacked
-                    for patch in data.get("patches", []):
-                        target = overrides.get(patch["module"])
-                        if target is None:
-                            continue
-                        self._host.inf(f"  apply {stacked}/{patch['path']}")
-                        git_for_temporary_patch_application(
-                            target,
-                            "am",
-                            "--3way",
-                            str(profile_dir / patch["path"]),
-                        )
+                if profile == "homebrew":
+                    self._materialize_canonical_homebrew(overrides)
+                else:
+                    for stacked in self._host._profile_stack(profile):
+                        data = self._host._load_profile(stacked)
+                        profile_dir = Path(self._host.manifest.repo_abspath) / "patches" / stacked
+                        for patch in data.get("patches", []):
+                            target = overrides.get(patch["module"])
+                            if target is None:
+                                continue
+                            self._host.inf(f"  apply {stacked}/{patch['path']}")
+                            git_for_temporary_patch_application(
+                                target,
+                                "am",
+                                "--3way",
+                                str(profile_dir / patch["path"]),
+                            )
                 yield
+            except BaseException as error:
+                # A cleanup fault must never disguise the canonical replay
+                # failure (including SIGINT) that made this lifecycle abort.
+                primary_error = error
+                raise
             finally:
                 self._host._project_overrides = previous_overrides
                 previous_sigint = signal.signal(signal.SIGINT, signal.SIG_IGN)
@@ -109,10 +181,12 @@ class RuntimeSourceMaterializer:
                 finally:
                     signal.signal(signal.SIGINT, previous_sigint)
                 if errors:
-                    self._host.die(
-                        f"{profile}: failed to remove temporary profile worktree(s): "
-                        f"{'; '.join(errors)}"
-                    )
+                    message = (f"{profile}: failed to remove temporary profile worktree(s): "
+                               f"{'; '.join(errors)}")
+                    if primary_error is None:
+                        self._host.die(message)
+                    else:
+                        self._host.inf(message)
 
     @contextmanager
     def bad_source_tree(self, module: str, revision: str) -> Iterator[Path]:

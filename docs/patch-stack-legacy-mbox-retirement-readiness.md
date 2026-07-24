@@ -20,6 +20,15 @@ The CI policy contract fails if regular host materialization adds
 legacy control. Guest-smoke and other guest tiers do not pass
 `--materialize-profile`, so they do not independently create homebrew applies.
 
+The host path has a second materialization entry point: `west test --profile
+homebrew --materialize-profile` enters `RuntimeSourceMaterializer.
+profile_worktree_checkout()`. Its worktrees are lifecycle-owned and disposable;
+for homebrew it now replays the exact immutable Batch 7 graph through the same
+per-module union-fetch materializer, emits runtime-source mode/replay markers,
+and publishes no integration ref or generated lock. Other profiles retain their
+pre-existing mbox worktree materializer. This path must never silently fall
+back to homebrew mbox replay.
+
 ## Archive dependency classification
 
 Archives and `patches/<profile>/patches.yml` remain required for legacy
