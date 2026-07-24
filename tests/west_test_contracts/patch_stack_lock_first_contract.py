@@ -395,12 +395,12 @@ def main() -> None:
                 subprocess.run(["git", "branch", "-D", "integration/homebrew"], cwd=production, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
                 before_roots = {path.resolve() for pattern in patterns for path in temporary_root.glob(pattern)}
                 replayed = []
-                def fail_third(repo, commit):
+                def fail_third(repo, commit, **kwargs):
                     if repo == production:
                         replayed.append(commit)
                         if commit == multi_commits[2]:
                             raise injected
-                    return old_cherry_pick(repo, commit)
+                    return old_cherry_pick(repo, commit, **kwargs)
                 lock_first._cherry_pick = fail_third
                 evidence_path = root / f"real-three-{type(injected).__name__}.json"
                 try:
@@ -473,12 +473,12 @@ def main() -> None:
                 subprocess.run(["git", "branch", "-D", "integration/homebrew"], cwd=eunion_production, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
                 before_roots = {path.resolve() for pattern in patterns for path in temporary_root.glob(pattern)}
                 replayed = []
-                def fail_eunion(repo, commit):
+                def fail_eunion(repo, commit, **kwargs):
                     if repo == eunion_production:
                         replayed.append(commit)
                         if commit == eunion_ordered[3]:
                             raise injected
-                    return old_cherry_pick(repo, commit)
+                    return old_cherry_pick(repo, commit, **kwargs)
                 lock_first._cherry_pick = fail_eunion
                 evidence_path = root / f"eunion-{type(injected).__name__}.json"
                 try:

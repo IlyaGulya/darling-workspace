@@ -29,6 +29,12 @@ and publishes no integration ref or generated lock. Other profiles retain their
 pre-existing mbox worktree materializer. This path must never silently fall
 back to homebrew mbox replay.
 
+The runtime-source replay supplies its fixed `West Test
+<west-test@example.invalid>` committer identity only as `git -c` arguments to
+the disposable native `git am` calls. It does not write global, source, or
+worktree Git configuration; immutable author metadata and author dates remain
+the source of record.
+
 ## Archive dependency classification
 
 Archives and `patches/<profile>/patches.yml` remain required for legacy
