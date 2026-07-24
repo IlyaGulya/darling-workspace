@@ -22,7 +22,7 @@ from pathlib import Path
 from typing import Any, Iterator
 
 from source_worktree import SourceWorktreeError, prepare_source_worktree
-from patch_git import git_for_temporary_patch_application
+from patch_git import TEMPORARY_PATCH_GIT_OPTIONS, git_for_temporary_patch_application
 import patch_stack_lock_first
 from test_results import RuntimeRedProven
 from test_runtime_evidence import RuntimeEvidenceSession
@@ -96,7 +96,7 @@ class RuntimeSourceMaterializer:
                 )
             entries = [entry for entry in plan if entry["module"] == module]
             module_results, _stats = patch_stack_lock_first.materialize_batch_into(
-                target, entries
+                target, entries, git_options=TEMPORARY_PATCH_GIT_OPTIONS
             )
             results.extend(module_results)
         if len(results) != batch["expected_count"]:

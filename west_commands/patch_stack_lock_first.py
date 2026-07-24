@@ -41,7 +41,7 @@ ROOT = Path(__file__).resolve().parents[1]
 MAPPING = ROOT / "locks" / "patch-stack" / "lock-first-series-v2.yml"
 
 
-def _cherry_pick(repo: Path, commit: str) -> None:
+def _cherry_pick(repo: Path, commit: str, *, git_options: tuple[str, ...] = ()) -> None:
     """Replay an immutable commit through Git's native mbox machinery.
 
     The input remains the declared immutable commit; the temporary mbox is
@@ -60,7 +60,7 @@ def _cherry_pick(repo: Path, commit: str) -> None:
         if generated.returncode:
             raise LockFirstError(f"git format-patch {commit} failed ({generated.returncode}): {generated.stderr.decode().strip()}")
         result = subprocess.run(
-            ["git", "am", "--3way", "--committer-date-is-author-date", mbox], cwd=repo, text=True,
+            ["git", *git_options, "am", "--3way", "--committer-date-is-author-date", mbox], cwd=repo, text=True,
             stdout=subprocess.PIPE, stderr=subprocess.PIPE,
         )
         if result.returncode:
@@ -248,7 +248,12 @@ def write_batch_evidence(path: Path, results: list[dict[str, Any]], batch: dict[
         raise LockFirstError(f"lock-first evidence write failed: {error}") from error
 
 
-def materialize_batch_into(repo: Path, entries: list[dict[str, str]]) -> tuple[list[dict[str, Any]], dict[str, int]]:
+def materialize_batch_into(
+    repo: Path,
+    entries: list[dict[str, str]],
+    *,
+    git_options: tuple[str, ...] = (),
+) -> tuple[list[dict[str, Any]], dict[str, int]]:
     """Validate and replay one module's immutable series in one transaction.
 
     A fresh disposable ODB receives the union of the module's declared base
@@ -311,7 +316,7 @@ def materialize_batch_into(repo: Path, entries: list[dict[str, str]]) -> tuple[l
                 raise LockFirstError("production immutable source fetch differs from validated source")
         for entry, lock, proof in validated:
             for commit in proof["ordered_commits"]:
-                _cherry_pick(repo, commit)
+                _cherry_pick(repo, commit, git_options=git_options)
                 stats["replayed_commits"] += 1
             results.append({"module": entry["module"], "patch": entry["patch"],
                             "base": lock["upstream"]["base_commit"], "source": proof["source_oid"],

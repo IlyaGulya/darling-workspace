@@ -2,11 +2,13 @@
 """Focused no-mbox contract for runtime-source homebrew materialization."""
 from __future__ import annotations
 
+import os
 import sys
 import types
 import subprocess
 import tempfile
 from pathlib import Path
+from unittest import mock
 
 import yaml
 
@@ -92,7 +94,12 @@ def runtime_fixture(root: Path):
     )
     baseline = {module: (git(repo, "rev-parse", "HEAD"), git(repo, "status", "--porcelain=v1"))
                 for module, repo in projects.items()}
-    return modules, projects, plan, host, xnu, lock_path, messages, baseline
+    for repo in projects.values():
+        subprocess.run(["git", "config", "--unset-all", "user.name"], cwd=repo,
+                       stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        subprocess.run(["git", "config", "--unset-all", "user.email"], cwd=repo,
+                       stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    return modules, projects, plan, host, xnu, lock_path, messages, baseline, commits
 
 
 def assert_source_restored(projects: dict[str, Path], baseline: dict[str, tuple[str, str]]) -> None:
@@ -113,7 +120,7 @@ def real_rollback_contract() -> None:
     for exception_type in (runtime_source.patch_stack_lock_first.LockFirstError, KeyboardInterrupt):
         for failing_index in (0, 4, 7):
             with tempfile.TemporaryDirectory() as directory:
-                modules, projects, plan, host, _xnu, _lock_path, messages, baseline = runtime_fixture(Path(directory))
+                modules, projects, plan, host, _xnu, _lock_path, messages, baseline, _commits = runtime_fixture(Path(directory))
                 materializer = runtime_source.RuntimeSourceMaterializer(host)
                 old_plan, old_batch, old_legacy = (runtime_source.patch_stack_lock_first.plan,
                                                    runtime_source.patch_stack_lock_first.materialize_batch_into,
@@ -122,7 +129,7 @@ def real_rollback_contract() -> None:
                 try:
                     runtime_source.patch_stack_lock_first.plan = lambda *_args: plan
                     runtime_source.git_for_temporary_patch_application = lambda *_args: (_ for _ in ()).throw(AssertionError("legacy fallback invoked"))
-                    def fail_at(target, entries):
+                    def fail_at(target, entries, **_kwargs):
                         calls.append(entries[0]["module"])
                         if len(calls) - 1 == failing_index:
                             raise exception_type("injected module failure") if exception_type is not KeyboardInterrupt else KeyboardInterrupt()
@@ -138,7 +145,7 @@ def real_rollback_contract() -> None:
                     runtime_source.patch_stack_lock_first.materialize_batch_into = old_batch
                     runtime_source.git_for_temporary_patch_application = old_legacy
         with tempfile.TemporaryDirectory() as directory:
-            modules, projects, plan, host, _xnu, _lock_path, messages, baseline = runtime_fixture(Path(directory))
+            modules, projects, plan, host, _xnu, _lock_path, messages, baseline, _commits = runtime_fixture(Path(directory))
             materializer = runtime_source.RuntimeSourceMaterializer(host)
             old_plan, old_cherry, old_legacy = (runtime_source.patch_stack_lock_first.plan,
                                                 runtime_source.patch_stack_lock_first._cherry_pick,
@@ -147,15 +154,15 @@ def real_rollback_contract() -> None:
             try:
                 runtime_source.patch_stack_lock_first.plan = lambda *_args: plan
                 runtime_source.git_for_temporary_patch_application = lambda *_args: (_ for _ in ()).throw(AssertionError("legacy fallback invoked"))
-                def interrupt_after_two(repo, commit):
+                def interrupt_after_two(repo, commit, **kwargs):
                     if len(replayed) == 2:
                         raise exception_type("injected eunion hardening failure") if exception_type is not KeyboardInterrupt else KeyboardInterrupt()
-                    old_cherry(repo, commit); replayed.append(commit)
+                    old_cherry(repo, commit, **kwargs); replayed.append(commit)
                 runtime_source.patch_stack_lock_first._cherry_pick = interrupt_after_two
                 # Skip preceding modules; invoke the genuine XNU batch only.
-                def xnu_only(target, entries):
+                def xnu_only(target, entries, **kwargs):
                     if entries[0]["module"] == "darling/src/external/xnu":
-                        return old_batch(target, entries)
+                        return old_batch(target, entries, **kwargs)
                     return [], {}
                 old_batch = runtime_source.patch_stack_lock_first.materialize_batch_into
                 runtime_source.patch_stack_lock_first.materialize_batch_into = xnu_only
@@ -171,7 +178,7 @@ def real_rollback_contract() -> None:
     # A malformed final result (the point immediately before the context is
     # returned to its caller) must take the same all-worktree rollback path.
     with tempfile.TemporaryDirectory() as directory:
-        modules, projects, plan, host, _xnu, _lock_path, messages, baseline = runtime_fixture(Path(directory))
+        modules, projects, plan, host, _xnu, _lock_path, messages, baseline, _commits = runtime_fixture(Path(directory))
         materializer = runtime_source.RuntimeSourceMaterializer(host)
         old_plan, old_batch = (runtime_source.patch_stack_lock_first.plan,
                                runtime_source.patch_stack_lock_first.materialize_batch_into)
@@ -179,7 +186,7 @@ def real_rollback_contract() -> None:
         try:
             runtime_source.patch_stack_lock_first.plan = lambda *_args: plan
             runtime_source.patch_stack_lock_first.materialize_batch_into = (
-                lambda _target, entries: (calls.append(entries[0]["module"]) or ([], {}))
+                lambda _target, entries, **_kwargs: (calls.append(entries[0]["module"]) or ([], {}))
             )
             must_raise(runtime_source.patch_stack_lock_first.LockFirstError,
                        lambda: materializer.profile_worktree_checkout("homebrew").__enter__())
@@ -189,6 +196,60 @@ def real_rollback_contract() -> None:
         finally:
             runtime_source.patch_stack_lock_first.plan = old_plan
             runtime_source.patch_stack_lock_first.materialize_batch_into = old_batch
+
+
+def identity_contract() -> None:
+    """Reproduce the hosted empty-ident failure without mutating any config."""
+    with tempfile.TemporaryDirectory() as directory:
+        root = Path(directory)
+        modules, projects, plan, host, xnu, _lock_path, messages, baseline, commits = runtime_fixture(root)
+        materializer = runtime_source.RuntimeSourceMaterializer(host)
+        source_author = git(xnu, "show", "-s", "--format=%an%x00%ae%x00%aI", commits[0])
+        configs_before = {module: git(repo, "config", "--local", "--list") for module, repo in projects.items()}
+        old_plan, old_batch, old_legacy = (runtime_source.patch_stack_lock_first.plan,
+                                           runtime_source.patch_stack_lock_first.materialize_batch_into,
+                                           runtime_source.git_for_temporary_patch_application)
+        try:
+            runtime_source.patch_stack_lock_first.plan = lambda *_args: plan
+            runtime_source.git_for_temporary_patch_application = lambda *_args: (_ for _ in ()).throw(AssertionError("legacy fallback invoked"))
+            real_batch = old_batch
+            def batch(target, entries, **kwargs):
+                if entries[0]["module"] == "darling/src/external/xnu":
+                    return real_batch(target, entries, **kwargs)
+                if entries[0]["module"] == "darling/src/external/installer":
+                    return ([{"module": "synthetic"}] * 68, {})
+                return [], {}
+            runtime_source.patch_stack_lock_first.materialize_batch_into = batch
+            empty_home = root / "empty-home"; empty_home.mkdir()
+            env = {key: value for key, value in os.environ.items()
+                   if not key.startswith("GIT_AUTHOR_") and not key.startswith("GIT_COMMITTER_")}
+            env.update({"HOME": str(empty_home), "GIT_CONFIG_NOSYSTEM": "1"})
+            with mock.patch.dict(os.environ, env, clear=True):
+                global_before = subprocess.run(
+                    ["git", "config", "--global", "--list"], check=False,
+                    text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                )
+                with materializer.profile_worktree_checkout("homebrew"):
+                    target = host._project_overrides["darling/src/external/xnu"]
+                    applied = git(target, "show", "-s", "--format=%an%x00%ae%x00%aI%x00%cn%x00%ce%x00%cI", "HEAD~2")
+                    author_name, author_email, author_date, committer_name, committer_email, committer_date = applied.split("\x00")
+                    assert "\x00".join((author_name, author_email, author_date)) == source_author
+                    assert (committer_name, committer_email) == ("West Test", "west-test@example.invalid")
+                    assert committer_date == author_date
+                global_after = subprocess.run(
+                    ["git", "config", "--global", "--list"], check=False,
+                    text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                )
+                assert (global_after.returncode, global_after.stdout, global_after.stderr) == (
+                    global_before.returncode, global_before.stdout, global_before.stderr
+                )
+            assert any(line.startswith("PATCH_STACK_REPLAY ") and line.endswith("verdict=VALID") for line in messages)
+            assert_source_restored(projects, baseline)
+            assert {module: git(repo, "config", "--local", "--list") for module, repo in projects.items()} == configs_before
+        finally:
+            runtime_source.patch_stack_lock_first.plan = old_plan
+            runtime_source.patch_stack_lock_first.materialize_batch_into = old_batch
+            runtime_source.git_for_temporary_patch_application = old_legacy
 
 
 def main() -> None:
@@ -217,7 +278,7 @@ def main() -> None:
     calls: list[str] = []
     try:
         runtime_source.patch_stack_lock_first.plan = lambda *_args: plan
-        def batch(target, entries):
+        def batch(target, entries, **_kwargs):
             calls.append(entries[0]["module"])
             return ([{"module": entries[0]["module"]}] * (69 if entries[0]["module"] == modules[-1] else 0), {})
         runtime_source.patch_stack_lock_first.materialize_batch_into = batch
@@ -241,6 +302,7 @@ def main() -> None:
         runtime_source.patch_stack_lock_first.plan = old_plan
         runtime_source.patch_stack_lock_first.materialize_batch_into = old_batch
     real_rollback_contract()
+    identity_contract()
     print("runtime-source lock-first contract: PASS")
 
 
