@@ -9,6 +9,7 @@ import re
 import subprocess
 import sys
 import tempfile
+import time
 from collections import OrderedDict
 from pathlib import Path
 from typing import NamedTuple
@@ -2321,6 +2322,16 @@ class DarlingPatch(WestCommand):
         # mode and must not silently become a second canonical replay.
         canonical_default = profile == "homebrew" and not legacy_mbox and not shadow_lock
         use_lock_first = canonical_default or lock_first
+        if shadow_lock:
+            patch_stack_mode = "shadow-lock"
+        elif legacy_mbox:
+            patch_stack_mode = "legacy-mbox"
+        elif lock_first:
+            patch_stack_mode = "explicit-lock-first"
+        elif canonical_default:
+            patch_stack_mode = "default-lock-first"
+        else:
+            patch_stack_mode = "legacy-mbox"
         if lock_first_evidence and not use_lock_first:
             self.die("--lock-first-evidence requires canonical lock-first mode")
         if lock_first_evidence:
@@ -2329,6 +2340,12 @@ class DarlingPatch(WestCommand):
                 self.die("--lock-first-evidence must name a new regular output path")
         if shadow_lock and lock_first:
             self.die("--shadow-lock and --lock-first are mutually exclusive")
+        if legacy_mbox and profile == "homebrew":
+            # WestCommand supplies err(); the inf fallback keeps the isolated
+            # command contracts independent of West's presentation shim.
+            getattr(self, "err", self.inf)(
+                "warning: --legacy-mbox is deprecated for homebrew; default-lock-first is the supported mode"
+            )
 
         # This is deliberately before generated-context preparation, branch
         # creation, or `git am`: malformed typed metadata must not mutate a
@@ -2350,6 +2367,11 @@ class DarlingPatch(WestCommand):
             except patch_stack_lock_first.LockFirstError as error:
                 self.die(str(error))
 
+        # This selection marker has no paths, URLs, object IDs, or evidence
+        # payload.  A success marker is intentionally emitted only below after
+        # the integration record and optional evidence publication succeed.
+        self.inf(f"PATCH_STACK_MODE={patch_stack_mode}")
+
         # The snapshot occurs only after the fail-closed planner has accepted
         # the exact Batch mapping and before any lifecycle mutation.
         generated_lock_snapshot = self._generated_lock_snapshot(profile) if use_lock_first else None
@@ -2370,6 +2392,7 @@ class DarlingPatch(WestCommand):
         shadow_runs = 0
         lock_first_runs: list[tuple[str, str]] = []
         lock_first_results = []
+        replay_started = time.monotonic()
         try:
             for module, module_patches in grouped.items():
                 repo = self._repo(module)
@@ -2435,6 +2458,21 @@ class DarlingPatch(WestCommand):
                 patch_stack_lock_first.write_batch_evidence(
                     Path(lock_first_evidence), lock_first_results,
                     batch,
+                )
+            if lock_first_plan:
+                if not isinstance(lock_first_plan, patch_stack_lock_first.LockFirstPlan):
+                    raise RuntimeError("lock-first planner did not return typed batch metadata")
+                batch = lock_first_plan.batch
+                expected_count = batch["expected_count"]
+                applied_count = len(lock_first_results)
+                if applied_count != expected_count:
+                    raise RuntimeError("lock-first applied series count differs from typed batch")
+                elapsed = time.monotonic() - replay_started
+                self.inf(
+                    "PATCH_STACK_REPLAY "
+                    f"batch_id={batch['batch_id']} expected_series={expected_count} "
+                    f"applied_series={applied_count} module_count={len(batch['module_order'])} "
+                    f"elapsed_replay_seconds={elapsed:.3f} verdict=VALID"
                 )
             self.inf(f"wrote {lock}")
         except KeyboardInterrupt:
