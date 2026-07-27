@@ -22,6 +22,7 @@ on:
           - macos
           - macho-corpus-batch
           - macho-corpus-validation
+          - arch-lock-first
       ccache_mode:
         description: ccache mode for guest-toolchain only; other tiers ignore this input
         required: false
@@ -32,6 +33,69 @@ on:
           - cold
 
 jobs:
+  arch-lock-first:
+    if: github.event_name == 'workflow_dispatch' && inputs.tier == 'arch-lock-first'
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    env:
+      DARLING_WEST_UPDATE_JOBS: 8
+    permissions:
+      contents: read
+    steps:
+      - name: Configure Arch acceptance paths
+        run: |
+          printf 'ARCH_LOCK_FIRST_ROOT=%s\n' "$RUNNER_TEMP/arch-lock-first" >>"$GITHUB_ENV"
+          printf 'TMPDIR=%s\n' "$RUNNER_TEMP" >>"$GITHUB_ENV"
+      - uses: actions/checkout@v7
+        with:
+          path: darling-dev/darling-workspace
+      - name: Install West
+        run: python3 -m pip install west
+      - name: Materialize frozen West workspace
+        run: darling-dev/darling-workspace/ci/bootstrap-west.sh
+      - name: Apply canonical Arch composition
+        working-directory: darling-dev/darling-workspace
+        run: |
+          set -euo pipefail
+          evidence="$ARCH_LOCK_FIRST_ROOT/evidence"
+          mkdir -p "$evidence"
+          west patch apply --profile arch \
+            --lock-first-evidence "$evidence/lock-first-evidence.json"
+          python3 ci/patch_stack_shadow_acceptance.py capture \
+            --workspace "$PWD" --profile arch \
+            --modules "$evidence/arch-modules.json" \
+            --manifest "$evidence/arch-manifest.json"
+          jq -e '
+            .verdict == "VALID" and
+            .evidence_schema_version == 2 and
+            .batch_id == "darling-arch-lock-first-batch-1" and
+            .expected_count == 19 and
+            (.series | length) == 19
+          ' "$evidence/lock-first-evidence.json" >/dev/null
+      - name: Verify Arch transaction cleanup
+        if: always()
+        working-directory: darling-dev/darling-workspace
+        run: |
+          set -euo pipefail
+          while IFS= read -r project; do
+            test -z "$(git -C "$project" for-each-ref --format='%(refname)' \
+              refs/west/patch-stack-materialize/ \
+              refs/west/patch-stack-results/ \
+              refs/west/patch-stack-lock-first/)"
+            ! git -C "$project" worktree list --porcelain | grep -Eq 'west-(lock-materialize|patch-lock-first)-'
+          done < <(west list -f '{abspath}')
+      - name: Upload Arch lock-first acceptance evidence
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: arch-lock-first-acceptance
+          if-no-files-found: error
+          retention-days: 14
+          path: |
+            ${{ runner.temp }}/arch-lock-first/evidence/lock-first-evidence.json
+            ${{ runner.temp }}/arch-lock-first/evidence/arch-modules.json
+            ${{ runner.temp }}/arch-lock-first/evidence/arch-manifest.json
+
   host:
     if: github.event_name != 'workflow_dispatch' || inputs.tier == 'host'
     runs-on: ubuntu-latest
