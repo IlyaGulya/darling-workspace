@@ -21,6 +21,7 @@ class AcceptanceError(RuntimeError):
 ARTIFACT_ALLOWLIST = {
     "control-manifest.json",
     "control-modules.json",
+    "legacy-oracle.json",
     "lock-first-manifest.json",
     "lock-first-modules.json",
     "shadow-manifest.json",

@@ -357,6 +357,26 @@ patches:
     - -Wno-sign-compare
     note: Host behavior contract for the real MessageQueue SCM_RIGHTS receive path; proves push_reply-sized fd messages survive SO_PASSCRED and oversized/truncated control data is not accepted.
   sha256sum: 8b9915b55966aec778ed8b730ef1d2f2a281733763da885464518616159339b6
+- path: darlingserver/standard-signal-coalescing-flood-progress.patch
+  module: darling/src/external/darlingserver
+  source-branch: fix/standard-signal-coalescing-flood-progress
+  source-base: a0877988b130f665ffbf9ee921482c2cbd67f925
+  source-commit: b545cdbe9e2f6c16828f484c36a5bef177b2b61a
+  bead: dar-cvstorm2-flood-lost-progress-s41p
+  publication-status: blocked
+  publication-blocker: requires reviewed immutable hosted closure and explicit ARCH_ONLY ownership acceptance.
+  tests:
+  - name: standard_signal_coalescing_helper
+    kind: compile
+    coverage-tier: host
+    runs: host
+    diag: bare
+    runner: source-profile-script
+    repo: darling-src-external-darlingserver
+    script: tests/standard_signal_coalescing_contract_test.sh
+    timeout-seconds: 60
+    note: The direct friend-adapter target drives the exact pending-mask helper used by Thread::sendSignal before tgkill.
+  sha256sum: a49b0c4005bebdee68b88b3416c6c49995eb262875b91a48cd62ba6f390cd703
 - path: darling/ci-host-regression-tests.patch
   module: darling
   source-branch: fix/ci-host-regression-tests

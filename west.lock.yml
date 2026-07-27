@@ -870,12 +870,13 @@ manifest:
       upstream-repository: neverbleed
       fetch-override-reason: darling-next-public-mirror-preserves-pin
   - name: darling-src-external-objc4
-    url: https://github.com/darlinghq/darling-objc4
-    revision: 1a12df76d12bfc9fdfffadb290f7742763568765
+    url: https://github.com/darling-next/darling-objc4
+    revision: 53342cec3dcc9cde6dd1aa935bbe26d88c3e5aa8
     path: darling/src/external/objc4
     userdata:
       kind: darling-source
       upstream-repository: darling-objc4
+      fetch-override-reason: darling-next-public-mirror-preserves-reviewed-objc4-baseline
   - name: darling-src-external-openjdk
     url: https://github.com/darlinghq/openjdk
     revision: 5a541c1844a9508e48b3addaf2d38775683abb38

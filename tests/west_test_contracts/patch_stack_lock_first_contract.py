@@ -7,6 +7,7 @@ import sys
 import tempfile
 import types
 import json
+import hashlib
 from collections import OrderedDict
 from pathlib import Path
 
@@ -22,7 +23,9 @@ sys.modules.setdefault("west", west_module)
 sys.modules.setdefault("west.commands", west_commands_module)
 
 import patch as patch_command
+from patch_git import TEMPORARY_PATCH_GIT_OPTIONS
 import patch_stack_lock_first as lock_first
+import patch_stack_profile_composition as profile_composition
 
 
 def git(repo: Path, *args: str) -> str:
@@ -90,6 +93,11 @@ def main() -> None:
             if entry["module"] == "darling/src/external/xnu"
         ]
         assert len(batch_seven) == 69 and batch_seven.batch["expected_count"] == 69
+        assert batch_seven.composition is not None
+        assert batch_seven.composition["profile"] == "homebrew"
+        assert batch_seven.composition["boundaries"][("darling/src/external/xnu", "xnu/fstatfs-missing-proc-mounts.patch")] == "84d7a41685fab6b459ce754e8db8421ab4fc3615"
+        assert batch_seven.composition["boundaries"][("darling", "darling/sandbox-exec-pass-through.patch")] == "630c80034b9aed3a89d133c948e457c1bc9e3709"
+        assert batch_seven.composition["finals"]["darling/src/external/xnu"] == "c093766c6abb005ad85392c78c77c1e73c817da3"
         assert batch_seven.batch["batch_id"] == "darling-homebrew-lock-first-batch-7"
         assert batch_seven.batch["module_order"] == [
             "darling/src/external/darlingserver",
@@ -132,6 +140,85 @@ def main() -> None:
             "xnu/gate-hotpath-kprintf-debug.patch",
             "xnu/generalize-recv-spin-guest.patch",
         ]
+        # The registry is the production selector for every profile. Each
+        # mapping must exactly cover the real grouped profile execution, with
+        # no profile-specific archive fallback hidden in orchestration.
+        for profile_name, expected_count in (("homebrew", 69), ("perf", 7), ("arch", 19)):
+            profile_data = yaml.safe_load((ROOT / "patches" / profile_name / "patches.yml").read_text())
+            profile_patches = profile_data["patches"]
+            profile_grouped = OrderedDict()
+            for entry in profile_patches:
+                profile_grouped.setdefault(entry["module"], []).append(entry)
+            selected_profile = lock_first.plan(profile_name, profile_patches)
+            expected_order = [
+                (module, entry["path"])
+                for module, entries in profile_grouped.items()
+                for entry in entries
+            ]
+            assert lock_first.mapping_for_profile(profile_name).is_file()
+            assert selected_profile.batch["expected_count"] == expected_count == len(expected_order)
+            assert [(entry["module"], entry["patch"]) for entry in selected_profile] == expected_order
+            assert len({entry["lock_path"] for entry in selected_profile}) == expected_count
+            assert selected_profile.composition is not None
+            assert selected_profile.composition["profile"] == profile_name
+            assert list(selected_profile.composition["starts"]) == selected_profile.batch["module_order"]
+            assert selected_profile.composition["frozen_manifest"] == {
+                "path": "west.lock.yml",
+                "sha256": hashlib.sha256((ROOT / "west.lock.yml").read_bytes()).hexdigest(),
+            }
+        arch_data = yaml.safe_load((ROOT / "patches" / "arch" / "patches.yml").read_text())
+        arch_selected = lock_first.plan("arch", arch_data["patches"])
+        arch_identity = [(entry["module"], entry["patch"]) for entry in arch_selected]
+        flood_identity = (
+            "darling/src/external/darlingserver",
+            "darlingserver/standard-signal-coalescing-flood-progress.patch",
+        )
+        flood_position = arch_identity.index(flood_identity)
+        assert arch_identity[flood_position - 1:flood_position + 2] == [
+            ("darling/src/external/darlingserver", "darlingserver/message-ctrunc-reject.patch"),
+            flood_identity,
+            ("darling", "darling/ci-host-regression-tests.patch"),
+        ]
+        flood_entry = next(entry for entry in arch_selected if (entry["module"], entry["patch"]) == flood_identity)
+        assert yaml.safe_load(Path(flood_entry["lock_path"]).read_text())["upstream"]["base_commit"] == "a0877988b130f665ffbf9ee921482c2cbd67f925"
+        assert arch_selected.composition["boundaries"][flood_identity] == "7b68b23e5a3d3b00a0e4ca5c340371667c18493e"
+        # The profile-owned continuation is fail-closed: omitting it, moving
+        # it before the final DarlingServer boundary, or tampering with its
+        # composition tree cannot reach mutation.
+        arch_mapping_payload = yaml.safe_load((ROOT / "locks" / "patch-stack" / "lock-first-series-arch-v2.yml").read_text())
+        missing_flood = root / "arch-missing-flood.yml"
+        missing_payload = {**arch_mapping_payload, "expected_count": 18,
+                           "series": [entry for entry in arch_mapping_payload["series"] if entry["patch"] != flood_identity[1]]}
+        missing_flood.write_text(yaml.safe_dump(missing_payload, sort_keys=False))
+        try:
+            lock_first.plan("arch", arch_data["patches"], missing_flood)
+        except lock_first.LockFirstError:
+            pass
+        else:
+            raise AssertionError("arch accepted a mapping missing the required flood-progress continuation")
+        wrong_position = root / "arch-wrong-flood-position.yml"
+        reordered = list(arch_mapping_payload["series"])
+        flood_index = next(index for index, entry in enumerate(reordered) if entry["patch"] == flood_identity[1])
+        moved = reordered.pop(flood_index)
+        preceding_index = next(index for index, entry in enumerate(reordered) if entry["patch"] == "darlingserver/message-ctrunc-reject.patch")
+        reordered.insert(preceding_index, moved)
+        wrong_position.write_text(yaml.safe_dump({**arch_mapping_payload, "series": reordered}, sort_keys=False))
+        try:
+            lock_first.plan("arch", arch_data["patches"], wrong_position)
+        except lock_first.LockFirstError:
+            pass
+        else:
+            raise AssertionError("arch accepted flood-progress at the wrong integration boundary")
+        # The general composition materializer contract separately proves that
+        # a tampered boundary tree fails before it can become an integration
+        # final; bind this concrete row to the reviewed immutable tree here.
+        assert arch_selected.composition["finals"][flood_identity[0]] == "7b68b23e5a3d3b00a0e4ca5c340371667c18493e"
+        try:
+            lock_first.mapping_for_profile("unknown-profile")
+        except lock_first.LockFirstError:
+            pass
+        else:
+            raise AssertionError("unconfigured profile selected a lock-first mapping")
         # The planner validates the real apply order, not the flat YAML
         # order: _group() executes all patches of the first module before a
         # later profile entry in the next module.
@@ -190,6 +277,14 @@ def main() -> None:
             try: fn(*args)
             except lock_first.LockFirstError: return
             raise AssertionError("lock-first accepted invalid metadata")
+        duplicate_composition = root / "duplicate-composition.yml"
+        duplicate_composition.write_text("schema_version: 1\nschema_version: 1\n")
+        try:
+            profile_composition.load(duplicate_composition)
+        except profile_composition.ProfileCompositionError:
+            pass
+        else:
+            raise AssertionError("profile composition accepted duplicate YAML keys")
         # The complete XNU group is typed data, not an implicit prefix. Its
         # exact 25-entry profile order is required before _prepare(), and all
         # missing/extra/duplicate/reordered/wrong-module/wrong-lock variants
@@ -301,6 +396,63 @@ def main() -> None:
         assert batch_stats == {"immutable_fetch_transactions": 1, "temporary_contexts": 1, "validated_locks": 1, "replayed_commits": 1}
         assert git(production, "rev-parse", "HEAD^{tree}") == tree
         assert not git(production, "for-each-ref", "refs/west/patch-stack-results/lock-first")
+        # A divergent profile base is fail-closed unless the profile declares
+        # its exact boundary tree.  The immutable source lock remains
+        # standalone truth; it must not be rewritten merely for this context.
+        git(production, "reset", "--hard", "-q", base)
+        (production / "integration-only").write_text("must not become canonical\n")
+        git(production, "add", "integration-only")
+        git(production, "commit", "-qm", "divergent integration base")
+        divergent_base = git(production, "rev-parse", "HEAD")
+        try:
+            lock_first.materialize_batch_into(production, list(selected))
+        except lock_first.LockFirstError as error:
+            assert "no composition lock is declared" in str(error)
+        else:
+            raise AssertionError("lock-first accepted a divergent profile base without composition")
+        divergent_tree = git(production, "rev-parse", "HEAD^{tree}")
+        git(production, "reset", "--hard", "-q", divergent_base)
+        composition = {"boundaries": {("darling", "darling/sandbox-exec-pass-through.patch"): divergent_tree}}
+        accepted, _ = lock_first.materialize_batch_into(production, list(selected), composition=composition)
+        assert accepted[0]["applied_tree"] == divergent_tree
+        git(production, "reset", "--hard", "-q", divergent_base)
+        tampered = {"boundaries": {("darling", "darling/sandbox-exec-pass-through.patch"): tree}}
+        try:
+            lock_first.materialize_batch_into(production, list(selected), composition=tampered)
+        except lock_first.LockFirstError:
+            pass
+        else:
+            raise AssertionError("lock-first accepted a tampered profile boundary")
+        assert not git(production, "for-each-ref", "refs/west/patch-stack-lock-first/")
+        # A real overlapping content edit is a semantic stop, not a reason to
+        # reinterpret a profile-boundary assertion as an automatic resolution.
+        git(production, "reset", "--hard", "-q", base)
+        (production / "a").write_text("independent semantic change\n")
+        git(production, "commit", "-am", "semantic conflict", "-q")
+        try:
+            lock_first.materialize_batch_into(production, list(selected), composition=composition)
+        except lock_first.LockFirstError as error:
+            assert "git am" in str(error)
+        else:
+            raise AssertionError("lock-first resolved a genuine semantic conflict")
+        rebase_apply = Path(git(production, "rev-parse", "--git-path", "rebase-apply"))
+        if not rebase_apply.is_absolute():
+            rebase_apply = production / rebase_apply
+        if rebase_apply.exists():
+            git(production, "am", "--abort")
+        assert not rebase_apply.exists()
+        assert not git(production, "for-each-ref", "refs/west/patch-stack-lock-first/")
+        # Reusing the same immutable source lock in another typed profile is
+        # purely a mapping choice; it neither duplicates the source object nor
+        # creates a profile-specific immutable ref.
+        reuse_mapping = root / "reuse-profile.yml"
+        reuse_mapping.write_text(yaml.safe_dump(mapping_doc([
+            {"profile": "perf", "module": "darling", "patch": "darling/reused.patch", "lock": "one.yml"},
+        ], profile="perf", batch_id="reuse-profile"), sort_keys=False))
+        reused = lock_first.plan("perf", [{"module": "darling", "path": "darling/reused.patch"}], reuse_mapping)
+        assert reused[0]["lock_path"] == selected[0]["lock_path"]
+        assert not git(production, "for-each-ref", "refs/west/patch-stack-lock-first/")
+        git(production, "reset", "--hard", "-q", base)
         # Existing canonical result refs are exercised by the materializer
         # contract; lock-first uses an isolated canonical repository.
         git(production, "reset", "--hard", "-q", base)
@@ -385,11 +537,11 @@ def main() -> None:
         real_command._record_integration = lambda *_args: (_ for _ in ()).throw(AssertionError("record must not run"))
         real_command.inf = lambda _message: None
         real_command.die = lambda message, **_kwargs: (_ for _ in ()).throw(RuntimeError(message))
-        old_mapping, old_cherry_pick = lock_first.MAPPING, lock_first._cherry_pick
+        old_mapping_for_profile, old_cherry_pick = lock_first.mapping_for_profile, lock_first._cherry_pick
         temporary_root = Path(tempfile.gettempdir())
         patterns = ("west-lock-materialize-*", "west-patch-lock-first-*", "west-patch-shadow-*")
         try:
-            lock_first.MAPPING = multi_mapping
+            lock_first.mapping_for_profile = lambda _profile: multi_mapping
             for injected in (lock_first.LockFirstError("third replay failure"), KeyboardInterrupt()):
                 git(production, "reset", "--hard", "-q", base)
                 subprocess.run(["git", "branch", "-D", "integration/homebrew"], cwd=production, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
@@ -424,7 +576,7 @@ def main() -> None:
                 assert {path.resolve() for pattern in patterns for path in temporary_root.glob(pattern)} == before_roots
                 assert "west-lock-materialize-" not in git(production, "worktree", "list", "--porcelain")
         finally:
-            lock_first.MAPPING, lock_first._cherry_pick = old_mapping, old_cherry_pick
+            lock_first.mapping_for_profile, lock_first._cherry_pick = old_mapping_for_profile, old_cherry_pick
         # Real Batch 7 internal-commit rollback: eunion-hardening is the
         # longest XNU schema-v2 series (six immutable commits). This calls
         # production materialize_into, lets the first three commits replay,
@@ -465,9 +617,9 @@ def main() -> None:
         eunion_command._record_integration = lambda *_args: (_ for _ in ()).throw(AssertionError("record must not run"))
         eunion_command.inf = lambda _message: None
         eunion_command.die = lambda message, **_kwargs: (_ for _ in ()).throw(RuntimeError(message))
-        old_mapping, old_cherry_pick = lock_first.MAPPING, lock_first._cherry_pick
+        old_mapping_for_profile, old_cherry_pick = lock_first.mapping_for_profile, lock_first._cherry_pick
         try:
-            lock_first.MAPPING = eunion_mapping
+            lock_first.mapping_for_profile = lambda _profile: eunion_mapping
             for injected in (lock_first.LockFirstError("eunion internal replay failure"), KeyboardInterrupt()):
                 git(eunion_production, "reset", "--hard", "-q", eunion_base)
                 subprocess.run(["git", "branch", "-D", "integration/homebrew"], cwd=eunion_production, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
@@ -502,7 +654,7 @@ def main() -> None:
                 assert {path.resolve() for pattern in patterns for path in temporary_root.glob(pattern)} == before_roots
                 assert "west-lock-materialize-" not in git(eunion_production, "worktree", "list", "--porcelain")
         finally:
-            lock_first.MAPPING, lock_first._cherry_pick = old_mapping, old_cherry_pick
+            lock_first.mapping_for_profile, lock_first._cherry_pick = old_mapping_for_profile, old_cherry_pick
         # Production orchestration: homebrew defaults to canonical code; the
         # typed plan is built before _prepare and failures roll back/SIGINT.
         command = patch_command.DarlingPatch.__new__(patch_command.DarlingPatch)
@@ -520,7 +672,9 @@ def main() -> None:
         calls: list[object] = []
         patch_command.patch_stack_lock_first.plan = lambda *_args: selected
         patch_command.patch_stack_lock_first.materialize_into = lambda _repo, entry, *_args: calls.append(entry["patch"]) or {"module": entry["module"], "patch": entry["patch"], "base": base, "source": source, "canonical_tree": tree, "applied_commit": source, "applied_tree": tree, "verdict": "VALID"}
-        def fake_batch(_repo, entries):
+        def fake_batch(_repo, entries, *, git_options=(), composition=None):
+            assert git_options == TEMPORARY_PATCH_GIT_OPTIONS
+            assert composition is selected.composition or composition is batch.composition
             results = [patch_command.patch_stack_lock_first.materialize_into(_repo, entry) for entry in entries]
             return results, {"immutable_fetch_transactions": 1, "validated_locks": len(entries), "replayed_commits": len(entries), "temporary_contexts": 1}
         patch_command.patch_stack_lock_first.materialize_batch_into = fake_batch

@@ -1,0 +1,34 @@
+schema_version: 3
+profile: perf
+batch_id: darling-perf-lock-first-batch-1
+expected_count: 7
+composition: perf-profile-composition-v2.yml
+series:
+  - profile: perf
+    module: darling
+    patch: darling/mldr-compact-fd-band.patch
+    lock: darling-mldr-compact-fd-band-v1.yml
+  - profile: perf
+    module: darling/src/external/xnu
+    patch: xnu/shmem-ring-guest.patch
+    lock: darling-xnu-shmem-ring-guest-profile-v7.yml
+  - profile: perf
+    module: darling/src/external/xnu
+    patch: xnu/j7e7-lane-wakefd-sentinel.patch
+    lock: darling-xnu-j7e7-lane-wakefd-sentinel-profile-v7.yml
+  - profile: perf
+    module: darling/src/external/dyld
+    patch: dyld/dcc2-reader.patch
+    lock: dyld-dcc2-reader-v1.yml
+  - profile: perf
+    module: darling/src/external/darlingserver
+    patch: darlingserver/perf18-server-ring.patch
+    lock: darlingserver-perf18-server-ring-profile-v7.yml
+  - profile: perf
+    module: darling/src/external/darlingserver
+    patch: darlingserver/a0-hang-fixes.patch
+    lock: darlingserver-a0-hang-fixes-profile-v7.yml
+  - profile: perf
+    module: darling/src/external/darlingserver
+    patch: darlingserver/j7e7-postfork-reset-gate.patch
+    lock: darlingserver-j7e7-postfork-reset-gate-profile-v7.yml

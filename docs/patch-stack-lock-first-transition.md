@@ -1,18 +1,18 @@
 # Canonical lock-first transition
 
-`west patch apply --profile homebrew` uses canonical lock-first materialization
-by default for the complete typed 69-series Batch 7 in
-`locks/patch-stack/lock-first-series-v2.yml`. `--lock-first` remains a
-compatible explicit alias. The retained mbox archive is an emergency fallback:
+`west patch apply` uses canonical lock-first materialization by default for
+every production profile through the typed registry in
+`locks/patch-stack/lock-first-profiles-v1.yml`. Homebrew retains its accepted
+69-series Batch 7 mapping; perf has 7 series and arch has 18. `--lock-first`
+remains a compatible explicit alias while the public legacy switch is being
+removed in a separately reviewed final step. The retained mbox archive is
+temporarily reachable only by an explicit compatibility switch:
 
 ```
 west patch apply --profile homebrew --legacy-mbox
 ```
 
-Other profiles remain legacy-mbox-first. For them `--legacy-mbox` is an
-explicit no-op alias of the same legacy behavior. `--shadow-lock` stays the
-existing single-series legacy/canonical diagnostic and does not enable the
-homebrew default replay. `--legacy-mbox` is mutually exclusive with
+`--legacy-mbox` is mutually exclusive with
 `--lock-first`, `--lock-first-evidence`, `--shadow-lock`, and
 `--shadow-evidence`; the CLI rejects every such combination before planning,
 fetching, ref creation, or worktree mutation.
@@ -22,7 +22,7 @@ west patch apply --profile homebrew \
   --lock-first-evidence /absolute/path/lock-first-oracle.json
 ```
 
-Before any homebrew integration worktree mutation, the command validates the complete
+Before any production integration worktree mutation, the command validates the complete
 typed batch against the profile's actual grouped execution order: module order
 from `_group()`, followed by profile order within each module. A series is
 identified by `(module, patch)`, not patch path alone. For each module it creates
@@ -116,7 +116,7 @@ emitted only after integration recording and optional evidence publication
 succeed; failure or SIGINT emits no success verdict. Markers omit credentials,
 remote URLs, temporary paths, and evidence payloads.
 
-For homebrew, explicit `--legacy-mbox` remains functional but emits a
-deprecation warning. Legacy-default profiles do not receive that warning. The
-host tier invokes no-flag homebrew materialization; the manual two-sided
-workflow is the sole hosted `--legacy-mbox` control/oracle.
+An explicit `--legacy-mbox` remains temporarily functional and emits a
+deprecation warning for every profile. The host tier invokes no-flag homebrew
+materialization; the manual two-sided workflow is currently the sole hosted
+`--legacy-mbox` control/oracle and is scheduled to move to a test-only oracle.

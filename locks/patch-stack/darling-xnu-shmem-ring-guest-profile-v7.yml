@@ -1,0 +1,33 @@
+schema_version: 2
+project:
+  name: darling-src-external-xnu
+  path: .
+upstream:
+  url: https://github.com/darlinghq/darling-xnu.git
+  base_commit: 3313e58b4ef0ac449db7b4aea6a454f6b4de5a9c
+mirror:
+  url: https://github.com/darling-next/darling-xnu.git
+  base_ref: refs/tags/patch-stack/v1/bases/3313e58b4ef0ac449db7b4aea6a454f6b4de5a9c
+  base_oid: 3313e58b4ef0ac449db7b4aea6a454f6b4de5a9c
+  source_ref: refs/tags/patch-stack/v1/sources/991fa4e4ee5e51e736c7fc27531f0e577917126e
+  source_oid: 991fa4e4ee5e51e736c7fc27531f0e577917126e
+source_commit: 991fa4e4ee5e51e736c7fc27531f0e577917126e
+ordered_commits:
+  - 5d09a2ebb07cc9e713e4d3738cbd6c6dac23ef38
+  - 74c0e9207226e9d24be7b5739719ebe51d627e74
+  - 4fdd74c938d30442e8a596827cc4cbf6391cb9e5
+  - a84c9859f2d24e60ae9fda0ff693cd49158020ef
+  - b489a2528ab981483ade3e3ae9c39a27fb7f635c
+  - a73521ea7810c5d29b9f4ce883e8e2e55a2a56ea
+  - 608802e67e9a1f4f79f18376b4c73c27c8e44ba1
+  - 163fb47f27502af09e617c4341eae8631c68e8bb
+  - 936602a2cb664207f4360dced91ffc07a83dbc19
+  - 2a428c2409deb6ef659b708e3da00bdcd17c2d35
+  - 22565f7e6f3e06c211f21da1818edb89d279aa09
+  - 787a36e76369e63c5c9ba50991cc82acba82f8bf
+  - 57d1c30de5c50a3aea602679be59fe89a959d5cb
+  - 6c54adfff82ff6bd80a35d833dcee45941889009
+  - e3f1b1093aca676aa75a151852a98864b1d77422
+  - f24ce78c10285b457eb5e759423d062bcfcf4565
+  - 991fa4e4ee5e51e736c7fc27531f0e577917126e
+expected_tree: 03a593d3131f7f57949473f18399a7b28fc998a9

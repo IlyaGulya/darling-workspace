@@ -1,7 +1,8 @@
-schema_version: 2
+schema_version: 3
 profile: homebrew
 batch_id: darling-homebrew-lock-first-batch-7
 expected_count: 69
+composition: homebrew-profile-composition-v2.yml
 series:
   - profile: homebrew
     module: darling/src/external/darlingserver

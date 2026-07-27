@@ -1,0 +1,17 @@
+schema_version: 2
+project:
+  name: objc4
+  path: .
+upstream:
+  url: https://github.com/darlinghq/darling-objc4.git
+  base_commit: 1a12df76d12bfc9fdfffadb290f7742763568765
+mirror:
+  url: https://github.com/darling-next/darling-objc4.git
+  base_ref: refs/tags/patch-stack/v1/bases/1a12df76d12bfc9fdfffadb290f7742763568765
+  base_oid: 1a12df76d12bfc9fdfffadb290f7742763568765
+  source_ref: refs/tags/patch-stack/v1/sources/53342cec3dcc9cde6dd1aa935bbe26d88c3e5aa8
+  source_oid: 53342cec3dcc9cde6dd1aa935bbe26d88c3e5aa8
+source_commit: 53342cec3dcc9cde6dd1aa935bbe26d88c3e5aa8
+ordered_commits:
+  - 53342cec3dcc9cde6dd1aa935bbe26d88c3e5aa8
+expected_tree: 28c39bbb8e68d2d99c887260de2da8435fa79db3

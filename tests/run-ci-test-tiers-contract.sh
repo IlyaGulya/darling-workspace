@@ -84,6 +84,7 @@ host_tier="$(sed -n '/^\thost)/,/^\tguest-smoke)/p' "$repo/ci/run-test-tier.sh")
 printf '%s\n' "$host_tier" | grep -F -q 'tests/run-west-patch-stack-materialize-contract.sh'
 printf '%s\n' "$host_tier" | grep -F -q 'tests/run-west-patch-stack-shadow-contract.sh'
 printf '%s\n' "$host_tier" | grep -F -q 'tests/run-west-patch-stack-lock-first-contract.sh'
+printf '%s\n' "$host_tier" | grep -F -q 'tests/run-profile-composition-dependency-contract.sh'
 printf '%s\n' "$host_tier" | grep -F -q 'tests/run-west-patch-stack-default-cutover-contract.sh'
 printf '%s\n' "$host_tier" | grep -F -q 'tests/run-west-patch-stack-legacy-observation-contract.sh'
 printf '%s\n' "$host_tier" | grep -F -q 'tests/run-west-patch-stack-runtime-source-contract.sh'
@@ -94,6 +95,7 @@ host_before_west="${host_tier%%exec west test*}"
 [[ "$host_before_west" == *'tests/run-west-patch-stack-materialize-contract.sh'* &&
 	"$host_before_west" == *'tests/run-west-patch-stack-shadow-contract.sh'* &&
 	"$host_before_west" == *'tests/run-west-patch-stack-lock-first-contract.sh'* &&
+	"$host_before_west" == *'tests/run-profile-composition-dependency-contract.sh'* &&
 	"$host_before_west" == *'tests/run-west-patch-stack-default-cutover-contract.sh'* &&
 	"$host_before_west" == *'tests/run-west-patch-stack-legacy-observation-contract.sh'* &&
 	"$host_before_west" == *'tests/run-west-patch-stack-runtime-source-contract.sh'* &&
@@ -105,7 +107,8 @@ host_before_west="${host_tier%%exec west test*}"
 }
 [[ "${host_before_west%%tests/run-west-patch-stack-shadow-contract.sh*}" == *'tests/run-west-patch-stack-materialize-contract.sh'* &&
 	"${host_before_west%%tests/run-west-patch-stack-lock-first-contract.sh*}" == *'tests/run-west-patch-stack-shadow-contract.sh'* &&
-	"${host_before_west%%tests/run-west-patch-stack-default-cutover-contract.sh*}" == *'tests/run-west-patch-stack-lock-first-contract.sh'* &&
+	"${host_before_west%%tests/run-profile-composition-dependency-contract.sh*}" == *'tests/run-west-patch-stack-lock-first-contract.sh'* &&
+	"${host_before_west%%tests/run-west-patch-stack-default-cutover-contract.sh*}" == *'tests/run-profile-composition-dependency-contract.sh'* &&
 	"${host_before_west%%tests/run-patch-stack-lock-first-hosted-workflow-contract.sh*}" == *'tests/run-west-patch-stack-default-cutover-contract.sh'* &&
 	"${host_before_west%%tests/run-west-patch-stack-runtime-source-contract.sh*}" == *'tests/run-west-patch-stack-legacy-observation-contract.sh'* &&
 	"${host_before_west%%tests/run-patch-stack-lock-first-hosted-workflow-contract.sh*}" == *'tests/run-west-patch-stack-runtime-source-contract.sh'* &&

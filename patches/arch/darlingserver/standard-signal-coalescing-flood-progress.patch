@@ -1,0 +1,158 @@
+From b545cdbe9e2f6c16828f484c36a5bef177b2b61a Mon Sep 17 00:00:00 2001
+From: West Integration <west-integration@example.invalid>
+Date: Mon, 27 Jul 2026 15:30:00 +0000
+Subject: [PATCH] darlingserver: coalesce pending SIGUSR1
+
+
+diff --git a/CMakeLists.txt b/CMakeLists.txt
+index d6fb787fc295ef3917be44456917fef147c4d056..57d13d39561aa4c004b4534edffd5bf22d461d04 100644
+--- a/CMakeLists.txt
++++ b/CMakeLists.txt
+@@ -160,6 +160,23 @@ add_custom_target(dserver_stack_pool_tests_run
+ 	DEPENDS dserver_stack_pool_tests
+ )
+ 
++add_executable(dserver_standard_signal_coalescing_tests
++	tests/standard-signal-coalescing.cpp
++)
++
++target_compile_options(dserver_standard_signal_coalescing_tests PRIVATE
++	-std=c++17
++)
++
++target_link_libraries(dserver_standard_signal_coalescing_tests PRIVATE
++	darlingserver_duct_tape
++)
++
++add_custom_target(dserver_standard_signal_coalescing_tests_run
++	COMMAND $<TARGET_FILE:dserver_standard_signal_coalescing_tests>
++	DEPENDS dserver_standard_signal_coalescing_tests
++)
++
+ add_dependencies(darlingserver
+ 	generate_dserver_rpc_wrappers
+ 	rtsig_h
+diff --git a/internal-include/darlingserver/thread.hpp b/internal-include/darlingserver/thread.hpp
+index 123c8155fa7831b70334b9c3cf98e8b7b111148d..5c34fb4ffe43ba7d47876203378a9909635bbfee 100644
+--- a/internal-include/darlingserver/thread.hpp
++++ b/internal-include/darlingserver/thread.hpp
+@@ -163,6 +163,19 @@ namespace DarlingServer {
+ 		// Consume one deliverable pending wake (preferring the innermost park kinds) and drop
+ 		// any stale pendings encountered. Returns true if a wake was consumed. _rwlock held.
+ 		bool _consumePendingWakeLocked();
++		// Standard signals are level-like while one delivery is pending.  The caller
++		// holds _rwlock and has already excluded SIGCHLD and non-standard signals.
++		// Returns false when the same standard signal is already pending; otherwise
++		// records it and returns true.  Kept separate so the exact production
++		// duplicate-suppression decision has a deterministic test seam.
++		static bool _markCoalescedStandardSignalPendingLocked(uint64_t& pendingMask, int signal) {
++			uint64_t bit = 1ull << signal;
++			if (pendingMask & bit) {
++				return false;
++			}
++			pendingMask |= bit;
++			return true;
++		}
+ 		// The two production suspend() consume windows.  Kept as locked helpers so
+ 		// deterministic tests exercise the exact implementation, not a model.
+ 		bool _consumeWakeBeforeSuspendLocked();
+diff --git a/src/thread.cpp b/src/thread.cpp
+index 8f0f8647b4f0e05310fa9f130f6127e430d9b52e..07c2a84b007079a968477a554b1b0106922c665b 100644
+--- a/src/thread.cpp
++++ b/src/thread.cpp
+@@ -2960,13 +2960,11 @@ void DarlingServer::Thread::sendSignal(int signal) const {
+ 		return;
+ 	}
+ 	bool markedPending = false;
+-	if (signal > 0 && signal < 32 && signal != SIGCHLD && signal != SIGUSR1) {
++	if (signal > 0 && signal < 32 && signal != SIGCHLD) {
+ 		std::unique_lock lock(_rwlock);
+-		uint64_t bit = 1ull << signal;
+-		if (_pendingStandardSignalMask & bit) {
++		if (!_markCoalescedStandardSignalPendingLocked(_pendingStandardSignalMask, signal)) {
+ 			return;
+ 		}
+-		_pendingStandardSignalMask |= bit;
+ 		markedPending = true;
+ 	}
+ 	if (_process) {
+diff --git a/tests/standard-signal-coalescing.cpp b/tests/standard-signal-coalescing.cpp
+new file mode 100644
+index 0000000000000000000000000000000000000000..3d7cda8eeaf58071c02c2e9ebf1aa13e1bc0b8c7
+--- /dev/null
++++ b/tests/standard-signal-coalescing.cpp
+@@ -0,0 +1,48 @@
++// Deterministic production-helper regression for standard-signal duplicate
++// suppression.  This does not model guest signal delivery: it drives the exact
++// helper called by Thread::sendSignal() before tgkill.
++#include <darlingserver/thread.hpp>
++
++#include <csignal>
++#include <cstdint>
++#include <cstdio>
++
++namespace DarlingServer {
++	struct ThreadWakeTestAdapter {
++		static bool markCoalescedStandardSignal(uint64_t& pendingMask, int signal) {
++			return Thread::_markCoalescedStandardSignalPendingLocked(pendingMask, signal);
++		}
++	};
++}
++
++int main() {
++	uint64_t pendingMask = 0;
++	const uint64_t bit = 1ull << SIGUSR1;
++
++	if (!DarlingServer::ThreadWakeTestAdapter::markCoalescedStandardSignal(pendingMask, SIGUSR1)) {
++		std::fprintf(stderr, "first SIGUSR1 delivery was incorrectly suppressed\n");
++		return 1;
++	}
++	if (pendingMask != bit) {
++		std::fprintf(stderr, "first SIGUSR1 delivery did not set its pending bit\n");
++		return 1;
++	}
++	if (DarlingServer::ThreadWakeTestAdapter::markCoalescedStandardSignal(pendingMask, SIGUSR1)) {
++		std::fprintf(stderr, "duplicate pending SIGUSR1 was not suppressed\n");
++		return 1;
++	}
++	if (pendingMask != bit) {
++		std::fprintf(stderr, "duplicate SIGUSR1 changed the pending mask\n");
++		return 1;
++	}
++
++	// processSignal's existing RAII completion clear makes the next delivery
++	// eligible; this models that exact mask transition without a timing race.
++	pendingMask &= ~bit;
++	if (!DarlingServer::ThreadWakeTestAdapter::markCoalescedStandardSignal(pendingMask, SIGUSR1) || pendingMask != bit) {
++		std::fprintf(stderr, "SIGUSR1 did not re-arm after completion clear\n");
++		return 1;
++	}
++
++	return 0;
++}
+diff --git a/tests/standard_signal_coalescing_contract_test.sh b/tests/standard_signal_coalescing_contract_test.sh
+index a15b1c5b4a1d4a3ba45208ce994516b5cdfd2e98..8d51cd45ffbf84013aaa79d77fe6d9b48338d404 100755
+--- a/tests/standard_signal_coalescing_contract_test.sh
++++ b/tests/standard_signal_coalescing_contract_test.sh
+@@ -16,12 +16,12 @@ require_grep "_pendingStandardSignalMask" "$thread_h" \
+ send_signal_body="$(sed -n '/void DarlingServer::Thread::sendSignal/,/^};/p' "$thread_cpp")"
+ process_signal_body="$(sed -n '/void DarlingServer::Thread::processSignal/,/dtape_thread_process_signal/p' "$thread_cpp")"
+ 
+-require_text "signal != SIGCHLD && signal != SIGUSR1" "$send_signal_body" \
+-	"sendSignal does not exempt SIGCHLD/SIGUSR1 from coalescing"
+-require_text "_pendingStandardSignalMask & bit" "$send_signal_body" \
+-	"sendSignal does not drop duplicate pending standard signals"
+-require_text "_pendingStandardSignalMask |= bit" "$send_signal_body" \
+-	"sendSignal does not mark standard signals pending before tgkill"
++require_text "signal != SIGCHLD" "$send_signal_body" \
++	"sendSignal does not retain SIGCHLD's exceptional delivery semantics"
++require_not_grep "SIGUSR1" <(printf '%s\n' "$send_signal_body") \
++	"sendSignal still exempts SIGUSR1 from standard-signal coalescing"
++require_text "_markCoalescedStandardSignalPendingLocked" "$send_signal_body" \
++	"sendSignal does not call the production standard-signal suppression helper"
+ require_text "_pendingStandardSignalMask &= ~(1ull << signal)" "$send_signal_body" \
+ 	"sendSignal does not clear pending mask on tgkill/process errors"
+ require_text "StandardSignalPendingClear" "$process_signal_body" \
+-- 
+2.43.0
+
