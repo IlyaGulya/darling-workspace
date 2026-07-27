@@ -1,6 +1,6 @@
 # Canonical immutable patch-stack migration inventory
 
-The frozen inventory records 94 patch series across `arch` (18),
+The frozen inventory records 95 patch series across `arch` (19),
 `homebrew` (69), and `perf` (7). It is machine-readable in
 `locks/patch-stack/migration-inventory-v1.yml` and deliberately excludes
 temporary paths and handoff implementation noise.
@@ -12,12 +12,13 @@ set of `From <OID>` headers. The inventory contract rejects duplicate YAML
 keys and verifies exact metadata/artifact correspondence and available-object
 linearity.
 
-This is a post-migration snapshot: 0 `READY`, 0 `RECOVERABLE_LOCAL`, and 94 `ALREADY_MIGRATED`
+This is a post-migration snapshot: 0 `READY`, 0 `RECOVERABLE_LOCAL`, and 95 `ALREADY_MIGRATED`
 (the XNU and LibreSSL pilots, the three first-batch series, and batch 2's four
 Darling series, Batch 3's two dependent rootless series, and Batch 4's
 rootless-prefix-initialization branch series, plus Batch 5's remaining six
 Darling series, plus the recovered XNU series and 40 recovered Darlingserver
-series, plus the final seven external recovery series). All 94 frozen patch
+series, plus the final seven external recovery series, plus the ARCH_ONLY
+cvstorm2 SIGUSR1 flood-progress series). All 95 frozen patch
 series now have standalone hosted immutable object closure.
 
 Darlingserver repository-scoped recovery moved all 40 of its formerly

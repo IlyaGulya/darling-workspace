@@ -397,6 +397,25 @@ stacks:
   reason: exact objects recovered from trusted Darlingserver worktree into an isolated clean ODB
   lock: locks/patch-stack/darlingserver-message-ctrunc-reject-v1.yml
 - profile: arch
+  patch: darlingserver/standard-signal-coalescing-flood-progress.patch
+  artifact: patches/arch/darlingserver/standard-signal-coalescing-flood-progress.patch
+  project_path: darling/src/external/darlingserver
+  upstream: https://github.com/darlinghq/darlingserver.git
+  downstream: https://github.com/darling-next/darlingserver.git
+  source_branch: fix/standard-signal-coalescing-flood-progress
+  base_commit: a0877988b130f665ffbf9ee921482c2cbd67f925
+  ordered_commits:
+  - b545cdbe9e2f6c16828f484c36a5bef177b2b61a
+  source_commit: b545cdbe9e2f6c16828f484c36a5bef177b2b61a
+  expected_tree: 7b68b23e5a3d3b00a0e4ca5c340371667c18493e
+  artifact_count: 1
+  commit_count: 1
+  object_closure: hosted_immutable_clean_odb
+  linearity: verified
+  classification: ALREADY_MIGRATED
+  reason: ARCH_ONLY cvstorm2 flood progress fix; hosted immutable base/source tags and fresh clean-ODB canonical replay verified
+  lock: locks/patch-stack/darlingserver-standard-signal-coalescing-flood-progress-v1.yml
+- profile: arch
   patch: darling/ci-host-regression-tests.patch
   artifact: patches/arch/darling/ci-host-regression-tests.patch
   project_path: darling
@@ -1934,4 +1953,4 @@ stacks:
 summary:
   READY: 0
   RECOVERABLE_LOCAL: 0
-  ALREADY_MIGRATED: 94
+  ALREADY_MIGRATED: 95
