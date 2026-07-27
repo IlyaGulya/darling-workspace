@@ -16,6 +16,7 @@ from pathlib import Path
 from typing import Any
 
 import patch_stack_materialize
+import patch_stack_profile_composition
 import yaml
 
 
@@ -26,7 +27,12 @@ class LockFirstError(RuntimeError):
 class LockFirstPlan(list[dict[str, str]]):
     """Ordered plan carrying the typed batch identity used for evidence."""
 
-    def __init__(self, entries: list[dict[str, str]], metadata: dict[str, Any]):
+    def __init__(
+        self,
+        entries: list[dict[str, str]],
+        metadata: dict[str, Any],
+        composition: dict[str, Any] | None = None,
+    ):
         super().__init__(entries)
         series = [{"module": entry["module"], "patch": entry["patch"]} for entry in entries]
         self.batch = {
@@ -35,10 +41,33 @@ class LockFirstPlan(list[dict[str, str]]):
             "series_order": series,
             "module_order": list(dict.fromkeys(entry["module"] for entry in entries)),
         }
+        self.composition = composition
+        if composition is not None:
+            modules: list[dict[str, Any]] = []
+            for module in self.batch["module_order"]:
+                boundaries = [
+                    {"patch": entry["patch"], "tree": composition["boundaries"][(module, entry["patch"])]}
+                    for entry in entries if entry["module"] == module
+                ]
+                modules.append({
+                    "module": module,
+                    "starting": composition["starts"][module],
+                    "series": boundaries,
+                    "final_tree": composition["finals"][module],
+                    "integration_final_tree": composition["integration_finals"][module],
+                })
+            self.batch["profile_composition"] = {
+                "schema_version": composition["schema_version"],
+                "path": composition["path"],
+                "prerequisites": composition["prerequisites"],
+                "frozen_manifest": composition["frozen_manifest"],
+                "modules": modules,
+            }
 
 
 ROOT = Path(__file__).resolve().parents[1]
 MAPPING = ROOT / "locks" / "patch-stack" / "lock-first-series-v2.yml"
+MAPPING_REGISTRY = ROOT / "locks" / "patch-stack" / "lock-first-profiles-v1.yml"
 
 
 def _cherry_pick(repo: Path, commit: str, *, git_options: tuple[str, ...] = ()) -> None:
@@ -70,8 +99,11 @@ def _cherry_pick(repo: Path, commit: str, *, git_options: tuple[str, ...] = ()) 
             Path(mbox).unlink(missing_ok=True)
 
 
-_MAPPING_FIELDS = {"schema_version", "profile", "batch_id", "expected_count", "series"}
+_MAPPING_V2_FIELDS = {"schema_version", "profile", "batch_id", "expected_count", "series"}
+_MAPPING_V3_FIELDS = {*_MAPPING_V2_FIELDS, "composition"}
 _SERIES_FIELDS = {"profile", "module", "patch", "lock"}
+_REGISTRY_FIELDS = {"schema_version", "profiles"}
+_REGISTRY_ENTRY_FIELDS = {"profile", "mapping"}
 
 
 def migrate_mapping_v1(data: object, *, batch_id: str = "migrated-v1") -> dict[str, Any]:
@@ -106,8 +138,16 @@ def load_mapping(mapping_path: Path = MAPPING, profile: str | None = None) -> di
         data = yaml.safe_load(mapping_path.read_text())
     except (OSError, yaml.YAMLError) as error:
         raise LockFirstError(f"invalid lock-first mapping: {error}") from error
-    if not isinstance(data, dict) or set(data) != _MAPPING_FIELDS or data.get("schema_version") != 2:
-        raise LockFirstError("lock-first mapping must use exact schema_version 2")
+    if not isinstance(data, dict):
+        raise LockFirstError("lock-first mapping must be an object")
+    version = data.get("schema_version")
+    if version == 2 and set(data) == _MAPPING_V2_FIELDS:
+        data = {**data, "composition": None}
+    elif version == 3 and set(data) == _MAPPING_V3_FIELDS:
+        if not isinstance(data.get("composition"), str) or not data["composition"]:
+            raise LockFirstError("lock-first mapping composition is invalid")
+    else:
+        raise LockFirstError("lock-first mapping must use exact schema_version 2 or 3")
     mapping_profile, batch_id, expected_count, series = (data["profile"], data["batch_id"], data["expected_count"], data["series"])
     if not isinstance(mapping_profile, str) or not mapping_profile or not isinstance(batch_id, str) or not batch_id:
         raise LockFirstError("lock-first mapping profile or batch_id is invalid")
@@ -125,13 +165,69 @@ def load_mapping(mapping_path: Path = MAPPING, profile: str | None = None) -> di
     return data
 
 
+def mapping_for_profile(profile: str, registry_path: Path = MAPPING_REGISTRY) -> Path:
+    """Return the one typed mapping declared for a production profile.
+
+    Profile selection is data-driven: no runtime caller chooses a batch file
+    by profile-specific code. The registry and every path component are
+    containment-checked before YAML from a mapping is read.
+    """
+    if not isinstance(profile, str) or not profile:
+        raise LockFirstError("lock-first profile is invalid")
+    try:
+        registry = yaml.safe_load(registry_path.read_text())
+    except (OSError, yaml.YAMLError) as error:
+        raise LockFirstError(f"invalid lock-first profile registry: {error}") from error
+    if (not isinstance(registry, dict) or set(registry) != _REGISTRY_FIELDS
+            or registry.get("schema_version") != 1
+            or not isinstance(registry.get("profiles"), list)):
+        raise LockFirstError("lock-first profile registry must use exact schema_version 1")
+    root = registry_path.parent.absolute()
+    if root.is_symlink():
+        raise LockFirstError("lock-first profile registry root may not be a symlink")
+    matches: list[Path] = []
+    seen_profiles: set[str] = set()
+    seen_mappings: set[Path] = set()
+    for index, entry in enumerate(registry["profiles"]):
+        if not isinstance(entry, dict) or set(entry) != _REGISTRY_ENTRY_FIELDS:
+            raise LockFirstError(f"lock-first profile registry entry {index} is invalid")
+        configured, relative_name = entry["profile"], entry["mapping"]
+        if not isinstance(configured, str) or not configured or not isinstance(relative_name, str) or not relative_name:
+            raise LockFirstError(f"lock-first profile registry entry {index} has an empty scalar")
+        if configured in seen_profiles:
+            raise LockFirstError("lock-first profile registry contains duplicate profile")
+        seen_profiles.add(configured)
+        relative = Path(relative_name)
+        if relative.is_absolute() or ".." in relative.parts or len(relative.parts) != 1:
+            raise LockFirstError("lock-first profile mapping must be a contained filename")
+        candidate = root / relative
+        if candidate.is_symlink():
+            raise LockFirstError("lock-first profile mapping may not be a symlink")
+        resolved = candidate.resolve()
+        if root not in resolved.parents or not resolved.is_file():
+            raise LockFirstError("lock-first profile mapping escapes locks/patch-stack")
+        if resolved in seen_mappings:
+            raise LockFirstError("lock-first profile registry resolves duplicate mapping")
+        seen_mappings.add(resolved)
+        if configured == profile:
+            matches.append(resolved)
+    if not matches:
+        raise LockFirstError(f"{profile}: no typed lock-first mapping is configured")
+    if len(matches) != 1:
+        raise LockFirstError(f"{profile}: typed lock-first mapping is ambiguous")
+    load_mapping(matches[0], profile)
+    return matches[0]
+
+
 def plan(
     profile: str,
     patches: list[dict[str, Any]],
-    mapping_path: Path = MAPPING,
+    mapping_path: Path | None = None,
     grouped: dict[str, list[dict[str, Any]]] | None = None,
 ) -> LockFirstPlan:
     """Return an ordered, uniquely matched batch before any mutation."""
+    if mapping_path is None:
+        mapping_path = mapping_for_profile(profile)
     metadata = load_mapping(mapping_path, profile)
     entries = metadata["series"]
     seen: set[tuple[str, str]] = set()
@@ -184,12 +280,78 @@ def plan(
         resolved.append({**entry, "lock_path": str(lock_path), "execution_index": str(matches[0])})
     if positions != sorted(positions):
         raise LockFirstError(f"{profile}: lock-first entries are not in grouped execution order")
-    return LockFirstPlan(resolved, metadata)
+    composition = None
+    composition_name = metadata.get("composition")
+    if composition_name is not None:
+        relative = Path(composition_name)
+        if relative.is_absolute() or ".." in relative.parts or len(relative.parts) != 1:
+            raise LockFirstError("lock-first composition must be a contained filename")
+        candidate = locks_root / relative
+        if candidate.is_symlink() or not candidate.is_file():
+            raise LockFirstError("lock-first composition may not be a symlink and must exist")
+        try:
+            composition = patch_stack_profile_composition.bind(
+                candidate.resolve(), mapping_path=mapping_path.resolve(), mapping=metadata, entries=resolved,
+            )
+        except patch_stack_profile_composition.ProfileCompositionError as error:
+            raise LockFirstError(f"{profile}: invalid profile composition: {error}") from error
+    return LockFirstPlan(resolved, metadata, composition)
 
 
 _OID = re.compile(r"^[0-9a-f]{40}$")
 EVIDENCE_SCHEMA_VERSION = 2
 _EVIDENCE_FIELDS = {"module", "patch", "base", "source", "canonical_tree", "applied_commit", "applied_tree", "verdict"}
+
+
+def _stable_patch_id(repo: Path, start: str, end: str) -> str:
+    """Return Git's stable identity for the complete ordered patch range."""
+    diff = patch_stack_materialize._run(repo, "diff", start, end)
+    if diff.returncode:
+        raise LockFirstError(f"git diff for patch identity failed ({diff.returncode}): {diff.stderr.strip()}")
+    result = subprocess.run(
+        ["git", "patch-id", "--stable"], input=diff.stdout, text=True,
+        stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+    )
+    fields = result.stdout.split()
+    if result.returncode or len(fields) < 1 or not _OID.fullmatch(fields[0]):
+        raise LockFirstError(f"git patch-id failed ({result.returncode}): {result.stderr.strip()}")
+    return fields[0]
+
+
+def _require_exact_replay(repo: Path, proof: dict[str, Any], before: str, after: str) -> None:
+    """Prove the applied history is an exact native replay of one immutable stack."""
+    applied = patch_stack_materialize._git(repo, "rev-list", "--reverse", f"{before}..{after}").splitlines()
+    if len(applied) != len(proof["ordered_commits"]):
+        raise LockFirstError("profile replay produced a different commit count")
+    for index, commit in enumerate(applied):
+        parents = patch_stack_materialize._git(repo, "show", "-s", "--format=%P", commit).split()
+        expected_parent = before if index == 0 else applied[index - 1]
+        if parents != [expected_parent]:
+            raise LockFirstError("profile replay produced a merge or nonlinear history")
+    comparison = patch_stack_materialize._run(
+        repo, "range-diff", f"{proof['base_oid']}..{proof['source_oid']}", f"{before}..{after}",
+    )
+    if comparison.returncode:
+        raise LockFirstError(f"git range-diff failed ({comparison.returncode}): {comparison.stderr.strip()}")
+    rows = [line for line in comparison.stdout.splitlines() if re.match(r"^\d+:\s+", line)]
+    if len(rows) != len(proof["ordered_commits"]) or any(" = " not in line for line in rows):
+        raise LockFirstError("immutable patch identity differs after profile replay")
+    if _stable_patch_id(repo, proof["base_oid"], proof["source_oid"]) != _stable_patch_id(repo, before, after):
+        raise LockFirstError("stable patch identity differs after profile replay")
+
+
+def _composition_boundary(
+    composition: dict[str, Any] | None,
+    entry: dict[str, str],
+) -> str:
+    if composition is None:
+        raise LockFirstError(
+            f"{entry['patch']}: profile base differs from immutable series base and no composition lock is declared"
+        )
+    boundary = composition["boundaries"].get((entry["module"], entry["patch"]))
+    if not isinstance(boundary, str) or not _OID.fullmatch(boundary):
+        raise LockFirstError(f"{entry['patch']}: profile composition has no boundary tree")
+    return boundary
 
 
 def write_batch_evidence(path: Path, results: list[dict[str, Any]], batch: dict[str, Any]) -> None:
@@ -231,8 +393,48 @@ def write_batch_evidence(path: Path, results: list[dict[str, Any]], batch: dict[
             for key in ("base", "source", "canonical_tree", "applied_commit", "applied_tree")
         ):
             raise LockFirstError("lock-first evidence entry has invalid OID or verdict")
+    composition = batch.get("profile_composition")
+    if composition is not None:
+        if not isinstance(composition, dict) or set(composition) != {"schema_version", "path", "prerequisites", "frozen_manifest", "modules"}:
+            raise LockFirstError("lock-first evidence profile composition is invalid")
+        if composition["schema_version"] != 3 or not isinstance(composition["path"], str) or not composition["path"]:
+            raise LockFirstError("lock-first evidence profile composition identity is invalid")
+        if (not isinstance(composition["frozen_manifest"], dict)
+                or set(composition["frozen_manifest"]) != {"path", "sha256"}
+                or not isinstance(composition["frozen_manifest"]["path"], str)
+                or not composition["frozen_manifest"]["path"]
+                or not isinstance(composition["frozen_manifest"]["sha256"], str)
+                or not re.fullmatch(r"[0-9a-f]{64}", composition["frozen_manifest"]["sha256"])):
+            raise LockFirstError("lock-first evidence profile composition frozen manifest is invalid")
+        if (not isinstance(composition["prerequisites"], list)
+                or any(not isinstance(value, dict) or set(value) != {"profile", "composition", "sha256", "frozen_manifest", "module_trees"}
+                       or not isinstance(value["profile"], str) or not value["profile"]
+                       or not isinstance(value["composition"], str) or not value["composition"]
+                       or not isinstance(value["sha256"], str) or not re.fullmatch(r"[0-9a-f]{64}", value["sha256"])
+                       or not isinstance(value["frozen_manifest"], dict) or set(value["frozen_manifest"]) != {"path", "sha256"}
+                       or not isinstance(value["module_trees"], dict) or not value["module_trees"]
+                       for value in composition["prerequisites"])):
+            raise LockFirstError("lock-first evidence profile composition prerequisites are invalid")
+        if not isinstance(composition["modules"], list) or [item.get("module") if isinstance(item, dict) else None for item in composition["modules"]] != module_order:
+            raise LockFirstError("lock-first evidence profile composition module order is invalid")
+        for module in composition["modules"]:
+            if set(module) != {"module", "starting", "series", "final_tree", "integration_final_tree"}:
+                raise LockFirstError("lock-first evidence profile composition module fields are invalid")
+            if (not isinstance(module["starting"], dict) or set(module["starting"]) != {"tree"}
+                    or not isinstance(module["starting"]["tree"], str) or not _OID.fullmatch(module["starting"]["tree"])
+                    or not isinstance(module["final_tree"], str) or not _OID.fullmatch(module["final_tree"])
+                    or not isinstance(module["integration_final_tree"], str) or not _OID.fullmatch(module["integration_final_tree"])):
+                raise LockFirstError("lock-first evidence profile composition tree is invalid")
+            expected_module = [entry["patch"] for entry in expected_series if entry["module"] == module["module"]]
+            observed_module = module["series"]
+            if (not isinstance(observed_module, list) or [item.get("patch") if isinstance(item, dict) else None for item in observed_module] != expected_module
+                    or any(not isinstance(item, dict) or set(item) != {"patch", "tree"} or not isinstance(item["tree"], str) or not _OID.fullmatch(item["tree"]) for item in observed_module)
+                    or not observed_module or module["final_tree"] != observed_module[-1]["tree"]):
+                raise LockFirstError("lock-first evidence profile composition boundaries are invalid")
     payload = {"evidence_schema_version": EVIDENCE_SCHEMA_VERSION, "verdict": "VALID", "batch_id": batch_id, "expected_count": expected_count,
                "module_order": module_order, "series_order": expected_series, "series": results}
+    if composition is not None:
+        payload["profile_composition"] = composition
     temporary = path.with_name(path.name + f".{uuid.uuid4().hex}.tmp")
     try:
         path.parent.mkdir(parents=True, exist_ok=True)
@@ -253,13 +455,18 @@ def materialize_batch_into(
     entries: list[dict[str, str]],
     *,
     git_options: tuple[str, ...] = (),
+    reset_to_first_base: bool = False,
+    composition: dict[str, Any] | None = None,
 ) -> tuple[list[dict[str, Any]], dict[str, int]]:
     """Validate and replay one module's immutable series in one transaction.
 
     A fresh disposable ODB receives the union of the module's declared base
     and source refs in one fetch. All locks are proven before the integration
     worktree is changed; commits are then replayed in exact typed order using
-    native ``format-patch`` and ``git am``. The caller owns profile rollback.
+    native ``format-patch`` and ``git am``. ``reset_to_first_base`` is only
+    for lifecycle-owned disposable worktrees whose manifest revision is not
+    the profile's immutable integration base. The caller owns profile
+    rollback.
     """
     if not entries or len({entry["module"] for entry in entries}) != 1:
         raise LockFirstError("lock-first batch must contain one non-empty module")
@@ -314,20 +521,53 @@ def materialize_batch_into(
         for index, (_, _, proof) in enumerate(validated):
             if patch_stack_materialize._oid(repo, refs[index * 2 + 1][1]) != proof["source_oid"]:
                 raise LockFirstError("production immutable source fetch differs from validated source")
+        if reset_to_first_base:
+            first_base = validated[0][2]["base_oid"]
+            patch_stack_materialize._git(repo, "reset", "--hard", first_base)
         for entry, lock, proof in validated:
+            before = patch_stack_materialize._oid(repo, "HEAD")
+            before_tree = patch_stack_materialize._git(repo, "rev-parse", "HEAD^{tree}")
+            declared_base_tree = patch_stack_materialize._git(repo, "show", "-s", "--format=%T", proof["base_oid"])
             for commit in proof["ordered_commits"]:
                 _cherry_pick(repo, commit, git_options=git_options)
                 stats["replayed_commits"] += 1
+            after = patch_stack_materialize._oid(repo, "HEAD")
+            applied_tree = patch_stack_materialize._git(repo, "rev-parse", "HEAD^{tree}")
+            if before_tree == declared_base_tree:
+                expected_tree = proof["resulting_tree"]
+            else:
+                _require_exact_replay(repo, proof, before, after)
+                expected_tree = _composition_boundary(composition, entry)
+            if applied_tree != expected_tree:
+                raise LockFirstError(
+                    f"{entry['patch']}: immutable replay tree {applied_tree} differs from "
+                    f"expected profile boundary tree {expected_tree}"
+                )
             results.append({"module": entry["module"], "patch": entry["patch"],
                             "base": lock["upstream"]["base_commit"], "source": proof["source_oid"],
                             "canonical_tree": proof["resulting_tree"],
                             "applied_commit": patch_stack_materialize._oid(repo, "HEAD"),
-                            "applied_tree": patch_stack_materialize._git(repo, "rev-parse", "HEAD^{tree}"), "verdict": "VALID"})
+                            "applied_tree": applied_tree, "verdict": "VALID"})
         return results, stats
     except patch_stack_materialize.MaterializeError as error:
         raise LockFirstError(str(error)) from error
     finally:
         failures: list[str] = []
+        # Native git am owns rebase-apply state.  The profile caller also
+        # aborts touched repositories, but this primitive is used directly by
+        # deterministic contracts and RuntimeSourceMaterializer, so it must
+        # leave no interrupted apply state when its own transaction fails.
+        rebase_path = patch_stack_materialize._run(repo, "rev-parse", "--git-path", "rebase-apply")
+        if rebase_path.returncode == 0:
+            candidate = Path(rebase_path.stdout.strip())
+            if not candidate.is_absolute():
+                candidate = repo / candidate
+            if candidate.exists():
+                aborted = patch_stack_materialize._run(repo, "am", "--abort")
+                if aborted.returncode:
+                    failures.append(f"git am --abort failed ({aborted.returncode}): {aborted.stderr.strip()}")
+        elif rebase_path.returncode != 0:
+            failures.append(f"git rev-parse --git-path rebase-apply failed ({rebase_path.returncode}): {rebase_path.stderr.strip()}")
         for ref in fetched_refs:
             try:
                 patch_stack_materialize._delete_ref(repo, ref)

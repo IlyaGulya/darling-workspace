@@ -1,0 +1,82 @@
+schema_version: 3
+profile: arch
+batch_id: darling-arch-lock-first-batch-1
+expected_count: 19
+composition: arch-profile-composition-v2.yml
+series:
+  - profile: arch
+    module: darling/src/external/libunwind
+    patch: libunwind/static-no-jump-tables-for-dyld.patch
+    lock: libunwind-static-no-jump-tables-for-dyld-v1.yml
+  - profile: arch
+    module: darling/src/external/xnu
+    patch: xnu/ring-committed-unknown-guest.patch
+    lock: darling-xnu-ring-committed-unknown-guest-profile-v7.yml
+  - profile: arch
+    module: darling/src/external/xnu
+    patch: xnu/rpc-interruptible-disconnect-status.patch
+    lock: darling-xnu-rpc-interruptible-disconnect-status-profile-v7.yml
+  - profile: arch
+    module: darling/src/external/xnu
+    patch: xnu/rpc-disconnect-status-contract-test.patch
+    lock: darling-xnu-rpc-disconnect-status-contract-test-profile-v7.yml
+  - profile: arch
+    module: darling/src/external/darlingserver
+    patch: darlingserver/a0-arch-redesign.patch
+    lock: darlingserver-a0-arch-redesign-profile-v6.yml
+  - profile: arch
+    module: darling/src/external/darlingserver
+    patch: darlingserver/standard-signal-coalescing.patch
+    lock: darlingserver-standard-signal-coalescing-profile-v6.yml
+  - profile: arch
+    module: darling/src/external/darlingserver
+    patch: darlingserver/a0-gate-shellspawn-retry.patch
+    lock: darlingserver-a0-gate-shellspawn-retry-profile-v6.yml
+  - profile: arch
+    module: darling/src/external/darlingserver
+    patch: darlingserver/ring-committed-unknown-gate.patch
+    lock: darlingserver-ring-committed-unknown-gate-profile-v6.yml
+  - profile: arch
+    module: darling/src/external/darlingserver
+    patch: darlingserver/duct-tape-fail-closed-stubs.patch
+    lock: darlingserver-duct-tape-fail-closed-stubs-profile-v6.yml
+  - profile: arch
+    module: darling/src/external/darlingserver
+    patch: darlingserver/rpc-uds-packed-correlation.patch
+    lock: darlingserver-rpc-uds-packed-correlation-profile-v6.yml
+  - profile: arch
+    module: darling/src/external/darlingserver
+    patch: darlingserver/a0-gate-client-rpc-log.patch
+    lock: darlingserver-a0-gate-client-rpc-log-profile-v6.yml
+  - profile: arch
+    module: darling/src/external/darlingserver
+    patch: darlingserver/rpc-interruptible-disconnect-eintr.patch
+    lock: darlingserver-rpc-interruptible-disconnect-eintr-profile-v6.yml
+  - profile: arch
+    module: darling/src/external/darlingserver
+    patch: darlingserver/stack-pool-empty-stack-handle.patch
+    lock: darlingserver-stack-pool-empty-stack-handle-profile-v6.yml
+  - profile: arch
+    module: darling/src/external/darlingserver
+    patch: darlingserver/a0-gate-focused-synth-markers.patch
+    lock: darlingserver-a0-gate-focused-synth-markers-profile-v6.yml
+  - profile: arch
+    module: darling/src/external/darlingserver
+    patch: darlingserver/recent-signal-rpc-contract-tests.patch
+    lock: darlingserver-recent-signal-rpc-contract-tests-profile-v6.yml
+  - profile: arch
+    module: darling/src/external/darlingserver
+    patch: darlingserver/message-ctrunc-reject.patch
+    lock: darlingserver-message-ctrunc-reject-profile-v6.yml
+  - profile: arch
+    module: darling/src/external/darlingserver
+    patch: darlingserver/standard-signal-coalescing-flood-progress.patch
+    lock: darlingserver-standard-signal-coalescing-flood-progress-v1.yml
+  - profile: arch
+    module: darling
+    patch: darling/ci-host-regression-tests.patch
+    lock: darling-ci-host-regression-profile-v6.yml
+  - profile: arch
+    module: darling
+    patch: darling/shellspawn-exit-status.patch
+    lock: darling-shellspawn-exit-status-mldr-disconnect-integration-local-v6.yml

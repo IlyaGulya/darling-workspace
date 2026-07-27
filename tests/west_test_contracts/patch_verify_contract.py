@@ -307,7 +307,10 @@ with tempfile.TemporaryDirectory(prefix="west-patch-verify-contract-") as temp:
     command.inf = lambda _message: None
     command.die = lambda message: (_ for _ in ()).throw(AssertionError(message))
     try:
-        command._apply("contract", repo, [{"path": "fixture.patch"}], "0", False)
+        # This fixture exercises the retained legacy `git am` helper itself.
+        # Generic profile names no longer silently select mbox application;
+        # make that oracle choice explicit.
+        command._apply("contract", repo, [{"path": "fixture.patch"}], "0", False, legacy_mbox=True)
     finally:
         if previous_trace is None:
             del os.environ["GIT_TRACE2_EVENT"]

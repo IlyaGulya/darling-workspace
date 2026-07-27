@@ -23,12 +23,14 @@ from patch_stack_shadow_acceptance import AcceptanceError, git
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "west_commands"))
 import patch_stack_materialize
+import patch_stack_profile_composition
 
 
 OID = re.compile(r"^[0-9a-f]{40}$")
 EVIDENCE_SCHEMA_VERSION = 2
 ENTRY_FIELDS = {"module", "patch", "base", "source", "canonical_tree", "applied_commit", "applied_tree", "verdict"}
-MAPPING_FIELDS = {"schema_version", "profile", "batch_id", "expected_count", "series"}
+MAPPING_V2_FIELDS = {"schema_version", "profile", "batch_id", "expected_count", "series"}
+MAPPING_V3_FIELDS = {*MAPPING_V2_FIELDS, "composition"}
 SERIES_FIELDS = {"profile", "module", "patch", "lock"}
 
 
@@ -79,9 +81,10 @@ def load_batch(mapping_path: Path, available_modules: set[str]) -> dict[str, Any
         data = yaml.safe_load(mapping_path.read_text())
     except (OSError, yaml.YAMLError) as error:
         raise AcceptanceError(f"invalid lock-first mapping {mapping_path}: {error}") from error
-    fail(isinstance(data, dict) and set(data) == MAPPING_FIELDS and data.get("schema_version") == 2, "lock-first mapping must use exact schema_version 2")
+    fields = set(data) if isinstance(data, dict) else set()
+    fail(isinstance(data, dict) and ((data.get("schema_version") == 2 and fields == MAPPING_V2_FIELDS) or (data.get("schema_version") == 3 and fields == MAPPING_V3_FIELDS)), "lock-first mapping must use exact schema_version 2 or 3")
     profile, batch_id, expected_count, series = data.get("profile"), data.get("batch_id"), data.get("expected_count"), data.get("series")
-    fail(isinstance(profile, str) and profile == "homebrew", "lock-first mapping profile must be homebrew")
+    fail(isinstance(profile, str) and profile, "lock-first mapping profile is invalid")
     fail(isinstance(batch_id, str) and batch_id, "lock-first mapping batch_id is invalid")
     fail(isinstance(expected_count, int) and not isinstance(expected_count, bool) and expected_count > 0, "lock-first mapping expected_count is invalid")
     fail(isinstance(series, list) and expected_count == len(series), "lock-first mapping expected_count differs from series length")
@@ -105,8 +108,37 @@ def load_batch(mapping_path: Path, available_modules: set[str]) -> dict[str, Any
         locks.add(str(path))
         batch.append({**entry, "lock_path": str(path)})
     module_order = list(dict.fromkeys(entry["module"] for entry in batch))
-    return {"profile": profile, "batch_id": batch_id, "expected_count": expected_count,
-            "module_order": module_order, "series": batch}
+    result = {"profile": profile, "batch_id": batch_id, "expected_count": expected_count,
+              "module_order": module_order, "series": batch}
+    if data["schema_version"] == 3:
+        composition_name = data.get("composition")
+        fail(isinstance(composition_name, str) and composition_name and not Path(composition_name).is_absolute() and ".." not in Path(composition_name).parts and len(Path(composition_name).parts) == 1, "lock-first composition path is invalid")
+        composition_path = contained(root, composition_name, "lock-first composition")
+        fail(composition_path.is_file(), "lock-first composition is not a regular contained file")
+        try:
+            composition = patch_stack_profile_composition.bind(
+                composition_path, mapping_path=mapping_path, mapping=data, entries=batch,
+            )
+        except patch_stack_profile_composition.ProfileCompositionError as error:
+            raise AcceptanceError(f"invalid profile composition: {error}") from error
+        modules = []
+        for module in module_order:
+            modules.append({
+                "module": module,
+                "starting": composition["starts"][module],
+                "series": [
+                    {"patch": entry["patch"], "tree": composition["boundaries"][(module, entry["patch"])]}
+                    for entry in batch if entry["module"] == module
+                ],
+                "final_tree": composition["finals"][module],
+                "integration_final_tree": composition["integration_finals"][module],
+            })
+        result["profile_composition"] = {
+            "schema_version": composition["schema_version"], "path": composition["path"],
+            "prerequisites": composition["prerequisites"], "frozen_manifest": composition["frozen_manifest"],
+            "modules": modules,
+        }
+    return result
 
 
 def lock_values(entry: dict[str, str]) -> dict[str, str]:
@@ -123,6 +155,18 @@ def lock_values(entry: dict[str, str]) -> dict[str, str]:
         "source": oid(lock.get("source_commit"), f"{entry['patch']} source"),
         "canonical_tree": oid(lock.get("expected_tree"), f"{entry['patch']} expected tree"),
     }
+
+
+def verify_profile_composition_evidence(evidence: dict[str, Any], batch_metadata: dict[str, Any]) -> None:
+    """Require the deterministic boundary manifest when mapping schema v3 declares it."""
+    expected = batch_metadata.get("profile_composition")
+    fields = {"evidence_schema_version", "verdict", "batch_id", "expected_count", "module_order", "series_order", "series"}
+    if expected is None:
+        fail(set(evidence) == fields, "lock-first evidence v2 has invalid top-level fields")
+        return
+    fields.add("profile_composition")
+    fail(set(evidence) == fields, "lock-first evidence composition manifest fields are invalid")
+    fail(evidence.get("profile_composition") == expected, "lock-first evidence profile composition differs from typed lock")
 
 
 def module_rows(value: dict[str, Any], label: str) -> dict[str, dict[str, Any]]:
@@ -181,6 +225,55 @@ def assert_no_transaction_state(workspace: Path, rows: dict[str, dict[str, Any]]
     fail(not leftovers, f"{label}: disposable roots remain: {sorted(leftovers)}")
 
 
+def verify_candidate_evidence(
+    evidence_path: Path,
+    batch_metadata: dict[str, Any],
+    rows: dict[str, dict[str, Any]],
+    workspace: Path,
+) -> None:
+    """Prove immutable per-series evidence against a real candidate workspace."""
+    batch = batch_metadata["series"]
+    evidence = load_json(evidence_path)
+    observed_version = evidence.get("evidence_schema_version")
+    fail(observed_version == EVIDENCE_SCHEMA_VERSION, f"lock-first evidence schema version mismatch: expected {EVIDENCE_SCHEMA_VERSION}, got {observed_version!r}")
+    verify_profile_composition_evidence(evidence, batch_metadata)
+    fail(evidence.get("verdict") == "VALID", "lock-first evidence verdict is not VALID")
+    series = evidence.get("series")
+    fail(evidence.get("batch_id") == batch_metadata["batch_id"], "lock-first evidence batch_id differs from mapping")
+    fail(evidence.get("expected_count") == batch_metadata["expected_count"], "lock-first evidence expected_count differs from mapping")
+    fail(isinstance(series, list) and len(series) == batch_metadata["expected_count"], "lock-first evidence does not contain expected_count entries")
+    expected_series = [{"module": entry["module"], "patch": entry["patch"]} for entry in batch]
+    fail(evidence.get("module_order") == batch_metadata["module_order"], "lock-first evidence module order differs from mapping")
+    fail(evidence.get("series_order") == expected_series, "lock-first evidence series order differs from mapping")
+    observed_series: list[dict[str, str]] = []
+    previous: dict[str, tuple[Path, str]] = {}
+    for mapping, observed in zip(batch, series, strict=True):
+        fail(isinstance(observed, dict) and set(observed) == ENTRY_FIELDS, f"{mapping['patch']}: evidence fields are invalid")
+        fail(observed.get("verdict") == "VALID", f"{mapping['patch']}: evidence verdict is not VALID")
+        module, patch = observed.get("module"), observed.get("patch")
+        fail(module == mapping["module"] and isinstance(patch, str), f"{mapping['patch']}: evidence module+patch invalid")
+        observed_series.append({"module": module, "patch": patch})
+        expected = lock_values(mapping)
+        for field, expected_value in expected.items():
+            fail(observed.get(field) == expected_value, f"{mapping['patch']}: {field} differs from schema-v2 lock")
+        applied_commit = oid(observed.get("applied_commit"), f"{mapping['patch']} applied commit")
+        applied_tree = oid(observed.get("applied_tree"), f"{mapping['patch']} applied tree")
+        row = rows.get(mapping["module"])
+        fail(row is not None, f"{mapping['patch']}: module missing from module map")
+        repo = contained(workspace, row["path"], f"{mapping['patch']} repository")
+        fail(git(repo, "cat-file", "-e", f"{applied_commit}^{{commit}}") == "", f"{mapping['patch']}: applied commit missing")
+        fail(git(repo, "rev-parse", f"{applied_commit}^{{tree}}") == applied_tree, f"{mapping['patch']}: applied tree is not the commit tree")
+        integration = row["integration_oid"]
+        fail(is_ancestor(repo, applied_commit, integration), f"{mapping['patch']}: applied commit is not an ancestor of integration")
+        if module in previous:
+            previous_repo, previous_commit = previous[module]
+            fail(previous_repo == repo and is_ancestor(repo, previous_commit, applied_commit), f"{mapping['patch']}: applied commits are not in per-module ancestry order")
+        previous[module] = (repo, applied_commit)
+    fail(observed_series == expected_series, "lock-first evidence series do not exactly match the grouped ordered batch")
+    observed_keys = [(entry["module"], entry["patch"]) for entry in observed_series]
+    fail(len(set(observed_keys)) == batch_metadata["expected_count"], "lock-first evidence contains duplicate module+patch")
+
+
 def compare_lock_first(
     control_path: Path,
     lock_first_path: Path,
@@ -203,7 +296,7 @@ def compare_lock_first(
     fail(control == lock_first, "control and lock-first module maps differ")
     fail(control_manifest == lock_first_manifest, "control and lock-first manifests differ")
     profile = control.get("profile")
-    fail(profile == "homebrew" and lock_first.get("profile") == profile, "module maps have an invalid profile")
+    fail(isinstance(profile, str) and profile and lock_first.get("profile") == profile, "module maps have an invalid profile")
     verify_manifest(control_manifest, "control manifest")
     rows = module_rows(control, "control module map")
     verify_actual_maps(control_workspace, rows, profile, "control")
@@ -217,7 +310,8 @@ def compare_lock_first(
         observed_version == EVIDENCE_SCHEMA_VERSION,
         f"lock-first evidence schema version mismatch: expected {EVIDENCE_SCHEMA_VERSION}, got {observed_version!r}",
     )
-    fail(set(evidence) == {"evidence_schema_version", "verdict", "batch_id", "expected_count", "module_order", "series_order", "series"} and evidence.get("verdict") == "VALID", "lock-first evidence v2 has invalid top-level fields")
+    verify_profile_composition_evidence(evidence, batch_metadata)
+    fail(evidence.get("verdict") == "VALID", "lock-first evidence verdict is not VALID")
     series = evidence.get("series")
     fail(evidence.get("batch_id") == batch_metadata["batch_id"], "lock-first evidence batch_id differs from mapping")
     fail(evidence.get("expected_count") == batch_metadata["expected_count"], "lock-first evidence expected_count differs from mapping")
@@ -267,6 +361,59 @@ def compare_lock_first(
     }, sort_keys=True, indent=2) + "\n")
 
 
+def compare_test_only_legacy_oracle(
+    oracle_path: Path,
+    candidate_path: Path,
+    candidate_manifest_path: Path,
+    evidence_path: Path,
+    mapping_path: Path,
+    candidate_workspace: Path,
+    transaction_root: Path,
+    result_path: Path,
+) -> None:
+    """Compare a cleaned test-only archive control with canonical candidate."""
+    fail(not result_path.exists() and not result_path.is_symlink(), "compare result path already exists")
+    oracle = load_json(oracle_path)
+    fail(set(oracle) == {"mode", "profile", "batch_id", "expected_count", "modules", "generated_profile_lock", "cleanup"}, "legacy oracle fields are invalid")
+    fail(oracle.get("mode") == "test-only-legacy-oracle", "control mode must be test-only-legacy-oracle")
+    fail(oracle.get("cleanup") == {"root": "removed", "worktrees": "removed"}, "legacy oracle cleanup is incomplete")
+    candidate = load_json(candidate_path)
+    profile = oracle.get("profile")
+    fail(isinstance(profile, str) and profile and candidate.get("profile") == profile, "oracle/candidate profile differs")
+    rows = module_rows(candidate, "candidate module map")
+    batch_metadata = load_batch(mapping_path, set(rows))
+    fail(oracle.get("batch_id") == batch_metadata["batch_id"], "legacy oracle batch differs from mapping")
+    fail(oracle.get("expected_count") == batch_metadata["expected_count"], "legacy oracle count differs from mapping")
+    oracle_rows = oracle.get("modules")
+    fail(isinstance(oracle_rows, list) and len(oracle_rows) == len(rows), "legacy oracle module count differs")
+    observed_trees: dict[str, str] = {}
+    for row in oracle_rows:
+        fail(isinstance(row, dict) and set(row) == {"module", "path", "commit", "tree"}, "legacy oracle module row is invalid")
+        module = row.get("module")
+        fail(isinstance(module, str) and module in rows and module not in observed_trees, "legacy oracle module is invalid or duplicate")
+        oid(row.get("commit"), f"legacy oracle {module} commit")
+        observed_trees[module] = oid(row.get("tree"), f"legacy oracle {module} tree")
+    fail(observed_trees == {module: row["tree"] for module, row in rows.items()}, "legacy oracle and canonical module trees differ")
+    manifest = load_json(candidate_manifest_path)
+    verify_manifest(manifest, "candidate manifest")
+    generated = oracle.get("generated_profile_lock")
+    fail(isinstance(generated, dict) and set(generated) == {"profile", "sha256", "size", "frozen_manifest_sha256"}, "legacy oracle generated lock metadata is invalid")
+    fail(generated.get("profile") == profile, "legacy oracle generated lock profile differs")
+    fail(generated.get("sha256") == manifest["generated_profile_lock"]["sha256"], "legacy oracle and canonical generated lock hash differ")
+    fail(generated.get("size") == manifest["generated_profile_lock"]["size"], "legacy oracle and canonical generated lock size differs")
+    fail(generated.get("frozen_manifest_sha256") == manifest["frozen_manifest_sha256"], "legacy oracle and canonical frozen manifest differ")
+    verify_actual_maps(candidate_workspace, rows, profile, "candidate")
+    verify_candidate_evidence(evidence_path, batch_metadata, rows, candidate_workspace)
+    assert_no_transaction_state(candidate_workspace, rows, transaction_root, "candidate")
+    result_path.write_text(json.dumps({
+        "verdict": "VALID", "evidence_schema_version": EVIDENCE_SCHEMA_VERSION,
+        "batch_id": batch_metadata["batch_id"], "expected_count": batch_metadata["expected_count"],
+        "module_order": batch_metadata["module_order"], "module_count": len(rows),
+        "control_mode": "test-only-legacy-oracle", "candidate_mode": "default-lock-first",
+        "lock_first_evidence": evidence_path.name,
+    }, sort_keys=True, indent=2) + "\n")
+
+
 def main() -> None:
     parser = argparse.ArgumentParser()
     sub = parser.add_subparsers(dest="action", required=True)
@@ -275,9 +422,15 @@ def main() -> None:
         compare.add_argument(f"--{name}", type=Path, required=True)
     compare.add_argument("--control-mode", required=True)
     compare.add_argument("--candidate-mode", required=True)
+    oracle = sub.add_parser("compare-test-only-legacy-oracle")
+    for name in ("oracle", "candidate", "candidate-manifest", "evidence", "mapping", "candidate-workspace", "transaction-root", "result"):
+        oracle.add_argument(f"--{name}", type=Path, required=True)
     args = parser.parse_args()
     try:
-        compare_lock_first(args.control, args.lock_first, args.control_manifest, args.lock_first_manifest, args.evidence, args.mapping, args.control_workspace, args.lock_first_workspace, args.transaction_root, args.result, args.control_mode, args.candidate_mode)
+        if args.action == "compare-lock-first":
+            compare_lock_first(args.control, args.lock_first, args.control_manifest, args.lock_first_manifest, args.evidence, args.mapping, args.control_workspace, args.lock_first_workspace, args.transaction_root, args.result, args.control_mode, args.candidate_mode)
+        else:
+            compare_test_only_legacy_oracle(args.oracle, args.candidate, args.candidate_manifest, args.evidence, args.mapping, args.candidate_workspace, args.transaction_root, args.result)
     except AcceptanceError as error:
         print(f"patch-stack lock-first acceptance: ERROR: {error}", file=sys.stderr)
         raise SystemExit(1)

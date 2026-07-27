@@ -1,0 +1,67 @@
+{
+  "schema_version": 1,
+  "source": {
+    "profiles": [
+      "patches/homebrew/patches.yml",
+      "patches/perf/patches.yml",
+      "patches/arch/patches.yml"
+    ],
+    "canonical_lock_inventory": "locks/patch-stack/migration-inventory-v1.yml",
+    "migration_report": "docs/patch-stack-canonical-migration-report.md"
+  },
+  "profiles": [
+    {
+      "profile": "homebrew",
+      "base_profile": null,
+      "mapping": "lock-first-series-v2.yml",
+      "batch_id": "darling-homebrew-lock-first-batch-7",
+      "series_count": 69,
+      "ordered_commit_count": 97,
+      "modules": [
+        {"path": "darling/src/external/darlingserver", "series_count": 25, "ordered_commit_count": 34},
+        {"path": "darling/src/external/xnu", "series_count": 25, "ordered_commit_count": 32},
+        {"path": "darling/src/external/libplatform", "series_count": 1, "ordered_commit_count": 1},
+        {"path": "darling/src/external/perl", "series_count": 1, "ordered_commit_count": 1},
+        {"path": "darling/src/external/libressl-2.8.3", "series_count": 1, "ordered_commit_count": 1},
+        {"path": "darling/src/external/libpthread", "series_count": 1, "ordered_commit_count": 3},
+        {"path": "darling", "series_count": 13, "ordered_commit_count": 21},
+        {"path": "darling/src/external/installer", "series_count": 2, "ordered_commit_count": 4}
+      ]
+    },
+    {
+      "profile": "perf",
+      "base_profile": "homebrew",
+      "mapping": "lock-first-series-perf-v2.yml",
+      "batch_id": "darling-perf-lock-first-batch-1",
+      "series_count": 7,
+      "ordered_commit_count": 29,
+      "modules": [
+        {"path": "darling", "series_count": 1, "ordered_commit_count": 1},
+        {"path": "darling/src/external/xnu", "series_count": 2, "ordered_commit_count": 18},
+        {"path": "darling/src/external/dyld", "series_count": 1, "ordered_commit_count": 7},
+        {"path": "darling/src/external/darlingserver", "series_count": 3, "ordered_commit_count": 3}
+      ]
+    },
+    {
+      "profile": "arch",
+      "base_profile": "perf",
+      "mapping": "lock-first-series-arch-v2.yml",
+      "batch_id": "darling-arch-lock-first-batch-1",
+      "series_count": 19,
+      "ordered_commit_count": 61,
+      "modules": [
+        {"path": "darling/src/external/libunwind", "series_count": 1, "ordered_commit_count": 1},
+        {"path": "darling/src/external/xnu", "series_count": 3, "ordered_commit_count": 3},
+        {"path": "darling/src/external/darlingserver", "series_count": 13, "ordered_commit_count": 52},
+        {"path": "darling", "series_count": 2, "ordered_commit_count": 5}
+      ]
+    }
+  ],
+  "closure": {
+    "total_series": 95,
+    "total_ordered_commits": 187,
+    "schema_v2_lock_coverage": "94/94 hosted plus 1 publication-pending Arch continuation",
+    "immutable_ref_closure": "hosted_immutable_clean_odb plus publication-pending Arch continuation",
+    "clean_odb_evidence": "94 hosted series independently verified; b545 Arch continuation has dual local clean-ODB evidence pending create-only hosted tags"
+  }
+}

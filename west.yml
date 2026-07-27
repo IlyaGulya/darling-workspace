@@ -1010,11 +1010,12 @@ manifest:
   - name: darling-src-external-objc4
     repo-path: darling-objc4
     path: darling/src/external/objc4
-    remote: darling
-    revision: 1a12df76d12bfc9fdfffadb290f7742763568765
+    remote: darling-next
+    revision: 53342cec3dcc9cde6dd1aa935bbe26d88c3e5aa8
     userdata:
       kind: darling-source
       upstream-repository: darling-objc4
+      fetch-override-reason: darling-next-public-mirror-preserves-reviewed-objc4-baseline
   - name: darling-src-external-openjdk
     repo-path: openjdk
     path: darling/src/external/openjdk

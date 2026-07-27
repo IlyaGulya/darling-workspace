@@ -12,7 +12,8 @@ archives.
 | `patch-stack-lock-first.yml` control | homebrew, `--legacy-mbox` | manual hosted oracle | Yes: independent A/B control. |
 | `patch-stack-lock-first.yml` candidate | homebrew, no flag | manual hosted acceptance | No: default-lock-first. |
 | `patch-stack-shadow.yml` | homebrew, no flag plus `--shadow-lock` | manual diagnostic oracle | Yes: legacy/canonical comparison. |
-| arch/perf/non-homebrew profiles | no flag / explicit legacy | local, CI test, profile materialization | Yes: still legacy-first. |
+| perf profile | no flag | local and runtime-source materialization | No: typed canonical mapping; portable archive authority is replaced by dual-clean-ODB canonical acceptance. |
+| arch profile | no flag | local and runtime-source materialization | Pending: canonical replay currently fails fail-closed at immutable darlingserver commit `80e8f944…`; no legacy fallback is authorized. |
 | docs and contracts | examples/oracles | documentation/test | Preserve until their modes migrate. |
 
 The CI policy contract fails if regular host materialization adds
@@ -25,9 +26,9 @@ homebrew --materialize-profile` enters `RuntimeSourceMaterializer.
 profile_worktree_checkout()`. Its worktrees are lifecycle-owned and disposable;
 for homebrew it now replays the exact immutable Batch 7 graph through the same
 per-module union-fetch materializer, emits runtime-source mode/replay markers,
-and publishes no integration ref or generated lock. Other profiles retain their
-pre-existing mbox worktree materializer. This path must never silently fall
-back to homebrew mbox replay.
+and publishes no integration ref or generated lock. The generalized path uses
+typed mappings for the whole requested profile stack and must never silently
+fall back to archive mbox replay.
 
 The runtime-source replay supplies its fixed `West Test
 <west-test@example.invalid>` committer identity only as `git -c` arguments to
@@ -37,12 +38,12 @@ the source of record.
 
 ## Archive dependency classification
 
-Archives and `patches/<profile>/patches.yml` remain required for legacy
-materialization of arch/perf/non-homebrew profiles; patch verify, export,
+Archives and `patches/<profile>/patches.yml` remain required for the retained
+manual oracle, patch verify, export,
 checksums, source provenance, and upstream review `format-patch`; manual
 legacy/canonical and shadow oracles; and emergency recovery. Immutable refs
-and schema-v2 locks replace homebrew's canonical runtime graph only, not review
-payloads or other profiles' portable integration source.
+and schema-v2 locks now replace all production profiles' canonical runtime
+graphs, not review payloads or portable integration source.
 
 ## Future removal plan
 
@@ -61,5 +62,5 @@ A.
 
 - fewer than three ordinary post-cutover CI observations with mode markers;
 - manual lock-first and shadow workflows need a legacy control/oracle;
-- arch/perf/non-homebrew profiles still use legacy runtime;
+- public legacy-mbox and shadow controls still need a test-only oracle;
 - verify/export/review and emergency recovery still consume archives.

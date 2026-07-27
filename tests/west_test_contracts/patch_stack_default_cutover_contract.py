@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""CLI-mode contract for the homebrew lock-first default cutover."""
+"""CLI-mode contract for the all-profile lock-first default cutover."""
 from __future__ import annotations
 
 import sys
@@ -95,7 +95,7 @@ def main() -> None:
                     "applied_tree": "e" * 40, "verdict": "VALID",
                 }
             )
-            patch_command.patch_stack_lock_first.materialize_batch_into = lambda repo, entries: (
+            patch_command.patch_stack_lock_first.materialize_batch_into = lambda repo, entries, **_kwargs: (
                 [patch_command.patch_stack_lock_first.materialize_into(repo, entry) for entry in entries],
                 {"immutable_fetch_transactions": 1, "temporary_contexts": 1, "validated_locks": len(entries), "replayed_commits": len(entries)},
             )
@@ -111,7 +111,7 @@ def main() -> None:
             assert canonical == ["darling/one.patch"] and not legacy
             assert "PATCH_STACK_MODE=default-lock-first" in messages
             success = next(message for message in messages if message.startswith("PATCH_STACK_REPLAY "))
-            assert re.fullmatch(r"PATCH_STACK_REPLAY batch_id=cutover expected_series=1 applied_series=1 module_count=1 elapsed_replay_seconds=\d+\.\d{3} verdict=VALID", success)
+            assert re.fullmatch(r"PATCH_STACK_REPLAY profile=homebrew batch_id=cutover expected_series=1 applied_series=1 module_count=1 elapsed_replay_seconds=\d+\.\d{3} verdict=VALID", success)
             canonical.clear(); prepared.clear(); messages.clear()
             command._apply("homebrew", root, patches, "0", False, lock_first=True)
             assert canonical == ["darling/one.patch"] and not legacy
@@ -122,7 +122,7 @@ def main() -> None:
             command._apply("homebrew", root, patches, "0", False, legacy_mbox=True)
             assert not canonical and len(legacy) == 1 and prepared == ["darling"]
             assert "PATCH_STACK_MODE=legacy-mbox" in messages
-            assert warnings == ["warning: --legacy-mbox is deprecated for homebrew; default-lock-first is the supported mode"]
+            assert warnings == ["warning: --legacy-mbox is deprecated; default-lock-first is the supported production mode"]
 
             # Shadow retains its established diagnostic/legacy behavior.
             legacy.clear(); shadows.clear(); canonical.clear(); messages.clear()
@@ -130,15 +130,16 @@ def main() -> None:
             assert not canonical and len(legacy) == 1 and shadows == ["run"]
             assert "PATCH_STACK_MODE=shadow-lock" in messages
 
-            # Other profiles remain legacy by default. --legacy-mbox is an
-            # explicit no-op spelling of that mode, avoiding ambiguous state.
+            # Every configured production profile is canonical by default;
+            # explicit legacy remains a temporary oracle-only compatibility
+            # spelling until the public switch is removed.
             legacy.clear(); canonical.clear(); messages.clear()
             command._apply("perf", root, patches, "0", False)
             command._apply("perf", root, patches, "0", False, legacy_mbox=True)
-            assert len(legacy) == 2 and not canonical
-            assert len(warnings) == 1, "other-profile legacy must not emit a false deprecation warning"
-            assert messages.count("PATCH_STACK_MODE=legacy-mbox") == 2
-            assert not any(message.startswith("PATCH_STACK_REPLAY ") for message in messages)
+            assert canonical == ["darling/one.patch"] and len(legacy) == 1
+            assert messages.count("PATCH_STACK_MODE=default-lock-first") == 1
+            assert messages.count("PATCH_STACK_MODE=legacy-mbox") == 1
+            assert len(warnings) == 2, "explicit legacy must always warn"
 
             # Invalid combinations reject before plan construction, prepare,
             # fetch, branch, or worktree mutation.
@@ -153,7 +154,7 @@ def main() -> None:
                 assert not prepared
 
             # A corrupt/incomplete default mapping cannot fall back to legacy.
-            prepared.clear(); canonical.clear(); legacy.clear()
+            prepared.clear(); canonical.clear(); legacy.clear(); messages.clear()
             patch_command.patch_stack_lock_first.plan = lambda *_args: (_ for _ in ()).throw(lock_first.LockFirstError("mapping incomplete"))
             expect_failure(lambda: command._apply("homebrew", root, patches, "0", False), "mapping incomplete")
             assert not prepared and not canonical and not legacy
