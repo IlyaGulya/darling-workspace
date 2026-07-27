@@ -16,14 +16,15 @@ def main() -> None:
     host = host_tier.split("\thost)", 1)[1].split("\tguest-smoke)", 1)[0]
     assert "exec west test --profile homebrew --env host --materialize-profile" in host
     assert "--legacy-mbox" not in host and "--lock-first" not in host
-    assert oracle.count("west patch apply --profile homebrew --legacy-mbox") == 1
+    assert "tests/patch_stack_legacy_oracle.py" in oracle
+    assert "west patch apply --profile homebrew --legacy-mbox" not in oracle
     assert "west patch apply --profile homebrew \\\n            --lock-first-evidence" in oracle
     assert "west patch apply --profile homebrew --lock-first" not in oracle
     for marker in (
         "PATCH_STACK_MODE=",
         "PATCH_STACK_REPLAY ",
         "elapsed_replay_seconds={elapsed:.3f}",
-        "warning: --legacy-mbox is deprecated for homebrew",
+        "warning: --legacy-mbox is deprecated; default-lock-first is the supported production mode",
     ):
         assert marker in patch, marker
     print("patch-stack legacy-observation policy: PASS")

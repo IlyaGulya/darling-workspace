@@ -19,6 +19,7 @@ from west.commands import WestCommand
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from patch_git import (
+    TEMPORARY_PATCH_GIT_OPTIONS,
     git,
     git_for_patch_application,
     git_for_temporary_patch_application,
@@ -28,6 +29,7 @@ import patch_stack_preflight
 import patch_stack_materialize
 import patch_stack_shadow
 import patch_stack_lock_first
+import patch_stack_profile_composition
 from test_runtime import ROOTLESS_BOOTSTRAP_RESOURCE, ROOTLESS_BOOTSTRAP_TARGET
 
 
@@ -426,6 +428,85 @@ class DarlingPatch(WestCommand):
                 f"(missing {base_branch} in: {', '.join(sorted(missing))}). "
                 f"Run `west patch apply --profile {self._base_profile}` first."
             )
+
+    def _apply_profile_prerequisite(self, profile_name: str) -> None:
+        """Materialize one declared canonical prerequisite in the same lifecycle.
+
+        A profile-composition prerequisite is a tree contract, not a generated
+        integration-commit reference.  This helper is intentionally used only
+        by lock-first application; legacy invocation retains its historical
+        explicit-base requirement.
+        """
+        profile_dir = Path(self.manifest.repo_abspath) / "patches" / profile_name
+        profile_path = profile_dir / "patches.yml"
+        if not profile_path.is_file():
+            raise RuntimeError(f"profile prerequisite {profile_name!r} is not found")
+        try:
+            profile = test_manifest.load_test_profile(profile_path)
+        except test_manifest.ManifestError as error:
+            raise RuntimeError(str(error)) from error
+        previous_base_profile = self._base_profile
+        self._base_profile = profile.get("base-profile")
+        if self._base_profile == profile_name:
+            self._base_profile = previous_base_profile
+            raise RuntimeError(f"{profile_name}: base-profile cannot be itself")
+        try:
+            self._apply(
+                profile_name,
+                profile_dir,
+                profile.get("patches", []),
+                profile["integration-date"],
+                False,
+                False,
+                None,
+                False,
+                None,
+                False,
+            )
+        finally:
+            self._base_profile = previous_base_profile
+
+    def _ensure_composition_prerequisites(self, profile: str, lock_first_plan) -> None:
+        """Materialize and verify typed prerequisite trees before this profile.
+
+        Generated integration commit IDs are never fetched or treated as
+        canonical inputs.  A standalone stacked invocation reconstructs its
+        prerequisite profile from immutable locks, then compares exact module
+        trees from the prerequisite composition lock.
+        """
+        composition = getattr(lock_first_plan, "composition", None)
+        if composition is None:
+            if self._base_profile:
+                self._require_base_applied([])
+            return
+        prerequisites = composition["prerequisites"]
+        names = [item["profile"] for item in prerequisites]
+        if self._base_profile is None:
+            if prerequisites:
+                raise RuntimeError(f"{profile}: composition declares an unexpected prerequisite")
+            return
+        if names != [self._base_profile]:
+            raise RuntimeError(f"{profile}: composition prerequisite order differs from base-profile")
+        prerequisite = prerequisites[0]
+        branch = f"integration/{prerequisite['profile']}"
+        missing = [
+            module for module in prerequisite["module_trees"]
+            if not self._branch_exists(self._repo(module), branch)
+        ]
+        if missing:
+            self._apply_profile_prerequisite(prerequisite["profile"])
+        expected = dict(prerequisite["module_trees"])
+        repos = {module: self._repo(module) for module in expected}
+        for module, expected_tree in expected.items():
+            repo = self._repo(module)
+            if not self._branch_exists(repo, branch):
+                raise RuntimeError(f"{profile}: prerequisite {branch} is missing in {module}")
+            try:
+                patch_stack_profile_composition.verify_integration(
+                    module, repo, expected_tree, expected, repos, ref=branch
+                )
+            except patch_stack_profile_composition.ProfileCompositionError as error:
+                raise RuntimeError(f"{profile}: prerequisite {prerequisite['profile']} {error}") from error
 
     def _ensure_clean(self, repo: Path, parent: bool = False):
         command = ["status", "--porcelain"]
@@ -2316,11 +2397,10 @@ class DarlingPatch(WestCommand):
             self.die("--legacy-mbox is mutually exclusive with --lock-first, --lock-first-evidence, --shadow-lock, and --shadow-evidence")
         if shadow_evidence and not shadow_lock:
             self.die("--shadow-evidence requires --shadow-lock")
-        # Homebrew has completed its Batch 7 canonical migration.  Keep the
-        # opt-in spelling as a compatibility alias, but make the canonical
-        # path the normal mode.  Shadow remains a diagnostic legacy/oracle
-        # mode and must not silently become a second canonical replay.
-        canonical_default = profile == "homebrew" and not legacy_mbox and not shadow_lock
+        # Every production profile is selected through a typed mapping. Keep
+        # the opt-in spelling as a compatibility alias while the retained
+        # legacy oracle is migrated out of this production command.
+        canonical_default = not legacy_mbox and not shadow_lock
         use_lock_first = canonical_default or lock_first
         if shadow_lock:
             patch_stack_mode = "shadow-lock"
@@ -2340,11 +2420,11 @@ class DarlingPatch(WestCommand):
                 self.die("--lock-first-evidence must name a new regular output path")
         if shadow_lock and lock_first:
             self.die("--shadow-lock and --lock-first are mutually exclusive")
-        if legacy_mbox and profile == "homebrew":
+        if legacy_mbox:
             # WestCommand supplies err(); the inf fallback keeps the isolated
             # command contracts independent of West's presentation shim.
             getattr(self, "err", self.inf)(
-                "warning: --legacy-mbox is deprecated for homebrew; default-lock-first is the supported mode"
+                "warning: --legacy-mbox is deprecated; default-lock-first is the supported production mode"
             )
 
         # This is deliberately before generated-context preparation, branch
@@ -2363,7 +2443,7 @@ class DarlingPatch(WestCommand):
         lock_first_plan = None
         if use_lock_first:
             try:
-                lock_first_plan = patch_stack_lock_first.plan(profile, patches, patch_stack_lock_first.MAPPING, grouped)
+                lock_first_plan = patch_stack_lock_first.plan(profile, patches, None, grouped)
             except patch_stack_lock_first.LockFirstError as error:
                 self.die(str(error))
 
@@ -2377,8 +2457,13 @@ class DarlingPatch(WestCommand):
         generated_lock_snapshot = self._generated_lock_snapshot(profile) if use_lock_first else None
 
         branch = f"integration/{profile}"
-        # A stacked profile requires its base profile to be applied first.
-        self._require_base_applied(list(grouped))
+        # A canonical stacked profile declares prerequisite composition trees.
+        # Reconstruct them when invoked standalone; legacy materialization
+        # retains its explicit-base behavior and never receives this fallback.
+        if use_lock_first:
+            self._ensure_composition_prerequisites(profile, lock_first_plan)
+        else:
+            self._require_base_applied(list(grouped))
         modules = list(grouped)
         if "darling" not in modules:
             modules.append("darling")
@@ -2408,13 +2493,11 @@ class DarlingPatch(WestCommand):
                 module_lock_first = [
                     entry for entry in (lock_first_plan or []) if entry["module"] == module
                 ]
-                verified_paths = {
-                    patch["path"]: self._verify_patch(profile_dir, patch)
-                    for patch in module_patches
-                }
                 if module_lock_first:
                     canonical_results, stats = patch_stack_lock_first.materialize_batch_into(
                         repo, module_lock_first,
+                        git_options=TEMPORARY_PATCH_GIT_OPTIONS,
+                        composition=lock_first_plan.composition,
                     )
                     lock_first_runs.extend((entry["module"], entry["patch"]) for entry in module_lock_first)
                     lock_first_results.extend(canonical_results)
@@ -2424,9 +2507,13 @@ class DarlingPatch(WestCommand):
                         f"{stats['replayed_commits']} replayed commits"
                     )
                 for patch in module_patches:
-                    path = verified_paths[patch["path"]]
                     lock_first_entry = next((entry for entry in module_lock_first if patch["path"] == entry["patch"]), None)
                     if not lock_first_entry:
+                        if use_lock_first:
+                            raise RuntimeError(
+                                f"{profile}: typed lock-first plan omitted {module}/{patch['path']}"
+                            )
+                        path = self._verify_patch(profile_dir, patch)
                         git_for_patch_application(
                             repo,
                             "am",
@@ -2435,6 +2522,7 @@ class DarlingPatch(WestCommand):
                             str(path),
                         )
                     if shadow_plan and module == shadow_plan["module"] and patch["path"] == shadow_plan["patch"]:
+                        path = self._verify_patch(profile_dir, patch)
                         evidence = Path(shadow_evidence) if shadow_evidence else None
                         shadow = patch_stack_shadow.run_shadow(
                             shadow_plan=shadow_plan,
@@ -2451,6 +2539,13 @@ class DarlingPatch(WestCommand):
                 if lock_first_runs != expected:
                     raise RuntimeError("lock-first batch was not invoked exactly once in grouped execution order")
             lock = self._record_integration(profile, grouped, integration_date)
+            if lock_first_plan and lock_first_plan.composition:
+                expected = lock_first_plan.composition["integration_finals"]
+                repos = {module: self._repo(module) for module in expected}
+                for module, expected_tree in expected.items():
+                    patch_stack_profile_composition.verify_integration(
+                        module, repos[module], expected_tree, expected, repos
+                    )
             if lock_first_plan and lock_first_evidence:
                 if not isinstance(lock_first_plan, patch_stack_lock_first.LockFirstPlan):
                     raise RuntimeError("lock-first planner did not return typed batch metadata")
@@ -2470,7 +2565,7 @@ class DarlingPatch(WestCommand):
                 elapsed = time.monotonic() - replay_started
                 self.inf(
                     "PATCH_STACK_REPLAY "
-                    f"batch_id={batch['batch_id']} expected_series={expected_count} "
+                    f"profile={profile} batch_id={batch['batch_id']} expected_series={expected_count} "
                     f"applied_series={applied_count} module_count={len(batch['module_order'])} "
                     f"elapsed_replay_seconds={elapsed:.3f} verdict=VALID"
                 )
@@ -2520,6 +2615,7 @@ class DarlingPatch(WestCommand):
             commit_env["GIT_COMMITTER_DATE"] = integration_date
             git(
                 darling,
+                *TEMPORARY_PATCH_GIT_OPTIONS,
                 "commit",
                 "-m",
                 f"Integrate {profile} patch profile",

@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 """Keep the lock-first acceptance tier manual and semantically exact."""
+import hashlib
 import json
 import subprocess
 import sys
@@ -104,13 +105,67 @@ def synthetic_compare_contract() -> None:
             mapping_entries.append({"profile": "homebrew", "module": module, "patch": patch, "lock": lock_name})
             series.append({"module": module, "patch": patch, "base": lock_base, "source": lock_commit, "canonical_tree": lock_tree, "applied_commit": lock_commit, "applied_tree": lock_tree, "verdict": "VALID"})
         mapping = locks / "lock-first-series-v2.yml"
-        mapping.write_text(json.dumps({"schema_version": 2, "profile": "homebrew", "batch_id": "synthetic-six", "expected_count": len(mapping_entries), "series": mapping_entries}))
+        mapping.write_text(json.dumps({
+            "schema_version": 3, "profile": "homebrew", "batch_id": "synthetic-six",
+            "expected_count": len(mapping_entries), "composition": "profile-composition.yml",
+            "series": mapping_entries,
+        }))
+        frozen_manifest = root / "west.lock.yml"
+        frozen_manifest.write_text("manifest: synthetic\n")
+        composition = {
+            "schema_version": 3,
+            "profile": "homebrew",
+            "prerequisites": [],
+            "frozen_manifest": {
+                "path": "west.lock.yml",
+                "sha256": hashlib.sha256(frozen_manifest.read_bytes()).hexdigest(),
+            },
+            "mapping": {
+                "path": mapping.name,
+                "sha256": hashlib.sha256(mapping.read_bytes()).hexdigest(),
+                "batch_id": "synthetic-six",
+                "expected_count": len(mapping_entries),
+            },
+            "modules": [
+                {
+                    "module": "darling/src/external/libplatform",
+                    "starting": {"tree": git(external, "rev-parse", f"{external_base}^{{tree}}")},
+                    "series": [{"patch": mapping_entries[0]["patch"], "lock": mapping_entries[0]["lock"], "expected_applied_tree": external_tree}],
+                    "final_tree": external_tree,
+                    "integration_final_tree": external_tree,
+                },
+                {
+                    "module": "darling",
+                    "starting": {"tree": git(source, "rev-parse", f"{base}^{{tree}}")},
+                    "series": [
+                        {"patch": entry["patch"], "lock": entry["lock"], "expected_applied_tree": git(source, "rev-parse", f"{commit}^{{tree}}")}
+                        for entry, commit in zip(mapping_entries[1:], commits[1:], strict=True)
+                    ],
+                    "final_tree": integration_tree,
+                    "integration_final_tree": integration_tree,
+                },
+            ],
+        }
+        (locks / "profile-composition.yml").write_text(json.dumps(composition))
+        batch_metadata = acceptance.load_batch(mapping, {row["module"] for row in modules["modules"]})
+        original_frozen_manifest = frozen_manifest.read_bytes()
+        frozen_manifest.write_text("manifest: tampered\n")
+        try:
+            try:
+                acceptance.load_batch(mapping, {row["module"] for row in modules["modules"]})
+            except acceptance.AcceptanceError as error:
+                assert "frozen manifest SHA-256 differs" in str(error)
+            else:
+                raise AssertionError("lock-first acceptance accepted a tampered frozen manifest")
+        finally:
+            frozen_manifest.write_bytes(original_frozen_manifest)
         evidence = root / "lock-first-evidence.json"
         evidence.write_text(json.dumps({
             "evidence_schema_version": 2, "verdict": "VALID", "batch_id": "synthetic-six", "expected_count": len(series),
             "module_order": ["darling/src/external/libplatform", "darling"],
             "series_order": [{"module": entry["module"], "patch": entry["patch"]} for entry in mapping_entries],
             "series": series,
+            "profile_composition": batch_metadata["profile_composition"],
         }))
         result = root / "result.json"
         transaction_root = root / "transactions"; transaction_root.mkdir()
@@ -120,6 +175,26 @@ def synthetic_compare_contract() -> None:
         assert result_payload["verdict"] == "VALID" and result_payload["evidence_schema_version"] == 2
         assert result_payload["batch_id"] == "synthetic-six" and result_payload["expected_count"] == len(series)
         assert result_payload["module_order"] == ["darling/src/external/libplatform", "darling"]
+        # The replacement control is a cleaned test-only oracle, not a
+        # production legacy CLI invocation. It compares module trees and the
+        # generated-lock bytes while candidate applied ancestry remains real.
+        oracle = root / "legacy-oracle.json"
+        oracle.write_text(json.dumps({
+            "mode": "test-only-legacy-oracle", "profile": "homebrew",
+            "batch_id": "synthetic-six", "expected_count": len(series),
+            "modules": [
+                {"module": row["module"], "path": f"temporary/{row['module']}", "commit": row["integration_oid"], "tree": row["tree"]}
+                for row in modules["modules"]
+            ],
+            "generated_profile_lock": {"profile": "homebrew", "sha256": "b" * 64, "size": 1, "frozen_manifest_sha256": "a" * 64},
+            "cleanup": {"root": "removed", "worktrees": "removed"},
+        }))
+        oracle_result = root / "oracle-result.json"
+        acceptance.compare_test_only_legacy_oracle(oracle, lock_map, lock_manifest, evidence, mapping, lock_workspace, transaction_root, oracle_result)
+        assert json.loads(oracle_result.read_text())["control_mode"] == "test-only-legacy-oracle"
+        tampered_oracle = json.loads(oracle.read_text()); tampered_oracle["modules"][0]["tree"] = "0" * 40
+        bad_oracle = root / "bad-legacy-oracle.json"; bad_oracle.write_text(json.dumps(tampered_oracle))
+        must_fail(acceptance.compare_test_only_legacy_oracle, bad_oracle, lock_map, lock_manifest, evidence, mapping, lock_workspace, transaction_root, root / "bad-oracle-result.json")
         for mutate in (
             lambda value: value["series"].pop(),
             lambda value: value["series"].append(dict(value["series"][0])),
@@ -222,11 +297,12 @@ assert "jdx/mise-action@5228313ee0372e111a38da051671ca30fc5a96db" in workflow
 assert "working_directory: darling-dev/darling-workspace" in workflow
 assert "cache: false" in workflow and "cache_save: false" in workflow
 assert "actions/cache" not in workflow and "MISE_CACHE_DIR" not in workflow
-assert workflow.count("west patch apply --profile homebrew") == 2
-assert "west patch apply --profile homebrew --legacy-mbox" in workflow
+assert workflow.count("west patch apply --profile homebrew") == 1
+assert "west patch apply --profile homebrew --legacy-mbox" not in workflow
 assert "west patch apply --profile homebrew --lock-first" not in workflow
-assert "Control legacy-mbox materialization" in workflow
+assert "Control test-only legacy oracle" in workflow
 assert "Candidate default-lock-first materialization" in workflow
+assert "tests/patch_stack_legacy_oracle.py" in workflow
 assert "mise exec -- uv --version" in workflow
 assert "mise exec -- west --version" in workflow
 assert "mise_toml_sha256=" in workflow and "sha256sum mise.toml" in workflow
@@ -247,15 +323,14 @@ assert 'mise -C "$workspace" exec -- env HOME="$LOCK_FIRST_ROOT/control-home"' i
 assert 'mise -C "$workspace" exec -- env HOME="$LOCK_FIRST_ROOT/lock-first-home"' in workflow
 assert "--lock-first-evidence \"$LOCK_FIRST_ROOT/evidence/lock-first-evidence.json\"" in workflow
 assert "--shadow-lock" not in workflow
-assert "patch_stack_lock_first_acceptance.py compare-lock-first" in workflow
+assert "patch_stack_lock_first_acceptance.py compare-test-only-legacy-oracle" in workflow
 assert "--mapping locks/patch-stack/lock-first-series-v2.yml" in workflow
-assert "--control-workspace \"$LOCK_FIRST_ROOT/control\"" in workflow
-assert "--lock-first-workspace \"$LOCK_FIRST_ROOT/lock-first\"" in workflow
-compare_args = workflow.split("patch_stack_lock_first_acceptance.py compare-lock-first", 1)[1].split("--result", 1)[0]
+assert "--candidate-workspace \"$LOCK_FIRST_ROOT/lock-first\"" in workflow
+compare_args = workflow.split("patch_stack_lock_first_acceptance.py compare-test-only-legacy-oracle", 1)[1].split("--result", 1)[0]
 assert "/darling-workspace" not in compare_args
 assert "--transaction-root \"$RUNNER_TEMP\"" in workflow
-assert "--control-mode legacy-mbox" in workflow
-assert "--candidate-mode default-lock-first" in workflow
+assert "--control-mode legacy-mbox" not in workflow
+assert "--candidate-mode default-lock-first" not in workflow
 assert "patch_stack_shadow_acceptance.py compare" not in workflow
 assert "git clone --no-local --no-hardlinks" in workflow and "fetch-depth: 0" in workflow
 assert "cleanup_status=" in workflow and "if: always()" in workflow
@@ -266,8 +341,10 @@ assert "BATCH_SIZE" not in compare_source
 assert '"batch_id"' in compare_source and '"expected_count"' in compare_source
 assert "refs/west/patch-stack-lock-first/" in compare_source
 assert "west-patch-lock-first-*" in compare_source
+assert "compare_test_only_legacy_oracle" in compare_source
 shadow_acceptance = (ROOT / "ci/patch_stack_shadow_acceptance.py").read_text()
 assert '"lock-first-modules.json"' in shadow_acceptance
 assert '"lock-first-manifest.json"' in shadow_acceptance
+assert '"legacy-oracle.json"' in shadow_acceptance
 synthetic_compare_contract()
 print("patch-stack lock-first hosted-workflow contract: PASS")

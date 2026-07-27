@@ -24,6 +24,8 @@ from typing import Any, Iterator
 from source_worktree import SourceWorktreeError, prepare_source_worktree
 from patch_git import TEMPORARY_PATCH_GIT_OPTIONS, git_for_temporary_patch_application
 import patch_stack_lock_first
+import patch_stack_materialize
+import patch_stack_profile_composition
 from test_results import RuntimeRedProven
 from test_runtime_evidence import RuntimeEvidenceSession
 from test_worktrees import remove_temporary_worktree
@@ -49,56 +51,157 @@ class RuntimeSourceMaterializer:
             self._host.die(f"red-proof source patch not found: {result}")
         return result
 
-    def _materialize_canonical_homebrew(self, overrides: dict[str, Path]) -> None:
-        """Replay the exact Batch 7 graph into lifecycle-owned worktrees.
+    def _materialize_canonical_profile(self, profile: str, overrides: dict[str, Path]) -> None:
+        """Replay one approved typed profile into lifecycle-owned worktrees.
 
         This intentionally does not use a patch archive or publish integration
         refs/generated locks.  The worktree context owns all resulting commits
         and removes them when its caller exits.
         """
-        grouped: OrderedDict[str, list[dict[str, Any]]] = OrderedDict()
-        patches: list[dict[str, Any]] = []
-        for stacked in self._host._profile_stack("homebrew"):
-            for patch in self._host._load_profile(stacked).get("patches", []):
-                grouped.setdefault(patch["module"], []).append(patch)
-                patches.append(patch)
-        try:
-            plan = patch_stack_lock_first.plan(
-                "homebrew", patches, patch_stack_lock_first.MAPPING, grouped
-            )
-        except patch_stack_lock_first.LockFirstError:
-            raise
-        batch = plan.batch
-        expected_modules = [
-            "darling/src/external/darlingserver",
-            "darling/src/external/xnu",
-            "darling/src/external/libplatform",
-            "darling/src/external/perl",
-            "darling/src/external/libressl-2.8.3",
-            "darling/src/external/libpthread",
-            "darling",
-            "darling/src/external/installer",
-        ]
-        if (batch["batch_id"] != "darling-homebrew-lock-first-batch-7"
-                or batch["expected_count"] != 69
-                or batch["module_order"] != expected_modules):
+        if profile not in {"homebrew", "perf", "arch"}:
             raise patch_stack_lock_first.LockFirstError(
-                "runtime-source homebrew requires exact Batch 7 (69 series, 8 modules)"
+                f"runtime-source canonical materialization is not enabled for {profile}"
             )
-        self._host.inf("PATCH_STACK_MODE=default-lock-first materializer=runtime-source")
+        def typed_plan(name: str) -> patch_stack_lock_first.LockFirstPlan:
+            grouped: OrderedDict[str, list[dict[str, Any]]] = OrderedDict()
+            patches = self._host._load_profile(name).get("patches", [])
+            for patch in patches:
+                grouped.setdefault(patch["module"], []).append(patch)
+            plan = patch_stack_lock_first.plan(name, patches, None, grouped)
+            if plan.composition is None:
+                raise patch_stack_lock_first.LockFirstError(
+                    f"runtime-source {name} requires a typed profile-composition lock"
+                )
+            return plan
+
+        plan = typed_plan(profile)
+        batch = plan.batch
+        expected = {
+            "homebrew": (
+                "darling-homebrew-lock-first-batch-7", 69,
+                [
+                    "darling/src/external/darlingserver", "darling/src/external/xnu",
+                    "darling/src/external/libplatform", "darling/src/external/perl",
+                    "darling/src/external/libressl-2.8.3", "darling/src/external/libpthread",
+                    "darling", "darling/src/external/installer",
+                ],
+            ),
+            "arch": (
+                "darling-arch-lock-first-batch-1", 19,
+                [
+                    "darling/src/external/libunwind", "darling/src/external/xnu",
+                    "darling/src/external/darlingserver", "darling",
+                ],
+            ),
+            "perf": (
+                "darling-perf-lock-first-batch-1", 7,
+                [
+                    "darling", "darling/src/external/xnu",
+                    "darling/src/external/dyld", "darling/src/external/darlingserver",
+                ],
+            ),
+        }[profile]
+        if (batch["batch_id"], batch["expected_count"], batch["module_order"]) != expected:
+            raise patch_stack_lock_first.LockFirstError(
+                f"runtime-source {profile} requires exact {expected[0]} "
+                f"({expected[1]} series, {len(expected[2])} modules in typed order)"
+            )
+        plans: list[tuple[str, patch_stack_lock_first.LockFirstPlan]] = []
+        visiting: set[str] = set()
+
+        def append_prerequisites(name: str) -> None:
+            if name in visiting:
+                raise patch_stack_lock_first.LockFirstError("runtime-source profile prerequisites are cyclic")
+            candidate = typed_plan(name)
+            visiting.add(name)
+            for prerequisite in candidate.composition["prerequisites"]:
+                if not isinstance(prerequisite, dict) or not isinstance(prerequisite.get("profile"), str):
+                    raise patch_stack_lock_first.LockFirstError(
+                        "runtime-source profile prerequisite is not typed"
+                    )
+                append_prerequisites(prerequisite["profile"])
+            visiting.remove(name)
+            if name not in [known for known, _ in plans]:
+                plans.append((name, candidate))
+
+        append_prerequisites(profile)
+        mode_marker = "PATCH_STACK_MODE=default-lock-first materializer=runtime-source"
+        if profile == "arch":
+            mode_marker += " profile=arch"
+        self._host.inf(mode_marker)
         started = time.monotonic()
         results: list[dict[str, Any]] = []
-        for module in batch["module_order"]:
-            target = overrides.get(module)
-            if target is None:
-                raise patch_stack_lock_first.LockFirstError(
-                    f"runtime-source canonical target missing for {module}"
-                )
-            entries = [entry for entry in plan if entry["module"] == module]
-            module_results, _stats = patch_stack_lock_first.materialize_batch_into(
-                target, entries, git_options=TEMPORARY_PATCH_GIT_OPTIONS
+        initialized: set[str] = set()
+        first_entries: dict[str, dict[str, Any]] = {}
+        for _phase, phase_plan in plans:
+            for entry in phase_plan:
+                first_entries.setdefault(entry["module"], entry)
+        parent_modules = sorted(
+            (module for module in first_entries
+             if any(other.startswith(f"{module}/") for other in first_entries)),
+            key=lambda module: len(Path(module).parts),
+        )
+        for module in parent_modules:
+            lock = patch_stack_materialize.load_lock(
+                Path(first_entries[module]["lock_path"])
             )
-            results.extend(module_results)
+            patch_stack_materialize._git(
+                overrides[module], "reset", "--hard", lock["upstream"]["base_commit"]
+            )
+            initialized.add(module)
+        for phase, phase_plan in plans:
+            for module in phase_plan.batch["module_order"]:
+                target = overrides.get(module)
+                if target is None:
+                    raise patch_stack_lock_first.LockFirstError(
+                        f"runtime-source canonical target missing for {module}"
+                    )
+                module_entries = [entry for entry in phase_plan if entry["module"] == module]
+                module_results, _stats = patch_stack_lock_first.materialize_batch_into(
+                    target, module_entries,
+                    git_options=TEMPORARY_PATCH_GIT_OPTIONS,
+                    # The first replay establishes the earliest declared
+                    # immutable base.  Each typed prerequisite then carries
+                    # its validated profile boundary into the next phase.
+                    reset_to_first_base=module not in initialized,
+                    composition=phase_plan.composition,
+                )
+                initialized.add(module)
+                if phase == profile:
+                    results.extend(module_results)
+            darling = overrides.get("darling")
+            nested = [
+                str(Path(module).relative_to("darling"))
+                for module in phase_plan.batch["module_order"]
+                if module != "darling" and module.startswith("darling/")
+            ]
+            if darling is not None and nested:
+                subprocess.run(["git", "add", "--", *nested], cwd=darling, check=True)
+                commit_env = os.environ.copy()
+                commit_env.update({
+                    "GIT_AUTHOR_DATE": "1970-01-01T00:00:00+0000",
+                    "GIT_COMMITTER_DATE": "1970-01-01T00:00:00+0000",
+                })
+                subprocess.run(
+                    ["git", *TEMPORARY_PATCH_GIT_OPTIONS, "commit", "-m",
+                     f"Runtime-source {phase} profile boundary"],
+                    cwd=darling, check=True, env=commit_env,
+                )
+            expected = phase_plan.composition["integration_finals"]
+            for module, expected_tree in expected.items():
+                target = overrides.get(module)
+                if target is None:
+                    raise patch_stack_lock_first.LockFirstError(
+                        f"runtime-source canonical target missing for {module}"
+                    )
+                try:
+                    patch_stack_profile_composition.verify_integration(
+                        module, target, expected_tree, expected, overrides
+                    )
+                except patch_stack_profile_composition.ProfileCompositionError as error:
+                    raise patch_stack_lock_first.LockFirstError(
+                        f"runtime-source {phase} {error}"
+                    ) from error
         if len(results) != batch["expected_count"]:
             raise patch_stack_lock_first.LockFirstError(
                 "runtime-source canonical applied series count differs from Batch 7"
@@ -113,8 +216,11 @@ class RuntimeSourceMaterializer:
     @contextmanager
     def profile_worktree_checkout(self, profile: str) -> Iterator[None]:
         projects = self._host._projects()
+        required_modules: set[str] = set()
+        for stacked in self._host._profile_stack(profile):
+            required_modules.update(patch["module"] for patch in self._host._load_profile(stacked).get("patches", []))
         modules = sorted(
-            self._host._profile_stack_modules(profile),
+            required_modules,
             key=lambda module: (len(Path(module).parts), module),
         )
         repos = [(module, projects[module]) for module in modules]
@@ -146,8 +252,8 @@ class RuntimeSourceMaterializer:
                             overrides[ref] = target
                     overrides[module] = target
                 self._host._project_overrides = overrides
-                if profile == "homebrew":
-                    self._materialize_canonical_homebrew(overrides)
+                if profile in {"homebrew", "perf", "arch"}:
+                    self._materialize_canonical_profile(profile, overrides)
                 else:
                     for stacked in self._host._profile_stack(profile):
                         data = self._host._load_profile(stacked)
@@ -226,7 +332,29 @@ class RuntimeSourceMaterializer:
         *,
         skip_patch_paths: set[str] | None = None,
     ) -> None:
+        """Materialize an intact profile module from immutable typed locks.
+
+        Current-minus RED proofs deliberately request a non-canonical partial
+        series and keep their archive fixture route until the test-only oracle
+        is extracted. Ordinary runtime-source GREEN materialization never
+        reads an archive here.
+        """
         skips = skip_patch_paths or set()
+        if not skips and profile in {"homebrew", "perf", "arch"}:
+            profile_patches = self._host._load_profile(profile).get("patches", [])
+            grouped: OrderedDict[str, list[dict[str, Any]]] = OrderedDict()
+            for patch in profile_patches:
+                grouped.setdefault(patch["module"], []).append(patch)
+            plan = patch_stack_lock_first.plan(profile, profile_patches, None, grouped)
+            entries = [entry for entry in plan if entry["module"] == module]
+            if entries:
+                patch_stack_lock_first.materialize_batch_into(
+                    target, entries,
+                    git_options=TEMPORARY_PATCH_GIT_OPTIONS,
+                    reset_to_first_base=(profile in {"perf", "arch"}),
+                    composition=plan.composition,
+                )
+            return
         for stacked in self._host._profile_stack(profile):
             data = self._host._load_profile(stacked)
             profile_dir = self._host._profile_path(stacked).parent

@@ -1,0 +1,72 @@
+schema_version: 3
+profile: perf
+prerequisites:
+- profile: homebrew
+  composition: homebrew-profile-composition-v2.yml
+  sha256: 03075c4b3e461a1b1e8f00a3dc925647dd52559ea2914ebc10d8a715bb4bbb19
+  frozen_manifest:
+    path: west.lock.yml
+    sha256: 5718c32c76a180b9078a206b93d93e70f478a5ada0034cd6afcc789c447e055d
+  module_trees:
+    darling/src/external/darlingserver: c094b9e6f456231d4358e6251c076ffefb52c181
+    darling/src/external/xnu: c093766c6abb005ad85392c78c77c1e73c817da3
+    darling/src/external/libplatform: aa23756779ff852be148fc08dec34f6ee371b08e
+    darling/src/external/perl: 4f1f2a7a7818800a8e39d1cddbcf7832c246e375
+    darling/src/external/libressl-2.8.3: c8ba46eeec25cfc71d0642c253e4ebe18c2898ae
+    darling/src/external/libpthread: addb3f6964e54573b34c189b7eeb5c54f3b34f5e
+    darling: e6092e1522b253d43e62a915ff137596f31b2878
+    darling/src/external/installer: a616bc3fd5afce5c9ca62a34e3d0fad30c4b45c6
+frozen_manifest:
+  path: west.lock.yml
+  sha256: 5718c32c76a180b9078a206b93d93e70f478a5ada0034cd6afcc789c447e055d
+mapping:
+  path: lock-first-series-perf-v2.yml
+  sha256: 108bec48bfbf3f9abef96071202eb20a29f5711425810831196752871df42830
+  batch_id: darling-perf-lock-first-batch-1
+  expected_count: 7
+modules:
+- module: darling
+  starting:
+    tree: e6092e1522b253d43e62a915ff137596f31b2878
+  series:
+  - patch: darling/mldr-compact-fd-band.patch
+    lock: darling-mldr-compact-fd-band-v1.yml
+    expected_applied_tree: 5befc5cfebf5b7a8d38a7b5a937825aff662a2f2
+  final_tree: 5befc5cfebf5b7a8d38a7b5a937825aff662a2f2
+  integration_final_tree: 00618a890482261087560b2d942131bf0cf7274e
+- module: darling/src/external/xnu
+  starting:
+    tree: c093766c6abb005ad85392c78c77c1e73c817da3
+  series:
+  - patch: xnu/shmem-ring-guest.patch
+    lock: darling-xnu-shmem-ring-guest-profile-v7.yml
+    expected_applied_tree: 03a593d3131f7f57949473f18399a7b28fc998a9
+  - patch: xnu/j7e7-lane-wakefd-sentinel.patch
+    lock: darling-xnu-j7e7-lane-wakefd-sentinel-profile-v7.yml
+    expected_applied_tree: 50258531a2475add6e9e1203d4ded408cfc605c9
+  final_tree: 50258531a2475add6e9e1203d4ded408cfc605c9
+  integration_final_tree: 50258531a2475add6e9e1203d4ded408cfc605c9
+- module: darling/src/external/dyld
+  starting:
+    tree: 4dee94a7af9ac7fd1a15115c368d679553af8f8d
+  series:
+  - patch: dyld/dcc2-reader.patch
+    lock: dyld-dcc2-reader-v1.yml
+    expected_applied_tree: 967445c7fbe8c6db155160c323cb4ece3a5cd1df
+  final_tree: 967445c7fbe8c6db155160c323cb4ece3a5cd1df
+  integration_final_tree: 967445c7fbe8c6db155160c323cb4ece3a5cd1df
+- module: darling/src/external/darlingserver
+  starting:
+    tree: c094b9e6f456231d4358e6251c076ffefb52c181
+  series:
+  - patch: darlingserver/perf18-server-ring.patch
+    lock: darlingserver-perf18-server-ring-profile-v7.yml
+    expected_applied_tree: ad558edf99e5a82fd237ce27f8f7e4289c3a3597
+  - patch: darlingserver/a0-hang-fixes.patch
+    lock: darlingserver-a0-hang-fixes-profile-v7.yml
+    expected_applied_tree: e6f2a07874758db513716c8f279acaa7f7b5e762
+  - patch: darlingserver/j7e7-postfork-reset-gate.patch
+    lock: darlingserver-j7e7-postfork-reset-gate-profile-v7.yml
+    expected_applied_tree: c022fe48df4c0c65df4be67d711ffdab5eab9810
+  final_tree: c022fe48df4c0c65df4be67d711ffdab5eab9810
+  integration_final_tree: c022fe48df4c0c65df4be67d711ffdab5eab9810

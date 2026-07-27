@@ -1,0 +1,13 @@
+schema_version: 1
+exceptions:
+  - profile: perf
+    patch: xnu/shmem-ring-guest.patch
+    artifact: patches/perf/xnu/shmem-ring-guest.patch
+    classification: LEGACY_ARCHIVE_NOT_CLEAN_ODB_REPRODUCIBLE
+    lock: darling-xnu-shmem-ring-guest-profile-v7.yml
+    missing_blob: 024ca655535df09af16e052c927001ac50484aff
+    index_path: darling/src/libsystem_kernel/emulation/src/linux_premigration/vchroot_userspace.c
+    index_preimage: 024ca655535df09af16e052c927001ac50484aff
+    declared_base: e1db4266f50415c013371fc57e8f38a0423493ec
+    declared_source: 88dcbf670cd4d1c000dd7f7d95324784bafb0dca
+    authority: immutable-cherry-pick-oracle
