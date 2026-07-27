@@ -132,23 +132,11 @@ class RuntimeSourceMaterializer:
         started = time.monotonic()
         results: list[dict[str, Any]] = []
         initialized: set[str] = set()
-        first_entries: dict[str, dict[str, Any]] = {}
-        for _phase, phase_plan in plans:
-            for entry in phase_plan:
-                first_entries.setdefault(entry["module"], entry)
-        parent_modules = sorted(
-            (module for module in first_entries
-             if any(other.startswith(f"{module}/") for other in first_entries)),
-            key=lambda module: len(Path(module).parts),
-        )
-        for module in parent_modules:
-            lock = patch_stack_materialize.load_lock(
-                Path(first_entries[module]["lock_path"])
-            )
-            patch_stack_materialize._git(
-                overrides[module], "reset", "--hard", lock["upstream"]["base_commit"]
-            )
-            initialized.add(module)
+        # Do not reset an overlapping parent before its immutable inputs are
+        # fetched. A fresh West clone contains only the manifest revision;
+        # the typed base can be absent. ``materialize_batch_into()`` fetches,
+        # validates and then performs this reset atomically for the parent
+        # module itself, before native replay.
         for phase, phase_plan in plans:
             for module in phase_plan.batch["module_order"]:
                 target = overrides.get(module)
