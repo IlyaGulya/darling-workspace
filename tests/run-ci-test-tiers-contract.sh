@@ -235,6 +235,15 @@ grep -F -x -q "cmake -S testkit -B $tmp/macos-build -DBUILD_TESTING=ON" "$tmp/co
 grep -F -x -q "ctest --test-dir $tmp/macos-build --output-on-failure -L env:macos" "$tmp/commands"
 grep -F -x -q "cmake --install $tmp/package-build" "$tmp/commands"
 
+arch_acceptance_workflow="$(sed -n '/^  arch-lock-first:/,/^  host:/p' "$repo/.github/workflows/test-infra.yml")"
+printf '%s\n' "$arch_acceptance_workflow" | grep -F -q "github.event_name == 'workflow_dispatch' && inputs.tier == 'arch-lock-first'"
+if printf '%s\n' "$arch_acceptance_workflow" | grep -F -q "github.event_name == 'push'"; then
+	echo 'Arch lock-first acceptance unexpectedly has a push trigger' >&2
+	exit 1
+fi
+[ "$(printf '%s\n' "$arch_acceptance_workflow" | grep -F -c 'fetch-depth: 0')" -eq 1 ]
+printf '%s\n' "$arch_acceptance_workflow" | grep -F -q 'patch_stack_shadow_acceptance.py capture'
+
 deps_script='darling-dev/darling-workspace/ci/install-darling-build-deps.sh'
 [ "$(grep -F -c "run: $deps_script" "$repo/.github/workflows/test-infra.yml")" -ge 2 ]
 [ "$(grep -F -c 'timeout-minutes: 30' "$repo/.github/workflows/test-infra.yml")" -ge 1 ]

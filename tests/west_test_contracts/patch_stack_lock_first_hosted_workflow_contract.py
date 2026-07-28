@@ -7,9 +7,12 @@ import sys
 import tempfile
 from pathlib import Path
 
+import yaml
+
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "ci"))
 import patch_stack_lock_first_acceptance as acceptance
+import patch_stack_shadow_acceptance as capture_acceptance
 
 
 def git(repo: Path, *args: str) -> str:
@@ -25,6 +28,61 @@ def must_fail(fn, *args) -> None:
     except acceptance.AcceptanceError:
         return
     raise AssertionError("lock-first compare accepted invalid evidence")
+
+
+def arch_acceptance_checkout_contract() -> None:
+    """The manual Arch capture receives a complete, non-shallow checkout."""
+    workflow_path = ROOT / ".github/workflows/test-infra.yml"
+    workflow_data = yaml.safe_load(workflow_path.read_text())
+    arch_job = workflow_data["jobs"]["arch-lock-first"]
+    assert arch_job["if"] == (
+        "github.event_name == 'workflow_dispatch' && "
+        "inputs.tier == 'arch-lock-first'"
+    )
+    assert "push" not in arch_job["if"]
+    checkout_steps = [
+        step for step in arch_job["steps"]
+        if step.get("uses") == "actions/checkout@v7"
+    ]
+    assert len(checkout_steps) == 1
+    checkout = checkout_steps[0]
+    assert checkout["with"] == {
+        "path": "darling-dev/darling-workspace",
+        "fetch-depth": 0,
+    }
+    checkout_index = arch_job["steps"].index(checkout)
+    capture_indices = [
+        index for index, step in enumerate(arch_job["steps"])
+        if "patch_stack_shadow_acceptance.py capture" in step.get("run", "")
+    ]
+    assert len(capture_indices) == 1 and checkout_index < capture_indices[0]
+
+    capture_source = (ROOT / "ci/patch_stack_shadow_acceptance.py").read_text()
+    assert (
+        'if git(repo, "rev-parse", "--is-shallow-repository") != "false":\n'
+        '        raise AcceptanceError(f"{repo}: shallow repository")'
+    ) in capture_source
+
+    with tempfile.TemporaryDirectory(prefix="arch-checkout-contract-") as temporary:
+        root = Path(temporary)
+        source = root / "source"
+        git(root, "init", "-q", str(source))
+        git(source, "config", "user.name", "Contract")
+        git(source, "config", "user.email", "contract@example.invalid")
+        (source / "tracked").write_text("content\n")
+        git(source, "add", "tracked")
+        git(source, "commit", "-qm", "source")
+        shallow = root / "shallow"
+        git(root, "clone", "-q", "--depth", "1", source.as_uri(), str(shallow))
+        try:
+            capture_acceptance.assert_clean_odb(shallow)
+        except capture_acceptance.AcceptanceError:
+            pass
+        else:
+            raise AssertionError("strict capture accepted a shallow repository")
+        complete = root / "complete"
+        git(root, "clone", "-q", source.as_uri(), str(complete))
+        capture_acceptance.assert_clean_odb(complete)
 
 
 def synthetic_compare_contract() -> None:
@@ -346,5 +404,6 @@ shadow_acceptance = (ROOT / "ci/patch_stack_shadow_acceptance.py").read_text()
 assert '"lock-first-modules.json"' in shadow_acceptance
 assert '"lock-first-manifest.json"' in shadow_acceptance
 assert '"legacy-oracle.json"' in shadow_acceptance
+arch_acceptance_checkout_contract()
 synthetic_compare_contract()
 print("patch-stack lock-first hosted-workflow contract: PASS")
