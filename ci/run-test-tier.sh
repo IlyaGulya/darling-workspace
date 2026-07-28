@@ -102,14 +102,14 @@ case "${1:-}" in
 		# Source-bound host cases must be selected through metadata so west can
 		# materialize the patch profile before CMake compiles the real source.
 		tests/run-west-patch-stack-materialize-contract.sh
-		tests/run-west-patch-stack-shadow-contract.sh
 		tests/run-west-patch-stack-lock-first-contract.sh
 		tests/run-profile-composition-dependency-contract.sh
 		tests/run-west-patch-stack-default-cutover-contract.sh
-		tests/run-west-patch-stack-legacy-observation-contract.sh
+		tests/run-west-patch-stack-retirement-policy-contract.sh
 		tests/run-west-patch-stack-runtime-source-contract.sh
+		tests/run-patch-stack-immutable-oracle-contract.sh
+		tests/run-west-patch-stack-export-contract.sh
 		tests/run-patch-stack-lock-first-hosted-workflow-contract.sh
-		tests/run-patch-stack-shadow-hosted-workflow-contract.sh
 		tests/run-patch-stack-migration-inventory-contract.sh
 		exec west test --profile homebrew --env host --materialize-profile "${@:2}"
 		;;

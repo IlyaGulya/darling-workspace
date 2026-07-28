@@ -691,10 +691,11 @@ the developer's current checkout stable while making headers, source files, and
 test assets come from the intended profile.
 
 With `--materialize-profile`, selected profile metadata tests run from temporary
-detached worktrees built from the West manifest revisions plus the profile's
-patch files. For stacked profiles, base profiles are applied first. The live
-checkout is not switched, and stale `integration/<profile>` branches are not
-trusted for test assets. List mode never materializes worktrees.
+detached worktrees built from the frozen West manifest and typed immutable
+schema-v2 locks. For composed profiles, typed prerequisite profiles are replayed
+first in dependency order. Historical patch archives and stale
+`integration/<profile>` branches are not materialization inputs. The live
+checkout is not switched, and list mode never materializes worktrees.
 
 For a bounded diagnostic A/B of a declared runtime provider, use
 `--runtime-cmake-define NAME=VALUE`. The override is applied only to the

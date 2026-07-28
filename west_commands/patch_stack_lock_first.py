@@ -75,8 +75,8 @@ def _cherry_pick(repo: Path, commit: str, *, git_options: tuple[str, ...] = ()) 
 
     The input remains the declared immutable commit; the temporary mbox is
     generated locally with ``format-patch``.  This intentionally shares the
-    exact message parsing and whitespace behavior of the legacy ``git am``
-    oracle without reading a legacy patch archive.
+    exact message parsing and whitespace behavior of native ``git am``
+    without reading a historical patch archive.
     """
     mbox = None
     try:
@@ -457,6 +457,7 @@ def materialize_batch_into(
     git_options: tuple[str, ...] = (),
     reset_to_first_base: bool = False,
     composition: dict[str, Any] | None = None,
+    skip_patches: set[str] | None = None,
 ) -> tuple[list[dict[str, Any]], dict[str, int]]:
     """Validate and replay one module's immutable series in one transaction.
 
@@ -466,7 +467,11 @@ def materialize_batch_into(
     native ``format-patch`` and ``git am``. ``reset_to_first_base`` is only
     for lifecycle-owned disposable worktrees whose manifest revision is not
     the profile's immutable integration base. The caller owns profile
-    rollback.
+    rollback. ``skip_patches`` is reserved for current-minus RED proofs: all
+    immutable locks are still fetched and validated, but selected series are
+    omitted and later series are proven by exact range-diff/patch identity
+    rather than by a canonical boundary tree that necessarily includes the
+    omitted change.
     """
     if not entries or len({entry["module"] for entry in entries}) != 1:
         raise LockFirstError("lock-first batch must contain one non-empty module")
@@ -486,6 +491,13 @@ def materialize_batch_into(
     fetched_prefix = f"refs/west/patch-stack-lock-first/{transaction}"
     fetched_refs: list[str] = []
     results: list[dict[str, Any]] = []
+    skipped = skip_patches or set()
+    configured_patches = {entry["patch"] for entry in entries}
+    if skipped - configured_patches:
+        raise LockFirstError(
+            "current-minus skip is not present in the typed module batch: "
+            + ", ".join(sorted(skipped - configured_patches))
+        )
     stats = {"immutable_fetch_transactions": 0, "temporary_contexts": 1, "validated_locks": 0, "replayed_commits": 0}
     try:
         root.mkdir()
@@ -524,7 +536,11 @@ def materialize_batch_into(
         if reset_to_first_base:
             first_base = validated[0][2]["base_oid"]
             patch_stack_materialize._git(repo, "reset", "--hard", first_base)
+        omitted_before = False
         for entry, lock, proof in validated:
+            if entry["patch"] in skipped:
+                omitted_before = True
+                continue
             before = patch_stack_materialize._oid(repo, "HEAD")
             before_tree = patch_stack_materialize._git(repo, "rev-parse", "HEAD^{tree}")
             declared_base_tree = patch_stack_materialize._git(repo, "show", "-s", "--format=%T", proof["base_oid"])
@@ -533,11 +549,14 @@ def materialize_batch_into(
                 stats["replayed_commits"] += 1
             after = patch_stack_materialize._oid(repo, "HEAD")
             applied_tree = patch_stack_materialize._git(repo, "rev-parse", "HEAD^{tree}")
-            if before_tree == declared_base_tree:
+            if not omitted_before and before_tree == declared_base_tree:
                 expected_tree = proof["resulting_tree"]
-            else:
+            elif not omitted_before:
                 _require_exact_replay(repo, proof, before, after)
                 expected_tree = _composition_boundary(composition, entry)
+            else:
+                _require_exact_replay(repo, proof, before, after)
+                expected_tree = applied_tree
             if applied_tree != expected_tree:
                 raise LockFirstError(
                     f"{entry['patch']}: immutable replay tree {applied_tree} differs from "
@@ -582,13 +601,13 @@ def materialize_batch_into(
             raise LockFirstError("lock-first batch cleanup failed: " + "; ".join(failures))
 
 
-def materialize_into(repo: Path, lock_first_plan: dict[str, str], legacy_patch: Path, oracle_evidence: Path | None = None) -> dict[str, Any]:
+def materialize_into(
+    repo: Path, lock_first_plan: dict[str, str]
+) -> dict[str, Any]:
     """Compatibility shim for focused single-series tests.
 
-    Production invokes :func:`materialize_batch_into`; retained legacy patches
-    remain an independent oracle in dedicated shadow/differential contracts,
-    rather than forcing a clean-ODB oracle transaction for every series.
+    Production invokes :func:`materialize_batch_into`; this wrapper accepts
+    only a typed immutable-lock entry and never an archive path.
     """
-    del legacy_patch, oracle_evidence
     results, _ = materialize_batch_into(repo, [lock_first_plan])
     return results[0]

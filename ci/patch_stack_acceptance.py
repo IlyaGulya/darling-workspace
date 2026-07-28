@@ -1,10 +1,11 @@
 #!/usr/bin/env python3
-"""Fail-closed evidence helpers for the manual hosted shadow acceptance tier."""
+"""Fail-closed capture/staging helpers for canonical hosted acceptance."""
 from __future__ import annotations
 
 import argparse
 import hashlib
 import json
+import re
 import shutil
 import subprocess
 import sys
@@ -19,14 +20,9 @@ class AcceptanceError(RuntimeError):
 
 
 ARTIFACT_ALLOWLIST = {
-    "control-manifest.json",
-    "control-modules.json",
-    "legacy-oracle.json",
+    "immutable-oracle.json",
     "lock-first-manifest.json",
     "lock-first-modules.json",
-    "shadow-manifest.json",
-    "shadow-modules.json",
-    "shadow-evidence.json",
     "lock-first-evidence.json",
     "acceptance-result.json",
     "cleanup.txt",
@@ -191,11 +187,82 @@ def assert_clean_odb(repo: Path) -> None:
 
 
 def touched_projects(profile_data: dict[str, Any], available: dict[str, dict[str, Any]]) -> set[str]:
-    modules = {"darling"} | {item["module"] for item in profile_data["patches"]}
+    patches = profile_data.get("patches")
+    fail(isinstance(patches, list), "profile patches are invalid")
+    modules = {"darling"}
+    for index, item in enumerate(patches):
+        fail(
+            isinstance(item, dict)
+            and isinstance(item.get("module"), str)
+            and item["module"],
+            f"profile patch {index} has invalid module",
+        )
+        modules.add(item["module"])
     unknown = modules - available.keys()
     if unknown:
         raise AcceptanceError(f"unknown profile modules: {sorted(unknown)}")
     return modules
+
+
+def composed_project_profiles(
+    workspace: Path,
+    profile: str,
+    available: dict[str, dict[str, Any]],
+) -> dict[str, str]:
+    """Map every touched module in the typed stack to its final profile layer."""
+    effective: dict[str, str] = {}
+    for phase in generated_lock_profiles(workspace, profile):
+        try:
+            profile_data = yaml.safe_load(
+                (workspace / "patches" / phase / "patches.yml").read_text()
+            )
+        except (OSError, yaml.YAMLError) as error:
+            raise AcceptanceError(
+                f"{phase}: invalid profile metadata for module capture: {error}"
+            ) from error
+        fail(isinstance(profile_data, dict), f"{phase}: profile metadata is invalid")
+        for module in touched_projects(profile_data, available):
+            effective[module] = phase
+    fail(effective, f"{profile}: composed profile has no touched modules")
+    return effective
+
+
+def generated_lock_revisions(path: Path) -> dict[str, str]:
+    """Load exact project-path revisions from one generated West lock."""
+    try:
+        value = yaml.safe_load(path.read_text())
+    except (OSError, yaml.YAMLError) as error:
+        raise AcceptanceError(f"invalid generated profile lock {path}: {error}") from error
+    projects_value = value.get("manifest", {}).get("projects") if isinstance(value, dict) else None
+    fail(isinstance(projects_value, list), f"generated profile lock has no project list: {path}")
+    revisions: dict[str, str] = {}
+    for index, project in enumerate(projects_value):
+        fail(isinstance(project, dict), f"generated profile lock project {index} is invalid")
+        project_path = project.get("path", project.get("name"))
+        revision = project.get("revision")
+        fail(
+            isinstance(project_path, str)
+            and project_path
+            and project_path not in revisions
+            and isinstance(revision, str)
+            and re.fullmatch(r"[0-9a-f]{40}", revision) is not None,
+            f"generated profile lock project {index} has invalid path/revision",
+        )
+        revisions[project_path] = revision
+    return revisions
+
+
+def verify_generated_module_revisions(
+    rows: list[dict[str, Any]], revisions: dict[str, str]
+) -> None:
+    """Bind every published integration row to the final generated lock."""
+    for row in rows:
+        module = row["module"]
+        fail(
+            revisions.get(module) == row["integration_oid"],
+            f"{module}: final generated lock revision differs from "
+            f"refs/heads/integration/{row['integration_profile']}",
+        )
 
 
 def parse_porcelain(raw: bytes) -> list[tuple[str, str]]:
@@ -241,10 +308,9 @@ def parent_clean(repo: Path, nested: dict[str, dict[str, Any]]) -> list[dict[str
 
 
 def capture(workspace: Path, profile: str, modules_path: Path, manifest_path: Path) -> None:
-    profile_data = yaml.safe_load((workspace / "patches" / profile / "patches.yml").read_text())
     top = Path(command(workspace, "west", "topdir"))
     available = projects(workspace, top)
-    modules = touched_projects(profile_data, available)
+    module_profiles = composed_project_profiles(workspace, profile, available)
     # The run is only trustworthy if every materialized project has an
     # independent complete object database and the production workspace is
     # clean, not merely the modules that happen to receive mbox patches.
@@ -277,22 +343,27 @@ def capture(workspace: Path, profile: str, modules_path: Path, manifest_path: Pa
         elif repo != workspace:
             fail(git(repo, "status", "--porcelain", "--ignore-submodules=none") == "", f"dirty workspace project: {repo}")
     rows = []
-    for module in sorted(modules):
+    target_revisions = generated_lock_revisions(workspace / expected_generated[-1][1])
+    for module in sorted(module_profiles):
         project = available[module]
         repo = project["path"]
         status = git(repo, "status", "--porcelain", "--ignore-submodules=none")
         relative = str(repo.relative_to(top))
         if relative in validated_parents:
             status = ""
-        ref = f"refs/heads/integration/{profile}"
+        integration_profile = module_profiles[module]
+        ref = f"refs/heads/integration/{integration_profile}"
+        integration_oid = git(repo, "rev-parse", ref)
         rows.append({
             "module": module,
             "west_name": project["name"],
             "path": relative,
-            "integration_oid": git(repo, "rev-parse", ref),
+            "integration_profile": integration_profile,
+            "integration_oid": integration_oid,
             "tree": git(repo, "rev-parse", f"{ref}^{{tree}}"),
             "status": status,
         })
+    verify_generated_module_revisions(rows, target_revisions)
     modules_path.write_text(json.dumps({"profile": profile, "modules": rows}, sort_keys=True, indent=2) + "\n")
     manifest_path.write_text(json.dumps({
         "workspace_commit": git(workspace, "rev-parse", "HEAD"),
@@ -317,56 +388,21 @@ def fail(condition: bool, message: str) -> None:
 def assert_no_transaction_state(workspace: Path) -> None:
     for project in projects(workspace).values():
         repo = project["path"]
-        refs = git(repo, "for-each-ref", "--format=%(refname)", "refs/west/patch-stack-materialize/", "refs/west/patch-stack-results/")
+        refs = git(
+            repo,
+            "for-each-ref",
+            "--format=%(refname)",
+            "refs/west/patch-stack-materialize/",
+            "refs/west/patch-stack-results/",
+            "refs/west/patch-stack-lock-first/",
+        )
         fail(not refs, f"{repo}: transaction refs remain: {refs}")
         worktrees = git(repo, "worktree", "list", "--porcelain")
-        fail("west-lock-materialize-" not in worktrees and "west-patch-shadow-" not in worktrees, f"{repo}: disposable worktree remains")
-
-
-def compare(control: Path, shadow: Path, control_manifest: Path, shadow_manifest: Path, evidence: Path, lock_path: Path, control_workspace: Path, shadow_workspace: Path, result: Path) -> None:
-    control_map, shadow_map = load(control), load(shadow)
-    fail(control_map == shadow_map, "control and shadow module maps differ")
-    control_value, shadow_value = load(control_manifest), load(shadow_manifest)
-    fail(control_value == shadow_value, "control and shadow frozen manifests differ")
-    profile = control_map.get("profile")
-    fail(isinstance(profile, str) and profile, "module map profile is invalid")
-    generated = control_value.get("generated_profile_locks")
-    fail(isinstance(generated, list) and generated and all(
-        isinstance(item, dict) and set(item) == {"profile", "path", "size", "sha256"}
-        and isinstance(item["profile"], str) and item["profile"]
-        and item["path"] == f"patches/{item['profile']}/west.lock.yml"
-        and isinstance(item["size"], int) and item["size"] >= 0
-        and isinstance(item["sha256"], str) and len(item["sha256"]) == 64
-        for item in generated) and len({item["path"] for item in generated}) == len(generated),
-        "generated profile lock evidence is incomplete")
-    expected = generated_lock_paths(control_workspace, profile)
-    fail([(item["profile"], item["path"]) for item in generated] == expected,
-         "generated profile lock order differs from typed composition")
-    fail(generated == generated_lock_evidence(control_workspace, expected),
-         "control generated profile lock content differs from evidence")
-    fail(generated == generated_lock_evidence(shadow_workspace, expected),
-         "shadow generated profile lock content differs from evidence")
-    rows = control_map.get("modules")
-    fail(isinstance(rows, list) and rows, "module map is incomplete")
-    for row in rows:
-        fail(row.get("status") == "", f"dirty module: {row.get('module')}")
-        fail(isinstance(row.get("integration_oid"), str) and len(row["integration_oid"]) == 40, "missing integration ref")
-        fail(isinstance(row.get("tree"), str) and len(row["tree"]) == 40, "missing resulting tree")
-    candidates = list(evidence.parent.glob(f"{evidence.stem}*{evidence.suffix}"))
-    fail(candidates == [evidence], "acceptance evidence is missing or duplicated")
-    value = load(evidence)
-    lock = yaml.safe_load(lock_path.read_text())
-    fail(value.get("verdict") == "VALID", "shadow verdict is not VALID")
-    fail(value.get("fetched_legacy_base_oid") == lock["upstream"]["base_commit"], "legacy base OID mismatch")
-    fail(value.get("source_oid") == lock["source_commit"], "source OID mismatch")
-    fail(value.get("legacy_mbox_ordered_commits") == lock["ordered_commits"], "legacy mbox chain mismatch")
-    fail(value.get("legacy_mbox_commit_count") == len(lock["ordered_commits"]), "legacy mbox count mismatch")
-    fail(value.get("legacy_resulting_tree") == lock["expected_tree"], "legacy tree mismatch")
-    fail(value.get("canonical_resulting_tree") == lock["expected_tree"], "canonical tree mismatch")
-    fail(value.get("cleanup", {}).get("root") == "removed", "shadow cleanup was incomplete")
-    assert_no_transaction_state(control_workspace)
-    assert_no_transaction_state(shadow_workspace)
-    result.write_text(json.dumps({"verdict": "VALID", "module_count": len(rows), "shadow_evidence": evidence.name}, sort_keys=True, indent=2) + "\n")
+        fail(
+            "west-lock-materialize-" not in worktrees
+            and "west-patch-lock-first-" not in worktrees,
+            f"{repo}: disposable worktree remains",
+        )
 
 
 def stage(source: Path, artifact: Path) -> None:
@@ -390,9 +426,6 @@ def main() -> None:
     capture_parser.add_argument("--profile", required=True)
     capture_parser.add_argument("--modules", type=Path, required=True)
     capture_parser.add_argument("--manifest", type=Path, required=True)
-    compare_parser = sub.add_parser("compare")
-    for name in ("control", "shadow", "control-manifest", "shadow-manifest", "evidence", "lock", "control-workspace", "shadow-workspace", "result"):
-        compare_parser.add_argument(f"--{name}", type=Path, required=True)
     stage_parser = sub.add_parser("stage")
     stage_parser.add_argument("--source", type=Path, required=True)
     stage_parser.add_argument("--artifact", type=Path, required=True)
@@ -400,12 +433,10 @@ def main() -> None:
     try:
         if args.action == "capture":
             capture(args.workspace, args.profile, args.modules, args.manifest)
-        elif args.action == "compare":
-            compare(args.control, args.shadow, args.control_manifest, args.shadow_manifest, args.evidence, args.lock, args.control_workspace, args.shadow_workspace, args.result)
         else:
             stage(args.source, args.artifact)
     except AcceptanceError as error:
-        print(f"patch-stack shadow acceptance: ERROR: {error}", file=sys.stderr)
+        print(f"patch-stack acceptance: ERROR: {error}", file=sys.stderr)
         raise SystemExit(1)
 
 

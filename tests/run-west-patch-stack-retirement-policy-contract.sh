@@ -1,5 +1,4 @@
 #!/usr/bin/env bash
 set -euo pipefail
-
 repo="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-python3 -B "$repo/tests/west_test_contracts/patch_stack_shadow_hosted_workflow_contract.py"
+python3 -B "$repo/tests/west_test_contracts/patch_stack_retirement_policy_contract.py"

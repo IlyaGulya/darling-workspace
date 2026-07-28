@@ -21,14 +21,12 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from patch_git import (
     TEMPORARY_PATCH_GIT_OPTIONS,
     git,
-    git_for_patch_application,
-    git_for_temporary_patch_application,
 )
 import test_manifest
 import patch_stack_preflight
 import patch_stack_materialize
-import patch_stack_shadow
 import patch_stack_lock_first
+import patch_stack_export
 import patch_stack_profile_composition
 from test_runtime import ROOTLESS_BOOTSTRAP_RESOURCE, ROOTLESS_BOOTSTRAP_TARGET
 
@@ -152,7 +150,7 @@ class DarlingPatch(WestCommand):
     def do_add_parser(self, parser_adder):
         parser = parser_adder.add_parser(self.name, description=self.description)
         subparsers = parser.add_subparsers(dest="action", required=True)
-        for action in ("list", "verify", "export", "apply", "clean", "status", "check", "preflight", "materialize-lock"):
+        for action in ("list", "verify", "export", "export-locks", "apply", "clean", "status", "check", "preflight", "materialize-lock"):
             command = subparsers.add_parser(action)
             command.add_argument("--profile", default="homebrew")
             if action == "verify":
@@ -176,8 +174,22 @@ class DarlingPatch(WestCommand):
                     action="store_true",
                     help="allow writing unusually large exported patch output",
                 )
+            if action == "export-locks":
+                command.add_argument(
+                    "--output",
+                    required=True,
+                    help="create a new canonical review/recovery mbox directory",
+                )
             if action == "apply":
-                command.add_argument("--roll-back", action="store_true")
+                command.add_argument(
+                    "--roll-back",
+                    action="store_true",
+                    help=(
+                        "deprecated compatibility no-op for the immutable "
+                        "build-drift recovery instruction; canonical apply "
+                        "always rolls back fail-closed on errors"
+                    ),
+                )
                 command.add_argument(
                     "--lock-first",
                     action="store_true",
@@ -185,21 +197,7 @@ class DarlingPatch(WestCommand):
                 )
                 command.add_argument(
                     "--lock-first-evidence",
-                    help="write independent legacy/canonical oracle evidence to this explicit path",
-                )
-                command.add_argument(
-                    "--legacy-mbox",
-                    action="store_true",
-                    help="use retained legacy git am --3way materialization instead of homebrew lock-first",
-                )
-                command.add_argument(
-                    "--shadow-lock",
-                    action="store_true",
-                    help="opt in to canonical shadow comparison for an approved series",
-                )
-                command.add_argument(
-                    "--shadow-evidence",
-                    help="write shadow JSON evidence to this explicit path",
+                    help="write canonical batch evidence to this explicit path",
                 )
             if action == "clean":
                 command.add_argument("--force", action="store_true")
@@ -207,7 +205,7 @@ class DarlingPatch(WestCommand):
                 command.add_argument(
                     "--strict",
                     action="store_true",
-                    help="exit non-zero if any patch is MISSING or CONFLICT",
+                    help="exit non-zero unless every typed integration tree matches",
                 )
             if action == "preflight":
                 command.add_argument("--repo", required=True)
@@ -297,6 +295,7 @@ class DarlingPatch(WestCommand):
             self._list(patches)
         elif args.action == "verify":
             self._verify(
+                args.profile,
                 profile_dir,
                 patches,
                 require_source_branches=not args.applicability_only,
@@ -311,8 +310,27 @@ class DarlingPatch(WestCommand):
                 args.check,
                 args.allow_large_output,
             )
+        elif args.action == "export-locks":
+            grouped = self._group(patches)
+            try:
+                plan = patch_stack_lock_first.plan(
+                    args.profile, patches, None, grouped
+                )
+                result = patch_stack_export.export_profile(
+                    args.profile, plan, Path(args.output)
+                )
+            except (
+                patch_stack_lock_first.LockFirstError,
+                patch_stack_export.ExportError,
+            ) as error:
+                self.die(str(error))
+            self.inf(
+                "canonical lock export: "
+                f"{result['batch_id']} {result['expected_count']} "
+                f"{result['verdict']}"
+            )
         elif args.action == "status":
-            self._status(profile_dir, patches, args.strict)
+            self._status(args.profile, patches, args.strict)
         elif args.action == "check":
             self._check(
                 profile_dir,
@@ -327,12 +345,8 @@ class DarlingPatch(WestCommand):
                 profile_dir,
                 patches,
                 profile["integration-date"],
-                args.roll_back,
-                args.shadow_lock,
-                args.shadow_evidence,
                 args.lock_first,
                 args.lock_first_evidence,
-                args.legacy_mbox,
             )
         else:
             self._clean(args.profile, patches, args.force)
@@ -434,8 +448,7 @@ class DarlingPatch(WestCommand):
 
         A profile-composition prerequisite is a tree contract, not a generated
         integration-commit reference.  This helper is intentionally used only
-        by lock-first application; legacy invocation retains its historical
-        explicit-base requirement.
+        by canonical lock-first application.
         """
         profile_dir = Path(self.manifest.repo_abspath) / "patches" / profile_name
         profile_path = profile_dir / "patches.yml"
@@ -457,11 +470,7 @@ class DarlingPatch(WestCommand):
                 profile.get("patches", []),
                 profile["integration-date"],
                 False,
-                False,
                 None,
-                False,
-                None,
-                False,
             )
         finally:
             self._base_profile = previous_base_profile
@@ -1746,6 +1755,7 @@ class DarlingPatch(WestCommand):
 
     def _verify(
         self,
+        profile: str,
         profile_dir: Path,
         patches,
         *,
@@ -1812,7 +1822,7 @@ class DarlingPatch(WestCommand):
                 self.die(f"{patch['path']}: missing PR draft {pr_draft}")
             self.inf(f"verified {path.relative_to(manifest_repo)}")
 
-        self._verify_applicability(profile_dir, grouped)
+        self._verify_applicability(profile, grouped)
         self.inf(f"verified {len(patches)} patches")
 
     def _export(
@@ -2159,16 +2169,28 @@ class DarlingPatch(WestCommand):
             self.die(f"{profile_path}: failed to update entries: {', '.join(missing_updates)}")
         profile_path.write_text("".join(lines))
 
-    def _verify_applicability(self, profile_dir: Path, grouped):
+    def _verify_applicability(self, profile: str, grouped):
+        patches = [
+            patch
+            for module_patches in grouped.values()
+            for patch in module_patches
+        ]
+        try:
+            plan = patch_stack_lock_first.plan(profile, patches, None, grouped)
+        except patch_stack_lock_first.LockFirstError as error:
+            self.die(str(error))
         with tempfile.TemporaryDirectory(prefix="west-patch-verify-") as temp:
             temp_root = Path(temp)
             for index, (module, module_patches) in enumerate(grouped.items()):
                 repo = self._repo(module)
                 worktree = temp_root / str(index)
-                # Verify each module's patches apply on the SAME base they will
-                # be applied on: manifest-rev, or the base profile's integration
-                # tip when stacking.
-                revision = self._base_revision(module)
+                # The worktree is disposable and begins at the frozen manifest
+                # revision. The canonical module transaction fetches and
+                # validates only declared immutable refs, then resets to its
+                # first typed base before replay. Patch archives are checksum
+                # and provenance fixtures only; applicability never executes
+                # them.
+                revision = self._manifest_revision(module)
                 git(
                     repo,
                     "worktree",
@@ -2179,13 +2201,25 @@ class DarlingPatch(WestCommand):
                     revision,
                 )
                 try:
-                    for patch in module_patches:
-                        git_for_temporary_patch_application(
-                            worktree,
-                            "am",
-                            "--3way",
-                            "--committer-date-is-author-date",
-                            str(profile_dir / patch["path"]),
+                    entries = [
+                        entry for entry in plan if entry["module"] == module
+                    ]
+                    if len(entries) != len(module_patches):
+                        raise RuntimeError(
+                            f"{profile}/{module}: canonical applicability plan "
+                            "does not cover every patch"
+                        )
+                    results, _stats = patch_stack_lock_first.materialize_batch_into(
+                        worktree,
+                        entries,
+                        git_options=TEMPORARY_PATCH_GIT_OPTIONS,
+                        reset_to_first_base=True,
+                        composition=plan.composition,
+                    )
+                    if len(results) != len(module_patches):
+                        raise RuntimeError(
+                            f"{profile}/{module}: canonical applicability "
+                            "result count differs"
                         )
                 finally:
                     self._abort_am(worktree)
@@ -2198,90 +2232,51 @@ class DarlingPatch(WestCommand):
                         check=False,
                     )
 
-    def _patch_state(self, repo: Path, patch_path: Path) -> str:
-        """Classify a patch against the CURRENT working tree of `repo`.
-
-        Unlike `verify` (which checks the patches against a throwaway worktree at
-        the frozen manifest revision), this inspects the tree you actually build
-        from -- so it catches the case where the build tree drifted away from
-        patches.yml and a tracked fix is silently missing.
-
-          APPLIED  - the patch reverse-applies cleanly: its content is present
-                     verbatim against the current tree.
-          MISSING  - the patch forward-applies cleanly: its content is ABSENT.
-                     This is the authoritative "lost patch" signal.
-          STACKED? - neither clean reverse nor clean forward. For a standalone
-                     patch this means partially applied / context-shifted /
-                     conflicting. But it is ALSO the normal result for a member
-                     of an interdependent patch SERIES (e.g. eunion-*): once a
-                     later patch in the series edits the same lines, an earlier
-                     patch no longer reverse-applies verbatim even though it is
-                     fully present. So STACKED? is NOT proof of drift -- only
-                     MISSING is. Trust a clean `west patch apply`/`verify` as the
-                     authoritative applicability check for stacked series.
-        """
-        reverse_ok = (
-            subprocess.run(
-                ["git", "apply", "--reverse", "--check", str(patch_path)],
-                cwd=repo,
-                check=False,
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
-            ).returncode
-            == 0
-        )
-        if reverse_ok:
-            return "APPLIED"
-        forward_ok = (
-            subprocess.run(
-                ["git", "apply", "--check", str(patch_path)],
-                cwd=repo,
-                check=False,
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
-            ).returncode
-            == 0
-        )
-        if forward_ok:
-            return "MISSING"
-        return "STACKED?"
-
-    def _status(self, profile_dir: Path, patches, strict: bool):
+    def _status(self, profile: str, patches, strict: bool):
+        """Report canonical integration state without executing archives."""
         grouped = self._group(patches)
-        counts = {"APPLIED": 0, "MISSING": 0, "STACKED?": 0, "NOFILE": 0}
+        try:
+            plan = patch_stack_lock_first.plan(profile, patches, None, grouped)
+        except patch_stack_lock_first.LockFirstError as error:
+            self.die(str(error))
+        if plan.composition is None:
+            self.die(f"{profile}: typed profile composition is required")
+        expected = plan.composition["integration_finals"]
+        repos = {module: self._repo(module) for module in expected}
+        counts = {"APPLIED": 0, "MISSING": 0}
+        branch = f"integration/{profile}"
         for module, module_patches in grouped.items():
             repo = self._repo(module)
-            branch = git(repo, "branch", "--show-current", capture=True) or (
-                "(detached " + git(repo, "rev-parse", "--short", "HEAD", capture=True) + ")"
-            )
-            self.inf(f"{module}  [{branch}]")
+            applied = self._branch_exists(repo, branch)
+            detail = ""
+            if applied:
+                try:
+                    patch_stack_profile_composition.verify_integration(
+                        module,
+                        repo,
+                        expected[module],
+                        expected,
+                        repos,
+                        ref=branch,
+                    )
+                except patch_stack_profile_composition.ProfileCompositionError as error:
+                    applied = False
+                    detail = f" ({error})"
+            self.inf(f"{module}  [{branch}]{detail}")
             for patch in module_patches:
-                patch_path = profile_dir / patch["path"]
-                if not patch_path.is_file():
-                    state = "NOFILE"
-                else:
-                    state = self._patch_state(repo, patch_path)
-                counts[state] = counts.get(state, 0) + 1
+                state = "APPLIED" if applied else "MISSING"
+                counts[state] += 1
                 bead = patch.get("bead", "-")
                 self.inf(f"  {state:8} {patch['path']}  [{bead}]")
         total = sum(counts.values())
         self.inf(
-            f"status: {counts['APPLIED']} applied, {counts['MISSING']} missing, "
-            f"{counts['STACKED?']} stacked?, {counts['NOFILE']} no-file "
-            f"(of {total})"
+            f"status: {counts['APPLIED']} applied, "
+            f"{counts['MISSING']} missing (of {total})"
         )
-        if counts["STACKED?"]:
-            self.inf(
-                "note: STACKED? is expected for interdependent series (eunion-*) "
-                "and is NOT drift; only MISSING means a tracked patch is absent."
-            )
-        # MISSING is the authoritative drift signal; STACKED? is not (see
-        # _patch_state). A NOFILE is a real error (patches.yml references a
-        # patch file that does not exist).
-        if strict and (counts["MISSING"] or counts["NOFILE"]):
+        if strict and counts["MISSING"]:
             self.die(
-                f"{counts['MISSING']} missing + {counts['NOFILE']} no-file "
-                "patch(es) -- build tree drifted from patches.yml"
+                f"{counts['MISSING']} patch(es) differ from typed "
+                "profile-composition integration state"
             )
 
     def _abort_am(self, repo: Path):
@@ -2383,69 +2378,32 @@ class DarlingPatch(WestCommand):
         profile_dir: Path,
         patches,
         integration_date: str,
-        roll_back: bool,
-        shadow_lock: bool = False,
-        shadow_evidence: str | None = None,
         lock_first: bool = False,
         lock_first_evidence: str | None = None,
-        legacy_mbox: bool = False,
     ):
         lock_source = Path(self.manifest.repo_abspath) / "west.lock.yml"
         if not lock_source.is_file():
             self.die(f"frozen manifest not found: {lock_source}")
-        if legacy_mbox and (lock_first or lock_first_evidence or shadow_lock or shadow_evidence):
-            self.die("--legacy-mbox is mutually exclusive with --lock-first, --lock-first-evidence, --shadow-lock, and --shadow-evidence")
-        if shadow_evidence and not shadow_lock:
-            self.die("--shadow-evidence requires --shadow-lock")
-        # Every production profile is selected through a typed mapping. Keep
-        # the opt-in spelling as a compatibility alias while the retained
-        # legacy oracle is migrated out of this production command.
-        canonical_default = not legacy_mbox and not shadow_lock
-        use_lock_first = canonical_default or lock_first
-        if shadow_lock:
-            patch_stack_mode = "shadow-lock"
-        elif legacy_mbox:
-            patch_stack_mode = "legacy-mbox"
-        elif lock_first:
+        # Every production profile is selected through a typed mapping.  The
+        # explicit spelling remains a compatibility alias; there is no
+        # archive-backed fallback or shadow branch.
+        if lock_first:
             patch_stack_mode = "explicit-lock-first"
-        elif canonical_default:
-            patch_stack_mode = "default-lock-first"
         else:
-            patch_stack_mode = "legacy-mbox"
-        if lock_first_evidence and not use_lock_first:
-            self.die("--lock-first-evidence requires canonical lock-first mode")
+            patch_stack_mode = "default-lock-first"
         if lock_first_evidence:
             evidence_path = Path(lock_first_evidence)
             if evidence_path.exists() or evidence_path.is_symlink():
                 self.die("--lock-first-evidence must name a new regular output path")
-        if shadow_lock and lock_first:
-            self.die("--shadow-lock and --lock-first are mutually exclusive")
-        if legacy_mbox:
-            # WestCommand supplies err(); the inf fallback keeps the isolated
-            # command contracts independent of West's presentation shim.
-            getattr(self, "err", self.inf)(
-                "warning: --legacy-mbox is deprecated; default-lock-first is the supported production mode"
-            )
-
-        # This is deliberately before generated-context preparation, branch
-        # creation, or `git am`: malformed typed metadata must not mutate a
-        # production worktree.
-        shadow_plan = None
-        if shadow_lock:
-            try:
-                shadow_plan = patch_stack_shadow.plan(profile, patches)
-            except patch_stack_shadow.ShadowError as error:
-                self.die(str(error))
         # Lock-first is ordered exactly as the real application loop: module
         # insertion order from _group(), then profile order within each module.
         # Build it before any generated context, ref, or worktree mutation.
         grouped = self._group(patches)
         lock_first_plan = None
-        if use_lock_first:
-            try:
-                lock_first_plan = patch_stack_lock_first.plan(profile, patches, None, grouped)
-            except patch_stack_lock_first.LockFirstError as error:
-                self.die(str(error))
+        try:
+            lock_first_plan = patch_stack_lock_first.plan(profile, patches, None, grouped)
+        except patch_stack_lock_first.LockFirstError as error:
+            self.die(str(error))
 
         # This selection marker has no paths, URLs, object IDs, or evidence
         # payload.  A success marker is intentionally emitted only below after
@@ -2454,16 +2412,12 @@ class DarlingPatch(WestCommand):
 
         # The snapshot occurs only after the fail-closed planner has accepted
         # the exact Batch mapping and before any lifecycle mutation.
-        generated_lock_snapshot = self._generated_lock_snapshot(profile) if use_lock_first else None
+        generated_lock_snapshot = self._generated_lock_snapshot(profile)
 
         branch = f"integration/{profile}"
-        # A canonical stacked profile declares prerequisite composition trees.
-        # Reconstruct them when invoked standalone; legacy materialization
-        # retains its explicit-base behavior and never receives this fallback.
-        if use_lock_first:
-            self._ensure_composition_prerequisites(profile, lock_first_plan)
-        else:
-            self._require_base_applied(list(grouped))
+        # A canonical stacked profile declares prerequisite composition trees
+        # and reconstructs them when invoked standalone.
+        self._ensure_composition_prerequisites(profile, lock_first_plan)
         modules = list(grouped)
         if "darling" not in modules:
             modules.append("darling")
@@ -2474,7 +2428,6 @@ class DarlingPatch(WestCommand):
                 self.die(str(error))
 
         touched = []
-        shadow_runs = 0
         lock_first_runs: list[tuple[str, str]] = []
         lock_first_results = []
         replay_started = time.monotonic()
@@ -2507,33 +2460,15 @@ class DarlingPatch(WestCommand):
                         f"{stats['replayed_commits']} replayed commits"
                     )
                 for patch in module_patches:
-                    lock_first_entry = next((entry for entry in module_lock_first if patch["path"] == entry["patch"]), None)
-                    if not lock_first_entry:
-                        if use_lock_first:
-                            raise RuntimeError(
-                                f"{profile}: typed lock-first plan omitted {module}/{patch['path']}"
-                            )
-                        path = self._verify_patch(profile_dir, patch)
-                        git_for_patch_application(
-                            repo,
-                            "am",
-                            "--3way",
-                            "--committer-date-is-author-date",
-                            str(path),
+                    if not any(
+                        patch["path"] == entry["patch"]
+                        for entry in module_lock_first
+                    ):
+                        raise RuntimeError(
+                            f"{profile}: typed lock-first plan omitted "
+                            f"{module}/{patch['path']}"
                         )
-                    if shadow_plan and module == shadow_plan["module"] and patch["path"] == shadow_plan["patch"]:
-                        path = self._verify_patch(profile_dir, patch)
-                        evidence = Path(shadow_evidence) if shadow_evidence else None
-                        shadow = patch_stack_shadow.run_shadow(
-                            shadow_plan=shadow_plan,
-                            legacy_patch=path,
-                            evidence_path=evidence,
-                        )
-                        shadow_runs += 1
-                        self.inf(f"shadow {patch['path']}: {shadow['legacy_resulting_tree']} == {shadow['canonical_resulting_tree']}")
                 self.inf(f"{module}: applied {len(module_patches)} patches")
-            if shadow_plan and shadow_runs != 1:
-                raise RuntimeError("shadow plan was not invoked exactly once")
             if lock_first_plan:
                 expected = [(entry["module"], entry["patch"]) for entry in lock_first_plan]
                 if lock_first_runs != expected:
@@ -2571,31 +2506,18 @@ class DarlingPatch(WestCommand):
                 )
             self.inf(f"wrote {lock}")
         except KeyboardInterrupt:
-            # A SIGINT can arrive after legacy git-am but while the isolated
-            # shadow comparison is running.  It must not leave that partial
-            # integration branch behind.  Preserve ordinary no-shadow SIGINT
-            # behavior, and never turn the interrupt into `die()` output.
-            if use_lock_first:
-                try:
-                    self._rollback_canonical_apply(profile, grouped, touched, generated_lock_snapshot)
-                finally:
-                    raise
-            if shadow_lock:
-                try:
-                    for repo in touched:
-                        self._abort_am(repo)
-                    self._reset(profile, grouped, force=True)
-                finally:
-                    raise
-            raise
+            # A SIGINT during canonical replay must not leave a partial
+            # integration branch. Never turn the interrupt into `die()` output.
+            try:
+                self._rollback_canonical_apply(
+                    profile, grouped, touched, generated_lock_snapshot
+                )
+            finally:
+                raise
         except Exception as error:
-            if use_lock_first:
-                self._rollback_canonical_apply(profile, grouped, touched, generated_lock_snapshot)
-            else:
-                for repo in touched:
-                    self._abort_am(repo)
-            if not use_lock_first and (roll_back or shadow_lock):
-                self._reset(profile, grouped, force=True)
+            self._rollback_canonical_apply(
+                profile, grouped, touched, generated_lock_snapshot
+            )
             self.die(str(error))
 
     def _record_integration(

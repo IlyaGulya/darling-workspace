@@ -1,122 +1,64 @@
-# Canonical lock-first transition
+# Canonical lock-first profile operation
 
-`west patch apply` uses canonical lock-first materialization by default for
-every production profile through the typed registry in
-`locks/patch-stack/lock-first-profiles-v1.yml`. Homebrew retains its accepted
-69-series Batch 7 mapping; perf has 7 series and arch has 18. `--lock-first`
-remains a compatible explicit alias while the public legacy switch is being
-removed in a separately reviewed final step. The retained mbox archive is
-temporarily reachable only by an explicit compatibility switch:
+`west patch apply` uses typed lock-first replay for every production profile.
+The no-flag mode reports `PATCH_STACK_MODE=default-lock-first`;
+`--lock-first` is an equivalent explicit alias. There is no legacy or shadow
+fallback.
 
+Before mutation, the planner binds the exact profile patch list to the mapping
+registered in `locks/patch-stack/lock-first-profiles-v1.yml` and to its typed
+profile-composition lock. Execution order is `_group()` module insertion order
+and then profile order within each module. Series identity is `(module, patch)`.
+
+For each module, one disposable clean ODB fetches the union of declared
+immutable base/source refs. Every lock proves:
+
+- exact immutable ref OIDs;
+- a linear, no-merge `ordered_commits` range;
+- complete author and committer metadata;
+- canonical source tree;
+- the expected applied profile boundary tree.
+
+The validated objects are transferred into the lifecycle worktree without
+alternates or shared ODBs. Each immutable commit is converted to a temporary
+mbox outside the production repository with native `git format-patch` and
+replayed with native `git am --3way --committer-date-is-author-date`. The
+temporary mbox is always removed. Historical profile archives are not read.
+
+Aggregate evidence schema v2 records `batch_id`, `expected_count`, exact
+`module_order`, exact `(module, patch)` `series_order`, and per-series
+base/source/canonical tree/applied commit/applied tree/verdict. Applied ancestry
+is checked separately per repository, never across modules. A result is
+published only after integration recording; failure, evidence error, cleanup
+error, or SIGINT rolls back every touched repository and emits no VALID marker.
+
+RuntimeSourceMaterializer uses the same typed plans and optimized per-module
+batch primitive in lifecycle-owned worktrees. It does not create persistent
+integration refs or generated locks. Its success markers distinguish
+`materializer=runtime-source`; failures preserve the original exception while
+performing lifecycle cleanup.
+
+The manual workflow compares:
+
+1. `immutable-cherry-pick-oracle`: a separate clean-ODB implementation using
+   plain Git cherry-pick and declared immutable refs only;
+2. `default-lock-first`: the production implementation.
+
+It requires identical module trees, frozen-manifest hash, and ordered generated
+profile-lock hashes. It remains `workflow_dispatch` only, uses full checkouts,
+and uploads evidence under `always()`.
+
+Canonical review/recovery export is:
+
+```text
+west patch export-locks --profile <profile> --output <new-directory>
 ```
-west patch apply --profile homebrew --legacy-mbox
-```
 
-`--legacy-mbox` is mutually exclusive with
-`--lock-first`, `--lock-first-evidence`, `--shadow-lock`, and
-`--shadow-evidence`; the CLI rejects every such combination before planning,
-fetching, ref creation, or worktree mutation.
+It produces deterministic mboxes and typed evidence from immutable lock
+objects. The older `west patch export` remains an authoring command that
+refreshes historical review files; it is not a materialization path.
 
-```
-west patch apply --profile homebrew \
-  --lock-first-evidence /absolute/path/lock-first-oracle.json
-```
-
-Before any production integration worktree mutation, the command validates the complete
-typed batch against the profile's actual grouped execution order: module order
-from `_group()`, followed by profile order within each module. A series is
-identified by `(module, patch)`, not patch path alone. For each module it creates
-one disposable, no-alternates object database, fetches the union of declared
-immutable base/source refs once, proves every lock's exact graph, metadata and
-tree, then replays the immutable commits in typed order through native
-`format-patch` plus `git am --3way`. The retained archive is still the explicit
-emergency fallback and independent legacy oracle in differential and hosted
-acceptance; it is not replayed once per canonical series at runtime.
-
-The mbox is neither deleted nor an input to canonical graph construction: it is
-the independent equivalence oracle and explicit fallback. Lock-first is mutually
-exclusive with the older shadow-only flag when requested explicitly. Any typed-plan, immutable-ref,
-oracle, dirty-worktree, existing-result-ref, cleanup, or interrupt failure
-uses the normal forced rollback lifecycle; no partially applied integration
-branch is retained.  The materializer's transaction result ref is removed
-before the apply returns.
-
-Default mode writes no persistent oracle diagnostic: the per-series legacy
-oracle evidence is transient and removed with its disposable canonical state.
-An explicit `--lock-first-evidence` path remains supported, must name a new
-non-symlink file, and is published only after integration succeeds. Existing
-integration and generated `patches/homebrew/west.lock.yml` lifecycle remains
-authoritative.
-
-The manual hosted oracle compares exactly two frozen workspaces: a
-`--legacy-mbox` control and the no-flag `default-lock-first` candidate. Its
-result labels both modes explicitly, so two canonical runs cannot be accepted as
-a false comparison. `--lock-first` remains a locally contracted compatibility
-alias, not a third hosted side. The legacy control and default candidate must
-have identical module maps, manifest state, integration results, and generated
-lock. The manual hosted tier stays intentionally separate from default CI.
-
-The manual hosted acceptance uses two fresh West workspaces from the same frozen
-manifest: legacy-mbox control and default-lock-first candidate. It captures
-complete module maps, generated-lock metadata, and integration results, then
-verifies equality and cleanup of all transaction refs, disposable roots,
-worktrees, and West jobs. The workflow remains manual-only; regular CI timeouts
-are not a performance workaround.
-
-Aggregate lock-first evidence uses `evidence_schema_version: 2`. It records
-`batch_id`, `expected_count`, exact `module_order`, exact `(module, patch)`
-`series_order`, and a per-series module field. Applied-commit ancestry is
-checked only within each module/repository; cross-repository ancestry is neither
-meaningful nor required. Batch 1--3 artifacts have implicit legacy evidence v1
-and are intentionally incompatible with the v2 compare protocol. OIDs and
-generated-lock hashes are compared only within a single control/lock-first run,
-because committer identity can make them differ across environments.
-
-The `patch-stack-lock-first` workflow job has a scoped 75-minute timeout. A
-fresh Batch 6 local control/lock-first critical path measured about 43 minutes.
-The audited 69-series Batch 7 forecast is 54.34 minutes: it adds all 25 XNU
-series (32 immutable commits) without cache, alternates, shared ODB, bootstrap
-reuse, or parallel replay. A 60-minute limit leaves no safe margin for hosted
-network variance, the mandatory `always()` cleanup, and artifact upload; 75
-minutes preserves roughly 20 minutes of operational margin. Splitting XNU
-would duplicate the two fresh West bootstraps and does not address that
-bottleneck. This exception does not alter any other workflow timeout.
-
-## Default-cutover performance gate
-
-The regular host tier calls `west test --profile homebrew --materialize-profile`.
-When its selected metadata requires the profile checkout, `west test` invokes
-`west patch apply --profile homebrew`; this is the only regular push/scheduled
-path that can exercise the default materializer. Guest-smoke, guest-toolchain,
-and guest-full use profile-scoped runtime tests but do not pass
-`--materialize-profile`; their normal lifecycle therefore does not create a
-homebrew integration branch merely because lock-first is the default. The
-manual `patch-stack-lock-first` tier is the explicit two-sided oracle.
-
-The pre-batch implementation measured 1719--1786 seconds after bootstrap,
-versus roughly 10 seconds for legacy mbox. Its cost was not native replay: it
-ran a clean-ODB materializer, immutable fetch, disposable worktree, preflight,
-and legacy shadow oracle independently for each of 69 series. The bounded
-batch design validates the typed 69-series plan before mutation, then performs
-one immutable union-fetch/disposable validation context per module, while
-retaining every per-series graph/metadata/canonical-tree/applied-tree proof and
-the existing profile-wide rollback. It introduces no persistent cache,
-alternates, shared ODB, or concurrent replay. Production default is gated on a
-fresh measured post-bootstrap run of at most 180 seconds (target 120); regular
-CI timeouts must not be increased to hide a regression.
-
-## Observation protocol
-
-Every `west patch apply` reports one selected mode as a machine-readable
-`PATCH_STACK_MODE=` marker: `default-lock-first`, `explicit-lock-first`,
-`legacy-mbox`, or `shadow-lock`. A successful typed canonical batch then
-reports one `PATCH_STACK_REPLAY` record with batch ID, expected/applied series
-counts, module count, elapsed replay seconds, and `verdict=VALID`. It is
-emitted only after integration recording and optional evidence publication
-succeed; failure or SIGINT emits no success verdict. Markers omit credentials,
-remote URLs, temporary paths, and evidence payloads.
-
-An explicit `--legacy-mbox` remains temporarily functional and emits a
-deprecation warning for every profile. The host tier invokes no-flag homebrew
-materialization; the manual two-sided workflow is currently the sole hosted
-`--legacy-mbox` control/oracle and is scheduled to move to a test-only oracle.
+The manual job retains its scoped 75-minute timeout for fresh West bootstrap,
+candidate replay, independent oracle, cleanup, and upload. Regular CI timeouts
+are unchanged; post-bootstrap canonical replay remains bounded by the accepted
+180-second gate.

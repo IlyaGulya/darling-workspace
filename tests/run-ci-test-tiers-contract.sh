@@ -82,39 +82,39 @@ export PATCH_STACK_MATERIALIZE_CONTRACT_SKIP_WEST_SUBPROCESS=1
 unset PATCH_STACK_MATERIALIZE_CONTRACT_SKIP_WEST_SUBPROCESS
 host_tier="$(sed -n '/^\thost)/,/^\tguest-smoke)/p' "$repo/ci/run-test-tier.sh")"
 printf '%s\n' "$host_tier" | grep -F -q 'tests/run-west-patch-stack-materialize-contract.sh'
-printf '%s\n' "$host_tier" | grep -F -q 'tests/run-west-patch-stack-shadow-contract.sh'
 printf '%s\n' "$host_tier" | grep -F -q 'tests/run-west-patch-stack-lock-first-contract.sh'
 printf '%s\n' "$host_tier" | grep -F -q 'tests/run-profile-composition-dependency-contract.sh'
 printf '%s\n' "$host_tier" | grep -F -q 'tests/run-west-patch-stack-default-cutover-contract.sh'
-printf '%s\n' "$host_tier" | grep -F -q 'tests/run-west-patch-stack-legacy-observation-contract.sh'
+printf '%s\n' "$host_tier" | grep -F -q 'tests/run-west-patch-stack-retirement-policy-contract.sh'
 printf '%s\n' "$host_tier" | grep -F -q 'tests/run-west-patch-stack-runtime-source-contract.sh'
+printf '%s\n' "$host_tier" | grep -F -q 'tests/run-patch-stack-immutable-oracle-contract.sh'
+printf '%s\n' "$host_tier" | grep -F -q 'tests/run-west-patch-stack-export-contract.sh'
 printf '%s\n' "$host_tier" | grep -F -q 'tests/run-patch-stack-lock-first-hosted-workflow-contract.sh'
-printf '%s\n' "$host_tier" | grep -F -q 'tests/run-patch-stack-shadow-hosted-workflow-contract.sh'
 printf '%s\n' "$host_tier" | grep -F -q 'tests/run-patch-stack-migration-inventory-contract.sh'
 host_before_west="${host_tier%%exec west test*}"
 [[ "$host_before_west" == *'tests/run-west-patch-stack-materialize-contract.sh'* &&
-	"$host_before_west" == *'tests/run-west-patch-stack-shadow-contract.sh'* &&
 	"$host_before_west" == *'tests/run-west-patch-stack-lock-first-contract.sh'* &&
 	"$host_before_west" == *'tests/run-profile-composition-dependency-contract.sh'* &&
 	"$host_before_west" == *'tests/run-west-patch-stack-default-cutover-contract.sh'* &&
-	"$host_before_west" == *'tests/run-west-patch-stack-legacy-observation-contract.sh'* &&
+	"$host_before_west" == *'tests/run-west-patch-stack-retirement-policy-contract.sh'* &&
 	"$host_before_west" == *'tests/run-west-patch-stack-runtime-source-contract.sh'* &&
+	"$host_before_west" == *'tests/run-patch-stack-immutable-oracle-contract.sh'* &&
+	"$host_before_west" == *'tests/run-west-patch-stack-export-contract.sh'* &&
 	"$host_before_west" == *'tests/run-patch-stack-lock-first-hosted-workflow-contract.sh'* &&
-	"$host_before_west" == *'tests/run-patch-stack-shadow-hosted-workflow-contract.sh'* &&
 	"$host_before_west" == *'tests/run-patch-stack-migration-inventory-contract.sh'* ]] || {
 	echo 'host tier does not run patch-stack contracts before west test' >&2
 	exit 1
 }
-[[ "${host_before_west%%tests/run-west-patch-stack-shadow-contract.sh*}" == *'tests/run-west-patch-stack-materialize-contract.sh'* &&
-	"${host_before_west%%tests/run-west-patch-stack-lock-first-contract.sh*}" == *'tests/run-west-patch-stack-shadow-contract.sh'* &&
+[[ "${host_before_west%%tests/run-west-patch-stack-lock-first-contract.sh*}" == *'tests/run-west-patch-stack-materialize-contract.sh'* &&
 	"${host_before_west%%tests/run-profile-composition-dependency-contract.sh*}" == *'tests/run-west-patch-stack-lock-first-contract.sh'* &&
 	"${host_before_west%%tests/run-west-patch-stack-default-cutover-contract.sh*}" == *'tests/run-profile-composition-dependency-contract.sh'* &&
-	"${host_before_west%%tests/run-patch-stack-lock-first-hosted-workflow-contract.sh*}" == *'tests/run-west-patch-stack-default-cutover-contract.sh'* &&
-	"${host_before_west%%tests/run-west-patch-stack-runtime-source-contract.sh*}" == *'tests/run-west-patch-stack-legacy-observation-contract.sh'* &&
-	"${host_before_west%%tests/run-patch-stack-lock-first-hosted-workflow-contract.sh*}" == *'tests/run-west-patch-stack-runtime-source-contract.sh'* &&
-	"${host_before_west%%tests/run-patch-stack-shadow-hosted-workflow-contract.sh*}" == *'tests/run-patch-stack-lock-first-hosted-workflow-contract.sh'* &&
-	"${host_before_west%%tests/run-patch-stack-migration-inventory-contract.sh*}" == *'tests/run-patch-stack-shadow-hosted-workflow-contract.sh'* ]] || {
-	echo 'host tier does not order materialize, shadow, lock-first, default-cutover, hosted-workflow, inventory contracts' >&2
+	"${host_before_west%%tests/run-west-patch-stack-retirement-policy-contract.sh*}" == *'tests/run-west-patch-stack-default-cutover-contract.sh'* &&
+	"${host_before_west%%tests/run-west-patch-stack-runtime-source-contract.sh*}" == *'tests/run-west-patch-stack-retirement-policy-contract.sh'* &&
+	"${host_before_west%%tests/run-patch-stack-immutable-oracle-contract.sh*}" == *'tests/run-west-patch-stack-runtime-source-contract.sh'* &&
+	"${host_before_west%%tests/run-west-patch-stack-export-contract.sh*}" == *'tests/run-patch-stack-immutable-oracle-contract.sh'* &&
+	"${host_before_west%%tests/run-patch-stack-lock-first-hosted-workflow-contract.sh*}" == *'tests/run-west-patch-stack-export-contract.sh'* &&
+	"${host_before_west%%tests/run-patch-stack-migration-inventory-contract.sh*}" == *'tests/run-patch-stack-lock-first-hosted-workflow-contract.sh'* ]] || {
+	echo 'host tier does not order canonical patch-stack contracts' >&2
 	exit 1
 }
 "$repo/ci/run-test-tier.sh" guest-smoke
@@ -242,7 +242,7 @@ if printf '%s\n' "$arch_acceptance_workflow" | grep -F -q "github.event_name == 
 	exit 1
 fi
 [ "$(printf '%s\n' "$arch_acceptance_workflow" | grep -F -c 'fetch-depth: 0')" -eq 1 ]
-printf '%s\n' "$arch_acceptance_workflow" | grep -F -q 'patch_stack_shadow_acceptance.py capture'
+printf '%s\n' "$arch_acceptance_workflow" | grep -F -q 'patch_stack_acceptance.py capture'
 
 deps_script='darling-dev/darling-workspace/ci/install-darling-build-deps.sh'
 [ "$(grep -F -c "run: $deps_script" "$repo/.github/workflows/test-infra.yml")" -ge 2 ]

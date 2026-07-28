@@ -22,7 +22,7 @@ from pathlib import Path
 from typing import Any, Iterator
 
 from source_worktree import SourceWorktreeError, prepare_source_worktree
-from patch_git import TEMPORARY_PATCH_GIT_OPTIONS, git_for_temporary_patch_application
+from patch_git import TEMPORARY_PATCH_GIT_OPTIONS
 import patch_stack_lock_first
 import patch_stack_materialize
 import patch_stack_profile_composition
@@ -192,7 +192,7 @@ class RuntimeSourceMaterializer:
                     ) from error
         if len(results) != batch["expected_count"]:
             raise patch_stack_lock_first.LockFirstError(
-                "runtime-source canonical applied series count differs from Batch 7"
+                "runtime-source canonical applied series count differs from typed batch"
             )
         self._host.inf(
             "PATCH_STACK_REPLAY "
@@ -240,23 +240,7 @@ class RuntimeSourceMaterializer:
                             overrides[ref] = target
                     overrides[module] = target
                 self._host._project_overrides = overrides
-                if profile in {"homebrew", "perf", "arch"}:
-                    self._materialize_canonical_profile(profile, overrides)
-                else:
-                    for stacked in self._host._profile_stack(profile):
-                        data = self._host._load_profile(stacked)
-                        profile_dir = Path(self._host.manifest.repo_abspath) / "patches" / stacked
-                        for patch in data.get("patches", []):
-                            target = overrides.get(patch["module"])
-                            if target is None:
-                                continue
-                            self._host.inf(f"  apply {stacked}/{patch['path']}")
-                            git_for_temporary_patch_application(
-                                target,
-                                "am",
-                                "--3way",
-                                str(profile_dir / patch["path"]),
-                            )
+                self._materialize_canonical_profile(profile, overrides)
                 yield
             except BaseException as error:
                 # A cleanup fault must never disguise the canonical replay
@@ -323,47 +307,46 @@ class RuntimeSourceMaterializer:
         """Materialize an intact profile module from immutable typed locks.
 
         Current-minus RED proofs deliberately request a non-canonical partial
-        series and keep their archive fixture route until the test-only oracle
-        is extracted. Ordinary runtime-source GREEN materialization never
-        reads an archive here.
+        series, but still derive every applied change from immutable schema-v2
+        lock objects. Historical archives are never executable inputs.
         """
         skips = skip_patch_paths or set()
-        if not skips and profile in {"homebrew", "perf", "arch"}:
-            profile_patches = self._host._load_profile(profile).get("patches", [])
+        if profile not in {"homebrew", "perf", "arch"}:
+            raise patch_stack_lock_first.LockFirstError(
+                f"runtime-source canonical materialization is not enabled for {profile}"
+            )
+        observed_skips: set[str] = set()
+        initialized = False
+        for stacked in self._host._profile_stack(profile):
+            profile_patches = self._host._load_profile(stacked).get("patches", [])
             grouped: OrderedDict[str, list[dict[str, Any]]] = OrderedDict()
             for patch in profile_patches:
                 grouped.setdefault(patch["module"], []).append(patch)
-            plan = patch_stack_lock_first.plan(profile, profile_patches, None, grouped)
+            plan = patch_stack_lock_first.plan(stacked, profile_patches, None, grouped)
             entries = [entry for entry in plan if entry["module"] == module]
-            if entries:
-                patch_stack_lock_first.materialize_batch_into(
-                    target, entries,
-                    git_options=TEMPORARY_PATCH_GIT_OPTIONS,
-                    reset_to_first_base=(profile in {"perf", "arch"}),
-                    composition=plan.composition,
+            if not entries:
+                continue
+            phase_skips = {
+                entry["patch"] for entry in entries if entry["patch"] in skips
+            }
+            observed_skips.update(phase_skips)
+            for patch in sorted(phase_skips):
+                self._host.inf(
+                    f"  skip {stacked}/{patch} for canonical current-minus-patch"
                 )
-            return
-        for stacked in self._host._profile_stack(profile):
-            data = self._host._load_profile(stacked)
-            profile_dir = self._host._profile_path(stacked).parent
-            for patch in data.get("patches", []):
-                if patch.get("module") != module:
-                    continue
-                if patch.get("path") in skips:
-                    self._host.inf(f"  skip {stacked}/{patch['path']} for current-minus-patch")
-                    continue
-                patch_file = profile_dir / patch["path"]
-                if self.profile_patch_is_already_applied(target, patch_file, patch):
-                    self._host.inf(f"  skip {stacked}/{patch['path']} already in {module}")
-                    continue
-                self._host.inf(f"  apply {stacked}/{patch['path']} -> {module}")
-                git_for_temporary_patch_application(
-                    target,
-                    "am",
-                    "--3way",
-                    "--committer-date-is-author-date",
-                    str(patch_file),
-                )
+            patch_stack_lock_first.materialize_batch_into(
+                target,
+                entries,
+                git_options=TEMPORARY_PATCH_GIT_OPTIONS,
+                reset_to_first_base=not initialized,
+                composition=plan.composition,
+                skip_patches=phase_skips,
+            )
+            initialized = True
+        if observed_skips != skips:
+            raise patch_stack_lock_first.LockFirstError(
+                "runtime-source current-minus skips differ from typed mappings"
+            )
 
     @staticmethod
     def commit_is_ancestor(repo: Path, commit: str) -> bool:
@@ -439,15 +422,8 @@ class RuntimeSourceMaterializer:
             ) or self.commit_has_equivalent_patch(repo, source_commit)
             self._patch_identity_cache_put(key, result)
             return result
-        return (
-            subprocess.run(
-                ["git", "apply", "--reverse", "--check", str(patch_file)],
-                cwd=repo,
-                capture_output=True,
-                text=True,
-                check=False,
-            ).returncode
-            == 0
+        self._host.die(
+            f"{patch.get('path', patch_file)}: immutable source-commit is required"
         )
 
     def _patch_identity_cache_path(self) -> Path:
