@@ -81,7 +81,10 @@ def capture_git_failure_fixture(root: Path) -> None:
     (workspace / "patches/homebrew/west.lock.yml").write_text("projects: {}\n")
     (workspace / "west.lock.yml").write_text("manifest: {}\n")
     original_command, original_raw = acceptance.command, acceptance.git_raw
+    original_generated_paths, original_generated_evidence = acceptance.generated_lock_paths, acceptance.generated_lock_evidence
     acceptance.command = lambda _workspace, *args: str(workspace) if args == ("west", "topdir") else "darling\tdarling"
+    acceptance.generated_lock_paths = lambda _workspace, _profile: [("homebrew", "patches/homebrew/west.lock.yml")]
+    acceptance.generated_lock_evidence = lambda _workspace, _expected: [{"profile": "homebrew", "path": "patches/homebrew/west.lock.yml", "size": 12, "sha256": "0" * 64}]
     def show_fails(_repo: Path, *args: str) -> bytes:
         if args == ("status", "--porcelain=v1", "-z", "--untracked-files=all"):
             return b" M patches/homebrew/west.lock.yml\0"
@@ -93,15 +96,70 @@ def capture_git_failure_fixture(root: Path) -> None:
         must_fail(acceptance.capture, workspace, "homebrew", root / "modules.json", root / "manifest.json")
     finally:
         acceptance.command, acceptance.git_raw = original_command, original_raw
+        acceptance.generated_lock_paths, acceptance.generated_lock_evidence = original_generated_paths, original_generated_evidence
+
+
+def generated_lock_fixtures(root: Path) -> None:
+    """The generated-lock set follows typed composition dependencies, not names."""
+    workspace, locks = root / "workspace", root / "workspace/locks/patch-stack"
+    locks.mkdir(parents=True)
+    (locks / "lock-first-profiles-v1.yml").write_text(yaml.safe_dump({"schema_version": 1, "profiles": [
+        {"profile": "homebrew", "mapping": "homebrew.yml"},
+        {"profile": "perf", "mapping": "perf.yml"},
+        {"profile": "arch", "mapping": "arch.yml"},
+    ]}, sort_keys=False))
+    def mapping(profile: str, composition: str) -> None:
+        (locks / f"{profile}.yml").write_text(yaml.safe_dump({"schema_version": 3, "profile": profile,
+            "batch_id": f"{profile}-batch", "expected_count": 1, "series": [{"profile": profile,
+            "module": "darling", "patch": f"darling/{profile}.patch", "lock": f"{profile}-lock.yml"}],
+            "composition": composition}, sort_keys=False))
+    def composition(profile: str, prerequisites: list[str]) -> None:
+        (locks / f"{profile}-composition.yml").write_text(yaml.safe_dump({"schema_version": 3, "profile": profile,
+            "prerequisites": [{"profile": value, "composition": f"{value}-composition.yml", "sha256": "0" * 64,
+                                  "frozen_manifest": {"path": "west.lock.yml", "sha256": "0" * 64}, "module_trees": {"darling": "0" * 40}}
+                              for value in prerequisites]}, sort_keys=False))
+    mapping("homebrew", "homebrew-composition.yml"); mapping("perf", "perf-composition.yml"); mapping("arch", "arch-composition.yml")
+    composition("homebrew", []); composition("perf", ["homebrew"]); composition("arch", ["perf"])
+    for profile, base in (("homebrew", None), ("perf", "homebrew"), ("arch", "perf")):
+        metadata = {"patches": []}
+        if base is not None:
+            metadata["base-profile"] = base
+        path = workspace / "patches" / profile / "patches.yml"; path.parent.mkdir(parents=True, exist_ok=True); path.write_text(yaml.safe_dump(metadata))
+    expected_arch = [("homebrew", "patches/homebrew/west.lock.yml"), ("perf", "patches/perf/west.lock.yml"), ("arch", "patches/arch/west.lock.yml")]
+    assert acceptance.generated_lock_paths(workspace, "arch") == expected_arch
+    assert acceptance.generated_lock_paths(workspace, "homebrew") == [("homebrew", "patches/homebrew/west.lock.yml")]
+    for _profile, relative in expected_arch:
+        path = workspace / relative; path.parent.mkdir(parents=True, exist_ok=True); path.write_text("projects: {}\n")
+    rows = acceptance.generated_lock_evidence(workspace, expected_arch)
+    assert [(row["profile"], row["path"]) for row in rows] == expected_arch
+    assert acceptance.allowed_generated_status(
+        [(" M", "patches/arch/west.lock.yml"), (" M", "patches/homebrew/west.lock.yml"), (" M", "patches/perf/west.lock.yml")], expected_arch)
+    assert not acceptance.allowed_generated_status([(" M", "patches/arch/west.lock.yml"), (" M", "patches/homebrew/west.lock.yml")], expected_arch)
+    assert not acceptance.allowed_generated_status([(" M", "patches/arch/west.lock.yml"), (" M", "patches/homebrew/west.lock.yml"), (" M", "patches/perf/west.lock.yml"), (" M", "patches/extra/west.lock.yml")], expected_arch)
+    for xy in ("M ", "??", " D", "R ", "C "):
+        bad = [(" M", path) for _profile, path in expected_arch]
+        bad[1] = (xy, bad[1][1])
+        assert not acceptance.allowed_generated_status(bad, expected_arch)
+    (workspace / "patches/perf/west.lock.yml").unlink(); must_fail(acceptance.generated_lock_evidence, workspace, expected_arch)
+    (workspace / "patches/perf/west.lock.yml").write_text("projects: {}\n")
+    (workspace / "patches/perf/west.lock.yml").unlink(); (workspace / "patches/perf/west.lock.yml").symlink_to("../homebrew/west.lock.yml")
+    must_fail(acceptance.generated_lock_evidence, workspace, expected_arch)
+    (workspace / "patches/perf/west.lock.yml").unlink(); (workspace / "patches/perf/west.lock.yml").write_text("[invalid\n")
+    must_fail(acceptance.generated_lock_evidence, workspace, expected_arch)
+    # The composition order must agree with profile base-profile metadata.
+    composition("arch", ["homebrew", "perf"])
+    must_fail(acceptance.generated_lock_paths, workspace, "arch")
+    composition("arch", ["missing-profile"])
+    must_fail(acceptance.generated_lock_paths, workspace, "arch")
 
 
 def main() -> None:
-    generated = "patches/homebrew/west.lock.yml"
-    assert acceptance.allowed_generated_status(acceptance.parse_porcelain(f" M {generated}\0".encode()), "homebrew")
-    assert not acceptance.allowed_generated_status(acceptance.parse_porcelain(f"M  {generated}\0".encode()), "homebrew")
+    generated = [("homebrew", "patches/homebrew/west.lock.yml")]
+    assert acceptance.allowed_generated_status(acceptance.parse_porcelain(b" M patches/homebrew/west.lock.yml\0"), generated)
+    assert not acceptance.allowed_generated_status(acceptance.parse_porcelain(b"M  patches/homebrew/west.lock.yml\0"), generated)
     for raw in (b" M patches/homebrew/west.lock.yml\0 M extra\0", b"?? patches/homebrew/west.lock.yml\0", b" D patches/homebrew/west.lock.yml\0", b"R  old\0new\0", b"C  old\0new\0", b"broken\0"):
         try:
-            assert not acceptance.allowed_generated_status(acceptance.parse_porcelain(raw), "homebrew")
+            assert not acceptance.allowed_generated_status(acceptance.parse_porcelain(raw), generated)
         except acceptance.AcceptanceError:
             pass
     workflow = (ROOT / ".github/workflows/patch-stack-shadow.yml").read_text()
@@ -153,12 +211,18 @@ def main() -> None:
     }
     original_transactions = acceptance.assert_no_transaction_state
     original_command = acceptance.command
+    original_generated_paths = acceptance.generated_lock_paths
+    original_generated_evidence = acceptance.generated_lock_evidence
     acceptance.assert_no_transaction_state = lambda _workspace: None
+    synthetic_generated = [{"profile": "homebrew", "path": "patches/homebrew/west.lock.yml", "sha256": "e" * 64, "size": 12}]
     try:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             parent_clean_fixtures(root / "parent-clean")
             capture_git_failure_fixture(root / "capture-git-failure")
+            generated_lock_fixtures(root / "generated-locks")
+            acceptance.generated_lock_paths = lambda _workspace, _profile: [("homebrew", "patches/homebrew/west.lock.yml")]
+            acceptance.generated_lock_evidence = lambda _workspace, _expected: synthetic_generated
             # West project names are normalized independently from their
             # manifest paths.  patches.yml must select by the latter.
             acceptance.command = lambda _workspace, *args: str(root) if args == ("west", "topdir") else "darling\tdarling\ndarling-src-external-xnu\tdarling/src/external/xnu"
@@ -173,7 +237,8 @@ def main() -> None:
             manifest = root / "manifest.json"; other_manifest = root / "other-manifest.json"
             value = {"profile": "homebrew", "modules": [row]}
             control.write_text(json.dumps(value)); shadow.write_text(json.dumps(value))
-            manifest.write_text(json.dumps({"workspace_commit": "c" * 40, "frozen_manifest_sha256": "d" * 64, "generated_profile_lock": {"sha256": "e" * 64, "size": 12}}))
+            generated_rows = [{"profile": "homebrew", "path": "patches/homebrew/west.lock.yml", "sha256": "e" * 64, "size": 12}]
+            manifest.write_text(json.dumps({"workspace_commit": "c" * 40, "frozen_manifest_sha256": "d" * 64, "generated_profile_locks": generated_rows}))
             other_manifest.write_text(manifest.read_text())
             evidence_path = root / "shadow-evidence.json"; evidence_path.write_text(json.dumps(evidence))
             result = root / "result.json"
@@ -236,6 +301,8 @@ def main() -> None:
     finally:
         acceptance.assert_no_transaction_state = original_transactions
         acceptance.command = original_command
+        acceptance.generated_lock_paths = original_generated_paths
+        acceptance.generated_lock_evidence = original_generated_evidence
     print("patch-stack shadow hosted workflow contract: PASS")
 
 
