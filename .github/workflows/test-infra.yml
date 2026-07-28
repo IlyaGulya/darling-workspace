@@ -49,6 +49,7 @@ jobs:
       - uses: actions/checkout@v7
         with:
           path: darling-dev/darling-workspace
+          fetch-depth: 0
       - name: Install West
         run: python3 -m pip install west
       - name: Materialize frozen West workspace
