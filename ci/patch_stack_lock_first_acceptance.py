@@ -1,9 +1,8 @@
 #!/usr/bin/env python3
 """Typed, fail-closed comparison for lock-first batch acceptance.
 
-This intentionally does not replace ``patch_stack_shadow_acceptance.py``:
-that helper remains the single-series legacy-shadow oracle.  This module
-validates versioned aggregate evidence against every declared
+The generic capture/staging helper remains in ``patch_stack_acceptance.py``.
+This module validates versioned aggregate evidence against every declared
 schema-v2 lock and against the actual lock-first Git worktree.
 """
 from __future__ import annotations
@@ -13,12 +12,13 @@ import json
 import re
 import subprocess
 import sys
+import uuid
 from pathlib import Path
 from typing import Any
 
 import yaml
 
-from patch_stack_shadow_acceptance import AcceptanceError, git
+from patch_stack_acceptance import AcceptanceError, git
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "west_commands"))
@@ -46,6 +46,17 @@ def load_json(path: Path) -> dict[str, Any]:
         raise AcceptanceError(f"invalid JSON evidence {path}: {error}") from error
     fail(isinstance(value, dict), f"{path}: evidence is not an object")
     return value
+
+
+def write_result(path: Path, payload: dict[str, Any]) -> None:
+    temporary = path.with_name(path.name + f".{uuid.uuid4().hex}.tmp")
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        temporary.write_text(json.dumps(payload, sort_keys=True, indent=2) + "\n")
+        temporary.replace(path)
+    except OSError as error:
+        temporary.unlink(missing_ok=True)
+        raise AcceptanceError(f"acceptance result write failed: {error}") from error
 
 
 def oid(value: object, label: str) -> str:
@@ -174,10 +185,15 @@ def module_rows(value: dict[str, Any], label: str) -> dict[str, dict[str, Any]]:
     fail(isinstance(rows, list) and rows, f"{label}: missing module rows")
     result: dict[str, dict[str, Any]] = {}
     for row in rows:
-        fail(isinstance(row, dict) and set(row) == {"module", "west_name", "path", "integration_oid", "tree", "status"}, f"{label}: invalid module row")
+        fail(isinstance(row, dict) and set(row) == {"module", "west_name", "path", "integration_profile", "integration_oid", "tree", "status"}, f"{label}: invalid module row")
         module = row.get("module")
         fail(isinstance(module, str) and module and module not in result, f"{label}: duplicate or invalid module")
         fail(isinstance(row.get("path"), str) and row["path"], f"{label}: invalid module path")
+        fail(
+            isinstance(row.get("integration_profile"), str)
+            and row["integration_profile"],
+            f"{label} {module}: invalid integration profile",
+        )
         oid(row.get("integration_oid"), f"{label} {module} integration OID")
         oid(row.get("tree"), f"{label} {module} integration tree")
         fail(row.get("status") == "", f"{label} {module}: dirty module")
@@ -186,13 +202,59 @@ def module_rows(value: dict[str, Any], label: str) -> dict[str, dict[str, Any]]:
 
 
 def verify_manifest(value: dict[str, Any], label: str) -> None:
-    generated = value.get("generated_profile_lock")
-    fail(isinstance(generated, dict), f"{label}: generated lock metadata missing")
-    fail(isinstance(generated.get("size"), int) and 0 <= generated["size"] <= 1_000_000, f"{label}: generated lock size invalid")
-    oid_hash = generated.get("sha256")
-    fail(isinstance(oid_hash, str) and re.fullmatch(r"[0-9a-f]{64}", oid_hash), f"{label}: generated lock hash invalid")
+    fail(
+        set(value)
+        == {
+            "workspace_commit",
+            "frozen_manifest_sha256",
+            "generated_profile_locks",
+            "validated_nested_children",
+        },
+        f"{label}: manifest fields are invalid",
+    )
+    oid(value.get("workspace_commit"), f"{label} workspace commit")
     frozen = value.get("frozen_manifest_sha256")
-    fail(isinstance(frozen, str) and re.fullmatch(r"[0-9a-f]{64}", frozen), f"{label}: frozen manifest hash invalid")
+    fail(
+        isinstance(frozen, str) and re.fullmatch(r"[0-9a-f]{64}", frozen),
+        f"{label}: frozen manifest hash invalid",
+    )
+    fail(
+        isinstance(value.get("validated_nested_children"), dict),
+        f"{label}: validated nested children are invalid",
+    )
+    generated = value.get("generated_profile_locks")
+    fail(
+        isinstance(generated, list) and generated,
+        f"{label}: generated lock metadata missing",
+    )
+    seen: set[tuple[str, str]] = set()
+    for row in generated:
+        fail(
+            isinstance(row, dict)
+            and set(row) == {"profile", "path", "size", "sha256"},
+            f"{label}: generated lock row is invalid",
+        )
+        profile, path = row.get("profile"), row.get("path")
+        fail(
+            isinstance(profile, str)
+            and profile
+            and isinstance(path, str)
+            and path == f"patches/{profile}/west.lock.yml"
+            and (profile, path) not in seen,
+            f"{label}: generated lock identity is invalid",
+        )
+        seen.add((profile, path))
+        fail(
+            isinstance(row.get("size"), int)
+            and not isinstance(row["size"], bool)
+            and 0 < row["size"] <= 1_000_000,
+            f"{label}: generated lock size invalid",
+        )
+        fail(
+            isinstance(row.get("sha256"), str)
+            and re.fullmatch(r"[0-9a-f]{64}", row["sha256"]),
+            f"{label}: generated lock hash invalid",
+        )
 
 
 def is_ancestor(repo: Path, ancestor: str, descendant: str) -> bool:
@@ -208,7 +270,7 @@ def verify_actual_maps(workspace: Path, rows: dict[str, dict[str, Any]], profile
     for module, row in rows.items():
         repo = contained(workspace, row["path"], f"{label} {module}")
         fail(repo.is_dir() and not repo.is_symlink(), f"{label} {module}: workspace repository missing")
-        ref = f"refs/heads/integration/{profile}"
+        ref = f"refs/heads/integration/{row['integration_profile']}"
         integration = git(repo, "rev-parse", ref)
         fail(integration == row["integration_oid"], f"{label} {module}: integration ref differs from map")
         fail(git(repo, "rev-parse", f"{ref}^{{tree}}") == row["tree"], f"{label} {module}: integration tree differs from map")
@@ -274,94 +336,7 @@ def verify_candidate_evidence(
     fail(len(set(observed_keys)) == batch_metadata["expected_count"], "lock-first evidence contains duplicate module+patch")
 
 
-def compare_lock_first(
-    control_path: Path,
-    lock_first_path: Path,
-    control_manifest_path: Path,
-    lock_first_manifest_path: Path,
-    evidence_path: Path,
-    mapping_path: Path,
-    control_workspace: Path,
-    lock_first_workspace: Path,
-    transaction_root: Path,
-    result_path: Path,
-    control_mode: str = "legacy-mbox",
-    candidate_mode: str = "default-lock-first",
-) -> None:
-    fail(not result_path.exists() and not result_path.is_symlink(), "compare result path already exists")
-    fail(control_mode == "legacy-mbox", "control mode must be legacy-mbox")
-    fail(candidate_mode == "default-lock-first", "candidate mode must be default-lock-first")
-    control, lock_first = load_json(control_path), load_json(lock_first_path)
-    control_manifest, lock_first_manifest = load_json(control_manifest_path), load_json(lock_first_manifest_path)
-    fail(control == lock_first, "control and lock-first module maps differ")
-    fail(control_manifest == lock_first_manifest, "control and lock-first manifests differ")
-    profile = control.get("profile")
-    fail(isinstance(profile, str) and profile and lock_first.get("profile") == profile, "module maps have an invalid profile")
-    verify_manifest(control_manifest, "control manifest")
-    rows = module_rows(control, "control module map")
-    verify_actual_maps(control_workspace, rows, profile, "control")
-    verify_actual_maps(lock_first_workspace, rows, profile, "lock-first")
-
-    batch_metadata = load_batch(mapping_path, set(rows))
-    batch = batch_metadata["series"]
-    evidence = load_json(evidence_path)
-    observed_version = evidence.get("evidence_schema_version")
-    fail(
-        observed_version == EVIDENCE_SCHEMA_VERSION,
-        f"lock-first evidence schema version mismatch: expected {EVIDENCE_SCHEMA_VERSION}, got {observed_version!r}",
-    )
-    verify_profile_composition_evidence(evidence, batch_metadata)
-    fail(evidence.get("verdict") == "VALID", "lock-first evidence verdict is not VALID")
-    series = evidence.get("series")
-    fail(evidence.get("batch_id") == batch_metadata["batch_id"], "lock-first evidence batch_id differs from mapping")
-    fail(evidence.get("expected_count") == batch_metadata["expected_count"], "lock-first evidence expected_count differs from mapping")
-    fail(isinstance(series, list) and len(series) == batch_metadata["expected_count"], "lock-first evidence does not contain expected_count entries")
-    expected_series = [{"module": entry["module"], "patch": entry["patch"]} for entry in batch]
-    fail(evidence.get("module_order") == batch_metadata["module_order"], "lock-first evidence module order differs from mapping")
-    fail(evidence.get("series_order") == expected_series, "lock-first evidence series order differs from mapping")
-    observed_series: list[dict[str, str]] = []
-    previous: dict[str, tuple[Path, str]] = {}
-    for mapping, observed in zip(batch, series, strict=True):
-        fail(isinstance(observed, dict) and set(observed) == ENTRY_FIELDS, f"{mapping['patch']}: evidence fields are invalid")
-        fail(observed.get("verdict") == "VALID", f"{mapping['patch']}: evidence verdict is not VALID")
-        module, patch = observed.get("module"), observed.get("patch")
-        fail(module == mapping["module"] and isinstance(patch, str), f"{mapping['patch']}: evidence module+patch invalid")
-        observed_series.append({"module": module, "patch": patch})
-        expected = lock_values(mapping)
-        for field, expected_value in expected.items():
-            fail(observed.get(field) == expected_value, f"{mapping['patch']}: {field} differs from schema-v2 lock")
-        applied_commit = oid(observed.get("applied_commit"), f"{mapping['patch']} applied commit")
-        applied_tree = oid(observed.get("applied_tree"), f"{mapping['patch']} applied tree")
-        row = rows.get(mapping["module"])
-        fail(row is not None, f"{mapping['patch']}: module missing from module map")
-        repo = contained(lock_first_workspace, row["path"], f"{mapping['patch']} repository")
-        fail(git(repo, "cat-file", "-e", f"{applied_commit}^{{commit}}") == "", f"{mapping['patch']}: applied commit missing")
-        fail(git(repo, "rev-parse", f"{applied_commit}^{{tree}}") == applied_tree, f"{mapping['patch']}: applied tree is not the commit tree")
-        integration = row["integration_oid"]
-        fail(is_ancestor(repo, applied_commit, integration), f"{mapping['patch']}: applied commit is not an ancestor of integration")
-        if module in previous:
-            previous_repo, previous_commit = previous[module]
-            fail(previous_repo == repo and is_ancestor(repo, previous_commit, applied_commit), f"{mapping['patch']}: applied commits are not in per-module ancestry order")
-        previous[module] = (repo, applied_commit)
-    fail(observed_series == expected_series, "lock-first evidence series do not exactly match the grouped ordered batch")
-    observed_keys = [(entry["module"], entry["patch"]) for entry in observed_series]
-    fail(len(set(observed_keys)) == batch_metadata["expected_count"], "lock-first evidence contains duplicate module+patch")
-    assert_no_transaction_state(control_workspace, rows, transaction_root, "control")
-    assert_no_transaction_state(lock_first_workspace, rows, transaction_root, "lock-first")
-    result_path.write_text(json.dumps({
-        "verdict": "VALID",
-        "evidence_schema_version": EVIDENCE_SCHEMA_VERSION,
-        "batch_id": batch_metadata["batch_id"],
-        "expected_count": batch_metadata["expected_count"],
-        "module_order": batch_metadata["module_order"],
-        "module_count": len(rows),
-        "control_mode": control_mode,
-        "candidate_mode": candidate_mode,
-        "lock_first_evidence": evidence_path.name,
-    }, sort_keys=True, indent=2) + "\n")
-
-
-def compare_test_only_legacy_oracle(
+def compare_immutable_oracle(
     oracle_path: Path,
     candidate_path: Path,
     candidate_manifest_path: Path,
@@ -371,66 +346,160 @@ def compare_test_only_legacy_oracle(
     transaction_root: Path,
     result_path: Path,
 ) -> None:
-    """Compare a cleaned test-only archive control with canonical candidate."""
+    """Compare the independent clean-ODB cherry-pick oracle with candidate."""
     fail(not result_path.exists() and not result_path.is_symlink(), "compare result path already exists")
     oracle = load_json(oracle_path)
-    fail(set(oracle) == {"mode", "profile", "batch_id", "expected_count", "modules", "generated_profile_lock", "cleanup"}, "legacy oracle fields are invalid")
-    fail(oracle.get("mode") == "test-only-legacy-oracle", "control mode must be test-only-legacy-oracle")
-    fail(oracle.get("cleanup") == {"root": "removed", "worktrees": "removed"}, "legacy oracle cleanup is incomplete")
+    fail(set(oracle) == {
+        "oracle_schema_version", "mode", "profile", "profile_order", "batches",
+        "modules", "generated_profile_locks", "frozen_manifest_sha256",
+        "clean_odb", "cleanup", "verdict",
+    }, "immutable oracle fields are invalid")
+    fail(oracle.get("oracle_schema_version") == 2, "immutable oracle schema version mismatch")
+    fail(oracle.get("mode") == "immutable-cherry-pick-oracle", "control mode must be immutable-cherry-pick-oracle")
+    fail(oracle.get("verdict") == "VALID", "immutable oracle verdict is not VALID")
+    fail(
+        oracle.get("cleanup")
+        == {"root": "removed", "worktrees": "removed", "refs": "removed"},
+        "immutable oracle cleanup is incomplete",
+    )
+    clean_odb = oracle.get("clean_odb")
+    fail(
+        isinstance(clean_odb, dict)
+        and set(clean_odb)
+        == {
+            "module_count", "immutable_fetch_transactions", "alternates",
+            "shallow", "partial",
+        }
+        and isinstance(clean_odb["module_count"], int)
+        and clean_odb["module_count"] > 0
+        and clean_odb["immutable_fetch_transactions"] == clean_odb["module_count"]
+        and clean_odb["alternates"] == clean_odb["shallow"] == clean_odb["partial"] == 0,
+        "immutable oracle clean-ODB evidence is incomplete",
+    )
     candidate = load_json(candidate_path)
     profile = oracle.get("profile")
     fail(isinstance(profile, str) and profile and candidate.get("profile") == profile, "oracle/candidate profile differs")
     rows = module_rows(candidate, "candidate module map")
     batch_metadata = load_batch(mapping_path, set(rows))
-    fail(oracle.get("batch_id") == batch_metadata["batch_id"], "legacy oracle batch differs from mapping")
-    fail(oracle.get("expected_count") == batch_metadata["expected_count"], "legacy oracle count differs from mapping")
+    batches = oracle.get("batches")
+    fail(isinstance(batches, list) and batches, "immutable oracle batches are missing")
+    fail(
+        oracle.get("profile_order") == [batch.get("profile") for batch in batches],
+        "immutable oracle profile order differs from batches",
+    )
+    target_batch = batches[-1]
+    fail(
+        isinstance(target_batch, dict)
+        and set(target_batch)
+        == {
+            "profile", "batch_id", "expected_count", "module_order",
+            "series_order", "series", "verdict",
+        },
+        "immutable oracle target batch fields are invalid",
+    )
+    fail(target_batch.get("profile") == profile, "immutable oracle target profile differs")
+    fail(target_batch.get("batch_id") == batch_metadata["batch_id"], "immutable oracle batch differs from mapping")
+    fail(target_batch.get("expected_count") == batch_metadata["expected_count"], "immutable oracle count differs from mapping")
+    fail(target_batch.get("module_order") == batch_metadata["module_order"], "immutable oracle module order differs")
+    expected_series = [
+        {"module": entry["module"], "patch": entry["patch"]}
+        for entry in batch_metadata["series"]
+    ]
+    fail(target_batch.get("series_order") == expected_series, "immutable oracle series order differs")
+    oracle_series = target_batch.get("series")
+    fail(
+        isinstance(oracle_series, list)
+        and len(oracle_series) == batch_metadata["expected_count"]
+        and all(
+            isinstance(entry, dict)
+            and set(entry) == ENTRY_FIELDS
+            and entry.get("verdict") == "VALID"
+            for entry in oracle_series
+        ),
+        "immutable oracle series evidence is invalid",
+    )
+    for mapping, observed in zip(
+        batch_metadata["series"], oracle_series, strict=True
+    ):
+        fail(
+            observed["module"] == mapping["module"]
+            and observed["patch"] == mapping["patch"],
+            f"{mapping['patch']}: immutable oracle identity differs",
+        )
+        for field, expected_value in lock_values(mapping).items():
+            fail(
+                observed[field] == expected_value,
+                f"{mapping['patch']}: immutable oracle {field} differs "
+                "from schema-v2 lock",
+            )
+        oid(
+            observed["applied_commit"],
+            f"{mapping['patch']} immutable oracle applied commit",
+        )
+        oid(
+            observed["applied_tree"],
+            f"{mapping['patch']} immutable oracle applied tree",
+        )
     oracle_rows = oracle.get("modules")
-    fail(isinstance(oracle_rows, list) and len(oracle_rows) == len(rows), "legacy oracle module count differs")
+    fail(isinstance(oracle_rows, list) and len(oracle_rows) == len(rows), "immutable oracle module count differs")
     observed_trees: dict[str, str] = {}
     for row in oracle_rows:
-        fail(isinstance(row, dict) and set(row) == {"module", "path", "commit", "tree"}, "legacy oracle module row is invalid")
+        fail(isinstance(row, dict) and set(row) == {"module", "commit", "tree"}, "immutable oracle module row is invalid")
         module = row.get("module")
-        fail(isinstance(module, str) and module in rows and module not in observed_trees, "legacy oracle module is invalid or duplicate")
-        oid(row.get("commit"), f"legacy oracle {module} commit")
-        observed_trees[module] = oid(row.get("tree"), f"legacy oracle {module} tree")
-    fail(observed_trees == {module: row["tree"] for module, row in rows.items()}, "legacy oracle and canonical module trees differ")
+        fail(isinstance(module, str) and module in rows and module not in observed_trees, "immutable oracle module is invalid or duplicate")
+        oid(row.get("commit"), f"immutable oracle {module} commit")
+        observed_trees[module] = oid(row.get("tree"), f"immutable oracle {module} tree")
+    fail(observed_trees == {module: row["tree"] for module, row in rows.items()}, "immutable oracle and canonical module trees differ")
     manifest = load_json(candidate_manifest_path)
     verify_manifest(manifest, "candidate manifest")
-    generated = oracle.get("generated_profile_lock")
-    fail(isinstance(generated, dict) and set(generated) == {"profile", "sha256", "size", "frozen_manifest_sha256"}, "legacy oracle generated lock metadata is invalid")
-    fail(generated.get("profile") == profile, "legacy oracle generated lock profile differs")
-    fail(generated.get("sha256") == manifest["generated_profile_lock"]["sha256"], "legacy oracle and canonical generated lock hash differ")
-    fail(generated.get("size") == manifest["generated_profile_lock"]["size"], "legacy oracle and canonical generated lock size differs")
-    fail(generated.get("frozen_manifest_sha256") == manifest["frozen_manifest_sha256"], "legacy oracle and canonical frozen manifest differ")
+    generated = oracle.get("generated_profile_locks")
+    fail(
+        isinstance(generated, list)
+        and generated == manifest.get("generated_profile_locks"),
+        "immutable oracle and canonical generated locks differ",
+    )
+    fail(
+        oracle.get("frozen_manifest_sha256")
+        == manifest.get("frozen_manifest_sha256"),
+        "immutable oracle and canonical frozen manifest differ",
+    )
     verify_actual_maps(candidate_workspace, rows, profile, "candidate")
     verify_candidate_evidence(evidence_path, batch_metadata, rows, candidate_workspace)
     assert_no_transaction_state(candidate_workspace, rows, transaction_root, "candidate")
-    result_path.write_text(json.dumps({
-        "verdict": "VALID", "evidence_schema_version": EVIDENCE_SCHEMA_VERSION,
-        "batch_id": batch_metadata["batch_id"], "expected_count": batch_metadata["expected_count"],
-        "module_order": batch_metadata["module_order"], "module_count": len(rows),
-        "control_mode": "test-only-legacy-oracle", "candidate_mode": "default-lock-first",
-        "lock_first_evidence": evidence_path.name,
-    }, sort_keys=True, indent=2) + "\n")
+    write_result(
+        result_path,
+        {
+            "verdict": "VALID",
+            "evidence_schema_version": EVIDENCE_SCHEMA_VERSION,
+            "batch_id": batch_metadata["batch_id"],
+            "expected_count": batch_metadata["expected_count"],
+            "module_order": batch_metadata["module_order"],
+            "module_count": len(rows),
+            "control_mode": "immutable-cherry-pick-oracle",
+            "candidate_mode": "default-lock-first",
+            "lock_first_evidence": evidence_path.name,
+        },
+    )
 
 
 def main() -> None:
     parser = argparse.ArgumentParser()
     sub = parser.add_subparsers(dest="action", required=True)
-    compare = sub.add_parser("compare-lock-first")
-    for name in ("control", "lock-first", "control-manifest", "lock-first-manifest", "evidence", "mapping", "control-workspace", "lock-first-workspace", "transaction-root", "result"):
-        compare.add_argument(f"--{name}", type=Path, required=True)
-    compare.add_argument("--control-mode", required=True)
-    compare.add_argument("--candidate-mode", required=True)
-    oracle = sub.add_parser("compare-test-only-legacy-oracle")
+    oracle = sub.add_parser("compare-immutable-oracle")
     for name in ("oracle", "candidate", "candidate-manifest", "evidence", "mapping", "candidate-workspace", "transaction-root", "result"):
         oracle.add_argument(f"--{name}", type=Path, required=True)
     args = parser.parse_args()
     try:
-        if args.action == "compare-lock-first":
-            compare_lock_first(args.control, args.lock_first, args.control_manifest, args.lock_first_manifest, args.evidence, args.mapping, args.control_workspace, args.lock_first_workspace, args.transaction_root, args.result, args.control_mode, args.candidate_mode)
-        else:
-            compare_test_only_legacy_oracle(args.oracle, args.candidate, args.candidate_manifest, args.evidence, args.mapping, args.candidate_workspace, args.transaction_root, args.result)
+        compare_immutable_oracle(
+            args.oracle,
+            args.candidate,
+            args.candidate_manifest,
+            args.evidence,
+            args.mapping,
+            args.candidate_workspace,
+            args.transaction_root,
+            args.result,
+        )
     except AcceptanceError as error:
         print(f"patch-stack lock-first acceptance: ERROR: {error}", file=sys.stderr)
         raise SystemExit(1)

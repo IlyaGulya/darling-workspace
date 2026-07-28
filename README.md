@@ -31,7 +31,7 @@ west update
 west dw restore
 west dw beads sync --import-only --rebuild
 west patch verify --profile homebrew
-west patch apply --profile homebrew --roll-back
+west patch apply --profile homebrew
 ```
 
 ## Daily use
@@ -44,7 +44,7 @@ west dw beads ready
 west dw restore
 west patch list --profile homebrew
 west patch verify --profile homebrew
-west patch apply --profile homebrew --roll-back
+west patch apply --profile homebrew
 west patch clean --profile homebrew
 west darling-doctor            # verify manifest/build/deploy alignment BEFORE building or booting
 west darling-build             # doctor-gated ninja build of dyld + closure (add --deploy to install)
@@ -114,48 +114,45 @@ branches selected for local composition with:
 ```
 
 `patches/<profile>/patches.yml` records the source branch and commit, Bead or
-PR, patch checksum, and application order. `west patch apply` uses
-`git am --3way`, creates clean `integration/<profile>` branches, records the
-top-level submodule pointers, and writes a frozen profile lock.
+PR, historical archive checksum, and application order. `west patch apply`
+validates schema-v2 locks and replays their immutable commits through native
+Git in clean disposable transactions. It creates clean
+`integration/<profile>` branches, records the top-level submodule pointers,
+and writes a frozen profile lock. The checked-in patch archives are retained
+for provenance and recovery review; they are not materialization inputs.
 
-## Stacked profiles (`base-profile`)
+## Typed profile composition
 
-A profile may declare `base-profile: <name>` at the top of its `patches.yml` to
-be applied ON TOP of another profile's integration branch instead of the raw
-manifest revision. This exists because some work is orthogonal in source but
-depends on another layer to build/boot — e.g. the `perf` profile stacks on
-`homebrew` because a bootable `mldr` needs the homebrew fork/stack fixes
-underneath (measured: perf#21b compiles standalone but the binary won't link
-without homebrew's `glibc_fork_reset.c`).
+A profile may declare `base-profile: <name>` in `patches.yml`. The corresponding
+schema-v3 mapping and composition document bind that dependency, the frozen
+manifest hash, every series boundary, and every final module tree. A standalone
+canonical apply resolves the complete typed dependency graph and materializes
+prerequisites automatically from immutable schema-v2 locks; it does not require
+pre-existing `integration/<base>` refs and does not infer composition from
+archive filenames.
 
-Semantics when `base-profile` is set:
-
-- `apply`/`verify`/`clean` start each module from the tip of
-  `integration/<base>` (falling back to `manifest-rev` for modules the base
-  profile does not patch), not from `manifest-rev`.
-- `apply` refuses to run unless the base profile is already applied
-  (`integration/<base>` present); it tells you to `west patch apply --profile
-  <base>` first.
-- `clean` resets a stacked profile back to the base profile's integration tip,
-  leaving the base layer intact.
-- The stacked profile's `west.lock.yml` is seeded from the base profile's lock,
-  so modules it does not touch keep the base revisions.
-
-Order of operations:
+For example, one command reconstructs Homebrew, then Perf, then Arch in the
+declared order:
 
 ```bash
-west patch apply --profile homebrew     # base layer first
-west patch apply --profile perf         # stacks on integration/homebrew
-west patch clean --profile perf         # back to integration/homebrew
-west patch clean --profile homebrew     # back to manifest-rev
+west patch apply --profile arch
 ```
 
-Profiles without `base-profile` (e.g. `homebrew`) behave exactly as before.
+Each successful layer publishes its own `integration/<profile>` refs and
+generated `patches/<profile>/west.lock.yml`. The final generated lock carries
+forward prerequisite-only module revisions. `west patch clean --profile
+<name>` removes that layer while leaving separately materialized prerequisite
+layers available. Any missing, reordered, or mismatched typed dependency fails
+closed; there is no archive fallback.
 
 ## Patch profile invariants
 
 - Canonical editable source: clean `fix/*` branch in the owning repository.
-- Portable integration source: patch files plus `patches/<profile>/patches.yml`.
+- Canonical materialization source: schema-v3 profile mappings/compositions,
+  schema-v2 series locks, and their declared immutable refs/OIDs.
+- Review/provenance artifacts: versioned patch archives and
+  `patches/<profile>/patches.yml`; authoring exporters may refresh them, but
+  they are not portable executable integration inputs.
 - Generated local state: `integration/<profile>` branches and the profile
   `west.lock.yml`.
 - Historical source: `backup/*` and preserved mega-branches.

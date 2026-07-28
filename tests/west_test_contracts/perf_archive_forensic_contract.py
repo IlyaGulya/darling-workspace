@@ -24,7 +24,7 @@ def main() -> None:
     assert lock["expected_tree"] == "c0b2c145f7f26734853657b165da88cc51ec7f46"
     assert len(lock["ordered_commits"]) == 17
 
-    registry = yaml.safe_load((ROOT / "locks/patch-stack/legacy-oracle-profiles-v1.yml").read_text())
+    registry = yaml.safe_load((ROOT / "locks/patch-stack/immutable-oracle-profiles-v1.yml").read_text())
     assert registry["schema_version"] == 1
     by_profile = {entry["profile"]: entry for entry in registry["profiles"]}
     assert by_profile["perf"] == {
@@ -32,7 +32,8 @@ def main() -> None:
         "oracle_mode": "immutable-cherry-pick-oracle",
         "mapping": "lock-first-series-perf-v2.yml",
     }
-    assert by_profile["homebrew"]["oracle_mode"] == "legacy-mbox-oracle"
+    assert by_profile["homebrew"]["oracle_mode"] == "immutable-cherry-pick-oracle"
+    assert by_profile["arch"]["oracle_mode"] == "immutable-cherry-pick-oracle"
 
     exceptions = yaml.safe_load((ROOT / "locks/patch-stack/archive-forensic-exceptions-v1.yml").read_text())
     assert exceptions["schema_version"] == 1

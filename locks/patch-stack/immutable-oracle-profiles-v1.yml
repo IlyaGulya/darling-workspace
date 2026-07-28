@@ -1,9 +1,11 @@
 schema_version: 1
-# Test-only differential authorities. Production runtime must not import this.
 profiles:
   - profile: homebrew
-    oracle_mode: legacy-mbox-oracle
+    oracle_mode: immutable-cherry-pick-oracle
     mapping: lock-first-series-v2.yml
   - profile: perf
     oracle_mode: immutable-cherry-pick-oracle
     mapping: lock-first-series-perf-v2.yml
+  - profile: arch
+    oracle_mode: immutable-cherry-pick-oracle
+    mapping: lock-first-series-arch-v2.yml
