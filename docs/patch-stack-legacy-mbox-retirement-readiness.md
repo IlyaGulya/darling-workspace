@@ -1,66 +1,127 @@
-# Legacy mbox observation and retirement readiness
+# Legacy mbox operational retirement
 
-This document records the boundary for a future, separately approved removal.
-It does **not** remove `--legacy-mbox`, the legacy implementation, or patch
-archives.
+Historical `patches/**/*.patch` files are provenance, review, and recovery
+records. They are not executable materialization inputs. Canonical profile
+state is the typed schema-v2 immutable lock graph plus its schema-v3 profile
+composition.
 
-## Call-site inventory
+## Production and CI call-site inventory
 
-| Consumer | Profile/mode | Class | Legacy dependency |
+| Entry point | Profile/mode | Class | Materialization source |
 | --- | --- | --- | --- |
-| `ci/run-test-tier.sh` host | homebrew, no flag | regular push CI | No: default-lock-first. |
-| `patch-stack-lock-first.yml` control | homebrew, `--legacy-mbox` | manual hosted oracle | Yes: independent A/B control. |
-| `patch-stack-lock-first.yml` candidate | homebrew, no flag | manual hosted acceptance | No: default-lock-first. |
-| `patch-stack-shadow.yml` | homebrew, no flag plus `--shadow-lock` | manual diagnostic oracle | Yes: legacy/canonical comparison. |
-| perf profile | no flag | local and runtime-source materialization | No: typed canonical mapping; portable archive authority is replaced by dual-clean-ODB canonical acceptance. |
-| arch profile | no flag | local and runtime-source materialization | Pending: canonical replay currently fails fail-closed at immutable darlingserver commit `80e8f944…`; no legacy fallback is authorized. |
-| docs and contracts | examples/oracles | documentation/test | Preserve until their modes migrate. |
+| `west patch apply --profile homebrew` | `default-lock-first` | normal CLI | Batch 7, 69 immutable series |
+| `west patch apply --profile perf` | `default-lock-first` | normal CLI | homebrew prerequisite plus perf 7 |
+| `west patch apply --profile arch` | `default-lock-first` | normal CLI/manual Arch tier | homebrew 69, perf 7, arch 19 |
+| `west patch apply ... --lock-first` | `explicit-lock-first` | compatibility alias | same typed plan as no-flag |
+| `west test --profile homebrew --materialize-profile` | runtime-source canonical | regular host CI | Batch 7 in lifecycle-owned worktrees |
+| `RuntimeSourceMaterializer.profile_worktree_checkout()` | runtime-source canonical | host/runtime tests | typed homebrew/perf/arch stack |
+| runtime-source current-minus RED proof | canonical-minus-one | tests | immutable locks with a typed omission |
+| manual `patch-stack-lock-first.yml` control | `immutable-cherry-pick-oracle` | manual oracle | declared immutable refs in fresh ODBs |
+| manual `patch-stack-lock-first.yml` candidate | `default-lock-first` | manual acceptance | production native format-patch/git-am replay |
+| manual `test-infra.yml` Arch tier | `default-lock-first` | manual acceptance | composed 69/7/19 canonical stack |
+| guest-smoke/toolchain/full | no profile apply | regular CI | consumes built runtime; no archive apply |
 
-The CI policy contract fails if regular host materialization adds
-`--legacy-mbox`. The manual lock-first workflow is the only hosted explicit
-legacy control. Guest-smoke and other guest tiers do not pass
-`--materialize-profile`, so they do not independently create homebrew applies.
+`--legacy-mbox`, `--shadow-lock`, `--shadow-evidence`, the shadow workflow,
+and their runtime implementations have zero callers and are removed in this
+review. A corrupt or incomplete mapping fails before production worktree
+mutation and cannot select an archive fallback.
 
-The host path has a second materialization entry point: `west test --profile
-homebrew --materialize-profile` enters `RuntimeSourceMaterializer.
-profile_worktree_checkout()`. Its worktrees are lifecycle-owned and disposable;
-for homebrew it now replays the exact immutable Batch 7 graph through the same
-per-module union-fetch materializer, emits runtime-source mode/replay markers,
-and publishes no integration ref or generated lock. The generalized path uses
-typed mappings for the whole requested profile stack and must never silently
-fall back to archive mbox replay.
+The immutable `darling/build-drift-gate` diagnostic still prints
+`--roll-back`. The CLI therefore retains that spelling as a deprecated
+parser-only compatibility no-op until a separate reviewed restack updates the
+diagnostic. Canonical apply does not branch on the value and always rolls back
+fail-closed.
 
-The runtime-source replay supplies its fixed `West Test
-<west-test@example.invalid>` committer identity only as `git -c` arguments to
-the disposable native `git am` calls. It does not write global, source, or
-worktree Git configuration; immutable author metadata and author dates remain
-the source of record.
+`west patch verify --applicability-only` now fetches and replays the typed
+immutable locks in disposable clean worktrees. `west patch status` validates
+the `integration/<profile>` trees against the typed composition. Neither
+operation executes an archive. `west patch export-locks` creates review or
+recovery mboxes with native `git format-patch` directly from validated
+immutable objects.
 
-## Archive dependency classification
+## Exact canonical inventory
 
-Archives and `patches/<profile>/patches.yml` remain required for the retained
-manual oracle, patch verify, export,
-checksums, source provenance, and upstream review `format-patch`; manual
-legacy/canonical and shadow oracles; and emergency recovery. Immutable refs
-and schema-v2 locks now replace all production profiles' canonical runtime
-graphs, not review payloads or portable integration source.
+| Profile | Batch | Own series | Grouped module order |
+| --- | --- | ---: | --- |
+| homebrew | `darling-homebrew-lock-first-batch-7` | 69 | darlingserver, xnu, libplatform, perl, libressl-2.8.3, libpthread, darling, installer |
+| perf | `darling-perf-lock-first-batch-1` | 7 | darling, xnu, dyld, darlingserver |
+| arch | `darling-arch-lock-first-batch-1` | 19 | libunwind, xnu, darlingserver, darling |
 
-## Future removal plan
+The immutable oracle independently validates every declared base/source ref,
+exact linear ordered commit list, no-merge topology, complete author and
+committer metadata, canonical tree, and final module composition. For parent
+repositories it independently derives integration-only gitlink OIDs, while
+requiring exact non-gitlink content and exact managed-child publication. It
+performs one union fetch per module, uses no active ODB, alternate, partial
+clone, shallow clone, replace ref, cache, or archive, and publishes evidence
+only after its disposable roots are removed.
 
-**Phase A — runtime fallback only.** After the observation gate, remove the
-homebrew `--legacy-mbox` runtime branch and update its manual oracle. Retain
-archives, locks, immutable refs, export, verify, and recovery tooling. Rollback
-is a normal revert; immutable locks/refs stay canonical and no reconstruction
-from mbox files is required.
+The hosted comparator requires the oracle and production candidate to agree on
+module trees, frozen manifest, ordered generated-lock hashes, typed batch
+identity, and canonical evidence. The implementations are deliberately
+different: plain Git cherry-pick versus production format-patch/git-am.
 
-**Phase B — archive disposition.** Separately classify each archive as retained
-review/recovery input, needed by another profile, or archival/deletable only
-after export/upstream and recovery owners approve. Do not combine it with Phase
-A.
+## Archive consumers
 
-## Current blockers
+`locks/patch-stack/archive-consumers-v1.yml` is the exact typed allowlist.
+Its classification is `NON_EXECUTABLE_ARCHIVE_PROVENANCE_RECOVERY`; each
+entry declares `access: read|write` separately from the invariant
+`executes_archive: false`. It includes:
 
-- fewer than three ordinary post-cutover CI observations with mode markers;
-- manual lock-first and shadow workflows need a legacy control/oracle;
-- public legacy-mbox and shadow controls still need a test-only oracle;
-- verify/export/review and emergency recovery still consume archives.
+- `west_commands/patch.py` reads archives for checksum, provenance-quality,
+  and source-export drift only;
+- `west patch export` and `scripts/export_patches.py` have typed write access
+  and refresh versioned review artifacts/profile metadata from reviewed source
+  branches;
+- PR tooling reads checksums for review/publish drift;
+- guest Mach-O metadata/build contracts bind reviewed sources to owning
+  archive checksums without compiling or applying archive payload;
+- focused lock-first rollback uses one owning archive path as a non-reading
+  fixture;
+- the perf hidden-blob forensic contract reads the affected index stanza;
+- the migration inventory verifies archive census and checksums.
+
+None of these consumers materializes a profile. The perf
+`shmem-ring-guest.patch` remains classified
+`LEGACY_ARCHIVE_NOT_CLEAN_ODB_REPRODUCIBLE`; its missing historical blob is
+not imported into an immutable closure.
+
+The canonical exporter records, per series, the module/patch identity,
+base/source OIDs, complete ordered commit list, count, resulting tree, mbox
+SHA-256, and stable patch IDs. Two independent clean-ODB exports must be
+byte-identical. Export output contains no `.git`, objects, packs, alternates,
+or bundles.
+
+## Deletion and recovery boundary
+
+Runtime fallback and shadow code can be deleted now; archive data cannot.
+Archives remain useful review/provenance artifacts and emergency-readable
+records. Recovery no longer applies them: regenerate an mbox from immutable
+locks with:
+
+```text
+west patch export-locks --profile <homebrew|perf|arch> --output <new-directory>
+```
+
+The output path must not exist. The object-bearing transaction is removed
+before the provenance-only directory is published. A recovery rehearsal must
+verify `evidence.json` and then may apply the generated mbox in an independent
+repository.
+
+Future archive deletion is a separate data-retention decision. It requires
+owners of upstream review, export provenance, and forensic evidence; it is not
+part of runtime retirement.
+
+## Bead/readiness decision
+
+- `dar-umoc.1` (manual legacy oracle migration): closable after this code lands
+  and ordinary CI proves the immutable oracle contract.
+- `dar-umoc.2` (remaining legacy-first profiles): closable after the same CI;
+  homebrew/perf/arch are all typed canonical.
+- `dar-umoc.3` (archive retention/export/recovery): the runtime blocker is
+  resolved by canonical export; archive deletion itself remains a separate
+  retention task, not a feature-work dependency.
+
+Verdict: **READY_FOR_DARLING_FEATURE_WORK**, subject to landing review and one
+ordinary host/guest-smoke CI. A hosted run is optional follow-up evidence, not
+required to establish that archives are no longer executable inputs.

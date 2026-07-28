@@ -62,7 +62,7 @@ jobs:
           mkdir -p "$evidence"
           west patch apply --profile arch \
             --lock-first-evidence "$evidence/lock-first-evidence.json"
-          python3 ci/patch_stack_shadow_acceptance.py capture \
+          python3 ci/patch_stack_acceptance.py capture \
             --workspace "$PWD" --profile arch \
             --modules "$evidence/arch-modules.json" \
             --manifest "$evidence/arch-manifest.json"

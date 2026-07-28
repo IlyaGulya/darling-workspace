@@ -1,0 +1,53 @@
+schema_version: 1
+classification: NON_EXECUTABLE_ARCHIVE_PROVENANCE_RECOVERY
+consumers:
+  - id: profile-checksum-provenance
+    path: west_commands/patch.py
+    operation: checksum-and-source-export-drift
+    access: read
+    executes_archive: false
+  - id: west-command-authoring-export
+    path: west_commands/patch.py
+    operation: authoring-output-refresh
+    access: write
+    executes_archive: false
+  - id: authoring-export
+    path: scripts/export_patches.py
+    operation: authoring-output-refresh
+    access: write
+    executes_archive: false
+  - id: pr-review-provenance
+    path: west_commands/pr.py
+    operation: dashboard-and-publish-checksum
+    access: read
+    executes_archive: false
+  - id: guest-macho-owner-metadata
+    path: ci/guest_macho_batch_specs.py
+    operation: owning-patch-path-and-checksum-metadata
+    access: read
+    executes_archive: false
+  - id: guest-macho-owner-checksum
+    path: ci/build-guest-macho-batch.sh
+    operation: owning-patch-checksum-verification
+    access: read
+    executes_archive: false
+  - id: guest-macho-source-provenance
+    path: tests/west_test_contracts/macho_corpus_batch_contract.py
+    operation: reviewed-source-provenance-comparison
+    access: read
+    executes_archive: false
+  - id: lock-first-rollback-fixture
+    path: tests/west_test_contracts/patch_stack_lock_first_contract.py
+    operation: non-reading-owning-path-fixture
+    access: read
+    executes_archive: false
+  - id: perf-nonportable-forensic
+    path: tests/west_test_contracts/perf_archive_forensic_contract.py
+    operation: read-only-index-stanza-classification
+    access: read
+    executes_archive: false
+  - id: migration-inventory
+    path: tests/west_test_contracts/patch_stack_migration_inventory_contract.py
+    operation: checksum-and-inventory
+    access: read
+    executes_archive: false

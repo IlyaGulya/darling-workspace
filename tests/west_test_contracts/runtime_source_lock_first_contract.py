@@ -138,13 +138,13 @@ def real_rollback_contract() -> None:
             with tempfile.TemporaryDirectory() as directory:
                 modules, projects, plan, host, _xnu, _lock_path, messages, baseline, _commits = runtime_fixture(Path(directory))
                 materializer = runtime_source.RuntimeSourceMaterializer(host)
-                old_plan, old_batch, old_legacy = (runtime_source.patch_stack_lock_first.plan,
-                                                   runtime_source.patch_stack_lock_first.materialize_batch_into,
-                                                   runtime_source.git_for_temporary_patch_application)
+                old_plan, old_batch = (
+                    runtime_source.patch_stack_lock_first.plan,
+                    runtime_source.patch_stack_lock_first.materialize_batch_into,
+                )
                 calls=[]
                 try:
                     runtime_source.patch_stack_lock_first.plan = lambda *_args: plan
-                    runtime_source.git_for_temporary_patch_application = lambda *_args: (_ for _ in ()).throw(AssertionError("legacy fallback invoked"))
                     def fail_at(target, entries, **_kwargs):
                         calls.append(entries[0]["module"])
                         if len(calls) - 1 == failing_index:
@@ -159,17 +159,16 @@ def real_rollback_contract() -> None:
                 finally:
                     runtime_source.patch_stack_lock_first.plan = old_plan
                     runtime_source.patch_stack_lock_first.materialize_batch_into = old_batch
-                    runtime_source.git_for_temporary_patch_application = old_legacy
         with tempfile.TemporaryDirectory() as directory:
             modules, projects, plan, host, _xnu, _lock_path, messages, baseline, _commits = runtime_fixture(Path(directory))
             materializer = runtime_source.RuntimeSourceMaterializer(host)
-            old_plan, old_cherry, old_legacy = (runtime_source.patch_stack_lock_first.plan,
-                                                runtime_source.patch_stack_lock_first._cherry_pick,
-                                                runtime_source.git_for_temporary_patch_application)
+            old_plan, old_cherry = (
+                runtime_source.patch_stack_lock_first.plan,
+                runtime_source.patch_stack_lock_first._cherry_pick,
+            )
             replayed=[]
             try:
                 runtime_source.patch_stack_lock_first.plan = lambda *_args: plan
-                runtime_source.git_for_temporary_patch_application = lambda *_args: (_ for _ in ()).throw(AssertionError("legacy fallback invoked"))
                 def interrupt_after_two(repo, commit, **kwargs):
                     if len(replayed) == 2:
                         raise exception_type("injected eunion hardening failure") if exception_type is not KeyboardInterrupt else KeyboardInterrupt()
@@ -190,7 +189,6 @@ def real_rollback_contract() -> None:
                 runtime_source.patch_stack_lock_first.plan = old_plan
                 runtime_source.patch_stack_lock_first._cherry_pick = old_cherry
                 runtime_source.patch_stack_lock_first.materialize_batch_into = old_batch
-                runtime_source.git_for_temporary_patch_application = old_legacy
     # A malformed final result (the point immediately before the context is
     # returned to its caller) must take the same all-worktree rollback path.
     with tempfile.TemporaryDirectory() as directory:
@@ -222,16 +220,16 @@ def identity_contract() -> None:
         materializer = runtime_source.RuntimeSourceMaterializer(host)
         source_author = git(xnu, "show", "-s", "--format=%an%x00%ae%x00%aI", commits[0])
         configs_before = {module: git(repo, "config", "--local", "--list") for module, repo in projects.items()}
-        old_plan, old_batch, old_legacy = (runtime_source.patch_stack_lock_first.plan,
-                                           runtime_source.patch_stack_lock_first.materialize_batch_into,
-                                           runtime_source.git_for_temporary_patch_application)
+        old_plan, old_batch = (
+            runtime_source.patch_stack_lock_first.plan,
+            runtime_source.patch_stack_lock_first.materialize_batch_into,
+        )
         try:
             runtime_source.patch_stack_lock_first.plan = lambda *_args: plan
             # This contract isolates command-scoped identity for the genuine
             # XNU replay; its other seven modules are intentional stubs.
             # Full profile-final trees are exercised by the composition E2E.
             plan.composition["integration_finals"] = {}
-            runtime_source.git_for_temporary_patch_application = lambda *_args: (_ for _ in ()).throw(AssertionError("legacy fallback invoked"))
             real_batch = old_batch
             result_counts: list[tuple[str, int]] = []
             def batch(target, entries, **kwargs):
@@ -280,7 +278,6 @@ def identity_contract() -> None:
         finally:
             runtime_source.patch_stack_lock_first.plan = old_plan
             runtime_source.patch_stack_lock_first.materialize_batch_into = old_batch
-            runtime_source.git_for_temporary_patch_application = old_legacy
 
 
 def profile_routing_contract() -> None:

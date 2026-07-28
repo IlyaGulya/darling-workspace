@@ -456,7 +456,7 @@ def main() -> None:
         # Existing canonical result refs are exercised by the materializer
         # contract; lock-first uses an isolated canonical repository.
         git(production, "reset", "--hard", "-q", base)
-        assert lock_first.materialize_into(production, selected[0], patch)["canonical_tree"] == tree
+        assert lock_first.materialize_into(production, selected[0])["canonical_tree"] == tree
         # Differential native-Git fixture: messages which are unsafe to
         # reserialize by string trimming must yield byte-identical history.
         differential = root / "differential"; git(root, "clone", "-q", str(bare), str(differential))
@@ -556,7 +556,11 @@ def main() -> None:
                 lock_first._cherry_pick = fail_third
                 evidence_path = root / f"real-three-{type(injected).__name__}.json"
                 try:
-                    real_command._apply("homebrew", root, multi_patches, "0", False, False, None, True, str(evidence_path))
+                    real_command._apply(
+                        "homebrew", root, multi_patches, "0",
+                        lock_first=True,
+                        lock_first_evidence=str(evidence_path),
+                    )
                 except KeyboardInterrupt:
                     assert isinstance(injected, KeyboardInterrupt)
                 except RuntimeError as error:
@@ -634,7 +638,11 @@ def main() -> None:
                 lock_first._cherry_pick = fail_eunion
                 evidence_path = root / f"eunion-{type(injected).__name__}.json"
                 try:
-                    eunion_command._apply("homebrew", root, [eunion_patch_entry], "0", False, False, None, True, str(evidence_path))
+                    eunion_command._apply(
+                        "homebrew", root, [eunion_patch_entry], "0",
+                        lock_first=True,
+                        lock_first_evidence=str(evidence_path),
+                    )
                 except KeyboardInterrupt:
                     assert isinstance(injected, KeyboardInterrupt)
                 except RuntimeError as error:
@@ -680,15 +688,22 @@ def main() -> None:
         patch_command.patch_stack_lock_first.materialize_batch_into = fake_batch
         try:
             existing_evidence = root / "existing-evidence.json"; existing_evidence.write_text("old\n")
-            try: command._apply("homebrew", root, patches, "0", False, False, None, True, str(existing_evidence))
+            try:
+                command._apply(
+                    "homebrew", root, patches, "0",
+                    lock_first=True,
+                    lock_first_evidence=str(existing_evidence),
+                )
             except RuntimeError: pass
             else: raise AssertionError("pre-existing evidence was accepted")
             assert not prepared and existing_evidence.read_text() == "old\n"
             existing_evidence.unlink()
-            command._apply("homebrew", root, patches, "0", False, False, None, False)
+            command._apply("homebrew", root, patches, "0")
             assert calls == ["darling/sandbox-exec-pass-through.patch"], "normal homebrew apply did not invoke lock-first"
             calls.clear()
-            command._apply("homebrew", root, patches, "0", False, False, None, True)
+            command._apply(
+                "homebrew", root, patches, "0", lock_first=True
+            )
             assert calls == ["darling/sandbox-exec-pass-through.patch"]
             # Every selected series is run once in profile order. Failure and
             # SIGINT in the middle both reset the entire touched transaction.
@@ -696,7 +711,11 @@ def main() -> None:
             patch_command.patch_stack_lock_first.plan = lambda *_args: batch
             calls.clear(); resets.clear()
             batch_output = root / "orchestration-evidence.json"
-            command._apply("homebrew", root, batch_patches, "0", False, False, None, True, str(batch_output))
+            command._apply(
+                "homebrew", root, batch_patches, "0",
+                lock_first=True,
+                lock_first_evidence=str(batch_output),
+            )
             assert calls == [item["path"] for item in batch_patches]
             payload = json.loads(batch_output.read_text())
             assert payload["expected_count"] == len(batch_patches) and len(payload["series"]) == len(batch_patches)
@@ -707,7 +726,12 @@ def main() -> None:
             writer_calls: list[bool] = []
             command._record_integration = lambda *_args: (_ for _ in ()).throw(RuntimeError("record failure"))
             patch_command.patch_stack_lock_first.write_batch_evidence = lambda *_args: writer_calls.append(True)
-            try: command._apply("homebrew", root, batch_patches, "0", False, False, None, True, str(record_output))
+            try:
+                command._apply(
+                    "homebrew", root, batch_patches, "0",
+                    lock_first=True,
+                    lock_first_evidence=str(record_output),
+                )
             except RuntimeError: pass
             else: raise AssertionError("record failure was accepted")
             assert not writer_calls and resets and not record_output.exists()
@@ -715,7 +739,12 @@ def main() -> None:
             writer_output = root / "writer-failure-evidence.json"
             command._record_integration = lambda *_args: root / "generated.lock"
             patch_command.patch_stack_lock_first.write_batch_evidence = lambda *_args: (_ for _ in ()).throw(lock_first.LockFirstError("writer failure"))
-            try: command._apply("homebrew", root, batch_patches, "0", False, False, None, True, str(writer_output))
+            try:
+                command._apply(
+                    "homebrew", root, batch_patches, "0",
+                    lock_first=True,
+                    lock_first_evidence=str(writer_output),
+                )
             except RuntimeError: pass
             else: raise AssertionError("writer failure was accepted")
             assert resets and not writer_output.exists()
@@ -725,7 +754,12 @@ def main() -> None:
             resets.clear(); plain_output = root / "plain-plan-evidence.json"
             patch_command.patch_stack_lock_first.plan = lambda *_args: list(batch)
             patch_command.patch_stack_lock_first.materialize_into = lambda _repo, entry, *_args: {"module": entry["module"], "patch": entry["patch"], "base": base, "source": source, "canonical_tree": tree, "applied_commit": source, "applied_tree": tree, "verdict": "VALID"}
-            try: command._apply("homebrew", root, batch_patches, "0", False, False, None, True, str(plain_output))
+            try:
+                command._apply(
+                    "homebrew", root, batch_patches, "0",
+                    lock_first=True,
+                    lock_first_evidence=str(plain_output),
+                )
             except RuntimeError: pass
             else: raise AssertionError("untyped lock-first plan was accepted")
             assert resets and not plain_output.exists()
@@ -737,7 +771,11 @@ def main() -> None:
                     if interrupted["count"] == position: raise KeyboardInterrupt()
                     return {"module": entry["module"], "patch": entry["patch"], "base": base, "source": source, "canonical_tree": tree, "applied_commit": source, "applied_tree": tree, "verdict": "VALID"}
                 patch_command.patch_stack_lock_first.materialize_into = interrupting
-                try: command._apply("homebrew", root, batch_patches, "0", False, False, None, True)
+                try:
+                    command._apply(
+                        "homebrew", root, batch_patches, "0",
+                        lock_first=True,
+                    )
                 except KeyboardInterrupt: pass
                 else: raise AssertionError("SIGINT was swallowed")
                 assert interrupted["count"] == position and resets
@@ -747,7 +785,11 @@ def main() -> None:
                     if failure["count"] == position: raise lock_first.LockFirstError("series failure")
                     return {"module": planned_entry["module"], "patch": planned_entry["patch"], "base": base, "source": source, "canonical_tree": tree, "applied_commit": source, "applied_tree": tree, "verdict": "VALID"}
                 patch_command.patch_stack_lock_first.materialize_into = failing_at
-                try: command._apply("homebrew", root, batch_patches, "0", False, False, None, True)
+                try:
+                    command._apply(
+                        "homebrew", root, batch_patches, "0",
+                        lock_first=True,
+                    )
                 except RuntimeError: pass
                 else: raise AssertionError("series failure was accepted")
                 assert failure["count"] == position and resets
@@ -810,7 +852,11 @@ def main() -> None:
                         return {"module": _entry["module"], "patch": _entry["patch"], "base": base, "source": source, "canonical_tree": tree, "applied_commit": source, "applied_tree": tree, "verdict": "VALID"}
                     patch_command.patch_stack_lock_first.materialize_into = fail_external
                     try:
-                        command._apply("homebrew", root, external_patches, "0", False, False, None, True, str(evidence_path))
+                        command._apply(
+                            "homebrew", root, external_patches, "0",
+                            lock_first=True,
+                            lock_first_evidence=str(evidence_path),
+                        )
                     except KeyboardInterrupt:
                         assert interrupt
                     except RuntimeError:
@@ -855,7 +901,11 @@ def main() -> None:
                         return {"module": entry["module"], "patch": entry["patch"], "base": base, "source": source, "canonical_tree": tree, "applied_commit": source, "applied_tree": tree, "verdict": "VALID"}
                     patch_command.patch_stack_lock_first.materialize_into = fail_darlingserver
                     try:
-                        command._apply("homebrew", root, darlingserver_patches, "0", False, False, None, True, str(evidence_path))
+                        command._apply(
+                            "homebrew", root, darlingserver_patches, "0",
+                            lock_first=True,
+                            lock_first_evidence=str(evidence_path),
+                        )
                     except KeyboardInterrupt:
                         assert interrupt
                     except RuntimeError:
@@ -896,7 +946,11 @@ def main() -> None:
                         return {"module": entry["module"], "patch": entry["patch"], "base": base, "source": source, "canonical_tree": tree, "applied_commit": source, "applied_tree": tree, "verdict": "VALID"}
                     patch_command.patch_stack_lock_first.materialize_into = fail_xnu
                     try:
-                        command._apply("homebrew", root, xnu_patches, "0", False, False, None, True, str(evidence_path))
+                        command._apply(
+                            "homebrew", root, xnu_patches, "0",
+                            lock_first=True,
+                            lock_first_evidence=str(evidence_path),
+                        )
                     except KeyboardInterrupt:
                         assert interrupt
                     except RuntimeError:
@@ -907,14 +961,20 @@ def main() -> None:
                     assert aborted == [production]
             prepared.clear()
             patch_command.patch_stack_lock_first.plan = lambda *_args: (_ for _ in ()).throw(lock_first.LockFirstError("bad mapping"))
-            try: command._apply("homebrew", root, patches, "0", False, False, None, True)
+            try:
+                command._apply(
+                    "homebrew", root, patches, "0", lock_first=True
+                )
             except RuntimeError: pass
             else: raise AssertionError("bad typed plan mutated")
             assert not prepared
             command._group = lambda _patches: {"darling": patches}
             patch_command.patch_stack_lock_first.plan = lambda *_args: selected
             patch_command.patch_stack_lock_first.materialize_into = lambda *_args: (_ for _ in ()).throw(KeyboardInterrupt())
-            try: command._apply("homebrew", root, patches, "0", False, False, None, True)
+            try:
+                command._apply(
+                    "homebrew", root, patches, "0", lock_first=True
+                )
             except KeyboardInterrupt: pass
             else: raise AssertionError("SIGINT swallowed")
             assert resets

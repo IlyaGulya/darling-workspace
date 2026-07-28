@@ -52,35 +52,3 @@ def git(
     env: dict[str, str] | None = None,
 ) -> str:
     return run(repo, "git", *args, capture=capture, check=check, env=env)
-
-
-def git_for_patch_application(
-    repo: Path,
-    *args: str,
-    capture: bool = False,
-    check: bool = True,
-) -> str:
-    """Run a patch application without background Git maintenance."""
-    return git(
-        repo,
-        *PATCH_APPLICATION_GIT_OPTIONS,
-        *args,
-        capture=capture,
-        check=check,
-    )
-
-
-def git_for_temporary_patch_application(
-    repo: Path,
-    *args: str,
-    capture: bool = False,
-    check: bool = True,
-) -> str:
-    """Apply a patch in a disposable worktree with deterministic identity."""
-    return git(
-        repo,
-        *TEMPORARY_PATCH_GIT_OPTIONS,
-        *args,
-        capture=capture,
-        check=check,
-    )
