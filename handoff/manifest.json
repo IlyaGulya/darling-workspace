@@ -288,12 +288,6 @@
           "source_ref": "refs/heads/fix/shellspawn-exit-status"
         },
         {
-          "branch": "integration/arch",
-          "head": "ca7410866640f3a2f5289e27bf705dc6fc13a957",
-          "upstream": "",
-          "source_ref": "refs/heads/integration/arch"
-        },
-        {
           "branch": "integration/homebrew",
           "head": "50b2e05dd9e21d9f39e35d947f830ae651aa3366",
           "upstream": "",
@@ -642,12 +636,6 @@
           "source_ref": "refs/heads/fix/z27x3-deadline-scheduler"
         },
         {
-          "branch": "integration/arch",
-          "head": "987542a5300044839a2dc21a16b8ba0688dfabd3",
-          "upstream": "",
-          "source_ref": "refs/heads/integration/arch"
-        },
-        {
           "branch": "integration/homebrew",
           "head": "1a60bae2de97cd645e0c25b941fca821949918ff",
           "upstream": "",
@@ -898,12 +886,6 @@
           "head": "d5fbc8180ea2e06efa693ee03a768e532a98671f",
           "upstream": "",
           "source_ref": "refs/heads/fix/libunwind-static-no-jump-tables-for-dyld"
-        },
-        {
-          "branch": "integration/arch",
-          "head": "d5fbc8180ea2e06efa693ee03a768e532a98671f",
-          "upstream": "",
-          "source_ref": "refs/heads/integration/arch"
         }
       ]
     },
@@ -1306,12 +1288,6 @@
           "head": "aad62153c971cb93f0953490b2513b5b1aeeeaff",
           "upstream": "origin/preupstream/main",
           "source_ref": "refs/heads/fix/vchroot-pathnull-guard"
-        },
-        {
-          "branch": "integration/arch",
-          "head": "41040ddd9f2a6353137a1f0a960d938f9d640d90",
-          "upstream": "",
-          "source_ref": "refs/heads/integration/arch"
         },
         {
           "branch": "integration/homebrew",
