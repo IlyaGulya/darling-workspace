@@ -34,7 +34,9 @@ on:
 
 jobs:
   arch-lock-first:
-    if: github.event_name == 'workflow_dispatch' && inputs.tier == 'arch-lock-first'
+    if: >-
+      (github.event_name == 'workflow_dispatch' && inputs.tier == 'arch-lock-first') ||
+      (github.event_name == 'push' && github.ref == 'refs/heads/rewrite/rootless-ci-series' && github.event.head_commit.message == 'ci: one-shot full-checkout Arch acceptance')
     runs-on: ubuntu-latest
     timeout-minutes: 45
     env:
