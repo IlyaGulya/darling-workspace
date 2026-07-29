@@ -66,22 +66,21 @@ def main() -> None:
         patches = [{"module": "darling", "path": "darling/sandbox-exec-pass-through.patch"}]
         selected = lock_first.plan("homebrew", patches, mapping)
         assert len(selected) == 1
-        # Rootless productization Batch 8 is the exact grouped homebrew
-        # selection: the retained Batch 7 series plus one final Darlingserver,
-        # XNU, and Darling entry. This binds the data mapping to the real
-        # profile order before an apply can mutate.
+        # Prefix-lifecycle Batch 9 is the exact grouped homebrew selection:
+        # retained Batch 8 plus one final Darlingserver and Darling entry.
+        # This binds the data mapping to real profile order before mutation.
         homebrew = yaml.safe_load((ROOT / "patches/homebrew/patches.yml").read_text())
         homebrew_patches = homebrew["patches"]
         homebrew_grouped = OrderedDict()
         for entry in homebrew_patches:
             homebrew_grouped.setdefault(entry["module"], []).append(entry)
-        batch_eight = lock_first.plan("homebrew", homebrew_patches, lock_first.MAPPING, homebrew_grouped)
+        batch_nine = lock_first.plan("homebrew", homebrew_patches, lock_first.MAPPING, homebrew_grouped)
         expected_darlingserver = [
             entry["path"] for entry in homebrew_patches
             if entry["module"] == "darling/src/external/darlingserver"
         ]
         observed_darlingserver = [
-            entry["patch"] for entry in batch_eight
+            entry["patch"] for entry in batch_nine
             if entry["module"] == "darling/src/external/darlingserver"
         ]
         expected_xnu = [
@@ -89,17 +88,19 @@ def main() -> None:
             if entry["module"] == "darling/src/external/xnu"
         ]
         observed_xnu = [
-            entry["patch"] for entry in batch_eight
+            entry["patch"] for entry in batch_nine
             if entry["module"] == "darling/src/external/xnu"
         ]
-        assert len(batch_eight) == 72 and batch_eight.batch["expected_count"] == 72
-        assert batch_eight.composition is not None
-        assert batch_eight.composition["profile"] == "homebrew"
-        assert batch_eight.composition["boundaries"][("darling/src/external/xnu", "xnu/fstatfs-missing-proc-mounts.patch")] == "84d7a41685fab6b459ce754e8db8421ab4fc3615"
-        assert batch_eight.composition["boundaries"][("darling", "darling/sandbox-exec-pass-through.patch")] == "630c80034b9aed3a89d133c948e457c1bc9e3709"
-        assert batch_eight.composition["finals"]["darling/src/external/xnu"] == "53c8fa45a1ac94bdfc2ced0b3179e43659dffabf"
-        assert batch_eight.batch["batch_id"] == "darling-homebrew-rootless-productization-batch-8"
-        assert batch_eight.batch["module_order"] == [
+        assert len(batch_nine) == 74 and batch_nine.batch["expected_count"] == 74
+        assert batch_nine.composition is not None
+        assert batch_nine.composition["profile"] == "homebrew"
+        assert batch_nine.composition["boundaries"][("darling/src/external/xnu", "xnu/fstatfs-missing-proc-mounts.patch")] == "84d7a41685fab6b459ce754e8db8421ab4fc3615"
+        assert batch_nine.composition["boundaries"][("darling", "darling/sandbox-exec-pass-through.patch")] == "630c80034b9aed3a89d133c948e457c1bc9e3709"
+        assert batch_nine.composition["boundaries"][("darling/src/external/darlingserver", "darlingserver/prefix-lifecycle-state-v2.patch")] == "2d6f0321cfe205dba7302666bc470adb79a44003"
+        assert batch_nine.composition["boundaries"][("darling", "darling/prefix-lifecycle-state-v2.patch")] == "7297ee393ed21d13484b1734e5e5694967f96851"
+        assert batch_nine.composition["finals"]["darling/src/external/xnu"] == "53c8fa45a1ac94bdfc2ced0b3179e43659dffabf"
+        assert batch_nine.batch["batch_id"] == "darling-homebrew-prefix-lifecycle-batch-9"
+        assert batch_nine.batch["module_order"] == [
             "darling/src/external/darlingserver",
             "darling/src/external/xnu",
             "darling/src/external/libplatform",
@@ -109,8 +110,12 @@ def main() -> None:
             "darling",
             "darling/src/external/installer",
         ]
-        assert len(expected_darlingserver) == 26
+        assert len(expected_darlingserver) == 27
         assert observed_darlingserver == expected_darlingserver
+        assert observed_darlingserver[-2:] == [
+            "darlingserver/runtime-mode-canonical.patch",
+            "darlingserver/prefix-lifecycle-state-v2.patch",
+        ]
         assert len(expected_xnu) == 26
         assert observed_xnu == expected_xnu
         assert observed_xnu == [
@@ -144,7 +149,7 @@ def main() -> None:
         # The registry is the production selector for every profile. Each
         # mapping must exactly cover the real grouped profile execution, with
         # no profile-specific archive fallback hidden in orchestration.
-        for profile_name, expected_count in (("homebrew", 72), ("perf", 7), ("arch", 19)):
+        for profile_name, expected_count in (("homebrew", 74), ("perf", 7), ("arch", 19)):
             profile_data = yaml.safe_load((ROOT / "patches" / profile_name / "patches.yml").read_text())
             profile_patches = profile_data["patches"]
             profile_grouped = OrderedDict()
@@ -182,7 +187,7 @@ def main() -> None:
         ]
         flood_entry = next(entry for entry in arch_selected if (entry["module"], entry["patch"]) == flood_identity)
         assert yaml.safe_load(Path(flood_entry["lock_path"]).read_text())["upstream"]["base_commit"] == "4ed1e806e850b45ec76758e0124c4274992415e6"
-        assert arch_selected.composition["boundaries"][flood_identity] == "8a9ec6b9460c3447d9d9f430e74a7a2490e8f974"
+        assert arch_selected.composition["boundaries"][flood_identity] == "8b39e62861dd3d6fd1e3afd2602b48a53ba906cb"
         # The profile-owned continuation is fail-closed: omitting it, moving
         # it before the final DarlingServer boundary, or tampering with its
         # composition tree cannot reach mutation.
@@ -213,7 +218,7 @@ def main() -> None:
         # The general composition materializer contract separately proves that
         # a tampered boundary tree fails before it can become an integration
         # final; bind this concrete row to the reviewed immutable tree here.
-        assert arch_selected.composition["finals"][flood_identity[0]] == "8a9ec6b9460c3447d9d9f430e74a7a2490e8f974"
+        assert arch_selected.composition["finals"][flood_identity[0]] == "8b39e62861dd3d6fd1e3afd2602b48a53ba906cb"
         try:
             lock_first.mapping_for_profile("unknown-profile")
         except lock_first.LockFirstError:

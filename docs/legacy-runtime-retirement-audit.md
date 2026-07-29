@@ -8,13 +8,13 @@ production or manual acceptance path executes them.
 
 | Profile | Stack | Own grouped module order | Own series |
 | --- | --- | --- | ---: |
-| homebrew | homebrew | darlingserver, xnu, libplatform, perl, libressl-2.8.3, libpthread, darling, installer | 72 |
+| homebrew | homebrew | darlingserver, xnu, libplatform, perl, libressl-2.8.3, libpthread, darling, installer | 74 |
 | perf | homebrew → perf | darling, xnu, dyld, darlingserver | 7 |
 | arch | homebrew → perf → arch | libunwind, xnu, darlingserver, darling | 19 |
 
 The canonical grouped order is module insertion order and then profile order
 within each module. Ancestry is checked only within a repository. Every one of
-the 98 own-profile series has a schema-v2 immutable lock and a bound
+the 100 own-profile series has a schema-v2 immutable lock and a bound
 schema-v3 composition boundary.
 
 ## Materialization call sites
@@ -82,8 +82,8 @@ conflicted with the actual preceding profile state. Reviewed versioned
 profile-integration locks preserve the approved typed-wake/MicroState,
 shellspawn, and downstream semantics. The current Arch mapping has 19 entries
 and its accepted baseline passed composed 69/7/19 local and hosted acceptance.
-The Rootless append-only proposal advances the prerequisite Homebrew batch to
-72 before its own publication review.
+The prefix-lifecycle append-only proposal advances the prerequisite Homebrew
+batch to 74 before its own publication review.
 
 The historical conflict bundles remain provenance. They do not authorize
 automatic conflict-side selection and are not runtime inputs.

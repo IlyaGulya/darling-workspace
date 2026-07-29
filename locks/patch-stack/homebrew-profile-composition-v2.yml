@@ -6,9 +6,9 @@ frozen_manifest:
   sha256: 5718c32c76a180b9078a206b93d93e70f478a5ada0034cd6afcc789c447e055d
 mapping:
   path: lock-first-series-v2.yml
-  sha256: 2f6eafc484236fa5cce2408460c78b189131daecc592dc8036757096244e047f
-  batch_id: darling-homebrew-rootless-productization-batch-8
-  expected_count: 72
+  sha256: a1dca1e582ccc565d7241121348e6d0955071fe1600cd8867d9d4559aeefaeee
+  batch_id: darling-homebrew-prefix-lifecycle-batch-9
+  expected_count: 74
 modules:
 - module: darling/src/external/darlingserver
   starting:
@@ -92,8 +92,11 @@ modules:
   - patch: darlingserver/runtime-mode-canonical.patch
     lock: darlingserver-runtime-mode-canonical-v1.yml
     expected_applied_tree: 596cc49f5ff12d4fca8accb58ea453362e9ae1d1
-  final_tree: 596cc49f5ff12d4fca8accb58ea453362e9ae1d1
-  integration_final_tree: 596cc49f5ff12d4fca8accb58ea453362e9ae1d1
+  - patch: darlingserver/prefix-lifecycle-state-v2.patch
+    lock: darlingserver-prefix-lifecycle-state-v2-v1.yml
+    expected_applied_tree: 2d6f0321cfe205dba7302666bc470adb79a44003
+  final_tree: 2d6f0321cfe205dba7302666bc470adb79a44003
+  integration_final_tree: 2d6f0321cfe205dba7302666bc470adb79a44003
 - module: darling/src/external/xnu
   starting:
     tree: b8353591777f7654d3b0d7d512bc0fa3ee6d64ef
@@ -260,8 +263,11 @@ modules:
   - patch: darling/runtime-mode-canonical.patch
     lock: darling-runtime-mode-canonical-v1.yml
     expected_applied_tree: 5e8144538bdc7cb7958dc22edc4016e8b64a6591
-  final_tree: 5e8144538bdc7cb7958dc22edc4016e8b64a6591
-  integration_final_tree: 5e8144538bdc7cb7958dc22edc4016e8b64a6591
+  - patch: darling/prefix-lifecycle-state-v2.patch
+    lock: darling-prefix-lifecycle-state-v2-v1.yml
+    expected_applied_tree: 7297ee393ed21d13484b1734e5e5694967f96851
+  final_tree: 7297ee393ed21d13484b1734e5e5694967f96851
+  integration_final_tree: 7297ee393ed21d13484b1734e5e5694967f96851
 - module: darling/src/external/installer
   starting:
     tree: 2c58e1c8da659d1c018efce169086dc247b31884

@@ -1,0 +1,755 @@
+From a2f99243227c57847308527a2a921d1bb77b1135 Mon Sep 17 00:00:00 2001
+From: Ilya Gulya <ilya@gulya.me>
+Date: Wed, 29 Jul 2026 00:00:00 +0000
+Subject: [PATCH] Rootless: validate typed prefix lifecycle state
+
+
+diff --git a/include/darlingserver/runtime-mode.hpp b/include/darlingserver/runtime-mode.hpp
+index a8dfc9ae5eaef1c6db7486d1b6edaca92f481d1a..1f5006dae4f5a03b039d977c8f8513697ecfd911 100644
+--- a/include/darlingserver/runtime-mode.hpp
++++ b/include/darlingserver/runtime-mode.hpp
+@@ -1,5 +1,7 @@
+ #pragma once
+ 
++#include <array>
++#include <limits.h>
+ #include <stdexcept>
+ #include <string>
+ #include <string_view>
+@@ -19,19 +21,74 @@ public:
+ 	using std::runtime_error::runtime_error;
+ };
+ 
++class RuntimePrefixCapability;
++
++class InheritedRuntimePrefix final {
++public:
++	InheritedRuntimePrefix(
++		int prefixFD,
++		int parentFD,
++		const char* leaf,
++		int workdirFD
++	);
++	~InheritedRuntimePrefix();
++	InheritedRuntimePrefix(const InheritedRuntimePrefix&) = delete;
++	InheritedRuntimePrefix& operator=(const InheritedRuntimePrefix&) = delete;
++	InheritedRuntimePrefix(InheritedRuntimePrefix&& other) noexcept;
++	InheritedRuntimePrefix& operator=(InheritedRuntimePrefix&& other) noexcept;
++
++private:
++	friend class RuntimePrefixCapability;
++	friend RuntimePrefixCapability anchorRuntimeModePrefix(
++		InheritedRuntimePrefix&&,
++		RuntimeMode,
++		uid_t,
++		gid_t
++	);
++
++	int prefixFD_;
++	int parentFD_;
++	std::array<char, NAME_MAX + 1> leaf_;
++	int workdirFD_;
++};
++
++class RuntimePrefixCapability final {
++public:
++	~RuntimePrefixCapability();
++	RuntimePrefixCapability(const RuntimePrefixCapability&) = delete;
++	RuntimePrefixCapability& operator=(const RuntimePrefixCapability&) = delete;
++	RuntimePrefixCapability(RuntimePrefixCapability&& other) noexcept;
++	RuntimePrefixCapability& operator=(RuntimePrefixCapability&& other) noexcept;
++
++	int prefixFD() const noexcept;
++	int workdirFD() const noexcept;
++	std::string prefixProcPath() const;
++	std::string workdirProcPath() const;
++
++private:
++	friend RuntimePrefixCapability anchorRuntimeModePrefix(
++		InheritedRuntimePrefix&&,
++		RuntimeMode,
++		uid_t,
++		gid_t
++	);
++	RuntimePrefixCapability(int prefixFD, int workdirFD) noexcept;
++
++	int prefixFD_;
++	int workdirFD_;
++};
++
+ RuntimeMode requireRuntimeModeFromEnvironment(bool eunionCapable);
+ std::string_view runtimeModeName(RuntimeMode mode);
+ bool runtimeModeIsRootless(RuntimeMode mode);
+ bool runtimeModeUsesOverlay(RuntimeMode mode);
+ bool runtimeModeUsesEunion(RuntimeMode mode);
+-void validateRuntimeModePrefixFD(
+-	int prefixFD,
+-	int parentFD,
+-	const char* leaf,
+-	int workdirFD,
+-	RuntimeMode mode
++RuntimePrefixCapability anchorRuntimeModePrefix(
++	InheritedRuntimePrefix&& inherited,
++	RuntimeMode mode,
++	uid_t ownerUID,
++	gid_t ownerGID
+ );
+-std::string runtimePrefixProcPath(int prefixFD);
+ void validateRootlessProcessCredentials(uid_t expectedUID, gid_t expectedGID);
+ 
+ }
+diff --git a/src/darlingserver.cpp b/src/darlingserver.cpp
+index d366c03d5bb50cdd4b1a1a0563a71e66a38da502..1f34dc3837722a250a64792ba387dd254396868e 100644
+--- a/src/darlingserver.cpp
++++ b/src/darlingserver.cpp
+@@ -34,6 +34,7 @@
+ #include <fcntl.h>
+ #include <sys/resource.h>
+ #include <iostream>
++#include <utility>
+ #include <linux/sched.h>
+ #include <linux/fs.h>
+ #include <sys/syscall.h>
+@@ -989,9 +990,6 @@ static void handle_sigusr1(int signum) {
+ 
+ int main(int argc, char** argv) {
+ 	const char* prefix = NULL;
+-	int prefixFD = -1;
+-	int prefixParentFD = -1;
+-	int workdirFD = -1;
+ 	uid_t originalUID = -1;
+ 	gid_t originalGID = -1;
+ 	int pipefd = -1;
+@@ -1017,9 +1015,6 @@ int main(int argc, char** argv) {
+ 	}
+ #endif
+ 
+-	prefixFD = parseInheritedFD(argv[1], "prefix");
+-	prefixParentFD = parseInheritedFD(argv[2], "prefix parent");
+-	workdirFD = parseInheritedFD(argv[4], "prefix workdir");
+ 	sscanf(argv[5], "%d", &originalUID);
+ 	sscanf(argv[6], "%d", &originalGID);
+ 	sscanf(argv[7], "%d", &pipefd);
+@@ -1031,24 +1026,29 @@ int main(int argc, char** argv) {
+ 	DarlingServer::RuntimeMode runtimeMode;
+ 	std::string prefixPath;
+ 	std::string workdirPath;
++	DarlingServer::RuntimePrefixCapability runtimePrefix = [&]() {
+ 	try {
+ 		runtimeMode = DarlingServer::requireRuntimeModeFromEnvironment(
+ 			DARLING_RUNTIME_EUNION_CAPABLE != 0);
+-		DarlingServer::validateRuntimeModePrefixFD(
+-			prefixFD, prefixParentFD, argv[3], workdirFD, runtimeMode);
+-		prefixPath = DarlingServer::runtimePrefixProcPath(prefixFD);
+-		workdirPath = DarlingServer::runtimePrefixProcPath(workdirFD);
++		DarlingServer::InheritedRuntimePrefix inherited(
++			parseInheritedFD(argv[1], "prefix"),
++			parseInheritedFD(argv[2], "prefix parent"),
++			argv[3],
++			parseInheritedFD(argv[4], "prefix workdir")
++		);
++		auto anchored = DarlingServer::anchorRuntimeModePrefix(
++			std::move(inherited), runtimeMode, originalUID, originalGID);
++		prefixPath = anchored.prefixProcPath();
++		workdirPath = anchored.workdirProcPath();
++		return anchored;
+ 	} catch (const DarlingServer::RuntimeModeError& error) {
+ 		fprintf(stderr, "Cannot select Darling runtime mode: %s\n",
+ 			error.what());
+ 		exit(1);
+ 	}
+-	if (close(prefixParentFD) == -1) {
+-		fprintf(stderr, "Cannot close inherited prefix parent descriptor: %s\n",
+-			strerror(errno));
+-		exit(1);
+-	}
+-	prefixParentFD = -1;
++	}();
++	const int prefixFD = runtimePrefix.prefixFD();
++	const int workdirFD = runtimePrefix.workdirFD();
+ 	makeDescriptorCloseOnExec(prefixFD, "prefix");
+ 	makeDescriptorCloseOnExec(workdirFD, "prefix workdir");
+ 	prefix = prefixPath.c_str();
+diff --git a/src/runtime-mode.cpp b/src/runtime-mode.cpp
+index ad27312ae1379bda7664414fd4860aef3e43a79e..1dfb7ae37ca3707c2a985889154d2af60f44e973 100644
+--- a/src/runtime-mode.cpp
++++ b/src/runtime-mode.cpp
+@@ -2,18 +2,284 @@
+ 
+ #include <darlingserver/runtime-mode.hpp>
+ 
++#include <array>
+ #include <cerrno>
++#include <charconv>
++#include <cstdint>
+ #include <cstring>
+ #include <fcntl.h>
+ #include <limits.h>
+ #include <string>
++#include <string_view>
+ #include <sys/stat.h>
+ #include <unistd.h>
++#include <utility>
+ 
+ namespace DarlingServer {
+ 
+ static constexpr const char* kCanonicalEnvironment = "DARLING_RUNTIME_MODE";
+-static constexpr const char* kMarkerName = ".darling-runtime-mode-v1";
++static constexpr const char* kStateName = ".darling-prefix-state-v2";
++static constexpr const char* kStateHeader = "DARLING_PREFIX_STATE_V2";
++static constexpr const char* kStateProvenance =
++	"darling-runtime-prefix-lifecycle-v2";
++
++static void closeOwnedFD(int& fd) noexcept
++{
++	if (fd >= 0)
++		close(fd);
++	fd = -1;
++}
++
++InheritedRuntimePrefix::InheritedRuntimePrefix(
++	int prefixFD,
++	int parentFD,
++	const char* leaf,
++	int workdirFD
++) :
++	prefixFD_(prefixFD),
++	parentFD_(parentFD),
++	workdirFD_(workdirFD)
++{
++	if (leaf == nullptr ||
++		*leaf == '\0' ||
++		std::strcmp(leaf, ".") == 0 ||
++		std::strcmp(leaf, "..") == 0 ||
++		std::strchr(leaf, '/') != nullptr ||
++		strnlen(leaf, NAME_MAX + 1) > NAME_MAX) {
++		closeOwnedFD(prefixFD_);
++		closeOwnedFD(parentFD_);
++		closeOwnedFD(workdirFD_);
++		throw RuntimeModeError(
++			"inherited runtime prefix leaf is invalid");
++	}
++	const size_t length = std::strlen(leaf);
++	leaf_.fill('\0');
++	std::memcpy(leaf_.data(), leaf, length + 1);
++}
++
++InheritedRuntimePrefix::~InheritedRuntimePrefix()
++{
++	closeOwnedFD(prefixFD_);
++	closeOwnedFD(parentFD_);
++	closeOwnedFD(workdirFD_);
++}
++
++InheritedRuntimePrefix::InheritedRuntimePrefix(
++	InheritedRuntimePrefix&& other
++) noexcept :
++	prefixFD_(other.prefixFD_),
++	parentFD_(other.parentFD_),
++	leaf_(other.leaf_),
++	workdirFD_(other.workdirFD_)
++{
++	other.prefixFD_ = -1;
++	other.parentFD_ = -1;
++	other.workdirFD_ = -1;
++	other.leaf_.fill('\0');
++}
++
++InheritedRuntimePrefix& InheritedRuntimePrefix::operator=(
++	InheritedRuntimePrefix&& other
++) noexcept
++{
++	if (this != &other) {
++		closeOwnedFD(prefixFD_);
++		closeOwnedFD(parentFD_);
++		closeOwnedFD(workdirFD_);
++		prefixFD_ = other.prefixFD_;
++		parentFD_ = other.parentFD_;
++		leaf_ = other.leaf_;
++		workdirFD_ = other.workdirFD_;
++		other.prefixFD_ = -1;
++		other.parentFD_ = -1;
++		other.workdirFD_ = -1;
++		other.leaf_.fill('\0');
++	}
++	return *this;
++}
++
++RuntimePrefixCapability::RuntimePrefixCapability(
++	int prefixFD,
++	int workdirFD
++) noexcept :
++	prefixFD_(prefixFD),
++	workdirFD_(workdirFD)
++{
++}
++
++RuntimePrefixCapability::~RuntimePrefixCapability()
++{
++	closeOwnedFD(prefixFD_);
++	closeOwnedFD(workdirFD_);
++}
++
++RuntimePrefixCapability::RuntimePrefixCapability(
++	RuntimePrefixCapability&& other
++) noexcept :
++	prefixFD_(other.prefixFD_),
++	workdirFD_(other.workdirFD_)
++{
++	other.prefixFD_ = -1;
++	other.workdirFD_ = -1;
++}
++
++RuntimePrefixCapability& RuntimePrefixCapability::operator=(
++	RuntimePrefixCapability&& other
++) noexcept
++{
++	if (this != &other) {
++		closeOwnedFD(prefixFD_);
++		closeOwnedFD(workdirFD_);
++		prefixFD_ = other.prefixFD_;
++		workdirFD_ = other.workdirFD_;
++		other.prefixFD_ = -1;
++		other.workdirFD_ = -1;
++	}
++	return *this;
++}
++
++int RuntimePrefixCapability::prefixFD() const noexcept
++{
++	return prefixFD_;
++}
++
++int RuntimePrefixCapability::workdirFD() const noexcept
++{
++	return workdirFD_;
++}
++
++static uint64_t parseUnsignedField(
++	std::string_view line,
++	std::string_view key
++)
++{
++	if (line.size() <= key.size() ||
++		line.substr(0, key.size()) != key)
++		throw RuntimeModeError("runtime prefix state field is malformed");
++	uint64_t value = 0;
++	const char* begin = line.data() + key.size();
++	const char* end = line.data() + line.size();
++	auto parsed = std::from_chars(begin, end, value, 10);
++	if (parsed.ec != std::errc() || parsed.ptr != end)
++		throw RuntimeModeError("runtime prefix state numeric field is malformed");
++	return value;
++}
++
++static std::array<std::string_view, 9> splitStateLines(
++	const std::string& content
++)
++{
++	std::array<std::string_view, 9> lines;
++	size_t offset = 0;
++	for (size_t index = 0; index < lines.size(); ++index) {
++		size_t newline = content.find('\n', offset);
++		if (newline == std::string::npos)
++			throw RuntimeModeError("runtime prefix state is truncated");
++		lines[index] = std::string_view(content).substr(
++			offset, newline - offset);
++		offset = newline + 1;
++	}
++	if (offset != content.size())
++		throw RuntimeModeError("runtime prefix state has extra fields");
++	return lines;
++}
++
++static std::string readPrefixState(
++	int prefixFD,
++	uid_t ownerUID,
++	gid_t ownerGID
++)
++{
++	struct stat named;
++	if (fstatat(prefixFD, kStateName, &named,
++			AT_SYMLINK_NOFOLLOW) != 0 ||
++		S_ISLNK(named.st_mode) ||
++		!S_ISREG(named.st_mode) ||
++		named.st_nlink != 1 ||
++		(named.st_mode & 07777) != 0600 ||
++		named.st_uid != ownerUID ||
++		named.st_gid != ownerGID ||
++		named.st_size <= 0 ||
++		named.st_size >= 1024)
++		throw RuntimeModeError(
++			"runtime prefix has no valid typed state");
++	int fd = openat(prefixFD, kStateName,
++		O_RDONLY | O_CLOEXEC | O_NOFOLLOW);
++	if (fd < 0)
++		throw RuntimeModeError(
++			"cannot open runtime prefix state");
++	struct stat opened;
++	if (fstat(fd, &opened) != 0 ||
++		opened.st_dev != named.st_dev ||
++		opened.st_ino != named.st_ino ||
++		!S_ISREG(opened.st_mode)) {
++		close(fd);
++		throw RuntimeModeError(
++			"runtime prefix state changed during inspection");
++	}
++	std::string content(static_cast<size_t>(opened.st_size), '\0');
++	size_t offset = 0;
++	while (offset < content.size()) {
++		ssize_t length = read(fd, content.data() + offset,
++			content.size() - offset);
++		if (length < 0 && errno == EINTR)
++			continue;
++		if (length <= 0) {
++			close(fd);
++			throw RuntimeModeError(
++				"cannot read runtime prefix state");
++		}
++		offset += static_cast<size_t>(length);
++	}
++	if (close(fd) != 0)
++		throw RuntimeModeError(
++			"cannot close runtime prefix state");
++	if (content.find('\0') != std::string::npos)
++		throw RuntimeModeError(
++			"runtime prefix state contains a NUL byte");
++	return content;
++}
++
++static void validateTypedPrefixState(
++	int prefixFD,
++	const struct stat& prefixStatus,
++	RuntimeMode mode,
++	uid_t ownerUID,
++	gid_t ownerGID
++)
++{
++	const std::string content =
++		readPrefixState(prefixFD, ownerUID, ownerGID);
++	auto lines = splitStateLines(content);
++	if (lines[0] != kStateHeader)
++		throw RuntimeModeError("runtime prefix state schema is malformed");
++	uint64_t schema = parseUnsignedField(lines[1], "schema_version=");
++	if (schema > 2)
++		throw RuntimeModeError("runtime prefix state uses a newer schema");
++	if (schema != 2)
++		throw RuntimeModeError("runtime prefix state schema is incompatible");
++	const std::string modeField = "runtime_mode=" +
++		std::string(runtimeModeName(mode));
++	if (lines[2] != modeField)
++		throw RuntimeModeError("runtime prefix mode mismatch");
++	uint64_t generation = parseUnsignedField(lines[3], "generation=");
++	uint64_t device = parseUnsignedField(lines[4], "prefix_device=");
++	uint64_t inode = parseUnsignedField(lines[5], "prefix_inode=");
++	uint64_t uid = parseUnsignedField(lines[6], "owner_uid=");
++	uint64_t gid = parseUnsignedField(lines[7], "owner_gid=");
++	const std::string provenanceField =
++		"provenance=" + std::string(kStateProvenance);
++	if (generation == 0 ||
++		prefixStatus.st_uid != ownerUID ||
++		prefixStatus.st_gid != ownerGID ||
++		device != static_cast<uint64_t>(prefixStatus.st_dev) ||
++		inode != static_cast<uint64_t>(prefixStatus.st_ino) ||
++		uid != static_cast<uint64_t>(ownerUID) ||
++		gid != static_cast<uint64_t>(ownerGID) ||
++		lines[8] != provenanceField)
++		throw RuntimeModeError(
++			"runtime prefix typed state is incompatible");
++}
+ 
+ std::string_view runtimeModeName(RuntimeMode mode)
+ {
+@@ -106,19 +372,18 @@ void validateRootlessProcessCredentials(
+ 			"rootless process retained unexpected real, effective, or saved credentials");
+ }
+ 
+-void validateRuntimeModePrefixFD(
+-	int prefixFD,
+-	int parentFD,
+-	const char* leaf,
+-	int workdirFD,
+-	RuntimeMode mode
++RuntimePrefixCapability anchorRuntimeModePrefix(
++	InheritedRuntimePrefix&& inherited,
++	RuntimeMode mode,
++	uid_t ownerUID,
++	gid_t ownerGID
+ )
+ {
+-	if (prefixFD < 0 || parentFD < 0 || workdirFD < 0 || leaf == nullptr ||
+-		*leaf == '\0' || std::strcmp(leaf, ".") == 0 ||
+-		std::strcmp(leaf, "..") == 0 ||
+-		std::strchr(leaf, '/') != nullptr ||
+-		std::strlen(leaf) > NAME_MAX)
++	const int prefixFD = inherited.prefixFD_;
++	const int parentFD = inherited.parentFD_;
++	const int workdirFD = inherited.workdirFD_;
++	const char* leaf = inherited.leaf_.data();
++	if (prefixFD < 0 || parentFD < 0 || workdirFD < 0)
+ 		throw RuntimeModeError("inherited runtime prefix handle is invalid");
+ 
+ 	struct stat opened;
+@@ -144,6 +409,9 @@ void validateRuntimeModePrefixFD(
+ 	if (workdirLeaf.size() > NAME_MAX ||
+ 		fstat(workdirFD, &workdirOpened) != 0 ||
+ 		!S_ISDIR(workdirOpened.st_mode) ||
++		(workdirOpened.st_mode & 07777) != 0755 ||
++		workdirOpened.st_uid != ownerUID ||
++		workdirOpened.st_gid != ownerGID ||
+ 		fstatat(
+ 			parentFD, workdirLeaf.c_str(), &workdirNamed,
+ 			AT_SYMLINK_NOFOLLOW) != 0 ||
+@@ -154,42 +422,20 @@ void validateRuntimeModePrefixFD(
+ 		throw RuntimeModeError(
+ 			"runtime prefix workdir changed before darlingserver handoff");
+ 
+-	int fd = openat(prefixFD, kMarkerName,
+-		O_RDONLY | O_CLOEXEC | O_NOFOLLOW);
+-	if (fd < 0) {
+-		throw RuntimeModeError(
+-			"runtime prefix has no valid mode marker; use a new prefix");
+-	}
++	validateTypedPrefixState(
++		prefixFD, opened, mode, ownerUID, ownerGID);
+ 
+-	struct stat status;
+-	if (fstat(fd, &status) != 0 || !S_ISREG(status.st_mode) ||
+-		status.st_size < 0 || status.st_size >= 128) {
+-		close(fd);
+-		throw RuntimeModeError(
+-			"runtime mode marker is not a bounded regular file");
+-	}
+-	char observed[128];
+-	ssize_t length = read(fd, observed, static_cast<size_t>(status.st_size));
+-	int savedErrno = errno;
+-	if (close(fd) != 0 && length >= 0) {
+-		length = -1;
+-		savedErrno = errno;
+-	}
+-	if (length < 0 || length != status.st_size) {
+-		errno = length < 0 ? savedErrno : EIO;
+-		throw RuntimeModeError(std::string("cannot read runtime mode marker: ") +
+-			std::strerror(errno));
+-	}
+-	observed[length] = '\0';
+-	std::string expected = "DARLING_RUNTIME_MODE_V1=";
+-	expected += runtimeModeName(mode);
+-	expected += "\n";
+-	if (expected != observed)
++	if (close(inherited.parentFD_) != 0)
+ 		throw RuntimeModeError(
+-			"runtime prefix mode mismatch; use a new prefix");
++			"cannot close validated runtime prefix parent descriptor");
++	inherited.parentFD_ = -1;
++	inherited.prefixFD_ = -1;
++	inherited.workdirFD_ = -1;
++	inherited.leaf_.fill('\0');
++	return RuntimePrefixCapability(prefixFD, workdirFD);
+ }
+ 
+-std::string runtimePrefixProcPath(int prefixFD)
++static std::string runtimePrefixProcPath(int prefixFD)
+ {
+ 	struct stat status;
+ 	if (prefixFD < 0 || fstat(prefixFD, &status) != 0 ||
+@@ -198,4 +444,14 @@ std::string runtimePrefixProcPath(int prefixFD)
+ 	return "/proc/self/fd/" + std::to_string(prefixFD);
+ }
+ 
++std::string RuntimePrefixCapability::prefixProcPath() const
++{
++	return runtimePrefixProcPath(prefixFD_);
++}
++
++std::string RuntimePrefixCapability::workdirProcPath() const
++{
++	return runtimePrefixProcPath(workdirFD_);
++}
++
+ }
+diff --git a/tests/runtime_mode_test.cpp b/tests/runtime_mode_test.cpp
+index bc2327e8d601fc55ff2471c1277714738b851d7f..c8178e97f1074b87d5929f026eb7cbd4c5c952b0 100644
+--- a/tests/runtime_mode_test.cpp
++++ b/tests/runtime_mode_test.cpp
+@@ -7,6 +7,7 @@
+ #include <iostream>
+ #include <string>
+ #include <sys/stat.h>
++#include <type_traits>
+ #include <unistd.h>
+ 
+ using namespace DarlingServer;
+@@ -45,11 +46,26 @@ static void requireFailure(bool capable)
+ 	require(false, "invalid runtime environment was accepted");
+ }
+ 
+-static void writeMarker(const std::filesystem::path& directory)
++static void writeState(const std::filesystem::path& directory)
+ {
+-	std::ofstream output(directory / ".darling-runtime-mode-v1");
+-	output << "DARLING_RUNTIME_MODE_V1=rootless-eunion\n";
+-	require(output.good(), "write runtime mode marker fixture");
++	struct stat status;
++	require(stat(directory.c_str(), &status) == 0,
++		"stat runtime prefix state fixture");
++	std::ofstream output(directory / ".darling-prefix-state-v2");
++	output << "DARLING_PREFIX_STATE_V2\n";
++	output << "schema_version=2\n";
++	output << "runtime_mode=rootless-eunion\n";
++	output << "generation=1\n";
++	output << "prefix_device=" << status.st_dev << '\n';
++	output << "prefix_inode=" << status.st_ino << '\n';
++	output << "owner_uid=" << getuid() << '\n';
++	output << "owner_gid=" << getgid() << '\n';
++	output << "provenance=darling-runtime-prefix-lifecycle-v2\n";
++	require(output.good(), "write typed runtime prefix state fixture");
++	output.close();
++	require(chmod(
++			(directory / ".darling-prefix-state-v2").c_str(), 0600) == 0,
++		"restrict typed runtime prefix state fixture");
+ }
+ 
+ static void requireRejectedPrefixFD(
+@@ -61,16 +77,45 @@ static void requireRejectedPrefixFD(
+ )
+ {
+ 	try {
+-		validateRuntimeModePrefixFD(
+-			prefixFD, parentFD, leaf, workdirFD,
+-			RuntimeMode::RootlessEunion);
++		InheritedRuntimePrefix inherited(
++			dup(prefixFD), dup(parentFD), leaf, dup(workdirFD));
++		(void)anchorRuntimeModePrefix(
++			std::move(inherited), RuntimeMode::RootlessEunion,
++			getuid(), getgid());
+ 		require(false, message);
+ 	} catch (const RuntimeModeError&) {
+ 	}
+ }
+ 
++static RuntimePrefixCapability requireAnchoredPrefix(
++	int prefixFD,
++	int parentFD,
++	const char* leaf,
++	int workdirFD,
++	RuntimeMode mode = RuntimeMode::RootlessEunion
++)
++{
++	const int prefixCopy = dup(prefixFD);
++	const int parentCopy = dup(parentFD);
++	const int workdirCopy = dup(workdirFD);
++	require(prefixCopy >= 0 && parentCopy >= 0 && workdirCopy >= 0,
++		"duplicate inherited descriptor fixture");
++	InheritedRuntimePrefix inherited(
++		prefixCopy, parentCopy, leaf, workdirCopy);
++	return anchorRuntimeModePrefix(
++		std::move(inherited), mode, getuid(), getgid());
++}
++
+ int main()
+ {
++	static_assert(!std::is_copy_constructible_v<InheritedRuntimePrefix>);
++	static_assert(!std::is_copy_assignable_v<InheritedRuntimePrefix>);
++	static_assert(std::is_nothrow_move_constructible_v<InheritedRuntimePrefix>);
++	static_assert(!std::is_copy_constructible_v<RuntimePrefixCapability>);
++	static_assert(!std::is_copy_assignable_v<RuntimePrefixCapability>);
++	static_assert(std::is_nothrow_move_constructible_v<RuntimePrefixCapability>);
++	static_assert(sizeof(RuntimePrefixCapability) == 2 * sizeof(int));
++
+ 	requireMode("privileged-overlay", RuntimeMode::PrivilegedOverlay);
+ 	requireMode("privileged-copy", RuntimeMode::PrivilegedCopy);
+ 	requireMode("privileged-eunion", RuntimeMode::PrivilegedEunion);
+@@ -107,8 +152,11 @@ int main()
+ 	const std::filesystem::path workdir =
+ 		std::filesystem::path(root) / "prefix.workdir";
+ 	std::filesystem::create_directory(workdir);
++	require(chmod(prefix.c_str(), 0755) == 0 &&
++			chmod(workdir.c_str(), 0755) == 0,
++		"normalize prefix fixture directory modes");
+ 	const std::string marker =
+-		(prefix / ".darling-runtime-mode-v1").string();
++		(prefix / ".darling-prefix-state-v2").string();
+ 	const int parentFD =
+ 		open(root, O_RDONLY | O_DIRECTORY | O_CLOEXEC | O_NOFOLLOW);
+ 	const int prefixFD =
+@@ -119,20 +167,18 @@ int main()
+ 		"open prefix fixture descriptors");
+ 
+ 	try {
+-		validateRuntimeModePrefixFD(
+-			prefixFD, parentFD, "prefix", workdirFD,
+-			RuntimeMode::RootlessEunion);
++		(void)requireAnchoredPrefix(
++			prefixFD, parentFD, "prefix", workdirFD);
+ 		require(false, "missing marker was accepted");
+ 	} catch (const RuntimeModeError&) {
+ 		require(!std::filesystem::exists(marker),
+ 			"missing-marker validation mutated the prefix");
+ 	}
+ 
+-	writeMarker(prefix);
+-	validateRuntimeModePrefixFD(
+-		prefixFD, parentFD, "prefix", workdirFD,
+-		RuntimeMode::RootlessEunion);
+-	const std::string retainedAlias = runtimePrefixProcPath(prefixFD);
++	writeState(prefix);
++	auto validated = requireAnchoredPrefix(
++		prefixFD, parentFD, "prefix", workdirFD);
++	const std::string retainedAlias = validated.prefixProcPath();
+ 	struct stat aliasStatus;
+ 	struct stat prefixStatus;
+ 	require(stat(retainedAlias.c_str(), &aliasStatus) == 0,
+@@ -142,7 +188,7 @@ int main()
+ 		aliasStatus.st_ino == prefixStatus.st_ino,
+ 		"retained prefix alias does not name exact descriptor");
+ 	try {
+-		validateRuntimeModePrefixFD(
++		(void)requireAnchoredPrefix(
+ 			prefixFD, parentFD, "prefix", workdirFD,
+ 			RuntimeMode::PrivilegedOverlay);
+ 		require(false, "mismatched marker was accepted");
+@@ -150,13 +196,13 @@ int main()
+ 		std::ifstream input(marker);
+ 		std::string content;
+ 		std::getline(input, content);
+-		require(content == "DARLING_RUNTIME_MODE_V1=rootless-eunion",
+-			"mismatch validation mutated the marker");
++		require(content == "DARLING_PREFIX_STATE_V2",
++			"mismatch validation mutated the typed state");
+ 	}
+ 
+ 	std::filesystem::path target = std::filesystem::path(root) / "target";
+ 	std::filesystem::create_directories(target);
+-	writeMarker(target);
++	writeState(target);
+ 	std::filesystem::path sentinel = target / "sentinel";
+ 	{
+ 		std::ofstream output(sentinel);
+@@ -186,9 +232,8 @@ int main()
+ 	require(unlink(prefix.c_str()) == 0 &&
+ 		rename(parked.c_str(), prefix.c_str()) == 0,
+ 		"restore inspected prefix fixture");
+-	validateRuntimeModePrefixFD(
+-		prefixFD, parentFD, "prefix", workdirFD,
+-		RuntimeMode::RootlessEunion);
++	(void)requireAnchoredPrefix(
++		prefixFD, parentFD, "prefix", workdirFD);
+ 	const std::filesystem::path parkedWorkdir =
+ 		std::filesystem::path(root) / "prefix.workdir.parked";
+ 	require(rename(workdir.c_str(), parkedWorkdir.c_str()) == 0,
+@@ -201,9 +246,8 @@ int main()
+ 	require(unlink(workdir.c_str()) == 0 &&
+ 		rename(parkedWorkdir.c_str(), workdir.c_str()) == 0,
+ 		"restore inspected workdir fixture");
+-	validateRuntimeModePrefixFD(
+-		prefixFD, parentFD, "prefix", workdirFD,
+-		RuntimeMode::RootlessEunion);
++	(void)requireAnchoredPrefix(
++		prefixFD, parentFD, "prefix", workdirFD);
+ 
+ 	std::filesystem::remove(marker);
+ 	require(symlink(target.c_str(), marker.c_str()) == 0,
+-- 
+2.43.0
+

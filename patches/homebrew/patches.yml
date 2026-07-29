@@ -4748,6 +4748,34 @@ patches:
       repo: darlinghq/darlingserver
       base: main
       state: local
+- path: darlingserver/prefix-lifecycle-state-v2.patch
+  sha256sum: 8bbd2c043433f1b42abe7927eb655f016b62109fe2258835b2eecc28a3123d71
+  module: darling/src/external/darlingserver
+  source-branch: fix/rootless-prefix-lifecycle-v2
+  source-base: dd0b23f1e3b8e9470016e67df40e18a28718b737
+  source-commit: a2f99243227c57847308527a2a921d1bb77b1135
+  bead: dar-productize-darling-rootless-mode-jkla.3
+  publication-status: blocked
+  publication-blocker: Typed prefix lifecycle is locally authored; immutable hosted refs and landing require separate publication authorization.
+  tests:
+  - name: rootless_prefix_lifecycle_server_contract
+    kind: contract
+    coverage-tier: host
+    runs: host
+    diag: bare
+    runner: source-contract-script
+    repo: darling-workspace
+    script: tests/run-rootless-runtime-server-contract.sh
+    note: Compiles the production typed-state validator and proves the inherited prefix/workdir capabilities reject hostile state before server mutation.
+  github:
+    fork:
+      repo: darling-next/darlingserver
+      base: preupstream/main
+      state: local
+    upstream:
+      repo: darlinghq/darlingserver
+      base: main
+      state: local
 - path: darling/rootless-runtime-integration.patch
   sha256sum: cd78af09b7d034b126c09888ae7521abea071a25649c9691b6da0bbf53615443
   module: darling
@@ -5124,6 +5152,34 @@ patches:
     repo: darling-workspace
     script: tests/run-rootless-opt-in-cli-contract.sh
     note: Exercises all four typed modes, launcher-only legacy normalization, hostile conflicts, capability gating, prefix marker binding and canonical mldr/launchd/shellspawn propagation.
+  github:
+    fork:
+      repo: darling-next/darling
+      base: preupstream/master
+      state: local
+    upstream:
+      repo: darlinghq/darling
+      base: master
+      state: local
+- path: darling/prefix-lifecycle-state-v2.patch
+  sha256sum: c7fbfb24b8d6744af9bac622fdc8b9a2c07e6b3a0bb5e893de7812101b8d6c9d
+  module: darling
+  source-branch: fix/rootless-prefix-lifecycle-v2
+  source-base: db7b5b404366fa630edeb5189f174518aad189ad
+  source-commit: da784f52c4e5b7a3ecbc628e6e619171ba78435c
+  bead: dar-productize-darling-rootless-mode-jkla.3
+  publication-status: blocked
+  publication-blocker: Crash-consistent prefix lifecycle is locally authored; immutable hosted refs and landing require separate publication authorization.
+  tests:
+  - name: rootless_prefix_lifecycle_contract
+    kind: contract
+    coverage-tier: host
+    runs: host
+    diag: bare
+    runner: source-contract-script
+    repo: darling-workspace
+    script: tests/run-rootless-opt-in-cli-contract.sh
+    note: Executes create, reuse, v1-to-v2 upgrade, repair, recreate and delete with a complete 144-case stable-state/journal-phase decision matrix, 24 real early/middle/late failure/SIGINT interruption cases across all four mutations, a three-process persistent-lock race, bottom-up durability failures, a direct-copy compile-negative contract and runtime typestate/reopen checks for the assignment-resistant owning capability.
   github:
     fork:
       repo: darling-next/darling

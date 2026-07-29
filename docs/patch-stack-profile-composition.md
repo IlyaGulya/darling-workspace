@@ -42,22 +42,24 @@ differ, the materializer first proves native replay identity (linear commit
 count, exact `git range-diff`, and stable patch-id) and then requires the
 declared profile boundary tree. The historical mldr series illustrates the
 distinction: its standalone lock tree is `1fce0600…`; the pre-Rootless
-homebrew boundary yielded `5befc5cf…`, while Rootless Batch 8 now yields
-`ef340c5f…`. The old `cd4b07ee…` value belongs to a superseded generated
-profile integration and is not a canonical source or prerequisite. A missing
-composition boundary fails closed.
+homebrew boundary yielded `5befc5cf…`, while prefix-lifecycle Batch 9 yields
+`e5c5611c…` in the real overlapping West layout after its validated managed
+child gitlinks are recorded. The old `cd4b07ee…` value belongs to a superseded
+generated profile integration and is not a canonical source or prerequisite.
+A missing composition boundary fails closed.
 
 ## Homebrew audit
 
 The original independent clean-ODB audit recorded 69 native replays.
-Rootless productization Batch 8 appends three direct-boundary series (typed
+Rootless productization Batch 8 appended three direct-boundary series (typed
 runtime mode in Darlingserver and Darling, plus the AF_UNIX expanded-path
-length fix in XNU), bringing the exact grouped total to 72. Twenty-nine
+length fix in XNU). Prefix-lifecycle Batch 9 appends one typed lifecycle series
+for Darlingserver and one for Darling, bringing the exact grouped total to 74. Twenty-nine
 entries start on an inherited profile base rather than their standalone source
 base: 1 Darlingserver, 18 XNU, and 10 Darling.  All 29 are classified
 `INHERITED_BASE_DELTA`: their complete ranges have exact range-diff equality,
 equal stable patch IDs, and equal changed-path sets.  There are zero
-`SEMANTIC_CHANGE` entries and zero source-series rewrites. The three appended
+`SEMANTIC_CHANGE` entries and zero source-series rewrites. The five appended
 series each declare the exact previous applied integration commit as their
 immutable base.
 
@@ -73,33 +75,38 @@ mismatch: that project has no series lock or archive identity to compare.
 
 The resulting module boundary trees are recorded in
 `homebrew-profile-composition-v2.yml`; the final trees are Darlingserver
-`596cc49f5ff12d4fca8accb58ea453362e9ae1d1`, XNU
+`2d6f0321cfe205dba7302666bc470adb79a44003`, XNU
 `53c8fa45a1ac94bdfc2ced0b3179e43659dffabf`, and Darling
-`5e8144538bdc7cb7958dc22edc4016e8b64a6591`.
+`7297ee393ed21d13484b1734e5e5694967f96851`.
 
 ## Rootless prerequisite cascade
 
-Because Perf and Arch explicitly consume the Homebrew composition, the three
-new Batch 8 module trees are not ambient state. Perf replays its seven entries
+Because Perf and Arch explicitly consume the Homebrew composition, the two
+new Batch 9 module trees are not ambient state. Perf replays its seven entries
 from those exact trees. Its XNU and Darling series remain immutable historical
 inputs with new profile boundaries; the three Darlingserver entries use
 append-only profile-integration locks because the typed runtime target and the
 existing ring target both extend the same CMake target list. Their final trees
-are XNU `15a50d8f…`, Darlingserver `f0e535f3…`, and Darling `fbef26d2…`.
+are XNU `15a50d8f…`, Darlingserver `43da4fa5…`, and Darling `e5c5611c…`.
+The normalized source-only Darling tree is `77abde10…`; the authoritative
+composed boundary additionally records the already-materialized child gitlinks.
 
 Arch then consumes that exact Perf result. Its first eight Darlingserver
 entries and all three XNU entries replay unchanged with new declared
 boundaries. The stack-pool entry required one reviewed mechanical integration:
 the existing `dserver_runtime_mode_tests` block and the incoming
 `dserver_stack_pool_tests` block are both retained exactly once. Four
-subsequent one-entry series were restacked without conflict on that actual
-profile boundary. The final Darling shellspawn series likewise retains both
+subsequent one-entry series replay without conflict on that actual profile
+boundary. Prefix-lifecycle changes adjacent main-function context, so
+stack-pool uses a new append-only v10 immutable source whose resulting tree
+remains `a390561a…`; the verifier is not weakened to accept the historical
+context identity. The final Darling shellspawn series likewise retains both
 independent includes—typed runtime mode and structured wait-status—without
 changing either control flow. The restacked locks yield Arch final trees XNU
-`3e1dbe60…`, Darlingserver `8a9ec6b9…`, and Darling `9c0d96fb…`.
+`3e1dbe60…`, Darlingserver `8b39e628…`, and Darling `8cbc1350…`.
 
-No accepted immutable ref is rewritten. The v8 bases and sources remain a
-local-only publication proposal until their create-only hosted refs are
+No accepted immutable ref is rewritten. The v8 and v10 bases and sources remain
+a local-only publication proposal until their create-only hosted refs are
 separately reviewed and authorized.
 
 ## Runtime-source lifecycle

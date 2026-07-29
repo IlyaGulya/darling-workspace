@@ -24,6 +24,7 @@ do
 done
 
 cc -std=gnu11 -Wall -Wextra -Werror \
+	-DDARLING_RUNTIME_PREFIX_LIFECYCLE_TESTING=1 \
 	-I"$startup" \
 	"$startup/runtime_credentials.c" \
 	"$startup/runtime_mode.c" \
@@ -32,6 +33,46 @@ cc -std=gnu11 -Wall -Wextra -Werror \
 	-o "$work/runtime-mode-test"
 
 test "$("$work/runtime-mode-test")" = "DARLING_RUNTIME_MODE_CONTRACT_OK"
+for focused_case in lock-race durability capability interruptions
+do
+	DARLING_RUNTIME_PREFIX_TEST_CASE="$focused_case" \
+		"$work/runtime-mode-test"
+done
+
+cat >"$work/capability-transfer-good.c" <<'EOF'
+#include "runtime_mode_prefix.h"
+
+int main(void)
+{
+	darling_runtime_prefix source = DARLING_RUNTIME_PREFIX_INITIALIZER;
+	darling_runtime_prefix destination = DARLING_RUNTIME_PREFIX_INITIALIZER;
+	char error[64] = {0};
+	return darling_runtime_prefix_move(destination, source,
+		error, sizeof(error));
+}
+EOF
+cc -std=gnu11 -Wall -Wextra -Werror -c -I"$startup" \
+	"$work/capability-transfer-good.c" -o "$work/capability-transfer-good.o"
+
+cat >"$work/capability-direct-copy-bad.c" <<'EOF'
+#include "runtime_mode_prefix.h"
+
+int main(void)
+{
+	darling_runtime_prefix source = DARLING_RUNTIME_PREFIX_INITIALIZER;
+	darling_runtime_prefix destination = source;
+	(void)destination;
+	return 0;
+}
+EOF
+if cc -std=gnu11 -Wall -Wextra -Werror -c -I"$startup" \
+	"$work/capability-direct-copy-bad.c" -o "$work/capability-direct-copy-bad.o" \
+	>"$work/capability-direct-copy-bad.stdout" \
+	2>"$work/capability-direct-copy-bad.stderr"
+then
+	printf 'assignment-resistant prefix capability accepted direct copy-initialization\n' >&2
+	exit 1
+fi
 
 python3 -B - "$darling_root" <<'PY'
 from pathlib import Path
@@ -60,11 +101,11 @@ selection = launcher.index("darling_runtime_mode_select_process(")
 privilege = launcher.index("if (!rootless && geteuid() != 0)")
 credential_drop = launcher.index("darling_runtime_drop_rootless_credentials(")
 publish = launcher.index("darling_runtime_mode_publish(")
-prefix = launcher.index("prefix = getenv(\"DPREFIX\")")
+prefix = launcher.index("requested_prefix = getenv(\"DPREFIX\")")
 inspect = launcher.index("darling_runtime_mode_open_prefix(")
-setup = launcher.index("setupPrefix();")
+lifecycle = launcher.index("darling_runtime_prefix_prepare(")
 dispatch = launcher.index("const int commandIndex = cli.command_index;")
-if not parser < selection < privilege < credential_drop < publish < prefix < inspect < setup < dispatch:
+if not parser < selection < privilege < credential_drop < publish < prefix < inspect < lifecycle < dispatch:
     raise SystemExit(
         "single CLI parse/mode/credential/prefix/dispatch order changed"
     )
@@ -81,8 +122,15 @@ if (
     raise SystemExit("launcher retained the mutation-before-real-prefix preflight")
 if 'getenv("DARLING_ROOTLESS")' in launcher:
     raise SystemExit("launcher re-decides rootless mode after normalization")
-if "darling_runtime_mode_validate_prefix_marker(" not in launcher:
-    raise SystemExit("existing prefix is not bound to the typed mode")
+if launcher.count("darling_runtime_prefix_prepare(") != 1:
+    raise SystemExit("launcher does not enter the typed prefix lifecycle once")
+after_anchor = launcher[inspect:dispatch]
+if (
+    "requested_prefix = NULL;" not in after_anchor
+    or "setupPrefix();" in after_anchor
+    or "darling_runtime_mode_validate_prefix_marker(" in after_anchor
+):
+    raise SystemExit("launcher retained a raw-path or legacy marker branch after anchoring")
 setup_start = launcher.index("void setupPrefix()")
 setup_end = launcher.index("\npid_t getInitProcess()", setup_start)
 setup_body = launcher[setup_start:setup_end]
@@ -141,7 +189,22 @@ for token in (
     "RENAME_NOREPLACE",
     "open_relative_directory(handle->directory_fd",
     "created_fd = create_and_open_directory(",
-    "openat(handle->directory_fd, DARLING_RUNTIME_MODE_MARKER_NAME",
+    "DARLING_RUNTIME_PREFIX_STATE_NAME",
+    "darling_runtime_prefix_prepare(",
+    "darling_runtime_prefix_recreate(",
+    "darling_runtime_prefix_delete(",
+    "darling_runtime_prefix_move(",
+    "LIFECYCLE_STABLE_CURRENT_V2",
+    "LIFECYCLE_PHASE_REPLACEMENT_STAGED",
+    "recovery_disposition(",
+    "advance_transaction_phase(",
+    "flock(fd, LOCK_EX)",
+    "fstatat(handle->parent_fd, names->lock, &named",
+    "named.st_dev != locked.st_dev",
+    "named.st_ino != locked.st_ino",
+    "fsync_directory(",
+    "cannot persist prefix initialization file",
+    "staged prefix root",
     "darling_runtime_mode_prepare_workdir(",
     "darling_runtime_mode_verify_prefix_name(",
     "darling_runtime_mode_write_relative_atomic(",
@@ -149,6 +212,16 @@ for token in (
 ):
     if token not in prefix_mode:
         raise SystemExit(f"real-prefix preflight is incomplete: {token}")
+if "names.lock" in prefix_mode:
+    raise SystemExit("delete path still unlinks the persistent lifecycle lock")
+prefix_header = (root / "src/startup/runtime_mode_prefix.h").read_text()
+for token in (
+    "} darling_runtime_prefix[1];",
+    "Transfer ownership only with",
+    "darling_runtime_prefix_move()",
+):
+    if token not in prefix_header:
+        raise SystemExit(f"assignment-resistant C capability contract is missing: {token}")
 prefix_test = (root / "src/startup/tests/runtime_mode_test.c").read_text()
 for token in (
     "intermediate prefix symlink was accepted before mutation",
@@ -164,16 +237,32 @@ for token in (
     "fd-relative state cleanup failed",
     "fd-relative open followed an intermediate symlink",
     "prefix lifecycle left a temporary directory or file",
+    "move did not invalidate source capability",
+    "stable-state/journal-phase recovery matrix mismatch",
+    "recovery matrix did not cover every combination",
+    "interrupted upgrade did not reach a valid stable state",
+    "newer prefix schema was accepted",
+    "cross-prefix typed state was accepted",
+    "hostile state metadata mode was accepted",
+    "multiply linked state metadata was accepted",
+    "state metadata symlink was accepted",
+    "truncated state metadata was accepted",
+    "third process acquired a replacement lifecycle lock concurrently",
+    "delete unlinked the persistent lifecycle lock while held",
+    "staged tree did not fsync files and directories bottom-up",
+    "staged root was not fsynced after nested directories",
+    "real create/recreate/delete interruption matrix was incomplete",
+    "open_prefix accepted an already-owned capability",
 ):
     if token not in prefix_test:
         raise SystemExit(f"prefix fail-closed fixture is missing: {token}")
 
 handoff = launcher[launcher.index("pid_t spawnInitProcess(void)") :]
 for token in (
-    "g_runtimePrefix.directory_fd",
-    "g_runtimePrefix.parent_fd",
-    "g_runtimePrefix.workdir_fd",
-    "g_runtimePrefix.leaf",
+    "g_runtimePrefix->directory_fd",
+    "g_runtimePrefix->parent_fd",
+    "g_runtimePrefix->workdir_fd",
+    "g_runtimePrefix->leaf",
     "darling_runtime_mode_make_fd_inheritable(",
 ):
     if token not in handoff:

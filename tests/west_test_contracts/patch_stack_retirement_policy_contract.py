@@ -9,7 +9,7 @@ import yaml
 
 
 ROOT = Path(__file__).resolve().parents[2]
-PROFILE_COUNTS = {"homebrew": 72, "perf": 7, "arch": 19}
+PROFILE_COUNTS = {"homebrew": 74, "perf": 7, "arch": 19}
 MAPPINGS = {
     "homebrew": "lock-first-series-v2.yml",
     "perf": "lock-first-series-perf-v2.yml",
