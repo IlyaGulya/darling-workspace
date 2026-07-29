@@ -4240,7 +4240,7 @@ patches:
       base: main
       state: local
 - path: xnu/af-unix-expanded-path-length.patch
-  sha256sum: 02d3c1b30c6541307c0af4792d82710a7478f8c7ae8c9193a55c9014c66a7316
+  sha256sum: d42d7f8d8a014d935176e2a5077bd9cd1343957e92c642bf6100df9fd42a7f46
   module: darling/src/external/xnu
   source-branch: fix/rootless-af-unix-length
   source-base: f0cdc82b8ac35a9feb9e499958f486ed53c25d85
