@@ -72,6 +72,7 @@ runtime-profiles:
     # The no-CLT boundary is homebrew-rootless-bootstrap-minimal below.
     source-profile: homebrew
     bootstrap: rootless-no-mount
+    runtime-mode: rootless-eunion
     source-module: darling
     guest-toolchain: darling-command-line-tools
     source-modules:
@@ -101,6 +102,7 @@ runtime-profiles:
     bootstrap-smoke-timeout-seconds: 180
     source-profile: homebrew
     bootstrap: rootless-no-mount
+    runtime-mode: rootless-eunion
     source-module: darling
     source-modules:
     - darling
@@ -130,6 +132,7 @@ runtime-profiles:
     bootstrap-smoke-timeout-seconds: 180
     source-profile: homebrew
     bootstrap: rootless-no-mount
+    runtime-mode: rootless-eunion
     source-module: darling
     guest-toolchain: darling-command-line-tools
     source-modules:
@@ -168,6 +171,7 @@ runtime-profiles:
     purpose: guest-toolchain-provisioning
     source-profile: homebrew
     bootstrap: rootless-no-mount
+    runtime-mode: rootless-eunion
     source-module: darling
     guest-toolchain: darling-command-line-tools
     source-modules:

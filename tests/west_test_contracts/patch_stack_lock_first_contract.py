@@ -66,22 +66,22 @@ def main() -> None:
         patches = [{"module": "darling", "path": "darling/sandbox-exec-pass-through.patch"}]
         selected = lock_first.plan("homebrew", patches, mapping)
         assert len(selected) == 1
-        # Batch 7 is the exact grouped homebrew selection: 25 Darlingserver
-        # series, then the complete 25-series XNU group, followed by the
-        # retained Batch 6 modules. This binds the data mapping to the real
+        # Rootless productization Batch 8 is the exact grouped homebrew
+        # selection: the retained Batch 7 series plus one final Darlingserver,
+        # XNU, and Darling entry. This binds the data mapping to the real
         # profile order before an apply can mutate.
         homebrew = yaml.safe_load((ROOT / "patches/homebrew/patches.yml").read_text())
         homebrew_patches = homebrew["patches"]
         homebrew_grouped = OrderedDict()
         for entry in homebrew_patches:
             homebrew_grouped.setdefault(entry["module"], []).append(entry)
-        batch_seven = lock_first.plan("homebrew", homebrew_patches, lock_first.MAPPING, homebrew_grouped)
+        batch_eight = lock_first.plan("homebrew", homebrew_patches, lock_first.MAPPING, homebrew_grouped)
         expected_darlingserver = [
             entry["path"] for entry in homebrew_patches
             if entry["module"] == "darling/src/external/darlingserver"
         ]
         observed_darlingserver = [
-            entry["patch"] for entry in batch_seven
+            entry["patch"] for entry in batch_eight
             if entry["module"] == "darling/src/external/darlingserver"
         ]
         expected_xnu = [
@@ -89,17 +89,17 @@ def main() -> None:
             if entry["module"] == "darling/src/external/xnu"
         ]
         observed_xnu = [
-            entry["patch"] for entry in batch_seven
+            entry["patch"] for entry in batch_eight
             if entry["module"] == "darling/src/external/xnu"
         ]
-        assert len(batch_seven) == 69 and batch_seven.batch["expected_count"] == 69
-        assert batch_seven.composition is not None
-        assert batch_seven.composition["profile"] == "homebrew"
-        assert batch_seven.composition["boundaries"][("darling/src/external/xnu", "xnu/fstatfs-missing-proc-mounts.patch")] == "84d7a41685fab6b459ce754e8db8421ab4fc3615"
-        assert batch_seven.composition["boundaries"][("darling", "darling/sandbox-exec-pass-through.patch")] == "630c80034b9aed3a89d133c948e457c1bc9e3709"
-        assert batch_seven.composition["finals"]["darling/src/external/xnu"] == "c093766c6abb005ad85392c78c77c1e73c817da3"
-        assert batch_seven.batch["batch_id"] == "darling-homebrew-lock-first-batch-7"
-        assert batch_seven.batch["module_order"] == [
+        assert len(batch_eight) == 72 and batch_eight.batch["expected_count"] == 72
+        assert batch_eight.composition is not None
+        assert batch_eight.composition["profile"] == "homebrew"
+        assert batch_eight.composition["boundaries"][("darling/src/external/xnu", "xnu/fstatfs-missing-proc-mounts.patch")] == "84d7a41685fab6b459ce754e8db8421ab4fc3615"
+        assert batch_eight.composition["boundaries"][("darling", "darling/sandbox-exec-pass-through.patch")] == "630c80034b9aed3a89d133c948e457c1bc9e3709"
+        assert batch_eight.composition["finals"]["darling/src/external/xnu"] == "53c8fa45a1ac94bdfc2ced0b3179e43659dffabf"
+        assert batch_eight.batch["batch_id"] == "darling-homebrew-rootless-productization-batch-8"
+        assert batch_eight.batch["module_order"] == [
             "darling/src/external/darlingserver",
             "darling/src/external/xnu",
             "darling/src/external/libplatform",
@@ -109,9 +109,9 @@ def main() -> None:
             "darling",
             "darling/src/external/installer",
         ]
-        assert len(expected_darlingserver) == 25
+        assert len(expected_darlingserver) == 26
         assert observed_darlingserver == expected_darlingserver
-        assert len(expected_xnu) == 25
+        assert len(expected_xnu) == 26
         assert observed_xnu == expected_xnu
         assert observed_xnu == [
             "xnu/psynch-cvsignal-args.patch",
@@ -139,11 +139,12 @@ def main() -> None:
             "xnu/guest-per-callnum-sleep-account.patch",
             "xnu/gate-hotpath-kprintf-debug.patch",
             "xnu/generalize-recv-spin-guest.patch",
+            "xnu/af-unix-expanded-path-length.patch",
         ]
         # The registry is the production selector for every profile. Each
         # mapping must exactly cover the real grouped profile execution, with
         # no profile-specific archive fallback hidden in orchestration.
-        for profile_name, expected_count in (("homebrew", 69), ("perf", 7), ("arch", 19)):
+        for profile_name, expected_count in (("homebrew", 72), ("perf", 7), ("arch", 19)):
             profile_data = yaml.safe_load((ROOT / "patches" / profile_name / "patches.yml").read_text())
             profile_patches = profile_data["patches"]
             profile_grouped = OrderedDict()
@@ -180,8 +181,8 @@ def main() -> None:
             ("darling", "darling/ci-host-regression-tests.patch"),
         ]
         flood_entry = next(entry for entry in arch_selected if (entry["module"], entry["patch"]) == flood_identity)
-        assert yaml.safe_load(Path(flood_entry["lock_path"]).read_text())["upstream"]["base_commit"] == "a0877988b130f665ffbf9ee921482c2cbd67f925"
-        assert arch_selected.composition["boundaries"][flood_identity] == "7b68b23e5a3d3b00a0e4ca5c340371667c18493e"
+        assert yaml.safe_load(Path(flood_entry["lock_path"]).read_text())["upstream"]["base_commit"] == "4ed1e806e850b45ec76758e0124c4274992415e6"
+        assert arch_selected.composition["boundaries"][flood_identity] == "8a9ec6b9460c3447d9d9f430e74a7a2490e8f974"
         # The profile-owned continuation is fail-closed: omitting it, moving
         # it before the final DarlingServer boundary, or tampering with its
         # composition tree cannot reach mutation.
@@ -212,13 +213,302 @@ def main() -> None:
         # The general composition materializer contract separately proves that
         # a tampered boundary tree fails before it can become an integration
         # final; bind this concrete row to the reviewed immutable tree here.
-        assert arch_selected.composition["finals"][flood_identity[0]] == "7b68b23e5a3d3b00a0e4ca5c340371667c18493e"
+        assert arch_selected.composition["finals"][flood_identity[0]] == "8a9ec6b9460c3447d9d9f430e74a7a2490e8f974"
         try:
             lock_first.mapping_for_profile("unknown-profile")
         except lock_first.LockFirstError:
             pass
         else:
             raise AssertionError("unconfigured profile selected a lock-first mapping")
+        # Applicability is evaluated against the complete typed dependency
+        # graph.  One disposable module worktree must retain the Homebrew
+        # result for Perf and the Perf result for Arch; only a module first
+        # introduced by Arch may reset to its historical lock base.
+        applicability_repos = {
+            "module-a": root / "applicability-module-a",
+            "module-b": root / "applicability-module-b",
+        }
+        applicability_commits: dict[str, dict[str, str]] = {}
+        applicability_trees: dict[str, dict[str, str]] = {}
+        for module, repo in applicability_repos.items():
+            git(root, "init", "-q", str(repo))
+            git(repo, "config", "user.name", "Applicability Test")
+            git(repo, "config", "user.email", "applicability@example.invalid")
+            applicability_commits[module] = {}
+            applicability_trees[module] = {}
+            states = (
+                ("base",)
+                if module == "module-b"
+                else ("base", "homebrew", "perf", "arch")
+            )
+            for state in states:
+                (repo / "state").write_text(f"{module}:{state}\n")
+                git(repo, "add", "state")
+                git(repo, "commit", "-qm", f"{module} {state}")
+                applicability_commits[module][state] = git(
+                    repo, "rev-parse", "HEAD"
+                )
+                applicability_trees[module][state] = git(
+                    repo, "rev-parse", "HEAD^{tree}"
+                )
+            if module == "module-b":
+                (repo / "state").write_text("module-b:arch\n")
+                git(repo, "commit", "-qam", "module-b arch")
+                applicability_commits[module]["arch"] = git(
+                    repo, "rev-parse", "HEAD"
+                )
+                applicability_trees[module]["arch"] = git(
+                    repo, "rev-parse", "HEAD^{tree}"
+                )
+
+        applicability_patches = {
+            "homebrew": [
+                {
+                    "profile": "homebrew",
+                    "module": "module-a",
+                    "path": "homebrew/a.patch",
+                }
+            ],
+            "perf": [
+                {
+                    "profile": "perf",
+                    "module": "module-a",
+                    "path": "perf/a.patch",
+                }
+            ],
+            "arch": [
+                {
+                    "profile": "arch",
+                    "module": "module-a",
+                    "path": "arch/a.patch",
+                },
+                {
+                    "profile": "arch",
+                    "module": "module-b",
+                    "path": "arch/b.patch",
+                },
+            ],
+        }
+        for profile_name in applicability_patches:
+            profile_dir = root / "patches" / profile_name
+            profile_dir.mkdir(parents=True, exist_ok=True)
+            (profile_dir / "patches.yml").write_text("synthetic: true\n")
+
+        def applicability_composition(
+            profile_name: str,
+            prerequisites: list[str],
+            starts: dict[str, str],
+            finals: dict[str, str],
+            entries: list[dict[str, str]],
+        ) -> dict[str, object]:
+            return {
+                "schema_version": 3,
+                "profile": profile_name,
+                "path": f"{profile_name}-composition.yml",
+                "prerequisites": [
+                    {"profile": prerequisite}
+                    for prerequisite in prerequisites
+                ],
+                "frozen_manifest": {},
+                "starts": {
+                    module: {"tree": tree}
+                    for module, tree in starts.items()
+                },
+                "boundaries": {
+                    (entry["module"], entry["patch"]): finals[entry["module"]]
+                    for entry in entries
+                },
+                "finals": finals,
+                "integration_finals": finals,
+            }
+
+        applicability_entries = {
+            profile_name: [
+                {
+                    "profile": profile_name,
+                    "module": patch["module"],
+                    "patch": patch["path"],
+                }
+                for patch in patches
+            ]
+            for profile_name, patches in applicability_patches.items()
+        }
+        applicability_compositions = {
+            "homebrew": applicability_composition(
+                "homebrew",
+                [],
+                {"module-a": applicability_trees["module-a"]["base"]},
+                {"module-a": applicability_trees["module-a"]["homebrew"]},
+                applicability_entries["homebrew"],
+            ),
+            "perf": applicability_composition(
+                "perf",
+                ["homebrew"],
+                {"module-a": applicability_trees["module-a"]["homebrew"]},
+                {"module-a": applicability_trees["module-a"]["perf"]},
+                applicability_entries["perf"],
+            ),
+            "arch": applicability_composition(
+                "arch",
+                ["perf"],
+                {
+                    "module-a": applicability_trees["module-a"]["perf"],
+                    "module-b": applicability_trees["module-b"]["base"],
+                },
+                {
+                    "module-a": applicability_trees["module-a"]["arch"],
+                    "module-b": applicability_trees["module-b"]["arch"],
+                },
+                applicability_entries["arch"],
+            ),
+        }
+        applicability_plans = {
+            profile_name: lock_first.LockFirstPlan(
+                entries,
+                {
+                    "batch_id": f"{profile_name}-applicability",
+                    "expected_count": len(entries),
+                },
+                applicability_compositions[profile_name],
+            )
+            for profile_name, entries in applicability_entries.items()
+        }
+        applicability_command = patch_command.DarlingPatch.__new__(
+            patch_command.DarlingPatch
+        )
+        applicability_command.manifest = types.SimpleNamespace(repo_abspath=root)
+        applicability_command._group = lambda profile_patches: OrderedDict(
+            (
+                module,
+                [
+                    patch
+                    for patch in profile_patches
+                    if patch["module"] == module
+                ],
+            )
+            for module in dict.fromkeys(
+                patch["module"] for patch in profile_patches
+            )
+        )
+        applicability_command._repo = lambda module: applicability_repos[module]
+        applicability_command._manifest_revision = lambda module: (
+            applicability_commits[module]["base"]
+        )
+        applicability_command._abort_am = lambda _repo: None
+        applicability_command.die = lambda message, **_kwargs: (
+            _ for _ in ()
+        ).throw(RuntimeError(message))
+        old_plan = patch_command.patch_stack_lock_first.plan
+        old_materialize_batch = (
+            patch_command.patch_stack_lock_first.materialize_batch_into
+        )
+        old_load_profile = patch_command.test_manifest.load_test_profile
+        applicability_calls: list[tuple[str, str, bool]] = []
+
+        def fake_applicability_plan(
+            profile_name, _patches, _mapping=None, _grouped=None
+        ):
+            return applicability_plans[profile_name]
+
+        def fake_load_profile(path):
+            return {
+                "patches": applicability_patches[Path(path).parent.name]
+            }
+
+        def fake_applicability_batch(
+            repo,
+            entries,
+            *,
+            git_options=(),
+            reset_to_first_base=False,
+            composition=None,
+        ):
+            assert git_options == TEMPORARY_PATCH_GIT_OPTIONS
+            entry = entries[0]
+            profile_name = entry["profile"]
+            module = entry["module"]
+            assert composition is applicability_compositions[profile_name]
+            applicability_calls.append(
+                (profile_name, module, reset_to_first_base)
+            )
+            git(
+                repo,
+                "reset",
+                "--hard",
+                "-q",
+                applicability_commits[module][profile_name],
+            )
+            return (
+                [{"module": module, "patch": entry["patch"]}],
+                {
+                    "immutable_fetch_transactions": 1,
+                    "validated_locks": len(entries),
+                    "replayed_commits": len(entries),
+                    "temporary_contexts": 1,
+                },
+            )
+
+        try:
+            patch_command.patch_stack_lock_first.plan = fake_applicability_plan
+            patch_command.patch_stack_lock_first.materialize_batch_into = (
+                fake_applicability_batch
+            )
+            patch_command.test_manifest.load_test_profile = fake_load_profile
+            arch_grouped = applicability_command._group(
+                applicability_patches["arch"]
+            )
+            applicability_command._verify_applicability("arch", arch_grouped)
+            assert applicability_calls == [
+                ("homebrew", "module-a", True),
+                ("perf", "module-a", False),
+                ("arch", "module-a", False),
+                ("arch", "module-b", True),
+            ]
+            for repo in applicability_repos.values():
+                assert (
+                    git(repo, "worktree", "list", "--porcelain").count(
+                        "worktree "
+                    )
+                    == 1
+                )
+
+            # A prerequisite boundary mismatch must fail before the next
+            # profile's batch is invoked and still clean every worktree.
+            applicability_calls.clear()
+            expected_start = applicability_compositions["perf"]["starts"][
+                "module-a"
+            ]["tree"]
+            applicability_compositions["perf"]["starts"]["module-a"] = (
+                {"tree": applicability_trees["module-a"]["base"]}
+            )
+            try:
+                applicability_command._verify_applicability(
+                    "arch", arch_grouped
+                )
+            except RuntimeError as error:
+                assert "differs from typed composition" in str(error)
+            else:
+                raise AssertionError(
+                    "applicability accepted a tampered prerequisite boundary"
+                )
+            finally:
+                applicability_compositions["perf"]["starts"][
+                    "module-a"
+                ] = {"tree": expected_start}
+            assert applicability_calls == [("homebrew", "module-a", True)]
+            for repo in applicability_repos.values():
+                assert (
+                    git(repo, "worktree", "list", "--porcelain").count(
+                        "worktree "
+                    )
+                    == 1
+                )
+        finally:
+            patch_command.patch_stack_lock_first.plan = old_plan
+            patch_command.patch_stack_lock_first.materialize_batch_into = (
+                old_materialize_batch
+            )
+            patch_command.test_manifest.load_test_profile = old_load_profile
         # The planner validates the real apply order, not the flat YAML
         # order: _group() executes all patches of the first module before a
         # later profile entry in the next module.
@@ -286,7 +576,7 @@ def main() -> None:
         else:
             raise AssertionError("profile composition accepted duplicate YAML keys")
         # The complete XNU group is typed data, not an implicit prefix. Its
-        # exact 25-entry profile order is required before _prepare(), and all
+        # exact 26-entry profile order is required before _prepare(), and all
         # missing/extra/duplicate/reordered/wrong-module/wrong-lock variants
         # fail before a production repository can be touched.
         xnu_series = [
@@ -297,38 +587,38 @@ def main() -> None:
             (root / entry["lock"]).write_text((lock_first.MAPPING.parent / entry["lock"]).read_text())
         xnu_mapping = root / "xnu-complete.yml"
         xnu_mapping.write_text(yaml.safe_dump(mapping_doc(xnu_series, batch_id="xnu-complete"), sort_keys=False))
-        assert len(lock_first.plan("homebrew", [{"module": "darling/src/external/xnu", "path": path} for path in expected_xnu], xnu_mapping)) == 25
+        assert len(lock_first.plan("homebrew", [{"module": "darling/src/external/xnu", "path": path} for path in expected_xnu], xnu_mapping)) == 26
         def require_exact_xnu(entries):
             assert [(entry.get("module"), entry.get("patch")) for entry in entries] == [
                 ("darling/src/external/xnu", path) for path in expected_xnu
-            ], "Batch 7 XNU mapping is not the exact profile group"
+            ], "Batch 8 XNU mapping is not the exact profile group"
         xnu_missing = root / "xnu-missing.yml"
         xnu_missing.write_text(yaml.safe_dump(mapping_doc(xnu_series[:-1], batch_id="xnu-missing"), sort_keys=False))
         try: require_exact_xnu(xnu_series[:-1])
         except AssertionError: pass
-        else: raise AssertionError("Batch 7 accepted missing XNU entry")
+        else: raise AssertionError("Batch 8 accepted missing XNU entry")
         xnu_extra = root / "xnu-extra.yml"
         xnu_extra.write_text(yaml.safe_dump(mapping_doc(xnu_series + [dict(xnu_series[0], patch="xnu/extra.patch")], batch_id="xnu-extra"), sort_keys=False))
         try: require_exact_xnu(xnu_series + [dict(xnu_series[0], patch="xnu/extra.patch")])
         except AssertionError: pass
-        else: raise AssertionError("Batch 7 accepted extra XNU entry")
+        else: raise AssertionError("Batch 8 accepted extra XNU entry")
         xnu_duplicate = root / "xnu-duplicate.yml"
         xnu_duplicate.write_text(yaml.safe_dump(mapping_doc(xnu_series + [xnu_series[0]], batch_id="xnu-duplicate"), sort_keys=False))
         try: require_exact_xnu(xnu_series + [xnu_series[0]])
         except AssertionError: pass
-        else: raise AssertionError("Batch 7 accepted duplicate XNU entry")
+        else: raise AssertionError("Batch 8 accepted duplicate XNU entry")
         must_fail(lock_first.plan, "homebrew", [{"module": "darling/src/external/xnu", "path": path} for path in expected_xnu], xnu_duplicate)
         xnu_reordered = root / "xnu-reordered.yml"
         xnu_reordered.write_text(yaml.safe_dump(mapping_doc(list(reversed(xnu_series)), batch_id="xnu-reordered"), sort_keys=False))
         try: require_exact_xnu(list(reversed(xnu_series)))
         except AssertionError: pass
-        else: raise AssertionError("Batch 7 accepted reordered XNU entries")
+        else: raise AssertionError("Batch 8 accepted reordered XNU entries")
         must_fail(lock_first.plan, "homebrew", [{"module": "darling/src/external/xnu", "path": path} for path in expected_xnu], xnu_reordered)
         xnu_wrong_module = root / "xnu-wrong-module.yml"
         xnu_wrong_module.write_text(yaml.safe_dump(mapping_doc([dict(xnu_series[0], module="darling")], batch_id="xnu-wrong-module"), sort_keys=False))
         try: require_exact_xnu([dict(xnu_series[0], module="darling")])
         except AssertionError: pass
-        else: raise AssertionError("Batch 7 accepted wrong XNU module")
+        else: raise AssertionError("Batch 8 accepted wrong XNU module")
         must_fail(lock_first.plan, "homebrew", [{"module": "darling/src/external/xnu", "path": path} for path in expected_xnu], xnu_wrong_module)
         xnu_wrong_lock = root / "xnu-wrong-lock.yml"
         malformed_xnu_lock = yaml.safe_load((root / xnu_series[0]["lock"]).read_text())
@@ -484,6 +774,47 @@ def main() -> None:
         for commit in commits: lock_first._cherry_pick(canonical, commit)
         assert git(legacy, "rev-list", "--reverse", f"{fixture_base}..HEAD") == git(canonical, "rev-list", "--reverse", f"{fixture_base}..HEAD")
         assert git(legacy, "show", "-s", "--format=raw", "HEAD") == git(canonical, "show", "-s", "--format=raw", "HEAD")
+        # A composed profile reaches immutable series on an inherited base.
+        # Git right-aligns the first range-diff ordinals once a series has at
+        # least ten commits; those leading spaces must not make an otherwise
+        # exact replay fail closed as a false identity mismatch.
+        wide_source = root / "wide-source"
+        wide_target = root / "wide-target"
+        git(root, "clone", "-q", str(differential), str(wide_source))
+        git(root, "clone", "-q", str(differential), str(wide_target))
+        for repo in (wide_source, wide_target):
+            git(repo, "config", "user.name", "Test")
+            git(repo, "config", "user.email", "test@example.invalid")
+            git(repo, "reset", "--hard", "-q", fixture_base)
+        wide_commits = []
+        for index in range(12):
+            (wide_source / f"wide-{index}").write_text(f"wide {index}\n")
+            git(wide_source, "add", f"wide-{index}")
+            git(wide_source, "commit", "-qm", f"wide {index}")
+            wide_commits.append(git(wide_source, "rev-parse", "HEAD"))
+        git(
+            wide_target,
+            "fetch",
+            "--no-tags",
+            str(wide_source),
+            f"{wide_commits[-1]}:refs/fixture/wide-source",
+        )
+        (wide_target / "inherited-only").write_text("profile prerequisite\n")
+        git(wide_target, "add", "inherited-only")
+        git(wide_target, "commit", "-qm", "profile prerequisite")
+        inherited = git(wide_target, "rev-parse", "HEAD")
+        for commit in wide_commits:
+            lock_first._cherry_pick(wide_target, commit)
+        lock_first._require_exact_replay(
+            wide_target,
+            {
+                "base_oid": fixture_base,
+                "source_oid": wide_commits[-1],
+                "ordered_commits": wide_commits,
+            },
+            inherited,
+            git(wide_target, "rev-parse", "HEAD"),
+        )
         # Exercise the real lock-first replay through _apply(), rather than
         # treating a series-level mock as proof of a mid-series failure.  The
         # first two immutable commits must reach the production repository;
@@ -581,7 +912,7 @@ def main() -> None:
                 assert "west-lock-materialize-" not in git(production, "worktree", "list", "--porcelain")
         finally:
             lock_first.mapping_for_profile, lock_first._cherry_pick = old_mapping_for_profile, old_cherry_pick
-        # Real Batch 7 internal-commit rollback: eunion-hardening is the
+        # Real retained-batch internal-commit rollback: eunion-hardening is the
         # longest XNU schema-v2 series (six immutable commits). This calls
         # production materialize_into, lets the first three commits replay,
         # then injects the original failure at the fourth production replay.
@@ -868,7 +1199,7 @@ def main() -> None:
                     expected_aborted = list(dict.fromkeys(repositories[item["module"]] for item in external_patches[:failing_position + 1]))
                     assert aborted == expected_aborted
                     assert replayed[-1] == (failing_patch, failing_commit)
-            # The Batch 7 Darlingserver portion is a single module batch. The
+            # The Batch 8 Darlingserver portion is a single module batch. The
             # existing real three-commit fixture above proves commit-level
             # rollback; this orchestration-only fixture proves the first,
             # middle and final actual profile entries take the normal _apply
@@ -914,7 +1245,7 @@ def main() -> None:
                         raise AssertionError("Darlingserver failure was accepted")
                     assert attempts["count"] == position and resets and not evidence_path.exists()
                     assert aborted == [production]
-            # XNU is the other complete Batch 7 module. Exercise first,
+            # XNU is the other complete Batch 8 module. Exercise first,
             # middle, and final series failures through the same production
             # rollback lifecycle. This is orchestration coverage; the real
             # eunion-hardening internal-commit rollback follows below.

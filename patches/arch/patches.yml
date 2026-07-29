@@ -366,16 +366,51 @@ patches:
   publication-status: blocked
   publication-blocker: requires reviewed immutable hosted closure and explicit ARCH_ONLY ownership acceptance.
   tests:
+  - name: standard_signal_coalescing_source_contract
+    kind: source-contract
+    coverage-tier: source
+    runs: host
+    diag: bare
+    red: true
+    red-proof:
+      mode: source-base
+      source-env: DSERVER_SRC_ROOT
+      source-module: darling/src/external/darlingserver
+      expect-output-contains:
+      - sendSignal still exempts SIGUSR1 from standard-signal coalescing
+    runner: source-profile-script
+    repo: darling/src/external/darlingserver
+    script: tests/standard_signal_coalescing_contract_test.sh
+    source-env: DSERVER_SRC_ROOT
+    timeout-seconds: 60
+    note: The profile-owned script is retained as a source-base structural proof and gets its source root explicitly; behavioral coverage is provided by the following friend-adapter fixture.
   - name: standard_signal_coalescing_helper
-    kind: compile
+    kind: contract
     coverage-tier: host
     runs: host
     diag: bare
-    runner: source-profile-script
-    repo: darling-src-external-darlingserver
-    script: tests/standard_signal_coalescing_contract_test.sh
+    red: true
+    red-proof:
+      mode: source-base
+      source-env: DSERVER_SRC_ROOT
+      source-module: darling/src/external/darlingserver
+      expect-failure-phase: compile
+    runner: c-fixture
+    repo: darling-workspace
+    script: tests/standard_signal_coalescing_helper_test.cpp
+    source-env: DSERVER_SRC_ROOT
+    cc: c++
+    fixture-include-dirs:
+    - tests/fixtures/standard-signal-coalescing
+    include-dirs:
+    - internal-include
+    compile-flags:
+    - -std=c++17
+    - -Wall
+    - -Wextra
+    - -Werror
     timeout-seconds: 60
-    note: The direct friend-adapter target drives the exact pending-mask helper used by Thread::sendSignal before tgkill.
+    note: The durable friend-adapter fixture compiles against the selected source-base/profile tree and executes the exact pending-mask helper called by Thread::sendSignal before tgkill.
   sha256sum: a49b0c4005bebdee68b88b3416c6c49995eb262875b91a48cd62ba6f390cd703
 - path: darling/ci-host-regression-tests.patch
   module: darling

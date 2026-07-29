@@ -14,6 +14,13 @@ import yaml
 ROOTLESS_BOOTSTRAP_RESOURCE = "rootless-bootstrap"
 ROOTLESS_BOOTSTRAP_TARGET = "rootless_bootstrap"
 ROOTLESS_BOOTSTRAP_MANIFEST = "darling-rootless-bootstrap.json"
+RUNTIME_MODE_MARKER_NAME = ".darling-runtime-mode-v1"
+RUNTIME_MODE_NAMES = {
+    "privileged-overlay",
+    "privileged-copy",
+    "privileged-eunion",
+    "rootless-eunion",
+}
 ROOTLESS_TOOLCHAIN_RESOURCE = "rootless-toolchain"
 ROOTLESS_TOOLCHAIN_TARGET = "rootless_toolchain"
 ROOTLESS_TOOLCHAIN_MANIFEST = "darling-rootless-toolchain.json"
@@ -324,6 +331,7 @@ def load_ctest_runtime_profiles(path: Path) -> dict[str, dict[str, Any]]:
         source_modules = profile.get("source-modules")
         artifacts = profile.get("runtime-artifacts")
         bootstrap = profile.get("bootstrap")
+        runtime_mode = profile.get("runtime-mode")
         guest_toolchain = profile.get("guest-toolchain")
         compiler_launcher = profile.get("compiler-launcher")
         purpose = profile.get("purpose", "runtime")
@@ -341,6 +349,19 @@ def load_ctest_runtime_profiles(path: Path) -> dict[str, dict[str, Any]]:
         if bootstrap is not None and bootstrap != "rootless-no-mount":
             raise ValueError(
                 f"runtime profile {name!r} has unknown bootstrap {bootstrap!r}"
+            )
+        if runtime_mode is not None and (
+            not isinstance(runtime_mode, str)
+            or runtime_mode not in RUNTIME_MODE_NAMES
+        ):
+            raise ValueError(
+                f"runtime profile {name!r} has invalid runtime-mode "
+                f"{runtime_mode!r}"
+            )
+        if bootstrap == "rootless-no-mount" and runtime_mode != "rootless-eunion":
+            raise ValueError(
+                f"runtime profile {name!r} rootless-no-mount must declare "
+                "runtime-mode: rootless-eunion"
             )
         if guest_toolchain is not None and guest_toolchain != GUEST_TOOLCHAIN_RESOURCE:
             raise ValueError(
@@ -502,6 +523,8 @@ def load_ctest_runtime_profiles(path: Path) -> dict[str, dict[str, Any]]:
         }
         if bootstrap is not None:
             normalized[name]["bootstrap"] = bootstrap
+        if runtime_mode is not None:
+            normalized[name]["runtime-mode"] = runtime_mode
         if guest_toolchain is not None:
             normalized[name]["guest-toolchain"] = guest_toolchain
         if compiler_launcher is not None:
@@ -540,6 +563,7 @@ def compose_ctest_runtime_profiles(
     guest_toolchain: str | None = None
     compiler_launcher: str | None = None
     bootstrap: str | None = None
+    runtime_mode: str | None = None
     bootstrap_smoke_timeout = 0
     for name in selected:
         definition = definitions[name]
@@ -587,6 +611,14 @@ def compose_ctest_runtime_profiles(
                     f"runtime profile {name!r} conflicts on bootstrap {candidate_bootstrap}"
                 )
             bootstrap = candidate_bootstrap
+        candidate_runtime_mode = definition.get("runtime-mode")
+        if candidate_runtime_mode is not None:
+            if runtime_mode is not None and runtime_mode != candidate_runtime_mode:
+                raise ValueError(
+                    f"runtime profile {name!r} conflicts on runtime mode "
+                    f"{candidate_runtime_mode}"
+                )
+            runtime_mode = candidate_runtime_mode
         candidate_toolchain = definition.get("guest-toolchain")
         if candidate_toolchain is not None:
             if guest_toolchain is not None and guest_toolchain != candidate_toolchain:
@@ -617,6 +649,8 @@ def compose_ctest_runtime_profiles(
         result["launcher-env"] = launcher_env
     if bootstrap is not None:
         result["bootstrap"] = bootstrap
+    if runtime_mode is not None:
+        result["runtime-mode"] = runtime_mode
     if guest_toolchain is not None:
         result["guest-toolchain"] = guest_toolchain
     if compiler_launcher is not None:

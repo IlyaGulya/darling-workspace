@@ -3182,7 +3182,7 @@ patches:
     runner: source-contract-script
     repo: darling-workspace
     script: experiments/e-union/run-nested-lower-root.sh
-    note: Host behavior for nested lower-template roots and fd-path unexpand; kept as a dedicated source contract because the full profile currently exposes a separate nested bind regression.
+    note: Host behavior for nested lower-template roots and fd-path unexpand; the contract must run with materialize-profile because a final immutable source tip is one series boundary, not the cumulative canonical profile integration tree.
   github:
     fork:
       repo: IlyaGulya/darling-xnu
@@ -4239,6 +4239,52 @@ patches:
       repo: darlinghq/darling-xnu
       base: main
       state: local
+- path: xnu/af-unix-expanded-path-length.patch
+  sha256sum: 02d3c1b30c6541307c0af4792d82710a7478f8c7ae8c9193a55c9014c66a7316
+  module: darling/src/external/xnu
+  source-branch: fix/rootless-af-unix-length
+  source-base: f0cdc82b8ac35a9feb9e499958f486ed53c25d85
+  source-commit: 92d87609088cbf50155519972d3919a5477ccea3
+  bead: dar-productize-darling-rootless-mode-jkla.2
+  publication-status: blocked
+  publication-blocker: AF_UNIX boundary fix is locally accepted; immutable hosted refs and landing require a separate publication authorization.
+  tests:
+  - name: eunion_af_unix_path_length_host
+    kind: contract
+    coverage-tier: host
+    runs: host
+    diag: bare
+    red: true
+    red-proof:
+      mode: source-base
+      source-env: XNU_SRC_ROOT
+      expect-failure-phase: run
+    runner: source-contract-script
+    repo: darling-workspace
+    script: tests/run-eunion-af-unix-path-length-host.sh
+    note: Production sockaddr expansion contract for short, exact-boundary and overlong AF_UNIX paths without truncation.
+  - name: eunion_af_unix_path_length_guest
+    kind: guest
+    coverage-tier: runtime
+    runs: guest
+    diag: guarded
+    runtime-profile: homebrew-rootless-no-mount
+    runner: guest-c-fixture
+    repo: darling-workspace
+    script: tests/eunion_af_unix_path_length_guest.c
+    ok-marker: WEST_EUNION_AF_UNIX_PATH_LENGTH_OK
+    timeout-seconds: 30
+    requires:
+    - darling-eunion-prefix
+  github:
+    fork:
+      repo: darling-next/darling-xnu
+      base: preupstream/main
+      state: local
+    upstream:
+      repo: darlinghq/darling-xnu
+      base: main
+      state: local
 - path: darlingserver/checkin-retask-current-thread-uaf.patch
   sha256sum: 2957e47c0b32c3b9300d5509a1666a82b1a037b28154a9dff0e96fe9258ea812
   module: darling/src/external/darlingserver
@@ -4669,6 +4715,39 @@ patches:
       repo: darlinghq/darlingserver
       base: main
       state: local
+- path: darlingserver/runtime-mode-canonical.patch
+  sha256sum: d4b3602133c43ef77718324c1040ab37d88f6e86f20e6c08d4645e235db45a9d
+  module: darling/src/external/darlingserver
+  source-branch: fix/rootless-typed-runtime-server
+  source-base: 14a9d36495cb84a7af6abf49ac30cf0a3e27a648
+  source-commit: dd0b23f1e3b8e9470016e67df40e18a28718b737
+  bead: dar-productize-darling-rootless-mode-jkla.1
+  publication-status: blocked
+  publication-blocker: Typed runtime-mode integration is locally accepted; immutable hosted refs and landing require a separate publication authorization.
+  tests:
+  - name: rootless_runtime_server_mode_contract
+    kind: contract
+    coverage-tier: host
+    runs: host
+    diag: bare
+    red: true
+    red-proof:
+      mode: source-base
+      source-env: DSERVER_SRC_ROOT
+      expect-failure-phase: compile
+    runner: source-contract-script
+    repo: darling-workspace
+    script: tests/run-rootless-runtime-server-contract.sh
+    note: Compiles the production typed-mode parser/marker validator and proves darlingserver validates before prefix, mount, socket or runtime mutation.
+  github:
+    fork:
+      repo: darling-next/darlingserver
+      base: preupstream/main
+      state: local
+    upstream:
+      repo: darlinghq/darlingserver
+      base: main
+      state: local
 - path: darling/rootless-runtime-integration.patch
   sha256sum: cd78af09b7d034b126c09888ae7521abea071a25649c9691b6da0bbf53615443
   module: darling
@@ -5021,6 +5100,39 @@ patches:
     requires:
     - darling-prefix
     note: Fast guest exit must still produce a structured shellspawn completion verdict.
+- path: darling/runtime-mode-canonical.patch
+  sha256sum: 15185fbf21126852a270f0788886ccc81d74b8c428849bd5481c4d7464cd3da6
+  module: darling
+  source-branch: fix/rootless-typed-runtime-mode
+  source-base: bcb438afefa11cf431038a16440b026fc37e8077
+  source-commit: db7b5b404366fa630edeb5189f174518aad189ad
+  bead: dar-productize-darling-rootless-mode-jkla.1
+  publication-status: blocked
+  publication-blocker: Typed launcher/bootstrap integration is locally accepted; immutable hosted refs and landing require a separate publication authorization.
+  tests:
+  - name: rootless_typed_runtime_mode_contract
+    kind: contract
+    coverage-tier: host
+    runs: host
+    diag: bare
+    red: true
+    red-proof:
+      mode: source-base
+      source-env: DARLING_SRC_ROOT
+      expect-failure-phase: compile
+    runner: source-contract-script
+    repo: darling-workspace
+    script: tests/run-rootless-opt-in-cli-contract.sh
+    note: Exercises all four typed modes, launcher-only legacy normalization, hostile conflicts, capability gating, prefix marker binding and canonical mldr/launchd/shellspawn propagation.
+  github:
+    fork:
+      repo: darling-next/darling
+      base: preupstream/master
+      state: local
+    upstream:
+      repo: darlinghq/darling
+      base: master
+      state: local
 - path: installer/normalize-payload-paths.patch
   sha256sum: f8d7c0b5e13e94c6af756c5806c4ace4154dd7402fac34c6b9a9ceddb06221d3
   module: darling/src/external/installer

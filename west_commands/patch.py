@@ -2170,58 +2170,284 @@ class DarlingPatch(WestCommand):
         profile_path.write_text("".join(lines))
 
     def _verify_applicability(self, profile: str, grouped):
-        patches = [
-            patch
-            for module_patches in grouped.values()
-            for patch in module_patches
-        ]
+        """Replay the complete typed profile graph in disposable worktrees.
+
+        A composed profile is applicable only to the exact trees produced by
+        its declared prerequisites.  Resetting every profile to its first
+        historical lock base silently skips that contract: for example, Arch
+        would be tested without the Homebrew and Perf state it actually
+        consumes.  Resolve the typed dependency graph first, then retain one
+        disposable worktree per module across the ordered profile replay.
+        """
+        profiles: list[
+            tuple[str, dict[str, list[dict]], patch_stack_lock_first.LockFirstPlan]
+        ] = []
+        resolved: set[str] = set()
+        visiting: set[str] = set()
+
+        def load_profile(
+            current_profile: str,
+            current_grouped: dict[str, list[dict]] | None = None,
+        ) -> None:
+            if current_profile in resolved:
+                return
+            if current_profile in visiting:
+                raise RuntimeError(
+                    f"{profile}: cyclic typed profile composition at "
+                    f"{current_profile}"
+                )
+            visiting.add(current_profile)
+            if current_grouped is None:
+                profile_dir = (
+                    Path(self.manifest.repo_abspath)
+                    / "patches"
+                    / current_profile
+                )
+                profile_path = profile_dir / "patches.yml"
+                if not profile_path.is_file():
+                    raise RuntimeError(
+                        f"profile prerequisite {current_profile!r} is not found"
+                    )
+                try:
+                    profile_data = test_manifest.load_test_profile(profile_path)
+                except test_manifest.ManifestError as error:
+                    raise RuntimeError(str(error)) from error
+                profile_patches = profile_data.get("patches", [])
+                current_grouped = self._group(profile_patches)
+            else:
+                profile_patches = [
+                    patch
+                    for module_patches in current_grouped.values()
+                    for patch in module_patches
+                ]
+            try:
+                current_plan = patch_stack_lock_first.plan(
+                    current_profile,
+                    profile_patches,
+                    None,
+                    current_grouped,
+                )
+            except patch_stack_lock_first.LockFirstError as error:
+                raise RuntimeError(str(error)) from error
+            composition = current_plan.composition
+            if composition is None:
+                raise RuntimeError(
+                    f"{current_profile}: typed profile composition is required "
+                    "for applicability verification"
+                )
+            for prerequisite in composition["prerequisites"]:
+                load_profile(prerequisite["profile"])
+            visiting.remove(current_profile)
+            resolved.add(current_profile)
+            profiles.append((current_profile, current_grouped, current_plan))
+
         try:
-            plan = patch_stack_lock_first.plan(profile, patches, None, grouped)
-        except patch_stack_lock_first.LockFirstError as error:
+            load_profile(profile, grouped)
+        except RuntimeError as error:
             self.die(str(error))
+
         with tempfile.TemporaryDirectory(prefix="west-patch-verify-") as temp:
             temp_root = Path(temp)
-            for index, (module, module_patches) in enumerate(grouped.items()):
-                repo = self._repo(module)
-                worktree = temp_root / str(index)
-                # The worktree is disposable and begins at the frozen manifest
-                # revision. The canonical module transaction fetches and
-                # validates only declared immutable refs, then resets to its
-                # first typed base before replay. Patch archives are checksum
-                # and provenance fixtures only; applicability never executes
-                # them.
-                revision = self._manifest_revision(module)
-                git(
-                    repo,
-                    "worktree",
-                    "add",
-                    "--quiet",
-                    "--detach",
-                    str(worktree),
-                    revision,
-                )
-                try:
-                    entries = [
-                        entry for entry in plan if entry["module"] == module
-                    ]
-                    if len(entries) != len(module_patches):
-                        raise RuntimeError(
-                            f"{profile}/{module}: canonical applicability plan "
-                            "does not cover every patch"
-                        )
-                    results, _stats = patch_stack_lock_first.materialize_batch_into(
+            worktrees: dict[str, tuple[Path, Path]] = {}
+            materialized: set[str] = set()
+
+            def verify_profile_tree(
+                current_profile: str,
+                module: str,
+                worktree: Path,
+                expected_tree: str,
+                boundary: str,
+            ) -> None:
+                if module != "darling":
+                    observed = git(
                         worktree,
-                        entries,
-                        git_options=TEMPORARY_PATCH_GIT_OPTIONS,
-                        reset_to_first_base=True,
-                        composition=plan.composition,
+                        "rev-parse",
+                        "HEAD^{tree}",
+                        capture=True,
                     )
-                    if len(results) != len(module_patches):
+                    if observed != expected_tree:
                         raise RuntimeError(
-                            f"{profile}/{module}: canonical applicability "
-                            "result count differs"
+                            f"{current_profile}/{module}: {boundary} tree "
+                            f"{observed} differs from typed composition "
+                            f"{expected_tree}"
                         )
-                finally:
+                    return
+
+                # Generated integration commits update only managed gitlinks
+                # in the Darling superproject. Their commit OIDs may depend on
+                # deterministic identity, so apply the same strict parent
+                # comparison as production status/capture: all ordinary
+                # content is exact and every differing gitlink is backed by
+                # an independently verified child tree.
+                expected = {"darling": expected_tree}
+                repos = {"darling": worktree}
+                for child in materialized:
+                    if not child.startswith("darling/"):
+                        continue
+                    child_worktree = worktrees[child][1]
+                    expected[child] = git(
+                        child_worktree,
+                        "rev-parse",
+                        "HEAD^{tree}",
+                        capture=True,
+                    )
+                    repos[child] = child_worktree
+                try:
+                    patch_stack_profile_composition.verify_integration(
+                        "darling",
+                        worktree,
+                        expected_tree,
+                        expected,
+                        repos,
+                    )
+                except (
+                    patch_stack_profile_composition.ProfileCompositionError
+                ) as error:
+                    raise RuntimeError(
+                        f"{current_profile}/darling: {boundary} {error}"
+                    ) from error
+
+            def record_profile_boundary(
+                current_profile: str,
+                current_grouped: dict[str, list[dict]],
+            ) -> None:
+                nested = [
+                    module
+                    for module in current_grouped
+                    if module.startswith("darling/")
+                ]
+                if not nested:
+                    return
+                if "darling" not in worktrees:
+                    raise RuntimeError(
+                        f"{current_profile}: composed applicability has nested "
+                        "modules without a Darling parent"
+                    )
+                parent = worktrees["darling"][1]
+                for module in nested:
+                    if module not in worktrees:
+                        raise RuntimeError(
+                            f"{current_profile}: missing applicability "
+                            f"worktree for {module}"
+                        )
+                    relative = Path(module).relative_to("darling")
+                    child_head = git(
+                        worktrees[module][1],
+                        "rev-parse",
+                        "HEAD",
+                        capture=True,
+                    )
+                    git(
+                        parent,
+                        "update-index",
+                        "--cacheinfo",
+                        f"160000,{child_head},{relative}",
+                    )
+                changed = subprocess.run(
+                    ["git", "diff", "--cached", "--quiet"],
+                    cwd=parent,
+                    check=False,
+                ).returncode
+                if changed not in (0, 1):
+                    raise RuntimeError(
+                        f"{current_profile}: cannot inspect applicability "
+                        "profile boundary"
+                    )
+                if changed:
+                    boundary_env = os.environ.copy()
+                    boundary_env["GIT_AUTHOR_DATE"] = (
+                        "2000-01-01T00:00:00+00:00"
+                    )
+                    boundary_env["GIT_COMMITTER_DATE"] = (
+                        "2000-01-01T00:00:00+00:00"
+                    )
+                    git(
+                        parent,
+                        *TEMPORARY_PATCH_GIT_OPTIONS,
+                        "commit",
+                        "--quiet",
+                        "-m",
+                        f"Verify {current_profile} profile boundary",
+                        env=boundary_env,
+                    )
+
+            try:
+                for current_profile, current_grouped, current_plan in profiles:
+                    for module, module_patches in current_grouped.items():
+                        if module not in worktrees:
+                            repo = self._repo(module)
+                            worktree = temp_root / str(len(worktrees))
+                            # One disposable worktree persists through the
+                            # prerequisite chain. Immutable inputs are still
+                            # fetched and validated per typed module batch;
+                            # archives remain provenance fixtures only.
+                            revision = self._manifest_revision(module)
+                            git(
+                                repo,
+                                "worktree",
+                                "add",
+                                "--quiet",
+                                "--detach",
+                                str(worktree),
+                                revision,
+                            )
+                            worktrees[module] = (repo, worktree)
+                        else:
+                            repo, worktree = worktrees[module]
+
+                        if module in materialized:
+                            expected_start = current_plan.composition["starts"][
+                                module
+                            ]["tree"]
+                            verify_profile_tree(
+                                current_profile,
+                                module,
+                                worktree,
+                                expected_start,
+                                "prerequisite",
+                            )
+
+                        entries = [
+                            entry
+                            for entry in current_plan
+                            if entry["module"] == module
+                        ]
+                        if len(entries) != len(module_patches):
+                            raise RuntimeError(
+                                f"{current_profile}/{module}: canonical "
+                                "applicability plan does not cover every patch"
+                            )
+                        results, _stats = (
+                            patch_stack_lock_first.materialize_batch_into(
+                                worktree,
+                                entries,
+                                git_options=TEMPORARY_PATCH_GIT_OPTIONS,
+                                reset_to_first_base=module not in materialized,
+                                composition=current_plan.composition,
+                            )
+                        )
+                        if len(results) != len(module_patches):
+                            raise RuntimeError(
+                                f"{current_profile}/{module}: canonical "
+                                "applicability result count differs"
+                            )
+                        expected_final = current_plan.composition["finals"][
+                            module
+                        ]
+                        verify_profile_tree(
+                            current_profile,
+                            module,
+                            worktree,
+                            expected_final,
+                            "applicability",
+                        )
+                        materialized.add(module)
+                    record_profile_boundary(
+                        current_profile,
+                        current_grouped,
+                    )
+            finally:
+                for repo, worktree in reversed(list(worktrees.values())):
                     self._abort_am(worktree)
                     git(
                         repo,
