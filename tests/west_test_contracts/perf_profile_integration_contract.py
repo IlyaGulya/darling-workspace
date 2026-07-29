@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Bind perf v7 profile boundaries to the typed profile and arch mappings."""
+"""Bind perf profile boundaries across the Rootless homebrew prerequisite."""
 from __future__ import annotations
 
 from pathlib import Path
@@ -28,9 +28,9 @@ def main() -> None:
         ("darling/src/external/xnu", "xnu/shmem-ring-guest.patch", "darling-xnu-shmem-ring-guest-profile-v7.yml"),
         ("darling/src/external/xnu", "xnu/j7e7-lane-wakefd-sentinel.patch", "darling-xnu-j7e7-lane-wakefd-sentinel-profile-v7.yml"),
         ("darling/src/external/dyld", "dyld/dcc2-reader.patch", "dyld-dcc2-reader-v1.yml"),
-        ("darling/src/external/darlingserver", "darlingserver/perf18-server-ring.patch", "darlingserver-perf18-server-ring-profile-v7.yml"),
-        ("darling/src/external/darlingserver", "darlingserver/a0-hang-fixes.patch", "darlingserver-a0-hang-fixes-profile-v7.yml"),
-        ("darling/src/external/darlingserver", "darlingserver/j7e7-postfork-reset-gate.patch", "darlingserver-j7e7-postfork-reset-gate-profile-v7.yml"),
+        ("darling/src/external/darlingserver", "darlingserver/perf18-server-ring.patch", "darlingserver-perf18-server-ring-rootless-profile-v9.yml"),
+        ("darling/src/external/darlingserver", "darlingserver/a0-hang-fixes.patch", "darlingserver-a0-hang-fixes-rootless-profile-v9.yml"),
+        ("darling/src/external/darlingserver", "darlingserver/j7e7-postfork-reset-gate.patch", "darlingserver-j7e7-postfork-reset-gate-rootless-profile-v9.yml"),
     ]
     mldr, shmem, sentinel, _dyld, perf18, hang, gate = [load(item[2]) for item in observed]
     assert mldr["upstream"]["base_commit"] == "50b2e05dd9e21d9f39e35d947f830ae651aa3366"
@@ -40,9 +40,9 @@ def main() -> None:
     assert composition["schema_version"] == 3
     prerequisite = composition["prerequisites"]
     assert [item["profile"] for item in prerequisite] == ["homebrew"]
-    assert prerequisite[0]["module_trees"]["darling"] == "e6092e1522b253d43e62a915ff137596f31b2878"
+    assert prerequisite[0]["module_trees"]["darling"] == "5e8144538bdc7cb7958dc22edc4016e8b64a6591"
     assert "source_oid" not in composition["modules"][0]["starting"]
-    assert composition["modules"][0]["series"][0]["expected_applied_tree"] == "5befc5cfebf5b7a8d38a7b5a937825aff662a2f2"
+    assert composition["modules"][0]["series"][0]["expected_applied_tree"] == "fbef26d273a9cefcc6fc2db72284e7c955356c2e"
     generated = {
         "43b4e876ad032635cfc5308ada0dc1bd383398b9",
         "585b0e89a7be83eaf8b8c0bd0ea7e69d1add0fea",
@@ -60,9 +60,10 @@ def main() -> None:
     assert len(shmem["ordered_commits"]) == 17
     assert shmem["source_commit"] == sentinel["upstream"]["base_commit"]
     assert sentinel["source_commit"] == "c85e7afea09c414ecc15e17175076f8d323068fe"
-    assert perf18["source_commit"] == hang["upstream"]["base_commit"]
-    assert hang["source_commit"] == gate["upstream"]["base_commit"]
-    assert gate["source_commit"] == "ce6671a41b6e248415e16990e38bb495b4a8fbbc"
+    assert perf18["upstream"]["base_commit"] == "4306b73eb20d08ddc9d544672d65d16326796e58"
+    assert perf18["source_commit"] == hang["upstream"]["base_commit"] == "a327ca32906c3729cf3a0178c250f0c90c69f291"
+    assert hang["source_commit"] == gate["upstream"]["base_commit"] == "85cc586e19043e71811e42c8f270625568b89f1c"
+    assert gate["source_commit"] == "0d4b252c566d064b954ca913813ec9fa2bf6cb20"
 
     arch = yaml.safe_load((LOCKS / "lock-first-series-arch-v2.yml").read_text())
     arch_xnu = [item["lock"] for item in arch["series"] if item["module"] == "darling/src/external/xnu"]

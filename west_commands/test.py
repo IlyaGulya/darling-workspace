@@ -1819,6 +1819,8 @@ class DarlingTest(ProfileOperationsMixin, BootstrapRuntimeProfileMixin, WestComm
         }
         if definition.get("compiler-launcher") is not None:
             proof["compiler-launcher"] = definition["compiler-launcher"]
+        if definition.get("runtime-mode") is not None:
+            proof["runtime-mode"] = definition["runtime-mode"]
         if omit_patch:
             proof["bad-profile"] = "current-minus-patch"
             if isinstance(red_proof, dict):

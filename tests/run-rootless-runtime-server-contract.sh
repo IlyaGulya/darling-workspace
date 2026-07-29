@@ -1,0 +1,152 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+workspace_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+server_root="${DSERVER_SRC_ROOT:-$workspace_root/../darling/src/external/darlingserver}"
+work="$(mktemp -d /tmp/dserver-runtime-mode-contract.XXXXXX)"
+
+cleanup() {
+	rm -rf -- "$work"
+}
+trap cleanup EXIT
+
+c++ -std=c++17 -Wall -Wextra -Werror \
+	-I"$server_root/include" \
+	"$server_root/tests/runtime_mode_test.cpp" \
+	"$server_root/src/runtime-mode.cpp" \
+	-o "$work/runtime-mode-test"
+
+test "$("$work/runtime-mode-test")" = "DSERVER_RUNTIME_MODE_CONTRACT_OK"
+
+python3 -B - "$server_root" <<'PY'
+from pathlib import Path
+import sys
+
+root = Path(sys.argv[1])
+source = (root / "src/darlingserver.cpp").read_text()
+selection = source.index("requireRuntimeModeFromEnvironment(")
+marker = source.index("validateRuntimeModePrefixFD(")
+credentials = source.index("validateRootlessProcessCredentials(")
+subreaper = source.index("prctl(PR_SET_CHILD_SUBREAPER")
+home = source.index("setupUserHome(prefixFD, originalUID)")
+namespace = source.index("unshare(CLONE_NEWNS)")
+if not selection < marker < credentials < subreaper < home < namespace:
+    raise SystemExit(
+        "darlingserver mutates runtime state before typed/credential validation"
+    )
+if "shouldUseOverlayFs" in source or "shouldUseEunionPrefix" in source:
+    raise SystemExit("darlingserver retained a boolean mode decision")
+if 'getenv("DARLING_ROOTLESS")' in source:
+    raise SystemExit("darlingserver retained legacy rootless selection")
+if 'setenv("__mldr_runtime_mode"' not in source:
+    raise SystemExit("darlingserver does not publish typed launchd bootstrap mode")
+if 'unsetenv("DARLING_RUNTIME_MODE")' not in source:
+    raise SystemExit("darlingserver does not isolate the mldr special boundary")
+for token in (
+    "if (argc != 9)",
+    'prefixFD = parseInheritedFD(argv[1], "prefix")',
+    'prefixParentFD = parseInheritedFD(argv[2], "prefix parent")',
+    'workdirFD = parseInheritedFD(argv[4], "prefix workdir")',
+    "runtimePrefixProcPath(prefixFD)",
+    "runtimePrefixProcPath(workdirFD)",
+    "makeDescriptorCloseOnExec(prefixFD",
+    "setupUserHome(prefixFD",
+    "setupEunionPrefix(prefixFD)",
+    "darlingPreInit(prefixFD)",
+    "copyDirectoryContentsAt(LIBEXEC_PATH, prefixFD",
+    "fixPermissionsRecursiveFD(prefixFD",
+    'unlinkat(prefixFD, ".darlingserver.sock"',
+):
+    if token not in source and token not in (root / "src/server.cpp").read_text():
+        raise SystemExit(f"fd-relative server lifecycle is incomplete: {token}")
+if "prefix = argv[1]" in source:
+    raise SystemExit("darlingserver still reopens the launcher prefix pathname")
+for forbidden in (
+    "setupUserHome(prefix,",
+    "darlingPreInit(prefix)",
+    "setupEunionPrefix(prefix)",
+    "copyAndSetAttributes(fromPath, toPath",
+    "fixPermissionsRecursive(prefix,",
+):
+    if forbidden in source:
+        raise SystemExit(f"server retained prefix pathname mutation: {forbidden}")
+
+runtime_mode = (root / "src/runtime-mode.cpp").read_text()
+for token in (
+    "getresuid(&realUID, &effectiveUID, &savedUID)",
+    "getresgid(&realGID, &effectiveGID, &savedGID)",
+    "realUID != expectedUID",
+    "effectiveUID != expectedUID",
+    "savedUID != expectedUID",
+    "realGID != expectedGID",
+    "effectiveGID != expectedGID",
+    "savedGID != expectedGID",
+    "validateRuntimeModePrefixFD(",
+    "fstat(prefixFD, &opened)",
+    "fstat(parentFD, &parent)",
+    "fstatat(parentFD, leaf, &named",
+    "AT_SYMLINK_NOFOLLOW",
+    "named.st_ino != opened.st_ino",
+    "fstat(workdirFD, &workdirOpened)",
+    "workdirNamed.st_ino != workdirOpened.st_ino",
+    "openat(prefixFD, kMarkerName",
+    'return "/proc/self/fd/" + std::to_string(prefixFD)',
+):
+    if token not in runtime_mode:
+        raise SystemExit(f"rootless server credential gate is incomplete: {token}")
+
+prefix_test = (root / "tests/runtime_mode_test.cpp").read_text()
+for token in (
+    "rename-swap runtime prefix symlink was accepted",
+    "rename-swap rejection mutated its target",
+    "rename-swap redirected retained prefix alias",
+    "rename-swap runtime workdir symlink was accepted",
+    "runtime marker symlink was accepted",
+    "retained prefix alias does not name exact descriptor",
+):
+    if token not in prefix_test:
+        raise SystemExit(f"server prefix fail-closed fixture is missing: {token}")
+
+server = (root / "src/server.cpp").read_text()
+logging = (root / "src/logging.cpp").read_text()
+header = (root / "internal-include/darlingserver/server.hpp").read_text()
+for token in (
+    "int _prefixFD;",
+    "int prefixFD() const;",
+):
+    if token not in header:
+        raise SystemExit(f"server does not retain the trusted prefix fd: {token}")
+for token in (
+    'unlinkat(prefixFD, ".darlingserver.sock", 0)',
+    'unlinkat(_prefixFD, ".darlingserver.sock", 0)',
+):
+    if token not in server:
+        raise SystemExit(f"server socket lifecycle is not fd-relative: {token}")
+if "unlink(_socketPath.c_str())" in server:
+    raise SystemExit("server socket cleanup still reopens a pathname")
+for token in (
+    "openLogDirectoryAt(Server::sharedInstance().prefixFD())",
+    "fstatat(current, component, &status, AT_SYMLINK_NOFOLLOW)",
+    "openat(\n\t\t\tcurrent, component,",
+    "O_DIRECTORY | O_CLOEXEC | O_NOFOLLOW",
+    'openat(\n\t\t\tdirectory, "dserver.log"',
+):
+    if token not in logging:
+        raise SystemExit(f"server logging lifecycle is not fd-relative: {token}")
+if "std::filesystem" in logging:
+    raise SystemExit("server logging reintroduced pathname-based prefix mutation")
+
+cmake = (root / "CMakeLists.txt").read_text()
+if "DARLING_RUNTIME_EUNION_CAPABLE=1" in cmake:
+    raise SystemExit("darlingserver unconditionally advertises E-UNION capability")
+if "DARLING_RUNTIME_EUNION_CAPABLE=$<BOOL:${DARLING_EUNION}>" not in cmake:
+    raise SystemExit("darlingserver capability is not bound to DARLING_EUNION")
+if (
+    'option(DARLING_EUNION' not in cmake
+    or '"Enable E-UNION union-in-vchroot prefix assembly (experimental)"\n\tOFF)'
+    not in cmake
+):
+    raise SystemExit("darlingserver E-UNION capability is not default-off")
+PY
+
+printf 'PASS rootless-runtime-server\n'

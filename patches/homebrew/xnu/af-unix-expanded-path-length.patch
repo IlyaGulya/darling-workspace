@@ -1,0 +1,39 @@
+From 92d87609088cbf50155519972d3919a5477ccea3 Mon Sep 17 00:00:00 2001
+From: Ilya Gulya <ilya@gulya.me>
+Date: Tue, 28 Jul 2026 12:02:00 +0000
+Subject: [PATCH] xnu: reject overlong expanded AF_UNIX paths
+
+---
+ .../emulation/src/xnu_syscall/bsd/helper/network/duct.c  | 9 +++++++--
+ 1 file changed, 7 insertions(+), 2 deletions(-)
+
+diff --git a/darling/src/libsystem_kernel/emulation/src/xnu_syscall/bsd/helper/network/duct.c b/darling/src/libsystem_kernel/emulation/src/xnu_syscall/bsd/helper/network/duct.c
+index cda40258f0a4486478eb8ffbbe236d0eff942372..ff1373e84cbd7e21c9f6e62469b78b21150323d3 100644
+--- a/darling/src/libsystem_kernel/emulation/src/xnu_syscall/bsd/helper/network/duct.c
++++ b/darling/src/libsystem_kernel/emulation/src/xnu_syscall/bsd/helper/network/duct.c
+@@ -1,9 +1,11 @@
+ #include <darling/emulation/xnu_syscall/bsd/helper/network/duct.h>
+ 
+ #include <sys/socket.h>
++#include <string.h>
+ 
+ #include <darling/emulation/conversion/network/duct.h>
+ #include <darling/emulation/conversion/errno.h>
++#include <darling/emulation/conversion/duct_errno.h>
+ #include <darling/emulation/linux_premigration/vchroot_expand.h>
+ #include <darling/emulation/common/bsdthread/per_thread_wd.h>
+ 
+@@ -29,8 +31,11 @@ int sockaddr_fixup_from_bsd(struct sockaddr_fixup* out, const void* bsd_sockaddr
+ 		if (ret < 0)
+ 			return errno_linux_to_bsd(ret);
+ 
+-		strncpy(out->sun_path, vc.path, sizeof(out->sun_path) - 1);
+-		out->sun_path[sizeof(out->sun_path) - 1] = '\0';
++		__SIZE_TYPE__ expanded_length = strlen(vc.path);
++		if (expanded_length >= sizeof(out->sun_path))
++			return errno_linux_to_bsd(-LINUX_ENAMETOOLONG);
++
++		memcpy(out->sun_path, vc.path, expanded_length + 1);
+ 		ret = sizeof(*out) - sizeof(out->sun_path) + strlen(out->sun_path);
+ 	}
+ 

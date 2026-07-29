@@ -43,11 +43,30 @@ def main() -> None:
     inventory = load(ROOT / "locks/patch-stack/migration-inventory-v1.yml")
     assert inventory["schema_version"] == 2
     rows = {(row["profile"], row["patch"]): row for row in inventory["stacks"]}
-    assert len(rows) == len(inventory["stacks"]) == 95, "entries must be exact and unique"
-    actual_summary = {name: sum(row["classification"] == name for row in rows.values()) for name in ("READY", "RECOVERABLE_LOCAL", "ALREADY_MIGRATED")}
-    assert inventory["summary"] == actual_summary == {"READY": 0, "RECOVERABLE_LOCAL": 0, "ALREADY_MIGRATED": 95}
+    assert len(rows) == len(inventory["stacks"]) == 98, "entries must be exact and unique"
+    classifications = (
+        "READY",
+        "RECOVERABLE_LOCAL",
+        "ALREADY_MIGRATED",
+        "PUBLICATION_PENDING",
+    )
+    actual_summary = {
+        name: sum(row["classification"] == name for row in rows.values())
+        for name in classifications
+    }
+    assert inventory["summary"] == actual_summary == {
+        "READY": 0,
+        "RECOVERABLE_LOCAL": 0,
+        "ALREADY_MIGRATED": 95,
+        "PUBLICATION_PENDING": 3,
+    }
     report = (ROOT / "docs/patch-stack-canonical-migration-report.md").read_text()
-    for count, name in ((0, "READY"), (0, "RECOVERABLE_LOCAL"), (95, "ALREADY_MIGRATED")):
+    for count, name in (
+        (0, "READY"),
+        (0, "RECOVERABLE_LOCAL"),
+        (95, "ALREADY_MIGRATED"),
+        (3, "PUBLICATION_PENDING"),
+    ):
         assert f"{count} `{name}`" in report, f"report summary missing {count} {name}"
     expected = {}
     for profile in ("arch", "homebrew", "perf"):
@@ -83,10 +102,14 @@ def main() -> None:
         "ALREADY_MIGRATED": "hosted_immutable_clean_odb",
         "READY": "frozen_bundle_clean_odb",
         "RECOVERABLE_LOCAL": "trusted_worktree_only",
+        "PUBLICATION_PENDING": "local_append_only_clean_odb",
     }
     for row in rows.values():
         assert row["object_closure"] == closures[row["classification"]], row["patch"]
-        if row["classification"] != "ALREADY_MIGRATED":
+        if row["classification"] not in {
+            "ALREADY_MIGRATED",
+            "PUBLICATION_PENDING",
+        }:
             assert "lock" not in row
             continue
         lock_path = ROOT / row["lock"]

@@ -27,16 +27,21 @@ def main() -> None:
     fail(set(inventory) == {"schema_version", "source", "profiles", "closure"}, "inventory top-level fields changed")
     fail(inventory["schema_version"] == 1, "inventory schema version changed")
     fail(inventory["closure"] == {
-        "total_series": 95,
-        "total_ordered_commits": 187,
-        "schema_v2_lock_coverage": "94/94 hosted plus 1 publication-pending Arch continuation",
-        "immutable_ref_closure": "hosted_immutable_clean_odb plus publication-pending Arch continuation",
-        "clean_odb_evidence": "94 hosted series independently verified; b545 Arch continuation has dual local clean-ODB evidence pending create-only hosted tags",
+        "total_series": 98,
+        "total_ordered_commits": 190,
+        "schema_v2_lock_coverage": "94/94 hosted plus 4 publication-pending append-only series",
+        "immutable_ref_closure": "hosted_immutable_clean_odb plus 4 publication-pending append-only series",
+        "clean_odb_evidence": "94 hosted series independently verified; the b545 Arch continuation and 3 Rootless productization series have dual local clean-ODB evidence pending create-only hosted tags",
     }, "inventory closure no longer states complete immutable coverage")
     profiles = inventory["profiles"]
     fail(isinstance(profiles, list) and [row.get("profile") for row in profiles] == ["homebrew", "perf", "arch"], "inventory profile order changed")
     expected = {
-        "homebrew": (69, 97, None, "darling-homebrew-lock-first-batch-7"),
+        "homebrew": (
+            72,
+            100,
+            None,
+            "darling-homebrew-rootless-productization-batch-8",
+        ),
         "perf": (7, 29, "homebrew", "darling-perf-lock-first-batch-1"),
         "arch": (19, 61, "perf", "darling-arch-lock-first-batch-1"),
     }
@@ -105,7 +110,7 @@ def main() -> None:
         fail(observed_commits == commit_count, f"{profile}: ordered commit total")
         total_series += series_count
         total_commits += commit_count
-    fail((total_series, total_commits) == (95, 187), "inventory totals differ")
+    fail((total_series, total_commits) == (98, 190), "inventory totals differ")
     fail(
         set(nonportable) == {("perf", "xnu/shmem-ring-guest.patch")},
         "unexpected archive forensic exception",

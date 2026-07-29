@@ -6,9 +6,9 @@ frozen_manifest:
   sha256: 5718c32c76a180b9078a206b93d93e70f478a5ada0034cd6afcc789c447e055d
 mapping:
   path: lock-first-series-v2.yml
-  sha256: 392ea1c5646e12f6c6bb60a5f84481f35f0e44f0f0359fcee29f5bbe37b0a060
-  batch_id: darling-homebrew-lock-first-batch-7
-  expected_count: 69
+  sha256: 2f6eafc484236fa5cce2408460c78b189131daecc592dc8036757096244e047f
+  batch_id: darling-homebrew-rootless-productization-batch-8
+  expected_count: 72
 modules:
 - module: darling/src/external/darlingserver
   starting:
@@ -89,8 +89,11 @@ modules:
   - patch: darlingserver/rootless-runtime-integration.patch
     lock: darlingserver-rootless-runtime-integration-v1.yml
     expected_applied_tree: c094b9e6f456231d4358e6251c076ffefb52c181
-  final_tree: c094b9e6f456231d4358e6251c076ffefb52c181
-  integration_final_tree: c094b9e6f456231d4358e6251c076ffefb52c181
+  - patch: darlingserver/runtime-mode-canonical.patch
+    lock: darlingserver-runtime-mode-canonical-v1.yml
+    expected_applied_tree: 596cc49f5ff12d4fca8accb58ea453362e9ae1d1
+  final_tree: 596cc49f5ff12d4fca8accb58ea453362e9ae1d1
+  integration_final_tree: 596cc49f5ff12d4fca8accb58ea453362e9ae1d1
 - module: darling/src/external/xnu
   starting:
     tree: b8353591777f7654d3b0d7d512bc0fa3ee6d64ef
@@ -170,8 +173,11 @@ modules:
   - patch: xnu/generalize-recv-spin-guest.patch
     lock: darling-xnu-generalize-recv-spin-guest-v1.yml
     expected_applied_tree: c093766c6abb005ad85392c78c77c1e73c817da3
-  final_tree: c093766c6abb005ad85392c78c77c1e73c817da3
-  integration_final_tree: c093766c6abb005ad85392c78c77c1e73c817da3
+  - patch: xnu/af-unix-expanded-path-length.patch
+    lock: darling-xnu-af-unix-expanded-path-length-v1.yml
+    expected_applied_tree: 53c8fa45a1ac94bdfc2ced0b3179e43659dffabf
+  final_tree: 53c8fa45a1ac94bdfc2ced0b3179e43659dffabf
+  integration_final_tree: 53c8fa45a1ac94bdfc2ced0b3179e43659dffabf
 - module: darling/src/external/libplatform
   starting:
     tree: 43604922b0d259ab093ac75cbad6e7dbe4bb2876
@@ -251,8 +257,11 @@ modules:
   - patch: darling/rootless-shellspawn-lifecycle.patch
     lock: darling-rootless-shellspawn-lifecycle-v1.yml
     expected_applied_tree: e6092e1522b253d43e62a915ff137596f31b2878
-  final_tree: e6092e1522b253d43e62a915ff137596f31b2878
-  integration_final_tree: caf5e6750a52cdfffb36ce4c98056a1013190382
+  - patch: darling/runtime-mode-canonical.patch
+    lock: darling-runtime-mode-canonical-v1.yml
+    expected_applied_tree: 5e8144538bdc7cb7958dc22edc4016e8b64a6591
+  final_tree: 5e8144538bdc7cb7958dc22edc4016e8b64a6591
+  integration_final_tree: 5e8144538bdc7cb7958dc22edc4016e8b64a6591
 - module: darling/src/external/installer
   starting:
     tree: 2c58e1c8da659d1c018efce169086dc247b31884

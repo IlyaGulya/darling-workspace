@@ -1950,7 +1950,65 @@ stacks:
   classification: ALREADY_MIGRATED
   reason: exact objects recovered from trusted Darlingserver worktree into an isolated clean ODB
   lock: locks/patch-stack/darlingserver-j7e7-postfork-reset-gate-v1.yml
+- profile: homebrew
+  patch: darlingserver/runtime-mode-canonical.patch
+  artifact: patches/homebrew/darlingserver/runtime-mode-canonical.patch
+  project_path: darling/src/external/darlingserver
+  upstream: https://github.com/darlinghq/darlingserver.git
+  downstream: https://github.com/darling-next/darlingserver.git
+  source_branch: fix/rootless-typed-runtime-server
+  base_commit: 14a9d36495cb84a7af6abf49ac30cf0a3e27a648
+  ordered_commits:
+  - dd0b23f1e3b8e9470016e67df40e18a28718b737
+  source_commit: dd0b23f1e3b8e9470016e67df40e18a28718b737
+  expected_tree: 596cc49f5ff12d4fca8accb58ea453362e9ae1d1
+  artifact_count: 1
+  commit_count: 1
+  object_closure: local_append_only_clean_odb
+  linearity: verified
+  classification: PUBLICATION_PENDING
+  reason: typed runtime-mode source and create-only refs are independently verified in the local append-only publication package
+  lock: locks/patch-stack/darlingserver-runtime-mode-canonical-v1.yml
+- profile: homebrew
+  patch: xnu/af-unix-expanded-path-length.patch
+  artifact: patches/homebrew/xnu/af-unix-expanded-path-length.patch
+  project_path: darling/src/external/xnu
+  upstream: https://github.com/darlinghq/darling-xnu.git
+  downstream: https://github.com/darling-next/darling-xnu.git
+  source_branch: fix/rootless-af-unix-length
+  base_commit: f0cdc82b8ac35a9feb9e499958f486ed53c25d85
+  ordered_commits:
+  - 92d87609088cbf50155519972d3919a5477ccea3
+  source_commit: 92d87609088cbf50155519972d3919a5477ccea3
+  expected_tree: 53c8fa45a1ac94bdfc2ced0b3179e43659dffabf
+  artifact_count: 1
+  commit_count: 1
+  object_closure: local_append_only_clean_odb
+  linearity: verified
+  classification: PUBLICATION_PENDING
+  reason: AF_UNIX boundary source and create-only refs are independently verified in the local append-only publication package
+  lock: locks/patch-stack/darling-xnu-af-unix-expanded-path-length-v1.yml
+- profile: homebrew
+  patch: darling/runtime-mode-canonical.patch
+  artifact: patches/homebrew/darling/runtime-mode-canonical.patch
+  project_path: darling
+  upstream: https://github.com/darlinghq/darling.git
+  downstream: https://github.com/darling-next/darling.git
+  source_branch: fix/rootless-typed-runtime-mode
+  base_commit: bcb438afefa11cf431038a16440b026fc37e8077
+  ordered_commits:
+  - db7b5b404366fa630edeb5189f174518aad189ad
+  source_commit: db7b5b404366fa630edeb5189f174518aad189ad
+  expected_tree: 5e8144538bdc7cb7958dc22edc4016e8b64a6591
+  artifact_count: 1
+  commit_count: 1
+  object_closure: local_append_only_clean_odb
+  linearity: verified
+  classification: PUBLICATION_PENDING
+  reason: launcher/bootstrap source and create-only refs are independently verified in the local append-only publication package
+  lock: locks/patch-stack/darling-runtime-mode-canonical-v1.yml
 summary:
   READY: 0
   RECOVERABLE_LOCAL: 0
   ALREADY_MIGRATED: 95
+  PUBLICATION_PENDING: 3

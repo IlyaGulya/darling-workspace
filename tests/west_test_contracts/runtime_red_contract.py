@@ -50,6 +50,7 @@ from west_commands.test_runtime import (
     ROOTLESS_BOOTSTRAP_CLOSURE_SOURCE_MODULES,
     ROOTLESS_BOOTSTRAP_RESOURCE,
     ROOTLESS_BOOTSTRAP_TARGET,
+    RUNTIME_MODE_MARKER_NAME,
     resolve_macho_runtime_closure,
 )
 from west_commands.test_runtime_deploy import RuntimeDeploymentService
@@ -242,6 +243,7 @@ runtime_profiles = {
         "source-modules": ["darling", "darling/src/external/darlingserver", "darling/src/external/xnu"],
         "runtime-artifacts": [{"build-targets": ["darling"], "deploy": ["bin/darling"]}],
         "launcher-env": {"DARLING_ROOTLESS": "1", "DARLING_NOOVERLAYFS": "1"},
+        "runtime-mode": "rootless-eunion",
     },
 }
 combined_runtime = compose_ctest_runtime_profiles(runtime_profiles, ["kernel", "server", "kernel"])
@@ -300,10 +302,12 @@ assert rootless_runtime["launcher-env"] == {
     "DARLING_ROOTLESS": "1",
     "DARLING_NOOVERLAYFS": "1",
 }
+assert rootless_runtime["runtime-mode"] == "rootless-eunion"
 
 actual_runtime_profiles = load_ctest_runtime_profiles(ROOT / "testkit/runtime-profiles.yml")
 rootless_provider = actual_runtime_profiles["homebrew-rootless-no-mount"]
 assert rootless_provider["bootstrap"] == "rootless-no-mount"
+assert rootless_provider["runtime-mode"] == "rootless-eunion"
 rootless_composed = compose_ctest_runtime_profiles(
     actual_runtime_profiles, ["homebrew-rootless-no-mount"]
 )
@@ -352,6 +356,24 @@ assert "darling/src/external/bash" in baseline_provider["source-modules"]
 assert ROOTLESS_BOOTSTRAP_CLOSURE_SOURCE_MODULES.issubset(
     baseline_provider["source-modules"]
 )
+
+with tempfile.TemporaryDirectory() as temp:
+    profiles_path = Path(temp) / "runtime-profiles.yml"
+    profiles_path.write_text(
+        "runtime-profiles:\n"
+        "  untyped-rootless:\n"
+        "    source-profile: homebrew\n"
+        "    source-module: darling\n"
+        "    source-modules: [darling]\n"
+        "    bootstrap: rootless-no-mount\n"
+        "    runtime-artifacts: [{build-targets: [rootless_bootstrap], resource: rootless-bootstrap}]\n"
+    )
+    try:
+        load_ctest_runtime_profiles(profiles_path)
+    except ValueError as exc:
+        assert "must declare runtime-mode: rootless-eunion" in str(exc), exc
+    else:
+        raise AssertionError("rootless runtime profile accepted missing typed mode")
 assert baseline_provider["runtime-artifacts"] == [
     {
         "module": "darling",
@@ -387,6 +409,7 @@ with tempfile.TemporaryDirectory() as temp:
         "    source-module: darling\n"
         "    source-modules: [darling, darling/src/external/darlingserver, darling/src/external/xnu, darling/src/external/dyld, darling/src/external/corefoundation, darling/src/external/libsystem, darling/src/external/bash]\n"
         "    bootstrap: rootless-no-mount\n"
+        "    runtime-mode: rootless-eunion\n"
         "    runtime-artifacts:\n"
         "    - build-targets: [darling]\n"
     )
@@ -406,6 +429,7 @@ with tempfile.TemporaryDirectory() as temp:
         "    source-module: darling\n"
         "    source-modules: [darling, darling/src/external/darlingserver, darling/src/external/xnu, darling/src/external/corefoundation, darling/src/external/libsystem, darling/src/external/bash]\n"
         "    bootstrap: rootless-no-mount\n"
+        "    runtime-mode: rootless-eunion\n"
         "    runtime-artifacts:\n"
         "    - build-targets: [rootless_bootstrap]\n"
         "      resource: rootless-bootstrap\n"
@@ -427,6 +451,7 @@ with tempfile.TemporaryDirectory() as temp:
         "    source-module: darling\n"
         "    source-modules: [darling, darling/src/external/darlingserver, darling/src/external/xnu, darling/src/external/dyld, darling/src/external/corefoundation, darling/src/external/libsystem, darling/src/external/bash]\n"
         "    bootstrap: rootless-no-mount\n"
+        "    runtime-mode: rootless-eunion\n"
         "    runtime-artifacts:\n"
         "    - build-targets: [darling]\n"
     )
@@ -637,6 +662,7 @@ with tempfile.TemporaryDirectory() as temp:
         "    source-module: darling\n"
         "    source-modules: [darling, darling/src/external/darlingserver, darling/src/external/xnu, darling/src/external/dyld, darling/src/external/corefoundation, darling/src/external/libsystem, darling/src/external/bash]\n"
         "    bootstrap: rootless-no-mount\n"
+        "    runtime-mode: rootless-eunion\n"
         "    runtime-artifacts:\n"
         "    - build-targets: [darling]\n"
         "      resource: rootless-bootstrap\n"
@@ -657,6 +683,7 @@ with tempfile.TemporaryDirectory() as temp:
         "    source-module: darling\n"
         "    source-modules: [darling, darling/src/external/darlingserver, darling/src/external/xnu, darling/src/external/dyld, darling/src/external/libsystem, darling/src/external/bash]\n"
         "    bootstrap: rootless-no-mount\n"
+        "    runtime-mode: rootless-eunion\n"
         "    runtime-artifacts:\n"
         "    - build-targets: [rootless_bootstrap]\n"
         "      resource: rootless-bootstrap\n"
@@ -856,6 +883,71 @@ with tempfile.TemporaryDirectory() as temp:
     else:
         raise AssertionError("failed bootstrap deployment unexpectedly passed")
     assert deployed.read_text() == "old launcher\n"
+
+with tempfile.TemporaryDirectory() as temp:
+    root = Path(temp)
+    prefix = root / "prefix"
+    prefix.mkdir()
+    build_root = root / "build"
+    artifact = build_root / "bin" / "darling"
+    artifact.parent.mkdir(parents=True)
+    artifact.write_text("typed launcher\n")
+    proof = {
+        "runtime-mode": "rootless-eunion",
+        "runtime-artifacts": [{"deploy": ["bin/darling"]}],
+    }
+    test = make_test()
+    shutdowns = []
+    test._shutdown_runtime_prefix = (
+        lambda _prefix, *, extra_env=None: shutdowns.append(Path(_prefix)) or True
+    )
+    marker = prefix / RUNTIME_MODE_MARKER_NAME
+    lifecycle_lock = prefix / ".west-test.lock"
+    lifecycle_lock.touch()
+
+    with test._runtime_red_deployed_artifacts(
+        proof, build_root, prefix, label="typed rollback", restore_deployment=True
+    ):
+        assert marker.read_text() == "DARLING_RUNTIME_MODE_V1=rootless-eunion\n"
+        assert (prefix / "bin/darling").read_text() == "typed launcher\n"
+    assert not marker.exists()
+    assert not (prefix / "bin/darling").exists()
+    assert lifecycle_lock.is_file()
+
+    with test._runtime_red_deployed_artifacts(
+        proof, build_root, prefix, label="typed retained", restore_deployment=False
+    ):
+        assert marker.read_text() == "DARLING_RUNTIME_MODE_V1=rootless-eunion\n"
+    assert marker.read_text() == "DARLING_RUNTIME_MODE_V1=rootless-eunion\n"
+    assert (prefix / "bin/darling").read_text() == "typed launcher\n"
+
+    marker.write_text("DARLING_RUNTIME_MODE_V1=privileged-overlay\n")
+    before_shutdowns = len(shutdowns)
+    try:
+        with test._runtime_red_deployed_artifacts(
+            proof, build_root, prefix, label="typed mismatch",
+            restore_deployment=False
+        ):
+            pass
+    except SystemExit as exc:
+        assert "typed mode marker mismatch" in str(exc), exc
+    else:
+        raise AssertionError("mismatched typed prefix was deployed")
+    assert len(shutdowns) == before_shutdowns
+    assert marker.read_text() == "DARLING_RUNTIME_MODE_V1=privileged-overlay\n"
+
+    marker.unlink()
+    try:
+        with test._runtime_red_deployed_artifacts(
+            proof, build_root, prefix, label="typed missing",
+            restore_deployment=False
+        ):
+            pass
+    except SystemExit as exc:
+        assert "populated prefix without a regular typed mode marker" in str(exc), exc
+    else:
+        raise AssertionError("populated unmarked prefix was deployed")
+    assert not marker.exists()
 
 with tempfile.TemporaryDirectory() as temp:
     bundle_root = Path(temp)

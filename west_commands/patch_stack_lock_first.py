@@ -333,7 +333,13 @@ def _require_exact_replay(repo: Path, proof: dict[str, Any], before: str, after:
     )
     if comparison.returncode:
         raise LockFirstError(f"git range-diff failed ({comparison.returncode}): {comparison.stderr.strip()}")
-    rows = [line for line in comparison.stdout.splitlines() if re.match(r"^\d+:\s+", line)]
+    # range-diff right-aligns ordinals to the width of the largest one, so a
+    # 10+ commit series starts its early rows with spaces (``" 1:"``).
+    rows = [
+        line
+        for line in comparison.stdout.splitlines()
+        if re.match(r"^\s*\d+:\s+", line)
+    ]
     if len(rows) != len(proof["ordered_commits"]) or any(" = " not in line for line in rows):
         raise LockFirstError("immutable patch identity differs after profile replay")
     if _stable_patch_id(repo, proof["base_oid"], proof["source_oid"]) != _stable_patch_id(repo, before, after):

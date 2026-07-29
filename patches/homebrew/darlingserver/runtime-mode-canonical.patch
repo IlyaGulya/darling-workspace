@@ -1,0 +1,1974 @@
+From dd0b23f1e3b8e9470016e67df40e18a28718b737 Mon Sep 17 00:00:00 2001
+From: Ilya Gulya <ilya@gulya.me>
+Date: Tue, 28 Jul 2026 12:01:00 +0000
+Subject: [PATCH] darlingserver: consume typed runtime mode
+
+---
+ CMakeLists.txt                            |   18 +
+ include/darlingserver/runtime-mode.hpp    |   37 +
+ internal-include/darlingserver/server.hpp |    7 +-
+ src/darlingserver.cpp                     | 1019 +++++++++++++++------
+ src/logging.cpp                           |   56 +-
+ src/runtime-mode.cpp                      |  201 ++++
+ src/server.cpp                            |   27 +-
+ tests/runtime_mode_test.cpp               |  226 +++++
+ 8 files changed, 1312 insertions(+), 279 deletions(-)
+ create mode 100644 include/darlingserver/runtime-mode.hpp
+ create mode 100644 src/runtime-mode.cpp
+ create mode 100644 tests/runtime_mode_test.cpp
+
+diff --git a/CMakeLists.txt b/CMakeLists.txt
+index 8ce9891..84543d8 100644
+--- a/CMakeLists.txt
++++ b/CMakeLists.txt
+@@ -5,6 +5,9 @@ cmake_minimum_required(VERSION 3.13)
+ option(DSERVER_TOOLS "Build darlingserver tools (for debugging)" OFF)
+ option(DSERVER_ASAN "Build darlingserver with ASAN" OFF)
+ option(DSERVER_UBSAN "Build darlingserver with UBSAN" OFF)
++option(DARLING_EUNION
++	"Enable E-UNION union-in-vchroot prefix assembly (experimental)"
++	OFF)
+ 
+ if (DSERVER_TOOLS)
+ 	add_subdirectory(tools)
+@@ -120,6 +123,10 @@ add_executable(darlingserver
+ 	src/stack-pool.cpp
+ 	src/metrics.cpp
+ 	src/test-diagnostics.cpp
++	src/runtime-mode.cpp
++)
++target_compile_definitions(darlingserver PRIVATE
++	DARLING_RUNTIME_EUNION_CAPABLE=$<BOOL:${DARLING_EUNION}>
+ )
+ 
+ add_executable(dserver_process_identity_tests
+@@ -135,6 +142,17 @@ add_custom_target(dserver_process_identity_tests_run
+ 	DEPENDS dserver_process_identity_tests
+ )
+ 
++add_executable(dserver_runtime_mode_tests
++	tests/runtime_mode_test.cpp
++	src/runtime-mode.cpp
++)
++target_compile_options(dserver_runtime_mode_tests PRIVATE
++	-std=c++17
++)
++target_include_directories(dserver_runtime_mode_tests PRIVATE
++	include
++)
++
+ add_dependencies(darlingserver
+ 	generate_dserver_rpc_wrappers
+ 	rtsig_h
+diff --git a/include/darlingserver/runtime-mode.hpp b/include/darlingserver/runtime-mode.hpp
+new file mode 100644
+index 0000000..a8dfc9a
+--- /dev/null
++++ b/include/darlingserver/runtime-mode.hpp
+@@ -0,0 +1,37 @@
++#pragma once
++
++#include <stdexcept>
++#include <string>
++#include <string_view>
++#include <sys/types.h>
++
++namespace DarlingServer {
++
++enum class RuntimeMode {
++	PrivilegedOverlay,
++	PrivilegedCopy,
++	PrivilegedEunion,
++	RootlessEunion,
++};
++
++class RuntimeModeError : public std::runtime_error {
++public:
++	using std::runtime_error::runtime_error;
++};
++
++RuntimeMode requireRuntimeModeFromEnvironment(bool eunionCapable);
++std::string_view runtimeModeName(RuntimeMode mode);
++bool runtimeModeIsRootless(RuntimeMode mode);
++bool runtimeModeUsesOverlay(RuntimeMode mode);
++bool runtimeModeUsesEunion(RuntimeMode mode);
++void validateRuntimeModePrefixFD(
++	int prefixFD,
++	int parentFD,
++	const char* leaf,
++	int workdirFD,
++	RuntimeMode mode
++);
++std::string runtimePrefixProcPath(int prefixFD);
++void validateRootlessProcessCredentials(uid_t expectedUID, gid_t expectedGID);
++
++}
+diff --git a/internal-include/darlingserver/server.hpp b/internal-include/darlingserver/server.hpp
+index 30fbb99..55ce90f 100644
+--- a/internal-include/darlingserver/server.hpp
++++ b/internal-include/darlingserver/server.hpp
+@@ -40,6 +40,7 @@ namespace DarlingServer {
+ 	private:
+ 		int _listenerSocket;
+ 		std::string _prefix;
++		int _prefixFD;
+ 		pid_t _rootlessInitHostPID;
+ 		std::string _socketPath;
+ 		// perf #0 (dar-dar6x4-perf-5dq.6): dedicated stat socket. A SOCK_STREAM listener in
+@@ -73,7 +74,10 @@ namespace DarlingServer {
+ 		friend struct ::DTapeHooks;
+ 
+ 	public:
+-		Server(std::string prefix, pid_t rootlessInitHostPID = 0);
++		Server(
++			std::string prefix,
++			int prefixFD,
++			pid_t rootlessInitHostPID = 0);
+ 		~Server();
+ 
+ 		Server(const Server&) = delete;
+@@ -86,6 +90,7 @@ namespace DarlingServer {
+ 		void monitorProcess(std::shared_ptr<Process> process);
+ 
+ 		std::string prefix() const;
++		int prefixFD() const;
+ 		pid_t namespaceIDForPeer(pid_t peerHostPID, pid_t reportedNamespaceID) const;
+ 
+ 		static Server& sharedInstance();
+diff --git a/src/darlingserver.cpp b/src/darlingserver.cpp
+index 08d702b..d366c03 100644
+--- a/src/darlingserver.cpp
++++ b/src/darlingserver.cpp
+@@ -35,14 +35,16 @@
+ #include <sys/resource.h>
+ #include <iostream>
+ #include <linux/sched.h>
++#include <linux/fs.h>
+ #include <sys/syscall.h>
+ #include <sys/signal.h>
+-#include <filesystem>
++#include <climits>
+ 
+ #include <darling-config.h>
+ 
+ #include <darlingserver/server.hpp>
+ #include <darlingserver/config.hpp>
++#include <darlingserver/runtime-mode.hpp>
+ 
+ #ifndef DARLINGSERVER_INIT_PROCESS
+ 	#define DARLINGSERVER_INIT_PROCESS "/sbin/launchd"
+@@ -58,37 +60,240 @@
+ 
+ // TODO: most of the code here was ported over from startup/darling.c; we should C++-ify it.
+ 
+-void fixPermissionsRecursive(const char* path, uid_t originalUID, gid_t originalGID)
+-{
+-	DIR* dir;
+-	struct dirent* ent;
+-
+-	if (chown(path, originalUID, originalGID) == -1)
+-		fprintf(stderr, "Cannot chown %s: %s\n", path, strerror(errno));
++static int openDirectoryAt(int parentFD, const char* name, bool missingIsOkay = false) {
++	struct stat st;
++	if (fstatat(parentFD, name, &st, AT_SYMLINK_NOFOLLOW) == -1) {
++		if (missingIsOkay && errno == ENOENT) {
++			return -1;
++		}
++		fprintf(stderr, "Cannot inspect prefix directory %s: %s\n",
++			name, strerror(errno));
++		exit(1);
++	}
++	if (!S_ISDIR(st.st_mode)) {
++		fprintf(stderr, "Prefix entry is not a trusted directory: %s\n", name);
++		exit(1);
++	}
++	const int fd = openat(
++		parentFD, name, O_RDONLY | O_DIRECTORY | O_CLOEXEC | O_NOFOLLOW);
++	if (fd == -1) {
++		fprintf(stderr, "Cannot open prefix directory %s: %s\n",
++			name, strerror(errno));
++		exit(1);
++	}
++	struct stat opened;
++	if (fstat(fd, &opened) == -1 ||
++		opened.st_dev != st.st_dev ||
++		opened.st_ino != st.st_ino) {
++		fprintf(stderr, "Prefix directory changed while opening: %s\n", name);
++		close(fd);
++		exit(1);
++	}
++	return fd;
++}
+ 
+-	dir = opendir(path);
+-	if (!dir)
+-		return;
++static unsigned long directoryTemporaryCounter = 0;
+ 
+-	while ((ent = readdir(dir)) != NULL)
+-	{
+-		if (ent->d_type == DT_DIR)
+-		{
+-			char* subdir;
+-
+-			if (strcmp(ent->d_name, ".") == 0 || strcmp(ent->d_name, "..") == 0)
+-				continue;
++static int createDirectoryAt(int parentFD, const char* name, mode_t mode) {
++	const std::string temporary =
++		".darling-dir-" + std::to_string(getpid()) + "-" +
++		std::to_string(++directoryTemporaryCounter);
++	if (temporary.size() > NAME_MAX) {
++		fprintf(stderr, "Prefix directory temporary name is too long\n");
++		exit(1);
++	}
++	if (mkdirat(parentFD, temporary.c_str(), mode) == -1) {
++		fprintf(stderr, "Cannot create prefix directory temporary: %s\n",
++			strerror(errno));
++		exit(1);
++	}
++	const int fd = openat(
++		parentFD, temporary.c_str(),
++		O_RDONLY | O_DIRECTORY | O_CLOEXEC | O_NOFOLLOW);
++	struct stat opened;
++	if (fd == -1 || fstat(fd, &opened) == -1 ||
++		!S_ISDIR(opened.st_mode)) {
++		const int saved = errno == 0 ? EAGAIN : errno;
++		if (fd >= 0) {
++			close(fd);
++		}
++		unlinkat(parentFD, temporary.c_str(), AT_REMOVEDIR);
++		errno = saved;
++		fprintf(stderr, "Cannot retain prefix directory temporary: %s\n",
++			strerror(errno));
++		exit(1);
++	}
++	if (renameat2(
++			parentFD, temporary.c_str(), parentFD, name,
++			RENAME_NOREPLACE) == -1) {
++		const int saved = errno;
++		close(fd);
++		unlinkat(parentFD, temporary.c_str(), AT_REMOVEDIR);
++		errno = saved;
++		fprintf(stderr, "Cannot publish prefix directory %s safely: %s\n",
++			name, strerror(errno));
++		exit(1);
++	}
++	struct stat named;
++	if (fstatat(parentFD, name, &named, AT_SYMLINK_NOFOLLOW) == -1 ||
++		S_ISLNK(named.st_mode) ||
++		!S_ISDIR(named.st_mode) ||
++		named.st_dev != opened.st_dev ||
++		named.st_ino != opened.st_ino) {
++		close(fd);
++		fprintf(stderr, "Prefix directory changed during creation: %s\n",
++			name);
++		exit(1);
++	}
++	return fd;
++}
+ 
+-			subdir = (char*) malloc(strlen(path) + 2 + strlen(ent->d_name));
+-			sprintf(subdir, "%s/%s", path, ent->d_name);
++static int ensureDirectoryAt(int parentFD, const char* name, mode_t mode) {
++	struct stat st;
++	if (fstatat(parentFD, name, &st, AT_SYMLINK_NOFOLLOW) == -1) {
++		if (errno != ENOENT) {
++			fprintf(stderr, "Cannot create prefix directory %s: %s\n",
++				name, strerror(errno));
++			exit(1);
++		}
++		return createDirectoryAt(parentFD, name, mode);
++	} else if (!S_ISDIR(st.st_mode)) {
++		fprintf(stderr, "Prefix entry is not a directory: %s\n", name);
++		exit(1);
++	}
++	return openDirectoryAt(parentFD, name);
++}
+ 
+-			fixPermissionsRecursive(subdir, originalUID, originalGID);
++static void unlinkLeafAt(int parentFD, const char* name) {
++	struct stat st;
++	if (fstatat(parentFD, name, &st, AT_SYMLINK_NOFOLLOW) == -1) {
++		if (errno == ENOENT) {
++			return;
++		}
++		fprintf(stderr, "Cannot inspect prefix entry %s: %s\n",
++			name, strerror(errno));
++		exit(1);
++	}
++	if (S_ISDIR(st.st_mode)) {
++		fprintf(stderr, "Refusing to unlink prefix directory as a leaf: %s\n",
++			name);
++		exit(1);
++	}
++	if (unlinkat(parentFD, name, 0) == -1) {
++		fprintf(stderr, "Cannot unlink prefix entry %s: %s\n",
++			name, strerror(errno));
++		exit(1);
++	}
++}
+ 
+-			free(subdir);
++static void fixPermissionsRecursiveFD(
++	int directoryFD,
++	uid_t originalUID,
++	gid_t originalGID
++) {
++	if (fchown(directoryFD, originalUID, originalGID) == -1) {
++		fprintf(stderr, "Cannot chown prefix directory: %s\n", strerror(errno));
++	}
++	const int scanFD = dup(directoryFD);
++	if (scanFD == -1) {
++		fprintf(stderr, "Cannot duplicate prefix directory: %s\n",
++			strerror(errno));
++		exit(1);
++	}
++	DIR* directory = fdopendir(scanFD);
++	if (directory == nullptr) {
++		close(scanFD);
++		fprintf(stderr, "Cannot scan prefix directory: %s\n", strerror(errno));
++		exit(1);
++	}
++	errno = 0;
++	while (struct dirent* entry = readdir(directory)) {
++		if (!strcmp(entry->d_name, ".") || !strcmp(entry->d_name, "..")) {
++			continue;
+ 		}
++		struct stat st;
++		if (fstatat(
++			directoryFD, entry->d_name, &st, AT_SYMLINK_NOFOLLOW) == -1) {
++			fprintf(stderr, "Cannot inspect prefix child %s: %s\n",
++				entry->d_name, strerror(errno));
++			closedir(directory);
++			exit(1);
++		}
++		if (!S_ISDIR(st.st_mode)) {
++			continue;
++		}
++		const int childFD = openDirectoryAt(directoryFD, entry->d_name);
++		fixPermissionsRecursiveFD(childFD, originalUID, originalGID);
++		close(childFD);
++		errno = 0;
+ 	}
++	if (errno != 0) {
++		fprintf(stderr, "Cannot scan prefix directory: %s\n", strerror(errno));
++		closedir(directory);
++		exit(1);
++	}
++	closedir(directory);
++}
+ 
+-	closedir(dir);
++static void chownRelativeAt(
++	int rootFD,
++	const char* relative,
++	uid_t uid,
++	gid_t gid
++) {
++	char copy[4096];
++	if (relative == nullptr || relative[0] == '/' ||
++		strlen(relative) >= sizeof(copy)) {
++		fprintf(stderr, "Invalid relative prefix ownership path\n");
++		exit(1);
++	}
++	strcpy(copy, relative);
++	char* slash = strrchr(copy, '/');
++	const char* leaf = copy;
++	int parentFD = dup(rootFD);
++	if (parentFD == -1) {
++		fprintf(stderr, "Cannot duplicate prefix descriptor: %s\n",
++			strerror(errno));
++		exit(1);
++	}
++	if (slash != nullptr) {
++		*slash = '\0';
++		leaf = slash + 1;
++		char* save = nullptr;
++		for (char* component = strtok_r(copy, "/", &save);
++			component != nullptr;
++			component = strtok_r(nullptr, "/", &save)) {
++			const int next = openDirectoryAt(parentFD, component, true);
++			close(parentFD);
++			parentFD = next;
++			if (parentFD == -1) {
++				return;
++			}
++		}
++	}
++	struct stat status;
++	if (fstatat(parentFD, leaf, &status, AT_SYMLINK_NOFOLLOW) == -1) {
++		if (errno == ENOENT) {
++			close(parentFD);
++			return;
++		}
++		fprintf(stderr, "Cannot inspect prefix ownership path %s: %s\n",
++			relative, strerror(errno));
++		close(parentFD);
++		exit(1);
++	}
++	if (S_ISLNK(status.st_mode)) {
++		fprintf(stderr, "Refusing to chown prefix symlink %s\n", relative);
++		close(parentFD);
++		exit(1);
++	}
++	if (fchownat(parentFD, leaf, uid, gid, AT_SYMLINK_NOFOLLOW) == -1) {
++		fprintf(stderr, "Cannot chown prefix entry %s: %s\n",
++			relative, strerror(errno));
++		close(parentFD);
++		exit(1);
++	}
++	close(parentFD);
+ }
+ 
+ const char* xdgDirectory(const char* name)
+@@ -118,21 +323,29 @@ const char* xdgDirectory(const char* name)
+ 	return dir;
+ }
+ 
+-void setupUserHome(const char* prefix, uid_t originalUID)
++void setupUserHome(int prefixFD, uid_t originalUID)
+ {
+-	char buf[4096], buf2[4096];
+-
+-	snprintf(buf, sizeof(buf), "%s/Users", prefix);
+-
+-	// Remove the old /Users symlink that may exist
+-	unlink(buf);
+-
+-	// mkdir /Users
+-	mkdir(buf, 0777);
+-
+-	// mkdir /Users/Shared
+-	strcat(buf, "/Shared");
+-	mkdir(buf, 0777);
++	char buf[4096];
++
++	struct stat usersStat;
++	errno = 0;
++	const int usersStatus =
++		fstatat(prefixFD, "Users", &usersStat, AT_SYMLINK_NOFOLLOW);
++	if (usersStatus == 0 && !S_ISDIR(usersStat.st_mode)) {
++		if (S_ISLNK(usersStat.st_mode)) {
++			unlinkLeafAt(prefixFD, "Users");
++		} else {
++			fprintf(stderr, "Refusing non-directory prefix Users entry\n");
++			exit(1);
++		}
++	} else if (usersStatus == -1 && errno != ENOENT) {
++		fprintf(stderr, "Cannot inspect prefix Users directory: %s\n",
++			strerror(errno));
++		exit(1);
++	}
++	const int usersFD = ensureDirectoryAt(prefixFD, "Users", 0777);
++	const int sharedFD = ensureDirectoryAt(usersFD, "Shared", 0777);
++	close(sharedFD);
+ 
+ 	const char* home = getenv("HOME");
+ 
+@@ -156,18 +369,15 @@ void setupUserHome(const char* prefix, uid_t originalUID)
+ 		exit(1);
+ 	}
+ 
+-	snprintf(buf, sizeof(buf), "%s/Users/%s", prefix, login);
+-
+-	// mkdir /Users/$LOGIN
+-	mkdir(buf, 0755);
+-
+-	snprintf(buf2, sizeof(buf2), "/Volumes/SystemRoot%s", home);
+-
+-	strcat(buf, "/LinuxHome");
+-	unlink(buf);
++	const int userFD = ensureDirectoryAt(usersFD, login, 0755);
++	close(usersFD);
+ 
+-	// symlink /Users/$LOGIN/LinuxHome -> $HOME
+-	symlink(buf2, buf);
++	snprintf(buf, sizeof(buf), "/Volumes/SystemRoot%s", home);
++	unlinkLeafAt(userFD, "LinuxHome");
++	if (symlinkat(buf, userFD, "LinuxHome") == -1) {
++		fprintf(stderr, "Cannot create LinuxHome link: %s\n", strerror(errno));
++		exit(1);
++	}
+ 
+ 	static const char* xdgmap[][2] = {
+ 		{ "DESKTOP", "Desktop" },
+@@ -185,12 +395,15 @@ void setupUserHome(const char* prefix, uid_t originalUID)
+ 		if (!dir)
+ 			continue;
+ 
+-		snprintf(buf2, sizeof(buf2), "/Volumes/SystemRoot%s", dir);
+-		snprintf(buf, sizeof(buf), "%s/Users/%s/%s", prefix, login, xdgmap[i][1]);
+-
+-		unlink(buf);
+-		symlink(buf2, buf);
++		snprintf(buf, sizeof(buf), "/Volumes/SystemRoot%s", dir);
++		unlinkLeafAt(userFD, xdgmap[i][1]);
++		if (symlinkat(buf, userFD, xdgmap[i][1]) == -1) {
++			fprintf(stderr, "Cannot create XDG directory link %s: %s\n",
++				xdgmap[i][1], strerror(errno));
++			exit(1);
++		}
+ 	}
++	close(userFD);
+ }
+ 
+ void setupCoredumpPattern(void)
+@@ -204,55 +417,87 @@ void setupCoredumpPattern(void)
+ 	}
+ }
+ 
+-static void wipeDir(const char* dirpath)
++static void wipeDirFD(int directoryFD)
+ {
+-	char path[4096];
+-	struct dirent* ent;
+-	DIR* dir = opendir(dirpath);
+-
+-	if (!dir)
+-		return;
+-
+-	while ((ent = readdir(dir)) != NULL)
+-	{
+-		if (strcmp(ent->d_name, ".") == 0 || strcmp(ent->d_name, "..") == 0)
++	const int scanFD = dup(directoryFD);
++	if (scanFD == -1) {
++		fprintf(stderr, "Cannot duplicate prefix directory: %s\n",
++			strerror(errno));
++		exit(1);
++	}
++	DIR* dir = fdopendir(scanFD);
++	if (dir == nullptr) {
++		close(scanFD);
++		fprintf(stderr, "Cannot scan prefix directory: %s\n", strerror(errno));
++		exit(1);
++	}
++	errno = 0;
++	while (struct dirent* ent = readdir(dir)) {
++		if (!strcmp(ent->d_name, ".") || !strcmp(ent->d_name, "..")) {
+ 			continue;
+-
+-		snprintf(path, sizeof(path), "%s/%s", dirpath, ent->d_name);
+-
+-		if (ent->d_type == DT_DIR)
+-		{
+-			wipeDir(path);
+-			rmdir(path);
+ 		}
+-		else
+-			unlink(path);
++		struct stat st;
++		if (fstatat(
++			directoryFD, ent->d_name, &st, AT_SYMLINK_NOFOLLOW) == -1) {
++			fprintf(stderr, "Cannot inspect prefix state entry %s: %s\n",
++				ent->d_name, strerror(errno));
++			closedir(dir);
++			exit(1);
++		}
++		if (S_ISDIR(st.st_mode)) {
++			const int childFD = openDirectoryAt(directoryFD, ent->d_name);
++			wipeDirFD(childFD);
++			close(childFD);
++			if (unlinkat(directoryFD, ent->d_name, AT_REMOVEDIR) == -1) {
++				fprintf(stderr, "Cannot remove prefix state directory %s: %s\n",
++					ent->d_name, strerror(errno));
++				closedir(dir);
++				exit(1);
++			}
++		} else if (unlinkat(directoryFD, ent->d_name, 0) == -1) {
++			fprintf(stderr, "Cannot remove prefix state entry %s: %s\n",
++				ent->d_name, strerror(errno));
++			closedir(dir);
++			exit(1);
++		}
++		errno = 0;
++	}
++	if (errno != 0) {
++		fprintf(stderr, "Cannot scan prefix state directory: %s\n",
++			strerror(errno));
++		closedir(dir);
++		exit(1);
+ 	}
+-
+ 	closedir(dir);
+ }
+ 
+-void darlingPreInit(const char* prefix)
++void darlingPreInit(int prefixFD)
+ {
+ 	// TODO: Run /usr/libexec/makewhatis
+ 	const char* dirs[] = {
+-		"/var/tmp",
+-		"/var/run"
++		"tmp",
++		"run"
+ 	};
+-
+-	char fullpath[4096];
+-	strcpy(fullpath, prefix);
+-	const size_t prefixLen = strlen(fullpath);
+-
++	const int varFD = openDirectoryAt(prefixFD, "var", true);
++	if (varFD == -1) {
++		return;
++	}
+ 	for (size_t i = 0; i < sizeof(dirs)/sizeof(dirs[0]); i++)
+ 	{
+-		fullpath[prefixLen] = 0;
+-		strcat(fullpath, dirs[i]);
+-		wipeDir(fullpath);
++		const int childFD = openDirectoryAt(varFD, dirs[i], true);
++		if (childFD != -1) {
++			wipeDirFD(childFD);
++			close(childFD);
++		}
+ 	}
++	close(varFD);
+ }
+ 
+-void spawnLaunchd(const char* prefix, bool rootless)
++void spawnLaunchd(
++	const char* prefix,
++	DarlingServer::RuntimeMode runtimeMode,
++	int prefixFD
++)
+ {
+ 	puts("Bootstrapping the container with launchd...");
+ 
+@@ -268,8 +513,19 @@ void spawnLaunchd(const char* prefix, bool rootless)
+ 
+ 	setenv("__mldr_DYLD_ROOT_PATH", LIBEXEC_PATH, 1);
+ 	setenv("__mldr_sockpath", tmp.c_str(), 1);
+-	if (rootless) {
+-		setenv("__mldr_rootless_pid1", "1", 1);
++	const std::string runtimeModeName(
++		DarlingServer::runtimeModeName(runtimeMode));
++	setenv("__mldr_runtime_mode", runtimeModeName.c_str(), 1);
++	unsetenv("DARLING_RUNTIME_MODE");
++	unsetenv("DARLING_ROOTLESS");
++	unsetenv("DARLING_NOOVERLAYFS");
++	unsetenv("DARLING_EUNION");
++	const int prefixFlags = fcntl(prefixFD, F_GETFD);
++	if (prefixFlags == -1 ||
++		fcntl(prefixFD, F_SETFD, prefixFlags & ~FD_CLOEXEC) == -1) {
++		fprintf(stderr, "Failed to retain trusted prefix descriptor for launchd: %s\n",
++			strerror(errno));
++		abort();
+ 	}
+ 	execl(DarlingServer::Config::defaultMldrPath.data(), "mldr!" LIBEXEC_PATH "/usr/libexec/darling/vchroot", "vchroot", prefix, initPath, NULL);
+ 
+@@ -305,182 +561,352 @@ static bool isOnWsl1() {
+ 	return result;
+ }
+ 
+-static bool shouldUseOverlayFs() {
+-	bool shouldUse = true;
+-	bool explicitlySet = false;
++static void setupEunionPrefix(int prefixFD) {
++	const int markerFD = ensureDirectoryAt(prefixFD, ".union-work", 0700);
++	close(markerFD);
++}
+ 
+-	if (testEnvVar("DARLING_NOOVERLAYFS")) {
+-		shouldUse = false;
+-		explicitlySet = true;
+-	} else if (getenv("DARLING_NOOVERLAYFS")) {
+-		shouldUse = true;
+-		explicitlySet = true;
++static int compareTimespec(const timespec& a, const timespec& b) {
++	if (a.tv_sec != b.tv_sec) {
++		return (a.tv_sec > b.tv_sec) ? 1 : -1;
++	} else if (a.tv_nsec != b.tv_nsec) {
++		return (a.tv_nsec > b.tv_nsec) ? 1 : -1;
++	} else {
++		return 0;
+ 	}
++}
+ 
+-	// https://github.com/microsoft/WSL/issues/8748
+-	// Microsoft is being dumb with its overlayfs implementation and they don't seem to be willing to be fix WSL1-related bugs.
+-	// We therefore have to enable this hack on WSL1.
+-	if (!explicitlySet && isOnWsl1()) {
+-		shouldUse = false;
+-	}
++static unsigned long copyTemporaryCounter = 0;
+ 
+-	return shouldUse;
++static std::string copyTemporaryName() {
++	return ".darling-copy-" + std::to_string(getpid()) + "-" +
++		std::to_string(++copyTemporaryCounter);
+ }
+ 
+-static bool shouldUseEunionPrefix() {
+-	return testEnvVar("DARLING_EUNION");
++static void applyDescriptorAttributes(
++	int fd,
++	const struct stat& source,
++	bool preserveOwnership,
++	const char* description
++) {
++	const struct timespec times[] = { source.st_atim, source.st_mtim };
++	if (futimens(fd, times) == -1 ||
++		(preserveOwnership &&
++		 fchown(fd, source.st_uid, source.st_gid) == -1) ||
++		fchmod(fd, source.st_mode & ALLPERMS) == -1) {
++		fprintf(stderr, "Failed to set destination attributes %s: %s\n",
++			description, strerror(errno));
++		abort();
++	}
+ }
+ 
+-static void setupEunionPrefix(const char* prefix) {
+-	char marker[4096];
+-
+-	if (snprintf(marker, sizeof(marker), "%s/.union-work", prefix) >= (int)sizeof(marker)) {
+-		fprintf(stderr, "E-UNION work directory path is too long for prefix %s\n", prefix);
+-		exit(1);
++static void applySymlinkAttributesAt(
++	int parentFD,
++	const char* name,
++	const struct stat& source,
++	bool preserveOwnership
++) {
++	if (!S_ISLNK(source.st_mode)) {
++		fprintf(stderr, "Internal error: non-symlink attributes used for %s\n",
++			name);
++		abort();
+ 	}
+-
+-	if (mkdir(marker, 0700) == -1 && errno != EEXIST) {
+-		fprintf(stderr, "Cannot create E-UNION work directory %s: %s\n", marker, strerror(errno));
+-		exit(1);
++	const struct timespec times[] = { source.st_atim, source.st_mtim };
++	if (utimensat(parentFD, name, times, AT_SYMLINK_NOFOLLOW) == -1) {
++		fprintf(stderr, "Failed to set destination timestamp %s: %s\n",
++			name, strerror(errno));
++		abort();
+ 	}
++	if (preserveOwnership &&
++		fchownat(
++			parentFD, name, source.st_uid, source.st_gid,
++			AT_SYMLINK_NOFOLLOW) == -1) {
++		fprintf(stderr, "Failed to set destination owner %s: %s\n",
++			name, strerror(errno));
++		abort();
++	}
++}
+ 
+-	struct stat st;
+-	if (lstat(marker, &st) == -1) {
+-		fprintf(stderr, "Cannot stat E-UNION work directory %s: %s\n", marker, strerror(errno));
+-		exit(1);
++static void replaceRegularFileAt(
++	const std::string& sourcePath,
++	int parentFD,
++	const char* name,
++	const struct stat& source,
++	bool preserveOwnership
++) {
++	const int input = open(
++		sourcePath.c_str(), O_RDONLY | O_CLOEXEC | O_NOFOLLOW);
++	if (input == -1) {
++		fprintf(stderr, "Failed to open source file %s: %s\n",
++			sourcePath.c_str(), strerror(errno));
++		abort();
+ 	}
+-	if (!S_ISDIR(st.st_mode)) {
+-		fprintf(stderr, "E-UNION work path exists but is not a directory: %s\n", marker);
+-		exit(1);
++	const std::string temporary = copyTemporaryName();
++	const int output = openat(
++		parentFD, temporary.c_str(),
++		O_WRONLY | O_CREAT | O_EXCL | O_CLOEXEC | O_NOFOLLOW,
++		source.st_mode & ALLPERMS);
++	if (output == -1) {
++		fprintf(stderr, "Failed to create destination temporary file %s: %s\n",
++			name, strerror(errno));
++		close(input);
++		abort();
++	}
++	const struct timespec times[] = { source.st_atim, source.st_mtim };
++	char buffer[128 * 1024];
++	for (;;) {
++		const ssize_t count = read(input, buffer, sizeof(buffer));
++		if (count == 0) {
++			break;
++		}
++		if (count < 0) {
++			fprintf(stderr, "Failed to read source file %s: %s\n",
++				sourcePath.c_str(), strerror(errno));
++			goto copy_failure;
++		}
++		ssize_t written = 0;
++		while (written < count) {
++			const ssize_t result =
++				write(output, buffer + written, count - written);
++			if (result <= 0) {
++				fprintf(stderr, "Failed to write destination file %s: %s\n",
++					name, strerror(errno));
++				goto copy_failure;
++			}
++			written += result;
++		}
++	}
++	if ((preserveOwnership &&
++		 fchown(output, source.st_uid, source.st_gid) == -1) ||
++		fchmod(output, source.st_mode & ALLPERMS) == -1 ||
++		futimens(output, times) == -1 ||
++		fsync(output) == -1) {
++		fprintf(stderr, "Failed to finalize destination file %s: %s\n",
++			name, strerror(errno));
++		goto copy_failure;
+ 	}
++	if (close(input) == -1 || close(output) == -1) {
++		fprintf(stderr, "Failed to close copied file %s: %s\n",
++			name, strerror(errno));
++		unlinkat(parentFD, temporary.c_str(), 0);
++		abort();
++	}
++	if (renameat(parentFD, temporary.c_str(), parentFD, name) == -1) {
++		fprintf(stderr, "Failed to publish destination file %s: %s\n",
++			name, strerror(errno));
++		unlinkat(parentFD, temporary.c_str(), 0);
++		abort();
++	}
++	return;
++
++copy_failure:
++	close(input);
++	close(output);
++	unlinkat(parentFD, temporary.c_str(), 0);
++	abort();
+ }
+ 
+-static int compareTimespec(const timespec& a, const timespec& b) {
+-	if (a.tv_sec != b.tv_sec) {
+-		return (a.tv_sec > b.tv_sec) ? 1 : -1;
+-	} else if (a.tv_nsec != b.tv_nsec) {
+-		return (a.tv_nsec > b.tv_nsec) ? 1 : -1;
+-	} else {
+-		return 0;
++static void replaceSymlinkAt(
++	const std::string& sourcePath,
++	int parentFD,
++	const char* name,
++	const struct stat& source,
++	bool preserveOwnership
++) {
++	std::string target;
++	target.resize(static_cast<size_t>(source.st_size) + 1);
++	const ssize_t length =
++		readlink(sourcePath.c_str(), target.data(), target.size());
++	if (length < 0 || static_cast<size_t>(length) >= target.size()) {
++		fprintf(stderr, "Failed to read source symlink %s: %s\n",
++			sourcePath.c_str(), strerror(errno));
++		abort();
++	}
++	target.resize(static_cast<size_t>(length));
++	const std::string temporary = copyTemporaryName();
++	if (symlinkat(target.c_str(), parentFD, temporary.c_str()) == -1) {
++		fprintf(stderr, "Failed to create destination symlink %s: %s\n",
++			name, strerror(errno));
++		abort();
++	}
++	applySymlinkAttributesAt(
++		parentFD, temporary.c_str(), source, preserveOwnership);
++	if (renameat(parentFD, temporary.c_str(), parentFD, name) == -1) {
++		fprintf(stderr, "Failed to publish destination symlink %s: %s\n",
++			name, strerror(errno));
++		unlinkat(parentFD, temporary.c_str(), 0);
++		abort();
+ 	}
+ }
+ 
+-static void copyAndSetAttributes(std::string& fromPath, std::string& toPath, bool preserveOwnership) {
+-	struct stat fromStat, toStat;
+-	if (lstat(fromPath.c_str(), &fromStat) == -1) {
+-		fprintf(stderr, "Failed to stat file %s: %s\n", fromPath.c_str(), strerror(errno));
++static void copyAndSetAttributesAt(
++	std::string& sourcePath,
++	int destinationParentFD,
++	const char* destinationName,
++	bool preserveOwnership
++) {
++	struct stat source;
++	if (lstat(sourcePath.c_str(), &source) == -1) {
++		fprintf(stderr, "Failed to stat source %s: %s\n",
++			sourcePath.c_str(), strerror(errno));
+ 		abort();
+ 	}
+-	bool destinationExists = true;
+-	bool updateAttributes = false;
+-	if (lstat(toPath.c_str(), &toStat) == -1) {
+-		if (errno != ENOENT) {
+-			fprintf(stderr, "Failed to stat file %s: %s\n", toPath.c_str(), strerror(errno));
++	struct stat destination;
++	errno = 0;
++	bool destinationExists =
++		fstatat(
++			destinationParentFD, destinationName, &destination,
++			AT_SYMLINK_NOFOLLOW) == 0;
++	if (!destinationExists && errno != ENOENT) {
++		fprintf(stderr, "Failed to stat destination %s: %s\n",
++			destinationName, strerror(errno));
++		abort();
++	}
++
++	if (S_ISDIR(source.st_mode)) {
++		if (destinationExists && !S_ISDIR(destination.st_mode)) {
++			fprintf(stderr, "Destination type mismatch for %s\n",
++				destinationName);
++			abort();
++		}
++		const int destinationFD = destinationExists
++			? openDirectoryAt(destinationParentFD, destinationName)
++			: createDirectoryAt(
++				destinationParentFD, destinationName,
++				source.st_mode & ALLPERMS);
++		DIR* sourceDirectory = opendir(sourcePath.c_str());
++		if (sourceDirectory == nullptr) {
++			fprintf(stderr, "Failed to open source directory %s: %s\n",
++				sourcePath.c_str(), strerror(errno));
++			close(destinationFD);
+ 			abort();
+ 		}
+-		destinationExists = false;
++		errno = 0;
++		while (struct dirent* entry = readdir(sourceDirectory)) {
++			if (!strcmp(entry->d_name, ".") ||
++				!strcmp(entry->d_name, "..")) {
++				continue;
++			}
++			const size_t originalLength = sourcePath.size();
++			sourcePath.push_back('/');
++			sourcePath.append(entry->d_name);
++			copyAndSetAttributesAt(
++				sourcePath, destinationFD, entry->d_name,
++				preserveOwnership);
++			sourcePath.resize(originalLength);
++			errno = 0;
++		}
++		if (errno != 0) {
++			fprintf(stderr, "Failed to scan source directory %s: %s\n",
++				sourcePath.c_str(), strerror(errno));
++			closedir(sourceDirectory);
++			close(destinationFD);
++			abort();
++		}
++		closedir(sourceDirectory);
++		applyDescriptorAttributes(
++			destinationFD, source, preserveOwnership, destinationName);
++		close(destinationFD);
++		return;
+ 	}
+ 
+-	if (S_ISDIR(fromStat.st_mode)) {
+-		if (destinationExists && !S_ISDIR(toStat.st_mode)) {
++	if (destinationExists &&
++		(source.st_mode & S_IFMT) != (destination.st_mode & S_IFMT)) {
++		fprintf(stderr, "Destination type mismatch for %s\n", destinationName);
++		abort();
++	}
++	if (destinationExists) {
++		const int order = compareTimespec(source.st_mtim, destination.st_mtim);
++		if (order < 0) {
+ 			return;
+-		} else {
+-			if (!destinationExists) {
+-				if (mkdir(toPath.c_str(), fromStat.st_mode & ALLPERMS) == -1) {
+-					fprintf(stderr, "Failed to create directory %s: %s\n", toPath.c_str(), strerror(errno));
+-					abort();
+-				}
+-				updateAttributes = true;
+-			}
+-			DIR* fromDir = opendir(fromPath.c_str());
+-			if (fromDir == NULL) {
+-				fprintf(stderr, "Failed to open directory %s: %s\n", fromPath.c_str(), strerror(errno));
+-				abort();
+-			}
+-
+-			struct dirent* entry = NULL;
+-			while ((errno = 0) || ((entry = readdir(fromDir)) != NULL)) {
+-				if (strcmp(entry->d_name, ".") == 0 || strcmp(entry->d_name, "..") == 0) {
+-					continue;
+-				}
+-
+-				size_t oldFromSize = fromPath.size();
+-				size_t oldToSize = toPath.size();
+-
+-				fromPath.push_back('/');
+-				toPath.push_back('/');
+-
+-				fromPath.append(entry->d_name);
+-				toPath.append(entry->d_name);
+-
+-				copyAndSetAttributes(fromPath, toPath, preserveOwnership);
+-
+-				fromPath.resize(oldFromSize);
+-				toPath.resize(oldToSize);
+-			}
+-
+-			if (errno) {
+-				fprintf(stderr, "Failed to read directory %s: %s\n", fromPath.c_str(), strerror(errno));
+-				abort();
+-			}
+-
+-			if (closedir(fromDir) == -1) {
+-				fprintf(stderr, "Failed to close directory %s: %s\n", fromPath.c_str(), strerror(errno));
+-			}
+ 		}
+-	} else {
+-		if (destinationExists) {
+-			if ((fromStat.st_mode & S_IFMT) != (toStat.st_mode & S_IFMT)) {
+-				return;
++		if (order == 0) {
++			if (S_ISLNK(source.st_mode)) {
++				applySymlinkAttributesAt(
++					destinationParentFD, destinationName, source,
++					preserveOwnership);
+ 			} else {
+-				int compareResult = compareTimespec(fromStat.st_mtim, toStat.st_mtim);
+-				// the lower file is older, don't touch the newer file.
+-				if (compareResult == -1) {
+-					return;
+-				// the lower file and the newer files should be the same.
+-				// we still update the attributes though, in case ownership or permission changes.
+-				} else if (compareResult == 0) {
+-					updateAttributes = true;
+-				} else if (compareResult == 1) {
+-					if (unlink(toPath.c_str()) == -1) {
+-						fprintf(stderr, "Failed to delete old destination file %s: %s\n", toPath.c_str(), strerror(errno));
+-						abort();
++				const int destinationFD = openat(
++					destinationParentFD, destinationName,
++					O_RDONLY | O_CLOEXEC | O_NOFOLLOW);
++				struct stat opened;
++				if (destinationFD == -1 ||
++					fstat(destinationFD, &opened) == -1 ||
++					(opened.st_mode & S_IFMT) !=
++						(source.st_mode & S_IFMT)) {
++					if (destinationFD >= 0) {
++						close(destinationFD);
+ 					}
+-					std::filesystem::copy(fromPath, toPath, std::filesystem::copy_options::copy_symlinks);
+-					updateAttributes = true;
++					fprintf(stderr,
++						"Destination changed while updating %s\n",
++						destinationName);
++					abort();
+ 				}
++				applyDescriptorAttributes(
++					destinationFD, source, preserveOwnership,
++					destinationName);
++				close(destinationFD);
+ 			}
+-		} else {
+-			std::filesystem::copy(fromPath, toPath, std::filesystem::copy_options::copy_symlinks);
+-			updateAttributes = true;
++			return;
+ 		}
+ 	}
+-
+-	if (updateAttributes) {
+-		struct timespec times[] = {
+-			fromStat.st_atim,
+-			fromStat.st_mtim
+-		};
+-		if (utimensat(-1, toPath.c_str(), times, AT_SYMLINK_NOFOLLOW) == -1) {
+-			fprintf(stderr, "Failed to set timestamp for %s: %s\n", toPath.c_str(), strerror(errno));
+-			abort();
+-    	}
+-		if (preserveOwnership && fchownat(-1, toPath.c_str(), fromStat.st_uid, fromStat.st_gid, AT_SYMLINK_NOFOLLOW) == -1) {
+-			fprintf(stderr, "Failed to set owner for %s: %s\n", toPath.c_str(), strerror(errno));
+-			abort();
+-		}
+-		// POSIX said that AT_SYMLINK_NOFOLLOW is acceptable for links, but on Linux all calls with AT_SYMLINK_NOFOLLOW fails with ENOTSUP.
+-		if (fchmodat(-1, toPath.c_str(), fromStat.st_mode & ALLPERMS, S_ISLNK(fromStat.st_mode) ? AT_SYMLINK_NOFOLLOW : 0) == -1) {
+-			if (!(S_ISLNK(fromStat.st_mode) && (errno == ENOTSUP))) {
+-				fprintf(stderr, "Failed to set permissions for %s: %s\n", toPath.c_str(), strerror(errno));
+-				abort();
+-			}
+-		}
++	if (S_ISREG(source.st_mode)) {
++		replaceRegularFileAt(
++			sourcePath, destinationParentFD, destinationName, source,
++			preserveOwnership);
++	} else if (S_ISLNK(source.st_mode)) {
++		replaceSymlinkAt(
++			sourcePath, destinationParentFD, destinationName, source,
++			preserveOwnership);
++	} else {
++		fprintf(stderr, "Unsupported source file type for %s\n",
++			sourcePath.c_str());
++		abort();
+ 	}
+ }
+ 
+-static bool rootlessModeEnabled() {
+-	return testEnvVar("DARLING_ROOTLESS");
++static void copyDirectoryContentsAt(
++	const char* sourceRoot,
++	int destinationFD,
++	bool preserveOwnership
++) {
++	std::string sourcePath(sourceRoot);
++	struct stat source;
++	if (lstat(sourcePath.c_str(), &source) == -1 ||
++		!S_ISDIR(source.st_mode)) {
++		fprintf(stderr, "Invalid runtime source directory %s: %s\n",
++			sourceRoot, strerror(errno));
++		abort();
++	}
++	DIR* sourceDirectory = opendir(sourceRoot);
++	if (sourceDirectory == nullptr) {
++		fprintf(stderr, "Failed to open runtime source directory %s: %s\n",
++			sourceRoot, strerror(errno));
++		abort();
++	}
++	errno = 0;
++	while (struct dirent* entry = readdir(sourceDirectory)) {
++		if (!strcmp(entry->d_name, ".") ||
++			!strcmp(entry->d_name, "..")) {
++			continue;
++		}
++		const size_t originalLength = sourcePath.size();
++		sourcePath.push_back('/');
++		sourcePath.append(entry->d_name);
++		copyAndSetAttributesAt(
++			sourcePath, destinationFD, entry->d_name, preserveOwnership);
++		sourcePath.resize(originalLength);
++		errno = 0;
++	}
++	if (errno != 0) {
++		fprintf(stderr, "Failed to scan runtime source directory %s: %s\n",
++			sourceRoot, strerror(errno));
++		closedir(sourceDirectory);
++		abort();
++	}
++	closedir(sourceDirectory);
++	applyDescriptorAttributes(
++		destinationFD, source, preserveOwnership, "prefix root");
+ }
+ 
+ static void temp_drop_privileges(uid_t uid, gid_t gid, bool rootless) {
+@@ -529,6 +955,32 @@ static void regain_privileges(bool rootless) {
+ 	}
+ };
+ 
++static int parseInheritedFD(const char* value, const char* description) {
++	char* end = nullptr;
++	errno = 0;
++	const long parsed = strtol(value, &end, 10);
++	if (
++		errno != 0 ||
++		end == value ||
++		*end != '\0' ||
++		parsed < 0 ||
++		parsed > INT_MAX
++	) {
++		fprintf(stderr, "Invalid inherited %s descriptor\n", description);
++		exit(1);
++	}
++	return static_cast<int>(parsed);
++}
++
++static void makeDescriptorCloseOnExec(int fd, const char* description) {
++	const int flags = fcntl(fd, F_GETFD);
++	if (flags == -1 || fcntl(fd, F_SETFD, flags | FD_CLOEXEC) == -1) {
++		fprintf(stderr, "Cannot protect inherited %s descriptor: %s\n",
++			description, strerror(errno));
++		exit(1);
++	}
++}
++
+ #if DSERVER_ASAN
+ static void handle_sigusr1(int signum) {
+ 	__lsan_do_recoverable_leak_check();
+@@ -537,12 +989,14 @@ static void handle_sigusr1(int signum) {
+ 
+ int main(int argc, char** argv) {
+ 	const char* prefix = NULL;
++	int prefixFD = -1;
++	int prefixParentFD = -1;
++	int workdirFD = -1;
+ 	uid_t originalUID = -1;
+ 	gid_t originalGID = -1;
+ 	int pipefd = -1;
+ 	bool fix_permissions = false;
+ 	pid_t launchdGlobalPID = -1;
+-	size_t prefix_length = 0;
+ 	struct rlimit default_limit;
+ 	struct rlimit increased_limit;
+ 	FILE* nr_open_file = NULL;
+@@ -551,9 +1005,7 @@ int main(int argc, char** argv) {
+ 
+ 	char *opts;
+ 	char putOld[4096];
+-	char *p;
+-
+-	if (argc < 6) {
++	if (argc != 9) {
+ 		fprintf(stderr, "darlingserver is not meant to be started manually\n");
+ 		exit(1);
+ 	}
+@@ -565,22 +1017,57 @@ int main(int argc, char** argv) {
+ 	}
+ #endif
+ 
+-	prefix = argv[1];
+-	sscanf(argv[2], "%d", &originalUID);
+-	sscanf(argv[3], "%d", &originalGID);
+-	sscanf(argv[4], "%d", &pipefd);
++	prefixFD = parseInheritedFD(argv[1], "prefix");
++	prefixParentFD = parseInheritedFD(argv[2], "prefix parent");
++	workdirFD = parseInheritedFD(argv[4], "prefix workdir");
++	sscanf(argv[5], "%d", &originalUID);
++	sscanf(argv[6], "%d", &originalGID);
++	sscanf(argv[7], "%d", &pipefd);
+ 
+-	if (argv[5][0] == '1') {
++	if (argv[8][0] == '1') {
+ 		fix_permissions = true;
+ 	}
+ 
+-	prefix_length = strlen(prefix);
+-	const bool rootless = rootlessModeEnabled();
++	DarlingServer::RuntimeMode runtimeMode;
++	std::string prefixPath;
++	std::string workdirPath;
++	try {
++		runtimeMode = DarlingServer::requireRuntimeModeFromEnvironment(
++			DARLING_RUNTIME_EUNION_CAPABLE != 0);
++		DarlingServer::validateRuntimeModePrefixFD(
++			prefixFD, prefixParentFD, argv[3], workdirFD, runtimeMode);
++		prefixPath = DarlingServer::runtimePrefixProcPath(prefixFD);
++		workdirPath = DarlingServer::runtimePrefixProcPath(workdirFD);
++	} catch (const DarlingServer::RuntimeModeError& error) {
++		fprintf(stderr, "Cannot select Darling runtime mode: %s\n",
++			error.what());
++		exit(1);
++	}
++	if (close(prefixParentFD) == -1) {
++		fprintf(stderr, "Cannot close inherited prefix parent descriptor: %s\n",
++			strerror(errno));
++		exit(1);
++	}
++	prefixParentFD = -1;
++	makeDescriptorCloseOnExec(prefixFD, "prefix");
++	makeDescriptorCloseOnExec(workdirFD, "prefix workdir");
++	prefix = prefixPath.c_str();
++	const bool rootless = DarlingServer::runtimeModeIsRootless(runtimeMode);
+ 
+ 	if (!rootless && (getuid() != 0 || getgid() != 0)) {
+ 		fprintf(stderr, "darlingserver needs to start as root\n");
+ 		exit(1);
+ 	}
++	if (rootless) {
++		try {
++			DarlingServer::validateRootlessProcessCredentials(
++				originalUID, originalGID);
++		} catch (const DarlingServer::RuntimeModeError& error) {
++			fprintf(stderr, "Cannot enter rootless runtime mode: %s\n",
++				error.what());
++			exit(1);
++		}
++	}
+ 	if (rootless && prctl(PR_SET_CHILD_SUBREAPER, 1, 0, 0, 0) != 0) {
+ 		fprintf(stderr, "Cannot enable rootless child reaping: %s\n", strerror(errno));
+ 		exit(1);
+@@ -588,7 +1075,7 @@ int main(int argc, char** argv) {
+ 
+ 	// temporarily drop privileges to perform some prefix work
+ 	temp_drop_privileges(originalUID, originalGID, rootless);
+-	setupUserHome(prefix, originalUID);
++	setupUserHome(prefixFD, originalUID);
+ 	//setupCoredumpPattern();
+ 	regain_privileges(rootless);
+ 
+@@ -661,14 +1148,10 @@ int main(int argc, char** argv) {
+ 			exit(1);
+ 		}
+ 	}
+-	const bool useOverlayFs = !rootless && shouldUseOverlayFs();
+-	const bool useEunionPrefix = !useOverlayFs && shouldUseEunionPrefix();
+-	if (rootless && !useEunionPrefix) {
+-		fprintf(stderr,
+-			"Rootless no-mount startup requires DARLING_EUNION=1; "
+-			"copy-mode would modify the shared template tree\n");
+-		exit(1);
+-	}
++	const bool useOverlayFs =
++		DarlingServer::runtimeModeUsesOverlay(runtimeMode);
++	const bool useEunionPrefix =
++		DarlingServer::runtimeModeUsesEunion(runtimeMode);
+ 
+ 	if (useOverlayFs) {
+ 		// Because systemd marks / as MS_SHARED and we would inherit this into the overlay mount,
+@@ -679,18 +1162,19 @@ int main(int argc, char** argv) {
+ 			exit(1);
+ 		}
+ 
+-		opts = (char*) malloc(strlen(prefix)*2 + sizeof(LIBEXEC_PATH) + 100);
++		opts = (char*) malloc(
++			strlen(prefix) + workdirPath.size() + sizeof(LIBEXEC_PATH) + 100);
+ 
+-		const char* opts_fmt = "lowerdir=%s,upperdir=%s,workdir=%s.workdir,index=off";
++		const char* opts_fmt = "lowerdir=%s,upperdir=%s,workdir=%s,index=off";
+ 
+-		sprintf(opts, opts_fmt, LIBEXEC_PATH, prefix, prefix);
++		sprintf(opts, opts_fmt, LIBEXEC_PATH, prefix, workdirPath.c_str());
+ 
+ 		// Mount overlay onto our prefix
+ 		if (mount("overlay", prefix, "overlay", 0, opts) != 0)
+ 		{
+ 			if (errno == EINVAL) {
+-				opts_fmt = "lowerdir=%s,upperdir=%s,workdir=%s.workdir";
+-				sprintf(opts, opts_fmt, LIBEXEC_PATH, prefix, prefix);
++				opts_fmt = "lowerdir=%s,upperdir=%s,workdir=%s";
++				sprintf(opts, opts_fmt, LIBEXEC_PATH, prefix, workdirPath.c_str());
+ 				if (mount("overlay", prefix, "overlay", 0, opts) == 0) {
+ 					goto mount_ok;
+ 				}
+@@ -702,11 +1186,9 @@ int main(int argc, char** argv) {
+ 	mount_ok:
+ 		free(opts);
+ 	} else if (useEunionPrefix) {
+-		setupEunionPrefix(prefix);
++		setupEunionPrefix(prefixFD);
+ 	} else {
+-		std::string fromPath = LIBEXEC_PATH;
+-		std::string toPath = prefix;
+-		copyAndSetAttributes(fromPath, toPath, !rootless);
++		copyDirectoryContentsAt(LIBEXEC_PATH, prefixFD, !rootless);
+ 	}
+ 
+ 	// This is executed once at prefix creation
+@@ -716,22 +1198,18 @@ int main(int argc, char** argv) {
+ 			"/private/etc/master.passwd",
+ 			"/private/etc/group",
+ 		};
+-		char path[4096];
+-
+-		fixPermissionsRecursive(prefix, originalUID, originalGID);
++		fixPermissionsRecursiveFD(prefixFD, originalUID, originalGID);
+ 
+-		path[sizeof(path) - 1] = '\0';
+-		strncpy(path, prefix, sizeof(path) - 1);
+ 		for (size_t i = 0; i < sizeof(extra_paths) / sizeof(*extra_paths); ++i) {
+-			path[prefix_length] = '\0';
+-			strncat(path, extra_paths[i], sizeof(path) - 1);
+-			fixPermissionsRecursive(path, originalUID, originalGID);
++			chownRelativeAt(
++				prefixFD, extra_paths[i] + 1,
++				originalUID, originalGID);
+ 		}
+ 	}
+ 
+ 	// temporarily drop privileges and do some prefix work
+ 	temp_drop_privileges(originalUID, originalGID, rootless);
+-	darlingPreInit(prefix);
++	darlingPreInit(prefixFD);
+ 	regain_privileges(rootless);
+ 
+ 	// Tell the parent we're ready
+@@ -802,7 +1280,7 @@ int main(int argc, char** argv) {
+ 		read(childWaitFDs[0], buf, 1);
+ 		close(childWaitFDs[0]);
+ 
+-		spawnLaunchd(prefix, rootless);
++		spawnLaunchd(prefix, runtimeMode, prefixFD);
+ 		__builtin_unreachable();
+ 	}
+ 
+@@ -823,7 +1301,8 @@ int main(int argc, char** argv) {
+ #endif
+ 
+ 	// create the server
+-	auto server = new DarlingServer::Server(prefix, rootless ? launchdGlobalPID : 0);
++	auto server = new DarlingServer::Server(
++		prefix, prefixFD, rootless ? launchdGlobalPID : 0);
+ 
+ 	// tell the child to go ahead; the socket has been created
+ 	write(childWaitFDs[1], ".", 1);
+diff --git a/src/logging.cpp b/src/logging.cpp
+index 7b8000f..73d5e57 100644
+--- a/src/logging.cpp
++++ b/src/logging.cpp
+@@ -21,7 +21,8 @@
+ #include <darlingserver/server.hpp>
+ #include <darlingserver/thread.hpp>
+ #include <darlingserver/process.hpp>
+-#include <filesystem>
++#include <cerrno>
++#include <cstring>
+ #include <fcntl.h>
+ #include <unistd.h>
+ #include <sys/stat.h>
+@@ -32,6 +33,45 @@ static const char* alwaysLoggedCategories[] = {
+ 	//"kprintf",
+ };
+ 
++static int openLogDirectoryAt(int rootFD) {
++	int current = dup(rootFD);
++	if (current == -1) {
++		return -1;
++	}
++	static const char* components[] = { "private", "var", "log" };
++	for (const char* component : components) {
++		struct stat status;
++		if (fstatat(current, component, &status, AT_SYMLINK_NOFOLLOW) == -1) {
++			close(current);
++			return -1;
++		}
++		if (!S_ISDIR(status.st_mode)) {
++			close(current);
++			errno = ENOTDIR;
++			return -1;
++		}
++		const int next = openat(
++			current, component,
++			O_RDONLY | O_DIRECTORY | O_CLOEXEC | O_NOFOLLOW);
++		if (next == -1) {
++			close(current);
++			return -1;
++		}
++		struct stat opened;
++		if (fstat(next, &opened) == -1 ||
++			opened.st_dev != status.st_dev ||
++			opened.st_ino != status.st_ino) {
++			close(next);
++			close(current);
++			errno = EAGAIN;
++			return -1;
++		}
++		close(current);
++		current = next;
++	}
++	return current;
++}
++
+ DarlingServer::Log::Log(std::string category):
+ 	_category(category)
+ {
+@@ -102,9 +142,17 @@ void DarlingServer::Log::_log(Type type, std::string message) const {
+ 	// NOTE: we use POSIX file APIs because we want to append each message to the log file atomically,
+ 	//       and as far as i can tell, C++ fstreams provide no such guarantee (that they won't write in chunks).
+ 	static int logFile = []() {
+-		std::filesystem::path path(Server::sharedInstance().prefix() + "/private/var/log/dserver.log");
+-		std::filesystem::create_directories(path.parent_path());
+-		return open(path.c_str(), O_WRONLY | O_APPEND | O_CREAT, S_IRUSR | S_IWUSR | S_IRGRP | S_IROTH);
++		const int directory =
++			openLogDirectoryAt(Server::sharedInstance().prefixFD());
++		if (directory == -1) {
++			return -1;
++		}
++		const int file = openat(
++			directory, "dserver.log",
++			O_WRONLY | O_APPEND | O_CREAT | O_CLOEXEC | O_NOFOLLOW,
++			S_IRUSR | S_IWUSR | S_IRGRP | S_IROTH);
++		close(directory);
++		return file;
+ 	}();
+ 
+ 	static bool logToStderr = []() {
+diff --git a/src/runtime-mode.cpp b/src/runtime-mode.cpp
+new file mode 100644
+index 0000000..ad27312
+--- /dev/null
++++ b/src/runtime-mode.cpp
+@@ -0,0 +1,201 @@
++#define _GNU_SOURCE 1
++
++#include <darlingserver/runtime-mode.hpp>
++
++#include <cerrno>
++#include <cstring>
++#include <fcntl.h>
++#include <limits.h>
++#include <string>
++#include <sys/stat.h>
++#include <unistd.h>
++
++namespace DarlingServer {
++
++static constexpr const char* kCanonicalEnvironment = "DARLING_RUNTIME_MODE";
++static constexpr const char* kMarkerName = ".darling-runtime-mode-v1";
++
++std::string_view runtimeModeName(RuntimeMode mode)
++{
++	switch (mode) {
++		case RuntimeMode::PrivilegedOverlay:
++			return "privileged-overlay";
++		case RuntimeMode::PrivilegedCopy:
++			return "privileged-copy";
++		case RuntimeMode::PrivilegedEunion:
++			return "privileged-eunion";
++		case RuntimeMode::RootlessEunion:
++			return "rootless-eunion";
++	}
++	throw RuntimeModeError("invalid Darling runtime mode");
++}
++
++static RuntimeMode parseRuntimeMode(const char* value)
++{
++	if (value == nullptr)
++		throw RuntimeModeError("canonical DARLING_RUNTIME_MODE is missing");
++	if (std::strcmp(value, "privileged-overlay") == 0)
++		return RuntimeMode::PrivilegedOverlay;
++	if (std::strcmp(value, "privileged-copy") == 0)
++		return RuntimeMode::PrivilegedCopy;
++	if (std::strcmp(value, "privileged-eunion") == 0)
++		return RuntimeMode::PrivilegedEunion;
++	if (std::strcmp(value, "rootless-eunion") == 0)
++		return RuntimeMode::RootlessEunion;
++	throw RuntimeModeError("canonical DARLING_RUNTIME_MODE is invalid");
++}
++
++RuntimeMode requireRuntimeModeFromEnvironment(bool eunionCapable)
++{
++	if (std::getenv("DARLING_ROOTLESS") != nullptr ||
++		std::getenv("DARLING_NOOVERLAYFS") != nullptr ||
++		std::getenv("DARLING_EUNION") != nullptr)
++		throw RuntimeModeError(
++			"legacy runtime flags are forbidden after launcher normalization");
++
++	RuntimeMode mode = parseRuntimeMode(std::getenv(kCanonicalEnvironment));
++	if (runtimeModeUsesEunion(mode) && !eunionCapable)
++		throw RuntimeModeError(
++			"canonical runtime mode requires an E-UNION-capable build");
++	return mode;
++}
++
++bool runtimeModeIsRootless(RuntimeMode mode)
++{
++	return mode == RuntimeMode::RootlessEunion;
++}
++
++bool runtimeModeUsesOverlay(RuntimeMode mode)
++{
++	return mode == RuntimeMode::PrivilegedOverlay;
++}
++
++bool runtimeModeUsesEunion(RuntimeMode mode)
++{
++	return mode == RuntimeMode::PrivilegedEunion ||
++		mode == RuntimeMode::RootlessEunion;
++}
++
++void validateRootlessProcessCredentials(
++	uid_t expectedUID,
++	gid_t expectedGID
++)
++{
++	if (expectedUID == 0 || expectedGID == 0)
++		throw RuntimeModeError(
++			"rootless mode requires non-root invoking user and group IDs");
++
++	uid_t realUID;
++	uid_t effectiveUID;
++	uid_t savedUID;
++	gid_t realGID;
++	gid_t effectiveGID;
++	gid_t savedGID;
++	if (getresuid(&realUID, &effectiveUID, &savedUID) != 0 ||
++		getresgid(&realGID, &effectiveGID, &savedGID) != 0)
++		throw RuntimeModeError(
++			std::string("cannot inspect rootless process credentials: ") +
++			std::strerror(errno));
++	if (realUID != expectedUID ||
++		effectiveUID != expectedUID ||
++		savedUID != expectedUID ||
++		realGID != expectedGID ||
++		effectiveGID != expectedGID ||
++		savedGID != expectedGID)
++		throw RuntimeModeError(
++			"rootless process retained unexpected real, effective, or saved credentials");
++}
++
++void validateRuntimeModePrefixFD(
++	int prefixFD,
++	int parentFD,
++	const char* leaf,
++	int workdirFD,
++	RuntimeMode mode
++)
++{
++	if (prefixFD < 0 || parentFD < 0 || workdirFD < 0 || leaf == nullptr ||
++		*leaf == '\0' || std::strcmp(leaf, ".") == 0 ||
++		std::strcmp(leaf, "..") == 0 ||
++		std::strchr(leaf, '/') != nullptr ||
++		std::strlen(leaf) > NAME_MAX)
++		throw RuntimeModeError("inherited runtime prefix handle is invalid");
++
++	struct stat opened;
++	struct stat parent;
++	struct stat named;
++	struct stat workdirOpened;
++	struct stat workdirNamed;
++	if (fstat(prefixFD, &opened) != 0 ||
++		fstat(parentFD, &parent) != 0 ||
++		!S_ISDIR(opened.st_mode) ||
++		!S_ISDIR(parent.st_mode))
++		throw RuntimeModeError(
++			"inherited runtime prefix descriptors are not directories");
++	if (fstatat(parentFD, leaf, &named, AT_SYMLINK_NOFOLLOW) != 0 ||
++		S_ISLNK(named.st_mode) ||
++		!S_ISDIR(named.st_mode) ||
++		named.st_dev != opened.st_dev ||
++		named.st_ino != opened.st_ino)
++		throw RuntimeModeError(
++			"runtime prefix name changed before darlingserver handoff");
++	std::string workdirLeaf(leaf);
++	workdirLeaf += ".workdir";
++	if (workdirLeaf.size() > NAME_MAX ||
++		fstat(workdirFD, &workdirOpened) != 0 ||
++		!S_ISDIR(workdirOpened.st_mode) ||
++		fstatat(
++			parentFD, workdirLeaf.c_str(), &workdirNamed,
++			AT_SYMLINK_NOFOLLOW) != 0 ||
++		S_ISLNK(workdirNamed.st_mode) ||
++		!S_ISDIR(workdirNamed.st_mode) ||
++		workdirNamed.st_dev != workdirOpened.st_dev ||
++		workdirNamed.st_ino != workdirOpened.st_ino)
++		throw RuntimeModeError(
++			"runtime prefix workdir changed before darlingserver handoff");
++
++	int fd = openat(prefixFD, kMarkerName,
++		O_RDONLY | O_CLOEXEC | O_NOFOLLOW);
++	if (fd < 0) {
++		throw RuntimeModeError(
++			"runtime prefix has no valid mode marker; use a new prefix");
++	}
++
++	struct stat status;
++	if (fstat(fd, &status) != 0 || !S_ISREG(status.st_mode) ||
++		status.st_size < 0 || status.st_size >= 128) {
++		close(fd);
++		throw RuntimeModeError(
++			"runtime mode marker is not a bounded regular file");
++	}
++	char observed[128];
++	ssize_t length = read(fd, observed, static_cast<size_t>(status.st_size));
++	int savedErrno = errno;
++	if (close(fd) != 0 && length >= 0) {
++		length = -1;
++		savedErrno = errno;
++	}
++	if (length < 0 || length != status.st_size) {
++		errno = length < 0 ? savedErrno : EIO;
++		throw RuntimeModeError(std::string("cannot read runtime mode marker: ") +
++			std::strerror(errno));
++	}
++	observed[length] = '\0';
++	std::string expected = "DARLING_RUNTIME_MODE_V1=";
++	expected += runtimeModeName(mode);
++	expected += "\n";
++	if (expected != observed)
++		throw RuntimeModeError(
++			"runtime prefix mode mismatch; use a new prefix");
++}
++
++std::string runtimePrefixProcPath(int prefixFD)
++{
++	struct stat status;
++	if (prefixFD < 0 || fstat(prefixFD, &status) != 0 ||
++		!S_ISDIR(status.st_mode))
++		throw RuntimeModeError("runtime prefix fd is not an open directory");
++	return "/proc/self/fd/" + std::to_string(prefixFD);
++}
++
++}
+diff --git a/src/server.cpp b/src/server.cpp
+index c2ec2ed..9cc4681 100644
+--- a/src/server.cpp
++++ b/src/server.cpp
+@@ -441,8 +441,13 @@ struct DTapeHooks {
+ 	};
+ };
+ 
+-DarlingServer::Server::Server(std::string prefix, pid_t rootlessInitHostPID):
++DarlingServer::Server::Server(
++	std::string prefix,
++	int prefixFD,
++	pid_t rootlessInitHostPID
++):
+ 	_prefix(prefix),
++	_prefixFD(prefixFD),
+ 	_rootlessInitHostPID(rootlessInitHostPID),
+ 	_socketPath(_prefix + "/.darlingserver.sock"),
+ 	// abstract-namespace name for the stat socket (see the stat-socket setup below for
+@@ -455,8 +460,14 @@ DarlingServer::Server::Server(std::string prefix, pid_t rootlessInitHostPID):
+ 	// perf #0 (dar-dar6x4-perf-5dq.6): record the server start time for uptime.
+ 	Metrics::shared().startMonoUs = Metrics::nowMonoUs();
+ 
+-	// remove the old socket (if it exists)
+-	unlink(_socketPath.c_str());
++	// Remove the old socket relative to the already-retained prefix. The path
++	// spelling is used only by bind(2), which has no *at variant.
++	if (unlinkat(prefixFD, ".darlingserver.sock", 0) == -1 &&
++		errno != ENOENT) {
++		throw std::system_error(
++			errno, std::generic_category(),
++			"Failed to remove stale server socket");
++	}
+ 
+ 	// create the socket
+ 	_listenerSocket = socket(AF_UNIX, SOCK_DGRAM | SOCK_NONBLOCK | SOCK_CLOEXEC, 0);
+@@ -576,7 +587,11 @@ DarlingServer::Server::~Server() {
+ 	close(_epollFD);
+ 	close(_wakeupFD);
+ 	close(_listenerSocket);
+-	unlink(_socketPath.c_str());
++	if (unlinkat(_prefixFD, ".darlingserver.sock", 0) == -1 &&
++		errno != ENOENT) {
++		fprintf(stderr, "Failed to remove server socket: %s\n",
++			strerror(errno));
++	}
+ 	if (_statListenerSocket >= 0) {
+ 		// abstract socket: no filesystem entry to unlink; closing frees the name.
+ 		close(_statListenerSocket);
+@@ -843,6 +858,10 @@ std::string DarlingServer::Server::prefix() const {
+ 	return _prefix;
+ };
+ 
++int DarlingServer::Server::prefixFD() const {
++	return _prefixFD;
++};
++
+ pid_t DarlingServer::Server::namespaceIDForPeer(pid_t peerHostPID, pid_t reportedNamespaceID) const {
+ 	return ProcessIdentity::namespaceIDForPeer(_rootlessInitHostPID, peerHostPID, reportedNamespaceID);
+ };
+diff --git a/tests/runtime_mode_test.cpp b/tests/runtime_mode_test.cpp
+new file mode 100644
+index 0000000..bc2327e
+--- /dev/null
++++ b/tests/runtime_mode_test.cpp
+@@ -0,0 +1,226 @@
++#include <darlingserver/runtime-mode.hpp>
++
++#include <cstdlib>
++#include <filesystem>
++#include <fstream>
++#include <fcntl.h>
++#include <iostream>
++#include <string>
++#include <sys/stat.h>
++#include <unistd.h>
++
++using namespace DarlingServer;
++
++static void require(bool condition, const char* message)
++{
++	if (!condition) {
++		std::cerr << "FAIL " << message << '\n';
++		std::exit(1);
++	}
++}
++
++static void clearEnvironment()
++{
++	unsetenv("DARLING_RUNTIME_MODE");
++	unsetenv("DARLING_ROOTLESS");
++	unsetenv("DARLING_NOOVERLAYFS");
++	unsetenv("DARLING_EUNION");
++}
++
++static void requireMode(const char* name, RuntimeMode expected)
++{
++	clearEnvironment();
++	setenv("DARLING_RUNTIME_MODE", name, 1);
++	require(requireRuntimeModeFromEnvironment(true) == expected,
++		"canonical runtime mode did not propagate to darlingserver");
++}
++
++static void requireFailure(bool capable)
++{
++	try {
++		(void)requireRuntimeModeFromEnvironment(capable);
++	} catch (const RuntimeModeError&) {
++		return;
++	}
++	require(false, "invalid runtime environment was accepted");
++}
++
++static void writeMarker(const std::filesystem::path& directory)
++{
++	std::ofstream output(directory / ".darling-runtime-mode-v1");
++	output << "DARLING_RUNTIME_MODE_V1=rootless-eunion\n";
++	require(output.good(), "write runtime mode marker fixture");
++}
++
++static void requireRejectedPrefixFD(
++	int prefixFD,
++	int parentFD,
++	const char* leaf,
++	int workdirFD,
++	const char* message
++)
++{
++	try {
++		validateRuntimeModePrefixFD(
++			prefixFD, parentFD, leaf, workdirFD,
++			RuntimeMode::RootlessEunion);
++		require(false, message);
++	} catch (const RuntimeModeError&) {
++	}
++}
++
++int main()
++{
++	requireMode("privileged-overlay", RuntimeMode::PrivilegedOverlay);
++	requireMode("privileged-copy", RuntimeMode::PrivilegedCopy);
++	requireMode("privileged-eunion", RuntimeMode::PrivilegedEunion);
++	requireMode("rootless-eunion", RuntimeMode::RootlessEunion);
++
++	clearEnvironment();
++	requireFailure(true);
++	setenv("DARLING_RUNTIME_MODE", "unknown", 1);
++	requireFailure(true);
++	setenv("DARLING_RUNTIME_MODE", "rootless-eunion", 1);
++	requireFailure(false);
++	setenv("DARLING_ROOTLESS", "1", 1);
++	requireFailure(true);
++	clearEnvironment();
++
++	validateRootlessProcessCredentials(getuid(), getgid());
++	try {
++		validateRootlessProcessCredentials(0, getgid());
++		require(false, "root user identity was accepted for rootless mode");
++	} catch (const RuntimeModeError&) {
++	}
++	try {
++		validateRootlessProcessCredentials(getuid(), 0);
++		require(false, "root group identity was accepted for rootless mode");
++	} catch (const RuntimeModeError&) {
++	}
++
++	char fixture[] = "/tmp/dserver-runtime-mode.XXXXXX";
++	char* root = mkdtemp(fixture);
++	require(root != nullptr, "mkdtemp");
++	const std::filesystem::path prefix =
++		std::filesystem::path(root) / "prefix";
++	std::filesystem::create_directory(prefix);
++	const std::filesystem::path workdir =
++		std::filesystem::path(root) / "prefix.workdir";
++	std::filesystem::create_directory(workdir);
++	const std::string marker =
++		(prefix / ".darling-runtime-mode-v1").string();
++	const int parentFD =
++		open(root, O_RDONLY | O_DIRECTORY | O_CLOEXEC | O_NOFOLLOW);
++	const int prefixFD =
++		open(prefix.c_str(), O_RDONLY | O_DIRECTORY | O_CLOEXEC | O_NOFOLLOW);
++	const int workdirFD =
++		open(workdir.c_str(), O_RDONLY | O_DIRECTORY | O_CLOEXEC | O_NOFOLLOW);
++	require(parentFD >= 0 && prefixFD >= 0 && workdirFD >= 0,
++		"open prefix fixture descriptors");
++
++	try {
++		validateRuntimeModePrefixFD(
++			prefixFD, parentFD, "prefix", workdirFD,
++			RuntimeMode::RootlessEunion);
++		require(false, "missing marker was accepted");
++	} catch (const RuntimeModeError&) {
++		require(!std::filesystem::exists(marker),
++			"missing-marker validation mutated the prefix");
++	}
++
++	writeMarker(prefix);
++	validateRuntimeModePrefixFD(
++		prefixFD, parentFD, "prefix", workdirFD,
++		RuntimeMode::RootlessEunion);
++	const std::string retainedAlias = runtimePrefixProcPath(prefixFD);
++	struct stat aliasStatus;
++	struct stat prefixStatus;
++	require(stat(retainedAlias.c_str(), &aliasStatus) == 0,
++		"retained prefix alias stat");
++	require(fstat(prefixFD, &prefixStatus) == 0 &&
++		aliasStatus.st_dev == prefixStatus.st_dev &&
++		aliasStatus.st_ino == prefixStatus.st_ino,
++		"retained prefix alias does not name exact descriptor");
++	try {
++		validateRuntimeModePrefixFD(
++			prefixFD, parentFD, "prefix", workdirFD,
++			RuntimeMode::PrivilegedOverlay);
++		require(false, "mismatched marker was accepted");
++	} catch (const RuntimeModeError&) {
++		std::ifstream input(marker);
++		std::string content;
++		std::getline(input, content);
++		require(content == "DARLING_RUNTIME_MODE_V1=rootless-eunion",
++			"mismatch validation mutated the marker");
++	}
++
++	std::filesystem::path target = std::filesystem::path(root) / "target";
++	std::filesystem::create_directories(target);
++	writeMarker(target);
++	std::filesystem::path sentinel = target / "sentinel";
++	{
++		std::ofstream output(sentinel);
++		output << "unchanged\n";
++	}
++	const std::filesystem::path parked =
++		std::filesystem::path(root) / "prefix.parked";
++	require(rename(prefix.c_str(), parked.c_str()) == 0,
++		"park inspected prefix");
++	require(symlink(target.c_str(), prefix.c_str()) == 0,
++		"replace inspected prefix with symlink");
++	requireRejectedPrefixFD(
++		prefixFD, parentFD, "prefix", workdirFD,
++		"rename-swap runtime prefix symlink was accepted");
++	struct stat retainedStatus;
++	require(stat(retainedAlias.c_str(), &retainedStatus) == 0 &&
++		retainedStatus.st_dev == prefixStatus.st_dev &&
++		retainedStatus.st_ino == prefixStatus.st_ino,
++		"rename-swap redirected retained prefix alias");
++	{
++		std::ifstream input(sentinel);
++		std::string content;
++		std::getline(input, content);
++		require(content == "unchanged",
++			"rename-swap rejection mutated its target");
++	}
++	require(unlink(prefix.c_str()) == 0 &&
++		rename(parked.c_str(), prefix.c_str()) == 0,
++		"restore inspected prefix fixture");
++	validateRuntimeModePrefixFD(
++		prefixFD, parentFD, "prefix", workdirFD,
++		RuntimeMode::RootlessEunion);
++	const std::filesystem::path parkedWorkdir =
++		std::filesystem::path(root) / "prefix.workdir.parked";
++	require(rename(workdir.c_str(), parkedWorkdir.c_str()) == 0,
++		"park inspected workdir");
++	require(symlink(target.c_str(), workdir.c_str()) == 0,
++		"replace inspected workdir with symlink");
++	requireRejectedPrefixFD(
++		prefixFD, parentFD, "prefix", workdirFD,
++		"rename-swap runtime workdir symlink was accepted");
++	require(unlink(workdir.c_str()) == 0 &&
++		rename(parkedWorkdir.c_str(), workdir.c_str()) == 0,
++		"restore inspected workdir fixture");
++	validateRuntimeModePrefixFD(
++		prefixFD, parentFD, "prefix", workdirFD,
++		RuntimeMode::RootlessEunion);
++
++	std::filesystem::remove(marker);
++	require(symlink(target.c_str(), marker.c_str()) == 0,
++		"create marker symlink");
++	requireRejectedPrefixFD(
++		prefixFD, parentFD, "prefix", workdirFD,
++		"runtime marker symlink was accepted");
++	require(!std::filesystem::exists(target / "mutated"),
++		"marker symlink rejection mutated target");
++
++	close(prefixFD);
++	close(workdirFD);
++	close(parentFD);
++	std::filesystem::remove_all(target);
++	std::filesystem::remove_all(prefix);
++	std::filesystem::remove_all(workdir);
++	std::filesystem::remove(root);
++	std::cout << "DSERVER_RUNTIME_MODE_CONTRACT_OK\n";
++	return 0;
++}
+-- 
+2.43.0
+
