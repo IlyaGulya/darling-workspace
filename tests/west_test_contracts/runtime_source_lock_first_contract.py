@@ -90,7 +90,8 @@ def runtime_fixture(root: Path):
         for patch in patches
     ]
     plan = runtime_source.patch_stack_lock_first.LockFirstPlan(plan_entries, {
-        "batch_id": "darling-homebrew-lock-first-batch-7", "expected_count": 69,
+        "batch_id": "darling-homebrew-rootless-productization-batch-8",
+        "expected_count": 72,
         "series": plan_entries,
     }, {
         "schema_version": 2, "path": "fixture-profile-composition.yml", "prerequisites": [],
@@ -238,9 +239,9 @@ def identity_contract() -> None:
                     result_counts.append((entries[0]["module"], len(result[0])))
                     return result
                 if entries[0]["module"] == "darling/src/external/installer":
-                    # The synthetic fixture represents the remaining Batch 7
+                    # The synthetic fixture represents the remaining Batch 8
                     # entries without inventing extra repositories.
-                    result = ([{"module": "synthetic"}] * 68, {})
+                    result = ([{"module": "synthetic"}] * 71, {})
                     result_counts.append((entries[0]["module"], len(result[0])))
                     return result
                 return [], {}
@@ -263,7 +264,7 @@ def identity_contract() -> None:
                     assert committer_date == author_date
                 assert result_counts == [
                     ("darling/src/external/xnu", 1),
-                    ("darling/src/external/installer", 68),
+                    ("darling/src/external/installer", 71),
                 ]
                 global_after = subprocess.run(
                     ["git", "config", "--global", "--list"], check=False,
@@ -459,7 +460,9 @@ def main() -> None:
     materializer = runtime_source.RuntimeSourceMaterializer(host)
     plan = runtime_source.patch_stack_lock_first.LockFirstPlan(
         [{"profile": "homebrew", "module": patch["module"], "patch": patch["path"], "lock": "x", "lock_path": "x"} for patch in patches],
-        {"batch_id": "darling-homebrew-lock-first-batch-7", "expected_count": 69,
+        {
+            "batch_id": "darling-homebrew-rootless-productization-batch-8",
+            "expected_count": 72,
          "series_order": [{"module": patch["module"], "patch": patch["path"]} for patch in patches],
          "module_order": modules},
         {"schema_version": 2, "path": "synthetic-profile-composition.yml", "prerequisites": [],
@@ -479,7 +482,7 @@ def main() -> None:
         runtime_source.patch_stack_lock_first.plan = lambda *_args: plan
         def batch(target, entries, **_kwargs):
             calls.append(entries[0]["module"])
-            count = 62 if entries[0]["module"] == "darling/src/external/installer" else 1
+            count = 65 if entries[0]["module"] == "darling/src/external/installer" else 1
             return ([{"module": entries[0]["module"]}] * count, {})
         runtime_source.patch_stack_lock_first.materialize_batch_into = batch
         runtime_source.patch_stack_materialize.load_lock = (
@@ -500,7 +503,11 @@ def main() -> None:
         materializer._materialize_canonical_profile("homebrew", targets)
         assert calls == modules
         assert messages[0] == "PATCH_STACK_MODE=default-lock-first materializer=runtime-source"
-        assert messages[-1].startswith("PATCH_STACK_REPLAY batch=darling-homebrew-lock-first-batch-7 expected=69 applied=69 modules=8 elapsed_seconds=")
+        assert messages[-1].startswith(
+            "PATCH_STACK_REPLAY "
+            "batch=darling-homebrew-rootless-productization-batch-8 "
+            "expected=72 applied=72 modules=8 elapsed_seconds="
+        )
         assert messages[-1].endswith(" verdict=VALID")
         runtime_source.patch_stack_lock_first.plan = lambda *_args: (_ for _ in ()).throw(runtime_source.patch_stack_lock_first.LockFirstError("bad mapping"))
         messages.clear()

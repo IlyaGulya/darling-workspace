@@ -23,12 +23,12 @@ series:
   - profile: perf
     module: darling/src/external/darlingserver
     patch: darlingserver/perf18-server-ring.patch
-    lock: darlingserver-perf18-server-ring-profile-v7.yml
+    lock: darlingserver-perf18-server-ring-rootless-profile-v9.yml
   - profile: perf
     module: darling/src/external/darlingserver
     patch: darlingserver/a0-hang-fixes.patch
-    lock: darlingserver-a0-hang-fixes-profile-v7.yml
+    lock: darlingserver-a0-hang-fixes-rootless-profile-v9.yml
   - profile: perf
     module: darling/src/external/darlingserver
     patch: darlingserver/j7e7-postfork-reset-gate.patch
-    lock: darlingserver-j7e7-postfork-reset-gate-profile-v7.yml
+    lock: darlingserver-j7e7-postfork-reset-gate-rootless-profile-v9.yml

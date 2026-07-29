@@ -232,7 +232,8 @@ patch_source = (ROOT / "west_commands/patch.py").read_text()
 runtime_source = (ROOT / "west_commands/test_runtime_source.py").read_text()
 export_source = (ROOT / "west_commands/patch_stack_export.py").read_text()
 assert "patch_stack_lock_first.materialize_batch_into(" in patch_source
-assert "applicability never executes" in patch_source
+assert "archives remain provenance fixtures only." in patch_source
+assert "reset_to_first_base=module not in materialized" in patch_source
 assert "patch_stack_lock_first.materialize_batch_into(" in runtime_source
 assert "Historical archives are never executable inputs." in runtime_source
 assert '"format-patch"' in export_source

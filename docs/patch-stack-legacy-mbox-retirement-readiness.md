@@ -9,16 +9,16 @@ composition.
 
 | Entry point | Profile/mode | Class | Materialization source |
 | --- | --- | --- | --- |
-| `west patch apply --profile homebrew` | `default-lock-first` | normal CLI | Batch 7, 69 immutable series |
+| `west patch apply --profile homebrew` | `default-lock-first` | normal CLI | Batch 8, 72 immutable series |
 | `west patch apply --profile perf` | `default-lock-first` | normal CLI | homebrew prerequisite plus perf 7 |
-| `west patch apply --profile arch` | `default-lock-first` | normal CLI/manual Arch tier | homebrew 69, perf 7, arch 19 |
+| `west patch apply --profile arch` | `default-lock-first` | normal CLI/manual Arch tier | homebrew 72, perf 7, arch 19 |
 | `west patch apply ... --lock-first` | `explicit-lock-first` | compatibility alias | same typed plan as no-flag |
-| `west test --profile homebrew --materialize-profile` | runtime-source canonical | regular host CI | Batch 7 in lifecycle-owned worktrees |
+| `west test --profile homebrew --materialize-profile` | runtime-source canonical | regular host CI | Batch 8 in lifecycle-owned worktrees |
 | `RuntimeSourceMaterializer.profile_worktree_checkout()` | runtime-source canonical | host/runtime tests | typed homebrew/perf/arch stack |
 | runtime-source current-minus RED proof | canonical-minus-one | tests | immutable locks with a typed omission |
 | manual `patch-stack-lock-first.yml` control | `immutable-cherry-pick-oracle` | manual oracle | declared immutable refs in fresh ODBs |
 | manual `patch-stack-lock-first.yml` candidate | `default-lock-first` | manual acceptance | production native format-patch/git-am replay |
-| manual `test-infra.yml` Arch tier | `default-lock-first` | manual acceptance | composed 69/7/19 canonical stack |
+| manual `test-infra.yml` Arch tier | `default-lock-first` | manual acceptance | composed 72/7/19 canonical stack |
 | guest-smoke/toolchain/full | no profile apply | regular CI | consumes built runtime; no archive apply |
 
 `--legacy-mbox`, `--shadow-lock`, `--shadow-evidence`, the shadow workflow,
@@ -43,7 +43,7 @@ immutable objects.
 
 | Profile | Batch | Own series | Grouped module order |
 | --- | --- | ---: | --- |
-| homebrew | `darling-homebrew-lock-first-batch-7` | 69 | darlingserver, xnu, libplatform, perl, libressl-2.8.3, libpthread, darling, installer |
+| homebrew | `darling-homebrew-rootless-productization-batch-8` | 72 | darlingserver, xnu, libplatform, perl, libressl-2.8.3, libpthread, darling, installer |
 | perf | `darling-perf-lock-first-batch-1` | 7 | darling, xnu, dyld, darlingserver |
 | arch | `darling-arch-lock-first-batch-1` | 19 | libunwind, xnu, darlingserver, darling |
 

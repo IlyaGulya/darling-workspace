@@ -1,7 +1,7 @@
 schema_version: 3
 profile: homebrew
-batch_id: darling-homebrew-lock-first-batch-7
-expected_count: 69
+batch_id: darling-homebrew-rootless-productization-batch-8
+expected_count: 72
 composition: homebrew-profile-composition-v2.yml
 series:
   - profile: homebrew
@@ -105,6 +105,10 @@ series:
     patch: darlingserver/rootless-runtime-integration.patch
     lock: darlingserver-rootless-runtime-integration-v1.yml
   - profile: homebrew
+    module: darling/src/external/darlingserver
+    patch: darlingserver/runtime-mode-canonical.patch
+    lock: darlingserver-runtime-mode-canonical-v1.yml
+  - profile: homebrew
     module: darling/src/external/xnu
     patch: xnu/psynch-cvsignal-args.patch
     lock: darling-xnu-psynch-cvsignal-args-v1.yml
@@ -205,6 +209,10 @@ series:
     patch: xnu/generalize-recv-spin-guest.patch
     lock: darling-xnu-generalize-recv-spin-guest-v1.yml
   - profile: homebrew
+    module: darling/src/external/xnu
+    patch: xnu/af-unix-expanded-path-length.patch
+    lock: darling-xnu-af-unix-expanded-path-length-v1.yml
+  - profile: homebrew
     module: darling/src/external/libplatform
     patch: libplatform/bzero-return-register.patch
     lock: libplatform-bzero-return-register-v1.yml
@@ -272,6 +280,10 @@ series:
     module: darling
     patch: darling/rootless-shellspawn-lifecycle.patch
     lock: darling-rootless-shellspawn-lifecycle-v1.yml
+  - profile: homebrew
+    module: darling
+    patch: darling/runtime-mode-canonical.patch
+    lock: darling-runtime-mode-canonical-v1.yml
   - profile: homebrew
     module: darling/src/external/installer
     patch: installer/normalize-payload-paths.patch

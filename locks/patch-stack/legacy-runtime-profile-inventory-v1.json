@@ -14,17 +14,17 @@
       "profile": "homebrew",
       "base_profile": null,
       "mapping": "lock-first-series-v2.yml",
-      "batch_id": "darling-homebrew-lock-first-batch-7",
-      "series_count": 69,
-      "ordered_commit_count": 97,
+      "batch_id": "darling-homebrew-rootless-productization-batch-8",
+      "series_count": 72,
+      "ordered_commit_count": 100,
       "modules": [
-        {"path": "darling/src/external/darlingserver", "series_count": 25, "ordered_commit_count": 34},
-        {"path": "darling/src/external/xnu", "series_count": 25, "ordered_commit_count": 32},
+        {"path": "darling/src/external/darlingserver", "series_count": 26, "ordered_commit_count": 35},
+        {"path": "darling/src/external/xnu", "series_count": 26, "ordered_commit_count": 33},
         {"path": "darling/src/external/libplatform", "series_count": 1, "ordered_commit_count": 1},
         {"path": "darling/src/external/perl", "series_count": 1, "ordered_commit_count": 1},
         {"path": "darling/src/external/libressl-2.8.3", "series_count": 1, "ordered_commit_count": 1},
         {"path": "darling/src/external/libpthread", "series_count": 1, "ordered_commit_count": 3},
-        {"path": "darling", "series_count": 13, "ordered_commit_count": 21},
+        {"path": "darling", "series_count": 14, "ordered_commit_count": 22},
         {"path": "darling/src/external/installer", "series_count": 2, "ordered_commit_count": 4}
       ]
     },
@@ -58,10 +58,10 @@
     }
   ],
   "closure": {
-    "total_series": 95,
-    "total_ordered_commits": 187,
-    "schema_v2_lock_coverage": "94/94 hosted plus 1 publication-pending Arch continuation",
-    "immutable_ref_closure": "hosted_immutable_clean_odb plus publication-pending Arch continuation",
-    "clean_odb_evidence": "94 hosted series independently verified; b545 Arch continuation has dual local clean-ODB evidence pending create-only hosted tags"
+    "total_series": 98,
+    "total_ordered_commits": 190,
+    "schema_v2_lock_coverage": "94/94 hosted plus 4 publication-pending append-only series",
+    "immutable_ref_closure": "hosted_immutable_clean_odb plus 4 publication-pending append-only series",
+    "clean_odb_evidence": "94 hosted series independently verified; the b545 Arch continuation and 3 Rootless productization series have dual local clean-ODB evidence pending create-only hosted tags"
   }
 }

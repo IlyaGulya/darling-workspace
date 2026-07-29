@@ -15,6 +15,7 @@ from deploy_transaction import DeploymentTransaction, DeploymentTransactionError
 from test_runtime import (
     ROOTLESS_BOOTSTRAP_RESOURCE,
     ROOTLESS_TOOLCHAIN_RESOURCE,
+    RUNTIME_MODE_MARKER_NAME,
     is_fat_macho_binary,
     is_macho_binary,
     load_runtime_component_manifest,
@@ -24,6 +25,7 @@ from test_runtime import (
     runtime_artifact_deploy_paths,
     runtime_deploy_targets,
 )
+from test_prefix import PREFIX_LIFECYCLE_LOCK_NAME
 
 
 @dataclass(frozen=True)
@@ -258,6 +260,50 @@ class RuntimeDeploymentService:
             plan.extend((source, target) for target in targets)
         return plan
 
+    def _runtime_mode_marker_required(
+        self, proof: dict, prefix: Path
+    ) -> tuple[bool, bytes | None]:
+        """Validate an existing mode binding or plan one for an empty prefix."""
+
+        mode = proof.get("runtime-mode")
+        if mode is None:
+            return False, None
+        expected = f"DARLING_RUNTIME_MODE_V1={mode}\n".encode()
+        if prefix.is_symlink() or not prefix.is_dir():
+            self._host.die(
+                f"guest-runtime-deploy runtime prefix is not a real directory: {prefix}"
+            )
+        marker = prefix / RUNTIME_MODE_MARKER_NAME
+        entries = [
+            entry
+            for entry in prefix.iterdir()
+            if not (
+                entry.name == PREFIX_LIFECYCLE_LOCK_NAME
+                and not entry.is_symlink()
+                and entry.is_file()
+            )
+        ]
+        if not entries:
+            return True, expected
+        if marker.is_symlink() or not marker.is_file():
+            self._host.die(
+                "guest-runtime-deploy refuses a populated prefix without a "
+                f"regular typed mode marker: {prefix}"
+            )
+        try:
+            observed = marker.read_bytes()
+        except OSError as error:
+            self._host.die(
+                f"guest-runtime-deploy cannot read typed mode marker {marker}: {error}"
+            )
+        if observed != expected:
+            self._host.die(
+                "guest-runtime-deploy typed mode marker mismatch: "
+                f"expected {expected.decode().strip()!r}, "
+                f"observed {observed.decode(errors='replace').strip()!r}"
+            )
+        return False, expected
+
     @contextmanager
     def deployed(
         self,
@@ -272,6 +318,9 @@ class RuntimeDeploymentService:
         succeeded = False
         started = time.monotonic()
         self._host.inf(f"  runtime phase start: {label} deploy")
+        create_mode_marker, mode_marker_content = self._runtime_mode_marker_required(
+            proof, prefix
+        )
         shutdown_env = lifecycle_env or self._proof_lifecycle_env(proof)
         if not self._host._shutdown_runtime_prefix(prefix, extra_env=shutdown_env):
             self._host.die(
@@ -282,6 +331,15 @@ class RuntimeDeploymentService:
                 Path(temp) / "manifest.json", prefix, normalize_modes=True
             )
             try:
+                if create_mode_marker:
+                    marker_source = Path(temp) / "runtime-mode-marker"
+                    marker_source.write_bytes(mode_marker_content or b"")
+                    marker_source.chmod(0o600)
+                    marker_destination = prefix / RUNTIME_MODE_MARKER_NAME
+                    transaction.replace(marker_source, marker_destination)
+                    self._host.inf(
+                        f"  {label} deploy: typed mode marker -> {marker_destination}"
+                    )
                 for source, destination in self.deployment_plan(proof, build_root, prefix):
                     transaction.replace(source, destination)
                     self._host.inf(f"  {label} deploy: {source} -> {destination}")

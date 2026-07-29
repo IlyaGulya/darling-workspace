@@ -55,23 +55,23 @@ series:
   - profile: arch
     module: darling/src/external/darlingserver
     patch: darlingserver/stack-pool-empty-stack-handle.patch
-    lock: darlingserver-stack-pool-empty-stack-handle-profile-v6.yml
+    lock: darlingserver-stack-pool-empty-stack-handle-rootless-profile-v8.yml
   - profile: arch
     module: darling/src/external/darlingserver
     patch: darlingserver/a0-gate-focused-synth-markers.patch
-    lock: darlingserver-a0-gate-focused-synth-markers-profile-v6.yml
+    lock: darlingserver-a0-gate-focused-synth-markers-rootless-profile-v8.yml
   - profile: arch
     module: darling/src/external/darlingserver
     patch: darlingserver/recent-signal-rpc-contract-tests.patch
-    lock: darlingserver-recent-signal-rpc-contract-tests-profile-v6.yml
+    lock: darlingserver-recent-signal-rpc-contract-tests-rootless-profile-v8.yml
   - profile: arch
     module: darling/src/external/darlingserver
     patch: darlingserver/message-ctrunc-reject.patch
-    lock: darlingserver-message-ctrunc-reject-profile-v6.yml
+    lock: darlingserver-message-ctrunc-reject-rootless-profile-v8.yml
   - profile: arch
     module: darling/src/external/darlingserver
     patch: darlingserver/standard-signal-coalescing-flood-progress.patch
-    lock: darlingserver-standard-signal-coalescing-flood-progress-v1.yml
+    lock: darlingserver-standard-signal-coalescing-flood-progress-rootless-profile-v8.yml
   - profile: arch
     module: darling
     patch: darling/ci-host-regression-tests.patch
@@ -79,4 +79,4 @@ series:
   - profile: arch
     module: darling
     patch: darling/shellspawn-exit-status.patch
-    lock: darling-shellspawn-exit-status-mldr-disconnect-integration-local-v6.yml
+    lock: darling-shellspawn-exit-status-rootless-profile-v8.yml

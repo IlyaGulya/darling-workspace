@@ -22,6 +22,8 @@ except ImportError:
 
 ProcessEntry = tuple[int, int, str]
 
+PREFIX_LIFECYCLE_LOCK_NAME = ".west-test.lock"
+
 # These are control-plane endpoints created by the rootless runtime itself.
 # They are not guest test fixtures and must not survive once the runner has
 # established that the prefix has no live runtime processes or mounts.
@@ -415,7 +417,7 @@ class PrefixLifecycleOwner:
 
     @contextmanager
     def locked(self, prefix: Path) -> Iterator[None]:
-        lock_path = prefix / ".west-test.lock"
+        lock_path = prefix / PREFIX_LIFECYCLE_LOCK_NAME
         lock_path.parent.mkdir(parents=True, exist_ok=True)
         with lock_path.open("a+") as lock:
             self.inf(f"lock Darling prefix: {prefix}")

@@ -9,7 +9,7 @@ import yaml
 
 
 ROOT = Path(__file__).resolve().parents[2]
-PROFILE_COUNTS = {"homebrew": 69, "perf": 7, "arch": 19}
+PROFILE_COUNTS = {"homebrew": 72, "perf": 7, "arch": 19}
 MAPPINGS = {
     "homebrew": "lock-first-series-v2.yml",
     "perf": "lock-first-series-perf-v2.yml",
@@ -244,7 +244,9 @@ def main() -> None:
     assert "deprecated compatibility no-op" in patch_command
     assert "args.roll_back" not in patch_command
     assert "patch_stack_export.export_profile" in patch_command
-    assert "canonical applicability plan" in patch_command
+    assert "Replay the complete typed profile graph in disposable worktrees." in patch_command
+    assert 'for prerequisite in composition["prerequisites"]' in patch_command
+    assert "reset_to_first_base=module not in materialized" in patch_command
     assert "def _patch_state" not in patch_command
     assert '["git", "apply"' not in patch_command
     assert "Report canonical integration state without executing archives." in patch_command
