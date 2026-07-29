@@ -55,7 +55,7 @@ allowed.
 
 All production profiles are canonical:
 
-- homebrew: 72 series;
+- homebrew: 74 series;
 - perf: 7 series on the homebrew prerequisite;
 - arch: 19 series on homebrew and perf.
 

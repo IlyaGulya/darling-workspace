@@ -28,14 +28,48 @@ an E-UNION-capable build; mode selection never substitutes copy or overlay
 after that check.
 
 Rootless mode does not create privileged mount/PID namespaces and requires a
-prefix prepared for E-UNION operation. Every new prefix receives a versioned
-`.darling-runtime-mode-v1` marker. An existing prefix with a missing or
-different marker is rejected without migration or partial runtime setup; use a
-fresh disposable prefix instead. During `west test` deployment, the
-lifecycle-owned `.west-test.lock` does not count as prefix content: the mode
-marker is still installed transactionally as the first product entry, and is
-rolled back with the deployment on failure. Any other content without the
-marker remains an error. The writable prefix is the upper layer; its
+prefix prepared for E-UNION operation. Every new prefix receives the strict
+schema-v2 `.darling-prefix-state-v2` record. It binds schema version, runtime
+mode, monotonic generation, prefix device/inode, owner identity, and
+provenance. The one supported compatibility transition upgrades an otherwise
+valid `.darling-runtime-mode-v1` prefix in place. A malformed, newer,
+cross-prefix, multiply-linked, symlinked, wrongly owned, or mode-incompatible
+state is rejected before mutation.
+
+The launcher represents the post-anchor prefix as an assignment-resistant
+owning capability with runtime typestate. Its zero-overhead one-element-array C
+type rejects ordinary direct copy-initialization/assignment, while the runtime
+state remains authoritative: reopening an owned handle fails without discarding
+its descriptors, the original path is discarded, and a moved-from capability
+is unusable. This is not an absolute compile-time linearity guarantee. Stable
+prefix state (`missing`, `empty`, `legacy-v1`, or `current-v2`) and transaction
+intent are separate tagged variants. The
+transaction journal persists its exact operation and phase; recovery defines
+and tests every operation × journal-phase × stable-state combination, rejecting
+impossible combinations rather than inferring a choice from independent
+booleans. Lifecycle actions are create, reuse, upgrade/repair, recreate, and
+delete.
+
+Each mutation holds a per-prefix `flock`, revalidates that the locked inode is
+still the persistent named lock, writes and fsyncs its journal, fsyncs every
+staged regular file and the staged directory tree bottom-up, atomically
+publishes with `renameat2`, fsyncs the containing directory, and only then
+cleans old state. The lock file is never unlinked by lifecycle operations, so a
+waiter cannot remain queued on an obsolete inode while a newcomer locks a
+replacement. A three-process behavioral contract exercises that exact race.
+SIGINT or failure at an early, middle, or late phase therefore leaves either
+the previous valid prefix or the new valid generation. The behavioral suite
+executes 24 interruption cases: early/middle/late failure and SIGINT for
+create, upgrade, recreate, and delete; the separate 144-case decision-table
+test exhausts all operation × journal-phase × stable-state inputs. Typestate
+does not replace fd-relative revalidation, locking, fsync, or atomic
+publication. Transaction files, stage trees, state temporaries, workdirs,
+sockets, and process metadata are lifecycle-owned and removed or recovered
+idempotently.
+
+During `west test` deployment, the lifecycle-owned `.west-test.lock` does not
+count as prefix content. Any other content without a recognized state remains
+an error. The writable prefix is the upper layer; its
 `libexec/darling` subtree is the immutable lower template. A successful run
 must leave the lower template unchanged and must remove its init PID, Unix
 sockets, child processes, and other runtime state after `darling --rootless
@@ -68,9 +102,9 @@ Without `--rootless` or a compatibility override, the launcher selects
 the privileged startup contract, and does not enter rootless startup. The
 option must precede the `shell`, `exec`, `shutdown`, or program-path command.
 
-The canonical publication proposal is append-only. Homebrew Batch 8 contains
-72 ordered entries and introduces one typed-mode series each for
-Darlingserver and Darling plus the XNU AF_UNIX length series. Its changed
+The canonical publication proposal is append-only. Homebrew Batch 9 contains
+74 ordered entries and appends one prefix-lifecycle series each for
+Darlingserver and Darling after the Batch 8 typed-mode sources. Its changed
 module boundaries are explicitly propagated through the seven-entry Perf and
 nineteen-entry Arch composition locks; existing immutable sources are never
 rewritten. All proposed new bases/sources are verified in independent local

@@ -43,7 +43,7 @@ def main() -> None:
     inventory = load(ROOT / "locks/patch-stack/migration-inventory-v1.yml")
     assert inventory["schema_version"] == 2
     rows = {(row["profile"], row["patch"]): row for row in inventory["stacks"]}
-    assert len(rows) == len(inventory["stacks"]) == 98, "entries must be exact and unique"
+    assert len(rows) == len(inventory["stacks"]) == 100, "entries must be exact and unique"
     classifications = (
         "READY",
         "RECOVERABLE_LOCAL",
@@ -58,14 +58,14 @@ def main() -> None:
         "READY": 0,
         "RECOVERABLE_LOCAL": 0,
         "ALREADY_MIGRATED": 95,
-        "PUBLICATION_PENDING": 3,
+        "PUBLICATION_PENDING": 5,
     }
     report = (ROOT / "docs/patch-stack-canonical-migration-report.md").read_text()
     for count, name in (
         (0, "READY"),
         (0, "RECOVERABLE_LOCAL"),
         (95, "ALREADY_MIGRATED"),
-        (3, "PUBLICATION_PENDING"),
+        (5, "PUBLICATION_PENDING"),
     ):
         assert f"{count} `{name}`" in report, f"report summary missing {count} {name}"
     expected = {}

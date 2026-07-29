@@ -29,6 +29,7 @@ sys.modules.setdefault("west.commands", west_commands_module)
 
 import west_commands.test as west_test_module
 import west_commands.test_guest_c as guest_c_module
+import test_runtime_source as runtime_source_module
 from west_commands.test import DarlingTest, RuntimeBuildFailure, RuntimeRedProven
 from west_commands.test_execution import ProcessResult, process_output_text
 from west_commands.test_runtime import (
@@ -891,7 +892,28 @@ with tempfile.TemporaryDirectory() as temp:
     build_root = root / "build"
     artifact = build_root / "bin" / "darling"
     artifact.parent.mkdir(parents=True)
-    artifact.write_text("typed launcher\n")
+    artifact.write_text(
+        "#!/bin/sh\n"
+        "set -eu\n"
+        "[ \"$1\" = --rootless ]\n"
+        "[ \"$2\" = shutdown ]\n"
+        "mkdir -p \"$DPREFIX/private/etc\"\n"
+        "printf 'passwd\\n' >\"$DPREFIX/private/etc/passwd\"\n"
+        "printf 'master.passwd\\n' >\"$DPREFIX/private/etc/master.passwd\"\n"
+        "printf 'group\\n' >\"$DPREFIX/private/etc/group\"\n"
+        "cat >\"$DPREFIX/.darling-prefix-state-v2\" <<EOF\n"
+        "DARLING_PREFIX_STATE_V2\n"
+        "schema_version=2\n"
+        "runtime_mode=rootless-eunion\n"
+        "generation=1\n"
+        "prefix_device=1\n"
+        "prefix_inode=1\n"
+        "owner_uid=1\n"
+        "owner_gid=1\n"
+        "provenance=contract\n"
+        "EOF\n"
+    )
+    artifact.chmod(0o755)
     proof = {
         "runtime-mode": "rootless-eunion",
         "runtime-artifacts": [{"deploy": ["bin/darling"]}],
@@ -902,26 +924,31 @@ with tempfile.TemporaryDirectory() as temp:
         lambda _prefix, *, extra_env=None: shutdowns.append(Path(_prefix)) or True
     )
     marker = prefix / RUNTIME_MODE_MARKER_NAME
-    lifecycle_lock = prefix / ".west-test.lock"
-    lifecycle_lock.touch()
+    state = prefix / ".darling-prefix-state-v2"
 
     with test._runtime_red_deployed_artifacts(
         proof, build_root, prefix, label="typed rollback", restore_deployment=True
     ):
-        assert marker.read_text() == "DARLING_RUNTIME_MODE_V1=rootless-eunion\n"
-        assert (prefix / "bin/darling").read_text() == "typed launcher\n"
+        assert "schema_version=2\n" in state.read_text()
+        assert not marker.exists()
+        assert (prefix / "bin/darling").read_text() == artifact.read_text()
     assert not marker.exists()
+    assert not state.exists()
     assert not (prefix / "bin/darling").exists()
-    assert lifecycle_lock.is_file()
+    assert list(prefix.iterdir()) == []
 
     with test._runtime_red_deployed_artifacts(
         proof, build_root, prefix, label="typed retained", restore_deployment=False
     ):
-        assert marker.read_text() == "DARLING_RUNTIME_MODE_V1=rootless-eunion\n"
-    assert marker.read_text() == "DARLING_RUNTIME_MODE_V1=rootless-eunion\n"
-    assert (prefix / "bin/darling").read_text() == "typed launcher\n"
+        assert "schema_version=2\n" in state.read_text()
+        assert not marker.exists()
+    assert "runtime_mode=rootless-eunion\n" in state.read_text()
+    assert (prefix / "bin/darling").read_text() == artifact.read_text()
 
-    marker.write_text("DARLING_RUNTIME_MODE_V1=privileged-overlay\n")
+    state.write_text(state.read_text().replace(
+        "runtime_mode=rootless-eunion\n",
+        "runtime_mode=privileged-overlay\n",
+    ))
     before_shutdowns = len(shutdowns)
     try:
         with test._runtime_red_deployed_artifacts(
@@ -930,13 +957,13 @@ with tempfile.TemporaryDirectory() as temp:
         ):
             pass
     except SystemExit as exc:
-        assert "typed mode marker mismatch" in str(exc), exc
+        assert "typed prefix state mismatch" in str(exc), exc
     else:
         raise AssertionError("mismatched typed prefix was deployed")
     assert len(shutdowns) == before_shutdowns
-    assert marker.read_text() == "DARLING_RUNTIME_MODE_V1=privileged-overlay\n"
+    assert "runtime_mode=privileged-overlay\n" in state.read_text()
 
-    marker.unlink()
+    state.unlink()
     try:
         with test._runtime_red_deployed_artifacts(
             proof, build_root, prefix, label="typed missing",
@@ -947,7 +974,7 @@ with tempfile.TemporaryDirectory() as temp:
         assert "populated prefix without a regular typed mode marker" in str(exc), exc
     else:
         raise AssertionError("populated unmarked prefix was deployed")
-    assert not marker.exists()
+    assert not state.exists()
 
 with tempfile.TemporaryDirectory() as temp:
     bundle_root = Path(temp)
@@ -2148,6 +2175,13 @@ with tempfile.TemporaryDirectory() as temp:
     (target / "dependent.txt").write_text("dependent\n")
     subprocess.run(["git", "add", "dependent.txt"], cwd=target, check=True)
     subprocess.run(["git", "commit", "-q", "-m", "dependent patch"], cwd=target, check=True)
+    dependent_rev = subprocess.run(
+        ["git", "rev-parse", "HEAD"],
+        cwd=target,
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
     dependent_patch = subprocess.run(
         ["git", "format-patch", "-1", "--stdout"],
         cwd=target,
@@ -2158,6 +2192,13 @@ with tempfile.TemporaryDirectory() as temp:
     (target / "other.txt").write_text("kept\n")
     subprocess.run(["git", "add", "other.txt"], cwd=target, check=True)
     subprocess.run(["git", "commit", "-q", "-m", "kept patch"], cwd=target, check=True)
+    kept_rev = subprocess.run(
+        ["git", "rev-parse", "HEAD"],
+        cwd=target,
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
     kept_patch = subprocess.run(
         ["git", "format-patch", "-1", "--stdout"],
         cwd=target,
@@ -2169,6 +2210,13 @@ with tempfile.TemporaryDirectory() as temp:
     (target / "rerolled.txt").write_text("rerolled\n")
     subprocess.run(["git", "add", "rerolled.txt"], cwd=target, check=True)
     subprocess.run(["git", "commit", "-q", "-m", "skipped patch"], cwd=target, check=True)
+    rerolled_rev = subprocess.run(
+        ["git", "rev-parse", "HEAD"],
+        cwd=target,
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
     rerolled_subject_patch = subprocess.run(
         ["git", "format-patch", "-1", "--stdout"],
         cwd=target,
@@ -2199,7 +2247,7 @@ with tempfile.TemporaryDirectory() as temp:
     ).stdout.strip()
     assert equivalent_skipped_rev != skipped_rev
 
-    profile_dir = tempdir / "patches/runtime"
+    profile_dir = tempdir / "patches/homebrew"
     skipped_patch_file = profile_dir / "x/skipped.patch"
     rerolled_subject_patch_file = profile_dir / "x/rerolled-subject.patch"
     dependent_patch_file = profile_dir / "x/dependent.patch"
@@ -2231,25 +2279,83 @@ with tempfile.TemporaryDirectory() as temp:
         ]
     }
     test._profile_path = lambda profile: tempdir / "patches" / profile / "patches.yml"
-    trace = tempdir / "profile-apply-trace.json"
-    previous_trace = os.environ.get("GIT_TRACE2_EVENT")
-    os.environ["GIT_TRACE2_EVENT"] = str(trace)
+
+    class SyntheticPlan(list):
+        composition = None
+
+    commits = {
+        "x/skipped.patch": skipped_rev,
+        "x/rerolled-subject.patch": rerolled_rev,
+        "x/dependent.patch": dependent_rev,
+        "x/kept.patch": kept_rev,
+    }
+
+    def synthetic_plan(_profile, patches, _mapping, _grouped):
+        return SyntheticPlan(
+            {
+                "profile": "homebrew",
+                "module": patch["module"],
+                "patch": patch["path"],
+                "lock_path": str(tempdir / "unused-contract-lock.yml"),
+                "commit": commits[patch["path"]],
+            }
+            for patch in patches
+        )
+
+    materialized_skips = []
+
+    def synthetic_materialize(
+        repo,
+        entries,
+        *,
+        git_options,
+        reset_to_first_base,
+        composition,
+        skip_patches,
+    ):
+        assert git_options
+        assert composition is None
+        if reset_to_first_base:
+            subprocess.run(
+                ["git", "reset", "--hard", "-q", base_rev],
+                cwd=repo,
+                check=True,
+            )
+        materialized_skips.append(set(skip_patches))
+        for entry in entries:
+            if entry["patch"] not in skip_patches:
+                subprocess.run(
+                    ["git", "cherry-pick", entry["commit"]],
+                    cwd=repo,
+                    check=True,
+                    capture_output=True,
+                    text=True,
+                )
+        return [], {}
+
+    original_plan = runtime_source_module.patch_stack_lock_first.plan
+    original_materialize = (
+        runtime_source_module.patch_stack_lock_first.materialize_batch_into
+    )
+    runtime_source_module.patch_stack_lock_first.plan = synthetic_plan
+    runtime_source_module.patch_stack_lock_first.materialize_batch_into = (
+        synthetic_materialize
+    )
     try:
         test._apply_profile_module_patches(
-            "runtime",
+            "homebrew",
             "module",
             target,
             skip_patch_paths={"x/skipped.patch", "x/dependent.patch"},
         )
     finally:
-        if previous_trace is None:
-            del os.environ["GIT_TRACE2_EVENT"]
-        else:
-            os.environ["GIT_TRACE2_EVENT"] = previous_trace
-    trace_text = trace.read_text()
-    assert "maintenance run --auto" not in trace_text
-    assert '"--patch"' not in trace_text
-    assert '"--cherry-mark"' in trace_text
+        runtime_source_module.patch_stack_lock_first.plan = original_plan
+        runtime_source_module.patch_stack_lock_first.materialize_batch_into = (
+            original_materialize
+        )
+    assert materialized_skips == [
+        {"x/skipped.patch", "x/dependent.patch"}
+    ], materialized_skips
     assert (target / "file.txt").read_text() == "base\n"
     assert not (target / "dependent.txt").exists()
     assert (target / "rerolled.txt").read_text() == "rerolled\n"
@@ -2278,7 +2384,17 @@ with tempfile.TemporaryDirectory() as temp:
     test._profile_path = lambda profile: tempdir / "patches" / profile / "patches.yml"
     assert not test._commit_is_ancestor(target, equivalent_skipped_rev)
     assert test._commit_has_equivalent_patch(target, equivalent_skipped_rev)
-    test._apply_profile_module_patches("runtime", "module", target)
+    runtime_source_module.patch_stack_lock_first.plan = synthetic_plan
+    runtime_source_module.patch_stack_lock_first.materialize_batch_into = (
+        synthetic_materialize
+    )
+    try:
+        test._apply_profile_module_patches("homebrew", "module", target)
+    finally:
+        runtime_source_module.patch_stack_lock_first.plan = original_plan
+        runtime_source_module.patch_stack_lock_first.materialize_batch_into = (
+            original_materialize
+        )
     assert (target / "file.txt").read_text() == "base\nskipped\n"
     assert (target / "rerolled.txt").read_text() == "rerolled\n"
     assert (target / "dependent.txt").read_text() == "dependent\n"
@@ -2307,19 +2423,31 @@ with tempfile.TemporaryDirectory() as temp:
         (repo / path).write_text(contents)
         subprocess.run(["git", "add", path], cwd=repo, check=True)
         subprocess.run(["git", "commit", "-q", "-m", message], cwd=repo, check=True)
-        return subprocess.run(
+        commit = subprocess.run(
+            ["git", "rev-parse", "HEAD"],
+            cwd=repo,
+            check=True,
+            capture_output=True,
+            text=True,
+        ).stdout.strip()
+        patch = subprocess.run(
             ["git", "format-patch", "-1", "--stdout"],
             cwd=repo,
             check=True,
             capture_output=True,
             text=True,
         ).stdout
+        return patch, commit
 
-    skipped_patch = independent_patch("skipped.txt", "skipped\n", "skipped patch")
-    kept_patch = independent_patch("kept.txt", "kept\n", "kept patch")
+    skipped_patch, skipped_commit = independent_patch(
+        "skipped.txt", "skipped\n", "skipped patch"
+    )
+    kept_patch, kept_commit = independent_patch(
+        "kept.txt", "kept\n", "kept patch"
+    )
     subprocess.run(["git", "reset", "--hard", "-q", base_rev], cwd=repo, check=True)
 
-    profile_dir = tempdir / "patches/runtime/darling"
+    profile_dir = tempdir / "patches/homebrew/darling"
     profile_dir.mkdir(parents=True)
     (profile_dir / "skipped.patch").write_text(skipped_patch)
     (profile_dir / "kept.patch").write_text(kept_patch)
@@ -2336,7 +2464,7 @@ with tempfile.TemporaryDirectory() as temp:
             )
         ],
     )
-    test._active_profile = "runtime"
+    test._active_profile = "homebrew"
     test._profile_stack = lambda profile: [profile]
     test._load_profile = lambda _profile: {
         "patches": [
@@ -2352,10 +2480,53 @@ with tempfile.TemporaryDirectory() as temp:
         "source-base": base_rev,
     }
     proof = {"mode": "guest-runtime-deploy", "bad-profile": "current-minus-patch"}
-    with test._guest_runtime_source_forest(patch, proof, omit_patch=True) as source_root:
-        assert (source_root / "base.txt").read_text() == "base\n"
-        assert not (source_root / "skipped.txt").exists()
-        assert (source_root / "kept.txt").read_text() == "kept\n"
+    original_apply = (
+        runtime_source_module.RuntimeSourceMaterializer.apply_profile_module_patches
+    )
+
+    def synthetic_apply(
+        _self,
+        profile,
+        module,
+        target,
+        *,
+        skip_patch_paths=None,
+    ):
+        assert profile == "homebrew"
+        assert module == "darling"
+        skipped = skip_patch_paths or set()
+        subprocess.run(
+            ["git", "reset", "--hard", "-q", base_rev],
+            cwd=target,
+            check=True,
+        )
+        for patch_path, commit in (
+            ("darling/skipped.patch", skipped_commit),
+            ("darling/kept.patch", kept_commit),
+        ):
+            if patch_path not in skipped:
+                subprocess.run(
+                    ["git", "cherry-pick", commit],
+                    cwd=target,
+                    check=True,
+                    capture_output=True,
+                    text=True,
+                )
+
+    runtime_source_module.RuntimeSourceMaterializer.apply_profile_module_patches = (
+        synthetic_apply
+    )
+    try:
+        with test._guest_runtime_source_forest(
+            patch, proof, omit_patch=True
+        ) as source_root:
+            assert (source_root / "base.txt").read_text() == "base\n"
+            assert not (source_root / "skipped.txt").exists()
+            assert (source_root / "kept.txt").read_text() == "kept\n"
+    finally:
+        runtime_source_module.RuntimeSourceMaterializer.apply_profile_module_patches = (
+            original_apply
+        )
 
 with tempfile.TemporaryDirectory() as temp:
     tempdir = Path(temp)
@@ -2384,6 +2555,13 @@ with tempfile.TemporaryDirectory() as temp:
     (repo / "tests" / "profile_contract.sh").chmod(0o755)
     subprocess.run(["git", "add", "fixed.txt", "tests/profile_contract.sh"], cwd=repo, check=True)
     subprocess.run(["git", "commit", "-q", "-m", "fixed patch"], cwd=repo, check=True)
+    fixed_commit = subprocess.run(
+        ["git", "rev-parse", "HEAD"],
+        cwd=repo,
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
     fixed_patch = subprocess.run(
         ["git", "format-patch", "-1", "--stdout"],
         cwd=repo,
@@ -2393,7 +2571,7 @@ with tempfile.TemporaryDirectory() as temp:
     ).stdout
     subprocess.run(["git", "reset", "--hard", "-q", base_rev], cwd=repo, check=True)
 
-    profile_dir = tempdir / "patches/runtime/darling"
+    profile_dir = tempdir / "patches/homebrew/darling"
     profile_dir.mkdir(parents=True)
     (profile_dir / "fixed.patch").write_text(fixed_patch)
 
@@ -2409,7 +2587,7 @@ with tempfile.TemporaryDirectory() as temp:
             )
         ],
     )
-    test._active_profile = "runtime"
+    test._active_profile = "homebrew"
     test._profile_stack = lambda profile: [profile]
     test._load_profile = lambda _profile: {
         "patches": [
@@ -2420,6 +2598,37 @@ with tempfile.TemporaryDirectory() as temp:
     test._execution_env = lambda _invocation: {}
     seen = []
     seen_assets = []
+    original_apply = (
+        runtime_source_module.RuntimeSourceMaterializer.apply_profile_module_patches
+    )
+
+    def synthetic_apply(
+        _self,
+        profile,
+        module,
+        target,
+        *,
+        skip_patch_paths=None,
+    ):
+        assert profile == "homebrew"
+        assert module == "darling"
+        subprocess.run(
+            ["git", "reset", "--hard", "-q", base_rev],
+            cwd=target,
+            check=True,
+        )
+        if "darling/fixed.patch" not in (skip_patch_paths or set()):
+            subprocess.run(
+                ["git", "cherry-pick", fixed_commit],
+                cwd=target,
+                check=True,
+                capture_output=True,
+                text=True,
+            )
+
+    runtime_source_module.RuntimeSourceMaterializer.apply_profile_module_patches = (
+        synthetic_apply
+    )
 
     def run_invocation(_invocation, env=None):
         if _invocation.get("runner") == "source-profile-script":
@@ -2508,6 +2717,9 @@ with tempfile.TemporaryDirectory() as temp:
     )
     assert rc == 0
     assert seen == [False, True], seen
+    runtime_source_module.RuntimeSourceMaterializer.apply_profile_module_patches = (
+        original_apply
+    )
 
 with tempfile.TemporaryDirectory() as temp:
     tempdir = Path(temp)
@@ -2606,8 +2818,10 @@ with tempfile.TemporaryDirectory() as temp:
         subprocess.run(["git", "reset", "--hard", "-q", base_rev], cwd=repo, check=True)
         return patch_text, commit
 
-    skipped_patch, _ = patch_from(xnu_repo, xnu_base, "skipped.txt", "skipped\n", "skipped patch")
-    darling_patch, _ = patch_from(
+    skipped_patch, skipped_commit = patch_from(
+        xnu_repo, xnu_base, "skipped.txt", "skipped\n", "skipped patch"
+    )
+    darling_patch, darling_commit = patch_from(
         darling_repo,
         darling_base,
         "root_profile.txt",
@@ -2616,7 +2830,7 @@ with tempfile.TemporaryDirectory() as temp:
     )
     dserver_patch, dserver_commit = patch_from(dserver_repo, dserver_base, "ring_abi.txt", "profile abi\n", "profile abi")
 
-    profile_dir = tempdir / "patches/runtime"
+    profile_dir = tempdir / "patches/homebrew"
     (profile_dir / "darling").mkdir(parents=True)
     (profile_dir / "xnu").mkdir(parents=True)
     (profile_dir / "darlingserver").mkdir(parents=True)
@@ -2633,7 +2847,7 @@ with tempfile.TemporaryDirectory() as temp:
             types.SimpleNamespace(name="darlingserver", path="darling/src/external/darlingserver", abspath=str(dserver_repo), revision=dserver_base),
         ],
     )
-    test._active_profile = "runtime"
+    test._active_profile = "homebrew"
     test._profile_stack = lambda profile: [profile]
     test._load_profile = lambda _profile: {
         "patches": [
@@ -2647,23 +2861,90 @@ with tempfile.TemporaryDirectory() as temp:
         ]
     }
     test._profile_path = lambda profile: tempdir / "patches" / profile / "patches.yml"
+    original_apply = (
+        runtime_source_module.RuntimeSourceMaterializer.apply_profile_module_patches
+    )
+    synthetic_series = {
+        "darling": (
+            darling_base,
+            (("darling/root-profile.patch", profile_dir / "darling/root-profile.patch"),),
+        ),
+        "darling/src/external/xnu": (
+            xnu_base,
+            (("xnu/skipped.patch", profile_dir / "xnu/skipped.patch"),),
+        ),
+        "darling/src/external/darlingserver": (
+            dserver_base,
+            (
+                (
+                    "darlingserver/ring-abi.patch",
+                    profile_dir / "darlingserver/ring-abi.patch",
+                ),
+            ),
+        ),
+    }
 
-    with test._guest_runtime_source_forest(
-        {
-            "path": "xnu/skipped.patch",
-            "module": "darling/src/external/xnu",
-            "source-base": xnu_base,
-        },
-        {
-            "mode": "guest-runtime-deploy",
-            "bad-profile": "current-minus-patch",
-            "source-modules": ["darling", "darling/src/external/darlingserver"],
-        },
-        omit_patch=True,
-    ) as source_root:
-        assert (source_root / "root_profile.txt").read_text() == "profile root\n"
-        assert not (source_root / "src/external/xnu/skipped.txt").exists()
-        assert (source_root / "src/external/darlingserver/ring_abi.txt").read_text() == "profile abi\n"
+    def synthetic_apply(
+        _self,
+        profile,
+        module,
+        target,
+        *,
+        skip_patch_paths=None,
+    ):
+        assert profile == "homebrew"
+        base, series = synthetic_series[module]
+        subprocess.run(
+            ["git", "reset", "--hard", "-q", base],
+            cwd=target,
+            check=True,
+        )
+        skipped = skip_patch_paths or set()
+        for patch_path, patch_file in series:
+            if patch_path not in skipped:
+                subprocess.run(
+                    [
+                        "git",
+                        "-c",
+                        "user.name=west test",
+                        "-c",
+                        "user.email=test@example.invalid",
+                        "am",
+                        "--3way",
+                        str(patch_file),
+                    ],
+                    cwd=target,
+                    check=True,
+                    capture_output=True,
+                    text=True,
+                )
+
+    runtime_source_module.RuntimeSourceMaterializer.apply_profile_module_patches = (
+        synthetic_apply
+    )
+    try:
+        with test._guest_runtime_source_forest(
+            {
+                "path": "xnu/skipped.patch",
+                "module": "darling/src/external/xnu",
+                "source-base": xnu_base,
+            },
+            {
+                "mode": "guest-runtime-deploy",
+                "bad-profile": "current-minus-patch",
+                "source-modules": ["darling", "darling/src/external/darlingserver"],
+            },
+            omit_patch=True,
+        ) as source_root:
+            assert (source_root / "root_profile.txt").read_text() == "profile root\n"
+            assert not (source_root / "src/external/xnu/skipped.txt").exists()
+            assert (
+                source_root / "src/external/darlingserver/ring_abi.txt"
+            ).read_text() == "profile abi\n"
+    finally:
+        runtime_source_module.RuntimeSourceMaterializer.apply_profile_module_patches = (
+            original_apply
+        )
 
 with tempfile.TemporaryDirectory() as temp:
     tempdir = Path(temp)
@@ -2695,10 +2976,20 @@ with tempfile.TemporaryDirectory() as temp:
             )
         ],
     )
-    test._active_profile = "runtime"
+    test._active_profile = "homebrew"
     test._profile_stack = lambda profile: [profile]
     test._load_profile = lambda _profile: {"patches": []}
     test._profile_path = lambda profile: tempdir / "patches" / profile / "patches.yml"
+    original_apply = (
+        runtime_source_module.RuntimeSourceMaterializer.apply_profile_module_patches
+    )
+    runtime_source_module.RuntimeSourceMaterializer.apply_profile_module_patches = (
+        lambda _self, profile, module, target, *, skip_patch_paths=None: (
+            profile == "homebrew"
+            and module == "darling"
+            and not skip_patch_paths
+        )
+    )
 
     before = set(Path(tempfile.gettempdir()).glob("west-red-proof-source-*"))
     try:
@@ -2738,6 +3029,9 @@ with tempfile.TemporaryDirectory() as temp:
     else:
         raise AssertionError("expected runtime RED control flow was swallowed")
     assert set(Path(tempfile.gettempdir()).glob("west-red-proof-source-*")) == before
+    runtime_source_module.RuntimeSourceMaterializer.apply_profile_module_patches = (
+        original_apply
+    )
 
 with tempfile.TemporaryDirectory() as temp:
     tempdir = Path(temp)
@@ -2784,7 +3078,7 @@ with tempfile.TemporaryDirectory() as temp:
         check=True,
     )
 
-    profile_dir = tempdir / "patches/runtime/darling/src/external/libsystem"
+    profile_dir = tempdir / "patches/homebrew/darling/src/external/libsystem"
     profile_dir.mkdir(parents=True)
     (profile_dir / "profile-owner.patch").write_text(libsystem_patch)
     test = make_test()
@@ -2798,7 +3092,7 @@ with tempfile.TemporaryDirectory() as temp:
             ),
         ],
     )
-    test._active_profile = "runtime"
+    test._active_profile = "homebrew"
     test._profile_stack = lambda profile: [profile]
     test._load_profile = lambda _profile: {
         "patches": [
@@ -2808,14 +3102,61 @@ with tempfile.TemporaryDirectory() as temp:
             }
         ]
     }
-    test._profile_path = lambda _profile: tempdir / "patches/runtime/patches.yml"
-    with test._guest_runtime_source_forest(
-        {"path": "darling/example.patch", "module": "darling", "source-base": "HEAD"},
-        {"mode": "guest-runtime-deploy", "source-modules": ["darling", "darling/src/external/libsystem"]},
-        omit_patch=False,
-    ) as source_root:
-        materialized = source_root / "src/external/libsystem"
-        assert not materialized.is_symlink(), materialized
-        assert (materialized / "profile-owner.txt").read_text() == "materialized profile owner\n"
+    test._profile_path = lambda _profile: tempdir / "patches/homebrew/patches.yml"
+    original_apply = (
+        runtime_source_module.RuntimeSourceMaterializer.apply_profile_module_patches
+    )
+
+    def synthetic_apply(
+        _self,
+        profile,
+        module,
+        target,
+        *,
+        skip_patch_paths=None,
+    ):
+        assert profile == "homebrew"
+        if module == "darling":
+            return
+        assert module == "darling/src/external/libsystem"
+        assert not skip_patch_paths
+        subprocess.run(
+            [
+                "git",
+                "-c",
+                "user.name=west test",
+                "-c",
+                "user.email=test@example.invalid",
+                "am",
+                "--3way",
+                str(profile_dir / "profile-owner.patch"),
+            ],
+            cwd=target,
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+
+    runtime_source_module.RuntimeSourceMaterializer.apply_profile_module_patches = (
+        synthetic_apply
+    )
+    try:
+        with test._guest_runtime_source_forest(
+            {"path": "darling/example.patch", "module": "darling", "source-base": "HEAD"},
+            {
+                "mode": "guest-runtime-deploy",
+                "source-modules": ["darling", "darling/src/external/libsystem"],
+            },
+            omit_patch=False,
+        ) as source_root:
+            materialized = source_root / "src/external/libsystem"
+            assert not materialized.is_symlink(), materialized
+            assert (
+                materialized / "profile-owner.txt"
+            ).read_text() == "materialized profile owner\n"
+    finally:
+        runtime_source_module.RuntimeSourceMaterializer.apply_profile_module_patches = (
+            original_apply
+        )
 
 print("PASS west-test-runtime-red-contract")

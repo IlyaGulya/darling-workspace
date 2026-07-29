@@ -40,9 +40,9 @@ def main() -> None:
     assert composition["schema_version"] == 3
     prerequisite = composition["prerequisites"]
     assert [item["profile"] for item in prerequisite] == ["homebrew"]
-    assert prerequisite[0]["module_trees"]["darling"] == "5e8144538bdc7cb7958dc22edc4016e8b64a6591"
+    assert prerequisite[0]["module_trees"]["darling"] == "7297ee393ed21d13484b1734e5e5694967f96851"
     assert "source_oid" not in composition["modules"][0]["starting"]
-    assert composition["modules"][0]["series"][0]["expected_applied_tree"] == "fbef26d273a9cefcc6fc2db72284e7c955356c2e"
+    assert composition["modules"][0]["series"][0]["expected_applied_tree"] == "e5c5611cf8f4d663d46e4da8a55135f95c97c8b0"
     generated = {
         "43b4e876ad032635cfc5308ada0dc1bd383398b9",
         "585b0e89a7be83eaf8b8c0bd0ea7e69d1add0fea",
@@ -66,6 +66,11 @@ def main() -> None:
     assert gate["source_commit"] == "0d4b252c566d064b954ca913813ec9fa2bf6cb20"
 
     arch = yaml.safe_load((LOCKS / "lock-first-series-arch-v2.yml").read_text())
+    assert next(
+        item["lock"]
+        for item in arch["series"]
+        if item["patch"] == "darlingserver/stack-pool-empty-stack-handle.patch"
+    ) == "darlingserver-stack-pool-empty-stack-handle-prefix-lifecycle-profile-v10.yml"
     arch_xnu = [item["lock"] for item in arch["series"] if item["module"] == "darling/src/external/xnu"]
     assert arch_xnu == [
         "darling-xnu-ring-committed-unknown-guest-profile-v7.yml",

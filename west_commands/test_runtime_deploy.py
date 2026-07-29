@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 import shutil
 import subprocess
 import tempfile
@@ -25,7 +26,7 @@ from test_runtime import (
     runtime_artifact_deploy_paths,
     runtime_deploy_targets,
 )
-from test_prefix import PREFIX_LIFECYCLE_LOCK_NAME
+PREFIX_STATE_NAME = ".darling-prefix-state-v2"
 
 
 @dataclass(frozen=True)
@@ -274,17 +275,33 @@ class RuntimeDeploymentService:
                 f"guest-runtime-deploy runtime prefix is not a real directory: {prefix}"
             )
         marker = prefix / RUNTIME_MODE_MARKER_NAME
-        entries = [
-            entry
-            for entry in prefix.iterdir()
-            if not (
-                entry.name == PREFIX_LIFECYCLE_LOCK_NAME
-                and not entry.is_symlink()
-                and entry.is_file()
-            )
-        ]
+        state = prefix / PREFIX_STATE_NAME
+        entries = list(prefix.iterdir())
         if not entries:
             return True, expected
+        if not state.is_symlink() and state.is_file():
+            try:
+                content = state.read_text()
+            except (OSError, UnicodeError) as error:
+                self._host.die(
+                    f"guest-runtime-deploy cannot read typed prefix state {state}: {error}"
+                )
+            fields = content.splitlines()
+            if (
+                fields[:2]
+                != ["DARLING_PREFIX_STATE_V2", "schema_version=2"]
+                or f"runtime_mode={mode}" not in fields
+            ):
+                self._host.die(
+                    "guest-runtime-deploy typed prefix state mismatch: "
+                    f"expected schema 2 mode {mode!r}: {state}"
+                )
+            if marker.exists() or marker.is_symlink():
+                self._host.die(
+                    "guest-runtime-deploy current typed prefix retained legacy "
+                    f"mode metadata: {marker}"
+                )
+            return False, expected
         if marker.is_symlink() or not marker.is_file():
             self._host.die(
                 "guest-runtime-deploy refuses a populated prefix without a "
@@ -304,6 +321,91 @@ class RuntimeDeploymentService:
             )
         return False, expected
 
+    def _initialize_empty_rootless_prefix(
+        self,
+        proof: dict,
+        build_root: Path,
+        prefix: Path,
+        lifecycle_env: dict[str, str],
+        *,
+        label: str,
+    ) -> bool:
+        """Let the built product establish state before artifact deployment.
+
+        The launcher, not West, owns prefix initialization and schema
+        publication. Returning true records that the prefix was empty on entry
+        so a restoring/failed proof can return it to that exact state.
+        """
+
+        create_marker, _ = self._runtime_mode_marker_required(proof, prefix)
+        if not create_marker or proof.get("runtime-mode") != "rootless-eunion":
+            return False
+        launcher = self._host._runtime_red_find_build_output(
+            build_root, "bin/darling"
+        )
+        if launcher.is_symlink() or not launcher.is_file():
+            self._host.die(
+                "guest-runtime-deploy built launcher is not a regular file: "
+                f"{launcher}"
+            )
+        environment = os.environ.copy()
+        environment.update(lifecycle_env)
+        environment["DPREFIX"] = str(prefix)
+        try:
+            initialized = subprocess.run(
+                [str(launcher), "--rootless", "shutdown"],
+                check=False,
+                capture_output=True,
+                text=True,
+                env=environment,
+                timeout=30,
+            )
+        except (OSError, subprocess.TimeoutExpired) as error:
+            self._host.die(
+                f"guest-runtime-deploy product prefix initialization failed: {error}"
+            )
+        detail = "\n".join(
+            part.strip()
+            for part in (initialized.stdout, initialized.stderr)
+            if part.strip()
+        )
+        already_stopped = (
+            initialized.returncode == 1
+            and "Darling container is not running" in detail
+        )
+        if initialized.returncode != 0 and not already_stopped:
+            self._host.die(
+                "guest-runtime-deploy product prefix initialization failed "
+                f"with rc {initialized.returncode}: {detail or 'no output'}"
+            )
+        create_marker, _ = self._runtime_mode_marker_required(proof, prefix)
+        if create_marker:
+            self._host.die(
+                "guest-runtime-deploy product prefix initialization did not "
+                "publish a typed lifecycle state"
+            )
+        self._host.inf(
+            f"  {label} deploy: product initialized typed prefix state -> "
+            f"{prefix / PREFIX_STATE_NAME}"
+        )
+        return True
+
+    def _restore_empty_initialized_prefix(self, prefix: Path) -> None:
+        if prefix.is_symlink() or not prefix.is_dir():
+            self._host.die(
+                "guest-runtime-deploy initialized prefix changed identity "
+                f"before restore: {prefix}"
+            )
+        for entry in list(prefix.iterdir()):
+            if entry.is_symlink() or not entry.is_dir():
+                entry.unlink()
+            else:
+                shutil.rmtree(entry)
+        if any(prefix.iterdir()):
+            self._host.die(
+                f"guest-runtime-deploy could not restore empty prefix: {prefix}"
+            )
+
     @contextmanager
     def deployed(
         self,
@@ -318,14 +420,24 @@ class RuntimeDeploymentService:
         succeeded = False
         started = time.monotonic()
         self._host.inf(f"  runtime phase start: {label} deploy")
-        create_mode_marker, mode_marker_content = self._runtime_mode_marker_required(
-            proof, prefix
-        )
+        # Reject hostile or mismatched existing state before invoking even the
+        # shutdown side of a runtime command.
+        self._runtime_mode_marker_required(proof, prefix)
         shutdown_env = lifecycle_env or self._proof_lifecycle_env(proof)
         if not self._host._shutdown_runtime_prefix(prefix, extra_env=shutdown_env):
             self._host.die(
                 f"guest-runtime-deploy could not stop Darling prefix before deploy: {prefix}"
             )
+        initialized_empty = self._initialize_empty_rootless_prefix(
+            proof,
+            build_root,
+            prefix,
+            shutdown_env,
+            label=label,
+        )
+        create_mode_marker, mode_marker_content = self._runtime_mode_marker_required(
+            proof, prefix
+        )
         with tempfile.TemporaryDirectory(prefix="west-red-proof-deploy-") as temp:
             transaction = DeploymentTransaction(
                 Path(temp) / "manifest.json", prefix, normalize_modes=True
@@ -366,6 +478,8 @@ class RuntimeDeploymentService:
                         transaction.rollback()
                     except DeploymentTransactionError as error:
                         self._host.die(f"guest-runtime-deploy rollback failed: {error}")
+                    if initialized_empty:
+                        self._restore_empty_initialized_prefix(prefix)
                 elif transaction.entries:
                     self._host.inf(f"  {label} deployment retained after successful smoke")
                 self._host._shutdown_runtime_prefix(prefix, extra_env=shutdown_env)
