@@ -55,7 +55,7 @@ series:
   - profile: arch
     module: darling/src/external/darlingserver
     patch: darlingserver/stack-pool-empty-stack-handle.patch
-    lock: darlingserver-stack-pool-empty-stack-handle-rootless-profile-v8.yml
+    lock: darlingserver-stack-pool-empty-stack-handle-prefix-lifecycle-profile-v10.yml
   - profile: arch
     module: darling/src/external/darlingserver
     patch: darlingserver/a0-gate-focused-synth-markers.patch

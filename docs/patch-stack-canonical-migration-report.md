@@ -1,28 +1,29 @@
 # Canonical immutable patch-stack migration inventory
 
-The frozen inventory records 98 patch series across `arch` (19),
-`homebrew` (72), and `perf` (7). It is machine-readable in
+The frozen inventory records 100 patch series across `arch` (19),
+`homebrew` (74), and `perf` (7). It is machine-readable in
 `locks/patch-stack/migration-inventory-v1.yml` and deliberately excludes
 temporary paths and handoff implementation noise.
 
 The unit is an mbox series, rather than a patch file incorrectly treated as
-one commit: the inventory records 189 archive `From` commits, one artifact per
+one commit: the inventory records 191 archive `From` commits, one artifact per
 series, the declared `source-base` where present, and the complete ordered
 set of `From <OID>` headers. The inventory contract rejects duplicate YAML
 keys and verifies exact metadata/artifact correspondence and available-object
 linearity.
 
 This is a post-migration snapshot: 0 `READY`, 0 `RECOVERABLE_LOCAL`, 95 `ALREADY_MIGRATED`,
-and 3 `PUBLICATION_PENDING`
+and 5 `PUBLICATION_PENDING`
 (the XNU and LibreSSL pilots, the three first-batch series, and batch 2's four
 Darling series, Batch 3's two dependent rootless series, and Batch 4's
 rootless-prefix-initialization branch series, plus Batch 5's remaining six
 Darling series, plus the recovered XNU series and 40 recovered Darlingserver
 series, plus the final seven external recovery series, plus the ARCH_ONLY
-cvstorm2 SIGUSR1 flood-progress series). The 95 accepted series have
-standalone hosted immutable object closure. The three Rootless productization
-series have independently verified local append-only closures and remain
-explicitly publication-pending until their create-only hosted tags are
+cvstorm2 SIGUSR1 flood-progress series). Ninety-four series have standalone
+hosted immutable object closure. The Rootless publication proposal adds six
+append-only series with independently verified local closures: the prior
+continuation/productization set plus the two prefix-lifecycle series. They
+remain explicitly publication-pending until create-only hosted tags are
 authorized.
 
 Darlingserver repository-scoped recovery moved all 40 of its formerly

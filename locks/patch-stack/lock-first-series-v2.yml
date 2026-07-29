@@ -1,7 +1,7 @@
 schema_version: 3
 profile: homebrew
-batch_id: darling-homebrew-rootless-productization-batch-8
-expected_count: 72
+batch_id: darling-homebrew-prefix-lifecycle-batch-9
+expected_count: 74
 composition: homebrew-profile-composition-v2.yml
 series:
   - profile: homebrew
@@ -108,6 +108,10 @@ series:
     module: darling/src/external/darlingserver
     patch: darlingserver/runtime-mode-canonical.patch
     lock: darlingserver-runtime-mode-canonical-v1.yml
+  - profile: homebrew
+    module: darling/src/external/darlingserver
+    patch: darlingserver/prefix-lifecycle-state-v2.patch
+    lock: darlingserver-prefix-lifecycle-state-v2-v1.yml
   - profile: homebrew
     module: darling/src/external/xnu
     patch: xnu/psynch-cvsignal-args.patch
@@ -284,6 +288,10 @@ series:
     module: darling
     patch: darling/runtime-mode-canonical.patch
     lock: darling-runtime-mode-canonical-v1.yml
+  - profile: homebrew
+    module: darling
+    patch: darling/prefix-lifecycle-state-v2.patch
+    lock: darling-prefix-lifecycle-state-v2-v1.yml
   - profile: homebrew
     module: darling/src/external/installer
     patch: installer/normalize-payload-paths.patch

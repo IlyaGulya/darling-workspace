@@ -25,7 +25,7 @@ import sys
 root = Path(sys.argv[1])
 source = (root / "src/darlingserver.cpp").read_text()
 selection = source.index("requireRuntimeModeFromEnvironment(")
-marker = source.index("validateRuntimeModePrefixFD(")
+marker = source.index("anchorRuntimeModePrefix(")
 credentials = source.index("validateRootlessProcessCredentials(")
 subreaper = source.index("prctl(PR_SET_CHILD_SUBREAPER")
 home = source.index("setupUserHome(prefixFD, originalUID)")
@@ -44,11 +44,12 @@ if 'unsetenv("DARLING_RUNTIME_MODE")' not in source:
     raise SystemExit("darlingserver does not isolate the mldr special boundary")
 for token in (
     "if (argc != 9)",
-    'prefixFD = parseInheritedFD(argv[1], "prefix")',
-    'prefixParentFD = parseInheritedFD(argv[2], "prefix parent")',
-    'workdirFD = parseInheritedFD(argv[4], "prefix workdir")',
-    "runtimePrefixProcPath(prefixFD)",
-    "runtimePrefixProcPath(workdirFD)",
+    "InheritedRuntimePrefix inherited(",
+    'parseInheritedFD(argv[1], "prefix")',
+    'parseInheritedFD(argv[2], "prefix parent")',
+    'parseInheritedFD(argv[4], "prefix workdir")',
+    "anchored.prefixProcPath()",
+    "anchored.workdirProcPath()",
     "makeDescriptorCloseOnExec(prefixFD",
     "setupUserHome(prefixFD",
     "setupEunionPrefix(prefixFD)",
@@ -81,7 +82,7 @@ for token in (
     "realGID != expectedGID",
     "effectiveGID != expectedGID",
     "savedGID != expectedGID",
-    "validateRuntimeModePrefixFD(",
+    "anchorRuntimeModePrefix(",
     "fstat(prefixFD, &opened)",
     "fstat(parentFD, &parent)",
     "fstatat(parentFD, leaf, &named",
@@ -89,7 +90,14 @@ for token in (
     "named.st_ino != opened.st_ino",
     "fstat(workdirFD, &workdirOpened)",
     "workdirNamed.st_ino != workdirOpened.st_ino",
-    "openat(prefixFD, kMarkerName",
+    "readPrefixState(",
+    "kStateName",
+    "schema_version=",
+    "prefix_device=",
+    "prefix_inode=",
+    "owner_uid=",
+    "owner_gid=",
+    "runtime prefix state uses a newer schema",
     'return "/proc/self/fd/" + std::to_string(prefixFD)',
 ):
     if token not in runtime_mode:
@@ -97,6 +105,10 @@ for token in (
 
 prefix_test = (root / "tests/runtime_mode_test.cpp").read_text()
 for token in (
+    "!std::is_copy_constructible_v<InheritedRuntimePrefix>",
+    "std::is_nothrow_move_constructible_v<InheritedRuntimePrefix>",
+    "!std::is_copy_constructible_v<RuntimePrefixCapability>",
+    "std::is_nothrow_move_constructible_v<RuntimePrefixCapability>",
     "rename-swap runtime prefix symlink was accepted",
     "rename-swap rejection mutated its target",
     "rename-swap redirected retained prefix alias",
@@ -106,6 +118,18 @@ for token in (
 ):
     if token not in prefix_test:
         raise SystemExit(f"server prefix fail-closed fixture is missing: {token}")
+
+runtime_header = (root / "include/darlingserver/runtime-mode.hpp").read_text()
+for token in (
+    "class InheritedRuntimePrefix final",
+    "class RuntimePrefixCapability final",
+    "InheritedRuntimePrefix(const InheritedRuntimePrefix&) = delete",
+    "RuntimePrefixCapability(const RuntimePrefixCapability&) = delete",
+):
+    if token not in runtime_header:
+        raise SystemExit(f"server prefix capability is not move-only: {token}")
+if "validateRuntimeModePrefixFD(" in runtime_header:
+    raise SystemExit("raw inherited descriptors cross the anchoring boundary")
 
 server = (root / "src/server.cpp").read_text()
 logging = (root / "src/logging.cpp").read_text()

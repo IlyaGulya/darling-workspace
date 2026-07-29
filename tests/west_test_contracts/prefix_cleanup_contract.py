@@ -413,6 +413,26 @@ with tempfile.TemporaryDirectory() as temp:
     assert not owner.finalize(prefix)
     assert order == ["mounts"], order
 
+with tempfile.TemporaryDirectory() as temp:
+    parent = Path(temp)
+    prefix = parent / "fresh-prefix"
+    owner = PrefixLifecycleOwner(
+        resolve_launcher=lambda _prefix: None,
+        prefix_env=lambda _prefix: {},
+        cleanup_mounts=lambda _prefix: types.SimpleNamespace(
+            changed=[], problems=[], success=True
+        ),
+        init_pid_is_usable=lambda _pid: False,
+        inf=lambda _message: None,
+        err=lambda _message: None,
+        wrn=lambda _message: None,
+        process_entries=lambda: [],
+    )
+    with owner.locked(prefix):
+        assert not prefix.exists()
+        assert list(parent.iterdir()) == []
+    assert list(parent.iterdir()) == []
+
 test = make_test()
 with tempfile.TemporaryDirectory() as temp:
     test._prefix = temp

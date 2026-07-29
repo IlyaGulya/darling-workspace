@@ -1970,6 +1970,25 @@ stacks:
   reason: typed runtime-mode source and create-only refs are independently verified in the local append-only publication package
   lock: locks/patch-stack/darlingserver-runtime-mode-canonical-v1.yml
 - profile: homebrew
+  patch: darlingserver/prefix-lifecycle-state-v2.patch
+  artifact: patches/homebrew/darlingserver/prefix-lifecycle-state-v2.patch
+  project_path: darling/src/external/darlingserver
+  upstream: https://github.com/darlinghq/darlingserver.git
+  downstream: https://github.com/darling-next/darlingserver.git
+  source_branch: fix/rootless-prefix-lifecycle-v2
+  base_commit: dd0b23f1e3b8e9470016e67df40e18a28718b737
+  ordered_commits:
+  - a2f99243227c57847308527a2a921d1bb77b1135
+  source_commit: a2f99243227c57847308527a2a921d1bb77b1135
+  expected_tree: 2d6f0321cfe205dba7302666bc470adb79a44003
+  artifact_count: 1
+  commit_count: 1
+  object_closure: local_append_only_clean_odb
+  linearity: verified
+  classification: PUBLICATION_PENDING
+  reason: typed prefix-state validation and create-only refs are independently verified in the local append-only publication package
+  lock: locks/patch-stack/darlingserver-prefix-lifecycle-state-v2-v1.yml
+- profile: homebrew
   patch: xnu/af-unix-expanded-path-length.patch
   artifact: patches/homebrew/xnu/af-unix-expanded-path-length.patch
   project_path: darling/src/external/xnu
@@ -2007,8 +2026,27 @@ stacks:
   classification: PUBLICATION_PENDING
   reason: launcher/bootstrap source and create-only refs are independently verified in the local append-only publication package
   lock: locks/patch-stack/darling-runtime-mode-canonical-v1.yml
+- profile: homebrew
+  patch: darling/prefix-lifecycle-state-v2.patch
+  artifact: patches/homebrew/darling/prefix-lifecycle-state-v2.patch
+  project_path: darling
+  upstream: https://github.com/darlinghq/darling.git
+  downstream: https://github.com/darling-next/darling.git
+  source_branch: fix/rootless-prefix-lifecycle-v2
+  base_commit: db7b5b404366fa630edeb5189f174518aad189ad
+  ordered_commits:
+  - da784f52c4e5b7a3ecbc628e6e619171ba78435c
+  source_commit: da784f52c4e5b7a3ecbc628e6e619171ba78435c
+  expected_tree: 7297ee393ed21d13484b1734e5e5694967f96851
+  artifact_count: 1
+  commit_count: 1
+  object_closure: local_append_only_clean_odb
+  linearity: verified
+  classification: PUBLICATION_PENDING
+  reason: crash-consistent prefix lifecycle and create-only refs are independently verified in the local append-only publication package
+  lock: locks/patch-stack/darling-prefix-lifecycle-state-v2-v1.yml
 summary:
   READY: 0
   RECOVERABLE_LOCAL: 0
   ALREADY_MIGRATED: 95
-  PUBLICATION_PENDING: 3
+  PUBLICATION_PENDING: 5
