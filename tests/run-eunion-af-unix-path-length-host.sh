@@ -27,12 +27,15 @@ lower_before="$(sha256sum "$work/root/prefix/libexec/darling/sentinel")"
 gcc -std=gnu11 -Wall -Wextra \
 	-Wno-format-overflow -Wno-unused-variable -Wno-unused-function \
 	-DEUNION -DEFAULT=14 \
+	-DTEST=1 \
 	-DEUNION_LIBEXEC_PATH="\"$work/root/prefix/libexec/darling\"" \
 	-I"$emulation/src/linux_premigration" \
-	-I"$emulation/include" -I"$work/shim" -I"$work/include" \
+	-I"$emulation/include" -I"$emulation/tests" \
+	-I"$work/shim" -I"$work/include" \
 	-o "$work/fixture" \
 	"$root/tests/eunion_af_unix_path_length_host.c" \
 	"$root/experiments/e-union/whiteout_hook_fallback.c" \
+	"$emulation/src/linux_premigration/eunion_sidecar.c" \
 	"$emulation/src/linux_premigration/eunion_resolver.c" \
 	"$emulation/src/conversion/network/duct.c" \
 	"$emulation/src/xnu_syscall/bsd/helper/network/duct.c"
