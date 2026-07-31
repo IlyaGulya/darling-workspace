@@ -2870,14 +2870,14 @@ patches:
       base: main
       state: local
 - path: xnu/eunion-hardening.patch
-  sha256sum: 230a7f709f80b7a02ff8cb9d2230a8e745e9dcd32b80f1ff71b329965f90ad05
+  sha256sum: de48731054ae0e8097d4c54839cb9bc30e8734bc9c49e0249ef806779b956e66
   module: darling/src/external/xnu
-  source-branch: repack/eunion-hardening
+  source-branch: fix/eunion-sidecar-v1
   source-base: 5c3019fca1d85533f34735bf40c97156c87b6d4f
-  source-commit: cb2cf623d9cd641ed4f9e899a0187acdedc423ea
-  bead: dar-7zvt.2
+  source-commit: 05e548652657c2f9bbfff54a87d23df011dbc422
+  bead: dar-productize-darling-rootless-mode-jkla.4.1.1
   publication-status: blocked
-  publication-blocker: E-UNION syscall coverage and hardening are a local architectural consolidation; publication remains blocked until the repackaged rootless stack passes its full guest audit.
+  publication-blocker: Sidecar v1 and the Policy 1 prefix-format recreate gate are local review candidates; publication remains disabled until the complete 74/7/19 clean-ODB acceptance and immutable-ref review are approved.
   tests:
   - name: eunion_resolver
     kind: unit
@@ -2902,7 +2902,16 @@ patches:
       source-revision: f033c5773992dfa57b6657f10f53f719664a5f18
       expect-output-contains:
       - 'FAIL  RESOLVE1 upper non-directory blocks lower directory'
-    note: Host behavioral RED-to-GREEN suite for syscall-site copy-up, template protection, nested path handling, metadata/error policy and directory-view lifecycle; the selected XNU source is compiled and run through the eunion-host CTest label and the fixed source passes 293 assertions.
+    note: Host behavioral RED-to-GREEN suite for syscall-site copy-up, template protection, nested path handling, metadata/error policy and directory-view lifecycle. The source-bound stream fixture enumerates 2,600 visible entries, exercises 320 directory descriptors, and verifies dup, dup2, F_DUPFD, fork, exec and concurrent-close OFD semantics without a process-local cursor table.
+  - name: eunion_sidecar_v1_host_suite
+    kind: unit
+    coverage-tier: host
+    runs: host
+    diag: bare
+    ctest-label: eunion-sidecar-v1
+    ctest-source-override: DARLING_XNU_SRC
+    requires-profile: homebrew
+    note: Production sidecar-v1 behavioral suite covering the versioned prefix gate, persistent locking, fd-relative identity revalidation, create/copy-up/rename/remove recovery, hostile permissions and the full failure/SIGINT matrix.
   - name: eunion_mutation_guest
     use: eunion-guest-c-runtime
     kind: guest
@@ -4749,11 +4758,11 @@ patches:
       base: main
       state: local
 - path: darlingserver/prefix-lifecycle-state-v2.patch
-  sha256sum: 8bbd2c043433f1b42abe7927eb655f016b62109fe2258835b2eecc28a3123d71
+  sha256sum: aa4e1574aea1aa4fe69668c222905fb4f7c40da5e3e81187d2ab78e8ca859979
   module: darling/src/external/darlingserver
-  source-branch: fix/rootless-prefix-lifecycle-v2
+  source-branch: fix/rootless-prefix-sidecar-v1
   source-base: dd0b23f1e3b8e9470016e67df40e18a28718b737
-  source-commit: a2f99243227c57847308527a2a921d1bb77b1135
+  source-commit: c81ddfa279a538eda247a960e59018e7fc7a4875
   bead: dar-productize-darling-rootless-mode-jkla.3
   publication-status: blocked
   publication-blocker: Typed prefix lifecycle is locally authored; immutable hosted refs and landing require separate publication authorization.
@@ -4766,7 +4775,7 @@ patches:
     runner: source-contract-script
     repo: darling-workspace
     script: tests/run-rootless-runtime-server-contract.sh
-    note: Compiles the production typed-state validator and proves the inherited prefix/workdir capabilities reject hostile state before server mutation.
+    note: Compiles the production validator and proves the four inherited prefix/workdir/sidecar/lifecycle-lock capabilities reject hostile identity, format and lock state before server mutation.
   github:
     fork:
       repo: darling-next/darlingserver
@@ -5162,11 +5171,11 @@ patches:
       base: master
       state: local
 - path: darling/prefix-lifecycle-state-v2.patch
-  sha256sum: c7fbfb24b8d6744af9bac622fdc8b9a2c07e6b3a0bb5e893de7812101b8d6c9d
+  sha256sum: 9f6e1293ec9066a08339fb7adf9f5cb54491ad8f0a9cc695587f05ce6a8ee5e9
   module: darling
-  source-branch: fix/rootless-prefix-lifecycle-v2
+  source-branch: fix/rootless-prefix-sidecar-v1
   source-base: db7b5b404366fa630edeb5189f174518aad189ad
-  source-commit: da784f52c4e5b7a3ecbc628e6e619171ba78435c
+  source-commit: d17322c622119264ba3a363ce80fc6b989087548
   bead: dar-productize-darling-rootless-mode-jkla.3
   publication-status: blocked
   publication-blocker: Crash-consistent prefix lifecycle is locally authored; immutable hosted refs and landing require separate publication authorization.
@@ -5179,7 +5188,7 @@ patches:
     runner: source-contract-script
     repo: darling-workspace
     script: tests/run-rootless-opt-in-cli-contract.sh
-    note: Executes create, reuse, v1-to-v2 upgrade, repair, recreate and delete with a complete 144-case stable-state/journal-phase decision matrix, 24 real early/middle/late failure/SIGINT interruption cases across all four mutations, a three-process persistent-lock race, bottom-up durability failures, a direct-copy compile-negative contract and runtime typestate/reopen checks for the assignment-resistant owning capability.
+    note: Executes sidecar-v1 create/reuse/delete and explicit Policy 1 legacy-prefix recreation with typed PREFIX_RECREATE_REQUIRED, no partial migration or fallback, all 24 mutation interruption cases, a three-process persistent-lock race, bottom-up durability failures, capability reopen rejection and the assignment-resistant owning runtime typestate contract.
   github:
     fork:
       repo: darling-next/darling

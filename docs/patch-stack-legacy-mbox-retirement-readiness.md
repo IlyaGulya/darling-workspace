@@ -43,7 +43,7 @@ immutable objects.
 
 | Profile | Batch | Own series | Grouped module order |
 | --- | --- | ---: | --- |
-| homebrew | `darling-homebrew-prefix-lifecycle-batch-9` | 74 | darlingserver, xnu, libplatform, perl, libressl-2.8.3, libpthread, darling, installer |
+| homebrew | `darling-homebrew-eunion-sidecar-batch-10` | 74 | darlingserver, xnu, libplatform, perl, libressl-2.8.3, libpthread, darling, installer |
 | perf | `darling-perf-lock-first-batch-1` | 7 | darling, xnu, dyld, darlingserver |
 | arch | `darling-arch-lock-first-batch-1` | 19 | libunwind, xnu, darlingserver, darling |
 

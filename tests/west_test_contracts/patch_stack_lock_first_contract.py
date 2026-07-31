@@ -66,21 +66,20 @@ def main() -> None:
         patches = [{"module": "darling", "path": "darling/sandbox-exec-pass-through.patch"}]
         selected = lock_first.plan("homebrew", patches, mapping)
         assert len(selected) == 1
-        # Prefix-lifecycle Batch 9 is the exact grouped homebrew selection:
-        # retained Batch 8 plus one final Darlingserver and Darling entry.
+        # E-UNION sidecar Batch 10 is the exact grouped homebrew selection.
         # This binds the data mapping to real profile order before mutation.
         homebrew = yaml.safe_load((ROOT / "patches/homebrew/patches.yml").read_text())
         homebrew_patches = homebrew["patches"]
         homebrew_grouped = OrderedDict()
         for entry in homebrew_patches:
             homebrew_grouped.setdefault(entry["module"], []).append(entry)
-        batch_nine = lock_first.plan("homebrew", homebrew_patches, lock_first.MAPPING, homebrew_grouped)
+        batch_current = lock_first.plan("homebrew", homebrew_patches, lock_first.MAPPING, homebrew_grouped)
         expected_darlingserver = [
             entry["path"] for entry in homebrew_patches
             if entry["module"] == "darling/src/external/darlingserver"
         ]
         observed_darlingserver = [
-            entry["patch"] for entry in batch_nine
+            entry["patch"] for entry in batch_current
             if entry["module"] == "darling/src/external/darlingserver"
         ]
         expected_xnu = [
@@ -88,19 +87,19 @@ def main() -> None:
             if entry["module"] == "darling/src/external/xnu"
         ]
         observed_xnu = [
-            entry["patch"] for entry in batch_nine
+            entry["patch"] for entry in batch_current
             if entry["module"] == "darling/src/external/xnu"
         ]
-        assert len(batch_nine) == 74 and batch_nine.batch["expected_count"] == 74
-        assert batch_nine.composition is not None
-        assert batch_nine.composition["profile"] == "homebrew"
-        assert batch_nine.composition["boundaries"][("darling/src/external/xnu", "xnu/fstatfs-missing-proc-mounts.patch")] == "84d7a41685fab6b459ce754e8db8421ab4fc3615"
-        assert batch_nine.composition["boundaries"][("darling", "darling/sandbox-exec-pass-through.patch")] == "630c80034b9aed3a89d133c948e457c1bc9e3709"
-        assert batch_nine.composition["boundaries"][("darling/src/external/darlingserver", "darlingserver/prefix-lifecycle-state-v2.patch")] == "2d6f0321cfe205dba7302666bc470adb79a44003"
-        assert batch_nine.composition["boundaries"][("darling", "darling/prefix-lifecycle-state-v2.patch")] == "7297ee393ed21d13484b1734e5e5694967f96851"
-        assert batch_nine.composition["finals"]["darling/src/external/xnu"] == "53c8fa45a1ac94bdfc2ced0b3179e43659dffabf"
-        assert batch_nine.batch["batch_id"] == "darling-homebrew-prefix-lifecycle-batch-9"
-        assert batch_nine.batch["module_order"] == [
+        assert len(batch_current) == 74 and batch_current.batch["expected_count"] == 74
+        assert batch_current.composition is not None
+        assert batch_current.composition["profile"] == "homebrew"
+        assert batch_current.composition["boundaries"][("darling/src/external/xnu", "xnu/fstatfs-missing-proc-mounts.patch")] == "84d7a41685fab6b459ce754e8db8421ab4fc3615"
+        assert batch_current.composition["boundaries"][("darling", "darling/sandbox-exec-pass-through.patch")] == "630c80034b9aed3a89d133c948e457c1bc9e3709"
+        assert batch_current.composition["boundaries"][("darling/src/external/darlingserver", "darlingserver/prefix-lifecycle-state-v2.patch")] == "9f5d3ce2c7542734d4b1859229c0301a2cc141bc"
+        assert batch_current.composition["boundaries"][("darling", "darling/prefix-lifecycle-state-v2.patch")] == "81d8d939c1b0cd454ef7cc7ed034d1a340df7fd8"
+        assert batch_current.composition["finals"]["darling/src/external/xnu"] == "2f1194b6ff901d54e4b04f28c58198e999c4783c"
+        assert batch_current.batch["batch_id"] == "darling-homebrew-eunion-sidecar-batch-10"
+        assert batch_current.batch["module_order"] == [
             "darling/src/external/darlingserver",
             "darling/src/external/xnu",
             "darling/src/external/libplatform",
@@ -187,7 +186,7 @@ def main() -> None:
         ]
         flood_entry = next(entry for entry in arch_selected if (entry["module"], entry["patch"]) == flood_identity)
         assert yaml.safe_load(Path(flood_entry["lock_path"]).read_text())["upstream"]["base_commit"] == "4ed1e806e850b45ec76758e0124c4274992415e6"
-        assert arch_selected.composition["boundaries"][flood_identity] == "8b39e62861dd3d6fd1e3afd2602b48a53ba906cb"
+        assert arch_selected.composition["boundaries"][flood_identity] == "4236d0130a44ab5e5564d205d171148154731627"
         # The profile-owned continuation is fail-closed: omitting it, moving
         # it before the final DarlingServer boundary, or tampering with its
         # composition tree cannot reach mutation.
@@ -218,7 +217,7 @@ def main() -> None:
         # The general composition materializer contract separately proves that
         # a tampered boundary tree fails before it can become an integration
         # final; bind this concrete row to the reviewed immutable tree here.
-        assert arch_selected.composition["finals"][flood_identity[0]] == "8b39e62861dd3d6fd1e3afd2602b48a53ba906cb"
+        assert arch_selected.composition["finals"][flood_identity[0]] == "4236d0130a44ab5e5564d205d171148154731627"
         try:
             lock_first.mapping_for_profile("unknown-profile")
         except lock_first.LockFirstError:

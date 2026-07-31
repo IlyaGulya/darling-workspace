@@ -3,18 +3,18 @@ profile: perf
 prerequisites:
 - profile: homebrew
   composition: homebrew-profile-composition-v2.yml
-  sha256: 9b3eaa045c4168fbeac26aa1e1215477814b6cfedd1ba4d5092c409a033e53fb
+  sha256: 53eec4fa8cc59f862cdb898449963b1dc39ab365dafa25f0bcc7a482f974bfe3
   frozen_manifest:
     path: west.lock.yml
     sha256: 5718c32c76a180b9078a206b93d93e70f478a5ada0034cd6afcc789c447e055d
   module_trees:
-    darling/src/external/darlingserver: 2d6f0321cfe205dba7302666bc470adb79a44003
-    darling/src/external/xnu: 53c8fa45a1ac94bdfc2ced0b3179e43659dffabf
+    darling/src/external/darlingserver: 9f5d3ce2c7542734d4b1859229c0301a2cc141bc
+    darling/src/external/xnu: 2f1194b6ff901d54e4b04f28c58198e999c4783c
     darling/src/external/libplatform: aa23756779ff852be148fc08dec34f6ee371b08e
     darling/src/external/perl: 4f1f2a7a7818800a8e39d1cddbcf7832c246e375
     darling/src/external/libressl-2.8.3: c8ba46eeec25cfc71d0642c253e4ebe18c2898ae
     darling/src/external/libpthread: addb3f6964e54573b34c189b7eeb5c54f3b34f5e
-    darling: 7297ee393ed21d13484b1734e5e5694967f96851
+    darling: 81d8d939c1b0cd454ef7cc7ed034d1a340df7fd8
     darling/src/external/installer: a616bc3fd5afce5c9ca62a34e3d0fad30c4b45c6
 frozen_manifest:
   path: west.lock.yml
@@ -27,25 +27,25 @@ mapping:
 modules:
 - module: darling
   starting:
-    tree: 7297ee393ed21d13484b1734e5e5694967f96851
+    tree: df3a7e7ce27977cfce567343bb28299057762dd2
   series:
   - patch: darling/mldr-compact-fd-band.patch
     lock: darling-mldr-compact-fd-band-v1.yml
-    expected_applied_tree: 6c60496262d213b4f64480ff815d44af560246c9
-  final_tree: 6c60496262d213b4f64480ff815d44af560246c9
-  integration_final_tree: 6c60496262d213b4f64480ff815d44af560246c9
+    expected_applied_tree: fdd359535047c81077bd780908e78d7590bb9b42
+  final_tree: fdd359535047c81077bd780908e78d7590bb9b42
+  integration_final_tree: b3c2e58ee814dbbf3d33d4df853e37c3ba6f2f76
 - module: darling/src/external/xnu
   starting:
-    tree: 53c8fa45a1ac94bdfc2ced0b3179e43659dffabf
+    tree: 2f1194b6ff901d54e4b04f28c58198e999c4783c
   series:
   - patch: xnu/shmem-ring-guest.patch
     lock: darling-xnu-shmem-ring-guest-profile-v7.yml
-    expected_applied_tree: f52e2aa854783d20282e6f778d7eaf3f6766c21a
+    expected_applied_tree: 152442d120b9f4dadffebcf98afc149022041fa3
   - patch: xnu/j7e7-lane-wakefd-sentinel.patch
     lock: darling-xnu-j7e7-lane-wakefd-sentinel-profile-v7.yml
-    expected_applied_tree: 15a50d8fe8fea2a1a603dbe4c2fb79bde8ecc419
-  final_tree: 15a50d8fe8fea2a1a603dbe4c2fb79bde8ecc419
-  integration_final_tree: 15a50d8fe8fea2a1a603dbe4c2fb79bde8ecc419
+    expected_applied_tree: 5b68dc7882d27caecea3ea9533f11800666e7676
+  final_tree: 5b68dc7882d27caecea3ea9533f11800666e7676
+  integration_final_tree: 5b68dc7882d27caecea3ea9533f11800666e7676
 - module: darling/src/external/dyld
   starting:
     tree: 4dee94a7af9ac7fd1a15115c368d679553af8f8d
@@ -57,16 +57,16 @@ modules:
   integration_final_tree: 967445c7fbe8c6db155160c323cb4ece3a5cd1df
 - module: darling/src/external/darlingserver
   starting:
-    tree: 2d6f0321cfe205dba7302666bc470adb79a44003
+    tree: 9f5d3ce2c7542734d4b1859229c0301a2cc141bc
   series:
   - patch: darlingserver/perf18-server-ring.patch
     lock: darlingserver-perf18-server-ring-rootless-profile-v9.yml
-    expected_applied_tree: 1a0aabf4396fba3bdf34a9fcbbc5c0a7ee92e181
+    expected_applied_tree: 0933a165f3428fe5095a8834b1466cef4f13052d
   - patch: darlingserver/a0-hang-fixes.patch
     lock: darlingserver-a0-hang-fixes-rootless-profile-v9.yml
-    expected_applied_tree: 1081ce3f27849f77c2665ef95a9813d9e33816c6
+    expected_applied_tree: 5481bbac6e3d4f786ee3050c16cf4e62fb0566ba
   - patch: darlingserver/j7e7-postfork-reset-gate.patch
     lock: darlingserver-j7e7-postfork-reset-gate-rootless-profile-v9.yml
-    expected_applied_tree: 43da4fa5a32b65efae9c1c7f5ebc961d09e55c6d
-  final_tree: 43da4fa5a32b65efae9c1c7f5ebc961d09e55c6d
-  integration_final_tree: 43da4fa5a32b65efae9c1c7f5ebc961d09e55c6d
+    expected_applied_tree: d51c96cd50b1c67644374b74b44f445ddd8d360b
+  final_tree: d51c96cd50b1c67644374b74b44f445ddd8d360b
+  integration_final_tree: d51c96cd50b1c67644374b74b44f445ddd8d360b
