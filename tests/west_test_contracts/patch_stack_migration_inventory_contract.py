@@ -57,15 +57,15 @@ def main() -> None:
     assert inventory["summary"] == actual_summary == {
         "READY": 0,
         "RECOVERABLE_LOCAL": 0,
-        "ALREADY_MIGRATED": 95,
-        "PUBLICATION_PENDING": 5,
+        "ALREADY_MIGRATED": 94,
+        "PUBLICATION_PENDING": 6,
     }
     report = (ROOT / "docs/patch-stack-canonical-migration-report.md").read_text()
     for count, name in (
         (0, "READY"),
         (0, "RECOVERABLE_LOCAL"),
-        (95, "ALREADY_MIGRATED"),
-        (5, "PUBLICATION_PENDING"),
+        (94, "ALREADY_MIGRATED"),
+        (6, "PUBLICATION_PENDING"),
     ):
         assert f"{count} `{name}`" in report, f"report summary missing {count} {name}"
     expected = {}

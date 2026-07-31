@@ -40,9 +40,9 @@ def main() -> None:
     assert composition["schema_version"] == 3
     prerequisite = composition["prerequisites"]
     assert [item["profile"] for item in prerequisite] == ["homebrew"]
-    assert prerequisite[0]["module_trees"]["darling"] == "7297ee393ed21d13484b1734e5e5694967f96851"
+    assert prerequisite[0]["module_trees"]["darling"] == "81d8d939c1b0cd454ef7cc7ed034d1a340df7fd8"
     assert "source_oid" not in composition["modules"][0]["starting"]
-    assert composition["modules"][0]["series"][0]["expected_applied_tree"] == "e5c5611cf8f4d663d46e4da8a55135f95c97c8b0"
+    assert composition["modules"][0]["series"][0]["expected_applied_tree"] == "13bd83e645901ddccf96bdec5759cbf9d2889462"
     generated = {
         "43b4e876ad032635cfc5308ada0dc1bd383398b9",
         "585b0e89a7be83eaf8b8c0bd0ea7e69d1add0fea",
