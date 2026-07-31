@@ -1151,7 +1151,7 @@ stacks:
   project_path: darling/src/external/xnu
   upstream: https://github.com/darlinghq/darling-xnu.git
   downstream: https://github.com/darling-next/darling-xnu.git
-  source_branch: repack/eunion-hardening
+  source_branch: fix/eunion-sidecar-v1
   base_commit: 5c3019fca1d85533f34735bf40c97156c87b6d4f
   ordered_commits:
   - f033c5773992dfa57b6657f10f53f719664a5f18
@@ -1160,15 +1160,22 @@ stacks:
   - b103905f2e700269815f870f3dd78f3c0604ec63
   - 82847c96f24a804cf6a7949cf4543872a860f612
   - cb2cf623d9cd641ed4f9e899a0187acdedc423ea
-  source_commit: cb2cf623d9cd641ed4f9e899a0187acdedc423ea
-  expected_tree: 135291022a32950236a2bce17943102f44fb8e57
+  - cda77a91450cdadb2c0743df559897c8a20f2a15
+  - 7301f84f1ccc85fa4dcf253bf8b2d1fa7a8e7b66
+  - deba379410749fd566659aeba8c3e788fe8a498d
+  - 4780216047d80405804946abd74d786b9f3a6cd3
+  - f10ea282e97b06cccf1e74218c4be4756762103a
+  - 05a5e63fea3c55a0527ba906b1985458701a5556
+  - 05e548652657c2f9bbfff54a87d23df011dbc422
+  source_commit: 05e548652657c2f9bbfff54a87d23df011dbc422
+  expected_tree: 1b7352bbdbd015f709eb899478e5651c444c7b17
   artifact_count: 1
-  commit_count: 6
-  object_closure: hosted_immutable_clean_odb
+  commit_count: 13
+  object_closure: local_append_only_clean_odb
   linearity: verified
-  classification: ALREADY_MIGRATED
-  reason: exact objects recovered from trusted XNU worktree into an isolated clean ODB
-  lock: locks/patch-stack/darling-xnu-eunion-hardening-v1.yml
+  classification: PUBLICATION_PENDING
+  reason: sidecar-v1 source and the Policy 1 recreate gate are independently verified locally; hosted immutable refs remain intentionally unpublished
+  lock: locks/patch-stack/darling-xnu-eunion-hardening-sidecar-v2.yml
 - profile: homebrew
   patch: darling/build-drift-gate.patch
   artifact: patches/homebrew/darling/build-drift-gate.patch
@@ -1975,19 +1982,20 @@ stacks:
   project_path: darling/src/external/darlingserver
   upstream: https://github.com/darlinghq/darlingserver.git
   downstream: https://github.com/darling-next/darlingserver.git
-  source_branch: fix/rootless-prefix-lifecycle-v2
+  source_branch: fix/rootless-prefix-sidecar-v1
   base_commit: dd0b23f1e3b8e9470016e67df40e18a28718b737
   ordered_commits:
   - a2f99243227c57847308527a2a921d1bb77b1135
-  source_commit: a2f99243227c57847308527a2a921d1bb77b1135
-  expected_tree: 2d6f0321cfe205dba7302666bc470adb79a44003
+  - c81ddfa279a538eda247a960e59018e7fc7a4875
+  source_commit: c81ddfa279a538eda247a960e59018e7fc7a4875
+  expected_tree: 9f5d3ce2c7542734d4b1859229c0301a2cc141bc
   artifact_count: 1
-  commit_count: 1
+  commit_count: 2
   object_closure: local_append_only_clean_odb
   linearity: verified
   classification: PUBLICATION_PENDING
-  reason: typed prefix-state validation and create-only refs are independently verified in the local append-only publication package
-  lock: locks/patch-stack/darlingserver-prefix-lifecycle-state-v2-v1.yml
+  reason: four-fd prefix/workdir/sidecar/lifecycle-lock validation is independently verified locally; hosted immutable refs remain intentionally unpublished
+  lock: locks/patch-stack/darlingserver-prefix-lifecycle-state-v3-v1.yml
 - profile: homebrew
   patch: xnu/af-unix-expanded-path-length.patch
   artifact: patches/homebrew/xnu/af-unix-expanded-path-length.patch
@@ -2032,21 +2040,22 @@ stacks:
   project_path: darling
   upstream: https://github.com/darlinghq/darling.git
   downstream: https://github.com/darling-next/darling.git
-  source_branch: fix/rootless-prefix-lifecycle-v2
+  source_branch: fix/rootless-prefix-sidecar-v1
   base_commit: db7b5b404366fa630edeb5189f174518aad189ad
   ordered_commits:
   - da784f52c4e5b7a3ecbc628e6e619171ba78435c
-  source_commit: da784f52c4e5b7a3ecbc628e6e619171ba78435c
-  expected_tree: 7297ee393ed21d13484b1734e5e5694967f96851
+  - d17322c622119264ba3a363ce80fc6b989087548
+  source_commit: d17322c622119264ba3a363ce80fc6b989087548
+  expected_tree: 81d8d939c1b0cd454ef7cc7ed034d1a340df7fd8
   artifact_count: 1
-  commit_count: 1
+  commit_count: 2
   object_closure: local_append_only_clean_odb
   linearity: verified
   classification: PUBLICATION_PENDING
-  reason: crash-consistent prefix lifecycle and create-only refs are independently verified in the local append-only publication package
-  lock: locks/patch-stack/darling-prefix-lifecycle-state-v2-v1.yml
+  reason: sidecar-v1 creation and explicit Policy 1 legacy-prefix recreation are independently verified locally; hosted immutable refs remain intentionally unpublished
+  lock: locks/patch-stack/darling-prefix-lifecycle-state-v3-v1.yml
 summary:
   READY: 0
   RECOVERABLE_LOCAL: 0
-  ALREADY_MIGRATED: 95
-  PUBLICATION_PENDING: 5
+  ALREADY_MIGRATED: 94
+  PUBLICATION_PENDING: 6

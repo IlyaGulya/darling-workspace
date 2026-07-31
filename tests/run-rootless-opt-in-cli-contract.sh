@@ -194,7 +194,7 @@ for token in (
     "darling_runtime_prefix_recreate(",
     "darling_runtime_prefix_delete(",
     "darling_runtime_prefix_move(",
-    "LIFECYCLE_STABLE_CURRENT_V2",
+    "LIFECYCLE_STABLE_CURRENT_V3",
     "LIFECYCLE_PHASE_REPLACEMENT_STAGED",
     "recovery_disposition(",
     "advance_transaction_phase(",
@@ -217,7 +217,7 @@ if "names.lock" in prefix_mode:
 prefix_header = (root / "src/startup/runtime_mode_prefix.h").read_text()
 for token in (
     "} darling_runtime_prefix[1];",
-    "Transfer ownership only with",
+    "transfer ownership only with",
     "darling_runtime_prefix_move()",
 ):
     if token not in prefix_header:
@@ -240,7 +240,7 @@ for token in (
     "move did not invalidate source capability",
     "stable-state/journal-phase recovery matrix mismatch",
     "recovery matrix did not cover every combination",
-    "interrupted upgrade did not reach a valid stable state",
+    "interrupted create/recreate reached an invalid generation",
     "newer prefix schema was accepted",
     "cross-prefix typed state was accepted",
     "hostile state metadata mode was accepted",

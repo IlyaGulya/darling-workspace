@@ -1543,7 +1543,10 @@ class DarlingTest(ProfileOperationsMixin, BootstrapRuntimeProfileMixin, WestComm
                 if source_root is not None
                 else self._project_path(invocation["source_module"])
             )
-        if invocation.get("ctest_label") == "eunion-host":
+        if invocation.get("ctest_label") in {
+            "eunion-host",
+            "eunion-sidecar-v1",
+        }:
             defines["DARLING_ENABLE_EUNION_HOST_SUITE"] = "ON"
         return defines
 
