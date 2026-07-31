@@ -91,6 +91,7 @@ printf '%s\n' "$host_tier" | grep -F -q 'tests/run-patch-stack-immutable-oracle-
 printf '%s\n' "$host_tier" | grep -F -q 'tests/run-west-patch-stack-export-contract.sh'
 printf '%s\n' "$host_tier" | grep -F -q 'tests/run-patch-stack-lock-first-hosted-workflow-contract.sh'
 printf '%s\n' "$host_tier" | grep -F -q 'tests/run-patch-stack-migration-inventory-contract.sh'
+printf '%s\n' "$host_tier" | grep -F -q 'tests/run-eunion-host-consumers-contract.sh'
 host_before_west="${host_tier%%exec west test*}"
 [[ "$host_before_west" == *'tests/run-west-patch-stack-materialize-contract.sh'* &&
 	"$host_before_west" == *'tests/run-west-patch-stack-lock-first-contract.sh'* &&
@@ -101,7 +102,8 @@ host_before_west="${host_tier%%exec west test*}"
 	"$host_before_west" == *'tests/run-patch-stack-immutable-oracle-contract.sh'* &&
 	"$host_before_west" == *'tests/run-west-patch-stack-export-contract.sh'* &&
 	"$host_before_west" == *'tests/run-patch-stack-lock-first-hosted-workflow-contract.sh'* &&
-	"$host_before_west" == *'tests/run-patch-stack-migration-inventory-contract.sh'* ]] || {
+	"$host_before_west" == *'tests/run-patch-stack-migration-inventory-contract.sh'* &&
+	"$host_before_west" == *'tests/run-eunion-host-consumers-contract.sh'* ]] || {
 	echo 'host tier does not run patch-stack contracts before west test' >&2
 	exit 1
 }
@@ -113,7 +115,8 @@ host_before_west="${host_tier%%exec west test*}"
 	"${host_before_west%%tests/run-patch-stack-immutable-oracle-contract.sh*}" == *'tests/run-west-patch-stack-runtime-source-contract.sh'* &&
 	"${host_before_west%%tests/run-west-patch-stack-export-contract.sh*}" == *'tests/run-patch-stack-immutable-oracle-contract.sh'* &&
 	"${host_before_west%%tests/run-patch-stack-lock-first-hosted-workflow-contract.sh*}" == *'tests/run-west-patch-stack-export-contract.sh'* &&
-	"${host_before_west%%tests/run-patch-stack-migration-inventory-contract.sh*}" == *'tests/run-patch-stack-lock-first-hosted-workflow-contract.sh'* ]] || {
+	"${host_before_west%%tests/run-patch-stack-migration-inventory-contract.sh*}" == *'tests/run-patch-stack-lock-first-hosted-workflow-contract.sh'* &&
+	"${host_before_west%%tests/run-eunion-host-consumers-contract.sh*}" == *'tests/run-patch-stack-migration-inventory-contract.sh'* ]] || {
 	echo 'host tier does not order canonical patch-stack contracts' >&2
 	exit 1
 }
