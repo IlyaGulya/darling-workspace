@@ -111,6 +111,7 @@ case "${1:-}" in
 		tests/run-west-patch-stack-export-contract.sh
 		tests/run-patch-stack-lock-first-hosted-workflow-contract.sh
 		tests/run-patch-stack-migration-inventory-contract.sh
+		tests/run-eunion-host-consumers-contract.sh
 		exec west test --profile homebrew --env host --materialize-profile "${@:2}"
 		;;
 	guest-smoke)
