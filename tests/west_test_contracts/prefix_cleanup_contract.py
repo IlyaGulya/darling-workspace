@@ -139,6 +139,7 @@ with tempfile.TemporaryDirectory() as temp:
     root = Path(temp)
     retained_prefix = root / "retained-prefix"
     retained_prefix.mkdir()
+    (retained_prefix / ".darling-prefix-state-v3").write_text("typed fixture\n")
     other_prefix = root / "other-prefix"
     other_prefix.mkdir()
     proc_root = root / "proc"
@@ -161,12 +162,90 @@ with tempfile.TemporaryDirectory() as temp:
         retained_prefix, retained_entries, proc_root=proc_root
     ) == [300]
 
-    process_snapshots = iter(
-        [retained_entries, retained_entries, [], [], []]
+    lifecycle_events = []
+    owner_module = sys.modules[PrefixLifecycleOwner.__module__]
+    original_shutdown = owner_module.shutdown_guest_prefix
+    original_rootless_cleanup = owner_module.cleanup_rootless_prefix_processes
+
+    def retained_shutdown(*_args, **_kwargs):
+        nonlocal_runtime[0] = False
+        lifecycle_events.append("launcher-shutdown")
+        return types.SimpleNamespace(
+            returncode=0,
+            timed_out=False,
+            stdout="",
+            stderr="",
+        )
+
+    nonlocal_runtime = [False]
+    lifecycle_errors = []
+    owner_module.shutdown_guest_prefix = retained_shutdown
+    owner_module.cleanup_rootless_prefix_processes = lambda _prefix: (
+        lifecycle_events.append("force-rootless-cleanup")
+        or types.SimpleNamespace(success=True, changed=[], problems=[])
     )
-    launcher_calls = []
     owner = PrefixLifecycleOwner(
-        resolve_launcher=lambda _prefix: launcher_calls.append(True) or "/fake/darling",
+        resolve_launcher=lambda _prefix: lifecycle_events.append("resolve-launcher")
+        or "/fake/darling",
+        prefix_env=lambda _prefix: {},
+        cleanup_mounts=lambda _prefix: types.SimpleNamespace(
+            success=True, changed=[], problems=[]
+        ),
+        init_pid_is_usable=lambda _pid: False,
+        inf=lambda _message: None,
+        err=lifecycle_errors.append,
+        wrn=lambda _message: None,
+        process_entries=lambda: retained_entries if nonlocal_runtime[0] else [],
+        proc_root=proc_root,
+    )
+    owner._kill_server = lambda _prefix: lifecycle_events.append("force-kill")
+    try:
+        for cycle in ("initial", "restart-1", "restart-2"):
+            nonlocal_runtime[0] = True
+            assert owner.shutdown(retained_prefix), (
+                cycle,
+                lifecycle_errors,
+                lifecycle_events,
+            )
+            assert owner.process_snapshot(retained_prefix) == [], cycle
+        assert lifecycle_events == [
+            "resolve-launcher",
+            "launcher-shutdown",
+            "resolve-launcher",
+            "launcher-shutdown",
+            "resolve-launcher",
+            "launcher-shutdown",
+        ], lifecycle_events
+    finally:
+        owner_module.shutdown_guest_prefix = original_shutdown
+        owner_module.cleanup_rootless_prefix_processes = original_rootless_cleanup
+
+    nonlocal_runtime = [True]
+    lifecycle_events = []
+    original_shutdown = owner_module.shutdown_guest_prefix
+    original_rootless_cleanup = owner_module.cleanup_rootless_prefix_processes
+
+    def timed_out_shutdown(*_args, **_kwargs):
+        lifecycle_events.append("launcher-shutdown")
+        return types.SimpleNamespace(
+            returncode=-signal.SIGKILL,
+            timed_out=True,
+            stdout="",
+            stderr="bounded shutdown timeout",
+        )
+
+    def force_retained_cleanup(_prefix):
+        lifecycle_events.append("force-kill")
+        nonlocal_runtime[0] = False
+
+    owner_module.shutdown_guest_prefix = timed_out_shutdown
+    owner_module.cleanup_rootless_prefix_processes = lambda _prefix: (
+        lifecycle_events.append("force-rootless-cleanup")
+        or types.SimpleNamespace(success=True, changed=[], problems=[])
+    )
+    owner = PrefixLifecycleOwner(
+        resolve_launcher=lambda _prefix: lifecycle_events.append("resolve-launcher")
+        or "/fake/darling",
         prefix_env=lambda _prefix: {},
         cleanup_mounts=lambda _prefix: types.SimpleNamespace(
             success=True, changed=[], problems=[]
@@ -175,11 +254,22 @@ with tempfile.TemporaryDirectory() as temp:
         inf=lambda _message: None,
         err=lambda _message: None,
         wrn=lambda _message: None,
-        process_entries=lambda: next(process_snapshots, []),
+        process_entries=lambda: retained_entries if nonlocal_runtime[0] else [],
         proc_root=proc_root,
     )
-    assert owner.shutdown(retained_prefix)
-    assert launcher_calls == [], "retained-FD cleanup reopened the prefix by path"
+    owner._kill_server = force_retained_cleanup
+    try:
+        assert not owner.shutdown(retained_prefix)
+        assert lifecycle_events == [
+            "resolve-launcher",
+            "launcher-shutdown",
+            "force-kill",
+            "force-rootless-cleanup",
+        ], lifecycle_events
+        assert owner.process_snapshot(retained_prefix) == []
+    finally:
+        owner_module.shutdown_guest_prefix = original_shutdown
+        owner_module.cleanup_rootless_prefix_processes = original_rootless_cleanup
 
 test._prefix = str(prefix)
 test._keep_prefix_running = False
