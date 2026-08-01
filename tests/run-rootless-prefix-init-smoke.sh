@@ -21,11 +21,20 @@ capture_lock_owners() {
 	fi
 }
 
+runtime_endpoint_absent() {
+	local path="$1"
+	[[ ! -e "$path" && ! -L "$path" ]]
+}
+
 wait_for_verified_shutdown() {
 	local phase="$1"
 	local attempt
 	for attempt in $(seq 1 100); do
-		if [[ ! -S "$DPREFIX/.darlingserver.sock" ]]; then
+		if runtime_endpoint_absent "$DPREFIX/.darlingserver.sock" &&
+			runtime_endpoint_absent "$DPREFIX/.darlingserver.stat.sock" &&
+			runtime_endpoint_absent "$DPREFIX/var/run/shellspawn.sock" &&
+			runtime_endpoint_absent "$DPREFIX/var/tmp/launchd/sock"
+		then
 			capture_lock_owners "$phase" true
 			printf 'ROOTLESS_PREFIX_RESTART_SHUTDOWN_OK phase=%s\n' "$phase"
 			return 0

@@ -668,6 +668,21 @@ class PrefixLifecycleOwner:
         entries.extend(rootless_prefix_process_snapshot(prefix, proc_root=self.proc_root))
         return sorted(set(entries))
 
+    @staticmethod
+    def runtime_socket_snapshot(prefix: Path) -> list[str]:
+        paths = (Path(".darlingserver.sock"), *_ROOTLESS_RUNTIME_SOCKET_PATHS)
+        leftovers = []
+        for relative in paths:
+            try:
+                (prefix / relative).lstat()
+            except FileNotFoundError:
+                continue
+            except OSError as error:
+                leftovers.append(f"{relative}: {error}")
+            else:
+                leftovers.append(str(relative))
+        return leftovers
+
     def _kill_server(self, prefix: Path) -> None:
         pids = darlingserver_pids_for_prefix(
             prefix, self.ps_entries(), proc_root=self.proc_root
@@ -696,9 +711,13 @@ class PrefixLifecycleOwner:
                     self.err(f"cannot stop darlingserver {pid} for {prefix}: {error}")
             time.sleep(1)
 
-    def finalize(self, prefix: Path) -> bool:
-        self._kill_server(prefix)
-        rootless_cleanup = cleanup_rootless_prefix_processes(prefix)
+    def finalize(
+        self, prefix: Path, *, force_process_cleanup: bool = True
+    ) -> bool:
+        rootless_cleanup = RootlessPrefixCleanupResult()
+        if force_process_cleanup:
+            self._kill_server(prefix)
+            rootless_cleanup = cleanup_rootless_prefix_processes(prefix)
         for message in rootless_cleanup.changed:
             self.inf(f"cleanup rootless Darling prefix: {message}")
         for message in rootless_cleanup.problems:
@@ -765,18 +784,21 @@ class PrefixLifecycleOwner:
                 for entry_pid, _ppid, args in process_entries
             )
         }
-        launcher = (
-            None
-            if empty_prefix or retained_server_pids
-            else self.resolve_launcher(str(prefix))
-        )
+        launcher = None if empty_prefix else self.resolve_launcher(str(prefix))
+        graceful_shutdown_completed = False
         if empty_prefix:
             self.inf(f"observe empty Darling prefix without launcher shutdown: {prefix}")
         elif retained_server_pids:
             self.inf(
-                "shutdown retained-FD Darling prefix through lifecycle owner: "
+                "request bounded launcher shutdown for retained-FD Darling prefix: "
                 f"{prefix} pids={sorted(retained_server_pids)}"
             )
+            if not launcher:
+                self.err(
+                    "cannot resolve launcher for retained-FD Darling prefix; "
+                    f"forcing cleanup: {prefix}"
+                )
+                shutdown_ok = False
         if launcher:
             env = os.environ.copy()
             env.update(self.prefix_env(prefix))
@@ -798,6 +820,7 @@ class PrefixLifecycleOwner:
                 )
                 if result.returncode == 0 and not result.timed_out:
                     shutdown_ok = True
+                    graceful_shutdown_completed = True
                     break
                 detail = process_output_text(result).strip()
                 if (
@@ -805,8 +828,16 @@ class PrefixLifecycleOwner:
                     and not result.timed_out
                     and "Darling container is not running" in detail
                 ):
-                    self.inf(f"Darling prefix already stopped: {prefix}")
-                    shutdown_ok = True
+                    if retained_server_pids:
+                        self.err(
+                            "launcher reported stopped while retained Darlingserver "
+                            f"still owned the prefix; forcing cleanup: {prefix}"
+                        )
+                        shutdown_ok = False
+                    else:
+                        self.inf(f"Darling prefix already stopped: {prefix}")
+                        shutdown_ok = True
+                        graceful_shutdown_completed = True
                     break
                 if result.timed_out:
                     self.err(f"Darling prefix shutdown timed out for {prefix}; forcing cleanup")
@@ -824,9 +855,27 @@ class PrefixLifecycleOwner:
                     f"({attempt + 1}/{attempts})"
                 )
                 time.sleep(1)
+        if graceful_shutdown_completed:
+            leftovers = self.process_snapshot(prefix)
+            socket_leftovers = self.runtime_socket_snapshot(prefix)
+            if leftovers or socket_leftovers:
+                self.err(
+                    "launcher shutdown left Darling prefix runtime state; "
+                    f"forcing cleanup for {prefix}:"
+                )
+                for entry in leftovers:
+                    self.err(f"  process: {entry}")
+                for entry in socket_leftovers:
+                    self.err(f"  socket: {entry}")
+                shutdown_ok = False
+                graceful_shutdown_completed = False
         # Always run the host-side cleanup oracle. A failed launcher shutdown
         # remains a failure, but skipping cleanup would leave diagnostics dirty.
-        final_ok = self.finalize(prefix)
+        # A verified graceful shutdown needs only observation and stale endpoint
+        # cleanup; signals are reserved for the bounded fallback path.
+        final_ok = self.finalize(
+            prefix, force_process_cleanup=not graceful_shutdown_completed
+        )
         return shutdown_ok and final_ok
 
     @contextmanager
