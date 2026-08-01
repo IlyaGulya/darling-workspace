@@ -96,7 +96,7 @@ def main() -> None:
         assert batch_current.composition["boundaries"][("darling/src/external/xnu", "xnu/fstatfs-missing-proc-mounts.patch")] == "84d7a41685fab6b459ce754e8db8421ab4fc3615"
         assert batch_current.composition["boundaries"][("darling", "darling/sandbox-exec-pass-through.patch")] == "630c80034b9aed3a89d133c948e457c1bc9e3709"
         assert batch_current.composition["boundaries"][("darling/src/external/darlingserver", "darlingserver/prefix-lifecycle-state-v2.patch")] == "27f6cf1747600ad0977ae31e243e90a6f3a4b5e3"
-        assert batch_current.composition["boundaries"][("darling", "darling/prefix-lifecycle-state-v2.patch")] == "a0dd8cb79c5da16469a7e1e6d9aac4f7f84477a1"
+        assert batch_current.composition["boundaries"][("darling", "darling/prefix-lifecycle-state-v2.patch")] == "1e8afb2d8923c41e48df96d1bfc7988ab89fa25d"
         assert batch_current.composition["finals"]["darling/src/external/xnu"] == "1005ed6f19731b681b717893ce50680198af5d9e"
         assert batch_current.batch["batch_id"] == "darling-homebrew-eunion-sidecar-batch-10"
         assert batch_current.batch["module_order"] == [

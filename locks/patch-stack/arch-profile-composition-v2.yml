@@ -3,7 +3,7 @@ profile: arch
 prerequisites:
 - profile: perf
   composition: perf-profile-composition-v2.yml
-  sha256: 52727d5e6a33d55d70037043b9a132ad9e1633ede40926d6d9c98e8c6c52fb9b
+  sha256: 3b1d16c357fd66982af8eac711686c194397ff4deadd23b094d394a2da5c9177
   frozen_manifest:
     path: west.lock.yml
     sha256: 5718c32c76a180b9078a206b93d93e70f478a5ada0034cd6afcc789c447e055d
