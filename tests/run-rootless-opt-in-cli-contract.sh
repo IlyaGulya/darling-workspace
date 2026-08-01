@@ -209,6 +209,7 @@ for token in (
     "darling_runtime_mode_verify_prefix_name(",
     "darling_runtime_mode_write_relative_atomic(",
     "darling_runtime_mode_make_fd_inheritable(",
+    "darling_runtime_mode_make_lock_fd_inheritable(",
 ):
     if token not in prefix_mode:
         raise SystemExit(f"real-prefix preflight is incomplete: {token}")
@@ -267,6 +268,25 @@ for token in (
 ):
     if token not in handoff:
         raise SystemExit(f"launcher/server retained-fd handoff is incomplete: {token}")
+spawn_init = function_body(launcher, "pid_t spawnInitProcess(void)")
+if spawn_init.count("darling_runtime_mode_make_fd_inheritable(") != 4:
+    raise SystemExit(
+        "launcher must preserve exactly four retained directory capabilities"
+    )
+if spawn_init.count("darling_runtime_mode_make_lock_fd_inheritable(") != 1:
+    raise SystemExit(
+        "launcher must preserve exactly one retained lifecycle lock capability"
+    )
+if (
+    "darling_runtime_mode_make_fd_inheritable(\n"
+    "\t\t\t\tg_runtimePrefix->lifecycle_lock_fd" in spawn_init
+):
+    raise SystemExit("launcher still validates the lifecycle lock as a directory fd")
+if (
+    "darling_runtime_mode_make_lock_fd_inheritable(\n"
+    "\t\t\t\tg_runtimePrefix->lifecycle_lock_fd" not in spawn_init
+):
+    raise SystemExit("launcher does not use the regular-file lifecycle lock handoff")
 if 'execl(INSTALL_PREFIX "/bin/darlingserver", "darlingserver",\n\t\t\tprefix,' in handoff:
     raise SystemExit("launcher still passes the original prefix path to darlingserver")
 for function in (

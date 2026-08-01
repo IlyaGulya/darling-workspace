@@ -13,6 +13,7 @@ from collections.abc import Callable
 from typing import Any
 
 from test_execution import run_bounded
+from test_prefix import RetainedDirectoryCapability
 from test_results import RuntimeBuildFailure
 from test_runtime import COMPILER_LAUNCHERS, runtime_build_targets
 
@@ -294,6 +295,53 @@ class RuntimeBuildService:
             return
         self._host.inf(f"  runtime {label} build {stream}: {line}")
 
+    def _empty_prefix_guard(
+        self, proof: dict, prefix: Path
+    ) -> RetainedDirectoryCapability | None:
+        """Retain an initially empty prefix across configure and build."""
+
+        if proof.get("runtime-mode") != "rootless-eunion":
+            return None
+        try:
+            capability = RetainedDirectoryCapability.open(prefix)
+        except OSError as error:
+            self._host.die(
+                f"runtime build prefix is not a stable real directory: "
+                f"{prefix}: {error}"
+            )
+        try:
+            if capability.entries():
+                capability.close()
+                return None
+            return capability
+        except OSError as error:
+            capability.close()
+            self._host.die(f"runtime build cannot inspect prefix {prefix}: {error}")
+
+    def _assert_prefix_still_empty(
+        self, capability: RetainedDirectoryCapability, phase: str
+    ) -> None:
+        try:
+            capability.revalidate(metadata=False)
+            entries = capability.entries()
+        except OSError as error:
+            self._host.die(
+                f"{phase} changed empty runtime prefix identity: "
+                f"{capability.path}: {error}"
+            )
+        if entries:
+            self._host.die(
+                f"{phase} mutated empty runtime prefix {capability.path}: "
+                + ", ".join(entries)
+            )
+        try:
+            capability.revalidate(metadata=True)
+        except OSError as error:
+            self._host.die(
+                f"{phase} changed empty runtime prefix metadata: "
+                f"{capability.path}: {error}"
+            )
+
     def build_artifacts(
         self,
         source_root: Path,
@@ -308,6 +356,40 @@ class RuntimeBuildService:
         runner: Callable[..., Any] = run_bounded,
         timeout_seconds: int | None = None,
     ) -> Path:
+        empty_prefix_guard = self._empty_prefix_guard(proof, prefix)
+        try:
+            return self._build_artifacts_guarded(
+                source_root,
+                proof,
+                prefix,
+                scratch_root,
+                label=label,
+                allow_failure=allow_failure,
+                configure_args=configure_args,
+                dump_command_tail=dump_command_tail,
+                runner=runner,
+                timeout_seconds=timeout_seconds,
+                empty_prefix_guard=empty_prefix_guard,
+            )
+        finally:
+            if empty_prefix_guard is not None:
+                empty_prefix_guard.close()
+
+    def _build_artifacts_guarded(
+        self,
+        source_root: Path,
+        proof: dict,
+        prefix: Path,
+        scratch_root: Path,
+        *,
+        label: str,
+        allow_failure: bool,
+        configure_args: Callable[[dict, Path, Path], list[str]],
+        dump_command_tail: Callable[[str, Any], None],
+        runner: Callable[..., Any],
+        timeout_seconds: int | None,
+        empty_prefix_guard: RetainedDirectoryCapability | None,
+    ) -> Path:
         targets = runtime_build_targets(proof)
         build_root = scratch_root / "build"
         timeout = int(
@@ -321,27 +403,37 @@ class RuntimeBuildService:
         configured_at = time.monotonic()
         self._host.inf(f"  runtime phase start: {label} configure")
         self._host.inf(f"  {label} configure: {source_root} -> {build_root}")
-        configured = runner(
-            [
-                "cmake",
-                "-S",
-                str(source_root),
-                "-B",
-                str(build_root),
-                *configure_args(proof, prefix, scratch_root),
-            ],
-            cwd=Path(self._host.topdir),
-            env=build_environment,
-            timeout_seconds=timeout,
-            capture_output=True,
-            heartbeat_seconds=30,
-            heartbeat=lambda elapsed: self._host.inf(
-                f"  runtime heartbeat: {label} configure still running ({elapsed:.0f}s)"
-            ),
-            output_line=lambda stream, line: self._forward_runtime_line(
-                label, "configure", stream, line
-            ),
-        )
+        try:
+            configured = runner(
+                [
+                    "cmake",
+                    "-S",
+                    str(source_root),
+                    "-B",
+                    str(build_root),
+                    *configure_args(proof, prefix, scratch_root),
+                ],
+                cwd=Path(self._host.topdir),
+                env=build_environment,
+                timeout_seconds=timeout,
+                capture_output=True,
+                heartbeat_seconds=30,
+                heartbeat=lambda elapsed: self._host.inf(
+                    f"  runtime heartbeat: {label} configure still running ({elapsed:.0f}s)"
+                ),
+                output_line=lambda stream, line: self._forward_runtime_line(
+                    label, "configure", stream, line
+                ),
+            )
+        except BaseException:
+            if empty_prefix_guard is not None:
+                try:
+                    self._assert_prefix_still_empty(empty_prefix_guard, "configure")
+                except BaseException as invariant_error:
+                    self._host.err(str(invariant_error))
+            raise
+        if empty_prefix_guard is not None:
+            self._assert_prefix_still_empty(empty_prefix_guard, "configure")
         if configured.returncode:
             dump_command_tail(f"{label} configure", configured)
             if allow_failure:
@@ -351,20 +443,30 @@ class RuntimeBuildService:
         built_at = time.monotonic()
         self._host.inf(f"  runtime phase start: {label} build")
         self._host.inf(f"  {label} build: {', '.join(targets)}")
-        built = runner(
-            ["ninja", "-C", str(build_root), *targets],
-            cwd=Path(self._host.topdir),
-            env=build_environment,
-            timeout_seconds=timeout,
-            capture_output=True,
-            heartbeat_seconds=30,
-            heartbeat=lambda elapsed: self._host.inf(
-                f"  runtime heartbeat: {label} build still running ({elapsed:.0f}s)"
-            ),
-            output_line=lambda stream, line: self._forward_runtime_line(
-                label, "build", stream, line
-            ),
-        )
+        try:
+            built = runner(
+                ["ninja", "-C", str(build_root), *targets],
+                cwd=Path(self._host.topdir),
+                env=build_environment,
+                timeout_seconds=timeout,
+                capture_output=True,
+                heartbeat_seconds=30,
+                heartbeat=lambda elapsed: self._host.inf(
+                    f"  runtime heartbeat: {label} build still running ({elapsed:.0f}s)"
+                ),
+                output_line=lambda stream, line: self._forward_runtime_line(
+                    label, "build", stream, line
+                ),
+            )
+        except BaseException:
+            if empty_prefix_guard is not None:
+                try:
+                    self._assert_prefix_still_empty(empty_prefix_guard, "build")
+                except BaseException as invariant_error:
+                    self._host.err(str(invariant_error))
+            raise
+        if empty_prefix_guard is not None:
+            self._assert_prefix_still_empty(empty_prefix_guard, "build")
         if built.returncode:
             dump_command_tail(f"{label} build", built)
             if allow_failure:
