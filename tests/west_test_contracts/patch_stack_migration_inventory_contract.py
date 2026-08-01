@@ -104,8 +104,27 @@ def main() -> None:
         "RECOVERABLE_LOCAL": "trusted_worktree_only",
         "PUBLICATION_PENDING": "local_append_only_clean_odb",
     }
+    canonical_fields = {
+        "canonical_ordered_commits",
+        "canonical_commit_count",
+        "canonical_source_commit",
+        "canonical_expected_tree",
+    }
     for row in rows.values():
         assert row["object_closure"] == closures[row["classification"]], row["patch"]
+        present_canonical_fields = canonical_fields.intersection(row)
+        assert present_canonical_fields in (set(), canonical_fields), (
+            row["patch"],
+            "canonical lock override fields must be supplied as one typed set",
+            sorted(present_canonical_fields),
+        )
+        canonical_commits = row.get("canonical_ordered_commits", row["ordered_commits"])
+        canonical_count = row.get("canonical_commit_count", row["commit_count"])
+        canonical_source = row.get("canonical_source_commit", row["source_commit"])
+        canonical_tree = row.get("canonical_expected_tree", row["expected_tree"])
+        assert canonical_commits and canonical_count == len(canonical_commits), row["patch"]
+        assert canonical_source == canonical_commits[-1], row["patch"]
+        assert all(SHA.fullmatch(oid) for oid in [*canonical_commits, canonical_tree]), row["patch"]
         if row["classification"] not in {
             "ALREADY_MIGRATED",
             "PUBLICATION_PENDING",
@@ -117,9 +136,9 @@ def main() -> None:
         assert lock["upstream"]["url"] == row["upstream"]
         assert lock["mirror"]["url"] == row["downstream"]
         assert lock["upstream"]["base_commit"] == row["base_commit"]
-        assert lock["ordered_commits"] == row["ordered_commits"]
-        assert lock["source_commit"] == row["source_commit"]
-        assert lock["expected_tree"] == row["expected_tree"]
+        assert lock["ordered_commits"] == canonical_commits
+        assert lock["source_commit"] == canonical_source
+        assert lock["expected_tree"] == canonical_tree
     host_tier = (ROOT / "ci/run-test-tier.sh").read_text().split("\thost)\n", 1)[1].split("\tguest-smoke)", 1)[0]
     runner = "tests/run-patch-stack-migration-inventory-contract.sh"
     assert runner in host_tier
