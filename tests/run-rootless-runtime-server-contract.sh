@@ -146,6 +146,20 @@ if "validateRuntimeModePrefixFD(" in runtime_header:
 server = (root / "src/server.cpp").read_text()
 logging = (root / "src/logging.cpp").read_text()
 header = (root / "internal-include/darlingserver/server.hpp").read_text()
+call = (root / "src/call.cpp").read_text()
+vchroot_reply = call[call.index("void DarlingServer::Call::VchrootDirectory::processCall()"):
+    call.index("void DarlingServer::Call::TaskSelfTrap::processCall()")]
+for token in (
+    "F_DUPFD_CLOEXEC",
+    "process->_vchrootDescriptor->fd()",
+    "code = -errno",
+):
+    if token not in vchroot_reply:
+        raise SystemExit(
+            f"retained vchroot reply does not transfer duplicate ownership: {token}"
+        )
+if "directoryFD = process->_vchrootDescriptor->fd();" in vchroot_reply:
+    raise SystemExit("retained vchroot reply lends and closes the process-owned fd")
 for token in (
     "int _prefixFD;",
     "int prefixFD() const;",

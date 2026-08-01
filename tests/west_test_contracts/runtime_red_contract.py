@@ -29,9 +29,11 @@ sys.modules.setdefault("west.commands", west_commands_module)
 
 import west_commands.test as west_test_module
 import west_commands.test_guest_c as guest_c_module
+import west_commands.test_runtime_deploy as runtime_deploy_module
 import test_runtime_source as runtime_source_module
 from west_commands.test import DarlingTest, RuntimeBuildFailure, RuntimeRedProven
 from west_commands.test_execution import ProcessResult, process_output_text
+from west_commands.test_runtime_build import RuntimeBuildService
 from west_commands.test_runtime import (
     compose_ctest_runtime_profiles,
     describe_runtime_deploy_plan,
@@ -76,6 +78,31 @@ def make_test():
     test._execution_env = lambda _invocation: {"DPREFIX": test._prefix}
     test._preflight_runtime_profile_stack = lambda *_args: None
     return test
+
+
+def write_typed_prefix_state(prefix: Path) -> tuple[Path, Path]:
+    prefix.chmod(0o755)
+    sidecar = Path(f"{prefix}.eunion-sidecar-v1")
+    sidecar.mkdir()
+    sidecar.chmod(0o700)
+    prefix_status = prefix.stat()
+    sidecar_status = sidecar.stat()
+    state = prefix / ".darling-prefix-state-v3"
+    state.write_text(
+        "DARLING_PREFIX_STATE_V3\n"
+        "schema_version=3\n"
+        "runtime_mode=rootless-eunion\n"
+        "generation=1\n"
+        f"prefix_device={prefix_status.st_dev}\n"
+        f"prefix_inode={prefix_status.st_ino}\n"
+        f"sidecar_device={sidecar_status.st_dev}\n"
+        f"sidecar_inode={sidecar_status.st_ino}\n"
+        f"owner_uid={prefix_status.st_uid}\n"
+        f"owner_gid={prefix_status.st_gid}\n"
+        "provenance=darling-runtime-prefix-sidecar-v1\n"
+    )
+    state.chmod(0o600)
+    return state, sidecar
 
 
 assert parse_runtime_cmake_define_overrides(
@@ -889,6 +916,7 @@ with tempfile.TemporaryDirectory() as temp:
     root = Path(temp)
     prefix = root / "prefix"
     prefix.mkdir()
+    prefix.chmod(0o755)
     build_root = root / "build"
     artifact = build_root / "bin" / "darling"
     artifact.parent.mkdir(parents=True)
@@ -897,21 +925,27 @@ with tempfile.TemporaryDirectory() as temp:
         "set -eu\n"
         "[ \"$1\" = --rootless ]\n"
         "[ \"$2\" = shutdown ]\n"
+        "sidecar=\"$DPREFIX.eunion-sidecar-v1\"\n"
+        "mkdir \"$sidecar\"\n"
+        "chmod 0700 \"$sidecar\"\n"
         "mkdir -p \"$DPREFIX/private/etc\"\n"
         "printf 'passwd\\n' >\"$DPREFIX/private/etc/passwd\"\n"
         "printf 'master.passwd\\n' >\"$DPREFIX/private/etc/master.passwd\"\n"
         "printf 'group\\n' >\"$DPREFIX/private/etc/group\"\n"
-        "cat >\"$DPREFIX/.darling-prefix-state-v2\" <<EOF\n"
-        "DARLING_PREFIX_STATE_V2\n"
-        "schema_version=2\n"
+        "cat >\"$DPREFIX/.darling-prefix-state-v3\" <<EOF\n"
+        "DARLING_PREFIX_STATE_V3\n"
+        "schema_version=3\n"
         "runtime_mode=rootless-eunion\n"
         "generation=1\n"
-        "prefix_device=1\n"
-        "prefix_inode=1\n"
-        "owner_uid=1\n"
-        "owner_gid=1\n"
-        "provenance=contract\n"
+        "prefix_device=$(stat -c %d \"$DPREFIX\")\n"
+        "prefix_inode=$(stat -c %i \"$DPREFIX\")\n"
+        "sidecar_device=$(stat -c %d \"$sidecar\")\n"
+        "sidecar_inode=$(stat -c %i \"$sidecar\")\n"
+        "owner_uid=$(stat -c %u \"$DPREFIX\")\n"
+        "owner_gid=$(stat -c %g \"$DPREFIX\")\n"
+        "provenance=darling-runtime-prefix-sidecar-v1\n"
         "EOF\n"
+        "chmod 0600 \"$DPREFIX/.darling-prefix-state-v3\"\n"
     )
     artifact.chmod(0o755)
     proof = {
@@ -924,23 +958,48 @@ with tempfile.TemporaryDirectory() as temp:
         lambda _prefix, *, extra_env=None: shutdowns.append(Path(_prefix)) or True
     )
     marker = prefix / RUNTIME_MODE_MARKER_NAME
-    state = prefix / ".darling-prefix-state-v2"
+    state = prefix / ".darling-prefix-state-v3"
+    sidecar = Path(f"{prefix}.eunion-sidecar-v1")
 
     with test._runtime_red_deployed_artifacts(
         proof, build_root, prefix, label="typed rollback", restore_deployment=True
     ):
-        assert "schema_version=2\n" in state.read_text()
+        assert "schema_version=3\n" in state.read_text()
         assert not marker.exists()
         assert (prefix / "bin/darling").read_text() == artifact.read_text()
     assert not marker.exists()
     assert not state.exists()
     assert not (prefix / "bin/darling").exists()
     assert list(prefix.iterdir()) == []
+    assert sidecar.is_dir()
+    sidecar.rmdir()
+
+    for failure in (RuntimeError("deployment failure"), KeyboardInterrupt()):
+        try:
+            with test._runtime_red_deployed_artifacts(
+                proof,
+                build_root,
+                prefix,
+                label="typed interrupted",
+                restore_deployment=True,
+            ):
+                raise failure
+        except type(failure) as exc:
+            assert exc is failure
+        else:
+            raise AssertionError(
+                f"{type(failure).__name__} at deployment boundary was swallowed"
+            )
+        assert list(prefix.iterdir()) == [], (
+            f"{type(failure).__name__} did not restore the initial empty prefix"
+        )
+        assert sidecar.is_dir()
+        sidecar.rmdir()
 
     with test._runtime_red_deployed_artifacts(
         proof, build_root, prefix, label="typed retained", restore_deployment=False
     ):
-        assert "schema_version=2\n" in state.read_text()
+        assert "schema_version=3\n" in state.read_text()
         assert not marker.exists()
     assert "runtime_mode=rootless-eunion\n" in state.read_text()
     assert (prefix / "bin/darling").read_text() == artifact.read_text()
@@ -975,6 +1034,321 @@ with tempfile.TemporaryDirectory() as temp:
     else:
         raise AssertionError("populated unmarked prefix was deployed")
     assert not state.exists()
+
+with tempfile.TemporaryDirectory() as temp:
+    root = Path(temp)
+    service = RuntimeDeploymentService(make_test())
+    proof = {"runtime-mode": "rootless-eunion"}
+
+    for kind in ("file", "symlink", "foreign"):
+        prefix = root / f"prefix-{kind}"
+        if kind == "file":
+            prefix.write_text("not a directory\n")
+        else:
+            prefix.mkdir()
+            if kind == "symlink":
+                state_target = root / "state-target"
+                state_target.write_text("DARLING_PREFIX_STATE_V3\n")
+                (prefix / ".darling-prefix-state-v3").symlink_to(state_target)
+            else:
+                (prefix / "var").mkdir()
+        try:
+            service._runtime_mode_marker_required(proof, prefix)
+        except SystemExit:
+            pass
+        else:
+            raise AssertionError(f"{kind} prefix state was accepted")
+
+    legacy = root / "prefix-legacy"
+    legacy.mkdir()
+    (legacy / RUNTIME_MODE_MARKER_NAME).write_text(
+        "DARLING_RUNTIME_MODE_V1=rootless-eunion\n"
+    )
+    try:
+        service._runtime_mode_marker_required(proof, legacy)
+    except SystemExit as exc:
+        assert "legacy" in str(exc), exc
+    else:
+        raise AssertionError("legacy runtime-mode marker was accepted")
+
+for metadata_case in ("state-mode", "state-nlink", "sidecar-mode", "prefix-mode"):
+    with tempfile.TemporaryDirectory() as temp:
+        root = Path(temp)
+        prefix = root / "prefix"
+        prefix.mkdir()
+        state, sidecar = write_typed_prefix_state(prefix)
+        if metadata_case == "state-mode":
+            state.chmod(0o644)
+        elif metadata_case == "state-nlink":
+            os.link(state, prefix / "state-hardlink")
+        elif metadata_case == "sidecar-mode":
+            sidecar.chmod(0o755)
+        else:
+            prefix.chmod(0o700)
+        service = RuntimeDeploymentService(make_test())
+        try:
+            service._runtime_mode_marker_required(
+                {"runtime-mode": "rootless-eunion"}, prefix
+            )
+        except SystemExit as exc:
+            assert "metadata" in str(exc) or "stable typed prefix state" in str(exc), exc
+        else:
+            raise AssertionError(f"typed prefix {metadata_case} mismatch was accepted")
+
+with tempfile.TemporaryDirectory() as temp:
+    root = Path(temp)
+    prefix = root / "prefix"
+    prefix.mkdir()
+    _state, sidecar = write_typed_prefix_state(prefix)
+    service = RuntimeDeploymentService(make_test())
+    with service._retain_runtime_mode_state(
+        {"runtime-mode": "rootless-eunion"}, prefix
+    ) as capability:
+        (sidecar / "active-v1").mkdir()
+        capability.revalidate()
+        assert sidecar.stat().st_nlink > capability.sidecar.initial_status.st_nlink
+
+with tempfile.TemporaryDirectory() as temp:
+    root = Path(temp)
+    prefix = root / "outer" / "inner" / "prefix"
+    prefix.mkdir(parents=True)
+    build_service = RuntimeBuildService(make_test())
+    build_guard = build_service._empty_prefix_guard(
+        {"runtime-mode": "rootless-eunion"}, prefix
+    )
+    assert build_guard is not None
+    try:
+        (prefix.parent / "unrelated-sibling").mkdir()
+        build_service._assert_prefix_still_empty(build_guard, "configure")
+    finally:
+        build_guard.close()
+
+with tempfile.TemporaryDirectory() as temp:
+    root = Path(temp)
+    prefix = root / "prefix"
+    prefix.mkdir()
+    write_typed_prefix_state(prefix)
+    original = root / "prefix-original"
+    test = make_test()
+    test._shutdown_runtime_prefix = (
+        lambda _prefix, *, extra_env=None: True
+    )
+    service = RuntimeDeploymentService(test)
+
+    def swap_before_deployment(_proof, _build_root, _prefix):
+        prefix.rename(original)
+        prefix.mkdir()
+        prefix.chmod(0o755)
+        return []
+
+    service.deployment_plan = swap_before_deployment
+    try:
+        with service.deployed(
+            {"runtime-mode": "rootless-eunion"},
+            root / "build",
+            prefix,
+            label="typed rename swap",
+            restore_deployment=True,
+        ):
+            pass
+    except SystemExit as exc:
+        assert "retained prefix identity changed" in str(exc), exc
+    else:
+        raise AssertionError("typed prefix rename-swap was accepted before mutation")
+    assert (original / ".darling-prefix-state-v3").is_file()
+    assert list(prefix.iterdir()) == []
+
+
+def run_runtime_prefix_swap_case(kind: str, phase: str) -> None:
+    with tempfile.TemporaryDirectory() as temp:
+        root = Path(temp)
+        outer = root / "outer"
+        prefix = outer / "inner" / "prefix"
+        prefix.mkdir(parents=True)
+        state, _sidecar = write_typed_prefix_state(prefix)
+        source = root / "darling"
+        source.write_bytes(b"candidate launcher\n")
+        destination = prefix / "bin/darling"
+        original_outer = root / "outer-original"
+        swapped = [False]
+
+        def swap() -> None:
+            if swapped[0]:
+                return
+            swapped[0] = True
+            if kind == "ancestor":
+                outer.rename(original_outer)
+                (outer / "inner" / "prefix").mkdir(parents=True)
+            else:
+                original_state = prefix / ".darling-prefix-state-v3.original"
+                content = state.read_bytes()
+                state.rename(original_state)
+                state.write_bytes(content)
+                state.chmod(0o600)
+
+        test = make_test()
+        test._shutdown_runtime_prefix = lambda _prefix, *, extra_env=None: True
+        service = RuntimeDeploymentService(test)
+
+        def plan(_proof, _build_root, _prefix):
+            if phase == "plan":
+                swap()
+            return [(source, destination)]
+
+        service.deployment_plan = plan
+        original_replace = runtime_deploy_module.DeploymentTransaction.replace
+        original_revalidate = service._revalidate_runtime_prefix_state
+
+        def replace_with_swap(transaction, deploy_source, deploy_destination):
+            if phase == "deploy":
+                swap()
+            return original_replace(transaction, deploy_source, deploy_destination)
+
+        def revalidate_with_swap(capability, *, phase: str):
+            if phase == "transaction rollback" and swap_phase == "rollback":
+                swap()
+            return original_revalidate(capability, phase=phase)
+
+        swap_phase = phase
+        runtime_deploy_module.DeploymentTransaction.replace = replace_with_swap
+        service._revalidate_runtime_prefix_state = revalidate_with_swap
+        try:
+            try:
+                with service.deployed(
+                    {"runtime-mode": "rootless-eunion"},
+                    root / "build",
+                    prefix,
+                    label=f"{kind} {phase} swap",
+                    restore_deployment=True,
+                ):
+                    if phase == "yield":
+                        assert destination.read_bytes() == b"candidate launcher\n"
+                        swap()
+            except SystemExit as error:
+                assert (
+                    "identity changed" in str(error)
+                    or "transaction failed" in str(error)
+                ), error
+            else:
+                raise AssertionError(
+                    f"runtime deploy accepted {kind} swap during {phase}"
+                )
+        finally:
+            runtime_deploy_module.DeploymentTransaction.replace = original_replace
+
+        assert swapped[0], f"{kind} {phase} injection did not execute"
+        if kind == "ancestor":
+            original_prefix = original_outer / "inner/prefix"
+            replacement_prefix = outer / "inner/prefix"
+            assert list(replacement_prefix.iterdir()) == [], (
+                f"{phase} rollback mutated replacement prefix"
+            )
+            assert not (original_prefix / "bin/darling").exists(), (
+                f"{phase} rollback did not clean retained original prefix"
+            )
+            assert (original_prefix / ".darling-prefix-state-v3").is_file()
+        else:
+            assert not destination.exists(), (
+                f"{phase} rollback left a deployed artifact after state swap"
+            )
+            assert state.is_file(), f"{phase} rollback removed replacement state"
+            assert (prefix / ".darling-prefix-state-v3.original").is_file()
+
+
+for boundary in ("plan", "deploy", "yield", "rollback"):
+    for swap_kind in ("ancestor", "state"):
+        run_runtime_prefix_swap_case(swap_kind, boundary)
+
+
+with tempfile.TemporaryDirectory() as temp:
+    root = Path(temp)
+    outer = root / "outer"
+    prefix = outer / "inner" / "prefix"
+    prefix.mkdir(parents=True)
+    write_typed_prefix_state(prefix)
+    source = root / "darling"
+    source.write_bytes(b"candidate launcher\n")
+    destination = prefix / "bin/darling"
+    original_outer = root / "outer-original"
+    replacement_outer = root / "outer-replacement"
+    (replacement_outer / "inner/prefix").mkdir(parents=True)
+    replacement_prefix = replacement_outer / "inner/prefix"
+    replacement_was_mutated = [False]
+
+    test = make_test()
+    test._shutdown_runtime_prefix = lambda _prefix, *, extra_env=None: True
+    service = RuntimeDeploymentService(test)
+    service.deployment_plan = lambda _proof, _build_root, _prefix: [
+        (source, destination)
+    ]
+    real_transaction = runtime_deploy_module.DeploymentTransaction
+
+    def exchange_outer() -> None:
+        outer.rename(root / "outer-exchange")
+        replacement_outer.rename(outer)
+        (root / "outer-exchange").rename(replacement_outer)
+
+    class ABATransaction:
+        def __init__(self, manifest, transaction_prefix, *args, **kwargs):
+            exchange_outer()
+            try:
+                self._transaction = real_transaction(
+                    manifest, transaction_prefix, *args, **kwargs
+                )
+            finally:
+                exchange_outer()
+
+        @property
+        def entries(self):
+            return self._transaction.entries
+
+        def replace(self, deploy_source, deploy_destination):
+            exchange_outer()
+            try:
+                self._transaction.replace(deploy_source, deploy_destination)
+                replacement_was_mutated[0] = (
+                    outer / "inner/prefix/bin/darling"
+                ).exists()
+            finally:
+                exchange_outer()
+
+        def rollback(self):
+            exchange_outer()
+            try:
+                self._transaction.rollback()
+            finally:
+                exchange_outer()
+
+        def commit(self):
+            exchange_outer()
+            try:
+                self._transaction.commit()
+            finally:
+                exchange_outer()
+
+    runtime_deploy_module.DeploymentTransaction = ABATransaction
+    try:
+        try:
+            with service.deployed(
+                {"runtime-mode": "rootless-eunion"},
+                root / "build",
+                prefix,
+                label="cross-capability ABA",
+                restore_deployment=True,
+            ):
+                pass
+        except (SystemExit, runtime_deploy_module.DeploymentTransactionError) as error:
+            assert "lifecycle identity" in str(error), error
+        else:
+            raise AssertionError("runtime deploy accepted a cross-capability ABA swap")
+    finally:
+        runtime_deploy_module.DeploymentTransaction = real_transaction
+
+    assert not replacement_was_mutated[0], (
+        "cross-capability replacement was modified before rejection"
+    )
+    assert list(replacement_prefix.iterdir()) == []
+    assert not destination.exists()
 
 with tempfile.TemporaryDirectory() as temp:
     bundle_root = Path(temp)
@@ -1461,10 +1835,13 @@ with tempfile.TemporaryDirectory() as temp:
     test.topdir = str(tempdir)
     source_root = tempdir / "source"
     source_root.mkdir()
+    prefix = tempdir / "prefix"
+    prefix.mkdir()
     calls = []
     old_run_bounded = west_test_module.run_bounded
 
     def quiet_success_run(args, **kwargs):
+        assert list(prefix.iterdir()) == [], "configure/build observed a dirty prefix"
         calls.append((list(args), kwargs.get("capture_output"), kwargs.get("timeout_seconds")))
         return ProcessResult(
             0,
@@ -1484,7 +1861,7 @@ with tempfile.TemporaryDirectory() as temp:
                         {"build-targets": ["target-a", "target-b"], "deploy": ["bin/b"]},
                     ]
                 },
-                tempdir / "prefix",
+                prefix,
                 tempdir / "scratch",
                 label="GREEN",
             )
@@ -1499,6 +1876,7 @@ with tempfile.TemporaryDirectory() as temp:
     assert any(message.startswith("  runtime phase complete: GREEN configure (") for message in test.inf_messages)
     assert any(message == "  runtime phase start: GREEN build" for message in test.inf_messages)
     assert any(message.startswith("  runtime phase complete: GREEN build (") for message in test.inf_messages)
+    assert list(prefix.iterdir()) == [], "configure/build mutated the empty prefix"
 
 with tempfile.TemporaryDirectory() as temp:
     tempdir = Path(temp)
@@ -1506,6 +1884,91 @@ with tempfile.TemporaryDirectory() as temp:
     test.topdir = str(tempdir)
     source_root = tempdir / "source"
     source_root.mkdir()
+    prefix = tempdir / "prefix"
+    prefix.mkdir()
+    old_run_bounded = west_test_module.run_bounded
+
+    def prefix_mutating_configure(*_args, **_kwargs):
+        (prefix / "var/run").mkdir(parents=True)
+        return ProcessResult(0)
+
+    west_test_module.run_bounded = prefix_mutating_configure
+    try:
+        try:
+            test._runtime_red_build_artifacts(
+                source_root,
+                {
+                    "runtime-mode": "rootless-eunion",
+                    "runtime-artifacts": [{"build-targets": ["rootless_bootstrap"]}],
+                },
+                prefix,
+                tempdir / "scratch",
+            )
+        except SystemExit as exc:
+            assert "configure mutated empty runtime prefix" in str(exc), exc
+        else:
+            raise AssertionError("configure prefix mutation was accepted")
+    finally:
+        west_test_module.run_bounded = old_run_bounded
+
+for swap_phase in ("configure", "build"):
+    with tempfile.TemporaryDirectory() as temp:
+        tempdir = Path(temp)
+        test = make_test()
+        test.topdir = str(tempdir)
+        source_root = tempdir / "source"
+        source_root.mkdir()
+        prefix = tempdir / "prefix"
+        prefix.mkdir()
+        original = tempdir / "prefix-original"
+        calls = 0
+        old_run_bounded = west_test_module.run_bounded
+
+        def prefix_swapping_runner(*_args, **_kwargs):
+            nonlocal_calls[0] += 1
+            boundary = "configure" if nonlocal_calls[0] == 1 else "build"
+            if boundary == swap_phase:
+                prefix.rename(original)
+                prefix.mkdir()
+            return ProcessResult(0)
+
+        nonlocal_calls = [calls]
+        west_test_module.run_bounded = prefix_swapping_runner
+        try:
+            try:
+                test._runtime_red_build_artifacts(
+                    source_root,
+                    {
+                        "runtime-mode": "rootless-eunion",
+                        "runtime-artifacts": [
+                            {"build-targets": ["rootless_bootstrap"]}
+                        ],
+                    },
+                    prefix,
+                    tempdir / "scratch",
+                )
+            except SystemExit as exc:
+                assert (
+                    f"{swap_phase} changed empty runtime prefix identity"
+                    in str(exc)
+                ), exc
+            else:
+                raise AssertionError(
+                    f"{swap_phase} empty-prefix rename-swap was accepted"
+                )
+            assert list(original.iterdir()) == []
+            assert list(prefix.iterdir()) == []
+        finally:
+            west_test_module.run_bounded = old_run_bounded
+
+with tempfile.TemporaryDirectory() as temp:
+    tempdir = Path(temp)
+    test = make_test()
+    test.topdir = str(tempdir)
+    source_root = tempdir / "source"
+    source_root.mkdir()
+    prefix = tempdir / "prefix"
+    prefix.mkdir()
     results = iter(
         [
             ProcessResult(0),
@@ -1519,7 +1982,7 @@ with tempfile.TemporaryDirectory() as temp:
             test._runtime_red_build_artifacts(
                 source_root,
                 {"runtime-artifacts": [{"build-targets": ["rootless_bootstrap"]}]},
-                tempdir / "prefix",
+                prefix,
                 tempdir / "scratch",
                 allow_failure=True,
             )
@@ -1528,6 +1991,38 @@ with tempfile.TemporaryDirectory() as temp:
             assert "unknown target 'rootless_bootstrap'" in process_output_text(exc.result)
         else:
             raise AssertionError("runtime RED build failure was not captured")
+        assert list(prefix.iterdir()) == [], "failed build mutated the empty prefix"
+    finally:
+        west_test_module.run_bounded = old_run_bounded
+
+with tempfile.TemporaryDirectory() as temp:
+    tempdir = Path(temp)
+    test = make_test()
+    test.topdir = str(tempdir)
+    source_root = tempdir / "source"
+    source_root.mkdir()
+    prefix = tempdir / "prefix"
+    prefix.mkdir()
+    old_run_bounded = west_test_module.run_bounded
+    west_test_module.run_bounded = lambda *_args, **_kwargs: (_ for _ in ()).throw(
+        KeyboardInterrupt()
+    )
+    try:
+        try:
+            test._runtime_red_build_artifacts(
+                source_root,
+                {
+                    "runtime-mode": "rootless-eunion",
+                    "runtime-artifacts": [{"build-targets": ["rootless_bootstrap"]}],
+                },
+                prefix,
+                tempdir / "scratch",
+            )
+        except KeyboardInterrupt:
+            pass
+        else:
+            raise AssertionError("configure SIGINT was swallowed")
+        assert list(prefix.iterdir()) == [], "configure SIGINT mutated the empty prefix"
     finally:
         west_test_module.run_bounded = old_run_bounded
 

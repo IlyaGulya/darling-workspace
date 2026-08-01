@@ -3,18 +3,18 @@ profile: perf
 prerequisites:
 - profile: homebrew
   composition: homebrew-profile-composition-v2.yml
-  sha256: 53eec4fa8cc59f862cdb898449963b1dc39ab365dafa25f0bcc7a482f974bfe3
+  sha256: 463c77cc75c27f63c357d1d05e8102e8bddf539e19aaa3b55f2481b506e24205
   frozen_manifest:
     path: west.lock.yml
     sha256: 5718c32c76a180b9078a206b93d93e70f478a5ada0034cd6afcc789c447e055d
   module_trees:
-    darling/src/external/darlingserver: 9f5d3ce2c7542734d4b1859229c0301a2cc141bc
-    darling/src/external/xnu: 2f1194b6ff901d54e4b04f28c58198e999c4783c
+    darling/src/external/darlingserver: 27f6cf1747600ad0977ae31e243e90a6f3a4b5e3
+    darling/src/external/xnu: 1005ed6f19731b681b717893ce50680198af5d9e
     darling/src/external/libplatform: aa23756779ff852be148fc08dec34f6ee371b08e
     darling/src/external/perl: 4f1f2a7a7818800a8e39d1cddbcf7832c246e375
     darling/src/external/libressl-2.8.3: c8ba46eeec25cfc71d0642c253e4ebe18c2898ae
     darling/src/external/libpthread: addb3f6964e54573b34c189b7eeb5c54f3b34f5e
-    darling: 81d8d939c1b0cd454ef7cc7ed034d1a340df7fd8
+    darling: a0dd8cb79c5da16469a7e1e6d9aac4f7f84477a1
     darling/src/external/installer: a616bc3fd5afce5c9ca62a34e3d0fad30c4b45c6
 frozen_manifest:
   path: west.lock.yml
@@ -31,21 +31,21 @@ modules:
   series:
   - patch: darling/mldr-compact-fd-band.patch
     lock: darling-mldr-compact-fd-band-v1.yml
-    expected_applied_tree: fdd359535047c81077bd780908e78d7590bb9b42
-  final_tree: fdd359535047c81077bd780908e78d7590bb9b42
-  integration_final_tree: b3c2e58ee814dbbf3d33d4df853e37c3ba6f2f76
+    expected_applied_tree: 20d7597add854d5f4528c2f574f2b09f139618a3
+  final_tree: 20d7597add854d5f4528c2f574f2b09f139618a3
+  integration_final_tree: 20d7597add854d5f4528c2f574f2b09f139618a3
 - module: darling/src/external/xnu
   starting:
     tree: 2f1194b6ff901d54e4b04f28c58198e999c4783c
   series:
   - patch: xnu/shmem-ring-guest.patch
     lock: darling-xnu-shmem-ring-guest-profile-v7.yml
-    expected_applied_tree: 152442d120b9f4dadffebcf98afc149022041fa3
+    expected_applied_tree: 68714a09b33675159e2706133f0f43d3c2fdb613
   - patch: xnu/j7e7-lane-wakefd-sentinel.patch
     lock: darling-xnu-j7e7-lane-wakefd-sentinel-profile-v7.yml
-    expected_applied_tree: 5b68dc7882d27caecea3ea9533f11800666e7676
-  final_tree: 5b68dc7882d27caecea3ea9533f11800666e7676
-  integration_final_tree: 5b68dc7882d27caecea3ea9533f11800666e7676
+    expected_applied_tree: 1753092cec9a29e08acad62787a315b9d9259e3c
+  final_tree: 1753092cec9a29e08acad62787a315b9d9259e3c
+  integration_final_tree: 1753092cec9a29e08acad62787a315b9d9259e3c
 - module: darling/src/external/dyld
   starting:
     tree: 4dee94a7af9ac7fd1a15115c368d679553af8f8d

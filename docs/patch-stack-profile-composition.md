@@ -75,11 +75,11 @@ mismatch: that project has no series lock or archive identity to compare.
 
 The resulting module boundary trees are recorded in
 `homebrew-profile-composition-v2.yml`; the final trees are Darlingserver
-`9f5d3ce2c7542734d4b1859229c0301a2cc141bc`, XNU
-`2f1194b6ff901d54e4b04f28c58198e999c4783c`, and Darling
-`81d8d939c1b0cd454ef7cc7ed034d1a340df7fd8`. The recorded Darling
-integration tree is `df3a7e7ce27977cfce567343bb28299057762dd2`; it differs
-only because it binds the newly materialized child gitlinks.
+`27f6cf1747600ad0977ae31e243e90a6f3a4b5e3`, XNU
+`1005ed6f19731b681b717893ce50680198af5d9e`, and Darling
+`a0dd8cb79c5da16469a7e1e6d9aac4f7f84477a1`. The canonical Darling
+boundary is its own content tree; nested West project trees are verified
+independently rather than binding generated gitlink commit identities.
 
 ## Rootless prerequisite cascade
 
@@ -91,9 +91,9 @@ append-only profile-integration locks because the typed runtime target and the
 existing ring target both extend the same CMake target list. Their final trees
 are XNU `5b68dc7882d27caecea3ea9533f11800666e7676`, Darlingserver
 `d51c96cd50b1c67644374b74b44f445ddd8d360b`, and Darling
-`fdd359535047c81077bd780908e78d7590bb9b42`. The authoritative
-Darling integration boundary with child gitlinks is
-`b3c2e58ee814dbbf3d33d4df853e37c3ba6f2f76`.
+`20d7597add854d5f4528c2f574f2b09f139618a3`. The authoritative Darling
+content boundary uses that same tree; nested West project trees remain
+independently typed by the composition lock.
 
 Arch then consumes that exact Perf result. Its first eight Darlingserver
 entries and all three XNU entries replay unchanged with new declared
@@ -109,8 +109,9 @@ independent includes—typed runtime mode and structured wait-status—without
 changing either control flow. The restacked locks yield Arch final trees XNU
 `5d122a19116ad3f23a72b3c34685c9c899cc69a5`, Darlingserver
 `4236d0130a44ab5e5564d205d171148154731627`, and Darling
-`04852edba223185c07c6157db70ff12abd185b4f`. The authoritative Darling
-integration boundary is `e714aed795f3aa2614a64a4c64d31546a2d4cdcb`.
+`adfb691280818b8c36ba4aa5bcaec22c623c4568`. The authoritative Darling
+content boundary uses that same tree; generated parent gitlink identities are
+not canonical inputs.
 
 No accepted immutable ref is rewritten. The v8 and v10 bases and sources remain
 a local-only publication proposal until their create-only hosted refs are

@@ -3761,10 +3761,6 @@ class DarlingTest(ProfileOperationsMixin, BootstrapRuntimeProfileMixin, WestComm
         except ValueError:
             self.die(f"guest-runtime-deploy deploy path must be relative: {deploy_path}")
 
-    def _runtime_replace_file(self, src: Path, dst: Path) -> None:
-        from deploy_transaction import DeploymentTransaction
-        DeploymentTransaction._replace_file(src, dst)
-
     @contextmanager
     def _runtime_red_deployed_artifacts(
         self,
