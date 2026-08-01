@@ -291,7 +291,7 @@ series:
   - profile: homebrew
     module: darling
     patch: darling/prefix-lifecycle-state-v2.patch
-    lock: darling-prefix-lifecycle-state-v3-v5.yml
+    lock: darling-prefix-lifecycle-state-v3-v6.yml
   - profile: homebrew
     module: darling/src/external/installer
     patch: installer/normalize-payload-paths.patch

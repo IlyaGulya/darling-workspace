@@ -3,7 +3,7 @@ profile: perf
 prerequisites:
 - profile: homebrew
   composition: homebrew-profile-composition-v2.yml
-  sha256: 463c77cc75c27f63c357d1d05e8102e8bddf539e19aaa3b55f2481b506e24205
+  sha256: 424bab5f86f83104bd8cfae732a9dd4de285f2b609094e8dec641f86c3b785ae
   frozen_manifest:
     path: west.lock.yml
     sha256: 5718c32c76a180b9078a206b93d93e70f478a5ada0034cd6afcc789c447e055d
@@ -14,7 +14,7 @@ prerequisites:
     darling/src/external/perl: 4f1f2a7a7818800a8e39d1cddbcf7832c246e375
     darling/src/external/libressl-2.8.3: c8ba46eeec25cfc71d0642c253e4ebe18c2898ae
     darling/src/external/libpthread: addb3f6964e54573b34c189b7eeb5c54f3b34f5e
-    darling: a0dd8cb79c5da16469a7e1e6d9aac4f7f84477a1
+    darling: 1e8afb2d8923c41e48df96d1bfc7988ab89fa25d
     darling/src/external/installer: a616bc3fd5afce5c9ca62a34e3d0fad30c4b45c6
 frozen_manifest:
   path: west.lock.yml

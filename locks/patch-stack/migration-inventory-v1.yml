@@ -2091,14 +2091,15 @@ stacks:
   - e3996200944dd67f96c36bb145e6cb3cbc1c68d2
   - 1a4f3022e0453e937a252d3a9baeddfb32b7f3d3
   - 6f4c122fbdda14045292581696bc4f864335d76d
-  canonical_commit_count: 6
-  canonical_source_commit: 6f4c122fbdda14045292581696bc4f864335d76d
-  canonical_expected_tree: a0dd8cb79c5da16469a7e1e6d9aac4f7f84477a1
+  - a6fcb619a96b7874e67469cc05d7c8e54eace578
+  canonical_commit_count: 7
+  canonical_source_commit: a6fcb619a96b7874e67469cc05d7c8e54eace578
+  canonical_expected_tree: 1e8afb2d8923c41e48df96d1bfc7988ab89fa25d
   object_closure: local_append_only_clean_odb
   linearity: verified
   classification: PUBLICATION_PENDING
-  reason: sidecar-v1 creation, explicit Policy 1 recreation, retained-FD bootstrap lifecycle, and vchroot exec FD lifetime are independently verified locally; hosted immutable refs remain intentionally unpublished
-  lock: locks/patch-stack/darling-prefix-lifecycle-state-v3-v5.yml
+  reason: sidecar-v1 creation, explicit Policy 1 recreation, retained-FD bootstrap lifecycle, bounded shared reuse, and vchroot exec FD lifetime are independently verified locally; the newest corrective ref remains publication-pending
+  lock: locks/patch-stack/darling-prefix-lifecycle-state-v3-v6.yml
 summary:
   READY: 0
   RECOVERABLE_LOCAL: 0
