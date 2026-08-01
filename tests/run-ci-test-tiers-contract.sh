@@ -92,6 +92,7 @@ printf '%s\n' "$host_tier" | grep -F -q 'tests/run-west-patch-stack-export-contr
 printf '%s\n' "$host_tier" | grep -F -q 'tests/run-patch-stack-lock-first-hosted-workflow-contract.sh'
 printf '%s\n' "$host_tier" | grep -F -q 'tests/run-patch-stack-migration-inventory-contract.sh'
 printf '%s\n' "$host_tier" | grep -F -q 'tests/run-eunion-host-consumers-contract.sh'
+printf '%s\n' "$host_tier" | grep -F -q 'tests/run-prefix-lock-diagnostic-contract.sh'
 host_before_west="${host_tier%%exec west test*}"
 [[ "$host_before_west" == *'tests/run-west-patch-stack-materialize-contract.sh'* &&
 	"$host_before_west" == *'tests/run-west-patch-stack-lock-first-contract.sh'* &&
@@ -103,7 +104,8 @@ host_before_west="${host_tier%%exec west test*}"
 	"$host_before_west" == *'tests/run-west-patch-stack-export-contract.sh'* &&
 	"$host_before_west" == *'tests/run-patch-stack-lock-first-hosted-workflow-contract.sh'* &&
 	"$host_before_west" == *'tests/run-patch-stack-migration-inventory-contract.sh'* &&
-	"$host_before_west" == *'tests/run-eunion-host-consumers-contract.sh'* ]] || {
+	"$host_before_west" == *'tests/run-eunion-host-consumers-contract.sh'* &&
+	"$host_before_west" == *'tests/run-prefix-lock-diagnostic-contract.sh'* ]] || {
 	echo 'host tier does not run patch-stack contracts before west test' >&2
 	exit 1
 }
@@ -116,7 +118,8 @@ host_before_west="${host_tier%%exec west test*}"
 	"${host_before_west%%tests/run-west-patch-stack-export-contract.sh*}" == *'tests/run-patch-stack-immutable-oracle-contract.sh'* &&
 	"${host_before_west%%tests/run-patch-stack-lock-first-hosted-workflow-contract.sh*}" == *'tests/run-west-patch-stack-export-contract.sh'* &&
 	"${host_before_west%%tests/run-patch-stack-migration-inventory-contract.sh*}" == *'tests/run-patch-stack-lock-first-hosted-workflow-contract.sh'* &&
-	"${host_before_west%%tests/run-eunion-host-consumers-contract.sh*}" == *'tests/run-patch-stack-migration-inventory-contract.sh'* ]] || {
+	"${host_before_west%%tests/run-eunion-host-consumers-contract.sh*}" == *'tests/run-patch-stack-migration-inventory-contract.sh'* &&
+	"${host_before_west%%tests/run-prefix-lock-diagnostic-contract.sh*}" == *'tests/run-eunion-host-consumers-contract.sh'* ]] || {
 	echo 'host tier does not order canonical patch-stack contracts' >&2
 	exit 1
 }
@@ -286,6 +289,8 @@ if printf '%s\n' "$validation_workflow" | grep -F -q 'homebrew-guest-toolchain-p
 fi
 smoke_workflow="$(sed -n '/^  guest-smoke:/,/^  guest-toolchain-provisioning:/p' "$repo/.github/workflows/test-infra.yml")"
 printf '%s\n' "$smoke_workflow" | grep -F -q 'timeout-minutes: 30'
+printf '%s\n' "$smoke_workflow" | grep -F -q '~/work/darling-debug'
+printf '%s\n' "$smoke_workflow" | grep -F -q 'darling-dev/.west-test/bootstrap-failure-trace'
 [ "$(grep -F -c "github.event_name == 'pull_request'" "$repo/.github/workflows/test-infra.yml")" -ge 1 ]
 grep -F -q 'Scheduled run intentionally covers host only.' "$repo/.github/workflows/test-infra.yml"
 grep -F -q 'description: Run exactly one test tier' "$repo/.github/workflows/test-infra.yml"

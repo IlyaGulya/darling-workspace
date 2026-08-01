@@ -77,9 +77,16 @@ The resulting module boundary trees are recorded in
 `homebrew-profile-composition-v2.yml`; the final trees are Darlingserver
 `27f6cf1747600ad0977ae31e243e90a6f3a4b5e3`, XNU
 `1005ed6f19731b681b717893ce50680198af5d9e`, and Darling
-`a0dd8cb79c5da16469a7e1e6d9aac4f7f84477a1`. The canonical Darling
+`1e8afb2d8923c41e48df96d1bfc7988ab89fa25d`. The canonical Darling
 boundary is its own content tree; nested West project trees are verified
 independently rather than binding generated gitlink commit identities.
+
+The final Homebrew Darling boundary also makes normal typed-prefix reuse a
+read-only shared lifecycle lease. Create, interrupted-transaction recovery,
+explicit recreation, and deletion remain bounded exclusive operations. A
+busy writer fails with the lock mode, inode identity, and deadline instead of
+waiting indefinitely; ordinary restart diagnostics enumerate retained lock
+owners before the second boot.
 
 ## Rootless prerequisite cascade
 

@@ -6,7 +6,7 @@ frozen_manifest:
   sha256: 5718c32c76a180b9078a206b93d93e70f478a5ada0034cd6afcc789c447e055d
 mapping:
   path: lock-first-series-v2.yml
-  sha256: a4d779197b1127a7a6fb1bc7a3a70ed8d847b13875f4f418394feb48424aff65
+  sha256: f9fad5b05e79b301050af13f6911f5809249a6c5535715f3bab55cc2b84564ab
   batch_id: darling-homebrew-eunion-sidecar-batch-10
   expected_count: 74
 modules:
@@ -264,10 +264,10 @@ modules:
     lock: darling-runtime-mode-canonical-v1.yml
     expected_applied_tree: 5e8144538bdc7cb7958dc22edc4016e8b64a6591
   - patch: darling/prefix-lifecycle-state-v2.patch
-    lock: darling-prefix-lifecycle-state-v3-v5.yml
-    expected_applied_tree: a0dd8cb79c5da16469a7e1e6d9aac4f7f84477a1
-  final_tree: a0dd8cb79c5da16469a7e1e6d9aac4f7f84477a1
-  integration_final_tree: a0dd8cb79c5da16469a7e1e6d9aac4f7f84477a1
+    lock: darling-prefix-lifecycle-state-v3-v6.yml
+    expected_applied_tree: 1e8afb2d8923c41e48df96d1bfc7988ab89fa25d
+  final_tree: 1e8afb2d8923c41e48df96d1bfc7988ab89fa25d
+  integration_final_tree: 1e8afb2d8923c41e48df96d1bfc7988ab89fa25d
 - module: darling/src/external/installer
   starting:
     tree: 2c58e1c8da659d1c018efce169086dc247b31884

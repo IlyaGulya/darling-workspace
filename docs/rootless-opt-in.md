@@ -37,6 +37,13 @@ rootless fallback. A malformed, newer, cross-prefix, multiply-linked,
 symlinked, wrongly owned, or mode-incompatible state is rejected before
 mutation.
 
+Normal startup of an already-current typed prefix retains a shared read-only
+lifecycle lease, so concurrent commands and a verified restart do not wait on
+another reader. Only creation, recovery, explicit recreation, and deletion
+request the exclusive writer lease. Both modes use bounded acquisition;
+deadline failures report the requested mode and exact lock inode instead of
+hanging behind a surviving holder.
+
 The launcher represents the post-anchor prefix as an assignment-resistant
 owning capability with runtime typestate. Its zero-overhead one-element-array C
 type rejects ordinary direct copy-initialization/assignment, while the runtime

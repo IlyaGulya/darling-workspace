@@ -33,7 +33,7 @@ cc -std=gnu11 -Wall -Wextra -Werror \
 	-o "$work/runtime-mode-test"
 
 test "$("$work/runtime-mode-test")" = "DARLING_RUNTIME_MODE_CONTRACT_OK"
-for focused_case in lock-race durability capability interruptions
+for focused_case in lock-race durability capability interruptions shared-reuse
 do
 	DARLING_RUNTIME_PREFIX_TEST_CASE="$focused_case" \
 		"$work/runtime-mode-test"
@@ -198,7 +198,11 @@ for token in (
     "LIFECYCLE_PHASE_REPLACEMENT_STAGED",
     "recovery_disposition(",
     "advance_transaction_phase(",
-    "flock(fd, LOCK_EX)",
+    "flock(fd, operation | LOCK_NB)",
+    "shared_reuse ? LOCK_SH : LOCK_EX",
+    "lifecycle_recovery_is_pending(",
+    "runtime prefix lifecycle lock busy:",
+    "mode=%s dev=%ju ino=%ju timeout_ms=%u",
     "fstatat(handle->parent_fd, names->lock, &named",
     "named.st_dev != locked.st_dev",
     "named.st_ino != locked.st_ino",

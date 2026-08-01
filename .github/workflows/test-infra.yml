@@ -166,8 +166,10 @@ jobs:
           path: |
             darling-dev/darling-workspace/.west-test/rootless-diagnostics
             darling-dev/darling-workspace/.west-test/bootstrap-failure-trace
+            darling-dev/.west-test/bootstrap-failure-trace
             darling-dev/darling-workspace/.west-test/runtime-evidence/**/manifest.json
             darling-dev/darling-workspace/.west-test/runtime-evidence/**/diagnostics/**
+            ~/work/darling-debug
       - name: Cleanup test state and runtime evidence
         if: always()
         working-directory: darling-dev/darling-workspace
