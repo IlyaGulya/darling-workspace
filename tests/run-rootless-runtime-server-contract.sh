@@ -43,22 +43,17 @@ if 'setenv("__mldr_runtime_mode"' not in source:
 if 'unsetenv("DARLING_RUNTIME_MODE")' not in source:
     raise SystemExit("darlingserver does not isolate the mldr special boundary")
 for token in (
-    "if (argc != 11)",
+    "if (argc != 9)",
     "InheritedRuntimePrefix inherited(",
     'parseInheritedFD(argv[1], "prefix")',
     'parseInheritedFD(argv[2], "prefix parent")',
     'parseInheritedFD(argv[4], "prefix workdir")',
-    'parseInheritedFD(argv[5], "prefix sidecar")',
-    'parseInheritedFD(argv[6], "prefix lifecycle lock")',
     "anchored.prefixProcPath()",
     "anchored.workdirProcPath()",
-    "runtimePrefix.sidecarFD()",
     "makeDescriptorCloseOnExec(prefixFD",
-    "makeDescriptorCloseOnExec(sidecarFD",
-    "makeDescriptorCloseOnExec(lifecycleLockFD",
     "setupUserHome(prefixFD",
     "setupEunionPrefix(prefixFD)",
-    "darlingPreInit(prefixFD, useEunionPrefix)",
+    "darlingPreInit(prefixFD)",
     "copyDirectoryContentsAt(LIBEXEC_PATH, prefixFD",
     "fixPermissionsRecursiveFD(prefixFD",
     'unlinkat(prefixFD, ".darlingserver.sock"',
@@ -67,26 +62,9 @@ for token in (
         raise SystemExit(f"fd-relative server lifecycle is incomplete: {token}")
 if "prefix = argv[1]" in source:
     raise SystemExit("darlingserver still reopens the launcher prefix pathname")
-
-preinit = source[source.index("void darlingPreInit("):
-    source.index("void spawnLaunchd(")]
-for token in (
-    "void darlingPreInit(int prefixFD, bool useEunionPrefix)",
-    "if (!useEunionPrefix)",
-    "wipeDirFD(childFD)",
-):
-    if token not in preinit:
-        raise SystemExit(
-            f"Darlingserver pre-init E-UNION bypass guard is missing: {token}"
-        )
-if preinit.index("if (!useEunionPrefix)") > preinit.index("wipeDirFD(childFD)"):
-    raise SystemExit("E-UNION pre-init can still reach host-side prefix wipe")
-if source.count("darlingPreInit(prefixFD, useEunionPrefix)") != 1:
-    raise SystemExit("typed pre-init mode is not propagated exactly once")
 for forbidden in (
     "setupUserHome(prefix,",
     "darlingPreInit(prefix)",
-    "darlingPreInit(prefixFD);",
     "setupEunionPrefix(prefix)",
     "copyAndSetAttributes(fromPath, toPath",
     "fixPermissionsRecursive(prefix,",
@@ -112,18 +90,11 @@ for token in (
     "named.st_ino != opened.st_ino",
     "fstat(workdirFD, &workdirOpened)",
     "workdirNamed.st_ino != workdirOpened.st_ino",
-    "fstat(sidecarFD, &sidecarOpened)",
-    "sidecarNamed.st_ino != sidecarOpened.st_ino",
-    "fstat(lifecycleLockFD, &lifecycleLockOpened)",
-    "lifecycleLockNamed.st_ino != lifecycleLockOpened.st_ino",
-    "flock(lifecycleLockFD, LOCK_SH | LOCK_NB)",
     "readPrefixState(",
     "kStateName",
     "schema_version=",
     "prefix_device=",
     "prefix_inode=",
-    "sidecar_device=",
-    "sidecar_inode=",
     "owner_uid=",
     "owner_gid=",
     "runtime prefix state uses a newer schema",
@@ -163,20 +134,6 @@ if "validateRuntimeModePrefixFD(" in runtime_header:
 server = (root / "src/server.cpp").read_text()
 logging = (root / "src/logging.cpp").read_text()
 header = (root / "internal-include/darlingserver/server.hpp").read_text()
-call = (root / "src/call.cpp").read_text()
-vchroot_reply = call[call.index("void DarlingServer::Call::VchrootDirectory::processCall()"):
-    call.index("void DarlingServer::Call::TaskSelfTrap::processCall()")]
-for token in (
-    "F_DUPFD_CLOEXEC",
-    "process->_vchrootDescriptor->fd()",
-    "code = -errno",
-):
-    if token not in vchroot_reply:
-        raise SystemExit(
-            f"retained vchroot reply does not transfer duplicate ownership: {token}"
-        )
-if "directoryFD = process->_vchrootDescriptor->fd();" in vchroot_reply:
-    raise SystemExit("retained vchroot reply lends and closes the process-owned fd")
 for token in (
     "int _prefixFD;",
     "int prefixFD() const;",

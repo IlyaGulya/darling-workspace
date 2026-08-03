@@ -33,7 +33,6 @@ with tempfile.TemporaryDirectory() as temp:
 with tempfile.TemporaryDirectory() as temp:
     root = Path(temp)
     prefix = root / "prefix"
-    prefix.mkdir()
     destination = prefix / "libexec/darling/System/Library/LaunchDaemons/job.plist"
     destination.parent.mkdir(parents=True)
     destination.parent.chmod(0o775)
@@ -57,7 +56,6 @@ with tempfile.TemporaryDirectory() as temp:
 with tempfile.TemporaryDirectory() as temp:
     root = Path(temp)
     prefix = root / "prefix"
-    prefix.mkdir()
     destination = prefix / "libexec/darling/System/Library/LaunchDaemons/job.plist"
     source = root / "job.plist"
     source.write_bytes(b"new plist\n")
@@ -96,7 +94,6 @@ with tempfile.TemporaryDirectory() as temp:
 with tempfile.TemporaryDirectory() as temp:
     root = Path(temp)
     prefix = root / "prefix"
-    prefix.mkdir()
     source = root / "shellspawn"
     source.write_bytes(b"new\n")
     outside = root / "outside"
@@ -112,7 +109,6 @@ with tempfile.TemporaryDirectory() as temp:
     root = Path(temp)
     prefix = root / "prefix"
     extra_prefix = root / "extra-prefix"
-    prefix.mkdir()
     source = root / "shellspawn"
     source.write_bytes(b"new\n")
     destination = extra_prefix / "usr/lib/system/libcache.dylib"
@@ -125,76 +121,5 @@ with tempfile.TemporaryDirectory() as temp:
     transaction.commit()
     DeploymentTransaction.restore(manifest, prefix)
     assert destination.read_bytes() == b"old\n"
-
-with tempfile.TemporaryDirectory() as temp:
-    root = Path(temp)
-    ancestor = root / "outer" / "inner"
-    prefix = ancestor / "prefix"
-    prefix.mkdir(parents=True)
-    source = root / "shellspawn"
-    source.write_bytes(b"new\n")
-    manifest = root / "transaction.json"
-    transaction = DeploymentTransaction(manifest, prefix)
-    original_outer = root / "outer-original"
-    (root / "outer").rename(original_outer)
-    replacement_prefix = root / "outer" / "inner" / "prefix"
-    replacement_prefix.mkdir(parents=True)
-    try:
-        transaction.replace(source, prefix / "bin/darling")
-    except DeploymentTransactionError as error:
-        assert "identity changed" in str(error), error
-    else:
-        raise AssertionError("deploy accepted an ancestor rename-swap")
-    transaction.rollback()
-    assert list(replacement_prefix.iterdir()) == []
-    assert list(original_outer.joinpath("inner/prefix").iterdir()) == []
-
-with tempfile.TemporaryDirectory() as temp:
-    root = Path(temp)
-    prefix = root / "outer" / "inner" / "prefix"
-    prefix.mkdir(parents=True)
-    expected = prefix.stat()
-    original_outer = root / "outer-original"
-    (root / "outer").rename(original_outer)
-    replacement_prefix = root / "outer" / "inner" / "prefix"
-    replacement_prefix.mkdir(parents=True)
-    try:
-        DeploymentTransaction(
-            root / "transaction.json",
-            prefix,
-            expected_root_identity=(expected.st_dev, expected.st_ino),
-        )
-    except DeploymentTransactionError as error:
-        assert "lifecycle identity" in str(error), error
-    else:
-        raise AssertionError("deploy transaction accepted a cross-capability root")
-    assert list(replacement_prefix.iterdir()) == []
-    assert not (root / "transaction.json").exists()
-
-with tempfile.TemporaryDirectory() as temp:
-    root = Path(temp)
-    ancestor = root / "outer" / "inner"
-    prefix = ancestor / "prefix"
-    destination = prefix / "bin/darling"
-    destination.parent.mkdir(parents=True)
-    destination.write_bytes(b"old\n")
-    source = root / "darling"
-    source.write_bytes(b"new\n")
-    manifest = root / "transaction.json"
-    transaction = DeploymentTransaction(manifest, prefix)
-    transaction.replace(source, destination)
-    transaction.commit()
-    original_outer = root / "outer-original"
-    (root / "outer").rename(original_outer)
-    replacement_prefix = root / "outer" / "inner" / "prefix"
-    replacement_prefix.mkdir(parents=True)
-    try:
-        DeploymentTransaction.restore(manifest, prefix)
-    except DeploymentTransactionError as error:
-        assert "identity changed" in str(error), error
-    else:
-        raise AssertionError("delayed restore accepted an ancestor rename-swap")
-    assert list(replacement_prefix.iterdir()) == []
-    assert original_outer.joinpath("inner/prefix/bin/darling").read_bytes() == b"new\n"
 
 print("PASS deploy-transaction-contract")

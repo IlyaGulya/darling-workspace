@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import os
 import shutil
-import stat
 import subprocess
 import tempfile
 import time
@@ -14,7 +13,6 @@ from pathlib import Path
 from typing import Any, Iterator
 
 from deploy_transaction import DeploymentTransaction, DeploymentTransactionError
-from test_prefix import RetainedDirectoryCapability, RetainedRegularFileCapability
 from test_runtime import (
     ROOTLESS_BOOTSTRAP_RESOURCE,
     ROOTLESS_TOOLCHAIN_RESOURCE,
@@ -28,11 +26,7 @@ from test_runtime import (
     runtime_artifact_deploy_paths,
     runtime_deploy_targets,
 )
-PREFIX_STATE_NAME = ".darling-prefix-state-v3"
-PREFIX_STATE_HEADER = "DARLING_PREFIX_STATE_V3"
-PREFIX_STATE_SCHEMA = 3
-PREFIX_STATE_PROVENANCE = "darling-runtime-prefix-sidecar-v1"
-PREFIX_SIDECAR_SUFFIX = ".eunion-sidecar-v1"
+PREFIX_STATE_NAME = ".darling-prefix-state-v2"
 
 
 @dataclass(frozen=True)
@@ -41,65 +35,6 @@ class IsolatedEmptyPrefix:
 
     root: Path
     prefix: Path
-
-
-@dataclass
-class RuntimePrefixStateCapability:
-    """Retain prefix, typed state, and sidecar through deployment."""
-
-    prefix: RetainedDirectoryCapability
-    binding: RetainedRegularFileCapability | None
-    sidecar: RetainedDirectoryCapability | None
-    create_mode_marker: bool
-    mode_marker_content: bytes | None
-
-    def revalidate(self) -> None:
-        prefix_status = self.prefix.revalidate(metadata=False)
-        initial_prefix = self.prefix.initial_status
-        if (
-            stat.S_IMODE(prefix_status.st_mode),
-            prefix_status.st_uid,
-            prefix_status.st_gid,
-        ) != (
-            stat.S_IMODE(initial_prefix.st_mode),
-            initial_prefix.st_uid,
-            initial_prefix.st_gid,
-        ):
-            raise OSError(
-                f"retained runtime prefix metadata changed: {self.prefix.path}"
-            )
-        if self.binding is not None:
-            self.binding.revalidate()
-        if self.sidecar is not None:
-            sidecar_status = self.sidecar.revalidate(metadata=False)
-            initial_sidecar = self.sidecar.initial_status
-            if (
-                stat.S_IMODE(sidecar_status.st_mode),
-                sidecar_status.st_uid,
-                sidecar_status.st_gid,
-            ) != (
-                stat.S_IMODE(initial_sidecar.st_mode),
-                initial_sidecar.st_uid,
-                initial_sidecar.st_gid,
-            ):
-                raise OSError(
-                    f"retained runtime sidecar metadata changed: {self.sidecar.path}"
-                )
-
-    def close(self) -> None:
-        if self.binding is not None:
-            self.binding.close()
-            self.binding = None
-        if self.sidecar is not None:
-            self.sidecar.close()
-            self.sidecar = None
-        self.prefix.close()
-
-    def __enter__(self) -> "RuntimePrefixStateCapability":
-        return self
-
-    def __exit__(self, *_exc_info) -> None:
-        self.close()
 
 
 class RuntimeDeploymentService:
@@ -326,205 +261,65 @@ class RuntimeDeploymentService:
             plan.extend((source, target) for target in targets)
         return plan
 
-    def _retain_runtime_mode_state(
-        self, proof: dict, prefix: Path
-    ) -> RuntimePrefixStateCapability:
-        """Validate state through retained FDs and keep its identities alive."""
-
-        try:
-            prefix_capability = RetainedDirectoryCapability.open(prefix)
-        except OSError as error:
-            self._host.die(
-                "guest-runtime-deploy runtime prefix is not a stable real "
-                f"directory: {prefix}: {error}"
-            )
-        binding_capability: RetainedRegularFileCapability | None = None
-        sidecar_capability: RetainedDirectoryCapability | None = None
-        try:
-            mode = proof.get("runtime-mode")
-            if mode is None:
-                return RuntimePrefixStateCapability(
-                    prefix_capability, None, None, False, None
-                )
-            expected = f"DARLING_RUNTIME_MODE_V1={mode}\n".encode()
-            entries = prefix_capability.entries()
-            if not entries:
-                return RuntimePrefixStateCapability(
-                    prefix_capability, None, None, True, expected
-                )
-
-            state_status = prefix_capability.child_status(PREFIX_STATE_NAME)
-            marker_status = prefix_capability.child_status(RUNTIME_MODE_MARKER_NAME)
-            if state_status is not None:
-                if not stat.S_ISREG(state_status.st_mode):
-                    self._host.die(
-                        "guest-runtime-deploy typed prefix state is not a "
-                        f"regular file: {prefix / PREFIX_STATE_NAME}"
-                    )
-                prefix_status = prefix_capability.revalidate(metadata=False)
-                if (
-                    stat.S_IMODE(prefix_status.st_mode) != 0o755
-                    or prefix_status.st_nlink < 2
-                ):
-                    self._host.die(
-                        "guest-runtime-deploy typed prefix root metadata "
-                        f"mismatch: {prefix}"
-                    )
-                try:
-                    binding_capability = prefix_capability.retain_regular_child(
-                        PREFIX_STATE_NAME,
-                        mode=0o600,
-                        uid=prefix_status.st_uid,
-                        gid=prefix_status.st_gid,
-                        nlink=1,
-                    )
-                    raw_state = binding_capability.content
-                    content = raw_state.decode("utf-8")
-                except (OSError, UnicodeError) as error:
-                    self._host.die(
-                        "guest-runtime-deploy cannot read stable typed prefix "
-                        f"state {prefix / PREFIX_STATE_NAME}: {error}"
-                    )
-                fields = content.splitlines()
-                names = (
-                    "generation",
-                    "prefix_device",
-                    "prefix_inode",
-                    "sidecar_device",
-                    "sidecar_inode",
-                    "owner_uid",
-                    "owner_gid",
-                )
-                if len(fields) != 11 or fields[:3] != [
-                    PREFIX_STATE_HEADER,
-                    f"schema_version={PREFIX_STATE_SCHEMA}",
-                    f"runtime_mode={mode}",
-                ] or fields[-1] != f"provenance={PREFIX_STATE_PROVENANCE}":
-                    self._host.die(
-                        "guest-runtime-deploy typed prefix state mismatch: "
-                        f"expected schema {PREFIX_STATE_SCHEMA} mode {mode!r}: "
-                        f"{prefix / PREFIX_STATE_NAME}"
-                    )
-                numbers: dict[str, int] = {}
-                for field, name in zip(fields[3:-1], names, strict=True):
-                    key, separator, raw_value = field.partition("=")
-                    if key != name or separator != "=" or not raw_value.isdecimal():
-                        self._host.die(
-                            "guest-runtime-deploy typed prefix state has "
-                            f"malformed {name}: {prefix / PREFIX_STATE_NAME}"
-                        )
-                    numbers[name] = int(raw_value)
-
-                sidecar = Path(f"{prefix}{PREFIX_SIDECAR_SUFFIX}")
-                try:
-                    sidecar_capability = RetainedDirectoryCapability.open(sidecar)
-                    sidecar_status = sidecar_capability.revalidate(metadata=True)
-                except OSError as error:
-                    self._host.die(
-                        "guest-runtime-deploy typed prefix sidecar is not a "
-                        f"stable real directory: {sidecar}: {error}"
-                    )
-                if (
-                    stat.S_IMODE(sidecar_status.st_mode) != 0o700
-                    or sidecar_status.st_uid != prefix_status.st_uid
-                    or sidecar_status.st_gid != prefix_status.st_gid
-                    or sidecar_status.st_nlink < 2
-                ):
-                    self._host.die(
-                        "guest-runtime-deploy typed prefix sidecar metadata "
-                        f"mismatch: {sidecar}"
-                    )
-                expected_numbers = {
-                    "prefix_device": prefix_status.st_dev,
-                    "prefix_inode": prefix_status.st_ino,
-                    "sidecar_device": sidecar_status.st_dev,
-                    "sidecar_inode": sidecar_status.st_ino,
-                    "owner_uid": prefix_status.st_uid,
-                    "owner_gid": prefix_status.st_gid,
-                }
-                if numbers["generation"] < 1 or any(
-                    numbers[name] != value
-                    for name, value in expected_numbers.items()
-                ):
-                    self._host.die(
-                        "guest-runtime-deploy typed prefix state identity "
-                        f"mismatch: {prefix / PREFIX_STATE_NAME}"
-                    )
-                if marker_status is not None:
-                    self._host.die(
-                        "guest-runtime-deploy current typed prefix retained "
-                        "legacy mode metadata: "
-                        f"{prefix / RUNTIME_MODE_MARKER_NAME}"
-                    )
-                prefix_capability.revalidate(metadata=False)
-                sidecar_capability.revalidate(metadata=True)
-                return RuntimePrefixStateCapability(
-                    prefix_capability,
-                    binding_capability,
-                    sidecar_capability,
-                    False,
-                    expected,
-                )
-
-            if mode == "rootless-eunion" and marker_status is not None:
-                self._host.die(
-                    "guest-runtime-deploy refuses legacy runtime-mode metadata "
-                    f"for rootless prefix: {prefix / RUNTIME_MODE_MARKER_NAME}"
-                )
-            if marker_status is None or not stat.S_ISREG(marker_status.st_mode):
-                self._host.die(
-                    "guest-runtime-deploy refuses a populated prefix without "
-                    f"a regular typed mode marker: {prefix}"
-                )
-            try:
-                binding_capability = prefix_capability.retain_regular_child(
-                    RUNTIME_MODE_MARKER_NAME,
-                    nlink=1,
-                )
-                observed = binding_capability.content
-            except OSError as error:
-                self._host.die(
-                    "guest-runtime-deploy cannot read stable typed mode marker "
-                    f"{prefix / RUNTIME_MODE_MARKER_NAME}: {error}"
-                )
-            if observed != expected:
-                self._host.die(
-                    "guest-runtime-deploy typed mode marker mismatch: "
-                    f"expected {expected.decode().strip()!r}, "
-                    f"observed {observed.decode(errors='replace').strip()!r}"
-                )
-            return RuntimePrefixStateCapability(
-                prefix_capability, binding_capability, None, False, expected
-            )
-        except BaseException:
-            if binding_capability is not None:
-                binding_capability.close()
-            if sidecar_capability is not None:
-                sidecar_capability.close()
-            prefix_capability.close()
-            raise
-
     def _runtime_mode_marker_required(
         self, proof: dict, prefix: Path
     ) -> tuple[bool, bytes | None]:
-        """Validate a mode binding without leaking retained capabilities."""
+        """Validate an existing mode binding or plan one for an empty prefix."""
 
-        with self._retain_runtime_mode_state(proof, prefix) as capability:
-            return capability.create_mode_marker, capability.mode_marker_content
-
-    def _revalidate_runtime_prefix_state(
-        self,
-        capability: RuntimePrefixStateCapability,
-        *,
-        phase: str,
-    ) -> None:
+        mode = proof.get("runtime-mode")
+        if mode is None:
+            return False, None
+        expected = f"DARLING_RUNTIME_MODE_V1={mode}\n".encode()
+        if prefix.is_symlink() or not prefix.is_dir():
+            self._host.die(
+                f"guest-runtime-deploy runtime prefix is not a real directory: {prefix}"
+            )
+        marker = prefix / RUNTIME_MODE_MARKER_NAME
+        state = prefix / PREFIX_STATE_NAME
+        entries = list(prefix.iterdir())
+        if not entries:
+            return True, expected
+        if not state.is_symlink() and state.is_file():
+            try:
+                content = state.read_text()
+            except (OSError, UnicodeError) as error:
+                self._host.die(
+                    f"guest-runtime-deploy cannot read typed prefix state {state}: {error}"
+                )
+            fields = content.splitlines()
+            if (
+                fields[:2]
+                != ["DARLING_PREFIX_STATE_V2", "schema_version=2"]
+                or f"runtime_mode={mode}" not in fields
+            ):
+                self._host.die(
+                    "guest-runtime-deploy typed prefix state mismatch: "
+                    f"expected schema 2 mode {mode!r}: {state}"
+                )
+            if marker.exists() or marker.is_symlink():
+                self._host.die(
+                    "guest-runtime-deploy current typed prefix retained legacy "
+                    f"mode metadata: {marker}"
+                )
+            return False, expected
+        if marker.is_symlink() or not marker.is_file():
+            self._host.die(
+                "guest-runtime-deploy refuses a populated prefix without a "
+                f"regular typed mode marker: {prefix}"
+            )
         try:
-            capability.revalidate()
+            observed = marker.read_bytes()
         except OSError as error:
             self._host.die(
-                "guest-runtime-deploy retained prefix identity changed before "
-                f"{phase}: {error}"
+                f"guest-runtime-deploy cannot read typed mode marker {marker}: {error}"
             )
+        if observed != expected:
+            self._host.die(
+                "guest-runtime-deploy typed mode marker mismatch: "
+                f"expected {expected.decode().strip()!r}, "
+                f"observed {observed.decode(errors='replace').strip()!r}"
+            )
+        return False, expected
 
     def _initialize_empty_rootless_prefix(
         self,
@@ -595,64 +390,20 @@ class RuntimeDeploymentService:
         )
         return True
 
-    def _restore_empty_initialized_prefix(
-        self, capability: RuntimePrefixStateCapability
-    ) -> None:
-        """Restore a proof-owned empty prefix through its retained directory FD."""
-
-        self._revalidate_runtime_prefix_state(
-            capability, phase="empty-prefix restore"
-        )
-
-        def remove_contents(directory_fd: int) -> None:
-            for name in sorted(os.listdir(directory_fd)):
-                if not name or "/" in name or name in {".", ".."}:
-                    self._host.die(
-                        f"guest-runtime-deploy found unsafe restore entry: {name!r}"
-                    )
-                entry_status = os.stat(
-                    name,
-                    dir_fd=directory_fd,
-                    follow_symlinks=False,
-                )
-                if stat.S_ISDIR(entry_status.st_mode):
-                    child_fd = os.open(
-                        name,
-                        os.O_RDONLY
-                        | os.O_DIRECTORY
-                        | os.O_CLOEXEC
-                        | os.O_NOFOLLOW,
-                        dir_fd=directory_fd,
-                    )
-                    try:
-                        opened_status = os.fstat(child_fd)
-                        named_status = os.stat(
-                            name,
-                            dir_fd=directory_fd,
-                            follow_symlinks=False,
-                        )
-                        if (
-                            opened_status.st_dev != entry_status.st_dev
-                            or opened_status.st_ino != entry_status.st_ino
-                            or named_status.st_dev != opened_status.st_dev
-                            or named_status.st_ino != opened_status.st_ino
-                        ):
-                            self._host.die(
-                                "guest-runtime-deploy restore entry changed "
-                                f"while opening: {name}"
-                            )
-                        remove_contents(child_fd)
-                    finally:
-                        os.close(child_fd)
-                    os.rmdir(name, dir_fd=directory_fd)
-                else:
-                    os.unlink(name, dir_fd=directory_fd)
-
-        remove_contents(capability.prefix.fd)
-        if os.listdir(capability.prefix.fd):
+    def _restore_empty_initialized_prefix(self, prefix: Path) -> None:
+        if prefix.is_symlink() or not prefix.is_dir():
             self._host.die(
-                "guest-runtime-deploy could not restore empty retained prefix: "
-                f"{capability.prefix.path}"
+                "guest-runtime-deploy initialized prefix changed identity "
+                f"before restore: {prefix}"
+            )
+        for entry in list(prefix.iterdir()):
+            if entry.is_symlink() or not entry.is_dir():
+                entry.unlink()
+            else:
+                shutil.rmtree(entry)
+        if any(prefix.iterdir()):
+            self._host.die(
+                f"guest-runtime-deploy could not restore empty prefix: {prefix}"
             )
 
     @contextmanager
@@ -684,136 +435,54 @@ class RuntimeDeploymentService:
             shutdown_env,
             label=label,
         )
-        with self._retain_runtime_mode_state(proof, prefix) as state_capability:
-            create_mode_marker = state_capability.create_mode_marker
-            mode_marker_content = state_capability.mode_marker_content
-            plan = self.deployment_plan(proof, build_root, prefix)
-            self._revalidate_runtime_prefix_state(
-                state_capability, phase="deployment planning"
+        create_mode_marker, mode_marker_content = self._runtime_mode_marker_required(
+            proof, prefix
+        )
+        with tempfile.TemporaryDirectory(prefix="west-red-proof-deploy-") as temp:
+            transaction = DeploymentTransaction(
+                Path(temp) / "manifest.json", prefix, normalize_modes=True
             )
-            with tempfile.TemporaryDirectory(prefix="west-red-proof-deploy-") as temp:
-                initial_prefix = state_capability.prefix.initial_status
-                try:
-                    transaction = DeploymentTransaction(
-                        Path(temp) / "manifest.json",
-                        prefix,
-                        normalize_modes=True,
-                        expected_root_identity=(
-                            initial_prefix.st_dev,
-                            initial_prefix.st_ino,
-                        ),
-                    )
-                except DeploymentTransactionError as error:
-                    self._host.die(
-                        f"guest-runtime-deploy transaction failed: {error}"
-                    )
-                self._revalidate_runtime_prefix_state(
-                    state_capability, phase="transaction root binding"
-                )
-                operation_error: BaseException | None = None
-                try:
-                    if create_mode_marker:
-                        marker_source = Path(temp) / "runtime-mode-marker"
-                        marker_source.write_bytes(mode_marker_content or b"")
-                        marker_source.chmod(0o600)
-                        marker_destination = prefix / RUNTIME_MODE_MARKER_NAME
-                        self._revalidate_runtime_prefix_state(
-                            state_capability, phase="mode-marker publication"
-                        )
-                        transaction.replace(marker_source, marker_destination)
-                        self._revalidate_runtime_prefix_state(
-                            state_capability, phase="mode-marker publication"
-                        )
-                        self._host.inf(
-                            f"  {label} deploy: typed mode marker -> "
-                            f"{marker_destination}"
-                        )
-                    for source, destination in plan:
-                        self._revalidate_runtime_prefix_state(
-                            state_capability, phase=f"deployment of {destination}"
-                        )
-                        transaction.replace(source, destination)
-                        self._revalidate_runtime_prefix_state(
-                            state_capability, phase=f"deployment of {destination}"
-                        )
-                        self._host.inf(
-                            f"  {label} deploy: {source} -> {destination}"
-                        )
+            try:
+                if create_mode_marker:
+                    marker_source = Path(temp) / "runtime-mode-marker"
+                    marker_source.write_bytes(mode_marker_content or b"")
+                    marker_source.chmod(0o600)
+                    marker_destination = prefix / RUNTIME_MODE_MARKER_NAME
+                    transaction.replace(marker_source, marker_destination)
                     self._host.inf(
-                        f"  runtime phase complete: {label} deploy "
-                        f"({time.monotonic() - started:.1f}s)"
+                        f"  {label} deploy: typed mode marker -> {marker_destination}"
                     )
-                    yield
-                    self._revalidate_runtime_prefix_state(
-                        state_capability, phase="post-deployment yield"
+                for source, destination in self.deployment_plan(proof, build_root, prefix):
+                    transaction.replace(source, destination)
+                    self._host.inf(f"  {label} deploy: {source} -> {destination}")
+                self._host.inf(
+                    f"  runtime phase complete: {label} deploy "
+                    f"({time.monotonic() - started:.1f}s)"
+                )
+                yield
+                succeeded = True
+                if not restore_deployment:
+                    transaction.commit()
+            except DeploymentTransactionError as error:
+                self._host.die(f"guest-runtime-deploy transaction failed: {error}")
+            finally:
+                if not self._host._shutdown_runtime_prefix(
+                    prefix, extra_env=shutdown_env
+                ):
+                    self._host.err(
+                        "guest-runtime-deploy could not stop Darling prefix before restore: "
+                        f"{prefix}"
                     )
-                    succeeded = True
-                    if not restore_deployment:
-                        transaction.commit()
-                except DeploymentTransactionError as error:
-                    operation_error = error
-                    self._host.die(
-                        f"guest-runtime-deploy transaction failed: {error}"
-                    )
-                except BaseException as error:
-                    operation_error = error
-                    raise
-                finally:
-                    cleanup_error: BaseException | None = None
+                if restore_deployment or not succeeded:
                     try:
-                        self._revalidate_runtime_prefix_state(
-                            state_capability, phase="pre-restore shutdown"
-                        )
-                    except BaseException as error:
-                        cleanup_error = error
-                    else:
-                        if not self._host._shutdown_runtime_prefix(
-                            prefix, extra_env=shutdown_env
-                        ):
-                            self._host.err(
-                                "guest-runtime-deploy could not stop Darling prefix "
-                                f"before restore: {prefix}"
-                            )
-                    if restore_deployment or not succeeded:
-                        try:
-                            self._revalidate_runtime_prefix_state(
-                                state_capability, phase="transaction rollback"
-                            )
-                        except BaseException as error:
-                            if cleanup_error is None:
-                                cleanup_error = error
-                        try:
-                            transaction.rollback()
-                        except DeploymentTransactionError as error:
-                            if cleanup_error is None:
-                                cleanup_error = SystemExit(
-                                    "guest-runtime-deploy rollback failed: "
-                                    f"{error}"
-                                )
-                        try:
-                            self._revalidate_runtime_prefix_state(
-                                state_capability, phase="post-transaction rollback"
-                            )
-                        except BaseException as error:
-                            if cleanup_error is None:
-                                cleanup_error = error
-                        if initialized_empty and cleanup_error is None:
-                            self._restore_empty_initialized_prefix(state_capability)
-                    elif transaction.entries:
-                        self._host.inf(
-                            f"  {label} deployment retained after successful smoke"
-                        )
-                    if cleanup_error is None:
-                        self._host._shutdown_runtime_prefix(
-                            prefix, extra_env=shutdown_env
-                        )
-                    if cleanup_error is not None:
-                        if operation_error is None:
-                            raise cleanup_error
-                        self._host.err(
-                            "guest-runtime-deploy cleanup also detected an unsafe "
-                            f"state transition: {cleanup_error}"
-                        )
+                        transaction.rollback()
+                    except DeploymentTransactionError as error:
+                        self._host.die(f"guest-runtime-deploy rollback failed: {error}")
+                    if initialized_empty:
+                        self._restore_empty_initialized_prefix(prefix)
+                elif transaction.entries:
+                    self._host.inf(f"  {label} deployment retained after successful smoke")
+                self._host._shutdown_runtime_prefix(prefix, extra_env=shutdown_env)
 
     @staticmethod
     def _proof_lifecycle_env(proof: dict) -> dict[str, str]:

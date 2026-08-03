@@ -1151,7 +1151,7 @@ stacks:
   project_path: darling/src/external/xnu
   upstream: https://github.com/darlinghq/darling-xnu.git
   downstream: https://github.com/darling-next/darling-xnu.git
-  source_branch: fix/eunion-sidecar-v1
+  source_branch: repack/eunion-hardening
   base_commit: 5c3019fca1d85533f34735bf40c97156c87b6d4f
   ordered_commits:
   - f033c5773992dfa57b6657f10f53f719664a5f18
@@ -1160,44 +1160,15 @@ stacks:
   - b103905f2e700269815f870f3dd78f3c0604ec63
   - 82847c96f24a804cf6a7949cf4543872a860f612
   - cb2cf623d9cd641ed4f9e899a0187acdedc423ea
-  - cda77a91450cdadb2c0743df559897c8a20f2a15
-  - 7301f84f1ccc85fa4dcf253bf8b2d1fa7a8e7b66
-  - deba379410749fd566659aeba8c3e788fe8a498d
-  - 4780216047d80405804946abd74d786b9f3a6cd3
-  - f10ea282e97b06cccf1e74218c4be4756762103a
-  - 05a5e63fea3c55a0527ba906b1985458701a5556
-  - 05e548652657c2f9bbfff54a87d23df011dbc422
-  source_commit: 05e548652657c2f9bbfff54a87d23df011dbc422
-  expected_tree: 1b7352bbdbd015f709eb899478e5651c444c7b17
+  source_commit: cb2cf623d9cd641ed4f9e899a0187acdedc423ea
+  expected_tree: 135291022a32950236a2bce17943102f44fb8e57
   artifact_count: 1
-  commit_count: 13
-  canonical_ordered_commits:
-  - f033c5773992dfa57b6657f10f53f719664a5f18
-  - f223ee035651e9b9f7d3952c654bb0d0dc238d34
-  - cfd2f9ed13cb33f2b9edcefe33709be4d90cb1db
-  - b103905f2e700269815f870f3dd78f3c0604ec63
-  - 82847c96f24a804cf6a7949cf4543872a860f612
-  - cb2cf623d9cd641ed4f9e899a0187acdedc423ea
-  - cda77a91450cdadb2c0743df559897c8a20f2a15
-  - 7301f84f1ccc85fa4dcf253bf8b2d1fa7a8e7b66
-  - deba379410749fd566659aeba8c3e788fe8a498d
-  - 4780216047d80405804946abd74d786b9f3a6cd3
-  - f10ea282e97b06cccf1e74218c4be4756762103a
-  - 05a5e63fea3c55a0527ba906b1985458701a5556
-  - 05e548652657c2f9bbfff54a87d23df011dbc422
-  - 018bf7edaeecf811a74f48addb79f8036152f846
-  - c1d2c8b7ee2637879285ab1b8f196b4f5ab755aa
-  - 96b3727dea938c68e035838517d296447b819eda
-  - b9c536eab2469e8d3577351d561c07fdf2a731d1
-  - 3954fb324e74f966c0a37daf7237859df86457f2
-  canonical_commit_count: 18
-  canonical_source_commit: 3954fb324e74f966c0a37daf7237859df86457f2
-  canonical_expected_tree: ea15ec0b0306061c9c4a101b0d051f60f7fe265f
-  object_closure: local_append_only_clean_odb
+  commit_count: 6
+  object_closure: hosted_immutable_clean_odb
   linearity: verified
-  classification: PUBLICATION_PENDING
-  reason: sidecar-v1 source, the Policy 1 recreate gate, early dual-image validation, transactional upper-only INDEX-to-ABSENT removal, and syscall-level relative remove coverage are independently verified locally; hosted immutable refs remain intentionally unpublished
-  lock: locks/patch-stack/darling-xnu-eunion-hardening-sidecar-v5.yml
+  classification: ALREADY_MIGRATED
+  reason: exact objects recovered from trusted XNU worktree into an isolated clean ODB
+  lock: locks/patch-stack/darling-xnu-eunion-hardening-v1.yml
 - profile: homebrew
   patch: darling/build-drift-gate.patch
   artifact: patches/homebrew/darling/build-drift-gate.patch
@@ -1291,17 +1262,11 @@ stacks:
   expected_tree: 777ee7789091da584e8cae655be62648f0b31f6e
   artifact_count: 1
   commit_count: 2
-  canonical_base_commit: 8b282419b7385cbf381ff082c83f3563ad7556bd
-  canonical_ordered_commits:
-  - 431071e9b727ea2fac3e0a8bbfef252f9c829cae
-  canonical_commit_count: 1
-  canonical_source_commit: 431071e9b727ea2fac3e0a8bbfef252f9c829cae
-  canonical_expected_tree: cf6cf5a55d18ecb20915c59e9b78952954ed2d68
   object_closure: hosted_immutable_clean_odb
   linearity: verified
   classification: ALREADY_MIGRATED
-  reason: archive provenance is preserved while the current typed Homebrew mapping uses the independently verified sidecar-v3 profile-integration restack
-  lock: locks/patch-stack/darling-xnu-fd-guard-ebadf-sidecar-v3.yml
+  reason: exact objects recovered from trusted XNU worktree into an isolated clean ODB
+  lock: locks/patch-stack/darling-xnu-fd-guard-ebadf-v1.yml
 - profile: homebrew
   patch: xnu/abort-with-payload-no-group-broadcast.patch
   artifact: patches/homebrew/xnu/abort-with-payload-no-group-broadcast.patch
@@ -2010,30 +1975,19 @@ stacks:
   project_path: darling/src/external/darlingserver
   upstream: https://github.com/darlinghq/darlingserver.git
   downstream: https://github.com/darling-next/darlingserver.git
-  source_branch: fix/rootless-prefix-sidecar-v1
+  source_branch: fix/rootless-prefix-lifecycle-v2
   base_commit: dd0b23f1e3b8e9470016e67df40e18a28718b737
   ordered_commits:
   - a2f99243227c57847308527a2a921d1bb77b1135
-  - c81ddfa279a538eda247a960e59018e7fc7a4875
-  source_commit: c81ddfa279a538eda247a960e59018e7fc7a4875
-  expected_tree: 9f5d3ce2c7542734d4b1859229c0301a2cc141bc
+  source_commit: a2f99243227c57847308527a2a921d1bb77b1135
+  expected_tree: 2d6f0321cfe205dba7302666bc470adb79a44003
   artifact_count: 1
-  commit_count: 2
-  canonical_ordered_commits:
-  - a2f99243227c57847308527a2a921d1bb77b1135
-  - c81ddfa279a538eda247a960e59018e7fc7a4875
-  - e45fe30186ffbbde4de944d1372d88f2f20d4b3c
-  - e0e2053de3df0d58cde1a9c0fd2164c4d298ed99
-  - 386979878c7112f1485d149417860b6f0a14ee5b
-  - acaf24b2eb24dbd3e78e5cacbbb1653ce2913062
-  canonical_commit_count: 6
-  canonical_source_commit: acaf24b2eb24dbd3e78e5cacbbb1653ce2913062
-  canonical_expected_tree: a9ebdb880e92d5a3f37a1a478f643f8d5bc5582f
+  commit_count: 1
   object_closure: local_append_only_clean_odb
   linearity: verified
   classification: PUBLICATION_PENDING
-  reason: five-fd prefix/workdir/sidecar/lifecycle-lock validation, reply-owned retained-vchroot descriptor transfer, and E-UNION-aware pre-init cleanup are independently verified locally; hosted immutable refs remain intentionally unpublished
-  lock: locks/patch-stack/darlingserver-prefix-lifecycle-state-v3-v5.yml
+  reason: typed prefix-state validation and create-only refs are independently verified in the local append-only publication package
+  lock: locks/patch-stack/darlingserver-prefix-lifecycle-state-v2-v1.yml
 - profile: homebrew
   patch: xnu/af-unix-expanded-path-length.patch
   artifact: patches/homebrew/xnu/af-unix-expanded-path-length.patch
@@ -2048,17 +2002,11 @@ stacks:
   expected_tree: 53c8fa45a1ac94bdfc2ced0b3179e43659dffabf
   artifact_count: 1
   commit_count: 1
-  canonical_ordered_commits:
-  - 92d87609088cbf50155519972d3919a5477ccea3
-  - bbfdb3c2f4f1a1d0010c9448413f71dd21a40771
-  canonical_commit_count: 2
-  canonical_source_commit: bbfdb3c2f4f1a1d0010c9448413f71dd21a40771
-  canonical_expected_tree: 3510fa3ec58e3090e152566f2b8badcd3c2faf21
   object_closure: local_append_only_clean_odb
   linearity: verified
   classification: PUBLICATION_PENDING
   reason: AF_UNIX boundary source and create-only refs are independently verified in the local append-only publication package
-  lock: locks/patch-stack/darling-xnu-af-unix-expanded-path-length-v2.yml
+  lock: locks/patch-stack/darling-xnu-af-unix-expanded-path-length-v1.yml
 - profile: homebrew
   patch: darling/runtime-mode-canonical.patch
   artifact: patches/homebrew/darling/runtime-mode-canonical.patch
@@ -2084,45 +2032,21 @@ stacks:
   project_path: darling
   upstream: https://github.com/darlinghq/darling.git
   downstream: https://github.com/darling-next/darling.git
-  source_branch: fix/rootless-prefix-sidecar-v1
+  source_branch: fix/rootless-prefix-lifecycle-v2
   base_commit: db7b5b404366fa630edeb5189f174518aad189ad
   ordered_commits:
   - da784f52c4e5b7a3ecbc628e6e619171ba78435c
-  - d17322c622119264ba3a363ce80fc6b989087548
-  source_commit: d17322c622119264ba3a363ce80fc6b989087548
-  expected_tree: 81d8d939c1b0cd454ef7cc7ed034d1a340df7fd8
+  source_commit: da784f52c4e5b7a3ecbc628e6e619171ba78435c
+  expected_tree: 7297ee393ed21d13484b1734e5e5694967f96851
   artifact_count: 1
-  commit_count: 2
-  canonical_ordered_commits:
-  - da784f52c4e5b7a3ecbc628e6e619171ba78435c
-  - d17322c622119264ba3a363ce80fc6b989087548
-  - 07e49b7b26c68b54b13c851f7edb4da99f8a3f17
-  - e3996200944dd67f96c36bb145e6cb3cbc1c68d2
-  - 1a4f3022e0453e937a252d3a9baeddfb32b7f3d3
-  - 6f4c122fbdda14045292581696bc4f864335d76d
-  - a6fcb619a96b7874e67469cc05d7c8e54eace578
-  - c03c8cfeb0ed0c384bffd24a9baf57144042e7cf
-  - 1dcf665af05773b21a1069172f25bd9e33cedca1
-  - 31abd92db3bc8ac7faf52fd0a2a745c200467940
-  - 7524124c907e381e5e7dbe0c1a1dfcaad8d5092a
-  - 7549b9f065b2fb6a8f9eeb50a9700dcc57d14686
-  - 89929f884562cf23b2baa8a75551927dc5646796
-  - 53d79b95f2cd72c0257d8ce42e1dde5e3fc826bf
-  - 6040ade66d0ed1bbda025c2ae7cbd5459b8e5072
-  - 5d1dc161231978914c236e5ef5d0f91b07a72b02
-  - e752ed72119bd983b5b331ffa71aa1ff23168ee7
-  - 45b7136144624ad12f1cf29a04e7e3dfc39169b2
-  - 21656a296e0a6f87b5f53ed96c4b10e0a34e1762
-  canonical_commit_count: 19
-  canonical_source_commit: 21656a296e0a6f87b5f53ed96c4b10e0a34e1762
-  canonical_expected_tree: 3881dad4f8cfbba45f530498a480c85ff3468a17
+  commit_count: 1
   object_closure: local_append_only_clean_odb
   linearity: verified
   classification: PUBLICATION_PENDING
-  reason: sidecar-v1 creation, explicit Policy 1 recreation, retained-FD bootstrap lifecycle, bounded shared reuse, vchroot exec FD lifetime, and typed cgroup-delegated or pidfd-subreaper shutdown closure with retained proc identities, all-thread stop barriers, transactional startup rollback, bounded descriptor cleanup, full cgroup capability fallback, deadline/FD bounds, retained state publication identity, and inode-bound cgroup cleanup are independently verified locally; the newest corrective ref remains publication-pending
-  lock: locks/patch-stack/darling-prefix-lifecycle-state-v3-v17.yml
+  reason: crash-consistent prefix lifecycle and create-only refs are independently verified in the local append-only publication package
+  lock: locks/patch-stack/darling-prefix-lifecycle-state-v2-v1.yml
 summary:
   READY: 0
   RECOVERABLE_LOCAL: 0
-  ALREADY_MIGRATED: 94
-  PUBLICATION_PENDING: 6
+  ALREADY_MIGRATED: 95
+  PUBLICATION_PENDING: 5

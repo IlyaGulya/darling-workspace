@@ -29,20 +29,12 @@ after that check.
 
 Rootless mode does not create privileged mount/PID namespaces and requires a
 prefix prepared for E-UNION operation. Every new prefix receives the strict
-schema-v3 `.darling-prefix-state-v3` record. It binds schema version, runtime
-mode, monotonic generation, prefix and sidecar device/inode identities, owner
-identity, and provenance. Runtime deployment accepts only that current typed
-state; it never treats the legacy `.darling-runtime-mode-v1` marker as a
-rootless fallback. A malformed, newer, cross-prefix, multiply-linked,
-symlinked, wrongly owned, or mode-incompatible state is rejected before
-mutation.
-
-Normal startup of an already-current typed prefix retains a shared read-only
-lifecycle lease, so concurrent commands and a verified restart do not wait on
-another reader. Only creation, recovery, explicit recreation, and deletion
-request the exclusive writer lease. Both modes use bounded acquisition;
-deadline failures report the requested mode and exact lock inode instead of
-hanging behind a surviving holder.
+schema-v2 `.darling-prefix-state-v2` record. It binds schema version, runtime
+mode, monotonic generation, prefix device/inode, owner identity, and
+provenance. The one supported compatibility transition upgrades an otherwise
+valid `.darling-runtime-mode-v1` prefix in place. A malformed, newer,
+cross-prefix, multiply-linked, symlinked, wrongly owned, or mode-incompatible
+state is rejected before mutation.
 
 The launcher represents the post-anchor prefix as an assignment-resistant
 owning capability with runtime typestate. Its zero-overhead one-element-array C
@@ -77,11 +69,7 @@ idempotently.
 
 During `west test` deployment, the lifecycle-owned `.west-test.lock` does not
 count as prefix content. Any other content without a recognized state remains
-an error. A newly runner-owned prefix remains byte-empty through source
-hydration, profile materialization, CMake configure, and Ninja build. Initial
-cleanup is observational for that empty directory; immediately before
-deployment the newly built launcher is the first writer and atomically
-publishes the current typed state. The writable prefix is the upper layer; its
+an error. The writable prefix is the upper layer; its
 `libexec/darling` subtree is the immutable lower template. A successful run
 must leave the lower template unchanged and must remove its init PID, Unix
 sockets, child processes, and other runtime state after `darling --rootless

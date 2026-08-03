@@ -1,6 +1,6 @@
 schema_version: 3
 profile: homebrew
-batch_id: darling-homebrew-eunion-sidecar-batch-10
+batch_id: darling-homebrew-prefix-lifecycle-batch-9
 expected_count: 74
 composition: homebrew-profile-composition-v2.yml
 series:
@@ -111,7 +111,7 @@ series:
   - profile: homebrew
     module: darling/src/external/darlingserver
     patch: darlingserver/prefix-lifecycle-state-v2.patch
-    lock: darlingserver-prefix-lifecycle-state-v3-v5.yml
+    lock: darlingserver-prefix-lifecycle-state-v2-v1.yml
   - profile: homebrew
     module: darling/src/external/xnu
     patch: xnu/psynch-cvsignal-args.patch
@@ -183,7 +183,7 @@ series:
   - profile: homebrew
     module: darling/src/external/xnu
     patch: xnu/eunion-hardening.patch
-    lock: darling-xnu-eunion-hardening-sidecar-v5.yml
+    lock: darling-xnu-eunion-hardening-v1.yml
   - profile: homebrew
     module: darling/src/external/xnu
     patch: xnu/chown-disabled-null-guard.patch
@@ -191,7 +191,7 @@ series:
   - profile: homebrew
     module: darling/src/external/xnu
     patch: xnu/fd-guard-ebadf.patch
-    lock: darling-xnu-fd-guard-ebadf-sidecar-v3.yml
+    lock: darling-xnu-fd-guard-ebadf-v1.yml
   - profile: homebrew
     module: darling/src/external/xnu
     patch: xnu/abort-with-payload-no-group-broadcast.patch
@@ -215,7 +215,7 @@ series:
   - profile: homebrew
     module: darling/src/external/xnu
     patch: xnu/af-unix-expanded-path-length.patch
-    lock: darling-xnu-af-unix-expanded-path-length-v2.yml
+    lock: darling-xnu-af-unix-expanded-path-length-v1.yml
   - profile: homebrew
     module: darling/src/external/libplatform
     patch: libplatform/bzero-return-register.patch
@@ -291,7 +291,7 @@ series:
   - profile: homebrew
     module: darling
     patch: darling/prefix-lifecycle-state-v2.patch
-    lock: darling-prefix-lifecycle-state-v3-v17.yml
+    lock: darling-prefix-lifecycle-state-v2-v1.yml
   - profile: homebrew
     module: darling/src/external/installer
     patch: installer/normalize-payload-paths.patch

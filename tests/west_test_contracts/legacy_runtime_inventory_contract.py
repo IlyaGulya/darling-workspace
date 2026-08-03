@@ -28,7 +28,7 @@ def main() -> None:
     fail(inventory["schema_version"] == 1, "inventory schema version changed")
     fail(inventory["closure"] == {
         "total_series": 100,
-        "total_ordered_commits": 199,
+        "total_ordered_commits": 192,
         "schema_v2_lock_coverage": "94/94 hosted plus 6 publication-pending append-only series",
         "immutable_ref_closure": "hosted_immutable_clean_odb plus 6 publication-pending append-only series",
         "clean_odb_evidence": "94 hosted series independently verified; the b545 Arch continuation, 3 Rootless productization series and 2 prefix-lifecycle series have dual local clean-ODB evidence pending create-only hosted tags",
@@ -38,9 +38,9 @@ def main() -> None:
     expected = {
         "homebrew": (
             74,
-            109,
+            102,
             None,
-            "darling-homebrew-eunion-sidecar-batch-10",
+            "darling-homebrew-prefix-lifecycle-batch-9",
         ),
         "perf": (7, 29, "homebrew", "darling-perf-lock-first-batch-1"),
         "arch": (19, 61, "perf", "darling-arch-lock-first-batch-1"),
@@ -110,7 +110,7 @@ def main() -> None:
         fail(observed_commits == commit_count, f"{profile}: ordered commit total")
         total_series += series_count
         total_commits += commit_count
-    fail((total_series, total_commits) == (100, 199), "inventory totals differ")
+    fail((total_series, total_commits) == (100, 192), "inventory totals differ")
     fail(
         set(nonportable) == {("perf", "xnu/shmem-ring-guest.patch")},
         "unexpected archive forensic exception",
