@@ -58,7 +58,7 @@ for token in (
     "makeDescriptorCloseOnExec(lifecycleLockFD",
     "setupUserHome(prefixFD",
     "setupEunionPrefix(prefixFD)",
-    "darlingPreInit(prefixFD)",
+    "darlingPreInit(prefixFD, useEunionPrefix)",
     "copyDirectoryContentsAt(LIBEXEC_PATH, prefixFD",
     "fixPermissionsRecursiveFD(prefixFD",
     'unlinkat(prefixFD, ".darlingserver.sock"',
@@ -67,9 +67,26 @@ for token in (
         raise SystemExit(f"fd-relative server lifecycle is incomplete: {token}")
 if "prefix = argv[1]" in source:
     raise SystemExit("darlingserver still reopens the launcher prefix pathname")
+
+preinit = source[source.index("void darlingPreInit("):
+    source.index("void spawnLaunchd(")]
+for token in (
+    "void darlingPreInit(int prefixFD, bool useEunionPrefix)",
+    "if (!useEunionPrefix)",
+    "wipeDirFD(childFD)",
+):
+    if token not in preinit:
+        raise SystemExit(
+            f"Darlingserver pre-init E-UNION bypass guard is missing: {token}"
+        )
+if preinit.index("if (!useEunionPrefix)") > preinit.index("wipeDirFD(childFD)"):
+    raise SystemExit("E-UNION pre-init can still reach host-side prefix wipe")
+if source.count("darlingPreInit(prefixFD, useEunionPrefix)") != 1:
+    raise SystemExit("typed pre-init mode is not propagated exactly once")
 for forbidden in (
     "setupUserHome(prefix,",
     "darlingPreInit(prefix)",
+    "darlingPreInit(prefixFD);",
     "setupEunionPrefix(prefix)",
     "copyAndSetAttributes(fromPath, toPath",
     "fixPermissionsRecursive(prefix,",

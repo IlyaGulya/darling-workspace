@@ -1188,14 +1188,16 @@ stacks:
   - 018bf7edaeecf811a74f48addb79f8036152f846
   - c1d2c8b7ee2637879285ab1b8f196b4f5ab755aa
   - 96b3727dea938c68e035838517d296447b819eda
-  canonical_commit_count: 16
-  canonical_source_commit: 96b3727dea938c68e035838517d296447b819eda
-  canonical_expected_tree: 1da41d0305b69c47e9f4560ff321c5ca9d10816f
+  - b9c536eab2469e8d3577351d561c07fdf2a731d1
+  - 3954fb324e74f966c0a37daf7237859df86457f2
+  canonical_commit_count: 18
+  canonical_source_commit: 3954fb324e74f966c0a37daf7237859df86457f2
+  canonical_expected_tree: ea15ec0b0306061c9c4a101b0d051f60f7fe265f
   object_closure: local_append_only_clean_odb
   linearity: verified
   classification: PUBLICATION_PENDING
-  reason: sidecar-v1 source, the Policy 1 recreate gate, and early dual-image validation are independently verified locally; hosted immutable refs remain intentionally unpublished
-  lock: locks/patch-stack/darling-xnu-eunion-hardening-sidecar-v3.yml
+  reason: sidecar-v1 source, the Policy 1 recreate gate, early dual-image validation, transactional upper-only INDEX-to-ABSENT removal, and syscall-level relative remove coverage are independently verified locally; hosted immutable refs remain intentionally unpublished
+  lock: locks/patch-stack/darling-xnu-eunion-hardening-sidecar-v5.yml
 - profile: homebrew
   patch: darling/build-drift-gate.patch
   artifact: patches/homebrew/darling/build-drift-gate.patch
@@ -1289,11 +1291,17 @@ stacks:
   expected_tree: 777ee7789091da584e8cae655be62648f0b31f6e
   artifact_count: 1
   commit_count: 2
+  canonical_base_commit: 8b282419b7385cbf381ff082c83f3563ad7556bd
+  canonical_ordered_commits:
+  - 431071e9b727ea2fac3e0a8bbfef252f9c829cae
+  canonical_commit_count: 1
+  canonical_source_commit: 431071e9b727ea2fac3e0a8bbfef252f9c829cae
+  canonical_expected_tree: cf6cf5a55d18ecb20915c59e9b78952954ed2d68
   object_closure: hosted_immutable_clean_odb
   linearity: verified
   classification: ALREADY_MIGRATED
-  reason: exact objects recovered from trusted XNU worktree into an isolated clean ODB
-  lock: locks/patch-stack/darling-xnu-fd-guard-ebadf-v1.yml
+  reason: archive provenance is preserved while the current typed Homebrew mapping uses the independently verified sidecar-v3 profile-integration restack
+  lock: locks/patch-stack/darling-xnu-fd-guard-ebadf-sidecar-v3.yml
 - profile: homebrew
   patch: xnu/abort-with-payload-no-group-broadcast.patch
   artifact: patches/homebrew/xnu/abort-with-payload-no-group-broadcast.patch
@@ -2017,14 +2025,15 @@ stacks:
   - e45fe30186ffbbde4de944d1372d88f2f20d4b3c
   - e0e2053de3df0d58cde1a9c0fd2164c4d298ed99
   - 386979878c7112f1485d149417860b6f0a14ee5b
-  canonical_commit_count: 5
-  canonical_source_commit: 386979878c7112f1485d149417860b6f0a14ee5b
-  canonical_expected_tree: 27f6cf1747600ad0977ae31e243e90a6f3a4b5e3
+  - acaf24b2eb24dbd3e78e5cacbbb1653ce2913062
+  canonical_commit_count: 6
+  canonical_source_commit: acaf24b2eb24dbd3e78e5cacbbb1653ce2913062
+  canonical_expected_tree: a9ebdb880e92d5a3f37a1a478f643f8d5bc5582f
   object_closure: local_append_only_clean_odb
   linearity: verified
   classification: PUBLICATION_PENDING
-  reason: five-fd prefix/workdir/sidecar/lifecycle-lock validation and reply-owned retained-vchroot descriptor transfer are independently verified locally; hosted immutable refs remain intentionally unpublished
-  lock: locks/patch-stack/darlingserver-prefix-lifecycle-state-v3-v4.yml
+  reason: five-fd prefix/workdir/sidecar/lifecycle-lock validation, reply-owned retained-vchroot descriptor transfer, and E-UNION-aware pre-init cleanup are independently verified locally; hosted immutable refs remain intentionally unpublished
+  lock: locks/patch-stack/darlingserver-prefix-lifecycle-state-v3-v5.yml
 - profile: homebrew
   patch: xnu/af-unix-expanded-path-length.patch
   artifact: patches/homebrew/xnu/af-unix-expanded-path-length.patch
@@ -2092,14 +2101,25 @@ stacks:
   - 1a4f3022e0453e937a252d3a9baeddfb32b7f3d3
   - 6f4c122fbdda14045292581696bc4f864335d76d
   - a6fcb619a96b7874e67469cc05d7c8e54eace578
-  canonical_commit_count: 7
-  canonical_source_commit: a6fcb619a96b7874e67469cc05d7c8e54eace578
-  canonical_expected_tree: 1e8afb2d8923c41e48df96d1bfc7988ab89fa25d
+  - c03c8cfeb0ed0c384bffd24a9baf57144042e7cf
+  - 1dcf665af05773b21a1069172f25bd9e33cedca1
+  - 31abd92db3bc8ac7faf52fd0a2a745c200467940
+  - 7524124c907e381e5e7dbe0c1a1dfcaad8d5092a
+  - 7549b9f065b2fb6a8f9eeb50a9700dcc57d14686
+  - 89929f884562cf23b2baa8a75551927dc5646796
+  - 53d79b95f2cd72c0257d8ce42e1dde5e3fc826bf
+  - 6040ade66d0ed1bbda025c2ae7cbd5459b8e5072
+  - 5d1dc161231978914c236e5ef5d0f91b07a72b02
+  - e752ed72119bd983b5b331ffa71aa1ff23168ee7
+  - 45b7136144624ad12f1cf29a04e7e3dfc39169b2
+  canonical_commit_count: 18
+  canonical_source_commit: 45b7136144624ad12f1cf29a04e7e3dfc39169b2
+  canonical_expected_tree: 3c798358a5dcad4693895be2151d898694ffa55b
   object_closure: local_append_only_clean_odb
   linearity: verified
   classification: PUBLICATION_PENDING
-  reason: sidecar-v1 creation, explicit Policy 1 recreation, retained-FD bootstrap lifecycle, bounded shared reuse, and vchroot exec FD lifetime are independently verified locally; the newest corrective ref remains publication-pending
-  lock: locks/patch-stack/darling-prefix-lifecycle-state-v3-v6.yml
+  reason: sidecar-v1 creation, explicit Policy 1 recreation, retained-FD bootstrap lifecycle, bounded shared reuse, vchroot exec FD lifetime, and session-bound bounded pidfd shutdown closure with deadline-adjacent acquisition and signalling, bounded pre-bind observation, retained state publication identity, and inode-bound cgroup cleanup are independently verified locally; the newest corrective refs remain publication-pending
+  lock: locks/patch-stack/darling-prefix-lifecycle-state-v3-v16.yml
 summary:
   READY: 0
   RECOVERABLE_LOCAL: 0

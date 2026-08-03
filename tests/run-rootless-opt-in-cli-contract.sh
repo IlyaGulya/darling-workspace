@@ -294,15 +294,13 @@ if (
 if 'execl(INSTALL_PREFIX "/bin/darlingserver", "darlingserver",\n\t\t\tprefix,' in handoff:
     raise SystemExit("launcher still passes the original prefix path to darlingserver")
 for function in (
-    "removeRuntimeStateFiles",
     "connectToShellspawn",
     "putInitPid",
     "getInitProcess",
 ):
     body = function_body(
         launcher,
-        ("static void " if function == "removeRuntimeStateFiles" else
-         "int " if function == "connectToShellspawn" else
+        ("int " if function == "connectToShellspawn" else
          "void " if function == "putInitPid" else "pid_t ") + function,
     )
     if function != "connectToShellspawn" and "prefix" in body:
