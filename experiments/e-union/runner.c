@@ -62,10 +62,6 @@ int __simple_printf(const char* f, ...){(void)f;return 0;}
 #include "vchroot_userspace.c"
 #undef main
 
-#ifdef HAVE_EUNION_SIDECAR
-#include "eunion_sidecar_test_support.h"
-#endif
-
 extern int eunion_test_fail_whiteout;
 extern int eunion_test_fail_xattr;
 
@@ -218,7 +214,6 @@ static void expect_resolves_to(const char* guest, const char* want) {
 }
 
 int main(void) {
-    setvbuf(stdout, NULL, _IONBF, 0);
     char cwd[4096];
     getcwd(cwd, sizeof(cwd));
     char prefix[4096], libexec[4096];
@@ -231,62 +226,31 @@ int main(void) {
 
     char p[4096], l[4096];
 
-    /* I0. Current activation is capability-based. The caller opens the upper
-       directory once, eunion_init_from_prefix(fd) duplicates that capability,
-       and the harness retains ownership of the original descriptor. */
+    /* I0. startup activation switch (step 6): eunion_init_from_prefix() must
+           leave the union INERT unless the server provisioned the prefix for
+           union (signalled by $prefix/.union-work). Run this BEFORE the global
+           set_libexec_path below, since that would mark the union active. */
     {
         printf("== E-UNION startup activation ==\n");
-#ifdef HAVE_EUNION_SIDECAR
-        char sidecar[4096];
-        snprintf(sidecar, sizeof(sidecar), "%s%s", prefix,
-                 EUNION_SIDECAR_SUFFIX);
-        check("I0 create external sidecar root",
-              mkdir(sidecar, 0700) == 0);
-        set_prefix(prefix);
-        set_libexec_path(libexec);
+        /* a fresh scratch prefix with NO marker -> union stays inert */
+        char sp[4096]; snprintf(sp, sizeof(sp), "%s/scratch-noeunion", cwd);
+        mkdir(sp, 0755);
+        set_prefix(sp);
+        libexec_path[0] = '\0'; libexec_path_len = -1; /* reset to pre-init */
+        eunion_init_from_prefix();
+        check("I0 no .union-work -> union inert (libexec unset)",
+              libexec_path_len <= 0);
 
-        struct eunion_sidecar_runtime fixture_runtime = {
-            .upper_root = prefix,
-            .lower_root = libexec,
-            .sidecar_root = sidecar,
-        };
-        int prefix_descriptor = open(prefix,
-            O_PATH | O_DIRECTORY | O_CLOEXEC | O_NOFOLLOW);
-        check("I0 open retained prefix capability", prefix_descriptor >= 0);
-        int legacy_result = prefix_descriptor >= 0
-            ? eunion_init_from_prefix(prefix_descriptor) : -1;
-        check("I0 unversioned prefix requires explicit recreate",
-              legacy_result == -EUNION_PREFIX_RECREATE_REQUIRED_ERROR);
-        check("I0 write versioned prefix binding",
-              eunion_sidecar_test_write_prefix_state(&fixture_runtime) == 0);
-        check("I0 initialize sidecar under its persistent lock",
-              eunion_sidecar_initialize(&fixture_runtime) == 0);
-        int activation_result = prefix_descriptor >= 0
-            ? eunion_init_from_prefix(prefix_descriptor) : -1;
-        check("I0 retained prefix capability activates sidecar",
-              activation_result == 0 && eunion_anchored_runtime.anchored);
-        struct stat source_status, owned_status;
-        check("I0 runtime owns a distinct prefix descriptor",
-              prefix_descriptor >= 0 &&
-              eunion_anchored_runtime.upper_descriptor >= 0 &&
-              prefix_descriptor != eunion_anchored_runtime.upper_descriptor);
-        check("I0 owned descriptor is bound to the validated prefix inode",
-              fstat(prefix_descriptor, &source_status) == 0 &&
-              fstat(eunion_anchored_runtime.upper_descriptor,
-                    &owned_status) == 0 &&
-              source_status.st_dev == owned_status.st_dev &&
-              source_status.st_ino == owned_status.st_ino);
-        check("I0 caller releases its retained descriptor",
-              close(prefix_descriptor) == 0);
-        check("I0 runtime capability survives caller descriptor release",
-              fcntl(eunion_anchored_runtime.upper_descriptor, F_GETFD) >= 0);
-#else
-        /* Historical RED closures predate sidecar-v1. They do not cross the
-           current activation boundary; the resolver tests set their lower
-           fixture directly and never call the removed pathname initializer. */
-        set_prefix(prefix);
-        set_libexec_path(libexec);
-#endif
+        /* now provision it: create the staging marker -> union activates with
+           the build-time template path */
+        char mk[4096]; snprintf(mk, sizeof(mk), "%s/.union-work", sp);
+        mkdir(mk, 0755);
+        eunion_init_from_prefix();
+        check("I0 .union-work present -> union active (libexec set)",
+              libexec_path_len > 0);
+        /* and the activated template is the compile-time constant */
+        check("I0 activated template == EUNION_LIBEXEC_PATH",
+              strcmp(libexec_path, EUNION_LIBEXEC_PATH) == 0);
     }
 
     set_prefix(prefix);
@@ -328,11 +292,6 @@ int main(void) {
     snprintf(l, sizeof(l), "%s/usr/local/share/tool.conf", libexec);
     expect_resolves_to("/usr/local/share/tool.conf", l);
 
-#ifndef HAVE_EUNION_SIDECAR
-    /* Sidecar-v1 owns mutation, directory-stream and recovery coverage in the
-       source-bound 12-test suite. This historical runner remains the resolver
-       consumer and capability-boundary smoke; do not execute its superseded
-       physical-whiteout/table-state assertions against the new format. */
     /*
      * B1. sys_bind must use the create policy, not the file-write policy. The
      * guest parent is a lower-only symlink. A naive copy-up leaves an upper
@@ -2079,17 +2038,6 @@ int main(void) {
                   r2 != NULL && strncmp(got, prefix, (size_t)prefix_path_len) != 0);
         }
     }
-
-#endif /* !HAVE_EUNION_SIDECAR */
-
-#ifdef HAVE_EUNION_SIDECAR
-    int owned_prefix_descriptor = eunion_anchored_runtime.upper_descriptor;
-    check("I0 release runtime-owned sidecar capability",
-          eunion_sidecar_runtime_release(&eunion_anchored_runtime) == 0);
-    errno = 0;
-    check("I0 released capability descriptors are closed",
-          fcntl(owned_prefix_descriptor, F_GETFD) == -1 && errno == EBADF);
-#endif
 
     printf("\n%d tests, %d failed\n", g_tests, g_fail);
     return g_fail ? 1 : 0;

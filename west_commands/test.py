@@ -1543,10 +1543,7 @@ class DarlingTest(ProfileOperationsMixin, BootstrapRuntimeProfileMixin, WestComm
                 if source_root is not None
                 else self._project_path(invocation["source_module"])
             )
-        if invocation.get("ctest_label") in {
-            "eunion-host",
-            "eunion-sidecar-v1",
-        }:
+        if invocation.get("ctest_label") == "eunion-host":
             defines["DARLING_ENABLE_EUNION_HOST_SUITE"] = "ON"
         return defines
 
@@ -3760,6 +3757,10 @@ class DarlingTest(ProfileOperationsMixin, BootstrapRuntimeProfileMixin, WestComm
             return runtime_deploy_targets(prefix, deploy_path)
         except ValueError:
             self.die(f"guest-runtime-deploy deploy path must be relative: {deploy_path}")
+
+    def _runtime_replace_file(self, src: Path, dst: Path) -> None:
+        from deploy_transaction import DeploymentTransaction
+        DeploymentTransaction._replace_file(src, dst)
 
     @contextmanager
     def _runtime_red_deployed_artifacts(

@@ -6,14 +6,14 @@ The frozen inventory records 100 patch series across `arch` (19),
 temporary paths and handoff implementation noise.
 
 The unit is an mbox series, rather than a patch file incorrectly treated as
-one commit: the inventory records 200 archive `From` commits, one artifact per
+one commit: the inventory records 191 archive `From` commits, one artifact per
 series, the declared `source-base` where present, and the complete ordered
 set of `From <OID>` headers. The inventory contract rejects duplicate YAML
 keys and verifies exact metadata/artifact correspondence and available-object
 linearity.
 
-This is a post-migration snapshot: 0 `READY`, 0 `RECOVERABLE_LOCAL`, 94 `ALREADY_MIGRATED`,
-and 6 `PUBLICATION_PENDING`
+This is a post-migration snapshot: 0 `READY`, 0 `RECOVERABLE_LOCAL`, 95 `ALREADY_MIGRATED`,
+and 5 `PUBLICATION_PENDING`
 (the XNU and LibreSSL pilots, the three first-batch series, and batch 2's four
 Darling series, Batch 3's two dependent rootless series, and Batch 4's
 rootless-prefix-initialization branch series, plus Batch 5's remaining six
@@ -24,10 +24,7 @@ hosted immutable object closure. The Rootless publication proposal adds six
 append-only series with independently verified local closures: the prior
 continuation/productization set plus the two prefix-lifecycle series. They
 remain explicitly publication-pending until create-only hosted tags are
-authorized. The reviewed fd-guard profile-integration lock is a replacement
-execution boundary for the same retained archive series, not a new archive
-inventory row; its publication-pending closure is tracked by the typed
-composition and review package.
+authorized.
 
 Darlingserver repository-scoped recovery moved all 40 of its formerly
 `RECOVERABLE_LOCAL` series to `ALREADY_MIGRATED`. The exact mbox chains include

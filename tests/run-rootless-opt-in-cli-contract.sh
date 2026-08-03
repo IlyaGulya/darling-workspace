@@ -33,7 +33,7 @@ cc -std=gnu11 -Wall -Wextra -Werror \
 	-o "$work/runtime-mode-test"
 
 test "$("$work/runtime-mode-test")" = "DARLING_RUNTIME_MODE_CONTRACT_OK"
-for focused_case in lock-race durability capability interruptions shared-reuse
+for focused_case in lock-race durability capability interruptions
 do
 	DARLING_RUNTIME_PREFIX_TEST_CASE="$focused_case" \
 		"$work/runtime-mode-test"
@@ -194,15 +194,11 @@ for token in (
     "darling_runtime_prefix_recreate(",
     "darling_runtime_prefix_delete(",
     "darling_runtime_prefix_move(",
-    "LIFECYCLE_STABLE_CURRENT_V3",
+    "LIFECYCLE_STABLE_CURRENT_V2",
     "LIFECYCLE_PHASE_REPLACEMENT_STAGED",
     "recovery_disposition(",
     "advance_transaction_phase(",
-    "flock(fd, operation | LOCK_NB)",
-    "shared_reuse ? LOCK_SH : LOCK_EX",
-    "lifecycle_recovery_is_pending(",
-    "runtime prefix lifecycle lock busy:",
-    "mode=%s dev=%ju ino=%ju timeout_ms=%u",
+    "flock(fd, LOCK_EX)",
     "fstatat(handle->parent_fd, names->lock, &named",
     "named.st_dev != locked.st_dev",
     "named.st_ino != locked.st_ino",
@@ -213,7 +209,6 @@ for token in (
     "darling_runtime_mode_verify_prefix_name(",
     "darling_runtime_mode_write_relative_atomic(",
     "darling_runtime_mode_make_fd_inheritable(",
-    "darling_runtime_mode_make_lock_fd_inheritable(",
 ):
     if token not in prefix_mode:
         raise SystemExit(f"real-prefix preflight is incomplete: {token}")
@@ -222,7 +217,7 @@ if "names.lock" in prefix_mode:
 prefix_header = (root / "src/startup/runtime_mode_prefix.h").read_text()
 for token in (
     "} darling_runtime_prefix[1];",
-    "transfer ownership only with",
+    "Transfer ownership only with",
     "darling_runtime_prefix_move()",
 ):
     if token not in prefix_header:
@@ -245,7 +240,7 @@ for token in (
     "move did not invalidate source capability",
     "stable-state/journal-phase recovery matrix mismatch",
     "recovery matrix did not cover every combination",
-    "interrupted create/recreate reached an invalid generation",
+    "interrupted upgrade did not reach a valid stable state",
     "newer prefix schema was accepted",
     "cross-prefix typed state was accepted",
     "hostile state metadata mode was accepted",
@@ -272,35 +267,18 @@ for token in (
 ):
     if token not in handoff:
         raise SystemExit(f"launcher/server retained-fd handoff is incomplete: {token}")
-spawn_init = function_body(launcher, "pid_t spawnInitProcess(void)")
-if spawn_init.count("darling_runtime_mode_make_fd_inheritable(") != 4:
-    raise SystemExit(
-        "launcher must preserve exactly four retained directory capabilities"
-    )
-if spawn_init.count("darling_runtime_mode_make_lock_fd_inheritable(") != 1:
-    raise SystemExit(
-        "launcher must preserve exactly one retained lifecycle lock capability"
-    )
-if (
-    "darling_runtime_mode_make_fd_inheritable(\n"
-    "\t\t\t\tg_runtimePrefix->lifecycle_lock_fd" in spawn_init
-):
-    raise SystemExit("launcher still validates the lifecycle lock as a directory fd")
-if (
-    "darling_runtime_mode_make_lock_fd_inheritable(\n"
-    "\t\t\t\tg_runtimePrefix->lifecycle_lock_fd" not in spawn_init
-):
-    raise SystemExit("launcher does not use the regular-file lifecycle lock handoff")
 if 'execl(INSTALL_PREFIX "/bin/darlingserver", "darlingserver",\n\t\t\tprefix,' in handoff:
     raise SystemExit("launcher still passes the original prefix path to darlingserver")
 for function in (
+    "removeRuntimeStateFiles",
     "connectToShellspawn",
     "putInitPid",
     "getInitProcess",
 ):
     body = function_body(
         launcher,
-        ("int " if function == "connectToShellspawn" else
+        ("static void " if function == "removeRuntimeStateFiles" else
+         "int " if function == "connectToShellspawn" else
          "void " if function == "putInitPid" else "pid_t ") + function,
     )
     if function != "connectToShellspawn" and "prefix" in body:

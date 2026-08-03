@@ -15,13 +15,6 @@ from types import SimpleNamespace
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT))
 
-testkit_cmake = (ROOT / "testkit" / "CMakeLists.txt").read_text()
-assert 'AND NOT EXISTS "${_eunion_sidecar_impl}")' in testkit_cmake
-assert (
-    "Legacy physical-whiteout hardening harness is not registered for "
-    in testkit_cmake
-)
-
 west_module = types.ModuleType("west")
 west_commands_module = types.ModuleType("west.commands")
 
@@ -82,17 +75,6 @@ test = DarlingTest.__new__(DarlingTest)
 test.die = lambda message: (_ for _ in ()).throw(SystemExit(message))
 assert test._ctest_cmake_defines(
     {"ctest_label": "eunion-host", "source_module": "darling/src/external/xnu"},
-    source_override="DARLING_XNU_SRC",
-    source_root=Path("/tmp/materialized-xnu"),
-) == {
-    "DARLING_ENABLE_EUNION_HOST_SUITE": "ON",
-    "DARLING_XNU_SRC": "/tmp/materialized-xnu",
-}
-assert test._ctest_cmake_defines(
-    {
-        "ctest_label": "eunion-sidecar-v1",
-        "source_module": "darling/src/external/xnu",
-    },
     source_override="DARLING_XNU_SRC",
     source_root=Path("/tmp/materialized-xnu"),
 ) == {
@@ -278,8 +260,6 @@ with tempfile.TemporaryDirectory() as temp:
             red_only=False,
             prove_red=False,
             with_runtime_profile=["extra"],
-            guest_macho_validation_group=None,
-            guest_macho_evidence_dir=None,
         )
         try:
             test.do_run(args, [])

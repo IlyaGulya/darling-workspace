@@ -303,7 +303,6 @@ if [ "$prepare_only" -eq 1 ]; then
 fi
 
 include_dirs=("-I$SRCDIR" "-I$WORK/shim" "-I$WORK/include")
-compile_definitions=()
 
 # The resolver extraction comes after the historical E-UNION patch under test.
 # Keep the source-base RED arm on its old production closure, but link the
@@ -313,24 +312,10 @@ if [ -f "$SRCDIR/eunion_resolver.c" ]; then
 	include_dirs+=("-I$INCDIR")
 fi
 
-# Sidecar-v1 moved E-UNION activation behind a retained prefix-directory
-# capability.  Link the canonical runtime implementation and its source-owned
-# test support whenever the selected XNU closure provides that API.  Historical
-# RED source trees do not have these files and continue to exercise only their
-# own resolver implementation; the current path never falls back to pathname-
-# based activation.
-if [ -f "$SRCDIR/eunion_sidecar.c" ] &&
-   [ -f "$XNU/tests/eunion_sidecar_test_support.h" ]; then
-	sources+=("$SRCDIR/eunion_sidecar.c")
-	include_dirs+=("-I$XNU/tests")
-	compile_definitions+=("-DHAVE_EUNION_SIDECAR=1" "-DTEST=1")
-fi
-
 gcc -Wall -Wno-format-truncation -Wno-unused-function \
     -DEUNION \
     -DEFAULT=14 \
     -DEUNION_LIBEXEC_PATH="\"$WORK/libexec\"" \
-    "${compile_definitions[@]}" \
     "${include_dirs[@]}" \
     -o "$WORK/runner" "${sources[@]}"
 

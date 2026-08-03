@@ -97,11 +97,7 @@ assert set(path.name for path in CORPUS_ROOT.iterdir()) == {"bin", "corpus.yml",
 bin_dir = CORPUS_ROOT / "bin"
 assert {path.name for path in bin_dir.iterdir()} == set(EXPECTED_NAMES)
 assert all(path.is_file() and not path.is_symlink() for path in bin_dir.iterdir())
-assert all(
-    (path.stat().st_mode & 0o111) == 0o111
-    and (path.stat().st_mode & 0o7000) == 0
-    for path in bin_dir.iterdir()
-)
+assert all((path.stat().st_mode & 0o777) == 0o755 for path in bin_dir.iterdir())
 
 assert document["toolchain"]["evidence-run"] == 29384636308
 assert document["toolchain"]["package-sha256"] == dict(REVIEWED_COMMAND_LINE_TOOLS_SHA256)
