@@ -78,7 +78,7 @@ class RuntimeSourceMaterializer:
         batch = plan.batch
         expected = {
             "homebrew": (
-                "darling-homebrew-eunion-sidecar-batch-10", 74,
+                "darling-homebrew-prefix-lifecycle-batch-9", 74,
                 [
                     "darling/src/external/darlingserver", "darling/src/external/xnu",
                     "darling/src/external/libplatform", "darling/src/external/perl",

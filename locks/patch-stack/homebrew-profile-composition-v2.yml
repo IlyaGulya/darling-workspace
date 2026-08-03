@@ -6,8 +6,8 @@ frozen_manifest:
   sha256: 5718c32c76a180b9078a206b93d93e70f478a5ada0034cd6afcc789c447e055d
 mapping:
   path: lock-first-series-v2.yml
-  sha256: 009e3e8b70411d9a2ff2b277e8262fc35bbcb82b314cca5c5a7e75cc3904a669
-  batch_id: darling-homebrew-eunion-sidecar-batch-10
+  sha256: a1dca1e582ccc565d7241121348e6d0955071fe1600cd8867d9d4559aeefaeee
+  batch_id: darling-homebrew-prefix-lifecycle-batch-9
   expected_count: 74
 modules:
 - module: darling/src/external/darlingserver
@@ -93,10 +93,10 @@ modules:
     lock: darlingserver-runtime-mode-canonical-v1.yml
     expected_applied_tree: 596cc49f5ff12d4fca8accb58ea453362e9ae1d1
   - patch: darlingserver/prefix-lifecycle-state-v2.patch
-    lock: darlingserver-prefix-lifecycle-state-v3-v5.yml
-    expected_applied_tree: a9ebdb880e92d5a3f37a1a478f643f8d5bc5582f
-  final_tree: a9ebdb880e92d5a3f37a1a478f643f8d5bc5582f
-  integration_final_tree: a9ebdb880e92d5a3f37a1a478f643f8d5bc5582f
+    lock: darlingserver-prefix-lifecycle-state-v2-v1.yml
+    expected_applied_tree: 2d6f0321cfe205dba7302666bc470adb79a44003
+  final_tree: 2d6f0321cfe205dba7302666bc470adb79a44003
+  integration_final_tree: 2d6f0321cfe205dba7302666bc470adb79a44003
 - module: darling/src/external/xnu
   starting:
     tree: b8353591777f7654d3b0d7d512bc0fa3ee6d64ef
@@ -153,34 +153,34 @@ modules:
     lock: darling-xnu-eunion-core-v1.yml
     expected_applied_tree: d8aea11fbaf6eddabbd4e4adfedb01ced203e297
   - patch: xnu/eunion-hardening.patch
-    lock: darling-xnu-eunion-hardening-sidecar-v5.yml
-    expected_applied_tree: 6085b61a72ca0589c2ea5bdfe94d22c22f95d7f6
+    lock: darling-xnu-eunion-hardening-v1.yml
+    expected_applied_tree: 7020af36a769087ad5a0589929142b007ff459a9
   - patch: xnu/chown-disabled-null-guard.patch
     lock: darling-xnu-chown-disabled-null-guard-v1.yml
-    expected_applied_tree: f2861ab29e16a9734ec730ed093d8d49601a1ccf
+    expected_applied_tree: 96cc475029094da978957c039a9c1bb843fa5ae8
   - patch: xnu/fd-guard-ebadf.patch
-    lock: darling-xnu-fd-guard-ebadf-sidecar-v3.yml
-    expected_applied_tree: 79ecaa9002199eb88578b9041c059646bf2bc838
+    lock: darling-xnu-fd-guard-ebadf-v1.yml
+    expected_applied_tree: cc3f51aee52351123588f631e765f851b0d8d9ee
   - patch: xnu/abort-with-payload-no-group-broadcast.patch
     lock: darling-xnu-abort-with-payload-no-group-broadcast-v1.yml
-    expected_applied_tree: 8c05366c98da33d9f3113a2d753740780aeea6bf
+    expected_applied_tree: 2aff4a1c54a24948178c9a50e7af3f25b493cda7
   - patch: xnu/cache-task-self-trap.patch
     lock: darling-xnu-cache-task-self-trap-v1.yml
-    expected_applied_tree: f266a4f60a1131f1d68796c9d84714c680004a83
+    expected_applied_tree: 6239cfba50296d163ccc875c7186711c319ea84b
   - patch: xnu/guest-per-callnum-sleep-account.patch
     lock: darling-xnu-guest-per-callnum-sleep-account-v1.yml
-    expected_applied_tree: 97dfbc63dd9a05cead9bb27dbfbb2b67adbd4731
+    expected_applied_tree: 31de99163fc0a808c6b3ab9107e330d92246c893
   - patch: xnu/gate-hotpath-kprintf-debug.patch
     lock: darling-xnu-gate-hotpath-kprintf-debug-v1.yml
-    expected_applied_tree: ef553d854aa488caa949651c5b28a71625274803
+    expected_applied_tree: ab758977a0fa9398ecd7f7c281ef04e0de4544f1
   - patch: xnu/generalize-recv-spin-guest.patch
     lock: darling-xnu-generalize-recv-spin-guest-v1.yml
-    expected_applied_tree: a703b184363082144fb104cdaefab8de304b5395
+    expected_applied_tree: c093766c6abb005ad85392c78c77c1e73c817da3
   - patch: xnu/af-unix-expanded-path-length.patch
-    lock: darling-xnu-af-unix-expanded-path-length-v2.yml
-    expected_applied_tree: 7f286a50f9675f2496b3892bfb7607c05ca0c01b
-  final_tree: 7f286a50f9675f2496b3892bfb7607c05ca0c01b
-  integration_final_tree: 7f286a50f9675f2496b3892bfb7607c05ca0c01b
+    lock: darling-xnu-af-unix-expanded-path-length-v1.yml
+    expected_applied_tree: 53c8fa45a1ac94bdfc2ced0b3179e43659dffabf
+  final_tree: 53c8fa45a1ac94bdfc2ced0b3179e43659dffabf
+  integration_final_tree: 53c8fa45a1ac94bdfc2ced0b3179e43659dffabf
 - module: darling/src/external/libplatform
   starting:
     tree: 43604922b0d259ab093ac75cbad6e7dbe4bb2876
@@ -264,10 +264,10 @@ modules:
     lock: darling-runtime-mode-canonical-v1.yml
     expected_applied_tree: 5e8144538bdc7cb7958dc22edc4016e8b64a6591
   - patch: darling/prefix-lifecycle-state-v2.patch
-    lock: darling-prefix-lifecycle-state-v3-v17.yml
-    expected_applied_tree: 3881dad4f8cfbba45f530498a480c85ff3468a17
-  final_tree: 3881dad4f8cfbba45f530498a480c85ff3468a17
-  integration_final_tree: 3881dad4f8cfbba45f530498a480c85ff3468a17
+    lock: darling-prefix-lifecycle-state-v2-v1.yml
+    expected_applied_tree: 7297ee393ed21d13484b1734e5e5694967f96851
+  final_tree: 7297ee393ed21d13484b1734e5e5694967f96851
+  integration_final_tree: 7297ee393ed21d13484b1734e5e5694967f96851
 - module: darling/src/external/installer
   starting:
     tree: 2c58e1c8da659d1c018efce169086dc247b31884

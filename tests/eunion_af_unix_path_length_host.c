@@ -45,8 +45,6 @@ int __simple_printf(const char* format, ...)
 #include "vchroot_userspace.c"
 #undef main
 
-#include "eunion_sidecar_test_support.h"
-
 #include <darling/emulation/xnu_syscall/bsd/helper/network/duct.h>
 
 int errno_linux_to_bsd(int error)
@@ -115,16 +113,11 @@ int main(int argc, char** argv)
 	require(argc == 2, "usage: fixture ROOT");
 	char prefix[4096];
 	char lower[4096];
-	char sidecar[4096];
 	require(snprintf(prefix, sizeof(prefix), "%s/prefix", argv[1]) <
 		(int)sizeof(prefix), "prefix path overflow");
 	require(snprintf(lower, sizeof(lower), "%s/prefix/libexec/darling", argv[1]) <
 		(int)sizeof(lower), "lower path overflow");
-	require(snprintf(sidecar, sizeof(sidecar), "%s%s", prefix,
-		EUNION_SIDECAR_SUFFIX) < (int)sizeof(sidecar),
-		"sidecar path overflow");
 	require(mkdir(prefix, 0700) == 0 || errno == EEXIST, "create prefix");
-	require(mkdir(sidecar, 0700) == 0, "create external sidecar");
 	char upper_parent[4096];
 	require(snprintf(upper_parent, sizeof(upper_parent), "%s/t", prefix) <
 		(int)sizeof(upper_parent), "upper parent overflow");
@@ -134,29 +127,6 @@ int main(int argc, char** argv)
 	prefix_path_len = (int)strlen(prefix);
 	strcpy(libexec_path, lower);
 	libexec_path_len = (int)strlen(lower);
-	struct eunion_sidecar_runtime fixture_runtime = {
-		.upper_root = prefix,
-		.lower_root = lower,
-		.sidecar_root = sidecar,
-	};
-	require(eunion_sidecar_test_write_prefix_state(&fixture_runtime) == 0,
-		"write versioned prefix binding");
-	require(eunion_sidecar_initialize(&fixture_runtime) == 0,
-		"initialize sidecar state");
-	int prefix_descriptor = open(prefix,
-		O_PATH | O_DIRECTORY | O_CLOEXEC | O_NOFOLLOW);
-	require(prefix_descriptor >= 0, "open retained prefix capability");
-	require(eunion_init_from_prefix(prefix_descriptor) == 0,
-		"activate retained-FD E-UNION runtime");
-	struct stat supplied_prefix;
-	struct stat owned_prefix;
-	require(fstat(prefix_descriptor, &supplied_prefix) == 0 &&
-		fstat(eunion_anchored_runtime.upper_descriptor, &owned_prefix) == 0 &&
-		supplied_prefix.st_dev == owned_prefix.st_dev &&
-		supplied_prefix.st_ino == owned_prefix.st_ino,
-		"runtime capability retains the validated prefix inode");
-	require(close(prefix_descriptor) == 0,
-		"caller releases supplied prefix descriptor");
 
 	struct sockaddr_fixup output;
 	char guest[sizeof(output.sun_path)];
@@ -195,20 +165,10 @@ int main(int argc, char** argv)
 	truncated[sizeof(truncated) - 1] = '\0';
 	unlink(truncated);
 	result = translate(guest, &output);
-	if (result != -ENAMETOOLONG)
-		fprintf(stderr, "overlong translation result=%d output=%s\n",
-			result, output.sun_path);
 	require(result == -ENAMETOOLONG,
 		"overlong path did not return deterministic ENAMETOOLONG");
 	require(lstat(truncated, &status) != 0 && errno == ENOENT,
 		"overlong translation created a truncated socket");
-
-	int owned_prefix_descriptor = eunion_anchored_runtime.upper_descriptor;
-	require(eunion_sidecar_runtime_release(&eunion_anchored_runtime) == 0,
-		"release runtime-owned prefix capability");
-	errno = 0;
-	require(fcntl(owned_prefix_descriptor, F_GETFD) == -1 && errno == EBADF,
-		"released runtime descriptor is closed");
 
 	printf("EUNION_AF_UNIX_PATH_LENGTH_OK short=16 boundary=%zu overlong=%zu\n",
 		boundary_guest_length, boundary_guest_length + 1);

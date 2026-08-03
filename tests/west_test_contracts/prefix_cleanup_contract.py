@@ -33,7 +33,6 @@ from west_commands.test_prefix import (
     remove_stale_init_pid,
     remove_stale_server_socket,
     PrefixLifecycleOwner,
-    RetainedDirectoryCapability,
     rootless_prefix_process_snapshot,
 )
 import test_prefix as prefix_module
@@ -48,47 +47,6 @@ def make_test():
     test.err = lambda message: test.err_messages.append(message)
     test.die = lambda message: (_ for _ in ()).throw(SystemExit(message))
     return test
-
-
-with tempfile.TemporaryDirectory() as temp:
-    root = Path(temp)
-    ancestor = root / "outer" / "inner"
-    prefix = ancestor / "prefix"
-    prefix.mkdir(parents=True)
-    original_outer = root / "outer-original"
-    with RetainedDirectoryCapability.open(prefix) as capability:
-        capability.revalidate(metadata=False)
-        (root / "outer").rename(original_outer)
-        replacement = root / "outer" / "inner" / "prefix"
-        replacement.mkdir(parents=True)
-        try:
-            capability.revalidate(metadata=False)
-        except OSError as error:
-            assert "component identity changed" in str(error), error
-        else:
-            raise AssertionError("retained prefix accepted an ancestor rename-swap")
-        assert capability.entries() == []
-        assert list(replacement.iterdir()) == []
-
-
-with tempfile.TemporaryDirectory() as temp:
-    root = Path(temp)
-    ancestor = root / "outer" / "inner"
-    prefix = ancestor / "prefix"
-    prefix.mkdir(parents=True)
-    with RetainedDirectoryCapability.open(prefix) as capability:
-        # A sibling changes the immediate parent's link count. Full-chain
-        # identity remains authoritative, but ancestor metadata is ambient and
-        # must not make the empty-prefix build guard flap.
-        (ancestor / "unrelated-sibling").mkdir()
-        capability.revalidate(metadata=True)
-        prefix.chmod(0o700)
-        try:
-            capability.revalidate(metadata=True)
-        except OSError as error:
-            assert "component metadata changed" in str(error), error
-        else:
-            raise AssertionError("retained prefix accepted changed leaf metadata")
 
 
 with tempfile.TemporaryDirectory() as temp:
@@ -134,142 +92,6 @@ assert any(line == "101 /sbin/launchd" for line in helper_snapshot), helper_snap
 assert any(line == "102 /usr/libexec/shellspawn" for line in helper_snapshot), helper_snapshot
 assert all("other-prefix" not in line for line in helper_snapshot), helper_snapshot
 assert darlingserver_pids_for_prefix(prefix, entries) == [100]
-
-with tempfile.TemporaryDirectory() as temp:
-    root = Path(temp)
-    retained_prefix = root / "retained-prefix"
-    retained_prefix.mkdir()
-    (retained_prefix / ".darling-prefix-state-v3").write_text("typed fixture\n")
-    other_prefix = root / "other-prefix"
-    other_prefix.mkdir()
-    proc_root = root / "proc"
-    for pid, target in ((300, retained_prefix), (400, other_prefix)):
-        fd_root = proc_root / str(pid) / "fd"
-        fd_root.mkdir(parents=True)
-        (fd_root / "4").symlink_to(target)
-    retained_entries = [
-        (300, 1, "darlingserver 4 3 retained-prefix 7 6 5 1000 1000 9 0"),
-        (301, 300, "/usr/libexec/shellspawn"),
-        (400, 1, "darlingserver 4 3 other-prefix 7 6 5 1000 1000 9 0"),
-    ]
-    retained_snapshot = prefix_process_snapshot(
-        retained_prefix, retained_entries, proc_root=proc_root
-    )
-    assert any(line.startswith("300 darlingserver ") for line in retained_snapshot)
-    assert any(line == "301 /usr/libexec/shellspawn" for line in retained_snapshot)
-    assert all(not line.startswith("400 ") for line in retained_snapshot)
-    assert darlingserver_pids_for_prefix(
-        retained_prefix, retained_entries, proc_root=proc_root
-    ) == [300]
-
-    lifecycle_events = []
-    owner_module = sys.modules[PrefixLifecycleOwner.__module__]
-    original_shutdown = owner_module.shutdown_guest_prefix
-    original_rootless_cleanup = owner_module.cleanup_rootless_prefix_processes
-
-    def retained_shutdown(*_args, **_kwargs):
-        nonlocal_runtime[0] = False
-        lifecycle_events.append("launcher-shutdown")
-        return types.SimpleNamespace(
-            returncode=0,
-            timed_out=False,
-            stdout="",
-            stderr="",
-        )
-
-    nonlocal_runtime = [False]
-    lifecycle_errors = []
-    owner_module.shutdown_guest_prefix = retained_shutdown
-    owner_module.cleanup_rootless_prefix_processes = lambda _prefix: (
-        lifecycle_events.append("force-rootless-cleanup")
-        or types.SimpleNamespace(success=True, changed=[], problems=[])
-    )
-    owner = PrefixLifecycleOwner(
-        resolve_launcher=lambda _prefix: lifecycle_events.append("resolve-launcher")
-        or "/fake/darling",
-        prefix_env=lambda _prefix: {},
-        cleanup_mounts=lambda _prefix: types.SimpleNamespace(
-            success=True, changed=[], problems=[]
-        ),
-        init_pid_is_usable=lambda _pid: False,
-        inf=lambda _message: None,
-        err=lifecycle_errors.append,
-        wrn=lambda _message: None,
-        process_entries=lambda: retained_entries if nonlocal_runtime[0] else [],
-        proc_root=proc_root,
-    )
-    owner._kill_server = lambda _prefix: lifecycle_events.append("force-kill")
-    try:
-        for cycle in ("initial", "restart-1", "restart-2"):
-            nonlocal_runtime[0] = True
-            assert owner.shutdown(retained_prefix), (
-                cycle,
-                lifecycle_errors,
-                lifecycle_events,
-            )
-            assert owner.process_snapshot(retained_prefix) == [], cycle
-        assert lifecycle_events == [
-            "resolve-launcher",
-            "launcher-shutdown",
-            "resolve-launcher",
-            "launcher-shutdown",
-            "resolve-launcher",
-            "launcher-shutdown",
-        ], lifecycle_events
-    finally:
-        owner_module.shutdown_guest_prefix = original_shutdown
-        owner_module.cleanup_rootless_prefix_processes = original_rootless_cleanup
-
-    nonlocal_runtime = [True]
-    lifecycle_events = []
-    original_shutdown = owner_module.shutdown_guest_prefix
-    original_rootless_cleanup = owner_module.cleanup_rootless_prefix_processes
-
-    def timed_out_shutdown(*_args, **_kwargs):
-        lifecycle_events.append("launcher-shutdown")
-        return types.SimpleNamespace(
-            returncode=-signal.SIGKILL,
-            timed_out=True,
-            stdout="",
-            stderr="bounded shutdown timeout",
-        )
-
-    def force_retained_cleanup(_prefix):
-        lifecycle_events.append("force-kill")
-        nonlocal_runtime[0] = False
-
-    owner_module.shutdown_guest_prefix = timed_out_shutdown
-    owner_module.cleanup_rootless_prefix_processes = lambda _prefix: (
-        lifecycle_events.append("force-rootless-cleanup")
-        or types.SimpleNamespace(success=True, changed=[], problems=[])
-    )
-    owner = PrefixLifecycleOwner(
-        resolve_launcher=lambda _prefix: lifecycle_events.append("resolve-launcher")
-        or "/fake/darling",
-        prefix_env=lambda _prefix: {},
-        cleanup_mounts=lambda _prefix: types.SimpleNamespace(
-            success=True, changed=[], problems=[]
-        ),
-        init_pid_is_usable=lambda _pid: False,
-        inf=lambda _message: None,
-        err=lambda _message: None,
-        wrn=lambda _message: None,
-        process_entries=lambda: retained_entries if nonlocal_runtime[0] else [],
-        proc_root=proc_root,
-    )
-    owner._kill_server = force_retained_cleanup
-    try:
-        assert not owner.shutdown(retained_prefix)
-        assert lifecycle_events == [
-            "resolve-launcher",
-            "launcher-shutdown",
-            "force-kill",
-            "force-rootless-cleanup",
-        ], lifecycle_events
-        assert owner.process_snapshot(retained_prefix) == []
-    finally:
-        owner_module.shutdown_guest_prefix = original_shutdown
-        owner_module.cleanup_rootless_prefix_processes = original_rootless_cleanup
 
 test._prefix = str(prefix)
 test._keep_prefix_running = False
@@ -354,36 +176,6 @@ with tempfile.TemporaryDirectory() as temp:
         if orphaned_shellspawn.poll() is None:
             orphaned_shellspawn.kill()
             orphaned_shellspawn.wait()
-
-with tempfile.TemporaryDirectory() as temp:
-    prefix = Path(temp)
-    sanitized_runtime = subprocess.Popen(
-        [sys.executable, "-c", "import time; time.sleep(60)"],
-        cwd=prefix,
-        env={key: value for key, value in os.environ.items() if key not in {
-            "DARLING_PREFIX", "DARLING_ROOTLESS"
-        }},
-    )
-    try:
-        for _ in range(20):
-            discovered = rootless_prefix_process_snapshot(prefix)
-            if any(
-                entry.startswith(f"{sanitized_runtime.pid} ")
-                for entry in discovered
-            ):
-                break
-            time.sleep(0.05)
-        else:
-            raise AssertionError(
-                "runtime with sanitized launcher env and prefix cwd was not discovered"
-            )
-        result = cleanup_rootless_prefix_processes(prefix)
-        assert result.success and result.changed, result
-        sanitized_runtime.wait(timeout=3)
-    finally:
-        if sanitized_runtime.poll() is None:
-            sanitized_runtime.kill()
-            sanitized_runtime.wait()
 
 with tempfile.TemporaryDirectory() as temp:
     prefix = Path(temp)
@@ -486,7 +278,6 @@ sleep 30
 
 with tempfile.TemporaryDirectory() as temp:
     prefix = Path(temp)
-    (prefix / "existing-runtime-state").write_text("fixture\n")
     calls = []
     original_shutdown = prefix_module.shutdown_guest_prefix
 
@@ -519,7 +310,6 @@ with tempfile.TemporaryDirectory() as temp:
 
 with tempfile.TemporaryDirectory() as temp:
     prefix = Path(temp)
-    (prefix / "existing-runtime-state").write_text("fixture\n")
     original_shutdown = prefix_module.shutdown_guest_prefix
     prefix_module.shutdown_guest_prefix = lambda *_args, **_kwargs: types.SimpleNamespace(
         returncode=1,
@@ -534,33 +324,6 @@ with tempfile.TemporaryDirectory() as temp:
     try:
         assert test._prefix_lifecycle_owner().shutdown(prefix)
         assert not test.err_messages
-    finally:
-        prefix_module.shutdown_guest_prefix = original_shutdown
-
-with tempfile.TemporaryDirectory() as temp:
-    prefix = Path(temp)
-    calls = []
-    original_shutdown = prefix_module.shutdown_guest_prefix
-
-    def mutating_shutdown(*_args, **_kwargs):
-        calls.append(True)
-        (prefix / "var/run").mkdir(parents=True)
-        return types.SimpleNamespace(
-            returncode=1,
-            timed_out=False,
-            stdout="",
-            stderr="Darling container is not running\n",
-        )
-
-    prefix_module.shutdown_guest_prefix = mutating_shutdown
-    test = make_test()
-    test._resolve_darling_launcher = lambda _prefix: "/fake/darling"
-    test._kill_dserver_for_prefix = lambda _prefix: None
-    test._ps_entries = lambda: []
-    try:
-        assert test._prefix_lifecycle_owner().shutdown(prefix)
-        assert calls == [], "empty-prefix cleanup invoked the product launcher"
-        assert list(prefix.iterdir()) == [], "empty-prefix cleanup mutated the prefix"
     finally:
         prefix_module.shutdown_guest_prefix = original_shutdown
 

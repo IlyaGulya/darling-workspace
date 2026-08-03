@@ -90,7 +90,7 @@ def runtime_fixture(root: Path):
         for patch in patches
     ]
     plan = runtime_source.patch_stack_lock_first.LockFirstPlan(plan_entries, {
-        "batch_id": "darling-homebrew-eunion-sidecar-batch-10",
+        "batch_id": "darling-homebrew-prefix-lifecycle-batch-9",
         "expected_count": 74,
         "series": plan_entries,
     }, {
@@ -461,7 +461,7 @@ def main() -> None:
     plan = runtime_source.patch_stack_lock_first.LockFirstPlan(
         [{"profile": "homebrew", "module": patch["module"], "patch": patch["path"], "lock": "x", "lock_path": "x"} for patch in patches],
         {
-            "batch_id": "darling-homebrew-eunion-sidecar-batch-10",
+            "batch_id": "darling-homebrew-prefix-lifecycle-batch-9",
             "expected_count": 74,
          "series_order": [{"module": patch["module"], "patch": patch["path"]} for patch in patches],
          "module_order": modules},
@@ -505,7 +505,7 @@ def main() -> None:
         assert messages[0] == "PATCH_STACK_MODE=default-lock-first materializer=runtime-source"
         assert messages[-1].startswith(
             "PATCH_STACK_REPLAY "
-            "batch=darling-homebrew-eunion-sidecar-batch-10 "
+            "batch=darling-homebrew-prefix-lifecycle-batch-9 "
             "expected=74 applied=74 modules=8 elapsed_seconds="
         )
         assert messages[-1].endswith(" verdict=VALID")

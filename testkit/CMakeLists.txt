@@ -103,18 +103,11 @@ set(_eunion_resolver_source
   "${_eunion_resolver_dir}/tests/eunion_resolver_test.c")
 set(_eunion_resolver_impl
   "${_eunion_resolver_dir}/src/linux_premigration/eunion_resolver.c")
-set(_eunion_include_root "${CMAKE_CURRENT_BINARY_DIR}/eunion-includes")
 set(_eunion_host_sources_available FALSE)
 if(DARLING_ENABLE_EUNION_HOST_SUITE
    AND EXISTS "${_eunion_resolver_source}"
    AND EXISTS "${_eunion_resolver_impl}")
   set(_eunion_host_sources_available TRUE)
-  file(MAKE_DIRECTORY "${_eunion_include_root}/darling")
-  if(NOT EXISTS "${_eunion_include_root}/darling/emulation")
-    file(CREATE_LINK "${_eunion_resolver_dir}/include"
-      "${_eunion_include_root}/darling/emulation" SYMBOLIC)
-  endif()
-
   add_executable(eunion_resolver_test
     "${_eunion_resolver_source}"
     "${_eunion_resolver_impl}")
@@ -123,49 +116,11 @@ if(DARLING_ENABLE_EUNION_HOST_SUITE
   add_test(NAME host/eunion_resolver_test COMMAND eunion_resolver_test)
   set_property(TEST host/eunion_resolver_test PROPERTY
     LABELS "env:host;diag:bare;bead:dar-yfp4;submod:xnu;eunion-host")
-
-  set(_eunion_sidecar_impl
-    "${_eunion_resolver_dir}/src/linux_premigration/eunion_sidecar.c")
-  function(_add_eunion_sidecar_test target)
-    add_executable("${target}" ${ARGN} "${_eunion_sidecar_impl}")
-    target_compile_definitions("${target}" PRIVATE TEST=1 EUNION=1)
-    target_compile_options("${target}" PRIVATE -Wall -Wextra -Werror)
-    target_include_directories("${target}" PRIVATE
-      "${_eunion_resolver_dir}/include"
-      "${_eunion_include_root}")
-    add_test(NAME "host/${target}" COMMAND "${target}")
-    set_property(TEST "host/${target}" PROPERTY
-      LABELS
-        "env:host;diag:bare;bead:dar-productize-darling-rootless-mode-jkla.4.1.1;submod:xnu;eunion-sidecar-v1")
-    set_property(TEST "host/${target}" PROPERTY TIMEOUT 120)
-  endfunction()
-
-  foreach(_target IN ITEMS
-      eunion_sidecar_contract_test
-      eunion_sidecar_state_test
-      eunion_sidecar_storage_test
-      eunion_sidecar_prefix_format_test
-      eunion_sidecar_recovery_test
-      eunion_sidecar_lock_test
-      eunion_sidecar_concurrency_test
-      eunion_sidecar_fault_matrix_test
-      eunion_sidecar_swap_test
-      eunion_sidecar_corruption_test)
-    _add_eunion_sidecar_test("${_target}"
-      "${_eunion_resolver_dir}/tests/${_target}.c")
-  endforeach()
-
-  _add_eunion_sidecar_test(eunion_sidecar_vchroot_test
-    "${_eunion_resolver_dir}/tests/eunion_sidecar_vchroot_test.c"
-    "${_eunion_resolver_impl}")
-  _add_eunion_sidecar_test(eunion_directory_stream_test
-    "${_eunion_resolver_dir}/tests/eunion_directory_stream_test.c"
-    "${_eunion_resolver_impl}")
-  target_link_libraries(eunion_directory_stream_test PRIVATE pthread)
 endif()
 
 set(_eunion_harness_dir
   "${DARLING_XNU_SRC}/darling/src/libsystem_kernel/emulation")
+set(_eunion_include_root "${CMAKE_CURRENT_BINARY_DIR}/eunion-includes")
 set(_eunion_harness_sources
   "${_workspace_root}/experiments/e-union/runner.c"
   "${_workspace_root}/experiments/e-union/whiteout_hook_fallback.c"
@@ -198,12 +153,17 @@ endforeach()
 
 if(_eunion_host_sources_available
    AND EXISTS "${_eunion_harness_dir}/src/linux_premigration/vchroot_userspace.c"
-   AND _eunion_harness_ready
-   AND NOT EXISTS "${_eunion_sidecar_impl}")
+   AND _eunion_harness_ready)
   # Production headers use the upstream <darling/emulation/...> prefix while
   # the XNU checkout stores the contents directly below emulation/include.
   # Recreate the same include shape as the standalone harness without copying
   # headers into the build tree.
+  file(MAKE_DIRECTORY "${_eunion_include_root}/darling")
+  if(NOT EXISTS "${_eunion_include_root}/darling/emulation")
+    file(CREATE_LINK "${_eunion_harness_dir}/include"
+      "${_eunion_include_root}/darling/emulation" SYMBOLIC)
+  endif()
+
   function(_add_eunion_harness target test_name fixture_root libexec_path fixture_name)
     add_executable("${target}" ${_eunion_harness_sources})
     target_compile_definitions("${target}" PRIVATE
@@ -248,11 +208,6 @@ elseif(NOT DARLING_ENABLE_EUNION_HOST_SUITE)
   message(STATUS
     "E-UNION host suite disabled; enable DARLING_ENABLE_EUNION_HOST_SUITE "
     "for a source-bound eunion-host CTest build")
-elseif(EXISTS "${_eunion_sidecar_impl}")
-  message(STATUS
-    "Legacy physical-whiteout hardening harness is not registered for "
-    "sidecar-v1; the source-bound sidecar lifecycle/runtime matrix above is "
-    "authoritative")
 else()
   message(WARNING
     "XNU checkout is missing the E-UNION host harness sources; skipping "

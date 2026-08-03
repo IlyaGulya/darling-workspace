@@ -75,32 +75,21 @@ mismatch: that project has no series lock or archive identity to compare.
 
 The resulting module boundary trees are recorded in
 `homebrew-profile-composition-v2.yml`; the final trees are Darlingserver
-`27f6cf1747600ad0977ae31e243e90a6f3a4b5e3`, XNU
-`1005ed6f19731b681b717893ce50680198af5d9e`, and Darling
-`1e8afb2d8923c41e48df96d1bfc7988ab89fa25d`. The canonical Darling
-boundary is its own content tree; nested West project trees are verified
-independently rather than binding generated gitlink commit identities.
-
-The final Homebrew Darling boundary also makes normal typed-prefix reuse a
-read-only shared lifecycle lease. Create, interrupted-transaction recovery,
-explicit recreation, and deletion remain bounded exclusive operations. A
-busy writer fails with the lock mode, inode identity, and deadline instead of
-waiting indefinitely; ordinary restart diagnostics enumerate retained lock
-owners before the second boot.
+`2d6f0321cfe205dba7302666bc470adb79a44003`, XNU
+`53c8fa45a1ac94bdfc2ced0b3179e43659dffabf`, and Darling
+`7297ee393ed21d13484b1734e5e5694967f96851`.
 
 ## Rootless prerequisite cascade
 
-Because Perf and Arch explicitly consume the Homebrew composition, the Batch
-10 module trees are not ambient state. Perf replays its seven entries
+Because Perf and Arch explicitly consume the Homebrew composition, the two
+new Batch 9 module trees are not ambient state. Perf replays its seven entries
 from those exact trees. Its XNU and Darling series remain immutable historical
 inputs with new profile boundaries; the three Darlingserver entries use
 append-only profile-integration locks because the typed runtime target and the
 existing ring target both extend the same CMake target list. Their final trees
-are XNU `5b68dc7882d27caecea3ea9533f11800666e7676`, Darlingserver
-`d51c96cd50b1c67644374b74b44f445ddd8d360b`, and Darling
-`20d7597add854d5f4528c2f574f2b09f139618a3`. The authoritative Darling
-content boundary uses that same tree; nested West project trees remain
-independently typed by the composition lock.
+are XNU `15a50d8f…`, Darlingserver `43da4fa5…`, and Darling `e5c5611c…`.
+The normalized source-only Darling tree is `77abde10…`; the authoritative
+composed boundary additionally records the already-materialized child gitlinks.
 
 Arch then consumes that exact Perf result. Its first eight Darlingserver
 entries and all three XNU entries replay unchanged with new declared
@@ -114,11 +103,7 @@ remains `a390561a…`; the verifier is not weakened to accept the historical
 context identity. The final Darling shellspawn series likewise retains both
 independent includes—typed runtime mode and structured wait-status—without
 changing either control flow. The restacked locks yield Arch final trees XNU
-`5d122a19116ad3f23a72b3c34685c9c899cc69a5`, Darlingserver
-`4236d0130a44ab5e5564d205d171148154731627`, and Darling
-`adfb691280818b8c36ba4aa5bcaec22c623c4568`. The authoritative Darling
-content boundary uses that same tree; generated parent gitlink identities are
-not canonical inputs.
+`3e1dbe60…`, Darlingserver `8b39e628…`, and Darling `8cbc1350…`.
 
 No accepted immutable ref is rewritten. The v8 and v10 bases and sources remain
 a local-only publication proposal until their create-only hosted refs are

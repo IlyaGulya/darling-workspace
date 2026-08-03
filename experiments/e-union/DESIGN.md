@@ -146,14 +146,11 @@ staging tree, ran `DARLING_ROOTLESS=1 darling shell` in a DEFAULT `docker run`
 tree mounted :ro so the template is provably never written).
 
 PROVEN end-to-end in that container:
-  * zero-copy: prefix bootstrap creates a versioned sidecar prefix rather than
-    copying the template (copy-mode prefix = ~524 MB). The :ro template mount
-    is never written.
-  * activation: the caller opens and validates the prefix once, then passes the
-    retained directory FD to eunion_init_from_prefix(fd). The runtime duplicates
-    that capability and validates the versioned sidecar binding; unversioned
-    prefixes fail closed with PREFIX_RECREATE_REQUIRED and are never reopened by
-    pathname at the activation boundary.
+  * zero-copy: prefix bootstrap creates an empty prefix + .union-work marker
+    (~156 KB) instead of copying the template (copy-mode prefix = ~524 MB). The
+    :ro template mount is never written.
+  * activation: eunion_init_from_prefix() enables the union iff $prefix/.union-work
+    exists (the server's zero-copy branch creates it); absent => inert = baseline.
   * union resolve + loader: launchd boots THROUGH the union -- dyld and every
     libsystem dylib load from the read-only template (verified via /proc/<pid>/maps),
     launchd copies up /private/etc/passwd etc. and creates /var/run/{utmpx,
