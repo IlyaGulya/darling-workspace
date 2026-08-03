@@ -45,6 +45,7 @@ python3 tests/west_test_contracts/selection_contract.py
 python3 tests/west_test_contracts/metadata_runtime_profile_contract.py
 python3 tests/west_test_contracts/metadata_runtime_profile_red_contract.py
 python3 tests/west_test_contracts/metadata_source_profile_contract.py
+python3 tests/west_test_contracts/patch_stack_migration_inventory_contract.py
 python3 tests/west_test_contracts/runtime_profile_current_minus_contract.py
 PYTHONDONTWRITEBYTECODE=1 python3 -B tests/west_test_contracts/runtime_evidence_contract.py
 python3 tests/west_test_contracts/host_trace_failure_phase_contract.py
@@ -56,12 +57,13 @@ tmp_invalid_profile="patches/__metadata_invalid_contract"
 tmp_runtime_red_profile="patches/__metadata_runtime_red_contract"
 guest_prefix=/tmp/west-test-guest-c-fixture-prefix
 source_script_marker=/tmp/west-source-script-fixture-second-case
+source_profile_failure_output=/tmp/west-source-profile-fixture-fail-closed.out
 quality_contract_output=/tmp/west-quality-contract.out
 invalid_guest_red_output=/tmp/west-test-invalid-guest-red-proof.out
 guest_runtime_red_output=/tmp/west-test-guest-runtime-red-proof.out
 source_profile_patch_scratch=
 temp_worktree_baseline=
-trap 'rm -rf "$tmp_profile" "$tmp_source_profile" "$tmp_invalid_profile" "$tmp_runtime_red_profile" "$guest_prefix" "$source_script_marker" "$quality_contract_output" "$invalid_guest_red_output" "$guest_runtime_red_output" "$source_profile_patch_scratch" "$temp_worktree_baseline"' EXIT
+trap 'rm -rf "$tmp_profile" "$tmp_source_profile" "$tmp_invalid_profile" "$tmp_runtime_red_profile" "$guest_prefix" "$source_script_marker" "$source_profile_failure_output" "$quality_contract_output" "$invalid_guest_red_output" "$guest_runtime_red_output" "$source_profile_patch_scratch" "$temp_worktree_baseline"' EXIT
 mkdir -p "$tmp_profile" "$tmp_source_profile" "$tmp_invalid_profile" "$tmp_runtime_red_profile"
 mkdir -p "$tmp_source_profile/test"
 source_profile_patch_scratch="$(mktemp -d)"
@@ -1167,10 +1169,18 @@ printf '%s\n' "$source_profile_script" | grep -q \
 	'<source-profile-script> tests/source_profile_contract.sh' ||
 	fail 'source-profile-script metadata did not resolve to a profile-owned source contract command'
 
-west test --profile __metadata_source_profile_contract \
+if west test --profile __metadata_source_profile_contract \
 	--patch test/source-profile-script.patch \
-	--prove-red >/dev/null ||
-	fail 'source-profile-script did not execute as a source-base RED proof'
+	--prove-red >"$source_profile_failure_output" 2>&1; then
+	fail 'untyped source-profile-script unexpectedly obtained an executable materialization path'
+fi
+grep -Fq \
+	'runtime-source canonical materialization is not enabled for __metadata_source_profile_contract' \
+	"$source_profile_failure_output" ||
+	fail 'untyped source-profile-script did not fail closed at canonical materialization'
+if grep -Eiq 'legacy|mbox|archive apply|fallback' "$source_profile_failure_output"; then
+	fail 'untyped source-profile-script failure attempted a legacy/archive fallback'
+fi
 
 self_contract_script="$(
 	west test --profile __metadata_contract \
