@@ -95,9 +95,9 @@ def main() -> None:
         assert batch_current.composition["profile"] == "homebrew"
         assert batch_current.composition["boundaries"][("darling/src/external/xnu", "xnu/fstatfs-missing-proc-mounts.patch")] == "84d7a41685fab6b459ce754e8db8421ab4fc3615"
         assert batch_current.composition["boundaries"][("darling", "darling/sandbox-exec-pass-through.patch")] == "630c80034b9aed3a89d133c948e457c1bc9e3709"
-        assert batch_current.composition["boundaries"][("darling/src/external/darlingserver", "darlingserver/prefix-lifecycle-state-v2.patch")] == "27f6cf1747600ad0977ae31e243e90a6f3a4b5e3"
-        assert batch_current.composition["boundaries"][("darling", "darling/prefix-lifecycle-state-v2.patch")] == "1e8afb2d8923c41e48df96d1bfc7988ab89fa25d"
-        assert batch_current.composition["finals"]["darling/src/external/xnu"] == "1005ed6f19731b681b717893ce50680198af5d9e"
+        assert batch_current.composition["boundaries"][("darling/src/external/darlingserver", "darlingserver/prefix-lifecycle-state-v2.patch")] == "a9ebdb880e92d5a3f37a1a478f643f8d5bc5582f"
+        assert batch_current.composition["boundaries"][("darling", "darling/prefix-lifecycle-state-v2.patch")] == "3c798358a5dcad4693895be2151d898694ffa55b"
+        assert batch_current.composition["finals"]["darling/src/external/xnu"] == "7f286a50f9675f2496b3892bfb7607c05ca0c01b"
         assert batch_current.batch["batch_id"] == "darling-homebrew-eunion-sidecar-batch-10"
         assert batch_current.batch["module_order"] == [
             "darling/src/external/darlingserver",
@@ -186,7 +186,7 @@ def main() -> None:
         ]
         flood_entry = next(entry for entry in arch_selected if (entry["module"], entry["patch"]) == flood_identity)
         assert yaml.safe_load(Path(flood_entry["lock_path"]).read_text())["upstream"]["base_commit"] == "4ed1e806e850b45ec76758e0124c4274992415e6"
-        assert arch_selected.composition["boundaries"][flood_identity] == "4236d0130a44ab5e5564d205d171148154731627"
+        assert arch_selected.composition["boundaries"][flood_identity] == "78302572926887403addc1ffee0d23ababe70710"
         # The profile-owned continuation is fail-closed: omitting it, moving
         # it before the final DarlingServer boundary, or tampering with its
         # composition tree cannot reach mutation.
@@ -217,7 +217,7 @@ def main() -> None:
         # The general composition materializer contract separately proves that
         # a tampered boundary tree fails before it can become an integration
         # final; bind this concrete row to the reviewed immutable tree here.
-        assert arch_selected.composition["finals"][flood_identity[0]] == "4236d0130a44ab5e5564d205d171148154731627"
+        assert arch_selected.composition["finals"][flood_identity[0]] == "78302572926887403addc1ffee0d23ababe70710"
         try:
             lock_first.mapping_for_profile("unknown-profile")
         except lock_first.LockFirstError:

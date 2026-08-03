@@ -5189,6 +5189,15 @@ patches:
     repo: darling-workspace
     script: tests/run-rootless-opt-in-cli-contract.sh
     note: Executes sidecar-v1 create/reuse/delete and explicit Policy 1 legacy-prefix recreation with typed PREFIX_RECREATE_REQUIRED, no partial migration or fallback, all 24 mutation interruption cases, a three-process persistent-lock race, bottom-up durability failures, capability reopen rejection and the assignment-resistant owning runtime typestate contract.
+  - name: rootless_shutdown_product_state_machine
+    kind: contract
+    coverage-tier: host
+    runs: host
+    diag: bare
+    runner: source-profile-script
+    repo: darling
+    script: src/startup/tests/run-rootless-shutdown-ctest.sh
+    note: Permanent GREEN coverage builds and executes the production session, lifecycle, and shared-session shutdown state machines plus real guest-side shellspawn and launchd endpoint cleanup, including root-final-TERM fork closure and exit-during-pidfd-acquisition through retained capabilities. It is intentionally not marked RED because the historical source base lacks the permanent test registration, which would only prove a missing test asset rather than old behavior.
   github:
     fork:
       repo: darling-next/darling

@@ -111,7 +111,7 @@ series:
   - profile: homebrew
     module: darling/src/external/darlingserver
     patch: darlingserver/prefix-lifecycle-state-v2.patch
-    lock: darlingserver-prefix-lifecycle-state-v3-v4.yml
+    lock: darlingserver-prefix-lifecycle-state-v3-v5.yml
   - profile: homebrew
     module: darling/src/external/xnu
     patch: xnu/psynch-cvsignal-args.patch
@@ -183,7 +183,7 @@ series:
   - profile: homebrew
     module: darling/src/external/xnu
     patch: xnu/eunion-hardening.patch
-    lock: darling-xnu-eunion-hardening-sidecar-v3.yml
+    lock: darling-xnu-eunion-hardening-sidecar-v5.yml
   - profile: homebrew
     module: darling/src/external/xnu
     patch: xnu/chown-disabled-null-guard.patch
@@ -291,7 +291,7 @@ series:
   - profile: homebrew
     module: darling
     patch: darling/prefix-lifecycle-state-v2.patch
-    lock: darling-prefix-lifecycle-state-v3-v6.yml
+    lock: darling-prefix-lifecycle-state-v3-v16.yml
   - profile: homebrew
     module: darling/src/external/installer
     patch: installer/normalize-payload-paths.patch
