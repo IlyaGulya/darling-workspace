@@ -2112,14 +2112,15 @@ stacks:
   - 5d1dc161231978914c236e5ef5d0f91b07a72b02
   - e752ed72119bd983b5b331ffa71aa1ff23168ee7
   - 45b7136144624ad12f1cf29a04e7e3dfc39169b2
-  canonical_commit_count: 18
-  canonical_source_commit: 45b7136144624ad12f1cf29a04e7e3dfc39169b2
-  canonical_expected_tree: 3c798358a5dcad4693895be2151d898694ffa55b
+  - 21656a296e0a6f87b5f53ed96c4b10e0a34e1762
+  canonical_commit_count: 19
+  canonical_source_commit: 21656a296e0a6f87b5f53ed96c4b10e0a34e1762
+  canonical_expected_tree: 3881dad4f8cfbba45f530498a480c85ff3468a17
   object_closure: local_append_only_clean_odb
   linearity: verified
   classification: PUBLICATION_PENDING
-  reason: sidecar-v1 creation, explicit Policy 1 recreation, retained-FD bootstrap lifecycle, bounded shared reuse, vchroot exec FD lifetime, and session-bound bounded pidfd shutdown closure with deadline-adjacent acquisition and signalling, bounded pre-bind observation, retained state publication identity, and inode-bound cgroup cleanup are independently verified locally; the newest corrective refs remain publication-pending
-  lock: locks/patch-stack/darling-prefix-lifecycle-state-v3-v16.yml
+  reason: sidecar-v1 creation, explicit Policy 1 recreation, retained-FD bootstrap lifecycle, bounded shared reuse, vchroot exec FD lifetime, and typed cgroup-delegated or pidfd-subreaper shutdown closure with retained proc identities, all-thread stop barriers, transactional startup rollback, bounded descriptor cleanup, full cgroup capability fallback, deadline/FD bounds, retained state publication identity, and inode-bound cgroup cleanup are independently verified locally; the newest corrective ref remains publication-pending
+  lock: locks/patch-stack/darling-prefix-lifecycle-state-v3-v17.yml
 summary:
   READY: 0
   RECOVERABLE_LOCAL: 0
