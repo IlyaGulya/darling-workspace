@@ -1,0 +1,14 @@
+[package]
+name = "darling-lifecycle-operation-boundary"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[dependencies]
+libc = "=0.2.186"
+serde = { version = "=1.0.229", features = ["derive"] }
+serde_json = "=1.0.151"
+
+[[bin]]
+name = "lifecycle-boundary"
+path = "src/bin/lifecycle-boundary.rs"
