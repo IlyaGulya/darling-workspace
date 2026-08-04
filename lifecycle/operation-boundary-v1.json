@@ -1,0 +1,55 @@
+{
+  "schema_version": 1,
+  "kind": "lifecycle-operation-boundary-policy",
+  "backend": {
+    "production": "rust",
+    "test": "same-rust-facade-with-scripted-clock-observer-faults"
+  },
+  "acceptance_scope": {
+    "boundary": "infrastructure-only",
+    "production_routing": "deferred_to_dar-4ush.7",
+    "optimized_overhead": "deferred_to_dar-4ush.7"
+  },
+  "capability_kinds": ["directory", "file", "pidfd", "lock", "exclusive_lease"],
+  "operations": [
+    "clock_now",
+    "anchor_directory",
+    "open_child",
+    "open_lock",
+    "mkdir_child",
+    "revalidate",
+    "revalidate_metadata",
+    "list_names",
+    "read",
+    "write",
+    "fsync",
+    "unlink_exact",
+    "rename_exact",
+    "pidfd_open",
+    "pidfd_signal",
+    "flock",
+    "close",
+    "stage_registered",
+    "stage_cleanup"
+  ],
+  "rules": {
+    "fd_relative_mutation": true,
+    "retained_inode_revalidation": true,
+    "registration_before_fallible_step": true,
+    "bounded_iteration": true,
+    "raw_syscalls_only_in_rust": true,
+    "rust_owns_syscalls": true,
+    "python_owns_syscalls": false,
+    "path_allowed_only_for_anchor": true,
+    "unvalidated_fd_allowed": false,
+    "mutation_requires_retained_lease": true,
+    "mutation_requires_exclusive_lease": true,
+    "exact_child_identity_required": true,
+    "capability_scope_branded": true,
+    "cleanup_uses_quarantine_move": true,
+    "quarantine_gc_requires_quiescence": true,
+    "quarantine_gc_requires_external_scope": true,
+    "quarantine_obligation_ownership": true,
+    "stage_cleanup_terminal_record": true
+  }
+}

@@ -103,3 +103,12 @@ fixture and requires identical terminal results. It checks the canonical
 ownership lifecycle, source provenance, budget enforcement, no-raw-authority
 rules, schema/Python differential negatives, and tamper-negative fixtures. It
 has no production, filesystem, West, ref, or hosted side effects.
+
+The next layer is specified separately in
+`docs/lifecycle-operation-boundary-v1.md`. Its Rust boundary is the
+production-quality fd/capability backend for future controllers and supplies a
+deterministic observer/clock/fault seam; it is not yet wired into the frozen
+Rootless or E-UNION transitions. That production-routing and optimized-overhead
+gate belongs to `dar-4ush.7`. The Python module is only a subprocess adapter;
+the boundary does not make a trace fixture a second implementation and does
+not change the frozen runtime.
