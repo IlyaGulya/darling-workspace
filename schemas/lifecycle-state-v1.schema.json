@@ -1,0 +1,184 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://darling.dev/schemas/lifecycle-state-v1.schema.json",
+  "title": "Darling lifecycle state model v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "kind",
+    "stable_states",
+    "journal_phases",
+    "intent_kinds",
+    "decision_kinds",
+    "capability_kinds",
+    "budgets",
+    "recovery_targets",
+    "recovery_matrix",
+    "invariants"
+  ],
+  "properties": {
+    "schema_version": {"const": 1},
+    "kind": {"const": "lifecycle-state-model"},
+    "stable_states": {
+      "type": "array",
+      "uniqueItems": true,
+      "minItems": 6,
+      "items": {
+        "enum": ["UNINITIALIZED", "READY", "RUNNING", "DRAINING", "STOPPED", "CORRUPT"]
+      }
+    },
+    "journal_phases": {
+      "type": "array",
+      "uniqueItems": true,
+      "minItems": 6,
+      "items": {
+        "enum": ["NONE", "PREPARE", "PUBLISH", "CLEANUP", "COMMIT", "ABORT"]
+      }
+    },
+    "intent_kinds": {
+      "type": "array",
+      "uniqueItems": true,
+      "minItems": 1,
+      "items": {
+        "enum": [
+          "NONE",
+          "CREATE_PREFIX",
+          "START_SESSION",
+          "REQUEST_SHUTDOWN",
+          "RELEASE_SESSION",
+          "RECREATE_PREFIX",
+          "RECOVER"
+        ]
+      }
+    },
+    "decision_kinds": {
+      "type": "array",
+      "uniqueItems": true,
+      "minItems": 1,
+      "items": {
+        "enum": [
+          "ACQUIRE_CAPABILITY",
+          "DECLARE_INTENT",
+          "ENTER_BARRIER",
+          "SNAPSHOT_MEMBERS",
+          "REVALIDATE_IDENTITY",
+          "SIGNAL_MEMBER",
+          "REMOVE_ENDPOINT",
+          "INJECT_FAULT",
+          "RECOVER",
+          "TERMINATE"
+        ]
+      }
+    },
+    "capability_kinds": {
+      "type": "array",
+      "uniqueItems": true,
+      "minItems": 1,
+      "items": {
+        "enum": [
+          "PREFIX_DIRECTORY",
+          "SESSION_ROOT_PIDFD",
+          "SESSION_MEMBER_PIDFD",
+          "SHARED_SESSION_LEASE",
+          "RUNTIME_ENDPOINT",
+          "JOURNAL_RECORD"
+        ]
+      }
+    },
+    "budgets": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["max_events", "max_virtual_time_ns", "max_live_capabilities", "max_recovery_steps"],
+      "properties": {
+        "max_events": {"const": 128},
+        "max_virtual_time_ns": {"const": 1000000},
+        "max_live_capabilities": {"const": 64},
+        "max_recovery_steps": {"const": 16}
+      }
+    },
+    "recovery_targets": {
+      "type": "array",
+      "minItems": 12,
+      "maxItems": 12,
+      "items": {"$ref": "#/$defs/recovery_target"}
+    },
+    "recovery_matrix": {
+      "type": "array",
+      "minItems": 36,
+      "maxItems": 36,
+      "items": {
+        "$ref": "#/$defs/recovery_entry"
+      }
+    },
+    "invariants": {
+      "type": "array",
+      "uniqueItems": true,
+      "minItems": 1,
+      "items": {"type": "string", "pattern": "^[a-z0-9-]+$"}
+    }
+  },
+  "$defs": {
+    "recovery_entry": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["stable_state", "journal_phase", "action"],
+      "properties": {
+        "stable_state": {
+          "enum": ["UNINITIALIZED", "READY", "RUNNING", "DRAINING", "STOPPED", "CORRUPT"]
+        },
+        "journal_phase": {
+          "enum": ["NONE", "PREPARE", "PUBLISH", "CLEANUP", "COMMIT", "ABORT"]
+        },
+        "action": {
+          "enum": [
+            "INITIALIZE",
+            "NOOP",
+            "ROLLBACK_UNINITIALIZED",
+            "ROLLBACK_READY",
+            "ROLLBACK_RUNNING",
+            "ROLLBACK_STOPPED",
+            "COMPLETE_PUBLISH",
+            "COMPLETE_CLEANUP",
+            "DRAIN_TO_READY",
+            "CONTINUE_DRAIN",
+            "FAIL_CLOSED",
+            "QUARANTINE"
+          ]
+        }
+      }
+    },
+    "recovery_target": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["action", "stable_state", "journal_phase", "intent"],
+      "properties": {
+        "action": {
+          "enum": [
+            "INITIALIZE",
+            "NOOP",
+            "ROLLBACK_UNINITIALIZED",
+            "ROLLBACK_READY",
+            "ROLLBACK_RUNNING",
+            "ROLLBACK_STOPPED",
+            "COMPLETE_PUBLISH",
+            "COMPLETE_CLEANUP",
+            "DRAIN_TO_READY",
+            "CONTINUE_DRAIN",
+            "FAIL_CLOSED",
+            "QUARANTINE"
+          ]
+        },
+        "stable_state": {
+          "enum": ["UNINITIALIZED", "READY", "RUNNING", "DRAINING", "STOPPED", "CORRUPT"]
+        },
+        "journal_phase": {
+          "enum": ["NONE", "PREPARE", "PUBLISH", "CLEANUP", "COMMIT", "ABORT"]
+        },
+        "intent": {
+          "enum": ["NONE", "CREATE_PREFIX", "START_SESSION", "REQUEST_SHUTDOWN", "RELEASE_SESSION", "RECREATE_PREFIX", "RECOVER"]
+        }
+      }
+    }
+  }
+}

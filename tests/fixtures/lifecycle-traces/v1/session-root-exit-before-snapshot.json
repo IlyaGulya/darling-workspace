@@ -1,0 +1,39 @@
+{
+  "schema_version": 1,
+  "kind": "lifecycle-replay-trace",
+  "model_version": 1,
+  "trace_id": "session-root-exit-before-snapshot",
+  "scenario": "session-root-exit-before-snapshot",
+  "provenance": {
+    "kind": "golden-scenario",
+    "source_label": "dar-4ush-golden-fixture",
+    "evidence_id": "dar-4ush/session-root-exit-before-snapshot",
+    "source_identity": {
+      "repository": "darling-workspace",
+      "commit": "e49c98e18b36959876fa0508e8bf68407115a72c",
+      "tree": "afd9b9ccb78af7efed95e0e789a3549178020f1c",
+      "profile": "rootless",
+      "module": "lifecycle-model"
+    }
+  },
+  "budget": {"max_events": 12, "max_virtual_time_ns": 20000, "max_live_capabilities": 2, "max_recovery_steps": 2},
+  "initial": {
+    "snapshot": {"stable_state": "RUNNING", "journal_phase": "NONE", "intent": "NONE"},
+    "capability_catalog": [{"capability_id": "cap.session-root", "kind": "SESSION_ROOT_PIDFD", "identity": {"token": "session-root@startup", "generation": 1}}],
+    "live_capabilities": []
+  },
+  "events": [
+    {"seq": 0, "time_ns": 0, "actor": "launcher", "kind": "intent_declared", "data": {"intent": "REQUEST_SHUTDOWN", "transaction_id": "txn.root-exit"}, "state_after": {"stable_state": "RUNNING", "journal_phase": "PREPARE", "intent": "REQUEST_SHUTDOWN"}},
+    {"seq": 1, "time_ns": 1000, "actor": "controller", "kind": "barrier_entered", "data": {"barrier": "THREADS_STOPPED", "result": "ENTERED"}, "state_after": {"stable_state": "DRAINING", "journal_phase": "PREPARE", "intent": "REQUEST_SHUTDOWN"}},
+    {"seq": 2, "time_ns": 2000, "actor": "controller", "kind": "capability_acquired", "data": {"capability": "cap.session-root", "owner": "controller"}, "state_after": {"stable_state": "DRAINING", "journal_phase": "PREPARE", "intent": "REQUEST_SHUTDOWN"}},
+    {"seq": 3, "time_ns": 3000, "actor": "observer", "kind": "identity_revalidated", "data": {"capability": "cap.session-root", "result": "GONE"}, "state_after": {"stable_state": "DRAINING", "journal_phase": "PREPARE", "intent": "REQUEST_SHUTDOWN"}},
+    {"seq": 4, "time_ns": 4000, "actor": "recovery", "kind": "recovery", "data": {"action": "ROLLBACK_RUNNING", "reason": "root-gone-before-membership-snapshot"}, "state_after": {"stable_state": "RUNNING", "journal_phase": "ABORT", "intent": "RECOVER"}},
+    {"seq": 5, "time_ns": 5000, "actor": "recovery", "kind": "terminal", "data": {"outcome": "FAIL_CLOSED"}, "state_after": {"stable_state": "RUNNING", "journal_phase": "ABORT", "intent": "RECOVER"}}
+  ],
+  "expected": {
+    "outcome": "FAIL_CLOSED", "stable_state": "RUNNING", "journal_phase": "ABORT", "intent": "RECOVER", "terminal_event_kind": "terminal",
+    "invariants": ["no-raw-path-authority", "no-unvalidated-fd", "stable-journal-independent", "total-recovery-matrix", "identity-before-signal", "no-children-after-gone", "shared-lease-bound", "pidfd-identity-before-signal", "late-fork-closes-snapshot", "bounded-replay", "terminal-trace"],
+    "live_capabilities": []
+  },
+  "recovery_observations": [{"stable_state": "DRAINING", "journal_phase": "PREPARE", "action": "ROLLBACK_RUNNING"}]
+}
