@@ -28,6 +28,7 @@ assert policy["schema_version"] == 1
 assert policy["kind"] == "lifecycle-operation-boundary-policy"
 assert policy["backend"]["production"] == "rust"
 assert policy["backend"]["test"] == "same-rust-facade-with-scripted-clock-observer-faults"
+assert policy["operations"][-1] == "quarantine"
 assert policy["acceptance_scope"] == {
     "boundary": "infrastructure-only",
     "production_routing": "deferred_to_dar-4ush.7",
@@ -42,6 +43,11 @@ assert policy["rules"]["cleanup_uses_quarantine_move"] is True
 assert policy["rules"]["quarantine_gc_requires_quiescence"] is True
 assert policy["rules"]["quarantine_gc_requires_external_scope"] is True
 assert policy["rules"]["quarantine_obligation_ownership"] is True
+assert policy["rules"]["stage_obligation_ownership"] is True
+assert policy["rules"]["obligation_queues_are_disjoint"] is True
+assert policy["rules"]["typed_journal_records"] is True
+assert policy["rules"]["operation_specific_capability_constructors"] is True
+assert policy["rules"]["stage_terminal_record"] is True
 assert policy["rules"]["stage_cleanup_terminal_record"] is True
 
 rust_source = (ROOT / "lifecycle" / "operation-boundary" / "src" / "lib.rs").read_text(encoding="utf-8")
@@ -51,13 +57,12 @@ assert "pub fn flock(" not in rust_source
 assert "lease: &ExclusiveLease" in rust_source
 assert "pub fn write" in rust_source
 assert "AfterMoveBeforeVerify" in rust_source
-assert "mutated-error" in rust_source
-assert "rollback-incomplete" in rust_source
+assert "MutatedError" in rust_source
+assert "RollbackIncomplete" in rust_source
 assert "StageRegistered" in rust_source
 assert "StageCleanup" in rust_source
 assert "AfterStageMkdirBeforeBind" in rust_source
 assert "flock_exclusive" in rust_source
-assert "pub identity: Option<FileIdentity>" in rust_source
 assert "AfterQuarantineMoveBeforeVerify" in rust_source
 assert "AfterQuarantineVerifyBeforeGc" in rust_source
 assert "lifecycle-quarantine-" in rust_source
@@ -68,11 +73,68 @@ assert "pub struct QuarantinedObject" in rust_source
 assert "from_external" in rust_source
 assert "acquire_quiescence" not in rust_source
 assert "take_quarantine_obligations" in rust_source
+assert "take_stage_obligations" in rust_source
 assert "pub fn into_parts" in rust_source
 assert "pub fn finish" in rust_source
 assert "pub fn into_observer(self) -> std::result::Result<O, BoundaryFinishError<O>>" in rust_source
+assert "stage_obligations" in rust_source
 assert "QuarantineObligation" in rust_source
 assert "UnboundQuarantine" in rust_source
+assert "pub enum OperationOutcome" in rust_source
+assert "Observed" in rust_source
+assert "Applied" in rust_source
+assert "    Ok," not in rust_source
+assert "pub enum MutationState" in rust_source
+assert "pub enum IdentityObservation" in rust_source
+assert "pub enum CapabilityRole" in rust_source
+assert "pub struct CapabilitySet" in rust_source
+assert "pub enum StageJournal" in rust_source
+assert "pub enum StageObligation" in rust_source
+assert "pub struct StageObligations" in rust_source
+assert "pub struct BoundStageObligation" in rust_source
+assert "retain_stage_authority" in rust_source
+assert "RollbackDisposition" in rust_source
+assert "pub enum QuarantineEvent" in rust_source
+assert "pub struct OperationEvent" in rust_source
+assert "pub enum JournalRecord" in rust_source
+assert "pub capabilities: CapabilitySet" in rust_source
+assert "pub result: OperationOutcome" in rust_source
+assert "pub outcome: OperationOutcome" not in rust_source
+assert "pub mutation: MutationState" not in rust_source
+assert "pub record: JournalRecord" in rust_source
+assert "pub fn write(file: &FileCap, lease: &ExclusiveLease)" in rust_source
+assert "pub fn mkdir_child(" in rust_source
+assert "pub fn rename(" in rust_source
+assert "pub fn publish(" in rust_source
+assert "StagePublished" in rust_source
+assert "fn for_operation" not in rust_source
+assert "impl From<&'static str> for OperationOutcome" not in rust_source
+assert "fn from_legacy" not in rust_source
+assert "fn record_with_identity" not in rust_source
+assert "mutated: bool" not in rust_source
+assert "pub identity: IdentityObservation" not in rust_source
+for legacy_outcome in (
+    "ok",
+    "error",
+    "injected",
+    "allocated",
+    "registered",
+    "deferred",
+    "staged-error",
+    "rolled-back-error",
+    "rollback-incomplete",
+    "identity-mismatch",
+    "mutated-error",
+):
+    assert f'"{legacy_outcome}"' not in rust_source
+assert "journal_capability_roles_are_typed_per_operation" in rust_source
+record_block = rust_source[
+    rust_source.index("pub struct OperationRecord") : rust_source.index("pub trait Observer")
+]
+assert "pub result: &'static str" not in record_block
+assert "pub capability_ids: Vec<u64>" not in record_block
+assert "pub identity: Option<FileIdentity>" not in record_block
+assert "pub payload:" not in record_block
 assert "gc_quarantine" in rust_source
 assert "QuarantineRequired" in rust_source
 assert "struct ScopeId" in rust_source
