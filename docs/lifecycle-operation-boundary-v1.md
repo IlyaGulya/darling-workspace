@@ -7,8 +7,9 @@ ownership, or lifecycle policy is authoritative.
 
 The crate also contains the typed `state::Reducer`. It computes the same
 terminal, capability-generation, journal, and total recovery semantics as the
-`.1` model. The Python reducer and JSON fixtures remain a differential
-reference oracle until the explorer consumes the Rust reducer directly.
+`.1` model. The deterministic `.3` explorer now consumes that Rust reducer;
+the Python reducer and JSON fixtures remain an independent differential oracle
+for every generated trace.
 Rejected reducer events are atomic: catalog, live ownership, checkpoints,
 journal and obligations are restored together. A recovery rollback restores
 the pre-transaction ownership checkpoint and clears only transaction-failure
@@ -31,7 +32,14 @@ later operations accept retained capabilities and one-component names only.
 Mutation requires an `ExclusiveLease` and an expected child identity.
 `unlink_exact` and `rename_exact` first move the named object into a
 transaction-owned staging directory, verify the retained identity there, and
-only then remove or publish it. Every capability also carries a private
+only then remove or publish it. The final name-based unlink/rename is allowed
+only while an externally supplied `QuiescentScope` is retained and the parent,
+lease, and staged inode are revalidated immediately before the syscall; a
+missing or single-parent scope leaves an explicit recovery obligation. A
+cross-directory rename uses a paired scope carrying both source and
+destination parent identities. A writer hook irreversibly invalidates a
+parked scope, so the lifecycle controller must establish a fresh barrier before
+recovery or another mutation. Every capability also carries a private
 runtime scope brand; an `ExclusiveLease` from another anchored root is rejected
 before any mutation. Cleanup moves the currently named object into a unique
 private quarantine name, binds a non-read-required object capability, and
@@ -86,7 +94,11 @@ post-mutation checkpoints (`AfterStageMkdirBeforeBind`,
 `AfterStageBindBeforeMove`, `AfterMkdirBeforeBind`,
 `AfterBindBeforePublish`, `BeforeExactMutation`, `AfterMoveBeforeVerify`, and
 `AfterQuarantineMoveBeforeVerify`, `AfterQuarantineVerifyBeforeGc`, and
-`AfterExactMutation`). The verified object is not unlinked at the verify
+`AfterExactMutation`). Fault hooks temporarily park the external quiescence
+scope while they run, so test/explorer writers never execute under an active
+final-mutation authority. A hook that writes irreversibly invalidates the
+parked proof; a controller must establish a new barrier before recovery. The
+verified object is not unlinked at the verify
 checkpoint; it remains quarantined until externally scoped GC performs the
 identity checks and the only permitted unlink. The boundary does not create a
 quiescent scope itself.
@@ -115,9 +127,10 @@ and invokes the Rust JSON self-check. Rust ingress rejects unknown policy and
 trace fields, enforces the authoritative model budget ceilings from
 `lifecycle/state-model-v1.json`, and compares computed recovery observations
 with the recorded observations. The Python `.1` reducer and JSON golden
-traces remain independent reference-oracle artifacts for the later explorer;
-the four fixtures are replayed through both implementations and their
-normalized results must match; they are not a substitute for this boundary.
+traces remain an independent reference oracle for the explorer; the four
+fixtures and every generated `.3` trace are replayed through both
+implementations and their normalized results must match; they are not a
+substitute for this boundary.
 The West adapter uses one monotonic deadline for nonblocking stdin/stdout/
 stderr transport, a 64 KiB input/output bound, and bounded child reaping; a
 child that never reads its request cannot stall the caller.
@@ -130,7 +143,7 @@ change frozen Darling source. Production-default routing and optimized-overhead
 measurement are intentionally deferred to `dar-4ush.7`, whose acceptance
 requires connecting the boundary to real product transitions. This `.2`
 artifact therefore makes no claim that production lifecycle code has already
-been routed through the boundary. `dar-4ush.3` is the next infrastructure
-layer after this accepted boundary; its start is blocked by the explicit
-`dar-4ush.2.1` journal/ownership handoff bead. `dar-4ush.7` follows `.3` and
-connects the real production consumers and overhead measurement.
+been routed through the boundary. `dar-4ush.3` is the deterministic explorer
+layer after this accepted boundary and remains infrastructure-only.
+`dar-4ush.7` follows `.3` and connects the real production consumers and
+overhead measurement.

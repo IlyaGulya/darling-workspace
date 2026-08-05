@@ -103,6 +103,14 @@ pub enum Outcome {
     Recovered,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum SignalResult {
+    Sent,
+    Gone,
+    Rejected,
+    Deadline,
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum Event {
     Acquire {
@@ -135,10 +143,17 @@ pub enum Event {
     },
     Signal {
         id: String,
+        result: SignalResult,
     },
     Endpoint {
         endpoint: String,
         operation: String,
+        result: String,
+    },
+    OperationCheckpoint {
+        operation: String,
+        checkpoint: String,
+        placement: String,
         result: String,
     },
     MemberObserved {
@@ -193,6 +208,8 @@ pub struct Reducer {
     late_fork_seen: bool,
     late_fork_after_closed: bool,
     late_fork_fault_seen: bool,
+    operation_rejection_seen: bool,
+    operation_recovery_seen: bool,
 }
 
 impl Reducer {
@@ -221,6 +238,8 @@ impl Reducer {
             late_fork_after_closed: false,
             late_fork_seen: false,
             late_fork_fault_seen: false,
+            operation_rejection_seen: false,
+            operation_recovery_seen: false,
         }
     }
 
@@ -365,7 +384,7 @@ impl Reducer {
                     self.matched.insert(id);
                 }
             }
-            Event::Signal { id } => {
+            Event::Signal { id, result } => {
                 let entry = self
                     .catalog
                     .get(&id)
@@ -379,9 +398,59 @@ impl Reducer {
                         "signal requires matching pidfd",
                     ));
                 }
+                match result {
+                    SignalResult::Sent => {}
+                    SignalResult::Gone => {
+                        self.live.remove(&id);
+                        self.matched.remove(&id);
+                        self.gone.insert(id);
+                    }
+                    SignalResult::Rejected => {
+                        self.obligations.insert("signal-failure".to_string());
+                    }
+                    SignalResult::Deadline => {
+                        self.obligations.insert("fault:TIMEOUT".to_string());
+                    }
+                }
                 self.snapshot.journal = JournalPhase::Cleanup;
             }
-            Event::Endpoint { .. } => {}
+            Event::Endpoint { result, .. } => {
+                if result == "REJECTED" {
+                    self.obligations.insert("endpoint-failure".to_string());
+                }
+            }
+            Event::OperationCheckpoint {
+                operation,
+                checkpoint,
+                placement,
+                result,
+            } => {
+                if !matches!(
+                    operation.as_str(),
+                    "MKDIR_CHILD" | "UNLINK_EXACT" | "RENAME_EXACT"
+                ) || !matches!(
+                    checkpoint.as_str(),
+                    "after-mkdir-before-bind"
+                        | "after-bind-before-publish"
+                        | "after-stage-mkdir-before-bind"
+                        | "after-stage-bind-before-move"
+                        | "after-move-before-verify"
+                        | "after-quarantine-move-before-verify"
+                        | "after-quarantine-verify-before-gc"
+                        | "before-exact-mutation"
+                        | "after-exact-mutation"
+                ) || !matches!(placement.as_str(), "BEFORE" | "AFTER")
+                    || !matches!(result.as_str(), "INJECTED" | "COMPLETED" | "ERROR")
+                {
+                    return Err(BoundaryError::WrongCapability(
+                        "invalid operation checkpoint",
+                    ));
+                }
+                if matches!(result.as_str(), "INJECTED" | "ERROR") {
+                    self.operation_rejection_seen = true;
+                    self.obligations.insert("operation-failure".to_string());
+                }
+            }
             Event::MemberObserved { id, origin } => {
                 let entry = self
                     .catalog
@@ -471,14 +540,31 @@ impl Reducer {
                 | RecoveryAction::FailClosed
                 | RecoveryAction::Quarantine
         ) {
+            if self.obligations.contains("operation-failure") {
+                self.operation_recovery_seen = true;
+            }
+            // A failed identity revalidation is a terminal observation for
+            // that capability generation.  Recovery may restore ownership
+            // that existed at the transaction checkpoint, but it must never
+            // resurrect a capability whose identity has since been proven
+            // gone or mismatched.
+            let gone_after_transaction = self.gone.clone();
             self.live = self.checkpoint_live.clone();
             self.matched = self.checkpoint_matched.clone();
             self.gone = self.checkpoint_gone.clone();
+            for id in gone_after_transaction {
+                self.live.remove(&id);
+                self.matched.remove(&id);
+                self.gone.insert(id);
+            }
             self.transaction = None;
             self.obligations.retain(|item| {
                 !item.starts_with("fault:")
                     && item != "identity-failure"
                     && item != "late-fork-recovery"
+                    && item != "endpoint-failure"
+                    && item != "operation-failure"
+                    && item != "signal-failure"
             });
         } else if matches!(
             action,
@@ -488,12 +574,12 @@ impl Reducer {
                 | RecoveryAction::DrainToReady
         ) {
             self.transaction = None;
+        } else if action == RecoveryAction::ContinueDrain {
+            if self.obligations.remove("operation-failure") {
+                self.operation_recovery_seen = true;
+            }
+            self.obligations.remove("signal-failure");
         }
-        self.obligations.retain(|item| {
-            !item.starts_with("fault:")
-                && item != "identity-failure"
-                && item != "late-fork-recovery"
-        });
         Ok(())
     }
 
@@ -502,14 +588,31 @@ impl Reducer {
             .ok_or(BoundaryError::WrongCapability("trace has no terminal"))
     }
 
+    fn unresolved_item(item: &str) -> bool {
+        item.starts_with("fault:")
+            || matches!(
+                item,
+                "identity-failure"
+                    | "late-fork-recovery"
+                    | "membership-incomplete"
+                    | "endpoint-failure"
+                    | "operation-failure"
+                    | "signal-failure"
+            )
+    }
+
     fn unresolved(&self) -> bool {
-        self.obligations.iter().any(|item| {
-            item.starts_with("fault:")
-                || matches!(
-                    item.as_str(),
-                    "identity-failure" | "late-fork-recovery" | "membership-incomplete"
-                )
-        })
+        self.obligations
+            .iter()
+            .any(|item| Self::unresolved_item(item))
+    }
+
+    pub fn unresolved_obligations(&self) -> Vec<String> {
+        self.obligations
+            .iter()
+            .filter(|item| Self::unresolved_item(item))
+            .cloned()
+            .collect()
     }
 
     pub fn snapshot(&self) -> &StateSnapshot {
@@ -517,6 +620,9 @@ impl Reducer {
     }
     pub fn live(&self) -> &BTreeMap<String, String> {
         &self.live
+    }
+    pub fn gone(&self) -> &BTreeSet<String> {
+        &self.gone
     }
     pub fn obligations(&self) -> &BTreeSet<String> {
         &self.obligations
@@ -527,6 +633,14 @@ impl Reducer {
 
     pub fn terminal(&self) -> Option<Outcome> {
         self.terminal
+    }
+
+    pub fn operation_rejection_seen(&self) -> bool {
+        self.operation_rejection_seen
+    }
+
+    pub fn operation_recovery_seen(&self) -> bool {
+        self.operation_recovery_seen
     }
 
     pub fn invariant_names(
@@ -836,7 +950,8 @@ mod tests {
         reducer
             .apply(Event::Recovery(RecoveryAction::RollbackRunning))
             .unwrap();
-        assert!(reducer.live().contains_key("cap.root"));
+        assert!(!reducer.live().contains_key("cap.root"));
+        assert!(reducer.gone().contains("cap.root"));
         assert!(reducer.obligations().is_empty());
         reducer
             .apply(Event::Intent {
@@ -865,11 +980,189 @@ mod tests {
             .is_ok());
         assert!(reducer
             .apply(Event::Signal {
-                id: "cap.lease".to_string()
+                id: "cap.lease".to_string(),
+                result: SignalResult::Sent,
             })
             .is_err());
         reducer.apply(Event::Terminal(Outcome::FailClosed)).unwrap();
         assert!(reducer.apply(Event::Terminal(Outcome::FailClosed)).is_err());
+    }
+
+    #[test]
+    fn deadline_signal_is_a_typed_unresolved_obligation() {
+        let mut reducer = root_reducer();
+        reducer
+            .apply(Event::Acquire {
+                id: "cap.root".to_string(),
+                kind: CapabilityKind::SessionRootPidfd,
+                generation: 1,
+                owner: "controller".to_string(),
+            })
+            .unwrap();
+        reducer
+            .apply(Event::Identity {
+                id: "cap.root".to_string(),
+                matches: true,
+            })
+            .unwrap();
+        reducer
+            .apply(Event::Intent {
+                intent: IntentKind::RequestShutdown,
+                transaction: "txn.deadline-signal".to_string(),
+            })
+            .unwrap();
+        reducer
+            .apply(Event::Signal {
+                id: "cap.root".to_string(),
+                result: SignalResult::Deadline,
+            })
+            .unwrap();
+
+        assert!(reducer.obligations().contains("fault:TIMEOUT"));
+        assert_eq!(
+            reducer.unresolved_obligations(),
+            vec!["fault:TIMEOUT".to_string()]
+        );
+        assert!(reducer.apply(Event::Terminal(Outcome::Success)).is_err());
+    }
+
+    #[test]
+    fn gone_signal_is_monotonic_and_rejects_reuse() {
+        let mut reducer = root_reducer();
+        reducer
+            .apply(Event::Acquire {
+                id: "cap.root".to_string(),
+                kind: CapabilityKind::SessionRootPidfd,
+                generation: 1,
+                owner: "controller".to_string(),
+            })
+            .unwrap();
+        reducer
+            .apply(Event::Identity {
+                id: "cap.root".to_string(),
+                matches: true,
+            })
+            .unwrap();
+        reducer
+            .apply(Event::Intent {
+                intent: IntentKind::RequestShutdown,
+                transaction: "txn.gone-signal".to_string(),
+            })
+            .unwrap();
+        reducer
+            .apply(Event::Signal {
+                id: "cap.root".to_string(),
+                result: SignalResult::Gone,
+            })
+            .unwrap();
+
+        assert!(!reducer.live().contains_key("cap.root"));
+        assert!(!reducer.matched.contains("cap.root"));
+        assert!(reducer.gone().contains("cap.root"));
+        assert!(reducer
+            .apply(Event::Membership {
+                members: vec!["cap.root".to_string()],
+                completeness: "CLOSED".to_string(),
+            })
+            .is_err());
+        assert!(reducer
+            .apply(Event::Signal {
+                id: "cap.root".to_string(),
+                result: SignalResult::Sent,
+            })
+            .is_err());
+    }
+
+    #[test]
+    fn rejected_signal_requires_typed_recovery() {
+        let mut reducer = root_reducer();
+        reducer
+            .apply(Event::Acquire {
+                id: "cap.root".to_string(),
+                kind: CapabilityKind::SessionRootPidfd,
+                generation: 1,
+                owner: "controller".to_string(),
+            })
+            .unwrap();
+        reducer
+            .apply(Event::Identity {
+                id: "cap.root".to_string(),
+                matches: true,
+            })
+            .unwrap();
+        reducer
+            .apply(Event::Intent {
+                intent: IntentKind::RequestShutdown,
+                transaction: "txn.rejected-signal".to_string(),
+            })
+            .unwrap();
+        reducer.apply(Event::BarrierEntered).unwrap();
+        reducer
+            .apply(Event::Signal {
+                id: "cap.root".to_string(),
+                result: SignalResult::Rejected,
+            })
+            .unwrap();
+
+        assert!(reducer.obligations().contains("signal-failure"));
+        assert!(reducer.apply(Event::Terminal(Outcome::Success)).is_err());
+        reducer
+            .apply(Event::Recovery(RecoveryAction::ContinueDrain))
+            .unwrap();
+        assert!(!reducer.obligations().contains("signal-failure"));
+        reducer.apply(Event::Terminal(Outcome::Recovered)).unwrap();
+    }
+
+    #[test]
+    fn rejected_endpoint_requires_recovery_before_terminal() {
+        let mut reducer = Reducer::new(StableState::Running);
+        reducer
+            .apply(Event::Intent {
+                intent: IntentKind::RequestShutdown,
+                transaction: "txn.endpoint".to_string(),
+            })
+            .unwrap();
+        reducer
+            .apply(Event::Endpoint {
+                endpoint: "endpoint.launchd".to_string(),
+                operation: "UNLINK".to_string(),
+                result: "REJECTED".to_string(),
+            })
+            .unwrap();
+        assert!(reducer.apply(Event::Terminal(Outcome::Success)).is_err());
+        reducer
+            .apply(Event::Recovery(RecoveryAction::RollbackRunning))
+            .unwrap();
+        assert!(!reducer.obligations().contains("endpoint-failure"));
+        reducer.apply(Event::Terminal(Outcome::Recovered)).unwrap();
+    }
+
+    #[test]
+    fn injected_operation_checkpoint_is_typed_recovery_obligation() {
+        let mut reducer = Reducer::new(StableState::Running);
+        reducer
+            .apply(Event::Intent {
+                intent: IntentKind::RequestShutdown,
+                transaction: "txn.operation-checkpoint".to_string(),
+            })
+            .unwrap();
+        reducer
+            .apply(Event::OperationCheckpoint {
+                operation: "UNLINK_EXACT".to_string(),
+                checkpoint: "before-exact-mutation".to_string(),
+                placement: "BEFORE".to_string(),
+                result: "INJECTED".to_string(),
+            })
+            .unwrap();
+        assert!(reducer.operation_rejection_seen());
+        assert!(!reducer.operation_recovery_seen());
+        assert!(reducer.apply(Event::Terminal(Outcome::Success)).is_err());
+        reducer
+            .apply(Event::Recovery(RecoveryAction::RollbackRunning))
+            .unwrap();
+        assert!(reducer.operation_recovery_seen());
+        assert!(!reducer.obligations().contains("operation-failure"));
+        reducer.apply(Event::Terminal(Outcome::Recovered)).unwrap();
     }
 
     #[test]

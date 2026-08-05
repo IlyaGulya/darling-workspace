@@ -68,6 +68,8 @@ assert {path.name for path in trace_paths} == {
     "shared-session-retained-holder-timeout.json",
     "shared-session-pid-reuse.json",
     "shared-session-late-fork.json",
+    "shared-session-signal-gone.json",
+    "shared-session-signal-rejected.json",
 }
 
 for trace_path in trace_paths:
@@ -233,10 +235,10 @@ assert replay_trace(no_recovery_success, state_document).recovery_observations =
 checkpoint_restore = copy.deepcopy(root_exit)
 checkpoint_restore["initial"]["live_capabilities"] = [{"capability": "cap.session-root", "owner": "controller"}]
 checkpoint_restore["events"].pop(2)  # ownership existed before this transaction
-checkpoint_restore["expected"]["live_capabilities"] = [{"capability": "cap.session-root", "owner": "controller"}]
+checkpoint_restore["expected"]["live_capabilities"] = []  # GONE is monotonic across rollback
 for index, event in enumerate(checkpoint_restore["events"]):
     event["seq"] = index
-assert replay_trace(checkpoint_restore, state_document).live_capabilities == (("cap.session-root", "controller"),)
+assert replay_trace(checkpoint_restore, state_document).live_capabilities == ()
 
 for trace_path in trace_paths:
     golden = load_json(trace_path)
