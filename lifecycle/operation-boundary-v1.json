@@ -30,7 +30,9 @@
     "flock",
     "close",
     "stage_registered",
-    "stage_cleanup"
+    "stage_published",
+    "stage_cleanup",
+    "quarantine"
   ],
   "rules": {
     "fd_relative_mutation": true,
@@ -50,6 +52,11 @@
     "quarantine_gc_requires_quiescence": true,
     "quarantine_gc_requires_external_scope": true,
     "quarantine_obligation_ownership": true,
+    "stage_obligation_ownership": true,
+    "obligation_queues_are_disjoint": true,
+    "typed_journal_records": true,
+    "operation_specific_capability_constructors": true,
+    "stage_terminal_record": true,
     "stage_cleanup_terminal_record": true
   }
 }

@@ -44,22 +44,39 @@ only permitted unlink. Failure restores with `RENAME_NOREPLACE`, so a
 replacement is never deleted or overwritten.
 
 The handoff is consuming and fail-closed: `finish()` returns the observer only
-when no quarantine obligations remain, otherwise it returns the observer and
-the typed obligations in `BoundaryFinishError`. `into_parts()` is the explicit
-handoff for callers that intentionally transfer both; dropping an ordinary
-observer can never silently discard pending quarantine state. If an object
+when neither quarantine nor stage obligations remain, otherwise it returns the
+observer and both typed obligation queues in `BoundaryFinishError`.
+`into_parts()` is the explicit handoff for callers that intentionally transfer
+both; dropping an ordinary observer can never silently discard pending recovery
+state. Ownership of a resource is exclusive between the queues: a failure before
+the quarantine move leaves exactly one `StageObligation`, while a successful move
+transfers ownership entirely to exactly one `QuarantineObligation`; a quarantine
+GC/restore failure never adds a second stage obligation. If an object
 cannot be rebound to an O_PATH capability after the move, the boundary retains
 an `UnboundQuarantine` obligation with its anchored identity and quarantine
 name for lifecycle-owned recovery.
+
+Journal records use closed Rust enums for outcome, mutation state, identity
+observation, role-labelled capability bindings, and lifecycle payloads. Stage allocation,
+registration, publication, cleanup, and quarantine terminal outcomes are therefore part of
+the typed record protocol rather than string labels or optional side fields.
+Operation call sites use operation-specific capability constructors (`write`,
+`mkdir_child`, `rename`, and their close/open counterparts); no producer passes
+an anonymous ID vector for later positional role inference.
 File writes likewise require an `ExclusiveLease` carrying the same private
 scope as the retained `FileCap`; read-only operations do not acquire a lease.
 
 Every staging mkdir is journaled with its parent/lease/stage capability ids and
-the bound `FileIdentity` before a fault checkpoint. Staging and cleanup records
-are marked as mutations; rollback failures are reported as
-`rollback-incomplete` with `mutated=true`, so an observer never mistakes a
-partially rolled-back filesystem for a clean rollback. A successful public
-mkdir is likewise recorded as a mutation.
+the bound `FileIdentity` before a fault checkpoint. Each allocated stage then
+ends in exactly one typed terminal: cleanup, publication, or an explicit
+recovery handoff. Unbound stages are retained as `StageObligation` values and
+are returned by `finish()`/`into_parts()` instead of being hidden in the
+observer. Failed restore/cleanup paths retain a bound stage authority (or an
+unbound parent/name obligation when duplication is impossible). Outcomes
+distinguish `Observed` operations from `Applied` mutations;
+there is no independent `mutated` flag that can contradict the recorded
+result. A successful public mkdir records the child publication and the outer
+staging cleanup separately.
 
 ## Transaction checkpoints
 
