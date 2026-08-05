@@ -177,6 +177,8 @@ class ReplayResult:
     live_capabilities: tuple[tuple[str, str], ...]
     obligations: tuple[str, ...] = ()
     satisfied_invariants: tuple[str, ...] = ()
+    operation_rejection_seen: bool = False
+    operation_recovery_seen: bool = False
 
 
 @dataclass
@@ -201,6 +203,8 @@ class _ReplayRuntime:
     membership_closed: bool = False
     late_fork_after_closed: bool = False
     terminal_outcome: str | None = None
+    operation_rejection_seen: bool = False
+    operation_recovery_seen: bool = False
 
 
 def _exact_keys(value: Mapping[str, Any], expected: set[str], label: str) -> None:
@@ -259,7 +263,7 @@ _JOURNAL_TRANSITIONS = {
 
 _EVENT_KINDS = {
     "capability_acquired", "capability_moved", "capability_released", "intent_declared", "barrier_entered",
-    "membership_snapshot", "identity_revalidated", "signal_sent", "endpoint_transition", "member_observed",
+    "membership_snapshot", "identity_revalidated", "signal_sent", "endpoint_transition", "operation_checkpoint", "member_observed",
     "fault_injected", "recovery", "terminal",
 }
 _ACTORS = {"launcher", "controller", "launchd", "member", "observer", "recovery"}
@@ -279,7 +283,7 @@ MODEL_BUDGETS = {
     "max_live_capabilities": 64,
     "max_recovery_steps": 16,
 }
-_UNRESOLVED_OBLIGATIONS = {"identity-failure", "late-fork-recovery", "membership-incomplete"}
+_UNRESOLVED_OBLIGATIONS = {"identity-failure", "late-fork-recovery", "membership-incomplete", "endpoint-failure", "operation-failure", "signal-failure"}
 
 
 def _recovery_target(document: Mapping[str, Any], action: RecoveryAction) -> StateSnapshot:
@@ -393,7 +397,7 @@ def _validate_event_data(kind: str, data: Mapping[str, Any], catalog: Mapping[st
     required = {
         "capability_acquired": {"capability", "owner"}, "capability_moved": {"capability", "from", "to"}, "capability_released": {"capability", "owner", "reason"},
         "intent_declared": {"intent", "transaction_id"}, "barrier_entered": {"barrier", "result"}, "membership_snapshot": {"authority", "members", "completeness"},
-        "identity_revalidated": {"capability", "result"}, "signal_sent": {"capability", "signal", "result"}, "endpoint_transition": {"endpoint", "operation", "result"},
+        "identity_revalidated": {"capability", "result"}, "signal_sent": {"capability", "signal", "result"}, "endpoint_transition": {"endpoint", "operation", "result"}, "operation_checkpoint": {"operation", "checkpoint", "placement", "result"},
         "member_observed": {"capability", "origin"}, "fault_injected": {"phase", "fault"}, "recovery": {"action", "reason"}, "terminal": {"outcome"},
     }
     _exact_keys(data, required[kind], f"{kind} data")
@@ -426,6 +430,15 @@ def _validate_event_data(kind: str, data: Mapping[str, Any], catalog: Mapping[st
     elif kind == "endpoint_transition":
         if not isinstance(data["endpoint"], str) or not data["endpoint"].startswith("endpoint.") or data["operation"] not in {"CLOSE", "UNLINK", "REVALIDATE"} or data["result"] not in {"REMOVED", "ALREADY_GONE", "MISMATCH", "REJECTED"}:
             raise TraceValidationError("invalid endpoint transition")
+    elif kind == "operation_checkpoint":
+        if data["operation"] not in {"MKDIR_CHILD", "UNLINK_EXACT", "RENAME_EXACT"}:
+            raise TraceValidationError("invalid boundary operation")
+        if data["checkpoint"] not in {
+            "after-mkdir-before-bind", "after-bind-before-publish", "after-stage-mkdir-before-bind",
+            "after-stage-bind-before-move", "after-move-before-verify", "after-quarantine-move-before-verify",
+            "after-quarantine-verify-before-gc", "before-exact-mutation", "after-exact-mutation",
+        } or data["placement"] not in {"BEFORE", "AFTER"} or data["result"] not in {"INJECTED", "COMPLETED", "ERROR"}:
+            raise TraceValidationError("invalid boundary checkpoint")
     elif kind == "member_observed":
         if data["capability"] not in catalog or data["origin"] not in {"STARTUP_LEDGER", "SNAPSHOT", "LATE_FORK", "REPLACEMENT"}:
             raise TraceValidationError("invalid member observation")
@@ -509,7 +522,26 @@ def apply_event(runtime: _ReplayRuntime, event: Mapping[str, Any], model: Mappin
             raise TraceValidationError(f"signal without live matching identity: {cap}")
         if runtime.catalog[cap].kind not in _PIDFD_KINDS:
             raise TraceValidationError(f"signal requires a process pidfd capability, got {runtime.catalog[cap].kind.value}")
+        signal_result = data["result"]
+        if signal_result == "GONE":
+            runtime.live.pop(cap, None)
+            runtime.matched.discard(cap)
+            runtime.gone.add(cap)
+        elif signal_result == "REJECTED":
+            runtime.obligations.add("signal-failure")
+        elif signal_result == "DEADLINE":
+            runtime.obligations.add("fault:TIMEOUT")
         runtime.snapshot = StateSnapshot(runtime.snapshot.stable_state, JournalPhase.CLEANUP, runtime.snapshot.intent)
+    elif kind == "endpoint_transition":
+        if data["result"] == "REJECTED":
+            runtime.obligations.add("endpoint-failure")
+    elif kind == "operation_checkpoint":
+        # This event is emitted from the real fd-relative boundary probe.  A
+        # rejected checkpoint is a typed recovery obligation, not a label
+        # attached to a synthetic fault event.
+        if data["result"] in {"INJECTED", "ERROR"}:
+            runtime.operation_rejection_seen = True
+            runtime.obligations.add("operation-failure")
     elif kind == "member_observed" and data["origin"] == "LATE_FORK":
         if runtime.catalog[data["capability"]].kind not in _PIDFD_KINDS:
             raise TraceValidationError("member observation requires a process pidfd capability")
@@ -531,12 +563,26 @@ def apply_event(runtime: _ReplayRuntime, event: Mapping[str, Any], model: Mappin
         if action in {RecoveryAction.ROLLBACK_UNINITIALIZED, RecoveryAction.ROLLBACK_READY, RecoveryAction.ROLLBACK_RUNNING, RecoveryAction.ROLLBACK_STOPPED, RecoveryAction.FAIL_CLOSED, RecoveryAction.QUARANTINE}:
             # Rollback owns the release boundary, but restores the exact
             # ownership checkpoint rather than erasing unrelated pre-existing
-            # capabilities.  Generation consumption remains monotonic.
+            # capabilities.  Generation consumption remains monotonic.  A
+            # capability whose identity was observed gone is also monotonic:
+            # rollback cannot resurrect a dead/replaced process or inode.
+            gone_after_transaction = set(runtime.gone)
             runtime.live = dict(runtime.checkpoint_live)
             runtime.matched = set(runtime.checkpoint_matched)
             runtime.gone = set(runtime.checkpoint_gone)
+            for cap in gone_after_transaction:
+                runtime.live.pop(cap, None)
+                runtime.matched.discard(cap)
+                runtime.gone.add(cap)
             runtime.transaction_id = None
-        runtime.obligations.difference_update({item for item in runtime.obligations if item.startswith("fault:") or item in {"late-fork-recovery", "identity-failure"}})
+            if "operation-failure" in runtime.obligations:
+                runtime.operation_recovery_seen = True
+            runtime.obligations.difference_update({item for item in runtime.obligations if item.startswith("fault:") or item in {"late-fork-recovery", "identity-failure", "endpoint-failure", "operation-failure", "signal-failure"}})
+        elif action is RecoveryAction.CONTINUE_DRAIN:
+            if "operation-failure" in runtime.obligations:
+                runtime.obligations.remove("operation-failure")
+                runtime.operation_recovery_seen = True
+            runtime.obligations.discard("signal-failure")
     elif kind == "terminal":
         if runtime.terminal_outcome is not None:
             raise TraceValidationError("trace contains more than one terminal event")
@@ -714,6 +760,8 @@ def replay_trace(
         actual_live,
         tuple(sorted(runtime.obligations)),
         tuple(sorted(satisfied)),
+        runtime.operation_rejection_seen,
+        runtime.operation_recovery_seen,
     )
 
 

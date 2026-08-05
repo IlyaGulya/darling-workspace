@@ -269,6 +269,73 @@ for trace_path in sorted(trace_root.glob("*.json")):
     }
     assert rust_result == expected_result, f"Rust/Python differential mismatch for {trace_path.name}"
 
+
+def assert_both_reject(document: dict, label: str) -> None:
+    try:
+        replay_trace(document)
+    except Exception:
+        pass
+    else:
+        raise AssertionError(f"Python accepted {label}")
+    try:
+        adapter.invoke({"op": "replay_trace", "trace": document})
+    except RuntimeError:
+        pass
+    else:
+        raise AssertionError(f"Rust accepted {label}")
+
+
+gone_trace = load_json(trace_root / "shared-session-signal-gone.json")
+for label, data in {
+    "membership-after-gone": {
+        "seq": 0,
+        "time_ns": 6000,
+        "actor": "observer",
+        "kind": "membership_snapshot",
+        "data": {
+            "authority": "SESSION_LEDGER",
+            "members": ["cap.session-root"],
+            "completeness": "CLOSED",
+        },
+        "state_after": gone_trace["events"][-1]["state_after"],
+    },
+    "signal-after-gone": {
+        "seq": 0,
+        "time_ns": 6000,
+        "actor": "controller",
+        "kind": "signal_sent",
+        "data": {"capability": "cap.session-root", "signal": "TERM", "result": "SENT"},
+        "state_after": gone_trace["events"][-1]["state_after"],
+    },
+}.items():
+    mutated = copy.deepcopy(gone_trace)
+    terminal = mutated["events"].pop()
+    mutated["events"].append(data)
+    terminal["seq"] = len(mutated["events"])
+    mutated["events"].append(terminal)
+    for index, event in enumerate(mutated["events"]):
+        event["seq"] = index
+    assert_both_reject(mutated, label)
+
+rejected_trace = load_json(trace_root / "shared-session-signal-rejected.json")
+unrecovered_observed = copy.deepcopy(rejected_trace)
+unrecovered_observed["events"].pop(-2)  # retain RECOVERED with signal-failure unresolved
+unrecovered_observed["recovery_observations"] = []
+for index, event in enumerate(unrecovered_observed["events"]):
+    event["seq"] = index
+python_unrecovered = replay_trace(unrecovered_observed)
+assert "signal-failure" in python_unrecovered.obligations
+rust_unrecovered = adapter.invoke({"op": "replay_trace", "trace": unrecovered_observed})
+assert "signal-failure" in rust_unrecovered["obligations"]
+
+unrecovered_rejected = copy.deepcopy(rejected_trace)
+unrecovered_rejected["events"].pop(-2)  # remove the ContinueDrain recovery
+unrecovered_rejected["events"][-1]["data"]["outcome"] = "SUCCESS"
+unrecovered_rejected["expected"]["outcome"] = "SUCCESS"
+for index, event in enumerate(unrecovered_rejected["events"]):
+    event["seq"] = index
+assert_both_reject(unrecovered_rejected, "rejected-signal-without-recovery")
+
 tampered_trace = copy.deepcopy(load_json(sorted(trace_root.glob("*.json"))[0]))
 tampered_trace["events"][0]["unexpected"] = True
 try:

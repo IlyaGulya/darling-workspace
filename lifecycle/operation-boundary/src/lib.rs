@@ -13,9 +13,11 @@ use std::mem::MaybeUninit;
 use std::os::fd::{AsRawFd, FromRawFd, IntoRawFd, OwnedFd, RawFd};
 use std::os::unix::ffi::OsStrExt;
 use std::path::Path;
+use std::ptr;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Instant;
 
+pub mod explorer;
 pub mod state;
 
 pub type Result<T> = std::result::Result<T, BoundaryError>;
@@ -214,7 +216,8 @@ capability_type!(LockCap, "LockCap");
 capability_type!(ExclusiveLease, "ExclusiveLease");
 
 /// An externally established proof that no namespace writer can mutate the
-/// anchored parent for the duration of one quarantine GC transaction.
+/// anchored parent for the duration of one final exact mutation or quarantine
+/// GC transaction.
 ///
 /// The operation boundary deliberately has no constructor that discovers or
 /// asserts quiescence.  A lifecycle controller/explorer must establish the
@@ -223,6 +226,8 @@ capability_type!(ExclusiveLease, "ExclusiveLease");
 /// obligation and cannot be unlinked by the boundary.
 pub struct QuiescentScope {
     parent_identity: FileIdentity,
+    secondary_parent_identity: Option<FileIdentity>,
+    secondary_parent_scope: Option<ScopeId>,
     lease_identity: FileIdentity,
     scope: ScopeId,
     token: u64,
@@ -246,10 +251,48 @@ impl QuiescentScope {
         let lease_identity = FileIdentity::from_fd(lease.raw_fd())?;
         Ok(Self {
             parent_identity,
+            secondary_parent_identity: None,
+            secondary_parent_scope: None,
             lease_identity,
             scope: parent.scope(),
             token: NEXT_SCOPE_ID.fetch_add(1, Ordering::Relaxed),
         })
+    }
+
+    /// Construct a scope for one cross-directory mutation.  Both parent
+    /// identities are captured under the same externally established writer
+    /// barrier; neither directory may be rediscovered by pathname later.
+    ///
+    /// # Safety
+    /// The caller must have stopped writers for both parents for the lifetime
+    /// of the returned scope.
+    pub unsafe fn from_external_pair(
+        source: &DirCap,
+        destination: &DirCap,
+        lease: &ExclusiveLease,
+    ) -> Result<Self> {
+        if source.scope() != lease.scope() {
+            return Err(BoundaryError::WrongCapability("quiescent scope"));
+        }
+        let parent_identity = FileIdentity::from_fd(source.raw_fd())?;
+        let secondary_parent_identity = FileIdentity::from_fd(destination.raw_fd())?;
+        let lease_identity = FileIdentity::from_fd(lease.raw_fd())?;
+        Ok(Self {
+            parent_identity,
+            secondary_parent_identity: Some(secondary_parent_identity),
+            secondary_parent_scope: Some(destination.scope()),
+            lease_identity,
+            scope: source.scope(),
+            token: NEXT_SCOPE_ID.fetch_add(1, Ordering::Relaxed),
+        })
+    }
+
+    fn allows_parent(&self, identity: FileIdentity) -> bool {
+        let inode = identity.inode_key();
+        self.parent_identity.inode_key() == inode
+            || self
+                .secondary_parent_identity
+                .is_some_and(|secondary| secondary.inode_key() == inode)
     }
 
     pub fn token(&self) -> u64 {
@@ -264,6 +307,11 @@ impl QuiescentScope {
 #[must_use = "quarantine obligations must be handled"]
 pub struct QuarantinedObject {
     fd: OwnedFd,
+    // Retain the exact parent authority with the quarantined inode.  A
+    // recovery controller must not rediscover the parent by pathname after
+    // the move; this capability also lets it build a matching quiescence
+    // scope for nested staging directories.
+    parent: DirCap,
     parent_identity: FileIdentity,
     lease_identity: FileIdentity,
     scope: ScopeId,
@@ -297,6 +345,10 @@ impl QuarantinedObject {
     pub fn is_directory(&self) -> bool {
         self.directory
     }
+
+    pub(crate) fn parent_cap(&self) -> &DirCap {
+        &self.parent
+    }
 }
 
 impl fmt::Debug for QuarantinedObject {
@@ -312,6 +364,7 @@ impl fmt::Debug for QuarantinedObject {
 
 #[must_use = "quarantine obligations must be handled"]
 pub struct UnboundQuarantine {
+    parent_fd: Option<OwnedFd>,
     parent_identity: FileIdentity,
     lease_identity: FileIdentity,
     scope: ScopeId,
@@ -344,6 +397,10 @@ impl UnboundQuarantine {
 
     pub fn is_directory(&self) -> bool {
         self.directory
+    }
+
+    pub(crate) fn parent_fd(&self) -> Option<RawFd> {
+        self.parent_fd.as_ref().map(AsRawFd::as_raw_fd)
     }
 }
 
@@ -422,9 +479,12 @@ pub enum StageObligation {
 #[must_use = "bound stage obligations must be handled"]
 #[derive(Debug)]
 pub struct BoundStageObligation {
+    parent: DirCap,
     stage: DirCap,
     stage_ref: StageRef,
+    name: CString,
     child: Option<ChildRef>,
+    child_identity: Option<FileIdentity>,
 }
 
 impl BoundStageObligation {
@@ -439,6 +499,14 @@ impl BoundStageObligation {
     pub fn stage_identity(&self) -> FileIdentity {
         self.stage.identity()
     }
+
+    pub fn child_identity(&self) -> Option<FileIdentity> {
+        self.child_identity
+    }
+
+    pub fn name(&self) -> &CStr {
+        &self.name
+    }
 }
 
 #[must_use = "unbound stage obligations must be handled"]
@@ -450,6 +518,7 @@ pub struct UnboundStageObligation {
     child: Option<ChildRef>,
     name: CString,
     expected: Option<FileIdentity>,
+    child_identity: Option<FileIdentity>,
     scope: ScopeId,
 }
 
@@ -468,6 +537,10 @@ impl UnboundStageObligation {
 
     pub fn expected_identity(&self) -> Option<FileIdentity> {
         self.expected
+    }
+
+    pub fn child_identity(&self) -> Option<FileIdentity> {
+        self.child_identity
     }
 
     pub fn name(&self) -> &CStr {
@@ -528,6 +601,29 @@ impl StageObligations {
 
     pub fn ids(&self) -> Vec<u64> {
         self.obligations.iter().map(StageObligation::id).collect()
+    }
+
+    /// Return the retained stage identity carried by each obligation.  Bound
+    /// records read from their retained directory FD; unbound records expose
+    /// the identity captured before the fallible bind step.
+    pub fn identities(&self) -> Vec<Option<FileIdentity>> {
+        self.obligations
+            .iter()
+            .map(|obligation| match obligation {
+                StageObligation::Bound(stage) => Some(stage.stage_identity()),
+                StageObligation::Unbound(stage) => stage.expected_identity(),
+            })
+            .collect()
+    }
+
+    pub fn child_identities(&self) -> Vec<Option<FileIdentity>> {
+        self.obligations
+            .iter()
+            .map(|obligation| match obligation {
+                StageObligation::Bound(stage) => stage.child_identity(),
+                StageObligation::Unbound(stage) => stage.child_identity(),
+            })
+            .collect()
     }
 
     pub fn into_inner(self) -> Vec<StageObligation> {
@@ -1248,6 +1344,28 @@ impl Clock for ScriptedClock {
 
 pub trait FaultInjector {
     fn checkpoint(&mut self, checkpoint: Checkpoint) -> Result<()>;
+
+    /// Whether the most recent hook performed (or attempted) a namespace
+    /// write.  A true result irreversibly invalidates any parked external
+    /// quiescence proof; a controller must establish a fresh barrier before
+    /// another exact mutation or recovery operation.
+    fn invalidates_quiescence(&self) -> bool {
+        false
+    }
+
+    /// Consume the invalidation for the hook just executed.  Keeping this a
+    /// one-shot observation lets a caller establish a fresh barrier after a
+    /// writer hook; a historical invalidation must not poison later scopes.
+    fn take_quiescence_invalidation(&mut self) -> bool {
+        self.invalidates_quiescence()
+    }
+
+    /// Run after a checkpoint has been observed successfully.  This second
+    /// phase lets a deterministic test seam model an AFTER failure at the
+    /// real operation boundary; production injectors keep the default no-op.
+    fn after_checkpoint(&mut self, _checkpoint: Checkpoint) -> Result<()> {
+        Ok(())
+    }
 }
 
 #[derive(Default)]
@@ -1405,6 +1523,44 @@ fn reopen_directory_fd(fd: RawFd) -> Result<OwnedFd> {
     Ok(unsafe { OwnedFd::from_raw_fd(reopened) })
 }
 
+/// RAII owner for the DIR* returned by fdopendir.  In particular, a readdir
+/// error must not bypass closedir: NULL is both EOF and error and the error
+/// path is otherwise an easy descriptor leak.
+struct DirStream {
+    raw: *mut libc::DIR,
+}
+
+impl DirStream {
+    fn new(raw: *mut libc::DIR) -> Self {
+        debug_assert!(!raw.is_null());
+        Self { raw }
+    }
+
+    fn as_raw(&self) -> *mut libc::DIR {
+        self.raw
+    }
+
+    fn close(mut self) -> Result<()> {
+        let raw = self.raw;
+        self.raw = ptr::null_mut();
+        // SAFETY: raw is the live DIR* owned by this guard.
+        if unsafe { libc::closedir(raw) } < 0 {
+            return Err(io_error("closedir"));
+        }
+        Ok(())
+    }
+}
+
+impl Drop for DirStream {
+    fn drop(&mut self) {
+        if !self.raw.is_null() {
+            // SAFETY: the guard exclusively owns this DIR*.
+            unsafe { libc::closedir(self.raw) };
+            self.raw = ptr::null_mut();
+        }
+    }
+}
+
 fn read_directory(
     fd: RawFd,
     max_items: usize,
@@ -1426,16 +1582,21 @@ fn read_directory(
         drop(unsafe { OwnedFd::from_raw_fd(reopened_fd) });
         return Err(io_error("fdopendir"));
     }
+    let directory = DirStream::new(directory);
     let mut names = Vec::new();
     loop {
         if clock.now_ns() >= deadline_ns {
-            // SAFETY: directory is a live DIR* owned by this function.
-            unsafe { libc::closedir(directory) };
             return Err(BoundaryError::BudgetExceeded("directory deadline"));
         }
+        // POSIX uses NULL for both EOF and errors.  Clear errno before the
+        // call so an old unrelated errno cannot turn a clean EOF into a
+        // false failure, and fail closed when readdir reports an error.
+        unsafe { *libc::__errno_location() = 0 };
         // SAFETY: readdir returns a borrowed entry valid until the next call.
-        let entry = unsafe { libc::readdir(directory) };
+        let entry = unsafe { libc::readdir(directory.as_raw()) };
         if entry.is_null() {
+            let errno = unsafe { *libc::__errno_location() };
+            readdir_end_or_error(errno)?;
             break;
         }
         // SAFETY: entry is non-null and d_name is a NUL-terminated field.
@@ -1448,17 +1609,23 @@ fn read_directory(
             continue;
         }
         if names.len() >= max_items {
-            // SAFETY: directory is a live DIR* owned by this function.
-            unsafe { libc::closedir(directory) };
             return Err(BoundaryError::BudgetExceeded("directory item limit"));
         }
         names.push(name);
     }
-    // SAFETY: directory is a live DIR* owned by this function.
-    if unsafe { libc::closedir(directory) } < 0 {
-        return Err(io_error("closedir"));
-    }
+    directory.close()?;
     Ok(names)
+}
+
+fn readdir_end_or_error(errno: i32) -> Result<()> {
+    if errno == 0 {
+        Ok(())
+    } else {
+        Err(BoundaryError::Io {
+            operation: "readdir",
+            source: std::io::Error::from_raw_os_error(errno),
+        })
+    }
 }
 
 pub struct Boundary<C: Clock, O: Observer, F: FaultInjector> {
@@ -1468,6 +1635,7 @@ pub struct Boundary<C: Clock, O: Observer, F: FaultInjector> {
     sequence: u64,
     next_id: u64,
     quiescent_scope: Option<QuiescentScope>,
+    quiescence_invalidated: bool,
     pending_quarantines: Vec<QuarantineObligation>,
     pending_stages: Vec<StageObligation>,
     rollback_disposition: RollbackDisposition,
@@ -1488,6 +1656,7 @@ impl<C: Clock, O: Observer, F: FaultInjector> Boundary<C, O, F> {
             sequence: 0,
             next_id: 0,
             quiescent_scope: None,
+            quiescence_invalidated: false,
             pending_quarantines: Vec::new(),
             pending_stages: Vec::new(),
             rollback_disposition: RollbackDisposition::ReadyForQuarantine,
@@ -1498,6 +1667,7 @@ impl<C: Clock, O: Observer, F: FaultInjector> Boundary<C, O, F> {
     /// boundary never derives this scope from its own directory or lock
     /// checks; callers must explicitly hand it over after quiescing writers.
     pub fn set_quiescent_scope(&mut self, scope: QuiescentScope) {
+        self.quiescence_invalidated = false;
         self.quiescent_scope = Some(scope);
     }
 
@@ -1532,6 +1702,7 @@ impl<C: Clock, O: Observer, F: FaultInjector> Boundary<C, O, F> {
         child: Option<ChildRef>,
         name: CString,
         expected: Option<FileIdentity>,
+        child_identity: Option<FileIdentity>,
     ) -> usize {
         // The duplicate is best-effort, but the typed obligation is never
         // dropped when duplication fails.  A None parent descriptor is an
@@ -1545,6 +1716,7 @@ impl<C: Clock, O: Observer, F: FaultInjector> Boundary<C, O, F> {
                 child,
                 name,
                 expected,
+                child_identity,
                 scope: parent.scope(),
             }));
         self.pending_stages.len() - 1
@@ -1560,23 +1732,38 @@ impl<C: Clock, O: Observer, F: FaultInjector> Boundary<C, O, F> {
         stage: &DirCap,
         name: &CString,
         child: Option<ChildRef>,
+        child_identity: Option<FileIdentity>,
     ) {
         let stage_ref = StageRef::new(stage.id());
-        if let Ok(fd) = duplicate_fd(stage.raw_fd()) {
-            self.pending_stages
-                .push(StageObligation::Bound(BoundStageObligation {
-                    stage: DirCap::new(fd, stage.identity(), stage.id(), stage.scope()),
+        let parent_fd = duplicate_fd(parent.raw_fd());
+        let stage_fd = duplicate_fd(stage.raw_fd());
+        match (parent_fd, stage_fd) {
+            (Ok(parent_fd), Ok(stage_fd)) => {
+                self.pending_stages
+                    .push(StageObligation::Bound(BoundStageObligation {
+                        parent: DirCap::new(
+                            parent_fd,
+                            parent.identity(),
+                            parent.id(),
+                            parent.scope(),
+                        ),
+                        stage: DirCap::new(stage_fd, stage.identity(), stage.id(), stage.scope()),
+                        stage_ref,
+                        name: name.clone(),
+                        child,
+                        child_identity,
+                    }))
+            }
+            _ => {
+                self.register_unbound_stage(
+                    parent,
                     stage_ref,
                     child,
-                }));
-        } else {
-            self.register_unbound_stage(
-                parent,
-                stage_ref,
-                child,
-                name.clone(),
-                Some(stage.identity()),
-            );
+                    name.clone(),
+                    Some(stage.identity()),
+                    child_identity,
+                );
+            }
         }
     }
 
@@ -1745,7 +1932,18 @@ impl<C: Clock, O: Observer, F: FaultInjector> Boundary<C, O, F> {
     }
 
     fn checkpoint(&mut self, checkpoint: Checkpoint) -> Result<()> {
+        // Fault hooks are test/explorer namespace writers, not participants
+        // in the lifecycle quiescence proof. Temporarily withdraw the parked
+        // scope while invoking either hook. A writer hook permanently
+        // invalidates the old proof; dropping the Rust value does not restore
+        // the external barrier, so callers must establish a new one.
+        let parked_scope = self.quiescent_scope.take();
         let result = self.faults.checkpoint(checkpoint);
+        if self.faults.take_quiescence_invalidation() {
+            self.quiescence_invalidated = true;
+        } else {
+            self.quiescent_scope = parked_scope;
+        }
         self.record_operation(
             OperationName::Checkpoint,
             CapabilitySet::empty(),
@@ -1756,7 +1954,24 @@ impl<C: Clock, O: Observer, F: FaultInjector> Boundary<C, O, F> {
             },
             Some(checkpoint),
         );
-        result
+        result?;
+        let parked_scope = self.quiescent_scope.take();
+        let after = self.faults.after_checkpoint(checkpoint);
+        if self.faults.take_quiescence_invalidation() {
+            self.quiescence_invalidated = true;
+        } else {
+            self.quiescent_scope = parked_scope;
+        }
+        if let Err(error) = after {
+            self.record_operation(
+                OperationName::Checkpoint,
+                CapabilitySet::empty(),
+                OperationOutcome::Injected,
+                Some(checkpoint),
+            );
+            return Err(error);
+        }
+        Ok(())
     }
 
     pub fn now_ns(&mut self) -> u64 {
@@ -1920,6 +2135,7 @@ impl<C: Clock, O: Observer, F: FaultInjector> Boundary<C, O, F> {
                     child_stage_ref,
                     Some(child_ref),
                     staged_name.clone(),
+                    None,
                     None,
                 );
                 let cleanup_stage =
@@ -2123,6 +2339,42 @@ impl<C: Clock, O: Observer, F: FaultInjector> Boundary<C, O, F> {
         }
     }
 
+    /// Final exact mutation is name-based at the kernel ABI, so the retained
+    /// object identity alone cannot close the last unlinkat/renameat window.
+    /// Require the lifecycle controller's external writer-stop proof and
+    /// validate that its anchored parent/lease still match immediately before
+    /// the syscall.  Without this capability the operation leaves its staged
+    /// object as an explicit recovery obligation instead of guessing.
+    fn require_exact_mutation_scope(
+        &mut self,
+        parent: &DirCap,
+        lease: &ExclusiveLease,
+    ) -> Result<()> {
+        let Some(scope) = self.quiescent_scope.as_ref() else {
+            return Err(BoundaryError::QuarantineRequired);
+        };
+        let scope_id = scope.scope;
+        let scope_parent_identity = scope.parent_identity;
+        let scope_secondary_parent_identity = scope.secondary_parent_identity;
+        let scope_secondary_parent_scope = scope.secondary_parent_scope;
+        let scope_lease_identity = scope.lease_identity;
+        if parent.scope() != scope_id && scope_secondary_parent_scope != Some(parent.scope()) {
+            return Err(BoundaryError::WrongCapability("authority scope"));
+        }
+        let observed_parent = self.revalidate_directory(parent, false)?;
+        let observed_inode = observed_parent.inode_key();
+        if scope_parent_identity.inode_key() != observed_inode
+            && scope_secondary_parent_identity
+                .is_none_or(|secondary| secondary.inode_key() != observed_inode)
+        {
+            return Err(BoundaryError::IdentityMismatch);
+        }
+        if FileIdentity::from_fd(lease.raw_fd())?.inode_key() != scope_lease_identity.inode_key() {
+            return Err(BoundaryError::IdentityMismatch);
+        }
+        Ok(())
+    }
+
     /// Collect a quarantined object only with the externally established
     /// writer-stop scope.  The identity check is intentionally made against
     /// the retained transaction object, not a caller-provided bare name.
@@ -2138,7 +2390,7 @@ impl<C: Clock, O: Observer, F: FaultInjector> Boundary<C, O, F> {
         self.require_scope(parent.scope(), scope.scope)?;
         self.require_scope(parent.scope(), object.scope)?;
         let observed_parent = self.revalidate_directory(parent, false)?;
-        if observed_parent.inode_key() != scope.parent_identity.inode_key()
+        if !scope.allows_parent(observed_parent)
             || observed_parent.inode_key() != object.parent_identity.inode_key()
         {
             return Err(BoundaryError::IdentityMismatch);
@@ -2163,6 +2415,9 @@ impl<C: Clock, O: Observer, F: FaultInjector> Boundary<C, O, F> {
         // this point is treated as a violated external quiescence claim and
         // fails closed; production callers must not run writers in this scope.
         self.checkpoint(Checkpoint::AfterQuarantineVerifyBeforeGc)?;
+        if self.quiescence_invalidated {
+            return Err(BoundaryError::QuarantineRequired);
+        }
         if FileIdentity::from_fd(object.fd.as_raw_fd())?.inode_key() != object.expected.inode_key()
             || FileIdentity::from_at(parent.raw_fd(), &object.quarantine_name)?.inode_key()
                 != object.expected.inode_key()
@@ -2203,7 +2458,9 @@ impl<C: Clock, O: Observer, F: FaultInjector> Boundary<C, O, F> {
         let object_id = object.id();
         let identity = object.identity();
         let result = self.gc_quarantine(parent, lease, &scope, &object);
-        self.quiescent_scope = Some(scope);
+        if !self.quiescence_invalidated {
+            self.quiescent_scope = Some(scope);
+        }
         if result.is_err() {
             self.pending_quarantines
                 .push(QuarantineObligation::Bound(object));
@@ -2230,7 +2487,7 @@ impl<C: Clock, O: Observer, F: FaultInjector> Boundary<C, O, F> {
             Ok(object) => self.finish_quarantine(parent, lease, object),
             Err(error) => {
                 if self.rollback_disposition.retains_stage_authority() {
-                    self.retain_stage_authority(parent, cap, name, None);
+                    self.retain_stage_authority(parent, cap, name, None, None);
                 }
                 Err(error)
             }
@@ -2265,6 +2522,7 @@ impl<C: Clock, O: Observer, F: FaultInjector> Boundary<C, O, F> {
                 None,
                 name.clone(),
                 Some(expected),
+                Some(expected),
             );
             Err(error)
         } else {
@@ -2277,6 +2535,7 @@ impl<C: Clock, O: Observer, F: FaultInjector> Boundary<C, O, F> {
                             StageRef::new(capability_id),
                             None,
                             name.clone(),
+                            Some(expected),
                             Some(expected),
                         );
                     }
@@ -2316,6 +2575,7 @@ impl<C: Clock, O: Observer, F: FaultInjector> Boundary<C, O, F> {
                         Some(ChildRef::new(stage.id())),
                         name.clone(),
                         Some(expected),
+                        None,
                     );
                 }
                 Err(error)
@@ -2407,6 +2667,7 @@ impl<C: Clock, O: Observer, F: FaultInjector> Boundary<C, O, F> {
             .expect("quarantine name has no NUL");
         rename_at(parent.raw_fd(), name, parent.raw_fd(), &quarantine_name)?;
         let unbound = UnboundQuarantine {
+            parent_fd: duplicate_fd(parent.raw_fd()).ok(),
             parent_identity: parent.identity(),
             lease_identity: lease.identity(),
             scope: parent.scope(),
@@ -2424,8 +2685,17 @@ impl<C: Clock, O: Observer, F: FaultInjector> Boundary<C, O, F> {
                 );
             }
         };
+        let parent_fd = match duplicate_fd(parent.raw_fd()) {
+            Ok(fd) => fd,
+            Err(error) => {
+                return Err(
+                    self.restore_or_track_quarantine(parent, name, expected, unbound, None, error)
+                );
+            }
+        };
         let object = QuarantinedObject {
             fd,
+            parent: DirCap::new(parent_fd, parent.identity(), parent.id(), parent.scope()),
             parent_identity: parent.identity(),
             lease_identity: lease.identity(),
             scope: parent.scope(),
@@ -2518,6 +2788,7 @@ impl<C: Clock, O: Observer, F: FaultInjector> Boundary<C, O, F> {
                     stage_ref,
                     Some(ChildRef::new(stage_id)),
                     stage_name.clone(),
+                    None,
                     None,
                 );
                 self.record_stage_cleanup(
@@ -2671,7 +2942,8 @@ impl<C: Clock, O: Observer, F: FaultInjector> Boundary<C, O, F> {
             // The stage still owns the retained object when restoration fails.
             // Transfer that authority before returning the error; otherwise a
             // failed rollback would leave an untracked inode in the stage.
-            self.retain_stage_authority(parent, stage, stage_name, None);
+            let child_identity = FileIdentity::from_at(stage.raw_fd(), staged_name).ok();
+            self.retain_stage_authority(parent, stage, stage_name, None, child_identity);
             return Err(error);
         }
         self.cleanup_registered(parent, lease, stage_name, stage, true)
@@ -2807,6 +3079,76 @@ impl<C: Clock, O: Observer, F: FaultInjector> Boundary<C, O, F> {
             );
             return Err(rollback.err().unwrap_or(BoundaryError::IdentityMismatch));
         }
+        if let Err(error) = self.require_exact_mutation_scope(parent, lease) {
+            let rollback = self.restore_staged_and_cleanup(
+                &stage,
+                parent,
+                lease,
+                &stage_name,
+                &staged_name,
+                &name,
+            );
+            self.record_with(
+                OperationName::UnlinkExact,
+                capabilities.clone(),
+                if rollback.is_ok() {
+                    OperationOutcome::RolledBackError
+                } else {
+                    OperationOutcome::RollbackIncomplete
+                },
+                None,
+            );
+            return Err(rollback.err().unwrap_or(error));
+        }
+        // The scope is the external writer-stop proof for the final
+        // name-based mutation.  Re-observe the retained stage immediately
+        // before unlinkat; a mismatch is handed to the existing typed
+        // recovery path and never mutates a foreign inode.
+        let final_identity = match FileIdentity::from_at(stage.raw_fd(), &staged_name) {
+            Ok(identity) => identity,
+            Err(error) => {
+                let rollback = self.restore_staged_and_cleanup(
+                    &stage,
+                    parent,
+                    lease,
+                    &stage_name,
+                    &staged_name,
+                    &name,
+                );
+                self.record_with(
+                    OperationName::UnlinkExact,
+                    capabilities.clone(),
+                    if rollback.is_ok() {
+                        OperationOutcome::RolledBackError
+                    } else {
+                        OperationOutcome::RollbackIncomplete
+                    },
+                    None,
+                );
+                return Err(rollback.err().unwrap_or(error));
+            }
+        };
+        if final_identity.inode_key() != expected.inode_key() {
+            let rollback = self.restore_staged_and_cleanup(
+                &stage,
+                parent,
+                lease,
+                &stage_name,
+                &staged_name,
+                &name,
+            );
+            self.record_with(
+                OperationName::UnlinkExact,
+                capabilities.clone(),
+                if rollback.is_ok() {
+                    OperationOutcome::IdentityMismatch
+                } else {
+                    OperationOutcome::RollbackIncomplete
+                },
+                None,
+            );
+            return Err(rollback.err().unwrap_or(BoundaryError::IdentityMismatch));
+        }
         if let Err(error) = unlink_at(stage.raw_fd(), &staged_name, directory) {
             let rollback = self.restore_staged_and_cleanup(
                 &stage,
@@ -2868,15 +3210,6 @@ impl<C: Clock, O: Observer, F: FaultInjector> Boundary<C, O, F> {
         let destination = c_name(destination)?;
         let capabilities = CapabilitySet::rename(source_parent, destination_parent, lease);
         if let Err(error) = self.require_scope(source_parent.scope(), lease.scope()) {
-            self.record_with(
-                OperationName::RenameExact,
-                capabilities.clone(),
-                OperationOutcome::Error,
-                None,
-            );
-            return Err(error);
-        }
-        if let Err(error) = self.require_scope(source_parent.scope(), destination_parent.scope()) {
             self.record_with(
                 OperationName::RenameExact,
                 capabilities.clone(),
@@ -2981,6 +3314,93 @@ impl<C: Clock, O: Observer, F: FaultInjector> Boundary<C, O, F> {
             }
         };
         if observed.inode_key() != expected.inode_key() {
+            let rollback = self.restore_staged_and_cleanup(
+                &stage,
+                source_parent,
+                lease,
+                &stage_name,
+                &staged_name,
+                &source,
+            );
+            self.record_with(
+                OperationName::RenameExact,
+                capabilities.clone(),
+                if rollback.is_ok() {
+                    OperationOutcome::IdentityMismatch
+                } else {
+                    OperationOutcome::RollbackIncomplete
+                },
+                None,
+            );
+            return Err(rollback.err().unwrap_or(BoundaryError::IdentityMismatch));
+        }
+        if let Err(error) = self.require_exact_mutation_scope(source_parent, lease) {
+            let rollback = self.restore_staged_and_cleanup(
+                &stage,
+                source_parent,
+                lease,
+                &stage_name,
+                &staged_name,
+                &source,
+            );
+            self.record_with(
+                OperationName::RenameExact,
+                capabilities.clone(),
+                if rollback.is_ok() {
+                    OperationOutcome::RolledBackError
+                } else {
+                    OperationOutcome::RollbackIncomplete
+                },
+                None,
+            );
+            return Err(rollback.err().unwrap_or(error));
+        }
+        if let Err(error) = self.require_exact_mutation_scope(destination_parent, lease) {
+            let rollback = self.restore_staged_and_cleanup(
+                &stage,
+                source_parent,
+                lease,
+                &stage_name,
+                &staged_name,
+                &source,
+            );
+            self.record_with(
+                OperationName::RenameExact,
+                capabilities.clone(),
+                if rollback.is_ok() {
+                    OperationOutcome::Error
+                } else {
+                    OperationOutcome::RollbackIncomplete
+                },
+                None,
+            );
+            return Err(rollback.err().unwrap_or(error));
+        }
+        let final_identity = match FileIdentity::from_at(stage.raw_fd(), &staged_name) {
+            Ok(identity) => identity,
+            Err(error) => {
+                let rollback = self.restore_staged_and_cleanup(
+                    &stage,
+                    source_parent,
+                    lease,
+                    &stage_name,
+                    &staged_name,
+                    &source,
+                );
+                self.record_with(
+                    OperationName::RenameExact,
+                    capabilities.clone(),
+                    if rollback.is_ok() {
+                        OperationOutcome::RolledBackError
+                    } else {
+                        OperationOutcome::RollbackIncomplete
+                    },
+                    None,
+                );
+                return Err(rollback.err().unwrap_or(error));
+            }
+        };
+        if final_identity.inode_key() != expected.inode_key() {
             let rollback = self.restore_staged_and_cleanup(
                 &stage,
                 source_parent,
@@ -3337,6 +3757,10 @@ mod tests {
     }
 
     impl FaultInjector for SwapAfterBind {
+        fn invalidates_quiescence(&self) -> bool {
+            self.fired
+        }
+
         fn checkpoint(&mut self, checkpoint: Checkpoint) -> Result<()> {
             if checkpoint == Checkpoint::AfterBindBeforePublish && !self.fired {
                 self.fired = true;
@@ -3353,6 +3777,10 @@ mod tests {
     }
 
     impl FaultInjector for SwapBeforeMutation {
+        fn invalidates_quiescence(&self) -> bool {
+            self.fired
+        }
+
         fn checkpoint(&mut self, checkpoint: Checkpoint) -> Result<()> {
             if checkpoint == Checkpoint::BeforeExactMutation && !self.fired {
                 self.fired = true;
@@ -3371,6 +3799,10 @@ mod tests {
     }
 
     impl FaultInjector for ReplacementAfterMove {
+        fn invalidates_quiescence(&self) -> bool {
+            self.fired
+        }
+
         fn checkpoint(&mut self, checkpoint: Checkpoint) -> Result<()> {
             if checkpoint == Checkpoint::AfterMoveBeforeVerify && !self.fired {
                 self.fired = true;
@@ -3394,6 +3826,10 @@ mod tests {
     }
 
     impl FaultInjector for ReplacementAfterQuarantineVerify {
+        fn invalidates_quiescence(&self) -> bool {
+            self.fired
+        }
+
         fn checkpoint(&mut self, checkpoint: Checkpoint) -> Result<()> {
             if checkpoint == Checkpoint::AfterQuarantineVerifyBeforeGc && !self.fired {
                 self.fired = true;
@@ -3409,6 +3845,10 @@ mod tests {
     }
 
     impl FaultInjector for ReplacementAfterQuarantine {
+        fn invalidates_quiescence(&self) -> bool {
+            self.fired
+        }
+
         fn checkpoint(&mut self, checkpoint: Checkpoint) -> Result<()> {
             if checkpoint == Checkpoint::AfterQuarantineMoveBeforeVerify && !self.fired {
                 self.fired = true;
@@ -3450,6 +3890,19 @@ mod tests {
         boundary.set_quiescent_scope(scope);
     }
 
+    fn install_external_scope_pair<C: Clock, O: Observer, F: FaultInjector>(
+        boundary: &mut Boundary<C, O, F>,
+        source: &DirCap,
+        destination: &DirCap,
+        lease: &ExclusiveLease,
+    ) {
+        // SAFETY: the sibling-directory fixture has no namespace writers
+        // after this handoff; it models one barrier covering both parents.
+        let scope = unsafe { QuiescentScope::from_external_pair(source, destination, lease) }
+            .expect("external paired quiescent scope");
+        boundary.set_quiescent_scope(scope);
+    }
+
     #[test]
     fn symlink_anchor_is_rejected() {
         let temp = TempDir::new("symlink");
@@ -3457,6 +3910,18 @@ mod tests {
         symlink(temp.0.join("real"), temp.0.join("alias")).expect("alias");
         let mut boundary = Boundary::new(RealClock::default(), VecObserver::default(), NoFault);
         assert!(boundary.anchor_directory(&temp.0.join("alias")).is_err());
+    }
+
+    #[test]
+    fn readdir_error_is_not_accepted_as_eof() {
+        readdir_end_or_error(0).expect("clean EOF");
+        assert!(matches!(
+            readdir_end_or_error(libc::EIO),
+            Err(BoundaryError::Io {
+                operation: "readdir",
+                source,
+            }) if source.raw_os_error() == Some(libc::EIO)
+        ));
     }
 
     #[test]
@@ -3641,7 +4106,7 @@ mod tests {
         let lease = boundary.flock_exclusive(lock, 10_000_000).expect("lease");
         install_external_scope(&mut boundary, &parent, &lease);
         let result = boundary.unlink_exact(&parent, &lease, "target", expected, false);
-        assert!(matches!(result, Err(BoundaryError::IdentityMismatch)));
+        assert!(matches!(result, Err(BoundaryError::QuarantineRequired)));
         assert_eq!(
             fs::read(temp.0.join("target")).expect("replacement"),
             b"replacement"
@@ -3820,6 +4285,97 @@ mod tests {
                 .file_name()
                 .to_string_lossy()
                 .starts_with(".lifecycle-quarantine-")));
+    }
+
+    #[test]
+    fn exact_mutation_requires_external_quiescence_scope() {
+        let temp = TempDir::new("exact-mutation-scope");
+        make_lock(&temp.0);
+        fs::write(temp.0.join("target"), b"payload").expect("target");
+        let expected = FileIdentity::from_fd(
+            fs::File::open(temp.0.join("target"))
+                .expect("target fd")
+                .as_raw_fd(),
+        )
+        .expect("identity");
+        let mut boundary = Boundary::new(RealClock::default(), VecObserver::default(), NoFault);
+        let parent = boundary.anchor_directory(&temp.0).expect("anchor");
+        let lock = boundary.open_lock(&parent, "lock").expect("lock");
+        let lease = boundary.flock_exclusive(lock, 10_000_000).expect("lease");
+        assert!(matches!(
+            boundary.unlink_exact(&parent, &lease, "target", expected, false),
+            Err(BoundaryError::QuarantineRequired)
+        ));
+        let parts = boundary.into_parts();
+        assert_eq!(parts.stage_obligations.len(), 0);
+        assert_eq!(parts.quarantine_obligations.len(), 1);
+        assert_eq!(
+            fs::read(temp.0.join("target")).expect("restored target"),
+            b"payload"
+        );
+    }
+
+    #[test]
+    fn rename_exact_requires_external_quiescence_scope() {
+        let temp = TempDir::new("rename-mutation-scope");
+        make_lock(&temp.0);
+        fs::write(temp.0.join("source"), b"payload").expect("source");
+        let expected = FileIdentity::from_fd(
+            fs::File::open(temp.0.join("source"))
+                .expect("source fd")
+                .as_raw_fd(),
+        )
+        .expect("identity");
+        let mut boundary = Boundary::new(RealClock::default(), VecObserver::default(), NoFault);
+        let parent = boundary.anchor_directory(&temp.0).expect("anchor");
+        let lock = boundary.open_lock(&parent, "lock").expect("lock");
+        let lease = boundary.flock_exclusive(lock, 10_000_000).expect("lease");
+        assert!(matches!(
+            boundary.rename_exact(&parent, &parent, &lease, "source", "destination", expected,),
+            Err(BoundaryError::QuarantineRequired)
+        ));
+        assert!(temp.0.join("source").exists());
+        assert!(!temp.0.join("destination").exists());
+    }
+
+    #[test]
+    fn rename_exact_accepts_external_scope_for_sibling_directories() {
+        let temp = TempDir::new("rename-sibling-scope");
+        fs::create_dir(temp.0.join("source-parent")).expect("source parent");
+        fs::create_dir(temp.0.join("destination-parent")).expect("destination parent");
+        make_lock(&temp.0.join("source-parent"));
+        fs::write(temp.0.join("source-parent/source"), b"payload").expect("source");
+        let expected = FileIdentity::from_fd(
+            fs::File::open(temp.0.join("source-parent/source"))
+                .expect("source fd")
+                .as_raw_fd(),
+        )
+        .expect("identity");
+        let mut boundary = Boundary::new(RealClock::default(), VecObserver::default(), NoFault);
+        let source_parent = boundary
+            .anchor_directory(&temp.0.join("source-parent"))
+            .expect("source anchor");
+        let destination_parent = boundary
+            .anchor_directory(&temp.0.join("destination-parent"))
+            .expect("destination anchor");
+        let lock = boundary.open_lock(&source_parent, "lock").expect("lock");
+        let lease = boundary.flock_exclusive(lock, 10_000_000).expect("lease");
+        install_external_scope_pair(&mut boundary, &source_parent, &destination_parent, &lease);
+        boundary
+            .rename_exact(
+                &source_parent,
+                &destination_parent,
+                &lease,
+                "source",
+                "destination",
+                expected,
+            )
+            .expect("sibling rename");
+        assert!(!temp.0.join("source-parent/source").exists());
+        assert_eq!(
+            fs::read(temp.0.join("destination-parent/destination")).expect("destination"),
+            b"payload"
+        );
     }
 
     #[test]
@@ -4284,6 +4840,7 @@ mod tests {
             stage,
             Some(ChildRef::new(78)),
             CString::new("entry").expect("name"),
+            None,
             None,
         );
         let error = match boundary.finish() {

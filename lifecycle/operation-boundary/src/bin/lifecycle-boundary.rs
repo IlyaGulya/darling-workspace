@@ -1,7 +1,8 @@
+use darling_lifecycle_operation_boundary::explorer::{explore, ExplorerBudget};
 use darling_lifecycle_operation_boundary::state::{
-    CapabilityKind, Event, IntentKind, JournalPhase, Outcome, RecoveryAction, Reducer, StableState,
-    INVARIANT_REGISTRY, MODEL_MAX_EVENTS, MODEL_MAX_LIVE_CAPABILITIES, MODEL_MAX_RECOVERY_STEPS,
-    MODEL_MAX_VIRTUAL_TIME_NS,
+    CapabilityKind, Event, IntentKind, JournalPhase, Outcome, RecoveryAction, Reducer,
+    SignalResult, StableState, INVARIANT_REGISTRY, MODEL_MAX_EVENTS, MODEL_MAX_LIVE_CAPABILITIES,
+    MODEL_MAX_RECOVERY_STEPS, MODEL_MAX_VIRTUAL_TIME_NS,
 };
 use darling_lifecycle_operation_boundary::{Boundary, NoFault, NoopObserver, RealClock};
 use serde::{Deserialize, Serialize};
@@ -16,6 +17,8 @@ struct Request {
     policy: Option<Value>,
     #[serde(default)]
     trace: Option<Value>,
+    #[serde(default)]
+    seed: Option<u64>,
 }
 
 #[derive(Serialize)]
@@ -347,6 +350,7 @@ fn validate_trace_shape(trace: &Value) -> Result<(), String> {
             "identity_revalidated" => &["capability", "result"][..],
             "signal_sent" => &["capability", "signal", "result"][..],
             "endpoint_transition" => &["endpoint", "operation", "result"][..],
+            "operation_checkpoint" => &["operation", "checkpoint", "placement", "result"][..],
             "member_observed" => &["capability", "origin"][..],
             "fault_injected" => &["phase", "fault"][..],
             "recovery" => &["action", "reason"][..],
@@ -433,6 +437,38 @@ fn validate_trace_shape(trace: &Value) -> Result<(), String> {
                     &event["data"]["result"],
                     &["REMOVED", "ALREADY_GONE", "MISMATCH", "REJECTED"],
                     "endpoint result",
+                )?;
+            }
+            "operation_checkpoint" => {
+                one_of(
+                    &event["data"]["operation"],
+                    &["MKDIR_CHILD", "UNLINK_EXACT", "RENAME_EXACT"],
+                    "boundary operation",
+                )?;
+                one_of(
+                    &event["data"]["checkpoint"],
+                    &[
+                        "after-mkdir-before-bind",
+                        "after-bind-before-publish",
+                        "after-stage-mkdir-before-bind",
+                        "after-stage-bind-before-move",
+                        "after-move-before-verify",
+                        "after-quarantine-move-before-verify",
+                        "after-quarantine-verify-before-gc",
+                        "before-exact-mutation",
+                        "after-exact-mutation",
+                    ],
+                    "boundary checkpoint",
+                )?;
+                one_of(
+                    &event["data"]["placement"],
+                    &["BEFORE", "AFTER"],
+                    "boundary placement",
+                )?;
+                one_of(
+                    &event["data"]["result"],
+                    &["INJECTED", "COMPLETED", "ERROR"],
+                    "boundary result",
                 )?;
             }
             "member_observed" => {
@@ -730,12 +766,28 @@ fn map_event(
             id: capability("capability")?,
             matches: string(data, "result")? == "MATCH",
         })),
-        "signal_sent" => Ok(Some(Event::Signal {
-            id: capability("capability")?,
-        })),
+        "signal_sent" => {
+            let result = match string(data, "result")? {
+                "SENT" => SignalResult::Sent,
+                "GONE" => SignalResult::Gone,
+                "REJECTED" => SignalResult::Rejected,
+                "DEADLINE" => SignalResult::Deadline,
+                _ => return Err("invalid signal result".to_string()),
+            };
+            Ok(Some(Event::Signal {
+                id: capability("capability")?,
+                result,
+            }))
+        }
         "endpoint_transition" => Ok(Some(Event::Endpoint {
             endpoint: string(data, "endpoint")?.to_string(),
             operation: string(data, "operation")?.to_string(),
+            result: string(data, "result")?.to_string(),
+        })),
+        "operation_checkpoint" => Ok(Some(Event::OperationCheckpoint {
+            operation: string(data, "operation")?.to_string(),
+            checkpoint: string(data, "checkpoint")?.to_string(),
+            placement: string(data, "placement")?.to_string(),
             result: string(data, "result")?.to_string(),
         })),
         "member_observed" => Ok(Some(Event::MemberObserved {
@@ -1011,6 +1063,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 .as_ref()
                 .ok_or_else(|| "replay_trace requires trace".to_string())?;
             println!("{}", serde_json::to_string(&replay_trace(trace)?)?);
+        }
+        "explore" => {
+            let report = explore(
+                request.seed.unwrap_or(0x0005_eed4_u64),
+                ExplorerBudget::default(),
+            )
+            .map_err(io::Error::other)?;
+            println!("{}", serde_json::to_string(&report)?);
         }
         _ => {
             let response = Response {

@@ -97,7 +97,7 @@
       "properties": {
         "seq": {"type": "integer", "minimum": 0}, "time_ns": {"type": "integer", "minimum": 0},
         "actor": {"enum": ["launcher", "controller", "launchd", "member", "observer", "recovery"]},
-        "kind": {"enum": ["capability_acquired", "capability_moved", "capability_released", "intent_declared", "barrier_entered", "membership_snapshot", "identity_revalidated", "signal_sent", "endpoint_transition", "member_observed", "fault_injected", "recovery", "terminal"]},
+        "kind": {"enum": ["capability_acquired", "capability_moved", "capability_released", "intent_declared", "barrier_entered", "membership_snapshot", "identity_revalidated", "signal_sent", "endpoint_transition", "operation_checkpoint", "member_observed", "fault_injected", "recovery", "terminal"]},
         "data": {"type": "object"}, "state_after": {"$ref": "#/$defs/snapshot"}
       },
       "allOf": [
@@ -110,6 +110,7 @@
         {"if": {"properties": {"kind": {"const": "identity_revalidated"}}}, "then": {"properties": {"data": {"$ref": "#/$defs/identity_revalidated"}}}},
         {"if": {"properties": {"kind": {"const": "signal_sent"}}}, "then": {"properties": {"data": {"$ref": "#/$defs/signal_sent"}}}},
         {"if": {"properties": {"kind": {"const": "endpoint_transition"}}}, "then": {"properties": {"data": {"$ref": "#/$defs/endpoint_transition"}}}},
+        {"if": {"properties": {"kind": {"const": "operation_checkpoint"}}}, "then": {"properties": {"data": {"$ref": "#/$defs/operation_checkpoint"}}}},
         {"if": {"properties": {"kind": {"const": "member_observed"}}}, "then": {"properties": {"data": {"$ref": "#/$defs/member_observed"}}}},
         {"if": {"properties": {"kind": {"const": "fault_injected"}}}, "then": {"properties": {"data": {"$ref": "#/$defs/fault_injected"}}}},
         {"if": {"properties": {"kind": {"const": "recovery"}}}, "then": {"properties": {"data": {"$ref": "#/$defs/recovery"}}}},
@@ -125,6 +126,7 @@
     "identity_revalidated": {"type": "object", "additionalProperties": false, "required": ["capability", "result"], "properties": {"capability": {"type": "string", "pattern": "^cap\\.[a-z0-9._-]+$"}, "result": {"enum": ["MATCH", "MISMATCH", "GONE"]}}},
     "signal_sent": {"type": "object", "additionalProperties": false, "required": ["capability", "signal", "result"], "properties": {"capability": {"type": "string", "pattern": "^cap\\.[a-z0-9._-]+$"}, "signal": {"enum": ["TERM", "KILL", "STOP", "CONT"]}, "result": {"enum": ["SENT", "GONE", "REJECTED", "DEADLINE"]}}},
     "endpoint_transition": {"type": "object", "additionalProperties": false, "required": ["endpoint", "operation", "result"], "properties": {"endpoint": {"type": "string", "pattern": "^endpoint\\.[a-z0-9._-]+$"}, "operation": {"enum": ["CLOSE", "UNLINK", "REVALIDATE"]}, "result": {"enum": ["REMOVED", "ALREADY_GONE", "MISMATCH", "REJECTED"]}}},
+    "operation_checkpoint": {"type": "object", "additionalProperties": false, "required": ["operation", "checkpoint", "placement", "result"], "properties": {"operation": {"enum": ["MKDIR_CHILD", "UNLINK_EXACT", "RENAME_EXACT"]}, "checkpoint": {"enum": ["after-mkdir-before-bind", "after-bind-before-publish", "after-stage-mkdir-before-bind", "after-stage-bind-before-move", "after-move-before-verify", "after-quarantine-move-before-verify", "after-quarantine-verify-before-gc", "before-exact-mutation", "after-exact-mutation"]}, "placement": {"enum": ["BEFORE", "AFTER"]}, "result": {"enum": ["INJECTED", "COMPLETED", "ERROR"]}}},
     "member_observed": {"type": "object", "additionalProperties": false, "required": ["capability", "origin"], "properties": {"capability": {"type": "string", "pattern": "^cap\\.[a-z0-9._-]+$"}, "origin": {"enum": ["STARTUP_LEDGER", "SNAPSHOT", "LATE_FORK", "REPLACEMENT"]}}},
     "fault_injected": {"type": "object", "additionalProperties": false, "required": ["phase", "fault"], "properties": {"phase": {"enum": ["PREPARE", "PUBLISH", "CLEANUP", "COMMIT", "BARRIER", "SIGNAL"]}, "fault": {"enum": ["SIGINT", "TIMEOUT", "ROOT_EXIT", "PID_REUSE", "LATE_FORK", "LEASE_HOLDER", "CLOSE_RANGE"]}}},
     "recovery": {"type": "object", "additionalProperties": false, "required": ["action", "reason"], "properties": {"action": {"enum": ["INITIALIZE", "NOOP", "ROLLBACK_UNINITIALIZED", "ROLLBACK_READY", "ROLLBACK_RUNNING", "ROLLBACK_STOPPED", "COMPLETE_PUBLISH", "COMPLETE_CLEANUP", "DRAIN_TO_READY", "CONTINUE_DRAIN", "FAIL_CLOSED", "QUARANTINE"]}, "reason": {"type": "string", "pattern": "^[a-z0-9._-]+$"}}},
