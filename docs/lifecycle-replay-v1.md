@@ -49,6 +49,11 @@ nanoseconds, 64 live capabilities, and 16 recovery steps. A trace may use
 lower limits, never higher ones. Capability kinds are policy-bearing: only
 session pidfd capabilities may appear in membership snapshots or receive a
 signal; shared leases may be revalidated but are not signal targets.
+Signal results are semantic transitions, not labels: `SENT` keeps the matched
+pidfd live, `GONE` moves it monotonically to the gone ledger, `REJECTED`
+creates the unresolved `signal-failure` obligation (consumed by
+`CONTINUE_DRAIN` recovery), and `DEADLINE` creates `fault:TIMEOUT`. A gone
+capability cannot reappear in membership or receive another signal.
 
 `replay_trace()` is a reducer, not a projection of captured fields. Its
 `apply_event()` path computes the state snapshot, journal intent, ownership
@@ -65,7 +70,7 @@ capability generations remain consumed. Recovery observations are computed
 from the reducer and compared with the recorded list. A trace has exactly one
 terminal event and it is the final event. A normal success may have no
 recovery at all, so its recovery-observation list is legitimately empty;
-success is rejected while identity, fault, or incomplete-membership
+success is rejected while identity, signal, fault, or incomplete-membership
 obligations remain unresolved.
 
 The terminal event is mandatory and unique. A successful terminal requires
