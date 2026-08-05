@@ -15,9 +15,11 @@ recovery, budgets, and terminal outcome. A missing signal, raw/non-capability
 target, `CREATE_PREFIX`/`RECREATE_PREFIX` intent, or non-Rootless profile is
 rejected before it can be treated as a Rootless result.
 
-Signal-free shutdown where the process is already gone is intentionally not
-accepted by this consumer. It needs a separate, explicitly named
-`RootlessShutdownGoneConsumer` contract rather than weakening this binding.
+Signal-free shutdown where the process is already gone is handled by the
+separate, explicitly named `RootlessShutdownGoneConsumer`. It requires an
+`identity_revalidated=GONE` observation for the single authoritative
+`SESSION_ROOT_PIDFD` in the initial capability catalog and rejects
+signal-bearing traces; the signal-bearing contract above is not weakened.
 
 This first consumer is observational and behavior-preserving. It does not
 change Darling shutdown code, runtime locks, source patches, mappings, or
