@@ -101,7 +101,9 @@ fn validate_policy(policy: &Value) -> Result<(), String> {
         "flock",
         "close",
         "stage_registered",
+        "stage_published",
         "stage_cleanup",
+        "quarantine",
     ];
     let strings = |key: &str| -> Result<Vec<&str>, String> {
         object
@@ -143,6 +145,11 @@ fn validate_policy(policy: &Value) -> Result<(), String> {
         "quarantine_gc_requires_quiescence",
         "quarantine_gc_requires_external_scope",
         "quarantine_obligation_ownership",
+        "stage_obligation_ownership",
+        "obligation_queues_are_disjoint",
+        "typed_journal_records",
+        "operation_specific_capability_constructors",
+        "stage_terminal_record",
         "stage_cleanup_terminal_record",
     ];
     require_keys(&object["rules"], &expected_rule_keys, "policy.rules")?;
@@ -164,6 +171,11 @@ fn validate_policy(policy: &Value) -> Result<(), String> {
         ("quarantine_gc_requires_quiescence", true),
         ("quarantine_gc_requires_external_scope", true),
         ("quarantine_obligation_ownership", true),
+        ("stage_obligation_ownership", true),
+        ("obligation_queues_are_disjoint", true),
+        ("typed_journal_records", true),
+        ("operation_specific_capability_constructors", true),
+        ("stage_terminal_record", true),
         ("stage_cleanup_terminal_record", true),
     ];
     for (key, expected) in expected_rules {

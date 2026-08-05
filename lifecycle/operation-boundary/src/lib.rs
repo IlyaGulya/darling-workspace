@@ -409,16 +409,144 @@ impl QuarantineObligations {
     }
 }
 
+/// A staging resource that could not reach publication or safe cleanup.
+/// Stage obligations are separate from quarantine obligations because the
+/// resource may still be reachable through its retained staging parent.
+#[must_use = "stage obligations must be handled"]
+#[derive(Debug)]
+pub enum StageObligation {
+    Bound(BoundStageObligation),
+    Unbound(UnboundStageObligation),
+}
+
+#[must_use = "bound stage obligations must be handled"]
+#[derive(Debug)]
+pub struct BoundStageObligation {
+    stage: DirCap,
+    stage_ref: StageRef,
+    child: Option<ChildRef>,
+}
+
+impl BoundStageObligation {
+    pub fn id(&self) -> u64 {
+        self.stage_ref.id()
+    }
+
+    pub fn child_id(&self) -> Option<u64> {
+        self.child.map(ChildRef::id)
+    }
+
+    pub fn stage_identity(&self) -> FileIdentity {
+        self.stage.identity()
+    }
+}
+
+#[must_use = "unbound stage obligations must be handled"]
+#[derive(Debug)]
+pub struct UnboundStageObligation {
+    parent_fd: Option<OwnedFd>,
+    parent_identity: FileIdentity,
+    stage_ref: StageRef,
+    child: Option<ChildRef>,
+    name: CString,
+    expected: Option<FileIdentity>,
+    scope: ScopeId,
+}
+
+impl UnboundStageObligation {
+    pub fn id(&self) -> u64 {
+        self.stage_ref.id()
+    }
+
+    pub fn child_id(&self) -> Option<u64> {
+        self.child.map(ChildRef::id)
+    }
+
+    pub fn parent_identity(&self) -> FileIdentity {
+        self.parent_identity
+    }
+
+    pub fn expected_identity(&self) -> Option<FileIdentity> {
+        self.expected
+    }
+
+    pub fn name(&self) -> &CStr {
+        &self.name
+    }
+
+    pub fn has_retained_parent(&self) -> bool {
+        self.parent_fd.is_some()
+    }
+
+    #[allow(dead_code)]
+    fn scope(&self) -> ScopeId {
+        self.scope
+    }
+}
+
+impl StageObligation {
+    pub fn id(&self) -> u64 {
+        match self {
+            Self::Bound(obligation) => obligation.id(),
+            Self::Unbound(obligation) => obligation.id(),
+        }
+    }
+
+    pub fn is_bound(&self) -> bool {
+        matches!(self, Self::Bound(_))
+    }
+}
+
+#[must_use = "stage obligations must be handled"]
+#[derive(Debug)]
+pub struct StageObligations {
+    obligations: Vec<StageObligation>,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum RollbackDisposition {
+    ReadyForQuarantine,
+    PreQuarantineFailure,
+    RestoredAfterMove,
+    QuarantinedForRecovery,
+}
+
+impl RollbackDisposition {
+    fn retains_stage_authority(self) -> bool {
+        matches!(self, Self::PreQuarantineFailure | Self::RestoredAfterMove)
+    }
+}
+
+impl StageObligations {
+    pub fn len(&self) -> usize {
+        self.obligations.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.obligations.is_empty()
+    }
+
+    pub fn ids(&self) -> Vec<u64> {
+        self.obligations.iter().map(StageObligation::id).collect()
+    }
+
+    pub fn into_inner(self) -> Vec<StageObligation> {
+        self.obligations
+    }
+}
+
 #[must_use = "boundary parts contain recovery obligations"]
 pub struct BoundaryParts<O> {
     pub observer: O,
     pub quarantine_obligations: QuarantineObligations,
+    pub stage_obligations: StageObligations,
 }
 
 #[must_use = "boundary finish failed with recovery obligations"]
 pub struct BoundaryFinishError<O> {
     pub observer: O,
     pub quarantine_obligations: QuarantineObligations,
+    pub stage_obligations: StageObligations,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -442,7 +570,590 @@ pub enum OperationName {
     Close,
     Checkpoint,
     StageRegistered,
+    StagePublished,
     StageCleanup,
+    Quarantine,
+}
+
+/// Closed set of outcomes emitted by the operation journal.
+///
+/// This is deliberately not constructible from a string.  Producers must
+/// select an outcome at compile time, so a typo cannot become a runtime
+/// journal event (or a panic in the boundary).
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum OperationOutcome {
+    Observed,
+    Applied,
+    Error,
+    Injected,
+    Allocated,
+    Registered,
+    Published,
+    Deferred,
+    StagedError,
+    RolledBackError,
+    RollbackIncomplete,
+    IdentityMismatch,
+    MutatedError,
+}
+
+impl OperationOutcome {
+    fn mutation(self) -> MutationState {
+        match self {
+            Self::Applied | Self::Allocated | Self::Registered | Self::Published => {
+                MutationState::Applied
+            }
+            Self::Observed | Self::Error | Self::Injected | Self::Deferred => {
+                MutationState::NotAttempted
+            }
+            Self::RolledBackError => MutationState::RolledBack,
+            Self::RollbackIncomplete => MutationState::RollbackIncomplete,
+            Self::StagedError | Self::IdentityMismatch | Self::MutatedError => {
+                MutationState::Partial
+            }
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum MutationState {
+    NotAttempted,
+    Applied,
+    Partial,
+    RolledBack,
+    RollbackIncomplete,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum IdentityObservation {
+    NotApplicable,
+    Observed(FileIdentity),
+}
+
+impl IdentityObservation {
+    pub fn is_observed(self) -> bool {
+        matches!(self, Self::Observed(_))
+    }
+}
+
+impl MutationState {
+    pub fn changed(self) -> bool {
+        !matches!(self, Self::NotAttempted)
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum CapabilityRole {
+    Directory,
+    File,
+    Lease,
+    Lock,
+    Pidfd,
+    Parent,
+    SourceParent,
+    DestinationParent,
+    Stage,
+    Child,
+    Quarantine,
+    Primary,
+    Operand,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct CapabilityRef {
+    id: u64,
+    role: CapabilityRole,
+}
+
+impl CapabilityRef {
+    pub fn id(self) -> u64 {
+        self.id
+    }
+
+    pub fn role(self) -> CapabilityRole {
+        self.role
+    }
+}
+
+/// Typed journal references for resources which are staged before they become
+/// a public capability.  Keeping these distinct from raw capability IDs
+/// prevents role inference from a positional integer vector.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct StageRef(u64);
+
+impl StageRef {
+    fn new(id: u64) -> Self {
+        Self(id)
+    }
+
+    pub fn id(self) -> u64 {
+        self.0
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct ChildRef(u64);
+
+impl ChildRef {
+    fn new(id: u64) -> Self {
+        Self(id)
+    }
+
+    pub fn id(self) -> u64 {
+        self.0
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct QuarantineRef(u64);
+
+impl QuarantineRef {
+    fn new(id: u64) -> Self {
+        Self(id)
+    }
+
+    pub fn id(self) -> u64 {
+        self.0
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct CapabilitySet {
+    entries: Vec<CapabilityRef>,
+}
+
+impl CapabilitySet {
+    fn from_refs(entries: impl IntoIterator<Item = CapabilityRef>) -> Self {
+        Self {
+            entries: entries.into_iter().collect(),
+        }
+    }
+
+    pub fn empty() -> Self {
+        Self::from_refs([])
+    }
+
+    pub fn anchor(directory: &DirCap) -> Self {
+        Self::from_refs([CapabilityRef {
+            id: directory.id(),
+            role: CapabilityRole::Primary,
+        }])
+    }
+
+    pub fn directory(directory: &DirCap) -> Self {
+        Self::from_refs([CapabilityRef {
+            id: directory.id(),
+            role: CapabilityRole::Directory,
+        }])
+    }
+
+    pub fn open_file(parent: &DirCap, child: &FileCap) -> Self {
+        Self::from_refs([
+            CapabilityRef {
+                id: parent.id(),
+                role: CapabilityRole::Parent,
+            },
+            CapabilityRef {
+                id: child.id(),
+                role: CapabilityRole::File,
+            },
+        ])
+    }
+
+    pub fn open_directory(parent: &DirCap, child: &DirCap) -> Self {
+        Self::from_refs([
+            CapabilityRef {
+                id: parent.id(),
+                role: CapabilityRole::Parent,
+            },
+            CapabilityRef {
+                id: child.id(),
+                role: CapabilityRole::Child,
+            },
+        ])
+    }
+
+    pub fn open_lock(parent: &DirCap, lock: &LockCap) -> Self {
+        Self::from_refs([
+            CapabilityRef {
+                id: parent.id(),
+                role: CapabilityRole::Parent,
+            },
+            CapabilityRef {
+                id: lock.id(),
+                role: CapabilityRole::Lock,
+            },
+        ])
+    }
+
+    pub fn mkdir_start(parent: &DirCap, lease: &ExclusiveLease) -> Self {
+        Self::from_refs([
+            CapabilityRef {
+                id: parent.id(),
+                role: CapabilityRole::Parent,
+            },
+            CapabilityRef {
+                id: lease.id(),
+                role: CapabilityRole::Lease,
+            },
+        ])
+    }
+
+    pub fn mkdir_child(
+        parent: &DirCap,
+        lease: &ExclusiveLease,
+        stage: Option<StageRef>,
+        child: Option<ChildRef>,
+    ) -> Self {
+        let mut entries = vec![
+            CapabilityRef {
+                id: parent.id(),
+                role: CapabilityRole::Parent,
+            },
+            CapabilityRef {
+                id: lease.id(),
+                role: CapabilityRole::Lease,
+            },
+        ];
+        if let Some(stage) = stage {
+            entries.push(CapabilityRef {
+                id: stage.id(),
+                role: CapabilityRole::Stage,
+            });
+        }
+        if let Some(child) = child {
+            entries.push(CapabilityRef {
+                id: child.id(),
+                role: CapabilityRole::Child,
+            });
+        }
+        Self::from_refs(entries)
+    }
+
+    pub fn stage(
+        parent: &DirCap,
+        lease: &ExclusiveLease,
+        stage: StageRef,
+        child: Option<ChildRef>,
+    ) -> Self {
+        Self::mkdir_child(parent, lease, Some(stage), child)
+    }
+
+    pub fn publish(
+        source_parent: &DirCap,
+        destination_parent: &DirCap,
+        lease: &ExclusiveLease,
+        stage: StageRef,
+        child: ChildRef,
+    ) -> Self {
+        Self::from_refs([
+            CapabilityRef {
+                id: source_parent.id(),
+                role: CapabilityRole::SourceParent,
+            },
+            CapabilityRef {
+                id: destination_parent.id(),
+                role: CapabilityRole::DestinationParent,
+            },
+            CapabilityRef {
+                id: lease.id(),
+                role: CapabilityRole::Lease,
+            },
+            CapabilityRef {
+                id: stage.id(),
+                role: CapabilityRole::Stage,
+            },
+            CapabilityRef {
+                id: child.id(),
+                role: CapabilityRole::Child,
+            },
+        ])
+    }
+
+    pub fn unlink(parent: &DirCap, lease: &ExclusiveLease) -> Self {
+        Self::mkdir_start(parent, lease)
+    }
+
+    pub fn rename(
+        source_parent: &DirCap,
+        destination_parent: &DirCap,
+        lease: &ExclusiveLease,
+    ) -> Self {
+        Self::from_refs([
+            CapabilityRef {
+                id: source_parent.id(),
+                role: CapabilityRole::SourceParent,
+            },
+            CapabilityRef {
+                id: destination_parent.id(),
+                role: CapabilityRole::DestinationParent,
+            },
+            CapabilityRef {
+                id: lease.id(),
+                role: CapabilityRole::Lease,
+            },
+        ])
+    }
+
+    pub fn file(file: &FileCap) -> Self {
+        Self::from_refs([CapabilityRef {
+            id: file.id(),
+            role: CapabilityRole::File,
+        }])
+    }
+
+    pub fn write(file: &FileCap, lease: &ExclusiveLease) -> Self {
+        Self::from_refs([
+            CapabilityRef {
+                id: file.id(),
+                role: CapabilityRole::File,
+            },
+            CapabilityRef {
+                id: lease.id(),
+                role: CapabilityRole::Lease,
+            },
+        ])
+    }
+
+    pub fn pidfd(pidfd: &PidFdCap) -> Self {
+        Self::from_refs([CapabilityRef {
+            id: pidfd.id(),
+            role: CapabilityRole::Pidfd,
+        }])
+    }
+
+    pub fn lock(lock: &LockCap) -> Self {
+        Self::from_refs([CapabilityRef {
+            id: lock.id(),
+            role: CapabilityRole::Lock,
+        }])
+    }
+
+    pub fn lease(lease: &ExclusiveLease) -> Self {
+        Self::from_refs([CapabilityRef {
+            id: lease.id(),
+            role: CapabilityRole::Lease,
+        }])
+    }
+
+    pub fn quarantine(object: QuarantineRef) -> Self {
+        Self::from_refs([CapabilityRef {
+            id: object.id(),
+            role: CapabilityRole::Quarantine,
+        }])
+    }
+
+    pub fn close_directory(capability: &DirCap) -> Self {
+        Self::from_refs([CapabilityRef {
+            id: capability.id(),
+            role: CapabilityRole::Directory,
+        }])
+    }
+
+    pub fn close_file(capability: &FileCap) -> Self {
+        Self::file(capability)
+    }
+
+    pub fn close_pidfd(capability: &PidFdCap) -> Self {
+        Self::pidfd(capability)
+    }
+
+    pub fn close_lock(capability: &LockCap) -> Self {
+        Self::lock(capability)
+    }
+
+    pub fn close_lease(capability: &ExclusiveLease) -> Self {
+        Self::lease(capability)
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.entries.is_empty()
+    }
+
+    pub fn as_slice(&self) -> &[CapabilityRef] {
+        &self.entries
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum StageCleanupTerminal {
+    Cleaned,
+    Deferred,
+    Failed,
+    RollbackIncomplete,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum QuarantineTerminal {
+    Restored,
+    BoundRecovery,
+    UnboundRecovery,
+    Collected,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum StageJournal {
+    Allocated {
+        capabilities: CapabilitySet,
+        stage: StageRef,
+        identity: IdentityObservation,
+    },
+    Registered {
+        capabilities: CapabilitySet,
+        stage: StageRef,
+        child: ChildRef,
+        identity: IdentityObservation,
+    },
+    Published {
+        capabilities: CapabilitySet,
+        stage: StageRef,
+        child: ChildRef,
+        identity: IdentityObservation,
+    },
+    Cleanup {
+        capabilities: CapabilitySet,
+        stage: StageRef,
+        terminal: StageCleanupTerminal,
+        identity: IdentityObservation,
+    },
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum QuarantineEvent {
+    Restored {
+        capabilities: CapabilitySet,
+        object: QuarantineRef,
+        identity: FileIdentity,
+    },
+    BoundRecovery {
+        capabilities: CapabilitySet,
+        object: QuarantineRef,
+        identity: FileIdentity,
+    },
+    UnboundRecovery {
+        capabilities: CapabilitySet,
+        object: QuarantineRef,
+        identity: FileIdentity,
+    },
+    Collected {
+        capabilities: CapabilitySet,
+        object: QuarantineRef,
+        identity: FileIdentity,
+    },
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct OperationEvent {
+    pub operation: OperationName,
+    pub capabilities: CapabilitySet,
+    pub result: OperationOutcome,
+    pub checkpoint: Option<Checkpoint>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum JournalRecord {
+    Operation(OperationEvent),
+    Stage(StageJournal),
+    Quarantine(QuarantineEvent),
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct OperationRecord {
+    pub sequence: u64,
+    pub record: JournalRecord,
+}
+
+impl OperationRecord {
+    /// Compatibility views for focused tests and explorers.  The stored
+    /// representation remains the exhaustive `JournalRecord`; these helpers
+    /// never reconstruct producer payloads or infer capability roles.
+    pub fn operation(&self) -> OperationName {
+        match &self.record {
+            JournalRecord::Operation(event) => event.operation,
+            JournalRecord::Stage(StageJournal::Allocated { .. })
+            | JournalRecord::Stage(StageJournal::Registered { .. }) => {
+                OperationName::StageRegistered
+            }
+            JournalRecord::Stage(StageJournal::Published { .. }) => OperationName::StagePublished,
+            JournalRecord::Stage(StageJournal::Cleanup { .. }) => OperationName::StageCleanup,
+            JournalRecord::Quarantine(_) => OperationName::Quarantine,
+        }
+    }
+
+    pub fn outcome(&self) -> OperationOutcome {
+        match &self.record {
+            JournalRecord::Operation(event) => event.result,
+            JournalRecord::Stage(StageJournal::Allocated { .. }) => OperationOutcome::Allocated,
+            JournalRecord::Stage(StageJournal::Registered { .. }) => OperationOutcome::Registered,
+            JournalRecord::Stage(StageJournal::Published { .. }) => OperationOutcome::Published,
+            JournalRecord::Stage(StageJournal::Cleanup {
+                terminal: StageCleanupTerminal::Cleaned,
+                ..
+            }) => OperationOutcome::Applied,
+            JournalRecord::Stage(StageJournal::Cleanup {
+                terminal: StageCleanupTerminal::Deferred,
+                ..
+            }) => OperationOutcome::Deferred,
+            JournalRecord::Stage(StageJournal::Cleanup {
+                terminal: StageCleanupTerminal::RollbackIncomplete,
+                ..
+            }) => OperationOutcome::RollbackIncomplete,
+            JournalRecord::Stage(StageJournal::Cleanup {
+                terminal: StageCleanupTerminal::Failed,
+                ..
+            }) => OperationOutcome::Error,
+            JournalRecord::Quarantine(_) => OperationOutcome::Applied,
+        }
+    }
+
+    pub fn mutation(&self) -> MutationState {
+        match &self.record {
+            JournalRecord::Operation(event) => event.result.mutation(),
+            JournalRecord::Stage(StageJournal::Cleanup {
+                terminal: StageCleanupTerminal::Cleaned,
+                ..
+            }) => MutationState::Applied,
+            JournalRecord::Stage(StageJournal::Cleanup {
+                terminal: StageCleanupTerminal::Deferred | StageCleanupTerminal::Failed,
+                ..
+            }) => MutationState::Partial,
+            JournalRecord::Stage(StageJournal::Cleanup {
+                terminal: StageCleanupTerminal::RollbackIncomplete,
+                ..
+            }) => MutationState::RollbackIncomplete,
+            JournalRecord::Stage(StageJournal::Allocated { .. })
+            | JournalRecord::Stage(StageJournal::Registered { .. })
+            | JournalRecord::Stage(StageJournal::Published { .. }) => MutationState::Applied,
+            JournalRecord::Quarantine(_) => MutationState::Applied,
+        }
+    }
+
+    pub fn checkpoint(&self) -> Option<Checkpoint> {
+        match &self.record {
+            JournalRecord::Operation(event) => event.checkpoint,
+            JournalRecord::Stage(_) | JournalRecord::Quarantine(_) => None,
+        }
+    }
+
+    pub fn identity(&self) -> IdentityObservation {
+        match &self.record {
+            JournalRecord::Operation(_) => IdentityObservation::NotApplicable,
+            JournalRecord::Stage(StageJournal::Allocated { identity, .. })
+            | JournalRecord::Stage(StageJournal::Registered { identity, .. })
+            | JournalRecord::Stage(StageJournal::Published { identity, .. })
+            | JournalRecord::Stage(StageJournal::Cleanup { identity, .. }) => *identity,
+            JournalRecord::Quarantine(QuarantineEvent::Restored { identity, .. })
+            | JournalRecord::Quarantine(QuarantineEvent::BoundRecovery { identity, .. })
+            | JournalRecord::Quarantine(QuarantineEvent::UnboundRecovery { identity, .. })
+            | JournalRecord::Quarantine(QuarantineEvent::Collected { identity, .. }) => {
+                IdentityObservation::Observed(*identity)
+            }
+        }
+    }
+
+    pub fn journal(&self) -> &JournalRecord {
+        &self.record
+    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -456,17 +1167,6 @@ pub enum Checkpoint {
     AfterQuarantineVerifyBeforeGc,
     BeforeExactMutation,
     AfterExactMutation,
-}
-
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct OperationRecord {
-    pub sequence: u64,
-    pub operation: OperationName,
-    pub capability_ids: Vec<u64>,
-    pub result: &'static str,
-    pub checkpoint: Option<Checkpoint>,
-    pub mutated: bool,
-    pub identity: Option<FileIdentity>,
 }
 
 pub trait Observer {
@@ -636,6 +1336,17 @@ fn open_root() -> Result<OwnedFd> {
     Ok(unsafe { OwnedFd::from_raw_fd(fd) })
 }
 
+fn duplicate_fd(fd: RawFd) -> Result<OwnedFd> {
+    // SAFETY: fcntl duplicates the retained descriptor and returns a new
+    // descriptor owned by this function; CLOEXEC prevents capability leakage.
+    let duplicated = unsafe { libc::fcntl(fd, libc::F_DUPFD_CLOEXEC, 0) };
+    if duplicated < 0 {
+        return Err(io_error("fcntl duplicate"));
+    }
+    // SAFETY: duplicated is a fresh descriptor returned by fcntl.
+    Ok(unsafe { OwnedFd::from_raw_fd(duplicated) })
+}
+
 fn mkdir_at(parent: RawFd, name: &CString, mode: u32) -> Result<()> {
     // SAFETY: name is NUL-terminated and mode is a value, not a pointer.
     if unsafe { libc::mkdirat(parent, name.as_ptr(), mode as libc::mode_t) } < 0 {
@@ -758,6 +1469,8 @@ pub struct Boundary<C: Clock, O: Observer, F: FaultInjector> {
     next_id: u64,
     quiescent_scope: Option<QuiescentScope>,
     pending_quarantines: Vec<QuarantineObligation>,
+    pending_stages: Vec<StageObligation>,
+    rollback_disposition: RollbackDisposition,
 }
 
 impl Boundary<RealClock, NoopObserver, NoFault> {
@@ -776,6 +1489,8 @@ impl<C: Clock, O: Observer, F: FaultInjector> Boundary<C, O, F> {
             next_id: 0,
             quiescent_scope: None,
             pending_quarantines: Vec::new(),
+            pending_stages: Vec::new(),
+            rollback_disposition: RollbackDisposition::ReadyForQuarantine,
         }
     }
 
@@ -796,72 +1511,262 @@ impl<C: Clock, O: Observer, F: FaultInjector> Boundary<C, O, F> {
         }
     }
 
+    /// Return staging obligations that could not be published or safely
+    /// rolled back.  The caller owns the retained capability/recovery decision.
+    #[must_use = "stage obligations must be handled"]
+    pub fn take_stage_obligations(&mut self) -> StageObligations {
+        StageObligations {
+            obligations: std::mem::take(&mut self.pending_stages),
+        }
+    }
+
     fn next_id(&mut self) -> u64 {
         self.next_id += 1;
         self.next_id
     }
 
-    fn record_with(
+    fn register_unbound_stage(
         &mut self,
-        operation: OperationName,
-        ids: Vec<u64>,
-        result: &'static str,
-        checkpoint: Option<Checkpoint>,
-        mutated: bool,
-    ) {
-        self.record_with_identity(operation, ids, result, checkpoint, mutated, None);
+        parent: &DirCap,
+        stage: StageRef,
+        child: Option<ChildRef>,
+        name: CString,
+        expected: Option<FileIdentity>,
+    ) -> usize {
+        // The duplicate is best-effort, but the typed obligation is never
+        // dropped when duplication fails.  A None parent descriptor is an
+        // explicit unbound recovery state, not an implicit cleanup success.
+        let parent_fd = duplicate_fd(parent.raw_fd()).ok();
+        self.pending_stages
+            .push(StageObligation::Unbound(UnboundStageObligation {
+                parent_fd,
+                parent_identity: parent.identity(),
+                stage_ref: stage,
+                child,
+                name,
+                expected,
+                scope: parent.scope(),
+            }));
+        self.pending_stages.len() - 1
     }
 
-    fn record_with_identity(
+    fn resolve_stage_obligation(&mut self, index: usize) {
+        let _ = self.pending_stages.swap_remove(index);
+    }
+
+    fn retain_stage_authority(
+        &mut self,
+        parent: &DirCap,
+        stage: &DirCap,
+        name: &CString,
+        child: Option<ChildRef>,
+    ) {
+        let stage_ref = StageRef::new(stage.id());
+        if let Ok(fd) = duplicate_fd(stage.raw_fd()) {
+            self.pending_stages
+                .push(StageObligation::Bound(BoundStageObligation {
+                    stage: DirCap::new(fd, stage.identity(), stage.id(), stage.scope()),
+                    stage_ref,
+                    child,
+                }));
+        } else {
+            self.register_unbound_stage(
+                parent,
+                stage_ref,
+                child,
+                name.clone(),
+                Some(stage.identity()),
+            );
+        }
+    }
+
+    fn record_operation(
         &mut self,
         operation: OperationName,
-        ids: Vec<u64>,
-        result: &'static str,
+        capabilities: CapabilitySet,
+        result: OperationOutcome,
         checkpoint: Option<Checkpoint>,
-        mutated: bool,
-        identity: Option<FileIdentity>,
     ) {
         self.sequence += 1;
         self.observer.record(OperationRecord {
             sequence: self.sequence,
-            operation,
-            capability_ids: ids,
-            result,
-            checkpoint,
-            mutated,
+            record: JournalRecord::Operation(OperationEvent {
+                operation,
+                capabilities,
+                result,
+                checkpoint,
+            }),
+        });
+    }
+
+    fn record(
+        &mut self,
+        operation: OperationName,
+        capabilities: CapabilitySet,
+        outcome: OperationOutcome,
+    ) {
+        self.record_operation(operation, capabilities, outcome, None);
+    }
+
+    fn record_with(
+        &mut self,
+        operation: OperationName,
+        capabilities: CapabilitySet,
+        outcome: OperationOutcome,
+        checkpoint: Option<Checkpoint>,
+    ) {
+        self.record_operation(operation, capabilities, outcome, checkpoint);
+    }
+
+    fn record_stage(&mut self, event: StageJournal) {
+        self.sequence += 1;
+        self.observer.record(OperationRecord {
+            sequence: self.sequence,
+            record: JournalRecord::Stage(event),
+        });
+    }
+
+    fn record_stage_allocated(&mut self, parent: &DirCap, lease: &ExclusiveLease, stage: StageRef) {
+        self.record_stage(StageJournal::Allocated {
+            capabilities: CapabilitySet::stage(parent, lease, stage, None),
+            stage,
+            identity: IdentityObservation::NotApplicable,
+        });
+    }
+
+    fn record_stage_registered(
+        &mut self,
+        parent: &DirCap,
+        lease: &ExclusiveLease,
+        stage: StageRef,
+        child: ChildRef,
+        identity: IdentityObservation,
+    ) {
+        self.record_stage(StageJournal::Registered {
+            capabilities: CapabilitySet::stage(parent, lease, stage, Some(child)),
+            stage,
+            child,
             identity,
         });
     }
 
-    fn record(&mut self, operation: OperationName, ids: Vec<u64>, result: &'static str) {
-        self.record_with(operation, ids, result, None, false);
+    fn record_stage_published(
+        &mut self,
+        source_parent: &DirCap,
+        destination_parent: &DirCap,
+        lease: &ExclusiveLease,
+        stage: StageRef,
+        child: ChildRef,
+        identity: IdentityObservation,
+    ) {
+        self.record_stage(StageJournal::Published {
+            capabilities: CapabilitySet::publish(
+                source_parent,
+                destination_parent,
+                lease,
+                stage,
+                child,
+            ),
+            stage,
+            child,
+            identity,
+        });
+    }
+
+    fn record_stage_cleanup(
+        &mut self,
+        parent: &DirCap,
+        lease: &ExclusiveLease,
+        stage: StageRef,
+        terminal: StageCleanupTerminal,
+        identity: IdentityObservation,
+    ) {
+        self.record_stage(StageJournal::Cleanup {
+            capabilities: CapabilitySet::stage(parent, lease, stage, None),
+            stage,
+            terminal,
+            identity,
+        });
+    }
+
+    fn record_quarantine(
+        &mut self,
+        object_id: u64,
+        terminal: QuarantineTerminal,
+        identity: FileIdentity,
+    ) {
+        let object = QuarantineRef::new(object_id);
+        let event = match terminal {
+            QuarantineTerminal::Restored => QuarantineEvent::Restored {
+                capabilities: CapabilitySet::quarantine(object),
+                object,
+                identity,
+            },
+            QuarantineTerminal::BoundRecovery => QuarantineEvent::BoundRecovery {
+                capabilities: CapabilitySet::quarantine(object),
+                object,
+                identity,
+            },
+            QuarantineTerminal::UnboundRecovery => QuarantineEvent::UnboundRecovery {
+                capabilities: CapabilitySet::quarantine(object),
+                object,
+                identity,
+            },
+            QuarantineTerminal::Collected => QuarantineEvent::Collected {
+                capabilities: CapabilitySet::quarantine(object),
+                object,
+                identity,
+            },
+        };
+        self.sequence += 1;
+        self.observer.record(OperationRecord {
+            sequence: self.sequence,
+            record: JournalRecord::Quarantine(event),
+        });
     }
 
     fn fail_or_record<T>(
         &mut self,
         operation: OperationName,
-        ids: Vec<u64>,
+        capabilities: CapabilitySet,
         result: Result<T>,
     ) -> Result<T> {
-        self.record(operation, ids, if result.is_ok() { "ok" } else { "error" });
+        self.record_operation(
+            operation,
+            capabilities,
+            if result.is_ok() {
+                OperationOutcome::Observed
+            } else {
+                OperationOutcome::Error
+            },
+            None,
+        );
         result
     }
 
     fn checkpoint(&mut self, checkpoint: Checkpoint) -> Result<()> {
         let result = self.faults.checkpoint(checkpoint);
-        self.record_with(
+        self.record_operation(
             OperationName::Checkpoint,
-            Vec::new(),
-            if result.is_ok() { "ok" } else { "injected" },
+            CapabilitySet::empty(),
+            if result.is_ok() {
+                OperationOutcome::Observed
+            } else {
+                OperationOutcome::Injected
+            },
             Some(checkpoint),
-            false,
         );
         result
     }
 
     pub fn now_ns(&mut self) -> u64 {
         let value = self.clock.now_ns();
-        self.record(OperationName::ClockNow, Vec::new(), "ok");
+        self.record_operation(
+            OperationName::ClockNow,
+            CapabilitySet::empty(),
+            OperationOutcome::Observed,
+            None,
+        );
         value
     }
 
@@ -881,7 +1786,11 @@ impl<C: Clock, O: Observer, F: FaultInjector> Boundary<C, O, F> {
         }
         let identity = FileIdentity::from_fd(current.as_raw_fd())?;
         let cap = DirCap::new(current, identity, self.next_id(), scope);
-        self.record(OperationName::AnchorDirectory, vec![cap.id()], "ok");
+        self.record(
+            OperationName::AnchorDirectory,
+            CapabilitySet::anchor(&cap),
+            OperationOutcome::Observed,
+        );
         Ok(cap)
     }
 
@@ -904,7 +1813,7 @@ impl<C: Clock, O: Observer, F: FaultInjector> Boundary<C, O, F> {
             } else {
                 OperationName::Revalidate
             },
-            vec![capability.id()],
+            CapabilitySet::directory(capability),
             result,
         )
     }
@@ -915,7 +1824,11 @@ impl<C: Clock, O: Observer, F: FaultInjector> Boundary<C, O, F> {
         let fd = open_file_at(parent.raw_fd(), &c_name, writable)?;
         let identity = FileIdentity::from_fd(fd.as_raw_fd())?;
         let cap = FileCap::new(fd, identity, self.next_id(), parent.scope());
-        self.record(OperationName::OpenChild, vec![parent.id(), cap.id()], "ok");
+        self.record(
+            OperationName::OpenChild,
+            CapabilitySet::open_file(parent, &cap),
+            OperationOutcome::Observed,
+        );
         Ok(cap)
     }
 
@@ -930,7 +1843,11 @@ impl<C: Clock, O: Observer, F: FaultInjector> Boundary<C, O, F> {
             ));
         }
         let cap = LockCap::new(fd, identity, self.next_id(), parent.scope());
-        self.record(OperationName::OpenLock, vec![parent.id(), cap.id()], "ok");
+        self.record(
+            OperationName::OpenLock,
+            CapabilitySet::open_lock(parent, &cap),
+            OperationOutcome::Observed,
+        );
         Ok(cap)
     }
 
@@ -940,7 +1857,11 @@ impl<C: Clock, O: Observer, F: FaultInjector> Boundary<C, O, F> {
         let fd = open_dir_at(parent.raw_fd(), &c_name)?;
         let identity = FileIdentity::from_fd(fd.as_raw_fd())?;
         let cap = DirCap::new(fd, identity, self.next_id(), parent.scope());
-        self.record(OperationName::OpenChild, vec![parent.id(), cap.id()], "ok");
+        self.record(
+            OperationName::OpenChild,
+            CapabilitySet::open_directory(parent, &cap),
+            OperationOutcome::Observed,
+        );
         Ok(cap)
     }
 
@@ -955,81 +1876,87 @@ impl<C: Clock, O: Observer, F: FaultInjector> Boundary<C, O, F> {
         self.revalidate_lock(lease)?;
         self.require_scope(parent.scope(), lease.scope())?;
         let final_name = c_name(name)?;
-        // The final public name is not touched until the child has an
-        // identity-bound fd.  This closes the mkdirat->bind window with a
-        // transaction-owned staging directory.
         let (stage_name, stage) = match self.create_staging_dir(parent, lease) {
             Ok(value) => value,
             Err(error) => {
                 self.record_with(
                     OperationName::MkdirChild,
-                    vec![parent.id(), lease.id()],
-                    "staged-error",
+                    CapabilitySet::mkdir_start(parent, lease),
+                    OperationOutcome::StagedError,
                     None,
-                    true,
                 );
                 return Err(error);
             }
         };
         let staged_name = CString::new("entry").expect("literal has no NUL");
+        let stage_ref = StageRef::new(stage.id());
         if let Err(error) = mkdir_at(stage.raw_fd(), &staged_name, mode) {
             let cleanup = self.cleanup_registered(parent, lease, &stage_name, &stage, true);
             self.record_with(
                 OperationName::MkdirChild,
-                vec![parent.id(), lease.id(), stage.id()],
+                CapabilitySet::mkdir_child(parent, lease, Some(stage_ref), None),
                 if cleanup.is_ok() {
-                    "staged-error"
+                    OperationOutcome::StagedError
                 } else {
-                    "rollback-incomplete"
+                    OperationOutcome::RollbackIncomplete
                 },
                 None,
-                true,
             );
             return Err(error);
         }
         let child_id = self.next_id();
-        self.record_with_identity(
-            OperationName::StageRegistered,
-            vec![parent.id(), lease.id(), stage.id(), child_id],
-            "allocated",
-            None,
-            true,
-            None,
-        );
+        let child_ref = ChildRef::new(child_id);
+        let child_stage_ref = StageRef::new(child_id);
+        self.record_stage_allocated(&stage, lease, child_stage_ref);
         let child_identity = match FileIdentity::from_at(stage.raw_fd(), &staged_name) {
             Ok(identity) => identity,
             Err(error) => {
-                let cleanup_child = open_dir_at(stage.raw_fd(), &staged_name)
-                    .and_then(|fd| {
-                        FileIdentity::from_fd(fd.as_raw_fd()).map(|identity| (fd, identity))
-                    })
-                    .and_then(|(fd, identity)| {
-                        let child = DirCap::new(fd, identity, child_id, stage.scope());
-                        self.cleanup_registered(&stage, lease, &staged_name, &child, true)
-                    });
+                // The child stage is already allocated, but its identity could
+                // not be bound.  A typed deferred terminal is mandatory here:
+                // recovery must see the unbound stage rather than infer it from
+                // a missing Registered record.
+                let obligation = self.register_unbound_stage(
+                    &stage,
+                    child_stage_ref,
+                    Some(child_ref),
+                    staged_name.clone(),
+                    None,
+                );
                 let cleanup_stage =
                     self.cleanup_registered(parent, lease, &stage_name, &stage, true);
+                if cleanup_stage.is_ok() {
+                    self.resolve_stage_obligation(obligation);
+                }
+                self.record_stage_cleanup(
+                    &stage,
+                    lease,
+                    child_stage_ref,
+                    if cleanup_stage.is_ok() {
+                        StageCleanupTerminal::Cleaned
+                    } else {
+                        StageCleanupTerminal::Deferred
+                    },
+                    IdentityObservation::NotApplicable,
+                );
                 self.record_with(
                     OperationName::MkdirChild,
-                    vec![parent.id(), lease.id(), stage.id()],
-                    if cleanup_child.is_ok() && cleanup_stage.is_ok() {
-                        "staged-error"
+                    CapabilitySet::mkdir_child(parent, lease, Some(stage_ref), None),
+                    if cleanup_stage.is_ok() {
+                        OperationOutcome::StagedError
                     } else {
-                        "rollback-incomplete"
+                        OperationOutcome::RollbackIncomplete
                     },
                     None,
-                    true,
                 );
                 return Err(error);
             }
         };
-        self.record_with_identity(
-            OperationName::StageRegistered,
-            vec![parent.id(), lease.id(), stage.id(), child_id],
-            "registered",
-            None,
-            true,
-            Some(child_identity),
+        self.record_stage_registered(
+            &stage,
+            lease,
+            child_stage_ref,
+            child_ref,
+            IdentityObservation::Observed(child_identity),
         );
         if let Err(error) = self.checkpoint(Checkpoint::AfterMkdirBeforeBind) {
             let cleanup_child = self.cleanup_registered_identity(
@@ -1042,14 +1969,13 @@ impl<C: Clock, O: Observer, F: FaultInjector> Boundary<C, O, F> {
             let cleanup_stage = self.cleanup_registered(parent, lease, &stage_name, &stage, true);
             self.record_with(
                 OperationName::MkdirChild,
-                vec![parent.id(), lease.id(), stage.id(), child_id],
+                CapabilitySet::mkdir_child(parent, lease, Some(stage_ref), Some(child_ref)),
                 if cleanup_child.is_ok() && cleanup_stage.is_ok() {
-                    "rolled-back-error"
+                    OperationOutcome::RolledBackError
                 } else {
-                    "rollback-incomplete"
+                    OperationOutcome::RollbackIncomplete
                 },
                 None,
-                true,
             );
             return Err(error);
         }
@@ -1067,14 +1993,13 @@ impl<C: Clock, O: Observer, F: FaultInjector> Boundary<C, O, F> {
                     self.cleanup_registered(parent, lease, &stage_name, &stage, true);
                 self.record_with(
                     OperationName::MkdirChild,
-                    vec![parent.id(), lease.id(), stage.id(), child_id],
+                    CapabilitySet::mkdir_child(parent, lease, Some(stage_ref), Some(child_ref)),
                     if cleanup_child.is_ok() && cleanup_stage.is_ok() {
-                        "staged-error"
+                        OperationOutcome::StagedError
                     } else {
-                        "rollback-incomplete"
+                        OperationOutcome::RollbackIncomplete
                     },
                     None,
-                    true,
                 );
                 return Err(error);
             }
@@ -1093,14 +2018,13 @@ impl<C: Clock, O: Observer, F: FaultInjector> Boundary<C, O, F> {
                     self.cleanup_registered(parent, lease, &stage_name, &stage, true);
                 self.record_with(
                     OperationName::MkdirChild,
-                    vec![parent.id(), lease.id(), stage.id(), child_id],
+                    CapabilitySet::mkdir_child(parent, lease, Some(stage_ref), Some(child_ref)),
                     if cleanup_child.is_ok() && cleanup_stage.is_ok() {
-                        "staged-error"
+                        OperationOutcome::StagedError
                     } else {
-                        "rollback-incomplete"
+                        OperationOutcome::RollbackIncomplete
                     },
                     None,
-                    true,
                 );
                 return Err(error);
             }
@@ -1116,14 +2040,13 @@ impl<C: Clock, O: Observer, F: FaultInjector> Boundary<C, O, F> {
             let cleanup_stage = self.cleanup_registered(parent, lease, &stage_name, &stage, true);
             self.record_with(
                 OperationName::MkdirChild,
-                vec![parent.id(), lease.id(), stage.id(), child_id],
+                CapabilitySet::mkdir_child(parent, lease, Some(stage_ref), Some(child_ref)),
                 if cleanup_child.is_ok() && cleanup_stage.is_ok() {
-                    "identity-mismatch"
+                    OperationOutcome::IdentityMismatch
                 } else {
-                    "rollback-incomplete"
+                    OperationOutcome::RollbackIncomplete
                 },
                 None,
-                true,
             );
             return Err(BoundaryError::IdentityMismatch);
         }
@@ -1133,14 +2056,13 @@ impl<C: Clock, O: Observer, F: FaultInjector> Boundary<C, O, F> {
             let cleanup_stage = self.cleanup_registered(parent, lease, &stage_name, &stage, true);
             self.record_with(
                 OperationName::MkdirChild,
-                vec![parent.id(), lease.id(), cap.id()],
+                CapabilitySet::mkdir_child(parent, lease, Some(stage_ref), Some(child_ref)),
                 if cleanup_child.is_ok() && cleanup_stage.is_ok() {
-                    "rolled-back-error"
+                    OperationOutcome::RolledBackError
                 } else {
-                    "rollback-incomplete"
+                    OperationOutcome::RollbackIncomplete
                 },
                 None,
-                true,
             );
             return Err(error);
         }
@@ -1149,33 +2071,38 @@ impl<C: Clock, O: Observer, F: FaultInjector> Boundary<C, O, F> {
             let cleanup_stage = self.cleanup_registered(parent, lease, &stage_name, &stage, true);
             self.record_with(
                 OperationName::MkdirChild,
-                vec![parent.id(), lease.id(), cap.id()],
+                CapabilitySet::mkdir_child(parent, lease, Some(stage_ref), Some(child_ref)),
                 if cleanup_child.is_ok() && cleanup_stage.is_ok() {
-                    "rolled-back-error"
+                    OperationOutcome::RolledBackError
                 } else {
-                    "rollback-incomplete"
+                    OperationOutcome::RollbackIncomplete
                 },
                 None,
-                true,
             );
             return Err(error);
         }
+        self.record_stage_published(
+            &stage,
+            parent,
+            lease,
+            child_stage_ref,
+            child_ref,
+            IdentityObservation::Observed(identity),
+        );
         if let Err(error) = self.cleanup_registered(parent, lease, &stage_name, &stage, true) {
             self.record_with(
                 OperationName::MkdirChild,
-                vec![parent.id(), lease.id(), cap.id()],
-                "mutated-error",
+                CapabilitySet::mkdir_child(parent, lease, Some(stage_ref), Some(child_ref)),
+                OperationOutcome::MutatedError,
                 None,
-                true,
             );
             return Err(error);
         }
         self.record_with(
             OperationName::MkdirChild,
-            vec![parent.id(), lease.id(), cap.id()],
-            "ok",
+            CapabilitySet::mkdir_child(parent, lease, Some(stage_ref), Some(child_ref)),
+            OperationOutcome::Applied,
             None,
-            true,
         );
         Ok(cap)
     }
@@ -1208,7 +2135,6 @@ impl<C: Clock, O: Observer, F: FaultInjector> Boundary<C, O, F> {
         scope: &QuiescentScope,
         object: &QuarantinedObject,
     ) -> Result<()> {
-        self.require_scope(parent.scope(), lease.scope())?;
         self.require_scope(parent.scope(), scope.scope)?;
         self.require_scope(parent.scope(), object.scope)?;
         let observed_parent = self.revalidate_directory(parent, false)?;
@@ -1254,6 +2180,7 @@ impl<C: Clock, O: Observer, F: FaultInjector> Boundary<C, O, F> {
         cap: &DirCap,
         directory: bool,
     ) -> Result<QuarantinedObject> {
+        self.rollback_disposition = RollbackDisposition::PreQuarantineFailure;
         self.require_scope(parent.scope(), lease.scope())?;
         self.require_scope(parent.scope(), cap.scope())?;
         self.rollback_named(parent, lease, name, cap.identity(), directory)
@@ -1266,15 +2193,23 @@ impl<C: Clock, O: Observer, F: FaultInjector> Boundary<C, O, F> {
         object: QuarantinedObject,
     ) -> Result<()> {
         let Some(scope) = self.quiescent_scope.take() else {
+            let object_id = object.id();
+            let identity = object.identity();
             self.pending_quarantines
                 .push(QuarantineObligation::Bound(object));
+            self.record_quarantine(object_id, QuarantineTerminal::BoundRecovery, identity);
             return Err(BoundaryError::QuarantineRequired);
         };
+        let object_id = object.id();
+        let identity = object.identity();
         let result = self.gc_quarantine(parent, lease, &scope, &object);
         self.quiescent_scope = Some(scope);
         if result.is_err() {
             self.pending_quarantines
                 .push(QuarantineObligation::Bound(object));
+            self.record_quarantine(object_id, QuarantineTerminal::BoundRecovery, identity);
+        } else {
+            self.record_quarantine(object_id, QuarantineTerminal::Collected, identity);
         }
         result
     }
@@ -1291,16 +2226,25 @@ impl<C: Clock, O: Observer, F: FaultInjector> Boundary<C, O, F> {
         cap: &DirCap,
         directory: bool,
     ) -> Result<()> {
-        let result = self
-            .rollback_created(parent, lease, name, cap, directory)
-            .and_then(|object| self.finish_quarantine(parent, lease, object));
-        self.record_with_identity(
-            OperationName::StageCleanup,
-            vec![parent.id(), lease.id(), cap.id()],
-            if result.is_ok() { "ok" } else { "error" },
-            None,
-            true,
-            Some(cap.identity()),
+        let result = match self.rollback_created(parent, lease, name, cap, directory) {
+            Ok(object) => self.finish_quarantine(parent, lease, object),
+            Err(error) => {
+                if self.rollback_disposition.retains_stage_authority() {
+                    self.retain_stage_authority(parent, cap, name, None);
+                }
+                Err(error)
+            }
+        };
+        self.record_stage_cleanup(
+            parent,
+            lease,
+            StageRef::new(cap.id()),
+            if result.is_ok() {
+                StageCleanupTerminal::Cleaned
+            } else {
+                StageCleanupTerminal::Failed
+            },
+            IdentityObservation::Observed(cap.identity()),
         );
         result
     }
@@ -1313,19 +2257,70 @@ impl<C: Clock, O: Observer, F: FaultInjector> Boundary<C, O, F> {
         expected: FileIdentity,
         capability_id: u64,
     ) -> Result<()> {
-        self.require_scope(parent.scope(), lease.scope())?;
-        let result = self
-            .rollback_named(parent, lease, name, expected, true)
-            .and_then(|object| self.finish_quarantine(parent, lease, object));
-        self.record_with_identity(
-            OperationName::StageCleanup,
-            vec![parent.id(), lease.id(), capability_id],
-            if result.is_ok() { "ok" } else { "error" },
-            None,
-            true,
-            Some(expected),
+        let result = if let Err(error) = self.require_scope(parent.scope(), lease.scope()) {
+            self.rollback_disposition = RollbackDisposition::PreQuarantineFailure;
+            self.register_unbound_stage(
+                parent,
+                StageRef::new(capability_id),
+                None,
+                name.clone(),
+                Some(expected),
+            );
+            Err(error)
+        } else {
+            match self.rollback_named(parent, lease, name, expected, true) {
+                Ok(object) => self.finish_quarantine(parent, lease, object),
+                Err(error) => {
+                    if self.rollback_disposition.retains_stage_authority() {
+                        self.register_unbound_stage(
+                            parent,
+                            StageRef::new(capability_id),
+                            None,
+                            name.clone(),
+                            Some(expected),
+                        );
+                    }
+                    Err(error)
+                }
+            }
+        };
+        self.record_stage_cleanup(
+            parent,
+            lease,
+            StageRef::new(capability_id),
+            if result.is_ok() {
+                StageCleanupTerminal::Cleaned
+            } else {
+                StageCleanupTerminal::Failed
+            },
+            IdentityObservation::Observed(expected),
         );
         result
+    }
+
+    fn rollback_named_and_finish_unbound_stage(
+        &mut self,
+        parent: &DirCap,
+        lease: &ExclusiveLease,
+        name: &CString,
+        stage: StageRef,
+        expected: FileIdentity,
+    ) -> Result<()> {
+        match self.rollback_named(parent, lease, name, expected, true) {
+            Ok(object) => self.finish_quarantine(parent, lease, object),
+            Err(error) => {
+                if self.rollback_disposition.retains_stage_authority() {
+                    self.register_unbound_stage(
+                        parent,
+                        stage,
+                        Some(ChildRef::new(stage.id())),
+                        name.clone(),
+                        Some(expected),
+                    );
+                }
+                Err(error)
+            }
+        }
     }
 
     fn restore_quarantine(
@@ -1364,12 +2359,29 @@ impl<C: Clock, O: Observer, F: FaultInjector> Boundary<C, O, F> {
         )
         .is_ok()
         {
+            self.rollback_disposition = RollbackDisposition::RestoredAfterMove;
+            self.record_quarantine(unbound.id, QuarantineTerminal::Restored, restore_expected);
             return error;
         }
-        self.pending_quarantines.push(match bound {
-            Some(object) => QuarantineObligation::Bound(object),
-            None => QuarantineObligation::Unbound(unbound),
-        });
+        let (obligation, terminal, identity) = match bound {
+            Some(object) => {
+                let identity = object.identity();
+                (
+                    QuarantineObligation::Bound(object),
+                    QuarantineTerminal::BoundRecovery,
+                    identity,
+                )
+            }
+            None => (
+                QuarantineObligation::Unbound(unbound),
+                QuarantineTerminal::UnboundRecovery,
+                restore_expected,
+            ),
+        };
+        let object_id = obligation.id();
+        self.rollback_disposition = RollbackDisposition::QuarantinedForRecovery;
+        self.pending_quarantines.push(obligation);
+        self.record_quarantine(object_id, terminal, identity);
         BoundaryError::QuarantineRequired
     }
 
@@ -1381,6 +2393,7 @@ impl<C: Clock, O: Observer, F: FaultInjector> Boundary<C, O, F> {
         expected: FileIdentity,
         directory: bool,
     ) -> Result<QuarantinedObject> {
+        self.rollback_disposition = RollbackDisposition::PreQuarantineFailure;
         self.require_scope(parent.scope(), lease.scope())?;
         self.revalidate_directory(parent, false)?;
         self.revalidate_lock(lease)?;
@@ -1459,18 +2472,27 @@ impl<C: Clock, O: Observer, F: FaultInjector> Boundary<C, O, F> {
                 // A replacement appeared while the expected inode was in
                 // quarantine.  Leave both objects intact for recovery rather
                 // than claiming a clean stage disposal.
+                let object_id = object.id();
+                let identity = object.identity();
+                self.rollback_disposition = RollbackDisposition::QuarantinedForRecovery;
                 self.pending_quarantines
                     .push(QuarantineObligation::Bound(object));
+                self.record_quarantine(object_id, QuarantineTerminal::BoundRecovery, identity);
                 return Err(BoundaryError::IdentityMismatch);
             }
             Err(BoundaryError::Io { source, .. })
                 if source.raw_os_error() == Some(libc::ENOENT) => {}
             Err(error) => {
+                let object_id = object.id();
+                let identity = object.identity();
+                self.rollback_disposition = RollbackDisposition::QuarantinedForRecovery;
                 self.pending_quarantines
                     .push(QuarantineObligation::Bound(object));
+                self.record_quarantine(object_id, QuarantineTerminal::BoundRecovery, identity);
                 return Err(error);
             }
         }
+        self.rollback_disposition = RollbackDisposition::ReadyForQuarantine;
         Ok(object)
     }
 
@@ -1486,65 +2508,78 @@ impl<C: Clock, O: Observer, F: FaultInjector> Boundary<C, O, F> {
         let stage_name =
             CString::new(format!(".lifecycle-stage-{stage_id}")).expect("stage name has no NUL");
         mkdir_at(parent.raw_fd(), &stage_name, 0o700)?;
-        self.record_with_identity(
-            OperationName::StageRegistered,
-            vec![parent.id(), lease.id(), stage_id],
-            "allocated",
-            None,
-            true,
-            None,
-        );
+        let stage_ref = StageRef::new(stage_id);
+        self.record_stage_allocated(parent, lease, stage_ref);
         let identity = match FileIdentity::from_at(parent.raw_fd(), &stage_name) {
             Ok(identity) => identity,
             Err(error) => {
-                self.record_with_identity(
-                    OperationName::StageCleanup,
-                    vec![parent.id(), lease.id(), stage_id],
-                    "deferred",
+                self.register_unbound_stage(
+                    parent,
+                    stage_ref,
+                    Some(ChildRef::new(stage_id)),
+                    stage_name.clone(),
                     None,
-                    true,
-                    None,
+                );
+                self.record_stage_cleanup(
+                    parent,
+                    lease,
+                    stage_ref,
+                    StageCleanupTerminal::Deferred,
+                    IdentityObservation::NotApplicable,
                 );
                 return Err(error);
             }
         };
-        self.record_with_identity(
-            OperationName::StageRegistered,
-            vec![parent.id(), lease.id(), stage_id],
-            "registered",
-            None,
-            true,
-            Some(identity),
+        self.record_stage_registered(
+            parent,
+            lease,
+            stage_ref,
+            ChildRef::new(stage_id),
+            IdentityObservation::Observed(identity),
         );
         // Before the child is bound, fail closed.  There is deliberately no
         // name-only rollback because a replacement could now occupy the name.
         if let Err(error) = self.checkpoint(Checkpoint::AfterStageMkdirBeforeBind) {
-            let cleanup = self
-                .rollback_named(parent, lease, &stage_name, identity, true)
-                .and_then(|object| self.finish_quarantine(parent, lease, object));
-            self.record_with_identity(
-                OperationName::StageCleanup,
-                vec![parent.id(), lease.id(), stage_id],
-                if cleanup.is_ok() { "ok" } else { "error" },
-                None,
-                true,
-                Some(identity),
+            let cleanup = self.rollback_named_and_finish_unbound_stage(
+                parent,
+                lease,
+                &stage_name,
+                stage_ref,
+                identity,
+            );
+            self.record_stage_cleanup(
+                parent,
+                lease,
+                stage_ref,
+                if cleanup.is_ok() {
+                    StageCleanupTerminal::Cleaned
+                } else {
+                    StageCleanupTerminal::Failed
+                },
+                IdentityObservation::Observed(identity),
             );
             return Err(error);
         }
         let fd = match open_dir_at(parent.raw_fd(), &stage_name) {
             Ok(fd) => fd,
             Err(error) => {
-                let cleanup = self
-                    .rollback_named(parent, lease, &stage_name, identity, true)
-                    .and_then(|object| self.finish_quarantine(parent, lease, object));
-                self.record_with_identity(
-                    OperationName::StageCleanup,
-                    vec![parent.id(), lease.id(), stage_id],
-                    if cleanup.is_ok() { "ok" } else { "error" },
-                    None,
-                    true,
-                    Some(identity),
+                let cleanup = self.rollback_named_and_finish_unbound_stage(
+                    parent,
+                    lease,
+                    &stage_name,
+                    stage_ref,
+                    identity,
+                );
+                self.record_stage_cleanup(
+                    parent,
+                    lease,
+                    stage_ref,
+                    if cleanup.is_ok() {
+                        StageCleanupTerminal::Cleaned
+                    } else {
+                        StageCleanupTerminal::Failed
+                    },
+                    IdentityObservation::Observed(identity),
                 );
                 return Err(error);
             }
@@ -1552,31 +2587,45 @@ impl<C: Clock, O: Observer, F: FaultInjector> Boundary<C, O, F> {
         let bound_identity = match FileIdentity::from_fd(fd.as_raw_fd()) {
             Ok(identity) => identity,
             Err(error) => {
-                let cleanup = self
-                    .rollback_named(parent, lease, &stage_name, identity, true)
-                    .and_then(|object| self.finish_quarantine(parent, lease, object));
-                self.record_with_identity(
-                    OperationName::StageCleanup,
-                    vec![parent.id(), lease.id(), stage_id],
-                    if cleanup.is_ok() { "ok" } else { "error" },
-                    None,
-                    true,
-                    Some(identity),
+                let cleanup = self.rollback_named_and_finish_unbound_stage(
+                    parent,
+                    lease,
+                    &stage_name,
+                    stage_ref,
+                    identity,
+                );
+                self.record_stage_cleanup(
+                    parent,
+                    lease,
+                    stage_ref,
+                    if cleanup.is_ok() {
+                        StageCleanupTerminal::Cleaned
+                    } else {
+                        StageCleanupTerminal::Failed
+                    },
+                    IdentityObservation::Observed(identity),
                 );
                 return Err(error);
             }
         };
         if bound_identity.inode_key() != identity.inode_key() {
-            let cleanup = self
-                .rollback_named(parent, lease, &stage_name, identity, true)
-                .and_then(|object| self.finish_quarantine(parent, lease, object));
-            self.record_with_identity(
-                OperationName::StageCleanup,
-                vec![parent.id(), lease.id(), stage_id],
-                if cleanup.is_ok() { "ok" } else { "error" },
-                None,
-                true,
-                Some(identity),
+            let cleanup = self.rollback_named_and_finish_unbound_stage(
+                parent,
+                lease,
+                &stage_name,
+                stage_ref,
+                identity,
+            );
+            self.record_stage_cleanup(
+                parent,
+                lease,
+                stage_ref,
+                if cleanup.is_ok() {
+                    StageCleanupTerminal::Cleaned
+                } else {
+                    StageCleanupTerminal::Failed
+                },
+                IdentityObservation::Observed(identity),
             );
             return Err(BoundaryError::IdentityMismatch);
         }
@@ -1618,7 +2667,13 @@ impl<C: Clock, O: Observer, F: FaultInjector> Boundary<C, O, F> {
         staged_name: &CString,
         original_name: &CString,
     ) -> Result<()> {
-        self.restore_staged(stage, parent, staged_name, original_name)?;
+        if let Err(error) = self.restore_staged(stage, parent, staged_name, original_name) {
+            // The stage still owns the retained object when restoration fails.
+            // Transfer that authority before returning the error; otherwise a
+            // failed rollback would leave an untracked inode in the stage.
+            self.retain_stage_authority(parent, stage, stage_name, None);
+            return Err(error);
+        }
         self.cleanup_registered(parent, lease, stage_name, stage, true)
     }
 
@@ -1648,16 +2703,26 @@ impl<C: Clock, O: Observer, F: FaultInjector> Boundary<C, O, F> {
         directory: bool,
     ) -> Result<()> {
         let name = c_name(name)?;
-        let ids = vec![parent.id(), lease.id()];
+        let capabilities = CapabilitySet::unlink(parent, lease);
         if let Err(error) = self.exact_identity(parent, lease, &name, expected) {
-            self.record_with(OperationName::UnlinkExact, ids, "error", None, false);
+            self.record_with(
+                OperationName::UnlinkExact,
+                capabilities.clone(),
+                OperationOutcome::Error,
+                None,
+            );
             return Err(error);
         }
         let staged_name = CString::new("entry").expect("literal has no NUL");
         let (stage_name, stage) = match self.create_staging_dir(parent, lease) {
             Ok(value) => value,
             Err(error) => {
-                self.record_with(OperationName::UnlinkExact, ids, "staged-error", None, true);
+                self.record_with(
+                    OperationName::UnlinkExact,
+                    capabilities.clone(),
+                    OperationOutcome::StagedError,
+                    None,
+                );
                 return Err(error);
             }
         };
@@ -1666,14 +2731,13 @@ impl<C: Clock, O: Observer, F: FaultInjector> Boundary<C, O, F> {
             let cleanup = self.cleanup_registered(parent, lease, &stage_name, &stage, true);
             self.record_with(
                 OperationName::UnlinkExact,
-                ids,
+                capabilities.clone(),
                 if cleanup.is_ok() {
-                    "staged-error"
+                    OperationOutcome::StagedError
                 } else {
-                    "rollback-incomplete"
+                    OperationOutcome::RollbackIncomplete
                 },
                 None,
-                true,
             );
             return Err(error);
         }
@@ -1688,14 +2752,13 @@ impl<C: Clock, O: Observer, F: FaultInjector> Boundary<C, O, F> {
             );
             self.record_with(
                 OperationName::UnlinkExact,
-                ids,
+                capabilities.clone(),
                 if rollback.is_ok() {
-                    "rolled-back-error"
+                    OperationOutcome::RolledBackError
                 } else {
-                    "rollback-incomplete"
+                    OperationOutcome::RollbackIncomplete
                 },
                 None,
-                true,
             );
             return Err(rollback.err().unwrap_or(error));
         }
@@ -1712,14 +2775,13 @@ impl<C: Clock, O: Observer, F: FaultInjector> Boundary<C, O, F> {
                 );
                 self.record_with(
                     OperationName::UnlinkExact,
-                    ids,
+                    capabilities.clone(),
                     if rollback.is_ok() {
-                        "rolled-back-error"
+                        OperationOutcome::RolledBackError
                     } else {
-                        "rollback-incomplete"
+                        OperationOutcome::RollbackIncomplete
                     },
                     None,
-                    true,
                 );
                 return Err(rollback.err().unwrap_or(error));
             }
@@ -1735,14 +2797,13 @@ impl<C: Clock, O: Observer, F: FaultInjector> Boundary<C, O, F> {
             );
             self.record_with(
                 OperationName::UnlinkExact,
-                ids,
+                capabilities.clone(),
                 if rollback.is_ok() {
-                    "identity-mismatch"
+                    OperationOutcome::IdentityMismatch
                 } else {
-                    "rollback-incomplete"
+                    OperationOutcome::RollbackIncomplete
                 },
                 None,
-                true,
             );
             return Err(rollback.err().unwrap_or(BoundaryError::IdentityMismatch));
         }
@@ -1757,26 +2818,40 @@ impl<C: Clock, O: Observer, F: FaultInjector> Boundary<C, O, F> {
             );
             self.record_with(
                 OperationName::UnlinkExact,
-                ids,
+                capabilities.clone(),
                 if rollback.is_ok() {
-                    "rolled-back-error"
+                    OperationOutcome::RolledBackError
                 } else {
-                    "rollback-incomplete"
+                    OperationOutcome::RollbackIncomplete
                 },
                 None,
-                true,
             );
             return Err(rollback.err().unwrap_or(error));
         }
         if let Err(error) = self.cleanup_registered(parent, lease, &stage_name, &stage, true) {
-            self.record_with(OperationName::UnlinkExact, ids, "mutated-error", None, true);
+            self.record_with(
+                OperationName::UnlinkExact,
+                capabilities.clone(),
+                OperationOutcome::MutatedError,
+                None,
+            );
             return Err(error);
         }
         if let Err(error) = self.checkpoint(Checkpoint::AfterExactMutation) {
-            self.record_with(OperationName::UnlinkExact, ids, "mutated-error", None, true);
+            self.record_with(
+                OperationName::UnlinkExact,
+                capabilities.clone(),
+                OperationOutcome::MutatedError,
+                None,
+            );
             return Err(error);
         }
-        self.record_with(OperationName::UnlinkExact, ids, "ok", None, true);
+        self.record_with(
+            OperationName::UnlinkExact,
+            capabilities,
+            OperationOutcome::Applied,
+            None,
+        );
         Ok(())
     }
 
@@ -1791,28 +2866,53 @@ impl<C: Clock, O: Observer, F: FaultInjector> Boundary<C, O, F> {
     ) -> Result<()> {
         let source = c_name(source)?;
         let destination = c_name(destination)?;
-        let ids = vec![source_parent.id(), destination_parent.id(), lease.id()];
+        let capabilities = CapabilitySet::rename(source_parent, destination_parent, lease);
         if let Err(error) = self.require_scope(source_parent.scope(), lease.scope()) {
-            self.record_with(OperationName::RenameExact, ids, "error", None, false);
+            self.record_with(
+                OperationName::RenameExact,
+                capabilities.clone(),
+                OperationOutcome::Error,
+                None,
+            );
             return Err(error);
         }
         if let Err(error) = self.require_scope(source_parent.scope(), destination_parent.scope()) {
-            self.record_with(OperationName::RenameExact, ids, "error", None, false);
+            self.record_with(
+                OperationName::RenameExact,
+                capabilities.clone(),
+                OperationOutcome::Error,
+                None,
+            );
             return Err(error);
         }
         if let Err(error) = self.exact_identity(source_parent, lease, &source, expected) {
-            self.record_with(OperationName::RenameExact, ids, "error", None, false);
+            self.record_with(
+                OperationName::RenameExact,
+                capabilities.clone(),
+                OperationOutcome::Error,
+                None,
+            );
             return Err(error);
         }
         if let Err(error) = self.revalidate_directory(destination_parent, false) {
-            self.record_with(OperationName::RenameExact, ids, "error", None, false);
+            self.record_with(
+                OperationName::RenameExact,
+                capabilities.clone(),
+                OperationOutcome::Error,
+                None,
+            );
             return Err(error);
         }
         let staged_name = CString::new("entry").expect("literal has no NUL");
         let (stage_name, stage) = match self.create_staging_dir(source_parent, lease) {
             Ok(value) => value,
             Err(error) => {
-                self.record_with(OperationName::RenameExact, ids, "staged-error", None, true);
+                self.record_with(
+                    OperationName::RenameExact,
+                    capabilities.clone(),
+                    OperationOutcome::StagedError,
+                    None,
+                );
                 return Err(error);
             }
         };
@@ -1825,14 +2925,13 @@ impl<C: Clock, O: Observer, F: FaultInjector> Boundary<C, O, F> {
             let cleanup = self.cleanup_registered(source_parent, lease, &stage_name, &stage, true);
             self.record_with(
                 OperationName::RenameExact,
-                ids,
+                capabilities.clone(),
                 if cleanup.is_ok() {
-                    "staged-error"
+                    OperationOutcome::StagedError
                 } else {
-                    "rollback-incomplete"
+                    OperationOutcome::RollbackIncomplete
                 },
                 None,
-                true,
             );
             return Err(error);
         }
@@ -1847,14 +2946,13 @@ impl<C: Clock, O: Observer, F: FaultInjector> Boundary<C, O, F> {
             );
             self.record_with(
                 OperationName::RenameExact,
-                ids,
+                capabilities.clone(),
                 if rollback.is_ok() {
-                    "rolled-back-error"
+                    OperationOutcome::RolledBackError
                 } else {
-                    "rollback-incomplete"
+                    OperationOutcome::RollbackIncomplete
                 },
                 None,
-                true,
             );
             return Err(rollback.err().unwrap_or(error));
         }
@@ -1871,14 +2969,13 @@ impl<C: Clock, O: Observer, F: FaultInjector> Boundary<C, O, F> {
                 );
                 self.record_with(
                     OperationName::RenameExact,
-                    ids,
+                    capabilities.clone(),
                     if rollback.is_ok() {
-                        "rolled-back-error"
+                        OperationOutcome::RolledBackError
                     } else {
-                        "rollback-incomplete"
+                        OperationOutcome::RollbackIncomplete
                     },
                     None,
-                    true,
                 );
                 return Err(rollback.err().unwrap_or(error));
             }
@@ -1894,14 +2991,13 @@ impl<C: Clock, O: Observer, F: FaultInjector> Boundary<C, O, F> {
             );
             self.record_with(
                 OperationName::RenameExact,
-                ids,
+                capabilities.clone(),
                 if rollback.is_ok() {
-                    "identity-mismatch"
+                    OperationOutcome::IdentityMismatch
                 } else {
-                    "rollback-incomplete"
+                    OperationOutcome::RollbackIncomplete
                 },
                 None,
-                true,
             );
             return Err(rollback.err().unwrap_or(BoundaryError::IdentityMismatch));
         }
@@ -1921,27 +3017,41 @@ impl<C: Clock, O: Observer, F: FaultInjector> Boundary<C, O, F> {
             );
             self.record_with(
                 OperationName::RenameExact,
-                ids,
+                capabilities.clone(),
                 if rollback.is_ok() {
-                    "rolled-back-error"
+                    OperationOutcome::RolledBackError
                 } else {
-                    "rollback-incomplete"
+                    OperationOutcome::RollbackIncomplete
                 },
                 None,
-                true,
             );
             return Err(rollback.err().unwrap_or(error));
         }
         if let Err(error) = self.cleanup_registered(source_parent, lease, &stage_name, &stage, true)
         {
-            self.record_with(OperationName::RenameExact, ids, "mutated-error", None, true);
+            self.record_with(
+                OperationName::RenameExact,
+                capabilities.clone(),
+                OperationOutcome::MutatedError,
+                None,
+            );
             return Err(error);
         }
         if let Err(error) = self.checkpoint(Checkpoint::AfterExactMutation) {
-            self.record_with(OperationName::RenameExact, ids, "mutated-error", None, true);
+            self.record_with(
+                OperationName::RenameExact,
+                capabilities.clone(),
+                OperationOutcome::MutatedError,
+                None,
+            );
             return Err(error);
         }
-        self.record_with(OperationName::RenameExact, ids, "ok", None, true);
+        self.record_with(
+            OperationName::RenameExact,
+            capabilities,
+            OperationOutcome::Applied,
+            None,
+        );
         Ok(())
     }
 
@@ -1953,7 +3063,11 @@ impl<C: Clock, O: Observer, F: FaultInjector> Boundary<C, O, F> {
     ) -> Result<Vec<String>> {
         self.revalidate_directory(parent, false)?;
         let result = read_directory(parent.raw_fd(), max_items, deadline_ns, &mut self.clock);
-        self.fail_or_record(OperationName::ListNames, vec![parent.id()], result)
+        self.fail_or_record(
+            OperationName::ListNames,
+            CapabilitySet::directory(parent),
+            result,
+        )
     }
 
     pub fn read(&mut self, file: &FileCap, max_bytes: usize) -> Result<Vec<u8>> {
@@ -1971,7 +3085,11 @@ impl<C: Clock, O: Observer, F: FaultInjector> Boundary<C, O, F> {
             return Err(io_error("read"));
         }
         buffer.truncate(count as usize);
-        self.record(OperationName::Read, vec![file.id()], "ok");
+        self.record(
+            OperationName::Read,
+            CapabilitySet::file(file),
+            OperationOutcome::Observed,
+        );
         Ok(buffer)
     }
 
@@ -1985,7 +3103,11 @@ impl<C: Clock, O: Observer, F: FaultInjector> Boundary<C, O, F> {
         if count < 0 {
             return Err(io_error("write"));
         }
-        self.record(OperationName::Write, vec![file.id(), lease.id()], "ok");
+        self.record(
+            OperationName::Write,
+            CapabilitySet::write(file, lease),
+            OperationOutcome::Applied,
+        );
         Ok(count as usize)
     }
 
@@ -1996,7 +3118,11 @@ impl<C: Clock, O: Observer, F: FaultInjector> Boundary<C, O, F> {
         if result < 0 {
             return Err(io_error("fsync"));
         }
-        self.record(OperationName::Fsync, vec![file.id()], "ok");
+        self.record(
+            OperationName::Fsync,
+            CapabilitySet::file(file),
+            OperationOutcome::Observed,
+        );
         Ok(())
     }
 
@@ -2018,7 +3144,11 @@ impl<C: Clock, O: Observer, F: FaultInjector> Boundary<C, O, F> {
         let fd = unsafe { OwnedFd::from_raw_fd(fd) };
         let identity = FileIdentity::from_fd(fd.as_raw_fd())?;
         let cap = PidFdCap::new(fd, identity, self.next_id(), fresh_scope());
-        self.record(OperationName::PidfdOpen, vec![cap.id()], "ok");
+        self.record(
+            OperationName::PidfdOpen,
+            CapabilitySet::pidfd(&cap),
+            OperationOutcome::Observed,
+        );
         Ok(cap)
     }
 
@@ -2032,7 +3162,11 @@ impl<C: Clock, O: Observer, F: FaultInjector> Boundary<C, O, F> {
         if result < 0 {
             return Err(io_error("pidfd_send_signal"));
         }
-        self.record(OperationName::PidfdSignal, vec![pidfd.id()], "ok");
+        self.record(
+            OperationName::PidfdSignal,
+            CapabilitySet::pidfd(pidfd),
+            OperationOutcome::Applied,
+        );
         Ok(())
     }
 
@@ -2055,7 +3189,11 @@ impl<C: Clock, O: Observer, F: FaultInjector> Boundary<C, O, F> {
             // SAFETY: fd is retained by the owned LockCap and operation is a
             // value.  On success ownership moves into ExclusiveLease.
             if unsafe { libc::flock(lock.raw_fd(), operation) } == 0 {
-                self.record(OperationName::Flock, vec![lock.id()], "ok");
+                self.record(
+                    OperationName::Flock,
+                    CapabilitySet::lock(&lock),
+                    OperationOutcome::Applied,
+                );
                 let scope = lock.scope();
                 let fd = lock.fd;
                 return Ok(ExclusiveLease::new(fd, identity, id, scope));
@@ -2084,17 +3222,23 @@ impl<C: Clock, O: Observer, F: FaultInjector> Boundary<C, O, F> {
             quarantine_obligations: QuarantineObligations {
                 obligations: self.pending_quarantines,
             },
+            stage_obligations: StageObligations {
+                obligations: self.pending_stages,
+            },
         }
     }
 
     pub fn finish(self) -> std::result::Result<O, BoundaryFinishError<O>> {
-        if self.pending_quarantines.is_empty() {
+        if self.pending_quarantines.is_empty() && self.pending_stages.is_empty() {
             Ok(self.observer)
         } else {
             Err(BoundaryFinishError {
                 observer: self.observer,
                 quarantine_obligations: QuarantineObligations {
                     obligations: self.pending_quarantines,
+                },
+                stage_obligations: StageObligations {
+                    obligations: self.pending_stages,
                 },
             })
         }
@@ -2108,27 +3252,47 @@ impl<C: Clock, O: Observer, F: FaultInjector> Boundary<C, O, F> {
     /// still the safety net, while the record makes close part of the
     /// deterministic operation trace rather than an invisible side effect.
     pub fn close_dir(&mut self, capability: DirCap) {
-        self.record(OperationName::Close, vec![capability.id()], "ok");
+        self.record(
+            OperationName::Close,
+            CapabilitySet::close_directory(&capability),
+            OperationOutcome::Applied,
+        );
         drop(capability);
     }
 
     pub fn close_file(&mut self, capability: FileCap) {
-        self.record(OperationName::Close, vec![capability.id()], "ok");
+        self.record(
+            OperationName::Close,
+            CapabilitySet::close_file(&capability),
+            OperationOutcome::Applied,
+        );
         drop(capability);
     }
 
     pub fn close_pidfd(&mut self, capability: PidFdCap) {
-        self.record(OperationName::Close, vec![capability.id()], "ok");
+        self.record(
+            OperationName::Close,
+            CapabilitySet::close_pidfd(&capability),
+            OperationOutcome::Applied,
+        );
         drop(capability);
     }
 
     pub fn close_lock(&mut self, capability: LockCap) {
-        self.record(OperationName::Close, vec![capability.id()], "ok");
+        self.record(
+            OperationName::Close,
+            CapabilitySet::close_lock(&capability),
+            OperationOutcome::Applied,
+        );
         drop(capability);
     }
 
     pub fn close_exclusive_lease(&mut self, capability: ExclusiveLease) {
-        self.record(OperationName::Close, vec![capability.id()], "ok");
+        self.record(
+            OperationName::Close,
+            CapabilitySet::close_lease(&capability),
+            OperationOutcome::Applied,
+        );
         drop(capability);
     }
 }
@@ -2136,6 +3300,7 @@ impl<C: Clock, O: Observer, F: FaultInjector> Boundary<C, O, F> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::collections::HashSet;
     use std::fs;
     use std::os::unix::fs::symlink;
     use std::path::PathBuf;
@@ -2156,6 +3321,14 @@ mod tests {
         fn drop(&mut self) {
             let _ = fs::remove_dir_all(&self.0);
         }
+    }
+
+    fn terminal_ids_match_allocations(allocated: &[u64], terminals: &[u64]) -> bool {
+        let allocated_set: HashSet<_> = allocated.iter().copied().collect();
+        let terminal_set: HashSet<_> = terminals.iter().copied().collect();
+        allocated.len() == allocated_set.len()
+            && terminals.len() == terminal_set.len()
+            && allocated_set == terminal_set
     }
 
     struct SwapAfterBind {
@@ -2362,21 +3535,23 @@ mod tests {
         );
         let parts = boundary.into_parts();
         assert_eq!(parts.quarantine_obligations.len(), 2);
+        assert_eq!(parts.stage_obligations.len(), 0);
         let records = parts.observer.records;
         assert!(records.iter().any(|record| {
-            record.operation == OperationName::StageRegistered && record.identity.is_some()
+            record.operation() == OperationName::StageRegistered && record.identity().is_observed()
         }));
         let registered = records
             .iter()
             .position(|record| {
-                record.operation == OperationName::StageRegistered && record.identity.is_some()
+                record.operation() == OperationName::StageRegistered
+                    && record.identity().is_observed()
             })
             .expect("stage registration");
         let checkpoint = records
             .iter()
             .position(|record| {
-                record.operation == OperationName::Checkpoint
-                    && record.checkpoint == Some(Checkpoint::AfterStageMkdirBeforeBind)
+                record.operation() == OperationName::Checkpoint
+                    && record.checkpoint() == Some(Checkpoint::AfterStageMkdirBeforeBind)
             })
             .expect("stage checkpoint");
         assert!(
@@ -2410,14 +3585,29 @@ mod tests {
             .expect("no quarantine obligations")
             .records;
         assert!(records.iter().any(|record| {
-            record.operation == OperationName::MkdirChild && record.result == "ok" && record.mutated
+            record.operation() == OperationName::MkdirChild
+                && record.outcome() == OperationOutcome::Applied
+                && record.mutation().changed()
         }));
-        assert!(
-            records
-                .iter()
-                .any(|record| record.operation == OperationName::StageCleanup
-                    && record.result == "ok")
-        );
+        assert!(records.iter().any(|record| {
+            record.operation() == OperationName::StageCleanup
+                && record.outcome() == OperationOutcome::Applied
+        }));
+        assert!(records.iter().any(|record| {
+            matches!(
+                record.journal(),
+                JournalRecord::Stage(StageJournal::Cleanup {
+                    terminal: StageCleanupTerminal::Cleaned,
+                    ..
+                })
+            )
+        }));
+        assert!(records.iter().any(|record| {
+            matches!(
+                record.journal(),
+                JournalRecord::Quarantine(QuarantineEvent::Collected { .. })
+            )
+        }));
     }
 
     #[test]
@@ -2459,7 +3649,7 @@ mod tests {
     }
 
     #[test]
-    fn rollback_failure_is_recorded_as_mutated() {
+    fn rollback_failure_is_recorded_as_partial() {
         let temp = TempDir::new("rollback-journal");
         make_lock(&temp.0);
         fs::write(temp.0.join("target"), b"original").expect("target");
@@ -2485,16 +3675,115 @@ mod tests {
             .is_err());
         let parts = boundary.into_parts();
         assert_eq!(parts.quarantine_obligations.len(), 0);
+        let stage_id = parts
+            .observer
+            .records
+            .iter()
+            .find_map(|record| match record.journal() {
+                JournalRecord::Stage(StageJournal::Allocated { stage, .. }) => Some(stage.id()),
+                _ => None,
+            })
+            .expect("allocated rollback stage");
+        assert_eq!(parts.stage_obligations.len(), 1);
+        let stage_obligations = parts.stage_obligations.into_inner();
+        match &stage_obligations[0] {
+            StageObligation::Bound(obligation) => {
+                assert_eq!(obligation.id(), stage_id);
+                assert_eq!(
+                    obligation.stage_identity().mode & libc::S_IFMT,
+                    libc::S_IFDIR
+                );
+            }
+            StageObligation::Unbound(_) => panic!("rollback retained a bound stage"),
+        }
         let records = parts.observer.records;
         assert!(records.iter().any(|record| {
-            record.operation == OperationName::UnlinkExact
-                && record.result == "rollback-incomplete"
-                && record.mutated
+            record.operation() == OperationName::UnlinkExact
+                && record.outcome() == OperationOutcome::RollbackIncomplete
+                && record.mutation().changed()
         }));
         assert_eq!(
             fs::read(temp.0.join("target")).expect("replacement"),
             b"replacement"
         );
+    }
+
+    #[test]
+    fn restored_after_quarantine_move_retains_stage_authority() {
+        let temp = TempDir::new("restored-quarantine-stage");
+        make_lock(&temp.0);
+        fs::create_dir(temp.0.join("stage")).expect("stage");
+        let mut boundary = Boundary::new(
+            RealClock::default(),
+            VecObserver::default(),
+            FailAt::new(Checkpoint::AfterQuarantineMoveBeforeVerify),
+        );
+        let parent = boundary.anchor_directory(&temp.0).expect("anchor");
+        let lock = boundary.open_lock(&parent, "lock").expect("lock");
+        let lease = boundary.flock_exclusive(lock, 10_000_000).expect("lease");
+        let stage = boundary
+            .open_directory(&parent, "stage")
+            .expect("stage cap");
+        let stage_id = stage.id();
+        let stage_name = CString::new("stage").expect("stage name");
+        assert!(matches!(
+            boundary.cleanup_registered(&parent, &lease, &stage_name, &stage, true),
+            Err(BoundaryError::Injected(
+                Checkpoint::AfterQuarantineMoveBeforeVerify
+            ))
+        ));
+        assert!(
+            temp.0.join("stage").is_dir(),
+            "restore lost the stage inode"
+        );
+        let error = match boundary.finish() {
+            Err(error) => error,
+            Ok(_) => panic!("restored stage authority was silently dropped"),
+        };
+        assert_eq!(error.quarantine_obligations.len(), 0);
+        assert_eq!(error.stage_obligations.len(), 1);
+        let stage_obligations = error.stage_obligations.into_inner();
+        assert!(matches!(
+            &stage_obligations[0],
+            StageObligation::Bound(obligation) if obligation.id() == stage_id
+        ));
+    }
+
+    #[test]
+    fn pre_quarantine_cleanup_failure_has_only_stage_obligation() {
+        let temp = TempDir::new("pre-quarantine-cleanup");
+        fs::create_dir(temp.0.join("a")).expect("root a");
+        fs::create_dir(temp.0.join("b")).expect("root b");
+        make_lock(&temp.0.join("a"));
+        make_lock(&temp.0.join("b"));
+        fs::create_dir(temp.0.join("a/stage")).expect("stage");
+        let mut boundary = Boundary::new(RealClock::default(), VecObserver::default(), NoFault);
+        let parent_a = boundary
+            .anchor_directory(&temp.0.join("a"))
+            .expect("anchor a");
+        let parent_b = boundary
+            .anchor_directory(&temp.0.join("b"))
+            .expect("anchor b");
+        let lock_b = boundary.open_lock(&parent_b, "lock").expect("lock b");
+        let lease_b = boundary
+            .flock_exclusive(lock_b, 10_000_000)
+            .expect("lease b");
+        let stage = boundary
+            .open_directory(&parent_a, "stage")
+            .expect("stage cap");
+        let stage_name = CString::new("stage").expect("stage name");
+        assert!(matches!(
+            boundary.cleanup_registered(&parent_a, &lease_b, &stage_name, &stage, true),
+            Err(BoundaryError::WrongCapability("authority scope"))
+        ));
+        let parts = boundary.into_parts();
+        assert_eq!(parts.stage_obligations.len(), 1);
+        assert_eq!(parts.quarantine_obligations.len(), 0);
+        let stage_obligations = parts.stage_obligations.into_inner();
+        assert!(matches!(
+            &stage_obligations[0],
+            StageObligation::Bound(obligation) if obligation.id() == stage.id()
+        ));
     }
 
     #[test]
@@ -2523,6 +3812,7 @@ mod tests {
         let obligations = boundary.take_quarantine_obligations();
         assert_eq!(obligations.len(), 1);
         assert_eq!(obligations.into_inner().len(), 1);
+        assert_eq!(boundary.take_stage_obligations().len(), 0);
         assert!(fs::read_dir(&temp.0)
             .expect("root listing")
             .flatten()
@@ -2561,6 +3851,7 @@ mod tests {
         };
         assert_eq!(error.quarantine_obligations.len(), 1);
         assert!(!error.quarantine_obligations.is_empty());
+        assert_eq!(error.stage_obligations.len(), 0);
     }
 
     #[test]
@@ -2600,14 +3891,22 @@ mod tests {
                 .starts_with(".lifecycle-quarantine-")));
         let parts = boundary.into_parts();
         assert_eq!(parts.quarantine_obligations.len(), 1);
+        assert_eq!(parts.stage_obligations.len(), 0);
         let records = parts.observer.records;
         assert!(records.iter().any(|record| {
-            record.operation == OperationName::StageCleanup && record.result == "error"
+            record.operation() == OperationName::StageCleanup
+                && record.outcome() == OperationOutcome::Error
         }));
         assert!(records.iter().any(|record| {
-            record.operation == OperationName::UnlinkExact
-                && record.result == "mutated-error"
-                && record.mutated
+            record.operation() == OperationName::UnlinkExact
+                && record.outcome() == OperationOutcome::MutatedError
+                && record.mutation().changed()
+        }));
+        assert!(records.iter().any(|record| {
+            matches!(
+                record.journal(),
+                JournalRecord::Quarantine(QuarantineEvent::BoundRecovery { .. })
+            )
         }));
     }
 
@@ -2642,9 +3941,11 @@ mod tests {
         assert!(temp.0.join(".quarantine-original").is_dir());
         let parts = boundary.into_parts();
         assert_eq!(parts.quarantine_obligations.len(), 1);
+        assert_eq!(parts.stage_obligations.len(), 0);
         let records = parts.observer.records;
         assert!(records.iter().any(|record| {
-            record.operation == OperationName::StageCleanup && record.result == "error"
+            record.operation() == OperationName::StageCleanup
+                && record.outcome() == OperationOutcome::Error
         }));
     }
 
@@ -2665,7 +3966,7 @@ mod tests {
             .expect("no quarantine obligations")
             .records
             .iter()
-            .any(|record| record.operation == OperationName::Flock));
+            .any(|record| record.operation() == OperationName::Flock));
     }
 
     #[test]
@@ -2698,14 +3999,14 @@ mod tests {
             .expect("no quarantine obligations")
             .records;
         assert!(records.iter().any(|record| {
-            record.operation == OperationName::UnlinkExact
-                && record.result == "mutated-error"
-                && record.mutated
+            record.operation() == OperationName::UnlinkExact
+                && record.outcome() == OperationOutcome::MutatedError
+                && record.mutation().changed()
         }));
         assert!(records.iter().any(|record| {
-            record.operation == OperationName::Checkpoint
-                && record.checkpoint == Some(Checkpoint::AfterExactMutation)
-                && record.result == "injected"
+            record.operation() == OperationName::Checkpoint
+                && record.checkpoint() == Some(Checkpoint::AfterExactMutation)
+                && record.outcome() == OperationOutcome::Injected
         }));
     }
 
@@ -2754,16 +4055,252 @@ mod tests {
             .records;
         assert!(records
             .iter()
-            .any(|record| record.operation == OperationName::RenameExact));
-        assert!(
-            records
-                .iter()
-                .any(|record| record.operation == OperationName::StageCleanup
-                    && record.result == "ok")
-        );
+            .any(|record| record.operation() == OperationName::RenameExact));
+        assert!(records.iter().any(|record| {
+            record.operation() == OperationName::StageCleanup
+                && record.outcome() == OperationOutcome::Applied
+        }));
         assert!(records
             .iter()
-            .any(|record| record.operation == OperationName::Close));
+            .any(|record| record.operation() == OperationName::Close));
+    }
+
+    #[test]
+    fn journal_capability_roles_are_typed_per_operation() {
+        let temp = TempDir::new("typed-capability-roles");
+        make_lock(&temp.0);
+        fs::write(temp.0.join("target"), b"payload").expect("target");
+        fs::write(temp.0.join("other"), b"other").expect("other");
+        let mut boundary = Boundary::new(RealClock::default(), VecObserver::default(), NoFault);
+        let parent = boundary.anchor_directory(&temp.0).expect("anchor");
+        let lock = boundary.open_lock(&parent, "lock").expect("lock");
+        let lease = boundary.flock_exclusive(lock, 10_000_000).expect("lease");
+        install_external_scope(&mut boundary, &parent, &lease);
+        let file = boundary.open_file(&parent, "target", true).expect("file");
+        boundary.write(&file, &lease, b"!").expect("write");
+        let child = boundary
+            .mkdir_child(&parent, &lease, "created", 0o700)
+            .expect("mkdir");
+        let published_identity = child.identity();
+        let other_identity = FileIdentity::from_fd(
+            fs::File::open(temp.0.join("other"))
+                .expect("other fd")
+                .as_raw_fd(),
+        )
+        .expect("other identity");
+        boundary
+            .rename_exact(&parent, &parent, &lease, "other", "renamed", other_identity)
+            .expect("rename");
+        drop(child);
+        let records = boundary
+            .into_observer()
+            .ok()
+            .expect("no obligations")
+            .records;
+
+        let write_roles = records.iter().find_map(|record| match record.journal() {
+            JournalRecord::Operation(OperationEvent {
+                operation: OperationName::Write,
+                capabilities,
+                ..
+            }) => Some(
+                capabilities
+                    .as_slice()
+                    .iter()
+                    .map(|entry| entry.role())
+                    .collect::<Vec<_>>(),
+            ),
+            _ => None,
+        });
+        assert_eq!(
+            write_roles,
+            Some(vec![CapabilityRole::File, CapabilityRole::Lease])
+        );
+        let mkdir_roles = records.iter().find_map(|record| match record.journal() {
+            JournalRecord::Operation(OperationEvent {
+                operation: OperationName::MkdirChild,
+                result: OperationOutcome::Applied,
+                capabilities,
+                ..
+            }) => Some(capabilities.as_slice()),
+            _ => None,
+        });
+        assert_eq!(
+            mkdir_roles.map(|entries| entries.iter().map(|entry| entry.role()).collect::<Vec<_>>()),
+            Some(vec![
+                CapabilityRole::Parent,
+                CapabilityRole::Lease,
+                CapabilityRole::Stage,
+                CapabilityRole::Child,
+            ])
+        );
+        let rename_roles = records.iter().find_map(|record| match record.journal() {
+            JournalRecord::Operation(OperationEvent {
+                operation: OperationName::RenameExact,
+                result: OperationOutcome::Applied,
+                capabilities,
+                ..
+            }) => Some(capabilities.as_slice()),
+            _ => None,
+        });
+        assert_eq!(
+            rename_roles
+                .map(|entries| entries.iter().map(|entry| entry.role()).collect::<Vec<_>>()),
+            Some(vec![
+                CapabilityRole::SourceParent,
+                CapabilityRole::DestinationParent,
+                CapabilityRole::Lease,
+            ])
+        );
+
+        let mut stage_allocations = Vec::new();
+        let mut stage_registrations = Vec::new();
+        let mut stage_terminals = Vec::new();
+        let mut stage_cleanups = Vec::new();
+        let mut published = Vec::new();
+        let mut quarantine_terminals = Vec::new();
+        for record in records {
+            match record.journal() {
+                JournalRecord::Stage(StageJournal::Allocated {
+                    stage,
+                    capabilities,
+                    ..
+                }) => {
+                    let parent = capabilities
+                        .as_slice()
+                        .iter()
+                        .find(|entry| entry.role() == CapabilityRole::Parent)
+                        .expect("allocated stage has parent");
+                    stage_allocations.push((stage.id(), parent.id()));
+                }
+                JournalRecord::Stage(StageJournal::Registered {
+                    stage,
+                    capabilities,
+                    ..
+                }) => {
+                    let parent = capabilities
+                        .as_slice()
+                        .iter()
+                        .find(|entry| entry.role() == CapabilityRole::Parent)
+                        .expect("registered stage has parent");
+                    stage_registrations.push((stage.id(), parent.id()));
+                }
+                JournalRecord::Stage(StageJournal::Published {
+                    stage,
+                    capabilities,
+                    identity: IdentityObservation::Observed(identity),
+                    ..
+                }) => {
+                    assert_eq!(
+                        identity.inode_key(),
+                        published_identity.inode_key(),
+                        "published identity must match the bound child"
+                    );
+                    let source_parent = capabilities
+                        .as_slice()
+                        .iter()
+                        .find(|entry| entry.role() == CapabilityRole::SourceParent)
+                        .expect("published stage has source parent");
+                    let destination_parent = capabilities
+                        .as_slice()
+                        .iter()
+                        .find(|entry| entry.role() == CapabilityRole::DestinationParent)
+                        .expect("published stage has destination parent");
+                    published.push((stage.id(), source_parent.id(), destination_parent.id()));
+                    stage_terminals.push(stage.id());
+                }
+                JournalRecord::Stage(StageJournal::Cleanup { stage, .. }) => {
+                    assert!(
+                        !stage_terminals.contains(&stage.id()),
+                        "stage cleanup terminal emitted twice"
+                    );
+                    stage_terminals.push(stage.id());
+                    stage_cleanups.push(stage.id());
+                }
+                JournalRecord::Quarantine(
+                    QuarantineEvent::Restored { object, .. }
+                    | QuarantineEvent::BoundRecovery { object, .. }
+                    | QuarantineEvent::UnboundRecovery { object, .. }
+                    | QuarantineEvent::Collected { object, .. },
+                ) => {
+                    assert!(
+                        !quarantine_terminals.contains(&object.id()),
+                        "quarantine terminal emitted twice"
+                    );
+                    quarantine_terminals.push(object.id());
+                }
+                _ => {}
+            }
+        }
+        assert_eq!(
+            stage_allocations.len(),
+            3,
+            "mkdir and rename stage allocations"
+        );
+        assert_eq!(
+            stage_registrations.len(),
+            3,
+            "mkdir and rename stage registrations"
+        );
+        assert!(terminal_ids_match_allocations(
+            &stage_allocations
+                .iter()
+                .map(|(stage_id, _)| *stage_id)
+                .collect::<Vec<_>>(),
+            &stage_terminals
+        ));
+        assert_eq!(stage_cleanups.len(), quarantine_terminals.len());
+        let child_stage = stage_allocations
+            .iter()
+            .find(|(_, parent_id)| *parent_id != parent.id())
+            .expect("child stage topology");
+        assert_eq!(
+            stage_registrations
+                .iter()
+                .find(|(stage_id, _)| *stage_id == child_stage.0)
+                .map(|(_, parent_id)| *parent_id),
+            Some(child_stage.1)
+        );
+        assert_eq!(published, vec![(child_stage.0, child_stage.1, parent.id())]);
+    }
+
+    #[test]
+    fn stage_terminality_rejects_missing_foreign_and_duplicate_terminals() {
+        assert!(terminal_ids_match_allocations(&[1, 2], &[1, 2]));
+        assert!(!terminal_ids_match_allocations(&[1, 2], &[1]));
+        assert!(!terminal_ids_match_allocations(&[1, 2], &[1, 3]));
+        assert!(!terminal_ids_match_allocations(&[1, 2], &[1, 2, 2]));
+    }
+
+    #[test]
+    fn finish_refuses_unbound_stage_obligation() {
+        let temp = TempDir::new("stage-obligation-finish");
+        make_lock(&temp.0);
+        let mut boundary = Boundary::new(RealClock::default(), VecObserver::default(), NoFault);
+        let parent = boundary.anchor_directory(&temp.0).expect("anchor");
+        let stage = StageRef::new(77);
+        boundary.register_unbound_stage(
+            &parent,
+            stage,
+            Some(ChildRef::new(78)),
+            CString::new("entry").expect("name"),
+            None,
+        );
+        let error = match boundary.finish() {
+            Err(error) => error,
+            Ok(_) => panic!("finish accepted a pending stage obligation"),
+        };
+        assert!(error.quarantine_obligations.is_empty());
+        assert_eq!(error.stage_obligations.len(), 1);
+        let obligations = error.stage_obligations.into_inner();
+        assert!(!obligations[0].is_bound());
+        match &obligations[0] {
+            StageObligation::Unbound(obligation) => {
+                assert_eq!(obligation.id(), stage.id());
+                assert!(obligation.has_retained_parent());
+            }
+            StageObligation::Bound(_) => panic!("expected unbound stage obligation"),
+        }
     }
 
     #[cfg(target_os = "linux")]
