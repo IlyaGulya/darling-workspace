@@ -23,8 +23,8 @@ class RootlessShutdownConsumerError(ValueError):
 _REQUIRED_EVENT_KINDS = {"intent_declared", "signal_sent", "terminal"}
 
 
-def _consumer_shape(trace: Mapping[str, Any]) -> None:
-    """Check the Rootless domain envelope; Rust validates the trace itself."""
+def _rootless_envelope(trace: Mapping[str, Any]) -> list[Mapping[str, Any]]:
+    """Validate shared Rootless provenance and return the typed event envelope."""
 
     provenance = trace.get("provenance")
     identity = provenance.get("source_identity") if isinstance(provenance, Mapping) else None
@@ -55,17 +55,16 @@ def _consumer_shape(trace: Mapping[str, Any]) -> None:
     events = trace.get("events")
     if not isinstance(events, list) or not events:
         raise RootlessShutdownConsumerError("Rootless shutdown trace has no events")
-    kinds = {event.get("kind") for event in events if isinstance(event, Mapping)}
-    missing = _REQUIRED_EVENT_KINDS - kinds
-    if missing:
-        raise RootlessShutdownConsumerError(
-            f"Rootless shutdown trace is missing events: {sorted(missing)}"
-        )
-    intent_events = [
-        event
-        for event in events
-        if isinstance(event, Mapping) and event.get("kind") == "intent_declared"
-    ]
+    if any(not isinstance(event, Mapping) for event in events):
+        raise RootlessShutdownConsumerError("Rootless shutdown trace contains an invalid event")
+    typed_events = [event for event in events if isinstance(event, Mapping)]
+    if typed_events[-1].get("kind") != "terminal":
+        raise RootlessShutdownConsumerError("Rootless shutdown trace must end in terminal")
+    return typed_events
+
+
+def _require_request_shutdown(events: list[Mapping[str, Any]]) -> None:
+    intent_events = [event for event in events if event.get("kind") == "intent_declared"]
     if not intent_events or any(
         not isinstance(event.get("data"), Mapping)
         or event["data"].get("intent") != "REQUEST_SHUTDOWN"
@@ -74,12 +73,23 @@ def _consumer_shape(trace: Mapping[str, Any]) -> None:
         raise RootlessShutdownConsumerError(
             "Rootless shutdown requires intent=REQUEST_SHUTDOWN"
         )
-    if not isinstance(events[-1], Mapping) or events[-1].get("kind") != "terminal":
-        raise RootlessShutdownConsumerError("Rootless shutdown trace must end in terminal")
+
+
+def _consumer_shape(trace: Mapping[str, Any]) -> None:
+    """Check the signal-bearing Rootless domain envelope."""
+
+    events = _rootless_envelope(trace)
+    kinds = {event.get("kind") for event in events}
+    missing = _REQUIRED_EVENT_KINDS - kinds
+    if missing:
+        raise RootlessShutdownConsumerError(
+            f"Rootless shutdown trace is missing events: {sorted(missing)}"
+        )
+    _require_request_shutdown(events)
     signals = [
         event
         for event in events
-        if isinstance(event, Mapping) and event.get("kind") == "signal_sent"
+        if event.get("kind") == "signal_sent"
     ]
     if not any(
         isinstance(event.get("data"), Mapping)
@@ -92,6 +102,42 @@ def _consumer_shape(trace: Mapping[str, Any]) -> None:
         )
 
 
+def _gone_consumer_shape(trace: Mapping[str, Any]) -> None:
+    """Check the signal-free already-GONE Rootless domain envelope."""
+
+    events = _rootless_envelope(trace)
+    _require_request_shutdown(events)
+    if any(event.get("kind") == "signal_sent" for event in events):
+        raise RootlessShutdownConsumerError(
+            "Rootless GONE consumer rejects signal-bearing traces"
+        )
+    initial = trace.get("initial")
+    catalog = initial.get("capability_catalog") if isinstance(initial, Mapping) else None
+    root_entries = [
+        entry
+        for entry in catalog or []
+        if isinstance(entry, Mapping) and entry.get("kind") == "SESSION_ROOT_PIDFD"
+    ]
+    if len(root_entries) != 1 or not isinstance(root_entries[0].get("capability_id"), str):
+        raise RootlessShutdownConsumerError(
+            "Rootless GONE shutdown requires one authoritative SESSION_ROOT_PIDFD"
+        )
+    root_capability = root_entries[0]["capability_id"]
+    gone_events = [
+        event
+        for event in events
+        if event.get("kind") == "identity_revalidated"
+        and isinstance(event.get("data"), Mapping)
+        and event["data"].get("result") == "GONE"
+    ]
+    if not any(
+        event["data"].get("capability") == root_capability for event in gone_events
+    ):
+        raise RootlessShutdownConsumerError(
+            "Rootless GONE shutdown requires identity_revalidated=GONE for the session root"
+        )
+
+
 @dataclass(frozen=True)
 class RootlessShutdownSignalConsumer:
     """Route signal-bearing Rootless shutdown observations to Rust."""
@@ -101,6 +147,24 @@ class RootlessShutdownSignalConsumer:
 
     def replay(self, trace: Mapping[str, Any]) -> dict[str, Any]:
         _consumer_shape(trace)
+        adapter = self.adapter or RustBoundaryAdapter(self.repository_root)
+        result = adapter.invoke({"op": "replay_trace", "trace": dict(trace)})
+        if result.get("trace_id") != trace.get("trace_id"):
+            raise RootlessShutdownConsumerError(
+                "Rust lifecycle boundary returned a different trace identity"
+            )
+        return result
+
+
+@dataclass(frozen=True)
+class RootlessShutdownGoneConsumer:
+    """Route signal-free already-GONE Rootless observations to Rust."""
+
+    repository_root: Path
+    adapter: RustBoundaryAdapter | None = None
+
+    def replay(self, trace: Mapping[str, Any]) -> dict[str, Any]:
+        _gone_consumer_shape(trace)
         adapter = self.adapter or RustBoundaryAdapter(self.repository_root)
         result = adapter.invoke({"op": "replay_trace", "trace": dict(trace)})
         if result.get("trace_id") != trace.get("trace_id"):

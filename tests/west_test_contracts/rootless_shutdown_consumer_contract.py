@@ -12,6 +12,7 @@ sys.path.insert(0, str(ROOT))
 
 from west_commands.lifecycle_operation_boundary import RustBoundaryAdapter  # noqa: E402
 from west_commands.rootless_shutdown_lifecycle import (  # noqa: E402
+    RootlessShutdownGoneConsumer,
     RootlessShutdownSignalConsumer,
     RootlessShutdownConsumerError,
 )
@@ -25,6 +26,10 @@ binary = Path(
     )
 )
 consumer = RootlessShutdownSignalConsumer(
+    ROOT,
+    adapter=RustBoundaryAdapter(ROOT, binary=binary),
+)
+gone_consumer = RootlessShutdownGoneConsumer(
     ROOT,
     adapter=RustBoundaryAdapter(ROOT, binary=binary),
 )
@@ -45,6 +50,18 @@ for filename in ("shared-session-signal-gone.json", "shared-session-signal-rejec
     assert result["final_snapshot"]["journal_phase"] == "CLEANUP"
     assert result["satisfied_invariants"]
 
+gone_trace = rootless_fixture(
+    "session-root-exit-before-snapshot.json", "root-exit-before-snapshot"
+)
+gone_result = gone_consumer.replay(gone_trace)
+assert gone_result["trace_id"] == gone_trace["trace_id"]
+assert gone_result["outcome"] == "FAIL_CLOSED"
+assert gone_result["final_snapshot"] == {
+    "stable_state": "RUNNING",
+    "journal_phase": "ABORT",
+    "intent": "RECOVER",
+}
+
 missing_signal = rootless_fixture(
     "session-root-exit-before-snapshot.json", "root-exit-before-signal"
 )
@@ -54,6 +71,46 @@ except RootlessShutdownConsumerError as error:
     assert "signal_sent" in str(error)
 else:
     raise AssertionError("Rootless consumer accepted a trace without signal evidence")
+
+try:
+    gone_consumer.replay(rootless_fixture("shared-session-signal-gone.json", "signal-bearing"))
+except RootlessShutdownConsumerError as error:
+    assert "signal-bearing" in str(error)
+else:
+    raise AssertionError("Rootless GONE consumer accepted a signal-bearing trace")
+
+bad_gone_result = copy.deepcopy(gone_trace)
+bad_gone_result["events"][3]["data"]["result"] = "MATCH"
+try:
+    gone_consumer.replay(bad_gone_result)
+except RootlessShutdownConsumerError as error:
+    assert "session root" in str(error)
+else:
+    raise AssertionError("Rootless GONE consumer accepted a trace without GONE evidence")
+
+member_gone = copy.deepcopy(gone_trace)
+member_gone["initial"]["capability_catalog"][0]["kind"] = "SESSION_MEMBER_PIDFD"
+try:
+    gone_consumer.replay(member_gone)
+except RootlessShutdownConsumerError as error:
+    assert "SESSION_ROOT_PIDFD" in str(error)
+else:
+    raise AssertionError("Rootless GONE consumer accepted member-only disappearance")
+
+duplicate_root = copy.deepcopy(gone_trace)
+duplicate_root["initial"]["capability_catalog"].append(
+    {
+        "capability_id": "cap.second-root",
+        "kind": "SESSION_ROOT_PIDFD",
+        "identity": {"token": "second-root@startup", "generation": 1},
+    }
+)
+try:
+    gone_consumer.replay(duplicate_root)
+except RootlessShutdownConsumerError as error:
+    assert "one authoritative" in str(error)
+else:
+    raise AssertionError("Rootless GONE consumer accepted ambiguous root authority")
 
 bad_shape = copy.deepcopy(
     rootless_fixture("shared-session-signal-gone.json", "bad-capability")
