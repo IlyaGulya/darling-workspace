@@ -283,7 +283,15 @@ impl Reducer {
         match self.apply_inner(event) {
             Ok(()) => Ok(()),
             Err(error) => {
+                // Rejected operations are state-atomic, but safety
+                // observations are monotone evidence. Preserve those flags
+                // across the rollback so a stale signal or post-GONE
+                // membership attempt cannot disappear from the oracle.
+                let signal_without_identity = self.signal_without_identity;
+                let membership_seen_after_gone = self.membership_seen_after_gone;
                 *self = before;
+                self.signal_without_identity |= signal_without_identity;
+                self.membership_seen_after_gone |= membership_seen_after_gone;
                 Err(error)
             }
         }
@@ -449,6 +457,18 @@ impl Reducer {
                 if matches!(result.as_str(), "INJECTED" | "ERROR") {
                     self.operation_rejection_seen = true;
                     self.obligations.insert("operation-failure".to_string());
+                    if checkpoint == "after-quarantine-move-before-verify"
+                        || (operation == "RENAME_EXACT" && checkpoint == "after-move-before-verify")
+                    {
+                        self.obligations.insert(
+                            if checkpoint == "after-quarantine-move-before-verify" {
+                                "quarantine-failure"
+                            } else {
+                                "inode-aba-failure"
+                            }
+                            .to_string(),
+                        );
+                    }
                 }
             }
             Event::MemberObserved { id, origin } => {
@@ -565,6 +585,8 @@ impl Reducer {
                     && item != "endpoint-failure"
                     && item != "operation-failure"
                     && item != "signal-failure"
+                    && item != "quarantine-failure"
+                    && item != "inode-aba-failure"
             });
         } else if matches!(
             action,
@@ -579,6 +601,8 @@ impl Reducer {
                 self.operation_recovery_seen = true;
             }
             self.obligations.remove("signal-failure");
+            self.obligations.remove("quarantine-failure");
+            self.obligations.remove("inode-aba-failure");
         }
         Ok(())
     }
@@ -598,6 +622,8 @@ impl Reducer {
                     | "endpoint-failure"
                     | "operation-failure"
                     | "signal-failure"
+                    | "quarantine-failure"
+                    | "inode-aba-failure"
             )
     }
 
