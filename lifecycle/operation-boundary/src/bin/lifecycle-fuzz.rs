@@ -1,6 +1,7 @@
 use darling_lifecycle_operation_boundary::fuzz::{
-    corpus_seed_hex, replay_program, run_smoke, safe_replay, verify_corpus, BytecodeOp, FuzzMode,
-    ScenarioBytecode,
+    corpus_seed_hex, replay_program, run_smoke, safe_replay, verify_corpus,
+    verify_kernel_observation, BytecodeOp, FuzzMode, KernelObservation, ScenarioBytecode,
+    MAX_KERNEL_OBSERVATION_BYTES,
 };
 use serde_json::json;
 use std::io::{self, Read};
@@ -58,6 +59,23 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             let value = args.next().ok_or("--replay-hex requires a value")?;
             let bytes = hex_decode(&value).map_err(io::Error::other)?;
             print_json(&safe_replay(&bytes))?;
+        }
+        Some("--verify-kernel-observation") => {
+            let value = args
+                .next()
+                .ok_or("--verify-kernel-observation requires a trace")?;
+            let bytes = hex_decode(&value).map_err(io::Error::other)?;
+            let mut observation_bytes = Vec::new();
+            io::stdin()
+                .take(MAX_KERNEL_OBSERVATION_BYTES as u64 + 1)
+                .read_to_end(&mut observation_bytes)?;
+            if observation_bytes.len() > MAX_KERNEL_OBSERVATION_BYTES {
+                return Err(io::Error::other("kernel observation exceeds input limit").into());
+            }
+            let observation: KernelObservation = serde_json::from_slice(&observation_bytes)?;
+            print_json(
+                &verify_kernel_observation(&bytes, &observation).map_err(io::Error::other)?,
+            )?;
         }
         Some("--corpus-hex") => {
             let name = args.next().ok_or("--corpus-hex requires a seed name")?;
