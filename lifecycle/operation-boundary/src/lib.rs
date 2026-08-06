@@ -18,6 +18,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Instant;
 
 pub mod explorer;
+pub mod fuzz;
 pub mod state;
 
 pub type Result<T> = std::result::Result<T, BoundaryError>;

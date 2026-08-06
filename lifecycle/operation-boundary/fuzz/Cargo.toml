@@ -1,0 +1,19 @@
+[package]
+name = "darling-lifecycle-operation-boundary-fuzz"
+version = "0.0.0"
+publish = false
+edition = "2021"
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "0.4"
+darling-lifecycle-operation-boundary = { path = ".." }
+
+[[bin]]
+name = "lifecycle_fuzz"
+path = "fuzz_targets/lifecycle.rs"
+test = false
+doc = false
+bench = false
