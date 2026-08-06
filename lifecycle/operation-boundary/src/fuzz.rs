@@ -14,7 +14,7 @@ use crate::state::{
     CapabilityKind, Event, IntentKind, Outcome, RecoveryAction, Reducer, SignalResult, StableState,
     MODEL_MAX_LIVE_CAPABILITIES, MODEL_MAX_RECOVERY_STEPS, MODEL_MAX_VIRTUAL_TIME_NS,
 };
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::collections::BTreeSet;
 use std::fmt;
@@ -31,10 +31,314 @@ pub const MAX_OUTPUT_BYTES: usize = 64 * 1024;
 pub const MAX_ERROR_RECORDS: usize = 16;
 pub const MAX_ERROR_BYTES: usize = 256;
 pub const MAX_REPLAY_TRACE: usize = 64;
+/// The kernel observation transport is deliberately much smaller than the
+/// bytecode input.  Observations are a closed, typed envelope; accepting an
+/// arbitrarily large JSON document would make the verifier an unbounded
+/// transport endpoint before deserialization can reject it.
+pub const MAX_KERNEL_OBSERVATION_BYTES: usize = 16 * 1024;
 /// A fuzz campaign may retain only a small bounded number of forensic roots
 /// for genuine unsafe outcomes.  Expected CLEAN/FORENSIC_REQUIRED roots are
 /// disposed by the target after their manifest has been emitted.
 pub const MAX_CAMPAIGN_FORENSIC_ROOTS: usize = 8;
+
+/// Common facts which every real-kernel observation must carry.  Keeping this
+/// nested under the mode-tagged enum makes the wire format closed: a mode
+/// cannot accidentally smuggle another mode's witness fields into a valid
+/// observation.
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct KernelObservationCommon {
+    pub trace_id: String,
+    pub event_kinds: Vec<String>,
+    pub outcome: String,
+    pub filesystem_clean: bool,
+    pub pidfd_retained: bool,
+}
+
+/// Typed, closed observations returned by the real-kernel `.5.1` transport.
+/// The kernel lane does not become a second reducer: Rust validates that the
+/// mode-specific witness is admissible for the already accepted bytecode and
+/// terminal.  Every variant names all facts needed to prove its claim; there
+/// are no optional witness fields or stringly-typed mode cross-products.
+#[derive(Debug, Deserialize, Serialize)]
+#[serde(tag = "mode", deny_unknown_fields)]
+pub enum KernelObservation {
+    #[serde(rename = "signal-gone")]
+    SignalGone {
+        common: KernelObservationCommon,
+        signal: String,
+        post_exit_signal: String,
+    },
+    #[serde(rename = "signal-rejected")]
+    SignalRejected {
+        common: KernelObservationCommon,
+        signal: String,
+        rejection_errno: String,
+    },
+    #[serde(rename = "retained-holder-timeout")]
+    RetainedHolderTimeout {
+        common: KernelObservationCommon,
+        deadline: String,
+        recovery_completed: bool,
+    },
+    #[serde(rename = "pid-reuse")]
+    PidReuse {
+        common: KernelObservationCommon,
+        identity: String,
+        pid_reuse_classification: String,
+        original_pid: u32,
+        original_starttime: u64,
+        replacement_pid: u32,
+        replacement_starttime: u64,
+        retired_pidfd_signal: String,
+        replacement_alive: bool,
+    },
+    #[serde(rename = "late-fork")]
+    LateFork {
+        common: KernelObservationCommon,
+        late_fork: String,
+        late_pid: u32,
+        late_starttime: u64,
+        late_fork_observed_by_controller: bool,
+        late_fork_acknowledged: bool,
+        late_fork_post_drain: String,
+    },
+    #[serde(rename = "root-exit-before-snapshot")]
+    RootExitBeforeSnapshot {
+        common: KernelObservationCommon,
+        identity: String,
+        children_traversed: bool,
+    },
+}
+
+impl KernelObservation {
+    fn common(&self) -> &KernelObservationCommon {
+        match self {
+            Self::SignalGone { common, .. }
+            | Self::SignalRejected { common, .. }
+            | Self::RetainedHolderTimeout { common, .. }
+            | Self::PidReuse { common, .. }
+            | Self::LateFork { common, .. }
+            | Self::RootExitBeforeSnapshot { common, .. } => common,
+        }
+    }
+
+    fn mode(&self) -> &'static str {
+        match self {
+            Self::SignalGone { .. } => "signal-gone",
+            Self::SignalRejected { .. } => "signal-rejected",
+            Self::RetainedHolderTimeout { .. } => "retained-holder-timeout",
+            Self::PidReuse { .. } => "pid-reuse",
+            Self::LateFork { .. } => "late-fork",
+            Self::RootExitBeforeSnapshot { .. } => "root-exit-before-snapshot",
+        }
+    }
+}
+
+/// Feed one host observation back through the Rust oracle.  This intentionally
+/// checks only typed kernel facts and the bytecode's terminal; all lifecycle
+/// transition semantics remain in `safe_replay`/the reducer.
+pub fn verify_kernel_observation(
+    input: &[u8],
+    observation: &KernelObservation,
+) -> Result<Value, String> {
+    let common = observation.common();
+    let mode = observation.mode();
+    let (canonical_hex, expected_mode, expected_events) = canonical_trace_spec(&common.trace_id)
+        .ok_or_else(|| format!("unknown canonical kernel trace {}", common.trace_id))?;
+    if hex_encode(input) != canonical_hex {
+        return Err("bytecode does not match canonical trace identity".to_string());
+    }
+    if mode != expected_mode {
+        return Err("kernel mode does not match canonical trace identity".to_string());
+    }
+    if common
+        .event_kinds
+        .iter()
+        .map(String::as_str)
+        .ne(expected_events.iter().copied())
+    {
+        return Err("kernel event sequence does not match canonical trace".to_string());
+    }
+    let report = safe_replay(input);
+    if report.status != "ACCEPTED" {
+        return Err(format!(
+            "kernel observation attached to {} trace",
+            report.status
+        ));
+    }
+    if report.terminal.as_deref() != Some(common.outcome.as_str()) {
+        return Err("kernel observation terminal differs from Rust oracle".to_string());
+    }
+    if common.trace_id.is_empty()
+        || common.event_kinds.is_empty()
+        || !common.filesystem_clean
+        || !common.pidfd_retained
+    {
+        return Err("kernel observation omitted required bounded safety facts".to_string());
+    }
+    match observation {
+        KernelObservation::SignalGone {
+            signal,
+            post_exit_signal,
+            ..
+        } if signal == "GONE" && post_exit_signal == "ESRCH" => {}
+        KernelObservation::SignalRejected {
+            signal,
+            rejection_errno,
+            ..
+        } if signal == "REJECTED" && rejection_errno == "EINVAL" => {}
+        KernelObservation::RetainedHolderTimeout {
+            deadline,
+            recovery_completed,
+            ..
+        } if deadline == "EXPIRED" && common.outcome == "TIMEOUT" && *recovery_completed => {}
+        KernelObservation::PidReuse {
+            identity,
+            pid_reuse_classification,
+            original_pid,
+            original_starttime,
+            replacement_pid,
+            replacement_starttime,
+            retired_pidfd_signal,
+            replacement_alive,
+            ..
+        } if identity == "MISMATCH"
+            && *original_pid > 0
+            && *replacement_pid > 0
+            && *original_starttime > 0
+            && *replacement_starttime > 0
+            && retired_pidfd_signal == "ESRCH"
+            && *replacement_alive
+            && match pid_reuse_classification.as_str() {
+                "NUMERIC_PID_REUSE_STARTTIME_MISMATCH" => {
+                    original_pid == replacement_pid && original_starttime != replacement_starttime
+                }
+                "RETIRED_PIDFD_REPLACEMENT_NOT_TARGETED" => original_pid != replacement_pid,
+                _ => false,
+            } => {}
+        KernelObservation::LateFork {
+            late_fork,
+            late_pid,
+            late_starttime,
+            late_fork_observed_by_controller,
+            late_fork_acknowledged,
+            late_fork_post_drain,
+            ..
+        } if late_fork == "OBSERVED_AND_REAPED"
+            && *late_pid > 0
+            && *late_starttime > 0
+            && *late_fork_observed_by_controller
+            && *late_fork_acknowledged
+            && late_fork_post_drain == "GONE" => {}
+        KernelObservation::RootExitBeforeSnapshot {
+            identity,
+            children_traversed,
+            ..
+        } if identity == "GONE" && !*children_traversed => {}
+        _ => return Err(format!("kernel observation is invalid for mode {mode}")),
+    }
+    Ok(json!({
+        "status": "KERNEL_OBSERVATION_ACCEPTED",
+        "trace_id": common.trace_id,
+        "mode": mode,
+        "terminal": report.terminal,
+        "oracle_status": report.status,
+    }))
+}
+
+fn canonical_trace_spec(
+    trace_id: &str,
+) -> Option<(&'static str, &'static str, &'static [&'static str])> {
+    Some(match trace_id {
+        "shared-session-signal-gone" => (
+            "444c463101003aac30275d690e65000002060003010200030001050000010b03",
+            "signal-gone",
+            &[
+                "intent_declared",
+                "barrier_entered",
+                "capability_acquired",
+                "identity_revalidated",
+                "signal_sent",
+                "terminal",
+            ],
+        ),
+        "shared-session-signal-rejected" => (
+            "444c463101007de40dd4201de3c70000020700030102000300010500000206090b03",
+            "signal-rejected",
+            &[
+                "intent_declared",
+                "barrier_entered",
+                "capability_acquired",
+                "identity_revalidated",
+                "signal_sent",
+                "recovery",
+                "terminal",
+            ],
+        ),
+        "shared-session-retained-holder-timeout" => (
+            "444c463101004716e91850bccfa50000020f00030102000300010201020304030003010103030105000000070007010a0506090b02",
+            "retained-holder-timeout",
+            &[
+                "intent_declared",
+                "barrier_entered",
+                "capability_acquired",
+                "capability_acquired",
+                "capability_acquired",
+                "membership_snapshot",
+                "identity_revalidated",
+                "identity_revalidated",
+                "identity_revalidated",
+                "signal_sent",
+                "capability_released",
+                "capability_released",
+                "fault_injected",
+                "recovery",
+                "terminal",
+            ],
+        ),
+        "shared-session-pid-reuse" => (
+            "444c463101009a4e9eede612eed300000206000301020003000006040b01",
+            "pid-reuse",
+            &[
+                "intent_declared",
+                "barrier_entered",
+                "capability_acquired",
+                "identity_revalidated",
+                "recovery",
+                "terminal",
+            ],
+        ),
+        "shared-session-late-fork" => (
+            "444c46310100fff15cebd6d822ae0000020a000301020003000102010403010902020a0406040b01",
+            "late-fork",
+            &[
+                "intent_declared",
+                "barrier_entered",
+                "capability_acquired",
+                "capability_acquired",
+                "membership_snapshot",
+                "member_observed",
+                "fault_injected",
+                "recovery",
+                "terminal",
+            ],
+        ),
+        "session-root-exit-before-snapshot" => (
+            "444c4631010094658829503ae61d00000206000301020003000006040b01",
+            "root-exit-before-snapshot",
+            &[
+                "intent_declared",
+                "barrier_entered",
+                "capability_acquired",
+                "identity_revalidated",
+                "recovery",
+                "terminal",
+            ],
+        ),
+        _ => return None,
+    })
+}
 
 /// The reducer's base registry is shared with the v1 lifecycle model.  Fuzz
 /// historical arms additionally require these defect-specific predicates;
@@ -2292,6 +2596,82 @@ mod tests {
             .errors
             .iter()
             .any(|error| error.contains("virtual time budget exceeded")));
+    }
+
+    #[test]
+    fn kernel_pid_reuse_requires_starttime_and_retired_pidfd_witnesses() {
+        let program = golden_program("shared-session-pid-reuse").unwrap();
+        let input = program.encode().unwrap();
+        let common = KernelObservationCommon {
+            trace_id: "shared-session-pid-reuse".to_string(),
+            event_kinds: canonical_trace_spec("shared-session-pid-reuse")
+                .unwrap()
+                .2
+                .iter()
+                .map(|event| (*event).to_string())
+                .collect(),
+            outcome: "FAIL_CLOSED".to_string(),
+            filesystem_clean: true,
+            pidfd_retained: true,
+        };
+        let valid = KernelObservation::PidReuse {
+            common: common.clone(),
+            identity: "MISMATCH".to_string(),
+            pid_reuse_classification: "NUMERIC_PID_REUSE_STARTTIME_MISMATCH".to_string(),
+            original_pid: 100,
+            original_starttime: 10,
+            replacement_pid: 100,
+            replacement_starttime: 11,
+            retired_pidfd_signal: "ESRCH".to_string(),
+            replacement_alive: true,
+        };
+        assert!(verify_kernel_observation(&input, &valid).is_ok());
+
+        let mut invalid = valid;
+        if let KernelObservation::PidReuse {
+            replacement_starttime,
+            ..
+        } = &mut invalid
+        {
+            *replacement_starttime = 10;
+        }
+        assert!(verify_kernel_observation(&input, &invalid).is_err());
+    }
+
+    #[test]
+    fn kernel_late_fork_requires_controller_ack_and_post_drain() {
+        let program = golden_program("shared-session-late-fork").unwrap();
+        let input = program.encode().unwrap();
+        let common = KernelObservationCommon {
+            trace_id: "shared-session-late-fork".to_string(),
+            event_kinds: canonical_trace_spec("shared-session-late-fork")
+                .unwrap()
+                .2
+                .iter()
+                .map(|event| (*event).to_string())
+                .collect(),
+            outcome: "FAIL_CLOSED".to_string(),
+            filesystem_clean: true,
+            pidfd_retained: true,
+        };
+        let mut observation = KernelObservation::LateFork {
+            common,
+            late_fork: "OBSERVED_AND_REAPED".to_string(),
+            late_pid: 101,
+            late_starttime: 20,
+            late_fork_observed_by_controller: true,
+            late_fork_acknowledged: false,
+            late_fork_post_drain: "GONE".to_string(),
+        };
+        assert!(verify_kernel_observation(&input, &observation).is_err());
+        if let KernelObservation::LateFork {
+            late_fork_acknowledged,
+            ..
+        } = &mut observation
+        {
+            *late_fork_acknowledged = true;
+        }
+        assert!(verify_kernel_observation(&input, &observation).is_ok());
     }
 
     #[test]
