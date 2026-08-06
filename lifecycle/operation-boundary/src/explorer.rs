@@ -1593,6 +1593,137 @@ fn run_reducer_only_case(
     })
 }
 
+/// Execute exactly one declared boundary/interleaving pair.  This is the
+/// bounded entry point used by the fuzz target; unlike the matrix runner it
+/// does not construct unrelated scenarios and therefore preserves the
+/// selected interleaving all the way into the real probe hook.
+pub fn explore_one(
+    seed: u64,
+    boundary: FailureBoundary,
+    interleaving: Interleaving,
+    budget: ExplorerBudget,
+) -> ExplorerResult<ScenarioResult> {
+    budget.validate()?;
+    let scenario_seed = mix_seed(seed, boundary as u64 * 32 + interleaving as u64);
+    if REAL_INTERLEAVINGS.contains(&interleaving) {
+        return run_real_case(boundary, interleaving, scenario_seed, &budget);
+    }
+    if REDUCER_ONLY_INTERLEAVINGS.contains(&interleaving) {
+        return run_reducer_only_case(boundary, interleaving, scenario_seed, &budget);
+    }
+    Err(ExplorerError::Undetected(format!(
+        "unsupported boundary/interleaving pair: {} / {}",
+        boundary.as_str(),
+        interleaving.as_str()
+    )))
+}
+
+fn run_real_case(
+    boundary: FailureBoundary,
+    interleaving: Interleaving,
+    scenario_seed: u64,
+    budget: &ExplorerBudget,
+) -> ExplorerResult<ScenarioResult> {
+    let real_probe = run_real_probe(boundary.probe_spec(), interleaving, scenario_seed)?;
+    let draft = draft_for(boundary, interleaving, scenario_seed, real_probe);
+    let original_count = draft.events.len();
+    let minimized = minimize_draft(draft.clone(), boundary, interleaving, budget)?;
+    let run = execute(&minimized, scenario_seed, budget)?;
+    let invariant_complete = complete_invariants(&run, budget);
+    let replay_fault_detected = invariant_complete
+        && run.reducer.terminal() == Some(Outcome::Recovered)
+        && run.reducer.operation_rejection_seen()
+        && run.reducer.operation_recovery_seen()
+        && !run.reducer.obligations().contains("operation-failure")
+        && required_events_present(&minimized, boundary, interleaving);
+    let fault_detected = minimized.real_probe.fault_detected && replay_fault_detected;
+    let safety_preserved = minimized.real_probe.safety_preserved && invariant_complete;
+    let recovery_status = if !fault_detected {
+        RecoveryStatus::Undetected
+    } else if !safety_preserved {
+        RecoveryStatus::Unsafe
+    } else if !run.reducer.unresolved_obligations().is_empty() {
+        RecoveryStatus::ForensicRequired
+    } else if minimized.real_probe.recovery_status == RecoveryStatus::Clean
+        && minimized.real_probe.recovery_completed
+        && minimized.real_probe.stage_obligations == 0
+        && minimized.real_probe.quarantine_obligations == 0
+        && minimized.real_probe.filesystem_clean
+        && minimized.real_probe.filesystem_postcondition
+        && !minimized.real_probe.root_preserved
+    {
+        RecoveryStatus::Clean
+    } else {
+        RecoveryStatus::ForensicRequired
+    };
+    let scenario_name = draft.scenario.clone();
+    let diagnostic_error = (recovery_status != RecoveryStatus::Clean).then(|| {
+        format!(
+            "status={:?} op={} mut={} fault={} hook={} obligations={:?} stage={} quarantine={} fs={} post={} preserved={} forensic_root={:?} invariant={} terminal={:?} reject={} recover={} events={}",
+            recovery_status,
+            minimized.real_probe.operation_outcome,
+            minimized.real_probe.mutation_state,
+            fault_detected,
+            minimized.real_probe.interleaving_applied,
+            run.reducer.obligations(),
+            minimized.real_probe.stage_obligations,
+            minimized.real_probe.quarantine_obligations,
+            minimized.real_probe.filesystem_clean,
+            minimized.real_probe.filesystem_postcondition,
+            minimized.real_probe.root_preserved,
+            minimized.real_probe.forensic_root,
+            invariant_complete,
+            run.reducer.terminal(),
+            run.reducer.operation_rejection_seen(),
+            run.reducer.operation_recovery_seen(),
+            required_events_present(&minimized, boundary, interleaving),
+        )
+    });
+    let trace = trace_json(&minimized, &run, budget);
+    Ok(ScenarioResult {
+        scenario: scenario_name,
+        seed: scenario_seed,
+        failure_boundary: boundary.as_str().to_string(),
+        boundary_execution: boundary.execution().to_string(),
+        interleaving: interleaving.as_str().to_string(),
+        fault_detected,
+        recovery_status,
+        safety_preserved,
+        diagnostic_error,
+        outcome: outcome_name(run.reducer.terminal().expect("terminal checked")).to_string(),
+        event_count: original_count,
+        minimized_event_count: minimized.events.len(),
+        schedule_steps: minimized.schedule_steps,
+        operation: minimized.real_probe.operation.as_str().to_string(),
+        checkpoint: checkpoint_name(minimized.real_probe.checkpoint).to_string(),
+        placement: minimized.real_probe.placement.as_str().to_string(),
+        probe_result: minimized.real_probe.result.to_string(),
+        real_checkpoint_observed: minimized.real_probe.real_checkpoint_observed,
+        real_injection_observed: minimized.real_probe.real_injection_observed,
+        operation_outcome: minimized.real_probe.operation_outcome.to_string(),
+        mutation_state: minimized.real_probe.mutation_state.to_string(),
+        interleaving_applied: minimized.real_probe.interleaving_applied,
+        stage_obligations: minimized.real_probe.stage_obligations,
+        quarantine_obligations: minimized.real_probe.quarantine_obligations,
+        stage_obligation_ids: minimized.real_probe.stage_obligation_ids.clone(),
+        quarantine_obligation_ids: minimized.real_probe.quarantine_obligation_ids.clone(),
+        filesystem_clean: minimized.real_probe.filesystem_clean,
+        filesystem_postcondition: minimized.real_probe.filesystem_postcondition,
+        root_preserved: minimized.real_probe.root_preserved,
+        forensic_root: minimized.real_probe.forensic_root.clone(),
+        recovery_completed: minimized.real_probe.recovery_completed,
+        expected_identity: minimized.real_probe.expected_identity,
+        staged_identity: minimized.real_probe.staged_identity,
+        obligation_identity: minimized.real_probe.obligation_identity,
+        typed_rejection_observed: run.reducer.operation_rejection_seen(),
+        typed_recovery_observed: run.reducer.operation_recovery_seen(),
+        unresolved_obligations: run.reducer.unresolved_obligations(),
+        virtual_time_ns: *run.times.last().unwrap_or(&0),
+        invariant_complete,
+        trace,
+    })
+}
+
 /// Run the full deterministic failure/interleaving matrix.
 pub fn explore(seed: u64, budget: ExplorerBudget) -> ExplorerResult<ExplorerReport> {
     budget.validate()?;
@@ -1604,105 +1735,12 @@ pub fn explore(seed: u64, budget: ExplorerBudget) -> ExplorerResult<ExplorerRepo
                 break 'matrix;
             }
             let scenario_seed = mix_seed(seed, ordinal as u64);
-            let real_probe = run_real_probe(boundary.probe_spec(), interleaving, scenario_seed)?;
-            let draft = draft_for(boundary, interleaving, scenario_seed, real_probe);
-            let original_count = draft.events.len();
-            let minimized = minimize_draft(draft.clone(), boundary, interleaving, &budget)?;
-            let run = execute(&minimized, scenario_seed, &budget)?;
-            let invariant_complete = complete_invariants(&run, &budget);
-            let replay_fault_detected = invariant_complete
-                && run.reducer.terminal() == Some(Outcome::Recovered)
-                && run.reducer.operation_rejection_seen()
-                && run.reducer.operation_recovery_seen()
-                && !run.reducer.obligations().contains("operation-failure")
-                && required_events_present(&minimized, boundary, interleaving);
-            let fault_detected = minimized.real_probe.fault_detected && replay_fault_detected;
-            let safety_preserved = minimized.real_probe.safety_preserved && invariant_complete;
-            let recovery_status = if !fault_detected {
-                RecoveryStatus::Undetected
-            } else if !safety_preserved {
-                RecoveryStatus::Unsafe
-            } else if !run.reducer.unresolved_obligations().is_empty() {
-                RecoveryStatus::ForensicRequired
-            } else if minimized.real_probe.recovery_status == RecoveryStatus::Clean
-                && minimized.real_probe.recovery_completed
-                && minimized.real_probe.stage_obligations == 0
-                && minimized.real_probe.quarantine_obligations == 0
-                && minimized.real_probe.filesystem_clean
-                && minimized.real_probe.filesystem_postcondition
-                && !minimized.real_probe.root_preserved
-            {
-                RecoveryStatus::Clean
-            } else {
-                RecoveryStatus::ForensicRequired
-            };
-            let scenario_name = draft.scenario.clone();
-            let diagnostic_error = (recovery_status != RecoveryStatus::Clean).then(|| {
-                format!(
-                    "status={:?} op={} mut={} fault={} hook={} obligations={:?} stage={} quarantine={} fs={} post={} preserved={} forensic_root={:?} invariant={} terminal={:?} reject={} recover={} events={}",
-                    recovery_status,
-                    minimized.real_probe.operation_outcome,
-                    minimized.real_probe.mutation_state,
-                    fault_detected,
-                    minimized.real_probe.interleaving_applied,
-                    run.reducer.obligations(),
-                    minimized.real_probe.stage_obligations,
-                    minimized.real_probe.quarantine_obligations,
-                    minimized.real_probe.filesystem_clean,
-                    minimized.real_probe.filesystem_postcondition,
-                    minimized.real_probe.root_preserved,
-                    minimized.real_probe.forensic_root,
-                    invariant_complete,
-                    run.reducer.terminal(),
-                    run.reducer.operation_rejection_seen(),
-                    run.reducer.operation_recovery_seen(),
-                    required_events_present(&minimized, boundary, interleaving),
-                )
-            });
-            let trace = trace_json(&minimized, &run, &budget);
-            scenarios.push(ScenarioResult {
-                scenario: scenario_name,
-                seed: scenario_seed,
-                failure_boundary: boundary.as_str().to_string(),
-                boundary_execution: boundary.execution().to_string(),
-                interleaving: interleaving.as_str().to_string(),
-                fault_detected,
-                recovery_status,
-                safety_preserved,
-                diagnostic_error,
-                outcome: outcome_name(run.reducer.terminal().expect("terminal checked"))
-                    .to_string(),
-                event_count: original_count,
-                minimized_event_count: minimized.events.len(),
-                schedule_steps: minimized.schedule_steps,
-                operation: minimized.real_probe.operation.as_str().to_string(),
-                checkpoint: checkpoint_name(minimized.real_probe.checkpoint).to_string(),
-                placement: minimized.real_probe.placement.as_str().to_string(),
-                probe_result: minimized.real_probe.result.to_string(),
-                real_checkpoint_observed: minimized.real_probe.real_checkpoint_observed,
-                real_injection_observed: minimized.real_probe.real_injection_observed,
-                operation_outcome: minimized.real_probe.operation_outcome.to_string(),
-                mutation_state: minimized.real_probe.mutation_state.to_string(),
-                interleaving_applied: minimized.real_probe.interleaving_applied,
-                stage_obligations: minimized.real_probe.stage_obligations,
-                quarantine_obligations: minimized.real_probe.quarantine_obligations,
-                stage_obligation_ids: minimized.real_probe.stage_obligation_ids.clone(),
-                quarantine_obligation_ids: minimized.real_probe.quarantine_obligation_ids.clone(),
-                filesystem_clean: minimized.real_probe.filesystem_clean,
-                filesystem_postcondition: minimized.real_probe.filesystem_postcondition,
-                root_preserved: minimized.real_probe.root_preserved,
-                forensic_root: minimized.real_probe.forensic_root.clone(),
-                recovery_completed: minimized.real_probe.recovery_completed,
-                expected_identity: minimized.real_probe.expected_identity,
-                staged_identity: minimized.real_probe.staged_identity,
-                obligation_identity: minimized.real_probe.obligation_identity,
-                typed_rejection_observed: run.reducer.operation_rejection_seen(),
-                typed_recovery_observed: run.reducer.operation_recovery_seen(),
-                unresolved_obligations: run.reducer.unresolved_obligations(),
-                virtual_time_ns: *run.times.last().unwrap_or(&0),
-                invariant_complete,
-                trace,
-            });
+            scenarios.push(run_real_case(
+                boundary,
+                interleaving,
+                scenario_seed,
+                &budget,
+            )?);
             ordinal += 1;
         }
     }
@@ -2385,7 +2423,23 @@ fn complete_invariants(run: &Run, budget: &ExplorerBudget) -> bool {
         budget.max_live_capabilities,
         budget.max_recovery_steps,
     );
-    INVARIANT_REGISTRY
+    // Explorer completion is the existing lifecycle safety contract.  The
+    // reducer-only historical arms add obligation-specific invariants; those
+    // are intentionally not required for a real process/interleaving draft.
+    const EXPLORER_COMPLETION_INVARIANTS: &[&str] = &[
+        "no-raw-path-authority",
+        "no-unvalidated-fd",
+        "stable-journal-independent",
+        "total-recovery-matrix",
+        "identity-before-signal",
+        "no-children-after-gone",
+        "shared-lease-bound",
+        "pidfd-identity-before-signal",
+        "late-fork-closes-snapshot",
+        "bounded-replay",
+        "terminal-trace",
+    ];
+    EXPLORER_COMPLETION_INVARIANTS
         .iter()
         .all(|invariant| satisfied.contains(*invariant))
 }

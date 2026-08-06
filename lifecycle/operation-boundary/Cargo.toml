@@ -3,6 +3,7 @@ name = "darling-lifecycle-operation-boundary"
 version = "0.1.0"
 edition = "2021"
 publish = false
+build = "build.rs"
 
 [dependencies]
 libc = "=0.2.186"
@@ -12,3 +13,7 @@ serde_json = "=1.0.151"
 [[bin]]
 name = "lifecycle-boundary"
 path = "src/bin/lifecycle-boundary.rs"
+
+[[bin]]
+name = "lifecycle-fuzz"
+path = "src/bin/lifecycle-fuzz.rs"
