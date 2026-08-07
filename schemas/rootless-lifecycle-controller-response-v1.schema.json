@@ -12,7 +12,7 @@
     "runtime_identity_digest": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
     "request_nonce": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
     "verdict": {"enum": ["SUCCESS", "FAIL_CLOSED", "UNSUPPORTED"]},
-    "obligations": {"type": "array", "maxItems": 16, "uniqueItems": true, "items": {"enum": ["MARKER_IDENTITY", "MEMBERSHIP_CHANGED", "LATE_FORK", "PID_REUSE", "ENDPOINT_REPLACEMENT", "LAUNCHER_IDENTITY", "SIGNAL_EVIDENCE", "QUIESCENCE_REQUIRED", "BUDGET_EXCEEDED", "CONTROLLER_INTERRUPTED"]}},
+    "obligations": {"type": "array", "maxItems": 16, "uniqueItems": true, "items": {"enum": ["MARKER_IDENTITY", "MEMBERSHIP_CHANGED", "LATE_FORK", "PID_REUSE", "ENDPOINT_REPLACEMENT", "LAUNCHER_IDENTITY", "SIGNAL_EVIDENCE", "QUIESCENCE_REQUIRED", "QUARANTINE_GC_REQUIRED", "STOPPED_PROCESS", "BUDGET_EXCEEDED", "CONTROLLER_INTERRUPTED"]}},
     "signals": {"type": "array", "maxItems": 65, "items": {"$ref": "#/$defs/signal"}},
     "journal": {"type": "array", "minItems": 2, "maxItems": 128, "items": {"$ref": "#/$defs/journal"}}
   },
@@ -38,7 +38,7 @@
         {"type": "object", "additionalProperties": false, "required": ["kind"], "properties": {"kind": {"const": "QUIESCENT"}}},
         {"type": "object", "additionalProperties": false, "required": ["kind", "endpoint_count"], "properties": {"kind": {"const": "CLEANED"}, "endpoint_count": {"type": "integer", "minimum": 0, "maximum": 16}}},
         {"type": "object", "additionalProperties": false, "required": ["kind", "verdict"], "properties": {"kind": {"const": "FINALIZED"}, "verdict": {"enum": ["SUCCESS", "FAIL_CLOSED", "UNSUPPORTED"]}}},
-        {"type": "object", "additionalProperties": false, "required": ["kind", "obligation", "completed"], "properties": {"kind": {"const": "RECOVERY"}, "obligation": {"enum": ["MARKER_IDENTITY", "MEMBERSHIP_CHANGED", "LATE_FORK", "PID_REUSE", "ENDPOINT_REPLACEMENT", "LAUNCHER_IDENTITY", "SIGNAL_EVIDENCE", "QUIESCENCE_REQUIRED", "BUDGET_EXCEEDED", "CONTROLLER_INTERRUPTED"]}, "completed": {"type": "integer", "minimum": 0, "maximum": 65}}}
+        {"type": "object", "additionalProperties": false, "required": ["kind", "obligation", "completed"], "properties": {"kind": {"const": "RECOVERY"}, "obligation": {"enum": ["MARKER_IDENTITY", "MEMBERSHIP_CHANGED", "LATE_FORK", "PID_REUSE", "ENDPOINT_REPLACEMENT", "LAUNCHER_IDENTITY", "SIGNAL_EVIDENCE", "QUIESCENCE_REQUIRED", "QUARANTINE_GC_REQUIRED", "STOPPED_PROCESS", "BUDGET_EXCEEDED", "CONTROLLER_INTERRUPTED"]}, "completed": {"type": "integer", "minimum": 0, "maximum": 65}}}
       ]
     }
   }
