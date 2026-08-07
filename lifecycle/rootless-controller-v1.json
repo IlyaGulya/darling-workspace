@@ -1,0 +1,72 @@
+{
+  "schema_version": 1,
+  "kind": "rootless-lifecycle-controller-architecture",
+  "status": "architecture-review-only",
+  "production_routing": "deferred",
+  "authority": "rust-controller",
+  "transport": "bounded-python-inherited-fd",
+  "handshake": {
+    "controller_closure": "required-and-matched-to-compiled-digest",
+    "runtime_identity_digest": "echoed-exactly",
+    "request_nonce": "single-transaction-echo",
+    "response_schema": "draft-2020-12-closed"
+  },
+  "acquisition": "rust-fd-relative-from-anchor",
+  "partial_transition": "recovery-pending-retains-capabilities-and-journal-then-terminal-fail-closed",
+  "runtime_binding": "launcher-retained-digest-equals-request-before-membership",
+  "recovery_budget": "typed-fail-closed-terminal-without-placeholder-fds",
+  "recovery_retry": "not-supported-in-v1",
+  "response_semantics": {
+    "phase_order": "ordered-prefix-with-finalized-last",
+    "signals": "journal-shutdown-request-exact-equality",
+    "terminal": "unique-and-last"
+  },
+  "phases": [
+    "Prepared",
+    "Acquired",
+    "MembershipBound",
+    "ShutdownRequested",
+    "Drained",
+    "Quiescent",
+    "Cleaned",
+    "Finalized"
+  ],
+  "capabilities": [
+    "PrefixCapability",
+    "MarkerCapability",
+    "LauncherCapability",
+    "PidFdCapability",
+    "QuiescenceProof",
+    "EndpointCapability"
+  ],
+  "forbidden_python_authority": [
+    "marker-read",
+    "proc-read",
+    "pidfd-open",
+    "membership-census",
+    "signal-operation",
+    "match-gone-classification",
+    "destructive-cleanup"
+  ],
+  "signal_evidence": {
+    "accepted": ["RUST_PIDFD", "PRODUCT_PROTOCOL"],
+    "launcher_return_code": "forbidden",
+    "product_protocol": "DARLING_SHUTDOWN_V1",
+    "semantic_gate": "product-side protocol evidence is not implemented by this architecture skeleton"
+  },
+  "budgets": {
+    "max_events": 128,
+    "max_members": 64,
+    "max_endpoints": 16,
+    "max_recovery_steps": 16,
+    "max_virtual_time_ns": 1000000,
+    "transport_input_bytes": 65536,
+    "transport_output_bytes": 65536,
+    "transport_timeout_seconds": 5
+  },
+  "fixtures": {
+    "count": 13,
+    "execution": "rust-typed-fault-backend",
+    "all_expected_classes_are_run": true
+  }
+}

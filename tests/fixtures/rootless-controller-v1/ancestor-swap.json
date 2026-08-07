@@ -1,0 +1,6 @@
+{
+  "id": "ancestor-swap",
+  "class": "identity",
+  "mutation": {"kind": "ancestor-swap", "component": "ancestor", "replacement": true},
+  "expected": "MEMBERSHIP_CHANGED"
+}

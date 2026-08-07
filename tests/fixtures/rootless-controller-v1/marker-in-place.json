@@ -1,0 +1,6 @@
+{
+  "id": "marker-in-place",
+  "class": "marker",
+  "mutation": {"kind": "marker-in-place", "same_inode": true, "content_changed": true, "mode_changed": true, "owner_changed": true},
+  "expected": "MARKER_IDENTITY"
+}

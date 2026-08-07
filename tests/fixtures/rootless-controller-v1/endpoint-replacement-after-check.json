@@ -1,0 +1,6 @@
+{
+  "id": "endpoint-replacement-after-check",
+  "class": "cleanup",
+  "mutation": {"kind": "endpoint-replacement-after-check", "phase": "AFTER_LAST_VERIFY", "same_name": true, "identity": "replacement", "operation": "FD_RELATIVE_UNLINK"},
+  "expected": "ENDPOINT_REPLACEMENT"
+}

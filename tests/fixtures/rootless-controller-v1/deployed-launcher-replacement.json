@@ -1,0 +1,6 @@
+{
+  "id": "deployed-launcher-replacement",
+  "class": "launcher",
+  "mutation": {"kind": "deployed-launcher-replacement", "verifier_closure": "unchanged", "launcher": "replacement", "content_digest": "changed"},
+  "expected": "ENDPOINT_REPLACEMENT"
+}

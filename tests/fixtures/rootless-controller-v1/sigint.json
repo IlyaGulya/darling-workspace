@@ -1,0 +1,6 @@
+{
+  "id": "sigint",
+  "class": "interrupt",
+  "mutation": {"kind": "sigint", "phase": "ANY_CHECKPOINT", "rollback": "typed"},
+  "expected": "CONTROLLER_INTERRUPTED"
+}

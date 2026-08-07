@@ -1,0 +1,6 @@
+{
+  "id": "membership-drift-before-shutdown",
+  "class": "membership",
+  "mutation": {"kind": "membership-drift-before-shutdown", "phase": "PRE_SHUTDOWN", "child_set": "changed", "pidfd_coverage": "incomplete"},
+  "expected": "MEMBERSHIP_CHANGED"
+}

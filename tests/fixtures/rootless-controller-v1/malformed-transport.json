@@ -1,0 +1,6 @@
+{
+  "id": "malformed-transport",
+  "class": "protocol",
+  "mutation": {"kind": "malformed-transport", "input": "unknown-field", "size": "oversized"},
+  "expected": "MALFORMED_REQUEST"
+}

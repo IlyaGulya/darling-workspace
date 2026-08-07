@@ -1,0 +1,6 @@
+{
+  "id": "stale-controller",
+  "class": "provenance",
+  "mutation": {"kind": "stale-controller", "verifier_closure": "same", "controller_binary": "stale"},
+  "expected": "MALFORMED_REQUEST"
+}
