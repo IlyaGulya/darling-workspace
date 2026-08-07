@@ -1,0 +1,33 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://darling.dev/schemas/rootless-lifecycle-controller-request-v1.schema.json",
+  "title": "Rust Rootless lifecycle controller request v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "transaction_id", "profile", "operation", "anchor_fd", "evidence_fd", "controller_closure_sha256", "runtime_identity_digest", "request_nonce", "budget"],
+  "properties": {
+    "schema_version": {"const": 1},
+    "transaction_id": {"type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9._:-]+$"},
+    "profile": {"const": "rootless"},
+    "operation": {"const": "REQUEST_SHUTDOWN"},
+    "anchor_fd": {"type": "integer", "minimum": 0},
+    "evidence_fd": {"type": ["integer", "null"], "minimum": 0},
+    "controller_closure_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "runtime_identity_digest": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "request_nonce": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "budget": {"$ref": "#/$defs/budget"}
+  },
+  "$defs": {
+    "budget": {
+      "type": "object", "additionalProperties": false,
+      "required": ["max_events", "max_virtual_time_ns", "max_members", "max_recovery_steps", "deadline_ns"],
+      "properties": {
+        "max_events": {"type": "integer", "minimum": 1, "maximum": 128},
+        "max_virtual_time_ns": {"type": "integer", "minimum": 1, "maximum": 1000000},
+        "max_members": {"type": "integer", "minimum": 1, "maximum": 64},
+        "max_recovery_steps": {"type": "integer", "minimum": 1, "maximum": 16},
+        "deadline_ns": {"type": "integer", "minimum": 1}
+      }
+    }
+  }
+}
