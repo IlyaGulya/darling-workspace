@@ -44,6 +44,12 @@ ARCHIVE_CONSUMERS = {
         "read",
     ),
     (
+        "patch-stack-capture-provenance",
+        "ci/patch_stack_acceptance.py",
+        "read-only-profile-patch-capture",
+        "read",
+    ),
+    (
         "lock-first-rollback-fixture",
         "tests/west_test_contracts/patch_stack_lock_first_contract.py",
         "non-reading-owning-path-fixture",
@@ -184,6 +190,11 @@ def main() -> None:
             "tests/west_test_contracts/macho_corpus_batch_contract.py",
             "extract_added_file(REVIEWED_XNU_PATCH",
             "WORKSPACE_ABORT_SOURCE.read_bytes()",
+        ),
+        "patch-stack-capture-provenance": (
+            "ci/patch_stack_acceptance.py",
+            "verify_profile_patch_artifacts",
+            "patch_path.read_bytes()",
         ),
         "lock-first-rollback-fixture": (
             "tests/west_test_contracts/patch_stack_lock_first_contract.py",
