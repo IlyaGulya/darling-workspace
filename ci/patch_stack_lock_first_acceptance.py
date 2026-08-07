@@ -201,7 +201,28 @@ def module_rows(value: dict[str, Any], label: str) -> dict[str, dict[str, Any]]:
     return result
 
 
-def verify_manifest(value: dict[str, Any], label: str) -> None:
+def _git_identity(workspace: Path, revision: str, label: str) -> str:
+    result = subprocess.run(
+        ["git", "rev-parse", revision],
+        cwd=workspace,
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+    )
+    if result.returncode:
+        raise AcceptanceError(
+            f"{label}: cannot resolve {revision}: {result.stderr.strip()}"
+        )
+    value = result.stdout.strip()
+    oid(value, f"{label} {revision}")
+    return value
+
+
+def verify_manifest(
+    value: dict[str, Any],
+    label: str,
+    workspace: Path | None = None,
+) -> None:
     fail(
         set(value)
         == {
@@ -213,6 +234,11 @@ def verify_manifest(value: dict[str, Any], label: str) -> None:
         f"{label}: manifest fields are invalid",
     )
     oid(value.get("workspace_commit"), f"{label} workspace commit")
+    if workspace is not None:
+        fail(
+            value["workspace_commit"] == _git_identity(workspace, "HEAD", label),
+            f"{label}: workspace commit is not the candidate HEAD",
+        )
     frozen = value.get("frozen_manifest_sha256")
     fail(
         isinstance(frozen, str) and re.fullmatch(r"[0-9a-f]{64}", frozen),
@@ -345,6 +371,9 @@ def compare_immutable_oracle(
     candidate_workspace: Path,
     transaction_root: Path,
     result_path: Path,
+    expected_modules_path: Path | None = None,
+    expected_manifest_path: Path | None = None,
+    manifest_workspace: Path | None = None,
 ) -> None:
     """Compare the independent clean-ODB cherry-pick oracle with candidate."""
     fail(not result_path.exists() and not result_path.is_symlink(), "compare result path already exists")
@@ -377,6 +406,12 @@ def compare_immutable_oracle(
         "immutable oracle clean-ODB evidence is incomplete",
     )
     candidate = load_json(candidate_path)
+    if expected_modules_path is not None:
+        expected_modules = load_json(expected_modules_path)
+        fail(
+            candidate == expected_modules,
+            "candidate module map differs from the canonical captured module map",
+        )
     profile = oracle.get("profile")
     fail(isinstance(profile, str) and profile and candidate.get("profile") == profile, "oracle/candidate profile differs")
     rows = module_rows(candidate, "candidate module map")
@@ -398,6 +433,7 @@ def compare_immutable_oracle(
         "immutable oracle target batch fields are invalid",
     )
     fail(target_batch.get("profile") == profile, "immutable oracle target profile differs")
+    fail(target_batch.get("verdict") == "VALID", "immutable oracle target batch verdict is not VALID")
     fail(target_batch.get("batch_id") == batch_metadata["batch_id"], "immutable oracle batch differs from mapping")
     fail(target_batch.get("expected_count") == batch_metadata["expected_count"], "immutable oracle count differs from mapping")
     fail(target_batch.get("module_order") == batch_metadata["module_order"], "immutable oracle module order differs")
@@ -451,7 +487,18 @@ def compare_immutable_oracle(
         observed_trees[module] = oid(row.get("tree"), f"immutable oracle {module} tree")
     fail(observed_trees == {module: row["tree"] for module, row in rows.items()}, "immutable oracle and canonical module trees differ")
     manifest = load_json(candidate_manifest_path)
-    verify_manifest(manifest, "candidate manifest")
+    verify_manifest(
+        manifest,
+        "candidate manifest",
+        manifest_workspace or candidate_workspace,
+    )
+    if expected_manifest_path is not None:
+        expected_manifest = load_json(expected_manifest_path)
+        verify_manifest(expected_manifest, "expected manifest")
+        fail(
+            manifest == expected_manifest,
+            "candidate manifest differs from the canonical captured manifest",
+        )
     generated = oracle.get("generated_profile_locks")
     fail(
         isinstance(generated, list)
@@ -488,6 +535,9 @@ def main() -> None:
     oracle = sub.add_parser("compare-immutable-oracle")
     for name in ("oracle", "candidate", "candidate-manifest", "evidence", "mapping", "candidate-workspace", "transaction-root", "result"):
         oracle.add_argument(f"--{name}", type=Path, required=True)
+    oracle.add_argument("--expected-modules", type=Path)
+    oracle.add_argument("--expected-manifest", type=Path)
+    oracle.add_argument("--manifest-workspace", type=Path)
     args = parser.parse_args()
     try:
         compare_immutable_oracle(
@@ -499,6 +549,9 @@ def main() -> None:
             args.candidate_workspace,
             args.transaction_root,
             args.result,
+            args.expected_modules,
+            args.expected_manifest,
+            args.manifest_workspace,
         )
     except AcceptanceError as error:
         print(f"patch-stack lock-first acceptance: ERROR: {error}", file=sys.stderr)

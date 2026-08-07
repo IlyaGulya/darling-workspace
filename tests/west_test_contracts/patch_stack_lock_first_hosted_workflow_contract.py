@@ -215,13 +215,18 @@ def composed_capture_contract() -> None:
             )
 
 
-def synthetic_compare_contract() -> None:
+def nested_layout_compare_contract() -> None:
     with tempfile.TemporaryDirectory(
         prefix="immutable-compare-contract-"
     ) as temp:
         root = Path(temp)
-        workspace = root / "candidate"
-        repo = workspace / "darling"
+        # Hosted lock-first has separate West and manifest roots.  Captured
+        # module paths are relative to the West topdir, while the manifest
+        # repository (and its locks) is nested below it.
+        west_topdir = root / "lock-first"
+        manifest_workspace = west_topdir / "darling-workspace"
+        repo = west_topdir / "darling"
+        manifest_workspace.mkdir(parents=True)
         repo.mkdir(parents=True)
         git(repo, "init", "-q")
         git(repo, "config", "user.name", "Compare Contract")
@@ -245,7 +250,7 @@ def synthetic_compare_contract() -> None:
             commits[-1],
         )
 
-        locks = root / "locks"
+        locks = manifest_workspace / "locks"
         locks.mkdir()
         entries = []
         boundaries = [base, commits[0]]
@@ -298,7 +303,7 @@ def synthetic_compare_contract() -> None:
             "series": entries,
         }
         mapping.write_text(yaml.safe_dump(mapping_value, sort_keys=False))
-        frozen = root / "west.lock.yml"
+        frozen = manifest_workspace / "west.lock.yml"
         frozen.write_text("manifest:\n  projects: []\n")
         composition = {
             "schema_version": 3,
@@ -334,6 +339,12 @@ def synthetic_compare_contract() -> None:
         (locks / "fixture-composition-v2.yml").write_text(
             yaml.safe_dump(composition, sort_keys=False)
         )
+        git(manifest_workspace, "init", "-q")
+        git(manifest_workspace, "config", "user.name", "Compare Workspace")
+        git(manifest_workspace, "config", "user.email", "compare-workspace@example.invalid")
+        git(manifest_workspace, "add", "locks", "west.lock.yml")
+        git(manifest_workspace, "commit", "-qm", "trusted compare workspace")
+        workspace_commit = git(manifest_workspace, "rev-parse", "HEAD")
         batch = acceptance.load_batch(mapping, {"darling"})
         row = {
             "module": "darling",
@@ -355,7 +366,7 @@ def synthetic_compare_contract() -> None:
             "sha256": "b" * 64,
         }
         manifest_value = {
-            "workspace_commit": commits[-1],
+            "workspace_commit": workspace_commit,
             "frozen_manifest_sha256": "a" * 64,
             "generated_profile_locks": [generated],
             "validated_nested_children": {},
@@ -438,6 +449,8 @@ def synthetic_compare_contract() -> None:
             oracle_file: Path,
             evidence_file: Path,
             result: Path,
+            *,
+            candidate_root: Path = west_topdir,
         ) -> None:
             acceptance.compare_immutable_oracle(
                 oracle_file,
@@ -445,9 +458,10 @@ def synthetic_compare_contract() -> None:
                 manifest,
                 evidence_file,
                 mapping,
-                workspace,
+                candidate_root,
                 transactions,
                 result,
+                manifest_workspace=manifest_workspace,
             )
 
         result = root / "result.json"
@@ -456,6 +470,40 @@ def synthetic_compare_contract() -> None:
         assert payload["verdict"] == "VALID"
         assert payload["control_mode"] == "immutable-cherry-pick-oracle"
         assert payload["candidate_mode"] == "default-lock-first"
+        assert west_topdir != manifest_workspace
+        assert (manifest_workspace / ".git").exists()
+        assert repo.relative_to(west_topdir) == Path("darling")
+        assert not (west_topdir / ".git").exists()
+
+        # The nested manifest repository is not the West candidate root.  A
+        # verifier accidentally resolving module paths from it must fail
+        # closed instead of accepting the synthetic layout.
+        try:
+            compare(
+                oracle_path,
+                evidence,
+                root / "wrong-candidate-result.json",
+                candidate_root=manifest_workspace,
+            )
+        except acceptance.AcceptanceError as error:
+            assert "workspace repository missing" in str(error), error
+        else:
+            raise AssertionError("manifest root was accepted as West candidate root")
+
+        # The production verifier, not this contract, must bind the captured
+        # manifest to the candidate workspace HEAD.
+        original_manifest = manifest.read_bytes()
+        forged_manifest = json.loads(original_manifest)
+        forged_manifest["workspace_commit"] = "0" * 40
+        manifest.write_text(json.dumps(forged_manifest))
+        try:
+            compare(oracle_path, evidence, root / "forged-manifest-result.json")
+        except acceptance.AcceptanceError as error:
+            assert "candidate HEAD" in str(error), error
+        else:
+            raise AssertionError("production compare accepted a forged workspace_commit")
+        finally:
+            manifest.write_bytes(original_manifest)
 
         for name, mutation, message in (
             (
@@ -565,6 +613,8 @@ assert workflow.count("west patch apply --profile homebrew") == 1
 assert "compare-immutable-oracle" in workflow
 assert "--oracle \"$LOCK_FIRST_ROOT/evidence/immutable-oracle.json\"" in workflow
 assert "--candidate-workspace \"$LOCK_FIRST_ROOT/lock-first\"" in workflow
+assert "--candidate-workspace \"$LOCK_FIRST_ROOT/lock-first/darling-workspace\"" not in workflow
+assert "--manifest-workspace \"$LOCK_FIRST_ROOT/lock-first/darling-workspace\"" in workflow
 assert "patch_stack_acceptance.py capture" in workflow
 assert "patch_stack_acceptance.py stage" in workflow
 assert "if: always()" in workflow
@@ -597,5 +647,5 @@ assert "rev-parse\", \"--is-shallow-repository\"" in capture_source
 assert "shallow repository" in capture_source
 full_checkout_contract()
 composed_capture_contract()
-synthetic_compare_contract()
+nested_layout_compare_contract()
 print("patch-stack lock-first hosted-workflow contract: PASS")

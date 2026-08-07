@@ -31,6 +31,7 @@ ARTIFACT_ALLOWLIST = {
 }
 MAX_ARTIFACT_BYTES = 1_000_000
 MAX_GENERATED_LOCK_BYTES = 1_000_000
+SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
 
 
 def contained_regular_file(root: Path, relative: str, label: str) -> Path:
@@ -44,6 +45,34 @@ def contained_regular_file(root: Path, relative: str, label: str) -> Path:
         fail(not current.is_symlink(), f"{label} traverses a symlink")
     fail(current.is_file(), f"{label} is not a regular file")
     return current
+
+
+def verify_profile_patch_artifacts(
+    workspace: Path, profile: str, profile_data: dict[str, Any]
+) -> None:
+    """Bind every declared mbox to the profile's immutable SHA-256 field."""
+    patches = profile_data.get("patches")
+    fail(isinstance(patches, list), f"{profile}: profile patches are invalid")
+    profile_root = workspace / "patches" / profile
+    for index, item in enumerate(patches):
+        fail(isinstance(item, dict), f"{profile}: patch {index} is invalid")
+        relative = item.get("path")
+        declared = item.get("sha256sum")
+        fail(
+            isinstance(relative, str) and relative
+            and not Path(relative).is_absolute()
+            and ".." not in Path(relative).parts,
+            f"{profile}: patch {index} path is invalid",
+        )
+        fail(
+            isinstance(declared, str) and SHA256_RE.fullmatch(declared),
+            f"{profile}: patch {index} sha256sum is invalid",
+        )
+        patch_path = contained_regular_file(
+            profile_root, relative, f"{profile}: patch {index}"
+        )
+        actual = hashlib.sha256(patch_path.read_bytes()).hexdigest()
+        fail(actual == declared, f"{profile}: patch {relative} sha256sum differs")
 
 
 def generated_lock_profiles(workspace: Path, profile: str) -> list[str]:
@@ -315,6 +344,17 @@ def capture(workspace: Path, profile: str, modules_path: Path, manifest_path: Pa
     # independent complete object database and the production workspace is
     # clean, not merely the modules that happen to receive mbox patches.
     expected_generated = generated_lock_paths(workspace, profile)
+    for phase, _relative in expected_generated:
+        try:
+            phase_data = yaml.safe_load(
+                (workspace / "patches" / phase / "patches.yml").read_text()
+            )
+        except (OSError, yaml.YAMLError) as error:
+            raise AcceptanceError(
+                f"{phase}: invalid profile metadata for patch binding: {error}"
+            ) from error
+        fail(isinstance(phase_data, dict), f"{phase}: profile metadata is invalid")
+        verify_profile_patch_artifacts(workspace, phase, phase_data)
     status_raw = git_raw(workspace, "status", "--porcelain=v1", "-z", "--untracked-files=all")
     entries = parse_porcelain(status_raw)
     frozen = workspace / "west.lock.yml"
