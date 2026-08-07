@@ -28,7 +28,8 @@ metadata, owner and content digest;
 launcher identity is bound to its retained fd and content digest, and that
 digest must equal the request's runtime identity before `MembershipBound` is
 created.  Membership
-is sourced from an anchored Rust `/proc/<pid>/task/<pid>/children` implementation
+is sourced from an anchored Rust cgroup-v2 plus `/proc/<pid>/task/<tid>/children`
+implementation
 or a separately verified product protocol.  The immediate pre-shutdown census
 must equal the startup census exactly, including every retained pidfd and
 `(pid,starttime)` identity.  A changed child set, late fork, member GONE, or
@@ -39,7 +40,10 @@ Endpoint cleanup accepts only an fd-relative `PrefixCapability`, retained
 each retained FD immediately before its mutation syscall; snapshots are
 observations, never authority.  Replacement after the last observation is
 rejected and capabilities remain in typed `RecoveryPending` state; there is no
-path-based fallback.  Recovery journal entries are closed enums.
+path-based fallback.  The Linux backend moves exact objects into private
+quarantine with `renameat2` and returns `QUARANTINE_GC_REQUIRED`; it never
+performs a final named `fstatat`→`unlinkat` without an external namespace-writer
+authority.  Recovery journal entries are closed enums.
 
 `SignalSent` is emitted only by a Rust pidfd operation or a verified typed
 `DARLING_SHUTDOWN_V1` product evidence record.  A launcher return code or

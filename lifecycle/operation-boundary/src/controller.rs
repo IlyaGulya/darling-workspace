@@ -37,7 +37,7 @@ fn compiled_controller_closure() -> &'static str {
 static NEXT_SCOPE: AtomicU64 = AtomicU64::new(1);
 
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
-struct ScopeId(u64);
+pub(crate) struct ScopeId(u64);
 
 fn fresh_scope() -> ScopeId {
     ScopeId(NEXT_SCOPE.fetch_add(1, Ordering::Relaxed))
@@ -207,7 +207,7 @@ pub enum ProductProtocol {
 }
 
 impl SignalEvidence {
-    fn rust_pidfd(target: SignalTarget, result: SignalResult) -> Self {
+    pub(crate) fn rust_pidfd(target: SignalTarget, result: SignalResult) -> Self {
         Self::RustPidfd {
             target,
             signal: SignalKind::Kill,
@@ -320,6 +320,8 @@ pub enum RecoveryObligation {
     LauncherIdentity,
     SignalEvidence,
     QuiescenceRequired,
+    QuarantineGcRequired,
+    StoppedProcess,
     BudgetExceeded,
     ControllerInterrupted,
 }
@@ -354,6 +356,7 @@ pub enum ControllerError {
     PartialCleanup,
     Interrupted,
     UnresolvedObligation,
+    SystemCall(&'static str),
 }
 
 impl fmt::Display for ControllerError {
@@ -490,6 +493,58 @@ pub struct EndpointIdentity {
     pub identity: FileIdentity,
 }
 
+/// A private, retained authority for one endpoint moved into quarantine.
+/// Both directory descriptors and the object descriptor survive every
+/// cleanup error; only an external namespace-writer authority may consume
+/// this handoff for GC.
+#[derive(Debug)]
+pub struct QuarantineObligation {
+    pub(crate) kind: EndpointKind,
+    pub(crate) identity: FileIdentity,
+    pub(crate) source_parent: OwnedFd,
+    pub(crate) quarantine_parent: OwnedFd,
+    pub(crate) source_name: Vec<u8>,
+    pub(crate) endpoint_name: Vec<u8>,
+    pub(crate) placeholder_name: Vec<u8>,
+    pub(crate) endpoint_fd: OwnedFd,
+    pub(crate) placeholder_fd: OwnedFd,
+}
+
+impl QuarantineObligation {
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn new(
+        kind: EndpointKind,
+        identity: FileIdentity,
+        source_parent: OwnedFd,
+        quarantine_parent: OwnedFd,
+        source_name: Vec<u8>,
+        endpoint_name: Vec<u8>,
+        placeholder_name: Vec<u8>,
+        endpoint_fd: OwnedFd,
+        placeholder_fd: OwnedFd,
+    ) -> Self {
+        Self {
+            kind,
+            identity,
+            source_parent,
+            quarantine_parent,
+            source_name,
+            endpoint_name,
+            placeholder_name,
+            endpoint_fd,
+            placeholder_fd,
+        }
+    }
+
+    pub(crate) fn rename_placeholder(&mut self, name: Vec<u8>) {
+        self.placeholder_name = name;
+    }
+
+    pub(crate) fn rename_endpoint(&mut self, name: Vec<u8>) {
+        self.endpoint_name = name;
+    }
+}
+
 #[derive(Clone, Debug, Default, Eq, PartialEq, Serialize)]
 pub struct EndpointSnapshot {
     entries: BTreeMap<EndpointKind, FileIdentity>,
@@ -520,6 +575,7 @@ impl EndpointSnapshot {
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
 pub enum MembershipSource {
     RustProcTaskChildren,
+    RustCgroupAndProcTaskChildren,
     ProductProtocol,
 }
 
@@ -599,10 +655,10 @@ impl PrefixCapability {
     pub fn identity(&self) -> FileIdentity {
         self.identity
     }
-    fn scope(&self) -> ScopeId {
+    pub(crate) fn scope(&self) -> ScopeId {
         self.scope
     }
-    fn raw_fd(&self) -> RawFd {
+    pub(crate) fn raw_fd(&self) -> RawFd {
         self.fd.as_raw_fd()
     }
     fn revalidate(&self, observed: FileIdentity) -> Result<(), ControllerError> {
@@ -656,6 +712,9 @@ impl PidFdCapability {
     pub fn target(&self) -> SignalTarget {
         self.target
     }
+    pub(crate) fn raw_fd(&self) -> RawFd {
+        self.fd.as_raw_fd()
+    }
     fn scope(&self) -> ScopeId {
         self.scope
     }
@@ -673,11 +732,14 @@ impl EndpointCapability {
     fn scope(&self) -> ScopeId {
         self.scope
     }
-    fn identity(&self) -> EndpointIdentity {
+    pub(crate) fn identity(&self) -> EndpointIdentity {
         EndpointIdentity {
             kind: self.kind,
             identity: self.identity,
         }
+    }
+    pub(crate) fn raw_fd(&self) -> RawFd {
+        self.fd.as_raw_fd()
     }
     fn revalidate(&self, observed: FileIdentity) -> Result<(), ControllerError> {
         if observed == self.identity {
@@ -722,6 +784,10 @@ impl AnchorCapabilities {
         })
     }
 
+    pub(crate) fn raw_fd(&self) -> RawFd {
+        self.anchor_fd.as_raw_fd()
+    }
+
     #[cfg(test)]
     fn test_owned(anchor_fd: OwnedFd, evidence_fd: Option<OwnedFd>) -> Self {
         Self {
@@ -740,7 +806,7 @@ impl AnchorCapabilities {
     }
 }
 
-mod sealed {
+pub(crate) mod sealed {
     pub trait CapabilityInspector {}
     pub trait SignalExecutor {}
     pub trait QuiescenceBackend {}
@@ -771,6 +837,75 @@ pub struct AcquisitionBundle {
 }
 
 impl AcquisitionBundle {
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn from_linux_owned(
+        anchor: AnchorCapabilities,
+        marker_fd: OwnedFd,
+        marker: MarkerObservation,
+        launcher_descriptor: OwnedFd,
+        launcher: LauncherObservation,
+        root_fd: OwnedFd,
+        root_identity: ProcessIdentity,
+        member_fds: Vec<(OwnedFd, ProcessIdentity)>,
+        endpoints: Vec<(EndpointKind, OwnedFd, FileIdentity)>,
+    ) -> Result<Self, ControllerError> {
+        if member_fds.len() > MAX_MEMBERS || endpoints.len() > MAX_ENDPOINTS {
+            return Err(ControllerError::BudgetExceeded);
+        }
+        let AnchorCapabilities {
+            anchor_fd,
+            evidence_fd,
+            anchor_identity,
+            scope,
+        } = anchor;
+        let prefix = PrefixCapability {
+            fd: anchor_fd,
+            identity: anchor_identity,
+            scope,
+        };
+        let members = member_fds
+            .into_iter()
+            .map(|(fd, identity)| PidFdCapability {
+                fd,
+                identity,
+                target: SignalTarget::SessionMember,
+                scope,
+            })
+            .collect();
+        let endpoints = endpoints
+            .into_iter()
+            .map(|(kind, fd, identity)| EndpointCapability {
+                fd,
+                kind,
+                identity,
+                scope,
+            })
+            .collect();
+        Ok(Self {
+            scope,
+            evidence: evidence_fd,
+            prefix,
+            marker: MarkerCapability {
+                fd: marker_fd,
+                observation: marker,
+                scope,
+            },
+            launcher: LauncherCapability {
+                fd: launcher_descriptor,
+                observation: launcher,
+                scope,
+            },
+            root: PidFdCapability {
+                fd: root_fd,
+                identity: root_identity,
+                target: SignalTarget::SessionRoot,
+                scope,
+            },
+            members,
+            endpoints,
+        })
+    }
+
     #[cfg(test)]
     #[allow(clippy::too_many_arguments)]
     fn from_owned_for_test(
@@ -906,6 +1041,19 @@ pub struct QuiescenceProof {
     scope: ScopeId,
     nonce: u64,
 }
+
+impl QuiescenceProof {
+    pub(crate) fn from_prefix(prefix: &PrefixCapability) -> Self {
+        Self {
+            scope: prefix.scope(),
+            nonce: 1,
+        }
+    }
+
+    pub(crate) fn validates_prefix(&self, prefix: &PrefixCapability) -> bool {
+        self.scope == prefix.scope() && self.nonce != 0
+    }
+}
 #[derive(Debug)]
 pub struct Quiescent {
     request: ControllerRequest,
@@ -924,6 +1072,7 @@ pub struct Cleaned {
 }
 pub struct Finalized {
     response: ControllerResponse,
+    quarantines: Vec<QuarantineObligation>,
 }
 
 #[derive(Debug)]
@@ -931,6 +1080,7 @@ pub struct RecoveryPending<S> {
     state: S,
     error: ControllerError,
     obligations: Vec<RecoveryObligation>,
+    quarantines: Vec<QuarantineObligation>,
 }
 
 /// The state is consumed when a recovery result is emitted.  Capabilities are
@@ -1026,6 +1176,9 @@ impl<S> RecoveryPending<S> {
     pub fn obligations(&self) -> &[RecoveryObligation] {
         &self.obligations
     }
+    pub fn quarantine_obligations(&self) -> &[QuarantineObligation] {
+        &self.quarantines
+    }
 }
 
 #[allow(private_bounds)]
@@ -1043,7 +1196,10 @@ impl<S: RecoveryStateParts> RecoveryPending<S> {
     /// closed without attempting a second mutation.
     pub(crate) fn finalize_fail_closed(self) -> Finalized {
         let Self {
-            state, obligations, ..
+            state,
+            obligations,
+            quarantines,
+            ..
         } = self;
         let (request, mut journal, signals) = state.into_response_parts();
         let verdict = ControllerVerdict::FailClosed;
@@ -1060,11 +1216,22 @@ impl<S: RecoveryStateParts> RecoveryPending<S> {
                 signals,
                 journal,
             },
+            quarantines,
         }
     }
 }
 
 pub(crate) trait SignalExecutor: sealed::SignalExecutor {
+    /// Abort any backend-owned stop barrier before a recovery state takes
+    /// ownership of the journal.  Test/external executors have no-op default;
+    /// the Linux backend resumes or force-kills its retained stopped set.
+    fn abort_after_error(&mut self) {}
+    /// Return backend-owned recovery obligations produced while unwinding a
+    /// partially established stop barrier.  The default executor has no
+    /// kernel state to retain.
+    fn take_failure_obligations(&mut self) -> Vec<RecoveryObligation> {
+        Vec::new()
+    }
     fn signal_member(
         &mut self,
         capability: &PidFdCapability,
@@ -1078,6 +1245,7 @@ pub(crate) trait SignalExecutor: sealed::SignalExecutor {
 pub struct CleanupFailure {
     pub removed: usize,
     pub obligation: RecoveryObligation,
+    pub quarantines: Vec<QuarantineObligation>,
 }
 pub(crate) trait EndpointCleanupExecutor: sealed::EndpointCleanupExecutor {
     /// The implementation receives retained endpoint FDs.  It must revalidate
@@ -1213,6 +1381,7 @@ impl Acquired {
             },
             error,
             obligations,
+            quarantines: Vec::new(),
         }
     }
 }
@@ -1246,46 +1415,61 @@ impl MembershipBound {
         executor: &mut impl SignalExecutor,
     ) -> Result<ShutdownRequested, RecoveryPending<MembershipBound>> {
         if let Err(error) = self.verify_before_shutdown(&current) {
+            executor.abort_after_error();
             let obligation = match &error {
                 ControllerError::IdentityMismatch(value) => *value,
                 _ => RecoveryObligation::MembershipChanged,
             };
-            return Err(self.recovery(error, obligation));
+            return Err(self.recovery_with_executor(executor, error, obligation));
         }
         let mut signals = Vec::with_capacity(self.capabilities.members.len() + 1);
         for member in &self.capabilities.members {
             if let Err(error) = self.budget.event().and_then(|_| self.budget.advance(1)) {
-                return Err(self.recovery(error, RecoveryObligation::BudgetExceeded));
+                executor.abort_after_error();
+                return Err(self.recovery_with_executor(
+                    executor,
+                    error,
+                    RecoveryObligation::BudgetExceeded,
+                ));
             }
             let evidence = match executor.signal_member(member) {
                 Ok(value) => value,
                 Err(error) => {
+                    executor.abort_after_error();
                     let obligation = signal_obligation(&error);
-                    return Err(self.recovery(error, obligation));
+                    return Err(self.recovery_with_executor(executor, error, obligation));
                 }
             };
             if let Err(error) =
                 evidence.reduce_for_shutdown(&self.request, SignalTarget::SessionMember)
             {
+                executor.abort_after_error();
                 let obligation = signal_obligation(&error);
-                return Err(self.recovery(error, obligation));
+                return Err(self.recovery_with_executor(executor, error, obligation));
             }
             signals.push(evidence);
             self.pending_signals = signals.clone();
         }
         if let Err(error) = self.budget.event().and_then(|_| self.budget.advance(1)) {
-            return Err(self.recovery(error, RecoveryObligation::BudgetExceeded));
+            executor.abort_after_error();
+            return Err(self.recovery_with_executor(
+                executor,
+                error,
+                RecoveryObligation::BudgetExceeded,
+            ));
         }
         let root = match executor.signal_root(&self.capabilities.root) {
             Ok(value) => value,
             Err(error) => {
+                executor.abort_after_error();
                 let obligation = signal_obligation(&error);
-                return Err(self.recovery(error, obligation));
+                return Err(self.recovery_with_executor(executor, error, obligation));
             }
         };
         if let Err(error) = root.reduce_for_shutdown(&self.request, SignalTarget::SessionRoot) {
+            executor.abort_after_error();
             let obligation = signal_obligation(&error);
-            return Err(self.recovery(error, obligation));
+            return Err(self.recovery_with_executor(executor, error, obligation));
         }
         signals.push(root);
         self.journal.push(JournalEvent::ShutdownRequested {
@@ -1337,7 +1521,26 @@ impl MembershipBound {
             },
             error,
             obligations,
+            quarantines: Vec::new(),
         }
+    }
+
+    fn recovery_with_executor(
+        self,
+        executor: &mut impl SignalExecutor,
+        error: ControllerError,
+        obligation: RecoveryObligation,
+    ) -> RecoveryPending<MembershipBound> {
+        let extra = executor.take_failure_obligations();
+        let mut pending = self.recovery(error, obligation);
+        for extra_obligation in extra {
+            push_obligation(&mut pending.obligations, extra_obligation);
+            pending.state.journal.push(JournalEvent::Recovery {
+                obligation: extra_obligation,
+                completed: pending.state.pending_signals.len(),
+            });
+        }
+        pending
     }
 }
 
@@ -1407,6 +1610,7 @@ impl ShutdownRequested {
             },
             error,
             obligations,
+            quarantines: Vec::new(),
         }
     }
 }
@@ -1474,6 +1678,7 @@ impl Drained {
             },
             error,
             obligations,
+            quarantines: Vec::new(),
         }
     }
 }
@@ -1497,6 +1702,7 @@ impl Quiescent {
                     ControllerError::PartialCleanup,
                     failure.obligation,
                     failure.removed,
+                    failure.quarantines,
                 ))
             }
         };
@@ -1513,13 +1719,14 @@ impl Quiescent {
         error: ControllerError,
         obligation: RecoveryObligation,
     ) -> RecoveryPending<Quiescent> {
-        self.recovery_with_completed(error, obligation, 0)
+        self.recovery_with_completed(error, obligation, 0, Vec::new())
     }
     fn recovery_with_completed(
         self,
         mut error: ControllerError,
         obligation: RecoveryObligation,
         completed: usize,
+        quarantines: Vec<QuarantineObligation>,
     ) -> RecoveryPending<Quiescent> {
         let Self {
             request,
@@ -1553,6 +1760,7 @@ impl Quiescent {
             },
             error,
             obligations,
+            quarantines,
         }
     }
 }
@@ -1575,12 +1783,17 @@ impl Cleaned {
                 signals: self.signals,
                 journal,
             },
+            quarantines: Vec::new(),
         })
     }
 }
 impl Finalized {
-    pub(crate) fn response(self) -> ControllerResponse {
-        self.response
+    pub(crate) fn into_parts(self) -> (ControllerResponse, Vec<QuarantineObligation>) {
+        (self.response, self.quarantines)
+    }
+
+    pub(crate) fn quarantine_obligations(&self) -> &[QuarantineObligation] {
+        &self.quarantines
     }
 }
 
@@ -1858,6 +2071,7 @@ mod tests {
                     .map_err(|_| CleanupFailure {
                         removed: 0,
                         obligation: RecoveryObligation::EndpointReplacement,
+                        quarantines: Vec::new(),
                     });
             }
             self.unlink_attempted = true;
@@ -2051,14 +2265,11 @@ mod tests {
             replacement_identity: None,
             unlink_attempted: false,
         };
-        let response = quiescent
-            .cleanup(&mut cleanup)
-            .unwrap()
-            .finalize()
-            .unwrap()
-            .response();
+        let finalized = quiescent.cleanup(&mut cleanup).unwrap().finalize().unwrap();
+        let (response, quarantines) = finalized.into_parts();
         assert_eq!(response.verdict, ControllerVerdict::Success);
         assert!(response.obligations.is_empty());
+        assert!(quarantines.is_empty());
         assert!(cleanup.verified);
         assert!(cleanup.unlink_attempted);
     }

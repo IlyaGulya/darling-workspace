@@ -21,6 +21,7 @@ use std::time::Instant;
 pub mod controller;
 pub mod explorer;
 pub mod fuzz;
+pub mod linux_backend;
 pub mod state;
 
 pub type Result<T> = std::result::Result<T, BoundaryError>;
@@ -127,7 +128,7 @@ impl FileIdentity {
         }
     }
 
-    fn from_fd(fd: RawFd) -> Result<Self> {
+    pub(crate) fn from_fd(fd: RawFd) -> Result<Self> {
         let mut value = MaybeUninit::<libc_stat>::zeroed();
         // SAFETY: fstat initializes the supplied stat buffer on success.
         let result = unsafe { libc::fstat(fd, value.as_mut_ptr()) };
@@ -138,7 +139,7 @@ impl FileIdentity {
         Ok(Self::from_stat(unsafe { &value.assume_init() }))
     }
 
-    fn from_at(parent: RawFd, name: &CString) -> Result<Self> {
+    pub(crate) fn from_at(parent: RawFd, name: &CString) -> Result<Self> {
         let mut value = MaybeUninit::<libc_stat>::zeroed();
         // SAFETY: fstatat initializes the supplied stat buffer on success;
         // AT_SYMLINK_NOFOLLOW keeps the name itself from becoming authority.
