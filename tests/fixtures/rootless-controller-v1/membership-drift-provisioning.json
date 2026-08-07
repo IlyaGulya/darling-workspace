@@ -1,0 +1,6 @@
+{
+  "id": "membership-drift-provisioning",
+  "class": "membership",
+  "mutation": {"kind": "membership-drift-provisioning", "phase": "PROVISIONING", "child_set": "changed", "starttime": "same"},
+  "expected": "MEMBERSHIP_CHANGED"
+}

@@ -1,0 +1,6 @@
+{
+  "id": "member-gone",
+  "class": "membership",
+  "mutation": {"kind": "member-gone", "member": "GONE", "pidfd": "retained", "signal": "not-sent"},
+  "expected": "MEMBERSHIP_CHANGED"
+}

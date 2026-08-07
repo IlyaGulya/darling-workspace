@@ -6,6 +6,7 @@
 //! their `OwnedFd` with RAII.  No capability implements `Clone`.
 
 use libc::{self, c_int, c_void, stat as libc_stat};
+use serde::{Deserialize, Serialize};
 use std::ffi::{CStr, CString, OsStr};
 use std::fmt;
 use std::io;
@@ -17,6 +18,7 @@ use std::ptr;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Instant;
 
+pub mod controller;
 pub mod explorer;
 pub mod fuzz;
 pub mod state;
@@ -90,7 +92,7 @@ fn c_name_bytes(name: &[u8]) -> Result<CString> {
         .map_err(|_| BoundaryError::InvalidComponent(String::from_utf8_lossy(name).into_owned()))
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub struct FileIdentity {
     pub device: u64,
     pub inode: u64,

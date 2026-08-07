@@ -1,0 +1,6 @@
+{
+  "id": "deadline",
+  "class": "budget",
+  "mutation": {"kind": "deadline", "phase": "SHUTDOWN", "deadline": "expired"},
+  "expected": "BUDGET_EXCEEDED"
+}
