@@ -36,6 +36,11 @@ consumers:
     operation: reviewed-source-provenance-comparison
     access: read
     executes_archive: false
+  - id: patch-stack-capture-provenance
+    path: ci/patch_stack_acceptance.py
+    operation: read-only-profile-patch-capture
+    access: read
+    executes_archive: false
   - id: lock-first-rollback-fixture
     path: tests/west_test_contracts/patch_stack_lock_first_contract.py
     operation: non-reading-owning-path-fixture
