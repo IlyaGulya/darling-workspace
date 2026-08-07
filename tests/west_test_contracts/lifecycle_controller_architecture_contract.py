@@ -100,6 +100,8 @@ build_script = (CRATE / "build.rs").read_text()
 assert "CONTROLLER_CLOSURE" in build_script
 assert "LIFECYCLE_CONTROLLER_CLOSURE_SHA256" in build_script
 assert "src/controller.rs" in build_script
+assert "src/linux_backend.rs" in build_script
+assert "run-lifecycle-linux-backend-contract.sh" in build_script
 assert "fixtures/rootless-controller-v1/ancestor-swap.json" in build_script
 assert "fixtures/rootless-controller-v1/stale-controller.json" in build_script
 for phase in architecture["phases"]:
@@ -123,6 +125,7 @@ assert "SignalResult::Deadline" in controller and "SignalResult::Rejected" in co
 assert "returncode" not in controller
 for capability in ("PrefixCapability", "MarkerCapability", "LauncherCapability", "PidFdCapability"):
     assert f"impl Clone for {capability}" not in controller
+assert "pub mod linux_backend;" in (ROOT / "lifecycle" / "operation-boundary" / "src" / "lib.rs").read_text()
 
 valid_response = {
     "schema_version": 1,
