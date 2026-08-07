@@ -122,6 +122,7 @@ class Fixture:
     mapping_rel: str
     composition_rel: str
     profile_rel: str
+    patch_rel: str
     generated_rel: str
     oracle_rel: str
     modules_rel: str
@@ -138,6 +139,22 @@ class Fixture:
     package_files: frozenset[str]
     bindings: dict[str, str]
 
+
+@dataclass(frozen=True)
+class DisposableFixtureScope:
+    """Contain every fixture write below one caller-owned temporary root."""
+
+    root: Path
+
+    def path(self, *parts: str) -> Path:
+        candidate = self.root.joinpath(*parts)
+        try:
+            candidate.resolve().relative_to(self.root.resolve())
+        except ValueError as error:
+            raise MutationContractError(
+                f"fixture path escapes disposable root: {candidate}"
+            ) from error
+        return candidate
 
 def make_fake_west(root: Path) -> Path:
     bindir = root / "bin"
@@ -176,13 +193,14 @@ def immutable_lock(mirror: Path, base: str, source: str, tree: str) -> dict[str,
 
 
 def build_fixture(root: Path) -> Fixture:
-    workspace = root / "workspace"
-    module = workspace / "darling"
-    mirror = root / "mirror.git"
-    bundle = root / "package-source.bundle"
-    package = root / "package"
+    scope = DisposableFixtureScope(root.resolve())
+    workspace = scope.path("workspace")
+    module = scope.path("workspace", "darling")
+    mirror = scope.path("mirror.git")
+    bundle = scope.path("package-source.bundle")
+    package = scope.path("package")
     (workspace / "locks" / "patch-stack").mkdir(parents=True)
-    (workspace / "patches" / "homebrew" / "darling").mkdir(parents=True)
+    scope.path("workspace", "patches", "homebrew", "darling").mkdir(parents=True)
     module.mkdir(parents=True)
     run(module, "git", "init", "-q")
     # Match the immutable oracle's explicit replay identity so generated
@@ -209,6 +227,10 @@ def build_fixture(root: Path) -> Fixture:
     mapping_rel = "locks/patch-stack/mapping.yml"
     composition_rel = "locks/patch-stack/composition.yml"
     profile_rel = "patches/homebrew/patches.yml"
+    patch_rel_path = Path("patches") / "homebrew" / "darling" / "mutation.patch"
+    patch_rel = patch_rel_path.as_posix()
+    profile_patch_rel = Path("darling") / "mutation.patch"
+    patch_path = scope.path("workspace", *patch_rel_path.parts)
     generated_rel = "patches/homebrew/west.lock.yml"
     lock_value = immutable_lock(mirror, base, source, source_tree)
     write_yaml(workspace / lock_rel, lock_value)
@@ -218,14 +240,14 @@ def build_fixture(root: Path) -> Fixture:
         "integration-date": "2026-01-01T00:00:00+00:00",
         "test-profiles": {},
         "fixture-profiles": {},
-        "patches": [{"module": "darling", "path": "darling/mutation.patch"}],
+        "patches": [{"module": "darling", "path": profile_patch_rel.as_posix()}],
     }
     write_yaml(workspace / profile_rel, profile_value)
     # Keep the portable fixture patch in the real production mbox format.
     # Lock-first still keys replay to the immutable commit, while capture and
     # export exercise the same profile patch path used by production.
     patch_bytes = run(module, "git", "format-patch", "--stdout", f"{base}..{source}").stdout
-    (workspace / "patches/homebrew/darling/mutation.patch").write_text(patch_bytes)
+    patch_path.write_text(patch_bytes)
     profile_value["patches"][0].update({
         "sha256sum": hashlib.sha256(patch_bytes.encode()).hexdigest(),
         "source-branch": "fix/mutation-production",
@@ -242,7 +264,7 @@ def build_fixture(root: Path) -> Fixture:
         "composition": "composition.yml",
         "series": [{
             "profile": "homebrew", "module": "darling",
-            "patch": "darling/mutation.patch", "lock": "mutation.yml",
+            "patch": profile_patch_rel.as_posix(), "lock": "mutation.yml",
         }],
     }
     write_yaml(workspace / mapping_rel, mapping_value)
@@ -275,7 +297,7 @@ def build_fixture(root: Path) -> Fixture:
             "module": "darling",
             "starting": {"tree": base_tree},
             "series": [{
-                "patch": "darling/mutation.patch", "lock": "mutation.yml",
+                "patch": profile_patch_rel.as_posix(), "lock": "mutation.yml",
                 "expected_applied_tree": source_tree,
             }],
             "final_tree": source_tree,
@@ -337,7 +359,7 @@ def build_fixture(root: Path) -> Fixture:
         composition_rel: workspace / composition_rel,
         "locks/patch-stack/lock-first-profiles-v1.yml": workspace / "locks/patch-stack/lock-first-profiles-v1.yml",
         profile_rel: workspace / profile_rel,
-        "patches/homebrew/darling/mutation.patch": workspace / "patches/homebrew/darling/mutation.patch",
+        patch_rel: patch_path,
         "west.lock.yml": workspace / "west.lock.yml",
         generated_rel: workspace / generated_rel,
         "bundles/source.bundle": bundle,
@@ -356,7 +378,7 @@ def build_fixture(root: Path) -> Fixture:
         for relative in (
             lock_rel, mapping_rel, composition_rel,
             "locks/patch-stack/lock-first-profiles-v1.yml", profile_rel,
-            "patches/homebrew/darling/mutation.patch", "west.lock.yml", generated_rel,
+            patch_rel, "west.lock.yml", generated_rel,
         )
     }
     package_index = {
@@ -377,6 +399,7 @@ def build_fixture(root: Path) -> Fixture:
         root=root, workspace=workspace, module=module, mirror=mirror, bundle=bundle,
         package=package, lock_rel=lock_rel, mapping_rel=mapping_rel,
         composition_rel=composition_rel, profile_rel=profile_rel,
+        patch_rel=patch_rel,
         generated_rel=generated_rel, oracle_rel="immutable-oracle.json",
         modules_rel="lock-first-modules.json", manifest_rel="manifest.json",
         evidence_rel="evidence/lock-first-evidence.json",
@@ -768,7 +791,7 @@ def mutations(fixture: Fixture) -> list[Mutation]:
     mapping = fixture.mapping_rel
     composition = fixture.composition_rel
     profile = fixture.profile_rel
-    patch = "patches/homebrew/darling/mutation.patch"
+    patch = fixture.patch_rel
     generated = fixture.generated_rel
     evidence = fixture.evidence_rel
     manifest = fixture.manifest_rel
