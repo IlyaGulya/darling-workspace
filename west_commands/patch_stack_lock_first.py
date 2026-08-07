@@ -226,6 +226,17 @@ def plan(
     grouped: dict[str, list[dict[str, Any]]] | None = None,
 ) -> LockFirstPlan:
     """Return an ordered, uniquely matched batch before any mutation."""
+    if not isinstance(patches, list) or not patches:
+        raise LockFirstError("lock-first profile patches must be a non-empty list")
+    for index, patch in enumerate(patches):
+        if (
+            not isinstance(patch, dict)
+            or not isinstance(patch.get("module"), str)
+            or not patch["module"]
+            or not isinstance(patch.get("path"), str)
+            or not patch["path"]
+        ):
+            raise LockFirstError(f"lock-first profile patch {index} has invalid module/path")
     if mapping_path is None:
         mapping_path = mapping_for_profile(profile)
     metadata = load_mapping(mapping_path, profile)
