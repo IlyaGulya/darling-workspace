@@ -26,6 +26,36 @@ const SEMANTIC_CLOSURE: &[&str] = &[
     "../../tests/run-lifecycle-fuzz-ub-gate.sh",
 ];
 
+const CONTROLLER_CLOSURE: &[&str] = &[
+    "build.rs",
+    "Cargo.toml",
+    "Cargo.lock",
+    "src/lib.rs",
+    "src/controller.rs",
+    "src/bin/lifecycle-boundary.rs",
+    "../../lifecycle/rootless-controller-v1.json",
+    "../../schemas/rootless-lifecycle-controller-request-v1.schema.json",
+    "../../schemas/rootless-lifecycle-controller-response-v1.schema.json",
+    "../../docs/lifecycle-controller-v1.md",
+    "../../docs/lifecycle-controller-migration-v1.md",
+    "../../west_commands/lifecycle_controller_transport.py",
+    "../../tests/west_test_contracts/lifecycle_controller_architecture_contract.py",
+    "../../tests/run-lifecycle-controller-architecture-contract.sh",
+    "../../tests/fixtures/rootless-controller-v1/ancestor-swap.json",
+    "../../tests/fixtures/rootless-controller-v1/deadline.json",
+    "../../tests/fixtures/rootless-controller-v1/deployed-launcher-replacement.json",
+    "../../tests/fixtures/rootless-controller-v1/endpoint-replacement-after-check.json",
+    "../../tests/fixtures/rootless-controller-v1/late-fork.json",
+    "../../tests/fixtures/rootless-controller-v1/malformed-transport.json",
+    "../../tests/fixtures/rootless-controller-v1/marker-in-place.json",
+    "../../tests/fixtures/rootless-controller-v1/member-gone.json",
+    "../../tests/fixtures/rootless-controller-v1/membership-drift-before-shutdown.json",
+    "../../tests/fixtures/rootless-controller-v1/membership-drift-provisioning.json",
+    "../../tests/fixtures/rootless-controller-v1/pid-reuse.json",
+    "../../tests/fixtures/rootless-controller-v1/sigint.json",
+    "../../tests/fixtures/rootless-controller-v1/stale-controller.json",
+];
+
 fn sha256(path: &Path) -> String {
     let output = Command::new("sha256sum")
         .arg(path)
@@ -122,5 +152,23 @@ fn main() {
     println!(
         "cargo:rustc-env=LIFECYCLE_FUZZ_WORKSPACE_HEAD={}",
         git_head(&manifest_dir)
+    );
+
+    let mut controller_manifest = String::new();
+    for relative in CONTROLLER_CLOSURE {
+        let path = manifest_dir.join(relative);
+        assert!(
+            path.is_file(),
+            "controller closure path is missing: {relative}"
+        );
+        println!("cargo:rerun-if-changed={}", path.display());
+        controller_manifest.push_str(relative);
+        controller_manifest.push('=');
+        controller_manifest.push_str(&sha256(&path));
+        controller_manifest.push('\n');
+    }
+    println!(
+        "cargo:rustc-env=LIFECYCLE_CONTROLLER_CLOSURE_SHA256={}",
+        sha256_bytes(controller_manifest.as_bytes())
     );
 }

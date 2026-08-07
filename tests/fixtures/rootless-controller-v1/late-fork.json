@@ -1,0 +1,6 @@
+{
+  "id": "late-fork",
+  "class": "membership",
+  "mutation": {"kind": "late-fork", "phase": "DRAIN", "new_child": true, "observed_by_controller": false},
+  "expected": "LATE_FORK"
+}

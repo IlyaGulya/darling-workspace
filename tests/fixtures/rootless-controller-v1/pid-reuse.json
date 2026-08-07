@@ -1,0 +1,6 @@
+{
+  "id": "pid-reuse",
+  "class": "membership",
+  "mutation": {"kind": "pid-reuse", "pid": "same", "starttime": "different", "pidfd": "retained"},
+  "expected": "PID_REUSE"
+}
