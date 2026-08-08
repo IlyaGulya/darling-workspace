@@ -22,6 +22,7 @@ pub mod controller;
 pub mod explorer;
 pub mod fuzz;
 pub mod linux_backend;
+pub mod quarantine_gc;
 pub mod state;
 
 pub type Result<T> = std::result::Result<T, BoundaryError>;

@@ -43,6 +43,11 @@ fn fresh_scope() -> ScopeId {
     ScopeId(NEXT_SCOPE.fetch_add(1, Ordering::Relaxed))
 }
 
+#[cfg(test)]
+pub(crate) fn fresh_scope_for_test() -> ScopeId {
+    fresh_scope()
+}
+
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "SCREAMING_SNAKE_CASE")]
 pub enum ControllerOperation {
@@ -499,24 +504,44 @@ pub struct EndpointIdentity {
 /// this handoff for GC.
 #[derive(Debug)]
 pub struct QuarantineObligation {
+    pub(crate) scope: ScopeId,
     pub(crate) kind: EndpointKind,
     pub(crate) identity: FileIdentity,
+    pub(crate) source_parent_identity: FileIdentity,
+    pub(crate) quarantine_parent_identity: FileIdentity,
+    pub(crate) placeholder_identity: FileIdentity,
+    pub(crate) writer_parent_identity: FileIdentity,
+    pub(crate) writer_lock_identity: FileIdentity,
     pub(crate) source_parent: OwnedFd,
     pub(crate) quarantine_parent: OwnedFd,
+    pub(crate) writer_parent: OwnedFd,
+    pub(crate) writer_lock: OwnedFd,
+    pub(crate) writer_lock_name: Vec<u8>,
     pub(crate) source_name: Vec<u8>,
     pub(crate) endpoint_name: Vec<u8>,
     pub(crate) placeholder_name: Vec<u8>,
     pub(crate) endpoint_fd: OwnedFd,
     pub(crate) placeholder_fd: OwnedFd,
+    endpoint_deleted: bool,
+    placeholder_deleted: bool,
 }
 
 impl QuarantineObligation {
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn new(
+        scope: ScopeId,
         kind: EndpointKind,
         identity: FileIdentity,
+        source_parent_identity: FileIdentity,
+        quarantine_parent_identity: FileIdentity,
+        placeholder_identity: FileIdentity,
+        writer_parent_identity: FileIdentity,
+        writer_lock_identity: FileIdentity,
         source_parent: OwnedFd,
         quarantine_parent: OwnedFd,
+        writer_parent: OwnedFd,
+        writer_lock: OwnedFd,
+        writer_lock_name: Vec<u8>,
         source_name: Vec<u8>,
         endpoint_name: Vec<u8>,
         placeholder_name: Vec<u8>,
@@ -524,16 +549,75 @@ impl QuarantineObligation {
         placeholder_fd: OwnedFd,
     ) -> Self {
         Self {
+            scope,
             kind,
             identity,
+            source_parent_identity,
+            quarantine_parent_identity,
+            placeholder_identity,
+            writer_parent_identity,
+            writer_lock_identity,
             source_parent,
             quarantine_parent,
+            writer_parent,
+            writer_lock,
+            writer_lock_name,
             source_name,
             endpoint_name,
             placeholder_name,
             endpoint_fd,
             placeholder_fd,
+            endpoint_deleted: false,
+            placeholder_deleted: false,
         }
+    }
+
+    pub(crate) fn mark_endpoint_deleted(&mut self) {
+        self.endpoint_deleted = true;
+    }
+
+    pub(crate) fn mark_placeholder_deleted(&mut self) {
+        self.placeholder_deleted = true;
+    }
+
+    pub(crate) fn is_complete(&self) -> bool {
+        self.endpoint_deleted && self.placeholder_deleted
+    }
+
+    pub(crate) fn endpoint_deleted(&self) -> bool {
+        self.endpoint_deleted
+    }
+
+    pub(crate) fn placeholder_deleted(&self) -> bool {
+        self.placeholder_deleted
+    }
+
+    #[cfg(test)]
+    pub(crate) fn duplicate_for_test(&self, suffix: &[u8]) -> Self {
+        let mut endpoint_name = self.endpoint_name.clone();
+        endpoint_name.extend_from_slice(suffix);
+        let mut placeholder_name = self.placeholder_name.clone();
+        placeholder_name.extend_from_slice(suffix);
+        Self::new(
+            self.scope,
+            self.kind,
+            self.identity,
+            self.source_parent_identity,
+            self.quarantine_parent_identity,
+            self.placeholder_identity,
+            self.writer_parent_identity,
+            self.writer_lock_identity,
+            crate::duplicate_fd(self.source_parent.as_raw_fd()).unwrap(),
+            crate::duplicate_fd(self.quarantine_parent.as_raw_fd()).unwrap(),
+            crate::duplicate_fd(self.writer_parent.as_raw_fd()).unwrap(),
+            crate::duplicate_fd(self.writer_lock.as_raw_fd()).unwrap(),
+            self.writer_lock_name.clone(),
+            self.source_name.clone(),
+            endpoint_name,
+            placeholder_name,
+            crate::duplicate_fd(self.endpoint_fd.as_raw_fd()).unwrap(),
+            crate::duplicate_fd(self.placeholder_fd.as_raw_fd()).unwrap(),
+        )
     }
 
     pub(crate) fn rename_placeholder(&mut self, name: Vec<u8>) {
@@ -729,7 +813,7 @@ impl PidFdCapability {
     }
 }
 impl EndpointCapability {
-    fn scope(&self) -> ScopeId {
+    pub(crate) fn scope(&self) -> ScopeId {
         self.scope
     }
     pub(crate) fn identity(&self) -> EndpointIdentity {
@@ -1070,8 +1154,18 @@ pub struct Cleaned {
     signals: Vec<SignalEvidence>,
     endpoint_count: usize,
 }
+#[must_use = "Finalized owns quarantine capabilities; consume it with into_parts()"]
 pub struct Finalized {
     response: ControllerResponse,
+    quarantines: Vec<QuarantineObligation>,
+}
+
+#[must_use = "QuarantinePending owns retained quarantine capabilities; consume it with into_parts()"]
+#[derive(Debug)]
+pub struct QuarantinePending {
+    request: ControllerRequest,
+    journal: Vec<JournalEvent>,
+    signals: Vec<SignalEvidence>,
     quarantines: Vec<QuarantineObligation>,
 }
 
@@ -1218,6 +1312,46 @@ impl<S: RecoveryStateParts> RecoveryPending<S> {
             },
             quarantines,
         }
+    }
+}
+
+impl RecoveryPending<Quiescent> {
+    /// Transfer a quiescent cleanup failure to the bounded GC consumer and
+    /// carry the issuer produced by the same Rust typestate. The transition
+    /// cannot be formed from an already-terminal response or arbitrary test
+    /// evidence.
+    pub(crate) fn try_into_quarantine_pending(
+        self,
+    ) -> Result<
+        (
+            QuarantinePending,
+            crate::quarantine_gc::ControllerQuiescenceGrant,
+        ),
+        Self,
+    > {
+        if self.quarantines.is_empty()
+            || self.obligations != [RecoveryObligation::QuarantineGcRequired]
+        {
+            return Err(self);
+        }
+        let obligation = self.quarantines.first().expect("checked non-empty");
+        let issuer = match self.state.issue_quarantine_gc_grant(obligation) {
+            Ok(issuer) => issuer,
+            Err(_) => return Err(self),
+        };
+        let Self {
+            state, quarantines, ..
+        } = self;
+        let (request, journal, signals) = state.into_response_parts();
+        Ok((
+            QuarantinePending {
+                request,
+                journal,
+                signals,
+                quarantines,
+            },
+            issuer,
+        ))
     }
 }
 
@@ -1684,6 +1818,24 @@ impl Drained {
 }
 
 impl Quiescent {
+    pub(crate) fn gc_authority_matches(&self, scope: ScopeId) -> bool {
+        self.proof.scope == self.capabilities.scope
+            && self.proof.scope == scope
+            && self.proof.nonce != 0
+    }
+
+    /// Issue the production quarantine-GC issuer while the controller still
+    /// owns a proven quiescent typestate. The issuer is bound to this scope
+    /// and to the retained obligation capabilities; no path or synthetic
+    /// token can satisfy the handoff.
+    pub(crate) fn issue_quarantine_gc_grant(
+        &self,
+        obligation: &QuarantineObligation,
+    ) -> Result<crate::quarantine_gc::ControllerQuiescenceGrant, ControllerError> {
+        crate::quarantine_gc::ControllerQuiescenceGrant::from_quiescent(self, obligation)
+            .map_err(|_| ControllerError::QuiescenceRequired)
+    }
+
     pub(crate) fn cleanup(
         mut self,
         executor: &mut impl EndpointCleanupExecutor,
@@ -1794,6 +1946,69 @@ impl Finalized {
 
     pub(crate) fn quarantine_obligations(&self) -> &[QuarantineObligation] {
         &self.quarantines
+    }
+
+    #[cfg(test)]
+    pub(crate) fn from_parts_for_test(
+        response: ControllerResponse,
+        quarantines: Vec<QuarantineObligation>,
+    ) -> Self {
+        Self {
+            response,
+            quarantines,
+        }
+    }
+}
+
+impl QuarantinePending {
+    pub(crate) fn into_parts(
+        self,
+    ) -> (
+        ControllerRequest,
+        Vec<JournalEvent>,
+        Vec<SignalEvidence>,
+        Vec<QuarantineObligation>,
+    ) {
+        (self.request, self.journal, self.signals, self.quarantines)
+    }
+
+    pub(crate) fn from_parts(
+        request: ControllerRequest,
+        journal: Vec<JournalEvent>,
+        signals: Vec<SignalEvidence>,
+        quarantines: Vec<QuarantineObligation>,
+    ) -> Self {
+        Self {
+            request,
+            journal,
+            signals,
+            quarantines,
+        }
+    }
+
+    pub(crate) fn into_cleaned(self, endpoint_count: usize) -> Cleaned {
+        let Self {
+            request,
+            journal,
+            signals,
+            quarantines: _,
+        } = self;
+        Cleaned {
+            request,
+            journal,
+            signals,
+            endpoint_count,
+        }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn from_parts_for_test(
+        request: ControllerRequest,
+        journal: Vec<JournalEvent>,
+        signals: Vec<SignalEvidence>,
+        quarantines: Vec<QuarantineObligation>,
+    ) -> Self {
+        Self::from_parts(request, journal, signals, quarantines)
     }
 }
 
@@ -2127,6 +2342,44 @@ mod tests {
             .unwrap();
         let mut q = Quiescence;
         drained.establish_quiescence(&mut q).unwrap()
+    }
+
+    #[test]
+    fn red_quarantine_handoff_uses_controller_issuer() {
+        let state = quiescent_for_test();
+        let scope = state.capabilities.scope;
+        let obligation = QuarantineObligation::new(
+            scope,
+            EndpointKind::Shellspawn,
+            identity(5),
+            identity(6),
+            identity(7),
+            identity(8),
+            identity(9),
+            identity(10),
+            fd(),
+            fd(),
+            fd(),
+            fd(),
+            b"lock".to_vec(),
+            b"source".to_vec(),
+            b"endpoint".to_vec(),
+            b"placeholder".to_vec(),
+            fd(),
+            fd(),
+        );
+        let pending = RecoveryPending {
+            state,
+            error: ControllerError::PartialCleanup,
+            obligations: vec![RecoveryObligation::QuarantineGcRequired],
+            quarantines: vec![obligation],
+        };
+        let (pending, _issuer) = pending.try_into_quarantine_pending().unwrap();
+        let (_, journal, _, obligations) = pending.into_parts();
+        assert!(journal
+            .iter()
+            .any(|event| matches!(event, JournalEvent::Quiescent)));
+        assert_eq!(obligations.len(), 1);
     }
 
     #[test]

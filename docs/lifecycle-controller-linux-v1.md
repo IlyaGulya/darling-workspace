@@ -48,10 +48,21 @@ Darling, Darlingserver, XNU, profiles, locks, mappings, or runtime defaults.
   inode, and moves both exact objects into private
   quarantine names with `RENAME_NOREPLACE`.  The backend never performs a
   final `fstatat`→`unlinkat` garbage-collection sequence: it returns
-  `QUARANTINE_GC_REQUIRED` for an external quiescent controller to own.  If a
-  replacement appears after either final identity check, the proof is
-  invalidated and the object remains as a typed recovery obligation; no
-  replacement is unlinked.
+  `QUARANTINE_GC_REQUIRED` for an external quiescent controller to own.  This
+  slice uses a cooperative-writer protocol: every namespace writer must hold
+  the retained exclusive lifecycle flock.  A lease or identity mismatch is
+  fail-closed and leaves the typed quarantine handoff intact.  Hostile
+  same-UID writers that ignore the protocol are explicitly outside this
+  infrastructure threat model; `fstatat` followed by `unlinkat` cannot promise
+  protection against them.  Before production routing, the complete writer
+  inventory must prove lease acquisition for every mutation entrypoint.
+
+The separate Rust-owned consumer in
+`docs/lifecycle-controller-quarantine-gc-v1.md` consumes that handoff only via
+`QuarantinePending::into_parts()`. It requires an independently granted quiescence
+authority, deletes only through retained parent FDs, and turns a fully drained
+handoff into a canonical `SUCCESS` response. No product routing is enabled by
+this infrastructure slice.
 
 The fixture tests create a private temporary prefix with real Unix sockets and
 task-owned `setsid` shell process trees. They drive the ordinary Rust transitions
@@ -60,9 +71,10 @@ and fd-relative cleanup. RED→GREEN cases cover a foreign PID, split-lock,
 orphaned cgroup members, grandchild and late-fork census changes,
 stop-barrier failure/resume, retained `.init.pid` swap, EBADF pidfds,
 regular-file endpoints, and replacement after each final quarantine identity
-check. The replacement tests require a fail-closed response while preserving
-the replacement. Fixture `Drop` drains child pidfds before removing its exact
-temporary root.
+  check. Replacement-before-handoff and lease-replacement tests require a
+  fail-closed response while preserving the replacement; endpoint-only ABA
+  after the final check is not claimed under the cooperative protocol.
+  Fixture `Drop` drains child pidfds before removing its exact temporary root.
 
 The Python adapter remains transport-only. It is not involved in acquisition,
 membership, signaling, quiescence, or cleanup.

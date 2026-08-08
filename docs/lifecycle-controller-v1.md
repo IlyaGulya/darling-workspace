@@ -45,6 +45,10 @@ quarantine with `renameat2` and returns `QUARANTINE_GC_REQUIRED`; it never
 performs a final named `fstatat`→`unlinkat` without an external namespace-writer
 authority.  Recovery journal entries are closed enums.
 
+The quarantine handoff has a separate Rust-owned bounded GC consumer. See
+`docs/lifecycle-controller-quarantine-gc-v1.md`; it is intentionally not
+connected to production routing yet.
+
 `SignalSent` is emitted only by a Rust pidfd operation or a verified typed
 `DARLING_SHUTDOWN_V1` product evidence record.  A launcher return code or
 post-state cannot synthesize signal events.  The product protocol evidence
