@@ -16,6 +16,12 @@
   "runtime_binding": "launcher-retained-digest-equals-request-before-membership",
   "recovery_budget": "typed-fail-closed-terminal-without-placeholder-fds",
   "recovery_retry": "not-supported-in-v1",
+  "writer_protocol": {
+    "threat_model": "cooperative-writers",
+    "lease": "retained-exclusive-flock",
+    "hostile_same_uid_writer": "out-of-scope",
+    "routing_gate": "inventory-all-product-writers-and-prove-lease-before-mutation"
+  },
   "response_semantics": {
     "phase_order": "ordered-prefix-with-finalized-last",
     "signals": "journal-shutdown-request-exact-equality",

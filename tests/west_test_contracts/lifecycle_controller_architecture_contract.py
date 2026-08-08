@@ -75,6 +75,12 @@ assert architecture["acquisition"] == "rust-fd-relative-from-anchor"
 assert architecture["partial_transition"] == "recovery-pending-retains-capabilities-and-journal-then-terminal-fail-closed"
 assert architecture["handshake"]["response_schema"] == "draft-2020-12-closed"
 assert architecture["fixtures"] == {"count": 13, "execution": "rust-typed-fault-backend", "all_expected_classes_are_run": True}
+assert architecture["writer_protocol"] == {
+    "threat_model": "cooperative-writers",
+    "lease": "retained-exclusive-flock",
+    "hostile_same_uid_writer": "out-of-scope",
+    "routing_gate": "inventory-all-product-writers-and-prove-lease-before-mutation",
+}
 assert architecture["phases"] == [
     "Prepared",
     "Acquired",
@@ -96,12 +102,19 @@ assert "MAX_TRANSPORT_INPUT_BYTES" in transport and "MAX_TRANSPORT_OUTPUT_BYTES"
 assert "os.killpg" in transport and "process.wait(timeout=0.25)" in transport
 
 controller = (CRATE / "src" / "controller.rs").read_text()
+quarantine_gc = (CRATE / "src" / "quarantine_gc.rs").read_text()
+boundary = (CRATE / "src" / "lib.rs").read_text()
+linux_backend = (CRATE / "src" / "linux_backend.rs").read_text()
+rootless_producer = (ROOT / "west_commands" / "rootless_shutdown_lifecycle.py").read_text()
 build_script = (CRATE / "build.rs").read_text()
 assert "CONTROLLER_CLOSURE" in build_script
 assert "LIFECYCLE_CONTROLLER_CLOSURE_SHA256" in build_script
 assert "src/controller.rs" in build_script
 assert "src/linux_backend.rs" in build_script
+assert "src/quarantine_gc.rs" in build_script
 assert "run-lifecycle-linux-backend-contract.sh" in build_script
+assert "run-lifecycle-quarantine-gc-contract.sh" in build_script
+assert "lifecycle-controller-quarantine-gc-v1.md" in build_script
 assert "fixtures/rootless-controller-v1/ancestor-swap.json" in build_script
 assert "fixtures/rootless-controller-v1/stale-controller.json" in build_script
 for phase in architecture["phases"]:
@@ -117,6 +130,28 @@ assert "launcher_fd" not in controller
 assert "from_owned(" not in controller
 assert "RecoveryPending" in controller and "ControllerVerdict::Success" in controller
 assert "finalize_fail_closed" in controller
+assert "QuarantinePending" in controller and "try_into_quarantine_pending" in controller
+assert "mod sealed" in quarantine_gc
+assert "impl QuarantineGcAuthority" in quarantine_gc
+assert "    fn new(" in quarantine_gc
+assert "flock" in quarantine_gc and "WriterIdentityMismatch" in quarantine_gc
+assert "QuarantinePending" in quarantine_gc and "into_parts" in quarantine_gc
+assert "ControllerQuiescenceGrant" in quarantine_gc
+assert "issue_quarantine_gc_grant" in controller
+assert "from_quiescent" in quarantine_gc
+assert "red_quarantine_handoff_uses_controller_issuer" in controller
+assert "BeforeEndpointDelete" in quarantine_gc and "BeforePlaceholderDelete" in quarantine_gc
+assert "authority.revoke" not in quarantine_gc and "valid: bool" not in quarantine_gc
+assert "cooperative_writer_protocol_blocks_unleased_mutation" in quarantine_gc
+assert "AfterFinalEndpointVerify" not in quarantine_gc
+assert "AfterFinalPlaceholderVerify" not in quarantine_gc
+assert "pub fn mkdir_start(parent: &DirCap, lease: &ExclusiveLease)" in boundary
+assert "pub fn unlink(parent: &DirCap, lease: &ExclusiveLease)" in boundary
+assert "lease: &ExclusiveLease" in boundary
+assert "acquire_exclusive(lock_fd.as_raw_fd()" in linux_backend
+assert "self.revalidate_lease()" in linux_backend
+assert "rename_exchange" in linux_backend and "rename_noreplace" in linux_backend
+assert all(token not in rootless_producer for token in ("unlink(", "rename(", "mkdir(", "rmtree("))
 assert "finalize_terminal" not in controller and "RecoveryTerminal" not in controller
 assert "BudgetLedger" in controller and ".event()" in controller
 assert "from_inherited" in controller and "fn acquire_from_anchor" in controller and "fn cleanup_fd_relative" in controller

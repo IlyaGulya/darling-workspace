@@ -1817,6 +1817,31 @@ impl EndpointCleanupExecutor for LinuxBackend {
                 ));
             }
             let quarantine_dir = self.quarantine_dir.as_ref().unwrap().as_raw_fd();
+            let source_parent_identity = match identity(parent) {
+                Ok(value) => value,
+                Err(_) => {
+                    return Err(self.cleanup_failure(
+                        removed,
+                        crate::controller::RecoveryObligation::EndpointReplacement,
+                    ))
+                }
+            };
+            let quarantine_parent_identity = match identity(quarantine_dir) {
+                Ok(value) => value,
+                Err(_) => {
+                    return Err(self.cleanup_failure(
+                        removed,
+                        crate::controller::RecoveryObligation::EndpointReplacement,
+                    ))
+                }
+            };
+            let endpoint_scope = endpoint.scope();
+            let writer_parent_identity = identity(prefix.raw_fd()).map_err(|_| {
+                self.cleanup_failure(
+                    removed,
+                    crate::controller::RecoveryObligation::QuiescenceRequired,
+                )
+            })?;
             let quarantine_name = CString::new(format!(
                 ".lifecycle-quarantine-{}-{}",
                 unsafe { libc::getpid() },
@@ -1930,6 +1955,33 @@ impl EndpointCleanupExecutor for LinuxBackend {
                     crate::controller::RecoveryObligation::QuiescenceRequired,
                 )
             })?;
+            let writer_lock_identity = self.lock_identity.ok_or_else(|| {
+                self.cleanup_failure(
+                    removed,
+                    crate::controller::RecoveryObligation::QuiescenceRequired,
+                )
+            })?;
+            let lock_fd = match self.lock_fd.as_ref() {
+                Some(fd) => fd.as_raw_fd(),
+                None => {
+                    return Err(self.cleanup_failure(
+                        removed,
+                        crate::controller::RecoveryObligation::QuiescenceRequired,
+                    ))
+                }
+            };
+            let retained_writer_lock = duplicate(lock_fd).map_err(|_| {
+                self.cleanup_failure(
+                    removed,
+                    crate::controller::RecoveryObligation::QuiescenceRequired,
+                )
+            })?;
+            let retained_writer_parent = duplicate(prefix.raw_fd()).map_err(|_| {
+                self.cleanup_failure(
+                    removed,
+                    crate::controller::RecoveryObligation::QuiescenceRequired,
+                )
+            })?;
             if rename_exchange(parent, &name, quarantine_dir, &quarantine_name).is_err() {
                 return Err(self.cleanup_failure(
                     removed,
@@ -1938,10 +1990,19 @@ impl EndpointCleanupExecutor for LinuxBackend {
             }
             let ledger_index = self.quarantine_ledger.len();
             self.quarantine_ledger.push(QuarantineObligation::new(
+                endpoint_scope,
                 endpoint.identity().kind,
                 expected,
+                source_parent_identity,
+                quarantine_parent_identity,
+                placeholder_identity,
+                writer_parent_identity,
+                writer_lock_identity,
                 retained_source_parent,
                 retained_quarantine_parent,
+                retained_writer_parent,
+                retained_writer_lock,
+                LOCK_NAME.to_vec(),
                 name.as_bytes().to_vec(),
                 quarantine_name.as_bytes().to_vec(),
                 name.as_bytes().to_vec(),
@@ -2647,8 +2708,25 @@ mod tests {
         let prepared = Controller::prepare(request).unwrap();
         let anchor_cap = AnchorCapabilities::from_inherited(anchor, None).unwrap();
         let mut backend = LinuxBackend::default();
-        let acquired = prepared.acquire(anchor_cap, &mut backend).unwrap();
         let root_session = process_stat(root_identity.pid).unwrap().unwrap().session;
+        let orphan_deadline = Instant::now() + Duration::from_secs(1);
+        while Instant::now() < orphan_deadline {
+            let orphan_ready =
+                read_children(root_identity)
+                    .ok()
+                    .into_iter()
+                    .flatten()
+                    .any(|member| {
+                        process_stat(member.pid).ok().flatten().is_some_and(|stat| {
+                            stat.session != root_session && stat.parent == unsafe { libc::getpid() }
+                        })
+                    });
+            if orphan_ready {
+                break;
+            }
+            thread::sleep(Duration::from_millis(5));
+        }
+        let acquired = prepared.acquire(anchor_cap, &mut backend).unwrap();
         assert!(
             backend
                 .initial_census
