@@ -80,6 +80,25 @@ assert architecture["writer_protocol"] == {
     "lease": "retained-exclusive-flock",
     "hostile_same_uid_writer": "out-of-scope",
     "routing_gate": "inventory-all-product-writers-and-prove-lease-before-mutation",
+    "first_cohort": {
+        "status": "opt-in-cohort-ready-global-route-disabled",
+        "controller": "darlingserver-host-rust-staticlib",
+        "lifetime": "pidfd-watched-supervisor-cleans-after-explicit-finish-or-owner-sigkill",
+        "authority": "retained-prefix-fd-and-one-exact-session-flock",
+        "lease_order": "existing-lock-validated-then-flocked-before-mutation-new-lock-normalized-only-after-flock",
+        "transport": "bounded-per-connection-seqpacket-nonce-peercred-retained-peerpidfd-direct-parent-scm-rights-invalid-input-never-terminates-authority",
+        "owner_death": "retained-pidfd-gone-exact-inode-retire-then-keepalive-republish",
+        "post_publication_failure": "close-received-capability-and-exact-rust-retire",
+        "nonce_exposure": "launchd-and-authorized-shellspawn-only-not-exportable-user-environment",
+        "writers": [
+            "rust-controller.transport-socket",
+            "darling.startup.init-pid",
+            "darling.startup.shellspawn-preflight",
+            "darling.shellspawn.socket",
+            "darlingserver.control-socket",
+            "launchd.system-ipc-socket",
+        ],
+    },
 }
 assert architecture["phases"] == [
     "Prepared",

@@ -379,7 +379,12 @@ def _owner_paths(registry: dict) -> dict[str, dict[str, str]]:
         if not isinstance(lock, dict):
             raise InventoryError(f"{writer_id}: lock is required")
         compatibility = writer.get("compatibility")
-        if compatibility not in {"incompatible", "compatible", "product-only-exception"}:
+        if compatibility not in {
+            "incompatible",
+            "cohort-ready",
+            "compatible",
+            "product-only-exception",
+        }:
             raise InventoryError(f"{writer_id}: invalid compatibility classification")
         _validate_lock_contract(writer_id, compatibility, lock)
         operation = writer.get("operation")
@@ -440,10 +445,10 @@ def _validate_lock_contract(writer_id: str, compatibility: str, lock: dict) -> N
         raise InventoryError(f"{writer_id}: retained_fd must be boolean")
     if lock.get("status") not in {"missing", "different-path", "exact-exclusive-flock"}:
         raise InventoryError(f"{writer_id}: invalid lock status")
-    if compatibility == "compatible" and lock.get("status") != "exact-exclusive-flock":
-        raise InventoryError(f"{writer_id}: compatible writer lacks exact exclusive flock")
-    if compatibility == "compatible" and not lock.get("retained_fd"):
-        raise InventoryError(f"{writer_id}: compatible writer must retain the lock FD")
+    if compatibility in {"cohort-ready", "compatible"} and lock.get("status") != "exact-exclusive-flock":
+        raise InventoryError(f"{writer_id}: routed writer lacks exact exclusive flock")
+    if compatibility in {"cohort-ready", "compatible"} and not lock.get("retained_fd"):
+        raise InventoryError(f"{writer_id}: routed writer must retain the lock FD")
 
 
 def _runtime_scan_paths() -> list[tuple[str, str]]:
@@ -2785,23 +2790,24 @@ def _negative_contract(registry: dict, owners: dict[str, dict[str, str]]) -> Non
     else:
         raise InventoryError("subtree exclusion unexpectedly passed")
 
-    for status, retained_fd in (("missing", False), ("exact-exclusive-flock", False)):
-        try:
-            _validate_lock_contract(
-                f"negative-compatible-writer-{status}",
-                "compatible",
-                {
-                    "required": True,
-                    "path": ".lifecycle.lock",
-                    "status": status,
-                    "acquisition": "none",
-                    "retained_fd": retained_fd,
-                },
-            )
-        except InventoryError as error:
-            assert "exact exclusive flock" in str(error) or "retain" in str(error)
-        else:
-            raise InventoryError("negative lock fixture unexpectedly accepted")
+    for compatibility in ("cohort-ready", "compatible"):
+        for status, retained_fd in (("missing", False), ("exact-exclusive-flock", False)):
+            try:
+                _validate_lock_contract(
+                    f"negative-{compatibility}-writer-{status}",
+                    compatibility,
+                    {
+                        "required": True,
+                        "path": ".lifecycle.lock",
+                        "status": status,
+                        "acquisition": "none",
+                        "retained_fd": retained_fd,
+                    },
+                )
+            except InventoryError as error:
+                assert "exact exclusive flock" in str(error) or "retain" in str(error)
+            else:
+                raise InventoryError("negative lock fixture unexpectedly accepted")
 
 
 def _digest_sources(owners: dict[str, dict[str, str]]) -> str:
@@ -2847,9 +2853,17 @@ def main() -> None:
     incompatible = sum(
         writer.get("compatibility") == "incompatible" for writer in registry["writers"]
     )
-    assert incompatible == len(
-        registry["writers"]
-    ), "routing must remain blocked by incompatible writers"
+    cohort_ready = sum(
+        writer.get("compatibility") == "cohort-ready" for writer in registry["writers"]
+    )
+    compatible = sum(
+        writer.get("compatibility") == "compatible" for writer in registry["writers"]
+    )
+    assert cohort_ready == 6, "only the reviewed first cohort and its transport may be cohort-ready"
+    assert compatible == 0, "global production routing must remain disabled"
+    assert incompatible + cohort_ready == len(registry["writers"]), (
+        "all non-cohort writers must remain incompatible"
+    )
     source_digest = _digest_sources(owners)
     discovered = _discover_runtime_mutation_paths(registry)
     service_targets, service_sources = _validate_installed_service_target_coverage(
@@ -2871,7 +2885,8 @@ def main() -> None:
         f"generated_source_bindings={len(generated_source_bindings)} "
         f"mig_declared_inputs={len(mig_declared_inputs)} mig_outputs={len(mig_outputs)} "
         f"excluded_hits={len(excluded_hits)} audited_non_shared={len(audit_entries)} "
-        f"incompatible={incompatible} candidate_digest={candidate_digest} "
+        f"incompatible={incompatible} cohort_ready={cohort_ready} "
+        f"compatible={compatible} candidate_digest={candidate_digest} "
         f"audit_digest={audit_digest} source_digest={source_digest} "
         f"registry_digest={registry_digest} contract_digest={contract_digest} "
         f"negatives=35 candidate_parity={candidate_parity} routing=DEFERRED"

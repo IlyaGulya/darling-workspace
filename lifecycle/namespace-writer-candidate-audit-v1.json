@@ -3,7 +3,7 @@
   "kind": "rootless-namespace-writer-candidate-audit",
   "coverage_tier": "source",
   "count": 1606,
-  "entries_digest": "b17b9243d08db25182dd7fbee1ec591ff01fe174eb0535aa8ac19f836831005e",
+  "entries_digest": "4692058b90cc5c753797fdf3d16a0514267b20903f08674b49be131143a89837",
   "entries": [
     {
       "repository": "darling-workspace",
@@ -10513,7 +10513,7 @@
     {
       "repository": "darling",
       "path": "src/external/installer/src/pkg/Installer.cpp",
-      "sha256": "d2c8cec09bca6e4f1697c8bbf54855f0f9751aca3c1c720bd9c339051109fc5e",
+      "sha256": "88a2fce8320e656fc4b1a3157d23c08ba3b44945ef80fc808f6366d0648dd393",
       "classification": "caller-selected-library-output",
       "reason": "src/external/installer/src/pkg/Installer.cpp exposes library/framework mutation of a caller-selected object; the source contains no registered shared lifecycle endpoint authority.",
       "evidence": {
@@ -10524,7 +10524,7 @@
         "build_anchor": {
           "repository": "darling",
           "path": "src/external/installer/CMakeLists.txt",
-          "sha256": "e72964f0d2e925ccc5a0481a3ba108842e1d6a3f7b0a4e141e11dac7b8a3e7cf",
+          "sha256": "f763922cec2aea232188dbe6e4f3b5d3170b062ef40bfdf43fd7636715936528",
           "relation": "nearest-cmake-ancestor"
         }
       }
@@ -10543,7 +10543,7 @@
         "build_anchor": {
           "repository": "darling",
           "path": "src/external/installer/CMakeLists.txt",
-          "sha256": "e72964f0d2e925ccc5a0481a3ba108842e1d6a3f7b0a4e141e11dac7b8a3e7cf",
+          "sha256": "f763922cec2aea232188dbe6e4f3b5d3170b062ef40bfdf43fd7636715936528",
           "relation": "nearest-cmake-ancestor"
         }
       }
@@ -14022,7 +14022,7 @@
         "build_anchor": {
           "repository": "darling",
           "path": "src/external/objc4/runtime/CMakeLists.txt",
-          "sha256": "f3ab263059706a9d5e1d75299fa52ac135b2fa60f496e1a86888acdf70ef8f71",
+          "sha256": "244d6279a43a9fb53bc8a01f89b668896d8a66e8dbf26864eca4b3dc2d1c810e",
           "relation": "nearest-cmake-ancestor"
         }
       }
@@ -14041,7 +14041,7 @@
         "build_anchor": {
           "repository": "darling",
           "path": "src/external/objc4/runtime/CMakeLists.txt",
-          "sha256": "f3ab263059706a9d5e1d75299fa52ac135b2fa60f496e1a86888acdf70ef8f71",
+          "sha256": "244d6279a43a9fb53bc8a01f89b668896d8a66e8dbf26864eca4b3dc2d1c810e",
           "relation": "nearest-cmake-ancestor"
         }
       }
@@ -29053,13 +29053,12 @@
     {
       "repository": "darling",
       "path": "src/external/xnu/darling/src/libsystem_kernel/tests/getattrlist_shared_packer_test.c",
-      "sha256": "058aaceee811ee41338b6e280add49d3b0f96474c1baaa7ca0aa45554a188406",
+      "sha256": "350c8143f5d9245c3fa8112fb72784b0a47105f5aaf7c79cd20bd890541e7f6b",
       "classification": "test-fixture-task-owned",
       "reason": "src/external/xnu/darling/src/libsystem_kernel/tests/getattrlist_shared_packer_test.c is a test/regression fixture whose namespace mutations are confined to fixture-owned temporary paths.",
       "evidence": {
         "runtime_scope": "task-owned-fixture",
         "mutation_operators": [
-          "link",
           "mkdir",
           "open-create-or-truncate",
           "remove"
@@ -31341,7 +31340,7 @@
         "build_anchor": {
           "repository": "darling",
           "path": "src/startup/CMakeLists.txt",
-          "sha256": "5567caef8025fb8d73add0ac737ea330c39d8ef5670ddb43fd53b07b4d587f20",
+          "sha256": "3aa0af7582f317134be5035731be0da8de34e6cdb1acc75ca9cb403e33396262",
           "relation": "nearest-cmake-ancestor"
         }
       }

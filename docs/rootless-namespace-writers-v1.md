@@ -14,7 +14,10 @@ then performs identity observations and mutations through retained
 fd-relative capabilities. Python remains orchestration/transport only.
 
 The current inventory is deliberately classified as **cooperative-writer,
-routing deferred**. A writer is not considered compatible merely because it
+global routing deferred**. Five product records plus the Rust-owned transport
+record in the first endpoint cohort are `cohort-ready`, not globally
+`compatible`; the other 75 records remain
+`incompatible`. A writer is not considered routable merely because it
 does an advisory check or happens to run under a West context. It must retain
 the exact `.lifecycle.lock` FD and hold `LOCK_EX` before the first namespace
 observation or mutation. Hostile same-UID writers are outside this v1 threat
@@ -23,10 +26,10 @@ required rather than another pathname check.
 
 ## Current writers
 
-The registry covers 139 finite production source paths (76 typed writer
+The registry covers 143 finite production source paths (81 typed writer
 records). The complete production-forest scan (anchored by the build/runtime
-closure) discovers 1,752 namespace-mutation candidates: 108 hit typed owner
-paths, 38 hit exact SHA-bound exclusions, and 1,606 have individual records in
+closure) discovers 1,754 namespace-mutation candidates: 111 hit typed owner
+paths, 37 hit exact SHA-bound exclusions, and 1,606 have individual records in
 `lifecycle/namespace-writer-candidate-audit-v1.json`. Every audit record has
 an exact source SHA-256, finite classification, path-specific reason, matched
 mutation operators, and SHA-bound build/runtime anchor. There is no implicit
@@ -36,20 +39,25 @@ computed/configured path writers, and does not use the owner grouping list as
 the scan universe. It also resolves 24 exact installed LaunchDaemon plist
 sources to 20 unique production executable declarations and requires all 34
 mutation-first sources compiled directly or through object-library closure
-into those targets to be typed
-writers. They
-are all currently `incompatible` because none of the product
-paths acquires the exact retained `.lifecycle.lock` required by the routing
-contract.
+into those targets to be typed writers.
+
+The first Rootless endpoint cohort now has an opt-in Rust route: one retained
+prefix FD and one exact session-long `.lifecycle.lock` lease publish `.init.pid`
+and four finite listeners, including the vchroot-visible controller transport.
+This is recorded as `cohort-ready`; it cannot be
+promoted to global `compatible` until every overlapping writer uses the same
+authority. All remaining records stay `incompatible`.
 
 | Owner | Namespace responsibility | Phase | Current lock evidence |
 | --- | --- | --- | --- |
-| `darling/src/startup/darling.c` | Prefix provisioning, `.init.pid` publication/repair, stale shellspawn endpoint | create, boot, shutdown | no `.lifecycle.lock` acquisition |
-| `darling/src/shellspawn/shellspawn.c` | `/var/run/shellspawn.sock` unlink/bind/chmod | runtime start/stop | no `.lifecycle.lock` acquisition |
+| `darling-workspace/lifecycle/operation-boundary/src/cohort_routing.rs` | `/private/var/run/.darling-lifecycle-controller-v1.sock` | controller start/stop | retained Rust session lease; global activation deferred |
+| `darling-workspace/lifecycle/operation-boundary/src/{lib,linux_backend,quarantine_gc}.rs` | generic fd-relative mutation, backend quarantine handoff and bounded GC | infrastructure/recovery | individually typed but incompatible until a production consumer binds the complete writer set to the same exact lease |
+| `darling/src/startup/darling.c` | Prefix provisioning, `.init.pid` publication/repair, stale shellspawn endpoint | create, boot, shutdown | endpoint/PID cohort ready; prefix provisioning incompatible |
+| `darling/src/shellspawn/shellspawn.c` | `/var/run/shellspawn.sock` unlink/bind/chmod | runtime start/stop | opt-in Rust cohort route, global activation deferred |
 | `darling/src/external/darlingserver/src/darlingserver.cpp` | `/var/run`/`/var/tmp` wipe, home layout, prefix copy/permissions/mount | runtime start/materialization | no `.lifecycle.lock` acquisition |
-| `darling/src/external/darlingserver/src/server.cpp` | `.darlingserver.sock` unlink/bind/cleanup | runtime start/stop | no `.lifecycle.lock` acquisition |
+| `darling/src/external/darlingserver/src/server.cpp` | `.darlingserver.sock` unlink/bind/cleanup | runtime start/stop | opt-in Rust cohort route, global activation deferred |
 | `darling/src/external/darlingserver/src/{logging,kqchan,call}.cpp` | `dserver.log` and auxiliary RPC logs | runtime diagnostics | no `.lifecycle.lock` acquisition |
-| `darling/src/launchd/src/ipc.c` | launchd socket directory and socket lifecycle | launchd start/stop | no `.lifecycle.lock` acquisition |
+| `darling/src/launchd/src/ipc.c` | launchd socket directory and socket lifecycle | launchd start/stop | system endpoint cohort ready; per-user endpoint incompatible |
 | `darling/src/launchd/src/{core,launchd,log}.c` and `support/launchctl.c` | job stdio/per-user directories, generic opens, persistent logs, sockets, `/var/run` and `/tmp` cleanup, `utmpx`, `.systemStarterRunning`, mode changes | launchd boot/runtime | no `.lifecycle.lock` acquisition |
 | `darling/src/xcselect/xcode-select.c` | xcode-select database links under `/var/db` and `/usr/share` | guest toolchain selection | no `.lifecycle.lock` acquisition |
 | `darling/src/external/mDNSResponder/{mDNSShared,mDNSMacOSX}/...` | mDNS UDS/PID, conditional named-error sockets, and state dumps | daemon/client diagnostics and stop | no `.lifecycle.lock` acquisition |
@@ -94,7 +102,8 @@ and anchor to the registry before it can be considered by routing.
 ## Source scan and exclusions
 
 The contract scans the complete Darling production forest rooted at `src` and
-the complete workspace `west_commands` runtime root. Recursive
+the complete workspace `west_commands` and lifecycle operation-boundary
+runtime roots. Recursive
 `src/CMakeLists.txt` closure validates build membership, and conditional
 targets such as mDNSResponder, libutil and dynamic_pager are pinned by
 `build_closure` entries and their concrete source/install files. The
@@ -208,8 +217,9 @@ service-target membership makes it part of the typed syslogd runtime writer.
    merely happens to hold a different lock.
 5. Keep Python repair/deploy/bootstrap as incompatible orchestration until
    their filesystem authority is removed or delegated to the Rust controller.
-6. Re-run the source inventory after every writer migration. Only when all
-   production records are compatible may the separate `.7` routing goal start.
+6. Re-run the source inventory after every writer cohort. `cohort-ready`
+   records remain opt-in; only when all overlapping production records are
+   globally compatible may the `.7` default route be enabled.
 
 ## Local contract
 

@@ -27,11 +27,12 @@
       "kind": "production-forest-with-build-anchor",
       "source_forest": {"repository": "darling", "root": "src", "build_file": "src/CMakeLists.txt"},
       "runtime_roots": [
-        {"repository": "darling-workspace", "path": "west_commands"}
+        {"repository": "darling-workspace", "path": "west_commands"},
+        {"repository": "darling-workspace", "path": "lifecycle/operation-boundary/src"}
       ],
-      "rule": "Mutation-first discovery scans every translation unit under darling/src plus the complete workspace west_commands runtime root using namespace_mutation_tokens; recursive CMake closure and conditional build_closure entries anchor the production forest, while production_roots are owner grouping metadata only."
+      "rule": "Mutation-first discovery scans every translation unit under darling/src plus the complete workspace west_commands and lifecycle operation-boundary runtime roots using namespace_mutation_tokens; recursive CMake closure and conditional build_closure entries anchor the production forest, while production_roots are owner grouping metadata only."
     },
-    "translation_unit_extensions": [".c", ".cc", ".cpp", ".cxx", ".m", ".mm", ".py"],
+    "translation_unit_extensions": [".c", ".cc", ".cpp", ".cxx", ".m", ".mm", ".py", ".rs"],
     "production_roots": [
       {"repository": "darling", "path": "src/startup"},
       {"repository": "darling", "path": "src/shellspawn"},
@@ -55,7 +56,8 @@
       {"repository": "darling", "path": "src/external/libdispatch/src"},
       {"repository": "darling", "path": "src/external/libpthread/src"},
       {"repository": "darling", "path": "src/external/libc/os"},
-      {"repository": "darling-workspace", "path": "west_commands"}
+      {"repository": "darling-workspace", "path": "west_commands"},
+      {"repository": "darling-workspace", "path": "lifecycle/operation-boundary/src"}
     ],
     "namespace_mutation_tokens": [
       "(?<![A-Za-z0-9_.>:])(?:mkdir(?:at)?|unlink(?:at)?|rmdir|rename(?:at2?|x_np)?|symlink(?:at)?|link(?:at)?|creat|mknod(?:at)?|chmod|fchmod(?:at)?|chown|lchown|fchown(?:at)?|utimensat|mount|unmount)\\s*\\(",
@@ -247,6 +249,50 @@
   },
   "writers": [
     {
+      "id": "rust-controller.transport-socket",
+      "owner": {"repository": "darling-workspace", "paths": ["lifecycle/operation-boundary/src/cohort_routing.rs"], "symbols": ["CohortEndpoint::Control", "CONTROL_GUEST_PATH"]},
+      "operation": ["stale-remove", "bind", "listen", "cleanup"],
+      "targets": ["/private/var/run/.darling-lifecycle-controller-v1.sock"],
+      "syscall_or_helper": ["socket(AF_UNIX, SOCK_SEQPACKET)", "bind", "listen", "SO_PEERPIDFD", "SCM_RIGHTS"],
+      "lifecycle_phase": "controller-start-and-stop",
+      "lock": {"required": true, "path": ".lifecycle.lock", "status": "exact-exclusive-flock", "acquisition": "rust-cohort-controller-retained-session-lease", "retained_fd": true},
+      "compatibility": "cohort-ready",
+      "migration": "The opt-in controller owns the vchroot-visible bounded transport endpoint under the retained prefix and exact session lease; guest writers receive no pathname mutation authority."
+    },
+    {
+      "id": "rust-boundary.generic-fd-relative-mutation",
+      "owner": {"repository": "darling-workspace", "paths": ["lifecycle/operation-boundary/src/lib.rs"], "symbols": ["OperationBoundary", "unlink_exact", "rename_exact"]},
+      "operation": ["create", "rename", "quarantine", "cleanup"],
+      "targets": ["caller-selected transaction-scoped child namespace"],
+      "syscall_or_helper": ["mkdirat", "renameat2", "unlinkat"],
+      "lifecycle_phase": "infrastructure-only-operation-boundary",
+      "lock": {"required": true, "path": ".lifecycle.lock", "status": "different-path", "acquisition": "scope-branded caller-supplied lease, not a production prefix lease", "retained_fd": true},
+      "compatibility": "incompatible",
+      "migration": "The generic boundary remains infrastructure-only; a production consumer must bind its scope-branded lease to the retained exact prefix .lifecycle.lock before routing."
+    },
+    {
+      "id": "rust-controller.linux-backend-endpoint-cleanup",
+      "owner": {"repository": "darling-workspace", "paths": ["lifecycle/operation-boundary/src/linux_backend.rs"], "symbols": ["LinuxBackend", "cleanup_fd_relative"]},
+      "operation": ["rename-exchange", "quarantine-handoff"],
+      "targets": ["retained Rootless runtime endpoints"],
+      "syscall_or_helper": ["renameat2(RENAME_EXCHANGE)", "openat(O_PATH)"],
+      "lifecycle_phase": "architecture-backend-recovery",
+      "lock": {"required": true, "path": ".lifecycle.lock", "status": "exact-exclusive-flock", "acquisition": "Rust Linux backend retained lifecycle lease", "retained_fd": true},
+      "compatibility": "incompatible",
+      "migration": "The backend is not a product route until the complete cooperative-writer inventory shares its authority and quarantine GC completes the transaction."
+    },
+    {
+      "id": "rust-controller.quarantine-gc",
+      "owner": {"repository": "darling-workspace", "paths": ["lifecycle/operation-boundary/src/quarantine_gc.rs"], "symbols": ["QuarantineGcConsumer", "unlink_name"]},
+      "operation": ["bounded-quarantine-delete"],
+      "targets": ["typed retained quarantine obligations"],
+      "syscall_or_helper": ["unlinkat"],
+      "lifecycle_phase": "architecture-backend-recovery",
+      "lock": {"required": true, "path": ".lifecycle.lock", "status": "exact-exclusive-flock", "acquisition": "sealed controller quiescence grant with retained lifecycle lease", "retained_fd": true},
+      "compatibility": "incompatible",
+      "migration": "The GC remains unrouted until every writer in the affected namespace is proven cooperative under the same retained lifecycle lease."
+    },
+    {
       "id": "darling.startup.prefix-provision",
       "owner": {"repository": "darling", "paths": ["src/startup/darling.c"], "symbols": ["checkPrefixDir", "createDir"]},
       "operation": ["create-directory", "create-passwd-files", "metadata-write"],
@@ -264,9 +310,9 @@
       "targets": [".init.pid"],
       "syscall_or_helper": ["fopen(\"w\")", "fprintf", "unlink", "kill(pid, 0)", "procfs identity checks"],
       "lifecycle_phase": "boot-and-shutdown",
-      "lock": {"required": true, "path": ".lifecycle.lock", "status": "missing", "acquisition": "none", "retained_fd": false},
-      "compatibility": "incompatible",
-      "migration": "Publish and retire .init.pid fd-relatively through the Rust session controller; never repair by pathname alone."
+      "lock": {"required": true, "path": ".lifecycle.lock", "status": "exact-exclusive-flock", "acquisition": "rust-cohort-controller-retained-session-lease", "retained_fd": true},
+      "compatibility": "cohort-ready",
+      "migration": "The opt-in first-cohort route publishes and retires .init.pid fd-relatively through the Rust session controller. Global routing remains blocked until every overlapping writer is compatible."
     },
     {
       "id": "darling.startup.shellspawn-preflight",
@@ -275,9 +321,9 @@
       "targets": ["/var/run/shellspawn.sock"],
       "syscall_or_helper": ["unlink", "access"],
       "lifecycle_phase": "boot-before-init",
-      "lock": {"required": true, "path": ".lifecycle.lock", "status": "missing", "acquisition": "none", "retained_fd": false},
-      "compatibility": "incompatible",
-      "migration": "Move stale endpoint handling behind the controller's retained endpoint capability and exclusive lease."
+      "lock": {"required": true, "path": ".lifecycle.lock", "status": "exact-exclusive-flock", "acquisition": "rust-cohort-controller-retained-session-lease", "retained_fd": true},
+      "compatibility": "cohort-ready",
+      "migration": "The opt-in first-cohort route suppresses launcher pathname cleanup and delegates stale endpoint handling to the retained Rust authority."
     },
     {
       "id": "darling.shellspawn.socket",
@@ -286,9 +332,9 @@
       "targets": ["/var/run/shellspawn.sock"],
       "syscall_or_helper": ["socket(AF_UNIX)", "unlink", "bind", "chmod", "listen"],
       "lifecycle_phase": "runtime-start-and-stop",
-      "lock": {"required": true, "path": ".lifecycle.lock", "status": "missing", "acquisition": "none", "retained_fd": false},
-      "compatibility": "incompatible",
-      "migration": "Require the session lease before endpoint publication and hand the retained socket capability to controller cleanup."
+      "lock": {"required": true, "path": ".lifecycle.lock", "status": "exact-exclusive-flock", "acquisition": "rust-cohort-controller-retained-session-lease", "retained_fd": true},
+      "compatibility": "cohort-ready",
+      "migration": "The opt-in first-cohort route receives the already-bound listener by SCM_RIGHTS and delegates retirement to the retained Rust authority."
     },
     {
       "id": "darlingserver.preinit-wipe",
@@ -330,9 +376,9 @@
       "targets": [".darlingserver.sock"],
       "syscall_or_helper": ["unlink", "socket(AF_UNIX)", "bind", "close"],
       "lifecycle_phase": "runtime-start-and-stop",
-      "lock": {"required": true, "path": ".lifecycle.lock", "status": "missing", "acquisition": "none", "retained_fd": false},
-      "compatibility": "incompatible",
-      "migration": "Publish the socket through the controller lease and retain its parent/identity for shutdown cleanup."
+      "lock": {"required": true, "path": ".lifecycle.lock", "status": "exact-exclusive-flock", "acquisition": "rust-cohort-controller-retained-session-lease", "retained_fd": true},
+      "compatibility": "cohort-ready",
+      "migration": "The opt-in first-cohort route adopts a listener published through the Rust controller lease; the legacy path remains until global routing activation."
     },
     {
       "id": "darlingserver.runtime-logs",
@@ -346,15 +392,26 @@
       "migration": "Open diagnostic files only through a controller-issued retained prefix capability; diagnostic opt-in must not bypass the lease."
     },
     {
-      "id": "launchd.ipc-socket",
+      "id": "launchd.system-ipc-socket",
       "owner": {"repository": "darling", "paths": ["src/launchd/src/ipc.c"], "symbols": ["ipc_server_init", "ipc_clean_up"]},
       "operation": ["stale-remove", "create-directory", "bind", "cleanup"],
-      "targets": ["/private/var/tmp/launchd/sock", "/private/var/tmp/launchd-*/*"],
-      "syscall_or_helper": ["unlink", "mkdir", "mkdtemp", "socket(AF_UNIX)", "bind", "rmdir", "atexit"],
+      "targets": ["/private/var/tmp/launchd/sock"],
+      "syscall_or_helper": ["darling_lifecycle_publish_endpoint", "darling_lifecycle_retire_endpoint", "SCM_RIGHTS"],
       "lifecycle_phase": "launchd-start-and-stop",
+      "lock": {"required": true, "path": ".lifecycle.lock", "status": "exact-exclusive-flock", "acquisition": "rust-cohort-controller-retained-session-lease", "retained_fd": true},
+      "compatibility": "cohort-ready",
+      "migration": "The opt-in first-cohort route publishes the system launchd endpoint through the Rust controller. Global routing remains blocked by per-user and generic launchd writers."
+    },
+    {
+      "id": "launchd.per-user-ipc-socket",
+      "owner": {"repository": "darling", "paths": ["src/launchd/src/ipc.c"], "symbols": ["ipc_server_init", "ipc_clean_up"]},
+      "operation": ["stale-remove", "create-directory", "bind", "cleanup"],
+      "targets": ["/private/var/tmp/launchd-*/*"],
+      "syscall_or_helper": ["unlink", "mkdtemp", "socket(AF_UNIX)", "bind", "rmdir", "atexit"],
+      "lifecycle_phase": "per-user-launchd-start-and-stop",
       "lock": {"required": true, "path": ".lifecycle.lock", "status": "missing", "acquisition": "none", "retained_fd": false},
       "compatibility": "incompatible",
-      "migration": "Expose launchd socket directory as a retained endpoint capability and require the session lease before create/remove."
+      "migration": "Add a separate typed dynamic-directory capability before enabling per-user launchd under the global route."
     },
     {
       "id": "launchd.boot-runtime-files",
@@ -1136,8 +1193,7 @@
     {"repository": "darling", "path": "src/external/xnu/tests/lockf_EOF_77264182.c", "sha256": "ecc7262f5bcabb9820a90190d82eebecf438e3941dee3d5c2dd51aeaeaab7633", "reason": "XNU regression fixture with task-owned files"},
     {"repository": "darling", "path": "src/external/xnu/tests/unp_connect_thread_uaf.c", "sha256": "8040dea54c2c4f8375637378a0b0234349df4373a8dd61e082636a7bfb695568", "reason": "XNU regression fixture with a disposable UNIX socket"},
     {"repository": "darling", "path": "src/external/zsh/zsh/Src/hist.c", "sha256": "be9016bfdea79a1c448690f53e31756d83468825f52300a59090fa0641249bc1", "reason": "user-owned shell history lock, not a shared system lifecycle endpoint"},
-    {"repository": "darling-workspace", "path": "west_commands/rootless_shutdown_lifecycle.py", "sha256": "294bbbfc2c1d9eaa04186e2dcfde79fc90b571ee951251db16aa899b6667d6b5", "reason": "writes only task-owned trace/evidence roots; it is not a prefix namespace writer"},
-    {"repository": "darling-workspace", "path": "west_commands/test.py", "sha256": "09dd9f5a74a07e0709bf13131e72dc6ab6fc9da33ec1fb40eae77a8c45660c90", "reason": "fixture-only host/E-UNION probes; each fixture root is disposable and must not be treated as product routing"},
+    {"repository": "darling-workspace", "path": "west_commands/test.py", "sha256": "264efa41d02261996f7f07d392bea405ee1115564ed5412dbb6cb9fbb323f144", "reason": "fixture-only host/E-UNION probes; each fixture root is disposable and must not be treated as product routing"},
     {"repository": "darling-workspace", "path": "west_commands/test_guest_macho.py", "sha256": "299604e9c68750f85e7c3b115be9bbca24d4f12112cc9ee608d7bad4cf90e7d9", "reason": "guest test staging under private/var/tmp; disposable test fixture"},
     {"repository": "darling-workspace", "path": "west_commands/test_guest_c.py", "sha256": "915b1977819344c9d5caf6fa4a30d4baf58d421d0854cf8ccbfdd2bccecf0b47", "reason": "guest C harness creates and removes fixture files; not a product writer"},
     {"repository": "darling", "path": "src/external/darlingserver/tools/dserverdbg.c", "sha256": "5a4f3682cfa09b09d54623a4cd508b89ecccf4220583e3bb4d83f25381927eb4", "reason": "diagnostic tool, not a production runtime owner"},
