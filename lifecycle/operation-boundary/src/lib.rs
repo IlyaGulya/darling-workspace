@@ -18,6 +18,7 @@ use std::ptr;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Instant;
 
+pub mod cohort_routing;
 pub mod controller;
 pub mod explorer;
 pub mod fuzz;
