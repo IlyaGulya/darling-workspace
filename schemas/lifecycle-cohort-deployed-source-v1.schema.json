@@ -1,0 +1,108 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://darlinghq.org/schemas/lifecycle-cohort-deployed-source-v1.schema.json",
+  "title": "Darling lifecycle cohort deployed source identity v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema", "status", "supersedes", "workspace", "composition", "semantic_closure", "build", "deployed_prefix"],
+  "properties": {
+    "schema": {"const": "darling-lifecycle-cohort-deployed-source-v1"},
+    "status": {"const": "CURRENT_UNCOMMITTED_REVIEW_DIFF"},
+    "supersedes": {"type": "string", "pattern": "^[A-Za-z0-9._-]+$", "minLength": 1, "maxLength": 128},
+    "workspace": {"$ref": "#/$defs/gitIdentity"},
+    "composition": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["profile", "canonical_source_map", "canonical_source_map_sha256", "darling_commit", "darling_tree", "darlingserver_commit", "darlingserver_tree"],
+      "properties": {
+        "profile": {"const": "homebrew-rootless-bootstrap-minimal"},
+        "canonical_source_map": {"const": "composed/homebrew-source-map.json"},
+        "canonical_source_map_sha256": {"$ref": "#/$defs/sha256"},
+        "darling_commit": {"$ref": "#/$defs/oid"},
+        "darling_tree": {"$ref": "#/$defs/oid"},
+        "darlingserver_commit": {"$ref": "#/$defs/oid"},
+        "darlingserver_tree": {"$ref": "#/$defs/oid"}
+      }
+    },
+    "semantic_closure": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["cohort_routing_rs_sha256", "cohort_header_sha256", "cohort_client_c_sha256", "launchd_ipc_c_sha256", "shellspawn_c_sha256", "darlingserver_cpp_sha256", "namespace_inventory_sha256", "routing_harness_sha256", "routing_contract_sha256", "routing_wrapper_sha256", "routing_documentation_sha256", "writer_documentation_sha256", "deployed_contract_sha256", "deployed_wrapper_sha256", "deployed_documentation_sha256", "source_identity_schema_sha256"],
+      "properties": {
+        "cohort_routing_rs_sha256": {"$ref": "#/$defs/sha256"},
+        "cohort_header_sha256": {"$ref": "#/$defs/sha256"},
+        "cohort_client_c_sha256": {"$ref": "#/$defs/sha256"},
+        "launchd_ipc_c_sha256": {"$ref": "#/$defs/sha256"},
+        "shellspawn_c_sha256": {"$ref": "#/$defs/sha256"},
+        "darlingserver_cpp_sha256": {"$ref": "#/$defs/sha256"},
+        "namespace_inventory_sha256": {"$ref": "#/$defs/sha256"},
+        "routing_harness_sha256": {"$ref": "#/$defs/sha256"},
+        "routing_contract_sha256": {"$ref": "#/$defs/sha256"},
+        "routing_wrapper_sha256": {"$ref": "#/$defs/sha256"},
+        "routing_documentation_sha256": {"$ref": "#/$defs/sha256"},
+        "writer_documentation_sha256": {"$ref": "#/$defs/sha256"},
+        "deployed_contract_sha256": {"$ref": "#/$defs/sha256"},
+        "deployed_wrapper_sha256": {"$ref": "#/$defs/sha256"},
+        "deployed_documentation_sha256": {"$ref": "#/$defs/sha256"},
+        "source_identity_schema_sha256": {"$ref": "#/$defs/sha256"}
+      }
+    },
+    "build": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["darling_lifecycle_cohort_v1", "inputs", "artifacts"],
+      "properties": {
+        "darling_lifecycle_cohort_v1": {"const": true},
+        "inputs": {
+          "type": "array",
+          "minItems": 3,
+          "maxItems": 8,
+          "uniqueItems": true,
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["path", "sha256"],
+            "properties": {
+              "path": {"type": "string", "pattern": "^(?!/)(?!.*(?:^|/)\\.\\.(?:/|$))[A-Za-z0-9._/-]+$", "minLength": 1, "maxLength": 256},
+              "sha256": {"$ref": "#/$defs/sha256"}
+            }
+          }
+        },
+        "artifacts": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["darling", "darlingserver", "launchd", "shellspawn"],
+          "properties": {
+            "darling": {"$ref": "#/$defs/sha256"},
+            "darlingserver": {"$ref": "#/$defs/sha256"},
+            "launchd": {"$ref": "#/$defs/sha256"},
+            "shellspawn": {"$ref": "#/$defs/sha256"}
+          }
+        }
+      }
+    },
+    "deployed_prefix": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["state_schema", "runtime_mode", "state_sha256"],
+      "properties": {
+        "state_schema": {"const": "DARLING_PREFIX_STATE_V2"},
+        "runtime_mode": {"const": "rootless-eunion"},
+        "state_sha256": {"$ref": "#/$defs/sha256"}
+      }
+    }
+  },
+  "$defs": {
+    "sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "oid": {"type": "string", "pattern": "^[0-9a-f]{40}$"},
+    "gitIdentity": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["commit", "tree"],
+      "properties": {
+        "commit": {"$ref": "#/$defs/oid"},
+        "tree": {"$ref": "#/$defs/oid"}
+      }
+    }
+  }
+}

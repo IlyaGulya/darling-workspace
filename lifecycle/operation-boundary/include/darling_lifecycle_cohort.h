@@ -22,7 +22,8 @@ struct darling_lifecycle_cohort_bootstrap {
 struct darling_lifecycle_cohort_controller;
 
 struct darling_lifecycle_cohort_controller* darling_lifecycle_cohort_start(
-	const char* prefix,
+	int prefix_fd,
+	const char* prefix_argument,
 	pid_t init_pid,
 	struct darling_lifecycle_cohort_bootstrap* output
 );

@@ -22,8 +22,8 @@ clang -std=c11 -Wall -Wextra -Werror \
 	-o "$TASK_ROOT/cohort-client-harness"
 
 ln -s "$TASK_ROOT/cohort-client-harness" "$TASK_ROOT/launchd"
-bash -c 'exec -a vchroot "$1" "$2" /sbin/launchd' \
-	cohort-launchd "$TASK_ROOT/launchd" "$TASK_ROOT/prefix"
+COHORT_HARNESS_LAUNCHD_PREFIX="$TASK_ROOT/prefix" \
+	bash -c 'exec -a /sbin/launchd "$1"' cohort-launchd "$TASK_ROOT/launchd"
 
 "${PYTHON:-/usr/bin/python3}" "$ROOT/tests/west_test_contracts/lifecycle_cohort_routing_contract.py" \
 	--workspace-root "$ROOT" \
