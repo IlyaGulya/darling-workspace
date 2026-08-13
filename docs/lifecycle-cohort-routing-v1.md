@@ -14,8 +14,9 @@ through a pidfd, enters a separate session, closes every inherited descriptor
 outside its finite retained capability set, and survives the existing product
 or owned-process-group `SIGKILL` shutdown long
 enough to perform exact cleanup. Explicit finalization remains bounded; owner
-death is an equally mandatory cleanup trigger. Rust opens and retains the prefix directory,
-validates the Rootless runtime marker, opens the exact `.lifecycle.lock` with
+death is an equally mandatory cleanup trigger. Rust duplicates and retains the exact prefix
+directory capability inherited by Darlingserver, validates the Rootless typed prefix state,
+opens the exact `.lifecycle.lock` with
 `O_NOFOLLOW`, validates but does not mutate an existing inode before taking
 `flock(LOCK_EX)`, and revalidates the named lock inode after
 acquisition and before every request. The same open-file description remains
@@ -25,23 +26,38 @@ The controller owns publication and retirement of:
 
 - `.init.pid`;
 - `.darlingserver.sock`;
-- `/private/var/run/shellspawn.sock`;
-- the system `/private/var/tmp/launchd/sock` endpoint.
+- `/var/run/shellspawn.sock`;
+- the system `/var/tmp/launchd/sock` endpoint.
 
 Publication preserves the established product metadata: `.init.pid`, launchd
 and shellspawn are mode `0600`, while the Darlingserver control socket remains
-mode `0775`. The acquired legacy marker must contain the canonical
-`DARLING_RUNTIME_MODE_V1=rootless-eunion` record and its retained inode and
-content are revalidated before every routed mutation.
+mode `0775`. The acquired `.darling-prefix-state-v2` must contain the canonical
+schema, `runtime_mode=rootless-eunion`, positive generation, exact prefix
+device/inode and owner, and lifecycle-v2 provenance. Its retained inode and
+complete content are revalidated before every routed mutation.
 
 Darlingserver adopts its pre-bound listener directly. Guest launchd and
 shellspawn use a fixed, bounded `SOCK_SEQPACKET` protocol over the hidden
-`/private/var/run/.darling-lifecycle-controller-v1.sock` endpoint. Rust binds
+`/.lc-v1.sock` endpoint. The short vchroot-visible name keeps the expanded host
+pathname within Linux `sockaddr_un.sun_path`. Rust binds
 and retains that endpoint fd-relatively under the same lease; a regular Unix
 path is required because Darling's guest AF_UNIX conversion vchroot-expands
 paths and does not preserve Linux abstract addresses. The envelope contains a
-per-session 256-bit nonce and a finite
-endpoint enum. Rust authenticates the peer UID, requires `SO_PEERPIDFD`, binds
+per-session 256-bit nonce and a finite endpoint enum. Publication is a
+two-phase transaction. Rust keeps the namespace object in
+`PENDING`, sends its retained listener with `SCM_RIGHTS`, and accepts ownership
+only after the consumer has validated, duplicated, adopted and (for launchd)
+registered the listener and returns an authenticated `COMMIT`. EOF, response
+delivery failure before `COMMIT`, malformed decision, explicit `ABORT`,
+duplicate failure and listener-adoption failure all retire the exact pending
+inode before another publication can proceed. A complete authenticated
+`COMMIT` is the irreversible ownership handoff: Rust records the owner before
+attempting the final diagnostic ACK, and the consumer retains its listener if
+that ACK is interrupted, times out or is lost. The C transport snapshots the
+control name and nonce once before connecting and moves that nonce into its
+typed pending-publication state; `COMMIT` and `ABORT` never reread mutable
+process environment. Rust authenticates the peer UID, requires
+`SO_PEERPIDFD`, binds
 that retained pidfd to the `SO_PEERCRED` PID through its kernel fdinfo, and
 returns already-bound listener descriptors through `SCM_RIGHTS`; guest code
 receives no prefix or lock descriptor and contains no lifecycle reducer. The
@@ -108,7 +124,8 @@ transport, and executes it against a task-owned prefix. It proves exact lock
 contention, fd-relative publication, `SCM_RIGHTS` listener delivery, wrong-
 nonce flood rejection without authority exhaustion, retained-pidfd peer
 authorization, shellspawn `SIGKILL`/KeepAlive republish, post-publication
-activation rollback, owner-`SIGKILL` cleanup, launchd/shellspawn
+activation rollback, stable-nonce commit across activation-environment drift,
+lost-final-ACK commit retention, owner-`SIGKILL` cleanup, launchd/shellspawn
 retirement, replacement preservation and bounded cleanup. The source/registry
 pass requires exactly six cohort-ready
 records, zero globally compatible records, and leaves the remainder

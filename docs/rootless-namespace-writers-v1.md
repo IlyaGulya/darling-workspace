@@ -50,7 +50,7 @@ authority. All remaining records stay `incompatible`.
 
 | Owner | Namespace responsibility | Phase | Current lock evidence |
 | --- | --- | --- | --- |
-| `darling-workspace/lifecycle/operation-boundary/src/cohort_routing.rs` | `/private/var/run/.darling-lifecycle-controller-v1.sock` | controller start/stop | retained Rust session lease; global activation deferred |
+| `darling-workspace/lifecycle/operation-boundary/src/cohort_routing.rs` | `/.lc-v1.sock` | controller start/stop | retained Rust session lease; global activation deferred |
 | `darling-workspace/lifecycle/operation-boundary/src/{lib,linux_backend,quarantine_gc}.rs` | generic fd-relative mutation, backend quarantine handoff and bounded GC | infrastructure/recovery | individually typed but incompatible until a production consumer binds the complete writer set to the same exact lease |
 | `darling/src/startup/darling.c` | Prefix provisioning, `.init.pid` publication/repair, stale shellspawn endpoint | create, boot, shutdown | endpoint/PID cohort ready; prefix provisioning incompatible |
 | `darling/src/shellspawn/shellspawn.c` | `/var/run/shellspawn.sock` unlink/bind/chmod | runtime start/stop | opt-in Rust cohort route, global activation deferred |

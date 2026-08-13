@@ -22,12 +22,18 @@ use std::thread;
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
-const MARKER_NAME: &[u8] = b".darling-runtime-mode-v1";
-const MARKER_VALUE: &[u8] = b"DARLING_RUNTIME_MODE_V1=rootless-eunion\n";
+const PREFIX_STATE_NAME: &[u8] = b".darling-prefix-state-v2";
+const PREFIX_STATE_HEADER: &str = "DARLING_PREFIX_STATE_V2";
+const PREFIX_STATE_PROVENANCE: &str = "darling-runtime-prefix-lifecycle-v2";
+const PREFIX_STATE_MAX_BYTES: usize = 1024;
 const LOCK_NAME: &[u8] = b".lifecycle.lock";
 const INIT_PID_NAME: &[u8] = b".init.pid";
 const PROTOCOL_MAGIC: [u8; 8] = *b"DLCOHR1\0";
 const PROTOCOL_VERSION: u16 = 1;
+const OPERATION_PUBLISH: u16 = 1;
+const OPERATION_RETIRE: u16 = 2;
+const OPERATION_COMMIT: u16 = 3;
+const OPERATION_ABORT: u16 = 4;
 const CONTROL_NAME_CAPACITY: usize = 80;
 const NONCE_BYTES: usize = 32;
 const NONCE_HEX_BYTES: usize = NONCE_BYTES * 2;
@@ -37,10 +43,12 @@ const REQUEST_TIMEOUT_MS: c_int = 250;
 const CONTROLLER_EXIT_TIMEOUT_MS: c_int = 1_000;
 const MAX_REJECTED_REQUESTS_PER_SLICE: usize = 128;
 const SO_PEERPIDFD: c_int = 77;
-const CONTROL_GUEST_PATH: &[u8] = b"/private/var/run/.darling-lifecycle-controller-v1.sock";
-const CONTROL_NAME: &[u8] = b".darling-lifecycle-controller-v1.sock";
-const SHELLSPAWN_PARENT: &[&[u8]] = &[b"private", b"var", b"run"];
-const LAUNCHD_PARENT: &[&[u8]] = &[b"private", b"var", b"tmp", b"launchd"];
+// Keep the vchroot-visible name short: the host prefix is prepended before
+// connect(2), and AF_UNIX sun_path is only 108 bytes on Linux.
+const CONTROL_GUEST_PATH: &[u8] = b"/.lc-v1.sock";
+const CONTROL_NAME: &[u8] = b".lc-v1.sock";
+const SHELLSPAWN_PARENT: &[&[u8]] = &[b"var", b"run"];
+const LAUNCHD_PARENT: &[&[u8]] = &[b"var", b"tmp", b"launchd"];
 
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
 #[repr(u16)]
@@ -89,7 +97,7 @@ impl CohortEndpoint {
                 mode: 0o600,
             },
             Self::Control => EndpointSpec {
-                parent: SHELLSPAWN_PARENT,
+                parent: &[],
                 name: CONTROL_NAME,
                 socket_type: libc::SOCK_SEQPACKET,
                 nonblocking: true,
@@ -205,6 +213,11 @@ fn current_uid() -> libc::uid_t {
     unsafe { libc::geteuid() }
 }
 
+fn current_gid() -> libc::gid_t {
+    // SAFETY: getegid has no preconditions.
+    unsafe { libc::getegid() }
+}
+
 fn validate_owned(
     value: FileIdentity,
     expected_type: u32,
@@ -304,6 +317,56 @@ fn open_directory_chain(prefix: RawFd, parts: &[&[u8]]) -> Result<OwnedFd, Cohor
     Ok(current)
 }
 
+fn ensure_directory_chain(prefix: RawFd, parts: &[(&[u8], u32)]) -> Result<OwnedFd, CohortError> {
+    let mut current = duplicate(prefix, true)?;
+    for (part, mode) in parts {
+        let mut created = false;
+        let next = match openat(
+            current.as_raw_fd(),
+            part,
+            libc::O_RDONLY | libc::O_DIRECTORY | libc::O_NOFOLLOW | libc::O_CLOEXEC,
+            0,
+        ) {
+            Ok(value) => value,
+            Err(CohortError::Io(_, error)) if error.raw_os_error() == Some(libc::ENOENT) => {
+                let name = component(part)?;
+                if unsafe { libc::mkdirat(current.as_raw_fd(), name.as_ptr(), *mode) } < 0 {
+                    return Err(io_error("mkdirat(endpoint parent)"));
+                }
+                created = true;
+                openat(
+                    current.as_raw_fd(),
+                    part,
+                    libc::O_RDONLY | libc::O_DIRECTORY | libc::O_NOFOLLOW | libc::O_CLOEXEC,
+                    0,
+                )?
+            }
+            Err(error) => return Err(error),
+        };
+        let observed = identity(next.as_raw_fd())?;
+        if file_type(observed) != libc::S_IFDIR || observed.uid != current_uid() {
+            return Err(CohortError::Identity("endpoint parent"));
+        }
+        if created && unsafe { libc::fchmod(next.as_raw_fd(), *mode) } < 0 {
+            return Err(io_error("fchmod(endpoint parent)"));
+        }
+        if identity(next.as_raw_fd())?.mode & 0o7777 != *mode {
+            return Err(CohortError::Identity("endpoint parent mode"));
+        }
+        current = next;
+    }
+    Ok(current)
+}
+
+fn ensure_endpoint_parents(prefix: RawFd) -> Result<(), CohortError> {
+    ensure_directory_chain(prefix, &[(b"var", 0o755), (b"run", 0o755)])?;
+    ensure_directory_chain(
+        prefix,
+        &[(b"var", 0o755), (b"tmp", 0o1777), (b"launchd", 0o700)],
+    )?;
+    Ok(())
+}
+
 fn acquire_lock(prefix: RawFd) -> Result<(OwnedFd, FileIdentity), CohortError> {
     let (lock, created) = match openat(
         prefix,
@@ -356,34 +419,78 @@ fn acquire_lock(prefix: RawFd) -> Result<(OwnedFd, FileIdentity), CohortError> {
     Ok((lock, expected))
 }
 
-fn acquire_marker(prefix: RawFd) -> Result<RetainedFile, CohortError> {
-    let marker = openat(
+fn parse_prefix_state(content: &[u8], prefix: FileIdentity) -> Result<(), CohortError> {
+    let text = std::str::from_utf8(content)
+        .map_err(|_| CohortError::Protocol("runtime prefix state encoding"))?;
+    let body = text
+        .strip_suffix('\n')
+        .ok_or(CohortError::Protocol("runtime prefix state terminator"))?;
+    let lines = body.split('\n').collect::<Vec<_>>();
+    if lines.len() != 9 || lines[0] != PREFIX_STATE_HEADER {
+        return Err(CohortError::Protocol("runtime prefix state schema"));
+    }
+    let field = |index: usize, key: &'static str| -> Result<&str, CohortError> {
+        lines[index]
+            .strip_prefix(key)
+            .filter(|value| !value.is_empty())
+            .ok_or(CohortError::Protocol("runtime prefix state field"))
+    };
+    let number = |index: usize, key: &'static str| -> Result<u64, CohortError> {
+        field(index, key)?
+            .parse::<u64>()
+            .map_err(|_| CohortError::Protocol("runtime prefix state number"))
+    };
+    if number(1, "schema_version=")? != 2
+        || field(2, "runtime_mode=")? != "rootless-eunion"
+        || number(3, "generation=")? == 0
+        || number(4, "prefix_device=")? != prefix.device
+        || number(5, "prefix_inode=")? != prefix.inode
+        || number(6, "owner_uid=")? != u64::from(current_uid())
+        || number(7, "owner_gid=")? != u64::from(current_gid())
+        || field(8, "provenance=")? != PREFIX_STATE_PROVENANCE
+    {
+        return Err(CohortError::Identity("runtime prefix state"));
+    }
+    Ok(())
+}
+
+fn acquire_prefix_state(
+    prefix: RawFd,
+    prefix_identity: FileIdentity,
+) -> Result<RetainedState, CohortError> {
+    let state = openat(
         prefix,
-        MARKER_NAME,
+        PREFIX_STATE_NAME,
         libc::O_RDONLY | libc::O_NOFOLLOW | libc::O_CLOEXEC,
         0,
     )?;
-    let expected = identity(marker.as_raw_fd())?;
+    let expected = identity(state.as_raw_fd())?;
     validate_owned(expected, libc::S_IFREG, Some(0o600))?;
-    if named_identity(prefix, MARKER_NAME)? != Some(expected)
-        || read_bounded(marker.as_raw_fd(), 64)? != MARKER_VALUE
-    {
-        return Err(CohortError::Identity("runtime marker"));
+    let content = read_bounded(state.as_raw_fd(), PREFIX_STATE_MAX_BYTES)?;
+    if named_identity(prefix, PREFIX_STATE_NAME)? != Some(expected) {
+        return Err(CohortError::Identity("runtime prefix state"));
     }
-    Ok(RetainedFile {
-        object: marker,
+    parse_prefix_state(&content, prefix_identity)?;
+    Ok(RetainedState {
+        object: state,
         identity: expected,
+        content,
     })
 }
 
-fn revalidate_marker(prefix: RawFd, marker: &RetainedFile) -> Result<(), CohortError> {
-    if identity(marker.object.as_raw_fd())? != marker.identity
-        || named_identity(prefix, MARKER_NAME)? != Some(marker.identity)
-        || read_bounded(marker.object.as_raw_fd(), 64)? != MARKER_VALUE
+fn revalidate_prefix_state(
+    prefix: RawFd,
+    prefix_identity: FileIdentity,
+    state: &RetainedState,
+) -> Result<(), CohortError> {
+    let content = read_bounded(state.object.as_raw_fd(), PREFIX_STATE_MAX_BYTES)?;
+    if identity(state.object.as_raw_fd())? != state.identity
+        || named_identity(prefix, PREFIX_STATE_NAME)? != Some(state.identity)
+        || content != state.content
     {
-        return Err(CohortError::Identity("runtime marker"));
+        return Err(CohortError::Identity("runtime prefix state"));
     }
-    Ok(())
+    parse_prefix_state(&content, prefix_identity)
 }
 
 fn revalidate_lock(prefix: RawFd, lock: RawFd, expected: FileIdentity) -> Result<(), CohortError> {
@@ -442,6 +549,13 @@ struct PublishedEndpoint {
 struct RetainedFile {
     object: OwnedFd,
     identity: FileIdentity,
+}
+
+#[derive(Debug)]
+struct RetainedState {
+    object: OwnedFd,
+    identity: FileIdentity,
+    content: Vec<u8>,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -609,11 +723,12 @@ struct SessionAuthority {
     prefix_identity: FileIdentity,
     lock: OwnedFd,
     lock_identity: FileIdentity,
-    marker: RetainedFile,
+    prefix_state: RetainedState,
     init_pid: Option<RetainedFile>,
     endpoints: BTreeMap<CohortEndpoint, PublishedEndpoint>,
     endpoint_owners: BTreeMap<CohortEndpoint, PeerAuthority>,
     session_root_pid: libc::pid_t,
+    #[cfg(test)]
     prefix_argument: Vec<u8>,
     cleanup_on_drop: bool,
     #[cfg(test)]
@@ -622,24 +737,61 @@ struct SessionAuthority {
 
 impl SessionAuthority {
     fn acquire(prefix_path: &Path, init_pid: libc::pid_t) -> Result<Self, CohortError> {
+        let prefix = open_prefix(prefix_path)?;
+        Self::acquire_owned(
+            prefix,
+            prefix_path.as_os_str().as_bytes().to_vec(),
+            init_pid,
+        )
+    }
+
+    fn acquire_from_fd(
+        prefix_fd: RawFd,
+        prefix_argument: &[u8],
+        init_pid: libc::pid_t,
+    ) -> Result<Self, CohortError> {
+        if prefix_fd < 0 || prefix_argument.is_empty() || prefix_argument.contains(&0) {
+            return Err(CohortError::InvalidPrefix);
+        }
+        let prefix = duplicate(prefix_fd, true)?;
+        let observed = identity(prefix.as_raw_fd())?;
+        if file_type(observed) != libc::S_IFDIR || observed.uid != current_uid() {
+            return Err(CohortError::Identity("prefix"));
+        }
+        Self::acquire_owned(prefix, prefix_argument.to_vec(), init_pid)
+    }
+
+    fn acquire_owned(
+        prefix: OwnedFd,
+        prefix_argument: Vec<u8>,
+        init_pid: libc::pid_t,
+    ) -> Result<Self, CohortError> {
         if init_pid <= 0 {
             return Err(CohortError::Protocol("invalid init pid"));
         }
-        let prefix = open_prefix(prefix_path)?;
-        let prefix_identity = identity(prefix.as_raw_fd())?;
+        let initial_prefix_identity = identity(prefix.as_raw_fd())?;
         let (lock, lock_identity) = acquire_lock(prefix.as_raw_fd())?;
-        let marker = acquire_marker(prefix.as_raw_fd())?;
+        let prefix_state = acquire_prefix_state(prefix.as_raw_fd(), initial_prefix_identity)?;
+        ensure_endpoint_parents(prefix.as_raw_fd())?;
+        // Creating a direct child changes a directory's link count. Refresh
+        // the retained identity only after the finite bootstrap parents exist;
+        // device/inode and the typed prefix-state binding remain unchanged.
+        let prefix_identity = identity(prefix.as_raw_fd())?;
+        revalidate_prefix_state(prefix.as_raw_fd(), prefix_identity, &prefix_state)?;
+        #[cfg(not(test))]
+        let _ = prefix_argument;
         let mut authority = Self {
             prefix,
             prefix_identity,
             lock,
             lock_identity,
-            marker,
+            prefix_state,
             init_pid: None,
             endpoints: BTreeMap::new(),
             endpoint_owners: BTreeMap::new(),
             session_root_pid: init_pid,
-            prefix_argument: prefix_path.as_os_str().as_bytes().to_vec(),
+            #[cfg(test)]
+            prefix_argument,
             cleanup_on_drop: true,
             #[cfg(test)]
             allow_test_peer: false,
@@ -657,7 +809,11 @@ impl SessionAuthority {
             self.lock.as_raw_fd(),
             self.lock_identity,
         )?;
-        revalidate_marker(self.prefix.as_raw_fd(), &self.marker)
+        revalidate_prefix_state(
+            self.prefix.as_raw_fd(),
+            self.prefix_identity,
+            &self.prefix_state,
+        )
     }
 
     #[cfg(not(test))]
@@ -670,7 +826,7 @@ impl SessionAuthority {
         let mut fds = vec![
             self.prefix.as_raw_fd(),
             self.lock.as_raw_fd(),
-            self.marker.object.as_raw_fd(),
+            self.prefix_state.object.as_raw_fd(),
         ];
         if let Some(init_pid) = self.init_pid.as_ref() {
             fds.push(init_pid.object.as_raw_fd());
@@ -932,11 +1088,7 @@ impl SessionAuthority {
         match kind {
             CohortEndpoint::Launchd => {
                 let argv = process_argv(peer.identity.pid)?;
-                if parent != self.session_root_pid
-                    || argv.len() != 3
-                    || argv0_basename(&argv) != b"vchroot"
-                    || argv[1] != self.prefix_argument
-                    || argv[2] != b"/sbin/launchd"
+                if parent != self.session_root_pid || argv.len() != 1 || argv[0] != b"/sbin/launchd"
                 {
                     return Err(CohortError::Protocol("launchd peer identity"));
                 }
@@ -1181,7 +1333,7 @@ fn serve_client(
     }
     let kind = CohortEndpoint::from_wire(request.endpoint)
         .ok_or(CohortError::Protocol("endpoint kind"))?;
-    if request.operation != 1 && request.operation != 2 {
+    if request.operation != OPERATION_PUBLISH && request.operation != OPERATION_RETIRE {
         return Err(CohortError::Protocol("operation"));
     }
     let peer_process = peer_pidfd(client, credentials.pid)?;
@@ -1197,28 +1349,113 @@ fn serve_client(
             _process: peer_process,
         },
     )?;
-    let (result, passed_fd, observed) = match request.operation {
-        1 => match authority.publish(kind) {
-            Ok(socket) => {
-                match identity(socket.as_raw_fd()) {
-                    Ok(socket_identity) => {
-                        authority.endpoint_owners.insert(kind, peer);
-                        (Ok(()), Some(socket), Some(socket_identity))
-                    }
-                    Err(error) => {
-                        // Publication has already mutated the namespace.  Do
-                        // not report failure while retaining an unowned
-                        // endpoint if the SCM_RIGHTS witness cannot be formed.
-                        let _ = authority.retire(kind);
-                        (Err(error), None, None)
-                    }
-                }
+    if request.operation == OPERATION_PUBLISH {
+        let socket = match authority.publish(kind) {
+            Ok(socket) => socket,
+            Err(error) => {
+                eprintln!("lifecycle cohort operation refused: {error}");
+                send_response(
+                    client,
+                    WireResponse {
+                        magic: PROTOCOL_MAGIC,
+                        version: PROTOCOL_VERSION,
+                        status: -1,
+                        endpoint: request.endpoint,
+                        has_fd: 0,
+                        device: 0,
+                        inode: 0,
+                    },
+                    None,
+                )?;
+                return Ok(());
             }
-            Err(error) => (Err(error), None, None),
-        },
-        2 => (authority.retire(kind), None, None),
-        _ => unreachable!("operation was validated before authorization"),
-    };
+        };
+        let socket_identity = match identity(socket.as_raw_fd()) {
+            Ok(identity) => identity,
+            Err(error) => {
+                let _ = authority.retire(kind);
+                return Err(error);
+            }
+        };
+        let pending = WireResponse {
+            magic: PROTOCOL_MAGIC,
+            version: PROTOCOL_VERSION,
+            status: 0,
+            endpoint: request.endpoint,
+            has_fd: 1,
+            device: socket_identity.device,
+            inode: socket_identity.inode,
+        };
+        if let Err(error) = send_response(client, pending, Some(socket.as_raw_fd())) {
+            let _ = authority.retire(kind);
+            return Err(error);
+        }
+        let decision = (|| {
+            wait_for_io(client, libc::POLLIN)?;
+            let decision = receive_request(client)?;
+            if decision.magic != PROTOCOL_MAGIC
+                || decision.version != PROTOCOL_VERSION
+                || decision.reserved != 0
+                || decision.nonce != *nonce
+                || decision.endpoint != request.endpoint
+                || (decision.operation != OPERATION_COMMIT && decision.operation != OPERATION_ABORT)
+            {
+                return Err(CohortError::Protocol("publication decision"));
+            }
+            Ok(decision.operation)
+        })();
+        match decision {
+            Ok(OPERATION_COMMIT) => {
+                // Receiving a complete, authenticated COMMIT is the
+                // irreversible ownership handoff.  There must be no fallible
+                // step between it and recording the owner: the client cannot
+                // distinguish a lost final acknowledgement from a rejected
+                // commit and must therefore be allowed to rely on the send.
+                authority.endpoint_owners.insert(kind, peer);
+                let committed = WireResponse {
+                    magic: PROTOCOL_MAGIC,
+                    version: PROTOCOL_VERSION,
+                    status: 0,
+                    endpoint: request.endpoint,
+                    has_fd: 0,
+                    device: 0,
+                    inode: 0,
+                };
+                // The acknowledgement is diagnostic only.  Once COMMIT was
+                // received, delivery failure cannot revoke ownership or
+                // unlink the endpoint behind the live consumer's retained FD.
+                send_response(client, committed, None)?;
+                return Ok(());
+            }
+            Ok(OPERATION_ABORT) => {
+                authority.retire(kind)?;
+                send_response(
+                    client,
+                    WireResponse {
+                        magic: PROTOCOL_MAGIC,
+                        version: PROTOCOL_VERSION,
+                        status: 0,
+                        endpoint: request.endpoint,
+                        has_fd: 0,
+                        device: 0,
+                        inode: 0,
+                    },
+                    None,
+                )?;
+                return Ok(());
+            }
+            Ok(_) => unreachable!("publication decision was validated"),
+            Err(error) => {
+                let rollback = authority.retire(kind);
+                return match rollback {
+                    Ok(()) => Err(error),
+                    Err(rollback) => Err(rollback),
+                };
+            }
+        }
+    }
+
+    let result = authority.retire(kind);
     let status = if result.is_ok() { 0 } else { -1 };
     if let Err(error) = result.as_ref() {
         eprintln!("lifecycle cohort operation refused: {error}");
@@ -1228,11 +1465,11 @@ fn serve_client(
         version: PROTOCOL_VERSION,
         status,
         endpoint: request.endpoint,
-        has_fd: u16::from(passed_fd.is_some()),
-        device: observed.map_or(0, |value| value.device),
-        inode: observed.map_or(0, |value| value.inode),
+        has_fd: 0,
+        device: 0,
+        inode: 0,
     };
-    send_response(client, response, passed_fd.as_ref().map(AsRawFd::as_raw_fd))?;
+    send_response(client, response, None)?;
     // Operation failures are represented by the typed response.  Returning
     // Ok here prevents the server loop from emitting a second response.
     Ok(())
@@ -1444,21 +1681,30 @@ pub struct CohortController {
 
 impl CohortController {
     pub fn start(prefix: &Path, init_pid: libc::pid_t) -> Result<(Self, OwnedFd), CohortError> {
-        Self::start_inner(prefix, init_pid, false)
+        let authority = SessionAuthority::acquire(prefix, init_pid)?;
+        Self::start_with_authority(authority, Some(prefix), false)
     }
 
-    fn start_inner(
-        prefix: &Path,
+    fn start_from_fd(
+        prefix_fd: RawFd,
+        prefix_argument: &[u8],
         init_pid: libc::pid_t,
+    ) -> Result<(Self, OwnedFd), CohortError> {
+        let authority = SessionAuthority::acquire_from_fd(prefix_fd, prefix_argument, init_pid)?;
+        Self::start_with_authority(authority, None, false)
+    }
+
+    fn start_with_authority(
+        mut authority: SessionAuthority,
+        test_prefix: Option<&Path>,
         allow_test_peer: bool,
     ) -> Result<(Self, OwnedFd), CohortError> {
-        let mut authority = SessionAuthority::acquire(prefix, init_pid)?;
         #[cfg(test)]
         {
             authority.allow_test_peer = allow_test_peer;
         }
         #[cfg(not(test))]
-        let _ = allow_test_peer;
+        let _ = (allow_test_peer, test_prefix);
         let darlingserver = authority.publish(CohortEndpoint::DarlingServer)?;
         let nonce = random_nonce()?;
         let name = CONTROL_GUEST_PATH.to_vec();
@@ -1482,8 +1728,8 @@ impl CohortController {
                 control_name: name,
                 nonce,
                 #[cfg(test)]
-                control_test_path: prefix
-                    .join("private/var/run")
+                control_test_path: test_prefix
+                    .ok_or(CohortError::Protocol("test prefix path"))?
                     .join(std::ffi::OsStr::from_bytes(CONTROL_NAME)),
             }
         };
@@ -1601,7 +1847,8 @@ impl CohortController {
         prefix: &Path,
         init_pid: libc::pid_t,
     ) -> Result<(Self, OwnedFd), CohortError> {
-        Self::start_inner(prefix, init_pid, true)
+        let authority = SessionAuthority::acquire(prefix, init_pid)?;
+        Self::start_with_authority(authority, Some(prefix), true)
     }
 
     pub fn control_name(&self) -> &[u8] {
@@ -1660,23 +1907,29 @@ impl Drop for CohortController {
 ///
 /// # Safety
 ///
-/// `prefix` must point to a live NUL-terminated path for the duration of the
-/// call and `output` must point to writable `CohortBootstrap` storage. The
+/// `prefix_fd` must be a live directory descriptor, `prefix_argument` must
+/// point to the live NUL-terminated prefix argument passed to launchd, and
+/// `output` must point to writable `CohortBootstrap` storage. The
 /// returned pointer must be consumed exactly once by
 /// [`darling_lifecycle_cohort_finish`].
 pub unsafe extern "C" fn darling_lifecycle_cohort_start(
-    prefix: *const c_char,
+    prefix_fd: c_int,
+    prefix_argument: *const c_char,
     init_pid: libc::pid_t,
     output: *mut CohortBootstrap,
 ) -> *mut CohortController {
-    if prefix.is_null() || output.is_null() {
+    if prefix_fd < 0 || prefix_argument.is_null() || output.is_null() {
         return ptr::null_mut();
     }
-    let prefix = CStr::from_ptr(prefix);
-    let path = Path::new(std::ffi::OsStr::from_bytes(prefix.to_bytes()));
-    let Ok((controller, darlingserver)) = CohortController::start(path, init_pid) else {
-        return ptr::null_mut();
-    };
+    let prefix_argument = CStr::from_ptr(prefix_argument);
+    let (controller, darlingserver) =
+        match CohortController::start_from_fd(prefix_fd, prefix_argument.to_bytes(), init_pid) {
+            Ok(value) => value,
+            Err(error) => {
+                eprintln!("lifecycle cohort acquisition refused: {error}");
+                return ptr::null_mut();
+            }
+        };
     if controller.control_name.len() > CONTROL_NAME_CAPACITY {
         return ptr::null_mut();
     }
@@ -1737,15 +1990,35 @@ mod tests {
                 NEXT_TEST.fetch_add(1, Ordering::Relaxed)
             ));
             fs::create_dir(&root).unwrap();
-            fs::create_dir_all(root.join("private/var/run")).unwrap();
-            fs::create_dir_all(root.join("private/var/tmp/launchd")).unwrap();
-            fs::write(
-                root.join(MARKER_NAME.escape_ascii().to_string()),
-                MARKER_VALUE,
+            fs::create_dir_all(root.join("var/run")).unwrap();
+            fs::create_dir_all(root.join("var/tmp/launchd")).unwrap();
+            fs::set_permissions(root.join("var"), fs::Permissions::from_mode(0o755)).unwrap();
+            fs::set_permissions(root.join("var/run"), fs::Permissions::from_mode(0o755)).unwrap();
+            fs::set_permissions(root.join("var/tmp"), fs::Permissions::from_mode(0o1777)).unwrap();
+            fs::set_permissions(
+                root.join("var/tmp/launchd"),
+                fs::Permissions::from_mode(0o700),
             )
             .unwrap();
+            let metadata = fs::metadata(&root).unwrap();
+            let state = format!(
+                "DARLING_PREFIX_STATE_V2\n\
+                 schema_version=2\n\
+                 runtime_mode=rootless-eunion\n\
+                 generation=1\n\
+                 prefix_device={}\n\
+                 prefix_inode={}\n\
+                 owner_uid={}\n\
+                 owner_gid={}\n\
+                 provenance=darling-runtime-prefix-lifecycle-v2\n",
+                metadata.dev(),
+                metadata.ino(),
+                metadata.uid(),
+                metadata.gid(),
+            );
+            fs::write(root.join(".darling-prefix-state-v2"), state).unwrap();
             fs::set_permissions(
-                root.join(MARKER_NAME.escape_ascii().to_string()),
+                root.join(".darling-prefix-state-v2"),
                 fs::Permissions::from_mode(0o600),
             )
             .unwrap();
@@ -1822,7 +2095,91 @@ mod tests {
             },
             size_of::<WireResponse>() as isize
         );
+        let response = unsafe { response.assume_init() };
+        if operation == OPERATION_PUBLISH && response.status == 0 {
+            let decision = WireRequest {
+                magic: PROTOCOL_MAGIC,
+                version: PROTOCOL_VERSION,
+                operation: OPERATION_COMMIT,
+                endpoint: kind as u16,
+                reserved: 0,
+                nonce,
+            };
+            assert_eq!(
+                unsafe {
+                    libc::send(
+                        client.as_raw_fd(),
+                        (&decision as *const WireRequest).cast(),
+                        size_of::<WireRequest>(),
+                        libc::MSG_NOSIGNAL,
+                    )
+                },
+                size_of::<WireRequest>() as isize
+            );
+            let committed = receive_response_only(client.as_raw_fd());
+            assert_eq!(committed.status, 0);
+            assert_eq!(committed.endpoint, kind as u16);
+            assert_eq!(committed.has_fd, 0);
+        }
+        response
+    }
+
+    fn send_request_only(
+        client: RawFd,
+        kind: CohortEndpoint,
+        operation: u16,
+        nonce: [u8; NONCE_BYTES],
+    ) {
+        let request = WireRequest {
+            magic: PROTOCOL_MAGIC,
+            version: PROTOCOL_VERSION,
+            operation,
+            endpoint: kind as u16,
+            reserved: 0,
+            nonce,
+        };
+        assert_eq!(
+            unsafe {
+                libc::send(
+                    client,
+                    (&request as *const WireRequest).cast(),
+                    size_of::<WireRequest>(),
+                    libc::MSG_NOSIGNAL,
+                )
+            },
+            size_of::<WireRequest>() as isize
+        );
+    }
+
+    fn receive_response_only(client: RawFd) -> WireResponse {
+        let mut response = MaybeUninit::<WireResponse>::zeroed();
+        assert_eq!(
+            unsafe {
+                libc::recv(
+                    client,
+                    response.as_mut_ptr().cast(),
+                    size_of::<WireResponse>(),
+                    0,
+                )
+            },
+            size_of::<WireResponse>() as isize
+        );
         unsafe { response.assume_init() }
+    }
+
+    fn wait_until_missing(path: &Path) {
+        for _ in 0..100 {
+            if fs::symlink_metadata(path)
+                .is_err_and(|error| error.kind() == io::ErrorKind::NotFound)
+            {
+                return;
+            }
+            thread::sleep(Duration::from_millis(5));
+        }
+        panic!(
+            "pending publication was not rolled back: {}",
+            path.display()
+        );
     }
 
     #[test]
@@ -1834,19 +2191,168 @@ mod tests {
         let publish = request(&controller, CohortEndpoint::Shellspawn, 1, controller.nonce);
         assert_eq!(publish.status, 0);
         assert_eq!(publish.has_fd, 1);
-        assert!(fixture
-            .root
-            .join("private/var/run/shellspawn.sock")
-            .exists());
+        assert!(fixture.root.join("var/run/shellspawn.sock").exists());
         let retire = request(&controller, CohortEndpoint::Shellspawn, 2, controller.nonce);
         assert_eq!(retire.status, 0);
-        assert!(!fixture
-            .root
-            .join("private/var/run/shellspawn.sock")
-            .exists());
+        assert!(!fixture.root.join("var/run/shellspawn.sock").exists());
         controller.finish().unwrap();
         assert!(!fixture.root.join(".init.pid").exists());
         assert!(!fixture.root.join(".darlingserver.sock").exists());
+    }
+
+    #[test]
+    fn pending_publication_rolls_back_on_client_eof_before_adoption() {
+        let fixture = Fixture::new();
+        let (controller, _darlingserver) =
+            CohortController::start_for_test(&fixture.root, 4242).unwrap();
+        let client = connect(&controller.control_test_path);
+        send_request_only(
+            client.as_raw_fd(),
+            CohortEndpoint::Shellspawn,
+            OPERATION_PUBLISH,
+            controller.nonce,
+        );
+        let response = receive_response_only(client.as_raw_fd());
+        assert_eq!(response.status, 0);
+        drop(client);
+        wait_until_missing(&fixture.root.join("var/run/shellspawn.sock"));
+        assert_eq!(
+            request(
+                &controller,
+                CohortEndpoint::Shellspawn,
+                OPERATION_PUBLISH,
+                controller.nonce,
+            )
+            .status,
+            0
+        );
+        assert_eq!(
+            request(
+                &controller,
+                CohortEndpoint::Shellspawn,
+                OPERATION_RETIRE,
+                controller.nonce,
+            )
+            .status,
+            0
+        );
+        controller.finish().unwrap();
+    }
+
+    #[test]
+    fn pending_publication_rolls_back_on_explicit_adoption_abort() {
+        let fixture = Fixture::new();
+        let (controller, _darlingserver) =
+            CohortController::start_for_test(&fixture.root, 4242).unwrap();
+        let client = connect(&controller.control_test_path);
+        send_request_only(
+            client.as_raw_fd(),
+            CohortEndpoint::Shellspawn,
+            OPERATION_PUBLISH,
+            controller.nonce,
+        );
+        assert_eq!(receive_response_only(client.as_raw_fd()).status, 0);
+        send_request_only(
+            client.as_raw_fd(),
+            CohortEndpoint::Shellspawn,
+            OPERATION_ABORT,
+            controller.nonce,
+        );
+        drop(client);
+        wait_until_missing(&fixture.root.join("var/run/shellspawn.sock"));
+        controller.finish().unwrap();
+    }
+
+    #[test]
+    fn response_delivery_failure_cannot_leave_pending_publication() {
+        let fixture = Fixture::new();
+        let (controller, _darlingserver) =
+            CohortController::start_for_test(&fixture.root, 4242).unwrap();
+        let client = connect(&controller.control_test_path);
+        send_request_only(
+            client.as_raw_fd(),
+            CohortEndpoint::Shellspawn,
+            OPERATION_PUBLISH,
+            controller.nonce,
+        );
+        unsafe { libc::shutdown(client.as_raw_fd(), libc::SHUT_RDWR) };
+        drop(client);
+        wait_until_missing(&fixture.root.join("var/run/shellspawn.sock"));
+        assert_eq!(
+            request(
+                &controller,
+                CohortEndpoint::Shellspawn,
+                OPERATION_PUBLISH,
+                controller.nonce,
+            )
+            .status,
+            0
+        );
+        assert_eq!(
+            request(
+                &controller,
+                CohortEndpoint::Shellspawn,
+                OPERATION_RETIRE,
+                controller.nonce,
+            )
+            .status,
+            0
+        );
+        controller.finish().unwrap();
+    }
+
+    #[test]
+    fn final_ack_delivery_failure_preserves_committed_publication() {
+        let fixture = Fixture::new();
+        let (controller, _darlingserver) =
+            CohortController::start_for_test(&fixture.root, 4242).unwrap();
+        let client = connect(&controller.control_test_path);
+        send_request_only(
+            client.as_raw_fd(),
+            CohortEndpoint::Shellspawn,
+            OPERATION_PUBLISH,
+            controller.nonce,
+        );
+        assert_eq!(receive_response_only(client.as_raw_fd()).status, 0);
+
+        // Make the final acknowledgement undeliverable while preserving the
+        // write side used for the irrevocable COMMIT.
+        assert_eq!(
+            unsafe { libc::shutdown(client.as_raw_fd(), libc::SHUT_RD) },
+            0
+        );
+        send_request_only(
+            client.as_raw_fd(),
+            CohortEndpoint::Shellspawn,
+            OPERATION_COMMIT,
+            controller.nonce,
+        );
+        drop(client);
+
+        let endpoint = fixture.root.join("var/run/shellspawn.sock");
+        assert!(endpoint.exists());
+        assert_ne!(
+            request(
+                &controller,
+                CohortEndpoint::Shellspawn,
+                OPERATION_PUBLISH,
+                controller.nonce,
+            )
+            .status,
+            0,
+            "a lost final ACK must not make the committed endpoint publishable again"
+        );
+        assert_eq!(
+            request(
+                &controller,
+                CohortEndpoint::Shellspawn,
+                OPERATION_RETIRE,
+                controller.nonce,
+            )
+            .status,
+            0
+        );
+        controller.finish().unwrap();
     }
 
     #[test]
@@ -1856,10 +2362,7 @@ mod tests {
             CohortController::start_for_test(&fixture.root, 4242).unwrap();
         let wrong = request(&controller, CohortEndpoint::Shellspawn, 1, [0x55; 32]);
         assert_ne!(wrong.status, 0);
-        assert!(!fixture
-            .root
-            .join("private/var/run/shellspawn.sock")
-            .exists());
+        assert!(!fixture.root.join("var/run/shellspawn.sock").exists());
         let unknown_operation = request(
             &controller,
             CohortEndpoint::Shellspawn,
@@ -1965,22 +2468,45 @@ mod tests {
     }
 
     #[test]
-    fn retained_marker_rejects_in_place_mutation() {
+    fn retained_prefix_state_rejects_in_place_mutation() {
         let fixture = Fixture::new();
         let (controller, _darlingserver) =
             CohortController::start_for_test(&fixture.root, 4242).unwrap();
-        let marker = fixture.root.join(".darling-runtime-mode-v1");
-        let before = fs::metadata(&marker).unwrap();
-        fs::write(&marker, b"privileged-eunion\n").unwrap();
-        let after = fs::metadata(&marker).unwrap();
+        let state = fixture.root.join(".darling-prefix-state-v2");
+        let original = fs::read(&state).unwrap();
+        let before = fs::metadata(&state).unwrap();
+        fs::write(&state, b"privileged-eunion\n").unwrap();
+        let after = fs::metadata(&state).unwrap();
         assert_eq!((before.dev(), before.ino()), (after.dev(), after.ino()));
         let rejected = request(&controller, CohortEndpoint::Shellspawn, 1, controller.nonce);
         assert_ne!(rejected.status, 0);
-        assert!(!fixture
-            .root
-            .join("private/var/run/shellspawn.sock")
-            .exists());
-        fs::write(&marker, MARKER_VALUE).unwrap();
+        assert!(!fixture.root.join("var/run/shellspawn.sock").exists());
+        fs::write(&state, original).unwrap();
+        controller.finish().unwrap();
+    }
+
+    #[test]
+    fn retained_prefix_fd_does_not_reopen_proc_path() {
+        let fixture = Fixture::new();
+        let prefix = open_prefix(&fixture.root).unwrap();
+        let proc_argument = format!("/proc/self/fd/{}", prefix.as_raw_fd());
+        let authority =
+            SessionAuthority::acquire_from_fd(prefix.as_raw_fd(), proc_argument.as_bytes(), 4242)
+                .unwrap();
+        assert_eq!(authority.prefix_argument, proc_argument.as_bytes());
+        drop(authority);
+    }
+
+    #[test]
+    fn controller_creates_missing_endpoint_parents_under_retained_lease() {
+        let fixture = Fixture::new();
+        fs::remove_dir_all(fixture.root.join("var")).unwrap();
+        let (controller, _darlingserver) =
+            CohortController::start_for_test(&fixture.root, 4242).unwrap();
+        let run = fs::metadata(fixture.root.join("var/run")).unwrap();
+        let launchd = fs::metadata(fixture.root.join("var/tmp/launchd")).unwrap();
+        assert_eq!(run.mode() & 0o7777, 0o755);
+        assert_eq!(launchd.mode() & 0o7777, 0o700);
         controller.finish().unwrap();
     }
 
@@ -2018,17 +2544,11 @@ mod tests {
             drop(authority.publish(CohortEndpoint::Control).unwrap());
             assert!(fixture.root.join(".init.pid").exists());
             assert!(fixture.root.join(".darlingserver.sock").exists());
-            assert!(fixture
-                .root
-                .join("private/var/run/.darling-lifecycle-controller-v1.sock")
-                .exists());
+            assert!(fixture.root.join(".lc-v1.sock").exists());
         }
         assert!(!fixture.root.join(".init.pid").exists());
         assert!(!fixture.root.join(".darlingserver.sock").exists());
-        assert!(!fixture
-            .root
-            .join("private/var/run/.darling-lifecycle-controller-v1.sock")
-            .exists());
+        assert!(!fixture.root.join(".lc-v1.sock").exists());
     }
 
     #[test]
@@ -2055,10 +2575,7 @@ mod tests {
         );
         let rejected = request(&controller, CohortEndpoint::Shellspawn, 1, controller.nonce);
         assert_ne!(rejected.status, 0);
-        assert!(!fixture
-            .root
-            .join("private/var/run/shellspawn.sock")
-            .exists());
+        assert!(!fixture.root.join("var/run/shellspawn.sock").exists());
         drop(controller);
     }
 
@@ -2071,7 +2588,7 @@ mod tests {
             request(&controller, CohortEndpoint::Shellspawn, 1, controller.nonce).status,
             0
         );
-        let endpoint = fixture.root.join("private/var/run/shellspawn.sock");
+        let endpoint = fixture.root.join("var/run/shellspawn.sock");
         fs::rename(&endpoint, endpoint.with_extension("original")).unwrap();
         fs::write(&endpoint, b"replacement").unwrap();
         let rejected = request(&controller, CohortEndpoint::Shellspawn, 2, controller.nonce);
@@ -2088,24 +2605,12 @@ mod tests {
         let retained = fixture.root.with_extension("retained");
         fs::rename(&fixture.root, &retained).unwrap();
         fs::create_dir(&fixture.root).unwrap();
-        fs::create_dir_all(fixture.root.join("private/var/run")).unwrap();
-        fs::create_dir_all(fixture.root.join("private/var/tmp/launchd")).unwrap();
-        fs::write(fixture.root.join(".darling-runtime-mode-v1"), MARKER_VALUE).unwrap();
-        fs::set_permissions(
-            fixture.root.join(".darling-runtime-mode-v1"),
-            fs::Permissions::from_mode(0o600),
-        )
-        .unwrap();
+        fs::create_dir_all(fixture.root.join("var/run")).unwrap();
+        fs::create_dir_all(fixture.root.join("var/tmp/launchd")).unwrap();
 
-        assert!(!fixture
-            .root
-            .join("private/var/run/.darling-lifecycle-controller-v1.sock")
-            .exists());
-        assert!(!retained.join("private/var/run/shellspawn.sock").exists());
-        assert!(!fixture
-            .root
-            .join("private/var/run/shellspawn.sock")
-            .exists());
+        assert!(!fixture.root.join(".lc-v1.sock").exists());
+        assert!(!retained.join("var/run/shellspawn.sock").exists());
+        assert!(!fixture.root.join("var/run/shellspawn.sock").exists());
         fs::remove_dir_all(&fixture.root).unwrap();
         fs::rename(retained, &fixture.root).unwrap();
         assert_eq!(

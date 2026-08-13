@@ -6,6 +6,7 @@
 #include <errno.h>
 #include <dirent.h>
 #include <fcntl.h>
+#include <inttypes.h>
 #include <signal.h>
 #include <stdbool.h>
 #include <stdio.h>
@@ -46,17 +47,38 @@ static void expect_missing(const char* path) {
 
 static void prepare_prefix(const char* prefix) {
 	char path[4096];
-	if (snprintf(path, sizeof(path), "%s/private/var/run", prefix) >= (int)sizeof(path))
+	char state[1024];
+	if (snprintf(path, sizeof(path), "%s/var/run", prefix) >= (int)sizeof(path))
 		fail("path too long");
-	if (mkdir(prefix, 0700) != 0 || mkdir(strcat(strcpy(path, prefix), "/private"), 0700) != 0 ||
-		mkdir(strcat(strcpy(path, prefix), "/private/var"), 0700) != 0 ||
-		mkdir(strcat(strcpy(path, prefix), "/private/var/run"), 0700) != 0 ||
-		mkdir(strcat(strcpy(path, prefix), "/private/var/tmp"), 0700) != 0 ||
-		mkdir(strcat(strcpy(path, prefix), "/private/var/tmp/launchd"), 0700) != 0)
+	if (mkdir(prefix, 0700) != 0 || mkdir(strcat(strcpy(path, prefix), "/var"), 0700) != 0 ||
+		mkdir(strcat(strcpy(path, prefix), "/var/run"), 0700) != 0 ||
+		mkdir(strcat(strcpy(path, prefix), "/var/tmp"), 0700) != 0 ||
+		mkdir(strcat(strcpy(path, prefix), "/var/tmp/launchd"), 0700) != 0)
 		fail("mkdir fixture");
-	if (snprintf(path, sizeof(path), "%s/.darling-runtime-mode-v1", prefix) >= (int)sizeof(path))
-		fail("marker path");
-	write_file(path, "DARLING_RUNTIME_MODE_V1=rootless-eunion\n", 0600);
+	if (chmod(strcat(strcpy(path, prefix), "/var"), 0755) != 0 ||
+		chmod(strcat(strcpy(path, prefix), "/var/run"), 0755) != 0 ||
+		chmod(strcat(strcpy(path, prefix), "/var/tmp"), 01777) != 0 ||
+		chmod(strcat(strcpy(path, prefix), "/var/tmp/launchd"), 0700) != 0)
+		fail("chmod fixture directories");
+	struct stat metadata;
+	if (stat(prefix, &metadata) != 0)
+		fail("stat prefix fixture");
+	int state_length = snprintf(state, sizeof(state),
+		"DARLING_PREFIX_STATE_V2\n"
+		"schema_version=2\n"
+		"runtime_mode=rootless-eunion\n"
+		"generation=1\n"
+		"prefix_device=%ju\n"
+		"prefix_inode=%ju\n"
+		"owner_uid=%ju\n"
+		"owner_gid=%ju\n"
+		"provenance=darling-runtime-prefix-lifecycle-v2\n",
+		(uintmax_t)metadata.st_dev, (uintmax_t)metadata.st_ino,
+		(uintmax_t)metadata.st_uid, (uintmax_t)metadata.st_gid);
+	if (state_length <= 0 || (size_t)state_length >= sizeof(state) ||
+		snprintf(path, sizeof(path), "%s/.darling-prefix-state-v2", prefix) >= (int)sizeof(path))
+		fail("prefix state fixture");
+	write_file(path, state, 0600);
 }
 
 static size_t open_fd_count(void) {
@@ -72,7 +94,7 @@ static size_t open_fd_count(void) {
 
 static void verify_malformed_response_fd_is_closed(const char* prefix) {
 	char endpoint[4096];
-	if (snprintf(endpoint, sizeof(endpoint), "%s/private/var/run/.darling-lifecycle-controller-v1.sock", prefix) >=
+	if (snprintf(endpoint, sizeof(endpoint), "%s/.lc-v1.sock", prefix) >=
 		(int)sizeof(endpoint))
 		fail("fake controller path");
 	int listener = socket(AF_UNIX, SOCK_SEQPACKET | SOCK_CLOEXEC, 0);
@@ -88,7 +110,7 @@ static void verify_malformed_response_fd_is_closed(const char* prefix) {
 	memset(nonce, '0', DARLING_LIFECYCLE_NONCE_HEX_BYTES);
 	nonce[DARLING_LIFECYCLE_NONCE_HEX_BYTES] = 0;
 	if (setenv("DARLING_LIFECYCLE_COHORT_V1", "1", 1) != 0 ||
-		setenv("DARLING_LIFECYCLE_CONTROL_NAME", "/private/var/run/.darling-lifecycle-controller-v1.sock", 1) != 0 ||
+		setenv("DARLING_LIFECYCLE_CONTROL_NAME", "/.lc-v1.sock", 1) != 0 ||
 		setenv("DARLING_LIFECYCLE_CONTROL_NONCE", nonce, 1) != 0 ||
 		setenv("DARLING_LIFECYCLE_CONTROL_TEST_ROOT", prefix, 1) != 0)
 		fail("fake controller environment");
@@ -154,6 +176,20 @@ static pid_t only_child_pid(void) {
 	return child;
 }
 
+static struct darling_lifecycle_cohort_controller* start_controller(
+	const char* prefix,
+	pid_t init_pid,
+	struct darling_lifecycle_cohort_bootstrap* bootstrap
+) {
+	int prefix_fd = open(prefix, O_PATH | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC);
+	if (prefix_fd < 0)
+		fail("open retained prefix");
+	struct darling_lifecycle_cohort_controller* controller =
+		darling_lifecycle_cohort_start(prefix_fd, prefix, init_pid, bootstrap);
+	close(prefix_fd);
+	return controller;
+}
+
 static void verify_sigkill_owner_cleanup(const char* parent_prefix) {
 	char prefix[4096];
 	if (snprintf(prefix, sizeof(prefix), "%s-owner-killed", parent_prefix) >= (int)sizeof(prefix))
@@ -171,7 +207,7 @@ static void verify_sigkill_owner_cleanup(const char* parent_prefix) {
 			_exit(119);
 		struct darling_lifecycle_cohort_bootstrap bootstrap = {};
 		struct darling_lifecycle_cohort_controller* controller =
-			darling_lifecycle_cohort_start(prefix, getpid(), &bootstrap);
+			start_controller(prefix, getpid(), &bootstrap);
 		if (!controller || bootstrap.darlingserver_fd < 0)
 			_exit(120);
 		close(bootstrap.darlingserver_fd);
@@ -202,7 +238,7 @@ static void verify_sigkill_owner_cleanup(const char* parent_prefix) {
 	const char* removed[] = {
 		"/.init.pid",
 		"/.darlingserver.sock",
-		"/private/var/run/.darling-lifecycle-controller-v1.sock",
+		"/.lc-v1.sock",
 	};
 	char path[4096];
 	for (size_t index = 0; index < sizeof(removed) / sizeof(removed[0]); ++index) {
@@ -251,8 +287,8 @@ static int shellspawn_client(const char* prefix) {
 	}
 	char endpoint[4096];
 	char saved[4096];
-	snprintf(endpoint, sizeof(endpoint), "%s/private/var/run/shellspawn.sock", prefix);
-	snprintf(saved, sizeof(saved), "%s/private/var/run/shellspawn.sock.saved", prefix);
+	snprintf(endpoint, sizeof(endpoint), "%s/var/run/shellspawn.sock", prefix);
+	snprintf(saved, sizeof(saved), "%s/var/run/shellspawn.sock.saved", prefix);
 	if (rename(endpoint, saved) != 0)
 		fail("stage endpoint replacement");
 	write_file(endpoint, "replacement", 0600);
@@ -315,7 +351,7 @@ static void verify_shellspawn_keepalive_restart(const char* prefix, const char* 
 		WEXITSTATUS(restart_status) != 0)
 		fail("KeepAlive shellspawn restart");
 	char endpoint[4096];
-	if (snprintf(endpoint, sizeof(endpoint), "%s/private/var/run/shellspawn.sock", prefix) >=
+	if (snprintf(endpoint, sizeof(endpoint), "%s/var/run/shellspawn.sock", prefix) >=
 		(int)sizeof(endpoint))
 		fail("shellspawn restart path");
 	expect_missing(endpoint);
@@ -326,6 +362,78 @@ static int reject_activation(int endpoint_fd, void* context) {
 	(void)context;
 	errno = EIO;
 	return -1;
+}
+
+struct nonce_mutation_context {
+	const char* replacement;
+};
+
+static int mutate_nonce_during_activation(int endpoint_fd, void* context) {
+	(void)endpoint_fd;
+	const struct nonce_mutation_context* mutation = context;
+	return setenv("DARLING_LIFECYCLE_CONTROL_NONCE", mutation->replacement, 1);
+}
+
+static void verify_pending_nonce_snapshot(
+	const char* original_nonce,
+	const char* replacement_nonce
+) {
+	struct nonce_mutation_context mutation = {.replacement = replacement_nonce};
+	int endpoint = darling_lifecycle_publish_and_activate_endpoint(
+		DARLING_LIFECYCLE_ENDPOINT_LAUNCHD,
+		&mutate_nonce_during_activation,
+		&mutation
+	);
+	int activation_errno = errno;
+	if (setenv("DARLING_LIFECYCLE_CONTROL_NONCE", original_nonce, 1) != 0)
+		fail("restore nonce after activation mutation");
+	errno = activation_errno;
+	if (endpoint < 0)
+		fail("pending transaction reread mutated nonce");
+	if (darling_lifecycle_publish_endpoint(DARLING_LIFECYCLE_ENDPOINT_LAUNCHD) >= 0)
+		fail("nonce snapshot commit did not retain ownership");
+	if (darling_lifecycle_retire_endpoint(DARLING_LIFECYCLE_ENDPOINT_LAUNCHD) != 0)
+		fail("retire nonce snapshot endpoint");
+	close(endpoint);
+}
+
+static void verify_adoption_fault_rollback(const char* prefix, const char* fault) {
+	char endpoint[4096];
+	if (snprintf(endpoint, sizeof(endpoint), "%s/var/tmp/launchd/sock", prefix) >=
+		(int)sizeof(endpoint))
+		fail("adoption fault endpoint path");
+	if (setenv("DARLING_LIFECYCLE_COHORT_TEST_ADOPTION_FAULT", fault, 1) != 0)
+		fail("set adoption fault");
+	if (darling_lifecycle_publish_endpoint(DARLING_LIFECYCLE_ENDPOINT_LAUNCHD) >= 0)
+		fail("adoption fault accepted");
+	if (unsetenv("DARLING_LIFECYCLE_COHORT_TEST_ADOPTION_FAULT") != 0)
+		fail("clear adoption fault");
+	for (size_t attempt = 0; attempt < 100; ++attempt) {
+		if (lstat(endpoint, &(struct stat){0}) != 0 && errno == ENOENT)
+			return;
+		usleep(5000);
+	}
+	fail("adoption fault did not roll back pending endpoint");
+}
+
+static void verify_lost_final_ack_commit(void) {
+	if (setenv("DARLING_LIFECYCLE_COHORT_TEST_FINAL_ACK_FAULT", "lost", 1) != 0)
+		fail("set final ACK fault");
+	int endpoint = darling_lifecycle_publish_endpoint(DARLING_LIFECYCLE_ENDPOINT_LAUNCHD);
+	if (endpoint < 0)
+		fail("lost final ACK revoked committed endpoint");
+	if (unsetenv("DARLING_LIFECYCLE_COHORT_TEST_FINAL_ACK_FAULT") != 0)
+		fail("clear final ACK fault");
+	int accepting = 0;
+	socklen_t option_length = sizeof(accepting);
+	if (getsockopt(endpoint, SOL_SOCKET, SO_ACCEPTCONN, &accepting, &option_length) != 0 ||
+		option_length != sizeof(accepting) || accepting != 1)
+		fail("committed endpoint listener was not retained after ACK loss");
+	if (darling_lifecycle_publish_endpoint(DARLING_LIFECYCLE_ENDPOINT_LAUNCHD) >= 0)
+		fail("lost final ACK made committed endpoint publishable again");
+	if (darling_lifecycle_retire_endpoint(DARLING_LIFECYCLE_ENDPOINT_LAUNCHD) != 0)
+		fail("retire endpoint committed across ACK loss");
+	close(endpoint);
 }
 
 static int unauthorized_client(enum darling_lifecycle_endpoint_kind kind) {
@@ -360,36 +468,37 @@ int main(int argc, char** argv) {
 		return shellspawn_client(shellspawn_prefix);
 	if (argc == 3 && strcmp(argv[1], "--unauthorized-client") == 0)
 		return unauthorized_client((enum darling_lifecycle_endpoint_kind)atoi(argv[2]));
-	if (argc != 3 || strcmp(argv[0], "vchroot") != 0 || strcmp(argv[2], "/sbin/launchd") != 0) {
-		fprintf(stderr, "usage: vchroot TASK_OWNED_PREFIX /sbin/launchd\n");
+	const char* prefix = getenv("COHORT_HARNESS_LAUNCHD_PREFIX");
+	if (argc != 1 || !prefix || strcmp(argv[0], "/sbin/launchd") != 0) {
+		fprintf(stderr, "usage: COHORT_HARNESS_LAUNCHD_PREFIX=... /sbin/launchd\n");
 		return 2;
 	}
 	char path[4096];
-	prepare_prefix(argv[1]);
-	verify_malformed_response_fd_is_closed(argv[1]);
+	prepare_prefix(prefix);
+	verify_malformed_response_fd_is_closed(prefix);
 	struct darling_lifecycle_cohort_bootstrap bootstrap = {};
 	struct darling_lifecycle_cohort_controller* controller =
-		darling_lifecycle_cohort_start(argv[1], getppid(), &bootstrap);
+		start_controller(prefix, getppid(), &bootstrap);
 	if (!controller || bootstrap.darlingserver_fd < 0)
 		fail("start Rust controller");
 	configure_transport(&bootstrap);
-	if (setenv("DARLING_LIFECYCLE_CONTROL_TEST_ROOT", argv[1], 1) != 0)
+	if (setenv("DARLING_LIFECYCLE_CONTROL_TEST_ROOT", prefix, 1) != 0)
 		fail("setenv test root");
 
 	struct stat status;
 	if (fstat(bootstrap.darlingserver_fd, &status) != 0 || !S_ISSOCK(status.st_mode))
 		fail("Darlingserver capability");
-	if (snprintf(path, sizeof(path), "%s/.darlingserver.sock", argv[1]) >= (int)sizeof(path) ||
+	if (snprintf(path, sizeof(path), "%s/.darlingserver.sock", prefix) >= (int)sizeof(path) ||
 		stat(path, &status) != 0 || !S_ISSOCK(status.st_mode) || (status.st_mode & 0777) != 0775)
 		fail("Darlingserver endpoint mode");
-	if (snprintf(path, sizeof(path), "%s/.init.pid", argv[1]) >= (int)sizeof(path) ||
+	if (snprintf(path, sizeof(path), "%s/.init.pid", prefix) >= (int)sizeof(path) ||
 		stat(path, &status) != 0 || !S_ISREG(status.st_mode) || (status.st_mode & 0777) != 0600)
 		fail("init pid mode");
-	if (snprintf(path, sizeof(path), "%s/private/var/run/.darling-lifecycle-controller-v1.sock", argv[1]) >=
+	if (snprintf(path, sizeof(path), "%s/.lc-v1.sock", prefix) >=
 		(int)sizeof(path) || stat(path, &status) != 0 || !S_ISSOCK(status.st_mode) ||
 		(status.st_mode & 0777) != 0600)
 		fail("controller endpoint mode");
-	if (snprintf(path, sizeof(path), "%s/.lifecycle.lock", argv[1]) >= (int)sizeof(path))
+	if (snprintf(path, sizeof(path), "%s/.lifecycle.lock", prefix) >= (int)sizeof(path))
 		fail("lock path");
 	int competing_lock = open(path, O_RDWR | O_NOFOLLOW | O_CLOEXEC);
 	if (competing_lock < 0 || flock(competing_lock, LOCK_EX | LOCK_NB) == 0)
@@ -409,10 +518,14 @@ int main(int argc, char** argv) {
 	setenv("DARLING_LIFECYCLE_CONTROL_NONCE", original_nonce, 1);
 
 	expect_unauthorized_child("/proc/self/exe", "not-launchd", DARLING_LIFECYCLE_ENDPOINT_LAUNCHD);
+	verify_adoption_fault_rollback(prefix, "dup");
+	verify_adoption_fault_rollback(prefix, "listen");
+	verify_lost_final_ack_commit();
+	verify_pending_nonce_snapshot(original_nonce, wrong_nonce);
 	if (darling_lifecycle_publish_and_activate_endpoint(
 			DARLING_LIFECYCLE_ENDPOINT_LAUNCHD, &reject_activation, NULL) >= 0)
 		fail("post-publication activation failure accepted");
-	if (snprintf(path, sizeof(path), "%s/private/var/tmp/launchd/sock", argv[1]) >= (int)sizeof(path))
+	if (snprintf(path, sizeof(path), "%s/var/tmp/launchd/sock", prefix) >= (int)sizeof(path))
 		fail("launchd rollback path");
 	expect_missing(path);
 	int launchd = darling_lifecycle_publish_endpoint(DARLING_LIFECYCLE_ENDPOINT_LAUNCHD);
@@ -420,15 +533,15 @@ int main(int argc, char** argv) {
 		fail("publish launchd");
 	expect_unauthorized_child("/proc/self/exe", "not-shellspawn", DARLING_LIFECYCLE_ENDPOINT_SHELLSPAWN);
 	char shellspawn_program[4096];
-	if (snprintf(shellspawn_program, sizeof(shellspawn_program), "%s/shellspawn", argv[1]) >=
+	if (snprintf(shellspawn_program, sizeof(shellspawn_program), "%s/shellspawn", prefix) >=
 		(int)sizeof(shellspawn_program) || symlink("/proc/self/exe", shellspawn_program) != 0)
 		fail("create shellspawn fixture executable");
-	verify_shellspawn_keepalive_restart(argv[1], shellspawn_program);
+	verify_shellspawn_keepalive_restart(prefix, shellspawn_program);
 	pid_t child = fork();
 	if (child < 0)
 		fail("fork shellspawn fixture");
 	if (child == 0) {
-		setenv("COHORT_HARNESS_SHELLSPAWN_PREFIX", argv[1], 1);
+		setenv("COHORT_HARNESS_SHELLSPAWN_PREFIX", prefix, 1);
 		execl(shellspawn_program, "shellspawn", NULL);
 		_exit(127);
 	}
@@ -447,17 +560,17 @@ int main(int argc, char** argv) {
 	const char* removed[] = {
 		"/.init.pid",
 		"/.darlingserver.sock",
-		"/private/var/run/shellspawn.sock",
-		"/private/var/tmp/launchd/sock",
-		"/private/var/run/.darling-lifecycle-controller-v1.sock",
+		"/var/run/shellspawn.sock",
+		"/var/tmp/launchd/sock",
+		"/.lc-v1.sock",
 	};
 	for (size_t index = 0; index < sizeof(removed) / sizeof(removed[0]); ++index) {
-		if (snprintf(path, sizeof(path), "%s%s", argv[1], removed[index]) >= (int)sizeof(path))
+		if (snprintf(path, sizeof(path), "%s%s", prefix, removed[index]) >= (int)sizeof(path))
 			fail("cleanup path");
 		expect_missing(path);
 	}
-	verify_sigkill_owner_cleanup(argv[1]);
+	verify_sigkill_owner_cleanup(prefix);
 
-	printf("LIFECYCLE_COHORT_ROUTING_VALID endpoints=5 lease=exact-exclusive-flock replacement=preserved shellspawn_keepalive=ready activation_rollback=clean flood=bounded owner_group_sigkill=clean scm_rights_leaks=0\n");
+	printf("LIFECYCLE_COHORT_ROUTING_VALID endpoints=5 lease=exact-exclusive-flock replacement=preserved shellspawn_keepalive=ready activation_rollback=clean commit_ack_loss=retained nonce_snapshot=stable flood=bounded owner_group_sigkill=clean scm_rights_leaks=0\n");
 	return 0;
 }
