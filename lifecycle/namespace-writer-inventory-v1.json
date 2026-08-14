@@ -381,15 +381,26 @@
       "migration": "The opt-in first-cohort route adopts a listener published through the Rust controller lease; the legacy path remains until global routing activation."
     },
     {
-      "id": "darlingserver.runtime-logs",
-      "owner": {"repository": "darling", "paths": ["src/external/darlingserver/src/logging.cpp", "src/external/darlingserver/src/kqchan.cpp", "src/external/darlingserver/src/call.cpp"], "symbols": ["DarlingServer::Log::_log", "__auxlog_fd", "__rpctrace_fd"]},
+      "id": "darlingserver.runtime-main-log",
+      "owner": {"repository": "darling", "paths": ["src/external/darlingserver/src/logging.cpp"], "symbols": ["DarlingServer::Log::_log"]},
       "operation": ["create-directory", "create", "append"],
-      "targets": ["/private/var/log/dserver.log", "/private/var/log/dserver-auxlog.txt"],
+      "targets": ["/private/var/log/dserver.log"],
       "syscall_or_helper": ["std::filesystem::create_directories", "open(O_CREAT|O_APPEND)", "write"],
       "lifecycle_phase": "darlingserver-runtime-diagnostics",
+      "lock": {"required": true, "path": ".lifecycle.lock", "status": "exact-exclusive-flock", "acquisition": "rust-cohort-controller-retained-session-lease", "retained_fd": true},
+      "compatibility": "cohort-ready",
+      "migration": "The opt-in controller opens dserver.log fd-relative under its retained prefix and exact lifecycle lease, then transfers only the append-only writer FD. Global routing remains deferred."
+    },
+    {
+      "id": "darlingserver.runtime-aux-log",
+      "owner": {"repository": "darling", "paths": ["src/external/darlingserver/src/kqchan.cpp", "src/external/darlingserver/src/call.cpp"], "symbols": ["__auxlog_fd", "__rpctrace_fd"]},
+      "operation": ["create-directory", "create", "append"],
+      "targets": ["/private/var/log/dserver-auxlog.txt"],
+      "syscall_or_helper": ["open(O_CREAT|O_APPEND)", "write"],
+      "lifecycle_phase": "darlingserver-runtime-diagnostics-perf-profile",
       "lock": {"required": true, "path": ".lifecycle.lock", "status": "missing", "acquisition": "none", "retained_fd": false},
       "compatibility": "incompatible",
-      "migration": "Open diagnostic files only through a controller-issued retained prefix capability; diagnostic opt-in must not bypass the lease."
+      "migration": "Route the Perf-derived auxlog call sites only after that composition has the retained-prefix controller ABI; do not infer readiness from the Homebrew main-log route."
     },
     {
       "id": "launchd.system-ipc-socket",

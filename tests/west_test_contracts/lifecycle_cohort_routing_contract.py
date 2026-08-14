@@ -14,6 +14,7 @@ COHORT = {
     "darling.startup.shellspawn-preflight",
     "darling.shellspawn.socket",
     "darlingserver.control-socket",
+    "darlingserver.runtime-main-log",
     "launchd.system-ipc-socket",
     "launchd.per-user-ipc-socket",
 }

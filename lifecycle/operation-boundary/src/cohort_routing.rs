@@ -52,6 +52,8 @@ const CONTROL_NAME: &[u8] = b".lc-v1.sock";
 const SHELLSPAWN_PARENT: &[&[u8]] = &[b"var", b"run"];
 const LAUNCHD_PARENT: &[&[u8]] = &[b"var", b"tmp", b"launchd"];
 const PER_USER_PARENT: &[&[u8]] = &[b"private", b"var", b"tmp"];
+const DSERVER_LOG_PARENT: &[&[u8]] = &[b"private", b"var", b"log"];
+const DSERVER_LOG_NAME: &[u8] = b"dserver.log";
 
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
 #[repr(u16)]
@@ -374,6 +376,30 @@ fn ensure_endpoint_parents(prefix: RawFd) -> Result<(), CohortError> {
         prefix,
         &[(b"private", 0o755), (b"var", 0o755), (b"tmp", 0o1777)],
     )?;
+    ensure_directory_chain(
+        prefix,
+        &[(b"private", 0o755), (b"var", 0o755), (b"log", 0o755)],
+    )?;
+    Ok(())
+}
+
+fn rollback_created_log(
+    parent: RawFd,
+    name: &[u8],
+    expected: FileIdentity,
+) -> Result<(), CohortError> {
+    if named_identity(parent, name)?.map(FileIdentity::inode_key) != Some(expected.inode_key()) {
+        return Err(CohortError::Identity("new Darlingserver log rollback"));
+    }
+    let name = component(name)?;
+    if unsafe { libc::unlinkat(parent, name.as_ptr(), 0) } < 0 {
+        return Err(io_error("unlinkat(new Darlingserver log rollback)"));
+    }
+    if named_identity(parent, name.as_bytes())?.is_some() {
+        return Err(CohortError::Identity(
+            "new Darlingserver log rollback result",
+        ));
+    }
     Ok(())
 }
 
@@ -572,6 +598,15 @@ struct RetainedFile {
 }
 
 #[derive(Debug)]
+struct PublishedLog {
+    parent: OwnedFd,
+    parent_identity: FileIdentity,
+    object: OwnedFd,
+    identity: FileIdentity,
+    name: Vec<u8>,
+}
+
+#[derive(Debug)]
 struct RetainedState {
     object: OwnedFd,
     identity: FileIdentity,
@@ -759,6 +794,7 @@ struct SessionAuthority {
     init_pid: Option<RetainedFile>,
     endpoints: BTreeMap<EndpointKey, PublishedEndpoint>,
     endpoint_owners: BTreeMap<EndpointKey, PeerAuthority>,
+    log: Option<PublishedLog>,
     session_root_pid: libc::pid_t,
     #[cfg(test)]
     prefix_argument: Vec<u8>,
@@ -767,6 +803,8 @@ struct SessionAuthority {
     allow_test_peer: bool,
     #[cfg(test)]
     dynamic_fault: Option<DynamicPublicationFault>,
+    #[cfg(test)]
+    fail_log_after_create: bool,
 }
 
 impl SessionAuthority {
@@ -823,6 +861,7 @@ impl SessionAuthority {
             init_pid: None,
             endpoints: BTreeMap::new(),
             endpoint_owners: BTreeMap::new(),
+            log: None,
             session_root_pid: init_pid,
             #[cfg(test)]
             prefix_argument,
@@ -831,6 +870,8 @@ impl SessionAuthority {
             allow_test_peer: false,
             #[cfg(test)]
             dynamic_fault: None,
+            #[cfg(test)]
+            fail_log_after_create: false,
         };
         authority.publish_init_pid(init_pid)?;
         Ok(authority)
@@ -876,7 +917,113 @@ impl SessionAuthority {
         for owner in self.endpoint_owners.values() {
             fds.push(owner._process.as_raw_fd());
         }
+        if let Some(log) = &self.log {
+            fds.extend([log.parent.as_raw_fd(), log.object.as_raw_fd()]);
+        }
         fds
+    }
+
+    fn publish_log(&mut self) -> Result<OwnedFd, CohortError> {
+        self.revalidate()?;
+        if self.log.is_some() {
+            return Err(CohortError::EndpointExists);
+        }
+        let parent = open_directory_chain(self.prefix.as_raw_fd(), DSERVER_LOG_PARENT)?;
+        let parent_identity = identity(parent.as_raw_fd())?;
+        let name = DSERVER_LOG_NAME;
+        let existing = named_identity(parent.as_raw_fd(), name)?;
+        if let Some(expected) = existing {
+            // Validate the named object before asking the kernel for a writer.
+            // In particular, opening a FIFO O_WRONLY can block indefinitely.
+            validate_owned(expected, libc::S_IFREG, Some(0o644))?;
+        }
+        let (writer, created) = if existing.is_some() {
+            (
+                openat(
+                    parent.as_raw_fd(),
+                    name,
+                    libc::O_WRONLY | libc::O_APPEND | libc::O_NOFOLLOW | libc::O_CLOEXEC,
+                    0,
+                )?,
+                None,
+            )
+        } else {
+            let writer = openat(
+                parent.as_raw_fd(),
+                name,
+                libc::O_WRONLY
+                    | libc::O_APPEND
+                    | libc::O_CREAT
+                    | libc::O_EXCL
+                    | libc::O_NOFOLLOW
+                    | libc::O_CLOEXEC,
+                0o644,
+            )?;
+            let created = identity(writer.as_raw_fd())?;
+            (writer, Some(created))
+        };
+        let publication = (|| {
+            // Creation mode is filtered by the process umask.  Normalize the
+            // exact newly-created inode before it can be transferred.
+            if created.is_some() && unsafe { libc::fchmod(writer.as_raw_fd(), 0o644) } < 0 {
+                return Err(io_error("fchmod(new Darlingserver log)"));
+            }
+            #[cfg(test)]
+            if created.is_some() && self.fail_log_after_create {
+                return Err(CohortError::Protocol("injected post-create log failure"));
+            }
+            let retained = openat(
+                parent.as_raw_fd(),
+                name,
+                libc::O_PATH | libc::O_NOFOLLOW | libc::O_CLOEXEC,
+                0,
+            )?;
+            let expected = identity(retained.as_raw_fd())?;
+            validate_owned(expected, libc::S_IFREG, Some(0o644))?;
+            if identity(writer.as_raw_fd())? != expected
+                || named_identity(parent.as_raw_fd(), name)? != Some(expected)
+            {
+                return Err(CohortError::Identity("Darlingserver log publication"));
+            }
+            Ok((retained, expected))
+        })();
+        let (retained, expected) = match publication {
+            Ok(publication) => publication,
+            Err(error) => {
+                if let Some(created) = created {
+                    rollback_created_log(parent.as_raw_fd(), name, created)?;
+                }
+                return Err(error);
+            }
+        };
+        if let Some(created) = created {
+            if expected.inode_key() != created.inode_key() {
+                rollback_created_log(parent.as_raw_fd(), name, created)?;
+                return Err(CohortError::Identity("new Darlingserver log identity"));
+            }
+        }
+        self.log = Some(PublishedLog {
+            parent,
+            parent_identity,
+            object: retained,
+            identity: expected,
+            name: name.to_vec(),
+        });
+        Ok(writer)
+    }
+
+    fn validate_logs(&mut self) -> Result<(), CohortError> {
+        self.revalidate()?;
+        if let Some(log) = &self.log {
+            if identity(log.parent.as_raw_fd())? != log.parent_identity
+                || identity(log.object.as_raw_fd())? != log.identity
+                || named_identity(log.parent.as_raw_fd(), &log.name)? != Some(log.identity)
+            {
+                return Err(CohortError::Identity("Darlingserver log replacement"));
+            }
+        }
+        self.log = None;
+        Ok(())
     }
 
     fn publish_init_pid(&mut self, init_pid: libc::pid_t) -> Result<(), CohortError> {
@@ -1389,6 +1536,9 @@ impl SessionAuthority {
 
     fn cleanup_all(&mut self) -> Result<(), CohortError> {
         let mut first_error = None;
+        if let Err(error) = self.validate_logs() {
+            first_error = Some(error);
+        }
         let keys = self.endpoints.keys().copied().collect::<Vec<_>>();
         for key in keys {
             if self.endpoints.contains_key(&key) {
@@ -1783,6 +1933,7 @@ fn server_loop(
 #[repr(C)]
 pub struct CohortBootstrap {
     pub darlingserver_fd: c_int,
+    pub dserver_log_fd: c_int,
     pub control_name_len: u16,
     pub reserved: u16,
     pub control_name: [u8; CONTROL_NAME_CAPACITY],
@@ -1886,6 +2037,7 @@ fn wait_worker(worker: ProcessWorker) -> Result<(), CohortError> {
 
 pub struct CohortController {
     shutdown: OwnedFd,
+    dserver_log: Option<OwnedFd>,
     #[cfg(test)]
     thread: Option<JoinHandle<(SessionAuthority, Result<(), CohortError>)>>,
     #[cfg(not(test))]
@@ -1908,7 +2060,11 @@ impl CohortController {
         init_pid: libc::pid_t,
     ) -> Result<(Self, OwnedFd), CohortError> {
         let authority = SessionAuthority::acquire_from_fd(prefix_fd, prefix_argument, init_pid)?;
-        Self::start_with_authority(authority, None, false)
+        #[cfg(test)]
+        let test_prefix = Some(Path::new(std::ffi::OsStr::from_bytes(prefix_argument)));
+        #[cfg(not(test))]
+        let test_prefix = None;
+        Self::start_with_authority(authority, test_prefix, false)
     }
 
     fn start_with_authority(
@@ -1923,6 +2079,7 @@ impl CohortController {
         #[cfg(not(test))]
         let _ = (allow_test_peer, test_prefix);
         let darlingserver = authority.publish(CohortEndpoint::DarlingServer)?;
+        let dserver_log = authority.publish_log()?;
         let nonce = random_nonce()?;
         let name = CONTROL_GUEST_PATH.to_vec();
         let listener = authority.publish(CohortEndpoint::Control)?;
@@ -1941,6 +2098,7 @@ impl CohortController {
                 .map_err(|error| CohortError::Io("spawn(controller)", error))?;
             Self {
                 shutdown,
+                dserver_log: Some(dserver_log),
                 thread: Some(thread),
                 control_name: name,
                 nonce,
@@ -2050,6 +2208,7 @@ impl CohortController {
             }
             Self {
                 shutdown,
+                dserver_log: Some(dserver_log),
                 process: Some(process),
                 control_name: name,
                 nonce,
@@ -2074,6 +2233,12 @@ impl CohortController {
 
     pub fn nonce_hex(&self) -> [u8; NONCE_HEX_BYTES] {
         nonce_hex(&self.nonce)
+    }
+
+    fn take_dserver_log(&mut self) -> Result<OwnedFd, CohortError> {
+        self.dserver_log.take().ok_or(CohortError::Protocol(
+            "Darlingserver log already transferred",
+        ))
     }
 
     pub fn finish(mut self) -> Result<(), CohortError> {
@@ -2139,7 +2304,7 @@ pub unsafe extern "C" fn darling_lifecycle_cohort_start(
         return ptr::null_mut();
     }
     let prefix_argument = CStr::from_ptr(prefix_argument);
-    let (controller, darlingserver) =
+    let (mut controller, darlingserver) =
         match CohortController::start_from_fd(prefix_fd, prefix_argument.to_bytes(), init_pid) {
             Ok(value) => value,
             Err(error) => {
@@ -2147,11 +2312,19 @@ pub unsafe extern "C" fn darling_lifecycle_cohort_start(
                 return ptr::null_mut();
             }
         };
+    let dserver_log = match controller.take_dserver_log() {
+        Ok(log) => log,
+        Err(error) => {
+            eprintln!("lifecycle cohort log transfer refused: {error}");
+            return ptr::null_mut();
+        }
+    };
     if controller.control_name.len() > CONTROL_NAME_CAPACITY {
         return ptr::null_mut();
     }
     let mut bootstrap = CohortBootstrap {
         darlingserver_fd: darlingserver.into_raw_fd(),
+        dserver_log_fd: dserver_log.into_raw_fd(),
         control_name_len: controller.control_name.len() as u16,
         reserved: 0,
         control_name: [0; CONTROL_NAME_CAPACITY],
@@ -2188,7 +2361,7 @@ pub unsafe extern "C" fn darling_lifecycle_cohort_finish(
 mod tests {
     use super::*;
     use std::fs;
-    use std::os::unix::fs::{FileTypeExt, MetadataExt, PermissionsExt};
+    use std::os::unix::fs::{symlink, FileTypeExt, MetadataExt, PermissionsExt};
     use std::path::PathBuf;
     use std::process::Command;
     use std::sync::atomic::{AtomicU64, Ordering};
@@ -2272,6 +2445,207 @@ mod tests {
             0
         );
         fd
+    }
+
+    #[test]
+    fn dserver_log_is_opened_fd_relative_and_persists_after_clean_finish() {
+        let fixture = Fixture::new();
+        let (mut controller, listener) =
+            CohortController::start_for_test(&fixture.root, std::process::id() as _).unwrap();
+        drop(listener);
+        let log = controller.take_dserver_log().unwrap();
+        write_all(log.as_raw_fd(), b"cohort-main-log\n").unwrap();
+        let descriptor_identity = identity(log.as_raw_fd()).unwrap();
+        let path = fixture.root.join("private/var/log/dserver.log");
+        let metadata = fs::metadata(&path).unwrap();
+        assert_eq!(metadata.dev(), descriptor_identity.device);
+        assert_eq!(metadata.ino(), descriptor_identity.inode);
+        assert_eq!(metadata.mode() & 0o777, 0o644);
+        controller.finish().unwrap();
+        assert_eq!(fs::read(&path).unwrap(), b"cohort-main-log\n");
+        assert!(!fixture
+            .root
+            .join("private/var/log/dserver-auxlog.txt")
+            .exists());
+    }
+
+    #[test]
+    fn dserver_log_replacement_is_preserved_and_finish_fails_closed() {
+        let fixture = Fixture::new();
+        let (mut controller, listener) =
+            CohortController::start_for_test(&fixture.root, std::process::id() as _).unwrap();
+        drop(listener);
+        let log = controller.take_dserver_log().unwrap();
+        let original = identity(log.as_raw_fd()).unwrap();
+        let directory = fixture.root.join("private/var/log");
+        let path = directory.join("dserver.log");
+        let retained = directory.join("dserver.log.retained");
+        fs::rename(&path, &retained).unwrap();
+        fs::write(&path, b"replacement\n").unwrap();
+        fs::set_permissions(&path, fs::Permissions::from_mode(0o644)).unwrap();
+        assert!(controller.finish().is_err());
+        assert_eq!(fs::read(&path).unwrap(), b"replacement\n");
+        let metadata = fs::metadata(&retained).unwrap();
+        assert_eq!(
+            (metadata.dev(), metadata.ino()),
+            (original.device, original.inode)
+        );
+    }
+
+    #[test]
+    fn dserver_log_symlink_is_rejected_before_writer_transfer() {
+        let fixture = Fixture::new();
+        let directory = fixture.root.join("private/var/log");
+        fs::create_dir_all(&directory).unwrap();
+        fs::set_permissions(&directory, fs::Permissions::from_mode(0o755)).unwrap();
+        fs::write(directory.join("outside"), b"preserved\n").unwrap();
+        symlink("outside", directory.join("dserver.log")).unwrap();
+        assert!(CohortController::start_for_test(&fixture.root, std::process::id() as _).is_err());
+        assert_eq!(fs::read(directory.join("outside")).unwrap(), b"preserved\n");
+    }
+
+    #[test]
+    fn dserver_log_fifo_is_rejected_without_opening_a_writer() {
+        let fixture = Fixture::new();
+        let directory = fixture.root.join("private/var/log");
+        fs::create_dir_all(&directory).unwrap();
+        fs::set_permissions(&directory, fs::Permissions::from_mode(0o755)).unwrap();
+        let fifo = CString::new(directory.join("dserver.log").as_os_str().as_bytes()).unwrap();
+        assert_eq!(unsafe { libc::mkfifo(fifo.as_ptr(), 0o644) }, 0);
+        let started = Instant::now();
+        assert!(CohortController::start_for_test(&fixture.root, std::process::id() as _).is_err());
+        assert!(started.elapsed() < Duration::from_secs(1));
+        assert!(fs::symlink_metadata(directory.join("dserver.log"))
+            .unwrap()
+            .file_type()
+            .is_fifo());
+    }
+
+    #[test]
+    fn dserver_log_creation_normalizes_aggressive_umask_inode_bound() {
+        const CHILD: &str = "DARLING_LIFECYCLE_UMASK_TEST_CHILD";
+        if std::env::var_os(CHILD).is_none() {
+            let status = Command::new(std::env::current_exe().unwrap())
+                .args([
+                    "--exact",
+                    "cohort_routing::tests::dserver_log_creation_normalizes_aggressive_umask_inode_bound",
+                    "--nocapture",
+                ])
+                .env(CHILD, "1")
+                .status()
+                .unwrap();
+            assert!(status.success());
+            return;
+        }
+        let fixture = Fixture::new();
+        let previous = unsafe { libc::umask(0o077) };
+        let result = CohortController::start_for_test(&fixture.root, std::process::id() as _);
+        unsafe { libc::umask(previous) };
+        let (mut controller, listener) = result.unwrap();
+        drop(listener);
+        let log = controller.take_dserver_log().unwrap();
+        assert_eq!(identity(log.as_raw_fd()).unwrap().mode & 0o777, 0o644);
+        controller.finish().unwrap();
+        assert_eq!(
+            fs::metadata(fixture.root.join("private/var/log/dserver.log"))
+                .unwrap()
+                .mode()
+                & 0o777,
+            0o644
+        );
+    }
+
+    #[test]
+    fn dserver_log_created_inode_rollback_is_exact_and_replacement_safe() {
+        let fixture = Fixture::new();
+        let directory = fixture.root.join("private/var/log");
+        fs::create_dir_all(&directory).unwrap();
+        fs::set_permissions(&directory, fs::Permissions::from_mode(0o755)).unwrap();
+        let parent = open_directory_chain(
+            open_prefix(&fixture.root).unwrap().as_raw_fd(),
+            DSERVER_LOG_PARENT,
+        )
+        .unwrap();
+        let created = openat(
+            parent.as_raw_fd(),
+            DSERVER_LOG_NAME,
+            libc::O_WRONLY | libc::O_CREAT | libc::O_EXCL | libc::O_CLOEXEC,
+            0o600,
+        )
+        .unwrap();
+        let created_identity = identity(created.as_raw_fd()).unwrap();
+        rollback_created_log(parent.as_raw_fd(), DSERVER_LOG_NAME, created_identity).unwrap();
+        assert!(!directory.join("dserver.log").exists());
+
+        let original = openat(
+            parent.as_raw_fd(),
+            DSERVER_LOG_NAME,
+            libc::O_WRONLY | libc::O_CREAT | libc::O_EXCL | libc::O_CLOEXEC,
+            0o600,
+        )
+        .unwrap();
+        let original_identity = identity(original.as_raw_fd()).unwrap();
+        fs::rename(directory.join("dserver.log"), directory.join("retained")).unwrap();
+        fs::write(directory.join("dserver.log"), b"replacement\n").unwrap();
+        assert!(
+            rollback_created_log(parent.as_raw_fd(), DSERVER_LOG_NAME, original_identity).is_err()
+        );
+        assert_eq!(
+            fs::read(directory.join("dserver.log")).unwrap(),
+            b"replacement\n"
+        );
+        assert_eq!(
+            fs::metadata(directory.join("retained")).unwrap().ino(),
+            original_identity.inode
+        );
+    }
+
+    #[test]
+    fn dserver_log_post_create_failure_removes_exact_inode() {
+        let fixture = Fixture::new();
+        let mut authority =
+            SessionAuthority::acquire(&fixture.root, std::process::id() as _).unwrap();
+        authority.fail_log_after_create = true;
+        assert!(matches!(
+            authority.publish_log(),
+            Err(CohortError::Protocol("injected post-create log failure"))
+        ));
+        assert!(!fixture.root.join("private/var/log/dserver.log").exists());
+        assert!(authority.log.is_none());
+    }
+
+    #[test]
+    fn dserver_log_bootstrap_transfers_exact_writer_fd_once() {
+        let fixture = Fixture::new();
+        let prefix = open_prefix(&fixture.root).unwrap();
+        let prefix_argument = CString::new(fixture.root.as_os_str().as_bytes()).unwrap();
+        let mut bootstrap = MaybeUninit::<CohortBootstrap>::zeroed();
+        let controller = unsafe {
+            darling_lifecycle_cohort_start(
+                prefix.as_raw_fd(),
+                prefix_argument.as_ptr(),
+                std::process::id() as _,
+                bootstrap.as_mut_ptr(),
+            )
+        };
+        assert!(!controller.is_null());
+        let bootstrap = unsafe { bootstrap.assume_init() };
+        assert!(bootstrap.darlingserver_fd >= 0);
+        assert!(bootstrap.dserver_log_fd >= 0);
+        write_all(bootstrap.dserver_log_fd, b"ffi-bootstrap-log\n").unwrap();
+        let expected = identity(bootstrap.dserver_log_fd).unwrap();
+        assert_eq!(unsafe { darling_lifecycle_cohort_finish(controller) }, 0);
+        let path = fixture.root.join("private/var/log/dserver.log");
+        let metadata = fs::metadata(&path).unwrap();
+        assert_eq!(
+            (metadata.dev(), metadata.ino()),
+            (expected.device, expected.inode)
+        );
+        assert_eq!(fs::read(&path).unwrap(), b"ffi-bootstrap-log\n");
+        unsafe {
+            libc::close(bootstrap.darlingserver_fd);
+            libc::close(bootstrap.dserver_log_fd);
+        }
     }
 
     fn request(
