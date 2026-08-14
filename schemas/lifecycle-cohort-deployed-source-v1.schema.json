@@ -27,16 +27,20 @@
     "semantic_closure": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["cohort_routing_rs_sha256", "cohort_header_sha256", "cohort_client_c_sha256", "launchd_ipc_c_sha256", "shellspawn_c_sha256", "darlingserver_cpp_sha256", "namespace_inventory_sha256", "routing_harness_sha256", "routing_contract_sha256", "routing_wrapper_sha256", "routing_documentation_sha256", "writer_documentation_sha256", "deployed_contract_sha256", "deployed_wrapper_sha256", "deployed_documentation_sha256", "source_identity_schema_sha256"],
+      "required": ["cohort_routing_rs_sha256", "cohort_header_sha256", "cohort_client_h_sha256", "cohort_client_c_sha256", "launchd_core_c_sha256", "launchd_ipc_c_sha256", "launchd_runtime_c_sha256", "shellspawn_c_sha256", "darlingserver_cpp_sha256", "namespace_inventory_sha256", "routing_harness_sha256", "per_user_probe_source_sha256", "routing_contract_sha256", "routing_wrapper_sha256", "routing_documentation_sha256", "writer_documentation_sha256", "deployed_contract_sha256", "deployed_wrapper_sha256", "deployed_documentation_sha256", "source_identity_schema_sha256"],
       "properties": {
         "cohort_routing_rs_sha256": {"$ref": "#/$defs/sha256"},
         "cohort_header_sha256": {"$ref": "#/$defs/sha256"},
+        "cohort_client_h_sha256": {"$ref": "#/$defs/sha256"},
         "cohort_client_c_sha256": {"$ref": "#/$defs/sha256"},
+        "launchd_core_c_sha256": {"$ref": "#/$defs/sha256"},
         "launchd_ipc_c_sha256": {"$ref": "#/$defs/sha256"},
+        "launchd_runtime_c_sha256": {"$ref": "#/$defs/sha256"},
         "shellspawn_c_sha256": {"$ref": "#/$defs/sha256"},
         "darlingserver_cpp_sha256": {"$ref": "#/$defs/sha256"},
         "namespace_inventory_sha256": {"$ref": "#/$defs/sha256"},
         "routing_harness_sha256": {"$ref": "#/$defs/sha256"},
+        "per_user_probe_source_sha256": {"$ref": "#/$defs/sha256"},
         "routing_contract_sha256": {"$ref": "#/$defs/sha256"},
         "routing_wrapper_sha256": {"$ref": "#/$defs/sha256"},
         "routing_documentation_sha256": {"$ref": "#/$defs/sha256"},
@@ -71,12 +75,13 @@
         "artifacts": {
           "type": "object",
           "additionalProperties": false,
-          "required": ["darling", "darlingserver", "launchd", "shellspawn"],
+          "required": ["darling", "darlingserver", "launchd", "shellspawn", "per_user_probe"],
           "properties": {
             "darling": {"$ref": "#/$defs/sha256"},
             "darlingserver": {"$ref": "#/$defs/sha256"},
             "launchd": {"$ref": "#/$defs/sha256"},
-            "shellspawn": {"$ref": "#/$defs/sha256"}
+            "shellspawn": {"$ref": "#/$defs/sha256"},
+            "per_user_probe": {"$ref": "#/$defs/sha256"}
           }
         }
       }

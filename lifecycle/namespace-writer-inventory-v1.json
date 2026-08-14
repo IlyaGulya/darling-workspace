@@ -407,11 +407,11 @@
       "owner": {"repository": "darling", "paths": ["src/launchd/src/ipc.c"], "symbols": ["ipc_server_init", "ipc_clean_up"]},
       "operation": ["stale-remove", "create-directory", "bind", "cleanup"],
       "targets": ["/private/var/tmp/launchd-*/*"],
-      "syscall_or_helper": ["unlink", "mkdtemp", "socket(AF_UNIX)", "bind", "rmdir", "atexit"],
+      "syscall_or_helper": ["darling_lifecycle_publish_and_activate_dynamic_endpoint", "darling_lifecycle_retire_endpoint", "SCM_RIGHTS"],
       "lifecycle_phase": "per-user-launchd-start-and-stop",
-      "lock": {"required": true, "path": ".lifecycle.lock", "status": "missing", "acquisition": "none", "retained_fd": false},
-      "compatibility": "incompatible",
-      "migration": "Add a separate typed dynamic-directory capability before enabling per-user launchd under the global route."
+      "lock": {"required": true, "path": ".lifecycle.lock", "status": "exact-exclusive-flock", "acquisition": "rust-cohort-controller-retained-session-lease", "retained_fd": true},
+      "compatibility": "cohort-ready",
+      "migration": "The opt-in second cohort routes only the per-user launchd dynamic directory and endpoint through a typed Rust capability; global routing and all other launchd writers remain deferred."
     },
     {
       "id": "launchd.boot-runtime-files",

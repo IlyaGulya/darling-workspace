@@ -7,19 +7,30 @@ remains `OFF`.  Global production routing remains `deferred`; this gate neither
 reclassifies nor routes the remaining incompatible writers.
 
 The contract executes two real Rootless guest sessions against one task-owned
-prefix.  The first session reaches guest-ready through an actual `darling shell`
-shellspawn RPC, kills the retained shellspawn identity through a pidfd, waits
-for launchd KeepAlive to publish a different process and observed socket
-identity (`device`, `inode`, `ctime_ns`), and performs a second RPC. The ctime
+prefix. The first session performs an ordinary `darling shell` RPC, kills the
+retained shellspawn identity through a pidfd, waits for launchd KeepAlive to
+publish a different process and observed socket identity (`device`, `inode`,
+`ctime_ns`), and performs a second shellspawn RPC. It then performs a real
+per-user launchd RPC. A task-owned, pre-boot LaunchDaemon waits on a bounded,
+task-owned trigger so the accepted shellspawn restart runs first. It then calls
+the actual Mach per-user lookup from a launchd-managed process and performs a
+legacy launchd request over the Rust-published AF_UNIX endpoint. This forces system
+launchd to start its direct per-user launchd child, exercises the returned
+endpoint, and
+requires one retained `0700` dynamic directory and Unix socket below
+`/private/var/tmp/launchd-<pid>-<nonce>/sock`. The ctime
 component distinguishes a valid immediate filesystem-inode reuse after exact
 retirement from retaining the old endpoint. It then requests product shutdown. The second session
 boots the same prefix, performs another RPC, proves reuse retained the exact
 `.lifecycle.lock` inode while creating a new session root, and shuts down.
 
-After each shutdown, the external observer requires:
+The reuse cycle requires a fresh per-user process identity and a new bounded
+dynamic directory name while retaining the exact persistent lifecycle-lock
+inode. After each shutdown, the external observer requires:
 
 - no prefix-owned process;
-- no `.init.pid`, Darlingserver, controller, launchd, or shellspawn endpoint;
+- no `.init.pid`, Darlingserver, controller, system launchd, per-user launchd,
+  shellspawn, or dynamic `launchd-*` endpoint/directory;
 - no same-UID process retaining an FD below the prefix;
 - no mount below the prefix;
 - no lifecycle staging, quarantine, or GC tail;
@@ -32,6 +43,9 @@ the deployed launcher digest, process/starttime identities, endpoint inodes,
 command-output digests, and both cleanup censuses.  The Python program is only
 an external fault driver and observation harness; lifecycle authority and
 namespace mutation remain in the Rust controller.
+The probe executable, plist, exact trigger and bounded stdout/stderr captures
+are provisioned only in the task-owned prefix, bound into source/build
+identity, and removed on both success and failure after product teardown.
 
 Before boot, the harness validates the source identity with a closed Draft
 2020-12 schema and independently recomputes the workspace/derived Git

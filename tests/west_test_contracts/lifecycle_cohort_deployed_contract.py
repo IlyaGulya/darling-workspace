@@ -15,6 +15,7 @@ import json
 import os
 from pathlib import Path
 import resource
+import re
 import select
 import signal
 import stat
@@ -48,6 +49,34 @@ FORBIDDEN_TAIL_PREFIXES = (
     ".lifecycle-quarantine-",
     ".lifecycle-gc-",
 )
+PER_USER_DIRECTORY = re.compile(r"^launchd-[1-9][0-9]*-[0-9a-f]{8}$")
+PER_USER_RPC = re.compile(
+    rb"^COHORT_PER_USER_RPC_OK (/private/var/tmp/launchd-[1-9][0-9]*-[0-9a-f]{8}/sock)\n$"
+)
+PROBE_BINARY_RELATIVE = "private/var/tmp/.lifecycle-cohort-per-user-probe"
+PROBE_STDOUT_RELATIVE = "private/var/tmp/.lifecycle-cohort-per-user-probe.out"
+PROBE_STDERR_RELATIVE = "private/var/tmp/.lifecycle-cohort-per-user-probe.err"
+PROBE_TRIGGER_RELATIVE = "private/var/tmp/.lifecycle-cohort-per-user-trigger"
+PROBE_PLIST_RELATIVE = (
+    "System/Library/LaunchDaemons/"
+    "org.darlinghq.lifecycle-cohort-per-user-probe.plist"
+)
+PROBE_PLIST = b"""<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>org.darlinghq.lifecycle-cohort-per-user-probe</string>
+  <key>ProgramArguments</key>
+  <array><string>/private/var/tmp/.lifecycle-cohort-per-user-probe</string></array>
+  <key>RunAtLoad</key><true/>
+  <key>StandardOutPath</key>
+  <string>/private/var/tmp/.lifecycle-cohort-per-user-probe.out</string>
+  <key>StandardErrorPath</key>
+  <string>/private/var/tmp/.lifecycle-cohort-per-user-probe.err</string>
+</dict>
+</plist>
+"""
 
 
 class ContractError(RuntimeError):
@@ -104,6 +133,7 @@ def _validate_source_identity(
     workspace: Path,
     evidence_root: Path,
     prefix: Path,
+    per_user_probe: Path,
 ) -> None:
     try:
         jsonschema.Draft202012Validator(schema).validate(identity)
@@ -162,15 +192,21 @@ def _validate_source_identity(
         / "lifecycle/operation-boundary/src/cohort_routing.rs",
         "cohort_header_sha256": workspace
         / "lifecycle/operation-boundary/include/darling_lifecycle_cohort.h",
+        "cohort_client_h_sha256": composed_darling
+        / "src/lifecycle/lifecycle_cohort_client.h",
         "cohort_client_c_sha256": composed_darling
         / "src/lifecycle/lifecycle_cohort_client.c",
+        "launchd_core_c_sha256": composed_darling / "src/launchd/src/core.c",
         "launchd_ipc_c_sha256": composed_darling / "src/launchd/src/ipc.c",
+        "launchd_runtime_c_sha256": composed_darling / "src/launchd/src/runtime.c",
         "shellspawn_c_sha256": composed_darling / "src/shellspawn/shellspawn.c",
         "darlingserver_cpp_sha256": composed_darlingserver / "src/darlingserver.cpp",
         "namespace_inventory_sha256": workspace
         / "lifecycle/namespace-writer-inventory-v1.json",
         "routing_harness_sha256": workspace
         / "tests/fixtures/lifecycle-cohort-v1/cohort_client_harness.c",
+        "per_user_probe_source_sha256": workspace
+        / "tests/fixtures/lifecycle-cohort-v1/per_user_probe.c",
         "routing_contract_sha256": workspace
         / "tests/west_test_contracts/lifecycle_cohort_routing_contract.py",
         "routing_wrapper_sha256": workspace
@@ -201,6 +237,7 @@ def _validate_source_identity(
         "darlingserver": prefix / "bin/darlingserver",
         "launchd": prefix / "sbin/launchd",
         "shellspawn": prefix / "usr/libexec/shellspawn",
+        "per_user_probe": per_user_probe,
     }
     for name, path in artifacts.items():
         if _sha256(path.resolve(strict=True)) != identity["build"]["artifacts"][name]:
@@ -240,6 +277,118 @@ def _sha256(path: Path) -> str:
         while block := stream.read(1024 * 1024):
             digest.update(block)
     return digest.hexdigest()
+
+
+def _write_new_file(path: Path, data: bytes, mode: int) -> tuple[int, int]:
+    descriptor = os.open(
+        path,
+        os.O_WRONLY
+        | os.O_CREAT
+        | os.O_EXCL
+        | os.O_CLOEXEC
+        | getattr(os, "O_NOFOLLOW", 0),
+        mode,
+    )
+    try:
+        offset = 0
+        while offset < len(data):
+            written = os.write(descriptor, data[offset:])
+            if written <= 0:
+                raise ContractError(f"short write while provisioning {path}")
+            offset += written
+        os.fchmod(descriptor, mode)
+        os.fsync(descriptor)
+        state = os.fstat(descriptor)
+    except BaseException:
+        os.close(descriptor)
+        try:
+            path.unlink()
+        except OSError:
+            pass
+        raise
+    os.close(descriptor)
+    return state.st_dev, state.st_ino
+
+
+def _provision_per_user_probe(prefix: Path, source: Path) -> dict[str, Any]:
+    source_state = source.stat()
+    if (
+        not stat.S_ISREG(source_state.st_mode)
+        or source_state.st_nlink != 1
+        or source_state.st_size <= 0
+        or source_state.st_size > COMMAND_OUTPUT_BYTES
+    ):
+        raise ContractError("per-user probe artifact metadata rejected")
+    probe_data = source.read_bytes()
+    paths = {
+        "probe": prefix / PROBE_BINARY_RELATIVE,
+        "plist": prefix / PROBE_PLIST_RELATIVE,
+        "stdout": prefix / PROBE_STDOUT_RELATIVE,
+        "stderr": prefix / PROBE_STDERR_RELATIVE,
+        "trigger": prefix / PROBE_TRIGGER_RELATIVE,
+    }
+    for path in paths.values():
+        if path.exists() or path.is_symlink():
+            raise ContractError(f"per-user probe fixture path already exists: {path}")
+    identities: dict[str, tuple[int, int]] = {}
+    try:
+        identities["probe"] = _write_new_file(paths["probe"], probe_data, 0o755)
+        identities["plist"] = _write_new_file(paths["plist"], PROBE_PLIST, 0o644)
+    except BaseException:
+        for name, identity in identities.items():
+            path = paths[name]
+            try:
+                state = path.lstat()
+                if (state.st_dev, state.st_ino) == identity:
+                    path.unlink()
+            except OSError:
+                pass
+        raise
+    return {
+        "paths": {name: str(path) for name, path in paths.items()},
+        "identities": {
+            name: {"device": identity[0], "inode": identity[1]}
+            for name, identity in identities.items()
+        },
+        "source_sha256": _sha256(source),
+        "installed_sha256": _sha256(paths["probe"]),
+        "trigger_identities": [],
+    }
+
+
+def _unlink_regular(path: Path, identity: tuple[int, int] | None = None) -> None:
+    try:
+        state = path.lstat()
+    except FileNotFoundError:
+        return
+    if (
+        not stat.S_ISREG(state.st_mode)
+        or state.st_nlink != 1
+        or (identity is not None and (state.st_dev, state.st_ino) != identity)
+    ):
+        raise ContractError(f"per-user probe cleanup identity rejected: {path}")
+    path.unlink()
+
+
+def _reset_per_user_probe_outputs(prefix: Path) -> None:
+    _unlink_regular(prefix / PROBE_STDOUT_RELATIVE)
+    _unlink_regular(prefix / PROBE_STDERR_RELATIVE)
+
+
+def _remove_per_user_probe(prefix: Path, fixture: dict[str, Any]) -> None:
+    for identity_record in fixture["trigger_identities"]:
+        _unlink_regular(
+            prefix / PROBE_TRIGGER_RELATIVE,
+            (identity_record["device"], identity_record["inode"]),
+        )
+    fixture["trigger_identities"].clear()
+    _reset_per_user_probe_outputs(prefix)
+    for name in ("probe", "plist"):
+        identity_record = fixture["identities"][name]
+        _unlink_regular(
+            Path(fixture["paths"][name]),
+            (identity_record["device"], identity_record["inode"]),
+        )
 
 
 def _bounded_child() -> None:
@@ -311,14 +460,14 @@ def _read_proc_bytes(path: Path, limit: int) -> bytes:
     return data
 
 
-def _starttime(pid: int) -> int | None:
+def _process_identity(pid: int) -> tuple[int, int, int] | None:
     try:
         raw = _read_proc_bytes(Path(f"/proc/{pid}/stat"), 64 * 1024).decode()
         _comm, fields = raw.rsplit(") ", 1)
         values = fields.split()
         if values[0] == "Z":
             return None
-        return int(values[19])
+        return int(values[1]), int(values[3]), int(values[19])
     except (OSError, UnicodeError, ValueError, IndexError):
         return None
 
@@ -345,11 +494,14 @@ def _process_record(pid: int, prefix: Path) -> dict[str, Any] | None:
                 break
     if not owns_prefix:
         return None
-    starttime = _starttime(pid)
-    if starttime is None:
+    identity = _process_identity(pid)
+    if identity is None:
         return None
+    ppid, sid, starttime = identity
     return {
         "pid": pid,
+        "ppid": ppid,
+        "sid": sid,
         "starttime": starttime,
         "comm": (process / "comm").read_text(errors="replace").strip()[:128],
         "argv": [os.fsdecode(item) for item in command if item][:64],
@@ -381,6 +533,35 @@ def _shellspawn(records: list[dict[str, Any]]) -> dict[str, Any]:
             matches.append(record)
     if len(matches) != 1:
         raise ContractError(f"expected exactly one live shellspawn, found {matches!r}")
+    return matches[0]
+
+
+def _per_user_launchd(
+    records: list[dict[str, Any]], system_launchd_pid: int
+) -> dict[str, Any]:
+    matches = [
+        record
+        for record in records
+        if record["ppid"] == system_launchd_pid
+        and record["argv"] == ["/sbin/launchd"]
+    ]
+    if len(matches) != 1:
+        raise ContractError(
+            f"expected one direct per-user launchd child, found {matches!r}"
+        )
+    return matches[0]
+
+
+def _system_launchd(
+    records: list[dict[str, Any]], session_root_pid: int
+) -> dict[str, Any]:
+    matches = [
+        record
+        for record in records
+        if record["ppid"] == session_root_pid and record["argv"] == ["/sbin/launchd"]
+    ]
+    if len(matches) != 1:
+        raise ContractError(f"expected one system launchd child, found {matches!r}")
     return matches[0]
 
 
@@ -431,7 +612,78 @@ def _endpoint_state(prefix: Path, relative: str, expected_kind: str) -> dict[str
     return result
 
 
-def _active_snapshot(prefix: Path) -> dict[str, Any]:
+def _per_user_endpoint_state(prefix: Path) -> dict[str, Any]:
+    parent = prefix / "private/var/tmp"
+    parent_fd = os.open(
+        parent,
+        os.O_RDONLY
+        | os.O_DIRECTORY
+        | os.O_CLOEXEC
+        | getattr(os, "O_NOFOLLOW", 0),
+    )
+    try:
+        names = sorted(
+            entry.name
+            for entry in os.scandir(parent_fd)
+            if PER_USER_DIRECTORY.fullmatch(entry.name)
+        )
+        if len(names) != 1:
+            raise ContractError(f"expected one per-user launchd directory, found {names!r}")
+        name = names[0]
+        directory_fd = _open_child_directory(parent_fd, name)
+        try:
+            directory = os.fstat(directory_fd)
+            if (
+                not stat.S_ISDIR(directory.st_mode)
+                or stat.S_IMODE(directory.st_mode) != 0o700
+                or directory.st_uid != os.getuid()
+                or directory.st_nlink != 2
+            ):
+                raise ContractError("per-user launchd directory metadata rejected")
+            socket_fd = os.open(
+                "sock",
+                os.O_RDONLY
+                | os.O_CLOEXEC
+                | getattr(os, "O_NOFOLLOW", 0)
+                | getattr(os, "O_PATH", 0),
+                dir_fd=directory_fd,
+            )
+            try:
+                endpoint = os.fstat(socket_fd)
+            finally:
+                os.close(socket_fd)
+        finally:
+            os.close(directory_fd)
+    finally:
+        os.close(parent_fd)
+    if (
+        not stat.S_ISSOCK(endpoint.st_mode)
+        or endpoint.st_uid != os.getuid()
+        or endpoint.st_nlink != 1
+    ):
+        raise ContractError("per-user launchd endpoint metadata rejected")
+    return {
+        "relative": f"private/var/tmp/{name}/sock",
+        "directory": {
+            "device": directory.st_dev,
+            "inode": directory.st_ino,
+            "ctime_ns": directory.st_ctime_ns,
+            "mode": stat.S_IMODE(directory.st_mode),
+            "owner": directory.st_uid,
+            "nlink": directory.st_nlink,
+        },
+        "socket": {
+            "device": endpoint.st_dev,
+            "inode": endpoint.st_ino,
+            "ctime_ns": endpoint.st_ctime_ns,
+            "mode": stat.S_IMODE(endpoint.st_mode),
+            "owner": endpoint.st_uid,
+            "nlink": endpoint.st_nlink,
+        },
+    }
+
+
+def _active_snapshot(prefix: Path, *, require_per_user: bool = True) -> dict[str, Any]:
     endpoints = {
         relative: _endpoint_state(prefix, relative, kind)
         for relative, kind in RUNTIME_ENDPOINTS.items()
@@ -453,7 +705,9 @@ def _active_snapshot(prefix: Path) -> dict[str, Any]:
         os.close(descriptor)
     processes = _process_census(prefix)
     shellspawn = _shellspawn(processes)
-    return {
+    session_root_pid = int(endpoints[".init.pid"]["pid"])
+    system_launchd = _system_launchd(processes, session_root_pid)
+    result = {
         "endpoints": endpoints,
         "lock": {
             "device": lock_state.st_dev,
@@ -462,16 +716,38 @@ def _active_snapshot(prefix: Path) -> dict[str, Any]:
         },
         "processes": processes,
         "shellspawn": shellspawn,
+        "system_launchd": system_launchd,
     }
+    if require_per_user:
+        per_user_launchd = _per_user_launchd(processes, system_launchd["pid"])
+        per_user_endpoint = _per_user_endpoint_state(prefix)
+        directory_name = Path(per_user_endpoint["relative"]).parts[-2]
+        encoded_pid = int(directory_name.split("-", 2)[1])
+        if encoded_pid != per_user_launchd["pid"]:
+            raise ContractError("per-user endpoint PID does not match its retained owner")
+        result["per_user_launchd"] = per_user_launchd
+        result["per_user_endpoint"] = per_user_endpoint
+    return result
+
+
+def _active_if_ready(
+    prefix: Path, *, require_per_user: bool = True
+) -> dict[str, Any] | None:
+    try:
+        return _active_snapshot(prefix, require_per_user=require_per_user)
+    except (ContractError, FileNotFoundError, OSError):
+        return None
 
 
 def _kill_exact_shellspawn(record: dict[str, Any]) -> None:
     pid = int(record["pid"])
-    if _starttime(pid) != int(record["starttime"]):
+    identity = _process_identity(pid)
+    if identity is None or identity[2] != int(record["starttime"]):
         raise ContractError("shellspawn identity changed before SIGKILL")
     pidfd = os.pidfd_open(pid, 0)
     try:
-        if _starttime(pid) != int(record["starttime"]):
+        identity = _process_identity(pid)
+        if identity is None or identity[2] != int(record["starttime"]):
             raise ContractError("shellspawn identity changed after pidfd acquisition")
         signal.pidfd_send_signal(pidfd, signal.SIGKILL)
         poller = select.poll()
@@ -573,6 +849,13 @@ def _namespace_census(
                             f"fail-closed lstat failed at {relative}"
                         ) from error
                     if relative in RUNTIME_ENDPOINTS:
+                        endpoints.append(relative)
+                    components = relative.split("/")
+                    if (
+                        len(components) >= 4
+                        and components[:3] == ["private", "var", "tmp"]
+                        and PER_USER_DIRECTORY.fullmatch(components[3])
+                    ):
                         endpoints.append(relative)
                     if entry.name.startswith(FORBIDDEN_TAIL_PREFIXES):
                         tails.append(relative)
@@ -692,6 +975,62 @@ def _rpc(
     )
 
 
+def _per_user_rpc(
+    prefix: Path,
+    evidence_dir: Path,
+    commands: list[dict[str, Any]],
+    fixture: dict[str, Any],
+    name: str,
+) -> str:
+    stdout_path = prefix / PROBE_STDOUT_RELATIVE
+    stderr_path = prefix / PROBE_STDERR_RELATIVE
+    trigger_path = prefix / PROBE_TRIGGER_RELATIVE
+    trigger_identity = _write_new_file(trigger_path, b"GO\n", 0o600)
+    trigger_record = {
+        "device": trigger_identity[0],
+        "inode": trigger_identity[1],
+    }
+    fixture["trigger_identities"].append(trigger_record)
+
+    def completed() -> tuple[bytes, bytes] | None:
+        try:
+            stdout = stdout_path.read_bytes()
+            stderr = stderr_path.read_bytes()
+        except FileNotFoundError:
+            return None
+        if len(stdout) > COMMAND_OUTPUT_BYTES or len(stderr) > COMMAND_OUTPUT_BYTES:
+            raise ContractError("per-user probe output exceeded bounded capture")
+        if stderr:
+            raise ContractError(f"per-user probe stderr rejected: {stderr[-4096:]!r}")
+        return (stdout, stderr) if PER_USER_RPC.fullmatch(stdout) else None
+
+    started = time.monotonic_ns()
+    stdout, stderr = _wait("per-user launchd RPC", completed)
+    match = PER_USER_RPC.fullmatch(stdout)
+    if match is None:
+        raise ContractError("per-user RPC marker rejected")
+    evidence_stdout = evidence_dir / f"{name}.stdout"
+    evidence_stderr = evidence_dir / f"{name}.stderr"
+    evidence_stdout.write_bytes(stdout)
+    evidence_stderr.write_bytes(stderr)
+    commands.append(
+        {
+            "name": name,
+            "argv": [str(prefix / PROBE_BINARY_RELATIVE)],
+            "managed_launchdaemon": str(prefix / PROBE_PLIST_RELATIVE),
+            "returncode": 0,
+            "elapsed_ns": time.monotonic_ns() - started,
+            "stdout_sha256": _sha256(evidence_stdout),
+            "stderr_sha256": _sha256(evidence_stderr),
+            "stdout_bytes": len(stdout),
+            "stderr_bytes": len(stderr),
+        }
+    )
+    _unlink_regular(trigger_path, trigger_identity)
+    fixture["trigger_identities"].remove(trigger_record)
+    return match.group(1).decode("ascii").removeprefix("/")
+
+
 def _shutdown(
     launcher: Path,
     prefix: Path,
@@ -754,11 +1093,13 @@ def main() -> None:
     parser.add_argument("--source-identity", type=Path, required=True)
     parser.add_argument("--source-identity-schema", type=Path, required=True)
     parser.add_argument("--workspace-root", type=Path, required=True)
+    parser.add_argument("--per-user-probe", type=Path, required=True)
     args = parser.parse_args()
 
     launcher = args.launcher.resolve(strict=True)
     prefix = args.prefix.resolve(strict=True)
     workspace = args.workspace_root.resolve(strict=True)
+    per_user_probe = args.per_user_probe.resolve(strict=True)
     source_identity_path = args.source_identity.resolve(strict=True)
     source_identity_schema_path = args.source_identity_schema.resolve(strict=True)
     evidence_dir = args.evidence_dir.resolve()
@@ -772,6 +1113,7 @@ def main() -> None:
         "workspace": workspace,
         "evidence_root": source_identity_path.parent,
         "prefix": prefix,
+        "per_user_probe": per_user_probe,
     }
     _validate_source_identity(source_identity, **validation)
     _validate_identity_tamper_negatives(source_identity, **validation)
@@ -784,9 +1126,9 @@ def main() -> None:
         "source_identity_validation": {
             "schema": "draft-2020-12",
             "git_identities": 6,
-            "semantic_closure_files": 16,
+            "semantic_closure_files": 20,
             "build_inputs": len(source_identity["build"]["inputs"]),
-            "deployed_artifacts": 4,
+            "deployed_artifacts": 5,
             "tamper_negatives": 5,
             "result": "PASS",
         },
@@ -807,16 +1149,20 @@ def main() -> None:
         "result": "FAIL",
     }
     report_path = evidence_dir / "report.json"
+    fixture: dict[str, Any] | None = None
     try:
+        _assert_clean(prefix)
+        fixture = _provision_per_user_probe(prefix, per_user_probe)
+        report["per_user_probe"] = fixture
         _rpc(launcher, prefix, evidence_dir, report["commands"], "cycle1-rpc-before-kill", "COHORT_RPC_BEFORE_KILL_OK")
-        first = _active_snapshot(prefix)
-        old_shellspawn = first["shellspawn"]
-        old_socket = first["endpoints"]["var/run/shellspawn.sock"]
+        before_restart = _active_snapshot(prefix, require_per_user=False)
+        old_shellspawn = before_restart["shellspawn"]
+        old_socket = before_restart["endpoints"]["var/run/shellspawn.sock"]
         _kill_exact_shellspawn(old_shellspawn)
 
         def restarted() -> dict[str, Any] | None:
             try:
-                current = _active_snapshot(prefix)
+                current = _active_snapshot(prefix, require_per_user=False)
             except (ContractError, FileNotFoundError, OSError):
                 return None
             new_shellspawn = current["shellspawn"]
@@ -832,6 +1178,19 @@ def main() -> None:
 
         after_restart = _wait("KeepAlive shellspawn restart and endpoint republish", restarted)
         _rpc(launcher, prefix, evidence_dir, report["commands"], "cycle1-rpc-after-restart", "COHORT_RPC_AFTER_RESTART_OK")
+        first_per_user_path = _per_user_rpc(
+            prefix,
+            evidence_dir,
+            report["commands"],
+            fixture,
+            "cycle1-per-user-rpc",
+        )
+        first = _wait(
+            "cycle 1 stable per-user launchd state",
+            lambda: _active_if_ready(prefix),
+        )
+        if first["per_user_endpoint"]["relative"] != first_per_user_path:
+            raise ContractError("cycle 1 per-user RPC path mismatches retained endpoint")
         clean_one = _shutdown(launcher, prefix, evidence_dir, report["commands"], "cycle1-shutdown")
         report["cycles"].append(
             {
@@ -848,26 +1207,52 @@ def main() -> None:
             }
         )
 
+        _reset_per_user_probe_outputs(prefix)
         _rpc(launcher, prefix, evidence_dir, report["commands"], "cycle2-rpc-reuse", "COHORT_RPC_REUSE_OK")
-        second = _active_snapshot(prefix)
+        second_per_user_path = _per_user_rpc(
+            prefix,
+            evidence_dir,
+            report["commands"],
+            fixture,
+            "cycle2-per-user-rpc-reuse",
+        )
+        second = _wait(
+            "cycle 2 stable per-user launchd state",
+            lambda: _active_if_ready(prefix),
+        )
+        if second["per_user_endpoint"]["relative"] != second_per_user_path:
+            raise ContractError("cycle 2 per-user RPC path mismatches retained endpoint")
         if second["lock"]["inode"] != first["lock"]["inode"] or second["lock"]["device"] != first["lock"]["device"]:
             raise ContractError("reuse replaced the persistent lifecycle lock inode")
         if second["endpoints"][".init.pid"]["pid"] == first["endpoints"][".init.pid"]["pid"]:
             raise ContractError("reuse did not create a fresh session root PID")
+        if second["per_user_endpoint"]["relative"] == first["per_user_endpoint"]["relative"]:
+            raise ContractError("reuse retained the prior per-user launchd directory name")
         clean_two = _shutdown(launcher, prefix, evidence_dir, report["commands"], "cycle2-shutdown")
         report["cycles"].append({"cycle": 2, "initial": second, "cleanup": clean_two})
+        _remove_per_user_probe(prefix, fixture)
+        fixture = None
+        report["per_user_probe_cleanup"] = "PASS"
         report["final_census"] = _assert_clean(prefix)
         report["result"] = "PASS"
     except BaseException as error:
         report["error"] = f"{type(error).__name__}: {error}"
         _best_effort_cleanup(launcher, prefix, evidence_dir)
+        if fixture is not None:
+            try:
+                _remove_per_user_probe(prefix, fixture)
+                report["per_user_probe_failure_cleanup"] = "PASS"
+            except BaseException as cleanup_error:
+                report["per_user_probe_failure_cleanup"] = (
+                    f"{type(cleanup_error).__name__}: {cleanup_error}"
+                )
         report["failure_cleanup_processes"] = _process_census(prefix)
         report_path.write_text(json.dumps(report, indent=2, sort_keys=True) + "\n")
         raise
     report_path.write_text(json.dumps(report, indent=2, sort_keys=True) + "\n")
     print(
         "LIFECYCLE_COHORT_DEPLOYED_VALID "
-        "cycles=2 rpc=3 shellspawn_restart=1 processes=0 endpoints=0 fd_holders=0 mounts=0 lock_tails=0"
+        "cycles=2 rpc=5 per_user_rpc=2 shellspawn_restart=1 processes=0 endpoints=0 fd_holders=0 mounts=0 lock_tails=0"
     )
 
 
