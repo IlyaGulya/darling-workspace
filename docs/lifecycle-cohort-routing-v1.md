@@ -1,7 +1,7 @@
 # Rootless lifecycle writer cohort v1
 
 This is the first bounded production-writer migration slice for `dar-4ush.7`.
-It does **not** enable the global lifecycle route. Five product records and
+It does **not** enable the global lifecycle route. Six product records and
 one Rust-owned transport record are classified `cohort-ready`; every other
 namespace writer remains
 `incompatible`, and the production build option defaults to `OFF`.
@@ -28,6 +28,8 @@ The controller owns publication and retirement of:
 - `.darlingserver.sock`;
 - `/var/run/shellspawn.sock`;
 - the system `/var/tmp/launchd/sock` endpoint.
+- one dynamic `/private/var/tmp/launchd-*/sock` per authenticated per-user
+  launchd owner.
 
 Publication preserves the established product metadata: `.init.pid`, launchd
 and shellspawn are mode `0600`, while the Darlingserver control socket remains
@@ -106,8 +108,20 @@ writer has a reviewed Rust-authority route and a retained exact lease when the
 cohort option is enabled. It does not claim that unrelated `/var/run`,
 `/var/tmp`, deploy, repair, E-UNION or guest daemon writers cooperate. Global
 production routing remains blocked until those records migrate in their own
-cohorts. Per-user launchd dynamic endpoints are split into a separate
-incompatible record.
+cohorts. The second bounded cohort adds only the per-user launchd dynamic
+endpoint. Rust creates a unique `0700` directory below `/private/var/tmp`,
+retains its parent and exact identity, binds and retains `sock`, and returns
+the bounded guest-visible path with the listener in the same two-phase
+transaction. The per-user launchd is authenticated as a direct child of the
+retained system launchd owner. Partial directory creation, symlink ancestors,
+replacement, owner death, duplicate publication and interruption fail closed;
+exact retirement removes the socket before the empty retained directory. No
+job, runtime-directory, log or generic launchd writer is included.
+System launchd marks only the dynamically created per-user launchd child; that
+child retains the canonical Rootless runtime mode but cannot inherit system
+`pid1_magic`. The marker is stripped again before ordinary per-user jobs are
+spawned. This prevents a Rootless per-user child from misidentifying itself as
+the system endpoint owner.
 
 ## Local contract
 
@@ -126,7 +140,9 @@ nonce flood rejection without authority exhaustion, retained-pidfd peer
 authorization, shellspawn `SIGKILL`/KeepAlive republish, post-publication
 activation rollback, stable-nonce commit across activation-environment drift,
 lost-final-ACK commit retention, owner-`SIGKILL` cleanup, launchd/shellspawn
-retirement, replacement preservation and bounded cleanup. The source/registry
-pass requires exactly six cohort-ready
+retirement, real dynamic per-user connect/accept, owner-death republish,
+partial-create rollback, symlink-ancestor rejection, replacement preservation
+and bounded directory cleanup. The source/registry
+pass requires exactly seven cohort-ready
 records, zero globally compatible records, and leaves the remainder
 incompatible.

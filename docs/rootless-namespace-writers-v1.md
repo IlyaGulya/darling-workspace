@@ -14,9 +14,9 @@ then performs identity observations and mutations through retained
 fd-relative capabilities. Python remains orchestration/transport only.
 
 The current inventory is deliberately classified as **cooperative-writer,
-global routing deferred**. Five product records plus the Rust-owned transport
-record in the first endpoint cohort are `cohort-ready`, not globally
-`compatible`; the other 75 records remain
+global routing deferred**. Six product records plus the Rust-owned transport
+record in the first two endpoint cohorts are `cohort-ready`, not globally
+`compatible`; the other 74 records remain
 `incompatible`. A writer is not considered routable merely because it
 does an advisory check or happens to run under a West context. It must retain
 the exact `.lifecycle.lock` FD and hold `LOCK_EX` before the first namespace
@@ -57,7 +57,7 @@ authority. All remaining records stay `incompatible`.
 | `darling/src/external/darlingserver/src/darlingserver.cpp` | `/var/run`/`/var/tmp` wipe, home layout, prefix copy/permissions/mount | runtime start/materialization | no `.lifecycle.lock` acquisition |
 | `darling/src/external/darlingserver/src/server.cpp` | `.darlingserver.sock` unlink/bind/cleanup | runtime start/stop | opt-in Rust cohort route, global activation deferred |
 | `darling/src/external/darlingserver/src/{logging,kqchan,call}.cpp` | `dserver.log` and auxiliary RPC logs | runtime diagnostics | no `.lifecycle.lock` acquisition |
-| `darling/src/launchd/src/ipc.c` | launchd socket directory and socket lifecycle | launchd start/stop | system endpoint cohort ready; per-user endpoint incompatible |
+| `darling/src/launchd/src/ipc.c` | launchd socket directory and socket lifecycle | launchd start/stop | system and per-user endpoints cohort ready; global activation deferred |
 | `darling/src/launchd/src/{core,launchd,log}.c` and `support/launchctl.c` | job stdio/per-user directories, generic opens, persistent logs, sockets, `/var/run` and `/tmp` cleanup, `utmpx`, `.systemStarterRunning`, mode changes | launchd boot/runtime | no `.lifecycle.lock` acquisition |
 | `darling/src/xcselect/xcode-select.c` | xcode-select database links under `/var/db` and `/usr/share` | guest toolchain selection | no `.lifecycle.lock` acquisition |
 | `darling/src/external/mDNSResponder/{mDNSShared,mDNSMacOSX}/...` | mDNS UDS/PID, conditional named-error sockets, and state dumps | daemon/client diagnostics and stop | no `.lifecycle.lock` acquisition |

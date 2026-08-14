@@ -15,6 +15,7 @@ COHORT = {
     "darling.shellspawn.socket",
     "darlingserver.control-socket",
     "launchd.system-ipc-socket",
+    "launchd.per-user-ipc-socket",
 }
 
 REQUIRED_ROUTING = {
@@ -28,12 +29,21 @@ REQUIRED_ROUTING = {
     ),
     "src/launchd/src/ipc.c": (
         "darling_lifecycle_publish_and_activate_endpoint(",
-        "darling_lifecycle_retire_endpoint(DARLING_LIFECYCLE_ENDPOINT_LAUNCHD)",
+        "DARLING_LIFECYCLE_ENDPOINT_PER_USER_LAUNCHD",
+        "darling_lifecycle_publish_and_activate_dynamic_endpoint(",
+        "darling_lifecycle_retire_endpoint(ipc_lifecycle_kind)",
         "lifecycle_reserved_environment_key",
     ),
     "src/launchd/src/core.c": (
         'strcmp(j->label, "org.darlinghq.shellspawn")',
+        'strncmp(j->label, "com.apple.launchd.peruser."',
+        'setenv("DARLING_LAUNCHD_PER_USER_CONTEXT", "1", 1)',
+        'unsetenv("DARLING_LAUNCHD_PER_USER_CONTEXT")',
         "lifecycle_reserved_environment_key",
+    ),
+    "src/launchd/src/runtime.c": (
+        'getenv("DARLING_LAUNCHD_PER_USER_CONTEXT")',
+        "pid1_magic = false",
     ),
 }
 
@@ -107,6 +117,8 @@ def main() -> None:
         "endpoint_owners",
         "OwnerDeathTransition",
         "MAX_REJECTED_REQUESTS_PER_SLICE",
+        "DYNAMIC_DIRECTORY_ATTEMPTS",
+        "EndpointKey::PerUser",
     ):
         if marker not in rust:
             raise SystemExit(f"Rust cohort authority missing {marker}")

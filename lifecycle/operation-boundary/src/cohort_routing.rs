@@ -37,6 +37,8 @@ const OPERATION_ABORT: u16 = 4;
 const CONTROL_NAME_CAPACITY: usize = 80;
 const NONCE_BYTES: usize = 32;
 const NONCE_HEX_BYTES: usize = NONCE_BYTES * 2;
+const DYNAMIC_PATH_CAPACITY: usize = 96;
+const DYNAMIC_DIRECTORY_ATTEMPTS: usize = 16;
 const LOCK_TIMEOUT: Duration = Duration::from_millis(250);
 const REQUEST_TIMEOUT_MS: c_int = 250;
 #[cfg(not(test))]
@@ -49,6 +51,7 @@ const CONTROL_GUEST_PATH: &[u8] = b"/.lc-v1.sock";
 const CONTROL_NAME: &[u8] = b".lc-v1.sock";
 const SHELLSPAWN_PARENT: &[&[u8]] = &[b"var", b"run"];
 const LAUNCHD_PARENT: &[&[u8]] = &[b"var", b"tmp", b"launchd"];
+const PER_USER_PARENT: &[&[u8]] = &[b"private", b"var", b"tmp"];
 
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
 #[repr(u16)]
@@ -58,6 +61,7 @@ pub enum CohortEndpoint {
     Launchd = 3,
     #[doc(hidden)]
     Control = 4,
+    PerUserLaunchd = 5,
 }
 
 impl CohortEndpoint {
@@ -66,44 +70,46 @@ impl CohortEndpoint {
             1 => Some(Self::DarlingServer),
             2 => Some(Self::Shellspawn),
             3 => Some(Self::Launchd),
+            5 => Some(Self::PerUserLaunchd),
             _ => None,
         }
     }
 
-    fn spec(self) -> EndpointSpec {
+    fn spec(self) -> Option<EndpointSpec> {
         match self {
-            Self::DarlingServer => EndpointSpec {
+            Self::DarlingServer => Some(EndpointSpec {
                 parent: &[],
                 name: b".darlingserver.sock",
                 socket_type: libc::SOCK_DGRAM,
                 nonblocking: true,
                 listen_backlog: None,
                 mode: 0o775,
-            },
-            Self::Shellspawn => EndpointSpec {
+            }),
+            Self::Shellspawn => Some(EndpointSpec {
                 parent: SHELLSPAWN_PARENT,
                 name: b"shellspawn.sock",
                 socket_type: libc::SOCK_STREAM,
                 nonblocking: false,
                 listen_backlog: Some(16_384),
                 mode: 0o600,
-            },
-            Self::Launchd => EndpointSpec {
+            }),
+            Self::Launchd => Some(EndpointSpec {
                 parent: LAUNCHD_PARENT,
                 name: b"sock",
                 socket_type: libc::SOCK_STREAM,
                 nonblocking: false,
                 listen_backlog: Some(libc::SOMAXCONN),
                 mode: 0o600,
-            },
-            Self::Control => EndpointSpec {
+            }),
+            Self::Control => Some(EndpointSpec {
                 parent: &[],
                 name: CONTROL_NAME,
                 socket_type: libc::SOCK_SEQPACKET,
                 nonblocking: true,
                 listen_backlog: Some(16),
                 mode: 0o600,
-            },
+            }),
+            Self::PerUserLaunchd => None,
         }
     }
 }
@@ -364,6 +370,10 @@ fn ensure_endpoint_parents(prefix: RawFd) -> Result<(), CohortError> {
         prefix,
         &[(b"var", 0o755), (b"tmp", 0o1777), (b"launchd", 0o700)],
     )?;
+    ensure_directory_chain(
+        prefix,
+        &[(b"private", 0o755), (b"var", 0o755), (b"tmp", 0o1777)],
+    )?;
     Ok(())
 }
 
@@ -542,7 +552,17 @@ struct PublishedEndpoint {
     parent_identity: FileIdentity,
     object: OwnedFd,
     identity: FileIdentity,
-    name: &'static [u8],
+    name: Vec<u8>,
+    dynamic_directory: Option<RetainedDirectory>,
+    endpoint_linked: bool,
+}
+
+#[derive(Debug)]
+struct RetainedDirectory {
+    parent: OwnedFd,
+    parent_identity: FileIdentity,
+    identity: FileIdentity,
+    name: Vec<u8>,
 }
 
 #[derive(Debug)]
@@ -558,10 +578,16 @@ struct RetainedState {
     content: Vec<u8>,
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
 struct PeerIdentity {
     pid: libc::pid_t,
     starttime: u64,
+}
+
+#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
+enum EndpointKey {
+    Static(CohortEndpoint),
+    PerUser(PeerIdentity),
 }
 
 #[derive(Debug)]
@@ -581,6 +607,12 @@ enum OwnerDeathTransition {
 enum OwnerProcessState {
     Alive,
     Gone,
+}
+
+#[cfg(test)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum DynamicPublicationFault {
+    AfterDirectoryCreate,
 }
 
 fn owner_process_state(pidfd: RawFd) -> Result<OwnerProcessState, CohortError> {
@@ -725,14 +757,16 @@ struct SessionAuthority {
     lock_identity: FileIdentity,
     prefix_state: RetainedState,
     init_pid: Option<RetainedFile>,
-    endpoints: BTreeMap<CohortEndpoint, PublishedEndpoint>,
-    endpoint_owners: BTreeMap<CohortEndpoint, PeerAuthority>,
+    endpoints: BTreeMap<EndpointKey, PublishedEndpoint>,
+    endpoint_owners: BTreeMap<EndpointKey, PeerAuthority>,
     session_root_pid: libc::pid_t,
     #[cfg(test)]
     prefix_argument: Vec<u8>,
     cleanup_on_drop: bool,
     #[cfg(test)]
     allow_test_peer: bool,
+    #[cfg(test)]
+    dynamic_fault: Option<DynamicPublicationFault>,
 }
 
 impl SessionAuthority {
@@ -795,6 +829,8 @@ impl SessionAuthority {
             cleanup_on_drop: true,
             #[cfg(test)]
             allow_test_peer: false,
+            #[cfg(test)]
+            dynamic_fault: None,
         };
         authority.publish_init_pid(init_pid)?;
         Ok(authority)
@@ -833,6 +869,9 @@ impl SessionAuthority {
         }
         for endpoint in self.endpoints.values() {
             fds.extend([endpoint.parent.as_raw_fd(), endpoint.object.as_raw_fd()]);
+            if let Some(directory) = endpoint.dynamic_directory.as_ref() {
+                fds.push(directory.parent.as_raw_fd());
+            }
         }
         for owner in self.endpoint_owners.values() {
             fds.push(owner._process.as_raw_fd());
@@ -916,15 +955,15 @@ impl SessionAuthority {
 
     fn prepare_publication(
         &mut self,
-        kind: CohortEndpoint,
+        key: EndpointKey,
     ) -> Result<OwnerDeathTransition, CohortError> {
-        if !self.endpoints.contains_key(&kind) {
-            if self.endpoint_owners.contains_key(&kind) {
+        if !self.endpoints.contains_key(&key) {
+            if self.endpoint_owners.contains_key(&key) {
                 return Err(CohortError::Identity("endpoint owner without endpoint"));
             }
             return Ok(OwnerDeathTransition::Fresh);
         }
-        let Some(owner) = self.endpoint_owners.get(&kind) else {
+        let Some(owner) = self.endpoint_owners.get(&key) else {
             return Ok(OwnerDeathTransition::RetainedAlive);
         };
         match owner_process_state(owner._process.as_raw_fd())? {
@@ -933,19 +972,149 @@ impl SessionAuthority {
                 // The retained pidfd proves owner death without consulting a
                 // reusable numeric PID.  Retirement still requires the exact
                 // retained endpoint inode under the session lease.
-                self.retire(kind)?;
+                self.retire_key(key)?;
                 Ok(OwnerDeathTransition::RetiredGone)
             }
         }
     }
 
-    fn publish(&mut self, kind: CohortEndpoint) -> Result<OwnedFd, CohortError> {
+    fn cleanup_dead_per_user_endpoints(&mut self) -> Result<(), CohortError> {
+        let keys = self
+            .endpoint_owners
+            .iter()
+            .filter_map(|(key, owner)| {
+                matches!(key, EndpointKey::PerUser(_)).then_some((*key, owner._process.as_raw_fd()))
+            })
+            .collect::<Vec<_>>();
+        for (key, pidfd) in keys {
+            if owner_process_state(pidfd)? == OwnerProcessState::Gone {
+                self.retire_key(key)?;
+            }
+        }
+        Ok(())
+    }
+
+    fn create_dynamic_directory(
+        &self,
+        peer: PeerIdentity,
+    ) -> Result<(OwnedFd, RetainedDirectory), CohortError> {
+        let parent = open_directory_chain(self.prefix.as_raw_fd(), PER_USER_PARENT)?;
+        for _attempt in 0..DYNAMIC_DIRECTORY_ATTEMPTS {
+            let nonce = random_nonce()?;
+            let name = format!(
+                "launchd-{}-{:02x}{:02x}{:02x}{:02x}",
+                peer.pid, nonce[0], nonce[1], nonce[2], nonce[3]
+            )
+            .into_bytes();
+            let component = component(&name)?;
+            if unsafe { libc::mkdirat(parent.as_raw_fd(), component.as_ptr(), 0o700) } < 0 {
+                if io::Error::last_os_error().raw_os_error() == Some(libc::EEXIST) {
+                    continue;
+                }
+                return Err(io_error("mkdirat(per-user launchd)"));
+            }
+            #[cfg(test)]
+            if self.dynamic_fault == Some(DynamicPublicationFault::AfterDirectoryCreate) {
+                unsafe {
+                    libc::unlinkat(parent.as_raw_fd(), component.as_ptr(), libc::AT_REMOVEDIR)
+                };
+                return Err(CohortError::Io(
+                    "fault(after dynamic directory create)",
+                    io::Error::from_raw_os_error(libc::EINTR),
+                ));
+            }
+            let directory = openat(
+                parent.as_raw_fd(),
+                &name,
+                libc::O_RDONLY | libc::O_DIRECTORY | libc::O_NOFOLLOW | libc::O_CLOEXEC,
+                0,
+            );
+            let directory = match directory {
+                Ok(directory) => directory,
+                Err(error) => {
+                    unsafe {
+                        libc::unlinkat(parent.as_raw_fd(), component.as_ptr(), libc::AT_REMOVEDIR)
+                    };
+                    return Err(error);
+                }
+            };
+            let validated = (|| {
+                let directory_identity = identity(directory.as_raw_fd())?;
+                if file_type(directory_identity) != libc::S_IFDIR
+                    || directory_identity.uid != current_uid()
+                    || directory_identity.mode & 0o777 != 0o700
+                    || directory_identity.nlink != 2
+                {
+                    return Err(CohortError::Identity("per-user launchd directory"));
+                }
+                if named_identity(parent.as_raw_fd(), &name)? != Some(directory_identity) {
+                    return Err(CohortError::Identity("per-user launchd directory"));
+                }
+                Ok(directory_identity)
+            })();
+            let directory_identity = match validated {
+                Ok(identity) => identity,
+                Err(error) => {
+                    unsafe {
+                        libc::unlinkat(parent.as_raw_fd(), component.as_ptr(), libc::AT_REMOVEDIR)
+                    };
+                    return Err(error);
+                }
+            };
+            return Ok((
+                directory,
+                RetainedDirectory {
+                    parent_identity: identity(parent.as_raw_fd())?,
+                    parent,
+                    identity: directory_identity,
+                    name,
+                },
+            ));
+        }
+        Err(CohortError::Protocol(
+            "dynamic directory attempts exhausted",
+        ))
+    }
+
+    fn publish_key(&mut self, key: EndpointKey) -> Result<(OwnedFd, Vec<u8>), CohortError> {
         self.revalidate()?;
-        if self.prepare_publication(kind)? == OwnerDeathTransition::RetainedAlive {
+        if matches!(key, EndpointKey::PerUser(_)) {
+            self.cleanup_dead_per_user_endpoints()?;
+        }
+        if self.prepare_publication(key)? == OwnerDeathTransition::RetainedAlive {
             return Err(CohortError::EndpointExists);
         }
-        let spec = kind.spec();
-        let parent = open_directory_chain(self.prefix.as_raw_fd(), spec.parent)?;
+        let (spec, parent, dynamic_directory, guest_path) = match key {
+            EndpointKey::Static(kind) => {
+                let spec = kind
+                    .spec()
+                    .ok_or(CohortError::Protocol("dynamic endpoint key"))?;
+                let parent = open_directory_chain(self.prefix.as_raw_fd(), spec.parent)?;
+                (spec, parent, None, Vec::new())
+            }
+            EndpointKey::PerUser(peer) => {
+                let (parent, directory) = self.create_dynamic_directory(peer)?;
+                let mut guest_path = b"/private/var/tmp/".to_vec();
+                guest_path.extend_from_slice(&directory.name);
+                guest_path.extend_from_slice(b"/sock");
+                if guest_path.len() >= DYNAMIC_PATH_CAPACITY {
+                    return Err(CohortError::Protocol("dynamic endpoint path capacity"));
+                }
+                (
+                    EndpointSpec {
+                        parent: &[],
+                        name: b"sock",
+                        socket_type: libc::SOCK_STREAM,
+                        nonblocking: false,
+                        listen_backlog: Some(libc::SOMAXCONN),
+                        mode: 0o600,
+                    },
+                    parent,
+                    Some(directory),
+                    guest_path,
+                )
+            }
+        };
         let parent_identity = identity(parent.as_raw_fd())?;
         if let Some(stale) = named_identity(parent.as_raw_fd(), spec.name)? {
             validate_owned(stale, libc::S_IFSOCK, Some(spec.mode))?;
@@ -1042,20 +1211,47 @@ impl SessionAuthority {
                         unsafe { libc::unlinkat(parent.as_raw_fd(), name.as_ptr(), 0) };
                     }
                 }
+                if let Some(directory) = dynamic_directory.as_ref() {
+                    if identity(directory.parent.as_raw_fd()).ok()
+                        == Some(directory.parent_identity)
+                        && identity(parent.as_raw_fd()).ok() == Some(directory.identity)
+                        && named_identity(directory.parent.as_raw_fd(), &directory.name)
+                            .ok()
+                            .flatten()
+                            == Some(directory.identity)
+                    {
+                        if let Ok(name) = component(&directory.name) {
+                            unsafe {
+                                libc::unlinkat(
+                                    directory.parent.as_raw_fd(),
+                                    name.as_ptr(),
+                                    libc::AT_REMOVEDIR,
+                                )
+                            };
+                        }
+                    }
+                }
                 return Err(error);
             }
         };
         self.endpoints.insert(
-            kind,
+            key,
             PublishedEndpoint {
                 parent,
                 parent_identity,
                 object,
                 identity: endpoint_identity,
-                name: spec.name,
+                name: spec.name.to_vec(),
+                dynamic_directory,
+                endpoint_linked: true,
             },
         );
-        Ok(socket)
+        Ok((socket, guest_path))
+    }
+
+    fn publish(&mut self, kind: CohortEndpoint) -> Result<OwnedFd, CohortError> {
+        self.publish_key(EndpointKey::Static(kind))
+            .map(|(socket, _guest_path)| socket)
     }
 
     fn authorize_peer(
@@ -1063,24 +1259,36 @@ impl SessionAuthority {
         kind: CohortEndpoint,
         operation: u16,
         peer: PeerAuthority,
-    ) -> Result<PeerAuthority, CohortError> {
+    ) -> Result<(EndpointKey, PeerAuthority), CohortError> {
         #[cfg(test)]
         if self.allow_test_peer {
-            return Ok(peer);
+            return Ok((
+                if kind == CohortEndpoint::PerUserLaunchd {
+                    EndpointKey::PerUser(peer.identity)
+                } else {
+                    EndpointKey::Static(kind)
+                },
+                peer,
+            ));
         }
         let (identity, parent) = process_identity(peer.identity.pid)?;
         if identity != peer.identity {
             return Err(CohortError::Protocol("peer identity drift"));
         }
         if operation == 2 {
+            let key = if kind == CohortEndpoint::PerUserLaunchd {
+                EndpointKey::PerUser(peer.identity)
+            } else {
+                EndpointKey::Static(kind)
+            };
             let owner = self
                 .endpoint_owners
-                .get(&kind)
+                .get(&key)
                 .ok_or(CohortError::Protocol("endpoint owner"))?;
             return if owner.identity == peer.identity
                 && owner_process_state(owner._process.as_raw_fd())? == OwnerProcessState::Alive
             {
-                Ok(peer)
+                Ok((key, peer))
             } else {
                 Err(CohortError::Protocol("endpoint owner"))
             };
@@ -1096,7 +1304,7 @@ impl SessionAuthority {
             CohortEndpoint::Shellspawn => {
                 let launchd = self
                     .endpoint_owners
-                    .get(&CohortEndpoint::Launchd)
+                    .get(&EndpointKey::Static(CohortEndpoint::Launchd))
                     .ok_or(CohortError::Protocol("launchd authority missing"))?;
                 let argv = process_argv(peer.identity.pid)?;
                 if argv.len() != 1
@@ -1104,6 +1312,17 @@ impl SessionAuthority {
                     || parent != launchd.identity.pid
                 {
                     return Err(CohortError::Protocol("shellspawn peer identity"));
+                }
+            }
+            CohortEndpoint::PerUserLaunchd => {
+                let launchd = self
+                    .endpoint_owners
+                    .get(&EndpointKey::Static(CohortEndpoint::Launchd))
+                    .ok_or(CohortError::Protocol("launchd authority missing"))?;
+                let argv = process_argv(peer.identity.pid)?;
+                if argv.len() != 1 || argv[0] != b"/sbin/launchd" || parent != launchd.identity.pid
+                {
+                    return Err(CohortError::Protocol("per-user launchd peer identity"));
                 }
             }
             CohortEndpoint::DarlingServer => {
@@ -1115,41 +1334,65 @@ impl SessionAuthority {
                 return Err(CohortError::Protocol("control endpoint is internal"));
             }
         }
-        Ok(peer)
+        let key = if kind == CohortEndpoint::PerUserLaunchd {
+            EndpointKey::PerUser(peer.identity)
+        } else {
+            EndpointKey::Static(kind)
+        };
+        Ok((key, peer))
     }
 
-    fn retire(&mut self, kind: CohortEndpoint) -> Result<(), CohortError> {
+    fn retire_key(&mut self, key: EndpointKey) -> Result<(), CohortError> {
         self.revalidate()?;
         let endpoint = self
             .endpoints
-            .get(&kind)
+            .get_mut(&key)
             .ok_or(CohortError::EndpointMissing)?;
-        if identity(endpoint.parent.as_raw_fd())? != endpoint.parent_identity
-            || identity(endpoint.object.as_raw_fd())? != endpoint.identity
-            || named_identity(endpoint.parent.as_raw_fd(), endpoint.name)?
-                != Some(endpoint.identity)
-        {
-            return Err(CohortError::Identity("endpoint replacement"));
+        if endpoint.endpoint_linked {
+            if identity(endpoint.parent.as_raw_fd())? != endpoint.parent_identity
+                || identity(endpoint.object.as_raw_fd())? != endpoint.identity
+                || named_identity(endpoint.parent.as_raw_fd(), &endpoint.name)?
+                    != Some(endpoint.identity)
+            {
+                return Err(CohortError::Identity("endpoint replacement"));
+            }
+            let name = component(&endpoint.name)?;
+            if unsafe { libc::unlinkat(endpoint.parent.as_raw_fd(), name.as_ptr(), 0) } < 0 {
+                return Err(io_error("unlinkat(endpoint)"));
+            }
+            endpoint.endpoint_linked = false;
         }
-        let name = component(endpoint.name)?;
-        if unsafe { libc::unlinkat(endpoint.parent.as_raw_fd(), name.as_ptr(), 0) } < 0 {
-            return Err(io_error("unlinkat(endpoint)"));
+        if let Some(directory) = endpoint.dynamic_directory.as_ref() {
+            if identity(directory.parent.as_raw_fd())? != directory.parent_identity
+                || identity(endpoint.parent.as_raw_fd())? != directory.identity
+                || named_identity(directory.parent.as_raw_fd(), &directory.name)?
+                    != Some(directory.identity)
+            {
+                return Err(CohortError::Identity("dynamic directory replacement"));
+            }
+            let name = component(&directory.name)?;
+            if unsafe {
+                libc::unlinkat(
+                    directory.parent.as_raw_fd(),
+                    name.as_ptr(),
+                    libc::AT_REMOVEDIR,
+                )
+            } < 0
+            {
+                return Err(io_error("unlinkat(per-user launchd directory)"));
+            }
         }
-        self.endpoints.remove(&kind);
-        self.endpoint_owners.remove(&kind);
+        self.endpoints.remove(&key);
+        self.endpoint_owners.remove(&key);
         Ok(())
     }
 
     fn cleanup_all(&mut self) -> Result<(), CohortError> {
         let mut first_error = None;
-        for kind in [
-            CohortEndpoint::Shellspawn,
-            CohortEndpoint::Launchd,
-            CohortEndpoint::DarlingServer,
-            CohortEndpoint::Control,
-        ] {
-            if self.endpoints.contains_key(&kind) {
-                if let Err(error) = self.retire(kind) {
+        let keys = self.endpoints.keys().copied().collect::<Vec<_>>();
+        for key in keys {
+            if self.endpoints.contains_key(&key) {
+                if let Err(error) = self.retire_key(key) {
                     if first_error.is_none() {
                         first_error = Some(error);
                     }
@@ -1211,6 +1454,34 @@ struct WireResponse {
     has_fd: u16,
     device: u64,
     inode: u64,
+    path_len: u16,
+    reserved: u16,
+    path: [u8; DYNAMIC_PATH_CAPACITY],
+}
+
+fn wire_response(
+    status: i16,
+    endpoint: u16,
+    passed: Option<FileIdentity>,
+    guest_path: &[u8],
+) -> Result<WireResponse, CohortError> {
+    if guest_path.len() >= DYNAMIC_PATH_CAPACITY {
+        return Err(CohortError::Protocol("dynamic endpoint path capacity"));
+    }
+    let mut path = [0u8; DYNAMIC_PATH_CAPACITY];
+    path[..guest_path.len()].copy_from_slice(guest_path);
+    Ok(WireResponse {
+        magic: PROTOCOL_MAGIC,
+        version: PROTOCOL_VERSION,
+        status,
+        endpoint,
+        has_fd: u16::from(passed.is_some()),
+        device: passed.map_or(0, |identity| identity.device),
+        inode: passed.map_or(0, |identity| identity.inode),
+        path_len: guest_path.len() as u16,
+        reserved: 0,
+        path,
+    })
 }
 
 fn receive_request(fd: RawFd) -> Result<WireRequest, CohortError> {
@@ -1341,7 +1612,7 @@ fn serve_client(
     if owner_process_state(peer_process.as_raw_fd())? != OwnerProcessState::Alive {
         return Err(CohortError::Protocol("peer exited during identity bind"));
     }
-    let peer = authority.authorize_peer(
+    let (key, peer) = authority.authorize_peer(
         kind,
         request.operation,
         PeerAuthority {
@@ -1350,21 +1621,13 @@ fn serve_client(
         },
     )?;
     if request.operation == OPERATION_PUBLISH {
-        let socket = match authority.publish(kind) {
-            Ok(socket) => socket,
+        let (socket, guest_path) = match authority.publish_key(key) {
+            Ok(publication) => publication,
             Err(error) => {
                 eprintln!("lifecycle cohort operation refused: {error}");
                 send_response(
                     client,
-                    WireResponse {
-                        magic: PROTOCOL_MAGIC,
-                        version: PROTOCOL_VERSION,
-                        status: -1,
-                        endpoint: request.endpoint,
-                        has_fd: 0,
-                        device: 0,
-                        inode: 0,
-                    },
+                    wire_response(-1, request.endpoint, None, &[])?,
                     None,
                 )?;
                 return Ok(());
@@ -1373,21 +1636,13 @@ fn serve_client(
         let socket_identity = match identity(socket.as_raw_fd()) {
             Ok(identity) => identity,
             Err(error) => {
-                let _ = authority.retire(kind);
+                let _ = authority.retire_key(key);
                 return Err(error);
             }
         };
-        let pending = WireResponse {
-            magic: PROTOCOL_MAGIC,
-            version: PROTOCOL_VERSION,
-            status: 0,
-            endpoint: request.endpoint,
-            has_fd: 1,
-            device: socket_identity.device,
-            inode: socket_identity.inode,
-        };
+        let pending = wire_response(0, request.endpoint, Some(socket_identity), &guest_path)?;
         if let Err(error) = send_response(client, pending, Some(socket.as_raw_fd())) {
-            let _ = authority.retire(kind);
+            let _ = authority.retire_key(key);
             return Err(error);
         }
         let decision = (|| {
@@ -1411,16 +1666,8 @@ fn serve_client(
                 // step between it and recording the owner: the client cannot
                 // distinguish a lost final acknowledgement from a rejected
                 // commit and must therefore be allowed to rely on the send.
-                authority.endpoint_owners.insert(kind, peer);
-                let committed = WireResponse {
-                    magic: PROTOCOL_MAGIC,
-                    version: PROTOCOL_VERSION,
-                    status: 0,
-                    endpoint: request.endpoint,
-                    has_fd: 0,
-                    device: 0,
-                    inode: 0,
-                };
+                authority.endpoint_owners.insert(key, peer);
+                let committed = wire_response(0, request.endpoint, None, &[])?;
                 // The acknowledgement is diagnostic only.  Once COMMIT was
                 // received, delivery failure cannot revoke ownership or
                 // unlink the endpoint behind the live consumer's retained FD.
@@ -1428,25 +1675,13 @@ fn serve_client(
                 return Ok(());
             }
             Ok(OPERATION_ABORT) => {
-                authority.retire(kind)?;
-                send_response(
-                    client,
-                    WireResponse {
-                        magic: PROTOCOL_MAGIC,
-                        version: PROTOCOL_VERSION,
-                        status: 0,
-                        endpoint: request.endpoint,
-                        has_fd: 0,
-                        device: 0,
-                        inode: 0,
-                    },
-                    None,
-                )?;
+                authority.retire_key(key)?;
+                send_response(client, wire_response(0, request.endpoint, None, &[])?, None)?;
                 return Ok(());
             }
             Ok(_) => unreachable!("publication decision was validated"),
             Err(error) => {
-                let rollback = authority.retire(kind);
+                let rollback = authority.retire_key(key);
                 return match rollback {
                     Ok(()) => Err(error),
                     Err(rollback) => Err(rollback),
@@ -1455,20 +1690,12 @@ fn serve_client(
         }
     }
 
-    let result = authority.retire(kind);
+    let result = authority.retire_key(key);
     let status = if result.is_ok() { 0 } else { -1 };
     if let Err(error) = result.as_ref() {
         eprintln!("lifecycle cohort operation refused: {error}");
     }
-    let response = WireResponse {
-        magic: PROTOCOL_MAGIC,
-        version: PROTOCOL_VERSION,
-        status,
-        endpoint: request.endpoint,
-        has_fd: 0,
-        device: 0,
-        inode: 0,
-    };
+    let response = wire_response(status, request.endpoint, None, &[])?;
     send_response(client, response, None)?;
     // Operation failures are represented by the typed response.  Returning
     // Ok here prevents the server loop from emitting a second response.
@@ -1534,19 +1761,9 @@ fn server_loop(
             if rejected_requests == 0 {
                 eprintln!("lifecycle cohort request rejected: {error}");
             }
-            let _ = send_response(
-                client.as_raw_fd(),
-                WireResponse {
-                    magic: PROTOCOL_MAGIC,
-                    version: PROTOCOL_VERSION,
-                    status: -1,
-                    endpoint: 0,
-                    has_fd: 0,
-                    device: 0,
-                    inode: 0,
-                },
-                None,
-            );
+            if let Ok(response) = wire_response(-1, 0, None, &[]) {
+                let _ = send_response(client.as_raw_fd(), response, None);
+            }
             rejected_requests += 1;
             if rejected_requests == MAX_REJECTED_REQUESTS_PER_SLICE {
                 // Invalid same-UID input never consumes a lifetime counter or
@@ -1971,7 +2188,7 @@ pub unsafe extern "C" fn darling_lifecycle_cohort_finish(
 mod tests {
     use super::*;
     use std::fs;
-    use std::os::unix::fs::{MetadataExt, PermissionsExt};
+    use std::os::unix::fs::{FileTypeExt, MetadataExt, PermissionsExt};
     use std::path::PathBuf;
     use std::process::Command;
     use std::sync::atomic::{AtomicU64, Ordering};
@@ -2200,6 +2417,195 @@ mod tests {
         assert!(!fixture.root.join(".darlingserver.sock").exists());
     }
 
+    fn response_path(response: &WireResponse) -> String {
+        let length = usize::from(response.path_len);
+        assert!(length > 0 && length < response.path.len());
+        assert_eq!(response.path[length], 0);
+        std::str::from_utf8(&response.path[..length])
+            .unwrap()
+            .to_owned()
+    }
+
+    #[test]
+    fn per_user_launchd_uses_retained_dynamic_directory_and_exact_retirement() {
+        let fixture = Fixture::new();
+        let (controller, _darlingserver) =
+            CohortController::start_for_test(&fixture.root, 4242).unwrap();
+        let published = request(
+            &controller,
+            CohortEndpoint::PerUserLaunchd,
+            OPERATION_PUBLISH,
+            controller.nonce,
+        );
+        assert_eq!(published.status, 0);
+        assert_eq!(published.has_fd, 1);
+        let guest_path = response_path(&published);
+        assert!(guest_path.starts_with("/private/var/tmp/launchd-"));
+        assert!(guest_path.ends_with("/sock"));
+        let endpoint = fixture.root.join(guest_path.trim_start_matches('/'));
+        let directory = endpoint.parent().unwrap().to_owned();
+        let endpoint_state = fs::symlink_metadata(&endpoint).unwrap();
+        assert!(endpoint_state.file_type().is_socket());
+        assert_eq!(endpoint_state.permissions().mode() & 0o777, 0o600);
+        let directory_state = fs::symlink_metadata(&directory).unwrap();
+        assert!(directory_state.is_dir());
+        assert_eq!(directory_state.permissions().mode() & 0o777, 0o700);
+
+        let duplicate = request(
+            &controller,
+            CohortEndpoint::PerUserLaunchd,
+            OPERATION_PUBLISH,
+            controller.nonce,
+        );
+        assert_eq!(duplicate.status, -1);
+        assert!(endpoint.exists());
+
+        let retired = request(
+            &controller,
+            CohortEndpoint::PerUserLaunchd,
+            OPERATION_RETIRE,
+            controller.nonce,
+        );
+        assert_eq!(retired.status, 0);
+        assert!(!endpoint.exists());
+        assert!(!directory.exists());
+        controller.finish().unwrap();
+    }
+
+    #[test]
+    fn per_user_dynamic_directory_partial_creation_is_rolled_back() {
+        let fixture = Fixture::new();
+        let mut authority = SessionAuthority::acquire(&fixture.root, 4242).unwrap();
+        authority.dynamic_fault = Some(DynamicPublicationFault::AfterDirectoryCreate);
+        let peer = process_identity(unsafe { libc::getpid() }).unwrap().0;
+        assert!(matches!(
+            authority.publish_key(EndpointKey::PerUser(peer)),
+            Err(CohortError::Io("fault(after dynamic directory create)", _))
+        ));
+        let parent = fixture.root.join("private/var/tmp");
+        assert!(fs::read_dir(parent).unwrap().next().is_none());
+        authority.cleanup_all().unwrap();
+    }
+
+    #[test]
+    fn per_user_endpoint_replacement_is_preserved_fail_closed() {
+        let fixture = Fixture::new();
+        let (controller, _darlingserver) =
+            CohortController::start_for_test(&fixture.root, 4242).unwrap();
+        let published = request(
+            &controller,
+            CohortEndpoint::PerUserLaunchd,
+            OPERATION_PUBLISH,
+            controller.nonce,
+        );
+        let endpoint = fixture
+            .root
+            .join(response_path(&published).trim_start_matches('/'));
+        let saved = endpoint.with_extension("saved");
+        fs::rename(&endpoint, &saved).unwrap();
+        fs::write(&endpoint, b"replacement").unwrap();
+        let refused = request(
+            &controller,
+            CohortEndpoint::PerUserLaunchd,
+            OPERATION_RETIRE,
+            controller.nonce,
+        );
+        assert_eq!(refused.status, -1);
+        assert_eq!(fs::read(&endpoint).unwrap(), b"replacement");
+        fs::remove_file(&endpoint).unwrap();
+        fs::rename(&saved, &endpoint).unwrap();
+        assert_eq!(
+            request(
+                &controller,
+                CohortEndpoint::PerUserLaunchd,
+                OPERATION_RETIRE,
+                controller.nonce,
+            )
+            .status,
+            0
+        );
+        controller.finish().unwrap();
+    }
+
+    #[test]
+    fn per_user_directory_replacement_is_preserved_fail_closed() {
+        let fixture = Fixture::new();
+        let (controller, _darlingserver) =
+            CohortController::start_for_test(&fixture.root, 4242).unwrap();
+        let published = request(
+            &controller,
+            CohortEndpoint::PerUserLaunchd,
+            OPERATION_PUBLISH,
+            controller.nonce,
+        );
+        let endpoint = fixture
+            .root
+            .join(response_path(&published).trim_start_matches('/'));
+        let directory = endpoint.parent().unwrap().to_owned();
+        let saved = directory.with_extension("saved");
+        fs::rename(&directory, &saved).unwrap();
+        fs::create_dir(&directory).unwrap();
+        fs::write(directory.join("replacement"), b"preserve").unwrap();
+        let refused = request(
+            &controller,
+            CohortEndpoint::PerUserLaunchd,
+            OPERATION_RETIRE,
+            controller.nonce,
+        );
+        assert_eq!(refused.status, -1);
+        assert_eq!(
+            fs::read(directory.join("replacement")).unwrap(),
+            b"preserve"
+        );
+        fs::remove_file(directory.join("replacement")).unwrap();
+        fs::remove_dir(&directory).unwrap();
+        fs::rename(&saved, &directory).unwrap();
+        assert_eq!(
+            request(
+                &controller,
+                CohortEndpoint::PerUserLaunchd,
+                OPERATION_RETIRE,
+                controller.nonce,
+            )
+            .status,
+            0
+        );
+        controller.finish().unwrap();
+    }
+
+    #[test]
+    fn per_user_pending_eof_removes_socket_and_dynamic_directory() {
+        let fixture = Fixture::new();
+        let (controller, _darlingserver) =
+            CohortController::start_for_test(&fixture.root, 4242).unwrap();
+        let client = connect(&controller.control_test_path);
+        send_request_only(
+            client.as_raw_fd(),
+            CohortEndpoint::PerUserLaunchd,
+            OPERATION_PUBLISH,
+            controller.nonce,
+        );
+        let pending = receive_response_only(client.as_raw_fd());
+        let endpoint = fixture
+            .root
+            .join(response_path(&pending).trim_start_matches('/'));
+        let directory = endpoint.parent().unwrap().to_owned();
+        drop(client);
+        wait_until_missing(&endpoint);
+        wait_until_missing(&directory);
+        controller.finish().unwrap();
+    }
+
+    #[test]
+    fn symlinked_dynamic_ancestor_is_rejected_before_mutation() {
+        let fixture = Fixture::new();
+        let outside = fixture.root.join("outside");
+        fs::create_dir(&outside).unwrap();
+        std::os::unix::fs::symlink(&outside, fixture.root.join("private")).unwrap();
+        assert!(SessionAuthority::acquire(&fixture.root, 4242).is_err());
+        assert!(fs::read_dir(outside).unwrap().next().is_none());
+    }
+
     #[test]
     fn pending_publication_rolls_back_on_client_eof_before_adoption() {
         let fixture = Fixture::new();
@@ -2412,7 +2818,7 @@ mod tests {
         let owner_pidfd = unsafe { libc::syscall(libc::SYS_pidfd_open, owner_pid, 0) as c_int };
         assert!(owner_pidfd >= 0);
         authority.endpoint_owners.insert(
-            CohortEndpoint::Shellspawn,
+            EndpointKey::Static(CohortEndpoint::Shellspawn),
             PeerAuthority {
                 identity: owner_identity,
                 _process: unsafe { OwnedFd::from_raw_fd(owner_pidfd) },
@@ -2424,7 +2830,7 @@ mod tests {
             owner_process_state(
                 authority
                     .endpoint_owners
-                    .get(&CohortEndpoint::Shellspawn)
+                    .get(&EndpointKey::Static(CohortEndpoint::Shellspawn))
                     .unwrap()
                     ._process
                     .as_raw_fd()
@@ -2438,7 +2844,7 @@ mod tests {
         assert_ne!(first_identity.inode_key(), second_identity.inode_key());
         assert!(!authority
             .endpoint_owners
-            .contains_key(&CohortEndpoint::Shellspawn));
+            .contains_key(&EndpointKey::Static(CohortEndpoint::Shellspawn)));
         authority.cleanup_all().unwrap();
     }
 

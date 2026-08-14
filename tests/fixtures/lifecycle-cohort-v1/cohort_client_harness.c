@@ -364,6 +364,273 @@ static int reject_activation(int endpoint_fd, void* context) {
 	return -1;
 }
 
+static int accept_dynamic_listener(int endpoint_fd, void* context) {
+	(void)context;
+	int accepting = 0;
+	socklen_t length = sizeof(accepting);
+	return getsockopt(endpoint_fd, SOL_SOCKET, SO_ACCEPTCONN, &accepting, &length) == 0 &&
+		length == sizeof(accepting) && accepting == 1 ? 0 : -1;
+}
+
+static size_t directory_entry_count(const char* path) {
+	DIR* directory = opendir(path);
+	if (!directory)
+		fail("open dynamic parent census");
+	size_t count = 0;
+	struct dirent* entry;
+	while ((entry = readdir(directory))) {
+		if (strcmp(entry->d_name, ".") && strcmp(entry->d_name, ".."))
+			++count;
+	}
+	closedir(directory);
+	return count;
+}
+
+static int mutate_nonce_and_accept_dynamic(int endpoint_fd, void* context) {
+	const char* replacement = context;
+	if (setenv("DARLING_LIFECYCLE_CONTROL_NONCE", replacement, 1) != 0)
+		return -1;
+	return accept_dynamic_listener(endpoint_fd, NULL);
+}
+
+static void verify_dynamic_transaction_faults(const char* prefix) {
+	char parent[4096];
+	char path[256] = {};
+	if (snprintf(parent, sizeof(parent), "%s/private/var/tmp", prefix) >= (int)sizeof(parent))
+		fail("dynamic parent path");
+	size_t baseline = directory_entry_count(parent);
+	if (darling_lifecycle_publish_and_activate_dynamic_endpoint(
+			DARLING_LIFECYCLE_ENDPOINT_PER_USER_LAUNCHD,
+			path,
+			sizeof(path),
+			&reject_activation,
+			NULL) >= 0 || directory_entry_count(parent) != baseline)
+		fail("dynamic activation rollback");
+
+	char original_nonce[DARLING_LIFECYCLE_NONCE_HEX_BYTES + 1];
+	const char* raw_nonce = getenv("DARLING_LIFECYCLE_CONTROL_NONCE");
+	if (!raw_nonce || strlen(raw_nonce) != DARLING_LIFECYCLE_NONCE_HEX_BYTES)
+		fail("dynamic transaction nonce");
+	strcpy(original_nonce, raw_nonce);
+	char wrong_nonce[DARLING_LIFECYCLE_NONCE_HEX_BYTES + 1];
+	memset(wrong_nonce, '0', DARLING_LIFECYCLE_NONCE_HEX_BYTES);
+	wrong_nonce[DARLING_LIFECYCLE_NONCE_HEX_BYTES] = 0;
+	int listener = darling_lifecycle_publish_and_activate_dynamic_endpoint(
+		DARLING_LIFECYCLE_ENDPOINT_PER_USER_LAUNCHD,
+		path,
+		sizeof(path),
+		&mutate_nonce_and_accept_dynamic,
+		wrong_nonce
+	);
+	int saved_errno = errno;
+	if (setenv("DARLING_LIFECYCLE_CONTROL_NONCE", original_nonce, 1) != 0)
+		fail("restore dynamic transaction nonce");
+	errno = saved_errno;
+	if (listener < 0)
+		fail("dynamic pending transaction reread nonce");
+	if (darling_lifecycle_retire_endpoint(DARLING_LIFECYCLE_ENDPOINT_PER_USER_LAUNCHD) != 0)
+		fail("retire dynamic nonce snapshot endpoint");
+	close(listener);
+
+	if (setenv("DARLING_LIFECYCLE_COHORT_TEST_FINAL_ACK_FAULT", "lost", 1) != 0)
+		fail("set dynamic final ACK fault");
+	listener = darling_lifecycle_publish_and_activate_dynamic_endpoint(
+		DARLING_LIFECYCLE_ENDPOINT_PER_USER_LAUNCHD,
+		path,
+		sizeof(path),
+		&accept_dynamic_listener,
+		NULL
+	);
+	if (unsetenv("DARLING_LIFECYCLE_COHORT_TEST_FINAL_ACK_FAULT") != 0)
+		fail("clear dynamic final ACK fault");
+	if (listener < 0 ||
+		darling_lifecycle_publish_endpoint(DARLING_LIFECYCLE_ENDPOINT_PER_USER_LAUNCHD) >= 0)
+		fail("dynamic lost ACK ownership");
+	if (darling_lifecycle_retire_endpoint(DARLING_LIFECYCLE_ENDPOINT_PER_USER_LAUNCHD) != 0)
+		fail("retire dynamic lost ACK endpoint");
+	close(listener);
+	if (directory_entry_count(parent) != baseline)
+		fail("dynamic transaction tail");
+}
+
+static void exercise_dynamic_listener(int listener, const char* prefix, const char* guest_path) {
+	char host_path[4096];
+	if (snprintf(host_path, sizeof(host_path), "%s%s", prefix, guest_path) >=
+		(int)sizeof(host_path))
+		fail("dynamic endpoint host path");
+	int client = socket(AF_UNIX, SOCK_STREAM | SOCK_CLOEXEC, 0);
+	if (client < 0)
+		fail("dynamic endpoint client socket");
+	struct sockaddr_un address = {.sun_family = AF_UNIX};
+	if (strlen(host_path) >= sizeof(address.sun_path))
+		fail("dynamic endpoint sockaddr capacity");
+	strcpy(address.sun_path, host_path);
+	if (connect(client, (struct sockaddr*)&address, sizeof(address)) != 0)
+		fail("dynamic endpoint connect");
+	int accepted = accept4(listener, NULL, NULL, SOCK_CLOEXEC);
+	if (accepted < 0)
+		fail("dynamic endpoint accept");
+	char sent = 'P';
+	char received = 0;
+	if (write(client, &sent, 1) != 1 || read(accepted, &received, 1) != 1 ||
+		received != sent)
+		fail("dynamic endpoint RPC");
+	close(accepted);
+	close(client);
+}
+
+static int per_user_launchd_client(const char* prefix) {
+	const char* action = getenv("COHORT_HARNESS_PER_USER_ACTION");
+	if (action && strcmp(action, "transaction-faults") == 0) {
+		verify_dynamic_transaction_faults(prefix);
+		return 0;
+	}
+	char guest_path[256] = {};
+	int listener = darling_lifecycle_publish_and_activate_dynamic_endpoint(
+		DARLING_LIFECYCLE_ENDPOINT_PER_USER_LAUNCHD,
+		guest_path,
+		sizeof(guest_path),
+		&accept_dynamic_listener,
+		NULL
+	);
+	static const char dynamic_prefix[] = "/private/var/tmp/launchd-";
+	if (listener < 0 ||
+		strncmp(guest_path, dynamic_prefix, sizeof(dynamic_prefix) - 1) != 0 ||
+		!strstr(guest_path, "/sock"))
+		fail("publish per-user launchd endpoint");
+	exercise_dynamic_listener(listener, prefix, guest_path);
+
+	if (action && strcmp(action, "hold") == 0) {
+		const char* raw_ready = getenv("COHORT_HARNESS_READY_FD");
+		int ready = raw_ready ? atoi(raw_ready) : -1;
+		uint16_t length = (uint16_t)strlen(guest_path);
+		if (ready < 0 || write(ready, &length, sizeof(length)) != sizeof(length) ||
+			write(ready, guest_path, length) != length)
+			fail("per-user hold readiness");
+		for (;;)
+			pause();
+	}
+	if (action && strcmp(action, "replacement") == 0) {
+		char host_path[4096];
+		char saved_path[4096];
+		if (snprintf(host_path, sizeof(host_path), "%s%s", prefix, guest_path) >=
+			(int)sizeof(host_path) ||
+			snprintf(saved_path, sizeof(saved_path), "%s.saved", host_path) >=
+			(int)sizeof(saved_path))
+			fail("dynamic replacement path");
+		if (rename(host_path, saved_path) != 0)
+			fail("stage dynamic endpoint replacement");
+		write_file(host_path, "replacement", 0600);
+		if (darling_lifecycle_retire_endpoint(DARLING_LIFECYCLE_ENDPOINT_PER_USER_LAUNCHD) == 0)
+			fail("dynamic endpoint replacement accepted");
+		char content[16] = {};
+		int replacement = open(host_path, O_RDONLY | O_CLOEXEC);
+		if (replacement < 0 || read(replacement, content, sizeof(content)) != 11 ||
+			memcmp(content, "replacement", 11) != 0)
+			fail("dynamic replacement not preserved");
+		close(replacement);
+		if (unlink(host_path) != 0 || rename(saved_path, host_path) != 0 ||
+			darling_lifecycle_retire_endpoint(DARLING_LIFECYCLE_ENDPOINT_PER_USER_LAUNCHD) != 0)
+			fail("restore and retire dynamic endpoint");
+		close(listener);
+		return 0;
+	}
+
+	if (darling_lifecycle_publish_endpoint(DARLING_LIFECYCLE_ENDPOINT_PER_USER_LAUNCHD) >= 0)
+		fail("duplicate per-user launchd endpoint accepted");
+	if (darling_lifecycle_retire_endpoint(DARLING_LIFECYCLE_ENDPOINT_PER_USER_LAUNCHD) != 0)
+		fail("retire per-user launchd endpoint");
+	close(listener);
+	char host_path[4096];
+	if (snprintf(host_path, sizeof(host_path), "%s%s", prefix, guest_path) >=
+		(int)sizeof(host_path))
+		fail("retired dynamic endpoint path");
+	expect_missing(host_path);
+	char* separator = strrchr(host_path, '/');
+	if (!separator)
+		fail("dynamic directory path");
+	*separator = 0;
+	expect_missing(host_path);
+	return 0;
+}
+
+static void run_per_user_fixture(
+	const char* prefix,
+	const char* program,
+	const char* action
+) {
+	pid_t child = fork();
+	if (child < 0)
+		fail("fork per-user fixture");
+	if (child == 0) {
+		setenv("COHORT_HARNESS_PER_USER_PREFIX", prefix, 1);
+		setenv("COHORT_HARNESS_PER_USER_ACTION", action, 1);
+		execl(program, "/sbin/launchd", NULL);
+		_exit(127);
+	}
+	int status = 0;
+	if (waitpid(child, &status, 0) != child || !WIFEXITED(status) ||
+		WEXITSTATUS(status) != 0)
+		fail("per-user fixture failed");
+}
+
+static void verify_per_user_owner_death_restart(const char* prefix, const char* program) {
+	int ready[2];
+	if (pipe2(ready, O_CLOEXEC) != 0)
+		fail("per-user readiness pipe");
+	pid_t first = fork();
+	if (first < 0)
+		fail("fork per-user launchd");
+	if (first == 0) {
+		close(ready[0]);
+		char ready_value[32];
+		snprintf(ready_value, sizeof(ready_value), "%d", ready[1]);
+		fcntl(ready[1], F_SETFD, 0);
+		setenv("COHORT_HARNESS_PER_USER_PREFIX", prefix, 1);
+		setenv("COHORT_HARNESS_PER_USER_ACTION", "hold", 1);
+		setenv("COHORT_HARNESS_READY_FD", ready_value, 1);
+		execl(program, "/sbin/launchd", NULL);
+		_exit(127);
+	}
+	close(ready[1]);
+	uint16_t old_length = 0;
+	char old_guest_path[256] = {};
+	if (read(ready[0], &old_length, sizeof(old_length)) != sizeof(old_length) ||
+		old_length == 0 || old_length >= sizeof(old_guest_path) ||
+		read(ready[0], old_guest_path, old_length) != old_length)
+		fail("per-user endpoint readiness");
+	close(ready[0]);
+	if (kill(first, SIGKILL) != 0)
+		fail("kill per-user launchd");
+	int status = 0;
+	if (waitpid(first, &status, 0) != first || !WIFSIGNALED(status) ||
+		WTERMSIG(status) != SIGKILL)
+		fail("wait killed per-user launchd");
+
+	pid_t second = fork();
+	if (second < 0)
+		fail("fork restarted per-user launchd");
+	if (second == 0) {
+		setenv("COHORT_HARNESS_PER_USER_PREFIX", prefix, 1);
+		setenv("COHORT_HARNESS_PER_USER_ACTION", "restart", 1);
+		execl(program, "/sbin/launchd", NULL);
+		_exit(127);
+	}
+	if (waitpid(second, &status, 0) != second || !WIFEXITED(status) ||
+		WEXITSTATUS(status) != 0)
+		fail("restarted per-user launchd");
+	char old_host_path[4096];
+	if (snprintf(old_host_path, sizeof(old_host_path), "%s%s", prefix, old_guest_path) >=
+		(int)sizeof(old_host_path))
+		fail("old per-user endpoint path");
+	expect_missing(old_host_path);
+	char* separator = strrchr(old_host_path, '/');
+	if (!separator)
+		fail("old per-user directory path");
+	*separator = 0;
+	expect_missing(old_host_path);
+}
+
 struct nonce_mutation_context {
 	const char* replacement;
 };
@@ -466,6 +733,9 @@ int main(int argc, char** argv) {
 	const char* shellspawn_prefix = getenv("COHORT_HARNESS_SHELLSPAWN_PREFIX");
 	if (argc == 1 && shellspawn_prefix && strcmp(argv[0], "shellspawn") == 0)
 		return shellspawn_client(shellspawn_prefix);
+	const char* per_user_prefix = getenv("COHORT_HARNESS_PER_USER_PREFIX");
+	if (argc == 1 && per_user_prefix && strcmp(argv[0], "/sbin/launchd") == 0)
+		return per_user_launchd_client(per_user_prefix);
 	if (argc == 3 && strcmp(argv[1], "--unauthorized-client") == 0)
 		return unauthorized_client((enum darling_lifecycle_endpoint_kind)atoi(argv[2]));
 	const char* prefix = getenv("COHORT_HARNESS_LAUNCHD_PREFIX");
@@ -531,6 +801,14 @@ int main(int argc, char** argv) {
 	int launchd = darling_lifecycle_publish_endpoint(DARLING_LIFECYCLE_ENDPOINT_LAUNCHD);
 	if (launchd < 0)
 		fail("publish launchd");
+	expect_unauthorized_child(
+		"/proc/self/exe",
+		"not-per-user-launchd",
+		DARLING_LIFECYCLE_ENDPOINT_PER_USER_LAUNCHD
+	);
+	run_per_user_fixture(prefix, "/proc/self/exe", "replacement");
+	run_per_user_fixture(prefix, "/proc/self/exe", "transaction-faults");
+	verify_per_user_owner_death_restart(prefix, "/proc/self/exe");
 	expect_unauthorized_child("/proc/self/exe", "not-shellspawn", DARLING_LIFECYCLE_ENDPOINT_SHELLSPAWN);
 	char shellspawn_program[4096];
 	if (snprintf(shellspawn_program, sizeof(shellspawn_program), "%s/shellspawn", prefix) >=
@@ -571,6 +849,6 @@ int main(int argc, char** argv) {
 	}
 	verify_sigkill_owner_cleanup(prefix);
 
-	printf("LIFECYCLE_COHORT_ROUTING_VALID endpoints=5 lease=exact-exclusive-flock replacement=preserved shellspawn_keepalive=ready activation_rollback=clean commit_ack_loss=retained nonce_snapshot=stable flood=bounded owner_group_sigkill=clean scm_rights_leaks=0\n");
+	printf("LIFECYCLE_COHORT_ROUTING_VALID endpoints=6 lease=exact-exclusive-flock replacement=preserved per_user_rpc=ready per_user_owner_restart=ready dynamic_cleanup=clean shellspawn_keepalive=ready activation_rollback=clean commit_ack_loss=retained nonce_snapshot=stable flood=bounded owner_group_sigkill=clean scm_rights_leaks=0\n");
 	return 0;
 }
