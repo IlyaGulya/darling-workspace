@@ -14,8 +14,8 @@ then performs identity observations and mutations through retained
 fd-relative capabilities. Python remains orchestration/transport only.
 
 The current inventory is deliberately classified as **cooperative-writer,
-global routing deferred**. Six product records plus the Rust-owned transport
-record in the first two endpoint cohorts are `cohort-ready`, not globally
+global routing deferred**. Seven product records plus the Rust-owned transport
+record in the first three bounded cohorts are `cohort-ready`, not globally
 `compatible`; the other 74 records remain
 `incompatible`. A writer is not considered routable merely because it
 does an advisory check or happens to run under a West context. It must retain
@@ -26,7 +26,7 @@ required rather than another pathname check.
 
 ## Current writers
 
-The registry covers 143 finite production source paths (81 typed writer
+The registry covers 143 finite production source paths (82 typed writer
 records). The complete production-forest scan (anchored by the build/runtime
 closure) discovers 1,754 namespace-mutation candidates: 111 hit typed owner
 paths, 37 hit exact SHA-bound exclusions, and 1,606 have individual records in
@@ -48,6 +48,14 @@ This is recorded as `cohort-ready`; it cannot be
 promoted to global `compatible` until every overlapping writer uses the same
 authority. All remaining records stay `incompatible`.
 
+The third bounded cohort routes only the Homebrew/source-line
+`/private/var/log/dserver.log`. Rust opens the regular file fd-relative under
+the retained prefix and session lease, retains its exact identity, and hands
+Darlingserver only an append-only writer descriptor. The Perf-derived
+`dserver-auxlog.txt` call sites remain explicitly incompatible until that
+composition receives the same retained-prefix ABI; splitting the registry
+record prevents main-log acceptance from silently promoting the aux path.
+
 | Owner | Namespace responsibility | Phase | Current lock evidence |
 | --- | --- | --- | --- |
 | `darling-workspace/lifecycle/operation-boundary/src/cohort_routing.rs` | `/.lc-v1.sock` | controller start/stop | retained Rust session lease; global activation deferred |
@@ -56,7 +64,8 @@ authority. All remaining records stay `incompatible`.
 | `darling/src/shellspawn/shellspawn.c` | `/var/run/shellspawn.sock` unlink/bind/chmod | runtime start/stop | opt-in Rust cohort route, global activation deferred |
 | `darling/src/external/darlingserver/src/darlingserver.cpp` | `/var/run`/`/var/tmp` wipe, home layout, prefix copy/permissions/mount | runtime start/materialization | no `.lifecycle.lock` acquisition |
 | `darling/src/external/darlingserver/src/server.cpp` | `.darlingserver.sock` unlink/bind/cleanup | runtime start/stop | opt-in Rust cohort route, global activation deferred |
-| `darling/src/external/darlingserver/src/{logging,kqchan,call}.cpp` | `dserver.log` and auxiliary RPC logs | runtime diagnostics | no `.lifecycle.lock` acquisition |
+| `darling/src/external/darlingserver/src/logging.cpp` | `dserver.log` | runtime diagnostics | opt-in Rust cohort route, global activation deferred |
+| `darling/src/external/darlingserver/src/{kqchan,call}.cpp` | auxiliary RPC log | Perf runtime diagnostics | incompatible; composition lacks the retained-prefix controller ABI |
 | `darling/src/launchd/src/ipc.c` | launchd socket directory and socket lifecycle | launchd start/stop | system and per-user endpoints cohort ready; global activation deferred |
 | `darling/src/launchd/src/{core,launchd,log}.c` and `support/launchctl.c` | job stdio/per-user directories, generic opens, persistent logs, sockets, `/var/run` and `/tmp` cleanup, `utmpx`, `.systemStarterRunning`, mode changes | launchd boot/runtime | no `.lifecycle.lock` acquisition |
 | `darling/src/xcselect/xcode-select.c` | xcode-select database links under `/var/db` and `/usr/share` | guest toolchain selection | no `.lifecycle.lock` acquisition |

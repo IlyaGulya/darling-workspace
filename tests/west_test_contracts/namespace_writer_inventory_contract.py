@@ -2859,7 +2859,7 @@ def main() -> None:
     compatible = sum(
         writer.get("compatibility") == "compatible" for writer in registry["writers"]
     )
-    assert cohort_ready == 7, "only the reviewed endpoint cohorts and their transport may be cohort-ready"
+    assert cohort_ready == 8, "only the reviewed endpoint cohorts and their transport may be cohort-ready"
     assert compatible == 0, "global production routing must remain disabled"
     assert incompatible + cohort_ready == len(registry["writers"]), (
         "all non-cohort writers must remain incompatible"

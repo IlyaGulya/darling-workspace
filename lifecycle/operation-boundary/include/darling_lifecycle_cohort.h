@@ -13,6 +13,7 @@ extern "C" {
 
 struct darling_lifecycle_cohort_bootstrap {
 	int darlingserver_fd;
+	int dserver_log_fd;
 	uint16_t control_name_len;
 	uint16_t reserved;
 	uint8_t control_name[DARLING_LIFECYCLE_CONTROL_NAME_CAPACITY];
