@@ -22,6 +22,7 @@ pub mod cohort_routing;
 pub mod controller;
 pub mod explorer;
 pub mod fuzz;
+pub mod guest_namespace_authority;
 pub mod linux_backend;
 pub mod quarantine_gc;
 pub mod state;

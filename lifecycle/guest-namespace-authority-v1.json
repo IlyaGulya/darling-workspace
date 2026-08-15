@@ -1,0 +1,38 @@
+{
+  "schema_version": 1,
+  "bead": "dar-4ush.7.3.2",
+  "status": "architecture-corrective-blocked",
+  "routing": "DEFERRED",
+  "default": "OFF",
+  "activation": "compile-time-opt-in-session-required",
+  "transport": "authenticated-exact-scm-rights",
+  "authority": "rust-controller",
+  "protected_descriptor_count": 5,
+  "requested_pilot_operations": [
+    "mkdir-absolute-blocked-with-enotsup",
+    "open-create-exclusive-absolute-blocked-with-enotsup",
+    "unlink-absolute-blocked-with-enotsup",
+    "rename-absolute-blocked-with-enotsup"
+  ],
+  "mutation_binding": "retained-prefix-parent-openat-no-follow",
+  "revocation": "lease-state-plus-controller-pidfd-then-bounded-independent-ofd-drain",
+  "cleanup_admission": "explicit-sock-seqpacket-cleanup-command-plus-ack-only",
+  "cleanup_commit_point": "successful-cleanup-packet-send",
+  "cleanup_typestate": "active-draining-cleanup-requested-cleanup-committed-finished",
+  "forensic_preserve": "parent-death-unknown-command-transport-failure-or-missing-ack",
+  "threat_model": {
+    "darwin_syscall_bypass": "denied-by-guard-table",
+    "native_linux_elf_injection": "excluded",
+    "hostile_same-uid-host-writer": "excluded",
+    "cooperative_product_writers": "required"
+  },
+  "not_claimed": [
+    "lower-layer-classification-until-rust-command-capability",
+    "unlink-whiteout-transaction-until-rust-command-capability",
+    "relative-dirfd-mutations",
+    "general-copy-up",
+    "metadata-and-xattr-mutations",
+    "remaining-writer-inventory",
+    "dar-4ush.7.3.1"
+  ]
+}
