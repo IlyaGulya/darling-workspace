@@ -7,6 +7,7 @@
 //! `SCM_RIGHTS`.  The v1 threat model is deliberately cooperative; writers
 //! outside this cohort keep global routing disabled.
 
+use crate::guest_namespace_authority::GuestNamespaceAuthority;
 use crate::FileIdentity;
 use std::collections::BTreeMap;
 use std::ffi::{CStr, CString};
@@ -41,6 +42,11 @@ const DYNAMIC_PATH_CAPACITY: usize = 96;
 const DYNAMIC_DIRECTORY_ATTEMPTS: usize = 16;
 const LOCK_TIMEOUT: Duration = Duration::from_millis(250);
 const REQUEST_TIMEOUT_MS: c_int = 250;
+const ABANDON_PENDING_STATUS: c_int = 3;
+const CLEANUP_PENDING_STATUS: c_int = 4;
+const CONTROLLER_COMMAND_CLEANUP: u8 = 1;
+const CONTROLLER_COMMAND_PRESERVE: u8 = 2;
+const CONTROLLER_COMMAND_ACK: u8 = 0x7f;
 #[cfg(not(test))]
 const CONTROLLER_EXIT_TIMEOUT_MS: c_int = 1_000;
 const MAX_REJECTED_REQUESTS_PER_SLICE: usize = 128;
@@ -893,7 +899,6 @@ impl SessionAuthority {
         )
     }
 
-    #[cfg(not(test))]
     fn disarm_drop_cleanup(&mut self) {
         self.cleanup_on_drop = false;
     }
@@ -1852,24 +1857,32 @@ fn serve_client(
     Ok(())
 }
 
+type ServerLoopResult = (SessionAuthority, Result<(), CohortError>, bool);
+
 fn server_loop(
     mut authority: SessionAuthority,
     listener: OwnedFd,
-    shutdown: OwnedFd,
+    control: OwnedFd,
     parent_watch: Option<OwnedFd>,
     nonce: [u8; NONCE_BYTES],
-) -> (SessionAuthority, Result<(), CohortError>) {
+) -> ServerLoopResult {
     let mut rejected_requests = 0usize;
+    let mut preserve_acknowledged = false;
+    let forensic_preserve;
     let result = loop {
         let mut pollfds = [
             libc::pollfd {
-                fd: listener.as_raw_fd(),
+                fd: if preserve_acknowledged {
+                    -1
+                } else {
+                    listener.as_raw_fd()
+                },
                 events: libc::POLLIN,
                 revents: 0,
             },
             libc::pollfd {
-                fd: shutdown.as_raw_fd(),
-                events: libc::POLLIN,
+                fd: control.as_raw_fd(),
+                events: libc::POLLIN | libc::POLLHUP | libc::POLLERR,
                 revents: 0,
             },
             libc::pollfd {
@@ -1884,12 +1897,49 @@ fn server_loop(
             if io::Error::last_os_error().raw_os_error() == Some(libc::EINTR) {
                 continue;
             }
+            forensic_preserve = true;
             break Err(io_error("poll(controller)"));
         }
-        if pollfds[1].revents & libc::POLLIN != 0 {
+        if pollfds[1].revents & (libc::POLLIN | libc::POLLHUP | libc::POLLERR) != 0 {
+            let mut command = [0u8; 2];
+            let received = unsafe {
+                libc::recv(
+                    control.as_raw_fd(),
+                    command.as_mut_ptr().cast(),
+                    command.len(),
+                    0,
+                )
+            };
+            let exact = received == 1;
+            if exact && command[0] == CONTROLLER_COMMAND_CLEANUP {
+                // Receipt proves the parent's successful send commit. Cleanup
+                // remains committed even if the diagnostic ACK is lost.
+                let acknowledged = [CONTROLLER_COMMAND_ACK];
+                let _ = write_all(control.as_raw_fd(), &acknowledged);
+                forensic_preserve = false;
+                break Ok(());
+            }
+            if !exact || command[0] != CONTROLLER_COMMAND_PRESERVE {
+                forensic_preserve = true;
+                break Ok(());
+            }
+            let acknowledged = [CONTROLLER_COMMAND_ACK];
+            if write_all(control.as_raw_fd(), &acknowledged).is_err() {
+                forensic_preserve = true;
+                break Ok(());
+            }
+            if parent_watch.is_some() {
+                // Admission is closed after preserve ACK. Keep the production
+                // child alive solely to witness parent death; it performs no
+                // more endpoint work and cleanup remains disarmed.
+                preserve_acknowledged = true;
+                continue;
+            }
+            forensic_preserve = true;
             break Ok(());
         }
         if pollfds[2].revents & libc::POLLIN != 0 {
+            forensic_preserve = true;
             break Ok(());
         }
         if pollfds[0].revents & libc::POLLIN == 0 {
@@ -1927,7 +1977,10 @@ fn server_loop(
             rejected_requests = 0;
         }
     };
-    (authority, result)
+    if forensic_preserve {
+        authority.disarm_drop_cleanup();
+    }
+    (authority, result, forensic_preserve)
 }
 
 #[repr(C)]
@@ -1940,19 +1993,75 @@ pub struct CohortBootstrap {
     pub nonce_hex: [u8; NONCE_HEX_BYTES],
 }
 
-#[cfg(not(test))]
 struct ProcessWorker {
     pid: libc::pid_t,
     pidfd: OwnedFd,
 }
 
-#[cfg(not(test))]
 fn pidfd_open(pid: libc::pid_t) -> Result<OwnedFd, CohortError> {
     let fd = unsafe { libc::syscall(libc::SYS_pidfd_open, pid, 0) as c_int };
     if fd < 0 {
         return Err(io_error("pidfd_open(controller)"));
     }
     Ok(unsafe { OwnedFd::from_raw_fd(fd) })
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[cfg_attr(not(test), allow(dead_code))]
+enum AbandonFault {
+    KillError,
+    PidfdTimeout,
+    WaitpidEintr,
+    WaitpidZero,
+    WaitpidError,
+}
+
+fn abandon_process_worker(
+    worker: &ProcessWorker,
+    fault: Option<AbandonFault>,
+) -> Result<(), CohortError> {
+    if fault == Some(AbandonFault::KillError) {
+        return Err(CohortError::Io(
+            "kill(abandon controller)",
+            io::Error::from_raw_os_error(libc::EPERM),
+        ));
+    }
+    if unsafe { libc::kill(worker.pid, libc::SIGKILL) } < 0
+        && io::Error::last_os_error().raw_os_error() != Some(libc::ESRCH)
+    {
+        return Err(io_error("kill(abandon controller)"));
+    }
+    if fault == Some(AbandonFault::PidfdTimeout) {
+        return Err(CohortError::Protocol("abandon pidfd timeout"));
+    }
+    wait_for_io(worker.pidfd.as_raw_fd(), libc::POLLIN)?;
+    match fault {
+        Some(AbandonFault::WaitpidEintr) => {
+            return Err(CohortError::Io(
+                "waitpid(abandon controller)",
+                io::Error::from_raw_os_error(libc::EINTR),
+            ));
+        }
+        Some(AbandonFault::WaitpidZero) => {
+            return Err(CohortError::Protocol("abandon waitpid pending"));
+        }
+        Some(AbandonFault::WaitpidError) => {
+            return Err(CohortError::Io(
+                "waitpid(abandon controller)",
+                io::Error::from_raw_os_error(libc::ECHILD),
+            ));
+        }
+        _ => {}
+    }
+    let mut status = 0;
+    let waited = unsafe { libc::waitpid(worker.pid, &mut status, libc::WNOHANG) };
+    if waited == worker.pid {
+        Ok(())
+    } else if waited == 0 {
+        Err(CohortError::Protocol("abandon waitpid pending"))
+    } else {
+        Err(io_error("waitpid(abandon controller)"))
+    }
 }
 
 #[cfg(not(test))]
@@ -2039,13 +2148,31 @@ pub struct CohortController {
     shutdown: OwnedFd,
     dserver_log: Option<OwnedFd>,
     #[cfg(test)]
-    thread: Option<JoinHandle<(SessionAuthority, Result<(), CohortError>)>>,
+    thread: Option<JoinHandle<ServerLoopResult>>,
     #[cfg(not(test))]
     process: Option<ProcessWorker>,
     control_name: Vec<u8>,
     nonce: [u8; NONCE_BYTES],
+    guest_namespace: Option<GuestNamespaceAuthority>,
+    cleanup_phase: CleanupPhase,
+    forensic_preserve_requested: bool,
+    forensic_preserve_acknowledged: bool,
+    #[cfg(test)]
+    lose_cleanup_ack_after_receive: bool,
+    #[cfg(test)]
+    abandon_fault: Option<AbandonFault>,
     #[cfg(test)]
     control_test_path: std::path::PathBuf,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum CleanupPhase {
+    Active,
+    Draining,
+    CleanupRequested,
+    CleanupCommitted,
+    Abandoning,
+    Finished,
 }
 
 impl CohortController {
@@ -2081,20 +2208,37 @@ impl CohortController {
         let darlingserver = authority.publish(CohortEndpoint::DarlingServer)?;
         let dserver_log = authority.publish_log()?;
         let nonce = random_nonce()?;
+        let generation = u64::from_ne_bytes(nonce[..8].try_into().expect("nonce width")) | 1;
+        let guest_namespace = Some(
+            GuestNamespaceAuthority::issue_from_locked_fds(
+                authority.prefix.as_raw_fd(),
+                authority.lock.as_raw_fd(),
+                generation,
+            )
+            .map_err(|_| CohortError::Protocol("guest namespace authority"))?,
+        );
         let name = CONTROL_GUEST_PATH.to_vec();
         let listener = authority.publish(CohortEndpoint::Control)?;
-        let shutdown = unsafe { libc::eventfd(0, libc::EFD_CLOEXEC | libc::EFD_NONBLOCK) };
-        if shutdown < 0 {
-            return Err(io_error("eventfd"));
+        let mut control = [0; 2];
+        if unsafe {
+            libc::socketpair(
+                libc::AF_UNIX,
+                libc::SOCK_SEQPACKET | libc::SOCK_CLOEXEC,
+                0,
+                control.as_mut_ptr(),
+            )
+        } < 0
+        {
+            return Err(io_error("socketpair(controller command)"));
         }
-        let shutdown = unsafe { OwnedFd::from_raw_fd(shutdown) };
+        let shutdown = unsafe { OwnedFd::from_raw_fd(control[0]) };
+        let child_control = unsafe { OwnedFd::from_raw_fd(control[1]) };
 
         #[cfg(test)]
         let controller = {
-            let thread_shutdown = duplicate(shutdown.as_raw_fd(), true)?;
             let thread = thread::Builder::new()
                 .name("darling-lifecycle-cohort".to_string())
-                .spawn(move || server_loop(authority, listener, thread_shutdown, None, nonce))
+                .spawn(move || server_loop(authority, listener, child_control, None, nonce))
                 .map_err(|error| CohortError::Io("spawn(controller)", error))?;
             Self {
                 shutdown,
@@ -2102,6 +2246,12 @@ impl CohortController {
                 thread: Some(thread),
                 control_name: name,
                 nonce,
+                guest_namespace,
+                cleanup_phase: CleanupPhase::Active,
+                forensic_preserve_requested: false,
+                forensic_preserve_acknowledged: false,
+                lose_cleanup_ack_after_receive: false,
+                abandon_fault: None,
                 #[cfg(test)]
                 control_test_path: test_prefix
                     .ok_or(CohortError::Protocol("test prefix path"))?
@@ -2113,7 +2263,6 @@ impl CohortController {
         let controller = {
             let parent_pid = unsafe { libc::getpid() };
             let parent_watch = pidfd_open(parent_pid)?;
-            let child_shutdown = duplicate(shutdown.as_raw_fd(), true)?;
             let mut ready = [0; 2];
             if unsafe {
                 libc::socketpair(
@@ -2134,17 +2283,18 @@ impl CohortController {
             }
             if child == 0 {
                 drop(ready_parent);
+                unsafe { libc::close(shutdown.as_raw_fd()) };
                 unsafe { libc::close(darlingserver.as_raw_fd()) };
                 if unsafe { libc::setsid() } < 0 {
                     let ready_status: i32 = -1;
                     let _ = write_all(ready_child.as_raw_fd(), &ready_status.to_ne_bytes());
-                    let _ = authority.cleanup_all();
+                    authority.disarm_drop_cleanup();
                     unsafe { libc::_exit(1) };
                 }
                 let mut allowed = authority.retained_fds();
                 allowed.extend([
                     listener.as_raw_fd(),
-                    child_shutdown.as_raw_fd(),
+                    child_control.as_raw_fd(),
                     parent_watch.as_raw_fd(),
                     ready_child.as_raw_fd(),
                 ]);
@@ -2153,25 +2303,30 @@ impl CohortController {
                 let _ = write_all(ready_child.as_raw_fd(), &ready_status.to_ne_bytes());
                 drop(ready_child);
                 if prepared.is_err() {
-                    let _ = authority.cleanup_all();
+                    authority.disarm_drop_cleanup();
                     unsafe { libc::_exit(1) };
                 }
-                let (mut authority, loop_result) = server_loop(
+                let (mut authority, loop_result, forensic_preserve) = server_loop(
                     authority,
                     listener,
-                    child_shutdown,
+                    child_control,
                     Some(parent_watch),
                     nonce,
                 );
-                let cleanup_result = authority.cleanup_all();
+                let cleanup_result = if forensic_preserve {
+                    authority.disarm_drop_cleanup();
+                    Ok(())
+                } else {
+                    authority.cleanup_all()
+                };
                 let status = i32::from(loop_result.is_err() || cleanup_result.is_err());
                 unsafe { libc::_exit(status) };
             }
             drop(ready_child);
+            drop(child_control);
             authority.disarm_drop_cleanup();
             drop(authority);
             drop(listener);
-            drop(child_shutdown);
             drop(parent_watch);
             let child_pidfd = match pidfd_open(child) {
                 Ok(pidfd) => pidfd,
@@ -2212,6 +2367,10 @@ impl CohortController {
                 process: Some(process),
                 control_name: name,
                 nonce,
+                guest_namespace,
+                cleanup_phase: CleanupPhase::Active,
+                forensic_preserve_requested: false,
+                forensic_preserve_acknowledged: false,
             }
         };
 
@@ -2235,51 +2394,251 @@ impl CohortController {
         nonce_hex(&self.nonce)
     }
 
+    pub fn send_guest_namespace_bootstrap(&self, socket: RawFd) -> Result<(), CohortError> {
+        self.guest_namespace
+            .as_ref()
+            .ok_or(CohortError::Protocol(
+                "guest namespace authority unavailable",
+            ))?
+            .send_bootstrap(socket)
+            .map_err(|_| CohortError::Protocol("guest namespace bootstrap"))
+    }
+
     fn take_dserver_log(&mut self) -> Result<OwnedFd, CohortError> {
         self.dserver_log.take().ok_or(CohortError::Protocol(
             "Darlingserver log already transferred",
         ))
     }
 
-    pub fn finish(mut self) -> Result<(), CohortError> {
-        let value: u64 = 1;
-        write_all(self.shutdown.as_raw_fd(), &value.to_ne_bytes())?;
+    #[must_use = "drain-pending returns the owning controller and must be recovered"]
+    pub fn finish(mut self) -> Result<(), CohortFinishError> {
+        if self.cleanup_phase == CleanupPhase::CleanupCommitted {
+            return self
+                .finish_after_cleanup_commit()
+                .map_err(CohortFinishError::Terminal);
+        }
+        if self.cleanup_phase == CleanupPhase::Abandoning {
+            return Err(CohortFinishError::CleanupRequestPending {
+                controller: Box::new(self),
+                source: CohortError::Protocol("normal finish forbidden after abandon request"),
+            });
+        }
+        self.cleanup_phase = CleanupPhase::Draining;
+        let Some(guest_namespace) = self.guest_namespace.as_mut() else {
+            return Err(CohortFinishError::Terminal(CohortError::Protocol(
+                "guest namespace authority unavailable",
+            )));
+        };
+        if let Err(source) = guest_namespace.revoke() {
+            return Err(CohortFinishError::DrainPending {
+                controller: Box::new(self),
+                source,
+            });
+        }
+        if let Err(source) = self.request_cleanup() {
+            return if self.cleanup_phase == CleanupPhase::CleanupCommitted {
+                Err(CohortFinishError::CleanupPending {
+                    controller: Box::new(self),
+                    source,
+                })
+            } else {
+                Err(CohortFinishError::CleanupRequestPending {
+                    controller: Box::new(self),
+                    source,
+                })
+            };
+        }
+        self.finish_after_cleanup_commit()
+            .map_err(CohortFinishError::Terminal)
+    }
+
+    fn send_controller_command(&self, command: u8) -> Result<(), CohortError> {
+        let sent = unsafe {
+            libc::send(
+                self.shutdown.as_raw_fd(),
+                (&command as *const u8).cast(),
+                1,
+                libc::MSG_NOSIGNAL,
+            )
+        };
+        if sent != 1 {
+            return Err(io_error("send(controller command)"));
+        }
+        Ok(())
+    }
+
+    fn receive_controller_ack(&self) -> Result<(), CohortError> {
+        wait_for_io(self.shutdown.as_raw_fd(), libc::POLLIN)?;
+        let mut acknowledged = [0u8; 2];
+        let received = unsafe {
+            libc::recv(
+                self.shutdown.as_raw_fd(),
+                acknowledged.as_mut_ptr().cast(),
+                acknowledged.len(),
+                0,
+            )
+        };
+        if received != 1 || acknowledged[0] != CONTROLLER_COMMAND_ACK {
+            return Err(CohortError::Protocol("controller command acknowledgement"));
+        }
+        Ok(())
+    }
+
+    fn request_cleanup(&mut self) -> Result<(), CohortError> {
+        if self.forensic_preserve_requested
+            || !matches!(
+                self.cleanup_phase,
+                CleanupPhase::Draining | CleanupPhase::CleanupRequested
+            )
+        {
+            return Err(CohortError::Protocol(
+                "cleanup forbidden after forensic preserve request",
+            ));
+        }
+        self.cleanup_phase = CleanupPhase::CleanupRequested;
+        if let Err(error) = self.send_controller_command(CONTROLLER_COMMAND_CLEANUP) {
+            self.cleanup_phase = CleanupPhase::Draining;
+            return Err(error);
+        }
+        // The successful packet send is the irreversible cleanup commit.  No
+        // later ACK/exit/reap failure may transition to preserve/abandon.
+        self.cleanup_phase = CleanupPhase::CleanupCommitted;
+        self.receive_controller_ack()?;
+        #[cfg(test)]
+        if self.lose_cleanup_ack_after_receive {
+            self.lose_cleanup_ack_after_receive = false;
+            return Err(CohortError::Protocol("fault(cleanup ACK lost)"));
+        }
+        Ok(())
+    }
+
+    fn finish_after_cleanup_commit(mut self) -> Result<(), CohortError> {
         #[cfg(test)]
         {
-            let (mut authority, loop_result) = self
+            let (mut authority, loop_result, forensic_preserve) = self
                 .thread
                 .take()
                 .ok_or(CohortError::Thread)?
                 .join()
                 .map_err(|_| CohortError::Thread)?;
+            if forensic_preserve {
+                authority.disarm_drop_cleanup();
+                return Err(CohortError::Protocol(
+                    "unexpected forensic preserve on finish",
+                ));
+            }
             let cleanup_result = authority.cleanup_all();
             cleanup_result?;
+            loop_result?;
+            self.cleanup_phase = CleanupPhase::Finished;
+            Ok(())
+        }
+        #[cfg(not(test))]
+        {
+            wait_worker(self.process.take().ok_or(CohortError::Process)?)?;
+            self.cleanup_phase = CleanupPhase::Finished;
+            Ok(())
+        }
+    }
+
+    fn request_forensic_preserve(&mut self) -> Result<(), CohortError> {
+        if self.forensic_preserve_acknowledged {
+            return Ok(());
+        }
+        if matches!(
+            self.cleanup_phase,
+            CleanupPhase::CleanupRequested
+                | CleanupPhase::CleanupCommitted
+                | CleanupPhase::Finished
+        ) {
+            return Err(CohortError::Protocol(
+                "forensic preserve forbidden after cleanup request",
+            ));
+        }
+        self.cleanup_phase = CleanupPhase::Abandoning;
+        self.forensic_preserve_requested = true;
+        self.send_controller_command(CONTROLLER_COMMAND_PRESERVE)?;
+        self.receive_controller_ack()?;
+        self.forensic_preserve_acknowledged = true;
+        Ok(())
+    }
+
+    #[doc(hidden)]
+    pub fn acknowledge_forensic_preserve_for_contract(&mut self) -> Result<(), CohortError> {
+        self.request_forensic_preserve()
+    }
+
+    fn abandon_after_revocation(&mut self) -> Result<(), CohortError> {
+        self.request_forensic_preserve()?;
+        #[cfg(test)]
+        {
+            if let Some(fault) = self.abandon_fault.take() {
+                return Err(CohortError::Protocol(match fault {
+                    AbandonFault::KillError => "fault(abandon kill)",
+                    AbandonFault::PidfdTimeout => "fault(abandon pidfd timeout)",
+                    AbandonFault::WaitpidEintr => "fault(abandon waitpid EINTR)",
+                    AbandonFault::WaitpidZero => "fault(abandon waitpid zero)",
+                    AbandonFault::WaitpidError => "fault(abandon waitpid error)",
+                }));
+            }
+            let (mut authority, loop_result, forensic_preserve) = self
+                .thread
+                .take()
+                .ok_or(CohortError::Thread)?
+                .join()
+                .map_err(|_| CohortError::Thread)?;
+            if !forensic_preserve {
+                return Err(CohortError::Protocol("forensic preserve not acknowledged"));
+            }
+            authority.disarm_drop_cleanup();
             loop_result
         }
         #[cfg(not(test))]
         {
-            wait_worker(self.process.take().ok_or(CohortError::Process)?)
+            let worker = self.process.as_ref().ok_or(CohortError::Process)?;
+            abandon_process_worker(worker, None)?;
+            self.process.take();
+            Ok(())
         }
     }
 }
 
 impl Drop for CohortController {
-    fn drop(&mut self) {
-        #[cfg(test)]
-        if self.thread.is_some() {
-            let value: u64 = 1;
-            let _ = write_all(self.shutdown.as_raw_fd(), &value.to_ne_bytes());
-            if let Some(thread) = self.thread.take() {
-                if let Ok((mut authority, _)) = thread.join() {
-                    let _ = authority.cleanup_all();
-                }
+    fn drop(&mut self) {}
+}
+
+#[must_use = "a drain-pending controller cannot be discarded as cleanup success"]
+pub enum CohortFinishError {
+    DrainPending {
+        controller: Box<CohortController>,
+        source: crate::guest_namespace_authority::AuthorityError,
+    },
+    CleanupRequestPending {
+        controller: Box<CohortController>,
+        source: CohortError,
+    },
+    CleanupPending {
+        controller: Box<CohortController>,
+        source: CohortError,
+    },
+    Terminal(CohortError),
+}
+
+impl std::fmt::Debug for CohortFinishError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::DrainPending { source, .. } => {
+                formatter.debug_tuple("DrainPending").field(source).finish()
             }
-        }
-        #[cfg(not(test))]
-        if let Some(process) = self.process.take() {
-            let value: u64 = 1;
-            let _ = write_all(self.shutdown.as_raw_fd(), &value.to_ne_bytes());
-            let _ = wait_worker(process);
+            Self::CleanupRequestPending { source, .. } => formatter
+                .debug_tuple("CleanupRequestPending")
+                .field(source)
+                .finish(),
+            Self::CleanupPending { source, .. } => formatter
+                .debug_tuple("CleanupPending")
+                .field(source)
+                .finish(),
+            Self::Terminal(error) => formatter.debug_tuple("Terminal").field(error).finish(),
         }
     }
 }
@@ -2349,11 +2708,108 @@ pub unsafe extern "C" fn darling_lifecycle_cohort_finish(
     if controller.is_null() {
         return -1;
     }
-    let controller = Box::from_raw(controller);
-    if controller.finish().is_ok() {
+    let mut owned = Box::from_raw(controller);
+    if owned.cleanup_phase == CleanupPhase::CleanupCommitted {
+        return if (*owned).finish_after_cleanup_commit().is_ok() {
+            0
+        } else {
+            -1
+        };
+    }
+    if owned.cleanup_phase == CleanupPhase::Abandoning {
+        let restored = Box::into_raw(owned);
+        debug_assert_eq!(restored, controller);
+        return 1;
+    }
+    owned.cleanup_phase = CleanupPhase::Draining;
+    let Some(guest_namespace) = owned.guest_namespace.as_mut() else {
+        return -1;
+    };
+    if guest_namespace.revoke().is_err() {
+        let restored = Box::into_raw(owned);
+        debug_assert_eq!(restored, controller);
+        return 1;
+    }
+    if owned.request_cleanup().is_err() {
+        let status = if owned.cleanup_phase == CleanupPhase::CleanupCommitted {
+            CLEANUP_PENDING_STATUS
+        } else {
+            1
+        };
+        let restored = Box::into_raw(owned);
+        debug_assert_eq!(restored, controller);
+        return status;
+    }
+    if (*owned).finish_after_cleanup_commit().is_ok() {
         0
     } else {
         -1
+    }
+}
+
+#[no_mangle]
+/// Consume a revoked controller without destructive namespace cleanup.
+///
+/// # Safety
+/// `controller` must be the live pointer retained after
+/// `DARLING_LIFECYCLE_FINISH_DRAIN_PENDING`. A zero result consumes it;
+/// `DARLING_LIFECYCLE_ABANDON_PENDING` preserves the exact pointer for retry.
+pub unsafe extern "C" fn darling_lifecycle_cohort_abandon(
+    controller: *mut CohortController,
+) -> c_int {
+    if controller.is_null() {
+        return -1;
+    }
+    let mut owned = Box::from_raw(controller);
+    if matches!(
+        owned.cleanup_phase,
+        CleanupPhase::CleanupRequested | CleanupPhase::CleanupCommitted | CleanupPhase::Finished
+    ) {
+        let restored = Box::into_raw(owned);
+        debug_assert_eq!(restored, controller);
+        return ABANDON_PENDING_STATUS;
+    }
+    let Some(guest_namespace) = owned.guest_namespace.as_mut() else {
+        return -1;
+    };
+    // revoke() publishes REVOKED before a possible DrainPending result.
+    let _ = guest_namespace.revoke();
+    // The transition may fail before exit/reap is proven. Preserve the exact
+    // allocation and ProcessWorker for a later retry in that case.
+    match owned.abandon_after_revocation() {
+        Ok(()) => 0,
+        Err(_) => {
+            let restored = Box::into_raw(owned);
+            debug_assert_eq!(restored, controller);
+            ABANDON_PENDING_STATUS
+        }
+    }
+}
+
+#[no_mangle]
+/// Send the exact authenticated guest namespace capability set over a trusted
+/// `SOCK_SEQPACKET` bootstrap socket before mldr enters guest code.
+///
+/// # Safety
+///
+/// `controller` must be the live pointer returned by
+/// [`darling_lifecycle_cohort_start`], and `socket_fd` must be owned by the
+/// caller for the duration of this call.
+pub unsafe extern "C" fn darling_lifecycle_cohort_send_guest_namespace_bootstrap(
+    controller: *mut CohortController,
+    socket_fd: c_int,
+) -> c_int {
+    let Some(controller) = controller.as_ref() else {
+        return -1;
+    };
+    if socket_fd < 0
+        || controller
+            .send_guest_namespace_bootstrap(socket_fd)
+            .is_err()
+    {
+        -1
+    } else {
+        0
     }
 }
 
@@ -2490,6 +2946,266 @@ mod tests {
             (metadata.dev(), metadata.ino()),
             (original.device, original.inode)
         );
+    }
+
+    #[test]
+    fn guest_mutation_drain_pending_preserves_owning_controller_for_retry() {
+        let fixture = Fixture::new();
+        let (controller, listener) =
+            CohortController::start_for_test(&fixture.root, std::process::id() as _).unwrap();
+        drop(listener);
+        let mut sockets = [0; 2];
+        assert_eq!(
+            unsafe {
+                libc::socketpair(
+                    libc::AF_UNIX,
+                    libc::SOCK_SEQPACKET | libc::SOCK_CLOEXEC,
+                    0,
+                    sockets.as_mut_ptr(),
+                )
+            },
+            0
+        );
+        controller
+            .send_guest_namespace_bootstrap(sockets[0])
+            .unwrap();
+        let session =
+            crate::guest_namespace_authority::SessionCapabilities::receive_required(sockets[1])
+                .unwrap();
+        unsafe {
+            libc::close(sockets[0]);
+            libc::close(sockets[1]);
+        }
+        let mutation = session.authorize().unwrap();
+        let control_path = controller.control_test_path.clone();
+        let pending = match controller.finish() {
+            Err(CohortFinishError::DrainPending { controller, .. }) => controller,
+            other => panic!("expected owning drain pending, got {other:?}"),
+        };
+        assert!(control_path.exists());
+        assert!(matches!(
+            session.authorize(),
+            Err(crate::guest_namespace_authority::AuthorityError::Revoked)
+        ));
+        drop(mutation);
+        pending.finish().unwrap();
+        assert!(!control_path.exists());
+    }
+
+    #[test]
+    fn c_abi_drain_pending_preserves_exact_pointer_for_retry() {
+        let fixture = Fixture::new();
+        let (controller, listener) =
+            CohortController::start_for_test(&fixture.root, std::process::id() as _).unwrap();
+        drop(listener);
+        let mut sockets = [0; 2];
+        assert_eq!(
+            unsafe {
+                libc::socketpair(
+                    libc::AF_UNIX,
+                    libc::SOCK_SEQPACKET | libc::SOCK_CLOEXEC,
+                    0,
+                    sockets.as_mut_ptr(),
+                )
+            },
+            0
+        );
+        controller
+            .send_guest_namespace_bootstrap(sockets[0])
+            .unwrap();
+        let session =
+            crate::guest_namespace_authority::SessionCapabilities::receive_required(sockets[1])
+                .unwrap();
+        unsafe {
+            libc::close(sockets[0]);
+            libc::close(sockets[1]);
+        }
+        let mutation = session.authorize().unwrap();
+        let pointer = Box::into_raw(Box::new(controller));
+        assert_eq!(unsafe { darling_lifecycle_cohort_finish(pointer) }, 1);
+        assert!(matches!(
+            session.authorize(),
+            Err(crate::guest_namespace_authority::AuthorityError::Revoked)
+        ));
+        drop(mutation);
+        assert_eq!(unsafe { darling_lifecycle_cohort_finish(pointer) }, 0);
+    }
+
+    fn assert_unknown_controller_command_preserves(command: u8) {
+        let fixture = Fixture::new();
+        let (mut controller, listener) =
+            CohortController::start_for_test(&fixture.root, std::process::id() as _).unwrap();
+        drop(listener);
+        let path = controller.control_test_path.clone();
+        let before = fs::symlink_metadata(&path).unwrap();
+        assert_eq!(
+            unsafe {
+                libc::send(
+                    controller.shutdown.as_raw_fd(),
+                    (&command as *const u8).cast(),
+                    1,
+                    libc::MSG_NOSIGNAL,
+                )
+            },
+            1
+        );
+        let (authority, result, forensic_preserve) =
+            controller.thread.take().unwrap().join().unwrap();
+        assert!(result.is_ok());
+        assert!(forensic_preserve);
+        drop(authority);
+        let after = fs::symlink_metadata(&path).unwrap();
+        assert_eq!((before.dev(), before.ino()), (after.dev(), after.ino()));
+    }
+
+    #[test]
+    fn accumulated_eventfd_values_four_and_six_are_unknown_and_preserve() {
+        assert_unknown_controller_command_preserves(4);
+        assert_unknown_controller_command_preserves(6);
+    }
+
+    #[test]
+    fn missing_preserve_ack_never_reenables_cleanup() {
+        let fixture = Fixture::new();
+        let (mut controller, listener) =
+            CohortController::start_for_test(&fixture.root, std::process::id() as _).unwrap();
+        drop(listener);
+        let path = controller.control_test_path.clone();
+        let before = fs::symlink_metadata(&path).unwrap();
+        controller.forensic_preserve_requested = true;
+        assert_eq!(
+            unsafe { libc::shutdown(controller.shutdown.as_raw_fd(), libc::SHUT_RDWR) },
+            0
+        );
+        assert!(controller.request_forensic_preserve().is_err());
+        assert!(controller.request_cleanup().is_err());
+        let (authority, _, forensic_preserve) = controller.thread.take().unwrap().join().unwrap();
+        assert!(forensic_preserve);
+        drop(authority);
+        let after = fs::symlink_metadata(&path).unwrap();
+        assert_eq!((before.dev(), before.ino()), (after.dev(), after.ino()));
+    }
+
+    #[test]
+    fn post_send_cleanup_ack_loss_only_reaps_and_never_abandons() {
+        let fixture = Fixture::new();
+        let (mut controller, listener) =
+            CohortController::start_for_test(&fixture.root, std::process::id() as _).unwrap();
+        drop(listener);
+        let path = controller.control_test_path.clone();
+        controller.lose_cleanup_ack_after_receive = true;
+        let pointer = Box::into_raw(Box::new(controller));
+        assert_eq!(
+            unsafe { darling_lifecycle_cohort_finish(pointer) },
+            CLEANUP_PENDING_STATUS
+        );
+        assert_eq!(
+            unsafe { (*pointer).cleanup_phase },
+            CleanupPhase::CleanupCommitted
+        );
+        // CLEANUP is committed. A raw abandon attempt is refused while
+        // preserving the exact owning pointer and cannot select forensics.
+        assert_eq!(
+            unsafe { darling_lifecycle_cohort_abandon(pointer) },
+            ABANDON_PENDING_STATUS
+        );
+        assert_eq!(
+            unsafe { (*pointer).cleanup_phase },
+            CleanupPhase::CleanupCommitted
+        );
+        assert_eq!(unsafe { darling_lifecycle_cohort_finish(pointer) }, 0);
+        assert!(!path.exists());
+    }
+
+    #[test]
+    fn c_abi_abandon_stops_worker_without_destructive_cleanup() {
+        let fixture = Fixture::new();
+        let (controller, listener) =
+            CohortController::start_for_test(&fixture.root, std::process::id() as _).unwrap();
+        drop(listener);
+        let control_path = controller.control_test_path.clone();
+        let mut sockets = [0; 2];
+        assert_eq!(
+            unsafe {
+                libc::socketpair(
+                    libc::AF_UNIX,
+                    libc::SOCK_SEQPACKET | libc::SOCK_CLOEXEC,
+                    0,
+                    sockets.as_mut_ptr(),
+                )
+            },
+            0
+        );
+        controller
+            .send_guest_namespace_bootstrap(sockets[0])
+            .unwrap();
+        let session =
+            crate::guest_namespace_authority::SessionCapabilities::receive_required(sockets[1])
+                .unwrap();
+        unsafe {
+            libc::close(sockets[0]);
+            libc::close(sockets[1]);
+        }
+        let mutation = session.authorize().unwrap();
+        let mut controller = controller;
+        controller.abandon_fault = Some(AbandonFault::WaitpidError);
+        let pointer = Box::into_raw(Box::new(controller));
+        assert_eq!(unsafe { darling_lifecycle_cohort_finish(pointer) }, 1);
+        assert_eq!(
+            unsafe { darling_lifecycle_cohort_abandon(pointer) },
+            ABANDON_PENDING_STATUS
+        );
+        assert!(control_path.exists());
+        assert!(matches!(
+            session.authorize(),
+            Err(crate::guest_namespace_authority::AuthorityError::Revoked)
+        ));
+        assert_eq!(unsafe { darling_lifecycle_cohort_abandon(pointer) }, 0);
+        assert!(control_path.exists());
+        assert!(matches!(
+            session.authorize(),
+            Err(crate::guest_namespace_authority::AuthorityError::Revoked)
+        ));
+        drop(mutation);
+        drop(session);
+    }
+
+    #[test]
+    fn real_process_abandon_faults_preserve_worker_until_retry_reaps() {
+        for fault in [
+            AbandonFault::KillError,
+            AbandonFault::PidfdTimeout,
+            AbandonFault::WaitpidEintr,
+            AbandonFault::WaitpidZero,
+            AbandonFault::WaitpidError,
+        ] {
+            let child = unsafe { libc::fork() };
+            assert!(child >= 0);
+            if child == 0 {
+                loop {
+                    unsafe { libc::pause() };
+                }
+            }
+            let worker = ProcessWorker {
+                pid: child,
+                pidfd: pidfd_open(child).unwrap(),
+            };
+            assert!(abandon_process_worker(&worker, Some(fault)).is_err());
+            assert!(unsafe { libc::fcntl(worker.pidfd.as_raw_fd(), libc::F_GETFD) } >= 0);
+            if fault == AbandonFault::KillError {
+                assert_eq!(unsafe { libc::kill(child, 0) }, 0);
+            }
+            abandon_process_worker(&worker, None).unwrap();
+            let mut status = 0;
+            assert_eq!(
+                unsafe { libc::waitpid(child, &mut status, libc::WNOHANG) },
+                -1
+            );
+            assert_eq!(
+                io::Error::last_os_error().raw_os_error(),
+                Some(libc::ECHILD)
+            );
+        }
     }
 
     #[test]
