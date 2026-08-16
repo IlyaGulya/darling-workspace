@@ -16,8 +16,18 @@ policy = json.loads((ROOT / "lifecycle/guest-namespace-authority-v1.json").read_
 assert policy["default"] == "OFF" and policy["routing"] == "DEFERRED"
 assert policy["activation"] == "compile-time-opt-in-session-required"
 assert len(policy["requested_pilot_operations"]) == 4
-assert all("blocked-with-enotsup" in operation for operation in policy["requested_pilot_operations"])
+assert all("rust-transaction" in operation for operation in policy["requested_pilot_operations"])
 assert policy["threat_model"]["native_linux_elf_injection"] == "excluded"
+assert "non-evicting" in policy["transaction_identity"]
+assert "durable-wal" in policy["transaction_identity"]
+assert "private-quarantine" in policy["transaction_durability"]
+assert "gc-pending-gc-done" in policy["durable_gc"]
+assert "ftruncate-fsync" in policy["torn_wal_policy"]
+assert "recovery-pending" in policy["commit_failure_policy"]
+assert "msg-cmsg-cloexec" in policy["created_fd_delivery"]
+assert "guest-kernel-umask" in policy["mode_semantics"]
+assert "exact-running-darlingserver" in policy["lower_authority"]
+assert "quarantine" in policy["leaf_authority"]
 assert 'option(DARLING_LIFECYCLE_COHORT_V1 "Build the opt-in Rust lifecycle endpoint cohort" OFF)' in (
     TASK / "darling/CMakeLists.txt"
 ).read_text()
@@ -28,7 +38,23 @@ required = {
         "darling_guest_namespace_initialize", "guard_flag_prevent_close"
     ],
     TASK / "xnu/darling/src/libsystem_kernel/emulation/src/linux_premigration/guest_namespace_authority.c": [
-        "CAP_OPENAT", "CAP_MKDIRAT", "CAP_UNLINKAT", "CAP_RENAMEAT", "/proc/self/fd/"
+        "dserver_rpc_guest_namespace_transaction", "transaction_rpc", "mutation_still_valid",
+        "__NR_getrandom", "guest_effective_mode", "F_SETFD", "FD_CLOEXEC"
+    ],
+    TASK / "xnu/darling/src/libsystem_kernel/emulation/include/linux_premigration/resources/dserver-rpc-defs.h": [
+        "LINUX_MSG_CMSG_CLOEXEC", "LINUX_MSG_DONTWAIT | LINUX_MSG_CMSG_CLOEXEC"
+    ],
+    ROOT / "lifecycle/operation-boundary/src/guest_namespace_transaction.rs": [
+        "GuestNamespaceTransactionService", "duplicate_created_result", "RecoveryObligation",
+        "LayerState::Whiteout", "transaction budget exhausted", "AfterQuarantineVerify",
+        "crash_after_private_quarantine_move_recovers_exact_authority_from_wal",
+        "effective_guest_mode_is_exact_despite_controller_umask",
+        "committed_unlink_restores_gc_pending_and_persists_gc_done",
+        "committed_create_restart_replays_with_exact_retained_fd",
+        "torn_tail_is_physically_repaired_before_new_commit_and_second_restart",
+        "create_commit_write_and_fsync_failures_retain_post_mutation_authority",
+        "unlink_commit_write_and_fsync_failures_retain_quarantine_authority",
+        "rename_commit_write_and_fsync_failures_retain_published_authority",
     ],
 }
 for path, markers in required.items():
@@ -52,8 +78,14 @@ for relative in (
     assert "DARLING_GUEST_NAMESPACE_REQUIRED" in text
     assert "ENOTSUP" in text
 
+generator = (TASK / "darlingserver/scripts/generate-rpc-wrappers.py").read_text()
+assert "guest_namespace_transaction" in generator
+assert "created_fd" in generator
+assert "('flags', 'int32_t')" in generator
+assert "DARLING_LIFECYCLE_FINISH_RECOVERY_PENDING" in dserver
+
 fixture = ROOT / "tests/fixtures/guest_namespace_authority_pilot.c"
-with tempfile.TemporaryDirectory(prefix="dar-4ush.7.3.2-contract-") as temp:
+with tempfile.TemporaryDirectory(prefix="dar-4ush.7.3.3-contract-") as temp:
     binary = Path(temp) / "pilot"
     subprocess.run([
         "cc", "-std=gnu11", "-Wall", "-Wextra", "-Werror", "-pthread",
@@ -71,6 +103,14 @@ with tempfile.TemporaryDirectory(prefix="dar-4ush.7.3.2-contract-") as temp:
         "-o", str(owner_binary),
     ], check=True)
     subprocess.run([str(owner_binary)], check=True)
+    subprocess.run([
+        "cargo", "test", "--manifest-path",
+        str(ROOT / "lifecycle/operation-boundary/Cargo.toml"),
+        "--lib", "guest_namespace_transaction", "--", "--nocapture",
+    ], check=True, env={
+        **os.environ,
+        "CARGO_TARGET_DIR": str(Path(temp) / "cargo-target"),
+    })
     subprocess.run([
         "cargo", "test", "--manifest-path",
         str(ROOT / "lifecycle/operation-boundary/Cargo.toml"),

@@ -190,7 +190,7 @@ static struct darling_lifecycle_cohort_controller* start_controller(
 	return controller;
 }
 
-static void verify_sigkill_owner_cleanup(const char* parent_prefix) {
+static void verify_sigkill_owner_forensic_preserve(const char* parent_prefix) {
 	char prefix[4096];
 	if (snprintf(prefix, sizeof(prefix), "%s-owner-killed", parent_prefix) >= (int)sizeof(prefix))
 		fail("killed-owner prefix");
@@ -225,6 +225,18 @@ static void verify_sigkill_owner_cleanup(const char* parent_prefix) {
 	int supervisor_pidfd = (int)syscall(SYS_pidfd_open, supervisor, 0);
 	if (supervisor_pidfd < 0)
 		fail("pidfd_open controller supervisor");
+	const char* retained[] = {
+		"/.init.pid",
+		"/.darlingserver.sock",
+		"/.lc-v1.sock",
+	};
+	struct stat before[sizeof(retained) / sizeof(retained[0])];
+	char path[4096];
+	for (size_t index = 0; index < sizeof(retained) / sizeof(retained[0]); ++index) {
+		if (snprintf(path, sizeof(path), "%s%s", prefix, retained[index]) >= (int)sizeof(path) ||
+			lstat(path, &before[index]) != 0)
+			fail("capture killed-owner forensic identity");
+	}
 	if (kill(-owner, SIGKILL) != 0)
 		fail("kill controller owner process group");
 	int owner_status = 0;
@@ -235,16 +247,12 @@ static void verify_sigkill_owner_cleanup(const char* parent_prefix) {
 	if (poll(&descriptor, 1, 2000) != 1 || !(descriptor.revents & POLLIN))
 		fail("controller supervisor did not clean up after owner death");
 	close(supervisor_pidfd);
-	const char* removed[] = {
-		"/.init.pid",
-		"/.darlingserver.sock",
-		"/.lc-v1.sock",
-	};
-	char path[4096];
-	for (size_t index = 0; index < sizeof(removed) / sizeof(removed[0]); ++index) {
-		if (snprintf(path, sizeof(path), "%s%s", prefix, removed[index]) >= (int)sizeof(path))
-			fail("killed-owner cleanup path");
-		expect_missing(path);
+	for (size_t index = 0; index < sizeof(retained) / sizeof(retained[0]); ++index) {
+		struct stat after;
+		if (snprintf(path, sizeof(path), "%s%s", prefix, retained[index]) >= (int)sizeof(path) ||
+			lstat(path, &after) != 0 || after.st_dev != before[index].st_dev ||
+			after.st_ino != before[index].st_ino)
+			fail("killed-owner forensic identity was not preserved");
 	}
 }
 
@@ -847,8 +855,8 @@ int main(int argc, char** argv) {
 			fail("cleanup path");
 		expect_missing(path);
 	}
-	verify_sigkill_owner_cleanup(prefix);
+	verify_sigkill_owner_forensic_preserve(prefix);
 
-	printf("LIFECYCLE_COHORT_ROUTING_VALID endpoints=6 lease=exact-exclusive-flock replacement=preserved per_user_rpc=ready per_user_owner_restart=ready dynamic_cleanup=clean shellspawn_keepalive=ready activation_rollback=clean commit_ack_loss=retained nonce_snapshot=stable flood=bounded owner_group_sigkill=clean scm_rights_leaks=0\n");
+	printf("LIFECYCLE_COHORT_ROUTING_VALID endpoints=6 lease=exact-exclusive-flock replacement=preserved per_user_rpc=ready per_user_owner_restart=ready dynamic_cleanup=clean shellspawn_keepalive=ready activation_rollback=clean commit_ack_loss=retained nonce_snapshot=stable flood=bounded owner_group_sigkill=forensic-preserved scm_rights_leaks=0\n");
 	return 0;
 }

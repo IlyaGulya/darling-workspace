@@ -16,6 +16,7 @@ const ABANDON_PENDING: i32 = 3;
 
 struct Fixture {
     root: PathBuf,
+    sidecar: PathBuf,
 }
 
 impl Fixture {
@@ -58,13 +59,25 @@ impl Fixture {
             fs::Permissions::from_mode(0o600),
         )
         .unwrap();
-        Self { root }
+        let sidecar = root.parent().unwrap().join(format!(
+            ".darling-lifecycle-{:x}-{:x}",
+            metadata.dev(),
+            metadata.ino()
+        ));
+        Self { root, sidecar }
     }
 }
 
 impl Drop for Fixture {
     fn drop(&mut self) {
         fs::remove_dir_all(&self.root).unwrap();
+        let entries: Vec<_> = fs::read_dir(&self.sidecar)
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name())
+            .collect();
+        assert_eq!(entries, ["owner.lock"]);
+        fs::remove_file(self.sidecar.join("owner.lock")).unwrap();
+        fs::remove_dir(&self.sidecar).unwrap();
     }
 }
 

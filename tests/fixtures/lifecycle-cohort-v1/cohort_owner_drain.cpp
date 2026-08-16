@@ -14,6 +14,7 @@ struct darling_lifecycle_cohort_controller {
 	int cleanup_pending_before_success = 0;
 	int abandon_calls = 0;
 	int abandon_pending_before_success = 0;
+	bool recovery_pending = false;
 };
 
 static int live_workers = 0;
@@ -25,6 +26,8 @@ extern "C" int darling_lifecycle_cohort_finish(
 	assert(controller);
 	++normal_finish_calls;
 	++controller->finish_calls;
+	if (controller->recovery_pending)
+		return DARLING_LIFECYCLE_FINISH_RECOVERY_PENDING;
 	if (controller->finish_calls <= controller->pending_before_success)
 		return DARLING_LIFECYCLE_FINISH_DRAIN_PENDING;
 	if (controller->cleanup_pending_before_success-- > 0)
@@ -71,6 +74,20 @@ int main(int argc, char** argv) {
 		assert(owner.adopt(controller));
 		assert(owner.finish() == DARLING_LIFECYCLE_FINISH_OK);
 		assert(live_workers == 0);
+	}
+	{
+		auto* controller = new darling_lifecycle_cohort_controller{0, 0, 0, 0, 0, true};
+		++live_workers;
+		LifecycleCohortOwner owner;
+		assert(owner.adopt(controller));
+		const int finishBefore = normal_finish_calls;
+		assert(owner.finish() == DARLING_LIFECYCLE_FINISH_RECOVERY_PENDING);
+		assert(owner.finish() == DARLING_LIFECYCLE_FINISH_RECOVERY_PENDING);
+		assert(normal_finish_calls == finishBefore + 1);
+		assert(controller->abandon_calls == 0);
+		assert(owner.takeRecoveryForHandoff() == controller);
+		--live_workers;
+		delete controller;
 	}
 	{
 		auto* controller = new darling_lifecycle_cohort_controller{0, 99, 0, 0, 1};
