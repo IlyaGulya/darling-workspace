@@ -117,8 +117,20 @@ pub struct GuestNamespaceAuthority {
 }
 
 unsafe impl Send for GuestNamespaceAuthority {}
+// The mapped lease page exposes only an AtomicU32 state to shared readers.
+// All descriptors and envelope fields are immutable after construction;
+// revocation is sequenced after the external gate drain.
+unsafe impl Sync for GuestNamespaceAuthority {}
 
 impl GuestNamespaceAuthority {
+    pub(crate) fn prefix_fd(&self) -> RawFd {
+        self.prefix.as_raw_fd()
+    }
+
+    pub(crate) fn generation(&self) -> u64 {
+        self.envelope.generation
+    }
+
     pub fn issue(prefix_path: &Path, generation: u64) -> Result<Self> {
         if generation == 0 {
             return Err(AuthorityError::Protocol("zero generation"));
@@ -673,6 +685,7 @@ mod tests {
     use super::*;
     use std::fs;
     use std::os::unix::fs::{symlink, MetadataExt};
+    use std::process::Command;
     use std::time::{SystemTime, UNIX_EPOCH};
 
     fn fixture() -> (
@@ -873,6 +886,20 @@ mod tests {
 
     #[test]
     fn malformed_scm_rights_closes_every_installed_descriptor() {
+        const HELPER: &str = "DARLING_GNA_MALFORMED_SCM_HELPER";
+        if std::env::var_os(HELPER).is_none() {
+            let status = Command::new(std::env::current_exe().unwrap())
+                .args([
+                    "--exact",
+                    "guest_namespace_authority::tests::malformed_scm_rights_closes_every_installed_descriptor",
+                    "--nocapture",
+                ])
+                .env(HELPER, "1")
+                .status()
+                .unwrap();
+            assert!(status.success());
+            return;
+        }
         let (root, authority, _session) = fixture();
         let mut sockets = [0; 2];
         assert_eq!(

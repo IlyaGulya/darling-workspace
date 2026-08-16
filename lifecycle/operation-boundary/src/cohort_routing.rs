@@ -8,6 +8,10 @@
 //! outside this cohort keep global routing disabled.
 
 use crate::guest_namespace_authority::GuestNamespaceAuthority;
+use crate::guest_namespace_transaction::{
+    GuestNamespaceTransactionService, Outcome as GuestTransactionOutcome,
+    Request as GuestTransactionRequest, TransactionId,
+};
 use crate::FileIdentity;
 use std::collections::BTreeMap;
 use std::ffi::{CStr, CString};
@@ -18,14 +22,18 @@ use std::os::raw::{c_char, c_int};
 use std::os::unix::ffi::OsStrExt;
 use std::path::Path;
 use std::ptr;
+use std::sync::Mutex;
 use std::thread;
 #[cfg(test)]
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
-const PREFIX_STATE_NAME: &[u8] = b".darling-prefix-state-v2";
-const PREFIX_STATE_HEADER: &str = "DARLING_PREFIX_STATE_V2";
-const PREFIX_STATE_PROVENANCE: &str = "darling-runtime-prefix-lifecycle-v2";
+const PREFIX_STATE_V2_NAME: &[u8] = b".darling-prefix-state-v2";
+const PREFIX_STATE_V2_HEADER: &str = "DARLING_PREFIX_STATE_V2";
+const PREFIX_STATE_V2_PROVENANCE: &str = "darling-runtime-prefix-lifecycle-v2";
+const PREFIX_STATE_V3_NAME: &[u8] = b".darling-prefix-state-v3";
+const PREFIX_STATE_V3_HEADER: &str = "DARLING_PREFIX_STATE_V3";
+const PREFIX_STATE_V3_PROVENANCE: &str = "darling-runtime-prefix-sidecar-v1";
 const PREFIX_STATE_MAX_BYTES: usize = 1024;
 const LOCK_NAME: &[u8] = b".lifecycle.lock";
 const INIT_PID_NAME: &[u8] = b".init.pid";
@@ -44,6 +52,7 @@ const LOCK_TIMEOUT: Duration = Duration::from_millis(250);
 const REQUEST_TIMEOUT_MS: c_int = 250;
 const ABANDON_PENDING_STATUS: c_int = 3;
 const CLEANUP_PENDING_STATUS: c_int = 4;
+const RECOVERY_PENDING_STATUS: c_int = 5;
 const CONTROLLER_COMMAND_CLEANUP: u8 = 1;
 const CONTROLLER_COMMAND_PRESERVE: u8 = 2;
 const CONTROLLER_COMMAND_ACK: u8 = 0x7f;
@@ -334,7 +343,6 @@ fn open_directory_chain(prefix: RawFd, parts: &[&[u8]]) -> Result<OwnedFd, Cohor
 fn ensure_directory_chain(prefix: RawFd, parts: &[(&[u8], u32)]) -> Result<OwnedFd, CohortError> {
     let mut current = duplicate(prefix, true)?;
     for (part, mode) in parts {
-        let mut created = false;
         let next = match openat(
             current.as_raw_fd(),
             part,
@@ -347,7 +355,6 @@ fn ensure_directory_chain(prefix: RawFd, parts: &[(&[u8], u32)]) -> Result<Owned
                 if unsafe { libc::mkdirat(current.as_raw_fd(), name.as_ptr(), *mode) } < 0 {
                     return Err(io_error("mkdirat(endpoint parent)"));
                 }
-                created = true;
                 openat(
                     current.as_raw_fd(),
                     part,
@@ -361,11 +368,16 @@ fn ensure_directory_chain(prefix: RawFd, parts: &[(&[u8], u32)]) -> Result<Owned
         if file_type(observed) != libc::S_IFDIR || observed.uid != current_uid() {
             return Err(CohortError::Identity("endpoint parent"));
         }
-        if created && unsafe { libc::fchmod(next.as_raw_fd(), *mode) } < 0 {
-            return Err(io_error("fchmod(endpoint parent)"));
-        }
         if identity(next.as_raw_fd())?.mode & 0o7777 != *mode {
-            return Err(CohortError::Identity("endpoint parent mode"));
+            // SessionAuthority already owns the exact exclusive lifecycle
+            // lease. Normalize both newly created parents and retained legacy
+            // bootstrap directories through the retained descriptor.
+            if unsafe { libc::fchmod(next.as_raw_fd(), *mode) } < 0 {
+                return Err(io_error("fchmod(endpoint parent)"));
+            }
+            if identity(next.as_raw_fd())?.mode & 0o7777 != *mode {
+                return Err(CohortError::Identity("endpoint parent mode"));
+            }
         }
         current = next;
     }
@@ -468,9 +480,6 @@ fn parse_prefix_state(content: &[u8], prefix: FileIdentity) -> Result<(), Cohort
         .strip_suffix('\n')
         .ok_or(CohortError::Protocol("runtime prefix state terminator"))?;
     let lines = body.split('\n').collect::<Vec<_>>();
-    if lines.len() != 9 || lines[0] != PREFIX_STATE_HEADER {
-        return Err(CohortError::Protocol("runtime prefix state schema"));
-    }
     let field = |index: usize, key: &'static str| -> Result<&str, CohortError> {
         lines[index]
             .strip_prefix(key)
@@ -482,16 +491,36 @@ fn parse_prefix_state(content: &[u8], prefix: FileIdentity) -> Result<(), Cohort
             .parse::<u64>()
             .map_err(|_| CohortError::Protocol("runtime prefix state number"))
     };
-    if number(1, "schema_version=")? != 2
-        || field(2, "runtime_mode=")? != "rootless-eunion"
-        || number(3, "generation=")? == 0
-        || number(4, "prefix_device=")? != prefix.device
-        || number(5, "prefix_inode=")? != prefix.inode
-        || number(6, "owner_uid=")? != u64::from(current_uid())
-        || number(7, "owner_gid=")? != u64::from(current_gid())
-        || field(8, "provenance=")? != PREFIX_STATE_PROVENANCE
-    {
-        return Err(CohortError::Identity("runtime prefix state"));
+    match (lines.len(), lines.first().copied()) {
+        (9, Some(PREFIX_STATE_V2_HEADER)) => {
+            if number(1, "schema_version=")? != 2
+                || field(2, "runtime_mode=")? != "rootless-eunion"
+                || number(3, "generation=")? == 0
+                || number(4, "prefix_device=")? != prefix.device
+                || number(5, "prefix_inode=")? != prefix.inode
+                || number(6, "owner_uid=")? != u64::from(current_uid())
+                || number(7, "owner_gid=")? != u64::from(current_gid())
+                || field(8, "provenance=")? != PREFIX_STATE_V2_PROVENANCE
+            {
+                return Err(CohortError::Identity("runtime prefix state"));
+            }
+        }
+        (11, Some(PREFIX_STATE_V3_HEADER)) => {
+            if number(1, "schema_version=")? != 3
+                || field(2, "runtime_mode=")? != "rootless-eunion"
+                || number(3, "generation=")? == 0
+                || number(4, "prefix_device=")? != prefix.device
+                || number(5, "prefix_inode=")? != prefix.inode
+                || number(6, "sidecar_device=")? == 0
+                || number(7, "sidecar_inode=")? == 0
+                || number(8, "owner_uid=")? != u64::from(current_uid())
+                || number(9, "owner_gid=")? != u64::from(current_gid())
+                || field(10, "provenance=")? != PREFIX_STATE_V3_PROVENANCE
+            {
+                return Err(CohortError::Identity("runtime prefix state"));
+            }
+        }
+        _ => return Err(CohortError::Protocol("runtime prefix state schema")),
     }
     Ok(())
 }
@@ -500,16 +529,23 @@ fn acquire_prefix_state(
     prefix: RawFd,
     prefix_identity: FileIdentity,
 ) -> Result<RetainedState, CohortError> {
+    let name = if named_identity(prefix, PREFIX_STATE_V3_NAME)?.is_some() {
+        PREFIX_STATE_V3_NAME
+    } else if named_identity(prefix, PREFIX_STATE_V2_NAME)?.is_some() {
+        PREFIX_STATE_V2_NAME
+    } else {
+        return Err(CohortError::Identity("runtime prefix state"));
+    };
     let state = openat(
         prefix,
-        PREFIX_STATE_NAME,
+        name,
         libc::O_RDONLY | libc::O_NOFOLLOW | libc::O_CLOEXEC,
         0,
     )?;
     let expected = identity(state.as_raw_fd())?;
     validate_owned(expected, libc::S_IFREG, Some(0o600))?;
     let content = read_bounded(state.as_raw_fd(), PREFIX_STATE_MAX_BYTES)?;
-    if named_identity(prefix, PREFIX_STATE_NAME)? != Some(expected) {
+    if named_identity(prefix, name)? != Some(expected) {
         return Err(CohortError::Identity("runtime prefix state"));
     }
     parse_prefix_state(&content, prefix_identity)?;
@@ -517,6 +553,7 @@ fn acquire_prefix_state(
         object: state,
         identity: expected,
         content,
+        name: name.to_vec(),
     })
 }
 
@@ -527,7 +564,7 @@ fn revalidate_prefix_state(
 ) -> Result<(), CohortError> {
     let content = read_bounded(state.object.as_raw_fd(), PREFIX_STATE_MAX_BYTES)?;
     if identity(state.object.as_raw_fd())? != state.identity
-        || named_identity(prefix, PREFIX_STATE_NAME)? != Some(state.identity)
+        || named_identity(prefix, &state.name)? != Some(state.identity)
         || content != state.content
     {
         return Err(CohortError::Identity("runtime prefix state"));
@@ -617,6 +654,7 @@ struct RetainedState {
     object: OwnedFd,
     identity: FileIdentity,
     content: Vec<u8>,
+    name: Vec<u8>,
 }
 
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
@@ -847,6 +885,8 @@ impl SessionAuthority {
         if init_pid <= 0 {
             return Err(CohortError::Protocol("invalid init pid"));
         }
+        #[cfg(not(test))]
+        let _ = &prefix_argument;
         let initial_prefix_identity = identity(prefix.as_raw_fd())?;
         let (lock, lock_identity) = acquire_lock(prefix.as_raw_fd())?;
         let prefix_state = acquire_prefix_state(prefix.as_raw_fd(), initial_prefix_identity)?;
@@ -856,8 +896,6 @@ impl SessionAuthority {
         // device/inode and the typed prefix-state binding remain unchanged.
         let prefix_identity = identity(prefix.as_raw_fd())?;
         revalidate_prefix_state(prefix.as_raw_fd(), prefix_identity, &prefix_state)?;
-        #[cfg(not(test))]
-        let _ = prefix_argument;
         let mut authority = Self {
             prefix,
             prefix_identity,
@@ -2144,6 +2182,134 @@ fn wait_worker(worker: ProcessWorker) -> Result<(), CohortError> {
     }
 }
 
+struct TransactionSidecar {
+    parent: OwnedFd,
+    name: Vec<u8>,
+    identity: FileIdentity,
+    directory: OwnedFd,
+    lease: OwnedFd,
+    lease_identity: FileIdentity,
+    armed: bool,
+    removed: bool,
+}
+
+impl TransactionSidecar {
+    fn arm(&mut self) {
+        self.armed = true;
+    }
+
+    fn cleanup(&mut self) -> Result<(), CohortError> {
+        if self.removed {
+            return Ok(());
+        }
+        if identity(self.directory.as_raw_fd())? != self.identity
+            || named_identity(self.parent.as_raw_fd(), &self.name)? != Some(self.identity)
+            || identity(self.lease.as_raw_fd())? != self.lease_identity
+            || named_identity(self.directory.as_raw_fd(), b"owner.lock")?
+                != Some(self.lease_identity)
+        {
+            return Err(CohortError::Identity("transaction sidecar cleanup"));
+        }
+        let lock_name = component(b"owner.lock")?;
+        if unsafe { libc::unlinkat(self.directory.as_raw_fd(), lock_name.as_ptr(), 0) } != 0 {
+            return Err(io_error("unlink transaction sidecar lease"));
+        }
+        let name = component(&self.name)?;
+        if unsafe { libc::unlinkat(self.parent.as_raw_fd(), name.as_ptr(), libc::AT_REMOVEDIR) }
+            != 0
+        {
+            return Err(io_error("remove transaction sidecar"));
+        }
+        self.removed = true;
+        Ok(())
+    }
+}
+
+impl Drop for TransactionSidecar {
+    fn drop(&mut self) {
+        if !self.removed && (!self.armed || cfg!(test)) {
+            let _ = self.cleanup();
+        }
+    }
+}
+
+fn acquire_transaction_sidecar(
+    prefix: RawFd,
+    expected_prefix: FileIdentity,
+) -> Result<TransactionSidecar, CohortError> {
+    if identity(prefix)? != expected_prefix {
+        return Err(CohortError::Identity("transaction sidecar prefix binding"));
+    }
+    let parent_name = c"..";
+    let parent_fd = unsafe {
+        libc::openat(
+            prefix,
+            parent_name.as_ptr(),
+            libc::O_PATH | libc::O_DIRECTORY | libc::O_NOFOLLOW | libc::O_CLOEXEC,
+        ) as c_int
+    };
+    if parent_fd < 0 {
+        return Err(io_error("open prefix parent for transaction sidecar"));
+    }
+    let parent = unsafe { OwnedFd::from_raw_fd(parent_fd) };
+    let sidecar_name = CString::new(format!(
+        ".darling-lifecycle-{:x}-{:x}",
+        expected_prefix.device, expected_prefix.inode
+    ))
+    .map_err(|_| CohortError::Protocol("transaction sidecar name"))?;
+    let created = if unsafe { libc::mkdirat(parent.as_raw_fd(), sidecar_name.as_ptr(), 0o700) } == 0
+    {
+        true
+    } else if io::Error::last_os_error().raw_os_error() == Some(libc::EEXIST) {
+        false
+    } else {
+        return Err(io_error("mkdir transaction sidecar"));
+    };
+    if created
+        && unsafe { libc::fchmodat(parent.as_raw_fd(), sidecar_name.as_ptr(), 0o700, 0) } != 0
+    {
+        return Err(io_error("normalize transaction sidecar mode"));
+    }
+    let directory_fd = unsafe {
+        libc::openat(
+            parent.as_raw_fd(),
+            sidecar_name.as_ptr(),
+            libc::O_PATH | libc::O_DIRECTORY | libc::O_NOFOLLOW | libc::O_CLOEXEC,
+        )
+    };
+    if directory_fd < 0 {
+        return Err(io_error("open transaction sidecar"));
+    }
+    let directory = unsafe { OwnedFd::from_raw_fd(directory_fd) };
+    let observed = identity(directory.as_raw_fd())?;
+    if file_type(observed) != libc::S_IFDIR
+        || observed.uid != current_uid()
+        || observed.mode & 0o777 != 0o700
+    {
+        return Err(CohortError::Identity("transaction sidecar"));
+    }
+    let lease = openat(
+        directory.as_raw_fd(),
+        b"owner.lock",
+        libc::O_RDWR | libc::O_CREAT | libc::O_CLOEXEC | libc::O_NOFOLLOW,
+        0o600,
+    )?;
+    if unsafe { libc::flock(lease.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) } != 0 {
+        return Err(CohortError::LockBusy);
+    }
+    let lease_identity = identity(lease.as_raw_fd())?;
+    Ok(TransactionSidecar {
+        parent,
+        name: sidecar_name.to_bytes().to_vec(),
+        identity: observed,
+        directory,
+        lease,
+        lease_identity,
+        armed: false,
+        removed: false,
+    })
+}
+
 pub struct CohortController {
     shutdown: OwnedFd,
     dserver_log: Option<OwnedFd>,
@@ -2154,6 +2320,8 @@ pub struct CohortController {
     control_name: Vec<u8>,
     nonce: [u8; NONCE_BYTES],
     guest_namespace: Option<GuestNamespaceAuthority>,
+    guest_transactions: Mutex<Option<GuestNamespaceTransactionService>>,
+    transaction_sidecar: TransactionSidecar,
     cleanup_phase: CleanupPhase,
     forensic_preserve_requested: bool,
     forensic_preserve_acknowledged: bool,
@@ -2171,11 +2339,209 @@ enum CleanupPhase {
     Draining,
     CleanupRequested,
     CleanupCommitted,
+    RecoveryPending,
     Abandoning,
     Finished,
 }
 
 impl CohortController {
+    fn configure_guest_transactions(&self, lower_path: &CStr) -> Result<(), CohortError> {
+        #[repr(C)]
+        struct OpenHow {
+            flags: u64,
+            mode: u64,
+            resolve: u64,
+        }
+        if lower_path.to_bytes().first() != Some(&b'/') {
+            return Err(CohortError::Protocol("lower root must be absolute"));
+        }
+        let root_name = c"/";
+        let root_fd = unsafe {
+            libc::open(
+                root_name.as_ptr(),
+                libc::O_PATH | libc::O_DIRECTORY | libc::O_CLOEXEC,
+            )
+        };
+        if root_fd < 0 {
+            return Err(io_error("open deployment root anchor"));
+        }
+        let root = unsafe { OwnedFd::from_raw_fd(root_fd) };
+        let relative = CString::new(&lower_path.to_bytes()[1..])
+            .map_err(|_| CohortError::Protocol("lower root path"))?;
+        let how = OpenHow {
+            flags: (libc::O_PATH | libc::O_DIRECTORY | libc::O_CLOEXEC) as u64,
+            mode: 0,
+            // RESOLVE_NO_MAGICLINKS | RESOLVE_NO_SYMLINKS | RESOLVE_BENEATH.
+            resolve: 0x02 | 0x04 | 0x08,
+        };
+        let lower_fd = unsafe {
+            libc::syscall(
+                libc::SYS_openat2,
+                root.as_raw_fd(),
+                relative.as_ptr(),
+                &how,
+                std::mem::size_of::<OpenHow>(),
+            ) as c_int
+        };
+        if lower_fd < 0 {
+            return Err(io_error("openat2 authenticated E-UNION lower root"));
+        }
+        let lower = unsafe { OwnedFd::from_raw_fd(lower_fd) };
+        let lower_identity = identity(lower.as_raw_fd())?;
+        if lower_identity.mode & libc::S_IFMT != libc::S_IFDIR
+            || lower_identity.mode & 0o022 != 0
+            || (lower_identity.uid != 0 && lower_identity.uid != current_uid())
+        {
+            return Err(CohortError::Identity("lower root deployment policy"));
+        }
+        // Bind the selected directory to the exact deployed controller binary,
+        // rather than trusting a caller-supplied pathname as provenance.  The
+        // installed controller and E-UNION lower root are siblings beneath one
+        // immutable install anchor, not parent/child directories.
+        let executable_fd =
+            unsafe { libc::open(c"/proc/self/exe".as_ptr(), libc::O_PATH | libc::O_CLOEXEC) };
+        if executable_fd < 0 {
+            return Err(io_error("open running controller identity"));
+        }
+        let executable = unsafe { OwnedFd::from_raw_fd(executable_fd) };
+        #[cfg(test)]
+        let deployed = openat(
+            lower.as_raw_fd(),
+            b"darlingserver",
+            libc::O_PATH | libc::O_NOFOLLOW | libc::O_CLOEXEC,
+            0,
+        )?;
+        #[cfg(not(test))]
+        let deployed = {
+            const LOWER_SUFFIX: &[u8] = b"/libexec/darling";
+            let install_path = lower_path
+                .to_bytes()
+                .strip_suffix(LOWER_SUFFIX)
+                .filter(|path| path.first() == Some(&b'/') && path.len() > 1)
+                .ok_or(CohortError::Protocol("deployed lower root layout"))?;
+            let relative = CString::new(&install_path[1..])
+                .map_err(|_| CohortError::Protocol("deployment anchor path"))?;
+            let anchor_fd = unsafe {
+                libc::syscall(
+                    libc::SYS_openat2,
+                    root.as_raw_fd(),
+                    relative.as_ptr(),
+                    &how,
+                    std::mem::size_of::<OpenHow>(),
+                ) as c_int
+            };
+            if anchor_fd < 0 {
+                return Err(io_error("open deployment anchor"));
+            }
+            let anchor = unsafe { OwnedFd::from_raw_fd(anchor_fd) };
+            let bin = openat(
+                anchor.as_raw_fd(),
+                b"bin",
+                libc::O_PATH | libc::O_DIRECTORY | libc::O_NOFOLLOW | libc::O_CLOEXEC,
+                0,
+            )?;
+            let deployed = openat(
+                bin.as_raw_fd(),
+                b"darlingserver",
+                libc::O_PATH | libc::O_NOFOLLOW | libc::O_CLOEXEC,
+                0,
+            )?;
+            (anchor, bin, deployed)
+        };
+        #[cfg(not(test))]
+        let deployed = deployed.2;
+        if identity(executable.as_raw_fd())? != identity(deployed.as_raw_fd())? {
+            return Err(CohortError::Identity(
+                "lower root deployed controller binding",
+            ));
+        }
+        let authority = self.guest_namespace.as_ref().ok_or(CohortError::Protocol(
+            "guest namespace authority unavailable",
+        ))?;
+        let service = GuestNamespaceTransactionService::from_retained_roots(
+            authority.prefix_fd(),
+            lower.as_raw_fd(),
+            self.transaction_sidecar.directory.as_raw_fd(),
+            authority.generation(),
+        )
+        .map_err(|_| CohortError::Protocol("guest transaction authority"))?;
+        let mut slot = self
+            .guest_transactions
+            .lock()
+            .map_err(|_| CohortError::Protocol("guest transaction mutex poisoned"))?;
+        if slot.is_some() {
+            return Err(CohortError::Protocol(
+                "guest transaction authority already configured",
+            ));
+        }
+        *slot = Some(service);
+        Ok(())
+    }
+
+    fn execute_guest_transaction(
+        &self,
+        request: GuestTransactionRequest,
+    ) -> Result<GuestTransactionOutcome, CohortError> {
+        let mut slot = self
+            .guest_transactions
+            .lock()
+            .map_err(|_| CohortError::Protocol("guest transaction mutex poisoned"))?;
+        slot.as_mut()
+            .ok_or(CohortError::Protocol(
+                "guest transaction authority not configured",
+            ))?
+            .execute(request)
+            .map_err(|_| CohortError::Protocol("guest transaction refused"))
+    }
+
+    fn revoke_guest_transactions(&self) {
+        let mut slot = self
+            .guest_transactions
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        if let Some(service) = slot.as_mut() {
+            service.revoke();
+        }
+    }
+
+    fn guest_transaction_recovery_pending(&self) -> bool {
+        let slot = self
+            .guest_transactions
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        slot.as_ref()
+            .is_some_and(GuestNamespaceTransactionService::has_outstanding_recovery)
+    }
+
+    fn cleanup_guest_transaction_sidecar(&mut self) -> Result<(), CohortError> {
+        let mut slot = self
+            .guest_transactions
+            .lock()
+            .map_err(|_| CohortError::Protocol("guest transaction mutex poisoned"))?;
+        if let Some(service) = slot.as_mut() {
+            service
+                .prepare_clean_sidecar()
+                .map_err(|_| CohortError::Protocol("guest transaction sidecar not clean"))?;
+        }
+        *slot = None;
+        self.transaction_sidecar.cleanup()
+    }
+
+    #[cfg(test)]
+    fn discard_forensic_transaction_sidecar_for_contract(&mut self) -> Result<(), CohortError> {
+        let mut slot = self
+            .guest_transactions
+            .lock()
+            .map_err(|_| CohortError::Protocol("guest transaction mutex poisoned"))?;
+        if let Some(service) = slot.as_mut() {
+            service
+                .discard_forensic_sidecar_for_contract()
+                .map_err(|_| CohortError::Protocol("discard contract transaction sidecar"))?;
+        }
+        *slot = None;
+        self.transaction_sidecar.cleanup()
+    }
+
     pub fn start(prefix: &Path, init_pid: libc::pid_t) -> Result<(Self, OwnedFd), CohortError> {
         let authority = SessionAuthority::acquire(prefix, init_pid)?;
         Self::start_with_authority(authority, Some(prefix), false)
@@ -2217,6 +2583,8 @@ impl CohortController {
             )
             .map_err(|_| CohortError::Protocol("guest namespace authority"))?,
         );
+        let mut transaction_sidecar =
+            acquire_transaction_sidecar(authority.prefix.as_raw_fd(), authority.prefix_identity)?;
         let name = CONTROL_GUEST_PATH.to_vec();
         let listener = authority.publish(CohortEndpoint::Control)?;
         let mut control = [0; 2];
@@ -2240,6 +2608,7 @@ impl CohortController {
                 .name("darling-lifecycle-cohort".to_string())
                 .spawn(move || server_loop(authority, listener, child_control, None, nonce))
                 .map_err(|error| CohortError::Io("spawn(controller)", error))?;
+            transaction_sidecar.arm();
             Self {
                 shutdown,
                 dserver_log: Some(dserver_log),
@@ -2247,6 +2616,8 @@ impl CohortController {
                 control_name: name,
                 nonce,
                 guest_namespace,
+                guest_transactions: Mutex::new(None),
+                transaction_sidecar,
                 cleanup_phase: CleanupPhase::Active,
                 forensic_preserve_requested: false,
                 forensic_preserve_acknowledged: false,
@@ -2361,6 +2732,7 @@ impl CohortController {
                 let _ = wait_worker(process);
                 return Err(CohortError::Process);
             }
+            transaction_sidecar.arm();
             Self {
                 shutdown,
                 dserver_log: Some(dserver_log),
@@ -2368,6 +2740,8 @@ impl CohortController {
                 control_name: name,
                 nonce,
                 guest_namespace,
+                guest_transactions: Mutex::new(None),
+                transaction_sidecar,
                 cleanup_phase: CleanupPhase::Active,
                 forensic_preserve_requested: false,
                 forensic_preserve_acknowledged: false,
@@ -2417,6 +2791,11 @@ impl CohortController {
                 .finish_after_cleanup_commit()
                 .map_err(CohortFinishError::Terminal);
         }
+        if self.cleanup_phase == CleanupPhase::RecoveryPending {
+            return Err(CohortFinishError::RecoveryPending {
+                controller: Box::new(self),
+            });
+        }
         if self.cleanup_phase == CleanupPhase::Abandoning {
             return Err(CohortFinishError::CleanupRequestPending {
                 controller: Box::new(self),
@@ -2433,6 +2812,13 @@ impl CohortController {
             return Err(CohortFinishError::DrainPending {
                 controller: Box::new(self),
                 source,
+            });
+        }
+        self.revoke_guest_transactions();
+        if self.guest_transaction_recovery_pending() {
+            self.cleanup_phase = CleanupPhase::RecoveryPending;
+            return Err(CohortFinishError::RecoveryPending {
+                controller: Box::new(self),
             });
         }
         if let Err(source) = self.request_cleanup() {
@@ -2530,12 +2916,14 @@ impl CohortController {
             let cleanup_result = authority.cleanup_all();
             cleanup_result?;
             loop_result?;
+            self.cleanup_guest_transaction_sidecar()?;
             self.cleanup_phase = CleanupPhase::Finished;
             Ok(())
         }
         #[cfg(not(test))]
         {
             wait_worker(self.process.take().ok_or(CohortError::Process)?)?;
+            self.cleanup_guest_transaction_sidecar()?;
             self.cleanup_phase = CleanupPhase::Finished;
             Ok(())
         }
@@ -2607,7 +2995,7 @@ impl Drop for CohortController {
     fn drop(&mut self) {}
 }
 
-#[must_use = "a drain-pending controller cannot be discarded as cleanup success"]
+#[must_use = "a pending controller retains worker or recovery ownership"]
 pub enum CohortFinishError {
     DrainPending {
         controller: Box<CohortController>,
@@ -2620,6 +3008,9 @@ pub enum CohortFinishError {
     CleanupPending {
         controller: Box<CohortController>,
         source: CohortError,
+    },
+    RecoveryPending {
+        controller: Box<CohortController>,
     },
     Terminal(CohortError),
 }
@@ -2638,6 +3029,7 @@ impl std::fmt::Debug for CohortFinishError {
                 .debug_tuple("CleanupPending")
                 .field(source)
                 .finish(),
+            Self::RecoveryPending { .. } => formatter.write_str("RecoveryPending"),
             Self::Terminal(error) => formatter.debug_tuple("Terminal").field(error).finish(),
         }
     }
@@ -2721,6 +3113,11 @@ pub unsafe extern "C" fn darling_lifecycle_cohort_finish(
         debug_assert_eq!(restored, controller);
         return 1;
     }
+    if owned.cleanup_phase == CleanupPhase::RecoveryPending {
+        let restored = Box::into_raw(owned);
+        debug_assert_eq!(restored, controller);
+        return RECOVERY_PENDING_STATUS;
+    }
     owned.cleanup_phase = CleanupPhase::Draining;
     let Some(guest_namespace) = owned.guest_namespace.as_mut() else {
         return -1;
@@ -2729,6 +3126,13 @@ pub unsafe extern "C" fn darling_lifecycle_cohort_finish(
         let restored = Box::into_raw(owned);
         debug_assert_eq!(restored, controller);
         return 1;
+    }
+    owned.revoke_guest_transactions();
+    if owned.guest_transaction_recovery_pending() {
+        owned.cleanup_phase = CleanupPhase::RecoveryPending;
+        let restored = Box::into_raw(owned);
+        debug_assert_eq!(restored, controller);
+        return RECOVERY_PENDING_STATUS;
     }
     if owned.request_cleanup().is_err() {
         let status = if owned.cleanup_phase == CleanupPhase::CleanupCommitted {
@@ -2763,7 +3167,10 @@ pub unsafe extern "C" fn darling_lifecycle_cohort_abandon(
     let mut owned = Box::from_raw(controller);
     if matches!(
         owned.cleanup_phase,
-        CleanupPhase::CleanupRequested | CleanupPhase::CleanupCommitted | CleanupPhase::Finished
+        CleanupPhase::CleanupRequested
+            | CleanupPhase::CleanupCommitted
+            | CleanupPhase::RecoveryPending
+            | CleanupPhase::Finished
     ) {
         let restored = Box::into_raw(owned);
         debug_assert_eq!(restored, controller);
@@ -2811,6 +3218,161 @@ pub unsafe extern "C" fn darling_lifecycle_cohort_send_guest_namespace_bootstrap
     } else {
         0
     }
+}
+
+const GUEST_TRANSACTION_PATH_CAPACITY: usize = 1024;
+
+#[repr(C)]
+pub struct GuestTransactionWireRequest {
+    transaction_id: [u8; 16],
+    operation: u32,
+    flags: i32,
+    mode: u32,
+    source_length: u16,
+    destination_length: u16,
+    source: [u8; GUEST_TRANSACTION_PATH_CAPACITY],
+    destination: [u8; GUEST_TRANSACTION_PATH_CAPACITY],
+}
+
+#[repr(C)]
+pub struct GuestTransactionWireResult {
+    result: i32,
+    disposition: u32,
+    device: u64,
+    inode: u64,
+    created_fd: i32,
+    reserved: u32,
+}
+
+#[no_mangle]
+/// Configure the Rust transaction service from the deployed immutable lower
+/// root. Rust opens and retains the directory; the caller never supplies a
+/// mutation descriptor.
+///
+/// # Safety
+/// The controller and NUL-terminated path must remain valid for this call.
+pub unsafe extern "C" fn darling_lifecycle_guest_namespace_configure(
+    controller: *mut CohortController,
+    retained_lower_root: *const c_char,
+) -> c_int {
+    let (Some(controller), false) = (controller.as_ref(), retained_lower_root.is_null()) else {
+        return -1;
+    };
+    match controller.configure_guest_transactions(CStr::from_ptr(retained_lower_root)) {
+        Ok(()) => 0,
+        Err(error) => {
+            eprintln!("guest transaction configuration refused: {error}");
+            -1
+        }
+    }
+}
+
+#[no_mangle]
+/// Execute one bounded, idempotent E-UNION pilot transaction.
+///
+/// # Safety
+/// All pointers must be valid for this call and originate from the live
+/// cohort owner. The wire buffers are copied before validation.
+pub unsafe extern "C" fn darling_lifecycle_guest_namespace_transaction(
+    controller: *mut CohortController,
+    request: *const GuestTransactionWireRequest,
+    result: *mut GuestTransactionWireResult,
+) -> c_int {
+    let (Some(controller), Some(request), Some(result)) =
+        (controller.as_ref(), request.as_ref(), result.as_mut())
+    else {
+        return -1;
+    };
+    let source_len = usize::from(request.source_length);
+    let destination_len = usize::from(request.destination_length);
+    if source_len == 0
+        || source_len > GUEST_TRANSACTION_PATH_CAPACITY
+        || destination_len > GUEST_TRANSACTION_PATH_CAPACITY
+    {
+        return -1;
+    }
+    let Ok(id) = TransactionId::new(request.transaction_id) else {
+        return -1;
+    };
+    let source = request.source[..source_len].to_vec();
+    let wants_created_fd = request.operation == 1;
+    let request = match request.operation {
+        1 if destination_len == 0 => GuestTransactionRequest::Create {
+            id,
+            path: source,
+            flags: request.flags,
+            mode: request.mode,
+        },
+        2 if destination_len == 0 => GuestTransactionRequest::Mkdir {
+            id,
+            path: source,
+            mode: request.mode,
+        },
+        3 if destination_len == 0 => GuestTransactionRequest::Unlink {
+            id,
+            path: source,
+            flags: request.flags,
+        },
+        4 if destination_len > 0 => GuestTransactionRequest::Rename {
+            id,
+            source,
+            destination: request.destination[..destination_len].to_vec(),
+        },
+        _ => return -1,
+    };
+    let Ok(outcome) = controller.execute_guest_transaction(request) else {
+        return -1;
+    };
+    *result = match outcome {
+        GuestTransactionOutcome::Created { device, inode } => {
+            let created_fd = if wants_created_fd {
+                let slot = controller.guest_transactions.lock();
+                let Ok(slot) = slot else { return -1 };
+                let Some(service) = slot.as_ref() else {
+                    return -1;
+                };
+                let Ok(fd) = service.duplicate_created_result(id, device, inode) else {
+                    return -1;
+                };
+                fd.into_raw_fd()
+            } else {
+                -1
+            };
+            GuestTransactionWireResult {
+                result: 0,
+                disposition: 1,
+                device,
+                inode,
+                created_fd,
+                reserved: 0,
+            }
+        }
+        GuestTransactionOutcome::Mutated => GuestTransactionWireResult {
+            result: 0,
+            disposition: 2,
+            device: 0,
+            inode: 0,
+            created_fd: -1,
+            reserved: 0,
+        },
+        GuestTransactionOutcome::Rejected { errno, .. } => GuestTransactionWireResult {
+            result: -errno,
+            disposition: 3,
+            device: 0,
+            inode: 0,
+            created_fd: -1,
+            reserved: 0,
+        },
+        GuestTransactionOutcome::RecoveryRequired { .. } => GuestTransactionWireResult {
+            result: -libc::EIO,
+            disposition: 4,
+            device: 0,
+            inode: 0,
+            created_fd: -1,
+            reserved: 0,
+        },
+    };
+    0
 }
 
 #[cfg(test)]
@@ -2870,12 +3432,84 @@ mod tests {
             .unwrap();
             Self { root }
         }
+
+        fn new_v3() -> Self {
+            let fixture = Self::new();
+            fs::remove_file(fixture.root.join(".darling-prefix-state-v2")).unwrap();
+            let metadata = fs::metadata(&fixture.root).unwrap();
+            let state = format!(
+                "DARLING_PREFIX_STATE_V3\n\
+                 schema_version=3\n\
+                 runtime_mode=rootless-eunion\n\
+                 generation=1\n\
+                 prefix_device={}\n\
+                 prefix_inode={}\n\
+                 sidecar_device={}\n\
+                 sidecar_inode={}\n\
+                 owner_uid={}\n\
+                 owner_gid={}\n\
+                 provenance=darling-runtime-prefix-sidecar-v1\n",
+                metadata.dev(),
+                metadata.ino(),
+                metadata.dev(),
+                metadata.ino() + 1,
+                metadata.uid(),
+                metadata.gid(),
+            );
+            fs::write(fixture.root.join(".darling-prefix-state-v3"), state).unwrap();
+            fs::set_permissions(
+                fixture.root.join(".darling-prefix-state-v3"),
+                fs::Permissions::from_mode(0o600),
+            )
+            .unwrap();
+            fixture
+        }
     }
 
     impl Drop for Fixture {
         fn drop(&mut self) {
             fs::remove_dir_all(&self.root).unwrap();
         }
+    }
+
+    #[test]
+    fn deployed_v3_prefix_state_is_retained_and_revalidated() {
+        let fixture = Fixture::new_v3();
+        let prefix = open_prefix(&fixture.root).unwrap();
+        let prefix_identity = identity(prefix.as_raw_fd()).unwrap();
+        let state = acquire_prefix_state(prefix.as_raw_fd(), prefix_identity).unwrap();
+        assert_eq!(state.name, PREFIX_STATE_V3_NAME);
+        revalidate_prefix_state(prefix.as_raw_fd(), prefix_identity, &state).unwrap();
+
+        let path = fixture.root.join(".darling-prefix-state-v3");
+        let mut content = fs::read(&path).unwrap();
+        let generation = content
+            .windows(b"generation=1".len())
+            .position(|window| window == b"generation=1")
+            .unwrap();
+        content[generation + b"generation=".len()] = b'2';
+        fs::write(path, content).unwrap();
+        assert!(matches!(
+            revalidate_prefix_state(prefix.as_raw_fd(), prefix_identity, &state),
+            Err(CohortError::Identity("runtime prefix state"))
+        ));
+    }
+
+    #[test]
+    fn leased_acquisition_normalizes_legacy_endpoint_parent_mode() {
+        let fixture = Fixture::new_v3();
+        fs::set_permissions(
+            fixture.root.join("var/tmp"),
+            fs::Permissions::from_mode(0o755),
+        )
+        .unwrap();
+        let authority =
+            SessionAuthority::acquire(&fixture.root, std::process::id() as libc::pid_t).unwrap();
+        assert_eq!(
+            fs::metadata(fixture.root.join("var/tmp")).unwrap().mode() & 0o7777,
+            0o1777
+        );
+        drop(authority);
     }
 
     fn connect(path: &Path) -> OwnedFd {
@@ -2901,6 +3535,291 @@ mod tests {
             0
         );
         fd
+    }
+
+    #[test]
+    fn c_abi_routes_one_idempotent_create_through_retained_service() {
+        let fixture = Fixture::new();
+        let lower = fixture.root.join("lower-template");
+        fs::create_dir(&lower).unwrap();
+        fs::set_permissions(&lower, fs::Permissions::from_mode(0o755)).unwrap();
+        fs::hard_link(
+            std::env::current_exe().unwrap(),
+            lower.join("darlingserver"),
+        )
+        .unwrap();
+        let (mut controller, listener) =
+            CohortController::start_for_test(&fixture.root, std::process::id() as _).unwrap();
+        drop(listener);
+        let lower_c = CString::new(lower.as_os_str().as_bytes()).unwrap();
+        assert_eq!(
+            unsafe {
+                darling_lifecycle_guest_namespace_configure(&mut controller, lower_c.as_ptr())
+            },
+            0
+        );
+        let mut request = GuestTransactionWireRequest {
+            transaction_id: [42; 16],
+            operation: 1,
+            flags: libc::O_WRONLY | libc::O_CREAT | libc::O_EXCL | libc::O_CLOEXEC,
+            mode: 0o600,
+            source_length: b"var/tmp/rpc-created".len() as u16,
+            destination_length: 0,
+            source: [0; GUEST_TRANSACTION_PATH_CAPACITY],
+            destination: [0; GUEST_TRANSACTION_PATH_CAPACITY],
+        };
+        request.transaction_id[..8].copy_from_slice(
+            &controller
+                .guest_namespace
+                .as_ref()
+                .unwrap()
+                .generation()
+                .to_ne_bytes(),
+        );
+        request.source[..usize::from(request.source_length)]
+            .copy_from_slice(b"var/tmp/rpc-created");
+        for _ in 0..2 {
+            let mut result = GuestTransactionWireResult {
+                result: -1,
+                disposition: 0,
+                device: 0,
+                inode: 0,
+                created_fd: -1,
+                reserved: 0,
+            };
+            assert_eq!(
+                unsafe {
+                    darling_lifecycle_guest_namespace_transaction(
+                        &mut controller,
+                        &request,
+                        &mut result,
+                    )
+                },
+                0
+            );
+            assert_eq!(result.result, 0);
+            assert_eq!(result.disposition, 1);
+            assert!(result.created_fd >= 0);
+            let fd = unsafe { OwnedFd::from_raw_fd(result.created_fd) };
+            assert_eq!(identity(fd.as_raw_fd()).unwrap().inode, result.inode);
+        }
+        assert!(fixture.root.join("var/tmp/rpc-created").exists());
+        controller.finish().unwrap();
+    }
+
+    #[test]
+    fn lower_root_ancestor_symlink_is_rejected_by_rust_acquisition() {
+        let fixture = Fixture::new();
+        let real = fixture.root.join("lower-real");
+        let link = fixture.root.join("lower-link");
+        fs::create_dir(&real).unwrap();
+        fs::set_permissions(&real, fs::Permissions::from_mode(0o755)).unwrap();
+        fs::hard_link(std::env::current_exe().unwrap(), real.join("darlingserver")).unwrap();
+        std::os::unix::fs::symlink(&real, &link).unwrap();
+        let (mut controller, listener) =
+            CohortController::start_for_test(&fixture.root, std::process::id() as _).unwrap();
+        drop(listener);
+        let lower_c = CString::new(link.as_os_str().as_bytes()).unwrap();
+        assert_eq!(
+            unsafe {
+                darling_lifecycle_guest_namespace_configure(&mut controller, lower_c.as_ptr())
+            },
+            -1
+        );
+        controller.finish().unwrap();
+    }
+
+    #[test]
+    fn lower_root_with_unrelated_deployment_identity_is_rejected() {
+        let fixture = Fixture::new();
+        let lower = fixture.root.join("lower-forged");
+        fs::create_dir(&lower).unwrap();
+        fs::set_permissions(&lower, fs::Permissions::from_mode(0o755)).unwrap();
+        fs::write(lower.join("darlingserver"), b"forged executable").unwrap();
+        let (mut controller, listener) =
+            CohortController::start_for_test(&fixture.root, std::process::id() as _).unwrap();
+        drop(listener);
+        let lower_c = CString::new(lower.as_os_str().as_bytes()).unwrap();
+        assert_eq!(
+            unsafe {
+                darling_lifecycle_guest_namespace_configure(&mut controller, lower_c.as_ptr())
+            },
+            -1
+        );
+        controller.finish().unwrap();
+    }
+
+    #[test]
+    fn transaction_c_abi_serializes_concurrent_guest_writers() {
+        fn assert_sync<T: Sync>() {}
+        assert_sync::<CohortController>();
+        let fixture = Fixture::new();
+        let lower = fixture.root.join("lower-template");
+        fs::create_dir(&lower).unwrap();
+        fs::set_permissions(&lower, fs::Permissions::from_mode(0o755)).unwrap();
+        fs::hard_link(
+            std::env::current_exe().unwrap(),
+            lower.join("darlingserver"),
+        )
+        .unwrap();
+        let (mut controller, listener) =
+            CohortController::start_for_test(&fixture.root, std::process::id() as _).unwrap();
+        drop(listener);
+        let lower_c = CString::new(lower.as_os_str().as_bytes()).unwrap();
+        assert_eq!(
+            unsafe {
+                darling_lifecycle_guest_namespace_configure(&mut controller, lower_c.as_ptr())
+            },
+            0
+        );
+        let generation = controller.guest_namespace.as_ref().unwrap().generation();
+        let controller_address = (&mut controller as *mut CohortController) as usize;
+        std::thread::scope(|scope| {
+            for index in 1u8..=8 {
+                scope.spawn(move || {
+                    let path = format!("var/tmp/concurrent-{index}");
+                    let mut request = GuestTransactionWireRequest {
+                        transaction_id: [index; 16],
+                        operation: 1,
+                        flags: libc::O_WRONLY | libc::O_CREAT | libc::O_EXCL | libc::O_CLOEXEC,
+                        mode: 0o600,
+                        source_length: path.len() as u16,
+                        destination_length: 0,
+                        source: [0; GUEST_TRANSACTION_PATH_CAPACITY],
+                        destination: [0; GUEST_TRANSACTION_PATH_CAPACITY],
+                    };
+                    request.transaction_id[..8].copy_from_slice(&generation.to_ne_bytes());
+                    request.source[..path.len()].copy_from_slice(path.as_bytes());
+                    let mut result = GuestTransactionWireResult {
+                        result: -1,
+                        disposition: 0,
+                        device: 0,
+                        inode: 0,
+                        created_fd: -1,
+                        reserved: 0,
+                    };
+                    let controller = controller_address as *mut CohortController;
+                    assert_eq!(
+                        unsafe {
+                            darling_lifecycle_guest_namespace_transaction(
+                                controller,
+                                &request,
+                                &mut result,
+                            )
+                        },
+                        0
+                    );
+                    assert_eq!(result.result, 0);
+                    drop(unsafe { OwnedFd::from_raw_fd(result.created_fd) });
+                });
+            }
+        });
+        for index in 1..=8 {
+            assert!(fixture
+                .root
+                .join(format!("var/tmp/concurrent-{index}"))
+                .exists());
+        }
+        controller.finish().unwrap();
+    }
+
+    #[test]
+    fn transaction_recovery_obligation_forces_forensic_finish() {
+        let fixture = Fixture::new();
+        let lower = fixture.root.join("lower-template");
+        fs::create_dir(&lower).unwrap();
+        fs::set_permissions(&lower, fs::Permissions::from_mode(0o755)).unwrap();
+        fs::hard_link(
+            std::env::current_exe().unwrap(),
+            lower.join("darlingserver"),
+        )
+        .unwrap();
+        let (mut controller, listener) =
+            CohortController::start_for_test(&fixture.root, std::process::id() as _).unwrap();
+        drop(listener);
+        let lower_c = CString::new(lower.as_os_str().as_bytes()).unwrap();
+        assert_eq!(
+            unsafe {
+                darling_lifecycle_guest_namespace_configure(&mut controller, lower_c.as_ptr())
+            },
+            0
+        );
+        let created = fixture.root.join("var/tmp/replaced-create");
+        let retained = fixture.root.join("var/tmp/replaced-create.retained");
+        {
+            let mut slot = controller.guest_transactions.lock().unwrap();
+            let service = slot.as_mut().unwrap();
+            let hook_created = created.clone();
+            let hook_retained = retained.clone();
+            service.set_test_hook(move |checkpoint| {
+                if checkpoint == crate::guest_namespace_transaction::TestCheckpoint::AfterMutation {
+                    fs::rename(&hook_created, &hook_retained).unwrap();
+                    fs::write(&hook_created, b"replacement").unwrap();
+                }
+            });
+        }
+        let mut request = GuestTransactionWireRequest {
+            transaction_id: [43; 16],
+            operation: 1,
+            flags: libc::O_WRONLY | libc::O_CREAT | libc::O_EXCL | libc::O_CLOEXEC,
+            mode: 0o600,
+            source_length: b"var/tmp/replaced-create".len() as u16,
+            destination_length: 0,
+            source: [0; GUEST_TRANSACTION_PATH_CAPACITY],
+            destination: [0; GUEST_TRANSACTION_PATH_CAPACITY],
+        };
+        request.transaction_id[..8].copy_from_slice(
+            &controller
+                .guest_namespace
+                .as_ref()
+                .unwrap()
+                .generation()
+                .to_ne_bytes(),
+        );
+        request.source[..usize::from(request.source_length)]
+            .copy_from_slice(b"var/tmp/replaced-create");
+        let mut result = GuestTransactionWireResult {
+            result: 0,
+            disposition: 0,
+            device: 0,
+            inode: 0,
+            created_fd: -1,
+            reserved: 0,
+        };
+        assert_eq!(
+            unsafe {
+                darling_lifecycle_guest_namespace_transaction(
+                    &mut controller,
+                    &request,
+                    &mut result,
+                )
+            },
+            0
+        );
+        assert_eq!(result.disposition, 4);
+        assert_eq!(result.created_fd, -1);
+        let raw = Box::into_raw(Box::new(controller));
+        assert_eq!(
+            unsafe { darling_lifecycle_cohort_finish(raw) },
+            RECOVERY_PENDING_STATUS
+        );
+        assert_eq!(
+            unsafe { darling_lifecycle_cohort_finish(raw) },
+            RECOVERY_PENDING_STATUS
+        );
+        assert_eq!(
+            unsafe { darling_lifecycle_cohort_abandon(raw) },
+            ABANDON_PENDING_STATUS
+        );
+        let mut controller = unsafe { Box::from_raw(raw) };
+        assert!(controller.guest_transaction_recovery_pending());
+        assert_eq!(fs::read(&created).unwrap(), b"replacement");
+        assert_eq!(fs::read(&retained).unwrap(), b"");
+        assert!(fixture.root.join(".lc-v1.sock").exists());
+        controller.abandon_after_revocation().unwrap();
+        controller
+            .discard_forensic_transaction_sidecar_for_contract()
+            .unwrap();
     }
 
     #[test]

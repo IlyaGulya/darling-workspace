@@ -1,7 +1,7 @@
 {
   "schema_version": 1,
-  "bead": "dar-4ush.7.3.2",
-  "status": "architecture-corrective-blocked",
+  "bead": "dar-4ush.7.3.3",
+  "status": "local-architecture-implementation",
   "routing": "DEFERRED",
   "default": "OFF",
   "activation": "compile-time-opt-in-session-required",
@@ -9,16 +9,26 @@
   "authority": "rust-controller",
   "protected_descriptor_count": 5,
   "requested_pilot_operations": [
-    "mkdir-absolute-blocked-with-enotsup",
-    "open-create-exclusive-absolute-blocked-with-enotsup",
-    "unlink-absolute-blocked-with-enotsup",
-    "rename-absolute-blocked-with-enotsup"
+    "mkdir-absolute-absent-target-rust-transaction",
+    "open-create-exclusive-absolute-absent-target-rust-transaction",
+    "unlink-absolute-upper-only-rust-transaction",
+    "rename-absolute-upper-only-source-absent-destination-rust-transaction"
   ],
-  "mutation_binding": "retained-prefix-parent-openat-no-follow",
+  "mutation_binding": "per-thread-dserver-rpc-to-rust-retained-upper-lower-at-syscalls",
+  "transaction_identity": "session-generation-plus-kernel-random-id-durable-wal-bounded-non-evicting-tombstones",
+  "transaction_durability": "exclusive-prefix-sibling-sidecar-private-quarantine-fsync-wal-restart-recovery",
+  "durable_gc": "gc-pending-gc-done-exact-private-quarantine-identity",
+  "torn_wal_policy": "physical-ftruncate-fsync-before-admission",
+  "commit_failure_policy": "exact-post-mutation-capability-to-recovery-pending-no-clean-teardown",
+  "created_fd_delivery": "rust-retained-exact-inode-duplicate-over-scm-rights-msg-cmsg-cloexec",
+  "mode_semantics": "guest-kernel-umask-to-exact-effective-mode-inode-fchmod",
+  "ambiguous_layer_policy": "enotsup-before-mutation",
   "revocation": "lease-state-plus-controller-pidfd-then-bounded-independent-ofd-drain",
   "cleanup_admission": "explicit-sock-seqpacket-cleanup-command-plus-ack-only",
   "cleanup_commit_point": "successful-cleanup-packet-send",
-  "cleanup_typestate": "active-draining-cleanup-requested-cleanup-committed-finished",
+  "cleanup_typestate": "active-draining-recovery-pending-or-cleanup-requested-cleanup-committed-finished",
+  "lower_authority": "rust-openat2-root-anchor-no-symlink-plus-exact-running-darlingserver-parent-and-inode",
+  "leaf_authority": "retained-leaf-private-sidecar-quarantine-before-unlink-or-rename",
   "forensic_preserve": "parent-death-unknown-command-transport-failure-or-missing-ack",
   "threat_model": {
     "darwin_syscall_bypass": "denied-by-guard-table",
@@ -27,8 +37,8 @@
     "cooperative_product_writers": "required"
   },
   "not_claimed": [
-    "lower-layer-classification-until-rust-command-capability",
-    "unlink-whiteout-transaction-until-rust-command-capability",
+    "lower-only-and-both-layer-mutations",
+    "unlink-whiteout-transaction",
     "relative-dirfd-mutations",
     "general-copy-up",
     "metadata-and-xattr-mutations",

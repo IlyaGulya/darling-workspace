@@ -18,6 +18,7 @@ extern "C" {
 #define DARLING_LIFECYCLE_FINISH_ABANDONED 2
 #define DARLING_LIFECYCLE_ABANDON_PENDING 3
 #define DARLING_LIFECYCLE_FINISH_CLEANUP_PENDING 4
+#define DARLING_LIFECYCLE_FINISH_RECOVERY_PENDING 5
 
 struct darling_guest_namespace_identity {
 	uint64_t device;
@@ -47,6 +48,32 @@ struct darling_lifecycle_cohort_bootstrap {
 
 struct darling_lifecycle_cohort_controller;
 
+#define DARLING_GUEST_TRANSACTION_PATH_CAPACITY 1024
+#define DARLING_GUEST_TRANSACTION_CREATE 1
+#define DARLING_GUEST_TRANSACTION_MKDIR 2
+#define DARLING_GUEST_TRANSACTION_UNLINK 3
+#define DARLING_GUEST_TRANSACTION_RENAME 4
+
+struct darling_guest_namespace_transaction {
+	uint8_t transaction_id[16];
+	uint32_t operation;
+	int32_t flags;
+	uint32_t mode;
+	uint16_t source_length;
+	uint16_t destination_length;
+	uint8_t source[DARLING_GUEST_TRANSACTION_PATH_CAPACITY];
+	uint8_t destination[DARLING_GUEST_TRANSACTION_PATH_CAPACITY];
+};
+
+struct darling_guest_namespace_transaction_result {
+	int32_t result;
+	uint32_t disposition;
+	uint64_t device;
+	uint64_t inode;
+	int32_t created_fd;
+	uint32_t reserved;
+};
+
 struct darling_lifecycle_cohort_controller* darling_lifecycle_cohort_start(
 	int prefix_fd,
 	const char* prefix_argument,
@@ -62,6 +89,8 @@ int darling_lifecycle_cohort_finish(
 /* On DARLING_LIFECYCLE_FINISH_CLEANUP_PENDING CLEANUP was irreversibly
  * committed. The same pointer remains owned only to collect ACK/exit/reap;
  * abandon and forensic-preserve transitions are forbidden. */
+/* RECOVERY_PENDING retains exact recovery FDs in the same pointer. It may
+ * only be retried or handed to a durable recovery owner; abandon is refused. */
 
 int darling_lifecycle_cohort_abandon(
 	struct darling_lifecycle_cohort_controller* controller
@@ -72,6 +101,17 @@ int darling_lifecycle_cohort_abandon(
 int darling_lifecycle_cohort_send_guest_namespace_bootstrap(
 	struct darling_lifecycle_cohort_controller* controller,
 	int socket_fd
+);
+
+int darling_lifecycle_guest_namespace_configure(
+	struct darling_lifecycle_cohort_controller* controller,
+	const char* retained_lower_root
+);
+
+int darling_lifecycle_guest_namespace_transaction(
+	struct darling_lifecycle_cohort_controller* controller,
+	const struct darling_guest_namespace_transaction* request,
+	struct darling_guest_namespace_transaction_result* result
 );
 
 #ifdef __cplusplus
