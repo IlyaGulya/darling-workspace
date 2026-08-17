@@ -38,11 +38,24 @@ const PREFIX_STATE_MAX_BYTES: usize = 1024;
 const LOCK_NAME: &[u8] = b".lifecycle.lock";
 const INIT_PID_NAME: &[u8] = b".init.pid";
 const PROTOCOL_MAGIC: [u8; 8] = *b"DLCOHR1\0";
-const PROTOCOL_VERSION: u16 = 1;
+const PROTOCOL_VERSION: u16 = 2;
 const OPERATION_PUBLISH: u16 = 1;
 const OPERATION_RETIRE: u16 = 2;
 const OPERATION_COMMIT: u16 = 3;
 const OPERATION_ABORT: u16 = 4;
+const RESPONSE_PHASE_REQUEST: u16 = 1;
+const RESPONSE_PHASE_PUBLISH: u16 = 2;
+const RESPONSE_PHASE_COMMIT: u16 = 3;
+const RESPONSE_PHASE_ABORT: u16 = 4;
+const RESPONSE_PHASE_RETIRE: u16 = 5;
+const RESPONSE_ERROR_NONE: i32 = 0;
+const RESPONSE_ERROR_IO: i32 = 1;
+const RESPONSE_ERROR_IDENTITY: i32 = 2;
+const RESPONSE_ERROR_LOCK_BUSY: i32 = 3;
+const RESPONSE_ERROR_PROTOCOL: i32 = 4;
+const RESPONSE_ERROR_ENDPOINT_EXISTS: i32 = 5;
+const RESPONSE_ERROR_ENDPOINT_MISSING: i32 = 6;
+const RESPONSE_ERROR_PROCESS: i32 = 7;
 const CONTROL_NAME_CAPACITY: usize = 80;
 const NONCE_BYTES: usize = 32;
 const NONCE_HEX_BYTES: usize = NONCE_BYTES * 2;
@@ -1645,16 +1658,20 @@ struct WireResponse {
     status: i16,
     endpoint: u16,
     has_fd: u16,
+    phase: u16,
+    reserved: u16,
+    error: i32,
     device: u64,
     inode: u64,
     path_len: u16,
-    reserved: u16,
     path: [u8; DYNAMIC_PATH_CAPACITY],
 }
 
 fn wire_response(
     status: i16,
     endpoint: u16,
+    phase: u16,
+    error: i32,
     passed: Option<FileIdentity>,
     guest_path: &[u8],
 ) -> Result<WireResponse, CohortError> {
@@ -1669,12 +1686,26 @@ fn wire_response(
         status,
         endpoint,
         has_fd: u16::from(passed.is_some()),
+        phase,
+        reserved: 0,
+        error,
         device: passed.map_or(0, |identity| identity.device),
         inode: passed.map_or(0, |identity| identity.inode),
         path_len: guest_path.len() as u16,
-        reserved: 0,
         path,
     })
+}
+
+fn response_error(error: &CohortError) -> i32 {
+    match error {
+        CohortError::Io(_, _) => RESPONSE_ERROR_IO,
+        CohortError::InvalidPrefix | CohortError::Identity(_) => RESPONSE_ERROR_IDENTITY,
+        CohortError::LockBusy => RESPONSE_ERROR_LOCK_BUSY,
+        CohortError::Protocol(_) => RESPONSE_ERROR_PROTOCOL,
+        CohortError::EndpointExists => RESPONSE_ERROR_ENDPOINT_EXISTS,
+        CohortError::EndpointMissing => RESPONSE_ERROR_ENDPOINT_MISSING,
+        CohortError::Thread | CohortError::Process => RESPONSE_ERROR_PROCESS,
+    }
 }
 
 fn receive_request(fd: RawFd) -> Result<WireRequest, CohortError> {
@@ -1820,7 +1851,14 @@ fn serve_client(
                 eprintln!("lifecycle cohort operation refused: {error}");
                 send_response(
                     client,
-                    wire_response(-1, request.endpoint, None, &[])?,
+                    wire_response(
+                        -1,
+                        request.endpoint,
+                        RESPONSE_PHASE_PUBLISH,
+                        response_error(&error),
+                        None,
+                        &[],
+                    )?,
                     None,
                 )?;
                 return Ok(());
@@ -1833,7 +1871,14 @@ fn serve_client(
                 return Err(error);
             }
         };
-        let pending = wire_response(0, request.endpoint, Some(socket_identity), &guest_path)?;
+        let pending = wire_response(
+            0,
+            request.endpoint,
+            RESPONSE_PHASE_PUBLISH,
+            RESPONSE_ERROR_NONE,
+            Some(socket_identity),
+            &guest_path,
+        )?;
         if let Err(error) = send_response(client, pending, Some(socket.as_raw_fd())) {
             let _ = authority.retire_key(key);
             return Err(error);
@@ -1860,7 +1905,14 @@ fn serve_client(
                 // distinguish a lost final acknowledgement from a rejected
                 // commit and must therefore be allowed to rely on the send.
                 authority.endpoint_owners.insert(key, peer);
-                let committed = wire_response(0, request.endpoint, None, &[])?;
+                let committed = wire_response(
+                    0,
+                    request.endpoint,
+                    RESPONSE_PHASE_COMMIT,
+                    RESPONSE_ERROR_NONE,
+                    None,
+                    &[],
+                )?;
                 // The acknowledgement is diagnostic only.  Once COMMIT was
                 // received, delivery failure cannot revoke ownership or
                 // unlink the endpoint behind the live consumer's retained FD.
@@ -1869,7 +1921,18 @@ fn serve_client(
             }
             Ok(OPERATION_ABORT) => {
                 authority.retire_key(key)?;
-                send_response(client, wire_response(0, request.endpoint, None, &[])?, None)?;
+                send_response(
+                    client,
+                    wire_response(
+                        0,
+                        request.endpoint,
+                        RESPONSE_PHASE_ABORT,
+                        RESPONSE_ERROR_NONE,
+                        None,
+                        &[],
+                    )?,
+                    None,
+                )?;
                 return Ok(());
             }
             Ok(_) => unreachable!("publication decision was validated"),
@@ -1888,7 +1951,18 @@ fn serve_client(
     if let Err(error) = result.as_ref() {
         eprintln!("lifecycle cohort operation refused: {error}");
     }
-    let response = wire_response(status, request.endpoint, None, &[])?;
+    let error = result
+        .as_ref()
+        .err()
+        .map_or(RESPONSE_ERROR_NONE, response_error);
+    let response = wire_response(
+        status,
+        request.endpoint,
+        RESPONSE_PHASE_RETIRE,
+        error,
+        None,
+        &[],
+    )?;
     send_response(client, response, None)?;
     // Operation failures are represented by the typed response.  Returning
     // Ok here prevents the server loop from emitting a second response.
@@ -1999,7 +2073,14 @@ fn server_loop(
             if rejected_requests == 0 {
                 eprintln!("lifecycle cohort request rejected: {error}");
             }
-            if let Ok(response) = wire_response(-1, 0, None, &[]) {
+            if let Ok(response) = wire_response(
+                -1,
+                0,
+                RESPONSE_PHASE_REQUEST,
+                response_error(&error),
+                None,
+                &[],
+            ) {
                 let _ = send_response(client.as_raw_fd(), response, None);
             }
             rejected_requests += 1;
@@ -4346,6 +4427,8 @@ mod tests {
             assert_eq!(committed.status, 0);
             assert_eq!(committed.endpoint, kind as u16);
             assert_eq!(committed.has_fd, 0);
+            assert_eq!(committed.phase, RESPONSE_PHASE_COMMIT);
+            assert_eq!(committed.error, RESPONSE_ERROR_NONE);
         }
         response
     }
@@ -4416,14 +4499,96 @@ mod tests {
         assert!(darlingserver.as_raw_fd() >= 0);
         let publish = request(&controller, CohortEndpoint::Shellspawn, 1, controller.nonce);
         assert_eq!(publish.status, 0);
+        assert_eq!(publish.phase, RESPONSE_PHASE_PUBLISH);
+        assert_eq!(publish.error, RESPONSE_ERROR_NONE);
         assert_eq!(publish.has_fd, 1);
         assert!(fixture.root.join("var/run/shellspawn.sock").exists());
         let retire = request(&controller, CohortEndpoint::Shellspawn, 2, controller.nonce);
         assert_eq!(retire.status, 0);
+        assert_eq!(retire.phase, RESPONSE_PHASE_RETIRE);
+        assert_eq!(retire.error, RESPONSE_ERROR_NONE);
         assert!(!fixture.root.join("var/run/shellspawn.sock").exists());
         controller.finish().unwrap();
         assert!(!fixture.root.join(".init.pid").exists());
         assert!(!fixture.root.join(".darlingserver.sock").exists());
+    }
+
+    #[test]
+    fn launchd_exact_socket_runs_publish_transfer_activation_commit_and_recovery_phases() {
+        let fixture = Fixture::new();
+        let (controller, _darlingserver) =
+            CohortController::start_for_test(&fixture.root, 4242).unwrap();
+        let endpoint = fixture.root.join("var/tmp/launchd/sock");
+
+        let client = connect(&controller.control_test_path);
+        send_request_only(
+            client.as_raw_fd(),
+            CohortEndpoint::Launchd,
+            OPERATION_PUBLISH,
+            controller.nonce,
+        );
+        let pending = receive_response_only(client.as_raw_fd());
+        assert_eq!(pending.status, 0);
+        assert_eq!(pending.phase, RESPONSE_PHASE_PUBLISH);
+        assert_eq!(pending.error, RESPONSE_ERROR_NONE);
+        assert_eq!(pending.has_fd, 1);
+        assert!(endpoint.exists());
+
+        // Activation failure is represented by an authenticated ABORT.  It
+        // must remove the exact pending inode before a retry can publish.
+        send_request_only(
+            client.as_raw_fd(),
+            CohortEndpoint::Launchd,
+            OPERATION_ABORT,
+            controller.nonce,
+        );
+        let aborted = receive_response_only(client.as_raw_fd());
+        assert_eq!(aborted.phase, RESPONSE_PHASE_ABORT);
+        assert_eq!(aborted.error, RESPONSE_ERROR_NONE);
+        wait_until_missing(&endpoint);
+
+        let committed = request(
+            &controller,
+            CohortEndpoint::Launchd,
+            OPERATION_PUBLISH,
+            controller.nonce,
+        );
+        assert_eq!(committed.phase, RESPONSE_PHASE_PUBLISH);
+        assert_eq!(committed.error, RESPONSE_ERROR_NONE);
+        assert!(endpoint.exists());
+
+        let duplicate = request(
+            &controller,
+            CohortEndpoint::Launchd,
+            OPERATION_PUBLISH,
+            controller.nonce,
+        );
+        assert_eq!(duplicate.status, -1);
+        assert_eq!(duplicate.phase, RESPONSE_PHASE_PUBLISH);
+        assert_eq!(duplicate.error, RESPONSE_ERROR_ENDPOINT_EXISTS);
+        assert!(endpoint.exists());
+
+        let retired = request(
+            &controller,
+            CohortEndpoint::Launchd,
+            OPERATION_RETIRE,
+            controller.nonce,
+        );
+        assert_eq!(retired.status, 0);
+        assert_eq!(retired.phase, RESPONSE_PHASE_RETIRE);
+        assert_eq!(retired.error, RESPONSE_ERROR_NONE);
+        wait_until_missing(&endpoint);
+
+        let missing = request(
+            &controller,
+            CohortEndpoint::Launchd,
+            OPERATION_RETIRE,
+            controller.nonce,
+        );
+        assert_eq!(missing.status, -1);
+        assert_eq!(missing.phase, RESPONSE_PHASE_RETIRE);
+        assert_eq!(missing.error, RESPONSE_ERROR_ENDPOINT_MISSING);
+        controller.finish().unwrap();
     }
 
     fn response_path(response: &WireResponse) -> String {
@@ -4777,6 +4942,8 @@ mod tests {
             CohortController::start_for_test(&fixture.root, 4242).unwrap();
         let wrong = request(&controller, CohortEndpoint::Shellspawn, 1, [0x55; 32]);
         assert_ne!(wrong.status, 0);
+        assert_eq!(wrong.phase, RESPONSE_PHASE_REQUEST);
+        assert_eq!(wrong.error, RESPONSE_ERROR_PROTOCOL);
         assert!(!fixture.root.join("var/run/shellspawn.sock").exists());
         let unknown_operation = request(
             &controller,
@@ -4785,6 +4952,8 @@ mod tests {
             controller.nonce,
         );
         assert_ne!(unknown_operation.status, 0);
+        assert_eq!(unknown_operation.phase, RESPONSE_PHASE_REQUEST);
+        assert_eq!(unknown_operation.error, RESPONSE_ERROR_PROTOCOL);
         controller.finish().unwrap();
     }
 

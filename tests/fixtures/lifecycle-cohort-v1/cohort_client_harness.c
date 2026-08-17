@@ -706,6 +706,8 @@ static void verify_lost_final_ack_commit(void) {
 		fail("committed endpoint listener was not retained after ACK loss");
 	if (darling_lifecycle_publish_endpoint(DARLING_LIFECYCLE_ENDPOINT_LAUNCHD) >= 0)
 		fail("lost final ACK made committed endpoint publishable again");
+	if (errno != EEXIST)
+		fail("typed endpoint-exists response errno");
 	if (darling_lifecycle_retire_endpoint(DARLING_LIFECYCLE_ENDPOINT_LAUNCHD) != 0)
 		fail("retire endpoint committed across ACK loss");
 	close(endpoint);
@@ -860,3 +862,4 @@ int main(int argc, char** argv) {
 	printf("LIFECYCLE_COHORT_ROUTING_VALID endpoints=6 lease=exact-exclusive-flock replacement=preserved per_user_rpc=ready per_user_owner_restart=ready dynamic_cleanup=clean shellspawn_keepalive=ready activation_rollback=clean commit_ack_loss=retained nonce_snapshot=stable flood=bounded owner_group_sigkill=forensic-preserved scm_rights_leaks=0\n");
 	return 0;
 }
+
