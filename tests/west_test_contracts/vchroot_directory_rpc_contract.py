@@ -17,6 +17,7 @@ DSERVER = Path(
 ).resolve()
 GENERATOR = DSERVER / "scripts/generate-rpc-wrappers.py"
 MLDR = ROOT.parent / "darling/src/startup/mldr/mldr.c"
+PROCESS = DSERVER / "src/process.cpp"
 
 
 def generate(generator: Path, output: Path) -> tuple[Path, Path, Path]:
@@ -80,5 +81,10 @@ mldr_text = MLDR.read_text(encoding="utf-8")
 assert "index < DARLING_GUEST_NAMESPACE_AUTHORITY_DESCRIPTOR_COUNT" in mldr_text
 assert "index < DARLING_GUEST_NAMESPACE_DESCRIPTOR_COUNT" in mldr_text
 assert ": DARLING_GUEST_NAMESPACE_VCHROOT_FD" in mldr_text
+
+process_text = PROCESS.read_text(encoding="utf-8")
+assert "#ifndef DARLING_LIFECYCLE_COHORT_V1" in process_text
+assert '"retained vchroot RPC is disabled"' in process_text
+assert "std::system_error(ENOTSUP" in process_text
 
 print("VCHROOT_DIRECTORY_RPC_GENERATOR_VALID")
