@@ -9,6 +9,7 @@ extern "C" {
 #endif
 
 #define DARLING_LIFECYCLE_CONTROL_NAME_CAPACITY 80
+#define DARLING_LIFECYCLE_COHORT_ABI_VERSION 3
 #define DARLING_LIFECYCLE_NONCE_HEX_BYTES 64
 #define DARLING_GUEST_NAMESPACE_BOOTSTRAP_FD 1023
 #define DARLING_GUEST_NAMESPACE_DESCRIPTOR_COUNT 5
@@ -104,8 +105,7 @@ int darling_lifecycle_cohort_send_guest_namespace_bootstrap(
 );
 
 int darling_lifecycle_guest_namespace_configure(
-	struct darling_lifecycle_cohort_controller* controller,
-	const char* retained_lower_root
+	struct darling_lifecycle_cohort_controller* controller
 );
 
 int darling_lifecycle_guest_namespace_transaction(

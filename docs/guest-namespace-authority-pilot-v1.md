@@ -63,13 +63,28 @@ Darlingserver copies guest memory and forwards that envelope to the
 Rust controller; it owns no upper/lower descriptors and performs no namespace
 syscall.
 
-The Rust transaction service resolves the immutable lower root from a retained
-`/` anchor with `openat2(RESOLVE_BENEATH|RESOLVE_NO_SYMLINKS|RESOLVE_NO_MAGICLINKS)`,
-validates its deployment ownership/mode, and retains it
-only when its `darlingserver` entry is the exact inode currently executing via
-`/proc/self/exe` and the directory is the exact fd-relative parent of that
-resolved executable. Thus the caller's path is only a selector, not provenance.
-and already owns the retained upper prefix. It classifies each leaf as absent,
+The product deployment transaction publishes one bounded
+`.darling-runtime-lower-binding-v1` direct child of the prefix. It binds the
+exact prefix generation and inode, the relative runtime destination
+`libexec/darling`, its device/inode/type/mode/uid/gid, the exact deployed
+`bin/darlingserver`, and a 128-bit deployment transaction identity. A
+user-owned destination is valid; neither deployment nor Rust changes ownership.
+For focused product deployment this is requested explicitly with
+`west darling-build --deploy --deploy-manifest PATH
+--bind-runtime-lower-root`; the flag is opt-in and does not change the default
+route. Publication and every rollback remain in that one deployment
+transaction.
+
+Rust opens the binding, lower root, and deployed controller fd-relative from
+the already-retained prefix with
+`openat2(RESOLVE_BENEATH|RESOLVE_NO_SYMLINKS|RESOLVE_NO_MAGICLINKS)`. The
+binding's named and opened inode/content, lower name/inode, prefix generation,
+and deployed controller are revalidated before every transaction. The running
+`/proc/self/exe` must be the bound deployed controller inode. C++ supplies no
+lower pathname in ABI v3, and no absolute path is consulted after session
+acquisition. Missing, stale, cross-prefix, replaced, malformed, truncated, or
+oversized bindings fail closed. The controller already owns the retained upper
+prefix. It classifies each leaf as absent,
 upper-only, lower-only, both or whiteout, serializes concurrent requests, and
 persists a write-ahead journal in an exclusive, mode-0700 sidecar next to (not
 inside) the guest prefix, and retains up to 128 exact request/outcome tombstones

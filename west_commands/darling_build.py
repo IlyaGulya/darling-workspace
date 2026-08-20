@@ -37,11 +37,19 @@ from pathlib import Path
 
 from west.commands import WestCommand
 try:
-    from .deploy_transaction import DeploymentTransaction, DeploymentTransactionError
+    from .deploy_transaction import (
+        DeploymentTransaction,
+        DeploymentTransactionError,
+        runtime_prefix_generation,
+    )
     from .prefix_repair import prefix_mount_targets
     from .test_prefix import rootless_prefix_process_snapshot
 except ImportError:
-    from deploy_transaction import DeploymentTransaction, DeploymentTransactionError
+    from deploy_transaction import (
+        DeploymentTransaction,
+        DeploymentTransactionError,
+        runtime_prefix_generation,
+    )
     from prefix_repair import prefix_mount_targets
     from test_prefix import rootless_prefix_process_snapshot
 
@@ -81,8 +89,6 @@ _BOOTCHAIN_DEPLOYS = [
     ("src/launchd/src/launchd", "libexec/darling/sbin/launchd"),
     _SHELLSPAWN_DEPLOY,
 ]
-
-
 class DarlingBuild(WestCommand):
     def __init__(self):
         super().__init__(
@@ -102,6 +108,8 @@ class DarlingBuild(WestCommand):
                        help="after building, deploy selected runtime artifacts into the prefix (backs up first)")
         p.add_argument("--deploy-manifest", metavar="PATH",
                        help="record a transactional deploy manifest at PATH (requires --deploy)")
+        p.add_argument("--bind-runtime-lower-root", action="store_true",
+                       help="publish the fd-relative runtime lower-root binding in the deploy transaction")
         p.add_argument("--restore-deploy", metavar="PATH",
                        help="restore one deploy manifest without building")
         p.add_argument("--deploy-extra-prefix", action="append", default=[], metavar="PREFIX",
@@ -224,6 +232,8 @@ class DarlingBuild(WestCommand):
                     )
                 except DeploymentTransactionError as error:
                     self.die(str(error))
+            if args.bind_runtime_lower_root and transaction is None:
+                self.die("--bind-runtime-lower-root requires --deploy-manifest")
             try:
                 self._deploy(
                     build_dir,
@@ -238,6 +248,11 @@ class DarlingBuild(WestCommand):
                     extra_prefixes=extra_prefixes,
                     transaction=transaction,
                 )
+                if args.bind_runtime_lower_root:
+                    binding = transaction.bind_runtime_lower_root(
+                        prefix_generation=runtime_prefix_generation(prefix)
+                    )
+                    self.inf(f"authenticated runtime lower binding: {binding}")
                 # ---- 4. post-deploy doctor ----
                 if args.skip_post_doctor:
                     self.wrn("skipping post-deploy doctor (--skip-post-doctor)")
