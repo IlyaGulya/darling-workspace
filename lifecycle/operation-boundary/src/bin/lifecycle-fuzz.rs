@@ -1,7 +1,11 @@
 use darling_lifecycle_operation_boundary::fuzz::{
-    corpus_seed_hex, replay_program, run_smoke, safe_replay, verify_corpus,
-    verify_kernel_observation, BytecodeOp, FuzzMode, KernelObservation, ScenarioBytecode,
-    MAX_KERNEL_OBSERVATION_BYTES,
+    corpus_seed_hex, replay_program, run_smoke, safe_replay, verifier_source_identity,
+    verify_corpus, verify_kernel_observation, BytecodeOp, FuzzMode, KernelObservation,
+    ScenarioBytecode, MAX_KERNEL_OBSERVATION_BYTES,
+};
+use darling_lifecycle_operation_boundary::guest_ready::{
+    guest_ready_template, verify_guest_ready_observation, GuestReadyObservation,
+    MAX_GUEST_OBSERVATION_BYTES,
 };
 use serde_json::json;
 use std::io::{self, Read};
@@ -75,6 +79,48 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             let observation: KernelObservation = serde_json::from_slice(&observation_bytes)?;
             print_json(
                 &verify_kernel_observation(&bytes, &observation).map_err(io::Error::other)?,
+            )?;
+        }
+        Some("--guest-verifier-identity") => {
+            print_json(&verifier_source_identity())?;
+        }
+        Some("--guest-observation-template") => {
+            let value = args
+                .next()
+                .ok_or("--guest-observation-template requires a trace")?;
+            let trace_id = args
+                .next()
+                .ok_or("--guest-observation-template requires a trace ID")?;
+            let bytes = hex_decode(&value).map_err(io::Error::other)?;
+            print_json(&guest_ready_template(&bytes, &trace_id).map_err(io::Error::other)?)?;
+        }
+        Some("--verify-guest-observation") => {
+            let value = args
+                .next()
+                .ok_or("--verify-guest-observation requires a trace")?;
+            let expected_source = args
+                .next()
+                .ok_or("--verify-guest-observation requires source identity")?;
+            let expected_runtime = args
+                .next()
+                .ok_or("--verify-guest-observation requires runtime identity")?;
+            let bytes = hex_decode(&value).map_err(io::Error::other)?;
+            let mut observation_bytes = Vec::new();
+            io::stdin()
+                .take(MAX_GUEST_OBSERVATION_BYTES as u64 + 1)
+                .read_to_end(&mut observation_bytes)?;
+            if observation_bytes.len() > MAX_GUEST_OBSERVATION_BYTES {
+                return Err(io::Error::other("guest observation exceeds input limit").into());
+            }
+            let observation: GuestReadyObservation = serde_json::from_slice(&observation_bytes)?;
+            print_json(
+                &verify_guest_ready_observation(
+                    &bytes,
+                    &observation,
+                    &expected_source,
+                    &expected_runtime,
+                )
+                .map_err(io::Error::other)?,
             )?;
         }
         Some("--corpus-hex") => {
