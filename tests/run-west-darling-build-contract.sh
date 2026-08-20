@@ -75,7 +75,9 @@ with tempfile.TemporaryDirectory() as temp:
     build_dir = tempdir / "build"
     prefix = tempdir / "prefix"
     build_dir.mkdir()
-    (build_dir / "CMakeCache.txt").write_text("configured\n")
+    (build_dir / "CMakeCache.txt").write_text(
+        "configured\nDARLING_LIFECYCLE_COHORT_V1:BOOL=ON\n"
+    )
     command = make_command()
     command._closure_targets = lambda _build_dir, _names=None: []
     deployed = []
@@ -265,7 +267,9 @@ with tempfile.TemporaryDirectory() as temp:
     build_dir = tempdir / "build"
     prefix = tempdir / "prefix"
     build_dir.mkdir()
-    (build_dir / "CMakeCache.txt").write_text("configured\n")
+    (build_dir / "CMakeCache.txt").write_text(
+        "configured\nDARLING_LIFECYCLE_COHORT_V1:BOOL=ON\n"
+    )
     (prefix / "libexec/darling").mkdir(parents=True)
     (prefix / "bin").mkdir()
     (prefix / "bin/darlingserver").write_bytes(b"deployed server\n")
@@ -274,6 +278,8 @@ with tempfile.TemporaryDirectory() as temp:
         "DARLING_PREFIX_STATE_V2\ngeneration=77\n"
     )
     (prefix / ".darling-prefix-state-v2").chmod(0o600)
+    (prefix / ".lifecycle.lock").write_bytes(b"")
+    (prefix / ".lifecycle.lock").chmod(0o600)
 
     command = make_command()
     command._closure_targets = lambda _build_dir, _names=None: []
@@ -298,6 +304,41 @@ with tempfile.TemporaryDirectory() as temp:
     assert "prefix_generation=77\n" in binding.read_text()
     manifest = json.loads((tempdir / "transaction.json").read_text())
     assert manifest["runtime_lower_binding"]["destination"] == "libexec/darling"
+
+with tempfile.TemporaryDirectory() as temp:
+    tempdir = Path(temp)
+    build_dir = tempdir / "build"
+    prefix = tempdir / "prefix"
+    build_dir.mkdir()
+    (build_dir / "CMakeCache.txt").write_text(
+        "DARLING_LIFECYCLE_COHORT_V1:BOOL=OFF\n"
+    )
+    prefix.mkdir()
+    command = make_command()
+    command._closure_targets = lambda _build_dir, _names=None: []
+    command._deploy = lambda *args, **kwargs: None
+    original_run = db.subprocess.run
+    db.subprocess.run = lambda *args, **kwargs: Completed()
+    try:
+        try:
+            command._run_locked(
+                make_args(
+                    targets=[],
+                    deploy_manifest=str(tempdir / "transaction.json"),
+                    bind_runtime_lower_root=True,
+                ),
+                tempdir,
+                build_dir,
+                prefix,
+            )
+        except SystemExit as error:
+            assert "BOOL=ON" in str(error)
+        else:
+            raise AssertionError("OFF build published runtime lower binding")
+    finally:
+        db.subprocess.run = original_run
+    assert not (prefix / ".darling-runtime-lower-binding-v1").exists()
+    assert not (tempdir / "transaction.json").exists()
 
 print("PASS west-darling-build-contract")
 PY

@@ -40,6 +40,7 @@ try:
     from .deploy_transaction import (
         DeploymentTransaction,
         DeploymentTransactionError,
+        cohort_build_enabled,
         runtime_prefix_generation,
     )
     from .prefix_repair import prefix_mount_targets
@@ -48,6 +49,7 @@ except ImportError:
     from deploy_transaction import (
         DeploymentTransaction,
         DeploymentTransactionError,
+        cohort_build_enabled,
         runtime_prefix_generation,
     )
     from prefix_repair import prefix_mount_targets
@@ -224,6 +226,13 @@ class DarlingBuild(WestCommand):
             extra_prefixes = [Path(p) for p in args.deploy_extra_prefix]
             if args.shutdown_before_deploy:
                 self._shutdown_prefixes(prefix, extra_prefixes)
+            if args.bind_runtime_lower_root and not args.deploy_manifest:
+                self.die("--bind-runtime-lower-root requires --deploy-manifest")
+            if args.bind_runtime_lower_root and not cohort_build_enabled(build_dir):
+                self.die(
+                    "--bind-runtime-lower-root requires "
+                    "DARLING_LIFECYCLE_COHORT_V1:BOOL=ON in the exact build cache"
+                )
             transaction = None
             if args.deploy_manifest:
                 try:
@@ -232,8 +241,6 @@ class DarlingBuild(WestCommand):
                     )
                 except DeploymentTransactionError as error:
                     self.die(str(error))
-            if args.bind_runtime_lower_root and transaction is None:
-                self.die("--bind-runtime-lower-root requires --deploy-manifest")
             try:
                 self._deploy(
                     build_dir,

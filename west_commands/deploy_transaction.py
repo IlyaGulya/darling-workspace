@@ -3,6 +3,9 @@
 from __future__ import annotations
 
 import hashlib
+import ctypes
+import errno
+import fcntl
 import json
 import os
 import shutil
@@ -15,6 +18,11 @@ from pathlib import Path
 
 class DeploymentTransactionError(RuntimeError):
     """A deploy transaction cannot safely continue or be restored."""
+
+    def __init__(self, message: str):
+        super().__init__(message)
+        self.recovery_obligations: tuple[RuntimeLowerRecoveryObligation, ...] = ()
+        self.recovery_owner: RuntimeLowerRecoveryOwner | None = None
 
 
 @dataclass(frozen=True)
@@ -34,9 +42,78 @@ class DirectoryEntry:
     deployed_mode: int
 
 
+@dataclass
+class RuntimeLowerRecoveryObligation:
+    """Owning fail-closed handoff for an ambiguous binding namespace object."""
+
+    object_fd: int
+    name: str
+    device: int
+    inode: int
+    reason: str
+
+    def close(self) -> None:
+        if self.object_fd >= 0:
+            os.close(self.object_fd)
+            self.object_fd = -1
+
+
+@dataclass
+class RuntimeLowerRecoveryOwner:
+    """Single idempotent owner for the lease and exact recovery objects."""
+
+    prefix_fd: int
+    lock_fd: int
+    obligations: list[RuntimeLowerRecoveryObligation]
+
+    @property
+    def closed(self) -> bool:
+        return self.prefix_fd < 0
+
+    def close(self) -> None:
+        if self.closed:
+            return
+        for obligation in self.obligations:
+            obligation.close()
+        fcntl.flock(self.lock_fd, fcntl.LOCK_UN)
+        os.close(self.lock_fd)
+        os.close(self.prefix_fd)
+        self.lock_fd = -1
+        self.prefix_fd = -1
+
+
 RUNTIME_LOWER_BINDING_NAME = ".darling-runtime-lower-binding-v1"
+RUNTIME_LOWER_LOCK_NAME = ".lifecycle.lock"
 RUNTIME_LOWER_BINDING_MAX_BYTES = 2048
 PREFIX_STATE_NAMES = (".darling-prefix-state-v3", ".darling-prefix-state-v2")
+RENAME_NOREPLACE = 1
+
+
+def cohort_build_enabled(build_dir: Path) -> bool:
+    """Return the authoritative compile-time cohort state from CMakeCache."""
+
+    cache = build_dir / "CMakeCache.txt"
+    try:
+        values = [
+            line.split("=", 1)[1].strip()
+            for line in cache.read_text(encoding="utf-8").splitlines()
+            if line.startswith("DARLING_LIFECYCLE_COHORT_V1:BOOL=")
+        ]
+    except OSError as error:
+        raise DeploymentTransactionError("cohort compile-time proof is unavailable") from error
+    if len(values) != 1 or values[0] not in {"ON", "OFF"}:
+        raise DeploymentTransactionError("cohort compile-time proof is malformed")
+    return values[0] == "ON"
+
+
+def _rename_noreplace(parent_fd: int, source: str, destination: str) -> None:
+    libc = ctypes.CDLL(None, use_errno=True)
+    renameat2 = libc.renameat2
+    renameat2.argtypes = [ctypes.c_int, ctypes.c_char_p, ctypes.c_int, ctypes.c_char_p, ctypes.c_uint]
+    renameat2.restype = ctypes.c_int
+    if renameat2(parent_fd, os.fsencode(source), parent_fd, os.fsencode(destination), RENAME_NOREPLACE) != 0:
+        code = ctypes.get_errno()
+        raise OSError(code, os.strerror(code), destination)
 
 
 def runtime_prefix_generation(prefix: Path) -> int:
@@ -130,6 +207,10 @@ class DeploymentTransaction:
         self.normalize_modes = normalize_modes
         self.transaction_id = uuid.uuid4().hex
         self.runtime_lower_binding: dict[str, object] | None = None
+        self.runtime_lower_recovery: list[RuntimeLowerRecoveryObligation] = []
+        self.runtime_lower_recovery_owner: RuntimeLowerRecoveryOwner | None = None
+        self._runtime_lower_prefix_fd: int | None = None
+        self._runtime_lower_lock_fd: int | None = None
         if self.manifest_path.exists():
             raise DeploymentTransactionError(
                 f"deploy manifest already exists: {self.manifest_path}; restore or remove it first"
@@ -241,15 +322,23 @@ class DeploymentTransaction:
         try:
             source.chmod(0o600)
             target = self.prefix / RUNTIME_LOWER_BINDING_NAME
+            # Keep recovery authority in memory before the first namespace
+            # mutation; it is published to the manifest only by the
+            # post-mutation active-state write.
+            self.runtime_lower_binding = fields
             self._replace_runtime_binding(
                 source=source,
                 destination=target,
                 expected_prefix=(prefix_stat.st_dev, prefix_stat.st_ino),
             )
+        except BaseException:
+            if self.runtime_lower_recovery_owner is None:
+                self._release_runtime_lower_lease()
+            raise
         finally:
             source.unlink(missing_ok=True)
-        self.runtime_lower_binding = fields
         self._write("active")
+        self._release_runtime_lower_lease()
         return target
 
     def _replace_runtime_binding(
@@ -259,21 +348,16 @@ class DeploymentTransaction:
         destination: Path,
         expected_prefix: tuple[int, int],
     ) -> None:
-        """Install the direct-child binding through a retained prefix FD."""
+        """Publish through an exact retained lease and no-clobber renames."""
 
-        retained = os.open(
-            self.prefix,
-            os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC,
-        )
+        retained = self._acquire_runtime_lower_lease(expected_prefix)
         temporary_name = f".{RUNTIME_LOWER_BINDING_NAME}.{self.transaction_id}.new"
+        backup_name = f".{RUNTIME_LOWER_BINDING_NAME}.{self.transaction_id}.backup"
         backup = None
         previous_sha256 = None
         old_fd = None
         deployed_sha256 = sha256_file(source)
         try:
-            retained_stat = os.fstat(retained)
-            if (retained_stat.st_dev, retained_stat.st_ino) != expected_prefix:
-                raise DeploymentTransactionError("runtime prefix changed before binding publish")
             try:
                 old_fd = os.open(
                     RUNTIME_LOWER_BINDING_NAME,
@@ -284,23 +368,30 @@ class DeploymentTransaction:
                 pass
             if old_fd is not None:
                 old_stat = os.fstat(old_fd)
-                named = os.stat(
-                    RUNTIME_LOWER_BINDING_NAME,
-                    dir_fd=retained,
-                    follow_symlinks=False,
+                if not stat.S_ISREG(old_stat.st_mode):
+                    raise DeploymentTransactionError("runtime lower binding is not regular")
+                self._runtime_lower_fault("after_existing_validation", retained, RUNTIME_LOWER_BINDING_NAME)
+                self._validate_or_recover(
+                    expected_prefix, retained, RUNTIME_LOWER_BINDING_NAME,
+                    "lease changed before existing binding quarantine",
                 )
-                if not stat.S_ISREG(old_stat.st_mode) or (
-                    old_stat.st_dev,
-                    old_stat.st_ino,
-                ) != (named.st_dev, named.st_ino):
-                    raise DeploymentTransactionError("changed runtime lower binding")
-                backup = self.backup_root / str(len(self.entries))
-                backup.parent.mkdir(parents=True, exist_ok=True)
-                with backup.open("wb") as output:
-                    os.lseek(old_fd, 0, os.SEEK_SET)
-                    while chunk := os.read(old_fd, 1024 * 1024):
-                        output.write(chunk)
-                os.chmod(backup, stat.S_IMODE(old_stat.st_mode))
+                _rename_noreplace(retained, RUNTIME_LOWER_BINDING_NAME, backup_name)
+                moved_fd = os.open(
+                    backup_name,
+                    os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC,
+                    dir_fd=retained,
+                )
+                moved_stat = os.fstat(moved_fd)
+                if (moved_stat.st_dev, moved_stat.st_ino) != (old_stat.st_dev, old_stat.st_ino):
+                    self._retain_runtime_lower_recovery(
+                        retained, moved_fd, backup_name, "binding replaced before quarantine"
+                    )
+                    moved_fd = -1
+                    raise DeploymentTransactionError(
+                        "runtime lower binding replacement quarantined; recovery required"
+                    )
+                os.close(moved_fd)
+                backup = self.prefix / backup_name
                 previous_sha256 = sha256_file(backup)
             new_fd = os.open(
                 temporary_name,
@@ -320,12 +411,37 @@ class DeploymentTransaction:
                 deployed = os.fstat(new_fd)
             finally:
                 os.close(new_fd)
-            os.rename(
-                temporary_name,
-                RUNTIME_LOWER_BINDING_NAME,
-                src_dir_fd=retained,
-                dst_dir_fd=retained,
+            self._runtime_lower_fault("before_publish", retained, RUNTIME_LOWER_BINDING_NAME)
+            self._validate_or_recover(
+                expected_prefix, retained, temporary_name, "lease changed before publication"
             )
+            try:
+                _rename_noreplace(retained, temporary_name, RUNTIME_LOWER_BINDING_NAME)
+            except OSError as error:
+                if error.errno == errno.EEXIST:
+                    staged_fd = os.open(
+                        temporary_name, os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC,
+                        dir_fd=retained,
+                    )
+                    self._retain_runtime_lower_recovery(
+                        retained, staged_fd, temporary_name, "publication destination occupied"
+                    )
+                    if backup is not None:
+                        backup_fd = os.open(
+                            backup_name,
+                            os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC,
+                            dir_fd=retained,
+                        )
+                        self._retain_runtime_lower_recovery(
+                            retained,
+                            backup_fd,
+                            backup_name,
+                            "previous binding awaits recovery after refused publication",
+                        )
+                    raise DeploymentTransactionError(
+                        "runtime lower binding publish refused; recovery required"
+                    ) from error
+                raise
             # From this point the namespace has changed.  Register exact
             # ownership immediately, without another fallible pathname open,
             # so every later exception is rollback-visible.
@@ -343,19 +459,106 @@ class DeploymentTransaction:
         finally:
             if old_fd is not None:
                 os.close(old_fd)
-            try:
-                os.unlink(temporary_name, dir_fd=retained)
-            except FileNotFoundError:
-                pass
-            os.close(retained)
+            if not any(item.name == temporary_name for item in self.runtime_lower_recovery):
+                try:
+                    os.unlink(temporary_name, dir_fd=retained)
+                except FileNotFoundError:
+                    pass
+
+    def _runtime_lower_fault(self, checkpoint: str, parent_fd: int, name: str) -> None:
+        """Test seam; production has no asynchronous callback in the lease."""
+
+    def _acquire_runtime_lower_lease(self, expected_prefix: tuple[int, int]) -> int:
+        if self.runtime_lower_recovery_owner is not None:
+            raise DeploymentTransactionError("runtime lower recovery owner is active")
+        if self._runtime_lower_prefix_fd is not None:
+            self._validate_runtime_lower_lease(expected_prefix)
+            return self._runtime_lower_prefix_fd
+        prefix_fd = os.open(
+            self.prefix, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC
+        )
+        lock_fd = None
+        try:
+            lock_fd = os.open(
+                RUNTIME_LOWER_LOCK_NAME,
+                os.O_RDWR | os.O_NOFOLLOW | os.O_CLOEXEC,
+                dir_fd=prefix_fd,
+            )
+            self._validate_lock_capability(prefix_fd, lock_fd)
+            fcntl.flock(lock_fd, fcntl.LOCK_EX)
+            self._validate_lock_capability(prefix_fd, lock_fd)
+            if (os.fstat(prefix_fd).st_dev, os.fstat(prefix_fd).st_ino) != expected_prefix:
+                raise DeploymentTransactionError("runtime prefix changed before binding publish")
+            self._runtime_lower_prefix_fd = prefix_fd
+            self._runtime_lower_lock_fd = lock_fd
+            return prefix_fd
+        except BaseException:
+            if lock_fd is not None:
+                os.close(lock_fd)
+            os.close(prefix_fd)
+            raise
+
+    @staticmethod
+    def _validate_lock_capability(prefix_fd: int, lock_fd: int) -> None:
+        prefix = os.fstat(prefix_fd)
+        opened = os.fstat(lock_fd)
+        named = os.stat(
+            RUNTIME_LOWER_LOCK_NAME, dir_fd=prefix_fd, follow_symlinks=False
+        )
+        if (
+            not stat.S_ISREG(opened.st_mode)
+            or opened.st_nlink != 1
+            or stat.S_IMODE(opened.st_mode) != 0o600
+            or (opened.st_uid, opened.st_gid) != (prefix.st_uid, prefix.st_gid)
+            or (opened.st_dev, opened.st_ino) != (named.st_dev, named.st_ino)
+        ):
+            raise DeploymentTransactionError("invalid or split runtime lifecycle lock")
+
+    def _validate_runtime_lower_lease(self, expected_prefix: tuple[int, int]) -> None:
+        assert self._runtime_lower_prefix_fd is not None
+        assert self._runtime_lower_lock_fd is not None
+        prefix = os.fstat(self._runtime_lower_prefix_fd)
+        self._validate_lock_capability(
+            self._runtime_lower_prefix_fd, self._runtime_lower_lock_fd
+        )
+        if (prefix.st_dev, prefix.st_ino) != expected_prefix:
+            raise DeploymentTransactionError("runtime lower lease identity mismatch")
+
+    def _retain_runtime_lower_recovery(
+        self, parent_fd: int, object_fd: int, name: str, reason: str
+    ) -> None:
+        observed = os.fstat(object_fd)
+        if self.runtime_lower_recovery_owner is None:
+            if self._runtime_lower_prefix_fd != parent_fd or self._runtime_lower_lock_fd is None:
+                os.close(object_fd)
+                raise DeploymentTransactionError("recovery lease ownership mismatch")
+            self.runtime_lower_recovery_owner = RuntimeLowerRecoveryOwner(
+                self._runtime_lower_prefix_fd, self._runtime_lower_lock_fd, []
+            )
+            self._runtime_lower_prefix_fd = None
+            self._runtime_lower_lock_fd = None
+        obligation = RuntimeLowerRecoveryObligation(
+            object_fd, name, observed.st_dev, observed.st_ino, reason
+        )
+        self.runtime_lower_recovery.append(obligation)
+        self.runtime_lower_recovery_owner.obligations.append(obligation)
+        self._write("recovery_required")
 
     def commit(self) -> None:
+        if self.runtime_lower_recovery:
+            raise DeploymentTransactionError("runtime lower recovery obligation is unresolved")
         self._write("committed")
+        self._release_runtime_lower_lease()
 
     def rollback(self) -> None:
-        self._restore_entries(self.entries)
-        self._restore_directories(self.directory_entries)
-        self._write("restored")
+        try:
+            self._restore_entries(self.entries)
+            self._restore_directories(self.directory_entries)
+            if self.runtime_lower_recovery:
+                raise DeploymentTransactionError("runtime lower recovery obligation is unresolved")
+            self._write("restored")
+        finally:
+            self._release_runtime_lower_lease()
 
     @classmethod
     def manifest_roots(cls, manifest_path: Path, prefix: Path) -> tuple[Path, ...]:
@@ -389,16 +592,90 @@ class DeploymentTransaction:
         transaction.normalize_modes = bool(payload.get("normalize_modes", False))
         transaction.transaction_id = str(payload.get("transaction_id", "legacy-v1"))
         transaction.runtime_lower_binding = payload.get("runtime_lower_binding")
+        transaction.runtime_lower_recovery = []
+        transaction.runtime_lower_recovery_owner = None
+        transaction._runtime_lower_prefix_fd = None
+        transaction._runtime_lower_lock_fd = None
         if payload.get("state") == "restored":
             raise DeploymentTransactionError(f"deploy manifest is already restored: {manifest_path}")
-        transaction._restore_entries(transaction.entries)
-        transaction._restore_directories(transaction.directory_entries)
-        transaction._write("restored")
+        persisted_recovery = payload.get("runtime_lower_recovery", [])
+        if persisted_recovery:
+            before = manifest_path.read_bytes()
+            transaction._recover_persisted_runtime_lower(persisted_recovery)
+            assert manifest_path.read_bytes() == before
+            error = DeploymentTransactionError(
+                "runtime lower recovery obligation remains unresolved"
+            )
+            error.recovery_obligations = tuple(transaction.runtime_lower_recovery)
+            error.recovery_owner = transaction.runtime_lower_recovery_owner
+            raise error
+        try:
+            transaction._restore_entries(transaction.entries)
+            transaction._restore_directories(transaction.directory_entries)
+            transaction._write("restored")
+        except DeploymentTransactionError as error:
+            # The exception is the ownership handoff for the classmethod path;
+            # retained descriptors must not become unreachable on failure.
+            error.recovery_obligations = tuple(transaction.runtime_lower_recovery)
+            error.recovery_owner = transaction.runtime_lower_recovery_owner
+            raise
+
+    def _recover_persisted_runtime_lower(self, records: object) -> None:
+        if not isinstance(records, list) or not isinstance(self.runtime_lower_binding, dict):
+            raise DeploymentTransactionError("persisted runtime lower recovery is malformed")
+        expected_prefix = (
+            int(self.runtime_lower_binding["prefix_device"]),
+            int(self.runtime_lower_binding["prefix_inode"]),
+        )
+        retained = self._acquire_runtime_lower_lease(expected_prefix)
+        opened: list[RuntimeLowerRecoveryObligation] = []
+        try:
+            for record in records:
+                if not isinstance(record, dict):
+                    raise DeploymentTransactionError("persisted recovery record is malformed")
+                name = str(record["name"])
+                if not name or "/" in name or name in {".", ".."}:
+                    raise DeploymentTransactionError("persisted recovery name is invalid")
+                object_fd = os.open(
+                    name, os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC, dir_fd=retained
+                )
+                observed = os.fstat(object_fd)
+                if (observed.st_dev, observed.st_ino) != (
+                    int(record["device"]),
+                    int(record["inode"]),
+                ):
+                    os.close(object_fd)
+                    raise DeploymentTransactionError("persisted recovery identity mismatch")
+                opened.append(
+                    RuntimeLowerRecoveryObligation(
+                        object_fd,
+                        name,
+                        observed.st_dev,
+                        observed.st_ino,
+                        str(record["reason"]),
+                    )
+                )
+            assert self._runtime_lower_prefix_fd == retained
+            assert self._runtime_lower_lock_fd is not None
+            self.runtime_lower_recovery = opened
+            self.runtime_lower_recovery_owner = RuntimeLowerRecoveryOwner(
+                retained, self._runtime_lower_lock_fd, opened
+            )
+            self._runtime_lower_prefix_fd = None
+            self._runtime_lower_lock_fd = None
+        except BaseException:
+            for obligation in opened:
+                obligation.close()
+            self._release_runtime_lower_lease()
+            raise
 
     def _restore_entries(self, entries: list[DeploymentEntry]) -> None:
         for entry in reversed(entries):
             destination = Path(entry.destination)
             self._require_destination(destination)
+            if destination.name == RUNTIME_LOWER_BINDING_NAME and destination.parent == self.prefix:
+                self._restore_runtime_lower_binding(entry)
+                continue
             observed = destination.stat() if destination.is_file() else None
             if (
                 observed is None
@@ -418,6 +695,106 @@ class DeploymentTransaction:
             self._replace_file(backup, destination)
             if sha256_file(destination) != entry.previous_sha256:
                 raise DeploymentTransactionError(f"restored checksum mismatch: {destination}")
+
+    def _restore_runtime_lower_binding(self, entry: DeploymentEntry) -> None:
+        binding = self.runtime_lower_binding
+        if not isinstance(binding, dict):
+            raise DeploymentTransactionError("runtime lower binding manifest authority is missing")
+        expected_prefix = (int(binding["prefix_device"]), int(binding["prefix_inode"]))
+        retained = self._acquire_runtime_lower_lease(expected_prefix)
+        quarantine_name = f".{RUNTIME_LOWER_BINDING_NAME}.{self.transaction_id}.rollback"
+        try:
+            _rename_noreplace(retained, RUNTIME_LOWER_BINDING_NAME, quarantine_name)
+        except OSError as error:
+            raise DeploymentTransactionError("runtime lower binding is unavailable for rollback") from error
+        quarantined_fd = os.open(
+            quarantine_name, os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC, dir_fd=retained
+        )
+        observed = os.fstat(quarantined_fd)
+        if (observed.st_dev, observed.st_ino) != (entry.deployed_device, entry.deployed_inode):
+            self._retain_runtime_lower_recovery(
+                retained, quarantined_fd, quarantine_name, "rollback quarantined replacement"
+            )
+            raise DeploymentTransactionError(
+                "runtime lower binding replacement preserved; recovery required"
+            )
+        os.close(quarantined_fd)
+
+        if entry.backup is not None:
+            backup_name = Path(entry.backup).name
+            self._runtime_lower_fault("before_backup_restore", retained, backup_name)
+            self._validate_or_recover(
+                expected_prefix, retained, backup_name, "lease changed before backup restore"
+            )
+            try:
+                _rename_noreplace(retained, backup_name, RUNTIME_LOWER_BINDING_NAME)
+            except OSError as error:
+                backup_fd = os.open(
+                    backup_name, os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC, dir_fd=retained
+                )
+                self._retain_runtime_lower_recovery(
+                    retained, backup_fd, backup_name, "backup restore destination occupied"
+                )
+                quarantine_fd = os.open(
+                    quarantine_name,
+                    os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC,
+                    dir_fd=retained,
+                )
+                self._retain_runtime_lower_recovery(
+                    retained,
+                    quarantine_fd,
+                    quarantine_name,
+                    "deployed binding awaits collection after refused backup restore",
+                )
+                raise DeploymentTransactionError(
+                    "runtime lower backup restore refused; recovery required"
+                ) from error
+
+        check_fd = os.open(
+            quarantine_name, os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC, dir_fd=retained
+        )
+        check = os.fstat(check_fd)
+        os.close(check_fd)
+        self._runtime_lower_fault("before_quarantine_unlink", retained, quarantine_name)
+        final_fd = os.open(
+            quarantine_name, os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC, dir_fd=retained
+        )
+        final = os.fstat(final_fd)
+        if (check.st_dev, check.st_ino) != (final.st_dev, final.st_ino):
+            self._retain_runtime_lower_recovery(
+                retained, final_fd, quarantine_name, "quarantine replaced before collection"
+            )
+            raise DeploymentTransactionError(
+                "runtime lower quarantine replacement preserved; recovery required"
+            )
+        os.close(final_fd)
+        self._validate_runtime_lower_lease(expected_prefix)
+        os.unlink(quarantine_name, dir_fd=retained)
+
+    def _release_runtime_lower_lease(self) -> None:
+        if self._runtime_lower_lock_fd is not None:
+            fcntl.flock(self._runtime_lower_lock_fd, fcntl.LOCK_UN)
+            os.close(self._runtime_lower_lock_fd)
+            self._runtime_lower_lock_fd = None
+        if self._runtime_lower_prefix_fd is not None:
+            os.close(self._runtime_lower_prefix_fd)
+            self._runtime_lower_prefix_fd = None
+
+    def _validate_or_recover(
+        self,
+        expected_prefix: tuple[int, int],
+        parent_fd: int,
+        owned_name: str,
+        reason: str,
+    ) -> None:
+        try:
+            self._validate_runtime_lower_lease(expected_prefix)
+        except (DeploymentTransactionError, OSError) as error:
+            object_fd = os.open(
+                owned_name, os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC, dir_fd=parent_fd
+            )
+            self._retain_runtime_lower_recovery(parent_fd, object_fd, owned_name, reason)
+            raise DeploymentTransactionError(f"{reason}; recovery required") from error
 
     def _prepare_destination_parent(self, destination: Path) -> None:
         parent = destination.parent
@@ -561,6 +938,15 @@ class DeploymentTransaction:
             "normalize_modes": self.normalize_modes,
             "transaction_id": self.transaction_id,
             "runtime_lower_binding": self.runtime_lower_binding,
+            "runtime_lower_recovery": [
+                {
+                    "name": item.name,
+                    "device": item.device,
+                    "inode": item.inode,
+                    "reason": item.reason,
+                }
+                for item in self.runtime_lower_recovery
+            ],
         }
         descriptor, temporary = tempfile.mkstemp(
             prefix=f".{self.manifest_path.name}.", dir=self.manifest_path.parent

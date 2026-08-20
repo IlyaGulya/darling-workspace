@@ -15,6 +15,7 @@ from typing import Any, Iterator
 from deploy_transaction import (
     DeploymentTransaction,
     DeploymentTransactionError,
+    cohort_build_enabled,
     runtime_prefix_generation,
 )
 from test_runtime import (
@@ -463,6 +464,7 @@ class RuntimeDeploymentService:
                     proof.get("runtime-mode") == "rootless-eunion"
                     and (prefix / "bin/darlingserver").is_file()
                     and (prefix / "libexec/darling").is_dir()
+                    and cohort_build_enabled(build_root)
                 ):
                     binding = transaction.bind_runtime_lower_root(
                         prefix_generation=runtime_prefix_generation(prefix)
