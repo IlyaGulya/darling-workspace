@@ -2,6 +2,7 @@
 #define DARLING_LIFECYCLE_COHORT_H
 
 #include <stdint.h>
+#include <stdbool.h>
 #include <sys/types.h>
 
 #ifdef __cplusplus
@@ -12,7 +13,10 @@ extern "C" {
 #define DARLING_LIFECYCLE_COHORT_ABI_VERSION 3
 #define DARLING_LIFECYCLE_NONCE_HEX_BYTES 64
 #define DARLING_GUEST_NAMESPACE_BOOTSTRAP_FD 1023
-#define DARLING_GUEST_NAMESPACE_DESCRIPTOR_COUNT 5
+#define DARLING_GUEST_NAMESPACE_VCHROOT_FD 1013
+#define DARLING_GUEST_NAMESPACE_PREFIX_FD 1010
+#define DARLING_GUEST_NAMESPACE_AUTHORITY_DESCRIPTOR_COUNT 5
+#define DARLING_GUEST_NAMESPACE_DESCRIPTOR_COUNT 6
 #define DARLING_LIFECYCLE_FINISH_OK 0
 #define DARLING_LIFECYCLE_FINISH_ERROR -1
 #define DARLING_LIFECYCLE_FINISH_DRAIN_PENDING 1
@@ -85,6 +89,10 @@ struct darling_lifecycle_cohort_controller* darling_lifecycle_cohort_start(
 int darling_lifecycle_cohort_finish(
 	struct darling_lifecycle_cohort_controller* controller
 );
+
+bool darling_lifecycle_cohort_admission_open(
+	struct darling_lifecycle_cohort_controller* controller
+);
 /* On DARLING_LIFECYCLE_FINISH_DRAIN_PENDING the same controller pointer remains
  * owned by the caller and must be retried; worker cleanup has not started. */
 /* On DARLING_LIFECYCLE_FINISH_CLEANUP_PENDING CLEANUP was irreversibly
@@ -105,6 +113,11 @@ int darling_lifecycle_cohort_send_guest_namespace_bootstrap(
 );
 
 int darling_lifecycle_guest_namespace_configure(
+	struct darling_lifecycle_cohort_controller* controller
+);
+
+/* Return a caller-owned duplicate of the authenticated retained lower root. */
+int darling_lifecycle_guest_namespace_directory(
 	struct darling_lifecycle_cohort_controller* controller
 );
 

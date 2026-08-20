@@ -2502,6 +2502,27 @@ impl CohortController {
             .map_err(|_| CohortError::Protocol("guest transaction refused"))
     }
 
+    fn duplicate_runtime_lower(&self) -> Result<OwnedFd, CohortError> {
+        let binding_slot = self
+            .runtime_lower_binding
+            .lock()
+            .map_err(|_| CohortError::Protocol("runtime lower binding mutex poisoned"))?;
+        let binding = binding_slot
+            .as_ref()
+            .ok_or(CohortError::Protocol("runtime lower binding unavailable"))?;
+        let authority = self.guest_namespace.as_ref().ok_or(CohortError::Protocol(
+            "guest namespace authority unavailable",
+        ))?;
+        binding
+            .revalidate(authority.prefix_fd())
+            .map_err(|_| CohortError::Identity("runtime lower deployment binding"))?;
+        let duplicate = unsafe { libc::fcntl(binding.lower_fd(), libc::F_DUPFD_CLOEXEC, 0) };
+        if duplicate < 0 {
+            return Err(io_error("duplicate(runtime lower)"));
+        }
+        Ok(unsafe { OwnedFd::from_raw_fd(duplicate) })
+    }
+
     fn revoke_guest_transactions(&self) {
         let mut slot = self
             .guest_transactions
@@ -2782,12 +2803,13 @@ impl CohortController {
     }
 
     pub fn send_guest_namespace_bootstrap(&self, socket: RawFd) -> Result<(), CohortError> {
+        let directory = self.duplicate_runtime_lower()?;
         self.guest_namespace
             .as_ref()
             .ok_or(CohortError::Protocol(
                 "guest namespace authority unavailable",
             ))?
-            .send_bootstrap(socket)
+            .send_bootstrap_with_directory(socket, directory.as_raw_fd())
             .map_err(|_| CohortError::Protocol("guest namespace bootstrap"))
     }
 
@@ -3165,6 +3187,26 @@ pub unsafe extern "C" fn darling_lifecycle_cohort_finish(
 }
 
 #[no_mangle]
+/// Observe whether the live controller still admits session capabilities.
+///
+/// # Safety
+/// `controller` must be the unconsumed pointer returned by
+/// [`darling_lifecycle_cohort_start`].
+pub unsafe extern "C" fn darling_lifecycle_cohort_admission_open(
+    controller: *mut CohortController,
+) -> bool {
+    if controller.is_null() {
+        return false;
+    }
+    let controller = &*controller;
+    controller.cleanup_phase == CleanupPhase::Active
+        && controller
+            .guest_namespace
+            .as_ref()
+            .is_some_and(GuestNamespaceAuthority::is_active)
+}
+
+#[no_mangle]
 /// Consume a revoked controller without destructive namespace cleanup.
 ///
 /// # Safety
@@ -3277,6 +3319,23 @@ pub unsafe extern "C" fn darling_lifecycle_guest_namespace_configure(
             -1
         }
     }
+}
+
+#[no_mangle]
+/// Return a caller-owned exact duplicate of the authenticated runtime lower root.
+///
+/// # Safety
+/// The controller must remain valid for this call.
+pub unsafe extern "C" fn darling_lifecycle_guest_namespace_directory(
+    controller: *mut CohortController,
+) -> c_int {
+    let Some(controller) = controller.as_ref() else {
+        return -1;
+    };
+    controller
+        .duplicate_runtime_lower()
+        .map(OwnedFd::into_raw_fd)
+        .unwrap_or(-1)
 }
 
 #[no_mangle]
@@ -3950,6 +4009,47 @@ mod tests {
             (metadata.dev(), metadata.ino()),
             (original.device, original.inode)
         );
+    }
+
+    #[test]
+    fn c_abi_admission_query_is_bound_to_live_guest_authority() {
+        assert!(!unsafe { darling_lifecycle_cohort_admission_open(std::ptr::null_mut()) });
+        let fixture = Fixture::new();
+        let (controller, listener) =
+            CohortController::start_for_test(&fixture.root, std::process::id() as _).unwrap();
+        drop(listener);
+        let mut sockets = [0; 2];
+        assert_eq!(
+            unsafe {
+                libc::socketpair(
+                    libc::AF_UNIX,
+                    libc::SOCK_SEQPACKET | libc::SOCK_CLOEXEC,
+                    0,
+                    sockets.as_mut_ptr(),
+                )
+            },
+            0
+        );
+        controller
+            .guest_namespace
+            .as_ref()
+            .unwrap()
+            .send_bootstrap(sockets[0])
+            .unwrap();
+        let session =
+            crate::guest_namespace_authority::SessionCapabilities::receive_required(sockets[1])
+                .unwrap();
+        unsafe {
+            libc::close(sockets[0]);
+            libc::close(sockets[1]);
+        }
+        let mutation = session.authorize().unwrap();
+        let pointer = Box::into_raw(Box::new(controller));
+        assert!(unsafe { darling_lifecycle_cohort_admission_open(pointer) });
+        assert_eq!(unsafe { darling_lifecycle_cohort_finish(pointer) }, 1);
+        assert!(!unsafe { darling_lifecycle_cohort_admission_open(pointer) });
+        drop(mutation);
+        assert_eq!(unsafe { darling_lifecycle_cohort_finish(pointer) }, 0);
     }
 
     #[test]

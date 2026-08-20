@@ -131,6 +131,10 @@ impl GuestNamespaceAuthority {
         self.envelope.generation
     }
 
+    pub(crate) fn is_active(&self) -> bool {
+        unsafe { (*self.page).state.load(Ordering::Acquire) == ACTIVE }
+    }
+
     pub fn issue(prefix_path: &Path, generation: u64) -> Result<Self> {
         if generation == 0 {
             return Err(AuthorityError::Protocol("zero generation"));
@@ -264,6 +268,23 @@ impl GuestNamespaceAuthority {
             self.controller_pidfd.as_raw_fd(),
         ];
         send_fds(socket, &self.envelope, &descriptors)
+    }
+
+    /// Send the authority envelope plus the exact retained runtime lower root.
+    /// The sixth descriptor is consumed only by mldr; the five authority
+    /// descriptors retain their stable ordering for libsystem_kernel.
+    pub fn send_bootstrap_with_directory(&self, socket: RawFd, directory: RawFd) -> Result<()> {
+        let mut envelope = self.envelope;
+        envelope.descriptor_count = 6;
+        let descriptors = [
+            self.lease.as_raw_fd(),
+            self.gate.as_raw_fd(),
+            self.prefix.as_raw_fd(),
+            self.lock.as_raw_fd(),
+            self.controller_pidfd.as_raw_fd(),
+            directory,
+        ];
+        send_fds(socket, &envelope, &descriptors)
     }
 
     pub fn revoke(&mut self) -> Result<()> {
