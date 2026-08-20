@@ -14,6 +14,14 @@
   "acquisition": "rust-fd-relative-from-anchor",
   "partial_transition": "recovery-pending-retains-capabilities-and-journal-then-terminal-fail-closed",
   "runtime_binding": "launcher-retained-digest-equals-request-before-membership",
+  "runtime_lower_deployment_binding": {
+    "schema": "darling-runtime-lower-binding-v1",
+    "authority": "product-deployment-transaction",
+    "acquisition": "retained-prefix-fd-openat2-no-symlinks",
+    "owner_policy": "exact-bound-metadata-user-owned-allowed-no-chown",
+    "c_abi": 3,
+    "routing": "deferred"
+  },
   "recovery_budget": "typed-fail-closed-terminal-without-placeholder-fds",
   "recovery_retry": "not-supported-in-v1",
   "writer_protocol": {

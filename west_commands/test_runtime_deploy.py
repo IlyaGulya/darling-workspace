@@ -12,7 +12,11 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Iterator
 
-from deploy_transaction import DeploymentTransaction, DeploymentTransactionError
+from deploy_transaction import (
+    DeploymentTransaction,
+    DeploymentTransactionError,
+    runtime_prefix_generation,
+)
 from test_runtime import (
     ROOTLESS_BOOTSTRAP_RESOURCE,
     ROOTLESS_TOOLCHAIN_RESOURCE,
@@ -455,6 +459,17 @@ class RuntimeDeploymentService:
                 for source, destination in self.deployment_plan(proof, build_root, prefix):
                     transaction.replace(source, destination)
                     self._host.inf(f"  {label} deploy: {source} -> {destination}")
+                if (
+                    proof.get("runtime-mode") == "rootless-eunion"
+                    and (prefix / "bin/darlingserver").is_file()
+                    and (prefix / "libexec/darling").is_dir()
+                ):
+                    binding = transaction.bind_runtime_lower_root(
+                        prefix_generation=runtime_prefix_generation(prefix)
+                    )
+                    self._host.inf(
+                        f"  {label} deploy: authenticated runtime lower binding -> {binding}"
+                    )
                 self._host.inf(
                     f"  runtime phase complete: {label} deploy "
                     f"({time.monotonic() - started:.1f}s)"

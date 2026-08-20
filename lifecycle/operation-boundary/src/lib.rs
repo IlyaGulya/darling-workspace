@@ -27,6 +27,7 @@ pub mod guest_namespace_transaction;
 pub mod guest_ready;
 pub mod linux_backend;
 pub mod quarantine_gc;
+pub mod runtime_lower_binding;
 pub mod state;
 
 pub type Result<T> = std::result::Result<T, BoundaryError>;

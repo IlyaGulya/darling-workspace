@@ -39,6 +39,7 @@ const CONTROLLER_CLOSURE: &[&str] = &[
     "src/cohort_routing.rs",
     "src/guest_namespace_authority.rs",
     "src/guest_namespace_transaction.rs",
+    "src/runtime_lower_binding.rs",
     "tests/cohort_child_forensic.rs",
     "src/linux_backend.rs",
     "src/quarantine_gc.rs",

@@ -6,6 +6,7 @@ cd "$repo"
 
 python3 - <<'PY'
 import sys
+import json
 import tempfile
 import types
 from pathlib import Path
@@ -32,6 +33,7 @@ def make_args(**overrides):
         "targets": None,
         "deploy": True,
         "deploy_manifest": None,
+        "bind_runtime_lower_root": False,
         "restore_deploy": None,
         "deploy_extra_prefix": [],
         "deploy_closure_names": None,
@@ -66,6 +68,35 @@ def make_command():
 
 class Completed:
     returncode = 0
+
+
+with tempfile.TemporaryDirectory() as temp:
+    tempdir = Path(temp)
+    build_dir = tempdir / "build"
+    prefix = tempdir / "prefix"
+    build_dir.mkdir()
+    (build_dir / "CMakeCache.txt").write_text("configured\n")
+    command = make_command()
+    command._closure_targets = lambda _build_dir, _names=None: []
+    deployed = []
+    command._deploy = lambda *args, **kwargs: deployed.append(True)
+    original_run = db.subprocess.run
+    db.subprocess.run = lambda *args, **kwargs: Completed()
+    try:
+        try:
+            command._run_locked(
+                make_args(targets=[], bind_runtime_lower_root=True),
+                tempdir,
+                build_dir,
+                prefix,
+            )
+        except SystemExit as error:
+            assert "requires --deploy-manifest" in str(error)
+        else:
+            raise AssertionError("untransactional binding request was accepted")
+    finally:
+        db.subprocess.run = original_run
+    assert not deployed, "deployment ran before binding transaction validation"
 
 
 with tempfile.TemporaryDirectory() as temp:
@@ -228,6 +259,45 @@ with tempfile.TemporaryDirectory() as temp:
     finally:
         db.subprocess.run = original_run
     assert destination.read_bytes() == b"old shellspawn\n"
+
+with tempfile.TemporaryDirectory() as temp:
+    tempdir = Path(temp)
+    build_dir = tempdir / "build"
+    prefix = tempdir / "prefix"
+    build_dir.mkdir()
+    (build_dir / "CMakeCache.txt").write_text("configured\n")
+    (prefix / "libexec/darling").mkdir(parents=True)
+    (prefix / "bin").mkdir()
+    (prefix / "bin/darlingserver").write_bytes(b"deployed server\n")
+    (prefix / "bin/darlingserver").chmod(0o755)
+    (prefix / ".darling-prefix-state-v2").write_text(
+        "DARLING_PREFIX_STATE_V2\ngeneration=77\n"
+    )
+    (prefix / ".darling-prefix-state-v2").chmod(0o600)
+
+    command = make_command()
+    command._closure_targets = lambda _build_dir, _names=None: []
+    command._deploy = lambda *args, **kwargs: None
+    original_run = db.subprocess.run
+    db.subprocess.run = lambda *args, **kwargs: Completed()
+    try:
+        command._run_locked(
+            make_args(
+                targets=[],
+                deploy_manifest=str(tempdir / "transaction.json"),
+                bind_runtime_lower_root=True,
+            ),
+            tempdir,
+            build_dir,
+            prefix,
+        )
+    finally:
+        db.subprocess.run = original_run
+    binding = prefix / ".darling-runtime-lower-binding-v1"
+    assert binding.is_file()
+    assert "prefix_generation=77\n" in binding.read_text()
+    manifest = json.loads((tempdir / "transaction.json").read_text())
+    assert manifest["runtime_lower_binding"]["destination"] == "libexec/darling"
 
 print("PASS west-darling-build-contract")
 PY

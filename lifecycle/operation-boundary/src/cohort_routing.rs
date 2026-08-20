@@ -12,6 +12,7 @@ use crate::guest_namespace_transaction::{
     GuestNamespaceTransactionService, Outcome as GuestTransactionOutcome,
     Request as GuestTransactionRequest, TransactionId,
 };
+use crate::runtime_lower_binding::RuntimeLowerBinding;
 use crate::FileIdentity;
 use std::collections::BTreeMap;
 use std::ffi::{CStr, CString};
@@ -486,7 +487,7 @@ fn acquire_lock(prefix: RawFd) -> Result<(OwnedFd, FileIdentity), CohortError> {
     Ok((lock, expected))
 }
 
-fn parse_prefix_state(content: &[u8], prefix: FileIdentity) -> Result<(), CohortError> {
+fn parse_prefix_state(content: &[u8], prefix: FileIdentity) -> Result<u64, CohortError> {
     let text = std::str::from_utf8(content)
         .map_err(|_| CohortError::Protocol("runtime prefix state encoding"))?;
     let body = text
@@ -504,7 +505,7 @@ fn parse_prefix_state(content: &[u8], prefix: FileIdentity) -> Result<(), Cohort
             .parse::<u64>()
             .map_err(|_| CohortError::Protocol("runtime prefix state number"))
     };
-    match (lines.len(), lines.first().copied()) {
+    let generation = match (lines.len(), lines.first().copied()) {
         (9, Some(PREFIX_STATE_V2_HEADER)) => {
             if number(1, "schema_version=")? != 2
                 || field(2, "runtime_mode=")? != "rootless-eunion"
@@ -517,6 +518,7 @@ fn parse_prefix_state(content: &[u8], prefix: FileIdentity) -> Result<(), Cohort
             {
                 return Err(CohortError::Identity("runtime prefix state"));
             }
+            number(3, "generation=")?
         }
         (11, Some(PREFIX_STATE_V3_HEADER)) => {
             if number(1, "schema_version=")? != 3
@@ -532,10 +534,11 @@ fn parse_prefix_state(content: &[u8], prefix: FileIdentity) -> Result<(), Cohort
             {
                 return Err(CohortError::Identity("runtime prefix state"));
             }
+            number(3, "generation=")?
         }
         _ => return Err(CohortError::Protocol("runtime prefix state schema")),
-    }
-    Ok(())
+    };
+    Ok(generation)
 }
 
 fn acquire_prefix_state(
@@ -561,12 +564,13 @@ fn acquire_prefix_state(
     if named_identity(prefix, name)? != Some(expected) {
         return Err(CohortError::Identity("runtime prefix state"));
     }
-    parse_prefix_state(&content, prefix_identity)?;
+    let generation = parse_prefix_state(&content, prefix_identity)?;
     Ok(RetainedState {
         object: state,
         identity: expected,
         content,
         name: name.to_vec(),
+        generation,
     })
 }
 
@@ -582,7 +586,7 @@ fn revalidate_prefix_state(
     {
         return Err(CohortError::Identity("runtime prefix state"));
     }
-    parse_prefix_state(&content, prefix_identity)
+    parse_prefix_state(&content, prefix_identity).map(|_| ())
 }
 
 fn revalidate_lock(prefix: RawFd, lock: RawFd, expected: FileIdentity) -> Result<(), CohortError> {
@@ -668,6 +672,7 @@ struct RetainedState {
     identity: FileIdentity,
     content: Vec<u8>,
     name: Vec<u8>,
+    generation: u64,
 }
 
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
@@ -2402,6 +2407,8 @@ pub struct CohortController {
     nonce: [u8; NONCE_BYTES],
     guest_namespace: Option<GuestNamespaceAuthority>,
     guest_transactions: Mutex<Option<GuestNamespaceTransactionService>>,
+    runtime_lower_binding: Mutex<Option<RuntimeLowerBinding>>,
+    prefix_generation: u64,
     transaction_sidecar: TransactionSidecar,
     cleanup_phase: CleanupPhase,
     forensic_preserve_requested: bool,
@@ -2426,122 +2433,19 @@ enum CleanupPhase {
 }
 
 impl CohortController {
-    fn configure_guest_transactions(&self, lower_path: &CStr) -> Result<(), CohortError> {
-        #[repr(C)]
-        struct OpenHow {
-            flags: u64,
-            mode: u64,
-            resolve: u64,
-        }
-        if lower_path.to_bytes().first() != Some(&b'/') {
-            return Err(CohortError::Protocol("lower root must be absolute"));
-        }
-        let root_name = c"/";
-        let root_fd = unsafe {
-            libc::open(
-                root_name.as_ptr(),
-                libc::O_PATH | libc::O_DIRECTORY | libc::O_CLOEXEC,
-            )
-        };
-        if root_fd < 0 {
-            return Err(io_error("open deployment root anchor"));
-        }
-        let root = unsafe { OwnedFd::from_raw_fd(root_fd) };
-        let relative = CString::new(&lower_path.to_bytes()[1..])
-            .map_err(|_| CohortError::Protocol("lower root path"))?;
-        let how = OpenHow {
-            flags: (libc::O_PATH | libc::O_DIRECTORY | libc::O_CLOEXEC) as u64,
-            mode: 0,
-            // RESOLVE_NO_MAGICLINKS | RESOLVE_NO_SYMLINKS | RESOLVE_BENEATH.
-            resolve: 0x02 | 0x04 | 0x08,
-        };
-        let lower_fd = unsafe {
-            libc::syscall(
-                libc::SYS_openat2,
-                root.as_raw_fd(),
-                relative.as_ptr(),
-                &how,
-                std::mem::size_of::<OpenHow>(),
-            ) as c_int
-        };
-        if lower_fd < 0 {
-            return Err(io_error("openat2 authenticated E-UNION lower root"));
-        }
-        let lower = unsafe { OwnedFd::from_raw_fd(lower_fd) };
-        let lower_identity = identity(lower.as_raw_fd())?;
-        if lower_identity.mode & libc::S_IFMT != libc::S_IFDIR
-            || lower_identity.mode & 0o022 != 0
-            || (lower_identity.uid != 0 && lower_identity.uid != current_uid())
-        {
-            return Err(CohortError::Identity("lower root deployment policy"));
-        }
-        // Bind the selected directory to the exact deployed controller binary,
-        // rather than trusting a caller-supplied pathname as provenance.  The
-        // installed controller and E-UNION lower root are siblings beneath one
-        // immutable install anchor, not parent/child directories.
-        let executable_fd =
-            unsafe { libc::open(c"/proc/self/exe".as_ptr(), libc::O_PATH | libc::O_CLOEXEC) };
-        if executable_fd < 0 {
-            return Err(io_error("open running controller identity"));
-        }
-        let executable = unsafe { OwnedFd::from_raw_fd(executable_fd) };
-        #[cfg(test)]
-        let deployed = openat(
-            lower.as_raw_fd(),
-            b"darlingserver",
-            libc::O_PATH | libc::O_NOFOLLOW | libc::O_CLOEXEC,
-            0,
-        )?;
-        #[cfg(not(test))]
-        let deployed = {
-            const LOWER_SUFFIX: &[u8] = b"/libexec/darling";
-            let install_path = lower_path
-                .to_bytes()
-                .strip_suffix(LOWER_SUFFIX)
-                .filter(|path| path.first() == Some(&b'/') && path.len() > 1)
-                .ok_or(CohortError::Protocol("deployed lower root layout"))?;
-            let relative = CString::new(&install_path[1..])
-                .map_err(|_| CohortError::Protocol("deployment anchor path"))?;
-            let anchor_fd = unsafe {
-                libc::syscall(
-                    libc::SYS_openat2,
-                    root.as_raw_fd(),
-                    relative.as_ptr(),
-                    &how,
-                    std::mem::size_of::<OpenHow>(),
-                ) as c_int
-            };
-            if anchor_fd < 0 {
-                return Err(io_error("open deployment anchor"));
-            }
-            let anchor = unsafe { OwnedFd::from_raw_fd(anchor_fd) };
-            let bin = openat(
-                anchor.as_raw_fd(),
-                b"bin",
-                libc::O_PATH | libc::O_DIRECTORY | libc::O_NOFOLLOW | libc::O_CLOEXEC,
-                0,
-            )?;
-            let deployed = openat(
-                bin.as_raw_fd(),
-                b"darlingserver",
-                libc::O_PATH | libc::O_NOFOLLOW | libc::O_CLOEXEC,
-                0,
-            )?;
-            (anchor, bin, deployed)
-        };
-        #[cfg(not(test))]
-        let deployed = deployed.2;
-        if identity(executable.as_raw_fd())? != identity(deployed.as_raw_fd())? {
-            return Err(CohortError::Identity(
-                "lower root deployed controller binding",
-            ));
-        }
+    fn configure_guest_transactions(&self) -> Result<(), CohortError> {
         let authority = self.guest_namespace.as_ref().ok_or(CohortError::Protocol(
             "guest namespace authority unavailable",
         ))?;
+        let binding = RuntimeLowerBinding::acquire(
+            authority.prefix_fd(),
+            identity(authority.prefix_fd())?,
+            self.prefix_generation,
+        )
+        .map_err(|_| CohortError::Identity("runtime lower deployment binding"))?;
         let service = GuestNamespaceTransactionService::from_retained_roots(
             authority.prefix_fd(),
-            lower.as_raw_fd(),
+            binding.lower_fd(),
             self.transaction_sidecar.directory.as_raw_fd(),
             authority.generation(),
         )
@@ -2555,6 +2459,16 @@ impl CohortController {
                 "guest transaction authority already configured",
             ));
         }
+        let mut binding_slot = self
+            .runtime_lower_binding
+            .lock()
+            .map_err(|_| CohortError::Protocol("runtime lower binding mutex poisoned"))?;
+        if binding_slot.is_some() {
+            return Err(CohortError::Protocol(
+                "runtime lower binding already configured",
+            ));
+        }
+        *binding_slot = Some(binding);
         *slot = Some(service);
         Ok(())
     }
@@ -2563,6 +2477,19 @@ impl CohortController {
         &self,
         request: GuestTransactionRequest,
     ) -> Result<GuestTransactionOutcome, CohortError> {
+        let binding_slot = self
+            .runtime_lower_binding
+            .lock()
+            .map_err(|_| CohortError::Protocol("runtime lower binding mutex poisoned"))?;
+        let binding = binding_slot
+            .as_ref()
+            .ok_or(CohortError::Protocol("runtime lower binding unavailable"))?;
+        let authority = self.guest_namespace.as_ref().ok_or(CohortError::Protocol(
+            "guest namespace authority unavailable",
+        ))?;
+        binding
+            .revalidate(authority.prefix_fd())
+            .map_err(|_| CohortError::Identity("runtime lower deployment binding"))?;
         let mut slot = self
             .guest_transactions
             .lock()
@@ -2646,6 +2573,7 @@ impl CohortController {
         test_prefix: Option<&Path>,
         allow_test_peer: bool,
     ) -> Result<(Self, OwnedFd), CohortError> {
+        let prefix_generation = authority.prefix_state.generation;
         #[cfg(test)]
         {
             authority.allow_test_peer = allow_test_peer;
@@ -2698,6 +2626,8 @@ impl CohortController {
                 nonce,
                 guest_namespace,
                 guest_transactions: Mutex::new(None),
+                runtime_lower_binding: Mutex::new(None),
+                prefix_generation,
                 transaction_sidecar,
                 cleanup_phase: CleanupPhase::Active,
                 forensic_preserve_requested: false,
@@ -2822,6 +2752,8 @@ impl CohortController {
                 nonce,
                 guest_namespace,
                 guest_transactions: Mutex::new(None),
+                runtime_lower_binding: Mutex::new(None),
+                prefix_generation,
                 transaction_sidecar,
                 cleanup_phase: CleanupPhase::Active,
                 forensic_preserve_requested: false,
@@ -3327,19 +3259,18 @@ pub struct GuestTransactionWireResult {
 
 #[no_mangle]
 /// Configure the Rust transaction service from the deployed immutable lower
-/// root. Rust opens and retains the directory; the caller never supplies a
-/// mutation descriptor.
+/// root. Rust opens the versioned binding and destination fd-relative from its
+/// retained prefix; the caller supplies no pathname or mutation descriptor.
 ///
 /// # Safety
-/// The controller and NUL-terminated path must remain valid for this call.
+/// The controller must remain valid for this call.
 pub unsafe extern "C" fn darling_lifecycle_guest_namespace_configure(
     controller: *mut CohortController,
-    retained_lower_root: *const c_char,
 ) -> c_int {
-    let (Some(controller), false) = (controller.as_ref(), retained_lower_root.is_null()) else {
+    let Some(controller) = controller.as_ref() else {
         return -1;
     };
-    match controller.configure_guest_transactions(CStr::from_ptr(retained_lower_root)) {
+    match controller.configure_guest_transactions() {
         Ok(()) => 0,
         Err(error) => {
             eprintln!("guest transaction configuration refused: {error}");
@@ -3553,6 +3484,56 @@ mod tests {
         }
     }
 
+    fn publish_runtime_lower_binding(fixture: &Fixture) {
+        let lower = fixture.root.join("libexec/darling");
+        let controller = fixture.root.join("bin/darlingserver");
+        fs::create_dir_all(&lower).unwrap();
+        fs::create_dir_all(controller.parent().unwrap()).unwrap();
+        fs::set_permissions(&lower, fs::Permissions::from_mode(0o755)).unwrap();
+        fs::hard_link(std::env::current_exe().unwrap(), &controller).unwrap();
+        let prefix = fs::metadata(&fixture.root).unwrap();
+        let lower_metadata = fs::metadata(&lower).unwrap();
+        let controller_metadata = fs::metadata(&controller).unwrap();
+        let content = format!(
+            "DARLING_RUNTIME_LOWER_BINDING_V1\n\
+             schema_version=1\n\
+             transaction_id=00112233445566778899aabbccddeeff\n\
+             prefix_generation=1\n\
+             destination=libexec/darling\n\
+             prefix_device={}\n\
+             prefix_inode={}\n\
+             lower_device={}\n\
+             lower_inode={}\n\
+             lower_type=directory\n\
+             lower_mode={}\n\
+             lower_uid={}\n\
+             lower_gid={}\n\
+             controller_destination=bin/darlingserver\n\
+             controller_device={}\n\
+             controller_inode={}\n\
+             controller_type=regular\n\
+             controller_mode={}\n\
+             controller_uid={}\n\
+             controller_gid={}\n\
+             provenance=product-deployment-transaction-v2\n",
+            prefix.dev(),
+            prefix.ino(),
+            lower_metadata.dev(),
+            lower_metadata.ino(),
+            lower_metadata.mode() & 0o7777,
+            lower_metadata.uid(),
+            lower_metadata.gid(),
+            controller_metadata.dev(),
+            controller_metadata.ino(),
+            controller_metadata.mode() & 0o7777,
+            controller_metadata.uid(),
+            controller_metadata.gid(),
+        );
+        let path = fixture.root.join(".darling-runtime-lower-binding-v1");
+        fs::write(&path, content).unwrap();
+        fs::set_permissions(&path, fs::Permissions::from_mode(0o600)).unwrap();
+    }
+
     #[test]
     fn deployed_v3_prefix_state_is_retained_and_revalidated() {
         let fixture = Fixture::new_v3();
@@ -3621,22 +3602,12 @@ mod tests {
     #[test]
     fn c_abi_routes_one_idempotent_create_through_retained_service() {
         let fixture = Fixture::new();
-        let lower = fixture.root.join("lower-template");
-        fs::create_dir(&lower).unwrap();
-        fs::set_permissions(&lower, fs::Permissions::from_mode(0o755)).unwrap();
-        fs::hard_link(
-            std::env::current_exe().unwrap(),
-            lower.join("darlingserver"),
-        )
-        .unwrap();
+        publish_runtime_lower_binding(&fixture);
         let (mut controller, listener) =
             CohortController::start_for_test(&fixture.root, std::process::id() as _).unwrap();
         drop(listener);
-        let lower_c = CString::new(lower.as_os_str().as_bytes()).unwrap();
         assert_eq!(
-            unsafe {
-                darling_lifecycle_guest_namespace_configure(&mut controller, lower_c.as_ptr())
-            },
+            unsafe { darling_lifecycle_guest_namespace_configure(&mut controller) },
             0
         );
         let mut request = GuestTransactionWireRequest {
@@ -3691,20 +3662,16 @@ mod tests {
     #[test]
     fn lower_root_ancestor_symlink_is_rejected_by_rust_acquisition() {
         let fixture = Fixture::new();
-        let real = fixture.root.join("lower-real");
-        let link = fixture.root.join("lower-link");
-        fs::create_dir(&real).unwrap();
-        fs::set_permissions(&real, fs::Permissions::from_mode(0o755)).unwrap();
-        fs::hard_link(std::env::current_exe().unwrap(), real.join("darlingserver")).unwrap();
-        std::os::unix::fs::symlink(&real, &link).unwrap();
+        publish_runtime_lower_binding(&fixture);
+        let ancestor = fixture.root.join("libexec");
+        let retained = fixture.root.join("libexec-retained");
+        fs::rename(&ancestor, &retained).unwrap();
+        std::os::unix::fs::symlink(&retained, &ancestor).unwrap();
         let (mut controller, listener) =
             CohortController::start_for_test(&fixture.root, std::process::id() as _).unwrap();
         drop(listener);
-        let lower_c = CString::new(link.as_os_str().as_bytes()).unwrap();
         assert_eq!(
-            unsafe {
-                darling_lifecycle_guest_namespace_configure(&mut controller, lower_c.as_ptr())
-            },
+            unsafe { darling_lifecycle_guest_namespace_configure(&mut controller) },
             -1
         );
         controller.finish().unwrap();
@@ -3713,20 +3680,77 @@ mod tests {
     #[test]
     fn lower_root_with_unrelated_deployment_identity_is_rejected() {
         let fixture = Fixture::new();
-        let lower = fixture.root.join("lower-forged");
-        fs::create_dir(&lower).unwrap();
-        fs::set_permissions(&lower, fs::Permissions::from_mode(0o755)).unwrap();
-        fs::write(lower.join("darlingserver"), b"forged executable").unwrap();
+        publish_runtime_lower_binding(&fixture);
+        let controller_path = fixture.root.join("bin/darlingserver");
+        fs::remove_file(&controller_path).unwrap();
+        fs::write(controller_path, b"forged executable").unwrap();
         let (mut controller, listener) =
             CohortController::start_for_test(&fixture.root, std::process::id() as _).unwrap();
         drop(listener);
-        let lower_c = CString::new(lower.as_os_str().as_bytes()).unwrap();
+        assert_eq!(
+            unsafe { darling_lifecycle_guest_namespace_configure(&mut controller) },
+            -1
+        );
+        controller.finish().unwrap();
+    }
+
+    #[test]
+    fn binding_replacement_after_configuration_refuses_before_mutation() {
+        let fixture = Fixture::new();
+        publish_runtime_lower_binding(&fixture);
+        let (mut controller, listener) =
+            CohortController::start_for_test(&fixture.root, std::process::id() as _).unwrap();
+        drop(listener);
+        assert_eq!(
+            unsafe { darling_lifecycle_guest_namespace_configure(&mut controller) },
+            0
+        );
+        let binding = fixture.root.join(std::ffi::OsStr::from_bytes(
+            crate::runtime_lower_binding::NAME,
+        ));
+        fs::rename(&binding, fixture.root.join("binding.retained")).unwrap();
+        fs::write(&binding, b"replacement").unwrap();
+        fs::set_permissions(&binding, fs::Permissions::from_mode(0o600)).unwrap();
+
+        let mut request = GuestTransactionWireRequest {
+            transaction_id: [44; 16],
+            operation: 1,
+            flags: libc::O_WRONLY | libc::O_CREAT | libc::O_EXCL | libc::O_CLOEXEC,
+            mode: 0o600,
+            source_length: b"var/tmp/must-not-exist".len() as u16,
+            destination_length: 0,
+            source: [0; GUEST_TRANSACTION_PATH_CAPACITY],
+            destination: [0; GUEST_TRANSACTION_PATH_CAPACITY],
+        };
+        request.transaction_id[..8].copy_from_slice(
+            &controller
+                .guest_namespace
+                .as_ref()
+                .unwrap()
+                .generation()
+                .to_ne_bytes(),
+        );
+        request.source[..usize::from(request.source_length)]
+            .copy_from_slice(b"var/tmp/must-not-exist");
+        let mut result = GuestTransactionWireResult {
+            result: 0,
+            disposition: 0,
+            device: 0,
+            inode: 0,
+            created_fd: -1,
+            reserved: 0,
+        };
         assert_eq!(
             unsafe {
-                darling_lifecycle_guest_namespace_configure(&mut controller, lower_c.as_ptr())
+                darling_lifecycle_guest_namespace_transaction(
+                    &mut controller,
+                    &request,
+                    &mut result,
+                )
             },
             -1
         );
+        assert!(!fixture.root.join("var/tmp/must-not-exist").exists());
         controller.finish().unwrap();
     }
 
@@ -3735,22 +3759,12 @@ mod tests {
         fn assert_sync<T: Sync>() {}
         assert_sync::<CohortController>();
         let fixture = Fixture::new();
-        let lower = fixture.root.join("lower-template");
-        fs::create_dir(&lower).unwrap();
-        fs::set_permissions(&lower, fs::Permissions::from_mode(0o755)).unwrap();
-        fs::hard_link(
-            std::env::current_exe().unwrap(),
-            lower.join("darlingserver"),
-        )
-        .unwrap();
+        publish_runtime_lower_binding(&fixture);
         let (mut controller, listener) =
             CohortController::start_for_test(&fixture.root, std::process::id() as _).unwrap();
         drop(listener);
-        let lower_c = CString::new(lower.as_os_str().as_bytes()).unwrap();
         assert_eq!(
-            unsafe {
-                darling_lifecycle_guest_namespace_configure(&mut controller, lower_c.as_ptr())
-            },
+            unsafe { darling_lifecycle_guest_namespace_configure(&mut controller) },
             0
         );
         let generation = controller.guest_namespace.as_ref().unwrap().generation();
@@ -3807,22 +3821,12 @@ mod tests {
     #[test]
     fn transaction_recovery_obligation_forces_forensic_finish() {
         let fixture = Fixture::new();
-        let lower = fixture.root.join("lower-template");
-        fs::create_dir(&lower).unwrap();
-        fs::set_permissions(&lower, fs::Permissions::from_mode(0o755)).unwrap();
-        fs::hard_link(
-            std::env::current_exe().unwrap(),
-            lower.join("darlingserver"),
-        )
-        .unwrap();
+        publish_runtime_lower_binding(&fixture);
         let (mut controller, listener) =
             CohortController::start_for_test(&fixture.root, std::process::id() as _).unwrap();
         drop(listener);
-        let lower_c = CString::new(lower.as_os_str().as_bytes()).unwrap();
         assert_eq!(
-            unsafe {
-                darling_lifecycle_guest_namespace_configure(&mut controller, lower_c.as_ptr())
-            },
+            unsafe { darling_lifecycle_guest_namespace_configure(&mut controller) },
             0
         );
         let created = fixture.root.join("var/tmp/replaced-create");
@@ -3967,7 +3971,10 @@ mod tests {
             0
         );
         controller
-            .send_guest_namespace_bootstrap(sockets[0])
+            .guest_namespace
+            .as_ref()
+            .unwrap()
+            .send_bootstrap(sockets[0])
             .unwrap();
         let session =
             crate::guest_namespace_authority::SessionCapabilities::receive_required(sockets[1])
@@ -4011,7 +4018,10 @@ mod tests {
             0
         );
         controller
-            .send_guest_namespace_bootstrap(sockets[0])
+            .guest_namespace
+            .as_ref()
+            .unwrap()
+            .send_bootstrap(sockets[0])
             .unwrap();
         let session =
             crate::guest_namespace_authority::SessionCapabilities::receive_required(sockets[1])
@@ -4137,7 +4147,10 @@ mod tests {
             0
         );
         controller
-            .send_guest_namespace_bootstrap(sockets[0])
+            .guest_namespace
+            .as_ref()
+            .unwrap()
+            .send_bootstrap(sockets[0])
             .unwrap();
         let session =
             crate::guest_namespace_authority::SessionCapabilities::receive_required(sockets[1])
