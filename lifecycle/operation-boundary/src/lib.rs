@@ -24,6 +24,7 @@ pub mod explorer;
 pub mod fuzz;
 pub mod guest_namespace_authority;
 pub mod guest_namespace_transaction;
+pub mod guest_ready;
 pub mod linux_backend;
 pub mod quarantine_gc;
 pub mod state;

@@ -247,7 +247,7 @@ pub fn verify_kernel_observation(
     }))
 }
 
-fn canonical_trace_spec(
+pub(crate) fn canonical_trace_spec(
     trace_id: &str,
 ) -> Option<(&'static str, &'static str, &'static [&'static str])> {
     Some(match trace_id {
@@ -1097,7 +1097,7 @@ fn replay_reducer(
         scenario: None,
         recovery_status: None,
         forensic_roots: Vec::new(),
-        source_identity: source_identity(),
+        source_identity: verifier_source_identity(),
         resource_census: json!({
             "input_bytes": program.encode().map(|value| value.len()).unwrap_or(MAX_INPUT_BYTES),
             "events": program.ops.len(),
@@ -1202,7 +1202,7 @@ fn replay_explorer_with_budget(
             .as_ref()
             .map(|path| vec![path.clone()])
             .unwrap_or_default(),
-        source_identity: source_identity(),
+        source_identity: verifier_source_identity(),
         resource_census: json!({
             "input_bytes": program.encode().map(|value| value.len()).unwrap_or(MAX_INPUT_BYTES),
             "events": scenario.minimized_event_count,
@@ -1299,7 +1299,7 @@ fn write_forensic_manifest(
         "filesystem_postcondition": scenario.filesystem_postcondition,
         "stage_obligation_ids": scenario.stage_obligation_ids,
         "quarantine_obligation_ids": scenario.quarantine_obligation_ids,
-        "source_identity": source_identity(),
+        "source_identity": verifier_source_identity(),
     });
     let bytes = serde_json::to_vec(&manifest)
         .map_err(|_| DecodeError::new("forensic manifest serialization"))?;
@@ -1567,7 +1567,7 @@ fn recovery_code(status: RecoveryStatus) -> u16 {
     }
 }
 
-fn source_identity() -> Value {
+pub fn verifier_source_identity() -> Value {
     json!({
         "repository": "darling-workspace",
         "module": "lifecycle-fuzz",
@@ -1605,7 +1605,7 @@ fn truncate_error(error: &str) -> String {
     error.chars().take(MAX_ERROR_BYTES).collect()
 }
 
-fn hex_encode(bytes: &[u8]) -> String {
+pub(crate) fn hex_encode(bytes: &[u8]) -> String {
     const HEX: &[u8; 16] = b"0123456789abcdef";
     let mut result = String::with_capacity(bytes.len() * 2);
     for byte in bytes {
@@ -2210,7 +2210,7 @@ pub fn verify_corpus() -> Result<CorpusVerification, DecodeError> {
         historical_provenance,
         historical_bad_violations,
         forensic_roots,
-        source_identity: source_identity(),
+        source_identity: verifier_source_identity(),
         names,
     })
 }
@@ -2309,7 +2309,7 @@ pub fn run_smoke(max_cases: usize) -> Result<SmokeReport, DecodeError> {
         explorer_observed,
         mutated_cases,
         corpus,
-        source_identity: source_identity(),
+        source_identity: verifier_source_identity(),
     })
 }
 
@@ -2356,7 +2356,7 @@ fn fuzz_report_for_decode_error(error: DecodeError, input_bytes: usize) -> Repla
         scenario: None,
         recovery_status: None,
         forensic_roots: Vec::new(),
-        source_identity: source_identity(),
+        source_identity: verifier_source_identity(),
         resource_census: json!({
             "input_bytes": input_bytes,
             "input_limit": MAX_INPUT_BYTES,
@@ -2400,7 +2400,7 @@ pub fn safe_replay(input: &[u8]) -> ReplayReport {
             scenario: None,
             recovery_status: None,
             forensic_roots: Vec::new(),
-            source_identity: source_identity(),
+            source_identity: verifier_source_identity(),
             resource_census: json!({
                 "input_bytes": input.len(),
                 "input_limit": MAX_INPUT_BYTES,

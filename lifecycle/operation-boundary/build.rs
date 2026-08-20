@@ -12,6 +12,7 @@ const SEMANTIC_CLOSURE: &[&str] = &[
     "src/state.rs",
     "src/explorer.rs",
     "src/fuzz.rs",
+    "src/guest_ready.rs",
     "src/bin/lifecycle-fuzz.rs",
     "src/bin/lifecycle-boundary.rs",
     "fuzz/Cargo.toml",
@@ -20,9 +21,12 @@ const SEMANTIC_CLOSURE: &[&str] = &[
     "../../lifecycle/operation-boundary-v1.json",
     "../../lifecycle/state-model-v1.json",
     "../../docs/lifecycle-fuzzing-v1.md",
+    "../../docs/lifecycle-guest-ready-v1.md",
     "../../tests/west_test_contracts/lifecycle_fuzz_contract.py",
+    "../../tests/west_test_contracts/lifecycle_guest_ready_contract.py",
     "../../tests/west_test_contracts/lifecycle_explorer_contract.py",
     "../../tests/run-lifecycle-fuzz-contract.sh",
+    "../../tests/run-lifecycle-guest-ready-contract.sh",
     "../../tests/run-lifecycle-fuzz-ub-gate.sh",
 ];
 
