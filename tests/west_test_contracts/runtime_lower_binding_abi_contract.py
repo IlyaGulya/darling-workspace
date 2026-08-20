@@ -35,6 +35,8 @@ state = (
 )
 (prefix / ".darling-prefix-state-v2").write_text(state, encoding="utf-8")
 (prefix / ".darling-prefix-state-v2").chmod(0o600)
+(prefix / ".lifecycle.lock").write_bytes(b"")
+(prefix / ".lifecycle.lock").chmod(0o600)
 (prefix / "libexec/darling").mkdir(parents=True)
 (prefix / "libexec/darling").chmod(0o755)
 (prefix / "bin").mkdir()
