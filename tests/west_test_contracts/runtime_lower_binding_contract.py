@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import fcntl
+import errno
 import os
 import stat
 import subprocess
@@ -142,18 +143,17 @@ with tempfile.TemporaryDirectory(prefix="runtime-lower-rollback-") as temp:
         error.recovery_owner.close()
     else:
         raise AssertionError("rollback removed a replacement inode")
-    # The standalone restore owns its recovery FDs until process exit; the
-    # exact replacement is preserved under the typed quarantine name.
-    quarantined = next(prefix.glob(f".{RUNTIME_LOWER_BINDING_NAME}.*.rollback"))
-    assert (quarantined.stat().st_dev, quarantined.stat().st_ino) == replacement_identity
-    assert quarantined.read_bytes() == retained.read_bytes()
+    # No namespace mutation is needed for an already-replaced destination;
+    # the exact public replacement stays retained by the recovery owner.
+    assert (replacement.stat().st_dev, replacement.stat().st_ino) == replacement_identity
+    assert replacement.read_bytes() == retained.read_bytes()
 
 with tempfile.TemporaryDirectory(prefix="runtime-lower-post-publish-fault-") as temp:
     root = Path(temp)
     prefix, _ = prefix_fixture(root)
 
     class PostPublishFault(DeploymentTransaction):
-        def _write(self, state: str) -> None:
+        def _write(self, state: str, **kwargs: object) -> None:
             if (
                 not getattr(self, "_faulted", False)
                 and self.entries
@@ -161,7 +161,7 @@ with tempfile.TemporaryDirectory(prefix="runtime-lower-post-publish-fault-") as 
             ):
                 self._faulted = True
                 raise DeploymentTransactionError("injected post-publish manifest fault")
-            super()._write(state)
+            super()._write(state, **kwargs)
 
     transaction = PostPublishFault(root / "manifest.json", prefix)
     try:
@@ -274,7 +274,7 @@ with tempfile.TemporaryDirectory(prefix="runtime-lower-race-existing-") as temp:
         raise AssertionError("existing-binding replacement race accepted")
     assert transaction.saved is not None
     assert transaction.saved.read_bytes() == b"old\n"
-    obligation = transaction.runtime_lower_recovery[0]
+    obligation = transaction.runtime_lower_recovery[-1]
     recovered = transaction.prefix / obligation.name
     assert_preserved(recovered, (obligation.device, obligation.inode), transaction.replacement)
     close_recovery(transaction)
@@ -291,7 +291,7 @@ with tempfile.TemporaryDirectory(prefix="runtime-lower-race-unlink-") as temp:
         assert "recovery required" in str(error)
     else:
         raise AssertionError("quarantine replacement race accepted")
-    obligation = transaction.runtime_lower_recovery[0]
+    obligation = transaction.runtime_lower_recovery[-1]
     recovered = transaction.prefix / obligation.name
     assert_preserved(recovered, (obligation.device, obligation.inode), transaction.replacement)
     close_recovery(transaction)
@@ -406,5 +406,148 @@ for hostile in ("mode", "nlink"):
         else:
             raise AssertionError(f"hostile lock {hostile} accepted")
         assert fd_census() == baseline
+
+
+class OwnershipFault(DeploymentTransaction):
+    runtime_checkpoint: str | None = None
+    manifest_checkpoint: str | None = None
+    interrupt = False
+    restore_checkpoint: str | None = None
+
+    def _write(self, state: str, **kwargs: object) -> None:
+        self._fault_manifest_state = state
+        super()._write(state, **kwargs)
+
+    def _manifest_fault(self, checkpoint: str) -> None:
+        if (
+            checkpoint == self.manifest_checkpoint
+            and getattr(self, "_fault_manifest_state", None) == "recovery_required"
+            and not getattr(self, "_manifest_faulted", False)
+        ):
+            self._manifest_faulted = True
+            raise OSError(errno.EIO, f"injected manifest {checkpoint}")
+
+    def _runtime_lower_fault(self, checkpoint: str, parent_fd: int, name: str) -> None:
+        selected = self.runtime_checkpoint or type(self).restore_checkpoint
+        if checkpoint == selected and not getattr(self, "_runtime_faulted", False):
+            self._runtime_faulted = True
+            if self.interrupt:
+                raise KeyboardInterrupt("injected interruption after namespace mutation")
+            raise OSError(errno.ENOSPC, f"injected runtime {checkpoint}")
+
+
+def assert_owned_failure(
+    transaction: DeploymentTransaction,
+    action: object,
+    *,
+    label: str,
+) -> None:
+    baseline = fd_census()
+    try:
+        action()  # type: ignore[operator]
+    except DeploymentTransactionError as error:
+        owner = error.recovery_owner
+        assert owner is transaction.runtime_lower_recovery_owner
+        assert owner is not None and error.recovery_obligations
+        payload = json.loads(transaction.manifest_path.read_text(encoding="utf-8"))
+        assert payload["state"] in {"active", "recovery_required"}
+        for obligation in error.recovery_obligations:
+            observed = os.fstat(obligation.object_fd)
+            assert (observed.st_dev, observed.st_ino) == (
+                obligation.device,
+                obligation.inode,
+            )
+            named = transaction.prefix / obligation.name
+            if named.exists():
+                named_stat = named.stat()
+                assert (named_stat.st_dev, named_stat.st_ino) == (
+                    obligation.device,
+                    obligation.inode,
+                )
+        assert_contender(transaction.prefix, blocked=True)
+        owner.close()
+        owner.close()
+    else:
+        raise AssertionError(f"{label} did not fail")
+    assert_contender(transaction.prefix, blocked=False)
+    assert fd_census() == baseline
+
+
+# Every post-mutation failure transfers the exact capability and lease before
+# returning, including asynchronous interruption.
+for checkpoint, existing, interrupt in (
+    ("after_quarantine", True, False),
+    ("before_staging_write", False, False),
+    ("before_staging_fsync", False, False),
+    ("after_publication", False, False),
+    ("after_publication", False, True),
+):
+    with tempfile.TemporaryDirectory(prefix=f"runtime-lower-fault-{checkpoint}-") as temp:
+        root = Path(temp)
+        prefix, _ = prefix_fixture(root)
+        if existing:
+            existing_path = prefix / RUNTIME_LOWER_BINDING_NAME
+            existing_path.write_bytes(b"previous binding\n")
+            existing_path.chmod(0o600)
+        transaction = OwnershipFault(root / "manifest.json", prefix)
+        transaction.runtime_checkpoint = checkpoint
+        transaction.interrupt = interrupt
+        assert_owned_failure(
+            transaction,
+            lambda: transaction.bind_runtime_lower_root(prefix_generation=71),
+            label=f"runtime-{checkpoint}-interrupt={interrupt}",
+        )
+
+
+# Durable recovery-manifest write, rename, and directory-fsync failures all
+# retain one reachable owner; the last fully written manifest stays valid.
+for checkpoint in (
+    "before_manifest_fsync",
+    "before_manifest_rename",
+    "before_manifest_parent_fsync",
+):
+    with tempfile.TemporaryDirectory(prefix=f"runtime-lower-manifest-{checkpoint}-") as temp:
+        root = Path(temp)
+        prefix, _ = prefix_fixture(root)
+        transaction = OwnershipFault(root / "manifest.json", prefix)
+        transaction.manifest_checkpoint = checkpoint
+        assert_owned_failure(
+            transaction,
+            lambda: transaction.bind_runtime_lower_root(prefix_generation=72),
+            label=f"manifest-{checkpoint}",
+        )
+
+
+# Standalone restore also hands off exact post-quarantine authority instead of
+# emitting a raw exception or rewriting the manifest to restored.
+with tempfile.TemporaryDirectory(prefix="runtime-lower-restore-fault-") as temp:
+    root = Path(temp)
+    prefix, _ = prefix_fixture(root)
+    manifest = root / "manifest.json"
+    transaction = DeploymentTransaction(manifest, prefix)
+    binding = transaction.bind_runtime_lower_root(prefix_generation=73)
+    deployed_identity = (binding.stat().st_dev, binding.stat().st_ino)
+    transaction.commit()
+    before = manifest.read_bytes()
+    baseline = fd_census()
+    OwnershipFault.restore_checkpoint = "after_restore_quarantine"
+    try:
+        OwnershipFault.restore(manifest, prefix)
+    except DeploymentTransactionError as error:
+        assert error.recovery_owner is not None
+        payload = json.loads(manifest.read_text(encoding="utf-8"))
+        assert payload["state"] == "recovery_required"
+        assert manifest.read_bytes() != b"" and manifest.read_bytes() != before
+        obligation = error.recovery_obligations[0]
+        assert (obligation.device, obligation.inode) == deployed_identity
+        assert_contender(prefix, blocked=True)
+        error.recovery_owner.close()
+        error.recovery_owner.close()
+    else:
+        raise AssertionError("standalone post-mutation restore failure was accepted")
+    finally:
+        OwnershipFault.restore_checkpoint = None
+    assert_contender(prefix, blocked=False)
+    assert fd_census() == baseline
 
 print("RUNTIME_LOWER_BINDING_DEPLOYMENT_VALID")
