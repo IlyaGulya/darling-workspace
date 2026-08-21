@@ -228,11 +228,16 @@ class DarlingBuild(WestCommand):
                 self._shutdown_prefixes(prefix, extra_prefixes)
             if args.bind_runtime_lower_root and not args.deploy_manifest:
                 self.die("--bind-runtime-lower-root requires --deploy-manifest")
-            if args.bind_runtime_lower_root and not cohort_build_enabled(build_dir):
-                self.die(
-                    "--bind-runtime-lower-root requires "
-                    "DARLING_LIFECYCLE_COHORT_V1:BOOL=ON in the exact build cache"
-                )
+            if args.bind_runtime_lower_root:
+                try:
+                    enabled = cohort_build_enabled(build_dir, require_entry=True)
+                except DeploymentTransactionError as error:
+                    self.die(str(error))
+                if not enabled:
+                    self.die(
+                        "--bind-runtime-lower-root requires "
+                        "DARLING_LIFECYCLE_COHORT_V1:BOOL=ON in the exact build cache"
+                    )
             transaction = None
             if args.deploy_manifest:
                 try:
