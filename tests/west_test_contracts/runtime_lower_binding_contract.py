@@ -6,6 +6,7 @@ import json
 import fcntl
 import errno
 import os
+import socket
 import stat
 import subprocess
 import sys
@@ -211,6 +212,40 @@ def close_recovery(transaction: DeploymentTransaction) -> None:
     owner.close()
 
 
+def create_special(path: Path, kind: str) -> None:
+    if kind == "fifo":
+        os.mkfifo(path, 0o600)
+    elif kind == "symlink":
+        path.symlink_to("unresolved-special-target")
+    elif kind == "socket":
+        endpoint = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        cwd_fd = os.open(".", os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC)
+        try:
+            os.chdir(path.parent)
+            endpoint.bind(path.name)
+        finally:
+            os.fchdir(cwd_fd)
+            os.close(cwd_fd)
+            endpoint.close()
+    elif kind == "directory":
+        path.mkdir(mode=0o700)
+    else:
+        raise AssertionError(f"unknown special kind: {kind}")
+
+
+def special_identity(path: Path) -> tuple[int, int, int]:
+    observed = path.lstat()
+    return observed.st_dev, observed.st_ino, stat.S_IFMT(observed.st_mode)
+
+
+SPECIAL_TYPES = {
+    "fifo": stat.S_IFIFO,
+    "symlink": stat.S_IFLNK,
+    "socket": stat.S_IFSOCK,
+    "directory": stat.S_IFDIR,
+}
+
+
 class NamespaceRace(DeploymentTransaction):
     checkpoint: str
     replacement: bytes
@@ -234,6 +269,19 @@ class NamespaceRace(DeploymentTransaction):
             target.rename(self.saved)
         target.write_bytes(self.replacement)
         target.chmod(0o600)
+
+
+class SpecialCollectionRace(DeploymentTransaction):
+    special_kind: str
+    saved: Path | None = None
+
+    def _runtime_lower_fault(self, checkpoint: str, parent_fd: int, name: str) -> None:
+        if checkpoint != "before_quarantine_unlink" or self.saved is not None:
+            return
+        target = self.prefix / name
+        self.saved = self.prefix / f"{name}.retained-special-race"
+        target.rename(self.saved)
+        create_special(target, self.special_kind)
 
 
 def race_transaction(root: Path, checkpoint: str, *, existing: bytes | None = None,
@@ -283,8 +331,9 @@ with tempfile.TemporaryDirectory(prefix="runtime-lower-race-existing-") as temp:
     assert_preserved(recovered, (obligation.device, obligation.inode), transaction.replacement)
     close_recovery(transaction)
 
-# Rollback validates the staged deployed inode, then a replacement arrives at
-# the private name. The replacement remains owned by a recovery obligation.
+# A replacement arriving at the final collection boundary is atomically moved
+# aside before any unlink.  Its identity is then rejected and retained by the
+# recovery owner; there is no public-name stat -> unlink window.
 with tempfile.TemporaryDirectory(prefix="runtime-lower-race-unlink-") as temp:
     root = Path(temp)
     transaction = race_transaction(root, "before_quarantine_unlink")
@@ -299,6 +348,43 @@ with tempfile.TemporaryDirectory(prefix="runtime-lower-race-unlink-") as temp:
     recovered = transaction.prefix / obligation.name
     assert_preserved(recovered, (obligation.device, obligation.inode), transaction.replacement)
     close_recovery(transaction)
+
+# The same final collection boundary is non-blocking and identity-safe for
+# every special namespace type.  Atomic isolation moves the replacement before
+# validation; no stat/open-for-read -> unlink sequence can hang on a FIFO or
+# discard an unowned inode.
+for kind in ("fifo", "symlink", "socket", "directory"):
+    with tempfile.TemporaryDirectory(
+        prefix=f"runtime-lower-race-special-unlink-{kind}-"
+    ) as temp:
+        root = Path(temp)
+        prefix, _ = prefix_fixture(root)
+        transaction = SpecialCollectionRace(root / "manifest.json", prefix)
+        transaction.special_kind = kind
+        transaction.bind_runtime_lower_root(prefix_generation=531)
+        baseline = fd_census()
+        try:
+            transaction.rollback()
+        except DeploymentTransactionError as error:
+            owner = error.recovery_owner
+            assert owner is transaction.runtime_lower_recovery_owner
+            assert owner is not None
+            obligation = error.recovery_obligations[-1]
+            recovered = prefix / obligation.name
+            assert special_identity(recovered) == (
+                obligation.device,
+                obligation.inode,
+                SPECIAL_TYPES[kind],
+            )
+            assert json.loads(transaction.manifest_path.read_text())["state"] == (
+                "recovery_required"
+            )
+            assert_contender(prefix, blocked=True)
+            owner.close()
+        else:
+            raise AssertionError(f"special {kind} collection replacement accepted")
+        assert_contender(prefix, blocked=False)
+        assert fd_census() == baseline
 
 # A destination replacement before backup restoration is never clobbered.
 with tempfile.TemporaryDirectory(prefix="runtime-lower-race-restore-") as temp:
@@ -542,19 +628,188 @@ def fresh_restore(manifest: Path, prefix: Path) -> None:
     assert child.returncode == 0, (child.stdout, child.stderr)
 
 
+def crash_bind(manifest: Path, prefix: Path, checkpoint: str) -> None:
+    """Crash a real child without Python unwinding at one create checkpoint."""
+
+    child = subprocess.run(
+        [
+            sys.executable,
+            "-B",
+            "-c",
+            (
+                "import os,sys; from pathlib import Path; "
+                "from west_commands.deploy_transaction import DeploymentTransaction; "
+                "\nclass Crash(DeploymentTransaction):"
+                "\n def _runtime_lower_fault(self, checkpoint, parent_fd, name):"
+                "\n  if checkpoint == sys.argv[3]: os._exit(86)"
+                "\nt=Crash(Path(sys.argv[1]), Path(sys.argv[2])); "
+                "t.bind_runtime_lower_root(prefix_generation=770)"
+            ),
+            str(manifest),
+            str(prefix),
+            checkpoint,
+        ],
+        cwd=ROOT,
+        env={**os.environ, "PYTHONPATH": str(ROOT)},
+        capture_output=True,
+        text=True,
+        timeout=10,
+        check=False,
+    )
+    assert child.returncode == 86, (child.stdout, child.stderr)
+
+
+def fresh_restore_requires_recovery(manifest: Path, prefix: Path) -> None:
+    child = subprocess.run(
+        [
+            sys.executable,
+            "-B",
+            "-c",
+            (
+                "import os,sys; from pathlib import Path; "
+                "from west_commands.deploy_transaction import "
+                "DeploymentTransaction,DeploymentTransactionError; "
+                "\ntry: DeploymentTransaction.restore(Path(sys.argv[1]), Path(sys.argv[2]))"
+                "\nexcept DeploymentTransactionError as e:"
+                "\n assert e.recovery_owner is not None"
+                "\n assert e.recovery_obligations"
+                "\n for o in e.recovery_obligations:"
+                "\n  s=os.fstat(o.object_fd); assert (s.st_dev,s.st_ino)==(o.device,o.inode)"
+                "\n e.recovery_owner.close()"
+                "\n raise SystemExit(73)"
+                "\nraise SystemExit(1)"
+            ),
+            str(manifest),
+            str(prefix),
+        ],
+        cwd=ROOT,
+        env={**os.environ, "PYTHONPATH": str(ROOT)},
+        capture_output=True,
+        text=True,
+        timeout=10,
+        check=False,
+    )
+    assert child.returncode == 73, (child.stdout, child.stderr)
+
+
 def assert_no_runtime_lower_tails(prefix: Path) -> None:
     tails = [
         path.name
         for path in prefix.iterdir()
         if path.name.startswith(f".{RUNTIME_LOWER_BINDING_NAME}.")
-        and path.name.endswith((".new", ".backup", ".rollback"))
+        and path.name.endswith((".new", ".backup", ".rollback", ".collect"))
     ]
     assert tails == [], tails
 
 
-# A durable expected-absent create intent closes the only pre-journal crash
-# window.  Every phase is replayed by a fresh interpreter for both an absent
-# and an existing public binding.
+# A durable expected-absent intent never grants identity authority.  Both a
+# crash before create and a crash after create/before the inode journal are
+# real os._exit boundaries; a same-name replacement inserted before a fresh
+# restore remains byte- and inode-identical and the manifest stays fail-closed.
+for checkpoint in (
+    "after_stage_create_intent",
+    "after_stage_open_before_identity_journal",
+):
+    with tempfile.TemporaryDirectory(
+        prefix=f"runtime-lower-os-exit-{checkpoint}-"
+    ) as temp:
+        root = Path(temp)
+        prefix, _ = prefix_fixture(root)
+        manifest = root / "manifest.json"
+        baseline = fd_census()
+        crash_bind(manifest, prefix, checkpoint)
+        payload = json.loads(manifest.read_text(encoding="utf-8"))
+        stage = [
+            record
+            for record in payload["runtime_lower_recovery"]
+            if record["phase"] == "stage_create_pending"
+        ]
+        assert len(stage) == 1
+        stage_path = prefix / stage[0]["name"]
+        if stage_path.exists():
+            stage_path.rename(root / "crashed-unidentified-stage")
+        replacement = b"foreign pre-journal replacement must survive\n"
+        stage_path.write_bytes(replacement)
+        replacement_identity = (stage_path.stat().st_dev, stage_path.stat().st_ino)
+        fresh_restore_requires_recovery(manifest, prefix)
+        observed = stage_path.stat()
+        assert (observed.st_dev, observed.st_ino) == replacement_identity
+        assert stage_path.read_bytes() == replacement
+        payload = json.loads(manifest.read_text(encoding="utf-8"))
+        assert payload["state"] == "recovery_required"
+        assert payload["runtime_lower_recovery"][0]["phase"] == "stage_create_pending"
+        assert_contender(prefix, blocked=False)
+        assert fd_census() == baseline
+
+
+# Identity acquisition is type-agnostic and non-blocking.  A FIFO, symlink,
+# socket, or directory appearing at either pre-identity crash boundary remains
+# the exact preserved object and yields only the typed recovery result.
+for checkpoint in (
+    "after_stage_create_intent",
+    "after_stage_open_before_identity_journal",
+):
+    for kind in ("fifo", "symlink", "socket", "directory"):
+        with tempfile.TemporaryDirectory(
+            prefix=f"runtime-lower-special-{checkpoint}-{kind}-"
+        ) as temp:
+            root = Path(temp)
+            prefix, _ = prefix_fixture(root)
+            manifest = root / "manifest.json"
+            baseline = fd_census()
+            crash_bind(manifest, prefix, checkpoint)
+            payload = json.loads(manifest.read_text(encoding="utf-8"))
+            record = next(
+                item
+                for item in payload["runtime_lower_recovery"]
+                if item["phase"] == "stage_create_pending"
+            )
+            stage_path = prefix / record["name"]
+            try:
+                stage_path.lstat()
+            except FileNotFoundError:
+                pass
+            else:
+                stage_path.rename(root / "crashed-unidentified-stage")
+            create_special(stage_path, kind)
+            identity = special_identity(stage_path)
+            fresh_restore_requires_recovery(manifest, prefix)
+            assert special_identity(stage_path) == identity
+            payload = json.loads(manifest.read_text(encoding="utf-8"))
+            assert payload["state"] == "recovery_required"
+            assert payload["runtime_lower_recovery"][0]["phase"] == (
+                "stage_create_pending"
+            )
+            assert_contender(prefix, blocked=False)
+            assert fd_census() == baseline
+
+
+# A pre-existing staging object is never owned by this transaction.  Rejecting
+# the expected-absent intent must not collect or alter it from an outer finally.
+with tempfile.TemporaryDirectory(prefix="runtime-lower-preexisting-stage-") as temp:
+    root = Path(temp)
+    prefix, _ = prefix_fixture(root)
+    transaction = DeploymentTransaction(root / "manifest.json", prefix)
+    stage_path = prefix / (
+        f".{RUNTIME_LOWER_BINDING_NAME}.{transaction.transaction_id}.new"
+    )
+    replacement = b"pre-existing stage is foreign\n"
+    stage_path.write_bytes(replacement)
+    identity = (stage_path.stat().st_dev, stage_path.stat().st_ino)
+    try:
+        transaction.bind_runtime_lower_root(prefix_generation=771)
+    except DeploymentTransactionError:
+        pass
+    else:
+        raise AssertionError("pre-existing staging destination was accepted")
+    observed = stage_path.stat()
+    assert (observed.st_dev, observed.st_ino) == identity
+    assert stage_path.read_bytes() == replacement
+
+
+# Every stage phase is replayed by a fresh interpreter for both an absent and
+# an existing public binding.  A pre-identity create is deliberately retained
+# as unresolved; later phases have a durable exact inode and can be collected.
 for existing in (False, True):
     for checkpoint in (
         "after_stage_create_intent",
@@ -597,6 +852,14 @@ for existing in (False, True):
                 owner.close()
             else:
                 raise AssertionError(f"stage checkpoint {checkpoint} did not fail")
+            if checkpoint == "after_stage_open_before_identity_journal":
+                fresh_restore_requires_recovery(transaction.manifest_path, prefix)
+                payload = json.loads(transaction.manifest_path.read_text())
+                assert payload["state"] == "recovery_required"
+                assert payload["runtime_lower_recovery"]
+                assert_contender(prefix, blocked=False)
+                assert fd_census() == baseline
+                continue
             fresh_restore(transaction.manifest_path, prefix)
             payload = json.loads(transaction.manifest_path.read_text())
             assert payload["state"] == "active"

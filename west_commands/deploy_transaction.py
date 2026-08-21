@@ -106,6 +106,16 @@ PREFIX_STATE_NAMES = (".darling-prefix-state-v3", ".darling-prefix-state-v2")
 RENAME_NOREPLACE = 1
 
 
+def _open_identity(parent_fd: int, name: str) -> int:
+    """Open one namespace object for identity only, without type side effects."""
+
+    return os.open(
+        name,
+        os.O_PATH | os.O_NOFOLLOW | os.O_CLOEXEC,
+        dir_fd=parent_fd,
+    )
+
+
 def cohort_build_enabled(build_dir: Path) -> bool:
     """Return the authoritative compile-time cohort state from CMakeCache."""
 
@@ -557,11 +567,6 @@ class DeploymentTransaction:
         finally:
             if old_fd is not None:
                 os.close(old_fd)
-            if staged_obligation is None:
-                try:
-                    os.unlink(temporary_name, dir_fd=retained)
-                except FileNotFoundError:
-                    pass
 
     def _runtime_lower_fault(self, checkpoint: str, parent_fd: int, name: str) -> None:
         """Test seam; production has no asynchronous callback in the lease."""
@@ -866,17 +871,11 @@ class DeploymentTransaction:
                             "persisted recovery alternate name is invalid"
                         )
                 try:
-                    object_fd = os.open(
-                        name, os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC, dir_fd=retained
-                    )
+                    object_fd = _open_identity(retained, name)
                 except FileNotFoundError:
                     if alternate_name is not None:
                         try:
-                            object_fd = os.open(
-                                alternate_name,
-                                os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC,
-                                dir_fd=retained,
-                            )
+                            object_fd = _open_identity(retained, alternate_name)
                         except FileNotFoundError:
                             object_fd = -1
                         else:
@@ -914,9 +913,32 @@ class DeploymentTransaction:
                         ) from None
                 observed = os.fstat(object_fd)
                 if phase == "stage_create_pending":
-                    record["device"] = observed.st_dev
-                    record["inode"] = observed.st_ino
-                    phase = "stage_created"
+                    # The intent proves only that the name was absent before
+                    # create.  A crash left no durable inode identity, so an
+                    # object now present at the name may be the candidate or a
+                    # replacement.  Preserve it; never adopt it by pathname.
+                    self._handoff_runtime_lower_lease()
+                    assert self.runtime_lower_recovery_owner is not None
+                    unknown = RuntimeLowerRecoveryObligation(
+                        object_fd,
+                        name,
+                        observed.st_dev,
+                        observed.st_ino,
+                        "unknown object preserved after pre-identity create crash",
+                        "retained",
+                        None,
+                        True,
+                        str(transaction_id),
+                    )
+                    self.runtime_lower_recovery = [*opened, unknown]
+                    self.runtime_lower_recovery_owner.obligations.extend(opened)
+                    self.runtime_lower_recovery_owner.obligations.append(unknown)
+                    self._raise_runtime_lower_recovery(
+                        "stage create identity was not durably recorded",
+                        DeploymentTransactionError(
+                            "named object cannot be adopted from expected-absent intent"
+                        ),
+                    )
                 elif (observed.st_dev, observed.st_ino) != (
                     int(record["device"]),
                     int(record["inode"]),
@@ -995,10 +1017,8 @@ class DeploymentTransaction:
                     if obligation.phase == "stage_create_pending":
                         if obligation.object_fd < 0:
                             try:
-                                object_fd = os.open(
-                                    obligation.name,
-                                    os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC,
-                                    dir_fd=owner.prefix_fd,
+                                object_fd = _open_identity(
+                                    owner.prefix_fd, obligation.name
                                 )
                             except FileNotFoundError:
                                 obligation.phase = "stage_absent"
@@ -1011,31 +1031,25 @@ class DeploymentTransaction:
                             obligation.object_fd = object_fd
                             obligation.device = observed.st_dev
                             obligation.inode = observed.st_ino
-                        obligation.phase = "stage_created"
-                        obligation.reason = "created stage recovered from durable intent"
-                        self._write("recovery_required", recovery_target="active")
+                            obligation.phase = "retained"
+                            obligation.reason = (
+                                "unknown object preserved after pre-identity create crash"
+                            )
+                            self._raise_runtime_lower_recovery(
+                                "stage create identity was not durably recorded",
+                                DeploymentTransactionError(
+                                    "named object cannot be adopted from expected-absent intent"
+                                ),
+                            )
                     if obligation.phase == "stage_created":
                         obligation.phase = "stage_collection_pending"
                         obligation.reason = "exact unpublished stage pending collection"
                         self._write("recovery_required", recovery_target="active")
                     if obligation.phase == "stage_collection_pending":
-                        try:
-                            named = os.stat(
-                                obligation.name,
-                                dir_fd=owner.prefix_fd,
-                                follow_symlinks=False,
-                            )
-                        except FileNotFoundError:
-                            pass
-                        else:
-                            if (named.st_dev, named.st_ino) != (
-                                obligation.device,
-                                obligation.inode,
-                            ):
-                                raise DeploymentTransactionError(
-                                    "stage replacement preserved during collection"
-                                )
-                            os.unlink(obligation.name, dir_fd=owner.prefix_fd)
+                        self._collect_exact_runtime_lower_object(
+                            obligation,
+                            checkpoint="before_stage_collection_unlink",
+                        )
                         obligation.phase = "stage_collected"
                         obligation.reason = "exact unpublished stage collected"
                         self._write("recovery_required", recovery_target="active")
@@ -1140,23 +1154,10 @@ class DeploymentTransaction:
                     continue
                 if obligation.phase == "collection_pending":
                     self._validate_runtime_lower_lease(expected_prefix)
-                    try:
-                        named = os.stat(
-                            obligation.name,
-                            dir_fd=owner.prefix_fd,
-                            follow_symlinks=False,
-                        )
-                    except FileNotFoundError:
-                        pass
-                    else:
-                        if (named.st_dev, named.st_ino) != (
-                            obligation.device,
-                            obligation.inode,
-                        ):
-                            raise DeploymentTransactionError(
-                                "runtime lower collection replacement preserved"
-                            )
-                        os.unlink(obligation.name, dir_fd=owner.prefix_fd)
+                    self._collect_exact_runtime_lower_object(
+                        obligation,
+                        checkpoint="before_quarantine_unlink",
+                    )
                     obligation.phase = "collected"
                     self._write(
                         "recovery_required", recovery_target="restored"
@@ -1168,6 +1169,54 @@ class DeploymentTransaction:
             self._raise_runtime_lower_recovery(
                 "runtime lower collection recovery remains pending", cause
             )
+
+    def _collect_exact_runtime_lower_object(
+        self,
+        obligation: RuntimeLowerRecoveryObligation,
+        *,
+        checkpoint: str,
+    ) -> None:
+        """Atomically isolate a named object before identity-bound collection.
+
+        There is deliberately no ``stat(name) -> unlink(name)`` sequence.  A
+        replacement racing the final boundary is moved to a fresh collection
+        name, detected there, and retained by the recovery owner.
+        """
+
+        owner = self.runtime_lower_recovery_owner
+        if owner is None:
+            raise DeploymentTransactionError("runtime lower recovery owner is unavailable")
+        collection_name = f".{RUNTIME_LOWER_BINDING_NAME}.{self.transaction_id}.{uuid.uuid4().hex}.collect"
+        obligation.alternate_name = collection_name
+        self._write("recovery_required", recovery_target=self.runtime_lower_recovery_target)
+        self._runtime_lower_fault(checkpoint, owner.prefix_fd, obligation.name)
+        try:
+            _rename_noreplace(owner.prefix_fd, obligation.name, collection_name)
+        except FileNotFoundError:
+            obligation.alternate_name = None
+            return
+        obligation.name = collection_name
+        obligation.alternate_name = None
+        moved_fd = _open_identity(owner.prefix_fd, collection_name)
+        moved = os.fstat(moved_fd)
+        if (moved.st_dev, moved.st_ino) != (obligation.device, obligation.inode):
+            obligation.close()
+            obligation.object_fd = moved_fd
+            obligation.device = moved.st_dev
+            obligation.inode = moved.st_ino
+            obligation.phase = "retained"
+            obligation.reason = "replacement isolated and preserved during collection"
+            self._write(
+                "recovery_required", recovery_target=self.runtime_lower_recovery_target
+            )
+            raise DeploymentTransactionError(
+                "runtime lower collection replacement preserved; recovery required"
+            )
+        os.close(moved_fd)
+        # The exact inode is now under a transaction-unique name while the
+        # exclusive lifecycle lease excludes cooperative namespace writers.
+        # Collection therefore does not depend on a check of the public name.
+        os.unlink(collection_name, dir_fd=owner.prefix_fd)
 
     def _restore_entries(self, entries: list[DeploymentEntry]) -> None:
         for entry in reversed(entries):
@@ -1291,26 +1340,11 @@ class DeploymentTransaction:
         self.runtime_lower_recovery_target = "restored"
         self._write("recovery_required", recovery_target="restored")
 
-        check_fd = os.open(
-            quarantine_name, os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC, dir_fd=retained
-        )
-        check = os.fstat(check_fd)
-        os.close(check_fd)
-        self._runtime_lower_fault("before_quarantine_unlink", retained, quarantine_name)
-        final_fd = os.open(
-            quarantine_name, os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC, dir_fd=retained
-        )
-        final = os.fstat(final_fd)
-        if (check.st_dev, check.st_ino) != (final.st_dev, final.st_ino):
-            self._retain_runtime_lower_recovery(
-                retained, final_fd, quarantine_name, "quarantine replaced before collection"
-            )
-            raise DeploymentTransactionError(
-                "runtime lower quarantine replacement preserved; recovery required"
-            )
-        os.close(final_fd)
         self._validate_runtime_lower_lease(expected_prefix)
-        os.unlink(quarantine_name, dir_fd=retained)
+        self._collect_exact_runtime_lower_object(
+            quarantine_obligation,
+            checkpoint="before_quarantine_unlink",
+        )
         quarantine_obligation.phase = "collected"
         self._runtime_lower_fault(
             "after_quarantine_unlink", retained, quarantine_name
@@ -1336,9 +1370,7 @@ class DeploymentTransaction:
         try:
             self._validate_runtime_lower_lease(expected_prefix)
         except (DeploymentTransactionError, OSError) as error:
-            object_fd = os.open(
-                owned_name, os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC, dir_fd=parent_fd
-            )
+            object_fd = _open_identity(parent_fd, owned_name)
             self._retain_runtime_lower_recovery(parent_fd, object_fd, owned_name, reason)
             raise DeploymentTransactionError(f"{reason}; recovery required") from error
 
