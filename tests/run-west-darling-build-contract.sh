@@ -25,7 +25,11 @@ sys.modules.setdefault("west", west_module)
 sys.modules.setdefault("west.commands", west_commands_module)
 
 from west_commands import darling_build as db
-from west_commands.deploy_transaction import DeploymentTransaction
+from west_commands.deploy_transaction import (
+    DeploymentTransaction,
+    DeploymentTransactionError,
+    cohort_build_enabled,
+)
 
 
 def make_args(**overrides):
@@ -68,6 +72,55 @@ def make_command():
 
 class Completed:
     returncode = 0
+
+
+# Production cache parser: missing is legacy OFF only for automatic deploy;
+# explicit authority requires one exact BOOL entry.  Every ambiguous or
+# unreadable cache fails closed.
+for content, expected in (
+    ("configured\n", False),
+    ("DARLING_LIFECYCLE_COHORT_V1:BOOL=OFF\n", False),
+    ("DARLING_LIFECYCLE_COHORT_V1:BOOL=ON\n", True),
+):
+    with tempfile.TemporaryDirectory() as temp:
+        build_dir = Path(temp)
+        (build_dir / "CMakeCache.txt").write_text(content)
+        assert cohort_build_enabled(build_dir) is expected
+        if "DARLING_LIFECYCLE_COHORT_V1" not in content:
+            try:
+                cohort_build_enabled(build_dir, require_entry=True)
+            except DeploymentTransactionError as error:
+                assert "missing" in str(error)
+            else:
+                raise AssertionError("explicit binding accepted a missing cache entry")
+        else:
+            assert cohort_build_enabled(build_dir, require_entry=True) is expected
+
+for malformed in (
+    "DARLING_LIFECYCLE_COHORT_V1:STRING=ON\n",
+    "DARLING_LIFECYCLE_COHORT_V1:BOOL=YES\n",
+    "DARLING_LIFECYCLE_COHORT_V1:BOOL=ON\nDARLING_LIFECYCLE_COHORT_V1:BOOL=OFF\n",
+):
+    with tempfile.TemporaryDirectory() as temp:
+        build_dir = Path(temp)
+        (build_dir / "CMakeCache.txt").write_text(malformed)
+        for require_entry in (False, True):
+            try:
+                cohort_build_enabled(build_dir, require_entry=require_entry)
+            except DeploymentTransactionError as error:
+                assert "malformed" in str(error)
+            else:
+                raise AssertionError("malformed cohort cache was accepted")
+
+with tempfile.TemporaryDirectory() as temp:
+    build_dir = Path(temp)
+    (build_dir / "CMakeCache.txt").mkdir()
+    try:
+        cohort_build_enabled(build_dir)
+    except DeploymentTransactionError as error:
+        assert "unavailable" in str(error)
+    else:
+        raise AssertionError("unreadable cohort cache was accepted")
 
 
 with tempfile.TemporaryDirectory() as temp:
@@ -339,6 +392,49 @@ with tempfile.TemporaryDirectory() as temp:
         db.subprocess.run = original_run
     assert not (prefix / ".darling-runtime-lower-binding-v1").exists()
     assert not (tempdir / "transaction.json").exists()
+
+for cache_content, expected_text in (
+    ("configured\n", "missing"),
+    ("DARLING_LIFECYCLE_COHORT_V1:STRING=ON\n", "malformed"),
+    (
+        "DARLING_LIFECYCLE_COHORT_V1:BOOL=ON\n"
+        "DARLING_LIFECYCLE_COHORT_V1:BOOL=OFF\n",
+        "malformed",
+    ),
+):
+    with tempfile.TemporaryDirectory() as temp:
+        tempdir = Path(temp)
+        build_dir = tempdir / "build"
+        prefix = tempdir / "prefix"
+        build_dir.mkdir()
+        prefix.mkdir()
+        (build_dir / "CMakeCache.txt").write_text(cache_content)
+        command = make_command()
+        command._closure_targets = lambda _build_dir, _names=None: []
+        deployed = []
+        command._deploy = lambda *args, **kwargs: deployed.append(True)
+        original_run = db.subprocess.run
+        db.subprocess.run = lambda *args, **kwargs: Completed()
+        try:
+            try:
+                command._run_locked(
+                    make_args(
+                        targets=[],
+                        deploy_manifest=str(tempdir / "transaction.json"),
+                        bind_runtime_lower_root=True,
+                    ),
+                    tempdir,
+                    build_dir,
+                    prefix,
+                )
+            except SystemExit as error:
+                assert expected_text in str(error)
+            else:
+                raise AssertionError("invalid explicit cohort proof was accepted")
+        finally:
+            db.subprocess.run = original_run
+        assert not deployed
+        assert not (tempdir / "transaction.json").exists()
 
 print("PASS west-darling-build-contract")
 PY
