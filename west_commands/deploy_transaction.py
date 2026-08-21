@@ -53,6 +53,8 @@ class RuntimeLowerRecoveryObligation:
     reason: str
     phase: str = "retained"
     alternate_name: str | None = None
+    expected_absent: bool = False
+    transaction_id: str | None = None
 
     def close(self) -> None:
         if self.object_fd >= 0:
@@ -459,6 +461,11 @@ class DeploymentTransaction:
                 self._runtime_lower_fault("after_quarantine", retained, backup_name)
                 backup = self.prefix / backup_name
                 previous_sha256 = sha256_file(backup)
+            self._retain_runtime_lower_create_intent(retained, temporary_name)
+            staged_obligation = self.runtime_lower_recovery[-1]
+            self._runtime_lower_fault(
+                "after_stage_create_intent", retained, temporary_name
+            )
             new_fd = os.open(
                 temporary_name,
                 os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW | os.O_CLOEXEC,
@@ -466,14 +473,20 @@ class DeploymentTransaction:
                 dir_fd=retained,
             )
             deployed = os.fstat(new_fd)
-            self._retain_runtime_lower_recovery(
-                retained,
-                new_fd,
-                temporary_name,
-                "candidate binding staged pending durable publication",
-                observed=deployed,
+            staged_obligation.object_fd = new_fd
+            staged_obligation.device = deployed.st_dev
+            staged_obligation.inode = deployed.st_ino
+            staged_obligation.reason = (
+                "candidate binding created pending durable identity journal"
             )
-            staged_obligation = self.runtime_lower_recovery[-1]
+            staged_obligation.phase = "stage_created"
+            self._runtime_lower_fault(
+                "after_stage_open_before_identity_journal", retained, temporary_name
+            )
+            self._write("recovery_required", recovery_target="active")
+            self._runtime_lower_fault(
+                "after_stage_created_journal", retained, temporary_name
+            )
             try:
                 with source.open("rb") as input_handle:
                     while chunk := input_handle.read(1024 * 1024):
@@ -492,6 +505,9 @@ class DeploymentTransaction:
                 deployed = os.fstat(new_fd)
             except BaseException:
                 raise
+            self._runtime_lower_fault(
+                "before_publish_intent", retained, temporary_name
+            )
             staged_obligation.phase = "publish_pending"
             staged_obligation.alternate_name = RUNTIME_LOWER_BINDING_NAME
             self.entries.append(
@@ -645,6 +661,37 @@ class DeploymentTransaction:
         self.runtime_lower_recovery_owner.obligations.append(obligation)
         self._write("recovery_required")
 
+    def _retain_runtime_lower_create_intent(self, parent_fd: int, name: str) -> None:
+        """Persist ownership of an expected-absent staging name before create."""
+
+        try:
+            os.stat(name, dir_fd=parent_fd, follow_symlinks=False)
+        except FileNotFoundError:
+            pass
+        else:
+            raise DeploymentTransactionError(
+                "runtime lower staging destination is not absent"
+            )
+        self._handoff_runtime_lower_lease()
+        owner = self.runtime_lower_recovery_owner
+        if owner is None or owner.prefix_fd != parent_fd:
+            raise DeploymentTransactionError("create intent lease ownership mismatch")
+        obligation = RuntimeLowerRecoveryObligation(
+            -1,
+            name,
+            0,
+            0,
+            "expected-absent candidate stage create pending",
+            "stage_create_pending",
+            None,
+            True,
+            self.transaction_id,
+        )
+        self.runtime_lower_recovery.append(obligation)
+        owner.obligations.append(obligation)
+        self.runtime_lower_recovery_target = "active"
+        self._write("recovery_required", recovery_target="active")
+
     def _handoff_runtime_lower_lease(self) -> None:
         """Move a raw acquired lease into an idempotent reachable owner."""
 
@@ -782,6 +829,11 @@ class DeploymentTransaction:
                 phase = str(record.get("phase", "retained"))
                 if phase not in {
                     "retained",
+                    "stage_create_pending",
+                    "stage_created",
+                    "stage_collection_pending",
+                    "stage_collected",
+                    "stage_absent",
                     "quarantine_pending",
                     "quarantined",
                     "publish_pending",
@@ -792,6 +844,17 @@ class DeploymentTransaction:
                 }:
                     raise DeploymentTransactionError("persisted recovery phase is invalid")
                 alternate_name = record.get("alternate_name")
+                expected_absent = record.get("expected_absent", False)
+                transaction_id = record.get("transaction_id")
+                if not isinstance(expected_absent, bool):
+                    raise DeploymentTransactionError(
+                        "persisted recovery expected-absent flag is invalid"
+                    )
+                if phase.startswith("stage_"):
+                    if not expected_absent or transaction_id != self.transaction_id:
+                        raise DeploymentTransactionError(
+                            "persisted stage-create intent identity is invalid"
+                        )
                 if alternate_name is not None:
                     alternate_name = str(alternate_name)
                     if (
@@ -822,19 +885,59 @@ class DeploymentTransaction:
                         object_fd = -1
                     if object_fd >= 0:
                         pass
-                    elif phase in {"collection_pending", "collected"}:
+                    elif phase in {
+                        "collection_pending",
+                        "collected",
+                        "stage_create_pending",
+                        "stage_collection_pending",
+                        "stage_collected",
+                        "stage_absent",
+                    }:
+                        if phase.startswith("stage_"):
+                            opened.append(
+                                RuntimeLowerRecoveryObligation(
+                                    -1,
+                                    name,
+                                    int(record["device"]),
+                                    int(record["inode"]),
+                                    str(record["reason"]),
+                                    phase,
+                                    alternate_name,
+                                    expected_absent,
+                                    str(transaction_id),
+                                )
+                            )
                         continue
                     else:
                         raise DeploymentTransactionError(
                             "persisted recovery object is missing"
                         ) from None
                 observed = os.fstat(object_fd)
-                if (observed.st_dev, observed.st_ino) != (
+                if phase == "stage_create_pending":
+                    record["device"] = observed.st_dev
+                    record["inode"] = observed.st_ino
+                    phase = "stage_created"
+                elif (observed.st_dev, observed.st_ino) != (
                     int(record["device"]),
                     int(record["inode"]),
                 ):
-                    os.close(object_fd)
-                    raise DeploymentTransactionError("persisted recovery identity mismatch")
+                    self._handoff_runtime_lower_lease()
+                    assert self.runtime_lower_recovery_owner is not None
+                    replacement = RuntimeLowerRecoveryObligation(
+                        object_fd,
+                        name,
+                        observed.st_dev,
+                        observed.st_ino,
+                        "replacement preserved after persisted identity mismatch",
+                        "retained",
+                    )
+                    self.runtime_lower_recovery = [*opened, replacement]
+                    self.runtime_lower_recovery_owner.obligations.extend(opened)
+                    self.runtime_lower_recovery_owner.obligations.append(replacement)
+                    self._raise_runtime_lower_recovery(
+                        "persisted recovery identity mismatch",
+                        DeploymentTransactionError("replacement identity differs"),
+                    )
                 opened.append(
                     RuntimeLowerRecoveryObligation(
                         object_fd,
@@ -844,6 +947,8 @@ class DeploymentTransaction:
                         str(record["reason"]),
                         phase,
                         alternate_name,
+                        expected_absent,
+                        str(transaction_id) if transaction_id is not None else None,
                     )
                 )
             assert self._runtime_lower_prefix_fd == retained
@@ -886,6 +991,54 @@ class DeploymentTransaction:
                     )
                     for obligation in owner.obligations
                 )
+                for obligation in owner.obligations:
+                    if obligation.phase == "stage_create_pending":
+                        if obligation.object_fd < 0:
+                            try:
+                                object_fd = os.open(
+                                    obligation.name,
+                                    os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC,
+                                    dir_fd=owner.prefix_fd,
+                                )
+                            except FileNotFoundError:
+                                obligation.phase = "stage_absent"
+                                obligation.reason = "stage create did not occur"
+                                self._write(
+                                    "recovery_required", recovery_target="active"
+                                )
+                                continue
+                            observed = os.fstat(object_fd)
+                            obligation.object_fd = object_fd
+                            obligation.device = observed.st_dev
+                            obligation.inode = observed.st_ino
+                        obligation.phase = "stage_created"
+                        obligation.reason = "created stage recovered from durable intent"
+                        self._write("recovery_required", recovery_target="active")
+                    if obligation.phase == "stage_created":
+                        obligation.phase = "stage_collection_pending"
+                        obligation.reason = "exact unpublished stage pending collection"
+                        self._write("recovery_required", recovery_target="active")
+                    if obligation.phase == "stage_collection_pending":
+                        try:
+                            named = os.stat(
+                                obligation.name,
+                                dir_fd=owner.prefix_fd,
+                                follow_symlinks=False,
+                            )
+                        except FileNotFoundError:
+                            pass
+                        else:
+                            if (named.st_dev, named.st_ino) != (
+                                obligation.device,
+                                obligation.inode,
+                            ):
+                                raise DeploymentTransactionError(
+                                    "stage replacement preserved during collection"
+                                )
+                            os.unlink(obligation.name, dir_fd=owner.prefix_fd)
+                        obligation.phase = "stage_collected"
+                        obligation.reason = "exact unpublished stage collected"
+                        self._write("recovery_required", recovery_target="active")
                 for obligation in owner.obligations:
                     if obligation.phase in {"quarantine_pending", "quarantined"}:
                         if not has_publish:
@@ -1355,6 +1508,8 @@ class DeploymentTransaction:
                     "reason": item.reason,
                     "phase": item.phase,
                     "alternate_name": item.alternate_name,
+                    "expected_absent": item.expected_absent,
+                    "transaction_id": item.transaction_id,
                 }
                 for item in recovery
             ],
