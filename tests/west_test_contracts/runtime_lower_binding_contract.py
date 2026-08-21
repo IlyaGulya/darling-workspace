@@ -158,6 +158,10 @@ with tempfile.TemporaryDirectory(prefix="runtime-lower-post-publish-fault-") as 
                 not getattr(self, "_faulted", False)
                 and self.entries
                 and self.entries[-1].destination.endswith(RUNTIME_LOWER_BINDING_NAME)
+                and any(
+                    obligation.phase == "final"
+                    for obligation in self.runtime_lower_recovery
+                )
             ):
                 self._faulted = True
                 raise DeploymentTransactionError("injected post-publish manifest fault")
@@ -413,6 +417,8 @@ class OwnershipFault(DeploymentTransaction):
     manifest_checkpoint: str | None = None
     interrupt = False
     restore_checkpoint: str | None = None
+    manifest_phase: str | None = None
+    source_cleanup_failure = False
 
     def _write(self, state: str, **kwargs: object) -> None:
         self._fault_manifest_state = state
@@ -422,6 +428,13 @@ class OwnershipFault(DeploymentTransaction):
         if (
             checkpoint == self.manifest_checkpoint
             and getattr(self, "_fault_manifest_state", None) == "recovery_required"
+            and (
+                self.manifest_phase is None
+                or any(
+                    obligation.phase == self.manifest_phase
+                    for obligation in self.runtime_lower_recovery
+                )
+            )
             and not getattr(self, "_manifest_faulted", False)
         ):
             self._manifest_faulted = True
@@ -434,6 +447,11 @@ class OwnershipFault(DeploymentTransaction):
             if self.interrupt:
                 raise KeyboardInterrupt("injected interruption after namespace mutation")
             raise OSError(errno.ENOSPC, f"injected runtime {checkpoint}")
+
+    def _collect_runtime_lower_source(self, source: Path) -> None:
+        if self.source_cleanup_failure:
+            raise OSError(errno.EIO, "injected post-commit source cleanup")
+        super()._collect_runtime_lower_source(source)
 
 
 def assert_owned_failure(
@@ -471,6 +489,52 @@ def assert_owned_failure(
         raise AssertionError(f"{label} did not fail")
     assert_contender(transaction.prefix, blocked=False)
     assert fd_census() == baseline
+
+
+def close_and_restart(
+    transaction: DeploymentTransaction,
+    error: DeploymentTransactionError,
+    *,
+    expected_content: bytes | None,
+) -> None:
+    owner = error.recovery_owner
+    assert owner is not None
+    owner.close()
+    owner.close()
+    OwnershipFault.restore_checkpoint = None
+    fresh_restore(transaction.manifest_path, transaction.prefix)
+    payload = json.loads(transaction.manifest_path.read_text(encoding="utf-8"))
+    assert payload["state"] == "restored"
+    binding = transaction.prefix / RUNTIME_LOWER_BINDING_NAME
+    if expected_content is None:
+        assert not binding.exists()
+    else:
+        assert binding.read_bytes() == expected_content
+
+
+def fresh_restore(manifest: Path, prefix: Path) -> None:
+    child = subprocess.run(
+        [
+            sys.executable,
+            "-B",
+            "-c",
+            (
+                "from pathlib import Path; "
+                "from west_commands.deploy_transaction import DeploymentTransaction; "
+                "DeploymentTransaction.restore(Path(__import__('sys').argv[1]), "
+                "Path(__import__('sys').argv[2]))"
+            ),
+            str(manifest),
+            str(prefix),
+        ],
+        cwd=ROOT,
+        env={**os.environ, "PYTHONPATH": str(ROOT)},
+        capture_output=True,
+        text=True,
+        timeout=10,
+        check=False,
+    )
+    assert child.returncode == 0, (child.stdout, child.stderr)
 
 
 # Every post-mutation failure transfers the exact capability and lease before
@@ -549,5 +613,141 @@ with tempfile.TemporaryDirectory(prefix="runtime-lower-restore-fault-") as temp:
         OwnershipFault.restore_checkpoint = None
     assert_contender(prefix, blocked=False)
     assert fd_census() == baseline
+
+
+# A durable active commit is not rewritten.  A later source-collection failure
+# transfers the still-held lease into a typed owner, then restart observes the
+# honest active manifest without a raw descriptor or flock leak.
+with tempfile.TemporaryDirectory(prefix="runtime-lower-post-commit-") as temp:
+    root = Path(temp)
+    prefix, _ = prefix_fixture(root)
+    baseline = fd_census()
+    transaction = OwnershipFault(root / "manifest.json", prefix)
+    transaction.source_cleanup_failure = True
+    try:
+        transaction.bind_runtime_lower_root(prefix_generation=74)
+    except DeploymentTransactionError as error:
+        assert error.recovery_owner is not None
+        assert not error.recovery_obligations
+        assert json.loads(transaction.manifest_path.read_text())["state"] == "active"
+        assert_contender(prefix, blocked=True)
+        error.recovery_owner.close()
+        error.recovery_owner.close()
+    else:
+        raise AssertionError("post-commit cleanup failure was accepted")
+    assert_contender(prefix, blocked=False)
+    assert fd_census() == baseline
+
+
+# Crash immediately after each publication rename is recoverable from the
+# durable two-name intent even though the post-syscall manifest write has not
+# happened yet.
+for checkpoint, existing in (
+    ("after_quarantine_before_manifest", True),
+    ("after_publish_before_manifest", False),
+):
+    with tempfile.TemporaryDirectory(prefix=f"runtime-lower-intent-{checkpoint}-") as temp:
+        root = Path(temp)
+        prefix, _ = prefix_fixture(root)
+        previous = b"previous binding\n"
+        if existing:
+            old = prefix / RUNTIME_LOWER_BINDING_NAME
+            old.write_bytes(previous)
+            old.chmod(0o600)
+            expected_identity = (old.stat().st_dev, old.stat().st_ino)
+        transaction = OwnershipFault(root / "manifest.json", prefix)
+        transaction.runtime_checkpoint = checkpoint
+        baseline = fd_census()
+        try:
+            transaction.bind_runtime_lower_root(prefix_generation=741)
+        except DeploymentTransactionError as error:
+            owner = error.recovery_owner
+            assert owner is not None
+            assert_contender(prefix, blocked=True)
+            if not existing:
+                published = prefix / RUNTIME_LOWER_BINDING_NAME
+                expected_identity = (published.stat().st_dev, published.stat().st_ino)
+            owner.close()
+            owner.close()
+        else:
+            raise AssertionError(f"intent checkpoint {checkpoint} did not fail")
+        assert_contender(prefix, blocked=False)
+        fresh_restore(transaction.manifest_path, prefix)
+        payload = json.loads(transaction.manifest_path.read_text(encoding="utf-8"))
+        assert payload["state"] == "active"
+        binding = prefix / RUNTIME_LOWER_BINDING_NAME
+        observed = binding.stat()
+        assert (observed.st_dev, observed.st_ino) == expected_identity
+        if existing:
+            assert binding.read_bytes() == previous
+            assert payload["runtime_lower_binding"] is None
+        assert fd_census() == baseline
+
+
+# Every restore mutation checkpoint is recoverable by a fresh process after
+# the exact owner is closed.  Collection records make an absent quarantine an
+# expected durable phase rather than a FileNotFoundError.
+for checkpoint, existing, expected in (
+    ("after_restore_quarantine", False, None),
+    ("after_backup_restore", True, b"previous binding\n"),
+    ("after_quarantine_unlink", False, None),
+):
+    with tempfile.TemporaryDirectory(prefix=f"runtime-lower-restart-{checkpoint}-") as temp:
+        root = Path(temp)
+        prefix, _ = prefix_fixture(root)
+        if existing:
+            old = prefix / RUNTIME_LOWER_BINDING_NAME
+            old.write_bytes(expected)
+            old.chmod(0o600)
+        manifest = root / "manifest.json"
+        transaction = DeploymentTransaction(manifest, prefix)
+        transaction.bind_runtime_lower_root(prefix_generation=75)
+        transaction.commit()
+        baseline = fd_census()
+        OwnershipFault.restore_checkpoint = checkpoint
+        try:
+            OwnershipFault.restore(manifest, prefix)
+        except DeploymentTransactionError as error:
+            assert error.recovery_owner is not None
+            assert_contender(prefix, blocked=True)
+            close_and_restart(transaction, error, expected_content=expected)
+        else:
+            raise AssertionError(f"restore checkpoint {checkpoint} did not fail")
+        assert_contender(prefix, blocked=False)
+        assert fd_census() == baseline
+
+
+# The three durability checkpoints after quarantine collection all replay in
+# a fresh process, including the state where unlink succeeded but the final
+# recovery record did not reach stable storage.
+for manifest_checkpoint in (
+    "before_manifest_fsync",
+    "before_manifest_rename",
+    "before_manifest_parent_fsync",
+):
+    with tempfile.TemporaryDirectory(prefix=f"runtime-lower-collect-{manifest_checkpoint}-") as temp:
+        root = Path(temp)
+        prefix, _ = prefix_fixture(root)
+        manifest = root / "manifest.json"
+        transaction = DeploymentTransaction(manifest, prefix)
+        transaction.bind_runtime_lower_root(prefix_generation=76)
+        transaction.commit()
+        baseline = fd_census()
+        OwnershipFault.manifest_checkpoint = manifest_checkpoint
+        OwnershipFault.manifest_phase = "collected"
+        try:
+            OwnershipFault.restore(manifest, prefix)
+        except DeploymentTransactionError as error:
+            assert error.recovery_owner is not None
+            assert_contender(prefix, blocked=True)
+            OwnershipFault.manifest_checkpoint = None
+            OwnershipFault.manifest_phase = None
+            close_and_restart(transaction, error, expected_content=None)
+        else:
+            raise AssertionError(
+                f"collection manifest checkpoint {manifest_checkpoint} did not fail"
+            )
+        assert_contender(prefix, blocked=False)
+        assert fd_census() == baseline
 
 print("RUNTIME_LOWER_BINDING_DEPLOYMENT_VALID")
