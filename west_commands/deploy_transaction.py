@@ -116,21 +116,37 @@ def _open_identity(parent_fd: int, name: str) -> int:
     )
 
 
-def cohort_build_enabled(build_dir: Path) -> bool:
-    """Return the authoritative compile-time cohort state from CMakeCache."""
+def cohort_build_enabled(build_dir: Path, *, require_entry: bool = False) -> bool:
+    """Return the exact compile-time cohort state from a readable CMake cache.
+
+    Automatic deployment treats a cache with no cohort entry as the legacy
+    compile-time OFF state.  Callers requesting an explicit authority binding
+    set ``require_entry`` and therefore require one exact ``BOOL=ON`` proof.
+    """
 
     cache = build_dir / "CMakeCache.txt"
     try:
-        values = [
-            line.split("=", 1)[1].strip()
-            for line in cache.read_text(encoding="utf-8").splitlines()
-            if line.startswith("DARLING_LIFECYCLE_COHORT_V1:BOOL=")
-        ]
-    except OSError as error:
+        lines = cache.read_text(encoding="utf-8").splitlines()
+    except (OSError, UnicodeError) as error:
         raise DeploymentTransactionError("cohort compile-time proof is unavailable") from error
-    if len(values) != 1 or values[0] not in {"ON", "OFF"}:
+    entries = [
+        line
+        for line in lines
+        if line.split(":", 1)[0] == "DARLING_LIFECYCLE_COHORT_V1"
+    ]
+    if not entries:
+        if require_entry:
+            raise DeploymentTransactionError("cohort compile-time proof is missing")
+        return False
+    if len(entries) != 1:
         raise DeploymentTransactionError("cohort compile-time proof is malformed")
-    return values[0] == "ON"
+    key, separator, value = entries[0].partition("=")
+    if separator != "=" or key != "DARLING_LIFECYCLE_COHORT_V1:BOOL" or value not in {
+        "ON",
+        "OFF",
+    }:
+        raise DeploymentTransactionError("cohort compile-time proof is malformed")
+    return value == "ON"
 
 
 def _rename_noreplace(parent_fd: int, source: str, destination: str) -> None:
