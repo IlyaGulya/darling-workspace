@@ -470,6 +470,11 @@ def assert_owned_failure(
         payload = json.loads(transaction.manifest_path.read_text(encoding="utf-8"))
         assert payload["state"] in {"active", "recovery_required"}
         for obligation in error.recovery_obligations:
+            if obligation.object_fd < 0:
+                assert obligation.phase == "stage_create_pending"
+                assert obligation.expected_absent
+                assert obligation.transaction_id == transaction.transaction_id
+                continue
             observed = os.fstat(obligation.object_fd)
             assert (observed.st_dev, observed.st_ino) == (
                 obligation.device,
@@ -535,6 +540,158 @@ def fresh_restore(manifest: Path, prefix: Path) -> None:
         check=False,
     )
     assert child.returncode == 0, (child.stdout, child.stderr)
+
+
+def assert_no_runtime_lower_tails(prefix: Path) -> None:
+    tails = [
+        path.name
+        for path in prefix.iterdir()
+        if path.name.startswith(f".{RUNTIME_LOWER_BINDING_NAME}.")
+        and path.name.endswith((".new", ".backup", ".rollback"))
+    ]
+    assert tails == [], tails
+
+
+# A durable expected-absent create intent closes the only pre-journal crash
+# window.  Every phase is replayed by a fresh interpreter for both an absent
+# and an existing public binding.
+for existing in (False, True):
+    for checkpoint in (
+        "after_stage_create_intent",
+        "after_stage_open_before_identity_journal",
+        "after_stage_created_journal",
+        "before_staging_write",
+        "before_staging_fsync",
+        "before_publish_intent",
+    ):
+        with tempfile.TemporaryDirectory(
+            prefix=f"runtime-lower-stage-{int(existing)}-{checkpoint}-"
+        ) as temp:
+            root = Path(temp)
+            prefix, _ = prefix_fixture(root)
+            binding = prefix / RUNTIME_LOWER_BINDING_NAME
+            expected = None
+            if existing:
+                expected = b"previous exact binding\n"
+                binding.write_bytes(expected)
+                binding.chmod(0o600)
+            baseline = fd_census()
+            transaction = OwnershipFault(root / "manifest.json", prefix)
+            transaction.runtime_checkpoint = checkpoint
+            try:
+                transaction.bind_runtime_lower_root(prefix_generation=74)
+            except DeploymentTransactionError as error:
+                owner = error.recovery_owner
+                assert owner is not None
+                payload = json.loads(transaction.manifest_path.read_text())
+                stage = [
+                    record
+                    for record in payload["runtime_lower_recovery"]
+                    if record["phase"].startswith("stage_")
+                ]
+                assert len(stage) == 1
+                assert stage[0]["expected_absent"] is True
+                assert stage[0]["transaction_id"] == transaction.transaction_id
+                assert_contender(prefix, blocked=True)
+                owner.close()
+                owner.close()
+            else:
+                raise AssertionError(f"stage checkpoint {checkpoint} did not fail")
+            fresh_restore(transaction.manifest_path, prefix)
+            payload = json.loads(transaction.manifest_path.read_text())
+            assert payload["state"] == "active"
+            assert payload["runtime_lower_recovery"] == []
+            if expected is None:
+                assert not binding.exists()
+            else:
+                assert binding.read_bytes() == expected
+            assert_no_runtime_lower_tails(prefix)
+            assert_contender(prefix, blocked=False)
+            assert fd_census() == baseline
+
+
+# Once stage_created durably binds an inode, a replacement is never collected
+# under that identity.  Recovery returns an owning fail-closed handoff and the
+# replacement remains byte-identical.
+with tempfile.TemporaryDirectory(prefix="runtime-lower-stage-replacement-") as temp:
+    root = Path(temp)
+    prefix, _ = prefix_fixture(root)
+    transaction = OwnershipFault(root / "manifest.json", prefix)
+    transaction.runtime_checkpoint = "after_stage_created_journal"
+    try:
+        transaction.bind_runtime_lower_root(prefix_generation=75)
+    except DeploymentTransactionError as error:
+        owner = error.recovery_owner
+        assert owner is not None
+        record = json.loads(transaction.manifest_path.read_text())[
+            "runtime_lower_recovery"
+        ][0]
+        staged = prefix / record["name"]
+        retained_original = root / "retained-original-stage"
+        staged.rename(retained_original)
+        replacement = b"foreign replacement must survive\n"
+        staged.write_bytes(replacement)
+        owner.close()
+    else:
+        raise AssertionError("stage replacement setup did not fail")
+    baseline = fd_census()
+    try:
+        DeploymentTransaction.restore(transaction.manifest_path, prefix)
+    except DeploymentTransactionError as error:
+        assert error.recovery_owner is not None
+        assert staged.read_bytes() == replacement
+        assert_contender(prefix, blocked=True)
+        error.recovery_owner.close()
+    else:
+        raise AssertionError("stage replacement identity mismatch was accepted")
+    assert staged.read_bytes() == replacement
+    assert_contender(prefix, blocked=False)
+    assert fd_census() == baseline
+
+
+# If collection happened but its terminal record did not become durable, the
+# next interpreter must persist stage_collected before clearing the manifest.
+for manifest_checkpoint in (
+    "before_manifest_fsync",
+    "before_manifest_rename",
+    "before_manifest_parent_fsync",
+):
+    with tempfile.TemporaryDirectory(
+        prefix=f"runtime-lower-stage-terminal-{manifest_checkpoint}-"
+    ) as temp:
+        root = Path(temp)
+        prefix, _ = prefix_fixture(root)
+        transaction = OwnershipFault(root / "manifest.json", prefix)
+        transaction.runtime_checkpoint = "after_stage_created_journal"
+        try:
+            transaction.bind_runtime_lower_root(prefix_generation=76)
+        except DeploymentTransactionError as error:
+            assert error.recovery_owner is not None
+            error.recovery_owner.close()
+        else:
+            raise AssertionError("stage terminal setup did not fail")
+        baseline = fd_census()
+        OwnershipFault.manifest_checkpoint = manifest_checkpoint
+        OwnershipFault.manifest_phase = "stage_collected"
+        try:
+            OwnershipFault.restore(transaction.manifest_path, prefix)
+        except DeploymentTransactionError as error:
+            assert error.recovery_owner is not None
+            assert_contender(prefix, blocked=True)
+            error.recovery_owner.close()
+        else:
+            raise AssertionError(
+                f"stage terminal {manifest_checkpoint} did not fail"
+            )
+        OwnershipFault.manifest_checkpoint = None
+        OwnershipFault.manifest_phase = None
+        fresh_restore(transaction.manifest_path, prefix)
+        payload = json.loads(transaction.manifest_path.read_text())
+        assert payload["state"] == "active"
+        assert payload["runtime_lower_recovery"] == []
+        assert_no_runtime_lower_tails(prefix)
+        assert_contender(prefix, blocked=False)
+        assert fd_census() == baseline
 
 
 # Every post-mutation failure transfers the exact capability and lease before
