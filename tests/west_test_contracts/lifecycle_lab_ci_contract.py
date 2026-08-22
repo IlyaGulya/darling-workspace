@@ -7,6 +7,7 @@ import json
 import importlib.util
 import os
 import re
+import shutil
 import subprocess
 import sys
 import textwrap
@@ -16,6 +17,10 @@ from pathlib import Path
 repo = Path(sys.argv[1]).resolve()
 owned = Path(sys.argv[2]).resolve()
 runner = repo / "ci/lifecycle_lab.py"
+
+if os.environ.get("LIFECYCLE_LAB_WRAPPER_PROBE") == "1":
+    print("LIFECYCLE_LAB_WRAPPER_NO_MISE_VALID")
+    raise SystemExit(0)
 
 
 def require(value: bool, message: str) -> None:
@@ -213,6 +218,16 @@ _, _, _ = run("optional-result", ["/bin/true"], 0, result=False)
 require(not no_result.exists(), "result became mandatory")
 
 workflow = (repo / ".github/workflows/lifecycle-lab.yml").read_text()
+wrapper = repo / "tests/run-lifecycle-lab-ci-contract.sh"
+probe_environment = os.environ.copy()
+probe_environment.update({"PATH": "/usr/bin:/bin", "LIFECYCLE_LAB_WRAPPER_PROBE": "1"})
+wrapper_probe = subprocess.run(
+    [str(wrapper)], env=probe_environment, text=True, stdout=subprocess.PIPE,
+    stderr=subprocess.PIPE, timeout=10,
+)
+require(wrapper_probe.returncode == 0, f"wrapper requires mise: {wrapper_probe.stderr}")
+require("LIFECYCLE_LAB_WRAPPER_NO_MISE_VALID" in wrapper_probe.stdout, "direct Python wrapper probe missing")
+require(not list(owned.glob("dlc.*")), "direct wrapper bypassed task-root cleanup")
 for command in (
     "tests/run-lifecycle-operation-boundary-contract.sh",
     "tests/run-lifecycle-trace-contract.sh",
@@ -231,9 +246,42 @@ mise_pin = "jdx/mise-action@5228313ee0372e111a38da051671ca30fc5a96db"
 require(workflow.count(mise_pin) == 2, "mise-action is not pinned at both call sites")
 mise_refs = re.findall(r"^\s*- uses: (jdx/mise-action@\S+)\s*$", workflow, re.MULTILINE)
 require(mise_refs == [mise_pin, mise_pin], "mutable or malformed mise-action ref accepted")
+fetch = "cargo fetch --locked --manifest-path lifecycle/operation-boundary/Cargo.toml"
+for job, first_consumer in (
+    ("deterministic:", "ci/run-lifecycle-lab.sh $LAB_ARGS"),
+    ("scheduled:", "ci/run-lifecycle-lab.sh $LAB_ARGS"),
+    ("landing:", "tests/run-lifecycle-real-kernel-contract.sh"),
+):
+    start = workflow.index(f"  {job}")
+    following = [workflow.find(f"  {name}:", start + 1) for name in ("deterministic", "scheduled", "landing")]
+    end_candidates = [position for position in following if position > start]
+    section = workflow[start:min(end_candidates) if end_candidates else len(workflow)]
+    require(section.count(fetch) == 1, f"{job} lacks one locked Cargo fetch")
+    require(section.index(fetch) < section.index(first_consumer), f"{job} fetch follows offline consumer")
 require("if: always()" not in workflow and "artifact-manifest" not in workflow, "ordinary artifact package survived")
 require(not (repo / "lifecycle/lab-ci-v1.json").exists(), "command policy survived simplification")
 require(not (repo / "schemas/lifecycle-lab-result-v1.schema.json").exists(), "result schema survived simplification")
 require(not (repo / "schemas/lifecycle-lab-artifact-v1.schema.json").exists(), "artifact schema survived simplification")
 
-print("LIFECYCLE_LAB_CI_CONTRACT_VALID negatives=11 cleanup_escape=PASS pidfd_identity=PASS lineage_churn=20000")
+cargo = shutil.which("cargo")
+require(cargo is not None, "cargo unavailable for fresh-home contract")
+fresh_environment = os.environ.copy()
+fresh_environment.update({
+    "CARGO_HOME": str(owned / "empty-cargo-home"),
+    "CARGO_TARGET_DIR": str(owned / "cargo-target"),
+})
+manifest = repo / "lifecycle/operation-boundary/Cargo.toml"
+fetched = subprocess.run(
+    [cargo, "fetch", "--locked", "--manifest-path", str(manifest)],
+    cwd=repo, env=fresh_environment, text=True, stdout=subprocess.PIPE,
+    stderr=subprocess.PIPE, timeout=120,
+)
+require(fetched.returncode == 0, f"fresh Cargo fetch failed: {fetched.stderr}")
+offline = subprocess.run(
+    [str(repo / "tests/run-lifecycle-operation-boundary-contract.sh")],
+    cwd=repo, env=fresh_environment, text=True, stdout=subprocess.PIPE,
+    stderr=subprocess.PIPE, timeout=180,
+)
+require(offline.returncode == 0, f"fresh fetch -> offline boundary failed:\n{offline.stdout}\n{offline.stderr}")
+
+print("LIFECYCLE_LAB_CI_CONTRACT_VALID negatives=14 cleanup_escape=PASS pidfd_identity=PASS lineage_churn=20000 cargo_bootstrap=PASS")

@@ -29,6 +29,8 @@ jobs:
       - uses: jdx/mise-action@5228313ee0372e111a38da051671ca30fc5a96db
         with:
           install: true
+      - name: Fetch locked Rust dependencies
+        run: cargo fetch --locked --manifest-path lifecycle/operation-boundary/Cargo.toml
       - name: Rust boundary
         run: ci/run-lifecycle-lab.sh $LAB_ARGS --result "$RUNNER_TEMP/lifecycle/result-boundary.json" --failure-artifacts "$RUNNER_TEMP/lifecycle/failure-boundary" -- tests/run-lifecycle-operation-boundary-contract.sh
       - name: Trace and recovery
@@ -62,6 +64,8 @@ jobs:
         run: |
           rustup toolchain install nightly --profile minimal --component miri,rust-src
           cargo install cargo-fuzz --locked --version 0.13.2
+      - name: Fetch locked Rust dependencies
+        run: cargo fetch --locked --manifest-path lifecycle/operation-boundary/Cargo.toml
       - name: ASan campaign
         if: matrix.tier == 'asan'
         run: ci/run-lifecycle-lab.sh $LAB_ARGS --result "$RUNNER_TEMP/lifecycle/result.json" --failure-artifacts "$RUNNER_TEMP/lifecycle/failure" -- ci/run-lifecycle-fuzz-campaign.sh asan
@@ -97,6 +101,8 @@ jobs:
       - uses: jdx/mise-action@5228313ee0372e111a38da051671ca30fc5a96db
         with:
           install: true
+      - name: Fetch locked Rust dependencies
+        run: cargo fetch --locked --manifest-path lifecycle/operation-boundary/Cargo.toml
       - name: Install Darling build dependencies
         run: ci/install-darling-build-deps.sh
       - name: Materialize exact West workspace

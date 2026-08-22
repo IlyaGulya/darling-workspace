@@ -2,7 +2,7 @@
 set -euo pipefail
 
 repo="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-owned_root="$(mktemp -d "${TMPDIR:-/tmp}/darling-lifecycle-lab-ci.XXXXXX")"
+owned_root="$(mktemp -d "${TMPDIR:-/tmp}/dlc.XXXXXX")"
 cleanup() {
 	rm -rf -- "$owned_root"
 }
@@ -12,6 +12,6 @@ trap 'exit 143' TERM
 
 export PYTHONDONTWRITEBYTECODE=1
 export TMPDIR="$owned_root"
-exec mise exec -- uv run --with jsonschema==4.23.0 -- python3 -B \
+python3 -B \
 	"$repo/tests/west_test_contracts/lifecycle_lab_ci_contract.py" \
 	"$repo" "$owned_root"
