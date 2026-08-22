@@ -470,11 +470,19 @@ if mode == "root-exit-before-snapshot":
     print("REAL_KERNEL_TRACE_READY mode=" + mode, flush=True)
     os._exit(0)
 
+worker_ready_read, worker_ready_write = os.pipe()
 worker = os.fork()
 if worker == 0:
+    os.close(worker_ready_read)
     signal.signal(signal.SIGTERM, lambda *_: os._exit(0))
+    os.write(worker_ready_write, b"R")
+    os.close(worker_ready_write)
     while True:
         time.sleep(0.05)
+os.close(worker_ready_write)
+if os.read(worker_ready_read, 1) != b"R":
+    os._exit(34)
+os.close(worker_ready_read)
 
 server = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
 server.bind(path)
