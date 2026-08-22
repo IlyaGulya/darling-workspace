@@ -13,6 +13,7 @@ trap 'exit 130' INT
 trap 'exit 143' TERM
 export TMPDIR="$contract_tmp_root"
 export DARLING_LIFECYCLE_CONTRACT_TMPDIR="$contract_tmp_root"
+cargo_target="${CARGO_TARGET_DIR:-$repo/lifecycle/operation-boundary/target}"
 env CARGO_NET_OFFLINE=true cargo build --manifest-path lifecycle/operation-boundary/Cargo.toml
-DARLING_LIFECYCLE_BOUNDARY_BIN="$repo/lifecycle/operation-boundary/target/debug/lifecycle-boundary" \
+DARLING_LIFECYCLE_BOUNDARY_BIN="$cargo_target/debug/lifecycle-boundary" \
     python3 -B tests/west_test_contracts/lifecycle_explorer_contract.py

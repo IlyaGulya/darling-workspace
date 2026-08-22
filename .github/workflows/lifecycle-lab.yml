@@ -1,0 +1,115 @@
+name: Lifecycle Lab
+
+on:
+  pull_request:
+  push:
+  schedule:
+    - cron: '43 2 * * 2,5'
+  workflow_dispatch:
+    inputs:
+      tier:
+        description: Landing-only privileged lifecycle lane
+        required: true
+        type: choice
+        options: [landing]
+
+permissions:
+  contents: read
+
+env:
+  LAB_ARGS: --timeout-seconds 900 --rss-mib 12288 --output-bytes 4194304 --cleanup-seconds 30 --artifact-count 32 --artifact-bytes 67108864
+
+jobs:
+  deterministic:
+    if: github.event_name == 'pull_request' || github.event_name == 'push'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v7
+      - uses: jdx/mise-action@5228313ee0372e111a38da051671ca30fc5a96db
+        with:
+          install: true
+      - name: Rust boundary
+        run: ci/run-lifecycle-lab.sh $LAB_ARGS --result "$RUNNER_TEMP/lifecycle/result-boundary.json" --failure-artifacts "$RUNNER_TEMP/lifecycle/failure-boundary" -- tests/run-lifecycle-operation-boundary-contract.sh
+      - name: Trace and recovery
+        run: ci/run-lifecycle-lab.sh $LAB_ARGS --result "$RUNNER_TEMP/lifecycle/result-trace.json" --failure-artifacts "$RUNNER_TEMP/lifecycle/failure-trace" -- tests/run-lifecycle-trace-contract.sh
+      - name: Explorer
+        run: ci/run-lifecycle-lab.sh $LAB_ARGS --result "$RUNNER_TEMP/lifecycle/result-explorer.json" --failure-artifacts "$RUNNER_TEMP/lifecycle/failure-explorer" -- tests/run-lifecycle-explorer-contract.sh
+      - name: Fuzz contract
+        run: ci/run-lifecycle-lab.sh $LAB_ARGS --result "$RUNNER_TEMP/lifecycle/result-fuzz-contract.json" --failure-artifacts "$RUNNER_TEMP/lifecycle/failure-fuzz-contract" -- tests/run-lifecycle-fuzz-contract.sh
+      - name: Upload failure diagnostics
+        if: failure()
+        uses: actions/upload-artifact@v7
+        with:
+          name: lifecycle-deterministic-failure
+          if-no-files-found: error
+          retention-days: 7
+          path: ${{ runner.temp }}/lifecycle
+
+  scheduled:
+    if: github.event_name == 'schedule'
+    strategy:
+      fail-fast: false
+      matrix:
+        tier: [asan, tsan, miri, fuzz]
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      LIFECYCLE_LAB_MAX_CORPUS: 512
+    steps:
+      - uses: actions/checkout@v7
+      - name: Install scheduled prerequisites
+        run: |
+          rustup toolchain install nightly --profile minimal --component miri,rust-src
+          cargo install cargo-fuzz --locked --version 0.13.2
+      - name: ASan campaign
+        if: matrix.tier == 'asan'
+        run: ci/run-lifecycle-lab.sh $LAB_ARGS --result "$RUNNER_TEMP/lifecycle/result.json" --failure-artifacts "$RUNNER_TEMP/lifecycle/failure" -- ci/run-lifecycle-fuzz-campaign.sh asan
+      - name: TSan campaign
+        if: matrix.tier == 'tsan'
+        run: ci/run-lifecycle-lab.sh $LAB_ARGS --result "$RUNNER_TEMP/lifecycle/result.json" --failure-artifacts "$RUNNER_TEMP/lifecycle/failure" -- ci/run-lifecycle-fuzz-campaign.sh tsan
+      - name: Miri semantic core
+        if: matrix.tier == 'miri'
+        run: ci/run-lifecycle-lab.sh $LAB_ARGS --result "$RUNNER_TEMP/lifecycle/result.json" --failure-artifacts "$RUNNER_TEMP/lifecycle/failure" -- tests/run-lifecycle-fuzz-ub-gate.sh
+      - name: Bounded fuzz campaign
+        if: matrix.tier == 'fuzz'
+        run: ci/run-lifecycle-lab.sh $LAB_ARGS --result "$RUNNER_TEMP/lifecycle/result.json" --failure-artifacts "$RUNNER_TEMP/lifecycle/failure" -- ci/run-lifecycle-fuzz-campaign.sh fuzz
+      - name: Upload failure corpus and diagnostics
+        if: failure()
+        uses: actions/upload-artifact@v7
+        with:
+          name: lifecycle-${{ matrix.tier }}-failure
+          if-no-files-found: error
+          retention-days: 30
+          path: ${{ runner.temp }}/lifecycle
+
+  landing:
+    if: github.event_name == 'workflow_dispatch' && inputs.tier == 'landing'
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    environment: lifecycle-landing
+    env:
+      DARLING_WEST_UPDATE_JOBS: 8
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+      - uses: jdx/mise-action@5228313ee0372e111a38da051671ca30fc5a96db
+        with:
+          install: true
+      - name: Install Darling build dependencies
+        run: ci/install-darling-build-deps.sh
+      - name: Materialize exact West workspace
+        run: ci/bootstrap-west.sh
+      - name: Real-kernel lane
+        run: ci/run-lifecycle-lab.sh $LAB_ARGS --result "$RUNNER_TEMP/lifecycle/result-kernel.json" --failure-artifacts "$RUNNER_TEMP/lifecycle/failure-kernel" -- tests/run-lifecycle-real-kernel-contract.sh
+      - name: Guest-ready lane
+        run: ci/run-lifecycle-lab.sh $LAB_ARGS --result "$RUNNER_TEMP/lifecycle/result-guest.json" --failure-artifacts "$RUNNER_TEMP/lifecycle/failure-guest" -- tests/run-lifecycle-guest-ready-contract.sh
+      - name: Upload landing failure diagnostics
+        if: failure()
+        uses: actions/upload-artifact@v7
+        with:
+          name: lifecycle-landing-failure
+          if-no-files-found: error
+          retention-days: 30
+          path: ${{ runner.temp }}/lifecycle
