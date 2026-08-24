@@ -36,9 +36,24 @@ def prefix_fixture(root: Path) -> tuple[Path, Path]:
     return prefix, lower
 
 
+def split_prefix_fixture(root: Path) -> tuple[Path, Path]:
+    session = root / "session"
+    session.mkdir()
+    (session / ".lifecycle.lock").write_bytes(b"")
+    (session / ".lifecycle.lock").chmod(0o600)
+    deployment = root / "deployment"
+    lower = deployment / "libexec/darling"
+    lower.mkdir(parents=True)
+    controller = deployment / "bin/darlingserver"
+    controller.parent.mkdir(parents=True)
+    controller.write_bytes(b"exact deployed darlingserver\n")
+    controller.chmod(0o755)
+    return session, deployment
+
+
 def parse_binding(path: Path) -> dict[str, str]:
     lines = path.read_text(encoding="utf-8").splitlines()
-    assert lines[0] == "DARLING_RUNTIME_LOWER_BINDING_V1"
+    assert lines[0] == "DARLING_RUNTIME_LOWER_BINDING_V2"
     return dict(line.split("=", 1) for line in lines[1:])
 
 
@@ -76,7 +91,8 @@ def run_umask_case(value: int) -> None:
         assert manifest["transaction_id"] == fields["transaction_id"]
         assert manifest["runtime_lower_binding"] == {
             key: int(value) if key in {
-                "schema_version", "prefix_generation", "prefix_device", "prefix_inode",
+                "schema_version", "prefix_generation", "session_prefix_device",
+                "session_prefix_inode", "prefix_device", "prefix_inode",
                 "lower_device", "lower_inode", "lower_mode", "lower_uid", "lower_gid",
                 "controller_device", "controller_inode", "controller_mode",
                 "controller_uid", "controller_gid",
@@ -628,7 +644,12 @@ def fresh_restore(manifest: Path, prefix: Path) -> None:
     assert child.returncode == 0, (child.stdout, child.stderr)
 
 
-def crash_bind(manifest: Path, prefix: Path, checkpoint: str) -> None:
+def crash_bind(
+    manifest: Path,
+    prefix: Path,
+    checkpoint: str,
+    deployment_prefix: Path | None = None,
+) -> None:
     """Crash a real child without Python unwinding at one create checkpoint."""
 
     child = subprocess.run(
@@ -643,11 +664,13 @@ def crash_bind(manifest: Path, prefix: Path, checkpoint: str) -> None:
                 "\n def _runtime_lower_fault(self, checkpoint, parent_fd, name):"
                 "\n  if checkpoint == sys.argv[3]: os._exit(86)"
                 "\nt=Crash(Path(sys.argv[1]), Path(sys.argv[2])); "
-                "t.bind_runtime_lower_root(prefix_generation=770)"
+                "t.bind_runtime_lower_root(prefix_generation=770, "
+                "deployment_prefix=Path(sys.argv[4]) if len(sys.argv) > 4 else None)"
             ),
             str(manifest),
             str(prefix),
             checkpoint,
+            *([str(deployment_prefix)] if deployment_prefix is not None else []),
         ],
         cwd=ROOT,
         env={**os.environ, "PYTHONPATH": str(ROOT)},
@@ -782,6 +805,50 @@ for checkpoint in (
             )
             assert_contender(prefix, blocked=False)
             assert fd_census() == baseline
+
+
+# Persisted recovery always leases the session prefix, never the distinct
+# deployment root recorded by prefix_device/prefix_inode.  Exercise every
+# durable publication phase in a real crashed interpreter with disjoint
+# session/deployment inodes.
+for checkpoint, existing in (
+    ("after_stage_create_intent", False),
+    ("after_stage_open_before_identity_journal", False),
+    ("after_stage_created_journal", False),
+    ("before_staging_write", False),
+    ("before_staging_fsync", False),
+    ("before_publish_intent", False),
+    ("after_publish_before_manifest", False),
+    ("after_publication", False),
+    ("after_quarantine_before_manifest", True),
+):
+    with tempfile.TemporaryDirectory(
+        prefix=f"runtime-lower-split-recovery-{checkpoint}-"
+    ) as temp:
+        root = Path(temp)
+        session, deployment = split_prefix_fixture(root)
+        if existing:
+            old = session / RUNTIME_LOWER_BINDING_NAME
+            old.write_bytes(b"previous split-root binding\n")
+            old.chmod(0o600)
+        manifest = root / "manifest.json"
+        baseline = fd_census()
+        crash_bind(manifest, session, checkpoint, deployment)
+        payload = json.loads(manifest.read_text(encoding="utf-8"))
+        binding = payload["runtime_lower_binding"]
+        assert binding["session_prefix_device"] == session.stat().st_dev
+        assert binding["session_prefix_inode"] == session.stat().st_ino
+        assert binding["prefix_device"] == deployment.stat().st_dev
+        assert binding["prefix_inode"] == deployment.stat().st_ino
+        if checkpoint == "after_stage_open_before_identity_journal":
+            fresh_restore_requires_recovery(manifest, session)
+            assert json.loads(manifest.read_text())["state"] == "recovery_required"
+        else:
+            fresh_restore(manifest, session)
+            assert json.loads(manifest.read_text())["state"] == "active"
+            assert_no_runtime_lower_tails(session)
+        assert_contender(session, blocked=False)
+        assert fd_census() == baseline
 
 
 # A pre-existing staging object is never owned by this transaction.  Rejecting
@@ -1169,5 +1236,58 @@ for manifest_checkpoint in (
             )
         assert_contender(prefix, blocked=False)
         assert fd_census() == baseline
+
+# A fresh interpreter must bind rollback authority to the originally persisted
+# session-prefix inode. Moving the exact lock/binding objects into a same-name
+# replacement directory must not let the replacement become authoritative.
+with tempfile.TemporaryDirectory(prefix="runtime-lower-whole-prefix-swap-") as temp:
+    root = Path(temp)
+    prefix, _ = prefix_fixture(root)
+    previous = prefix / RUNTIME_LOWER_BINDING_NAME
+    previous.write_bytes(b"previous exact binding\n")
+    previous.chmod(0o600)
+    manifest = root / "manifest.json"
+    transaction = DeploymentTransaction(manifest, prefix)
+    transaction.bind_runtime_lower_root(prefix_generation=77)
+    transaction.commit()
+    deployed = (prefix / RUNTIME_LOWER_BINDING_NAME).read_bytes()
+    retained = root / "retained-original-prefix"
+    prefix.rename(retained)
+    prefix.mkdir()
+    replacement_identity = prefix.stat()
+    for child in retained.iterdir():
+        if child.name == ".lifecycle.lock" or "darling-runtime-lower-binding" in child.name:
+            child.rename(prefix / child.name)
+    child = subprocess.run(
+        [
+            sys.executable,
+            "-B",
+            "-c",
+            (
+                "import sys; from pathlib import Path; "
+                "from west_commands.deploy_transaction import "
+                "DeploymentTransaction,DeploymentTransactionError; "
+                "\ntry: DeploymentTransaction.restore(Path(sys.argv[1]), Path(sys.argv[2]))"
+                "\nexcept DeploymentTransactionError as e:"
+                "\n assert 'session prefix identity mismatch' in str(e)"
+                "\n raise SystemExit(73)"
+                "\nraise SystemExit(1)"
+            ),
+            str(manifest),
+            str(prefix),
+        ],
+        cwd=ROOT,
+        env={**os.environ, "PYTHONPATH": str(ROOT)},
+        capture_output=True,
+        text=True,
+        timeout=10,
+        check=False,
+    )
+    assert child.returncode == 73, (child.stdout, child.stderr)
+    assert (prefix.stat().st_dev, prefix.stat().st_ino) == (
+        replacement_identity.st_dev,
+        replacement_identity.st_ino,
+    )
+    assert (prefix / RUNTIME_LOWER_BINDING_NAME).read_bytes() == deployed
 
 print("RUNTIME_LOWER_BINDING_DEPLOYMENT_VALID")

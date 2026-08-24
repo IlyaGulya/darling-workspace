@@ -5,7 +5,7 @@
 
 #include <cstdio>
 
-#if DARLING_LIFECYCLE_COHORT_ABI_VERSION != 3
+#if DARLING_LIFECYCLE_COHORT_ABI_VERSION != 4
 #error "unexpected lifecycle cohort ABI"
 #endif
 
@@ -16,7 +16,7 @@ int main(int argc, char** argv) {
 	if (prefix < 0)
 		return 65;
 	darling_lifecycle_cohort_bootstrap bootstrap = {};
-	auto* controller = darling_lifecycle_cohort_start(prefix, argv[1], getpid(), &bootstrap);
+	auto* controller = darling_lifecycle_cohort_start(prefix, prefix, argv[1], getpid(), &bootstrap);
 	close(prefix);
 	if (!controller)
 		return 66;

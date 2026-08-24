@@ -80,7 +80,8 @@ with tempfile.TemporaryDirectory(prefix="vchroot-rpc-contract-") as temporary:
 mldr_text = MLDR.read_text(encoding="utf-8")
 assert "index < DARLING_GUEST_NAMESPACE_AUTHORITY_DESCRIPTOR_COUNT" in mldr_text
 assert "index < DARLING_GUEST_NAMESPACE_DESCRIPTOR_COUNT" in mldr_text
-assert ": DARLING_GUEST_NAMESPACE_VCHROOT_FD" in mldr_text
+assert "fstat(DARLING_GUEST_NAMESPACE_VCHROOT_FD" in mldr_text
+assert "mldr_load_results.vchroot_fd = DARLING_GUEST_NAMESPACE_VCHROOT_FD" in mldr_text
 
 process_text = PROCESS.read_text(encoding="utf-8")
 assert "#ifndef DARLING_LIFECYCLE_COHORT_V1" in process_text

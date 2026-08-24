@@ -213,6 +213,44 @@ fn open_dir(parent: RawFd, name: &CStr) -> Result<OwnedFd, TransactionError> {
     Ok(unsafe { OwnedFd::from_raw_fd(fd) })
 }
 
+#[repr(C)]
+struct OpenHow {
+    flags: u64,
+    mode: u64,
+    resolve: u64,
+}
+
+fn open_logical_dir(root: RawFd, parts: &[CString]) -> Result<OwnedFd, TransactionError> {
+    let mut path = Vec::new();
+    for (index, part) in parts.iter().enumerate() {
+        if index != 0 {
+            path.push(b'/');
+        }
+        path.extend_from_slice(part.as_bytes());
+    }
+    let path = CString::new(path).map_err(|_| TransactionError::Protocol("logical directory"))?;
+    let how = OpenHow {
+        flags: (libc::O_PATH | libc::O_DIRECTORY | libc::O_CLOEXEC) as u64,
+        mode: 0,
+        // RESOLVE_NO_MAGICLINKS | RESOLVE_IN_ROOT. Relative and absolute
+        // symlinks are resolved as guest paths beneath the retained layer.
+        resolve: 0x02 | 0x10,
+    };
+    let fd = unsafe {
+        libc::syscall(
+            libc::SYS_openat2,
+            root,
+            path.as_ptr(),
+            &how,
+            std::mem::size_of::<OpenHow>(),
+        ) as libc::c_int
+    };
+    if fd < 0 {
+        return Err(io("open logical retained parent"));
+    }
+    Ok(unsafe { OwnedFd::from_raw_fd(fd) })
+}
+
 fn exists(parent: RawFd, name: &CStr) -> Result<bool, TransactionError> {
     let mut stat = MaybeUninit::<libc::stat>::uninit();
     if unsafe {
@@ -1195,6 +1233,7 @@ impl GuestNamespaceTransactionService {
             .ok_or(TransactionError::Protocol("missing leaf"))?;
         let mut upper = duplicate(self.upper.as_raw_fd())?;
         let mut lower = Some(duplicate(self.lower.as_raw_fd())?);
+        let mut logical_parts = Vec::new();
         for part in parts {
             upper = match open_dir(upper.as_raw_fd(), &part) {
                 Ok(directory) => directory,
@@ -1205,11 +1244,15 @@ impl GuestNamespaceTransactionService {
                 }
                 Err(error) => return Err(error),
             };
-            lower = match lower {
-                Some(current) if exists(current.as_raw_fd(), &part)? => {
-                    Some(open_dir(current.as_raw_fd(), &part)?)
+            logical_parts.push(part);
+            lower = match open_logical_dir(self.lower.as_raw_fd(), &logical_parts) {
+                Ok(directory) => Some(directory),
+                Err(TransactionError::Io(_, error))
+                    if error.raw_os_error() == Some(libc::ENOENT) =>
+                {
+                    None
                 }
-                _ => None,
+                Err(error) => return Err(error),
             };
         }
         Ok(Some(ResolvedParent { upper, lower, leaf }))
@@ -1281,6 +1324,22 @@ impl GuestNamespaceTransactionService {
         })
     }
 
+    fn classify_create(parent: &ResolvedParent) -> Result<LayerState, TransactionError> {
+        if let Some(fd) = Self::open_leaf(parent.upper.as_raw_fd(), &parent.leaf)? {
+            return if Self::is_whiteout(fd.as_raw_fd())? {
+                Ok(LayerState::Whiteout)
+            } else {
+                // O_CREAT|O_EXCL and mkdir fail with EEXIST as soon as the
+                // writable name exists. Resolving a lower namesake (whose
+                // parent may itself be a relative symlink such as /var) is
+                // unnecessary and must not turn that deterministic result into
+                // a recovery obligation.
+                Ok(LayerState::UpperOnly)
+            };
+        }
+        Self::classify(parent)
+    }
+
     fn execute_once(&mut self, request: &Request) -> Result<Outcome, TransactionError> {
         match request {
             Request::Create {
@@ -1315,15 +1374,15 @@ impl GuestNamespaceTransactionService {
         };
         #[cfg(test)]
         self.checkpoint(TestCheckpoint::AfterResolve);
-        match Self::classify(&parent)? {
+        match Self::classify_create(&parent)? {
             LayerState::Absent => {}
-            LayerState::UpperOnly | LayerState::Both => {
+            LayerState::UpperOnly | LayerState::LowerOnly | LayerState::Both => {
                 return Ok(Outcome::Rejected {
                     errno: libc::EEXIST,
-                    reason: "upper target already exists",
+                    reason: "merged target already exists",
                 });
             }
-            LayerState::LowerOnly | LayerState::Whiteout => {
+            LayerState::Whiteout => {
                 return Ok(Outcome::Rejected {
                     errno: libc::ENOTSUP,
                     reason: "unsupported non-upper E-UNION target",
