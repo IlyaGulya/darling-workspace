@@ -134,6 +134,7 @@ fn start_controller(
     let controller = unsafe {
         darling_lifecycle_cohort_start(
             root_fd.as_raw_fd(),
+            root_fd.as_raw_fd(),
             root_c.as_ptr(),
             std::process::id() as _,
             bootstrap.as_mut_ptr(),

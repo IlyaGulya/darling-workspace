@@ -11,11 +11,11 @@ use std::mem::{size_of, zeroed};
 use std::os::fd::{AsRawFd, FromRawFd, OwnedFd, RawFd};
 use std::path::Path;
 use std::ptr;
-use std::sync::atomic::{AtomicU32, Ordering};
+use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 
-const MAGIC: [u8; 8] = *b"DLGNSA2\0";
-const VERSION: u32 = 2;
+const MAGIC: [u8; 8] = *b"DLGNSA3\0";
+const VERSION: u32 = 3;
 const ACTIVE: u32 = 1;
 const REVOKED: u32 = 2;
 const MAX_COMPONENTS: usize = 128;
@@ -89,6 +89,8 @@ struct LeasePage {
     prefix: FileIdentity,
     lock: FileIdentity,
     gate: FileIdentity,
+    lower_device: AtomicU64,
+    lower_inode: AtomicU64,
     controller_pid: i32,
 }
 
@@ -102,6 +104,7 @@ pub struct BootstrapEnvelope {
     pub prefix: FileIdentity,
     pub lock: FileIdentity,
     pub gate: FileIdentity,
+    pub lower: FileIdentity,
     pub descriptor_count: u32,
     pub reserved: u32,
 }
@@ -233,6 +236,8 @@ impl GuestNamespaceAuthority {
                     prefix: prefix_identity,
                     lock: lock_identity,
                     gate: gate_identity,
+                    lower_device: AtomicU64::new(0),
+                    lower_inode: AtomicU64::new(0),
                     controller_pid: libc::getpid(),
                 },
             );
@@ -245,6 +250,10 @@ impl GuestNamespaceAuthority {
             prefix: prefix_identity,
             lock: lock_identity,
             gate: gate_identity,
+            lower: FileIdentity {
+                device: 0,
+                inode: 0,
+            },
             descriptor_count: 5,
             reserved: 0,
         };
@@ -271,18 +280,27 @@ impl GuestNamespaceAuthority {
     }
 
     /// Send the authority envelope plus the exact retained runtime lower root.
-    /// The sixth descriptor is consumed only by mldr; the five authority
-    /// descriptors retain their stable ordering for libsystem_kernel.
-    pub fn send_bootstrap_with_directory(&self, socket: RawFd, directory: RawFd) -> Result<()> {
+    /// The lower descriptor remains protected after mldr uses it to establish
+    /// fd-relative dyld lookup.
+    pub fn send_bootstrap_with_lower(&self, socket: RawFd, lower: RawFd) -> Result<()> {
         let mut envelope = self.envelope;
         envelope.descriptor_count = 6;
+        envelope.lower = identity(lower)?;
+        unsafe {
+            (*self.page)
+                .lower_device
+                .store(envelope.lower.device, Ordering::Release);
+            (*self.page)
+                .lower_inode
+                .store(envelope.lower.inode, Ordering::Release);
+        }
         let descriptors = [
             self.lease.as_raw_fd(),
             self.gate.as_raw_fd(),
             self.prefix.as_raw_fd(),
             self.lock.as_raw_fd(),
             self.controller_pidfd.as_raw_fd(),
-            directory,
+            lower,
         ];
         send_fds(socket, &envelope, &descriptors)
     }

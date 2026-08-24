@@ -299,12 +299,19 @@ class DeploymentTransaction:
         self,
         *,
         prefix_generation: int,
+        deployment_prefix: Path | None = None,
         destination: str = "libexec/darling",
         controller_destination: str = "bin/darlingserver",
     ) -> Path:
         """Publish the exact deployed lower-root authority for Rust.
 
-        Both objects are acquired from the retained prefix descriptor.  The
+        The binding is published under the retained session-prefix lease while
+        both deployed objects are acquired from a distinct retained deployment
+        prefix descriptor.  The optional argument exists for the product
+        launcher topology; omitting it preserves the single-root focused
+        fixture.
+
+        The
         pathname strings are only bounded relative labels in the durable
         record; no absolute source/install-root path becomes authority.
         """
@@ -313,17 +320,25 @@ class DeploymentTransaction:
             raise DeploymentTransactionError("runtime lower binding already published")
         if prefix_generation <= 0:
             raise DeploymentTransactionError("runtime lower binding generation is invalid")
-        prefix_fd = os.open(
+        session_fd = os.open(
             self.prefix,
+            os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC,
+        )
+        deployment_root = self.prefix if deployment_prefix is None else deployment_prefix
+        deployment_fd = os.open(
+            deployment_root,
             os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC,
         )
         committed = False
         try:
-            prefix_stat = os.fstat(prefix_fd)
-            lower_fd = self._open_relative_directory(prefix_fd, destination)
+            session_stat = os.fstat(session_fd)
+            deployment_stat = os.fstat(deployment_fd)
+            lower_fd = self._open_relative_directory(deployment_fd, destination)
             try:
                 lower_stat = os.fstat(lower_fd)
-                controller_fd = self._open_relative_file(prefix_fd, controller_destination)
+                controller_fd = self._open_relative_file(
+                    deployment_fd, controller_destination
+                )
                 try:
                     controller_stat = os.fstat(controller_fd)
                 finally:
@@ -331,14 +346,17 @@ class DeploymentTransaction:
             finally:
                 os.close(lower_fd)
         finally:
-            os.close(prefix_fd)
+            os.close(deployment_fd)
+            os.close(session_fd)
         fields = {
-            "schema_version": 1,
+            "schema_version": 2,
             "transaction_id": self.transaction_id,
             "prefix_generation": prefix_generation,
+            "session_prefix_device": session_stat.st_dev,
+            "session_prefix_inode": session_stat.st_ino,
             "destination": destination,
-            "prefix_device": prefix_stat.st_dev,
-            "prefix_inode": prefix_stat.st_ino,
+            "prefix_device": deployment_stat.st_dev,
+            "prefix_inode": deployment_stat.st_ino,
             "lower_device": lower_stat.st_dev,
             "lower_inode": lower_stat.st_ino,
             "lower_type": "directory",
@@ -354,7 +372,7 @@ class DeploymentTransaction:
             "controller_gid": controller_stat.st_gid,
             "provenance": "product-deployment-transaction-v2",
         }
-        lines = ["DARLING_RUNTIME_LOWER_BINDING_V1"]
+        lines = ["DARLING_RUNTIME_LOWER_BINDING_V2"]
         lines.extend(f"{key}={value}" for key, value in fields.items())
         content = ("\n".join(lines) + "\n").encode()
         if len(content) > RUNTIME_LOWER_BINDING_MAX_BYTES:
@@ -374,7 +392,7 @@ class DeploymentTransaction:
             self._replace_runtime_binding(
                 source=source,
                 destination=target,
-                expected_prefix=(prefix_stat.st_dev, prefix_stat.st_ino),
+                expected_prefix=(session_stat.st_dev, session_stat.st_ino),
             )
             committed = True
             self._collect_runtime_lower_source(source)
@@ -834,10 +852,15 @@ class DeploymentTransaction:
     def _recover_persisted_runtime_lower(self, records: object) -> bool:
         if not isinstance(records, list) or not isinstance(self.runtime_lower_binding, dict):
             raise DeploymentTransactionError("persisted runtime lower recovery is malformed")
-        expected_prefix = (
-            int(self.runtime_lower_binding["prefix_device"]),
-            int(self.runtime_lower_binding["prefix_inode"]),
-        )
+        try:
+            expected_prefix = (
+                int(self.runtime_lower_binding["session_prefix_device"]),
+                int(self.runtime_lower_binding["session_prefix_inode"]),
+            )
+        except (KeyError, TypeError, ValueError) as error:
+            raise DeploymentTransactionError(
+                "persisted runtime session prefix authority is missing"
+            ) from error
         retained = self._acquire_runtime_lower_lease(expected_prefix)
         opened: list[RuntimeLowerRecoveryObligation] = []
         try:
@@ -1265,7 +1288,24 @@ class DeploymentTransaction:
         binding = self.runtime_lower_binding
         if not isinstance(binding, dict):
             raise DeploymentTransactionError("runtime lower binding manifest authority is missing")
-        expected_prefix = (int(binding["prefix_device"]), int(binding["prefix_inode"]))
+        # `prefix_device`/`prefix_inode` in the binding identify the retained
+        # deployment root from which the lower tree and controller were opened.
+        # Rollback is serialized by the distinct session-prefix lease recorded
+        # by this deployment manifest.
+        try:
+            expected_prefix = (
+                int(binding["session_prefix_device"]),
+                int(binding["session_prefix_inode"]),
+            )
+        except (KeyError, TypeError, ValueError) as error:
+            raise DeploymentTransactionError(
+                "runtime session prefix authority is missing"
+            ) from error
+        session = os.stat(self.prefix, follow_symlinks=False)
+        if not stat.S_ISDIR(session.st_mode):
+            raise DeploymentTransactionError("runtime session prefix is not a directory")
+        if (session.st_dev, session.st_ino) != expected_prefix:
+            raise DeploymentTransactionError("runtime session prefix identity mismatch")
         retained = self._acquire_runtime_lower_lease(expected_prefix)
         quarantine_name = f".{RUNTIME_LOWER_BINDING_NAME}.{self.transaction_id}.rollback"
         self.runtime_lower_recovery_target = "restored"

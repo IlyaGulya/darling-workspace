@@ -10,12 +10,13 @@ extern "C" {
 #endif
 
 #define DARLING_LIFECYCLE_CONTROL_NAME_CAPACITY 80
-#define DARLING_LIFECYCLE_COHORT_ABI_VERSION 3
+#define DARLING_LIFECYCLE_COHORT_ABI_VERSION 4
 #define DARLING_LIFECYCLE_NONCE_HEX_BYTES 64
 #define DARLING_GUEST_NAMESPACE_BOOTSTRAP_FD 1023
-#define DARLING_GUEST_NAMESPACE_VCHROOT_FD 1013
+#define DARLING_GUEST_NAMESPACE_VCHROOT_FD 1010
+#define DARLING_GUEST_NAMESPACE_LOWER_FD 1013
 #define DARLING_GUEST_NAMESPACE_PREFIX_FD 1010
-#define DARLING_GUEST_NAMESPACE_AUTHORITY_DESCRIPTOR_COUNT 5
+#define DARLING_GUEST_NAMESPACE_AUTHORITY_DESCRIPTOR_COUNT 6
 #define DARLING_GUEST_NAMESPACE_DESCRIPTOR_COUNT 6
 #define DARLING_LIFECYCLE_FINISH_OK 0
 #define DARLING_LIFECYCLE_FINISH_ERROR -1
@@ -38,6 +39,7 @@ struct darling_guest_namespace_bootstrap {
 	struct darling_guest_namespace_identity prefix;
 	struct darling_guest_namespace_identity lock;
 	struct darling_guest_namespace_identity gate;
+	struct darling_guest_namespace_identity lower;
 	uint32_t descriptor_count;
 	uint32_t reserved;
 };
@@ -81,12 +83,19 @@ struct darling_guest_namespace_transaction_result {
 
 struct darling_lifecycle_cohort_controller* darling_lifecycle_cohort_start(
 	int prefix_fd,
+	int deployment_prefix_fd,
 	const char* prefix_argument,
 	pid_t init_pid,
 	struct darling_lifecycle_cohort_bootstrap* output
 );
 
 int darling_lifecycle_cohort_finish(
+	struct darling_lifecycle_cohort_controller* controller
+);
+
+/* Return the live Rust controller worker PID that a subreaper must retain
+ * until cleanup is committed.  A non-positive result is fail-closed. */
+pid_t darling_lifecycle_cohort_worker_pid(
 	struct darling_lifecycle_cohort_controller* controller
 );
 

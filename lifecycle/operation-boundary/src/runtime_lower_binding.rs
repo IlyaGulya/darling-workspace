@@ -9,7 +9,7 @@ use std::mem::size_of;
 use std::os::fd::{AsRawFd, FromRawFd, OwnedFd, RawFd};
 
 pub const NAME: &[u8] = b".darling-runtime-lower-binding-v1";
-const HEADER: &str = "DARLING_RUNTIME_LOWER_BINDING_V1";
+const HEADER: &str = "DARLING_RUNTIME_LOWER_BINDING_V2";
 const MAX_BYTES: usize = 2048;
 const LOWER_DESTINATION: &str = "libexec/darling";
 const CONTROLLER_DESTINATION: &str = "bin/darlingserver";
@@ -238,14 +238,16 @@ pub struct RuntimeLowerBinding {
 
 impl RuntimeLowerBinding {
     pub fn acquire(
-        prefix: RawFd,
-        prefix_identity: FileIdentity,
+        session_prefix: RawFd,
+        session_prefix_identity: FileIdentity,
+        deployment_prefix: RawFd,
+        deployment_prefix_identity: FileIdentity,
         prefix_generation: u64,
     ) -> Result<Self, BindingError> {
         let binding_name = component(NAME)?;
         let binding_fd = unsafe {
             libc::openat(
-                prefix,
+                session_prefix,
                 binding_name.as_ptr(),
                 libc::O_RDONLY | libc::O_NOFOLLOW | libc::O_CLOEXEC,
             )
@@ -258,15 +260,15 @@ impl RuntimeLowerBinding {
         if binding_identity.mode & libc::S_IFMT != libc::S_IFREG
             || binding_identity.mode & 0o7777 != 0o600
             || binding_identity.nlink != 1
-            || binding_identity.uid != prefix_identity.uid
-            || binding_identity.gid != prefix_identity.gid
-            || named_identity(prefix, NAME)? != binding_identity
+            || binding_identity.uid != session_prefix_identity.uid
+            || binding_identity.gid != session_prefix_identity.gid
+            || named_identity(session_prefix, NAME)? != binding_identity
         {
             return Err(BindingError::Identity("binding object"));
         }
         let binding_content = read_bounded(binding.as_raw_fd())?;
         let (prefix_state, prefix_state_name, prefix_state_identity, prefix_state_content) =
-            open_prefix_state(prefix, prefix_generation, prefix_identity)?;
+            open_prefix_state(session_prefix, prefix_generation, session_prefix_identity)?;
         let text = std::str::from_utf8(&binding_content)
             .map_err(|_| BindingError::Malformed("encoding"))?;
         let body = text
@@ -285,16 +287,18 @@ impl RuntimeLowerBinding {
                 return Err(BindingError::Malformed("duplicate field"));
             }
         }
-        if fields.len() != 20
-            || parse_number(&fields, "schema_version")? != 1
+        if fields.len() != 22
+            || parse_number(&fields, "schema_version")? != 2
             || fields.get("destination").copied() != Some(LOWER_DESTINATION)
             || fields.get("lower_type").copied() != Some("directory")
             || fields.get("controller_destination").copied() != Some(CONTROLLER_DESTINATION)
             || fields.get("controller_type").copied() != Some("regular")
             || fields.get("provenance").copied() != Some(PROVENANCE)
             || parse_number(&fields, "prefix_generation")? != prefix_generation
-            || parse_number(&fields, "prefix_device")? != prefix_identity.device
-            || parse_number(&fields, "prefix_inode")? != prefix_identity.inode
+            || parse_number(&fields, "session_prefix_device")? != session_prefix_identity.device
+            || parse_number(&fields, "session_prefix_inode")? != session_prefix_identity.inode
+            || parse_number(&fields, "prefix_device")? != deployment_prefix_identity.device
+            || parse_number(&fields, "prefix_inode")? != deployment_prefix_identity.inode
         {
             return Err(BindingError::Identity("manifest fields"));
         }
@@ -314,13 +318,13 @@ impl RuntimeLowerBinding {
         if transaction_id == [0; 16] {
             return Err(BindingError::Malformed("zero transaction id"));
         }
-        let lower = open_relative(prefix, LOWER_DESTINATION, true)?;
+        let lower = open_relative(deployment_prefix, LOWER_DESTINATION, true)?;
         let lower_identity = identity(lower.as_raw_fd())?;
         let expected_lower = expected_identity(&fields, "lower", libc::S_IFDIR)?;
         if !metadata_matches(lower_identity, expected_lower) {
             return Err(BindingError::Identity("lower root"));
         }
-        let controller = open_relative(prefix, CONTROLLER_DESTINATION, false)?;
+        let controller = open_relative(deployment_prefix, CONTROLLER_DESTINATION, false)?;
         let controller_identity = identity(controller.as_raw_fd())?;
         let expected_controller = expected_identity(&fields, "controller", libc::S_IFREG)?;
         if !metadata_matches(controller_identity, expected_controller) {
@@ -355,25 +359,30 @@ impl RuntimeLowerBinding {
         self.lower.as_raw_fd()
     }
 
-    pub fn revalidate(&self, prefix: RawFd) -> Result<(), BindingError> {
+    pub fn revalidate(
+        &self,
+        session_prefix: RawFd,
+        deployment_prefix: RawFd,
+    ) -> Result<(), BindingError> {
         if identity(self.binding.as_raw_fd())? != self.binding_identity
-            || named_identity(prefix, NAME)? != self.binding_identity
+            || named_identity(session_prefix, NAME)? != self.binding_identity
             || read_bounded(self.binding.as_raw_fd())? != self.binding_content
         {
             return Err(BindingError::Identity("binding replacement"));
         }
         if identity(self.prefix_state.as_raw_fd())? != self.prefix_state_identity
-            || named_identity(prefix, &self.prefix_state_name)? != self.prefix_state_identity
+            || named_identity(session_prefix, &self.prefix_state_name)?
+                != self.prefix_state_identity
             || read_bounded(self.prefix_state.as_raw_fd())? != self.prefix_state_content
             || prefix_generation(&self.prefix_state_content)? != self.prefix_generation
         {
             return Err(BindingError::Identity("prefix state replacement"));
         }
-        let lower = open_relative(prefix, LOWER_DESTINATION, true)?;
+        let lower = open_relative(deployment_prefix, LOWER_DESTINATION, true)?;
         if !metadata_matches(identity(lower.as_raw_fd())?, self.lower_identity) {
             return Err(BindingError::Identity("lower replacement"));
         }
-        let controller = open_relative(prefix, CONTROLLER_DESTINATION, false)?;
+        let controller = open_relative(deployment_prefix, CONTROLLER_DESTINATION, false)?;
         if !metadata_matches(identity(controller.as_raw_fd())?, self.controller_identity) {
             return Err(BindingError::Identity("controller replacement"));
         }
@@ -460,9 +469,11 @@ mod tests {
             let controller = fs::metadata(self.root.join("bin/darlingserver")).unwrap();
             format!(
                 "{HEADER}\n\
-                 schema_version=1\n\
+                 schema_version=2\n\
                  transaction_id=00112233445566778899aabbccddeeff\n\
                  prefix_generation={generation}\n\
+                 session_prefix_device={}\n\
+                 session_prefix_inode={}\n\
                  destination={LOWER_DESTINATION}\n\
                  prefix_device={}\n\
                  prefix_inode={}\n\
@@ -480,6 +491,8 @@ mod tests {
                  controller_uid={}\n\
                  controller_gid={}\n\
                  provenance={PROVENANCE}\n",
+                prefix.dev(),
+                prefix.ino(),
                 prefix.dev(),
                 prefix.ino(),
                 lower.dev(),
@@ -506,6 +519,8 @@ mod tests {
             RuntimeLowerBinding::acquire(
                 prefix.as_raw_fd(),
                 identity(prefix.as_raw_fd()).unwrap(),
+                prefix.as_raw_fd(),
+                identity(prefix.as_raw_fd()).unwrap(),
                 generation,
             )
         }
@@ -521,7 +536,9 @@ mod tests {
     fn user_owned_runtime_root_and_restart_replay_are_accepted() {
         let fixture = Fixture::new();
         let first = fixture.acquire(7).unwrap();
-        first.revalidate(fixture.prefix().as_raw_fd()).unwrap();
+        first
+            .revalidate(fixture.prefix().as_raw_fd(), fixture.prefix().as_raw_fd())
+            .unwrap();
         drop(first);
         fixture.acquire(7).unwrap();
     }
@@ -594,7 +611,9 @@ mod tests {
         let path = fixture.root.join(std::str::from_utf8(NAME).unwrap());
         fs::rename(&path, fixture.root.join("binding.retained")).unwrap();
         fixture.write_binding(7);
-        assert!(binding.revalidate(fixture.prefix().as_raw_fd()).is_err());
+        assert!(binding
+            .revalidate(fixture.prefix().as_raw_fd(), fixture.prefix().as_raw_fd())
+            .is_err());
 
         fs::remove_file(&path).unwrap();
         fs::rename(fixture.root.join("binding.retained"), &path).unwrap();
@@ -602,7 +621,9 @@ mod tests {
         let lower = fixture.root.join("libexec/darling");
         fs::rename(&lower, fixture.root.join("libexec/retained")).unwrap();
         fs::create_dir(&lower).unwrap();
-        assert!(binding.revalidate(fixture.prefix().as_raw_fd()).is_err());
+        assert!(binding
+            .revalidate(fixture.prefix().as_raw_fd(), fixture.prefix().as_raw_fd())
+            .is_err());
     }
 
     #[test]
@@ -617,7 +638,9 @@ mod tests {
             .replace("generation=7", "generation=8");
         fs::write(&state, replacement).unwrap();
         fs::set_permissions(&state, fs::Permissions::from_mode(0o600)).unwrap();
-        assert!(binding.revalidate(fixture.prefix().as_raw_fd()).is_err());
+        assert!(binding
+            .revalidate(fixture.prefix().as_raw_fd(), fixture.prefix().as_raw_fd())
+            .is_err());
     }
 
     #[test]

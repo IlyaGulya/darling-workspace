@@ -1104,7 +1104,8 @@ impl SessionAuthority {
             libc::O_WRONLY | libc::O_CREAT | libc::O_EXCL | libc::O_NOFOLLOW | libc::O_CLOEXEC,
             0o600,
         )?;
-        let bytes = format!("{init_pid}\n");
+        let (init_identity, _) = process_identity(init_pid)?;
+        let bytes = format!("{init_pid} {}\n", init_identity.starttime);
         let mut published_identity = None;
         let result = (|| {
             write_all(file.as_raw_fd(), bytes.as_bytes())?;
@@ -2408,6 +2409,7 @@ pub struct CohortController {
     guest_namespace: Option<GuestNamespaceAuthority>,
     guest_transactions: Mutex<Option<GuestNamespaceTransactionService>>,
     runtime_lower_binding: Mutex<Option<RuntimeLowerBinding>>,
+    deployment_prefix: OwnedFd,
     prefix_generation: u64,
     transaction_sidecar: TransactionSidecar,
     cleanup_phase: CleanupPhase,
@@ -2440,6 +2442,8 @@ impl CohortController {
         let binding = RuntimeLowerBinding::acquire(
             authority.prefix_fd(),
             identity(authority.prefix_fd())?,
+            self.deployment_prefix.as_raw_fd(),
+            identity(self.deployment_prefix.as_raw_fd())?,
             self.prefix_generation,
         )
         .map_err(|_| CohortError::Identity("runtime lower deployment binding"))?;
@@ -2488,7 +2492,7 @@ impl CohortController {
             "guest namespace authority unavailable",
         ))?;
         binding
-            .revalidate(authority.prefix_fd())
+            .revalidate(authority.prefix_fd(), self.deployment_prefix.as_raw_fd())
             .map_err(|_| CohortError::Identity("runtime lower deployment binding"))?;
         let mut slot = self
             .guest_transactions
@@ -2502,7 +2506,7 @@ impl CohortController {
             .map_err(|_| CohortError::Protocol("guest transaction refused"))
     }
 
-    fn duplicate_runtime_lower(&self) -> Result<OwnedFd, CohortError> {
+    fn duplicate_vchroot_directory(&self) -> Result<OwnedFd, CohortError> {
         let binding_slot = self
             .runtime_lower_binding
             .lock()
@@ -2514,11 +2518,11 @@ impl CohortController {
             "guest namespace authority unavailable",
         ))?;
         binding
-            .revalidate(authority.prefix_fd())
+            .revalidate(authority.prefix_fd(), self.deployment_prefix.as_raw_fd())
             .map_err(|_| CohortError::Identity("runtime lower deployment binding"))?;
-        let duplicate = unsafe { libc::fcntl(binding.lower_fd(), libc::F_DUPFD_CLOEXEC, 0) };
+        let duplicate = unsafe { libc::fcntl(authority.prefix_fd(), libc::F_DUPFD_CLOEXEC, 0) };
         if duplicate < 0 {
-            return Err(io_error("duplicate(runtime lower)"));
+            return Err(io_error("duplicate(vchroot directory)"));
         }
         Ok(unsafe { OwnedFd::from_raw_fd(duplicate) })
     }
@@ -2573,24 +2577,28 @@ impl CohortController {
 
     pub fn start(prefix: &Path, init_pid: libc::pid_t) -> Result<(Self, OwnedFd), CohortError> {
         let authority = SessionAuthority::acquire(prefix, init_pid)?;
-        Self::start_with_authority(authority, Some(prefix), false)
+        let deployment_prefix = duplicate(authority.prefix.as_raw_fd(), true)?;
+        Self::start_with_authority(authority, deployment_prefix, Some(prefix), false)
     }
 
     fn start_from_fd(
         prefix_fd: RawFd,
+        deployment_prefix_fd: RawFd,
         prefix_argument: &[u8],
         init_pid: libc::pid_t,
     ) -> Result<(Self, OwnedFd), CohortError> {
         let authority = SessionAuthority::acquire_from_fd(prefix_fd, prefix_argument, init_pid)?;
+        let deployment_prefix = duplicate(deployment_prefix_fd, true)?;
         #[cfg(test)]
         let test_prefix = Some(Path::new(std::ffi::OsStr::from_bytes(prefix_argument)));
         #[cfg(not(test))]
         let test_prefix = None;
-        Self::start_with_authority(authority, test_prefix, false)
+        Self::start_with_authority(authority, deployment_prefix, test_prefix, false)
     }
 
     fn start_with_authority(
         mut authority: SessionAuthority,
+        deployment_prefix: OwnedFd,
         test_prefix: Option<&Path>,
         allow_test_peer: bool,
     ) -> Result<(Self, OwnedFd), CohortError> {
@@ -2648,6 +2656,7 @@ impl CohortController {
                 guest_namespace,
                 guest_transactions: Mutex::new(None),
                 runtime_lower_binding: Mutex::new(None),
+                deployment_prefix,
                 prefix_generation,
                 transaction_sidecar,
                 cleanup_phase: CleanupPhase::Active,
@@ -2774,6 +2783,7 @@ impl CohortController {
                 guest_namespace,
                 guest_transactions: Mutex::new(None),
                 runtime_lower_binding: Mutex::new(None),
+                deployment_prefix,
                 prefix_generation,
                 transaction_sidecar,
                 cleanup_phase: CleanupPhase::Active,
@@ -2788,10 +2798,13 @@ impl CohortController {
     #[cfg(test)]
     fn start_for_test(
         prefix: &Path,
-        init_pid: libc::pid_t,
+        _init_pid: libc::pid_t,
     ) -> Result<(Self, OwnedFd), CohortError> {
-        let authority = SessionAuthority::acquire(prefix, init_pid)?;
-        Self::start_with_authority(authority, Some(prefix), true)
+        // Production publication is now identity-bound and therefore cannot
+        // use the historical synthetic PID supplied by older unit fixtures.
+        let authority = SessionAuthority::acquire(prefix, unsafe { libc::getpid() })?;
+        let deployment_prefix = duplicate(authority.prefix.as_raw_fd(), true)?;
+        Self::start_with_authority(authority, deployment_prefix, Some(prefix), true)
     }
 
     pub fn control_name(&self) -> &[u8] {
@@ -2803,13 +2816,21 @@ impl CohortController {
     }
 
     pub fn send_guest_namespace_bootstrap(&self, socket: RawFd) -> Result<(), CohortError> {
-        let directory = self.duplicate_runtime_lower()?;
-        self.guest_namespace
+        let authority = self.guest_namespace.as_ref().ok_or(CohortError::Protocol(
+            "guest namespace authority unavailable",
+        ))?;
+        let binding_slot = self
+            .runtime_lower_binding
+            .lock()
+            .map_err(|_| CohortError::Protocol("runtime lower binding mutex poisoned"))?;
+        let binding = binding_slot
             .as_ref()
-            .ok_or(CohortError::Protocol(
-                "guest namespace authority unavailable",
-            ))?
-            .send_bootstrap_with_directory(socket, directory.as_raw_fd())
+            .ok_or(CohortError::Protocol("runtime lower binding unavailable"))?;
+        binding
+            .revalidate(authority.prefix_fd(), self.deployment_prefix.as_raw_fd())
+            .map_err(|_| CohortError::Identity("runtime lower deployment binding"))?;
+        authority
+            .send_bootstrap_with_lower(socket, binding.lower_fd())
             .map_err(|_| CohortError::Protocol("guest namespace bootstrap"))
     }
 
@@ -3082,22 +3103,27 @@ impl std::fmt::Debug for CohortFinishError {
 /// [`darling_lifecycle_cohort_finish`].
 pub unsafe extern "C" fn darling_lifecycle_cohort_start(
     prefix_fd: c_int,
+    deployment_prefix_fd: c_int,
     prefix_argument: *const c_char,
     init_pid: libc::pid_t,
     output: *mut CohortBootstrap,
 ) -> *mut CohortController {
-    if prefix_fd < 0 || prefix_argument.is_null() || output.is_null() {
+    if prefix_fd < 0 || deployment_prefix_fd < 0 || prefix_argument.is_null() || output.is_null() {
         return ptr::null_mut();
     }
     let prefix_argument = CStr::from_ptr(prefix_argument);
-    let (mut controller, darlingserver) =
-        match CohortController::start_from_fd(prefix_fd, prefix_argument.to_bytes(), init_pid) {
-            Ok(value) => value,
-            Err(error) => {
-                eprintln!("lifecycle cohort acquisition refused: {error}");
-                return ptr::null_mut();
-            }
-        };
+    let (mut controller, darlingserver) = match CohortController::start_from_fd(
+        prefix_fd,
+        deployment_prefix_fd,
+        prefix_argument.to_bytes(),
+        init_pid,
+    ) {
+        Ok(value) => value,
+        Err(error) => {
+            eprintln!("lifecycle cohort acquisition refused: {error}");
+            return ptr::null_mut();
+        }
+    };
     let dserver_log = match controller.take_dserver_log() {
         Ok(log) => log,
         Err(error) => {
@@ -3182,6 +3208,30 @@ pub unsafe extern "C" fn darling_lifecycle_cohort_finish(
     if (*owned).finish_after_cleanup_commit().is_ok() {
         0
     } else {
+        -1
+    }
+}
+
+#[no_mangle]
+/// Return the exact unreaped controller worker PID retained by `controller`.
+///
+/// # Safety
+///
+/// `controller` must be a live pointer returned by
+/// [`darling_lifecycle_cohort_start`].
+pub unsafe extern "C" fn darling_lifecycle_cohort_worker_pid(
+    controller: *mut CohortController,
+) -> libc::pid_t {
+    let Some(controller) = controller.as_ref() else {
+        return -1;
+    };
+    #[cfg(not(test))]
+    {
+        controller.process.as_ref().map_or(-1, |worker| worker.pid)
+    }
+    #[cfg(test)]
+    {
+        let _ = controller;
         -1
     }
 }
@@ -3322,7 +3372,9 @@ pub unsafe extern "C" fn darling_lifecycle_guest_namespace_configure(
 }
 
 #[no_mangle]
-/// Return a caller-owned exact duplicate of the authenticated runtime lower root.
+/// Return a caller-owned exact duplicate of the authenticated writable vchroot
+/// directory. The immutable lower root remains private to the Rust transaction
+/// service and is never transferred into the guest.
 ///
 /// # Safety
 /// The controller must remain valid for this call.
@@ -3333,7 +3385,7 @@ pub unsafe extern "C" fn darling_lifecycle_guest_namespace_directory(
         return -1;
     };
     controller
-        .duplicate_runtime_lower()
+        .duplicate_vchroot_directory()
         .map(OwnedFd::into_raw_fd)
         .unwrap_or(-1)
 }
@@ -3554,10 +3606,12 @@ mod tests {
         let lower_metadata = fs::metadata(&lower).unwrap();
         let controller_metadata = fs::metadata(&controller).unwrap();
         let content = format!(
-            "DARLING_RUNTIME_LOWER_BINDING_V1\n\
-             schema_version=1\n\
+            "DARLING_RUNTIME_LOWER_BINDING_V2\n\
+             schema_version=2\n\
              transaction_id=00112233445566778899aabbccddeeff\n\
              prefix_generation=1\n\
+             session_prefix_device={}\n\
+             session_prefix_inode={}\n\
              destination=libexec/darling\n\
              prefix_device={}\n\
              prefix_inode={}\n\
@@ -3575,6 +3629,8 @@ mod tests {
              controller_uid={}\n\
              controller_gid={}\n\
              provenance=product-deployment-transaction-v2\n",
+            prefix.dev(),
+            prefix.ino(),
             prefix.dev(),
             prefix.ino(),
             lower_metadata.dev(),
@@ -4452,6 +4508,7 @@ mod tests {
         let controller = unsafe {
             darling_lifecycle_cohort_start(
                 prefix.as_raw_fd(),
+                prefix.as_raw_fd(),
                 prefix_argument.as_ptr(),
                 std::process::id() as _,
                 bootstrap.as_mut_ptr(),
@@ -4762,7 +4819,8 @@ mod tests {
     #[test]
     fn per_user_dynamic_directory_partial_creation_is_rolled_back() {
         let fixture = Fixture::new();
-        let mut authority = SessionAuthority::acquire(&fixture.root, 4242).unwrap();
+        let mut authority =
+            SessionAuthority::acquire(&fixture.root, unsafe { libc::getpid() }).unwrap();
         authority.dynamic_fault = Some(DynamicPublicationFault::AfterDirectoryCreate);
         let peer = process_identity(unsafe { libc::getpid() }).unwrap().0;
         assert!(matches!(
@@ -5097,7 +5155,8 @@ mod tests {
     #[test]
     fn dead_endpoint_owner_transitions_to_exact_republication() {
         let fixture = Fixture::new();
-        let mut authority = SessionAuthority::acquire(&fixture.root, 4242).unwrap();
+        let mut authority =
+            SessionAuthority::acquire(&fixture.root, unsafe { libc::getpid() }).unwrap();
         let first_listener = authority.publish(CohortEndpoint::Shellspawn).unwrap();
         let first_identity = identity(first_listener.as_raw_fd()).unwrap();
         let mut owner = Command::new("/bin/sh")
@@ -5142,7 +5201,8 @@ mod tests {
     #[test]
     fn lock_contender_cannot_mutate_existing_inode_before_lease() {
         let fixture = Fixture::new();
-        let authority = SessionAuthority::acquire(&fixture.root, 4242).unwrap();
+        let authority =
+            SessionAuthority::acquire(&fixture.root, unsafe { libc::getpid() }).unwrap();
         let lock_path = fixture.root.join(".lifecycle.lock");
         let before = fs::metadata(&lock_path).unwrap();
         let contender_root = fixture.root.clone();
@@ -5187,9 +5247,12 @@ mod tests {
         let fixture = Fixture::new();
         let prefix = open_prefix(&fixture.root).unwrap();
         let proc_argument = format!("/proc/self/fd/{}", prefix.as_raw_fd());
-        let authority =
-            SessionAuthority::acquire_from_fd(prefix.as_raw_fd(), proc_argument.as_bytes(), 4242)
-                .unwrap();
+        let authority = SessionAuthority::acquire_from_fd(
+            prefix.as_raw_fd(),
+            proc_argument.as_bytes(),
+            unsafe { libc::getpid() },
+        )
+        .unwrap();
         assert_eq!(authority.prefix_argument, proc_argument.as_bytes());
         drop(authority);
     }
@@ -5236,7 +5299,8 @@ mod tests {
     fn pre_thread_authority_drop_rolls_back_published_namespace() {
         let fixture = Fixture::new();
         {
-            let mut authority = SessionAuthority::acquire(&fixture.root, 4242).unwrap();
+            let mut authority =
+                SessionAuthority::acquire(&fixture.root, unsafe { libc::getpid() }).unwrap();
             drop(authority.publish(CohortEndpoint::DarlingServer).unwrap());
             drop(authority.publish(CohortEndpoint::Control).unwrap());
             assert!(fixture.root.join(".init.pid").exists());

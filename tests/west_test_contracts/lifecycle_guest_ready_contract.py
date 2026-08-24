@@ -306,11 +306,13 @@ def _endpoint_observations(prefix: Path) -> list[dict[str, Any]]:
 
 def _active(prefix: Path) -> dict[str, Any] | None:
     try:
-        value = (prefix / ".init.pid").read_text().strip()
-        if not value.isdigit():
+        fields = (prefix / ".init.pid").read_text().split()
+        if len(fields) not in {1, 2} or not all(value.isdigit() for value in fields):
             return None
-        root = _process_identity(int(value))
+        root = _process_identity(int(fields[0]))
         if root is None:
+            return None
+        if len(fields) == 2 and root["starttime"] != int(fields[1]):
             return None
         records, max_fds = _process_census(prefix)
         if not any(item["pid"] == root["pid"] for item in records):

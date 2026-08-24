@@ -185,7 +185,7 @@ static struct darling_lifecycle_cohort_controller* start_controller(
 	if (prefix_fd < 0)
 		fail("open retained prefix");
 	struct darling_lifecycle_cohort_controller* controller =
-		darling_lifecycle_cohort_start(prefix_fd, prefix, init_pid, bootstrap);
+		darling_lifecycle_cohort_start(prefix_fd, prefix_fd, prefix, init_pid, bootstrap);
 	close(prefix_fd);
 	return controller;
 }
@@ -862,4 +862,3 @@ int main(int argc, char** argv) {
 	printf("LIFECYCLE_COHORT_ROUTING_VALID endpoints=6 lease=exact-exclusive-flock replacement=preserved per_user_rpc=ready per_user_owner_restart=ready dynamic_cleanup=clean shellspawn_keepalive=ready activation_rollback=clean commit_ack_loss=retained nonce_snapshot=stable flood=bounded owner_group_sigkill=forensic-preserved scm_rights_leaks=0\n");
 	return 0;
 }
-
