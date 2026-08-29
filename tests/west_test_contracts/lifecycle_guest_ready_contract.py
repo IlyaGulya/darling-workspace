@@ -25,6 +25,10 @@ import sys
 import time
 from typing import Any, Callable
 
+sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "west_commands"))
+from prefix_state import PrefixStateError, read_prefix_state
+from runtime_cell import RuntimeCell, RuntimeCellError, load_runtime_cell, observe, same_object
+
 
 COMMAND_SECONDS = 45.0
 TRANSITION_SECONDS = 20.0
@@ -58,14 +62,18 @@ TRANSACTION_MARKERS = (
     ".lifecycle-gc-",
     ".darling-lifecycle-",
 )
-ARTIFACTS = {
+HOST_ARTIFACTS = {
     "darling": "bin/darling",
     "darlingserver": "bin/darlingserver",
+}
+GUEST_BOOTCHAIN_ARTIFACTS = {
     "launchd": "sbin/launchd",
     "shellspawn": "usr/libexec/shellspawn",
     "mldr": "usr/libexec/darling/mldr",
+    "mldr32": "usr/libexec/darling/mldr32",
     "dyld": "usr/lib/dyld",
     "libsystem_kernel": "usr/lib/system/libsystem_kernel.dylib",
+    "vchroot": "usr/libexec/darling/vchroot",
 }
 
 
@@ -118,32 +126,24 @@ def _file_identity(path: Path, *, nofollow: bool = True) -> dict[str, int]:
 
 
 def _prefix_generation(prefix: Path) -> int:
-    state = prefix / ".darling-prefix-state-v2"
-    fields: dict[str, str] = {}
-    data = state.read_bytes()
-    if len(data) > 4096:
-        raise ContractError("prefix state exceeds bound")
-    for line in data.decode("ascii", errors="strict").splitlines()[1:]:
-        if "=" in line:
-            key, value = line.split("=", 1)
-            fields[key] = value
-    generation = fields.get("generation", "")
-    if not generation.isdigit() or int(generation) <= 0:
-        raise ContractError("prefix generation is invalid")
-    identity = _file_identity(prefix)
-    if fields.get("prefix_device") != str(identity["device"]) or fields.get(
-        "prefix_inode"
-    ) != str(identity["inode"]):
-        raise ContractError("prefix state identity mismatch")
-    return int(generation)
+    try:
+        return read_prefix_state(prefix).generation
+    except PrefixStateError as error:
+        raise ContractError(str(error)) from error
 
 
 def _source_identity(
     workspace: Path, prefix: Path, verifier_identity: dict[str, Any]
 ) -> tuple[dict[str, Any], str, str]:
     artifacts: dict[str, Any] = {}
-    for name, relative in ARTIFACTS.items():
-        path = prefix / relative
+    artifact_paths = {
+        **{name: (prefix / relative, relative) for name, relative in HOST_ARTIFACTS.items()},
+        **{
+            name: (prefix / "libexec/darling" / relative, f"libexec/darling/{relative}")
+            for name, relative in GUEST_BOOTCHAIN_ARTIFACTS.items()
+        },
+    }
+    for name, (path, relative) in artifact_paths.items():
         if not path.is_file() or path.is_symlink():
             raise ContractError(f"runtime artifact is not a retained regular file: {relative}")
         artifacts[name] = {
@@ -372,7 +372,12 @@ def _run(argv: list[str], env: dict[str, str], evidence: Path, name: str) -> dic
             except subprocess.TimeoutExpired:
                 os.killpg(process.pid, signal.SIGKILL)
                 process.wait(KILL_GRACE_SECONDS)
-            raise ContractError(f"{name}: command timeout") from error
+            stdout_tail = stdout_path.read_bytes()[-4096:].decode(errors="replace")
+            stderr_tail = stderr_path.read_bytes()[-4096:].decode(errors="replace")
+            raise ContractError(
+                f"{name}: command timeout rc={process.returncode!r}; "
+                f"stdout_tail={stdout_tail!r}; stderr_tail={stderr_tail!r}"
+            ) from error
     stdout_data = stdout_path.read_bytes()
     stderr_data = stderr_path.read_bytes()
     if len(stdout_data) + len(stderr_data) > MAX_OUTPUT_BYTES:
@@ -413,6 +418,8 @@ def _start_holder(
     evidence: Path,
     name: str,
     script: str,
+    *,
+    interactive: bool = False,
 ) -> tuple[subprocess.Popen[bytes], dict[str, Any]]:
     stdout_path = evidence / f"{name}.stdout"
     stderr_path = evidence / f"{name}.stderr"
@@ -421,7 +428,7 @@ def _start_holder(
     process = subprocess.Popen(
         [str(launcher), "shell", "/bin/bash", "-c", script],
         env=_environment(prefix),
-        stdin=subprocess.DEVNULL,
+        stdin=subprocess.PIPE if interactive else subprocess.DEVNULL,
         stdout=stdout,
         stderr=stderr,
         start_new_session=True,
@@ -431,15 +438,30 @@ def _start_holder(
     stderr.close()
 
     def ready() -> dict[str, Any] | None:
-        if process.poll() is not None:
-            raise ContractError(f"{name}: holder exited before guest-ready")
+        returncode = process.poll()
+        if returncode is not None:
+            stdout_tail = stdout_path.read_bytes()[-4096:].decode(errors="replace")
+            stderr_tail = stderr_path.read_bytes()[-4096:].decode(errors="replace")
+            raise ContractError(
+                f"{name}: holder exited before guest-ready rc={returncode}; "
+                f"stdout_tail={stdout_tail!r}; stderr_tail={stderr_tail!r}"
+            )
         if stdout_path.stat().st_size + stderr_path.stat().st_size > MAX_OUTPUT_BYTES:
             raise ContractError(f"{name}: output exceeds bound")
         if b"GUEST52_HOLDER_READY\n" not in stdout_path.read_bytes():
             return None
         return _active(prefix)
 
-    return process, _wait(f"{name} guest-ready", ready)
+    try:
+        active = _wait(f"{name} guest-ready", ready)
+    except ContractError as error:
+        stdout_tail = stdout_path.read_bytes()[-4096:].decode(errors="replace")
+        stderr_tail = stderr_path.read_bytes()[-4096:].decode(errors="replace")
+        raise ContractError(
+            f"{error}; holder_rc={process.poll()!r}; "
+            f"stdout_tail={stdout_tail!r}; stderr_tail={stderr_tail!r}"
+        ) from error
+    return process, active
 
 
 def _stop_holder(process: subprocess.Popen[bytes]) -> None:
@@ -571,7 +593,7 @@ def _kill_owned_holders(prefix: Path) -> list[dict[str, int]]:
         identity = _process_identity(record["pid"])
         if identity != {"pid": record["pid"], "starttime": record["starttime"]}:
             continue
-        pidfd = os.pidfd_open(record["pid"], 0)
+        pidfd = _retain_pidfd(identity)
         try:
             if _process_identity(record["pid"]) != identity:
                 continue
@@ -583,6 +605,18 @@ def _kill_owned_holders(prefix: Path) -> list[dict[str, int]]:
         finally:
             os.close(pidfd)
     return killed
+
+
+def _retain_pidfd(identity: dict[str, int]) -> int:
+    """Acquire a pidfd and reject PID reuse across the acquisition boundary."""
+    try:
+        descriptor = os.pidfd_open(identity["pid"], 0)
+    except ProcessLookupError as error:
+        raise ContractError("process exited before pidfd acquisition") from error
+    if _process_identity(identity["pid"]) != identity:
+        os.close(descriptor)
+        raise ContractError("process identity changed during pidfd acquisition")
+    return descriptor
 
 
 def _cleanup(
@@ -641,6 +675,7 @@ def _common(
 
 def _verify(
     verifier: Path,
+    evidence: Path,
     trace_id: str,
     observation: dict[str, Any],
 ) -> dict[str, Any]:
@@ -662,6 +697,18 @@ def _verify(
         check=False,
     )
     if result.returncode != 0:
+        diagnostic = {
+            "trace_id": trace_id,
+            "returncode": result.returncode,
+            "observation": observation,
+            "field_diff": {
+                "verifier_stderr": result.stderr[-4096:].decode(errors="replace"),
+                "verifier_stdout": result.stdout[-4096:].decode(errors="replace"),
+            },
+        }
+        (evidence / f"{trace_id}.verifier-failure.json").write_text(
+            json.dumps(diagnostic, indent=2, sort_keys=True) + "\n"
+        )
         raise ContractError(
             f"Rust verifier rejected {trace_id}: stdout={result.stdout!r} stderr={result.stderr!r}"
         )
@@ -855,6 +902,16 @@ def _run_lane(args: argparse.Namespace) -> dict[str, Any]:
     prefix = args.prefix.resolve(strict=True)
     launcher = args.launcher.resolve(strict=True)
     verifier = args.verifier.resolve(strict=True)
+    cell = load_runtime_cell(
+        forest=args.forest,
+        workspace=workspace,
+        build_dir=args.build_dir,
+        runtime_prefix=prefix,
+        cohort_enabled=args.cohort == "ON",
+        profile=args.runtime_profile,
+    )
+    if launcher != cell.runtime_prefix / "bin/darling":
+        raise ContractError("launcher is outside the authenticated RuntimeCell")
     evidence = args.evidence.resolve()
     evidence.mkdir(mode=0o700, parents=True, exist_ok=False)
     verifier_identity = _rust_verifier_identity(verifier)
@@ -862,7 +919,8 @@ def _run_lane(args: argparse.Namespace) -> dict[str, Any]:
         workspace, prefix, verifier_identity
     )
     templates = _rust_templates(verifier)
-    prefix_identity = _file_identity(prefix)
+    prefix_observation = observe(prefix)
+    prefix_generation = cell.state.generation
     commands: list[dict[str, Any]] = []
     output_budget_negative = _output_budget_negative(evidence)
     accepted: dict[str, tuple[dict[str, Any], dict[str, Any]]] = {}
@@ -879,7 +937,7 @@ def _run_lane(args: argparse.Namespace) -> dict[str, Any]:
             "echo GUEST52_HOLDER_READY; while :; do read -t 1 || :; done",
         )
         holders.append(holder1)
-        root1_fd = os.pidfd_open(active1["root"]["pid"], 0)
+        root1_fd = _retain_pidfd(active1["root"])
         retained_pidfds.append(root1_fd)
         try:
             signal.pidfd_send_signal(root1_fd, 999)
@@ -902,7 +960,7 @@ def _run_lane(args: argparse.Namespace) -> dict[str, Any]:
         }
         accepted["shared-session-signal-rejected"] = (
             rejected_observation,
-            _verify(verifier, "shared-session-signal-rejected", rejected_observation),
+            _verify(verifier, evidence, "shared-session-signal-rejected", rejected_observation),
         )
         rpc1 = _rpc(launcher, prefix, evidence, "cycle1-rpc")
         commands.append(rpc1)
@@ -929,7 +987,7 @@ def _run_lane(args: argparse.Namespace) -> dict[str, Any]:
         }
         accepted["shared-session-signal-gone"] = (
             gone_observation,
-            _verify(verifier, "shared-session-signal-gone", gone_observation),
+            _verify(verifier, evidence, "shared-session-signal-gone", gone_observation),
         )
         cycles.append({"cycle": 1, "root": active1["root"], "rpc": rpc1, "cleanup": clean1})
 
@@ -942,7 +1000,7 @@ def _run_lane(args: argparse.Namespace) -> dict[str, Any]:
             "echo GUEST52_HOLDER_READY; while :; do read -t 1 || :; done",
         )
         holders.append(holder2)
-        root2_fd = os.pidfd_open(active2["root"]["pid"], 0)
+        root2_fd = _retain_pidfd(active2["root"])
         retained_pidfds.append(root2_fd)
         if _pidfd_state(root2_fd, 100):
             raise ContractError("retained holder terminated before deadline")
@@ -962,7 +1020,7 @@ def _run_lane(args: argparse.Namespace) -> dict[str, Any]:
         holders.remove(holder2)
         accepted["shared-session-retained-holder-timeout"] = (
             timeout_observation,
-            _verify(verifier, "shared-session-retained-holder-timeout", timeout_observation),
+            _verify(verifier, evidence, "shared-session-retained-holder-timeout", timeout_observation),
         )
         cycles.append({"cycle": 2, "root": active2["root"], "cleanup": clean2})
 
@@ -974,7 +1032,7 @@ def _run_lane(args: argparse.Namespace) -> dict[str, Any]:
             "echo GUEST52_HOLDER_READY; while :; do read -t 1 || :; done",
         )
         holders.append(holder3)
-        root3_fd = os.pidfd_open(active3["root"]["pid"], 0)
+        root3_fd = _retain_pidfd(active3["root"])
         retained_pidfds.append(root3_fd)
         if active3["root"] == active1["root"]:
             raise ContractError("reuse cycle repeated the root PID/starttime identity")
@@ -994,11 +1052,11 @@ def _run_lane(args: argparse.Namespace) -> dict[str, Any]:
             "replacement": active3["root"],
             "retired_pidfd_signal": "ESRCH",
             "replacement_alive": True,
-            "same_prefix": _file_identity(prefix) == prefix_identity,
+            "same_prefix": same_object(observe(prefix), prefix_observation),
         }
         accepted["shared-session-pid-reuse"] = (
             pid_reuse_observation,
-            _verify(verifier, "shared-session-pid-reuse", pid_reuse_observation),
+            _verify(verifier, evidence, "shared-session-pid-reuse", pid_reuse_observation),
         )
         rpc3 = _rpc(launcher, prefix, evidence, "cycle3-rpc")
         commands.append(rpc3)
@@ -1011,45 +1069,51 @@ def _run_lane(args: argparse.Namespace) -> dict[str, Any]:
         # Fault cycle A: a real guest fork appears after the retained process
         # snapshot.  The accepted trace is FAIL_CLOSED, so external recovery
         # owns any exact prefix holder left after product shutdown.
-        trigger = prefix / "private/var/tmp/.guest52-late-trigger"
-        late_pid_path = prefix / "private/var/tmp/.guest52-late-pid"
-        for path in (trigger, late_pid_path):
-            try:
-                path.unlink()
-            except FileNotFoundError:
-                pass
         started = time.monotonic_ns()
         late_script = (
             "echo GUEST52_HOLDER_READY; "
-            "while [ ! -e /private/var/tmp/.guest52-late-trigger ]; do read -t 1 || :; done; "
-            "(while :; do read -t 1 || :; done) & "
-            "echo $! > /private/var/tmp/.guest52-late-pid; "
+            "IFS= read -r _; "
+            "(/usr/bin/perl -MPOSIX -e "
+            "'POSIX::setsid(); %ENV=(); exec q{/bin/bash}, q{-c}, "
+            "q{while :; do read -t 1 || :; done}') & "
+            "printf 'GUEST52_LATE_PID=%s\\n' \"$!\"; "
             "while :; do read -t 1 || :; done"
         )
         late_holder, late_active = _start_holder(
-            launcher, prefix, evidence, "fault-late-holder", late_script
+            launcher, prefix, evidence, "fault-late-holder", late_script,
+            interactive=True,
         )
         holders.append(late_holder)
-        late_root_fd = os.pidfd_open(late_active["root"]["pid"], 0)
+        late_root_fd = _retain_pidfd(late_active["root"])
         retained_pidfds.append(late_root_fd)
         snapshot_ids = {
             (item["pid"], item["starttime"]) for item in late_active["processes"]
         }
-        trigger.write_bytes(b"go\n")
+        if late_holder.stdin is None:
+            raise ContractError("late holder has no retained trigger pipe")
+        late_holder.stdin.write(b"go\n")
+        late_holder.stdin.flush()
 
         def late_child() -> dict[str, int] | None:
-            try:
-                value = late_pid_path.read_text().strip()
-            except FileNotFoundError:
+            output = (evidence / "fault-late-holder.stdout").read_bytes()
+            marker = b"GUEST52_LATE_PID="
+            if marker not in output:
                 return None
-            if not value.isdigit():
-                raise ContractError("late child PID is malformed")
-            identity = _process_identity(int(value))
+            value = output.split(marker, 1)[1].split(b"\n", 1)[0]
+            if len(value) > 20:
+                raise ContractError("late child identity exceeds pipe budget")
+            try:
+                pid = int(value.decode("ascii"))
+            except (UnicodeError, ValueError) as error:
+                raise ContractError("late child PID is malformed") from error
+            identity = _process_identity(pid)
             if identity is None or (identity["pid"], identity["starttime"]) in snapshot_ids:
                 return None
             return identity
 
         late = _wait("real late guest fork", late_child)
+        late_pidfd = _retain_pidfd(late)
+        retained_pidfds.append(late_pidfd)
         late_clean, late_killed = _cleanup(
             launcher, prefix, evidence, "fault-late-cleanup", commands
         )
@@ -1057,14 +1121,6 @@ def _run_lane(args: argparse.Namespace) -> dict[str, Any]:
         holders.remove(late_holder)
         if _process_identity(late["pid"]) is not None:
             raise ContractError("late guest child survived fail-closed recovery")
-        for path in (trigger, late_pid_path):
-            try:
-                value = path.lstat()
-            except FileNotFoundError:
-                continue
-            if not stat.S_ISREG(value.st_mode) or value.st_uid != os.getuid():
-                raise ContractError(f"late-fork fixture identity rejected: {path}")
-            path.unlink()
         late_observation = {
             "mode": templates["shared-session-late-fork"]["mode"],
             "common": _common(
@@ -1078,7 +1134,7 @@ def _run_lane(args: argparse.Namespace) -> dict[str, Any]:
         }
         accepted["shared-session-late-fork"] = (
             late_observation,
-            _verify(verifier, "shared-session-late-fork", late_observation),
+            _verify(verifier, evidence, "shared-session-late-fork", late_observation),
         )
 
         # Fault cycle B: kill the exact retained root pidfd before membership
@@ -1090,7 +1146,7 @@ def _run_lane(args: argparse.Namespace) -> dict[str, Any]:
             "echo GUEST52_HOLDER_READY; while :; do read -t 1 || :; done",
         )
         holders.append(holder4)
-        root4_fd = os.pidfd_open(active4["root"]["pid"], 0)
+        root4_fd = _retain_pidfd(active4["root"])
         retained_pidfds.append(root4_fd)
         signal.pidfd_send_signal(root4_fd, signal.SIGKILL)
         if not _pidfd_state(root4_fd, int(TRANSITION_SECONDS * 1000)):
@@ -1115,7 +1171,7 @@ def _run_lane(args: argparse.Namespace) -> dict[str, Any]:
         }
         accepted["session-root-exit-before-snapshot"] = (
             root_gone_observation,
-            _verify(verifier, "session-root-exit-before-snapshot", root_gone_observation),
+            _verify(verifier, evidence, "session-root-exit-before-snapshot", root_gone_observation),
         )
 
         # Transport interruption: interrupt the owned launcher group while a
@@ -1130,7 +1186,7 @@ def _run_lane(args: argparse.Namespace) -> dict[str, Any]:
             "echo GUEST52_HOLDER_READY; while :; do read -t 1 || :; done",
         )
         holders.append(interrupt_holder)
-        interrupt_pidfd = os.pidfd_open(interrupt_active["root"]["pid"], 0)
+        interrupt_pidfd = _retain_pidfd(interrupt_active["root"])
         retained_pidfds.append(interrupt_pidfd)
         os.killpg(interrupt_holder.pid, signal.SIGINT)
         _stop_holder(interrupt_holder)
@@ -1161,7 +1217,7 @@ def _run_lane(args: argparse.Namespace) -> dict[str, Any]:
             "externally_reaped": interrupt_killed,
             "cleanup": interrupt_clean,
             "rust_verdict": _verify(
-                verifier, "shared-session-signal-gone", interruption_observation
+                verifier, evidence, "shared-session-signal-gone", interruption_observation
             ),
         }
 
@@ -1169,8 +1225,13 @@ def _run_lane(args: argparse.Namespace) -> dict[str, Any]:
             raise ContractError("not every accepted trace reached the Rust verifier")
         negatives = _negative_matrix(verifier, accepted, verifier_identity)
         final_clean = _wait("final clean census", lambda: _clean_census(prefix))
-        if _file_identity(prefix) != prefix_identity:
+        final_prefix = observe(prefix)
+        if not same_object(final_prefix, prefix_observation):
             raise ContractError("same-prefix root identity changed")
+        if final_prefix.security != prefix_observation.security:
+            raise ContractError("same-prefix security metadata changed")
+        if _prefix_generation(prefix) != prefix_generation:
+            raise ContractError("same-prefix lifecycle generation changed")
         normalized_semantics = {
             "traces": {
                 name: {
@@ -1252,12 +1313,30 @@ def _run_lane(args: argparse.Namespace) -> dict[str, Any]:
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--workspace", type=Path, required=True)
+    parser.add_argument("--forest", type=Path, required=True)
+    parser.add_argument("--build-dir", type=Path, required=True)
+    parser.add_argument("--cohort", choices=("ON", "OFF"), required=True)
+    parser.add_argument(
+        "--runtime-profile", default="homebrew-rootless-bootstrap-minimal"
+    )
     parser.add_argument("--prefix", type=Path, required=True)
     parser.add_argument("--launcher", type=Path, required=True)
     parser.add_argument("--verifier", type=Path, required=True)
     parser.add_argument("--evidence", type=Path, required=True)
     parser.add_argument("--report", type=Path, required=True)
+    parser.add_argument("--preflight-only", action="store_true")
     args = parser.parse_args()
+    if args.preflight_only:
+        load_runtime_cell(
+            forest=args.forest,
+            workspace=args.workspace,
+            build_dir=args.build_dir,
+            runtime_prefix=args.prefix,
+            cohort_enabled=args.cohort == "ON",
+            profile=args.runtime_profile,
+        )
+        print("GUEST_READY_RUNTIME_CELL_VALID")
+        return
     report = _run_lane(args)
     args.report.write_text(json.dumps(report, indent=2, sort_keys=True) + "\n")
     print("GUEST_READY_REAL_KERNEL_LANE_5_2_VALID")
@@ -1266,6 +1345,8 @@ def main() -> None:
 if __name__ == "__main__":
     try:
         main()
-    except (ContractError, OSError, subprocess.SubprocessError, ValueError) as error:
+    except (
+        ContractError, RuntimeCellError, OSError, subprocess.SubprocessError, ValueError
+    ) as error:
         print(f"GUEST_READY_REAL_KERNEL_LANE_5_2_FAILED {error}", file=sys.stderr)
         raise SystemExit(1)

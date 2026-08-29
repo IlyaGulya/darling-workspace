@@ -27,6 +27,7 @@ from __future__ import annotations
 
 import argparse
 import fcntl
+import hashlib
 import os
 import signal
 import shutil
@@ -82,12 +83,14 @@ _MLDR_DEPLOYS = [
 ]
 _BOOTCHAIN_TARGETS = [
     *_MLDR_TARGETS,
+    "src/vchroot/vchroot",
     "src/launchd/src/launchd",
     "src/shellspawn/shellspawn",
 ]
 _SHELLSPAWN_DEPLOY = ("src/shellspawn/shellspawn", "libexec/darling/usr/libexec/shellspawn")
 _BOOTCHAIN_DEPLOYS = [
     *_MLDR_DEPLOYS,
+    ("src/vchroot/vchroot", "libexec/darling/usr/libexec/darling/vchroot"),
     ("src/launchd/src/launchd", "libexec/darling/sbin/launchd"),
     _SHELLSPAWN_DEPLOY,
 ]
@@ -238,6 +241,7 @@ class DarlingBuild(WestCommand):
                         "--bind-runtime-lower-root requires "
                         "DARLING_LIFECYCLE_COHORT_V1:BOOL=ON in the exact build cache"
                     )
+                self._binding_build_prefix_preflight(build_dir, prefix)
             transaction = None
             if args.deploy_manifest:
                 try:
@@ -261,6 +265,7 @@ class DarlingBuild(WestCommand):
                     transaction=transaction,
                 )
                 if args.bind_runtime_lower_root:
+                    self._binding_deployed_identity_preflight(build_dir, prefix)
                     binding = transaction.bind_runtime_lower_root(
                         prefix_generation=runtime_prefix_generation(prefix)
                     )
@@ -288,6 +293,51 @@ class DarlingBuild(WestCommand):
             self.inf("(not deployed; pass --deploy to copy into the prefix)")
 
     # -- helpers -----------------------------------------------------------
+    def _binding_build_prefix_preflight(self, build_dir: Path, prefix: Path) -> None:
+        """Reject cross-prefix lifecycle deployment before any mutation."""
+        cache = build_dir / "CMakeCache.txt"
+        try:
+            lines = cache.read_text(encoding="utf-8").splitlines()
+        except (OSError, UnicodeError) as error:
+            self.die(f"cannot read exact build cache for runtime binding: {error}")
+        values = [
+            line.split("=", 1)[1]
+            for line in lines
+            if line.startswith("CMAKE_INSTALL_PREFIX:PATH=")
+        ]
+        if len(values) != 1:
+            self.die("runtime binding requires exactly one CMAKE_INSTALL_PREFIX:PATH")
+        try:
+            configured = Path(values[0]).expanduser().resolve(strict=False)
+            requested = prefix.expanduser().resolve(strict=True)
+        except OSError as error:
+            self.die(f"runtime binding prefix cannot be resolved: {error}")
+        if configured != requested:
+            self.die(
+                "runtime binding build/prefix mismatch: "
+                f"CMAKE_INSTALL_PREFIX={configured}, --prefix={requested}"
+            )
+
+    @staticmethod
+    def _sha256(path: Path) -> str:
+        digest = hashlib.sha256()
+        with path.open("rb") as stream:
+            for chunk in iter(lambda: stream.read(1024 * 1024), b""):
+                digest.update(chunk)
+        return digest.hexdigest()
+
+    def _binding_deployed_identity_preflight(self, build_dir: Path, prefix: Path) -> None:
+        """Bind only launcher/server bytes produced by this exact build."""
+        pairs = (
+            (build_dir / "src/startup/darling", prefix / "bin/darling", "launcher"),
+            (build_dir / "src/external/darlingserver/darlingserver", prefix / "bin/darlingserver", "darlingserver"),
+        )
+        for built, deployed, label in pairs:
+            if built.is_symlink() or deployed.is_symlink() or not built.is_file() or not deployed.is_file():
+                self.die(f"runtime binding {label} artifact is unavailable")
+            if self._sha256(built) != self._sha256(deployed):
+                self.die(f"runtime binding {label} does not belong to the exact build")
+
     @contextmanager
     def _build_dir_lock(self, build_dir):
         lock_path = build_dir / ".west-darling-build.lock"

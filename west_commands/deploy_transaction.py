@@ -15,6 +15,11 @@ import uuid
 from dataclasses import asdict, dataclass
 from pathlib import Path
 
+try:
+    from .prefix_state import PrefixStateError, read_prefix_state
+except ImportError:  # West loads command modules directly from west_commands.
+    from prefix_state import PrefixStateError, read_prefix_state
+
 
 class DeploymentTransactionError(RuntimeError):
     """A deploy transaction cannot safely continue or be restored."""
@@ -102,7 +107,6 @@ class RuntimeLowerRecoveryOwner:
 RUNTIME_LOWER_BINDING_NAME = ".darling-runtime-lower-binding-v1"
 RUNTIME_LOWER_LOCK_NAME = ".lifecycle.lock"
 RUNTIME_LOWER_BINDING_MAX_BYTES = 2048
-PREFIX_STATE_NAMES = (".darling-prefix-state-v3", ".darling-prefix-state-v2")
 RENAME_NOREPLACE = 1
 
 
@@ -161,65 +165,10 @@ def _rename_noreplace(parent_fd: int, source: str, destination: str) -> None:
 
 def runtime_prefix_generation(prefix: Path) -> int:
     """Read one exact typed generation through a retained prefix capability."""
-
-    prefix_fd = os.open(
-        prefix, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC
-    )
     try:
-        prefix_stat = os.fstat(prefix_fd)
-        for name in PREFIX_STATE_NAMES:
-            try:
-                state_fd = os.open(
-                    name,
-                    os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC,
-                    dir_fd=prefix_fd,
-                )
-            except FileNotFoundError:
-                continue
-            try:
-                opened = os.fstat(state_fd)
-                named = os.stat(name, dir_fd=prefix_fd, follow_symlinks=False)
-                if (
-                    not stat.S_ISREG(opened.st_mode)
-                    or opened.st_nlink != 1
-                    or stat.S_IMODE(opened.st_mode) != 0o600
-                    or (opened.st_uid, opened.st_gid)
-                    != (prefix_stat.st_uid, prefix_stat.st_gid)
-                    or (opened.st_dev, opened.st_ino) != (named.st_dev, named.st_ino)
-                ):
-                    raise DeploymentTransactionError("typed prefix state identity mismatch")
-                chunks: list[bytes] = []
-                size = 0
-                while True:
-                    chunk = os.read(state_fd, 256)
-                    if not chunk:
-                        break
-                    size += len(chunk)
-                    if size > RUNTIME_LOWER_BINDING_MAX_BYTES:
-                        raise DeploymentTransactionError("typed prefix state exceeds budget")
-                    chunks.append(chunk)
-                lines = b"".join(chunks).decode("utf-8").splitlines()
-                expected = (
-                    "DARLING_PREFIX_STATE_V3"
-                    if name.endswith("v3")
-                    else "DARLING_PREFIX_STATE_V2"
-                )
-                if not lines or lines[0] != expected:
-                    raise DeploymentTransactionError("typed prefix state schema mismatch")
-                values = [line for line in lines if line.startswith("generation=")]
-                if len(values) != 1:
-                    raise DeploymentTransactionError("typed prefix generation is ambiguous")
-                generation = int(values[0].split("=", 1)[1])
-                if generation <= 0:
-                    raise DeploymentTransactionError("typed prefix generation is invalid")
-                return generation
-            except (UnicodeError, ValueError) as error:
-                raise DeploymentTransactionError("typed prefix generation is malformed") from error
-            finally:
-                os.close(state_fd)
-        raise DeploymentTransactionError("typed prefix state is missing")
-    finally:
-        os.close(prefix_fd)
+        return read_prefix_state(prefix).generation
+    except PrefixStateError as error:
+        raise DeploymentTransactionError(str(error)) from error
 
 
 def sha256_file(path: Path) -> str:
@@ -616,20 +565,66 @@ class DeploymentTransaction:
             self.prefix, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC
         )
         lock_fd = None
+        created = False
         try:
-            lock_fd = os.open(
-                RUNTIME_LOWER_LOCK_NAME,
-                os.O_RDWR | os.O_NOFOLLOW | os.O_CLOEXEC,
-                dir_fd=prefix_fd,
-            )
+            try:
+                lock_fd = os.open(
+                    RUNTIME_LOWER_LOCK_NAME,
+                    os.O_RDWR | os.O_NOFOLLOW | os.O_CLOEXEC,
+                    dir_fd=prefix_fd,
+                )
+            except FileNotFoundError:
+                try:
+                    lock_fd = os.open(
+                        RUNTIME_LOWER_LOCK_NAME,
+                        os.O_RDWR
+                        | os.O_CREAT
+                        | os.O_EXCL
+                        | os.O_NOFOLLOW
+                        | os.O_CLOEXEC,
+                        0o600,
+                        dir_fd=prefix_fd,
+                    )
+                    created = True
+                except FileExistsError:
+                    # A concurrent creator won.  Adopt nothing: retain and
+                    # validate the winner exactly as an existing anchor.
+                    lock_fd = os.open(
+                        RUNTIME_LOWER_LOCK_NAME,
+                        os.O_RDWR | os.O_NOFOLLOW | os.O_CLOEXEC,
+                        dir_fd=prefix_fd,
+                    )
             self._validate_lock_capability(prefix_fd, lock_fd)
-            fcntl.flock(lock_fd, fcntl.LOCK_EX)
+            self._runtime_lower_fault(
+                "before_lock_flock", prefix_fd, RUNTIME_LOWER_LOCK_NAME
+            )
+            try:
+                fcntl.flock(lock_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            except BlockingIOError as error:
+                raise DeploymentTransactionError("runtime lifecycle lock is busy") from error
+            if created:
+                os.fchmod(lock_fd, 0o600)
+            self._runtime_lower_fault(
+                "after_lock_flock", prefix_fd, RUNTIME_LOWER_LOCK_NAME
+            )
             self._validate_lock_capability(prefix_fd, lock_fd)
             if (os.fstat(prefix_fd).st_dev, os.fstat(prefix_fd).st_ino) != expected_prefix:
                 raise DeploymentTransactionError("runtime prefix changed before binding publish")
             self._runtime_lower_prefix_fd = prefix_fd
             self._runtime_lower_lock_fd = lock_fd
             return prefix_fd
+        except DeploymentTransactionError:
+            if lock_fd is not None:
+                os.close(lock_fd)
+            os.close(prefix_fd)
+            raise
+        except OSError as error:
+            if lock_fd is not None:
+                os.close(lock_fd)
+            os.close(prefix_fd)
+            raise DeploymentTransactionError(
+                "runtime lifecycle lock acquisition failed"
+            ) from error
         except BaseException:
             if lock_fd is not None:
                 os.close(lock_fd)

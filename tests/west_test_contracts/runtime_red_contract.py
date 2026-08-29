@@ -901,17 +901,20 @@ with tempfile.TemporaryDirectory() as temp:
         "printf 'passwd\\n' >\"$DPREFIX/private/etc/passwd\"\n"
         "printf 'master.passwd\\n' >\"$DPREFIX/private/etc/master.passwd\"\n"
         "printf 'group\\n' >\"$DPREFIX/private/etc/group\"\n"
+        "prefix_device=$(stat -c %d \"$DPREFIX\")\n"
+        "prefix_inode=$(stat -c %i \"$DPREFIX\")\n"
         "cat >\"$DPREFIX/.darling-prefix-state-v2\" <<EOF\n"
         "DARLING_PREFIX_STATE_V2\n"
         "schema_version=2\n"
         "runtime_mode=rootless-eunion\n"
         "generation=1\n"
-        "prefix_device=1\n"
-        "prefix_inode=1\n"
-        "owner_uid=1\n"
-        "owner_gid=1\n"
+        "prefix_device=$prefix_device\n"
+        "prefix_inode=$prefix_inode\n"
+        "owner_uid=$(id -u)\n"
+        "owner_gid=$(id -g)\n"
         "provenance=contract\n"
         "EOF\n"
+        "chmod 0600 \"$DPREFIX/.darling-prefix-state-v2\"\n"
     )
     artifact.chmod(0o755)
     proof = {
@@ -947,7 +950,7 @@ with tempfile.TemporaryDirectory() as temp:
 
     state.write_text(state.read_text().replace(
         "runtime_mode=rootless-eunion\n",
-        "runtime_mode=privileged-overlay\n",
+        "runtime_mode=privileged-eunion\n",
     ))
     before_shutdowns = len(shutdowns)
     try:
@@ -961,7 +964,7 @@ with tempfile.TemporaryDirectory() as temp:
     else:
         raise AssertionError("mismatched typed prefix was deployed")
     assert len(shutdowns) == before_shutdowns
-    assert "runtime_mode=privileged-overlay\n" in state.read_text()
+    assert "runtime_mode=privileged-eunion\n" in state.read_text()
 
     state.unlink()
     try:
@@ -971,7 +974,7 @@ with tempfile.TemporaryDirectory() as temp:
         ):
             pass
     except SystemExit as exc:
-        assert "populated prefix without a regular typed mode marker" in str(exc), exc
+        assert "populated prefix without a valid legacy mode marker" in str(exc), exc
     else:
         raise AssertionError("populated unmarked prefix was deployed")
     assert not state.exists()
@@ -3103,23 +3106,36 @@ with tempfile.TemporaryDirectory() as temp:
         ]
     }
     test._profile_path = lambda _profile: tempdir / "patches/homebrew/patches.yml"
-    original_apply = (
-        runtime_source_module.RuntimeSourceMaterializer.apply_profile_module_patches
+    materializer_type = runtime_source_module.RuntimeSourceMaterializer
+    original_plans = materializer_type._typed_profile_plans
+    original_fetch = materializer_type._fetch_profile_module_inputs
+    original_materialize = materializer_type._materialize_canonical_profile
+
+    class SyntheticPlan(list):
+        composition = {"prerequisites": []}
+
+    darling_base = subprocess.run(
+        ["git", "rev-parse", "HEAD"], cwd=darling_repo, check=True,
+        capture_output=True, text=True,
+    ).stdout.strip()
+    entries = SyntheticPlan([
+        {"module": "darling", "patch": "darling/root.patch"},
+        {
+            "module": "darling/src/external/libsystem",
+            "patch": "darling/src/external/libsystem/profile-owner.patch",
+        },
+    ])
+
+    materializer_type._typed_profile_plans = lambda _self, profile: [
+        (profile, entries)
+    ]
+    materializer_type._fetch_profile_module_inputs = lambda _self, repo, _entries: (
+        darling_base if repo == darling_repo else libsystem_base
     )
 
-    def synthetic_apply(
-        _self,
-        profile,
-        module,
-        target,
-        *,
-        skip_patch_paths=None,
-    ):
+    def synthetic_materialize(_self, profile, overrides):
         assert profile == "homebrew"
-        if module == "darling":
-            return
-        assert module == "darling/src/external/libsystem"
-        assert not skip_patch_paths
+        target = overrides["darling/src/external/libsystem"]
         subprocess.run(
             [
                 "git",
@@ -3137,9 +3153,7 @@ with tempfile.TemporaryDirectory() as temp:
             text=True,
         )
 
-    runtime_source_module.RuntimeSourceMaterializer.apply_profile_module_patches = (
-        synthetic_apply
-    )
+    materializer_type._materialize_canonical_profile = synthetic_materialize
     try:
         with test._guest_runtime_source_forest(
             {"path": "darling/example.patch", "module": "darling", "source-base": "HEAD"},
@@ -3155,8 +3169,8 @@ with tempfile.TemporaryDirectory() as temp:
                 materialized / "profile-owner.txt"
             ).read_text() == "materialized profile owner\n"
     finally:
-        runtime_source_module.RuntimeSourceMaterializer.apply_profile_module_patches = (
-            original_apply
-        )
+        materializer_type._typed_profile_plans = original_plans
+        materializer_type._fetch_profile_module_inputs = original_fetch
+        materializer_type._materialize_canonical_profile = original_materialize
 
 print("PASS west-test-runtime-red-contract")

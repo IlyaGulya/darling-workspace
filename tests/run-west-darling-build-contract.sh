@@ -31,6 +31,11 @@ from west_commands.deploy_transaction import (
     cohort_build_enabled,
 )
 
+assert (
+    "src/vchroot/vchroot",
+    "libexec/darling/usr/libexec/darling/vchroot",
+) in db._BOOTCHAIN_DEPLOYS
+
 
 def make_args(**overrides):
     values = {
@@ -321,14 +326,30 @@ with tempfile.TemporaryDirectory() as temp:
     prefix = tempdir / "prefix"
     build_dir.mkdir()
     (build_dir / "CMakeCache.txt").write_text(
-        "configured\nDARLING_LIFECYCLE_COHORT_V1:BOOL=ON\n"
+        "configured\n"
+        "DARLING_LIFECYCLE_COHORT_V1:BOOL=ON\n"
+        f"CMAKE_INSTALL_PREFIX:PATH={prefix}\n"
+    )
+    (build_dir / "src/startup").mkdir(parents=True)
+    (build_dir / "src/external/darlingserver").mkdir(parents=True)
+    (build_dir / "src/startup/darling").write_bytes(b"deployed launcher\n")
+    (build_dir / "src/external/darlingserver/darlingserver").write_bytes(
+        b"deployed server\n"
     )
     (prefix / "libexec/darling").mkdir(parents=True)
     (prefix / "bin").mkdir()
+    (prefix / "bin/darling").write_bytes(b"deployed launcher\n")
+    (prefix / "bin/darling").chmod(0o755)
     (prefix / "bin/darlingserver").write_bytes(b"deployed server\n")
     (prefix / "bin/darlingserver").chmod(0o755)
+    prefix_identity = prefix.stat()
     (prefix / ".darling-prefix-state-v2").write_text(
-        "DARLING_PREFIX_STATE_V2\ngeneration=77\n"
+        "DARLING_PREFIX_STATE_V2\n"
+        "schema_version=2\n"
+        "runtime_mode=rootless-eunion\n"
+        "generation=77\n"
+        f"prefix_device={prefix_identity.st_dev}\n"
+        f"prefix_inode={prefix_identity.st_ino}\n"
     )
     (prefix / ".darling-prefix-state-v2").chmod(0o600)
     (prefix / ".lifecycle.lock").write_bytes(b"")
@@ -357,6 +378,43 @@ with tempfile.TemporaryDirectory() as temp:
     assert "prefix_generation=77\n" in binding.read_text()
     manifest = json.loads((tempdir / "transaction.json").read_text())
     assert manifest["runtime_lower_binding"]["destination"] == "libexec/darling"
+
+with tempfile.TemporaryDirectory() as temp:
+    tempdir = Path(temp)
+    build_dir = tempdir / "build"
+    build_prefix = tempdir / "build-prefix"
+    runtime_prefix = tempdir / "runtime-prefix"
+    build_dir.mkdir(); build_prefix.mkdir(); runtime_prefix.mkdir()
+    (build_dir / "CMakeCache.txt").write_text(
+        "DARLING_LIFECYCLE_COHORT_V1:BOOL=ON\n"
+        f"CMAKE_INSTALL_PREFIX:PATH={build_prefix}\n"
+    )
+    command = make_command()
+    deployed = []
+    command._closure_targets = lambda _build_dir, _names=None: []
+    command._deploy = lambda *args, **kwargs: deployed.append(True)
+    original_run = db.subprocess.run
+    db.subprocess.run = lambda *args, **kwargs: Completed()
+    try:
+        try:
+            command._run_locked(
+                make_args(
+                    targets=[],
+                    deploy_manifest=str(tempdir / "transaction.json"),
+                    bind_runtime_lower_root=True,
+                ),
+                tempdir,
+                build_dir,
+                runtime_prefix,
+            )
+        except SystemExit as error:
+            assert "build/prefix mismatch" in str(error), error
+        else:
+            raise AssertionError("cross-prefix build was deployed")
+    finally:
+        db.subprocess.run = original_run
+    assert not deployed
+    assert not (tempdir / "transaction.json").exists()
 
 with tempfile.TemporaryDirectory() as temp:
     tempdir = Path(temp)
