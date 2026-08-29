@@ -30,6 +30,38 @@ def must_raise(expected, callback) -> BaseException:
     raise AssertionError(f"expected {expected.__name__}")
 
 
+def unknown_profile_has_no_side_effects() -> None:
+    calls: list[str] = []
+    host = types.SimpleNamespace(
+        manifest=types.SimpleNamespace(
+            projects=[
+                types.SimpleNamespace(
+                    name="darling", path="darling", abspath="/tmp/darling"
+                )
+            ]
+        ),
+        die=lambda message: (_ for _ in ()).throw(RuntimeError(message)),
+        _bad_revision=lambda *_args: None,
+    )
+    materializer = runtime_source.RuntimeSourceMaterializer(host)
+    materializer.project_manifest_path = lambda _module: Path("darling")
+    materializer._guest_runtime_source_modules = lambda *_args: {Path("darling")}
+    materializer.active_runtime_profile = lambda _patch: "unknown-profile"
+    materializer._typed_profile_plans = lambda _profile: calls.append("plan") or []
+    materializer._fetch_profile_module_inputs = (
+        lambda *_args: calls.append("fetch") or "0" * 40
+    )
+    host._load_profile = lambda _profile: calls.append("load") or {}
+    context = materializer.guest_runtime_source_forest(
+        {"module": "darling", "path": "fixture.patch"},
+        {},
+        omit_patch=False,
+    )
+    error = must_raise(runtime_source.patch_stack_lock_first.LockFirstError, context.__enter__)
+    assert "unknown-profile" in str(error)
+    assert calls == [], calls
+
+
 def runtime_fixture(root: Path):
     """Create eight real source repositories and a 3-commit XNU immutable lock."""
     modules = [
@@ -281,6 +313,85 @@ def identity_contract() -> None:
             runtime_source.patch_stack_lock_first.materialize_batch_into = old_batch
 
 
+def input_authority_contract() -> None:
+    """Typed modules never require an obsolete frozen-manifest revision."""
+
+    with tempfile.TemporaryDirectory() as directory:
+        root = Path(directory)
+        (
+            _modules,
+            _projects,
+            _plan,
+            host,
+            _xnu,
+            lock_path,
+            _messages,
+            _baseline,
+            _commits,
+        ) = runtime_fixture(root)
+        consumer = root / "fresh-consumer"
+        consumer.mkdir()
+        git(consumer, "init", "-q")
+        obsolete = "f" * 40
+        assert subprocess.run(
+            ["git", "cat-file", "-e", f"{obsolete}^{{commit}}"],
+            cwd=consumer,
+            check=False,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        ).returncode != 0
+        entry = {
+            "module": "darling/src/external/xnu",
+            "patch": "xnu/fixture.patch",
+            "lock_path": str(lock_path),
+        }
+        materializer = runtime_source.RuntimeSourceMaterializer(host)
+        first_base = materializer._fetch_profile_module_inputs(consumer, [entry])
+        lock = yaml.safe_load(lock_path.read_text())
+        assert first_base == lock["mirror"]["base_oid"]
+        for oid in (lock["mirror"]["base_oid"], lock["mirror"]["source_oid"]):
+            assert git(consumer, "rev-parse", f"{oid}^{{commit}}") == oid
+        assert not git(consumer, "for-each-ref", "--format=%(refname)", "refs/west")
+        assert subprocess.run(
+            ["git", "cat-file", "-e", f"{obsolete}^{{commit}}"],
+            cwd=consumer,
+            check=False,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        ).returncode != 0
+
+        broken = yaml.safe_load(lock_path.read_text())
+        broken["mirror"]["source_ref"] = "refs/tags/patch-stack/v1/sources/missing"
+        broken_path = root / "broken-lock.yml"
+        broken_path.write_text(yaml.safe_dump(broken, sort_keys=False))
+        must_raise(
+            runtime_source.patch_stack_lock_first.LockFirstError,
+            lambda: materializer._fetch_profile_module_inputs(
+                consumer, [{**entry, "lock_path": str(broken_path)}]
+            ),
+        )
+        assert not git(consumer, "for-each-ref", "--format=%(refname)", "refs/west")
+
+        frozen_calls: list[str] = []
+        host._manifest_revision = lambda module: (
+            frozen_calls.append(module) or "1" * 40
+        )
+        assert materializer._canonical_nested_revision(
+            Path("darling/src/external/xnu"),
+            "2" * 40,
+            {"darling/src/external/xnu": first_base},
+            {Path("darling/src/external/xnu"): consumer},
+        ) == first_base
+        assert not frozen_calls
+        assert materializer._canonical_nested_revision(
+            Path("darling/src/external/unpatched"),
+            "2" * 40,
+            {},
+            {Path("darling/src/external/unpatched"): consumer},
+        ) == "1" * 40
+        assert frozen_calls == ["darling/src/external/unpatched"]
+
+
 def profile_routing_contract() -> None:
     """Only approved whole profiles take the typed runtime-source route."""
     arch_modules = [
@@ -444,6 +555,7 @@ def profile_routing_contract() -> None:
 
 
 def main() -> None:
+    unknown_profile_has_no_side_effects()
     modules = [
         "darling/src/external/darlingserver", "darling/src/external/xnu",
         "darling/src/external/libplatform", "darling/src/external/perl",
@@ -526,6 +638,7 @@ def main() -> None:
         runtime_source.patch_stack_materialize._git = old_git
     real_rollback_contract()
     identity_contract()
+    input_authority_contract()
     profile_routing_contract()
     print("runtime-source lock-first contract: PASS")
 

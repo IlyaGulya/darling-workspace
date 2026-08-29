@@ -42,6 +42,13 @@ class RuntimeSourceMaterializer:
     def __init__(self, host: Any):
         self._host = host
 
+    @staticmethod
+    def _require_supported_profile(profile: str) -> None:
+        if profile not in {"homebrew", "perf", "arch"}:
+            raise patch_stack_lock_first.LockFirstError(
+                f"runtime-source canonical materialization is not enabled for {profile}"
+            )
+
     def red_source_patch_path(self, path: str) -> Path:
         rel = Path(path)
         if rel.is_absolute() or ".." in rel.parts:
@@ -51,17 +58,13 @@ class RuntimeSourceMaterializer:
             self._host.die(f"red-proof source patch not found: {result}")
         return result
 
-    def _materialize_canonical_profile(self, profile: str, overrides: dict[str, Path]) -> None:
-        """Replay one approved typed profile into lifecycle-owned worktrees.
+    def _typed_profile_plans(
+        self, profile: str
+    ) -> list[tuple[str, patch_stack_lock_first.LockFirstPlan]]:
+        """Return the prerequisite-ordered immutable composition plans."""
 
-        This intentionally does not use a patch archive or publish integration
-        refs/generated locks.  The worktree context owns all resulting commits
-        and removes them when its caller exits.
-        """
-        if profile not in {"homebrew", "perf", "arch"}:
-            raise patch_stack_lock_first.LockFirstError(
-                f"runtime-source canonical materialization is not enabled for {profile}"
-            )
+        self._require_supported_profile(profile)
+
         def typed_plan(name: str) -> patch_stack_lock_first.LockFirstPlan:
             grouped: OrderedDict[str, list[dict[str, Any]]] = OrderedDict()
             patches = self._host._load_profile(name).get("patches", [])
@@ -74,7 +77,144 @@ class RuntimeSourceMaterializer:
                 )
             return plan
 
-        plan = typed_plan(profile)
+        plans: list[tuple[str, patch_stack_lock_first.LockFirstPlan]] = []
+        visiting: set[str] = set()
+
+        def append_prerequisites(name: str) -> None:
+            if name in visiting:
+                raise patch_stack_lock_first.LockFirstError(
+                    "runtime-source profile prerequisites are cyclic"
+                )
+            candidate = typed_plan(name)
+            visiting.add(name)
+            for prerequisite in candidate.composition["prerequisites"]:
+                if not isinstance(prerequisite, dict) or not isinstance(
+                    prerequisite.get("profile"), str
+                ):
+                    raise patch_stack_lock_first.LockFirstError(
+                        "runtime-source profile prerequisite is not typed"
+                    )
+                append_prerequisites(prerequisite["profile"])
+            visiting.remove(name)
+            if name not in [known for known, _ in plans]:
+                plans.append((name, candidate))
+
+        append_prerequisites(profile)
+        return plans
+
+    def _fetch_profile_module_inputs(
+        self,
+        repo: Path,
+        entries: list[dict[str, Any]],
+    ) -> str:
+        """Validate immutable inputs and import their objects without refs.
+
+        The returned OID is the first declared base for the module.  A
+        disposable ODB owns the temporary validation refs; the canonical West
+        repository receives objects through FETCH_HEAD only.
+        """
+
+        if not entries:
+            raise patch_stack_lock_first.LockFirstError(
+                "runtime-source module has no immutable series"
+            )
+        locks: list[dict[str, Any]] = []
+        for entry in entries:
+            try:
+                locks.append(
+                    patch_stack_materialize.load_lock(Path(entry["lock_path"]))
+                )
+            except (OSError, ValueError, patch_stack_materialize.MaterializeError) as error:
+                raise patch_stack_lock_first.LockFirstError(
+                    f"{entry['patch']}: invalid immutable lock: {error}"
+                ) from error
+        mirrors = {lock["mirror"]["url"] for lock in locks}
+        if len(mirrors) != 1:
+            raise patch_stack_lock_first.LockFirstError(
+                "runtime-source module locks use different immutable mirrors"
+            )
+        try:
+            with tempfile.TemporaryDirectory(prefix="west-runtime-inputs-") as directory:
+                canonical = Path(directory) / "canonical"
+                patch_stack_materialize._git(Path(directory), "init", "-q", str(canonical))
+                patch_stack_materialize._git(
+                    canonical, "remote", "add", "immutable", next(iter(mirrors))
+                )
+                ref_pairs: list[tuple[str, str]] = []
+                fetch_specs: list[str] = []
+                for index, lock in enumerate(locks):
+                    base_ref = f"refs/west/runtime-input/{index}/base"
+                    source_ref = f"refs/west/runtime-input/{index}/source"
+                    fetch_specs.extend(
+                        [
+                            f"{lock['mirror']['base_ref']}:{base_ref}",
+                            f"{lock['mirror']['source_ref']}:{source_ref}",
+                        ]
+                    )
+                    ref_pairs.append((base_ref, source_ref))
+                patch_stack_materialize._git(
+                    canonical, "fetch", "--no-tags", "immutable", *fetch_specs
+                )
+                proofs = [
+                    patch_stack_materialize.validate_fetched_lock(
+                        canonical, lock, base_ref, source_ref
+                    )
+                    for lock, (base_ref, source_ref) in zip(
+                        locks, ref_pairs, strict=True
+                    )
+                ]
+                # A local fetch by validated OID imports the objects while creating
+                # no persistent branch, tag, handoff ref or ad-hoc mirror ref.
+                import_oids = sorted(
+                    {
+                        oid
+                        for proof in proofs
+                        for oid in (proof["base_oid"], proof["source_oid"])
+                    }
+                )
+                patch_stack_materialize._git(
+                    repo,
+                    "fetch",
+                    "--no-tags",
+                    "--no-recurse-submodules",
+                    str(canonical),
+                    *import_oids,
+                )
+                for oid in import_oids:
+                    if patch_stack_materialize._oid(repo, oid) != oid:
+                        raise patch_stack_lock_first.LockFirstError(
+                            "runtime-source imported immutable OID differs from validated input"
+                        )
+                return proofs[0]["base_oid"]
+        except patch_stack_materialize.MaterializeError as error:
+            raise patch_stack_lock_first.LockFirstError(str(error)) from error
+
+    def _canonical_nested_revision(
+        self,
+        project_path: Path,
+        tree_revision: str,
+        first_bases: dict[str, str],
+        projects_by_path: dict[Path, Path],
+    ) -> str:
+        """Select typed bases first and frozen revisions for all other projects."""
+
+        declared_base = first_bases.get(str(project_path))
+        if declared_base is not None:
+            return declared_base
+        if project_path in projects_by_path:
+            return self._host._manifest_revision(str(project_path))
+        return tree_revision
+
+    def _materialize_canonical_profile(self, profile: str, overrides: dict[str, Path]) -> None:
+        """Replay one approved typed profile into lifecycle-owned worktrees.
+
+        This intentionally does not use a patch archive or publish integration
+        refs/generated locks.  The worktree context owns all resulting commits
+        and removes them when its caller exits.
+        """
+        self._require_supported_profile(profile)
+        plans = self._typed_profile_plans(profile)
+        plan = plans[-1][1]
         batch = plan.batch
         expected = {
             "homebrew": (
@@ -106,25 +246,6 @@ class RuntimeSourceMaterializer:
                 f"runtime-source {profile} requires exact {expected[0]} "
                 f"({expected[1]} series, {len(expected[2])} modules in typed order)"
             )
-        plans: list[tuple[str, patch_stack_lock_first.LockFirstPlan]] = []
-        visiting: set[str] = set()
-
-        def append_prerequisites(name: str) -> None:
-            if name in visiting:
-                raise patch_stack_lock_first.LockFirstError("runtime-source profile prerequisites are cyclic")
-            candidate = typed_plan(name)
-            visiting.add(name)
-            for prerequisite in candidate.composition["prerequisites"]:
-                if not isinstance(prerequisite, dict) or not isinstance(prerequisite.get("profile"), str):
-                    raise patch_stack_lock_first.LockFirstError(
-                        "runtime-source profile prerequisite is not typed"
-                    )
-                append_prerequisites(prerequisite["profile"])
-            visiting.remove(name)
-            if name not in [known for known, _ in plans]:
-                plans.append((name, candidate))
-
-        append_prerequisites(profile)
         mode_marker = "PATCH_STACK_MODE=default-lock-first materializer=runtime-source"
         if profile == "arch":
             mode_marker += " profile=arch"
@@ -600,6 +721,33 @@ class RuntimeSourceMaterializer:
         if omit_patch and not current_minus_patch:
             self._host.die(f"{patch['path']}: only current-minus-patch runtime proofs are supported")
         bad_revision = self._host._bad_revision(patch, proof) if omit_patch else None
+        canonical_profile = self.active_runtime_profile(patch)
+        if not omit_patch:
+            # Reject an unapproved profile before profile plans are loaded and
+            # before any immutable object is fetched or imported.
+            self._require_supported_profile(canonical_profile)
+        canonical_plans = (
+            [] if omit_patch else self._typed_profile_plans(canonical_profile)
+        )
+        canonical_entries: OrderedDict[str, list[dict[str, Any]]] = OrderedDict()
+        for _phase, phase_plan in canonical_plans:
+            for entry in phase_plan:
+                canonical_entries.setdefault(entry["module"], []).append(entry)
+        first_bases: dict[str, str] = {}
+        if not omit_patch:
+            for module, entries in canonical_entries.items():
+                repo = projects_by_path.get(Path(module))
+                if repo is None:
+                    self._host.die(
+                        f"{patch['path']}: typed profile module is absent from West: {module}"
+                    )
+                first_bases[module] = self._fetch_profile_module_inputs(
+                    repo.resolve(), entries
+                )
+            if "darling" not in first_bases:
+                self._host.die(
+                    f"{patch['path']}: typed profile composition has no Darling root"
+                )
         added: list[tuple[Path, Path]] = []
         owns_root = root is None
         temp = (
@@ -613,7 +761,15 @@ class RuntimeSourceMaterializer:
         source_started = time.monotonic()
         try:
             source_root = (temp / "darling").resolve()
-            darling_ref = bad_revision if omit_patch and patch_module_is_darling_root else self._host._manifest_revision("darling")
+            darling_ref = (
+                bad_revision
+                if omit_patch and patch_module_is_darling_root
+                else (
+                    self._host._manifest_revision("darling")
+                    if omit_patch
+                    else first_bases["darling"]
+                )
+            )
             bad_text = "current-minus-patch" if omit_patch else "profile-current"
             self._host.inf(f"  runtime source forest: {patch_module_path}={bad_text} under {source_root}")
             subprocess.run(
@@ -643,6 +799,10 @@ class RuntimeSourceMaterializer:
 
             def nested_revision(relative_path: Path, tree_revision: str) -> str:
                 project_path = Path("darling") / relative_path
+                if not omit_patch:
+                    return self._canonical_nested_revision(
+                        project_path, tree_revision, first_bases, projects_by_path
+                    )
                 if project_path not in materialized_modules:
                     return tree_revision
                 revision, _uses_profile_source_commit = self._guest_runtime_source_revision(
@@ -667,7 +827,26 @@ class RuntimeSourceMaterializer:
             )
             profile_started = time.monotonic()
             self._host.inf("  runtime phase start: profile materialization")
-            if patch_module_is_darling_root or Path("darling") in materialized_modules:
+            if not omit_patch:
+                overrides: dict[str, Path] = {"darling": source_root}
+                for entry in nested_entries:
+                    project_path = str(Path("darling") / entry.relative_path)
+                    overrides[project_path] = source_root / entry.relative_path
+                missing = sorted(set(canonical_entries) - set(overrides))
+                if missing:
+                    self._host.die(
+                        f"{patch['path']}: hydrated runtime source lacks typed module(s): "
+                        + ", ".join(missing)
+                    )
+                self._materialize_canonical_profile(canonical_profile, overrides)
+                for project_path in materialized_modules:
+                    target = (
+                        source_root
+                        if project_path == Path("darling")
+                        else source_root / project_path.relative_to("darling")
+                    )
+                    self._apply_red_source_patches(proof, str(project_path), target)
+            elif patch_module_is_darling_root or Path("darling") in materialized_modules:
                 if omit_patch:
                     self.apply_current_minus_profile(patch, proof, "darling", source_root)
                 else:
@@ -683,7 +862,7 @@ class RuntimeSourceMaterializer:
                 except ValueError:
                     continue
                 target = source_root / rel
-                if project_path not in materialized_modules:
+                if not omit_patch or project_path not in materialized_modules:
                     continue
                 module_text = str(project_path)
                 _revision, uses_profile_source_commit = self._guest_runtime_source_revision(

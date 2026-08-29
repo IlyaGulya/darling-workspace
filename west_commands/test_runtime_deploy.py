@@ -18,6 +18,12 @@ from deploy_transaction import (
     cohort_build_enabled,
     runtime_prefix_generation,
 )
+from prefix_state import (
+    PrefixStateError,
+    STATE_NAMES,
+    read_legacy_runtime_mode,
+    read_prefix_state,
+)
 from test_runtime import (
     ROOTLESS_BOOTSTRAP_RESOURCE,
     ROOTLESS_TOOLCHAIN_RESOURCE,
@@ -31,7 +37,6 @@ from test_runtime import (
     runtime_artifact_deploy_paths,
     runtime_deploy_targets,
 )
-PREFIX_STATE_NAME = ".darling-prefix-state-v2"
 
 
 @dataclass(frozen=True)
@@ -280,26 +285,25 @@ class RuntimeDeploymentService:
                 f"guest-runtime-deploy runtime prefix is not a real directory: {prefix}"
             )
         marker = prefix / RUNTIME_MODE_MARKER_NAME
-        state = prefix / PREFIX_STATE_NAME
         entries = list(prefix.iterdir())
         if not entries:
             return True, expected
-        if not state.is_symlink() and state.is_file():
+        state_entries = [
+            prefix / name
+            for name in STATE_NAMES
+            if (prefix / name).exists() or (prefix / name).is_symlink()
+        ]
+        if state_entries:
             try:
-                content = state.read_text()
-            except (OSError, UnicodeError) as error:
+                state = read_prefix_state(prefix)
+            except (OSError, PrefixStateError) as error:
                 self._host.die(
-                    f"guest-runtime-deploy cannot read typed prefix state {state}: {error}"
+                    f"guest-runtime-deploy cannot read typed prefix state: {error}"
                 )
-            fields = content.splitlines()
-            if (
-                fields[:2]
-                != ["DARLING_PREFIX_STATE_V2", "schema_version=2"]
-                or f"runtime_mode={mode}" not in fields
-            ):
+            if state.runtime_mode != mode:
                 self._host.die(
                     "guest-runtime-deploy typed prefix state mismatch: "
-                    f"expected schema 2 mode {mode!r}: {state}"
+                    f"expected mode {mode!r}, observed {state.runtime_mode!r}"
                 )
             if marker.exists() or marker.is_symlink():
                 self._host.die(
@@ -307,22 +311,17 @@ class RuntimeDeploymentService:
                     f"mode metadata: {marker}"
                 )
             return False, expected
-        if marker.is_symlink() or not marker.is_file():
+        try:
+            legacy_mode = read_legacy_runtime_mode(prefix)
+        except (OSError, PrefixStateError) as error:
             self._host.die(
                 "guest-runtime-deploy refuses a populated prefix without a "
-                f"regular typed mode marker: {prefix}"
+                f"valid legacy mode marker: {prefix}: {error}"
             )
-        try:
-            observed = marker.read_bytes()
-        except OSError as error:
-            self._host.die(
-                f"guest-runtime-deploy cannot read typed mode marker {marker}: {error}"
-            )
-        if observed != expected:
+        if legacy_mode != mode:
             self._host.die(
                 "guest-runtime-deploy typed mode marker mismatch: "
-                f"expected {expected.decode().strip()!r}, "
-                f"observed {observed.decode(errors='replace').strip()!r}"
+                f"expected mode {mode!r}, observed {legacy_mode!r}"
             )
         return False, expected
 
@@ -391,7 +390,7 @@ class RuntimeDeploymentService:
             )
         self._host.inf(
             f"  {label} deploy: product initialized typed prefix state -> "
-            f"{prefix / PREFIX_STATE_NAME}"
+            f"schema v{read_prefix_state(prefix).schema_version}"
         )
         return True
 

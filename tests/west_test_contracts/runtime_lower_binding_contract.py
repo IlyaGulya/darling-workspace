@@ -73,8 +73,6 @@ def run_umask_case(value: int) -> None:
         )
         transaction.replace(lower_source, prefix / "libexec/darling/usr/lib/dyld")
         transaction.replace(controller_source, prefix / "bin/darlingserver")
-        (prefix / ".lifecycle.lock").write_bytes(b"")
-        (prefix / ".lifecycle.lock").chmod(0o600)
         lower = prefix / "libexec/darling"
         binding = transaction.bind_runtime_lower_root(prefix_generation=41)
         fields = parse_binding(binding)
@@ -494,15 +492,21 @@ with tempfile.TemporaryDirectory(prefix="runtime-lower-restart-recovery-") as te
 
 # Hostile metadata is rejected both before and after flock. Hard-linking also
 # proves nlink=1 is enforced rather than inferred from pathname equality.
-for hostile in ("mode", "nlink"):
+for hostile in ("mode", "nlink", "symlink", "fifo"):
     with tempfile.TemporaryDirectory(prefix=f"runtime-lower-hostile-{hostile}-") as temp:
         root = Path(temp)
         prefix, _ = prefix_fixture(root)
         lock = prefix / ".lifecycle.lock"
         if hostile == "mode":
             lock.chmod(0o640)
-        else:
+        elif hostile == "nlink":
             os.link(lock, prefix / ".lifecycle.lock.alias")
+        elif hostile == "symlink":
+            lock.unlink()
+            os.symlink("target", lock)
+        else:
+            lock.unlink()
+            os.mkfifo(lock, 0o600)
         baseline = fd_census()
         transaction = DeploymentTransaction(root / "manifest.json", prefix)
         try:
@@ -512,6 +516,93 @@ for hostile in ("mode", "nlink"):
         else:
             raise AssertionError(f"hostile lock {hostile} accepted")
         assert fd_census() == baseline
+
+
+class LockAcquisitionFault(DeploymentTransaction):
+    checkpoint: str | None = None
+    replace = False
+
+    def _runtime_lower_fault(self, checkpoint: str, parent_fd: int, name: str) -> None:
+        if checkpoint != self.checkpoint:
+            return
+        if self.replace:
+            os.rename(name, f"{name}.retained", src_dir_fd=parent_fd, dst_dir_fd=parent_fd)
+            replacement = os.open(
+                name,
+                os.O_RDWR | os.O_CREAT | os.O_EXCL | os.O_CLOEXEC,
+                0o600,
+                dir_fd=parent_fd,
+            )
+            os.write(replacement, b"replacement\n")
+            os.close(replacement)
+        raise OSError(errno.EIO, "lock acquisition fault")
+
+
+# Fresh creation is umask-independent, persists as a coordination anchor, and
+# owns no descriptor after release or failure.
+with tempfile.TemporaryDirectory(prefix="runtime-lower-fresh-lock-") as temp:
+    root = Path(temp); prefix = root / "prefix"; prefix.mkdir()
+    baseline = fd_census(); transaction = DeploymentTransaction(root / "manifest.json", prefix)
+    expected = (prefix.stat().st_dev, prefix.stat().st_ino)
+    transaction._acquire_runtime_lower_lease(expected)
+    lock = prefix / ".lifecycle.lock"
+    assert stat.S_ISREG(lock.stat().st_mode) and stat.S_IMODE(lock.stat().st_mode) == 0o600
+    assert lock.stat().st_nlink == 1
+    assert_contender(prefix, blocked=True)
+    transaction._release_runtime_lower_lease()
+    assert_contender(prefix, blocked=False)
+    assert fd_census() == baseline
+
+# An active holder is typed LockBusy and the losing acquisition leaks no FD.
+with tempfile.TemporaryDirectory(prefix="runtime-lower-active-lock-") as temp:
+    root = Path(temp); prefix, _ = prefix_fixture(root)
+    holder = os.open(prefix / ".lifecycle.lock", os.O_RDWR | os.O_CLOEXEC)
+    fcntl.flock(holder, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    baseline = fd_census(); transaction = DeploymentTransaction(root / "manifest.json", prefix)
+    try:
+        transaction._acquire_runtime_lower_lease((prefix.stat().st_dev, prefix.stat().st_ino))
+    except DeploymentTransactionError as error:
+        assert "busy" in str(error)
+    else:
+        raise AssertionError("active lifecycle lock holder was accepted")
+    assert fd_census() == baseline
+    fcntl.flock(holder, fcntl.LOCK_UN); os.close(holder)
+
+# Replacement immediately before or after flock is detected by the exact
+# opened/named inode revalidation and the replacement remains untouched.
+for checkpoint in ("before_lock_flock", "after_lock_flock"):
+    with tempfile.TemporaryDirectory(prefix=f"runtime-lower-lock-race-{checkpoint}-") as temp:
+        root = Path(temp); prefix, _ = prefix_fixture(root)
+        transaction = LockAcquisitionFault(root / "manifest.json", prefix)
+        transaction.checkpoint = checkpoint; transaction.replace = True
+        baseline = fd_census()
+        try:
+            transaction._acquire_runtime_lower_lease((prefix.stat().st_dev, prefix.stat().st_ino))
+        except DeploymentTransactionError:
+            pass
+        else:
+            raise AssertionError(f"lock replacement at {checkpoint} was accepted")
+        assert (prefix / ".lifecycle.lock").read_bytes() == b"replacement\n"
+        assert (prefix / ".lifecycle.lock.retained").is_file()
+        assert fd_census() == baseline
+
+# A failure after creation never removes the permanent anchor and releases the
+# lease; a subsequent contender can acquire it.
+with tempfile.TemporaryDirectory(prefix="runtime-lower-created-lock-failure-") as temp:
+    root = Path(temp); prefix = root / "prefix"; prefix.mkdir()
+    transaction = LockAcquisitionFault(root / "manifest.json", prefix)
+    transaction.checkpoint = "after_lock_flock"
+    baseline = fd_census()
+    try:
+        transaction._acquire_runtime_lower_lease((prefix.stat().st_dev, prefix.stat().st_ino))
+    except DeploymentTransactionError:
+        pass
+    else:
+        raise AssertionError("post-create acquisition fault was accepted")
+    assert (prefix / ".lifecycle.lock").is_file()
+    assert stat.S_IMODE((prefix / ".lifecycle.lock").stat().st_mode) == 0o600
+    assert_contender(prefix, blocked=False)
+    assert fd_census() == baseline
 
 
 class OwnershipFault(DeploymentTransaction):
@@ -1289,5 +1380,15 @@ with tempfile.TemporaryDirectory(prefix="runtime-lower-whole-prefix-swap-") as t
         replacement_identity.st_ino,
     )
     assert (prefix / RUNTIME_LOWER_BINDING_NAME).read_bytes() == deployed
+
+# An ordinary deployment transaction must not create the lifecycle lock.  The
+# permanent anchor belongs exclusively to explicit runtime-lower publication.
+with tempfile.TemporaryDirectory(prefix="runtime-lower-off-no-lock-") as temp:
+    root = Path(temp)
+    prefix = root / "prefix"
+    prefix.mkdir()
+    transaction = DeploymentTransaction(root / "manifest.json", prefix)
+    transaction.commit()
+    assert not (prefix / ".lifecycle.lock").exists()
 
 print("RUNTIME_LOWER_BINDING_DEPLOYMENT_VALID")
