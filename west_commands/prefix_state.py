@@ -103,9 +103,12 @@ def read_prefix_state(prefix: Path) -> PrefixState:
             if not key or key in fields:
                 raise PrefixStateError("typed prefix state is ambiguous")
             fields[key] = value
-        common = {"schema_version", "runtime_mode", "generation", "prefix_device", "prefix_inode"}
+        common = {
+            "schema_version", "runtime_mode", "generation", "prefix_device",
+            "prefix_inode", "owner_uid", "owner_gid", "provenance",
+        }
         required = common if version == 2 else common | {
-            "sidecar_device", "sidecar_inode", "owner_uid", "owner_gid", "provenance"
+            "sidecar_device", "sidecar_inode",
         }
         if set(fields) != required:
             raise PrefixStateError("typed prefix state field set is not exact")
@@ -121,16 +124,23 @@ def read_prefix_state(prefix: Path) -> PrefixState:
             raise PrefixStateError("typed prefix runtime mode is invalid")
         if (device, inode) != (prefix_stat.st_dev, prefix_stat.st_ino):
             raise PrefixStateError("typed prefix state identity mismatch")
+        try:
+            owner = (int(fields["owner_uid"]), int(fields["owner_gid"]))
+        except ValueError as error:
+            raise PrefixStateError("typed prefix state metadata is malformed") from error
+        if owner != (prefix_stat.st_uid, prefix_stat.st_gid):
+            raise PrefixStateError("typed prefix state owner mismatch")
+        expected_provenance = (
+            "darling-runtime-prefix-lifecycle-v2"
+            if version == 2 else "darling-runtime-prefix-sidecar-v1"
+        )
+        if fields["provenance"] != expected_provenance:
+            raise PrefixStateError("typed prefix state provenance mismatch")
         if version == 3:
             try:
                 sidecar_identity = (int(fields["sidecar_device"]), int(fields["sidecar_inode"]))
-                owner = (int(fields["owner_uid"]), int(fields["owner_gid"]))
             except ValueError as error:
                 raise PrefixStateError("typed prefix state metadata is malformed") from error
-            if owner != (prefix_stat.st_uid, prefix_stat.st_gid):
-                raise PrefixStateError("typed prefix state owner mismatch")
-            if fields["provenance"] != "darling-runtime-prefix-sidecar-v1":
-                raise PrefixStateError("typed prefix state provenance mismatch")
             parent_fd = os.open(
                 prefix.parent,
                 os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC,
