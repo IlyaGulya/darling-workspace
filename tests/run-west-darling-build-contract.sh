@@ -350,6 +350,9 @@ with tempfile.TemporaryDirectory() as temp:
         "generation=77\n"
         f"prefix_device={prefix_identity.st_dev}\n"
         f"prefix_inode={prefix_identity.st_ino}\n"
+        f"owner_uid={prefix_identity.st_uid}\n"
+        f"owner_gid={prefix_identity.st_gid}\n"
+        "provenance=darling-runtime-prefix-lifecycle-v2\n"
     )
     (prefix / ".darling-prefix-state-v2").chmod(0o600)
     (prefix / ".lifecycle.lock").write_bytes(b"")

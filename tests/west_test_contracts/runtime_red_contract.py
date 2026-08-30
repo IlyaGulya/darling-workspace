@@ -912,7 +912,7 @@ with tempfile.TemporaryDirectory() as temp:
         "prefix_inode=$prefix_inode\n"
         "owner_uid=$(id -u)\n"
         "owner_gid=$(id -g)\n"
-        "provenance=contract\n"
+        "provenance=darling-runtime-prefix-lifecycle-v2\n"
         "EOF\n"
         "chmod 0600 \"$DPREFIX/.darling-prefix-state-v2\"\n"
     )

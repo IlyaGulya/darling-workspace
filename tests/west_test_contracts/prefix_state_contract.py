@@ -15,15 +15,17 @@ from test_runtime_deploy import RuntimeDeploymentService
 
 def write_state(prefix: Path, version: int, *, inode: int | None = None) -> Path:
     identity = prefix.stat(); state = prefix / f".darling-prefix-state-v{version}"
-    extra = ""
+    extra = (
+        f"owner_uid={identity.st_uid}\nowner_gid={identity.st_gid}\n"
+        f"provenance={'darling-runtime-prefix-lifecycle-v2' if version == 2 else 'darling-runtime-prefix-sidecar-v1'}\n"
+    )
     if version == 3:
         sidecar = prefix.with_name(f"{prefix.name}.eunion-sidecar-v1")
         sidecar.mkdir(exist_ok=True)
         sidecar_identity = sidecar.stat()
         extra = (
             f"sidecar_device={sidecar_identity.st_dev}\nsidecar_inode={sidecar_identity.st_ino}\n"
-            f"owner_uid={identity.st_uid}\nowner_gid={identity.st_gid}\n"
-            "provenance=darling-runtime-prefix-sidecar-v1\n"
+            + extra
         )
     state.write_text(f"DARLING_PREFIX_STATE_V{version}\nschema_version={version}\ngeneration=7\n"
                      "runtime_mode=rootless-eunion\n"
@@ -96,6 +98,22 @@ def main() -> None:
         deployment_rejected(state_marker)
         extra_field = root / "extra-field"; extra_field.mkdir(); extra = write_state(extra_field, 3)
         extra.write_text(extra.read_text() + "forged=accepted\n"); rejected(extra_field)
+        v2_missing = root / "v2-missing"; v2_missing.mkdir(); missing = write_state(v2_missing, 2)
+        missing.write_text(missing.read_text().replace(f"owner_gid={v2_missing.stat().st_gid}\n", "")); rejected(v2_missing)
+        deployment_rejected(v2_missing)
+        v2_extra = root / "v2-extra"; v2_extra.mkdir(); extra = write_state(v2_extra, 2)
+        extra.write_text(extra.read_text() + "forged=accepted\n"); rejected(v2_extra)
+        deployment_rejected(v2_extra)
+        v2_owner = root / "v2-owner"; v2_owner.mkdir(); owner = write_state(v2_owner, 2)
+        owner.write_text(owner.read_text().replace(
+            f"owner_uid={v2_owner.stat().st_uid}\n", f"owner_uid={v2_owner.stat().st_uid + 1}\n"
+        )); rejected(v2_owner)
+        deployment_rejected(v2_owner)
+        v2_provenance = root / "v2-provenance"; v2_provenance.mkdir(); provenance = write_state(v2_provenance, 2)
+        provenance.write_text(provenance.read_text().replace(
+            "provenance=darling-runtime-prefix-lifecycle-v2\n", "provenance=forged\n"
+        )); rejected(v2_provenance)
+        deployment_rejected(v2_provenance)
         sidecar_swap = root / "sidecar-swap"; sidecar_swap.mkdir(); write_state(sidecar_swap, 3)
         original_sidecar = sidecar_swap.with_name(f"{sidecar_swap.name}.eunion-sidecar-v1")
         original_sidecar.rename(original_sidecar.with_name(f"{original_sidecar.name}.old"))
