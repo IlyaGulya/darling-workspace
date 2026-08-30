@@ -337,15 +337,26 @@
       "migration": "The opt-in first-cohort route receives the already-bound listener by SCM_RIGHTS and delegates retirement to the retained Rust authority."
     },
     {
-      "id": "darlingserver.preinit-wipe",
-      "owner": {"repository": "darling", "paths": ["src/external/darlingserver/src/darlingserver.cpp"], "symbols": ["darlingPreInit", "wipeDir"]},
+      "id": "darlingserver.preinit-var-run-generation",
+      "owner": {"repository": "darling", "paths": ["src/external/darlingserver/src/darlingserver.cpp"], "symbols": ["darlingPreInit", "main"]},
       "operation": ["recursive-remove"],
-      "targets": ["/var/tmp/*", "/var/run/*"],
-      "syscall_or_helper": ["opendir/readdir", "unlink", "rmdir"],
+      "targets": ["/var/run", "/var/run/*"],
+      "syscall_or_helper": ["darling_lifecycle_cohort_prepare_var_run", "renameat2(RENAME_NOREPLACE)", "mkdirat", "unlinkat"],
       "lifecycle_phase": "runtime-start",
+      "lock": {"required": true, "path": ".lifecycle.lock", "status": "exact-exclusive-flock", "acquisition": "rust-cohort-controller-retained-session-lease", "retained_fd": true},
+      "compatibility": "cohort-ready",
+      "migration": "The opt-in route replaces the whole generation-owned var/run directory through a Rust-owned durable transaction. Unbound legacy directories are preserved in forensic quarantine; global activation remains deferred."
+    },
+    {
+      "id": "darlingserver.preinit-var-tmp-legacy-wipe",
+      "owner": {"repository": "darling", "paths": ["src/external/darlingserver/src/darlingserver.cpp"], "symbols": ["darlingPreInit", "wipeDirFD"]},
+      "operation": ["recursive-remove"],
+      "targets": ["/var/tmp/*"],
+      "syscall_or_helper": ["opendir/readdir", "unlinkat"],
+      "lifecycle_phase": "runtime-start-off-only",
       "lock": {"required": true, "path": ".lifecycle.lock", "status": "missing", "acquisition": "none", "retained_fd": false},
       "compatibility": "incompatible",
-      "migration": "Replace blanket wipe with a controller-owned typed startup transaction; preserve product-only exceptions explicitly."
+      "migration": "Compile-time OFF preserves the legacy blanket wipe. The opt-in route never invokes it and leaves persistent var/tmp byte- and inode-identical."
     },
     {
       "id": "darlingserver.user-home",
