@@ -37,6 +37,7 @@ const CONTROLLER_CLOSURE: &[&str] = &[
     "src/lib.rs",
     "src/controller.rs",
     "src/cohort_routing.rs",
+    "src/preinit_var_run.rs",
     "src/guest_namespace_authority.rs",
     "src/guest_namespace_transaction.rs",
     "src/runtime_lower_binding.rs",

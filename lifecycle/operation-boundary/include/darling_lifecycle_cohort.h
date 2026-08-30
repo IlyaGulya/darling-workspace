@@ -10,7 +10,7 @@ extern "C" {
 #endif
 
 #define DARLING_LIFECYCLE_CONTROL_NAME_CAPACITY 80
-#define DARLING_LIFECYCLE_COHORT_ABI_VERSION 4
+#define DARLING_LIFECYCLE_COHORT_ABI_VERSION 5
 #define DARLING_LIFECYCLE_NONCE_HEX_BYTES 64
 #define DARLING_GUEST_NAMESPACE_BOOTSTRAP_FD 1023
 #define DARLING_GUEST_NAMESPACE_VCHROOT_FD 1010
@@ -100,6 +100,11 @@ pid_t darling_lifecycle_cohort_worker_pid(
 );
 
 bool darling_lifecycle_cohort_admission_open(
+	struct darling_lifecycle_cohort_controller* controller
+);
+
+/* Rotate/create the generation-owned public var/run directory. */
+int darling_lifecycle_cohort_prepare_var_run(
 	struct darling_lifecycle_cohort_controller* controller
 );
 /* On DARLING_LIFECYCLE_FINISH_DRAIN_PENDING the same controller pointer remains

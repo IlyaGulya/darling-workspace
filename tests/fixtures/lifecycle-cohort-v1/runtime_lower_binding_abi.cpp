@@ -5,7 +5,7 @@
 
 #include <cstdio>
 
-#if DARLING_LIFECYCLE_COHORT_ABI_VERSION != 4
+#if DARLING_LIFECYCLE_COHORT_ABI_VERSION != 5
 #error "unexpected lifecycle cohort ABI"
 #endif
 

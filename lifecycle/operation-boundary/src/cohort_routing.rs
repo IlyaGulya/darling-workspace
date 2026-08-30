@@ -940,7 +940,13 @@ impl SessionAuthority {
     }
 
     fn revalidate(&self) -> Result<(), CohortError> {
-        if identity(self.prefix.as_raw_fd())? != self.prefix_identity {
+        let observed = identity(self.prefix.as_raw_fd())?;
+        if observed.device != self.prefix_identity.device
+            || observed.inode != self.prefix_identity.inode
+            || observed.mode != self.prefix_identity.mode
+            || observed.uid != self.prefix_identity.uid
+            || observed.gid != self.prefix_identity.gid
+        {
             return Err(CohortError::Identity("prefix"));
         }
         revalidate_lock(
@@ -2409,6 +2415,9 @@ pub struct CohortController {
     guest_namespace: Option<GuestNamespaceAuthority>,
     guest_transactions: Mutex<Option<GuestNamespaceTransactionService>>,
     runtime_lower_binding: Mutex<Option<RuntimeLowerBinding>>,
+    preinit_var_run_recovery: Mutex<bool>,
+    preinit_var_parent: Option<OwnedFd>,
+    prefix_state_v3: bool,
     deployment_prefix: OwnedFd,
     prefix_generation: u64,
     transaction_sidecar: TransactionSidecar,
@@ -2435,6 +2444,63 @@ enum CleanupPhase {
 }
 
 impl CohortController {
+    fn prepare_var_run(&mut self) -> Result<crate::preinit_var_run::VarRunOutcome, CohortError> {
+        let (prefix, session_generation) = {
+            let authority = self.guest_namespace.as_ref().ok_or(CohortError::Protocol(
+                "guest namespace authority unavailable",
+            ))?;
+            (authority.prefix_fd(), authority.generation())
+        };
+        if !self.prefix_state_v3 {
+            return Err(CohortError::Protocol(
+                "generation var/run requires runtime prefix state v3",
+            ));
+        }
+        if self.preinit_var_parent.is_none() {
+            self.preinit_var_parent = Some(
+                crate::preinit_var_run::acquire_var_parent(prefix).map_err(|error| {
+                    eprintln!("generation var/run parent acquisition refused: {error}");
+                    CohortError::Protocol("generation var/run parent acquisition refused")
+                })?,
+            );
+        }
+        let parent = self
+            .preinit_var_parent
+            .as_ref()
+            .ok_or(CohortError::Protocol(
+                "generation var/run parent unavailable",
+            ))?;
+        match crate::preinit_var_run::prepare_retained(
+            prefix,
+            parent.as_raw_fd(),
+            session_generation,
+        ) {
+            Ok(outcome) => Ok(outcome),
+            Err(error) => {
+                eprintln!("generation var/run authority error: {error}");
+                if error.recovery_required() {
+                    *self
+                        .preinit_var_run_recovery
+                        .lock()
+                        .unwrap_or_else(|p| p.into_inner()) = true;
+                    if let Some(authority) = self.guest_namespace.as_mut() {
+                        let _ = authority.revoke();
+                    }
+                    self.revoke_guest_transactions();
+                }
+                Err(CohortError::Protocol(
+                    "generation var/run preparation refused",
+                ))
+            }
+        }
+    }
+
+    fn preinit_var_run_recovery_pending(&self) -> bool {
+        *self
+            .preinit_var_run_recovery
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+    }
     fn configure_guest_transactions(&self) -> Result<(), CohortError> {
         let authority = self.guest_namespace.as_ref().ok_or(CohortError::Protocol(
             "guest namespace authority unavailable",
@@ -2603,6 +2669,7 @@ impl CohortController {
         allow_test_peer: bool,
     ) -> Result<(Self, OwnedFd), CohortError> {
         let prefix_generation = authority.prefix_state.generation;
+        let prefix_state_v3 = authority.prefix_state.name == PREFIX_STATE_V3_NAME;
         #[cfg(test)]
         {
             authority.allow_test_peer = allow_test_peer;
@@ -2656,6 +2723,9 @@ impl CohortController {
                 guest_namespace,
                 guest_transactions: Mutex::new(None),
                 runtime_lower_binding: Mutex::new(None),
+                preinit_var_run_recovery: Mutex::new(false),
+                preinit_var_parent: None,
+                prefix_state_v3,
                 deployment_prefix,
                 prefix_generation,
                 transaction_sidecar,
@@ -2783,6 +2853,9 @@ impl CohortController {
                 guest_namespace,
                 guest_transactions: Mutex::new(None),
                 runtime_lower_binding: Mutex::new(None),
+                preinit_var_run_recovery: Mutex::new(false),
+                preinit_var_parent: None,
+                prefix_state_v3,
                 deployment_prefix,
                 prefix_generation,
                 transaction_sidecar,
@@ -3189,7 +3262,7 @@ pub unsafe extern "C" fn darling_lifecycle_cohort_finish(
         return 1;
     }
     owned.revoke_guest_transactions();
-    if owned.guest_transaction_recovery_pending() {
+    if owned.guest_transaction_recovery_pending() || owned.preinit_var_run_recovery_pending() {
         owned.cleanup_phase = CleanupPhase::RecoveryPending;
         let restored = Box::into_raw(owned);
         debug_assert_eq!(restored, controller);
@@ -3222,7 +3295,7 @@ pub unsafe extern "C" fn darling_lifecycle_cohort_finish(
 pub unsafe extern "C" fn darling_lifecycle_cohort_worker_pid(
     controller: *mut CohortController,
 ) -> libc::pid_t {
-    let Some(controller) = controller.as_ref() else {
+    let Some(controller) = controller.as_mut() else {
         return -1;
     };
     #[cfg(not(test))]
@@ -3347,6 +3420,26 @@ pub struct GuestTransactionWireResult {
     inode: u64,
     created_fd: i32,
     reserved: u32,
+}
+
+#[no_mangle]
+/// Prepare the generation-owned public `var/run` directory.
+///
+/// # Safety
+/// The controller must remain valid and exclusively owned for this call.
+pub unsafe extern "C" fn darling_lifecycle_cohort_prepare_var_run(
+    controller: *mut CohortController,
+) -> c_int {
+    let Some(controller) = controller.as_mut() else {
+        return -1;
+    };
+    match controller.prepare_var_run() {
+        Ok(_) => 0,
+        Err(error) => {
+            eprintln!("generation var/run preparation refused: {error}");
+            -1
+        }
+    }
 }
 
 #[no_mangle]
@@ -3689,6 +3782,19 @@ mod tests {
         drop(authority);
     }
 
+    #[test]
+    fn retained_prefix_revalidation_separates_identity_from_link_topology() {
+        let fixture = Fixture::new_v3();
+        let authority =
+            SessionAuthority::acquire(&fixture.root, std::process::id() as libc::pid_t).unwrap();
+        let before = identity(authority.prefix.as_raw_fd()).unwrap();
+        fs::create_dir(fixture.root.join("post-acquisition-directory")).unwrap();
+        let after = identity(authority.prefix.as_raw_fd()).unwrap();
+        assert_eq!((before.device, before.inode), (after.device, after.inode));
+        assert_ne!(before.nlink, after.nlink);
+        authority.revalidate().unwrap();
+    }
+
     fn connect(path: &Path) -> OwnedFd {
         let fd =
             unsafe { libc::socket(libc::AF_UNIX, libc::SOCK_SEQPACKET | libc::SOCK_CLOEXEC, 0) };
@@ -3771,6 +3877,80 @@ mod tests {
             assert_eq!(identity(fd.as_raw_fd()).unwrap().inode, result.inode);
         }
         assert!(fixture.root.join("var/tmp/rpc-created").exists());
+        controller.finish().unwrap();
+    }
+
+    #[test]
+    fn c_abi_rotates_only_var_run_and_preserves_var_tmp() {
+        let fixture = Fixture::new_v3();
+        let sentinel = fixture.root.join("var/tmp/preinit-sentinel");
+        fs::write(&sentinel, b"persistent").unwrap();
+        let before = fs::metadata(&sentinel).unwrap();
+        let (mut controller, listener) =
+            CohortController::start_for_test(&fixture.root, std::process::id() as _).unwrap();
+        drop(listener);
+        assert_eq!(
+            unsafe { darling_lifecycle_cohort_prepare_var_run(&mut controller) },
+            0
+        );
+        let after = fs::metadata(&sentinel).unwrap();
+        assert_eq!((before.dev(), before.ino()), (after.dev(), after.ino()));
+        assert_eq!(fs::read(&sentinel).unwrap(), b"persistent");
+        let first = fs::metadata(fixture.root.join("var/run")).unwrap();
+        assert_eq!(
+            unsafe { darling_lifecycle_cohort_prepare_var_run(&mut controller) },
+            0
+        );
+        let repeated = fs::metadata(fixture.root.join("var/run")).unwrap();
+        assert_eq!((first.dev(), first.ino()), (repeated.dev(), repeated.ino()));
+        controller.finish().unwrap();
+
+        let (mut reused, listener) =
+            CohortController::start_for_test(&fixture.root, std::process::id() as _).unwrap();
+        drop(listener);
+        assert_eq!(
+            unsafe { darling_lifecycle_cohort_prepare_var_run(&mut reused) },
+            0
+        );
+        let next = fs::metadata(fixture.root.join("var/run")).unwrap();
+        assert_ne!((first.dev(), first.ino()), (next.dev(), next.ino()));
+        reused.finish().unwrap();
+    }
+
+    #[test]
+    fn interrupted_var_run_rotation_closes_admission_and_retains_recovery() {
+        let fixture = Fixture::new_v3();
+        let (mut controller, listener) =
+            CohortController::start_for_test(&fixture.root, std::process::id() as _).unwrap();
+        drop(listener);
+        crate::preinit_var_run::inject_fault(2);
+        assert!(controller.prepare_var_run().is_err());
+        assert!(controller.preinit_var_run_recovery_pending());
+        let retained_parent = controller.preinit_var_parent.as_ref().unwrap();
+        let retained_identity = identity(retained_parent.as_raw_fd()).unwrap();
+        fs::rename(fixture.root.join("var"), fixture.root.join("var-retained")).unwrap();
+        fs::create_dir(fixture.root.join("var")).unwrap();
+        assert_eq!(
+            identity(retained_parent.as_raw_fd()).unwrap(),
+            retained_identity
+        );
+        assert!(!controller.guest_namespace.as_ref().unwrap().is_active());
+    }
+
+    #[test]
+    fn var_run_phase_rejects_legacy_prefix_state_before_mutation() {
+        let fixture = Fixture::new();
+        let public = fs::metadata(fixture.root.join("var/run")).unwrap();
+        let (mut controller, listener) =
+            CohortController::start_for_test(&fixture.root, std::process::id() as _).unwrap();
+        drop(listener);
+        assert_eq!(
+            unsafe { darling_lifecycle_cohort_prepare_var_run(&mut controller) },
+            -1
+        );
+        let after = fs::metadata(fixture.root.join("var/run")).unwrap();
+        assert_eq!((public.dev(), public.ino()), (after.dev(), after.ino()));
+        assert!(!fixture.root.join(".darling-var-run-state-v1").exists());
         controller.finish().unwrap();
     }
 
