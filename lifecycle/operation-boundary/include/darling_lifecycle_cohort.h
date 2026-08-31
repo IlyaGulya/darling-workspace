@@ -10,7 +10,7 @@ extern "C" {
 #endif
 
 #define DARLING_LIFECYCLE_CONTROL_NAME_CAPACITY 80
-#define DARLING_LIFECYCLE_COHORT_ABI_VERSION 5
+#define DARLING_LIFECYCLE_COHORT_ABI_VERSION 6
 #define DARLING_LIFECYCLE_NONCE_HEX_BYTES 64
 #define DARLING_GUEST_NAMESPACE_BOOTSTRAP_FD 1023
 #define DARLING_GUEST_NAMESPACE_VCHROOT_FD 1010
@@ -106,6 +106,28 @@ bool darling_lifecycle_cohort_admission_open(
 /* Rotate/create the generation-owned public var/run directory. */
 int darling_lifecycle_cohort_prepare_var_run(
 	struct darling_lifecycle_cohort_controller* controller
+);
+
+#define DARLING_LIFECYCLE_USER_HOME_SCHEMA_V1 1u
+#define DARLING_LIFECYCLE_USER_HOME_LINK_COUNT 8u
+#define DARLING_LIFECYCLE_USER_HOME_SHARED_MODE 0777u
+#define DARLING_LIFECYCLE_USER_HOME_USER_MODE 0755u
+struct darling_lifecycle_user_home_plan {
+	uint32_t schema_version;
+	uid_t owner_uid;
+	gid_t owner_gid;
+	uint32_t shared_mode;
+	uint32_t user_mode;
+	uint32_t reserved;
+	const char* login;
+	/* LinuxHome followed by Desktop, Downloads, Public, Documents, Music,
+	 * Pictures and Movies. Optional XDG targets are NULL. */
+	const char* targets[DARLING_LIFECYCLE_USER_HOME_LINK_COUNT];
+};
+
+int darling_lifecycle_cohort_prepare_user_home(
+	struct darling_lifecycle_cohort_controller* controller,
+	const struct darling_lifecycle_user_home_plan* plan
 );
 /* On DARLING_LIFECYCLE_FINISH_DRAIN_PENDING the same controller pointer remains
  * owned by the caller and must be retried; worker cleanup has not started. */

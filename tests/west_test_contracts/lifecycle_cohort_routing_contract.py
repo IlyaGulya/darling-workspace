@@ -16,6 +16,7 @@ COHORT = {
     "darlingserver.control-socket",
     "darlingserver.runtime-main-log",
     "darlingserver.preinit-var-run-generation",
+    "darlingserver.user-home",
     "launchd.system-ipc-socket",
     "launchd.per-user-ipc-socket",
 }
@@ -105,6 +106,14 @@ def main() -> None:
     for marker in ("lifecycleListenerSocket", "_lifecycleRoutedSocket"):
         if marker not in dserver_source:
             raise SystemExit(f"Darlingserver route missing {marker}")
+    dserver_main = (darlingserver / "src/darlingserver.cpp").read_text(encoding="utf-8")
+    for marker in (
+        "collectLifecycleUserHomePlan",
+        "darling_lifecycle_cohort_prepare_user_home",
+        "setupUserHomeLegacy(prefixFD, originalUID)",
+    ):
+        if marker not in dserver_main:
+            raise SystemExit(f"Darlingserver user-home route missing {marker}")
 
     rust = (workspace / "lifecycle/operation-boundary/src/cohort_routing.rs").read_text()
     for marker in (
@@ -121,6 +130,7 @@ def main() -> None:
         "MAX_REJECTED_REQUESTS_PER_SLICE",
         "DYNAMIC_DIRECTORY_ATTEMPTS",
         "EndpointKey::PerUser",
+        "prepare_user_home",
     ):
         if marker not in rust:
             raise SystemExit(f"Rust cohort authority missing {marker}")

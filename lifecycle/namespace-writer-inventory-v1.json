@@ -363,11 +363,11 @@
       "owner": {"repository": "darling", "paths": ["src/external/darlingserver/src/darlingserver.cpp"], "symbols": ["setupUserHome"]},
       "operation": ["remove", "create-directory", "create-symlink"],
       "targets": ["Users", "Users/*", "Users/*/LinuxHome", "Users/*/{Desktop,Downloads,Public,Documents,Music,Pictures,Movies}"],
-      "syscall_or_helper": ["unlink", "mkdir", "symlink"],
+      "syscall_or_helper": ["darling_lifecycle_cohort_prepare_user_home", "mkdirat", "symlinkat"],
       "lifecycle_phase": "runtime-start",
-      "lock": {"required": true, "path": ".lifecycle.lock", "status": "missing", "acquisition": "none", "retained_fd": false},
-      "compatibility": "incompatible",
-      "migration": "Perform home-layout materialization under the same pre-session lease, with fd-relative parent capabilities."
+      "lock": {"required": true, "path": ".lifecycle.lock", "status": "exact-exclusive-flock", "acquisition": "rust-cohort-controller-retained-session-lease", "retained_fd": true},
+      "compatibility": "cohort-ready",
+      "migration": "The opt-in route accepts persistent policy-valid layout objects without claiming them, including safe umask-derived subsets of the declared base modes, creates only missing objects fd-relative under the retained lease, and preserves every conflict fail-closed. OFF keeps the legacy setupUserHome path."
     },
     {
       "id": "darlingserver.prefix-copy-and-permissions",

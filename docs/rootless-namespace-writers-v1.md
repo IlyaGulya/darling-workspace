@@ -54,6 +54,16 @@ an unbound legacy directory is moved intact to a reported forensic quarantine.
 The ON path never blanket-cleans persistent `var/tmp`; that legacy responsibility
 is a separate OFF-only incompatible record.
 
+The opt-in user-home phase is additive and persistent: Rust accepts existing
+directories and links only when their type, owner, mode and target are exact,
+and creates missing objects fd-relative under the same retained lease. It does
+not claim existing objects, delete conflicts, or add shutdown cleanup. The OFF
+build continues to execute the legacy `setupUserHome` implementation. The ON
+layout passes base modes `0777` for `Users`/`Shared` and `0755` for the login
+directory to the kernel. Existing directories are accepted only when their
+mode is a safe umask-derived subset with owner `rwx`, no excess or special bits,
+and exact owner/type.
+
 The third bounded cohort routes only the Homebrew/source-line
 `/private/var/log/dserver.log`. Rust opens the regular file fd-relative under
 the retained prefix and session lease, retains its exact identity, and hands
@@ -68,7 +78,7 @@ record prevents main-log acceptance from silently promoting the aux path.
 | `darling-workspace/lifecycle/operation-boundary/src/{lib,linux_backend,quarantine_gc}.rs` | generic fd-relative mutation, backend quarantine handoff and bounded GC | infrastructure/recovery | individually typed but incompatible until a production consumer binds the complete writer set to the same exact lease |
 | `darling/src/startup/darling.c` | Prefix provisioning, `.init.pid` publication/repair, stale shellspawn endpoint | create, boot, shutdown | endpoint/PID cohort ready; prefix provisioning incompatible |
 | `darling/src/shellspawn/shellspawn.c` | `/var/run/shellspawn.sock` unlink/bind/chmod | runtime start/stop | opt-in Rust cohort route, global activation deferred |
-| `darling/src/external/darlingserver/src/darlingserver.cpp` | generation-owned `/var/run`; OFF-only legacy `/var/tmp` wipe; home layout; prefix copy/permissions/mount | runtime start/materialization | opt-in `/var/run` uses retained Rust lease; remaining responsibilities incompatible |
+| `darling/src/external/darlingserver/src/darlingserver.cpp` | generation-owned `/var/run`; persistent validated home layout; OFF-only legacy `/var/tmp` wipe; prefix copy/permissions/mount | runtime start/materialization | opt-in `/var/run` and user-home phases use the retained Rust lease; remaining responsibilities incompatible |
 | `darling/src/external/darlingserver/src/server.cpp` | `.darlingserver.sock` unlink/bind/cleanup | runtime start/stop | opt-in Rust cohort route, global activation deferred |
 | `darling/src/external/darlingserver/src/logging.cpp` | `dserver.log` | runtime diagnostics | opt-in Rust cohort route, global activation deferred |
 | `darling/src/external/darlingserver/src/{kqchan,call}.cpp` | auxiliary RPC log | Perf runtime diagnostics | incompatible; composition lacks the retained-prefix controller ABI |
