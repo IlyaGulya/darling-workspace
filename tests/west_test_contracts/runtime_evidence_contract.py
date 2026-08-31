@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -12,6 +13,7 @@ ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT))
 
 from west_commands.test_runtime_evidence import RuntimeEvidenceStore
+from west_commands.owned_scratch import discard_exact
 
 
 relative_store = RuntimeEvidenceStore(Path("relative-runtime-evidence"))
@@ -50,11 +52,13 @@ with tempfile.TemporaryDirectory() as temp:
     subprocess.run(["git", "commit", "-q", "-m", "base"], cwd=repo, check=True)
 
     active = store.start("active materialization", {"provider": "homebrew"})
-    assert store.gc(max_age_hours=0, keep_last=0, dry_run=False) == []
+    active_outcome = store.gc(max_age_hours=0, keep_last=0, dry_run=False)
+    assert active_outcome.removed == [] and active_outcome.retained == []
     assert active.directory.is_dir()
     active.discard()
 
-    orphan = root / ".inflight-orphan"
+    orphan_session = store.start("orphan", {"provider": "homebrew"})
+    orphan = orphan_session.directory
     orphan_worktree = orphan / "source/darling"
     orphan_worktree.parent.mkdir(parents=True)
     subprocess.run(
@@ -62,13 +66,15 @@ with tempfile.TemporaryDirectory() as temp:
         cwd=repo,
         check=True,
     )
-    (orphan / ".worktrees.json").write_text(
-        json.dumps([{"repo": str(repo), "path": "source/darling"}]) + "\n"
-    )
+    orphan_session.record_worktrees([(repo, orphan_worktree)])
+    orphan_session._release_lock()
+    orphan_session._scratch.close()
     before_dry_run = sorted(path.relative_to(orphan) for path in orphan.rglob("*"))
-    assert store.gc(max_age_hours=0, keep_last=0, dry_run=True) == [orphan]
+    dry_outcome = store.gc(max_age_hours=0, keep_last=0, dry_run=True)
+    assert dry_outcome.removed == [orphan] and dry_outcome.retained == []
     assert sorted(path.relative_to(orphan) for path in orphan.rglob("*")) == before_dry_run
-    assert store.gc(max_age_hours=0, keep_last=0, dry_run=False) == [orphan]
+    orphan_outcome = store.gc(max_age_hours=0, keep_last=0, dry_run=False)
+    assert orphan_outcome.removed == [orphan] and orphan_outcome.retained == []
     assert not orphan.exists()
     worktree_listing = subprocess.run(
         ["git", "worktree", "list", "--porcelain"],
@@ -87,8 +93,12 @@ with tempfile.TemporaryDirectory() as temp:
         cwd=repo,
         check=True,
     )
-    assert store.gc(max_age_hours=0, keep_last=0, dry_run=False) == [legacy_orphan]
-    assert not legacy_orphan.exists()
+    before_legacy = sorted(path.relative_to(legacy_orphan) for path in legacy_orphan.rglob("*"))
+    legacy_outcome = store.gc(max_age_hours=0, keep_last=0, dry_run=False)
+    assert legacy_outcome.removed == []
+    assert [path for path, _reason in legacy_outcome.retained] == [legacy_orphan]
+    assert legacy_orphan.exists()
+    assert sorted(path.relative_to(legacy_orphan) for path in legacy_orphan.rglob("*")) == before_legacy
     worktree_listing = subprocess.run(
         ["git", "worktree", "list", "--porcelain"],
         cwd=repo,
@@ -96,7 +106,9 @@ with tempfile.TemporaryDirectory() as temp:
         capture_output=True,
         text=True,
     ).stdout
-    assert f"worktree {legacy_worktree}" not in worktree_listing, worktree_listing
+    assert f"worktree {legacy_worktree}" in worktree_listing, worktree_listing
+    subprocess.run(["git", "worktree", "remove", "--force", str(legacy_worktree)], cwd=repo, check=True)
+    shutil.rmtree(legacy_orphan)
 
     try:
         with store.session("rootless bootstrap", {"provider": "homebrew-rootless-no-mount"}) as session:
@@ -136,9 +148,9 @@ with tempfile.TemporaryDirectory() as temp:
     assert manifest["context"] == {"provider": "homebrew-rootless-no-mount"}, manifest
     assert manifest["failure"]["type"] == "RuntimeError", manifest
     assert "shellspawn readiness" in manifest["failure"]["message"], manifest
-    assert manifest["paths"] == {"source": "source/darling", "build": "build"}, manifest
+    assert manifest["paths"] == {"source": "source/darling"}, manifest
     assert (entry / manifest["paths"]["source"] / "source.c").read_text() == "broken\n"
-    assert (entry / manifest["paths"]["build"] / "build.ninja").is_file()
+    assert not (entry / "build").exists()
     assert manifest["worktrees"] == [{"repo": str(repo), "path": "source/darling"}], manifest
     assert manifest["diagnostics"] == [
         {
@@ -146,14 +158,13 @@ with tempfile.TemporaryDirectory() as temp:
             "summary": "E-UNION login shell did not reach a verdict",
             "returncode": 124,
             "command": ["darling", "shell", "/bin/bash", "--login", "-c", ":"],
-            "output": "diagnostics/0-output.log",
-            "artifacts": ["diagnostics/0-rootless-boot.trace"],
+            "output": "failure.raw.log",
         }
     ], manifest
-    assert (entry / "diagnostics/0-output.log").read_text() == (
+    assert (entry / "failure.raw.log").read_text() == (
         "semaphore_timedwait failed (internally): -111\n"
     )
-    assert (entry / "diagnostics/0-rootless-boot.trace").read_text() == "dyld main-entry-ready\n"
+    assert not (entry / "diagnostics").exists()
     assert store.resolve(entry.name) == entry
     assert store.resolve(entry.name.rsplit("-", 1)[1]) == entry
     assert store.manifest(entry) == manifest
@@ -161,17 +172,21 @@ with tempfile.TemporaryDirectory() as temp:
     assert replay["unit"] == entry.name, replay
     assert replay["diagnostics"] == manifest["diagnostics"], replay
     assert replay["attachments"] == [
-        {"path": "diagnostics/0-output.log", "bytes": 46},
-        {"path": "diagnostics/0-rootless-boot.trace", "bytes": 22},
+        {"path": "failure.raw.log", "bytes": 46},
     ], replay
     worktree_listing = subprocess.run(
         ["git", "worktree", "list", "--porcelain"], cwd=repo, check=True, capture_output=True, text=True
     ).stdout
     assert f"worktree {entry / 'source/darling'}" in worktree_listing, worktree_listing
 
-    assert store.gc(max_age_hours=0, keep_last=0, dry_run=True) == [entry]
+    dirty_dry = store.gc(max_age_hours=0, keep_last=0, dry_run=True)
+    assert dirty_dry.removed == [entry] and dirty_dry.retained == []
     assert entry.is_dir()
-    assert store.gc(max_age_hours=0, keep_last=0, dry_run=False) == [entry]
+    dirty_outcome = store.gc(max_age_hours=0, keep_last=0, dry_run=False)
+    assert dirty_outcome.removed == []
+    assert [path for path, _reason in dirty_outcome.retained] == [entry]
+    assert entry.exists()
+    discard_exact(root, entry, force_dirty=True)
     assert not entry.exists()
     worktree_listing = subprocess.run(
         ["git", "worktree", "list", "--porcelain"], cwd=repo, check=True, capture_output=True, text=True
@@ -220,7 +235,8 @@ with tempfile.TemporaryDirectory() as temp:
     ).stdout
     assert f"worktree {stale_worktree}" not in worktree_listing, worktree_listing
 
-    assert store.gc(max_age_hours=0, keep_last=0, dry_run=False) == [stale_entry]
+    stale_outcome = store.gc(max_age_hours=0, keep_last=0, dry_run=False)
+    assert stale_outcome.removed == [stale_entry] and stale_outcome.retained == []
     assert not stale_entry.exists()
 
 print("PASS runtime-evidence-contract")

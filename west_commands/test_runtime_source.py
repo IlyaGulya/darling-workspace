@@ -29,6 +29,10 @@ import patch_stack_profile_composition
 from test_results import RuntimeRedProven
 from test_runtime_evidence import RuntimeEvidenceSession
 from test_worktrees import remove_temporary_worktree
+try:
+    from .owned_scratch import OwnedScratchRoot, garbage_collect
+except ImportError:
+    from owned_scratch import OwnedScratchRoot, garbage_collect
 
 
 class RuntimeSourceMaterializer:
@@ -634,8 +638,12 @@ class RuntimeSourceMaterializer:
 
         module_repo = self._host._project_path(module)
         revision = self._host._manifest_revision(module)
-        temp = tempfile.mkdtemp(prefix="west-green-proof-source-")
-        target = Path(temp) / "source"
+        garbage_collect()
+        scratch = OwnedScratchRoot.create(
+            kind="runtime-proof", prefix="west-green-proof-source-"
+        )
+        temp = scratch.path
+        target = temp / "source"
         keep_on_failure = False
         try:
             subprocess.run(
@@ -643,6 +651,7 @@ class RuntimeSourceMaterializer:
                 cwd=module_repo,
                 check=True,
             )
+            scratch.register_worktree(module_repo, target)
             self.apply_full_runtime_profile(patch, module, target)
             yield target
         except BaseException:
@@ -654,7 +663,9 @@ class RuntimeSourceMaterializer:
                 error = remove_temporary_worktree(module_repo, target)
                 if error:
                     self._host.die(f"failed to remove GREEN source worktree: {error}")
-                shutil.rmtree(temp, ignore_errors=True)
+                scratch.discard()
+            else:
+                scratch.retain()
 
     def _apply_red_source_patches(self, proof: dict, module_label: str, target: Path) -> None:
         for source_patch in proof.get("source-patches", []):
@@ -750,11 +761,15 @@ class RuntimeSourceMaterializer:
                 )
         added: list[tuple[Path, Path]] = []
         owns_root = root is None
-        temp = (
-            Path(tempfile.mkdtemp(prefix="west-red-proof-source-")).resolve()
-            if owns_root
-            else Path(root).expanduser().resolve()
-        )
+        scratch = None
+        if owns_root:
+            garbage_collect()
+            scratch = OwnedScratchRoot.create(
+                kind="runtime-proof", prefix="west-red-proof-source-"
+            )
+            temp = scratch.path
+        else:
+            temp = Path(root).expanduser().resolve()
         temp.mkdir(parents=True, exist_ok=True)
         yielded = False
         keep_on_failure = False
@@ -796,6 +811,8 @@ class RuntimeSourceMaterializer:
                     f"expected {source_root}, observed {detail or 'unknown'}"
                 )
             added.append((darling_repo, source_root))
+            if scratch is not None:
+                scratch.register_worktree(darling_repo, source_root)
 
             def nested_revision(relative_path: Path, tree_revision: str) -> str:
                 project_path = Path("darling") / relative_path
@@ -821,6 +838,9 @@ class RuntimeSourceMaterializer:
                 for entry in nested_entries
                 if entry.created
             )
+            if scratch is not None:
+                for repo, target in added[1:]:
+                    scratch.register_worktree(repo, target)
             self._host.inf(
                 f"  runtime phase complete: source hydration "
                 f"({len(nested_entries)} gitlink(s), {time.monotonic() - source_started:.1f}s)"
@@ -909,4 +929,8 @@ class RuntimeSourceMaterializer:
                         stderr=subprocess.DEVNULL,
                     )
                 if owns_root:
-                    shutil.rmtree(temp, ignore_errors=True)
+                    assert scratch is not None
+                    scratch.discard()
+            elif owns_root:
+                assert scratch is not None
+                scratch.retain()

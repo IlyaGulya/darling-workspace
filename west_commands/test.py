@@ -104,6 +104,20 @@ from test_runtime_build import RuntimeBuildService
 from test_runtime_evidence import RuntimeEvidenceStore
 from test_runtime_source import RuntimeSourceMaterializer
 from test_runtime_identity import runtime_identity
+try:
+    from .owned_scratch import (
+        ScratchSafetyError,
+        default_namespace,
+        discard_exact,
+        garbage_collect,
+    )
+except ImportError:
+    from owned_scratch import (
+        ScratchSafetyError,
+        default_namespace,
+        discard_exact,
+        garbage_collect,
+    )
 from guest_macho_validation import (
     add_cli_arguments,
     capture_invocation,
@@ -350,9 +364,8 @@ class DarlingTest(ProfileOperationsMixin, BootstrapRuntimeProfileMixin, WestComm
         parser.add_argument(
             "--proof-scratch-root",
             metavar="DIR",
-            default=tempfile.gettempdir(),
-            help="with --gc, directory to scan for stale runtime, source-proof, and "
-            f"deploy-proof scratch plus guest runner output (default {tempfile.gettempdir()})",
+            default=str(default_namespace()),
+            help="managed scratch namespace scanned by --gc",
         )
         parser.add_argument(
             "--runtime-evidence-root",
@@ -379,10 +392,10 @@ class DarlingTest(ProfileOperationsMixin, BootstrapRuntimeProfileMixin, WestComm
         parser.add_argument(
             "--proof-scratch-max-age-hours",
             type=float,
-            default=24.0,
+            default=72.0,
             metavar="HOURS",
             help="with --gc, prune stale west runtime/source-profile scratch dirs older than this "
-            "(default 24)",
+            "(default 72)",
         )
         parser.add_argument(
             "--proof-scratch-keep-last",
@@ -391,6 +404,16 @@ class DarlingTest(ProfileOperationsMixin, BootstrapRuntimeProfileMixin, WestComm
             metavar="N",
             help="with --gc, keep at most N newest west runtime/source-profile scratch dirs "
             "regardless of age (default 2)",
+        )
+        parser.add_argument(
+            "--scratch-discard",
+            metavar="PATH",
+            help="with --gc, discard one exact marked root after full safety checks",
+        )
+        parser.add_argument(
+            "--scratch-force-dirty",
+            action="store_true",
+            help="with --gc --scratch-discard, explicitly allow a confirmed dirty worktree",
         )
         return parser
 
@@ -4843,123 +4866,6 @@ class DarlingTest(ProfileOperationsMixin, BootstrapRuntimeProfileMixin, WestComm
             f"gc: kept {kept}, {action} {freed // (1024 * 1024)}M from {root}"
         )
 
-    def _gc_runtime_proof_scratch(
-        self,
-        root: Path,
-        max_age_hours: float,
-        keep_last: int,
-        dry_run: bool = False,
-    ) -> None:
-        root = root.expanduser()
-        if max_age_hours < 0:
-            self.die("--proof-scratch-max-age-hours must be >= 0")
-        if keep_last < 0:
-            self.die("--proof-scratch-keep-last must be >= 0")
-        if not root.is_dir():
-            self.inf(f"no proof scratch root at {root}")
-            return
-        cutoff = time.time() - (max_age_hours * 3600)
-        patterns = (
-            "west-red-proof-runtime-*",
-            "west-green-proof-runtime-*",
-            "west-red-proof-source-*",
-            "west-red-proof-deploy-*",
-            "west-ctest-runtime-*",
-            "west-runtime-*",
-        )
-        all_scratch_dirs = sorted(
-            {
-                path
-                for pattern in patterns
-                for path in root.glob(pattern)
-                if path.is_dir() and not path.is_symlink()
-            },
-            key=lambda path: path.stat().st_mtime,
-            reverse=True,
-        )
-        freed = 0
-        retained = 0
-        pruned = 0
-        verb = "would prune" if dry_run else "pruned"
-        now = time.time()
-        for index, scratch in enumerate(all_scratch_dirs):
-            size = self._dir_size(scratch)
-            age_hours = max(0.0, (now - scratch.stat().st_mtime) / 3600)
-            over_count = index >= keep_last
-            stale = scratch.stat().st_mtime <= cutoff
-            if over_count or stale:
-                if over_count and stale:
-                    reason = "count+age"
-                elif over_count:
-                    reason = "count"
-                else:
-                    reason = "age"
-                freed += size
-                pruned += 1
-                self.inf(
-                    f"{verb} proof scratch ({reason}, {self._format_size(size)}, "
-                    f"age {age_hours:.1f}h): {scratch}"
-                )
-                if not dry_run:
-                    shutil.rmtree(scratch, ignore_errors=True)
-            else:
-                retained += 1
-                self.inf(
-                    f"retained proof scratch (newest, {self._format_size(size)}, "
-                    f"age {age_hours:.1f}h): {scratch}"
-                )
-        action = "would free" if dry_run else "freed"
-        self.inf(
-            "proof-scratch gc: "
-            f"retained {retained}, {verb} {pruned} dir(s), "
-            f"{action} {self._format_size(freed)} from {root}"
-        )
-
-    def _gc_guest_runner_output(
-        self,
-        root: Path,
-        max_age_hours: float,
-        dry_run: bool = False,
-    ) -> None:
-        """Prune stale local output files left by pre-cleanup guest C runners.
-
-        The guest runner now unlinks its output on every exit path.  This pass
-        only repairs historical files, so it uses the same age threshold as
-        runtime scratch and deliberately ignores directories, symlinks, and
-        fresh output that may belong to a still-running test.
-        """
-
-        root = root.expanduser()
-        if max_age_hours < 0:
-            self.die("--proof-scratch-max-age-hours must be >= 0")
-        if not root.is_dir():
-            self.inf(f"no guest runner output root at {root}")
-            return
-        cutoff = time.time() - (max_age_hours * 3600)
-        outputs = sorted(
-            (
-                path
-                for path in root.glob("west-ctest-guest-c.*")
-                if path.is_file()
-                and not path.is_symlink()
-                and path.stat().st_mtime <= cutoff
-            ),
-            key=lambda path: path.stat().st_mtime,
-        )
-        freed = 0
-        verb = "would prune" if dry_run else "pruned"
-        for output in outputs:
-            size = output.stat().st_size
-            freed += size
-            self.inf(f"{verb} guest runner output ({size}B): {output}")
-            if not dry_run:
-                output.unlink(missing_ok=True)
-        action = "would free" if dry_run else "freed"
-        self.inf(
-            "guest-runner gc: "
-            f"{verb} {len(outputs)} file(s), {action} {freed}B from {root}"
-        )
-
     # --- entrypoint ---------------------------------------------------------
 
     @contextmanager
@@ -5077,44 +4983,71 @@ class DarlingTest(ProfileOperationsMixin, BootstrapRuntimeProfileMixin, WestComm
             return
 
         if args.gc:
+            if args.scratch_force_dirty and not args.scratch_discard:
+                self.die("--scratch-force-dirty requires --scratch-discard")
             self._gc_bundles(
                 Path(args.bundle_root), args.keep_last, args.max_bundle_mb,
                 dry_run=args.dry_run,
             )
-            self._gc_runtime_proof_scratch(
-                Path(args.proof_scratch_root),
-                args.proof_scratch_max_age_hours,
-                args.proof_scratch_keep_last,
-                dry_run=args.dry_run,
-            )
-            if not args.dry_run:
-                # Source-proof scratch can contain detached Git worktrees.
-                # Once its directory is removed, prune only the stale West
-                # entries from the owning project repositories.
-                self._prune_stale_west_temp_worktrees()
-            self._gc_guest_runner_output(
-                Path(args.proof_scratch_root),
-                args.proof_scratch_max_age_hours,
-                dry_run=args.dry_run,
-            )
+            scratch_namespace = Path(args.proof_scratch_root)
+            try:
+                if args.scratch_discard:
+                    census_diagnostics = []
+                    freed = discard_exact(
+                        scratch_namespace,
+                        Path(args.scratch_discard),
+                        force_dirty=args.scratch_force_dirty,
+                        dry_run=args.dry_run,
+                        diagnostics=census_diagnostics,
+                    )
+                    for diagnostic in census_diagnostics:
+                        self.inf(f"owned scratch census diagnostic: {diagnostic}")
+                    verb = "would free" if args.dry_run else "freed"
+                    self.inf(f"owned-scratch exact discard {verb} {self._format_size(freed)}")
+                else:
+                    outcome = garbage_collect(
+                        scratch_namespace,
+                        ttl_seconds=args.proof_scratch_max_age_hours * 3600,
+                        keep=args.proof_scratch_keep_last,
+                        dry_run=args.dry_run,
+                    )
+                    verb = "would prune" if args.dry_run else "pruned"
+                    for path in outcome.removed:
+                        self.inf(f"{verb} owned scratch: {path}")
+                    for path, reason in outcome.retained:
+                        self.inf(f"retained owned scratch ({reason}): {path}")
+                    for diagnostic in outcome.diagnostics:
+                        self.inf(f"owned scratch census diagnostic: {diagnostic}")
+                    action = "would free" if args.dry_run else "freed"
+                    self.inf(
+                        f"owned-scratch gc: scanned {outcome.scanned}, "
+                        f"{verb} {len(outcome.removed)}, {action} "
+                        f"{self._format_size(outcome.bytes_freed)}, bounded={outcome.bounded}"
+                    )
+            except ScratchSafetyError as error:
+                self.die(f"owned scratch GC refused: {error}")
             if getattr(args, "gc_runtime_evidence", False):
                 evidence_store = self._runtime_evidence_store()
-                entries = evidence_store.gc(
+                evidence_outcome = evidence_store.gc(
                     max_age_hours=args.proof_scratch_max_age_hours,
                     keep_last=args.proof_scratch_keep_last,
                     dry_run=args.dry_run,
                 )
                 verb = "would prune" if args.dry_run else "pruned"
-                for entry in entries:
+                for entry in evidence_outcome.removed:
                     self.inf(f"{verb} runtime evidence: {entry}")
-                # Runtime evidence GC can remove the last directory reference
-                # to a source worktree. Prune its now-stale Git metadata too.
-                if not args.dry_run:
-                    self._prune_stale_west_temp_worktrees()
+                for entry, reason in evidence_outcome.retained:
+                    self.inf(f"retained runtime evidence ({reason}): {entry}")
             return
 
         if getattr(args, "gc_runtime_evidence", False):
             self.die("--gc-runtime-evidence requires --gc")
+        if args.scratch_discard or args.scratch_force_dirty:
+            self.die("--scratch-discard/--scratch-force-dirty require --gc")
+
+        # A small bounded preflight repairs only marked, inactive roots. It is
+        # intentionally silent and never scans arbitrary /tmp names.
+        garbage_collect(Path(args.proof_scratch_root))
 
         try:
             validate_cli_selection(args)

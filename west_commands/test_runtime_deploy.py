@@ -11,6 +11,10 @@ from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Iterator
+try:
+    from .owned_scratch import OwnedScratchRoot, ScratchSafetyError
+except ImportError:
+    from owned_scratch import OwnedScratchRoot, ScratchSafetyError
 
 from deploy_transaction import (
     DeploymentTransaction,
@@ -45,6 +49,7 @@ class IsolatedEmptyPrefix:
 
     root: Path
     prefix: Path
+    scratch: OwnedScratchRoot
 
 
 class RuntimeDeploymentService:
@@ -79,16 +84,16 @@ class RuntimeDeploymentService:
                 "guest-runtime-deploy clean-prefix parent is not a directory: "
                 f"{resolved.parent}"
             )
-        root = Path(
-            tempfile.mkdtemp(
-                prefix=f".{resolved.name}.west-red-clean-",
-                dir=resolved.parent,
-            )
-        ).resolve()
+        scratch = OwnedScratchRoot.create(
+            namespace=resolved.parent / ".darling-scratch-v1",
+            kind="runtime-proof",
+            prefix=f".{resolved.name}.west-red-clean-",
+        )
+        root = scratch.path
         prefix = root / "prefix"
         prefix.mkdir()
         self._host.inf(f"  runtime RED: created empty prefix {prefix}")
-        return IsolatedEmptyPrefix(root=root, prefix=prefix)
+        return IsolatedEmptyPrefix(root=root, prefix=prefix, scratch=scratch)
 
     def cleanup_empty_prefix(
         self,
@@ -105,6 +110,7 @@ class RuntimeDeploymentService:
                 "guest-runtime-deploy could not cleanly shutdown isolated RED "
                 f"prefix; preserving it for diagnostics: {isolated.prefix}"
             )
+            isolated.scratch.retain()
             return False
         if (
             isolated.root.name.find(".west-red-clean-") == -1
@@ -118,8 +124,14 @@ class RuntimeDeploymentService:
                 "guest-runtime-deploy refused to remove an unexpected isolated "
                 f"RED prefix layout: {isolated.root}"
             )
+            isolated.scratch.retain()
             return False
-        shutil.rmtree(isolated.root)
+        try:
+            isolated.scratch.discard()
+        except ScratchSafetyError as error:
+            self._host.err(f"guest-runtime-deploy scratch cleanup refused: {error}")
+            isolated.scratch.close()
+            return False
         self._host.inf(f"  runtime RED: removed empty prefix {isolated.prefix}")
         return True
 

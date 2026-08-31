@@ -4,14 +4,18 @@ from __future__ import annotations
 
 import json
 import fcntl
-import shutil
 import subprocess
-import tempfile
 import time
+from dataclasses import dataclass, field
 import uuid
 from contextlib import contextmanager
 from pathlib import Path
 from typing import Any, Iterator
+
+try:
+    from .owned_scratch import OwnedScratchRoot, ScratchSafetyError, discard_exact
+except ImportError:
+    from owned_scratch import OwnedScratchRoot, ScratchSafetyError, discard_exact
 
 
 class RuntimeEvidenceSession:
@@ -21,13 +25,17 @@ class RuntimeEvidenceSession:
         self._root = root
         self._label = label
         self._context = context
-        self._directory = Path(tempfile.mkdtemp(prefix=".inflight-", dir=root))
+        self._scratch = OwnedScratchRoot.create(
+            namespace=root, kind="runtime-proof", prefix=".inflight-"
+        )
+        self._directory = self._scratch.path
         self._lock_file = (self._directory / ".lock").open("w")
         fcntl.flock(self._lock_file, fcntl.LOCK_EX)
         self._retained = False
         self._worktrees: list[dict[str, str]] = []
         self._diagnostics: list[dict[str, Any]] = []
         self._requested_failure: BaseException | None = None
+        self._scratch.register_disposable(self.build_root)
 
     @property
     def directory(self) -> Path:
@@ -51,6 +59,7 @@ class RuntimeEvidenceSession:
             except ValueError as error:
                 raise ValueError(f"evidence worktree escapes its unit: {target}") from error
             records.append({"repo": str(repo), "path": str(relative_target)})
+            self._scratch.register_worktree(repo, target)
         self._worktrees = records
         self._write_json(".worktrees.json", records)
 
@@ -95,34 +104,14 @@ class RuntimeEvidenceSession:
             raise ValueError("runtime evidence diagnostic phase must be non-empty")
         if not summary:
             raise ValueError("runtime evidence diagnostic summary must be non-empty")
-        index = len(self._diagnostics)
-        diagnostics_root = self._directory / "diagnostics"
         entry: dict[str, Any] = {"phase": phase, "summary": summary}
         if returncode is not None:
             entry["returncode"] = returncode
         if command:
             entry["command"] = list(command)
         if output:
-            output_path = diagnostics_root / f"{index}-output.log"
-            output_path.parent.mkdir(parents=True, exist_ok=True)
-            output_path.write_text(output[-64 * 1024 :])
+            output_path = self._scratch.write_failure_log(output[-64 * 1024 :])
             entry["output"] = str(output_path.relative_to(self._directory))
-        copied_artifacts: list[str] = []
-        copied_bytes = 0
-        artifact_budget = 64 * 1024 * 1024
-        for artifact in artifacts or []:
-            if not artifact.is_file() or artifact.is_symlink():
-                continue
-            artifact_size = artifact.stat().st_size
-            if artifact_size > artifact_budget - copied_bytes:
-                continue
-            artifact_path = diagnostics_root / f"{index}-{artifact.name}"
-            artifact_path.parent.mkdir(parents=True, exist_ok=True)
-            shutil.copyfile(artifact, artifact_path)
-            copied_artifacts.append(str(artifact_path.relative_to(self._directory)))
-            copied_bytes += artifact_size
-        if copied_artifacts:
-            entry["artifacts"] = copied_artifacts
         self._diagnostics.append(entry)
 
     def retain(self, failure: BaseException) -> Path:
@@ -145,6 +134,7 @@ class RuntimeEvidenceSession:
         else:
             self._directory.rename(target)
         self._directory = target
+        self._scratch.relocated(target)
         manifest = {
             "schema": 1,
             "status": "failed",
@@ -152,7 +142,7 @@ class RuntimeEvidenceSession:
             "created-at": stamp,
             "context": self._context,
             "failure": {"type": type(failure).__name__, "message": str(failure)},
-            "paths": {"source": "source/darling", "build": "build"},
+            "paths": {"source": "source/darling"},
             "worktrees": self._worktrees,
         }
         if self._diagnostics:
@@ -163,6 +153,10 @@ class RuntimeEvidenceSession:
         temporary.replace(manifest_path)
         self._retained = True
         self._release_lock()
+        raw_log = target / "failure.raw.log"
+        if not raw_log.exists():
+            raw_log = self._scratch.write_failure_log(f"{type(failure).__name__}: {failure}\n")
+        self._scratch.retain(raw_log=raw_log)
         return target
 
     def _relocate_worktrees(self, target: Path) -> None:
@@ -190,7 +184,7 @@ class RuntimeEvidenceSession:
     def discard(self) -> None:
         if not self._retained:
             self._release_lock()
-            shutil.rmtree(self._directory, ignore_errors=True)
+            self._scratch.discard()
 
 
 class RuntimeEvidenceStore:
@@ -301,7 +295,12 @@ class RuntimeEvidenceStore:
             "attachments": checked,
         }
 
-    def gc(self, *, max_age_hours: float, keep_last: int, dry_run: bool) -> list[Path]:
+    @dataclass
+    class GCOutcome:
+        removed: list[Path] = field(default_factory=list)
+        retained: list[tuple[Path, str]] = field(default_factory=list)
+
+    def gc(self, *, max_age_hours: float, keep_last: int, dry_run: bool) -> "RuntimeEvidenceStore.GCOutcome":
         if max_age_hours < 0:
             raise ValueError("runtime evidence max age must be >= 0")
         if keep_last < 0:
@@ -313,14 +312,20 @@ class RuntimeEvidenceStore:
             if index >= keep_last or stale:
                 selected.append(entry)
         selected.extend(self._orphan_inflight_entries(cutoff))
-        if not dry_run:
-            for entry in selected:
-                if entry.name.startswith(".inflight-"):
-                    self._remove_inflight_worktrees(entry)
-                else:
-                    self._remove_worktrees(entry)
-                shutil.rmtree(entry)
-        return selected
+        outcome = self.GCOutcome()
+        for entry in selected:
+            if dry_run:
+                outcome.removed.append(entry)
+                continue
+            try:
+                discard_exact(self._root, entry)
+            except ScratchSafetyError as error:
+                # Pre-owner evidence is deliberately not adopted; report the
+                # actual retained outcome instead of claiming it was pruned.
+                outcome.retained.append((entry, str(error)))
+            else:
+                outcome.removed.append(entry)
+        return outcome
 
     def _orphan_inflight_entries(self, cutoff: float) -> list[Path]:
         if not self._root.is_dir():

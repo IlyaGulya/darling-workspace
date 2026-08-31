@@ -20,6 +20,12 @@ USAGE
 
 state_dir=
 follow_timeout_seconds=0
+script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
+bounded_scratch_gc() {
+	python3 -B "$script_dir/owned-scratch.py" gc \
+		--max-candidates 32 --max-seconds 0.15 >/dev/null
+}
 
 write_command_record() {
 	local target="$1"
@@ -459,7 +465,12 @@ command="${1:-}"
 shift
 
 case "$command" in
-	start|status|wait|cancel)
+	start)
+		bounded_scratch_gc
+		parse_state_dir "$@"
+		start_job
+		;;
+	status|wait|cancel)
 		parse_state_dir "$@"
 		"${command}_job"
 		;;
