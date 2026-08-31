@@ -54,4 +54,30 @@ if result.returncode != 0 or "RUNTIME_LOWER_BINDING_ABI_VALID" not in result.std
     raise SystemExit(
         f"ABI fixture failed rc={result.returncode}: {result.stdout}\n{result.stderr}"
     )
+home = prefix / "Users/abi-user"
+linux_home = home / "LinuxHome"
+if (home.stat().st_mode & 0o777) != 0o755:
+    raise SystemExit("Rust ABI home directory mode mismatch")
+if os.readlink(linux_home) != "/Volumes/SystemRoot/home/abi-user":
+    raise SystemExit("Rust ABI LinuxHome target mismatch")
+before = (linux_home.lstat().st_dev, linux_home.lstat().st_ino)
+if (linux_home.lstat().st_uid, linux_home.lstat().st_gid) != (
+    os.geteuid(),
+    os.getegid(),
+):
+    raise SystemExit("Rust ABI LinuxHome owner mismatch")
+# The fixture invokes the phase once; a second process/restart must accept the
+# same persistent exact-valid layout without changing its identity.
+result = subprocess.run(
+    [str(args.fixture), str(prefix)],
+    check=False,
+    capture_output=True,
+    text=True,
+    timeout=20,
+)
+if result.returncode != 0:
+    raise SystemExit(f"ABI restart failed rc={result.returncode}: {result.stderr}")
+after = (linux_home.lstat().st_dev, linux_home.lstat().st_ino)
+if after != before:
+    raise SystemExit("persistent exact-valid LinuxHome was replaced")
 print("RUNTIME_LOWER_BINDING_ABI_INTEGRATION_VALID")

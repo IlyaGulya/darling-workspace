@@ -245,6 +245,14 @@ fn file_type(value: FileIdentity) -> u32 {
     value.mode & libc::S_IFMT
 }
 
+fn same_retained_object(left: FileIdentity, right: FileIdentity) -> bool {
+    left.device == right.device
+        && left.inode == right.inode
+        && left.mode == right.mode
+        && left.uid == right.uid
+        && left.gid == right.gid
+}
+
 fn current_uid() -> libc::uid_t {
     // SAFETY: geteuid has no preconditions.
     unsafe { libc::geteuid() }
@@ -1564,8 +1572,10 @@ impl SessionAuthority {
             .get_mut(&key)
             .ok_or(CohortError::EndpointMissing)?;
         if endpoint.endpoint_linked {
-            if identity(endpoint.parent.as_raw_fd())? != endpoint.parent_identity
-                || identity(endpoint.object.as_raw_fd())? != endpoint.identity
+            if !same_retained_object(
+                identity(endpoint.parent.as_raw_fd())?,
+                endpoint.parent_identity,
+            ) || identity(endpoint.object.as_raw_fd())? != endpoint.identity
                 || named_identity(endpoint.parent.as_raw_fd(), &endpoint.name)?
                     != Some(endpoint.identity)
             {
@@ -1578,10 +1588,14 @@ impl SessionAuthority {
             endpoint.endpoint_linked = false;
         }
         if let Some(directory) = endpoint.dynamic_directory.as_ref() {
-            if identity(directory.parent.as_raw_fd())? != directory.parent_identity
-                || identity(endpoint.parent.as_raw_fd())? != directory.identity
-                || named_identity(directory.parent.as_raw_fd(), &directory.name)?
-                    != Some(directory.identity)
+            if !same_retained_object(
+                identity(directory.parent.as_raw_fd())?,
+                directory.parent_identity,
+            ) || !same_retained_object(
+                identity(endpoint.parent.as_raw_fd())?,
+                directory.identity,
+            ) || named_identity(directory.parent.as_raw_fd(), &directory.name)?
+                != Some(directory.identity)
             {
                 return Err(CohortError::Identity("dynamic directory replacement"));
             }
@@ -2444,6 +2458,21 @@ enum CleanupPhase {
 }
 
 impl CohortController {
+    fn prepare_user_home(
+        &mut self,
+        plan: crate::preinit_user_home::UserHomePlan,
+    ) -> Result<(), CohortError> {
+        let authority = self.guest_namespace.as_ref().ok_or(CohortError::Protocol(
+            "guest namespace authority unavailable",
+        ))?;
+        if !authority.is_active() || self.cleanup_phase != CleanupPhase::Active {
+            return Err(CohortError::Protocol("guest home admission closed"));
+        }
+        let prefix = unsafe { std::os::fd::BorrowedFd::borrow_raw(authority.prefix_fd()) };
+        crate::preinit_user_home::prepare(prefix, &plan)
+            .map_err(|_| CohortError::Protocol("persistent guest home preparation refused"))
+    }
+
     fn prepare_var_run(&mut self) -> Result<crate::preinit_var_run::VarRunOutcome, CohortError> {
         let (prefix, session_generation) = {
             let authority = self.guest_namespace.as_ref().ok_or(CohortError::Protocol(
@@ -3120,6 +3149,32 @@ impl CohortController {
     }
 }
 
+#[no_mangle]
+/// Materialize the persistent guest-home layout under the retained lifecycle
+/// prefix and lock capabilities. Existing policy-valid objects are never
+/// claimed; conflicts are preserved and refused.
+///
+/// # Safety
+/// `controller` and `plan` must remain valid for the duration of the call, and
+/// every non-null plan string must be NUL terminated within its bounded field.
+pub unsafe extern "C" fn darling_lifecycle_cohort_prepare_user_home(
+    controller: *mut CohortController,
+    plan: *const crate::preinit_user_home::DarlingLifecycleUserHomePlan,
+) -> c_int {
+    let (Some(controller), Some(plan)) = (controller.as_mut(), plan.as_ref()) else {
+        return -1;
+    };
+    let parsed = unsafe { crate::preinit_user_home::parse_ffi_plan(plan) }
+        .map_err(|_| CohortError::Protocol("invalid persistent guest home plan"));
+    match parsed.and_then(|plan| controller.prepare_user_home(plan)) {
+        Ok(()) => 0,
+        Err(error) => {
+            eprintln!("persistent guest home preparation refused: {error}");
+            -1
+        }
+    }
+}
+
 impl Drop for CohortController {
     fn drop(&mut self) {}
 }
@@ -3236,10 +3291,12 @@ pub unsafe extern "C" fn darling_lifecycle_cohort_finish(
     }
     let mut owned = Box::from_raw(controller);
     if owned.cleanup_phase == CleanupPhase::CleanupCommitted {
-        return if (*owned).finish_after_cleanup_commit().is_ok() {
-            0
-        } else {
-            -1
+        return match (*owned).finish_after_cleanup_commit() {
+            Ok(()) => 0,
+            Err(error) => {
+                eprintln!("lifecycle cleanup completion failed: {error}");
+                -1
+            }
         };
     }
     if owned.cleanup_phase == CleanupPhase::Abandoning {
@@ -3278,10 +3335,12 @@ pub unsafe extern "C" fn darling_lifecycle_cohort_finish(
         debug_assert_eq!(restored, controller);
         return status;
     }
-    if (*owned).finish_after_cleanup_commit().is_ok() {
-        0
-    } else {
-        -1
+    match (*owned).finish_after_cleanup_commit() {
+        Ok(()) => 0,
+        Err(error) => {
+            eprintln!("lifecycle cleanup completion failed: {error}");
+            -1
+        }
     }
 }
 
@@ -3793,6 +3852,31 @@ mod tests {
         assert_eq!((before.device, before.inode), (after.device, after.inode));
         assert_ne!(before.nlink, after.nlink);
         authority.revalidate().unwrap();
+    }
+
+    #[test]
+    fn persistent_user_home_does_not_expand_controller_cleanup_scope() {
+        let fixture = Fixture::new_v3();
+        let (mut controller, listener) =
+            CohortController::start_for_test(&fixture.root, std::process::id() as _).unwrap();
+        drop(listener);
+        controller
+            .prepare_user_home(crate::preinit_user_home::UserHomePlan {
+                login: b"cohort-user".to_vec(),
+                targets: std::array::from_fn(|index| {
+                    (index == 0).then(|| b"/Volumes/SystemRoot/home/cohort-user".to_vec())
+                }),
+                owner_uid: unsafe { libc::geteuid() },
+                owner_gid: unsafe { libc::getegid() },
+                shared_mode: 0o777,
+                user_mode: 0o755,
+            })
+            .unwrap();
+        controller.finish().unwrap();
+        assert!(fixture
+            .root
+            .join("Users/cohort-user/LinuxHome")
+            .is_symlink());
     }
 
     fn connect(path: &Path) -> OwnedFd {
