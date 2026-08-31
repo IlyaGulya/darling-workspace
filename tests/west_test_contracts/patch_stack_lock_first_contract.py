@@ -26,6 +26,7 @@ import patch as patch_command
 from patch_git import TEMPORARY_PATCH_GIT_OPTIONS
 import patch_stack_lock_first as lock_first
 import patch_stack_profile_composition as profile_composition
+from owned_scratch import default_namespace, garbage_collect
 
 
 def git(repo: Path, *args: str) -> str:
@@ -500,6 +501,7 @@ def main() -> None:
                 applicability_compositions["perf"]["starts"][
                     "module-a"
                 ] = {"tree": expected_start}
+            garbage_collect(default_namespace(), ttl_seconds=0, keep=0)
             assert applicability_calls == [("homebrew", "module-a", True)]
             for repo in applicability_repos.values():
                 assert (

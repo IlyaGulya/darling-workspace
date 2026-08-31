@@ -114,6 +114,7 @@ case "${1:-}" in
 		tests/run-prefix-state-contract.sh
 		tests/run-runtime-cell-contract.sh
 		tests/run-lifecycle-guest-ready-artifact-contract.sh
+		tests/run-owned-scratch-contract.sh
 		exec west test --profile homebrew --env host --materialize-profile "${@:2}"
 		;;
 	guest-smoke)

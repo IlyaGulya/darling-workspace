@@ -94,6 +94,7 @@ printf '%s\n' "$host_tier" | grep -F -q 'tests/run-patch-stack-migration-invento
 printf '%s\n' "$host_tier" | grep -F -q 'tests/run-prefix-state-contract.sh'
 printf '%s\n' "$host_tier" | grep -F -q 'tests/run-runtime-cell-contract.sh'
 printf '%s\n' "$host_tier" | grep -F -q 'tests/run-lifecycle-guest-ready-artifact-contract.sh'
+printf '%s\n' "$host_tier" | grep -F -q 'tests/run-owned-scratch-contract.sh'
 host_before_west="${host_tier%%exec west test*}"
 [[ "$host_before_west" == *'tests/run-west-patch-stack-materialize-contract.sh'* &&
 	"$host_before_west" == *'tests/run-west-patch-stack-lock-first-contract.sh'* &&
@@ -104,7 +105,8 @@ host_before_west="${host_tier%%exec west test*}"
 	"$host_before_west" == *'tests/run-patch-stack-immutable-oracle-contract.sh'* &&
 	"$host_before_west" == *'tests/run-west-patch-stack-export-contract.sh'* &&
 	"$host_before_west" == *'tests/run-patch-stack-lock-first-hosted-workflow-contract.sh'* &&
-	"$host_before_west" == *'tests/run-patch-stack-migration-inventory-contract.sh'* ]] || {
+	"$host_before_west" == *'tests/run-patch-stack-migration-inventory-contract.sh'* &&
+	"$host_before_west" == *'tests/run-owned-scratch-contract.sh'* ]] || {
 	echo 'host tier does not run patch-stack contracts before west test' >&2
 	exit 1
 }

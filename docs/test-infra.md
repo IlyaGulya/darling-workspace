@@ -895,9 +895,49 @@ without deletion. Verified: a 77M scratch dir with an
 nor Wine offers, and the reason `west test` exists rather than bare
 `ninja test` — but it is metered, not free.
 
-A failed runtime source/build is not ordinary scratch. It is retained as one
-manifested unit under `.west-test/runtime-evidence`, with its source tree,
-build directory, failure reason, provider context and owned Git worktrees.
+Tooling scratch is owned through `west_commands/owned_scratch.py`. Managed
+roots are direct children of `${DARLING_SCRATCH_ROOT:-$TMPDIR/darling-scratch-v1}`
+and carry an exact `.darling-scratch-v1` marker plus an exclusively held lease.
+Unmarked lookalikes are never adopted. Normal exits discard generated roots;
+failures retain only the registered review/source paths and one bounded raw
+log. A short bounded GC runs before heavy test, patch-verify, and
+`west-job start` paths. Lifecycle Lab integration remains a separate follow-up
+on its accepted landing rather than being replayed in this GC change. The full
+pass remains `west test --gc --dry-run`;
+its default policy deletes inactive roots older than 72 hours while preserving
+the two newest. `scripts/owned-scratch.py create --kind agent-review` is the
+explicit agent/review creator, and exact manual removal uses either its
+`discard` action or `west test --gc --scratch-discard PATH`. Dirty worktrees
+are diagnostic-only unless exact discard also names `--scratch-force-dirty`.
+
+Deletion is fail-closed: root/marker/lease identity, UID, modes, hardlinks,
+active lease, readable `/proc` cwd/root/exe/FD references, mounts, Git
+cleanliness and worktree registrations are checked. The private scratch
+namespace is cooperative: every integrated owner must retain its exclusive
+lease until its process cleanup completes and must not move scratch references
+into another mount namespace. The current mount census is therefore bounded to
+the collector's readable namespace; it does not claim privileged visibility
+into foreign namespaces. Same-UID processes hidden by ordinary ptrace/dumpable
+policy are reported as census diagnostics, while an explicitly found reference,
+a readable FD census overflow, or any non-permission ambiguity retains the root.
+A surviving repository that borrows the
+candidate object database retains the donor. Automatic GC never rewrites it;
+an operator may explicitly run `scripts/owned-scratch.py dissociate REPO DONOR`
+and retry collection after reviewing the repository. This explicit operation
+atomically updates the alternates file and verifies object connectivity; any
+Git inspection, parse, repack, publication, or connectivity failure preserves
+the dependency and retains the donor.
+Any ambiguous observation retains the root for inspection. Retention and
+triage therefore start with the dry-run output; replay the recorded command,
+copy the single raw failure log if escalation is needed, then use exact
+discard after the owning process/mount/worktree has been resolved.
+
+A failed runtime source/build is retained as one marked unit under
+`.west-test/runtime-evidence`, with its source/review tree, failure reason,
+provider context, owned Git worktrees and one bounded `failure.raw.log`.
+Generated build state and copied diagnostic payloads are discarded. Disposable
+paths are exact direct children removed relative to a retained root descriptor;
+ancestor symlinks are never followed.
 Ordinary `west test --gc` never deletes those units. Removal is deliberate:
 `west test --gc --gc-runtime-evidence` applies the configured proof-scratch
 age/count policy and first removes only the worktrees listed by that unit's

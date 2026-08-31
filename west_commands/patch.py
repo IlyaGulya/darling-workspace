@@ -28,6 +28,10 @@ import patch_stack_materialize
 import patch_stack_lock_first
 import patch_stack_export
 import patch_stack_profile_composition
+try:
+    from .owned_scratch import OwnedScratchRoot, garbage_collect
+except ImportError:
+    from owned_scratch import OwnedScratchRoot, garbage_collect
 from test_runtime import ROOTLESS_BOOTSTRAP_RESOURCE, ROOTLESS_BOOTSTRAP_TARGET
 
 
@@ -2246,8 +2250,9 @@ class DarlingPatch(WestCommand):
         except RuntimeError as error:
             self.die(str(error))
 
-        with tempfile.TemporaryDirectory(prefix="west-patch-verify-") as temp:
-            temp_root = Path(temp)
+        garbage_collect()
+        with OwnedScratchRoot.create(kind="patch-verify") as scratch:
+            temp_root = scratch.path
             worktrees: dict[str, tuple[Path, Path]] = {}
             materialized: set[str] = set()
 
@@ -2391,6 +2396,7 @@ class DarlingPatch(WestCommand):
                                 str(worktree),
                                 revision,
                             )
+                            scratch.register_worktree(repo, worktree)
                             worktrees[module] = (repo, worktree)
                         else:
                             repo, worktree = worktrees[module]
@@ -2447,16 +2453,19 @@ class DarlingPatch(WestCommand):
                         current_grouped,
                     )
             finally:
-                for repo, worktree in reversed(list(worktrees.values())):
-                    self._abort_am(worktree)
-                    git(
-                        repo,
-                        "worktree",
-                        "remove",
-                        "--force",
-                        str(worktree),
-                        check=False,
-                    )
+                # Failed applicability is retained as the one useful review
+                # forest. Normal completion removes registrations immediately.
+                if sys.exc_info()[0] is None:
+                    for repo, worktree in reversed(list(worktrees.values())):
+                        self._abort_am(worktree)
+                        git(
+                            repo,
+                            "worktree",
+                            "remove",
+                            "--force",
+                            str(worktree),
+                            check=False,
+                        )
 
     def _status(self, profile: str, patches, strict: bool):
         """Report canonical integration state without executing archives."""

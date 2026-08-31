@@ -2994,7 +2994,10 @@ with tempfile.TemporaryDirectory() as temp:
         )
     )
 
-    before = set(Path(tempfile.gettempdir()).glob("west-red-proof-source-*"))
+    scratch_namespace = tempdir / "managed-scratch"
+    previous_scratch = os.environ.get("DARLING_SCRATCH_ROOT")
+    os.environ["DARLING_SCRATCH_ROOT"] = str(scratch_namespace)
+    before = set(scratch_namespace.glob("west-red-proof-source-*"))
     try:
         with test._guest_runtime_source_forest(
             {"path": "darling/example.patch", "module": "darling", "source-base": base_rev},
@@ -3008,16 +3011,16 @@ with tempfile.TemporaryDirectory() as temp:
     else:
         raise AssertionError("forced downstream failure unexpectedly passed")
 
-    after = set(Path(tempfile.gettempdir()).glob("west-red-proof-source-*"))
+    after = set(scratch_namespace.glob("west-red-proof-source-*"))
     kept = list(after - before)
     assert len(kept) == 1, kept
     assert (kept[0] / "darling/base.txt").read_text() == "base\n"
-    subprocess.run(
-        ["git", "worktree", "remove", "--force", str(kept[0] / "darling")],
-        cwd=repo,
-        check=True,
-    )
-    shutil.rmtree(kept[0])
+    from west_commands.owned_scratch import discard_exact
+    discard_exact(scratch_namespace, kept[0])
+    if previous_scratch is None:
+        os.environ.pop("DARLING_SCRATCH_ROOT", None)
+    else:
+        os.environ["DARLING_SCRATCH_ROOT"] = previous_scratch
 
     before = set(Path(tempfile.gettempdir()).glob("west-red-proof-source-*"))
     try:
