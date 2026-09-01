@@ -21,3 +21,7 @@ path = "src/bin/lifecycle-boundary.rs"
 [[bin]]
 name = "lifecycle-fuzz"
 path = "src/bin/lifecycle-fuzz.rs"
+
+[[bin]]
+name = "darling-scratch-census"
+path = "src/bin/darling-scratch-census.rs"

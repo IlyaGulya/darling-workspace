@@ -99,6 +99,12 @@ run_guest_macho_regression_tier() {
 
 case "${1:-}" in
 	host)
+		# CI provisions the one-shot helper once before any scratch-owning host
+		# contract. Production Python never invokes Cargo when it is absent.
+		cargo build --quiet --locked \
+			--manifest-path "$root/lifecycle/operation-boundary/Cargo.toml" \
+			--bin darling-scratch-census
+		export DARLING_SCRATCH_CENSUS_HELPER="$root/lifecycle/operation-boundary/target/debug/darling-scratch-census"
 		# Source-bound host cases must be selected through metadata so west can
 		# materialize the patch profile before CMake compiles the real source.
 		tests/run-west-patch-stack-materialize-contract.sh

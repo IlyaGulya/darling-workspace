@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import fcntl
+import inspect
 import os
 from pathlib import Path
 import shutil
@@ -40,32 +41,17 @@ def rewrite_created(root: Path, created_ns: int) -> None:
     os.utime(root, (seconds, seconds), follow_symlinks=False)
 
 
+def write_fake_census_helper(path: Path, payload: str) -> None:
+    path.write_text(
+        "#!/usr/bin/env python3\n"
+        "import sys\n"
+        "sys.stdin.read()\n"
+        f"sys.stdout.write({payload!r})\n"
+    )
+    path.chmod(0o700)
+
+
 def main() -> None:
-    real_process_census = scratch._live_process_references
-
-    def task_processes() -> list[Path]:
-        selected = {os.getpid()}
-        changed = True
-        while changed:
-            changed = False
-            for entry in Path("/proc").iterdir():
-                if not entry.name.isdigit():
-                    continue
-                try:
-                    fields = (entry / "stat").read_text().split()
-                except OSError:
-                    continue
-                if int(fields[3]) in selected and int(entry.name) not in selected:
-                    selected.add(int(entry.name)); changed = True
-        return [Path("/proc") / str(pid) for pid in sorted(selected)]
-
-    def task_process_census(root: Path, **kwargs):
-        return real_process_census(root, proc_entries=task_processes(), **kwargs)
-
-    # The production scanner is fail-closed across all same-UID processes.
-    # The contract scopes its own cleanup to the contract process tree so an
-    # unrelated non-dumpable user service cannot make the fixture host-specific.
-    scratch._live_process_references = task_process_census
     with tempfile.TemporaryDirectory(prefix="owned-scratch-contract-") as temporary:
         base = Path(temporary)
         namespace = base / "namespace"
@@ -134,15 +120,6 @@ os._exit(17)
                 os.close(descriptor)
         scratch.discard_exact(namespace, overflow_path)
 
-        unreadable_proc = base / "proc"; unreadable_proc.mkdir()
-        unreadable_pid = unreadable_proc / str(os.getpid()); unreadable_pid.mkdir()
-        unreadable_pid.chmod(0)
-        try:
-            unreadable = real_process_census(fd_path, proc_entries=[unreadable_pid])
-            assert unreadable.unreadable and not unreadable.references
-        finally:
-            unreadable_pid.chmod(0o700)
-
         nondumpable = scratch.OwnedScratchRoot.create(namespace=namespace, kind="agent-review")
         nondumpable_path = nondumpable.path; nondumpable.close()
         child = subprocess.Popen(
@@ -159,6 +136,90 @@ os._exit(17)
             assert diagnostics and any(f"pid={child.pid}:" in item for item in diagnostics)
         finally:
             child.terminate(); child.wait(timeout=5)
+
+        unavailable = scratch.OwnedScratchRoot.create(namespace=namespace, kind="agent-review")
+        unavailable_path = unavailable.path; unavailable.close()
+        helper = os.environ["DARLING_SCRATCH_CENSUS_HELPER"]
+        assert "cargo" not in inspect.getsource(scratch._process_census_helper)
+        os.environ["DARLING_SCRATCH_CENSUS_HELPER"] = str(base / "missing-helper")
+        try:
+            expect_refused(
+                lambda: scratch.discard_exact(namespace, unavailable_path),
+                "helper unavailable",
+            )
+            retained = scratch.garbage_collect(namespace, ttl_seconds=0, keep=0)
+            assert unavailable_path.exists()
+            assert any(
+                path == unavailable_path and "helper unavailable" in reason
+                for path, reason in retained.retained
+            )
+        finally:
+            os.environ["DARLING_SCRATCH_CENSUS_HELPER"] = helper
+        scratch.discard_exact(namespace, unavailable_path)
+
+        transport = scratch.OwnedScratchRoot.create(namespace=namespace, kind="agent-review")
+        transport_path = transport.path; transport.close()
+        transport_sentinel = transport_path / "sentinel"
+        transport_sentinel.write_bytes(b"transport-boundary-sentinel\x00")
+
+        def transport_identity() -> tuple[int, int, int, int, bytes]:
+            root_info = transport_path.lstat()
+            sentinel_info = transport_sentinel.lstat()
+            return (
+                root_info.st_dev, root_info.st_ino,
+                sentinel_info.st_dev, sentinel_info.st_ino,
+                transport_sentinel.read_bytes(),
+            )
+
+        real_helper = os.environ["DARLING_SCRATCH_CENSUS_HELPER"]
+        root_fd = os.open(transport_path, os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC)
+        try:
+            expect_refused(lambda: scratch._run_process_census(-1), "transport failed")
+            closed_fd = os.dup(root_fd); os.close(closed_fd)
+            expect_refused(lambda: scratch._run_process_census(closed_fd), "transport failed")
+            for invalid in (0, 1, 2, 999_999):
+                request = {
+                    "protocol_version": 1, "root_fd": invalid, "process_limit": 1,
+                    "fd_limit": 1, "time_limit_ms": 100, "output_limit_bytes": 256,
+                    "ignored_descriptors": [],
+                }
+                result = subprocess.run(
+                    [real_helper], input=__import__("json").dumps(request),
+                    capture_output=True, text=True, check=False,
+                )
+                assert result.returncode == 2, (invalid, result)
+
+            fake = base / "fake-census"
+            malformed_payloads = [
+                "", "{", '{"protocol_version":2,"outcomes":[]}',
+                "[" * 2_000 + "]" * 2_000,
+                '{"protocol_version":' + "9" * 5_000 + ',"outcomes":[]}',
+                '{"protocol_version":1,"outcomes":[{"kind":"unreadable","pid":7,"tid":7,"operation":"stat","errno":5}]}',
+                '{"protocol_version":1,"outcomes":[{"kind":"unreadable","pid":7,"tid":7,"operation":"stat","errno":true}]}',
+                '{"protocol_version":1,"outcomes":[{"kind":"unreadable","pid":7,"tid":7,"operation":{},"errno":13}]}',
+                '{"protocol_version":1,"outcomes":[{"kind":"reference","identity":{"pid":true,"tid":7,"starttime":9},"source":"cwd","descriptor":null}]}',
+                '{"protocol_version":1,"outcomes":[{"kind":"reference","identity":{"pid":7,"tid":7,"starttime":9},"source":"unknown","descriptor":null}]}',
+                '{"protocol_version":1,"outcomes":[{"kind":"reference","identity":{"pid":7,"tid":7,"starttime":9},"source":[],"descriptor":null}]}',
+                '{"protocol_version":1,"outcomes":[{"kind":"budget_exceeded","budget":"fds"}]}',
+                '{"protocol_version":1,"outcomes":[{"kind":"budget_exceeded","budget":[]}]}',
+            ]
+            for payload in malformed_payloads:
+                write_fake_census_helper(fake, payload)
+                os.environ["DARLING_SCRATCH_CENSUS_HELPER"] = str(fake)
+                before = transport_identity()
+                expect_refused(
+                    lambda: scratch.discard_exact(namespace, transport_path),
+                    "Rust scratch census" if payload == "" else "scratch census",
+                )
+                assert transport_identity() == before
+                automatic = scratch.garbage_collect(namespace, ttl_seconds=0, keep=0)
+                assert transport_path not in automatic.removed
+                assert any(path == transport_path for path, _reason in automatic.retained)
+                assert transport_identity() == before
+        finally:
+            os.environ["DARLING_SCRATCH_CENSUS_HELPER"] = real_helper
+            os.close(root_fd)
+        scratch.discard_exact(namespace, transport_path)
 
         mount_owner = scratch.OwnedScratchRoot.create(namespace=namespace, kind="agent-review")
         mount_path = mount_owner.path; mount_owner.close()
