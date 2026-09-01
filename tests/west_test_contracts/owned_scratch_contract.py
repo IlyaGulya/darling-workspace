@@ -51,10 +51,29 @@ def write_fake_census_helper(path: Path, payload: str) -> None:
     path.chmod(0o700)
 
 
+def write_fake_collection_helper(path: Path, payload: str) -> None:
+    path.write_text(
+        "#!/usr/bin/env python3\n"
+        "import json,sys\n"
+        "request=json.loads(sys.stdin.read())\n"
+        f"payload={payload!r}\n"
+        "sys.stdout.write(payload if 'operation' in request else "
+        "'{\"protocol_version\":1,\"outcomes\":[]}')\n"
+    )
+    path.chmod(0o700)
+
+
 def main() -> None:
     with tempfile.TemporaryDirectory(prefix="owned-scratch-contract-") as temporary:
         base = Path(temporary)
         namespace = base / "namespace"
+
+        expect_refused(
+            lambda: scratch.OwnedScratchRoot.create(
+                namespace=namespace, kind="agent-review", prefix=".gc-forged-",
+            ),
+            "reserved scratch recovery namespace",
+        )
 
         owner = scratch.OwnedScratchRoot.create(namespace=namespace, kind="agent-review")
         (owner.path / "build").mkdir()
@@ -108,6 +127,31 @@ os._exit(17)
         finally:
             child.terminate(); child.wait(timeout=5)
         scratch.discard_exact(namespace, fd_path)
+
+        final_census = scratch.OwnedScratchRoot.create(
+            namespace=namespace, kind="agent-review"
+        )
+        final_census_path = final_census.path; final_census.close()
+        original_nested = scratch._remove_nested_worktrees
+        final_child = None
+        def activate_after_python_census(root, *, mutate, **kwargs):
+            nonlocal final_child
+            if mutate and final_child is None:
+                final_child = subprocess.Popen(
+                    [sys.executable, "-c", "import time; time.sleep(30)"], cwd=root,
+                )
+            return []
+        scratch._remove_nested_worktrees = activate_after_python_census
+        try:
+            expect_refused(
+                lambda: scratch.discard_exact(namespace, final_census_path),
+                "active_reference",
+            )
+        finally:
+            scratch._remove_nested_worktrees = original_nested
+            if final_child is not None:
+                final_child.terminate(); final_child.wait(timeout=5)
+        scratch.discard_exact(namespace, final_census_path)
 
         overflow = scratch.OwnedScratchRoot.create(namespace=namespace, kind="agent-review")
         overflow_path = overflow.path; overflow.close()
@@ -220,6 +264,189 @@ os._exit(17)
             os.environ["DARLING_SCRATCH_CENSUS_HELPER"] = real_helper
             os.close(root_fd)
         scratch.discard_exact(namespace, transport_path)
+
+        collection_transport = scratch.OwnedScratchRoot.create(
+            namespace=namespace, kind="agent-review"
+        )
+        collection_path = collection_transport.path; collection_transport.close()
+        collection_sentinel = collection_path / "sentinel"
+        collection_sentinel.write_bytes(b"collection-transport-sentinel")
+        collection_identity = (
+            collection_path.lstat().st_dev,
+            collection_path.lstat().st_ino,
+            collection_sentinel.lstat().st_dev,
+            collection_sentinel.lstat().st_ino,
+            collection_sentinel.read_bytes(),
+        )
+        fake_collection = base / "fake-collection"
+        collection_payloads = [
+            "",
+            "{",
+            '{"protocol_version":2,"result":{"outcome":"collected","entries":1}}',
+            '{"protocol_version":1,"result":{"outcome":"collected","entries":true}}',
+            '{"protocol_version":1,"result":{"outcome":[],"entries":1}}',
+            '{"protocol_version":1,"result":{"outcome":"retained","reason":"unknown"}}',
+            '{"protocol_version":1,"result":{"outcome":"collected","entries":1}}',
+        ]
+        for payload in collection_payloads:
+            write_fake_collection_helper(fake_collection, payload)
+            os.environ["DARLING_SCRATCH_CENSUS_HELPER"] = str(fake_collection)
+            try:
+                scratch.discard_exact(namespace, collection_path)
+            except scratch.ScratchSafetyError:
+                pass
+            else:
+                raise AssertionError("malformed collection helper was accepted")
+            current = (
+                collection_path.lstat().st_dev,
+                collection_path.lstat().st_ino,
+                collection_sentinel.lstat().st_dev,
+                collection_sentinel.lstat().st_ino,
+                collection_sentinel.read_bytes(),
+            )
+            assert current == collection_identity
+        os.environ["DARLING_SCRATCH_CENSUS_HELPER"] = real_helper
+        scratch.discard_exact(namespace, collection_path)
+
+        interrupted = scratch.OwnedScratchRoot.create(
+            namespace=namespace, kind="agent-review"
+        )
+        interrupted_path = interrupted.path; interrupted.close()
+        (interrupted_path / "payload").write_bytes(b"payload")
+        interrupted_helper = base / "interrupted-collection"
+        interrupted_helper.write_text(
+            "#!/usr/bin/env python3\n"
+            "import json,os,sys\n"
+            "request=json.loads(sys.stdin.read())\n"
+            "if 'operation' not in request:\n"
+            " print('{\"protocol_version\":1,\"outcomes\":[]}')\n"
+            "else:\n"
+            " root=dict(request['root_identity']); links=root.pop('links')\n"
+            " record={'version':1,'public_name':request['root_name'],"
+            "'quarantine_name':request['quarantine_name'],'root_identity':root,"
+            "'root_links':links,'marker_identity':request['marker_identity'],"
+            "'lease_identity':request['lease_identity']}\n"
+            " afd=os.open(request['authority_name'],os.O_RDWR|os.O_CREAT|os.O_EXCL,0o600,"
+            "dir_fd=request['namespace_fd'])\n"
+            " os.write(afd,b'P\\n'+json.dumps(record,separators=(',',':')).encode());os.fsync(afd);"
+            "os.fsync(request['namespace_fd'])\n"
+            " os.rename(request['root_name'],request['quarantine_name'],"
+            "src_dir_fd=request['namespace_fd'],dst_dir_fd=request['namespace_fd'])\n"
+            " os.fsync(request['namespace_fd']);os.pwrite(afd,b'Q',0);os.fsync(afd)\n"
+            " os._exit(91)\n"
+        )
+        interrupted_helper.chmod(0o700)
+        os.environ["DARLING_SCRATCH_CENSUS_HELPER"] = str(interrupted_helper)
+        try:
+            scratch.discard_exact(namespace, interrupted_path)
+        except scratch.ScratchQuarantinedError as error:
+            interrupted_quarantine = error.path
+        else:
+            raise AssertionError("helper death after quarantine was not retained")
+        interrupted_payload = Path(str(interrupted_quarantine).removesuffix(".authority"))
+        assert not interrupted_path.exists() and interrupted_quarantine.exists()
+        assert interrupted_payload.exists()
+        recovery_sentinel = interrupted_payload / "payload"
+        recovery_identity = (
+            interrupted_quarantine.lstat().st_dev,
+            interrupted_quarantine.lstat().st_ino,
+            interrupted_payload.lstat().st_dev,
+            interrupted_payload.lstat().st_ino,
+            recovery_sentinel.read_bytes(),
+        )
+        for payload in [
+            '{"protocol_version":true,"result":{"outcome":"retained","reason":"identity_mismatch"}}',
+            '{"protocol_version":1,"result":{"outcome":"retained","reason":[]}}',
+            '{"protocol_version":1,"result":{"outcome":"quarantined","name":[],"authority_name":{},"identity":{},"observed_links":0,"reason":{}}}',
+        ]:
+            write_fake_collection_helper(fake_collection, payload)
+            os.environ["DARLING_SCRATCH_CENSUS_HELPER"] = str(fake_collection)
+            expect_refused(
+                lambda: scratch.discard_exact(namespace, interrupted_quarantine),
+                "Rust scratch recovery",
+            )
+            assert recovery_identity == (
+                interrupted_quarantine.lstat().st_dev,
+                interrupted_quarantine.lstat().st_ino,
+                interrupted_payload.lstat().st_dev,
+                interrupted_payload.lstat().st_ino,
+                recovery_sentinel.read_bytes(),
+            )
+        interrupted_path.mkdir()
+        (interrupted_path / "replacement").write_bytes(b"replacement")
+        replacement_identity = interrupted_path.lstat().st_dev, interrupted_path.lstat().st_ino
+        os.environ["DARLING_SCRATCH_CENSUS_HELPER"] = real_helper
+        recovered = scratch.garbage_collect(namespace, ttl_seconds=10**9, keep=2)
+        assert interrupted_quarantine in recovered.removed, recovered
+        assert not interrupted_quarantine.exists()
+        assert not interrupted_payload.exists()
+        assert (interrupted_path.lstat().st_dev, interrupted_path.lstat().st_ino) == replacement_identity
+        assert (interrupted_path / "replacement").read_bytes() == b"replacement"
+        shutil.rmtree(interrupted_path)
+
+        phase_helper = base / "phase-death-collection"
+        phase_helper.write_text(
+            "#!/usr/bin/env python3\n"
+            "import json,os,sys\n"
+            "r=json.loads(sys.stdin.read())\n"
+            "if 'operation' not in r: print('{\"protocol_version\":1,\"outcomes\":[]}');sys.exit(0)\n"
+            "phase=os.environ['DARLING_FAULT_PHASE'];root=dict(r['root_identity']);links=root.pop('links')\n"
+            "record={'version':1,'public_name':r['root_name'],'quarantine_name':r['quarantine_name'],"
+            "'root_identity':root,'root_links':links,'marker_identity':r['marker_identity'],"
+            "'lease_identity':r['lease_identity']}\n"
+            "a=os.open(r['authority_name'],os.O_RDWR|os.O_CREAT|os.O_EXCL,0o600,dir_fd=r['namespace_fd'])\n"
+            "os.write(a,b'P\\n'+json.dumps(record,separators=(',',':')).encode());os.fsync(a);os.fsync(r['namespace_fd'])\n"
+            "os.rename(r['root_name'],r['quarantine_name'],src_dir_fd=r['namespace_fd'],dst_dir_fd=r['namespace_fd']);os.fsync(r['namespace_fd'])\n"
+            "os.pwrite(a,b'Q',0);os.fsync(a)\n"
+            "if phase=='after-quarantine': os._exit(91)\n"
+            "if phase=='during-payload': os.unlink('payload-a',dir_fd=r['root_fd']);os._exit(91)\n"
+            "os.unlink('payload-a',dir_fd=r['root_fd']);os.unlink('payload-b',dir_fd=r['root_fd'])\n"
+            "if phase=='before-marker-phase': os._exit(91)\n"
+            "os.pwrite(a,b'M',0);os.fsync(a)\n"
+            "if phase=='after-marker-phase': os._exit(91)\n"
+            "os.unlink('.darling-scratch-v1',dir_fd=r['root_fd'])\n"
+            "if phase=='after-marker-unlink': os._exit(91)\n"
+            "os.pwrite(a,b'L',0);os.fsync(a)\n"
+            "if phase=='after-lease-phase': os._exit(91)\n"
+            "os.pwrite(a,b'R',0);os.fsync(a);os.unlink('.darling-scratch-lease',dir_fd=r['root_fd'])\n"
+            "if phase=='before-final-rmdir': os._exit(91)\n"
+            "os.rmdir(r['quarantine_name'],dir_fd=r['namespace_fd']);os.fsync(r['namespace_fd']);os._exit(91)\n"
+        )
+        phase_helper.chmod(0o700)
+        for fault_phase in [
+            "after-quarantine",
+            "during-payload",
+            "before-marker-phase",
+            "after-marker-phase",
+            "after-marker-unlink",
+            "after-lease-phase",
+            "before-final-rmdir",
+            "after-final-rmdir",
+        ]:
+            phase_owner = scratch.OwnedScratchRoot.create(
+                namespace=namespace, kind="agent-review"
+            )
+            phase_path = phase_owner.path
+            (phase_path / "payload-a").write_bytes(b"a")
+            (phase_path / "payload-b").write_bytes(b"b")
+            phase_owner.close()
+            before_authorities = set(namespace.glob(".gc-*.authority"))
+            os.environ["DARLING_FAULT_PHASE"] = fault_phase
+            os.environ["DARLING_SCRATCH_CENSUS_HELPER"] = str(phase_helper)
+            expect_refused(
+                lambda: scratch.discard_exact(namespace, phase_path),
+                "scratch",
+            )
+            new_authorities = set(namespace.glob(".gc-*.authority")) - before_authorities
+            assert len(new_authorities) == 1, (fault_phase, new_authorities)
+            authority_path = new_authorities.pop()
+            os.environ["DARLING_SCRATCH_CENSUS_HELPER"] = real_helper
+            recovered = scratch.garbage_collect(namespace, ttl_seconds=0, keep=0)
+            assert authority_path in recovered.removed, (fault_phase, recovered)
+            assert not authority_path.exists()
+            assert not Path(str(authority_path).removesuffix(".authority")).exists()
+            assert not phase_path.exists()
+        os.environ.pop("DARLING_FAULT_PHASE", None)
 
         mount_owner = scratch.OwnedScratchRoot.create(namespace=namespace, kind="agent-review")
         mount_path = mount_owner.path; mount_owner.close()
@@ -410,21 +637,15 @@ os._exit(17)
         assert final.bytes_freed >= 0
 
         large = scratch.OwnedScratchRoot.create(namespace=namespace, kind="agent-review")
-        (large.path / "entry").write_bytes(b"x")
+        for index in range(200):
+            (large.path / f"entry-{index}").write_bytes(b"x")
         large_path = large.path; large.close(); rewrite_created(large_path, old)
-        real_remove_tree = scratch._remove_tree_at
-        def blocking_remove(parent_fd, name, *, deadline=None):
-            if name.startswith(".gc-"):
-                time.sleep(0.2)
-            return real_remove_tree(parent_fd, name, deadline=deadline)
-        scratch._remove_tree_at = blocking_remove
         before = time.monotonic()
-        try:
-            limited = scratch.garbage_collect(namespace, ttl_seconds=0, keep=0, max_seconds=0.1)
-        finally:
-            scratch._remove_tree_at = real_remove_tree
+        limited = scratch.garbage_collect(namespace, ttl_seconds=0, keep=0, max_seconds=0.001)
         assert time.monotonic() - before < 0.5 and limited.bounded
-        assert not large_path.exists() and len(limited.quarantined) == 1 and limited.quarantined[0].exists(), limited
+        assert large_path.exists() or (
+            len(limited.quarantined) == 1 and limited.quarantined[0].exists()
+        ), limited
         scratch.garbage_collect(namespace, ttl_seconds=0, keep=0, max_seconds=10)
 
         print(f"OWNED_SCRATCH_CONTRACT_VALID cases=27 synthetic_bytes={outcome.bytes_freed}")

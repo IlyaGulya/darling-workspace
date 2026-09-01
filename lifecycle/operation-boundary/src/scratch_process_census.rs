@@ -95,6 +95,7 @@ pub enum BudgetKind {
 #[serde(deny_unknown_fields)]
 pub struct IgnoredDescriptor {
     pub pid: u32,
+    pub starttime: u64,
     pub fd: u32,
 }
 
@@ -194,6 +195,11 @@ fn parse_starttime(payload: &str) -> Option<u64> {
         .nth(19)?
         .parse()
         .ok()
+}
+
+pub(crate) fn live_process_starttime(pid: u32) -> io::Result<u64> {
+    parse_starttime(&fs::read_to_string(format!("/proc/{pid}/stat"))?)
+        .ok_or_else(|| io::Error::from_raw_os_error(libc::EINVAL))
 }
 
 fn revalidated_identity_outcome(
@@ -308,7 +314,7 @@ impl Scanner<'_> {
         }
     }
 
-    fn scan_task(&mut self, pid: u32, task: &Path, tid: u32) {
+    fn scan_task(&mut self, pid: u32, process_starttime: Option<u64>, task: &Path, tid: u32) {
         if !self.check_time() || self.terminal {
             return;
         }
@@ -393,13 +399,12 @@ impl Scanner<'_> {
                 });
                 continue;
             };
-            if self
-                .request
-                .ignored_descriptors
-                .iter()
-                .any(|ignored| ignored.pid == pid && ignored.fd == fd)
-                || (pid == std::process::id()
-                    && (fd as i32 == self.request.root_fd || fd as i32 == self.owned_root_fd))
+            if self.request.ignored_descriptors.iter().any(|ignored| {
+                ignored.pid == pid
+                    && Some(ignored.starttime) == process_starttime
+                    && ignored.fd == fd
+            }) || (pid == std::process::id()
+                && (fd as i32 == self.request.root_fd || fd as i32 == self.owned_root_fd))
             {
                 continue;
             }
@@ -470,6 +475,38 @@ impl Scanner<'_> {
             if metadata.uid() != self.uid {
                 continue;
             }
+            let process_starttime = if self
+                .request
+                .ignored_descriptors
+                .iter()
+                .any(|ignored| ignored.pid == pid)
+            {
+                match fs::read_to_string(process.path().join("stat")) {
+                    Ok(payload) => match parse_starttime(&payload) {
+                        Some(starttime) => Some(starttime),
+                        None => {
+                            self.push(CensusOutcome::Ambiguous {
+                                pid,
+                                tid: None,
+                                operation: CensusOperation::ParseStat,
+                                errno: None,
+                            });
+                            continue;
+                        }
+                    },
+                    Err(error) if error.kind() == io::ErrorKind::NotFound => continue,
+                    Err(error) if permission_error(&error) => {
+                        self.unreadable(pid, None, CensusOperation::Stat, &error);
+                        continue;
+                    }
+                    Err(error) => {
+                        self.ambiguous(pid, None, CensusOperation::Stat, &error);
+                        continue;
+                    }
+                }
+            } else {
+                None
+            };
             let tasks = match fs::read_dir(process.path().join("task")) {
                 Ok(tasks) => tasks,
                 Err(error) if error.kind() == io::ErrorKind::NotFound => continue,
@@ -505,7 +542,7 @@ impl Scanner<'_> {
                     self.terminal = true;
                     break;
                 }
-                self.scan_task(pid, &task.path(), tid);
+                self.scan_task(pid, process_starttime, &task.path(), tid);
             }
         }
         CensusResponse {
@@ -617,6 +654,7 @@ mod tests {
         let (base, proc, root_fd) = fixture();
         let task = proc.join("41/task/43");
         fs::create_dir_all(task.join("fd")).unwrap();
+        fs::write(proc.join("41/stat"), stat_payload(9001)).unwrap();
         fs::write(task.join("stat"), stat_payload(9001)).unwrap();
         symlink(base.join("scratch"), task.join("cwd")).unwrap();
         symlink("/", task.join("root")).unwrap();
@@ -702,6 +740,57 @@ mod tests {
     }
 
     #[test]
+    fn ignored_descriptor_is_generation_bound() {
+        let (base, proc, root_fd) = fixture();
+        let task = proc.join("41/task/43");
+        fs::create_dir_all(task.join("fd")).unwrap();
+        fs::write(proc.join("41/stat"), stat_payload(9001)).unwrap();
+        fs::write(task.join("stat"), stat_payload(9001)).unwrap();
+        symlink("/", task.join("cwd")).unwrap();
+        symlink("/", task.join("root")).unwrap();
+        symlink("/bin/sh", task.join("exe")).unwrap();
+        symlink(base.join("scratch"), task.join("fd/7")).unwrap();
+        let uid = effective_uid();
+
+        let mut stale = request(999);
+        stale.ignored_descriptors.push(IgnoredDescriptor {
+            pid: 41,
+            starttime: 9000,
+            fd: 7,
+        });
+        let response = census_at(root_fd, &stale, &proc, uid).unwrap();
+        assert!(response.outcomes.iter().any(|outcome| matches!(
+            outcome,
+            CensusOutcome::Reference {
+                identity: ProcessIdentity {
+                    starttime: 9001,
+                    ..
+                },
+                source: ReferenceSource::Fd,
+                descriptor: Some(7),
+            }
+        )));
+
+        let root_fd = OwnedFd::from(File::open(base.join("scratch")).unwrap());
+        let mut exact = request(999);
+        exact.ignored_descriptors.push(IgnoredDescriptor {
+            pid: 41,
+            starttime: 9001,
+            fd: 7,
+        });
+        let response = census_at(root_fd, &exact, &proc, uid).unwrap();
+        assert!(!response.outcomes.iter().any(|outcome| matches!(
+            outcome,
+            CensusOutcome::Reference {
+                source: ReferenceSource::Fd,
+                descriptor: Some(7),
+                ..
+            }
+        )));
+        fs::remove_dir_all(base).unwrap();
+    }
+
+    #[test]
     fn request_protocol_rejects_extra_fields() {
         let payload = r#"{"protocol_version":1,"root_fd":3,"process_limit":1,"fd_limit":1,"time_limit_ms":1,"output_limit_bytes":256,"ignored_descriptors":[],"extra":true}"#;
         assert!(serde_json::from_str::<CensusRequest>(payload).is_err());
@@ -729,6 +818,7 @@ mod tests {
                     oversized.ignored_descriptors = (0..=MAX_IGNORED_DESCRIPTORS)
                         .map(|fd| IgnoredDescriptor {
                             pid: 1,
+                            starttime: 1,
                             fd: fd as u32,
                         })
                         .collect()

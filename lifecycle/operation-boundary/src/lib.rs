@@ -30,6 +30,8 @@ pub mod preinit_user_home;
 pub mod preinit_var_run;
 pub mod quarantine_gc;
 pub mod runtime_lower_binding;
+pub mod scratch_collection;
+mod scratch_fs;
 pub mod scratch_process_census;
 pub mod state;
 
