@@ -8,8 +8,11 @@ refs, PR drafts, and agent handoff.
 
 - `mise.toml` is the canonical host-side CLI environment for this workspace.
   On a fresh checkout, review it, run `mise trust`, then run `mise install`
-  from `darling-workspace`; from the West workspace root use
-  `mise -C darling-workspace trust` and `mise -C darling-workspace install`.
+  from `darling-workspace`. Users with Cargo may additionally run
+  `mise run setup-scratch-census` to enable local managed-scratch GC.
+  From the West workspace root use `mise -C darling-workspace trust`,
+  `mise -C darling-workspace install`; the optional provisioning command is
+  `mise -C darling-workspace run setup-scratch-census`.
 - Run pinned project CLIs through mise: `mise exec -- west ...` and
   `mise exec -- uv ...`. From the West workspace root, add
   `-C darling-workspace`, for example
