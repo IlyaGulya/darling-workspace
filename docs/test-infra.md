@@ -1123,6 +1123,38 @@ Verified end-to-end on this machine:
   the existing prefix hung indefinitely (darlingserver stuck `Sl` 12+ min);
   guest tests therefore default to `guarded`, not `bare`.
 
+## Lifecycle Rust unsafe boundary audit
+
+The `operation-boundary` unsafe baseline is counted from parsed Rust syntax,
+not text matches. The audit distinguishes unsafe blocks, unsafe functions and
+unsafe impls, and separately attributes production code, inline `cfg(test)`
+code and integration tests. At commit `34c9b00d`, the baseline was 414
+production sites (397 blocks, 15 functions, 2 impls), 108 inline-test blocks
+and 14 integration-test blocks. Site review classified them as FFI,
+syscall/FD, raw-memory or process-control boundaries; no site was accepted as
+unnecessary merely because an automated classifier could not identify it.
+
+The first isolation slice makes `scratch_process_census`,
+`scratch_collection` and `scratch_fs` deny unsafe code. Their combined count
+is 4 to 0. One separate `inherited_fd` transport site owns the unavoidable
+raw inherited-descriptor conversion around `F_DUPFD_CLOEXEC`; invalid input is
+an ordinary kernel error and only a newly returned descriptor becomes an
+`OwnedFd`. The package-wide count becomes 424 production, 107 inline-test and
+14 integration-test syntax sites because `deny(unsafe_op_in_unsafe_fn)` makes
+12 previously implicit C-ABI pointer operations explicit and documented. This
+increase is intentional: implicit unsafe operations are no longer hidden by
+an unsafe function body.
+
+Remaining work stays bounded and ordered by concentration:
+
+1. Isolate the C-ABI/process-control boundary in `cohort_routing` (164 sites)
+   and the syscall/FD boundary in `preinit_var_run` (89 sites).
+2. Separate raw-memory/SCM_RIGHTS handling from policy in
+   `guest_namespace_transaction` (73 sites) and
+   `guest_namespace_authority` (66 sites).
+3. Migrate the remaining `lib`, `linux_backend` and integration-test helpers
+   only after the preceding boundaries have stable safe APIs.
+
 ## Open questions
 
 - test↔submodule mapping: explicit `SUBMODULES` labels (chosen) vs directory

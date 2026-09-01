@@ -1,9 +1,11 @@
 //! Bounded, read-only process census for a retained owned-scratch root.
 
+#![deny(unsafe_code)]
+
 use serde::{Deserialize, Serialize};
 use std::fs;
 use std::io;
-use std::os::fd::{AsRawFd, FromRawFd, OwnedFd, RawFd};
+use std::os::fd::{AsRawFd, OwnedFd, RawFd};
 use std::os::unix::ffi::OsStringExt;
 use std::os::unix::fs::{FileTypeExt, MetadataExt};
 use std::path::{Path, PathBuf};
@@ -146,15 +148,7 @@ pub fn duplicate_inherited_root(raw_fd: RawFd) -> Result<OwnedFd, CensusError> {
             io::Error::from_raw_os_error(libc::EBADF),
         ));
     }
-    // SAFETY: fcntl does not borrow Rust memory. On success F_DUPFD_CLOEXEC
-    // returns a new descriptor-table entry owned exclusively by this call.
-    let duplicated = unsafe { libc::fcntl(raw_fd, libc::F_DUPFD_CLOEXEC, 3) };
-    if duplicated < 0 {
-        return Err(CensusError::InvalidDescriptor(io::Error::last_os_error()));
-    }
-    // SAFETY: `duplicated` is the fresh, successful F_DUPFD_CLOEXEC result and
-    // has not been wrapped or transferred elsewhere.
-    Ok(unsafe { OwnedFd::from_raw_fd(duplicated) })
+    crate::inherited_fd::duplicate_cloexec(raw_fd, 3).map_err(CensusError::InvalidDescriptor)
 }
 
 impl std::error::Error for CensusError {}
@@ -168,9 +162,7 @@ fn permission_error(error: &io::Error) -> bool {
 }
 
 fn effective_uid() -> u32 {
-    // SAFETY: geteuid has no arguments, cannot invalidate memory, and returns
-    // the effective UID value for the calling process.
-    unsafe { libc::geteuid() }
+    rustix::process::geteuid().as_raw()
 }
 
 fn strip_deleted(path: &Path) -> PathBuf {
@@ -851,10 +843,35 @@ mod tests {
         let original = root_fd.as_raw_fd();
         let duplicate = duplicate_inherited_root(original).unwrap();
         assert_ne!(duplicate.as_raw_fd(), original);
-        // SAFETY: F_GETFD only inspects the live descriptor owned above.
-        let flags = unsafe { libc::fcntl(duplicate.as_raw_fd(), libc::F_GETFD) };
-        assert_ne!(flags & libc::FD_CLOEXEC, 0);
+        let flags = rustix::io::fcntl_getfd(&duplicate).unwrap();
+        assert!(flags.contains(rustix::io::FdFlags::CLOEXEC));
         assert!(fs::metadata(format!("/proc/self/fd/{original}")).is_ok());
+        fs::remove_dir_all(base).unwrap();
+    }
+
+    #[test]
+    fn inherited_descriptor_duplicate_retains_the_exact_lock_description() {
+        let (base, _proc, _root_fd) = fixture();
+        let lease_path = base.join("lease");
+        let lease = File::create(&lease_path).unwrap();
+        rustix::fs::flock(&lease, rustix::fs::FlockOperation::NonBlockingLockExclusive).unwrap();
+
+        let duplicate = duplicate_inherited_root(lease.as_raw_fd()).unwrap();
+        rustix::fs::flock(
+            &duplicate,
+            rustix::fs::FlockOperation::NonBlockingLockExclusive,
+        )
+        .expect("a duplicate of the retained OFD keeps the same lock owner");
+
+        let contender = File::open(&lease_path).unwrap();
+        let error = rustix::fs::flock(
+            &contender,
+            rustix::fs::FlockOperation::NonBlockingLockExclusive,
+        )
+        .expect_err("an independent OFD must remain blocked");
+        assert_eq!(error, rustix::io::Errno::WOULDBLOCK);
+        drop(duplicate);
+        drop(lease);
         fs::remove_dir_all(base).unwrap();
     }
 
