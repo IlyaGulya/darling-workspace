@@ -1,3 +1,10 @@
 [tools]
 uv = "0.8.17"
 "pipx:west" = { version = "1.5.0", depends = ["uv"] }
+
+[env]
+DARLING_SCRATCH_CENSUS_HELPER = "{{config_root}}/.darling-tools/darling-scratch-census"
+
+[tasks.setup-scratch-census]
+description = "Optionally build and atomically provision the Rust scratch census helper"
+run = "bash {{config_root}}/scripts/provision-scratch-census.sh"

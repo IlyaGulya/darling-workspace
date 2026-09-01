@@ -898,6 +898,13 @@ nor Wine offers, and the reason `west test` exists rather than bare
 Tooling scratch is owned through `west_commands/owned_scratch.py`. Managed
 roots are direct children of `${DARLING_SCRATCH_ROOT:-$TMPDIR/darling-scratch-v1}`
 and carry an exact `.darling-scratch-v1` marker plus an exclusively held lease.
+After the normal `mise trust && mise install` checkout setup, provision the
+Rust process-census helper once with `mise run setup-scratch-census` when Cargo
+is available. The command builds in a private workspace-local stage and atomically
+installs the validated executable at the exact path exported through mise.
+Ordinary `mise exec -- west ...` and
+Python never invoke Cargo; a missing, stale, or hostile helper keeps automatic GC
+fail-closed and makes explicit removal fail.
 Unmarked lookalikes are never adopted. Normal exits discard generated roots;
 failures retain only the registered review/source paths and one bounded raw
 log. A short bounded GC runs before heavy test, patch-verify, and
