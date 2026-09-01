@@ -3161,7 +3161,9 @@ pub unsafe extern "C" fn darling_lifecycle_cohort_prepare_user_home(
     controller: *mut CohortController,
     plan: *const crate::preinit_user_home::DarlingLifecycleUserHomePlan,
 ) -> c_int {
-    let (Some(controller), Some(plan)) = (controller.as_mut(), plan.as_ref()) else {
+    // SAFETY: the caller contract requires both pointers to remain valid and
+    // exclusively usable for this call; null is handled by the pattern.
+    let (Some(controller), Some(plan)) = (unsafe { (controller.as_mut(), plan.as_ref()) }) else {
         return -1;
     };
     let parsed = unsafe { crate::preinit_user_home::parse_ffi_plan(plan) }
@@ -3239,7 +3241,9 @@ pub unsafe extern "C" fn darling_lifecycle_cohort_start(
     if prefix_fd < 0 || deployment_prefix_fd < 0 || prefix_argument.is_null() || output.is_null() {
         return ptr::null_mut();
     }
-    let prefix_argument = CStr::from_ptr(prefix_argument);
+    // SAFETY: null was rejected above and the caller contract requires a live
+    // NUL-terminated prefix argument for the duration of this call.
+    let prefix_argument = unsafe { CStr::from_ptr(prefix_argument) };
     let (mut controller, darlingserver) = match CohortController::start_from_fd(
         prefix_fd,
         deployment_prefix_fd,
@@ -3272,7 +3276,9 @@ pub unsafe extern "C" fn darling_lifecycle_cohort_start(
     };
     bootstrap.control_name[..controller.control_name.len()]
         .copy_from_slice(&controller.control_name);
-    ptr::write(output, bootstrap);
+    // SAFETY: null was rejected above and the caller contract provides
+    // writable, properly aligned CohortBootstrap storage.
+    unsafe { ptr::write(output, bootstrap) };
     Box::into_raw(Box::new(controller))
 }
 
@@ -3289,7 +3295,8 @@ pub unsafe extern "C" fn darling_lifecycle_cohort_finish(
     if controller.is_null() {
         return -1;
     }
-    let mut owned = Box::from_raw(controller);
+    // SAFETY: the caller transfers the unique live pointer returned by start.
+    let mut owned = unsafe { Box::from_raw(controller) };
     if owned.cleanup_phase == CleanupPhase::CleanupCommitted {
         return match (*owned).finish_after_cleanup_commit() {
             Ok(()) => 0,
@@ -3354,7 +3361,9 @@ pub unsafe extern "C" fn darling_lifecycle_cohort_finish(
 pub unsafe extern "C" fn darling_lifecycle_cohort_worker_pid(
     controller: *mut CohortController,
 ) -> libc::pid_t {
-    let Some(controller) = controller.as_mut() else {
+    // SAFETY: the caller contract requires a live uniquely usable controller;
+    // null is handled by the pattern.
+    let Some(controller) = (unsafe { controller.as_mut() }) else {
         return -1;
     };
     #[cfg(not(test))]
@@ -3380,7 +3389,9 @@ pub unsafe extern "C" fn darling_lifecycle_cohort_admission_open(
     if controller.is_null() {
         return false;
     }
-    let controller = &*controller;
+    // SAFETY: null was rejected above and the caller contract retains the live
+    // controller for the duration of this observation.
+    let controller = unsafe { &*controller };
     controller.cleanup_phase == CleanupPhase::Active
         && controller
             .guest_namespace
@@ -3401,7 +3412,8 @@ pub unsafe extern "C" fn darling_lifecycle_cohort_abandon(
     if controller.is_null() {
         return -1;
     }
-    let mut owned = Box::from_raw(controller);
+    // SAFETY: the caller transfers the exact unique pending controller.
+    let mut owned = unsafe { Box::from_raw(controller) };
     if matches!(
         owned.cleanup_phase,
         CleanupPhase::CleanupRequested
@@ -3443,7 +3455,9 @@ pub unsafe extern "C" fn darling_lifecycle_cohort_send_guest_namespace_bootstrap
     controller: *mut CohortController,
     socket_fd: c_int,
 ) -> c_int {
-    let Some(controller) = controller.as_ref() else {
+    // SAFETY: the caller contract retains the live controller; null is
+    // handled by the pattern.
+    let Some(controller) = (unsafe { controller.as_ref() }) else {
         return -1;
     };
     if socket_fd < 0
@@ -3489,7 +3503,9 @@ pub struct GuestTransactionWireResult {
 pub unsafe extern "C" fn darling_lifecycle_cohort_prepare_var_run(
     controller: *mut CohortController,
 ) -> c_int {
-    let Some(controller) = controller.as_mut() else {
+    // SAFETY: the caller contract requires a live uniquely usable controller;
+    // null is handled by the pattern.
+    let Some(controller) = (unsafe { controller.as_mut() }) else {
         return -1;
     };
     match controller.prepare_var_run() {
@@ -3511,7 +3527,9 @@ pub unsafe extern "C" fn darling_lifecycle_cohort_prepare_var_run(
 pub unsafe extern "C" fn darling_lifecycle_guest_namespace_configure(
     controller: *mut CohortController,
 ) -> c_int {
-    let Some(controller) = controller.as_ref() else {
+    // SAFETY: the caller contract retains the live controller; null is
+    // handled by the pattern.
+    let Some(controller) = (unsafe { controller.as_ref() }) else {
         return -1;
     };
     match controller.configure_guest_transactions() {
@@ -3533,7 +3551,9 @@ pub unsafe extern "C" fn darling_lifecycle_guest_namespace_configure(
 pub unsafe extern "C" fn darling_lifecycle_guest_namespace_directory(
     controller: *mut CohortController,
 ) -> c_int {
-    let Some(controller) = controller.as_ref() else {
+    // SAFETY: the caller contract retains the live controller; null is
+    // handled by the pattern.
+    let Some(controller) = (unsafe { controller.as_ref() }) else {
         return -1;
     };
     controller
@@ -3553,8 +3573,10 @@ pub unsafe extern "C" fn darling_lifecycle_guest_namespace_transaction(
     request: *const GuestTransactionWireRequest,
     result: *mut GuestTransactionWireResult,
 ) -> c_int {
+    // SAFETY: the caller contract requires all three pointers to remain valid
+    // for this call; null values are handled by the pattern.
     let (Some(controller), Some(request), Some(result)) =
-        (controller.as_ref(), request.as_ref(), result.as_mut())
+        (unsafe { (controller.as_ref(), request.as_ref(), result.as_mut()) })
     else {
         return -1;
     };

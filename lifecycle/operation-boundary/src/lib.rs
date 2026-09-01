@@ -5,6 +5,8 @@
 //! directory/file/pidfd/lock capabilities, and the capability newtypes own
 //! their `OwnedFd` with RAII.  No capability implements `Clone`.
 
+#![deny(unsafe_op_in_unsafe_fn)]
+
 use libc::{self, c_int, c_void, stat as libc_stat};
 use serde::{Deserialize, Serialize};
 use std::ffi::{CStr, CString, OsStr};
@@ -25,6 +27,7 @@ pub mod fuzz;
 pub mod guest_namespace_authority;
 pub mod guest_namespace_transaction;
 pub mod guest_ready;
+mod inherited_fd;
 pub mod linux_backend;
 pub mod preinit_user_home;
 pub mod preinit_var_run;
