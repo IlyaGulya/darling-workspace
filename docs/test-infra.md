@@ -917,8 +917,21 @@ explicit agent/review creator, and exact manual removal uses either its
 `discard` action or `west test --gc --scratch-discard PATH`. Dirty worktrees
 are diagnostic-only unless exact discard also names `--scratch-force-dirty`.
 
-Deletion is fail-closed: root/marker/lease identity, UID, modes, hardlinks,
-active lease, readable `/proc` cwd/root/exe/FD references, mounts, Git
+Deletion is fail-closed: Python retains TTL/keep and Git orchestration, then
+passes already-open namespace/root/marker/lease descriptors to the same Rust
+helper. The collection path uses the exact-pinned `rustix` filesystem API and
+contains no local unsafe syscall wrappers. Rust acquires the exclusive lock on
+the passed lease OFD, binds transport descriptor exclusions to
+`(pid,starttime,fd)`, repeats exact identity, process and mount checks, performs a
+no-clobber same-parent quarantine rename, and recursively deletes only through
+retained descriptors. There is no Python deletion fallback. Before isolation it
+durably creates an exact `.gc-<uuid>.authority` sidecar. Monotonic payload,
+marker, lease, and root phases keep recovery authority valid across helper death;
+a later pass either resumes the exact retained quarantine or proves its payload
+root is already gone. The public name and every replacement are left untouched.
+Helper absence, timeout, malformed output, collision or ambiguous result retains
+the root. Root/marker/lease identity, UID, modes,
+hardlinks, active lease, readable `/proc` cwd/root/exe/FD references, mounts, Git
 cleanliness and worktree registrations are checked. The private scratch
 namespace is cooperative: every integrated owner must retain its exclusive
 lease until its process cleanup completes and must not move scratch references

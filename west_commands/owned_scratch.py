@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import ctypes
 import fcntl
 import json
 import os
@@ -33,6 +32,21 @@ PROCESS_CENSUS_OPERATIONS = {
     "parse-stat", "parse-fd", "process-identity-changed",
 }
 PROCESS_CENSUS_BUDGETS = {"processes", "time", "output"}
+COLLECTION_PROTOCOL_VERSION = 1
+COLLECTION_OUTCOMES = {"collected", "retained", "quarantined"}
+COLLECTION_RETAIN_REASONS = {
+    "identity_mismatch", "active_reference", "ambiguous_census",
+    "mounted_subtree", "budget_exceeded",
+}
+COLLECTION_RECOVERY_REASONS = {"delete_failed", "budget_exceeded"}
+
+
+def _recovery_quarantine_name(name: str) -> str | None:
+    suffix = name.removesuffix(".authority") if name.endswith(".authority") else ""
+    token = suffix.removeprefix(".gc-") if suffix.startswith(".gc-") else ""
+    if len(token) == 32 and all(character in "0123456789abcdef" for character in token):
+        return suffix
+    return None
 
 
 class ScratchSafetyError(RuntimeError):
@@ -76,8 +90,10 @@ def _open_root(path: Path) -> int:
         raise ScratchSafetyError(f"cannot retain scratch root: {error}") from error
 
 
-def _regular_at(directory_fd: int, name: str, *, mode: int = 0o600) -> tuple[int, os.stat_result]:
-    flags = os.O_RDONLY | os.O_NONBLOCK | os.O_CLOEXEC | getattr(os, "O_NOFOLLOW", 0)
+def _regular_at(
+    directory_fd: int, name: str, *, mode: int = 0o600, writable: bool = False,
+) -> tuple[int, os.stat_result]:
+    flags = (os.O_RDWR if writable else os.O_RDONLY) | os.O_NONBLOCK | os.O_CLOEXEC | getattr(os, "O_NOFOLLOW", 0)
     try:
         fd = os.open(name, flags, dir_fd=directory_fd)
     except OSError as error:
@@ -144,18 +160,6 @@ def _remove_relative_at(root_fd: int, relative: Path, *, deadline: float | None 
         raise ScratchSafetyError(f"cannot remove registered relative path: {error}") from error
     finally:
         os.close(current_fd)
-
-
-def _rename_noreplace(directory_fd: int, source: str, destination: str) -> None:
-    libc = ctypes.CDLL(None, use_errno=True)
-    renameat2 = getattr(libc, "renameat2", None)
-    if renameat2 is None:
-        raise ScratchSafetyError("renameat2 is unavailable for safe scratch isolation")
-    renameat2.argtypes = [ctypes.c_int, ctypes.c_char_p, ctypes.c_int, ctypes.c_char_p, ctypes.c_uint]
-    renameat2.restype = ctypes.c_int
-    if renameat2(directory_fd, os.fsencode(source), directory_fd, os.fsencode(destination), 1) != 0:
-        error = ctypes.get_errno()
-        raise ScratchSafetyError(f"cannot isolate scratch root: {os.strerror(error)}")
 
 
 def default_namespace() -> Path:
@@ -323,6 +327,22 @@ def _process_census_helper() -> Path:
     return candidate
 
 
+def _process_starttime(pid: int) -> int:
+    try:
+        payload = Path(f"/proc/{pid}/stat").read_text()
+        closing = payload.rfind(")")
+        if closing < 0:
+            raise ValueError("missing process comm terminator")
+        starttime = int(payload[closing + 1 :].split()[19])
+    except (OSError, ValueError, IndexError) as error:
+        raise ScratchSafetyError(
+            f"cannot bind ignored descriptor to process generation pid={pid}: {error}"
+        ) from error
+    if starttime <= 0:
+        raise ScratchSafetyError("invalid ignored descriptor process generation")
+    return starttime
+
+
 def _run_process_census(
     root_fd: int,
     *,
@@ -348,7 +368,7 @@ def _run_process_census(
         "time_limit_ms": max(1, int(timeout * 1_000)),
         "output_limit_bytes": PROCESS_CENSUS_OUTPUT_BYTES,
         "ignored_descriptors": [
-            {"pid": pid, "fd": descriptor}
+            {"pid": pid, "starttime": _process_starttime(pid), "fd": descriptor}
             for pid, descriptor in sorted(ignored_fds or set())
         ],
     }
@@ -357,7 +377,9 @@ def _run_process_census(
             [str(helper)], input=json.dumps(request, separators=(",", ":")),
             capture_output=True, text=True, check=False, pass_fds=(root_fd,), timeout=timeout,
         )
-    except (OSError, ValueError, subprocess.TimeoutExpired) as error:
+    except subprocess.TimeoutExpired as error:
+        raise ScratchSafetyError("scratch operation time budget exceeded") from error
+    except (OSError, ValueError) as error:
         raise ScratchSafetyError(f"Rust scratch census transport failed: {error}") from error
     if completed.returncode != 0:
         detail = (completed.stderr or completed.stdout)[:4096].strip()
@@ -462,6 +484,216 @@ def _run_process_census(
                 raise ScratchSafetyError("unknown Rust scratch census budget")
             census.ambiguous.append(f"budget-exceeded:{outcome.get('budget')}")
     return census
+
+
+def _identity(info: os.stat_result) -> dict[str, int]:
+    return {
+        "device": info.st_dev,
+        "inode": info.st_ino,
+        "file_type": stat.S_IFMT(info.st_mode),
+        "mode": stat.S_IMODE(info.st_mode),
+        "uid": info.st_uid,
+        "gid": info.st_gid,
+        "links": info.st_nlink,
+    }
+
+
+def _run_collection(
+    namespace_fd: int,
+    root_fd: int,
+    marker_fd: int,
+    lease_fd: int,
+    *,
+    root_name: str,
+    quarantine_name: str,
+    deadline: float | None,
+) -> tuple[str, str | None, dict[str, int] | None, int | None, str | None]:
+    helper = _process_census_helper()
+    remaining = _remaining(deadline)
+    timeout = remaining if remaining is not None else PROCESS_CENSUS_EXPLICIT_SECONDS
+    descriptors = (namespace_fd, root_fd, marker_fd, lease_fd)
+    if any(type(descriptor) is not int or descriptor <= 2 for descriptor in descriptors):
+        raise ScratchSafetyError("Rust scratch collection transport failed: invalid descriptor")
+    try:
+        identities = [_identity(os.fstat(descriptor)) for descriptor in descriptors]
+    except OSError as error:
+        raise ScratchSafetyError(f"Rust scratch collection transport failed: {error}") from error
+    request = {
+        "protocol_version": COLLECTION_PROTOCOL_VERSION,
+        "operation": "collect",
+        "namespace_fd": namespace_fd,
+        "root_fd": root_fd,
+        "marker_fd": marker_fd,
+        "lease_fd": lease_fd,
+        "root_name": root_name,
+        "quarantine_name": quarantine_name,
+        "authority_name": f"{quarantine_name}.authority",
+        "namespace_identity": identities[0],
+        "root_identity": identities[1],
+        "marker_identity": identities[2],
+        "lease_identity": identities[3],
+        "process_limit": 65_536,
+        "fd_limit": 4_096,
+        "entry_limit": 1_000_000,
+        "depth_limit": 256,
+        "time_limit_ms": max(1, int(timeout * 1_000)),
+        "output_limit_bytes": PROCESS_CENSUS_OUTPUT_BYTES,
+    }
+    try:
+        completed = subprocess.run(
+            [str(helper)], input=json.dumps(request, separators=(",", ":")),
+            capture_output=True, text=True, check=False, pass_fds=descriptors,
+            timeout=timeout,
+        )
+    except (OSError, ValueError, subprocess.TimeoutExpired) as error:
+        raise ScratchSafetyError(f"Rust scratch collection transport failed: {error}") from error
+    if completed.returncode != 0:
+        detail = (completed.stderr or completed.stdout)[:4096].strip()
+        raise ScratchSafetyError(
+            f"Rust scratch collection helper failed rc={completed.returncode}: {detail}"
+        )
+    if len(completed.stdout.encode()) > PROCESS_CENSUS_OUTPUT_BYTES:
+        raise ScratchSafetyError("Rust scratch collection response exceeded output budget")
+    try:
+        response = json.loads(completed.stdout)
+    except (json.JSONDecodeError, UnicodeError, RecursionError, ValueError) as error:
+        raise ScratchSafetyError(f"malformed Rust scratch collection response: {error}") from error
+    if not isinstance(response, dict) or set(response) != {"protocol_version", "result"}:
+        raise ScratchSafetyError("malformed Rust scratch collection envelope")
+    if type(response["protocol_version"]) is not int or response["protocol_version"] != COLLECTION_PROTOCOL_VERSION:
+        raise ScratchSafetyError("Rust scratch collection protocol mismatch")
+    result = response["result"]
+    if not isinstance(result, dict) or not isinstance(result.get("outcome"), str):
+        raise ScratchSafetyError("malformed Rust scratch collection outcome")
+    outcome = result["outcome"]
+    if outcome not in COLLECTION_OUTCOMES:
+        raise ScratchSafetyError("unknown Rust scratch collection outcome")
+    if outcome == "collected":
+        if set(result) != {"outcome", "entries"} or type(result["entries"]) is not int or result["entries"] < 0:
+            raise ScratchSafetyError("malformed Rust collected outcome")
+        return outcome, None, None, None, None
+    if outcome == "retained":
+        if (
+            set(result) != {"outcome", "reason"}
+            or not isinstance(result["reason"], str)
+            or result["reason"] not in COLLECTION_RETAIN_REASONS
+        ):
+            raise ScratchSafetyError("malformed Rust retained outcome")
+        return outcome, result["reason"], None, None, None
+    if set(result) != {
+        "outcome", "name", "authority_name", "identity", "observed_links", "reason"
+    }:
+        raise ScratchSafetyError("malformed Rust quarantined outcome")
+    quarantine_identity = result["identity"]
+    identity_fields = {"device", "inode", "file_type", "mode", "uid", "gid"}
+    if (
+        not isinstance(result["name"], str)
+        or result["name"] != quarantine_name
+        or result["authority_name"] != f"{quarantine_name}.authority"
+        or type(result["observed_links"]) is not int
+        or result["observed_links"] < 0
+        or not isinstance(result["reason"], str)
+        or result["reason"] not in COLLECTION_RECOVERY_REASONS
+        or not isinstance(quarantine_identity, dict)
+        or set(quarantine_identity) != identity_fields
+        or any(type(value) is not int or value < 0 for value in quarantine_identity.values())
+    ):
+        raise ScratchSafetyError("malformed Rust quarantined authority")
+    return (
+        outcome,
+        result["reason"],
+        quarantine_identity,
+        result["observed_links"],
+        result["authority_name"],
+    )
+
+
+def _run_recovery(
+    namespace_fd: int,
+    authority_fd: int,
+    *,
+    authority_name: str,
+    deadline: float | None,
+) -> tuple[str, str | None, dict[str, int] | None, int | None, str | None]:
+    helper = _process_census_helper()
+    remaining = _remaining(deadline)
+    timeout = remaining if remaining is not None else PROCESS_CENSUS_EXPLICIT_SECONDS
+    descriptors = (namespace_fd, authority_fd)
+    try:
+        identities = [_identity(os.fstat(descriptor)) for descriptor in descriptors]
+    except OSError as error:
+        raise ScratchSafetyError(f"Rust scratch recovery transport failed: {error}") from error
+    request = {
+        "protocol_version": COLLECTION_PROTOCOL_VERSION,
+        "operation": "recover",
+        "namespace_fd": namespace_fd,
+        "authority_fd": authority_fd,
+        "authority_name": authority_name,
+        "namespace_identity": identities[0],
+        "authority_identity": identities[1],
+        "process_limit": 65_536,
+        "fd_limit": 4_096,
+        "entry_limit": 1_000_000,
+        "depth_limit": 256,
+        "time_limit_ms": max(1, int(timeout * 1_000)),
+        "output_limit_bytes": PROCESS_CENSUS_OUTPUT_BYTES,
+    }
+    try:
+        completed = subprocess.run(
+            [str(helper)], input=json.dumps(request, separators=(",", ":")),
+            capture_output=True, text=True, check=False, pass_fds=descriptors, timeout=timeout,
+        )
+    except (OSError, ValueError, subprocess.TimeoutExpired) as error:
+        raise ScratchSafetyError(f"Rust scratch recovery transport failed: {error}") from error
+    if completed.returncode != 0:
+        detail = (completed.stderr or completed.stdout)[:4096].strip()
+        raise ScratchSafetyError(
+            f"Rust scratch recovery helper failed rc={completed.returncode}: {detail}"
+        )
+    if len(completed.stdout.encode()) > PROCESS_CENSUS_OUTPUT_BYTES:
+        raise ScratchSafetyError("Rust scratch recovery response exceeded output budget")
+    try:
+        response = json.loads(completed.stdout)
+    except (json.JSONDecodeError, UnicodeError, RecursionError, ValueError) as error:
+        raise ScratchSafetyError(f"malformed Rust scratch recovery response: {error}") from error
+    if not isinstance(response, dict) or set(response) != {"protocol_version", "result"}:
+        raise ScratchSafetyError("malformed Rust scratch recovery envelope")
+    result = response["result"]
+    if (
+        type(response.get("protocol_version")) is not int
+        or response["protocol_version"] != COLLECTION_PROTOCOL_VERSION
+        or not isinstance(result, dict)
+    ):
+        raise ScratchSafetyError("Rust scratch recovery protocol mismatch")
+    outcome = result.get("outcome")
+    if outcome == "collected" and set(result) == {"outcome", "entries"} and type(result["entries"]) is int:
+        return outcome, None, None, None, None
+    if (
+        outcome == "retained"
+        and set(result) == {"outcome", "reason"}
+        and isinstance(result["reason"], str)
+        and result["reason"] in COLLECTION_RETAIN_REASONS
+    ):
+        return outcome, result["reason"], None, None, None
+    quarantine_name = authority_name.removesuffix(".authority")
+    if outcome != "quarantined" or set(result) != {
+        "outcome", "name", "authority_name", "identity", "observed_links", "reason"
+    }:
+        raise ScratchSafetyError("malformed Rust scratch recovery outcome")
+    identity_value = result["identity"]
+    if (
+        result["name"] != quarantine_name
+        or result["authority_name"] != authority_name
+        or not isinstance(result["reason"], str)
+        or result["reason"] not in COLLECTION_RECOVERY_REASONS
+        or not isinstance(identity_value, dict)
+        or set(identity_value) != {"device", "inode", "file_type", "mode", "uid", "gid"}
+        or any(type(value) is not int or value < 0 for value in identity_value.values())
+        or type(result["observed_links"]) is not int
+        or result["observed_links"] < 0
+    ):
+        raise ScratchSafetyError("malformed Rust scratch recovery authority")
+    return outcome, result["reason"], identity_value, result["observed_links"], authority_name
 
 
 def _mounts_inside(root: Path, *, deadline: float | None = None) -> list[str]:
@@ -883,8 +1115,11 @@ class OwnedScratchRoot:
 
     @classmethod
     def create(cls, *, namespace: Path | None = None, kind: str, prefix: str | None = None) -> "OwnedScratchRoot":
+        selected_prefix = prefix or f"{kind}-"
+        if selected_prefix.startswith(".gc-"):
+            raise ScratchSafetyError("reserved scratch recovery namespace")
         namespace = _validated_namespace(namespace or default_namespace(), create=True)
-        root = Path(tempfile.mkdtemp(prefix=prefix or f"{kind}-", dir=namespace))
+        root = Path(tempfile.mkdtemp(prefix=selected_prefix, dir=namespace))
         created_root = root.lstat()
         identifier = str(uuid.uuid4())
         created_ns = time.time_ns()
@@ -1124,6 +1359,41 @@ def discard_exact(
     diagnostics: list[str] | None = None,
 ) -> int:
     deadline = None if max_seconds is None else time.monotonic() + max_seconds
+    namespace = _validated_namespace(namespace)
+    root = root.expanduser().absolute()
+    if root.parent != namespace or root == namespace:
+        raise ScratchSafetyError("scratch root is not a direct namespace child")
+    recovery_name = _recovery_quarantine_name(root.name)
+    if recovery_name is not None:
+        if dry_run:
+            return 0
+        namespace_fd = os.open(
+            namespace,
+            os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC | getattr(os, "O_NOFOLLOW", 0),
+        )
+        try:
+            authority_fd, _ = _regular_at(namespace_fd, root.name, writable=True)
+            try:
+                outcome, reason, _identity_value, _links, _authority = _run_recovery(
+                    namespace_fd,
+                    authority_fd,
+                    authority_name=root.name,
+                    deadline=deadline,
+                )
+            finally:
+                os.close(authority_fd)
+        finally:
+            os.close(namespace_fd)
+        if outcome == "retained":
+            raise ScratchSafetyError(f"Rust scratch recovery retained authority: {reason}")
+        if outcome == "quarantined":
+            raise ScratchQuarantinedError(
+                namespace / root.name,
+                f"isolated scratch retained after recovery failure: {reason}",
+            )
+        return 0
+    if root.name.startswith(".gc-"):
+        raise ScratchSafetyError("reserved scratch recovery name requires exact authority sidecar")
     namespace, root = _direct_child(namespace, root)
     original = root.lstat()
     root_fd = _open_root(root)
@@ -1151,52 +1421,95 @@ def discard_exact(
             )
         _remaining(deadline)
         if not dry_run:
-            # Revalidate marker/lease names after all fallible preparation.
-            named_root = root.lstat()
-            if not _same_object(original, named_root):
-                raise ScratchSafetyError("scratch root replaced before isolation")
-            _read_marker_at(root_fd)
-            opened = os.fstat(lease_fd)
-            named = os.stat(LEASE, dir_fd=root_fd, follow_symlinks=False)
-            if (opened.st_dev, opened.st_ino) != (named.st_dev, named.st_ino):
-                raise ScratchSafetyError("scratch lease replaced before deletion")
-            namespace_fd = os.open(namespace, os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC)
-            quarantine_name = f".gc-{uuid.uuid4().hex}"
-            quarantine = namespace / quarantine_name
             try:
-                _rename_noreplace(namespace_fd, root.name, quarantine_name)
-                isolated = quarantine.lstat()
-                if (isolated.st_dev, isolated.st_ino) != (original.st_dev, original.st_ino):
-                    try:
-                        _rename_noreplace(namespace_fd, quarantine_name, root.name)
-                    except ScratchSafetyError:
-                        pass
-                    raise ScratchSafetyError("scratch root changed during isolation")
-                _read_marker(quarantine)
-                isolated_lease = (quarantine / LEASE).stat(follow_symlinks=False)
-                if (opened.st_dev, opened.st_ino) != (isolated_lease.st_dev, isolated_lease.st_ino):
-                    raise ScratchSafetyError("scratch lease changed during isolation")
-                os.fsync(namespace_fd)
+                named_root = root.lstat()
+            except OSError as error:
+                raise ScratchSafetyError(f"scratch root replaced before Git preparation: {error}") from error
+            if not _same_object(original, named_root) or not stat.S_ISDIR(named_root.st_mode):
+                raise ScratchSafetyError("scratch root replaced before Git preparation")
+            # Git owns repository registration. Rust repeats the final safety
+            # checks after this preparation and exclusively owns isolation and
+            # recursive collection.
+            _remove_registered_worktrees(
+                root, force_dirty=force_dirty, mutate=True, deadline=deadline,
+            )
+            _remove_nested_worktrees(
+                root,
+                force_dirty=force_dirty,
+                mutate=True,
+                skip={path for _repo, path in _registered_worktrees(root)},
+                deadline=deadline,
+            )
+            marker_fd, _marker = _regular_at(root_fd, MARKER)
+            namespace_fd = os.open(
+                namespace,
+                os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC | getattr(os, "O_NOFOLLOW", 0),
+            )
+            try:
+                quarantine_name = f".gc-{uuid.uuid4().hex}"
                 try:
-                    _remove_registered_worktrees(
-                        quarantine, force_dirty=force_dirty, mutate=True,
-                        registered_at_root=root,
+                    outcome, reason, quarantine_identity, observed_links, authority_name = _run_collection(
+                        namespace_fd, root_fd, marker_fd, lease_fd,
+                        root_name=root.name,
+                        quarantine_name=quarantine_name,
                         deadline=deadline,
                     )
-                    _remove_nested_worktrees(
-                        quarantine,
-                        force_dirty=force_dirty,
-                        mutate=True,
-                        skip={path for _repo, path in _registered_worktrees(quarantine)},
-                        deadline=deadline,
-                    )
-                    _remove_tree_at(namespace_fd, quarantine_name, deadline=deadline)
-                except BaseException as error:
+                except ScratchSafetyError as error:
+                    authority_path = namespace / f"{quarantine_name}.authority"
+                    try:
+                        isolated = os.stat(
+                            quarantine_name, dir_fd=namespace_fd, follow_symlinks=False,
+                        )
+                    except OSError:
+                        raise error
+                    if not _same_object(original, isolated):
+                        raise error
                     raise ScratchQuarantinedError(
-                        quarantine, f"isolated scratch retained after collection failure: {error}"
+                        authority_path if authority_path.exists() else namespace / quarantine_name,
+                        f"isolated scratch retained after helper failure: {error}",
                     ) from error
-                os.fsync(namespace_fd)
+                if outcome == "retained":
+                    raise ScratchSafetyError(f"Rust scratch collection retained root: {reason}")
+                if outcome == "quarantined":
+                    try:
+                        isolated = os.stat(
+                            quarantine_name, dir_fd=namespace_fd, follow_symlinks=False,
+                        )
+                    except OSError as error:
+                        raise ScratchSafetyError(
+                            f"Rust scratch collection lost quarantine authority: {error}"
+                        ) from error
+                    isolated_identity = _identity(isolated)
+                    immutable = {key: value for key, value in isolated_identity.items() if key != "links"}
+                    if (
+                        quarantine_identity is None
+                        or immutable != quarantine_identity
+                        or observed_links is None
+                        or authority_name != f"{quarantine_name}.authority"
+                    ):
+                        raise ScratchSafetyError("Rust scratch collection quarantine identity mismatch")
+                    raise ScratchQuarantinedError(
+                        namespace / authority_name,
+                        f"isolated scratch retained after collection failure: {reason}",
+                    )
+                try:
+                    isolated = os.stat(
+                        quarantine_name, dir_fd=namespace_fd, follow_symlinks=False,
+                    )
+                except FileNotFoundError:
+                    pass
+                else:
+                    if _same_object(original, isolated):
+                        raise ScratchSafetyError("Rust scratch collection falsely reported removal")
+                try:
+                    public = os.stat(root.name, dir_fd=namespace_fd, follow_symlinks=False)
+                except FileNotFoundError:
+                    pass
+                else:
+                    if _same_object(original, public):
+                        raise ScratchSafetyError("Rust scratch collection falsely reported removal")
             finally:
+                os.close(marker_fd)
                 os.close(namespace_fd)
         return size
     finally:
@@ -1226,23 +1539,44 @@ def garbage_collect(
         if len(candidates) >= max_candidates or time.monotonic() - started >= max_seconds:
             result.bounded = True
             break
-        if child.is_symlink() or not child.is_dir():
+        recovery = _recovery_quarantine_name(child.name) is not None
+        if child.name.startswith(".gc-") and not child.name.endswith(".authority"):
+            try:
+                paired_authority = (namespace / f"{child.name}.authority").lstat()
+            except FileNotFoundError:
+                pass
+            else:
+                if stat.S_ISREG(paired_authority.st_mode):
+                    continue
+        if child.is_symlink() or (not child.is_dir() and not recovery):
             continue
         try:
-            _read_marker(child)
-            retained_ns = child.stat(follow_symlinks=False).st_mtime_ns
+            if recovery:
+                info = child.stat(follow_symlinks=False)
+                if not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid() or info.st_nlink != 1:
+                    raise ScratchSafetyError("hostile scratch recovery authority")
+                retained_ns = info.st_mtime_ns
+            else:
+                if child.name.startswith(".gc-"):
+                    raise ScratchSafetyError("reserved scratch quarantine lacks authority")
+                _read_marker(child)
+                retained_ns = child.stat(follow_symlinks=False).st_mtime_ns
         except ScratchSafetyError as error:
             result.retained.append((child, str(error)))
             continue
-        candidates.append((retained_ns, child))
+        candidates.append((retained_ns, child, recovery))
     candidates.sort(reverse=True)
     cutoff_ns = time.time_ns() - int(ttl_seconds * 1_000_000_000)
-    for index, (retained_ns, child) in enumerate(candidates):
+    normal_index = 0
+    for retained_ns, child, recovery in candidates:
         result.scanned += 1
-        if index < keep:
+        if not recovery and normal_index < keep:
+            normal_index += 1
             result.retained.append((child, "keep-newest"))
             continue
-        if retained_ns > cutoff_ns:
+        if not recovery:
+            normal_index += 1
+        if not recovery and retained_ns > cutoff_ns:
             result.retained.append((child, "fresh"))
             continue
         try:
