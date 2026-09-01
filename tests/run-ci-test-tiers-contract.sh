@@ -16,6 +16,14 @@ fi
 if [ "$(basename "$0")" = west ] && [ "${1:-}" = topdir ]; then
 	exit "${CI_WEST_TOPDIR_RC:-0}"
 fi
+if [[ "${DARLING_CI_SCRATCH_TIER:-0}" == 1 ]]; then
+	[[ -n "${DARLING_SCRATCH_CENSUS_HELPER:-}" && \
+		-f "$DARLING_SCRATCH_CENSUS_HELPER" && \
+		-x "$DARLING_SCRATCH_CENSUS_HELPER" ]] || {
+		echo "tier west invoked without provisioned scratch census helper: ${DARLING_SCRATCH_CENSUS_HELPER:-unset}" >&2
+		exit 1
+	}
+fi
 if [ "$(basename "$0")" = west ] && {
 	[[ "$*" == *"--bootstrap-runtime-profile homebrew-rootless-bootstrap-minimal"* ]] ||
 	[[ "$*" == *"name:rootless_prefix_initialization_guest"* ]] ||
@@ -78,11 +86,13 @@ export ROOTLESS_TIER_REPO_CHILD_OUTPUT="$tmp/rootless-tier-repo-child"
 unset ROOTLESS_TIER_REPO
 
 export PATCH_STACK_MATERIALIZE_CONTRACT_SKIP_WEST_SUBPROCESS=1
-"$repo/ci/run-test-tier.sh" host
+run_tier_unset() {
+	env -u DARLING_SCRATCH_CENSUS_HELPER "$repo/ci/run-test-tier.sh" "$@"
+}
+run_tier_unset host
 unset PATCH_STACK_MATERIALIZE_CONTRACT_SKIP_WEST_SUBPROCESS
 host_tier="$(sed -n '/^\thost)/,/^\tguest-smoke)/p' "$repo/ci/run-test-tier.sh")"
-printf '%s\n' "$host_tier" | grep -F -q -- '--bin darling-scratch-census'
-printf '%s\n' "$host_tier" | grep -F -q 'export DARLING_SCRATCH_CENSUS_HELPER='
+printf '%s\n' "$host_tier" | grep -F -q 'provision_scratch_census'
 printf '%s\n' "$host_tier" | grep -F -q 'tests/run-west-patch-stack-materialize-contract.sh'
 printf '%s\n' "$host_tier" | grep -F -q 'tests/run-west-patch-stack-lock-first-contract.sh'
 printf '%s\n' "$host_tier" | grep -F -q 'tests/run-profile-composition-dependency-contract.sh'
@@ -124,21 +134,21 @@ host_before_west="${host_tier%%exec west test*}"
 	echo 'host tier does not order canonical patch-stack contracts' >&2
 	exit 1
 }
-"$repo/ci/run-test-tier.sh" guest-smoke
-"$repo/ci/run-test-tier.sh" guest-macho-validation
-if "$repo/ci/run-test-tier.sh" guest-macho-validation perf; then
+run_tier_unset guest-smoke
+run_tier_unset guest-macho-validation
+if run_tier_unset guest-macho-validation perf; then
 	echo 'guest Mach-O validation accepted the removed perf group' >&2
 	exit 1
 fi
-if "$repo/ci/run-test-tier.sh" guest-macho-validation invalid; then
+if run_tier_unset guest-macho-validation invalid; then
 	echo 'guest Mach-O validation accepted an invalid group' >&2
 	exit 1
 fi
 [ -s "$ROOTLESS_TIER_REPO_CHILD_OUTPUT" ]
 grep -F -x -q "$repo" "$ROOTLESS_TIER_REPO_CHILD_OUTPUT"
-"$repo/ci/run-test-tier.sh" guest-full
+run_tier_unset guest-full
 DARLING_TOOLCHAIN_PREFIX="$tmp/runner/darling-rootless-toolchain" \
-	"$repo/ci/run-test-tier.sh" guest-toolchain
+	run_tier_unset guest-toolchain
 DARLING_TESTKIT_BUILD="$tmp/macos-build" "$repo/ci/run-test-tier.sh" macos
 DARLING_TESTKIT_BUILD="$tmp/package-build" \
 	"$repo/ci/run-test-tier.sh" macos-package "$tmp/oracle"
@@ -190,6 +200,12 @@ cp "$repo/ci/rootless-prefix.sh" "$lifecycle_repo/ci/rootless-prefix.sh"
 cat >"$lifecycle_bin/west" <<'WEST'
 #!/usr/bin/env bash
 set -euo pipefail
+[[ -n "${DARLING_SCRATCH_CENSUS_HELPER:-}" && \
+	-f "$DARLING_SCRATCH_CENSUS_HELPER" && \
+	-x "$DARLING_SCRATCH_CENSUS_HELPER" ]] || {
+	echo 'cleanup west invoked without provisioned scratch census helper' >&2
+	exit 1
+}
 if [[ "$*" == *"--bootstrap-runtime-profile homebrew-guest-toolchain-provisioning"* ]]; then
 	prefix=""
 	while (($#)); do
@@ -230,6 +246,7 @@ chmod +x "$lifecycle_repo/scripts/west-job.sh"
 PATH="$lifecycle_bin:$PATH" \
 	RUNNER_TEMP="$tmp/lifecycle-runner" \
 	DARLING_TOOLCHAIN_PREFIX="$lifecycle_prefix" \
+	DARLING_SCRATCH_CENSUS_HELPER="$repo/lifecycle/operation-boundary/target/debug/darling-scratch-census" \
 	LIFECYCLE_LOG="$lifecycle_log" \
 	"$lifecycle_repo/ci/run-test-tier.sh" guest-toolchain
 evidence_line="$(grep -n -m 1 '^evidence$' "$lifecycle_log" | cut -d: -f1)"

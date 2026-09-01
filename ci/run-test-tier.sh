@@ -6,6 +6,26 @@ cd "$root"
 export ROOTLESS_TIER_REPO="$root"
 . "$root/ci/rootless-prefix.sh"
 
+provision_scratch_census() {
+	export DARLING_CI_SCRATCH_TIER=1
+	local helper="${DARLING_SCRATCH_CENSUS_HELPER:-}"
+	if [[ -n "$helper" && -f "$helper" && ! -L "$helper" && -x "$helper" ]]; then
+		scratch_census_helper="$helper"
+		export DARLING_SCRATCH_CENSUS_HELPER="$helper"
+		return
+	fi
+	cargo build --quiet --locked \
+		--manifest-path "$root/lifecycle/operation-boundary/Cargo.toml" \
+		--bin darling-scratch-census
+	helper="$root/lifecycle/operation-boundary/target/debug/darling-scratch-census"
+	[[ -f "$helper" && ! -L "$helper" && -x "$helper" ]] || {
+		echo "CI scratch census helper provisioning failed" >&2
+		exit 1
+	}
+	scratch_census_helper="$helper"
+	export DARLING_SCRATCH_CENSUS_HELPER="$helper"
+}
+
 cleanup_rootless_tier() {
 	local test_rc="$1"
 	local cleanup_rc=0
@@ -13,6 +33,12 @@ cleanup_rootless_tier() {
 	local jobs_rc=0
 	local evidence_rc=0
 	local diagnostics_rc=0
+	if [[ -z "${scratch_census_helper:-}" || ! -f "$scratch_census_helper" || \
+		-L "$scratch_census_helper" || ! -x "$scratch_census_helper" ]]; then
+		echo "scratch census helper unavailable during tier cleanup" >&2
+		exit 1
+	fi
+	export DARLING_SCRATCH_CENSUS_HELPER="$scratch_census_helper"
 	set +e
 	if [[ -d "$prefix" ]]; then
 		case "$tier_kind" in
@@ -99,12 +125,7 @@ run_guest_macho_regression_tier() {
 
 case "${1:-}" in
 	host)
-		# CI provisions the one-shot helper once before any scratch-owning host
-		# contract. Production Python never invokes Cargo when it is absent.
-		cargo build --quiet --locked \
-			--manifest-path "$root/lifecycle/operation-boundary/Cargo.toml" \
-			--bin darling-scratch-census
-		export DARLING_SCRATCH_CENSUS_HELPER="$root/lifecycle/operation-boundary/target/debug/darling-scratch-census"
+		provision_scratch_census
 		# Source-bound host cases must be selected through metadata so west can
 		# materialize the patch profile before CMake compiles the real source.
 		tests/run-west-patch-stack-materialize-contract.sh
@@ -124,6 +145,7 @@ case "${1:-}" in
 		exec west test --profile homebrew --env host --materialize-profile "${@:2}"
 		;;
 	guest-smoke)
+		provision_scratch_census
 		tier_kind=smoke
 		prefix="$(rootless_prefix_create "$tier_kind" DARLING_SMOKE_PREFIX)"
 		rootless_prefix_export_output prefix "$prefix"
@@ -147,6 +169,7 @@ case "${1:-}" in
 			echo "guest-full does not accept additional test selectors" >&2
 			exit 2
 		fi
+		provision_scratch_census
 		run_guest_macho_regression_tier regression DARLING_REGRESSION_PREFIX \
 			.west-test/guest-full-diagnostics
 		;;
@@ -155,10 +178,12 @@ case "${1:-}" in
 			echo "guest-macho-validation does not accept a validation group" >&2
 			exit 2
 		fi
+		provision_scratch_census
 		run_guest_macho_regression_tier corpus DARLING_CORPUS_PREFIX \
 			.west-test/guest-macho-validation-diagnostics/homebrew
 		;;
 	guest-toolchain)
+		provision_scratch_census
 		tier_kind=toolchain
 		prefix="$(rootless_prefix_create "$tier_kind" DARLING_TOOLCHAIN_PREFIX)"
 		rootless_prefix_export_output prefix "$prefix"
