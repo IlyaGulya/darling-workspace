@@ -81,6 +81,8 @@ export PATCH_STACK_MATERIALIZE_CONTRACT_SKIP_WEST_SUBPROCESS=1
 "$repo/ci/run-test-tier.sh" host
 unset PATCH_STACK_MATERIALIZE_CONTRACT_SKIP_WEST_SUBPROCESS
 host_tier="$(sed -n '/^\thost)/,/^\tguest-smoke)/p' "$repo/ci/run-test-tier.sh")"
+printf '%s\n' "$host_tier" | grep -F -q -- '--bin darling-scratch-census'
+printf '%s\n' "$host_tier" | grep -F -q 'export DARLING_SCRATCH_CENSUS_HELPER='
 printf '%s\n' "$host_tier" | grep -F -q 'tests/run-west-patch-stack-materialize-contract.sh'
 printf '%s\n' "$host_tier" | grep -F -q 'tests/run-west-patch-stack-lock-first-contract.sh'
 printf '%s\n' "$host_tier" | grep -F -q 'tests/run-profile-composition-dependency-contract.sh'

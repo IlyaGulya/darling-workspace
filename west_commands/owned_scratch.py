@@ -4,7 +4,9 @@ from __future__ import annotations
 
 import ctypes
 import fcntl
+import json
 import os
+import shutil
 import stat
 import subprocess
 import tempfile
@@ -12,7 +14,6 @@ import time
 import uuid
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Iterable
 
 
 MARKER = ".darling-scratch-v1"
@@ -22,6 +23,16 @@ DEFAULT_TTL_SECONDS = 72 * 3600
 DEFAULT_KEEP = 2
 DEFAULT_CANDIDATES = 64
 DEFAULT_SECONDS = 0.25
+PROCESS_CENSUS_PROTOCOL_VERSION = 1
+PROCESS_CENSUS_OUTPUT_BYTES = 1_048_576
+PROCESS_CENSUS_EXPLICIT_SECONDS = 5.0
+PROCESS_CENSUS_SOURCES = {"cwd", "root", "exe", "fd"}
+PROCESS_CENSUS_OPERATIONS = {
+    "cwd", "root", "exe", "fd", "stat", "stat-revalidate", "fd-census",
+    "process-metadata", "task-census", "task-entry", "proc-census", "proc-entry",
+    "parse-stat", "parse-fd", "process-identity-changed",
+}
+PROCESS_CENSUS_BUDGETS = {"processes", "time", "output"}
 
 
 class ScratchSafetyError(RuntimeError):
@@ -288,84 +299,168 @@ def _path_inside(path: str, root: Path) -> bool:
         return False
 
 
-def _live_process_references(
-    root: Path, *, limit: int = 65536, fd_limit: int = 4096,
-    ignored_fds: set[tuple[int, int]] | None = None, deadline: float | None = None,
-    proc_entries: Iterable[Path] | None = None,
+def _process_census_helper() -> Path:
+    configured = os.environ.get("DARLING_SCRATCH_CENSUS_HELPER")
+    candidate = Path(configured) if configured else None
+    if candidate is None:
+        discovered = shutil.which("darling-scratch-census")
+        candidate = Path(discovered) if discovered else None
+    if candidate is None:
+        raise ScratchSafetyError("Rust scratch census helper unavailable; candidate retained")
+    try:
+        info = candidate.lstat()
+    except OSError as error:
+        raise ScratchSafetyError(
+            f"Rust scratch census helper unavailable; candidate retained: {error}"
+        ) from error
+    if (
+        not stat.S_ISREG(info.st_mode)
+        or info.st_uid not in {0, os.getuid()}
+        or info.st_mode & stat.S_IWOTH
+        or not os.access(candidate, os.X_OK)
+    ):
+        raise ScratchSafetyError("Rust scratch census helper is not an executable regular file")
+    return candidate
+
+
+def _run_process_census(
+    root_fd: int,
+    *,
+    ignored_fds: set[tuple[int, int]] | None = None,
+    deadline: float | None = None,
 ) -> ProcessCensus:
+    if type(root_fd) is not int or root_fd <= 2:
+        raise ScratchSafetyError("Rust scratch census transport failed: invalid root descriptor")
+    try:
+        root_info = os.fstat(root_fd)
+    except OSError as error:
+        raise ScratchSafetyError(f"Rust scratch census transport failed: {error}") from error
+    if not stat.S_ISDIR(root_info.st_mode):
+        raise ScratchSafetyError("Rust scratch census transport failed: root is not a directory")
+    helper = _process_census_helper()
+    remaining = _remaining(deadline)
+    timeout = remaining if remaining is not None else PROCESS_CENSUS_EXPLICIT_SECONDS
+    request = {
+        "protocol_version": PROCESS_CENSUS_PROTOCOL_VERSION,
+        "root_fd": root_fd,
+        "process_limit": 65_536,
+        "fd_limit": 4_096,
+        "time_limit_ms": max(1, int(timeout * 1_000)),
+        "output_limit_bytes": PROCESS_CENSUS_OUTPUT_BYTES,
+        "ignored_descriptors": [
+            {"pid": pid, "fd": descriptor}
+            for pid, descriptor in sorted(ignored_fds or set())
+        ],
+    }
+    try:
+        completed = subprocess.run(
+            [str(helper)], input=json.dumps(request, separators=(",", ":")),
+            capture_output=True, text=True, check=False, pass_fds=(root_fd,), timeout=timeout,
+        )
+    except (OSError, ValueError, subprocess.TimeoutExpired) as error:
+        raise ScratchSafetyError(f"Rust scratch census transport failed: {error}") from error
+    if completed.returncode != 0:
+        detail = (completed.stderr or completed.stdout)[:4096].strip()
+        raise ScratchSafetyError(
+            f"Rust scratch census helper failed rc={completed.returncode}: {detail}"
+        )
+    if len(completed.stdout.encode()) > PROCESS_CENSUS_OUTPUT_BYTES:
+        raise ScratchSafetyError("Rust scratch census response exceeded output budget")
+    try:
+        response = json.loads(completed.stdout)
+    except (json.JSONDecodeError, UnicodeError, RecursionError, ValueError) as error:
+        raise ScratchSafetyError(f"malformed Rust scratch census response: {error}") from error
+    if not isinstance(response, dict) or set(response) != {"protocol_version", "outcomes"}:
+        raise ScratchSafetyError("malformed Rust scratch census envelope")
+    if type(response["protocol_version"]) is not int or response["protocol_version"] != PROCESS_CENSUS_PROTOCOL_VERSION:
+        raise ScratchSafetyError("Rust scratch census protocol mismatch")
+    if not isinstance(response["outcomes"], list):
+        raise ScratchSafetyError("malformed Rust scratch census outcomes")
     census = ProcessCensus()
-    proc = Path("/proc")
-    entries = proc.iterdir() if proc_entries is None else proc_entries
-    for index, entry in enumerate(entries):
-        _remaining(deadline)
-        if index >= limit:
-            raise ScratchSafetyError("process census budget exceeded")
-        if not entry.name.isdigit():
-            continue
-        try:
-            process_info = entry.stat()
-        except FileNotFoundError:
-            continue
-        except OSError as error:
-            diagnostic = f"pid={entry.name}:stat:{error}"
-            if error.errno in {13, 1}:
-                census.unreadable.append(diagnostic)
-            else:
-                census.ambiguous.append(diagnostic)
-            continue
-        if process_info.st_uid != os.getuid():
-            continue
-        vanished = False
-        for label in ("cwd", "root", "exe"):
-            try:
-                target = os.readlink(entry / label)
-            except FileNotFoundError:
-                vanished = True
-                break
-            except OSError as error:
-                diagnostic = f"pid={entry.name}:{label}:{error}"
-                if error.errno in {13, 1}:
-                    census.unreadable.append(diagnostic)
-                else:
-                    census.ambiguous.append(diagnostic)
-                vanished = True
-                break
-            if _path_inside(target.removesuffix(" (deleted)"), root):
-                census.references.append(f"pid={entry.name}:{label}")
-        if vanished:
-            continue
-        fds = entry / "fd"
-        try:
-            names = list(fds.iterdir())
-        except FileNotFoundError:
-            continue
-        except OSError as error:
-            diagnostic = f"pid={entry.name}:fd-census:{error}"
-            if error.errno in {13, 1}:
-                census.unreadable.append(diagnostic)
-            else:
-                census.ambiguous.append(diagnostic)
-            continue
-        if len(names) > fd_limit:
-            census.overflows.append(f"pid={entry.name}:fd-count={len(names)}>{fd_limit}")
-            continue
-        for descriptor in names:
-            _remaining(deadline)
-            if ignored_fds and (int(entry.name), int(descriptor.name)) in ignored_fds:
-                continue
-            try:
-                target = os.readlink(descriptor)
-            except FileNotFoundError:
-                continue
-            except OSError as error:
-                diagnostic = f"pid={entry.name}:fd={descriptor.name}:{error}"
-                if error.errno in {13, 1}:
-                    census.unreadable.append(diagnostic)
-                else:
-                    census.ambiguous.append(diagnostic)
-                continue
-            if _path_inside(target.removesuffix(" (deleted)"), root):
-                census.references.append(f"pid={entry.name}:fd={descriptor.name}")
+
+    def exact_int(value: object, *, minimum: int = 0, maximum: int = (1 << 63) - 1) -> bool:
+        return type(value) is int and minimum <= value <= maximum
+
+    def valid_pid(value: object, *, allow_zero: bool = False) -> bool:
+        return exact_int(value, minimum=0 if allow_zero else 1, maximum=(1 << 31) - 1)
+
+    def valid_tid(value: object) -> bool:
+        return value is None or valid_pid(value)
+
+    for outcome in response["outcomes"]:
+        if not isinstance(outcome, dict) or not isinstance(outcome.get("kind"), str):
+            raise ScratchSafetyError("malformed Rust scratch census outcome")
+        kind = outcome["kind"]
+        expected_fields = {
+            "reference": {"kind", "identity", "source", "descriptor"},
+            "unreadable": {"kind", "pid", "tid", "operation", "errno"},
+            "fd_overflow": {"kind", "identity", "observed", "limit"},
+            "ambiguous": {"kind", "pid", "tid", "operation", "errno"},
+            "budget_exceeded": {"kind", "budget"},
+        }
+        if kind not in expected_fields or set(outcome) != expected_fields[kind]:
+            raise ScratchSafetyError("malformed Rust scratch census outcome fields")
+        identity = outcome.get("identity")
+        if kind in {"reference", "fd_overflow"}:
+            if not isinstance(identity, dict) or set(identity) != {"pid", "tid", "starttime"}:
+                raise ScratchSafetyError("malformed Rust scratch census identity")
+            if not (
+                valid_pid(identity["pid"])
+                and valid_pid(identity["tid"])
+                and exact_int(identity["starttime"], minimum=1, maximum=(1 << 64) - 1)
+            ):
+                raise ScratchSafetyError("malformed Rust scratch census identity values")
+            label = f"pid={identity['pid']}:tid={identity['tid']}:starttime={identity['starttime']}"
+        elif kind in {"unreadable", "ambiguous"}:
+            allow_zero = kind == "ambiguous" and outcome.get("tid") is None
+            if not valid_pid(outcome.get("pid"), allow_zero=allow_zero) or not valid_tid(outcome.get("tid")):
+                raise ScratchSafetyError("malformed Rust scratch census process values")
+            label = f"pid={outcome.get('pid', 0)}:tid={outcome.get('tid')}"
+        else:
+            label = ""
+        if kind == "reference":
+            source = outcome.get("source")
+            descriptor = outcome.get("descriptor")
+            if not isinstance(source, str) or source not in PROCESS_CENSUS_SOURCES:
+                raise ScratchSafetyError("unknown Rust scratch census source")
+            if (source == "fd" and not exact_int(descriptor, maximum=(1 << 31) - 1)) or (
+                source != "fd" and descriptor is not None
+            ):
+                raise ScratchSafetyError("malformed Rust scratch census descriptor")
+            suffix = f":fd={descriptor}" if descriptor is not None else ""
+            census.references.append(f"{label}:{source}{suffix}")
+        elif kind == "unreadable":
+            operation = outcome.get("operation")
+            error_number = outcome.get("errno")
+            if (
+                not isinstance(operation, str)
+                or operation not in PROCESS_CENSUS_OPERATIONS
+                or type(error_number) is not int
+                or error_number not in {1, 13}
+            ):
+                raise ScratchSafetyError("invalid unreadable Rust scratch census outcome")
+            census.unreadable.append(f"{label}:{outcome.get('operation')}:errno={outcome.get('errno')}")
+        elif kind == "fd_overflow":
+            if not (
+                exact_int(outcome.get("observed"), minimum=1)
+                and exact_int(outcome.get("limit"), minimum=1)
+                and outcome["observed"] > outcome["limit"]
+            ):
+                raise ScratchSafetyError("malformed Rust scratch census overflow")
+            census.overflows.append(f"{label}:fd-count={outcome.get('observed')}>{outcome.get('limit')}")
+        elif kind == "ambiguous":
+            operation = outcome.get("operation")
+            error_number = outcome.get("errno")
+            if not isinstance(operation, str) or operation not in PROCESS_CENSUS_OPERATIONS or not (
+                error_number is None or exact_int(error_number, minimum=1, maximum=4095)
+            ):
+                raise ScratchSafetyError("invalid ambiguous Rust scratch census outcome")
+            census.ambiguous.append(f"{label}:{outcome.get('operation')}:errno={outcome.get('errno')}")
+        elif kind == "budget_exceeded":
+            budget = outcome.get("budget")
+            if not isinstance(budget, str) or budget not in PROCESS_CENSUS_BUDGETS:
+                raise ScratchSafetyError("unknown Rust scratch census budget")
+            census.ambiguous.append(f"budget-exceeded:{outcome.get('budget')}")
     return census
 
 
@@ -981,15 +1076,20 @@ def inspect_exact(
 ) -> tuple[int, list[str], ProcessCensus]:
     namespace, root = _direct_child(namespace, root)
     _read_marker(root)
-    census = _live_process_references(
-        root,
-        ignored_fds={
-            (os.getpid(), descriptor)
-            for descriptor in (lease_fd, root_fd)
-            if descriptor is not None
-        },
-        deadline=deadline,
-    )
+    owned_root_fd = root_fd if root_fd is not None else _open_root(root)
+    try:
+        census = _run_process_census(
+            owned_root_fd,
+            ignored_fds={
+                (os.getpid(), descriptor)
+                for descriptor in (lease_fd, root_fd)
+                if descriptor is not None
+            },
+            deadline=deadline,
+        )
+    finally:
+        if root_fd is None:
+            os.close(owned_root_fd)
     if census.references:
         raise ScratchSafetyError(
             "live process references scratch: " + ", ".join(census.references[:8])
