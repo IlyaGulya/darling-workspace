@@ -63,6 +63,23 @@ def write_fake_collection_helper(path: Path, payload: str) -> None:
     path.chmod(0o700)
 
 
+def gc_failure_payload(outcome: scratch.GCResult, namespace: Path) -> dict[str, object]:
+    """Build bounded diagnostics only when an assertion evaluates its message."""
+    remaining = []
+    for child in sorted(namespace.iterdir(), key=lambda item: item.name)[:16]:
+        info = child.lstat()
+        remaining.append({"name": child.name, "dev": info.st_dev, "ino": info.st_ino})
+    return {
+        "removed": [str(path) for path in outcome.removed[:16]],
+        "retained": [(str(path), reason) for path, reason in outcome.retained[:16]],
+        "quarantined": [str(path) for path in outcome.quarantined[:16]],
+        "diagnostics": outcome.diagnostics[:16],
+        "bounded": outcome.bounded,
+        "bytes_freed": outcome.bytes_freed,
+        "remaining_direct_children": remaining,
+    }
+
+
 def main() -> None:
     with tempfile.TemporaryDirectory(prefix="owned-scratch-contract-") as temporary:
         base = Path(temporary)
@@ -615,18 +632,46 @@ os._exit(17)
         assert (failed_path / "failure.raw.log").read_text() == "RuntimeError: bounded failure\n"
         scratch.discard_exact(namespace, failed_path)
 
-        unmarked = namespace / "dar-looking-unmarked"; unmarked.mkdir(); sentinel = unmarked / "sentinel"; sentinel.write_bytes(b"unchanged")
         old = time.time_ns() - 100 * 3600 * 1_000_000_000
+        ttl_namespace = base / "ttl-keep-namespace"
+        ttl_namespace.mkdir(mode=0o700)
+        ttl_unmarked = ttl_namespace / "dar-looking-unmarked"
+        ttl_unmarked.mkdir()
+        ttl_sentinel = ttl_unmarked / "sentinel"
+        ttl_sentinel.write_bytes(b"unchanged")
+        ttl_sentinel_identity = ttl_sentinel.stat().st_dev, ttl_sentinel.stat().st_ino
         roots = []
         for index in range(4):
-            item = scratch.OwnedScratchRoot.create(namespace=namespace, kind="agent-review")
+            item = scratch.OwnedScratchRoot.create(namespace=ttl_namespace, kind="agent-review")
             (item.path / "payload").write_bytes(b"g" * 1024 * 1024)
-            item.close(); rewrite_created(item.path, old + index * 1_000_000_000); roots.append(item.path)
-        outcome = scratch.garbage_collect(namespace, ttl_seconds=72 * 3600, keep=2)
-        assert len(outcome.removed) == 2 and outcome.bytes_freed >= 2 * 1024 * 1024
-        assert set(outcome.removed) == set(roots[:2])
-        assert all(path.exists() for path in roots[2:])
-        assert sentinel.read_bytes() == b"unchanged"
+            item.close()
+            rewrite_created(item.path, old + index * 1_000_000_000)
+            roots.append(item.path)
+        outcome = scratch.garbage_collect(
+            ttl_namespace, ttl_seconds=72 * 3600, keep=2, max_seconds=10,
+        )
+        expected_removed = set(roots[:2])
+        expected_retained = set(roots[2:])
+        retained_keep = {
+            path for path, reason in outcome.retained if reason == "keep-newest"
+        }
+        correct = (
+            len(outcome.removed) == 2
+            and set(outcome.removed) == expected_removed
+            and retained_keep == expected_retained
+            and outcome.bytes_freed >= 2 * 1024 * 1024
+            and all(not path.exists() for path in expected_removed)
+            and all(path.exists() for path in expected_retained)
+            and ttl_sentinel.read_bytes() == b"unchanged"
+            and (ttl_sentinel.stat().st_dev, ttl_sentinel.stat().st_ino)
+            == ttl_sentinel_identity
+        )
+        assert correct, gc_failure_payload(outcome, ttl_namespace)
+
+        unmarked = namespace / "dar-looking-unmarked"
+        unmarked.mkdir()
+        sentinel = unmarked / "sentinel"
+        sentinel.write_bytes(b"unchanged")
 
         for _ in range(5):
             item = scratch.OwnedScratchRoot.create(namespace=namespace, kind="agent-review"); item.close()
