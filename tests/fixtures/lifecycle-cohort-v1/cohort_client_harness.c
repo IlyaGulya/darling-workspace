@@ -8,6 +8,8 @@
 #include <fcntl.h>
 #include <inttypes.h>
 #include <signal.h>
+#include <pthread.h>
+#include <stdatomic.h>
 #include <stdbool.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -25,6 +27,20 @@
 static void fail(const char* message) {
 	perror(message);
 	exit(1);
+}
+
+static atomic_bool churn_running;
+
+static void* allocator_churn(void* context) {
+	(void)context;
+	while (atomic_load_explicit(&churn_running, memory_order_relaxed)) {
+		void* value = malloc(4096);
+		if (value) {
+			memset(value, 0x5a, 4096);
+			free(value);
+		}
+	}
+	return NULL;
 }
 
 static void write_file(const char* path, const char* value, mode_t mode) {
@@ -47,38 +63,62 @@ static void expect_missing(const char* path) {
 
 static void prepare_prefix(const char* prefix) {
 	char path[4096];
-	char state[1024];
-	if (snprintf(path, sizeof(path), "%s/var/run", prefix) >= (int)sizeof(path))
-		fail("path too long");
+	char executable[4096];
+	char state[2048];
+	char binding[4096];
+	const char* worker = getenv("COHORT_HARNESS_WORKER");
+	ssize_t executable_length = readlink("/proc/self/exe", executable, sizeof(executable) - 1);
+	if (!worker || executable_length <= 0 || executable_length >= (ssize_t)sizeof(executable))
+		fail("fixture executable identity");
+	executable[executable_length] = 0;
 	if (mkdir(prefix, 0700) != 0 || mkdir(strcat(strcpy(path, prefix), "/var"), 0700) != 0 ||
 		mkdir(strcat(strcpy(path, prefix), "/var/run"), 0700) != 0 ||
 		mkdir(strcat(strcpy(path, prefix), "/var/tmp"), 0700) != 0 ||
-		mkdir(strcat(strcpy(path, prefix), "/var/tmp/launchd"), 0700) != 0)
+		mkdir(strcat(strcpy(path, prefix), "/var/tmp/launchd"), 0700) != 0 ||
+		mkdir(strcat(strcpy(path, prefix), "/bin"), 0755) != 0 ||
+		mkdir(strcat(strcpy(path, prefix), "/libexec"), 0755) != 0 ||
+		mkdir(strcat(strcpy(path, prefix), "/libexec/darling"), 0755) != 0)
 		fail("mkdir fixture");
 	if (chmod(strcat(strcpy(path, prefix), "/var"), 0755) != 0 ||
 		chmod(strcat(strcpy(path, prefix), "/var/run"), 0755) != 0 ||
 		chmod(strcat(strcpy(path, prefix), "/var/tmp"), 01777) != 0 ||
 		chmod(strcat(strcpy(path, prefix), "/var/tmp/launchd"), 0700) != 0)
 		fail("chmod fixture directories");
-	struct stat metadata;
-	if (stat(prefix, &metadata) != 0)
-		fail("stat prefix fixture");
+	if (link(executable, strcat(strcpy(path, prefix), "/bin/darlingserver")) != 0 ||
+		link(worker, strcat(strcpy(path, prefix), "/libexec/darling-lifecycle-controller-worker")) != 0)
+		fail("link fixture executable");
+	if (chmod(strcat(strcpy(path, prefix), "/libexec/darling-lifecycle-controller-worker"), 0755) != 0)
+		fail("chmod worker fixture");
+	struct stat metadata, lower, controller, worker_metadata;
+	if (stat(prefix, &metadata) != 0 ||
+		stat(strcat(strcpy(path, prefix), "/libexec/darling"), &lower) != 0 ||
+		stat(strcat(strcpy(path, prefix), "/bin/darlingserver"), &controller) != 0 ||
+		stat(strcat(strcpy(path, prefix), "/libexec/darling-lifecycle-controller-worker"), &worker_metadata) != 0)
+		fail("stat deployment fixture");
 	int state_length = snprintf(state, sizeof(state),
-		"DARLING_PREFIX_STATE_V2\n"
-		"schema_version=2\n"
-		"runtime_mode=rootless-eunion\n"
-		"generation=1\n"
-		"prefix_device=%ju\n"
-		"prefix_inode=%ju\n"
-		"owner_uid=%ju\n"
-		"owner_gid=%ju\n"
-		"provenance=darling-runtime-prefix-lifecycle-v2\n",
+		"DARLING_PREFIX_STATE_V3\nschema_version=3\nruntime_mode=rootless-eunion\ngeneration=1\n"
+		"prefix_device=%ju\nprefix_inode=%ju\nsidecar_device=%ju\nsidecar_inode=%ju\n"
+		"owner_uid=%ju\nowner_gid=%ju\nprovenance=darling-runtime-prefix-sidecar-v1\n",
+		(uintmax_t)metadata.st_dev, (uintmax_t)metadata.st_ino,
 		(uintmax_t)metadata.st_dev, (uintmax_t)metadata.st_ino,
 		(uintmax_t)metadata.st_uid, (uintmax_t)metadata.st_gid);
-	if (state_length <= 0 || (size_t)state_length >= sizeof(state) ||
-		snprintf(path, sizeof(path), "%s/.darling-prefix-state-v2", prefix) >= (int)sizeof(path))
+	if (state_length <= 0 || (size_t)state_length >= sizeof(state))
 		fail("prefix state fixture");
-	write_file(path, state, 0600);
+	write_file(strcat(strcpy(path, prefix), "/.darling-prefix-state-v3"), state, 0600);
+	int binding_length = snprintf(binding, sizeof(binding),
+		"DARLING_RUNTIME_LOWER_BINDING_V3\nschema_version=3\ntransaction_id=11111111111111111111111111111111\nprefix_generation=1\n"
+		"session_prefix_device=%ju\nsession_prefix_inode=%ju\ndestination=libexec/darling\n"
+		"prefix_device=%ju\nprefix_inode=%ju\nlower_device=%ju\nlower_inode=%ju\nlower_type=directory\nlower_mode=%ju\nlower_uid=%ju\nlower_gid=%ju\n"
+		"controller_destination=bin/darlingserver\ncontroller_device=%ju\ncontroller_inode=%ju\ncontroller_type=regular\ncontroller_mode=%ju\ncontroller_uid=%ju\ncontroller_gid=%ju\n"
+		"worker_destination=libexec/darling-lifecycle-controller-worker\nworker_device=%ju\nworker_inode=%ju\nworker_type=regular\nworker_mode=%ju\nworker_uid=%ju\nworker_gid=%ju\nprovenance=product-deployment-transaction-v3\n",
+		(uintmax_t)metadata.st_dev, (uintmax_t)metadata.st_ino,
+		(uintmax_t)metadata.st_dev, (uintmax_t)metadata.st_ino,
+		(uintmax_t)lower.st_dev, (uintmax_t)lower.st_ino, (uintmax_t)(lower.st_mode & 07777), (uintmax_t)lower.st_uid, (uintmax_t)lower.st_gid,
+		(uintmax_t)controller.st_dev, (uintmax_t)controller.st_ino, (uintmax_t)(controller.st_mode & 07777), (uintmax_t)controller.st_uid, (uintmax_t)controller.st_gid,
+		(uintmax_t)worker_metadata.st_dev, (uintmax_t)worker_metadata.st_ino, (uintmax_t)(worker_metadata.st_mode & 07777), (uintmax_t)worker_metadata.st_uid, (uintmax_t)worker_metadata.st_gid);
+	if (binding_length <= 0 || (size_t)binding_length >= sizeof(binding))
+		fail("binding fixture");
+	write_file(strcat(strcpy(path, prefix), "/.darling-runtime-lower-binding-v1"), binding, 0600);
 }
 
 static size_t open_fd_count(void) {
@@ -756,9 +796,18 @@ int main(int argc, char** argv) {
 	char path[4096];
 	prepare_prefix(prefix);
 	verify_malformed_response_fd_is_closed(prefix);
+	pthread_t churn[4];
+	atomic_store(&churn_running, true);
+	for (size_t index = 0; index < 4; ++index)
+		if (pthread_create(&churn[index], NULL, allocator_churn, NULL) != 0)
+			fail("start allocator churn");
 	struct darling_lifecycle_cohort_bootstrap bootstrap = {};
 	struct darling_lifecycle_cohort_controller* controller =
 		start_controller(prefix, getppid(), &bootstrap);
+	atomic_store(&churn_running, false);
+	for (size_t index = 0; index < 4; ++index)
+		if (pthread_join(churn[index], NULL) != 0)
+			fail("join allocator churn");
 	if (!controller || bootstrap.darlingserver_fd < 0)
 		fail("start Rust controller");
 	configure_transport(&bootstrap);

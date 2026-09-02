@@ -1,4 +1,151 @@
 use super::*;
+use std::fs::File;
+
+fn send_worker_test_packet(socket: &OwnedFd, bytes: &[u8], descriptors: &[BorrowedFd<'_>]) {
+    let vectors = [std::io::IoSlice::new(bytes)];
+    let mut space = [std::mem::MaybeUninit::uninit();
+        rustix::cmsg_space!(ScmRights(CONTROLLER_WORKER_FD_COUNT + 1))];
+    let mut ancillary = rustix::net::SendAncillaryBuffer::new(&mut space);
+    if !descriptors.is_empty() {
+        assert!(ancillary.push(rustix::net::SendAncillaryMessage::ScmRights(descriptors)));
+    }
+    assert_eq!(
+        rustix::net::sendmsg(
+            socket,
+            &vectors,
+            &mut ancillary,
+            rustix::net::SendFlags::NOSIGNAL,
+        )
+        .unwrap(),
+        bytes.len()
+    );
+}
+
+#[test]
+fn worker_bootstrap_rejects_truncated_and_duplicate_scm_rights() {
+    let (sender, receiver) = rustix::net::socketpair(
+        rustix::net::AddressFamily::UNIX,
+        rustix::net::SocketType::SEQPACKET,
+        rustix::net::SocketFlags::CLOEXEC,
+        None,
+    )
+    .unwrap();
+    send_worker_test_packet(&sender, &[0], &[]);
+    assert!(matches!(
+        cohort_ffi::receive_worker_bootstrap(receiver.as_raw_fd()),
+        Err(CohortError::Protocol("worker bootstrap truncation"))
+    ));
+
+    let (sender, receiver) = rustix::net::socketpair(
+        rustix::net::AddressFamily::UNIX,
+        rustix::net::SocketType::SEQPACKET,
+        rustix::net::SocketFlags::CLOEXEC,
+        None,
+    )
+    .unwrap();
+    let duplicate = File::open("/dev/null").unwrap();
+    let descriptors = vec![duplicate.as_fd(); CONTROLLER_WORKER_FD_COUNT + 1];
+    send_worker_test_packet(
+        &sender,
+        &vec![0; std::mem::size_of::<ControllerWorkerBootstrap>()],
+        &descriptors,
+    );
+    assert!(matches!(
+        cohort_ffi::receive_worker_bootstrap(receiver.as_raw_fd()),
+        Err(CohortError::Protocol("worker descriptor count"))
+            | Err(CohortError::Protocol("worker bootstrap truncation"))
+    ));
+}
+
+fn unready_process(program: &str, arguments: &[&str]) -> (ProcessWorker, OwnedFd, OwnedFd, u32) {
+    let (parent, peer) = rustix::net::socketpair(
+        rustix::net::AddressFamily::UNIX,
+        rustix::net::SocketType::SEQPACKET,
+        rustix::net::SocketFlags::CLOEXEC,
+        None,
+    )
+    .unwrap();
+    let child = std::process::Command::new(program)
+        .args(arguments)
+        .env_clear()
+        .spawn()
+        .unwrap();
+    let raw_pid = child.id();
+    let pid = libc::pid_t::try_from(raw_pid).unwrap();
+    let pidfd = pidfd_open(pid).unwrap();
+    std::mem::forget(child);
+    (ProcessWorker { pid, pidfd }, parent, peer, raw_pid)
+}
+
+#[test]
+fn worker_exec_exit_before_ready_is_reaped() {
+    let (process, parent, peer, pid) = unready_process("/bin/true", &[]);
+    drop(peer);
+    assert!(cohort_ffi::await_worker_ready(process, &parent).is_err());
+    assert!(!std::path::Path::new("/proc").join(pid.to_string()).exists());
+}
+
+#[test]
+fn worker_ready_timeout_kills_and_reaps_exact_process() {
+    let (process, parent, _peer, pid) = unready_process("/bin/sleep", &["30"]);
+    assert!(cohort_ffi::await_worker_ready(process, &parent).is_err());
+    assert!(!std::path::Path::new("/proc").join(pid.to_string()).exists());
+}
+
+#[test]
+fn bootstrap_peer_pidfd_survives_pid_churn_and_targets_only_its_peer() {
+    let (socket, _peer) = rustix::net::socketpair(
+        rustix::net::AddressFamily::UNIX,
+        rustix::net::SocketType::SEQPACKET,
+        rustix::net::SocketFlags::CLOEXEC,
+        None,
+    )
+    .unwrap();
+    let peer_pidfd = cohort_ffi::peer_pidfd_from_socket(socket.as_raw_fd()).unwrap();
+    let fdinfo =
+        std::fs::read_to_string(format!("/proc/self/fdinfo/{}", peer_pidfd.as_raw_fd())).unwrap();
+    assert!(fdinfo
+        .lines()
+        .any(|line| line == format!("Pid:\t{}", std::process::id())));
+
+    for _ in 0..512 {
+        assert!(std::process::Command::new("/bin/true")
+            .status()
+            .unwrap()
+            .success());
+    }
+    cohort_ffi::probe_pidfd(peer_pidfd.as_raw_fd()).unwrap();
+}
+
+#[test]
+fn worker_signal_uses_retained_pidfd_not_numeric_pid() {
+    let mut worker = std::process::Command::new("/bin/sleep")
+        .arg("30")
+        .spawn()
+        .unwrap();
+    let worker_pid = libc::pid_t::try_from(worker.id()).unwrap();
+    let worker_pidfd = pidfd_open(worker_pid).unwrap();
+    rustix::process::pidfd_send_signal(&worker_pidfd, rustix::process::Signal::KILL).unwrap();
+    assert!(!worker.wait().unwrap().success());
+
+    let mut survivor = std::process::Command::new("/bin/sleep")
+        .arg("30")
+        .spawn()
+        .unwrap();
+    for _ in 0..512 {
+        assert!(std::process::Command::new("/bin/true")
+            .status()
+            .unwrap()
+            .success());
+    }
+    assert_eq!(
+        rustix::process::pidfd_send_signal(&worker_pidfd, rustix::process::Signal::KILL),
+        Err(rustix::io::Errno::SRCH)
+    );
+    assert!(survivor.try_wait().unwrap().is_none());
+    survivor.kill().unwrap();
+    let _ = survivor.wait();
+}
 use std::fs;
 use std::os::unix::fs::{symlink, FileTypeExt, MetadataExt, PermissionsExt};
 use std::path::PathBuf;
@@ -96,16 +243,22 @@ impl Drop for Fixture {
 fn publish_runtime_lower_binding(fixture: &Fixture) {
     let lower = fixture.root.join("libexec/darling");
     let controller = fixture.root.join("bin/darlingserver");
+    let worker = fixture
+        .root
+        .join("libexec/darling-lifecycle-controller-worker");
     fs::create_dir_all(&lower).unwrap();
     fs::create_dir_all(controller.parent().unwrap()).unwrap();
     fs::set_permissions(&lower, fs::Permissions::from_mode(0o755)).unwrap();
     fs::hard_link(std::env::current_exe().unwrap(), &controller).unwrap();
+    fs::copy(std::env::current_exe().unwrap(), &worker).unwrap();
+    fs::set_permissions(&worker, fs::Permissions::from_mode(0o755)).unwrap();
     let prefix = fs::metadata(&fixture.root).unwrap();
     let lower_metadata = fs::metadata(&lower).unwrap();
     let controller_metadata = fs::metadata(&controller).unwrap();
+    let worker_metadata = fs::metadata(&worker).unwrap();
     let content = format!(
-        "DARLING_RUNTIME_LOWER_BINDING_V2\n\
-             schema_version=2\n\
+        "DARLING_RUNTIME_LOWER_BINDING_V3\n\
+             schema_version=3\n\
              transaction_id=00112233445566778899aabbccddeeff\n\
              prefix_generation=1\n\
              session_prefix_device={}\n\
@@ -126,7 +279,14 @@ fn publish_runtime_lower_binding(fixture: &Fixture) {
              controller_mode={}\n\
              controller_uid={}\n\
              controller_gid={}\n\
-             provenance=product-deployment-transaction-v2\n",
+             worker_destination=libexec/darling-lifecycle-controller-worker\n\
+             worker_device={}\n\
+             worker_inode={}\n\
+             worker_type=regular\n\
+             worker_mode={}\n\
+             worker_uid={}\n\
+             worker_gid={}\n\
+             provenance=product-deployment-transaction-v3\n",
         prefix.dev(),
         prefix.ino(),
         prefix.dev(),
@@ -141,6 +301,11 @@ fn publish_runtime_lower_binding(fixture: &Fixture) {
         controller_metadata.mode() & 0o7777,
         controller_metadata.uid(),
         controller_metadata.gid(),
+        worker_metadata.dev(),
+        worker_metadata.ino(),
+        worker_metadata.mode() & 0o7777,
+        worker_metadata.uid(),
+        worker_metadata.gid(),
     );
     let path = fixture.root.join(".darling-runtime-lower-binding-v1");
     fs::write(&path, content).unwrap();
@@ -251,7 +416,7 @@ fn connect(path: &Path) -> OwnedFd {
 
 #[test]
 fn c_abi_routes_one_idempotent_create_through_retained_service() {
-    let fixture = Fixture::new();
+    let fixture = Fixture::new_v3();
     publish_runtime_lower_binding(&fixture);
     let (mut controller, listener) =
         CohortController::start_for_test(&fixture.root, std::process::id() as _).unwrap();
@@ -384,7 +549,7 @@ fn var_run_phase_rejects_legacy_prefix_state_before_mutation() {
 
 #[test]
 fn lower_root_ancestor_symlink_is_rejected_by_rust_acquisition() {
-    let fixture = Fixture::new();
+    let fixture = Fixture::new_v3();
     publish_runtime_lower_binding(&fixture);
     let ancestor = fixture.root.join("libexec");
     let retained = fixture.root.join("libexec-retained");
@@ -402,7 +567,7 @@ fn lower_root_ancestor_symlink_is_rejected_by_rust_acquisition() {
 
 #[test]
 fn lower_root_with_unrelated_deployment_identity_is_rejected() {
-    let fixture = Fixture::new();
+    let fixture = Fixture::new_v3();
     publish_runtime_lower_binding(&fixture);
     let controller_path = fixture.root.join("bin/darlingserver");
     fs::remove_file(&controller_path).unwrap();
@@ -419,7 +584,7 @@ fn lower_root_with_unrelated_deployment_identity_is_rejected() {
 
 #[test]
 fn binding_replacement_after_configuration_refuses_before_mutation() {
-    let fixture = Fixture::new();
+    let fixture = Fixture::new_v3();
     publish_runtime_lower_binding(&fixture);
     let (mut controller, listener) =
         CohortController::start_for_test(&fixture.root, std::process::id() as _).unwrap();
@@ -476,7 +641,7 @@ fn binding_replacement_after_configuration_refuses_before_mutation() {
 fn transaction_c_abi_serializes_concurrent_guest_writers() {
     fn assert_sync<T: Sync>() {}
     assert_sync::<CohortController>();
-    let fixture = Fixture::new();
+    let fixture = Fixture::new_v3();
     publish_runtime_lower_binding(&fixture);
     let (mut controller, listener) =
         CohortController::start_for_test(&fixture.root, std::process::id() as _).unwrap();
@@ -538,7 +703,7 @@ fn transaction_c_abi_serializes_concurrent_guest_writers() {
 
 #[test]
 fn transaction_recovery_obligation_forces_forensic_finish() {
-    let fixture = Fixture::new();
+    let fixture = Fixture::new_v3();
     publish_runtime_lower_binding(&fixture);
     let (mut controller, listener) =
         CohortController::start_for_test(&fixture.root, std::process::id() as _).unwrap();

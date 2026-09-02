@@ -10,6 +10,7 @@ use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
 use std::os::unix::ffi::OsStrExt;
 use std::os::unix::fs::{MetadataExt, PermissionsExt};
 use std::path::{Path, PathBuf};
+use std::process::Command;
 use std::time::{Duration, Instant};
 
 const ABANDON_PENDING: i32 = 3;
@@ -29,6 +30,8 @@ impl Fixture {
         fs::create_dir(&root).unwrap();
         fs::create_dir_all(root.join("var/run")).unwrap();
         fs::create_dir_all(root.join("var/tmp/launchd")).unwrap();
+        fs::create_dir_all(root.join("libexec/darling")).unwrap();
+        fs::create_dir_all(root.join("bin")).unwrap();
         fs::set_permissions(root.join("var"), fs::Permissions::from_mode(0o755)).unwrap();
         fs::set_permissions(root.join("var/run"), fs::Permissions::from_mode(0o755)).unwrap();
         fs::set_permissions(root.join("var/tmp"), fs::Permissions::from_mode(0o1777)).unwrap();
@@ -39,23 +42,66 @@ impl Fixture {
         .unwrap();
         let metadata = fs::metadata(&root).unwrap();
         let state = format!(
-            "DARLING_PREFIX_STATE_V2\n\
-             schema_version=2\n\
+            "DARLING_PREFIX_STATE_V3\n\
+             schema_version=3\n\
              runtime_mode=rootless-eunion\n\
              generation=1\n\
              prefix_device={}\n\
              prefix_inode={}\n\
+             sidecar_device={}\n\
+             sidecar_inode={}\n\
              owner_uid={}\n\
              owner_gid={}\n\
-             provenance=darling-runtime-prefix-lifecycle-v2\n",
+             provenance=darling-runtime-prefix-sidecar-v1\n",
+            metadata.dev(),
+            metadata.ino(),
             metadata.dev(),
             metadata.ino(),
             metadata.uid(),
             metadata.gid(),
         );
-        fs::write(root.join(".darling-prefix-state-v2"), state).unwrap();
+        fs::write(root.join(".darling-prefix-state-v3"), state).unwrap();
         fs::set_permissions(
-            root.join(".darling-prefix-state-v2"),
+            root.join(".darling-prefix-state-v3"),
+            fs::Permissions::from_mode(0o600),
+        )
+        .unwrap();
+        let current = std::env::current_exe().unwrap();
+        fs::hard_link(&current, root.join("bin/darlingserver")).unwrap();
+        let worker_source = current
+            .parent()
+            .unwrap()
+            .parent()
+            .unwrap()
+            .join("darling-lifecycle-controller-worker");
+        fs::copy(
+            worker_source,
+            root.join("libexec/darling-lifecycle-controller-worker"),
+        )
+        .unwrap();
+        fs::set_permissions(
+            root.join("libexec/darling-lifecycle-controller-worker"),
+            fs::Permissions::from_mode(0o755),
+        )
+        .unwrap();
+        let lower = fs::metadata(root.join("libexec/darling")).unwrap();
+        let controller = fs::metadata(root.join("bin/darlingserver")).unwrap();
+        let worker =
+            fs::metadata(root.join("libexec/darling-lifecycle-controller-worker")).unwrap();
+        let binding = format!(
+            "DARLING_RUNTIME_LOWER_BINDING_V3\nschema_version=3\ntransaction_id=11111111111111111111111111111111\nprefix_generation=1\n\
+             session_prefix_device={}\nsession_prefix_inode={}\ndestination=libexec/darling\nprefix_device={}\nprefix_inode={}\n\
+             lower_device={}\nlower_inode={}\nlower_type=directory\nlower_mode={}\nlower_uid={}\nlower_gid={}\n\
+             controller_destination=bin/darlingserver\ncontroller_device={}\ncontroller_inode={}\ncontroller_type=regular\ncontroller_mode={}\ncontroller_uid={}\ncontroller_gid={}\n\
+             worker_destination=libexec/darling-lifecycle-controller-worker\nworker_device={}\nworker_inode={}\nworker_type=regular\nworker_mode={}\nworker_uid={}\nworker_gid={}\nprovenance=product-deployment-transaction-v3\n",
+            metadata.dev(), metadata.ino(), metadata.dev(), metadata.ino(),
+            lower.dev(), lower.ino(), lower.mode() & 0o7777, lower.uid(), lower.gid(),
+            controller.dev(), controller.ino(), controller.mode() & 0o7777, controller.uid(), controller.gid(),
+            worker.dev(), worker.ino(), worker.mode() & 0o7777, worker.uid(), worker.gid(),
+        );
+        fs::write(root.join(".darling-runtime-lower-binding-v1"), binding).unwrap();
+        fs::set_permissions(
+            root.join(".darling-runtime-lower-binding-v1"),
             fs::Permissions::from_mode(0o600),
         )
         .unwrap();
@@ -213,6 +259,11 @@ fn run_parent_death_case(label: &str, before_ack: bool) {
     assert_eq!(unsafe { libc::kill(parent, libc::SIGKILL) }, 0);
     let mut status = 0;
     assert_eq!(unsafe { libc::waitpid(parent, &mut status, 0) }, parent);
+    // Exercise numeric PID churn after the peer died: the worker must observe
+    // the retained SO_PEERPIDFD, not reopen the now-free parent PID.
+    for _ in 0..512 {
+        assert!(Command::new("/bin/true").status().unwrap().success());
+    }
     if before_ack {
         assert_eq!(unsafe { libc::kill(controller_child, libc::SIGCONT) }, 0);
     }

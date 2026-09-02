@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import re
 import signal
 import sys
 import tempfile
@@ -121,6 +122,8 @@ assert "MAX_TRANSPORT_INPUT_BYTES" in transport and "MAX_TRANSPORT_OUTPUT_BYTES"
 assert "os.killpg" in transport and "process.wait(timeout=0.25)" in transport
 
 controller = (CRATE / "src" / "controller.rs").read_text()
+cohort_ffi = (CRATE / "src" / "cohort_ffi.rs").read_text()
+cohort_routing = (CRATE / "src" / "cohort_routing.rs").read_text()
 quarantine_gc = (CRATE / "src" / "quarantine_gc.rs").read_text()
 boundary = (CRATE / "src" / "lib.rs").read_text()
 linux_backend = (CRATE / "src" / "linux_backend.rs").read_text()
@@ -129,13 +132,51 @@ build_script = (CRATE / "build.rs").read_text()
 assert "CONTROLLER_CLOSURE" in build_script
 assert "LIFECYCLE_CONTROLLER_CLOSURE_SHA256" in build_script
 assert "src/controller.rs" in build_script
+assert '"src/cohort_ffi.rs"' in build_script
+assert '"src/inherited_fd.rs"' in build_script
+assert '"src/bin/darling-lifecycle-controller-worker.rs"' in build_script
 assert "src/linux_backend.rs" in build_script
 assert "src/quarantine_gc.rs" in build_script
+assert "kill_process(" not in cohort_ffi
+assert "kill_process(" not in cohort_routing
+assert "pidfd_open(envelope.parent_pid)" not in cohort_routing
+assert "peer_pidfd_from_socket(bootstrap.as_raw_fd())" in cohort_routing
 assert "run-lifecycle-linux-backend-contract.sh" in build_script
 assert "run-lifecycle-quarantine-gc-contract.sh" in build_script
 assert "lifecycle-controller-quarantine-gc-v1.md" in build_script
 assert "fixtures/rootless-controller-v1/ancestor-swap.json" in build_script
 assert "fixtures/rootless-controller-v1/stale-controller.json" in build_script
+
+# Mirror the deliberately simple build.rs closure encoding and prove that each
+# new worker-boundary input changes the compiled controller identity.
+closure_source = re.search(
+    r"const CONTROLLER_CLOSURE: &\[&str\] = &\[(.*?)\n\];",
+    build_script,
+    re.DOTALL,
+)
+assert closure_source is not None
+closure_paths = re.findall(r'"([^"\n]+)"', closure_source.group(1))
+
+
+def controller_closure_digest(overrides: dict[str, bytes] | None = None) -> str:
+    manifest = bytearray()
+    for relative in closure_paths:
+        content = (overrides or {}).get(relative, (CRATE / relative).read_bytes())
+        manifest.extend(relative.encode())
+        manifest.extend(b"=")
+        manifest.extend(hashlib.sha256(content).hexdigest().encode())
+        manifest.extend(b"\n")
+    return hashlib.sha256(manifest).hexdigest()
+
+
+closure_digest = controller_closure_digest()
+for relative in (
+    "src/cohort_ffi.rs",
+    "src/inherited_fd.rs",
+    "src/bin/darling-lifecycle-controller-worker.rs",
+):
+    original = (CRATE / relative).read_bytes()
+    assert controller_closure_digest({relative: original + b"\nTAMPER"}) != closure_digest
 for phase in architecture["phases"]:
     assert f"pub struct {phase}" in controller or f"pub struct {phase} " in controller
 for capability in architecture["capabilities"][:4]:

@@ -68,6 +68,10 @@ class RuntimeCell:
 ARTIFACT_PATHS = {
     "darling": ("src/startup/darling", "bin/darling"),
     "darlingserver": ("src/external/darlingserver/darlingserver", "bin/darlingserver"),
+    "lifecycle_controller_worker": (
+        "lifecycle-rust-target/release/darling-lifecycle-controller-worker",
+        "libexec/darling-lifecycle-controller-worker",
+    ),
     "launchd": ("src/launchd/src/launchd", "libexec/darling/sbin/launchd"),
     "shellspawn": ("src/shellspawn/shellspawn", "libexec/darling/usr/libexec/shellspawn"),
     "mldr": ("src/startup/mldr/mldr", "libexec/darling/usr/libexec/darling/mldr"),
@@ -251,8 +255,14 @@ def _read_binding(prefix: Path, state: PrefixState, required: bool) -> dict[str,
         lines = data.decode("ascii").splitlines()
     except UnicodeError as error:
         raise RuntimeCellError("runtime lower binding is malformed") from error
-    if not lines or lines[0] != "DARLING_RUNTIME_LOWER_BINDING_V2":
+    if not lines or lines[0] not in {
+        "DARLING_RUNTIME_LOWER_BINDING_V2",
+        "DARLING_RUNTIME_LOWER_BINDING_V3",
+    }:
         raise RuntimeCellError("runtime lower binding schema mismatch")
+    schema = lines[0]
+    if required and schema != "DARLING_RUNTIME_LOWER_BINDING_V3":
+        raise RuntimeCellError("cohort-enabled runtime requires binding schema v3")
     fields: dict[str, str] = {}
     for line in lines[1:]:
         if "=" not in line:
@@ -269,6 +279,11 @@ def _read_binding(prefix: Path, state: PrefixState, required: bool) -> dict[str,
         "controller_type", "controller_mode", "controller_uid", "controller_gid",
         "provenance", "transaction_id",
     }
+    if schema == "DARLING_RUNTIME_LOWER_BINDING_V3":
+        required_fields |= {
+            "worker_destination", "worker_device", "worker_inode", "worker_type",
+            "worker_mode", "worker_uid", "worker_gid",
+        }
     if set(fields) != required_fields:
         raise RuntimeCellError("runtime lower binding field set is not exact")
     try:
@@ -285,8 +300,19 @@ def _read_binding(prefix: Path, state: PrefixState, required: bool) -> dict[str,
         raise RuntimeCellError("runtime lower binding destination mismatch")
     lower = _observe_beneath(prefix, fields["destination"])
     controller = _observe_beneath(prefix, fields["controller_destination"])
+    worker = None
+    if schema == "DARLING_RUNTIME_LOWER_BINDING_V3":
+        if fields["worker_destination"] != "libexec/darling-lifecycle-controller-worker":
+            raise RuntimeCellError("runtime lower binding destination mismatch")
+        worker = _observe_beneath(prefix, fields["worker_destination"])
+    expected_schema = 3 if schema == "DARLING_RUNTIME_LOWER_BINDING_V3" else 2
+    expected_provenance = (
+        "product-deployment-transaction-v3"
+        if expected_schema == 3
+        else "product-deployment-transaction-v2"
+    )
     if (
-        numeric["schema_version"] != 2
+        numeric["schema_version"] != expected_schema
         or numeric["prefix_generation"] != state.generation
         or (numeric["session_prefix_device"], numeric["session_prefix_inode"])
         != (state.prefix_device, state.prefix_inode)
@@ -304,7 +330,18 @@ def _read_binding(prefix: Path, state: PrefixState, required: bool) -> dict[str,
         or numeric["controller_mode"] != controller.security.mode
         or numeric["controller_uid"] != controller.security.uid
         or numeric["controller_gid"] != controller.security.gid
-        or fields["provenance"] != "product-deployment-transaction-v2"
+        or fields["provenance"] != expected_provenance
+        or (
+            worker is not None
+            and (
+                (numeric["worker_device"], numeric["worker_inode"])
+                != (worker.identity.device, worker.identity.inode)
+                or fields["worker_type"] != worker.security.object_type
+                or numeric["worker_mode"] != worker.security.mode
+                or numeric["worker_uid"] != worker.security.uid
+                or numeric["worker_gid"] != worker.security.gid
+            )
+        )
     ):
         raise RuntimeCellError("runtime lower binding identity mismatch")
     return fields
@@ -377,6 +414,8 @@ def load_runtime_cell(
     binding = _read_binding(runtime_prefix, state, cohort_enabled)
     artifacts = []
     for name, (build_relative, deployed_relative) in ARTIFACT_PATHS.items():
+        if name == "lifecycle_controller_worker" and not cohort_enabled:
+            continue
         build_path = build_dir / build_relative
         deployed_path = runtime_prefix / deployed_relative
         try:

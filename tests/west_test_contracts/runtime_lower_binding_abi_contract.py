@@ -16,6 +16,7 @@ from west_commands.deploy_transaction import DeploymentTransaction  # noqa: E402
 
 parser = argparse.ArgumentParser()
 parser.add_argument("--fixture", type=Path, required=True)
+parser.add_argument("--worker", type=Path, required=True)
 parser.add_argument("--task-root", type=Path, required=True)
 args = parser.parse_args()
 
@@ -23,24 +24,30 @@ prefix = args.task_root / "prefix"
 prefix.mkdir(parents=True)
 metadata = prefix.stat()
 state = (
-    "DARLING_PREFIX_STATE_V2\n"
-    "schema_version=2\n"
+    "DARLING_PREFIX_STATE_V3\n"
+    "schema_version=3\n"
     "runtime_mode=rootless-eunion\n"
     "generation=23\n"
     f"prefix_device={metadata.st_dev}\n"
     f"prefix_inode={metadata.st_ino}\n"
+    f"sidecar_device={metadata.st_dev}\n"
+    f"sidecar_inode={metadata.st_ino}\n"
     f"owner_uid={os.geteuid()}\n"
     f"owner_gid={os.getegid()}\n"
-    "provenance=darling-runtime-prefix-lifecycle-v2\n"
+    "provenance=darling-runtime-prefix-sidecar-v1\n"
 )
-(prefix / ".darling-prefix-state-v2").write_text(state, encoding="utf-8")
-(prefix / ".darling-prefix-state-v2").chmod(0o600)
+(prefix / ".darling-prefix-state-v3").write_text(state, encoding="utf-8")
+(prefix / ".darling-prefix-state-v3").chmod(0o600)
 (prefix / ".lifecycle.lock").write_bytes(b"")
 (prefix / ".lifecycle.lock").chmod(0o600)
 (prefix / "libexec/darling").mkdir(parents=True)
 (prefix / "libexec/darling").chmod(0o755)
 (prefix / "bin").mkdir()
 os.link(args.fixture, prefix / "bin/darlingserver")
+(prefix / "libexec/darling-lifecycle-controller-worker").write_bytes(
+    args.worker.read_bytes()
+)
+(prefix / "libexec/darling-lifecycle-controller-worker").chmod(0o755)
 transaction = DeploymentTransaction(args.task_root / "deployment.json", prefix)
 transaction.bind_runtime_lower_root(prefix_generation=23)
 result = subprocess.run(

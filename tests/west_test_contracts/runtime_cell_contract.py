@@ -65,6 +65,8 @@ def make_cell(root: Path, *, enabled: bool = True) -> tuple[dict, Path]:
     )
     (workspace / "lifecycle/operation-boundary").mkdir(parents=True)
     for index, (name, (build_relative, deployed_relative)) in enumerate(ARTIFACT_PATHS.items()):
+        if name == "lifecycle_controller_worker" and not enabled:
+            continue
         source = build / build_relative
         deployed = prefix / deployed_relative
         source.parent.mkdir(parents=True, exist_ok=True)
@@ -88,10 +90,12 @@ def make_cell(root: Path, *, enabled: bool = True) -> tuple[dict, Path]:
     lower = prefix / "libexec/darling"
     controller = prefix / "bin/darlingserver"
     lower_value = lower.stat(); controller_value = controller.stat()
+    worker = prefix / "libexec/darling-lifecycle-controller-worker"
     binding = prefix / ".darling-runtime-lower-binding-v1"
-    binding.write_text(
-        "DARLING_RUNTIME_LOWER_BINDING_V2\n"
-        "schema_version=2\ntransaction_id=fixture\nprefix_generation=7\n"
+    binding_text = (
+        ("DARLING_RUNTIME_LOWER_BINDING_V3\n" if enabled else "DARLING_RUNTIME_LOWER_BINDING_V2\n")
+        + ("schema_version=3\n" if enabled else "schema_version=2\n")
+        + "transaction_id=fixture\nprefix_generation=7\n"
         f"session_prefix_device={prefix_value.st_dev}\nsession_prefix_inode={prefix_value.st_ino}\n"
         "destination=libexec/darling\n"
         f"prefix_device={prefix_value.st_dev}\nprefix_inode={prefix_value.st_ino}\n"
@@ -102,7 +106,21 @@ def make_cell(root: Path, *, enabled: bool = True) -> tuple[dict, Path]:
         f"controller_device={controller_value.st_dev}\ncontroller_inode={controller_value.st_ino}\n"
         f"controller_type=regular\ncontroller_mode={controller_value.st_mode & 0o7777}\n"
         f"controller_uid={controller_value.st_uid}\ncontroller_gid={controller_value.st_gid}\n"
-        "provenance=product-deployment-transaction-v2\n"
+    )
+    if enabled:
+        worker.chmod(0o755)
+        worker_value = worker.stat()
+        binding_text += (
+            "worker_destination=libexec/darling-lifecycle-controller-worker\n"
+            f"worker_device={worker_value.st_dev}\nworker_inode={worker_value.st_ino}\n"
+            f"worker_type=regular\nworker_mode={worker_value.st_mode & 0o7777}\n"
+            f"worker_uid={worker_value.st_uid}\nworker_gid={worker_value.st_gid}\n"
+            "provenance=product-deployment-transaction-v3\n"
+        )
+    else:
+        binding_text += "provenance=product-deployment-transaction-v2\n"
+    binding.write_text(
+        binding_text
     )
     binding.chmod(0o600)
     arguments = {
@@ -137,6 +155,25 @@ def main() -> None:
         arguments, prefix = make_cell(root / "valid")
         cell = load_runtime_cell(**arguments)
         assert cell.state.generation == 7 and len(cell.artifacts) == len(ARTIFACT_PATHS)
+
+        off_arguments, off_prefix = make_cell(root / "valid-off", enabled=False)
+        off_cell = load_runtime_cell(**off_arguments)
+        assert all(artifact.name != "lifecycle_controller_worker" for artifact in off_cell.artifacts)
+        assert not (off_prefix / "libexec/darling-lifecycle-controller-worker").exists()
+
+        def downgrade_binding(_args: dict, p: Path) -> None:
+            path = p / ".darling-runtime-lower-binding-v1"
+            lines = path.read_text().splitlines()
+            lines[0] = "DARLING_RUNTIME_LOWER_BINDING_V2"
+            lines = [line for line in lines if not line.startswith("worker_")]
+            lines = [
+                "schema_version=2" if line == "schema_version=3" else
+                "provenance=product-deployment-transaction-v2"
+                if line == "provenance=product-deployment-transaction-v3" else line
+                for line in lines
+            ]
+            path.write_text("\n".join(lines) + "\n")
+        isolated(root, "on-v2-binding", downgrade_binding, "requires binding schema v3")
 
         before = observe(prefix / "bin/darling")
         os.link(prefix / "bin/darling", prefix / "bin/darling-link")
@@ -192,7 +229,7 @@ def main() -> None:
             path = p / ".darling-runtime-lower-binding-v1"
             path.write_text(path.read_text() + "forged=yes\n")
         isolated(root, "binding-extra", binding_extra, "field set is not exact")
-    print("runtime cell contract: PASS negatives=11")
+    print("runtime cell contract: PASS negatives=12")
 
 
 if __name__ == "__main__":

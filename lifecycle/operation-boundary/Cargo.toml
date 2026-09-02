@@ -26,3 +26,7 @@ path = "src/bin/lifecycle-fuzz.rs"
 [[bin]]
 name = "darling-scratch-census"
 path = "src/bin/darling-scratch-census.rs"
+
+[[bin]]
+name = "darling-lifecycle-controller-worker"
+path = "src/bin/darling-lifecycle-controller-worker.rs"
