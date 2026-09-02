@@ -251,6 +251,7 @@ class DeploymentTransaction:
         deployment_prefix: Path | None = None,
         destination: str = "libexec/darling",
         controller_destination: str = "bin/darlingserver",
+        worker_destination: str = "libexec/darling-lifecycle-controller-worker",
     ) -> Path:
         """Publish the exact deployed lower-root authority for Rust.
 
@@ -292,13 +293,18 @@ class DeploymentTransaction:
                     controller_stat = os.fstat(controller_fd)
                 finally:
                     os.close(controller_fd)
+                worker_fd = self._open_relative_file(deployment_fd, worker_destination)
+                try:
+                    worker_stat = os.fstat(worker_fd)
+                finally:
+                    os.close(worker_fd)
             finally:
                 os.close(lower_fd)
         finally:
             os.close(deployment_fd)
             os.close(session_fd)
         fields = {
-            "schema_version": 2,
+            "schema_version": 3,
             "transaction_id": self.transaction_id,
             "prefix_generation": prefix_generation,
             "session_prefix_device": session_stat.st_dev,
@@ -319,9 +325,16 @@ class DeploymentTransaction:
             "controller_mode": stat.S_IMODE(controller_stat.st_mode),
             "controller_uid": controller_stat.st_uid,
             "controller_gid": controller_stat.st_gid,
-            "provenance": "product-deployment-transaction-v2",
+            "worker_destination": worker_destination,
+            "worker_device": worker_stat.st_dev,
+            "worker_inode": worker_stat.st_ino,
+            "worker_type": "regular",
+            "worker_mode": stat.S_IMODE(worker_stat.st_mode),
+            "worker_uid": worker_stat.st_uid,
+            "worker_gid": worker_stat.st_gid,
+            "provenance": "product-deployment-transaction-v3",
         }
-        lines = ["DARLING_RUNTIME_LOWER_BINDING_V2"]
+        lines = ["DARLING_RUNTIME_LOWER_BINDING_V3"]
         lines.extend(f"{key}={value}" for key, value in fields.items())
         content = ("\n".join(lines) + "\n").encode()
         if len(content) > RUNTIME_LOWER_BINDING_MAX_BYTES:

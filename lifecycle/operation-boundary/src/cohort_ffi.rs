@@ -66,11 +66,158 @@ pub(super) fn probe_pidfd(pidfd: RawFd) -> io::Result<()> {
 }
 
 #[cfg(not(test))]
-pub(super) fn close_unowned_descriptor(fd: RawFd) {
-    // SAFETY: the caller obtained this fd from the current `/proc/self/fd`
-    // census, excluded every retained/stdio/directory fd, and transfers the
-    // remaining descriptor to this close operation exactly once.
-    unsafe { rustix::io::close(fd) };
+unsafe fn exec_controller_worker(worker_fd: RawFd, bootstrap_fd: RawFd) -> ! {
+    const WORKER_ARG0: &[u8] = b"darling-lifecycle-controller-worker\0";
+    let argv = [WORKER_ARG0.as_ptr().cast::<libc::c_char>(), ptr::null()];
+    let envp = [ptr::null::<libc::c_char>()];
+    // SAFETY: source descriptors were duplicated above 9 before fork; targets
+    // 3 and 4 are child-local and dup3 is async-signal-safe.
+    if unsafe { libc::dup3(bootstrap_fd, 3, 0) } < 0 || unsafe { libc::dup3(worker_fd, 4, 0) } < 0 {
+        // SAFETY: _exit is async-signal-safe and does not run destructors.
+        unsafe { libc::_exit(126) };
+    }
+    // SAFETY: close_range is an async-signal-safe Linux syscall; descriptors
+    // 0..=4 are the only deliberately inherited set.
+    if unsafe { libc::syscall(libc::SYS_close_range, 5u32, u32::MAX, 0u32) } < 0 {
+        // SAFETY: _exit is async-signal-safe and does not run destructors.
+        unsafe { libc::_exit(126) };
+    }
+    // SAFETY: fd 4 is a retained O_PATH executable, argv/envp are static,
+    // NUL-terminated arrays prepared before fork, and execveat is syscall-only.
+    unsafe {
+        libc::syscall(
+            libc::SYS_execveat,
+            4,
+            c"".as_ptr(),
+            argv.as_ptr(),
+            envp.as_ptr(),
+            libc::AT_EMPTY_PATH,
+        )
+    };
+    // SAFETY: _exit is async-signal-safe and does not run destructors.
+    unsafe { libc::_exit(127) };
+}
+
+#[cfg(not(test))]
+pub(super) fn worker_setsid() -> Result<(), CohortError> {
+    // SAFETY: executed after exec in the dedicated single-threaded worker;
+    // setsid has no pointer or ownership preconditions.
+    if unsafe { libc::setsid() } < 0 {
+        Err(io_error("setsid(controller worker)"))
+    } else {
+        Ok(())
+    }
+}
+
+#[cfg(not(test))]
+pub(super) fn close_worker_trampoline_descriptors() {
+    // SAFETY: after exec, fd 3 has already been duplicated into an OwnedFd and
+    // fd 4 was used only as the execveat executable. These inherited raw
+    // descriptors are closed exactly once before authority is received.
+    unsafe {
+        rustix::io::close(3);
+        rustix::io::close(4);
+    }
+}
+
+#[cfg(not(test))]
+pub(super) fn send_worker_bootstrap(
+    socket: RawFd,
+    envelope: ControllerWorkerBootstrap,
+    descriptors: &[RawFd; CONTROLLER_WORKER_FD_COUNT],
+) -> Result<(), CohortError> {
+    let socket = crate::inherited_fd::duplicate_cloexec(socket, 5)
+        .map_err(|error| CohortError::Io("duplicate(worker bootstrap)", error))?;
+    let owned = descriptors
+        .iter()
+        .map(|fd| crate::inherited_fd::duplicate_cloexec(*fd, 5))
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|error| CohortError::Io("duplicate(worker authority)", error))?;
+    let borrowed = owned.iter().map(OwnedFd::as_fd).collect::<Vec<_>>();
+    // SAFETY: the repr(C) envelope contains only integers and a byte array and
+    // remains immutable for the duration of sendmsg.
+    let bytes = unsafe {
+        std::slice::from_raw_parts(
+            (&envelope as *const ControllerWorkerBootstrap).cast::<u8>(),
+            size_of::<ControllerWorkerBootstrap>(),
+        )
+    };
+    let vectors = [io::IoSlice::new(bytes)];
+    let mut space =
+        [MaybeUninit::uninit(); rustix::cmsg_space!(ScmRights(CONTROLLER_WORKER_FD_COUNT))];
+    let mut ancillary = rustix::net::SendAncillaryBuffer::new(&mut space);
+    if !ancillary.push(rustix::net::SendAncillaryMessage::ScmRights(&borrowed)) {
+        return Err(CohortError::Protocol("worker SCM_RIGHTS buffer"));
+    }
+    let sent = rustix::net::sendmsg(
+        &socket,
+        &vectors,
+        &mut ancillary,
+        rustix::net::SendFlags::NOSIGNAL,
+    )
+    .map_err(|error| CohortError::Io("sendmsg(worker bootstrap)", error.into()))?;
+    if sent != bytes.len() {
+        return Err(CohortError::Protocol("worker bootstrap size"));
+    }
+    Ok(())
+}
+
+pub(super) fn receive_worker_bootstrap(
+    socket: RawFd,
+) -> Result<(ControllerWorkerBootstrap, Vec<OwnedFd>), CohortError> {
+    let socket = crate::inherited_fd::duplicate_cloexec(socket, 5)
+        .map_err(|error| CohortError::Io("duplicate(worker receive)", error))?;
+    let mut envelope = MaybeUninit::<ControllerWorkerBootstrap>::zeroed();
+    // SAFETY: the destination spans exactly one envelope and is not read until
+    // recvmsg reports the exact byte count.
+    let buffer = unsafe {
+        std::slice::from_raw_parts_mut(
+            envelope.as_mut_ptr().cast::<u8>(),
+            size_of::<ControllerWorkerBootstrap>(),
+        )
+    };
+    let mut vectors = [io::IoSliceMut::new(buffer)];
+    let mut space =
+        [MaybeUninit::uninit(); rustix::cmsg_space!(ScmRights(CONTROLLER_WORKER_FD_COUNT + 1))];
+    let mut ancillary = rustix::net::RecvAncillaryBuffer::new(&mut space);
+    let message = rustix::net::recvmsg(
+        &socket,
+        &mut vectors,
+        &mut ancillary,
+        rustix::net::RecvFlags::CMSG_CLOEXEC,
+    )
+    .map_err(|error| CohortError::Io("recvmsg(worker bootstrap)", error.into()))?;
+    if message.bytes != size_of::<ControllerWorkerBootstrap>()
+        || message.flags.contains(rustix::net::ReturnFlags::TRUNC)
+        || message.flags.contains(rustix::net::ReturnFlags::CTRUNC)
+    {
+        return Err(CohortError::Protocol("worker bootstrap truncation"));
+    }
+    let mut descriptors = Vec::new();
+    for item in ancillary.drain() {
+        match item {
+            rustix::net::RecvAncillaryMessage::ScmRights(fds) => descriptors.extend(fds),
+            _ => return Err(CohortError::Protocol("worker ancillary type")),
+        }
+    }
+    if descriptors.len() != CONTROLLER_WORKER_FD_COUNT {
+        return Err(CohortError::Protocol("worker descriptor count"));
+    }
+    // SAFETY: every bit pattern is valid and recvmsg filled the exact object.
+    Ok((unsafe { envelope.assume_init() }, descriptors))
+}
+
+#[cfg(not(test))]
+pub(super) fn send_worker_ready(socket: RawFd) -> Result<(), CohortError> {
+    let socket = crate::inherited_fd::duplicate_cloexec(socket, 5)
+        .map_err(|error| CohortError::Io("duplicate(worker ready)", error))?;
+    let sent = rustix::net::send(&socket, &[1], rustix::net::SendFlags::NOSIGNAL)
+        .map_err(|error| CohortError::Io("send(worker ready)", error.into()))?;
+    if sent == 1 {
+        Ok(())
+    } else {
+        Err(CohortError::Protocol("worker ready size"))
+    }
 }
 
 #[cfg(not(test))]
@@ -78,13 +225,11 @@ pub(super) fn spawn_controller_process(
     mut authority: SessionAuthority,
     listener: OwnedFd,
     child_control: OwnedFd,
-    shutdown_fd: RawFd,
-    darlingserver_fd: RawFd,
+    worker_fd: RawFd,
     nonce: [u8; NONCE_BYTES],
 ) -> Result<ProcessWorker, CohortError> {
     let parent_pid = std::process::id() as libc::pid_t;
-    let parent_watch = pidfd_open(parent_pid)?;
-    let (ready_parent, ready_child) = rustix::net::socketpair(
+    let (bootstrap_parent, bootstrap_child) = rustix::net::socketpair(
         rustix::net::AddressFamily::UNIX,
         rustix::net::SocketType::SEQPACKET,
         rustix::net::SocketFlags::CLOEXEC,
@@ -92,80 +237,48 @@ pub(super) fn spawn_controller_process(
     )
     .map_err(|error| {
         CohortError::Io(
-            "socketpair(controller ready)",
+            "socketpair(controller bootstrap)",
             io::Error::from_raw_os_error(error.raw_os_error()),
         )
     })?;
+    let worker_exec = crate::inherited_fd::duplicate_cloexec(worker_fd, 10)
+        .map_err(|error| CohortError::Io("duplicate(worker executable)", error))?;
+    let child_bootstrap =
+        crate::inherited_fd::duplicate_cloexec(bootstrap_child.as_raw_fd(), 10)
+            .map_err(|error| CohortError::Io("duplicate(worker child socket)", error))?;
+    let descriptors = authority.worker_fds(&listener, &child_control)?;
 
-    // SAFETY: this is the single production fork boundary. The child invokes
-    // only async-signal-safe syscalls plus the pre-existing controller loop;
-    // it never returns into the parent's Rust stack and terminates via _exit.
+    // SAFETY: the child branch immediately enters a syscall-only trampoline;
+    // it performs no allocation, formatting, collection access, or destructor.
     let child = unsafe { libc::fork() };
     if child < 0 {
         return Err(io_error("fork(controller)"));
     }
     if child == 0 {
-        drop(ready_parent);
-        // SAFETY: after fork these are child-local copies of parent-owned
-        // descriptors and are closed exactly once before entering the loop.
-        unsafe {
-            libc::close(shutdown_fd);
-            libc::close(darlingserver_fd);
-        }
-        // SAFETY: setsid has no memory-safety preconditions.
-        if unsafe { libc::setsid() } < 0 {
-            let ready_status: i32 = -1;
-            let _ = write_all(ready_child.as_fd(), &ready_status.to_ne_bytes());
-            authority.disarm_drop_cleanup();
-            // SAFETY: the fork child must not run Rust destructors on failure.
-            unsafe { libc::_exit(1) };
-        }
-        let mut allowed = authority.retained_fds();
-        allowed.extend([
-            listener.as_raw_fd(),
-            child_control.as_raw_fd(),
-            parent_watch.as_raw_fd(),
-            ready_child.as_raw_fd(),
-        ]);
-        let prepared = close_unowned_child_fds(&allowed);
-        let ready_status: i32 = if prepared.is_ok() { 0 } else { -1 };
-        let _ = write_all(ready_child.as_fd(), &ready_status.to_ne_bytes());
-        drop(ready_child);
-        if prepared.is_err() {
-            authority.disarm_drop_cleanup();
-            // SAFETY: see the fork-child termination contract above.
-            unsafe { libc::_exit(1) };
-        }
-        let (mut authority, loop_result, forensic_preserve) = server_loop(
-            authority,
-            listener,
-            child_control,
-            Some(parent_watch),
-            nonce,
-        );
-        let cleanup_result = if forensic_preserve {
-            authority.disarm_drop_cleanup();
-            Ok(())
-        } else {
-            authority.cleanup_all()
-        };
-        let status = i32::from(loop_result.is_err() || cleanup_result.is_err());
-        // SAFETY: final child termination; no parent-owned Rust stack resumes.
-        unsafe { libc::_exit(status) };
+        // SAFETY: all arguments were prepared before fork. This function never
+        // returns and contains only dup3, close_range, execveat, and _exit.
+        unsafe { exec_controller_worker(worker_exec.as_raw_fd(), child_bootstrap.as_raw_fd()) }
     }
 
-    drop(ready_child);
-    drop(child_control);
-    authority.disarm_drop_cleanup();
-    drop(authority);
-    drop(listener);
-    drop(parent_watch);
+    drop(bootstrap_child);
+    drop(child_bootstrap);
+    drop(worker_exec);
     let child_pidfd = match pidfd_open(child) {
         Ok(pidfd) => pidfd,
         Err(error) => {
+            // No numeric-PID signal fallback is permitted. Closing the only
+            // parent bootstrap endpoint makes the worker's bounded receive
+            // fail; reap that exact child identity before returning.
+            drop(bootstrap_parent);
             if let Some(pid) = rustix::process::Pid::from_raw(child) {
-                let _ = rustix::process::kill_process(pid, rustix::process::Signal::KILL);
-                let _ = rustix::process::waitpid(Some(pid), rustix::process::WaitOptions::empty());
+                loop {
+                    match rustix::process::waitpid(Some(pid), rustix::process::WaitOptions::empty())
+                    {
+                        Ok(Some(_)) | Err(rustix::io::Errno::CHILD) => break,
+                        Ok(None) | Err(rustix::io::Errno::INTR) => continue,
+                        Err(_) => break,
+                    }
+                }
             }
             return Err(error);
         }
@@ -174,31 +287,56 @@ pub(super) fn spawn_controller_process(
         pid: child,
         pidfd: child_pidfd,
     };
-    if let Err(error) = wait_for_io(ready_parent.as_raw_fd(), libc::POLLIN) {
-        if let Some(pid) = rustix::process::Pid::from_raw(child) {
-            let _ = rustix::process::kill_process(pid, rustix::process::Signal::KILL);
-        }
-        let _ = wait_worker(process);
+    let envelope = ControllerWorkerBootstrap {
+        version: CONTROLLER_WORKER_PROTOCOL,
+        descriptor_count: CONTROLLER_WORKER_FD_COUNT as u32,
+        parent_pid,
+        session_root_pid: authority.session_root_pid,
+        nonce,
+    };
+    if let Err(error) = send_worker_bootstrap(bootstrap_parent.as_raw_fd(), envelope, &descriptors)
+    {
+        terminate_worker(process);
         return Err(error);
     }
-    let mut ready_status = [0u8; size_of::<i32>()];
-    let received = rustix::net::recv(
-        &ready_parent,
+    let process = await_worker_ready(process, &bootstrap_parent)?;
+    authority.disarm_drop_cleanup();
+    drop(authority);
+    drop(listener);
+    drop(child_control);
+    Ok(process)
+}
+
+fn terminate_worker(process: ProcessWorker) {
+    let _ = rustix::process::pidfd_send_signal(&process.pidfd, rustix::process::Signal::KILL);
+    let _ = wait_worker(process);
+}
+
+pub(super) fn await_worker_ready(
+    process: ProcessWorker,
+    bootstrap_parent: &OwnedFd,
+) -> Result<ProcessWorker, CohortError> {
+    if let Err(error) = wait_for_io(bootstrap_parent.as_raw_fd(), libc::POLLIN) {
+        terminate_worker(process);
+        return Err(error);
+    }
+    let mut ready_status = [0u8; 1];
+    let received = match rustix::net::recv(
+        bootstrap_parent,
         &mut ready_status,
         rustix::net::RecvFlags::empty(),
-    )
-    .map_err(|error| {
-        CohortError::Io(
-            "recv(controller ready)",
-            io::Error::from_raw_os_error(error.raw_os_error()),
-        )
-    })?
-    .0;
-    if received != size_of::<i32>() || i32::from_ne_bytes(ready_status) != 0 {
-        if let Some(pid) = rustix::process::Pid::from_raw(child) {
-            let _ = rustix::process::kill_process(pid, rustix::process::Signal::KILL);
+    ) {
+        Ok((count, _)) => count,
+        Err(error) => {
+            terminate_worker(process);
+            return Err(CohortError::Io(
+                "recv(controller ready)",
+                io::Error::from_raw_os_error(error.raw_os_error()),
+            ));
         }
-        let _ = wait_worker(process);
+    };
+    if received != 1 || ready_status[0] != 1 {
+        terminate_worker(process);
         return Err(CohortError::Process);
     }
     Ok(process)

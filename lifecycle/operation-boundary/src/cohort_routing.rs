@@ -77,10 +77,13 @@ const RECOVERY_PENDING_STATUS: c_int = 5;
 const CONTROLLER_COMMAND_CLEANUP: u8 = 1;
 const CONTROLLER_COMMAND_PRESERVE: u8 = 2;
 const CONTROLLER_COMMAND_ACK: u8 = 0x7f;
-#[cfg(not(test))]
 const CONTROLLER_EXIT_TIMEOUT_MS: c_int = 1_000;
 const MAX_REJECTED_REQUESTS_PER_SLICE: usize = 128;
 const SO_PEERPIDFD: c_int = 77;
+#[cfg_attr(test, allow(dead_code))]
+const CONTROLLER_WORKER_PROTOCOL: u32 = 1;
+#[cfg_attr(test, allow(dead_code))]
+const CONTROLLER_WORKER_FD_COUNT: usize = 12;
 // Keep the vchroot-visible name short: the host prefix is prepended before
 // connect(2), and AF_UNIX sun_path is only 108 bytes on Linux.
 const CONTROL_GUEST_PATH: &[u8] = b"/.lc-v1.sock";
@@ -931,28 +934,161 @@ impl SessionAuthority {
     }
 
     #[cfg(not(test))]
-    fn retained_fds(&self) -> Vec<RawFd> {
-        let mut fds = vec![
+    fn worker_fds(
+        &self,
+        listener: &OwnedFd,
+        child_control: &OwnedFd,
+    ) -> Result<[RawFd; CONTROLLER_WORKER_FD_COUNT], CohortError> {
+        let init_pid = self
+            .init_pid
+            .as_ref()
+            .ok_or(CohortError::Protocol("worker init pid"))?;
+        let dserver = self
+            .endpoints
+            .get(&EndpointKey::Static(CohortEndpoint::DarlingServer))
+            .ok_or(CohortError::Protocol("worker Darlingserver endpoint"))?;
+        let control = self
+            .endpoints
+            .get(&EndpointKey::Static(CohortEndpoint::Control))
+            .ok_or(CohortError::Protocol("worker control endpoint"))?;
+        let log = self
+            .log
+            .as_ref()
+            .ok_or(CohortError::Protocol("worker log"))?;
+        Ok([
             self.prefix.as_raw_fd(),
             self.lock.as_raw_fd(),
             self.prefix_state.object.as_raw_fd(),
-        ];
-        if let Some(init_pid) = self.init_pid.as_ref() {
-            fds.push(init_pid.object.as_raw_fd());
+            init_pid.object.as_raw_fd(),
+            dserver.parent.as_raw_fd(),
+            dserver.object.as_raw_fd(),
+            control.parent.as_raw_fd(),
+            control.object.as_raw_fd(),
+            log.parent.as_raw_fd(),
+            log.object.as_raw_fd(),
+            listener.as_raw_fd(),
+            child_control.as_raw_fd(),
+        ])
+    }
+
+    #[cfg(not(test))]
+    fn from_worker_fds(
+        mut fds: Vec<OwnedFd>,
+        session_root_pid: libc::pid_t,
+    ) -> Result<(Self, OwnedFd, OwnedFd), CohortError> {
+        if fds.len() != CONTROLLER_WORKER_FD_COUNT || session_root_pid <= 0 {
+            return Err(CohortError::Protocol("worker descriptor count"));
         }
-        for endpoint in self.endpoints.values() {
-            fds.extend([endpoint.parent.as_raw_fd(), endpoint.object.as_raw_fd()]);
-            if let Some(directory) = endpoint.dynamic_directory.as_ref() {
-                fds.push(directory.parent.as_raw_fd());
+        let child_control = fds
+            .pop()
+            .ok_or(CohortError::Protocol("worker control transport"))?;
+        let listener = fds.pop().ok_or(CohortError::Protocol("worker listener"))?;
+        let log_object = fds
+            .pop()
+            .ok_or(CohortError::Protocol("worker log object"))?;
+        let log_parent = fds
+            .pop()
+            .ok_or(CohortError::Protocol("worker log parent"))?;
+        let control_object = fds.pop().ok_or(CohortError::Protocol("worker endpoint"))?;
+        let control_parent = fds
+            .pop()
+            .ok_or(CohortError::Protocol("worker endpoint parent"))?;
+        let dserver_object = fds.pop().ok_or(CohortError::Protocol("worker endpoint"))?;
+        let dserver_parent = fds
+            .pop()
+            .ok_or(CohortError::Protocol("worker endpoint parent"))?;
+        let init_object = fds.pop().ok_or(CohortError::Protocol("worker init pid"))?;
+        let state_object = fds
+            .pop()
+            .ok_or(CohortError::Protocol("worker prefix state"))?;
+        let lock = fds.pop().ok_or(CohortError::Protocol("worker lock"))?;
+        let prefix = fds.pop().ok_or(CohortError::Protocol("worker prefix"))?;
+        let prefix_identity = identity(prefix.as_raw_fd())?;
+        let lock_identity = identity(lock.as_raw_fd())?;
+        revalidate_lock(prefix.as_fd(), lock.as_fd(), lock_identity)?;
+        let state_identity = identity(state_object.as_raw_fd())?;
+        let state_content = read_bounded(state_object.as_fd(), PREFIX_STATE_MAX_BYTES)?;
+        let (state_name, generation) =
+            if named_identity(prefix.as_fd(), PREFIX_STATE_V3_NAME)? == Some(state_identity) {
+                (
+                    PREFIX_STATE_V3_NAME.to_vec(),
+                    parse_prefix_state(&state_content, prefix_identity)?,
+                )
+            } else {
+                return Err(CohortError::Identity("worker prefix state"));
+            };
+        let init_identity = identity(init_object.as_raw_fd())?;
+        if named_identity(prefix.as_fd(), INIT_PID_NAME)? != Some(init_identity) {
+            return Err(CohortError::Identity("worker init pid"));
+        }
+        let endpoint = |kind: CohortEndpoint,
+                        parent: OwnedFd,
+                        object: OwnedFd|
+         -> Result<PublishedEndpoint, CohortError> {
+            let spec = kind
+                .spec()
+                .ok_or(CohortError::Protocol("worker endpoint spec"))?;
+            let parent_identity = identity(parent.as_raw_fd())?;
+            let object_identity = identity(object.as_raw_fd())?;
+            if named_identity(parent.as_fd(), spec.name)? != Some(object_identity) {
+                return Err(CohortError::Identity("worker endpoint"));
             }
+            Ok(PublishedEndpoint {
+                parent,
+                parent_identity,
+                object,
+                identity: object_identity,
+                name: spec.name.to_vec(),
+                dynamic_directory: None,
+                endpoint_linked: true,
+            })
+        };
+        let dserver = endpoint(
+            CohortEndpoint::DarlingServer,
+            dserver_parent,
+            dserver_object,
+        )?;
+        let control = endpoint(CohortEndpoint::Control, control_parent, control_object)?;
+        let log_identity = identity(log_object.as_raw_fd())?;
+        let log_parent_identity = identity(log_parent.as_raw_fd())?;
+        if named_identity(log_parent.as_fd(), DSERVER_LOG_NAME)? != Some(log_identity) {
+            return Err(CohortError::Identity("worker log"));
         }
-        for owner in self.endpoint_owners.values() {
-            fds.push(owner._process.as_raw_fd());
-        }
-        if let Some(log) = &self.log {
-            fds.extend([log.parent.as_raw_fd(), log.object.as_raw_fd()]);
-        }
-        fds
+        let mut endpoints = BTreeMap::new();
+        endpoints.insert(EndpointKey::Static(CohortEndpoint::DarlingServer), dserver);
+        endpoints.insert(EndpointKey::Static(CohortEndpoint::Control), control);
+        Ok((
+            Self {
+                prefix,
+                prefix_identity,
+                lock,
+                lock_identity,
+                prefix_state: RetainedState {
+                    object: state_object,
+                    identity: state_identity,
+                    content: state_content,
+                    name: state_name,
+                    generation,
+                },
+                init_pid: Some(RetainedFile {
+                    object: init_object,
+                    identity: init_identity,
+                }),
+                endpoints,
+                endpoint_owners: BTreeMap::new(),
+                log: Some(PublishedLog {
+                    parent: log_parent,
+                    parent_identity: log_parent_identity,
+                    object: log_object,
+                    identity: log_identity,
+                    name: DSERVER_LOG_NAME.to_vec(),
+                }),
+                session_root_pid,
+                cleanup_on_drop: true,
+            },
+            listener,
+            child_control,
+        ))
     }
 
     fn publish_log(&mut self) -> Result<OwnedFd, CohortError> {
@@ -2115,9 +2251,86 @@ pub struct CohortBootstrap {
     pub nonce_hex: [u8; NONCE_HEX_BYTES],
 }
 
+#[repr(C)]
+#[derive(Clone, Copy)]
+#[cfg_attr(test, allow(dead_code))]
+struct ControllerWorkerBootstrap {
+    version: u32,
+    descriptor_count: u32,
+    parent_pid: libc::pid_t,
+    session_root_pid: libc::pid_t,
+    nonce: [u8; NONCE_BYTES],
+}
+
 struct ProcessWorker {
     pid: libc::pid_t,
     pidfd: OwnedFd,
+}
+
+/// Entry point for the separately installed controller worker binary.
+/// Authority arrives only through the fixed inherited bootstrap socket and
+/// SCM_RIGHTS; argv and environment carry no authority.
+#[cfg(not(test))]
+pub fn controller_worker_main() -> i32 {
+    if std::env::vars_os().next().is_some() {
+        return 1;
+    }
+    if cohort_ffi::worker_setsid().is_err() {
+        return 1;
+    }
+    let bootstrap = match crate::inherited_fd::duplicate_cloexec(3, 5) {
+        Ok(fd) => fd,
+        Err(_) => return 1,
+    };
+    cohort_ffi::close_worker_trampoline_descriptors();
+    let credentials = match cohort_ffi::socket_peer_credentials(bootstrap.as_raw_fd()) {
+        Ok(value) => value,
+        Err(_) => return 1,
+    };
+    let parent_watch = match cohort_ffi::peer_pidfd_from_socket(bootstrap.as_raw_fd()) {
+        Ok(fd) => fd,
+        Err(_) => return 1,
+    };
+    let (envelope, fds) = match cohort_ffi::receive_worker_bootstrap(bootstrap.as_raw_fd()) {
+        Ok(value) => value,
+        Err(_) => return 1,
+    };
+    if envelope.version != CONTROLLER_WORKER_PROTOCOL
+        || envelope.descriptor_count as usize != CONTROLLER_WORKER_FD_COUNT
+        || envelope.parent_pid <= 0
+        || envelope.parent_pid != credentials.pid
+        || envelope.session_root_pid <= 0
+    {
+        return 1;
+    }
+    let (mut authority, listener, child_control) =
+        match SessionAuthority::from_worker_fds(fds, envelope.session_root_pid) {
+            Ok(value) => value,
+            Err(_) => return 1,
+        };
+    if cohort_ffi::send_worker_ready(bootstrap.as_raw_fd()).is_err() {
+        authority.disarm_drop_cleanup();
+        return 1;
+    }
+    let (mut authority, loop_result, forensic_preserve) = server_loop(
+        authority,
+        listener,
+        child_control,
+        Some(parent_watch),
+        envelope.nonce,
+    );
+    let cleanup_result = if forensic_preserve {
+        authority.disarm_drop_cleanup();
+        Ok(())
+    } else {
+        authority.cleanup_all()
+    };
+    i32::from(loop_result.is_err() || cleanup_result.is_err())
+}
+
+#[cfg(test)]
+pub fn controller_worker_main() -> i32 {
+    1
 }
 
 fn pidfd_open(pid: libc::pid_t) -> Result<OwnedFd, CohortError> {
@@ -2152,7 +2365,9 @@ fn abandon_process_worker(
     }
     let pid =
         rustix::process::Pid::from_raw(worker.pid).ok_or(CohortError::Protocol("worker pid"))?;
-    if let Err(error) = rustix::process::kill_process(pid, rustix::process::Signal::KILL) {
+    if let Err(error) =
+        rustix::process::pidfd_send_signal(&worker.pidfd, rustix::process::Signal::KILL)
+    {
         if error != rustix::io::Errno::SRCH {
             return Err(CohortError::Io(
                 "kill(abandon controller)",
@@ -2192,66 +2407,6 @@ fn abandon_process_worker(
     }
 }
 
-#[cfg(not(test))]
-fn close_unowned_child_fds(allowed: &[RawFd]) -> Result<(), CohortError> {
-    let directory_fd = rustix::fs::open(
-        "/proc/self/fd",
-        rustix::fs::OFlags::RDONLY | rustix::fs::OFlags::DIRECTORY | rustix::fs::OFlags::CLOEXEC,
-        rustix::fs::Mode::empty(),
-    )
-    .map_err(|error| {
-        CohortError::Io(
-            "open(controller fds)",
-            io::Error::from_raw_os_error(error.raw_os_error()),
-        )
-    })?;
-    let mut directory = rustix::fs::Dir::new(directory_fd).map_err(|error| {
-        CohortError::Io(
-            "opendir(controller fds)",
-            io::Error::from_raw_os_error(error.raw_os_error()),
-        )
-    })?;
-    let stream_fd = directory
-        .fd()
-        .map_err(|error| {
-            CohortError::Io(
-                "dirfd(controller fds)",
-                io::Error::from_raw_os_error(error.raw_os_error()),
-            )
-        })?
-        .as_raw_fd();
-    let mut close_list = [0; 4096];
-    let mut count = 0usize;
-    for entry in &mut directory {
-        let entry = entry.map_err(|error| {
-            CohortError::Io(
-                "readdir(controller fds)",
-                io::Error::from_raw_os_error(error.raw_os_error()),
-            )
-        })?;
-        let Some(fd) = std::str::from_utf8(entry.file_name().to_bytes())
-            .ok()
-            .and_then(|value| value.parse::<RawFd>().ok())
-        else {
-            continue;
-        };
-        if fd <= 2 || fd == stream_fd || allowed.contains(&fd) {
-            continue;
-        }
-        if count == close_list.len() {
-            return Err(CohortError::Protocol("inherited fd budget"));
-        }
-        close_list[count] = fd;
-        count += 1;
-    }
-    drop(directory);
-    for fd in &close_list[..count] {
-        cohort_ffi::close_unowned_descriptor(*fd);
-    }
-    Ok(())
-}
-
-#[cfg(not(test))]
 fn wait_worker(worker: ProcessWorker) -> Result<(), CohortError> {
     let forced = wait_for_io_timeout(
         worker.pidfd.as_raw_fd(),
@@ -2262,7 +2417,7 @@ fn wait_worker(worker: ProcessWorker) -> Result<(), CohortError> {
     let pid =
         rustix::process::Pid::from_raw(worker.pid).ok_or(CohortError::Protocol("worker pid"))?;
     if forced {
-        let _ = rustix::process::kill_process(pid, rustix::process::Signal::KILL);
+        let _ = rustix::process::pidfd_send_signal(&worker.pidfd, rustix::process::Signal::KILL);
     }
     loop {
         match rustix::process::waitpid(Some(pid), rustix::process::WaitOptions::empty()) {
@@ -2566,14 +2721,28 @@ impl CohortController {
         let authority = self.guest_namespace.as_ref().ok_or(CohortError::Protocol(
             "guest namespace authority unavailable",
         ))?;
-        let binding = RuntimeLowerBinding::acquire(
-            authority.prefix_fd(),
-            identity(authority.prefix_fd())?,
-            self.deployment_prefix.as_raw_fd(),
-            identity(self.deployment_prefix.as_raw_fd())?,
-            self.prefix_generation,
-        )
-        .map_err(|_| CohortError::Identity("runtime lower deployment binding"))?;
+        let mut binding_slot = self
+            .runtime_lower_binding
+            .lock()
+            .map_err(|_| CohortError::Protocol("runtime lower binding mutex poisoned"))?;
+        if binding_slot.is_none() {
+            *binding_slot = Some(
+                RuntimeLowerBinding::acquire(
+                    authority.prefix_fd(),
+                    identity(authority.prefix_fd())?,
+                    self.deployment_prefix.as_raw_fd(),
+                    identity(self.deployment_prefix.as_raw_fd())?,
+                    self.prefix_generation,
+                )
+                .map_err(|_| CohortError::Identity("runtime lower deployment binding"))?,
+            );
+        }
+        let binding = binding_slot
+            .as_ref()
+            .ok_or(CohortError::Protocol("runtime lower binding unavailable"))?;
+        binding
+            .revalidate(authority.prefix_fd(), self.deployment_prefix.as_raw_fd())
+            .map_err(|_| CohortError::Identity("runtime lower deployment binding"))?;
         let service = GuestNamespaceTransactionService::from_retained_roots(
             authority.prefix_fd(),
             binding.lower_fd(),
@@ -2590,16 +2759,6 @@ impl CohortController {
                 "guest transaction authority already configured",
             ));
         }
-        let mut binding_slot = self
-            .runtime_lower_binding
-            .lock()
-            .map_err(|_| CohortError::Protocol("runtime lower binding mutex poisoned"))?;
-        if binding_slot.is_some() {
-            return Err(CohortError::Protocol(
-                "runtime lower binding already configured",
-            ));
-        }
-        *binding_slot = Some(binding);
         *slot = Some(service);
         Ok(())
     }
@@ -2749,6 +2908,19 @@ impl CohortController {
         );
         let mut transaction_sidecar =
             acquire_transaction_sidecar(authority.prefix.as_raw_fd(), authority.prefix_identity)?;
+        #[cfg(not(test))]
+        let initial_binding = Some(
+            RuntimeLowerBinding::acquire(
+                authority.prefix.as_raw_fd(),
+                authority.prefix_identity,
+                deployment_prefix.as_raw_fd(),
+                identity(deployment_prefix.as_raw_fd())?,
+                prefix_generation,
+            )
+            .map_err(|_| CohortError::Identity("runtime lower deployment binding"))?,
+        );
+        #[cfg(test)]
+        let initial_binding: Option<RuntimeLowerBinding> = None;
         let name = CONTROL_GUEST_PATH.to_vec();
         let listener = authority.publish(CohortEndpoint::Control)?;
         let (shutdown, child_control) = rustix::net::socketpair(
@@ -2779,7 +2951,7 @@ impl CohortController {
                 nonce,
                 guest_namespace,
                 guest_transactions: Mutex::new(None),
-                runtime_lower_binding: Mutex::new(None),
+                runtime_lower_binding: Mutex::new(initial_binding),
                 preinit_var_run_recovery: Mutex::new(false),
                 preinit_var_parent: None,
                 prefix_state_v3,
@@ -2800,12 +2972,18 @@ impl CohortController {
 
         #[cfg(not(test))]
         let controller = {
+            let worker_binding = initial_binding
+                .as_ref()
+                .ok_or(CohortError::Protocol("controller worker binding"))?;
+            worker_binding
+                .revalidate(authority.prefix.as_raw_fd(), deployment_prefix.as_raw_fd())
+                .map_err(|_| CohortError::Identity("controller worker replacement"))?;
+            let worker_fd = worker_binding.worker_fd();
             let process = cohort_ffi::spawn_controller_process(
                 authority,
                 listener,
                 child_control,
-                shutdown.as_raw_fd(),
-                darlingserver.as_raw_fd(),
+                worker_fd,
                 nonce,
             )?;
             transaction_sidecar.arm();
@@ -2817,7 +2995,7 @@ impl CohortController {
                 nonce,
                 guest_namespace,
                 guest_transactions: Mutex::new(None),
-                runtime_lower_binding: Mutex::new(None),
+                runtime_lower_binding: Mutex::new(initial_binding),
                 preinit_var_run_recovery: Mutex::new(false),
                 preinit_var_parent: None,
                 prefix_state_v3,

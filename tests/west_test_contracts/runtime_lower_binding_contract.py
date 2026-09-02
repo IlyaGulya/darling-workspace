@@ -31,6 +31,9 @@ def prefix_fixture(root: Path) -> tuple[Path, Path]:
     controller.parent.mkdir(parents=True)
     controller.write_bytes(b"exact deployed darlingserver\n")
     controller.chmod(0o755)
+    worker = prefix / "libexec/darling-lifecycle-controller-worker"
+    worker.write_bytes(b"exact deployed controller worker\n")
+    worker.chmod(0o755)
     (prefix / ".lifecycle.lock").write_bytes(b"")
     (prefix / ".lifecycle.lock").chmod(0o600)
     return prefix, lower
@@ -48,12 +51,15 @@ def split_prefix_fixture(root: Path) -> tuple[Path, Path]:
     controller.parent.mkdir(parents=True)
     controller.write_bytes(b"exact deployed darlingserver\n")
     controller.chmod(0o755)
+    worker = deployment / "libexec/darling-lifecycle-controller-worker"
+    worker.write_bytes(b"exact deployed controller worker\n")
+    worker.chmod(0o755)
     return session, deployment
 
 
 def parse_binding(path: Path) -> dict[str, str]:
     lines = path.read_text(encoding="utf-8").splitlines()
-    assert lines[0] == "DARLING_RUNTIME_LOWER_BINDING_V2"
+    assert lines[0] == "DARLING_RUNTIME_LOWER_BINDING_V3"
     return dict(line.split("=", 1) for line in lines[1:])
 
 
@@ -65,14 +71,18 @@ def run_umask_case(value: int) -> None:
         prefix.mkdir()
         lower_source = root / "dyld"
         controller_source = root / "darlingserver"
+        worker_source = root / "darling-lifecycle-controller-worker"
         lower_source.write_bytes(b"exact deployed dyld\n")
         controller_source.write_bytes(b"exact deployed darlingserver\n")
         controller_source.chmod(0o755)
+        worker_source.write_bytes(b"exact deployed controller worker\n")
+        worker_source.chmod(0o755)
         transaction = DeploymentTransaction(
             root / "manifest.json", prefix, normalize_modes=True
         )
         transaction.replace(lower_source, prefix / "libexec/darling/usr/lib/dyld")
         transaction.replace(controller_source, prefix / "bin/darlingserver")
+        transaction.replace(worker_source, prefix / "libexec/darling-lifecycle-controller-worker")
         lower = prefix / "libexec/darling"
         binding = transaction.bind_runtime_lower_root(prefix_generation=41)
         fields = parse_binding(binding)
@@ -83,6 +93,7 @@ def run_umask_case(value: int) -> None:
         assert int(fields["lower_mode"]) == 0o755
         assert fields["destination"] == "libexec/darling"
         assert fields["controller_destination"] == "bin/darlingserver"
+        assert fields["worker_destination"] == "libexec/darling-lifecycle-controller-worker"
         assert binding.stat().st_mode & 0o777 == 0o600
         manifest = json.loads((root / "manifest.json").read_text())
         assert manifest["version"] == 2
@@ -94,6 +105,7 @@ def run_umask_case(value: int) -> None:
                 "lower_device", "lower_inode", "lower_mode", "lower_uid", "lower_gid",
                 "controller_device", "controller_inode", "controller_mode",
                 "controller_uid", "controller_gid",
+                "worker_device", "worker_inode", "worker_mode", "worker_uid", "worker_gid",
             } else value
             for key, value in fields.items()
             if key != "transaction_id"

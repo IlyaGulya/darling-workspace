@@ -9,12 +9,13 @@ use std::mem::size_of;
 use std::os::fd::{AsRawFd, FromRawFd, OwnedFd, RawFd};
 
 pub const NAME: &[u8] = b".darling-runtime-lower-binding-v1";
-const HEADER: &str = "DARLING_RUNTIME_LOWER_BINDING_V2";
+const HEADER: &str = "DARLING_RUNTIME_LOWER_BINDING_V3";
 const MAX_BYTES: usize = 2048;
 const LOWER_DESTINATION: &str = "libexec/darling";
 const CONTROLLER_DESTINATION: &str = "bin/darlingserver";
-const PROVENANCE: &str = "product-deployment-transaction-v2";
-const PREFIX_STATE_NAMES: [&[u8]; 2] = [b".darling-prefix-state-v3", b".darling-prefix-state-v2"];
+const WORKER_DESTINATION: &str = "libexec/darling-lifecycle-controller-worker";
+const PROVENANCE: &str = "product-deployment-transaction-v3";
+const PREFIX_STATE_NAME: &[u8] = b".darling-prefix-state-v3";
 
 #[derive(Debug)]
 pub enum BindingError {
@@ -109,7 +110,7 @@ fn open_prefix_state(
     expected_generation: u64,
     prefix_identity: FileIdentity,
 ) -> Result<(OwnedFd, Vec<u8>, FileIdentity, Vec<u8>), BindingError> {
-    for name in PREFIX_STATE_NAMES {
+    for name in [PREFIX_STATE_NAME] {
         let name_c = component(name)?;
         let fd = unsafe {
             libc::openat(
@@ -232,6 +233,8 @@ pub struct RuntimeLowerBinding {
     lower: OwnedFd,
     lower_identity: FileIdentity,
     controller_identity: FileIdentity,
+    worker: OwnedFd,
+    worker_identity: FileIdentity,
     transaction_id: [u8; 16],
     prefix_generation: u64,
 }
@@ -287,12 +290,14 @@ impl RuntimeLowerBinding {
                 return Err(BindingError::Malformed("duplicate field"));
             }
         }
-        if fields.len() != 22
-            || parse_number(&fields, "schema_version")? != 2
+        if fields.len() != 29
+            || parse_number(&fields, "schema_version")? != 3
             || fields.get("destination").copied() != Some(LOWER_DESTINATION)
             || fields.get("lower_type").copied() != Some("directory")
             || fields.get("controller_destination").copied() != Some(CONTROLLER_DESTINATION)
             || fields.get("controller_type").copied() != Some("regular")
+            || fields.get("worker_destination").copied() != Some(WORKER_DESTINATION)
+            || fields.get("worker_type").copied() != Some("regular")
             || fields.get("provenance").copied() != Some(PROVENANCE)
             || parse_number(&fields, "prefix_generation")? != prefix_generation
             || parse_number(&fields, "session_prefix_device")? != session_prefix_identity.device
@@ -339,6 +344,15 @@ impl RuntimeLowerBinding {
         if !metadata_matches(identity(executable.as_raw_fd())?, controller_identity) {
             return Err(BindingError::Identity("running controller"));
         }
+        let worker = open_relative(deployment_prefix, WORKER_DESTINATION, false)?;
+        let worker_identity = identity(worker.as_raw_fd())?;
+        let expected_worker = expected_identity(&fields, "worker", libc::S_IFREG)?;
+        if !metadata_matches(worker_identity, expected_worker)
+            || worker_identity.mode & 0o111 == 0
+            || worker_identity.mode & 0o022 != 0
+        {
+            return Err(BindingError::Identity("controller worker"));
+        }
         Ok(Self {
             binding,
             binding_identity,
@@ -350,6 +364,8 @@ impl RuntimeLowerBinding {
             lower,
             lower_identity,
             controller_identity,
+            worker,
+            worker_identity,
             transaction_id,
             prefix_generation,
         })
@@ -357,6 +373,10 @@ impl RuntimeLowerBinding {
 
     pub fn lower_fd(&self) -> RawFd {
         self.lower.as_raw_fd()
+    }
+
+    pub fn worker_fd(&self) -> RawFd {
+        self.worker.as_raw_fd()
     }
 
     pub fn revalidate(
@@ -385,6 +405,12 @@ impl RuntimeLowerBinding {
         let controller = open_relative(deployment_prefix, CONTROLLER_DESTINATION, false)?;
         if !metadata_matches(identity(controller.as_raw_fd())?, self.controller_identity) {
             return Err(BindingError::Identity("controller replacement"));
+        }
+        let worker = open_relative(deployment_prefix, WORKER_DESTINATION, false)?;
+        if !metadata_matches(identity(worker.as_raw_fd())?, self.worker_identity)
+            || identity(self.worker.as_raw_fd())? != self.worker_identity
+        {
+            return Err(BindingError::Identity("worker replacement"));
         }
         if self.transaction_id == [0; 16] {
             return Err(BindingError::Identity("transaction identity"));
@@ -417,6 +443,7 @@ mod tests {
             fs::create_dir(&root).unwrap();
             fs::create_dir_all(root.join("libexec/darling")).unwrap();
             fs::create_dir_all(root.join("bin")).unwrap();
+            fs::create_dir_all(root.join("libexec")).unwrap();
             fs::set_permissions(
                 root.join("libexec/darling"),
                 fs::Permissions::from_mode(0o755),
@@ -427,23 +454,37 @@ mod tests {
                 root.join("bin/darlingserver"),
             )
             .unwrap();
+            fs::copy(
+                std::env::current_exe().unwrap(),
+                root.join(WORKER_DESTINATION),
+            )
+            .unwrap();
+            fs::set_permissions(
+                root.join(WORKER_DESTINATION),
+                fs::Permissions::from_mode(0o755),
+            )
+            .unwrap();
             let prefix = fs::metadata(&root).unwrap();
             let state = format!(
-                "DARLING_PREFIX_STATE_V2\n\
-                 schema_version=2\n\
+                "DARLING_PREFIX_STATE_V3\n\
+                 schema_version=3\n\
                  runtime_mode=rootless-eunion\n\
                  generation=7\n\
                  prefix_device={}\n\
                  prefix_inode={}\n\
+                 sidecar_device={}\n\
+                 sidecar_inode={}\n\
                  owner_uid={}\n\
                  owner_gid={}\n\
-                 provenance=darling-runtime-prefix-lifecycle-v2\n",
+                 provenance=darling-runtime-prefix-lifecycle-v3\n",
+                prefix.dev(),
+                prefix.ino(),
                 prefix.dev(),
                 prefix.ino(),
                 prefix.uid(),
                 prefix.gid(),
             );
-            let state_path = root.join(".darling-prefix-state-v2");
+            let state_path = root.join(".darling-prefix-state-v3");
             fs::write(&state_path, state).unwrap();
             fs::set_permissions(&state_path, fs::Permissions::from_mode(0o600)).unwrap();
             let fixture = Self { root };
@@ -467,9 +508,10 @@ mod tests {
             let prefix = fs::metadata(&self.root).unwrap();
             let lower = fs::metadata(self.root.join("libexec/darling")).unwrap();
             let controller = fs::metadata(self.root.join("bin/darlingserver")).unwrap();
+            let worker = fs::metadata(self.root.join(WORKER_DESTINATION)).unwrap();
             format!(
                 "{HEADER}\n\
-                 schema_version=2\n\
+                 schema_version=3\n\
                  transaction_id=00112233445566778899aabbccddeeff\n\
                  prefix_generation={generation}\n\
                  session_prefix_device={}\n\
@@ -490,6 +532,13 @@ mod tests {
                  controller_mode={}\n\
                  controller_uid={}\n\
                  controller_gid={}\n\
+                 worker_destination={WORKER_DESTINATION}\n\
+                 worker_device={}\n\
+                 worker_inode={}\n\
+                 worker_type=regular\n\
+                 worker_mode={}\n\
+                 worker_uid={}\n\
+                 worker_gid={}\n\
                  provenance={PROVENANCE}\n",
                 prefix.dev(),
                 prefix.ino(),
@@ -505,6 +554,11 @@ mod tests {
                 controller.mode() & 0o7777,
                 controller.uid(),
                 controller.gid(),
+                worker.dev(),
+                worker.ino(),
+                worker.mode() & 0o7777,
+                worker.uid(),
+                worker.gid(),
             )
         }
 
@@ -630,7 +684,7 @@ mod tests {
     fn prefix_generation_manifest_replacement_after_acquisition_is_rejected() {
         let fixture = Fixture::new();
         let binding = fixture.acquire(7).unwrap();
-        let state = fixture.root.join(".darling-prefix-state-v2");
+        let state = fixture.root.join(".darling-prefix-state-v3");
         let retained = fixture.root.join("prefix-state.retained");
         fs::rename(&state, &retained).unwrap();
         let replacement = fs::read_to_string(&retained)
@@ -657,5 +711,22 @@ mod tests {
         fs::remove_file(&controller).unwrap();
         fs::write(controller, b"replacement").unwrap();
         assert!(fixture.acquire(7).is_err());
+    }
+
+    #[test]
+    fn worker_replacement_after_acquisition_is_rejected() {
+        let fixture = Fixture::new();
+        let binding = fixture.acquire(7).unwrap();
+        let worker = fixture.root.join(WORKER_DESTINATION);
+        let retained = fixture.root.join("libexec/worker.retained");
+        fs::rename(&worker, &retained).unwrap();
+        fs::copy(&retained, &worker).unwrap();
+        fs::set_permissions(&worker, fs::Permissions::from_mode(0o755)).unwrap();
+
+        assert!(matches!(
+            binding.revalidate(fixture.prefix().as_raw_fd(), fixture.prefix().as_raw_fd()),
+            Err(BindingError::Identity("worker replacement"))
+        ));
+        assert_eq!(fs::read(&retained).unwrap(), fs::read(&worker).unwrap());
     }
 }
