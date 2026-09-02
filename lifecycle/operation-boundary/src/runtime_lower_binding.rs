@@ -1,12 +1,14 @@
 //! Authenticated, fd-relative binding for the deployed E-UNION lower root.
+#![deny(unsafe_code)]
 
+use crate::inherited_fd::duplicate_cloexec;
 use crate::FileIdentity;
-use libc::{self, c_int};
+use libc;
+use rustix::fs::{AtFlags, Mode, OFlags, ResolveFlags, SeekFrom};
 use std::collections::BTreeMap;
 use std::ffi::CString;
 use std::io;
-use std::mem::size_of;
-use std::os::fd::{AsRawFd, FromRawFd, OwnedFd, RawFd};
+use std::os::fd::{AsFd, AsRawFd, OwnedFd, RawFd};
 
 pub const NAME: &[u8] = b".darling-runtime-lower-binding-v1";
 const HEADER: &str = "DARLING_RUNTIME_LOWER_BINDING_V3";
@@ -40,10 +42,6 @@ impl std::fmt::Display for BindingError {
 
 impl std::error::Error for BindingError {}
 
-fn io(operation: &'static str) -> BindingError {
-    BindingError::Io(operation, io::Error::last_os_error())
-}
-
 fn component(value: &[u8]) -> Result<CString, BindingError> {
     if value.is_empty()
         || value == b"."
@@ -56,33 +54,45 @@ fn component(value: &[u8]) -> Result<CString, BindingError> {
     CString::new(value).map_err(|_| BindingError::Malformed("relative component"))
 }
 
-fn named_identity(parent: RawFd, name: &[u8]) -> Result<FileIdentity, BindingError> {
-    let name = component(name)?;
-    FileIdentity::from_at(parent, &name).map_err(|_| io("fstatat runtime binding"))
-}
-
-fn identity(fd: RawFd) -> Result<FileIdentity, BindingError> {
-    FileIdentity::from_fd(fd).map_err(|_| io("fstat runtime binding"))
-}
-
-fn read_bounded(fd: RawFd) -> Result<Vec<u8>, BindingError> {
-    if unsafe { libc::lseek(fd, 0, libc::SEEK_SET) } < 0 {
-        return Err(io("seek runtime binding"));
+fn from_stat(stat: rustix::fs::Stat) -> FileIdentity {
+    FileIdentity {
+        device: stat.st_dev,
+        inode: stat.st_ino,
+        mode: stat.st_mode,
+        nlink: stat.st_nlink,
+        uid: stat.st_uid,
+        gid: stat.st_gid,
     }
+}
+
+fn named_identity(parent: impl AsFd, name: &[u8]) -> Result<FileIdentity, BindingError> {
+    let name = component(name)?;
+    rustix::fs::statat(parent, name.as_c_str(), AtFlags::SYMLINK_NOFOLLOW)
+        .map(from_stat)
+        .map_err(|error| BindingError::Io("fstatat runtime binding", error.into()))
+}
+
+fn identity(fd: impl AsFd) -> Result<FileIdentity, BindingError> {
+    rustix::fs::fstat(fd)
+        .map(from_stat)
+        .map_err(|error| BindingError::Io("fstat runtime binding", error.into()))
+}
+
+fn read_bounded(fd: impl AsFd) -> Result<Vec<u8>, BindingError> {
+    let fd = fd.as_fd();
+    rustix::fs::seek(fd, SeekFrom::Start(0))
+        .map_err(|error| BindingError::Io("seek runtime binding", error.into()))?;
     let mut output = Vec::with_capacity(512);
     let mut buffer = [0u8; 256];
     loop {
-        let count = unsafe { libc::read(fd, buffer.as_mut_ptr().cast(), buffer.len()) };
-        if count < 0 {
-            if io::Error::last_os_error().raw_os_error() == Some(libc::EINTR) {
-                continue;
-            }
-            return Err(io("read runtime binding"));
-        }
+        let count = match rustix::io::read(fd, &mut buffer) {
+            Ok(count) => count,
+            Err(rustix::io::Errno::INTR) => continue,
+            Err(error) => return Err(BindingError::Io("read runtime binding", error.into())),
+        };
         if count == 0 {
             return Ok(output);
         }
-        let count = count as usize;
         if output.len() + count > MAX_BYTES {
             return Err(BindingError::Malformed("size budget"));
         }
@@ -106,33 +116,36 @@ fn prefix_generation(content: &[u8]) -> Result<u64, BindingError> {
 }
 
 fn open_prefix_state(
-    prefix: RawFd,
+    prefix: impl AsFd,
     expected_generation: u64,
     prefix_identity: FileIdentity,
 ) -> Result<(OwnedFd, Vec<u8>, FileIdentity, Vec<u8>), BindingError> {
     for name in [PREFIX_STATE_NAME] {
         let name_c = component(name)?;
-        let fd = unsafe {
-            libc::openat(
-                prefix,
-                name_c.as_ptr(),
-                libc::O_RDONLY | libc::O_NOFOLLOW | libc::O_CLOEXEC,
-            )
-        };
-        if fd < 0 {
-            if io::Error::last_os_error().raw_os_error() == Some(libc::ENOENT) {
+        let state = match rustix::fs::openat(
+            prefix.as_fd(),
+            name_c.as_c_str(),
+            OFlags::RDONLY | OFlags::NOFOLLOW | OFlags::CLOEXEC,
+            Mode::empty(),
+        ) {
+            Ok(state) => state,
+            Err(rustix::io::Errno::NOENT) => {
                 continue;
             }
-            return Err(io("open prefix state for runtime binding"));
-        }
-        let state = unsafe { OwnedFd::from_raw_fd(fd) };
-        let state_identity = identity(state.as_raw_fd())?;
-        let content = read_bounded(state.as_raw_fd())?;
+            Err(error) => {
+                return Err(BindingError::Io(
+                    "open prefix state for runtime binding",
+                    error.into(),
+                ));
+            }
+        };
+        let state_identity = identity(&state)?;
+        let content = read_bounded(&state)?;
         if state_identity.mode & libc::S_IFMT != libc::S_IFREG
             || state_identity.mode & 0o7777 != 0o600
             || state_identity.uid != prefix_identity.uid
             || state_identity.gid != prefix_identity.gid
-            || named_identity(prefix, name)? != state_identity
+            || named_identity(prefix.as_fd(), name)? != state_identity
             || prefix_generation(&content)? != expected_generation
         {
             return Err(BindingError::Identity("prefix state generation"));
@@ -142,14 +155,7 @@ fn open_prefix_state(
     Err(BindingError::Identity("missing prefix state"))
 }
 
-#[repr(C)]
-struct OpenHow {
-    flags: u64,
-    mode: u64,
-    resolve: u64,
-}
-
-fn open_relative(prefix: RawFd, value: &str, directory: bool) -> Result<OwnedFd, BindingError> {
+fn open_relative(prefix: impl AsFd, value: &str, directory: bool) -> Result<OwnedFd, BindingError> {
     if value.starts_with('/')
         || value
             .split('/')
@@ -157,29 +163,18 @@ fn open_relative(prefix: RawFd, value: &str, directory: bool) -> Result<OwnedFd,
     {
         return Err(BindingError::Malformed("destination"));
     }
-    let name = CString::new(value).map_err(|_| BindingError::Malformed("destination"))?;
-    let how = OpenHow {
-        flags: (libc::O_PATH
-            | libc::O_NOFOLLOW
-            | libc::O_CLOEXEC
-            | if directory { libc::O_DIRECTORY } else { 0 }) as u64,
-        mode: 0,
-        // RESOLVE_NO_MAGICLINKS | RESOLVE_NO_SYMLINKS | RESOLVE_BENEATH.
-        resolve: 0x02 | 0x04 | 0x08,
-    };
-    let fd = unsafe {
-        libc::syscall(
-            libc::SYS_openat2,
-            prefix,
-            name.as_ptr(),
-            &how,
-            size_of::<OpenHow>(),
-        ) as c_int
-    };
-    if fd < 0 {
-        return Err(io("openat2 runtime binding destination"));
+    let mut flags = OFlags::PATH | OFlags::NOFOLLOW | OFlags::CLOEXEC;
+    if directory {
+        flags |= OFlags::DIRECTORY;
     }
-    Ok(unsafe { OwnedFd::from_raw_fd(fd) })
+    rustix::fs::openat2(
+        prefix,
+        value,
+        flags,
+        Mode::empty(),
+        ResolveFlags::NO_MAGICLINKS | ResolveFlags::NO_SYMLINKS | ResolveFlags::BENEATH,
+    )
+    .map_err(|error| BindingError::Io("openat2 runtime binding destination", error.into()))
 }
 
 fn parse_number(fields: &BTreeMap<&str, &str>, key: &'static str) -> Result<u64, BindingError> {
@@ -247,31 +242,31 @@ impl RuntimeLowerBinding {
         deployment_prefix_identity: FileIdentity,
         prefix_generation: u64,
     ) -> Result<Self, BindingError> {
+        let session_prefix = duplicate_cloexec(session_prefix, 3)
+            .map_err(|error| BindingError::Io("retain session prefix", error))?;
+        let deployment_prefix = duplicate_cloexec(deployment_prefix, 3)
+            .map_err(|error| BindingError::Io("retain deployment prefix", error))?;
         let binding_name = component(NAME)?;
-        let binding_fd = unsafe {
-            libc::openat(
-                session_prefix,
-                binding_name.as_ptr(),
-                libc::O_RDONLY | libc::O_NOFOLLOW | libc::O_CLOEXEC,
-            )
-        };
-        if binding_fd < 0 {
-            return Err(io("open runtime lower binding"));
-        }
-        let binding = unsafe { OwnedFd::from_raw_fd(binding_fd) };
-        let binding_identity = identity(binding.as_raw_fd())?;
+        let binding = rustix::fs::openat(
+            &session_prefix,
+            binding_name.as_c_str(),
+            OFlags::RDONLY | OFlags::NOFOLLOW | OFlags::CLOEXEC,
+            Mode::empty(),
+        )
+        .map_err(|error| BindingError::Io("open runtime lower binding", error.into()))?;
+        let binding_identity = identity(&binding)?;
         if binding_identity.mode & libc::S_IFMT != libc::S_IFREG
             || binding_identity.mode & 0o7777 != 0o600
             || binding_identity.nlink != 1
             || binding_identity.uid != session_prefix_identity.uid
             || binding_identity.gid != session_prefix_identity.gid
-            || named_identity(session_prefix, NAME)? != binding_identity
+            || named_identity(&session_prefix, NAME)? != binding_identity
         {
             return Err(BindingError::Identity("binding object"));
         }
-        let binding_content = read_bounded(binding.as_raw_fd())?;
+        let binding_content = read_bounded(&binding)?;
         let (prefix_state, prefix_state_name, prefix_state_identity, prefix_state_content) =
-            open_prefix_state(session_prefix, prefix_generation, session_prefix_identity)?;
+            open_prefix_state(&session_prefix, prefix_generation, session_prefix_identity)?;
         let text = std::str::from_utf8(&binding_content)
             .map_err(|_| BindingError::Malformed("encoding"))?;
         let body = text
@@ -323,29 +318,29 @@ impl RuntimeLowerBinding {
         if transaction_id == [0; 16] {
             return Err(BindingError::Malformed("zero transaction id"));
         }
-        let lower = open_relative(deployment_prefix, LOWER_DESTINATION, true)?;
-        let lower_identity = identity(lower.as_raw_fd())?;
+        let lower = open_relative(&deployment_prefix, LOWER_DESTINATION, true)?;
+        let lower_identity = identity(&lower)?;
         let expected_lower = expected_identity(&fields, "lower", libc::S_IFDIR)?;
         if !metadata_matches(lower_identity, expected_lower) {
             return Err(BindingError::Identity("lower root"));
         }
-        let controller = open_relative(deployment_prefix, CONTROLLER_DESTINATION, false)?;
-        let controller_identity = identity(controller.as_raw_fd())?;
+        let controller = open_relative(&deployment_prefix, CONTROLLER_DESTINATION, false)?;
+        let controller_identity = identity(&controller)?;
         let expected_controller = expected_identity(&fields, "controller", libc::S_IFREG)?;
         if !metadata_matches(controller_identity, expected_controller) {
             return Err(BindingError::Identity("deployed controller"));
         }
-        let executable_fd =
-            unsafe { libc::open(c"/proc/self/exe".as_ptr(), libc::O_PATH | libc::O_CLOEXEC) };
-        if executable_fd < 0 {
-            return Err(io("open controller executable"));
-        }
-        let executable = unsafe { OwnedFd::from_raw_fd(executable_fd) };
-        if !metadata_matches(identity(executable.as_raw_fd())?, controller_identity) {
+        let executable = rustix::fs::open(
+            "/proc/self/exe",
+            OFlags::PATH | OFlags::CLOEXEC,
+            Mode::empty(),
+        )
+        .map_err(|error| BindingError::Io("open controller executable", error.into()))?;
+        if !metadata_matches(identity(&executable)?, controller_identity) {
             return Err(BindingError::Identity("running controller"));
         }
-        let worker = open_relative(deployment_prefix, WORKER_DESTINATION, false)?;
-        let worker_identity = identity(worker.as_raw_fd())?;
+        let worker = open_relative(&deployment_prefix, WORKER_DESTINATION, false)?;
+        let worker_identity = identity(&worker)?;
         let expected_worker = expected_identity(&fields, "worker", libc::S_IFREG)?;
         if !metadata_matches(worker_identity, expected_worker)
             || worker_identity.mode & 0o111 == 0
@@ -384,31 +379,35 @@ impl RuntimeLowerBinding {
         session_prefix: RawFd,
         deployment_prefix: RawFd,
     ) -> Result<(), BindingError> {
-        if identity(self.binding.as_raw_fd())? != self.binding_identity
-            || named_identity(session_prefix, NAME)? != self.binding_identity
-            || read_bounded(self.binding.as_raw_fd())? != self.binding_content
+        let session_prefix = duplicate_cloexec(session_prefix, 3)
+            .map_err(|error| BindingError::Io("retain session prefix", error))?;
+        let deployment_prefix = duplicate_cloexec(deployment_prefix, 3)
+            .map_err(|error| BindingError::Io("retain deployment prefix", error))?;
+        if identity(&self.binding)? != self.binding_identity
+            || named_identity(&session_prefix, NAME)? != self.binding_identity
+            || read_bounded(&self.binding)? != self.binding_content
         {
             return Err(BindingError::Identity("binding replacement"));
         }
-        if identity(self.prefix_state.as_raw_fd())? != self.prefix_state_identity
-            || named_identity(session_prefix, &self.prefix_state_name)?
+        if identity(&self.prefix_state)? != self.prefix_state_identity
+            || named_identity(&session_prefix, &self.prefix_state_name)?
                 != self.prefix_state_identity
-            || read_bounded(self.prefix_state.as_raw_fd())? != self.prefix_state_content
+            || read_bounded(&self.prefix_state)? != self.prefix_state_content
             || prefix_generation(&self.prefix_state_content)? != self.prefix_generation
         {
             return Err(BindingError::Identity("prefix state replacement"));
         }
-        let lower = open_relative(deployment_prefix, LOWER_DESTINATION, true)?;
-        if !metadata_matches(identity(lower.as_raw_fd())?, self.lower_identity) {
+        let lower = open_relative(&deployment_prefix, LOWER_DESTINATION, true)?;
+        if !metadata_matches(identity(&lower)?, self.lower_identity) {
             return Err(BindingError::Identity("lower replacement"));
         }
-        let controller = open_relative(deployment_prefix, CONTROLLER_DESTINATION, false)?;
-        if !metadata_matches(identity(controller.as_raw_fd())?, self.controller_identity) {
+        let controller = open_relative(&deployment_prefix, CONTROLLER_DESTINATION, false)?;
+        if !metadata_matches(identity(&controller)?, self.controller_identity) {
             return Err(BindingError::Identity("controller replacement"));
         }
-        let worker = open_relative(deployment_prefix, WORKER_DESTINATION, false)?;
-        if !metadata_matches(identity(worker.as_raw_fd())?, self.worker_identity)
-            || identity(self.worker.as_raw_fd())? != self.worker_identity
+        let worker = open_relative(&deployment_prefix, WORKER_DESTINATION, false)?;
+        if !metadata_matches(identity(&worker)?, self.worker_identity)
+            || identity(&self.worker)? != self.worker_identity
         {
             return Err(BindingError::Identity("worker replacement"));
         }
@@ -493,15 +492,12 @@ mod tests {
         }
 
         fn prefix(&self) -> OwnedFd {
-            let path = CString::new(self.root.as_os_str().as_encoded_bytes()).unwrap();
-            let fd = unsafe {
-                libc::open(
-                    path.as_ptr(),
-                    libc::O_PATH | libc::O_DIRECTORY | libc::O_NOFOLLOW | libc::O_CLOEXEC,
-                )
-            };
-            assert!(fd >= 0);
-            unsafe { OwnedFd::from_raw_fd(fd) }
+            rustix::fs::open(
+                &self.root,
+                OFlags::PATH | OFlags::DIRECTORY | OFlags::NOFOLLOW | OFlags::CLOEXEC,
+                Mode::empty(),
+            )
+            .unwrap()
         }
 
         fn content(&self, generation: u64) -> String {
@@ -572,9 +568,9 @@ mod tests {
             let prefix = self.prefix();
             RuntimeLowerBinding::acquire(
                 prefix.as_raw_fd(),
-                identity(prefix.as_raw_fd()).unwrap(),
+                identity(&prefix).unwrap(),
                 prefix.as_raw_fd(),
-                identity(prefix.as_raw_fd()).unwrap(),
+                identity(&prefix).unwrap(),
                 generation,
             )
         }
@@ -711,6 +707,114 @@ mod tests {
         fs::remove_file(&controller).unwrap();
         fs::write(controller, b"replacement").unwrap();
         assert!(fixture.acquire(7).is_err());
+    }
+
+    #[test]
+    fn traversal_magiclink_and_hostile_binding_metadata_are_rejected() {
+        let fixture = Fixture::new();
+        let prefix = fixture.prefix();
+        for destination in ["../libexec/darling", "libexec//darling", "/libexec/darling"] {
+            assert!(matches!(
+                open_relative(&prefix, destination, true),
+                Err(BindingError::Malformed("destination"))
+            ));
+        }
+        let proc_root = rustix::fs::open(
+            "/proc",
+            OFlags::PATH | OFlags::DIRECTORY | OFlags::CLOEXEC,
+            Mode::empty(),
+        )
+        .unwrap();
+        assert!(
+            open_relative(&proc_root, "self/exe", false).is_err(),
+            "procfs magiclink was accepted"
+        );
+
+        let lower = fixture.root.join("libexec/darling");
+        let retained = fixture.root.join("libexec/retained");
+        fs::rename(&lower, &retained).unwrap();
+        std::os::unix::fs::symlink("/proc/self/fd/0", &lower).unwrap();
+        assert!(fixture.acquire(7).is_err(), "proc magiclink was accepted");
+        fs::remove_file(&lower).unwrap();
+        fs::rename(&retained, &lower).unwrap();
+
+        let binding_path = fixture.root.join(std::str::from_utf8(NAME).unwrap());
+        fs::set_permissions(&binding_path, fs::Permissions::from_mode(0o644)).unwrap();
+        assert!(fixture.acquire(7).is_err(), "hostile mode was accepted");
+        fs::set_permissions(&binding_path, fs::Permissions::from_mode(0o600)).unwrap();
+        fs::hard_link(&binding_path, fixture.root.join("binding-hardlink")).unwrap();
+        assert!(
+            fixture.acquire(7).is_err(),
+            "hardlinked binding was accepted"
+        );
+    }
+
+    #[test]
+    fn retained_descriptors_are_cloexec_and_survive_descriptor_reuse() {
+        let fixture = Fixture::new();
+        let binding = fixture.acquire(7).unwrap();
+        for descriptor in [
+            binding.binding.as_fd(),
+            binding.prefix_state.as_fd(),
+            binding.lower.as_fd(),
+            binding.worker.as_fd(),
+        ] {
+            let flags = rustix::io::fcntl_getfd(descriptor).unwrap();
+            assert!(flags.contains(rustix::io::FdFlags::CLOEXEC));
+        }
+
+        let mut transient = fixture.prefix();
+        let reused_number = transient.as_raw_fd();
+        let replacement = fixture.prefix();
+        rustix::io::dup3(&replacement, &mut transient, rustix::io::DupFlags::CLOEXEC).unwrap();
+        assert_eq!(transient.as_raw_fd(), reused_number);
+        binding
+            .revalidate(transient.as_raw_fd(), transient.as_raw_fd())
+            .unwrap();
+
+        let foreign = Fixture::new();
+        let foreign_prefix = foreign.prefix();
+        rustix::io::dup3(
+            &foreign_prefix,
+            &mut transient,
+            rustix::io::DupFlags::CLOEXEC,
+        )
+        .unwrap();
+        assert_eq!(transient.as_raw_fd(), reused_number);
+        assert!(binding
+            .revalidate(transient.as_raw_fd(), transient.as_raw_fd())
+            .is_err());
+    }
+
+    #[test]
+    fn controller_replacement_after_acquisition_is_rejected() {
+        let fixture = Fixture::new();
+        let binding = fixture.acquire(7).unwrap();
+        let controller = fixture.root.join(CONTROLLER_DESTINATION);
+        let retained = fixture.root.join("bin/controller.retained");
+        fs::rename(&controller, &retained).unwrap();
+        fs::copy(&retained, &controller).unwrap();
+
+        assert!(matches!(
+            binding.revalidate(fixture.prefix().as_raw_fd(), fixture.prefix().as_raw_fd()),
+            Err(BindingError::Identity("controller replacement"))
+        ));
+        assert_eq!(fs::read(&retained).unwrap(), fs::read(&controller).unwrap());
+    }
+
+    #[test]
+    fn symlinked_ancestor_is_rejected_without_traversal() {
+        let fixture = Fixture::new();
+        let libexec = fixture.root.join("libexec");
+        let retained = fixture.root.join("libexec.retained");
+        fs::rename(&libexec, &retained).unwrap();
+        std::os::unix::fs::symlink(&retained, &libexec).unwrap();
+
+        assert!(fixture.acquire(7).is_err());
+        assert!(retained.join("darling").is_dir());
+        assert!(retained
+            .join("darling-lifecycle-controller-worker")
+            .is_file());
     }
 
     #[test]
