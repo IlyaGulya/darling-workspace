@@ -41,7 +41,13 @@ def main() -> int:
     require(aux_log["compatibility"] == "incompatible", "Perf aux route was promoted")
 
     header = text(workspace / "lifecycle/operation-boundary/include/darling_lifecycle_cohort.h")
-    rust = text(workspace / "lifecycle/operation-boundary/src/cohort_routing.rs")
+    rust = "\n".join(
+        text(workspace / relative)
+        for relative in (
+            "lifecycle/operation-boundary/src/cohort_routing.rs",
+            "lifecycle/operation-boundary/src/cohort_ffi.rs",
+        )
+    )
     server_h = text(dserver / "internal-include/darlingserver/server.hpp")
     server_cpp = text(dserver / "src/server.cpp")
     logging_cpp = text(dserver / "src/logging.cpp")
@@ -76,7 +82,7 @@ def main() -> int:
             "existing append-only/no-follow writer flags drifted")
     require("| libc::O_EXCL" in rust and "fchmod(new Darlingserver log)" in rust,
             "new log lacks exclusive inode-bound mode normalization")
-    require("named_identity(log.parent.as_raw_fd(), &log.name)? != Some(log.identity)" in rust,
+    require("named_identity(log.parent.as_fd(), &log.name)? != Some(log.identity)" in rust,
             "finish lacks exact named identity validation")
 
     tests = subprocess.run(

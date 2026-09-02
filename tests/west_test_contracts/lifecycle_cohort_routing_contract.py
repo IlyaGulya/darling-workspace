@@ -115,7 +115,46 @@ def main() -> None:
         if marker not in dserver_main:
             raise SystemExit(f"Darlingserver user-home route missing {marker}")
 
-    rust = (workspace / "lifecycle/operation-boundary/src/cohort_routing.rs").read_text()
+    routing = (workspace / "lifecycle/operation-boundary/src/cohort_routing.rs").read_text()
+    ffi = (workspace / "lifecycle/operation-boundary/src/cohort_ffi.rs").read_text()
+    rust = "\n".join(
+        (workspace / relative).read_text()
+        for relative in (
+            "lifecycle/operation-boundary/src/cohort_routing.rs",
+            "lifecycle/operation-boundary/src/cohort_ffi.rs",
+        )
+    )
+    if "#![deny(unsafe_code)]" not in routing or "unsafe {" in routing or "unsafe fn" in routing:
+        raise SystemExit("cohort_routing.rs is not a fully safe semantic module")
+    if "debug_assert_eq!(Box::into_raw" in ffi:
+        raise SystemExit("pending ownership restoration is debug-only")
+    if "libc::cmsghdr" in ffi or "CMSG_FIRSTHDR" in ffi or "libc::sendmsg" in ffi:
+        raise SystemExit("manual SCM_RIGHTS construction returned")
+    for marker in (
+        "fcntl_dupfd_cloexec",
+        "SendAncillaryBuffer",
+        "SendAncillaryMessage::ScmRights",
+        "rustix::net::sendmsg",
+        "rustix::net::sockopt::socket_peercred",
+    ):
+        if marker not in rust:
+            raise SystemExit(f"safe rustix boundary missing {marker}")
+    exported = {
+        "darling_lifecycle_cohort_prepare_user_home",
+        "darling_lifecycle_cohort_start",
+        "darling_lifecycle_cohort_finish",
+        "darling_lifecycle_cohort_worker_pid",
+        "darling_lifecycle_cohort_admission_open",
+        "darling_lifecycle_cohort_abandon",
+        "darling_lifecycle_cohort_send_guest_namespace_bootstrap",
+        "darling_lifecycle_cohort_prepare_var_run",
+        "darling_lifecycle_guest_namespace_configure",
+        "darling_lifecycle_guest_namespace_directory",
+        "darling_lifecycle_guest_namespace_transaction",
+    }
+    for symbol in exported:
+        if f'extern "C" fn {symbol}' not in ffi or symbol in routing:
+            raise SystemExit(f"C ABI boundary drift for {symbol}")
     for marker in (
         "SessionAuthority",
         "acquire_lock",
