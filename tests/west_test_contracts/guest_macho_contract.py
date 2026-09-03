@@ -58,6 +58,10 @@ ACCEPTED_ARTIFACT_SHA256 = {
     "rootless_no_mount_guest": "81f6d4d14ab7645ff8212cf129c58d6326bc1366f1c603f8de5608f0f68071da",
 }
 
+def is_executable_fixture(path: Path) -> bool:
+    return path.is_file() and not path.is_symlink() and os.access(path, os.X_OK)
+
+
 document = yaml.safe_load(PRODUCTION_CORPUS.read_text())
 build_evidence = document["corpus"]["build-evidence"]
 runtime_validation = document["corpus"]["runtime-validation"]
@@ -96,8 +100,13 @@ assert runtime_validation == {
 assert set(path.name for path in CORPUS_ROOT.iterdir()) == {"bin", "corpus.yml", "clt-provenance.txt"}
 bin_dir = CORPUS_ROOT / "bin"
 assert {path.name for path in bin_dir.iterdir()} == set(EXPECTED_NAMES)
-assert all(path.is_file() and not path.is_symlink() for path in bin_dir.iterdir())
-assert all((path.stat().st_mode & 0o777) == 0o755 for path in bin_dir.iterdir())
+assert all(is_executable_fixture(path) for path in bin_dir.iterdir())
+with tempfile.TemporaryDirectory(prefix="west-guest-macho-mode-contract-") as raw:
+    restrictive_fixture = Path(raw) / "fixture"
+    restrictive_fixture.write_bytes(b"fixture")
+    restrictive_fixture.chmod(0o700)
+    assert (restrictive_fixture.stat().st_mode & 0o777) == 0o700
+    assert is_executable_fixture(restrictive_fixture)
 
 assert document["toolchain"]["evidence-run"] == 29384636308
 assert document["toolchain"]["package-sha256"] == dict(REVIEWED_COMMAND_LINE_TOOLS_SHA256)
