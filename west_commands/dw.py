@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import json
 import os
 import subprocess
 import sys
@@ -87,6 +88,26 @@ class DarlingWorkspace(WestCommand):
 
         env = os.environ.copy()
         env["DW_DARLING_SRC"] = str(Path(self.topdir) / "darling")
+        darling_root = Path(self.topdir) / "darling"
+        closure = []
+        for project in self.manifest.projects:
+            if not self.manifest.is_active(project):
+                continue
+            userdata = project.userdata
+            if isinstance(userdata, str):
+                try:
+                    userdata = json.loads(userdata)
+                except json.JSONDecodeError:
+                    userdata = {}
+            if not isinstance(userdata, dict) or userdata.get("kind") != "darling-source":
+                continue
+            project_path = Path(self.topdir) / project.path
+            try:
+                relative = project_path.relative_to(darling_root)
+            except ValueError:
+                continue
+            closure.append("." if not relative.parts else relative.as_posix())
+        env["DW_HANDOFF_EXPECTED_PROJECTS"] = json.dumps(closure, separators=(",", ":"))
         raise SystemExit(
             subprocess.run(
                 [

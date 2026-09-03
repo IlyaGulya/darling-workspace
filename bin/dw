@@ -193,7 +193,8 @@ Commands:
   forall COMMAND    Run a shell command in every project
   snapshot          Write state/repos.tsv
   beads [args...]   Run br against the control repository
-  handoff           Export Beads and refresh locked manifest/state
+  handoff [--dry-run] [--json] [--allow-dirty]
+                    Transactionally refresh Beads, manifests, state, and bundles
   doctor            Validate paths and Beads state
   setup-local       Install local agent instructions and Git excludes
   env               Print resolved workspace paths
@@ -231,9 +232,20 @@ case "${1:-}" in
     exec br "$@"
     ;;
   handoff|sync)
-    br sync --flush-only
-    snapshot
-    git -C "$DW_ROOT" status --short
+    shift
+    handoff_read_only=false
+    for arg in "$@"; do
+      if [[ "$arg" == "--dry-run" || "$arg" == "--json" || "$arg" == "-h" || "$arg" == "--help" ]]; then
+        handoff_read_only=true
+      fi
+    done
+    "$DW_ROOT/scripts/handoff_transaction.py" \
+      --control-root "$DW_ROOT" \
+      --source "$DW_DARLING_SRC" \
+      "$@"
+    if [[ "$handoff_read_only" == false ]]; then
+      git -C "$DW_ROOT" status --short
+    fi
     ;;
   doctor)
     doctor

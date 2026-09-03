@@ -3,13 +3,17 @@
 
 from __future__ import annotations
 
+import fcntl
 import argparse
 import json
+import os
+import shutil
 import subprocess
-import tempfile
+import stat
+import sys
 from pathlib import Path
 
-from generate_manifest import git, public_base
+from generate_manifest import git, public_base, run_bounded
 
 
 def initialized_projects(source: Path):
@@ -98,13 +102,11 @@ def private_branches(repo: Path, include_remote_only: bool = False) -> list[dict
 def bundle_heads(bundle: Path) -> dict[str, str]:
     if not bundle.exists():
         return {}
-    result = subprocess.run(
-        ["git", "bundle", "list-heads", str(bundle)],
-        capture_output=True,
-        text=True,
-        check=False,
-    )
-    if result.returncode != 0:
+    try:
+        result = run_bounded(["git", "bundle", "list-heads", str(bundle)])
+    except subprocess.TimeoutExpired:
+        return {}
+    if result.returncode != 0 or result.overflow:
         return {}
     heads = {}
     for line in result.stdout.splitlines():
@@ -118,23 +120,163 @@ def expected_bundle_heads(branches: list[dict[str, str]]) -> dict[str, str]:
     return {item["source_ref"]: item["head"] for item in branches}
 
 
-def pack(source: Path, output: Path) -> None:
-    output.mkdir(parents=True, exist_ok=True)
-    records = []
-    dirty = []
-    expected_files = {"manifest.json"}
+def bundle_filename(relative: str) -> str:
+    return ("root" if relative == "." else relative.replace("/", "__")) + ".bundle"
 
-    for relative, repo in initialized_projects(source):
-        changes = git(repo, "status", "--porcelain")
-        if changes:
-            dirty.append(relative)
 
-        branches = private_branches(repo, include_remote_only=relative == ".")
+def write_package(
+    projects: list[tuple[str, Path, list[dict[str, str]], list[str]]],
+    output: Path,
+) -> list[dict[str, object]]:
+    """Write and verify a complete bundle package in a new directory."""
+    if output.exists():
+        raise RuntimeError(f"bundle staging directory already exists: {output}")
+    output.mkdir(parents=True)
+    records: list[dict[str, object]] = []
+    filenames: set[str] = set()
+    for relative, repo, branches, exclusions in projects:
         if not branches:
             continue
-        filename = ("root" if relative == "." else relative.replace("/", "__")) + ".bundle"
+        filename = bundle_filename(relative)
+        if filename in filenames:
+            raise RuntimeError(f"bundle filename collision: {filename}")
+        filenames.add(filename)
         bundle = output / filename
         refs = [item["source_ref"] for item in branches]
+        try:
+            result = run_bounded(
+                [
+                    "git",
+                    "-C",
+                    str(repo),
+                    "bundle",
+                    "create",
+                    str(bundle),
+                    *refs,
+                    *exclusions,
+                ]
+            )
+        except subprocess.TimeoutExpired as error:
+            raise RuntimeError(f"{relative}: git bundle create timed out") from error
+        if result.overflow:
+            raise RuntimeError(f"{relative}: git bundle create output limit exceeded")
+        if result.returncode:
+            detail = (result.stderr.strip() or result.stdout.strip() or "unknown error")[:4096]
+            raise RuntimeError(f"{relative}: git bundle create failed: {detail}")
+        expected = expected_bundle_heads(branches)
+        observed = bundle_heads(bundle)
+        if observed != expected:
+            raise RuntimeError(
+                f"{relative}: bundle heads differ: expected {expected}, observed {observed}"
+            )
+        records.append(
+            {
+                "path": relative,
+                "bundle": filename,
+                "branches": branches,
+            }
+        )
+    (output / "manifest.json").write_text(
+        json.dumps({"version": 1, "projects": records}, indent=2) + "\n",
+        encoding="utf-8",
+    )
+    return records
+
+
+def _fsync_tree(root: Path) -> None:
+    directories = []
+    for path in root.rglob("*"):
+        if path.is_file() and not path.is_symlink():
+            with path.open("rb") as stream:
+                os.fsync(stream.fileno())
+        elif path.is_dir() and not path.is_symlink():
+            directories.append(path)
+    for directory in sorted(directories, key=lambda item: len(item.parts), reverse=True):
+        descriptor = os.open(directory, os.O_RDONLY | os.O_DIRECTORY)
+        try:
+            os.fsync(descriptor)
+        finally:
+            os.close(descriptor)
+    descriptor = os.open(root, os.O_RDONLY | os.O_DIRECTORY)
+    try:
+        os.fsync(descriptor)
+    finally:
+        os.close(descriptor)
+
+
+def _fsync_directory(path: Path) -> None:
+    descriptor = os.open(path, os.O_RDONLY | os.O_DIRECTORY)
+    try:
+        os.fsync(descriptor)
+    finally:
+        os.close(descriptor)
+
+
+def _pack_transaction_paths(output: Path) -> tuple[Path, Path, Path, Path]:
+    state = output.parent.parent / f".{output.parent.name}.{output.name}.pack-transaction"
+    return state, state / "journal.json", state / "backup", state / "staged"
+
+
+def _pack_write_journal(path: Path, payload: dict[str, object]) -> None:
+    temporary = path.with_name(path.name + ".tmp")
+    with temporary.open("w", encoding="utf-8") as stream:
+        json.dump(payload, stream, sort_keys=True)
+        stream.write("\n")
+        stream.flush()
+        os.fsync(stream.fileno())
+    os.replace(temporary, path)
+    _fsync_directory(path.parent)
+
+
+def _pack_remove(path: Path) -> None:
+    if path.is_dir() and not path.is_symlink():
+        shutil.rmtree(path)
+    elif path.exists() or path.is_symlink():
+        path.unlink()
+
+
+def _pack_cleanup(state: Path, journal: Path, backup: Path, staged: Path) -> None:
+    for path in (backup, staged):
+        _pack_remove(path)
+    if journal.exists():
+        journal.unlink()
+    temporary = journal.with_name(journal.name + ".tmp")
+    if temporary.exists():
+        temporary.unlink()
+    _fsync_directory(state)
+
+
+def _recover_pack(output: Path, state: Path, journal: Path, backup: Path, staged: Path) -> None:
+    if not journal.exists():
+        _pack_cleanup(state, journal, backup, staged)
+        return
+    payload = json.loads(journal.read_text(encoding="utf-8"))
+    if payload.get("version") != 1 or payload.get("output") != str(output):
+        raise RuntimeError(f"invalid handoff pack recovery journal: {journal}")
+    status = payload.get("state")
+    if status == "prepared":
+        if backup.exists():
+            _pack_remove(output)
+            os.replace(backup, output)
+            _fsync_directory(output.parent)
+        elif not payload.get("existed"):
+            _pack_remove(output)
+            _fsync_directory(output.parent)
+        elif not output.exists():
+            raise RuntimeError(f"handoff pack backup is missing: {backup}")
+    elif status != "committed":
+        raise RuntimeError(f"invalid handoff pack recovery state: {status}")
+    _pack_cleanup(state, journal, backup, staged)
+
+
+def pack(source: Path, output: Path) -> None:
+    projects = []
+    dirty = []
+    for relative, repo in initialized_projects(source):
+        changes = git(repo, "status", "--porcelain", "--ignore-submodules=all")
+        if changes:
+            dirty.append(relative)
+        branches = private_branches(repo, include_remote_only=relative == ".")
         exclusions = []
         for default_branch in ("main", "master"):
             base = git(
@@ -146,44 +288,63 @@ def pack(source: Path, output: Path) -> None:
             )
             if base:
                 exclusions.append(f"^{base}")
-        current_heads = bundle_heads(bundle)
-        target_heads = expected_bundle_heads(branches)
-        with tempfile.TemporaryDirectory(prefix=f".{filename}.", dir=output) as temp:
-            temp_bundle = Path(temp) / filename
-            result = subprocess.run(
-                [
-                    "git",
-                    "-C",
-                    str(repo),
-                    "bundle",
-                    "create",
-                    str(temp_bundle),
-                    *refs,
-                    *exclusions,
-                ],
-                check=False,
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
-            )
-            if result.returncode == 0:
-                expected_files.add(filename)
-                if current_heads != target_heads:
-                    temp_bundle.replace(bundle)
-                records.append(
-                    {
-                        "path": relative,
-                        "bundle": filename,
-                        "branches": branches,
-                    }
-                )
-
-    for stale in output.glob("*.bundle"):
-        if stale.name not in expected_files:
-            stale.unlink()
-
-    (output / "manifest.json").write_text(
-        json.dumps({"version": 1, "projects": records}, indent=2) + "\n"
+        projects.append((relative, repo, branches, exclusions))
+    output.parent.mkdir(parents=True, exist_ok=True)
+    state, journal, backup, staged = _pack_transaction_paths(output)
+    state.mkdir(mode=0o700, exist_ok=True)
+    state_metadata = state.lstat()
+    if (
+        state.is_symlink()
+        or not stat.S_ISDIR(state_metadata.st_mode)
+        or state_metadata.st_uid != os.getuid()
+        or stat.S_IMODE(state_metadata.st_mode) & 0o077
+    ):
+        raise RuntimeError(f"unsafe handoff pack transaction state: {state}")
+    _fsync_directory(state.parent)
+    lock_path = state / "lock"
+    descriptor = os.open(
+        lock_path,
+        os.O_RDWR | os.O_CREAT | os.O_CLOEXEC | os.O_NOFOLLOW,
+        0o600,
     )
+    lock_metadata = os.fstat(descriptor)
+    if (
+        not stat.S_ISREG(lock_metadata.st_mode)
+        or lock_metadata.st_uid != os.getuid()
+        or stat.S_IMODE(lock_metadata.st_mode) & 0o077
+    ):
+        os.close(descriptor)
+        raise RuntimeError(f"unsafe handoff pack lock: {lock_path}")
+    with os.fdopen(descriptor, "a+") as lock:
+        fcntl.flock(lock.fileno(), fcntl.LOCK_EX)
+        _recover_pack(output, state, journal, backup, staged)
+        records = write_package(projects, staged)
+        _fsync_tree(staged)
+        payload: dict[str, object] = {
+            "version": 1,
+            "state": "prepared",
+            "output": str(output),
+            "existed": output.exists(),
+        }
+        _pack_write_journal(journal, payload)
+        try:
+            if output.exists():
+                os.replace(output, backup)
+                _fsync_directory(output.parent)
+                _fsync_directory(state)
+            if os.environ.get("DW_HANDOFF_PACK_CRASH_AFTER_DISPLACE") == "1":
+                os._exit(87)
+            os.replace(staged, output)
+            _fsync_directory(output.parent)
+            payload["state"] = "committed"
+            _pack_write_journal(journal, payload)
+        except BaseException:
+            _recover_pack(output, state, journal, backup, staged)
+            raise
+        try:
+            _pack_cleanup(state, journal, backup, staged)
+        except OSError as error:
+            print(f"warning: committed handoff pack cleanup failed: {error}", file=sys.stderr)
     print(f"packed {len(records)} repositories into {output}")
     if dirty:
         print("warning: uncommitted changes are not included:")
@@ -202,7 +363,7 @@ def restore(source: Path, input_dir: Path) -> None:
             existing = git(repo, "rev-parse", "--verify", f"refs/heads/{branch}", required=False)
             if existing and existing != head:
                 raise SystemExit(f"{record['path']}: branch {branch} already differs")
-            subprocess.run(
+            result = run_bounded(
                 [
                     "git",
                     "-C",
@@ -210,9 +371,12 @@ def restore(source: Path, input_dir: Path) -> None:
                     "fetch",
                     str(bundle),
                     f"{branch_record['source_ref']}:refs/heads/{branch}",
-                ],
-                check=True,
+                ]
             )
+            if result.overflow:
+                raise RuntimeError(f"{record['path']}: git fetch output limit exceeded")
+            if result.returncode:
+                raise subprocess.CalledProcessError(result.returncode, "git fetch")
             print(f"restored {record['path']} -> {branch}")
 
 
