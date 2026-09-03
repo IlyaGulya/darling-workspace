@@ -2532,10 +2532,6 @@ def _validate_acceptance_closure(
                 and isinstance(parent_evidence, list)
             )
             if evidence_valid:
-                child_paths = {
-                    str(Path(child["path"]).relative_to(parent_path))
-                    for child in children.values()
-                }
                 observed_paths: set[str] = set()
                 expected_status = {
                     "modified_gitlink": " M",
@@ -2562,7 +2558,6 @@ def _validate_acceptance_closure(
                         or relative.is_absolute()
                         or ".." in relative.parts
                         or relative.as_posix() != normalized
-                        or normalized not in child_paths
                         or normalized in observed_paths
                         or expected_status.get(kind) != evidence_row.get("xy")
                     ):
