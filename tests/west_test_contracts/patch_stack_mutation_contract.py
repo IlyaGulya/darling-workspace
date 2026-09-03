@@ -323,7 +323,11 @@ def build_fixture(root: Path) -> Fixture:
         immutable_oracle.apply(workspace, "homebrew", workspace / mapping_rel, oracle_path)
         results, _stats = lock_first.materialize_batch_into(module, list(plan), composition=plan.composition)
         generated_value, _generated_row = immutable_oracle.generated_lock(
-            frozen, "homebrew", ["darling"], {"darling": module}
+            frozen,
+            "homebrew",
+            ["darling"],
+            {"darling": module},
+            {"darling": git(module, "rev-parse", "HEAD^{tree}")},
         )
         (workspace / generated_rel).write_text(
             yaml.safe_dump(generated_value, sort_keys=False, width=1000)

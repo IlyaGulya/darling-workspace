@@ -8,6 +8,7 @@ schema-v2 lock and against the actual lock-first Git worktree.
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import re
 import subprocess
@@ -257,7 +258,8 @@ def verify_manifest(
     for row in generated:
         fail(
             isinstance(row, dict)
-            and set(row) == {"profile", "path", "size", "sha256"},
+            and set(row)
+            == {"profile", "path", "size", "sha256", "semantic_sha256"},
             f"{label}: generated lock row is invalid",
         )
         profile, path = row.get("profile"), row.get("path")
@@ -281,6 +283,25 @@ def verify_manifest(
             and re.fullmatch(r"[0-9a-f]{64}", row["sha256"]),
             f"{label}: generated lock hash invalid",
         )
+        fail(
+            isinstance(row.get("semantic_sha256"), str)
+            and re.fullmatch(r"[0-9a-f]{64}", row["semantic_sha256"]),
+            f"{label}: generated lock semantic hash invalid",
+        )
+        if workspace is not None:
+            generated_path = contained(
+                workspace, row["path"], f"{label} generated lock"
+            )
+            fail(
+                generated_path.is_file() and not generated_path.is_symlink(),
+                f"{label}: generated lock file is unavailable",
+            )
+            generated_bytes = generated_path.read_bytes()
+            fail(
+                len(generated_bytes) == row["size"]
+                and hashlib.sha256(generated_bytes).hexdigest() == row["sha256"],
+                f"{label}: generated lock file integrity differs",
+            )
 
 
 def is_ancestor(repo: Path, ancestor: str, descendant: str) -> bool:
@@ -318,7 +339,7 @@ def verify_candidate_evidence(
     batch_metadata: dict[str, Any],
     rows: dict[str, dict[str, Any]],
     workspace: Path,
-) -> None:
+) -> dict[str, Any]:
     """Prove immutable per-series evidence against a real candidate workspace."""
     batch = batch_metadata["series"]
     evidence = load_json(evidence_path)
@@ -360,6 +381,338 @@ def verify_candidate_evidence(
     fail(observed_series == expected_series, "lock-first evidence series do not exactly match the grouped ordered batch")
     observed_keys = [(entry["module"], entry["patch"]) for entry in observed_series]
     fail(len(set(observed_keys)) == batch_metadata["expected_count"], "lock-first evidence contains duplicate module+patch")
+    return evidence
+
+
+def _series_applied_trees(series: list[dict[str, Any]]) -> dict[str, str]:
+    trees: dict[str, str] = {}
+    for entry in series:
+        module = entry.get("module")
+        applied_tree = entry.get("applied_tree")
+        fail(
+            isinstance(module, str)
+            and module
+            and isinstance(applied_tree, str)
+            and re.fullmatch(r"[0-9a-f]{40}", applied_tree) is not None,
+            "series applied-tree evidence is invalid",
+        )
+        trees[module] = applied_tree
+    return trees
+
+
+def _verify_parent_gitlink_publication(
+    repo: Path,
+    content_tree: str,
+    integration_tree: str,
+    expected_gitlinks: dict[str, str],
+    label: str,
+) -> None:
+    result = subprocess.run(
+        ["git", "diff-tree", "--raw", "-r", content_tree, integration_tree],
+        cwd=repo,
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+    )
+    fail(
+        result.returncode == 0,
+        f"{label} tree comparison failed: {result.stderr.strip()}",
+    )
+    observed: set[str] = set()
+    for line in filter(None, result.stdout.splitlines()):
+        fields = line.split("\t", 1)
+        fail(len(fields) == 2, f"{label} diff is malformed")
+        metadata, path = fields
+        tokens = metadata.split()
+        modes = [tokens[0].lstrip(":"), tokens[1]] if len(tokens) >= 2 else []
+        fail(
+            path in expected_gitlinks and modes == ["160000", "160000"],
+            f"{label} changed non-managed content {path}",
+        )
+        actual_gitlink = git(repo, "ls-tree", integration_tree, "--", path).split()
+        fail(
+            len(actual_gitlink) >= 3
+            and actual_gitlink[0] == "160000"
+            and actual_gitlink[1] == "commit"
+            and actual_gitlink[2] == expected_gitlinks[path],
+            f"{label} gitlink differs from managed child: {path}",
+        )
+        observed.add(path)
+    fail(
+        observed == set(expected_gitlinks),
+        f"{label} did not publish the exact managed child set",
+    )
+
+
+def _verify_candidate_parent_integration(
+    workspace: Path,
+    parent: dict[str, Any],
+    children: dict[str, dict[str, Any]],
+    content_tree: str,
+) -> None:
+    parent_repo = contained(workspace, parent["path"], "candidate parent repository")
+    parent_path = Path(parent["path"])
+    expected_gitlinks = {
+        str(Path(row["path"]).relative_to(parent_path)): row["integration_oid"]
+        for row in children.values()
+    }
+    _verify_parent_gitlink_publication(
+        parent_repo,
+        content_tree,
+        parent["tree"],
+        expected_gitlinks,
+        "candidate parent integration",
+    )
+
+
+def _verify_semantic_module_equivalence(
+    workspace: Path,
+    oracle_trees: dict[str, str],
+    rows: dict[str, dict[str, Any]],
+    oracle_series: list[dict[str, Any]],
+    candidate_series: list[dict[str, Any]],
+) -> None:
+    candidate_trees = {module: row["tree"] for module, row in rows.items()}
+    mismatches = {
+        module
+        for module, tree in oracle_trees.items()
+        if candidate_trees.get(module) != tree
+    }
+    if not mismatches:
+        return
+    oracle_content = _series_applied_trees(oracle_series)
+    candidate_content = _series_applied_trees(candidate_series)
+    for module in mismatches:
+        parent_path = Path(rows[module]["path"])
+        children = {
+            child_module: row
+            for child_module, row in rows.items()
+            if child_module != module
+            and Path(row["path"]).is_relative_to(parent_path)
+        }
+        fail(
+            children
+            and oracle_content.get(module) == candidate_content.get(module),
+            "immutable oracle and canonical module trees differ",
+        )
+        fail(
+            all(
+                oracle_trees.get(child_module) == child_row["tree"]
+                for child_module, child_row in children.items()
+            ),
+            "immutable oracle and canonical nested module trees differ",
+        )
+        _verify_candidate_parent_integration(
+            workspace, rows[module], children, candidate_content[module]
+        )
+
+
+def _generated_lock_semantics(rows: object, label: str) -> list[dict[str, str]]:
+    fail(isinstance(rows, list) and rows, f"{label} generated locks are missing")
+    expected_fields = {"profile", "path", "semantic_sha256"}
+    result: list[dict[str, str]] = []
+    for row in rows:
+        fail(
+            isinstance(row, dict) and set(row) == expected_fields,
+            f"{label} generated lock row is invalid",
+        )
+        profile, path = row.get("profile"), row.get("path")
+        fail(
+            isinstance(profile, str)
+            and profile
+            and isinstance(path, str)
+            and path == f"patches/{profile}/west.lock.yml",
+            f"{label} generated lock identity is invalid",
+        )
+        fail(
+            isinstance(row["semantic_sha256"], str)
+            and re.fullmatch(r"[0-9a-f]{64}", row["semantic_sha256"]) is not None,
+            f"{label} generated lock semantic hash is invalid",
+        )
+        result.append(
+            {
+                "profile": profile,
+                "path": path,
+                "semantic_sha256": row["semantic_sha256"],
+            }
+        )
+    return result
+
+
+def _nested_managed_modules(
+    module: str,
+    managed: set[str],
+    candidate_rows: dict[str, dict[str, Any]],
+) -> list[str]:
+    parent = Path(candidate_rows[module]["path"])
+    descendants: list[str] = []
+    for child in managed - {module}:
+        child_path = Path(candidate_rows[child]["path"])
+        try:
+            child_path.relative_to(parent)
+        except ValueError:
+            continue
+        descendants.append(child)
+    nested: list[str] = []
+    for child in descendants:
+        child_path = Path(candidate_rows[child]["path"])
+        if any(
+            child != ancestor
+            and child_path.is_relative_to(Path(candidate_rows[ancestor]["path"]))
+            for ancestor in descendants
+        ):
+            continue
+        nested.append(child)
+    return sorted(nested)
+
+
+def _candidate_generated_lock_semantics(
+    raw_rows: object,
+    batches: list[dict[str, Any]],
+    manifest_workspace: Path,
+    candidate_workspace: Path,
+    candidate_rows: dict[str, dict[str, Any]],
+) -> list[dict[str, str]]:
+    fail(isinstance(raw_rows, list) and raw_rows, "candidate generated locks are missing")
+    cumulative_modules: dict[str, set[str]] = {}
+    managed_so_far: set[str] = set()
+    for batch in batches:
+        fail(
+            isinstance(batch, dict)
+            and isinstance(batch.get("profile"), str)
+            and batch["profile"]
+            and isinstance(batch.get("module_order"), list)
+            and all(
+                isinstance(module, str) and module
+                for module in batch["module_order"]
+            ),
+            "oracle generated-lock batch is invalid",
+        )
+        fail(
+            batch["profile"] not in cumulative_modules,
+            "oracle contains duplicate generated-lock profiles",
+        )
+        managed_so_far.update(batch["module_order"])
+        cumulative_modules[batch["profile"]] = set(managed_so_far)
+    result: list[dict[str, str]] = []
+    expected_fields = {"profile", "path", "size", "sha256", "semantic_sha256"}
+    for raw_row in raw_rows:
+        fail(
+            isinstance(raw_row, dict) and set(raw_row) == expected_fields,
+            "candidate generated lock row is invalid",
+        )
+        profile, path = raw_row["profile"], raw_row["path"]
+        fail(
+            isinstance(profile, str)
+            and profile in cumulative_modules
+            and isinstance(path, str)
+            and path == f"patches/{profile}/west.lock.yml",
+            "candidate generated lock identity is invalid",
+        )
+        lock_path = contained(
+            manifest_workspace, path, "candidate generated lock"
+        )
+        try:
+            lock = yaml.safe_load(lock_path.read_bytes())
+        except (OSError, yaml.YAMLError) as exc:
+            fail(False, f"candidate generated lock is unreadable: {exc}")
+        try:
+            lock = json.loads(json.dumps(lock))
+        except (TypeError, ValueError) as exc:
+            fail(False, f"candidate generated lock cannot be normalized: {exc}")
+        fail(
+            isinstance(lock, dict)
+            and isinstance(lock.get("manifest"), dict)
+            and isinstance(lock["manifest"].get("projects"), list),
+            f"{path}: candidate generated lock schema is invalid",
+        )
+        projects = lock["manifest"]["projects"]
+        projects_by_path: dict[str, dict[str, Any]] = {}
+        for project in projects:
+            project_path = (
+                project.get("path", project.get("name"))
+                if isinstance(project, dict)
+                else None
+            )
+            fail(
+                isinstance(project_path, str) and project_path,
+                f"{path}: generated lock project is invalid",
+            )
+            fail(
+                project_path not in projects_by_path,
+                f"{path}: duplicate generated lock project path {project_path}",
+            )
+            projects_by_path[project_path] = project
+        managed = cumulative_modules[profile]
+        fail(
+            managed
+            and managed <= set(candidate_rows),
+            f"{path}: generated lock references an unknown managed module",
+        )
+        locked_revisions: dict[str, str] = {}
+        for module in managed:
+            module_path = candidate_rows[module]["path"]
+            project = projects_by_path.get(module_path)
+            fail(project is not None, f"{path}: generated lock omits {module}")
+            revision = project.get("revision")
+            fail(
+                isinstance(revision, str)
+                and re.fullmatch(r"[0-9a-f]{40}", revision) is not None,
+                f"{path}: generated lock revision is invalid for {module}",
+            )
+            locked_revisions[module] = revision
+        for module in managed:
+            module_path = candidate_rows[module]["path"]
+            project = projects_by_path[module_path]
+            revision = locked_revisions[module]
+            repo = contained(
+                candidate_workspace,
+                module_path,
+                f"candidate generated-lock repository {module}",
+            )
+            fail(
+                (repo / ".git").exists(),
+                f"candidate workspace repository missing: {module_path}",
+            )
+            nested = _nested_managed_modules(module, managed, candidate_rows)
+            if nested:
+                content_tree = git(repo, "rev-parse", f"{revision}^1^{{tree}}")
+                integration_tree = git(repo, "rev-parse", f"{revision}^{{tree}}")
+                parent_path = Path(module_path)
+                expected_gitlinks: dict[str, str] = {}
+                for child in nested:
+                    relative = str(
+                        Path(candidate_rows[child]["path"]).relative_to(parent_path)
+                    )
+                    expected_gitlinks[relative] = locked_revisions[child]
+                _verify_parent_gitlink_publication(
+                    repo,
+                    content_tree,
+                    integration_tree,
+                    expected_gitlinks,
+                    f"{path}: {module} integration",
+                )
+                project["revision"] = content_tree
+            else:
+                project["revision"] = git(repo, "rev-parse", f"{revision}^{{tree}}")
+        semantic_payload = yaml.safe_dump(
+            lock,
+            sort_keys=False,
+            width=1000,
+        ).encode()
+        semantic_sha256 = hashlib.sha256(semantic_payload).hexdigest()
+        fail(
+            semantic_sha256 == raw_row["semantic_sha256"],
+            f"{path}: candidate generated lock semantic hash mismatch",
+        )
+        result.append(
+            {
+                "profile": profile,
+                "path": path,
+                "semantic_sha256": semantic_sha256,
+            }
+        )
+    return result
 
 
 def compare_immutable_oracle(
@@ -477,15 +830,17 @@ def compare_immutable_oracle(
             f"{mapping['patch']} immutable oracle applied tree",
         )
     oracle_rows = oracle.get("modules")
-    fail(isinstance(oracle_rows, list) and len(oracle_rows) == len(rows), "immutable oracle module count differs")
-    observed_trees: dict[str, str] = {}
+    fail(
+        isinstance(oracle_rows, list) and len(oracle_rows) == len(rows),
+        "immutable oracle module count differs",
+    )
+    oracle_trees: dict[str, str] = {}
     for row in oracle_rows:
         fail(isinstance(row, dict) and set(row) == {"module", "commit", "tree"}, "immutable oracle module row is invalid")
         module = row.get("module")
-        fail(isinstance(module, str) and module in rows and module not in observed_trees, "immutable oracle module is invalid or duplicate")
+        fail(isinstance(module, str) and module in rows and module not in oracle_trees, "immutable oracle module is invalid or duplicate")
         oid(row.get("commit"), f"immutable oracle {module} commit")
-        observed_trees[module] = oid(row.get("tree"), f"immutable oracle {module} tree")
-    fail(observed_trees == {module: row["tree"] for module, row in rows.items()}, "immutable oracle and canonical module trees differ")
+        oracle_trees[module] = oid(row.get("tree"), f"immutable oracle {module} tree")
     manifest = load_json(candidate_manifest_path)
     verify_manifest(
         manifest,
@@ -499,10 +854,18 @@ def compare_immutable_oracle(
             manifest == expected_manifest,
             "candidate manifest differs from the canonical captured manifest",
         )
-    generated = oracle.get("generated_profile_locks")
+    generated = _generated_lock_semantics(
+        oracle.get("generated_profile_locks"), "immutable oracle"
+    )
+    candidate_generated = _candidate_generated_lock_semantics(
+        manifest.get("generated_profile_locks"),
+        batches,
+        manifest_workspace or candidate_workspace,
+        candidate_workspace,
+        rows,
+    )
     fail(
-        isinstance(generated, list)
-        and generated == manifest.get("generated_profile_locks"),
+        generated == candidate_generated,
         "immutable oracle and canonical generated locks differ",
     )
     fail(
@@ -511,7 +874,16 @@ def compare_immutable_oracle(
         "immutable oracle and canonical frozen manifest differ",
     )
     verify_actual_maps(candidate_workspace, rows, profile, "candidate")
-    verify_candidate_evidence(evidence_path, batch_metadata, rows, candidate_workspace)
+    candidate_evidence = verify_candidate_evidence(
+        evidence_path, batch_metadata, rows, candidate_workspace
+    )
+    _verify_semantic_module_equivalence(
+        candidate_workspace,
+        oracle_trees,
+        rows,
+        oracle_series,
+        candidate_evidence["series"],
+    )
     assert_no_transaction_state(candidate_workspace, rows, transaction_root, "candidate")
     write_result(
         result_path,

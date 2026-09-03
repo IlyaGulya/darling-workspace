@@ -359,11 +359,46 @@ def nested_layout_compare_contract() -> None:
         module_map.write_text(
             json.dumps({"profile": "homebrew", "modules": [row]})
         )
+        generated_path = (
+            manifest_workspace / "patches" / "homebrew" / "west.lock.yml"
+        )
+        generated_path.parent.mkdir(parents=True)
+        generated_value = {
+            "manifest": {
+                "projects": [
+                    {
+                        "name": "darling",
+                        "path": "darling",
+                        "revision": commits[-1],
+                    }
+                ]
+            }
+        }
+        generated_bytes = yaml.safe_dump(
+            generated_value,
+            sort_keys=False,
+            width=1000,
+        ).encode()
+        generated_path.write_bytes(generated_bytes)
+        semantic_value = copy.deepcopy(generated_value)
+        semantic_value["manifest"]["projects"][0]["revision"] = trees[-1]
+        semantic_bytes = yaml.safe_dump(
+            semantic_value,
+            sort_keys=False,
+            width=1000,
+        ).encode()
+        semantic_sha256 = hashlib.sha256(semantic_bytes).hexdigest()
         generated = {
             "profile": "homebrew",
             "path": "patches/homebrew/west.lock.yml",
-            "size": 17,
-            "sha256": "b" * 64,
+            "size": len(generated_bytes),
+            "sha256": hashlib.sha256(generated_bytes).hexdigest(),
+            "semantic_sha256": semantic_sha256,
+        }
+        oracle_generated = {
+            "profile": "homebrew",
+            "path": "patches/homebrew/west.lock.yml",
+            "semantic_sha256": semantic_sha256,
         }
         manifest_value = {
             "workspace_commit": workspace_commit,
@@ -424,7 +459,7 @@ def nested_layout_compare_contract() -> None:
                     "tree": trees[-1],
                 }
             ],
-            "generated_profile_locks": [generated],
+            "generated_profile_locks": [oracle_generated],
             "frozen_manifest_sha256": "a" * 64,
             "clean_odb": {
                 "module_count": 1,
@@ -532,6 +567,13 @@ def nested_layout_compare_contract() -> None:
                 "series order",
             ),
             (
+                "wrong-generated-lock-semantics",
+                lambda value: value["generated_profile_locks"][0].__setitem__(
+                    "semantic_sha256", "d" * 64
+                ),
+                "generated locks",
+            ),
+            (
                 "unclean-odb",
                 lambda value: value["clean_odb"].__setitem__("alternates", 1),
                 "clean-ODB",
@@ -544,6 +586,35 @@ def nested_layout_compare_contract() -> None:
             output = root / f"{name}-result.json"
             must_fail(compare, path, evidence, output, contains=message)
             assert not output.exists()
+
+        tampered_lock = copy.deepcopy(generated_value)
+        tampered_lock["manifest"]["self"] = {"path": "poisoned.yml"}
+        tampered_bytes = yaml.safe_dump(
+            tampered_lock,
+            sort_keys=False,
+            default_flow_style=False,
+            allow_unicode=True,
+        ).encode("utf-8")
+        tampered_manifest = copy.deepcopy(manifest_value)
+        tampered_manifest["generated_profile_locks"][0]["size"] = len(
+            tampered_bytes
+        )
+        tampered_manifest["generated_profile_locks"][0]["sha256"] = (
+            hashlib.sha256(tampered_bytes).hexdigest()
+        )
+        generated_path.write_bytes(tampered_bytes)
+        manifest.write_text(json.dumps(tampered_manifest))
+        try:
+            must_fail(
+                compare,
+                oracle_path,
+                evidence,
+                root / "tampered-lock-result.json",
+                contains="semantic hash mismatch",
+            )
+        finally:
+            generated_path.write_bytes(generated_bytes)
+            manifest.write_bytes(original_manifest)
 
         bad_evidence = copy.deepcopy(evidence_value)
         bad_evidence["series"] = list(reversed(bad_evidence["series"]))
