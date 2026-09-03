@@ -1683,10 +1683,10 @@ class DarlingPatch(WestCommand):
                 "hint: add behavioral tests: [{name, runner, script|target|ctest-label, env, diag, kind, red}] "
                 "or test-exception: {reason, note}"
             )
-        if strict and (missing or invalid):
-            self.die(
-                f"{len(missing)} missing + {len(invalid)} invalid patch test metadata entries"
-            )
+        if invalid:
+            self.die(f"{len(invalid)} invalid patch test metadata entries")
+        if strict and missing:
+            self.die(f"{len(missing)} missing patch test metadata entries")
         if strict_quality and quality_warnings:
             total = sum(len(warnings) for _, warnings in quality_warnings)
             self.die(f"{total} patch test quality warning(s)")
