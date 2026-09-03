@@ -1,4 +1,9 @@
 west-commands:
+  - file: west_commands/dev.py
+    commands:
+      - name: dev
+        class: DarlingDev
+        help: Run the daily multi-repository Darling feature workflow
   - file: west_commands/dw.py
     commands:
       - name: dw

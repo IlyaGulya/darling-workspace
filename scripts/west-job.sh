@@ -37,7 +37,8 @@ registry_entry_name() {
 
 prepare_job_registry() {
 	local state_root registry_dir
-	state_root="$(dirname "$state_dir")"
+	state_root="${WEST_JOB_REGISTRY_ROOT:-${TMPDIR:-/tmp}}"
+	state_root="$(realpath -m -- "$state_root")"
 	registry_dir="$(registry_dir_for_state_root "$state_root")"
 	if [[ -L "$registry_dir" ]] || { [[ -e "$registry_dir" ]] && [[ ! -d "$registry_dir" ]]; }; then
 		echo "west job registry is not a directory: $registry_dir" >&2
@@ -51,11 +52,105 @@ prepare_job_registry() {
 	REGISTRY_DIR="$registry_dir"
 }
 
+registry_identity_live() {
+	local root="$1" pid_name="$2" start_name="$3" pid start_time
+	[[ -f "$root/$pid_name" && ! -L "$root/$pid_name" ]] || return 1
+	[[ -f "$root/$start_name" && ! -L "$root/$start_name" ]] || return 1
+	pid="$(<"$root/$pid_name")"
+	start_time="$(<"$root/$start_name")"
+	[[ "$pid" =~ ^[0-9]+$ && "$start_time" =~ ^[0-9]+$ ]] || return 1
+	kill -0 "$pid" 2>/dev/null || return 1
+	[[ "$(pid_start_time "$pid")" == "$start_time" ]] || return 1
+	REGISTRY_IDENTITY_PID="$pid"
+	REGISTRY_IDENTITY_START_TIME="$start_time"
+}
+
+publish_registry_identity() {
+	local entry="$1" pid_tmp start_tmp
+	pid_tmp="$entry/.pid.$$"
+	start_tmp="$entry/.start-time.$$"
+	printf '%s\n' "$REGISTRY_IDENTITY_PID" >"$pid_tmp"
+	printf '%s\n' "$REGISTRY_IDENTITY_START_TIME" >"$start_tmp"
+	mv "$pid_tmp" "$entry/pid"
+	mv "$start_tmp" "$entry/start-time"
+}
+
+reconcile_registry_entry() {
+	local entry="$1" candidate_state owner_uid
+	owner_uid="$(id -u)"
+	[[ -d "$entry" && ! -L "$entry" ]] || return
+	[[ "$(stat -c '%u' "$entry")" == "$owner_uid" ]] || return
+	if [[ ! -f "$entry/state-dir" || -L "$entry/state-dir" ]]; then
+		rm -rf -- "$entry"
+		return
+	fi
+	if registry_identity_live "$entry" pid start-time; then
+		return
+	fi
+	candidate_state="$(<"$entry/state-dir")"
+	if [[ ! -d "$candidate_state" || -L "$candidate_state" ]]; then
+		rm -rf -- "$entry"
+		return
+	fi
+	[[ "$(stat -c '%u' "$candidate_state")" == "$owner_uid" ]] || return
+	if [[ -f "$candidate_state/rc" && ! -L "$candidate_state/rc" ]]; then
+		rm -rf -- "$entry"
+		return
+	fi
+	if registry_identity_live "$candidate_state" pid start-time ||
+		registry_identity_live "$candidate_state" runner-pid runner-start-time; then
+		publish_registry_identity "$entry"
+		return
+	fi
+	rm -rf -- "$entry"
+}
+
+prune_dead_registry_entries() {
+	local entry
+	shopt -s nullglob
+	for entry in "$REGISTRY_DIR"/*; do
+		reconcile_registry_entry "$entry"
+	done
+}
+
+cleanup_registry_reservation() {
+	local launched_start owner_uid
+	owner_uid="$(id -u)"
+	if [[ -n "${REGISTRY_ENTRY:-}" ]]; then
+		if [[ "${REGISTRY_LAUNCHED_PID:-}" =~ ^[0-9]+$ ]] &&
+			kill -0 "$REGISTRY_LAUNCHED_PID" 2>/dev/null &&
+			launched_start="$(pid_start_time "$REGISTRY_LAUNCHED_PID")" &&
+			[[ "$launched_start" =~ ^[0-9]+$ ]] &&
+			[[ -d "$state_dir" && ! -L "$state_dir" ]] &&
+			[[ "$(stat -c '%u' "$state_dir")" == "$owner_uid" ]]; then
+			printf '%s\n' "$REGISTRY_LAUNCHED_PID" >"$state_dir/pid"
+			printf '%s\n' "$launched_start" >"$state_dir/start-time"
+			REGISTRY_IDENTITY_PID="$REGISTRY_LAUNCHED_PID"
+			REGISTRY_IDENTITY_START_TIME="$launched_start"
+			publish_registry_identity "$REGISTRY_ENTRY"
+		else
+			reconcile_registry_entry "$REGISTRY_ENTRY"
+			if [[ "${REGISTRY_STATE_CREATED:-0}" == 1 ]] &&
+				[[ -z "${REGISTRY_LAUNCHED_PID:-}" ]] &&
+				[[ -d "$state_dir" && ! -L "$state_dir" ]] &&
+				[[ "$(stat -c '%u' "$state_dir")" == "$owner_uid" ]]; then
+				rm -rf -- "$state_dir"
+			fi
+		fi
+	fi
+	if [[ -n "${REGISTRY_LOCK_FD:-}" ]]; then
+		flock -u "$REGISTRY_LOCK_FD" 2>/dev/null || true
+		exec {REGISTRY_LOCK_FD}>&- 2>/dev/null || true
+	fi
+}
+
+
 reserve_job_registry_entry() {
 	local entry candidate_pid candidate_start_time
 	prepare_job_registry
 	exec {REGISTRY_LOCK_FD}>"$REGISTRY_DIR/.lock"
 	flock "$REGISTRY_LOCK_FD"
+	prune_dead_registry_entries
 	entry="$REGISTRY_DIR/$(registry_entry_name)"
 	if ! mkdir "$entry" 2>/dev/null; then
 		if [[ -d "$entry" && ! -L "$entry" && -f "$entry/state-dir" ]] &&
@@ -78,16 +173,18 @@ reserve_job_registry_entry() {
 			exit 2
 		fi
 	fi
+	REGISTRY_ENTRY="$entry"
 	printf '%s\n' "$state_dir" >"$entry/state-dir"
 	write_command_record "$entry/command"
-	REGISTRY_ENTRY="$entry"
 }
 
 record_job_registry_identity() {
-	printf '%s\n' "$(<"$state_dir/pid")" >"$REGISTRY_ENTRY/pid"
-	printf '%s\n' "$(<"$state_dir/start-time")" >"$REGISTRY_ENTRY/start-time"
+	REGISTRY_IDENTITY_PID="$(<"$state_dir/pid")"
+	REGISTRY_IDENTITY_START_TIME="$(<"$state_dir/start-time")"
+	publish_registry_identity "$REGISTRY_ENTRY"
 	flock -u "$REGISTRY_LOCK_FD"
 	exec {REGISTRY_LOCK_FD}>&-
+	REGISTRY_ENTRY=
 }
 
 parse_state_dir() {
@@ -109,6 +206,7 @@ parse_state_dir() {
 	if [[ -z "$state_dir" ]]; then
 		usage
 	fi
+	state_dir="$(realpath -m -- "$state_dir")"
 	STATE_REST=("$@")
 }
 
@@ -129,10 +227,11 @@ parse_follow() {
 	if [[ -z "$state_dir" ]] || [[ ! "$follow_timeout_seconds" =~ ^[0-9]+$ ]]; then
 		usage
 	fi
+	state_dir="$(realpath -m -- "$state_dir")"
 }
 
 parse_state_root() {
-	state_root="${TMPDIR:-/tmp}"
+	state_root="${WEST_JOB_REGISTRY_ROOT:-${TMPDIR:-/tmp}}"
 	while (($#)); do
 		case "$1" in
 			--state-root)
@@ -144,7 +243,7 @@ parse_state_root() {
 				;;
 		esac
 	done
-	STATE_ROOT="$state_root"
+	STATE_ROOT="$(realpath -m -- "$state_root")"
 }
 
 pid_start_time() {
@@ -249,8 +348,13 @@ start_job() {
 	if ((${#STATE_REST[@]} == 0)); then
 		usage
 	fi
+	REGISTRY_ENTRY=
+	REGISTRY_STATE_CREATED=0
+	REGISTRY_LAUNCHED_PID=
+	trap cleanup_registry_reservation EXIT
 	reserve_job_registry_entry
 	mkdir -p "$state_dir"
+	REGISTRY_STATE_CREATED=1
 	write_command_record "$state_dir/command"
 
 	nohup setsid --wait bash -c '
@@ -289,10 +393,12 @@ start_job() {
 		finish "$?"
 	' bash "$state_dir" "${STATE_REST[@]}" \
 		>"$state_dir/log" 2>&1 < /dev/null &
-	local pid=$!
+	REGISTRY_LAUNCHED_PID=$!
+	local pid="$REGISTRY_LAUNCHED_PID"
 	printf '%s\n' "$pid" >"$state_dir/pid"
 	pid_start_time "$pid" >"$state_dir/start-time"
 	record_job_registry_identity
+	trap - EXIT
 	printf 'started pid=%s state=%s log=%s\n' "$pid" "$state_dir" "$state_dir/log"
 }
 
