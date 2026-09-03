@@ -14,6 +14,16 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from beads_aliases import normalize_beads_args
 
 
+class _DelegatingActionParser(argparse.ArgumentParser):
+    def parse_known_args(self, args=None, namespace=None):
+        raw_args = [] if args is None else list(args)
+        if raw_args in (["-h"], ["--help"]):
+            return super().parse_known_args(raw_args, namespace)
+        parsed, _unknown = super().parse_known_args([], namespace)
+        parsed.args = raw_args
+        return parsed, []
+
+
 class DarlingWorkspace(WestCommand):
     def __init__(self):
         super().__init__(
@@ -25,11 +35,14 @@ class DarlingWorkspace(WestCommand):
 
     def do_add_parser(self, parser_adder):
         parser = parser_adder.add_parser(self.name, description=self.description)
-        parser.add_argument(
-            "action",
-            choices=("summary", "beads", "restore", "handoff"),
+        actions = parser.add_subparsers(
+            dest="action",
+            required=True,
+            parser_class=_DelegatingActionParser,
         )
-        parser.add_argument("args", nargs=argparse.REMAINDER)
+        actions.add_parser("summary")
+        for action in ("beads", "restore", "handoff"):
+            actions.add_parser(action)
         return parser
 
     def do_run(self, args, unknown):
