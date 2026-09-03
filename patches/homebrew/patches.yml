@@ -4716,7 +4716,7 @@ patches:
       base: main
       state: local
 - path: darlingserver/runtime-mode-canonical.patch
-  sha256sum: d4b3602133c43ef77718324c1040ab37d88f6e86f20e6c08d4645e235db45a9d
+  sha256sum: eaef96c26ef3cf07e73a4e28ef6b6868a8bceba24fba548fb8c982c3bab8734e
   module: darling/src/external/darlingserver
   source-branch: fix/rootless-typed-runtime-server
   source-base: 14a9d36495cb84a7af6abf49ac30cf0a3e27a648
@@ -5130,7 +5130,7 @@ patches:
     - darling-prefix
     note: Fast guest exit must still produce a structured shellspawn completion verdict.
 - path: darling/runtime-mode-canonical.patch
-  sha256sum: 15185fbf21126852a270f0788886ccc81d74b8c428849bd5481c4d7464cd3da6
+  sha256sum: 836a1b3131a8f2d0f9a4dc3d3eab60f15cccbb80cb3b0ddca0ada110959f8c23
   module: darling
   source-branch: fix/rootless-typed-runtime-mode
   source-base: bcb438afefa11cf431038a16440b026fc37e8077

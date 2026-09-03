@@ -18,7 +18,7 @@ Subject: [PATCH] darlingserver: consume typed runtime mode
  create mode 100644 tests/runtime_mode_test.cpp
 
 diff --git a/CMakeLists.txt b/CMakeLists.txt
-index 8ce9891..84543d8 100644
+index 8ce989173af6945d3a1a00dd93da0a0a6415952b..84543d88a21835269d4ee69ba563097d8bfc9ebe 100644
 --- a/CMakeLists.txt
 +++ b/CMakeLists.txt
 @@ -5,6 +5,9 @@ cmake_minimum_required(VERSION 3.13)
@@ -62,7 +62,7 @@ index 8ce9891..84543d8 100644
  	rtsig_h
 diff --git a/include/darlingserver/runtime-mode.hpp b/include/darlingserver/runtime-mode.hpp
 new file mode 100644
-index 0000000..a8dfc9a
+index 0000000000000000000000000000000000000000..a8dfc9ae5eaef1c6db7486d1b6edaca92f481d1a
 --- /dev/null
 +++ b/include/darlingserver/runtime-mode.hpp
 @@ -0,0 +1,37 @@
@@ -104,7 +104,7 @@ index 0000000..a8dfc9a
 +
 +}
 diff --git a/internal-include/darlingserver/server.hpp b/internal-include/darlingserver/server.hpp
-index 30fbb99..55ce90f 100644
+index 30fbb99f417226c4bc632964c647d13d7e1ec526..55ce90f92403275cbf5251da5c7ffa720d04af06 100644
 --- a/internal-include/darlingserver/server.hpp
 +++ b/internal-include/darlingserver/server.hpp
 @@ -40,6 +40,7 @@ namespace DarlingServer {
@@ -136,7 +136,7 @@ index 30fbb99..55ce90f 100644
  
  		static Server& sharedInstance();
 diff --git a/src/darlingserver.cpp b/src/darlingserver.cpp
-index 08d702b..d366c03 100644
+index 08d702b2453504a240e3c4e96d61be0a5245f0bc..d366c03d5bb50cdd4b1a1a0563a71e66a38da502 100644
 --- a/src/darlingserver.cpp
 +++ b/src/darlingserver.cpp
 @@ -35,14 +35,16 @@
@@ -1390,7 +1390,7 @@ index 08d702b..d366c03 100644
  	// tell the child to go ahead; the socket has been created
  	write(childWaitFDs[1], ".", 1);
 diff --git a/src/logging.cpp b/src/logging.cpp
-index 7b8000f..73d5e57 100644
+index 7b8000f96e8adfc314dc864e368a6b38a78b8ed0..73d5e5797347a3bf0447d5e6d9c31870543b96c5 100644
 --- a/src/logging.cpp
 +++ b/src/logging.cpp
 @@ -21,7 +21,8 @@
@@ -1472,7 +1472,7 @@ index 7b8000f..73d5e57 100644
  	static bool logToStderr = []() {
 diff --git a/src/runtime-mode.cpp b/src/runtime-mode.cpp
 new file mode 100644
-index 0000000..ad27312
+index 0000000000000000000000000000000000000000..ad27312ae1379bda7664414fd4860aef3e43a79e
 --- /dev/null
 +++ b/src/runtime-mode.cpp
 @@ -0,0 +1,201 @@
@@ -1678,7 +1678,7 @@ index 0000000..ad27312
 +
 +}
 diff --git a/src/server.cpp b/src/server.cpp
-index c2ec2ed..9cc4681 100644
+index c2ec2ed18f9bd23cce6e0d1669bec1b4e97e2302..9cc4681a0b631875e039afecb6d7055b749f37f2 100644
 --- a/src/server.cpp
 +++ b/src/server.cpp
 @@ -441,8 +441,13 @@ struct DTapeHooks {
@@ -1739,7 +1739,7 @@ index c2ec2ed..9cc4681 100644
  };
 diff --git a/tests/runtime_mode_test.cpp b/tests/runtime_mode_test.cpp
 new file mode 100644
-index 0000000..bc2327e
+index 0000000000000000000000000000000000000000..bc2327e8d601fc55ff2471c1277714738b851d7f
 --- /dev/null
 +++ b/tests/runtime_mode_test.cpp
 @@ -0,0 +1,226 @@
@@ -1969,6 +1969,3 @@ index 0000000..bc2327e
 +	std::cout << "DSERVER_RUNTIME_MODE_CONTRACT_OK\n";
 +	return 0;
 +}
--- 
-2.43.0
-
