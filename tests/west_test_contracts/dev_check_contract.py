@@ -80,7 +80,7 @@ if argv[:2] == ["patch", "apply"] and "--lock-first-evidence" in argv:
         "manifest:\n  projects: []\n# generated candidate\n",
         encoding="utf-8",
     )
-    module_repo = Path.cwd() / "fixture" / "module"
+    module_repo = Path.cwd().parent / "fixture" / "module"
     subprocess.run(
         ["git", "commit", "--allow-empty", "-qm", "candidate integration"],
         cwd=module_repo,
@@ -303,8 +303,7 @@ with Path(os.environ["DEV_CHECK_FAKE_LOG"]).open("a", encoding="utf-8") as strea
 if authority == "bootstrap":
     workspace = Path.cwd()
     ids = json.loads((workspace / "fixture-ids.json").read_text())
-    destination = workspace / "fixture" / "module"
-    destination.parent.mkdir(parents=True, exist_ok=True)
+    destination = workspace.parent / "fixture" / "module"
     shutil.copytree(ids["module_repo"], destination)
 elif authority == "capture":
     workspace = Path(sys.argv[sys.argv.index("--workspace") + 1])
@@ -333,7 +332,7 @@ elif authority == "capture":
                         "integration_profile": "homebrew",
                         "integration_oid": subprocess.run(
                             ["git", "rev-parse", "HEAD"],
-                            cwd=workspace / "fixture" / "module",
+                            cwd=workspace.parent / "fixture" / "module",
                             check=True,
                             text=True,
                             stdout=subprocess.PIPE,
