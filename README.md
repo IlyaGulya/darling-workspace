@@ -61,6 +61,19 @@ runs the doctor as a pre-gate, refuses to build on failure (unless `--force`), a
 after `--deploy`. Update `deploy-baseline.md5` when a legitimate rebuild changes what is
 deployed.
 
+Doctor output has three explicit modes. The default is a bounded summary with
+at most eight problem/warning rows and an exact, shell-quoted command for the
+complete view. That command preserves the current West launcher and writes
+free-form options as `--option=value`, so leading-dash values replay safely.
+`west darling-doctor --full` retains the verbose per-check diagnostics; `west
+darling-doctor --json` writes only its complete machine result. Independent
+sections continue after an operational error so the result remains complete.
+The JSON envelope has `schema_version: 1`, `operation: "doctor"`, and `state`
+equal to `healthy`, `problems`, or `operational_error`, plus typed per-check
+results and summary counts. Exit status is 0 only for `healthy`, 1 for
+diagnosed problems or an operational failure, and 2 for invalid command-line
+usage.
+
 ## Claude Code guardrails (hooks + skills)
 
 The workspace ships Claude Code automation that encodes the guardrails and
@@ -115,17 +128,48 @@ west dev check quick --profile homebrew \
   --evidence /path/outside/active/repos/quick.json
 west dev check canonical --profile homebrew \
   --evidence /path/outside/active/repos/canonical.json
-west dev package --profile homebrew --receipt /path/to/canonical.json \
+west dev check acceptance --profile homebrew --prefix /path/to/prefix \
+  --build-dir /path/to/build --evidence /path/outside/active/repos/acceptance.json
+west dev package --profile homebrew --receipt /path/to/acceptance.json \
   --output /path/to/review-package --evidence /path/to/package.json
+west dev verify-package /path/to/review-package
 ```
 
 `start` creates an independent exact-base clone without alternates, hardlinks,
 or mutations to active West repositories. Its `--dry-run --json` form emits
 the complete plan. `west dev recover-start --evidence <start.json>` recovers
 an interrupted transaction. `acceptance` is an unnarrowed Homebrew runtime
-tier and requires explicit `--prefix` and `--build-dir`. `package` accepts only
-a committed, current-workspace tier receipt. Add `--json` when another tool
-consumes the status, plan, or receipt.
+tier and requires explicit `--prefix` and `--build-dir`. `package` requires a
+committed, current-workspace acceptance receipt and its embedded acceptance
+artifacts; `verify-package` revalidates a published package's complete closure
+without changing it.
+
+The review package contains the accepted receipt, exact manifest/profile/mapping
+and generated-lock bytes, acceptance artifacts, recovery mboxes, Git object
+bundles, `package-index.json`, and `SHA256SUMS`. Offline verification derives
+the locked commit order, stable patch identities, and resulting trees from
+those contents. The candidate commit is explicitly acceptance-attested; its
+tree is independently replayed. A local package directory remains mutable by
+its owner—the receipt is not a signature—so run `verify-package` immediately
+before use and again after copying or transfer. Any missing, extra, changed, or
+internally inconsistent payload is rejected.
+
+Default `west dev` output is bounded: dirty repositories, active operations,
+and planned mutations each show at most eight entries and report the omitted
+count. Every status or dry-run summary prints an exact shell-quoted `--json`
+command immediately after its header for full detail. The command preserves
+the recorded or current West launcher and uses `--option=value` for arbitrary
+option values. A completed `check` or `package` instead places an exact
+`cat --` command for its durable evidence JSON there, so inspecting detail never
+reruns a mutation. Add `--json` when another tool consumes an operation.
+These results use `schema_version: 1` with an `operation` discriminator
+(`status`, `start`, `check`, `package`, or `package-verify`) and an
+operation-specific `state` such as `healthy`, `degraded`, `in_progress`,
+`planned`, `committed`, `failed`, `invalid`, `operational_error`, or `valid`.
+A caught validation or operational failure in JSON mode returns one
+action-specific error envelope and exits 1 without appending human
+diagnostics. Successful operations exit 0, recorded command failures
+propagate their nonzero status, and invalid command-line usage exits 2.
 
 ## Sharing code without fork noise
 
@@ -146,6 +190,19 @@ Git in clean disposable transactions. It creates clean
 `integration/<profile>` branches, records the top-level submodule pointers,
 and writes a frozen profile lock. The checked-in patch archives are retained
 for provenance and recovery review; they are not materialization inputs.
+
+Patch diagnostics have the same bounded-default contract. `west patch status`,
+`west patch check`, and `west patch explain` print a summary, then an exact
+shell-quoted `--full` command, then at most eight problem rows; `explain` also
+prints one recommended next command. `--full` emits every human-readable row
+and `--json` emits the complete machine result. Their JSON envelopes use
+`schema_version: 1` and operation discriminators `patch_status`,
+`patch_check`, and `patch_explain`. `status --strict` exits 1 for missing,
+mismatched, or locally unavailable integration state. `check` exits 1 for
+invalid metadata, for missing behavioral coverage with `--strict`, or for
+quality findings with `--strict-quality`. `explain` is read-only and exits 0
+after classifying the requested profile, module, or series; planning or input
+errors exit 1. Invalid command-line usage exits 2 for all three commands.
 
 ## Typed profile composition
 

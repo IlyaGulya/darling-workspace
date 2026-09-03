@@ -7,6 +7,7 @@ import json
 import os
 import signal
 import stat
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -74,10 +75,53 @@ if mode == "interrupt" and argv[:2] == ["patch", "check"]:
 if argv[:1] == ["test"] and "--list" in argv:
     sys.stdout.write("fixture.case: [env:host diag:contract kind:behavior]\n")
 if argv[:2] == ["patch", "apply"] and "--lock-first-evidence" in argv:
+    ids = json.loads((Path.cwd() / "fixture-ids.json").read_text())
+    (Path.cwd() / "patches" / "homebrew" / "west.lock.yml").write_text(
+        "manifest:\n  projects: []\n# generated candidate\n",
+        encoding="utf-8",
+    )
+    module_repo = Path.cwd() / "fixture" / "module"
+    subprocess.run(
+        ["git", "commit", "--allow-empty", "-qm", "candidate integration"],
+        cwd=module_repo,
+        check=True,
+    )
+    applied_commit = subprocess.run(
+        ["git", "rev-parse", "HEAD"],
+        cwd=module_repo,
+        check=True,
+        text=True,
+        stdout=subprocess.PIPE,
+    ).stdout.strip()
     lock_evidence = Path(argv[argv.index("--lock-first-evidence") + 1])
     lock_evidence.parent.mkdir(parents=True, exist_ok=True)
     lock_evidence.write_text(
-        json.dumps({"evidence_schema_version": 2, "verdict": "VALID"}) + "\n",
+        json.dumps(
+            {
+                "evidence_schema_version": 2,
+                "verdict": "VALID",
+                "batch_id": "dev-check-contract-batch",
+                "expected_count": 1,
+                "module_order": ["fixture/module"],
+                "series_order": [
+                    {"module": "fixture/module", "patch": "fixture/change.patch"}
+                ],
+                "series": [
+                    {
+                        "module": "fixture/module",
+                        "patch": "fixture/change.patch",
+                        "base": ids["base"],
+                        "source": ids["source"],
+                        "canonical_tree": ids["tree"],
+                        "applied_commit": applied_commit,
+                        "applied_tree": ids["tree"],
+                        "verdict": "VALID",
+                    }
+                ],
+            },
+            sort_keys=True,
+        )
+        + "\n",
         encoding="utf-8",
     )
 if len(argv) >= 2 and argv[:2] == ["patch", "export-locks"]:
@@ -86,8 +130,28 @@ if len(argv) >= 2 and argv[:2] == ["patch", "export-locks"]:
     if mode == "package-fail":
         (output / "partial").write_text("transaction-owned\n", encoding="utf-8")
         raise SystemExit(41)
-    mbox_data = b"From fixture-contract\nSubject: [PATCH] fixture\n\nbody\n"
-    mbox = output / "patches" / "fixture.mbox"
+    ids = json.loads((Path.cwd() / "fixture-ids.json").read_text())
+    source = ids["source"]
+    mbox_data = subprocess.run(
+        [
+            "git",
+            "format-patch",
+            "--stdout",
+            "--no-stat",
+            "--full-index",
+            f"{source}^!",
+        ],
+        cwd=ids["module_repo"],
+        check=True,
+        stdout=subprocess.PIPE,
+    ).stdout
+    patch_id = subprocess.run(
+        ["git", "patch-id", "--stable"],
+        input=mbox_data,
+        check=True,
+        stdout=subprocess.PIPE,
+    ).stdout.decode().split()[0]
+    mbox = output / "mbox" / "fixture" / "module" / "fixture" / "change.mbox"
     mbox.parent.mkdir(parents=True)
     mbox.write_bytes(mbox_data)
     evidence = {
@@ -105,18 +169,34 @@ if len(argv) >= 2 and argv[:2] == ["patch", "export-locks"]:
             {
                 "module": "fixture/module",
                 "patch": "fixture/change.patch",
-                "mbox": "patches/fixture.mbox",
+                "lock": "fixture.lock.yml",
+                "base": ids["base"],
+                "source": source,
+                "ordered_commits": [source],
+                "commit_count": 1,
+                "resulting_tree": ids["tree"],
+                "mbox": "mbox/fixture/module/fixture/change.mbox",
                 "sha256": hashlib.sha256(mbox_data).hexdigest(),
+                "stable_patch_ids": [patch_id],
             }
         ],
-        "clean_odb": {"alternates": 0, "shallow": 0, "partial": 0},
+        "clean_odb": {
+            "module_count": 1,
+            "immutable_fetch_transactions": 1,
+            "alternates": 0,
+            "shallow": 0,
+            "partial": 0,
+        },
     }
+    if mode == "package-semantic-lie":
+        evidence["series"][0]["resulting_tree"] = "9" * 40
     (output / "evidence.json").write_text(
         json.dumps(evidence, sort_keys=True, indent=2) + "\n", encoding="utf-8"
     )
 '''
 
 FAKE_ORACLE = r'''#!/usr/bin/env python3
+import hashlib
 import json
 import os
 import sys
@@ -126,15 +206,68 @@ log = Path(os.environ["DEV_CHECK_FAKE_LOG"])
 with log.open("a", encoding="utf-8") as stream:
     stream.write(json.dumps({"authority": "oracle", "argv": sys.argv[1:]}) + "\n")
 output = Path(sys.argv[sys.argv.index("--output") + 1])
+workspace = Path(sys.argv[sys.argv.index("--workspace") + 1])
+frozen_sha256 = hashlib.sha256((workspace / "west.lock.yml").read_bytes()).hexdigest()
+ids = json.loads((workspace / "fixture-ids.json").read_text())
+generated_path = workspace / "patches" / "homebrew" / "west.lock.yml"
+generated_data = b"manifest:\n  projects: []\n# generated candidate\n"
+generated_row = {
+    "profile": "homebrew",
+    "path": "patches/homebrew/west.lock.yml",
+    "size": len(generated_data),
+    "sha256": hashlib.sha256(generated_data).hexdigest(),
+}
 output.parent.mkdir(parents=True, exist_ok=True)
+series = {
+    "module": "fixture/module",
+    "patch": "fixture/change.patch",
+    "base": ids["base"],
+    "source": ids["source"],
+    "canonical_tree": ids["tree"],
+    "applied_commit": ids["source"],
+    "applied_tree": ids["tree"],
+    "verdict": "VALID",
+}
 output.write_text(
     json.dumps(
         {
             "oracle_schema_version": 2,
             "mode": "immutable-cherry-pick-oracle",
             "profile": "homebrew",
+            "profile_order": ["homebrew"],
+            "batches": [
+                {
+                    "profile": "homebrew",
+                    "batch_id": "dev-check-contract-batch",
+                    "expected_count": 1,
+                    "module_order": ["fixture/module"],
+                    "series_order": [
+                        {"module": "fixture/module", "patch": "fixture/change.patch"}
+                    ],
+                    "series": [series],
+                    "verdict": "VALID",
+                }
+            ],
+            "modules": [
+                {
+                    "module": "fixture/module",
+                    "commit": ids["source"],
+                    "tree": ids["tree"],
+                }
+            ],
+            "generated_profile_locks": [generated_row],
+            "frozen_manifest_sha256": frozen_sha256,
+            "clean_odb": {
+                "module_count": 1,
+                "immutable_fetch_transactions": 1,
+                "alternates": 0,
+                "shallow": 0,
+                "partial": 0,
+            },
+            "cleanup": {"root": "removed", "worktrees": "removed", "refs": "removed"},
             "verdict": "VALID",
-        }
+        },
+        sort_keys=True,
     )
     + "\n",
     encoding="utf-8",
@@ -152,8 +285,11 @@ with Path(os.environ["DEV_CHECK_FAKE_LOG"]).open("a", encoding="utf-8") as strea
 '''
 
 FAKE_ACCEPTANCE = r'''#!/usr/bin/env python3
+import hashlib
 import json
 import os
+import subprocess
+import shutil
 import sys
 from pathlib import Path
 
@@ -165,23 +301,95 @@ authority = {
 }[name]
 with Path(os.environ["DEV_CHECK_FAKE_LOG"]).open("a", encoding="utf-8") as stream:
     stream.write(json.dumps({"authority": authority, "argv": sys.argv[1:]}) + "\n")
-if authority == "capture":
-    for option in ("--modules", "--manifest"):
-        target = Path(sys.argv[sys.argv.index(option) + 1])
-        target.parent.mkdir(parents=True, exist_ok=True)
-        target.write_text(json.dumps({"fixture": option}) + "\n", encoding="utf-8")
-elif authority == "compare":
-    evidence = Path(sys.argv[sys.argv.index("--evidence") + 1])
-    evidence.parent.mkdir(parents=True, exist_ok=True)
-    if not evidence.exists():
-        evidence.write_text(
-            json.dumps({"evidence_schema_version": 2, "verdict": "VALID"}) + "\n",
-            encoding="utf-8",
+if authority == "bootstrap":
+    workspace = Path.cwd()
+    ids = json.loads((workspace / "fixture-ids.json").read_text())
+    destination = workspace / "fixture" / "module"
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copytree(ids["module_repo"], destination)
+elif authority == "capture":
+    workspace = Path(sys.argv[sys.argv.index("--workspace") + 1])
+    modules = Path(sys.argv[sys.argv.index("--modules") + 1])
+    manifest = Path(sys.argv[sys.argv.index("--manifest") + 1])
+    ids = json.loads((workspace / "fixture-ids.json").read_text())
+    generated_path = workspace / "patches" / "homebrew" / "west.lock.yml"
+    generated_data = generated_path.read_bytes()
+    generated_row = {
+        "profile": "homebrew",
+        "path": "patches/homebrew/west.lock.yml",
+        "size": len(generated_data),
+        "sha256": hashlib.sha256(generated_data).hexdigest(),
+    }
+    modules.parent.mkdir(parents=True, exist_ok=True)
+    modules.write_text(
+        json.dumps(
+            {
+                "profile": "homebrew",
+                "modules": [
+                    {
+                        "module": "fixture/module",
+                        "west_name": "fixture-module",
+                        "path": "fixture/module",
+                        "integration_profile": "homebrew",
+                        "integration_oid": subprocess.run(
+                            ["git", "rev-parse", "HEAD"],
+                            cwd=workspace / "fixture" / "module",
+                            check=True,
+                            text=True,
+                            stdout=subprocess.PIPE,
+                        ).stdout.strip(),
+                        "tree": ids["tree"],
+                        "status": "",
+                    }
+                ],
+            },
+
+
+            sort_keys=True,
         )
+        + "\n",
+        encoding="utf-8",
+    )
+    commit = subprocess.run(
+        ["git", "rev-parse", "HEAD"],
+        cwd=workspace,
+        check=True,
+        text=True,
+        stdout=subprocess.PIPE,
+    ).stdout.strip()
+    frozen = (workspace / "west.lock.yml").read_bytes()
+    manifest.write_text(
+        json.dumps(
+            {
+                "workspace_commit": commit,
+                "frozen_manifest_sha256": hashlib.sha256(frozen).hexdigest(),
+                "generated_profile_locks": [generated_row],
+                "validated_nested_children": {},
+            },
+            sort_keys=True,
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+elif authority == "compare":
     result = Path(sys.argv[sys.argv.index("--result") + 1])
     result.parent.mkdir(parents=True, exist_ok=True)
     result.write_text(
-        json.dumps({"evidence_schema_version": 2, "verdict": "VALID"}) + "\n",
+        json.dumps(
+            {
+                "evidence_schema_version": 2,
+                "verdict": "VALID",
+                "batch_id": "dev-check-contract-batch",
+                "expected_count": 1,
+                "module_order": ["fixture/module"],
+                "module_count": 1,
+                "control_mode": "immutable-cherry-pick-oracle",
+                "candidate_mode": "default-lock-first",
+                "lock_first_evidence": "lock-first-evidence.json",
+            },
+            sort_keys=True,
+        )
+        + "\n",
         encoding="utf-8",
     )
 '''
@@ -224,6 +432,90 @@ def must_reject(callback: Callable[[], object], fragment: str) -> None:
         assert fragment in str(error), error
     else:
         raise AssertionError(f"dev check accepted invalid input requiring {fragment!r}")
+
+def package_copy(source: Path, destination: Path) -> Path:
+    shutil.copytree(source, destination)
+    return destination
+
+
+def rewrite_package_index(
+    package: Path, change: Callable[[dict[str, object]], None]
+) -> None:
+    index_path = package / "package-index.json"
+    index = json.loads(index_path.read_text(encoding="utf-8"))
+    change(index)
+    index_path.write_text(
+        json.dumps(index, sort_keys=True, indent=2) + "\n", encoding="utf-8"
+    )
+    sums_path = package / "SHA256SUMS"
+    sums = {}
+    for line in sums_path.read_text(encoding="utf-8").splitlines():
+        digest, relative = line.split("  ", 1)
+        sums[relative] = digest
+    sums["package-index.json"] = hashlib.sha256(index_path.read_bytes()).hexdigest()
+    sums_path.write_text(
+        "".join(f"{digest}  {relative}\n" for relative, digest in sorted(sums.items())),
+        encoding="utf-8",
+    )
+
+
+def reseal_package(package: Path) -> None:
+    index_path = package / "package-index.json"
+    index = json.loads(index_path.read_text(encoding="utf-8"))
+    for row in index["files"]:
+        data = (package / row["path"]).read_bytes()
+        row["sha256"] = hashlib.sha256(data).hexdigest()
+        row["bytes"] = len(data)
+    index_path.write_text(
+        json.dumps(index, sort_keys=True, indent=2) + "\n", encoding="utf-8"
+    )
+    sums = []
+    for path in sorted(
+        (item for item in package.rglob("*") if item.is_file()),
+        key=lambda item: item.relative_to(package).as_posix(),
+    ):
+        relative = path.relative_to(package).as_posix()
+        if relative == "SHA256SUMS":
+            continue
+        sums.append(f"{hashlib.sha256(path.read_bytes()).hexdigest()}  {relative}\n")
+    (package / "SHA256SUMS").write_text("".join(sums), encoding="utf-8")
+
+
+def mutate_packaged_artifact(
+    package: Path,
+    name: str,
+    change: Callable[[dict[str, object]], None],
+) -> None:
+    receipt_path = package / "check-receipt.json"
+    receipt = json.loads(receipt_path.read_text(encoding="utf-8"))
+    row = receipt["acceptance_artifacts"][name]
+    value = json.loads(row["content"])
+    change(value)
+    data = (json.dumps(value, sort_keys=True, indent=2) + "\n").encode()
+    row["content"] = data.decode()
+    row["sha256"] = hashlib.sha256(data).hexdigest()
+    row["bytes"] = len(data)
+    index = json.loads((package / "package-index.json").read_text(encoding="utf-8"))
+    relative = next(
+        item["path"] for item in index["acceptance"]["artifacts"] if item["name"] == name
+    )
+    (package / relative).write_bytes(data)
+    receipt_path.write_text(
+        json.dumps(receipt, sort_keys=True, indent=2) + "\n", encoding="utf-8"
+    )
+    reseal_package(package)
+
+
+def mutate_packaged_receipt(
+    package: Path, change: Callable[[dict[str, object]], None]
+) -> None:
+    receipt_path = package / "check-receipt.json"
+    receipt = json.loads(receipt_path.read_text(encoding="utf-8"))
+    change(receipt)
+    receipt_path.write_text(
+        json.dumps(receipt, sort_keys=True, indent=2) + "\n", encoding="utf-8"
+    )
+    reseal_package(package)
 
 
 def assert_plan(
@@ -286,8 +578,89 @@ with tempfile.TemporaryDirectory(prefix="dev-check-contract-") as temporary:
     executable(bootstrap, FAKE_ACCEPTANCE)
     executable(capture, FAKE_ACCEPTANCE)
     executable(compare, FAKE_ACCEPTANCE)
+    module_repo = sandbox / "fixture" / "module"
+    module_repo.mkdir(parents=True)
+    git(module_repo, "init", "-q")
+    git(module_repo, "config", "user.name", "Fixture Module")
+    git(module_repo, "config", "user.email", "fixture-module@example.invalid")
+    (module_repo / "base.txt").write_text("base\n", encoding="utf-8")
+    git(module_repo, "add", ".")
+    git(module_repo, "commit", "-qm", "fixture base")
+    module_base = git(module_repo, "rev-parse", "HEAD")
+    (module_repo / "fixture.txt").write_text("fixture\n", encoding="utf-8")
+    git(module_repo, "add", ".")
+    git(module_repo, "commit", "-qm", "fixture change")
+    module_source = git(module_repo, "rev-parse", "HEAD")
+    module_tree = git(module_repo, "rev-parse", "HEAD^{tree}")
+    fixture_ids = {
+        "base": module_base,
+        "source": module_source,
+        "tree": module_tree,
+        "module_repo": str(module_repo),
+    }
+    (repo / "fixture-ids.json").write_text(
+        json.dumps(fixture_ids, sort_keys=True) + "\n", encoding="utf-8"
+    )
     mapping.parent.mkdir(parents=True)
-    mapping.write_text("fixture: true\n", encoding="utf-8")
+    mapping.write_text(
+        json.dumps(
+            {
+                "schema_version": 2,
+                "profile": "homebrew",
+                "batch_id": "dev-check-contract-batch",
+                "expected_count": 1,
+                "series": [
+                    {
+                        "profile": "homebrew",
+                        "module": "fixture/module",
+                        "patch": "fixture/change.patch",
+                        "lock": "fixture.lock.yml",
+                    }
+                ],
+            },
+            sort_keys=True,
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    (mapping.parent / "lock-first-profiles-v1.yml").write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "profiles": [
+                    {
+                        "profile": "homebrew",
+                        "mapping": mapping.name,
+                    }
+                ],
+            },
+            sort_keys=True,
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    (mapping.parent / "fixture.lock.yml").write_text(
+        json.dumps(
+            {
+                "schema_version": 2,
+                "project": {"name": "fixture-module", "path": "."},
+                "upstream": {"url": str(module_repo), "base_commit": module_base},
+                "mirror": {
+                    "url": str(module_repo),
+                    "base_ref": f"refs/tags/patch-stack/v1/bases/{module_base}",
+                    "base_oid": module_base,
+                    "source_ref": f"refs/tags/patch-stack/v1/sources/{module_source}",
+                    "source_oid": module_source,
+                },
+                "source_commit": module_source,
+                "ordered_commits": [module_source],
+                "expected_tree": module_tree,
+            },
+            sort_keys=True,
+        )
+        + "\n",
+        encoding="utf-8",
+    )
     (repo / "west.yml").write_text("manifest: {}\n", encoding="utf-8")
     (repo / "west.lock.yml").write_text("manifest: {}\n", encoding="utf-8")
     for profile in ("focused", "homebrew"):
@@ -296,7 +669,14 @@ with tempfile.TemporaryDirectory(prefix="dev-check-contract-") as temporary:
         (patch_dir / "fixture.patch").write_text(
             f"{profile} fixture\n", encoding="utf-8"
         )
+        if profile == "homebrew":
+            (patch_dir / "west.lock.yml").write_text(
+                "manifest:\n  projects: []\n", encoding="utf-8"
+            )
     (repo / "fixture.txt").write_text("manifest fixture\n", encoding="utf-8")
+    (repo / ".gitignore").write_text(
+        "locks/patch-stack/*.ignored\n", encoding="utf-8"
+    )
     git(repo, "init", "-q")
     git(repo, "config", "user.name", "Dev Check Contract")
     git(repo, "config", "user.email", "dev-check-contract@example.invalid")
@@ -312,6 +692,25 @@ with tempfile.TemporaryDirectory(prefix="dev-check-contract-") as temporary:
     build_dir = sandbox / "runtime-build"
     prefix.mkdir()
     build_dir.mkdir()
+    descendant_result = dev_check._run_process(
+        [
+            sys.executable,
+            "-c",
+            (
+                "import subprocess, time; "
+                "subprocess.Popen("
+                "['sleep', '60'], stdin=subprocess.DEVNULL, "
+                "stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL); "
+                "time.sleep(0.05)"
+            ),
+        ],
+        sandbox,
+        10,
+        {},
+    )
+    assert descendant_result["returncode"] == 125
+    assert descendant_result["process_group_quiescent"] is False
+
 
     quick_evidence = outside / "quick-plan.json"
     quick = dev_check.build_check_plan(
@@ -534,6 +933,7 @@ with tempfile.TemporaryDirectory(prefix="dev-check-contract-") as temporary:
                 str(prefix),
                 "--build-dir",
                 str(build_dir),
+                "--full",
             ],
         ),
         (
@@ -684,19 +1084,27 @@ with tempfile.TemporaryDirectory(prefix="dev-check-contract-") as temporary:
         "immutable_oracle",
         "lock_first_evidence",
         "comparison",
+        "module_map",
+        "candidate_manifest",
     }
     for name, artifact in acceptance_receipt["acceptance_artifacts"].items():
         raw = artifact["content"].encode("utf-8")
         assert artifact["bytes"] == len(raw)
         assert artifact["sha256"] == hashlib.sha256(raw).hexdigest()
         embedded = json.loads(raw)
-        assert embedded["verdict"] == "VALID"
         if name == "immutable_oracle":
+            assert embedded["verdict"] == "VALID"
             assert embedded["oracle_schema_version"] == 2
             assert embedded["mode"] == "immutable-cherry-pick-oracle"
             assert embedded["profile"] == "homebrew"
-        else:
+        elif name in {"lock_first_evidence", "comparison"}:
+            assert embedded["verdict"] == "VALID"
             assert embedded["evidence_schema_version"] == 2
+        elif name == "module_map":
+            assert embedded["profile"] == "homebrew"
+            assert embedded["modules"]
+        else:
+            assert embedded["workspace_commit"] == head
     durable(acceptance_path, acceptance_receipt)
     assert not scratch.exists()
     fake_kinds = {
@@ -763,6 +1171,23 @@ with tempfile.TemporaryDirectory(prefix="dev-check-contract-") as temporary:
         ),
         "outside the active manifest repository",
     )
+    manifest_fixture = repo / "fixture.txt"
+    manifest_fixture.write_text("dirty manifest fixture\n", encoding="utf-8")
+    must_reject(
+        lambda: acceptance_plan(),
+        "acceptance checks require a clean manifest repository",
+    )
+    manifest_fixture.write_text("manifest fixture\n", encoding="utf-8")
+    assert git(repo, "status", "--porcelain") == ""
+
+    ignored_input = repo / "locks" / "patch-stack" / "fixture.ignored"
+    ignored_input.write_text("ignored package input\n", encoding="utf-8")
+    assert git(repo, "status", "--porcelain") == ""
+    must_reject(
+        lambda: acceptance_plan(),
+        "acceptance package inputs contain ignored files",
+    )
+    ignored_input.unlink()
 
     failure_path = outside / "failed-check.json"
     failure_plan = dev_check.build_check_plan(
@@ -968,17 +1393,18 @@ with tempfile.TemporaryDirectory(prefix="dev-check-contract-") as temporary:
     assert substituted_temp_path[0].read_bytes() == foreign_temp_data
 
     os.environ["DEV_CHECK_FAKE_MODE"] = "package-ok"
-    weak_gate = dev_check.build_package_plan(
-        repo,
-        west,
-        "homebrew",
-        check_receipt_path,
-        outside / "weak-gate-output",
-        outside / "weak-gate-receipt.json",
-        "quick",
+    must_reject(
+        lambda: dev_check.build_package_plan(
+            repo,
+            west,
+            "homebrew",
+            check_receipt_path,
+            outside / "weak-gate-output",
+            outside / "weak-gate-receipt.json",
+            "quick",
+        ),
+        "requires an acceptance check receipt",
     )
-    assert weak_gate["inputs"]["receipt_tier"] == "canonical"
-    assert weak_gate["inputs"]["required_tier"] == "quick"
     must_reject(
         lambda: dev_check.build_package_plan(
             repo,
@@ -996,10 +1422,10 @@ with tempfile.TemporaryDirectory(prefix="dev-check-contract-") as temporary:
             repo,
             west,
             "focused",
-            check_receipt_path,
+            acceptance_path,
             outside / "wrong-profile-output",
             outside / "wrong-profile-receipt.json",
-            "canonical",
+            "acceptance",
         ),
         "profile does not match",
     )
@@ -1013,7 +1439,7 @@ with tempfile.TemporaryDirectory(prefix="dev-check-contract-") as temporary:
             outside / "narrowed-package-receipt.json",
             "quick",
         ),
-        "rejects narrowed check receipts",
+        "requires an acceptance check receipt",
     )
 
     existing_output = outside / "existing-output"
@@ -1025,7 +1451,7 @@ with tempfile.TemporaryDirectory(prefix="dev-check-contract-") as temporary:
             repo,
             west,
             "homebrew",
-            check_receipt_path,
+            acceptance_path,
             existing_output,
             outside / "existing-output-receipt.json",
             "canonical",
@@ -1038,7 +1464,7 @@ with tempfile.TemporaryDirectory(prefix="dev-check-contract-") as temporary:
             repo,
             west,
             "homebrew",
-            check_receipt_path,
+            acceptance_path,
             repo / "forbidden-package",
             outside / "forbidden-package-receipt.json",
             "canonical",
@@ -1048,18 +1474,18 @@ with tempfile.TemporaryDirectory(prefix="dev-check-contract-") as temporary:
 
     package_output = outside / "package"
     package_receipt_path = outside / "package-receipt.json"
-    check_receipt_digest = hashlib.sha256(check_receipt_path.read_bytes()).hexdigest()
+    check_receipt_digest = hashlib.sha256(acceptance_path.read_bytes()).hexdigest()
     package_plan = dev_check.build_package_plan(
         repo,
         west,
         "homebrew",
-        check_receipt_path,
+        acceptance_path,
         package_output,
         package_receipt_path,
-        "canonical",
+        "acceptance",
     )
     assert package_plan["inputs"]["receipt_sha256"] == check_receipt_digest
-    assert package_plan["inputs"]["receipt_transaction_id"] == canonical_receipt[
+    assert package_plan["inputs"]["receipt_transaction_id"] == acceptance_receipt[
         "transaction_id"
     ]
     assert package_plan["inputs"]["output"] == str(package_output)
@@ -1089,7 +1515,7 @@ with tempfile.TemporaryDirectory(prefix="dev-check-contract-") as temporary:
     clear_log(log)
     packaged = dev_check.execute_package(package_plan)
     durable(package_receipt_path, packaged)
-    assert packaged["state"] == "committed"
+    assert packaged["state"] == "committed", packaged.get("error")
     assert packaged["returncode"] == 0
     assert packaged["results"][0]["returncode"] == 0
     assert packaged["staging"]["path"] == str(package_staging)
@@ -1101,13 +1527,237 @@ with tempfile.TemporaryDirectory(prefix="dev-check-contract-") as temporary:
     assert not package_staging.exists() and not package_marker.exists()
     package_binding = packaged["package"]
     assert package_binding["output"] == str(package_output)
-    assert package_binding["check_receipt"] == {
-        "path": str(check_receipt_path),
-        "sha256": check_receipt_digest,
-        "transaction_id": canonical_receipt["transaction_id"],
-        "tier": "canonical",
+
+    verified = dev_check.verify_package(package_output)
+    assert verified["schema_version"] == 1
+    assert verified["operation"] == "package-verify"
+    assert verified["state"] == "valid"
+    assert verified["returncode"] == 0
+    assert verified["profile"] == "homebrew"
+    package_index = verified["package_index"]
+    assert package_index["manifest"]["commit"] == acceptance_receipt["inputs"][
+        "package_snapshot"
+    ]["manifest_head"]
+    assert package_index["manifest"]["tree"] == acceptance_receipt["inputs"][
+        "package_snapshot"
+    ]["manifest_tree"]
+    assert set(package_index["source_closure"]) == {
+        "paths",
+        "generated_locks",
+        "manifest_bundle",
+        "module_bundles",
+        "lock_bindings",
     }
-    assert package_binding["package_snapshot"] == package_snapshot
+    assert package_index["acceptance"]["cleanup"] == "complete"
+    assert package_index["checks"]
+    assert (package_output / "package-index.json").is_file()
+    assert (package_output / "SHA256SUMS").is_file()
+    assert (package_output / "check-receipt.json").read_bytes() == acceptance_path.read_bytes()
+    generated_binding = package_index["source_closure"]["generated_locks"][0]
+    assert (
+        package_output / generated_binding["path"]
+    ).read_bytes() == (
+        package_output / generated_binding["source_copy"]
+    ).read_bytes()
+    assert (
+        package_output / generated_binding["path"]
+    ).read_bytes() != (
+        package_output / "source" / generated_binding["source_path"]
+    ).read_bytes()
+
+    extra_package = package_copy(package_output, outside / "verify-extra")
+    (extra_package / "foreign").write_text("foreign\n", encoding="utf-8")
+    must_reject(lambda: dev_check.verify_package(extra_package), "extra files")
+
+    missing_package = package_copy(package_output, outside / "verify-missing")
+    (missing_package / "evidence.json").unlink()
+    must_reject(lambda: dev_check.verify_package(missing_package), "files are missing")
+    assert package_index["integrity_boundary"] == {
+        "mode": "local-owner-mutable",
+        "publication": "verified-before-and-after-atomic-rename",
+        "consumer_requirement": "verify-package immediately before use",
+        "verify_operation": "package-verify",
+    }
+    candidate_module = package_index["source_closure"]["module_bundles"][0]
+    assert candidate_module["candidate_object_authority"] == (
+        "validated-acceptance-receipt"
+    )
+    assert candidate_module["candidate_integration_commit"] != module_source
+    assert (
+        subprocess.run(
+            [
+                "git",
+                "cat-file",
+                "-e",
+                f"{candidate_module['candidate_integration_commit']}^{{commit}}",
+            ],
+            cwd=module_repo,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            check=False,
+        ).returncode
+        != 0
+    )
+
+    tampered_package = package_copy(package_output, outside / "verify-tampered")
+    tampered_mbox = tampered_package / package_index["export"]["mboxes"][0]
+    tampered_mbox.write_bytes(tampered_mbox.read_bytes() + b"tampered\n")
+    must_reject(lambda: dev_check.verify_package(tampered_package), "digest mismatch")
+
+    stale_log_package = package_copy(package_output, outside / "verify-stale-log")
+    mutate_packaged_receipt(
+        stale_log_package,
+        lambda value: (
+            value["results"][0]["stdout"].__setitem__("tail", "stale"),
+            value["results"][0].__setitem__("stdout_tail", "stale"),
+        ),
+    )
+    must_reject(
+        lambda: dev_check.verify_package(stale_log_package),
+        "index bindings",
+    )
+
+    mismatch_package = package_copy(package_output, outside / "verify-receipt-mismatch")
+    mutate_packaged_receipt(
+        mismatch_package,
+        lambda value: value.__setitem__("transaction_id", "0" * 32),
+    )
+    must_reject(lambda: dev_check.verify_package(mismatch_package), "steps differ")
+
+    wrong_module_package = package_copy(package_output, outside / "verify-module")
+    mutate_packaged_artifact(
+        wrong_module_package,
+        "module_map",
+        lambda value: value["modules"][0].__setitem__("tree", "9" * 40),
+    )
+    must_reject(
+        lambda: dev_check.verify_package(wrong_module_package),
+        "module trees differ",
+    )
+
+    wrong_manifest_package = package_copy(package_output, outside / "verify-manifest")
+    mutate_packaged_artifact(
+        wrong_manifest_package,
+        "candidate_manifest",
+        lambda value: value.__setitem__("workspace_commit", "9" * 40),
+    )
+    must_reject(
+        lambda: dev_check.verify_package(wrong_manifest_package),
+        "manifest commit differs",
+    )
+    missing_generated_package = package_copy(
+        package_output, outside / "verify-generated-missing"
+    )
+    mutate_packaged_artifact(
+        missing_generated_package,
+        "candidate_manifest",
+        lambda value: value.__setitem__("generated_profile_locks", []),
+    )
+    mutate_packaged_receipt(
+        missing_generated_package,
+        lambda value: value["acceptance_artifacts"]["candidate_manifest"].__setitem__(
+            "generated_locks", []
+        ),
+    )
+    must_reject(
+        lambda: dev_check.verify_package(missing_generated_package),
+        "candidate generated lock extension is invalid",
+    )
+
+    duplicate_generated_package = package_copy(
+        package_output, outside / "verify-generated-duplicate"
+    )
+    mutate_packaged_artifact(
+        duplicate_generated_package,
+        "immutable_oracle",
+        lambda value: value["generated_profile_locks"].append(
+            dict(value["generated_profile_locks"][0])
+        ),
+    )
+    mutate_packaged_artifact(
+        duplicate_generated_package,
+        "candidate_manifest",
+        lambda value: value["generated_profile_locks"].append(
+            dict(value["generated_profile_locks"][0])
+        ),
+    )
+    mutate_packaged_receipt(
+        duplicate_generated_package,
+        lambda value: value["acceptance_artifacts"]["candidate_manifest"][
+            "generated_locks"
+        ].append(
+            dict(
+                value["acceptance_artifacts"]["candidate_manifest"][
+                    "generated_locks"
+                ][0]
+            )
+        ),
+    )
+    must_reject(
+        lambda: dev_check.verify_package(duplicate_generated_package),
+        "invalid or duplicated",
+    )
+
+
+    wrong_lock_package = package_copy(package_output, outside / "verify-lock")
+    mutate_packaged_artifact(
+        wrong_lock_package,
+        "lock_first_evidence",
+        lambda value: value["series"][0].__setitem__("base", "9" * 40),
+    )
+    must_reject(
+        lambda: dev_check.verify_package(wrong_lock_package),
+        "lock-first evidence base differs",
+    )
+
+    wrong_mapping_package = package_copy(package_output, outside / "verify-mapping")
+    rewrite_package_index(
+        wrong_mapping_package,
+        lambda value: value["source_closure"]["paths"][3].__setitem__(
+            "sha256", "9" * 64
+        ),
+    )
+    must_reject(
+        lambda: dev_check.verify_package(wrong_mapping_package),
+        "package source closure index differs from packaged bytes",
+    )
+
+    incomplete_cleanup_package = package_copy(
+        package_output, outside / "verify-incomplete-cleanup"
+    )
+    assert package_binding["publication_verification"] == {
+        "verified_after_rename": True,
+        "package_index_sha256": verified["package_index_sha256"],
+        "output_identity": package_binding["output_identity"],
+    }
+    assert package_binding["verify_before_use"]["argv"] == [
+        *west,
+        "dev",
+        "verify-package",
+        str(package_output),
+        "--json",
+    ]
+    assert "local package files remain mutable" in package_binding[
+        "verify_before_use"
+    ]["reason"]
+    mutate_packaged_receipt(
+        incomplete_cleanup_package,
+        lambda value: value["scratch"].__setitem__("state", "cleanup-failed"),
+    )
+    must_reject(
+        lambda: dev_check.verify_package(incomplete_cleanup_package),
+        "cleanup verdict is incomplete",
+    )
+    assert package_binding["check_receipt"] == {
+        "path": str(package_output / "check-receipt.json"),
+        "source_path": str(acceptance_path),
+        "sha256": check_receipt_digest,
+        "transaction_id": acceptance_receipt["transaction_id"],
+        "tier": "acceptance",
+    }
+    assert package_binding["package_snapshot"] == acceptance_receipt["inputs"][
+        "package_snapshot"
+    ]
     assert package_binding["output_identity"] == {
         "device": package_output.stat().st_dev,
         "inode": package_output.stat().st_ino,
@@ -1115,12 +1765,38 @@ with tempfile.TemporaryDirectory(prefix="dev-check-contract-") as temporary:
     export_evidence_path = package_output / "evidence.json"
     export_evidence_data = export_evidence_path.read_bytes()
     assert package_binding["export_evidence"]["path"] == str(export_evidence_path)
-    assert package_binding["export_evidence"]["sha256"] == hashlib.sha256(
+    assert package_binding["export_evidence"]["evidence_sha256"] == hashlib.sha256(
         export_evidence_data
     ).hexdigest()
-    assert package_binding["export_evidence"]["bytes"] == len(export_evidence_data)
     exported = json.loads(export_evidence_data)
     series = exported["series"][0]
+    source_tamper_package = package_copy(
+        package_output, outside / "verify-source-resealed"
+    )
+    source_mapping = (
+        source_tamper_package
+        / "source"
+        / "locks"
+        / "lock-first-series-v2.yml"
+    )
+    source_mapping.write_bytes(source_mapping.read_bytes() + b" ")
+    reseal_package(source_tamper_package)
+    must_reject(
+        lambda: dev_check.verify_package(source_tamper_package),
+        "packaged source bytes differ",
+    )
+
+    bundle_tamper_package = package_copy(
+        package_output, outside / "verify-bundle-resealed"
+    )
+    module_bundle = bundle_tamper_package / "bundles" / "modules" / "0000.bundle"
+    module_bundle.write_bytes(module_bundle.read_bytes() + b"tampered")
+    reseal_package(bundle_tamper_package)
+    must_reject(
+        lambda: dev_check.verify_package(bundle_tamper_package),
+        "package Git bundle is invalid",
+    )
+
     mbox = package_output / series["mbox"]
     assert series["sha256"] == hashlib.sha256(mbox.read_bytes()).hexdigest()
     assert load_log(log) == [
@@ -1132,16 +1808,72 @@ with tempfile.TemporaryDirectory(prefix="dev-check-contract-") as temporary:
     neighbor_marker = neighbor / "preserve"
     neighbor_marker.write_text("neighbor-owned\n", encoding="utf-8")
 
+    semantic_output = outside / "semantic-lie-package"
+    semantic_receipt = outside / "semantic-lie-receipt.json"
+    semantic_plan = dev_check.build_package_plan(
+        repo,
+        west,
+        "homebrew",
+        acceptance_path,
+        semantic_output,
+        semantic_receipt,
+        "acceptance",
+    )
+    os.environ["DEV_CHECK_FAKE_MODE"] = "package-semantic-lie"
+    semantic_result = dev_check.execute_package(semantic_plan)
+    durable(semantic_receipt, semantic_result)
+    assert semantic_result["state"] == "failed"
+    assert semantic_result["returncode"] == 1
+    assert "semantic identity differs" in semantic_result["error"]
+    assert not semantic_output.exists()
+    assert not Path(semantic_plan["inputs"]["staging_root"]).exists()
+    assert neighbor_marker.read_text(encoding="utf-8") == "neighbor-owned\n"
+
+    mutation_output = outside / "boundary-mutation-package"
+    mutation_receipt = outside / "boundary-mutation-receipt.json"
+    mutation_plan = dev_check.build_package_plan(
+        repo,
+        west,
+        "homebrew",
+        acceptance_path,
+        mutation_output,
+        mutation_receipt,
+        "acceptance",
+    )
+    real_fsync_package_tree = dev_check._fsync_package_tree
+    mutation_injected = [False]
+
+    def mutate_child_after_fsync(package: Path) -> None:
+        real_fsync_package_tree(package)
+        if not mutation_injected[0]:
+            mutation_injected[0] = True
+            evidence_path = package / "evidence.json"
+            evidence_path.write_bytes(evidence_path.read_bytes() + b" ")
+
+    os.environ["DEV_CHECK_FAKE_MODE"] = "package-ok"
+    dev_check._fsync_package_tree = mutate_child_after_fsync
+    try:
+        mutation_result = dev_check.execute_package(mutation_plan)
+    finally:
+        dev_check._fsync_package_tree = real_fsync_package_tree
+    durable(mutation_receipt, mutation_result)
+    assert mutation_injected == [True]
+    assert mutation_result["state"] == "failed"
+    assert mutation_result["returncode"] == 1
+    assert "digest mismatch" in mutation_result["error"]
+    assert not mutation_output.exists()
+    assert not Path(mutation_plan["inputs"]["staging_root"]).exists()
+
     publish_failure_output = outside / "publish-failure-package"
     publish_failure_receipt = outside / "publish-failure-receipt.json"
     publish_failure_plan = dev_check.build_package_plan(
         repo,
         west,
         "homebrew",
-        check_receipt_path,
+        acceptance_path,
         publish_failure_output,
         publish_failure_receipt,
-        "canonical",
+        "acceptance",
     )
     publish_failure_staging = Path(publish_failure_plan["inputs"]["staging"])
     publish_failure_marker = Path(publish_failure_plan["inputs"]["marker"])
@@ -1197,10 +1929,10 @@ with tempfile.TemporaryDirectory(prefix="dev-check-contract-") as temporary:
         repo,
         west,
         "homebrew",
-        check_receipt_path,
+        acceptance_path,
         post_commit_output,
         post_commit_receipt,
-        "canonical",
+        "acceptance",
     )
     post_commit_root = Path(post_commit_plan["inputs"]["staging_root"])
     post_commit_interrupt = [False]
@@ -1243,10 +1975,10 @@ with tempfile.TemporaryDirectory(prefix="dev-check-contract-") as temporary:
         repo,
         west,
         "homebrew",
-        check_receipt_path,
+        acceptance_path,
         failed_output,
         failed_package_receipt,
-        "canonical",
+        "acceptance",
     )
     failed_root = Path(failure_package_plan["inputs"]["staging_root"])
     failed_staging = Path(failure_package_plan["inputs"]["staging"])
@@ -1312,10 +2044,10 @@ with tempfile.TemporaryDirectory(prefix="dev-check-contract-") as temporary:
         repo,
         west,
         "homebrew",
-        check_receipt_path,
+        acceptance_path,
         swap_output,
         swap_receipt,
-        "canonical",
+        "acceptance",
     )
     swap_staging = Path(swap_plan["inputs"]["staging"])
     swap_root_name = Path(swap_plan["inputs"]["staging_root"]).name

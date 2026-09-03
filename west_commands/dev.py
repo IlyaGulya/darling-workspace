@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+import shlex
 import shutil
 import sys
 from typing import Any
@@ -12,16 +13,21 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 
 from dev_check import (
+    DevCheckError,
     build_check_plan,
     build_package_plan,
     execute_check,
     execute_package,
+    verify_package,
 )
 from dev_start import build_start_plan, execute_start, recover_start
 from dev_status import collect_status
 
 
 _TIERS = ("quick", "canonical", "acceptance")
+_HUMAN_PREVIEW_LIMIT = 8
+_HUMAN_ITEM_CHARACTER_LIMIT = 160
+_HUMAN_COMMAND_CHARACTER_LIMIT = 320
 
 
 def _west_argv() -> list[str]:
@@ -56,27 +62,162 @@ def _active_repository_roots(manifest: Any, manifest_repo: Path) -> list[Path]:
     return sorted(roots, key=str)
 
 
-def _render_human(command: WestCommand, payload: dict[str, Any]) -> None:
+def _truncate(value: str, limit: int) -> str:
+    if len(value) <= limit:
+        return value
+    return value[: limit - 1] + "…"
+
+
+def _preview(values: list[str]) -> tuple[str, int]:
+    shown = [
+        _truncate(value, _HUMAN_ITEM_CHARACTER_LIMIT)
+        for value in values[:_HUMAN_PREVIEW_LIMIT]
+    ]
+    return ",".join(shown), len(values) - len(shown)
+
+
+def _replay_west_argv(
+    payload: dict[str, Any], current_west_argv: list[str] | None
+) -> list[str]:
+    recorded = payload.get("inputs", {}).get("west_argv")
+    if (
+        isinstance(recorded, list)
+        and recorded
+        and all(isinstance(item, str) and item for item in recorded)
+    ):
+        return list(recorded)
+    if current_west_argv:
+        return list(current_west_argv)
+    return _west_argv()
+
+
+def _status_json_command(
+    payload: dict[str, Any], current_west_argv: list[str] | None = None
+) -> str:
+    inputs = payload.get("inputs", {})
+    argv = [
+        *_replay_west_argv(payload, current_west_argv),
+        "dev",
+        "status",
+        f"--profile={inputs.get('profile', 'homebrew')}",
+    ]
+    for option, key in (
+        ("--bead", "bead"),
+        ("--prefix", "prefix"),
+        ("--build-dir", "build_dir"),
+    ):
+        value = inputs.get(key)
+        if value is not None:
+            argv.append(f"{option}={value}")
+    argv.append("--json")
+    return shlex.join(argv)
+
+
+def _planned_json_command(
+    payload: dict[str, Any], current_west_argv: list[str] | None = None
+) -> str | None:
+    operation = payload.get("operation")
+    inputs = payload.get("inputs", {})
+    west = _replay_west_argv(payload, current_west_argv)
+    if operation == "start":
+        argv = [
+            *west,
+            "dev",
+            "start",
+            f"--source={inputs['source']}",
+            f"--destination={inputs['destination']}",
+            f"--base={inputs['requested_base']}",
+            f"--branch={inputs['branch']}",
+            f"--bead={inputs['bead']}",
+            f"--module={inputs['module']}",
+            f"--evidence={inputs['evidence']}",
+        ]
+    elif operation == "check":
+        argv = [
+            *west,
+            "dev",
+            "check",
+            str(inputs["tier"]),
+            f"--profile={inputs['profile']}",
+        ]
+        for option, key in (
+            ("--bead", "bead"),
+            ("--patch", "patch"),
+            ("--prefix", "prefix"),
+            ("--build-dir", "build_dir"),
+        ):
+            value = inputs.get(key)
+            if value is not None:
+                argv.append(f"{option}={value}")
+        argv.append(f"--evidence={inputs['evidence']}")
+    elif operation == "package":
+        argv = [
+            *west,
+            "dev",
+            "package",
+            f"--profile={inputs['profile']}",
+            f"--receipt={inputs['receipt']}",
+            f"--output={inputs['output']}",
+            f"--evidence={inputs['evidence']}",
+            f"--required-tier={inputs['required_tier']}",
+        ]
+    else:
+        return None
+    argv.extend(("--dry-run", "--json"))
+    return shlex.join(argv)
+
+
+def _detail_access(
+    payload: dict[str, Any], current_west_argv: list[str] | None = None
+) -> str | None:
+    operation = payload.get("operation")
+    state = payload.get("state")
+    if operation == "status":
+        return _status_json_command(payload, current_west_argv)
+    if state == "planned":
+        return _planned_json_command(payload, current_west_argv)
+    if operation in {"start", "check", "package"}:
+        evidence = payload.get("inputs", {}).get("evidence")
+        if evidence:
+            return shlex.join(["cat", "--", str(evidence)])
+    return None
+
+
+def _render_human(
+    command: WestCommand,
+    payload: dict[str, Any],
+    current_west_argv: list[str] | None = None,
+) -> None:
     operation = payload.get("operation", "dev")
     state = payload.get("state", "unknown")
     transaction = payload.get("transaction_id")
     suffix = f" transaction={transaction}" if transaction else ""
     command.inf(f"west dev {operation}: {state}{suffix}")
+    detail_access = _detail_access(payload, current_west_argv)
+    if detail_access:
+        command.inf(f"details: {detail_access}")
     if operation == "status":
         for name, section in payload.get("results", payload.get("sections", {})).items():
             health = section.get("health", section.get("state", "unknown"))
             details: list[str] = []
             if name == "git":
                 dirty = [
-                    repository.get("name", repository.get("path", "?"))
+                    str(repository.get("name", repository.get("path", "?")))
                     for repository in section.get("repositories", [])
                     if repository.get("dirty") is True
                 ]
                 if dirty:
-                    details.append("dirty=" + ",".join(dirty))
+                    preview, omitted = _preview(dirty)
+                    details.append("dirty=" + preview)
+                    if omitted:
+                        details.append(f"dirty_omitted={omitted}")
             active = section.get("active")
             if active:
-                details.append("active=" + ",".join(str(item) for item in active))
+                active_values = [str(item) for item in active]
+                preview, omitted = _preview(active_values)
+                details.append("active=" + preview)
+                if omitted:
+                    details.append(f"active_omitted={omitted}")
             invalid = section.get("invalid")
             if invalid:
                 details.append(f"invalid={len(invalid)}")
@@ -85,12 +226,18 @@ def _render_human(command: WestCommand, payload: dict[str, Any]) -> None:
     steps = payload.get("steps", [])
     if state == "planned":
         command.inf(f"plan: {len(steps)} steps")
-        for step in steps:
-            if step.get("mutating"):
-                command.inf(
-                    f"mutates: {step.get('name', 'step')} "
-                    + " ".join(step.get("argv", []))
-                )
+        mutations = [step for step in steps if step.get("mutating")]
+        for step in mutations[:_HUMAN_PREVIEW_LIMIT]:
+            invocation = shlex.join(
+                [str(part) for part in step.get("argv", [])]
+            )
+            command.inf(
+                f"mutates: {step.get('name', 'step')} "
+                + _truncate(invocation, _HUMAN_COMMAND_CHARACTER_LIMIT)
+            )
+        omitted = len(mutations) - min(len(mutations), _HUMAN_PREVIEW_LIMIT)
+        if omitted:
+            command.inf(f"... {omitted} additional mutation previews omitted")
     elif steps:
         results = payload.get("results", [])
         command.inf(f"commands recorded: {len(results)}")
@@ -108,9 +255,38 @@ def _render_human(command: WestCommand, payload: dict[str, Any]) -> None:
                     f"failed: {terminal.get('name', 'step')} "
                     f"rc={terminal.get('returncode')}"
                 )
+
     next_action = payload.get("next_safe_action")
     if next_action:
         command.inf(f"next: {next_action}")
+
+
+def _json_error_payload(args: Any, error: Exception) -> dict[str, Any]:
+    action = args.action
+    operation = {
+        "recover-start": "start",
+        "verify-package": "package-verify",
+    }.get(action, action)
+    state = (
+        "invalid"
+        if action == "verify-package" or isinstance(error, (DevCheckError, ValueError))
+        else "operational_error"
+    )
+    payload: dict[str, Any] = {
+        "schema_version": 1,
+        "operation": operation,
+        "state": state,
+        "returncode": 1,
+        "action": action,
+        "error": {
+            "type": type(error).__name__,
+            "message": str(error),
+        },
+    }
+    package = getattr(args, "package", None)
+    if action == "verify-package" and package is not None:
+        payload["package"] = str(package.absolute())
+    return payload
 
 
 class DarlingDev(WestCommand):
@@ -161,22 +337,40 @@ class DarlingDev(WestCommand):
         package.add_argument("--receipt", type=Path, required=True)
         package.add_argument("--output", type=Path, required=True)
         package.add_argument("--evidence", type=Path, required=True)
-        package.add_argument("--required-tier", choices=_TIERS, default="canonical")
+        package.add_argument(
+            "--required-tier",
+            choices=("acceptance",),
+            default="acceptance",
+            help="required receipt tier (acceptance is mandatory for review packages)",
+        )
         package.add_argument("--dry-run", action="store_true")
         package.add_argument("--json", action="store_true")
+
+        verify = subparsers.add_parser(
+            "verify-package", help="verify a published local review package"
+        )
+        verify.add_argument("package", type=Path)
+        verify.add_argument("--json", action="store_true")
         return parser
 
-    def _emit(self, payload: dict[str, Any], json_output: bool) -> None:
+    def _emit(
+        self,
+        payload: dict[str, Any],
+        json_output: bool,
+        current_west_argv: list[str] | None = None,
+    ) -> None:
         if json_output:
             self.inf(json.dumps(payload, sort_keys=True, indent=2))
         else:
-            _render_human(self, payload)
+            _render_human(self, payload, current_west_argv)
 
     def do_run(self, args, unknown) -> None:
         if unknown:
-            self.die(f"unknown arguments: {' '.join(unknown)}")
+            self.err(f"unknown arguments: {' '.join(unknown)}")
+            raise SystemExit(2)
         manifest_repo = Path(self.manifest.repo_abspath).resolve()
         topdir = Path(self.topdir).resolve()
+        west_argv: list[str] | None = None
         try:
             west_argv = _west_argv()
             if args.action == "status":
@@ -207,7 +401,7 @@ class DarlingDev(WestCommand):
                     result = plan
                 else:
                     if not args.json:
-                        _render_human(self, plan)
+                        _render_human(self, plan, west_argv)
                     result = execute_start(plan)
             elif args.action == "recover-start":
                 result = recover_start(args.evidence.absolute())
@@ -227,9 +421,9 @@ class DarlingDev(WestCommand):
                     result = plan
                 else:
                     if not args.json:
-                        _render_human(self, plan)
+                        _render_human(self, plan, west_argv)
                     result = execute_check(plan)
-            else:
+            elif args.action == "package":
                 plan = build_package_plan(
                     manifest_repo=manifest_repo,
                     west_argv=west_argv,
@@ -243,15 +437,22 @@ class DarlingDev(WestCommand):
                     result = plan
                 else:
                     if not args.json:
-                        _render_human(self, plan)
+                        _render_human(self, plan, west_argv)
                     result = execute_package(plan)
+            else:
+                result = verify_package(args.package.absolute())
         except (OSError, RuntimeError, ValueError) as error:
+            if args.json:
+                self._emit(_json_error_payload(args, error), True, west_argv)
+                raise SystemExit(1)
             self.die(str(error))
             return
 
-        self._emit(result, args.json)
+        self._emit(result, args.json, west_argv)
         returncode = result.get("returncode", 0)
         if returncode:
+            if args.json:
+                raise SystemExit(returncode)
             self.die(
                 f"west dev {args.action} failed with exit status {returncode}",
                 exit_code=returncode,
