@@ -309,7 +309,45 @@ def allowed_generated_status(entries: list[tuple[str, str]], expected: list[tupl
     return len(entries) == len(expected) and set(entries) == {(" M", path) for _profile, path in expected}
 
 
-def generated_lock_evidence(workspace: Path, expected: list[tuple[str, str]]) -> list[dict[str, Any]]:
+def _semantic_generated_lock_sha256(
+    value: dict[str, Any],
+    managed_modules: set[str],
+    available: dict[str, dict[str, Any]],
+) -> str:
+    normalized = json.loads(json.dumps(value))
+    projects_value = normalized.get("manifest", {}).get("projects")
+    fail(isinstance(projects_value, list), "generated profile lock has no project list")
+    for index, project in enumerate(projects_value):
+        fail(isinstance(project, dict), f"generated profile lock project {index} is invalid")
+        project_path = project.get("path", project.get("name"))
+        if project_path not in managed_modules:
+            continue
+        revision = project.get("revision")
+        fail(
+            isinstance(revision, str)
+            and re.fullmatch(r"[0-9a-f]{40}", revision) is not None,
+            f"generated profile lock project {index} has invalid revision",
+        )
+        project_info = available.get(project_path)
+        has_managed_children = any(
+            module != "darling" and Path(module).is_relative_to(Path("darling"))
+            for module in managed_modules
+        )
+        tree_revision = (
+            f"{revision}^1^{{tree}}"
+            if project_path == "darling" and has_managed_children
+            else f"{revision}^{{tree}}"
+        )
+        project["revision"] = git(project_info["path"], "rev-parse", tree_revision)
+    payload = yaml.safe_dump(normalized, sort_keys=False, width=1000).encode()
+    return hashlib.sha256(payload).hexdigest()
+
+
+def generated_lock_evidence(
+    workspace: Path,
+    expected: list[tuple[str, str]],
+    available: dict[str, dict[str, Any]],
+) -> list[dict[str, Any]]:
     rows = []
     for profile, relative in expected:
         path = workspace / relative
@@ -317,10 +355,22 @@ def generated_lock_evidence(workspace: Path, expected: list[tuple[str, str]]) ->
         value = path.read_bytes()
         fail(len(value) <= MAX_GENERATED_LOCK_BYTES, f"generated profile lock is too large: {relative}")
         try:
-            fail(isinstance(yaml.safe_load(value), dict), f"generated profile lock is not YAML mapping: {relative}")
+            parsed = yaml.safe_load(value)
+            fail(isinstance(parsed, dict), f"generated profile lock is not YAML mapping: {relative}")
         except yaml.YAMLError as error:
             raise AcceptanceError(f"generated profile lock is invalid YAML: {relative}: {error}") from error
-        rows.append({"profile": profile, "path": relative, "size": len(value), "sha256": hashlib.sha256(value).hexdigest()})
+        managed_modules = set(composed_project_profiles(workspace, profile, available))
+        rows.append(
+            {
+                "profile": profile,
+                "path": relative,
+                "size": len(value),
+                "sha256": hashlib.sha256(value).hexdigest(),
+                "semantic_sha256": _semantic_generated_lock_sha256(
+                    parsed, managed_modules, available
+                ),
+            }
+        )
     return rows
 
 
@@ -364,7 +414,9 @@ def capture(workspace: Path, profile: str, modules_path: Path, manifest_path: Pa
     generated_rows: list[dict[str, Any]] = []
     generated_error: str | None = None
     try:
-        generated_rows = generated_lock_evidence(workspace, expected_generated)
+        generated_rows = generated_lock_evidence(
+            workspace, expected_generated, available
+        )
     except AcceptanceError as error:
         generated_error = str(error)
     diagnostic = {"phase": "capture", "manifest_status_entries": [{"xy": xy, "path": path} for xy, path in entries], "expected_generated_locks": [{"profile": item, "path": path} for item, path in expected_generated], "generated_profile_locks": generated_rows, "generated_lock_error": generated_error, "frozen_lock_unchanged": frozen_ok}

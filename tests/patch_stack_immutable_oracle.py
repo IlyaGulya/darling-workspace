@@ -368,6 +368,7 @@ def generated_lock(
     phase: str,
     phase_modules: list[str],
     targets: dict[str, Path],
+    semantic_revisions: dict[str, str],
 ) -> tuple[dict[str, Any], dict[str, Any]]:
     value = json.loads(json.dumps(frozen))
     revisions = {"darling": git(targets["darling"], "rev-parse", "HEAD")}
@@ -381,12 +382,18 @@ def generated_lock(
         path = project.get("path", project.get("name"))
         if path in revisions:
             project["revision"] = revisions[path]
-    payload = yaml.safe_dump(value, sort_keys=False, width=1000).encode()
+    normalized = json.loads(json.dumps(value))
+    for project in normalized["manifest"]["projects"]:
+        path = project.get("path", project.get("name"))
+        if path in semantic_revisions:
+            project["revision"] = semantic_revisions[path]
+    semantic_payload = yaml.safe_dump(
+        normalized, sort_keys=False, width=1000
+    ).encode()
     return value, {
         "profile": phase,
         "path": f"patches/{phase}/west.lock.yml",
-        "size": len(payload),
-        "sha256": hashlib.sha256(payload).hexdigest(),
+        "semantic_sha256": hashlib.sha256(semantic_payload).hexdigest(),
     }
 
 
@@ -473,6 +480,7 @@ def apply(
         phase_results: dict[str, list[dict[str, str]]] = {}
         generated_locks: list[dict[str, Any]] = []
         current_lock = frozen
+        semantic_revisions: dict[str, str] = {}
         for phase, profile_data, plan in plans:
             results: list[dict[str, str]] = []
             parent_content_tree: str | None = None
@@ -570,8 +578,20 @@ def apply(
                     )
                 except patch_stack_profile_composition.ProfileCompositionError as error:
                     raise OracleError(f"{phase}/{module}: {error}") from error
+            semantic_revisions["darling"] = parent_content_tree
+            semantic_revisions.update(
+                {
+                    module: git(targets[module], "rev-parse", "HEAD^{tree}")
+                    for module in plan.batch["module_order"]
+                    if module != "darling"
+                }
+            )
             current_lock, generated_row = generated_lock(
-                current_lock, phase, plan.batch["module_order"], targets
+                current_lock,
+                phase,
+                plan.batch["module_order"],
+                targets,
+                semantic_revisions,
             )
             generated_locks.append(generated_row)
             phase_results[phase] = results
