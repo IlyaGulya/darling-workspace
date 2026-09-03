@@ -180,8 +180,6 @@ def _command_section(authority: str, result: dict[str, Any]) -> dict[str, Any]:
 
 def _json_command_section(authority: str, result: dict[str, Any]) -> dict[str, Any]:
     section = _command_section(authority, result)
-    if result["rc"] != 0:
-        return section
     if result["stdout_truncated"]:
         section["health"] = "degraded"
         section["json_error"] = "JSON output exceeded the capture limit"
@@ -966,20 +964,28 @@ def collect_status(
             cwd=manifest_repo,
         ),
     )
-    patch_section = _command_section(
+    patch_section = _json_command_section(
         "west patch status typed profile composition",
         _run_bounded(
-            [*west_argv, "patch", "status", "--profile", profile, "--strict"],
+            [
+                *west_argv,
+                "patch",
+                "status",
+                f"--profile={profile}",
+                "--strict",
+                "--json",
+            ],
             cwd=manifest_repo,
         ),
     )
 
     doctor_argv = [*west_argv, "darling-doctor"]
     if prefix is not None:
-        doctor_argv.extend(("--prefix", str(prefix)))
+        doctor_argv.append(f"--prefix={prefix}")
     if build_dir is not None:
-        doctor_argv.extend(("--build-dir", str(build_dir)))
-    doctor_section = _command_section(
+        doctor_argv.append(f"--build-dir={build_dir}")
+    doctor_argv.append("--json")
+    doctor_section = _json_command_section(
         "west darling-doctor authoritative defaults with explicit overrides",
         _run_bounded(doctor_argv, cwd=manifest_repo),
     )

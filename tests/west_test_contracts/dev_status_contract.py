@@ -206,6 +206,18 @@ print(\"job-status: complete\")
     fake_west = root / "bin" / "fake-west"
     bead_payload = {"id": "B-42", "state": "open", "cwd": str(manifest_repo)}
     handoff_payload = {"ready": True, "changes": [], "cwd": str(manifest_repo)}
+    patch_payload = {
+        "schema_version": 1,
+        "operation": "status",
+        "state": "clean",
+        "profile": "contract-profile",
+    }
+    doctor_payload = {
+        "schema_version": 1,
+        "operation": "doctor",
+        "state": "healthy",
+        "returncode": 0,
+    }
     fake_program = f"""#!{sys.executable}
 import json
 import os
@@ -218,16 +230,16 @@ if args == [\"dw\", \"beads\", \"show\", \"B-42\", \"--json\"]:
     print(json.dumps({bead_payload!r}, sort_keys=True, separators=(\",\", \":\")))
 elif args == [\"dw\", \"handoff\", \"--dry-run\", \"--json\"]:
     print(json.dumps({handoff_payload!r}, sort_keys=True, separators=(\",\", \":\")))
-elif args == [\"patch\", \"status\", \"--profile\", \"contract-profile\", \"--strict\"]:
-    print(\"patch-status: composed and clean\")
-elif args == [\"patch\", \"status\", \"--profile\", \"overflow-profile\", \"--strict\"]:
+elif args == [\"patch\", \"status\", \"--profile=contract-profile\", \"--strict\", \"--json\"]:
+    print(json.dumps({patch_payload!r}, sort_keys=True, separators=(\",\", \":\")))
+elif args == [\"patch\", \"status\", \"--profile=overflow-profile\", \"--strict\", \"--json\"]:
     sys.stdout.write(\"X\" * ({dev_status.MAX_CAPTURE_BYTES} + 17))
-elif args == [\"darling-doctor\", \"--prefix\", {str(prefix)!r}, \"--build-dir\", {str(build_dir)!r}]:
-    print(\"doctor: prefix and build are healthy\")
-elif args == [\"darling-doctor\", \"--prefix\", {str(oversized_root)!r}]:
-    print(\"doctor: bounded discovery is healthy\")
-elif args == ["darling-doctor"]:
-    print("doctor: defaults are healthy")
+elif args == [\"darling-doctor\", \"--prefix={str(prefix)}\", \"--build-dir={str(build_dir)}\", \"--json\"]:
+    print(json.dumps({doctor_payload!r}, sort_keys=True, separators=(\",\", \":\")))
+elif args == [\"darling-doctor\", \"--prefix={str(oversized_root)}\", \"--json\"]:
+    print(json.dumps({doctor_payload!r}, sort_keys=True, separators=(\",\", \":\")))
+elif args == [\"darling-doctor\", \"--json\"]:
+    print(json.dumps({doctor_payload!r}, sort_keys=True, separators=(\",\", \":\")))
 else:
     print(\"unexpected fake west invocation: \" + repr(args), file=sys.stderr)
     raise SystemExit(97)
@@ -390,19 +402,18 @@ else:
     assert results["patch"]["argv"] == west_argv + [
         "patch",
         "status",
-        "--profile",
-        "contract-profile",
+        "--profile=contract-profile",
         "--strict",
+        "--json",
     ]
-    assert results["patch"]["stdout"] == "patch-status: composed and clean\n"
+    assert results["patch"]["data"] == patch_payload
     assert results["doctor"]["argv"] == west_argv + [
         "darling-doctor",
-        "--prefix",
-        str(prefix),
-        "--build-dir",
-        str(build_dir),
+        f"--prefix={prefix}",
+        f"--build-dir={build_dir}",
+        "--json",
     ]
-    assert results["doctor"]["stdout"] == "doctor: prefix and build are healthy\n"
+    assert results["doctor"]["data"] == doctor_payload
 
     assert results["source_worktrees"] == {
         "authority": "west_commands.source_worktree record version 1",
@@ -479,8 +490,11 @@ else:
         "west darling-doctor authoritative defaults with explicit overrides"
     )
     assert optional["results"]["doctor"]["health"] == "healthy"
-    assert optional["results"]["doctor"]["argv"] == west_argv + ["darling-doctor"]
-    assert optional["results"]["doctor"]["stdout"] == "doctor: defaults are healthy\n"
+    assert optional["results"]["doctor"]["argv"] == west_argv + [
+        "darling-doctor",
+        "--json",
+    ]
+    assert optional["results"]["doctor"]["data"] == doctor_payload
 
     overflow_patch = overflow["results"]["patch"]
     assert overflow_patch["health"] == "degraded"

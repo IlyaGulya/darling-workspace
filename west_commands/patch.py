@@ -28,6 +28,7 @@ import patch_stack_materialize
 import patch_stack_lock_first
 import patch_stack_export
 import patch_stack_profile_composition
+import patch_explain
 from test_runtime import ROOTLESS_BOOTSTRAP_RESOURCE, ROOTLESS_BOOTSTRAP_TARGET
 
 
@@ -150,9 +151,24 @@ class DarlingPatch(WestCommand):
     def do_add_parser(self, parser_adder):
         parser = parser_adder.add_parser(self.name, description=self.description)
         subparsers = parser.add_subparsers(dest="action", required=True)
-        for action in ("list", "verify", "export", "export-locks", "apply", "clean", "status", "check", "preflight", "materialize-lock"):
+        for action in (
+            "list",
+            "verify",
+            "export",
+            "export-locks",
+            "apply",
+            "clean",
+            "status",
+            "check",
+            "explain",
+            "preflight",
+            "materialize-lock",
+        ):
             command = subparsers.add_parser(action)
-            command.add_argument("--profile", default="homebrew")
+            if action == "explain":
+                command.add_argument("--profile", required=True)
+            else:
+                command.add_argument("--profile", default="homebrew")
             if action == "verify":
                 command.add_argument(
                     "--applicability-only",
@@ -201,12 +217,20 @@ class DarlingPatch(WestCommand):
                 )
             if action == "clean":
                 command.add_argument("--force", action="store_true")
+            if action == "explain":
+                selectors = command.add_mutually_exclusive_group()
+                selectors.add_argument("--module")
+                selectors.add_argument("--series", metavar="PATCH")
+                command.add_argument("--full", action="store_true")
+                command.add_argument("--json", action="store_true")
             if action == "status":
                 command.add_argument(
                     "--strict",
                     action="store_true",
                     help="exit non-zero unless every typed integration tree matches",
                 )
+                command.add_argument("--full", action="store_true")
+                command.add_argument("--json", action="store_true")
             if action == "preflight":
                 command.add_argument("--repo", required=True)
                 command.add_argument("--lock", required=True)
@@ -233,11 +257,36 @@ class DarlingPatch(WestCommand):
                     action="store_true",
                     help="exit non-zero for test quality warnings; implies --quality",
                 )
+                command.add_argument("--full", action="store_true")
+                command.add_argument("--json", action="store_true")
         return parser
 
     def do_run(self, args, unknown):
+        diagnostic_operations = {
+            "explain": "patch_explain",
+            "status": "patch_status",
+            "check": "patch_check",
+        }
+
+        def fail(message: str, *, exit_code: int = 1):
+            operation = diagnostic_operations.get(args.action)
+            if operation is not None and getattr(args, "json", False):
+                self.inf(
+                    json.dumps(
+                        patch_explain.error_result(
+                            operation,
+                            getattr(args, "profile", None),
+                            message,
+                            exit_code=exit_code,
+                        ),
+                        sort_keys=True,
+                    )
+                )
+                raise SystemExit(exit_code)
+            self.die(message, exit_code=exit_code)
+
         if unknown:
-            self.die(f"unknown arguments: {' '.join(unknown)}")
+            fail(f"unknown arguments: {' '.join(unknown)}", exit_code=2)
 
         manifest_repo = Path(self.manifest.repo_abspath)
         if args.action == "preflight":
@@ -276,12 +325,12 @@ class DarlingPatch(WestCommand):
         profile_dir = manifest_repo / "patches" / args.profile
         profile_path = profile_dir / "patches.yml"
         if not profile_path.is_file():
-            self.die(f"patch profile not found: {profile_path}")
+            fail(f"patch profile not found: {profile_path}")
 
         try:
             profile = test_manifest.load_test_profile(profile_path)
         except test_manifest.ManifestError as error:
-            self.die(str(error))
+            fail(str(error))
         patches = profile.get("patches", [])
         # Optional stacking: a profile may declare `base-profile: <name>` to be
         # applied ON TOP of another profile's integration branch instead of the
@@ -290,7 +339,7 @@ class DarlingPatch(WestCommand):
         # unset, the base is the manifest revision (the original behaviour).
         self._base_profile = profile.get("base-profile")
         if self._base_profile == args.profile:
-            self.die(f"{args.profile}: base-profile cannot be itself")
+            fail(f"{args.profile}: base-profile cannot be itself")
         if args.action == "list":
             self._list(patches)
         elif args.action == "verify":
@@ -329,16 +378,63 @@ class DarlingPatch(WestCommand):
                 f"{result['batch_id']} {result['expected_count']} "
                 f"{result['verdict']}"
             )
+        elif args.action == "explain":
+            grouped = self._group(patches)
+            try:
+                plan = patch_stack_lock_first.plan(
+                    args.profile, patches, None, grouped
+                )
+                projects = self._projects()
+                modules = (
+                    plan.composition["integration_finals"]
+                    if isinstance(plan.composition, dict)
+                    else {}
+                )
+                repos = {
+                    module: Path(projects[module].abspath)
+                    for module in modules
+                    if module in projects
+                }
+                result = patch_explain.explain(
+                    args.profile,
+                    plan,
+                    repos,
+                    module=args.module,
+                    series=args.series,
+                )
+            except (
+                OSError,
+                ValueError,
+                patch_explain.ExplainError,
+                patch_stack_lock_first.LockFirstError,
+            ) as error:
+                fail(str(error))
+            if args.json:
+                self.inf(json.dumps(result, sort_keys=True))
+            else:
+                for line in patch_explain.human_lines(result, full=args.full):
+                    self.inf(line)
         elif args.action == "status":
-            self._status(args.profile, patches, args.strict)
-        elif args.action == "check":
-            self._check(
-                profile_dir,
+            self._status(
+                args.profile,
                 patches,
                 args.strict,
-                quality=args.quality or args.strict_quality,
-                strict_quality=args.strict_quality,
+                full=args.full,
+                json_output=args.json,
             )
+        elif args.action == "check":
+            try:
+                self._check(
+                    profile_dir,
+                    patches,
+                    args.strict,
+                    quality=args.quality or args.strict_quality,
+                    strict_quality=args.strict_quality,
+                    full=args.full,
+                    json_output=args.json,
+                )
+            except (OSError, ValueError, patch_explain.ExplainError) as error:
+                fail(str(error))
         elif args.action == "apply":
             self._apply(
                 args.profile,
@@ -1574,10 +1670,13 @@ class DarlingPatch(WestCommand):
         *,
         quality: bool = False,
         strict_quality: bool = False,
+        full: bool = False,
+        json_output: bool = False,
     ):
         missing = []
         invalid = []
         quality_warnings = []
+        items = []
         covered_by_tier = {
             "runtime": 0,
             "compile": 0,
@@ -1587,7 +1686,19 @@ class DarlingPatch(WestCommand):
         excepted = 0
         for patch in patches:
             errors = self._validate_test_metadata(patch)
+            item = {
+                "path": patch["path"],
+                "bead": patch.get("bead"),
+                "status": None,
+                "coverage_tier": None,
+                "behavioral_tests": 0,
+                "source_contracts": 0,
+                "errors": list(errors),
+                "quality_warnings": [],
+            }
+            items.append(item)
             if errors:
+                item["status"] = "invalid"
                 invalid.append((patch, errors))
                 continue
             if quality:
@@ -1608,6 +1719,7 @@ class DarlingPatch(WestCommand):
                             + describe_legacy_automation_trailers(trailers)
                         )
                 if warnings:
+                    item["quality_warnings"] = list(warnings)
                     quality_warnings.append((patch, warnings))
             tests = [
                 test
@@ -1615,6 +1727,8 @@ class DarlingPatch(WestCommand):
                 if not test.get("blocked")
             ]
             behavioral = [test for test in tests if self._is_behavioral_test(test)]
+            item["behavioral_tests"] = len(behavioral)
+            item["source_contracts"] = len(tests) - len(behavioral)
             exception = patch.get("test-exception")
             if behavioral:
                 tiers = [self._coverage_tier(test) for test in behavioral]
@@ -1627,47 +1741,23 @@ class DarlingPatch(WestCommand):
                         "model": 3,
                     }.get(tier, 99),
                 )
-                covered_by_tier[strongest] += 1
-                suffix = ""
-                if len(behavioral) != len(tests):
-                    suffix = f", {len(tests) - len(behavioral)} source-contract(s)"
-                tier_summary = ", ".join(
-                    f"{tier}:{tiers.count(tier)}"
+                item["status"] = "covered"
+                item["coverage_tier"] = strongest
+                item["coverage_tiers"] = {
+                    tier: tiers.count(tier)
                     for tier in ("runtime", "compile", "host", "model")
                     if tier in tiers
-                )
-                self.inf(
-                    f"{strongest.upper():<9} {patch['path']} "
-                    f"({len(behavioral)} behavioral test(s); {tier_summary}{suffix})"
-                )
-            elif tests:
-                if exception:
-                    excepted += 1
-                    reason = exception.get("reason", "-")
-                    self.inf(
-                        f"EXCEPTION {patch['path']} ({reason}; "
-                        f"{len(tests)} source-contract(s))"
-                    )
-                else:
-                    missing.append(patch)
-                    self.inf(
-                        f"SOURCE    {patch['path']} ({len(tests)} source-contract(s); "
-                        f"missing behavioral test)  [{patch.get('bead', '-')}]"
-                    )
+                }
+                covered_by_tier[strongest] += 1
             elif exception:
+                item["status"] = "exception"
+                item["exception_reason"] = exception.get("reason", "-")
                 excepted += 1
-                reason = exception.get("reason", "-")
-                self.inf(f"EXCEPTION {patch['path']} ({reason})")
             else:
+                item["status"] = "missing"
                 missing.append(patch)
-                self.inf(f"MISSING   {patch['path']}  [{patch.get('bead', '-')}]")
-        for patch, errors in invalid:
-            for error in errors:
-                self.err(f"INVALID   {patch['path']}: {error}")
-        for patch, warnings in quality_warnings:
-            for warning in warnings:
-                self.inf(f"QUALITY   {patch['path']}: {warning}")
-        self.inf(
+
+        summary_text = (
             "test metadata: "
             f"{sum(covered_by_tier.values())} covered "
             f"(runtime {covered_by_tier['runtime']}, "
@@ -1678,18 +1768,110 @@ class DarlingPatch(WestCommand):
             f"{len(missing)} missing, {len(invalid)} invalid "
             f"(of {len(patches)})"
         )
-        if missing:
-            self.inf(
-                "hint: add behavioral tests: [{name, runner, script|target|ctest-label, env, diag, kind, red}] "
-                "or test-exception: {reason, note}"
-            )
+        quality_count = sum(len(warnings) for _, warnings in quality_warnings)
+        result = {
+            "schema_version": 1,
+            "operation": "patch_check",
+            "profile": profile_dir.name,
+            "summary": {
+                "total": len(patches),
+                "covered": sum(covered_by_tier.values()),
+                "covered_by_tier": covered_by_tier,
+                "exceptions": excepted,
+                "missing": len(missing),
+                "invalid": len(invalid),
+                "quality_warnings": quality_count,
+            },
+            "items": items,
+            "exit_code": (
+                1
+                if invalid
+                or (strict and missing)
+                or (strict_quality and quality_warnings)
+                else 0
+            ),
+            "strict": strict,
+            "strict_quality": strict_quality,
+        }
+        full_rows = []
+        problem_rows = []
+        for item in items:
+            path = item["path"]
+            bead = item["bead"] or "-"
+            if item["status"] == "covered":
+                tiers = ", ".join(
+                    f"{tier}:{count}"
+                    for tier, count in item["coverage_tiers"].items()
+                )
+                suffix = (
+                    f", {item['source_contracts']} source-contract(s)"
+                    if item["source_contracts"]
+                    else ""
+                )
+                full_rows.append(
+                    f"{item['coverage_tier'].upper():<9} {path} "
+                    f"({item['behavioral_tests']} behavioral test(s); "
+                    f"{tiers}{suffix})"
+                )
+            elif item["status"] == "exception":
+                suffix = (
+                    f"; {item['source_contracts']} source-contract(s)"
+                    if item["source_contracts"]
+                    else ""
+                )
+                full_rows.append(
+                    f"EXCEPTION {path} ({item['exception_reason']}{suffix})"
+                )
+            elif item["status"] == "missing":
+                if item["source_contracts"]:
+                    row = (
+                        f"SOURCE    {path} ({item['source_contracts']} "
+                        f"source-contract(s); missing behavioral test)  [{bead}]"
+                    )
+                else:
+                    row = f"MISSING   {path}  [{bead}]"
+                full_rows.append(row)
+                problem_rows.append(row)
+            else:
+                for error in item["errors"]:
+                    row = f"INVALID   {path}: {error}"
+                    full_rows.append(row)
+                    problem_rows.append(row)
+            for warning in item["quality_warnings"]:
+                row = f"QUALITY   {path}: {warning}"
+                full_rows.append(row)
+                problem_rows.append(row)
+
+        if json_output:
+            self.inf(json.dumps(result, sort_keys=True))
+        else:
+            rows = full_rows if full else problem_rows
+            for line in patch_explain.bounded_lines(
+                "check",
+                profile_dir.name,
+                summary_text,
+                rows,
+                full=full,
+            ):
+                self.inf(line)
+            if missing and full:
+                self.inf(
+                    "hint: add behavioral tests: [{name, runner, "
+                    "script|target|ctest-label, env, diag, kind, red}] "
+                    "or test-exception: {reason, note}"
+                )
+
+        exit_message = None
         if invalid:
-            self.die(f"{len(invalid)} invalid patch test metadata entries")
-        if strict and missing:
-            self.die(f"{len(missing)} missing patch test metadata entries")
-        if strict_quality and quality_warnings:
-            total = sum(len(warnings) for _, warnings in quality_warnings)
-            self.die(f"{total} patch test quality warning(s)")
+            exit_message = f"{len(invalid)} invalid patch test metadata entries"
+        elif strict and missing:
+            exit_message = f"{len(missing)} missing patch test metadata entries"
+        elif strict_quality and quality_warnings:
+            exit_message = f"{quality_count} patch test quality warning(s)"
+        if exit_message:
+            if json_output:
+                raise SystemExit(1)
+            self.die(exit_message)
 
     def _prepare(
         self, module: str, repo: Path, branch: str, parent: bool = False
@@ -2458,50 +2640,145 @@ class DarlingPatch(WestCommand):
                         check=False,
                     )
 
-    def _status(self, profile: str, patches, strict: bool):
+    def _status(
+        self,
+        profile: str,
+        patches,
+        strict: bool,
+        *,
+        full: bool = False,
+        json_output: bool = False,
+    ):
         """Report canonical integration state without executing archives."""
         grouped = self._group(patches)
         try:
             plan = patch_stack_lock_first.plan(profile, patches, None, grouped)
         except patch_stack_lock_first.LockFirstError as error:
+            if json_output:
+                self.inf(
+                    json.dumps(
+                        patch_explain.error_result(
+                            "patch_status", profile, str(error)
+                        ),
+                        sort_keys=True,
+                    )
+                )
+                raise SystemExit(1)
             self.die(str(error))
         if plan.composition is None:
-            self.die(f"{profile}: typed profile composition is required")
-        expected = plan.composition["integration_finals"]
-        repos = {module: self._repo(module) for module in expected}
-        counts = {"APPLIED": 0, "MISSING": 0}
-        branch = f"integration/{profile}"
-        for module, module_patches in grouped.items():
-            repo = self._repo(module)
-            applied = self._branch_exists(repo, branch)
-            detail = ""
-            if applied:
-                try:
-                    patch_stack_profile_composition.verify_integration(
-                        module,
-                        repo,
-                        expected[module],
-                        expected,
-                        repos,
-                        ref=branch,
+            message = f"{profile}: typed profile composition is required"
+            if json_output:
+                self.inf(
+                    json.dumps(
+                        patch_explain.error_result(
+                            "patch_status", profile, message
+                        ),
+                        sort_keys=True,
                     )
-                except patch_stack_profile_composition.ProfileCompositionError as error:
-                    applied = False
-                    detail = f" ({error})"
-            self.inf(f"{module}  [{branch}]{detail}")
+                )
+                raise SystemExit(1)
+            self.die(message)
+        expected = plan.composition["integration_finals"]
+        projects = self._projects()
+        repos = {
+            module: (
+                Path(projects[module].abspath)
+                if module in projects
+                else None
+            )
+            for module in expected
+        }
+        counts = {"matched": 0, "missing": 0, "mismatched": 0, "unavailable": 0}
+        branch = f"integration/{profile}"
+        items = []
+        full_rows = []
+        problem_rows = []
+        for module, module_patches in grouped.items():
+            repo = repos[module]
+            try:
+                integration = patch_explain.inspect_integration(
+                    module,
+                    repo,
+                    expected[module],
+                    expected,
+                    repos,
+                    branch,
+                )
+            except patch_explain.ExplainError as error:
+                if json_output:
+                    self.inf(
+                        json.dumps(
+                            patch_explain.error_result(
+                                "patch_status", profile, str(error)
+                            ),
+                            sort_keys=True,
+                        )
+                    )
+                    raise SystemExit(1)
+                self.die(str(error))
+            classification = integration["classification"]
+            detail = integration["detail"]
+            applied_tree = integration["applied_tree"]
+            full_rows.append(f"{module}  [{branch}] {detail}")
             for patch in module_patches:
-                state = "APPLIED" if applied else "MISSING"
-                counts[state] += 1
+                counts[classification] += 1
                 bead = patch.get("bead", "-")
-                self.inf(f"  {state:8} {patch['path']}  [{bead}]")
+                state = {
+                    "matched": "APPLIED",
+                    "missing": "MISSING",
+                    "mismatched": "MISMATCH",
+                    "unavailable": "UNAVAILABLE",
+                }[classification]
+                row = f"  {state:8} {patch['path']}  [{bead}]"
+                full_rows.append(row)
+                if classification != "matched":
+                    problem = f"{state:8} {module} {patch['path']}: {detail}"
+                    problem_rows.append(problem)
+                items.append(
+                    {
+                        "module": module,
+                        "path": patch["path"],
+                        "bead": patch.get("bead"),
+                        "classification": classification,
+                        "integration_ref": branch,
+                        "expected_tree": expected[module],
+                        "applied_tree": applied_tree,
+                        "detail": detail,
+                    }
+                )
+        differing = counts["missing"] + counts["mismatched"] + counts["unavailable"]
         total = sum(counts.values())
-        self.inf(
-            f"status: {counts['APPLIED']} applied, "
-            f"{counts['MISSING']} missing (of {total})"
+        summary_text = (
+            f"status: {counts['matched']} matched, {counts['missing']} missing, "
+            f"{counts['mismatched']} mismatched, {counts['unavailable']} unavailable "
+            f"(of {total})"
         )
-        if strict and counts["MISSING"]:
+        result = {
+            "schema_version": 1,
+            "operation": "patch_status",
+            "profile": profile,
+            "summary": {
+                "total": total,
+                **counts,
+                "differing": differing,
+            },
+            "items": items,
+            "exit_code": 1 if strict and differing else 0,
+            "strict": strict,
+        }
+        if json_output:
+            self.inf(json.dumps(result, sort_keys=True))
+        else:
+            rows = full_rows if full else problem_rows
+            for line in patch_explain.bounded_lines(
+                "status", profile, summary_text, rows, full=full
+            ):
+                self.inf(line)
+        if strict and differing:
+            if json_output:
+                raise SystemExit(1)
             self.die(
-                f"{counts['MISSING']} patch(es) differ from typed "
+                f"{differing} patch(es) differ from typed "
                 "profile-composition integration state"
             )
 
