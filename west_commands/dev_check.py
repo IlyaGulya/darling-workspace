@@ -1376,6 +1376,7 @@ def _acceptance_artifact_receipt(scratch: Path) -> dict[str, Any]:
             "path",
             "size",
             "sha256",
+            "semantic_sha256",
         }:
             raise DevCheckError("acceptance generated lock row is invalid")
         relative = _safe_package_relative(row.get("path"), "generated lock path")
@@ -1390,6 +1391,7 @@ def _acceptance_artifact_receipt(scratch: Path) -> dict[str, Any]:
             or isinstance(row.get("size"), bool)
             or row["size"] <= 0
             or not _is_lower_hex(row.get("sha256"), 64)
+            or not _is_lower_hex(row.get("semantic_sha256"), 64)
         ):
             raise DevCheckError("acceptance generated lock path is invalid or duplicated")
         seen_generated.add(relative)
@@ -1407,6 +1409,7 @@ def _acceptance_artifact_receipt(scratch: Path) -> dict[str, Any]:
                 "path": relative,
                 "size": len(data),
                 "sha256": row["sha256"],
+                "semantic_sha256": row["semantic_sha256"],
                 "content": data.decode("utf-8"),
             }
         )
@@ -1543,7 +1546,14 @@ def _validate_embedded_acceptance_artifacts(
                 if (
                     not isinstance(generated, dict)
                     or set(generated)
-                    != {"profile", "path", "size", "sha256", "content"}
+                    != {
+                        "profile",
+                        "path",
+                        "size",
+                        "sha256",
+                        "semantic_sha256",
+                        "content",
+                    }
                     or not isinstance(generated.get("content"), str)
                 ):
                     raise DevCheckError("candidate generated lock extension row is invalid")
@@ -1555,6 +1565,7 @@ def _validate_embedded_acceptance_artifacts(
                     or len(generated_data) != generated["size"]
                     or hashlib.sha256(generated_data).hexdigest()
                     != generated.get("sha256")
+                    or not _is_lower_hex(generated.get("semantic_sha256"), 64)
                 ):
                     raise DevCheckError(
                         "candidate generated lock extension digest is invalid"
@@ -1562,7 +1573,13 @@ def _validate_embedded_acceptance_artifacts(
                 projected.append(
                     {
                         field: generated[field]
-                        for field in ("profile", "path", "size", "sha256")
+                        for field in (
+                            "profile",
+                            "path",
+                            "size",
+                            "sha256",
+                            "semantic_sha256",
+                        )
                     }
                 )
             if projected != declared:
@@ -2377,17 +2394,28 @@ def _validate_acceptance_closure(
     ):
         raise DevCheckError("acceptance frozen manifest differs from check receipt")
     generated = candidate_manifest.get("generated_profile_locks")
+    oracle_generated = oracle.get("generated_profile_locks")
     if (
         not isinstance(generated, list)
         or not generated
-        or oracle.get("generated_profile_locks") != generated
+        or not isinstance(oracle_generated, list)
+        or [
+            {
+                key: row.get(key)
+                for key in ("profile", "path", "semantic_sha256")
+            }
+            for row in generated
+            if isinstance(row, dict)
+        ]
+        != oracle_generated
     ):
         raise DevCheckError("acceptance generated lock closure differs")
     seen_generated: set[str] = set()
     for row in generated:
         if (
             not isinstance(row, dict)
-            or set(row) != {"profile", "path", "size", "sha256"}
+            or set(row)
+            != {"profile", "path", "size", "sha256", "semantic_sha256"}
             or not isinstance(row.get("profile"), str)
             or not row["profile"]
             or not isinstance(row.get("size"), int)
@@ -2395,6 +2423,7 @@ def _validate_acceptance_closure(
             or row["size"] <= 0
             or row["size"] > _GENERATED_LOCK_LIMIT
             or not _is_lower_hex(row.get("sha256"), 64)
+            or not _is_lower_hex(row.get("semantic_sha256"), 64)
         ):
             raise DevCheckError("acceptance generated lock row is invalid")
         relative = _safe_package_relative(row.get("path"), "generated lock path")
@@ -2975,7 +3004,7 @@ def _build_source_closure(
     projected_generated = [
         {
             field: row[field]
-            for field in ("profile", "path", "size", "sha256")
+            for field in ("profile", "path", "size", "sha256", "semantic_sha256")
         }
         for row in embedded_locks
     ]
@@ -2997,6 +3026,7 @@ def _build_source_closure(
                 "source_path": row["path"],
                 "size": row["size"],
                 "sha256": row["sha256"],
+                "semantic_sha256": row["semantic_sha256"],
                 "source_copy": source_copy,
             }
         )
@@ -3190,7 +3220,7 @@ def _verify_source_closure(
     projected_generated = [
         {
             field: row[field]
-            for field in ("profile", "path", "size", "sha256")
+            for field in ("profile", "path", "size", "sha256", "semantic_sha256")
         }
         for row in embedded
         if isinstance(row, dict)
@@ -3207,6 +3237,7 @@ def _verify_source_closure(
             "path",
             "size",
             "sha256",
+            "semantic_sha256",
             "content",
         }:
             raise DevCheckError("packaged generated lock row is invalid")
@@ -3222,6 +3253,7 @@ def _verify_source_closure(
             len(data) > _GENERATED_LOCK_LIMIT
             or len(data) != row.get("size")
             or hashlib.sha256(data).hexdigest() != row.get("sha256")
+            or not _is_lower_hex(row.get("semantic_sha256"), 64)
             or data != row.get("content", "").encode("utf-8")
             or source_data != data
         ):
@@ -3233,6 +3265,7 @@ def _verify_source_closure(
                 "source_path": source_path,
                 "size": row["size"],
                 "sha256": row["sha256"],
+                "semantic_sha256": row["semantic_sha256"],
                 "source_copy": source_copy,
             }
         )

@@ -214,8 +214,7 @@ generated_data = b"manifest:\n  projects: []\n# generated candidate\n"
 generated_row = {
     "profile": "homebrew",
     "path": "patches/homebrew/west.lock.yml",
-    "size": len(generated_data),
-    "sha256": hashlib.sha256(generated_data).hexdigest(),
+    "semantic_sha256": "c" * 64,
 }
 output.parent.mkdir(parents=True, exist_ok=True)
 series = {
@@ -319,6 +318,7 @@ elif authority == "capture":
         "path": "patches/homebrew/west.lock.yml",
         "size": len(generated_data),
         "sha256": hashlib.sha256(generated_data).hexdigest(),
+        "semantic_sha256": "c" * 64,
     }
     modules.parent.mkdir(parents=True, exist_ok=True)
     modules.write_text(
