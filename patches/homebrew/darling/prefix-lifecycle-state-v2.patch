@@ -12,7 +12,7 @@ Subject: [PATCH] Rootless: add transactional prefix lifecycle
  5 files changed, 4000 insertions(+), 165 deletions(-)
 
 diff --git a/src/startup/CMakeLists.txt b/src/startup/CMakeLists.txt
-index a2d6d1df7..74e338309 100644
+index a2d6d1df7613cb9d94ea695735a1a9474dc25f5a..74e338309573a1c9fd96a02abebb4c43eaca2907 100644
 --- a/src/startup/CMakeLists.txt
 +++ b/src/startup/CMakeLists.txt
 @@ -36,6 +36,8 @@ add_executable(darling_runtime_mode_test EXCLUDE_FROM_ALL
@@ -25,7 +25,7 @@ index a2d6d1df7..74e338309 100644
  include_directories(${CMAKE_CURRENT_SOURCE_DIR} ${CMAKE_BINARY_DIR}/src/external/darlingserver/include ${CMAKE_SOURCE_DIR}/src/external/darlingserver/include)
  
 diff --git a/src/startup/darling.c b/src/startup/darling.c
-index 134bc1cb2..3c0c068d7 100644
+index 134bc1cb2d93cb304fee47c599e9eea7064671c2..3c0c068d703b1e1c5c9b976edccd6340c003f4ae 100644
 --- a/src/startup/darling.c
 +++ b/src/startup/darling.c
 @@ -52,19 +52,18 @@ along with Darling.  If not, see <http://www.gnu.org/licenses/>.
@@ -397,7 +397,7 @@ index 134bc1cb2..3c0c068d7 100644
  		if (g_originalUid != 0 && st.st_uid != g_originalUid)
  		{
 diff --git a/src/startup/runtime_mode_prefix.c b/src/startup/runtime_mode_prefix.c
-index 5c087abf9..7804ed8cb 100644
+index 5c087abf9a842f5b8393ac3a5cc7fa9d8c73b6cc..7804ed8cb42079d4a67bf2bd774b22f9fdc576bb 100644
 --- a/src/startup/runtime_mode_prefix.c
 +++ b/src/startup/runtime_mode_prefix.c
 @@ -5,11 +5,15 @@
@@ -3307,7 +3307,7 @@ index 5c087abf9..7804ed8cb 100644
 +	return 0;
 +}
 diff --git a/src/startup/runtime_mode_prefix.h b/src/startup/runtime_mode_prefix.h
-index 796b9a692..e24e28f34 100644
+index 796b9a69241f73ef5f3e999d0b0d5e38da01e3cf..e24e28f346ce8f69eaca6d5a595e4b61ad358e48 100644
 --- a/src/startup/runtime_mode_prefix.h
 +++ b/src/startup/runtime_mode_prefix.h
 @@ -5,38 +5,95 @@
@@ -3586,7 +3586,7 @@ index 796b9a692..e24e28f34 100644
 +
  #endif
 diff --git a/src/startup/tests/runtime_mode_test.c b/src/startup/tests/runtime_mode_test.c
-index 3a08d6e36..7e97ec3a9 100644
+index 3a08d6e364a6aaaad42da668350a1d32568ba7dd..7e97ec3a94a60a8e7e2468d78eb7ad73fd296942 100644
 --- a/src/startup/tests/runtime_mode_test.c
 +++ b/src/startup/tests/runtime_mode_test.c
 @@ -7,12 +7,100 @@
@@ -4916,6 +4916,3 @@ index 3a08d6e36..7e97ec3a9 100644
  	test_prefix_marker();
  	puts("DARLING_RUNTIME_MODE_CONTRACT_OK");
  	return 0;
--- 
-2.43.0
-

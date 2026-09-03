@@ -3,6 +3,12 @@ From: Ilya Gulya <ilya@gulya.me>
 Date: Wed, 29 Jul 2026 00:00:00 +0000
 Subject: [PATCH] Rootless: validate typed prefix lifecycle state
 
+---
+ include/darlingserver/runtime-mode.hpp |  71 ++++-
+ src/darlingserver.cpp                  |  32 +--
+ src/runtime-mode.cpp                   | 344 +++++++++++++++++++++----
+ tests/runtime_mode_test.cpp            |  96 +++++--
+ 4 files changed, 450 insertions(+), 93 deletions(-)
 
 diff --git a/include/darlingserver/runtime-mode.hpp b/include/darlingserver/runtime-mode.hpp
 index a8dfc9ae5eaef1c6db7486d1b6edaca92f481d1a..1f5006dae4f5a03b039d977c8f8513697ecfd911 100644
@@ -750,6 +756,3 @@ index bc2327e8d601fc55ff2471c1277714738b851d7f..c8178e97f1074b87d5929f026eb7cbd4
  
  	std::filesystem::remove(marker);
  	require(symlink(target.c_str(), marker.c_str()) == 0,
--- 
-2.43.0
-
