@@ -29,6 +29,11 @@ import patch_stack_lock_first
 import patch_stack_export
 import patch_stack_profile_composition
 import patch_explain
+from profile_catalog import (
+    PATCH_PROFILE_KIND,
+    PROFILE_OPTION,
+    add_profile_argument,
+)
 from test_runtime import ROOTLESS_BOOTSTRAP_RESOURCE, ROOTLESS_BOOTSTRAP_TARGET
 
 
@@ -166,9 +171,13 @@ class DarlingPatch(WestCommand):
         ):
             command = subparsers.add_parser(action)
             if action == "explain":
-                command.add_argument("--profile", required=True)
+                add_profile_argument(
+                    command, PROFILE_OPTION, PATCH_PROFILE_KIND, required=True
+                )
             else:
-                command.add_argument("--profile", default="homebrew")
+                add_profile_argument(
+                    command, PROFILE_OPTION, PATCH_PROFILE_KIND, default="homebrew"
+                )
             if action == "verify":
                 command.add_argument(
                     "--applicability-only",
