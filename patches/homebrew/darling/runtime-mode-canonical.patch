@@ -35,7 +35,7 @@ Subject: [PATCH] darling: type runtime mode across bootstrap
  create mode 100644 src/startup/tests/runtime_mode_test.c
 
 diff --git a/CMakeLists.txt b/CMakeLists.txt
-index ae5f65180..0678b9953 100644
+index ae5f65180d17489e3c33ad85066058dde0b4390a..0678b99533fb16f41f93aef5c3092ef13785dc63 100644
 --- a/CMakeLists.txt
 +++ b/CMakeLists.txt
 @@ -53,6 +53,9 @@ if (NOT DEFINED CMAKE_CXX_COMPILER)
@@ -49,7 +49,7 @@ index ae5f65180..0678b9953 100644
  find_program(CCACHE_PROGRAM ccache)
  if(CCACHE_PROGRAM AND NOT DARLING_NO_CCACHE)
 diff --git a/src/launchd/src/CMakeLists.txt b/src/launchd/src/CMakeLists.txt
-index 2c8640a8a..287333883 100644
+index 2c8640a8aaaac496acf3a464d3a87f42713d325f..28733388372b665ccdbc2e7406e13e94f517ecd6 100644
 --- a/src/launchd/src/CMakeLists.txt
 +++ b/src/launchd/src/CMakeLists.txt
 @@ -14,6 +14,7 @@ add_definitions(
@@ -79,7 +79,7 @@ index 2c8640a8a..287333883 100644
  
  install(TARGETS launchd DESTINATION libexec/darling/sbin)
 diff --git a/src/launchd/src/launchd.c b/src/launchd/src/launchd.c
-index 21d1c9daf..e9ce6759f 100644
+index 21d1c9daf0477f75a88a8713578daf981e1250cb..e9ce6759fb4fdc59b152faa38e7bde49c1c0f798 100644
 --- a/src/launchd/src/launchd.c
 +++ b/src/launchd/src/launchd.c
 @@ -82,6 +82,7 @@
@@ -148,7 +148,7 @@ index 21d1c9daf..e9ce6759f 100644
  		fprintf(stderr, "%s: This program is not meant to be run directly.\n", getprogname());
  		exit(EXIT_FAILURE);
 diff --git a/src/launchd/src/runtime.c b/src/launchd/src/runtime.c
-index 9dfe93da0..b12b59a83 100644
+index 9dfe93da01b107ebba6e278d7e5efb25fb69dfaf..b12b59a837df3a41fd49cec21429c2daebed6dca 100644
 --- a/src/launchd/src/runtime.c
 +++ b/src/launchd/src/runtime.c
 @@ -76,6 +76,7 @@
@@ -227,7 +227,7 @@ index 9dfe93da0..b12b59a83 100644
  	}
  
 diff --git a/src/launchd/src/runtime.h b/src/launchd/src/runtime.h
-index a13deff06..422899a00 100644
+index a13deff060c351053c498feb2f05063c9c5755ef..422899a009a5924481bdbbf1c6c088dc71365149 100644
 --- a/src/launchd/src/runtime.h
 +++ b/src/launchd/src/runtime.h
 @@ -86,6 +86,7 @@ void runtime_remove_timer(void);
@@ -239,7 +239,7 @@ index a13deff06..422899a00 100644
  void launchd_log_vm_stats(void);
  
 diff --git a/src/shellspawn/CMakeLists.txt b/src/shellspawn/CMakeLists.txt
-index fa1c195c9..6bab0188d 100644
+index fa1c195c9a1c4df72179fb27093ef151d3c84df6..6bab0188db069add969b0ff74faf02e113c2cd3b 100644
 --- a/src/shellspawn/CMakeLists.txt
 +++ b/src/shellspawn/CMakeLists.txt
 @@ -2,8 +2,14 @@ project(shellspawn)
@@ -260,7 +260,7 @@ index fa1c195c9..6bab0188d 100644
  install(FILES org.darlinghq.shellspawn.plist DESTINATION libexec/darling/System/Library/LaunchDaemons)
 -
 diff --git a/src/shellspawn/shellspawn.c b/src/shellspawn/shellspawn.c
-index 8e7be9aa7..3b587be83 100644
+index 8e7be9aa7c0758928a57799df70d5081bf20b577..3b587be83ece6b5c6b801fdc6abaafbc26d7a2b4 100644
 --- a/src/shellspawn/shellspawn.c
 +++ b/src/shellspawn/shellspawn.c
 @@ -34,11 +34,13 @@ along with Darling.  If not, see <http://www.gnu.org/licenses/>.
@@ -322,7 +322,7 @@ index 8e7be9aa7..3b587be83 100644
  	// in order to read the exit status of the shell process,
  	// we have to allow it to become a zombie, therefore we need to
 diff --git a/src/startup/CMakeLists.txt b/src/startup/CMakeLists.txt
-index f28b61a32..a2d6d1df7 100644
+index f28b61a32e667fb0f22d4a07b0fcc1eac01a3b11..a2d6d1df7613cb9d94ea695735a1a9474dc25f5a 100644
 --- a/src/startup/CMakeLists.txt
 +++ b/src/startup/CMakeLists.txt
 @@ -14,7 +14,16 @@ set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -std=c++11")
@@ -356,7 +356,7 @@ index f28b61a32..a2d6d1df7 100644
  
  install(TARGETS darling DESTINATION bin
 diff --git a/src/startup/darling.c b/src/startup/darling.c
-index ae80b78dc..134bc1cb2 100644
+index ae80b78dc23aa19372a25878bb5cc95fe67dd34b..134bc1cb2d93cb304fee47c599e9eea7064671c2 100644
 --- a/src/startup/darling.c
 +++ b/src/startup/darling.c
 @@ -34,13 +34,16 @@ along with Darling.  If not, see <http://www.gnu.org/licenses/>.
@@ -1325,7 +1325,7 @@ index ae80b78dc..134bc1cb2 100644
  	}
  }
 diff --git a/src/startup/darling.h b/src/startup/darling.h
-index 371968929..60d90e8ff 100644
+index 371968929e7b74d164bf197b8ab9faea92895867..60d90e8ff4bbe97a17d1720fc06a0f7c089e6601 100644
 --- a/src/startup/darling.h
 +++ b/src/startup/darling.h
 @@ -35,11 +35,6 @@ void setupWorkdir(void);
@@ -1341,7 +1341,7 @@ index 371968929..60d90e8ff 100644
  void setupShellspawnEnv(int shellspawnFD);
  void setupWorkingDir(int shellspawnFD);
 diff --git a/src/startup/mldr/CMakeLists.txt b/src/startup/mldr/CMakeLists.txt
-index e1f93647d..efacd2eb4 100644
+index e1f93647d2a7a38b1ba9cf07ee3b4ce621441767..efacd2eb4bf3ef2f60cc918a708dfa7ffd81dc54 100644
 --- a/src/startup/mldr/CMakeLists.txt
 +++ b/src/startup/mldr/CMakeLists.txt
 @@ -18,6 +18,7 @@ target_include_directories(mldr_dserver_rpc PRIVATE ${CMAKE_CURRENT_BINARY_DIR}/
@@ -1373,7 +1373,7 @@ index e1f93647d..efacd2eb4 100644
  	target_link_options(mldr32 PRIVATE -m32)
  	target_compile_options(mldr32 PRIVATE -pthread)
 diff --git a/src/startup/mldr/loader.h b/src/startup/mldr/loader.h
-index d1bd92c66..7deb51917 100644
+index d1bd92c66c1966226e05632a8bfbd28c8defc676..7deb519179ccb55e0ae6cbe7685f5cbfd02d1d1a 100644
 --- a/src/startup/mldr/loader.h
 +++ b/src/startup/mldr/loader.h
 @@ -4,6 +4,7 @@
@@ -1394,7 +1394,7 @@ index d1bd92c66..7deb51917 100644
  	uint32_t bprefs[4];
  	char* root_path;
 diff --git a/src/startup/mldr/mldr.c b/src/startup/mldr/mldr.c
-index 5438259c7..dfeb5eaff 100644
+index 5438259c76326143bbd13692ac9cd4438148a22a..dfeb5eaff6ec9c64c6132925c7be83ffbb792c9b 100644
 --- a/src/startup/mldr/mldr.c
 +++ b/src/startup/mldr/mldr.c
 @@ -230,7 +230,8 @@ int main(int argc, char** argv, char** envp)
@@ -1447,7 +1447,7 @@ index 5438259c7..dfeb5eaff 100644
  
  typedef struct socket_bitmap {
 diff --git a/src/startup/mldr/stack.c b/src/startup/mldr/stack.c
-index ca02c2366..94a0d303b 100644
+index ca02c2366e4bba963525d2f5ff7284b9f64419b3..94a0d303b19daeeb05f1e92a0f9a8c10d7247bb1 100644
 --- a/src/startup/mldr/stack.c
 +++ b/src/startup/mldr/stack.c
 @@ -42,7 +42,7 @@
@@ -1530,7 +1530,7 @@ index ca02c2366..94a0d303b 100644
  	}
 diff --git a/src/startup/runtime_credentials.c b/src/startup/runtime_credentials.c
 new file mode 100644
-index 000000000..3bff05460
+index 0000000000000000000000000000000000000000..3bff05460a2b64c19da2973a72926ab889966007
 --- /dev/null
 +++ b/src/startup/runtime_credentials.c
 @@ -0,0 +1,80 @@
@@ -1616,7 +1616,7 @@ index 000000000..3bff05460
 +}
 diff --git a/src/startup/runtime_credentials.h b/src/startup/runtime_credentials.h
 new file mode 100644
-index 000000000..ed64b6db6
+index 0000000000000000000000000000000000000000..ed64b6db632f462489a3b99d9930efe3073fe022
 --- /dev/null
 +++ b/src/startup/runtime_credentials.h
 @@ -0,0 +1,21 @@
@@ -1643,7 +1643,7 @@ index 000000000..ed64b6db6
 +#endif
 diff --git a/src/startup/runtime_mode.c b/src/startup/runtime_mode.c
 new file mode 100644
-index 000000000..e9c7569b4
+index 0000000000000000000000000000000000000000..e9c7569b478f48863a77070aaeb83f52a8026958
 --- /dev/null
 +++ b/src/startup/runtime_mode.c
 @@ -0,0 +1,308 @@
@@ -1957,7 +1957,7 @@ index 000000000..e9c7569b4
 +}
 diff --git a/src/startup/runtime_mode.h b/src/startup/runtime_mode.h
 new file mode 100644
-index 000000000..5b28802b6
+index 0000000000000000000000000000000000000000..5b28802b6d5669aaf61f0d8fe90d67208bf642ec
 --- /dev/null
 +++ b/src/startup/runtime_mode.h
 @@ -0,0 +1,79 @@
@@ -2042,7 +2042,7 @@ index 000000000..5b28802b6
 +#endif
 diff --git a/src/startup/runtime_mode_prefix.c b/src/startup/runtime_mode_prefix.c
 new file mode 100644
-index 000000000..5c087abf9
+index 0000000000000000000000000000000000000000..5c087abf9a842f5b8393ac3a5cc7fa9d8c73b6cc
 --- /dev/null
 +++ b/src/startup/runtime_mode_prefix.c
 @@ -0,0 +1,1103 @@
@@ -3151,7 +3151,7 @@ index 000000000..5c087abf9
 +}
 diff --git a/src/startup/runtime_mode_prefix.h b/src/startup/runtime_mode_prefix.h
 new file mode 100644
-index 000000000..796b9a692
+index 0000000000000000000000000000000000000000..796b9a69241f73ef5f3e999d0b0d5e38da01e3cf
 --- /dev/null
 +++ b/src/startup/runtime_mode_prefix.h
 @@ -0,0 +1,128 @@
@@ -3285,7 +3285,7 @@ index 000000000..796b9a692
 +#endif
 diff --git a/src/startup/tests/runtime_mode_test.c b/src/startup/tests/runtime_mode_test.c
 new file mode 100644
-index 000000000..3a08d6e36
+index 0000000000000000000000000000000000000000..3a08d6e364a6aaaad42da668350a1d32568ba7dd
 --- /dev/null
 +++ b/src/startup/tests/runtime_mode_test.c
 @@ -0,0 +1,481 @@
@@ -3770,6 +3770,3 @@ index 000000000..3a08d6e36
 +	puts("DARLING_RUNTIME_MODE_CONTRACT_OK");
 +	return 0;
 +}
--- 
-2.43.0
-
