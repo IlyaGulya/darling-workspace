@@ -480,6 +480,23 @@ def reseal_package(package: Path) -> None:
     (package / "SHA256SUMS").write_text("".join(sums), encoding="utf-8")
 
 
+def mutate_receipt_artifact(
+    receipt: dict[str, object],
+    name: str,
+    change: Callable[[dict[str, object]], None],
+) -> None:
+    artifacts = receipt["acceptance_artifacts"]
+    assert isinstance(artifacts, dict)
+    row = artifacts[name]
+    assert isinstance(row, dict)
+    value = json.loads(row["content"])
+    change(value)
+    data = (json.dumps(value, sort_keys=True, indent=2) + "\n").encode()
+    row["content"] = data.decode()
+    row["sha256"] = hashlib.sha256(data).hexdigest()
+    row["bytes"] = len(data)
+
+
 def mutate_packaged_artifact(
     package: Path,
     name: str,
@@ -1104,6 +1121,104 @@ with tempfile.TemporaryDirectory(prefix="dev-check-contract-") as temporary:
             assert embedded["modules"]
         else:
             assert embedded["workspace_commit"] == head
+    semantic_receipt = json.loads(json.dumps(acceptance_receipt))
+    parent_module = "fixture/module"
+    child_module = "fixture/module/nested"
+    parent_candidate_tree = "d" * 40
+    child_tree = "e" * 40
+    child_commit = "f" * 40
+    child_patch = "fixture/nested-change.patch"
+
+    def add_oracle_child(value: dict[str, object]) -> None:
+        batch = value["batches"][-1]
+        batch["expected_count"] = 2
+        batch["module_order"].append(child_module)
+        batch["series_order"].append(
+            {"module": child_module, "patch": child_patch}
+        )
+        child_series = dict(batch["series"][0])
+        child_series.update(
+            {
+                "module": child_module,
+                "patch": child_patch,
+                "canonical_tree": child_tree,
+                "applied_commit": child_commit,
+                "applied_tree": child_tree,
+            }
+        )
+        batch["series"].append(child_series)
+        value["modules"].append(
+            {"module": child_module, "commit": child_commit, "tree": child_tree}
+        )
+        value["clean_odb"]["module_count"] = 2
+        value["clean_odb"]["immutable_fetch_transactions"] = 2
+
+    def add_candidate_child(value: dict[str, object]) -> None:
+        value["expected_count"] = 2
+        value["module_order"].append(child_module)
+        value["series_order"].append(
+            {"module": child_module, "patch": child_patch}
+        )
+        child_series = dict(value["series"][0])
+        child_series.update(
+            {
+                "module": child_module,
+                "patch": child_patch,
+                "canonical_tree": child_tree,
+                "applied_commit": child_commit,
+                "applied_tree": child_tree,
+            }
+        )
+        value["series"].append(child_series)
+
+    mutate_receipt_artifact(semantic_receipt, "immutable_oracle", add_oracle_child)
+    mutate_receipt_artifact(semantic_receipt, "lock_first_evidence", add_candidate_child)
+    mutate_receipt_artifact(
+        semantic_receipt,
+        "comparison",
+        lambda value: (
+            value.__setitem__("expected_count", 2),
+            value["module_order"].append(child_module),
+            value.__setitem__("module_count", 2),
+        ),
+    )
+
+    def add_candidate_module(value: dict[str, object]) -> None:
+        value["modules"][0]["tree"] = parent_candidate_tree
+        value["modules"].append(
+            {
+                "module": child_module,
+                "west_name": "fixture-module-nested",
+                "path": child_module,
+                "integration_profile": "homebrew",
+                "integration_oid": child_commit,
+                "tree": child_tree,
+                "status": "",
+            }
+        )
+
+    mutate_receipt_artifact(semantic_receipt, "module_map", add_candidate_module)
+    mutate_receipt_artifact(
+        semantic_receipt,
+        "candidate_manifest",
+        lambda value: value.__setitem__(
+            "validated_nested_children", {parent_module: []}
+        ),
+    )
+    dev_check._validate_acceptance_closure(semantic_receipt, "homebrew")
+    invalid_semantic_receipt = json.loads(json.dumps(semantic_receipt))
+    mutate_receipt_artifact(
+        invalid_semantic_receipt,
+        "module_map",
+        lambda value: value["modules"][1].__setitem__("tree", "a" * 40),
+    )
+    must_reject(
+        lambda: dev_check._validate_acceptance_closure(
+            invalid_semantic_receipt, "homebrew"
+        ),
+        "module trees differ",
+    )
+
     durable(acceptance_path, acceptance_receipt)
     assert not scratch.exists()
     fake_kinds = {

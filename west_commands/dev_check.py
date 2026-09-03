@@ -2325,6 +2325,7 @@ def _validate_acceptance_closure(
     ):
         raise DevCheckError("acceptance module maps are invalid")
     candidate_trees: dict[str, str] = {}
+    candidate_rows: dict[str, dict[str, Any]] = {}
     for row in modules:
         if (
             not isinstance(row, dict)
@@ -2349,6 +2350,7 @@ def _validate_acceptance_closure(
         candidate_trees[module] = _require_oid(
             row.get("tree"), f"candidate {module} tree"
         )
+        candidate_rows[module] = row
         if row.get("status") != "":
             raise DevCheckError(f"candidate module is dirty: {module}")
     oracle_trees: dict[str, str] = {}
@@ -2360,8 +2362,6 @@ def _validate_acceptance_closure(
             raise DevCheckError("oracle module row is duplicated")
         _require_oid(row.get("commit"), f"oracle {module} commit")
         oracle_trees[module] = _require_oid(row.get("tree"), f"oracle {module} tree")
-    if candidate_trees != oracle_trees:
-        raise DevCheckError("candidate and immutable-oracle module trees differ")
 
     inputs = receipt.get("inputs")
     snapshot = inputs.get("package_snapshot") if isinstance(inputs, dict) else None
@@ -2501,6 +2501,85 @@ def _validate_acceptance_closure(
             if observed.get(field) != expected.get(field):
                 raise DevCheckError(
                     f"lock-first evidence {field} differs from immutable oracle"
+                )
+    if set(candidate_trees) != set(oracle_trees):
+        raise DevCheckError("candidate and immutable-oracle module sets differ")
+    mismatched_trees = {
+        module
+        for module, tree in oracle_trees.items()
+        if candidate_trees[module] != tree
+    }
+    if mismatched_trees:
+        oracle_content = {
+            row["module"]: row["applied_tree"] for row in oracle_series
+        }
+        candidate_content = {
+            row["module"]: row["applied_tree"] for row in lock_series
+        }
+        validated_nested = candidate_manifest["validated_nested_children"]
+        for module in mismatched_trees:
+            parent = candidate_rows[module]
+            parent_path = Path(parent["path"])
+            children = {
+                child_module: row
+                for child_module, row in candidate_rows.items()
+                if child_module != module
+                and Path(row["path"]).is_relative_to(parent_path)
+            }
+            parent_evidence = validated_nested.get(parent["path"])
+            evidence_valid = (
+                parent["path"] in validated_nested
+                and isinstance(parent_evidence, list)
+            )
+            if evidence_valid:
+                child_paths = {
+                    str(Path(child["path"]).relative_to(parent_path))
+                    for child in children.values()
+                }
+                observed_paths: set[str] = set()
+                expected_status = {
+                    "modified_gitlink": " M",
+                    "untracked_nested_repo": "??",
+                }
+                for evidence_row in parent_evidence:
+                    if not isinstance(evidence_row, dict) or set(evidence_row) != {
+                        "xy",
+                        "path",
+                        "kind",
+                    }:
+                        evidence_valid = False
+                        break
+                    evidence_path = evidence_row.get("path")
+                    normalized = (
+                        evidence_path.rstrip("/")
+                        if isinstance(evidence_path, str)
+                        else ""
+                    )
+                    relative = Path(normalized)
+                    kind = evidence_row.get("kind")
+                    if (
+                        not normalized
+                        or relative.is_absolute()
+                        or ".." in relative.parts
+                        or relative.as_posix() != normalized
+                        or normalized not in child_paths
+                        or normalized in observed_paths
+                        or expected_status.get(kind) != evidence_row.get("xy")
+                    ):
+                        evidence_valid = False
+                        break
+                    observed_paths.add(normalized)
+            if (
+                not children
+                or not evidence_valid
+                or oracle_content.get(module) != candidate_content.get(module)
+                or any(
+                    oracle_trees.get(child_module) != child["tree"]
+                    for child_module, child in children.items()
+                )
+            ):
+                raise DevCheckError(
+                    "candidate and immutable-oracle module trees differ"
                 )
     return values, {
         "cleanup": "complete",
