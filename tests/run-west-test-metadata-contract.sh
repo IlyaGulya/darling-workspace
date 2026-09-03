@@ -59,9 +59,10 @@ source_script_marker=/tmp/west-source-script-fixture-second-case
 quality_contract_output=/tmp/west-quality-contract.out
 invalid_guest_red_output=/tmp/west-test-invalid-guest-red-proof.out
 guest_runtime_red_output=/tmp/west-test-guest-runtime-red-proof.out
+strict_missing_output=/tmp/west-strict-missing.out
 source_profile_patch_scratch=
 temp_worktree_baseline=
-trap 'rm -rf "$tmp_profile" "$tmp_source_profile" "$tmp_invalid_profile" "$tmp_runtime_red_profile" "$guest_prefix" "$source_script_marker" "$quality_contract_output" "$invalid_guest_red_output" "$guest_runtime_red_output" "$source_profile_patch_scratch" "$temp_worktree_baseline"' EXIT
+trap 'rm -rf "$tmp_profile" "$tmp_source_profile" "$tmp_invalid_profile" "$tmp_runtime_red_profile" "$guest_prefix" "$source_script_marker" "$quality_contract_output" "$invalid_guest_red_output" "$guest_runtime_red_output" "$strict_missing_output" "$source_profile_patch_scratch" "$temp_worktree_baseline"' EXIT
 mkdir -p "$tmp_profile" "$tmp_source_profile" "$tmp_invalid_profile" "$tmp_runtime_red_profile"
 mkdir -p "$tmp_source_profile/test"
 source_profile_patch_scratch="$(mktemp -d)"
@@ -899,6 +900,12 @@ printf '%s\n' "$source_only_check" | grep -q 'HOST      test/darling-cmake-targe
 printf '%s\n' "$source_only_check" | grep -q 'RUNTIME   test/eunion-prefix-resource.patch' ||
 	fail 'darling-eunion-prefix patch was not reported as RUNTIME'
 
+if west patch check --profile __metadata_contract --strict >"$strict_missing_output" 2>&1; then
+	fail 'strict coverage check accepted missing behavioral metadata'
+fi
+grep -q 'missing patch test metadata entries' "$strict_missing_output" ||
+	fail 'strict coverage check did not report the missing metadata count'
+
 quality_check="$(west patch check --profile __metadata_contract --quality)"
 printf '%s\n' "$quality_check" | grep -q \
 	'QUALITY   test/compact-guest-runtime.patch: tests\[1\] guest-runtime-deploy builds system_kernel' ||
@@ -960,7 +967,15 @@ printf '%s\n' "$guest_command_fixture" | grep -q \
 printf '%s\n' "$source_only_check" | grep -q 'test metadata: ' ||
 	fail 'coverage-tier summary was not emitted'
 
+set +e
 invalid_guest_red_check="$(west patch check --profile __metadata_invalid_contract 2>&1)"
+invalid_guest_red_rc=$?
+set -e
+if [[ "$invalid_guest_red_rc" -eq 0 ]]; then
+	fail 'default patch check accepted structurally invalid metadata'
+fi
+printf '%s\n' "$invalid_guest_red_check" | grep -q 'invalid patch test metadata entries' ||
+	fail 'default invalid metadata failure did not report the invalid entry count'
 printf '%s\n' "$invalid_guest_red_check" | grep -q \
 	'INVALID   test/invalid-guest-red-proof.patch: tests\[1\] guest-c-fixture cannot use source-base red-proof' ||
 	fail 'guest-c-fixture source-base red-proof metadata was not rejected'
