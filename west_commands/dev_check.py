@@ -525,9 +525,12 @@ def _check_steps(inputs: dict[str, Any], transaction_id: str) -> list[dict[str, 
     candidate_parent = scratch / "lock-first"
     candidate = candidate_parent / "darling-workspace"
     artifacts = scratch / "evidence"
+    # Host contracts exercise Darwin's 104-byte AF_UNIX limit.  Their own
+    # mkdtemp children provide isolation; nesting TMPDIR below this long
+    # transaction path makes valid boundary cases fail before the code under test.
     scratch_env = {
         "HOME": str(scratch / "home"),
-        "TMPDIR": str(scratch / "tmp"),
+        "TMPDIR": "/tmp",
         "XDG_CACHE_HOME": str(scratch / "cache"),
     }
     head = inputs["package_snapshot"]["manifest_head"]

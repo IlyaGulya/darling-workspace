@@ -1063,7 +1063,7 @@ with tempfile.TemporaryDirectory(prefix="dev-check-contract-") as temporary:
     assert_plan(acceptance, acceptance_expected)
     scratch_env = {
         "HOME": str(scratch / "home"),
-        "TMPDIR": str(scratch / "tmp"),
+        "TMPDIR": "/tmp",
         "XDG_CACHE_HOME": str(scratch / "cache"),
     }
     assert [(step["cwd"], step["env"]) for step in acceptance["steps"]] == [
