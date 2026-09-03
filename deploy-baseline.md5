@@ -7,7 +7,10 @@
 # UPDATE this file (and note why + which Bead) whenever a legitimate rebuild changes what is
 # deployed — otherwise the doctor will (correctly) flag the new deploy as a baseline mismatch.
 #
-# Current baseline (2026-07-04, task #116 A0-ARCH stage 3 LANDED): darlingserver updated to
+# Current baseline (2026-09-03, dar-tcwe.4 acceptance): the homebrew
+# rootless-bootstrap profile emitted WEST_PREFIX_BOOTSTRAP_OK and left no
+# Darling process residue after shutdown.
+# Previous baseline (2026-07-04, task #116 A0-ARCH stage 3 LANDED): darlingserver updated to
 # the A0-ARCH stage 3 landing (commit 78d7f7b + fixes 2d2cd37/5020b3f/e66aeee, fix-2 ccbe517
 # reverted by 1789d62; binary d81b5cf1): interrupt-as-cancellation -- the interrupted call
 # unwinds via NORMAL dispatch on its own fiber (frame armed {cancellationArmed,replyOwed,
@@ -28,6 +31,6 @@
 # Previous dserver baselines: 7692d9f6 (2c, .bak in darling-prefix/bin), 47ac175d (2b, .bak),
 # e50a3450 (2a), a889e85f (stage 1, .bak), 886d13af (a3de8c2, task #113).
 
-dyld    = 79b22273481ea61ab63c0606c23ab300
-mldr    = f0cd2a82efc4cb4614b63cabac0168f8
-dserver = d81b5cf1ece9588452f3b250aeb293fb
+dyld    = e156a68eeb6c600416325ced8df2e9c3
+mldr    = 6b014127095ebf8e8c9034bdf25abc2a
+dserver = 5d8e4e8b588a21a275cd0577f3f7e224
