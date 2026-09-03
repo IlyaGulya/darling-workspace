@@ -101,6 +101,32 @@ syncs `base.xml`, then restores all those branch refs from the bundles.
 Uncommitted worktree changes cannot be handed off. `dw handoff` prints every
 dirty repository so it can be committed or intentionally discarded first.
 
+## Daily feature workflow
+
+`west dev` is a thin, evidence-producing front end for the existing patch,
+test, doctor, deployment, Beads, and handoff authorities:
+
+```bash
+west dev status --profile homebrew
+west dev start --source /path/to/source --destination /path/to/authoring \
+  --base <commit-or-ref> --branch fix/<topic> --bead <id> --module <name> \
+  --evidence /path/outside/active/repos/start.json --dry-run
+west dev check quick --profile homebrew \
+  --evidence /path/outside/active/repos/quick.json
+west dev check canonical --profile homebrew \
+  --evidence /path/outside/active/repos/canonical.json
+west dev package --profile homebrew --receipt /path/to/canonical.json \
+  --output /path/to/review-package --evidence /path/to/package.json
+```
+
+`start` creates an independent exact-base clone without alternates, hardlinks,
+or mutations to active West repositories. Its `--dry-run --json` form emits
+the complete plan. `west dev recover-start --evidence <start.json>` recovers
+an interrupted transaction. `acceptance` is an unnarrowed Homebrew runtime
+tier and requires explicit `--prefix` and `--build-dir`. `package` accepts only
+a committed, current-workspace tier receipt. Add `--json` when another tool
+consumes the status, plan, or receipt.
+
 ## Sharing code without fork noise
 
 Share stable work as normal upstreamable commits and clean PR branches. Export

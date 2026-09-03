@@ -3,6 +3,7 @@ set -euo pipefail
 
 repo="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 tmp="$(mktemp -d)"
+export WEST_JOB_REGISTRY_ROOT="$tmp"
 job="$repo/scripts/west-job.sh"
 metadata_contract="$repo/tests/run-west-test-metadata-contract.sh"
 
@@ -292,6 +293,115 @@ grep -F -x -q 'WEST_JOB_CANCEL_GRACE_SECONDS must be a positive integer' "$tmp/i
 WEST_JOB_CANCEL_GRACE_SECONDS=1 "$job" cancel --state-dir "$tmp/invalid-grace" >/dev/null
 if wait_job --state-dir "$tmp/invalid-grace"; then
 	echo 'invalid grace cleanup job unexpectedly succeeded' >&2
+	exit 1
+fi
+
+# Relative state paths are canonicalized before registry identity is recorded,
+# so later callers may address them from another working directory.
+relative_cwd="$tmp/relative-cwd"
+custom_registry="$tmp/custom-registry"
+mkdir -p "$relative_cwd" "$custom_registry"
+(
+	cd "$relative_cwd"
+	WEST_JOB_REGISTRY_ROOT="$custom_registry" "$job" start \
+		--state-dir relative-state -- /bin/true
+)
+relative_state="$relative_cwd/relative-state"
+wait_job --state-dir "$relative_state"
+relative_entry_name="$(printf '%s' "$relative_state" | cksum | awk '{print $1 "-" $2}')"
+relative_entry="$custom_registry/.west-job-registry/$relative_entry_name"
+test "$(<"$relative_entry/state-dir")" = "$relative_state"
+
+# The cleanup gate defaults to the same custom global registry as start.
+WEST_JOB_REGISTRY_ROOT="$custom_registry" "$job" start \
+	--state-dir "$tmp/custom-live-west-test" -- \
+	env "PATH=$tmp/bin:$PATH" west test
+while [[ ! -f "$tmp/custom-live-west-test/command-pid" ]] || \
+	! grep -F -x -q 'WEST_TEST_JOB_READY' "$tmp/custom-live-west-test/log"; do
+	:
+done
+if WEST_JOB_REGISTRY_ROOT="$custom_registry" "$job" assert-no-live-west-test \
+	>"$tmp/custom-live-west-test.out" 2>"$tmp/custom-live-west-test.err"; then
+	echo 'custom-registry cleanup audit missed live west test' >&2
+	exit 1
+fi
+grep -F -x -q \
+	"cleanup audit blocked by live west test job: $tmp/custom-live-west-test" \
+	"$tmp/custom-live-west-test.err"
+"$job" cancel --state-dir "$tmp/custom-live-west-test" >/dev/null
+if wait_job --state-dir "$tmp/custom-live-west-test"; then
+	echo 'custom-registry cancelled west test unexpectedly succeeded' >&2
+	exit 1
+fi
+WEST_JOB_REGISTRY_ROOT="$custom_registry" "$job" assert-no-live-west-test
+
+# A reservation interrupted after the runner publishes its state identity is
+# reconciled into the registry and preserved rather than mistaken for stale.
+partial_live_state="$tmp/partial-live-state"
+mkdir "$partial_live_state"
+sleep 30 &
+partial_live_pid=$!
+printf '%s\n' "$partial_live_pid" >"$partial_live_state/pid"
+awk '{print $22}' "/proc/$partial_live_pid/stat" >"$partial_live_state/start-time"
+partial_live_name="$(printf '%s' "$partial_live_state" | cksum | awk '{print $1 "-" $2}')"
+partial_live_entry="$custom_registry/.west-job-registry/$partial_live_name"
+mkdir "$partial_live_entry"
+printf '%s\n' "$partial_live_state" >"$partial_live_entry/state-dir"
+printf 'west test partial-live\n' >"$partial_live_entry/command"
+WEST_JOB_REGISTRY_ROOT="$custom_registry" "$job" start \
+	--state-dir "$tmp/reconcile-trigger" -- /bin/true
+wait_job --state-dir "$tmp/reconcile-trigger"
+test "$(<"$partial_live_entry/pid")" = "$partial_live_pid"
+test "$(<"$partial_live_entry/start-time")" = "$(<"$partial_live_state/start-time")"
+kill "$partial_live_pid"
+wait "$partial_live_pid" 2>/dev/null || true
+
+# An interrupted reservation with no live state identity is safely removed, so
+# the exact state path can be retried.
+partial_stale_state="$tmp/partial-stale-state"
+partial_stale_name="$(printf '%s' "$partial_stale_state" | cksum | awk '{print $1 "-" $2}')"
+partial_stale_entry="$custom_registry/.west-job-registry/$partial_stale_name"
+mkdir "$partial_stale_entry"
+printf '%s\n' "$partial_stale_state" >"$partial_stale_entry/state-dir"
+WEST_JOB_REGISTRY_ROOT="$custom_registry" "$job" start \
+	--state-dir "$partial_stale_state" -- /bin/true
+wait_job --state-dir "$partial_stale_state"
+
+# Many interrupted pre-publication entries are removed by one later
+# reservation instead of accumulating beyond the status enumeration cap.
+for ((index = 0; index < 129; index++)); do
+	mkdir "$custom_registry/.west-job-registry/interrupted-$index"
+done
+WEST_JOB_REGISTRY_ROOT="$custom_registry" "$job" start \
+	--state-dir "$tmp/interrupted-prune-trigger" -- /bin/true
+wait_job --state-dir "$tmp/interrupted-prune-trigger"
+interrupted_count=0
+for entry in "$custom_registry/.west-job-registry"/*; do
+	if [[ -d "$entry" && ! -L "$entry" ]]; then
+		((interrupted_count += 1))
+	fi
+done
+if ((interrupted_count > 1)); then
+	echo "interrupted registry entries accumulated: $interrupted_count" >&2
+	exit 1
+fi
+
+# Reservation prunes completed entries under the registry lock, keeping a long
+# sequence of distinct completed jobs below the status collector's hard cap.
+for ((index = 0; index < 129; index++)); do
+	state="$tmp/sequential-$index"
+	WEST_JOB_REGISTRY_ROOT="$custom_registry" "$job" start \
+		--state-dir "$state" -- /bin/true
+	wait_job --state-dir "$state"
+done
+registry_count=0
+for entry in "$custom_registry/.west-job-registry"/*; do
+	if [[ -d "$entry" && ! -L "$entry" ]]; then
+		((registry_count += 1))
+	fi
+done
+if ((registry_count > 1)); then
+	echo "completed registry entries accumulated: $registry_count" >&2
 	exit 1
 fi
 
