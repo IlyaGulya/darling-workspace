@@ -1369,7 +1369,8 @@ def _acceptance_artifact_receipt(scratch: Path) -> dict[str, Any]:
         raise DevCheckError("acceptance generated lock closure is empty")
     generated_locks = []
     seen_generated: set[str] = set()
-    candidate = scratch / "lock-first" / "darling-workspace"
+    candidate_manifest = scratch / "lock-first" / "darling-workspace"
+    candidate_top = candidate_manifest.parent
     for row in generated_rows:
         if not isinstance(row, dict) or set(row) != {
             "profile",
@@ -1393,9 +1394,9 @@ def _acceptance_artifact_receipt(scratch: Path) -> dict[str, Any]:
             or not _is_lower_hex(row.get("sha256"), 64)
             or not _is_lower_hex(row.get("semantic_sha256"), 64)
         ):
-            raise DevCheckError("acceptance generated lock path is invalid or duplicated")
+            raise DevCheckError("acceptance generated lock row is invalid")
         seen_generated.add(relative)
-        path = candidate / relative
+        path = candidate_manifest / relative
         data = path.read_bytes()
         if (
             len(data) > _GENERATED_LOCK_LIMIT
@@ -1437,7 +1438,7 @@ def _acceptance_artifact_receipt(scratch: Path) -> dict[str, Any]:
         relative_repo = _safe_package_relative(
             mapped.get("path"), f"acceptance {module} repository"
         )
-        repository = candidate / relative_repo
+        repository = candidate_top / relative_repo
         if repository.is_symlink() or not repository.is_dir():
             raise DevCheckError(f"acceptance {module} repository is unavailable")
         if _run_git(["rev-parse", f"{commit}^{{tree}}"], repository) != tree:
