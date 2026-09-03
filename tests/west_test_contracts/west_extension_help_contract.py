@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import importlib.util
+import json
 import os
 import resource
 import shutil
@@ -324,13 +325,26 @@ def _assert_dw_dispatch_contract(command_class: type, topdir: Path, manifest_rep
         _expect_exit_code(lambda: root_parser.parse_known_args(["dw"]), 2)
 
     projects = [
-        types.SimpleNamespace(groups=["private"]),
-        types.SimpleNamespace(groups=[]),
+        types.SimpleNamespace(
+            groups=["private"],
+            path="darling",
+            userdata={"kind": "darling-source"},
+        ),
+        types.SimpleNamespace(
+            groups=[],
+            path="darling/src/child",
+            userdata={"kind": "darling-source"},
+        ),
+        types.SimpleNamespace(
+            groups=[],
+            path="workspace-tool",
+            userdata={"kind": "workspace-tool"},
+        ),
     ]
     parser_command.manifest = types.SimpleNamespace(
         repo_abspath=manifest_repo,
         projects=projects,
-        is_active=lambda project: project is projects[0],
+        is_active=lambda project: project is not projects[2],
     )
     parser_command.topdir = str(topdir)
     messages: list[str] = []
@@ -346,7 +360,7 @@ def _assert_dw_dispatch_contract(command_class: type, topdir: Path, manifest_rep
     expected_messages = [
         f"workspace: {topdir}",
         f"manifest:  {manifest_repo}",
-        "projects:  2 (1 active)",
+        "projects:  3 (2 active)",
         "private:   1",
     ]
     if messages != expected_messages:
@@ -497,6 +511,11 @@ def _assert_dw_dispatch_contract(command_class: type, topdir: Path, manifest_rep
     expected_source = str(topdir / "darling")
     if handoff_call.kwargs["env"]["DW_DARLING_SRC"] != expected_source:
         raise AssertionError(f"handoff environment changed: {handoff_call.kwargs['env']!r}")
+    expected_closure = json.dumps([".", "src/child"], separators=(",", ":"))
+    if handoff_call.kwargs["env"]["DW_HANDOFF_EXPECTED_PROJECTS"] != expected_closure:
+        raise AssertionError(
+            f"handoff closure environment changed: {handoff_call.kwargs['env']!r}"
+        )
 
 
 def _file_digest(path: Path) -> str:
