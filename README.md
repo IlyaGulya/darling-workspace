@@ -120,6 +120,9 @@ dirty repository so it can be committed or intentionally discarded first.
 test, doctor, deployment, Beads, and handoff authorities:
 
 ```bash
+west dev profiles
+west dev profiles --kind runtime --json
+source <(west dev profiles --completion bash)
 west dev status --profile homebrew
 west dev start --source /path/to/source --destination /path/to/authoring \
   --base <commit-or-ref> --branch fix/<topic> --bead <id> --module <name> \
@@ -144,6 +147,20 @@ committed, current-workspace acceptance receipt and its embedded acceptance
 artifacts; `verify-package` revalidates a published package's complete closure
 without changing it.
 
+`profiles` discovers immediate `patches/*/patches.yml` manifests and the
+CTest-owned `testkit/runtime-profiles.yml` catalog at invocation time. Its
+default summary is bounded to eight rows and names the exact `--json` command
+for the complete result; `--names --kind patch|runtime|all` is the stable
+newline-delimited candidate protocol. Repeatable `--purpose` filters narrow
+runtime discovery; bootstrap completion uses the two bootstrap-capable
+purposes automatically and never advertises an ordinary runtime-only provider.
+Because discovery is dynamic, adding a valid manifest needs no completion
+regeneration. The sourced Bash helper
+completes only values for `--profile`, `--with-runtime-profile`, and
+`--bootstrap-runtime-profile`, including `--option=value`; it deliberately
+does not provide general West command/option completion and does not complete
+the unrelated `--prefix-profile` shortcut.
+
 The review package contains the accepted receipt, exact manifest/profile/mapping
 and generated-lock bytes, acceptance artifacts, recovery mboxes, Git object
 bundles, `package-index.json`, and `SHA256SUMS`. Offline verification derives
@@ -163,13 +180,16 @@ option values. A completed `check` or `package` instead places an exact
 `cat --` command for its durable evidence JSON there, so inspecting detail never
 reruns a mutation. Add `--json` when another tool consumes an operation.
 These results use `schema_version: 1` with an `operation` discriminator
-(`status`, `start`, `check`, `package`, or `package-verify`) and an
-operation-specific `state` such as `healthy`, `degraded`, `in_progress`,
-`planned`, `committed`, `failed`, `invalid`, `operational_error`, or `valid`.
-A caught validation or operational failure in JSON mode returns one
-action-specific error envelope and exits 1 without appending human
-diagnostics. Successful operations exit 0, recorded command failures
-propagate their nonzero status, and invalid command-line usage exits 2.
+(`profiles`, `status`, `start`, `check`, `package`, or `package-verify`) and an
+operation-specific `state` such as `valid`, `healthy`, `degraded`,
+`in_progress`, `planned`, `committed`, `failed`, `invalid`, or
+`operational_error`. A successful `profiles` result has `state: "valid"`,
+records the selected patch/runtime kind in `inputs.kind`, includes the full
+ordered `profiles` array, and returns 0. A caught validation or operational
+failure in JSON mode returns one action-specific error envelope and exits 1
+without appending human diagnostics. Successful operations exit 0, recorded
+command failures propagate their nonzero status, and invalid command-line
+usage exits 2.
 
 ## Sharing code without fork noise
 

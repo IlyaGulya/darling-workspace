@@ -18,6 +18,7 @@ from guest_toolchain import (
 )
 from test_execution import process_output_text, run_bounded
 from test_guest_execution import run_guest_argv, run_guest_shell
+from profile_catalog import BOOTSTRAP_RUNTIME_PROFILE_PURPOSES
 from test_runtime_identity import runtime_identity
 
 
@@ -150,10 +151,7 @@ class BootstrapRuntimeProfileMixin:
         definition = self._ctest_runtime_profile_definitions().get(profile_name)
         if definition is None:
             self.die(f"unknown prefix baseline runtime profile: {profile_name}")
-        if definition.get("purpose") not in {
-            "prefix-baseline",
-            "guest-toolchain-provisioning",
-        }:
+        if definition.get("purpose") not in BOOTSTRAP_RUNTIME_PROFILE_PURPOSES:
             self.die(
                 f"runtime profile {profile_name} is not a bootstrap-capable provider; "
                 "bootstrap only accepts minimal or guest-toolchain provisioning profiles"

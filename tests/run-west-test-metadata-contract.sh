@@ -1,6 +1,39 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+display_has_debug_runner_run() {
+	python3 tests/west_test_contracts/metadata_display_contract.py --match guarded
+}
+
+display_has_guarded_ctest() {
+	local label=$1
+	python3 tests/west_test_contracts/metadata_display_contract.py \
+		--match guarded-ctest \
+		--label "$label"
+}
+
+if [ "${1:-}" = "--metadata-display-contract-probe" ]; then
+	case "${2:-}" in
+	guarded)
+		display_has_debug_runner_run
+		;;
+	bare)
+		if display_has_debug_runner_run; then
+			exit 1
+		fi
+		;;
+	guarded-ctest)
+		[ "$#" -eq 3 ] || exit 2
+		display_has_guarded_ctest "$3"
+		;;
+	*)
+		printf 'unknown metadata display contract probe: %s\n' "${2:-}" >&2
+		exit 2
+		;;
+	esac
+	exit 0
+fi
+
 repo="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$repo"
 "$repo/scripts/west-job.sh" assert-no-live-west-test --state-root "${TMPDIR:-/tmp}"
@@ -42,6 +75,7 @@ if [ "${1:-}" = "--transport-gate-probe" ]; then
 fi
 
 python3 tests/west_test_contracts/selection_contract.py
+python3 tests/west_test_contracts/metadata_display_contract.py
 python3 tests/west_test_contracts/metadata_runtime_profile_contract.py
 python3 tests/west_test_contracts/metadata_runtime_profile_red_contract.py
 python3 tests/west_test_contracts/metadata_source_profile_contract.py
@@ -759,6 +793,7 @@ fail() {
 	exit 1
 }
 
+
 branch_of() {
 	git -C "$1" branch --show-current
 }
@@ -807,7 +842,7 @@ guarded="$(
 
 printf '%s\n' "$guarded" | grep -q 'diag:guarded' ||
 	fail 'guarded metadata did not resolve to diag:guarded'
-printf '%s\n' "$guarded" | grep -q 'darling-debug-runner run ' ||
+printf '%s\n' "$guarded" | display_has_debug_runner_run ||
 	fail 'guarded metadata was not wrapped in darling-debug-runner'
 
 bare="$(
@@ -825,7 +860,7 @@ bare_host_display="$(
 			END { if (!found) exit 1 }
 		'
 )" || fail 'bare host metadata line was not found'
-if printf '%s\n' "$bare_host_display" | grep -q 'darling-debug-runner run '; then
+if printf '%s\n' "$bare_host_display" | display_has_debug_runner_run; then
 	fail 'bare host metadata was unexpectedly wrapped'
 fi
 
@@ -871,13 +906,14 @@ ctest_label="$(
 
 printf '%s\n' "$ctest_label" | grep -q 'ctest .* -L bead:dar-gwn.5' ||
 	fail 'ctest-label metadata did not resolve to a runnable ctest command'
-printf '%s\n' "$ctest_label" | grep -q 'darling-debug-runner.* run .* ctest .* -L bead:dar-gwn.5' ||
+printf '%s\n' "$ctest_label" |
+	display_has_guarded_ctest 'bead:dar-gwn.5' ||
 	fail 'ctest-label metadata did not preserve diag:guarded wrapping'
 if printf '%s\n' "$ctest_label" | grep -q 'list-only'; then
 	fail 'ctest-label metadata is still reported as list-only'
 fi
 
-source_only_check="$(west patch check --profile __metadata_contract)"
+source_only_check="$(west patch check --profile __metadata_contract --full)"
 printf '%s\n' "$source_only_check" | grep -q 'SOURCE    test/source-only.patch' ||
 	fail 'source-contract-only patch was not reported as SOURCE'
 printf '%s\n' "$source_only_check" | grep -q 'missing behavioral test' ||
@@ -968,7 +1004,7 @@ printf '%s\n' "$source_only_check" | grep -q 'test metadata: ' ||
 	fail 'coverage-tier summary was not emitted'
 
 set +e
-invalid_guest_red_check="$(west patch check --profile __metadata_invalid_contract 2>&1)"
+invalid_guest_red_check="$(west patch check --profile __metadata_invalid_contract --full 2>&1)"
 invalid_guest_red_rc=$?
 set -e
 if [[ "$invalid_guest_red_rc" -eq 0 ]]; then
@@ -1037,7 +1073,7 @@ printf '%s\n' "$invalid_guest_red_check" | grep -q \
 	'INVALID   test/invalid-host-trace-oracle.patch: tests\[1\] host-trace-oracle requires host-trace-files' ||
 	fail 'host-trace-oracle without host-trace-files was not rejected'
 
-runtime_red_check="$(west patch check --profile __metadata_runtime_red_contract)"
+runtime_red_check="$(west patch check --profile __metadata_runtime_red_contract --full)"
 printf '%s\n' "$runtime_red_check" | grep -q 'RUNTIME   test/guest-runtime-red-proof.patch' ||
 	fail 'guest-runtime-deploy metadata was not accepted as runtime coverage'
 printf '%s\n' "$runtime_red_check" | grep -q 'RUNTIME   test/script-runtime-red-proof.patch' ||
@@ -1182,10 +1218,11 @@ printf '%s\n' "$source_profile_script" | grep -q \
 	'<source-profile-script> tests/source_profile_contract.sh' ||
 	fail 'source-profile-script metadata did not resolve to a profile-owned source contract command'
 
-west test --profile __metadata_source_profile_contract \
-	--patch test/source-profile-script.patch \
+west test --profile homebrew \
+	--patch xnu/psynch-negative-errno.patch \
+	--env host \
 	--prove-red >/dev/null ||
-	fail 'source-profile-script did not execute as a source-base RED proof'
+	fail 'canonical source-profile-script did not execute as a source-base RED proof'
 
 self_contract_script="$(
 	west test --profile __metadata_contract \

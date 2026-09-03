@@ -87,6 +87,14 @@ try:
     from .test_guest_c import failure_phase_from_debug_bundle, run_guest_c_fixture
 except ImportError:  # Loaded as a West extension module, not a package.
     from test_guest_c import failure_phase_from_debug_bundle, run_guest_c_fixture
+from profile_catalog import (
+    BOOTSTRAP_RUNTIME_PROFILE_OPTION,
+    PATCH_PROFILE_KIND,
+    PROFILE_OPTION,
+    RUNTIME_PROFILE_KIND,
+    WITH_RUNTIME_PROFILE_OPTION,
+    add_profile_argument,
+)
 from test_profile import ProfileOperationsMixin
 from test_prefix import (
     cleanup_rootless_runtime_sockets,
@@ -162,8 +170,10 @@ class DarlingTest(ProfileOperationsMixin, BootstrapRuntimeProfileMixin, WestComm
             metavar="PATH",
             help="run CTest-backed tests labelled for a West project path/name",
         )
-        parser.add_argument(
-            "--profile",
+        add_profile_argument(
+            parser,
+            PROFILE_OPTION,
+            PATCH_PROFILE_KIND,
             metavar="NAME",
             help="run tests declared by a patch profile's patches.yml metadata",
         )
@@ -207,8 +217,10 @@ class DarlingTest(ProfileOperationsMixin, BootstrapRuntimeProfileMixin, WestComm
             metavar="BASELINE",
             help="copy BASELINE into an isolated disposable prefix for this test run",
         )
-        parser.add_argument(
-            "--with-runtime-profile",
+        add_profile_argument(
+            parser,
+            WITH_RUNTIME_PROFILE_OPTION,
+            RUNTIME_PROFILE_KIND,
             action="append",
             default=[],
             metavar="NAME",
@@ -221,8 +233,10 @@ class DarlingTest(ProfileOperationsMixin, BootstrapRuntimeProfileMixin, WestComm
             metavar="NAME=VALUE",
             help="override one feature CMake definition for a disposable runtime deployment",
         )
-        parser.add_argument(
-            "--bootstrap-runtime-profile",
+        add_profile_argument(
+            parser,
+            BOOTSTRAP_RUNTIME_PROFILE_OPTION,
+            RUNTIME_PROFILE_KIND,
             metavar="NAME",
             help="with --prefix, --prefix-profile, or DPREFIX: build and retain one declared runtime provider as the selected prefix baseline, then prove it with a bounded guest smoke",
         )
