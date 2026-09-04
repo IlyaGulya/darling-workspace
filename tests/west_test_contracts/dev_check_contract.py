@@ -1569,6 +1569,9 @@ with tempfile.TemporaryDirectory(prefix="dev-check-contract-") as temporary:
     )
     guest_env["WEST_RUNTIME_BUILD_CACHE_KEY"] = checkpoint_key
     guest_env["WEST_MATERIALIZED_WORKSPACE_LOCK"] = str(guest_workspace_lock)
+    guest_env["WEST_PREMATERIALIZED_RUNTIME_SOURCE_ROOT"] = str(
+        guest_parent / "darling"
+    )
     guest_env["DARLING_SMOKE_PREFIX"] = (
         f"/tmp/darling-rootless-smoke-{checkpoint_key[:16]}"
     )
