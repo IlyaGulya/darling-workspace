@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import os
 import sys
 import tempfile
@@ -70,6 +71,7 @@ with tempfile.TemporaryDirectory() as temp:
 
 
     cached_calls = []
+    cached_ninja_runs = [0]
 
     def cached_runner(command, **kwargs):
         cached_calls.append((command, kwargs))
@@ -80,8 +82,11 @@ with tempfile.TemporaryDirectory() as temp:
             build = Path(command[command.index("-C") + 1])
             artifact = build / "bin/darling"
             artifact.parent.mkdir(parents=True, exist_ok=True)
-            artifact.write_bytes(b"cached runtime\n")
-            artifact.chmod(0o755)
+            cached_ninja_runs[0] += 1
+            content = b"cached runtime v2\n" if cached_ninja_runs[0] >= 2 else b"cached runtime v1\n"
+            if not artifact.exists() or artifact.read_bytes() != content:
+                artifact.write_bytes(content)
+                artifact.chmod(0o755)
         return ProcessResult(0)
 
     cache_root = root / "cache"
@@ -120,25 +125,42 @@ with tempfile.TemporaryDirectory() as temp:
             runner=cached_runner,
             timeout_seconds=7,
         )
-        assert first == second
-        assert len(cached_calls) == 3, cached_calls
-        assert [call[0][0] for call in cached_calls] == ["cmake", "ninja", "ninja"]
+        third = service.build_artifacts(
+            root / "source-c",
+            cached_proof,
+            root / "prefix",
+            root / "scratch-c",
+            label="CACHED",
+            allow_failure=False,
+            configure_args=lambda _proof, _prefix, _scratch: [],
+            dump_command_tail=lambda *_args: None,
+            runner=cached_runner,
+            timeout_seconds=7,
+        )
+        assert first == second == third
+        assert len(cached_calls) == 4, cached_calls
+        assert [call[0][0] for call in cached_calls] == ["cmake", "ninja", "ninja", "ninja"]
         assert "-d" in cached_calls[-1][0] and "stats" in cached_calls[-1][0]
-        assert [call[0][-1] for call in cached_calls[1:]] == ["darling", "darling"]
+        assert [call[0][-1] for call in cached_calls[1:]] == ["darling"] * 3
         assert any(
             "ninja_edges=" in message
             and "ccache_hits=" in message
             and "ccache_hit_rate=" in message
             for message in host.messages
         )
-        assert nonlocal_artifact_discovery == [1], (
-            "a warm no-op build must validate indexed artifacts without "
-            f"rediscovering the build tree: {nonlocal_artifact_discovery}"
+        assert nonlocal_artifact_discovery == [2], (
+            "a changed incremental build must refresh its artifact index once, "
+            "then warm no-op builds must reuse it: "
+            f"{nonlocal_artifact_discovery}"
         )
-        (second / "bin/darling").write_bytes(b"mutated\n")
+        index = json.loads((third.parent / "cache-index.json").read_text())
+        assert index["artifacts"][0]["sha256"] == service._compiler_file_sha256(
+            third / "bin/darling"
+        )
+        (third / "bin/darling").write_bytes(b"mutated\n")
         try:
             service.build_artifacts(
-                root / "source-c",
+                root / "source-d",
                 cached_proof,
                 root / "prefix",
                 root / "scratch-c",

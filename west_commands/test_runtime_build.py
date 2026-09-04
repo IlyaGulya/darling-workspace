@@ -612,12 +612,12 @@ class RuntimeBuildService:
             fcntl.flock(lock, fcntl.LOCK_EX)
             cached = self._read_runtime_cache(entry, identity) if entry.exists() else None
             if cached is not None:
-                build_root, signatures, indexed = cached
+                build_root, signatures, _indexed = cached
                 yield build_root, True
                 if not self._cached_artifact_signatures_unchanged(
                     build_root, signatures
                 ):
-                    self._validate_indexed_artifacts(indexed, build_root)
+                    self._write_runtime_cache(entry, identity, build_root)
                 return
             if entry.exists():
                 shutil.rmtree(entry)
