@@ -14,6 +14,22 @@ case "$defer_global_cleanup" in
 		;;
 esac
 
+run_tier_phase() {
+	local name="$1"
+	shift
+	local started_ns finished_ns rc
+	started_ns="$(date +%s%N)"
+	echo "tier phase start: $name"
+	set +e
+	"$@"
+	rc=$?
+	set -e
+	finished_ns="$(date +%s%N)"
+	echo "tier phase complete: $name ($(((finished_ns - started_ns) / 1000000))ms)"
+	return "$rc"
+}
+
+
 cleanup_rootless_tier() {
 	local test_rc="$1"
 	local cleanup_rc=0
@@ -115,6 +131,15 @@ case "${1:-}" in
 		;;
 	guest-smoke)
 		tier_kind=smoke
+		if [[ -n "${WEST_MATERIALIZED_WORKSPACE_LOCK:-}" ]]; then
+			if [[ "$WEST_MATERIALIZED_WORKSPACE_LOCK" != /* ]]; then
+				echo "materialized workspace lock must be absolute" >&2
+				exit 2
+			fi
+			mkdir -p -- "${WEST_MATERIALIZED_WORKSPACE_LOCK%/*}"
+			exec {materialized_workspace_lock_fd}>"$WEST_MATERIALIZED_WORKSPACE_LOCK"
+			flock "$materialized_workspace_lock_fd"
+		fi
 		if [[ -n "${WEST_RUNTIME_BUILD_CACHE_DIR:-}" ]]; then
 			if [[ ! "${WEST_RUNTIME_BUILD_CACHE_KEY:-}" =~ ^[0-9a-f]{64}$ ]]; then
 				echo "runtime build cache identity is incomplete" >&2
@@ -127,10 +152,12 @@ case "${1:-}" in
 		prefix="$(rootless_prefix_create "$tier_kind" DARLING_SMOKE_PREFIX)"
 		rootless_prefix_export_output prefix "$prefix"
 		trap 'cleanup_rootless_tier "$?"' EXIT
-		WEST_TEST_FORBID_GUEST_TOOLCHAIN=1 west test --prefix "$prefix" \
+		WEST_TEST_FORBID_GUEST_TOOLCHAIN=1 run_tier_phase bootstrap-runtime \
+			west test --prefix "$prefix" \
 			--bootstrap-runtime-profile homebrew-rootless-bootstrap-minimal \
 			--runtime-build-timeout-seconds 600
-		WEST_TEST_FORBID_GUEST_TOOLCHAIN=1 west test \
+		WEST_TEST_FORBID_GUEST_TOOLCHAIN=1 run_tier_phase guest-contracts \
+			west test \
 			--profile homebrew --patch darling/rootless-prefix-initialization.patch \
 			--env darling \
 			--label 'name:(rootless_prefix_initialization_guest|rootless_prebuilt_macho_regression)' \

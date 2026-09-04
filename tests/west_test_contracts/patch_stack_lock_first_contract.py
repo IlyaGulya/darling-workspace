@@ -2,6 +2,7 @@
 """Lock-first is opt-in, graph-based, and leaves the legacy apply path intact."""
 from __future__ import annotations
 
+import os
 import subprocess
 import sys
 import tempfile
@@ -219,6 +220,33 @@ def main() -> None:
         assert (cloned_project / ".git").is_file()
         project_carrier = tier_destination / ".west-tier-repositories/project-0000.git"
         assert (project_carrier / "objects/info/alternates").is_file()
+        lock_first_acceptance.clone_tier_workspace(
+            tier_manifest,
+            tier_source,
+            tier_destination,
+            "homebrew",
+            candidate_manifest,
+        )
+        persistent_destination = root / "persistent-tier-destination"
+        persistent_lock = root / "persistent-tier.lock"
+        os.environ["WEST_MATERIALIZED_WORKSPACE_LOCK"] = str(persistent_lock)
+        try:
+            for _attempt in range(2):
+                lock_first_acceptance.locked_clone_tier_workspace(
+                    tier_manifest,
+                    tier_source,
+                    persistent_destination,
+                    "homebrew",
+                    candidate_manifest,
+                )
+        finally:
+            os.environ.pop("WEST_MATERIALIZED_WORKSPACE_LOCK", None)
+        persistent_carrier = (
+            persistent_destination
+            / ".west-tier-repositories"
+            / "project-0000.git"
+        )
+        assert not (persistent_carrier / "objects/info/alternates").exists()
         git(cloned_project, "update-ref", "refs/acceptance/isolated", tier_revision)
         assert (
             subprocess.run(
@@ -248,7 +276,7 @@ def main() -> None:
         except lock_first_acceptance.AcceptanceError:
             pass
         else:
-            raise AssertionError("tier clone accepted an existing destination")
+            raise AssertionError("tier workspace cache accepted dirty content")
         corrupt_manifest = root / "tier-corrupt-manifest.json"
         corrupt_manifest.write_text(
             json.dumps(

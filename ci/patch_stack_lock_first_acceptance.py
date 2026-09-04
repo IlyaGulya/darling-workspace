@@ -7,8 +7,9 @@ schema-v2 lock and against the actual lock-first Git worktree.
 """
 from __future__ import annotations
 
-import concurrent.futures
 import argparse
+import concurrent.futures
+import fcntl
 import hashlib
 import json
 import os
@@ -1609,6 +1610,8 @@ def _create_shared_worktree(
     revision: str,
     label: str,
     allowed_dirty_paths: set[str] | None = None,
+    *,
+    independent_objects: bool = False,
 ) -> None:
     fail(
         source.is_dir() and not source.is_symlink() and (source / ".git").exists(),
@@ -1627,16 +1630,11 @@ def _create_shared_worktree(
     )
     carrier.parent.mkdir(parents=True, exist_ok=True)
     destination.parent.mkdir(parents=True, exist_ok=True)
+    clone_argv = ["git", "clone", "--bare"]
+    clone_argv.append("--no-local" if independent_objects else "--shared")
+    clone_argv.extend(("--", str(source), str(carrier)))
     cloned = subprocess.run(
-        [
-            "git",
-            "clone",
-            "--shared",
-            "--bare",
-            "--",
-            str(source),
-            str(carrier),
-        ],
+        clone_argv,
         stdin=subprocess.DEVNULL,
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
@@ -1644,7 +1642,7 @@ def _create_shared_worktree(
     )
     fail(
         cloned.returncode == 0,
-        f"{label}: shared object carrier failed: {cloned.stderr.strip()}",
+        f"{label}: object carrier failed: {cloned.stderr.strip()}",
     )
     checked = subprocess.run(
         [
@@ -1684,10 +1682,6 @@ def clone_tier_workspace(
     fail(
         destination_workspace.is_absolute(),
         "tier destination workspace must be absolute",
-    )
-    fail(
-        not destination_workspace.exists() and not destination_workspace.is_symlink(),
-        "tier destination workspace already exists",
     )
     generated = load_json(candidate_manifest_path).get("generated_profile_locks")
     fail(isinstance(generated, list) and generated, "tier generated locks are missing")
@@ -1778,6 +1772,83 @@ def clone_tier_workspace(
     manifest_revision = _git_identity(
         manifest_workspace, "HEAD", "tier manifest source"
     )
+    independent_objects = bool(os.environ.get("WEST_MATERIALIZED_WORKSPACE_LOCK"))
+    workspace_index = {
+        "schema_version": 1,
+        "kind": "west-acceptance-tier-workspace",
+        "profile": profile,
+        "manifest_revision": manifest_revision,
+        "projects": [
+            {"path": path.as_posix(), "revision": revision}
+            for path, revision in rows
+        ],
+        "generated_locks": [
+            {
+                "path": source.relative_to(manifest_workspace).as_posix(),
+                "sha256": hashlib.sha256(source.read_bytes()).hexdigest(),
+            }
+            for source in generated_paths
+        ],
+    }
+    if destination_workspace.exists() or destination_workspace.is_symlink():
+        fail(
+            destination_workspace.is_dir() and not destination_workspace.is_symlink(),
+            "tier destination workspace is not a real directory",
+        )
+        marker = destination_workspace / "tier-workspace-index.json"
+        fail(
+            marker.is_file() and not marker.is_symlink(),
+            "tier destination workspace is incomplete",
+        )
+        fail(
+            load_json(marker) == workspace_index,
+            "tier destination workspace identity differs",
+        )
+        destination_manifest = destination_workspace / "darling-workspace"
+        fail(
+            _git_identity(destination_manifest, "HEAD", "tier manifest destination")
+            == manifest_revision,
+            "tier manifest destination HEAD differs",
+        )
+        allowed_manifest_dirty = {
+            source.relative_to(manifest_workspace).as_posix()
+            for source in generated_paths
+        }
+        fail(
+            _git_status_paths(destination_manifest) <= allowed_manifest_dirty,
+            "tier manifest destination is dirty outside generated locks",
+        )
+        for path, revision in rows:
+            destination = contained(
+                destination_workspace,
+                path.as_posix(),
+                f"tier destination project {path}",
+            )
+            fail(
+                git(destination, "rev-parse", "HEAD") == revision,
+                f"tier destination project {path}: HEAD differs from frozen revision",
+            )
+            dirty = _git_status_paths(destination)
+            fail(
+                dirty <= allowed_dirty[path],
+                f"tier destination project {path}: dirty outside nested projects: "
+                f"{sorted(dirty - allowed_dirty[path])}",
+            )
+        for source in generated_paths:
+            relative = source.relative_to(manifest_workspace)
+            destination = contained(
+                destination_manifest,
+                relative.as_posix(),
+                f"tier generated lock {relative}",
+            )
+            fail(
+                destination.is_file()
+                and not destination.is_symlink()
+                and destination.read_bytes() == source.read_bytes(),
+                f"tier generated lock {relative}: cached content differs",
+            )
+        print(f"tier workspace: reused {len(rows)} frozen projects")
+        return
     destination_workspace.mkdir(parents=True)
     carrier_root = destination_workspace / ".west-tier-repositories"
     destination_manifest = destination_workspace / "darling-workspace"
@@ -1799,6 +1870,7 @@ def clone_tier_workspace(
             revision,
             f"tier project {path}",
             allowed_dirty[path],
+            independent_objects=independent_objects,
         )
 
     first_depth = min(rows_by_depth)
@@ -1823,6 +1895,7 @@ def clone_tier_workspace(
                             source.relative_to(manifest_workspace).as_posix()
                             for source in generated_paths
                         },
+                        independent_objects=independent_objects,
                     )
                 )
             for future in futures:
@@ -1842,7 +1915,77 @@ def clone_tier_workspace(
         )
         destination.parent.mkdir(parents=True, exist_ok=True)
         destination.write_bytes(source.read_bytes())
+    write_result(
+        destination_workspace / "tier-workspace-index.json", workspace_index
+    )
     print(f"tier workspace: cloned {len(rows)} frozen projects")
+
+
+def locked_clone_tier_workspace(
+    manifest_workspace: Path,
+    source_workspace: Path,
+    destination_workspace: Path,
+    profile: str,
+    candidate_manifest_path: Path,
+) -> None:
+    raw_lock = os.environ.get("WEST_MATERIALIZED_WORKSPACE_LOCK")
+    if not raw_lock:
+        clone_tier_workspace(
+            manifest_workspace,
+            source_workspace,
+            destination_workspace,
+            profile,
+            candidate_manifest_path,
+        )
+        return
+    lock_path = Path(raw_lock)
+    fail(lock_path.is_absolute(), "tier workspace lock must be absolute")
+    lock_path.parent.mkdir(parents=True, exist_ok=True)
+    descriptor = os.open(lock_path, os.O_RDWR | os.O_CREAT | os.O_CLOEXEC, 0o600)
+    building_marker = destination_workspace.with_name(
+        f".{destination_workspace.name}.building"
+    )
+    try:
+        fcntl.flock(descriptor, fcntl.LOCK_EX)
+        if building_marker.exists() or building_marker.is_symlink():
+            fail(
+                building_marker.is_file()
+                and not building_marker.is_symlink()
+                and building_marker.read_text(encoding="utf-8")
+                == "west-acceptance-tier-workspace\n",
+                "tier workspace building marker is invalid",
+            )
+            if destination_workspace.exists() or destination_workspace.is_symlink():
+                fail(
+                    destination_workspace.is_dir()
+                    and not destination_workspace.is_symlink(),
+                    "incomplete tier workspace is not a real directory",
+                )
+                shutil.rmtree(destination_workspace)
+            building_marker.unlink()
+        if destination_workspace.exists() or destination_workspace.is_symlink():
+            clone_tier_workspace(
+                manifest_workspace,
+                source_workspace,
+                destination_workspace,
+                profile,
+                candidate_manifest_path,
+            )
+            return
+        building_marker.write_text(
+            "west-acceptance-tier-workspace\n", encoding="utf-8"
+        )
+        clone_tier_workspace(
+            manifest_workspace,
+            source_workspace,
+            destination_workspace,
+            profile,
+            candidate_manifest_path,
+        )
+        building_marker.unlink()
+    finally:
+        fcntl.flock(descriptor, fcntl.LOCK_UN)
+        os.close(descriptor)
 
 
 
@@ -1901,7 +2044,7 @@ def main() -> None:
                 args.profile,
             )
         elif args.action == "clone-tier-workspace":
-            clone_tier_workspace(
+            locked_clone_tier_workspace(
                 ROOT,
                 args.source_workspace,
                 args.destination_workspace,
