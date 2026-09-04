@@ -13,11 +13,26 @@ if ((jobs < 1)); then
 	exit 2
 fi
 
+cache_args=()
+if [[ -n "${DARLING_WEST_UPDATE_PATH_CACHE:-}" ]]; then
+	path_cache="$DARLING_WEST_UPDATE_PATH_CACHE"
+	if [[ "$path_cache" != /* || ! -d "$path_cache" || -L "$path_cache" ]]; then
+		echo "DARLING_WEST_UPDATE_PATH_CACHE must be a real absolute directory" >&2
+		exit 2
+	fi
+	resolved_path_cache="$(cd "$path_cache" && pwd -P)"
+	if [[ "$resolved_path_cache" != "$path_cache" ]]; then
+		echo "DARLING_WEST_UPDATE_PATH_CACHE must not contain symlink components" >&2
+		exit 2
+	fi
+	cache_args=(--path-cache "$path_cache")
+fi
+
 if [[ "${1:-}" == '--worker' ]]; then
 	project="${2:?worker requires a project name}"
 	safe_project="$(printf '%s' "$project" | tr -c 'A-Za-z0-9_.-' '_')"
 	log_file="$DARLING_WEST_UPDATE_LOG_DIR/$safe_project.log"
-	if west update "$project" >"$log_file" 2>&1; then
+	if west update "${cache_args[@]}" "$project" >"$log_file" 2>&1; then
 		echo "west update $project: ok"
 		exit 0
 	fi
@@ -27,7 +42,7 @@ if [[ "${1:-}" == '--worker' ]]; then
 fi
 
 if ((jobs == 1)); then
-	exec west update
+	exec west update "${cache_args[@]}"
 fi
 
 script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"

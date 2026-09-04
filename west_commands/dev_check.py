@@ -46,7 +46,12 @@ _CHECKPOINT_STEP_NAMES = (
     "host-materialized-test",
     "immutable-oracle",
 )
+_FINAL_TIER_STEP_NAMES = (
+    "acceptance-host-tier",
+    "acceptance-guest-smoke",
+)
 _CHECKPOINT_LIMIT = 8 * 1024 * 1024
+_ACCEPTANCE_BOOTSTRAP_JOBS = 8
 _PARALLEL_ENVIRONMENT_NAMES = frozenset(
     {
         "CC",
@@ -66,6 +71,8 @@ _PARALLEL_ENVIRONMENT_NAMES = frozenset(
         "DEV_CHECK_INTERRUPT_MARKERS",
         "DEV_CHECK_INTERRUPT_READY",
         "DEV_CHECK_PARALLEL_BARRIER",
+        "DEV_CHECK_FINAL_TIER_BARRIER",
+        "DEV_CHECK_FINAL_TIER_CLEANUP",
         "DEV_CHECK_PARALLEL_CLEANUP",
         "FORCE_COLOR",
         "LANG",
@@ -102,6 +109,8 @@ _CHECK_TIMEOUTS = {
     "acceptance-compare": 1800,
     "acceptance-host-tier": 10800,
     "acceptance-guest-smoke": 10800,
+    "clone-tier-workspace": 1800,
+    "acceptance-final-cleanup": 1800,
 }
 _PACKAGE_TIMEOUT_SECONDS = 3600
 
@@ -1208,6 +1217,8 @@ def _check_steps(inputs: dict[str, Any], transaction_id: str) -> list[dict[str, 
     control = control_parent / "darling-workspace"
     candidate_parent = scratch / "lock-first"
     candidate = candidate_parent / "darling-workspace"
+    guest_parent = scratch / "guest"
+    guest = guest_parent / "darling-workspace"
     artifacts = scratch / "evidence"
 
     def stage_env(name: str) -> dict[str, str]:
@@ -1234,6 +1245,16 @@ def _check_steps(inputs: dict[str, Any], transaction_id: str) -> list[dict[str, 
     host_env = stage_env("host")
     oracle_env = stage_env("oracle")
     candidate_env = stage_env("candidate")
+    guest_env = stage_env("guest")
+    guest_env["DARLING_TIER_DEFER_GLOBAL_CLEANUP"] = "1"
+    final_host_env = stage_env("final-host")
+    bootstrap_env = dict(candidate_env)
+    bootstrap_env.update(
+        {
+            "DARLING_WEST_UPDATE_JOBS": str(_ACCEPTANCE_BOOTSTRAP_JOBS),
+            "DARLING_WEST_UPDATE_PATH_CACHE": str(manifest_repo.parent),
+        }
+    )
     head = inputs["package_snapshot"]["manifest_head"]
     mapping = control / "locks" / "patch-stack" / "lock-first-series-v2.yml"
     oracle = artifacts / "immutable-oracle.json"
@@ -1312,7 +1333,7 @@ def _check_steps(inputs: dict[str, Any], transaction_id: str) -> list[dict[str, 
                 "temporary/local-output",
                 _CHECK_TIMEOUTS["bootstrap"],
                 candidate,
-                candidate_env,
+                bootstrap_env,
             ),
             _step(
                 "acceptance-configure-candidate-identity",
@@ -1468,18 +1489,50 @@ def _check_steps(inputs: dict[str, Any], transaction_id: str) -> list[dict[str, 
                 candidate_env,
             ),
             _step(
+                "acceptance-clone-guest-candidate",
+                [
+                    str(Path(sys.executable).resolve()),
+                    str(
+                        candidate
+                        / "ci"
+                        / "patch_stack_lock_first_acceptance.py"
+                    ),
+                    "clone-tier-workspace",
+                    "--source-workspace",
+                    str(candidate_parent),
+                    "--destination-workspace",
+                    str(guest_parent),
+                    "--profile",
+                    profile,
+                    "--candidate-manifest",
+                    str(manifest),
+                ],
+                "temporary/local-output",
+                _CHECK_TIMEOUTS["clone-tier-workspace"],
+                candidate,
+                candidate_env,
+            ),
+            _step(
                 "acceptance-host-tier",
                 [str(candidate / "ci" / "run-test-tier.sh"), "host"],
                 "temporary/local-output",
                 _CHECK_TIMEOUTS["acceptance-host-tier"],
                 candidate,
-                candidate_env,
+                final_host_env,
             ),
             _step(
                 "acceptance-guest-smoke",
-                [str(candidate / "ci" / "run-test-tier.sh"), "guest-smoke"],
+                [str(guest / "ci" / "run-test-tier.sh"), "guest-smoke"],
                 "temporary/local-output",
                 _CHECK_TIMEOUTS["acceptance-guest-smoke"],
+                guest,
+                guest_env,
+            ),
+            _step(
+                "acceptance-final-cleanup",
+                [str(candidate / "ci" / "run-test-tier.sh"), "acceptance-cleanup"],
+                "temporary/local-output",
+                _CHECK_TIMEOUTS["acceptance-final-cleanup"],
                 candidate,
                 candidate_env,
             ),
@@ -3211,6 +3264,21 @@ def _raise_step_failure(result: dict[str, Any]) -> None:
         raise _StepFailure(f"{result['name']}-capture", 1)
 
 
+def _parallel_failure(
+    ordered_results: list[dict[str, Any]],
+) -> dict[str, Any] | None:
+    for include_cancelled in (False, True):
+        for result in ordered_results:
+            failed = result["returncode"] != 0 or any(
+                "capture_error" in result[stream] for stream in ("stdout", "stderr")
+            )
+            if failed and (
+                include_cancelled or not result.get("cancelled_by_peer", False)
+            ):
+                return result
+    return None
+
+
 def execute_check(
     plan: dict[str, Any],
     progress: Callable[[dict[str, Any]], None] | None = None,
@@ -3328,30 +3396,7 @@ def execute_check(
                     ]
                     for result in ordered_results:
                         publish_result(result)
-                    failed = next(
-                        (
-                            result
-                            for result in ordered_results
-                            if (
-                                result["returncode"] != 0
-                                or "capture_error" in result["stdout"]
-                                or "capture_error" in result["stderr"]
-                            )
-                            and not result.get("cancelled_by_peer", False)
-                        ),
-                        None,
-                    )
-                    if failed is None:
-                        failed = next(
-                            (
-                                result
-                                for result in ordered_results
-                                if result["returncode"] != 0
-                                or "capture_error" in result["stdout"]
-                                or "capture_error" in result["stderr"]
-                            ),
-                            None,
-                        )
+                    failed = _parallel_failure(ordered_results)
                     if failed is not None:
                         _raise_step_failure(failed)
                     assert scratch is not None
@@ -3371,6 +3416,88 @@ def execute_check(
                         evidence, record, evidence_fd, evidence_identity
                     )
                 position += len(_CHECKPOINT_STEP_NAMES)
+                continue
+
+            if (
+                plan["inputs"]["tier"] == "acceptance"
+                and planned_step["name"] == _FINAL_TIER_STEP_NAMES[0]
+            ):
+                parallel_steps = plan["steps"][
+                    position : position + len(_FINAL_TIER_STEP_NAMES)
+                ]
+                cleanup_position = position + len(_FINAL_TIER_STEP_NAMES)
+                if (
+                    [step["name"] for step in parallel_steps]
+                    != list(_FINAL_TIER_STEP_NAMES)
+                    or cleanup_position >= len(plan["steps"])
+                    or plan["steps"][cleanup_position]["name"]
+                    != "acceptance-final-cleanup"
+                ):
+                    raise DevCheckError(
+                        "acceptance final tiers are not one cleanup-bound wave"
+                    )
+                interrupted = False
+                try:
+                    parallel_results = _run_parallel_acceptance_steps(
+                        parallel_steps,
+                        indices,
+                        total,
+                        started,
+                        progress,
+                    )
+                except _ParallelInterrupted as error:
+                    parallel_results = error.results
+                    interrupted = True
+                ordered_results = [
+                    parallel_results[step["name"]]
+                    for step in parallel_steps
+                    if step["name"] in parallel_results
+                ]
+                for result in ordered_results:
+                    publish_result(result)
+                failed = _parallel_failure(ordered_results)
+                cleanup_step = plan["steps"][cleanup_position]
+                _progress(
+                    progress,
+                    "start",
+                    cleanup_step,
+                    indices[cleanup_step["name"]],
+                    total,
+                    started,
+                )
+                cleanup_outcome = _run_process(
+                    list(cleanup_step["argv"]),
+                    Path(cleanup_step["cwd"]),
+                    int(cleanup_step["timeout_seconds"]),
+                    dict(cleanup_step["env"]),
+                    sanitize_environment=True,
+                )
+                cleanup_result = copy.deepcopy(cleanup_step)
+                cleanup_result.update(cleanup_outcome)
+                _progress(
+                    progress,
+                    "finish",
+                    cleanup_step,
+                    indices[cleanup_step["name"]],
+                    total,
+                    started,
+                    duration_ms=cleanup_result["duration_ms"],
+                    returncode=cleanup_result["returncode"],
+                )
+                publish_result(cleanup_result)
+                cleanup_failed = _parallel_failure([cleanup_result])
+                if cleanup_failed is not None:
+                    if failed is not None:
+                        raise _StepFailure(
+                            f"{failed['name']} and {cleanup_result['name']}",
+                            cleanup_result["returncode"] or 1,
+                        )
+                    _raise_step_failure(cleanup_failed)
+                if interrupted:
+                    raise KeyboardInterrupt
+                if failed is not None:
+                    _raise_step_failure(failed)
+                position = cleanup_position + 1
                 continue
 
             _progress(

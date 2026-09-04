@@ -5,6 +5,14 @@ root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$root"
 export ROOTLESS_TIER_REPO="$root"
 . "$root/ci/rootless-prefix.sh"
+defer_global_cleanup="${DARLING_TIER_DEFER_GLOBAL_CLEANUP:-0}"
+case "$defer_global_cleanup" in
+	0|1) ;;
+	*)
+		echo "DARLING_TIER_DEFER_GLOBAL_CLEANUP must be 0 or 1" >&2
+		exit 2
+		;;
+esac
 
 cleanup_rootless_tier() {
 	local test_rc="$1"
@@ -45,10 +53,12 @@ cleanup_rootless_tier() {
 		cleanup_rc=1
 		echo "rootless tier prefix disappeared before cleanup: $prefix" >&2
 	fi
-	west test --gc --gc-runtime-evidence
-	gc_rc=$?
-	"$root/scripts/west-job.sh" assert-no-live-west-test --state-root "${TMPDIR:-/tmp}"
-	jobs_rc=$?
+	if [[ "$defer_global_cleanup" == 0 ]]; then
+		west test --gc --gc-runtime-evidence
+		gc_rc=$?
+		"$root/scripts/west-job.sh" assert-no-live-west-test --state-root "${TMPDIR:-/tmp}"
+		jobs_rc=$?
+	fi
 	if (( test_rc == 0 && cleanup_rc == 0 && gc_rc == 0 && jobs_rc == 0 )); then
 		rootless_prefix_remove "$tier_kind" "$prefix"
 		cleanup_rc=$?
@@ -163,6 +173,12 @@ case "${1:-}" in
 			--env darling --label 'name:rootless_guest_toolchain_compile_execute' \
 			--reuse-prefix-runtime \
 			--prefix "$prefix" "${@:2}"
+		;;
+	acceptance-cleanup)
+		unset DARLING_TIER_DEFER_GLOBAL_CLEANUP
+		west test --gc --gc-runtime-evidence
+		exec "$root/scripts/west-job.sh" assert-no-live-west-test \
+			--state-root "${TMPDIR:-/tmp}"
 		;;
 	macos)
 		build="${DARLING_TESTKIT_BUILD:-$root/.west-test/macos-build}"

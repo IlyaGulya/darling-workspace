@@ -1018,6 +1018,193 @@ def seed_source_refs(
             )
 
 
+def _clone_shared_repository(
+    source: Path, destination: Path, revision: str, label: str
+) -> None:
+    fail(
+        source.is_dir() and not source.is_symlink() and (source / ".git").exists(),
+        f"{label}: source repository is unavailable",
+    )
+    fail(
+        git(source, "rev-parse", "HEAD") == revision,
+        f"{label}: source HEAD differs from frozen revision",
+    )
+    fail(not git(source, "status", "--porcelain"), f"{label}: source repository is dirty")
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    cloned = subprocess.run(
+        [
+            "git",
+            "clone",
+            "--shared",
+            "--no-checkout",
+            "--",
+            str(source),
+            str(destination),
+        ],
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+    fail(
+        cloned.returncode == 0,
+        f"{label}: shared clone failed: {cloned.stderr.strip()}",
+    )
+    checked = subprocess.run(
+        ["git", "-C", str(destination), "checkout", "--detach", revision],
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+    fail(
+        checked.returncode == 0,
+        f"{label}: checkout failed: {checked.stderr.strip()}",
+    )
+    fail(
+        git(destination, "rev-parse", "HEAD") == revision
+        and not git(destination, "status", "--porcelain"),
+        f"{label}: cloned repository identity differs",
+    )
+
+
+def clone_tier_workspace(
+    manifest_workspace: Path,
+    source_workspace: Path,
+    destination_workspace: Path,
+    profile: str,
+    candidate_manifest_path: Path,
+) -> None:
+    """Clone an applied candidate into an isolated tier workspace."""
+    fail(
+        destination_workspace.is_absolute(),
+        "tier destination workspace must be absolute",
+    )
+    fail(
+        not destination_workspace.exists() and not destination_workspace.is_symlink(),
+        "tier destination workspace already exists",
+    )
+    generated = load_json(candidate_manifest_path).get("generated_profile_locks")
+    fail(isinstance(generated, list) and generated, "tier generated locks are missing")
+    generated_paths: list[Path] = []
+    for index, row in enumerate(generated):
+        path = row.get("path") if isinstance(row, dict) else None
+        size = row.get("size") if isinstance(row, dict) else None
+        digest = row.get("sha256") if isinstance(row, dict) else None
+        fail(
+            isinstance(path, str)
+            and path
+            and not Path(path).is_absolute()
+            and ".." not in Path(path).parts
+            and isinstance(size, int)
+            and not isinstance(size, bool)
+            and size > 0
+            and isinstance(digest, str)
+            and re.fullmatch(r"[0-9a-f]{64}", digest) is not None,
+            f"tier generated lock {index}: invalid identity",
+        )
+        generated_path = contained(
+            manifest_workspace, path, f"tier generated lock {index}"
+        )
+        fail(
+            generated_path.is_file() and not generated_path.is_symlink(),
+            f"tier generated lock {index}: unavailable",
+        )
+        data = generated_path.read_bytes()
+        fail(
+            len(data) == size and hashlib.sha256(data).hexdigest() == digest,
+            f"tier generated lock {index}: content differs from evidence",
+        )
+        generated_paths.append(generated_path)
+    target_lock = contained(
+        manifest_workspace,
+        f"patches/{profile}/west.lock.yml",
+        "tier frozen manifest",
+    )
+    fail(target_lock in generated_paths, "tier profile lock is not generated evidence")
+    try:
+        frozen = yaml.safe_load(target_lock.read_text())
+    except (OSError, yaml.YAMLError) as error:
+        raise AcceptanceError(f"tier frozen manifest is invalid: {error}") from error
+    projects = (
+        frozen.get("manifest", {}).get("projects")
+        if isinstance(frozen, dict)
+        and isinstance(frozen.get("manifest"), dict)
+        else None
+    )
+    fail(isinstance(projects, list) and projects, "tier frozen manifest has no projects")
+    rows: list[tuple[Path, str]] = []
+    seen: set[str] = set()
+    for index, project in enumerate(projects):
+        name = project.get("name") if isinstance(project, dict) else None
+        path = project.get("path", name) if isinstance(project, dict) else None
+        revision = project.get("revision") if isinstance(project, dict) else None
+        fail(
+            isinstance(path, str)
+            and path
+            and not Path(path).is_absolute()
+            and ".." not in Path(path).parts
+            and path not in seen,
+            f"tier project {index}: invalid or duplicate path",
+        )
+        rows.append((Path(path), oid(revision, f"tier project {index} revision")))
+        seen.add(path)
+    rows.sort(key=lambda row: (len(row[0].parts), row[0].as_posix()))
+    for path, revision in rows:
+        source = contained(
+            source_workspace, path.as_posix(), f"tier source project {path}"
+        )
+        fail(
+            git(source, "rev-parse", "HEAD") == revision,
+            f"tier source project {path}: HEAD differs from frozen revision",
+        )
+        fail(
+            not git(source, "status", "--porcelain"),
+            f"tier source project {path}: repository is dirty",
+        )
+    manifest_revision = _git_identity(
+        manifest_workspace, "HEAD", "tier manifest source"
+    )
+    destination_workspace.mkdir(parents=True)
+    destination_manifest = destination_workspace / "darling-workspace"
+    _clone_shared_repository(
+        manifest_workspace,
+        destination_manifest,
+        manifest_revision,
+        "tier manifest",
+    )
+    for path, revision in rows:
+        _clone_shared_repository(
+            contained(
+                source_workspace, path.as_posix(), f"tier source project {path}"
+            ),
+            contained(
+                destination_workspace,
+                path.as_posix(),
+                f"tier destination project {path}",
+            ),
+            revision,
+            f"tier project {path}",
+        )
+    west_root = destination_workspace / ".west"
+    west_root.mkdir()
+    (west_root / "config").write_text(
+        "[manifest]\npath = darling-workspace\nfile = west.yml\n",
+        encoding="utf-8",
+    )
+    for source in generated_paths:
+        relative = source.relative_to(manifest_workspace)
+        destination = contained(
+            destination_manifest,
+            relative.as_posix(),
+            f"tier generated lock {relative}",
+        )
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        destination.write_bytes(source.read_bytes())
+    print(f"tier workspace: cloned {len(rows)} frozen projects")
+
+
+
 def main() -> None:
     parser = argparse.ArgumentParser()
     sub = parser.add_subparsers(dest="action", required=True)
@@ -1031,6 +1218,11 @@ def main() -> None:
     seed.add_argument("--source-workspace", type=Path, required=True)
     seed.add_argument("--candidate-workspace", type=Path, required=True)
     seed.add_argument("--profile", required=True)
+    clone = sub.add_parser("clone-tier-workspace")
+    clone.add_argument("--source-workspace", type=Path, required=True)
+    clone.add_argument("--destination-workspace", type=Path, required=True)
+    clone.add_argument("--profile", required=True)
+    clone.add_argument("--candidate-manifest", type=Path, required=True)
     args = parser.parse_args()
     try:
         if args.action == "seed-source-refs":
@@ -1039,6 +1231,14 @@ def main() -> None:
                 args.source_workspace,
                 args.candidate_workspace,
                 args.profile,
+            )
+        elif args.action == "clone-tier-workspace":
+            clone_tier_workspace(
+                ROOT,
+                args.source_workspace,
+                args.destination_workspace,
+                args.profile,
+                args.candidate_manifest,
             )
         else:
             compare_immutable_oracle(

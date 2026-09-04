@@ -148,19 +148,27 @@ artifacts; `verify-package` revalidates a published package's complete closure
 without changing it.
 
 Human-mode checks report each step start/finish with elapsed time. Acceptance
-copies only manifest-declared source refs into its disposable candidate, then
-runs `patch verify`, the host materialized test, and the immutable oracle
-concurrently across isolated candidate, active, and control repository sets.
+bootstraps a fresh disposable candidate from the active West forest as a Git
+path cache, with eight bounded update workers. The frozen manifest still
+selects every checkout by exact revision; active worktrees and refs are not
+reused. Acceptance then copies only manifest-declared source refs into the
+candidate and runs `patch verify`, the host materialized test, and the
+immutable oracle concurrently across isolated candidate, active, and control
+repository sets.
+
 Successful results for those three steps are checkpointed under the manifest
 repository's Git common directory. The key binds the workspace commit and
 tree, composed profile graph, profile manifest and patch bytes, lock-first
 mapping and lock bytes, frozen manifest, executable and installed West package
 content, the host compiler/build-tool content, and the exact non-secret
 environment inherited by the parallel gate. A valid hit reuses only those
-three results and the content-addressed oracle; candidate replay and
-comparison, the candidate host tier, and the final guest/prefix smoke still
-run. Corrupt checkpoints are recomputed and replaced. Symlinked or otherwise
-unsafe checkpoint paths fail closed.
+three results and the content-addressed oracle; candidate replay and comparison
+still run. After comparison, the guest tier receives a shared-object clone with
+independent refs, index, and worktree. The candidate host tier and guest smoke
+then run concurrently; guest-wide GC is deferred until both finish and a final
+sequential cleanup gate verifies no live West test jobs remain. Corrupt
+checkpoints are recomputed and replaced. Symlinked or otherwise unsafe
+checkpoint paths fail closed.
 
 `profiles` discovers immediate `patches/*/patches.yml` manifests and the
 CTest-owned `testkit/runtime-profiles.yml` catalog at invocation time. Its

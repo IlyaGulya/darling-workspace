@@ -413,11 +413,82 @@ output.write_text(
 FAKE_TIER = r'''#!/usr/bin/env python3
 import json
 import os
+import signal
 import sys
+import time
 from pathlib import Path
 
+
+def barrier(name):
+    value = os.environ.get("DEV_CHECK_FINAL_TIER_BARRIER")
+    if not value:
+        return
+    root = Path(value)
+    root.mkdir(parents=True, exist_ok=True)
+    (root / f"{name}.ready").write_text("ready\n", encoding="utf-8")
+    deadline = time.monotonic() + 5
+    while len(list(root.glob("*.ready"))) < 2:
+        if time.monotonic() >= deadline:
+            raise SystemExit(97)
+        time.sleep(0.01)
+
+
+def hold(name):
+    root = Path(os.environ["DEV_CHECK_FINAL_TIER_CLEANUP"])
+    root.mkdir(parents=True, exist_ok=True)
+    orphan = root / f"{name}.orphan"
+    holding = root / f"{name}.holding"
+    orphan.write_text("owned\n", encoding="utf-8")
+    holding.write_text("holding\n", encoding="utf-8")
+    try:
+        time.sleep(60)
+    finally:
+        holding.unlink(missing_ok=True)
+        orphan.unlink(missing_ok=True)
+        (root / f"{name}.cleaned").write_text("cleaned\n", encoding="utf-8")
+
+
+def wait_for_holder():
+    root = Path(os.environ["DEV_CHECK_FINAL_TIER_CLEANUP"])
+    deadline = time.monotonic() + 5
+    while not list(root.glob("*.holding")):
+        if time.monotonic() >= deadline:
+            raise SystemExit(94)
+        time.sleep(0.01)
+
+
+argv = sys.argv[1:]
 with Path(os.environ["DEV_CHECK_FAKE_LOG"]).open("a", encoding="utf-8") as stream:
-    stream.write(json.dumps({"authority": "tier", "argv": sys.argv[1:]}) + "\n")
+    stream.write(json.dumps({"authority": "tier", "argv": argv}) + "\n")
+mode = os.environ.get("DEV_CHECK_FAKE_MODE", "pass")
+if argv == ["host"]:
+    assert Path.cwd().parent.name == "lock-first"
+    assert Path(os.environ["HOME"]).name == "final-host"
+    barrier("acceptance-host-tier")
+    if mode in {"fail-final-tier", "interrupt-final-tier"}:
+        wait_for_holder()
+    if mode == "fail-final-tier":
+        raise SystemExit(43)
+    if mode == "interrupt-final-tier":
+        os.kill(os.getppid(), signal.SIGINT)
+        time.sleep(60)
+elif argv == ["guest-smoke"]:
+    assert Path.cwd().parent.name == "guest"
+    assert Path(os.environ["HOME"]).name == "guest"
+    assert os.environ.get("DARLING_TIER_DEFER_GLOBAL_CLEANUP") == "1"
+    barrier("acceptance-guest-smoke")
+    if mode in {"fail-final-tier", "interrupt-final-tier"}:
+        hold("acceptance-guest-smoke")
+elif argv == ["acceptance-cleanup"]:
+    root_value = os.environ.get("DEV_CHECK_FINAL_TIER_CLEANUP")
+    if root_value:
+        root = Path(root_value)
+        root.mkdir(parents=True, exist_ok=True)
+        assert not list(root.glob("*.holding"))
+        assert not list(root.glob("*.orphan"))
+        (root / "final-cleanup").write_text("clean\n", encoding="utf-8")
+else:
+    raise SystemExit(93)
 '''
 
 FAKE_ACCEPTANCE = r'''#!/usr/bin/env python3
@@ -430,11 +501,14 @@ import sys
 from pathlib import Path
 
 name = Path(__file__).name
-if (
-    name == "patch_stack_lock_first_acceptance.py"
-    and sys.argv[1:2] == ["seed-source-refs"]
-):
+action = sys.argv[1:2]
+if name == "patch_stack_lock_first_acceptance.py" and action == ["seed-source-refs"]:
     authority = "seed"
+elif (
+    name == "patch_stack_lock_first_acceptance.py"
+    and action == ["clone-tier-workspace"]
+):
+    authority = "clone-tier"
 else:
     authority = {
         "bootstrap-west.sh": "bootstrap",
@@ -445,8 +519,15 @@ with Path(os.environ["DEV_CHECK_FAKE_LOG"]).open("a", encoding="utf-8") as strea
     stream.write(json.dumps({"authority": authority, "argv": sys.argv[1:]}) + "\n")
 if authority == "seed":
     pass
+elif authority == "clone-tier":
+    source = Path(sys.argv[sys.argv.index("--source-workspace") + 1])
+    destination = Path(sys.argv[sys.argv.index("--destination-workspace") + 1])
+    shutil.copytree(source, destination)
 elif authority == "bootstrap":
     workspace = Path.cwd()
+    assert os.environ.get("DARLING_WEST_UPDATE_JOBS") == "8"
+    path_cache = Path(os.environ["DARLING_WEST_UPDATE_PATH_CACHE"])
+    assert path_cache.is_absolute() and path_cache.is_dir()
     ids = json.loads((workspace / "fixture-ids.json").read_text())
     destination = workspace.parent / "fixture" / "module"
     shutil.copytree(ids["module_repo"], destination)
@@ -1049,6 +1130,10 @@ with tempfile.TemporaryDirectory(prefix="dev-check-contract-") as temporary:
         "patches/homebrew",
         "locks/patch-stack",
     }
+    final_tier_barrier = outside / "final-tier-barrier"
+    os.environ["DEV_CHECK_FINAL_TIER_BARRIER"] = str(final_tier_barrier)
+    final_tier_cleanup = outside / "final-tier-cleanup"
+    os.environ["DEV_CHECK_FINAL_TIER_CLEANUP"] = str(final_tier_cleanup)
     durable(check_receipt_path, canonical_receipt)
     assert load_log(log) == [
         {"authority": "west", "argv": argv[1:]} for _name, argv in canonical_expected
@@ -1073,6 +1158,8 @@ with tempfile.TemporaryDirectory(prefix="dev-check-contract-") as temporary:
     control = control_parent / "darling-workspace"
     candidate_parent = scratch / "lock-first"
     candidate = candidate_parent / "darling-workspace"
+    guest_parent = scratch / "guest"
+    guest = guest_parent / "darling-workspace"
     artifacts = scratch / "evidence"
     oracle_output = artifacts / "immutable-oracle.json"
     modules = artifacts / "lock-first-modules.json"
@@ -1260,12 +1347,32 @@ with tempfile.TemporaryDirectory(prefix="dev-check-contract-") as temporary:
             ],
         ),
         (
+            "acceptance-clone-guest-candidate",
+            [
+                str(Path(sys.executable).resolve()),
+                str(candidate / "ci" / "patch_stack_lock_first_acceptance.py"),
+                "clone-tier-workspace",
+                "--source-workspace",
+                str(candidate_parent),
+                "--destination-workspace",
+                str(guest_parent),
+                "--profile",
+                "homebrew",
+                "--candidate-manifest",
+                str(manifest),
+            ],
+        ),
+        (
             "acceptance-host-tier",
             [str(candidate / "ci" / "run-test-tier.sh"), "host"],
         ),
         (
             "acceptance-guest-smoke",
-            [str(candidate / "ci" / "run-test-tier.sh"), "guest-smoke"],
+            [str(guest / "ci" / "run-test-tier.sh"), "guest-smoke"],
+        ),
+        (
+            "acceptance-final-cleanup",
+            [str(candidate / "ci" / "run-test-tier.sh"), "acceptance-cleanup"],
         ),
     ]
     assert_plan(acceptance, acceptance_expected)
@@ -1293,15 +1400,30 @@ with tempfile.TemporaryDirectory(prefix="dev-check-contract-") as temporary:
     host_env = isolated_env("host")
     oracle_env = isolated_env("oracle")
     candidate_env = isolated_env("candidate")
+    bootstrap_env = dict(candidate_env)
+    bootstrap_env.update(
+        {
+            "DARLING_WEST_UPDATE_JOBS": str(dev_check._ACCEPTANCE_BOOTSTRAP_JOBS),
+            "DARLING_WEST_UPDATE_PATH_CACHE": str(repo.parent),
+        }
+    )
+    final_host_env = isolated_env("final-host")
+    guest_env = isolated_env("guest")
+    guest_env["DARLING_TIER_DEFER_GLOBAL_CLEANUP"] = "1"
     assert [(step["cwd"], step["env"]) for step in acceptance["steps"]] == [
         *((str(repo), {}) for _ in range(4)),
         (str(control_parent), oracle_env),
         (str(control), oracle_env),
         (str(candidate_parent), candidate_env),
-        *((str(candidate), candidate_env) for _ in range(5)),
+        (str(candidate), candidate_env),
+        (str(candidate), bootstrap_env),
+        *((str(candidate), candidate_env) for _ in range(3)),
         (str(repo), host_env),
         (str(control), oracle_env),
-        *((str(candidate), candidate_env) for _ in range(5)),
+        *((str(candidate), candidate_env) for _ in range(4)),
+        (str(candidate), final_host_env),
+        (str(guest), guest_env),
+        (str(candidate), candidate_env),
     ]
     clear_log(log)
     acceptance_receipt = dev_check.execute_check(acceptance)
@@ -1312,7 +1434,14 @@ with tempfile.TemporaryDirectory(prefix="dev-check-contract-") as temporary:
         "host-materialized-test.ready",
         "immutable-oracle.ready",
     }
-    assert acceptance_receipt["state"] == "committed"
+    assert acceptance_receipt["state"] == "committed", next(
+        (
+            result.get("stderr_tail")
+            for result in acceptance_receipt["results"]
+            if result["name"] == "acceptance-final-cleanup"
+        ),
+        acceptance_receipt.get("error"),
+    )
     assert acceptance_receipt["returncode"] == 0
     assert acceptance_receipt["scratch"]["state"] == "cleaned"
     assert set(acceptance_receipt["acceptance_artifacts"]) == {
@@ -1321,6 +1450,12 @@ with tempfile.TemporaryDirectory(prefix="dev-check-contract-") as temporary:
         "comparison",
         "module_map",
         "candidate_manifest",
+    }
+    assert {
+        path.name for path in final_tier_barrier.glob("*.ready")
+    } == {
+        "acceptance-host-tier.ready",
+        "acceptance-guest-smoke.ready",
     }
     for name, artifact in acceptance_receipt["acceptance_artifacts"].items():
         raw = artifact["content"].encode("utf-8")
@@ -1454,8 +1589,10 @@ with tempfile.TemporaryDirectory(prefix="dev-check-contract-") as temporary:
         "acceptance-candidate-apply": ("west", 1),
         "acceptance-capture": ("capture", 2),
         "acceptance-compare": ("compare", 2),
+        "acceptance-clone-guest-candidate": ("clone-tier", 2),
         "acceptance-host-tier": ("tier", 1),
         "acceptance-guest-smoke": ("tier", 1),
+        "acceptance-final-cleanup": ("tier", 1),
     }
     expected_acceptance_log = []
     for name, argv in acceptance_expected:
@@ -1477,9 +1614,21 @@ with tempfile.TemporaryDirectory(prefix="dev-check-contract-") as temporary:
         expected_acceptance_log[parallel_start:parallel_end],
         key=lambda row: (row["authority"], row["argv"]),
     )
-    assert observed_acceptance_log[parallel_end:] == expected_acceptance_log[
-        parallel_end:
-    ]
+    final_parallel_start = parallel_end + 4
+    final_parallel_end = final_parallel_start + len(dev_check._FINAL_TIER_STEP_NAMES)
+    assert observed_acceptance_log[parallel_end:final_parallel_start] == (
+        expected_acceptance_log[parallel_end:final_parallel_start]
+    )
+    assert sorted(
+        observed_acceptance_log[final_parallel_start:final_parallel_end],
+        key=lambda row: (row["authority"], row["argv"]),
+    ) == sorted(
+        expected_acceptance_log[final_parallel_start:final_parallel_end],
+        key=lambda row: (row["authority"], row["argv"]),
+    )
+    assert observed_acceptance_log[final_parallel_end:] == (
+        expected_acceptance_log[final_parallel_end:]
+    )
 
     checkpoint_binding = acceptance["inputs"]["acceptance_checkpoint"]
     assert set(checkpoint_binding) == {
@@ -1683,8 +1832,10 @@ with tempfile.TemporaryDirectory(prefix="dev-check-contract-") as temporary:
         "acceptance-candidate-apply",
         "acceptance-capture",
         "acceptance-compare",
+        "acceptance-clone-guest-candidate",
         "acceptance-host-tier",
         "acceptance-guest-smoke",
+        "acceptance-final-cleanup",
     }.issubset(
         {
             event["name"]
@@ -1701,7 +1852,21 @@ with tempfile.TemporaryDirectory(prefix="dev-check-contract-") as temporary:
             expected_reuse_log.append(
                 {"authority": authority, "argv": step["argv"][stripped:]}
             )
-    assert observed_reuse_log == expected_reuse_log
+    reuse_parallel_start = 11
+    reuse_parallel_end = reuse_parallel_start + len(dev_check._FINAL_TIER_STEP_NAMES)
+    assert observed_reuse_log[:reuse_parallel_start] == (
+        expected_reuse_log[:reuse_parallel_start]
+    )
+    assert sorted(
+        observed_reuse_log[reuse_parallel_start:reuse_parallel_end],
+        key=lambda row: (row["authority"], row["argv"]),
+    ) == sorted(
+        expected_reuse_log[reuse_parallel_start:reuse_parallel_end],
+        key=lambda row: (row["authority"], row["argv"]),
+    )
+    assert observed_reuse_log[reuse_parallel_end:] == (
+        expected_reuse_log[reuse_parallel_end:]
+    )
     assert (
         reused_receipt["acceptance_artifacts"]["immutable_oracle"]["sha256"]
         == acceptance_receipt["acceptance_artifacts"]["immutable_oracle"]["sha256"]
@@ -1777,6 +1942,7 @@ with tempfile.TemporaryDirectory(prefix="dev-check-contract-") as temporary:
     assert json.loads(checkpoint_path.read_text(encoding="utf-8"))["key"] == (
         checkpoint_binding["key"]
     )
+    checkpoint_data = checkpoint_path.read_bytes()
 
     safe_checkpoint = checkpoint_path.with_suffix(".safe")
     checkpoint_path.rename(safe_checkpoint)
@@ -1909,6 +2075,48 @@ with tempfile.TemporaryDirectory(prefix="dev-check-contract-") as temporary:
         "immutable-oracle.cleaned",
     }
     assert not list(parallel_cleanup.glob("*.orphan"))
+
+    checkpoint_path.write_bytes(checkpoint_data)
+    checkpoint_path.chmod(0o600)
+    for final_mode, expected_state, expected_returncode in (
+        ("fail-final-tier", "failed", 43),
+        ("interrupt-final-tier", "interrupted", 130),
+    ):
+        shutil.rmtree(final_tier_barrier, ignore_errors=True)
+        shutil.rmtree(parallel_barrier, ignore_errors=True)
+        shutil.rmtree(final_tier_cleanup, ignore_errors=True)
+        clear_log(log)
+        os.environ["DEV_CHECK_FAKE_MODE"] = final_mode
+        final_path = outside / f"acceptance-check-{final_mode}.json"
+        final_plan = dev_check.build_check_plan(
+            repo,
+            west,
+            "acceptance",
+            "homebrew",
+            None,
+            None,
+            final_path,
+            prefix,
+            build_dir,
+        )
+        final_receipt = dev_check.execute_check(final_plan)
+        os.environ["DEV_CHECK_FAKE_MODE"] = "pass"
+        assert final_receipt["state"] == expected_state
+        assert final_receipt["returncode"] == expected_returncode
+        assert final_receipt["scratch"]["state"] == "cleaned"
+        final_results = {
+            result["name"]: result for result in final_receipt["results"]
+        }
+        assert final_results["acceptance-final-cleanup"]["returncode"] == 0
+        for name in dev_check._FINAL_TIER_STEP_NAMES:
+            assert final_results[name]["process_group_quiescent"] is True
+        assert final_results["acceptance-guest-smoke"]["cancelled_by_peer"] is True
+        assert {
+            path.name for path in final_tier_cleanup.glob("*.cleaned")
+        } == {"acceptance-guest-smoke.cleaned"}
+        assert (final_tier_cleanup / "final-cleanup").is_file()
+        assert not list(final_tier_cleanup.glob("*.orphan"))
+        assert not list(final_tier_cleanup.glob("*.holding"))
 
     def acceptance_plan(
         *,
