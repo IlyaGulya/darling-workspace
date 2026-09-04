@@ -1,8 +1,11 @@
 from __future__ import annotations
 
+import concurrent.futures
+import contextlib
 import ctypes
 import errno
 import copy
+import fcntl
 import hashlib
 import json
 import os
@@ -12,15 +15,17 @@ import signal
 import stat
 import subprocess
 import threading
+import sys
 import time
 import tempfile
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, BinaryIO
+from typing import Any, BinaryIO, Callable, Iterator
 
 import patch_stack_lock_first
 import patch_stack_materialize
+import yaml
 
 SCHEMA_VERSION = 1
 TIER_ORDER = ("quick", "canonical", "acceptance")
@@ -34,6 +39,50 @@ _UNTRACKED_FILE_LIMIT = 16 * 1024 * 1024
 _UNTRACKED_TOTAL_LIMIT = 64 * 1024 * 1024
 _UNTRACKED_COUNT_LIMIT = 4096
 _TERMINATE_GRACE_SECONDS = 5.0
+_CHECKPOINT_SCHEMA_VERSION = 1
+_CHECKPOINT_TOOL_VERSION = "west-dev-acceptance-v1"
+_CHECKPOINT_STEP_NAMES = (
+    "patch-verify",
+    "host-materialized-test",
+    "immutable-oracle",
+)
+_CHECKPOINT_LIMIT = 8 * 1024 * 1024
+_PARALLEL_ENVIRONMENT_NAMES = frozenset(
+    {
+        "CC",
+        "CFLAGS",
+        "CMAKE_PREFIX_PATH",
+        "CMAKE_C_COMPILER_LAUNCHER",
+        "CMAKE_CXX_COMPILER_LAUNCHER",
+        "CMAKE_GENERATOR",
+        "CMAKE_MAKE_PROGRAM",
+        "CMAKE_TOOLCHAIN_FILE",
+        "CODEX_CI",
+        "COLORTERM",
+        "CXX",
+        "CXXFLAGS",
+        "DEV_CHECK_FAKE_LOG",
+        "DEV_CHECK_FAKE_MODE",
+        "DEV_CHECK_INTERRUPT_MARKERS",
+        "DEV_CHECK_INTERRUPT_READY",
+        "DEV_CHECK_PARALLEL_BARRIER",
+        "DEV_CHECK_PARALLEL_CLEANUP",
+        "FORCE_COLOR",
+        "LANG",
+        "LC_ALL",
+        "LDFLAGS",
+        "MAKEFLAGS",
+        "NINJA_STATUS",
+        "NO_COLOR",
+        "PATH",
+        "PKG_CONFIG_PATH",
+        "SOURCE_DATE_EPOCH",
+        "TERM",
+        "TZ",
+    }
+)
+
+
 
 _CHECK_TIMEOUTS = {
     "patch-check": 900,
@@ -46,6 +95,7 @@ _CHECK_TIMEOUTS = {
     "checkout": 300,
     "bootstrap": 3600,
     "identity": 300,
+    "seed-source-refs": 1800,
     "immutable-oracle": 3600,
     "candidate-apply": 3600,
     "acceptance-capture": 300,
@@ -187,9 +237,128 @@ def _test_selectors(profile: str, bead: str | None, patch: str | None) -> list[s
     return result
 
 
-def _validate_acceptance_inputs(inputs: dict[str, Any]) -> None:
-    if inputs["tier"] != "acceptance":
-        return
+def _validate_checkpoint_binding(
+    value: object, profile: str, west_argv: list[str]
+) -> dict[str, Any]:
+    if not isinstance(value, dict) or set(value) != {
+        "schema_version",
+        "key",
+        "path",
+        "identity",
+    }:
+        raise DevCheckError("acceptance checkpoint binding is invalid")
+    key = value.get("key")
+    path_value = value.get("path")
+    identity = value.get("identity")
+    if (
+        value.get("schema_version") != _CHECKPOINT_SCHEMA_VERSION
+        or not isinstance(key, str)
+        or len(key) != 64
+        or any(character not in "0123456789abcdef" for character in key)
+        or not isinstance(path_value, str)
+        or not isinstance(identity, dict)
+    ):
+        raise DevCheckError("acceptance checkpoint binding is malformed")
+    path = Path(path_value)
+    if (
+        not path.is_absolute()
+        or path.name != f"acceptance-{key}.json"
+        or path.parent.name != "west-dev-checkpoints"
+    ):
+        raise DevCheckError("acceptance checkpoint path is invalid")
+    if identity.get("west_argv") != west_argv:
+        raise DevCheckError("acceptance checkpoint launcher identity differs")
+    tool_files = identity.get("tool_files")
+    if not isinstance(tool_files, list) or not tool_files:
+        raise DevCheckError("acceptance checkpoint tool identity is missing")
+    for row in tool_files:
+        if (
+            not isinstance(row, dict)
+            or set(row) != {"path", "sha256", "bytes"}
+            or not isinstance(row.get("path"), str)
+            or not Path(row["path"]).is_absolute()
+            or not _is_lower_hex(row.get("sha256"), 64)
+            or not isinstance(row.get("bytes"), int)
+            or isinstance(row.get("bytes"), bool)
+            or row["bytes"] <= 0
+        ):
+            raise DevCheckError("acceptance checkpoint tool identity is invalid")
+    host_tools = identity.get("host_tools")
+    if not isinstance(host_tools, list) or not host_tools:
+        raise DevCheckError(
+            "acceptance checkpoint host tool identity is missing"
+        )
+    for row in host_tools:
+        if (
+            not isinstance(row, dict)
+            or set(row)
+            != {"name", "command", "path", "sha256", "bytes"}
+            or not isinstance(row.get("name"), str)
+            or not row["name"]
+            or not isinstance(row.get("command"), str)
+            or not row["command"]
+            or not isinstance(row.get("path"), str)
+            or not Path(row["path"]).is_absolute()
+            or not _is_lower_hex(row.get("sha256"), 64)
+            or not isinstance(row.get("bytes"), int)
+            or isinstance(row.get("bytes"), bool)
+            or row["bytes"] <= 0
+        ):
+            raise DevCheckError(
+                "acceptance checkpoint host tool identity is invalid"
+            )
+    if (
+        not isinstance(identity.get("west_version"), str)
+        or not identity["west_version"]
+    ):
+        raise DevCheckError("acceptance checkpoint West version is invalid")
+    parallel_environment = identity.get("parallel_environment")
+    if (
+        not isinstance(parallel_environment, dict)
+        or any(
+            name not in _PARALLEL_ENVIRONMENT_NAMES
+            or not isinstance(environment_value, str)
+            for name, environment_value in parallel_environment.items()
+        )
+    ):
+        raise DevCheckError(
+            "acceptance checkpoint parallel environment is invalid"
+        )
+    west_package = identity.get("west_package")
+    if west_package is not None and (
+        not isinstance(west_package, dict)
+        or set(west_package) != {
+            "path",
+            "sha256",
+            "file_count",
+            "bytes",
+        }
+        or not isinstance(west_package.get("path"), str)
+        or not Path(west_package["path"]).is_absolute()
+        or not _is_lower_hex(west_package.get("sha256"), 64)
+        or any(
+            not isinstance(west_package.get(field), int)
+            or isinstance(west_package.get(field), bool)
+            or west_package[field] < 0
+            for field in ("file_count", "bytes")
+        )
+    ):
+        raise DevCheckError("acceptance checkpoint West package is invalid")
+    if (
+        identity.get("schema_version") != _CHECKPOINT_SCHEMA_VERSION
+        or identity.get("tool_version") != _CHECKPOINT_TOOL_VERSION
+        or identity.get("profile") != profile
+    ):
+        raise DevCheckError("acceptance checkpoint identity version differs")
+    encoded = json.dumps(
+        identity, sort_keys=True, separators=(",", ":"), ensure_ascii=False
+    ).encode("utf-8")
+    if hashlib.sha256(encoded).hexdigest() != key:
+        raise DevCheckError("acceptance checkpoint identity digest differs")
+    return value
+
+
+def _validate_acceptance_selection(inputs: dict[str, Any]) -> None:
     if inputs["profile"] != "homebrew":
         raise DevCheckError("acceptance checks require profile 'homebrew'")
     if inputs["bead"] is not None or inputs["patch"] is not None:
@@ -198,6 +367,19 @@ def _validate_acceptance_inputs(inputs: dict[str, Any]) -> None:
         raise DevCheckError(
             "acceptance checks require both prefix and build_dir runtime prerequisites"
         )
+
+
+def _validate_acceptance_inputs(inputs: dict[str, Any]) -> None:
+    if inputs["tier"] != "acceptance":
+        if inputs.get("acceptance_checkpoint") is not None:
+            raise DevCheckError("non-acceptance checks cannot use checkpoints")
+        return
+    _validate_acceptance_selection(inputs)
+    _validate_checkpoint_binding(
+        inputs.get("acceptance_checkpoint"),
+        inputs["profile"],
+        inputs["west_argv"],
+    )
 
 
 def _hash_file(path: Path) -> tuple[str, int]:
@@ -417,6 +599,492 @@ def _collect_package_snapshot(manifest_repo: Path, profile: str) -> dict[str, An
             name: _content_snapshot(path) for name, path in sorted(targets.items())
         },
     }
+def _safe_profile_component(value: object, label: str) -> str:
+    profile = _validate_text(value, label)
+    if Path(profile).name != profile or profile in {".", ".."}:
+        raise DevCheckError(f"{label} must be one safe path component")
+    return profile
+
+
+def _load_checkpoint_profile(manifest_repo: Path, profile: str) -> tuple[Path, dict[str, Any]]:
+    path = manifest_repo / "patches" / profile / "patches.yml"
+    if path.is_symlink() or not path.is_file():
+        raise DevCheckError(f"checkpoint profile manifest is unavailable: {path}")
+    try:
+        value = yaml.safe_load(path.read_text(encoding="utf-8"))
+    except (OSError, yaml.YAMLError) as error:
+        raise DevCheckError(f"checkpoint profile manifest is invalid: {path}: {error}") from error
+    if not isinstance(value, dict) or not isinstance(value.get("patches"), list):
+        raise DevCheckError(f"checkpoint profile manifest has no patch list: {path}")
+    return path, value
+
+
+def _acceptance_tool_files(west_argv: list[str]) -> list[dict[str, Any]]:
+    candidates = [west_argv[0], "git", sys.executable]
+    candidates.extend(
+        argument
+        for argument in west_argv[1:]
+        if Path(argument).is_absolute()
+    )
+    resolved: set[Path] = set()
+    rows: list[dict[str, Any]] = []
+    for candidate in candidates:
+        if Path(candidate).is_absolute():
+            selected = Path(candidate)
+        else:
+            located = shutil.which(candidate)
+            if located is None:
+                raise DevCheckError(
+                    f"checkpoint tool is unavailable: {candidate}"
+                )
+            selected = Path(located)
+        try:
+            path = selected.resolve(strict=True)
+        except (OSError, RuntimeError) as error:
+            raise DevCheckError(
+                f"checkpoint tool is unavailable: {candidate}: {error}"
+            ) from error
+        if not path.is_file():
+            raise DevCheckError(f"checkpoint tool is not a file: {path}")
+        if path in resolved:
+            continue
+        resolved.add(path)
+        digest, size = _hash_file(path)
+        rows.append({"path": str(path), "sha256": digest, "bytes": size})
+    return sorted(rows, key=lambda row: row["path"])
+
+
+def _acceptance_parallel_environment() -> dict[str, str]:
+    environment = {
+        name: os.environ[name]
+        for name in sorted(_PARALLEL_ENVIRONMENT_NAMES)
+        if name in os.environ
+    }
+    if "PATH" in environment:
+        environment["PATH"] = os.pathsep.join(
+            component
+            for component in environment["PATH"].split(os.pathsep)
+            if component
+            and Path(component).name != "shims"
+            and Path(component).resolve().name != "shims"
+        )
+    return environment
+
+
+def _acceptance_host_tools() -> list[dict[str, Any]]:
+    specifications = [
+        ("cc", os.environ.get("CC", "cc"), True),
+        ("cxx", os.environ.get("CXX", "c++"), True),
+        ("cmake", "cmake", True),
+        ("ctest", "ctest", True),
+        ("ninja", "ninja", False),
+        ("make", "make", False),
+        ("ccache", "ccache", False),
+        ("pkg-config", "pkg-config", False),
+        ("ld", "ld", False),
+        ("ar", "ar", False),
+        ("ranlib", "ranlib", False),
+        ("bash", "bash", True),
+    ]
+    for name in (
+        "CMAKE_C_COMPILER_LAUNCHER",
+        "CMAKE_CXX_COMPILER_LAUNCHER",
+        "CMAKE_MAKE_PROGRAM",
+    ):
+        value = os.environ.get(name)
+        if value:
+            specifications.append((name.lower(), value, True))
+    toolchain_file = os.environ.get("CMAKE_TOOLCHAIN_FILE")
+    if toolchain_file:
+        specifications.append(
+            ("cmake_toolchain_file", toolchain_file, True)
+        )
+    search_path = _acceptance_parallel_environment().get(
+        "PATH", os.defpath
+    )
+    rows: list[dict[str, Any]] = []
+    for name, command, required in specifications:
+        try:
+            words = shlex.split(command)
+        except ValueError as error:
+            raise DevCheckError(
+                f"checkpoint host tool command is invalid: {name}: {error}"
+            ) from error
+        if not words:
+            raise DevCheckError(
+                f"checkpoint host tool command is empty: {name}"
+            )
+        candidate = Path(words[0])
+        if not candidate.is_absolute():
+            located = shutil.which(words[0], path=search_path)
+            if located is None:
+                if required:
+                    raise DevCheckError(
+                        f"checkpoint host tool is unavailable: {name}"
+                    )
+                continue
+            candidate = Path(located)
+        try:
+            path = candidate.resolve(strict=True)
+        except (OSError, RuntimeError) as error:
+            raise DevCheckError(
+                f"checkpoint host tool is unavailable: {name}: {error}"
+            ) from error
+        if not path.is_file():
+            raise DevCheckError(
+                f"checkpoint host tool is not a file: {name}: {path}"
+            )
+        digest, size = _hash_file(path)
+        rows.append(
+            {
+                "name": name,
+                "command": command,
+                "path": str(path),
+                "sha256": digest,
+                "bytes": size,
+            }
+        )
+    return rows
+
+
+def _acceptance_west_package(
+    manifest_repo: Path, west_argv: list[str]
+) -> dict[str, Any] | None:
+    launcher = Path(west_argv[0])
+    if not launcher.is_absolute():
+        located = shutil.which(west_argv[0])
+        if located is None:
+            return None
+        launcher = Path(located)
+    interpreter: Path | None = None
+    if (
+        west_argv[1:3] == ["-m", "west"]
+        or (
+            len(west_argv) >= 2
+            and Path(west_argv[1]).is_absolute()
+            and Path(west_argv[1]).is_file()
+        )
+    ):
+        interpreter = launcher
+    else:
+        try:
+            first_line = launcher.read_bytes().splitlines()[0].decode("utf-8")
+        except (OSError, IndexError, UnicodeDecodeError):
+            return None
+        if first_line.startswith("#!"):
+            words = first_line[2:].strip().split()
+            if words and Path(words[0]).name == "env" and len(words) >= 2:
+                located = shutil.which(words[1])
+                interpreter = Path(located) if located is not None else None
+            elif words:
+                interpreter = Path(words[0])
+    if interpreter is None:
+        return None
+    probe = (
+        "import importlib.util,json;"
+        "s=importlib.util.find_spec('west');"
+        "print(json.dumps(None if s is None else "
+        "{'origin':s.origin,'roots':list(s.submodule_search_locations or [])}))"
+    )
+    outcome = _run_process(
+        [str(interpreter), "-I", "-c", probe],
+        manifest_repo,
+        60,
+        {},
+        sanitize_environment=True,
+    )
+    if (
+        outcome["returncode"] != 0
+        or outcome["stdout"]["truncated"]
+        or "capture_error" in outcome["stdout"]
+        or "capture_error" in outcome["stderr"]
+    ):
+        raise DevCheckError("cannot resolve installed West package for checkpoint")
+    try:
+        discovered = json.loads(outcome["stdout_tail"])
+    except json.JSONDecodeError as error:
+        raise DevCheckError(
+            "installed West package identity is invalid"
+        ) from error
+    if discovered is None:
+        return None
+    if (
+        not isinstance(discovered, dict)
+        or set(discovered) != {"origin", "roots"}
+        or not isinstance(discovered["roots"], list)
+        or len(discovered["roots"]) != 1
+    ):
+        raise DevCheckError("installed West package identity is invalid")
+    package_root = Path(discovered["roots"][0]).resolve(strict=True)
+    snapshot = _content_snapshot(package_root)
+    return {
+        "path": str(package_root),
+        "sha256": snapshot["sha256"],
+        "file_count": snapshot["file_count"],
+        "bytes": snapshot["bytes"],
+    }
+
+
+def _acceptance_west_version(
+    manifest_repo: Path, west_argv: list[str]
+) -> str:
+    outcome = _run_process(
+        [*west_argv, "--version"],
+        manifest_repo,
+        60,
+        {},
+    )
+    version = outcome["stdout_tail"].strip()
+    if (
+        outcome["returncode"] != 0
+        or outcome["stdout"]["truncated"]
+        or "capture_error" in outcome["stdout"]
+        or "capture_error" in outcome["stderr"]
+        or not version
+    ):
+        raise DevCheckError("cannot resolve West tool version for checkpoint")
+    return version
+
+
+def _acceptance_checkpoint_identity(
+    manifest_repo: Path,
+    profile: str,
+    snapshot: dict[str, Any],
+    west_argv: list[str],
+    dynamic_identity: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    selected = _safe_profile_component(profile, "checkpoint profile")
+    try:
+        phases = patch_stack_lock_first.profile_dependency_chain(
+            manifest_repo, selected
+        )
+    except patch_stack_lock_first.LockFirstError as error:
+        raise DevCheckError(f"checkpoint profile graph is invalid: {error}") from error
+    graph_rows: list[dict[str, Any]] = []
+    patch_rows: list[dict[str, str]] = []
+    mapping_rows: list[dict[str, str]] = []
+    lock_rows: list[dict[str, str]] = []
+    seen_patches: set[str] = set()
+    locks_parent = manifest_repo / "locks"
+    locks_root = locks_parent / "patch-stack"
+    if (
+        locks_parent.is_symlink()
+        or not locks_parent.is_dir()
+        or locks_root.is_symlink()
+        or not locks_root.is_dir()
+    ):
+        raise DevCheckError("checkpoint lock root must be real and contained")
+    registry = manifest_repo / "locks" / "patch-stack" / "lock-first-profiles-v1.yml"
+    for phase in phases:
+        manifest_path, manifest = _load_checkpoint_profile(manifest_repo, phase)
+        manifest_digest, _manifest_size = _hash_file(manifest_path)
+        base = manifest.get("base-profile")
+        graph_rows.append(
+            {
+                "profile": phase,
+                "base_profile": base,
+                "manifest": manifest_path.relative_to(manifest_repo).as_posix(),
+                "sha256": manifest_digest,
+            }
+        )
+        for index, row in enumerate(manifest["patches"]):
+            if not isinstance(row, dict):
+                raise DevCheckError(
+                    f"checkpoint profile patch {phase}[{index}] is invalid"
+                )
+            relative_value = row.get("path")
+            declared = row.get("sha256sum")
+            if (
+                not isinstance(relative_value, str)
+                or not relative_value
+                or not isinstance(declared, str)
+                or len(declared) != 64
+                or any(
+                    character not in "0123456789abcdef"
+                    for character in declared
+                )
+            ):
+                raise DevCheckError(
+                    f"checkpoint profile patch {phase}[{index}] has invalid identity"
+                )
+            relative = Path(relative_value)
+            if (
+                relative.is_absolute()
+                or ".." in relative.parts
+                or relative.as_posix() != relative_value
+            ):
+                raise DevCheckError(
+                    f"checkpoint profile patch {phase}[{index}] has unsafe path"
+                )
+            profile_root = manifest_repo / "patches" / phase
+            patch = profile_root / relative
+            candidate = profile_root
+            for component in relative.parts:
+                candidate = candidate / component
+                if candidate.is_symlink():
+                    raise DevCheckError(
+                        f"checkpoint patch path contains a symlink: {patch}"
+                    )
+            try:
+                resolved_patch = patch.resolve(strict=True)
+                resolved_root = profile_root.resolve(strict=True)
+            except OSError as error:
+                raise DevCheckError(
+                    f"checkpoint patch is unavailable: {patch}: {error}"
+                ) from error
+            if (
+                resolved_root not in resolved_patch.parents
+                or not resolved_patch.is_file()
+            ):
+                raise DevCheckError(f"checkpoint patch is unavailable: {patch}")
+            observed, _patch_size = _hash_file(resolved_patch)
+            if observed != declared:
+                raise DevCheckError(f"checkpoint patch checksum differs: {patch}")
+            logical = patch.relative_to(manifest_repo).as_posix()
+            if logical in seen_patches:
+                raise DevCheckError(f"checkpoint patch is duplicated: {logical}")
+            seen_patches.add(logical)
+            patch_rows.append(
+                {"profile": phase, "path": logical, "sha256": observed}
+            )
+        try:
+            mapping_path = patch_stack_lock_first.mapping_for_profile(
+                phase, registry
+            )
+            mapping = patch_stack_lock_first.load_mapping(mapping_path, phase)
+        except patch_stack_lock_first.LockFirstError as error:
+            raise DevCheckError(
+                f"checkpoint mapping for {phase} is invalid: {error}"
+            ) from error
+        mapping_digest, _mapping_size = _hash_file(mapping_path)
+        mapping_rows.append(
+            {
+                "profile": phase,
+                "path": mapping_path.relative_to(manifest_repo).as_posix(),
+                "sha256": mapping_digest,
+            }
+        )
+        for entry in mapping["series"]:
+            lock_relative = Path(entry["lock"])
+            if (
+                lock_relative.is_absolute()
+                or ".." in lock_relative.parts
+                or lock_relative.as_posix() != entry["lock"]
+            ):
+                raise DevCheckError(
+                    f"checkpoint lock path is unsafe: {entry['lock']}"
+                )
+            lock_path = mapping_path.parent / lock_relative
+            candidate = mapping_path.parent
+            for component in lock_relative.parts:
+                candidate = candidate / component
+                if candidate.is_symlink():
+                    raise DevCheckError(
+                        f"checkpoint lock path contains a symlink: {lock_path}"
+                    )
+            if not lock_path.is_file():
+                raise DevCheckError(f"checkpoint lock is unavailable: {lock_path}")
+            logical = lock_path.relative_to(manifest_repo).as_posix()
+            digest, _lock_size = _hash_file(lock_path)
+            previous = next(
+                (row for row in lock_rows if row["path"] == logical), None
+            )
+            if previous is not None:
+                if previous["sha256"] != digest:
+                    raise DevCheckError(
+                        f"checkpoint lock identity is inconsistent: {logical}"
+                    )
+                continue
+            lock_rows.append({"path": logical, "sha256": digest})
+    if dynamic_identity is None:
+        dynamic = {
+            "tool_files": _acceptance_tool_files(west_argv),
+            "host_tools": _acceptance_host_tools(),
+            "west_version": _acceptance_west_version(
+                manifest_repo, west_argv
+            ),
+            "parallel_environment": _acceptance_parallel_environment(),
+            "west_package": _acceptance_west_package(
+                manifest_repo, west_argv
+            ),
+        }
+    else:
+        dynamic = {
+            field: copy.deepcopy(dynamic_identity[field])
+            for field in (
+                "tool_files",
+                "host_tools",
+                "west_version",
+                "parallel_environment",
+                "west_package",
+            )
+        }
+    identity = {
+        "schema_version": _CHECKPOINT_SCHEMA_VERSION,
+        "tool_version": _CHECKPOINT_TOOL_VERSION,
+        "workspace_commit": snapshot["manifest_head"],
+        "workspace_tree": snapshot["manifest_tree"],
+        "west_argv": list(west_argv),
+        "profile": selected,
+        "profile_graph": graph_rows,
+        "mappings": mapping_rows,
+        "patches": patch_rows,
+        "locks": lock_rows,
+        "tool_files": dynamic["tool_files"],
+        "host_tools": dynamic["host_tools"],
+        "frozen_manifest_sha256": snapshot["content"]["west.lock.yml"]["sha256"],
+        "west_version": dynamic["west_version"],
+        "parallel_environment": dynamic["parallel_environment"],
+        "west_package": dynamic["west_package"],
+    }
+    encoded = json.dumps(
+        identity, sort_keys=True, separators=(",", ":"), ensure_ascii=False
+    ).encode("utf-8")
+    return {"key": hashlib.sha256(encoded).hexdigest(), "identity": identity}
+
+
+def _git_common_directory(manifest_repo: Path) -> Path:
+    outcome = _run_process(
+        ["git", "rev-parse", "--path-format=absolute", "--git-common-dir"],
+        manifest_repo,
+        60,
+        {},
+    )
+    if (
+        outcome["returncode"] != 0
+        or outcome["stdout"]["truncated"]
+        or "capture_error" in outcome["stdout"]
+        or "capture_error" in outcome["stderr"]
+    ):
+        raise DevCheckError("cannot resolve Git common directory for checkpoints")
+    path = Path(outcome["stdout_tail"].strip())
+    if not path.is_absolute() or path.is_symlink() or not path.is_dir():
+        raise DevCheckError("Git common directory for checkpoints is invalid")
+    return path
+
+
+def _acceptance_checkpoint_plan(
+    manifest_repo: Path,
+    profile: str,
+    snapshot: dict[str, Any],
+    west_argv: list[str],
+    dynamic_identity: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    bound = _acceptance_checkpoint_identity(
+        manifest_repo,
+        profile,
+        snapshot,
+        west_argv,
+        dynamic_identity,
+    )
+    root = _git_common_directory(manifest_repo) / "west-dev-checkpoints"
+    return {
+        "schema_version": _CHECKPOINT_SCHEMA_VERSION,
+        "key": bound["key"],
+        "path": str(root / f"acceptance-{bound['key']}.json"),
+        "identity": bound["identity"],
+    }
+
 def _reject_ignored_package_inputs(manifest_repo: Path, profile: str) -> None:
     result = _run_process(
         [
@@ -477,7 +1145,15 @@ def _check_steps(inputs: dict[str, Any], transaction_id: str) -> list[dict[str, 
     steps = [
         _step(
             "patch-check",
-            [*west, "patch", "check", "--profile", profile, "--strict", "--strict-quality"],
+            [
+                *west,
+                "patch",
+                "check",
+                "--profile",
+                profile,
+                "--strict",
+                "--strict-quality",
+            ],
             "read-only",
             _CHECK_TIMEOUTS["patch-check"],
             manifest_repo,
@@ -497,7 +1173,9 @@ def _check_steps(inputs: dict[str, Any], transaction_id: str) -> list[dict[str, 
             manifest_repo,
         ),
     ]
-    if _TIER_RANK[tier] >= _TIER_RANK["canonical"]:
+    if tier == "quick":
+        return steps
+    if tier == "canonical":
         steps.extend(
             (
                 _step(
@@ -509,14 +1187,20 @@ def _check_steps(inputs: dict[str, Any], transaction_id: str) -> list[dict[str, 
                 ),
                 _step(
                     "host-materialized-test",
-                    [*west, "test", *selectors, "--env", "host", "--materialize-profile"],
+                    [
+                        *west,
+                        "test",
+                        *selectors,
+                        "--env",
+                        "host",
+                        "--materialize-profile",
+                    ],
                     "temporary/local-output",
                     _CHECK_TIMEOUTS["host-materialized-test"],
                     manifest_repo,
                 ),
             )
         )
-    if tier != "acceptance":
         return steps
 
     scratch = Path(inputs["evidence"]).parent / f".dev-check-{transaction_id}"
@@ -525,14 +1209,31 @@ def _check_steps(inputs: dict[str, Any], transaction_id: str) -> list[dict[str, 
     candidate_parent = scratch / "lock-first"
     candidate = candidate_parent / "darling-workspace"
     artifacts = scratch / "evidence"
-    # Host contracts exercise Darwin's 104-byte AF_UNIX limit.  Their own
-    # mkdtemp children provide isolation; nesting TMPDIR below this long
-    # transaction path makes valid boundary cases fail before the code under test.
-    scratch_env = {
-        "HOME": str(scratch / "home"),
-        "TMPDIR": "/tmp",
-        "XDG_CACHE_HOME": str(scratch / "cache"),
-    }
+
+    def stage_env(name: str) -> dict[str, str]:
+        environment = dict(
+            inputs["acceptance_checkpoint"]["identity"][
+                "parallel_environment"
+            ]
+        )
+        environment.update(
+            {
+                "CCACHE_DIR": str(scratch / "cache" / name / "ccache"),
+                "GIT_CONFIG_COUNT": "0",
+                "GIT_CONFIG_GLOBAL": "/dev/null",
+                "GIT_CONFIG_NOSYSTEM": "1",
+                "GIT_TERMINAL_PROMPT": "0",
+                "HOME": str(scratch / "home" / name),
+                "TMPDIR": "/tmp",
+                "XDG_CACHE_HOME": str(scratch / "cache" / name),
+                "XDG_CONFIG_HOME": str(scratch / "config" / name),
+            }
+        )
+        return environment
+
+    host_env = stage_env("host")
+    oracle_env = stage_env("oracle")
+    candidate_env = stage_env("candidate")
     head = inputs["package_snapshot"]["manifest_head"]
     mapping = control / "locks" / "patch-stack" / "lock-first-series-v2.yml"
     oracle = artifacts / "immutable-oracle.json"
@@ -559,11 +1260,19 @@ def _check_steps(inputs: dict[str, Any], transaction_id: str) -> list[dict[str, 
             ),
             _step(
                 "acceptance-clone-control",
-                ["git", "clone", "--no-local", "--no-hardlinks", "--no-checkout", str(manifest_repo), str(control)],
+                [
+                    "git",
+                    "clone",
+                    "--no-local",
+                    "--no-hardlinks",
+                    "--no-checkout",
+                    str(manifest_repo),
+                    str(control),
+                ],
                 "temporary/local-output",
                 _CHECK_TIMEOUTS["clone"],
                 control_parent,
-                scratch_env,
+                oracle_env,
             ),
             _step(
                 "acceptance-checkout-control",
@@ -571,15 +1280,23 @@ def _check_steps(inputs: dict[str, Any], transaction_id: str) -> list[dict[str, 
                 "temporary/local-output",
                 _CHECK_TIMEOUTS["checkout"],
                 control,
-                scratch_env,
+                oracle_env,
             ),
             _step(
                 "acceptance-clone-candidate",
-                ["git", "clone", "--no-local", "--no-hardlinks", "--no-checkout", str(manifest_repo), str(candidate)],
+                [
+                    "git",
+                    "clone",
+                    "--no-local",
+                    "--no-hardlinks",
+                    "--no-checkout",
+                    str(manifest_repo),
+                    str(candidate),
+                ],
                 "temporary/local-output",
                 _CHECK_TIMEOUTS["clone"],
                 candidate_parent,
-                scratch_env,
+                candidate_env,
             ),
             _step(
                 "acceptance-checkout-candidate",
@@ -587,7 +1304,7 @@ def _check_steps(inputs: dict[str, Any], transaction_id: str) -> list[dict[str, 
                 "temporary/local-output",
                 _CHECK_TIMEOUTS["checkout"],
                 candidate,
-                scratch_env,
+                candidate_env,
             ),
             _step(
                 "acceptance-bootstrap-candidate",
@@ -595,7 +1312,7 @@ def _check_steps(inputs: dict[str, Any], transaction_id: str) -> list[dict[str, 
                 "temporary/local-output",
                 _CHECK_TIMEOUTS["bootstrap"],
                 candidate,
-                scratch_env,
+                candidate_env,
             ),
             _step(
                 "acceptance-configure-candidate-identity",
@@ -609,39 +1326,146 @@ def _check_steps(inputs: dict[str, Any], transaction_id: str) -> list[dict[str, 
                 "temporary/local-output",
                 _CHECK_TIMEOUTS["identity"],
                 candidate,
-                scratch_env,
+                candidate_env,
+            ),
+            _step(
+                "acceptance-seed-candidate-refs",
+                [
+                    str(Path(sys.executable).resolve()),
+                    str(
+                        candidate
+                        / "ci"
+                        / "patch_stack_lock_first_acceptance.py"
+                    ),
+                    "seed-source-refs",
+                    "--source-workspace",
+                    str(manifest_repo.parent),
+                    "--candidate-workspace",
+                    str(candidate_parent),
+                    "--profile",
+                    profile,
+                ],
+                "temporary/local-output",
+                _CHECK_TIMEOUTS["seed-source-refs"],
+                candidate,
+                candidate_env,
+            ),
+            _step(
+                "patch-verify",
+                [*west, "patch", "verify", "--profile", profile],
+                "temporary/local-output",
+                _CHECK_TIMEOUTS["patch-verify"],
+                candidate,
+                candidate_env,
+            ),
+            _step(
+                "host-materialized-test",
+                [
+                    *west,
+                    "test",
+                    *selectors,
+                    "--env",
+                    "host",
+                    "--materialize-profile",
+                ],
+                "temporary/local-output",
+                _CHECK_TIMEOUTS["host-materialized-test"],
+                manifest_repo,
+                host_env,
             ),
             _step(
                 "immutable-oracle",
-                ["python3", str(control / "tests" / "patch_stack_immutable_oracle.py"), "--workspace", str(control), "--profile", profile, "--mapping", str(mapping), "--output", str(oracle)],
+                [
+                    str(Path(sys.executable).resolve()),
+                    str(control / "tests" / "patch_stack_immutable_oracle.py"),
+                    "--workspace",
+                    str(control),
+                    "--profile",
+                    profile,
+                    "--mapping",
+                    str(mapping),
+                    "--output",
+                    str(oracle),
+                ],
                 "temporary/local-output",
                 _CHECK_TIMEOUTS["immutable-oracle"],
                 control,
-                scratch_env,
+                oracle_env,
             ),
             _step(
                 "acceptance-candidate-apply",
-                [*west, "patch", "apply", "--profile", profile, "--lock-first-evidence", str(lock_evidence)],
+                [
+                    *west,
+                    "patch",
+                    "apply",
+                    "--profile",
+                    profile,
+                    "--lock-first-evidence",
+                    str(lock_evidence),
+                ],
                 "temporary/local-output",
                 _CHECK_TIMEOUTS["candidate-apply"],
                 candidate,
-                scratch_env,
+                candidate_env,
             ),
             _step(
                 "acceptance-capture",
-                ["python3", str(candidate / "ci" / "patch_stack_acceptance.py"), "capture", "--workspace", str(candidate), "--profile", profile, "--modules", str(modules), "--manifest", str(manifest)],
+                [
+                    str(Path(sys.executable).resolve()),
+                    str(candidate / "ci" / "patch_stack_acceptance.py"),
+                    "capture",
+                    "--workspace",
+                    str(candidate),
+                    "--profile",
+                    profile,
+                    "--modules",
+                    str(modules),
+                    "--manifest",
+                    str(manifest),
+                ],
                 "temporary/local-output",
                 _CHECK_TIMEOUTS["acceptance-capture"],
                 candidate,
-                scratch_env,
+                candidate_env,
             ),
             _step(
                 "acceptance-compare",
-                ["python3", str(candidate / "ci" / "patch_stack_lock_first_acceptance.py"), "compare-immutable-oracle", "--oracle", str(oracle), "--candidate", str(modules), "--candidate-manifest", str(manifest), "--evidence", str(lock_evidence), "--mapping", str(candidate / "locks" / "patch-stack" / "lock-first-series-v2.yml"), "--candidate-workspace", str(candidate_parent), "--manifest-workspace", str(candidate), "--transaction-root", str(scratch), "--result", str(comparison)],
+                [
+                    str(Path(sys.executable).resolve()),
+                    str(
+                        candidate
+                        / "ci"
+                        / "patch_stack_lock_first_acceptance.py"
+                    ),
+                    "compare-immutable-oracle",
+                    "--oracle",
+                    str(oracle),
+                    "--candidate",
+                    str(modules),
+                    "--candidate-manifest",
+                    str(manifest),
+                    "--evidence",
+                    str(lock_evidence),
+                    "--mapping",
+                    str(
+                        candidate
+                        / "locks"
+                        / "patch-stack"
+                        / "lock-first-series-v2.yml"
+                    ),
+                    "--candidate-workspace",
+                    str(candidate_parent),
+                    "--manifest-workspace",
+                    str(candidate),
+                    "--transaction-root",
+                    str(scratch),
+                    "--result",
+                    str(comparison),
+                ],
                 "temporary/local-output",
                 _CHECK_TIMEOUTS["acceptance-compare"],
                 candidate,
-                scratch_env,
+                candidate_env,
             ),
             _step(
                 "acceptance-host-tier",
@@ -649,7 +1473,7 @@ def _check_steps(inputs: dict[str, Any], transaction_id: str) -> list[dict[str, 
                 "temporary/local-output",
                 _CHECK_TIMEOUTS["acceptance-host-tier"],
                 candidate,
-                scratch_env,
+                candidate_env,
             ),
             _step(
                 "acceptance-guest-smoke",
@@ -657,7 +1481,7 @@ def _check_steps(inputs: dict[str, Any], transaction_id: str) -> list[dict[str, 
                 "temporary/local-output",
                 _CHECK_TIMEOUTS["acceptance-guest-smoke"],
                 candidate,
-                scratch_env,
+                candidate_env,
             ),
         )
     )
@@ -706,12 +1530,20 @@ def build_check_plan(
             if build_dir is not None
             else None
         ),
+        "acceptance_checkpoint": None,
     }
     inputs["package_snapshot"] = _collect_package_snapshot(repo, selected_profile)
     if selected_tier == "acceptance":
+        _validate_acceptance_selection(inputs)
         _reject_ignored_package_inputs(repo, selected_profile)
         if inputs["package_snapshot"]["dirty"]:
             raise DevCheckError("acceptance checks require a clean manifest repository")
+        inputs["acceptance_checkpoint"] = _acceptance_checkpoint_plan(
+            repo,
+            selected_profile,
+            inputs["package_snapshot"],
+            inputs["west_argv"],
+        )
     _validate_acceptance_inputs(inputs)
     return {
         "schema_version": SCHEMA_VERSION,
@@ -752,19 +1584,49 @@ def _terminate_process_group(
         process.wait(timeout=_TERMINATE_GRACE_SECONDS)
 
 
+class _ProcessCancellation:
+    def __init__(self) -> None:
+        self.event = threading.Event()
+        self._lock = threading.Lock()
+        self._processes: set[subprocess.Popen[bytes]] = set()
+
+    def register(self, process: subprocess.Popen[bytes]) -> bool:
+        with self._lock:
+            if self.event.is_set():
+                return False
+            self._processes.add(process)
+            return True
+
+    def unregister(self, process: subprocess.Popen[bytes]) -> None:
+        with self._lock:
+            self._processes.discard(process)
+
+    def cancel(self, first_signal: signal.Signals) -> None:
+        self.event.set()
+        with self._lock:
+            processes = tuple(self._processes)
+        for process in processes:
+            _terminate_process_group(process, first_signal)
+
+
 def _run_process(
     argv: list[str],
     cwd: Path,
     timeout_seconds: int,
     env_overrides: dict[str, str],
     stdout_full_limit: int = 0,
+    cancellation: _ProcessCancellation | None = None,
+    sanitize_environment: bool = False,
 ) -> dict[str, Any]:
     """Run one process with bounded capture and an independently killable group."""
     started_at = _utc_now()
     started = time.monotonic()
     stdout_capture = _BoundedCapture(full_limit=stdout_full_limit)
     stderr_capture = _BoundedCapture()
-    process_env = os.environ.copy()
+    if sanitize_environment:
+        process_env: dict[str, str] = {}
+    else:
+        process_env = os.environ.copy()
     process_env.update(env_overrides)
     try:
         process = subprocess.Popen(
@@ -803,6 +1665,7 @@ def _run_process(
             result["_stdout_full"] = stdout_capture.full()
         return result
 
+    registered = cancellation is None or cancellation.register(process)
     assert process.stdout is not None
     assert process.stderr is not None
     stdout_thread = threading.Thread(
@@ -815,20 +1678,54 @@ def _run_process(
     stderr_thread.start()
     timed_out = False
     interrupted = False
+    cancelled_by_peer = False
     process_group_quiescent = True
     returncode: int
     try:
         try:
-            returncode = process.wait(timeout=timeout_seconds)
+            if not registered:
+                cancelled_by_peer = True
+                _terminate_process_group(process, signal.SIGINT)
+                returncode = 125
+            elif cancellation is None:
+                returncode = process.wait(timeout=timeout_seconds)
+            else:
+                deadline = time.monotonic() + timeout_seconds
+                while True:
+                    if cancellation.event.is_set():
+                        cancelled_by_peer = True
+                        _terminate_process_group(process, signal.SIGINT)
+                        returncode = 125
+                        break
+                    remaining = deadline - time.monotonic()
+                    if remaining <= 0:
+                        raise subprocess.TimeoutExpired(argv, timeout_seconds)
+                    try:
+                        returncode = process.wait(timeout=min(0.1, remaining))
+                        break
+                    except subprocess.TimeoutExpired:
+                        continue
         except subprocess.TimeoutExpired:
             timed_out = True
             _terminate_process_group(process, signal.SIGTERM)
             returncode = 124
         except KeyboardInterrupt:
             interrupted = True
-            _terminate_process_group(process, signal.SIGINT)
+            if cancellation is not None:
+                cancellation.cancel(signal.SIGINT)
+            else:
+                _terminate_process_group(process, signal.SIGINT)
             returncode = 130
-        if not timed_out and not interrupted:
+        if (
+            cancellation is not None
+            and cancellation.event.is_set()
+            and returncode != 0
+            and not timed_out
+            and not interrupted
+        ):
+            cancelled_by_peer = True
+            returncode = 125
+        if not timed_out and not interrupted and not cancelled_by_peer:
             try:
                 os.killpg(process.pid, 0)
             except ProcessLookupError:
@@ -842,6 +1739,8 @@ def _run_process(
         _terminate_process_group(process, signal.SIGTERM)
         raise
     finally:
+        if cancellation is not None and registered:
+            cancellation.unregister(process)
         stdout_thread.join(timeout=_TERMINATE_GRACE_SECONDS)
         stderr_thread.join(timeout=_TERMINATE_GRACE_SECONDS)
 
@@ -863,6 +1762,8 @@ def _run_process(
         "stderr_tail": stderr_result["tail"],
         "process_group_quiescent": process_group_quiescent,
     }
+    if cancelled_by_peer:
+        result["cancelled_by_peer"] = True
     if stdout_full_limit:
         result["_stdout_full"] = stdout_capture.full()
     return result
@@ -1205,6 +2106,14 @@ def _validate_check_plan(plan: dict[str, Any]) -> tuple[Path, Path]:
         raise DevCheckError("manifest repository changed after check planning")
     if inputs["tier"] == "acceptance" and snapshot.get("dirty") is not False:
         raise DevCheckError("acceptance checks require a clean manifest repository")
+    if (
+        inputs["tier"] == "acceptance"
+        and _acceptance_checkpoint_plan(
+            repo, inputs["profile"], snapshot, inputs["west_argv"]
+        )
+        != inputs["acceptance_checkpoint"]
+    ):
+        raise DevCheckError("acceptance checkpoint identity changed after planning")
     expected = _check_steps(inputs, plan["transaction_id"])
     if plan["steps"] != expected:
         raise DevCheckError("check steps do not match the frozen inputs")
@@ -1252,6 +2161,7 @@ def _same_path_identity(path: Path, identity: dict[str, int]) -> bool:
         return False
 
 
+
 def _check_scratch_marker(scratch: Path) -> Path:
     return scratch / ".west-dev-check-owner"
 
@@ -1274,8 +2184,18 @@ def _create_check_scratch(plan: dict[str, Any]) -> tuple[Path, dict[str, int]]:
             stream.write(plan["transaction_id"] + "\n")
             stream.flush()
             os.fsync(stream.fileno())
-        for name in ("control", "lock-first", "evidence", "home", "tmp", "cache"):
+        for name in (
+            "control",
+            "lock-first",
+            "evidence",
+            "home",
+            "cache",
+            "config",
+        ):
             (scratch / name).mkdir(mode=0o700)
+        for parent in ("home", "cache", "config"):
+            for stage in ("host", "oracle", "candidate"):
+                (scratch / parent / stage).mkdir(mode=0o700)
         return scratch, identity
     except BaseException:
         if identity is not None and _same_path_identity(scratch, identity):
@@ -1589,6 +2509,587 @@ def _validate_embedded_acceptance_artifacts(
                 )
 
 
+def _checkpoint_capture(data: bytes = b"") -> dict[str, Any]:
+    tail = data[-_CAPTURE_LIMIT:].decode("utf-8", errors="replace")
+    return {
+        "sha256": hashlib.sha256(data).hexdigest(),
+        "bytes": len(data),
+        "tail": tail,
+        "truncated": len(data) > _CAPTURE_LIMIT,
+    }
+
+
+def _validate_checkpoint_capture(value: object, name: str) -> None:
+    if (
+        not isinstance(value, dict)
+        or set(value) != {"sha256", "bytes", "tail", "truncated"}
+        or not _is_lower_hex(value.get("sha256"), 64)
+        or not isinstance(value.get("bytes"), int)
+        or isinstance(value.get("bytes"), bool)
+        or value["bytes"] < 0
+        or not isinstance(value.get("tail"), str)
+        or len(value["tail"].encode("utf-8")) > _CAPTURE_LIMIT
+        or not isinstance(value.get("truncated"), bool)
+        or value["truncated"] != (value["bytes"] > _CAPTURE_LIMIT)
+    ):
+        raise DevCheckError(f"acceptance checkpoint {name} capture is invalid")
+
+
+
+
+def _validate_checkpoint_oracle(
+    payload: object, identity: dict[str, Any]
+) -> None:
+    fields = {
+        "oracle_schema_version",
+        "mode",
+        "profile",
+        "profile_order",
+        "batches",
+        "modules",
+        "generated_profile_locks",
+        "frozen_manifest_sha256",
+        "clean_odb",
+        "cleanup",
+        "verdict",
+    }
+    profiles = [row["profile"] for row in identity["profile_graph"]]
+    if (
+        not isinstance(payload, dict)
+        or set(payload) != fields
+        or payload.get("oracle_schema_version") != 2
+        or payload.get("mode") != "immutable-cherry-pick-oracle"
+        or payload.get("profile") != identity["profile"]
+        or payload.get("profile_order") != profiles
+        or payload.get("frozen_manifest_sha256")
+        != identity["frozen_manifest_sha256"]
+        or payload.get("cleanup")
+        != {"root": "removed", "worktrees": "removed", "refs": "removed"}
+        or payload.get("verdict") != "VALID"
+    ):
+        raise DevCheckError("acceptance checkpoint oracle semantics differ")
+    clean_odb = payload.get("clean_odb")
+    if (
+        not isinstance(clean_odb, dict)
+        or set(clean_odb)
+        != {
+            "module_count",
+            "immutable_fetch_transactions",
+            "alternates",
+            "shallow",
+            "partial",
+        }
+        or not isinstance(clean_odb.get("module_count"), int)
+        or isinstance(clean_odb.get("module_count"), bool)
+        or clean_odb["module_count"] < 1
+        or clean_odb.get("immutable_fetch_transactions")
+        != clean_odb["module_count"]
+        or any(
+            clean_odb.get(name) != 0
+            for name in ("alternates", "shallow", "partial")
+        )
+    ):
+        raise DevCheckError("acceptance checkpoint oracle clean ODB is invalid")
+
+    batches = payload.get("batches")
+    if not isinstance(batches, list) or len(batches) != len(profiles):
+        raise DevCheckError("acceptance checkpoint oracle batches are invalid")
+    batch_modules: set[str] = set()
+    for expected_profile, batch in zip(profiles, batches, strict=True):
+        if (
+            not isinstance(batch, dict)
+            or set(batch)
+            != {
+                "profile",
+                "batch_id",
+                "expected_count",
+                "module_order",
+                "series_order",
+                "series",
+                "verdict",
+            }
+            or batch.get("profile") != expected_profile
+            or not isinstance(batch.get("batch_id"), str)
+            or not batch["batch_id"]
+            or batch.get("verdict") != "VALID"
+            or not isinstance(batch.get("expected_count"), int)
+            or isinstance(batch.get("expected_count"), bool)
+            or batch["expected_count"] < 1
+            or not isinstance(batch.get("module_order"), list)
+            or not batch["module_order"]
+            or not all(
+                isinstance(module, str) and module
+                for module in batch["module_order"]
+            )
+            or len(set(batch["module_order"])) != len(batch["module_order"])
+            or not isinstance(batch.get("series_order"), list)
+            or not isinstance(batch.get("series"), list)
+            or len(batch["series_order"]) != batch["expected_count"]
+            or len(batch["series"]) != batch["expected_count"]
+        ):
+            raise DevCheckError("acceptance checkpoint oracle batch is invalid")
+        observed_order: list[dict[str, str]] = []
+        for order, row in zip(
+            batch["series_order"], batch["series"], strict=True
+        ):
+            if (
+                not isinstance(order, dict)
+                or set(order) != {"module", "patch"}
+                or not isinstance(row, dict)
+                or set(row)
+                != {
+                    "module",
+                    "patch",
+                    "base",
+                    "source",
+                    "canonical_tree",
+                    "applied_commit",
+                    "applied_tree",
+                    "verdict",
+                }
+                or row.get("verdict") != "VALID"
+            ):
+                raise DevCheckError(
+                    "acceptance checkpoint oracle series is invalid"
+                )
+            module = _validate_text(row.get("module"), "checkpoint oracle module")
+            patch = _validate_text(row.get("patch"), "checkpoint oracle patch")
+            for field in (
+                "base",
+                "source",
+                "canonical_tree",
+                "applied_commit",
+                "applied_tree",
+            ):
+                _require_oid(
+                    row.get(field),
+                    f"checkpoint oracle {module}/{patch} {field}",
+                )
+            observed = {"module": module, "patch": patch}
+            if order != observed:
+                raise DevCheckError(
+                    "acceptance checkpoint oracle series order differs"
+                )
+            observed_order.append(observed)
+        if (
+            len({(row["module"], row["patch"]) for row in observed_order})
+            != batch["expected_count"]
+            or list(dict.fromkeys(row["module"] for row in observed_order))
+            != batch["module_order"]
+        ):
+            raise DevCheckError(
+                "acceptance checkpoint oracle series closure is invalid"
+            )
+        batch_modules.update(batch["module_order"])
+
+    modules = payload.get("modules")
+    if not isinstance(modules, list) or len(modules) != clean_odb["module_count"]:
+        raise DevCheckError("acceptance checkpoint oracle modules are invalid")
+    observed_modules: set[str] = set()
+    for row in modules:
+        if not isinstance(row, dict) or set(row) != {"module", "commit", "tree"}:
+            raise DevCheckError("acceptance checkpoint oracle module is invalid")
+        module = _validate_text(row.get("module"), "checkpoint oracle module")
+        if module in observed_modules:
+            raise DevCheckError(
+                "acceptance checkpoint oracle module is duplicated"
+            )
+        observed_modules.add(module)
+        _require_oid(row.get("commit"), f"checkpoint oracle {module} commit")
+        _require_oid(row.get("tree"), f"checkpoint oracle {module} tree")
+    if observed_modules != batch_modules:
+        raise DevCheckError(
+            "acceptance checkpoint oracle module closure differs"
+        )
+
+    generated = payload.get("generated_profile_locks")
+    if not isinstance(generated, list) or len(generated) != len(profiles):
+        raise DevCheckError(
+            "acceptance checkpoint generated lock closure is invalid"
+        )
+    for expected_profile, row in zip(profiles, generated, strict=True):
+        if (
+            not isinstance(row, dict)
+            or set(row) != {"profile", "path", "semantic_sha256"}
+            or row.get("profile") != expected_profile
+            or row.get("path")
+            != f"patches/{expected_profile}/west.lock.yml"
+            or not _is_lower_hex(row.get("semantic_sha256"), 64)
+        ):
+            raise DevCheckError(
+                "acceptance checkpoint generated lock row is invalid"
+            )
+def _validate_checkpoint_payload(
+    value: object, binding: dict[str, Any]
+) -> dict[str, Any]:
+    if not isinstance(value, dict) or set(value) != {
+        "schema_version",
+        "kind",
+        "key",
+        "identity",
+        "steps",
+        "oracle",
+    }:
+        raise DevCheckError("acceptance checkpoint fields are invalid")
+    if (
+        value.get("schema_version") != _CHECKPOINT_SCHEMA_VERSION
+        or value.get("kind") != "west-dev-acceptance"
+        or value.get("key") != binding["key"]
+        or value.get("identity") != binding["identity"]
+    ):
+        raise DevCheckError("acceptance checkpoint identity differs")
+    steps = value.get("steps")
+    if not isinstance(steps, dict) or set(steps) != set(_CHECKPOINT_STEP_NAMES):
+        raise DevCheckError("acceptance checkpoint step closure is invalid")
+    for name in _CHECKPOINT_STEP_NAMES:
+        row = steps[name]
+        if (
+            not isinstance(row, dict)
+            or set(row)
+            != {
+                "returncode",
+                "timed_out",
+                "interrupted",
+                "started_at",
+                "finished_at",
+                "duration_ms",
+                "duration_ns",
+                "stdout",
+                "stderr",
+                "stdout_tail",
+                "stderr_tail",
+                "process_group_quiescent",
+            }
+            or row.get("returncode") != 0
+            or row.get("timed_out") is not False
+            or row.get("interrupted") is not False
+            or row.get("process_group_quiescent") is not True
+            or not isinstance(row.get("duration_ms"), int)
+            or isinstance(row.get("duration_ms"), bool)
+            or row["duration_ms"] < 0
+            or not isinstance(row.get("duration_ns"), int)
+            or isinstance(row.get("duration_ns"), bool)
+            or row["duration_ns"] < 0
+            or not isinstance(row.get("started_at"), str)
+            or not row["started_at"]
+            or not isinstance(row.get("finished_at"), str)
+            or not row["finished_at"]
+            or not isinstance(row.get("stdout"), dict)
+            or not isinstance(row.get("stderr"), dict)
+            or row.get("stdout_tail") != row.get("stdout", {}).get("tail")
+            or row.get("stderr_tail") != row.get("stderr", {}).get("tail")
+        ):
+            raise DevCheckError(f"acceptance checkpoint step is invalid: {name}")
+        _validate_checkpoint_capture(row["stdout"], f"{name} stdout")
+        _validate_checkpoint_capture(row["stderr"], f"{name} stderr")
+    oracle = value.get("oracle")
+    if not isinstance(oracle, dict) or set(oracle) != {
+        "bytes",
+        "sha256",
+        "content",
+    }:
+        raise DevCheckError("acceptance checkpoint oracle binding is invalid")
+    content = oracle.get("content")
+    if not isinstance(content, str):
+        raise DevCheckError("acceptance checkpoint oracle content is invalid")
+    data = content.encode("utf-8")
+    if (
+        not isinstance(oracle.get("bytes"), int)
+        or isinstance(oracle.get("bytes"), bool)
+        or oracle["bytes"] != len(data)
+        or len(data) > _CHECKPOINT_LIMIT
+        or not _is_lower_hex(oracle.get("sha256"), 64)
+        or oracle["sha256"] != hashlib.sha256(data).hexdigest()
+    ):
+        raise DevCheckError("acceptance checkpoint oracle digest differs")
+    try:
+        payload = json.loads(content)
+    except json.JSONDecodeError as error:
+        raise DevCheckError("acceptance checkpoint oracle JSON is invalid") from error
+    _validate_checkpoint_oracle(payload, binding["identity"])
+    return value
+
+
+def _checkpoint_root(path: Path, create: bool) -> Path | None:
+    root = path.parent
+    if not root.exists():
+        if not create:
+            return None
+        root.mkdir(mode=0o700)
+        _fsync_directory(root.parent)
+    metadata = root.lstat()
+    if (
+        stat.S_ISLNK(metadata.st_mode)
+        or not stat.S_ISDIR(metadata.st_mode)
+        or metadata.st_uid != os.getuid()
+        or stat.S_IMODE(metadata.st_mode) & 0o077
+    ):
+        raise DevCheckError("acceptance checkpoint root is unsafe")
+    return root
+
+
+@contextlib.contextmanager
+def _locked_checkpoint(
+    path: Path, create: bool
+) -> Iterator[tuple[Path, int] | None]:
+    root = _checkpoint_root(path, create)
+    if root is None:
+        yield None
+        return
+    expected_identity = _identity_from_stat(root.lstat())
+    root_descriptor = os.open(
+        root,
+        os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC | os.O_NOFOLLOW,
+    )
+    lock_descriptor: int | None = None
+    try:
+        if _identity_from_stat(os.fstat(root_descriptor)) != expected_identity:
+            raise DevCheckError("acceptance checkpoint root identity changed")
+        lock_descriptor = os.open(
+            ".lock",
+            os.O_RDWR | os.O_CREAT | os.O_CLOEXEC | os.O_NOFOLLOW,
+            0o600,
+            dir_fd=root_descriptor,
+        )
+        lock_metadata = os.fstat(lock_descriptor)
+        if (
+            not stat.S_ISREG(lock_metadata.st_mode)
+            or lock_metadata.st_uid != os.getuid()
+            or stat.S_IMODE(lock_metadata.st_mode) != 0o600
+        ):
+            raise DevCheckError("acceptance checkpoint lock is unsafe")
+        fcntl.flock(lock_descriptor, fcntl.LOCK_EX)
+        if _identity_from_stat(os.fstat(root_descriptor)) != expected_identity:
+            raise DevCheckError("acceptance checkpoint root identity changed")
+        yield root, root_descriptor
+    finally:
+        if lock_descriptor is not None:
+            with contextlib.suppress(OSError):
+                fcntl.flock(lock_descriptor, fcntl.LOCK_UN)
+            os.close(lock_descriptor)
+        os.close(root_descriptor)
+
+
+def _read_checkpoint_descriptor(
+    root_descriptor: int, name: str
+) -> tuple[int, os.stat_result] | None:
+    try:
+        descriptor = os.open(
+            name,
+            os.O_RDONLY | os.O_CLOEXEC | os.O_NOFOLLOW,
+            dir_fd=root_descriptor,
+        )
+    except FileNotFoundError:
+        return None
+    except OSError as error:
+        raise DevCheckError(
+            f"acceptance checkpoint path is unsafe: {error}"
+        ) from error
+    metadata = os.fstat(descriptor)
+    if (
+        not stat.S_ISREG(metadata.st_mode)
+        or metadata.st_uid != os.getuid()
+        or stat.S_IMODE(metadata.st_mode) != 0o600
+    ):
+        os.close(descriptor)
+        raise DevCheckError("acceptance checkpoint path is unsafe")
+    return descriptor, metadata
+
+
+def _read_checkpoint_file(
+    path: Path, binding: dict[str, Any]
+) -> tuple[dict[str, Any] | None, str]:
+    with _locked_checkpoint(path, False) as locked:
+        if locked is None:
+            return None, "missing"
+        _root, root_descriptor = locked
+        opened = _read_checkpoint_descriptor(root_descriptor, path.name)
+        if opened is None:
+            return None, "missing"
+        descriptor, metadata = opened
+        try:
+            if metadata.st_size > _CHECKPOINT_LIMIT:
+                return None, "oversized"
+            with os.fdopen(descriptor, "rb") as stream:
+                descriptor = -1
+                data = stream.read(_CHECKPOINT_LIMIT + 1)
+        finally:
+            if descriptor >= 0:
+                os.close(descriptor)
+        if len(data) > _CHECKPOINT_LIMIT:
+            return None, "oversized"
+        try:
+            value = json.loads(data)
+            return _validate_checkpoint_payload(value, binding), "valid"
+        except (UnicodeError, json.JSONDecodeError, DevCheckError):
+            return None, "invalid"
+
+
+def _publish_checkpoint_file(
+    path: Path, binding: dict[str, Any], payload: dict[str, Any]
+) -> str:
+    validated = _validate_checkpoint_payload(payload, binding)
+    encoded = (
+        json.dumps(validated, sort_keys=True, indent=2, ensure_ascii=False) + "\n"
+    ).encode("utf-8")
+    if len(encoded) > _CHECKPOINT_LIMIT:
+        raise DevCheckError("acceptance checkpoint exceeds size bound")
+    with _locked_checkpoint(path, True) as locked:
+        assert locked is not None
+        _root, root_descriptor = locked
+        opened = _read_checkpoint_descriptor(root_descriptor, path.name)
+        if opened is not None:
+            descriptor, metadata = opened
+            try:
+                with os.fdopen(descriptor, "rb") as stream:
+                    descriptor = -1
+                    existing_data = stream.read(_CHECKPOINT_LIMIT + 1)
+            finally:
+                if descriptor >= 0:
+                    os.close(descriptor)
+            try:
+                if len(existing_data) > _CHECKPOINT_LIMIT:
+                    raise DevCheckError(
+                        "existing acceptance checkpoint exceeds size bound"
+                    )
+                existing = json.loads(existing_data)
+                _validate_checkpoint_payload(existing, binding)
+                return "existing"
+            except (UnicodeError, json.JSONDecodeError, DevCheckError):
+                current = os.stat(
+                    path.name,
+                    dir_fd=root_descriptor,
+                    follow_symlinks=False,
+                )
+                if _identity_from_stat(current) != _identity_from_stat(metadata):
+                    raise DevCheckError(
+                        "acceptance checkpoint identity changed before replacement"
+                    )
+                os.unlink(path.name, dir_fd=root_descriptor)
+        temporary_name = f".{path.name}.{uuid.uuid4().hex}.tmp"
+        descriptor = os.open(
+            temporary_name,
+            os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_CLOEXEC | os.O_NOFOLLOW,
+            0o600,
+            dir_fd=root_descriptor,
+        )
+        try:
+            with os.fdopen(descriptor, "wb") as stream:
+                descriptor = -1
+                stream.write(encoded)
+                stream.flush()
+                os.fsync(stream.fileno())
+            if _identity_at_or_none(root_descriptor, path.name) is not None:
+                raise DevCheckError(
+                    "acceptance checkpoint appeared before publication"
+                )
+            os.replace(
+                temporary_name,
+                path.name,
+                src_dir_fd=root_descriptor,
+                dst_dir_fd=root_descriptor,
+            )
+            os.fsync(root_descriptor)
+        finally:
+            if descriptor >= 0:
+                os.close(descriptor)
+            with contextlib.suppress(FileNotFoundError):
+                os.unlink(temporary_name, dir_fd=root_descriptor)
+    return "published"
+
+
+def _materialize_checkpoint_oracle(
+    checkpoint: dict[str, Any], destination: Path
+) -> None:
+    if _path_exists(destination):
+        raise DevCheckError("immutable oracle output appeared before checkpoint reuse")
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    data = checkpoint["oracle"]["content"].encode("utf-8")
+    descriptor = os.open(
+        destination,
+        os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_CLOEXEC | os.O_NOFOLLOW,
+        0o600,
+    )
+    with os.fdopen(descriptor, "wb") as stream:
+        stream.write(data)
+        stream.flush()
+        os.fsync(stream.fileno())
+    _fsync_directory(destination.parent)
+
+
+def _checkpoint_result(
+    planned_step: dict[str, Any],
+    source: dict[str, Any],
+) -> dict[str, Any]:
+    timestamp = _utc_now()
+    return {
+        **copy.deepcopy(planned_step),
+        "returncode": 0,
+        "timed_out": False,
+        "interrupted": False,
+        "started_at": timestamp,
+        "finished_at": timestamp,
+        "duration_ms": 0,
+        "duration_ns": 0,
+        "stdout": copy.deepcopy(source["stdout"]),
+        "stderr": copy.deepcopy(source["stderr"]),
+        "stdout_tail": source["stdout_tail"],
+        "stderr_tail": source["stderr_tail"],
+        "process_group_quiescent": True,
+        "checkpoint_reused": True,
+        "checkpoint_source_started_at": source["started_at"],
+        "checkpoint_source_finished_at": source["finished_at"],
+        "checkpoint_source_duration_ms": source["duration_ms"],
+        "checkpoint_source_duration_ns": source["duration_ns"],
+    }
+
+
+def _checkpoint_payload(
+    binding: dict[str, Any],
+    results: dict[str, dict[str, Any]],
+    oracle_path: Path,
+) -> dict[str, Any]:
+    data = oracle_path.read_bytes()
+    if len(data) > _CHECKPOINT_LIMIT:
+        raise DevCheckError("immutable oracle output exceeds checkpoint bound")
+    return {
+        "schema_version": _CHECKPOINT_SCHEMA_VERSION,
+        "kind": "west-dev-acceptance",
+        "key": binding["key"],
+        "identity": binding["identity"],
+        "steps": {
+            name: {
+                field: copy.deepcopy(results[name][field])
+                for field in (
+                    "returncode",
+                    "timed_out",
+                    "interrupted",
+                    "started_at",
+                    "finished_at",
+                    "duration_ms",
+                    "duration_ns",
+                    "stdout",
+                    "stderr",
+                    "stdout_tail",
+                    "stderr_tail",
+                    "process_group_quiescent",
+                )
+            }
+            for name in _CHECKPOINT_STEP_NAMES
+        },
+        "oracle": {
+            "bytes": len(data),
+            "sha256": hashlib.sha256(data).hexdigest(),
+            "content": data.decode("utf-8"),
+        },
+    }
+
+class _ParallelInterrupted(KeyboardInterrupt):
+    def __init__(self, results: dict[str, dict[str, Any]]) -> None:
+        super().__init__()
+        self.results = results
+
+
 class _StepFailure(DevCheckError):
     def __init__(self, name: str, returncode: int, interrupted: bool = False) -> None:
         super().__init__(f"{name} failed with returncode {returncode}")
@@ -1599,7 +3100,121 @@ def _normalized_returncode(returncode: int) -> int:
     return 128 + (-returncode) if returncode < 0 else returncode
 
 
-def execute_check(plan: dict[str, Any]) -> dict[str, Any]:
+def _progress(
+    callback: Callable[[dict[str, Any]], None] | None,
+    phase: str,
+    planned_step: dict[str, Any],
+    index: int,
+    total: int,
+    started: float,
+    **fields: Any,
+) -> None:
+    if callback is None:
+        return
+    callback(
+        {
+            "phase": phase,
+            "name": planned_step["name"],
+            "index": index,
+            "total": total,
+            "elapsed_ms": round((time.monotonic() - started) * 1000),
+            **fields,
+        }
+    )
+
+
+def _run_parallel_acceptance_steps(
+    planned_steps: list[dict[str, Any]],
+    indices: dict[str, int],
+    total: int,
+    started: float,
+    progress: Callable[[dict[str, Any]], None] | None,
+) -> dict[str, dict[str, Any]]:
+    cancellation = _ProcessCancellation()
+    progress_lock = threading.Lock()
+
+    def notify(
+        phase: str, step: dict[str, Any], **fields: Any
+    ) -> None:
+        with progress_lock:
+            _progress(
+                progress,
+                phase,
+                step,
+                indices[step["name"]],
+                total,
+                started,
+                **fields,
+            )
+
+    def run(step: dict[str, Any]) -> dict[str, Any]:
+        notify("start", step)
+        outcome = _run_process(
+            list(step["argv"]),
+            Path(step["cwd"]),
+            int(step["timeout_seconds"]),
+            dict(step["env"]),
+            cancellation=cancellation,
+            sanitize_environment=True,
+        )
+        result = copy.deepcopy(step)
+        result.update(outcome)
+        notify(
+            "finish",
+            step,
+            duration_ms=result["duration_ms"],
+            returncode=result["returncode"],
+        )
+        if result["returncode"] != 0 or any(
+            "capture_error" in result[stream] for stream in ("stdout", "stderr")
+        ):
+            cancellation.cancel(signal.SIGINT)
+        return result
+
+    futures: dict[
+        concurrent.futures.Future[dict[str, Any]], dict[str, Any]
+    ] = {}
+    executor = concurrent.futures.ThreadPoolExecutor(
+        max_workers=len(planned_steps), thread_name_prefix="west-dev-check"
+    )
+    try:
+        for step in planned_steps:
+            futures[executor.submit(run, step)] = step
+        results = {
+            futures[future]["name"]: future.result()
+            for future in concurrent.futures.as_completed(futures)
+        }
+    except KeyboardInterrupt:
+        cancellation.cancel(signal.SIGINT)
+        interrupted_results: dict[str, dict[str, Any]] = {}
+        for future, step in futures.items():
+            with contextlib.suppress(BaseException):
+                interrupted_results[step["name"]] = future.result()
+        raise _ParallelInterrupted(interrupted_results)
+    finally:
+        executor.shutdown(wait=True, cancel_futures=True)
+    return results
+
+
+def _raise_step_failure(result: dict[str, Any]) -> None:
+    if result["returncode"] != 0:
+        raise _StepFailure(
+            result["name"],
+            result["returncode"],
+            result["interrupted"]
+            or result["returncode"] == -int(signal.SIGINT),
+        )
+    if (
+        "capture_error" in result["stdout"]
+        or "capture_error" in result["stderr"]
+    ):
+        raise _StepFailure(f"{result['name']}-capture", 1)
+
+
+def execute_check(
+    plan: dict[str, Any],
+    progress: Callable[[dict[str, Any]], None] | None = None,
+) -> dict[str, Any]:
     """Execute a frozen check plan and return its durable receipt."""
     repo, evidence = _validate_check_plan(plan)
     evidence_fd = _open_pinned_directory(
@@ -1607,6 +3222,7 @@ def execute_check(plan: dict[str, Any]) -> dict[str, Any]:
     )
     record = _active_record(plan)
     record["_started_monotonic"] = time.monotonic()
+    started = record["_started_monotonic"]
     try:
         evidence_identity = _create_json(evidence, record, evidence_fd)
         record["state"] = "active"
@@ -1620,6 +3236,20 @@ def execute_check(plan: dict[str, Any]) -> dict[str, Any]:
         raise
     scratch: Path | None = None
     scratch_identity: dict[str, int] | None = None
+    checkpoint: dict[str, Any] | None = None
+    total = len(plan["steps"])
+    indices = {
+        step["name"]: index
+        for index, step in enumerate(plan["steps"], start=1)
+    }
+
+    def publish_result(result: dict[str, Any]) -> None:
+        nonlocal evidence_identity
+        record["results"].append(result)
+        evidence_identity = _atomic_json(
+            evidence, record, evidence_fd, evidence_identity
+        )
+
     try:
         if plan["inputs"]["tier"] == "acceptance":
             scratch, scratch_identity = _create_check_scratch(plan)
@@ -1628,10 +3258,129 @@ def execute_check(plan: dict[str, Any]) -> dict[str, Any]:
                 "identity": scratch_identity,
                 "state": "active",
             }
+            binding = plan["inputs"]["acceptance_checkpoint"]
+            checkpoint_path = Path(binding["path"])
+            checkpoint, checkpoint_reason = _read_checkpoint_file(
+                checkpoint_path, binding
+            )
+            record["checkpoint"] = {
+                "schema_version": _CHECKPOINT_SCHEMA_VERSION,
+                "key": binding["key"],
+                "path": str(checkpoint_path),
+                "state": "reused" if checkpoint is not None else "miss",
+                "reason": checkpoint_reason,
+            }
             evidence_identity = _atomic_json(
                 evidence, record, evidence_fd, evidence_identity
             )
-        for planned_step in plan["steps"]:
+        position = 0
+        while position < len(plan["steps"]):
+            planned_step = plan["steps"][position]
+            if (
+                plan["inputs"]["tier"] == "acceptance"
+                and planned_step["name"] == _CHECKPOINT_STEP_NAMES[0]
+            ):
+                parallel_steps = plan["steps"][
+                    position : position + len(_CHECKPOINT_STEP_NAMES)
+                ]
+                if [step["name"] for step in parallel_steps] != list(
+                    _CHECKPOINT_STEP_NAMES
+                ):
+                    raise DevCheckError(
+                        "acceptance checkpoint steps are not one contiguous wave"
+                    )
+                if checkpoint is not None:
+                    assert scratch is not None
+                    _materialize_checkpoint_oracle(
+                        checkpoint,
+                        scratch / "evidence" / "immutable-oracle.json",
+                    )
+                    for step in parallel_steps:
+                        source = checkpoint["steps"][step["name"]]
+                        result = _checkpoint_result(step, source)
+                        _progress(
+                            progress,
+                            "reuse",
+                            step,
+                            indices[step["name"]],
+                            total,
+                            started,
+                            source_duration_ms=source["duration_ms"],
+                        )
+                        publish_result(result)
+                else:
+                    try:
+                        parallel_results = _run_parallel_acceptance_steps(
+                            parallel_steps,
+                            indices,
+                            total,
+                            started,
+                            progress,
+                        )
+                    except _ParallelInterrupted as error:
+                        for step in parallel_steps:
+                            result = error.results.get(step["name"])
+                            if result is not None:
+                                publish_result(result)
+                        raise KeyboardInterrupt from None
+                    ordered_results = [
+                        parallel_results[step["name"]] for step in parallel_steps
+                    ]
+                    for result in ordered_results:
+                        publish_result(result)
+                    failed = next(
+                        (
+                            result
+                            for result in ordered_results
+                            if (
+                                result["returncode"] != 0
+                                or "capture_error" in result["stdout"]
+                                or "capture_error" in result["stderr"]
+                            )
+                            and not result.get("cancelled_by_peer", False)
+                        ),
+                        None,
+                    )
+                    if failed is None:
+                        failed = next(
+                            (
+                                result
+                                for result in ordered_results
+                                if result["returncode"] != 0
+                                or "capture_error" in result["stdout"]
+                                or "capture_error" in result["stderr"]
+                            ),
+                            None,
+                        )
+                    if failed is not None:
+                        _raise_step_failure(failed)
+                    assert scratch is not None
+                    binding = plan["inputs"]["acceptance_checkpoint"]
+                    publication = _publish_checkpoint_file(
+                        Path(binding["path"]),
+                        binding,
+                        _checkpoint_payload(
+                            binding,
+                            parallel_results,
+                            scratch / "evidence" / "immutable-oracle.json",
+                        ),
+                    )
+                    record["checkpoint"]["state"] = "published"
+                    record["checkpoint"]["reason"] = publication
+                    evidence_identity = _atomic_json(
+                        evidence, record, evidence_fd, evidence_identity
+                    )
+                position += len(_CHECKPOINT_STEP_NAMES)
+                continue
+
+            _progress(
+                progress,
+                "start",
+                planned_step,
+                indices[planned_step["name"]],
+                total,
+                started,
+            )
             outcome = _run_process(
                 list(planned_step["argv"]),
                 Path(planned_step["cwd"]),
@@ -1656,25 +3405,22 @@ def execute_check(plan: dict[str, Any]) -> dict[str, Any]:
                     "observed_listing_rows": count,
                     "selected": count > 0,
                 }
-            record["results"].append(result)
-            evidence_identity = _atomic_json(
-                evidence, record, evidence_fd, evidence_identity
+            _progress(
+                progress,
+                "finish",
+                planned_step,
+                indices[planned_step["name"]],
+                total,
+                started,
+                duration_ms=result["duration_ms"],
+                returncode=result["returncode"],
             )
-            if outcome["returncode"] != 0:
-                raise _StepFailure(
-                    planned_step["name"],
-                    outcome["returncode"],
-                    outcome["interrupted"]
-                    or outcome["returncode"] == -int(signal.SIGINT),
-                )
-            if (
-                "capture_error" in outcome["stdout"]
-                or "capture_error" in outcome["stderr"]
-            ):
-                raise _StepFailure(f"{planned_step['name']}-capture", 1)
+            publish_result(result)
+            _raise_step_failure(result)
             oracle = result.get("selection_oracle")
             if isinstance(oracle, dict) and not oracle["selected"]:
                 raise _StepFailure("test-list-selection-oracle", 1)
+            position += 1
         if scratch is not None:
             record["acceptance_artifacts"] = _acceptance_artifact_receipt(scratch)
         current_snapshot = _collect_package_snapshot(
@@ -1759,6 +3505,86 @@ def _read_json_file(path: Path, description: str) -> tuple[dict[str, Any], bytes
     return value, data
 
 
+def _validate_checkpoint_receipt(
+    receipt: dict[str, Any],
+    inputs: dict[str, Any],
+    results: list[dict[str, Any]],
+) -> None:
+    binding = _validate_checkpoint_binding(
+        inputs.get("acceptance_checkpoint"),
+        inputs["profile"],
+        inputs["west_argv"],
+    )
+    checkpoint = receipt.get("checkpoint")
+    if (
+        not isinstance(checkpoint, dict)
+        or set(checkpoint)
+        != {"schema_version", "key", "path", "state", "reason"}
+        or checkpoint.get("schema_version") != _CHECKPOINT_SCHEMA_VERSION
+        or checkpoint.get("key") != binding["key"]
+        or checkpoint.get("path") != binding["path"]
+    ):
+        raise DevCheckError("check receipt checkpoint binding is invalid")
+    state = checkpoint.get("state")
+    reason = checkpoint.get("reason")
+    if (
+        state == "reused"
+        and reason != "valid"
+        or state == "published"
+        and reason not in {"published", "existing"}
+        or state not in {"reused", "published"}
+    ):
+        raise DevCheckError("check receipt checkpoint verdict is invalid")
+
+    checkpoint_fields = {
+        "checkpoint_reused",
+        "checkpoint_source_started_at",
+        "checkpoint_source_finished_at",
+        "checkpoint_source_duration_ms",
+        "checkpoint_source_duration_ns",
+    }
+    by_name = {result.get("name"): result for result in results}
+    if len(by_name) != len(results):
+        raise DevCheckError("check receipt result names are duplicated")
+    for name, result in by_name.items():
+        present = checkpoint_fields.intersection(result)
+        if name not in _CHECKPOINT_STEP_NAMES:
+            if present:
+                raise DevCheckError(
+                    "non-checkpoint result claims checkpoint provenance"
+                )
+            continue
+        if state == "published":
+            if present:
+                raise DevCheckError(
+                    "executed checkpoint result claims reuse provenance"
+                )
+            continue
+        if (
+            present != checkpoint_fields
+            or result.get("checkpoint_reused") is not True
+            or result.get("duration_ms") != 0
+            or result.get("duration_ns") != 0
+            or not isinstance(result.get("checkpoint_source_started_at"), str)
+            or not result["checkpoint_source_started_at"]
+            or not isinstance(result.get("checkpoint_source_finished_at"), str)
+            or not result["checkpoint_source_finished_at"]
+            or not isinstance(result.get("checkpoint_source_duration_ms"), int)
+            or isinstance(result.get("checkpoint_source_duration_ms"), bool)
+            or result["checkpoint_source_duration_ms"] < 0
+            or not isinstance(result.get("checkpoint_source_duration_ns"), int)
+            or isinstance(result.get("checkpoint_source_duration_ns"), bool)
+            or result["checkpoint_source_duration_ns"] < 0
+        ):
+            raise DevCheckError(
+                "reused checkpoint result provenance is invalid"
+            )
+    if state == "reused" and not all(
+        name in by_name for name in _CHECKPOINT_STEP_NAMES
+    ):
+        raise DevCheckError("reused checkpoint result closure is incomplete")
+
+
 def _validate_check_receipt(
     receipt: Path,
     expected_manifest_repo: Path,
@@ -1819,6 +3645,35 @@ def _validate_check_receipt(
     _validate_package_snapshot(snapshot, profile)
     if _collect_package_snapshot(expected_manifest_repo, profile) != snapshot:
         raise DevCheckError("package inputs changed after the committed check")
+    recorded_checkpoint = _validate_checkpoint_binding(
+        inputs.get("acceptance_checkpoint"),
+        profile,
+        inputs["west_argv"],
+    )
+    current_checkpoint = _acceptance_checkpoint_plan(
+        expected_manifest_repo,
+        profile,
+        snapshot,
+        inputs["west_argv"],
+        recorded_checkpoint["identity"],
+    )
+    for field in (
+        "workspace_commit",
+        "workspace_tree",
+        "profile",
+        "profile_graph",
+        "mappings",
+        "patches",
+        "locks",
+        "frozen_manifest_sha256",
+    ):
+        if (
+            recorded_checkpoint["identity"].get(field)
+            != current_checkpoint["identity"].get(field)
+        ):
+            raise DevCheckError(
+                "check receipt acceptance checkpoint content differs"
+            )
     try:
         _validate_acceptance_inputs(inputs)
         expected_steps = _check_steps(inputs, transaction_id)
@@ -1835,7 +3690,11 @@ def _validate_check_receipt(
             raise DevCheckError("check receipt result is not an object")
         if any(result.get(key) != planned[key] for key in planned):
             raise DevCheckError("check receipt result does not match its planned step")
-        if result.get("returncode") != 0:
+        if (
+            result.get("returncode") != 0
+            or result.get("timed_out") is not False
+            or result.get("interrupted") is not False
+        ):
             raise DevCheckError("committed check receipt contains a failed step")
         if result.get("process_group_quiescent") is not True:
             raise DevCheckError("committed check receipt retained process descendants")
@@ -1858,6 +3717,12 @@ def _validate_check_receipt(
                 or not isinstance(capture.get("truncated"), bool)
             ):
                 raise DevCheckError("check receipt result capture is invalid")
+        if (
+            result.get("stdout_tail") != stdout["tail"]
+            or result.get("stderr_tail") != stderr["tail"]
+        ):
+            raise DevCheckError("check receipt result capture tail differs")
+    _validate_checkpoint_receipt(value, inputs, results)
     _validate_embedded_acceptance_artifacts(
         value.get("acceptance_artifacts"), profile
     )
@@ -2894,6 +4759,7 @@ def _validate_packaged_check_receipt(
                 or result.get(f"{stream}_tail") != tail
             ):
                 raise DevCheckError("packaged check result capture is invalid")
+    _validate_checkpoint_receipt(receipt, inputs, results)
     _validate_acceptance_closure(receipt, profile)
     return inputs
 

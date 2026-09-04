@@ -116,16 +116,10 @@ def load_profile(workspace: Path, profile: str) -> dict[str, Any]:
 
 
 def profile_stack(workspace: Path, profile: str) -> list[str]:
-    reverse: list[str] = []
-    current: str | None = profile
-    while current is not None:
-        fail(current not in reverse, "profile dependency cycle")
-        reverse.append(current)
-        value = load_profile(workspace, current)
-        base = value.get("base-profile")
-        fail(base is None or isinstance(base, str), f"{current}: invalid base-profile")
-        current = base
-    return list(reversed(reverse))
+    try:
+        return patch_stack_lock_first.profile_dependency_chain(workspace, profile)
+    except patch_stack_lock_first.LockFirstError as error:
+        raise OracleError(str(error)) from error
 
 
 def typed_plan(

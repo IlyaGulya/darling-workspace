@@ -147,6 +147,21 @@ committed, current-workspace acceptance receipt and its embedded acceptance
 artifacts; `verify-package` revalidates a published package's complete closure
 without changing it.
 
+Human-mode checks report each step start/finish with elapsed time. Acceptance
+copies only manifest-declared source refs into its disposable candidate, then
+runs `patch verify`, the host materialized test, and the immutable oracle
+concurrently across isolated candidate, active, and control repository sets.
+Successful results for those three steps are checkpointed under the manifest
+repository's Git common directory. The key binds the workspace commit and
+tree, composed profile graph, profile manifest and patch bytes, lock-first
+mapping and lock bytes, frozen manifest, executable and installed West package
+content, the host compiler/build-tool content, and the exact non-secret
+environment inherited by the parallel gate. A valid hit reuses only those
+three results and the content-addressed oracle; candidate replay and
+comparison, the candidate host tier, and the final guest/prefix smoke still
+run. Corrupt checkpoints are recomputed and replaced. Symlinked or otherwise
+unsafe checkpoint paths fail closed.
+
 `profiles` discovers immediate `patches/*/patches.yml` manifests and the
 CTest-owned `testkit/runtime-profiles.yml` catalog at invocation time. Its
 default summary is bounded to eight rows and names the exact `--json` command
