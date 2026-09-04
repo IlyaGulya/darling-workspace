@@ -164,6 +164,11 @@ if argv[:2] == ["patch", "apply"] and "--lock-first-evidence" in argv:
     subprocess.run(
         ["git", "commit", "--allow-empty", "-qm", "candidate integration"],
         cwd=module_repo,
+        env={
+            **os.environ,
+            "GIT_AUTHOR_DATE": "2001-01-01T00:00:00Z",
+            "GIT_COMMITTER_DATE": "2001-01-01T00:00:00Z",
+        },
         check=True,
     )
     applied_commit = subprocess.run(
@@ -531,26 +536,85 @@ with Path(os.environ["DEV_CHECK_FAKE_LOG"]).open("a", encoding="utf-8") as strea
 if authority == "seed":
     pass
 elif authority == "candidate-materialize":
+    cache = Path(sys.argv[sys.argv.index("--cache") + 1])
+    evidence = Path(sys.argv[sys.argv.index("--lock-evidence") + 1])
+    modules = Path(sys.argv[sys.argv.index("--modules") + 1])
+    candidate_manifest = Path(
+        sys.argv[sys.argv.index("--candidate-manifest") + 1]
+    )
     west = sys.argv[sys.argv.index("--west-command") + 1 :]
     profile = sys.argv[sys.argv.index("--profile") + 1]
-    evidence = sys.argv[sys.argv.index("--lock-evidence") + 1]
-    subprocess.run(
-        [
-            *west,
-            "patch",
-            "apply",
-            "--profile",
-            profile,
-            "--lock-first-evidence",
-            evidence,
-        ],
-        cwd=Path(sys.argv[sys.argv.index("--manifest-workspace") + 1]),
-        check=True,
-    )
+    if cache.exists():
+        evidence.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(cache / "evidence.json", evidence)
+        shutil.copy2(cache / "modules.json", modules)
+        shutil.copy2(cache / "candidate-manifest.json", candidate_manifest)
+        manifest_workspace = Path(
+            sys.argv[sys.argv.index("--manifest-workspace") + 1]
+        )
+        generated = json.loads(candidate_manifest.read_text())[
+            "generated_profile_locks"
+        ]
+        for index, row in enumerate(generated):
+            destination = manifest_workspace / row["path"]
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(cache / "generated" / str(index), destination)
+        subprocess.run(
+            [
+                *west,
+                "patch",
+                "apply",
+                "--profile",
+                profile,
+                "--lock-first-evidence",
+                str(evidence),
+            ],
+            cwd=manifest_workspace,
+            check=True,
+        )
+    else:
+        west = sys.argv[sys.argv.index("--west-command") + 1 :]
+        profile = sys.argv[sys.argv.index("--profile") + 1]
+        subprocess.run(
+            [
+                *west,
+                "patch",
+                "apply",
+                "--profile",
+                profile,
+                "--lock-first-evidence",
+                str(evidence),
+            ],
+            cwd=Path(sys.argv[sys.argv.index("--manifest-workspace") + 1]),
+            check=True,
+        )
 elif authority == "candidate-publish":
     cache = Path(sys.argv[sys.argv.index("--cache") + 1])
     cache.mkdir(mode=0o700, exist_ok=True)
-    (cache / "fixture").write_text("published\n", encoding="utf-8")
+    shutil.copy2(
+        sys.argv[sys.argv.index("--lock-evidence") + 1],
+        cache / "evidence.json",
+    )
+    shutil.copy2(
+        sys.argv[sys.argv.index("--modules") + 1],
+        cache / "modules.json",
+    )
+    shutil.copy2(
+        sys.argv[sys.argv.index("--candidate-manifest") + 1],
+        cache / "candidate-manifest.json",
+    )
+    manifest_workspace = Path(
+        sys.argv[sys.argv.index("--manifest-workspace") + 1]
+    )
+    generated = json.loads(
+        Path(sys.argv[sys.argv.index("--candidate-manifest") + 1]).read_text()
+    )["generated_profile_locks"]
+    (cache / "generated").mkdir()
+    for index, row in enumerate(generated):
+        shutil.copy2(
+            manifest_workspace / row["path"],
+            cache / "generated" / str(index),
+        )
 elif authority == "clone-tier":
     source = Path(sys.argv[sys.argv.index("--source-workspace") + 1])
     destination = Path(sys.argv[sys.argv.index("--destination-workspace") + 1])
@@ -1346,6 +1410,10 @@ with tempfile.TemporaryDirectory(prefix="dev-check-contract-") as temporary:
                 acceptance["inputs"]["acceptance_checkpoint"]["key"],
                 "--lock-evidence",
                 str(lock_evidence),
+                "--modules",
+                str(modules),
+                "--candidate-manifest",
+                str(manifest),
                 "--west-command",
                 *west,
             ],
@@ -1488,6 +1556,16 @@ with tempfile.TemporaryDirectory(prefix="dev-check-contract-") as temporary:
     )
     guest_env["CCACHE_MAXSIZE"] = "4G"
     guest_env["DARLING_TIER_DEFER_GLOBAL_CLEANUP"] = "1"
+    checkpoint_key = acceptance["inputs"]["acceptance_checkpoint"]["key"]
+    guest_env["WEST_RUNTIME_BUILD_CACHE_DIR"] = str(
+        Path(acceptance["inputs"]["acceptance_checkpoint"]["path"]).parent
+        / "runtime-build-v1"
+        / checkpoint_key
+    )
+    guest_env["WEST_RUNTIME_BUILD_CACHE_KEY"] = checkpoint_key
+    guest_env["DARLING_SMOKE_PREFIX"] = (
+        f"/tmp/darling-rootless-smoke-{checkpoint_key[:16]}"
+    )
     assert [(step["cwd"], step["env"]) for step in acceptance["steps"]] == [
         *((str(repo), {}) for _ in range(4)),
         (str(control_parent), oracle_env),
@@ -1939,7 +2017,7 @@ with tempfile.TemporaryDirectory(prefix="dev-check-contract-") as temporary:
         )
     finally:
         dev_check._run_process = real_run_process_for_clones
-    assert reused_receipt["state"] == "committed"
+    assert reused_receipt["state"] == "committed", reused_receipt.get("error")
     assert reused_receipt["checkpoint"] == {
         "schema_version": 1,
         "key": checkpoint_binding["key"],
@@ -1957,7 +2035,16 @@ with tempfile.TemporaryDirectory(prefix="dev-check-contract-") as temporary:
     ] == list(dev_check._CHECKPOINT_STEP_NAMES)
     assert [
         event["name"] for event in progress_events if event["phase"] == "reuse"
-    ] == list(dev_check._CHECKPOINT_STEP_NAMES)
+    ] == [
+        "acceptance-seed-candidate-refs",
+        *dev_check._CHECKPOINT_STEP_NAMES,
+        "acceptance-capture",
+        "acceptance-publish-candidate-cache",
+    ]
+    assert all(
+        reused_results[name].get("warm_cache_pruned") is True
+        for name in dev_check._CANDIDATE_CACHE_PRUNED_STEPS
+    )
     original_results = {
         result["name"]: result for result in acceptance_receipt["results"]
     }
@@ -1968,13 +2055,14 @@ with tempfile.TemporaryDirectory(prefix="dev-check-contract-") as temporary:
         event["name"]
         for event in progress_events
         if event["phase"] == "start"
-    }.intersection(dev_check._CHECKPOINT_STEP_NAMES)
+    }.intersection(
+        set(dev_check._CHECKPOINT_STEP_NAMES)
+        | set(dev_check._CANDIDATE_CACHE_PRUNED_STEPS)
+    )
     assert {
         "acceptance-candidate-apply",
-        "acceptance-capture",
         "acceptance-compare",
         "acceptance-clone-guest-candidate",
-        "acceptance-publish-candidate-cache",
         "acceptance-host-tier",
         "acceptance-guest-smoke",
         "acceptance-final-cleanup",
@@ -1989,7 +2077,11 @@ with tempfile.TemporaryDirectory(prefix="dev-check-contract-") as temporary:
     expected_reuse_log = []
     for step in reused_plan["steps"]:
         name = step["name"]
-        if name in fake_kinds and name not in dev_check._CHECKPOINT_STEP_NAMES:
+        if (
+            name in fake_kinds
+            and name not in dev_check._CHECKPOINT_STEP_NAMES
+            and name not in dev_check._CANDIDATE_CACHE_PRUNED_STEPS
+        ):
             authority, stripped = fake_kinds[name]
             expected_reuse_log.append(
                 {"authority": authority, "argv": step["argv"][stripped:]}
@@ -2010,7 +2102,11 @@ with tempfile.TemporaryDirectory(prefix="dev-check-contract-") as temporary:
                         ],
                     }
                 )
-    reuse_parallel_start = 13
+    reuse_parallel_start = next(
+        index
+        for index, row in enumerate(expected_reuse_log)
+        if row == {"authority": "tier", "argv": ["host"]}
+    )
     reuse_parallel_end = reuse_parallel_start + len(dev_check._FINAL_TIER_STEP_NAMES)
     assert observed_reuse_log[:reuse_parallel_start] == (
         expected_reuse_log[:reuse_parallel_start]
@@ -2665,6 +2761,15 @@ with tempfile.TemporaryDirectory(prefix="dev-check-contract-") as temporary:
     assert packaged["state"] == "committed", packaged.get("error")
     assert packaged["returncode"] == 0
     assert packaged["results"][0]["returncode"] == 0
+    assert [phase["name"] for phase in packaged["phases"]] == [
+        "export-locks",
+        "validate-export-and-inputs",
+        "build-source-closure-and-index",
+        "durable-prepublication-verification",
+        "atomic-publication-identity-check",
+    ]
+    assert all(phase["elapsed_ms"] >= 0 for phase in packaged["phases"])
+    assert packaged["package_cache"]["state"] == "published"
     assert packaged["staging"]["path"] == str(package_staging)
     assert packaged["staging"]["state"] == "published"
     assert packaged["ownership"]["root"] == str(package_root)
@@ -2682,6 +2787,23 @@ with tempfile.TemporaryDirectory(prefix="dev-check-contract-") as temporary:
     assert verified["returncode"] == 0
     assert verified["profile"] == "homebrew"
     package_index = verified["package_index"]
+    cached_package_output = outside / "package-cached"
+    cached_package_receipt = outside / "package-cached-receipt.json"
+    cached_package_plan = dev_check.build_package_plan(
+        repo,
+        west,
+        "homebrew",
+        acceptance_path,
+        cached_package_output,
+        cached_package_receipt,
+        "acceptance",
+    )
+    cached_packaged = dev_check.execute_package(cached_package_plan)
+    durable(cached_package_receipt, cached_packaged)
+    assert cached_packaged["state"] == "committed", cached_packaged.get("error")
+    assert cached_packaged["package_cache"]["state"] == "reused"
+    assert cached_packaged["results"][0]["package_cache_reused"] is True
+    assert dev_check.verify_package(cached_package_output)["state"] == "valid"
     assert package_index["manifest"]["commit"] == acceptance_receipt["inputs"][
         "package_snapshot"
     ]["manifest_head"]
@@ -2721,7 +2843,9 @@ with tempfile.TemporaryDirectory(prefix="dev-check-contract-") as temporary:
     must_reject(lambda: dev_check.verify_package(missing_package), "files are missing")
     assert package_index["integrity_boundary"] == {
         "mode": "local-owner-mutable",
-        "publication": "verified-before-and-after-atomic-rename",
+        "publication": (
+            "content-verified-before-rename-and-identity-verified-after"
+        ),
         "consumer_requirement": "verify-package immediately before use",
         "verify_operation": "package-verify",
     }
@@ -2949,6 +3073,7 @@ with tempfile.TemporaryDirectory(prefix="dev-check-contract-") as temporary:
     assert load_log(log) == [
         {"authority": "west", "argv": package_plan["steps"][0]["argv"][1:]}
     ]
+    shutil.rmtree(Path(packaged["package_cache"]["path"]))
 
     neighbor = outside / "neighbor"
     neighbor.mkdir()
@@ -3063,12 +3188,8 @@ with tempfile.TemporaryDirectory(prefix="dev-check-contract-") as temporary:
     assert not publish_failure_staging.exists()
     assert not publish_failure_marker.exists()
     assert neighbor_marker.read_text(encoding="utf-8") == "neighbor-owned\n"
-    assert load_log(log) == [
-        {
-            "authority": "west",
-            "argv": publish_failure_plan["steps"][0]["argv"][1:],
-        }
-    ]
+    assert publish_failure["package_cache"]["state"] == "reused"
+    assert load_log(log) == []
 
     post_commit_output = outside / "post-commit-interrupt-package"
     post_commit_receipt = outside / "post-commit-interrupt-receipt.json"
@@ -3115,6 +3236,7 @@ with tempfile.TemporaryDirectory(prefix="dev-check-contract-") as temporary:
     assert post_commit_result["returncode"] == 0
     assert post_commit_output.is_dir()
     assert not post_commit_root.exists()
+    shutil.rmtree(Path(packaged["package_cache"]["path"]))
 
     failed_output = outside / "failed-package"
     failed_package_receipt = outside / "failed-package-receipt.json"

@@ -7,6 +7,7 @@ schema-v2 lock and against the actual lock-first Git worktree.
 """
 from __future__ import annotations
 
+import concurrent.futures
 import argparse
 import hashlib
 import json
@@ -36,7 +37,7 @@ ENTRY_FIELDS = {"module", "patch", "base", "source", "canonical_tree", "applied_
 MAPPING_V2_FIELDS = {"schema_version", "profile", "batch_id", "expected_count", "series"}
 MAPPING_V3_FIELDS = {*MAPPING_V2_FIELDS, "composition"}
 SERIES_FIELDS = {"profile", "module", "patch", "lock"}
-CANDIDATE_CACHE_SCHEMA_VERSION = 1
+CANDIDATE_CACHE_SCHEMA_VERSION = 2
 
 
 def fail(condition: bool, message: str) -> None:
@@ -1104,6 +1105,7 @@ def _load_candidate_cache(
             "profile",
             "candidate_manifest",
             "lock_evidence",
+            "module_map",
             "modules",
             "generated_locks",
         }
@@ -1115,6 +1117,9 @@ def _load_candidate_cache(
     )
     _validate_cached_file(
         cache, index["candidate_manifest"], "candidate cache manifest"
+    )
+    _validate_cached_file(
+        cache, index["module_map"], "candidate cache module map"
     )
     _validate_cached_file(
         cache, index["lock_evidence"], "candidate cache lock evidence"
@@ -1239,6 +1244,8 @@ def hydrate_candidate_cache(
     cache: Path,
     key: str,
     lock_evidence_path: Path,
+    modules_path: Path,
+    candidate_manifest_path: Path,
     west_command: list[str],
 ) -> None:
     """Hydrate immutable integration commits, otherwise perform a real replay."""
@@ -1366,6 +1373,21 @@ def hydrate_candidate_cache(
     )
     lock_evidence_path.parent.mkdir(parents=True, exist_ok=True)
     lock_evidence_path.write_bytes(evidence_source.read_bytes())
+    for binding, destination, label in (
+        (index["module_map"], modules_path, "candidate cache module map"),
+        (
+            index["candidate_manifest"],
+            candidate_manifest_path,
+            "candidate cache manifest",
+        ),
+    ):
+        source, _row = _validate_cached_file(cache, binding, label)
+        fail(
+            not destination.exists() and not destination.is_symlink(),
+            f"{label} destination already exists",
+        )
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        destination.write_bytes(source.read_bytes())
     print("candidate cache: hit; hydrated immutable stack")
 
 
@@ -1405,6 +1427,9 @@ def publish_candidate_cache(
         manifest_data = candidate_manifest_path.read_bytes()
         manifest_binding = _write_private_file(
             temporary, "candidate-manifest.json", manifest_data
+        )
+        module_map_binding = _write_private_file(
+            temporary, "modules.json", modules_path.read_bytes()
         )
         evidence_data = lock_evidence_path.read_bytes()
         evidence_binding = _write_private_file(
@@ -1524,6 +1549,7 @@ def publish_candidate_cache(
             "key": key,
             "profile": profile,
             "candidate_manifest": manifest_binding,
+            "module_map": module_map_binding,
             "lock_evidence": evidence_binding,
             "modules": module_bindings,
             "generated_locks": generated_bindings,
@@ -1576,8 +1602,9 @@ def _git_status_paths(repo: Path) -> set[str]:
     return paths
 
 
-def _clone_shared_repository(
+def _create_shared_worktree(
     source: Path,
+    carrier: Path,
     destination: Path,
     revision: str,
     label: str,
@@ -1598,16 +1625,17 @@ def _clone_shared_repository(
         f"{label}: source repository is dirty outside nested projects: "
         f"{sorted(dirty - allowed)}",
     )
+    carrier.parent.mkdir(parents=True, exist_ok=True)
     destination.parent.mkdir(parents=True, exist_ok=True)
     cloned = subprocess.run(
         [
             "git",
             "clone",
             "--shared",
-            "--no-checkout",
+            "--bare",
             "--",
             str(source),
-            str(destination),
+            str(carrier),
         ],
         stdin=subprocess.DEVNULL,
         stdout=subprocess.PIPE,
@@ -1616,10 +1644,19 @@ def _clone_shared_repository(
     )
     fail(
         cloned.returncode == 0,
-        f"{label}: shared clone failed: {cloned.stderr.strip()}",
+        f"{label}: shared object carrier failed: {cloned.stderr.strip()}",
     )
     checked = subprocess.run(
-        ["git", "-C", str(destination), "checkout", "--detach", revision],
+        [
+            "git",
+            f"--git-dir={carrier}",
+            "worktree",
+            "add",
+            "--quiet",
+            "--detach",
+            str(destination),
+            revision,
+        ],
         stdin=subprocess.DEVNULL,
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
@@ -1627,12 +1664,12 @@ def _clone_shared_repository(
     )
     fail(
         checked.returncode == 0,
-        f"{label}: checkout failed: {checked.stderr.strip()}",
+        f"{label}: worktree checkout failed: {checked.stderr.strip()}",
     )
     fail(
         git(destination, "rev-parse", "HEAD") == revision
         and not git(destination, "status", "--porcelain"),
-        f"{label}: cloned repository identity differs",
+        f"{label}: worktree repository identity differs",
     )
 
 
@@ -1742,22 +1779,18 @@ def clone_tier_workspace(
         manifest_workspace, "HEAD", "tier manifest source"
     )
     destination_workspace.mkdir(parents=True)
+    carrier_root = destination_workspace / ".west-tier-repositories"
     destination_manifest = destination_workspace / "darling-workspace"
-    _clone_shared_repository(
-        manifest_workspace,
-        destination_manifest,
-        manifest_revision,
-        "tier manifest",
-        {
-            source.relative_to(manifest_workspace).as_posix()
-            for source in generated_paths
-        },
-    )
-    for path, revision in rows:
-        _clone_shared_repository(
+    rows_by_depth: dict[int, list[tuple[int, Path, str]]] = {}
+    for index, (path, revision) in enumerate(rows):
+        rows_by_depth.setdefault(len(path.parts), []).append((index, path, revision))
+
+    def create_project(index: int, path: Path, revision: str) -> None:
+        _create_shared_worktree(
             contained(
                 source_workspace, path.as_posix(), f"tier source project {path}"
             ),
+            carrier_root / f"project-{index:04d}.git",
             contained(
                 destination_workspace,
                 path.as_posix(),
@@ -1767,6 +1800,33 @@ def clone_tier_workspace(
             f"tier project {path}",
             allowed_dirty[path],
         )
+
+    first_depth = min(rows_by_depth)
+    for depth in sorted(rows_by_depth):
+        with concurrent.futures.ThreadPoolExecutor(
+            max_workers=min(8, len(rows_by_depth[depth]) + (depth == first_depth))
+        ) as pool:
+            futures = [
+                pool.submit(create_project, index, path, revision)
+                for index, path, revision in rows_by_depth[depth]
+            ]
+            if depth == first_depth:
+                futures.append(
+                    pool.submit(
+                        _create_shared_worktree,
+                        manifest_workspace,
+                        carrier_root / "manifest.git",
+                        destination_manifest,
+                        manifest_revision,
+                        "tier manifest",
+                        {
+                            source.relative_to(manifest_workspace).as_posix()
+                            for source in generated_paths
+                        },
+                    )
+                )
+            for future in futures:
+                future.result()
     west_root = destination_workspace / ".west"
     west_root.mkdir()
     (west_root / "config").write_text(
@@ -1810,6 +1870,8 @@ def main() -> None:
         "candidate-workspace",
         "cache",
         "lock-evidence",
+        "modules",
+        "candidate-manifest",
     ):
         hydrate.add_argument(f"--{name}", type=Path, required=True)
     hydrate.add_argument("--profile", required=True)
@@ -1854,6 +1916,8 @@ def main() -> None:
                 args.cache,
                 args.key,
                 args.lock_evidence,
+                args.modules,
+                args.candidate_manifest,
                 args.west_command,
             )
         elif args.action == "publish-candidate-cache":

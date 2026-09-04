@@ -216,7 +216,25 @@ def main() -> None:
         )
         assert git(cloned_project, "rev-parse", "HEAD") == tier_revision
         assert (cloned_project / "value").read_text() == "frozen\n"
-        assert (cloned_project / ".git/objects/info/alternates").is_file()
+        assert (cloned_project / ".git").is_file()
+        project_carrier = tier_destination / ".west-tier-repositories/project-0000.git"
+        assert (project_carrier / "objects/info/alternates").is_file()
+        git(cloned_project, "update-ref", "refs/acceptance/isolated", tier_revision)
+        assert (
+            subprocess.run(
+                [
+                    "git",
+                    "-C",
+                    str(tier_project),
+                    "show-ref",
+                    "--verify",
+                    "--quiet",
+                    "refs/acceptance/isolated",
+                ],
+                check=False,
+            ).returncode
+            != 0
+        )
         (cloned_project / "value").write_text("isolated\n")
         assert (tier_project / "value").read_text() == "frozen\n"
         try:

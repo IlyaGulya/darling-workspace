@@ -109,22 +109,21 @@ run_guest_macho_regression_tier() {
 
 case "${1:-}" in
 	host)
-		# Source-bound host cases must be selected through metadata so west can
+		# Source-bound host cases are selected through metadata so west can
 		# materialize the patch profile before CMake compiles the real source.
-		tests/run-west-patch-stack-materialize-contract.sh
-		tests/run-west-patch-stack-lock-first-contract.sh
-		tests/run-profile-composition-dependency-contract.sh
-		tests/run-west-patch-stack-default-cutover-contract.sh
-		tests/run-west-patch-stack-retirement-policy-contract.sh
-		tests/run-west-patch-stack-runtime-source-contract.sh
-		tests/run-patch-stack-immutable-oracle-contract.sh
-		tests/run-west-patch-stack-export-contract.sh
-		tests/run-patch-stack-lock-first-hosted-workflow-contract.sh
-		tests/run-patch-stack-migration-inventory-contract.sh
-		exec west test --profile homebrew --env host --materialize-profile "${@:2}"
+		exec "$root/ci/run-host-tier.py" "${@:2}"
 		;;
 	guest-smoke)
 		tier_kind=smoke
+		if [[ -n "${WEST_RUNTIME_BUILD_CACHE_DIR:-}" ]]; then
+			if [[ ! "${WEST_RUNTIME_BUILD_CACHE_KEY:-}" =~ ^[0-9a-f]{64}$ ]]; then
+				echo "runtime build cache identity is incomplete" >&2
+				exit 2
+			fi
+			mkdir -p -- "$WEST_RUNTIME_BUILD_CACHE_DIR"
+			exec {runtime_cache_lock_fd}>"$WEST_RUNTIME_BUILD_CACHE_DIR/.guest-tier.lock"
+			flock "$runtime_cache_lock_fd"
+		fi
 		prefix="$(rootless_prefix_create "$tier_kind" DARLING_SMOKE_PREFIX)"
 		rootless_prefix_export_output prefix "$prefix"
 		trap 'cleanup_rootless_tier "$?"' EXIT

@@ -57,7 +57,17 @@ _FINAL_TIER_STEP_NAMES = (
     "acceptance-guest-smoke",
 )
 _CHECKPOINT_LIMIT = 8 * 1024 * 1024
+_CANDIDATE_CACHE_PRUNED_STEPS = frozenset(
+    {
+        "acceptance-seed-candidate-refs",
+        "acceptance-capture",
+        "acceptance-publish-candidate-cache",
+    }
+)
+_PACKAGE_HASH_WORKERS = min(8, max(1, os.cpu_count() or 1))
 _ACCEPTANCE_BOOTSTRAP_JOBS = 8
+_PACKAGE_CACHE_SCHEMA_VERSION = 1
+_FICLONE = 0x40049409
 _PARALLEL_ENVIRONMENT_NAMES = frozenset(
     {
         "CC",
@@ -1260,6 +1270,17 @@ def _check_steps(inputs: dict[str, Any], transaction_id: str) -> list[dict[str, 
     )
     guest_env["CCACHE_MAXSIZE"] = "4G"
     guest_env["DARLING_TIER_DEFER_GLOBAL_CLEANUP"] = "1"
+    guest_env["WEST_RUNTIME_BUILD_CACHE_DIR"] = str(
+        Path(inputs["acceptance_checkpoint"]["path"]).parent
+        / "runtime-build-v1"
+        / inputs["acceptance_checkpoint"]["key"]
+    )
+    guest_env["WEST_RUNTIME_BUILD_CACHE_KEY"] = inputs["acceptance_checkpoint"][
+        "key"
+    ]
+    guest_env["DARLING_SMOKE_PREFIX"] = (
+        f"/tmp/darling-rootless-smoke-{inputs['acceptance_checkpoint']['key'][:16]}"
+    )
     final_host_env = stage_env("final-host")
     bootstrap_env = dict(candidate_env)
     bootstrap_env.update(
@@ -1452,6 +1473,10 @@ def _check_steps(inputs: dict[str, Any], transaction_id: str) -> list[dict[str, 
                     inputs["acceptance_checkpoint"]["key"],
                     "--lock-evidence",
                     str(lock_evidence),
+                    "--modules",
+                    str(modules),
+                    "--candidate-manifest",
+                    str(manifest),
                     "--west-command",
                     *west,
                 ],
@@ -3193,6 +3218,28 @@ def _checkpoint_result(
     }
 
 
+def _warm_cache_result(planned_step: dict[str, Any]) -> dict[str, Any]:
+    timestamp = _utc_now()
+    stdout = _checkpoint_capture(b"candidate cache pruned redundant step\n")
+    empty = _checkpoint_capture()
+    return {
+        **copy.deepcopy(planned_step),
+        "returncode": 0,
+        "timed_out": False,
+        "interrupted": False,
+        "started_at": timestamp,
+        "finished_at": timestamp,
+        "duration_ms": 0,
+        "duration_ns": 0,
+        "stdout": stdout,
+        "stderr": empty,
+        "stdout_tail": stdout["tail"],
+        "stderr_tail": empty["tail"],
+        "process_group_quiescent": True,
+        "warm_cache_pruned": True,
+    }
+
+
 def _checkpoint_payload(
     binding: dict[str, Any],
     results: dict[str, dict[str, Any]],
@@ -3401,6 +3448,7 @@ def execute_check(
     scratch: Path | None = None
     scratch_identity: dict[str, int] | None = None
     checkpoint: dict[str, Any] | None = None
+    candidate_cache_available = False
     total = len(plan["steps"])
     indices = {
         step["name"]: index
@@ -3424,6 +3472,12 @@ def execute_check(
             }
             binding = plan["inputs"]["acceptance_checkpoint"]
             checkpoint_path = Path(binding["path"])
+            candidate_cache = (
+                checkpoint_path.parent / f"candidate-{binding['key']}"
+            )
+            candidate_cache_available = (
+                candidate_cache.exists() or candidate_cache.is_symlink()
+            )
             _prepare_checkpoint_subdirectory(
                 checkpoint_path, "runtime-ccache-v1"
             )
@@ -3553,6 +3607,24 @@ def execute_check(
                         evidence, record, evidence_fd, evidence_identity
                     )
                 position += len(_CHECKPOINT_STEP_NAMES)
+                continue
+
+            if (
+                candidate_cache_available
+                and planned_step["name"] in _CANDIDATE_CACHE_PRUNED_STEPS
+            ):
+                result = _warm_cache_result(planned_step)
+                _progress(
+                    progress,
+                    "reuse",
+                    planned_step,
+                    indices[planned_step["name"]],
+                    total,
+                    started,
+                    source_duration_ms=0,
+                )
+                publish_result(result)
+                position += 1
                 continue
 
             if (
@@ -4012,6 +4084,138 @@ def _package_step(inputs: dict[str, Any]) -> dict[str, Any]:
         _PACKAGE_TIMEOUT_SECONDS,
         Path(inputs["manifest_repo"]),
     )
+
+
+def _package_export_cache_path(
+    manifest_repo: Path, receipt: dict[str, Any]
+) -> tuple[Path, str]:
+    checkpoint = receipt["inputs"].get("acceptance_checkpoint")
+    if not isinstance(checkpoint, dict):
+        raise DevCheckError("acceptance receipt has no package cache identity")
+    key = _require_digest(checkpoint.get("key"), "acceptance checkpoint key")
+    return (
+        _git_common_directory(manifest_repo)
+        / "west-dev-package-export-v1"
+        / key,
+        key,
+    )
+
+
+def _reflink_or_copy(source: str, destination: str) -> str:
+    source_path = Path(source)
+    destination_path = Path(destination)
+    with source_path.open("rb") as source_stream:
+        with destination_path.open("xb") as destination_stream:
+            try:
+                fcntl.ioctl(
+                    destination_stream.fileno(),
+                    _FICLONE,
+                    source_stream.fileno(),
+                )
+            except OSError:
+                destination_stream.seek(0)
+                destination_stream.truncate()
+                shutil.copyfileobj(
+                    source_stream, destination_stream, length=1024 * 1024
+                )
+    shutil.copystat(source_path, destination_path, follow_symlinks=False)
+    return destination
+
+
+def _verify_package_export_cache(entry: Path, key: str) -> Path:
+    if entry.is_symlink() or not entry.is_dir():
+        raise DevCheckError("package export cache entry is not a real directory")
+    index, _data = _read_json_file(
+        entry / "cache-index.json", "package export cache index"
+    )
+    if (
+        index.get("schema_version") != _PACKAGE_CACHE_SCHEMA_VERSION
+        or index.get("kind") != "west-dev-package-export"
+        or index.get("key") != key
+        or not isinstance(index.get("files"), list)
+    ):
+        raise DevCheckError("package export cache identity is invalid")
+    payload = entry / "payload"
+    files, _directories = _scan_package_tree(payload)
+    observed = _package_file_rows(payload)
+    if index["files"] != observed or set(files) != {
+        row["path"] for row in observed
+    }:
+        raise DevCheckError("package export cache content differs from its index")
+    return payload
+
+
+def _hydrate_package_export_cache(entry: Path, key: str, destination: Path) -> None:
+    payload = _verify_package_export_cache(entry, key)
+    shutil.copytree(payload, destination, copy_function=_reflink_or_copy)
+
+
+def _fsync_package_cache_tree(cache: Path) -> None:
+    files, directories = _scan_package_tree(cache)
+    for path in files.values():
+        descriptor = os.open(path, os.O_RDONLY | os.O_NOFOLLOW)
+        try:
+            os.fsync(descriptor)
+        finally:
+            os.close(descriptor)
+    for relative in sorted(
+        directories, key=lambda value: len(Path(value).parts), reverse=True
+    ):
+        _fsync_directory(cache / relative)
+    _fsync_directory(cache)
+
+
+def _publish_package_export_cache(
+    entry: Path, key: str, package: Path
+) -> str:
+    root = entry.parent
+    root.mkdir(mode=0o700, parents=True, exist_ok=True)
+    if root.is_symlink() or not root.is_dir():
+        raise DevCheckError("package export cache root is not a real directory")
+    if entry.exists():
+        _verify_package_export_cache(entry, key)
+        return "existing"
+    temporary = root / f".{key}.{uuid.uuid4().hex}.tmp"
+    try:
+        temporary.mkdir(mode=0o700)
+        payload = temporary / "payload"
+        shutil.copytree(package, payload, copy_function=_reflink_or_copy)
+        _write_package_payload(
+            temporary / "cache-index.json",
+            _json_bytes(
+                {
+                    "schema_version": _PACKAGE_CACHE_SCHEMA_VERSION,
+                    "kind": "west-dev-package-export",
+                    "key": key,
+                    "files": _package_file_rows(payload),
+                }
+            ),
+        )
+        _fsync_package_cache_tree(temporary)
+        _verify_package_export_cache(temporary, key)
+        root_fd = os.open(root, os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC)
+        try:
+            try:
+                _rename_noreplace(
+                    root_fd,
+                    temporary.name,
+                    root_fd,
+                    entry.name,
+                )
+            except DevCheckError as error:
+                if "appeared before publication" not in str(error):
+                    raise
+                shutil.rmtree(temporary)
+                _verify_package_export_cache(entry, key)
+                return "existing"
+            os.fsync(root_fd)
+        finally:
+            os.close(root_fd)
+        return "published"
+    except BaseException:
+        if temporary.exists():
+            shutil.rmtree(temporary)
+        raise
 
 
 def _is_within(path: Path, parent: Path) -> bool:
@@ -5028,15 +5232,42 @@ def _validate_packaged_check_receipt(
     return inputs
 
 
+def _parallel_file_hashes(
+    files: dict[str, Path],
+) -> dict[str, tuple[str, int]]:
+    ordered = sorted(files.items())
+    if len(ordered) <= 1:
+        return {
+            relative: _hash_file(path)
+            for relative, path in ordered
+        }
+    with concurrent.futures.ThreadPoolExecutor(
+        max_workers=min(_PACKAGE_HASH_WORKERS, len(ordered))
+    ) as executor:
+        hashes = executor.map(
+            _hash_file, (path for _relative, path in ordered)
+        )
+        return {
+            relative: binding
+            for (relative, _path), binding in zip(
+                ordered, hashes, strict=True
+            )
+        }
+
+
 def _package_file_rows(package: Path) -> list[dict[str, Any]]:
     files, _directories = _scan_package_tree(package)
-    rows = []
-    for relative, path in sorted(files.items()):
-        if relative in {"package-index.json", "SHA256SUMS"}:
-            continue
-        digest, size = _hash_file(path)
-        rows.append({"path": relative, "sha256": digest, "bytes": size})
-    return rows
+    selected = {
+        relative: path
+        for relative, path in files.items()
+        if relative not in {"package-index.json", "SHA256SUMS"}
+    }
+    return [
+        {"path": relative, "sha256": digest, "bytes": size}
+        for relative, (digest, size) in _parallel_file_hashes(selected).items()
+    ]
+
+
 def _proc_fds_for_subprocess(*values: object) -> tuple[int, ...]:
     marker = "/proc/self/fd/"
     descriptors: set[int] = set()
@@ -5238,11 +5469,13 @@ def _build_source_closure(
 
     manifest_bundle = "bundles/manifest.bundle"
     manifest_ref = "refs/package/manifest"
-    _create_bundle(
-        manifest_repo,
-        package / manifest_bundle,
-        {manifest_ref: snapshot["manifest_head"]},
-    )
+    bundle_tasks = [
+        (
+            manifest_repo,
+            package / manifest_bundle,
+            {manifest_ref: snapshot["manifest_head"]},
+        )
+    ]
     acceptance_values = _embedded_acceptance_values(receipt, profile)
     module_rows = {
         row["module"]: row for row in acceptance_values["module_map"]["modules"]
@@ -5271,7 +5504,7 @@ def _build_source_closure(
                 }
             )
         relative = f"bundles/modules/{module_index:04d}.bundle"
-        _create_bundle(source_repo, package / relative, refs)
+        bundle_tasks.append((source_repo, package / relative, refs))
         module_bundles.append(
             {
                 "module": module,
@@ -5282,6 +5515,15 @@ def _build_source_closure(
                 "series": series_refs,
             }
         )
+    with concurrent.futures.ThreadPoolExecutor(
+        max_workers=min(_PACKAGE_HASH_WORKERS, len(bundle_tasks))
+    ) as pool:
+        futures = [
+            pool.submit(_create_bundle, source, destination, refs)
+            for source, destination, refs in bundle_tasks
+        ]
+        for future in futures:
+            future.result()
     lock_bindings = _validate_export_locks(package, profile, export_evidence)
     return {
         "paths": [
@@ -5688,7 +5930,9 @@ def _derived_package_index(
         "export": export,
         "integrity_boundary": {
             "mode": "local-owner-mutable",
-            "publication": "verified-before-and-after-atomic-rename",
+            "publication": (
+                "content-verified-before-rename-and-identity-verified-after"
+            ),
             "consumer_requirement": "verify-package immediately before use",
             "verify_operation": "package-verify",
         },
@@ -5735,11 +5979,13 @@ def _complete_review_package(
     )
     _write_package_payload(package / "package-index.json", _json_bytes(index))
     files, _directories = _scan_package_tree(package)
-    sums = []
-    for relative, path in sorted(files.items()):
-        digest, _size = _hash_file(path)
-        sums.append(f"{digest}  {relative}\n")
-    _write_package_payload(package / "SHA256SUMS", "".join(sums).encode("utf-8"))
+    sums = [
+        f"{digest}  {relative}\n"
+        for relative, (digest, _size) in _parallel_file_hashes(files).items()
+    ]
+    _write_package_payload(
+        package / "SHA256SUMS", "".join(sums).encode("utf-8")
+    )
     return index
 
 
@@ -5759,7 +6005,9 @@ def _parse_sha256sums(path: Path) -> dict[str, str]:
         digest = _require_digest(fields[0], "SHA256SUMS digest")
         relative = _safe_package_relative(fields[1], "SHA256SUMS path")
         if relative == "SHA256SUMS" or relative in result:
-            raise DevCheckError("SHA256SUMS inventory is duplicated or recursive")
+            raise DevCheckError(
+                "SHA256SUMS inventory is duplicated or recursive"
+            )
         result[relative] = digest
     if list(result) != sorted(result):
         raise DevCheckError("SHA256SUMS inventory is not sorted")
@@ -5808,12 +6056,18 @@ def verify_package(package: Path) -> dict[str, Any]:
     sums = _parse_sha256sums(root / "SHA256SUMS")
     if set(sums) != expected_files - {"SHA256SUMS"}:
         raise DevCheckError("SHA256SUMS allowlist differs from package inventory")
-    for relative in sorted(expected_files - {"SHA256SUMS"}):
-        digest, size = _hash_file(root / relative)
+    hashes = _parallel_file_hashes(
+        {
+            relative: root / relative
+            for relative in expected_files - {"SHA256SUMS"}
+        }
+    )
+    for relative, (digest, size) in hashes.items():
         if sums[relative] != digest:
             raise DevCheckError(f"SHA256SUMS digest mismatch: {relative}")
         if relative in listed and (
-            listed[relative]["sha256"] != digest or listed[relative]["bytes"] != size
+            listed[relative]["sha256"] != digest
+            or listed[relative]["bytes"] != size
         ):
             raise DevCheckError(f"package index digest mismatch: {relative}")
     receipt, receipt_data = _read_json_file(
@@ -5877,6 +6131,34 @@ def _fsync_package_tree(package: Path) -> None:
     ):
         _fsync_directory(package / relative)
     _fsync_directory(package)
+
+
+def _package_tree_identity_snapshot(
+    package: Path,
+) -> dict[str, dict[str, tuple[int, ...]]]:
+    files, directories = _scan_package_tree(package)
+
+    def binding(path: Path) -> tuple[int, ...]:
+        metadata = path.lstat()
+        return (
+            metadata.st_dev,
+            metadata.st_ino,
+            stat.S_IMODE(metadata.st_mode),
+            metadata.st_size,
+            metadata.st_mtime_ns,
+            metadata.st_ctime_ns,
+        )
+
+    return {
+        "files": {
+            relative: binding(path)
+            for relative, path in sorted(files.items())
+        },
+        "directories": {
+            relative: binding(package / relative)
+            for relative in sorted(directories)
+        },
+    }
 
 
 def _proc_fd_path(directory_fd: int, name: str) -> Path:
@@ -6038,6 +6320,9 @@ def execute_package(plan: dict[str, Any]) -> dict[str, Any]:
         evidence,
     ) = _validate_package_plan(plan)
     receipt_value, _receipt_data = _read_json_file(receipt, "check receipt")
+    package_cache, package_cache_key = _package_export_cache_path(
+        repo, receipt_value
+    )
     evidence_fd = _open_pinned_directory(
         evidence.parent, plan["inputs"]["evidence_parent_identity"]
     )
@@ -6050,6 +6335,20 @@ def execute_package(plan: dict[str, Any]) -> dict[str, Any]:
         raise
     record = _active_record(plan)
     record["_started_monotonic"] = time.monotonic()
+    record["phases"] = []
+    record["package_cache"] = {
+        "path": str(package_cache),
+        "key": package_cache_key,
+        "state": "miss",
+    }
+
+    def record_phase(name: str, started: float) -> None:
+        record["phases"].append(
+            {
+                "name": name,
+                "elapsed_ms": round((time.monotonic() - started) * 1000),
+            }
+        )
     try:
         evidence_identity = _create_json(evidence, record, evidence_fd)
         record["state"] = "active"
@@ -6089,12 +6388,38 @@ def execute_package(plan: dict[str, Any]) -> dict[str, Any]:
         evidence_identity = _atomic_json(
             evidence, record, evidence_fd, evidence_identity
         )
-        outcome = _run_process(
-            list(planned_step["argv"]),
-            Path(planned_step["cwd"]),
-            int(planned_step["timeout_seconds"]),
-            dict(planned_step["env"]),
-        )
+        phase_started = time.monotonic()
+        if package_cache.exists():
+            _hydrate_package_export_cache(
+                package_cache, package_cache_key, staging_access
+            )
+            timestamp = _utc_now()
+            stdout = _checkpoint_capture(b"package export cache hit\n")
+            empty = _checkpoint_capture()
+            outcome = {
+                "returncode": 0,
+                "timed_out": False,
+                "interrupted": False,
+                "started_at": timestamp,
+                "finished_at": timestamp,
+                "duration_ms": 0,
+                "duration_ns": 0,
+                "stdout": stdout,
+                "stderr": empty,
+                "stdout_tail": stdout["tail"],
+                "stderr_tail": empty["tail"],
+                "process_group_quiescent": True,
+                "package_cache_reused": True,
+            }
+            record["package_cache"]["state"] = "reused"
+        else:
+            outcome = _run_process(
+                list(planned_step["argv"]),
+                Path(planned_step["cwd"]),
+                int(planned_step["timeout_seconds"]),
+                dict(planned_step["env"]),
+            )
+        record_phase("export-locks", phase_started)
         result = copy.deepcopy(planned_step)
         result.update(outcome)
         record["results"].append(result)
@@ -6139,14 +6464,23 @@ def execute_package(plan: dict[str, Any]) -> dict[str, Any]:
         evidence_identity = _atomic_json(
             evidence, record, evidence_fd, evidence_identity
         )
+        phase_started = time.monotonic()
         exported, export_files = _verify_export_evidence(
             staging_access, plan["inputs"]["profile"], receipt_value
         )
+        if record["package_cache"]["state"] == "miss":
+            record["package_cache"]["state"] = _publish_package_export_cache(
+                package_cache,
+                package_cache_key,
+                staging_access,
+            )
         if (
             _collect_package_snapshot(repo, plan["inputs"]["profile"])
             != plan["inputs"]["package_snapshot"]
         ):
             raise DevCheckError("package inputs changed during export")
+        record_phase("validate-export-and-inputs", phase_started)
+        phase_started = time.monotonic()
         package_index = _complete_review_package(
             repo,
             package_access,
@@ -6156,12 +6490,14 @@ def execute_package(plan: dict[str, Any]) -> dict[str, Any]:
             exported,
             export_files,
         )
-        verification = verify_package(package_access)
-        package_index_sha256 = verification["package_index_sha256"]
+        record_phase("build-source-closure-and-index", phase_started)
+        phase_started = time.monotonic()
         _fsync_package_tree(package_access)
         verification = verify_package(package_access)
-        if verification["package_index_sha256"] != package_index_sha256:
-            raise DevCheckError("package verification changed before publication")
+        package_index_sha256 = verification["package_index_sha256"]
+        package_identity = _package_tree_identity_snapshot(package_access)
+        record_phase("durable-prepublication-verification", phase_started)
+        phase_started = time.monotonic()
         if _directory_identity(package_fd) != staging_identity:
             raise DevCheckError("package staging identity changed before publication")
         if _exists_at(output_parent_fd, output.name):
@@ -6174,9 +6510,9 @@ def execute_package(plan: dict[str, Any]) -> dict[str, Any]:
         )
         published_identity = _identity_at(output_parent_fd, output.name)
         os.fsync(output_parent_fd)
-        verification = verify_package(package_access)
-        if verification["package_index_sha256"] != package_index_sha256:
-            raise DevCheckError("published package verification changed at publication")
+        if _package_tree_identity_snapshot(package_access) != package_identity:
+            raise DevCheckError("published package identity changed at publication")
+        record_phase("atomic-publication-identity-check", phase_started)
         if not _same_path_identity(
             output.parent, plan["inputs"]["output_parent_identity"]
         ):

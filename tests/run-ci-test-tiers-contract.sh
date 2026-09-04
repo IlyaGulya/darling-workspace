@@ -81,42 +81,24 @@ export PATCH_STACK_MATERIALIZE_CONTRACT_SKIP_WEST_SUBPROCESS=1
 "$repo/ci/run-test-tier.sh" host
 unset PATCH_STACK_MATERIALIZE_CONTRACT_SKIP_WEST_SUBPROCESS
 host_tier="$(sed -n '/^\thost)/,/^\tguest-smoke)/p' "$repo/ci/run-test-tier.sh")"
-printf '%s\n' "$host_tier" | grep -F -q 'tests/run-west-patch-stack-materialize-contract.sh'
-printf '%s\n' "$host_tier" | grep -F -q 'tests/run-west-patch-stack-lock-first-contract.sh'
-printf '%s\n' "$host_tier" | grep -F -q 'tests/run-profile-composition-dependency-contract.sh'
-printf '%s\n' "$host_tier" | grep -F -q 'tests/run-west-patch-stack-default-cutover-contract.sh'
-printf '%s\n' "$host_tier" | grep -F -q 'tests/run-west-patch-stack-retirement-policy-contract.sh'
-printf '%s\n' "$host_tier" | grep -F -q 'tests/run-west-patch-stack-runtime-source-contract.sh'
-printf '%s\n' "$host_tier" | grep -F -q 'tests/run-patch-stack-immutable-oracle-contract.sh'
-printf '%s\n' "$host_tier" | grep -F -q 'tests/run-west-patch-stack-export-contract.sh'
-printf '%s\n' "$host_tier" | grep -F -q 'tests/run-patch-stack-lock-first-hosted-workflow-contract.sh'
-printf '%s\n' "$host_tier" | grep -F -q 'tests/run-patch-stack-migration-inventory-contract.sh'
-host_before_west="${host_tier%%exec west test*}"
-[[ "$host_before_west" == *'tests/run-west-patch-stack-materialize-contract.sh'* &&
-	"$host_before_west" == *'tests/run-west-patch-stack-lock-first-contract.sh'* &&
-	"$host_before_west" == *'tests/run-profile-composition-dependency-contract.sh'* &&
-	"$host_before_west" == *'tests/run-west-patch-stack-default-cutover-contract.sh'* &&
-	"$host_before_west" == *'tests/run-west-patch-stack-retirement-policy-contract.sh'* &&
-	"$host_before_west" == *'tests/run-west-patch-stack-runtime-source-contract.sh'* &&
-	"$host_before_west" == *'tests/run-patch-stack-immutable-oracle-contract.sh'* &&
-	"$host_before_west" == *'tests/run-west-patch-stack-export-contract.sh'* &&
-	"$host_before_west" == *'tests/run-patch-stack-lock-first-hosted-workflow-contract.sh'* &&
-	"$host_before_west" == *'tests/run-patch-stack-migration-inventory-contract.sh'* ]] || {
-	echo 'host tier does not run patch-stack contracts before west test' >&2
-	exit 1
-}
-[[ "${host_before_west%%tests/run-west-patch-stack-lock-first-contract.sh*}" == *'tests/run-west-patch-stack-materialize-contract.sh'* &&
-	"${host_before_west%%tests/run-profile-composition-dependency-contract.sh*}" == *'tests/run-west-patch-stack-lock-first-contract.sh'* &&
-	"${host_before_west%%tests/run-west-patch-stack-default-cutover-contract.sh*}" == *'tests/run-profile-composition-dependency-contract.sh'* &&
-	"${host_before_west%%tests/run-west-patch-stack-retirement-policy-contract.sh*}" == *'tests/run-west-patch-stack-default-cutover-contract.sh'* &&
-	"${host_before_west%%tests/run-west-patch-stack-runtime-source-contract.sh*}" == *'tests/run-west-patch-stack-retirement-policy-contract.sh'* &&
-	"${host_before_west%%tests/run-patch-stack-immutable-oracle-contract.sh*}" == *'tests/run-west-patch-stack-runtime-source-contract.sh'* &&
-	"${host_before_west%%tests/run-west-patch-stack-export-contract.sh*}" == *'tests/run-patch-stack-immutable-oracle-contract.sh'* &&
-	"${host_before_west%%tests/run-patch-stack-lock-first-hosted-workflow-contract.sh*}" == *'tests/run-west-patch-stack-export-contract.sh'* &&
-	"${host_before_west%%tests/run-patch-stack-migration-inventory-contract.sh*}" == *'tests/run-patch-stack-lock-first-hosted-workflow-contract.sh'* ]] || {
-	echo 'host tier does not order canonical patch-stack contracts' >&2
-	exit 1
-}
+printf '%s\n' "$host_tier" | grep -F -q 'exec "$root/ci/run-host-tier.py"'
+host_runner="$repo/ci/run-host-tier.py"
+for contract in \
+	run-west-patch-stack-materialize-contract.sh \
+	run-west-patch-stack-lock-first-contract.sh \
+	run-profile-composition-dependency-contract.sh \
+	run-west-patch-stack-default-cutover-contract.sh \
+	run-west-patch-stack-retirement-policy-contract.sh \
+	run-west-patch-stack-runtime-source-contract.sh \
+	run-patch-stack-immutable-oracle-contract.sh \
+	run-west-patch-stack-export-contract.sh \
+	run-patch-stack-lock-first-hosted-workflow-contract.sh \
+	run-patch-stack-migration-inventory-contract.sh
+do
+	grep -F -q "\"tests/$contract\"" "$host_runner"
+done
+grep -F -q 'ThreadPoolExecutor(max_workers=_worker_count())' "$host_runner"
+grep -F -q '"--materialize-profile"' "$host_runner"
 "$repo/ci/run-test-tier.sh" guest-smoke
 deferred_log="$tmp/deferred-cleanup-commands"
 CI_CONTRACT_LOG="$deferred_log" \
