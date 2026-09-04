@@ -149,6 +149,128 @@ def main() -> None:
             raise AssertionError(
                 "seed accepted a source branch that changed after declaration"
             )
+        tier_source = root / "tier-source"
+        tier_manifest = tier_source / "darling-workspace"
+        tier_project = tier_source / "fixture/module"
+        for repo in (tier_manifest, tier_project):
+            repo.mkdir(parents=True)
+            git(repo, "init", "-q")
+            git(repo, "config", "user.email", "tier@example.invalid")
+            git(repo, "config", "user.name", "Tier Contract")
+        (tier_project / "value").write_text("frozen\n")
+        git(tier_project, "add", "value")
+        git(tier_project, "commit", "-qm", "frozen project")
+        tier_revision = git(tier_project, "rev-parse", "HEAD")
+        tier_lock = tier_manifest / "patches/homebrew/west.lock.yml"
+        tier_lock.parent.mkdir(parents=True)
+        tier_lock.write_text(
+            yaml.safe_dump(
+                {
+                    "manifest": {
+                        "projects": [
+                            {
+                                "name": "fixture-module",
+                                "path": "fixture/module",
+                                "revision": tier_revision,
+                            }
+                        ]
+                    }
+                },
+                sort_keys=False,
+            )
+        )
+        (tier_manifest / "west.yml").write_text("manifest:\n  projects: []\n")
+        git(tier_manifest, "add", ".")
+        git(tier_manifest, "commit", "-qm", "tier manifest")
+        tier_lock_data = tier_lock.read_bytes()
+        candidate_manifest = root / "tier-candidate-manifest.json"
+        candidate_manifest.write_text(
+            json.dumps(
+                {
+                    "generated_profile_locks": [
+                        {
+                            "path": "patches/homebrew/west.lock.yml",
+                            "size": len(tier_lock_data),
+                            "sha256": hashlib.sha256(tier_lock_data).hexdigest(),
+                        }
+                    ]
+                }
+            )
+        )
+        tier_destination = root / "tier-destination"
+        lock_first_acceptance.clone_tier_workspace(
+            tier_manifest,
+            tier_source,
+            tier_destination,
+            "homebrew",
+            candidate_manifest,
+        )
+        cloned_manifest = tier_destination / "darling-workspace"
+        cloned_project = tier_destination / "fixture/module"
+        assert (
+            tier_destination / ".west/config"
+        ).read_text() == "[manifest]\npath = darling-workspace\nfile = west.yml\n"
+        assert git(cloned_manifest, "rev-parse", "HEAD") == git(
+            tier_manifest, "rev-parse", "HEAD"
+        )
+        assert git(cloned_project, "rev-parse", "HEAD") == tier_revision
+        assert (cloned_project / "value").read_text() == "frozen\n"
+        assert (cloned_project / ".git/objects/info/alternates").is_file()
+        (cloned_project / "value").write_text("isolated\n")
+        assert (tier_project / "value").read_text() == "frozen\n"
+        try:
+            lock_first_acceptance.clone_tier_workspace(
+                tier_manifest,
+                tier_source,
+                tier_destination,
+                "homebrew",
+                candidate_manifest,
+            )
+        except lock_first_acceptance.AcceptanceError:
+            pass
+        else:
+            raise AssertionError("tier clone accepted an existing destination")
+        corrupt_manifest = root / "tier-corrupt-manifest.json"
+        corrupt_manifest.write_text(
+            json.dumps(
+                {
+                    "generated_profile_locks": [
+                        {
+                            "path": "patches/homebrew/west.lock.yml",
+                            "size": len(tier_lock_data),
+                            "sha256": "0" * 64,
+                        }
+                    ]
+                }
+            )
+        )
+        try:
+            lock_first_acceptance.clone_tier_workspace(
+                tier_manifest,
+                tier_source,
+                root / "tier-corrupt-destination",
+                "homebrew",
+                corrupt_manifest,
+            )
+        except lock_first_acceptance.AcceptanceError:
+            pass
+        else:
+            raise AssertionError("tier clone accepted corrupt generated-lock evidence")
+        (cloned_project / "value").write_text("frozen\n")
+        (tier_project / "value").write_text("dirty\n")
+        try:
+            lock_first_acceptance.clone_tier_workspace(
+                tier_manifest,
+                tier_source,
+                root / "tier-dirty-destination",
+                "homebrew",
+                candidate_manifest,
+            )
+        except lock_first_acceptance.AcceptanceError:
+            pass
+        else:
+            raise AssertionError("tier clone accepted a dirty source repository")
+        (tier_project / "value").write_text("frozen\n")
         external_profile = root / "external-profile"
         external_profile.mkdir()
         (external_profile / "patches.yml").write_text("patches: []\n")

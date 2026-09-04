@@ -18,7 +18,7 @@ case "${1:-}" in
 		printf 'three|two/three\n'
 		;;
 	update)
-		printf 'update %s\n' "${2:-all}" >>"$WEST_LOG"
+		printf 'update %s\n' "${*:2}" >>"$WEST_LOG"
 		sleep 0.01
 		if [[ "${2:-}" == bad ]]; then
 			printf 'fatal: bad project\n'
@@ -42,6 +42,21 @@ done
 parent_line="$(grep -n -F 'update two' "$WEST_LOG" | cut -d: -f1)"
 child_line="$(grep -n -F 'update three' "$WEST_LOG" | cut -d: -f1)"
 ((child_line > parent_line))
+
+mkdir "$tmp/path-cache"
+: >"$WEST_LOG"
+DARLING_WEST_UPDATE_JOBS=1 \
+	DARLING_WEST_UPDATE_PATH_CACHE="$tmp/path-cache" \
+	"$repo/ci/west-update-parallel.sh"
+grep -F -x -q "update --path-cache $tmp/path-cache" "$WEST_LOG"
+ln -s "$tmp/path-cache" "$tmp/path-cache-link"
+if DARLING_WEST_UPDATE_JOBS=1 \
+	DARLING_WEST_UPDATE_PATH_CACHE="$tmp/path-cache-link" \
+	"$repo/ci/west-update-parallel.sh" 2>"$tmp/unsafe-cache.log"; then
+	echo 'west update accepted a symlinked path cache' >&2
+	exit 1
+fi
+grep -F -q 'must be a real absolute directory' "$tmp/unsafe-cache.log"
 
 cat >"$tmp/bin/west" <<'WEST'
 #!/usr/bin/env bash

@@ -118,6 +118,21 @@ host_before_west="${host_tier%%exec west test*}"
 	exit 1
 }
 "$repo/ci/run-test-tier.sh" guest-smoke
+deferred_log="$tmp/deferred-cleanup-commands"
+CI_CONTRACT_LOG="$deferred_log" \
+	DARLING_TIER_DEFER_GLOBAL_CLEANUP=1 \
+	"$repo/ci/run-test-tier.sh" guest-smoke
+if grep -F -q 'west test --gc --gc-runtime-evidence' "$deferred_log"; then
+	echo 'deferred guest cleanup ran global GC beside a parallel tier' >&2
+	exit 1
+fi
+CI_CONTRACT_LOG="$deferred_log" "$repo/ci/run-test-tier.sh" acceptance-cleanup
+grep -F -x -q 'west test --gc --gc-runtime-evidence' "$deferred_log"
+if DARLING_TIER_DEFER_GLOBAL_CLEANUP=invalid \
+	"$repo/ci/run-test-tier.sh" acceptance-cleanup; then
+	echo 'tier runner accepted invalid deferred-cleanup policy' >&2
+	exit 1
+fi
 "$repo/ci/run-test-tier.sh" guest-macho-validation
 if "$repo/ci/run-test-tier.sh" guest-macho-validation perf; then
 	echo 'guest Mach-O validation accepted the removed perf group' >&2
