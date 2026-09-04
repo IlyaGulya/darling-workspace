@@ -148,28 +148,37 @@ artifacts; `verify-package` revalidates a published package's complete closure
 without changing it.
 
 Human-mode checks report each step start/finish with elapsed time. Acceptance
-bootstraps a fresh disposable candidate from the active West forest as a Git
-path cache, with eight bounded update workers. The frozen manifest still
-selects every checkout by exact revision; active worktrees and refs are not
-reused. Acceptance then copies only manifest-declared source refs into the
-candidate and runs `patch verify`, the host materialized test, and the
-immutable oracle concurrently across isolated candidate, active, and control
-repository sets.
+creates the independent control and candidate manifest clones concurrently,
+then bootstraps the candidate from the active West forest as a Git path cache
+with eight bounded update workers. The frozen manifest still selects every
+checkout by exact revision; active worktrees and refs are not reused.
+Acceptance then copies only manifest-declared source refs into the candidate
+and runs `patch verify`, the host materialized test, and the immutable oracle
+concurrently across isolated candidate, active, and control repository sets.
 
 Successful results for those three steps are checkpointed under the manifest
 repository's Git common directory. The key binds the workspace commit and
 tree, composed profile graph, profile manifest and patch bytes, lock-first
 mapping and lock bytes, frozen manifest, executable and installed West package
 content, the host compiler/build-tool content, and the exact non-secret
-environment inherited by the parallel gate. A valid hit reuses only those
-three results and the content-addressed oracle; candidate replay and comparison
-still run. After comparison, the guest tier receives a shared-object clone with
-independent refs, index, and worktree. The candidate host tier and guest smoke
-then run concurrently; the host leak audit and guest-wide GC are deferred until
-both finish, when a final sequential cleanup gate runs the audit, collects
-global garbage, and verifies no live West test jobs remain. Corrupt
-checkpoints are recomputed and replaced. Symlinked or otherwise unsafe
-checkpoint paths fail closed.
+environment inherited by the parallel gate. After the first verified replay,
+acceptance also publishes an immutable candidate cache containing only the
+integration-object deltas, generated locks, and lock-first evidence. A valid
+hit hydrates those objects into the fresh exact-base candidate instead of
+replaying the stack. The guest tier then receives a shared-object clone with
+independent refs, index, and worktree.
+
+The candidate host tier and guest smoke run concurrently. Guest smoke selects
+the initialization and prebuilt-Mach-O cases in one `west test` invocation so
+prefix setup, locking, and shutdown happen once. Bootstrap runtime builds share
+a private persistent ccache directory; the cache identity binds the resolved
+Clang binaries, their content hashes, and version output, while debug/file
+prefix maps keep disposable build paths out of object identity. Lock-first
+rollback checks use an owned temporary root, so they cannot confuse another
+tier's live worktree with a leak. Guest-wide GC is deferred until both tiers
+finish, when a final sequential cleanup gate collects global garbage and
+verifies no live West test jobs remain. Corrupt reusable content and symlinked
+or otherwise unsafe cache paths fail closed.
 
 `profiles` discovers immediate `patches/*/patches.yml` manifests and the
 CTest-owned `testkit/runtime-profiles.yml` catalog at invocation time. Its

@@ -10,7 +10,10 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import os
 import re
+import shutil
+import stat
 import subprocess
 import sys
 import uuid
@@ -33,6 +36,7 @@ ENTRY_FIELDS = {"module", "patch", "base", "source", "canonical_tree", "applied_
 MAPPING_V2_FIELDS = {"schema_version", "profile", "batch_id", "expected_count", "series"}
 MAPPING_V3_FIELDS = {*MAPPING_V2_FIELDS, "composition"}
 SERIES_FIELDS = {"profile", "module", "patch", "lock"}
+CANDIDATE_CACHE_SCHEMA_VERSION = 1
 
 
 def fail(condition: bool, message: str) -> None:
@@ -1018,6 +1022,517 @@ def seed_source_refs(
             )
 
 
+def _sha256_file(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as stream:
+        for chunk in iter(lambda: stream.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def _candidate_cache_parent(cache: Path, key: str) -> Path:
+    fail(
+        cache.is_absolute()
+        and re.fullmatch(r"[0-9a-f]{64}", key) is not None
+        and cache.name == f"candidate-{key}",
+        "candidate cache path does not match its key",
+    )
+    parent = cache.parent
+    _reject_symlink_components(parent, "candidate cache parent")
+    fail(parent.exists(), "candidate cache parent is missing")
+    metadata = parent.lstat()
+    fail(
+        stat.S_ISDIR(metadata.st_mode)
+        and metadata.st_uid == os.getuid()
+        and stat.S_IMODE(metadata.st_mode) & 0o077 == 0,
+        "candidate cache parent is unsafe",
+    )
+    return parent
+
+
+def _cache_file(cache: Path, relative: object, label: str) -> Path:
+    path = contained(cache, relative, label)
+    fail(path.is_file() and not path.is_symlink(), f"{label}: unavailable")
+    return path
+
+
+def _validate_cached_file(
+    cache: Path, row: object, label: str
+) -> tuple[Path, dict[str, Any]]:
+    fail(
+        isinstance(row, dict)
+        and set(row) >= {"cache_path", "size", "sha256"},
+        f"{label}: invalid file binding",
+    )
+    path = _cache_file(cache, row["cache_path"], label)
+    size = row["size"]
+    digest = row["sha256"]
+    fail(
+        isinstance(size, int)
+        and not isinstance(size, bool)
+        and size >= 0
+        and isinstance(digest, str)
+        and re.fullmatch(r"[0-9a-f]{64}", digest) is not None
+        and path.stat().st_size == size
+        and _sha256_file(path) == digest,
+        f"{label}: content differs",
+    )
+    return path, row
+
+
+def _load_candidate_cache(
+    cache: Path, key: str, profile: str
+) -> dict[str, Any] | None:
+    _candidate_cache_parent(cache, key)
+    if not cache.exists() and not cache.is_symlink():
+        return None
+    fail(cache.is_dir() and not cache.is_symlink(), "candidate cache is unsafe")
+    metadata = cache.lstat()
+    fail(
+        metadata.st_uid == os.getuid()
+        and stat.S_IMODE(metadata.st_mode) & 0o077 == 0,
+        "candidate cache permissions are unsafe",
+    )
+    index_path = _cache_file(cache, "index.json", "candidate cache index")
+    index = load_json(index_path)
+    fail(
+        set(index)
+        == {
+            "schema_version",
+            "kind",
+            "key",
+            "profile",
+            "candidate_manifest",
+            "lock_evidence",
+            "modules",
+            "generated_locks",
+        }
+        and index.get("schema_version") == CANDIDATE_CACHE_SCHEMA_VERSION
+        and index.get("kind") == "west-dev-materialized-candidate"
+        and index.get("key") == key
+        and index.get("profile") == profile,
+        "candidate cache identity differs",
+    )
+    _validate_cached_file(
+        cache, index["candidate_manifest"], "candidate cache manifest"
+    )
+    _validate_cached_file(
+        cache, index["lock_evidence"], "candidate cache lock evidence"
+    )
+    modules = index.get("modules")
+    fail(isinstance(modules, list) and modules, "candidate cache modules are missing")
+    seen_modules: set[str] = set()
+    for position, row in enumerate(modules):
+        fail(
+            isinstance(row, dict)
+            and set(row)
+            == {
+                "module",
+                "path",
+                "base",
+                "commit",
+                "tree",
+                "ref",
+                "cache_path",
+                "size",
+                "sha256",
+            },
+            f"candidate cache module {position}: invalid binding",
+        )
+        module = row.get("module")
+        path = row.get("path")
+        fail(
+            isinstance(module, str)
+            and module
+            and module not in seen_modules
+            and isinstance(path, str)
+            and path == module
+            and not Path(path).is_absolute()
+            and ".." not in Path(path).parts,
+            f"candidate cache module {position}: invalid module",
+        )
+        oid(row.get("base"), f"candidate cache module {position} base")
+        oid(row.get("commit"), f"candidate cache module {position} commit")
+        oid(row.get("tree"), f"candidate cache module {position} tree")
+        fail(
+            row.get("ref") == f"refs/west/dev-candidate-cache/{key}/{position}",
+            f"candidate cache module {position}: invalid ref",
+        )
+        _validate_cached_file(
+            cache, row, f"candidate cache module {position} bundle"
+        )
+        seen_modules.add(module)
+    generated = index.get("generated_locks")
+    fail(
+        isinstance(generated, list) and generated,
+        "candidate cache generated locks are missing",
+    )
+    seen_generated: set[str] = set()
+    for position, row in enumerate(generated):
+        fail(
+            isinstance(row, dict)
+            and set(row) == {"path", "cache_path", "size", "sha256"},
+            f"candidate cache generated lock {position}: invalid binding",
+        )
+        path = row.get("path")
+        fail(
+            isinstance(path, str)
+            and path
+            and path not in seen_generated
+            and not Path(path).is_absolute()
+            and ".." not in Path(path).parts,
+            f"candidate cache generated lock {position}: invalid path",
+        )
+        _validate_cached_file(
+            cache, row, f"candidate cache generated lock {position}"
+        )
+        seen_generated.add(path)
+    return index
+
+
+def _write_private_file(
+    root: Path, relative: str, data: bytes
+) -> dict[str, Any]:
+    path = contained(root, relative, "candidate cache output")
+    path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+    path.write_bytes(data)
+    path.chmod(0o600)
+    return {
+        "cache_path": relative,
+        "size": len(data),
+        "sha256": hashlib.sha256(data).hexdigest(),
+    }
+
+
+def _frozen_project_revisions(manifest_workspace: Path) -> dict[str, str]:
+    try:
+        value = yaml.safe_load((manifest_workspace / "west.lock.yml").read_text())
+    except (OSError, yaml.YAMLError) as error:
+        raise AcceptanceError(f"candidate base manifest is invalid: {error}") from error
+    projects = (
+        value.get("manifest", {}).get("projects")
+        if isinstance(value, dict) and isinstance(value.get("manifest"), dict)
+        else None
+    )
+    fail(isinstance(projects, list) and projects, "candidate base manifest has no projects")
+    result: dict[str, str] = {}
+    for position, row in enumerate(projects):
+        name = row.get("name") if isinstance(row, dict) else None
+        path = row.get("path", name) if isinstance(row, dict) else None
+        revision = row.get("revision") if isinstance(row, dict) else None
+        fail(
+            isinstance(path, str)
+            and path
+            and path not in result
+            and not Path(path).is_absolute()
+            and ".." not in Path(path).parts,
+            f"candidate base project {position}: invalid path",
+        )
+        result[path] = oid(revision, f"candidate base project {position} revision")
+    return result
+
+
+def hydrate_candidate_cache(
+    manifest_workspace: Path,
+    candidate_workspace: Path,
+    profile: str,
+    cache: Path,
+    key: str,
+    lock_evidence_path: Path,
+    west_command: list[str],
+) -> None:
+    """Hydrate immutable integration commits, otherwise perform a real replay."""
+
+    fail(
+        bool(west_command) and all(isinstance(value, str) and value for value in west_command),
+        "candidate replay West command is missing",
+    )
+    index = _load_candidate_cache(cache, key, profile)
+    if index is None:
+        applied = subprocess.run(
+            [
+                *west_command,
+                "patch",
+                "apply",
+                "--profile",
+                profile,
+                "--lock-first-evidence",
+                str(lock_evidence_path),
+            ],
+            cwd=manifest_workspace,
+            stdin=subprocess.DEVNULL,
+        )
+        fail(applied.returncode == 0, f"candidate replay failed with rc {applied.returncode}")
+        print("candidate cache: miss; replayed immutable stack")
+        return
+
+    modules = sorted(
+        index["modules"],
+        key=lambda row: (-len(Path(row["path"]).parts), row["path"]),
+    )
+    for position, row in enumerate(modules):
+        repository = contained(
+            candidate_workspace,
+            row["path"],
+            f"candidate cache destination module {position}",
+        )
+        bundle, _binding = _validate_cached_file(
+            cache, row, f"candidate cache module {position} bundle"
+        )
+        verified = subprocess.run(
+            ["git", "bundle", "verify", str(bundle)],
+            cwd=repository,
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+        )
+        fail(
+            verified.returncode == 0,
+            f"candidate cache module {row['module']}: bundle prerequisites differ: "
+            f"{verified.stderr.strip()}",
+        )
+        fetched = subprocess.run(
+            [
+                "git",
+                "fetch",
+                "--no-tags",
+                "--no-write-fetch-head",
+                str(bundle),
+                row["ref"],
+            ],
+            cwd=repository,
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+        )
+        fail(
+            fetched.returncode == 0,
+            f"candidate cache module {row['module']}: fetch failed: "
+            f"{fetched.stderr.strip()}",
+        )
+        checked = subprocess.run(
+            [
+                "git",
+                "checkout",
+                "-B",
+                f"integration/{profile}",
+                row["commit"],
+            ],
+            cwd=repository,
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+        )
+        fail(
+            checked.returncode == 0
+            and git(repository, "rev-parse", "HEAD") == row["commit"]
+            and git(repository, "rev-parse", "HEAD^{tree}") == row["tree"],
+            f"candidate cache module {row['module']}: checkout differs",
+        )
+
+    for position, row in enumerate(index["generated_locks"]):
+        source, _binding = _validate_cached_file(
+            cache, row, f"candidate cache generated lock {position}"
+        )
+        destination = contained(
+            manifest_workspace,
+            row["path"],
+            f"candidate cache generated lock destination {position}",
+        )
+        fail(
+            not destination.exists() and not destination.is_symlink(),
+            f"candidate cache generated lock destination {position}: already exists",
+        )
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        destination.write_bytes(source.read_bytes())
+    evidence_source, _binding = _validate_cached_file(
+        cache, index["lock_evidence"], "candidate cache lock evidence"
+    )
+    fail(
+        not lock_evidence_path.exists() and not lock_evidence_path.is_symlink(),
+        "candidate cache evidence destination already exists",
+    )
+    lock_evidence_path.parent.mkdir(parents=True, exist_ok=True)
+    lock_evidence_path.write_bytes(evidence_source.read_bytes())
+    print("candidate cache: hit; hydrated immutable stack")
+
+
+def publish_candidate_cache(
+    manifest_workspace: Path,
+    candidate_workspace: Path,
+    profile: str,
+    cache: Path,
+    key: str,
+    lock_evidence_path: Path,
+    modules_path: Path,
+    candidate_manifest_path: Path,
+) -> None:
+    """Publish only the integration object delta and generated evidence."""
+
+    parent = _candidate_cache_parent(cache, key)
+    existing = _load_candidate_cache(cache, key, profile)
+    if existing is not None:
+        print("candidate cache: existing immutable entry retained")
+        return
+    modules_document = load_json(modules_path)
+    fail(
+        modules_document.get("profile") == profile
+        and isinstance(modules_document.get("modules"), list)
+        and modules_document["modules"],
+        "candidate cache module map is invalid",
+    )
+    candidate_manifest = load_json(candidate_manifest_path)
+    generated = candidate_manifest.get("generated_profile_locks")
+    fail(isinstance(generated, list) and generated, "candidate cache generated locks are missing")
+    base_revisions = _frozen_project_revisions(manifest_workspace)
+    staging = parent / f".{cache.name}.{uuid.uuid4().hex}.tmp"
+    staging.mkdir(mode=0o700)
+    temporary = staging / cache.name
+    temporary.mkdir(mode=0o700)
+    try:
+        manifest_data = candidate_manifest_path.read_bytes()
+        manifest_binding = _write_private_file(
+            temporary, "candidate-manifest.json", manifest_data
+        )
+        evidence_data = lock_evidence_path.read_bytes()
+        evidence_binding = _write_private_file(
+            temporary, "lock-first-evidence.json", evidence_data
+        )
+        module_bindings: list[dict[str, Any]] = []
+        for position, row in enumerate(modules_document["modules"]):
+            module = row.get("module") if isinstance(row, dict) else None
+            path = row.get("path") if isinstance(row, dict) else None
+            commit = row.get("integration_oid") if isinstance(row, dict) else None
+            tree = row.get("tree") if isinstance(row, dict) else None
+            fail(
+                isinstance(module, str)
+                and module
+                and path == module
+                and path in base_revisions,
+                f"candidate cache module {position}: invalid captured module",
+            )
+            commit = oid(commit, f"candidate cache module {position} commit")
+            tree = oid(tree, f"candidate cache module {position} tree")
+            base = base_revisions[path]
+            repository = contained(
+                candidate_workspace, path, f"candidate cache source module {position}"
+            )
+            fail(
+                git(repository, "rev-parse", "HEAD") == commit
+                and git(repository, "rev-parse", "HEAD^{tree}") == tree
+                and subprocess.run(
+                    ["git", "merge-base", "--is-ancestor", base, commit],
+                    cwd=repository,
+                    stdin=subprocess.DEVNULL,
+                ).returncode
+                == 0,
+                f"candidate cache module {module}: source identity differs",
+            )
+            ref = f"refs/west/dev-candidate-cache/{key}/{position}"
+            bundle_relative = f"bundles/{position}.bundle"
+            bundle = temporary / bundle_relative
+            bundle.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+            git(repository, "update-ref", ref, commit)
+            try:
+                bundled = subprocess.run(
+                    [
+                        "git",
+                        "bundle",
+                        "create",
+                        "--version=3",
+                        str(bundle),
+                        ref,
+                        f"^{base}",
+                    ],
+                    cwd=repository,
+                    stdin=subprocess.DEVNULL,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE,
+                    text=True,
+                )
+            finally:
+                git(repository, "update-ref", "-d", ref)
+            fail(
+                bundled.returncode == 0,
+                f"candidate cache module {module}: bundle failed: "
+                f"{bundled.stderr.strip()}",
+            )
+            bundle.chmod(0o600)
+            verified = subprocess.run(
+                ["git", "bundle", "verify", str(bundle)],
+                cwd=repository,
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+            )
+            fail(
+                verified.returncode == 0,
+                f"candidate cache module {module}: produced bundle is invalid",
+            )
+            module_bindings.append(
+                {
+                    "module": module,
+                    "path": path,
+                    "base": base,
+                    "commit": commit,
+                    "tree": tree,
+                    "ref": ref,
+                    "cache_path": bundle_relative,
+                    "size": bundle.stat().st_size,
+                    "sha256": _sha256_file(bundle),
+                }
+            )
+        generated_bindings: list[dict[str, Any]] = []
+        for position, row in enumerate(generated):
+            path = row.get("path") if isinstance(row, dict) else None
+            fail(
+                isinstance(path, str)
+                and path
+                and not Path(path).is_absolute()
+                and ".." not in Path(path).parts,
+                f"candidate cache generated lock {position}: invalid path",
+            )
+            source = contained(
+                manifest_workspace, path, f"candidate cache generated lock {position}"
+            )
+            data = source.read_bytes()
+            fail(
+                len(data) == row.get("size")
+                and hashlib.sha256(data).hexdigest() == row.get("sha256"),
+                f"candidate cache generated lock {position}: capture differs",
+            )
+            binding = _write_private_file(
+                temporary, f"generated/{position}.lock", data
+            )
+            generated_bindings.append({"path": path, **binding})
+        index = {
+            "schema_version": CANDIDATE_CACHE_SCHEMA_VERSION,
+            "kind": "west-dev-materialized-candidate",
+            "key": key,
+            "profile": profile,
+            "candidate_manifest": manifest_binding,
+            "lock_evidence": evidence_binding,
+            "modules": module_bindings,
+            "generated_locks": generated_bindings,
+        }
+        index_path = temporary / "index.json"
+        index_path.write_text(json.dumps(index, sort_keys=True, indent=2) + "\n")
+        index_path.chmod(0o600)
+        _load_candidate_cache(temporary, key, profile)
+        try:
+            temporary.rename(cache)
+        except FileExistsError:
+            _load_candidate_cache(cache, key, profile)
+        print("candidate cache: published immutable entry")
+    finally:
+        if staging.exists():
+            shutil.rmtree(staging)
+
+
 def _git_status_paths(repo: Path) -> set[str]:
     result = subprocess.run(
         ["git", "status", "--porcelain=v1", "-z", "--untracked-files=all"],
@@ -1280,6 +1795,31 @@ def main() -> None:
     clone.add_argument("--destination-workspace", type=Path, required=True)
     clone.add_argument("--profile", required=True)
     clone.add_argument("--candidate-manifest", type=Path, required=True)
+    hydrate = sub.add_parser("materialize-candidate")
+    for name in (
+        "manifest-workspace",
+        "candidate-workspace",
+        "cache",
+        "lock-evidence",
+    ):
+        hydrate.add_argument(f"--{name}", type=Path, required=True)
+    hydrate.add_argument("--profile", required=True)
+    hydrate.add_argument("--key", required=True)
+    hydrate.add_argument(
+        "--west-command", nargs=argparse.REMAINDER, required=True
+    )
+    publish = sub.add_parser("publish-candidate-cache")
+    for name in (
+        "manifest-workspace",
+        "candidate-workspace",
+        "cache",
+        "lock-evidence",
+        "modules",
+        "candidate-manifest",
+    ):
+        publish.add_argument(f"--{name}", type=Path, required=True)
+    publish.add_argument("--profile", required=True)
+    publish.add_argument("--key", required=True)
     args = parser.parse_args()
     try:
         if args.action == "seed-source-refs":
@@ -1295,6 +1835,27 @@ def main() -> None:
                 args.source_workspace,
                 args.destination_workspace,
                 args.profile,
+                args.candidate_manifest,
+            )
+        elif args.action == "materialize-candidate":
+            hydrate_candidate_cache(
+                args.manifest_workspace,
+                args.candidate_workspace,
+                args.profile,
+                args.cache,
+                args.key,
+                args.lock_evidence,
+                args.west_command,
+            )
+        elif args.action == "publish-candidate-cache":
+            publish_candidate_cache(
+                args.manifest_workspace,
+                args.candidate_workspace,
+                args.profile,
+                args.cache,
+                args.key,
+                args.lock_evidence,
+                args.modules,
                 args.candidate_manifest,
             )
         else:

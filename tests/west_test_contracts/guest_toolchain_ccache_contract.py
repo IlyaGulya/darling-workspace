@@ -1,4 +1,4 @@
-"""Contracts for the guest-toolchain-only ccache integration."""
+"""Contracts for fingerprinted ccache integration in bootstrap runtime builds."""
 
 from __future__ import annotations
 
@@ -44,13 +44,21 @@ class Host:
 
 def assert_profile_contract() -> None:
     profiles = load_ctest_runtime_profiles(ROOT / "testkit/runtime-profiles.yml")
-    toolchain = profiles["homebrew-guest-toolchain-provisioning"]
-    assert toolchain["compiler-launcher"] == "ccache"
+    ccache_profiles = {
+        "homebrew-guest-toolchain-provisioning",
+        "homebrew-rootless-bootstrap-minimal",
+    }
+    for name in ccache_profiles:
+        assert profiles[name]["compiler-launcher"] == "ccache"
     for name, profile in profiles.items():
-        if name != "homebrew-guest-toolchain-provisioning":
+        if name not in ccache_profiles:
             assert "compiler-launcher" not in profile, name
     composed = compose_ctest_runtime_profiles(
-        profiles, ["homebrew-guest-toolchain-provisioning"]
+        profiles,
+        [
+            "homebrew-rootless-bootstrap-minimal",
+            "homebrew-guest-toolchain-provisioning",
+        ],
     )
     assert composed["compiler-launcher"] == "ccache"
 
@@ -73,9 +81,9 @@ def assert_profile_contract() -> None:
         try:
             load_ctest_runtime_profiles(path)
         except ValueError as error:
-            assert "only for guest-toolchain-provisioning" in str(error)
+            assert "only for bootstrap-capable profiles" in str(error)
         else:
-            raise AssertionError("ccache was accepted outside guest-toolchain")
+            raise AssertionError("ccache was accepted outside bootstrap profiles")
 
 
 def assert_build_contract() -> None:
@@ -191,14 +199,35 @@ def assert_build_contract() -> None:
             os.environ.pop("DARLING_BUILD_DIR", None)
             for key in identity:
                 os.environ.pop(key, None)
-            try:
-                service.configure_args(proof, root / "prefix", root / "scratch")
-            except ValueError as error:
-                assert "compiler identity is incomplete" in str(error)
-            else:
-                raise AssertionError("ccache accepted missing compiler identity")
+            derived = RuntimeBuildService.derive_ccache_environment()
+            derived_args = service.configure_args(
+                proof, root / "prefix", root / "scratch"
+            )
+            assert (
+                f"-DCMAKE_C_COMPILER={derived['CCACHE_CLANG_PATH']}"
+                in derived_args
+            )
+            assert (
+                f"-DCMAKE_CXX_COMPILER={derived['CCACHE_CLANGXX_PATH']}"
+                in derived_args
+            )
+            with patch.dict(
+                os.environ,
+                {"CCACHE_CLANG_PATH": derived["CCACHE_CLANG_PATH"]},
+                clear=False,
+            ):
+                try:
+                    service.configure_args(
+                        proof, root / "prefix", root / "scratch"
+                    )
+                except ValueError as error:
+                    assert "compiler identity is incomplete" in str(error)
+                else:
+                    raise AssertionError(
+                        "ccache accepted a partial compiler identity"
+                    )
 
-        non_clang = {}
+        non_clang = {"CCACHE_COMPILER_FINGERPRINT": "0" * 64}
         for command, variable in (("gcc", "CLANG"), ("g++", "CLANGXX")):
             invocation = Path(shutil.which(command)).absolute()
             resolved = invocation.resolve(strict=True)

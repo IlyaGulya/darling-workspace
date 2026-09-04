@@ -8,6 +8,7 @@ import copy
 import fcntl
 import hashlib
 import json
+import re
 import os
 import shutil
 import shlex
@@ -26,6 +27,7 @@ from typing import Any, BinaryIO, Callable, Iterator
 import patch_stack_lock_first
 import patch_stack_materialize
 import yaml
+from test_runtime_build import RuntimeBuildService
 
 SCHEMA_VERSION = 1
 TIER_ORDER = ("quick", "canonical", "acceptance")
@@ -40,6 +42,10 @@ _UNTRACKED_TOTAL_LIMIT = 64 * 1024 * 1024
 _UNTRACKED_COUNT_LIMIT = 4096
 _TERMINATE_GRACE_SECONDS = 5.0
 _CHECKPOINT_SCHEMA_VERSION = 1
+_INITIAL_CLONE_STEP_NAMES = (
+    "acceptance-clone-control",
+    "acceptance-clone-candidate",
+)
 _CHECKPOINT_TOOL_VERSION = "west-dev-acceptance-v1"
 _CHECKPOINT_STEP_NAMES = (
     "patch-verify",
@@ -111,6 +117,7 @@ _CHECK_TIMEOUTS = {
     "acceptance-guest-smoke": 10800,
     "clone-tier-workspace": 1800,
     "acceptance-final-cleanup": 1800,
+    "candidate-cache-publish": 1800,
 }
 _PACKAGE_TIMEOUT_SECONDS = 3600
 
@@ -1246,9 +1253,14 @@ def _check_steps(inputs: dict[str, Any], transaction_id: str) -> list[dict[str, 
     oracle_env = stage_env("oracle")
     candidate_env = stage_env("candidate")
     guest_env = stage_env("guest")
+    guest_env.update(RuntimeBuildService.derive_ccache_environment(guest_env))
+    guest_env["CCACHE_DIR"] = str(
+        Path(inputs["acceptance_checkpoint"]["path"]).parent
+        / "runtime-ccache-v1"
+    )
+    guest_env["CCACHE_MAXSIZE"] = "4G"
     guest_env["DARLING_TIER_DEFER_GLOBAL_CLEANUP"] = "1"
     final_host_env = stage_env("final-host")
-    final_host_env["DARLING_TIER_DEFER_GLOBAL_CLEANUP"] = "1"
     bootstrap_env = dict(candidate_env)
     bootstrap_env.update(
         {
@@ -1261,6 +1273,10 @@ def _check_steps(inputs: dict[str, Any], transaction_id: str) -> list[dict[str, 
     oracle = artifacts / "immutable-oracle.json"
     modules = artifacts / "lock-first-modules.json"
     manifest = artifacts / "lock-first-manifest.json"
+    candidate_cache = (
+        Path(inputs["acceptance_checkpoint"]["path"]).parent
+        / f"candidate-{inputs['acceptance_checkpoint']['key']}"
+    )
     lock_evidence = artifacts / "lock-first-evidence.json"
     comparison = artifacts / "acceptance-result.json"
     steps.extend(
@@ -1297,14 +1313,6 @@ def _check_steps(inputs: dict[str, Any], transaction_id: str) -> list[dict[str, 
                 oracle_env,
             ),
             _step(
-                "acceptance-checkout-control",
-                ["git", "-C", str(control), "checkout", "--detach", head],
-                "temporary/local-output",
-                _CHECK_TIMEOUTS["checkout"],
-                control,
-                oracle_env,
-            ),
-            _step(
                 "acceptance-clone-candidate",
                 [
                     "git",
@@ -1319,6 +1327,14 @@ def _check_steps(inputs: dict[str, Any], transaction_id: str) -> list[dict[str, 
                 _CHECK_TIMEOUTS["clone"],
                 candidate_parent,
                 candidate_env,
+            ),
+            _step(
+                "acceptance-checkout-control",
+                ["git", "-C", str(control), "checkout", "--detach", head],
+                "temporary/local-output",
+                _CHECK_TIMEOUTS["checkout"],
+                control,
+                oracle_env,
             ),
             _step(
                 "acceptance-checkout-candidate",
@@ -1417,13 +1433,27 @@ def _check_steps(inputs: dict[str, Any], transaction_id: str) -> list[dict[str, 
             _step(
                 "acceptance-candidate-apply",
                 [
-                    *west,
-                    "patch",
-                    "apply",
+                    str(Path(sys.executable).resolve()),
+                    str(
+                        candidate
+                        / "ci"
+                        / "patch_stack_lock_first_acceptance.py"
+                    ),
+                    "materialize-candidate",
+                    "--manifest-workspace",
+                    str(candidate),
+                    "--candidate-workspace",
+                    str(candidate_parent),
                     "--profile",
                     profile,
-                    "--lock-first-evidence",
+                    "--cache",
+                    str(candidate_cache),
+                    "--key",
+                    inputs["acceptance_checkpoint"]["key"],
+                    "--lock-evidence",
                     str(lock_evidence),
+                    "--west-command",
+                    *west,
                 ],
                 "temporary/local-output",
                 _CHECK_TIMEOUTS["candidate-apply"],
@@ -1486,6 +1516,38 @@ def _check_steps(inputs: dict[str, Any], transaction_id: str) -> list[dict[str, 
                 ],
                 "temporary/local-output",
                 _CHECK_TIMEOUTS["acceptance-compare"],
+                candidate,
+                candidate_env,
+            ),
+            _step(
+                "acceptance-publish-candidate-cache",
+                [
+                    str(Path(sys.executable).resolve()),
+                    str(
+                        candidate
+                        / "ci"
+                        / "patch_stack_lock_first_acceptance.py"
+                    ),
+                    "publish-candidate-cache",
+                    "--manifest-workspace",
+                    str(candidate),
+                    "--candidate-workspace",
+                    str(candidate_parent),
+                    "--profile",
+                    profile,
+                    "--cache",
+                    str(candidate_cache),
+                    "--key",
+                    inputs["acceptance_checkpoint"]["key"],
+                    "--lock-evidence",
+                    str(lock_evidence),
+                    "--modules",
+                    str(modules),
+                    "--candidate-manifest",
+                    str(manifest),
+                ],
+                "temporary/local-output",
+                _CHECK_TIMEOUTS["candidate-cache-publish"],
                 candidate,
                 candidate_env,
             ),
@@ -2827,6 +2889,8 @@ def _validate_checkpoint_payload(
             or not isinstance(row.get("started_at"), str)
             or not row["started_at"]
             or not isinstance(row.get("finished_at"), str)
+
+
             or not row["finished_at"]
             or not isinstance(row.get("stdout"), dict)
             or not isinstance(row.get("stderr"), dict)
@@ -2924,6 +2988,37 @@ def _locked_checkpoint(
         os.close(root_descriptor)
 
 
+def _prepare_checkpoint_subdirectory(path: Path, name: str) -> Path:
+    if not re.fullmatch(r"[a-z0-9][a-z0-9-]*", name):
+        raise DevCheckError("acceptance checkpoint subdirectory name is invalid")
+    with _locked_checkpoint(path, True) as locked:
+        assert locked is not None
+        root, root_descriptor = locked
+        try:
+            os.mkdir(name, mode=0o700, dir_fd=root_descriptor)
+        except FileExistsError:
+            pass
+        try:
+            metadata = os.stat(
+                name, dir_fd=root_descriptor, follow_symlinks=False
+            )
+        except OSError as error:
+            raise DevCheckError(
+                f"acceptance checkpoint subdirectory is unavailable: {error}"
+            ) from error
+        if (
+            not stat.S_ISDIR(metadata.st_mode)
+            or metadata.st_uid != os.getuid()
+            or stat.S_IMODE(metadata.st_mode) & 0o077
+        ):
+            raise DevCheckError("acceptance checkpoint subdirectory is unsafe")
+        descriptor = os.open(
+            name,
+            os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC | os.O_NOFOLLOW,
+            dir_fd=root_descriptor,
+        )
+        os.close(descriptor)
+        return root / name
 def _read_checkpoint_descriptor(
     root_descriptor: int, name: str
 ) -> tuple[int, os.stat_result] | None:
@@ -3329,6 +3424,9 @@ def execute_check(
             }
             binding = plan["inputs"]["acceptance_checkpoint"]
             checkpoint_path = Path(binding["path"])
+            _prepare_checkpoint_subdirectory(
+                checkpoint_path, "runtime-ccache-v1"
+            )
             checkpoint, checkpoint_reason = _read_checkpoint_file(
                 checkpoint_path, binding
             )
@@ -3345,6 +3443,44 @@ def execute_check(
         position = 0
         while position < len(plan["steps"]):
             planned_step = plan["steps"][position]
+            if (
+                plan["inputs"]["tier"] == "acceptance"
+                and planned_step["name"] == _INITIAL_CLONE_STEP_NAMES[0]
+            ):
+                parallel_steps = plan["steps"][
+                    position : position + len(_INITIAL_CLONE_STEP_NAMES)
+                ]
+                if [step["name"] for step in parallel_steps] != list(
+                    _INITIAL_CLONE_STEP_NAMES
+                ):
+                    raise DevCheckError(
+                        "acceptance initial clones are not one contiguous wave"
+                    )
+                try:
+                    parallel_results = _run_parallel_acceptance_steps(
+                        parallel_steps,
+                        indices,
+                        total,
+                        started,
+                        progress,
+                    )
+                except _ParallelInterrupted as error:
+                    for step in parallel_steps:
+                        result = error.results.get(step["name"])
+                        if result is not None:
+                            publish_result(result)
+                    raise KeyboardInterrupt from None
+                ordered_results = [
+                    parallel_results[step["name"]] for step in parallel_steps
+                ]
+                for result in ordered_results:
+                    publish_result(result)
+                failed = _parallel_failure(ordered_results)
+                if failed is not None:
+                    _raise_step_failure(failed)
+                position += len(_INITIAL_CLONE_STEP_NAMES)
+                continue
+
             if (
                 plan["inputs"]["tier"] == "acceptance"
                 and planned_step["name"] == _CHECKPOINT_STEP_NAMES[0]

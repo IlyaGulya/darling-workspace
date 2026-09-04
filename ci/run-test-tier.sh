@@ -112,9 +112,7 @@ case "${1:-}" in
 		# Source-bound host cases must be selected through metadata so west can
 		# materialize the patch profile before CMake compiles the real source.
 		tests/run-west-patch-stack-materialize-contract.sh
-		if [[ "$defer_global_cleanup" == 0 ]]; then
-			tests/run-west-patch-stack-lock-first-contract.sh
-		fi
+		tests/run-west-patch-stack-lock-first-contract.sh
 		tests/run-profile-composition-dependency-contract.sh
 		tests/run-west-patch-stack-default-cutover-contract.sh
 		tests/run-west-patch-stack-retirement-policy-contract.sh
@@ -135,12 +133,8 @@ case "${1:-}" in
 			--runtime-build-timeout-seconds 600
 		WEST_TEST_FORBID_GUEST_TOOLCHAIN=1 west test \
 			--profile homebrew --patch darling/rootless-prefix-initialization.patch \
-			--env darling --label 'name:rootless_prefix_initialization_guest' \
-			--reuse-prefix-runtime \
-			--prefix "$prefix" "${@:2}"
-		WEST_TEST_FORBID_GUEST_TOOLCHAIN=1 west test \
-			--profile homebrew --patch darling/rootless-prefix-initialization.patch \
-			--env darling --label 'name:rootless_prebuilt_macho_regression' \
+			--env darling \
+			--label 'name:(rootless_prefix_initialization_guest|rootless_prebuilt_macho_regression)' \
 			--reuse-prefix-runtime \
 			--prefix "$prefix" "${@:2}"
 		;;
@@ -178,7 +172,6 @@ case "${1:-}" in
 		;;
 	acceptance-cleanup)
 		unset DARLING_TIER_DEFER_GLOBAL_CLEANUP
-		tests/run-west-patch-stack-lock-first-contract.sh
 		west test --gc --gc-runtime-evidence
 		exec "$root/scripts/west-job.sh" assert-no-live-west-test \
 			--state-root "${TMPDIR:-/tmp}"

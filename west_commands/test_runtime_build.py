@@ -5,11 +5,12 @@ from __future__ import annotations
 import hashlib
 import os
 import re
+import shutil
 import subprocess
 import sys
 import time
+from collections.abc import Callable, Mapping
 from pathlib import Path
-from collections.abc import Callable
 from typing import Any
 
 from test_execution import run_bounded
@@ -52,21 +53,110 @@ class RuntimeBuildService:
         return digest.hexdigest()
 
     @classmethod
-    def _ccache_compiler_identity(cls) -> dict[str, str]:
+    def derive_ccache_environment(
+        cls, environment: Mapping[str, str] | None = None
+    ) -> dict[str, str]:
+        """Bind ccache to the exact Clang invocation selected by PATH."""
+
+        source = os.environ if environment is None else environment
+        result: dict[str, str] = {}
+        records: list[dict[str, str]] = []
+        for name, variable in (("clang", "CLANG"), ("clang++", "CLANGXX")):
+            raw_path = shutil.which(name, path=source.get("PATH"))
+            if not raw_path:
+                raise ValueError(f"ccache compiler is unavailable on PATH: {name}")
+            path = Path(raw_path)
+            if not path.is_absolute() or not path.is_file() or not os.access(path, os.X_OK):
+                raise ValueError(
+                    f"ccache compiler invocation path is not executable: {path}"
+                )
+            try:
+                resolved_path = path.resolve(strict=True)
+            except OSError as error:
+                raise ValueError(
+                    f"ccache compiler path cannot be resolved: {path}"
+                ) from error
+            fingerprint = cls._compiler_file_sha256(resolved_path)
+            try:
+                version = subprocess.run(
+                    [str(path), "--version"],
+                    capture_output=True,
+                    text=True,
+                    check=False,
+                    timeout=10,
+                )
+            except (OSError, subprocess.SubprocessError) as error:
+                raise ValueError(
+                    f"could not verify ccache compiler {path}: {error}"
+                ) from error
+            if version.returncode or "clang" not in (
+                f"{version.stdout}\n{version.stderr}".lower()
+            ):
+                raise ValueError(f"ccache compiler is not Clang: {path}")
+            result[f"CCACHE_{variable}_PATH"] = str(path)
+            result[f"CCACHE_{variable}_RESOLVED_PATH"] = str(resolved_path)
+            result[f"CCACHE_{variable}_FINGERPRINT"] = fingerprint
+            records.append(
+                {
+                    "name": "clangxx" if name == "clang++" else name,
+                    "path": str(path),
+                    "resolved_path": str(resolved_path),
+                    "fingerprint": fingerprint,
+                    "version_stdout": version.stdout,
+                }
+            )
+        identity_payload = "".join(
+            f"{record['name']}_path={record['path']}\n"
+            f"{record['name']}_resolved_path={record['resolved_path']}\n"
+            f"{record['name']}_fingerprint={record['fingerprint']}\n"
+            for record in records
+        ) + "".join(record["version_stdout"] for record in records)
+        result["CCACHE_COMPILER_FINGERPRINT"] = hashlib.sha256(
+            identity_payload.encode()
+        ).hexdigest()
+        return result
+
+    @classmethod
+    def _ccache_environment(cls) -> dict[str, str]:
+        environment = os.environ.copy()
+        names = {
+            "CCACHE_CLANG_PATH",
+            "CCACHE_CLANG_RESOLVED_PATH",
+            "CCACHE_CLANG_FINGERPRINT",
+            "CCACHE_CLANGXX_PATH",
+            "CCACHE_CLANGXX_RESOLVED_PATH",
+            "CCACHE_CLANGXX_FINGERPRINT",
+            "CCACHE_COMPILER_FINGERPRINT",
+        }
+        present = {name for name in names if environment.get(name)}
+        if not present:
+            environment.update(cls.derive_ccache_environment(environment))
+        elif present != names:
+            missing = ", ".join(sorted(names - present))
+            raise ValueError(
+                f"ccache compiler identity is incomplete; missing {missing}"
+            )
+        return environment
+
+    @classmethod
+    def _ccache_compiler_identity(
+        cls, environment: Mapping[str, str] | None = None
+    ) -> dict[str, str]:
+        source = os.environ if environment is None else environment
         identity = {}
         records = []
         for name, path_name, fingerprint_name in (
             ("clang", "CCACHE_CLANG_PATH", "CCACHE_CLANG_FINGERPRINT"),
             ("clang++", "CCACHE_CLANGXX_PATH", "CCACHE_CLANGXX_FINGERPRINT"),
         ):
-            raw_path = os.environ.get(path_name)
+            raw_path = source.get(path_name)
             resolved_path_name = (
                 "CCACHE_CLANG_RESOLVED_PATH"
                 if name == "clang"
                 else "CCACHE_CLANGXX_RESOLVED_PATH"
             )
-            raw_resolved_path = os.environ.get(resolved_path_name)
-            expected_fingerprint = os.environ.get(fingerprint_name)
+            raw_resolved_path = source.get(resolved_path_name)
+            expected_fingerprint = source.get(fingerprint_name)
             if not raw_path or not raw_resolved_path or not expected_fingerprint:
                 raise ValueError(
                     "ccache compiler identity is incomplete; missing "
@@ -137,7 +227,7 @@ class RuntimeBuildService:
                 }
             )
 
-        expected_identity_fingerprint = os.environ.get(
+        expected_identity_fingerprint = source.get(
             "CCACHE_COMPILER_FINGERPRINT"
         )
         if not expected_identity_fingerprint:
@@ -177,7 +267,9 @@ class RuntimeBuildService:
             os.environ.get("DARLING_BUILD_DIR", str(Path.home() / "work/darling-build"))
         )
         if launcher is not None:
-            compiler_paths = self._ccache_compiler_identity()
+            compiler_paths = self._ccache_compiler_identity(
+                self._ccache_environment()
+            )
         args = ["-G", self.cmake_cache_value(current_build, "CMAKE_GENERATOR") or "Ninja"]
         cmake_defines = {"CMAKE_BUILD_TYPE": "Debug", **(proof.get("cmake-defines") or {})}
         active_profile = getattr(self._host, "_active_profile", None)
@@ -250,8 +342,8 @@ class RuntimeBuildService:
 
         if self._compiler_launcher(proof) is None:
             return None
-        compiler_identity = self._ccache_compiler_identity()
-        environment = os.environ.copy()
+        environment = self._ccache_environment()
+        compiler_identity = self._ccache_compiler_identity(environment)
         environment.update(
             {
                 "CCACHE_BASEDIR": str(scratch_root),

@@ -1139,7 +1139,10 @@ def main() -> None:
         real_command.inf = lambda _message: None
         real_command.die = lambda message, **_kwargs: (_ for _ in ()).throw(RuntimeError(message))
         old_mapping_for_profile, old_cherry_pick = lock_first.mapping_for_profile, lock_first._cherry_pick
-        temporary_root = Path(tempfile.gettempdir())
+        temporary_root = root / "operation-tmp"
+        temporary_root.mkdir()
+        previous_tempdir = tempfile.tempdir
+        tempfile.tempdir = str(temporary_root)
         patterns = ("west-lock-materialize-*", "west-patch-lock-first-*", "west-patch-shadow-*")
         try:
             lock_first.mapping_for_profile = lambda _profile: multi_mapping
@@ -1264,6 +1267,7 @@ def main() -> None:
                 assert "west-lock-materialize-" not in git(eunion_production, "worktree", "list", "--porcelain")
         finally:
             lock_first.mapping_for_profile, lock_first._cherry_pick = old_mapping_for_profile, old_cherry_pick
+        tempfile.tempdir = previous_tempdir
         # Production orchestration: homebrew defaults to canonical code; the
         # typed plan is built before _prepare and failures roll back/SIGINT.
         command = patch_command.DarlingPatch.__new__(patch_command.DarlingPatch)
