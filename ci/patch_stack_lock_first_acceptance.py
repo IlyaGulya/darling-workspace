@@ -1040,10 +1040,14 @@ def _git_status_paths(repo: Path) -> set[str]:
             continue
         fail(len(field) >= 4 and field[2:3] == b" ", f"{repo}: malformed Git status")
         status = field[:2]
-        paths.add(field[3:].decode("utf-8", errors="surrogateescape"))
+        paths.add(
+            field[3:].decode("utf-8", errors="surrogateescape").rstrip("/")
+        )
         if b"R" in status or b"C" in status:
             fail(index < len(fields) and fields[index], f"{repo}: malformed rename status")
-            paths.add(fields[index].decode("utf-8", errors="surrogateescape"))
+            paths.add(
+                fields[index].decode("utf-8", errors="surrogateescape").rstrip("/")
+            )
             index += 1
     return paths
 
