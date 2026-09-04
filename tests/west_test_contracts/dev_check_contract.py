@@ -464,6 +464,7 @@ mode = os.environ.get("DEV_CHECK_FAKE_MODE", "pass")
 if argv == ["host"]:
     assert Path.cwd().parent.name == "lock-first"
     assert Path(os.environ["HOME"]).name == "final-host"
+    assert os.environ.get("DARLING_TIER_DEFER_GLOBAL_CLEANUP") == "1"
     barrier("acceptance-host-tier")
     if mode in {"fail-final-tier", "interrupt-final-tier"}:
         wait_for_holder()
@@ -1408,6 +1409,7 @@ with tempfile.TemporaryDirectory(prefix="dev-check-contract-") as temporary:
         }
     )
     final_host_env = isolated_env("final-host")
+    final_host_env["DARLING_TIER_DEFER_GLOBAL_CLEANUP"] = "1"
     guest_env = isolated_env("guest")
     guest_env["DARLING_TIER_DEFER_GLOBAL_CLEANUP"] = "1"
     assert [(step["cwd"], step["env"]) for step in acceptance["steps"]] == [

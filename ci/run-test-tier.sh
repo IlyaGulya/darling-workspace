@@ -112,7 +112,9 @@ case "${1:-}" in
 		# Source-bound host cases must be selected through metadata so west can
 		# materialize the patch profile before CMake compiles the real source.
 		tests/run-west-patch-stack-materialize-contract.sh
-		tests/run-west-patch-stack-lock-first-contract.sh
+		if [[ "$defer_global_cleanup" == 0 ]]; then
+			tests/run-west-patch-stack-lock-first-contract.sh
+		fi
 		tests/run-profile-composition-dependency-contract.sh
 		tests/run-west-patch-stack-default-cutover-contract.sh
 		tests/run-west-patch-stack-retirement-policy-contract.sh
@@ -176,6 +178,7 @@ case "${1:-}" in
 		;;
 	acceptance-cleanup)
 		unset DARLING_TIER_DEFER_GLOBAL_CLEANUP
+		tests/run-west-patch-stack-lock-first-contract.sh
 		west test --gc --gc-runtime-evidence
 		exec "$root/scripts/west-job.sh" assert-no-live-west-test \
 			--state-root "${TMPDIR:-/tmp}"

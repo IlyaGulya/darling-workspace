@@ -78,7 +78,7 @@ export ROOTLESS_TIER_REPO_CHILD_OUTPUT="$tmp/rootless-tier-repo-child"
 unset ROOTLESS_TIER_REPO
 
 export PATCH_STACK_MATERIALIZE_CONTRACT_SKIP_WEST_SUBPROCESS=1
-"$repo/ci/run-test-tier.sh" host
+DARLING_TIER_DEFER_GLOBAL_CLEANUP=1 "$repo/ci/run-test-tier.sh" host
 unset PATCH_STACK_MATERIALIZE_CONTRACT_SKIP_WEST_SUBPROCESS
 host_tier="$(sed -n '/^\thost)/,/^\tguest-smoke)/p' "$repo/ci/run-test-tier.sh")"
 printf '%s\n' "$host_tier" | grep -F -q 'tests/run-west-patch-stack-materialize-contract.sh'

@@ -165,8 +165,9 @@ environment inherited by the parallel gate. A valid hit reuses only those
 three results and the content-addressed oracle; candidate replay and comparison
 still run. After comparison, the guest tier receives a shared-object clone with
 independent refs, index, and worktree. The candidate host tier and guest smoke
-then run concurrently; guest-wide GC is deferred until both finish and a final
-sequential cleanup gate verifies no live West test jobs remain. Corrupt
+then run concurrently; the host leak audit and guest-wide GC are deferred until
+both finish, when a final sequential cleanup gate runs the audit, collects
+global garbage, and verifies no live West test jobs remain. Corrupt
 checkpoints are recomputed and replaced. Symlinked or otherwise unsafe
 checkpoint paths fail closed.
 
