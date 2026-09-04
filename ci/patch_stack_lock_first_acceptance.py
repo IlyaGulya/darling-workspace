@@ -1921,6 +1921,47 @@ def clone_tier_workspace(
     print(f"tier workspace: cloned {len(rows)} frozen projects")
 
 
+def _prune_materialized_tier_workspaces(current_root: Path) -> None:
+    cache_root = current_root.parent
+    global_lock_path = cache_root / ".prune.lock"
+    global_lock = os.open(
+        global_lock_path,
+        os.O_RDWR | os.O_CREAT | os.O_CLOEXEC | os.O_NOFOLLOW,
+        0o600,
+    )
+    try:
+        fcntl.flock(global_lock, fcntl.LOCK_EX)
+        for candidate in cache_root.iterdir():
+            if (
+                candidate == current_root
+                or not re.fullmatch(r"[0-9a-f]{64}", candidate.name)
+                or candidate.is_symlink()
+                or not candidate.is_dir()
+            ):
+                continue
+            marker = candidate / "guest" / "tier-workspace-index.json"
+            building_marker = candidate / ".guest.building"
+            if not marker.is_file() and not building_marker.is_file():
+                continue
+            lock_path = candidate / ".guest.lock"
+            if not lock_path.is_file() or lock_path.is_symlink():
+                continue
+            lock = os.open(
+                lock_path, os.O_RDWR | os.O_CLOEXEC | os.O_NOFOLLOW
+            )
+            try:
+                try:
+                    fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                except BlockingIOError:
+                    continue
+                shutil.rmtree(candidate)
+            finally:
+                os.close(lock)
+    finally:
+        fcntl.flock(global_lock, fcntl.LOCK_UN)
+        os.close(global_lock)
+
+
 def locked_clone_tier_workspace(
     manifest_workspace: Path,
     source_workspace: Path,
@@ -1941,6 +1982,12 @@ def locked_clone_tier_workspace(
     lock_path = Path(raw_lock)
     fail(lock_path.is_absolute(), "tier workspace lock must be absolute")
     lock_path.parent.mkdir(parents=True, exist_ok=True)
+    if (
+        lock_path.name == ".guest.lock"
+        and destination_workspace.parent == lock_path.parent
+        and re.fullmatch(r"[0-9a-f]{64}", lock_path.parent.name)
+    ):
+        _prune_materialized_tier_workspaces(lock_path.parent)
     descriptor = os.open(lock_path, os.O_RDWR | os.O_CREAT | os.O_CLOEXEC, 0o600)
     building_marker = destination_workspace.with_name(
         f".{destination_workspace.name}.building"

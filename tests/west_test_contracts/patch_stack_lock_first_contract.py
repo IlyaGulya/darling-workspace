@@ -227,8 +227,14 @@ def main() -> None:
             "homebrew",
             candidate_manifest,
         )
-        persistent_destination = root / "persistent-tier-destination"
-        persistent_lock = root / "persistent-tier.lock"
+        materialized_cache = root / "materialized-v1"
+        stale_root = materialized_cache / ("b" * 64)
+        (stale_root / "guest").mkdir(parents=True)
+        (stale_root / "guest/tier-workspace-index.json").write_text("{}\n")
+        (stale_root / ".guest.lock").touch()
+        persistent_root = materialized_cache / ("a" * 64)
+        persistent_destination = persistent_root / "guest"
+        persistent_lock = persistent_root / ".guest.lock"
         os.environ["WEST_MATERIALIZED_WORKSPACE_LOCK"] = str(persistent_lock)
         try:
             for _attempt in range(2):
@@ -241,6 +247,7 @@ def main() -> None:
                 )
         finally:
             os.environ.pop("WEST_MATERIALIZED_WORKSPACE_LOCK", None)
+        assert not stale_root.exists()
         persistent_carrier = (
             persistent_destination
             / ".west-tier-repositories"

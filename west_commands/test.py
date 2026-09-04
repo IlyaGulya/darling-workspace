@@ -35,7 +35,7 @@ import subprocess
 import sys
 import tempfile
 import time
-from contextlib import ExitStack, contextmanager
+from contextlib import ExitStack, contextmanager, nullcontext
 from pathlib import Path
 from shlex import quote, join as shell_join
 
@@ -1853,7 +1853,37 @@ class DarlingTest(ProfileOperationsMixin, BootstrapRuntimeProfileMixin, WestComm
             "module": definition["source-module"],
         }
         previous_profile = getattr(self, "_active_profile", None)
-        self._require_runtime_scratch_space(f"{label_prefix} profile {profile_name}")
+        prematerialized_source: Path | None = None
+        raw_prematerialized_source = os.environ.get(
+            "WEST_PREMATERIALIZED_RUNTIME_SOURCE_ROOT"
+        )
+        if raw_prematerialized_source:
+            prematerialized_source = Path(raw_prematerialized_source)
+            raw_workspace_lock = os.environ.get("WEST_MATERIALIZED_WORKSPACE_LOCK")
+            workspace_root = (
+                Path(raw_workspace_lock).parent if raw_workspace_lock else None
+            )
+            if omit_patch:
+                self.die(
+                    f"{label_prefix} cannot use a prematerialized source for RED"
+                )
+            if (
+                workspace_root is None
+                or not workspace_root.is_absolute()
+                or workspace_root not in prematerialized_source.parents
+                or not prematerialized_source.is_absolute()
+                or prematerialized_source.is_symlink()
+                or not prematerialized_source.is_dir()
+                or not (prematerialized_source / ".git").exists()
+            ):
+                self.die(
+                    f"{label_prefix} prematerialized runtime source is invalid: "
+                    f"{prematerialized_source}"
+                )
+        else:
+            self._require_runtime_scratch_space(
+                f"{label_prefix} profile {profile_name}"
+            )
         self._preflight_runtime_profile_stack(
             source_profile, f"{label_prefix} profile {profile_name}"
         )
@@ -1869,13 +1899,21 @@ class DarlingTest(ProfileOperationsMixin, BootstrapRuntimeProfileMixin, WestComm
         self._active_profile = source_profile
         try:
             self.inf(f"{label_prefix} runtime profile: {profile_name} ({source_profile})")
-            with self._guest_runtime_source_forest(
-                anchor,
-                proof,
-                omit_patch=omit_patch,
-                root=evidence.source_root,
-                evidence_session=evidence,
-            ) as source_root:
+            if prematerialized_source is not None:
+                self.inf(
+                    f"{label_prefix} prematerialized runtime source: "
+                    f"{prematerialized_source}"
+                )
+                source_context = nullcontext(prematerialized_source)
+            else:
+                source_context = self._guest_runtime_source_forest(
+                    anchor,
+                    proof,
+                    omit_patch=omit_patch,
+                    root=evidence.source_root,
+                    evidence_session=evidence,
+                )
+            with source_context as source_root:
                 build_root = self._runtime_red_build_artifacts(
                     source_root,
                     proof,
