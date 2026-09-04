@@ -1603,6 +1603,129 @@ def _git_status_paths(repo: Path) -> set[str]:
     return paths
 
 
+def _run_seed_git(arguments: list[str], label: str) -> None:
+    result = subprocess.run(
+        ["git", *arguments],
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+    fail(result.returncode == 0, f"{label}: {result.stderr.strip()}")
+
+
+def clone_acceptance_seed(
+    source: Path,
+    seed: Path,
+    revision: str,
+    destination: Path,
+) -> None:
+    """Clone one exact manifest revision through a persistent shallow seed."""
+    oid(revision, "acceptance seed revision")
+    fail(
+        source.is_dir() and not source.is_symlink() and (source / ".git").exists(),
+        "acceptance seed source repository is unavailable",
+    )
+    fail(
+        git(source, "cat-file", "-t", revision) == "commit",
+        "acceptance seed revision is not a source commit",
+    )
+    fail(not destination.exists(), "acceptance seed destination already exists")
+    seed.parent.mkdir(parents=True, exist_ok=True)
+    lock_path = seed.with_name(seed.name + ".lock")
+    descriptor = os.open(lock_path, os.O_CREAT | os.O_RDWR | os.O_CLOEXEC, 0o600)
+    try:
+        fcntl.flock(descriptor, fcntl.LOCK_EX)
+        if not seed.exists():
+            temporary = seed.with_name(seed.name + f".{uuid.uuid4().hex}.tmp")
+            try:
+                _run_seed_git(
+                    ["init", "--bare", "--quiet", str(temporary)],
+                    "acceptance seed initialization failed",
+                )
+                _run_seed_git(
+                    [
+                        f"--git-dir={temporary}",
+                        "fetch",
+                        "--quiet",
+                        "--no-tags",
+                        "--depth=1",
+                        "--force",
+                        "--no-write-fetch-head",
+                        "--",
+                        str(source),
+                        f"{revision}:refs/heads/acceptance",
+                    ],
+                    "acceptance seed fetch failed",
+                )
+                _run_seed_git(
+                    [
+                        f"--git-dir={temporary}",
+                        "symbolic-ref",
+                        "HEAD",
+                        "refs/heads/acceptance",
+                    ],
+                    "acceptance seed HEAD update failed",
+                )
+                temporary.rename(seed)
+            finally:
+                if temporary.exists():
+                    shutil.rmtree(temporary)
+        fail(
+            seed.is_dir()
+            and not seed.is_symlink()
+            and git(seed, "rev-parse", "--is-bare-repository") == "true",
+            "acceptance seed repository is invalid",
+        )
+        fail(
+            not (seed / "objects/info/alternates").exists(),
+            "acceptance seed borrows an object database",
+        )
+        _run_seed_git(
+            [
+                f"--git-dir={seed}",
+                "fetch",
+                "--quiet",
+                "--no-tags",
+                "--depth=1",
+                "--force",
+                "--no-write-fetch-head",
+                "--",
+                str(source),
+                f"{revision}:refs/heads/acceptance",
+            ],
+            "acceptance seed refresh failed",
+        )
+        _run_seed_git(
+            [
+                "clone",
+                "--quiet",
+                "--no-local",
+                "--no-hardlinks",
+                "--no-checkout",
+                "--depth=1",
+                "--single-branch",
+                "--branch",
+                "acceptance",
+                "--",
+                str(seed),
+                str(destination),
+            ],
+            "acceptance seed clone failed",
+        )
+    finally:
+        fcntl.flock(descriptor, fcntl.LOCK_UN)
+        os.close(descriptor)
+    fail(
+        git(destination, "rev-parse", "HEAD") == revision,
+        "acceptance seed clone revision differs",
+    )
+    fail(
+        not (destination / ".git/objects/info/alternates").exists(),
+        "acceptance seed clone borrows an object database",
+    )
+
+
 def _create_shared_worktree(
     source: Path,
     carrier: Path,
@@ -1669,6 +1792,253 @@ def _create_shared_worktree(
         and not git(destination, "status", "--porcelain"),
         f"{label}: worktree repository identity differs",
     )
+
+def _tier_index_rows(
+    index: dict[str, Any],
+    label: str,
+) -> tuple[list[tuple[Path, str]], list[dict[str, str]]]:
+    fail(
+        index.get("schema_version") == 1
+        and index.get("kind") == "west-acceptance-tier-workspace"
+        and isinstance(index.get("profile"), str)
+        and isinstance(index.get("manifest_revision"), str),
+        f"{label}: identity is invalid",
+    )
+    rows: list[tuple[Path, str]] = []
+    for project_index, row in enumerate(index.get("projects", [])):
+        fail(
+            isinstance(row, dict)
+            and set(row) == {"path", "revision"}
+            and isinstance(row.get("path"), str)
+            and row["path"]
+            and not Path(row["path"]).is_absolute()
+            and ".." not in Path(row["path"]).parts,
+            f"{label}: project {project_index} is invalid",
+        )
+        rows.append(
+            (
+                Path(row["path"]),
+                oid(row.get("revision"), f"{label}: project {project_index} revision"),
+            )
+        )
+    fail(rows, f"{label}: projects are missing")
+    fail(
+        len({path.as_posix() for path, _revision in rows}) == len(rows),
+        f"{label}: project paths are duplicated",
+    )
+    generated = index.get("generated_locks")
+    fail(isinstance(generated, list) and generated, f"{label}: generated locks are missing")
+    generated_rows: list[dict[str, str]] = []
+    for generated_index, row in enumerate(generated):
+        fail(
+            isinstance(row, dict)
+            and set(row) == {"path", "sha256"}
+            and isinstance(row.get("path"), str)
+            and row["path"]
+            and not Path(row["path"]).is_absolute()
+            and ".." not in Path(row["path"]).parts
+            and isinstance(row.get("sha256"), str)
+            and re.fullmatch(r"[0-9a-f]{64}", row["sha256"]) is not None,
+            f"{label}: generated lock {generated_index} is invalid",
+        )
+        generated_rows.append(row)
+    return rows, generated_rows
+
+
+def _validate_tier_workspace(
+    destination_workspace: Path,
+    index: dict[str, Any],
+    *,
+    generated_sources: dict[str, Path] | None = None,
+) -> None:
+    rows, generated = _tier_index_rows(index, "tier workspace")
+    destination_manifest = destination_workspace / "darling-workspace"
+    fail(
+        _git_identity(destination_manifest, "HEAD", "tier manifest destination")
+        == oid(index["manifest_revision"], "tier manifest revision"),
+        "tier manifest destination HEAD differs",
+    )
+    generated_paths = {row["path"] for row in generated}
+    fail(
+        _git_status_paths(destination_manifest) <= generated_paths,
+        "tier manifest destination is dirty outside generated locks",
+    )
+    allowed_dirty = {
+        path: {
+            child.relative_to(path).as_posix()
+            for child, _child_revision in rows
+            if child != path and child.is_relative_to(path)
+        }
+        for path, _revision in rows
+    }
+    for path, revision in rows:
+        destination = contained(
+            destination_workspace,
+            path.as_posix(),
+            f"tier destination project {path}",
+        )
+        fail(
+            git(destination, "rev-parse", "HEAD") == revision,
+            f"tier destination project {path}: HEAD differs from frozen revision",
+        )
+        dirty = _git_status_paths(destination)
+        fail(
+            dirty <= allowed_dirty[path],
+            f"tier destination project {path}: dirty outside nested projects: "
+            f"{sorted(dirty - allowed_dirty[path])}",
+        )
+    for row in generated:
+        destination = contained(
+            destination_manifest,
+            row["path"],
+            f"tier generated lock {row['path']}",
+        )
+        fail(
+            destination.is_file() and not destination.is_symlink(),
+            f"tier generated lock {row['path']}: cached file is unavailable",
+        )
+        data = destination.read_bytes()
+        fail(
+            hashlib.sha256(data).hexdigest() == row["sha256"],
+            f"tier generated lock {row['path']}: cached content differs",
+        )
+        if generated_sources is not None:
+            source = generated_sources.get(row["path"])
+            fail(
+                source is not None and data == source.read_bytes(),
+                f"tier generated lock {row['path']}: source content differs",
+            )
+
+
+def _advance_tier_workspace(
+    destination_workspace: Path,
+    source_workspace: Path,
+    manifest_workspace: Path,
+    previous_index: dict[str, Any],
+    workspace_index: dict[str, Any],
+    generated_paths: list[Path],
+) -> None:
+    previous_rows, previous_generated = _tier_index_rows(
+        previous_index, "previous tier workspace"
+    )
+    rows, _generated = _tier_index_rows(workspace_index, "updated tier workspace")
+    fail(
+        previous_index["profile"] == workspace_index["profile"],
+        "tier workspace profile changed",
+    )
+    fail(
+        [path for path, _revision in previous_rows]
+        == [path for path, _revision in rows],
+        "tier workspace project set changed",
+    )
+    _validate_tier_workspace(destination_workspace, previous_index)
+    carrier_root = destination_workspace / ".west-tier-repositories"
+    destination_manifest = destination_workspace / "darling-workspace"
+    previous_generated_bytes = {
+        row["path"]: (destination_manifest / row["path"]).read_bytes()
+        for row in previous_generated
+    }
+    updates: list[tuple[Path, Path, Path, str, str]] = []
+    previous_revisions = dict(previous_rows)
+    for index, (path, revision) in enumerate(rows):
+        previous = previous_revisions[path]
+        if previous == revision:
+            continue
+        updates.append(
+            (
+                contained(
+                    destination_workspace,
+                    path.as_posix(),
+                    f"tier destination project {path}",
+                ),
+                carrier_root / f"project-{index:04d}.git",
+                contained(
+                    source_workspace,
+                    path.as_posix(),
+                    f"tier source project {path}",
+                ),
+                previous,
+                revision,
+            )
+        )
+    previous_manifest_revision = oid(
+        previous_index["manifest_revision"], "previous tier manifest revision"
+    )
+    updated_manifest_revision = oid(
+        workspace_index["manifest_revision"], "updated tier manifest revision"
+    )
+    if previous_manifest_revision != updated_manifest_revision:
+        updates.append(
+            (
+                destination_manifest,
+                carrier_root / "manifest.git",
+                manifest_workspace,
+                previous_manifest_revision,
+                updated_manifest_revision,
+            )
+        )
+    completed: list[tuple[Path, str]] = []
+    try:
+        for destination, carrier, source, previous, revision in updates:
+            fail(
+                carrier.is_dir()
+                and not carrier.is_symlink()
+                and not (carrier / "objects/info/alternates").exists(),
+                f"tier workspace object carrier is not independent: {carrier}",
+            )
+            git(
+                carrier,
+                "fetch",
+                "--no-tags",
+                "--force",
+                "--",
+                str(source),
+                revision,
+            )
+            git(destination, "reset", "--hard", revision)
+            completed.append((destination, previous))
+        current_sources = {
+            source.relative_to(manifest_workspace).as_posix(): source
+            for source in generated_paths
+        }
+        for relative, source in current_sources.items():
+            destination = contained(
+                destination_manifest,
+                relative,
+                f"tier generated lock {relative}",
+            )
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            destination.write_bytes(source.read_bytes())
+        _validate_tier_workspace(
+            destination_workspace,
+            workspace_index,
+            generated_sources=current_sources,
+        )
+        write_result(destination_workspace / "tier-workspace-index.json", workspace_index)
+    except BaseException:
+        rollback_errors: list[str] = []
+        for destination, revision in reversed(completed):
+            try:
+                git(destination, "reset", "--hard", revision)
+            except AcceptanceError as error:
+                rollback_errors.append(str(error))
+        for relative, data in previous_generated_bytes.items():
+            try:
+                destination = contained(
+                    destination_manifest,
+                    relative,
+                    f"tier rollback generated lock {relative}",
+                )
+                destination.parent.mkdir(parents=True, exist_ok=True)
+                destination.write_bytes(data)
+            except (OSError, AcceptanceError) as error:
+                rollback_errors.append(str(error))
+        if rollback_errors:
+            raise AcceptanceError(
+                "tier workspace update rollback failed: " + "; ".join(rollback_errors)
+            )
+        raise
+
 
 
 def clone_tier_workspace(
@@ -1800,54 +2170,32 @@ def clone_tier_workspace(
             marker.is_file() and not marker.is_symlink(),
             "tier destination workspace is incomplete",
         )
-        fail(
-            load_json(marker) == workspace_index,
-            "tier destination workspace identity differs",
-        )
-        destination_manifest = destination_workspace / "darling-workspace"
-        fail(
-            _git_identity(destination_manifest, "HEAD", "tier manifest destination")
-            == manifest_revision,
-            "tier manifest destination HEAD differs",
-        )
-        allowed_manifest_dirty = {
-            source.relative_to(manifest_workspace).as_posix()
+        previous_index = load_json(marker)
+        current_sources = {
+            source.relative_to(manifest_workspace).as_posix(): source
             for source in generated_paths
         }
-        fail(
-            _git_status_paths(destination_manifest) <= allowed_manifest_dirty,
-            "tier manifest destination is dirty outside generated locks",
-        )
-        for path, revision in rows:
-            destination = contained(
+        if previous_index == workspace_index:
+            _validate_tier_workspace(
                 destination_workspace,
-                path.as_posix(),
-                f"tier destination project {path}",
+                workspace_index,
+                generated_sources=current_sources,
             )
-            fail(
-                git(destination, "rev-parse", "HEAD") == revision,
-                f"tier destination project {path}: HEAD differs from frozen revision",
-            )
-            dirty = _git_status_paths(destination)
-            fail(
-                dirty <= allowed_dirty[path],
-                f"tier destination project {path}: dirty outside nested projects: "
-                f"{sorted(dirty - allowed_dirty[path])}",
-            )
-        for source in generated_paths:
-            relative = source.relative_to(manifest_workspace)
-            destination = contained(
-                destination_manifest,
-                relative.as_posix(),
-                f"tier generated lock {relative}",
-            )
-            fail(
-                destination.is_file()
-                and not destination.is_symlink()
-                and destination.read_bytes() == source.read_bytes(),
-                f"tier generated lock {relative}: cached content differs",
-            )
-        print(f"tier workspace: reused {len(rows)} frozen projects")
+            print(f"tier workspace: reused {len(rows)} frozen projects")
+            return
+        fail(
+            independent_objects,
+            "tier destination workspace identity differs",
+        )
+        _advance_tier_workspace(
+            destination_workspace,
+            source_workspace,
+            manifest_workspace,
+            previous_index,
+            workspace_index,
+            generated_paths,
+        )
+        print(f"tier workspace: updated {len(rows)} frozen projects")
         return
     destination_workspace.mkdir(parents=True)
     carrier_root = destination_workspace / ".west-tier-repositories"
@@ -2049,6 +2397,11 @@ def main() -> None:
     seed.add_argument("--source-workspace", type=Path, required=True)
     seed.add_argument("--candidate-workspace", type=Path, required=True)
     seed.add_argument("--profile", required=True)
+    manifest_clone = sub.add_parser("clone-acceptance-seed")
+    manifest_clone.add_argument("--source", type=Path, required=True)
+    manifest_clone.add_argument("--seed", type=Path, required=True)
+    manifest_clone.add_argument("--revision", required=True)
+    manifest_clone.add_argument("--destination", type=Path, required=True)
     clone = sub.add_parser("clone-tier-workspace")
     clone.add_argument("--source-workspace", type=Path, required=True)
     clone.add_argument("--destination-workspace", type=Path, required=True)
@@ -2089,6 +2442,13 @@ def main() -> None:
                 args.source_workspace,
                 args.candidate_workspace,
                 args.profile,
+            )
+        elif args.action == "clone-acceptance-seed":
+            clone_acceptance_seed(
+                args.source,
+                args.seed,
+                args.revision,
+                args.destination,
             )
         elif args.action == "clone-tier-workspace":
             locked_clone_tier_workspace(

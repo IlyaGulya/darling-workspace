@@ -47,6 +47,14 @@ with tempfile.TemporaryDirectory() as temp:
     root = Path(temp)
     host = Host()
     service = RuntimeBuildService(host)
+    discover_artifacts = service._cache_artifacts
+
+    def counted_artifact_discovery(proof, build_root):
+        nonlocal_artifact_discovery[0] += 1
+        return discover_artifacts(proof, build_root)
+
+    nonlocal_artifact_discovery = [0]
+    service._cache_artifacts = counted_artifact_discovery
     service.build_artifacts(
         root / "source",
         {"runtime-artifacts": [{"build-targets": ["darlingserver"]}]},
@@ -122,6 +130,10 @@ with tempfile.TemporaryDirectory() as temp:
             and "ccache_hits=" in message
             and "ccache_hit_rate=" in message
             for message in host.messages
+        )
+        assert nonlocal_artifact_discovery == [1], (
+            "a warm no-op build must validate indexed artifacts without "
+            f"rediscovering the build tree: {nonlocal_artifact_discovery}"
         )
         (second / "bin/darling").write_bytes(b"mutated\n")
         try:

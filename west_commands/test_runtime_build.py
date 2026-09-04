@@ -486,11 +486,66 @@ class RuntimeBuildService:
         ).hexdigest()
         return root / digest, identity
 
+    @classmethod
+    def _validate_indexed_artifacts(
+        cls,
+        indexed: Any,
+        build_root: Path,
+    ) -> dict[str, tuple[int, int]]:
+        if not isinstance(indexed, list) or not indexed:
+            raise ValueError("runtime build cache artifact index is invalid")
+        observed: list[dict[str, Any]] = []
+        signatures: dict[str, tuple[int, int]] = {}
+        seen: set[str] = set()
+        for row in indexed:
+            if (
+                not isinstance(row, dict)
+                or set(row) != {"path", "sha256", "bytes", "mode"}
+                or not isinstance(row.get("path"), str)
+                or not row["path"]
+            ):
+                raise ValueError("runtime build cache artifact index is invalid")
+            relative = Path(row["path"])
+            if relative.is_absolute() or ".." in relative.parts or row["path"] in seen:
+                raise ValueError("runtime build cache artifact path is invalid")
+            seen.add(row["path"])
+            path = build_root / relative
+            try:
+                binding = cls._file_binding(path, build_root)
+                metadata = path.stat()
+            except (OSError, ValueError) as error:
+                raise ValueError(
+                    "runtime build cache artifacts differ from their index"
+                ) from error
+            observed.append(binding)
+            signatures[row["path"]] = (metadata.st_size, metadata.st_mtime_ns)
+        if observed != indexed:
+            raise ValueError("runtime build cache artifacts differ from their index")
+        return signatures
+
+    @staticmethod
+    def _cached_artifact_signatures_unchanged(
+        build_root: Path,
+        signatures: dict[str, tuple[int, int]],
+    ) -> bool:
+        for relative, signature in signatures.items():
+            try:
+                metadata = (build_root / relative).stat()
+            except OSError:
+                return False
+            if (metadata.st_size, metadata.st_mtime_ns) != signature:
+                return False
+        return True
+
     def _read_runtime_cache(
         self,
         entry: Path,
         identity: dict[str, Any],
-    ) -> Path | None:
+    ) -> tuple[
+        Path,
+        dict[str, tuple[int, int]],
+        list[dict[str, Any]],
+    ] | None:
         marker = entry / "cache-index.json"
         if not marker.is_file() or marker.is_symlink():
             return None
@@ -507,10 +562,9 @@ class RuntimeBuildService:
             or build_root.is_symlink()
         ):
             raise ValueError("runtime build cache identity is invalid")
-        observed = self._cache_artifacts(identity["proof"], build_root)
-        if value.get("artifacts") != observed:
-            raise ValueError("runtime build cache artifacts differ from their index")
-        return build_root
+        indexed = value.get("artifacts")
+        signatures = self._validate_indexed_artifacts(indexed, build_root)
+        return build_root, signatures, indexed
 
     def _write_runtime_cache(
         self,
@@ -558,8 +612,12 @@ class RuntimeBuildService:
             fcntl.flock(lock, fcntl.LOCK_EX)
             cached = self._read_runtime_cache(entry, identity) if entry.exists() else None
             if cached is not None:
-                yield cached, True
-                self._write_runtime_cache(entry, identity, cached)
+                build_root, signatures, indexed = cached
+                yield build_root, True
+                if not self._cached_artifact_signatures_unchanged(
+                    build_root, signatures
+                ):
+                    self._validate_indexed_artifacts(indexed, build_root)
                 return
             if entry.exists():
                 shutil.rmtree(entry)

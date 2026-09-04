@@ -468,7 +468,9 @@ with Path(os.environ["DEV_CHECK_FAKE_LOG"]).open("a", encoding="utf-8") as strea
     stream.write(json.dumps({"authority": "tier", "argv": argv}) + "\n")
 mode = os.environ.get("DEV_CHECK_FAKE_MODE", "pass")
 if argv == ["host"]:
-    assert Path.cwd().parent.name == "lock-first"
+    assert Path.cwd().parent.name == "guest"
+    assert os.environ["WEST_PREMATERIALIZED_PROFILE"] == "homebrew"
+    assert Path(os.environ["CCACHE_DIR"]).name == "host-ccache-v1"
     assert Path(os.environ["HOME"]).name == "final-host"
     barrier("acceptance-host-tier")
     if mode in {"fail-final-tier", "interrupt-final-tier"}:
@@ -508,7 +510,14 @@ from pathlib import Path
 
 name = Path(__file__).name
 action = sys.argv[1:2]
-if name == "patch_stack_lock_first_acceptance.py" and action == ["seed-source-refs"]:
+if (
+    name == "patch_stack_lock_first_acceptance.py"
+    and action == ["clone-acceptance-seed"]
+):
+    authority = "manifest-clone"
+elif (
+    name == "patch_stack_lock_first_acceptance.py" and action == ["seed-source-refs"]
+):
     authority = "seed"
 elif (
     name == "patch_stack_lock_first_acceptance.py"
@@ -533,7 +542,17 @@ else:
     }[name]
 with Path(os.environ["DEV_CHECK_FAKE_LOG"]).open("a", encoding="utf-8") as stream:
     stream.write(json.dumps({"authority": authority, "argv": sys.argv[1:]}) + "\n")
-if authority == "seed":
+if authority == "manifest-clone":
+    source = Path(sys.argv[sys.argv.index("--source") + 1])
+    destination = Path(sys.argv[sys.argv.index("--destination") + 1])
+    subprocess.run(
+        ["git", "clone", "--no-local", "--no-hardlinks", "--no-checkout", source, destination],
+        check=True,
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+    )
+elif authority == "seed":
     pass
 elif authority == "candidate-materialize":
     cache = Path(sys.argv[sys.argv.index("--cache") + 1])
@@ -1259,7 +1278,7 @@ with tempfile.TemporaryDirectory(prefix="dev-check-contract-") as temporary:
     checkpoint_root = Path(
         acceptance["inputs"]["acceptance_checkpoint"]["path"]
     ).parent
-    materialized_root = checkpoint_root / "materialized-v1" / checkpoint_key
+    materialized_root = checkpoint_root / "materialized-v2" / "homebrew"
     guest_parent = materialized_root / "guest"
     guest = guest_parent / "darling-workspace"
     artifacts = scratch / "evidence"
@@ -1273,6 +1292,8 @@ with tempfile.TemporaryDirectory(prefix="dev-check-contract-") as temporary:
         / f"candidate-{acceptance['inputs']['acceptance_checkpoint']['key']}"
     )
     head = acceptance["inputs"]["package_snapshot"]["manifest_head"]
+    acceptance_seed = checkpoint_root / "manifest-seed-v1"
+    acceptance_helper = repo / "ci" / "patch_stack_lock_first_acceptance.py"
     acceptance_expected = [
         (
             "patch-check",
@@ -1306,24 +1327,32 @@ with tempfile.TemporaryDirectory(prefix="dev-check-contract-") as temporary:
         (
             "acceptance-clone-control",
             [
-                "git",
-                "clone",
-                "--no-local",
-                "--no-hardlinks",
-                "--no-checkout",
+                str(Path(sys.executable).resolve()),
+                str(acceptance_helper),
+                "clone-acceptance-seed",
+                "--source",
                 str(repo),
+                "--seed",
+                str(acceptance_seed),
+                "--revision",
+                head,
+                "--destination",
                 str(control),
             ],
         ),
         (
             "acceptance-clone-candidate",
             [
-                "git",
-                "clone",
-                "--no-local",
-                "--no-hardlinks",
-                "--no-checkout",
+                str(Path(sys.executable).resolve()),
+                str(acceptance_helper),
+                "clone-acceptance-seed",
+                "--source",
                 str(repo),
+                "--seed",
+                str(acceptance_seed),
+                "--revision",
+                head,
+                "--destination",
                 str(candidate),
             ],
         ),
@@ -1508,7 +1537,7 @@ with tempfile.TemporaryDirectory(prefix="dev-check-contract-") as temporary:
         ),
         (
             "acceptance-host-tier",
-            [str(candidate / "ci" / "run-test-tier.sh"), "host"],
+            [str(guest / "ci" / "run-test-tier.sh"), "host"],
         ),
         (
             "acceptance-guest-smoke",
@@ -1551,7 +1580,16 @@ with tempfile.TemporaryDirectory(prefix="dev-check-contract-") as temporary:
             "DARLING_WEST_UPDATE_PATH_CACHE": str(repo.parent),
         }
     )
+    guest_workspace_lock = materialized_root / ".guest.lock"
     final_host_env = isolated_env("final-host")
+    final_host_env["CCACHE_DIR"] = str(checkpoint_root / "host-ccache-v1")
+    final_host_env["CCACHE_MAXSIZE"] = "2G"
+    final_host_env["WEST_HOST_CONTRACT_CACHE_DIR"] = str(
+        checkpoint_root / "host-contract-cache-v1"
+    )
+    final_host_env["WEST_HOST_CONTRACT_CACHE_KEY"] = checkpoint_key
+    final_host_env["WEST_MATERIALIZED_WORKSPACE_LOCK"] = str(guest_workspace_lock)
+    final_host_env["WEST_PREMATERIALIZED_PROFILE"] = "homebrew"
     guest_env = isolated_env("guest")
     guest_env.update(
         dev_check.RuntimeBuildService.derive_ccache_environment(guest_env)
@@ -1559,21 +1597,26 @@ with tempfile.TemporaryDirectory(prefix="dev-check-contract-") as temporary:
     guest_env["CCACHE_DIR"] = str(checkpoint_root / "runtime-ccache-v1")
     guest_env["CCACHE_MAXSIZE"] = "4G"
     guest_env["DARLING_TIER_DEFER_GLOBAL_CLEANUP"] = "1"
-    guest_workspace_lock = materialized_root / ".guest.lock"
     guest_prepare_env = dict(candidate_env)
     guest_prepare_env["WEST_MATERIALIZED_WORKSPACE_LOCK"] = str(
         guest_workspace_lock
     )
+    stable_runtime_key = hashlib.sha256(
+        b"west-runtime-build-v2:homebrew"
+    ).hexdigest()
     guest_env["WEST_RUNTIME_BUILD_CACHE_DIR"] = str(
-        checkpoint_root / "runtime-build-v1" / checkpoint_key
+        checkpoint_root / "runtime-build-v2" / "homebrew"
     )
-    guest_env["WEST_RUNTIME_BUILD_CACHE_KEY"] = checkpoint_key
+    guest_env["WEST_RUNTIME_BUILD_CACHE_KEY"] = stable_runtime_key
     guest_env["WEST_MATERIALIZED_WORKSPACE_LOCK"] = str(guest_workspace_lock)
     guest_env["WEST_PREMATERIALIZED_RUNTIME_SOURCE_ROOT"] = str(
         guest_parent / "darling"
     )
+    workspace_identity = hashlib.sha256(
+        str(repo.resolve()).encode("utf-8")
+    ).hexdigest()[:12]
     guest_env["DARLING_SMOKE_PREFIX"] = (
-        f"/tmp/darling-rootless-smoke-{checkpoint_key[:16]}"
+        f"/tmp/darling-rootless-smoke-{workspace_identity}-homebrew"
     )
     assert [(step["cwd"], step["env"]) for step in acceptance["steps"]] == [
         *((str(repo), {}) for _ in range(4)),
@@ -1587,7 +1630,7 @@ with tempfile.TemporaryDirectory(prefix="dev-check-contract-") as temporary:
         (str(control), oracle_env),
         *((str(candidate), candidate_env) for _ in range(4)),
         (str(candidate), guest_prepare_env),
-        (str(candidate), final_host_env),
+        (str(guest), final_host_env),
         (str(guest), guest_env),
         (str(candidate), candidate_env),
     ]
@@ -1759,6 +1802,8 @@ with tempfile.TemporaryDirectory(prefix="dev-check-contract-") as temporary:
         "patch-verify": ("west", 1),
         "host-materialized-test": ("west", 1),
         "doctor": ("west", 1),
+        "acceptance-clone-control": ("manifest-clone", 2),
+        "acceptance-clone-candidate": ("manifest-clone", 2),
         "acceptance-bootstrap-candidate": ("bootstrap", 1),
         "acceptance-configure-candidate-identity": ("west", 1),
         "acceptance-seed-candidate-refs": ("seed", 2),
@@ -1794,11 +1839,24 @@ with tempfile.TemporaryDirectory(prefix="dev-check-contract-") as temporary:
                     }
                 )
     observed_acceptance_log = load_log(log)
-    parallel_start = 7
-    parallel_end = parallel_start + len(dev_check._CHECKPOINT_STEP_NAMES)
-    assert observed_acceptance_log[:parallel_start] == expected_acceptance_log[
-        :parallel_start
+    initial_serial_end = 4
+    clone_end = initial_serial_end + 2
+    assert observed_acceptance_log[:initial_serial_end] == expected_acceptance_log[
+        :initial_serial_end
     ]
+    assert sorted(
+        observed_acceptance_log[initial_serial_end:clone_end],
+        key=lambda row: row["argv"],
+    ) == sorted(
+        expected_acceptance_log[initial_serial_end:clone_end],
+        key=lambda row: row["argv"],
+    )
+    pre_checkpoint_end = clone_end + 3
+    assert observed_acceptance_log[clone_end:pre_checkpoint_end] == (
+        expected_acceptance_log[clone_end:pre_checkpoint_end]
+    )
+    parallel_start = pre_checkpoint_end
+    parallel_end = parallel_start + len(dev_check._CHECKPOINT_STEP_NAMES)
     assert sorted(
         observed_acceptance_log[parallel_start:parallel_end],
         key=lambda row: (row["authority"], row["argv"]),
@@ -1829,6 +1887,9 @@ with tempfile.TemporaryDirectory(prefix="dev-check-contract-") as temporary:
     )
     assert observed_acceptance_log[final_parallel_end:] == (
         expected_acceptance_log[final_parallel_end:]
+    ), (
+        observed_acceptance_log[final_parallel_end:],
+        expected_acceptance_log[final_parallel_end:],
     )
 
     checkpoint_binding = acceptance["inputs"]["acceptance_checkpoint"]
@@ -2724,6 +2785,46 @@ with tempfile.TemporaryDirectory(prefix="dev-check-contract-") as temporary:
         ),
         "outside the active manifest repository",
     )
+
+    package_module_state = [0, 0]
+    package_module_lock = threading.Lock()
+
+    def verify_module_concurrently(module):
+        with package_module_lock:
+            package_module_state[0] += 1
+            package_module_state[1] = max(
+                package_module_state[1], package_module_state[0]
+            )
+        time.sleep(0.05)
+        with package_module_lock:
+            package_module_state[0] -= 1
+        return module.upper()
+
+    assert dev_check._parallel_package_modules(
+        ["first", "second"], verify_module_concurrently
+    ) == ["FIRST", "SECOND"]
+    assert package_module_state[1] == 2
+
+    export_cache_path, export_cache_key = dev_check._package_export_cache_path(
+        repo, acceptance_receipt
+    )
+    equivalent_receipt = json.loads(json.dumps(acceptance_receipt))
+    equivalent_receipt["inputs"]["acceptance_checkpoint"]["key"] = "b" * 64
+    equivalent_path, equivalent_key = dev_check._package_export_cache_path(
+        repo, equivalent_receipt
+    )
+    assert (equivalent_path, equivalent_key) == (
+        export_cache_path,
+        export_cache_key,
+    )
+    changed_export_receipt = json.loads(json.dumps(acceptance_receipt))
+    changed_export_receipt["inputs"]["package_snapshot"]["content"][
+        "locks/patch-stack"
+    ]["sha256"] = "c" * 64
+    _changed_path, changed_key = dev_check._package_export_cache_path(
+        repo, changed_export_receipt
+    )
+    assert changed_key != export_cache_key
 
     package_output = outside / "package"
     package_receipt_path = outside / "package-receipt.json"

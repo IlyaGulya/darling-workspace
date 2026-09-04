@@ -97,8 +97,9 @@ for contract in \
 do
 	grep -F -q "\"tests/$contract\"" "$host_runner"
 done
-grep -F -q 'ThreadPoolExecutor(max_workers=_worker_count())' "$host_runner"
-grep -F -q '"--materialize-profile"' "$host_runner"
+grep -F -q 'default = min(8, max(1, os.cpu_count() or 1), len(CONTRACTS) + 1)' "$host_runner"
+grep -F -q 'return run_commands(' "$host_runner"
+grep -F -q 'else ["--materialize-profile"]' "$host_runner"
 "$repo/ci/run-test-tier.sh" guest-smoke
 deferred_log="$tmp/deferred-cleanup-commands"
 CI_CONTRACT_LOG="$deferred_log" \

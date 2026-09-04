@@ -85,6 +85,60 @@ def main() -> None:
         write_graph_profile("cycle-b", "cycle-a")
         graph_must_fail("cycle-a")
 
+        acceptance_source = root / "acceptance-source"
+        acceptance_source.mkdir()
+        git(acceptance_source, "init", "-q")
+        git(acceptance_source, "config", "user.email", "seed@example.invalid")
+        git(acceptance_source, "config", "user.name", "Seed Contract")
+        (acceptance_source / "value").write_text("first\n")
+        git(acceptance_source, "add", "value")
+        git(acceptance_source, "commit", "-qm", "first")
+        first_revision = git(acceptance_source, "rev-parse", "HEAD")
+        acceptance_seed = root / "acceptance-seed.git"
+        first_clone = root / "acceptance-first"
+        second_clone = root / "acceptance-second"
+        lock_first_acceptance.clone_acceptance_seed(
+            acceptance_source,
+            acceptance_seed,
+            first_revision,
+            first_clone,
+        )
+        seed_marker = acceptance_seed / "contract-marker"
+        seed_marker.write_text("persistent\n")
+        lock_first_acceptance.clone_acceptance_seed(
+            acceptance_source,
+            acceptance_seed,
+            first_revision,
+            second_clone,
+        )
+        assert seed_marker.read_text() == "persistent\n"
+        for clone in (first_clone, second_clone):
+            assert git(clone, "rev-parse", "HEAD") == first_revision
+            assert git(clone, "rev-parse", "--is-shallow-repository") == "true"
+            assert not (clone / ".git/objects/info/alternates").exists()
+        git(first_clone, "update-ref", "refs/heads/clone-local", first_revision)
+        assert (
+            subprocess.run(
+                ["git", "show-ref", "--verify", "refs/heads/clone-local"],
+                cwd=second_clone,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+            ).returncode
+            != 0
+        )
+        (acceptance_source / "value").write_text("second\n")
+        git(acceptance_source, "commit", "-qam", "second")
+        second_revision = git(acceptance_source, "rev-parse", "HEAD")
+        third_clone = root / "acceptance-third"
+        lock_first_acceptance.clone_acceptance_seed(
+            acceptance_source,
+            acceptance_seed,
+            second_revision,
+            third_clone,
+        )
+        assert seed_marker.read_text() == "persistent\n"
+        assert git(third_clone, "rev-parse", "HEAD") == second_revision
+
         seed_source_workspace = root / "seed-source"
         seed_candidate_workspace = root / "seed-candidate"
         seed_manifest_workspace = seed_candidate_workspace / "darling-workspace"
@@ -254,6 +308,61 @@ def main() -> None:
             / "project-0000.git"
         )
         assert not (persistent_carrier / "objects/info/alternates").exists()
+        persistent_project = persistent_destination / "fixture/module"
+        persistent_inode = persistent_project.stat().st_ino
+        (tier_project / "value").write_text("updated\n")
+        git(tier_project, "add", "value")
+        git(tier_project, "commit", "-qm", "updated project")
+        updated_revision = git(tier_project, "rev-parse", "HEAD")
+        tier_lock.write_text(
+            yaml.safe_dump(
+                {
+                    "manifest": {
+                        "projects": [
+                            {
+                                "name": "fixture-module",
+                                "path": "fixture/module",
+                                "revision": updated_revision,
+                            }
+                        ]
+                    }
+                },
+                sort_keys=False,
+            )
+            + "# generated update\n"
+        )
+        (tier_manifest / "revision-marker").write_text("updated\n")
+        git(tier_manifest, "add", "revision-marker")
+        git(tier_manifest, "commit", "-qm", "updated manifest")
+        tier_lock_data = tier_lock.read_bytes()
+        candidate_manifest.write_text(
+            json.dumps(
+                {
+                    "generated_profile_locks": [
+                        {
+                            "path": "patches/homebrew/west.lock.yml",
+                            "size": len(tier_lock_data),
+                            "sha256": hashlib.sha256(tier_lock_data).hexdigest(),
+                        }
+                    ]
+                }
+            )
+        )
+        os.environ["WEST_MATERIALIZED_WORKSPACE_LOCK"] = str(persistent_lock)
+        try:
+            lock_first_acceptance.locked_clone_tier_workspace(
+                tier_manifest,
+                tier_source,
+                persistent_destination,
+                "homebrew",
+                candidate_manifest,
+            )
+        finally:
+            os.environ.pop("WEST_MATERIALIZED_WORKSPACE_LOCK", None)
+        assert persistent_project.stat().st_ino == persistent_inode
+        assert git(persistent_project, "rev-parse", "HEAD") == updated_revision
+        assert (persistent_project / "value").read_text() == "updated\n"
+        assert not (persistent_carrier / "objects/info/alternates").exists()
         git(cloned_project, "update-ref", "refs/acceptance/isolated", tier_revision)
         assert (
             subprocess.run(
@@ -271,7 +380,7 @@ def main() -> None:
             != 0
         )
         (cloned_project / "value").write_text("isolated\n")
-        assert (tier_project / "value").read_text() == "frozen\n"
+        assert (tier_project / "value").read_text() == "updated\n"
         try:
             lock_first_acceptance.clone_tier_workspace(
                 tier_manifest,

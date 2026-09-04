@@ -1,6 +1,7 @@
 """Canonical review/recovery mbox export from immutable schema-v2 locks."""
 from __future__ import annotations
 
+import concurrent.futures
 import hashlib
 import json
 import re
@@ -120,6 +121,79 @@ def _safe_relative_mbox(module: str, patch: str) -> Path:
     return module_path / patch_path.with_suffix(".mbox")
 
 
+def _export_module(
+    transaction: str,
+    scratch: Path,
+    staged: Path,
+    module_index: int,
+    module: str,
+    entries: list[dict[str, str]],
+) -> tuple[int, list[dict[str, Any]]]:
+    repo = scratch / str(module_index)
+    repo.mkdir()
+    _git(repo, "init", "-q")
+    locks: list[tuple[dict[str, str], dict[str, Any]]] = []
+    mirrors: set[str] = set()
+    for entry in entries:
+        try:
+            lock = patch_stack_materialize.load_lock(Path(entry["lock_path"]))
+        except (
+            OSError,
+            ValueError,
+            patch_stack_materialize.MaterializeError,
+        ) as error:
+            raise ExportError(f"{entry['patch']}: invalid immutable lock: {error}") from error
+        locks.append((entry, lock))
+        mirrors.add(lock["mirror"]["url"])
+    if len(mirrors) != 1:
+        raise ExportError(f"{module}: immutable locks use multiple mirrors")
+    _git(repo, "remote", "add", "immutable", next(iter(mirrors)))
+    refs: list[tuple[str, str]] = []
+    specs: list[str] = []
+    for index, (_entry, lock) in enumerate(locks):
+        base_ref = f"refs/export/{transaction}/{index}/base"
+        source_ref = f"refs/export/{transaction}/{index}/source"
+        refs.append((base_ref, source_ref))
+        specs.extend(
+            [
+                f"{lock['mirror']['base_ref']}:{base_ref}",
+                f"{lock['mirror']['source_ref']}:{source_ref}",
+            ]
+        )
+    _git(repo, "fetch", "--no-tags", "immutable", *specs)
+    _assert_clean_odb(repo)
+    rows: list[dict[str, Any]] = []
+    for (entry, lock), (base_ref, source_ref) in zip(locks, refs, strict=True):
+        try:
+            proof = patch_stack_materialize.validate_fetched_lock(
+                repo, lock, base_ref, source_ref
+            )
+        except patch_stack_materialize.MaterializeError as error:
+            raise ExportError(f"{entry['patch']}: {error}") from error
+        content, patch_ids = _mbox(repo, proof["ordered_commits"])
+        relative = _safe_relative_mbox(module, entry["patch"])
+        destination = staged / "mbox" / relative
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        destination.write_bytes(content)
+        rows.append(
+            {
+                "module": module,
+                "patch": entry["patch"],
+                "lock": Path(entry["lock_path"]).name,
+                "base": proof["base_oid"],
+                "source": proof["source_oid"],
+                "ordered_commits": proof["ordered_commits"],
+                "commit_count": len(proof["ordered_commits"]),
+                "resulting_tree": proof["resulting_tree"],
+                "mbox": str(Path("mbox") / relative),
+                "sha256": hashlib.sha256(content).hexdigest(),
+                "stable_patch_ids": patch_ids,
+            }
+        )
+    _git(repo, "fsck", "--no-dangling")
+    return module_index, rows
+
+
 def export_profile(profile: str, plan: LockFirstPlan, output: Path) -> dict[str, Any]:
     """Export one typed profile atomically, leaving no Git object payload."""
     if output.exists() or output.is_symlink():
@@ -149,73 +223,43 @@ def export_profile(profile: str, plan: LockFirstPlan, output: Path) -> dict[str,
         entries_by_module: dict[str, list[dict[str, str]]] = {}
         for entry in plan:
             entries_by_module.setdefault(entry["module"], []).append(entry)
-        fetch_count = 0
-        for module_index, module in enumerate(plan.batch["module_order"]):
-            entries = entries_by_module[module]
-            repo = scratch / str(module_index)
-            repo.mkdir()
-            _git(repo, "init", "-q")
-            locks: list[tuple[dict[str, str], dict[str, Any]]] = []
-            mirrors: set[str] = set()
-            for entry in entries:
-                try:
-                    lock = patch_stack_materialize.load_lock(Path(entry["lock_path"]))
-                except (
-                    OSError,
-                    ValueError,
-                    patch_stack_materialize.MaterializeError,
-                ) as error:
-                    raise ExportError(f"{entry['patch']}: invalid immutable lock: {error}") from error
-                locks.append((entry, lock))
-                mirrors.add(lock["mirror"]["url"])
-            if len(mirrors) != 1:
-                raise ExportError(f"{module}: immutable locks use multiple mirrors")
-            _git(repo, "remote", "add", "immutable", next(iter(mirrors)))
-            refs: list[tuple[str, str]] = []
-            specs: list[str] = []
-            for index, (_entry, lock) in enumerate(locks):
-                base_ref = f"refs/export/{transaction}/{index}/base"
-                source_ref = f"refs/export/{transaction}/{index}/source"
-                refs.append((base_ref, source_ref))
-                specs.extend(
-                    [
-                        f"{lock['mirror']['base_ref']}:{base_ref}",
-                        f"{lock['mirror']['source_ref']}:{source_ref}",
-                    ]
+        module_rows: list[list[dict[str, Any]] | None] = [
+            None
+            for _module in plan.batch["module_order"]
+        ]
+        with concurrent.futures.ThreadPoolExecutor(
+            max_workers=min(8, len(module_rows))
+        ) as pool:
+            futures = [
+                pool.submit(
+                    _export_module,
+                    transaction,
+                    scratch,
+                    staged,
+                    module_index,
+                    module,
+                    entries_by_module[module],
                 )
-            _git(repo, "fetch", "--no-tags", "immutable", *specs)
-            fetch_count += 1
-            _assert_clean_odb(repo)
-            for (entry, lock), (base_ref, source_ref) in zip(
-                locks, refs, strict=True
-            ):
-                try:
-                    proof = patch_stack_materialize.validate_fetched_lock(
-                        repo, lock, base_ref, source_ref
-                    )
-                except patch_stack_materialize.MaterializeError as error:
-                    raise ExportError(f"{entry['patch']}: {error}") from error
-                content, patch_ids = _mbox(repo, proof["ordered_commits"])
-                relative = _safe_relative_mbox(module, entry["patch"])
-                destination = staged / "mbox" / relative
-                destination.parent.mkdir(parents=True, exist_ok=True)
-                destination.write_bytes(content)
-                rows.append(
-                    {
-                        "module": module,
-                        "patch": entry["patch"],
-                        "lock": Path(entry["lock_path"]).name,
-                        "base": proof["base_oid"],
-                        "source": proof["source_oid"],
-                        "ordered_commits": proof["ordered_commits"],
-                        "commit_count": len(proof["ordered_commits"]),
-                        "resulting_tree": proof["resulting_tree"],
-                        "mbox": str(Path("mbox") / relative),
-                        "sha256": hashlib.sha256(content).hexdigest(),
-                        "stable_patch_ids": patch_ids,
-                    }
-                )
-            _git(repo, "fsck", "--no-dangling")
+                for module_index, module in enumerate(plan.batch["module_order"])
+            ]
+            for future in concurrent.futures.as_completed(futures):
+                module_index, exported_rows = future.result()
+                module_rows[module_index] = exported_rows
+        fail_missing = [
+            plan.batch["module_order"][index]
+            for index, exported_rows in enumerate(module_rows)
+            if exported_rows is None
+        ]
+        if fail_missing:
+            raise ExportError(
+                "canonical export omitted modules: " + ", ".join(fail_missing)
+            )
+        rows = [
+            row
+            for exported_rows in module_rows
+            for row in (exported_rows or [])
+        ]
+        fetch_count = len(module_rows)
         observed = [
             {"module": entry["module"], "patch": entry["patch"]} for entry in rows
         ]

@@ -7,6 +7,8 @@ import json
 import subprocess
 import sys
 import tempfile
+import threading
+import time
 from pathlib import Path
 
 import yaml
@@ -155,6 +157,54 @@ with tempfile.TemporaryDirectory(prefix="patch-stack-export-contract-") as temp:
         path.suffix in {".bundle", ".pack", ".idx"}
         for path in first.rglob("*")
     )
+
+    parallel_entries = [
+        dict(entries[0], module="vendor/a", patch="review/a.patch"),
+        dict(entries[1], module="vendor/b", patch="review/b.patch"),
+    ]
+    parallel_order = [
+        {"module": entry["module"], "patch": entry["patch"]}
+        for entry in parallel_entries
+    ]
+    parallel_plan = LockFirstPlan(
+        parallel_entries,
+        {
+            "batch_id": "parallel-export",
+            "expected_count": 2,
+            "module_order": ["vendor/a", "vendor/b"],
+            "series_order": parallel_order,
+        },
+    )
+    original_export_module = patch_stack_export._export_module
+    active = 0
+    maximum_active = 0
+    activity_lock = threading.Lock()
+    def observed_export_module(*args, **kwargs):
+        with activity_lock:
+            nonlocal_state[0] += 1
+            nonlocal_state[1] = max(nonlocal_state[1], nonlocal_state[0])
+        time.sleep(0.1)
+        try:
+            return original_export_module(*args, **kwargs)
+        finally:
+            with activity_lock:
+                nonlocal_state[0] -= 1
+
+    nonlocal_state = [active, maximum_active]
+    patch_stack_export._export_module = observed_export_module
+    try:
+        parallel_output = root / "parallel"
+        parallel_evidence = patch_stack_export.export_profile(
+            "fixture", parallel_plan, parallel_output
+        )
+    finally:
+        patch_stack_export._export_module = original_export_module
+    assert nonlocal_state[1] == 2, nonlocal_state
+    assert parallel_evidence["series_order"] == parallel_order
+    assert [
+        {"module": row["module"], "patch": row["patch"]}
+        for row in parallel_evidence["series"]
+    ] == parallel_order
 
     must_fail(
         lambda: patch_stack_export.export_profile("fixture", plan, first),

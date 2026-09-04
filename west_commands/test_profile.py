@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import json
+import os
 import subprocess
 from contextlib import contextmanager
 from pathlib import Path
@@ -35,6 +37,63 @@ class ProfileOperationsMixin:
         return modules
 
     def _profile_is_applied(self, profile: str) -> bool:
+        prematerialized = os.environ.get("WEST_PREMATERIALIZED_PROFILE")
+        raw_lock = os.environ.get("WEST_MATERIALIZED_WORKSPACE_LOCK")
+        if prematerialized == profile and raw_lock:
+            lock_path = Path(raw_lock)
+            workspace = lock_path.parent / "guest"
+            manifest_repo = workspace / "darling-workspace"
+            marker = workspace / "tier-workspace-index.json"
+            if (
+                not lock_path.is_absolute()
+                or workspace.is_symlink()
+                or manifest_repo.resolve() != Path(self.manifest.repo_abspath).resolve()
+                or not marker.is_file()
+                or marker.is_symlink()
+            ):
+                return False
+            try:
+                index = json.loads(marker.read_text(encoding="utf-8"))
+            except (OSError, json.JSONDecodeError):
+                return False
+            if (
+                not isinstance(index, dict)
+                or index.get("schema_version") != 1
+                or index.get("kind") != "west-acceptance-tier-workspace"
+                or index.get("profile") != profile
+            ):
+                return False
+            projects = {
+                row.get("path"): row.get("revision")
+                for row in index.get("projects", [])
+                if isinstance(row, dict)
+            }
+            expected = {
+                "darling-workspace": index.get("manifest_revision"),
+                **{
+                    module: projects.get(module)
+                    for module in self._profile_modules(profile)
+                },
+            }
+            for module, revision in expected.items():
+                repo = (
+                    Path(self.manifest.repo_abspath)
+                    if module == "darling-workspace"
+                    else self._project_path(module)
+                )
+                if (
+                    not isinstance(revision, str)
+                    or subprocess.run(
+                        ["git", "rev-parse", "HEAD"],
+                        cwd=repo,
+                        capture_output=True,
+                        text=True,
+                        check=False,
+                    ).stdout.strip()
+                    != revision
+                ):
+                    return False
+            return True
         expected = f"integration/{profile}"
         for module in self._profile_modules(profile):
             repo = self._project_path(module)
