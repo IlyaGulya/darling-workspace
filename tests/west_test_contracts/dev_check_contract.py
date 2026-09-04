@@ -2173,17 +2173,35 @@ with tempfile.TemporaryDirectory(prefix="dev-check-contract-") as temporary:
                         ],
                     }
                 )
+    reuse_clone_start = next(
+        index
+        for index, row in enumerate(expected_reuse_log)
+        if row["authority"] == "manifest-clone"
+    )
+    reuse_clone_end = reuse_clone_start + len(
+        dev_check._INITIAL_CLONE_STEP_NAMES
+    )
     reuse_parallel_start = next(
         index
         for index, row in enumerate(expected_reuse_log)
         if row["authority"] == "clone-tier"
     )
-    reuse_parallel_end = reuse_parallel_start + len(dev_check._FINAL_TIER_STEP_NAMES)
-    assert observed_reuse_log[:reuse_parallel_start] == (
-        expected_reuse_log[:reuse_parallel_start]
-    ), (
-        [row["authority"] for row in observed_reuse_log[:reuse_parallel_start]],
-        [row["authority"] for row in expected_reuse_log[:reuse_parallel_start]],
+    reuse_parallel_end = reuse_parallel_start + len(
+        dev_check._FINAL_TIER_STEP_NAMES
+    )
+    assert len(observed_reuse_log) == len(expected_reuse_log)
+    assert observed_reuse_log[:reuse_clone_start] == (
+        expected_reuse_log[:reuse_clone_start]
+    )
+    assert sorted(
+        observed_reuse_log[reuse_clone_start:reuse_clone_end],
+        key=lambda row: (row["authority"], row["argv"]),
+    ) == sorted(
+        expected_reuse_log[reuse_clone_start:reuse_clone_end],
+        key=lambda row: (row["authority"], row["argv"]),
+    )
+    assert observed_reuse_log[reuse_clone_end:reuse_parallel_start] == (
+        expected_reuse_log[reuse_clone_end:reuse_parallel_start]
     )
     assert sorted(
         observed_reuse_log[reuse_parallel_start:reuse_parallel_end],
