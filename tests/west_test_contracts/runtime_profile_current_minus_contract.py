@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import json
+import os
 import sys
 import tempfile
 import types
@@ -106,6 +108,36 @@ with tempfile.TemporaryDirectory() as temp:
         "current-minus-skip-patches": ["darling/downstream.patch"],
     }
     assert test._active_profile == "outer-profile"
+
+    materialized = root / "materialized" / "guest"
+    prematerialized_source = materialized / "darling"
+    (prematerialized_source / ".git").mkdir(parents=True)
+    (materialized / "tier-workspace-index.json").write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "kind": "west-acceptance-tier-workspace",
+                "profile": "homebrew",
+            }
+        )
+    )
+    os.environ["WEST_MATERIALIZED_WORKSPACE_LOCK"] = str(materialized / ".guest.lock")
+    os.environ["WEST_PREMATERIALIZED_RUNTIME_SOURCE_ROOT"] = str(
+        prematerialized_source
+    )
+    test._preflight_runtime_profile_stack = lambda *_args: test.die(
+        "verified prematerialized source redundantly ran patch preflight"
+    )
+    try:
+        with test._runtime_profile_deployment_context(
+            ["rootless"],
+            label_prefix="metadata RED",
+            retain_deployment=False,
+        ):
+            pass
+    finally:
+        os.environ.pop("WEST_MATERIALIZED_WORKSPACE_LOCK")
+        os.environ.pop("WEST_PREMATERIALIZED_RUNTIME_SOURCE_ROOT")
 
 
 # The deployment context must be able to bind a source forest to one durable

@@ -449,6 +449,26 @@ class DarlingTest(ProfileOperationsMixin, BootstrapRuntimeProfileMixin, WestComm
                 "run west test --gc or free disk space before materializing the runtime source forest"
             )
 
+    @staticmethod
+    def _prematerialized_runtime_profile_is_verified(
+        source_root: Path,
+        workspace_root: Path,
+        source_profile: str,
+    ) -> bool:
+        marker = workspace_root / "tier-workspace-index.json"
+        if not marker.is_file() or marker.is_symlink():
+            return False
+        try:
+            index = json.loads(marker.read_text())
+        except (OSError, json.JSONDecodeError):
+            return False
+        return (
+            index.get("schema_version") == 1
+            and index.get("kind") == "west-acceptance-tier-workspace"
+            and index.get("profile") == source_profile
+            and source_root.parent == workspace_root
+        )
+
     def _preflight_runtime_profile_stack(
         self, source_profile: str, deployment_name: str
     ) -> None:
@@ -1854,6 +1874,7 @@ class DarlingTest(ProfileOperationsMixin, BootstrapRuntimeProfileMixin, WestComm
         }
         previous_profile = getattr(self, "_active_profile", None)
         prematerialized_source: Path | None = None
+        prematerialized_profile_verified = False
         raw_prematerialized_source = os.environ.get(
             "WEST_PREMATERIALIZED_RUNTIME_SOURCE_ROOT"
         )
@@ -1880,13 +1901,26 @@ class DarlingTest(ProfileOperationsMixin, BootstrapRuntimeProfileMixin, WestComm
                     f"{label_prefix} prematerialized runtime source is invalid: "
                     f"{prematerialized_source}"
                 )
+            prematerialized_profile_verified = (
+                self._prematerialized_runtime_profile_is_verified(
+                    prematerialized_source,
+                    workspace_root,
+                    source_profile,
+                )
+            )
         else:
             self._require_runtime_scratch_space(
                 f"{label_prefix} profile {profile_name}"
             )
-        self._preflight_runtime_profile_stack(
-            source_profile, f"{label_prefix} profile {profile_name}"
-        )
+        if prematerialized_profile_verified:
+            self.inf(
+                f"  runtime profile preflight reuse: {source_profile} "
+                f"for {label_prefix} profile {profile_name}"
+            )
+        else:
+            self._preflight_runtime_profile_stack(
+                source_profile, f"{label_prefix} profile {profile_name}"
+            )
         evidence_store = self._runtime_evidence_store()
         evidence = evidence_store.start(
             f"{label_prefix} runtime profile {profile_name}",
