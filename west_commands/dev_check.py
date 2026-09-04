@@ -1248,6 +1248,7 @@ def _check_steps(inputs: dict[str, Any], transaction_id: str) -> list[dict[str, 
     guest_env = stage_env("guest")
     guest_env["DARLING_TIER_DEFER_GLOBAL_CLEANUP"] = "1"
     final_host_env = stage_env("final-host")
+    final_host_env["DARLING_TIER_DEFER_GLOBAL_CLEANUP"] = "1"
     bootstrap_env = dict(candidate_env)
     bootstrap_env.update(
         {
