@@ -125,8 +125,14 @@ run_guest_macho_regression_tier() {
 
 case "${1:-}" in
 	host)
-		# Source-bound host cases are selected through metadata so west can
-		# materialize the patch profile before CMake compiles the real source.
+		if [[ -n "${WEST_MATERIALIZED_WORKSPACE_LOCK:-}" ]]; then
+			if [[ "$WEST_MATERIALIZED_WORKSPACE_LOCK" != /* ]]; then
+				echo "materialized workspace lock must be absolute" >&2
+				exit 2
+			fi
+			exec {materialized_workspace_lock_fd}>"$WEST_MATERIALIZED_WORKSPACE_LOCK"
+			flock -s "$materialized_workspace_lock_fd"
+		fi
 		exec "$root/ci/run-host-tier.py" "${@:2}"
 		;;
 	guest-smoke)
@@ -138,7 +144,7 @@ case "${1:-}" in
 			fi
 			mkdir -p -- "${WEST_MATERIALIZED_WORKSPACE_LOCK%/*}"
 			exec {materialized_workspace_lock_fd}>"$WEST_MATERIALIZED_WORKSPACE_LOCK"
-			flock "$materialized_workspace_lock_fd"
+			flock -s "$materialized_workspace_lock_fd"
 		fi
 		if [[ -n "${WEST_RUNTIME_BUILD_CACHE_DIR:-}" ]]; then
 			if [[ ! "${WEST_RUNTIME_BUILD_CACHE_KEY:-}" =~ ^[0-9a-f]{64}$ ]]; then

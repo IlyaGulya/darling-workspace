@@ -1235,11 +1235,8 @@ def _check_steps(inputs: dict[str, Any], transaction_id: str) -> list[dict[str, 
     control = control_parent / "darling-workspace"
     candidate_parent = scratch / "lock-first"
     candidate = candidate_parent / "darling-workspace"
-    materialized_root = (
-        Path(inputs["acceptance_checkpoint"]["path"]).parent
-        / "materialized-v1"
-        / inputs["acceptance_checkpoint"]["key"]
-    )
+    checkpoint_root = Path(inputs["acceptance_checkpoint"]["path"]).parent
+    materialized_root = checkpoint_root / "materialized-v2" / profile
     guest_parent = materialized_root / "guest"
     guest = guest_parent / "darling-workspace"
     artifacts = scratch / "evidence"
@@ -1275,28 +1272,38 @@ def _check_steps(inputs: dict[str, Any], transaction_id: str) -> list[dict[str, 
     )
     guest_env = stage_env("guest")
     guest_env.update(RuntimeBuildService.derive_ccache_environment(guest_env))
-    guest_env["CCACHE_DIR"] = str(
-        Path(inputs["acceptance_checkpoint"]["path"]).parent
-        / "runtime-ccache-v1"
-    )
+    guest_env["CCACHE_DIR"] = str(checkpoint_root / "runtime-ccache-v1")
     guest_env["CCACHE_MAXSIZE"] = "4G"
     guest_env["DARLING_TIER_DEFER_GLOBAL_CLEANUP"] = "1"
     guest_env["WEST_RUNTIME_BUILD_CACHE_DIR"] = str(
-        Path(inputs["acceptance_checkpoint"]["path"]).parent
-        / "runtime-build-v1"
-        / inputs["acceptance_checkpoint"]["key"]
+        checkpoint_root / "runtime-build-v2" / profile
     )
-    guest_env["WEST_RUNTIME_BUILD_CACHE_KEY"] = inputs["acceptance_checkpoint"][
-        "key"
-    ]
+    guest_env["WEST_RUNTIME_BUILD_CACHE_KEY"] = hashlib.sha256(
+        f"west-runtime-build-v2:{profile}".encode("utf-8")
+    ).hexdigest()
     guest_env["WEST_MATERIALIZED_WORKSPACE_LOCK"] = str(guest_workspace_lock)
     guest_env["WEST_PREMATERIALIZED_RUNTIME_SOURCE_ROOT"] = str(
         guest_parent / "darling"
     )
+    workspace_identity = hashlib.sha256(
+        str(manifest_repo.resolve()).encode("utf-8")
+    ).hexdigest()[:12]
     guest_env["DARLING_SMOKE_PREFIX"] = (
-        f"/tmp/darling-rootless-smoke-{inputs['acceptance_checkpoint']['key'][:16]}"
+        f"/tmp/darling-rootless-smoke-{workspace_identity}-{profile}"
     )
     final_host_env = stage_env("final-host")
+    final_host_env["CCACHE_DIR"] = str(checkpoint_root / "host-ccache-v1")
+    final_host_env["CCACHE_MAXSIZE"] = "2G"
+    final_host_env["WEST_HOST_CONTRACT_CACHE_DIR"] = str(
+        checkpoint_root / "host-contract-cache-v1"
+    )
+    final_host_env["WEST_HOST_CONTRACT_CACHE_KEY"] = inputs[
+        "acceptance_checkpoint"
+    ]["key"]
+    final_host_env["WEST_MATERIALIZED_WORKSPACE_LOCK"] = str(
+        guest_workspace_lock
+    )
+    final_host_env["WEST_PREMATERIALIZED_PROFILE"] = profile
     bootstrap_env = dict(candidate_env)
     bootstrap_env.update(
         {
@@ -1305,6 +1312,8 @@ def _check_steps(inputs: dict[str, Any], transaction_id: str) -> list[dict[str, 
         }
     )
     head = inputs["package_snapshot"]["manifest_head"]
+    acceptance_seed = checkpoint_root / "manifest-seed-v1"
+    acceptance_helper = manifest_repo / "ci" / "patch_stack_lock_first_acceptance.py"
     mapping = control / "locks" / "patch-stack" / "lock-first-series-v2.yml"
     oracle = artifacts / "immutable-oracle.json"
     modules = artifacts / "lock-first-modules.json"
@@ -1335,12 +1344,16 @@ def _check_steps(inputs: dict[str, Any], transaction_id: str) -> list[dict[str, 
             _step(
                 "acceptance-clone-control",
                 [
-                    "git",
-                    "clone",
-                    "--no-local",
-                    "--no-hardlinks",
-                    "--no-checkout",
+                    str(Path(sys.executable).resolve()),
+                    str(acceptance_helper),
+                    "clone-acceptance-seed",
+                    "--source",
                     str(manifest_repo),
+                    "--seed",
+                    str(acceptance_seed),
+                    "--revision",
+                    head,
+                    "--destination",
                     str(control),
                 ],
                 "temporary/local-output",
@@ -1351,12 +1364,16 @@ def _check_steps(inputs: dict[str, Any], transaction_id: str) -> list[dict[str, 
             _step(
                 "acceptance-clone-candidate",
                 [
-                    "git",
-                    "clone",
-                    "--no-local",
-                    "--no-hardlinks",
-                    "--no-checkout",
+                    str(Path(sys.executable).resolve()),
+                    str(acceptance_helper),
+                    "clone-acceptance-seed",
+                    "--source",
                     str(manifest_repo),
+                    "--seed",
+                    str(acceptance_seed),
+                    "--revision",
+                    head,
+                    "--destination",
                     str(candidate),
                 ],
                 "temporary/local-output",
@@ -1617,10 +1634,10 @@ def _check_steps(inputs: dict[str, Any], transaction_id: str) -> list[dict[str, 
             ),
             _step(
                 "acceptance-host-tier",
-                [str(candidate / "ci" / "run-test-tier.sh"), "host"],
+                [str(guest / "ci" / "run-test-tier.sh"), "host"],
                 "temporary/local-output",
                 _CHECK_TIMEOUTS["acceptance-host-tier"],
-                candidate,
+                guest,
                 final_host_env,
             ),
             _step(
@@ -3713,9 +3730,12 @@ def execute_check(
                         started,
                         progress,
                         dependencies={
+                            "acceptance-host-tier": (
+                                "acceptance-clone-guest-candidate",
+                            ),
                             "acceptance-guest-smoke": (
                                 "acceptance-clone-guest-candidate",
-                            )
+                            ),
                         },
                     )
                 except _ParallelInterrupted as error:
@@ -4153,13 +4173,48 @@ def _package_step(inputs: dict[str, Any]) -> dict[str, Any]:
 def _package_export_cache_path(
     manifest_repo: Path, receipt: dict[str, Any]
 ) -> tuple[Path, str]:
-    checkpoint = receipt["inputs"].get("acceptance_checkpoint")
-    if not isinstance(checkpoint, dict):
+    inputs = receipt.get("inputs")
+    if not isinstance(inputs, dict) or not isinstance(inputs.get("profile"), str):
         raise DevCheckError("acceptance receipt has no package cache identity")
-    key = _require_digest(checkpoint.get("key"), "acceptance checkpoint key")
+    profile = inputs["profile"]
+    snapshot = inputs.get("package_snapshot")
+    content = snapshot.get("content") if isinstance(snapshot, dict) else None
+    profile_row = (
+        content.get(f"patches/{profile}") if isinstance(content, dict) else None
+    )
+    locks_row = content.get("locks/patch-stack") if isinstance(content, dict) else None
+    if not isinstance(profile_row, dict) or not isinstance(locks_row, dict):
+        raise DevCheckError("acceptance receipt package cache content is incomplete")
+    implementation: dict[str, str] = {}
+    for name in (
+        "patch_stack_export.py",
+        "patch_stack_lock_first.py",
+        "patch_stack_materialize.py",
+    ):
+        path = Path(__file__).with_name(name)
+        try:
+            implementation[name] = hashlib.sha256(path.read_bytes()).hexdigest()
+        except OSError as error:
+            raise DevCheckError(
+                f"package export cache implementation is unavailable: {path}"
+            ) from error
+    identity = {
+        "schema_version": 2,
+        "profile": profile,
+        "profile_sha256": _require_digest(
+            profile_row.get("sha256"), "package export profile digest"
+        ),
+        "locks_sha256": _require_digest(
+            locks_row.get("sha256"), "package export locks digest"
+        ),
+        "implementation": implementation,
+    }
+    key = hashlib.sha256(
+        json.dumps(identity, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    ).hexdigest()
     return (
         _git_common_directory(manifest_repo)
-        / "west-dev-package-export-v1"
+        / "west-dev-package-export-v2"
         / key,
         key,
     )
@@ -5693,6 +5748,27 @@ def _bundle_repository(
     return bare
 
 
+def _parallel_package_modules(
+    items: list[Any],
+    worker: Callable[[Any], Any],
+) -> list[Any]:
+    if not items:
+        return []
+    results: list[Any | None] = [None] * len(items)
+    with concurrent.futures.ThreadPoolExecutor(
+        max_workers=min(8, len(items))
+    ) as pool:
+        futures = {
+            pool.submit(worker, item): index
+            for index, item in enumerate(items)
+        }
+        for future in concurrent.futures.as_completed(futures):
+            results[futures[future]] = future.result()
+    if any(result is None for result in results):
+        raise DevCheckError("parallel package module verification omitted a result")
+    return results
+
+
 def _verify_source_closure(
     package: Path,
     receipt: dict[str, Any],
@@ -5826,8 +5902,8 @@ def _verify_source_closure(
     series_by_module: dict[str, list[tuple[int, dict[str, Any]]]] = {}
     for ordinal, row in enumerate(export_evidence["series"]):
         series_by_module.setdefault(row["module"], []).append((ordinal, row))
-    module_bundles = []
-    for module_index, module in enumerate(export_evidence["module_order"]):
+    def verify_module(item: tuple[int, str]) -> dict[str, Any]:
+        module_index, module = item
         module_row = module_rows[module]
         relative = f"bundles/modules/{module_index:04d}.bundle"
         series_refs = []
@@ -5907,16 +5983,19 @@ def _verify_source_closure(
                     raise DevCheckError(
                         f"recovery mbox replay tree differs: {module}/{row['patch']}"
                     )
-        module_bundles.append(
-            {
-                "module": module,
-                "path": relative,
-                "candidate_integration_commit": module_row["integration_oid"],
-                "candidate_integration_tree": module_row["tree"],
-                "candidate_object_authority": "validated-acceptance-receipt",
-                "series": series_refs,
-            }
-        )
+        return {
+            "module": module,
+            "path": relative,
+            "candidate_integration_commit": module_row["integration_oid"],
+            "candidate_integration_tree": module_row["tree"],
+            "candidate_object_authority": "validated-acceptance-receipt",
+            "series": series_refs,
+        }
+
+    module_bundles = _parallel_package_modules(
+        list(enumerate(export_evidence["module_order"])),
+        verify_module,
+    )
     derived = {
         "paths": path_rows,
         "generated_locks": generated_rows,
