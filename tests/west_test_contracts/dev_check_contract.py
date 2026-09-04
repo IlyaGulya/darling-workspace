@@ -11,6 +11,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 from pathlib import Path
 from typing import Callable
@@ -464,7 +465,6 @@ mode = os.environ.get("DEV_CHECK_FAKE_MODE", "pass")
 if argv == ["host"]:
     assert Path.cwd().parent.name == "lock-first"
     assert Path(os.environ["HOME"]).name == "final-host"
-    assert os.environ.get("DARLING_TIER_DEFER_GLOBAL_CLEANUP") == "1"
     barrier("acceptance-host-tier")
     if mode in {"fail-final-tier", "interrupt-final-tier"}:
         wait_for_holder()
@@ -510,6 +510,16 @@ elif (
     and action == ["clone-tier-workspace"]
 ):
     authority = "clone-tier"
+elif (
+    name == "patch_stack_lock_first_acceptance.py"
+    and action == ["materialize-candidate"]
+):
+    authority = "candidate-materialize"
+elif (
+    name == "patch_stack_lock_first_acceptance.py"
+    and action == ["publish-candidate-cache"]
+):
+    authority = "candidate-publish"
 else:
     authority = {
         "bootstrap-west.sh": "bootstrap",
@@ -520,6 +530,27 @@ with Path(os.environ["DEV_CHECK_FAKE_LOG"]).open("a", encoding="utf-8") as strea
     stream.write(json.dumps({"authority": authority, "argv": sys.argv[1:]}) + "\n")
 if authority == "seed":
     pass
+elif authority == "candidate-materialize":
+    west = sys.argv[sys.argv.index("--west-command") + 1 :]
+    profile = sys.argv[sys.argv.index("--profile") + 1]
+    evidence = sys.argv[sys.argv.index("--lock-evidence") + 1]
+    subprocess.run(
+        [
+            *west,
+            "patch",
+            "apply",
+            "--profile",
+            profile,
+            "--lock-first-evidence",
+            evidence,
+        ],
+        cwd=Path(sys.argv[sys.argv.index("--manifest-workspace") + 1]),
+        check=True,
+    )
+elif authority == "candidate-publish":
+    cache = Path(sys.argv[sys.argv.index("--cache") + 1])
+    cache.mkdir(mode=0o700, exist_ok=True)
+    (cache / "fixture").write_text("published\n", encoding="utf-8")
 elif authority == "clone-tier":
     source = Path(sys.argv[sys.argv.index("--source-workspace") + 1])
     destination = Path(sys.argv[sys.argv.index("--destination-workspace") + 1])
@@ -1167,6 +1198,10 @@ with tempfile.TemporaryDirectory(prefix="dev-check-contract-") as temporary:
     manifest = artifacts / "lock-first-manifest.json"
     lock_evidence = artifacts / "lock-first-evidence.json"
     comparison = artifacts / "acceptance-result.json"
+    candidate_cache = (
+        Path(acceptance["inputs"]["acceptance_checkpoint"]["path"]).parent
+        / f"candidate-{acceptance['inputs']['acceptance_checkpoint']['key']}"
+    )
     head = acceptance["inputs"]["package_snapshot"]["manifest_head"]
     acceptance_expected = [
         (
@@ -1211,10 +1246,6 @@ with tempfile.TemporaryDirectory(prefix="dev-check-contract-") as temporary:
             ],
         ),
         (
-            "acceptance-checkout-control",
-            ["git", "-C", str(control), "checkout", "--detach", head],
-        ),
-        (
             "acceptance-clone-candidate",
             [
                 "git",
@@ -1225,6 +1256,10 @@ with tempfile.TemporaryDirectory(prefix="dev-check-contract-") as temporary:
                 str(repo),
                 str(candidate),
             ],
+        ),
+        (
+            "acceptance-checkout-control",
+            ["git", "-C", str(control), "checkout", "--detach", head],
         ),
         (
             "acceptance-checkout-candidate",
@@ -1296,13 +1331,23 @@ with tempfile.TemporaryDirectory(prefix="dev-check-contract-") as temporary:
         (
             "acceptance-candidate-apply",
             [
-                *west,
-                "patch",
-                "apply",
+                str(Path(sys.executable).resolve()),
+                str(candidate / "ci" / "patch_stack_lock_first_acceptance.py"),
+                "materialize-candidate",
+                "--manifest-workspace",
+                str(candidate),
+                "--candidate-workspace",
+                str(candidate_parent),
                 "--profile",
                 "homebrew",
-                "--lock-first-evidence",
+                "--cache",
+                str(candidate_cache),
+                "--key",
+                acceptance["inputs"]["acceptance_checkpoint"]["key"],
+                "--lock-evidence",
                 str(lock_evidence),
+                "--west-command",
+                *west,
             ],
         ),
         (
@@ -1345,6 +1390,30 @@ with tempfile.TemporaryDirectory(prefix="dev-check-contract-") as temporary:
                 str(scratch),
                 "--result",
                 str(comparison),
+            ],
+        ),
+        (
+            "acceptance-publish-candidate-cache",
+            [
+                str(Path(sys.executable).resolve()),
+                str(candidate / "ci" / "patch_stack_lock_first_acceptance.py"),
+                "publish-candidate-cache",
+                "--manifest-workspace",
+                str(candidate),
+                "--candidate-workspace",
+                str(candidate_parent),
+                "--profile",
+                "homebrew",
+                "--cache",
+                str(candidate_cache),
+                "--key",
+                acceptance["inputs"]["acceptance_checkpoint"]["key"],
+                "--lock-evidence",
+                str(lock_evidence),
+                "--modules",
+                str(modules),
+                "--candidate-manifest",
+                str(manifest),
             ],
         ),
         (
@@ -1409,33 +1478,51 @@ with tempfile.TemporaryDirectory(prefix="dev-check-contract-") as temporary:
         }
     )
     final_host_env = isolated_env("final-host")
-    final_host_env["DARLING_TIER_DEFER_GLOBAL_CLEANUP"] = "1"
     guest_env = isolated_env("guest")
+    guest_env.update(
+        dev_check.RuntimeBuildService.derive_ccache_environment(guest_env)
+    )
+    guest_env["CCACHE_DIR"] = str(
+        Path(acceptance["inputs"]["acceptance_checkpoint"]["path"]).parent
+        / "runtime-ccache-v1"
+    )
+    guest_env["CCACHE_MAXSIZE"] = "4G"
     guest_env["DARLING_TIER_DEFER_GLOBAL_CLEANUP"] = "1"
     assert [(step["cwd"], step["env"]) for step in acceptance["steps"]] == [
         *((str(repo), {}) for _ in range(4)),
         (str(control_parent), oracle_env),
-        (str(control), oracle_env),
         (str(candidate_parent), candidate_env),
+        (str(control), oracle_env),
         (str(candidate), candidate_env),
         (str(candidate), bootstrap_env),
         *((str(candidate), candidate_env) for _ in range(3)),
         (str(repo), host_env),
         (str(control), oracle_env),
-        *((str(candidate), candidate_env) for _ in range(4)),
+        *((str(candidate), candidate_env) for _ in range(5)),
         (str(candidate), final_host_env),
         (str(guest), guest_env),
         (str(candidate), candidate_env),
     ]
     clear_log(log)
     acceptance_receipt = dev_check.execute_check(acceptance)
-    assert {
-        path.name for path in parallel_barrier.glob("*.ready")
-    } == {
+    assert acceptance_receipt["state"] == "committed", (
+        acceptance_receipt.get("error"),
+        [
+            (
+                result["name"],
+                result["returncode"],
+                result.get("stderr_tail"),
+            )
+            for result in acceptance_receipt["results"]
+            if result["returncode"] != 0
+        ],
+    )
+    ready_names = {path.name for path in parallel_barrier.glob("*.ready")}
+    assert ready_names == {
         "patch-verify.ready",
         "host-materialized-test.ready",
         "immutable-oracle.ready",
-    }
+    }, ready_names
     assert acceptance_receipt["state"] == "committed", next(
         (
             result.get("stderr_tail")
@@ -1588,9 +1675,10 @@ with tempfile.TemporaryDirectory(prefix="dev-check-contract-") as temporary:
         "acceptance-configure-candidate-identity": ("west", 1),
         "acceptance-seed-candidate-refs": ("seed", 2),
         "immutable-oracle": ("oracle", 2),
-        "acceptance-candidate-apply": ("west", 1),
+        "acceptance-candidate-apply": ("candidate-materialize", 2),
         "acceptance-capture": ("capture", 2),
         "acceptance-compare": ("compare", 2),
+        "acceptance-publish-candidate-cache": ("candidate-publish", 2),
         "acceptance-clone-guest-candidate": ("clone-tier", 2),
         "acceptance-host-tier": ("tier", 1),
         "acceptance-guest-smoke": ("tier", 1),
@@ -1603,6 +1691,20 @@ with tempfile.TemporaryDirectory(prefix="dev-check-contract-") as temporary:
             expected_acceptance_log.append(
                 {"authority": authority, "argv": argv[stripped:]}
             )
+            if name == "acceptance-candidate-apply":
+                expected_acceptance_log.append(
+                    {
+                        "authority": "west",
+                        "argv": [
+                            "patch",
+                            "apply",
+                            "--profile",
+                            "homebrew",
+                            "--lock-first-evidence",
+                            str(lock_evidence),
+                        ],
+                    }
+                )
     observed_acceptance_log = load_log(log)
     parallel_start = 7
     parallel_end = parallel_start + len(dev_check._CHECKPOINT_STEP_NAMES)
@@ -1616,10 +1718,19 @@ with tempfile.TemporaryDirectory(prefix="dev-check-contract-") as temporary:
         expected_acceptance_log[parallel_start:parallel_end],
         key=lambda row: (row["authority"], row["argv"]),
     )
-    final_parallel_start = parallel_end + 4
+    final_parallel_start = parallel_end + 6
     final_parallel_end = final_parallel_start + len(dev_check._FINAL_TIER_STEP_NAMES)
     assert observed_acceptance_log[parallel_end:final_parallel_start] == (
         expected_acceptance_log[parallel_end:final_parallel_start]
+    ), (
+        [
+            row["authority"]
+            for row in observed_acceptance_log[parallel_end:final_parallel_start]
+        ],
+        [
+            row["authority"]
+            for row in expected_acceptance_log[parallel_end:final_parallel_start]
+        ],
     )
     assert sorted(
         observed_acceptance_log[final_parallel_start:final_parallel_end],
@@ -1797,9 +1908,37 @@ with tempfile.TemporaryDirectory(prefix="dev-check-contract-") as temporary:
     )
     clear_log(log)
     progress_events = []
-    reused_receipt = dev_check.execute_check(
-        reused_plan, progress=progress_events.append
-    )
+    clone_barrier = threading.Barrier(2, timeout=5)
+    real_run_process_for_clones = dev_check._run_process
+
+    def require_parallel_initial_clones(
+        argv: list[str],
+        cwd: Path,
+        timeout_seconds: int,
+        env_overrides: dict[str, str],
+        stdout_full_limit: int = 0,
+        cancellation: object | None = None,
+        sanitize_environment: bool = False,
+    ) -> dict[str, object]:
+        if argv[:2] == ["git", "clone"]:
+            clone_barrier.wait()
+        return real_run_process_for_clones(
+            argv,
+            cwd,
+            timeout_seconds,
+            env_overrides,
+            stdout_full_limit,
+            cancellation,
+            sanitize_environment,
+        )
+
+    dev_check._run_process = require_parallel_initial_clones
+    try:
+        reused_receipt = dev_check.execute_check(
+            reused_plan, progress=progress_events.append
+        )
+    finally:
+        dev_check._run_process = real_run_process_for_clones
     assert reused_receipt["state"] == "committed"
     assert reused_receipt["checkpoint"] == {
         "schema_version": 1,
@@ -1835,6 +1974,7 @@ with tempfile.TemporaryDirectory(prefix="dev-check-contract-") as temporary:
         "acceptance-capture",
         "acceptance-compare",
         "acceptance-clone-guest-candidate",
+        "acceptance-publish-candidate-cache",
         "acceptance-host-tier",
         "acceptance-guest-smoke",
         "acceptance-final-cleanup",
@@ -1854,10 +1994,29 @@ with tempfile.TemporaryDirectory(prefix="dev-check-contract-") as temporary:
             expected_reuse_log.append(
                 {"authority": authority, "argv": step["argv"][stripped:]}
             )
-    reuse_parallel_start = 11
+            if name == "acceptance-candidate-apply":
+                expected_reuse_log.append(
+                    {
+                        "authority": "west",
+                        "argv": [
+                            "patch",
+                            "apply",
+                            "--profile",
+                            "homebrew",
+                            "--lock-first-evidence",
+                            step["argv"][
+                                step["argv"].index("--lock-evidence") + 1
+                            ],
+                        ],
+                    }
+                )
+    reuse_parallel_start = 13
     reuse_parallel_end = reuse_parallel_start + len(dev_check._FINAL_TIER_STEP_NAMES)
     assert observed_reuse_log[:reuse_parallel_start] == (
         expected_reuse_log[:reuse_parallel_start]
+    ), (
+        [row["authority"] for row in observed_reuse_log[:reuse_parallel_start]],
+        [row["authority"] for row in expected_reuse_log[:reuse_parallel_start]],
     )
     assert sorted(
         observed_reuse_log[reuse_parallel_start:reuse_parallel_end],

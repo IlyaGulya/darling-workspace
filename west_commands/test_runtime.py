@@ -378,10 +378,13 @@ def load_ctest_runtime_profiles(path: Path) -> dict[str, dict[str, Any]]:
                     f"{compiler_launcher!r}; allowed values: "
                     + ", ".join(sorted(COMPILER_LAUNCHERS))
                 )
-            if purpose != "guest-toolchain-provisioning":
+            if purpose not in {
+                "prefix-baseline",
+                "guest-toolchain-provisioning",
+            }:
                 raise ValueError(
                     f"runtime profile {name!r} may use compiler-launcher only for "
-                    "guest-toolchain-provisioning"
+                    "bootstrap-capable profiles"
                 )
         if purpose not in {"runtime", "prefix-baseline", "guest-toolchain-provisioning"}:
             raise ValueError(

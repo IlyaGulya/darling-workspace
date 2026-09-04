@@ -18,8 +18,8 @@ if [ "$(basename "$0")" = west ] && [ "${1:-}" = topdir ]; then
 fi
 if [ "$(basename "$0")" = west ] && {
 	[[ "$*" == *"--bootstrap-runtime-profile homebrew-rootless-bootstrap-minimal"* ]] ||
-	[[ "$*" == *"name:rootless_prefix_initialization_guest"* ]] ||
-	[[ "$*" == *"name:rootless_prebuilt_macho_regression"* ]] ||
+	[[ "$*" == *"rootless_prefix_initialization_guest"* ]] ||
+	[[ "$*" == *"rootless_prebuilt_macho_regression"* ]] ||
 	[[ "$*" == *"name:select_fdset_guest_prebuilt"* ]] ||
 	[[ "$*" == *"--guest-macho-validation-group"* ]]
 }; then
@@ -78,7 +78,7 @@ export ROOTLESS_TIER_REPO_CHILD_OUTPUT="$tmp/rootless-tier-repo-child"
 unset ROOTLESS_TIER_REPO
 
 export PATCH_STACK_MATERIALIZE_CONTRACT_SKIP_WEST_SUBPROCESS=1
-DARLING_TIER_DEFER_GLOBAL_CLEANUP=1 "$repo/ci/run-test-tier.sh" host
+"$repo/ci/run-test-tier.sh" host
 unset PATCH_STACK_MATERIALIZE_CONTRACT_SKIP_WEST_SUBPROCESS
 host_tier="$(sed -n '/^\thost)/,/^\tguest-smoke)/p' "$repo/ci/run-test-tier.sh")"
 printf '%s\n' "$host_tier" | grep -F -q 'tests/run-west-patch-stack-materialize-contract.sh'
@@ -152,9 +152,7 @@ DARLING_TESTKIT_BUILD="$tmp/package-build" \
 	"$repo/ci/run-test-tier.sh" macos-package "$tmp/oracle"
 
 grep -F -x -q 'west test --profile homebrew --env host --materialize-profile' "$tmp/commands"
-grep -F -x -q "west test --prefix $tmp/runner/darling-rootless-smoke --bootstrap-runtime-profile homebrew-rootless-bootstrap-minimal --runtime-build-timeout-seconds 600" "$tmp/commands"
-grep -F -x -q "west test --profile homebrew --patch darling/rootless-prefix-initialization.patch --env darling --label name:rootless_prefix_initialization_guest --reuse-prefix-runtime --prefix $tmp/runner/darling-rootless-smoke" "$tmp/commands"
-grep -F -x -q "west test --profile homebrew --patch darling/rootless-prefix-initialization.patch --env darling --label name:rootless_prebuilt_macho_regression --reuse-prefix-runtime --prefix $tmp/runner/darling-rootless-smoke" "$tmp/commands"
+grep -F -x -q "west test --profile homebrew --patch darling/rootless-prefix-initialization.patch --env darling --label name:(rootless_prefix_initialization_guest|rootless_prebuilt_macho_regression) --reuse-prefix-runtime --prefix $tmp/runner/darling-rootless-smoke" "$tmp/commands"
 grep -F -x -q "west test --prefix $tmp/runner/darling-rootless-corpus --bootstrap-runtime-profile homebrew-rootless-bootstrap-minimal --runtime-build-timeout-seconds 600" "$tmp/commands"
 grep -F -q "west test --profile homebrew --env darling --guest-macho-validation-group homebrew --guest-macho-evidence-dir $repo/.west-test/guest-macho-validation-diagnostics/homebrew/fixtures --reuse-prefix-runtime --prefix $tmp/runner/darling-rootless-corpus" "$tmp/commands"
 grep -F -x -q "west test --prefix $tmp/runner/darling-rootless-regression --bootstrap-runtime-profile homebrew-rootless-bootstrap-minimal --runtime-build-timeout-seconds 600" "$tmp/commands"
