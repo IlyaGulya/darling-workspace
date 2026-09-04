@@ -182,6 +182,7 @@ def main() -> None:
         (tier_manifest / "west.yml").write_text("manifest:\n  projects: []\n")
         git(tier_manifest, "add", ".")
         git(tier_manifest, "commit", "-qm", "tier manifest")
+        tier_lock.write_text(tier_lock.read_text() + "# generated\n")
         tier_lock_data = tier_lock.read_bytes()
         candidate_manifest = root / "tier-candidate-manifest.json"
         candidate_manifest.write_text(

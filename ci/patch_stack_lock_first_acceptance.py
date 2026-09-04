@@ -1224,6 +1224,10 @@ def clone_tier_workspace(
         destination_manifest,
         manifest_revision,
         "tier manifest",
+        {
+            source.relative_to(manifest_workspace).as_posix()
+            for source in generated_paths
+        },
     )
     for path, revision in rows:
         _clone_shared_repository(
