@@ -1308,7 +1308,8 @@ with tempfile.TemporaryDirectory(prefix="dev-check-contract-") as temporary:
             [
                 "git",
                 "clone",
-                "--shared",
+                "--no-local",
+                "--no-hardlinks",
                 "--no-checkout",
                 str(repo),
                 str(control),
@@ -1319,7 +1320,8 @@ with tempfile.TemporaryDirectory(prefix="dev-check-contract-") as temporary:
             [
                 "git",
                 "clone",
-                "--shared",
+                "--no-local",
+                "--no-hardlinks",
                 "--no-checkout",
                 str(repo),
                 str(candidate),
