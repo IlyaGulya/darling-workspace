@@ -1620,7 +1620,7 @@ def clone_acceptance_seed(
     revision: str,
     destination: Path,
 ) -> None:
-    """Clone one exact manifest revision through a persistent shallow seed."""
+    """Clone one exact manifest revision through a persistent packed seed."""
     oid(revision, "acceptance seed revision")
     fail(
         source.is_dir() and not source.is_symlink() and (source / ".git").exists(),
@@ -1649,7 +1649,6 @@ def clone_acceptance_seed(
                         "fetch",
                         "--quiet",
                         "--no-tags",
-                        "--depth=1",
                         "--force",
                         "--no-write-fetch-head",
                         "--",
@@ -1681,20 +1680,23 @@ def clone_acceptance_seed(
             not (seed / "objects/info/alternates").exists(),
             "acceptance seed borrows an object database",
         )
-        _run_seed_git(
-            [
-                f"--git-dir={seed}",
-                "fetch",
-                "--quiet",
-                "--no-tags",
-                "--depth=1",
-                "--force",
-                "--no-write-fetch-head",
-                "--",
-                str(source),
-                f"{revision}:refs/heads/acceptance",
-            ],
-            "acceptance seed refresh failed",
+        refresh_arguments = [
+            f"--git-dir={seed}",
+            "fetch",
+            "--quiet",
+            "--no-tags",
+            "--force",
+            "--no-write-fetch-head",
+            "--",
+            str(source),
+            f"{revision}:refs/heads/acceptance",
+        ]
+        if git(seed, "rev-parse", "--is-shallow-repository") == "true":
+            refresh_arguments.insert(4, "--unshallow")
+        _run_seed_git(refresh_arguments, "acceptance seed refresh failed")
+        fail(
+            git(seed, "rev-parse", "--is-shallow-repository") == "false",
+            "acceptance seed repository is shallow",
         )
         _run_seed_git(
             [
@@ -1703,8 +1705,6 @@ def clone_acceptance_seed(
                 "--no-local",
                 "--no-hardlinks",
                 "--no-checkout",
-                "--depth=1",
-                "--single-branch",
                 "--branch",
                 "acceptance",
                 "--",
