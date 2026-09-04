@@ -114,7 +114,7 @@ def main() -> None:
         assert seed_marker.read_text() == "persistent\n"
         for clone in (first_clone, second_clone):
             assert git(clone, "rev-parse", "HEAD") == first_revision
-            assert git(clone, "rev-parse", "--is-shallow-repository") == "true"
+            assert git(clone, "rev-parse", "--is-shallow-repository") == "false"
             assert not (clone / ".git/objects/info/alternates").exists()
         git(first_clone, "update-ref", "refs/heads/clone-local", first_revision)
         assert (
