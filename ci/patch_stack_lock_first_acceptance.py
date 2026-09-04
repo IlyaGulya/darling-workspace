@@ -2142,7 +2142,12 @@ def clone_tier_workspace(
     manifest_revision = _git_identity(
         manifest_workspace, "HEAD", "tier manifest source"
     )
-    independent_objects = bool(os.environ.get("WEST_MATERIALIZED_WORKSPACE_LOCK"))
+    raw_workspace_lock = os.environ.get("WEST_MATERIALIZED_WORKSPACE_LOCK")
+    independent_objects = bool(
+        raw_workspace_lock
+        and Path(raw_workspace_lock).is_absolute()
+        and destination_workspace.parent == Path(raw_workspace_lock).parent
+    )
     workspace_index = {
         "schema_version": 1,
         "kind": "west-acceptance-tier-workspace",
