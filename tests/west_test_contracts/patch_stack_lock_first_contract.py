@@ -254,13 +254,18 @@ def main() -> None:
             )
         )
         tier_destination = root / "tier-destination"
-        lock_first_acceptance.clone_tier_workspace(
-            tier_manifest,
-            tier_source,
-            tier_destination,
-            "homebrew",
-            candidate_manifest,
-        )
+        ambient_lock = root / "unrelated-materialized/.guest.lock"
+        os.environ["WEST_MATERIALIZED_WORKSPACE_LOCK"] = str(ambient_lock)
+        try:
+            lock_first_acceptance.clone_tier_workspace(
+                tier_manifest,
+                tier_source,
+                tier_destination,
+                "homebrew",
+                candidate_manifest,
+            )
+        finally:
+            os.environ.pop("WEST_MATERIALIZED_WORKSPACE_LOCK", None)
         cloned_manifest = tier_destination / "darling-workspace"
         cloned_project = tier_destination / "fixture/module"
         assert (
