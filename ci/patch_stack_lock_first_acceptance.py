@@ -1342,12 +1342,21 @@ def hydrate_candidate_cache(
             row["path"],
             f"candidate cache generated lock destination {position}",
         )
-        fail(
-            not destination.exists() and not destination.is_symlink(),
-            f"candidate cache generated lock destination {position}: already exists",
-        )
+        if destination.exists() or destination.is_symlink():
+            fail(
+                destination.is_file() and not destination.is_symlink(),
+                f"candidate cache generated lock destination {position}: unsafe",
+            )
         destination.parent.mkdir(parents=True, exist_ok=True)
-        destination.write_bytes(source.read_bytes())
+        temporary = destination.with_name(
+            destination.name + f".{uuid.uuid4().hex}.tmp"
+        )
+        try:
+            temporary.write_bytes(source.read_bytes())
+            temporary.chmod(0o644)
+            temporary.replace(destination)
+        finally:
+            temporary.unlink(missing_ok=True)
     evidence_source, _binding = _validate_cached_file(
         cache, index["lock_evidence"], "candidate cache lock evidence"
     )

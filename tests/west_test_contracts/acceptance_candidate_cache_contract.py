@@ -82,7 +82,12 @@ def main() -> None:
                 sort_keys=False,
             )
         )
-        git(manifest_workspace, "add", "west.lock.yml")
+        generated_path = (
+            manifest_workspace / "patches/homebrew/west.lock.yml"
+        )
+        generated_path.parent.mkdir(parents=True)
+        generated_path.write_bytes(b"base lock\n")
+        git(manifest_workspace, "add", ".")
         git(manifest_workspace, "commit", "-qm", "manifest base")
         manifest_head = git(manifest_workspace, "rev-parse", "HEAD")
 
@@ -98,7 +103,7 @@ def main() -> None:
 
         generated_path = manifest_workspace / "patches/homebrew/west.lock.yml"
         generated_data = b"manifest:\n  projects: []\n"
-        generated_path.parent.mkdir(parents=True)
+        generated_path.parent.mkdir(parents=True, exist_ok=True)
         generated_path.write_bytes(generated_data)
         generated_row = {
             "profile": "homebrew",
