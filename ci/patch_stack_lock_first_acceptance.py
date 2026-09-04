@@ -1018,8 +1018,42 @@ def seed_source_refs(
             )
 
 
+def _git_status_paths(repo: Path) -> set[str]:
+    result = subprocess.run(
+        ["git", "status", "--porcelain=v1", "-z", "--untracked-files=all"],
+        cwd=repo,
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+    )
+    fail(
+        result.returncode == 0,
+        f"{repo}: cannot read source status: {result.stderr.decode(errors='replace').strip()}",
+    )
+    fields = result.stdout.split(b"\0")
+    paths: set[str] = set()
+    index = 0
+    while index < len(fields):
+        field = fields[index]
+        index += 1
+        if not field:
+            continue
+        fail(len(field) >= 4 and field[2:3] == b" ", f"{repo}: malformed Git status")
+        status = field[:2]
+        paths.add(field[3:].decode("utf-8", errors="surrogateescape"))
+        if b"R" in status or b"C" in status:
+            fail(index < len(fields) and fields[index], f"{repo}: malformed rename status")
+            paths.add(fields[index].decode("utf-8", errors="surrogateescape"))
+            index += 1
+    return paths
+
+
 def _clone_shared_repository(
-    source: Path, destination: Path, revision: str, label: str
+    source: Path,
+    destination: Path,
+    revision: str,
+    label: str,
+    allowed_dirty_paths: set[str] | None = None,
 ) -> None:
     fail(
         source.is_dir() and not source.is_symlink() and (source / ".git").exists(),
@@ -1029,7 +1063,13 @@ def _clone_shared_repository(
         git(source, "rev-parse", "HEAD") == revision,
         f"{label}: source HEAD differs from frozen revision",
     )
-    fail(not git(source, "status", "--porcelain"), f"{label}: source repository is dirty")
+    dirty = _git_status_paths(source)
+    allowed = allowed_dirty_paths or set()
+    fail(
+        dirty <= allowed,
+        f"{label}: source repository is dirty outside nested projects: "
+        f"{sorted(dirty - allowed)}",
+    )
     destination.parent.mkdir(parents=True, exist_ok=True)
     cloned = subprocess.run(
         [
@@ -1150,7 +1190,13 @@ def clone_tier_workspace(
         rows.append((Path(path), oid(revision, f"tier project {index} revision")))
         seen.add(path)
     rows.sort(key=lambda row: (len(row[0].parts), row[0].as_posix()))
+    allowed_dirty: dict[Path, set[str]] = {}
     for path, revision in rows:
+        allowed_dirty[path] = {
+            child.relative_to(path).as_posix()
+            for child, _child_revision in rows
+            if child != path and child.is_relative_to(path)
+        }
         source = contained(
             source_workspace, path.as_posix(), f"tier source project {path}"
         )
@@ -1158,9 +1204,11 @@ def clone_tier_workspace(
             git(source, "rev-parse", "HEAD") == revision,
             f"tier source project {path}: HEAD differs from frozen revision",
         )
+        dirty = _git_status_paths(source)
         fail(
-            not git(source, "status", "--porcelain"),
-            f"tier source project {path}: repository is dirty",
+            dirty <= allowed_dirty[path],
+            f"tier source project {path}: dirty outside nested projects: "
+            f"{sorted(dirty - allowed_dirty[path])}",
         )
     manifest_revision = _git_identity(
         manifest_workspace, "HEAD", "tier manifest source"
@@ -1185,6 +1233,7 @@ def clone_tier_workspace(
             ),
             revision,
             f"tier project {path}",
+            allowed_dirty[path],
         )
     west_root = destination_workspace / ".west"
     west_root.mkdir()
