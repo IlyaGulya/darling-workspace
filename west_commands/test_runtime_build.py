@@ -9,11 +9,11 @@ import json
 import os
 import re
 import shutil
+import stat
 import subprocess
 import sys
-import stat
-import uuid
 import time
+import uuid
 from collections.abc import Callable, Mapping
 from pathlib import Path
 from typing import Any
@@ -559,6 +559,7 @@ class RuntimeBuildService:
             cached = self._read_runtime_cache(entry, identity) if entry.exists() else None
             if cached is not None:
                 yield cached, True
+                self._write_runtime_cache(entry, identity, cached)
                 return
             if entry.exists():
                 shutil.rmtree(entry)
@@ -569,6 +570,75 @@ class RuntimeBuildService:
         finally:
             fcntl.flock(lock, fcntl.LOCK_UN)
             os.close(lock)
+
+    @staticmethod
+    def _ccache_stats(environment: Mapping[str, str] | None) -> dict[str, int]:
+        if environment is None:
+            return {}
+        merged = os.environ.copy()
+        merged.update(environment)
+        try:
+            result = subprocess.run(
+                ["ccache", "--print-stats"],
+                env=merged,
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.DEVNULL,
+                text=True,
+                timeout=10,
+            )
+        except (OSError, subprocess.SubprocessError):
+            return {}
+        if result.returncode:
+            return {}
+        stats: dict[str, int] = {}
+        for line in result.stdout.splitlines():
+            name, separator, raw_value = line.partition("\t")
+            if separator and raw_value.isdecimal():
+                stats[name] = int(raw_value)
+        return stats
+
+    @staticmethod
+    def _ninja_log_entries(build_root: Path) -> int:
+        try:
+            with (build_root / ".ninja_log").open(encoding="utf-8") as stream:
+                return sum(1 for line in stream if line and not line.startswith("#"))
+        except OSError:
+            return 0
+
+    def _report_build_effectiveness(
+        self,
+        label: str,
+        ninja_before: int,
+        ninja_after: int,
+        ccache_before: dict[str, int],
+        ccache_after: dict[str, int],
+    ) -> None:
+        direct_hits = max(
+            0,
+            ccache_after.get("direct_cache_hit", 0)
+            - ccache_before.get("direct_cache_hit", 0),
+        )
+        preprocessed_hits = max(
+            0,
+            ccache_after.get("preprocessed_cache_hit", 0)
+            - ccache_before.get("preprocessed_cache_hit", 0),
+        )
+        misses = max(
+            0,
+            ccache_after.get("cache_miss", 0)
+            - ccache_before.get("cache_miss", 0),
+        )
+        hits = direct_hits + preprocessed_hits
+        attempts = hits + misses
+        hit_rate = round(100 * hits / attempts, 1) if attempts else 100.0
+        self._host.inf(
+            f"  runtime build effectiveness: {label} "
+            f"ninja_edges={max(0, ninja_after - ninja_before)} "
+            f"ccache_hits={hits} ccache_misses={misses} "
+            f"ccache_hit_rate={hit_rate:.1f}%"
+        )
+
 
     def build_artifacts(
         self,
@@ -604,49 +674,53 @@ class RuntimeBuildService:
             cache_reused,
         ):
             if cache_reused:
-                self._host.inf(f"  runtime build cache hit: {label} -> {build_root}")
-                return build_root
-            configured_at = time.monotonic()
-            self._host.inf(f"  runtime phase start: {label} configure")
-            self._host.inf(f"  {label} configure: {source_root} -> {build_root}")
-            configured = runner(
-                [
-                    "cmake",
-                    "-S",
-                    str(source_root),
-                    "-B",
-                    str(build_root),
-                    *configured_args,
-                ],
-                cwd=Path(self._host.topdir),
-                env=build_environment,
-                timeout_seconds=timeout,
-                capture_output=True,
-                heartbeat_seconds=30,
-                heartbeat=lambda elapsed: self._host.inf(
-                    f"  runtime heartbeat: {label} configure still running "
-                    f"({elapsed:.0f}s)"
-                ),
-                output_line=lambda stream, line: self._forward_runtime_line(
-                    label, "configure", stream, line
-                ),
-            )
-            if configured.returncode:
-                dump_command_tail(f"{label} configure", configured)
-                if allow_failure:
-                    raise RuntimeBuildFailure("configure", configured)
-                self._host.die(
-                    f"{label} configure failed with rc {configured.returncode}"
+                self._host.inf(
+                    f"  runtime incremental build reuse: {label} -> {build_root}"
                 )
-            self._host.inf(
-                f"  runtime phase complete: {label} configure "
-                f"({time.monotonic() - configured_at:.1f}s)"
-            )
+            else:
+                configured_at = time.monotonic()
+                self._host.inf(f"  runtime phase start: {label} configure")
+                self._host.inf(f"  {label} configure: {source_root} -> {build_root}")
+                configured = runner(
+                    [
+                        "cmake",
+                        "-S",
+                        str(source_root),
+                        "-B",
+                        str(build_root),
+                        *configured_args,
+                    ],
+                    cwd=Path(self._host.topdir),
+                    env=build_environment,
+                    timeout_seconds=timeout,
+                    capture_output=True,
+                    heartbeat_seconds=30,
+                    heartbeat=lambda elapsed: self._host.inf(
+                        f"  runtime heartbeat: {label} configure still running "
+                        f"({elapsed:.0f}s)"
+                    ),
+                    output_line=lambda stream, line: self._forward_runtime_line(
+                        label, "configure", stream, line
+                    ),
+                )
+                if configured.returncode:
+                    dump_command_tail(f"{label} configure", configured)
+                    if allow_failure:
+                        raise RuntimeBuildFailure("configure", configured)
+                    self._host.die(
+                        f"{label} configure failed with rc {configured.returncode}"
+                    )
+                self._host.inf(
+                    f"  runtime phase complete: {label} configure "
+                    f"({time.monotonic() - configured_at:.1f}s)"
+                )
+            ninja_before = self._ninja_log_entries(build_root)
+            ccache_before = self._ccache_stats(build_environment)
             built_at = time.monotonic()
             self._host.inf(f"  runtime phase start: {label} build")
             self._host.inf(f"  {label} build: {', '.join(targets)}")
             built = runner(
-                ["ninja", "-C", str(build_root), *targets],
+                ["ninja", "-d", "stats", "-C", str(build_root), *targets],
                 cwd=Path(self._host.topdir),
                 env=build_environment,
                 timeout_seconds=timeout,
@@ -668,6 +742,13 @@ class RuntimeBuildService:
             self._host.inf(
                 f"  runtime phase complete: {label} build "
                 f"({time.monotonic() - built_at:.1f}s)"
+            )
+            self._report_build_effectiveness(
+                label,
+                ninja_before,
+                self._ninja_log_entries(build_root),
+                ccache_before,
+                self._ccache_stats(build_environment),
             )
             return build_root
 

@@ -618,7 +618,8 @@ elif authority == "candidate-publish":
 elif authority == "clone-tier":
     source = Path(sys.argv[sys.argv.index("--source-workspace") + 1])
     destination = Path(sys.argv[sys.argv.index("--destination-workspace") + 1])
-    shutil.copytree(source, destination)
+    if not destination.exists():
+        shutil.copytree(source, destination)
 elif authority == "bootstrap":
     workspace = Path.cwd()
     assert os.environ.get("DARLING_WEST_UPDATE_JOBS") == "8"
@@ -1254,7 +1255,12 @@ with tempfile.TemporaryDirectory(prefix="dev-check-contract-") as temporary:
     control = control_parent / "darling-workspace"
     candidate_parent = scratch / "lock-first"
     candidate = candidate_parent / "darling-workspace"
-    guest_parent = scratch / "guest"
+    checkpoint_key = acceptance["inputs"]["acceptance_checkpoint"]["key"]
+    checkpoint_root = Path(
+        acceptance["inputs"]["acceptance_checkpoint"]["path"]
+    ).parent
+    materialized_root = checkpoint_root / "materialized-v1" / checkpoint_key
+    guest_parent = materialized_root / "guest"
     guest = guest_parent / "darling-workspace"
     artifacts = scratch / "evidence"
     oracle_output = artifacts / "immutable-oracle.json"
@@ -1302,8 +1308,7 @@ with tempfile.TemporaryDirectory(prefix="dev-check-contract-") as temporary:
             [
                 "git",
                 "clone",
-                "--no-local",
-                "--no-hardlinks",
+                "--shared",
                 "--no-checkout",
                 str(repo),
                 str(control),
@@ -1314,8 +1319,7 @@ with tempfile.TemporaryDirectory(prefix="dev-check-contract-") as temporary:
             [
                 "git",
                 "clone",
-                "--no-local",
-                "--no-hardlinks",
+                "--shared",
                 "--no-checkout",
                 str(repo),
                 str(candidate),
@@ -1550,19 +1554,19 @@ with tempfile.TemporaryDirectory(prefix="dev-check-contract-") as temporary:
     guest_env.update(
         dev_check.RuntimeBuildService.derive_ccache_environment(guest_env)
     )
-    guest_env["CCACHE_DIR"] = str(
-        Path(acceptance["inputs"]["acceptance_checkpoint"]["path"]).parent
-        / "runtime-ccache-v1"
-    )
+    guest_env["CCACHE_DIR"] = str(checkpoint_root / "runtime-ccache-v1")
     guest_env["CCACHE_MAXSIZE"] = "4G"
     guest_env["DARLING_TIER_DEFER_GLOBAL_CLEANUP"] = "1"
-    checkpoint_key = acceptance["inputs"]["acceptance_checkpoint"]["key"]
+    guest_workspace_lock = materialized_root / ".guest.lock"
+    guest_prepare_env = dict(candidate_env)
+    guest_prepare_env["WEST_MATERIALIZED_WORKSPACE_LOCK"] = str(
+        guest_workspace_lock
+    )
     guest_env["WEST_RUNTIME_BUILD_CACHE_DIR"] = str(
-        Path(acceptance["inputs"]["acceptance_checkpoint"]["path"]).parent
-        / "runtime-build-v1"
-        / checkpoint_key
+        checkpoint_root / "runtime-build-v1" / checkpoint_key
     )
     guest_env["WEST_RUNTIME_BUILD_CACHE_KEY"] = checkpoint_key
+    guest_env["WEST_MATERIALIZED_WORKSPACE_LOCK"] = str(guest_workspace_lock)
     guest_env["DARLING_SMOKE_PREFIX"] = (
         f"/tmp/darling-rootless-smoke-{checkpoint_key[:16]}"
     )
@@ -1576,7 +1580,8 @@ with tempfile.TemporaryDirectory(prefix="dev-check-contract-") as temporary:
         *((str(candidate), candidate_env) for _ in range(3)),
         (str(repo), host_env),
         (str(control), oracle_env),
-        *((str(candidate), candidate_env) for _ in range(5)),
+        *((str(candidate), candidate_env) for _ in range(4)),
+        (str(candidate), guest_prepare_env),
         (str(candidate), final_host_env),
         (str(guest), guest_env),
         (str(candidate), candidate_env),
@@ -1796,7 +1801,7 @@ with tempfile.TemporaryDirectory(prefix="dev-check-contract-") as temporary:
         expected_acceptance_log[parallel_start:parallel_end],
         key=lambda row: (row["authority"], row["argv"]),
     )
-    final_parallel_start = parallel_end + 6
+    final_parallel_start = parallel_end + 5
     final_parallel_end = final_parallel_start + len(dev_check._FINAL_TIER_STEP_NAMES)
     assert observed_acceptance_log[parallel_end:final_parallel_start] == (
         expected_acceptance_log[parallel_end:final_parallel_start]
@@ -2105,7 +2110,7 @@ with tempfile.TemporaryDirectory(prefix="dev-check-contract-") as temporary:
     reuse_parallel_start = next(
         index
         for index, row in enumerate(expected_reuse_log)
-        if row == {"authority": "tier", "argv": ["host"]}
+        if row["authority"] == "clone-tier"
     )
     reuse_parallel_end = reuse_parallel_start + len(dev_check._FINAL_TIER_STEP_NAMES)
     assert observed_reuse_log[:reuse_parallel_start] == (
@@ -2765,7 +2770,7 @@ with tempfile.TemporaryDirectory(prefix="dev-check-contract-") as temporary:
         "export-locks",
         "validate-export-and-inputs",
         "build-source-closure-and-index",
-        "durable-prepublication-verification",
+        "durable-prepublication-integrity",
         "atomic-publication-identity-check",
     ]
     assert all(phase["elapsed_ms"] >= 0 for phase in packaged["phases"])

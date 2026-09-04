@@ -25,8 +25,11 @@ sys.modules.setdefault("west.commands", west_commands_module)
 class Host:
     topdir = "/tmp"
 
-    def inf(self, _message):
-        pass
+    def __init__(self):
+        self.messages = []
+
+    def inf(self, message):
+        self.messages.append(message)
 
     def err(self, _message):
         pass
@@ -42,7 +45,8 @@ def runner(command, **kwargs):
 
 with tempfile.TemporaryDirectory() as temp:
     root = Path(temp)
-    service = RuntimeBuildService(Host())
+    host = Host()
+    service = RuntimeBuildService(host)
     service.build_artifacts(
         root / "source",
         {"runtime-artifacts": [{"build-targets": ["darlingserver"]}]},
@@ -65,9 +69,9 @@ with tempfile.TemporaryDirectory() as temp:
             build = Path(command[command.index("-B") + 1])
             build.mkdir(parents=True)
         else:
-            build = Path(command[2])
+            build = Path(command[command.index("-C") + 1])
             artifact = build / "bin/darling"
-            artifact.parent.mkdir(parents=True)
+            artifact.parent.mkdir(parents=True, exist_ok=True)
             artifact.write_bytes(b"cached runtime\n")
             artifact.chmod(0o755)
         return ProcessResult(0)
@@ -109,7 +113,16 @@ with tempfile.TemporaryDirectory() as temp:
             timeout_seconds=7,
         )
         assert first == second
-        assert len(cached_calls) == 2, cached_calls
+        assert len(cached_calls) == 3, cached_calls
+        assert [call[0][0] for call in cached_calls] == ["cmake", "ninja", "ninja"]
+        assert "-d" in cached_calls[-1][0] and "stats" in cached_calls[-1][0]
+        assert [call[0][-1] for call in cached_calls[1:]] == ["darling", "darling"]
+        assert any(
+            "ninja_edges=" in message
+            and "ccache_hits=" in message
+            and "ccache_hit_rate=" in message
+            for message in host.messages
+        )
         (second / "bin/darling").write_bytes(b"mutated\n")
         try:
             service.build_artifacts(
@@ -132,4 +145,5 @@ with tempfile.TemporaryDirectory() as temp:
         os.environ.pop("WEST_RUNTIME_BUILD_CACHE_DIR", None)
         os.environ.pop("WEST_RUNTIME_BUILD_CACHE_KEY", None)
 assert [kwargs["timeout_seconds"] for _command, kwargs in calls] == [7, 7], calls
+assert calls[1][0][-1] == "darlingserver", calls
 print("PASS runtime-build-contract")

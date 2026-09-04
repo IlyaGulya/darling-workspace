@@ -9,6 +9,7 @@ from __future__ import annotations
 import json
 import re
 import shutil
+import time
 from pathlib import Path
 
 from guest_toolchain import (
@@ -194,6 +195,7 @@ class BootstrapRuntimeProfileMixin:
                 retain_deployment=True,
                 provision_guest_toolchain=False,
             ) as deployment:
+                guest_started = time.monotonic()
                 target = executable or "login shell"
                 self.inf(
                     f"prefix bootstrap phase start: guest {target} "
@@ -330,7 +332,11 @@ class BootstrapRuntimeProfileMixin:
                         "prefix bootstrap guest smoke returned without its verdict marker"
                     )
                     self.die("prefix bootstrap guest smoke returned without its verdict marker")
-                self.inf(f"prefix bootstrap phase complete: guest {target}")
+                self.inf(
+                    f"prefix bootstrap phase complete: guest {target} "
+                    f"({time.monotonic() - guest_started:.1f}s)"
+                )
+                doctor_started = time.monotonic()
                 doctor = run_bounded(
                     [
                         "west",
@@ -354,6 +360,10 @@ class BootstrapRuntimeProfileMixin:
                         "prefix bootstrap doctor failed "
                         f"with rc {doctor.returncode}: {doctor_output[-1000:]}"
                     )
+                self.inf(
+                    "prefix bootstrap phase complete: doctor "
+                    f"({time.monotonic() - doctor_started:.1f}s)"
+                )
                 if definition.get("guest-toolchain") == COMMAND_LINE_TOOLS_RESOURCE:
                     self.inf(
                         "prefix bootstrap phase start: guest toolchain "

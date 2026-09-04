@@ -53,6 +53,7 @@ _CHECKPOINT_STEP_NAMES = (
     "immutable-oracle",
 )
 _FINAL_TIER_STEP_NAMES = (
+    "acceptance-clone-guest-candidate",
     "acceptance-host-tier",
     "acceptance-guest-smoke",
 )
@@ -1234,7 +1235,12 @@ def _check_steps(inputs: dict[str, Any], transaction_id: str) -> list[dict[str, 
     control = control_parent / "darling-workspace"
     candidate_parent = scratch / "lock-first"
     candidate = candidate_parent / "darling-workspace"
-    guest_parent = scratch / "guest"
+    materialized_root = (
+        Path(inputs["acceptance_checkpoint"]["path"]).parent
+        / "materialized-v1"
+        / inputs["acceptance_checkpoint"]["key"]
+    )
+    guest_parent = materialized_root / "guest"
     guest = guest_parent / "darling-workspace"
     artifacts = scratch / "evidence"
 
@@ -1262,6 +1268,11 @@ def _check_steps(inputs: dict[str, Any], transaction_id: str) -> list[dict[str, 
     host_env = stage_env("host")
     oracle_env = stage_env("oracle")
     candidate_env = stage_env("candidate")
+    guest_prepare_env = dict(candidate_env)
+    guest_workspace_lock = materialized_root / ".guest.lock"
+    guest_prepare_env["WEST_MATERIALIZED_WORKSPACE_LOCK"] = str(
+        guest_workspace_lock
+    )
     guest_env = stage_env("guest")
     guest_env.update(RuntimeBuildService.derive_ccache_environment(guest_env))
     guest_env["CCACHE_DIR"] = str(
@@ -1278,6 +1289,7 @@ def _check_steps(inputs: dict[str, Any], transaction_id: str) -> list[dict[str, 
     guest_env["WEST_RUNTIME_BUILD_CACHE_KEY"] = inputs["acceptance_checkpoint"][
         "key"
     ]
+    guest_env["WEST_MATERIALIZED_WORKSPACE_LOCK"] = str(guest_workspace_lock)
     guest_env["DARLING_SMOKE_PREFIX"] = (
         f"/tmp/darling-rootless-smoke-{inputs['acceptance_checkpoint']['key'][:16]}"
     )
@@ -1322,8 +1334,7 @@ def _check_steps(inputs: dict[str, Any], transaction_id: str) -> list[dict[str, 
                 [
                     "git",
                     "clone",
-                    "--no-local",
-                    "--no-hardlinks",
+                    "--shared",
                     "--no-checkout",
                     str(manifest_repo),
                     str(control),
@@ -1338,8 +1349,7 @@ def _check_steps(inputs: dict[str, Any], transaction_id: str) -> list[dict[str, 
                 [
                     "git",
                     "clone",
-                    "--no-local",
-                    "--no-hardlinks",
+                    "--shared",
                     "--no-checkout",
                     str(manifest_repo),
                     str(candidate),
@@ -1598,7 +1608,7 @@ def _check_steps(inputs: dict[str, Any], transaction_id: str) -> list[dict[str, 
                 "temporary/local-output",
                 _CHECK_TIMEOUTS["clone-tier-workspace"],
                 candidate,
-                candidate_env,
+                guest_prepare_env,
             ),
             _step(
                 "acceptance-host-tier",
@@ -3319,15 +3329,46 @@ def _progress(
     )
 
 
+def _dependency_cancelled_result(
+    planned_step: dict[str, Any], dependency: str
+) -> dict[str, Any]:
+    timestamp = _utc_now()
+    stdout = _checkpoint_capture()
+    stderr = _checkpoint_capture(
+        f"not run because dependency failed: {dependency}\n".encode()
+    )
+    return {
+        **copy.deepcopy(planned_step),
+        "returncode": 125,
+        "timed_out": False,
+        "interrupted": False,
+        "started_at": timestamp,
+        "finished_at": timestamp,
+        "duration_ms": 0,
+        "duration_ns": 0,
+        "stdout": stdout,
+        "stderr": stderr,
+        "stdout_tail": stdout["tail"],
+        "stderr_tail": stderr["tail"],
+        "process_group_quiescent": True,
+        "cancelled_by_peer": True,
+    }
+
+
 def _run_parallel_acceptance_steps(
     planned_steps: list[dict[str, Any]],
     indices: dict[str, int],
     total: int,
     started: float,
     progress: Callable[[dict[str, Any]], None] | None,
+    dependencies: dict[str, tuple[str, ...]] | None = None,
 ) -> dict[str, dict[str, Any]]:
     cancellation = _ProcessCancellation()
     progress_lock = threading.Lock()
+    dependency_names = dependencies or {}
+    futures_by_name: dict[
+        str, concurrent.futures.Future[dict[str, Any]]
+    ] = {}
 
     def notify(
         phase: str, step: dict[str, Any], **fields: Any
@@ -3344,6 +3385,17 @@ def _run_parallel_acceptance_steps(
             )
 
     def run(step: dict[str, Any]) -> dict[str, Any]:
+        for dependency in dependency_names.get(step["name"], ()):
+            dependency_result = futures_by_name[dependency].result()
+            if dependency_result["returncode"] != 0:
+                result = _dependency_cancelled_result(step, dependency)
+                notify(
+                    "finish",
+                    step,
+                    duration_ms=0,
+                    returncode=result["returncode"],
+                )
+                return result
         notify("start", step)
         outcome = _run_process(
             list(step["argv"]),
@@ -3375,7 +3427,9 @@ def _run_parallel_acceptance_steps(
     )
     try:
         for step in planned_steps:
-            futures[executor.submit(run, step)] = step
+            future = executor.submit(run, step)
+            futures[future] = step
+            futures_by_name[step["name"]] = future
         results = {
             futures[future]["name"]: future.result()
             for future in concurrent.futures.as_completed(futures)
@@ -3653,6 +3707,11 @@ def execute_check(
                         total,
                         started,
                         progress,
+                        dependencies={
+                            "acceptance-guest-smoke": (
+                                "acceptance-clone-guest-candidate",
+                            )
+                        },
                     )
                 except _ParallelInterrupted as error:
                     parallel_results = error.results
@@ -6014,6 +6073,50 @@ def _parse_sha256sums(path: Path) -> dict[str, str]:
     return result
 
 
+def _verify_owned_package_integrity(
+    package: Path, expected_index: dict[str, Any]
+) -> dict[str, Any]:
+    """Verify bytes written by this process without replaying accepted semantics."""
+
+    rows = expected_index["files"]
+    listed = {row["path"]: row for row in rows}
+    expected_files = set(listed) | {"package-index.json", "SHA256SUMS"}
+    _assert_exact_package_tree(package, expected_files)
+    index, index_data = _read_json_file(
+        package / "package-index.json", "owned review package index"
+    )
+    if index != expected_index:
+        raise DevCheckError("owned review package index changed after construction")
+    sums = _parse_sha256sums(package / "SHA256SUMS")
+    if set(sums) != expected_files - {"SHA256SUMS"}:
+        raise DevCheckError("owned package SHA256SUMS allowlist differs")
+    hashes = _parallel_file_hashes(
+        {
+            relative: package / relative
+            for relative in expected_files - {"SHA256SUMS"}
+        }
+    )
+    for relative, (digest, size) in hashes.items():
+        if sums[relative] != digest:
+            raise DevCheckError(f"owned package digest mismatch: {relative}")
+        if relative in listed and (
+            listed[relative]["sha256"] != digest
+            or listed[relative]["bytes"] != size
+        ):
+            raise DevCheckError(f"owned package index mismatch: {relative}")
+    return {
+        "schema_version": SCHEMA_VERSION,
+        "operation": "package-integrity",
+        "state": "valid",
+        "returncode": 0,
+        "package": str(package),
+        "profile": expected_index["profile"],
+        "file_count": len(expected_files),
+        "package_index_sha256": hashlib.sha256(index_data).hexdigest(),
+        "package_index": index,
+    }
+
+
 def verify_package(package: Path) -> dict[str, Any]:
     """Validate a published review package without consulting or mutating a workspace."""
     root = Path(package).expanduser().absolute()
@@ -6493,10 +6596,12 @@ def execute_package(plan: dict[str, Any]) -> dict[str, Any]:
         record_phase("build-source-closure-and-index", phase_started)
         phase_started = time.monotonic()
         _fsync_package_tree(package_access)
-        verification = verify_package(package_access)
+        verification = _verify_owned_package_integrity(
+            package_access, package_index
+        )
         package_index_sha256 = verification["package_index_sha256"]
         package_identity = _package_tree_identity_snapshot(package_access)
-        record_phase("durable-prepublication-verification", phase_started)
+        record_phase("durable-prepublication-integrity", phase_started)
         phase_started = time.monotonic()
         if _directory_identity(package_fd) != staging_identity:
             raise DevCheckError("package staging identity changed before publication")
