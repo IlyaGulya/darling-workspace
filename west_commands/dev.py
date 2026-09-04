@@ -1,6 +1,7 @@
 """Human-oriented orchestration over authoritative Darling workspace commands."""
 from __future__ import annotations
 
+from collections.abc import Callable
 import json
 from pathlib import Path
 import shlex
@@ -327,6 +328,39 @@ def _render_human(
         command.inf(f"next: {next_action}")
 
 
+def _check_progress(
+    command: WestCommand,
+) -> Callable[[dict[str, Any]], None]:
+    def emit(event: dict[str, Any]) -> None:
+        phase = event["phase"]
+        prefix = (
+            f"check: {phase} {event['index']}/{event['total']} "
+            f"{event['name']}"
+        )
+        if phase == "start":
+            suffix = f"elapsed={event['elapsed_ms']}ms"
+        elif phase == "finish":
+            outcome = "pass" if event["returncode"] == 0 else "fail"
+            prefix = (
+                f"check: {outcome} {event['index']}/{event['total']} "
+                f"{event['name']}"
+            )
+            suffix = (
+                f"step={event['duration_ms']}ms "
+                f"elapsed={event['elapsed_ms']}ms"
+            )
+        elif phase == "reuse":
+            suffix = (
+                f"source={event['source_duration_ms']}ms "
+                f"elapsed={event['elapsed_ms']}ms"
+            )
+        else:
+            raise ValueError(f"unknown check progress phase: {phase}")
+        command.inf(f"{prefix} {suffix}")
+
+    return emit
+
+
 def _json_error_payload(args: Any, error: Exception) -> dict[str, Any]:
     action = args.action
     operation = {
@@ -518,7 +552,10 @@ class DarlingDev(WestCommand):
                 else:
                     if not args.json:
                         _render_human(self, plan, west_argv)
-                    result = execute_check(plan)
+                    if args.json:
+                        result = execute_check(plan)
+                    else:
+                        result = execute_check(plan, progress=_check_progress(self))
             elif args.action == "package":
                 plan = build_package_plan(
                     manifest_repo=manifest_repo,

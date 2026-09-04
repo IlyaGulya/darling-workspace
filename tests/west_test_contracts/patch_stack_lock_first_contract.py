@@ -15,6 +15,7 @@ import yaml
 
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "west_commands"))
+sys.path.insert(0, str(ROOT / "ci"))
 west_module = types.ModuleType("west")
 west_commands_module = types.ModuleType("west.commands")
 class WestCommand: pass
@@ -26,6 +27,7 @@ import patch as patch_command
 from patch_git import TEMPORARY_PATCH_GIT_OPTIONS
 import patch_stack_lock_first as lock_first
 import patch_stack_profile_composition as profile_composition
+import patch_stack_lock_first_acceptance as lock_first_acceptance
 
 
 def git(repo: Path, *args: str) -> str:
@@ -40,6 +42,146 @@ def mapping_doc(series, *, profile="homebrew", batch_id="synthetic-batch", expec
 def main() -> None:
     with tempfile.TemporaryDirectory() as directory:
         root = Path(directory)
+        graph_workspace = root / "profile-graph"
+
+        def write_graph_profile(name: str, base: object = None) -> Path:
+            path = graph_workspace / "patches" / name / "patches.yml"
+            path.parent.mkdir(parents=True)
+            payload: dict[str, object] = {"patches": []}
+            if base is not None:
+                payload["base-profile"] = base
+            path.write_text(yaml.safe_dump(payload, sort_keys=False))
+            return path
+
+        write_graph_profile("root")
+        write_graph_profile("middle", "root")
+        write_graph_profile("leaf", "middle")
+        assert lock_first.profile_dependency_chain(
+            graph_workspace, "leaf"
+        ) == ["root", "middle", "leaf"]
+
+        def graph_must_fail(profile_name: str) -> None:
+            try:
+                lock_first.profile_dependency_chain(graph_workspace, profile_name)
+            except lock_first.LockFirstError:
+                return
+            raise AssertionError(
+                f"lock-first accepted invalid profile graph {profile_name!r}"
+            )
+
+        graph_must_fail("missing")
+        malformed = write_graph_profile("malformed")
+        malformed.write_text("[unterminated\n")
+        graph_must_fail("malformed")
+        nonmapping = write_graph_profile("nonmapping")
+        nonmapping.write_text("- not\n- a\n- mapping\n")
+        graph_must_fail("nonmapping")
+        write_graph_profile("invalid-base-type", ["root"])
+        graph_must_fail("invalid-base-type")
+        write_graph_profile("invalid-base-name", "../escape")
+        graph_must_fail("invalid-base-name")
+        write_graph_profile("cycle-a", "cycle-b")
+        write_graph_profile("cycle-b", "cycle-a")
+        graph_must_fail("cycle-a")
+
+        seed_source_workspace = root / "seed-source"
+        seed_candidate_workspace = root / "seed-candidate"
+        seed_manifest_workspace = seed_candidate_workspace / "darling-workspace"
+        source_repo = seed_source_workspace / "fixture/module"
+        candidate_repo = seed_candidate_workspace / "fixture/module"
+        source_repo.mkdir(parents=True)
+        candidate_repo.mkdir(parents=True)
+        for repo in (source_repo, candidate_repo):
+            git(repo, "init", "-q")
+            git(repo, "config", "user.email", "seed@example.invalid")
+            git(repo, "config", "user.name", "Seed Contract")
+        (source_repo / "value").write_text("base\n")
+        git(source_repo, "add", "value")
+        git(source_repo, "commit", "-qm", "base")
+        git(source_repo, "checkout", "-qb", "fix/seed-contract")
+        (source_repo / "value").write_text("source\n")
+        git(source_repo, "commit", "-qam", "source")
+        source_commit = git(source_repo, "rev-parse", "HEAD")
+        (candidate_repo / "value").write_text("candidate\n")
+        git(candidate_repo, "add", "value")
+        git(candidate_repo, "commit", "-qm", "candidate")
+        seed_manifest = (
+            seed_manifest_workspace / "patches/homebrew/patches.yml"
+        )
+        seed_manifest.parent.mkdir(parents=True)
+        seed_manifest.write_text(
+            yaml.safe_dump(
+                {
+                    "patches": [
+                        {
+                            "module": "fixture/module",
+                            "source-branch": "fix/seed-contract",
+                            "source-commit": source_commit,
+                        }
+                    ]
+                },
+                sort_keys=False,
+            )
+        )
+        lock_first_acceptance.seed_source_refs(
+            seed_manifest_workspace,
+            seed_source_workspace,
+            seed_candidate_workspace,
+            "homebrew",
+        )
+        assert git(
+            candidate_repo,
+            "rev-parse",
+            "refs/heads/fix/seed-contract",
+        ) == source_commit
+        (source_repo / "value").write_text("changed\n")
+        git(source_repo, "commit", "-qam", "change declared branch")
+        try:
+            lock_first_acceptance.seed_source_refs(
+                seed_manifest_workspace,
+                seed_source_workspace,
+                seed_candidate_workspace,
+                "homebrew",
+            )
+        except lock_first_acceptance.AcceptanceError:
+            pass
+        else:
+            raise AssertionError(
+                "seed accepted a source branch that changed after declaration"
+            )
+        external_profile = root / "external-profile"
+        external_profile.mkdir()
+        (external_profile / "patches.yml").write_text("patches: []\n")
+        (graph_workspace / "patches" / "linked").symlink_to(
+            external_profile, target_is_directory=True
+        )
+        graph_must_fail("linked")
+        linked_root_workspace = root / "linked-root"
+        linked_root_workspace.mkdir()
+        (linked_root_workspace / "patches").symlink_to(
+            graph_workspace / "patches", target_is_directory=True
+        )
+        try:
+            lock_first.profile_dependency_chain(linked_root_workspace, "root")
+        except lock_first.LockFirstError:
+            pass
+        else:
+            raise AssertionError("lock-first accepted a symlinked profile root")
+        for unsafe_profile in (
+            "",
+            ".",
+            "..",
+            "../escape",
+            "/absolute",
+            "nested/name",
+            "back\\slash",
+            "-option",
+            " leading",
+            "trailing ",
+            "line\nbreak",
+        ):
+            graph_must_fail(unsafe_profile)
+
         bare, work, production = root / "mirror.git", root / "work", root / "production"
         git(root, "init", "--bare", "-q", str(bare)); git(root, "clone", "-q", str(bare), str(work))
         git(work, "config", "user.name", "Test"); git(work, "config", "user.email", "test@example.invalid")

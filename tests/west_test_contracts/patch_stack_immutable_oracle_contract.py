@@ -144,6 +144,33 @@ with tempfile.TemporaryDirectory(prefix="immutable-oracle-contract-") as temp:
             sort_keys=False,
         )
     )
+    assert oracle.profile_stack(workspace, "homebrew") == ["homebrew"]
+
+    def oracle_graph_must_fail(profile_name: str) -> None:
+        try:
+            oracle.profile_stack(workspace, profile_name)
+        except oracle.OracleError as error:
+            assert isinstance(
+                error.__cause__,
+                oracle.patch_stack_lock_first.LockFirstError,
+            )
+            return
+        raise AssertionError(
+            f"immutable oracle accepted invalid profile graph {profile_name!r}"
+        )
+
+    malformed_profile = workspace / "patches" / "malformed"
+    malformed_profile.mkdir()
+    (malformed_profile / "patches.yml").write_text("[unterminated\n")
+    cycle_a = workspace / "patches" / "cycle-a"
+    cycle_b = workspace / "patches" / "cycle-b"
+    cycle_a.mkdir()
+    cycle_b.mkdir()
+    (cycle_a / "patches.yml").write_text("base-profile: cycle-b\n")
+    (cycle_b / "patches.yml").write_text("base-profile: cycle-a\n")
+    for invalid_profile in ("missing", "malformed", "cycle-a", "../escape"):
+        oracle_graph_must_fail(invalid_profile)
+
     frozen = workspace / "west.lock.yml"
     frozen.write_text(
         yaml.safe_dump(

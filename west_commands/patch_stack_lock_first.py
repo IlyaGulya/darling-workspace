@@ -106,6 +106,65 @@ _REGISTRY_FIELDS = {"schema_version", "profiles"}
 _REGISTRY_ENTRY_FIELDS = {"profile", "mapping"}
 
 
+def _safe_profile_name(value: object) -> bool:
+    return (
+        isinstance(value, str)
+        and bool(value)
+        and value == value.strip()
+        and not value.startswith("-")
+        and value not in {".", ".."}
+        and "/" not in value
+        and "\\" not in value
+        and not any(
+            ord(character) < 32 or ord(character) == 127
+            for character in value
+        )
+    )
+
+
+def profile_dependency_chain(workspace: Path, profile: str) -> list[str]:
+    """Return the profile dependency chain from its base root to ``profile``."""
+    if not _safe_profile_name(profile):
+        raise LockFirstError("lock-first profile is invalid")
+    patches_root = workspace / "patches"
+    if patches_root.is_symlink() or not patches_root.is_dir():
+        raise LockFirstError("profile metadata root must be a real directory")
+
+    reverse: list[str] = []
+    seen: set[str] = set()
+    current: str | None = profile
+    while current is not None:
+        if current in seen:
+            raise LockFirstError("profile dependency cycle")
+        seen.add(current)
+        reverse.append(current)
+        profile_root = patches_root / current
+        path = profile_root / "patches.yml"
+        if (
+            profile_root.is_symlink()
+            or not profile_root.is_dir()
+            or path.is_symlink()
+            or not path.is_file()
+        ):
+            raise LockFirstError(
+                f"{current}: profile metadata path must be real and contained"
+            )
+        try:
+            value = yaml.safe_load(path.read_text(encoding="utf-8"))
+        except (OSError, yaml.YAMLError) as error:
+            raise LockFirstError(
+                f"{current}: invalid profile metadata: {error}"
+            ) from error
+        if not isinstance(value, dict):
+            raise LockFirstError(f"{current}: invalid profile metadata")
+        base = value.get("base-profile")
+        if base is not None and not _safe_profile_name(base):
+            raise LockFirstError(f"{current}: invalid base-profile")
+        current = base
+    reverse.reverse()
+    return reverse
+
+
 def migrate_mapping_v1(data: object, *, batch_id: str = "migrated-v1") -> dict[str, Any]:
     """Return the explicit schema-v2 form of a legacy single-profile mapping.
 

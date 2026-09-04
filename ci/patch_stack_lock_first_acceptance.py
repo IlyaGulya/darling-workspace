@@ -901,30 +901,159 @@ def compare_immutable_oracle(
     )
 
 
+def seed_source_refs(
+    manifest_workspace: Path,
+    source_workspace: Path,
+    candidate_workspace: Path,
+    profile: str,
+) -> None:
+    """Copy only manifest-declared source branches into the disposable candidate."""
+    manifest_path = contained(
+        manifest_workspace,
+        f"patches/{profile}/patches.yml",
+        "seed profile manifest",
+    )
+    try:
+        manifest = yaml.safe_load(manifest_path.read_text())
+    except (OSError, yaml.YAMLError) as error:
+        raise AcceptanceError(
+            f"invalid seed profile manifest {manifest_path}: {error}"
+        ) from error
+    patches = manifest.get("patches") if isinstance(manifest, dict) else None
+    fail(isinstance(patches, list), "seed profile manifest has no patch list")
+    refs: dict[tuple[str, str], str] = {}
+    for index, entry in enumerate(patches):
+        fail(isinstance(entry, dict), f"seed patch {index}: invalid entry")
+        module = entry.get("module")
+        branch = entry.get("source-branch")
+        source = entry.get("source-commit")
+        fail(
+            isinstance(module, str) and module,
+            f"seed patch {index}: invalid module",
+        )
+        fail(
+            isinstance(branch, str) and branch,
+            f"seed patch {index}: invalid source branch",
+        )
+        source = oid(source, f"seed patch {index} source commit")
+        ref = f"refs/heads/{branch}"
+        checked = subprocess.run(
+            ["git", "check-ref-format", ref],
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+        fail(
+            checked.returncode == 0,
+            f"seed patch {index}: invalid source branch",
+        )
+        key = (module, branch)
+        previous = refs.get(key)
+        fail(
+            previous is None or previous == source,
+            f"seed patch {index}: source branch has conflicting commits",
+        )
+        refs[key] = source
+    fail(refs, "seed profile manifest has no source refs")
+    modules: dict[str, list[tuple[str, str]]] = {}
+    for (module, branch), expected in sorted(refs.items()):
+        modules.setdefault(module, []).append((branch, expected))
+    for module, branches in modules.items():
+        source_repo = contained(
+            source_workspace, module, f"seed source repository {module}"
+        )
+        candidate_repo = contained(
+            candidate_workspace,
+            module,
+            f"seed candidate repository {module}",
+        )
+        fail(
+            (source_repo / ".git").exists(),
+            f"seed source repository is missing: {module}",
+        )
+        fail(
+            (candidate_repo / ".git").exists(),
+            f"seed candidate repository is missing: {module}",
+        )
+        for branch, expected in branches:
+            observed = git(
+                source_repo, "rev-parse", f"refs/heads/{branch}"
+            )
+            fail(
+                observed == expected,
+                "seed source branch differs from declared commit: "
+                f"{module}:{branch}",
+            )
+        fetched = subprocess.run(
+            [
+                "git",
+                "-C",
+                str(candidate_repo),
+                "fetch",
+                "--no-tags",
+                "--no-recurse-submodules",
+                "--force",
+                str(source_repo),
+                *(
+                    f"refs/heads/{branch}:refs/heads/{branch}"
+                    for branch, _expected in branches
+                ),
+            ],
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+        )
+        fail(
+            fetched.returncode == 0,
+            f"seed fetch failed for {module}: {fetched.stderr.strip()}",
+        )
+        for branch, expected in branches:
+            seeded = git(
+                candidate_repo, "rev-parse", f"refs/heads/{branch}"
+            )
+            fail(
+                seeded == expected,
+                f"seeded source branch differs: {module}:{branch}",
+            )
+
+
 def main() -> None:
     parser = argparse.ArgumentParser()
     sub = parser.add_subparsers(dest="action", required=True)
-    oracle = sub.add_parser("compare-immutable-oracle")
+    compare = sub.add_parser("compare-immutable-oracle")
     for name in ("oracle", "candidate", "candidate-manifest", "evidence", "mapping", "candidate-workspace", "transaction-root", "result"):
-        oracle.add_argument(f"--{name}", type=Path, required=True)
-    oracle.add_argument("--expected-modules", type=Path)
-    oracle.add_argument("--expected-manifest", type=Path)
-    oracle.add_argument("--manifest-workspace", type=Path)
+        compare.add_argument(f"--{name}", type=Path, required=True)
+    compare.add_argument("--expected-modules", type=Path)
+    compare.add_argument("--expected-manifest", type=Path)
+    compare.add_argument("--manifest-workspace", type=Path)
+    seed = sub.add_parser("seed-source-refs")
+    seed.add_argument("--source-workspace", type=Path, required=True)
+    seed.add_argument("--candidate-workspace", type=Path, required=True)
+    seed.add_argument("--profile", required=True)
     args = parser.parse_args()
     try:
-        compare_immutable_oracle(
-            args.oracle,
-            args.candidate,
-            args.candidate_manifest,
-            args.evidence,
-            args.mapping,
-            args.candidate_workspace,
-            args.transaction_root,
-            args.result,
-            args.expected_modules,
-            args.expected_manifest,
-            args.manifest_workspace,
-        )
+        if args.action == "seed-source-refs":
+            seed_source_refs(
+                ROOT,
+                args.source_workspace,
+                args.candidate_workspace,
+                args.profile,
+            )
+        else:
+            compare_immutable_oracle(
+                args.oracle,
+                args.candidate,
+                args.candidate_manifest,
+                args.evidence,
+                args.mapping,
+                args.candidate_workspace,
+                args.transaction_root,
+                args.result,
+                args.expected_modules,
+                args.expected_manifest,
+                args.manifest_workspace,
+            )
     except AcceptanceError as error:
         print(f"patch-stack lock-first acceptance: ERROR: {error}", file=sys.stderr)
         raise SystemExit(1)

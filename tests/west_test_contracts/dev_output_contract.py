@@ -40,7 +40,7 @@ for module_name, attributes in {
         "DevCheckError": DevCheckError,
         "build_check_plan": lambda **_kwargs: {},
         "build_package_plan": lambda **_kwargs: {},
-        "execute_check": lambda _plan: {},
+        "execute_check": lambda _plan, progress=None: {},
         "execute_package": lambda _plan: {},
         "verify_package": lambda _package: {},
     },
@@ -65,6 +65,45 @@ class Output:
 
     def inf(self, message: str) -> None:
         self.lines.append(message)
+
+progress_output = Output()
+progress = dev._check_progress(progress_output)
+progress(
+    {
+        "phase": "start",
+        "name": "doctor",
+        "index": 4,
+        "total": 18,
+        "elapsed_ms": 123,
+    }
+)
+progress(
+    {
+        "phase": "finish",
+        "name": "doctor",
+        "index": 4,
+        "total": 18,
+        "elapsed_ms": 168,
+        "duration_ms": 45,
+        "returncode": 0,
+    }
+)
+progress(
+    {
+        "phase": "reuse",
+        "name": "doctor",
+        "index": 4,
+        "total": 18,
+        "elapsed_ms": 169,
+        "source_duration_ms": 45,
+    }
+)
+assert progress_output.lines == [
+    "check: start 4/18 doctor elapsed=123ms",
+    "check: pass 4/18 doctor step=45ms elapsed=168ms",
+    "check: reuse 4/18 doctor source=45ms elapsed=169ms",
+]
+
 
 
 with tempfile.TemporaryDirectory(prefix="dev-output-contract-") as temporary:
@@ -228,6 +267,84 @@ with tempfile.TemporaryDirectory(prefix="dev-output-contract-") as temporary:
     command.manifest = SimpleNamespace(repo_abspath=str(root))
     emitted: list[str] = []
     command.inf = emitted.append
+    check_evidence = root / "check-progress.json"
+    check_argv = [
+        "dev",
+        "check",
+        "acceptance",
+        "--evidence",
+        str(check_evidence),
+    ]
+    check_plan = {
+        "schema_version": 1,
+        "operation": "check",
+        "state": "planned",
+        "transaction_id": "check-progress",
+        "inputs": {
+            "tier": "acceptance",
+            "profile": "homebrew",
+            "bead": None,
+            "patch": None,
+            "prefix": None,
+            "build_dir": None,
+            "evidence": str(check_evidence),
+            "west_argv": ["west"],
+        },
+        "steps": [{"name": "doctor", "argv": ["west", "doctor"], "mutating": False}],
+        "results": [],
+        "returncode": None,
+        "next_safe_action": "execute",
+    }
+    check_result = {
+        **check_plan,
+        "state": "committed",
+        "results": [{"name": "doctor", "returncode": 0}],
+        "returncode": 0,
+        "next_safe_action": None,
+    }
+    no_progress_argument = object()
+    check_executions: list[tuple[dict, object]] = []
+
+    def execute(candidate: dict, progress=no_progress_argument):
+        check_executions.append((candidate, progress))
+        if callable(progress):
+            progress(
+                {
+                    "phase": "start",
+                    "name": "doctor",
+                    "index": 1,
+                    "total": 1,
+                    "elapsed_ms": 7,
+                }
+            )
+        return check_result
+
+    dev.build_check_plan = lambda **_kwargs: check_plan
+    dev.execute_check = execute
+
+    emitted.clear()
+    command.do_run(root_parser.parse_args(check_argv), [])
+    assert check_executions[0][0] is check_plan
+    assert callable(check_executions[0][1])
+    assert "check: start 1/1 doctor elapsed=7ms" in emitted
+
+    emitted.clear()
+    command.do_run(root_parser.parse_args([*check_argv, "--json"]), [])
+    assert check_executions[1] == (check_plan, no_progress_argument)
+    assert len(emitted) == 1
+    assert json.loads(emitted[0]) == check_result
+
+    execution_count = len(check_executions)
+    for output_args in (["--dry-run"], ["--dry-run", "--json"]):
+        emitted.clear()
+        command.do_run(root_parser.parse_args([*check_argv, *output_args]), [])
+        assert len(check_executions) == execution_count
+        assert not any(line.startswith("check: ") for line in emitted)
+        if "--json" in output_args:
+            assert len(emitted) == 1
+            assert json.loads(emitted[0]) == check_plan
+
+    emitted.clear()
     command.do_run(parsed, [])
     assert observed == [package.absolute()]
     assert len(emitted) == 1
