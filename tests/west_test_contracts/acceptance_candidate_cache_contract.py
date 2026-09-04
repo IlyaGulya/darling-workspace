@@ -173,6 +173,8 @@ def main() -> None:
         hydrated_module = hydrated_root / "fixture/module"
         clone(source_module, hydrated_module)
         hydrated_evidence = root / "hydrated-evidence.json"
+        hydrated_modules = root / "hydrated-modules.json"
+        hydrated_candidate_manifest = root / "hydrated-candidate-manifest.json"
         acceptance.hydrate_candidate_cache(
             hydrated_manifest,
             hydrated_root,
@@ -180,6 +182,8 @@ def main() -> None:
             cache,
             key,
             hydrated_evidence,
+            hydrated_modules,
+            hydrated_candidate_manifest,
             [str(root / "must-not-run-west")],
         )
         assert git(hydrated_module, "rev-parse", "HEAD") == commit
@@ -188,6 +192,11 @@ def main() -> None:
         )
         assert (hydrated_manifest / generated_row["path"]).read_bytes() == generated_data
         assert hydrated_evidence.read_bytes() == evidence_data
+        assert hydrated_modules.read_bytes() == modules_path.read_bytes()
+        assert (
+            hydrated_candidate_manifest.read_bytes()
+            == candidate_manifest_path.read_bytes()
+        )
 
         index = json.loads((cache / "index.json").read_text())
         bundle = cache / index["modules"][0]["cache_path"]
@@ -204,6 +213,8 @@ def main() -> None:
                 cache,
                 key,
                 root / "rejected-evidence.json",
+                root / "rejected-modules.json",
+                root / "rejected-candidate-manifest.json",
                 [str(root / "must-not-run-west")],
             )
         except acceptance.AcceptanceError as error:

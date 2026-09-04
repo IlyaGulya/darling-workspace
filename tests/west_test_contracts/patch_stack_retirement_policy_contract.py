@@ -244,7 +244,20 @@ def main() -> None:
     assert not (ROOT / ".github/workflows/patch-stack-shadow.yml").exists()
 
     host = (ROOT / "ci/run-test-tier.sh").read_text()
-    assert "west test --profile homebrew --env host --materialize-profile" in host
+    assert 'exec "$root/ci/run-host-tier.py"' in host
+    host_runner = (ROOT / "ci/run-host-tier.py").read_text()
+    assert all(
+        marker in host_runner
+        for marker in (
+            '"west"',
+            '"test"',
+            '"--profile"',
+            '"homebrew"',
+            '"--env"',
+            '"host"',
+            '"--materialize-profile"',
+        )
+    )
     runtime_source = (ROOT / "west_commands/test_runtime_source.py").read_text()
     assert 'profile not in {"homebrew", "perf", "arch"}' in runtime_source
     assert "skip_patches=phase_skips" in runtime_source

@@ -2,12 +2,17 @@
 
 from __future__ import annotations
 
+import contextlib
+import fcntl
 import hashlib
+import json
 import os
 import re
 import shutil
 import subprocess
 import sys
+import stat
+import uuid
 import time
 from collections.abc import Callable, Mapping
 from pathlib import Path
@@ -15,7 +20,14 @@ from typing import Any
 
 from test_execution import run_bounded
 from test_results import RuntimeBuildFailure
-from test_runtime import COMPILER_LAUNCHERS, runtime_build_targets
+from test_runtime import (
+    COMPILER_LAUNCHERS,
+    ROOTLESS_BOOTSTRAP_RESOURCE,
+    ROOTLESS_TOOLCHAIN_RESOURCE,
+    load_runtime_component_manifest,
+    runtime_artifact_deploy_paths,
+    runtime_build_targets,
+)
 
 
 class RuntimeBuildService:
@@ -386,6 +398,178 @@ class RuntimeBuildService:
             return
         self._host.inf(f"  runtime {label} build {stream}: {line}")
 
+    @staticmethod
+    def _file_binding(path: Path, root: Path) -> dict[str, Any]:
+        metadata = path.stat()
+        return {
+            "path": path.resolve().relative_to(root.resolve()).as_posix(),
+            "sha256": RuntimeBuildService._compiler_file_sha256(path),
+            "bytes": metadata.st_size,
+            "mode": stat.S_IMODE(metadata.st_mode),
+        }
+
+    def _cache_artifacts(self, proof: dict, build_root: Path) -> list[dict[str, Any]]:
+        paths: set[Path] = set()
+        resources = {
+            artifact.get("resource")
+            for artifact in proof.get("runtime-artifacts", [])
+            if isinstance(artifact, dict)
+        }
+        for artifact in proof.get("runtime-artifacts", []):
+            for deploy_path in runtime_artifact_deploy_paths(artifact):
+                paths.add(self.find_build_output(build_root, deploy_path))
+        for resource in (
+            ROOTLESS_BOOTSTRAP_RESOURCE,
+            ROOTLESS_TOOLCHAIN_RESOURCE,
+        ):
+            if resource not in resources:
+                continue
+            manifest_name = {
+                ROOTLESS_BOOTSTRAP_RESOURCE: "darling-rootless-bootstrap.json",
+                ROOTLESS_TOOLCHAIN_RESOURCE: "darling-rootless-toolchain.json",
+            }[resource]
+            paths.add(build_root / manifest_name)
+            paths.update(load_runtime_component_manifest(build_root, resource).values())
+        macho_magics = {
+            b"\xce\xfa\xed\xfe",
+            b"\xcf\xfa\xed\xfe",
+            b"\xfe\xed\xfa\xce",
+            b"\xfe\xed\xfa\xcf",
+            b"\xca\xfe\xba\xbe",
+            b"\xca\xfe\xba\xbf",
+            b"\xbe\xba\xfe\xca",
+            b"\xbf\xba\xfe\xca",
+        }
+        for path in build_root.rglob("*"):
+            if (
+                path.is_file()
+                and not path.is_symlink()
+                and "CMakeFiles" not in path.parts
+            ):
+                try:
+                    with path.open("rb") as stream:
+                        if stream.read(4) in macho_magics:
+                            paths.add(path)
+                except OSError:
+                    continue
+        return [
+            self._file_binding(path, build_root)
+            for path in sorted(paths)
+        ]
+
+    def _runtime_cache_identity(
+        self,
+        proof: dict,
+        prefix: Path,
+        targets: list[str],
+        configured_args: list[str],
+    ) -> tuple[Path, dict[str, Any]] | None:
+        raw_root = os.environ.get("WEST_RUNTIME_BUILD_CACHE_DIR")
+        raw_key = os.environ.get("WEST_RUNTIME_BUILD_CACHE_KEY")
+        if not raw_root and not raw_key:
+            return None
+        if not raw_root or not raw_key or re.fullmatch(r"[0-9a-f]{64}", raw_key) is None:
+            raise ValueError("runtime build cache identity is incomplete")
+        root = Path(raw_root)
+        if not root.is_absolute():
+            raise ValueError("runtime build cache root must be absolute")
+        identity = {
+            "schema_version": 1,
+            "key": raw_key,
+            "proof": proof,
+            "prefix": str(prefix),
+            "targets": targets,
+            "configure_args": configured_args,
+        }
+        digest = hashlib.sha256(
+            json.dumps(identity, sort_keys=True, separators=(",", ":")).encode()
+        ).hexdigest()
+        return root / digest, identity
+
+    def _read_runtime_cache(
+        self,
+        entry: Path,
+        identity: dict[str, Any],
+    ) -> Path | None:
+        marker = entry / "cache-index.json"
+        if not marker.is_file() or marker.is_symlink():
+            return None
+        try:
+            value = json.loads(marker.read_text())
+        except (OSError, json.JSONDecodeError) as error:
+            raise ValueError(f"runtime build cache index is invalid: {error}") from error
+        build_root = entry / "build"
+        if (
+            value.get("schema_version") != 1
+            or value.get("kind") != "west-runtime-build"
+            or value.get("identity") != identity
+            or not build_root.is_dir()
+            or build_root.is_symlink()
+        ):
+            raise ValueError("runtime build cache identity is invalid")
+        observed = self._cache_artifacts(identity["proof"], build_root)
+        if value.get("artifacts") != observed:
+            raise ValueError("runtime build cache artifacts differ from their index")
+        return build_root
+
+    def _write_runtime_cache(
+        self,
+        entry: Path,
+        identity: dict[str, Any],
+        build_root: Path,
+    ) -> None:
+        marker = entry / "cache-index.json"
+        temporary = marker.with_name(f".{marker.name}.{uuid.uuid4().hex}.tmp")
+        data = {
+            "schema_version": 1,
+            "kind": "west-runtime-build",
+            "identity": identity,
+            "artifacts": self._cache_artifacts(identity["proof"], build_root),
+        }
+        with temporary.open("x", encoding="utf-8") as stream:
+            json.dump(data, stream, sort_keys=True, indent=2)
+            stream.write("\n")
+            stream.flush()
+            os.fsync(stream.fileno())
+        temporary.replace(marker)
+        descriptor = os.open(entry, os.O_RDONLY | os.O_DIRECTORY)
+        try:
+            os.fsync(descriptor)
+        finally:
+            os.close(descriptor)
+
+    @contextlib.contextmanager
+    def _cached_build_root(
+        self,
+        scratch_root: Path,
+        cache: tuple[Path, dict[str, Any]] | None,
+    ):
+        if cache is None:
+            yield scratch_root / "build", False
+            return
+        entry, identity = cache
+        root = entry.parent
+        root.mkdir(parents=True, mode=0o700, exist_ok=True)
+        if root.is_symlink() or not root.is_dir():
+            raise ValueError("runtime build cache root is not a real directory")
+        lock_path = root / f".{entry.name}.lock"
+        lock = os.open(lock_path, os.O_RDWR | os.O_CREAT | os.O_CLOEXEC, 0o600)
+        try:
+            fcntl.flock(lock, fcntl.LOCK_EX)
+            cached = self._read_runtime_cache(entry, identity) if entry.exists() else None
+            if cached is not None:
+                yield cached, True
+                return
+            if entry.exists():
+                shutil.rmtree(entry)
+            entry.mkdir(mode=0o700)
+            build_root = entry / "build"
+            yield build_root, False
+            self._write_runtime_cache(entry, identity, build_root)
+        finally:
+            fcntl.flock(lock, fcntl.LOCK_UN)
+            os.close(lock)
+
     def build_artifacts(
         self,
         source_root: Path,
@@ -401,7 +585,12 @@ class RuntimeBuildService:
         timeout_seconds: int | None = None,
     ) -> Path:
         targets = runtime_build_targets(proof)
-        build_root = scratch_root / "build"
+        cache_root = os.environ.get("WEST_RUNTIME_BUILD_CACHE_DIR")
+        configuration_root = Path(cache_root) if cache_root else scratch_root
+        configured_args = configure_args(proof, prefix, configuration_root)
+        cache = self._runtime_cache_identity(
+            proof, prefix, targets, configured_args
+        )
         timeout = int(
             timeout_seconds
             if timeout_seconds is not None
@@ -409,61 +598,78 @@ class RuntimeBuildService:
         )
         if timeout <= 0:
             raise ValueError("runtime build timeout must be greater than zero")
-        build_environment = self.build_environment(proof, scratch_root)
-        configured_at = time.monotonic()
-        self._host.inf(f"  runtime phase start: {label} configure")
-        self._host.inf(f"  {label} configure: {source_root} -> {build_root}")
-        configured = runner(
-            [
-                "cmake",
-                "-S",
-                str(source_root),
-                "-B",
-                str(build_root),
-                *configure_args(proof, prefix, scratch_root),
-            ],
-            cwd=Path(self._host.topdir),
-            env=build_environment,
-            timeout_seconds=timeout,
-            capture_output=True,
-            heartbeat_seconds=30,
-            heartbeat=lambda elapsed: self._host.inf(
-                f"  runtime heartbeat: {label} configure still running ({elapsed:.0f}s)"
-            ),
-            output_line=lambda stream, line: self._forward_runtime_line(
-                label, "configure", stream, line
-            ),
-        )
-        if configured.returncode:
-            dump_command_tail(f"{label} configure", configured)
-            if allow_failure:
-                raise RuntimeBuildFailure("configure", configured)
-            self._host.die(f"{label} configure failed with rc {configured.returncode}")
-        self._host.inf(f"  runtime phase complete: {label} configure ({time.monotonic() - configured_at:.1f}s)")
-        built_at = time.monotonic()
-        self._host.inf(f"  runtime phase start: {label} build")
-        self._host.inf(f"  {label} build: {', '.join(targets)}")
-        built = runner(
-            ["ninja", "-C", str(build_root), *targets],
-            cwd=Path(self._host.topdir),
-            env=build_environment,
-            timeout_seconds=timeout,
-            capture_output=True,
-            heartbeat_seconds=30,
-            heartbeat=lambda elapsed: self._host.inf(
-                f"  runtime heartbeat: {label} build still running ({elapsed:.0f}s)"
-            ),
-            output_line=lambda stream, line: self._forward_runtime_line(
-                label, "build", stream, line
-            ),
-        )
-        if built.returncode:
-            dump_command_tail(f"{label} build", built)
-            if allow_failure:
-                raise RuntimeBuildFailure("build", built)
-            self._host.die(f"{label} build failed with rc {built.returncode}")
-        self._host.inf(f"  runtime phase complete: {label} build ({time.monotonic() - built_at:.1f}s)")
-        return build_root
+        build_environment = self.build_environment(proof, configuration_root)
+        with self._cached_build_root(scratch_root, cache) as (
+            build_root,
+            cache_reused,
+        ):
+            if cache_reused:
+                self._host.inf(f"  runtime build cache hit: {label} -> {build_root}")
+                return build_root
+            configured_at = time.monotonic()
+            self._host.inf(f"  runtime phase start: {label} configure")
+            self._host.inf(f"  {label} configure: {source_root} -> {build_root}")
+            configured = runner(
+                [
+                    "cmake",
+                    "-S",
+                    str(source_root),
+                    "-B",
+                    str(build_root),
+                    *configured_args,
+                ],
+                cwd=Path(self._host.topdir),
+                env=build_environment,
+                timeout_seconds=timeout,
+                capture_output=True,
+                heartbeat_seconds=30,
+                heartbeat=lambda elapsed: self._host.inf(
+                    f"  runtime heartbeat: {label} configure still running "
+                    f"({elapsed:.0f}s)"
+                ),
+                output_line=lambda stream, line: self._forward_runtime_line(
+                    label, "configure", stream, line
+                ),
+            )
+            if configured.returncode:
+                dump_command_tail(f"{label} configure", configured)
+                if allow_failure:
+                    raise RuntimeBuildFailure("configure", configured)
+                self._host.die(
+                    f"{label} configure failed with rc {configured.returncode}"
+                )
+            self._host.inf(
+                f"  runtime phase complete: {label} configure "
+                f"({time.monotonic() - configured_at:.1f}s)"
+            )
+            built_at = time.monotonic()
+            self._host.inf(f"  runtime phase start: {label} build")
+            self._host.inf(f"  {label} build: {', '.join(targets)}")
+            built = runner(
+                ["ninja", "-C", str(build_root), *targets],
+                cwd=Path(self._host.topdir),
+                env=build_environment,
+                timeout_seconds=timeout,
+                capture_output=True,
+                heartbeat_seconds=30,
+                heartbeat=lambda elapsed: self._host.inf(
+                    f"  runtime heartbeat: {label} build still running "
+                    f"({elapsed:.0f}s)"
+                ),
+                output_line=lambda stream, line: self._forward_runtime_line(
+                    label, "build", stream, line
+                ),
+            )
+            if built.returncode:
+                dump_command_tail(f"{label} build", built)
+                if allow_failure:
+                    raise RuntimeBuildFailure("build", built)
+                self._host.die(f"{label} build failed with rc {built.returncode}")
+            self._host.inf(
+                f"  runtime phase complete: {label} build "
+                f"({time.monotonic() - built_at:.1f}s)"
+            )
+            return build_root
 
     def find_build_output(self, build_root: Path, deploy_path: str) -> Path:
         name = Path(deploy_path).name

@@ -120,10 +120,10 @@ def main() -> None:
         assert lock["ordered_commits"] == row["ordered_commits"]
         assert lock["source_commit"] == row["source_commit"]
         assert lock["expected_tree"] == row["expected_tree"]
-    host_tier = (ROOT / "ci/run-test-tier.sh").read_text().split("\thost)\n", 1)[1].split("\tguest-smoke)", 1)[0]
-    runner = "tests/run-patch-stack-migration-inventory-contract.sh"
-    assert runner in host_tier
-    assert host_tier.index(runner) < host_tier.index("exec west test"), "inventory runner must precede west test"
+    host_tier = (ROOT / "ci/run-test-tier.sh").read_text()
+    assert 'exec "$root/ci/run-host-tier.py"' in host_tier
+    host_runner = (ROOT / "ci/run-host-tier.py").read_text()
+    assert '"tests/run-patch-stack-migration-inventory-contract.sh"' in host_runner
     print(f"migration inventory contract: PASS ({len(rows)} series, {sum(r['commit_count'] for r in rows.values())} commits)")
 
 
