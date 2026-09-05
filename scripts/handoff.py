@@ -146,6 +146,21 @@ def write_package(
         bundle = output / filename
         refs = [item["source_ref"] for item in branches]
         try:
+            # A named branch at a public tip still needs a bundle ref. Excluding
+            # that tip (or a descendant) would erase the branch, or the bundle.
+            retained_exclusions = []
+            for exclusion in exclusions:
+                for branch in branches:
+                    ancestry = run_bounded([
+                        "git", "-C", str(repo), "merge-base", "--is-ancestor",
+                        branch["head"], exclusion.removeprefix("^"),
+                    ])
+                    if ancestry.overflow or ancestry.returncode not in (0, 1):
+                        raise RuntimeError(f"{relative}: cannot plan bundle exclusions")
+                    if ancestry.returncode == 0:
+                        break
+                else:
+                    retained_exclusions.append(exclusion)
             result = run_bounded(
                 [
                     "git",
@@ -155,7 +170,7 @@ def write_package(
                     "create",
                     str(bundle),
                     *refs,
-                    *exclusions,
+                    *retained_exclusions,
                 ]
             )
         except subprocess.TimeoutExpired as error:
