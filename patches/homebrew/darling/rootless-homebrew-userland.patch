@@ -225,3 +225,26 @@ index 54263867316a5815c50177911ccd97efd2a83bfb..5c47c0269f85cb1d6fe3c8137600ccdb
  	"cat|/bin/cat" "chmod|/bin/chmod" "cp|/bin/cp" "date|/bin/date"
  	"echo|/bin/echo" "expr|/bin/expr" "kill|/bin/kill" "ln|/bin/ln"
  	"ls|/bin/ls" "mkdir|/bin/mkdir" "mv|/bin/mv" "pwd|/bin/pwd"
+
+From 681329d6b6cb007e86316c572b138de88f1cfb8b Mon Sep 17 00:00:00 2001
+From: Ilya Gulya <ilya@gulya.me>
+Date: Sat, 5 Sep 2026 10:49:05 +0000
+Subject: [PATCH] Include stock resolver configuration in rootless Homebrew
+ closure
+
+---
+ cmake/RootlessHomebrew.cmake | 1 +
+ 1 file changed, 1 insertion(+)
+
+diff --git a/cmake/RootlessHomebrew.cmake b/cmake/RootlessHomebrew.cmake
+index 5c47c0269f85cb1d6fe3c8137600ccdbbcaed669..e39a11dc4769f3f468967d17c98f8e59baf889ba 100644
+--- a/cmake/RootlessHomebrew.cmake
++++ b/cmake/RootlessHomebrew.cmake
+@@ -36,6 +36,7 @@ foreach(_homebrew_command IN ITEMS
+ endforeach()
+ 
+ set(_homebrew_resources
++	"etc/resolv.conf|/private/etc/resolv.conf"
+ 	"src/frameworks/CoreServices/SystemVersion.plist|/System/Library/CoreServices/SystemVersion.plist"
+ 	"src/frameworks/CoreServices/SystemVersionCompat.plist|/System/Library/CoreServices/SystemVersionCompat.plist"
+ 	"src/sandbox/sandbox-exec.sh|/usr/bin/sandbox-exec"

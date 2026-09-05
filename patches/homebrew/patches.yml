@@ -5255,7 +5255,7 @@ patches:
   module: darling
   source-branch: fix/rootless-homebrew-userland
   source-base: da784f52c4e5b7a3ecbc628e6e619171ba78435c
-  source-commit: 1e22715429afb4e28cd947b064d6b9bfb509e22f
+  source-commit: 681329d6b6cb007e86316c572b138de88f1cfb8b
   bead: dar-arsg
   publication-status: blocked
   publication-blocker: Local fresh-prefix lz4 source-install and shutdown/reuse acceptance passed; canonical clean-ODB validation, immutable hosted source closure and release review remain required.
@@ -5272,7 +5272,7 @@ patches:
     runtime-profile: homebrew-lz4-source
     timeout-seconds: 1800
     note: Untouched pinned stock Homebrew builds lz4 from source; installed binary roundtrips data before and after shutdown/reuse.
-  sha256sum: f0a25d62bf1969f5d14d1396af028d65947d14ec4059d6b0b106b08826f945b2
+  sha256sum: d4116f7b8a15ccb82eb37e34ed1f5af1b0f9eb511baff21c8b4f46004129e0f5
 - path: xnu/eunion-ownership-syscalls.patch
   module: darling/src/external/xnu
   source-branch: fix/eunion-ownership-syscalls
