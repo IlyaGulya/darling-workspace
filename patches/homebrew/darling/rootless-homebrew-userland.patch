@@ -203,3 +203,25 @@ index a74b6afa0828975d788ea4ba3a5afdf52d7b40d4..54263867316a5815c50177911ccd97ef
  	"cat|/bin/cat" "chmod|/bin/chmod" "cp|/bin/cp" "date|/bin/date"
  	"echo|/bin/echo" "expr|/bin/expr" "kill|/bin/kill" "ln|/bin/ln"
  	"ls|/bin/ls" "mkdir|/bin/mkdir" "mv|/bin/mv" "pwd|/bin/pwd"
+
+From 1e22715429afb4e28cd947b064d6b9bfb509e22f Mon Sep 17 00:00:00 2001
+From: Ilya Gulya <ilya@gulya.me>
+Date: Sat, 5 Sep 2026 08:46:08 +0000
+Subject: [PATCH] Include nice for the stock Homebrew build subprocess
+
+---
+ cmake/RootlessHomebrew.cmake | 1 +
+ 1 file changed, 1 insertion(+)
+
+diff --git a/cmake/RootlessHomebrew.cmake b/cmake/RootlessHomebrew.cmake
+index 54263867316a5815c50177911ccd97efd2a83bfb..5c47c0269f85cb1d6fe3c8137600ccdbbcaed669 100644
+--- a/cmake/RootlessHomebrew.cmake
++++ b/cmake/RootlessHomebrew.cmake
+@@ -2,6 +2,7 @@
+ # Targets and guest paths follow the source repositories' normal install rules.
+ foreach(_homebrew_command IN ITEMS
+ 	"bash|/bin/sh" "stty|/bin/stty"
++	"nice|/usr/bin/nice"
+ 	"cat|/bin/cat" "chmod|/bin/chmod" "cp|/bin/cp" "date|/bin/date"
+ 	"echo|/bin/echo" "expr|/bin/expr" "kill|/bin/kill" "ln|/bin/ln"
+ 	"ls|/bin/ls" "mkdir|/bin/mkdir" "mv|/bin/mv" "pwd|/bin/pwd"

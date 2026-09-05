@@ -7,8 +7,8 @@ mirror:
   url: https://github.com/darling-next/darling.git
   base_ref: refs/tags/patch-stack/v1/bases/da784f52c4e5b7a3ecbc628e6e619171ba78435c
   base_oid: da784f52c4e5b7a3ecbc628e6e619171ba78435c
-  source_ref: refs/tags/patch-stack/v1/sources/2261067d7049cf29ed6a9047df1c1babefdaf565
-  source_oid: 2261067d7049cf29ed6a9047df1c1babefdaf565
-source_commit: 2261067d7049cf29ed6a9047df1c1babefdaf565
-ordered_commits: [5f132bc0bfbec58c2c45dbb0154e47dde583faef, 780ab2b9231d83aebba61af38ee17d3e1c5bdfa7, a714fc88b6d8c75b3d2dbe5599425eac72884b1d, 2261067d7049cf29ed6a9047df1c1babefdaf565]
-expected_tree: 9dfd3ca661c3201018e53934004bfbb1ee7a9c07
+  source_ref: refs/tags/patch-stack/v1/sources/1e22715429afb4e28cd947b064d6b9bfb509e22f
+  source_oid: 1e22715429afb4e28cd947b064d6b9bfb509e22f
+source_commit: 1e22715429afb4e28cd947b064d6b9bfb509e22f
+ordered_commits: [5f132bc0bfbec58c2c45dbb0154e47dde583faef, 780ab2b9231d83aebba61af38ee17d3e1c5bdfa7, a714fc88b6d8c75b3d2dbe5599425eac72884b1d, 2261067d7049cf29ed6a9047df1c1babefdaf565, 1e22715429afb4e28cd947b064d6b9bfb509e22f]
+expected_tree: 57e64d3c8c2456933cd4fef929194e76e3eff41c

@@ -17,11 +17,10 @@ phase=$2
 brew=/usr/local/bin/brew
 ruby=/usr/local/Homebrew/Library/Homebrew/vendor/portable-ruby/current/bin/ruby
 cc=/Library/Developer/CommandLineTools/usr/bin/clang
-export HOME="$work/home" TMPDIR="$work/tmp" HOMEBREW_CACHE="$work/cache" HOMEBREW_LOGS="$work/logs"
+export HOME="$work/home" HOMEBREW_CACHE="$work/cache" HOMEBREW_LOGS="$work/logs"
 export HOMEBREW_NO_AUTO_UPDATE=1 HOMEBREW_NO_INSTALL_FROM_API=1 HOMEBREW_NO_ANALYTICS=1
 export HOMEBREW_NO_INSTALL_CLEANUP=1 HOMEBREW_FORCE_VENDOR_RUBY=1
 export PATH=/usr/local/Homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin
-export HOMEBREW_TEMP="$work/tmp"
 export LC_ALL=en_US.UTF-8 LANG=en_US.UTF-8
 export DEVELOPER_DIR=/Library/Developer/CommandLineTools
 

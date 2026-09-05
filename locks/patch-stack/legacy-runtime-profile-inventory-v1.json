@@ -16,7 +16,7 @@
       "mapping": "lock-first-series-v2.yml",
       "batch_id": "darling-homebrew-userland-batch-11",
       "series_count": 76,
-      "ordered_commit_count": 107,
+      "ordered_commit_count": 108,
       "modules": [
         {"path": "darling/src/external/darlingserver", "series_count": 27, "ordered_commit_count": 36},
         {"path": "darling/src/external/xnu", "series_count": 27, "ordered_commit_count": 34},
@@ -24,7 +24,7 @@
         {"path": "darling/src/external/perl", "series_count": 1, "ordered_commit_count": 1},
         {"path": "darling/src/external/libressl-2.8.3", "series_count": 1, "ordered_commit_count": 1},
         {"path": "darling/src/external/libpthread", "series_count": 1, "ordered_commit_count": 3},
-        {"path": "darling", "series_count": 16, "ordered_commit_count": 27},
+        {"path": "darling", "series_count": 16, "ordered_commit_count": 28},
         {"path": "darling/src/external/installer", "series_count": 2, "ordered_commit_count": 4}
       ]
     },
@@ -59,7 +59,7 @@
   ],
   "closure": {
     "total_series": 102,
-    "total_ordered_commits": 197,
+    "total_ordered_commits": 198,
     "schema_v2_lock_coverage": "94/94 hosted plus 8 publication-pending append-only series",
     "immutable_ref_closure": "hosted_immutable_clean_odb plus 8 publication-pending append-only series",
     "clean_odb_evidence": "94 hosted series independently verified; the b545 Arch continuation, 3 Rootless productization series and 2 prefix-lifecycle series have dual local clean-ODB evidence pending create-only hosted tags; the EUNION upper-parent-dominance and rootless Homebrew userland series have authored native replay boundaries pending canonical clean-ODB validation and create-only hosted tags"
