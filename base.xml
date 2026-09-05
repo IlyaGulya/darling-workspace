@@ -2,7 +2,8 @@
 <manifest>
   <remote name="darling" fetch="https://github.com/darlinghq/" />
   <default remote="darling" sync-j="16" sync-tags="false" />
-  <project name="darling" path="darling" revision="01eadab41dcf9c8693d9b720781aa6e59b58dcaf" />
+  <project name="darling" path="darling" revision="e017cb9cbbe32a9a67920a9f1f3997355e9b86fa" />
+  <project name="darling-docs" path="darling/docs/darling-docs" revision="14c841ef3df319254ef5ac291f828f27048a6579" />
   <project name="darling-AvailabilityVersions" path="darling/src/external/AvailabilityVersions" revision="e28c029a8fa46fa933cbf6d6d9a1c00978c5fad1" />
   <project name="darling-BerkeleyDB" path="darling/src/external/BerkeleyDB" revision="1411173f0eb71f96ab6134de4e052d16acb8c673" />
   <project name="darling-DSTools" path="darling/src/external/DSTools" revision="e015256b16965ac032412f2277c608c7213c03b3" />
@@ -55,7 +56,7 @@
   <project name="darling-cups" path="darling/src/external/cups" revision="51b7c251ef5ff81adc20284544394de8cc2e1315" />
   <project name="darling-curl" path="darling/src/external/curl" revision="92f54fd7eceabed2c2382a4acc0f7293dedd92ff" />
   <project name="darling-dmg" path="darling/src/external/darling-dmg" revision="1a6de10c5886c40a414090701b2520bd0417ce29" />
-  <project name="darlingserver" path="darling/src/external/darlingserver" revision="9e6529aeacb6edaea31532a62b4a3d7f07d034d3" />
+  <project name="darlingserver" path="darling/src/external/darlingserver" revision="89751e64bc6c2082f7725061824ee0e33395b0de" />
   <project name="darling-dbuskit" path="darling/src/external/dbuskit" revision="890e51fda949e4dd2c46765e39074f790c10ca18" />
   <project name="darling-doc_cmds" path="darling/src/external/doc_cmds" revision="60c6a2b858abe1f27b441f479aad2b0a9d0f9ba2" />
   <project name="darling-dtrace" path="darling/src/external/dtrace" revision="4f52343b36756e32a81eb302242ac6472e9075fa" />
@@ -74,7 +75,7 @@
   <project name="darling-grep" path="darling/src/external/grep" revision="62d70fada3a01de87aff927a86b8df0f7f2a837a" />
   <project name="darling-groff" path="darling/src/external/groff" revision="10dd5a6be4915a99065bc15dfc6b6b1e9e1a2714" />
   <project name="darling-icu" path="darling/src/external/icu" revision="6b609b2b0ce9a620543f357de4e549f09afec4ea" />
-  <project name="darling-installer" path="darling/src/external/installer" revision="88764e6149f92f1747442c27ab00231f40de278c" />
+  <project name="darling-installer" path="darling/src/external/installer" revision="aa310ef30ddcd35f8ab43474325316e40b1e24f8" />
   <project name="darling-iokitd" path="darling/src/external/iokitd" revision="5549ac4cd2db923c256f016a1381b3bfb716730a" />
   <project name="darling-keymgr" path="darling/src/external/keymgr" revision="43b4230aec2e9018b0ffd3069b8b23a34ba257fb" />
   <project name="darling-less" path="darling/src/external/less" revision="a6bc77c8e72aaa35da92b903172a70eaa4ef78fa" />
@@ -99,7 +100,7 @@
   <project name="darling-libressl" path="darling/src/external/libressl-2.2.9" revision="c5e9edb9d82ccf5fde5d8ae32b162fec8fe11318" />
   <project name="darling-libressl" path="darling/src/external/libressl-2.5.5" revision="1f663b5bdc9082178717c080e4728fe3e7084de4" />
   <project name="darling-libressl" path="darling/src/external/libressl-2.6.5" revision="30826df38d7c0f416158a94e0112c928188e0327" />
-  <project name="darling-libressl" path="darling/src/external/libressl-2.8.3" revision="7599e3e01d3b1a742aa0293123290f267b6eb720" />
+  <project name="darling-libressl" path="darling/src/external/libressl-2.8.3" revision="277ea7e0abcf1076f327a885daa2267423e5da08" />
   <project name="darling-librpcsvc" path="darling/src/external/librpcsvc" revision="0cc1d42e53c61446616719597e96b29aeda51eb3" />
   <project name="darling-libstdcxx" path="darling/src/external/libstdcxx" revision="73eb757fe23170c372bef17d6de41787c1271c80" />
   <project name="darling-Libsystem" path="darling/src/external/libsystem" revision="08df454b6eb0df9400aa4c39839a7efd6efd2c3c" />
@@ -125,7 +126,7 @@
   <project name="darling-nghttp2" path="darling/src/external/nghttp2" revision="1a1853837b4350d4393bd25e1e4cb6018ab2d918" />
   <project name="mruby" path="darling/src/external/nghttp2/third-party/mruby" revision="7c91efc1ffda769a5f1a872c646c82b00698f1b8" />
   <project name="neverbleed" path="darling/src/external/nghttp2/third-party/neverbleed" revision="b967ca054f48a36f82d8fcdd32e54ec5144f2751" />
-  <project name="darling-objc4" path="darling/src/external/objc4" revision="1a12df76d12bfc9fdfffadb290f7742763568765" />
+  <project name="darling-objc4" path="darling/src/external/objc4" revision="53342cec3dcc9cde6dd1aa935bbe26d88c3e5aa8" />
   <project name="openjdk" path="darling/src/external/openjdk" revision="5a541c1844a9508e48b3addaf2d38775683abb38" />
   <project name="darling-openpam" path="darling/src/external/openpam" revision="8362545bac04032fcf59287cd66e6f4662a3692b" />
   <project name="darling-pam_modules" path="darling/src/external/openpam/darling/submodules/pam_modules" revision="241bbee0da845d1dfebc747b16a62aaed22f165b" />
@@ -159,7 +160,7 @@
   <project name="xcbuild" path="darling/src/external/xcbuild" revision="a903c6952fc5617816113cbb7b551ac701dba2ff" />
   <project name="googletest" path="darling/src/external/xcbuild/ThirdParty/googletest" revision="a2b8a8e07628e5fd60644b6dd99c1b5e7d7f1f47" />
   <project name="linenoise" path="darling/src/external/xcbuild/ThirdParty/linenoise" revision="c894b9e59f02203dbe4e2be657572cf88c4230c3" />
-  <project name="darling-xnu" path="darling/src/external/xnu" revision="d068e65d28bb0c059a0e1f4ea327c2f88c722c6f" />
+  <project name="darling-xnu" path="darling/src/external/xnu" revision="d9f34da978fbae093d260686ef1cef965f687139" />
   <project name="darling-zip" path="darling/src/external/zip" revision="caf41ebbc3ebab0250e4d13aa42221ef91a9802c" />
   <project name="darling-zlib" path="darling/src/external/zlib" revision="677de9b1c2bea1e428f56d8fc63300aa471eaf99" />
   <project name="darling-zsh" path="darling/src/external/zsh" revision="4a7a6ebf6216395c7db698a4993db16e484aa54d" />
