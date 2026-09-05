@@ -100,8 +100,9 @@ def _run_git(repo: Path, *args: str, required: bool = True) -> str:
     return result.stdout.strip() if result.returncode == 0 else ""
 
 
-def _submodule_state(source: Path) -> list[tuple[str, str]]:
-    output = _run_git(source, "submodule", "status", "--recursive")
+def _submodule_state(source: Path, *, recursive: bool = True) -> list[tuple[str, str]]:
+    args = ("--recursive",) if recursive else ()
+    output = _run_git(source, "submodule", "status", *args)
     result: list[tuple[str, str]] = []
     for line in output.splitlines():
         if not line:
@@ -185,30 +186,36 @@ def build_plan(control: Path, source: Path, allow_dirty: bool) -> Plan:
             valid = destination.is_file() and not destination.is_symlink()
         if not valid:
             raise HandoffError(f"invalid publication destination type: {destination}")
-    states = _submodule_state(source)
-    closure = expected_closure(source, states)
-    state_by_path = {path: marker for path, marker in states}
-    if len(state_by_path) != len(states):
-        raise HandoffError("duplicate paths in recursive submodule status")
-    declared = (".", *(path for path, _marker in states))
-    missing = [path for path in closure if path not in declared]
-    unexpected = [
-        path
-        for path, marker in states
-        if path not in closure and marker != "-"
-    ]
-    incomplete = [
-        path for path in closure[1:] if state_by_path.get(path) in {None, "-", "U"}
-    ]
-    if missing or unexpected or incomplete:
-        details = []
-        if missing:
-            details.append(f"missing: {', '.join(missing)}")
-        if incomplete:
-            details.append(f"uninitialized/conflicted: {', '.join(incomplete)}")
+    if EXPECTED_PROJECTS_ENV in os.environ:
+        closure = expected_closure(source, [])
+        unexpected: list[str] = []
+        for relative in closure:
+            repo = source if relative == "." else source / relative
+            _require_real_parent_chain(source, repo / ".git")
+            top = _run_git(repo, "rev-parse", "--show-toplevel")
+            if Path(top).resolve() != repo.resolve():
+                raise HandoffError(f"expected Git worktree at {repo}, found top level {top}")
+            for child, marker in _submodule_state(repo, recursive=False):
+                child_path = (Path(relative) / child).as_posix()
+                if marker == "U":
+                    raise HandoffError(f"conflicted submodule: {child_path}")
+                if child_path in closure:
+                    continue
+                child_repo = source / child_path
+                child_top = _run_git(
+                    child_repo, "rev-parse", "--show-toplevel", required=False
+                )
+                if marker != "-" or (
+                    child_top and Path(child_top).resolve() == child_repo.resolve()
+                ):
+                    unexpected.append(child_path)
         if unexpected:
-            details.append(f"unexpected initialized repositories: {', '.join(unexpected)}")
-        raise HandoffError("repository closure mismatch; " + "; ".join(details))
+            raise HandoffError(
+                "repository closure mismatch; unexpected initialized repositories: "
+                + ", ".join(unexpected)
+            )
+    else:
+        closure = expected_closure(source, _submodule_state(source))
 
     projects: list[Project] = []
     dirty_projects: list[str] = []
@@ -222,13 +229,30 @@ def build_plan(control: Path, source: Path, allow_dirty: bool) -> Plan:
         branch = _run_git(repo, "symbolic-ref", "--quiet", "--short", "HEAD", required=False)
         if not branch:
             branch = "DETACHED"
-        origin = _run_git(repo, "remote", "get-url", "origin")
+        remotes = _run_git(repo, "remote").splitlines()
+        if "origin" in remotes:
+            remote = "origin"
+        elif len(remotes) == 1:
+            remote = remotes[0]
+        else:
+            raise HandoffError(f"repository remote is ambiguous or missing: {repo}")
+        origin = _run_git(repo, "remote", "get-url", remote)
+        exclusions_for_status = [
+            f":(exclude){Path(child).relative_to(relative).as_posix()}"
+            for child in closure
+            if child != relative and Path(child).is_relative_to(relative)
+        ] if EXPECTED_PROJECTS_ENV in os.environ else []
         dirty = tuple(
-            _run_git(repo, "status", "--porcelain", "--ignore-submodules=all").splitlines()
+            _run_git(
+                repo, "status", "--porcelain", "--ignore-submodules=all",
+                "--", ".", *exclusions_for_status,
+            ).splitlines()
         )
         if dirty:
             dirty_projects.append(relative)
-        branch_dicts = private_branches(repo, include_remote_only=relative == ".")
+        branch_dicts = private_branches(
+            repo, include_remote_only=relative == ".", remote=remote
+        )
         branches = tuple(Branch(**record) for record in branch_dicts)
         exclusions: list[str] = []
         for default in ("main", "master"):
@@ -236,12 +260,12 @@ def build_plan(control: Path, source: Path, allow_dirty: bool) -> Plan:
                 repo,
                 "rev-parse",
                 "--verify",
-                f"refs/remotes/origin/{default}",
+                f"refs/remotes/{remote}/{default}",
                 required=False,
             )
             if base:
                 exclusions.append(f"^{base}")
-        base_revision = public_base(repo, head) or head
+        base_revision = public_base(repo, head, remote=remote) or head
         if branches:
             filename = bundle_filename(relative)
             if filename in filenames:

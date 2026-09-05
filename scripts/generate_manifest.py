@@ -126,10 +126,10 @@ def git(repo: Path, *args: str, required: bool = True) -> str:
     return result.stdout.strip() if result.returncode == 0 else ""
 
 
-def public_base(repo: Path, head: str) -> str | None:
+def public_base(repo: Path, head: str, *, remote: str = "origin") -> str | None:
     if not git(repo, "symbolic-ref", "--quiet", "--short", "HEAD", required=False):
         return None
-    for ref in ("refs/remotes/origin/main", "refs/remotes/origin/master"):
+    for ref in (f"refs/remotes/{remote}/main", f"refs/remotes/{remote}/master"):
         base = git(repo, "rev-parse", "--verify", ref, required=False)
         if not base or base == head:
             continue

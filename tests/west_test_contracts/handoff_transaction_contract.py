@@ -11,6 +11,7 @@ import stat
 import subprocess
 import sys
 import tempfile
+import xml.etree.ElementTree as ET
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -129,6 +130,88 @@ def invoke(control: Path, source: Path, **kwargs):
     )
 
 
+def independent_west_clones(root: Path) -> None:
+    root.mkdir()
+    control, source, child = fixture(root)
+    saved_child = root / "saved-child"
+    git(root, "clone", "-q", str(child), str(saved_child))
+    git(source, "submodule", "deinit", "-q", "-f", "modules/child")
+    child.rmdir()
+    git(root, "clone", "-q", str(saved_child), str(child))
+    git(child, "config", "user.name", "Contract")
+    git(child, "config", "user.email", "contract@example.invalid")
+    grand_origin, _ = init_origin(root, "grandchild")
+    git(child, "-c", "protocol.file.allow=always", "submodule", "add", "-q",
+        str(grand_origin), "nested/grandchild")
+    git(child, "commit", "-qm", "declare nested repository")
+    grandchild = child / "nested/grandchild"
+    git(child, "submodule", "deinit", "-q", "-f", "nested/grandchild")
+    grandchild.rmdir()
+    git(root, "clone", "-q", str(grand_origin), str(grandchild))
+    docs = source / "docs/manual"
+    git(root, "clone", "-q", str(grand_origin), str(docs))
+    repositories = {".": source, "modules/child": child,
+                    "modules/child/nested/grandchild": grandchild, "docs/manual": docs}
+    for repo in repositories.values():
+        git(repo, "remote", "rename", "origin", "darling")
+    os.environ[transaction.EXPECTED_PROJECTS_ENV] = json.dumps(list(repositories))
+    before = tree_snapshot(control)
+    source_before = source_state(source, child)
+    plan = transaction.build_plan(control, source, False)
+    assert {item.relative: item.head for item in plan.projects} == {
+        name: git(repo, "rev-parse", "HEAD") for name, repo in repositories.items()
+    }
+    assert all(not item.dirty for item in plan.projects)
+    assert tree_snapshot(control) == before
+    assert source_state(source, child) == source_before
+
+    # Registration is not existence: a real unlisted nested checkout must not
+    # vanish from the handoff when recursion stops at an unregistered parent.
+    os.environ[transaction.EXPECTED_PROJECTS_ENV] = json.dumps(
+        [name for name in repositories if name != "modules/child/nested/grandchild"]
+    )
+    try:
+        transaction.build_plan(control, source, False)
+        raise AssertionError("populated nested repository omitted from handoff")
+    except transaction.HandoffError:
+        pass
+    os.environ[transaction.EXPECTED_PROJECTS_ENV] = json.dumps(list(repositories))
+    saved_grandchild = root / "saved-grandchild"
+    grandchild.rename(saved_grandchild)
+    grandchild.mkdir()
+    try:
+        transaction.build_plan(control, source, False)
+        raise AssertionError("parent repository accepted as missing child worktree")
+    except transaction.HandoffError:
+        pass
+    grandchild.rmdir()
+    saved_grandchild.rename(grandchild)
+    (source / "docs/unmanaged").write_text("not a managed repository\n")
+    try:
+        transaction.build_plan(control, source, False)
+        raise AssertionError("unmanaged sibling dirt hidden by managed repository")
+    except transaction.HandoffError:
+        pass
+    (source / "docs/unmanaged").unlink()
+    assert tree_snapshot(control) == before
+    with contextlib.redirect_stdout(io.StringIO()):
+        invoke(control, source)
+    manifest = json.loads((control / "handoff/manifest.json").read_text())
+    assert [item["path"] for item in manifest["projects"]] == [".", "modules/child"]
+    assert {
+        item.attrib["path"]: item.attrib["revision"]
+        for item in ET.parse(control / "locked.xml").getroot().findall("project")
+    } == {
+        ("darling" if name == "." else f"darling/{name}"): git(repo, "rev-parse", "HEAD")
+        for name, repo in repositories.items()
+    }
+    assert handoff.bundle_heads(control / "handoff/modules__child.bundle")[
+        "refs/heads/fix/child"
+    ] == git(child, "rev-parse", "HEAD")
+    assert source_state(source, child) == source_before
+    assert_clean_external(control)
+
+
 def main() -> None:
     with tempfile.TemporaryDirectory() as directory:
         root = Path(directory)
@@ -148,6 +231,7 @@ def main() -> None:
         )
         br.chmod(0o755)
         os.environ["PATH"] = f"{tools}:{os.environ['PATH']}"
+        independent_west_clones(root / "west-clones")
         os.environ[transaction.EXPECTED_PROJECTS_ENV] = json.dumps([".", "modules/child"])
         baseline = tree_snapshot(control)
         refs_before = source_state(source, child)
