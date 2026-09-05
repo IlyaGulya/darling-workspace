@@ -185,6 +185,14 @@ source-base host RED/GREEN also passed. `dar-arsg` and `dar-nmda` are closed
 for this local behavior; repeated wget reinstall (`dar-gwn.7`) and publication
 remain separate gates.
 
+The subsequent wget run exposed a missing rootless Homebrew resource:
+`etc/resolv.conf`, already installed by the ordinary Darling build. Userland
+commit `681329d6b6cb007e86316c572b138de88f1cfb8b` includes that stock file
+in the source-owned toolchain component. After provider rebuild/deploy,
+guest curl resolves `ghcr.io` and completes certificate-verified HTTPS
+(`https://ghcr.io/v2/` returns its expected HTTP 401), without prefix repairs.
+This closes the DNS prerequisite, not the wget cancellation/freeze gate.
+
 ## Runtime-source lifecycle
 
 `RuntimeSourceMaterializer` consumes the same typed composition plan.  Its
