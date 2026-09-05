@@ -150,6 +150,7 @@ def independent_west_clones(root: Path) -> None:
     git(root, "clone", "-q", str(grand_origin), str(grandchild))
     docs = source / "docs/manual"
     git(root, "clone", "-q", str(grand_origin), str(docs))
+    git(docs, "branch", "manifest-rev", "main")
     repositories = {".": source, "modules/child": child,
                     "modules/child/nested/grandchild": grandchild, "docs/manual": docs}
     for repo in repositories.values():
@@ -197,7 +198,9 @@ def independent_west_clones(root: Path) -> None:
     with contextlib.redirect_stdout(io.StringIO()):
         invoke(control, source)
     manifest = json.loads((control / "handoff/manifest.json").read_text())
-    assert [item["path"] for item in manifest["projects"]] == [".", "modules/child"]
+    assert [item["path"] for item in manifest["projects"]] == [
+        ".", "modules/child", "docs/manual"
+    ]
     assert {
         item.attrib["path"]: item.attrib["revision"]
         for item in ET.parse(control / "locked.xml").getroot().findall("project")
@@ -208,6 +211,9 @@ def independent_west_clones(root: Path) -> None:
     assert handoff.bundle_heads(control / "handoff/modules__child.bundle")[
         "refs/heads/fix/child"
     ] == git(child, "rev-parse", "HEAD")
+    assert handoff.bundle_heads(control / "handoff/docs__manual.bundle")[
+        "refs/heads/manifest-rev"
+    ] == git(docs, "rev-parse", "main")
     assert source_state(source, child) == source_before
     assert_clean_external(control)
 
