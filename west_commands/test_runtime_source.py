@@ -78,7 +78,7 @@ class RuntimeSourceMaterializer:
         batch = plan.batch
         expected = {
             "homebrew": (
-                "darling-homebrew-prefix-lifecycle-batch-9", 74,
+                "darling-homebrew-userland-batch-11", 76,
                 [
                     "darling/src/external/darlingserver", "darling/src/external/xnu",
                     "darling/src/external/libplatform", "darling/src/external/perl",
@@ -184,7 +184,8 @@ class RuntimeSourceMaterializer:
                     )
                 try:
                     patch_stack_profile_composition.verify_integration(
-                        module, target, expected_tree, expected, overrides
+                        module, target, expected_tree, expected, overrides,
+                        inherited_children=phase_plan.composition.get("inherited_children", {}),
                     )
                 except patch_stack_profile_composition.ProfileCompositionError as error:
                     raise patch_stack_lock_first.LockFirstError(

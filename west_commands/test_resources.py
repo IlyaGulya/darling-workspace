@@ -12,6 +12,11 @@ from contextlib import ExitStack, contextmanager
 from dataclasses import dataclass
 from typing import Any
 
+try:
+    from .test_homebrew import homebrew_lz4_context
+except ImportError:
+    from test_homebrew import homebrew_lz4_context
+
 
 @dataclass(frozen=True)
 class ResourceProvider:
@@ -81,12 +86,24 @@ class HostStatProvider(ResourceProvider):
         return command._host_stat_context(invocation, env)
 
 
+class HomebrewLz4Provider(ResourceProvider):
+    def __init__(self) -> None:
+        super().__init__("homebrew-lz4")
+
+    def active(self, invocation: dict[str, Any]) -> bool:
+        return self.name in set(invocation.get("requires_resources", []))
+
+    def context(self, command: Any, invocation: dict[str, Any], env: dict[str, str] | None):
+        return homebrew_lz4_context(env)
+
+
 RESOURCE_PROVIDERS: tuple[ResourceProvider, ...] = (
     HostTempProvider(),
     HostTraceProvider(),
     HostStatProvider(),
     DccCacheProvider(),
     EunionPrefixProvider(),
+    HomebrewLz4Provider(),
 )
 
 

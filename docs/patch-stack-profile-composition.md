@@ -73,8 +73,8 @@ The table is deliberately about the 29 series/base mismatches.  It does not
 silently classify an unrelated frozen West project revision as a patch-series
 mismatch: that project has no series lock or archive identity to compare.
 
-The resulting module boundary trees are recorded in
-`homebrew-profile-composition-v2.yml`; the final trees are Darlingserver
+The Batch 9 module boundary trees were recorded in
+`homebrew-profile-composition-v2.yml`; its final trees were Darlingserver
 `2d6f0321cfe205dba7302666bc470adb79a44003`, XNU
 `53c8fa45a1ac94bdfc2ced0b3179e43659dffabf`, and Darling
 `7297ee393ed21d13484b1734e5e5694967f96851`.
@@ -109,6 +109,44 @@ No accepted immutable ref is rewritten. The v8 and v10 bases and sources remain
 a local-only publication proposal until their create-only hosted refs are
 separately reviewed and authorized.
 
+## EUNION parent-dominance admission
+
+Batch 10 (`darling-homebrew-eunion-parent-dominance-batch-10`) adds
+`xnu/eunion-upper-parent-dominance.patch` after the existing XNU series in
+grouped execution order. All 74 prior series retain their relative order,
+source locks, and Homebrew applied boundaries. The new schema-v2 recipe binds
+base `cb2cf623d9cd641ed4f9e899a0187acdedc423ea`, the single ordered source
+commit `0ae4c3fecc658859002346356ddfc2ae01391166`, and source tree
+`c0f7e6685242e284938bb6d9d652e55b311bed17`.
+
+Native `format-patch`/`git am` recipe generation on the existing Homebrew XNU
+boundary produced `553220e4a0b9ebb7905d39abcd0880dcb2718b69`. Replaying the
+unchanged Perf and Arch source recipes then produced XNU final trees
+`d28cb624090489594c896738ef3c0e159120b048` and
+`2396da43c219e7dba14df419d97c30e5f36cba53`. The dependent compositions bind
+these exact trees and the refreshed prerequisite digests. This authoring
+replay is not clean-ODB acceptance evidence.
+
+Publication remains blocked: the new content-addressed base/source tags need
+separate create-only hosted publication authorization. Local source branches
+and handoff bundles do not replace the immutable-ref fetch gate. Canonical
+applicability, exact replay identity, and clean-ODB acceptance remain required;
+no source tree, inherited boundary, or publication check is waived.
+
+For the next admission, commit/export the independent source range first,
+derive its exact linear `git rev-list --reverse BASE..TIP` and
+`git show -s --format=%T TIP`, and add a new schema-v2 recipe with the existing
+content-addressed mirror-ref convention. In a disposable repository, start at
+the owning module's current composition boundary and use the existing
+`patch_stack_lock_first._cherry_pick` native replay helper on each declared
+commit to derive the applied tree. Add the series at its grouped module tail,
+advance the typed batch/count and runtime count guard, then refresh mapping
+SHA-256, dependent profile replay boundaries, and composition SHA-256 bindings
+in prerequisite order. Parent gitlinks remain generated lifecycle evidence,
+not authored source identity. Finally run canonical applicability through
+`west patch verify --profile homebrew --applicability-only` and the dependent
+profiles, with reviewed immutable refs available, before claiming acceptance.
+
 ## Runtime-source lifecycle
 
 `RuntimeSourceMaterializer` consumes the same typed composition plan.  Its
@@ -120,6 +158,15 @@ gitlinks exactly as normal `west patch apply` does.  That generated commit ID
 is lifecycle-only evidence, never a series source OID; the next phase remains
 authorized by the typed profile boundary trees.  The lifecycle worktrees and
 all transaction refs remain disposable.
+
+Parent replay normalization includes child modules inherited through the entire
+checksum-bound prerequisite graph, including Homebrew-only children carried
+through Perf into Arch. Only unchanged, declared gitlink records are normalized
+in a temporary index; ordinary parent content and source-authored child changes
+still require exact replay. Final verification independently compares inherited
+child trees with their typed boundaries. For historical integration branches,
+an inherited-only child is checked through the parent's recorded gitlink because
+that child has no integration branch for the later profile.
 
 Batch evidence includes a normalized `profile_composition` manifest whenever a
 schema-v3 mapping declares one.  It makes the profile start, boundaries, final

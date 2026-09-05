@@ -5293,3 +5293,25 @@ patches:
       upper directory masking a lower symlink. Creation must succeed in upper
       without following or changing the masked lower alias.
   sha256sum: 7c3e6217721e5746fd469aee8ae987d877f3c78d4c0e8e605f70bc05eebdba6e
+- path: darling/rootless-homebrew-userland.patch
+  module: darling
+  source-branch: fix/rootless-homebrew-userland
+  source-base: da784f52c4e5b7a3ecbc628e6e619171ba78435c
+  source-commit: a714fc88b6d8c75b3d2dbe5599425eac72884b1d
+  bead: dar-arsg
+  publication-status: blocked
+  publication-blocker: Fresh rootless Homebrew source-install and shutdown/reuse acceptance remain in progress.
+  tests:
+  - name: rootless_homebrew_source_install
+    kind: guest
+    coverage-tier: runtime
+    runs: guest
+    diag: bare
+    runner: guest-runtime-script
+    repo: darling-workspace
+    script: tests/run-homebrew-lz4-source.sh
+    requires: [darling-prefix, homebrew-lz4]
+    runtime-profile: homebrew-lz4-source
+    timeout-seconds: 1800
+    note: Untouched pinned stock Homebrew builds lz4 from source; installed binary roundtrips data before and after shutdown/reuse.
+  sha256sum: 976037020db122289b3740e272bfeac169c5257422b7c8f27828efaa28ff1222

@@ -381,10 +381,14 @@ def _merge_typed_resource(
             test["host-trace-oracle"] = bool(body["oracle"])
     elif kind == "host-stat-deltas":
         _extend_list_field(test, "host-stat-deltas", body.get("fields", []), location)
+    elif kind == "homebrew-lz4":
+        if body:
+            raise ManifestError(f"{location}: homebrew-lz4 takes no options; its inputs are pinned")
+        _append_unique(test, "requires", ["darling-prefix", "homebrew-lz4"])
     else:
         raise ManifestError(
             f"{location}: resource profile kind must be dcc-cache, "
-            "host-trace-files, or host-stat-deltas"
+            "host-trace-files, host-stat-deltas, or homebrew-lz4"
         )
 
 

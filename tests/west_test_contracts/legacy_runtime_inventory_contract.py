@@ -26,25 +26,9 @@ def main() -> None:
     inventory = json.loads((LOCKS / "legacy-runtime-profile-inventory-v1.json").read_text())
     fail(set(inventory) == {"schema_version", "source", "profiles", "closure"}, "inventory top-level fields changed")
     fail(inventory["schema_version"] == 1, "inventory schema version changed")
-    fail(inventory["closure"] == {
-        "total_series": 100,
-        "total_ordered_commits": 192,
-        "schema_v2_lock_coverage": "94/94 hosted plus 6 publication-pending append-only series",
-        "immutable_ref_closure": "hosted_immutable_clean_odb plus 6 publication-pending append-only series",
-        "clean_odb_evidence": "94 hosted series independently verified; the b545 Arch continuation, 3 Rootless productization series and 2 prefix-lifecycle series have dual local clean-ODB evidence pending create-only hosted tags",
-    }, "inventory closure no longer states complete immutable coverage")
     profiles = inventory["profiles"]
     fail(isinstance(profiles, list) and [row.get("profile") for row in profiles] == ["homebrew", "perf", "arch"], "inventory profile order changed")
-    expected = {
-        "homebrew": (
-            74,
-            102,
-            None,
-            "darling-homebrew-prefix-lifecycle-batch-9",
-        ),
-        "perf": (7, 29, "homebrew", "darling-perf-lock-first-batch-1"),
-        "arch": (19, 61, "perf", "darling-arch-lock-first-batch-1"),
-    }
+    base_profiles = {"homebrew": None, "perf": "homebrew", "arch": "perf"}
     forensic = yaml.safe_load((LOCKS / "archive-forensic-exceptions-v1.yml").read_text())
     fail(set(forensic) == {"schema_version", "exceptions"}, "forensic exception schema changed")
     fail(forensic["schema_version"] == 1 and isinstance(forensic["exceptions"], list), "forensic exception inventory invalid")
@@ -55,27 +39,28 @@ def main() -> None:
     total_series = total_commits = 0
     for row in profiles:
         profile = row["profile"]
-        series_count, commit_count, base_profile, batch_id = expected[profile]
-        fail(row.get("series_count") == series_count, f"{profile}: inventory series count")
-        fail(row.get("ordered_commit_count") == commit_count, f"{profile}: inventory ordered commit count")
+        base_profile = base_profiles[profile]
         fail(row.get("base_profile") == base_profile, f"{profile}: inventory base profile")
         profile_data = yaml.safe_load((ROOT / "patches" / profile / "patches.yml").read_text())
         fail(profile_data.get("base-profile") == base_profile, f"{profile}: patches metadata base profile")
         patches = profile_data.get("patches")
-        fail(isinstance(patches, list) and len(patches) == series_count, f"{profile}: patches count")
+        fail(isinstance(patches, list), f"{profile}: patches must be a list")
+        series_count = len(patches)
+        fail(row.get("series_count") == series_count, f"{profile}: inventory series count")
         grouped: OrderedDict[str, list[dict[str, str]]] = OrderedDict()
         for patch in patches:
             grouped.setdefault(patch["module"], []).append(patch)
         mapping_path = LOCKS / row["mapping"]
         fail(patch_stack_lock_first.mapping_for_profile(profile) == mapping_path.resolve(), f"{profile}: registry mapping")
         plan = patch_stack_lock_first.plan(profile, patches)
-        fail(plan.batch["batch_id"] == batch_id and plan.batch["expected_count"] == series_count, f"{profile}: typed batch identity")
+        fail(plan.batch["batch_id"] == row.get("batch_id") and plan.batch["expected_count"] == series_count, f"{profile}: typed batch identity")
         expected_order = [(module, patch["path"]) for module, patches in grouped.items() for patch in patches]
         fail([(entry["module"], entry["patch"]) for entry in plan] == expected_order, f"{profile}: mapping order differs from grouped execution")
         fail(plan.batch["module_order"] == list(grouped), f"{profile}: mapping module order")
         entries = {(entry["module"], entry["patch"]): entry for entry in plan}
         fail(len(entries) == len(plan), f"{profile}: duplicate typed mapping identity")
         observed_commits = 0
+        module_commits = dict.fromkeys(grouped, 0)
         for patch in patches:
             entry = entries.get((patch["module"], patch["path"]))
             fail(entry is not None, f"{profile}/{patch['path']}: typed mapping entry missing")
@@ -107,10 +92,19 @@ def main() -> None:
             fail(lock["mirror"]["base_oid"] == lock["upstream"]["base_commit"], f"{profile}/{patch['path']}: base OID differs")
             fail(lock["ordered_commits"][-1] == lock["source_commit"], f"{profile}/{patch['path']}: ordered tip differs")
             observed_commits += len(lock["ordered_commits"])
-        fail(observed_commits == commit_count, f"{profile}: ordered commit total")
+            module_commits[patch["module"]] += len(lock["ordered_commits"])
+        fail(observed_commits == row.get("ordered_commit_count"), f"{profile}: ordered commit total")
+        fail(row.get("modules") == [
+            {"path": module, "series_count": len(module_patches),
+             "ordered_commit_count": module_commits[module]}
+            for module, module_patches in grouped.items()
+        ], f"{profile}: module census differs from ordered immutable locks")
         total_series += series_count
-        total_commits += commit_count
-    fail((total_series, total_commits) == (100, 192), "inventory totals differ")
+        total_commits += observed_commits
+    # Coverage/evidence strings are publication notes, not executable proof.
+    # Bind numerical closure to the actual profile, mapping and lock census.
+    fail(inventory["closure"].get("total_series") == total_series, "inventory total series differs")
+    fail(inventory["closure"].get("total_ordered_commits") == total_commits, "inventory total ordered commits differs")
     fail(
         set(nonportable) == {("perf", "xnu/shmem-ring-guest.patch")},
         "unexpected archive forensic exception",

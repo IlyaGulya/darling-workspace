@@ -40,7 +40,194 @@ def mapping_doc(series, *, profile="homebrew", batch_id="synthetic-batch", expec
             "expected_count": len(series) if expected_count is None else expected_count, "series": series}
 
 
+def transitive_parent_composition_contract() -> None:
+    """An untouched Homebrew child survives native Perf and Arch parent replay."""
+    with tempfile.TemporaryDirectory() as directory:
+        root = Path(directory)
+        child_module = "darling/child"
+        sources = {"darling": root / "parent-source", child_module: root / "child-source"}
+        revisions: dict[str, dict[str, str]] = {}
+        trees: dict[str, dict[str, str]] = {}
+        for module in (child_module, "darling"):
+            repo = sources[module]
+            git(root, "init", "-q", str(repo))
+            git(repo, "config", "user.name", "Canonical Author")
+            git(repo, "config", "user.email", "canonical@example.invalid")
+            (repo / "state").write_text("base\n")
+            git(repo, "add", "state")
+            if module == "darling":
+                git(repo, "update-index", "--add", "--cacheinfo",
+                    f"160000,{revisions[child_module]['base']},child")
+            git(repo, "commit", "-qm", "base")
+            revisions[module] = {"base": git(repo, "rev-parse", "HEAD")}
+            trees[module] = {"base": git(repo, "rev-parse", "HEAD^{tree}")}
+            phases = ("homebrew",) if module == child_module else ("homebrew", "perf", "arch")
+            previous = "base"
+            for phase in phases:
+                (repo / "state").write_text(f"{phase}\n")
+                git(repo, "add", "state")
+                git(repo, "commit", "-qm", phase)
+                revisions[module][phase] = git(repo, "rev-parse", "HEAD")
+                trees[module][phase] = git(repo, "rev-parse", "HEAD^{tree}")
+                base = revisions[module][previous]
+                source = revisions[module][phase]
+                git(repo, "tag", f"patch-stack/v1/bases/{base}", base)
+                git(repo, "tag", f"patch-stack/v1/sources/{source}", source)
+                previous = phase
+
+        frozen_path = root / "west.lock.yml"
+        frozen_path.write_text("manifest: synthetic transitive composition\n")
+        frozen = {"path": frozen_path.name,
+                  "sha256": hashlib.sha256(frozen_path.read_bytes()).hexdigest()}
+        plans = {}
+        documents = {}
+        previous = None
+        for phase in ("homebrew", "perf", "arch"):
+            modules = (child_module, "darling") if phase == "homebrew" else ("darling",)
+            series = []
+            declared_modules = []
+            for module in modules:
+                before = previous or "base"
+                base = revisions[module][before]
+                source = revisions[module][phase]
+                tree = trees[module][phase]
+                lock_name = f"{phase}-{Path(module).name}-series.yml"
+                patch_name = f"{Path(module).name}/{phase}.patch"
+                lock = {
+                    "schema_version": 2,
+                    "project": {"name": Path(module).name, "path": "."},
+                    "upstream": {"url": sources[module].as_uri(), "base_commit": base},
+                    "mirror": {
+                        "url": sources[module].as_uri(),
+                        "base_ref": f"refs/tags/patch-stack/v1/bases/{base}", "base_oid": base,
+                        "source_ref": f"refs/tags/patch-stack/v1/sources/{source}", "source_oid": source,
+                    },
+                    "source_commit": source, "ordered_commits": [source], "expected_tree": tree,
+                }
+                (root / lock_name).write_text(yaml.safe_dump(lock, sort_keys=False))
+                series.append({"profile": phase, "module": module,
+                               "patch": patch_name, "lock": lock_name})
+                declared_modules.append({
+                    "module": module, "starting": {"tree": trees[module][before]},
+                    "series": [{"patch": patch_name, "lock": lock_name,
+                                "expected_applied_tree": tree}],
+                    "final_tree": tree, "integration_final_tree": tree,
+                })
+            composition_path = root / f"{phase}-composition.yml"
+            mapping_path = root / f"{phase}-mapping.yml"
+            mapping = dict(mapping_doc(series, profile=phase, batch_id=f"{phase}-transitive"),
+                           schema_version=3, composition=composition_path.name)
+            mapping_path.write_text(yaml.safe_dump(mapping, sort_keys=False))
+            prerequisites = []
+            if previous is not None:
+                prerequisite_path = root / f"{previous}-composition.yml"
+                prerequisites.append({
+                    "profile": previous, "composition": prerequisite_path.name,
+                    "sha256": hashlib.sha256(prerequisite_path.read_bytes()).hexdigest(),
+                    "frozen_manifest": frozen,
+                    "module_trees": {
+                        item["module"]: item["integration_final_tree"]
+                        for item in documents[previous]["modules"]
+                    },
+                })
+            documents[phase] = {
+                "schema_version": 3, "profile": phase, "prerequisites": prerequisites,
+                "frozen_manifest": frozen,
+                "mapping": {
+                    "path": mapping_path.name,
+                    "sha256": hashlib.sha256(mapping_path.read_bytes()).hexdigest(),
+                    "batch_id": mapping["batch_id"], "expected_count": len(series),
+                },
+                "modules": declared_modules,
+            }
+            composition_path.write_text(yaml.safe_dump(documents[phase], sort_keys=False))
+            plans[phase] = lock_first.plan(
+                phase, [{"module": item["module"], "path": item["patch"]} for item in series],
+                mapping_path,
+            )
+            previous = phase
+
+        repos = {"darling": root / "parent", child_module: root / "child"}
+        for module, repo in repos.items():
+            git(root, "clone", "-q", str(sources[module]), str(repo))
+            git(repo, "config", "user.name", "Generated Integration")
+            git(repo, "config", "user.email", "integration@example.invalid")
+            git(repo, "reset", "--hard", "-q", revisions[module]["base"])
+
+        parent, child = repos["darling"], repos[child_module]
+        for phase in ("homebrew", "perf", "arch"):
+            plan = plans[phase]
+            if phase == "arch":
+                arch_start = git(parent, "rev-parse", "HEAD")
+            for module in dict.fromkeys(entry["module"] for entry in plan):
+                results, _ = lock_first.materialize_batch_into(
+                    repos[module], [entry for entry in plan if entry["module"] == module],
+                    composition=plan.composition,
+                )
+                assert results[-1]["canonical_tree"] == trees[module][phase]
+                assert (repos[module] / "state").read_text() == f"{phase}\n"
+            if phase == "homebrew":
+                # Different integration identity, identical independently locked child tree.
+                git(child, "commit", "--amend", "--no-edit", "-q")
+                generated_child = git(child, "rev-parse", "HEAD")
+                assert generated_child != revisions[child_module]["homebrew"]
+                git(parent, "update-index", "--cacheinfo", f"160000,{generated_child},child")
+                git(parent, "commit", "-qm", "record generated Homebrew child")
+            assert git(parent, "rev-parse", "HEAD:child") == generated_child
+            profile_composition.verify_integration(
+                "darling", parent, plan.composition["integration_finals"]["darling"],
+                plan.composition["integration_finals"], repos,
+                inherited_children=plan.composition["inherited_children"],
+            )
+
+        arch = plans["arch"]
+        bound = arch.composition
+        arch_final = git(parent, "rev-parse", "HEAD")
+        # Neither Arch nor its immediate Perf prerequisite declares this child.
+        assert child_module not in bound["starts"]
+        assert child_module not in bound["prerequisites"][0]["module_trees"]
+        assert bound["inherited_children"][child_module] == trees[child_module]["homebrew"]
+        assert git(parent, "rev-parse", "HEAD^{tree}") != trees["darling"]["arch"]
+
+        # Removing transitive proof reproduces the former immediate-only rejection.
+        git(parent, "reset", "--hard", "-q", arch_start)
+        try:
+            lock_first.materialize_batch_into(
+                parent, list(arch), composition=dict(bound, inherited_children={}),
+            )
+        except lock_first.LockFirstError:
+            pass
+        else:
+            raise AssertionError("native replay accepted an undeclared transitive child")
+
+        git(parent, "reset", "--hard", "-q", arch_start)
+        (parent / "unexpected").write_text("ordinary parent drift\n")
+        git(parent, "add", "unexpected")
+        git(parent, "commit", "-qm", "ordinary drift")
+        try:
+            lock_first.materialize_batch_into(parent, list(arch), composition=bound)
+        except lock_first.LockFirstError:
+            pass
+        else:
+            raise AssertionError("transitive normalization hid ordinary parent drift")
+
+        git(parent, "reset", "--hard", "-q", arch_final)
+        (child / "state").write_text("independent child drift\n")
+        git(child, "commit", "-qam", "independent child drift")
+        try:
+            profile_composition.verify_integration(
+                "darling", parent, bound["integration_finals"]["darling"],
+                bound["integration_finals"], repos,
+                inherited_children=bound["inherited_children"],
+            )
+        except profile_composition.ProfileCompositionError:
+            pass
+        else:
+            raise AssertionError("final parent verification ignored inherited child-tree drift")
+
+
 def main() -> None:
+    transitive_parent_composition_contract()
     with tempfile.TemporaryDirectory() as directory:
         root = Path(directory)
         graph_workspace = root / "profile-graph"
@@ -498,21 +685,21 @@ def main() -> None:
         patches = [{"module": "darling", "path": "darling/sandbox-exec-pass-through.patch"}]
         selected = lock_first.plan("homebrew", patches, mapping)
         assert len(selected) == 1
-        # Prefix-lifecycle Batch 9 is the exact grouped homebrew selection:
-        # retained Batch 8 plus one final Darlingserver and Darling entry.
-        # This binds the data mapping to real profile order before mutation.
+        # Bind the authored batch to real grouped profile order before mutation.
+        # Appends may extend the batch, but must retain reviewed boundaries.
         homebrew = yaml.safe_load((ROOT / "patches/homebrew/patches.yml").read_text())
         homebrew_patches = homebrew["patches"]
+        homebrew_mapping = yaml.safe_load(lock_first.MAPPING.read_text())
         homebrew_grouped = OrderedDict()
         for entry in homebrew_patches:
             homebrew_grouped.setdefault(entry["module"], []).append(entry)
-        batch_nine = lock_first.plan("homebrew", homebrew_patches, lock_first.MAPPING, homebrew_grouped)
+        homebrew_plan = lock_first.plan("homebrew", homebrew_patches, lock_first.MAPPING, homebrew_grouped)
         expected_darlingserver = [
             entry["path"] for entry in homebrew_patches
             if entry["module"] == "darling/src/external/darlingserver"
         ]
         observed_darlingserver = [
-            entry["patch"] for entry in batch_nine
+            entry["patch"] for entry in homebrew_plan
             if entry["module"] == "darling/src/external/darlingserver"
         ]
         expected_xnu = [
@@ -520,19 +707,26 @@ def main() -> None:
             if entry["module"] == "darling/src/external/xnu"
         ]
         observed_xnu = [
-            entry["patch"] for entry in batch_nine
+            entry["patch"] for entry in homebrew_plan
             if entry["module"] == "darling/src/external/xnu"
         ]
-        assert len(batch_nine) == 74 and batch_nine.batch["expected_count"] == 74
-        assert batch_nine.composition is not None
-        assert batch_nine.composition["profile"] == "homebrew"
-        assert batch_nine.composition["boundaries"][("darling/src/external/xnu", "xnu/fstatfs-missing-proc-mounts.patch")] == "84d7a41685fab6b459ce754e8db8421ab4fc3615"
-        assert batch_nine.composition["boundaries"][("darling", "darling/sandbox-exec-pass-through.patch")] == "630c80034b9aed3a89d133c948e457c1bc9e3709"
-        assert batch_nine.composition["boundaries"][("darling/src/external/darlingserver", "darlingserver/prefix-lifecycle-state-v2.patch")] == "2d6f0321cfe205dba7302666bc470adb79a44003"
-        assert batch_nine.composition["boundaries"][("darling", "darling/prefix-lifecycle-state-v2.patch")] == "7297ee393ed21d13484b1734e5e5694967f96851"
-        assert batch_nine.composition["finals"]["darling/src/external/xnu"] == "53c8fa45a1ac94bdfc2ced0b3179e43659dffabf"
-        assert batch_nine.batch["batch_id"] == "darling-homebrew-prefix-lifecycle-batch-9"
-        assert batch_nine.batch["module_order"] == [
+        assert len(homebrew_plan) == homebrew_plan.batch["expected_count"] == len(homebrew_patches)
+        assert homebrew_plan.composition is not None
+        assert homebrew_plan.composition["profile"] == "homebrew"
+        assert homebrew_plan.composition["boundaries"][("darling/src/external/xnu", "xnu/fstatfs-missing-proc-mounts.patch")] == "84d7a41685fab6b459ce754e8db8421ab4fc3615"
+        assert homebrew_plan.composition["boundaries"][("darling", "darling/sandbox-exec-pass-through.patch")] == "630c80034b9aed3a89d133c948e457c1bc9e3709"
+        assert homebrew_plan.composition["boundaries"][("darling/src/external/darlingserver", "darlingserver/prefix-lifecycle-state-v2.patch")] == "2d6f0321cfe205dba7302666bc470adb79a44003"
+        assert homebrew_plan.composition["boundaries"][("darling", "darling/prefix-lifecycle-state-v2.patch")] == "7297ee393ed21d13484b1734e5e5694967f96851"
+        parent_identity = ("darling/src/external/xnu", "xnu/eunion-upper-parent-dominance.patch")
+        parent_entry = next(entry for entry in homebrew_plan if (entry["module"], entry["patch"]) == parent_identity)
+        parent_lock = yaml.safe_load(Path(parent_entry["lock_path"]).read_text())
+        parent_source = "0ae4c3fecc658859002346356ddfc2ae01391166"
+        assert parent_lock["source_commit"] == parent_lock["mirror"]["source_oid"] == parent_source
+        assert parent_lock["ordered_commits"] == [parent_source]
+        assert next(entry for entry in homebrew_patches if (entry["module"], entry["path"]) == parent_identity)["source-commit"] == parent_source
+        assert homebrew_plan.composition["boundaries"][parent_identity] == "553220e4a0b9ebb7905d39abcd0880dcb2718b69"
+        assert homebrew_plan.batch["batch_id"] == homebrew_mapping["batch_id"]
+        assert homebrew_plan.batch["module_order"] == [
             "darling/src/external/darlingserver",
             "darling/src/external/xnu",
             "darling/src/external/libplatform",
@@ -548,9 +742,9 @@ def main() -> None:
             "darlingserver/runtime-mode-canonical.patch",
             "darlingserver/prefix-lifecycle-state-v2.patch",
         ]
-        assert len(expected_xnu) == 26
+        assert len(expected_xnu) >= 27
         assert observed_xnu == expected_xnu
-        assert observed_xnu == [
+        assert observed_xnu[:27] == [
             "xnu/psynch-cvsignal-args.patch",
             "xnu/fstatfs-missing-proc-mounts.patch",
             "xnu/select-pselect-fdset.patch",
@@ -577,13 +771,15 @@ def main() -> None:
             "xnu/gate-hotpath-kprintf-debug.patch",
             "xnu/generalize-recv-spin-guest.patch",
             "xnu/af-unix-expanded-path-length.patch",
+            "xnu/eunion-upper-parent-dominance.patch",
         ]
         # The registry is the production selector for every profile. Each
         # mapping must exactly cover the real grouped profile execution, with
         # no profile-specific archive fallback hidden in orchestration.
-        for profile_name, expected_count in (("homebrew", 74), ("perf", 7), ("arch", 19)):
+        for profile_name in ("homebrew", "perf", "arch"):
             profile_data = yaml.safe_load((ROOT / "patches" / profile_name / "patches.yml").read_text())
             profile_patches = profile_data["patches"]
+            expected_count = len(profile_patches)
             profile_grouped = OrderedDict()
             for entry in profile_patches:
                 profile_grouped.setdefault(entry["module"], []).append(entry)
@@ -604,6 +800,10 @@ def main() -> None:
                 "path": "west.lock.yml",
                 "sha256": hashlib.sha256((ROOT / "west.lock.yml").read_bytes()).hexdigest(),
             }
+            if profile_name == "perf":
+                assert selected_profile.composition["finals"]["darling/src/external/xnu"] == "d28cb624090489594c896738ef3c0e159120b048"
+            elif profile_name == "arch":
+                assert selected_profile.composition["finals"]["darling/src/external/xnu"] == "2396da43c219e7dba14df419d97c30e5f36cba53"
         arch_data = yaml.safe_load((ROOT / "patches" / "arch" / "patches.yml").read_text())
         arch_selected = lock_first.plan("arch", arch_data["patches"])
         arch_identity = [(entry["module"], entry["patch"]) for entry in arch_selected]
@@ -1013,7 +1213,7 @@ def main() -> None:
         else:
             raise AssertionError("profile composition accepted duplicate YAML keys")
         # The complete XNU group is typed data, not an implicit prefix. Its
-        # exact 26-entry profile order is required before _prepare(), and all
+        # exact authored profile order is required before _prepare(), and all
         # missing/extra/duplicate/reordered/wrong-module/wrong-lock variants
         # fail before a production repository can be touched.
         xnu_series = [
@@ -1024,45 +1224,33 @@ def main() -> None:
             (root / entry["lock"]).write_text((lock_first.MAPPING.parent / entry["lock"]).read_text())
         xnu_mapping = root / "xnu-complete.yml"
         xnu_mapping.write_text(yaml.safe_dump(mapping_doc(xnu_series, batch_id="xnu-complete"), sort_keys=False))
-        assert len(lock_first.plan("homebrew", [{"module": "darling/src/external/xnu", "path": path} for path in expected_xnu], xnu_mapping)) == 26
-        def require_exact_xnu(entries):
-            assert [(entry.get("module"), entry.get("patch")) for entry in entries] == [
-                ("darling/src/external/xnu", path) for path in expected_xnu
-            ], "Batch 8 XNU mapping is not the exact profile group"
+        xnu_patches = [{"module": "darling/src/external/xnu", "path": path} for path in expected_xnu]
+        assert len(lock_first.plan("homebrew", xnu_patches, xnu_mapping)) == len(expected_xnu)
         xnu_missing = root / "xnu-missing.yml"
-        xnu_missing.write_text(yaml.safe_dump(mapping_doc(xnu_series[:-1], batch_id="xnu-missing"), sort_keys=False))
-        try: require_exact_xnu(xnu_series[:-1])
-        except AssertionError: pass
-        else: raise AssertionError("Batch 8 accepted missing XNU entry")
+        xnu_missing.write_text(yaml.safe_dump(mapping_doc(xnu_series[:-1], batch_id="xnu-missing", expected_count=len(xnu_series)), sort_keys=False))
+        must_fail(lock_first.plan, "homebrew", xnu_patches, xnu_missing)
         xnu_extra = root / "xnu-extra.yml"
         xnu_extra.write_text(yaml.safe_dump(mapping_doc(xnu_series + [dict(xnu_series[0], patch="xnu/extra.patch")], batch_id="xnu-extra"), sort_keys=False))
-        try: require_exact_xnu(xnu_series + [dict(xnu_series[0], patch="xnu/extra.patch")])
-        except AssertionError: pass
-        else: raise AssertionError("Batch 8 accepted extra XNU entry")
+        must_fail(lock_first.plan, "homebrew", xnu_patches, xnu_extra)
         xnu_duplicate = root / "xnu-duplicate.yml"
         xnu_duplicate.write_text(yaml.safe_dump(mapping_doc(xnu_series + [xnu_series[0]], batch_id="xnu-duplicate"), sort_keys=False))
-        try: require_exact_xnu(xnu_series + [xnu_series[0]])
-        except AssertionError: pass
-        else: raise AssertionError("Batch 8 accepted duplicate XNU entry")
         must_fail(lock_first.plan, "homebrew", [{"module": "darling/src/external/xnu", "path": path} for path in expected_xnu], xnu_duplicate)
         xnu_reordered = root / "xnu-reordered.yml"
         xnu_reordered.write_text(yaml.safe_dump(mapping_doc(list(reversed(xnu_series)), batch_id="xnu-reordered"), sort_keys=False))
-        try: require_exact_xnu(list(reversed(xnu_series)))
-        except AssertionError: pass
-        else: raise AssertionError("Batch 8 accepted reordered XNU entries")
         must_fail(lock_first.plan, "homebrew", [{"module": "darling/src/external/xnu", "path": path} for path in expected_xnu], xnu_reordered)
         xnu_wrong_module = root / "xnu-wrong-module.yml"
-        xnu_wrong_module.write_text(yaml.safe_dump(mapping_doc([dict(xnu_series[0], module="darling")], batch_id="xnu-wrong-module"), sort_keys=False))
-        try: require_exact_xnu([dict(xnu_series[0], module="darling")])
-        except AssertionError: pass
-        else: raise AssertionError("Batch 8 accepted wrong XNU module")
-        must_fail(lock_first.plan, "homebrew", [{"module": "darling/src/external/xnu", "path": path} for path in expected_xnu], xnu_wrong_module)
+        wrong_module_series = [dict(entry, module="darling") if index == 0 else entry
+                               for index, entry in enumerate(xnu_series)]
+        xnu_wrong_module.write_text(yaml.safe_dump(mapping_doc(wrong_module_series, batch_id="xnu-wrong-module"), sort_keys=False))
+        must_fail(lock_first.plan, "homebrew", xnu_patches, xnu_wrong_module)
         xnu_wrong_lock = root / "xnu-wrong-lock.yml"
         malformed_xnu_lock = yaml.safe_load((root / xnu_series[0]["lock"]).read_text())
         malformed_xnu_lock["mirror"]["source_oid"] = "0" * 40
         (root / "xnu-incompatible.yml").write_text(yaml.safe_dump(malformed_xnu_lock, sort_keys=False))
-        xnu_wrong_lock.write_text(yaml.safe_dump(mapping_doc([dict(xnu_series[0], lock="xnu-incompatible.yml")], batch_id="xnu-wrong-lock"), sort_keys=False))
-        must_fail(lock_first.plan, "homebrew", [{"module": "darling/src/external/xnu", "path": path} for path in expected_xnu], xnu_wrong_lock)
+        wrong_lock_series = [dict(entry, lock="xnu-incompatible.yml") if index == 0 else entry
+                             for index, entry in enumerate(xnu_series)]
+        xnu_wrong_lock.write_text(yaml.safe_dump(mapping_doc(wrong_lock_series, batch_id="xnu-wrong-lock"), sort_keys=False))
+        must_fail(lock_first.plan, "homebrew", xnu_patches, xnu_wrong_lock)
         empty = root / "empty.yml"; empty.write_text(yaml.safe_dump(mapping_doc([], expected_count=0)))
         must_fail(lock_first.plan, "homebrew", batch_patches, empty)
         duplicate = root / "duplicate.yml"; duplicate.write_text(yaml.safe_dump(mapping_doc(batch_series + [batch_series[0]], batch_id="duplicate")))
@@ -1151,6 +1339,49 @@ def main() -> None:
         else:
             raise AssertionError("lock-first accepted a tampered profile boundary")
         assert not git(production, "for-each-ref", "refs/west/patch-stack-lock-first/")
+        # Parent integration records may replace child commit IDs without
+        # changing the independently verified child trees. Native parent
+        # replay must preserve those inherited IDs, not pin generated commits.
+        git(production, "reset", "--hard", "-q", base)
+        git(production, "update-index", "--add", "--cacheinfo", f"160000,{base},child")
+        git(production, "commit", "-qm", "original child record")
+        parent_base = git(production, "rev-parse", "HEAD")
+        lock_first._cherry_pick(production, source)
+        parent_tree = git(production, "rev-parse", "HEAD^{tree}")
+        parent_content = (production / "a").read_bytes()
+        git(production, "reset", "--hard", "-q", parent_base)
+        git(production, "update-index", "--cacheinfo", f"160000,{source},child")
+        git(production, "commit", "-qm", "generated child record")
+        generated_parent = git(production, "rev-parse", "HEAD")
+        parent_composition = {
+            "boundaries": {("darling", "darling/sandbox-exec-pass-through.patch"): parent_tree},
+            "starts": {"darling": {"tree": git(production, "rev-parse", f"{parent_base}^{{tree}}")},
+                       "darling/child": {"tree": tree}},
+        }
+        lock_first.materialize_batch_into(production, list(selected), composition=parent_composition)
+        assert (production / "a").read_bytes() == parent_content
+        assert git(production, "rev-parse", "HEAD:child") == source
+        git(production, "reset", "--hard", "-q", generated_parent)
+        try:
+            lock_first.materialize_batch_into(
+                production, list(selected),
+                composition={"boundaries": parent_composition["boundaries"],
+                             "starts": {"darling": parent_composition["starts"]["darling"]}},
+            )
+        except lock_first.LockFirstError:
+            pass
+        else:
+            raise AssertionError("native replay accepted an undeclared child identity change")
+        git(production, "reset", "--hard", "-q", generated_parent)
+        (production / "unexpected-parent-file").write_text("not in the declared boundary\n")
+        git(production, "add", "unexpected-parent-file")
+        git(production, "commit", "-qm", "ordinary parent drift")
+        try:
+            lock_first.materialize_batch_into(production, list(selected), composition=parent_composition)
+        except lock_first.LockFirstError:
+            pass
+        else:
+            raise AssertionError("child normalization hid ordinary parent content drift")
         # A real overlapping content edit is a semantic stop, not a reason to
         # reinterpret a profile-boundary assertion as an automatic resolution.
         git(production, "reset", "--hard", "-q", base)
