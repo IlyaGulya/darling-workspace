@@ -339,7 +339,7 @@ set(_simple_xnu_guest_cases
   "dar-gwn.6.4|sigexc_default_resend_self_guest|tests/sigexc_default_resend_self_guest.c|SIGEXC_DEFAULT_RESEND_SELF_GUEST_OK"
   "dar-gwn.6|ulock_eintr_retry_guest|tests/ulock_eintr_retry_guest.c|ULOCK_EINTR_RETRY_GUEST_OK"
   "dar-gwn.1.6|vchroot_pathnull_guard_guest|tests/vchroot_pathnull_guard_guest.c|VCHROOT_PATHNULL_GUARD_GUEST_OK"
-  "dar-gyvb|chown_disabled_null_guard_guest|tests/chown_disabled_null_guard_guest.c|CHOWN_DISABLED_NULL_GUARD_GUEST_OK"
+  "dar-nmda|chown_ownership_guest|tests/chown_ownership_guest.c|CHOWN_OWNERSHIP_GUEST_OK"
   "dar-6x4.1|fd_guard_ebadf_guest|tests/fd_guard_ebadf_guest.c|FD_GUARD_EBADF_GUEST_OK")
 foreach(_case IN LISTS _simple_xnu_guest_cases)
   string(REPLACE "|" ";" _case_fields "${_case}")

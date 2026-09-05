@@ -26,7 +26,6 @@ VALIDATION_GROUP_FIXTURES = {
             "sigexc_default_resend_self_guest",
             "ulock_eintr_retry_guest",
             "vchroot_pathnull_guard_guest",
-            "chown_disabled_null_guard_guest",
             "fd_guard_ebadf_guest",
             "fork_checkin_signal_storm_guest",
             "rootless_no_mount_guest",

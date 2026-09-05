@@ -57,7 +57,7 @@ if [ "$(basename "$0")" = west ] &&
   Test  #8: darling/sigexc_default_resend_self_guest
   Test  #9: darling/ulock_eintr_retry_guest
   Test #10: darling/vchroot_pathnull_guard_guest
-  Test #11: darling/chown_disabled_null_guard_guest
+  Test #11: darling/chown_ownership_guest
   Test #12: darling/fd_guard_ebadf_guest
   Test #13: darling/fork_checkin_signal_storm_guest
   Test #14: darling/rootless_no_mount_guest
