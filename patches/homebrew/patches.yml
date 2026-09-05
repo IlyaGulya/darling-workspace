@@ -5297,7 +5297,7 @@ patches:
   module: darling
   source-branch: fix/rootless-homebrew-userland
   source-base: da784f52c4e5b7a3ecbc628e6e619171ba78435c
-  source-commit: a714fc88b6d8c75b3d2dbe5599425eac72884b1d
+  source-commit: 2261067d7049cf29ed6a9047df1c1babefdaf565
   bead: dar-arsg
   publication-status: blocked
   publication-blocker: Fresh rootless Homebrew source-install and shutdown/reuse acceptance remain in progress.
@@ -5314,4 +5314,4 @@ patches:
     runtime-profile: homebrew-lz4-source
     timeout-seconds: 1800
     note: Untouched pinned stock Homebrew builds lz4 from source; installed binary roundtrips data before and after shutdown/reuse.
-  sha256sum: 976037020db122289b3740e272bfeac169c5257422b7c8f27828efaa28ff1222
+  sha256sum: afb736eb9647633aa7f9fa82a35f6cf1c7f3e4c12e9b9857ba5c44152d53b76a

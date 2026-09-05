@@ -181,3 +181,25 @@ index 7185d711886a7cbea2bc8283d72429ea3b65e0cd..a74b6afa0828975d788ea4ba3a5afdf5
  	"ranlib_shim|/usr/bin/ranlib" "dsymutil_shim|/usr/bin/dsymutil")
  	string(REPLACE "|" ";" _homebrew_parts "${_homebrew_command}")
  	list(GET _homebrew_parts 0 _homebrew_target)
+
+From 2261067d7049cf29ed6a9047df1c1babefdaf565 Mon Sep 17 00:00:00 2001
+From: Ilya Gulya <ilya@gulya.me>
+Date: Sat, 5 Sep 2026 08:30:21 +0000
+Subject: [PATCH] Provide POSIX shell and terminal utility for stock Homebrew
+
+---
+ cmake/RootlessHomebrew.cmake | 1 +
+ 1 file changed, 1 insertion(+)
+
+diff --git a/cmake/RootlessHomebrew.cmake b/cmake/RootlessHomebrew.cmake
+index a74b6afa0828975d788ea4ba3a5afdf52d7b40d4..54263867316a5815c50177911ccd97efd2a83bfb 100644
+--- a/cmake/RootlessHomebrew.cmake
++++ b/cmake/RootlessHomebrew.cmake
+@@ -1,6 +1,7 @@
+ # Extend the toolchain component only for the explicit Homebrew product fixture.
+ # Targets and guest paths follow the source repositories' normal install rules.
+ foreach(_homebrew_command IN ITEMS
++	"bash|/bin/sh" "stty|/bin/stty"
+ 	"cat|/bin/cat" "chmod|/bin/chmod" "cp|/bin/cp" "date|/bin/date"
+ 	"echo|/bin/echo" "expr|/bin/expr" "kill|/bin/kill" "ln|/bin/ln"
+ 	"ls|/bin/ls" "mkdir|/bin/mkdir" "mv|/bin/mv" "pwd|/bin/pwd"
