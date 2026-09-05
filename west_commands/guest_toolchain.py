@@ -6,7 +6,9 @@ import hashlib
 import json
 import os
 import shutil
+import stat
 import struct
+import tempfile
 import urllib.request
 from dataclasses import dataclass
 from pathlib import Path
@@ -55,6 +57,13 @@ REVIEWED_COMMAND_LINE_TOOLS_SHA256 = {
     "com.apple.pkg.CLTools_Executables":
         "95df96bfc8369bbd9ecf9acccd36b4020e2885777524a97b3aa288f660be5d32",
 }
+# Locally supplied CLT13.2 bytes; this pin is not publisher authentication.
+SELECTED_COMMAND_LINE_TOOLS_ID = "Command_Line_Tools_for_Xcode_13.2"
+SELECTED_COMMAND_LINE_TOOLS_SHA256 = (
+    "7d45d981d51dce2b91de369eba56dbaf77ae175ff89bcaf6a885c3095587f8a8"
+)
+SELECTED_COMMAND_LINE_TOOLS_CLANG = "clang-1300.0.29.30"
+COMMAND_LINE_TOOLS_RECEIPT = ".west-command-line-tools.json"
 DEFAULT_GUEST_CC = "/Library/Developer/CommandLineTools/usr/bin/clang"
 DEFAULT_GUEST_CFLAGS = (
     "-isysroot /Library/Developer/CommandLineTools/SDKs/MacOSX.sdk"
@@ -295,6 +304,149 @@ def _cached_package(
         ) from error
 
 
+def _verify_selected_package(path: Path) -> None:
+    """Authenticate the one supported local package, including staged bytes."""
+    try:
+        if not stat.S_ISREG(path.stat().st_mode):
+            raise GuestToolchainError(
+                f"selected CommandLineTools package is not a regular file: {path}",
+                kind="download",
+            )
+        actual = _sha256(path)
+    except OSError as error:
+        raise GuestToolchainError(
+            f"cannot read selected CommandLineTools package {path}: {error}",
+            kind="download",
+        ) from error
+    if actual != SELECTED_COMMAND_LINE_TOOLS_SHA256:
+        raise GuestToolchainError(
+            f"selected CommandLineTools package has SHA-256 {actual}, "
+            f"expected {SELECTED_COMMAND_LINE_TOOLS_SHA256}",
+            kind="download",
+        )
+
+
+def _selected_prerequisite_problems(
+    prefix: Path,
+    launcher: str,
+    *,
+    cwd: Path,
+    env: dict[str, str],
+    timeout_seconds: int,
+    guest_runner: Callable[..., ProcessResult],
+) -> list[str]:
+    problems = guest_c_fixture_prerequisite_problems(
+        prefix,
+        DEFAULT_GUEST_CC,
+        DEFAULT_GUEST_CFLAGS
+        + " -isysroot /Library/Developer/CommandLineTools/SDKs/MacOSX12.1.sdk",
+    )
+    if problems:
+        return problems
+    result = guest_runner(
+        launcher, prefix, (DEFAULT_GUEST_CC, "--version"),
+        cwd=cwd, env=env, timeout_seconds=timeout_seconds, capture_output=True,
+    )
+    if (
+        result.returncode != 0
+        or result.timed_out
+        or SELECTED_COMMAND_LINE_TOOLS_CLANG not in _result_output(result)
+    ):
+        problems.append(
+            "selected CommandLineTools compiler version is not "
+            + SELECTED_COMMAND_LINE_TOOLS_CLANG
+        )
+    return problems
+
+
+def _ensure_selected_command_line_tools(
+    package: Path,
+    *,
+    prefix: Path,
+    launcher: str,
+    cwd: Path,
+    env: dict[str, str],
+    timeout_seconds: int,
+    guest_runner: Callable[..., ProcessResult],
+    log: Callable[[str], None],
+) -> list[str]:
+    # Authenticate even on reuse, before repair, staging, or receipt mutation.
+    _verify_selected_package(package)
+    receipt = prefix / COMMAND_LINE_TOOLS_RECEIPT
+    identity = {
+        "package": SELECTED_COMMAND_LINE_TOOLS_ID,
+        "sha256": SELECTED_COMMAND_LINE_TOOLS_SHA256,
+    }
+    probe_args = dict(
+        cwd=cwd, env=env, timeout_seconds=timeout_seconds, guest_runner=guest_runner,
+    )
+    try:
+        installed = json.loads(receipt.read_text())
+    except (OSError, ValueError):
+        installed = None
+    if installed == identity and not _selected_prerequisite_problems(
+        prefix, launcher, **probe_args
+    ):
+        return ["guest CommandLineTools already provisioned"]
+
+    # A failed reinstall must not leave a previous success claim behind.
+    receipt.unlink(missing_ok=True)
+    staged_dir = prefix / "private/var/tmp"
+    staged_dir.mkdir(parents=True, exist_ok=True)
+    staged = None
+    try:
+        with tempfile.NamedTemporaryFile(
+            prefix="west-clt13.2-", suffix=".pkg", dir=staged_dir, delete=False,
+        ) as output:
+            staged = Path(output.name)
+            with package.open("rb") as source:
+                shutil.copyfileobj(source, output, length=1024 * 1024)
+        # Catch source replacement or modification between verification and copy.
+        _verify_selected_package(staged)
+        log(f"guest toolchain install: {SELECTED_COMMAND_LINE_TOOLS_ID}")
+        result = guest_runner(
+            launcher, prefix,
+            ("/usr/bin/installer", "-pkg", f"/private/var/tmp/{staged.name}", "-target", "/"),
+            cwd=cwd, env=env, timeout_seconds=timeout_seconds,
+            capture_output=True, heartbeat_seconds=30,
+            output_line=lambda stream, line: log(f"guest installer {stream}: {line}"),
+        )
+        if result.returncode != 0 or result.timed_out:
+            raise GuestToolchainError(
+                f"guest installer failed for {SELECTED_COMMAND_LINE_TOOLS_ID} "
+                f"(rc={result.returncode}, timed_out={result.timed_out}): "
+                f"{_result_output(result)[-1000:]}",
+                kind="install",
+            )
+    finally:
+        if staged is not None:
+            staged.unlink(missing_ok=True)
+
+    repair = repair_prefix_prerequisites(prefix)
+    problems = repair.problems + _selected_prerequisite_problems(
+        prefix, launcher, **probe_args
+    )
+    if problems:
+        raise GuestToolchainError(
+            "selected CommandLineTools installation did not satisfy prerequisites: "
+            + "; ".join(problems),
+            kind="setup",
+        )
+    pending = None
+    try:
+        with tempfile.NamedTemporaryFile(
+            mode="w", prefix=COMMAND_LINE_TOOLS_RECEIPT + ".", dir=prefix, delete=False,
+        ) as output:
+            pending = Path(output.name)
+            json.dump(identity, output)
+            output.write("\n")
+        pending.replace(receipt)
+    finally:
+        if pending is not None:
+            pending.unlink(missing_ok=True)
+    return [SELECTED_COMMAND_LINE_TOOLS_ID]
+
+
 def ensure_command_line_tools(
     *,
     prefix: Path,
@@ -313,7 +465,19 @@ def ensure_command_line_tools(
     own guest ``installer`` so paths, symlinks, and package payload semantics
     are the same as a normal Darling installation. Package bytes live only in
     the host cache and prefix-owned temporary storage, never in patch metadata.
+    ``DARLING_CLT_PACKAGE`` opts into the pinned local CLT13.2 package instead
+    of the unchanged mirrored package set.
     """
+
+    require_guest_toolchain_provisioning_allowed()
+    require_guest_toolchain_provisioning_allowed(env)
+    selected = env.get("DARLING_CLT_PACKAGE", os.environ.get("DARLING_CLT_PACKAGE"))
+    if selected is not None:
+        return _ensure_selected_command_line_tools(
+            Path(selected).expanduser(),
+            prefix=prefix, launcher=launcher, cwd=cwd, env=env,
+            timeout_seconds=timeout_seconds, guest_runner=guest_runner, log=log,
+        )
 
     missing = guest_c_fixture_prerequisite_problems(
         prefix, DEFAULT_GUEST_CC, DEFAULT_GUEST_CFLAGS
@@ -329,10 +493,16 @@ def ensure_command_line_tools(
     staged_dir = prefix / "private/var/tmp"
     staged_dir.mkdir(parents=True, exist_ok=True)
     changed: list[str] = []
+    staged_paths: list[Path] = []
     try:
         for package in packages:
             cached = _cached_package(package, resolved_cache, opener=opener, log=log)
-            staged = staged_dir / f"west-{package.cache_name}"
+            with tempfile.NamedTemporaryFile(
+                prefix=f"west-{package.package_id}.", suffix=".pkg",
+                dir=staged_dir, delete=False,
+            ) as output:
+                staged = Path(output.name)
+            staged_paths.append(staged)
             shutil.copyfile(cached, staged)
             guest_path = f"/private/var/tmp/{staged.name}"
             log(f"guest toolchain install: {package.package_id}")
@@ -360,7 +530,7 @@ def ensure_command_line_tools(
             changed.append(package.package_id)
             staged.unlink(missing_ok=True)
     finally:
-        for staged in staged_dir.glob("west-com.apple.pkg.*.pkg"):
+        for staged in staged_paths:
             staged.unlink(missing_ok=True)
 
     repair = repair_prefix_prerequisites(prefix)

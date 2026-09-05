@@ -1639,6 +1639,26 @@ int main(void) {
         check("SP1 template target dir untouched (no leak)", access(l, F_OK) != 0);
     }
 
+    /* An upper directory masks a lower symlink, including a host-side alias
+       whose relative spelling would escape the guest root if interpreted. */
+    {
+        const char* target = "../../../masked-target";
+        snprintf(p, sizeof(p), "%s/var/shadowed_parent", prefix);
+        snprintf(l, sizeof(l), "%s/var/shadowed_parent", libexec);
+        check("SP2 upper parent directory created", mkdir(p, 0755) == 0);
+        check("SP2 lower alias created", symlink(target, l) == 0);
+        int rv = (int)sys_mkdirat(BSD_AT_FDCWD, "/var/shadowed_parent/new", 0700);
+        check("SP2 mkdir ignores lower symlink masked by upper directory", rv == 0);
+        snprintf(p, sizeof(p), "%s/var/shadowed_parent/new", prefix);
+        struct stat created;
+        check("SP2 new directory lands in upper",
+              lstat(p, &created) == 0 && S_ISDIR(created.st_mode));
+        char link[64];
+        ssize_t length = readlink(l, link, sizeof(link));
+        check("SP2 lower symlink remains unchanged",
+              length == (ssize_t)strlen(target) && memcmp(link, target, length) == 0);
+    }
+
     /* SAFE1. A lower symlink containing .. must not let a mutating open escape
        the upper root. The sentinel lives beside prefix, where a raw joined path
        such as prefix/var/../../escape-target would reach it. */

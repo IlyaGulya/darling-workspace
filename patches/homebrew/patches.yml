@@ -5264,3 +5264,32 @@ patches:
     note: >-
       Source-owned behavior test for normalized archive traversal rejection and
       intermediate symlink containment; it is independent of the CLT provider.
+- path: xnu/eunion-upper-parent-dominance.patch
+  module: darling/src/external/xnu
+  source-branch: fix/eunion-upper-parent-dominance
+  source-base: cb2cf623d9cd641ed4f9e899a0187acdedc423ea
+  source-commit: 0ae4c3fecc658859002346356ddfc2ae01391166
+  bead: dar-arsg
+  publication-status: blocked
+  publication-blocker: Rootless CLT upgrade and Homebrew product acceptance remain in progress.
+  tests:
+  - name: eunion_upper_parent_dominance
+    kind: unit
+    coverage-tier: host
+    runs: host
+    diag: bare
+    red: true
+    red-proof:
+      mode: source-base
+      source-env: XNU_SRC_ROOT
+      expect-output-contains:
+      - 'FAIL  SP2 mkdir ignores lower symlink masked by upper directory'
+    runner: source-contract-script
+    repo: darling-workspace
+    script: experiments/e-union/run.sh
+    timeout-seconds: 60
+    note: >-
+      Execute production mkdirat and EUNION parent preparation against a real
+      upper directory masking a lower symlink. Creation must succeed in upper
+      without following or changing the masked lower alias.
+  sha256sum: 7c3e6217721e5746fd469aee8ae987d877f3c78d4c0e8e605f70bc05eebdba6e
