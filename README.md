@@ -111,6 +111,13 @@ for every local branch except an unchanged `main`/`master`. This includes
 active topics, clean PR branches, and backup snapshots. The bootstrap flow
 syncs `base.xml`, then restores all those branch refs from the bundles.
 
+West supplies the complete project closure, including independently cloned
+nested repositories; Git submodule initialization is not required for those
+clones. Every declared path must still be its own worktree, and populated
+gitlinks outside that closure are rejected. Without a West closure, handoff
+retains strict recursive submodule validation. Repository remote selection
+prefers `origin`, otherwise requires exactly one configured remote.
+
 Uncommitted worktree changes cannot be handed off. `dw handoff` prints every
 dirty repository so it can be committed or intentionally discarded first.
 

@@ -28,8 +28,10 @@ def initialized_projects(source: Path):
             yield relative, source / relative
 
 
-def private_branches(repo: Path, include_remote_only: bool = False) -> list[dict[str, str]]:
-    origin_url = git(repo, "remote", "get-url", "origin", required=False).lower()
+def private_branches(
+    repo: Path, include_remote_only: bool = False, *, remote: str = "origin"
+) -> list[dict[str, str]]:
+    origin_url = git(repo, "remote", "get-url", remote, required=False).lower()
     personal_origin = "ilyagulya" in origin_url
     output = git(
         repo,
@@ -45,7 +47,7 @@ def private_branches(repo: Path, include_remote_only: bool = False) -> list[dict
                 repo,
                 "rev-parse",
                 "--verify",
-                f"refs/remotes/origin/{branch}",
+                f"refs/remotes/{remote}/{branch}",
                 required=False,
             )
             if remote_head == head:
@@ -80,7 +82,7 @@ def private_branches(repo: Path, include_remote_only: bool = False) -> list[dict
         repo,
         "for-each-ref",
         "--format=%(refname:strip=3)\t%(objectname)",
-        "refs/remotes/origin",
+        f"refs/remotes/{remote}",
     )
     for line in remote_output.splitlines():
         branch, head = line.split("\t")
@@ -92,8 +94,8 @@ def private_branches(repo: Path, include_remote_only: bool = False) -> list[dict
             {
                 "branch": branch,
                 "head": head,
-                "upstream": f"origin/{branch}",
-                "source_ref": f"refs/remotes/origin/{branch}",
+                "upstream": f"{remote}/{branch}",
+                "source_ref": f"refs/remotes/{remote}/{branch}",
             }
         )
     return branches
