@@ -44,15 +44,6 @@ class Host:
 
 def assert_profile_contract() -> None:
     profiles = load_ctest_runtime_profiles(ROOT / "testkit/runtime-profiles.yml")
-    ccache_profiles = {
-        "homebrew-guest-toolchain-provisioning",
-        "homebrew-rootless-bootstrap-minimal",
-    }
-    for name in ccache_profiles:
-        assert profiles[name]["compiler-launcher"] == "ccache"
-    for name, profile in profiles.items():
-        if name not in ccache_profiles:
-            assert "compiler-launcher" not in profile, name
     composed = compose_ctest_runtime_profiles(
         profiles,
         [

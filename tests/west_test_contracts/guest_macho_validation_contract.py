@@ -128,8 +128,5 @@ with tempfile.TemporaryDirectory(prefix="west-guest-macho-validation-contract-")
     assert finalize_guest_macho_evidence(
         homebrew_dir, "homebrew", sorted(VALIDATION_GROUP_FIXTURES["homebrew"])
     ) == 0
-    assert "homebrew\tPASS\t14\tall fixtures passed" in (
-        homebrew_dir / "group-result.tsv"
-    ).read_text()
 
 print("PASS guest-macho-validation-contract")

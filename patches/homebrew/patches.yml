@@ -3336,68 +3336,26 @@ patches:
   tests:
   - name: chown_disabled_null_guard_contract
     kind: contract
-    coverage-tier: compile
+    coverage-tier: host
     runs: host
     diag: bare
     red: true
     red-proof:
       mode: source-base
       source-env: XNU_SRC_ROOT
-      expect-failure-phase: run
-    runner: c-fixture
+      expect-output-contains:
+      - 'FAIL ownership: NULL chown: got 0 expected -14'
+    runner: source-contract-script
     repo: darling-workspace
-    script: tests/chown_disabled_null_guard_contract.c
-    source-files:
-    - darling/src/libsystem_kernel/emulation/src/xnu_syscall/bsd/impl/unistd/chown.c
-    - darling/src/libsystem_kernel/emulation/src/xnu_syscall/bsd/impl/unistd/fchown.c
-    - darling/src/libsystem_kernel/emulation/src/xnu_syscall/bsd/impl/unistd/fchownat.c
-    - darling/src/libsystem_kernel/emulation/src/xnu_syscall/bsd/impl/unistd/lchown.c
-    fixture-include-dirs:
-    - tests/fixtures/chown-disabled/include
-    compile-flags:
-    - -std=gnu11
-    - -w
-    - -Ulinux
-    note: >-
-      Host RED->GREEN contract for the complete disabled ownership-stub class:
-      NULL paths return EFAULT and non-NULL chown operations return ENOTSUP
-      without entering vchroot or Linux syscall fallbacks.
-  - name: chown_disabled_null_guard_guest
-    kind: guest
-    coverage-tier: runtime
-    runs: guest
-    diag: guarded
-    runtime-profile: homebrew
-    runner: guest-c-fixture
-    repo: darling-workspace
-    script: tests/chown_disabled_null_guard_guest.c
-    ok-marker: CHOWN_DISABLED_NULL_GUARD_GUEST_OK
-    timeout-seconds: 30
-    requires:
-    - darling-prefix
-    note: >-
-      Guest behavior proof that the deployed libsystem_kernel does not report
-      false success for disabled ownership changes and preserves EFAULT for
-      invalid path pointers.
-  - name: chown_disabled_null_guard_guest_prebuilt
-    kind: guest
-    coverage-tier: runtime
-    runs: guest
-    diag: guarded
-    runner: guest-macho-fixture
-    repo: darling-workspace
-    corpus: testkit/fixtures/guest-macho/v1/corpus.yml
-    fixture: chown_disabled_null_guard_guest
-    source-profile: homebrew
-    validation-group: homebrew
-    timeout-seconds: 30
-    requires:
-    - darling-prefix
+    script: tests/run-eunion-ownership-host.sh
     env-vars:
-      DARLING_ROOTLESS: '1'
-      DARLING_NOOVERLAYFS: '1'
-      DARLING_EUNION: '1'
-      WEST_TEST_FORBID_GUEST_TOOLCHAIN: '1'
+      CHOWN_NULL_GUARD_ONLY: '1'
+    timeout-seconds: 60
+    note: >-
+      Execute the production ownership syscall closure and retain the NULL-path
+      EFAULT regression. Real ownership behavior is covered by dar-nmda.
+      The former ENOTSUP guest binary remains an immutable historical corpus
+      artifact, not a current runtime gate.
   pr-draft: pr-drafts/xnu-chown-disabled-null-guard.md
   github:
     fork:
@@ -5271,7 +5229,7 @@ patches:
   source-commit: 0ae4c3fecc658859002346356ddfc2ae01391166
   bead: dar-arsg
   publication-status: blocked
-  publication-blocker: Rootless CLT upgrade and Homebrew product acceptance remain in progress.
+  publication-blocker: Local fresh-prefix CLT and lz4 acceptance passed; canonical clean-ODB validation, immutable hosted source closure and release review remain required.
   tests:
   - name: eunion_upper_parent_dominance
     kind: unit
@@ -5300,7 +5258,7 @@ patches:
   source-commit: 1e22715429afb4e28cd947b064d6b9bfb509e22f
   bead: dar-arsg
   publication-status: blocked
-  publication-blocker: Fresh rootless Homebrew source-install and shutdown/reuse acceptance remain in progress.
+  publication-blocker: Local fresh-prefix lz4 source-install and shutdown/reuse acceptance passed; canonical clean-ODB validation, immutable hosted source closure and release review remain required.
   tests:
   - name: rootless_homebrew_source_install
     kind: guest
@@ -5315,3 +5273,41 @@ patches:
     timeout-seconds: 1800
     note: Untouched pinned stock Homebrew builds lz4 from source; installed binary roundtrips data before and after shutdown/reuse.
   sha256sum: f0a25d62bf1969f5d14d1396af028d65947d14ec4059d6b0b106b08826f945b2
+- path: xnu/eunion-ownership-syscalls.patch
+  module: darling/src/external/xnu
+  source-branch: fix/eunion-ownership-syscalls
+  source-base: 50db68ce8504da6c9c8f24ddfd31d737b1f1db23
+  source-commit: 812e6e820009dde5f5af832233ebd120b7258fb6
+  bead: dar-nmda
+  publication-status: blocked
+  publication-blocker: Local ownership runtime and stock lz4 acceptance passed; canonical clean-ODB validation, immutable hosted source closure and release review remain required.
+  tests:
+  - name: eunion_ownership_host
+    kind: contract
+    coverage-tier: host
+    runs: host
+    diag: bare
+    red: true
+    red-proof:
+      mode: source-base
+      source-env: XNU_SRC_ROOT
+      expect-output-contains:
+      - 'FAIL ownership: upper chown must reach Linux: got -95 expected 0'
+    runner: source-contract-script
+    repo: darling-workspace
+    script: tests/run-eunion-ownership-host.sh
+    timeout-seconds: 60
+    note: Real production ownership syscalls and copy-up execute against sibling and nested LOWER layouts; kernel effects and errors are observed and LOWER inode metadata stays unchanged.
+  - name: chown_ownership_guest
+    kind: guest
+    coverage-tier: runtime
+    runs: guest
+    diag: guarded
+    runtime-profile: homebrew-lz4-source
+    runner: guest-c-fixture
+    repo: darling-workspace
+    script: tests/chown_ownership_guest.c
+    ok-marker: CHOWN_OWNERSHIP_GUEST_OK
+    timeout-seconds: 60
+    requires: [darling-prefix]
+  sha256sum: b896700155538ab1746bdaf6beb1328ef1190bd4dc1b9ce4cf0e437309c12c58

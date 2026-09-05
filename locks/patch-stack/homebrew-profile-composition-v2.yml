@@ -6,9 +6,9 @@ frozen_manifest:
   sha256: 5718c32c76a180b9078a206b93d93e70f478a5ada0034cd6afcc789c447e055d
 mapping:
   path: lock-first-series-v2.yml
-  sha256: f49305fef5315ac1ffb9004cd10d4f1772a5dc4a6a9b0e198d669e6ebfc8e46c
-  batch_id: darling-homebrew-userland-batch-11
-  expected_count: 76
+  sha256: 059fe48c4cb7b341dc4a7ea9e19b22f4f4d4d78eafb8cc4cc565f1f532db8ce1
+  batch_id: darling-eunion-ownership-batch-12
+  expected_count: 77
 modules:
 - module: darling/src/external/darlingserver
   starting:
@@ -182,8 +182,11 @@ modules:
   - patch: xnu/eunion-upper-parent-dominance.patch
     lock: darling-xnu-eunion-upper-parent-dominance-v1.yml
     expected_applied_tree: 553220e4a0b9ebb7905d39abcd0880dcb2718b69
-  final_tree: 553220e4a0b9ebb7905d39abcd0880dcb2718b69
-  integration_final_tree: 553220e4a0b9ebb7905d39abcd0880dcb2718b69
+  - patch: xnu/eunion-ownership-syscalls.patch
+    lock: darling-xnu-eunion-ownership-syscalls-v1.yml
+    expected_applied_tree: dcd79f5ae99340e590f5ee904464f578999823a1
+  final_tree: dcd79f5ae99340e590f5ee904464f578999823a1
+  integration_final_tree: dcd79f5ae99340e590f5ee904464f578999823a1
 - module: darling/src/external/libplatform
   starting:
     tree: 43604922b0d259ab093ac75cbad6e7dbe4bb2876

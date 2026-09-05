@@ -1,7 +1,7 @@
 schema_version: 3
 profile: homebrew
-batch_id: darling-homebrew-userland-batch-11
-expected_count: 76
+batch_id: darling-eunion-ownership-batch-12
+expected_count: 77
 composition: homebrew-profile-composition-v2.yml
 series:
   - profile: homebrew
@@ -220,6 +220,10 @@ series:
     module: darling/src/external/xnu
     patch: xnu/eunion-upper-parent-dominance.patch
     lock: darling-xnu-eunion-upper-parent-dominance-v1.yml
+  - profile: homebrew
+    module: darling/src/external/xnu
+    patch: xnu/eunion-ownership-syscalls.patch
+    lock: darling-xnu-eunion-ownership-syscalls-v1.yml
   - profile: homebrew
     module: darling/src/external/libplatform
     patch: libplatform/bzero-return-register.patch

@@ -74,6 +74,10 @@ def main() -> None:
         for item in metadata["patches"]:
             if "module" not in item:
                 continue
+            # This inventory is a frozen migration receipt, not the live series
+            # registry. Later admissions are checked by legacy_runtime_inventory_contract.
+            if (profile, item["path"]) not in rows:
+                continue
             artifact = ROOT / "patches" / profile / item["path"]
             commits = MBOX.findall(artifact.read_text())
             assert commits, artifact

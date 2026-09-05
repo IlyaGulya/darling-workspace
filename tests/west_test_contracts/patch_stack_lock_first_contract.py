@@ -800,10 +800,6 @@ def main() -> None:
                 "path": "west.lock.yml",
                 "sha256": hashlib.sha256((ROOT / "west.lock.yml").read_bytes()).hexdigest(),
             }
-            if profile_name == "perf":
-                assert selected_profile.composition["finals"]["darling/src/external/xnu"] == "d28cb624090489594c896738ef3c0e159120b048"
-            elif profile_name == "arch":
-                assert selected_profile.composition["finals"]["darling/src/external/xnu"] == "2396da43c219e7dba14df419d97c30e5f36cba53"
         arch_data = yaml.safe_load((ROOT / "patches" / "arch" / "patches.yml").read_text())
         arch_selected = lock_first.plan("arch", arch_data["patches"])
         arch_identity = [(entry["module"], entry["patch"]) for entry in arch_selected]

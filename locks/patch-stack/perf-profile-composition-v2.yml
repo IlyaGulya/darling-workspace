@@ -3,13 +3,13 @@ profile: perf
 prerequisites:
 - profile: homebrew
   composition: homebrew-profile-composition-v2.yml
-  sha256: bba0aacfa854eb759140409b5c6a28d2bae23ab4b334cdc31596678688bb9744
+  sha256: 1d9d31d2599c8c40df7e0eb6aea9114576ad145e8570bf0a8097dd7b61794cf3
   frozen_manifest:
     path: west.lock.yml
     sha256: 5718c32c76a180b9078a206b93d93e70f478a5ada0034cd6afcc789c447e055d
   module_trees:
     darling/src/external/darlingserver: 2d6f0321cfe205dba7302666bc470adb79a44003
-    darling/src/external/xnu: 553220e4a0b9ebb7905d39abcd0880dcb2718b69
+    darling/src/external/xnu: dcd79f5ae99340e590f5ee904464f578999823a1
     darling/src/external/libplatform: aa23756779ff852be148fc08dec34f6ee371b08e
     darling/src/external/perl: 4f1f2a7a7818800a8e39d1cddbcf7832c246e375
     darling/src/external/libressl-2.8.3: c8ba46eeec25cfc71d0642c253e4ebe18c2898ae
@@ -36,16 +36,16 @@ modules:
   integration_final_tree: 070717bb07b61cda1c78d44e90b6506eb6f21768
 - module: darling/src/external/xnu
   starting:
-    tree: 553220e4a0b9ebb7905d39abcd0880dcb2718b69
+    tree: dcd79f5ae99340e590f5ee904464f578999823a1
   series:
   - patch: xnu/shmem-ring-guest.patch
     lock: darling-xnu-shmem-ring-guest-profile-v7.yml
-    expected_applied_tree: a551a11dc68a2569561d4d565e0edfb94e2a693a
+    expected_applied_tree: 77391b43baf71aeeeed5133b755555ea95c5aa71
   - patch: xnu/j7e7-lane-wakefd-sentinel.patch
     lock: darling-xnu-j7e7-lane-wakefd-sentinel-profile-v7.yml
-    expected_applied_tree: d28cb624090489594c896738ef3c0e159120b048
-  final_tree: d28cb624090489594c896738ef3c0e159120b048
-  integration_final_tree: d28cb624090489594c896738ef3c0e159120b048
+    expected_applied_tree: 85d308400571030b4a5417ef722621bc7ee2d4b4
+  final_tree: 85d308400571030b4a5417ef722621bc7ee2d4b4
+  integration_final_tree: 85d308400571030b4a5417ef722621bc7ee2d4b4
 - module: darling/src/external/dyld
   starting:
     tree: 4dee94a7af9ac7fd1a15115c368d679553af8f8d

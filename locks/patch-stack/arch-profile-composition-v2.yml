@@ -3,13 +3,13 @@ profile: arch
 prerequisites:
 - profile: perf
   composition: perf-profile-composition-v2.yml
-  sha256: 482ddbbe0b15691987105d64a941e44d382025c2107448e942d10a262ff1394f
+  sha256: e08206f5af349e06a1ed7777d80310c4fb40410190729860757aab774ea4f574
   frozen_manifest:
     path: west.lock.yml
     sha256: 5718c32c76a180b9078a206b93d93e70f478a5ada0034cd6afcc789c447e055d
   module_trees:
     darling: 070717bb07b61cda1c78d44e90b6506eb6f21768
-    darling/src/external/xnu: d28cb624090489594c896738ef3c0e159120b048
+    darling/src/external/xnu: 85d308400571030b4a5417ef722621bc7ee2d4b4
     darling/src/external/dyld: 967445c7fbe8c6db155160c323cb4ece3a5cd1df
     darling/src/external/darlingserver: 43da4fa5a32b65efae9c1c7f5ebc961d09e55c6d
 frozen_manifest:
@@ -32,19 +32,19 @@ modules:
   integration_final_tree: 43270a8f66b98e0e07a9f8705e21550791884400
 - module: darling/src/external/xnu
   starting:
-    tree: d28cb624090489594c896738ef3c0e159120b048
+    tree: 85d308400571030b4a5417ef722621bc7ee2d4b4
   series:
   - patch: xnu/ring-committed-unknown-guest.patch
     lock: darling-xnu-ring-committed-unknown-guest-profile-v7.yml
-    expected_applied_tree: 417036cc5a6baba745fd1ef465d1707cc9593f58
+    expected_applied_tree: df0a3d9d0c3feafe989253148060699bc89994a0
   - patch: xnu/rpc-interruptible-disconnect-status.patch
     lock: darling-xnu-rpc-interruptible-disconnect-status-profile-v7.yml
-    expected_applied_tree: ed0a69010f20def873b1e2197ad6491d756e028d
+    expected_applied_tree: 6975d75418b97887ac0bfef46d67f43f897b3295
   - patch: xnu/rpc-disconnect-status-contract-test.patch
     lock: darling-xnu-rpc-disconnect-status-contract-test-profile-v7.yml
-    expected_applied_tree: 2396da43c219e7dba14df419d97c30e5f36cba53
-  final_tree: 2396da43c219e7dba14df419d97c30e5f36cba53
-  integration_final_tree: 2396da43c219e7dba14df419d97c30e5f36cba53
+    expected_applied_tree: cc31b4d449edb26201266153453c839e46420769
+  final_tree: cc31b4d449edb26201266153453c839e46420769
+  integration_final_tree: cc31b4d449edb26201266153453c839e46420769
 - module: darling/src/external/darlingserver
   starting:
     tree: 43da4fa5a32b65efae9c1c7f5ebc961d09e55c6d

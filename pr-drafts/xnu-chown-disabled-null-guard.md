@@ -8,7 +8,11 @@ unsupported status instead of returning success. Invalid path pointers return
 
 ## Validation
 
-- Host RED/GREEN contract covers all disabled ownership entry points.
-- Guest fixture calls the public APIs through the deployed `libsystem_kernel`.
-- The change is kept in the local Darling XNU fork until the rootless guest
-  regression is stable and the patch is reviewed for upstreaming.
+- The current host RED/GREEN gate executes the production syscall closure and
+  preserves the NULL-path `EFAULT` regression.
+- `dar-nmda` supersedes unsupported ownership with real Linux operations after
+  E-UNION copy-up; its host and source-driven guest fixtures own current behavior.
+- The old ENOTSUP guest source, Mach-O binary, and hosted receipts remain
+  byte-identical historical corpus artifacts, excluded from active runtime
+  selection. They are not evidence for the new ownership implementation.
+- Publication remains blocked pending current-stack review.

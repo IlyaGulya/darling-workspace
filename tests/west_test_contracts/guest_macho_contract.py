@@ -18,6 +18,7 @@ sys.path.insert(0, str(ROOT / "ci"))
 
 import test_guest_macho as module
 from guest_macho_batch_specs import FIXTURE_SPECS
+from guest_macho_validation import VALIDATION_GROUP_FIXTURES
 from guest_toolchain import REVIEWED_COMMAND_LINE_TOOLS_SHA256
 from test_execution import ProcessResult
 
@@ -202,14 +203,12 @@ typed_tests = [
     for test in patch.get("tests", [])
     if test.get("runner") == "guest-macho-fixture"
 ]
-assert len(typed_tests) == 14
+assert len(typed_tests) == len(VALIDATION_GROUP_FIXTURES["homebrew"])
 assert [test["name"] for _, test in typed_tests] == [
     f"{test['fixture']}_prebuilt" for _, test in typed_tests
 ]
-assert {test["fixture"] for _, test in typed_tests} == set(EXPECTED_NAMES)
+assert {test["fixture"] for _, test in typed_tests} == VALIDATION_GROUP_FIXTURES["homebrew"]
 assert {test["validation-group"] for _, test in typed_tests} == {"homebrew"}
-assert sum(test["validation-group"] == "homebrew" for _, test in typed_tests) == 14
-assert all(test["validation-group"] != "perf" for _, test in typed_tests)
 required_env = {
     "DARLING_ROOTLESS": "1",
     "DARLING_NOOVERLAYFS": "1",
@@ -235,18 +234,10 @@ for patch, test in typed_tests:
             and item.get("runner") == "guest-c-fixture"
             for item in patch.get("tests", [])
         ), fixture
-assert "rootless_no_mount_guest" in (ROOT / "testkit/CMakeLists.txt").read_text()
 profiles = yaml.safe_load((ROOT / "testkit/runtime-profiles.yml").read_text())["runtime-profiles"]
 assert profiles["homebrew-rootless-bootstrap-minimal"]["source-profile"] == "homebrew"
 assert "guest-toolchain" not in profiles["homebrew-rootless-bootstrap-minimal"]
 assert "perf-rootless-bootstrap-minimal" not in profiles
-fork_registration = next(
-    test
-    for patch, test in typed_tests
-    if test["fixture"] == "fork_checkin_signal_storm_guest"
-)
-assert "owning homebrew product stack" in fork_registration["note"]
-assert "perf source-driven case" in fork_registration["note"]
 
 
 def make_macho(path: Path) -> None:

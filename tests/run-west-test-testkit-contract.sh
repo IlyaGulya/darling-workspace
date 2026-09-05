@@ -59,7 +59,7 @@ expected = [
     "darling/sigexc_default_resend_self_guest",
     "darling/ulock_eintr_retry_guest",
     "darling/vchroot_pathnull_guard_guest",
-    "darling/chown_disabled_null_guard_guest",
+    "darling/chown_ownership_guest",
     "darling/fd_guard_ebadf_guest",
     "darling/fork_checkin_signal_storm_guest",
     "darling/rootless_no_mount_guest",
@@ -79,7 +79,6 @@ for test in tests:
         for label in labels
         if label.startswith("runtime-profile:")
     )
-assert len(profiles) == 14
 runtime_profiles = __import__("yaml").safe_load(
     Path("testkit/runtime-profiles.yml").read_text()
 )["runtime-profiles"]
@@ -129,7 +128,7 @@ list_select_prebuilt="$(west test --profile homebrew --patch xnu/select-pselect-
 printf '%s\n' "$list_select_prebuilt" | grep -q 'select_fdset_guest_prebuilt' ||
 	{ printf '%s\n' "$list_select_prebuilt" >&2; exit 1; }
 list_macho_homebrew="$(west test --profile homebrew --env darling --guest-macho-validation-group homebrew --list)"
-[ "$(printf '%s\n' "$list_macho_homebrew" | grep -F -c '_prebuilt')" -eq 14 ] ||
+[ "$(printf '%s\n' "$list_macho_homebrew" | grep -F -c '_prebuilt')" -eq 13 ] ||
 	{ printf '%s\n' "$list_macho_homebrew" >&2; exit 1; }
 if west test --profile homebrew --env darling --guest-macho-validation-group invalid --list >/dev/null 2>&1; then
 	echo 'guest Mach-O selector accepted an invalid group' >&2
@@ -159,7 +158,7 @@ bzero_json="$(ctest --test-dir testkit/build --show-only=json-v1 \
 printf '%s\n' "$bzero_json" | grep -q 'runtime-profile:homebrew-libplatform' ||
 	{ printf '%s\n' "$bzero_json" >&2; exit 1; }
 
-for bead in dar-q95.10 dar-q95.11 dar-q95.20 dar-gwn.6.4 dar-gwn.6 dar-gwn.1.6 dar-gyvb dar-6x4.1 dar-gwn.6.5; do
+for bead in dar-q95.10 dar-q95.11 dar-q95.20 dar-gwn.6.4 dar-gwn.6 dar-gwn.1.6 dar-nmda dar-6x4.1 dar-gwn.6.5; do
 	guest_list="$(west test --bead "$bead" --env darling --list)"
 	printf '%s\n' "$guest_list" | grep -q 'darling/' ||
 		{ printf '%s\n' "$guest_list" >&2; exit 1; }

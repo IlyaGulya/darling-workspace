@@ -147,6 +147,44 @@ not authored source identity. Finally run canonical applicability through
 `west patch verify --profile homebrew --applicability-only` and the dependent
 profiles, with reviewed immutable refs available, before claiming acceptance.
 
+## EUNION ownership admission
+
+Batch 12 (`darling-eunion-ownership-batch-12`) appends
+`xnu/eunion-ownership-syscalls.patch` after parent dominance, retaining all 76
+prior series. Its source base is `50db68ce8504da6c9c8f24ddfd31d737b1f1db23`;
+ordered commits are `6823b8ae1b4945ce6da0e7aee43269b15d938735` and
+`812e6e820009dde5f5af832233ebd120b7258fb6`. The latter also fixes symlink
+following after case-insensitive name correction.
+
+Native replay produces XNU final trees
+`dcd79f5ae99340e590f5ee904464f578999823a1` (Homebrew),
+`85d308400571030b4a5417ef722621bc7ee2d4b4` (Perf), and
+`cc31b4d449edb26201266153453c839e46420769` (Arch).
+These are authoring boundaries, not hosted or clean-ODB acceptance.
+
+Ownership calls now execute real Linux operations on UPPER copies.
+Host fixtures observe kernel metadata effects, permission errors, symlink
+semantics, and unchanged LOWER inode metadata in sibling and nested layouts.
+`chown_ownership_guest` replaces the active disabled-ownership guest test.
+The immutable 14-fixture Mach-O corpus remains historical evidence; current
+prebuilt Homebrew selection contains 13 fixtures and excludes its ENOTSUP case.
+No old receipt or binary is relabeled as evidence for new ownership behavior.
+
+`west test --materialize-profile` explicitly replays the selected profile,
+even when live checkouts already carry that profile's integration branch name.
+This prevents newly admitted patches from being tested against stale GREEN
+source. Publication and the stock Homebrew product milestone remain separate
+gates.
+
+Local product acceptance passed on a newly provisioned rootless prefix with
+native CLT 13.2: unchanged stock Homebrew built lz4 1.10.0 from source
+(`poured_from_bottle=false`, `built_as_bottle=false`). The installed program
+roundtripped 262144 bytes both before and after shutdown/reuse; the LOWER
+template digest remained identical. The guarded ownership guest fixture and
+source-base host RED/GREEN also passed. `dar-arsg` and `dar-nmda` are closed
+for this local behavior; repeated wget reinstall (`dar-gwn.7`) and publication
+remain separate gates.
+
 ## Runtime-source lifecycle
 
 `RuntimeSourceMaterializer` consumes the same typed composition plan.  Its

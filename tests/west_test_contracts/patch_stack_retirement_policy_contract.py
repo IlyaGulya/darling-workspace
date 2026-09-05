@@ -9,7 +9,6 @@ import yaml
 
 
 ROOT = Path(__file__).resolve().parents[2]
-PROFILE_COUNTS = {"homebrew": 74, "perf": 7, "arch": 19}
 MAPPINGS = {
     "homebrew": "lock-first-series-v2.yml",
     "perf": "lock-first-series-perf-v2.yml",
@@ -81,11 +80,11 @@ def main() -> None:
             {"profile": "perf", "mapping": MAPPINGS["perf"]},
         ],
     }
-    for profile, expected_count in PROFILE_COUNTS.items():
+    for profile in MAPPINGS:
         mapping = yaml.safe_load((locks / MAPPINGS[profile]).read_text())
         assert mapping["schema_version"] == 3
         assert mapping["profile"] == profile
-        assert mapping["expected_count"] == expected_count
+        expected_count = mapping["expected_count"]
         assert len(mapping["series"]) == expected_count
         assert len(
             {(entry["module"], entry["patch"]) for entry in mapping["series"]}

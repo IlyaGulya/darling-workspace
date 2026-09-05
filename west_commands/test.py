@@ -3651,9 +3651,6 @@ class DarlingTest(ProfileOperationsMixin, BootstrapRuntimeProfileMixin, WestComm
         if list_only or not getattr(self, "_materialize_profile", False):
             yield
             return
-        if self._profile_is_applied(profile):
-            yield
-            return
         self.inf(f"temporarily materializing selected profile {profile!r} in worktrees")
         active = set(getattr(self, "_worktree_materialized_profiles", set()))
         active.add(profile)
