@@ -274,9 +274,9 @@ modules:
     expected_applied_tree: 7297ee393ed21d13484b1734e5e5694967f96851
   - patch: darling/rootless-homebrew-userland.patch
     lock: darling-rootless-homebrew-userland-v1.yml
-    expected_applied_tree: 57e64d3c8c2456933cd4fef929194e76e3eff41c
-  final_tree: 57e64d3c8c2456933cd4fef929194e76e3eff41c
-  integration_final_tree: 57e64d3c8c2456933cd4fef929194e76e3eff41c
+    expected_applied_tree: 331143f48e6a70a18665f99edde5715ab9958016
+  final_tree: 331143f48e6a70a18665f99edde5715ab9958016
+  integration_final_tree: 331143f48e6a70a18665f99edde5715ab9958016
 - module: darling/src/external/installer
   starting:
     tree: 2c58e1c8da659d1c018efce169086dc247b31884

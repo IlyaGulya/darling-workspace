@@ -3,7 +3,7 @@ profile: perf
 prerequisites:
 - profile: homebrew
   composition: homebrew-profile-composition-v2.yml
-  sha256: 1d9d31d2599c8c40df7e0eb6aea9114576ad145e8570bf0a8097dd7b61794cf3
+  sha256: e9997dedfd8caf9bda71f22b46bb1b0657870b83bd9ec13f78bac4a9a6d70543
   frozen_manifest:
     path: west.lock.yml
     sha256: 5718c32c76a180b9078a206b93d93e70f478a5ada0034cd6afcc789c447e055d
@@ -14,7 +14,7 @@ prerequisites:
     darling/src/external/perl: 4f1f2a7a7818800a8e39d1cddbcf7832c246e375
     darling/src/external/libressl-2.8.3: c8ba46eeec25cfc71d0642c253e4ebe18c2898ae
     darling/src/external/libpthread: addb3f6964e54573b34c189b7eeb5c54f3b34f5e
-    darling: 57e64d3c8c2456933cd4fef929194e76e3eff41c
+    darling: 331143f48e6a70a18665f99edde5715ab9958016
     darling/src/external/installer: a616bc3fd5afce5c9ca62a34e3d0fad30c4b45c6
 frozen_manifest:
   path: west.lock.yml
@@ -27,13 +27,13 @@ mapping:
 modules:
 - module: darling
   starting:
-    tree: 57e64d3c8c2456933cd4fef929194e76e3eff41c
+    tree: 331143f48e6a70a18665f99edde5715ab9958016
   series:
   - patch: darling/mldr-compact-fd-band.patch
     lock: darling-mldr-compact-fd-band-v1.yml
-    expected_applied_tree: 070717bb07b61cda1c78d44e90b6506eb6f21768
-  final_tree: 070717bb07b61cda1c78d44e90b6506eb6f21768
-  integration_final_tree: 070717bb07b61cda1c78d44e90b6506eb6f21768
+    expected_applied_tree: 2134b23d4980d7b4cdd534c9e42b4c04d6b303b5
+  final_tree: 2134b23d4980d7b4cdd534c9e42b4c04d6b303b5
+  integration_final_tree: 2134b23d4980d7b4cdd534c9e42b4c04d6b303b5
 - module: darling/src/external/xnu
   starting:
     tree: dcd79f5ae99340e590f5ee904464f578999823a1
