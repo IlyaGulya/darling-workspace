@@ -21,6 +21,9 @@ for path in \
     exit 1
   fi
 done
+test -c /dev/null
+: > /dev/null
+test -r /etc/passwd
 '
 
 for path in private/tmp private/var/tmp var/tmp tmp; do

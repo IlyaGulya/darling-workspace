@@ -1,0 +1,183 @@
+From 5f132bc0bfbec58c2c45dbb0154e47dde583faef Mon Sep 17 00:00:00 2001
+From: Ilya Gulya <ilya@gulya.me>
+Date: Sat, 5 Sep 2026 07:16:00 +0000
+Subject: [PATCH] Provide rootless device namespace and opt-in Homebrew
+ userland
+
+---
+ CMakeLists.txt                    | 14 ++++++--
+ cmake/RootlessHomebrew.cmake      | 54 +++++++++++++++++++++++++++++++
+ src/startup/runtime_mode_prefix.c | 11 +++++++
+ 3 files changed, 77 insertions(+), 2 deletions(-)
+ create mode 100644 cmake/RootlessHomebrew.cmake
+
+diff --git a/CMakeLists.txt b/CMakeLists.txt
+index 0678b99533fb16f41f93aef5c3092ef13785dc63..c797748606da418f1342c59d49c3108fa749e68c 100644
+--- a/CMakeLists.txt
++++ b/CMakeLists.txt
+@@ -340,6 +340,11 @@ file(GENERATE
+ # this manifest so West never has to duplicate install rules by hand.
+ option(DARLING_ROOTLESS_TOOLCHAIN
+ 	"Build the source-owned rootless guest-toolchain component" OFF)
++option(DARLING_ROOTLESS_HOMEBREW
++	"Include the Homebrew userland in the rootless guest-toolchain component" OFF)
++if(DARLING_ROOTLESS_HOMEBREW AND NOT DARLING_ROOTLESS_TOOLCHAIN)
++	message(FATAL_ERROR "DARLING_ROOTLESS_HOMEBREW requires DARLING_ROOTLESS_TOOLCHAIN")
++endif()
+ set(DARLING_ROOTLESS_TOOLCHAIN_TARGETS
+ 	installer
+ 	perl
+@@ -378,6 +383,11 @@ if(DARLING_ROOTLESS_TOOLCHAIN)
+ 		"${_rootless_toolchain_resource_dir}/usr/bin/c2ph"
+ 		COPYONLY
+ 	)
++	set(_rootless_toolchain_extra_entrypoints "")
++	set(_rootless_toolchain_extra_resources "")
++	if(DARLING_ROOTLESS_HOMEBREW)
++		include(cmake/RootlessHomebrew.cmake)
++	endif()
+ 	file(GENERATE
+ 		OUTPUT "${CMAKE_BINARY_DIR}/darling-rootless-toolchain.json"
+ 		CONTENT
+@@ -388,11 +398,11 @@ if(DARLING_ROOTLESS_TOOLCHAIN)
+     {\"target\": \"perl\", \"guest_path\": \"/usr/bin/perl\", \"host_path\": \"$<TARGET_FILE:perl>\"},
+     {\"target\": \"perl5.18\", \"guest_path\": \"/usr/bin/perl5.18\", \"host_path\": \"$<TARGET_FILE:perl5.18>\"},
+     {\"target\": \"perl5.28\", \"guest_path\": \"/usr/bin/perl5.28\", \"host_path\": \"$<TARGET_FILE:perl5.28>\"},
+-    {\"target\": \"security\", \"guest_path\": \"/usr/bin/security\", \"host_path\": \"$<TARGET_FILE:securitytool_macos>\"}
++    {\"target\": \"security\", \"guest_path\": \"/usr/bin/security\", \"host_path\": \"$<TARGET_FILE:securitytool_macos>\"}${_rootless_toolchain_extra_entrypoints}
+   ],
+   \"resources\": [
+     {\"target\": \"installer_man\", \"guest_path\": \"/usr/share/man/man8/installer.8\", \"host_path\": \"${_rootless_toolchain_resource_dir}/usr/share/man/man8/installer.8\"},
+-    {\"target\": \"perl_c2ph\", \"guest_path\": \"/usr/bin/c2ph\", \"host_path\": \"${_rootless_toolchain_resource_dir}/usr/bin/c2ph\"}
++    {\"target\": \"perl_c2ph\", \"guest_path\": \"/usr/bin/c2ph\", \"host_path\": \"${_rootless_toolchain_resource_dir}/usr/bin/c2ph\"}${_rootless_toolchain_extra_resources}
+   ]
+ }
+ "
+diff --git a/cmake/RootlessHomebrew.cmake b/cmake/RootlessHomebrew.cmake
+new file mode 100644
+index 0000000000000000000000000000000000000000..80502044a186828f04c95667ab57002740a1206b
+--- /dev/null
++++ b/cmake/RootlessHomebrew.cmake
+@@ -0,0 +1,54 @@
++# Extend the toolchain component only for the explicit Homebrew product fixture.
++# Targets and guest paths follow the source repositories' normal install rules.
++foreach(_homebrew_command IN ITEMS
++	"cat|/bin/cat" "chmod|/bin/chmod" "cp|/bin/cp" "date|/bin/date"
++	"echo|/bin/echo" "expr|/bin/expr" "kill|/bin/kill" "ln|/bin/ln"
++	"ls|/bin/ls" "mkdir|/bin/mkdir" "mv|/bin/mv" "pwd|/bin/pwd"
++	"rm|/bin/rm" "rmdir|/bin/rmdir" "sleep|/bin/sleep" "stat|/bin/stat"
++	"stat|/bin/readlink" "test-bin|/bin/test" "grep|/bin/grep"
++	"basename|/usr/bin/basename" "dirname|/usr/bin/dirname" "env|/usr/bin/env"
++	"find|/usr/bin/find" "gzip|/usr/bin/gzip" "head|/usr/bin/head"
++	"id|/usr/bin/id" "install-bin|/usr/bin/install" "locale|/usr/bin/locale"
++	"mktemp|/usr/bin/mktemp" "printenv|/usr/bin/printenv" "printf|/usr/bin/printf"
++	"sed|/usr/bin/sed" "sort|/usr/bin/sort" "tail|/usr/bin/tail" "tee|/usr/bin/tee"
++	"touch|/usr/bin/touch" "tr|/usr/bin/tr" "uname|/usr/bin/uname"
++	"uniq|/usr/bin/uniq" "wc|/usr/bin/wc" "which|/usr/bin/which" "xargs|/usr/bin/xargs"
++	"awkexe|/usr/bin/awk" "cmp|/usr/bin/cmp" "diff|/usr/bin/diff"
++	"bsdtar|/usr/bin/tar" "curlexe|/usr/bin/curl" "sw_vers|/usr/bin/sw_vers"
++	"sysctl|/usr/sbin/sysctl" "xcrun|/usr/bin/xcrun" "xcode-select|/usr/bin/xcode-select"
++	"git_shim|/usr/bin/git" "make_shim|/usr/bin/make" "ar_shim|/usr/bin/ar"
++	"clang_shim|/usr/bin/clang" "clang++_shim|/usr/bin/clang++"
++	"lipo_shim|/usr/bin/lipo" "otool_shim|/usr/bin/otool" "nm_shim|/usr/bin/nm"
++	"strip_shim|/usr/bin/strip" "install_name_tool_shim|/usr/bin/install_name_tool"
++	"ranlib_shim|/usr/bin/ranlib" "dsymutil_shim|/usr/bin/dsymutil")
++	string(REPLACE "|" ";" _homebrew_parts "${_homebrew_command}")
++	list(GET _homebrew_parts 0 _homebrew_target)
++	list(GET _homebrew_parts 1 _homebrew_guest_path)
++	if(NOT TARGET ${_homebrew_target})
++		message(FATAL_ERROR "rootless Homebrew target is unavailable: ${_homebrew_target}")
++	endif()
++	add_dependencies(rootless_toolchain ${_homebrew_target})
++	string(APPEND _rootless_toolchain_extra_entrypoints
++		",\n    {\"target\": \"${_homebrew_target}\", \"guest_path\": \"${_homebrew_guest_path}\", \"host_path\": \"$<TARGET_FILE:${_homebrew_target}>\"}")
++endforeach()
++
++set(_homebrew_resources
++	"src/sandbox/sandbox-exec.sh|/usr/bin/sandbox-exec"
++	"src/external/libressl-2.8.3/apps/openssl/cert.pem|/private/etc/ssl/cert.pem")
++set(_homebrew_locale_source "src/external/libc/darling/assets/locale")
++foreach(_homebrew_category IN ITEMS
++	LC_COLLATE LC_CTYPE LC_MESSAGES/LC_MESSAGES LC_MONETARY LC_NUMERIC LC_TIME)
++	list(APPEND _homebrew_resources
++		"${_homebrew_locale_source}/en_US.UTF-8/${_homebrew_category}|/usr/share/locale/en_US.UTF-8/${_homebrew_category}")
++endforeach()
++foreach(_homebrew_resource IN LISTS _homebrew_resources)
++	string(REPLACE "|" ";" _homebrew_parts "${_homebrew_resource}")
++	list(GET _homebrew_parts 0 _homebrew_source)
++	list(GET _homebrew_parts 1 _homebrew_guest_path)
++	set(_homebrew_host_path "${_rootless_toolchain_resource_dir}${_homebrew_guest_path}")
++	get_filename_component(_homebrew_parent "${_homebrew_host_path}" DIRECTORY)
++	file(MAKE_DIRECTORY "${_homebrew_parent}")
++	configure_file("${CMAKE_SOURCE_DIR}/${_homebrew_source}" "${_homebrew_host_path}" COPYONLY)
++	string(APPEND _rootless_toolchain_extra_resources
++		",\n    {\"target\": \"${_homebrew_source}\", \"guest_path\": \"${_homebrew_guest_path}\", \"host_path\": \"${_homebrew_host_path}\"}")
++endforeach()
+diff --git a/src/startup/runtime_mode_prefix.c b/src/startup/runtime_mode_prefix.c
+index 7804ed8cb42079d4a67bf2bd774b22f9fdc576bb..1103b0b9cbd46e1f0222475bf2731f26b57b6404 100644
+--- a/src/startup/runtime_mode_prefix.c
++++ b/src/startup/runtime_mode_prefix.c
+@@ -957,6 +957,17 @@ int darling_runtime_mode_setup_prefix(
+ 		close(fd);
+ 	}
+ 
++	/* Match the ordinary install's device namespace without mounts. */
++	if (symlinkat("/Volumes/SystemRoot/dev",
++			handle->directory_fd, "dev") != 0)
++		return prefix_error(error, error_size,
++			"cannot create prefix device namespace: %s",
++			strerror(errno));
++	if (symlinkat("private/etc", handle->directory_fd, "etc") != 0)
++		return prefix_error(error, error_size,
++			"cannot create prefix configuration namespace: %s",
++			strerror(errno));
++
+ 	int etc_fd = open_relative_directory(handle->directory_fd,
+ 		"private/etc", false, error, error_size);
+ 	if (etc_fd < 0)
+
+From 780ab2b9231d83aebba61af38ee17d3e1c5bdfa7 Mon Sep 17 00:00:00 2001
+From: Ilya Gulya <ilya@gulya.me>
+Date: Sat, 5 Sep 2026 07:40:41 +0000
+Subject: [PATCH] Stage canonical system version resources for rootless
+ Homebrew
+
+---
+ cmake/RootlessHomebrew.cmake | 2 ++
+ 1 file changed, 2 insertions(+)
+
+diff --git a/cmake/RootlessHomebrew.cmake b/cmake/RootlessHomebrew.cmake
+index 80502044a186828f04c95667ab57002740a1206b..7185d711886a7cbea2bc8283d72429ea3b65e0cd 100644
+--- a/cmake/RootlessHomebrew.cmake
++++ b/cmake/RootlessHomebrew.cmake
+@@ -33,6 +33,8 @@ foreach(_homebrew_command IN ITEMS
+ endforeach()
+ 
+ set(_homebrew_resources
++	"src/frameworks/CoreServices/SystemVersion.plist|/System/Library/CoreServices/SystemVersion.plist"
++	"src/frameworks/CoreServices/SystemVersionCompat.plist|/System/Library/CoreServices/SystemVersionCompat.plist"
+ 	"src/sandbox/sandbox-exec.sh|/usr/bin/sandbox-exec"
+ 	"src/external/libressl-2.8.3/apps/openssl/cert.pem|/private/etc/ssl/cert.pem")
+ set(_homebrew_locale_source "src/external/libc/darling/assets/locale")
+
+From a714fc88b6d8c75b3d2dbe5599425eac72884b1d Mon Sep 17 00:00:00 2001
+From: Ilya Gulya <ilya@gulya.me>
+Date: Sat, 5 Sep 2026 08:14:34 +0000
+Subject: [PATCH] Include libffi in the rootless Homebrew runtime
+
+---
+ cmake/RootlessHomebrew.cmake | 1 +
+ 1 file changed, 1 insertion(+)
+
+diff --git a/cmake/RootlessHomebrew.cmake b/cmake/RootlessHomebrew.cmake
+index 7185d711886a7cbea2bc8283d72429ea3b65e0cd..a74b6afa0828975d788ea4ba3a5afdf52d7b40d4 100644
+--- a/cmake/RootlessHomebrew.cmake
++++ b/cmake/RootlessHomebrew.cmake
+@@ -20,6 +20,7 @@ foreach(_homebrew_command IN ITEMS
+ 	"clang_shim|/usr/bin/clang" "clang++_shim|/usr/bin/clang++"
+ 	"lipo_shim|/usr/bin/lipo" "otool_shim|/usr/bin/otool" "nm_shim|/usr/bin/nm"
+ 	"strip_shim|/usr/bin/strip" "install_name_tool_shim|/usr/bin/install_name_tool"
++	"ffi|/usr/lib/libffi.dylib"
+ 	"ranlib_shim|/usr/bin/ranlib" "dsymutil_shim|/usr/bin/dsymutil")
+ 	string(REPLACE "|" ";" _homebrew_parts "${_homebrew_command}")
+ 	list(GET _homebrew_parts 0 _homebrew_target)

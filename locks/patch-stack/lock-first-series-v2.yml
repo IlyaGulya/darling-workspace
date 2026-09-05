@@ -1,7 +1,7 @@
 schema_version: 3
 profile: homebrew
-batch_id: darling-homebrew-prefix-lifecycle-batch-9
-expected_count: 74
+batch_id: darling-homebrew-userland-batch-11
+expected_count: 76
 composition: homebrew-profile-composition-v2.yml
 series:
   - profile: homebrew
@@ -217,6 +217,10 @@ series:
     patch: xnu/af-unix-expanded-path-length.patch
     lock: darling-xnu-af-unix-expanded-path-length-v1.yml
   - profile: homebrew
+    module: darling/src/external/xnu
+    patch: xnu/eunion-upper-parent-dominance.patch
+    lock: darling-xnu-eunion-upper-parent-dominance-v1.yml
+  - profile: homebrew
     module: darling/src/external/libplatform
     patch: libplatform/bzero-return-register.patch
     lock: libplatform-bzero-return-register-v1.yml
@@ -292,6 +296,10 @@ series:
     module: darling
     patch: darling/prefix-lifecycle-state-v2.patch
     lock: darling-prefix-lifecycle-state-v2-v1.yml
+  - profile: homebrew
+    module: darling
+    patch: darling/rootless-homebrew-userland.patch
+    lock: darling-rootless-homebrew-userland-v1.yml
   - profile: homebrew
     module: darling/src/external/installer
     patch: installer/normalize-payload-paths.patch

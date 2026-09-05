@@ -613,6 +613,10 @@ def materialize_batch_into(
             first_base = validated[0][2]["base_oid"]
             patch_stack_materialize._git(repo, "reset", "--hard", first_base)
         omitted_before = False
+        expected_parent_base = (
+            composition.get("starts", {}).get(entries[0]["module"], {}).get("tree")
+            if composition else None
+        )
         for entry, lock, proof in validated:
             if entry["patch"] in skipped:
                 omitted_before = True
@@ -634,10 +638,21 @@ def materialize_batch_into(
                 _require_exact_replay(repo, proof, before, after)
                 expected_tree = applied_tree
             if applied_tree != expected_tree:
-                raise LockFirstError(
-                    f"{entry['patch']}: immutable replay tree {applied_tree} differs from "
-                    f"expected profile boundary tree {expected_tree}"
-                )
+                try:
+                    if (entry["module"] != "darling" or composition is None or
+                            omitted_before or before_tree == declared_base_tree):
+                        raise patch_stack_profile_composition.ProfileCompositionError(
+                            "boundary requires exact tree identity"
+                        )
+                    patch_stack_profile_composition.verify_inherited_parent_boundary(
+                        repo, before, after, expected_parent_base, expected_tree, composition,
+                    )
+                except patch_stack_profile_composition.ProfileCompositionError as error:
+                    raise LockFirstError(
+                        f"{entry['patch']}: immutable replay tree {applied_tree} differs from "
+                        f"expected profile boundary tree {expected_tree}: {error}"
+                    ) from error
+            expected_parent_base = expected_tree
             results.append({"module": entry["module"], "patch": entry["patch"],
                             "base": lock["upstream"]["base_commit"], "source": proof["source_oid"],
                             "canonical_tree": proof["resulting_tree"],

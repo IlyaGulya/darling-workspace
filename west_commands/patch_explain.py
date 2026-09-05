@@ -156,6 +156,8 @@ def inspect_integration(
     all_expected: Mapping[str, str],
     repos: Mapping[str, Path | None],
     branch: str,
+    *,
+    inherited_children: Mapping[str, str] | None = None,
 ) -> dict[str, Any]:
     state = {
         "applied_tree": None,
@@ -211,8 +213,10 @@ def inspect_integration(
             f"git diff-tree failed ({difference.returncode}): "
             f"{difference.stderr.strip()}"
         )
+    expected_children = dict(inherited_children or {})
+    expected_children.update(all_expected)
     children = {
-        name for name in all_expected if name.startswith("darling/")
+        name for name in expected_children if name.startswith("darling/")
     }
     relative_children = {
         str(Path(name).relative_to("darling")): name for name in children
@@ -240,7 +244,14 @@ def inspect_integration(
                 recovery="west_update",
             )
             return state
-        child_oid = _branch_oid(child_repo, branch)
+        if child in all_expected:
+            child_oid = _branch_oid(child_repo, branch)
+        else:
+            relative = Path(child).relative_to("darling")
+            recorded = _git(repo, "rev-parse", "--verify", f"{oid}:{relative}")
+            if recorded.returncode and not _missing_revision(recorded):
+                raise ExplainError(f"cannot read dependency gitlink {child}: {recorded.stderr.strip()}")
+            child_oid = recorded.stdout.strip() if recorded.returncode == 0 else None
         child_tree = _tree(child_repo, child_oid) if child_oid is not None else None
         if child_tree is None:
             state.update(
@@ -249,7 +260,7 @@ def inspect_integration(
                 recovery="patch_apply",
             )
             return state
-        if child_tree != all_expected[child]:
+        if child_tree != expected_children[child]:
             state.update(
                 classification="mismatched",
                 detail=f"darling integration child {child} differs from typed final tree",
@@ -354,6 +365,7 @@ def explain(
             expected_finals,
             repos,
             branch,
+            inherited_children=composition.get("inherited_children", {}),
         )
         for name in dict.fromkeys(entry["module"] for entry in entries)
     }

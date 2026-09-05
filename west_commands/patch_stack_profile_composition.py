@@ -9,8 +9,10 @@ commit IDs, because committer identity is not canonical profile state.
 from __future__ import annotations
 
 import hashlib
+import os
 import re
 import subprocess
+import tempfile
 from pathlib import Path
 from typing import Any
 
@@ -188,6 +190,72 @@ def load(path: Path) -> dict[str, Any]:
     return payload
 
 
+def _inherited_children(
+    path: Path, payload: dict[str, Any], workspace_root: Path,
+) -> dict[str, str]:
+    """Resolve child boundaries only through checksum-bound prerequisite locks."""
+    visiting: set[str] = set()
+    identities: dict[str, Path] = {}
+    resolved: dict[str, dict[str, tuple[str, frozenset[str]]]] = {}
+    ancestors: dict[str, set[str]] = {}
+
+    def visit(lock_path: Path, lock: dict[str, Any]) -> dict[str, tuple[str, frozenset[str]]]:
+        profile = lock["profile"]
+        if profile in visiting:
+            raise ProfileCompositionError("profile composition prerequisites are cyclic")
+        identity = lock_path.resolve()
+        if profile in identities and identities[profile] != identity:
+            raise ProfileCompositionError("profile composition prerequisite profile has conflicting locks")
+        identities[profile] = identity
+        if profile in resolved:
+            return resolved[profile]
+        visiting.add(profile)
+        inherited: dict[str, tuple[str, frozenset[str]]] = {}
+        ancestors[profile] = set()
+        for prerequisite in lock["prerequisites"]:
+            prerequisite_path = lock_path.parent / prerequisite["composition"]
+            prerequisite_lock = load(prerequisite_path)
+            dependency = prerequisite["profile"]
+            if prerequisite_lock["profile"] != dependency:
+                raise ProfileCompositionError("profile composition prerequisite profile differs")
+            if prerequisite_lock["frozen_manifest"] != prerequisite["frozen_manifest"]:
+                raise ProfileCompositionError("profile composition prerequisite frozen manifest differs")
+            frozen = prerequisite_lock["frozen_manifest"]
+            manifest_path = _contained_regular_file(workspace_root, frozen["path"], "frozen_manifest.path")
+            if hashlib.sha256(manifest_path.read_bytes()).hexdigest() != frozen["sha256"]:
+                raise ProfileCompositionError("profile composition prerequisite frozen manifest SHA-256 differs")
+            available = {
+                item["module"]: (item["final_tree"] if item["module"] == "darling" else item["integration_final_tree"])
+                for item in prerequisite_lock["modules"]
+            }
+            if any(available.get(module) != tree for module, tree in prerequisite["module_trees"].items()):
+                raise ProfileCompositionError("profile composition prerequisite module tree differs")
+            children = dict(visit(prerequisite_path, prerequisite_lock))
+            children.update({
+                module: (tree, frozenset({dependency}))
+                for module, tree in prerequisite["module_trees"].items()
+                if module.startswith("darling/")
+            })
+            ancestors[profile].update(ancestors[dependency] | {dependency})
+            for module, (tree, owners) in children.items():
+                previous = inherited.get(module)
+                if previous is None:
+                    inherited[module] = (tree, owners)
+                    continue
+                prior_tree, prior_owners = previous
+                if prior_tree == tree:
+                    inherited[module] = (tree, prior_owners | owners)
+                elif all(any(owner in ancestors[new] for new in owners) for owner in prior_owners):
+                    inherited[module] = (tree, owners)
+                elif not all(any(owner in ancestors[old] for old in prior_owners) for owner in owners):
+                    raise ProfileCompositionError("profile composition prerequisite child trees conflict")
+        visiting.remove(profile)
+        resolved[profile] = inherited
+        return inherited
+
+    return {module: tree for module, (tree, _owners) in visit(path, payload).items()}
+
+
 def bind(
     path: Path,
     *,
@@ -211,19 +279,7 @@ def bind(
     manifest_path = _contained_regular_file(workspace_root, frozen["path"], "frozen_manifest.path")
     if hashlib.sha256(manifest_path.read_bytes()).hexdigest() != frozen["sha256"]:
         raise ProfileCompositionError("profile composition frozen manifest SHA-256 differs")
-    for prerequisite in payload["prerequisites"]:
-        prerequisite_path = path.parent / prerequisite["composition"]
-        prerequisite_lock = load(prerequisite_path)
-        if prerequisite_lock["profile"] != prerequisite["profile"]:
-            raise ProfileCompositionError("profile composition prerequisite profile differs")
-        if prerequisite_lock["frozen_manifest"] != prerequisite["frozen_manifest"]:
-            raise ProfileCompositionError("profile composition prerequisite frozen manifest differs")
-        available = {
-            item["module"]: (item["final_tree"] if item["module"] == "darling" else item["integration_final_tree"])
-            for item in prerequisite_lock["modules"]
-        }
-        if any(available.get(module) != tree for module, tree in prerequisite["module_trees"].items()):
-            raise ProfileCompositionError("profile composition prerequisite module tree differs")
+    inherited_children = _inherited_children(path, payload, workspace_root)
     grouped: list[tuple[str, list[dict[str, str]]]] = []
     for entry in entries:
         if not grouped or grouped[-1][0] != entry["module"]:
@@ -262,11 +318,89 @@ def bind(
         "starts": starts,
         "finals": finals,
         "integration_finals": integration_finals,
+        "inherited_children": inherited_children,
     }
 
 
+def _parent_gitlink_changes(
+    repo: Path, expected_tree: str, actual_tree: str, children: set[str],
+) -> set[str]:
+    diff = subprocess.run(["git", "diff-tree", "--raw", "-r", expected_tree, actual_tree], cwd=repo,
+                          text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    if diff.returncode:
+        raise ProfileCompositionError(f"cannot compare darling integration content: {diff.stderr.strip()}")
+    relative_children = {str(Path(name).relative_to("darling")) for name in children}
+    changed = set()
+    for line in filter(None, diff.stdout.splitlines()):
+        fields = line.split("\t", 1)
+        if len(fields) != 2:
+            raise ProfileCompositionError("darling integration diff is malformed")
+        meta, path = fields
+        modes = meta.split()[:2]
+        if modes:
+            modes[0] = modes[0].lstrip(":")
+        if path not in relative_children or modes != ["160000", "160000"]:
+            raise ProfileCompositionError("darling integration changed non-gitlink content")
+        changed.add(path)
+    return changed
+
+
+def verify_inherited_parent_boundary(
+    repo: Path, before: str, after: str, expected_base: str | None,
+    expected_tree: str, composition: dict[str, Any],
+) -> None:
+    """Normalize only untouched child records; phase owners verify child trees."""
+    declared = set(composition.get("starts", {}))
+    declared.update(composition.get("inherited_children", {}))
+    for prerequisite in composition.get("prerequisites", []):
+        declared.update(prerequisite["module_trees"])
+    paths = sorted(str(Path(name).relative_to("darling"))
+                   for name in declared if name.startswith("darling/"))
+    if not expected_base or not paths:
+        raise ProfileCompositionError("parent replay has no declared inherited child boundary")
+
+    records = []
+    for ref in (expected_base, before, after):
+        result = subprocess.run(
+            ["git", "ls-tree", "-r", "-z", ref, "--", *paths],
+            cwd=repo, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+        )
+        if result.returncode:
+            raise ProfileCompositionError(f"cannot read parent child records: {result.stderr.decode().strip()}")
+        entries = {}
+        for record in filter(None, result.stdout.split(b"\0")):
+            metadata, path = record.split(b"\t", 1)
+            entries[path] = metadata.split()
+        records.append(entries)
+    canonical, prior, current = records
+    updates = b"".join(
+        b"160000 " + entry[2] + b"\t" + path + b"\0"
+        for path, entry in canonical.items()
+        if entry[0] == b"160000" and current.get(path, [None])[0] == b"160000"
+        and prior.get(path) == current[path] and entry != current[path]
+    )
+    # Profile boundary trees need not exist in a fresh ODB yet. Reconstruct the
+    # normalized tree with Git rather than fetching generated integration refs.
+    with tempfile.TemporaryDirectory(prefix="west-parent-boundary-") as temporary:
+        environment = dict(os.environ, GIT_INDEX_FILE=str(Path(temporary) / "index"))
+        for args, data in (
+            (["read-tree", after], None),
+            (["update-index", "-z", "--index-info"], updates),
+            (["write-tree"], None),
+        ):
+            result = subprocess.run(
+                ["git", *args], cwd=repo, env=environment, input=data,
+                stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+            )
+            if result.returncode:
+                raise ProfileCompositionError(f"cannot normalize parent boundary: {result.stderr.decode().strip()}")
+        if result.stdout.decode().strip() != expected_tree:
+            raise ProfileCompositionError("parent replay differs beyond untouched declared child records")
+
+
 def verify_integration(
-    module: str, repo: Path, expected_tree: str, all_expected: dict[str, str], repos: dict[str, Path], *, ref: str = "HEAD",
+    module: str, repo: Path, expected_tree: str, all_expected: dict[str, str], repos: dict[str, Path], *,
+    ref: str = "HEAD", inherited_children: dict[str, str] | None = None,
 ) -> None:
     """Verify an integration boundary without treating generated gitlinks as IDs."""
     actual = subprocess.run(["git", "rev-parse", f"{ref}^{{tree}}"], cwd=repo, text=True,
@@ -278,27 +412,25 @@ def verify_integration(
         if actual_tree != expected_tree:
             raise ProfileCompositionError(f"{module} integration tree {actual_tree} differs from typed profile final tree {expected_tree}")
         return
-    diff = subprocess.run(["git", "diff-tree", "--raw", "-r", expected_tree, actual_tree], cwd=repo,
-                          text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-    if diff.returncode:
-        raise ProfileCompositionError(f"cannot compare darling integration content: {diff.stderr.strip()}")
-    children = {name for name in all_expected if name.startswith("darling/")}
-    relative_children = {str(Path(name).relative_to("darling")): name for name in children}
-    for line in filter(None, diff.stdout.splitlines()):
-        fields = line.split("\t", 1)
-        if len(fields) != 2:
-            raise ProfileCompositionError("darling integration diff is malformed")
-        meta, path = fields
-        modes = meta.split()[:2]
-        if modes:
-            modes[0] = modes[0].lstrip(":")
-        if path not in relative_children or modes != ["160000", "160000"]:
-            raise ProfileCompositionError("darling integration changed non-gitlink content")
+    expected_children = dict(inherited_children or {})
+    expected_children.update(all_expected)
+    children = {name for name in expected_children if name.startswith("darling/")}
+    _parent_gitlink_changes(repo, expected_tree, actual_tree, children)
     for child in children:
         target = repos.get(child)
         if target is None:
             raise ProfileCompositionError(f"darling integration child {child} is unavailable")
-        result = subprocess.run(["git", "rev-parse", f"{ref}^{{tree}}"], cwd=target, text=True,
+        child_ref = ref
+        if ref != "HEAD" and child not in all_expected:
+            relative = Path(child).relative_to("darling")
+            recorded = subprocess.run(
+                ["git", "rev-parse", f"{ref}:{relative}"], cwd=repo, text=True,
+                stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+            )
+            if recorded.returncode:
+                raise ProfileCompositionError(f"darling integration child {child} record is unavailable")
+            child_ref = recorded.stdout.strip()
+        result = subprocess.run(["git", "rev-parse", f"{child_ref}^{{tree}}"], cwd=target, text=True,
                                 stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-        if result.returncode or result.stdout.strip() != all_expected[child]:
+        if result.returncode or result.stdout.strip() != expected_children[child]:
             raise ProfileCompositionError(f"darling integration child {child} differs from typed final tree")

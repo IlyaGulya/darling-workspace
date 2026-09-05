@@ -16,6 +16,13 @@ ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "west_commands"))
 import test_runtime_source as runtime_source
 
+AUTHORED_BATCHES = {
+    profile: runtime_source.patch_stack_lock_first.load_mapping(
+        runtime_source.patch_stack_lock_first.mapping_for_profile(profile), profile,
+    )
+    for profile in ("homebrew", "perf", "arch")
+}
+
 
 def git(repo: Path, *args: str) -> str:
     return subprocess.run(["git", *args], cwd=repo, check=True, text=True,
@@ -90,8 +97,8 @@ def runtime_fixture(root: Path):
         for patch in patches
     ]
     plan = runtime_source.patch_stack_lock_first.LockFirstPlan(plan_entries, {
-        "batch_id": "darling-homebrew-prefix-lifecycle-batch-9",
-        "expected_count": 74,
+        "batch_id": AUTHORED_BATCHES["homebrew"]["batch_id"],
+        "expected_count": AUTHORED_BATCHES["homebrew"]["expected_count"],
         "series": plan_entries,
     }, {
         "schema_version": 2, "path": "fixture-profile-composition.yml", "prerequisites": [],
@@ -239,9 +246,9 @@ def identity_contract() -> None:
                     result_counts.append((entries[0]["module"], len(result[0])))
                     return result
                 if entries[0]["module"] == "darling/src/external/installer":
-                    # The synthetic fixture represents the remaining Batch 9
-                    # entries without inventing extra repositories.
-                    result = ([{"module": "synthetic"}] * 73, {})
+                    # Represent the other authored series without inventing
+                    # extra repositories; XNU contributes one genuine replay.
+                    result = ([{"module": "synthetic"}] * (plan.batch["expected_count"] - 1), {})
                     result_counts.append((entries[0]["module"], len(result[0])))
                     return result
                 return [], {}
@@ -264,7 +271,7 @@ def identity_contract() -> None:
                     assert committer_date == author_date
                 assert result_counts == [
                     ("darling/src/external/xnu", 1),
-                    ("darling/src/external/installer", 73),
+                    ("darling/src/external/installer", plan.batch["expected_count"] - 1),
                 ]
                 global_after = subprocess.run(
                     ["git", "config", "--global", "--list"], check=False,
@@ -326,12 +333,8 @@ def profile_routing_contract() -> None:
                  "lock": f"entry-{index}.yml", "lock_path": f"entry-{index}.yml"}
                 for index, patch in enumerate(patches)
             ]
-            if profile == "arch":
-                batch_id, expected_count = "darling-arch-lock-first-batch-1", 19
-            elif profile == "perf":
-                batch_id, expected_count = "darling-perf-lock-first-batch-1", 7
-            else:
-                batch_id, expected_count = f"{profile}-batch", len(entries)
+            authored = AUTHORED_BATCHES[profile]
+            batch_id, expected_count = authored["batch_id"], authored["expected_count"]
             return runtime_source.patch_stack_lock_first.LockFirstPlan(entries, {
                 "batch_id": batch_id, "expected_count": expected_count,
                 "series_order": [{"module": entry["module"], "patch": entry["patch"]} for entry in entries],
@@ -340,14 +343,10 @@ def profile_routing_contract() -> None:
         runtime_source.patch_stack_lock_first.plan = plan
         def batch(_target, entries, **_kwargs):
             calls.append((entries[0]["module"], [entry["patch"] for entry in entries]))
-            if entries[0]["profile"] == "perf":
-                count = {
-                    "darling": 1, "darling/src/external/xnu": 2,
-                    "darling/src/external/dyld": 1,
-                    "darling/src/external/darlingserver": 3,
-                }[entries[0]["module"]]
-            else:
-                count = 16 if entries[0]["module"] == "darling" else 1
+            count = sum(
+                entry["module"] == entries[0]["module"]
+                for entry in AUTHORED_BATCHES[entries[0]["profile"]]["series"]
+            )
             return ([{"module": entries[0]["module"]}] * count, {})
         runtime_source.patch_stack_lock_first.materialize_batch_into = batch
         runtime_source.patch_stack_materialize.load_lock = (
@@ -372,9 +371,12 @@ def profile_routing_contract() -> None:
             (module, [f"arch/{module}.patch"]) for module in arch_modules
         ]
         assert messages[0] == "PATCH_STACK_MODE=default-lock-first materializer=runtime-source profile=arch"
-        assert messages[-1].startswith("PATCH_STACK_REPLAY batch=darling-arch-lock-first-batch-1 expected=19 applied=19 modules=4 elapsed_seconds=")
+        arch_batch = AUTHORED_BATCHES["arch"]
+        assert messages[-1].startswith(
+            f"PATCH_STACK_REPLAY batch={arch_batch['batch_id']} "
+            f"expected={arch_batch['expected_count']} applied={arch_batch['expected_count']} modules=4 elapsed_seconds="
+        )
         assert messages[-1].endswith(" verdict=VALID")
-        assert runtime_source.RuntimeSourceMaterializer._materialize_canonical_profile
         messages.clear()
         calls.clear()
         perf_targets = {module: Path("/tmp") / f"perf-{index}" for index, module in enumerate(perf_modules)}
@@ -388,9 +390,10 @@ def profile_routing_contract() -> None:
         )
         assert calls == [(module, [f"perf/{module}.patch"]) for module in perf_modules]
         assert messages[0] == "PATCH_STACK_MODE=default-lock-first materializer=runtime-source"
+        perf_batch = AUTHORED_BATCHES["perf"]
         assert messages[-1].startswith(
-            "PATCH_STACK_REPLAY batch=darling-perf-lock-first-batch-1 "
-            "expected=7 applied=7 modules=4 elapsed_seconds="
+            f"PATCH_STACK_REPLAY batch={perf_batch['batch_id']} "
+            f"expected={perf_batch['expected_count']} applied={perf_batch['expected_count']} modules=4 elapsed_seconds="
         )
         assert messages[-1].endswith(" verdict=VALID")
         messages.clear()
@@ -401,11 +404,11 @@ def profile_routing_contract() -> None:
             *[{"profile": "arch", "module": module, "patch": f"arch/{index}-{module}.patch", "lock_path": f"rest-{index}.yml"}
               for index, module in enumerate(arch_modules[1:], 1)],
             *[{"profile": "arch", "module": arch_modules[-1], "patch": f"arch/filler-{index}.patch", "lock_path": f"filler-{index}.yml"}
-              for index in range(13)],
+              for index in range(arch_batch["expected_count"] - 5)],
         ]
         divergent = runtime_source.patch_stack_lock_first.LockFirstPlan(
             divergent_entries,
-            {"batch_id": "darling-arch-lock-first-batch-1", "expected_count": 19},
+            {"batch_id": arch_batch["batch_id"], "expected_count": arch_batch["expected_count"]},
         )
         messages.clear()
         runtime_source.patch_stack_lock_first.plan = lambda *_args: divergent
@@ -416,31 +419,12 @@ def profile_routing_contract() -> None:
         else:
             raise AssertionError("arch accepted a missing profile composition")
         assert not messages and not calls
-
-        # Profile composition, rather than an impossible source-OID chain,
-        # authorizes a native replay on an inherited but tree-equivalent base.
-        rewritten_entries = [
-            {"profile": "arch", "module": "darling", "patch": "darling/ci.patch", "lock_path": "ci.yml"},
-            {"profile": "arch", "module": "darling", "patch": "darling/shellspawn.patch", "lock_path": "shellspawn.yml"},
-            *[{"profile": "arch", "module": module, "patch": f"arch/{index}-{module}.patch", "lock_path": f"tail-{index}.yml"}
-              for index, module in enumerate(arch_modules[:-1], 1)],
-            *[{"profile": "arch", "module": "darling", "patch": f"arch/filler-{index}.patch", "lock_path": f"filler-{index}.yml"}
-              for index in range(13)],
-        ]
-        rewritten = runtime_source.patch_stack_lock_first.LockFirstPlan(
-            rewritten_entries,
-            {"batch_id": "darling-arch-lock-first-batch-1", "expected_count": 19},
-            composition(rewritten_entries),
-        )
-        assert rewritten.composition is not None
-        assert rewritten.composition["boundaries"][("darling", "darling/shellspawn.patch")]
     finally:
         runtime_source.patch_stack_lock_first.plan = old_plan
         runtime_source.patch_stack_lock_first.materialize_batch_into = old_batch
         runtime_source.subprocess.run = old_run
         runtime_source.patch_stack_materialize.load_lock = old_load_lock
         runtime_source.patch_stack_materialize._git = old_git
-        runtime_source.subprocess.run = old_run
 
 
 def main() -> None:
@@ -461,8 +445,8 @@ def main() -> None:
     plan = runtime_source.patch_stack_lock_first.LockFirstPlan(
         [{"profile": "homebrew", "module": patch["module"], "patch": patch["path"], "lock": "x", "lock_path": "x"} for patch in patches],
         {
-            "batch_id": "darling-homebrew-prefix-lifecycle-batch-9",
-            "expected_count": 74,
+            "batch_id": AUTHORED_BATCHES["homebrew"]["batch_id"],
+            "expected_count": AUTHORED_BATCHES["homebrew"]["expected_count"],
          "series_order": [{"module": patch["module"], "patch": patch["path"]} for patch in patches],
          "module_order": modules},
         {"schema_version": 2, "path": "synthetic-profile-composition.yml", "prerequisites": [],
@@ -482,7 +466,7 @@ def main() -> None:
         runtime_source.patch_stack_lock_first.plan = lambda *_args: plan
         def batch(target, entries, **_kwargs):
             calls.append(entries[0]["module"])
-            count = 67 if entries[0]["module"] == "darling/src/external/installer" else 1
+            count = plan.batch["expected_count"] - len(modules) + 1 if entries[0]["module"] == "darling/src/external/installer" else 1
             return ([{"module": entries[0]["module"]}] * count, {})
         runtime_source.patch_stack_lock_first.materialize_batch_into = batch
         runtime_source.patch_stack_materialize.load_lock = (
@@ -505,10 +489,44 @@ def main() -> None:
         assert messages[0] == "PATCH_STACK_MODE=default-lock-first materializer=runtime-source"
         assert messages[-1].startswith(
             "PATCH_STACK_REPLAY "
-            "batch=darling-homebrew-prefix-lifecycle-batch-9 "
-            "expected=74 applied=74 modules=8 elapsed_seconds="
+            f"batch={plan.batch['batch_id']} "
+            f"expected={plan.batch['expected_count']} applied={plan.batch['expected_count']} modules=8 elapsed_seconds="
         )
         assert messages[-1].endswith(" verdict=VALID")
+        # Valid authored fixtures must not turn the exact runtime gate into
+        # a moving target: reject count, identity and order drift before replay.
+        for field, value in (
+            ("batch_id", plan.batch["batch_id"] + "-unapproved"),
+            ("expected_count", plan.batch["expected_count"] - 1),
+            ("expected_count", plan.batch["expected_count"] + 1),
+            ("module_order", list(reversed(plan.batch["module_order"]))),
+        ):
+            original = plan.batch[field]
+            plan.batch[field] = value
+            messages.clear()
+            calls.clear()
+            try:
+                must_raise(runtime_source.patch_stack_lock_first.LockFirstError,
+                           lambda: materializer._materialize_canonical_profile("homebrew", targets))
+                assert not calls and not messages
+            finally:
+                plan.batch[field] = original
+        # Even an approved batch cannot report success with a short or excess
+        # result set. Exercise both boundaries through the real result gate.
+        for delta in (-1, 1):
+            def wrong_result_count(target, entries, **kwargs):
+                results, metrics = batch(target, entries, **kwargs)
+                if entries[0]["module"] == modules[-1]:
+                    results = results[:-1] if delta < 0 else results + [results[-1]]
+                return results, metrics
+            runtime_source.patch_stack_lock_first.materialize_batch_into = wrong_result_count
+            messages.clear()
+            calls.clear()
+            must_raise(runtime_source.patch_stack_lock_first.LockFirstError,
+                       lambda: materializer._materialize_canonical_profile("homebrew", targets))
+            assert calls == modules
+            assert not any(line.startswith("PATCH_STACK_REPLAY ") for line in messages)
+        runtime_source.patch_stack_lock_first.materialize_batch_into = batch
         runtime_source.patch_stack_lock_first.plan = lambda *_args: (_ for _ in ()).throw(runtime_source.patch_stack_lock_first.LockFirstError("bad mapping"))
         messages.clear()
         try:

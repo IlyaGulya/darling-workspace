@@ -395,7 +395,8 @@ class DarlingPatch(WestCommand):
                 )
                 projects = self._projects()
                 modules = (
-                    plan.composition["integration_finals"]
+                    {**plan.composition.get("inherited_children", {}),
+                     **plan.composition["integration_finals"]}
                     if isinstance(plan.composition, dict)
                     else {}
                 )
@@ -610,14 +611,16 @@ class DarlingPatch(WestCommand):
         if missing:
             self._apply_profile_prerequisite(prerequisite["profile"])
         expected = dict(prerequisite["module_trees"])
-        repos = {module: self._repo(module) for module in expected}
+        inherited = composition.get("inherited_children", {})
+        repos = {module: self._repo(module) for module in inherited.keys() | expected.keys()}
         for module, expected_tree in expected.items():
             repo = self._repo(module)
             if not self._branch_exists(repo, branch):
                 raise RuntimeError(f"{profile}: prerequisite {branch} is missing in {module}")
             try:
                 patch_stack_profile_composition.verify_integration(
-                    module, repo, expected_tree, expected, repos, ref=branch
+                    module, repo, expected_tree, expected, repos, ref=branch,
+                    inherited_children=inherited,
                 )
             except patch_stack_profile_composition.ProfileCompositionError as error:
                 raise RuntimeError(f"{profile}: prerequisite {prerequisite['profile']} {error}") from error
@@ -982,9 +985,14 @@ class DarlingPatch(WestCommand):
                     isinstance(name, str) and name for name in required
                 ):
                     errors.append(f"tests[{index}] requires must be a list of names")
-                elif any(name not in {"darling-prefix", "darling-eunion-prefix"} for name in required):
+                elif any(name not in {"darling-prefix", "darling-eunion-prefix", "homebrew-lz4"} for name in required):
                     errors.append(f"tests[{index}] has unsupported requires resource")
             required_resources = test.get("requires") if isinstance(test.get("requires"), list) else []
+            if "homebrew-lz4" in required_resources:
+                if runner not in {"guest-runtime-script", "script"} or test.get("env") != "darling":
+                    errors.append(f"tests[{index}] homebrew-lz4 requires a guest runtime script and env: darling")
+                if "darling-prefix" not in required_resources:
+                    errors.append(f"tests[{index}] homebrew-lz4 requires darling-prefix")
             if test.get("host-trace-files") is not None:
                 traces = test.get("host-trace-files")
                 if runner not in {"guest-c-fixture", "guest-argv-fixture", "guest-runtime-script", "script"}:
@@ -2470,19 +2478,8 @@ class DarlingPatch(WestCommand):
                 # comparison as production status/capture: all ordinary
                 # content is exact and every differing gitlink is backed by
                 # an independently verified child tree.
-                expected = {"darling": expected_tree}
-                repos = {"darling": worktree}
-                for child in materialized:
-                    if not child.startswith("darling/"):
-                        continue
-                    child_worktree = worktrees[child][1]
-                    expected[child] = git(
-                        child_worktree,
-                        "rev-parse",
-                        "HEAD^{tree}",
-                        capture=True,
-                    )
-                    repos[child] = child_worktree
+                expected = {"darling": expected_tree, **phase_children}
+                repos = {name: target for name, (_repo, target) in worktrees.items()}
                 try:
                     patch_stack_profile_composition.verify_integration(
                         "darling",
@@ -2564,6 +2561,7 @@ class DarlingPatch(WestCommand):
 
             try:
                 for current_profile, current_grouped, current_plan in profiles:
+                    phase_children = dict(current_plan.composition.get("inherited_children", {}))
                     for module, module_patches in current_grouped.items():
                         if module not in worktrees:
                             repo = self._repo(module)
@@ -2633,10 +2631,19 @@ class DarlingPatch(WestCommand):
                             "applicability",
                         )
                         materialized.add(module)
+                        if module.startswith("darling/"):
+                            phase_children[module] = current_plan.composition["integration_finals"][module]
                     record_profile_boundary(
                         current_profile,
                         current_grouped,
                     )
+                    expected = current_plan.composition["integration_finals"]
+                    repos = {name: target for name, (_repo, target) in worktrees.items()}
+                    for module, expected_tree in expected.items():
+                        patch_stack_profile_composition.verify_integration(
+                            module, repos[module], expected_tree, expected, repos,
+                            inherited_children=current_plan.composition.get("inherited_children", {}),
+                        )
             finally:
                 for repo, worktree in reversed(list(worktrees.values())):
                     self._abort_am(worktree)
@@ -2688,6 +2695,7 @@ class DarlingPatch(WestCommand):
                 raise SystemExit(1)
             self.die(message)
         expected = plan.composition["integration_finals"]
+        inherited = plan.composition.get("inherited_children", {})
         projects = self._projects()
         repos = {
             module: (
@@ -2695,7 +2703,7 @@ class DarlingPatch(WestCommand):
                 if module in projects
                 else None
             )
-            for module in expected
+            for module in inherited.keys() | expected.keys()
         }
         counts = {"matched": 0, "missing": 0, "mismatched": 0, "unavailable": 0}
         branch = f"integration/{profile}"
@@ -2712,6 +2720,7 @@ class DarlingPatch(WestCommand):
                     expected,
                     repos,
                     branch,
+                    inherited_children=inherited,
                 )
             except patch_explain.ExplainError as error:
                 if json_output:
@@ -2988,10 +2997,12 @@ class DarlingPatch(WestCommand):
             lock = self._record_integration(profile, grouped, integration_date)
             if lock_first_plan and lock_first_plan.composition:
                 expected = lock_first_plan.composition["integration_finals"]
-                repos = {module: self._repo(module) for module in expected}
+                inherited = lock_first_plan.composition.get("inherited_children", {})
+                repos = {module: self._repo(module) for module in inherited.keys() | expected.keys()}
                 for module, expected_tree in expected.items():
                     patch_stack_profile_composition.verify_integration(
-                        module, repos[module], expected_tree, expected, repos
+                        module, repos[module], expected_tree, expected, repos,
+                        inherited_children=inherited,
                     )
             if lock_first_plan and lock_first_evidence:
                 if not isinstance(lock_first_plan, patch_stack_lock_first.LockFirstPlan):
