@@ -1,0 +1,22 @@
+From 23ccdeddaf85df02ef1c0e9570d2103308e21d2e Mon Sep 17 00:00:00 2001
+From: Ilya Gulya <ilya@gulya.me>
+Date: Sun, 6 Sep 2026 06:10:24 +0000
+Subject: [PATCH] Include CoreServices in rootless Homebrew runtime
+
+Stock libunistring links CoreServices and aborts before main when the rootless Homebrew component omits it. Declare the framework as a component entrypoint so the existing Mach-O closure resolver includes its subframeworks and FMDB without a second deployment list.
+---
+ cmake/RootlessHomebrew.cmake | 1 +
+ 1 file changed, 1 insertion(+)
+
+diff --git a/cmake/RootlessHomebrew.cmake b/cmake/RootlessHomebrew.cmake
+index e39a11dc4769f3f468967d17c98f8e59baf889ba..47b64830e2ac2b41cca12df7fdaa780b82e84298 100644
+--- a/cmake/RootlessHomebrew.cmake
++++ b/cmake/RootlessHomebrew.cmake
+@@ -23,6 +23,7 @@ foreach(_homebrew_command IN ITEMS
+ 	"lipo_shim|/usr/bin/lipo" "otool_shim|/usr/bin/otool" "nm_shim|/usr/bin/nm"
+ 	"strip_shim|/usr/bin/strip" "install_name_tool_shim|/usr/bin/install_name_tool"
+ 	"ffi|/usr/lib/libffi.dylib"
++	"CoreServices|/System/Library/Frameworks/CoreServices.framework/Versions/A/CoreServices"
+ 	"ranlib_shim|/usr/bin/ranlib" "dsymutil_shim|/usr/bin/dsymutil")
+ 	string(REPLACE "|" ";" _homebrew_parts "${_homebrew_command}")
+ 	list(GET _homebrew_parts 0 _homebrew_target)

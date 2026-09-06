@@ -132,6 +132,7 @@ set(_eunion_harness_sources
   "${_eunion_harness_dir}/src/xnu_syscall/bsd/impl/unistd/unlinkat.c"
   "${_eunion_harness_dir}/src/xnu_syscall/bsd/impl/fcntl/openat.c"
   "${_eunion_harness_dir}/src/xnu_syscall/bsd/impl/unistd/dup.c"
+  "${_eunion_harness_dir}/src/xnu_syscall/bsd/impl/unistd/ftruncate.c"
   "${_eunion_harness_dir}/src/xnu_syscall/bsd/impl/unistd/lseek.c"
   "${_eunion_harness_dir}/src/conversion/fcntl/open.c"
   "${_eunion_harness_dir}/src/xnu_syscall/bsd/impl/network/bind.c")

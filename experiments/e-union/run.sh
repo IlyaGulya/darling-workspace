@@ -208,10 +208,9 @@ echo "wh both upper" > "$WORK/prefix/var/whboth/file"            #   -> upper co
 mkdir -p "$WORK/libexec/var/opq" "$WORK/prefix/var/opq"
 echo "opq lower child" > "$WORK/libexec/var/opq/lo_child"        # lower-only
 echo "opq upper child" > "$WORK/prefix/var/opq/up_child"         # upper-only
-# .11 ftruncate fd copy-up (FT): a DEDICATED pristine lower-only NON-EMPTY file.
-#    ftruncate via a lower fd must copy up + truncate the UPPER copy, leaving the
-#    template bytes intact. Touched ONLY by the FT test so "template untouched" can
-#    only hold if sys_ftruncate routed through vchroot_fd_for_meta_write.
+# ftruncate descriptor validation and copy-up use a pristine lower-only file.
+# Rejected read-only mutation must not copy it up; a writable descriptor must
+# truncate only the upper copy and leave the template untouched.
 echo "0123456789abcdef this content must survive in the template" > "$WORK/libexec/var/log/ftrunc_lower"
 # .5 xattr marker isolation (XS1): a DEDICATED lower-only file the path-based
 #    setxattr copy-up test targets, touched ONLY by XS1 so "materialized in upper"
@@ -285,6 +284,7 @@ sources=(
 	"$XNU/src/xnu_syscall/bsd/impl/unistd/unlinkat.c"
 	"$XNU/src/xnu_syscall/bsd/impl/fcntl/openat.c"
 	"$XNU/src/xnu_syscall/bsd/impl/unistd/dup.c"
+	"$XNU/src/xnu_syscall/bsd/impl/unistd/ftruncate.c"
 	"$XNU/src/xnu_syscall/bsd/impl/unistd/lseek.c"
 	"$XNU/src/conversion/fcntl/open.c"
 	"$XNU/src/xnu_syscall/bsd/impl/network/bind.c"

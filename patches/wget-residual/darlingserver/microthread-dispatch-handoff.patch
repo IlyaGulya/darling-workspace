@@ -1,0 +1,223 @@
+From 893f7414fa0f2308b69fe73199c86196d6f1cae9 Mon Sep 17 00:00:00 2001
+From: Ilya Gulya <ilya@gulya.me>
+Date: Sun, 6 Sep 2026 07:44:19 +0000
+Subject: [PATCH] Preserve overlapping RPC dispatch through execution ownership
+ states
+
+---
+ .../darlingserver/microthread-resume.hpp      | 38 +++++++++++++++++++
+ internal-include/darlingserver/thread.hpp     |  9 ++---
+ src/thread.cpp                                | 37 +++++++++---------
+ 3 files changed, 62 insertions(+), 22 deletions(-)
+
+diff --git a/internal-include/darlingserver/microthread-resume.hpp b/internal-include/darlingserver/microthread-resume.hpp
+index d5b3235d93271ee7da4cbae577951f39db3296ef..1c6d49da20005db3d84783cd7b239ff73e9d5b95 100644
+--- a/internal-include/darlingserver/microthread-resume.hpp
++++ b/internal-include/darlingserver/microthread-resume.hpp
+@@ -1,7 +1,45 @@
+ #ifndef _DARLINGSERVER_MICROTHREAD_RESUME_HPP_
+ #define _DARLINGSERVER_MICROTHREAD_RESUME_HPP_
+ 
++#include <cassert>
++
+ namespace DarlingServer {
++	// Caller serializes transitions with the thread's lock.
++	class MicrothreadExecution {
++		enum class State {
++			Idle,
++			Running,
++			RunningWithPendingDispatch,
++		};
++		State _state = State::Idle;
++
++	public:
++		bool isRunning() const {
++			return _state != State::Idle;
++		}
++
++		bool deferDispatch() {
++			if (_state == State::Idle) {
++				return false;
++			}
++			_state = State::RunningWithPendingDispatch;
++			return true;
++		}
++
++		void begin() {
++			assert(_state == State::Idle);
++			_state = State::Running;
++		}
++
++		// Return the coalesced dispatch to the caller as ownership is released.
++		bool finish() {
++			assert(isRunning());
++			bool dispatchPending = _state == State::RunningWithPendingDispatch;
++			_state = State::Idle;
++			return dispatchPending;
++		}
++	};
++
+ 	inline bool microthreadRecordResume(bool running, bool suspended, bool& resumePermit) {
+ 		if (!running && !suspended) {
+ 			return false;
+diff --git a/internal-include/darlingserver/thread.hpp b/internal-include/darlingserver/thread.hpp
+index 6871d5f6e2b83c08a57de51c0d8fc0d833d8fe3f..4d3800be9d86b757805044bdb44cbb3878cf8987 100644
+--- a/internal-include/darlingserver/thread.hpp
++++ b/internal-include/darlingserver/thread.hpp
+@@ -33,6 +33,7 @@
+ #include <darlingserver/logging.hpp>
+ #include <darlingserver/stack-pool.hpp>
+ #include <darlingserver/registry.hpp>
++#include <darlingserver/microthread-resume.hpp>
+ 
+ #include <ucontext.h>
+ 
+@@ -80,16 +81,14 @@ namespace DarlingServer {
+ 		Address _address;
+ 		mutable std::shared_mutex _rwlock;
+ 		StackPool::Stack _stack;
+-		// These are orthogonal lifecycle dimensions, not one enum state:
+-		// _running means a worker currently owns this microthread;
+-		// _suspended means it has a resumable context; and _resumePermit is a
+-		// coalesced wake request that bridges the transition between the two.
++		// Execution ownership is separate from the saved wait context and its
++		// wake permit. Pending dispatch exists only while execution is owned.
+ 		bool _suspended = false;
+ 		bool _resumePermit = false;
+ 		ucontext_t _resumeContext;
+ 		dtape_thread_t* _dtapeThread;
+ 		std::function<void()> _continuationCallback = nullptr;
+-		bool _running = false;
++		MicrothreadExecution _execution;
+ 		bool _terminating = false;
+ 		std::shared_ptr<Call> _activeCall = nullptr;
+ 		std::shared_ptr<Thread> _impersonating = nullptr;
+diff --git a/src/thread.cpp b/src/thread.cpp
+index 9e83b2da70d7a56aed5e1192c767de05b1d65fc4..5ea4621baec37bb436b9fc80e1e2b1048267b6c2 100644
+--- a/src/thread.cpp
++++ b/src/thread.cpp
+@@ -407,9 +407,9 @@ void DarlingServer::Thread::doWork() {
+ 		return;
+ 	}
+ 
+-	if (_running) {
+-		// this is probably an error
+-		microthreadLog.warning() << _tid << "(" << _nstid << "): attempt to re-run already running microthread on another thread" << microthreadLog.endLog;
++	if (_execution.deferDispatch()) {
++		// A client can send its next call after receiving our reply but before
++		// this worker physically stops. Hand that dispatch back to the owner.
+ 		_rwlock.unlock();
+ 		return;
+ 	}
+@@ -428,7 +428,7 @@ void DarlingServer::Thread::doWork() {
+ 		// This execution was scheduled by resume(); consume that wake permit.
+ 		microthreadConsumePendingResume(_resumePermit);
+ 	}
+-	_running = true;
++	_execution.begin();
+ 	currentThreadVar = shared_from_this();
+ 	dtape_thread_entering(_dtapeThread);
+ 
+@@ -545,15 +545,18 @@ void DarlingServer::Thread::doWork() {
+ 
+ doneWorking:
+ 	// we must be holding `_rwlock` when we get here
+-	if (_running) {
++	bool dispatchPending = false;
++	if (_execution.isRunning()) {
+ 		dtape_thread_exiting(_dtapeThread);
+ 		currentThreadVar = nullptr;
+-		_running = false;
++		dispatchPending = _execution.finish();
+ 	}
+ 	// A wake can arrive after suspend()'s final permit check but before it
+-	// physically switches back here. Now that _running is false, rescheduling
++	// physically switches back here. Now that execution is released, rescheduling
+ 	// is safe and cannot race another worker running this microthread.
+-	bool resumeAfterWorking = microthreadShouldScheduleAfterStop(_resumePermit, _suspended, _terminating, _dead);
++	bool scheduleAfterWorking =
++		microthreadShouldScheduleAfterStop(_resumePermit, _suspended, _terminating, _dead) ||
++		(dispatchPending && _pendingCall && !_pendingCallOverride && !_terminating && !_dead);
+ 	bool canRelease = false;
+ 	if (_dead) {
+ 		threadLog.debug() << *this << ": dead thread returning. active call? " << (!!_activeCall ? "true" : "false") << " terminating? " << (_terminating ? "true" : "false") << threadLog.endLog;
+@@ -580,7 +583,7 @@ doneWorking:
+ 			_pendingCall = _pendingInterrupts.front();
+ 			_pendingInterrupts.pop();
+ 
+-			Server::sharedInstance().scheduleThread(shared_from_this());
++			scheduleAfterWorking = true;
+ 		}
+ 
+ 		_rwlock.unlock();
+@@ -590,7 +593,7 @@ doneWorking:
+ 		unlockMeWhenSuspending = nullptr;
+ 	}
+ 	_runningCondvar.notify_all();
+-	if (resumeAfterWorking) {
++	if (scheduleAfterWorking) {
+ 		Server::sharedInstance().scheduleThread(shared_from_this());
+ 	}
+ 	if (canRelease) {
+@@ -674,7 +677,7 @@ void DarlingServer::Thread::resume() {
+ 		// Coalesce repeated wakes into one permit. If the microthread is still
+ 		// running, it will either consume the permit in suspend() or reschedule
+ 		// itself from doWork() after physically stopping.
+-		schedule = microthreadRecordResume(_running, _suspended, _resumePermit);
++		schedule = microthreadRecordResume(_execution.isRunning(), _suspended, _resumePermit);
+ 	}
+ 
+ 	if (schedule) {
+@@ -704,7 +707,7 @@ void DarlingServer::Thread::terminate() {
+ 	} else {
+ 		// if it's not the current thread and it's not currently running, just tell it died;
+ 		// it should die once the caller releases their reference(s) on us
+-		if (!_running) {
++		if (!_execution.isRunning()) {
+ 			_rwlock.unlock();
+ 			notifyDead();
+ 		} else {
+@@ -740,7 +743,7 @@ void DarlingServer::Thread::impersonate(std::shared_ptr<Thread> thread) {
+ 		{
+ 			std::unique_lock lock(thread->_rwlock);
+ 			thread->_deferLocked(true, lock);
+-			thread->_running = true;
++			thread->_execution.begin();
+ 		}
+ 		thread->_runningCondvar.notify_all();
+ 	}
+@@ -754,7 +757,7 @@ void DarlingServer::Thread::impersonate(std::shared_ptr<Thread> thread) {
+ 	if (oldThread) {
+ 		{
+ 			std::unique_lock lock(oldThread->_rwlock);
+-			oldThread->_running = false;
++			oldThread->_execution.finish();
+ 			oldThread->_undeferLocked(lock);
+ 		}
+ 		oldThread->_runningCondvar.notify_all();
+@@ -1338,14 +1341,14 @@ void DarlingServer::Thread::syncMemory(uintptr_t address, size_t size, int sync_
+ void DarlingServer::Thread::waitUntilRunning() {
+ 	std::shared_lock lock(_rwlock);
+ 	_runningCondvar.wait(lock, [&]() {
+-		return _running;
++		return _execution.isRunning();
+ 	});
+ };
+ 
+ void DarlingServer::Thread::waitUntilNotRunning() {
+ 	std::shared_lock lock(_rwlock);
+ 	_runningCondvar.wait(lock, [&]() {
+-		return !_running;
++		return !_execution.isRunning();
+ 	});
+ };
+ 
+@@ -1356,7 +1359,7 @@ void DarlingServer::Thread::_deferLocked(bool wait, std::unique_lock<std::shared
+ 
+ 	if (wait) {
+ 		_runningCondvar.wait(lock, [&]() {
+-			return !_running;
++			return !_execution.isRunning();
+ 		});
+ 	}
+ };

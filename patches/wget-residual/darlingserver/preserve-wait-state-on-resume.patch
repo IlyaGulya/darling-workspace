@@ -1,0 +1,39 @@
+From 84a354411b5b6866c9b856b80af1a3855e473948 Mon Sep 17 00:00:00 2001
+From: Ilya Gulya <ilya@gulya.me>
+Date: Sun, 6 Sep 2026 06:57:01 +0000
+Subject: [PATCH] Preserve XNU wait state when resuming microthreads
+
+---
+ src/thread.cpp | 12 +++++++++++-
+ 1 file changed, 11 insertions(+), 1 deletion(-)
+
+diff --git a/src/thread.cpp b/src/thread.cpp
+index 5563ad92cea6ff5f717abc55ec330b6a215a6ab6..e845d78f0a6ae287d024241265bd906d4fd33360 100644
+--- a/src/thread.cpp
++++ b/src/thread.cpp
+@@ -397,6 +397,8 @@ void DarlingServer::Thread::doWork() {
+ 	//       this method is actually major UB because the compiler is free to do whatever it likes with the stack,
+ 	//       but we know what reasonable compilers (i.e. GCC and Clang) do with it and we're specifically targeting Clang, so it's okay for us.
+ 
++	bool preserveWaitState;
++
+ 	_rwlock.lock();
+ 
+ 	if (_deferralState != DeferralState::NotDeferred) {
+@@ -425,7 +427,15 @@ void DarlingServer::Thread::doWork() {
+ 
+ 	_running = true;
+ 	currentThreadVar = shared_from_this();
+-	dtape_thread_entering(_dtapeThread);
++	// Resuming an existing context (including a raw-lock suspension inside an
++	// XNU wait) does not complete that wait. Interrupt dispatch likewise needs
++	// TH_WAIT intact so clear_wait_internal() can remove the waitq entry.
++	preserveWaitState =
++		(_suspended && (_pendingCallOverride || !_pendingCall)) ||
++		(!_pendingCallOverride && _pendingCall && _pendingCall->number() == Call::Number::InterruptEnter);
++	if (!preserveWaitState) {
++		dtape_thread_entering(_dtapeThread);
++	}
+ 
+ 	returningToThreadTop = false;
+ 	_rwlock.unlock();
