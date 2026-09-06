@@ -14,6 +14,10 @@ usage:
 Use this only when the caller cannot keep a long west command attached.  DIR
 contains command, job/command PIDs, start-times, log, and rc; it is safe to
 inspect directly.
+
+Cancel sends SIGINT to the registered command and waits for owner cleanup.
+WEST_JOB_CANCEL_GRACE_SECONDS defaults to 30; only an unresponsive owner
+triggers the identity-checked descendant and process-group fallback.
 USAGE
 	exit 2
 }
@@ -382,10 +386,9 @@ start_job() {
 			finish 143
 		}
 		trap forward_cancel TERM INT HUP
-		# Bash launches asynchronous commands with SIGINT ignored. Restore the
-		# default disposition before exec so cooperative cancellation reaches the
-		# command we are supervising.
-		bash -c "trap - INT; exec \"\$@\"" bash "$@" &
+		# An asynchronous Bash child inherits SIGINT ignored. Bash cannot reset
+		# a signal ignored on entry; restore it outside the shell before exec.
+		env --default-signal=INT -- "$@" &
 		command_pid=$!
 		printf "%s\\n" "$command_pid" >"$state_dir/command-pid"
 		awk "{print \$22}" "/proc/$command_pid/stat" >"$state_dir/command-start-time"

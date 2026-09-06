@@ -2067,7 +2067,7 @@ class DarlingTest(ProfileOperationsMixin, BootstrapRuntimeProfileMixin, WestComm
             return ["/bin/bash", "-lc", invocation["args"]]
         return [str(arg) for arg in invocation["args"]]
 
-    def _debug_runner_args(self, invocation, *, display_only: bool = False) -> list[str]:
+    def _debug_runner_args(self, invocation, *, env=None, display_only: bool = False) -> list[str]:
         diag = invocation.get("diag", "bare")
         if diag == "bare":
             return self._wrapped_args(invocation)
@@ -2095,6 +2095,29 @@ class DarlingTest(ProfileOperationsMixin, BootstrapRuntimeProfileMixin, WestComm
         cwd = invocation.get("cwd")
         if cwd is not None:
             args.extend(["--cwd", str(cwd)])
+        resources = set(invocation.get("requires_resources", []))
+        if resources & {"darling-prefix", "darling-eunion-prefix"}:
+            run_env = env if env is not None else self._execution_env(invocation)
+            run_env = run_env or {}
+            prefix = run_env.get("DPREFIX") or getattr(self, "_prefix", None)
+            launcher = (
+                run_env.get("DARLING_LAUNCHER")
+                or run_env.get("DARLING")
+                or self._resolve_darling_launcher(str(prefix) if prefix else None)
+            )
+            if not prefix or not launcher:
+                if not display_only:
+                    self.die(f"{invocation['name']}: guarded prefix cleanup requires its prefix and launcher")
+                prefix = prefix or "<darling-prefix>"
+                launcher = launcher or "<darling-launcher>"
+            shutdown = ["env", f"DPREFIX={prefix}", f"DARLING_PREFIX={prefix}"]
+            shutdown.extend(
+                f"{key}={run_env[key]}"
+                for key in ("DARLING_RUNTIME_MODE", "DARLING_ROOTLESS", "DARLING_NOOVERLAYFS", "DARLING_EUNION")
+                if key in run_env
+            )
+            shutdown.extend([str(launcher), "shutdown"])
+            args.extend(["--terminate-command", "exec " + " ".join(quote(arg) for arg in shutdown)])
         if diag == "forensic":
             args.extend(["--capture-gdb", "--capture-tree"])
         args.append("--")
@@ -2211,7 +2234,7 @@ class DarlingTest(ProfileOperationsMixin, BootstrapRuntimeProfileMixin, WestComm
     def _run_command_invocation(self, invocation, env=None) -> int:
         run_env = env if env is not None else invocation.get("env")
         result = run_bounded(
-            self._debug_runner_args(invocation),
+            self._debug_runner_args(invocation, env=run_env),
             cwd=invocation["cwd"],
             env=run_env,
             timeout_seconds=int(invocation.get("timeout_seconds", 600)) + 15,

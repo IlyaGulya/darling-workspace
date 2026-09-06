@@ -3,19 +3,65 @@ set -euo pipefail
 : "${DPREFIX:?set DPREFIX}"
 : "${DARLING:?set DARLING}"
 prefix="$DPREFIX"
+source "$(dirname "$0")/../testkit/scripts/darling-guest-shell.sh"
 log="$(mktemp /tmp/west-rootless-shutdown-session.XXXXXX)"
-trap 'rm -f "$log"' EXIT
-if ! env DARLING_PREFIX="$prefix" DARLING_ROOTLESS=1 DARLING_NOOVERLAYFS=1 DARLING_EUNION=1 "$DARLING" shell /bin/bash --login -c 'sleep 1; printf "WEST_ROOTLESS_SHUTDOWN_WORKER_OK\n"' >"$log" 2>&1; then
-	printf 'rootless shutdown worker failed before completion:\n' >&2
+shell_job=
+cleanup() {
+	local status=$?
+	if [ -n "$shell_job" ]; then
+		env DARLING_PREFIX="$prefix" DARLING_ROOTLESS=1 DARLING_NOOVERLAYFS=1 DARLING_EUNION=1 "$DARLING" shutdown || true
+		wait "$shell_job" || true
+	fi
+	rm -f "$log"
+	exit "$status"
+}
+trap cleanup EXIT
+export DARLING_ROOTLESS=1 DARLING_NOOVERLAYFS=1 DARLING_EUNION=1
+darling_guest_shell "$DARLING" "$prefix" 45 '
+	/bin/sleep 120 &
+	first=$!
+	/bin/sleep 120 &
+	second=$!
+	printf "WEST_ROOTLESS_SHUTDOWN_READY %s %s %s\n" "$$" "$first" "$second"
+	wait
+' >"$log" 2>&1 &
+shell_job=$!
+ready=
+for attempt in $(seq 1 100); do
+	ready="$(grep '^WEST_ROOTLESS_SHUTDOWN_READY ' "$log" || true)"
+	[ -n "$ready" ] && break
+	kill -0 "$shell_job" 2>/dev/null || break
+	sleep 0.1
+done
+if [ -z "$ready" ]; then
+	printf 'rootless shutdown worker failed before readiness:\n' >&2
 	cat "$log" >&2 || true
 	exit 1
 fi
-if ! grep -F -x -q WEST_ROOTLESS_SHUTDOWN_WORKER_OK "$log"; then
-	printf 'rootless shutdown worker returned without completion marker:\n' >&2
-	cat "$log" >&2 || true
+read -r marker shell_pid first_pid second_pid <<<"$ready"
+env DARLING_PREFIX="$prefix" "$DARLING" shutdown
+# A force-stopped shell need not return success. Its processes must be gone
+# before shutdown returns, while the RPC server remains available until then.
+for pid in "$shell_pid" "$first_pid" "$second_pid"; do
+	if stat="$(cat "/proc/$pid/stat" 2>/dev/null)"; then
+		state="${stat##*) }"
+		state="${state%% *}"
+		if [ "$state" != Z ] && [ "$state" != X ]; then
+			printf 'rootless shutdown left prefix-owned process(es): %s\n' "$pid" >&2
+			exit 1
+		fi
+	elif [ -e "/proc/$pid/stat" ]; then
+		printf 'rootless shutdown cannot read process state: %s\n' "$pid" >&2
+		exit 1
+	fi
+done
+wait "$shell_job" || true
+shell_job=
+if grep -E -q 'Failed to interrupt_enter|interrupt_enter failed' "$log"; then
+	printf 'rootless shutdown lost RPC service before guest termination:\n' >&2
+	cat "$log" >&2
 	exit 1
 fi
-env DARLING_PREFIX="$prefix" DARLING_ROOTLESS=1 DARLING_NOOVERLAYFS=1 DARLING_EUNION=1 "$DARLING" shutdown
 for attempt in $(seq 1 20); do
 	left=()
 	for proc in /proc/[0-9]*; do

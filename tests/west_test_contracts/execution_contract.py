@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import signal
 import sys
 import tempfile
 import time
@@ -174,5 +175,62 @@ result = run_bounded(
 )
 assert result.returncode == 0 and not result.timed_out, result
 assert result.stdout == b"evihcra-tseug", result
+
+# The ordinary communicate path and selector/live-capture path have different
+# exception boundaries. Both must let the child finish its SIGINT cleanup.
+# The ordinary path also exercises owner cleanup beyond the shutdown stage's
+# five-second budget: unwinding must wait for the complete cleanup sequence.
+for live_capture in (False, True):
+    with tempfile.TemporaryDirectory() as temp:
+        tempdir = Path(temp)
+        ready = tempdir / "ready"
+        cleaned = tempdir / "cleaned"
+        code = """
+import os, pathlib, signal, sys, time
+root = pathlib.Path(sys.argv[1])
+def cancelled(signum, frame):
+    time.sleep(float(sys.argv[2]))
+    (root / "cleaned").write_text("resource released")
+    sys.exit(0)
+signal.signal(signal.SIGINT, cancelled)
+(root / "ready").write_text(str(os.getpid()))
+print("CANCEL_READY", flush=True)
+time.sleep(30)
+"""
+
+        cancellation_fd = None
+
+        def interrupt_when_ready(*_args):
+            global cancellation_fd
+            try:
+                pid = int(ready.read_text())
+            except (FileNotFoundError, ValueError):
+                return
+            cancellation_fd = os.pidfd_open(pid)
+            signal.raise_signal(signal.SIGINT)
+
+        try:
+            run_bounded(
+                [sys.executable, "-c", code, str(tempdir), "0.1" if live_capture else "6"],
+                cwd=tempdir,
+                env=None,
+                timeout_seconds=5,
+                capture_output=True,
+                heartbeat_seconds=None if live_capture else 0.03,
+                heartbeat=None if live_capture else interrupt_when_ready,
+                output_line=interrupt_when_ready if live_capture else None,
+            )
+            raise AssertionError("caller interruption was swallowed")
+        except KeyboardInterrupt:
+            assert cleaned.is_file(), "caller unwound before child cleanup completed"
+            assert not Path(f"/proc/{int(ready.read_text())}").exists(), "cancelled child was not reaped"
+        finally:
+            if cancellation_fd is not None:
+                try:
+                    signal.pidfd_send_signal(cancellation_fd, signal.SIGKILL)
+                except ProcessLookupError:
+                    pass
+                finally:
+                    os.close(cancellation_fd)
 
 print("PASS west-test-execution-contract")

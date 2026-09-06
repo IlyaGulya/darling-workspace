@@ -131,3 +131,41 @@ patches:
     use: spawn-cloexec-guest
     note: Use the prepared rootless runtime; spawned children must check in after CLOEXEC_DEFAULT closes inherited application descriptors.
   sha256sum: 0424b780b0c4d309e63e56cbeae6594acbe045d0c8f93d71b4d36836916e5c8c
+- path: darling/rootless-shutdown-guest-tree.patch
+  module: darling
+  source-branch: fix/rootless-shutdown-guest-tree
+  source-base: 681329d6b6cb007e86316c572b138de88f1cfb8b
+  source-commit: c02cdd1220ee3907458f418714055f5aeb2f5c4d
+  bead: dar-gwn.8
+  publication-status: blocked
+  publication-blocker: Local lifecycle repair; canonical rootless composition and publication review remain under dar-gwn.7.
+  tests:
+  - name: rootless_shutdown_guest_tree_host
+    kind: contract
+    coverage-tier: host
+    runs: host
+    diag: bare
+    runner: c-fixture
+    repo: darling
+    script: src/startup/tests/rootless_shutdown_session_test.c
+    source-files:
+    - src/startup/rootless_shutdown.c
+    compile-flags: [-D_GNU_SOURCE, -std=gnu11, -Wall, -Wextra, -Werror]
+    timeout-seconds: 20
+    note: Real nested sessions, RPC-dependent TERM handlers, late forks and service restarts must drain before the live subreaper is terminated.
+  - name: rootless_shutdown_active_guest
+    kind: guest
+    coverage-tier: runtime
+    runs: guest
+    diag: guarded
+    runner: guest-runtime-script
+    repo: darling-workspace
+    script: tests/run-rootless-shutdown-session.sh
+    ok-marker: WEST_ROOTLESS_SHUTDOWN_SESSION_OK
+    timeout-seconds: 60
+    requires: [darling-prefix]
+    env-vars:
+      DARLING_ROOTLESS: '1'
+      DARLING_NOOVERLAYFS: '1'
+      DARLING_EUNION: '1'
+  sha256sum: 533080c4f3b6195a537449b48f27fc4ae72c26cd6cbd831c9c2266706a673278

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import subprocess
 import sys
 import tempfile
 import time
@@ -34,19 +35,72 @@ from west_commands.test_execution import ProcessResult
 
 os.environ.setdefault("WEST_RUNTIME_MIN_FREE_BYTES", "0")
 
-debug_test = DarlingTest.__new__(DarlingTest)
-debug_test._executor = "/tmp/darling-debug-runner"
-debug_args = debug_test._debug_runner_args(
-    {
-        "name": "cwd_contract",
-        "diag": "guarded",
-        "cwd": Path("/tmp/workspace-owned-script"),
-        "args": ["tests/runtime.sh"],
-        "shell": False,
-        "timeout_seconds": 7,
-    }
-)
-assert debug_args[-4:] == ["--cwd", "/tmp/workspace-owned-script", "--", "tests/runtime.sh"], debug_args
+with tempfile.TemporaryDirectory() as temp:
+    root = Path(temp)
+    prefix = root / "selected prefix ' $(printf wrong)"
+    (prefix / "bin").mkdir(parents=True)
+    launcher = prefix / "bin" / "darling ' owner"
+    launcher.write_text(
+        f"#!{sys.executable}\n"
+        "import os,pathlib,select,signal,sys\n"
+        "prefix=pathlib.Path(__file__).parent.parent\n"
+        "assert sys.argv[1:]==['shutdown']\n"
+        "assert os.environ['DPREFIX']==str(prefix)\n"
+        "assert os.environ['DARLING_PREFIX']==str(prefix)\n"
+        "assert os.environ['DARLING_ROOTLESS']=='1'\n"
+        "fd=os.pidfd_open(int((prefix/'worker.pid').read_text()))\n"
+        "signal.pidfd_send_signal(fd,signal.SIGTERM)\n"
+        "watch=select.poll(); watch.register(fd,select.POLLIN)\n"
+        "assert watch.poll(2000)\n"
+        "os.close(fd)\n"
+    )
+    launcher.chmod(0o755)
+    worker = subprocess.Popen(
+        [
+            sys.executable,
+            "-c",
+            "import os,pathlib,signal,sys,time; "
+            "signal.signal(signal.SIGTERM,lambda *_:sys.exit(23)); "
+            "pathlib.Path(sys.argv[1]).write_text(str(os.getpid())); time.sleep(30)",
+            str(prefix / "worker.pid"),
+        ]
+    )
+    try:
+        deadline = time.monotonic() + 5
+        while True:
+            try:
+                if (prefix / "worker.pid").read_text() == str(worker.pid):
+                    break
+            except FileNotFoundError:
+                pass
+            assert worker.poll() is None
+            assert time.monotonic() < deadline
+            time.sleep(0.01)
+        debug_test = DarlingTest.__new__(DarlingTest)
+        debug_test._executor = "/tmp/darling-debug-runner"
+        debug_args = debug_test._debug_runner_args(
+            {
+                "name": "prefix_owner",
+                "diag": "guarded",
+                "cwd": root,
+                "args": ["runtime.sh"],
+                "shell": False,
+                "requires_resources": ["darling-prefix"],
+            },
+            env={
+                "DPREFIX": str(prefix),
+                "DARLING_LAUNCHER": str(launcher),
+                "DARLING": "/not-the-selected-prefix/darling",
+                "DARLING_ROOTLESS": "1",
+            },
+        )
+        shutdown = debug_args[debug_args.index("--terminate-command") + 1]
+        subprocess.run(["/bin/bash", "-lc", shutdown], cwd=root, check=True, timeout=3)
+        assert worker.wait(timeout=2) == 23
+    finally:
+        if worker.poll() is None:
+            worker.kill()
+        worker.wait()
 
 
 with tempfile.TemporaryDirectory() as temp:
@@ -246,6 +300,8 @@ with tempfile.TemporaryDirectory() as temp:
             gc=False,
             red_audit=False,
             profile=None,
+            guest_macho_validation_group=None,
+            guest_macho_evidence_dir=None,
             patch=None,
             submodule=[],
             fuzz=False,

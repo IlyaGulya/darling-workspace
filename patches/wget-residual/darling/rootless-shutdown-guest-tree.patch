@@ -1,0 +1,1476 @@
+From deb8b0c5eee0b50bceffb9257167786d6279aae6 Mon Sep 17 00:00:00 2001
+From: Ilya Gulya <ilya@gulya.me>
+Date: Sun, 6 Sep 2026 16:50:36 +0000
+Subject: [PATCH] Stop cross-session rootless guests before their RPC server
+
+---
+ src/startup/darling.c                         |   4 +-
+ src/startup/darling.h                         |   2 +-
+ src/startup/rootless_shutdown.c               | 242 ++++++++++++++----
+ src/startup/rootless_shutdown.h               |   2 +-
+ .../tests/rootless_shutdown_session_test.c    | 156 ++++++++---
+ 5 files changed, 320 insertions(+), 86 deletions(-)
+
+diff --git a/src/startup/darling.c b/src/startup/darling.c
+index 3c0c068d703b1e1c5c9b976edccd6340c003f4ae..e845ca76ab5da912ff6eadaa615dd6ecaa589db1 100644
+--- a/src/startup/darling.c
++++ b/src/startup/darling.c
+@@ -307,9 +307,9 @@ int main(int argc, char ** argv)
+ 		fclose(file);
+ 
+ 		if (rootless) {
+-			int shutdown_result = shutdown_rootless_process_session(launchd_pid);
++			int shutdown_result = shutdown_rootless_process_tree(launchd_pid);
+ 			if (shutdown_result != 0) {
+-				fprintf(stderr, "Failed to stop rootless Darling session: %s\n",
++				fprintf(stderr, "Failed to stop rootless Darling guest processes: %s\n",
+ 					strerror(-shutdown_result));
+ 				return 1;
+ 			}
+diff --git a/src/startup/darling.h b/src/startup/darling.h
+index 60d90e8ff4bbe97a17d1720fc06a0f7c089e6601..5bf9821b1246705b3f9b42da02dbd7aa4c21a957 100644
+--- a/src/startup/darling.h
++++ b/src/startup/darling.h
+@@ -71,6 +71,6 @@ void joinNamespace(pid_t pid, int type, const char* typeName);
+ void setupCoredumpPattern(void);
+ void setupUserHome(void);
+ 
+-int shutdown_rootless_process_session(pid_t member);
++#include "rootless_shutdown.h"
+ 
+ #endif
+diff --git a/src/startup/rootless_shutdown.c b/src/startup/rootless_shutdown.c
+index 6e1d7969e3de4465d3a63f7dbe3809827654d341..782dc480a461d941b5af3800a5b9c3e0c5f14b61 100644
+--- a/src/startup/rootless_shutdown.c
++++ b/src/startup/rootless_shutdown.c
+@@ -2,83 +2,227 @@
+ 
+ #include <dirent.h>
+ #include <errno.h>
++#include <limits.h>
++#include <poll.h>
++#include <stdbool.h>
++#include <stdint.h>
+ #include <signal.h>
+ #include <stdio.h>
+ #include <stdlib.h>
+ #include <string.h>
++#include <sys/syscall.h>
++#include <time.h>
+ #include <unistd.h>
+ 
+-static int session_for_pid(pid_t pid, pid_t* session)
++struct process {
++	pid_t pid;
++	pid_t parent;
++	pid_t session;
++	unsigned long long start_time;
++	bool owned;
++	int pidfd;
++};
++
++static int read_process(pid_t pid, struct process* process)
+ {
+ 	char path[64];
+-	char stat_line[4096];
+-	FILE* file;
+-	char* fields;
+-	char state;
+-	int parent;
+-	int group;
+-	int parsed_session;
+-
++	char stat[4096];
+ 	snprintf(path, sizeof(path), "/proc/%d/stat", pid);
+-	file = fopen(path, "r");
++	FILE* file = fopen(path, "r");
+ 	if (file == NULL)
+ 		return -errno;
+-	if (fgets(stat_line, sizeof(stat_line), file) == NULL) {
+-		int error = errno;
+-		fclose(file);
+-		return -error;
+-	}
++	size_t length = fread(stat, 1, sizeof(stat) - 1, file);
++	int result = ferror(file) ? -(errno ? errno : EIO) : 0;
+ 	fclose(file);
+-	fields = strrchr(stat_line, ')');
+-	if (fields == NULL ||
+-		sscanf(fields + 1, " %c %d %d %d", &state, &parent, &group,
+-			&parsed_session) != 4)
+-		return -EINVAL;
+-	*session = parsed_session;
++	if (result != 0)
++		return result;
++	stat[length] = '\0';
++	char* fields = strrchr(stat, ')');
++	char state;
++	if (fields == NULL || sscanf(fields + 1,
++			" %c %d %*d %d"
++			" %*s %*s %*s %*s %*s"
++			" %*s %*s %*s %*s %*s"
++			" %*s %*s %*s %*s %*s %llu",
++			&state, &process->parent, &process->session,
++			&process->start_time) != 4)
++		return -EIO;
++	process->pid = pid;
++	process->owned = false;
++	process->pidfd = -1;
+ 	return 0;
+ }
+ 
+-static int signal_session_members(pid_t session, int signal_number)
++static int collect_processes(struct process** processes, size_t* count)
+ {
+ 	DIR* proc = opendir("/proc");
+-	struct dirent* entry;
+-	int signalled = 0;
+-
+ 	if (proc == NULL)
+ 		return -errno;
+-	while ((entry = readdir(proc)) != NULL) {
++	size_t capacity = 0;
++	int result = 0;
++	struct dirent* entry;
++	while (errno = 0, (entry = readdir(proc)) != NULL) {
+ 		char* end;
+-		long value;
+-		pid_t pid;
+-		pid_t candidate_session;
+-
+-		if (entry->d_name[0] < '0' || entry->d_name[0] > '9')
++		long pid = strtol(entry->d_name, &end, 10);
++		if (*end != '\0' || pid <= 0 || pid > INT_MAX)
+ 			continue;
+-		value = strtol(entry->d_name, &end, 10);
+-		if (*end != '\0' || value <= 0)
++		struct process process;
++		result = read_process((pid_t)pid, &process);
++		if (result == -ENOENT || result == -ESRCH) {
++			result = 0;
+ 			continue;
+-		pid = (pid_t)value;
+-		if (pid == getpid() || session_for_pid(pid, &candidate_session) != 0 ||
+-			candidate_session != session)
+-			continue;
+-		if (kill(pid, signal_number) == 0 || errno == ESRCH)
+-			signalled++;
++		}
++		if (result != 0)
++			break;
++		if (*count == capacity) {
++			if (capacity > SIZE_MAX / 2 / sizeof(**processes)) {
++				result = -ENOMEM;
++				break;
++			}
++			capacity = capacity ? capacity * 2 : 64;
++			void* resized = realloc(*processes, capacity * sizeof(**processes));
++			if (resized == NULL) {
++				result = -ENOMEM;
++				break;
++			}
++			*processes = resized;
++		}
++		(*processes)[(*count)++] = process;
+ 	}
++	if (entry == NULL && errno != 0)
++		result = -errno;
+ 	closedir(proc);
+-	return signalled;
++	return result;
+ }
+ 
+-int shutdown_rootless_process_session(pid_t member)
++static int signal_processes(struct process* processes, size_t count, int signal_number)
+ {
+-	pid_t session;
+-	int result = session_for_pid(member, &session);
++	for (size_t i = 0; i < count; ++i) {
++		if (processes[i].pidfd < 0)
++			continue;
++		if (syscall(SYS_pidfd_send_signal, processes[i].pidfd,
++				signal_number, NULL, 0) < 0 && errno != ESRCH)
++			return -errno;
++	}
++	return 0;
++}
++
++static int wait_processes(struct process* processes, size_t count, int timeout_ms)
++{
++	struct timespec deadline;
++	if (clock_gettime(CLOCK_MONOTONIC, &deadline) != 0)
++		return -errno;
++	deadline.tv_sec += timeout_ms / 1000;
++	deadline.tv_nsec += (timeout_ms % 1000) * 1000000L;
++	if (deadline.tv_nsec >= 1000000000L) {
++		++deadline.tv_sec;
++		deadline.tv_nsec -= 1000000000L;
++	}
++	for (size_t i = 0; i < count; ++i) {
++		if (processes[i].pidfd < 0)
++			continue;
++		struct pollfd fd = { .fd = processes[i].pidfd, .events = POLLIN };
++		for (;;) {
++			struct timespec now;
++			if (clock_gettime(CLOCK_MONOTONIC, &now) != 0)
++				return -errno;
++			long long remaining = (deadline.tv_sec - now.tv_sec) * 1000LL
++				+ (deadline.tv_nsec - now.tv_nsec + 999999L) / 1000000L;
++			int result = poll(&fd, 1, remaining > 0 ? (int)remaining : 0);
++			if (result < 0 && errno == EINTR)
++				continue;
++			if (result < 0)
++				return -errno;
++			if (result == 0)
++				return -ETIMEDOUT;
++			if ((fd.revents & (POLLIN | POLLHUP)) == 0)
++				return -EIO;
++			break;
++		}
++	}
++	return 0;
++}
+ 
++int shutdown_rootless_process_tree(pid_t leader)
++{
++	struct process root;
++	int result = read_process(leader, &root);
+ 	if (result != 0)
+ 		return result;
+-	result = signal_session_members(session, SIGTERM);
+-	if (result < 0)
+-		return result;
+-	usleep(100000);
+-	result = signal_session_members(session, SIGKILL);
+-	return result < 0 ? result : 0;
++	/* launchd owns a distinct session; never seed the caller's host session. */
++	if (root.session != leader || root.session == getsid(0))
++		return -EINVAL;
++
++	struct process* processes = NULL;
++	size_t count = 0;
++	result = collect_processes(&processes, &count);
++	if (result != 0)
++		goto out;
++
++	for (size_t i = 0; i < count; ++i)
++		processes[i].owned = processes[i].session == root.session;
++	/* shellspawn creates another session. Capture its descendants before any
++	 * parent is terminated and they are reparented outside launchd's tree. */
++	bool changed;
++	do {
++		changed = false;
++		for (size_t i = 0; i < count; ++i) {
++			if (processes[i].owned)
++				continue;
++			for (size_t j = 0; j < count; ++j) {
++				if (processes[j].owned && processes[i].parent == processes[j].pid) {
++					processes[i].owned = true;
++					changed = true;
++					break;
++				}
++			}
++		}
++	} while (changed);
++
++	for (size_t i = 0; i < count; ++i) {
++		if (!processes[i].owned)
++			continue;
++		if (processes[i].pid == getpid()) {
++			result = -EDEADLK;
++			goto out;
++		}
++		int fd = syscall(SYS_pidfd_open, processes[i].pid, 0);
++		if (fd < 0) {
++			if (errno == ESRCH)
++				continue;
++			result = -errno;
++			goto out;
++		}
++		struct process current;
++		result = read_process(processes[i].pid, &current);
++		if (result == -ENOENT || result == -ESRCH ||
++				(result == 0 && current.start_time != processes[i].start_time)) {
++			close(fd);
++			result = 0;
++			continue;
++		}
++		if (result != 0) {
++			close(fd);
++			goto out;
++		}
++		processes[i].pidfd = fd;
++	}
++
++	result = signal_processes(processes, count, SIGTERM);
++	if (result == 0)
++		result = wait_processes(processes, count, 1000);
++	if (result == -ETIMEDOUT) {
++		result = signal_processes(processes, count, SIGKILL);
++		if (result == 0)
++			result = wait_processes(processes, count, 1000);
++	}
++	/* Only a verified terminal guest set permits the caller to stop the RPC
++	 * server. An error leaves both the server and its runtime state intact. */
++out:
++	for (size_t i = 0; i < count; ++i) {
++		if (processes[i].pidfd >= 0)
++			close(processes[i].pidfd);
++	}
++	free(processes);
++	return result;
+ }
+diff --git a/src/startup/rootless_shutdown.h b/src/startup/rootless_shutdown.h
+index f14bf54bdda6d3102e76538ef57511993ee31ce8..f9e0a7b69cc9fbb3f2b98bf81a2cda2889d8bd87 100644
+--- a/src/startup/rootless_shutdown.h
++++ b/src/startup/rootless_shutdown.h
+@@ -3,6 +3,6 @@
+ 
+ #include <sys/types.h>
+ 
+-int shutdown_rootless_process_session(pid_t member);
++int shutdown_rootless_process_tree(pid_t leader);
+ 
+ #endif
+diff --git a/src/startup/tests/rootless_shutdown_session_test.c b/src/startup/tests/rootless_shutdown_session_test.c
+index 66805c5e3cb37827962ae7926b68fa061ebde2b1..3eae3b5932700a35fd9045ad6a935cc298f9628a 100644
+--- a/src/startup/tests/rootless_shutdown_session_test.c
++++ b/src/startup/tests/rootless_shutdown_session_test.c
+@@ -3,56 +3,146 @@
+ #include <errno.h>
+ #include <signal.h>
+ #include <stdio.h>
++#include <stdlib.h>
++#include <sys/prctl.h>
++#include <sys/socket.h>
+ #include <sys/types.h>
+ #include <sys/wait.h>
++#include <time.h>
+ #include <unistd.h>
+ 
+-struct session_fixture {
+-	pid_t worker;
++struct ready {
++	int role;
++	pid_t pid;
+ };
+ 
+-int main(void)
++static int client;
++
++static void terminate_worker(int signal_number)
+ {
+-	int pipefd[2];
+-	pid_t leader;
+-	struct session_fixture fixture;
+-	int status;
++	(void)signal_number;
++	char reply;
++	if (write(client, "T", 1) != 1 || read(client, &reply, 1) != 1 || reply != 'A')
++		_exit(43);
++	_exit(42);
++}
++
++static void announce(int fd, int role)
++{
++	struct ready ready = { .role = role, .pid = getpid() };
++	if (write(fd, &ready, sizeof(ready)) != sizeof(ready))
++		_exit(44);
++}
+ 
+-	if (pipe(pipefd) != 0)
++static int run_fixture(int separate_sessions)
++{
++	int ready_pipe[2];
++	int sockets[2];
++	if (pipe(ready_pipe) != 0 || socketpair(AF_UNIX, SOCK_STREAM, 0, sockets) != 0)
++		return 1;
++	client = sockets[1];
++	pid_t server = fork();
++	if (server < 0)
+ 		return 1;
+-	leader = fork();
++	if (server == 0) {
++		close(sockets[1]);
++		char request;
++		while (read(sockets[0], &request, 1) == 1) {
++			/* Termination needs a live server, not merely successful kill(). */
++			struct timespec delay = { .tv_nsec = 200000000L };
++			nanosleep(&delay, NULL);
++			if (request != 'T' || write(sockets[0], "A", 1) != 1)
++				_exit(45);
++		}
++		_exit(0);
++	}
++	close(sockets[0]);
++	pid_t leader = fork();
+ 	if (leader < 0)
+ 		return 1;
+ 	if (leader == 0) {
+-		close(pipefd[0]);
++		close(ready_pipe[0]);
+ 		if (setsid() < 0)
+-			return 2;
+-		fixture.worker = fork();
+-		if (fixture.worker < 0)
+-			return 3;
+-		if (fixture.worker == 0) {
+-			for (;;)
+-				pause();
++			_exit(46);
++		pid_t worker = fork();
++		if (worker < 0)
++			_exit(47);
++		if (worker == 0) {
++			if (separate_sessions && setsid() < 0)
++				_exit(48);
++			struct sigaction action = { .sa_handler = terminate_worker };
++			sigemptyset(&action.sa_mask);
++			if (sigaction(SIGTERM, &action, NULL) != 0)
++				_exit(49);
++			pid_t stubborn = fork();
++			if (stubborn < 0)
++				_exit(50);
++			if (stubborn == 0) {
++				if (separate_sessions && setsid() < 0)
++					_exit(51);
++				signal(SIGTERM, SIG_IGN);
++				announce(ready_pipe[1], 2);
++			} else {
++				announce(ready_pipe[1], 1);
++			}
++		} else {
++			announce(ready_pipe[1], 0);
+ 		}
+-		if (write(pipefd[1], &fixture, sizeof(fixture)) != sizeof(fixture))
+-			return 4;
+ 		for (;;)
+ 			pause();
+ 	}
+-	close(pipefd[1]);
+-	if (read(pipefd[0], &fixture, sizeof(fixture)) != sizeof(fixture))
+-		return 1;
+-	close(pipefd[0]);
+-	if (shutdown_rootless_process_session(leader) != 0)
+-		return 1;
+-	if (waitpid(leader, &status, 0) != leader || !WIFSIGNALED(status))
+-		return 1;
+-	for (int attempt = 0; attempt < 20; attempt++) {
+-		if (kill(fixture.worker, 0) < 0 && errno == ESRCH) {
+-			puts("ROOTLESS_SHUTDOWN_SESSION_OK");
+-			return 0;
++	close(ready_pipe[1]);
++	close(sockets[1]);
++	pid_t guests[3] = { 0 };
++	int failed = 0;
++	for (int i = 0; i < 3; ++i) {
++		struct ready ready;
++		if (read(ready_pipe[0], &ready, sizeof(ready)) != sizeof(ready) ||
++				ready.role < 0 || ready.role >= 3 || guests[ready.role] != 0) {
++			failed = 1;
++			break;
++		}
++		guests[ready.role] = ready.pid;
++	}
++	close(ready_pipe[0]);
++	if (!failed && shutdown_rootless_process_tree(leader) != 0)
++		failed = 1;
++	/* The caller may now stop its server. Any still-running termination
++	 * handler loses the reply and produces a distinct failing exit status. */
++	if (kill(server, 0) != 0)
++		failed = 1;
++	kill(server, SIGKILL);
++	int status;
++	waitpid(server, &status, 0);
++	for (int i = 0; i < 3; ++i) {
++		if (guests[i] <= 0)
++			continue;
++		pid_t reaped = waitpid(guests[i], &status, WNOHANG);
++		if (reaped != guests[i]) {
++			failed = 1;
++			kill(guests[i], SIGKILL);
++			waitpid(guests[i], &status, 0);
++			continue;
+ 		}
+-		usleep(10000);
++		if (i == 1 ? !(WIFEXITED(status) && WEXITSTATUS(status) == 42) :
++				!(WIFSIGNALED(status) && WTERMSIG(status) == (i == 0 ? SIGTERM : SIGKILL)))
++			failed = 1;
+ 	}
+-	return 1;
++	if (failed)
++		fprintf(stderr, "rootless shutdown failed guest-tree termination (separate_sessions=%d)\n",
++			separate_sessions);
++	return failed;
++}
++
++int main(void)
++{
++	alarm(15);
++	if (prctl(PR_SET_CHILD_SUBREAPER, 1) != 0)
++		return 1;
++	int failed = run_fixture(0);
++	failed |= run_fixture(1);
++	if (failed)
++		return 1;
++	puts("ROOTLESS_SHUTDOWN_SESSION_OK");
++	return 0;
+ }
+
+From c02cdd1220ee3907458f418714055f5aeb2f5c4d Mon Sep 17 00:00:00 2001
+From: Ilya Gulya <ilya@gulya.me>
+Date: Sun, 6 Sep 2026 17:50:32 +0000
+Subject: [PATCH] dar-gwn.8: quiesce owned guests before terminating the RPC
+ server
+
+---
+ src/startup/darling.c                         |  36 +-
+ src/startup/rootless_shutdown.c               | 559 +++++++++++++-----
+ src/startup/rootless_shutdown.h               |   4 +-
+ .../tests/rootless_shutdown_session_test.c    | 161 +++--
+ 4 files changed, 538 insertions(+), 222 deletions(-)
+
+diff --git a/src/startup/darling.c b/src/startup/darling.c
+index e845ca76ab5da912ff6eadaa615dd6ecaa589db1..3a4e33262b16c85d03685a59ce6699fe40d4700c 100644
+--- a/src/startup/darling.c
++++ b/src/startup/darling.c
+@@ -289,34 +289,34 @@ int main(int argc, char ** argv)
+ 			return 1;
+ 		}
+ 
+-		// TODO: when we have a working launchd,
+-		// this is where we ask it to shut down nicely
+-
+-		char path_buf[128];
+-		FILE* file;
+-		pid_t launchd_pid;
+-		snprintf(path_buf, sizeof(path_buf), "/proc/%d/task/%d/children", pidInit, pidInit);
+-		file = fopen(path_buf, "r");
+-		if (!file || fscanf(file, "%d", &launchd_pid) != 1) {
+-			fprintf(stderr, "Failed to shutdown Darling container\n");
+-			if (file) {
+-				fclose(file);
+-			}
+-			return 1;
+-		}
+-		fclose(file);
+ 
+ 		if (rootless) {
+-			int shutdown_result = shutdown_rootless_process_tree(launchd_pid);
++			int shutdown_result = shutdown_rootless_process_tree(pidInit);
+ 			if (shutdown_result != 0) {
+ 				fprintf(stderr, "Failed to stop rootless Darling guest processes: %s\n",
+ 					strerror(-shutdown_result));
+ 				return 1;
+ 			}
+ 		} else {
++			// TODO: when we have a working launchd,
++			// this is where we ask it to shut down nicely
++
++			char path_buf[128];
++			FILE* file;
++			pid_t launchd_pid;
++			snprintf(path_buf, sizeof(path_buf), "/proc/%d/task/%d/children", pidInit, pidInit);
++			file = fopen(path_buf, "r");
++			if (!file || fscanf(file, "%d", &launchd_pid) != 1) {
++				fprintf(stderr, "Failed to shutdown Darling container\n");
++				if (file) {
++					fclose(file);
++				}
++				return 1;
++			}
++			fclose(file);
+ 			kill(launchd_pid, SIGKILL);
++			kill(pidInit, SIGKILL);
+ 		}
+-		kill(pidInit, SIGKILL);
+ 		removeRuntimeStateFiles();
+ 		return 0;
+ 	}
+diff --git a/src/startup/rootless_shutdown.c b/src/startup/rootless_shutdown.c
+index 782dc480a461d941b5af3800a5b9c3e0c5f14b61..574df5e744df0dd6066b3d6d56b59e0318195a63 100644
+--- a/src/startup/rootless_shutdown.c
++++ b/src/startup/rootless_shutdown.c
+@@ -4,7 +4,6 @@
+ #include <errno.h>
+ #include <limits.h>
+ #include <poll.h>
+-#include <stdbool.h>
+ #include <stdint.h>
+ #include <signal.h>
+ #include <stdio.h>
+@@ -14,16 +13,63 @@
+ #include <time.h>
+ #include <unistd.h>
+ 
+-struct process {
++/* The live rootless server is a Linux child subreaper. Descendants cannot
++ * escape its ownership by setsid(), double-forking, or losing their parent. */
++enum shutdown_state {
++	QUIESCING,
++	TERM_PENDING,
++	RESUMING,
++	DRAINING,
++	QUIESCING_FOR_KILL,
++	KILL_PENDING,
++	WAITING_FOR_EXIT,
++	VERIFYING_EMPTY,
++	STOPPING_SERVER,
++	WAITING_FOR_SERVER,
++	COMPLETE,
++};
++
++enum guest_state {
++	RUNNING,
++	STOP_REQUESTED,
++	STOPPED,
++	PREVIOUSLY_STOPPED,
++	EXITING,
++	EXITED,
++};
++
++struct process_identity {
+ 	pid_t pid;
+ 	pid_t parent;
+-	pid_t session;
+ 	unsigned long long start_time;
+-	bool owned;
++	char state;
++};
++
++struct guest {
++	struct process_identity identity;
+ 	int pidfd;
++	enum guest_state state;
++};
++
++struct shutdown {
++	pid_t server;
++	int server_fd;
++	struct guest* guests;
++	size_t count;
++	size_t capacity;
++	int64_t deadline;
++	enum shutdown_state state;
+ };
+ 
+-static int read_process(pid_t pid, struct process* process)
++static int64_t now_ms(void)
++{
++	struct timespec now;
++	if (clock_gettime(CLOCK_MONOTONIC, &now) != 0)
++		return -errno;
++	return now.tv_sec * INT64_C(1000) + now.tv_nsec / 1000000;
++}
++
++static int read_process(pid_t pid, struct process_identity* process)
+ {
+ 	char path[64];
+ 	char stat[4096];
+@@ -38,191 +84,408 @@ static int read_process(pid_t pid, struct process* process)
+ 		return result;
+ 	stat[length] = '\0';
+ 	char* fields = strrchr(stat, ')');
+-	char state;
+ 	if (fields == NULL || sscanf(fields + 1,
+-			" %c %d %*d %d"
++			" %c %d %*s %*s"
+ 			" %*s %*s %*s %*s %*s"
+ 			" %*s %*s %*s %*s %*s"
+ 			" %*s %*s %*s %*s %*s %llu",
+-			&state, &process->parent, &process->session,
+-			&process->start_time) != 4)
++			&process->state, &process->parent, &process->start_time) != 3)
+ 		return -EIO;
+ 	process->pid = pid;
+-	process->owned = false;
+-	process->pidfd = -1;
+ 	return 0;
+ }
+ 
+-static int collect_processes(struct process** processes, size_t* count)
++static int process_exited(int pidfd)
+ {
+-	DIR* proc = opendir("/proc");
+-	if (proc == NULL)
++	struct pollfd fd = { .fd = pidfd, .events = POLLIN };
++	int result;
++	do {
++		result = poll(&fd, 1, 0);
++	} while (result < 0 && errno == EINTR);
++	if (result < 0)
+ 		return -errno;
+-	size_t capacity = 0;
+-	int result = 0;
++	if (result == 0)
++		return 0;
++	return fd.revents & (POLLIN | POLLHUP) ? 1 : -EIO;
++}
++
++static int owner_alive(const struct shutdown* shutdown)
++{
++	int result = process_exited(shutdown->server_fd);
++	return result > 0 ? -EPIPE : result;
++}
++
++static int signal_guest(struct guest* guest, int signal_number)
++{
++	if (guest->state == EXITED)
++		return 0;
++	if (syscall(SYS_pidfd_send_signal, guest->pidfd, signal_number, NULL, 0) == 0)
++		return 0;
++	int error = errno;
++	if (error == ESRCH && process_exited(guest->pidfd) == 1) {
++		guest->state = EXITED;
++		return 0;
++	}
++	return -error;
++}
++
++/* Return one when the ownership view changed, including a child disappearing
++ * during discovery. That requires another pass over the subreaper's children. */
++static int pin_child(struct shutdown* shutdown, pid_t pid, pid_t parent, int parent_fd)
++{
++	for (size_t i = 0; i < shutdown->count; ++i) {
++		if (shutdown->guests[i].identity.pid == pid &&
++				process_exited(shutdown->guests[i].pidfd) == 0)
++			return 0;
++	}
++	int fd = syscall(SYS_pidfd_open, pid, 0);
++	if (fd < 0)
++		return errno == ESRCH ? 1 : -errno;
++	struct process_identity identity;
++	int result = read_process(pid, &identity);
++	if (result == -ENOENT || result == -ESRCH) {
++		close(fd);
++		return 1;
++	}
++	if (result != 0) {
++		close(fd);
++		return result;
++	}
++	int exited = process_exited(fd);
++	int parent_exited = process_exited(parent_fd);
++	if (exited < 0 || parent_exited < 0) {
++		close(fd);
++		return exited < 0 ? exited : parent_exited;
++	}
++	/* A live pinned parent proves the relationship, not just a reused PID
++	 * number in a stale /proc snapshot. Ownership then remains monotonic. */
++	if (identity.parent != parent || parent_exited) {
++		close(fd);
++		return 1;
++	}
++	if (exited) {
++		for (size_t i = 0; i < shutdown->count; ++i) {
++			if (shutdown->guests[i].identity.pid == pid &&
++					shutdown->guests[i].identity.start_time == identity.start_time) {
++				close(fd);
++				return 0;
++			}
++		}
++	}
++	if (pid == getpid()) {
++		close(fd);
++		return -EDEADLK;
++	}
++	if (shutdown->count == shutdown->capacity) {
++		if (shutdown->capacity > SIZE_MAX / 2 / sizeof(*shutdown->guests)) {
++			close(fd);
++			return -ENOMEM;
++		}
++		size_t capacity = shutdown->capacity ? shutdown->capacity * 2 : 16;
++		void* resized = realloc(shutdown->guests, capacity * sizeof(*shutdown->guests));
++		if (resized == NULL) {
++			close(fd);
++			return -ENOMEM;
++		}
++		shutdown->guests = resized;
++		shutdown->capacity = capacity;
++	}
++	shutdown->guests[shutdown->count++] = (struct guest) {
++		.identity = identity,
++		.pidfd = fd,
++		.state = exited ? EXITED : RUNNING,
++	};
++	return 1;
++}
++
++static int scan_children(struct shutdown* shutdown, pid_t parent, int parent_fd)
++{
++	char path[96];
++	snprintf(path, sizeof(path), "/proc/%d/task", parent);
++	DIR* tasks = opendir(path);
++	if (tasks == NULL)
++		return errno == ENOENT || errno == ESRCH ? 1 : -errno;
++	int changes = 0;
+ 	struct dirent* entry;
+-	while (errno = 0, (entry = readdir(proc)) != NULL) {
++	while (errno = 0, (entry = readdir(tasks)) != NULL) {
+ 		char* end;
+-		long pid = strtol(entry->d_name, &end, 10);
+-		if (*end != '\0' || pid <= 0 || pid > INT_MAX)
++		long tid = strtol(entry->d_name, &end, 10);
++		if (*end != '\0' || tid <= 0 || tid > INT_MAX)
+ 			continue;
+-		struct process process;
+-		result = read_process((pid_t)pid, &process);
+-		if (result == -ENOENT || result == -ESRCH) {
+-			result = 0;
+-			continue;
+-		}
+-		if (result != 0)
+-			break;
+-		if (*count == capacity) {
+-			if (capacity > SIZE_MAX / 2 / sizeof(**processes)) {
+-				result = -ENOMEM;
+-				break;
++		snprintf(path, sizeof(path), "/proc/%d/task/%ld/children", parent, tid);
++		FILE* children = fopen(path, "r");
++		if (children == NULL) {
++			if (errno == ENOENT || errno == ESRCH) {
++				++changes;
++				continue;
+ 			}
+-			capacity = capacity ? capacity * 2 : 64;
+-			void* resized = realloc(*processes, capacity * sizeof(**processes));
+-			if (resized == NULL) {
+-				result = -ENOMEM;
++			changes = -errno;
++			break;
++		}
++		long pid;
++		int parsed;
++		while ((parsed = fscanf(children, "%ld", &pid)) == 1) {
++			int result = pid > 0 && pid <= INT_MAX
++				? pin_child(shutdown, (pid_t)pid, parent, parent_fd) : -EIO;
++			if (result < 0) {
++				changes = result;
+ 				break;
+ 			}
+-			*processes = resized;
++			changes += result;
+ 		}
+-		(*processes)[(*count)++] = process;
++		if (changes >= 0 && (parsed == 0 || ferror(children)))
++			changes = -(errno ? errno : EIO);
++		fclose(children);
++		if (changes < 0)
++			break;
+ 	}
+ 	if (entry == NULL && errno != 0)
+-		result = -errno;
+-	closedir(proc);
+-	return result;
++		changes = -errno;
++	closedir(tasks);
++	return changes;
+ }
+ 
+-static int signal_processes(struct process* processes, size_t count, int signal_number)
++static int threads_stopped(pid_t pid)
+ {
+-	for (size_t i = 0; i < count; ++i) {
+-		if (processes[i].pidfd < 0)
++	char path[64];
++	snprintf(path, sizeof(path), "/proc/%d/task", pid);
++	DIR* tasks = opendir(path);
++	if (tasks == NULL)
++		return errno == ENOENT || errno == ESRCH ? 0 : -errno;
++	int stopped = 0;
++	struct dirent* entry;
++	while (errno = 0, (entry = readdir(tasks)) != NULL) {
++		char* end;
++		long tid = strtol(entry->d_name, &end, 10);
++		if (*end != '\0' || tid <= 0 || tid > INT_MAX)
+ 			continue;
+-		if (syscall(SYS_pidfd_send_signal, processes[i].pidfd,
+-				signal_number, NULL, 0) < 0 && errno != ESRCH)
+-			return -errno;
++		struct process_identity thread;
++		int result = read_process((pid_t)tid, &thread);
++		if (result == -ENOENT || result == -ESRCH) {
++			stopped = 0;
++			break;
++		}
++		if (result != 0) {
++			stopped = result;
++			break;
++		}
++		if (thread.state != 'T' && thread.state != 't' &&
++				thread.state != 'Z' && thread.state != 'X') {
++			stopped = 0;
++			break;
++		}
++		stopped = 1;
+ 	}
+-	return 0;
++	if (entry == NULL && errno != 0)
++		stopped = -errno;
++	closedir(tasks);
++	return stopped;
+ }
+ 
+-static int wait_processes(struct process* processes, size_t count, int timeout_ms)
++static int quiesce(struct shutdown* shutdown)
+ {
+-	struct timespec deadline;
+-	if (clock_gettime(CLOCK_MONOTONIC, &deadline) != 0)
+-		return -errno;
+-	deadline.tv_sec += timeout_ms / 1000;
+-	deadline.tv_nsec += (timeout_ms % 1000) * 1000000L;
+-	if (deadline.tv_nsec >= 1000000000L) {
+-		++deadline.tv_sec;
+-		deadline.tv_nsec -= 1000000000L;
+-	}
+-	for (size_t i = 0; i < count; ++i) {
+-		if (processes[i].pidfd < 0)
+-			continue;
+-		struct pollfd fd = { .fd = processes[i].pidfd, .events = POLLIN };
+-		for (;;) {
+-			struct timespec now;
+-			if (clock_gettime(CLOCK_MONOTONIC, &now) != 0)
+-				return -errno;
+-			long long remaining = (deadline.tv_sec - now.tv_sec) * 1000LL
+-				+ (deadline.tv_nsec - now.tv_nsec + 999999L) / 1000000L;
+-			int result = poll(&fd, 1, remaining > 0 ? (int)remaining : 0);
+-			if (result < 0 && errno == EINTR)
++	int64_t started = now_ms();
++	if (started < 0)
++		return (int)started;
++	for (;;) {
++		int result = owner_alive(shutdown);
++		if (result != 0)
++			return result;
++		int changes = scan_children(shutdown, shutdown->server, shutdown->server_fd);
++		if (changes < 0)
++			return changes;
++		size_t pending = 0;
++		for (size_t i = 0; i < shutdown->count; ++i) {
++			struct guest* guest = &shutdown->guests[i];
++			result = process_exited(guest->pidfd);
++			if (result < 0)
++				return result;
++			if (result) {
++				if (guest->state != EXITED)
++					++changes;
++				guest->state = EXITED;
+ 				continue;
++			}
++			result = threads_stopped(guest->identity.pid);
+ 			if (result < 0)
+-				return -errno;
+-			if (result == 0)
+-				return -ETIMEDOUT;
+-			if ((fd.revents & (POLLIN | POLLHUP)) == 0)
+-				return -EIO;
+-			break;
++				return result;
++			if (result) {
++				if (guest->state == RUNNING)
++					guest->state = PREVIOUSLY_STOPPED;
++				else if (guest->state == STOP_REQUESTED)
++					guest->state = STOPPED;
++				/* Scanning may grow the array; retain no guest pointer across it. */
++				result = scan_children(shutdown, guest->identity.pid, guest->pidfd);
++				if (result < 0)
++					return result;
++				changes += result;
++			} else {
++				if (guest->state != STOP_REQUESTED) {
++					result = signal_guest(guest, SIGSTOP);
++					if (result != 0)
++						return result;
++					if (guest->state != EXITED)
++						guest->state = STOP_REQUESTED;
++				}
++				++pending;
++			}
+ 		}
++		if (pending == 0 && changes == 0)
++			return owner_alive(shutdown);
++		int64_t now = now_ms();
++		if (now < 0)
++			return (int)now;
++		if (now - started >= 1000 || now >= shutdown->deadline)
++			return -ETIMEDOUT;
++		usleep(10000);
+ 	}
+-	return 0;
+ }
+ 
+-int shutdown_rootless_process_tree(pid_t leader)
++static int wait_pidfd(int pidfd, int64_t deadline)
+ {
+-	struct process root;
+-	int result = read_process(leader, &root);
+-	if (result != 0)
+-		return result;
+-	/* launchd owns a distinct session; never seed the caller's host session. */
+-	if (root.session != leader || root.session == getsid(0))
+-		return -EINVAL;
++	struct pollfd fd = { .fd = pidfd, .events = POLLIN };
++	for (;;) {
++		int64_t now = now_ms();
++		if (now < 0)
++			return (int)now;
++		int result = poll(&fd, 1, now < deadline ? (int)(deadline - now) : 0);
++		if (result < 0 && errno == EINTR)
++			continue;
++		if (result < 0)
++			return -errno;
++		if (result == 0)
++			return -ETIMEDOUT;
++		return fd.revents & (POLLIN | POLLHUP) ? 0 : -EIO;
++	}
++}
+ 
+-	struct process* processes = NULL;
+-	size_t count = 0;
+-	result = collect_processes(&processes, &count);
+-	if (result != 0)
+-		goto out;
++static int wait_guests(struct shutdown* shutdown)
++{
++	int64_t now = now_ms();
++	if (now < 0)
++		return (int)now;
++	int64_t deadline = now + 1000;
++	if (deadline > shutdown->deadline)
++		deadline = shutdown->deadline;
++	for (size_t i = 0; i < shutdown->count; ++i) {
++		int result = wait_pidfd(shutdown->guests[i].pidfd, deadline);
++		if (result != 0)
++			return result;
++		shutdown->guests[i].state = EXITED;
++	}
++	return owner_alive(shutdown);
++}
+ 
+-	for (size_t i = 0; i < count; ++i)
+-		processes[i].owned = processes[i].session == root.session;
+-	/* shellspawn creates another session. Capture its descendants before any
+-	 * parent is terminated and they are reparented outside launchd's tree. */
+-	bool changed;
+-	do {
+-		changed = false;
+-		for (size_t i = 0; i < count; ++i) {
+-			if (processes[i].owned)
+-				continue;
+-			for (size_t j = 0; j < count; ++j) {
+-				if (processes[j].owned && processes[i].parent == processes[j].pid) {
+-					processes[i].owned = true;
+-					changed = true;
++static int resume_guests(struct shutdown* shutdown)
++{
++	for (size_t i = 0; i < shutdown->count; ++i) {
++		struct guest* guest = &shutdown->guests[i];
++		if (guest->state != STOPPED && guest->state != STOP_REQUESTED)
++			continue;
++		int result = signal_guest(guest, SIGCONT);
++		if (result != 0)
++			return result;
++		if (guest->state != EXITED)
++			guest->state = RUNNING;
++	}
++	return 0;
++}
++
++int shutdown_rootless_process_tree(pid_t server)
++{
++	if (server <= 1 || server == getpid())
++		return -EINVAL;
++	struct shutdown shutdown = { .server = server, .server_fd = -1, .state = QUIESCING };
++	int64_t started = now_ms();
++	if (started < 0)
++		return (int)started;
++	shutdown.deadline = started + 5000;
++	shutdown.server_fd = syscall(SYS_pidfd_open, server, 0);
++	if (shutdown.server_fd < 0)
++		return -errno;
++	int result = 0;
++	while (shutdown.state != COMPLETE) {
++		result = shutdown.state == WAITING_FOR_SERVER ? 0 : owner_alive(&shutdown);
++		if (result != 0)
++			break;
++		switch (shutdown.state) {
++		case QUIESCING:
++		case QUIESCING_FOR_KILL:
++			result = quiesce(&shutdown);
++			if (result == 0)
++				shutdown.state = shutdown.state == QUIESCING ? TERM_PENDING : KILL_PENDING;
++			break;
++		case TERM_PENDING:
++		case KILL_PENDING:
++			for (size_t i = 0; i < shutdown.count; ++i) {
++				result = signal_guest(&shutdown.guests[i],
++					shutdown.state == TERM_PENDING ? SIGTERM : SIGKILL);
++				if (result != 0)
+ 					break;
+-				}
++				if (shutdown.state == KILL_PENDING && shutdown.guests[i].state != EXITED)
++					shutdown.guests[i].state = EXITING;
+ 			}
++			if (result == 0)
++				shutdown.state = shutdown.state == TERM_PENDING ? RESUMING : WAITING_FOR_EXIT;
++			break;
++		case RESUMING:
++			result = resume_guests(&shutdown);
++			if (result == 0)
++				shutdown.state = DRAINING;
++			break;
++		case DRAINING:
++			result = wait_guests(&shutdown);
++			if (result == 0 || result == -ETIMEDOUT) {
++				/* Resumed TERM handlers may fork. Re-freeze the complete kernel
++				 * ownership closure before any final kill, not the old snapshot. */
++				result = 0;
++				shutdown.state = QUIESCING_FOR_KILL;
++			}
++			break;
++		case WAITING_FOR_EXIT:
++			result = wait_guests(&shutdown);
++			if (result == 0)
++				shutdown.state = VERIFYING_EMPTY;
++			break;
++		case VERIFYING_EMPTY:
++			result = scan_children(&shutdown, server, shutdown.server_fd);
++			if (result >= 0) {
++				shutdown.state = result == 0 ? STOPPING_SERVER : QUIESCING_FOR_KILL;
++				result = 0;
++			}
++			break;
++		case STOPPING_SERVER:
++			if (syscall(SYS_pidfd_send_signal, shutdown.server_fd, SIGKILL, NULL, 0) != 0)
++				result = -errno;
++			else
++				shutdown.state = WAITING_FOR_SERVER;
++			break;
++		case WAITING_FOR_SERVER:
++			result = wait_pidfd(shutdown.server_fd, shutdown.deadline);
++			if (result == 0)
++				shutdown.state = COMPLETE;
++			break;
++		case COMPLETE:
++			break;
+ 		}
+-	} while (changed);
+-
+-	for (size_t i = 0; i < count; ++i) {
+-		if (!processes[i].owned)
+-			continue;
+-		if (processes[i].pid == getpid()) {
+-			result = -EDEADLK;
+-			goto out;
+-		}
+-		int fd = syscall(SYS_pidfd_open, processes[i].pid, 0);
+-		if (fd < 0) {
+-			if (errno == ESRCH)
+-				continue;
+-			result = -errno;
+-			goto out;
+-		}
+-		struct process current;
+-		result = read_process(processes[i].pid, &current);
+-		if (result == -ENOENT || result == -ESRCH ||
+-				(result == 0 && current.start_time != processes[i].start_time)) {
+-			close(fd);
+-			result = 0;
+-			continue;
+-		}
+-		if (result != 0) {
+-			close(fd);
+-			goto out;
++		if (result != 0)
++			break;
++		int64_t now = now_ms();
++		if (now < 0 || (shutdown.state != COMPLETE && now >= shutdown.deadline)) {
++			result = now < 0 ? (int)now : -ETIMEDOUT;
++			break;
+ 		}
+-		processes[i].pidfd = fd;
+-	}
+-
+-	result = signal_processes(processes, count, SIGTERM);
+-	if (result == 0)
+-		result = wait_processes(processes, count, 1000);
+-	if (result == -ETIMEDOUT) {
+-		result = signal_processes(processes, count, SIGKILL);
+-		if (result == 0)
+-			result = wait_processes(processes, count, 1000);
+ 	}
+-	/* Only a verified terminal guest set permits the caller to stop the RPC
+-	 * server. An error leaves both the server and its runtime state intact. */
+-out:
+-	for (size_t i = 0; i < count; ++i) {
+-		if (processes[i].pidfd >= 0)
+-			close(processes[i].pidfd);
++	/* Failure is not successful shutdown: release only stops acquired by us,
++	 * and leave the live RPC owner and its runtime state for the caller. */
++	if (result != 0) {
++		int resume_result = resume_guests(&shutdown);
++		if (resume_result != 0)
++			fprintf(stderr, "Cannot release rootless shutdown stops: %s\n", strerror(-resume_result));
+ 	}
+-	free(processes);
++	for (size_t i = 0; i < shutdown.count; ++i)
++		close(shutdown.guests[i].pidfd);
++	free(shutdown.guests);
++	close(shutdown.server_fd);
+ 	return result;
+ }
+diff --git a/src/startup/rootless_shutdown.h b/src/startup/rootless_shutdown.h
+index f9e0a7b69cc9fbb3f2b98bf81a2cda2889d8bd87..271ab8541d06ec7de7b8ff6ce9a8512e85ba1c15 100644
+--- a/src/startup/rootless_shutdown.h
++++ b/src/startup/rootless_shutdown.h
+@@ -3,6 +3,8 @@
+ 
+ #include <sys/types.h>
+ 
+-int shutdown_rootless_process_tree(pid_t leader);
++/* The server must be the rootless prefix's live Linux child subreaper.
++ * Success means all guests exited before the pinned server was terminated. */
++int shutdown_rootless_process_tree(pid_t server);
+ 
+ #endif
+diff --git a/src/startup/tests/rootless_shutdown_session_test.c b/src/startup/tests/rootless_shutdown_session_test.c
+index 3eae3b5932700a35fd9045ad6a935cc298f9628a..8f1bc58657b16b8073707d5bb96022718d91d7ef 100644
+--- a/src/startup/tests/rootless_shutdown_session_test.c
++++ b/src/startup/tests/rootless_shutdown_session_test.c
+@@ -1,9 +1,9 @@
+ #include "../rootless_shutdown.h"
+ 
+ #include <errno.h>
++#include <fcntl.h>
+ #include <signal.h>
+ #include <stdio.h>
+-#include <stdlib.h>
+ #include <sys/prctl.h>
+ #include <sys/socket.h>
+ #include <sys/types.h>
+@@ -17,6 +17,14 @@ struct ready {
+ };
+ 
+ static int client;
++static int notifications;
++
++static void announce_pid(int role, pid_t pid)
++{
++	struct ready ready = { .role = role, .pid = pid };
++	if (write(notifications, &ready, sizeof(ready)) != sizeof(ready))
++		_exit(44);
++}
+ 
+ static void terminate_worker(int signal_number)
+ {
+@@ -24,14 +32,72 @@ static void terminate_worker(int signal_number)
+ 	char reply;
+ 	if (write(client, "T", 1) != 1 || read(client, &reply, 1) != 1 || reply != 'A')
+ 		_exit(43);
++	/* A real TERM handler can fork and exit. The child changes session and
++	 * is adopted by the live server, not by its dead guest parent. */
++	pid_t child = fork();
++	if (child < 0)
++		_exit(54);
++	if (child == 0) {
++		if (setsid() < 0)
++			_exit(55);
++		signal(SIGTERM, SIG_IGN);
++		for (;;)
++			pause();
++	}
++	announce_pid(3, child);
+ 	_exit(42);
+ }
+ 
+-static void announce(int fd, int role)
++static void restart_worker(int signal_number)
+ {
+-	struct ready ready = { .role = role, .pid = getpid() };
+-	if (write(fd, &ready, sizeof(ready)) != sizeof(ready))
+-		_exit(44);
++	(void)signal_number;
++	pid_t child = fork();
++	if (child == 0) {
++		signal(SIGTERM, SIG_DFL);
++		signal(SIGCHLD, SIG_DFL);
++		for (;;)
++			pause();
++	}
++	if (child > 0)
++		announce_pid(3, child);
++}
++
++static void guest_init(int separate_sessions)
++{
++	if (setsid() < 0)
++		_exit(46);
++	signal(SIGTERM, SIG_IGN);
++	struct sigaction restart = { .sa_handler = restart_worker };
++	sigemptyset(&restart.sa_mask);
++	if (sigaction(SIGCHLD, &restart, NULL) != 0)
++		_exit(53);
++	pid_t worker = fork();
++	if (worker < 0)
++		_exit(47);
++	if (worker == 0) {
++		signal(SIGCHLD, SIG_DFL);
++		if (separate_sessions && setsid() < 0)
++			_exit(48);
++		struct sigaction action = { .sa_handler = terminate_worker };
++		sigemptyset(&action.sa_mask);
++		if (sigaction(SIGTERM, &action, NULL) != 0)
++			_exit(49);
++		pid_t stubborn = fork();
++		if (stubborn < 0)
++			_exit(50);
++		if (stubborn == 0) {
++			if (separate_sessions && setsid() < 0)
++				_exit(51);
++			signal(SIGTERM, SIG_IGN);
++			announce_pid(2, getpid());
++		} else {
++			announce_pid(1, getpid());
++		}
++	} else {
++		announce_pid(0, getpid());
++	}
++	for (;;)
++		pause();
+ }
+ 
+ static int run_fixture(int separate_sessions)
+@@ -41,58 +107,36 @@ static int run_fixture(int separate_sessions)
+ 	if (pipe(ready_pipe) != 0 || socketpair(AF_UNIX, SOCK_STREAM, 0, sockets) != 0)
+ 		return 1;
+ 	client = sockets[1];
++	notifications = ready_pipe[1];
+ 	pid_t server = fork();
+ 	if (server < 0)
+ 		return 1;
+ 	if (server == 0) {
++		close(ready_pipe[0]);
++		if (prctl(PR_SET_CHILD_SUBREAPER, 1) != 0)
++			_exit(56);
++		pid_t init = fork();
++		if (init < 0)
++			_exit(57);
++		if (init == 0) {
++			close(sockets[0]);
++			guest_init(separate_sessions);
++		}
+ 		close(sockets[1]);
++		close(ready_pipe[1]);
+ 		char request;
+ 		while (read(sockets[0], &request, 1) == 1) {
+-			/* Termination needs a live server, not merely successful kill(). */
+ 			struct timespec delay = { .tv_nsec = 200000000L };
+ 			nanosleep(&delay, NULL);
+ 			if (request != 'T' || write(sockets[0], "A", 1) != 1)
+ 				_exit(45);
+ 		}
+-		_exit(0);
+-	}
+-	close(sockets[0]);
+-	pid_t leader = fork();
+-	if (leader < 0)
+-		return 1;
+-	if (leader == 0) {
+-		close(ready_pipe[0]);
+-		if (setsid() < 0)
+-			_exit(46);
+-		pid_t worker = fork();
+-		if (worker < 0)
+-			_exit(47);
+-		if (worker == 0) {
+-			if (separate_sessions && setsid() < 0)
+-				_exit(48);
+-			struct sigaction action = { .sa_handler = terminate_worker };
+-			sigemptyset(&action.sa_mask);
+-			if (sigaction(SIGTERM, &action, NULL) != 0)
+-				_exit(49);
+-			pid_t stubborn = fork();
+-			if (stubborn < 0)
+-				_exit(50);
+-			if (stubborn == 0) {
+-				if (separate_sessions && setsid() < 0)
+-					_exit(51);
+-				signal(SIGTERM, SIG_IGN);
+-				announce(ready_pipe[1], 2);
+-			} else {
+-				announce(ready_pipe[1], 1);
+-			}
+-		} else {
+-			announce(ready_pipe[1], 0);
+-		}
+ 		for (;;)
+ 			pause();
+ 	}
+-	close(ready_pipe[1]);
++	close(sockets[0]);
+ 	close(sockets[1]);
++	close(ready_pipe[1]);
+ 	pid_t guests[3] = { 0 };
+ 	int failed = 0;
+ 	for (int i = 0; i < 3; ++i) {
+@@ -104,39 +148,46 @@ static int run_fixture(int separate_sessions)
+ 		}
+ 		guests[ready.role] = ready.pid;
+ 	}
+-	close(ready_pipe[0]);
+-	if (!failed && shutdown_rootless_process_tree(leader) != 0)
++	if (!failed && shutdown_rootless_process_tree(server) != 0)
+ 		failed = 1;
+-	/* The caller may now stop its server. Any still-running termination
+-	 * handler loses the reply and produces a distinct failing exit status. */
+-	if (kill(server, 0) != 0)
+-		failed = 1;
+-	kill(server, SIGKILL);
+ 	int status;
+-	waitpid(server, &status, 0);
++	if (waitpid(server, &status, WNOHANG) != server) {
++		failed = 1;
++		kill(server, SIGKILL);
++		waitpid(server, &status, 0);
++	}
+ 	for (int i = 0; i < 3; ++i) {
+ 		if (guests[i] <= 0)
+ 			continue;
+-		pid_t reaped = waitpid(guests[i], &status, WNOHANG);
+-		if (reaped != guests[i]) {
++		if (waitpid(guests[i], &status, WNOHANG) != guests[i]) {
+ 			failed = 1;
+ 			kill(guests[i], SIGKILL);
+ 			waitpid(guests[i], &status, 0);
+ 			continue;
+ 		}
+-		if (i == 1 ? !(WIFEXITED(status) && WEXITSTATUS(status) == 42) :
+-				!(WIFSIGNALED(status) && WTERMSIG(status) == (i == 0 ? SIGTERM : SIGKILL)))
++		if (i == 1 ? !(WIFEXITED(status) && WEXITSTATUS(status) == 42) : !WIFSIGNALED(status))
+ 			failed = 1;
+ 	}
++	fcntl(ready_pipe[0], F_SETFL, O_NONBLOCK);
++	struct ready replacement;
++	while (read(ready_pipe[0], &replacement, sizeof(replacement)) == sizeof(replacement)) {
++		if (waitpid(replacement.pid, &status, WNOHANG) != replacement.pid) {
++			failed = 1;
++			fprintf(stderr, "late guest survived shutdown: %d\n", replacement.pid);
++			kill(replacement.pid, SIGKILL);
++			waitpid(replacement.pid, &status, 0);
++		}
++	}
++	close(ready_pipe[0]);
+ 	if (failed)
+-		fprintf(stderr, "rootless shutdown failed guest-tree termination (separate_sessions=%d)\n",
++		fprintf(stderr, "rootless shutdown failed guest-domain termination (separate_sessions=%d)\n",
+ 			separate_sessions);
+ 	return failed;
+ }
+ 
+ int main(void)
+ {
+-	alarm(15);
++	alarm(20);
+ 	if (prctl(PR_SET_CHILD_SUBREAPER, 1) != 0)
+ 		return 1;
+ 	int failed = run_fixture(0);
