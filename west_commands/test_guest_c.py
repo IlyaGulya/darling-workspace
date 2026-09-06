@@ -563,7 +563,7 @@ fi
             }
         )
         result = run_bounded(
-            command._debug_runner_args(child),
+            command._debug_runner_args(child, env=run_env),
             cwd=invocation["cwd"],
             env=run_env,
             timeout_seconds=int(child["debug_timeout_seconds"]) + 15,

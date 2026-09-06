@@ -27,7 +27,7 @@ from west_commands.test_execution import ProcessResult
 
 
 test = DarlingTest.__new__(DarlingTest)
-test._debug_runner_args = lambda _invocation: ["fixture"]
+test._debug_runner_args = lambda _invocation, **_kwargs: ["fixture"]
 test._check_host_traces = lambda _invocation, _env: 1
 test.err = lambda _message: None
 phases: list[str] = []

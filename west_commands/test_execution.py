@@ -157,6 +157,9 @@ def _run_with_live_capture(
             stdout=_read_capture(capture_streams[0], text=text),
             stderr=_read_capture(capture_streams[1], text=text),
         )
+    except KeyboardInterrupt:
+        # The outer execution owner forwards cancellation and waits for cleanup.
+        raise
     except BaseException:
         _kill_process_group(process)
         process.wait()
@@ -262,6 +265,18 @@ def run_bounded(
                 return ProcessResult(process.wait(timeout=min(remaining, heartbeat_seconds)))
             except subprocess.TimeoutExpired:
                 heartbeat(time.monotonic() - started_at)
+    except KeyboardInterrupt:
+        # A guarded child owns ordered resource cleanup. Give it the signal
+        # before unwinding the caller's prefix context or escalating to SIGKILL.
+        process.send_signal(signal.SIGINT)
+        try:
+            # Match the guarded runner's outer cleanup allowance: shutdown can
+            # take five seconds, followed by a five-second managed-child wait.
+            process.communicate(timeout=15)
+        except subprocess.TimeoutExpired:
+            _kill_process_group(process)
+            process.communicate()
+        raise
     except subprocess.TimeoutExpired:
         _kill_process_group(process)
         if capture_output or input_data is not None:

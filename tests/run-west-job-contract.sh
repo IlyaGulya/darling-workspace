@@ -240,6 +240,32 @@ if kill -0 "$command_pid" 2>/dev/null; then
 	exit 1
 fi
 
+# A shell cannot install its cleanup trap if SIGINT was ignored on entry.
+# Python's signal.signal() fixtures above do not exercise that exec contract.
+"$job" start --state-dir "$tmp/shell-cancel" -- /bin/bash -c '
+	cancelled() {
+		kill "$child"
+		wait "$child" || true
+		printf "SHELL_CANCEL_CLEANUP_COMPLETE\n"
+		exit 0
+	}
+	trap cancelled INT
+	sleep 30 &
+	child=$!
+	printf "SHELL_CANCEL_READY\n"
+	wait "$child"
+'
+while ! grep -F -x -q SHELL_CANCEL_READY "$tmp/shell-cancel/log"; do
+	kill -0 "$(<"$tmp/shell-cancel/pid")" 2>/dev/null || exit 1
+done
+"$job" cancel --state-dir "$tmp/shell-cancel"
+if wait_job --state-dir "$tmp/shell-cancel"; then
+	echo 'cancelled shell job unexpectedly succeeded' >&2
+	exit 1
+fi
+test "$(<"$tmp/shell-cancel/rc")" = 143
+grep -F -x -q SHELL_CANCEL_CLEANUP_COMPLETE "$tmp/shell-cancel/log"
+
 env WEST_JOB_CANCEL_GRACE_SECONDS=1 "$job" start --state-dir "$tmp/unresponsive" -- \
 	bash -c 'trap "" INT; printf "UNRESPONSIVE_READY\\n"; sleep 30'
 while [[ ! -f "$tmp/unresponsive/command-pid" ]] || ! grep -F -x -q 'UNRESPONSIVE_READY' "$tmp/unresponsive/log"; do
