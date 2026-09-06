@@ -1,0 +1,37 @@
+From f1575e01386ca9068626f9cd9ebc7d2872183b99 Mon Sep 17 00:00:00 2001
+From: Ilya Gulya <ilya@gulya.me>
+Date: Sun, 6 Sep 2026 06:25:57 +0000
+Subject: [PATCH] Validate descriptor access before E-UNION content copy-up
+
+F_GETFL distinguishes invalid descriptors from negative errno results and prevents read-only or O_PATH descriptors from acquiring write access when the upper copy is reopened for ftruncate.
+---
+ .../emulation/src/linux_premigration/vchroot_userspace.c | 9 +++++++++
+ 1 file changed, 9 insertions(+)
+
+diff --git a/darling/src/libsystem_kernel/emulation/src/linux_premigration/vchroot_userspace.c b/darling/src/libsystem_kernel/emulation/src/linux_premigration/vchroot_userspace.c
+index 8a418f9373602d01e32b390969be98c063d1f82b..f25804c9b9ab53ad95df76959213d5ebbf486e2e 100644
+--- a/darling/src/libsystem_kernel/emulation/src/linux_premigration/vchroot_userspace.c
++++ b/darling/src/libsystem_kernel/emulation/src/linux_premigration/vchroot_userspace.c
+@@ -33,6 +33,7 @@
+ 
+ #	define LINUX_AT_FDCWD AT_FDCWD
+ #	define LINUX_O_RDONLY O_RDONLY
++#	define LINUX_O_WRONLY O_WRONLY
+ 
+ #	define __simple_sprintf sprintf
+ #	define __simple_snprintf snprintf
+@@ -1271,6 +1272,14 @@ int vchroot_fd_for_meta_write(int fd)
+ // unmanaged/escape/no-copyup, or a negative errno.
+ int vchroot_fd_for_content_write(int fd)
+ {
++	int flags = LINUX_SYSCALL(__NR_fcntl, fd, LINUX_F_GETFL, 0);
++	if (flags < 0)
++		return flags;
++	int access = flags & (LINUX_O_WRONLY | LINUX_O_RDWR);
++	if ((flags & LINUX_O_PATH) ||
++		(access != LINUX_O_WRONLY && access != LINUX_O_RDWR))
++		return -LINUX_EBADF;
++
+ 	char guest[4096];
+ 	int r = vchroot_prepare_write_fd(fd, guest, sizeof(guest));
+ 	if (r < 0)

@@ -1,0 +1,88 @@
+version: 1
+description: Local wget residual fixes; canonical lock-first activation awaits immutable source closure and reviewed composition under dar-gwn.7.
+base-profile: homebrew
+patches:
+- path: darling/rootless-homebrew-coreservices.patch
+  module: darling
+  source-branch: fix/rootless-homebrew-coreservices
+  source-base: 681329d6b6cb007e86316c572b138de88f1cfb8b
+  source-commit: 23ccdeddaf85df02ef1c0e9570d2103308e21d2e
+  bead: dar-gwn.7
+  publication-status: blocked
+  publication-blocker: Complete stock wget source-install acceptance and portable rootless closure coverage remain under dar-gwn.7.
+  test-exception:
+    reason: manual-runtime-regression
+    scope: CoreServices loading was reproduced through unmodified libunistring test-alignasof and passed after closure deployment; the portable dynamic-loader regression belongs to dar-gwn.7.
+  sha256sum: d620056b44fc4a2dee128ef8317621f9f1f93ed37b9a56f561f3c7ac245be3fa
+- path: xnu/eunion-content-fd-validation.patch
+  module: darling/src/external/xnu
+  source-branch: fix/eunion-content-fd-validation
+  source-base: 812e6e820009dde5f5af832233ebd120b7258fb6
+  source-commit: f1575e01386ca9068626f9cd9ebc7d2872183b99
+  bead: dar-gwn.7
+  publication-status: blocked
+  publication-blocker: Deployed guest regression and complete stock wget acceptance remain under dar-gwn.7.
+  tests:
+  - name: eunion_content_fd_validation
+    kind: contract
+    coverage-tier: host
+    runs: host
+    diag: bare
+    red: true
+    red-proof:
+      mode: source-base
+      source-env: XNU_SRC_ROOT
+      expect-output-contains:
+      - 'FAIL  FT negative descriptor reports EBADF'
+    runner: source-contract-script
+    repo: darling-workspace
+    script: experiments/e-union/run.sh
+    timeout-seconds: 60
+    note: Execute production ftruncate and E-UNION copy-up; rejected descriptors must report EBADF without copying up or mutating LOWER.
+  sha256sum: 9ca0a7dd504aff7dd8d79a14fbb69a74bea1ad8975127bee716c8030c5fad69e
+- path: darlingserver/preserve-wait-state-on-resume.patch
+  module: darling/src/external/darlingserver
+  source-branch: fix/preserve-wait-state-on-resume
+  source-base: 89751e64bc6c2082f7725061824ee0e33395b0de
+  source-commit: 84a354411b5b6866c9b856b80af1a3855e473948
+  bead: dar-gwn.7
+  publication-status: blocked
+  publication-blocker: Full guest acceptance and a portable waitq-enrollment regression remain under dar-gwn.7.
+  test-exception:
+    reason: manual-runtime-regression
+    scope: The libunistring mutex stage reproduced a waitq double-enrollment panic and passed on the diagnostic runtime; a deterministic raw-lock-within-XNU-wait fixture belongs to dar-gwn.7.
+  sha256sum: 3f3692e47bce0019f3c9321085adb50af34cece4d3a8300552f394a7f324d173
+- path: darlingserver/microthread-dispatch-handoff.patch
+  module: darling/src/external/darlingserver
+  source-branch: fix/microthread-dispatch-handoff
+  source-base: a99d52248f437be96239a22c8ce5f58fbf32d221
+  source-commit: 893f7414fa0f2308b69fe73199c86196d6f1cae9
+  bead: dar-gwn.7
+  publication-status: blocked
+  publication-blocker: Full guest acceptance and portable overlapping-dispatch runtime proof remain under dar-gwn.7; model coverage is not runtime coverage.
+  tests:
+  - name: microthread_dispatch_handoff_model
+    kind: contract
+    coverage-tier: model
+    runs: host
+    diag: bare
+    red: true
+    red-proof:
+      mode: self
+      why-self: The fixture executes the old lost-dispatch model and the production execution-ownership state machine with the same overlapping calls and duplicate dispatch attempts.
+      expect-output-contains:
+      - MICROTHREAD_OLD_DISPATCH_LOST_CALL
+      - MICROTHREAD_DISPATCH_HANDOFF_OK
+    runner: c-fixture
+    repo: darling-workspace
+    script: tests/microthread_dispatch_contract.cpp
+    source-env: DSERVER_SRC_ROOT
+    cc: c++
+    include-dirs:
+    - internal-include
+    compile-flags:
+    - -std=c++17
+    - -Wall
+    - -Wextra
+    - -Werror
+  sha256sum: c0e8f2b6cb17682d1a26433d8e60a42a5d7e5690167475137508b2df42929dd3

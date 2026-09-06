@@ -120,6 +120,7 @@ long sys_renameat(int oldfd, const char* oldpath, int newfd, const char* newpath
 long sys_unlinkat(int fd, const char* path, int flag);
 long sys_openat(int fd, const char* path, int flags, unsigned int mode);
 long sys_dup(int fd);
+long sys_ftruncate(int fd, long long length);
 long long sys_lseek(int fd, long long offset, int whence);
 void kqueue_dup(int oldfd, int newfd) { (void)oldfd; (void)newfd; }
 
@@ -1876,49 +1877,51 @@ int main(void) {
             }
         }
 
-        /* FT (.11). ftruncate is a CONTENT mutation by fd -- structurally identical
-           to fchmod/futimes (.4) but it was omitted from that set, so ftruncate.c
-           still hit the raw fd with no copy-up. This pins the wiring sys_ftruncate
-           must use: hand the fd to vchroot_fd_for_meta_write(), ftruncate the
-           RETURNED fd, close it if it differs. On a lower-only file opened (here)
-           on the lower inode, the helper copies up and re-opens the UPPER copy; the
-           truncate must shrink the UPPER copy and leave the TEMPLATE's bytes intact.
-           The buggy code (ftruncate the ORIGINAL fd) truncates the lower inode ->
-           template content lost -> RED. Dedicated pristine fixture. */
+        /* Descriptor validation must precede copy-up. A read-only descriptor
+           must not acquire write access by being reopened in the upper layer. */
         {
+            check("FT negative descriptor reports EBADF",
+                  sys_ftruncate(-1, 0) == -EBADF);
+            int closed_fd = dup(STDOUT_FILENO);
+            check("FT closed-descriptor fixture opens", closed_fd >= 0);
+            if (closed_fd >= 0) {
+                close(closed_fd);
+                check("FT closed descriptor reports EBADF",
+                      sys_ftruncate(closed_fd, 0) == -EBADF);
+            }
+
             snprintf(l, sizeof(l), "%s/var/log/ftrunc_lower", libexec);
             snprintf(p, sizeof(p), "%s/var/log/ftrunc_lower", prefix);
-            unlink(p); /* pristine: not copied up by an earlier test */
-            struct stat lst0; stat(l, &lst0);
-            check("FT fixture: template starts non-empty",
-                  lst0.st_size > 0);
-            off_t orig_size = lst0.st_size;
+            unlink(p);
+            struct stat original;
+            int original_ok = stat(l, &original) == 0;
+            check("FT template starts non-empty",
+                  original_ok && original.st_size > 0);
 
-            int fd = open(l, O_RDONLY); /* lower inode */
-            check("FT fixture: lower file opens", fd >= 0);
+            int fd = open(l, O_RDONLY);
+            check("FT read-only lower descriptor opens", fd >= 0);
             if (fd >= 0) {
-                /* exactly the wiring sys_ftruncate must perform under EUNION:
-                   the CONTENT-write helper (O_RDWR upper fd), not the meta helper */
-                int wfd = vchroot_fd_for_content_write(fd);
-                check("FT helper returns a usable fd (>=0)", wfd >= 0);
-                check("FT helper re-opened a DIFFERENT fd (upper copy)",
-                      wfd != fd);
-                if (wfd >= 0) {
-                    int tr = ftruncate(wfd, 0);
-                    check("FT ftruncate(returned fd, 0) succeeds", tr == 0);
-                    if (wfd != fd) close(wfd);
-                }
+                check("FT read-only descriptor reports EBADF",
+                      sys_ftruncate(fd, 0) == -EBADF);
                 close(fd);
-
-                /* the UPPER copy must now be truncated to 0 ... */
-                struct stat ust; int us_ok = (stat(p, &ust) == 0);
-                check("FT upper copy materialized", us_ok);
-                check("FT upper copy truncated to 0", us_ok && ust.st_size == 0);
-                /* ... and the TEMPLATE must keep its original bytes */
-                struct stat lst1; stat(l, &lst1);
-                check("FT template size UNTOUCHED (original bytes preserved)",
-                      lst1.st_size == orig_size);
+                check("FT rejected mutation does not copy up",
+                      access(p, F_OK) == -1 && errno == ENOENT);
             }
+
+            fd = open(l, O_RDWR);
+            check("FT writable lower descriptor opens", fd >= 0);
+            if (fd >= 0) {
+                check("FT writable descriptor truncates successfully",
+                      sys_ftruncate(fd, 0) == 0);
+                close(fd);
+                struct stat upper;
+                check("FT upper copy is truncated",
+                      stat(p, &upper) == 0 && upper.st_size == 0);
+            }
+            struct stat lower;
+            check("FT template contents retain their original size",
+                  original_ok && stat(l, &lower) == 0 &&
+                  lower.st_size == original.st_size);
         }
     }
 
