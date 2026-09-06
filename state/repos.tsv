@@ -1,5 +1,5 @@
 path	head	branch	origin	worktree
-.	e017cb9cbbe32a9a67920a9f1f3997355e9b86fa	integration/homebrew	git@github.com:darlinghq/darling	clean
+.	49e5fac3a292f46b8153baf00be3581406734e5d	integration/homebrew	git@github.com:darlinghq/darling	clean
 docs/darling-docs	14c841ef3df319254ef5ac291f828f27048a6579	DETACHED	git@github.com:darlinghq/darling-docs	clean
 src/external/AvailabilityVersions	e28c029a8fa46fa933cbf6d6d9a1c00978c5fad1	DETACHED	git@github.com:darlinghq/darling-AvailabilityVersions	clean
 src/external/BerkeleyDB	1411173f0eb71f96ab6134de4e052d16acb8c673	DETACHED	git@github.com:darlinghq/darling-BerkeleyDB	clean
@@ -157,7 +157,7 @@ src/external/xar	887bd4f42eb4ac9139a7f621b5811065aa86f3e3	DETACHED	git@github.co
 src/external/xcbuild	a903c6952fc5617816113cbb7b551ac701dba2ff	DETACHED	git@github.com:darlinghq/xcbuild	clean
 src/external/xcbuild/ThirdParty/googletest	a2b8a8e07628e5fd60644b6dd99c1b5e7d7f1f47	DETACHED	git@github.com:google/googletest	clean
 src/external/xcbuild/ThirdParty/linenoise	c894b9e59f02203dbe4e2be657572cf88c4230c3	DETACHED	git@github.com:antirez/linenoise	clean
-src/external/xnu	d9f34da978fbae093d260686ef1cef965f687139	integration/homebrew	git@github.com:darlinghq/darling-xnu	clean
+src/external/xnu	595b25130d4fcd1747bf6505467779d404036b53	integration/homebrew	git@github.com:darlinghq/darling-xnu	clean
 src/external/zip	caf41ebbc3ebab0250e4d13aa42221ef91a9802c	DETACHED	git@github.com:darlinghq/darling-zip	clean
 src/external/zlib	677de9b1c2bea1e428f56d8fc63300aa471eaf99	DETACHED	git@github.com:darlinghq/darling-zlib	clean
 src/external/zsh	4a7a6ebf6216395c7db698a4993db16e484aa54d	DETACHED	git@github.com:darlinghq/darling-zsh	clean
