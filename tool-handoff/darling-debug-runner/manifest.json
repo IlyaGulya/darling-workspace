@@ -1,0 +1,23 @@
+{
+  "version": 1,
+  "projects": [
+    {
+      "path": ".",
+      "bundle": "root.bundle",
+      "branches": [
+        {
+          "branch": "fix/cooperative-cancel-cleanup",
+          "head": "e586bce7c8e922fe8aeb1f97c98289db99b1d710",
+          "upstream": "",
+          "source_ref": "refs/heads/fix/cooperative-cancel-cleanup"
+        },
+        {
+          "branch": "manifest-rev",
+          "head": "dbcd8ebfbb63a94e5f3f21fb6df570b831425b33",
+          "upstream": "",
+          "source_ref": "refs/heads/manifest-rev"
+        }
+      ]
+    }
+  ]
+}
