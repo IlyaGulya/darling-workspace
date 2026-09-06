@@ -2,7 +2,7 @@
 <manifest>
   <remote name="darling" fetch="https://github.com/darlinghq/" />
   <default remote="darling" sync-j="16" sync-tags="false" />
-  <project name="darling" path="darling" revision="e017cb9cbbe32a9a67920a9f1f3997355e9b86fa" />
+  <project name="darling" path="darling" revision="49e5fac3a292f46b8153baf00be3581406734e5d" />
   <project name="darling-docs" path="darling/docs/darling-docs" revision="14c841ef3df319254ef5ac291f828f27048a6579" />
   <project name="darling-AvailabilityVersions" path="darling/src/external/AvailabilityVersions" revision="e28c029a8fa46fa933cbf6d6d9a1c00978c5fad1" />
   <project name="darling-BerkeleyDB" path="darling/src/external/BerkeleyDB" revision="1411173f0eb71f96ab6134de4e052d16acb8c673" />
@@ -160,7 +160,7 @@
   <project name="xcbuild" path="darling/src/external/xcbuild" revision="a903c6952fc5617816113cbb7b551ac701dba2ff" />
   <project name="googletest" path="darling/src/external/xcbuild/ThirdParty/googletest" revision="a2b8a8e07628e5fd60644b6dd99c1b5e7d7f1f47" />
   <project name="linenoise" path="darling/src/external/xcbuild/ThirdParty/linenoise" revision="c894b9e59f02203dbe4e2be657572cf88c4230c3" />
-  <project name="darling-xnu" path="darling/src/external/xnu" revision="d9f34da978fbae093d260686ef1cef965f687139" />
+  <project name="darling-xnu" path="darling/src/external/xnu" revision="595b25130d4fcd1747bf6505467779d404036b53" />
   <project name="darling-zip" path="darling/src/external/zip" revision="caf41ebbc3ebab0250e4d13aa42221ef91a9802c" />
   <project name="darling-zlib" path="darling/src/external/zlib" revision="677de9b1c2bea1e428f56d8fc63300aa471eaf99" />
   <project name="darling-zsh" path="darling/src/external/zsh" revision="4a7a6ebf6216395c7db698a4993db16e484aa54d" />
