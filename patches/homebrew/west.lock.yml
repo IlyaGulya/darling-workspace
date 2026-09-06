@@ -2,7 +2,7 @@ manifest:
   projects:
   - name: darling
     url: https://github.com/darlinghq/darling
-    revision: 49e5fac3a292f46b8153baf00be3581406734e5d
+    revision: a6de885d8c6642292f0649f81f5e937528c917c6
     userdata:
       kind: darling-source
       upstream-repository: darling
@@ -379,7 +379,7 @@ manifest:
       upstream-repository: darling-dmg
   - name: darling-src-external-darlingserver
     url: https://github.com/darlinghq/darlingserver
-    revision: c43641a5f2305d5ab53412e4ed1e5a173e4accec
+    revision: ce9c990df38ed6a97ee57ef6195eca982765cdf6
     path: darling/src/external/darlingserver
     userdata:
       kind: darling-source
@@ -512,7 +512,7 @@ manifest:
       upstream-repository: darling-icu
   - name: darling-src-external-installer
     url: https://github.com/darlinghq/darling-installer
-    revision: aa310ef30ddcd35f8ab43474325316e40b1e24f8
+    revision: 88764e6149f92f1747442c27ab00231f40de278c
     path: darling/src/external/installer
     userdata:
       kind: darling-source
@@ -645,14 +645,14 @@ manifest:
       upstream-repository: darling-Libnotify
   - name: darling-src-external-libplatform
     url: https://github.com/darlinghq/darling-libplatform
-    revision: 300fba26032d9e78287f69f4ca02ef79fd80913c
+    revision: 6a71adae2108910bc6f77a05b2bff8947b049121
     path: darling/src/external/libplatform
     userdata:
       kind: darling-source
       upstream-repository: darling-libplatform
   - name: darling-src-external-libpthread
     url: https://github.com/darlinghq/darling-libpthread
-    revision: 2f5a78cfc482c7e69b87138a48980cab97e387dc
+    revision: 7b0200bdf53551c6d4979eda8a7560b4b9572ab0
     path: darling/src/external/libpthread
     userdata:
       kind: darling-source
@@ -687,7 +687,7 @@ manifest:
       upstream-repository: darling-libressl
   - name: darling-src-external-libressl-2-8-3
     url: https://github.com/darling-next/darling-libressl
-    revision: 277ea7e0abcf1076f327a885daa2267423e5da08
+    revision: fb3669cee40467408716c7d96ec8f31f83bf7aeb
     path: darling/src/external/libressl-2.8.3
     userdata:
       kind: darling-source
@@ -870,13 +870,12 @@ manifest:
       upstream-repository: neverbleed
       fetch-override-reason: darling-next-public-mirror-preserves-pin
   - name: darling-src-external-objc4
-    url: https://github.com/darling-next/darling-objc4
-    revision: 53342cec3dcc9cde6dd1aa935bbe26d88c3e5aa8
+    url: https://github.com/darlinghq/darling-objc4
+    revision: 1a12df76d12bfc9fdfffadb290f7742763568765
     path: darling/src/external/objc4
     userdata:
       kind: darling-source
       upstream-repository: darling-objc4
-      fetch-override-reason: darling-next-public-mirror-preserves-reviewed-objc4-baseline
   - name: darling-src-external-openjdk
     url: https://github.com/darlinghq/openjdk
     revision: 5a541c1844a9508e48b3addaf2d38775683abb38
@@ -942,7 +941,7 @@ manifest:
       upstream-repository: darling-pcre
   - name: darling-src-external-perl
     url: https://github.com/darlinghq/darling-perl
-    revision: 7c83779599e7c658e30dcabbe73b1f8bfa0c8cc3
+    revision: 4f96b78dbb8cf545be9ae9439bb6fffe5c6b6392
     path: darling/src/external/perl
     userdata:
       kind: darling-source
@@ -1110,7 +1109,7 @@ manifest:
       upstream-repository: linenoise
   - name: darling-src-external-xnu
     url: https://github.com/darlinghq/darling-xnu
-    revision: 595b25130d4fcd1747bf6505467779d404036b53
+    revision: e0b55ebd7346773fb7aaa7c0723dd00accc08692
     path: darling/src/external/xnu
     userdata:
       kind: darling-source
