@@ -1,6 +1,25 @@
 version: 1
 description: Local wget residual fixes; canonical lock-first activation awaits immutable source closure and reviewed composition under dar-gwn.7.
 base-profile: homebrew
+test-profiles:
+  spawn-cloexec-guest:
+    kind: guest
+    coverage-tier: runtime
+    runs: guest
+    diag: guarded
+    runner: guest-c-fixture
+    repo: darling-workspace
+    script: tests/posix_spawn_cloexec_default_guest.c
+    ok-marker: POSIX_SPAWN_CLOEXEC_DEFAULT_GUEST_OK
+    timeout-seconds: 120
+    requires:
+    - darling-prefix
+    compile-flags:
+    - -std=gnu11
+    - -D_DARWIN_C_SOURCE
+    - -Wall
+    - -Wextra
+    - -Werror
 patches:
 - path: darling/rootless-homebrew-coreservices.patch
   module: darling
@@ -86,3 +105,29 @@ patches:
     - -Wextra
     - -Werror
   sha256sum: c0e8f2b6cb17682d1a26433d8e60a42a5d7e5690167475137508b2df42929dd3
+- path: xnu/posix-spawn-cloexec-default.patch
+  module: darling/src/external/xnu
+  source-branch: fix/posix-spawn-cloexec-default
+  source-base: 5f26a4c2365d9774b5a1e66ae7da20b61ab6d2db
+  source-commit: 3332f4035976af51133bc4fd296f3bb0cd6c897a
+  bead: dar-gwn.7
+  publication-status: blocked
+  publication-blocker: Canonical combined-runtime materialization and complete stock wget acceptance remain under dar-gwn.7.
+  tests:
+  - name: posix_spawn_cloexec_default_guest
+    use: spawn-cloexec-guest
+    note: Prepared-runtime gate for successful CLOEXEC_DEFAULT exec, ordinary descriptor closure, and legacy FD 1023 object inheritance; no automatic bad-runtime deployment is claimed.
+  sha256sum: e1dbccc547fc540ba159741aef4a12d5f2339ed0b44c00f705a25b635b3b30ef
+- path: darlingserver/rootless-server-owned-socket-address.patch
+  module: darling/src/external/darlingserver
+  source-branch: fix/rootless-server-owned-socket-address
+  source-base: a2f99243227c57847308527a2a921d1bb77b1135
+  source-commit: 1422236fb030234ed9ec52216da04087cac9de84
+  bead: dar-gwn.7
+  publication-status: blocked
+  publication-blocker: Canonical combined-runtime materialization and complete stock wget acceptance remain under dar-gwn.7; the foundational rootless publication gate is unchanged.
+  tests:
+  - name: rootless_socket_owner_exec_guest
+    use: spawn-cloexec-guest
+    note: Use the prepared rootless runtime; spawned children must check in after CLOEXEC_DEFAULT closes inherited application descriptors.
+  sha256sum: 0424b780b0c4d309e63e56cbeae6594acbe045d0c8f93d71b4d36836916e5c8c
