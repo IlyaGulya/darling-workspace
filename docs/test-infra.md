@@ -315,9 +315,9 @@ blocked-source mirror exception, those exact tags were created and their remote
 OIDs verified. No branch, PR, upstream, or publication-status changes accompanied
 that operation.
 
-`wget-residual` now has a typed ten-patch mapping and a checksum-bound composition
+`wget-residual` now has a typed eleven-patch mapping and a checksum-bound composition
 over homebrew. `west patch verify --profile wget-residual` passed. Its unpublished
-source inputs are explicit Git bundles under `handoff/wget-residual/`, not a
+source inputs are explicit Git bundles under `source-bundles/wget-residual/`, not a
 fallback to the developer's checkout. Relative `mirror.url` paths resolve against
 the declaring lock file's directory, so locks and bundles can move together.
 Every declared base/source tag, ordered commit graph, and tree is still checked;
@@ -325,6 +325,10 @@ an unavailable bundle fails even if the caller already has the objects.
 The wait-state and dispatch fixes were rebased onto their actual canonical
 prerequisites to preserve exact replay identity, rather than weakening the
 range-diff or stable-patch-ID checks.
+These inputs stay outside generated `handoff/`, which the transactional handoff
+replaces wholesale. `source-bundles/darling-debug-runner.bundle` separately
+preserves `fix/forward-guarded-output`; the Darling-forest handoff does not include
+this sibling tools repository.
 
 The old materialization-only `blocked: true` test flag has been removed.
 Runtime proof must still reach the guest-visible semantic oracle before any

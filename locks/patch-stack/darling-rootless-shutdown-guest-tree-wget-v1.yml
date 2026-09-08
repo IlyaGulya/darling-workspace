@@ -6,7 +6,7 @@ upstream:
   url: https://github.com/darlinghq/darling.git
   base_commit: 681329d6b6cb007e86316c572b138de88f1cfb8b
 mirror:
-  url: ../../handoff/wget-residual/darling.bundle
+  url: ../../source-bundles/wget-residual/darling.bundle
   base_ref: refs/tags/patch-stack/v1/bases/681329d6b6cb007e86316c572b138de88f1cfb8b
   base_oid: 681329d6b6cb007e86316c572b138de88f1cfb8b
   source_ref: refs/tags/patch-stack/v1/sources/c02cdd1220ee3907458f418714055f5aeb2f5c4d
