@@ -1,0 +1,137 @@
+From 1164c849ef85364845476c854a7a0d9a14cf0058 Mon Sep 17 00:00:00 2001
+From: Ilya Gulya <ilya@gulya.me>
+Date: Tue, 8 Sep 2026 06:02:59 +0000
+Subject: [PATCH] dar-3jw9: keep failed posix_spawn children private and reap
+ them
+
+---
+ .../xnu_syscall/bsd/impl/process/fork.h       |  2 ++
+ .../src/xnu_syscall/bsd/impl/process/fork.c   | 20 +++++++++--
+ .../bsd/impl/process/posix_spawn.c            | 35 +++++++++++++++----
+ 3 files changed, 48 insertions(+), 9 deletions(-)
+
+diff --git a/darling/src/libsystem_kernel/emulation/include/xnu_syscall/bsd/impl/process/fork.h b/darling/src/libsystem_kernel/emulation/include/xnu_syscall/bsd/impl/process/fork.h
+index 4ff30980f4e3cdb4fd74ddb2974a9b9eb16c4c71..441c24ace4a29c7ac9063429efa1bd69254f8e32 100644
+--- a/darling/src/libsystem_kernel/emulation/include/xnu_syscall/bsd/impl/process/fork.h
++++ b/darling/src/libsystem_kernel/emulation/include/xnu_syscall/bsd/impl/process/fork.h
+@@ -2,5 +2,7 @@
+ #define LINUX_FORK_H
+ 
+ long sys_fork(void);
++/* Private until exec: failed children require an internal __WCLONE reap. */
++long fork_for_spawn(void);
+ 
+ #endif // LINUX_FORK_H
+diff --git a/darling/src/libsystem_kernel/emulation/src/xnu_syscall/bsd/impl/process/fork.c b/darling/src/libsystem_kernel/emulation/src/xnu_syscall/bsd/impl/process/fork.c
+index 76b6f53e21dec0ed37d252ba852d9090e50a2bba..3527c8a08fa48dae3080d7f31dfecb8a1e641a79 100644
+--- a/darling/src/libsystem_kernel/emulation/src/xnu_syscall/bsd/impl/process/fork.c
++++ b/darling/src/libsystem_kernel/emulation/src/xnu_syscall/bsd/impl/process/fork.c
+@@ -18,15 +18,18 @@
+ 
+ extern _libkernel_functions_t _libkernel_functions;
+ 
+-long sys_fork(void)
++static long fork_with_exit_signal(int exit_signal)
+ {
+ 	int ret;
+ 	int wdfd = get_perthread_wd();
+ 
+ #ifdef SYS_fork
+-	ret = LINUX_SYSCALL(__NR_fork);
++	if (exit_signal == LINUX_SIGCHLD)
++		ret = LINUX_SYSCALL(__NR_fork);
++	else
++		ret = LINUX_SYSCALL(__NR_clone, exit_signal, 0);
+ #else
+-	ret = LINUX_SYSCALL(__NR_clone, LINUX_SIGCHLD, 0);
++	ret = LINUX_SYSCALL(__NR_clone, exit_signal, 0);
+ #endif
+ 	if (ret < 0)
+ 		ret = errno_linux_to_bsd(ret);
+@@ -69,3 +72,14 @@ long sys_fork(void)
+ 
+ 	return ret;
+ }
++
++long sys_fork(void)
++{
++	return fork_with_exit_signal(LINUX_SIGCHLD);
++}
++
++long fork_for_spawn(void)
++{
++	/* Linux exec resets the exit signal to SIGCHLD before closing CLOEXEC fds. */
++	return fork_with_exit_signal(0);
++}
+diff --git a/darling/src/libsystem_kernel/emulation/src/xnu_syscall/bsd/impl/process/posix_spawn.c b/darling/src/libsystem_kernel/emulation/src/xnu_syscall/bsd/impl/process/posix_spawn.c
+index 3348756344b9c7aa74630595ca78f0c64969678f..1751bacdbd2c96f678a49bec4bf206c94af3fef3 100644
+--- a/darling/src/libsystem_kernel/emulation/src/xnu_syscall/bsd/impl/process/posix_spawn.c
++++ b/darling/src/libsystem_kernel/emulation/src/xnu_syscall/bsd/impl/process/posix_spawn.c
+@@ -4,6 +4,7 @@
+ #include <stdint.h>
+ #include <sys/spawn.h>
+ #include <sys/fcntl.h>
++#include <sys/errno.h>
+ #include <_libkernel_init.h>
+ 
+ #include <darling/emulation/xnu_syscall/bsd/impl/process/execve.h>
+@@ -42,6 +43,7 @@
+ #endif
+ 
+ #define LINUX_ADDR_NO_RANDOMIZE 0x40000
++#define LINUX_WCLONE 0x80000000U
+ 
+ extern _libkernel_functions_t _libkernel_functions;
+ 
+@@ -64,7 +66,7 @@ long sys_posix_spawn(int* pid, const char* path, const struct _posix_spawn_args_
+ 
+ 	_libkernel_functions->posix_spawn_prepare();
+ 
+-	if ((my_pid = sys_fork()) == 0)
++	if ((my_pid = fork_for_spawn()) == 0)
+ 	{
+ 		// child
+ 		// close the reading side
+@@ -358,16 +360,37 @@ fail:
+ 
+ 		if (my_pid < 0)
+ 		{
++			close_internal(pipe[0]);
+ 			ret = my_pid;
+ 			goto out;
+ 		}
+ 
+-		if (pid != NULL)
+-			*pid = my_pid;
+-
+-		if (sys_read(pipe[0], &ret, sizeof(ret)) != sizeof(ret))
+-			ret = 0;
++		long received;
++		do {
++			received = sys_read(pipe[0], &ret, sizeof(ret));
++		} while (received == -EINTR);
+ 		close_internal(pipe[0]);
++		if (received == 0)
++			ret = 0;
++		else if (received != sizeof(ret))
++			ret = received < 0 ? (int)received : -EIO;
++
++		/*
++		 * Failed setup/exec children remain private and cannot notify or be
++		 * reaped by application SIGCHLD handlers. Successful exec changes the
++		 * Linux exit signal to SIGCHLD, so __WCLONE returns ECHILD without
++		 * consuming the public child. Reap even an unexpectedly killed private
++		 * child whose error pipe closed without a complete error record.
++		 */
++		do {
++			err = LINUX_SYSCALL(__NR_wait4, my_pid, NULL, LINUX_WCLONE, NULL);
++		} while (err == -EINTR);
++		if (err == my_pid && ret == 0)
++			ret = -EIO;
++		else if (err < 0 && err != -ECHILD && ret == 0)
++			ret = errno_linux_to_bsd(err);
++		if (ret == 0 && pid != NULL)
++			*pid = my_pid;
+ 	}
+ 
+ out:
