@@ -1,4 +1,5 @@
 import os
+import shutil
 import signal
 import socket
 import subprocess
@@ -176,6 +177,73 @@ with tempfile.TemporaryDirectory() as temp:
         if orphaned_shellspawn.poll() is None:
             orphaned_shellspawn.kill()
             orphaned_shellspawn.wait()
+
+with tempfile.TemporaryDirectory() as temp:
+    root = Path(temp)
+    prefix = root / "prefix"
+    other_prefix = root / "other-prefix"
+    prefix.mkdir()
+    other_prefix.mkdir()
+    loader = root / "mldr"
+    shutil.copy2("/bin/sleep", loader)
+    markerless_env = dict(os.environ)
+    markerless_env.pop("DARLING_PREFIX", None)
+    markerless_env.pop("DARLING_ROOTLESS", None)
+    endpoint_owner = subprocess.Popen(["/bin/sleep", "0"])
+    endpoint_owner.wait(timeout=3)
+    directory_fds = []
+    processes = {}
+    try:
+        for directory in (prefix, other_prefix):
+            directory_fds.append(os.open(directory, os.O_RDONLY | os.O_DIRECTORY))
+        prefix_fd, other_fd = directory_fds
+        for name, executable, socket_fd, inherited_fds in (
+            ("owned", loader, prefix_fd, (prefix_fd,)),
+            ("other_prefix", loader, other_fd, (other_fd,)),
+            ("ordinary_host", "/bin/sleep", prefix_fd, (prefix_fd,)),
+            ("missing_fd", loader, prefix_fd, ()),
+        ):
+            processes[name] = subprocess.Popen(
+                ["mldr" if name == "ordinary_host" else "/usr/bin/wget", "60"],
+                executable=executable,
+                cwd=root,
+                pass_fds=inherited_fds,
+                env={
+                    **markerless_env,
+                    "__mldr_sockpath": (
+                        f"/proc/{endpoint_owner.pid}/fd/{socket_fd}/.darlingserver.sock"
+                    ),
+                },
+            )
+        owned = processes["owned"]
+        for _ in range(20):
+            discovered = rootless_prefix_process_snapshot(prefix)
+            if any(entry.startswith(f"{owned.pid} ") for entry in discovered):
+                break
+            time.sleep(0.05)
+        else:
+            raise AssertionError(
+                "markerless loader retaining the prefix directory fd was not discovered"
+            )
+        for name, process in processes.items():
+            if name != "owned":
+                assert not any(
+                    entry.startswith(f"{process.pid} ") for entry in discovered
+                ), (name, discovered)
+        result = cleanup_rootless_prefix_processes(prefix)
+        assert result.success and result.changed, result
+        owned.wait(timeout=3)
+        assert owned.returncode < 0, owned.returncode
+        for name, process in processes.items():
+            if name != "owned":
+                assert process.poll() is None, f"cleanup terminated {name}"
+    finally:
+        for process in processes.values():
+            if process.poll() is None:
+                process.kill()
+            process.wait()
+        for directory_fd in directory_fds:
+            os.close(directory_fd)
 
 with tempfile.TemporaryDirectory() as temp:
     prefix = Path(temp)
