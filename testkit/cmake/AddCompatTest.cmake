@@ -308,7 +308,7 @@ function(add_compat_test)
           math(EXPR test_timeout
             "${ACT_TIMEOUT} + ${DARLING_TEST_GUARDED_CLEANUP_GRACE_SECONDS}")
         endif()
-        set(exec_args run --name "${test_name}" --timeout-seconds ${ACT_TIMEOUT})
+        set(exec_args run --forward-output --name "${test_name}" --timeout-seconds ${ACT_TIMEOUT})
         if(DARLING_TEST_BUNDLE_ROOT)
           list(APPEND exec_args --bundle-root "${DARLING_TEST_BUNDLE_ROOT}")
         endif()
