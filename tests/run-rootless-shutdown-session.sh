@@ -39,7 +39,15 @@ if [ -z "$ready" ]; then
 	exit 1
 fi
 read -r marker shell_pid first_pid second_pid <<<"$ready"
-env DARLING_PREFIX="$prefix" "$DARLING" shutdown
+# Both lifecycle owners must acknowledge the same stopped state successfully.
+env DARLING_PREFIX="$prefix" "$DARLING" shutdown &
+first_shutdown=$!
+env DARLING_PREFIX="$prefix" "$DARLING" shutdown &
+second_shutdown=$!
+shutdown_status=0
+wait "$first_shutdown" || shutdown_status=1
+wait "$second_shutdown" || shutdown_status=1
+[ "$shutdown_status" -eq 0 ] || exit "$shutdown_status"
 # A force-stopped shell need not return success. Its processes must be gone
 # before shutdown returns, while the RPC server remains available until then.
 for pid in "$shell_pid" "$first_pid" "$second_pid"; do

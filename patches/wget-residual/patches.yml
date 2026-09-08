@@ -169,3 +169,68 @@ patches:
       DARLING_NOOVERLAYFS: '1'
       DARLING_EUNION: '1'
   sha256sum: 533080c4f3b6195a537449b48f27fc4ae72c26cd6cbd831c9c2266706a673278
+- path: darling/runtime-prefix-unlink-race.patch
+  module: darling
+  source-branch: fix/runtime-prefix-unlink-race
+  source-base: 681329d6b6cb007e86316c572b138de88f1cfb8b
+  source-commit: f43cbf12a701fa4308a9ba166f88c671765f0499
+  bead: dar-gwn.8
+  publication-status: blocked
+  publication-blocker: Canonical rootless composition and publication review remain under dar-gwn.7.
+  tests:
+  - name: runtime_prefix_concurrent_unlink_host
+    kind: contract
+    coverage-tier: host
+    runs: host
+    diag: bare
+    runner: c-fixture
+    repo: darling
+    script: src/startup/tests/runtime_mode_test.c
+    source-files:
+    - src/startup/runtime_credentials.c
+    - src/startup/runtime_mode.c
+    - src/startup/runtime_mode_prefix.c
+    compile-flags: [-D_GNU_SOURCE, -DDARLING_RUNTIME_PREFIX_LIFECYCLE_TESTING=1, -std=gnu11]
+    timeout-seconds: 60
+    note: A real child removes the inspected entry before the parent unlinks it; optional cleanup succeeds while strict disappearance and other errors still fail.
+  sha256sum: 42bbb6bb7dfdb761902c26cb26a794b5b6e39a4c7dbca3f17e195e0124355154
+- path: darling/runtime-lifecycle-owner.patch
+  module: darling
+  source-branch: fix/runtime-lifecycle-owner
+  source-base: c02cdd1220ee3907458f418714055f5aeb2f5c4d
+  source-commit: 58111ee357fa6d9d971f0aa1d1763321604525f6
+  bead: dar-gwn.8
+  publication-status: blocked
+  publication-blocker: Canonical rootless composition and publication review remain under dar-gwn.7.
+  tests:
+  - name: runtime_lifecycle_owner_host
+    kind: contract
+    coverage-tier: host
+    runs: host
+    diag: bare
+    runner: c-fixture
+    repo: darling
+    script: src/startup/tests/runtime_mode_test.c
+    source-files:
+    - src/startup/runtime_credentials.c
+    - src/startup/runtime_mode.c
+    - src/startup/runtime_mode_prefix.c
+    compile-flags: [-D_GNU_SOURCE, -DDARLING_RUNTIME_PREFIX_LIFECYCLE_TESTING=1, -std=gnu11]
+    timeout-seconds: 60
+    note: Competing processes must acquire runtime lifecycle ownership exclusively and transfer it after release.
+  - name: rootless_concurrent_shutdown_guest
+    kind: guest
+    coverage-tier: runtime
+    runs: guest
+    diag: guarded
+    runner: guest-runtime-script
+    repo: darling-workspace
+    script: tests/run-rootless-shutdown-session.sh
+    ok-marker: WEST_ROOTLESS_SHUTDOWN_SESSION_OK
+    timeout-seconds: 60
+    requires: [darling-prefix]
+    env-vars:
+      DARLING_ROOTLESS: '1'
+      DARLING_NOOVERLAYFS: '1'
+      DARLING_EUNION: '1'
+  sha256sum: 9fe29b5cc1cd5e19723b7e858fdeef243cb0d5835bb9a5d1e7981322433ba1c7
