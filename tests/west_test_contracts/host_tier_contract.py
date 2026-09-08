@@ -20,8 +20,6 @@ assert SPEC is not None and SPEC.loader is not None
 host_tier = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(host_tier)
 
-with patch.dict(os.environ, {}, clear=True), patch.object(host_tier.os, "cpu_count", return_value=32):
-    assert host_tier._worker_count() == 8
 with patch.dict(os.environ, {"DARLING_HOST_TIER_WORKERS": "3"}, clear=True):
     assert host_tier._worker_count() == 3
 

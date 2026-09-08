@@ -1,4 +1,6 @@
 """Inventory preserves patch bindings, rejects unreviewed cases and never runs them."""
+from copy import deepcopy
+import hashlib
 import json
 from pathlib import Path
 import subprocess
@@ -7,6 +9,8 @@ import tempfile
 
 ROOT = Path(__file__).resolve().parents[2]
 COLLECTOR = ROOT / "scripts/audit-test-registration.py"
+sys.path.insert(0, str(ROOT))
+from west_commands.test_manifest import normalize_test_profile
 
 with tempfile.TemporaryDirectory(prefix="west-native-inventory-contract-") as temporary:
     top = Path(temporary)
@@ -40,10 +44,19 @@ with tempfile.TemporaryDirectory(prefix="west-native-inventory-contract-") as te
     (profile / "patches.yml").write_text(json.dumps(profile_data))
     (workspace / "audits").mkdir()
     policy = workspace / "audits/native-test-applicability.json"
+    reviews = {}
+    for patch_data in normalize_test_profile(profile_data)["patches"]:
+        declaration = {"project": "src/fixture", "test": patch_data["tests"][0]}
+        digest = hashlib.sha256(json.dumps(
+            declaration, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode()).hexdigest()
+        reviews[f"probe:{patch_data['path']}:1"] = {
+            "policy": "native_reference", "identity_sha256": digest,
+            "reason": "Synthetic public scenario for the inventory contract.",
+        }
     policy.write_text(json.dumps({
-        "groups": [{"names": ["shared_probe"], "policy": "native_reference",
+        "groups": [{"policy": "native_reference",
                     "reason": "Synthetic public scenario for the inventory contract."}],
-        "aliases": {},
+        "bindings": reviews,
     }))
     (workspace / "testkit").mkdir()
     built_marker = top / "product-was-built"
@@ -78,16 +91,37 @@ with tempfile.TemporaryDirectory(prefix="west-native-inventory-contract-") as te
     assert not built_marker.exists(), "discovery must not build product targets"
     assert not executed_marker.exists(), "discovery must not execute registered cases"
 
-    # A newly introduced runtime binding must not inherit a default PASS/policy.
-    profile_data["patches"][1]["tests"][0]["name"] = "unreviewed_probe"
-    (profile / "patches.yml").write_text(json.dumps(profile_data))
-    rejected_output = top / "unreviewed"
-    rejected = collect(rejected_output)
-    assert rejected.returncode != 0, "unreviewed runtime binding was silently accepted"
-    assert "probe:second.patch:1" in rejected.stderr, \
-        "failure must identify the unreviewed binding, not unrelated infrastructure"
-    assert not (rejected_output / "inventory.json").exists(), \
-        "a rejected census must not publish a successful inventory snapshot"
+    def reject_changed_profile(changed, directory, binding):
+        (profile / "patches.yml").write_text(json.dumps(changed))
+        rejected_output = top / directory
+        rejected = collect(rejected_output)
+        assert rejected.returncode != 0, "unreviewed binding was silently accepted"
+        assert binding in rejected.stderr, \
+            "failure must identify the affected binding, not unrelated infrastructure"
+        assert not (rejected_output / "inventory.json").exists(), \
+            "a rejected census must not publish a successful inventory snapshot"
+
+    # A new binding cannot borrow approval from an identically named case.
+    duplicate_name = deepcopy(profile_data)
+    duplicate_name["patches"].append({
+        "path": "third.patch", "module": "src/fixture",
+        "tests": [{"name": "shared_probe", "use": "shared"}],
+    })
+    reject_changed_profile(duplicate_name, "same-name", "probe:third.patch:1")
+
+    # Existing ownership/name cannot bless changed scenario parameters either.
+    changed_scenario = deepcopy(profile_data)
+    changed_scenario["patches"][1]["tests"][0]["run-args"] = ["different-scenario"]
+    reject_changed_profile(changed_scenario, "changed-scenario", "probe:second.patch:1")
+
+    # Compile-tier ABI/header checks require review just like runtime cases.
+    compile_case = deepcopy(profile_data)
+    compile_case["patches"].append({
+        "path": "compile.patch", "module": "src/fixture",
+        "tests": [{"name": "shared_probe", "runner": "c-fixture", "runs": "host",
+                   "coverage-tier": "compile", "repo": "fixture-owner", "script": "probe.c"}],
+    })
+    reject_changed_profile(compile_case, "unreviewed-compile", "probe:compile.patch:1")
     assert not built_marker.exists() and not executed_marker.exists()
 
 print("PASS native-inventory-contract")
