@@ -56,9 +56,9 @@ modules:
     expected_applied_tree: 1b9255b358dd2dfd6bbf84815d731badf7907a28
   - patch: xnu/sigpending-mask-copyout.patch
     lock: darling-xnu-sigpending-mask-copyout-wget-v1.yml
-    expected_applied_tree: e143b8140fbdb0e720cb1e7c90329d29b4bc5e4e
-  final_tree: e143b8140fbdb0e720cb1e7c90329d29b4bc5e4e
-  integration_final_tree: e143b8140fbdb0e720cb1e7c90329d29b4bc5e4e
+    expected_applied_tree: ee2738d3a4486a63fdf79593920bea3a8b708a54
+  final_tree: ee2738d3a4486a63fdf79593920bea3a8b708a54
+  integration_final_tree: ee2738d3a4486a63fdf79593920bea3a8b708a54
 - module: darling/src/external/darlingserver
   starting:
     tree: 2d6f0321cfe205dba7302666bc470adb79a44003

@@ -289,7 +289,7 @@ patches:
   module: darling/src/external/xnu
   source-branch: fix/sigpending-mask-copyout
   source-base: e8c8127d553578929d3867e35b14d9fc5c5edcae
-  source-commit: 17843013121f9566ebe2f29544fff4cf34d7697f
+  source-commit: 0e54f6a1261216f2eafb880b534288f349027901
   bead: dar-759a.5.3
   publication-status: blocked
   publication-blocker: dar-759a.5.3 owns deployed pending-mask regression and canonical review; no publication is authorized.
@@ -305,4 +305,4 @@ patches:
     runs: macos
     diag: bare
     repo: darling-workspace
-  sha256sum: 38cd42b628413a94a2877ed25d5d4ec974b2fab599e71b5c01fc0b075f496378
+  sha256sum: 1004217e0475ca35ca8cd7a5d224bcc5a5058807dec49fcbdd9aa0e479f5d4a5
