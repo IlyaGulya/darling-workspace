@@ -515,10 +515,13 @@ jobs:
       - uses: actions/checkout@v7
       - name: Build installable native oracle bundle
         run: ci/run-test-tier.sh macos-package "$RUNNER_TEMP/oracle"
+      - name: Archive complete native oracle bundle with permissions
+        run: ci/run-test-tier.sh macos-archive "$RUNNER_TEMP/oracle" "$RUNNER_TEMP/macos-oracle.tar"
       - uses: actions/upload-artifact@v4
         with:
           name: macos-oracle
-          path: ${{ runner.temp }}/oracle
+          path: ${{ runner.temp }}/macos-oracle.tar
+          if-no-files-found: error
 
   macos:
     needs: macos-package
@@ -533,6 +536,8 @@ jobs:
       - uses: actions/download-artifact@v4
         with:
           name: macos-oracle
-          path: ${{ runner.temp }}/oracle
+          path: ${{ runner.temp }}/macos-oracle-artifact
+      - name: Extract native oracle into a fresh directory
+        run: ci/run-test-tier.sh macos-extract "$RUNNER_TEMP/macos-oracle-artifact/macos-oracle.tar" "$RUNNER_TEMP/oracle"
       - name: Run identical native macOS oracle bundle
         run: ci/run-test-tier.sh macos-installed "$RUNNER_TEMP/oracle"

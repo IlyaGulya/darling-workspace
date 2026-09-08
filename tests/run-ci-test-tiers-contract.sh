@@ -330,21 +330,12 @@ fi
 ! grep -F -q 'return "PASS"' "$repo/ci/verify_clt_provenance.py"
 ! grep -F -q "github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'" "$repo/.github/workflows/test-infra.yml"
 ! grep -F -q 'actions/checkout@v4' "$repo/.github/workflows/test-infra.yml"
-! grep -F -q 'actions/upload-artifact@v4' "$repo/.github/workflows/test-infra.yml"
 ! grep -F -q $'\t\texec west test --profile homebrew --patch' "$repo/ci/run-test-tier.sh"
 for package in libfuse-dev libx11-dev libcairo2-dev libxrandr-dev libfreetype6-dev strace; do
 	grep -F -q "$package" "$repo/ci/install-darling-build-deps.sh"
 done
 
-mkdir -p "$tmp/installed/testcase"
-cat >"$tmp/installed/testcase/compat.sample" <<'SAMPLE'
-#!/usr/bin/env bash
-printf 'SAMPLE_OK\n'
-SAMPLE
-chmod +x "$tmp/installed/testcase/compat.sample"
-printf 'sample\tcompat.sample\tSAMPLE_OK\n' >"$tmp/installed/compat-install-manifest.tsv"
-"$repo/ci/run-test-tier.sh" macos-installed "$tmp/installed" |
-	grep -F -x -q 'PASS macos/sample'
+python3 -B "$repo/tests/west_test_contracts/native_artifact_contract.py"
 
 "$repo/tests/run-rootless-prefix-contract.sh"
 "$repo/tests/run-rootless-cleanup-contract.sh"

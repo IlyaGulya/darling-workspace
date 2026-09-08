@@ -40,15 +40,15 @@ class HostCommand(NamedTuple):
 
 
 def _worker_count() -> int:
-    default = min(8, max(1, os.cpu_count() or 1), len(CONTRACTS) + 2)
+    default = min(8, max(1, os.cpu_count() or 1), len(CONTRACTS) + 3)
     value = os.environ.get("DARLING_HOST_TIER_WORKERS", str(default))
     try:
         workers = int(value)
     except ValueError as error:
         raise SystemExit("DARLING_HOST_TIER_WORKERS must be an integer") from error
-    if not 1 <= workers <= len(CONTRACTS) + 2:
+    if not 1 <= workers <= len(CONTRACTS) + 3:
         raise SystemExit(
-            f"DARLING_HOST_TIER_WORKERS must be between 1 and {len(CONTRACTS) + 2}"
+            f"DARLING_HOST_TIER_WORKERS must be between 1 and {len(CONTRACTS) + 3}"
         )
     return workers
 
@@ -237,6 +237,13 @@ def main() -> int:
             "native-inventory",
             [str(ROOT / "tests/run-native-inventory-contract.sh")],
             False,
+        )
+    )
+    commands.append(
+        HostCommand(
+            "native-artifact",
+            [sys.executable, "-B", str(ROOT / "tests/west_test_contracts/native_artifact_contract.py")],
+            True,
         )
     )
     profile_materialization = (
