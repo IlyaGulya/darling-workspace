@@ -315,7 +315,7 @@ blocked-source mirror exception, those exact tags were created and their remote
 OIDs verified. No branch, PR, upstream, or publication-status changes accompanied
 that operation.
 
-`wget-residual` now has a typed eleven-patch mapping and a checksum-bound composition
+`wget-residual` now has a typed thirteen-patch mapping and a checksum-bound composition
 over homebrew. `west patch verify --profile wget-residual` passed. Its unpublished
 source inputs are explicit Git bundles under `source-bundles/wget-residual/`, not a
 fallback to the developer's checkout. Relative `mirror.url` paths resolve against
@@ -350,8 +350,27 @@ review and explicit authorization, not unrelated complete wget acceptance.
 
 The separate `sigpending_mask_copyout` regression also passes supported runtime
 RED/GREEN: it checks empty, blocked-pending, and delivered-empty masks. It consumes
-the signal through a real handler; changing disposition to `SIG_IGN` exposes the
-separate unresolved pending-discard defect `dar-cpuk`, not a copyout failure.
+the signal through a real handler, independently of disposition changes.
+
+Two follow-up signal defects now have separate canonical fixes and supported
+current-minus/fixed runtime proofs:
+
+- `dar-cpuk`, `sigaction_ignore_pending`: installing `SIG_IGN` discards an already
+  pending signal; leaving ignore restores delivery, preserves unrelated blocked
+  signals, and restores default termination when requested. Canonical XNU source:
+  `8a2b2f11325cd647495a03fa309d0851fc48fd2f`.
+- `dar-1c53`, `signal_handler_mask`: application handlers retain the interrupted
+  mask, add the translated BSD application mask, and use BSD `SA_NODEFER` flags.
+  An explicit self-signal in `sa_mask` still wins over `SA_NODEFER`. Canonical XNU
+  source: `b0c7888e903fb44266baffa92ec9cb5391fe9019`.
+
+Each RED arm removes only its own patch from the current composed runtime and
+fails in the guest fixture, not during upload, compilation, or boot. Both GREEN
+arms pass on the same composed XNU source. The source/artifact/fixture evidence
+index is `~/work/darling-debug/dar-cpuk-handler-mask-proof/summary.json`.
+These added fixtures have Linux host smoke and deployed Darling proof; their
+macOS registrations do not imply a new macOS reference run. Publication remains
+blocked pending canonical publication review and explicit authorization.
 
 Native reference identity remains under `~/work/darling-debug/dar-759a.5-pilot/`.
 The completed evidence index is
