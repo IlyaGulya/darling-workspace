@@ -73,23 +73,35 @@ mise exec -- uv run --no-project --with west==1.5.0 python -B \
 ```
 
 The collector configures testkit for discovery only, does not build product
-targets or execute tests, and fails if a runtime binding has no reviewed
-applicability policy. Generated `configure.log`, `ctest.json` and
+targets or execute tests. Every binding requires explicit applicability review,
+independent of runner or coverage tier. Policy is keyed by
+`profile:patch-path:ordinal`, with a SHA-256 fingerprint of the normalized test
+declaration and relative West project path. An unknown binding, reused name on a
+new binding, or changed declaration fails before a successful snapshot is
+written. Source-content/reference review remains separate from this metadata
+drift guard. Generated `configure.log`, `ctest.json` and
 `inventory.json` stay outside version control. The snapshot records all
 bindings, owners, source hashes, normalized proof/resources, applicability
 and explicit unresolved prerequisites. This audit's captured output is in
-`~/work/darling-debug/dar-759a-inventory-OIHskT/reproduced/`.
+`~/work/darling-debug/dar-759a-inventory-OIHskT/scoped-policy/`.
 
 The versioned focused host contract exercises inherited-profile census,
-independent patch bindings, West alias resolution, rejection of an unreviewed
-runtime case, and discovery without product builds or test execution:
+independent patch bindings, West alias resolution, rejection of an unknown
+compile binding and a reused name, declaration-change rejection, and discovery
+without product builds or test execution:
 
 ```sh
 mise exec -- uv run --no-project --with west==1.5.0 python -B \
   tests/west_test_contracts/native_inventory_contract.py
 ```
+The aggregate entrypoint `tests/run-native-inventory-contract.sh` runs that
+focused contract and the real current-workspace census, then removes its
+temporary discovery output. `ci/run-test-tier.sh host` includes it through
+`ci/run-host-tier.py` as an uncached command: cached host evidence must not
+bypass a current metadata/applicability review.
 
-Eight script references are absent from the live source trees; seven exist in
+
+Eight script references are `unresolved_in_current_checkout`; seven exist in
 their declared source commits, and the remaining coalescing script exists in a
 later declared profile commit. Live-tree absence is not evidence of missing
 materialized-profile coverage. No guest/native case or source-profile runtime
@@ -165,7 +177,23 @@ bindings separately) are:
 | Package/toolchain platform setup required | 4 |
 | Complete current verdict is Darling-internal | 41 |
 
-The 93 non-runtime proofs are not required to become native Darwin references.
+The 93 non-runtime bindings also have individual reviewed decisions:
+
+| Policy | Bindings |
+| --- | ---: |
+| Narrowly scoped implementation-only proof exemption | 48 |
+| ABI, SDK, compiler/linker or host-runtime reference review | 13 |
+| Public API/SPI semantic reference review | 21 |
+| Mixed public filesystem and private overlay oracle | 7 |
+| Unresolved stub, security divergence or SDK identity review | 4 |
+
+Those four unresolved bindings are `darwin_priority_contract`,
+`socket_siocgifconf_contract`, `sandbox_exec_pass_through_contract` and
+`sdk_homebrew_detection_contract`. Recording their unresolved applicability is
+not approval of stub behavior, security-policy bypass or SDK-label consistency
+as compatibility evidence. Compile, host, model and source evidence never imply
+native inapplicability by themselves.
+
 These are applicability decisions from source inspection, not native run
 verdicts. Internal classification applies to the complete current oracle, not
 to every public API used by its workload.

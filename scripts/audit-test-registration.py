@@ -93,31 +93,31 @@ if ctest:
                             "properties": properties})
 
 policy_spec = json.loads((workspace / "audits/native-test-applicability.json").read_text())
-policy_by_name = {}
-for group in policy_spec["groups"]:
-    for name in group["names"]:
-        if name in policy_by_name:
-            raise ValueError(f"duplicate audit policy: {name}")
-        policy_by_name[name] = group
+policy_groups = {group["policy"]: group for group in policy_spec["groups"]}
+if len(policy_groups) != len(policy_spec["groups"]):
+    raise ValueError("duplicate applicability policy group")
+reviewed_bindings = policy_spec["bindings"]
 
 for row in bindings:
     matching = [case for case in ctest_cases if row["asset_path"] and case["source"]
                 and Path(case["source"]).resolve() == Path(row["asset_path"]).resolve()]
     row["workspace_ctest_same_source"] = [case["name"] for case in matching]
     row["registration_surface"] = "source-ctest-runner" if row["runner"] != "ctest" and row["ctest_selector"] else "workspace-ctest-selector" if row["runner"] == "ctest" else "direct-metadata-runner"
-    if row["coverage_tier"] != "runtime":
-        row["native_policy"] = {"policy": "not_required_for_nonruntime_proof",
-                                "reason": "Host/model/source/compile proof is not itself a native Darwin compatibility assertion."}
-    else:
-        policy_name = row["normalized_test"].get("fixture", row["name"])
-        policy_name = policy_spec["aliases"].get(policy_name, policy_name)
-        policy = policy_by_name.get(policy_name)
-        if policy is None:
-            raise ValueError(f"runtime binding has no reviewed applicability policy: {row['binding_id']}")
-        row["native_policy"] = {"policy": policy["policy"], "reason": policy["reason"]}
+    declaration = {"project": project_paths.get(row["repo"], row["repo"]),
+                   "test": row["normalized_test"]}
+    declaration_bytes = json.dumps(declaration, sort_keys=True, separators=(",", ":"),
+                                   ensure_ascii=False).encode()
+    row["identity_sha256"] = hashlib.sha256(declaration_bytes).hexdigest()
+    review = reviewed_bindings.get(row["binding_id"])
+    if review is None:
+        raise ValueError(f"binding has no reviewed applicability policy: {row['binding_id']}")
+    if review["identity_sha256"] != row["identity_sha256"]:
+        raise ValueError(f"binding declaration changed since applicability review: {row['binding_id']}")
+    policy = policy_groups[review["policy"]]
+    row["native_policy"] = {"policy": policy["policy"], "reason": review["reason"]}
     row["audit_execution_status"] = "not_run"
     if row["asset_exists"] is False:
-        row["asset_resolution"] = "absent_in_live_tree_not_a_proven_profile_gap"
+        row["asset_resolution"] = "unresolved_in_current_checkout"
         if row["source_commit"] and row["repo"] not in {"darling-workspace", "manifest"}:
             root = workspace.parent / project_paths.get(row["repo"], row["repo"])
             check = subprocess.run(["git", "-C", str(root), "cat-file", "-e",
@@ -134,7 +134,7 @@ summary = {
     "runners": dict(collections.Counter(r["runner"] for r in bindings)),
     "coverage_tiers": dict(collections.Counter(r["coverage_tier"] for r in bindings)),
     "blocked_bindings": sum(bool(r["blocked"]) for r in bindings),
-    "missing_script_assets": [{k: r[k] for k in ("binding_id", "name", "asset_path")} for r in bindings if r["asset_exists"] is False],
+    "unresolved_script_assets_in_current_checkout": [{k: r[k] for k in ("binding_id", "name", "asset_path")} for r in bindings if r["asset_exists"] is False],
     "workspace_ctest_entries": len(ctest_cases),
     "native_policy": dict(collections.Counter(r["native_policy"]["policy"] for r in bindings)),
     "same_source_metadata_ctest_bindings": sum(bool(r["workspace_ctest_same_source"]) for r in bindings),

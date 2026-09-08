@@ -40,15 +40,15 @@ class HostCommand(NamedTuple):
 
 
 def _worker_count() -> int:
-    default = min(8, max(1, os.cpu_count() or 1), len(CONTRACTS) + 1)
+    default = min(8, max(1, os.cpu_count() or 1), len(CONTRACTS) + 2)
     value = os.environ.get("DARLING_HOST_TIER_WORKERS", str(default))
     try:
         workers = int(value)
     except ValueError as error:
         raise SystemExit("DARLING_HOST_TIER_WORKERS must be an integer") from error
-    if not 1 <= workers <= len(CONTRACTS) + 1:
+    if not 1 <= workers <= len(CONTRACTS) + 2:
         raise SystemExit(
-            f"DARLING_HOST_TIER_WORKERS must be between 1 and {len(CONTRACTS) + 1}"
+            f"DARLING_HOST_TIER_WORKERS must be between 1 and {len(CONTRACTS) + 2}"
         )
     return workers
 
@@ -232,6 +232,13 @@ def main() -> int:
         HostCommand(Path(contract).stem, [str(ROOT / contract)], True)
         for contract in CONTRACTS
     ]
+    commands.append(
+        HostCommand(
+            "native-inventory",
+            [str(ROOT / "tests/run-native-inventory-contract.sh")],
+            False,
+        )
+    )
     profile_materialization = (
         []
         if os.environ.get("WEST_PREMATERIALIZED_PROFILE") == "homebrew"
