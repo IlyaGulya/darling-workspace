@@ -49,6 +49,15 @@ python3 -B tests/west_test_contracts/native_artifact_contract.py
 
 Local Linux RED/GREEN evidence is not a native macOS or hosted-matrix PASS.
 
+dar-759a.2 native acceptance also passed over SSH on `misakaindrive`, macOS
+26.5.1 (25F80), Darwin arm64. The same four runner/contract files from
+`ba046ee` matched SHA-256 hashes on both hosts. The real Mac reproduced the
+raw-route execute-bit failure and passed the archived-route compiled fixture
+through the installed runner. Its isolated scratch directory was removed.
+Captured evidence: `~/work/darling-debug/dar-759a.2-misakaindrive-native.json`.
+This is one real-Mac transport acceptance, not a hosted-matrix or product
+compatibility verdict.
+
 ## Native convergence contract and inventory (2026-09-08)
 
 Owner: dar-759a.1. This extends the implemented work in dar-test-infra-sp5.7,
@@ -1202,9 +1211,10 @@ How `add_compat_test` models this:
   `MIN_VERSION 13.0 MAX_VERSION 15.0` configures clean and carries
   `macos:13.0-15.0`.
 
-Not yet real here: a `macos` host to run on, and the install→ship→run plumbing
-(that is the Tier 2 farm). The build knobs and labels are in place so wiring a
-runner later is config, not redesign.
+A real macOS host is available over SSH as `misakaindrive`; dar-759a.2 has
+verified archive transport and installed execution there. Complete local/SSH
+CTest contract parity remains dar-759a.4, and the Tier 2 version farm is not
+established by this single-host acceptance.
 
 ## Colocation & upstream stance
 
