@@ -1,107 +1,104 @@
 ---
 name: darling-durability
 description: >-
-  Make in-progress Darling work durable so it survives checkout/reset/handoff:
-  triage dirty & uncommitted work, rescue at-risk commits onto clean fix/*
-  branches, commit the manifest repo, run west dw handoff, and verify. Use
-  before ending a session, before any west update / git checkout / west patch
-  apply, or whenever `git status` shows uncommitted work in the Darling
-  workspace. Prevents silent loss of perf work (e.g. perf#21b nearly lost off a
-  generated integration branch; the whole manifest repo was once uncommitted).
+  Preserve Darling changes across checkout, integration regeneration, and handoff.
+  Use before ending a changing session, before checkout/update/patch application,
+  or when dirty source work is found. Preserve canonical fix branches and stage
+  only explicitly owned manifest and handoff changes.
 ---
 
-# darling-durability: make workspace work durable
+# Darling durability: preserve owned changes, then hand off
 
-The Darling workspace has three durability traps, all of which have bitten us:
-1. **Uncommitted worktree changes** — lost on any `git checkout`/`west update`.
-   `west dw handoff` CANNOT carry dirty worktrees (it only prints them).
-2. **Commits only on a GENERATED `integration/<profile>` branch** — `west patch
-   apply`/`clean` regenerates that branch and DISCARDS anything committed only there.
-3. **An uncommitted manifest repo** (`darling-workspace`) — the single most fragile
-   spot; it holds the exported patch profile (patches.yml + patch files), tooling,
-   and the handoff bundles themselves.
+Treat this skill as guidance to verify against current repository rules and
+commands, not as authority over them. Re-check the active West workspace and
+manifest repository; do not assume a historical checkout or baseline. Correct
+stale instructions when found.
 
-Canonical rules (workspace CLAUDE.md): clean `fix/*` branch = editable source;
-patch files + `patches.yml` = portable; `integration/*` + profile `west.lock.yml`
-= generated (never edit). **Never push** unless explicitly asked.
+## What must survive
 
-## Procedure
+- Clean `fix/*` branches are canonical editable product source.
+- Patch archives and their full source SHA/checksum metadata are portable inputs.
+- The manifest repository owns workspace metadata, Beads, drafts, and handoff.
+- `integration/*` branches and profile `west.lock.yml` files are generated,
+  not a place to retain fixes. Do not edit generated branches or locks.
+- Dirty worktrees are not made durable by `west dw handoff` alone.
 
-### 1. Triage — find every at-risk piece
-```
-cd ~/work/darling-dev
-west forall -c 'test -n "$(git status --porcelain)" && echo "DIRTY: $(pwd)"' 2>/dev/null | grep -i dirty
-```
-Also inspect the manifest repo itself (it is NOT in `west forall`):
-```
-git -C darling-workspace status --porcelain
-```
-For the superproject, distinguish real dirt from submodule-pointer drift:
-```
-git -C darling status --porcelain --ignore-submodules=all --untracked-files=no
-```
-(empty = only submodule pointers moved = expected, not a durability risk).
+Use mise-managed project CLIs: `mise exec -- west ...` from the manifest
+repository, or `mise -C darling-workspace exec -- west ...` from the West root.
 
-Classify each: **keep** (commit it), **rescue** (on a generated branch → move),
-or **artifact/experiment** (commit but not for a profile). Read
-`docs/perf-work-triage-*.md` for the current keep/rescue map.
+## Triage before changing repository state
 
-### 2. Rescue commits stranded on a generated integration branch
-If a keeper commit sits only on `integration/<profile>`, cherry-pick it onto a
-clean `fix/*` at **manifest-rev** (NOT onto the integration tip):
-```
-REV=$(west list -f '{revision}' darling)      # resolve manifest revision
-git -C darling branch -f fix/<name> $REV
-git -C darling switch fix/<name>
-git -C darling cherry-pick <sha>              # clean pick => independent of the profile
-git -C darling switch integration/<profile>   # restore working branch
-```
-A clean cherry-pick onto manifest-rev also MEASURES independence from the profile.
+1. Inspect relevant repository status and worktree/branch ownership, including
+   the manifest repository itself. Distinguish source edits from expected
+   submodule-pointer drift and generated files. Use the current harness's file
+   and search tools instead of copied shell pipelines.
+2. Classify each change as owned keeper, another person's work, or disposable
+   experiment/evidence. Do not discard, stage, reformat, or commit someone else's
+   changes as part of your task.
+3. Before rebasing, switching, resetting, or regenerating an integration, preserve
+   at-risk commits with an explicit local rescue ref or verified bundle, and back
+   up owned uncommitted changes outside disposable worktrees. A branch reference
+   alone does not preserve uncommitted files.
+4. Put the actual fix on a clean `fix/*` worktree at its reviewed base, including
+   required dependencies. Do not force-update a branch from a copied recipe or
+   blindly assume every fix can be based on the manifest revision. Verify the
+   intended replay and behavior; preserve the old identity until the replacement
+   is durable.
 
-### 3. Commit uncommitted keepers onto clean fix/* branches
-For each repo with real dirt (e.g. dyld reader, tooling), create/switch a
-`fix/*` (or the owning topic branch) and commit — WIP commits are fine; the goal
-is durability, not working code. Make the message name the bead and mark WIP if
-the feature isn't done.
+## Commit and export narrowly
 
-### 4. Commit the manifest repo
-Stage content first, but EXCLUDE handoff-generated artifacts (handoff refreshes
-them next), then commit; you re-commit the artifacts after handoff:
-```
-cd darling-workspace
-git add -A
-git reset -q handoff/ .beads/issues.jsonl base.xml locked.xml state/repos.tsv \
-              west.lock.yml patches/homebrew/west.lock.yml
-git commit -m "Commit workspace state: <what>"
-```
+- Commit only the exact owned source paths on the canonical fix branch. Inspect
+  pre-existing staged changes so the commit cannot absorb unrelated work.
+- Refresh changed patch inputs with `west patch export`, using the focused
+  `--profile` and `--patch` selectors when applicable. Update the full source
+  SHA and checksum together. Do not hand-edit archives or accept unrelated YAML
+  formatting churn. Never edit generated locks to make verification pass.
+- Validate through the current `west patch export --check`, `west patch verify`,
+  and relevant behavior checks. Unified patch archives have significant blank
+  context lines: exclude `patches/**/*.patch` from ordinary whitespace checks
+  and validate the payload with patch tooling instead.
+- Commit owned manifest changes with an explicit path list, separate from
+  handoff-generated changes. NEVER use `git add -A`, broad directory staging,
+  or a blanket reset/clean as a shortcut. If the index contains unrelated work,
+  isolate your commit without altering that work.
+- Keep generated logs, snapshots, test archives, and diagnostic evidence in the
+  external diagnostic archive, not in product patches. An experiment does not
+  become product source merely to make it durable.
 
-### 5. Handoff
-```
-cd ~/work/darling-dev && west dw handoff
-```
-Then verify the new branch tips actually landed in the bundles:
-```
-git -C darling-workspace bundle list-heads handoff/src__external__<repo>.bundle | grep <branch>
-git -C darling-workspace bundle list-heads handoff/root.bundle | grep <branch>
-```
+## Refresh handoff without swallowing other work
 
-### 6. Commit the refreshed handoff artifacts
-```
-cd darling-workspace
-git add -A handoff/ .beads/issues.jsonl base.xml locked.xml state/repos.tsv \
-             west.lock.yml patches/homebrew/west.lock.yml
-git commit -m "Refresh handoff bundles + locks"
-git status --porcelain   # must be empty
-```
+After changing private branches or Beads, run `mise exec -- west dw handoff`.
+Before doing so, inspect the current handoff implementation and record the
+pre-existing dirty/staged paths; handoff behavior and generated paths can change.
 
-### 7. Final safety check
-- Prod binaries still at baseline (`west darling-doctor`, or md5 the deployed
-  dyld/mldr/dserver vs `deploy-baseline.md5`): 79b22273 / f0cd2a82 / 835946f9.
-- No stray procs (`pgrep -af 'mldr|darlingserver|vchroot'`).
-- Every keeper branch tip printed and confirmed in a bundle.
+Afterward:
 
-## Hard rules
-- Never push to any remote unless explicitly asked (LOCAL commits only).
-- Never edit `integration/*` branches or generated locks; rescue onto `fix/*`.
-- Back up dirty files to the job tmp dir before large staging, as a safety net.
-- Prod baseline binaries stay byte-identical; restore if you deployed.
+1. Identify which files the handoff operation actually changed. Do not assume a
+   historical list of bundle, state, manifest, or Beads paths is exhaustive.
+2. Inspect those changes and stage only the exact handoff-owned paths or hunks.
+   A file that already contained unrelated edits needs separation, not wholesale
+   staging. Never use `git add -A`, even scoped to a handoff directory.
+3. Commit the handoff changes separately when needed.
+4. Use `git bundle list-heads <actual-bundle-path>` or the current handoff verifier
+   to prove each owned canonical branch tip is retained. Record the source and
+   manifest commit IDs and any remaining unrelated dirt or blocked work.
+
+A successful command exit is not proof that every desired branch reached a
+bundle. Conversely, a checkout containing someone else's intentional changes
+need not be made globally clean to finish your task.
+
+## Publication and runtime boundaries
+
+- Local durability does not authorize a push. Never publish branches, tags, or PR
+  updates without explicit approval covering that exact action and destination.
+  Fork approval does not authorize upstream changes. Preserve publication gates;
+  do not silently reclassify blocked fixes.
+- Handoff does not require booting Darling, redeploying artifacts, or resetting
+  all prefixes to a remembered baseline. If this session used a runtime, verify
+  only its owned prefix's lifecycle and declared restore obligations through the
+  current tools. Do not globally kill processes or use historical binary hashes.
+- Preserve current working fixes even if their end-to-end proof is blocked; record
+  the exact blocker and evidence. Do not call the feature complete merely because
+  a commit or bundle exists.
+- An explicit user stop pauses further mutation, including commits and handoff.
+  Report the preserved state and what remains uncommitted; resume only when asked.

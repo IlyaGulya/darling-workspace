@@ -1,78 +1,100 @@
 ---
 name: darling-boot
 description: >-
-  Cleanly tear down and boot a Darling prefix without wedging launchd. Use
-  before any live boot/smoke test in the Darling workspace (guest launch,
-  shellspawn, clang-in-guest, DCC2 smoke). Prevents the perf#23a wedge where
-  rapid boot/kill churn hangs launchd in __skb_wait_for_more_packets and a
-  leftover orphan mldr/launchd silently blocks the next boot.
+  Safely run Darling boot and guest smoke tests using the current prefix-scoped
+  lifecycle tools. Use before guest launches, shellspawn, clang-in-guest, or DCC
+  smoke tests. Prevent overlapping boots and orphaned prefix processes without
+  touching other sessions.
 ---
 
-# darling-boot: clean teardown + single boot
+# Darling boot: verify ownership, run once, verify cleanup
 
-Darling boots via a setuid launcher; a botched teardown leaves an **orphan
-`launchd`/`mldr` process tree** that silently blocks the next boot (shellspawn.sock
-never appears). Rapid boot/kill churn additionally wedges launchd in
-`__skb_wait_for_more_packets` (perf#23a). This skill enforces the only reliable
-sequence: **full teardown → kill orphans by PID → settle → ONE background boot → poll**.
+This skill is operational guidance, not a snapshot of the current workspace.
+Re-check the current repository rules, CLI help, runtime profiles, and lifecycle
+implementation before using it. If they disagree, fix this skill rather than
+following stale commands. Historical perf#23a explains the risk of rapid
+boot/kill churn; it is not evidence that a current failure has the same cause.
 
-## When to use
-Before ANY live boot or in-guest smoke test: `darling shell`, `shellspawn`,
-`/usr/bin/true` in guest, clang-in-guest, DCC2 live smoke, closure boot tests.
+## Identify the exact runtime
 
-## Preconditions (verify first)
-- `west darling-doctor` is green (manifest/build/deploy aligned). If it fails, STOP
-  and fix drift first — do not boot a mismatched prefix (that was #89/#90).
-- Know your prefix: `DPREFIX` (default `~/.darling`); the launcher lives at
-  `~/work/darling-prefix/bin/darling`.
+- Resolve the West workspace, manifest repository, install prefix, guest prefix,
+  launcher, build directory, and runtime profile from current configuration.
+  The install prefix and guest prefix may differ. Do not substitute a remembered
+  home directory, default prefix, setuid launcher, or runtime mode.
+- Run project CLIs through the workspace's mise environment. From the manifest
+  repository use `mise exec -- west ...`; from the West root use
+  `mise -C darling-workspace exec -- west ...`.
+- Inspect `west darling-doctor --help` before choosing its flags.
+  `--prefix` names the install prefix; `--extra-prefix` checks an additional
+  runtime/test prefix. Diagnose unexplained source/build/deploy mismatches before
+  booting. Intentional profile drift must be identified and validated by the
+  current materialization/deployment workflow, not hidden with broad exclusions.
+- A declared runtime RED proof intentionally deploys bad artifacts. Its runner
+  must validate the exact source/artifact plan and own backup, restoration, and
+  fixed-runtime verification; historical baseline hashes are not its oracle.
 
-## Protocol (do these in order — do NOT skip the orphan kill)
+## Prefer the supported runner
 
-1. **Graceful shutdown** (ignore failure — the point is best-effort):
-   ```
-   darling shutdown 2>/dev/null || true
-   ```
+Use `west test` for registered guest tests with an explicit prefix/profile.
+Current metadata prefix tests acquire `$DPREFIX/.west-test.lock` and use a
+prefix-scoped lifecycle owner. Check the current implementation before relying
+on those details. Do not start a competing manual boot or cleanup command.
 
-2. **Kill the process tree by PID** — server, vchroot, AND any orphan
-   `mldr`/`launchd`. This is the step people skip; the orphan is the real confound.
-   ```
-   pgrep -f 'darlingserver' | xargs -r kill 2>/dev/null || true
-   pgrep -f 'vchroot'       | xargs -r kill 2>/dev/null || true
-   pgrep -f 'mldr'          | xargs -r kill 2>/dev/null || true
-   pgrep -f 'sbin/launchd'  | xargs -r kill 2>/dev/null || true
-   ```
-   GOTCHA: the Bash tool aborts a compound command when `pkill`/`kill` exits 1
-   (nothing matched). Always use `xargs -r` (skip if empty) or append `|| true`.
-   Never let a "no process" exit 1 abort the teardown.
+For long runs, use the current `scripts/west-job.sh` interface:
 
-3. **Confirm nothing is left**:
-   ```
-   pgrep -af 'mldr|darlingserver|vchroot|sbin/launchd' || echo "clean"
-   ```
-   Must print `clean`. If not, kill remaining PIDs explicitly and re-check.
+`scripts/west-job.sh start --state-dir <unique-absolute-dir> -- <mise-managed-command>`
 
-4. **Settle** — give the kernel time to tear down sockets/namespaces. A short
-   real wait (2–3 s), NOT a tight retry loop. Churn = wedge.
+Then stay attached with:
 
-5. **ONE background boot + poll** — start exactly one boot, then poll for
-   `shellspawn.sock` (or your success signal). Do NOT launch multiple boots, and
-   do NOT wrap the boot in an aggressive timeout-kill that races the poll.
-   ```
-   # start the single boot (background), then poll for readiness
-   darling shell true &            # or your specific smoke command
-   # poll: look for shellspawn.sock / expected stdout, up to ~10s
-   ```
+`scripts/west-job.sh follow --state-dir <same-dir>`
 
-6. **On success**: run the smoke. **On failure/hang**: go back to step 2 (kill
-   orphans) BEFORE retrying — never retry a boot on top of a half-dead tree.
+An observer timeout does not stop the job. Resume `follow`, or use `status`
+after a transport interruption. Do not infer completion from a detached tool
+handle. Do not start a second prefix-backed run until the first has a final exit
+status and its prefix cleanup has completed. Follow the active harness's process
+supervision rules when it provides a different required transport.
 
-## Teardown after the test
-Repeat steps 1–3. Leaving an orphan launchd running is what silently breaks the
-*next* session's boot. End every boot session on a verified-`clean` process table.
+## Lifecycle invariants
 
-## Hard rules
-- Never tight-loop boot/kill (perf#23a wedge).
-- Never assume "shutdown" cleaned up — always verify with `pgrep`.
-- Never boot when `west darling-doctor` is red.
-- Never touch prod baseline binaries during boot testing (dyld 79b22273 /
-  mldr f0cd2a82 / dserver 835946f9). Restore byte-identical if you deployed.
+1. Establish that no other run owns the selected prefix. Use the current runner's
+   lock and process-identity tracking; process names alone do not prove ownership.
+2. Request graceful shutdown through the current prefix-scoped lifecycle path.
+   Verify leftover processes and mounts for that prefix even if shutdown exits 0.
+3. Let that lifecycle owner handle verified leftovers. NEVER use global
+   `pkill`, `killall`, or `pgrep | xargs kill` for darlingserver, mldr,
+   launchd, or vchroot. An orphan must be tied to the selected prefix/namespace
+   before any termination. If ownership cannot be established, stop and retain
+   diagnostics rather than guessing.
+4. Allow teardown to settle. Start one managed boot and observe the actual
+   readiness/verdict condition. A created process or socket alone is not proof
+   that the requested guest operation passed. Avoid tight retry/kill loops.
+5. On failure, preserve diagnostics and complete prefix-scoped teardown before
+   another attempt. Do not layer a boot over a half-dead runtime.
+
+Use `--keep-prefix-running` only for deliberate local iteration with explicit
+ownership; it is not a workaround for cleanup failures.
+
+## Repair and completion
+
+- Missing tmp directories or CLT links: use
+  `mise exec -- west darling-prefix-repair --prefix <guest-prefix> --check`,
+  then the supported repair command when necessary. Do not improvise mkdir/ln
+  repairs. Check the current test profile's toolchain provisioning first.
+- For stale mounts, first establish that no live process owns the prefix, then
+  use `west darling-prefix-repair --prefix <guest-prefix> --cleanup-mounts`.
+  Check its result; do not ignore mount tails or glob-delete debug prefixes.
+- Record the final command status, guest-visible verdict, and prefix-scoped
+  process/mount cleanup. A cleanup failure keeps the run failed or blocked.
+- Never compare against hashes copied from this skill. If deployment is involved,
+  capture the actual pre-run artifacts and let the supported deploy/restore
+  workflow verify them. Do not overwrite unrelated prefixes or production state.
+
+## Implementation anchors to re-check
+
+- `west_commands/test.py`: test orchestration and prefix integration.
+- `west_commands/test_prefix.py`: prefix lifecycle owner and process identity.
+- `west_commands/test_guest_execution.py`: bounded guest transport/shutdown.
+- `west_commands/darling_prefix_repair.py` and `prefix_repair.py`: repair CLI.
+- `scripts/west-job.sh`: supervised finite-job transport.
+
+These locations can move. Locate their current replacements before acting.
