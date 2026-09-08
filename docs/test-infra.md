@@ -972,13 +972,17 @@ failure, rerun the same explicit command with `--sudo`; it uses
 `rm --one-file-system` only after the same checks pass.
 
 For metadata tests that use `runs: guest`, `west test` also owns the resource
-lock and shutdown path. A real run takes `$DPREFIX/.west-test.lock` before
-launching the test, holds it through cleanup, calls `darling shutdown` for the
-selected prefix, and kills a matching leftover `darlingserver` if shutdown did
-not finish cleanly. After cleanup it checks the remaining `darlingserver`
-process tree for that prefix; leftover processes make the `west test` run fail,
-even if the test payload itself passed. Pass `--keep-prefix-running` only when
-intentionally keeping the prefix warm for a
+lock and shutdown path. A real run flocks the prefix's open parent-directory
+descriptor before launching the test and holds it through cleanup, without
+creating a lock file inside the prefix. It calls `darling shutdown` for the
+selected prefix, then stops matching leftover server and rootless guest
+processes. Rootless guest discovery also handles scrubbed `DARLING_*` variables:
+an `mldr` process's `__mldr_sockpath` identifies an inherited directory fd,
+whose device/inode must match the selected prefix. The original socket owner
+may already have exited; the guest's own retained fd remains the ownership
+evidence. A shared loader installation or guest argv alone is not sufficient.
+Leftover processes make the run fail even if the payload passed. Pass
+`--keep-prefix-running` only when intentionally keeping the prefix warm for a
 manual debug loop.
 
 For patch metadata, `diag: guarded` and `diag: forensic` are enforced by

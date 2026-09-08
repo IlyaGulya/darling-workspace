@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import os
 import fcntl
+import re
 import signal
 import stat
 import subprocess
@@ -52,6 +53,30 @@ class RootlessRuntimeSocketCleanupResult:
         return not self.problems
 
 
+def _loader_retains_prefix(
+    process_dir: Path, environment: set[bytes], prefix: Path
+) -> bool:
+    for entry in environment:
+        if not entry.startswith(b"__mldr_sockpath="):
+            continue
+        match = re.fullmatch(
+            rb"__mldr_sockpath=/proc/[0-9]+/fd/([0-9]+)/\.darlingserver\.sock",
+            entry,
+        )
+        if match is None:
+            continue
+        try:
+            executable = os.readlink(process_dir / "exe").removesuffix(" (deleted)")
+            # The endpoint owner may already have exited. The loader inherits
+            # the same directory capability, independent of its guest argv/env.
+            return Path(executable).name == "mldr" and (
+                process_dir / "fd" / match[1].decode("ascii")
+            ).samefile(prefix)
+        except OSError:
+            return False
+    return False
+
+
 def rootless_prefix_process_snapshot(
     prefix: Path,
     *,
@@ -60,9 +85,9 @@ def rootless_prefix_process_snapshot(
 ) -> list[str]:
     """List rootless guest processes that explicitly belong to ``prefix``.
 
-    A rootless guest can re-parent itself to init and therefore disappear from
-    the darlingserver process tree. The launcher-provided environment remains
-    its stable ownership token, unlike a process name such as ``launchd``.
+    A rootless guest can re-parent itself to init and scrub DARLING_* from its
+    environment. In that case, identify the loader's retained prefix directory
+    capability, not its guest argv, cwd, or shared installation path.
     """
 
     current_pid = os.getpid() if current_pid is None else current_pid
@@ -84,10 +109,10 @@ def rootless_prefix_process_snapshot(
             environment = set((process_dir / "environ").read_bytes().split(b"\0"))
         except OSError:
             continue
-        if rootless_marker not in environment:
-            continue
-        owns_prefix = prefix_marker in environment
+        owns_prefix = rootless_marker in environment and prefix_marker in environment
         if not owns_prefix:
+            owns_prefix = _loader_retains_prefix(process_dir, environment, prefix)
+        if not owns_prefix and rootless_marker in environment:
             for proc_link in (process_dir / "cwd", process_dir / "exe"):
                 try:
                     proc_target = proc_link.resolve(strict=False)
@@ -114,7 +139,7 @@ def cleanup_rootless_prefix_processes(
     kill_func=os.kill,
     sleep_func=time.sleep,
 ) -> RootlessPrefixCleanupResult:
-    """Terminate only rootless descendants carrying this prefix's env token."""
+    """Terminate only rootless processes with this prefix's ownership evidence."""
 
     result = RootlessPrefixCleanupResult()
     for sig in (signal.SIGTERM, signal.SIGKILL):
