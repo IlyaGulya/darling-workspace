@@ -10,7 +10,6 @@ try:
     from .test_guest_macho import GuestMachoFixtureError, load_guest_macho_fixture
 except ImportError:  # Loaded as a West extension module, not a package.
     from test_guest_macho import GuestMachoFixtureError, load_guest_macho_fixture
-from test_selection import select_metadata_tests
 
 
 VALIDATION_GROUP_FIXTURES = {
@@ -119,31 +118,6 @@ def expected_marker_from_corpus(invocation: dict) -> str:
     return marker
 
 
-def select_metadata_tests_for_command(
-    command,
-    profile: str,
-    patch_path: str | None,
-    bead: str | None,
-    env: str | None,
-    diag: str | None,
-    label: str | None,
-    red_only: bool,
-    validation_group: str | None = None,
-):
-    selection = select_metadata_tests(
-        command._load_profile(profile),
-        patch_path=patch_path,
-        bead=bead,
-        env=env,
-        diag=diag,
-        label=label,
-        validation_group=validation_group,
-        red_only=red_only,
-        resolved_diag=command._resolved_diag,
-    )
-    if patch_path and not selection.found_patch:
-        command.die(f"{profile}: patch not found or has no selected tests: {patch_path}")
-    return selection.selected, selection.missing
 
 
 def write_guest_macho_evidence(

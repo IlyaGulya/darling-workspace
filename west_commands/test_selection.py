@@ -5,6 +5,8 @@ from __future__ import annotations
 import re
 from typing import Callable
 
+from test_ctest import is_ctest_binding
+
 
 class MetadataSelection:
     """Selected tests plus patches that need a test/exception decision."""
@@ -26,6 +28,7 @@ def select_metadata_tests(
     red_only: bool,
     resolved_diag: Callable[[dict], str],
     validation_group: str | None = None,
+    defer_ctest: bool = False,
 ) -> MetadataSelection:
     """Select normalized metadata without depending on a West command object."""
 
@@ -46,7 +49,7 @@ def select_metadata_tests(
         if red_only:
             tests = [test for test in tests if test.get("red")]
         if env:
-            tests = [test for test in tests if test.get("env") == env]
+            tests = [test for test in tests if (defer_ctest and is_ctest_binding(test)) or test.get("env") == env]
         if validation_group:
             tests = [
                 test
@@ -55,13 +58,14 @@ def select_metadata_tests(
                 and test.get("validation-group") == validation_group
             ]
         if diag:
-            tests = [test for test in tests if resolved_diag(test) == diag]
+            tests = [test for test in tests if (defer_ctest and is_ctest_binding(test)) or resolved_diag(test) == diag]
         if label:
             matcher = re.compile(label)
             tests = [
                 test
                 for test in tests
-                if any(matcher.search(item) for item in metadata_test_labels(patch, test, resolved_diag))
+                if (defer_ctest and is_ctest_binding(test))
+                or any(matcher.search(item) for item in metadata_test_labels(patch, test, resolved_diag))
             ]
         selected.extend((patch, test) for test in tests)
         if not tests and not all_tests and not patch.get("test-exception"):
@@ -93,7 +97,36 @@ def metadata_test_labels(
     if isinstance(explicit, str):
         explicit = [explicit]
     labels.update(str(item) for item in explicit)
+    labels.update(test.get("_ctest", {}).get("labels", []))
     for axis in ("smoke", "fuzz", "stress"):
         if test.get(axis):
             labels.add(f"{axis}:true")
     return labels
+
+
+def select_metadata_tests_for_command(
+    command,
+    profile: str,
+    patch_path: str | None,
+    bead: str | None,
+    env: str | None,
+    diag: str | None,
+    label: str | None,
+    red_only: bool,
+    validation_group: str | None = None,
+):
+    selection = select_metadata_tests(
+        command._load_profile(profile),
+        patch_path=patch_path,
+        bead=bead,
+        env=env,
+        diag=diag,
+        label=label,
+        validation_group=validation_group,
+        red_only=red_only,
+        resolved_diag=command._resolved_diag,
+        defer_ctest=True,
+    )
+    if patch_path and not selection.found_patch:
+        command.die(f"{profile}: patch not found or has no selected tests: {patch_path}")
+    return selection.selected, selection.missing

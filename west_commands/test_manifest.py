@@ -140,6 +140,17 @@ def _expand_compact_axes(test: dict[str, Any], *, index: int = 0) -> None:
         if "ctest-label" in test and test["ctest-label"] != test["ctest"]:
             raise ManifestError(f"{location}: ctest conflicts with ctest-label")
         test["ctest-label"] = test.pop("ctest")
+    for reference in ("ctest-label", "ctest-name"):
+        if reference in test and (not isinstance(test[reference], str) or not test[reference].strip()):
+            raise ManifestError(f"{location}: {reference} must be a non-empty string")
+    if test.get("ctest-name") and test.get("runner") not in {None, "ctest"}:
+        raise ManifestError(f"{location}: ctest-name requires a CTest registration binding")
+    if (
+        (test.get("ctest-label") or test.get("ctest-name"))
+        and test.get("runner") in {None, "ctest"}
+        and test.get("command")
+    ):
+        raise ManifestError(f"{location}: a CTest registration binding cannot override command")
     if "build-target" in test:
         if "target" in test and test["target"] != test["build-target"]:
             raise ManifestError(f"{location}: build-target conflicts with target")
@@ -147,7 +158,7 @@ def _expand_compact_axes(test: dict[str, Any], *, index: int = 0) -> None:
     runs = test.pop("runs", None)
     if runs is not None:
         runs_map = {"host": "host", "guest": "darling", "macos": "macos"}
-        if runs not in runs_map:
+        if not isinstance(runs, str) or runs not in runs_map:
             raise ManifestError(f"{location}: runs must be host, guest, or macos")
         env = runs_map[str(runs)]
         if "env" in test and test["env"] != env:
@@ -155,6 +166,14 @@ def _expand_compact_axes(test: dict[str, Any], *, index: int = 0) -> None:
         test["env"] = env
         if runs == "guest":
             _append_unique(test, "requires", ["darling-prefix"])
+    if (
+        test.get("runner") in {"guest-c-fixture", "guest-command-fixture", "guest-macho-fixture"}
+        and test.get("env") not in {None, "darling"}
+    ):
+        raise ManifestError(
+            f"{location}: {test['runner']} only supports env:darling; "
+            "use a CTest registration reference for other environments"
+        )
     proof = test.get("red-proof")
     if isinstance(proof, str):
         proof_map = {
@@ -218,7 +237,7 @@ def _default_red_failure_phase(test: dict[str, Any]) -> None:
     tier = test.get("coverage-tier")
     if runner == "object-symbol-fixture":
         proof["expect-failure-phase"] = "inspect"
-    elif runner == "ctest" or (test.get("ctest-label") and not runner):
+    elif runner == "ctest" or ((test.get("ctest-label") or test.get("ctest-name")) and not runner):
         proof["expect-failure-phase"] = "ctest"
     elif runner in {"source-contract-script", "source-profile-script", "source-script-fixture"}:
         proof["expect-failure-phase"] = "script"

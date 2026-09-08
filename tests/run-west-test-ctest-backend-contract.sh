@@ -6,5 +6,5 @@ cd "$repo"
 
 export PYTHONDONTWRITEBYTECODE=1
 
-python3 tests/west_test_contracts/ctest_backend_contract.py
+mise exec -- uv run --no-project --with west==1.5.0 python -B tests/west_test_contracts/ctest_backend_contract.py
 printf 'PASS west-test-ctest-backend-contract\n'
