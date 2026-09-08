@@ -40,16 +40,16 @@ class HostCommand(NamedTuple):
     cacheable: bool
 
 
-def _worker_count() -> int:
-    default = min(8, max(1, os.cpu_count() or 1), len(CONTRACTS) + 3)
+def _worker_count(command_count: int) -> int:
+    default = min(8, max(1, os.cpu_count() or 1), command_count)
     value = os.environ.get("DARLING_HOST_TIER_WORKERS", str(default))
     try:
         workers = int(value)
     except ValueError as error:
         raise SystemExit("DARLING_HOST_TIER_WORKERS must be an integer") from error
-    if not 1 <= workers <= len(CONTRACTS) + 3:
+    if not 1 <= workers <= command_count:
         raise SystemExit(
-            f"DARLING_HOST_TIER_WORKERS must be between 1 and {len(CONTRACTS) + 3}"
+            f"DARLING_HOST_TIER_WORKERS must be between 1 and {command_count}"
         )
     return workers
 
@@ -247,6 +247,13 @@ def main() -> int:
             True,
         )
     )
+    commands.append(
+        HostCommand(
+            "native-transport",
+            [sys.executable, "-B", str(ROOT / "tests/west_test_contracts/native_transport_contract.py")],
+            True,
+        )
+    )
     profile_materialization = (
         []
         if os.environ.get("WEST_PREMATERIALIZED_PROFILE") == "homebrew"
@@ -272,7 +279,7 @@ def main() -> int:
     raw_cache_key = os.environ.get("WEST_HOST_CONTRACT_CACHE_KEY")
     return run_commands(
         commands,
-        workers=_worker_count(),
+        workers=_worker_count(len(commands)),
         cache_root=Path(raw_cache_root) if raw_cache_root else None,
         cache_key=raw_cache_key,
     )

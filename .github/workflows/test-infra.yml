@@ -513,6 +513,15 @@ jobs:
     runs-on: macos-14
     steps:
       - uses: actions/checkout@v7
+      - name: Verify native CTest relocation and failure handling
+        run: python3 -B tests/west_test_contracts/native_bundle_contract.py --work-dir "$RUNNER_TEMP/native-contract"
+      - name: Preserve native contract evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: native-contract
+          path: ${{ runner.temp }}/native-contract
+          if-no-files-found: warn
       - name: Build installable native oracle bundle
         run: ci/run-test-tier.sh macos-package "$RUNNER_TEMP/oracle"
       - name: Archive complete native oracle bundle with permissions
@@ -540,4 +549,13 @@ jobs:
       - name: Extract native oracle into a fresh directory
         run: ci/run-test-tier.sh macos-extract "$RUNNER_TEMP/macos-oracle-artifact/macos-oracle.tar" "$RUNNER_TEMP/oracle"
       - name: Run identical native macOS oracle bundle
+        env:
+          DARLING_NATIVE_RESULTS_DIR: ${{ runner.temp }}/native-results
         run: ci/run-test-tier.sh macos-installed "$RUNNER_TEMP/oracle"
+      - name: Preserve native CTest results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: native-results-${{ matrix.runner }}
+          path: ${{ runner.temp }}/native-results
+          if-no-files-found: warn
