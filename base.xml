@@ -2,7 +2,7 @@
 <manifest>
   <remote name="darling" fetch="https://github.com/darlinghq/" />
   <default remote="darling" sync-j="16" sync-tags="false" />
-  <project name="darling" path="darling" revision="49e5fac3a292f46b8153baf00be3581406734e5d" />
+  <project name="darling" path="darling" revision="ad54dc5bfbb15fcf5d5a3ae826864472a274724c" />
   <project name="darling-docs" path="darling/docs/darling-docs" revision="14c841ef3df319254ef5ac291f828f27048a6579" />
   <project name="darling-AvailabilityVersions" path="darling/src/external/AvailabilityVersions" revision="e28c029a8fa46fa933cbf6d6d9a1c00978c5fad1" />
   <project name="darling-BerkeleyDB" path="darling/src/external/BerkeleyDB" revision="1411173f0eb71f96ab6134de4e052d16acb8c673" />
@@ -94,8 +94,8 @@
   <project name="darling-libmalloc" path="darling/src/external/libmalloc" revision="a57991e2651226a675654bd96e5d9ab6bec288c5" />
   <project name="darling-libnetwork" path="darling/src/external/libnetwork" revision="56c5fad43f24a40d8ca7f8a1d0badedfeaf7e64e" />
   <project name="darling-Libnotify" path="darling/src/external/libnotify" revision="98156d3f847a3ced6c5f52c12a889047bc4f9b20" />
-  <project name="darling-libplatform" path="darling/src/external/libplatform" revision="5a3e5b529d25c70257dcfa97e94f1826e71e9f40" />
-  <project name="darling-libpthread" path="darling/src/external/libpthread" revision="f07f265bfbcf071c1adfc808de971e053ea5edc5" />
+  <project name="darling-libplatform" path="darling/src/external/libplatform" revision="300fba26032d9e78287f69f4ca02ef79fd80913c" />
+  <project name="darling-libpthread" path="darling/src/external/libpthread" revision="2f5a78cfc482c7e69b87138a48980cab97e387dc" />
   <project name="darling-libresolv" path="darling/src/external/libresolv" revision="cf955392e5449efb269b8b3510c755085fd36a2d" />
   <project name="darling-libressl" path="darling/src/external/libressl-2.2.9" revision="c5e9edb9d82ccf5fde5d8ae32b162fec8fe11318" />
   <project name="darling-libressl" path="darling/src/external/libressl-2.5.5" revision="1f663b5bdc9082178717c080e4728fe3e7084de4" />
@@ -106,7 +106,7 @@
   <project name="darling-Libsystem" path="darling/src/external/libsystem" revision="08df454b6eb0df9400aa4c39839a7efd6efd2c3c" />
   <project name="darling-libtelnet" path="darling/src/external/libtelnet" revision="1ebd4eef48d06e6411ed2a0f60ba5d3fce5ab455" />
   <project name="darling-libtrace" path="darling/src/external/libtrace" revision="8cf07f02b15f7dca6436882a03678fff0392eaf6" />
-  <project name="darling-libunwind" path="darling/src/external/libunwind" revision="a91da1a0e262e04eb601152a84228ff733e48422" />
+  <project name="darling-libunwind" path="darling/src/external/libunwind" revision="d5fbc8180ea2e06efa693ee03a768e532a98671f" />
   <project name="darling-libutil" path="darling/src/external/libutil" revision="e3782a467c248c8d181aba1200ee0642abb65baf" />
   <project name="darling-libxml2" path="darling/src/external/libxml2" revision="d4f2967c8ca84a23a886978098c0520fe2963b92" />
   <project name="darling-libxpc" path="darling/src/external/libxpc" revision="394e033333d3c253a12f08a99090c113b0917d00" />
@@ -136,7 +136,7 @@
   <project name="darling-passwordserver_sasl" path="darling/src/external/passwordserver_sasl" revision="794093ece0203718ce5da5645a689b5c6e766208" />
   <project name="darling-patch_cmds" path="darling/src/external/patch_cmds" revision="0670c7fbadfd715ac78d5476552788416cad0020" />
   <project name="darling-pcre" path="darling/src/external/pcre" revision="6f67e33869a2b08da9465034c41e64e16fc7faf9" />
-  <project name="darling-perl" path="darling/src/external/perl" revision="a65d68be2146d85928e511aabc8f3a2b05e564ba" />
+  <project name="darling-perl" path="darling/src/external/perl" revision="7c83779599e7c658e30dcabbe73b1f8bfa0c8cc3" />
   <project name="darling-pyobjc" path="darling/src/external/pyobjc" revision="c0912a6c46c25e958eeb70f47f046b5a55ebb387" />
   <project name="darling-python" path="darling/src/external/python" revision="4856509729cc320006a1235291e47408cd7b13ce" />
   <project name="darling-python_modules" path="darling/src/external/python_modules" revision="24d01b41cb38fafc810cdd27562224c4014a4761" />
@@ -160,7 +160,7 @@
   <project name="xcbuild" path="darling/src/external/xcbuild" revision="a903c6952fc5617816113cbb7b551ac701dba2ff" />
   <project name="googletest" path="darling/src/external/xcbuild/ThirdParty/googletest" revision="a2b8a8e07628e5fd60644b6dd99c1b5e7d7f1f47" />
   <project name="linenoise" path="darling/src/external/xcbuild/ThirdParty/linenoise" revision="c894b9e59f02203dbe4e2be657572cf88c4230c3" />
-  <project name="darling-xnu" path="darling/src/external/xnu" revision="595b25130d4fcd1747bf6505467779d404036b53" />
+  <project name="darling-xnu" path="darling/src/external/xnu" revision="ccc25260ed19e47648d2c88188b840f85d5bf617" />
   <project name="darling-zip" path="darling/src/external/zip" revision="caf41ebbc3ebab0250e4d13aa42221ef91a9802c" />
   <project name="darling-zlib" path="darling/src/external/zlib" revision="677de9b1c2bea1e428f56d8fc63300aa471eaf99" />
   <project name="darling-zsh" path="darling/src/external/zsh" revision="4a7a6ebf6216395c7db698a4993db16e484aa54d" />
