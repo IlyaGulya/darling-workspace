@@ -234,3 +234,30 @@ patches:
       DARLING_NOOVERLAYFS: '1'
       DARLING_EUNION: '1'
   sha256sum: 9fe29b5cc1cd5e19723b7e858fdeef243cb0d5835bb9a5d1e7981322433ba1c7
+- path: xnu/posix-spawn-failure-ownership.patch
+  module: darling/src/external/xnu
+  source-branch: fix/posix-spawn-failure-ownership
+  source-base: 3332f4035976af51133bc4fd296f3bb0cd6c897a
+  source-commit: 1164c849ef85364845476c854a7a0d9a14cf0058
+  bead: dar-3jw9
+  publication-status: blocked
+  publication-blocker: Canonical combined-runtime materialization and complete stock wget acceptance remain under dar-gwn.7.
+  tests:
+  - name: posix_spawn_failure_ownership_guest
+    kind: guest
+    coverage-tier: runtime
+    runs: guest
+    diag: guarded
+    runner: guest-c-fixture
+    repo: darling-workspace
+    script: tests/posix_spawn_failure_guest.c
+    ok-marker: POSIX_SPAWN_FAILURE_OWNERSHIP_OK
+    timeout-seconds: 90
+    requires: [darling-prefix]
+    compile-flags: [-std=gnu11, -D_DARWIN_C_SOURCE, -Wall, -Wextra, -Werror]
+    env-vars:
+      DARLING_ROOTLESS: '1'
+      DARLING_NOOVERLAYFS: '1'
+      DARLING_EUNION: '1'
+    note: Failed ENOENT spawn must leave neither a waitable child nor SIGCHLD; successful spawn must retain both. Identical fixture passes on native macOS. Manual deployed RED/GREEN evidence is recorded in dar-3jw9; this metadata is a GREEN gate, not an automated bad-runtime proof.
+  sha256sum: 31302f56695f6654a3f50e758f50dd2a943eef7f27af5b8df3ca3e48332af6a8
