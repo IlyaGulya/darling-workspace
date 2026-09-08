@@ -79,6 +79,16 @@ applicability policy. Generated `configure.log`, `ctest.json` and
 bindings, owners, source hashes, normalized proof/resources, applicability
 and explicit unresolved prerequisites. This audit's captured output is in
 `~/work/darling-debug/dar-759a-inventory-OIHskT/reproduced/`.
+
+The versioned focused host contract exercises inherited-profile census,
+independent patch bindings, West alias resolution, rejection of an unreviewed
+runtime case, and discovery without product builds or test execution:
+
+```sh
+mise exec -- uv run --no-project --with west==1.5.0 python -B \
+  tests/west_test_contracts/native_inventory_contract.py
+```
+
 Eight script references are absent from the live source trees; seven exist in
 their declared source commits, and the remaining coalescing script exists in a
 later declared profile commit. Live-tree absence is not evidence of missing
