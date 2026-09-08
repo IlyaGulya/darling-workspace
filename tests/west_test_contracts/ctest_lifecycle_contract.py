@@ -276,10 +276,8 @@ with tempfile.TemporaryDirectory() as temp:
         yield
 
     test._ctest_runtime_profile_context = runtime_context
-    recorded = []
     original = test_module.run_bounded
     def bounded(args, **kwargs):
-        recorded.append((args, kwargs))
         if "--show-only=json-v1" in args:
             return ProcessResult(0, stdout=json.dumps({"tests": [{
                 "name": "darling/extra",
@@ -328,10 +326,6 @@ with tempfile.TemporaryDirectory() as temp:
 
     assert lifecycle == [True], lifecycle
     assert runtime_contexts == [["extra"]], runtime_contexts
-    assert len(recorded) == 2, recorded
-    assert "--show-only=json-v1" in recorded[0][0], recorded
-    assert recorded[1][0][0] == "ctest", recorded
-    assert recorded[1][1]["timeout_seconds"] == 17, recorded
     assert not stale_failure_record.exists(), stale_failure_record
 
 

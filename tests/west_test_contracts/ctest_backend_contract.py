@@ -2,97 +2,19 @@ import sys
 import subprocess
 import tempfile
 from pathlib import Path
+import json
+import os
+import shutil
+import xml.etree.ElementTree as ET
+import yaml
+
+from west_extension_help_contract import _copy_manifest_fixture
 
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT))
 sys.path.insert(0, str(ROOT / "west_commands"))
-from test_ctest import (
-    ctest_command,
-    ctest_label_args,
-    ctest_label_display,
-    ctest_selection_command,
-    ctest_selector_label_args,
-    ctest_runtime_group_passthrough,
-    ctest_submodule_label_name,
-    ctest_test_name_regex,
-    ctest_uses_prefix,
-)
 from test_cmake import archive_git_tree_to, archive_source_to
 
-build = Path("/tmp/build dir")
-assert ctest_submodule_label_name("darling/src/external/xnu") == "xnu"
-assert ctest_submodule_label_name("xnu") == "xnu"
-
-assert ctest_label_args(build, "bead:dar-gwn.5") == [
-    "ctest",
-    "--test-dir",
-    "/tmp/build dir",
-    "--output-on-failure",
-    "-L",
-    "bead:dar-gwn.5",
-]
-assert ctest_label_display(build, "bead:dar-gwn.5") == (
-    "ctest --test-dir '/tmp/build dir' --output-on-failure -L bead:dar-gwn.5"
-)
-assert ctest_selection_command(build, label_args=["-L", "env:darling"]) == [
-    "ctest",
-    "--test-dir",
-    "/tmp/build dir",
-    "--show-only=json-v1",
-    "-L",
-    "env:darling",
-]
-assert ctest_selection_command(
-    build, label_args=["-L", "env:darling"], passthrough=["--repeat", "until-fail:2"]
-)[-4:] == ["-L", "env:darling", "--repeat", "until-fail:2"]
-assert ctest_test_name_regex(["darling/fork+signal", "host/plain"]) == (
-    r"^(darling/fork\+signal|host/plain)$"
-)
-assert ctest_runtime_group_passthrough([
-    "--repeat", "until-fail:2", "-R", "darling/one", "--union", "-L", "env:darling",
-]) == ["--repeat", "until-fail:2"]
-
-labels = ctest_selector_label_args(
-    bead="dar-gwn.5",
-    env="host",
-    diag="guarded",
-    label="macos:15",
-    fuzz=True,
-    stress=True,
-    changed_submodules=["xnu", "darlingserver"],
-    submodules=["darling/src/external/libplatform", "xnu"],
-)
-assert labels == [
-    "-L",
-    "bead:dar-gwn.5",
-    "-L",
-    "env:host",
-    "-L",
-    "diag:guarded",
-    "-L",
-    "macos:15",
-    "-L",
-    "fuzz:",
-    "-L",
-    "stress:",
-    "-L",
-    "submod:xnu|submod:darlingserver|submod:libplatform",
-]
-
-command = ctest_command(
-    build,
-    label_args=labels,
-    list_only=True,
-    passthrough=["-j4", "--output-junit", "junit.xml"],
-)
-assert command[:4] == ["ctest", "--test-dir", "/tmp/build dir", "--output-on-failure"]
-assert command[4:4 + len(labels)] == labels
-assert command[4 + len(labels)] == "--show-only"
-assert command[-3:] == ["-j4", "--output-junit", "junit.xml"]
-
-assert ctest_uses_prefix(env="darling", list_only=False)
-assert not ctest_uses_prefix(env="darling", list_only=True)
-assert not ctest_uses_prefix(env="host", list_only=False)
 
 with tempfile.TemporaryDirectory() as temp:
     root = Path(temp)
@@ -121,3 +43,184 @@ with tempfile.TemporaryDirectory() as temp:
     )
     assert subset.returncode == 0, subset
     assert (root / "subset/tools/closure.txt").read_text() == "DCC_ARCHIVE_OK\n"
+
+# Exercise the real West loader and CTest, not rendered command templates.
+with tempfile.TemporaryDirectory(prefix="ctest-selection-contract-") as temp:
+    top, manifest, _ = _copy_manifest_fixture(Path(temp), Path(shutil.which("git")))
+    testkit = manifest / "testkit"
+    testkit.mkdir()
+    shutil.copy2(ROOT / "testkit/runtime-profiles.yml", testkit / "runtime-profiles.yml")
+    definitions = yaml.safe_load((testkit / "runtime-profiles.yml").read_text())["runtime-profiles"]
+    provider = next(name for name, definition in definitions.items()
+                    if definition.get("purpose", "runtime") == "runtime")
+    built = top / "product-built"
+    executed = top / "host-executed"
+    unrelated = top / "unrelated-executed"
+    upstream_executed = top / "upstream-executed"
+    upstream_name = "testsuite/System/Library/Frameworks/Example.framework/test_variable"
+    (testkit / "CMakeLists.txt").write_text(f"""
+cmake_minimum_required(VERSION 3.16)
+project(selection_contract NONE)
+enable_testing()
+add_custom_target(product ALL COMMAND "${{CMAKE_COMMAND}}" -E touch "{built}")
+add_test(NAME host/scenario COMMAND "${{CMAKE_COMMAND}}" -E touch "{executed}")
+set_tests_properties(host/scenario PROPERTIES LABELS "env:host;scenario:shared;diag:bare;bead:shared;submod:example")
+add_test(NAME macos/scenario COMMAND "${{CMAKE_COMMAND}}" -E false)
+set_tests_properties(macos/scenario PROPERTIES LABELS "env:macos;scenario:shared;diag:guarded;bead:shared;submod:example")
+add_test(NAME darling/scenario COMMAND "${{CMAKE_COMMAND}}" -E false)
+set_tests_properties(darling/scenario PROPERTIES LABELS "env:darling;scenario:shared;diag:bare;bead:shared;runtime-profile:{provider}")
+add_test(NAME host/unrelated COMMAND "${{CMAKE_COMMAND}}" -E touch "{unrelated}")
+set_tests_properties(host/unrelated PROPERTIES LABELS "env:host;scenario:host-only;bead:shared-extra;submod:example-extra")
+add_test(NAME "{upstream_name}" COMMAND "${{CMAKE_COMMAND}}" -E touch "{upstream_executed}")
+add_test(NAME "{upstream_name.replace('.framework', 'Xframework')}" COMMAND "${{CMAKE_COMMAND}}" -E touch "{unrelated}")
+add_test(NAME host/skip COMMAND sh -c "exit 77")
+set_tests_properties(host/skip PROPERTIES LABELS "env:host;scenario:skip" SKIP_RETURN_CODE 77)
+""")
+    profile = manifest / "patches/selection/patches.yml"
+    profile.parent.mkdir(parents=True)
+    shared_patch = {
+        "path": "shared.patch", "module": "darling", "bead": "shared",
+        "tests": [{"name": "shared-binding", "ctest": "^scenario:shared$"}],
+    }
+    host_patch = {
+        "path": "host.patch", "module": "darling", "bead": "host-only",
+        "tests": [{"name": "host-binding", "ctest": "^scenario:host-only$", "runs": "host"}],
+    }
+    profile.write_text(json.dumps({"patches": [shared_patch, host_patch]}))
+    environment = dict(os.environ)
+    for variable in ("WEST_PREMATERIALIZED_PROFILE", "WEST_MATERIALIZED_WORKSPACE_LOCK", "DPREFIX"):
+        environment.pop(variable, None)
+
+    def west_test(*arguments, succeeds=True):
+        result = subprocess.run(
+            ["west", "test", *arguments], cwd=top, env=environment,
+            text=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, timeout=60,
+        )
+        if succeeds:
+            assert result.returncode == 0, result.stdout
+        else:
+            assert result.returncode != 0, result.stdout
+        return result.stdout
+
+    # Profile, patch, Bead, metadata-name and CTest-label selectors converge.
+    for selectors in (
+        (),
+        ("--patch", "shared.patch"),
+        ("--bead", "shared"),
+        ("--label", "^name:shared-binding$"),
+        ("--label", "^scenario:shared$"),
+        ("--diag", "guarded"),
+    ):
+        output = west_test("--profile", "selection", "--env", "macos", "--list", *selectors)
+        assert "macos/scenario" in output, output
+        assert "host/scenario" not in output and "darling/scenario" not in output, output
+        assert provider not in output, "native selection inherited a Darling runtime"
+        assert not built.exists() and not executed.exists() and not unrelated.exists()
+
+    # Both selection planes expose the same real guest prerequisite, without booting.
+    for selectors in (("--profile", "selection"), ("--label", "^scenario:shared$")):
+        output = west_test(*selectors, "--env", "darling", "--list")
+        assert "darling/scenario" in output and provider in output, output
+        assert not built.exists() and not executed.exists()
+    output = west_test("--bead", "shared", "--submodule", "example", "--env", "macos", "--list")
+    for selector in (("--bead", "shared"), ("--submodule", "example")):
+        scoped = west_test(*selector, "--env", "host", "--list")
+        assert "host/scenario" in scoped and "host/unrelated" not in scoped, scoped
+    assert "macos/scenario" in output and "host/scenario" not in output, output
+
+    output = west_test("--profile", "selection", "--patch", "shared.patch", "--env", "host", "--list")
+    assert "host/scenario" in output and not built.exists(), output
+    west_test("--profile", "selection", "--patch", "shared.patch", "--env", "host")
+    assert executed.exists(), "listed host registration was not executed"
+    assert not unrelated.exists(), "execution escaped the frozen CTest selection"
+    executed.unlink()
+    built.unlink()
+
+    # Exact upstream names need neither name labels nor a renamed layout.
+    profile.write_text(json.dumps({"patches": [{
+        "path": "upstream.patch", "module": "darling", "bead": "upstream",
+        "tests": [{"name": "upstream-binding", "ctest-name": upstream_name}],
+    }]}))
+    native_host = "macos" if sys.platform == "darwin" else "host"
+    output = west_test("--profile", "selection", "--env", native_host, "--list")
+    assert upstream_name in output and not built.exists(), output
+    west_test("--profile", "selection", "--env", native_host)
+    assert upstream_executed.exists() and not unrelated.exists()
+    upstream_executed.unlink()
+    output = west_test("--env", native_host, "--list", "--",
+                       "-R", "Example[.]framework/test_variable$")
+    assert upstream_name in output, output
+    west_test("--env", native_host, "--", "-R", "Example[.]framework/test_variable$")
+    assert upstream_executed.exists() and not unrelated.exists()
+    built.unlink()
+
+    # Identical third-party names in different suite directories must not escape scope.
+    for directory, marker in (("first", executed), ("second", unrelated)):
+        child = testkit / directory
+        child.mkdir()
+        (child / "CMakeLists.txt").write_text(
+            f'add_test(NAME collision COMMAND "${{CMAKE_COMMAND}}" -E touch "{marker}")\n'
+            f'set_tests_properties(collision PROPERTIES LABELS "env:host;scope:{directory}")\n'
+        )
+    with (testkit / "CMakeLists.txt").open("a") as cmake:
+        cmake.write("add_subdirectory(first)\nadd_subdirectory(second)\n")
+    profile.write_text(json.dumps({"patches": [{
+        **shared_patch, "tests": [{"name": "scoped", "ctest-name": "collision", "ctest": "^scope:first$"}],
+    }]}))
+    for selectors in (("--profile", "selection"), ("--label", "^scope:first$")):
+        west_test(*selectors, "--env", "host")
+        assert executed.exists() and not unrelated.exists(), "same-named case escaped its source-suite scope"
+        executed.unlink()
+    # Replay disjoint indices, without implicitly selecting the range between them.
+    selection_junit = top / "selection.xml"
+    west_test("--env", "host", "--label", "^(scenario:shared|scope:first)$",
+              "--", "--output-junit", str(selection_junit))
+    assert {case.attrib["name"] for case in ET.parse(selection_junit).findall(".//testcase")} == {
+        "host/scenario", "collision",
+    }
+    assert executed.exists() and not unrelated.exists()
+    executed.unlink()
+    built.unlink()
+
+    # Missing references, unsupported variants and accidental empty selections fail closed.
+    profile.write_text(json.dumps({"patches": [shared_patch, host_patch]}))
+    for selectors in (
+        ("--profile", "selection", "--patch", "absent.patch"),
+        ("--profile", "selection", "--bead", "absent-bead"),
+        ("--profile", "selection", "--patch", "host.patch", "--env", "macos"),
+        ("--profile", "selection", "--label", "nonexistent-label"),
+        ("--env", "macos", "--label", "nonexistent-label"),
+    ):
+        west_test(*selectors, "--list", succeeds=False)
+        assert not built.exists() and not executed.exists() and not unrelated.exists()
+    profile.write_text(json.dumps({"patches": [{
+        **shared_patch, "tests": [{"name": "dangling-reference", "ctest-name": "missing/test"}],
+    }]}))
+    output = west_test("--profile", "selection", "--list", succeeds=False)
+    assert "missing/test" in output and not built.exists(), output
+
+    # A guest fixture cannot become a native runner by changing its environment label.
+    profile.write_text(json.dumps({"patches": [{
+        **shared_patch, "tests": [{"name": "mislabelled", "runner": "guest-c-fixture",
+                                  "runs": "macos", "script": "unused.c"}],
+    }]}))
+    west_test("--profile", "selection", "--env", "macos", "--list", succeeds=False)
+    assert not built.exists() and not executed.exists()
+    for invalid_binding in (
+        {"ctest-name": upstream_name, "command": "true"},
+        {"ctest": "^scenario:shared$", "runtime-profile": provider},
+    ):
+        profile.write_text(json.dumps({"patches": [{
+            **shared_patch, "tests": [{"name": "invalid-binding", **invalid_binding}],
+        }]}))
+        west_test("--profile", "selection", "--env", "macos", "--list", succeeds=False)
+        assert not built.exists() and not executed.exists()
+
+    # Preserve CTest's formal skip status; no text-based pseudo-protocol.
+    junit = top / "skip.xml"
+    west_test("--env", "host", "--label", "^scenario:skip$", "--", "--output-junit", str(junit))
+    cases = ET.parse(junit).findall(".//testcase")
+    assert {case.attrib["name"] for case in cases} == {"host/skip"}
+    assert cases[0].find("skipped") is not None
+
+print("PASS ctest-discovery-contract")

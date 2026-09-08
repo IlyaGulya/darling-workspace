@@ -59,7 +59,13 @@ from test_ctest import (
     ctest_runtime_group_passthrough,
     ctest_test_name_regex,
     ctest_uses_prefix,
+    ctest_metadata_variants,
+    is_ctest_binding,
+    ctest_reference_args,
+    ctest_registration_indices,
+    ctest_index_args,
 )
+from test_selection import select_metadata_tests, select_metadata_tests_for_command
 from test_dispatch import dispatch_fixture_runner
 from test_cmake import archive_git_tree_to, archive_source_to, run_darling_cmake_target_fixture
 from test_execution import process_output_text, run_bounded
@@ -116,7 +122,6 @@ from guest_macho_validation import (
     add_cli_arguments,
     capture_invocation,
     finalize_guest_macho_evidence,
-    select_metadata_tests_for_command,
     validate_cli_selection,
     validate_selected_group,
 )
@@ -688,19 +693,29 @@ class DarlingTest(ProfileOperationsMixin, BootstrapRuntimeProfileMixin, WestComm
                 "source_env": source_env,
                 "source_module": source_module,
             }
-        if test.get("ctest-label") and not test.get("runner"):
+        if is_ctest_binding(test):
+            selection = test.get("_ctest", {})
+            build = Path(selection.get("build", self._testkit_dir() / "build"))
+            ctest_args = (
+                ctest_command(build, passthrough=ctest_index_args([selection["index"]]))
+                if selection else ctest_command(build, label_args=ctest_reference_args(test))
+            )
             env = None
             if test.get("env-vars"):
                 env = os.environ.copy()
                 env.update({str(k): str(v) for k, v in test["env-vars"].items()})
             return {
-                "key": f"ctest-label:{test['ctest-label']}",
-                "display": self._display_ctest_label(test["ctest-label"]),
+                "key": f"ctest:{patch['path']}:{test.get('name')}:{build}:{selection.get('index')}",
+                "display": shell_join(ctest_args),
                 "cwd": Path(self.topdir),
-                "args": None,
+                "args": ctest_args,
                 "shell": False,
                 "env": env,
-                "ctest_label": test["ctest-label"],
+                "ctest_label": test.get("ctest-label"),
+                "ctest_name": selection.get("name", test.get("ctest-name")),
+                "ctest_build": selection.get("build"),
+                "ctest_index": selection.get("index"),
+                "ctest_directory": selection.get("directory"),
                 "ctest_source_override": test.get("ctest-source-override"),
                 "requires_resources": list(test.get("requires", [])),
                 "requires_env": list(test.get("requires-env", [])),
@@ -1420,6 +1435,12 @@ class DarlingTest(ProfileOperationsMixin, BootstrapRuntimeProfileMixin, WestComm
                 f"{patch['path']}: {name} [{red}, env:{env}, diag:{diag}, kind:{kind}]"
             )
             self.inf(f"  {self._display_invocation(invocation)}")
+            if test.get("_ctest"):
+                self.inf(
+                    f"  registration: {test['_ctest']['name']}; "
+                    f"runtime profiles: {', '.join(test['_ctest']['profiles']) or 'none'}; "
+                    f"resources: {', '.join(invocation.get('requires_resources', [])) or 'none'}"
+                )
             if list_only:
                 continue
             script_path = invocation.get("script_path")
@@ -1527,13 +1548,110 @@ class DarlingTest(ProfileOperationsMixin, BootstrapRuntimeProfileMixin, WestComm
                 return True
         return False
 
+    @contextmanager
+    def _metadata_ctest_selection(self, selected, *, env, diag, label, additional_profiles):
+        """Resolve references in the active source profile before prefix acquisition."""
+        resolved = []
+        builds = {}
+        catalogues = {}
+        unavailable = []
+        with ExitStack() as stack:
+            for patch, test in selected:
+                if not is_ctest_binding(test):
+                    resolved.append((patch, test))
+                    continue
+                invocation = self._test_invocation(patch, test)
+                override = invocation.get("ctest_source_override")
+                defines = self._ctest_cmake_defines(invocation, source_override=override)
+                scope = (str(self._testkit_dir()), tuple(sorted(defines.items())))
+                if scope not in builds:
+                    scratch = stack.enter_context(tempfile.TemporaryDirectory(prefix="west-ctest-selection-"))
+                    builds[scope] = self._configure_and_build(
+                        self._testkit_dir(), self._executor,
+                        darling_launcher=self._resolve_darling_launcher(self._prefix),
+                        prefix=self._prefix,
+                        bundle_root=str(getattr(self, "_bundle_root", "")),
+                        build_dir=Path(scratch) / "build",
+                        cmake_defines=defines,
+                        compile_tests=False,
+                    )
+                    catalogues[scope] = self._ctest_catalogue(builds[scope])
+                build = builds[scope]
+                discovery = run_bounded(
+                    ctest_selection_command(build, label_args=ctest_reference_args(test)),
+                    cwd=Path(self.topdir), env=None, timeout_seconds=30, capture_output=True,
+                )
+                if discovery.returncode:
+                    self._dump_command_tail("CTest reference discovery", discovery)
+                    self.die(f"{patch['path']}: could not resolve CTest reference {ctest_reference_args(test)}")
+                try:
+                    registrations = json.loads(discovery.stdout)["tests"]
+                    if not registrations:
+                        raise ValueError(f"missing CTest reference {ctest_reference_args(test)}")
+                    indices = ctest_registration_indices(catalogues[scope], registrations)
+                    for registration, index in zip(registrations, indices):
+                        registration["_ctest_index"] = index
+                    variants = ctest_metadata_variants(
+                        test, registrations, default_env="macos" if sys.platform == "darwin" else "host"
+                    )
+                    chosen = select_metadata_tests(
+                        {"patches": [{**patch, "tests": variants}]},
+                        patch_path=None, bead=None, env=env, diag=diag, label=label,
+                        red_only=False, resolved_diag=self._resolved_diag,
+                    ).selected
+                    for _, variant in chosen:
+                        registration = variant["_ctest"]
+                        profiles = list(dict.fromkeys([
+                            *([variant["runtime-profile"]] if variant.get("runtime-profile") else []),
+                            *registration["profiles"],
+                        ]))
+                        groups = partition_ctest_runtime_profiles(
+                            self._ctest_runtime_profile_definitions(),
+                            [{"name": registration["name"], "darling": variant["env"] == "darling",
+                              "profiles": profiles}],
+                            additional_profiles,
+                        )
+                        registration["profiles"] = groups[0]["profiles"]
+                        registration["build"] = str(build)
+                        resolved.append((patch, variant))
+                    if not chosen:
+                        available = sorted({variant["env"] for variant in variants})
+                        unavailable.append(
+                            f"{patch['path']}:{test.get('name') or ctest_reference_args(test)}: "
+                            f"available environments: {', '.join(available) or 'none'}"
+                        )
+                except (KeyError, TypeError, ValueError) as error:
+                    self.die(f"{patch['path']}: invalid CTest reference: {error}")
+            if not resolved:
+                detail = "; ".join(unavailable) or "metadata selectors matched no runnable bindings"
+                self.die(f"no tests selected (env={env or 'any'}): {detail}")
+            yield resolved
+
     def _display_ctest_label(self, label: str) -> str:
         build = self._testkit_dir() / "build"
         return ctest_label_display(build, label)
 
+    def _ctest_catalogue(self, build: Path) -> list[dict]:
+        discovery = run_bounded(
+            ctest_selection_command(build), cwd=Path(self.topdir), env=None,
+            timeout_seconds=30, capture_output=True,
+        )
+        if discovery.returncode:
+            self._dump_command_tail("CTest catalogue discovery", discovery)
+            self.die(f"could not discover CTest suite {build}")
+        try:
+            return json.loads(discovery.stdout)["tests"]
+        except (KeyError, TypeError, ValueError) as error:
+            self.die(f"invalid CTest catalogue in {build}: {error}")
+
     def _ensure_ctest_build(self, invocation=None) -> Path:
         if invocation and invocation.get("ctest_build"):
-            return Path(invocation["ctest_build"])
+            build = Path(invocation["ctest_build"])
+            built = getattr(self, "_compiled_ctest_builds", set())
+            if build not in built:
+                self._run_testkit_build_command("build", ["ninja", "-C", str(build)])
+                self._compiled_ctest_builds = built | {build}
+            return build
         build = getattr(self, "_ctest_build", None)
         if build is not None:
             return build
@@ -1543,7 +1661,12 @@ class DarlingTest(ProfileOperationsMixin, BootstrapRuntimeProfileMixin, WestComm
 
     def _ctest_label_args(self, invocation) -> list[str]:
         build = self._ensure_ctest_build(invocation)
-        label_args = ctest_label_args(build, invocation["ctest_label"])
+        if invocation.get("ctest_index") is not None:
+            label_args = ctest_command(build, passthrough=ctest_index_args([invocation["ctest_index"]]))
+        elif invocation.get("ctest_name"):
+            label_args = ctest_command(build, passthrough=["-R", ctest_test_name_regex([invocation["ctest_name"]])])
+        else:
+            label_args = ctest_label_args(build, invocation["ctest_label"])
         discovery = run_bounded(
             ctest_selection_command(build, label_args=label_args[4:]),
             cwd=Path(self.topdir),
@@ -1563,6 +1686,14 @@ class DarlingTest(ProfileOperationsMixin, BootstrapRuntimeProfileMixin, WestComm
                 f"CTest label {invocation['ctest_label']!r} selected no tests in {build}; "
                 "refusing a false GREEN"
             )
+        if invocation.get("ctest_index") is not None:
+            identities = [
+                (test["name"], next((item["value"] for item in test.get("properties", [])
+                                    if item["name"] == "WORKING_DIRECTORY"), None))
+                for test in selected
+            ]
+            if identities.count((invocation["ctest_name"], invocation["ctest_directory"])) != 1:
+                self.die("CTest registration changed after discovery; refusing to run a different case")
         return label_args
 
     def _ctest_cmake_defines(
@@ -1584,7 +1715,7 @@ class DarlingTest(ProfileOperationsMixin, BootstrapRuntimeProfileMixin, WestComm
     @contextmanager
     def _ctest_source_override_context(self, invocation):
         override = invocation.get("ctest_source_override")
-        if not override:
+        if not override or invocation.get("ctest_build"):
             yield invocation
             return
         with tempfile.TemporaryDirectory(prefix="west-ctest-source-") as temp:
@@ -1615,6 +1746,9 @@ class DarlingTest(ProfileOperationsMixin, BootstrapRuntimeProfileMixin, WestComm
         label_args: list[str],
         passthrough: list[str],
         additional_profiles: list[str],
+        *,
+        env: str | None = None,
+        diag: str | None = None,
     ) -> list[dict]:
         """Return lifecycle groups for exactly the CTest-selected cases."""
 
@@ -1634,30 +1768,34 @@ class DarlingTest(ProfileOperationsMixin, BootstrapRuntimeProfileMixin, WestComm
             payload = json.loads(discovery.stdout)
         except json.JSONDecodeError as error:
             self.die(f"CTest runtime profile discovery returned invalid JSON: {error}")
-        selections: list[dict] = []
-        for test in payload.get("tests", []):
-            name = test.get("name")
-            labels: list[str] = []
-            for property_data in test.get("properties", []):
-                if property_data.get("name") != "LABELS":
-                    continue
-                labels.extend(
-                    label
-                    for label in property_data.get("value", [])
-                    if isinstance(label, str)
-                )
-            selections.append(
-                {
-                    "name": name,
-                    "darling": "env:darling" in labels,
-                    "profiles": [
-                        label.removeprefix("runtime-profile:")
-                        for label in labels
-                        if label.startswith("runtime-profile:")
-                        and label.removeprefix("runtime-profile:")
-                    ],
-                }
+        if not payload.get("tests"):
+            self.die("CTest selectors matched no registrations; refusing an empty selection")
+        try:
+            catalogue = self._ctest_catalogue(build) if label_args or passthrough else payload["tests"]
+            indices = ctest_registration_indices(catalogue, payload["tests"])
+        except ValueError as error:
+            self.die(f"invalid scoped CTest selection: {error}")
+        for registration, index in zip(payload["tests"], indices):
+            registration["_ctest_index"] = index
+        try:
+            variants = ctest_metadata_variants(
+                {}, payload["tests"], default_env="macos" if sys.platform == "darwin" else "host"
             )
+        except ValueError as error:
+            self.die(f"invalid CTest environment selection: {error}")
+        selections = [
+            {
+                "name": variant["_ctest"]["name"],
+                "index": variant["_ctest"]["index"],
+                "darling": variant["env"] == "darling",
+                "profiles": variant["_ctest"]["profiles"],
+            }
+            for variant in variants
+            if (not env or variant["env"] == env)
+            and (not diag or self._resolved_diag(variant) == diag)
+        ]
+        if not selections:
+            self.die(f"CTest selectors matched no applicable registrations (env={env or 'any'}, diag={diag or 'any'})")
         try:
             return partition_ctest_runtime_profiles(
                 self._ctest_runtime_profile_definitions(),
@@ -1693,17 +1831,22 @@ class DarlingTest(ProfileOperationsMixin, BootstrapRuntimeProfileMixin, WestComm
     ):
         """Temporarily deploy the typed runtime provider declared by metadata."""
 
-        profile_name = test.get("runtime-profile")
-        if not profile_name:
+        profiles = list(dict.fromkeys([
+            *([test["runtime-profile"]] if test.get("runtime-profile") else []),
+            *test.get("_ctest", {}).get("profiles", []),
+        ]))
+        if not profiles:
             yield None
             return
         if getattr(self, "_reuse_prefix_runtime", False):
+            if len(profiles) != 1:
+                self.die("--reuse-prefix-runtime requires exactly one selected runtime profile")
             if omit_patch:
                 self.die(
                     "--reuse-prefix-runtime cannot be used for RED proofs; "
                     "RED requires an isolated runtime deployment"
                 )
-            yield self._retained_runtime_profile(profile_name)
+            yield self._retained_runtime_profile(profiles[0])
             return
         label = f"metadata {patch['path']}:{test.get('name', patch['path'])}"
         deployment_args = {
@@ -1715,7 +1858,7 @@ class DarlingTest(ProfileOperationsMixin, BootstrapRuntimeProfileMixin, WestComm
         if red_proof is not None:
             deployment_args["red_proof"] = red_proof
         with self._runtime_profile_deployment_context(
-            [profile_name],
+            profiles,
             **deployment_args,
         ) as deployment:
             yield deployment
@@ -2061,7 +2204,7 @@ class DarlingTest(ProfileOperationsMixin, BootstrapRuntimeProfileMixin, WestComm
         return f"{source_commit}^"
 
     def _wrapped_args(self, invocation) -> list[str]:
-        if invocation.get("ctest_label"):
+        if invocation.get("ctest_label") or invocation.get("ctest_name"):
             return self._ctest_label_args(invocation)
         if invocation["shell"]:
             return ["/bin/bash", "-lc", invocation["args"]]
@@ -2121,7 +2264,10 @@ class DarlingTest(ProfileOperationsMixin, BootstrapRuntimeProfileMixin, WestComm
         if diag == "forensic":
             args.extend(["--capture-gdb", "--capture-tree"])
         args.append("--")
-        args.extend(self._wrapped_args(invocation))
+        args.extend(
+            invocation["args"] if display_only and (invocation.get("ctest_label") or invocation.get("ctest_name"))
+            else self._wrapped_args(invocation)
+        )
         return args
 
     def _debug_bundle_root(self) -> Path:
@@ -2248,7 +2394,7 @@ class DarlingTest(ProfileOperationsMixin, BootstrapRuntimeProfileMixin, WestComm
         if rc:
             self._record_failure_phase(
                 invocation,
-                "ctest" if invocation.get("ctest_label") else "script",
+                "ctest" if invocation.get("ctest_label") or invocation.get("ctest_name") else "script",
             )
             return rc
         trace_rc = self._check_host_traces(invocation, run_env)
@@ -4844,6 +4990,7 @@ class DarlingTest(ProfileOperationsMixin, BootstrapRuntimeProfileMixin, WestComm
         bundle_root: str | None = None,
         build_dir: Path | None = None,
         cmake_defines: dict[str, str] | None = None,
+        compile_tests: bool = True,
     ) -> Path:
         build = build_dir or testkit / "build"
         cfg = ["cmake", "-S", str(testkit), "-B", str(build), "-G", "Ninja"]
@@ -4859,7 +5006,8 @@ class DarlingTest(ProfileOperationsMixin, BootstrapRuntimeProfileMixin, WestComm
             cfg.append(f"-DDARLING_TEST_BUNDLE_ROOT={bundle_root}")
         self.inf(f"configuring: {testkit}")
         self._run_testkit_build_command("configure", cfg)
-        self._run_testkit_build_command("build", ["ninja", "-C", str(build)])
+        if compile_tests:
+            self._run_testkit_build_command("build", ["ninja", "-C", str(build)])
         return build
 
     def _run_testkit_build_command(self, stage: str, args) -> None:
@@ -5366,7 +5514,7 @@ class DarlingTest(ProfileOperationsMixin, BootstrapRuntimeProfileMixin, WestComm
             self._active_profile = args.profile
             if (
                 selected
-                and not args.list
+                and (not args.list or any(is_ctest_binding(test) for _, test in selected))
                 and not self._materialize_profile
                 and not self._profile_is_applied(args.profile)
                 and self._metadata_needs_profile_worktree(selected)
@@ -5377,7 +5525,13 @@ class DarlingTest(ProfileOperationsMixin, BootstrapRuntimeProfileMixin, WestComm
                 )
                 self._materialize_profile = True
             try:
-                with self._selected_profile_context(args.profile, list_only=args.list):
+                with self._selected_profile_context(
+                    args.profile,
+                    list_only=args.list and not any(is_ctest_binding(test) for _, test in selected),
+                ), self._metadata_ctest_selection(
+                    selected, env=args.env, diag=args.diag, label=args.label,
+                    additional_profiles=args.with_runtime_profile,
+                ) as selected:
                     if missing:
                         for patch in missing:
                             self.inf(f"missing test metadata: {patch['path']} [{patch.get('bead', '-')}]")
@@ -5429,6 +5583,7 @@ class DarlingTest(ProfileOperationsMixin, BootstrapRuntimeProfileMixin, WestComm
             darling_launcher=launcher,
             prefix=self._prefix,
             bundle_root=str(getattr(self, "_bundle_root", "")),
+            compile_tests=not args.list,
         )
 
         changed = None
@@ -5442,50 +5597,48 @@ class DarlingTest(ProfileOperationsMixin, BootstrapRuntimeProfileMixin, WestComm
         # alternation label regex to select any touched submodule.
         label_args = ctest_selector_label_args(
             bead=args.bead,
-            env=args.env,
-            diag=args.diag,
+            env=None,
+            diag=None,
             label=args.label,
             fuzz=args.fuzz,
             stress=args.stress,
             changed_submodules=changed,
             submodules=args.submodule,
         )
-        ctest = ctest_command(
-            build,
-            label_args=label_args,
-            list_only=args.list,
-            passthrough=unknown,
-        )
 
-        runtime_groups: list[dict] = []
-        if not args.list:
-            runtime_groups = self._selected_ctest_runtime_groups(
-                build, label_args, unknown, args.with_runtime_profile
-            )
-        needs_prefix = (
-            ctest_uses_prefix(env=args.env, list_only=args.list)
-            or any(group["profiles"] for group in runtime_groups)
+        runtime_groups = self._selected_ctest_runtime_groups(
+            build, label_args, unknown, args.with_runtime_profile, env=args.env, diag=args.diag
         )
-        commands: list[tuple[list[str], list[str]]] = []
-        if args.list or not runtime_groups:
-            commands.append((ctest, []))
-        else:
+        needs_prefix = (
+            not args.list and (
+                ctest_uses_prefix(env=args.env, list_only=False)
+                or any(group["profiles"] for group in runtime_groups)
+            )
+        )
+        if args.list:
             for group in runtime_groups:
-                try:
-                    group_passthrough = ctest_runtime_group_passthrough(unknown)
-                except ValueError as error:
-                    self.die(f"invalid CTest passthrough selection: {error}")
-                group_ctest = ctest_command(
-                    build,
-                    passthrough=[
-                        *group_passthrough,
-                        "-R",
-                        ctest_test_name_regex(group["tests"]),
-                    ],
+                self.inf(
+                    f"selected registrations: {', '.join(group['tests'])}; "
+                    f"runtime profiles: {', '.join(group['profiles']) or 'none'}"
                 )
-                commands.append((group_ctest, group["profiles"]))
+        commands: list[tuple[list[str], list[str]]] = []
+        for group in runtime_groups:
+            try:
+                group_passthrough = ctest_runtime_group_passthrough(unknown)
+            except ValueError as error:
+                self.die(f"invalid CTest passthrough selection: {error}")
+            group_ctest = ctest_command(
+                build,
+                list_only=args.list,
+                passthrough=[
+                    *group_passthrough,
+                    *ctest_index_args(group["indices"]),
+                ],
+            )
+            commands.append((group_ctest, [] if args.list else group["profiles"]))
         with self._prefix_resource_context(needs_prefix):
-            self._clear_ctest_failure_record(build)
+            if not args.list:
+                self._clear_ctest_failure_record(build)
             rc = 0
             for command, profiles in commands:
                 profile_text = ", ".join(profiles) if profiles else "no runtime deployment"

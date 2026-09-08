@@ -159,6 +159,58 @@ was executed by this inventory.
   Use isolated owned work directories and bounded cleanup. A Linux-built binary
   or successful shell transport is never a native Darwin reference.
 
+### Implemented selection bridge (dar-759a.3)
+
+Patch metadata can bind existing CTest registrations with `ctest: <label-regex>`,
+`ctest-name: <exact-existing-name>`, or both for a scoped exact-name selection.
+These references do not copy fixture commands or require new `name:` labels.
+A reference cannot override `command`; explicit fixture runners remain separate.
+
+West configures the selected source scope and discovers CTest JSON before
+filtering environment and diagnostics. `env:*` labels define the actual
+variants; an unlabelled upstream registration belongs to the configured host
+(`macos` on Darwin, otherwise `host`) in both metadata and direct CTest selection.
+A binding's explicit `runs`/`env` restricts its variants; it never relabels a
+guest runner. Darling runtime and RED ownership must use a Darling-scoped
+binding, separate from a native reference to the same scenario.
+
+`--list` configures discovery without building product targets, executing tests,
+or acquiring a prefix. A source-bound profile may need temporary worktrees.
+Both listing and execution replay the exact discovered registrations. CTest
+indices are local to that configured build, not persistent case IDs: existing
+names and suite directories retain identity, including equal names in different
+source suites. Installed transports must derive their contract from the source
+registration, not persist these temporary build paths or indices.
+
+Missing references, missing requested variants, ambiguous registrations and
+unintended empty selections fail closed. Bead/submodule selectors match complete
+labels, while `--label` remains a user-supplied regex. Runtime-profile prerequisites
+are shown during discovery and deployed only for execution.
+
+The behavioral CLI contract runs disposable CMake/CTest suites through the real
+West loader, exercises metadata and direct selectors, executes the selected host
+cases, and preserves CTest's formal `SKIP_RETURN_CODE` in JUnit. It also covers
+exact upstream-style names, colliding suite names, disjoint indices, unlabelled
+native cases, and invalid bindings:
+
+```sh
+tests/run-west-test-ctest-backend-contract.sh
+west test --env macos --list
+west test --env darling --bead dar-e1j --list
+```
+
+The host tier includes this contract. The real-workspace discovery smoke finds
+`macos/getattrlist_name_objtype_guest` without runtime deployment, and its
+Darling counterpart with `homebrew-rootless-no-mount`. Neither listing is a
+native or guest execution verdict.
+
+Upstream remains simple CMake/CTest PASS/FAIL; no TAP protocol is introduced.
+Its [unsupported helpers](https://github.com/darlinghq/darling-testsuite/blob/master/lib/darling-testsuite/src/darling-testsuite/unsupported.c)
+only print availability messages and do not themselves produce a formal skip.
+West does not reinterpret those messages as a new protocol. A zero exit through
+an unsupported-API branch is not evidence that the API was exercised; a formal
+skip must come from the source-owned CTest verdict contract.
+
 ### Preserve the complete execution and verdict contract
 
 | Property | Darling CTest today | Local macOS CTest today | Installed native today |

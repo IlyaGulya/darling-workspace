@@ -724,6 +724,8 @@ def partition_ctest_runtime_profiles(
             {"source-profile": source_profile, "profiles": [], "tests": []},
         )
         group["tests"].append(name)
+        if selection.get("index") is not None:
+            group.setdefault("indices", []).append(selection["index"])
         for profile in profiles:
             if profile not in group["profiles"]:
                 group["profiles"].append(profile)

@@ -670,6 +670,7 @@ class DarlingPatch(WestCommand):
             if not (
                 test.get("command")
                 or test.get("ctest-label")
+                or test.get("ctest-name")
                 or test.get("script")
                 or test.get("source-script")
                 or test.get("source-file")

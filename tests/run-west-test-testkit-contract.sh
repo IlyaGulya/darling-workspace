@@ -167,7 +167,7 @@ done
 # The E-UNION host suite has source-base RED proof and must run against a
 # materialized selected profile through the same CTest label used by GREEN.
 eunion_metadata="$(west test --profile homebrew --patch xnu/eunion-hardening.patch --env host --list)"
-printf '%s\n' "$eunion_metadata" | grep -q 'eunion-host' ||
+printf '%s\n' "$eunion_metadata" | grep -q 'host/eunion_hardening_host_suite' ||
 	{ printf '%s\n' "$eunion_metadata" >&2; exit 1; }
 
 printf 'PASS west-test-testkit-contract\n'
