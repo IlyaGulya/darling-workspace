@@ -13,10 +13,10 @@ from shlex import quote
 
 try:
     from .test_execution import run_bounded
-    from .test_guest_execution import resolve_guest_execution
+    from .test_guest_execution import failure_phase_from_output, resolve_guest_execution
 except ImportError:  # Loaded as a West extension module, not a package.
     from test_execution import run_bounded
-    from test_guest_execution import resolve_guest_execution
+    from test_guest_execution import failure_phase_from_output, resolve_guest_execution
 
 
 def failure_phase_from_debug_bundle(output: str) -> str | None:
@@ -24,15 +24,16 @@ def failure_phase_from_debug_bundle(output: str) -> str | None:
     match = re.search(r"^BUNDLE=(.+)$", output, flags=re.MULTILINE)
     if match is None:
         return None
-    log_path = Path(match.group(1)) / "stderr.log"
-    try:
-        content = log_path.read_text(errors="replace")
-    except OSError:
-        return None
-    if "Rootless shellspawn did not become ready" in content:
-        return "bootstrap"
-    if "E-UNION runtime readiness" in content:
-        return "bootstrap"
+    parts = []
+    for name in ("stdout.log", "stderr.log"):
+        try:
+            parts.append((Path(match.group(1)) / name).read_text(errors="replace"))
+        except OSError:
+            continue
+    content = "\n".join(parts)
+    phase = failure_phase_from_output(content)
+    if phase is not None:
+        return phase
     if "WEST_GUEST_TRACE_ORACLE_FAILED" in content:
         return "run"
     stages = re.findall(r"^WEST_GUEST_STAGE=([a-z-]+)$", content, flags=re.MULTILINE)
