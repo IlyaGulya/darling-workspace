@@ -330,10 +330,11 @@ replaces wholesale. `source-bundles/darling-debug-runner.bundle` separately
 preserves `fix/forward-guarded-output`; the Darling-forest handoff does not include
 this sibling tools repository.
 
-The old materialization-only `blocked: true` test flag has been removed.
-Runtime proof must still reach the guest-visible semantic oracle before any
-Darling RED/GREEN claim. The CTest bridge propagates guest upload, compile, run,
-and timeout phases; compiler diagnostics containing the marker are not RED.
+The supported current-minus runtime now fails at the guest-visible ENOENT
+waitable-child oracle; the fixed runtime passes all five scenarios above.
+The exact spawn fixture SHA matches the native local/SSH reference. The CTest
+bridge propagates guest upload, compile, run, and timeout phases; compiler
+diagnostics containing the marker are not RED.
 
 Ownership review confirmed that Linux
 [`de_thread()` resets the exit signal before close-on-exec](https://github.com/torvalds/linux/blob/v6.8/fs/exec.c#L1170-L1353).
@@ -343,12 +344,21 @@ successful child and its numeric PID is reused. This requires Linux 5.4 or newer
 The production-linked host fixture in `darling/tests/spawn-pidfd/` passed ordinary
 ownership/error/descriptor/EINTR cases and forced PID reuse in a private PID
 namespace. It substitutes Darwin runtime services for native linkage, so this is
-not Darling RPC integration evidence. Publication remains blocked on the
-supported runtime proof, not unrelated complete wget acceptance.
+not Darling RPC integration evidence. The deployed guest RED/GREEN proof now
+complements it. Publication remains blocked pending owning-patch publication
+review and explicit authorization, not unrelated complete wget acceptance.
 
-Evidence is retained under `~/work/darling-debug/dar-759a.5-pilot/` for native
-reference identity and under `~/work/darling-debug/dar-759a.5-repair/` for transport,
-approved tag publication, immutable composition, and subsequent runtime attempts.
+The separate `sigpending_mask_copyout` regression also passes supported runtime
+RED/GREEN: it checks empty, blocked-pending, and delivered-empty masks. It consumes
+the signal through a real handler; changing disposition to `SIG_IGN` exposes the
+separate unresolved pending-discard defect `dar-cpuk`, not a copyout failure.
+
+Native reference identity remains under `~/work/darling-debug/dar-759a.5-pilot/`.
+The completed evidence index is
+`~/work/darling-debug/dar-759a.5-repair/completed-proof-summary.json`; it binds
+canonical fix commits separately from materialized integration commits, exact
+dyld/libsystem_kernel hashes, fixture identities, runtime composition and
+toolchain provenance. `dar-759a.5` and its three prerequisites are closed.
 
 ### Native applicability and migration gates
 

@@ -3,6 +3,13 @@
 #include <stdlib.h>
 #include <unistd.h>
 
+static volatile sig_atomic_t delivered;
+
+static void receive_signal(int signum)
+{
+    delivered = signum;
+}
+
 static void require_mask(int expected)
 {
     sigset_t pending;
@@ -16,6 +23,8 @@ static void require_mask(int expected)
     }
     if (sigismember(&pending, SIGUSR1) != expected ||
         sigismember(&pending, SIGUSR2) != 0) {
+        fprintf(stderr, "pending: expected_usr1=%d actual_usr1=%d actual_usr2=%d\n",
+            expected, sigismember(&pending, SIGUSR1), sigismember(&pending, SIGUSR2));
         puts("SIGPENDING_MASK_COPYOUT_BROKEN");
         exit(1);
     }
@@ -23,6 +32,13 @@ static void require_mask(int expected)
 
 int main(void)
 {
+    struct sigaction action = {0};
+    action.sa_handler = receive_signal;
+    sigemptyset(&action.sa_mask);
+    if (sigaction(SIGUSR1, &action, NULL)) {
+        perror("sigaction");
+        return 2;
+    }
     sigset_t blocked;
     sigemptyset(&blocked);
     sigaddset(&blocked, SIGUSR1);
@@ -36,11 +52,12 @@ int main(void)
         return 2;
     }
     require_mask(1);
-    struct sigaction ignore = {0};
-    ignore.sa_handler = SIG_IGN;
-    sigemptyset(&ignore.sa_mask);
-    if (sigaction(SIGUSR1, &ignore, NULL)) {
-        perror("sigaction");
+    if (sigprocmask(SIG_UNBLOCK, &blocked, NULL)) {
+        perror("sigprocmask");
+        return 2;
+    }
+    if (delivered != SIGUSR1) {
+        fputs("SIGUSR1 was not delivered after unblocking\n", stderr);
         return 2;
     }
     require_mask(0);

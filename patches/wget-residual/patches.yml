@@ -271,7 +271,7 @@ patches:
   source-commit: e8c8127d553578929d3867e35b14d9fc5c5edcae
   bead: dar-3jw9
   publication-status: blocked
-  publication-blocker: dar-759a.5 must complete supported native/current-minus/fixed runtime proof; dar-759a.5.1 owns private-child PID-reuse review and dar-759a.5.2 owns canonical runtime materialization. Full wget acceptance is not this patch's gate.
+  publication-blocker: Supported native/current-minus/fixed runtime proof and private-child identity prerequisites are complete under dar-759a.5; owning-patch publication review and explicit authorization remain under dar-3jw9. Full wget acceptance is not this patch's gate.
   tests:
   - ctest-name: darling/posix_spawn_failure_ownership
     use: xnu-signal-runtime-proof
@@ -292,7 +292,7 @@ patches:
   source-commit: 0e54f6a1261216f2eafb880b534288f349027901
   bead: dar-759a.5.3
   publication-status: blocked
-  publication-blocker: dar-759a.5.3 owns deployed pending-mask regression and canonical review; no publication is authorized.
+  publication-blocker: Deployed pending-mask RED/GREEN is complete under dar-759a.5.3; canonical publication review and explicit authorization remain outstanding. SIG_IGN pending discard is a separate defect under dar-cpuk.
   tests:
   - ctest-name: darling/sigpending_mask_copyout
     use: xnu-signal-runtime-proof
