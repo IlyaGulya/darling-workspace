@@ -1,5 +1,5 @@
 path	head	branch	origin	worktree
-.	ad54dc5bfbb15fcf5d5a3ae826864472a274724c	fix/recovered-gwn-runtime	git@github.com:darlinghq/darling	clean
+.	6d7c5ed697b18819ab2022dabacc8d7ef3bedc8f	fix/recovered-gwn-runtime	git@github.com:darlinghq/darling	clean
 docs/darling-docs	14c841ef3df319254ef5ac291f828f27048a6579	DETACHED	git@github.com:darlinghq/darling-docs	clean
 src/external/AvailabilityVersions	e28c029a8fa46fa933cbf6d6d9a1c00978c5fad1	DETACHED	git@github.com:darlinghq/darling-AvailabilityVersions	clean
 src/external/BerkeleyDB	1411173f0eb71f96ab6134de4e052d16acb8c673	DETACHED	git@github.com:darlinghq/darling-BerkeleyDB	clean
