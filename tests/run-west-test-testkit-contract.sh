@@ -109,6 +109,10 @@ bzero_json="$(ctest --test-dir testkit/build --show-only=json-v1 \
 printf '%s\n' "$bzero_json" | grep -q 'runtime-profile:homebrew-libplatform' ||
 	{ printf '%s\n' "$bzero_json" >&2; exit 1; }
 
+list_sigignore_guest="$(west test --bead dar-cpuk --env darling --list)"
+printf '%s\n' "$list_sigignore_guest" | grep -q 'darling/sigaction_ignore_pending' ||
+	{ printf '%s\n' "$list_sigignore_guest" >&2; exit 1; }
+
 for bead in dar-q95.10 dar-q95.11 dar-q95.20 dar-gwn.6.4 dar-gwn.6 dar-gwn.1.6 dar-nmda dar-6x4.1 dar-gwn.6.5; do
 	guest_list="$(west test --bead "$bead" --env darling --list)"
 	printf '%s\n' "$guest_list" | grep -q 'darling/' ||
