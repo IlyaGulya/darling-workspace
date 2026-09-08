@@ -306,3 +306,24 @@ patches:
     diag: bare
     repo: darling-workspace
   sha256sum: 1004217e0475ca35ca8cd7a5d224bcc5a5058807dec49fcbdd9aa0e479f5d4a5
+- path: xnu/sigaction-ignore-discard.patch
+  module: darling/src/external/xnu
+  source-branch: fix/sigaction-ignore-discard
+  source-base: 0e54f6a1261216f2eafb880b534288f349027901
+  source-commit: 8a2b2f11325cd647495a03fa309d0851fc48fd2f
+  bead: dar-cpuk
+  publication-status: blocked
+  publication-blocker: dar-cpuk owns deployed pending-discard regression and canonical review; publication is not authorized.
+  tests:
+  - ctest-name: darling/sigaction_ignore_pending
+    use: xnu-signal-runtime-proof
+    timeout-seconds: 30
+    red-proof:
+      expect-output-contains:
+      - SIGACTION_IGNORE_PENDING_NOT_DISCARDED
+  - ctest-name: macos/sigaction_ignore_pending
+    coverage-tier: runtime
+    runs: macos
+    diag: bare
+    repo: darling-workspace
+  sha256sum: 5d9c99ce174b13b75aa60b4b8175157dbf03e049cc579bc79cb0fc3e79a66197

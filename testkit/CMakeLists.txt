@@ -329,6 +329,21 @@ if(EXISTS "${_sigpending_mask_guest}")
   )
 endif()
 
+set(_sigaction_ignore_pending_guest "${_workspace_root}/tests/sigaction_ignore_pending_guest.c")
+if(EXISTS "${_sigaction_ignore_pending_guest}")
+  add_compat_test(
+    NAME       sigaction_ignore_pending
+    SOURCE     "${_sigaction_ignore_pending_guest}"
+    ENVS       darling macos
+    BEAD       dar-cpuk
+    SUBMODULES xnu
+    RUNTIME_PROFILE spawn-failure-ownership
+    INSTALL
+    TIMEOUT    30
+    OK_MARKER  "SIGACTION_IGNORE_PENDING_OK"
+  )
+endif()
+
 set(_darwin_priority_guest "${_workspace_root}/tests/darwin_priority_guest.c")
 if(EXISTS "${_darwin_priority_guest}")
   add_compat_test(
