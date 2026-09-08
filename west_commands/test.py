@@ -1626,7 +1626,30 @@ class DarlingTest(ProfileOperationsMixin, BootstrapRuntimeProfileMixin, WestComm
             if not resolved:
                 detail = "; ".join(unavailable) or "metadata selectors matched no runnable bindings"
                 self.die(f"no tests selected (env={env or 'any'}): {detail}")
-            yield resolved
+            # The outer prefix lease shuts down the existing runtime before
+            # entering a provider. Its launcher mode must already be known.
+            launcher_env = {}
+            definitions = None
+            for _, test in resolved:
+                profiles = list(test.get("_ctest", {}).get("profiles", []))
+                if test.get("runtime-profile"):
+                    profiles.append(test["runtime-profile"])
+                for name in dict.fromkeys(profiles):
+                    if definitions is None:
+                        definitions = self._ctest_runtime_profile_definitions()
+                    if name not in definitions:
+                        self.die(f"unknown runtime profile: {name}")
+                    for key, value in definitions[name].get("launcher-env", {}).items():
+                        value = str(value)
+                        if key in launcher_env and launcher_env[key] != value:
+                            self.die(f"selected runtime profiles conflict on launcher environment {key}")
+                        launcher_env[key] = value
+            previous_prefix_env = getattr(self, "_prefix_env", {})
+            self._prefix_env = {**previous_prefix_env, **launcher_env}
+            try:
+                yield resolved
+            finally:
+                self._prefix_env = previous_prefix_env
 
     def _display_ctest_label(self, label: str) -> str:
         build = self._testkit_dir() / "build"

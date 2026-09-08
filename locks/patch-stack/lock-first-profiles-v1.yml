@@ -6,3 +6,5 @@ profiles:
     mapping: lock-first-series-arch-v2.yml
   - profile: perf
     mapping: lock-first-series-perf-v2.yml
+  - profile: wget-residual
+    mapping: lock-first-series-wget-residual-v1.yml

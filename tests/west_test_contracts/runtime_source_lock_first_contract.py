@@ -427,6 +427,40 @@ def profile_routing_contract() -> None:
         runtime_source.patch_stack_materialize._git = old_git
 
 
+def current_minus_module_scope_contract() -> None:
+    """Omitting a child patch must not omit or reject its parent module."""
+    with tempfile.TemporaryDirectory() as directory:
+        _, projects, plan, host, xnu, lock_path, _, _, _ = runtime_fixture(Path(directory))
+        host._active_profile = "homebrew"
+        patches = host._load_profile("homebrew")["patches"]
+        child_patch = next(patch for patch in patches if patch["module"] == "darling/src/external/xnu")
+        parent_patch = next(patch for patch in patches if patch["module"] == "darling")
+        # Both synthetic modules change the same relative fixture path using
+        # the real immutable graph; only their ownership/skip selection differs.
+        for entry in plan:
+            if entry["module"] == "darling":
+                entry["lock_path"] = str(lock_path)
+        materializer = runtime_source.RuntimeSourceMaterializer(host)
+        parent = projects["darling"]
+        with mock.patch.object(runtime_source.patch_stack_lock_first, "plan", return_value=plan):
+            materializer.apply_current_minus_profile(child_patch, {}, "darling", parent)
+            assert (parent / "fixture").read_text() == "three\n"
+            materializer.apply_current_minus_profile(child_patch, {}, "darling/src/external/xnu", xnu)
+            assert (xnu / "fixture").read_text() == "base\n"
+            materializer.apply_current_minus_profile(
+                child_patch, {"current-minus-skip-patches": [parent_patch["path"]]},
+                "darling", parent,
+            )
+            assert (parent / "fixture").read_text() == "base\n"
+            before = git(parent, "rev-parse", "HEAD")
+            must_raise(runtime_source.patch_stack_lock_first.LockFirstError, lambda:
+                materializer.apply_current_minus_profile(
+                    child_patch, {"current-minus-skip-patches": ["missing.patch"]},
+                    "darling", parent,
+                ))
+            assert git(parent, "rev-parse", "HEAD") == before
+
+
 def main() -> None:
     modules = [
         "darling/src/external/darlingserver", "darling/src/external/xnu",
@@ -542,6 +576,7 @@ def main() -> None:
         runtime_source.subprocess.run = old_run
         runtime_source.patch_stack_materialize.load_lock = old_load_lock
         runtime_source.patch_stack_materialize._git = old_git
+    current_minus_module_scope_contract()
     real_rollback_contract()
     identity_contract()
     profile_routing_contract()
