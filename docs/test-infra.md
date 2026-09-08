@@ -958,6 +958,13 @@ capture. The runner is resolved from `--executor`, `PATH`, or the checked-out
 fails before launching the test. `--list` is still offline and shows the wrapper
 shape without requiring the binary to exist.
 
+Guarded CTest registrations pass `--forward-output` to the executor. This replays
+captured stdout/stderr after execution, preserving guest phase and domain-oracle
+markers through nested watchdogs without accepting compile or transport errors
+as runtime RED. Rebuild `darling-debug-runner` after updating its source; use
+`--executor ../darling-debug-runner/target/release/darling-debug-runner` to select
+the workspace build explicitly when `PATH` still names an older installed tool.
+
 Keep shell scripts thin. Static source-contract scripts should source a local
 `contract-test-lib.sh` helper for common `fail`, `require_grep`, and
 `require_text` assertions instead of copying that boilerplate into every test.
