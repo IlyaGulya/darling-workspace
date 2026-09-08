@@ -6,7 +6,7 @@ upstream:
   url: https://github.com/darlinghq/darling-xnu.git
   base_commit: 5f26a4c2365d9774b5a1e66ae7da20b61ab6d2db
 mirror:
-  url: ../../handoff/wget-residual/darling-xnu.bundle
+  url: ../../source-bundles/wget-residual/darling-xnu.bundle
   base_ref: refs/tags/patch-stack/v1/bases/5f26a4c2365d9774b5a1e66ae7da20b61ab6d2db
   base_oid: 5f26a4c2365d9774b5a1e66ae7da20b61ab6d2db
   source_ref: refs/tags/patch-stack/v1/sources/3332f4035976af51133bc4fd296f3bb0cd6c897a
