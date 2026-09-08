@@ -96,6 +96,32 @@ def main() -> None:
         assert exists(repo, result) and run(repo, "rev-parse", f"{result}^{{tree}}") == tree
         assert outcome["transaction_id"] and all("patch-stack-materialize/" not in ref for ref in run(repo, "for-each-ref", "--format=%(refname)").splitlines())
 
+        # A private immutable bundle remains usable after moving the lock and
+        # its declared source together; the caller's ODB is not the URL base.
+        portable = temp / "portable"
+        (portable / "locks").mkdir(parents=True)
+        (portable / "handoff").mkdir()
+        run(work, "bundle", "create", str(portable / "handoff" / "mirror.bundle"),
+            data["mirror"]["base_ref"], data["mirror"]["source_ref"])
+        bundled = copy.deepcopy(data)
+        bundled["mirror"]["url"] = "../handoff/mirror.bundle"
+        write_lock(portable / "locks" / "lock.yml", bundled)
+        relocated = temp / "relocated"
+        portable.rename(relocated)
+        bundle_result = "refs/west/patch-stack-results/relative-bundle"
+        bundle_outcome = materialize.materialize(
+            repo, relocated / "locks" / "lock.yml", bundle_result,
+            temp / "relative-bundle.json")
+        assert bundle_outcome["verdict"] == "VALID", bundle_outcome
+        assert run(repo, "rev-parse", f"{bundle_result}^{{tree}}") == tree
+
+        # Even with every object already present, an unavailable declared
+        # bundle must fail rather than use the ambient repository as a fallback.
+        (relocated / "handoff" / "mirror.bundle").unlink()
+        assert_failure(repo, relocated / "locks" / "lock.yml",
+                       result_ref="refs/west/patch-stack-results/missing-bundle",
+                       evidence=temp / "missing-bundle.json", text="fetch")
+
         # Existing results are create-only and are never modified, even when their OID is wrong.
         existing = "refs/west/patch-stack-results/existing"; run(repo, "update-ref", existing, base)
         assert_failure(repo, lock, result_ref=existing, evidence=temp / "existing.json", text="already exists", preserve_result=True)

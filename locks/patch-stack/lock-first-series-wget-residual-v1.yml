@@ -1,0 +1,46 @@
+schema_version: 3
+profile: wget-residual
+batch_id: wget-residual-local-immutable-batch-1
+expected_count: 10
+composition: wget-residual-profile-composition-v1.yml
+series:
+- profile: wget-residual
+  module: darling
+  patch: darling/rootless-homebrew-coreservices.patch
+  lock: darling-rootless-homebrew-coreservices-wget-v1.yml
+- profile: wget-residual
+  module: darling
+  patch: darling/rootless-shutdown-guest-tree.patch
+  lock: darling-rootless-shutdown-guest-tree-wget-v1.yml
+- profile: wget-residual
+  module: darling
+  patch: darling/runtime-prefix-unlink-race.patch
+  lock: darling-runtime-prefix-unlink-race-wget-v1.yml
+- profile: wget-residual
+  module: darling
+  patch: darling/runtime-lifecycle-owner.patch
+  lock: darling-runtime-lifecycle-owner-wget-v1.yml
+- profile: wget-residual
+  module: darling/src/external/xnu
+  patch: xnu/eunion-content-fd-validation.patch
+  lock: darling-xnu-eunion-content-fd-validation-wget-v1.yml
+- profile: wget-residual
+  module: darling/src/external/xnu
+  patch: xnu/posix-spawn-cloexec-default.patch
+  lock: darling-xnu-posix-spawn-cloexec-default-wget-v1.yml
+- profile: wget-residual
+  module: darling/src/external/xnu
+  patch: xnu/posix-spawn-failure-ownership.patch
+  lock: darling-xnu-posix-spawn-failure-ownership-wget-v1.yml
+- profile: wget-residual
+  module: darling/src/external/darlingserver
+  patch: darlingserver/preserve-wait-state-on-resume.patch
+  lock: darlingserver-preserve-wait-state-on-resume-wget-v1.yml
+- profile: wget-residual
+  module: darling/src/external/darlingserver
+  patch: darlingserver/microthread-dispatch-handoff.patch
+  lock: darlingserver-microthread-dispatch-handoff-wget-v1.yml
+- profile: wget-residual
+  module: darling/src/external/darlingserver
+  patch: darlingserver/rootless-server-owned-socket-address.patch
+  lock: darlingserver-rootless-server-owned-socket-address-wget-v1.yml

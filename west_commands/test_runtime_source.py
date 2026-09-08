@@ -58,7 +58,7 @@ class RuntimeSourceMaterializer:
         refs/generated locks.  The worktree context owns all resulting commits
         and removes them when its caller exits.
         """
-        if profile not in {"homebrew", "perf", "arch"}:
+        if profile not in {"homebrew", "perf", "arch", "wget-residual"}:
             raise patch_stack_lock_first.LockFirstError(
                 f"runtime-source canonical materialization is not enabled for {profile}"
             )
@@ -98,6 +98,13 @@ class RuntimeSourceMaterializer:
                 [
                     "darling", "darling/src/external/xnu",
                     "darling/src/external/dyld", "darling/src/external/darlingserver",
+                ],
+            ),
+            "wget-residual": (
+                "wget-residual-local-immutable-batch-1", 10,
+                [
+                    "darling", "darling/src/external/xnu",
+                    "darling/src/external/darlingserver",
                 ],
             ),
         }[profile]
@@ -312,7 +319,7 @@ class RuntimeSourceMaterializer:
         lock objects. Historical archives are never executable inputs.
         """
         skips = skip_patch_paths or set()
-        if profile not in {"homebrew", "perf", "arch"}:
+        if profile not in {"homebrew", "perf", "arch", "wget-residual"}:
             raise patch_stack_lock_first.LockFirstError(
                 f"runtime-source canonical materialization is not enabled for {profile}"
             )
@@ -474,11 +481,26 @@ class RuntimeSourceMaterializer:
     def apply_current_minus_profile(
         self, patch: dict, proof: dict, module: str, target: Path
     ) -> None:
+        profile = self.active_runtime_profile(patch)
+        requested = self._current_minus_skip_patch_paths(patch, proof)
+        available = set()
+        module_skips = set()
+        for stacked in self._host._profile_stack(profile):
+            for candidate in self._host._load_profile(stacked).get("patches", []):
+                if candidate["path"] in requested:
+                    available.add(candidate["path"])
+                    if candidate["module"] == module:
+                        module_skips.add(candidate["path"])
+        if available != requested:
+            raise patch_stack_lock_first.LockFirstError(
+                "runtime-source current-minus skips absent from active profile: "
+                + ", ".join(sorted(requested - available))
+            )
         self.apply_profile_module_patches(
-            self.active_runtime_profile(patch),
+            profile,
             module,
             target,
-            skip_patch_paths=self._current_minus_skip_patch_paths(patch, proof),
+            skip_patch_paths=module_skips,
         )
 
     def apply_full_runtime_profile(self, patch: dict, module: str, target: Path) -> None:

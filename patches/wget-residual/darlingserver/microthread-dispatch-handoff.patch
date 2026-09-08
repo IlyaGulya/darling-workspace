@@ -1,4 +1,4 @@
-From 893f7414fa0f2308b69fe73199c86196d6f1cae9 Mon Sep 17 00:00:00 2001
+From 9be2568f5489684168f61cb1dfecf76d0cc50849 Mon Sep 17 00:00:00 2001
 From: Ilya Gulya <ilya@gulya.me>
 Date: Sun, 6 Sep 2026 07:44:19 +0000
 Subject: [PATCH] Preserve overlapping RPC dispatch through execution ownership
@@ -93,10 +93,10 @@ index 6871d5f6e2b83c08a57de51c0d8fc0d833d8fe3f..4d3800be9d86b757805044bdb44cbb38
  		std::shared_ptr<Call> _activeCall = nullptr;
  		std::shared_ptr<Thread> _impersonating = nullptr;
 diff --git a/src/thread.cpp b/src/thread.cpp
-index 9e83b2da70d7a56aed5e1192c767de05b1d65fc4..5ea4621baec37bb436b9fc80e1e2b1048267b6c2 100644
+index d8edffd0065fabe7480470da96b0096764034893..ffb3e04af0afffbe52939443db120fbfd65391ea 100644
 --- a/src/thread.cpp
 +++ b/src/thread.cpp
-@@ -407,9 +407,9 @@ void DarlingServer::Thread::doWork() {
+@@ -409,9 +409,9 @@ void DarlingServer::Thread::doWork() {
  		return;
  	}
  
@@ -109,16 +109,16 @@ index 9e83b2da70d7a56aed5e1192c767de05b1d65fc4..5ea4621baec37bb436b9fc80e1e2b104
  		_rwlock.unlock();
  		return;
  	}
-@@ -428,7 +428,7 @@ void DarlingServer::Thread::doWork() {
+@@ -430,7 +430,7 @@ void DarlingServer::Thread::doWork() {
  		// This execution was scheduled by resume(); consume that wake permit.
  		microthreadConsumePendingResume(_resumePermit);
  	}
 -	_running = true;
 +	_execution.begin();
  	currentThreadVar = shared_from_this();
- 	dtape_thread_entering(_dtapeThread);
- 
-@@ -545,15 +545,18 @@ void DarlingServer::Thread::doWork() {
+ 	// Resuming an existing context (including a raw-lock suspension inside an
+ 	// XNU wait) does not complete that wait. Interrupt dispatch likewise needs
+@@ -555,15 +555,18 @@ void DarlingServer::Thread::doWork() {
  
  doneWorking:
  	// we must be holding `_rwlock` when we get here
@@ -141,7 +141,7 @@ index 9e83b2da70d7a56aed5e1192c767de05b1d65fc4..5ea4621baec37bb436b9fc80e1e2b104
  	bool canRelease = false;
  	if (_dead) {
  		threadLog.debug() << *this << ": dead thread returning. active call? " << (!!_activeCall ? "true" : "false") << " terminating? " << (_terminating ? "true" : "false") << threadLog.endLog;
-@@ -580,7 +583,7 @@ doneWorking:
+@@ -590,7 +593,7 @@ doneWorking:
  			_pendingCall = _pendingInterrupts.front();
  			_pendingInterrupts.pop();
  
@@ -150,7 +150,7 @@ index 9e83b2da70d7a56aed5e1192c767de05b1d65fc4..5ea4621baec37bb436b9fc80e1e2b104
  		}
  
  		_rwlock.unlock();
-@@ -590,7 +593,7 @@ doneWorking:
+@@ -600,7 +603,7 @@ doneWorking:
  		unlockMeWhenSuspending = nullptr;
  	}
  	_runningCondvar.notify_all();
@@ -159,7 +159,7 @@ index 9e83b2da70d7a56aed5e1192c767de05b1d65fc4..5ea4621baec37bb436b9fc80e1e2b104
  		Server::sharedInstance().scheduleThread(shared_from_this());
  	}
  	if (canRelease) {
-@@ -674,7 +677,7 @@ void DarlingServer::Thread::resume() {
+@@ -684,7 +687,7 @@ void DarlingServer::Thread::resume() {
  		// Coalesce repeated wakes into one permit. If the microthread is still
  		// running, it will either consume the permit in suspend() or reschedule
  		// itself from doWork() after physically stopping.
@@ -168,7 +168,7 @@ index 9e83b2da70d7a56aed5e1192c767de05b1d65fc4..5ea4621baec37bb436b9fc80e1e2b104
  	}
  
  	if (schedule) {
-@@ -704,7 +707,7 @@ void DarlingServer::Thread::terminate() {
+@@ -714,7 +717,7 @@ void DarlingServer::Thread::terminate() {
  	} else {
  		// if it's not the current thread and it's not currently running, just tell it died;
  		// it should die once the caller releases their reference(s) on us
@@ -177,7 +177,7 @@ index 9e83b2da70d7a56aed5e1192c767de05b1d65fc4..5ea4621baec37bb436b9fc80e1e2b104
  			_rwlock.unlock();
  			notifyDead();
  		} else {
-@@ -740,7 +743,7 @@ void DarlingServer::Thread::impersonate(std::shared_ptr<Thread> thread) {
+@@ -750,7 +753,7 @@ void DarlingServer::Thread::impersonate(std::shared_ptr<Thread> thread) {
  		{
  			std::unique_lock lock(thread->_rwlock);
  			thread->_deferLocked(true, lock);
@@ -186,7 +186,7 @@ index 9e83b2da70d7a56aed5e1192c767de05b1d65fc4..5ea4621baec37bb436b9fc80e1e2b104
  		}
  		thread->_runningCondvar.notify_all();
  	}
-@@ -754,7 +757,7 @@ void DarlingServer::Thread::impersonate(std::shared_ptr<Thread> thread) {
+@@ -764,7 +767,7 @@ void DarlingServer::Thread::impersonate(std::shared_ptr<Thread> thread) {
  	if (oldThread) {
  		{
  			std::unique_lock lock(oldThread->_rwlock);
@@ -195,7 +195,7 @@ index 9e83b2da70d7a56aed5e1192c767de05b1d65fc4..5ea4621baec37bb436b9fc80e1e2b104
  			oldThread->_undeferLocked(lock);
  		}
  		oldThread->_runningCondvar.notify_all();
-@@ -1338,14 +1341,14 @@ void DarlingServer::Thread::syncMemory(uintptr_t address, size_t size, int sync_
+@@ -1348,14 +1351,14 @@ void DarlingServer::Thread::syncMemory(uintptr_t address, size_t size, int sync_
  void DarlingServer::Thread::waitUntilRunning() {
  	std::shared_lock lock(_rwlock);
  	_runningCondvar.wait(lock, [&]() {
@@ -212,7 +212,7 @@ index 9e83b2da70d7a56aed5e1192c767de05b1d65fc4..5ea4621baec37bb436b9fc80e1e2b104
  	});
  };
  
-@@ -1356,7 +1359,7 @@ void DarlingServer::Thread::_deferLocked(bool wait, std::unique_lock<std::shared
+@@ -1366,7 +1369,7 @@ void DarlingServer::Thread::_deferLocked(bool wait, std::unique_lock<std::shared
  
  	if (wait) {
  		_runningCondvar.wait(lock, [&]() {

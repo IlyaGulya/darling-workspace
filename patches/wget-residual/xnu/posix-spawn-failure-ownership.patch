@@ -135,3 +135,507 @@ index 3348756344b9c7aa74630595ca78f0c64969678f..1751bacdbd2c96f678a49bec4bf206c9
  	}
  
  out:
+
+From e8c8127d553578929d3867e35b14d9fc5c5edcae Mon Sep 17 00:00:00 2001
+From: Ilya Gulya <ilya@gulya.me>
+Date: Tue, 8 Sep 2026 13:43:08 +0000
+Subject: [PATCH] Pin private spawn ownership with atomic pidfd (dar-759a.5.1)
+
+---
+ .../xnu_syscall/bsd/impl/process/fork.h       |   8 +-
+ .../src/xnu_syscall/bsd/impl/process/fork.c   |  27 +-
+ .../bsd/impl/process/posix_spawn.c            |  20 +-
+ darling/tests/spawn-pidfd/fixture.c           | 281 ++++++++++++++++++
+ darling/tests/spawn-pidfd/run.py              |  60 ++++
+ 5 files changed, 381 insertions(+), 15 deletions(-)
+ create mode 100644 darling/tests/spawn-pidfd/fixture.c
+ create mode 100755 darling/tests/spawn-pidfd/run.py
+
+diff --git a/darling/src/libsystem_kernel/emulation/include/xnu_syscall/bsd/impl/process/fork.h b/darling/src/libsystem_kernel/emulation/include/xnu_syscall/bsd/impl/process/fork.h
+index 441c24ace4a29c7ac9063429efa1bd69254f8e32..23a3156ec90c7cba1338cde3e84d44e6d87b5e6e 100644
+--- a/darling/src/libsystem_kernel/emulation/include/xnu_syscall/bsd/impl/process/fork.h
++++ b/darling/src/libsystem_kernel/emulation/include/xnu_syscall/bsd/impl/process/fork.h
+@@ -2,7 +2,11 @@
+ #define LINUX_FORK_H
+ 
+ long sys_fork(void);
+-/* Private until exec: failed children require an internal __WCLONE reap. */
+-long fork_for_spawn(void);
++/*
++ * Private until exec. On success the parent owns a CLOEXEC pidfd and must close
++ * it after its internal P_PIDFD/__WCLONE wait; the child does not inherit it.
++ * Requires Linux >= 5.4 (CLONE_PIDFD arrived in 5.2, P_PIDFD waits in 5.4).
++ */
++long fork_for_spawn(int* pidfd);
+ 
+ #endif // LINUX_FORK_H
+diff --git a/darling/src/libsystem_kernel/emulation/src/xnu_syscall/bsd/impl/process/fork.c b/darling/src/libsystem_kernel/emulation/src/xnu_syscall/bsd/impl/process/fork.c
+index 3527c8a08fa48dae3080d7f31dfecb8a1e641a79..599ee826b53a95b5fe3b5a7b1e86dd45956dabeb 100644
+--- a/darling/src/libsystem_kernel/emulation/src/xnu_syscall/bsd/impl/process/fork.c
++++ b/darling/src/libsystem_kernel/emulation/src/xnu_syscall/bsd/impl/process/fork.c
+@@ -1,6 +1,7 @@
+ #include <darling/emulation/xnu_syscall/bsd/impl/process/fork.h>
+ 
+ #include <_libkernel_init.h>
++#include <stddef.h>
+ 
+ #include <darling/emulation/common/base.h>
+ #include <darling/emulation/conversion/errno.h>
+@@ -18,19 +19,29 @@
+ 
+ extern _libkernel_functions_t _libkernel_functions;
+ 
+-static long fork_with_exit_signal(int exit_signal)
++#define LINUX_CLONE_PIDFD 0x00001000
++
++static long fork_with_exit_signal(int exit_signal, int* pidfd)
+ {
+ 	int ret;
+ 	int wdfd = get_perthread_wd();
+ 
++	if (pidfd != NULL) {
++		/*
++		 * parent_tid is argument 3 on x86_64, i386 and arm64. The last two
++		 * arguments (child_tid/tls) differ in order but are both unused.
++		 * Only the parent receives the new CLOEXEC descriptor.
++		 */
++		*pidfd = -1;
++		ret = LINUX_SYSCALL(__NR_clone, exit_signal | LINUX_CLONE_PIDFD,
++			0, pidfd, 0, 0);
++	} else {
+ #ifdef SYS_fork
+-	if (exit_signal == LINUX_SIGCHLD)
+ 		ret = LINUX_SYSCALL(__NR_fork);
+-	else
+-		ret = LINUX_SYSCALL(__NR_clone, exit_signal, 0);
+ #else
+-	ret = LINUX_SYSCALL(__NR_clone, exit_signal, 0);
++		ret = LINUX_SYSCALL(__NR_clone, exit_signal, 0);
+ #endif
++	}
+ 	if (ret < 0)
+ 		ret = errno_linux_to_bsd(ret);
+ 	else if (ret == 0)
+@@ -75,11 +86,11 @@ static long fork_with_exit_signal(int exit_signal)
+ 
+ long sys_fork(void)
+ {
+-	return fork_with_exit_signal(LINUX_SIGCHLD);
++	return fork_with_exit_signal(LINUX_SIGCHLD, NULL);
+ }
+ 
+-long fork_for_spawn(void)
++long fork_for_spawn(int* pidfd)
+ {
+ 	/* Linux exec resets the exit signal to SIGCHLD before closing CLOEXEC fds. */
+-	return fork_with_exit_signal(0);
++	return fork_with_exit_signal(0, pidfd);
+ }
+diff --git a/darling/src/libsystem_kernel/emulation/src/xnu_syscall/bsd/impl/process/posix_spawn.c b/darling/src/libsystem_kernel/emulation/src/xnu_syscall/bsd/impl/process/posix_spawn.c
+index 1751bacdbd2c96f678a49bec4bf206c94af3fef3..64cf1d5d1efcc1f5fe52b10e819d872441b3cacd 100644
+--- a/darling/src/libsystem_kernel/emulation/src/xnu_syscall/bsd/impl/process/posix_spawn.c
++++ b/darling/src/libsystem_kernel/emulation/src/xnu_syscall/bsd/impl/process/posix_spawn.c
+@@ -44,6 +44,8 @@
+ 
+ #define LINUX_ADDR_NO_RANDOMIZE 0x40000
+ #define LINUX_WCLONE 0x80000000U
++#define LINUX_WEXITED 0x00000004
++#define LINUX_P_PIDFD 3
+ 
+ extern _libkernel_functions_t _libkernel_functions;
+ 
+@@ -52,6 +54,8 @@ long sys_posix_spawn(int* pid, const char* path, const struct _posix_spawn_args_
+ {
+ 	int ret, my_pid;
+ 	int pipe[2] = { -1, -1 };
++	/* Transient, like the error pipe; never published to application code. */
++	int pidfd = -1;
+ 
+ 	if (desc && desc->attrp && desc->attrp->psa_flags & POSIX_SPAWN_SETEXEC)
+ 		goto no_fork;
+@@ -66,7 +70,7 @@ long sys_posix_spawn(int* pid, const char* path, const struct _posix_spawn_args_
+ 
+ 	_libkernel_functions->posix_spawn_prepare();
+ 
+-	if ((my_pid = fork_for_spawn()) == 0)
++	if ((my_pid = fork_for_spawn(&pidfd)) == 0)
+ 	{
+ 		// child
+ 		// close the reading side
+@@ -379,13 +383,19 @@ fail:
+ 		 * Failed setup/exec children remain private and cannot notify or be
+ 		 * reaped by application SIGCHLD handlers. Successful exec changes the
+ 		 * Linux exit signal to SIGCHLD, so __WCLONE returns ECHILD without
+-		 * consuming the public child. Reap even an unexpectedly killed private
+-		 * child whose error pipe closed without a complete error record.
++		 * consuming the public child. The atomically acquired pidfd retains
++		 * identity even if a SIGCHLD handler reaps that child and Linux reuses
++		 * its numeric PID for a different private clone. Reap even an
++		 * unexpectedly killed private child whose error pipe closed without
++		 * a complete error record.
+ 		 */
+ 		do {
+-			err = LINUX_SYSCALL(__NR_wait4, my_pid, NULL, LINUX_WCLONE, NULL);
++			/* Raw Linux waitid permits NULL siginfo and returns 0 on reap. */
++			err = LINUX_SYSCALL(__NR_waitid, LINUX_P_PIDFD, pidfd, NULL,
++				LINUX_WEXITED | LINUX_WCLONE, NULL);
+ 		} while (err == -EINTR);
+-		if (err == my_pid && ret == 0)
++		close_internal(pidfd);
++		if (err == 0 && ret == 0)
+ 			ret = -EIO;
+ 		else if (err < 0 && err != -ECHILD && ret == 0)
+ 			ret = errno_linux_to_bsd(err);
+diff --git a/darling/tests/spawn-pidfd/fixture.c b/darling/tests/spawn-pidfd/fixture.c
+new file mode 100644
+index 0000000000000000000000000000000000000000..dd1204c68519720a12654c87a9f9f76d508dcb2c
+--- /dev/null
++++ b/darling/tests/spawn-pidfd/fixture.c
+@@ -0,0 +1,281 @@
++#define _GNU_SOURCE
++#include <assert.h>
++#include <dirent.h>
++#include <errno.h>
++#include <fcntl.h>
++#include <signal.h>
++#include <stdarg.h>
++#include <stdbool.h>
++#include <stdint.h>
++#include <stdio.h>
++#include <stdlib.h>
++#include <string.h>
++#include <sys/resource.h>
++#include <sys/syscall.h>
++#include <sys/types.h>
++#include <sys/wait.h>
++#include <unistd.h>
++
++#include <darling/emulation/common/base.h>
++#include <darling/emulation/xnu_syscall/bsd/impl/process/fork.h>
++#include <darling/emulation/xnu_syscall/bsd/impl/process/posix_spawn.h>
++
++/* Host adapters for Darwin-only runtime services, not for fork/spawn logic. */
++#define LINUX_SIGCHLD SIGCHLD
++#define LINUX_O_CLOEXEC O_CLOEXEC
++#define LINUX_O_RDONLY O_RDONLY
++#define LINUX_O_DIRECTORY O_DIRECTORY
++#define POSIX_SPAWN_RESETIDS 0x01
++#define POSIX_SPAWN_SETPGROUP 0x02
++#define POSIX_SPAWN_SETSIGMASK 0x08
++#define POSIX_SPAWN_SETEXEC 0x40
++#define POSIX_SPAWN_START_SUSPENDED 0x80
++#define POSIX_SPAWN_CLOEXEC_DEFAULT 0x4000
++struct linux_dirent64 {
++    uint64_t d_ino;
++    int64_t d_off;
++    unsigned short d_reclen;
++    unsigned char d_type;
++    char d_name[];
++};
++typedef struct {
++    void (*posix_spawn_prepare)(void);
++    void (*posix_spawn_parent)(void);
++    void (*posix_spawn_child)(void);
++} * _libkernel_functions_t;
++typedef struct { void (*close)(int); } guard_entry_options_t;
++enum { guard_flag_prevent_close = 1, guard_flag_close_on_fork = 2 };
++static void guard_table_postfork_child(void) {}
++static int guard_table_add(int fd, int flags, guard_entry_options_t* options) { return 0; }
++static int guard_table_check(int fd, int flags) { return 0; }
++static int get_perthread_wd(void) { return -1; }
++static void __dserver_per_thread_socket_refresh(void) {}
++static int __dserver_process_lifetime_pipe_refresh(void) { return -1; }
++static void __dserver_close_socket(int fd) {}
++static void __dserver_close_process_lifetime_pipe(int fd) {}
++static int __dserver_per_thread_socket(void) { return -1; }
++static int __dserver_get_process_lifetime_pipe(void) { return -1; }
++static int dserver_rpc_checkin(bool child, void* stack, int fd) { return 0; }
++static int dserver_rpc_stop_after_exec(void) { return 0; }
++#define __simple_printf printf
++#define __simple_sprintf sprintf
++#define __simple_abort abort
++#define __simple_atoi(str, end) ((int)strtol(str, end, 10))
++static int errno_linux_to_bsd(int value) { return value; }
++static long converted(long value) { return value < 0 ? -errno : value; }
++static long close_internal(int fd) { return converted(close(fd)); }
++static long sys_fchdir(int fd) { return converted(fchdir(fd)); }
++static long sys_chdir(const char* path) { return converted(chdir(path)); }
++static long sys_open(const char* path, int flags, int mode) { return converted(open(path, flags, mode)); }
++static long sys_dup(int fd) { return converted(dup(fd)); }
++static long sys_dup2(int oldfd, int newfd) { return converted(dup2(oldfd, newfd)); }
++static long sys_fcntl(int fd, int cmd, long arg) { return converted(fcntl(fd, cmd, arg)); }
++static long sys_setpgid(int pid, int group) { return converted(setpgid(pid, group)); }
++static long sys_getgid(void) { return getgid(); }
++static long sys_getuid(void) { return getuid(); }
++static long sys_setgid(int gid) { return converted(setgid(gid)); }
++static long sys_setuid(int uid) { return converted(setuid(uid)); }
++static long sys_sigprocmask(int how, const unsigned int* mask, void* old) {
++    sigset_t set;
++    sigemptyset(&set);
++    for (int sig = 1; sig <= 32; ++sig)
++        if (*mask & (1U << (sig - 1))) sigaddset(&set, sig);
++    return converted(sigprocmask(SIG_SETMASK, &set, old));
++}
++
++enum scenario { NORMAL, PRIVATE_DEATH, READ_INTERRUPT, WAIT_INTERRUPT, CLONE_FAILURE, REAP_FIRST };
++static enum scenario scenario;
++static pid_t original_pid, replacement_pid;
++static volatile sig_atomic_t application_pid, application_status, alarms;
++static int clone_calls, read_interrupts, wait_interrupts, reuse;
++static int original_pidfd = -1;
++static void noop(void) {}
++static void child_hook(void) {
++    if (scenario == PRIVATE_DEATH) {
++        kill(getpid(), SIGKILL);
++        _exit(99);
++    }
++    if (scenario == READ_INTERRUPT) usleep(100000);
++}
++static struct {
++    void (*posix_spawn_prepare)(void);
++    void (*posix_spawn_parent)(void);
++    void (*posix_spawn_child)(void);
++} callbacks = { noop, noop, child_hook };
++_libkernel_functions_t _libkernel_functions = (void*)&callbacks;
++static long sys_execve(char* path, char** argv, char** env) {
++    return converted(execve(path, argv, env));
++}
++static long sys_read(int fd, void* data, size_t size) {
++    if (scenario == READ_INTERRUPT && !read_interrupts) ualarm(10000, 0);
++    long result = converted(read(fd, data, size));
++    if (result == -EINTR) ++read_interrupts;
++    return result;
++}
++static long sys_write(int fd, const void* data, size_t size) {
++    long result = converted(write(fd, data, size));
++    if (scenario == WAIT_INTERRUPT) usleep(100000);
++    return result;
++}
++static void sys_exit(int status) { _exit(status); }
++static void alarm_handler(int sig) { ++alarms; }
++static void application_handler(int sig) {
++    int saved = errno, status;
++    pid_t pid;
++    while ((pid = waitpid(-1, &status, WNOHANG)) > 0) {
++        application_pid = pid;
++        application_status = status;
++    }
++    errno = saved;
++}
++static void schedule_reuse(void) {
++    /* Pause the production internal wait until the application has reaped exec. */
++    while (application_pid != original_pid) usleep(1000);
++    if (!reuse) return;
++    /* run.py enforces a newly-created PID namespace before enabling this mode. */
++    int fd = open("/proc/sys/kernel/ns_last_pid", O_WRONLY | O_CLOEXEC);
++    if (fd < 0) { perror("private namespace ns_last_pid"); exit(1); }
++    char value[32];
++    int length = snprintf(value, sizeof(value), "%d", original_pid - 1);
++    assert(write(fd, value, length) == length);
++    assert(close(fd) == 0);
++    replacement_pid = syscall(SYS_clone, 0, 0, 0, 0, 0);
++    assert(replacement_pid >= 0);
++    if (replacement_pid == 0) _exit(42);
++    assert(replacement_pid == original_pid);
++}
++long linux_syscall(long a1, long a2, long a3, long a4, long a5, long a6, int nr) {
++    if (nr == SYS_clone || nr == SYS_fork) {
++        ++clone_calls;
++        struct rlimit saved;
++        if (scenario == CLONE_FAILURE) {
++            assert(getrlimit(RLIMIT_NOFILE, &saved) == 0);
++            struct rlimit exhausted = saved;
++            exhausted.rlim_cur = 0;
++            assert(setrlimit(RLIMIT_NOFILE, &exhausted) == 0);
++        }
++        long result = converted(syscall(nr, a1, a2, a3, a4, a5, a6));
++        if (scenario == CLONE_FAILURE) assert(setrlimit(RLIMIT_NOFILE, &saved) == 0);
++        if (result > 0) {
++            original_pid = result;
++            if (nr == SYS_clone && (a1 & 0x1000)) {
++                original_pidfd = *(int*)a3;
++                assert(fcntl(original_pidfd, F_GETFD) & FD_CLOEXEC);
++            }
++        }
++        return result;
++    }
++    if (nr == SYS_waitid || nr == SYS_wait4) {
++        if (scenario == REAP_FIRST && !replacement_pid) schedule_reuse();
++        if (scenario == WAIT_INTERRUPT && !wait_interrupts) ualarm(10000, 0);
++        long result = converted(syscall(nr, a1, a2, a3, a4, a5, a6));
++        if (result == -EINTR) ++wait_interrupts;
++        return result;
++    }
++    return converted(syscall(nr, a1, a2, a3, a4, a5, a6));
++}
++
++/* Compile and execute the actual implementation, not a duplicate algorithm. */
++#include "fork.c"
++#include "posix_spawn.c"
++
++static int fd_count(void) {
++    DIR* dir = opendir("/proc/self/fd");
++    assert(dir);
++    int count = 0;
++    while (readdir(dir)) ++count;
++    assert(closedir(dir) == 0);
++    return count;
++}
++static void set_handler(void (*handler)(int)) {
++    struct sigaction action = { .sa_handler = handler };
++    sigemptyset(&action.sa_mask);
++    assert(sigaction(SIGCHLD, &action, NULL) == 0);
++}
++static void assert_closed(void) {
++    if (original_pidfd >= 0) {
++        errno = 0;
++        assert(fcntl(original_pidfd, F_GETFD) == -1 && errno == EBADF);
++    }
++}
++static long spawn_case(enum scenario selected, const char* path, int expected) {
++    scenario = selected;
++    int before = fd_count(), pid = -123;
++    original_pidfd = -1;
++    char* args[] = { (char*)path, (char*)"-c", (char*)"exit 7", NULL };
++    char* env[] = { NULL };
++    long result = sys_posix_spawn(&pid, path, NULL, args, env);
++    assert(result == expected);
++    assert_closed();
++    assert(fd_count() == before);
++    if (result == 0) assert(pid == original_pid);
++    else assert(pid == -123);
++    return pid;
++}
++int main(int argc, char** argv) {
++    reuse = argc == 2 && strcmp(argv[1], "--reuse") == 0;
++    alarm(20);
++    struct sigaction action = { .sa_handler = alarm_handler };
++    sigemptyset(&action.sa_mask);
++    assert(sigaction(SIGALRM, &action, NULL) == 0);
++    set_handler(SIG_DFL);
++    scenario = NORMAL;
++    pid_t ordinary = sys_fork();
++    assert(ordinary >= 0);
++    if (ordinary == 0) _exit(9);
++    int status;
++    assert(waitpid(ordinary, &status, 0) == ordinary);
++    assert(WIFEXITED(status) && WEXITSTATUS(status) == 9);
++    pid_t pid = spawn_case(NORMAL, "/bin/sh", 0);
++    assert(waitpid(pid, &status, 0) == pid);
++    assert(WIFEXITED(status) && WEXITSTATUS(status) == 7);
++    set_handler(application_handler);
++    spawn_case(REAP_FIRST, "/bin/sh", 0);
++    assert(application_pid == original_pid);
++    assert(WIFEXITED(application_status) && WEXITSTATUS(application_status) == 7);
++    if (reuse) {
++        assert(waitpid(replacement_pid, &status, __WCLONE) == replacement_pid);
++        assert(WIFEXITED(status) && WEXITSTATUS(status) == 42);
++    }
++    application_pid = 0;
++    application_status = 0;
++    spawn_case(NORMAL, "/definitely-missing-spawn-pidfd", -ENOENT);
++    spawn_case(PRIVATE_DEATH, "/bin/sh", -EIO);
++    spawn_case(READ_INTERRUPT, "/definitely-missing-spawn-pidfd", -ENOENT);
++    assert(read_interrupts > 0);
++    spawn_case(WAIT_INTERRUPT, "/definitely-missing-spawn-pidfd", -ENOENT);
++    assert(wait_interrupts > 0 && alarms >= 2);
++    spawn_case(CLONE_FAILURE, "/bin/sh", -EMFILE);
++    assert(application_pid == 0);
++    errno = 0;
++    assert(waitpid(-1, &status, __WCLONE | WNOHANG) == -1 && errno == ECHILD);
++    struct xnu__posix_spawnattr attr = { .psa_flags = POSIX_SPAWN_SETEXEC };
++    struct _posix_spawn_args_desc desc = { .attrp = &attr };
++    char* args[] = { (char*)"missing", NULL };
++    char* env[] = { NULL };
++    int calls = clone_calls, before = fd_count(), unpublished = -123;
++    assert(sys_posix_spawn(&unpublished, "/definitely-missing-spawn-pidfd", &desc, args, env) == -ENOENT);
++    assert(clone_calls == calls && fd_count() == before && unpublished == -123);
++    scenario = NORMAL;
++    attr.psa_flags = POSIX_SPAWN_SETPGROUP;
++    attr.psa_pgroup = (unsigned int)-1;
++    assert(sys_posix_spawn(&unpublished, "/bin/sh", &desc, args, env) == -EINVAL);
++    assert_closed();
++    assert(fd_count() == before && unpublished == -123 && application_pid == 0);
++    errno = 0;
++    assert(waitpid(-1, &status, __WCLONE | WNOHANG) == -1 && errno == ECHILD);
++    set_handler(SIG_DFL);
++    pid_t setexec = sys_fork();
++    assert(setexec >= 0);
++    if (setexec == 0) {
++        attr.psa_flags = POSIX_SPAWN_SETEXEC;
++        char* command[] = { (char*)"/bin/sh", (char*)"-c", (char*)"exit 13", NULL };
++        sys_posix_spawn(NULL, "/bin/sh", &desc, command, env);
++        _exit(99);
++    }
++    assert(waitpid(setexec, &status, 0) == setexec);
++    assert(WIFEXITED(status) && WEXITSTATUS(status) == 13);
++    puts(reuse ? "PASS: production spawn, descriptor lifecycle, EINTR, and deterministic PID reuse"
++               : "PASS: production spawn, descriptor lifecycle, EINTR, and application-first reap (reuse not exercised)");
++    return 0;
++}
+diff --git a/darling/tests/spawn-pidfd/run.py b/darling/tests/spawn-pidfd/run.py
+new file mode 100755
+index 0000000000000000000000000000000000000000..f8872c17d76abb81998cf96f06451979df9cf609
+--- /dev/null
++++ b/darling/tests/spawn-pidfd/run.py
+@@ -0,0 +1,60 @@
++#!/usr/bin/env python3
++"""Compile the production spawn/fork sources with host runtime adapters and run.
++
++Native: python3 darling/tests/spawn-pidfd/run.py
++Deterministic reuse (isolated namespace, never alter host ns_last_pid):
++  python3 darling/tests/spawn-pidfd/run.py --reuse
++Requires a Linux >= 5.4 host and a C compiler. --reuse also requires permission
++for ns_last_pid in that private namespace; a denied prerequisite fails explicitly.
++"""
++import os
++from pathlib import Path
++import re
++import subprocess
++import sys
++import tempfile
++
++here = Path(__file__).resolve().parent
++arguments = sys.argv[1:]
++if arguments == ["--reuse"]:
++    original_namespace = os.readlink("/proc/self/ns/pid")
++    namespace = ["unshare"]
++    if os.geteuid() != 0:
++        namespace += ["--user", "--map-root-user"]
++    subprocess.run([*namespace, "--pid", "--fork", "--mount-proc",
++                    sys.executable, str(Path(__file__).resolve()),
++                    "--in-reuse-namespace", original_namespace], check=True)
++    sys.exit(0)
++if len(arguments) == 2 and arguments[0] == "--in-reuse-namespace":
++    if os.readlink("/proc/self/ns/pid") == arguments[1] or os.getpid() != 1:
++        raise SystemExit("Refusing ns_last_pid write outside a fresh private PID namespace")
++    arguments = ["--reuse"]
++elif arguments:
++    raise SystemExit("usage: run.py [--reuse]")
++source_root = Path(os.environ.get("SPAWN_PIDFD_SOURCE_ROOT", here.parents[2]))
++emulation = source_root / "darling/src/libsystem_kernel/emulation"
++production = emulation / "src/xnu_syscall/bsd/impl/process"
++with tempfile.TemporaryDirectory(prefix="spawn-pidfd-") as temporary:
++    root = Path(temporary)
++    includes = root / "include"
++    # Only replace platform/runtime headers; the implementation itself is compiled
++    # unchanged. Real Darwin spawn structures and syscall macros remain in use.
++    for source in (production / "fork.c", production / "posix_spawn.c"):
++        for name in re.findall(r"^#include <([^>]+)>", source.read_text(), re.M):
++            if name.startswith(("darling/", "darlingserver/")) or name in ("_libkernel_init.h", "sys/spawn.h"):
++                target = includes / name
++                target.parent.mkdir(parents=True, exist_ok=True)
++                target.write_text("")
++    for name in ("common/base.h", "xnu_syscall/bsd/impl/process/fork.h",
++                 "xnu_syscall/bsd/impl/process/posix_spawn.h", "conversion/process/posix_spawn.h"):
++        target = includes / "darling/emulation" / name
++        target.parent.mkdir(parents=True, exist_ok=True)
++        target.write_text((emulation / "include" / name).read_text())
++    mach = includes / "mach/mach_port.h"
++    mach.parent.mkdir(parents=True, exist_ok=True)
++    mach.write_text("typedef unsigned int mach_port_name_t;\n")
++    binary = root / "spawn-pidfd"
++    subprocess.run([os.environ.get("CC", "cc"), "-std=gnu11", "-O0", "-g", "-Wall", "-Wextra",
++                    "-Wno-unused-parameter", "-I", str(includes), "-I", str(production),
++                    str(here / "fixture.c"), "-o", str(binary)], check=True)
++    subprocess.run([str(binary), *arguments], check=True, timeout=30)

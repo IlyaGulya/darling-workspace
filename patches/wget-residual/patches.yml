@@ -1,5 +1,5 @@
 version: 1
-description: Local wget residual fixes; canonical lock-first activation awaits immutable source closure and reviewed composition under dar-gwn.7.
+description: Local wget residual fixes with explicit immutable source bundles and checked composition over homebrew; publication remains gated per patch.
 base-profile: homebrew
 test-profiles:
   spawn-cloexec-guest:
@@ -62,20 +62,20 @@ patches:
 - path: darlingserver/preserve-wait-state-on-resume.patch
   module: darling/src/external/darlingserver
   source-branch: fix/preserve-wait-state-on-resume
-  source-base: 89751e64bc6c2082f7725061824ee0e33395b0de
-  source-commit: 84a354411b5b6866c9b856b80af1a3855e473948
+  source-base: a99d52248f437be96239a22c8ce5f58fbf32d221
+  source-commit: d6ca60236ea0ab0d9adefb05afe63eb3ed03b3fc
   bead: dar-gwn.7
   publication-status: blocked
   publication-blocker: Full guest acceptance and a portable waitq-enrollment regression remain under dar-gwn.7.
   test-exception:
     reason: manual-runtime-regression
     scope: The libunistring mutex stage reproduced a waitq double-enrollment panic and passed on the diagnostic runtime; a deterministic raw-lock-within-XNU-wait fixture belongs to dar-gwn.7.
-  sha256sum: 3f3692e47bce0019f3c9321085adb50af34cece4d3a8300552f394a7f324d173
+  sha256sum: 0b9bc8985605d335be4c25088480dc5edc756a141ea340175617e48e24c4d82c
 - path: darlingserver/microthread-dispatch-handoff.patch
   module: darling/src/external/darlingserver
   source-branch: fix/microthread-dispatch-handoff
-  source-base: a99d52248f437be96239a22c8ce5f58fbf32d221
-  source-commit: 893f7414fa0f2308b69fe73199c86196d6f1cae9
+  source-base: d6ca60236ea0ab0d9adefb05afe63eb3ed03b3fc
+  source-commit: 9be2568f5489684168f61cb1dfecf76d0cc50849
   bead: dar-gwn.7
   publication-status: blocked
   publication-blocker: Full guest acceptance and portable overlapping-dispatch runtime proof remain under dar-gwn.7; model coverage is not runtime coverage.
@@ -104,7 +104,7 @@ patches:
     - -Wall
     - -Wextra
     - -Werror
-  sha256sum: c0e8f2b6cb17682d1a26433d8e60a42a5d7e5690167475137508b2df42929dd3
+  sha256sum: f995e131dfebc952cb25c143c1d5d42c4d8ec8b3e975c693c25010de26976ccd
 - path: xnu/posix-spawn-cloexec-default.patch
   module: darling/src/external/xnu
   source-branch: fix/posix-spawn-cloexec-default
@@ -238,7 +238,7 @@ patches:
   module: darling/src/external/xnu
   source-branch: fix/posix-spawn-failure-ownership
   source-base: 3332f4035976af51133bc4fd296f3bb0cd6c897a
-  source-commit: 1164c849ef85364845476c854a7a0d9a14cf0058
+  source-commit: e8c8127d553578929d3867e35b14d9fc5c5edcae
   bead: dar-3jw9
   publication-status: blocked
   publication-blocker: dar-759a.5 must complete supported native/current-minus/fixed runtime proof; dar-759a.5.1 owns private-child PID-reuse review and dar-759a.5.2 owns canonical runtime materialization. Full wget acceptance is not this patch's gate.
@@ -250,7 +250,6 @@ patches:
     diag: guarded
     repo: darling-workspace
     red: true
-    blocked: true
     red-proof:
       mode: guest-runtime-deploy
       bad-profile: current-minus-patch
@@ -275,10 +274,10 @@ patches:
       DARLING_ROOTLESS: '1'
       DARLING_NOOVERLAYFS: '1'
       DARLING_EUNION: '1'
-    note: One source-owned CTest fixture is shared with macOS. Runtime proof is blocked until canonical wget-residual current-minus materialization is available; infrastructure failures are not semantic RED.
+    note: One source-owned CTest fixture is shared with macOS. The typed wget-residual composition supplies current-minus and fixed sources; infrastructure failures are not semantic RED.
   - ctest-name: macos/posix_spawn_failure_ownership
     coverage-tier: runtime
     runs: macos
     diag: bare
     repo: darling-workspace
-  sha256sum: 31302f56695f6654a3f50e758f50dd2a943eef7f27af5b8df3ca3e48332af6a8
+  sha256sum: 5a8cf8a30e2eb44e4d987f5263cd966e389c3c13bd210313cfc2fea7fbe9c153

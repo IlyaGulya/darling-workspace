@@ -296,35 +296,55 @@ ci/run-test-tier.sh macos-installed /absolute/path/to/bundle \
   -R '^macos/posix_spawn_failure_ownership$'
 ci/run-test-tier.sh macos-ssh HOST /absolute/path/to/bundle \
   -R '^macos/posix_spawn_failure_ownership$'
-DARLING_ROOTLESS=1 DARLING_NOOVERLAYFS=1 DARLING_EUNION=1 \
-  mise exec -- west test --profile wget-residual \
+mise exec -- west test --profile wget-residual \
   --patch xnu/posix-spawn-failure-ownership.patch --env darling \
   --prefix /absolute/path/to/prefix --prove-red
 ```
 
 Run the prefix-backed command through `scripts/west-job.sh` in agent transport.
-The attempted proof stopped before deployment: homebrew immutable-ref fetch
-failed with early EOF; an independent `west patch verify --profile
-wget-residual` also rejects the absent typed lock-first mapping. This is
-infrastructure blockage, **not RED**. No current pilot Darling GREEN is claimed.
-The CTest bridge now propagates guest upload/compile/run/timeout phases, so even
-compiler diagnostics containing the semantic marker cannot satisfy runtime RED.
+The selected runtime provider declares its launcher environment; metadata
+selection binds it before the initial prefix shutdown as well as during the
+provider's deployment/execution. Conflicting launcher environments for one
+selection are rejected before acquiring the prefix.
 
-The Darling metadata binding is explicitly `blocked: true`; remove that flag
-only after the source closure is executable, then run the command above.
+The initial immutable fetch ended with early EOF. An isolated transfer of the
+same 54 darlingserver refs subsequently passed without configuration changes;
+the original disconnect's cause remains unproven. The homebrew closure then
+exposed five missing immutable tags. With explicit user approval, including the
+blocked-source mirror exception, those exact tags were created and their remote
+OIDs verified. No branch, PR, upstream, or publication-status changes accompanied
+that operation.
+
+`wget-residual` now has a typed ten-patch mapping and a checksum-bound composition
+over homebrew. `west patch verify --profile wget-residual` passed. Its unpublished
+source inputs are explicit Git bundles under `handoff/wget-residual/`, not a
+fallback to the developer's checkout. Relative `mirror.url` paths resolve against
+the declaring lock file's directory, so locks and bundles can move together.
+Every declared base/source tag, ordered commit graph, and tree is still checked;
+an unavailable bundle fails even if the caller already has the objects.
+The wait-state and dispatch fixes were rebased onto their actual canonical
+prerequisites to preserve exact replay identity, rather than weakening the
+range-diff or stable-patch-ID checks.
+
+The old materialization-only `blocked: true` test flag has been removed.
+Runtime proof must still reach the guest-visible semantic oracle before any
+Darling RED/GREEN claim. The CTest bridge propagates guest upload, compile, run,
+and timeout phases; compiler diagnostics containing the marker are not RED.
 
 Ownership review confirmed that Linux
 [`de_thread()` resets the exit signal before close-on-exec](https://github.com/torvalds/linux/blob/v6.8/fs/exec.c#L1170-L1353).
-It also found an unresolved static-analysis risk:
-[`kernel_wait4()` resolves a numeric PID again](https://github.com/torvalds/linux/blob/v6.8/kernel/exit.c#L1756-L1792)
-after an application handler may have reaped the successful child. PID reuse by
-a concurrent private spawn could target the wrong child. This schedule has not
-been reproduced; the repeated native checks do not prove its absence.
-Publication remains blocked on ownership review and supported runtime proof,
-not on unrelated complete wget acceptance. The canonical XNU patch is unchanged.
+The canonical XNU fix now acquires `CLONE_PIDFD` atomically and waits with
+`waitid(P_PIDFD, ..., __WCLONE)`, retaining identity when an application reaps the
+successful child and its numeric PID is reused. This requires Linux 5.4 or newer.
+The production-linked host fixture in `darling/tests/spawn-pidfd/` passed ordinary
+ownership/error/descriptor/EINTR cases and forced PID reuse in a private PID
+namespace. It substitutes Darwin runtime services for native linkage, so this is
+not Darling RPC integration evidence. Publication remains blocked on the
+supported runtime proof, not unrelated complete wget acceptance.
 
-Evidence: `~/work/darling-debug/dar-759a.5-pilot/`, including native reports,
-the installed archive, runtime preflight logs and exact source/artifact identity.
+Evidence is retained under `~/work/darling-debug/dar-759a.5-pilot/` for native
+reference identity and under `~/work/darling-debug/dar-759a.5-repair/` for transport,
+approved tag publication, immutable composition, and subsequent runtime attempts.
 
 ### Native applicability and migration gates
 

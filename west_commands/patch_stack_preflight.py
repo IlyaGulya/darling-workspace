@@ -125,6 +125,11 @@ def load_lock(path: Path) -> dict[str, Any]:
             raise ValueError("v2 mirror tag refs must have exact content-addressed suffixes")
         if mirror["base_oid"] != base or mirror["source_oid"] != value["source_commit"]:
             raise ValueError("v2 mirror OIDs must equal upstream.base_commit and source_commit")
+    # Git resolves local remotes against its working directory. Lock inputs
+    # instead travel with their declared bundle/repository, independent of
+    # the disposable ODB used to validate them.
+    if ":" not in mirror["url"] and not Path(mirror["url"]).is_absolute():
+        mirror["url"] = str((path.parent / mirror["url"]).resolve())
     return value
 
 

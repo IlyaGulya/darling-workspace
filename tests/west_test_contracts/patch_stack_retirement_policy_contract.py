@@ -257,10 +257,6 @@ def main() -> None:
             '"--materialize-profile"',
         )
     )
-    runtime_source = (ROOT / "west_commands/test_runtime_source.py").read_text()
-    assert 'profile not in {"homebrew", "perf", "arch"}' in runtime_source
-    assert "skip_patches=phase_skips" in runtime_source
-    assert "Historical archives are never executable inputs." in runtime_source
 
     patch_command = (ROOT / "west_commands/patch.py").read_text()
     assert patch_command.count('"--roll-back"') == 1
