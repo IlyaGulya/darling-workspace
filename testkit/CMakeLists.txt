@@ -344,6 +344,21 @@ if(EXISTS "${_sigaction_ignore_pending_guest}")
   )
 endif()
 
+set(_signal_handler_mask_guest "${_workspace_root}/tests/signal_handler_mask_guest.c")
+if(EXISTS "${_signal_handler_mask_guest}")
+  add_compat_test(
+    NAME       signal_handler_mask
+    SOURCE     "${_signal_handler_mask_guest}"
+    ENVS       darling macos
+    BEAD       dar-1c53
+    SUBMODULES xnu
+    RUNTIME_PROFILE spawn-failure-ownership
+    INSTALL
+    TIMEOUT    30
+    OK_MARKER  "SIGNAL_HANDLER_MASK_OK"
+  )
+endif()
+
 set(_darwin_priority_guest "${_workspace_root}/tests/darwin_priority_guest.c")
 if(EXISTS "${_darwin_priority_guest}")
   add_compat_test(

@@ -327,3 +327,24 @@ patches:
     diag: bare
     repo: darling-workspace
   sha256sum: 5d9c99ce174b13b75aa60b4b8175157dbf03e049cc579bc79cb0fc3e79a66197
+- path: xnu/sigexc-handler-mask.patch
+  module: darling/src/external/xnu
+  source-branch: fix/sigexc-preserve-handler-mask
+  source-base: 8a2b2f11325cd647495a03fa309d0851fc48fd2f
+  source-commit: b0c7888e903fb44266baffa92ec9cb5391fe9019
+  bead: dar-1c53
+  publication-status: blocked
+  publication-blocker: dar-1c53 owns deployed handler-mask regression and canonical review; publication is not authorized.
+  tests:
+  - ctest-name: darling/signal_handler_mask
+    use: xnu-signal-runtime-proof
+    timeout-seconds: 30
+    red-proof:
+      expect-output-contains:
+      - SIGNAL_HANDLER_MASK_BROKEN
+  - ctest-name: macos/signal_handler_mask
+    coverage-tier: runtime
+    runs: macos
+    diag: bare
+    repo: darling-workspace
+  sha256sum: 9cecf3c9ae1c39d51c313fc4a6fd8b148f2b226597030039930ec476b168d3d8
