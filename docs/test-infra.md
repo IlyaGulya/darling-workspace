@@ -1,19 +1,21 @@
 # Darling test infrastructure — design RFC
 
-Status: local productized foundation with three-tier CI definitions; publication
-and first remote matrix execution remain external rollout actions.
+Status: existing CTest/West architecture; residual native contract parity and
+coverage work is tracked by dar-759a. Hosted native matrix success is not
+established by the local infrastructure acceptance.
 Owner: ilyagulya.
 
 ## CI execution contract
 
 `.github/workflows/test-infra.yml` keeps privilege and trust boundaries explicit:
 
-- every pull request runs changed-only host tests on a hosted Linux runner;
-- pushes and manual trusted runs use the official GitHub-hosted `ubuntu-latest`
-  runner for the `smoke:true` guest slice;
-- nightly/manual runs execute the full rootless guest suite;
-- one `macos-14` job builds and installs the native testcase bundle, then
-  `macos-14`, `macos-15`, and `macos-26` run that identical artifact.
+- host tests run on pull requests, pushes, schedule, and the selected manual tier;
+- pull requests, pushes, and the selected manual tier run guest smoke on the
+  official GitHub-hosted `ubuntu-latest` runner;
+- the full rootless guest suite is a separately selected manual tier;
+- the manual `macos` tier builds an installed bundle on `macos-14`, then
+  configures consumption of that artifact on `macos-14`, `macos-15`, and
+  `macos-26`. This configuration is not proof of a successful hosted run.
 
 `ci/run-test-tier.sh` is the sole tier entrypoint. `ci/bootstrap-west.sh`
 materializes a clean checkout before Linux tiers. Hosted Linux jobs set
@@ -22,9 +24,171 @@ path depth, completes parents before descendants, and delegates independent
 projects within each level to West through one bounded worker pool. It prints
 the complete failing project logs. Setting `DARLING_WEST_UPDATE_JOBS=1` selects
 West's native sequential update path for debugging. Native macOS transport uses
-the generated `compat-install-manifest.tsv`; `ci/run-macos-installed-tests.sh`
-executes every installed testcase and validates its exact marker. Docker is
-not part of the guest execution contract.
+the generated three-column `compat-install-manifest.tsv`;
+`ci/run-macos-installed-tests.sh` currently checks zero exit plus a literal
+substring marker. It does not preserve the complete CTest execution contract.
+The raw CI artifact transfer loses executable permissions (dar-759a.2).
+Docker is not part of the guest execution contract.
+
+## Native convergence contract and inventory (2026-09-08)
+
+Owner: dar-759a.1. This extends the implemented work in dar-test-infra-sp5.7,
+dar-test-infra-sp5.10/.11, dar-r7z7 and dar-zhlt; it does not replace it.
+The following contract is the acceptance target for dar-759a.3–.8, not a claim
+that all transports already implement it.
+
+### Inventory boundary and evidence
+
+The audit normalized every concrete `patches/*/patches.yml` with the production
+`test_manifest.load_test_profile`, resolving repository names through West.
+It counts each file's entries independently, not inherited/composed runtime
+stacks. A binding is a patch-to-test entry, not a unique executable or a PASS.
+
+| Declared metadata scope | Count |
+| --- | ---: |
+| Profiles: arch, homebrew, perf, wget-residual | 4 |
+| Patch entries | 113 |
+| Test bindings | 179 |
+| Host bindings | 93 |
+| Darling/runtime bindings | 86 |
+| Native macOS metadata bindings | 0 |
+| Patch entries with no tests, each declaring an exception | 8 |
+
+A fresh configure and `ctest --show-only=json-v1` discovered 18 default workspace
+testkit entries: 3 host, 14 Darling and 1 macOS. Only
+`getattrlist_name_objtype_guest` has both Darling and macOS registrations.
+Thirteen metadata bindings share an exact source path with a workspace CTest
+case; this identifies overlap, not proof that their arguments/oracles are
+duplicates. Source-repository CTest suites and disabled E-UNION host targets
+remain separate scopes; this is not a census of every upstream test.
+
+The collector `scripts/audit-test-registration.py` and reviewed applicability
+decisions `audits/native-test-applicability.json` are versioned in this
+workspace. The latter is audit policy, not a second runtime test registry.
+Reproduce from a configured West checkout with the pinned tool environment:
+
+```sh
+mise exec -- uv run --no-project --with west==1.5.0 python -B \
+  scripts/audit-test-registration.py /tmp/darling-native-inventory
+```
+
+The collector configures testkit for discovery only, does not build product
+targets or execute tests, and fails if a runtime binding has no reviewed
+applicability policy. Generated `configure.log`, `ctest.json` and
+`inventory.json` stay outside version control. The snapshot records all
+bindings, owners, source hashes, normalized proof/resources, applicability
+and explicit unresolved prerequisites. This audit's captured output is in
+`~/work/darling-debug/dar-759a-inventory-OIHskT/reproduced/`.
+Eight script references are absent from the live source trees; seven exist in
+their declared source commits, and the remaining coalescing script exists in a
+later declared profile commit. Live-tree absence is not evidence of missing
+materialized-profile coverage. No guest/native case or source-profile runtime
+was executed by this inventory.
+
+### Authority, identity and selection
+
+- Keep fixture sources and source-owned CMake/CTest registrations colocated
+  with their owning project. Do not move all suites into workspace testkit.
+- CTest/source registration defines the scenario, arguments, environment,
+  resources, working directory, deadline and verdict. Patch metadata binds
+  that case to patch-specific runtime prerequisites, diagnostics and RED proof.
+  Preserve legitimate direct host/model/source/build runners.
+- Identify a case by project, source-suite scope and existing declared case
+  name; retain exact discovered CTest names as execution instances. For example,
+  workspace `testkit` case `getattrlist_name_objtype_guest` has the existing
+  `darling/...` and `macos/...` instances. Do not require invented `name:` labels,
+  globally unique third-party names, or mass renames.
+- Environment and reference/bad/fixed roles are execution dimensions. Compare
+  fixture/contract digests and deliberate scenario parameters; the same source
+  filename alone does not prove the same test. Shared cases may bind many patches.
+- Resolve existing scoped selectors to exact CTest instances before applying
+  target-environment selection. `--list` and execution must agree. An explicit
+  request with no applicable case must say why; it cannot establish coverage.
+  Merely changing `runs: guest` to `runs: macos` does not change a guest runner.
+- Local macOS and SSH are transports for the same native execution contract.
+  Use isolated owned work directories and bounded cleanup. A Linux-built binary
+  or successful shell transport is never a native Darwin reference.
+
+### Preserve the complete execution and verdict contract
+
+| Property | Darling CTest today | Local macOS CTest today | Installed native today |
+| --- | --- | --- | --- |
+| Arguments | forwarded by guest helper | direct target argv | omitted |
+| Working directory | host wrapper directory, not declared guest cwd | CTest directory | omitted |
+| Success `OK_MARKER` | exact output line | not enforced | substring |
+| Expected-failure oracle | existing wrapper | existing wrapper | omitted |
+| Deadline | CTest and guest-stage supervision | CTest | no per-case deadline |
+| Resources | guest setup/transport must be explicit | source/build setup | files installed, execution context not preserved |
+
+The residual implementation must preserve the same declared arguments,
+environment, resource semantics, cwd, deadline and verdict through packaging.
+Do not grow the three-column TSV loop into an independent test framework.
+Generate transport artifacts from the existing registration contract and reuse
+CTest and shared verdict helpers. Archive transport must preserve executable
+and non-executable resource modes through a tested round trip before the pilot.
+
+For a declared success marker, require successful execution and the exact
+literal output line on every path. For declared expected failure, preserve
+the explicit failure oracle and failure stage; unrelated upload, compile,
+bootstrap or runner errors do not prove a semantic RED. Treat timeout as a
+supervision outcome, not automatically as an expected incompatibility.
+
+Record separate semantic PASS/FAIL, infrastructure error, not-run and
+inapplicable-with-reason outcomes. Record normal exit versus signal termination;
+do not equate a raw process status with shell convention `128 + signal`.
+Reference, bad-runtime and fixed-runtime results remain separate records with
+full fixture/contract identity, canonical and deployed source SHAs, deployed
+artifact hashes, OS build, architecture/Rosetta, compiler/SDK and flags.
+No result from one role substitutes for another.
+
+### Native applicability and migration gates
+
+The reviewed runtime binding classifications (including source/prebuilt
+bindings separately) are:
+
+| Policy | Bindings |
+| --- | ---: |
+| Public semantic reference candidates | 19 |
+| Assertions require review before native registration | 9 |
+| ABI/version/limit setup requires review | 8 |
+| Split semantic workload from internal diagnostic gate | 5 |
+| Package/toolchain platform setup required | 4 |
+| Complete current verdict is Darling-internal | 41 |
+
+The 93 non-runtime proofs are not required to become native Darwin references.
+These are applicability decisions from source inspection, not native run
+verdicts. Internal classification applies to the complete current oracle, not
+to every public API used by its workload.
+
+Concrete migration blockers must not be hidden by adding `ENVS macos`:
+
+- `socket_siocgifconf_guest` pins an empty interface list.
+- `darwin_priority_guest` pins raw negative `EINVAL` through public APIs.
+- The shared spawn-CLOEXEC fixture requires preservation of FD1023 without an
+  explicit inherit action for that descriptor.
+- `getattrlist_shared_packer` treats creation-time attributes as unsupported;
+  bulk enumeration tests also pin incidental batch sizes.
+- A stale-wait test uses scheduling delays to assume an early wake. Preserve
+  the state-transition oracle, not a native latency guarantee.
+- Raw psynch/ulock/cancellation entrypoints, the private `___bzero` return ABI
+  and descriptor-limit boundaries require explicit target/applicability review.
+
+Keep those decisions with the owning patch/Bead and dar-759a.6. Do not weaken
+assertions just to obtain a shared GREEN. Retain internal RPC/fault/trace, DCC,
+overlay and prefix-lifecycle gates on Darling; expose a separate semantic
+reference only when the workload has a meaningful public contract.
+
+The pilot (dar-759a.5) must establish native reference plus compatible
+bad-runtime RED and fixed-runtime GREEN through supported runners. Subsequent
+cohorts cover public API cases, mixed diagnostic workloads, reviewed assertions
+and ABI targets, then setup-dependent package scenarios. Each case cuts over
+completely before its obsolete duplicate wrapper is removed. Workspace-only
+registration changes do not rewrite canonical source commits; source fixture
+changes require normal fix-branch/export SHA and checksum refresh.
+
+Publication checks remain tied to the owning patch's semantic proof and review,
+not an unrelated blanket wget gate. Existing architecture/materialization
+blockers remain intact.
 
 ## 2026-07-08 Audit Refresh
 

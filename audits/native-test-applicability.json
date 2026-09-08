@@ -1,0 +1,117 @@
+{
+  "qualification": "Audit recommendations from source inspection, not runtime PASS claims or a new test registry. Prebuilt fixtures inherit the policy of their corpus fixture; current shared sources remain separate patch bindings.",
+  "groups": [
+    {
+      "policy": "native_reference",
+      "names": [
+        "select_fdset_guest",
+        "fork_checkin_signal_storm_guest",
+        "sigexc_sa_restart_guest",
+        "sigexc_default_resend_self_guest",
+        "vchroot_pathnull_guard_guest",
+        "abort_with_payload_no_group_broadcast_guest",
+        "getattrlist_name_objtype_guest",
+        "pthread_cancel_read_guest",
+        "psynch_kernel_return_contract",
+        "chown_ownership_guest",
+        "j7e7_postfork_stdin_guest",
+        "posix_spawn_failure_ownership_guest"
+      ],
+      "reason": "Public Darwin/POSIX observable behavior; preserve target API availability, ordinary-user setup and backend-neutral assertions. Native execution is required before claiming reference evidence."
+    },
+    {
+      "policy": "assertion_review_before_native",
+      "names": [
+        "getattrlistbulk_guest",
+        "wait_timer_stale_guest",
+        "darwin_priority_guest",
+        "socket_siocgifconf_guest",
+        "getattrlist_shared_packer",
+        "posix_spawn_cloexec_default_guest",
+        "rootless_socket_owner_exec_guest"
+      ],
+      "reason": "Current assertions include implementation limitations, incidental batching/timing or unrequested FD1023 preservation. Resolve/split the oracle before native registration; do not weaken assertions just to obtain a green result."
+    },
+    {
+      "policy": "abi_target_review_before_native",
+      "names": [
+        "psynch_cvwait_balanced_guest",
+        "psynch_return_contract_guest",
+        "ulock_eintr_retry_guest",
+        "bzero_return_register_guest",
+        "fd_guard_ebadf_guest"
+      ],
+      "reason": "Declare applicable OS/SDK/architecture/private ABI or descriptor-limit setup; native expected result is not established by this audit."
+    },
+    {
+      "policy": "split_semantic_reference_and_internal_gate",
+      "names": [
+        "semaphore_rpc_trace_guest",
+        "pthread_cancellation_rpc_trace_guest",
+        "shmem_ring_mach_ops_guest",
+        "a0_zero_hang_synth_gate",
+        "shellspawn_signal_exit_status_guest"
+      ],
+      "reason": "Retain Darling-specific trace/resource/transport assertions; reference only the semantic workload. Raw pthread ABI needs target review; shell signal status requires explicit normalization."
+    },
+    {
+      "policy": "platform_setup_before_native",
+      "names": [
+        "a0_gate_full_strict",
+        "rootless_guest_toolchain_compile_execute",
+        "command_line_tools_installer_guest",
+        "rootless_homebrew_source_install"
+      ],
+      "reason": "Reference common package/compiler workloads with declared isolated setup; Darling bootstrap/provisioning/lifecycle remains platform-specific."
+    },
+    {
+      "policy": "darling_internal_gate",
+      "names": [
+        "microthread_resume_before_suspend_guest",
+        "fork_checkin_drop_timeout_guest",
+        "fork_wait_timeout_parent_guest",
+        "fork_checkin_direct_sticky_oracle",
+        "psynch_cvsignal_args_guest",
+        "processcall_uidgid_fault_guest",
+        "ingest_process_register_fault_guest",
+        "pushreply_bad_pointer_guest",
+        "fatal_exception_unreplying_handler_guest",
+        "wait_timer_assert_prepare_guest",
+        "checkin_exec_rwlock_runtime_trace",
+        "checkin_retask_current_thread_runtime_trace",
+        "pot_lifetime_binding_runtime",
+        "dserver_test_diagnostics_trace",
+        "eunion_exec_path_trace_guest",
+        "eunion_path_direnum_guest",
+        "eunion_activation_guest_smoke",
+        "eunion_mutation_guest",
+        "eunion_metadata_guest",
+        "eunion_relative_at_guest",
+        "eunion_nested_bind_guest",
+        "eunion_xattr_policy_guest",
+        "eunion_special_create_guest",
+        "eunion_path_errors_guest",
+        "eunion_mkdir_opaque_guest",
+        "eunion_af_unix_path_length_guest",
+        "rootless_no_mount_guest",
+        "rootless_bootstrap_component",
+        "rootless_prefix_initialization_guest",
+        "rootless_prebuilt_macho_regression",
+        "rootless_shellspawn_readiness",
+        "rootless_shutdown_session",
+        "rootless_shellspawn_fast_direct_exit",
+        "mldr_compact_fd_band_guest",
+        "dcc2_valid_cache_guest",
+        "dcc2_missing_path_hard_fail_guest",
+        "dcc2_stale_cache_hard_fail_guest",
+        "dcc2_stale_cache_soft_fallback_guest",
+        "rootless_shutdown_active_guest",
+        "rootless_concurrent_shutdown_guest"
+      ],
+      "reason": "Complete current verdict requires Darling-specific fault injection, RPC/trace/FD/cache/overlay/launchd/server lifecycle policy. No native equivalent required for this internal gate; public subcases may be extracted separately."
+    }
+  ],
+  "aliases": {
+    "abort_with_payload_no_group_broadcast": "abort_with_payload_no_group_broadcast_guest"
+  }
+}
