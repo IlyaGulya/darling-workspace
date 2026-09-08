@@ -117,9 +117,19 @@ dump_file_sha() {
 
 dump_runtime_file_state() {
 	dump_file_sha launcher "$launcher"
+	dump_file_sha fixture "$source"
+	dump_file_sha prefix_dyld "$prefix/usr/lib/dyld"
+	dump_file_sha prefix_nested_dyld "$prefix/libexec/darling/usr/lib/dyld"
 	dump_file_sha prefix_libsystem_kernel "$prefix/usr/lib/system/libsystem_kernel.dylib"
 	dump_file_sha prefix_nested_libsystem_kernel \
 		"$prefix/libexec/darling/usr/lib/system/libsystem_kernel.dylib"
+	if [[ -n "${WEST_RUNTIME_SOURCE_ROOT:-}" ]]; then
+		local module
+		for module in . src/external/xnu src/external/dyld src/external/darlingserver; do
+			git -C "$WEST_RUNTIME_SOURCE_ROOT/$module" rev-parse HEAD |
+				sed "s#^#WEST_RUNTIME_SOURCE_COMMIT $module #" >&2
+		done
+	fi
 }
 
 dump_boot_trace() {
@@ -161,6 +171,7 @@ run_guest_stage() {
 		>>"$output" 2>&1
 }
 
+dump_runtime_file_state
 set +e
 run_guest_stage upload "umask 077; printf '%s' $source_literal > $guest_src_literal"
 rc=$?
@@ -180,7 +191,6 @@ fi
 cat "$output"
 
 if [[ "$rc" -ne 0 ]]; then
-	dump_runtime_file_state
 	dump_boot_trace
 fi
 

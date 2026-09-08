@@ -314,6 +314,21 @@ if(EXISTS "${_posix_spawn_failure_guest}")
     "DARLING_GUEST_CFLAGS=-isysroot /Library/Developer/CommandLineTools/SDKs/MacOSX.sdk ${_posix_spawn_guest_flags}")
 endif()
 
+set(_sigpending_mask_guest "${_workspace_root}/tests/sigpending_mask_guest.c")
+if(EXISTS "${_sigpending_mask_guest}")
+  add_compat_test(
+    NAME       sigpending_mask_copyout
+    SOURCE     "${_sigpending_mask_guest}"
+    ENVS       darling macos
+    BEAD       dar-759a.5.3
+    SUBMODULES xnu
+    RUNTIME_PROFILE spawn-failure-ownership
+    INSTALL
+    TIMEOUT    30
+    OK_MARKER  "SIGPENDING_MASK_COPYOUT_OK"
+  )
+endif()
+
 set(_darwin_priority_guest "${_workspace_root}/tests/darwin_priority_guest.c")
 if(EXISTS "${_darwin_priority_guest}")
   add_compat_test(
