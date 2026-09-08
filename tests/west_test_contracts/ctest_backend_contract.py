@@ -223,4 +223,71 @@ set_tests_properties(host/skip PROPERTIES LABELS "env:host;scenario:skip" SKIP_R
     assert {case.attrib["name"] for case in cases} == {"host/skip"}
     assert cases[0].find("skipped") is not None
 
+    # An unavailable runtime must be reported, not silently look inapplicable.
+    profile.write_text(json.dumps({"patches": [{
+        **shared_patch, "tests": [{"ctest-name": "host/scenario", "runs": "host",
+                                  "blocked": True, "note": "runtime ownership unresolved"}],
+    }]}))
+    output = west_test("--profile", "selection", "--env", "host", "--list", succeeds=False)
+    assert "host/scenario BLOCKED:" in output and "runtime ownership unresolved" in output, output
+    assert not executed.exists(), "blocked registration was executed"
+
+# Execute the source-driven CTest transport with a host shell adapter. This
+# proves runner phase classification, not Darwin or Darling compatibility.
+from west_commands.test import DarlingTest
+from west_commands.test_runtime_proof import ProofObservation, RedOracle, RuntimeProofStateMachine
+from west_commands.test_manifest import _default_red_failure_phase
+
+with tempfile.TemporaryDirectory(prefix="ctest-runtime-phase-") as temp:
+    root = Path(temp)
+    prefix = root / "prefix"
+    (prefix / "private/var/tmp").mkdir(parents=True)
+    launcher = root / "launcher"
+    launcher.write_text(
+        f"#!{sys.executable}\n"
+        "import os, subprocess, sys\n"
+        "assert sys.argv[1] == 'shell'\n"
+        "args = sys.argv[2:]\n"
+        "args[-1] = args[-1].replace('/private/var/tmp', os.environ['DPREFIX'] + '/private/var/tmp')\n"
+        "sys.exit(subprocess.call(args))\n"
+    )
+    launcher.chmod(0o755)
+    marker = "CTEST_RUNTIME_SEMANTIC_BROKEN"
+    sources = {
+        "semantic": f'#include <stdio.h>\nint main(void) {{ puts("{marker}"); return 1; }}\n',
+        "compile": f"#error {marker}\n",
+        "timeout": f'#include <stdio.h>\n#include <unistd.h>\nint main(void) {{ puts("{marker}"); fflush(stdout); sleep(30); }}\n',
+    }
+    cmake = ["cmake_minimum_required(VERSION 3.16)", "project(runtime_phases NONE)", "enable_testing()"]
+    for name, source in sources.items():
+        (root / f"{name}.c").write_text(source)
+        cmake.append(
+            f'add_test(NAME {name} COMMAND "{ROOT}/testkit/scripts/run-darling-c-test.sh" '
+            f'--name {name} --source "{root}/{name}.c" --launcher "{launcher}" --cc cc --cflags "")'
+        )
+    (root / "CMakeLists.txt").write_text("\n".join(cmake) + "\n")
+    build = root / "build"
+    subprocess.run(["cmake", "-S", str(root), "-B", str(build), "-G", "Ninja"],
+                   check=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+    runner = DarlingTest()
+    runner.topdir = str(root)
+    runner._bundle_root = root
+    environment = dict(os.environ, DPREFIX=str(prefix), DARLING_GUEST_TIMEOUT_SECONDS="1")
+    declaration = {"ctest-name": "semantic", "red-proof": {"mode": "guest-runtime-deploy",
+                    "expect-output-contains": [marker]}}
+    _default_red_failure_phase(declaration)
+    for name, expected_phase in (("semantic", "run"), ("compile", "compile"), ("timeout", "timeout")):
+        invocation = {"name": name, "ctest_name": name, "ctest_build": build,
+                      "cwd": root, "diag": "bare", "timeout_seconds": 15}
+        observed = runner._run_invocation_captured(invocation, env=environment)
+        assert observed.returncode != 0 and marker in observed.output, observed
+        assert observed.failure_phase == expected_phase, observed
+        machine = RuntimeProofStateMachine(
+            name=name, oracle=RedOracle.from_manifest(declaration["red-proof"]),
+            error=lambda _message: None,
+        )
+        accepted = machine.validate_red(ProofObservation(
+            observed.returncode, observed.output, observed.failure_phase))
+        assert accepted == (name == "semantic"), (name, observed)
+
 print("PASS ctest-discovery-contract")

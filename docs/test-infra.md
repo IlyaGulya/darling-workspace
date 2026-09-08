@@ -267,6 +267,65 @@ full fixture/contract identity, canonical and deployed source SHAs, deployed
 artifact hashes, OS build, architecture/Rosetta, compiler/SDK and flags.
 No result from one role substitutes for another.
 
+### posix_spawn pilot status (dar-759a.5)
+
+`tests/posix_spawn_failure_guest.c` now has one source-owned CTest definition,
+`posix_spawn_failure_ownership`, with Darling and installed macOS variants.
+Patch metadata binds these existing names instead of duplicating the guest-C
+invocation. The dedicated runtime provider selects `wget-residual`, not the
+unfixed homebrew profile. Both dyld and libsystem_kernel are runtime artifacts
+because dyld embeds the syscall emulation path.
+
+Native local and SSH references passed on macOS 26.5.1 (25F80), arm64, SDK
+26.5, AppleClang 21.0.0, using the identical bundle. The fixture checks:
+
+- failed ENOENT spawn exposes no waitable child or SIGCHLD;
+- 64 fast successful children retain status and notification;
+- 64 successful children can be reaped by an application SIGCHLD handler;
+- a pipe handshake proves spawn returns before the child is released;
+- an unrelated successful child's pending SIGCHLD survives a failed spawn.
+
+Do not interpret `waitpid(..., WNOHANG) == 0` immediately after failed spawn as
+a leak: the real Mac exposed this transient private-cleanup state. The fixture
+uses blocking waitpid to ask whether any child is actually returned to the
+application; CTest bounds hangs without counting them as semantic RED.
+
+```sh
+ci/run-test-tier.sh macos-package /absolute/path/to/bundle
+ci/run-test-tier.sh macos-installed /absolute/path/to/bundle \
+  -R '^macos/posix_spawn_failure_ownership$'
+ci/run-test-tier.sh macos-ssh HOST /absolute/path/to/bundle \
+  -R '^macos/posix_spawn_failure_ownership$'
+DARLING_ROOTLESS=1 DARLING_NOOVERLAYFS=1 DARLING_EUNION=1 \
+  mise exec -- west test --profile wget-residual \
+  --patch xnu/posix-spawn-failure-ownership.patch --env darling \
+  --prefix /absolute/path/to/prefix --prove-red
+```
+
+Run the prefix-backed command through `scripts/west-job.sh` in agent transport.
+The attempted proof stopped before deployment: homebrew immutable-ref fetch
+failed with early EOF; an independent `west patch verify --profile
+wget-residual` also rejects the absent typed lock-first mapping. This is
+infrastructure blockage, **not RED**. No current pilot Darling GREEN is claimed.
+The CTest bridge now propagates guest upload/compile/run/timeout phases, so even
+compiler diagnostics containing the semantic marker cannot satisfy runtime RED.
+
+The Darling metadata binding is explicitly `blocked: true`; remove that flag
+only after the source closure is executable, then run the command above.
+
+Ownership review confirmed that Linux
+[`de_thread()` resets the exit signal before close-on-exec](https://github.com/torvalds/linux/blob/v6.8/fs/exec.c#L1170-L1353).
+It also found an unresolved static-analysis risk:
+[`kernel_wait4()` resolves a numeric PID again](https://github.com/torvalds/linux/blob/v6.8/kernel/exit.c#L1756-L1792)
+after an application handler may have reaped the successful child. PID reuse by
+a concurrent private spawn could target the wrong child. This schedule has not
+been reproduced; the repeated native checks do not prove its absence.
+Publication remains blocked on ownership review and supported runtime proof,
+not on unrelated complete wget acceptance. The canonical XNU patch is unchanged.
+
+Evidence: `~/work/darling-debug/dar-759a.5-pilot/`, including native reports,
+the installed archive, runtime preflight logs and exact source/artifact identity.
+
 ### Native applicability and migration gates
 
 The reviewed runtime binding classifications (including source/prebuilt

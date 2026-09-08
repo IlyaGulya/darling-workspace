@@ -1112,10 +1112,16 @@
       "reason": "Complete current verdict requires Darling-specific fault injection, RPC/trace/FD/cache/overlay/launchd/server lifecycle policy. No native equivalent required for this internal gate; public subcases may be extracted separately."
     },
     "wget-residual:xnu/posix-spawn-failure-ownership.patch:1": {
-      "name": "posix_spawn_failure_ownership_guest",
-      "identity_sha256": "7592955bd900b8127d16784e42e522019be47f85c343b5c41fecad876403fbf5",
+      "name": "darling/posix_spawn_failure_ownership",
+      "identity_sha256": "bad10ec0344ea304202b4b44dcd97b6eb479fad3cc328aa4e11b77c68a48ceb9",
       "policy": "native_reference",
       "reason": "Public Darwin/POSIX observable behavior; preserve target API availability, ordinary-user setup and backend-neutral assertions. Native execution is required before claiming reference evidence."
+    },
+    "wget-residual:xnu/posix-spawn-failure-ownership.patch:2": {
+      "name": "macos/posix_spawn_failure_ownership",
+      "identity_sha256": "49082d0c01e7ca0383a8ec211dca0b62055accf01cf37ab2b1693da041893958",
+      "policy": "native_reference",
+      "reason": "The same CTest fixture checks failed-spawn privacy, successful-child ownership and pending SIGCHLD on native macOS. Native PASS is reference evidence, not a Darling RED/GREEN result."
     }
   }
 }

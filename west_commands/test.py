@@ -716,6 +716,7 @@ class DarlingTest(ProfileOperationsMixin, BootstrapRuntimeProfileMixin, WestComm
                 "ctest_build": selection.get("build"),
                 "ctest_index": selection.get("index"),
                 "ctest_directory": selection.get("directory"),
+                "ctest_env": test.get("env"),
                 "ctest_source_override": test.get("ctest-source-override"),
                 "requires_resources": list(test.get("requires", [])),
                 "requires_env": list(test.get("requires-env", [])),
@@ -2435,10 +2436,10 @@ class DarlingTest(ProfileOperationsMixin, BootstrapRuntimeProfileMixin, WestComm
             if (
                 result.returncode
                 and derived_phase is not None
-                and result.failure_phase in {None, "script"}
+                and result.failure_phase in {None, "script", "ctest"}
             ):
                 result.failure_phase = derived_phase
-            if result.returncode and result.failure_phase in {None, "script"}:
+            if result.returncode and result.failure_phase in {None, "script", "ctest"}:
                 bundle = self._latest_debug_bundle(invocation, since=started_at)
                 if bundle is not None:
                     bundle_phase = failure_phase_from_debug_bundle(
@@ -4396,12 +4397,19 @@ class DarlingTest(ProfileOperationsMixin, BootstrapRuntimeProfileMixin, WestComm
             not invocation.get("guest_c_fixture")
             and not invocation.get("guest_command_fixture")
             and not invocation.get("guest_argv_fixture")
+            and not invocation.get("ctest_label")
+            and not invocation.get("ctest_name")
             and invocation.get("runner") not in {"script", "guest-runtime-script"}
         ):
             self.die(
                 f"{patch['path']}: guest-runtime-deploy requires guest-c-fixture, "
-                "guest-command-fixture, guest-argv-fixture, script, or guest-runtime-script"
+                "guest-command-fixture, guest-argv-fixture, CTest, script, or guest-runtime-script"
             )
+        if invocation.get("ctest_label") or invocation.get("ctest_name"):
+            if invocation.get("ctest_env") != "darling":
+                self.die(f"{patch['path']}: runtime CTest proof requires a Darling registration")
+            if not {"darling-prefix", "darling-eunion-prefix"} & set(invocation.get("requires_resources", [])):
+                self.die(f"{patch['path']}: runtime CTest proof requires darling-prefix")
         if not self._guest_runtime_red_has_positive_reason(proof):
             self.die(
                 f"{patch['path']}: {invocation['name']} guest-runtime-deploy "

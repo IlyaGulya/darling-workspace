@@ -287,6 +287,33 @@ else()
     "workspace missing ${_getattrlist_name_objtype_guest}; skipping dar-e1j")
 endif()
 
+# dar-3jw9 — one source and installed registration for the native reference
+# and the Darling posix_spawn failure-ownership oracle.
+set(_posix_spawn_failure_guest
+  "${_workspace_root}/tests/posix_spawn_failure_guest.c")
+if(EXISTS "${_posix_spawn_failure_guest}")
+  add_compat_test(
+    NAME       posix_spawn_failure_ownership
+    SOURCE     "${_posix_spawn_failure_guest}"
+    ENVS       darling macos
+    BEAD       dar-3jw9
+    SUBMODULES xnu
+    RUNTIME_PROFILE spawn-failure-ownership
+    INSTALL
+    TIMEOUT    90
+    OK_MARKER  "POSIX_SPAWN_FAILURE_OWNERSHIP_OK"
+  )
+  set(_posix_spawn_flags -std=gnu11 -D_DARWIN_C_SOURCE -Wall -Wextra -Werror)
+  if(TARGET compat.posix_spawn_failure_ownership)
+    target_compile_options(compat.posix_spawn_failure_ownership PRIVATE
+      ${_posix_spawn_flags})
+  endif()
+  string(JOIN " " _posix_spawn_guest_flags ${_posix_spawn_flags})
+  set_property(TEST darling/posix_spawn_failure_ownership APPEND PROPERTY
+    ENVIRONMENT
+    "DARLING_GUEST_CFLAGS=-isysroot /Library/Developer/CommandLineTools/SDKs/MacOSX.sdk ${_posix_spawn_guest_flags}")
+endif()
+
 set(_darwin_priority_guest "${_workspace_root}/tests/darwin_priority_guest.c")
 if(EXISTS "${_darwin_priority_guest}")
   add_compat_test(

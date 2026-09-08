@@ -155,6 +155,7 @@ trap cleanup EXIT
 run_guest_stage() {
 	local stage="$1"
 	local script="$2"
+	guest_stage="$stage"
 	printf 'WEST_GUEST_STAGE=%s\n' "$stage" >>"$output"
 	darling_guest_shell "$launcher" "$prefix" "$timeout_seconds" "$script" \
 		>>"$output" 2>&1
@@ -184,7 +185,15 @@ if [[ "$rc" -ne 0 ]]; then
 fi
 
 if [ "$rc" -eq 0 ] && [ -n "$ok_marker" ]; then
-	grep -F -x -q -- "$ok_marker" "$output"
+	if ! grep -F -x -q -- "$ok_marker" "$output"; then
+		rc=1
+	fi
+fi
+if [ "$rc" -ne 0 ]; then
+	if [ "$rc" -eq 124 ]; then
+		guest_stage=timeout
+	fi
+	printf 'WEST_TEST_FAILURE_PHASE=%s\n' "$guest_stage" >&2
 fi
 
 exit "$rc"

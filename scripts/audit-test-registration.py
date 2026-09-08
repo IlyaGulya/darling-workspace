@@ -18,6 +18,7 @@ workspace = args.workspace.resolve()
 output = args.output.resolve()
 sys.path.insert(0, str(workspace / "west_commands"))
 from test_manifest import load_test_profile
+from test_ctest import is_ctest_binding
 
 project_paths = dict(line.split("\t", 1) for line in subprocess.check_output(
     ["west", "list", "-f", "{name}\t{path}"], cwd=workspace, text=True).splitlines())
@@ -47,7 +48,7 @@ for manifest in sorted((workspace / "patches").glob("*/patches.yml")):
             repo_root = workspace if repo in {"darling-workspace", "manifest"} else workspace.parent / project_paths.get(repo, repo)
             script = test.get("script")
             asset = repo_root / script if script else None
-            runner = test.get("runner") or ("ctest" if test.get("ctest-label") else "command" if test.get("command") else "script" if script else "unspecified")
+            runner = test.get("runner") or ("ctest" if is_ctest_binding(test) else "command" if test.get("command") else "script" if script else "unspecified")
             row = {**owner, "binding_id": f"{profile}:{patch['path']}:{ordinal}",
                    "name": test.get("name"), "runner": runner,
                    "environment": test.get("env", "host"),
@@ -58,7 +59,7 @@ for manifest in sorted((workspace / "patches").glob("*/patches.yml")):
                    "asset_path": str(asset) if asset else None,
                    "asset_exists": asset.exists() if asset else None,
                    "asset_sha256": identity(asset) if asset else None,
-                   "ctest_selector": test.get("ctest-label"),
+                   "ctest_selector": test.get("ctest-label") or test.get("ctest-name"),
                    "requirements": test.get("requires", []),
                    "normalized_test": test}
             bindings.append(row)

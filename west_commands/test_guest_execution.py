@@ -17,13 +17,16 @@ except ImportError:  # Loaded as a West extension module, not a package.
 
 
 def failure_phase_from_output(output: str) -> str | None:
-    """Classify launcher readiness failures before a guest script can start."""
+    """Prefer readiness failures, then source-driven guest runner stages."""
 
     if re.search(
         r"(?:Rootless shellspawn did not become ready|E-UNION runtime readiness)",
         output,
     ):
         return "bootstrap"
+    stages = re.findall(r"^WEST_TEST_FAILURE_PHASE=(upload|compile|run|timeout)$", output, re.MULTILINE)
+    if stages:
+        return stages[-1]
     return None
 
 
