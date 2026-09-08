@@ -98,6 +98,7 @@ if DARLING_HOST_BOOT_TRACE="$tmp/rootless-boot.trace" DPREFIX="$tmp/prefix" \
 	exit 1
 fi
 grep -F -x -q WEST_GUEST_STAGE=compile "$tmp/compile-fail.out"
+grep -F -x -q WEST_TEST_FAILURE_PHASE=compile "$tmp/compile-fail.out"
 grep -E -q '^ORACLE_RC=[1-9][0-9]*$' "$tmp/compile-fail.out"
 grep -F -q 'WEST_GUEST_FILE_SHA256 launcher ' "$tmp/compile-fail.out"
 grep -F -q 'WEST_GUEST_FILE_MISSING prefix_libsystem_kernel ' "$tmp/compile-fail.out"
@@ -126,6 +127,7 @@ if DARLING_GUEST_TIMEOUT_SECONDS=1 DPREFIX="$tmp/prefix" \
 	exit 1
 fi
 grep -F -x -q WEST_GUEST_STAGE=run "$tmp/timeout.out"
+grep -F -x -q WEST_TEST_FAILURE_PHASE=timeout "$tmp/timeout.out"
 grep -F -q 'WEST_GUEST_FILE_SHA256 launcher ' "$tmp/timeout.out"
 
 if DPREFIX="$tmp/prefix" "$repo/testkit/scripts/run-darling-c-test.sh" \
@@ -138,6 +140,7 @@ grep -F -x -q GUEST_C_EXACT_OK "$tmp/bad.out" || {
 	cat "$tmp/bad.out" >&2
 	exit 1
 }
+grep -F -x -q WEST_TEST_FAILURE_PHASE=run "$tmp/bad.out"
 
 if compgen -G "/tmp/${name}.*" >/dev/null; then
 	compgen -G "/tmp/${name}.*" >&2

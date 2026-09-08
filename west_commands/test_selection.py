@@ -11,10 +11,11 @@ from test_ctest import is_ctest_binding
 class MetadataSelection:
     """Selected tests plus patches that need a test/exception decision."""
 
-    def __init__(self, selected: list[tuple[dict, dict]], missing: list[dict], found_patch: bool):
+    def __init__(self, selected: list[tuple[dict, dict]], missing: list[dict], found_patch: bool, blocked: list[tuple[dict, dict]]):
         self.selected = selected
         self.missing = missing
         self.found_patch = found_patch
+        self.blocked = blocked
 
 
 def select_metadata_tests(
@@ -37,6 +38,7 @@ def select_metadata_tests(
 
     selected = []
     missing = []
+    blocked = []
     found_patch = False
     for patch in profile.get("patches", []):
         if patch_path and patch["path"] != patch_path:
@@ -45,7 +47,7 @@ def select_metadata_tests(
         if bead and patch.get("bead") != bead:
             continue
         all_tests = [test for test in (patch.get("tests") or []) if not test.get("blocked")]
-        tests = all_tests
+        tests = patch.get("tests") or []
         if red_only:
             tests = [test for test in tests if test.get("red")]
         if env:
@@ -67,10 +69,11 @@ def select_metadata_tests(
                 if (defer_ctest and is_ctest_binding(test))
                 or any(matcher.search(item) for item in metadata_test_labels(patch, test, resolved_diag))
             ]
-        selected.extend((patch, test) for test in tests)
-        if not tests and not all_tests and not patch.get("test-exception"):
+        blocked.extend((patch, test) for test in tests if test.get("blocked"))
+        selected.extend((patch, test) for test in tests if not test.get("blocked"))
+        if not all_tests and not patch.get("test-exception"):
             missing.append(patch)
-    return MetadataSelection(selected, missing, found_patch)
+    return MetadataSelection(selected, missing, found_patch, blocked)
 
 
 def metadata_test_labels(
@@ -129,4 +132,10 @@ def select_metadata_tests_for_command(
     )
     if patch_path and not selection.found_patch:
         command.die(f"{profile}: patch not found or has no selected tests: {patch_path}")
+    for patch, test in selection.blocked:
+        if env and test.get("env") and test["env"] != env:
+            continue
+        identity = test.get("ctest-name") or test.get("name") or test.get("ctest-label")
+        reason = test.get("note") or patch.get("publication-blocker") or "explicitly blocked in metadata"
+        command.inf(f"{patch['path']}: {identity} BLOCKED: {reason}")
     return selection.selected, selection.missing

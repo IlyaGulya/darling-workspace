@@ -23,6 +23,7 @@ from patch_git import (
     git,
 )
 import test_manifest
+from test_ctest import is_ctest_binding
 import patch_stack_preflight
 import patch_stack_materialize
 import patch_stack_lock_first
@@ -665,7 +666,7 @@ class DarlingPatch(WestCommand):
             if not isinstance(test, dict):
                 errors.append(f"tests[{index}] must be a mapping")
                 continue
-            if not test.get("name"):
+            if not test.get("name") and not is_ctest_binding(test):
                 errors.append(f"tests[{index}] missing name")
             if not (
                 test.get("command")
@@ -684,7 +685,7 @@ class DarlingPatch(WestCommand):
                 errors.append(
                     f"tests[{index}] needs script, source-script, source-file, target, ctest-label, guest command, or command override"
                 )
-            runner = test.get("runner")
+            runner = test.get("runner") or ("ctest" if is_ctest_binding(test) else None)
             if runner and runner not in {
                 "script",
                 "guest-runtime-script",
@@ -1310,10 +1311,18 @@ class DarlingPatch(WestCommand):
                         "guest-argv-fixture",
                         "guest-runtime-script",
                         "script",
+                        "ctest",
                     }:
                             errors.append(
-                                f"tests[{index}] red-proof guest-runtime-deploy requires runner: guest-c-fixture, guest-command-fixture, guest-argv-fixture, guest-runtime-script, or script"
+                                f"tests[{index}] red-proof guest-runtime-deploy requires runner: guest-c-fixture, guest-command-fixture, guest-argv-fixture, ctest, guest-runtime-script, or script"
                             )
+                    elif runner == "ctest" and (
+                        test.get("env") != "darling"
+                        or not {"darling-prefix", "darling-eunion-prefix"} & set(required_resources)
+                    ):
+                        errors.append(
+                            f"tests[{index}] runtime CTest proof requires env: darling and darling-prefix"
+                        )
                     elif runner == "script" and not (
                         {"darling-prefix", "darling-eunion-prefix"} & set(required_resources)
                     ):
@@ -1666,7 +1675,14 @@ class DarlingPatch(WestCommand):
             test_name = str(test.get("name", "")).lower()
             patch_path = str(patch.get("path", "")).lower()
             dyld_is_subject = "dyld" in test_name or "dyld" in patch_path
-            if not dyld_is_subject:
+            # dyld embeds libsystem_kernel's emulation path. Runtime syscall
+            # proofs must deploy both, but a dyld build failure is not RED.
+            dyld_contains_kernel = (
+                patch.get("module") == "darling/src/external/xnu"
+                and builds_system_kernel
+                and proof.get("expect-failure-phase") in {"run", "ctest"}
+            )
+            if not dyld_is_subject and not dyld_contains_kernel:
                 for artifact_index, artifact in enumerate(artifacts):
                     if not isinstance(artifact, dict):
                         continue

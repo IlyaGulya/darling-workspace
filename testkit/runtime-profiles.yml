@@ -5,6 +5,30 @@ runtime-profiles:
   # a different runtime variant. west materializes the selected source profile
   # in disposable worktrees, builds these targets, deploys them under the
   # prefix lock, runs CTest, then restores the prefix byte-for-byte.
+  spawn-failure-ownership:
+    # Requires the reviewed wget-residual closure; never substitute homebrew
+    # without this patch or the developer's diagnostic source checkout.
+    source-profile: wget-residual
+    source-module: darling/src/external/xnu
+    guest-toolchain: darling-command-line-tools
+    source-modules:
+    - darling
+    - darling/src/external/darlingserver
+    - darling/src/external/xnu
+    - darling/src/external/dyld
+    cmake-defines:
+      DARLING_EUNION: true
+    launcher-env:
+      DARLING_ROOTLESS: '1'
+      DARLING_NOOVERLAYFS: '1'
+      DARLING_EUNION: '1'
+    runtime-artifacts:
+    - module: darling/src/external/xnu
+      build-targets: [system_kernel]
+      deploy: [usr/lib/system/libsystem_kernel.dylib]
+    - module: darling/src/external/dyld
+      build-targets: [dyld]
+      deploy: [usr/lib/dyld]
   homebrew:
     source-profile: homebrew
     source-module: darling/src/external/xnu

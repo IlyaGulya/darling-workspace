@@ -224,6 +224,8 @@ def _default_red_failure_phase(test: dict[str, Any]) -> None:
         )
         if runner in {"guest-c-fixture", "guest-command-fixture"}:
             proof["expect-failure-phase"] = "run"
+        elif runner == "ctest" or ((test.get("ctest-label") or test.get("ctest-name")) and not runner):
+            proof["expect-failure-phase"] = "run"
         else:
             proof["expect-failure-phase"] = "script"
         return

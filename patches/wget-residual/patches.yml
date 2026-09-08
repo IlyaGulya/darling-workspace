@@ -241,23 +241,44 @@ patches:
   source-commit: 1164c849ef85364845476c854a7a0d9a14cf0058
   bead: dar-3jw9
   publication-status: blocked
-  publication-blocker: Canonical combined-runtime materialization and complete stock wget acceptance remain under dar-gwn.7.
+  publication-blocker: dar-759a.5 must complete supported native/current-minus/fixed runtime proof; dar-759a.5.1 owns private-child PID-reuse review and dar-759a.5.2 owns canonical runtime materialization. Full wget acceptance is not this patch's gate.
   tests:
-  - name: posix_spawn_failure_ownership_guest
+  - ctest-name: darling/posix_spawn_failure_ownership
     kind: guest
     coverage-tier: runtime
     runs: guest
     diag: guarded
-    runner: guest-c-fixture
     repo: darling-workspace
-    script: tests/posix_spawn_failure_guest.c
-    ok-marker: POSIX_SPAWN_FAILURE_OWNERSHIP_OK
+    red: true
+    blocked: true
+    red-proof:
+      mode: guest-runtime-deploy
+      bad-profile: current-minus-patch
+      expect-output-contains:
+      - POSIX_SPAWN_FAILURE_OWNERSHIP_BROKEN
+      cmake-defines:
+        DARLING_EUNION: true
+      source-modules:
+      - darling
+      - darling/src/external/darlingserver
+      - darling/src/external/dyld
+      runtime-artifacts:
+      - module: darling/src/external/xnu
+        build-targets: [system_kernel]
+        deploy: [usr/lib/system/libsystem_kernel.dylib]
+      - module: darling/src/external/dyld
+        build-targets: [dyld]
+        deploy: [usr/lib/dyld]
     timeout-seconds: 90
     requires: [darling-prefix]
-    compile-flags: [-std=gnu11, -D_DARWIN_C_SOURCE, -Wall, -Wextra, -Werror]
     env-vars:
       DARLING_ROOTLESS: '1'
       DARLING_NOOVERLAYFS: '1'
       DARLING_EUNION: '1'
-    note: Failed ENOENT spawn must leave neither a waitable child nor SIGCHLD; successful spawn must retain both. Identical fixture passes on native macOS. Manual deployed RED/GREEN evidence is recorded in dar-3jw9; this metadata is a GREEN gate, not an automated bad-runtime proof.
+    note: One source-owned CTest fixture is shared with macOS. Runtime proof is blocked until canonical wget-residual current-minus materialization is available; infrastructure failures are not semantic RED.
+  - ctest-name: macos/posix_spawn_failure_ownership
+    coverage-tier: runtime
+    runs: macos
+    diag: bare
+    repo: darling-workspace
   sha256sum: 31302f56695f6654a3f50e758f50dd2a943eef7f27af5b8df3ca3e48332af6a8
