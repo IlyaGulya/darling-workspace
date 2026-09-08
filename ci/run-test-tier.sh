@@ -222,12 +222,23 @@ case "${1:-}" in
 		cmake --build "$build" --parallel
 		exec cmake --install "$build"
 		;;
+	macos-archive)
+		bundle="${2:?macos-archive requires an installed bundle}"
+		archive="${3:?macos-archive requires an output archive}"
+		exec tar -cf "$archive" -C "$bundle" .
+		;;
+	macos-extract)
+		archive="${2:?macos-extract requires an archive}"
+		destination="${3:?macos-extract requires a new destination directory}"
+		mkdir -- "$destination"
+		exec tar -xpf "$archive" --no-same-owner -C "$destination"
+		;;
 	macos-installed)
 		exec "$root/ci/run-macos-installed-tests.sh" \
 			"${2:?macos-installed requires an installed bundle}"
 		;;
 	*)
-		echo "usage: $0 host|guest-smoke|guest-macho-validation|guest-full|guest-toolchain|macos|macos-package|macos-installed" >&2
+		echo "usage: $0 host|guest-smoke|guest-macho-validation|guest-full|guest-toolchain|macos|macos-package|macos-archive|macos-extract|macos-installed" >&2
 		exit 2
 		;;
 esac

@@ -27,8 +27,27 @@ West's native sequential update path for debugging. Native macOS transport uses
 the generated three-column `compat-install-manifest.tsv`;
 `ci/run-macos-installed-tests.sh` currently checks zero exit plus a literal
 substring marker. It does not preserve the complete CTest execution contract.
-The raw CI artifact transfer loses executable permissions (dar-759a.2).
+Native CI uploads a tar archive of the complete bundle, not its raw directory.
+`macos-archive BUNDLE ARCHIVE` preserves member modes, links and resources;
+`macos-extract ARCHIVE NEW_DIRECTORY` requires a fresh destination and restores
+permissions independently of the receiver's umask, without restoring archived
+ownership. The artifact service may normalize the outer archive to `0644`
+without changing executable or data-file modes inside it (dar-759a.2).
 Docker is not part of the guest execution contract.
+
+The host tier runs `tests/west_test_contracts/native_artifact_contract.py`.
+It compiles a resource-reading fixture, demonstrates the old raw-directory
+failure specifically from lost execute bits, then exercises the real archive,
+extraction and installed-runner commands. It checks bytes, executable/data/
+directory modes, hidden resources and symlink targets, and rejects extraction
+into an existing directory. Run the same contract on macOS to obtain native
+transport evidence:
+
+```sh
+python3 -B tests/west_test_contracts/native_artifact_contract.py
+```
+
+Local Linux RED/GREEN evidence is not a native macOS or hosted-matrix PASS.
 
 ## Native convergence contract and inventory (2026-09-08)
 
