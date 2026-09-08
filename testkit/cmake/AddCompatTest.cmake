@@ -191,9 +191,11 @@ function(add_compat_test)
       set(INSTALL_DIR_TESTCASE "testcase")  # match upstream default
     endif()
     install(TARGETS "${target}" DESTINATION "${INSTALL_DIR_TESTCASE}")
-    if(DARLING_COMPAT_INSTALL_MANIFEST)
-      file(APPEND "${DARLING_COMPAT_INSTALL_MANIFEST}"
-        "${ACT_NAME}\t${target}\t${act_ok_marker}\n")
+    if(APPLE AND "macos" IN_LIST ACT_ENVS)
+      _darling_native_path("$<TARGET_FILE:${target}>"
+        "${INSTALL_DIR_TESTCASE}/$<TARGET_FILE_NAME:${target}>" file)
+      _darling_native_scope("${CMAKE_CURRENT_SOURCE_DIR}" "${CMAKE_CURRENT_BINARY_DIR}")
+      set_property(GLOBAL APPEND PROPERTY DARLING_NATIVE_TARGETS "${target}")
     endif()
     if(ACT_RESOURCES)
       if(NOT DEFINED INSTALL_DIR_RESOURCE)
@@ -201,6 +203,18 @@ function(add_compat_test)
       endif()
       install(DIRECTORY ${ACT_RESOURCES}
         DESTINATION "${INSTALL_DIR_RESOURCE}/${ACT_NAME}")
+      if(APPLE AND "macos" IN_LIST ACT_ENVS)
+        foreach(resource IN LISTS ACT_RESOURCES)
+          get_filename_component(resource_abs "${resource}" ABSOLUTE
+            BASE_DIR "${CMAKE_CURRENT_SOURCE_DIR}")
+          set(resource_dest "${INSTALL_DIR_RESOURCE}/${ACT_NAME}")
+          if(NOT resource MATCHES "/$")
+            get_filename_component(resource_name "${resource_abs}" NAME)
+            string(APPEND resource_dest "/${resource_name}")
+          endif()
+          _darling_native_path("${resource_abs}" "${resource_dest}" directory)
+        endforeach()
+      endif()
     endif()
   endif()
 
@@ -235,6 +249,31 @@ function(add_compat_test)
     elseif(env STREQUAL "macos")
       if(APPLE)
         set(cmd "$<TARGET_FILE:${target}>" ${ACT_ARGS})
+        if(act_ok_marker OR act_expect_failure_marker)
+          set(native_marker_args)
+          if(act_ok_marker)
+            list(APPEND native_marker_args --ok-marker-file "${ok_marker_file}")
+          endif()
+          if(act_expect_failure_marker)
+            list(APPEND native_marker_args
+              --failure-marker-file "${expect_failure_marker_file}")
+          endif()
+          set(cmd /usr/bin/env python3
+            "${_ADD_COMPAT_TEST_ROOT}/scripts/native-verdict.py"
+            --ctest-root "${CMAKE_BINARY_DIR}" --test-name "${test_name}"
+            "--config=$<CONFIG>"
+            ${native_marker_args} -- ${cmd})
+          if(ACT_INSTALL)
+            foreach(marker IN ITEMS "${ok_marker_file}" "${expect_failure_marker_file}")
+              if(marker)
+                file(RELATIVE_PATH marker_rel "${CMAKE_BINARY_DIR}" "${marker}")
+                get_filename_component(marker_dest "libexec/${marker_rel}" DIRECTORY)
+                install(FILES "${marker}" DESTINATION "${marker_dest}")
+                _darling_native_path("${marker}" "libexec/${marker_rel}" file)
+              endif()
+            endforeach()
+          endif()
+        endif()
       else()
         # A Linux-built binary is not a macOS oracle. Keep the registration
         # discoverable, but fail plainly until a remote macOS transport exists.
@@ -297,7 +336,7 @@ function(add_compat_test)
     # CTest's WILL_FAIL only inverts the exit status. A RED case instead needs
     # a specific observed symptom so unrelated launcher/build failures cannot
     # be accepted as regression evidence.
-    if(act_expect_failure_marker)
+    if(act_expect_failure_marker AND NOT (env STREQUAL "macos" AND APPLE))
       set(cmd
         "${_ADD_COMPAT_TEST_ROOT}/scripts/expect-failure.sh"
         --marker-file "${expect_failure_marker_file}"
@@ -366,4 +405,97 @@ function(add_compat_test)
     set_property(TEST "${test_name}" PROPERTY LABELS ${labels})
     set_property(TEST "${test_name}" PROPERTY TIMEOUT ${test_timeout})
   endforeach()
+endfunction()
+
+# Transport metadata describes installed paths and source scopes, never tests.
+# Final commands and properties are read from CTest at installation time.
+function(_darling_native_json output value)
+  string(REPLACE "\\" "\\\\" value "${value}")
+  string(REPLACE "\"" "\\\"" value "${value}")
+  string(REPLACE "\n" "\\n" value "${value}")
+  string(REPLACE "\r" "\\r" value "${value}")
+  string(REPLACE "\t" "\\t" value "${value}")
+  string(REPLACE ";" "\\u003b" value "${value}")
+  set("${output}" "\"${value}\"" PARENT_SCOPE)
+endfunction()
+
+function(_darling_native_path source destination kind)
+  if(IS_ABSOLUTE "${destination}" OR destination MATCHES "(^|/)\\.\\.(/|$)")
+    message(FATAL_ERROR "Native bundle destination must stay inside the bundle: ${destination}")
+  endif()
+  _darling_native_json(src "${source}")
+  _darling_native_json(dst "${destination}")
+  set_property(GLOBAL APPEND PROPERTY DARLING_NATIVE_PATHS
+    "{\"source\":${src},\"destination\":${dst},\"kind\":\"${kind}\"}")
+endfunction()
+
+function(_darling_native_scope source binary)
+  _darling_native_json(src "${source}")
+  _darling_native_json(bin "${binary}")
+  set_property(GLOBAL APPEND PROPERTY DARLING_NATIVE_SCOPES
+    "{\"source\":${src},\"binary\":${bin}}")
+endfunction()
+
+function(darling_install_native_bundle)
+  if(NOT APPLE)
+    return()
+  endif()
+  find_package(Python3 REQUIRED COMPONENTS Interpreter)
+  _darling_native_path("${_ADD_COMPAT_TEST_ROOT}/scripts/native-verdict.py"
+    "libexec/native-verdict.py" file)
+  install(PROGRAMS "${_ADD_COMPAT_TEST_ROOT}/scripts/native-verdict.py"
+    DESTINATION libexec)
+  install(PROGRAMS "${_ADD_COMPAT_TEST_ROOT}/../ci/run-macos-installed-tests.sh"
+    DESTINATION ".")
+  install(PROGRAMS "${_ADD_COMPAT_TEST_ROOT}/../ci/native-transport.py"
+    DESTINATION "." RENAME native-runner.py)
+  get_property(paths GLOBAL PROPERTY DARLING_NATIVE_PATHS)
+  get_property(scopes GLOBAL PROPERTY DARLING_NATIVE_SCOPES)
+  get_property(targets GLOBAL PROPERTY DARLING_NATIVE_TARGETS)
+  list(REMOVE_DUPLICATES paths)
+  list(REMOVE_DUPLICATES scopes)
+  list(REMOVE_DUPLICATES targets)
+  string(JOIN "," paths ${paths})
+  string(JOIN "," scopes ${scopes})
+  set(target_json)
+  foreach(target IN LISTS targets)
+    _darling_native_json(name "${target}")
+    foreach(field IN ITEMS SOURCES SOURCE_DIR COMPILE_OPTIONS COMPILE_DEFINITIONS
+        INCLUDE_DIRECTORIES LINK_LIBRARIES)
+      get_target_property(value "${target}" "${field}")
+      if(value STREQUAL "value-NOTFOUND")
+        set(value "")
+      endif()
+      _darling_native_json("${field}" "${value}")
+    endforeach()
+    list(APPEND target_json
+      "{\"name\":${name},\"sources\":${SOURCES},\"source_dir\":${SOURCE_DIR},\"options\":${COMPILE_OPTIONS},\"defines\":${COMPILE_DEFINITIONS},\"includes\":${INCLUDE_DIRECTORIES},\"libraries\":${LINK_LIBRARIES}}")
+  endforeach()
+  string(JOIN "," target_json ${target_json})
+  _darling_native_json(source_root "${CMAKE_SOURCE_DIR}")
+  _darling_native_json(binary_root "${CMAKE_BINARY_DIR}")
+  set(build_identity)
+  foreach(variable IN ITEMS CMAKE_SYSTEM_NAME CMAKE_SYSTEM_PROCESSOR
+      CMAKE_C_COMPILER_ID CMAKE_C_COMPILER_VERSION CMAKE_C_COMPILER_TARGET
+      CMAKE_OSX_SYSROOT CMAKE_OSX_ARCHITECTURES CMAKE_OSX_DEPLOYMENT_TARGET
+      CMAKE_C_FLAGS CMAKE_EXE_LINKER_FLAGS)
+    _darling_native_json(value "${${variable}}")
+    list(APPEND build_identity "\"${variable}\":${value}")
+  endforeach()
+  string(JOIN "," build_identity ${build_identity})
+  file(GENERATE OUTPUT "${CMAKE_BINARY_DIR}/native-bundle-paths-$<CONFIG>.json"
+    CONTENT "{\"source_root\":${source_root},\"binary_root\":${binary_root},\"paths\":[${paths}],\"scopes\":[${scopes}],\"targets\":[${target_json}],\"build_identity\":{${build_identity}}}\n")
+  # This function must be called after source suites register their installs.
+  # CTest's generated files, not configure-time ACT arguments, are authoritative.
+  install(CODE "
+    execute_process(COMMAND \"${Python3_EXECUTABLE}\"
+      \"${_ADD_COMPAT_TEST_ROOT}/scripts/export-native-bundle.py\"
+      --build \"${CMAKE_BINARY_DIR}\"
+      --config \"\${CMAKE_INSTALL_CONFIG_NAME}\"
+      --ctest \"${CMAKE_CTEST_COMMAND}\"
+      --output \"\$ENV{DESTDIR}\${CMAKE_INSTALL_PREFIX}\"
+      RESULT_VARIABLE native_bundle_result)
+    if(NOT native_bundle_result EQUAL 0)
+      message(FATAL_ERROR \"Native CTest bundle export failed\")
+    endif()")
 endfunction()

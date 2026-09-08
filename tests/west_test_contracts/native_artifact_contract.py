@@ -6,6 +6,7 @@ import platform
 import shutil
 import stat
 import subprocess
+import tarfile
 import tempfile
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -13,8 +14,11 @@ TIER = ROOT / "ci/run-test-tier.sh"
 
 
 def run(*args, check=True, **kwargs):
-    return subprocess.run([str(arg) for arg in args], check=check, text=True,
-                          capture_output=True, timeout=60, **kwargs)
+    result = subprocess.run([str(arg) for arg in args], text=True,
+                            capture_output=True, timeout=60, **kwargs)
+    if check and result.returncode:
+        raise AssertionError(f"{args}: exit {result.returncode}\n{result.stdout}\n{result.stderr}")
+    return result
 
 
 def snapshot(root):
@@ -40,7 +44,11 @@ with tempfile.TemporaryDirectory(prefix="native-artifact-contract-") as temporar
     (resources / "data link").symlink_to("binary payload.dat")
     resources.chmod(0o750)
     (bundle / ".fixture-data").write_bytes(b"hidden resource\x00\xff")
-    (bundle / "compat-install-manifest.tsv").write_text("transport\ttransport.probe\tTRANSPORT_OK\n")
+    (resources / "._literal-data").write_bytes(b"literal hidden asset, not archive metadata")
+    if platform.system() == "Darwin":
+        # BSD tar must not manufacture extra AppleDouble files from host metadata.
+        run("xattr", "-w", "org.darling.artifact-contract", "metadata-only",
+            resources / "binary payload.dat")
     source = top / "probe.c"
     source.write_text(r'''
 #include <stdio.h>
@@ -69,8 +77,8 @@ int main(int argc, char **argv) {
     executable = bundle / "testcase/transport.probe"
     run("cc", "-std=c99", source, "-o", executable)
     executable.chmod(0o751)
-    baseline = run(TIER, "macos-installed", bundle)
-    assert "PASS macos/transport" in baseline.stdout
+    baseline = run(executable)
+    assert baseline.stdout.splitlines() == ["TRANSPORT_OK"]
 
     # The old raw-directory route fails specifically because execute bits vanish.
     raw = top / "raw-download"
@@ -78,20 +86,28 @@ int main(int argc, char **argv) {
     for path in raw.rglob("*"):
         if not path.is_symlink():
             path.chmod(0o755 if path.is_dir() else 0o644)
-    rejected = run(TIER, "macos-installed", raw, check=False)
-    assert rejected.returncode == 1 and "installed testcase is not executable:" in rejected.stderr
-    print("RED raw artifact: installed testcase is not executable")
+    try:
+        run(raw / "testcase/transport.probe")
+    except PermissionError:
+        pass
+    else:
+        raise AssertionError("mode-normalizing transport preserved execution unexpectedly")
+    print("RED raw artifact: operating system refused execution after execute bits vanished")
 
     archive = top / "oracle.tar"
     run(TIER, "macos-archive", bundle, archive)
     downloaded = top / "downloaded.tar"
     shutil.copyfile(archive, downloaded)
     downloaded.chmod(0o644)  # Artifact service permissions apply only to the container.
+    with tarfile.open(downloaded) as payload:
+        members = {Path(member.name).as_posix().rstrip("/") for member in payload.getmembers()
+                   if Path(member.name).as_posix() != "."}
+    assert members == set(snapshot(bundle)), "archive manufactured or omitted resource files"
     extracted = top / "extracted"
     run(TIER, "macos-extract", downloaded, extracted, umask=0o077)
     assert snapshot(extracted) == snapshot(bundle), "archive changed file bytes, modes or symlink targets"
-    fixed = run(TIER, "macos-installed", extracted)
-    assert "PASS macos/transport" in fixed.stdout
+    fixed = run(extracted / "testcase/transport.probe")
+    assert fixed.stdout.splitlines() == ["TRANSPORT_OK"]
 
     # Extraction must not merge into an existing destination, even an empty one.
     existing = top / "existing"

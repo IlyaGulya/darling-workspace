@@ -14,6 +14,19 @@ case "$defer_global_cleanup" in
 		;;
 esac
 
+native_tar() {
+	local operation="$1"
+	shift
+	local flags=(--no-xattrs)
+	if [[ "$(uname -s)" == Darwin ]]; then
+		flags+=(--no-mac-metadata)
+		if [[ "$operation" == extract ]]; then
+			flags+=(--options '!mac-ext')
+		fi
+	fi
+	exec env COPYFILE_DISABLE=1 tar "${flags[@]}" "$@"
+}
+
 run_tier_phase() {
 	local name="$1"
 	shift
@@ -225,20 +238,26 @@ case "${1:-}" in
 	macos-archive)
 		bundle="${2:?macos-archive requires an installed bundle}"
 		archive="${3:?macos-archive requires an output archive}"
-		exec tar -cf "$archive" -C "$bundle" .
+		# Keep a literal portable file tree: no implicit AppleDouble sidecars.
+		native_tar create -cf "$archive" -C "$bundle" .
 		;;
 	macos-extract)
 		archive="${2:?macos-extract requires an archive}"
 		destination="${3:?macos-extract requires a new destination directory}"
 		mkdir -- "$destination"
-		exec tar -xpf "$archive" --no-same-owner -C "$destination"
+		native_tar extract -xpf "$archive" --no-same-owner -C "$destination"
 		;;
 	macos-installed)
 		exec "$root/ci/run-macos-installed-tests.sh" \
-			"${2:?macos-installed requires an installed bundle}"
+			"${2:?macos-installed requires an installed bundle}" "${@:3}"
+		;;
+	macos-ssh)
+		exec python3 "$root/ci/native-transport.py" ssh \
+			"${2:?macos-ssh requires an SSH host}" \
+			"${3:?macos-ssh requires an installed bundle}" "${@:4}"
 		;;
 	*)
-		echo "usage: $0 host|guest-smoke|guest-macho-validation|guest-full|guest-toolchain|macos|macos-package|macos-archive|macos-extract|macos-installed" >&2
+		echo "usage: $0 host|guest-smoke|guest-macho-validation|guest-full|guest-toolchain|macos|macos-package|macos-archive|macos-extract|macos-installed|macos-ssh [tier arguments]" >&2
 		exit 2
 		;;
 esac

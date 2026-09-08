@@ -12,10 +12,6 @@ project(darling-testkit C)
 include(CTest)
 include("${CMAKE_CURRENT_SOURCE_DIR}/cmake/AddCompatTest.cmake")
 
-set(DARLING_COMPAT_INSTALL_MANIFEST
-  "${CMAKE_CURRENT_BINARY_DIR}/compat-install-manifest.tsv")
-file(WRITE "${DARLING_COMPAT_INSTALL_MANIFEST}" "")
-install(FILES "${DARLING_COMPAT_INSTALL_MANIFEST}" DESTINATION ".")
 
 find_package(Threads REQUIRED)
 
@@ -428,3 +424,6 @@ else()
     "darling checkout not found at ${DARLING_SRC}; skipping dar-gwn.5 "
     "(set -DDARLING_SRC=/path/to/darling)")
 endif()
+
+# Run after every source-owned registration and caller property override.
+darling_install_native_bundle()

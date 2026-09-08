@@ -23,10 +23,10 @@ materializes a clean checkout before Linux tiers. Hosted Linux jobs set
 path depth, completes parents before descendants, and delegates independent
 projects within each level to West through one bounded worker pool. It prints
 the complete failing project logs. Setting `DARLING_WEST_UPDATE_JOBS=1` selects
-West's native sequential update path for debugging. Native macOS transport uses
-the generated three-column `compat-install-manifest.tsv`;
-`ci/run-macos-installed-tests.sh` currently checks zero exit plus a literal
-substring marker. It does not preserve the complete CTest execution contract.
+West's native sequential update path for debugging. Native macOS packaging
+exports the final configured CTest registrations into a relocatable installed
+bundle. Local and SSH execution share `ci/native-transport.py`, CTest, and the
+source-owned verdict helper; the three-column TSV runner has been removed.
 Native CI uploads a tar archive of the complete bundle, not its raw directory.
 `macos-archive BUNDLE ARCHIVE` preserves member modes, links and resources;
 `macos-extract ARCHIVE NEW_DIRECTORY` requires a fresh destination and restores
@@ -213,21 +213,45 @@ skip must come from the source-owned CTest verdict contract.
 
 ### Preserve the complete execution and verdict contract
 
-| Property | Darling CTest today | Local macOS CTest today | Installed native today |
-| --- | --- | --- | --- |
-| Arguments | forwarded by guest helper | direct target argv | omitted |
-| Working directory | host wrapper directory, not declared guest cwd | CTest directory | omitted |
-| Success `OK_MARKER` | exact output line | not enforced | substring |
-| Expected-failure oracle | existing wrapper | existing wrapper | omitted |
-| Deadline | CTest and guest-stage supervision | CTest | no per-case deadline |
-| Resources | guest setup/transport must be explicit | source/build setup | files installed, execution context not preserved |
+The installed native bundle now preserves final CTest arguments, environment,
+working directory, resources, properties and per-case timeout (dar-759a.4).
+`darling_install_native_bundle()` exports registrations after all source scopes
+have been configured. Unrelocatable paths and unsupported dylib dependencies
+fail packaging rather than silently producing an incomplete bundle.
 
-The residual implementation must preserve the same declared arguments,
-environment, resource semantics, cwd, deadline and verdict through packaging.
-Do not grow the three-column TSV loop into an independent test framework.
-Generate transport artifacts from the existing registration contract and reuse
-CTest and shared verdict helpers. Archive transport must preserve executable
-and non-executable resource modes through a tested round trip before the pilot.
+```sh
+ci/run-test-tier.sh macos-installed BUNDLE [-R REGEX]
+ci/run-test-tier.sh macos-ssh HOST BUNDLE [-R REGEX]
+```
+
+Both transports require real Darwin/Mach-O execution and use fresh result
+directories outside the immutable bundle. Set `DARLING_NATIVE_RESULTS_DIR` to
+a nonexistent output path; otherwise a temporary directory is allocated.
+`DARLING_NATIVE_REMOTE_PATH` supplies the remote tool search path.
+`DARLING_NATIVE_TIMEOUT_SECONDS` bounds execution (default 1800 seconds);
+`DARLING_NATIVE_TRANSFER_TIMEOUT_SECONDS` bounds transfers (default 120).
+SSH uses a token-owned temporary workspace and collects results before cleanup.
+
+Exit codes are 0 for pass/formal skip, 1 for semantic test failure, and 2 for
+infrastructure failure. Results include `execution.json`, `native-build.json`,
+CTest discovery, JUnit and logs; SSH retains remote results under `remote/`.
+Build identity records source/CTest digests, compiler/SDK and build options;
+execution identity records bundle digest, OS build, architecture and Rosetta.
+CTest runs through a results-owned facade so nested discovery does not write
+`Testing/` into the bundle.
+
+Real-Mac acceptance on `misakaindrive`, macOS 26.5.1 (25F80), arm64, CTest
+3.31.6 exercised relocation after deleting the source/build trees, arguments,
+environment, resources, exact success and negative markers, normal exit 137,
+signal rejection, timeout, formal skip and late CTest property changes.
+Local and SSH runs agreed on all nine representative verdicts. Separate SSH
+selections returned pass, skip and infrastructure-error outcomes. Evidence is
+under `~/work/darling-debug/dar-759a.4-8XFgdS/`. This is transport acceptance,
+not a hosted matrix or product compatibility result.
+
+Focused regressions are `native_bundle_contract.py` (real Mac),
+`native_transport_contract.py`, and `native_artifact_contract.py` under
+`tests/west_test_contracts/`.
 
 For a declared success marker, require successful execution and the exact
 literal output line on every path. For declared expected failure, preserve
