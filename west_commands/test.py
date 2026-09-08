@@ -2301,7 +2301,7 @@ class DarlingTest(ProfileOperationsMixin, BootstrapRuntimeProfileMixin, WestComm
         root = self._debug_bundle_root()
         if not root.is_dir():
             return None
-        suffix = f"west-test-{invocation['name']}"
+        suffix = re.sub(r"[^A-Za-z0-9._-]", "_", f"west-test-{invocation['name']}")
         candidates = [
             path
             for path in root.iterdir()

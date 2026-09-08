@@ -1,10 +1,16 @@
 import os
 import subprocess
+import sys
 import tempfile
+import time
 from pathlib import Path
 
 
 ROOT = Path(__file__).resolve().parents[2]
+sys.path.insert(0, str(ROOT))
+sys.path.insert(0, str(ROOT / "west_commands"))
+from west_commands.test import DarlingTest
+
 RUNNER = Path(os.environ.get(
     "DARLING_DEBUG_RUNNER_TEST_BINARY",
     ROOT.parent / "darling-debug-runner/target/release/darling-debug-runner",
@@ -44,13 +50,26 @@ add_compat_test(NAME guarded_output_contract SOURCE "{root}/failure.c"
         ], check=True, capture_output=True, text=True, timeout=30)
         subprocess.run(["cmake", "--build", str(build)], check=True,
                        capture_output=True, text=True, timeout=30)
-        failed = subprocess.run([
-            "ctest", "--test-dir", str(build), "--output-on-failure",
-            "-R", "^host/guarded_output_contract$",
-        ], capture_output=True, text=True, timeout=20)
-        output = failed.stdout + failed.stderr
+        runner = DarlingTest()
+        runner.topdir = str(root)
+        runner._executor = str(RUNNER)
+        runner._bundle_root = bundles
+        invocation = {
+            "name": "xnu/guarded-output.patch",
+            "ctest_name": "host/guarded_output_contract",
+            "ctest_build": build,
+            "cwd": root,
+            "diag": "guarded",
+            "timeout_seconds": 15,
+        }
+        started = time.time()
+        failed = runner._run_invocation_captured(invocation)
+        output = runner._guest_runtime_red_output(
+            invocation, since=started, captured_output=failed.output
+        )
         assert failed.returncode != 0, output
-        assert "GUARDED_DOMAIN_FAILURE" in output, output
+        assert failed.failure_phase == "run", (failed.failure_phase, output)
+        assert output is not None and "GUARDED_DOMAIN_FAILURE" in output, output
         assert "WEST_TEST_FAILURE_PHASE=run" in output, output
 
         timed_out = subprocess.run([
