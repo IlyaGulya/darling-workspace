@@ -1,0 +1,48 @@
+From 17843013121f9566ebe2f29544fff4cf34d7697f Mon Sep 17 00:00:00 2001
+From: Ilya Gulya <ilya@gulya.me>
+Date: Tue, 8 Sep 2026 15:31:46 +0000
+Subject: [PATCH] Copy converted pending signal mask to caller (dar-759a.5.3)
+
+---
+ .../include/xnu_syscall/bsd/impl/signal/sigpending.h      | 2 +-
+ .../src/xnu_syscall/bsd/impl/signal/sigpending.c          | 8 ++++----
+ 2 files changed, 5 insertions(+), 5 deletions(-)
+
+diff --git a/darling/src/libsystem_kernel/emulation/include/xnu_syscall/bsd/impl/signal/sigpending.h b/darling/src/libsystem_kernel/emulation/include/xnu_syscall/bsd/impl/signal/sigpending.h
+index a77b19b102ceec3e39dd746e757e2895c9be8f92..696afcc1b3eebc052acafddcf7114ec99ceb811d 100644
+--- a/darling/src/libsystem_kernel/emulation/include/xnu_syscall/bsd/impl/signal/sigpending.h
++++ b/darling/src/libsystem_kernel/emulation/include/xnu_syscall/bsd/impl/signal/sigpending.h
+@@ -3,6 +3,6 @@
+ 
+ #include <darling/emulation/conversion/signal/duct_signals.h>
+ 
+-long sys_sigpending(sigset_t set);
++long sys_sigpending(sigset_t* set);
+ 
+ #endif // LINUX_SIGPENDING_H
+diff --git a/darling/src/libsystem_kernel/emulation/src/xnu_syscall/bsd/impl/signal/sigpending.c b/darling/src/libsystem_kernel/emulation/src/xnu_syscall/bsd/impl/signal/sigpending.c
+index 3c7f13e99c9e92082210a4738484404585cf3231..5da19a271b17c65e63d000e6bd2ade0c73d5839f 100644
+--- a/darling/src/libsystem_kernel/emulation/src/xnu_syscall/bsd/impl/signal/sigpending.c
++++ b/darling/src/libsystem_kernel/emulation/src/xnu_syscall/bsd/impl/signal/sigpending.c
+@@ -7,17 +7,17 @@
+ #include <darling/emulation/conversion/signal/duct_signals.h>
+ #include <darling/emulation/linux_premigration/linux-syscalls/linux.h>
+ 
+-long sys_sigpending(sigset_t set)
++long sys_sigpending(sigset_t* set)
+ {
+ 	linux_sigset_t set_linux;
+ 	int ret;
+ 
+-	sigset_bsd_to_linux(&set, &set_linux);
+-
+-	ret = LINUX_SYSCALL(__NR_rt_sigpending, &set_linux, 8);
++	ret = LINUX_SYSCALL(__NR_rt_sigpending, set ? &set_linux : NULL, sizeof(set_linux));
+ 
+ 	if (ret < 0)
+ 		ret = errno_linux_to_bsd(ret);
++	else
++		sigset_linux_to_bsd(&set_linux, set);
+ 
+ 	return ret;
+ }

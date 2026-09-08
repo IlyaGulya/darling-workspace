@@ -20,6 +20,36 @@ test-profiles:
     - -Wall
     - -Wextra
     - -Werror
+  xnu-signal-runtime-proof:
+    kind: guest
+    coverage-tier: runtime
+    runs: guest
+    diag: guarded
+    repo: darling-workspace
+    red: true
+    red-proof:
+      mode: guest-runtime-deploy
+      bad-profile: current-minus-patch
+      expect-failure-phase: run
+      cmake-defines:
+        DARLING_EUNION: true
+      source-modules:
+      - darling
+      - darling/src/external/darlingserver
+      - darling/src/external/dyld
+      runtime-artifacts:
+      - module: darling/src/external/xnu
+        build-targets: [system_kernel]
+        deploy: [usr/lib/system/libsystem_kernel.dylib]
+      - module: darling/src/external/dyld
+        build-targets: [dyld]
+        deploy: [usr/lib/dyld]
+    timeout-seconds: 90
+    requires: [darling-prefix]
+    env-vars:
+      DARLING_ROOTLESS: '1'
+      DARLING_NOOVERLAYFS: '1'
+      DARLING_EUNION: '1'
 patches:
 - path: darling/rootless-homebrew-coreservices.patch
   module: darling
@@ -244,36 +274,10 @@ patches:
   publication-blocker: dar-759a.5 must complete supported native/current-minus/fixed runtime proof; dar-759a.5.1 owns private-child PID-reuse review and dar-759a.5.2 owns canonical runtime materialization. Full wget acceptance is not this patch's gate.
   tests:
   - ctest-name: darling/posix_spawn_failure_ownership
-    kind: guest
-    coverage-tier: runtime
-    runs: guest
-    diag: guarded
-    repo: darling-workspace
-    red: true
+    use: xnu-signal-runtime-proof
     red-proof:
-      mode: guest-runtime-deploy
-      bad-profile: current-minus-patch
       expect-output-contains:
       - POSIX_SPAWN_FAILURE_OWNERSHIP_BROKEN
-      cmake-defines:
-        DARLING_EUNION: true
-      source-modules:
-      - darling
-      - darling/src/external/darlingserver
-      - darling/src/external/dyld
-      runtime-artifacts:
-      - module: darling/src/external/xnu
-        build-targets: [system_kernel]
-        deploy: [usr/lib/system/libsystem_kernel.dylib]
-      - module: darling/src/external/dyld
-        build-targets: [dyld]
-        deploy: [usr/lib/dyld]
-    timeout-seconds: 90
-    requires: [darling-prefix]
-    env-vars:
-      DARLING_ROOTLESS: '1'
-      DARLING_NOOVERLAYFS: '1'
-      DARLING_EUNION: '1'
     note: One source-owned CTest fixture is shared with macOS. The typed wget-residual composition supplies current-minus and fixed sources; infrastructure failures are not semantic RED.
   - ctest-name: macos/posix_spawn_failure_ownership
     coverage-tier: runtime
@@ -281,3 +285,24 @@ patches:
     diag: bare
     repo: darling-workspace
   sha256sum: 5a8cf8a30e2eb44e4d987f5263cd966e389c3c13bd210313cfc2fea7fbe9c153
+- path: xnu/sigpending-mask-copyout.patch
+  module: darling/src/external/xnu
+  source-branch: fix/sigpending-mask-copyout
+  source-base: e8c8127d553578929d3867e35b14d9fc5c5edcae
+  source-commit: 17843013121f9566ebe2f29544fff4cf34d7697f
+  bead: dar-759a.5.3
+  publication-status: blocked
+  publication-blocker: dar-759a.5.3 owns deployed pending-mask regression and canonical review; no publication is authorized.
+  tests:
+  - ctest-name: darling/sigpending_mask_copyout
+    use: xnu-signal-runtime-proof
+    timeout-seconds: 30
+    red-proof:
+      expect-output-contains:
+      - SIGPENDING_MASK_COPYOUT_BROKEN
+  - ctest-name: macos/sigpending_mask_copyout
+    coverage-tier: runtime
+    runs: macos
+    diag: bare
+    repo: darling-workspace
+  sha256sum: 38cd42b628413a94a2877ed25d5d4ec974b2fab599e71b5c01fc0b075f496378
