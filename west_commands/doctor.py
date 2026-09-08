@@ -20,6 +20,9 @@ HEAD against the WEST MANIFEST revision, plus checks build-prefix alignment and 
 Read-only. Exit 0 = green; exit 1 = diagnosed problem or operational failure; invalid
 arguments exit 2. Default output is bounded, while --full and --json expose complete detail.
 Intended for `west darling-doctor` before a build/deploy/boot, and as a pre-build gate.
+Typed rootless prefixes without a published runtime are checked as PREPARED;
+launchd creates their boot directories. Published runtimes must satisfy READY
+directory postconditions. Build identity and binary checks apply in both phases.
 """
 
 from __future__ import annotations
@@ -37,7 +40,7 @@ from typing import Any
 from west.commands import WestCommand
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from prefix_repair import prefix_boot_prerequisite_problems
+from prefix_repair import PrefixBootPhase, prefix_boot_phase, prefix_boot_prerequisite_problems
 
 _EXTRA_PREFIX_DYLIBS = [
     "libsystem_kernel.dylib",
@@ -522,13 +525,16 @@ class DarlingDoctor(WestCommand):
         self._section("2b. prefix boot prerequisites")
 
         def check_one(prefix: Path, label: str):
-            problems = prefix_boot_prerequisite_problems(prefix)
+            phase = prefix_boot_phase(prefix)
+            problems = prefix_boot_prerequisite_problems(prefix, phase=phase)
             if problems:
                 for problem in problems:
                     self._problem(f"{label}: {problem}")
                 return
-            for rel in ("private/var/tmp", "libexec/darling/private/var/tmp"):
-                self._ok(f"{label}: {rel} exists with mode 1777")
+            if phase is PrefixBootPhase.PREPARED:
+                self._ok(f"{label}: typed rootless prefix prepared; launchd owns first-boot directories")
+                return
+            self._ok(f"{label}: boot directory postconditions satisfied")
 
         check_one(Path(args.prefix), "prefix")
         for extra in args.extra_prefix:

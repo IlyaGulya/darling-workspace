@@ -10,6 +10,7 @@ import subprocess
 import time
 from collections import Counter
 from dataclasses import dataclass, field
+from enum import Enum
 from pathlib import Path
 
 
@@ -61,19 +62,59 @@ def prefix_roots(prefix: Path) -> list[tuple[str, Path]]:
     ]
 
 
-def prefix_boot_prerequisite_problems(prefix: Path) -> list[str]:
+class PrefixBootPhase(Enum):
+    PREPARED = "prepared"
+    READY = "ready"
+
+
+def prefix_boot_phase(prefix: Path) -> PrefixBootPhase:
+    """Recognize a typed, identity-bound prefix that has not published a runtime."""
+    state = prefix / ".darling-prefix-state-v2"
+    if state.is_symlink() or os.path.lexists(prefix / INIT_PID_REL):
+        return PrefixBootPhase.READY
+    try:
+        lines = state.read_text().splitlines()
+        if len(lines) != 9 or lines[0] != "DARLING_PREFIX_STATE_V2":
+            return PrefixBootPhase.READY
+        fields = dict(line.split("=", 1) for line in lines[1:])
+        identity = prefix.stat()
+        if (
+            len(fields) == 8
+            and fields["schema_version"] == "2"
+            and fields["runtime_mode"] == "rootless-eunion"
+            and int(fields["generation"]) > 0
+            and int(fields["prefix_device"]) == identity.st_dev
+            and int(fields["prefix_inode"]) == identity.st_ino
+            and int(fields["owner_uid"]) == identity.st_uid
+            and int(fields["owner_gid"]) == identity.st_gid
+            and fields["provenance"]
+        ):
+            return PrefixBootPhase.PREPARED
+    except (OSError, UnicodeError, ValueError, KeyError):
+        pass
+    return PrefixBootPhase.READY
+
+
+def prefix_boot_prerequisite_problems(
+    prefix: Path, *, phase: PrefixBootPhase = PrefixBootPhase.READY
+) -> list[str]:
+    """Check ready-state postconditions unless first-boot preparation is explicit."""
     problems = []
-    for rel in (*TMP_RELS, *PRIVATE_TMP_RELS, *ROOT_TMP_RELS):
+    temporary_dirs = (*TMP_RELS, *PRIVATE_TMP_RELS, *ROOT_TMP_RELS)
+    for rel in (*temporary_dirs, *ROOTLESS_RUNTIME_DIR_RELS):
         path = prefix / rel
         if not path.is_dir():
+            if phase is PrefixBootPhase.PREPARED and all(
+                not os.path.lexists(parent) or parent.is_dir()
+                for parent in (path, *path.parents)
+            ):
+                continue
             problems.append(f"{rel} missing in Darling prefix")
             continue
-        mode = path.stat().st_mode & 0o7777
-        if mode != 0o1777:
-            problems.append(f"{rel} mode {mode:o}, expected 1777")
-    for rel in ROOTLESS_RUNTIME_DIR_RELS:
-        if not (prefix / rel).is_dir():
-            problems.append(f"{rel} missing in Darling prefix")
+        if rel in temporary_dirs:
+            mode = path.stat().st_mode & 0o7777
+            if mode != 0o1777:
+                problems.append(f"{rel} mode {mode:o}, expected 1777")
     return problems
 
 
