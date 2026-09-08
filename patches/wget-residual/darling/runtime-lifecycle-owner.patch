@@ -1,0 +1,172 @@
+From 58111ee357fa6d9d971f0aa1d1763321604525f6 Mon Sep 17 00:00:00 2001
+From: Ilya Gulya <ilya@gulya.me>
+Date: Tue, 8 Sep 2026 05:19:11 +0000
+Subject: [PATCH] dar-gwn.8: serialize rootless runtime lifecycle ownership
+
+---
+ src/startup/darling.c                 | 17 +++++++++++-
+ src/startup/runtime_mode_prefix.c     | 32 ++++++++++++++++++++++
+ src/startup/runtime_mode_prefix.h     | 15 +++++++++++
+ src/startup/tests/runtime_mode_test.c | 38 +++++++++++++++++++++++++++
+ 4 files changed, 101 insertions(+), 1 deletion(-)
+
+diff --git a/src/startup/darling.c b/src/startup/darling.c
+index 3a4e33262b16c85d03685a59ce6699fe40d4700c..1b287ad2cf8535eb3063d858a6b3cd798f786b09 100644
+--- a/src/startup/darling.c
++++ b/src/startup/darling.c
+@@ -279,6 +279,19 @@ int main(int argc, char ** argv)
+ 
+ 	const int commandIndex = cli.command_index;
+ 
++	/* Serialize lifecycle decisions, not the lifetime of guest commands. */
++	int runtime_lock_fd = -1;
++	if (rootless) {
++		runtime_lock_fd = darling_runtime_prefix_lock_runtime(g_runtimePrefix,
++			g_runtimeMode, g_originalUid, g_originalGid,
++			runtimeModeError, sizeof(runtimeModeError));
++		if (runtime_lock_fd < 0) {
++			fprintf(stderr, "Cannot acquire Darling runtime lifecycle: %s\n",
++				runtimeModeError);
++			return 1;
++		}
++	}
++
+ 	pidInit = getInitProcess();
+ 
+ 	if (strcmp(argv[commandIndex], "shutdown") == 0)
+@@ -286,7 +299,7 @@ int main(int argc, char ** argv)
+ 		if (pidInit == 0)
+ 		{
+ 			fprintf(stderr, "Darling container is not running\n");
+-			return 1;
++			return rootless ? 0 : 1;
+ 		}
+ 
+ 
+@@ -363,6 +376,8 @@ int main(int argc, char ** argv)
+ 			}
+ 		}
+ 	}
++	if (runtime_lock_fd >= 0)
++		close(runtime_lock_fd);
+ 
+ #if USE_LINUX_4_11_HACK
+ 	if (!rootless)
+diff --git a/src/startup/runtime_mode_prefix.c b/src/startup/runtime_mode_prefix.c
+index 1103b0b9cbd46e1f0222475bf2731f26b57b6404..369e29a6d8600d272b85f41049dec9dd16a40e70 100644
+--- a/src/startup/runtime_mode_prefix.c
++++ b/src/startup/runtime_mode_prefix.c
+@@ -1461,6 +1461,38 @@ static int acquire_lifecycle_lock(
+ 	return fd;
+ }
+ 
++int darling_runtime_prefix_lock_runtime(
++	const darling_runtime_prefix handle,
++	enum darling_runtime_mode mode,
++	uid_t owner_uid,
++	gid_t owner_gid,
++	char* error,
++	size_t error_size
++)
++{
++	if (handle == NULL || handle->parent_fd < 0 ||
++		handle->directory_fd < 0 || handle->leaf[0] == '\0')
++		return prefix_error(error, error_size,
++			"runtime prefix lock input is invalid: %s", "invalid");
++	struct lifecycle_names names;
++	if (format_lifecycle_names(handle, &names, error, error_size) != 0)
++		return -1;
++	int fd = acquire_lifecycle_lock(handle, &names, owner_uid, owner_gid,
++		error, error_size);
++	if (fd < 0)
++		return -1;
++	struct darling_runtime_prefix_state state;
++	if (darling_runtime_mode_verify_prefix_name(handle, error, error_size) != 0 ||
++		darling_runtime_prefix_read_state(handle, mode, owner_uid, owner_gid,
++			&state, error, error_size) != 0) {
++		int saved_errno = errno;
++		close(fd);
++		errno = saved_errno;
++		return -1;
++	}
++	return fd;
++}
++
+ static int read_regular_file_at(
+ 	int directory_fd,
+ 	const char* name,
+diff --git a/src/startup/runtime_mode_prefix.h b/src/startup/runtime_mode_prefix.h
+index e24e28f346ce8f69eaca6d5a595e4b61ad358e48..923ffdb5c91c5d443983c33f518907a842539b26 100644
+--- a/src/startup/runtime_mode_prefix.h
++++ b/src/startup/runtime_mode_prefix.h
+@@ -121,6 +121,21 @@ int darling_runtime_mode_prefix_needs_initialization(
+ 	size_t error_size
+ );
+ 
++/*
++ * Acquire the existing lifecycle lock for a prepared runtime. Revalidate the
++ * retained prefix after waiting. The caller owns the returned CLOEXEC fd:
++ * retain it through PID publication or completed shutdown, then close it.
++ * Do not call prefix lifecycle mutators while holding this lease.
++ */
++int darling_runtime_prefix_lock_runtime(
++	const darling_runtime_prefix handle,
++	enum darling_runtime_mode mode,
++	uid_t owner_uid,
++	gid_t owner_gid,
++	char* error,
++	size_t error_size
++);
++
+ int darling_runtime_prefix_prepare(
+ 	darling_runtime_prefix handle,
+ 	enum darling_runtime_mode mode,
+diff --git a/src/startup/tests/runtime_mode_test.c b/src/startup/tests/runtime_mode_test.c
+index 7e97ec3a94a60a8e7e2468d78eb7ad73fd296942..5ca08b83db2436ef14b07a92e2ee13d1166fdd39 100644
+--- a/src/startup/tests/runtime_mode_test.c
++++ b/src/startup/tests/runtime_mode_test.c
+@@ -1106,6 +1106,44 @@ static void test_prefix_lifecycle(void)
+ 	require(result.recovery == DARLING_RUNTIME_PREFIX_NO_RECOVERY,
+ 		"fresh create unexpectedly reported recovery");
+ 	require_state(created, 1);
++	char lease_error[512] = {0};
++	int lease = darling_runtime_prefix_lock_runtime(created,
++		DARLING_RUNTIME_MODE_ROOTLESS_EUNION, getuid(), getgid(),
++		lease_error, sizeof(lease_error));
++	require(lease >= 0, lease_error);
++	int events[2];
++	require(pipe(events) == 0, "create runtime lease observer");
++	pid_t contender = fork();
++	require(contender >= 0, "fork runtime lease contender");
++	if (contender == 0) {
++		close(events[0]);
++		close(lease);
++		if (write(events[1], "R", 1) != 1)
++			_exit(1);
++		int acquired = darling_runtime_prefix_lock_runtime(created,
++			DARLING_RUNTIME_MODE_ROOTLESS_EUNION, getuid(), getgid(),
++			lease_error, sizeof(lease_error));
++		if (acquired < 0 || write(events[1], "A", 1) != 1)
++			_exit(1);
++		close(acquired);
++		_exit(0);
++	}
++	close(events[1]);
++	char event;
++	require(read(events[0], &event, 1) == 1 && event == 'R',
++		"runtime lease contender did not start");
++	struct pollfd observer = { .fd = events[0], .events = POLLIN };
++	require(poll(&observer, 1, 100) == 0,
++		"two runtime lifecycle owners entered concurrently");
++	close(lease);
++	require(poll(&observer, 1, 5000) == 1 &&
++		read(events[0], &event, 1) == 1 && event == 'A',
++		"runtime lifecycle ownership did not transfer");
++	close(events[0]);
++	int contender_status;
++	require(waitpid(contender, &contender_status, 0) == contender &&
++		WIFEXITED(contender_status) && WEXITSTATUS(contender_status) == 0,
++		"runtime lease contender failed");
+ 	struct stat generation_one;
+ 	require(fstat(created->directory_fd, &generation_one) == 0,
+ 		"stat generation one prefix");
