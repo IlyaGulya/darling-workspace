@@ -161,6 +161,36 @@ patches:
     use: spawn-cloexec-guest
     note: Use the prepared rootless runtime; spawned children must check in after CLOEXEC_DEFAULT closes inherited application descriptors.
   sha256sum: 0424b780b0c4d309e63e56cbeae6594acbe045d0c8f93d71b4d36836916e5c8c
+- path: darlingserver/exec-checkin-completion-order.patch
+  module: darling/src/external/darlingserver
+  source-branch: fix/exec-checkin-completion-order
+  source-base: 1422236fb030234ed9ec52216da04087cac9de84
+  source-commit: 0eaf1ec6e9b375691d850d87d2543ef029e44a32
+  bead: dar-gwn.7.2
+  publication-status: blocked
+  publication-blocker: Foundational rootless architecture review and publication remain gated by dar-gwn.7; exec-order runtime acceptance is tracked in dar-gwn.7.2.
+  tests:
+  - name: exec_completion_order_host
+    kind: contract
+    coverage-tier: host
+    runs: host
+    diag: bare
+    runner: c-fixture
+    requires-profile: wget-residual
+    script: tests/exec_completion_test.cpp
+    source-files:
+    - src/utility.cpp
+    cc: c++
+    include-dirs:
+    - internal-include
+    compile-flags:
+    - -std=c++17
+    - -Wall
+    - -Wextra
+    - -Werror
+    - -DNDEBUG
+    timeout-seconds: 60
+  sha256sum: 5c45d90feaf795d8ea8652047b379b03d715479b0110c1deac4fbb0c3bb71de9
 - path: darling/rootless-shutdown-guest-tree.patch
   module: darling
   source-branch: fix/rootless-shutdown-guest-tree
