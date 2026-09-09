@@ -1,4 +1,7 @@
+import ctypes
 import os
+import shlex
+import signal
 import subprocess
 import sys
 import tempfile
@@ -15,6 +18,92 @@ RUNNER = Path(os.environ.get(
     "DARLING_DEBUG_RUNNER_TEST_BINARY",
     ROOT.parent / "darling-debug-runner/target/release/darling-debug-runner",
 ))
+
+
+def forensic_capture_contract(root):
+    started = root / "capture-started"
+    completed = root / "capture-completed"
+    hook = root / "capture.py"
+    hook.write_text(
+        "import time\nfrom pathlib import Path\n"
+        f"Path({str(started)!r}).touch()\n"
+        "time.sleep(17)\n"
+        f"Path({str(completed)!r}).write_text('capture complete\\n')\n"
+    )
+    executor = root / "capture-executor"
+    capture_command = "exec " + shlex.join([sys.executable, str(hook)])
+    # Replace machine-dependent GDB capture with a deterministic slow hook;
+    # DarlingTest still selects its real forensic execution path.
+    executor.write_text(
+        f"#!{sys.executable}\n"
+        "import os, sys\n"
+        "args = sys.argv[1:]\n"
+        "separator = args.index('--')\n"
+        "options = [arg for arg in args[:separator]\n"
+        "           if arg not in {'--capture-gdb', '--capture-tree'}]\n"
+        f"options += ['--poll-seconds', '1', '--capture-command', {capture_command!r}]\n"
+        f"os.execv({str(RUNNER)!r}, [{str(RUNNER)!r}, *options, *args[separator:]])\n"
+    )
+    executor.chmod(0o755)
+    runner = DarlingTest()
+    runner.topdir = str(root)
+    runner._executor = str(executor)
+    runner._bundle_root = root / "forensic-bundles"
+    runner.err = lambda *args, **kwargs: print(*args, file=sys.stderr)
+    invocation = {
+        "name": "forensic-capture-completion",
+        "cwd": root,
+        "diag": "forensic",
+        "timeout_seconds": 1,
+        "shell": False,
+        "args": [sys.executable, "-c", "import time; time.sleep(30)"],
+    }
+
+    # The executor gives its payload a separate session. Adopt its children
+    # so the RED host timeout cannot leave that payload or the hook orphaned.
+    libc = ctypes.CDLL(None, use_errno=True)
+    previous_subreaper = ctypes.c_int()
+    if libc.prctl(37, ctypes.byref(previous_subreaper), 0, 0, 0) != 0:
+        raise OSError(ctypes.get_errno(), "PR_GET_CHILD_SUBREAPER")
+    if libc.prctl(36, 1, 0, 0, 0) != 0:
+        raise OSError(ctypes.get_errno(), "PR_SET_CHILD_SUBREAPER")
+
+    def deadline_expired(signum, frame):
+        raise TimeoutError("forensic capture contract exceeded 45 seconds")
+
+    previous_alarm = signal.signal(signal.SIGALRM, deadline_expired)
+    signal.alarm(45)
+    try:
+        result = runner._run_invocation(invocation)
+        assert result != 0, "timed-out payload unexpectedly succeeded"
+        assert started.is_file(), "forensic capture hook never started"
+        assert completed.is_file(), "host deadline killed unfinished forensic capture"
+    finally:
+        signal.alarm(0)
+        signal.signal(signal.SIGALRM, previous_alarm)
+        try:
+            deadline = time.monotonic() + 5
+            children_path = Path(f"/proc/self/task/{os.getpid()}/children")
+            while True:
+                children = children_path.read_text().split()
+                if not children:
+                    break
+                for child in children:
+                    try:
+                        os.kill(int(child), signal.SIGKILL)
+                    except ProcessLookupError:
+                        pass
+                try:
+                    while os.waitpid(-1, os.WNOHANG)[0]:
+                        pass
+                except ChildProcessError:
+                    pass
+                if time.monotonic() >= deadline:
+                    raise AssertionError("forensic fixture children were not reaped")
+                time.sleep(0.01)
+        finally:
+            if libc.prctl(36, previous_subreaper.value, 0, 0, 0) != 0:
+                raise OSError(ctypes.get_errno(), "restoring child subreaper")
 
 
 def main():
@@ -93,6 +182,7 @@ add_compat_test(NAME guarded_output_contract SOURCE "{root}/failure.c"
             assert os.fsencode(root) not in command, (
                 f"timed-out fixture is still alive: {pid}"
             )
+        forensic_capture_contract(root)
     print("PASS west-test-guarded-timeout-contract")
 
 

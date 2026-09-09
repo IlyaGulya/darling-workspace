@@ -567,7 +567,7 @@ fi
             command._debug_runner_args(child, env=run_env),
             cwd=invocation["cwd"],
             env=run_env,
-            timeout_seconds=int(child["debug_timeout_seconds"]) + 15,
+            timeout_seconds=command._debug_runner_timeout_seconds(child),
             capture_output=True,
         )
         output = result.stdout + result.stderr
