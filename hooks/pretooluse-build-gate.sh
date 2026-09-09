@@ -1,28 +1,23 @@
 #!/usr/bin/env bash
 # Claude Code PreToolUse hook (matcher: Bash) for the Darling workspace.
 #
-# Runs `west darling-doctor` BEFORE any command that looks like a Darling
-# build / deploy / boot, and BLOCKS (exit 2) if the doctor fails. This catches
-# the perf#24c2c-pre detours automatically:
-#   #89  building in the wrong build dir (/usr/local instead of ~/work/darling-build)
-#   #90  a project worktree drifted from its West manifest revision
-# and a deploy that would diverge the prod baseline (dyld/mldr/dserver md5).
+# Runs the pinned doctor before explicit Darling build/deploy/boot commands.
+# Exit 2 blocks a command whose workspace/runtime doctor gate fails.
 #
 # Design:
 #  - NARROW match: only fires on explicit build/deploy/boot patterns, never on
 #    ordinary shell commands.
 #  - ESCAPE HATCH: a command containing DARLING_SKIP_DOCTOR (env or literal) or
 #    `--force`/`--skip-doctor` is allowed through (intentional override).
-#  - FAIL-OPEN on infrastructure problems (no west / not in workspace): never
-#    block work just because the guard itself can't run; only block on a real
-#    doctor failure.
+#  - FAIL-OPEN when mise or the West workspace is unavailable.
 #
 # Contract: reads event JSON on stdin; exit 0 = allow, exit 2 = block (stderr
 # becomes Claude's feedback).
 
 set -uo pipefail
 
-WORKSPACE="${DARLING_WORKSPACE:-$HOME/work/darling-dev}"
+MANIFEST="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
+WORKSPACE="${DARLING_WORKSPACE:-$(dirname -- "$MANIFEST")}"
 
 INPUT="$(cat)"
 
@@ -60,23 +55,23 @@ case "$CMD" in
 esac
 [ "$is_target" -eq 0 ] && exit 0
 
-# Guard can only run if west + workspace are present. Fail-open otherwise.
-if ! command -v west >/dev/null 2>&1; then exit 0; fi
+# Guard requires the pinned task entry and a West workspace.
+if ! command -v mise >/dev/null 2>&1; then exit 0; fi
 if [ ! -d "$WORKSPACE/.west" ]; then exit 0; fi
 
-DOCTOR_OUT="$(cd "$WORKSPACE" && west darling-doctor 2>&1)"
+DOCTOR_OUT="$(mise -C "$WORKSPACE/darling-workspace" run west darling-doctor 2>&1)"
 DOCTOR_RC=$?
 
 if [ "$DOCTOR_RC" -ne 0 ]; then
   {
     echo "BLOCKED by darling-doctor build/deploy/boot gate."
     echo "The command looks like a Darling build/deploy/boot, but"
-    echo "\`west darling-doctor\` reports drift (this is exactly what caused #89/#90):"
+    echo "\`mise run west darling-doctor\` reports a failed gate:"
     echo
     echo "$DOCTOR_OUT"
     echo
-    echo "Fix the drift, or if this override is intentional, re-run the command"
-    echo "with --force (or prefix DARLING_SKIP_DOCTOR=1)."
+    echo "Inspect the complete report, resolve the configuration or deployment"
+    echo "mismatch, and retry through the workspace's managed entrypoint."
   } >&2
   exit 2
 fi

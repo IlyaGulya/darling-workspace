@@ -1,3 +1,18 @@
 [tools]
 uv = "0.8.17"
 "pipx:west" = { version = "1.5.0", depends = ["uv"] }
+
+[tasks.dw]
+description = "Run workspace orchestration"
+file = "bin/dw"
+raw_args = true
+raw = true
+quiet = true
+
+[tasks.west]
+description = "Run pinned West commands"
+run = "exec west"
+dir = "{{cwd}}"
+raw_args = true
+raw = true
+quiet = true

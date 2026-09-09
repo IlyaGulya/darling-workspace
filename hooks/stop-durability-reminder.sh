@@ -2,10 +2,9 @@
 # Claude Code Stop hook for the Darling workspace.
 #
 # When the session is about to stop, warn if there is undurable work:
-#   - an uncommitted manifest repo (darling-workspace) — the most fragile spot,
-#   - or dirty worktrees in tracked repos (dyld / darlingserver / xnu / superproject).
-# This is the gap that nearly lost perf#21b and the entire (uncommitted) manifest
-# repo. See the `darling-durability` skill for the fix procedure.
+#   - an uncommitted manifest repository;
+#   - dirty worktrees in the source forest or independent runner.
+# Follow the darling-durability skill for ownership and preservation rules.
 #
 # It BLOCKS the stop once (decision: block) with a reminder so the work isn't
 # silently abandoned. It NEVER loops: if stop_hook_active is true (we already
@@ -17,7 +16,8 @@
 
 set -uo pipefail
 
-WORKSPACE="${DARLING_WORKSPACE:-$HOME/work/darling-dev}"
+MANIFEST="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
+WORKSPACE="${DARLING_WORKSPACE:-$(dirname -- "$MANIFEST")}"
 MANIFEST="$WORKSPACE/darling-workspace"
 
 INPUT="$(cat)"
@@ -30,7 +30,7 @@ fi
 [ "$active" = "true" ] && exit 0
 
 # Fail-open if the workspace isn't here (wrong machine / not initialized).
-[ -d "$MANIFEST/.git" ] || exit 0
+[ -d "$MANIFEST/.git" ] || [ -f "$MANIFEST/.git" ] || exit 0
 
 warnings=""
 
@@ -42,6 +42,7 @@ fi
 # 2. Dirty worktrees in the repos we actually care about (fast, targeted — not a full west forall).
 for rel in \
     "darling" \
+    "darling-debug-runner" \
     "darling/src/external/dyld" \
     "darling/src/external/darlingserver" \
     "darling/src/external/xnu"; do
@@ -59,7 +60,7 @@ done
 # Nothing at risk → allow stop silently.
 [ -z "$warnings" ] && exit 0
 
-REASON="Undurable Darling work detected before stopping:\n${warnings}\nRun the \`darling-durability\` skill (rescue → commit → \`west dw handoff\` → verify) so this survives any checkout/reset. If you intend to leave it uncommitted on purpose, stop again to proceed."
+REASON="Undurable Darling work detected before stopping:\n${warnings}\nFollow the darling-durability skill: preserve owned source, commit exact paths, run mise run west dw handoff, and verify forest and runner keeper refs. Record any intentionally uncommitted work explicitly. Respect an explicit user stop."
 
 # Emit a block decision (exit 0 + JSON). Prefer jq for safe JSON encoding.
 if command -v jq >/dev/null 2>&1; then

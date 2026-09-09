@@ -185,6 +185,12 @@ source-base host RED/GREEN also passed. `dar-arsg` and `dar-nmda` are closed
 for this local behavior; repeated wget reinstall (`dar-gwn.7`) and publication
 remain separate gates.
 
+This is acceptance evidence for the native-CLT-13.2 prefix, not a general
+Homebrew compatibility verdict. Validate each selected SDK against authoritative
+package metadata and retain provenance; do not invent version metadata or
+suppress SDK compatibility checks. Use [test-infra.md](test-infra.md) for
+managed context/run commands and their separate acceptance criteria.
+
 The subsequent wget run exposed a missing rootless Homebrew resource:
 `etc/resolv.conf`, already installed by the ordinary Darling build. Userland
 commit `681329d6b6cb007e86316c572b138de88f1cfb8b` includes that stock file

@@ -1,6 +1,12 @@
 # Rootless opt-in
 
-The supported user-facing rootless launcher mode is:
+This document specifies the low-level product launcher contract, not the default
+agent launch recipe. For managed preparation, preflight, Homebrew source-build
+attempts and exact diagnostics, use the [context/run workflow](test-infra.md#reproducible-homebrew-build-prerequisites).
+Execute advanced prefix-backed tests with `mise run west test ...` under
+`scripts/west-job.sh start` / `follow`; West owns the prefix lock and cleanup.
+The launcher syntax below is for product/API reference on an appropriately
+prepared prefix, not instructions to bypass that ownership:
 
 ```sh
 DPREFIX=/path/to/a/disposable-prefix darling --rootless shell
@@ -102,10 +108,7 @@ Without `--rootless` or a compatibility override, the launcher selects
 the privileged startup contract, and does not enter rootless startup. The
 option must precede the `shell`, `exec`, `shutdown`, or program-path command.
 
-The canonical publication proposal is append-only. Homebrew Batch 9 contains
-74 ordered entries and appends one prefix-lifecycle series each for
-Darlingserver and Darling after the Batch 8 typed-mode sources. Its changed
-module boundaries are explicitly propagated through the seven-entry Perf and
-nineteen-entry Arch composition locks; existing immutable sources are never
-rewritten. All proposed new bases/sources are verified in independent local
-clean ODBs before any hosted publication is considered.
+Preserve immutable source identity when admitting prefix-lifecycle changes.
+Propagate changed module boundaries through dependent composition locks and
+verify proposed bases/sources in independent clean object databases before
+considering hosted publication.

@@ -105,7 +105,7 @@ records. Recovery no longer applies them: regenerate an mbox from immutable
 locks with:
 
 ```text
-west patch export-locks --profile <homebrew|perf|arch> --output <new-directory>
+mise run west patch export-locks --profile <homebrew|perf|arch> --output <new-directory>
 ```
 
 The output path must not exist. The object-bearing transaction is removed

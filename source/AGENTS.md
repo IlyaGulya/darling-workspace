@@ -1,219 +1,87 @@
 # Local Darling agent instructions
 
-Workspace coordination lives in the sibling private control repository, not in
-Darling Git history.
+Workspace coordination belongs to the private manifest repository, not Darling
+Git history. Resolve the actual West workspace and read its `darling-workspace/AGENTS.md`
+before editing source. That file owns the complete current workflow; this template
+is the source-checkout entry point, not a second policy implementation.
 
-```bash
-../darling-workspace/bin/dw beads ready
-../darling-workspace/bin/dw beads show <id>
-../darling-workspace/bin/dw beads update <id> --status=in_progress
-../darling-workspace/bin/dw sync
+For a normal sibling layout, commands below run from the Darling source root.
+For separate `fix/*` worktrees, resolve the manifest path from workspace
+configuration before choosing command paths.
+
+## Managed diagnostics
+
+```sh
+mise -C ../darling-workspace run dw dev context NAME --prefix /absolute/path/to/prefix
+mise -C ../darling-workspace run dw dev run homebrew-prepare
+mise -C ../darling-workspace run dw dev run homebrew-preflight
+mise -C ../darling-workspace run dw dev run exact-capture
+mise -C ../darling-workspace run dw dev run homebrew-source
 ```
 
-Do not add `.beads/`, `AGENTS.md`, `pr-drafts/`, `.bv/`, or other agent state
-to Darling commits. The `br` examples below must be run through
-`../darling-workspace/bin/dw beads` so they use the shared control repository.
+Configure the context once. A new bootstrap prefix must be absent or empty.
+`dev run` owns the pinned environment, default executor build, job observation
+and normal West prefix lifecycle. Use `--dry-run` to inspect the command without
+launching; `--context` and explicit run overrides do not rewrite configuration.
+Use the printed `dev follow JOB` and `dev cancel JOB` commands for existing jobs.
+Execute registered scenarios through initialized West command state and its
+prefix-scoped lifecycle owner.
 
-## Darling workspace rules
+Other registered tests are available through `mise run dw test`. Advanced long
+commands use the manifest's `scripts/west-job.sh start` and attached `follow`;
+`status` is for recovery. Do not overlap runs using one prefix. Phase/log age is
+an observation, not proof of a hang. Runner stdout/stderr and Homebrew log
+directories are registered automatically; `--forward-output` is later replay.
 
-- Use `west dw beads ...` for Beads in this workspace; do not run raw `br`
-  from Darling source unless routed through `darling-workspace`.
-- Do not push upstream. Only push to the user's forks with explicit approval;
-  the default workflow is local-only.
-- Patch workflow: clean `fix/*` branches are canonical source; `patches.yml`,
-  patch files, and `west.lock.yml` are portable integration artifacts. After
-  editing a source branch, regenerate the patch, update full `source-commit`
-  and `sha256sum`, then run `west patch verify` and
-  `west patch status --strict`.
-- Every non-documentation fix patch must carry a committed red test in the
-  patchset: a runnable regression, contract, gate, or focused repro that fails
-  on the pre-fix tree and passes with the fix. If the test must land as a
-  follow-up patch, it must use the same Bead and be in the same profile before
-  the fix is considered complete. Runtime/manual validation is useful evidence
-  but is not a substitute for a committed red test; any exception must be
-  explicit in the Bead and patch metadata.
-- Prefer patch-local red tests: put the minimal proof in the same source repo
-  and profile entry as the fix when practical. Do not require a separate
-  upstream `darling-testsuite` patch for local completion; use that suite as the
-  portable testcase style/future upstream destination. Record runnable proof in
-  `patches.yml` `tests:` metadata, or a machine-readable `test-exception:`.
-- Runtime deploys must keep the launcher prefix and any test `DPREFIX` in sync.
-  Prefer `west darling-build --deploy --deploy-extra-prefix "$DPREFIX" ...`;
-  otherwise verify matching closure dylib md5s before trusting runtime results.
-- `libsystem_kernel.dylib` changes can also affect dyld's statically linked
-  `emulation_dyld` objects. Do not validate signal/RPC/libsystem_kernel
-  behavior with `--no-deploy-dyld` unless you explicitly mean closure-only
-  validation and record that limitation; otherwise rebuild/deploy dyld too.
-- Never run concurrent raw `ninja` commands against the same Darling build dir.
-  Use `west darling-build` for deployable builds because it serializes the
-  build dir.
-- If a runner, cleanboot, shellspawn, or deploy tool flakes/hangs,
-  create/update a Bead and add timeout/diagnostics while the repro is fresh.
-- Run `west dw handoff` before ending after Beads, patchset, or private branch
-  changes.
-- The generated Beads checklists below mention `git push`; in this fork
-  workflow, that step is disabled unless the user explicitly asks for a push.
+A native-tools preflight pass is not a complete Homebrew source-build pass.
+Derive SDK/runtime identities from authoritative metadata and validate their
+compatibility; keep failing gates open without spoofing versions or disabling
+package-manager checks. Exact-capture success verifies a deliberately timed-out
+guest's image/core/registers and cleanup; archive completeness is independent.
 
-<!-- br-agent-instructions-v1 -->
+## Issues and source ownership
 
----
+The `dw` and `west` mise tasks own the pinned environment for every command.
+Use the West task for Beads:
 
-## Beads Workflow Integration
-
-This project uses [beads_rust](https://github.com/Dicklesworthstone/beads_rust) (`br`/`bd`) for issue tracking. Issues are stored in `.beads/` and tracked in git.
-
-### Essential Commands
-
-```bash
-# View ready issues (open, unblocked, not deferred)
-br ready              # or: bd ready
-
-# List and search
-br list --status=open # All open issues
-br show <id>          # Full issue details with dependencies
-br search "keyword"   # Full-text search
-
-# Create and update
-br create --title="..." --description="..." --type=task --priority=2
-br update <id> --status=in_progress
-br close <id> --reason="Completed"
-br close <id1> <id2>  # Close multiple issues at once
-
-# Sync with git
-br sync --flush-only  # Export DB to JSONL
-br sync --status      # Check sync status
+```sh
+mise -C ../darling-workspace run west dw beads ready
+mise -C ../darling-workspace run west dw beads show <id>
+mise -C ../darling-workspace run west dw beads update <id> --status=in_progress
+mise -C ../darling-workspace run west dw beads comment <id> "Evidence or blocker"
 ```
 
-### Workflow Pattern
+Do not run raw `br`/`bd` from source or create a second issue database. Optional
+`bv --robot-*` triage belongs in the manifest directory; recheck issue state with
+`west dw beads` before claiming. Never launch an unattended interactive `bv`.
 
-1. **Start**: Run `br ready` to find actionable work
-2. **Claim**: Use `br update <id> --status=in_progress`
-3. **Work**: Implement the task
-4. **Complete**: Use `br close <id>`
-5. **Sync**: Always run `br sync --flush-only` at session end
+- Edit canonical clean `fix/*` branches. Integration branches and profile locks
+  are generated; do not edit or publish them.
+- Export source changes through `west patch export`, refreshing full source SHA
+  and checksum together. Preserve publication blockers and use focused profile
+  verification. Follow the manifest's behavioral coverage and RED-proof rules;
+  source-text matching or an unrelated startup failure is not regression proof.
+- Use declared runtime providers for build/deploy/restore. For manual focused
+  validation, use serialized `west darling-build`; never race raw Ninja builds.
+  A libsystem_kernel behavior change also requires dyld deployment because dyld
+  contains a static emulation path. Do not validate against remembered hashes.
+- Keep `.beads/`, agent instructions, PR drafts and handoff state out of source
+  commits. Stage exact owned paths; do not absorb unrelated work.
 
-### Key Concepts
+## Completion and durability
 
-- **Dependencies**: Issues can block other issues. `br ready` shows only open, unblocked work.
-- **Priority**: P0=critical, P1=high, P2=medium, P3=low, P4=backlog (use numbers 0-4, not words)
-- **Types**: task, bug, feature, epic, chore, docs, question
-- **Blocking**: `br dep add <issue> <depends-on>` to add dependencies
+1. Record actual verdicts, diagnostic paths and unresolved blockers in the Bead.
+   Preserve full bootstrap failure evidence before interpreting a restored prefix.
+2. Commit owned source changes and refresh their portable patch metadata; commit
+   owned manifest changes separately. No blanket staging or automatic push.
+3. Run `mise -C ../darling-workspace run west dw handoff` after Bead/private-ref
+   changes, then commit only the files that handoff actually changed.
+4. Verify every changed canonical tip in its keeper bundle. A forest handoff may
+   omit sibling tooling repositories; preserve those explicitly. Local contexts
+   and diagnostic archives are not product patches.
+5. No push or mutating PR operation without explicit approval for that action and
+   destination. Fork approval never permits an upstream mutation.
 
-### Session Protocol
-
-**Before ending any session, run this checklist:**
-
-```bash
-git status              # Check what changed
-git add <files>         # Stage code changes
-br sync --flush-only    # Export beads changes to JSONL
-git commit -m "..."     # Commit everything
-git push                # Push to remote
-```
-
-### Best Practices
-
-- Check `br ready` at session start to find available work
-- Update status as you work (in_progress → closed)
-- Create new issues with `br create` when you discover tasks
-- Use descriptive titles and set appropriate priority/type
-- Always sync before ending session
-
-<!-- end-br-agent-instructions -->
-
-<!-- bv-agent-instructions-v2 -->
-
----
-
-## Beads Workflow Integration
-
-This project uses [beads_rust](https://github.com/Dicklesworthstone/beads_rust) (`br`) for issue tracking and [beads_viewer](https://github.com/Dicklesworthstone/beads_viewer) (`bv`) for graph-aware triage. Issues are stored in `.beads/` and tracked in git.
-
-### Using bv as an AI sidecar
-
-bv is a graph-aware triage engine for Beads projects (.beads/beads.jsonl). Instead of parsing JSONL or hallucinating graph traversal, use robot flags for deterministic, dependency-aware outputs with precomputed metrics (PageRank, betweenness, critical path, cycles, HITS, eigenvector, k-core).
-
-**Scope boundary:** bv handles *what to work on* (triage, priority, planning). `br` handles creating, modifying, and closing beads.
-
-**CRITICAL: Use ONLY --robot-* flags. Bare bv launches an interactive TUI that blocks your session.**
-
-#### The Workflow: Start With Triage
-
-**`bv --robot-triage` is your single entry point.** It returns everything you need in one call:
-- `quick_ref`: at-a-glance counts + top 3 picks
-- `recommendations`: ranked actionable items with scores, reasons, unblock info
-- `quick_wins`: low-effort high-impact items
-- `blockers_to_clear`: items that unblock the most downstream work
-- `project_health`: status/type/priority distributions, graph metrics
-- `commands`: copy-paste shell commands for next steps
-
-```bash
-bv --robot-triage        # THE MEGA-COMMAND: start here
-bv --robot-next          # Minimal: just the single top pick + claim command
-
-# Token-optimized output (TOON) for lower LLM context usage:
-bv --robot-triage --format toon
-```
-
-Before claiming, verify current state with `br show <id> --json` or `br ready --json`. `recommendations` can include graph-important blocked or assigned work; only `quick_ref.top_picks` and non-empty `claim_command` fields represent claimable work.
-
-#### Other bv Commands
-
-| Command | Returns |
-|---------|---------|
-| `--robot-plan` | Parallel execution tracks with unblocks lists |
-| `--robot-priority` | Priority misalignment detection with confidence |
-| `--robot-insights` | Full metrics: PageRank, betweenness, HITS, eigenvector, critical path, cycles, k-core |
-| `--robot-alerts` | Stale issues, blocking cascades, priority mismatches |
-| `--robot-suggest` | Hygiene: duplicates, missing deps, label suggestions, cycle breaks |
-| `--robot-diff --diff-since <ref>` | Changes since ref: new/closed/modified issues |
-| `--robot-graph [--graph-format=json\|dot\|mermaid]` | Dependency graph export |
-
-#### Scoping & Filtering
-
-```bash
-bv --robot-plan --label backend              # Scope to label's subgraph
-bv --robot-insights --as-of HEAD~30          # Historical point-in-time
-bv --recipe actionable --robot-plan          # Pre-filter: ready to work (no blockers)
-bv --recipe high-impact --robot-triage       # Pre-filter: top PageRank scores
-```
-
-### br Commands for Issue Management
-
-```bash
-br ready              # Show issues ready to work (no blockers)
-br list --status=open # All open issues
-br show <id>          # Full issue details with dependencies
-br create --title="..." --type=task --priority=2
-br update <id> --status=in_progress
-br close <id> --reason="Completed"
-br close <id1> <id2>  # Close multiple issues at once
-br sync --flush-only  # Export DB to JSONL
-```
-
-### Workflow Pattern
-
-1. **Triage**: Run `bv --robot-triage` to find the highest-impact actionable work
-2. **Claim**: Use `br update <id> --status=in_progress`
-3. **Work**: Implement the task
-4. **Complete**: Use `br close <id>`
-5. **Sync**: Always run `br sync --flush-only` at session end
-
-### Key Concepts
-
-- **Dependencies**: Issues can block other issues. `br ready` shows only unblocked work.
-- **Priority**: P0=critical, P1=high, P2=medium, P3=low, P4=backlog (use numbers 0-4, not words)
-- **Types**: task, bug, feature, epic, chore, docs, question
-- **Blocking**: `br dep add <issue> <depends-on>` to add dependencies
-
-### Session Protocol
-
-```bash
-git status              # Check what changed
-git add <files>         # Stage code changes
-br sync --flush-only    # Export beads changes to JSONL
-git commit -m "..."     # Commit everything
-git push                # Push to remote
-```
-
-<!-- end-bv-agent-instructions -->
+The manifest's `mise run dw setup-local` installs this template only when no source
+instruction file exists. It preserves differing installed copies: inspect local
+additions and synchronize the installed file with the template explicitly.

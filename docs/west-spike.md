@@ -1,5 +1,10 @@
 # West backend validation
 
+> Historical June 2026 spike and acceptance record, not a current operator
+> runbook. The `repo` fallback, local paths and remaining adoption gates below
+> describe that migration stage. Use the [workspace README](../README.md) for
+> current setup, managed dev scenarios, mise/West commands and handoff.
+
 West is the selected workspace backend. The `repo` implementation remains
 available as a rollback/bootstrap reference until the first integration
 profile and branch migration are complete.
