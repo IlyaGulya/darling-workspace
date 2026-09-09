@@ -106,9 +106,18 @@ import sys
 import time
 
 job, root = sys.argv[1], Path(sys.argv[2])
+sys.path.insert(0, str(Path(job).resolve().parents[1] / "west_commands"))
+from test_homebrew import _register_build_logs
+
 state = root / "activity state"
 activity = root / "guest activity.log"
 done = root / "activity.done"
+work = root / "homebrew work"
+work.mkdir()
+build_log = work / "logs/lz4/01.make"
+runner_log = root / "runner stdout.log"
+unregistered = root / "unregistered.log"
+unregistered.write_text("PRIVATE_UNREGISTERED_OUTPUT\n")
 subprocess.run([
     job, "start", "--state-dir", str(state), "--activity-log", str(activity),
     "--", sys.executable, "-c",
@@ -156,6 +165,32 @@ try:
     progress("unavailable", activity)
     Path(str(done) + ".build").touch()
     progress("runtime phase start: GREEN build", state / "log")
+    # A staged resource registers directories before the guest creates them.
+    _register_build_logs({"WEST_JOB_STATE_DIR": str(state)}, work)
+    build_log.parent.mkdir(parents=True)
+    build_log.write_text("STOCK_PHASE=source-build\nBUILD_OUTPUT_FIRST\n")
+    progress("STOCK_PHASE=source-build", build_log)
+    assert b"BUILD_OUTPUT_FIRST\n" in transcript, transcript
+    assert observer.poll() is None
+    # Stdout is data, never a path-registration channel. Partial publications
+    # are invisible until the producer's rename, even if otherwise well-formed.
+    with (state / "log").open("a") as output:
+        output.write(f"BUNDLE={unregistered}\n")
+    temporary = state / "activity-logs.d/runner.tmp"
+    temporary.write_bytes(b"file\0" + os.fsencode(runner_log) + b"\0")
+    runner_log.write_text("WEST_GUEST_STAGE=runner-output\nRUNNER_OUTPUT_FIRST\n")
+    with build_log.open("a") as output:
+        output.write("STOCK_PHASE=publication-barrier\n")
+    progress("STOCK_PHASE=publication-barrier", build_log)
+    assert b"RUNNER_OUTPUT_FIRST" not in transcript, transcript
+    temporary.rename(temporary.with_suffix(".logs"))
+    progress("WEST_GUEST_STAGE=runner-output", runner_log)
+    assert b"RUNNER_OUTPUT_FIRST\n" in transcript, transcript
+    rotated = build_log.with_suffix(".replacement")
+    rotated.write_text("STOCK_PHASE=rotated-build\nBUILD_OUTPUT_ROTATED\n")
+    rotated.replace(build_log)
+    progress("STOCK_PHASE=rotated-build", build_log)
+    assert b"BUILD_OUTPUT_ROTATED\n" in transcript, transcript
     activity.write_text("STOCK_PHASE=config")
     # A partial record must join the next append, not become a bogus stage.
     with activity.open("a") as output:
@@ -174,12 +209,15 @@ try:
     progress("unavailable", activity)
     activity.write_text("WEST_GUEST_STAGE=cleanup\n")
     progress("WEST_GUEST_STAGE=cleanup", activity)
+    (build_log.parent / "02.final").write_text("BUILD_OUTPUT_FINAL\n")
     done.touch()
     rest, errors = observer.communicate(timeout=10)
     transcript += rest
     assert observer.returncode == 0, (transcript, errors)
     assert b"runtime phase complete: GREEN build" in transcript, transcript
     assert f"completed rc=0 state={state}".encode() in transcript, transcript
+    assert b"PRIVATE_UNREGISTERED_OUTPUT" not in transcript, transcript
+    assert b"BUILD_OUTPUT_FINAL\n" in transcript, transcript
 finally:
     if observer.poll() is None:
         observer.terminate()
@@ -198,6 +236,9 @@ line = next(line for line in resumed.stdout.splitlines()
 assert "stage='WEST_GUEST_STAGE=cleanup'" in line, line
 assert int(re.search(r"log-change-age=(\d+)s", line)[1]) >= 60, line
 assert f"log={str(root / 'missing optional.log')!r} stage='unavailable'" in resumed.stdout
+assert "BUILD_OUTPUT_ROTATED\n" in resumed.stdout, resumed.stdout
+assert "RUNNER_OUTPUT_FIRST\n" in resumed.stdout, resumed.stdout
+assert "PRIVATE_UNREGISTERED_OUTPUT" not in resumed.stdout, resumed.stdout
 PY
 
 if CODEX_CI=1 env -u WEST_JOB_ACTIVE -u WEST_JOB_STATE_DIR "$metadata_contract" \

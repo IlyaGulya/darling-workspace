@@ -27,6 +27,7 @@ STABLE_FIELDS = (
     "actual_size",
     "actual_sha1",
     "actual_sha256",
+    "xar_toc_sha1",
     "api_sha1_status",
     "pkgutil_status",
     "certificate_fingerprints",
@@ -42,6 +43,12 @@ def read_rows(path: Path) -> dict[str, dict[str, str]]:
     for package_id, row in result.items():
         if row.get("pkgutil_status") != "SIGNATURE_VALID_NOT_REVIEWED":
             raise ValueError(f"{path}: {package_id} has an unreviewed signature result")
+        if (
+            row.get("api_sha1_status") != "MATCH"
+            or not row.get("xar_toc_sha1")
+            or row["xar_toc_sha1"] != (row.get("api_sha1") or "").lower()
+        ):
+            raise ValueError(f"{path}: {package_id} lacks matching catalog/XAR TOC evidence")
     return result
 
 

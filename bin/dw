@@ -2,6 +2,13 @@
 set -euo pipefail
 
 DW_ROOT="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
+# User-facing West entry: always use this workspace's pinned tool environment.
+case "${1:-}" in
+  dev|test|config)
+    cd "$DW_ROOT"
+    exec mise -C "$DW_ROOT" exec -- west "$@"
+    ;;
+esac
 if [[ -f "$DW_ROOT/workspace.env" ]]; then
   # shellcheck disable=SC1091
   source "$DW_ROOT/workspace.env"
@@ -183,6 +190,9 @@ usage() {
 Usage: dw <command> [args]
 
 Commands:
+  dev [...]         Managed scenarios, contexts, jobs and feature workflow
+  test [...]        Run West tests in the pinned project environment
+  config [...]      Read or write West workspace configuration
   status            Show source and active submodule state
   dirty             Show only repositories with worktree changes
   bootstrap DIR [URL]

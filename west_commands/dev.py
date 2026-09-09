@@ -6,6 +6,7 @@ import json
 from pathlib import Path
 import shlex
 import shutil
+import subprocess
 import sys
 from typing import Any
 
@@ -396,6 +397,8 @@ class DarlingDev(WestCommand):
     def do_add_parser(self, parser_adder):
         parser = parser_adder.add_parser(self.name, description=self.description)
         subparsers = parser.add_subparsers(dest="action", required=True)
+        from dev_scenarios import add_scenario_parsers
+        add_scenario_parsers(subparsers)
 
         profiles = subparsers.add_parser(
             "profiles", help="discover patch and CTest runtime profiles"
@@ -491,6 +494,13 @@ class DarlingDev(WestCommand):
         if unknown:
             self.err(f"unknown arguments: {' '.join(unknown)}")
             raise SystemExit(2)
+        if args.action in ("context", "run", "follow", "cancel"):
+            from dev_scenarios import run_scenario_action
+            try:
+                run_scenario_action(self, args, _west_argv())
+            except (OSError, RuntimeError, ValueError, subprocess.CalledProcessError) as error:
+                self.die(str(error))
+            return
         if args.action == "profiles" and args.completion == "bash":
             self.inf(bash_profile_completion().rstrip("\n"))
             return

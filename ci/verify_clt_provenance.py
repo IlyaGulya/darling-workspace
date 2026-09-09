@@ -62,6 +62,7 @@ TSV_FIELDS = (
     "actual_size",
     "actual_sha1",
     "actual_sha256",
+    "xar_toc_sha1",
     "api_sha1_status",
     "pkgutil_status",
     "certificate_fingerprints",
@@ -198,32 +199,40 @@ def download_package(package: dict[str, Any], output: Path) -> tuple[Path, dict[
         raise VerificationError(f"cannot download {package_id}: {error}") from error
 
 
-def sha256(path: Path) -> str:
-    digest = hashlib.sha256()
+def _file_digests(path: Path, *algorithms: str) -> tuple[str, ...]:
+    digests = [hashlib.new(algorithm) for algorithm in algorithms]
     with path.open("rb") as stream:
         for chunk in iter(lambda: stream.read(1024 * 1024), b""):
-            digest.update(chunk)
-    return digest.hexdigest()
+            for digest in digests:
+                digest.update(chunk)
+    return tuple(digest.hexdigest() for digest in digests)
+
+
+def sha256(path: Path) -> str:
+    return _file_digests(path, "sha256")[0]
 
 
 def sha1(path: Path) -> str:
-    digest = hashlib.sha1()
-    with path.open("rb") as stream:
-        for chunk in iter(lambda: stream.read(1024 * 1024), b""):
-            digest.update(chunk)
-    return digest.hexdigest()
+    return _file_digests(path, "sha1")[0]
 
 
-def xar_certificates(path: Path) -> list[bytes]:
+def _read_xar_toc(path: Path) -> tuple[bytes, int]:
     file_size = path.stat().st_size
     with path.open("rb") as stream:
         header = stream.read(XAR_HEADER_SIZE)
         if len(header) != XAR_HEADER_SIZE:
             raise VerificationError(f"{path.name}: truncated XAR header")
-        magic, header_size, version, toc_compressed, toc_uncompressed, _ = struct.unpack(
+        magic, header_size, version, toc_compressed, toc_uncompressed, checksum = struct.unpack(
             ">4sHHQQI", header
         )
-        if magic != b"xar!" or version != 1 or header_size < XAR_HEADER_SIZE:
+        if (
+            magic != b"xar!"
+            or version != 1
+            or header_size < XAR_HEADER_SIZE
+            or checksum != 1
+            or toc_compressed == 0
+            or toc_uncompressed == 0
+        ):
             raise VerificationError(f"{path.name}: invalid XAR header")
         if header_size > MAX_XAR_HEADER_SIZE:
             raise VerificationError(f"{path.name}: XAR header exceeds safety bound")
@@ -231,17 +240,30 @@ def xar_certificates(path: Path) -> list[bytes]:
             raise VerificationError(f"{path.name}: compressed XAR TOC exceeds safety bound")
         if toc_uncompressed > MAX_XAR_TOC_UNCOMPRESSED:
             raise VerificationError(f"{path.name}: uncompressed XAR TOC exceeds safety bound")
-        if header_size + toc_compressed > file_size:
+        if header_size + toc_compressed + 20 > file_size:
             raise VerificationError(f"{path.name}: XAR TOC exceeds file size")
         stream.seek(header_size - XAR_HEADER_SIZE, 1)
         compressed_toc = stream.read(toc_compressed)
+        if len(compressed_toc) != toc_compressed:
+            raise VerificationError(f"{path.name}: truncated compressed XAR TOC")
+    return compressed_toc, toc_uncompressed
+
+
+def xar_toc_sha1(path: Path) -> str:
+    """Hash the compressed XAR TOC identified by the Darling catalog digest."""
+    compressed_toc, _ = _read_xar_toc(path)
+    return hashlib.sha1(compressed_toc).hexdigest()
+
+
+def xar_certificates(path: Path) -> list[bytes]:
+    compressed_toc, toc_uncompressed = _read_xar_toc(path)
     try:
         decompressor = zlib.decompressobj()
         toc = decompressor.decompress(compressed_toc, MAX_XAR_TOC_UNCOMPRESSED + 1)
         if len(toc) > MAX_XAR_TOC_UNCOMPRESSED or decompressor.unconsumed_tail:
             raise VerificationError(f"{path.name}: XAR TOC decompression exceeds safety bound")
         toc += decompressor.flush(MAX_XAR_TOC_UNCOMPRESSED + 1 - len(toc))
-        if len(toc) > MAX_XAR_TOC_UNCOMPRESSED or not decompressor.eof:
+        if len(toc) > MAX_XAR_TOC_UNCOMPRESSED or not decompressor.eof or decompressor.unused_data:
             raise VerificationError(f"{path.name}: incomplete or oversized XAR TOC")
         if len(toc) != toc_uncompressed:
             raise VerificationError(
@@ -346,15 +368,15 @@ def package_row(package: dict[str, Any], output: Path) -> dict[str, str]:
         raise VerificationError(
             f"{package_id}: downloaded size {actual_size}, catalog says {catalog_size}"
         )
-    actual_sha1 = sha1(path)
-    actual_sha256 = sha256(path)
+    toc_sha1 = xar_toc_sha1(path)
+    if toc_sha1 != str(package["api_sha1"]).lower():
+        raise VerificationError(
+            f"{package_id}: compressed XAR TOC SHA-1 {toc_sha1} "
+            f"does not match catalog digest {package['api_sha1']}"
+        )
+    actual_sha1, actual_sha256 = _file_digests(path, "sha1", "sha256")
     cert_fingerprints = certificate_report(path, output, package_id)
     pkgutil_status = pkgutil_report(path, output, package_id)
-    api_sha1_status = (
-        "MATCH"
-        if actual_sha1.lower() == str(package["api_sha1"]).lower()
-        else "STALE_OR_REPUBLISHED_CATALOG_METADATA_UNPROVEN"
-    )
     return {
         "package_id": package_id,
         "catalog_url": str(package["catalog_url"]),
@@ -369,7 +391,8 @@ def package_row(package: dict[str, Any], output: Path) -> dict[str, str]:
         "actual_size": str(actual_size),
         "actual_sha1": actual_sha1,
         "actual_sha256": actual_sha256,
-        "api_sha1_status": api_sha1_status,
+        "xar_toc_sha1": toc_sha1,
+        "api_sha1_status": "MATCH",
         "pkgutil_status": pkgutil_status,
         "certificate_fingerprints": cert_fingerprints,
     }
@@ -416,7 +439,7 @@ def write_provenance(
         )
         stream.write(f"trust_status: {trust_status}\n")
         stream.write("sha256_policy: observation only; no provider allowlist comparison performed\n")
-        stream.write("api_sha1_policy: mismatch is recorded as stale_or_republished_catalog_metadata_unproven\n")
+        stream.write("api_sha1_policy: must match SHA-1 of the compressed XAR TOC, not the full payload; not publisher authentication\n")
         for row in rows:
             stream.write("\n[package]\n")
             for field in TSV_FIELDS:

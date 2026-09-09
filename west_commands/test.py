@@ -158,6 +158,8 @@ class DarlingTest(ProfileOperationsMixin, BootstrapRuntimeProfileMixin, WestComm
 
     def do_add_parser(self, parser_adder):
         parser = parser_adder.add_parser(self.name, description=self.description)
+        parser.add_argument("--diagnostic", choices=("exact-capture",),
+                            help="run a managed live diagnostic acceptance scenario")
         parser.add_argument(
             "--changed",
             action="store_true",
@@ -5319,6 +5321,15 @@ class DarlingTest(ProfileOperationsMixin, BootstrapRuntimeProfileMixin, WestComm
             if runtime_build_timeout_seconds <= 0:
                 self.die("--runtime-build-timeout-seconds must be > 0")
             self._runtime_build_timeout_seconds = runtime_build_timeout_seconds
+
+        if getattr(args, "diagnostic", None):
+            if (args.profile or args.patch or args.bead or args.list or args.prove_red
+                    or args.keep_prefix_running or args.bootstrap_runtime_profile or unknown):
+                self.die("--diagnostic cannot be combined with test selection, bootstrap, or keep-running")
+            if len(args.with_runtime_profile) != 1:
+                self.die("--diagnostic requires one --with-runtime-profile retained provider")
+            from test_diagnostics import run_exact_capture
+            raise SystemExit(run_exact_capture(self, args.with_runtime_profile[0]))
 
         evidence_action = getattr(args, "runtime_evidence", None)
         evidence_id = getattr(args, "runtime_evidence_id", None)

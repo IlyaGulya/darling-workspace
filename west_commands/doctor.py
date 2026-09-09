@@ -131,6 +131,12 @@ class DarlingDoctor(WestCommand):
             help="additional runtime/test prefix whose critical closure dylibs must match --prefix "
             "(repeatable; DARLING_TEST_PREFIX is also checked when set)",
         )
+        p.add_argument(
+            "--scope",
+            choices=("all", "workspace", "runtime"),
+            default="all",
+            help="check workspace drift, runtime postconditions, or both (default: all)",
+        )
         output = p.add_mutually_exclusive_group()
         output.add_argument(
             "--full",
@@ -166,27 +172,34 @@ class DarlingDoctor(WestCommand):
 
         attempts = (
             (
+                "workspace",
                 "1. West manifest revision vs working-tree HEAD",
                 lambda: self._check_manifest_drift(topdir, args),
             ),
             (
+                "runtime",
                 "2. build-dir install-prefix vs deployed launcher",
                 lambda: self._check_build_prefix(topdir, args),
             ),
             (
+                "runtime",
                 "2b. prefix boot prerequisites",
                 lambda: self._check_prefix_boot_prereqs(args),
             ),
             (
+                "runtime",
                 "3. deployed binaries vs known-good baseline",
                 lambda: self._check_baseline(args),
             ),
             (
+                "runtime",
                 "4. extra runtime prefixes vs primary prefix",
                 lambda: self._check_extra_prefixes(args),
             ),
         )
-        for section, attempt in attempts:
+        for scope, section, attempt in attempts:
+            if args.scope not in ("all", scope):
+                continue
             try:
                 attempt()
             except Exception as error:
@@ -268,6 +281,8 @@ class DarlingDoctor(WestCommand):
             f"--prefix={args.prefix}",
             f"--build-dir={args.build_dir}",
         ]
+        if args.scope != "all":
+            command.append(f"--scope={args.scope}")
         for option, attribute in (
             ("--expect-dyld-md5", "expect_dyld_md5"),
             ("--expect-mldr-md5", "expect_mldr_md5"),
@@ -302,6 +317,7 @@ class DarlingDoctor(WestCommand):
             "returncode": 0 if state == "healthy" else 1,
             "inputs": {
                 "workspace": str(Path(self.topdir)),
+                "scope": args.scope,
                 "build_dir": str(args.build_dir),
                 "prefix": str(args.prefix),
                 "extra_prefixes": [str(value) for value in args.extra_prefix],
