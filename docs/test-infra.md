@@ -327,8 +327,8 @@ prerequisites to preserve exact replay identity, rather than weakening the
 range-diff or stable-patch-ID checks.
 These inputs stay outside generated `handoff/`, which the transactional handoff
 replaces wholesale. `source-bundles/darling-debug-runner.bundle` separately
-preserves `fix/forward-guarded-output`; the Darling-forest handoff does not include
-this sibling tools repository.
+preserves `fix/forward-guarded-output` and `fix/exact-prefix-capture`; the
+Darling-forest handoff does not include this sibling tools repository.
 
 The supported current-minus runtime now fails at the guest-visible ENOENT
 waitable-child oracle; the fixed runtime passes all five scenarios above.
@@ -424,6 +424,42 @@ The retained libunistring `test-categ_Zs` and `test-u32-prev` inputs also passed
 `dar-gwn7-unistring-rebuild-stress-job` exited 0. The earlier intermittent compiler
 stall did not recur, so its localization remains open rather than being
 attributed to the kqueue fix without evidence.
+
+### Reproducible Homebrew build prerequisites (dar-gwn.9)
+
+The opt-in `homebrew-lz4-source` runtime profile now uses `wget-residual` and
+the source-owned `rootless_toolchain` component. It includes native `cut`,
+system `openssl` with its configuration/certificate data, and Perl 5.18/5.28
+standard libraries and XS bundles. Perl uses its normal CMake install rules,
+staged through `DESTDIR`; absolute dSYM destinations must not populate the
+live prefix before West deployment. Explicit component providers take
+precedence over duplicate build/staging copies during Mach-O closure discovery.
+
+Start with a **new empty directory**, not an untyped populated prefix:
+
+```sh
+prefix=/absolute/path/to/new-homebrew-prefix
+mkdir "$prefix"
+scripts/west-job.sh start --state-dir /absolute/path/to/bootstrap-job -- \
+  mise exec -- west test --bootstrap-runtime-profile homebrew-lz4-source \
+  --prefix "$prefix"
+scripts/west-job.sh follow --state-dir /absolute/path/to/bootstrap-job
+
+scripts/west-job.sh start --state-dir /absolute/path/to/preflight-job -- \
+  mise exec -- west test --profile wget-residual \
+  --patch darling/homebrew-prefix-tooling.patch --env darling \
+  --prefix "$prefix" --reuse-prefix-runtime
+scripts/west-job.sh follow --state-dir /absolute/path/to/preflight-job
+```
+
+The preflight executes field extraction, Perl SHA-256/POSIX/Socket operations
+and XS loading, and system OpenSSL X509 fingerprinting. The host requires the
+guest verdict as well as successful transport. The `homebrew-lz4` resource runs
+this preflight before downloading/staging stock brew inputs. No formula changes,
+insecure TLS options, or binary-only Perl installation are involved.
+The separate host `homebrew_component_staging_isolation` contract exercises real
+CMake relative/absolute installs and symlinks, including prefix paths with spaces.
+
 
 ### Native applicability and migration gates
 
@@ -1034,8 +1070,10 @@ manual debug loop.
 For patch metadata, `diag: guarded` and `diag: forensic` are enforced by
 `west test`, not by each script. `guarded` wraps the structured invocation in
 `darling-debug-runner run --timeout-seconds ...`, writes a small debug bundle,
-and kills the process group on timeout. `forensic` adds process-tree and GDB
-capture. The runner is resolved from `--executor`, `PATH`, or the checked-out
+and uses prefix-owned shutdown for guest commands (process-group termination for
+generic commands). `forensic` adds `--capture-exact --capture-tree`, plus exact
+prefix ownership selection for detached guests, before shutdown or artifact
+restoration. The runner is resolved from `--executor`, `PATH`, or the checked-out
 `darling-debug-runner` west project (`target/release` preferred, then
 `target/debug`). If a non-bare test is executed without a runner, `west test`
 fails before launching the test. `--list` is still offline and shows the wrapper
@@ -1045,6 +1083,29 @@ reserves 300 seconds after a forensic executor's deadline for capture and
 cleanup, rather than the ordinary 15-second grace. This does not extend the
 payload deadline or make a timed-out test pass. Capture is still bounded; an
 executor that exceeds the grace fails the run.
+The exact archive defaults to a shared 60-second deadline and 512 MiB cap.
+Mapped images are identity-checked and hashed; cores, mappings, fd state and
+registers stay with those images instead of depending on restored prefix files.
+Incomplete capture is explicitly recorded, including unreadable kernel mappings.
+Cores can contain secrets. Build the updated runner and pass `--executor`
+explicitly when `PATH` still selects an older installed binary.
+
+For long agent jobs, `scripts/west-job.sh follow` reports the latest recognized
+runtime/preflight/guest stage, log pathname, and age of the file's last
+modification. Silence is not classified as a hang. Add repeatable
+`--activity-log /host/visible/guest.log` to `start` to persist watched paths, or
+to `follow` for observer-local paths. Missing files, rotation and truncation
+remain observable; follow can be resumed without losing the recorded job exit
+status. The observer stays attached and does not create a detached monitor:
+
+```sh
+scripts/west-job.sh start --state-dir /absolute/path/to/job \
+  --activity-log "/host/path/guest build.log" -- mise exec -- west test ...
+scripts/west-job.sh follow --state-dir /absolute/path/to/job
+```
+
+Watch a host-visible log directly when live guest progress matters: runner
+`--forward-output` replays captured output after execution, not while it runs.
 
 
 Guarded CTest registrations pass `--forward-output` to the executor. This replays
@@ -1341,7 +1402,7 @@ cost is paid only when it buys something:
 | --- | --- | --- | --- | --- |
 | `bare` | none — plain ctest exec | nothing | nothing | host, macos |
 | `guarded` | runner as watchdog: hard timeout + process-group kill | ~20K text bundle (cmd/exit/stdout/stderr) | same ~20K bundle | darling |
-| `forensic` | `--capture-gdb --capture-tree` | ~20K + gdb/proc | large bundle | opt-in per case |
+| `forensic` | `--capture-exact --capture-tree`, prefix ownership when applicable | guarded text bundle | timeout/stall: exact archive, default ≤512 MiB | opt-in per case |
 
 Key properties that answer the speed/disk fear directly:
 

@@ -40,7 +40,7 @@ def forensic_capture_contract(root):
         "args = sys.argv[1:]\n"
         "separator = args.index('--')\n"
         "options = [arg for arg in args[:separator]\n"
-        "           if arg not in {'--capture-gdb', '--capture-tree'}]\n"
+        "           if arg not in {'--capture-exact', '--capture-tree'}]\n"
         f"options += ['--poll-seconds', '1', '--capture-command', {capture_command!r}]\n"
         f"os.execv({str(RUNNER)!r}, [{str(RUNNER)!r}, *options, *args[separator:]])\n"
     )

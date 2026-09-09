@@ -29,3 +29,4 @@ darling-src-external-objc4           # ahead of manifest (dev)
 darling-src-external-perl            # homebrew integration profile
 darling-src-external-xnu             # perf/shmem-ring-guest — does NOT boot; use manifest-rev for deployable builds
 darling-src-external-zlib            # ahead of manifest (dev)
+darling-debug-runner                 # dar-gwn.10: fix/exact-prefix-capture, including guarded-output forwarding

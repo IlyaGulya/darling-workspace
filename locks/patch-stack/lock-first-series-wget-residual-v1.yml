@@ -1,7 +1,7 @@
 schema_version: 3
 profile: wget-residual
 batch_id: wget-residual-local-immutable-batch-1
-expected_count: 14
+expected_count: 15
 composition: wget-residual-profile-composition-v1.yml
 series:
 - profile: wget-residual
@@ -20,6 +20,10 @@ series:
   module: darling
   patch: darling/runtime-lifecycle-owner.patch
   lock: darling-runtime-lifecycle-owner-wget-v1.yml
+- profile: wget-residual
+  module: darling
+  patch: darling/homebrew-prefix-tooling.patch
+  lock: darling-homebrew-prefix-tooling-wget-v1.yml
 - profile: wget-residual
   module: darling/src/external/xnu
   patch: xnu/eunion-content-fd-validation.patch

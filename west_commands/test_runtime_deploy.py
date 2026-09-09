@@ -138,7 +138,9 @@ class RuntimeDeploymentService:
             return []
         return parse_macho_dylib_dependencies(self.macho_inspect(path, "--dylibs-used"))
 
-    def macho_dylib_providers(self, build_root: Path) -> dict[str, Path]:
+    def macho_dylib_providers(
+        self, build_root: Path, explicit: dict[str, Path]
+    ) -> dict[str, Path]:
         candidates: dict[str, list[Path]] = {}
         for path in build_root.rglob("*"):
             if (
@@ -149,9 +151,12 @@ class RuntimeDeploymentService:
             ):
                 continue
             install_name = parse_macho_dylib_id(self.macho_inspect(path, "--dylib-id"))
-            if install_name is not None:
+            if install_name is not None and install_name not in explicit:
                 candidates.setdefault(install_name, []).append(path)
-        providers = {}
+        # Typed component declarations already choose the deployed image. A
+        # normal CMake install can leave both built and staged copies in this
+        # tree; ambient discovery must not override or reject that choice.
+        providers = dict(explicit)
         for install_name, paths in candidates.items():
             universal = [path for path in paths if is_fat_macho_binary(path)]
             selected = universal or paths
@@ -189,7 +194,7 @@ class RuntimeDeploymentService:
         try:
             closure = resolve_macho_runtime_closure(
                 roots,
-                self.macho_dylib_providers(build_root),
+                self.macho_dylib_providers(build_root, roots),
                 self.macho_dependencies,
             )
         except ValueError as error:

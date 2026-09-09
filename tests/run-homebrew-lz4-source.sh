@@ -24,6 +24,7 @@ export PATH=/usr/local/Homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin
 export LC_ALL=en_US.UTF-8 LANG=en_US.UTF-8
 export DEVELOPER_DIR=/Library/Developer/CommandLineTools
 
+printf 'WEST_GUEST_STAGE=homebrew-lz4-%s\n' "$phase"
 printf 'HOMEBREW_LZ4 execution-context=guest phase=%s\n' "$phase"
 if [ "$phase" = install ]; then
     "$brew" --version

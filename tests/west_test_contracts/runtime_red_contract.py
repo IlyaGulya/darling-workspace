@@ -559,9 +559,29 @@ with tempfile.TemporaryDirectory() as temp:
     deployment_service.macho_inspect = lambda path, _mode: (
         f"{path}:\n{install_names[path]}\n" if install_names[path] else f"{path}:\n"
     )
-    assert deployment_service.macho_dylib_providers(build_root) == {
+    assert deployment_service.macho_dylib_providers(build_root, {}) == {
         "/System/Library/Frameworks/CoreFoundation.framework/Versions/A/CoreFoundation": framework
     }
+    staged_framework = build_root / "staged" / framework.name
+    staged_framework.parent.mkdir()
+    shutil.copy2(framework, staged_framework)
+    install_name = install_names[framework]
+    install_names[staged_framework] = install_name
+    try:
+        deployment_service.macho_dylib_providers(build_root, {})
+    except SystemExit:
+        pass
+    else:
+        raise AssertionError("ambient duplicate providers were silently accepted")
+    providers = deployment_service.macho_dylib_providers(
+        build_root, {install_name: staged_framework}
+    )
+    closure = resolve_macho_runtime_closure(
+        {"/usr/libexec/darling/launchd": executable},
+        providers,
+        lambda path: [install_name] if path == executable else [],
+    )
+    assert closure[install_name] == staged_framework
 
     retained_prefix = build_root / "retained-prefix"
     retained_prefix.mkdir()
@@ -2976,9 +2996,14 @@ with tempfile.TemporaryDirectory() as temp:
             )
         ],
     )
+    class ForcedDownstreamFailure(RuntimeError):
+        pass
+
     test._active_profile = "homebrew"
     test._profile_stack = lambda profile: [profile]
-    test._load_profile = lambda _profile: {"patches": []}
+    test._load_profile = lambda _profile: {
+        "patches": [{"path": "darling/example.patch", "module": "darling"}]
+    }
     test._profile_path = lambda profile: tempdir / "patches" / profile / "patches.yml"
     original_apply = (
         runtime_source_module.RuntimeSourceMaterializer.apply_profile_module_patches
@@ -2999,8 +3024,8 @@ with tempfile.TemporaryDirectory() as temp:
             omit_patch=True,
         ) as source_root:
             assert (source_root / "base.txt").read_text() == "base\n"
-            raise RuntimeError("forced downstream failure")
-    except RuntimeError:
+            raise ForcedDownstreamFailure("forced downstream failure")
+    except ForcedDownstreamFailure:
         pass
     else:
         raise AssertionError("forced downstream failure unexpectedly passed")

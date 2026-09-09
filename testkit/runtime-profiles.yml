@@ -215,7 +215,7 @@ runtime-profiles:
     purpose: guest-toolchain-provisioning
     compiler-launcher: ccache
     bootstrap-smoke-timeout-seconds: 180
-    source-profile: homebrew
+    source-profile: wget-residual
     bootstrap: rootless-no-mount
     runtime-mode: rootless-eunion
     source-module: darling
@@ -233,6 +233,9 @@ runtime-profiles:
     - darling/src/external/cfnetwork
     - darling/src/external/security
     - darling/src/external/coretls
+    - darling/src/external/text_cmds
+    - darling/src/external/libressl-2.8.3
+    - darling/src/external/libkqueue
     cmake-defines:
       DARLING_EUNION: true
       DARLING_ROOTLESS_TOOLCHAIN: true

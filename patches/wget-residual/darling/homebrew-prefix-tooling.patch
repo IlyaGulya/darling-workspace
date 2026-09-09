@@ -1,0 +1,271 @@
+From 96ac8990071a59412a3cfbf6dd14002243b02eb7 Mon Sep 17 00:00:00 2001
+From: Ilya Gulya <ilya@gulya.me>
+Date: Wed, 9 Sep 2026 03:31:48 +0000
+Subject: [PATCH] Include complete native build tools in Homebrew runtime
+ component
+
+---
+ CMakeLists.txt               |  3 +-
+ cmake/RootlessHomebrew.cmake | 24 ++++++++++++-
+ cmake/stage-homebrew-perl.py | 66 ++++++++++++++++++++++++++++++++++++
+ 3 files changed, 91 insertions(+), 2 deletions(-)
+ create mode 100755 cmake/stage-homebrew-perl.py
+
+diff --git a/CMakeLists.txt b/CMakeLists.txt
+index c797748606da418f1342c59d49c3108fa749e68c..39e19ed16bb88b5a18673c5005543ccce9e65a84 100644
+--- a/CMakeLists.txt
++++ b/CMakeLists.txt
+@@ -385,11 +385,12 @@ if(DARLING_ROOTLESS_TOOLCHAIN)
+ 	)
+ 	set(_rootless_toolchain_extra_entrypoints "")
+ 	set(_rootless_toolchain_extra_resources "")
++	set(_rootless_toolchain_manifest "${CMAKE_BINARY_DIR}/darling-rootless-toolchain.json")
+ 	if(DARLING_ROOTLESS_HOMEBREW)
+ 		include(cmake/RootlessHomebrew.cmake)
+ 	endif()
+ 	file(GENERATE
+-		OUTPUT "${CMAKE_BINARY_DIR}/darling-rootless-toolchain.json"
++		OUTPUT "${_rootless_toolchain_manifest}"
+ 		CONTENT
+ "{
+   \"schema\": 1,
+diff --git a/cmake/RootlessHomebrew.cmake b/cmake/RootlessHomebrew.cmake
+index 47b64830e2ac2b41cca12df7fdaa780b82e84298..756c459b34c50a34d8f61f65e91155877b5e8876 100644
+--- a/cmake/RootlessHomebrew.cmake
++++ b/cmake/RootlessHomebrew.cmake
+@@ -16,6 +16,7 @@ foreach(_homebrew_command IN ITEMS
+ 	"touch|/usr/bin/touch" "tr|/usr/bin/tr" "uname|/usr/bin/uname"
+ 	"uniq|/usr/bin/uniq" "wc|/usr/bin/wc" "which|/usr/bin/which" "xargs|/usr/bin/xargs"
+ 	"awkexe|/usr/bin/awk" "cmp|/usr/bin/cmp" "diff|/usr/bin/diff"
++	"cut|/usr/bin/cut" "openssl|/usr/bin/openssl"
+ 	"bsdtar|/usr/bin/tar" "curlexe|/usr/bin/curl" "sw_vers|/usr/bin/sw_vers"
+ 	"sysctl|/usr/sbin/sysctl" "xcrun|/usr/bin/xcrun" "xcode-select|/usr/bin/xcode-select"
+ 	"git_shim|/usr/bin/git" "make_shim|/usr/bin/make" "ar_shim|/usr/bin/ar"
+@@ -41,7 +42,9 @@ set(_homebrew_resources
+ 	"src/frameworks/CoreServices/SystemVersion.plist|/System/Library/CoreServices/SystemVersion.plist"
+ 	"src/frameworks/CoreServices/SystemVersionCompat.plist|/System/Library/CoreServices/SystemVersionCompat.plist"
+ 	"src/sandbox/sandbox-exec.sh|/usr/bin/sandbox-exec"
+-	"src/external/libressl-2.8.3/apps/openssl/cert.pem|/private/etc/ssl/cert.pem")
++	"src/external/libressl-2.8.3/apps/openssl/cert.pem|/private/etc/ssl/cert.pem"
++	"src/external/libressl-2.8.3/apps/openssl/openssl.cnf|/private/etc/ssl/openssl.cnf"
++	"src/external/libressl-2.8.3/apps/openssl/x509v3.cnf|/private/etc/ssl/x509v3.cnf")
+ set(_homebrew_locale_source "src/external/libc/darling/assets/locale")
+ foreach(_homebrew_category IN ITEMS
+ 	LC_COLLATE LC_CTYPE LC_MESSAGES/LC_MESSAGES LC_MONETARY LC_NUMERIC LC_TIME)
+@@ -59,3 +62,22 @@ foreach(_homebrew_resource IN LISTS _homebrew_resources)
+ 	string(APPEND _rootless_toolchain_extra_resources
+ 		",\n    {\"target\": \"${_homebrew_source}\", \"guest_path\": \"${_homebrew_guest_path}\", \"host_path\": \"${_homebrew_host_path}\"}")
+ endforeach()
++
++# Use Perl's own install rules for its standard library and XS bundles. Building
++# only the versioner/interpreters leaves a runnable perl unable to load strict.
++foreach(_perl_directory IN ITEMS "" "/5.18" "/5.28")
++	get_property(_perl_targets DIRECTORY "${CMAKE_SOURCE_DIR}/src/external/perl${_perl_directory}"
++		PROPERTY BUILDSYSTEM_TARGETS)
++	add_dependencies(rootless_toolchain ${_perl_targets})
++endforeach()
++find_package(Python3 REQUIRED COMPONENTS Interpreter)
++set(_rootless_toolchain_manifest "${CMAKE_BINARY_DIR}/darling-rootless-toolchain-base.json")
++add_custom_command(TARGET rootless_toolchain POST_BUILD
++	COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_LIST_DIR}/stage-homebrew-perl.py"
++		--cmake "${CMAKE_COMMAND}"
++		--build-dir "${CMAKE_BINARY_DIR}"
++		--manifest-input "${_rootless_toolchain_manifest}"
++		--manifest-output "${CMAKE_BINARY_DIR}/darling-rootless-toolchain.json"
++	COMMENT "Staging complete native Perl for the Homebrew runtime component"
++	VERBATIM
++)
+diff --git a/cmake/stage-homebrew-perl.py b/cmake/stage-homebrew-perl.py
+new file mode 100755
+index 0000000000000000000000000000000000000000..7840d96185fb65bf9e77c02f3ebbddd674823899
+--- /dev/null
++++ b/cmake/stage-homebrew-perl.py
+@@ -0,0 +1,66 @@
++#!/usr/bin/env python3
++"""Stage Perl's normal CMake install into the opt-in Homebrew component."""
++
++import argparse
++import json
++import os
++from pathlib import Path
++import shutil
++import subprocess
++
++
++def main() -> None:
++    parser = argparse.ArgumentParser(description=__doc__)
++    parser.add_argument("--cmake", required=True)
++    parser.add_argument("--build-dir", type=Path, required=True)
++    parser.add_argument("--manifest-input", type=Path, required=True)
++    parser.add_argument("--manifest-output", type=Path, required=True)
++    args = parser.parse_args()
++    build = args.build_dir.resolve(strict=True)
++    stage = build / "rootless-homebrew-perl"
++    if stage.exists():
++        shutil.rmtree(stage)
++    stage.mkdir()
++    environment = os.environ.copy()
++    # An outer packaging DESTDIR must not redirect this private build component.
++    environment.pop("DESTDIR", None)
++    subprocess.run(
++        [args.cmake, "--install", str(build / "src/external/perl"),
++         "--prefix", str(stage)],
++        env=environment,
++        check=True,
++    )
++    manifest = json.loads(args.manifest_input.read_text())
++    seen = {entry["guest_path"] for key in ("entrypoints", "resources")
++            for entry in manifest[key]}
++    root = stage / "libexec/darling"
++    count = 0
++    # Runtime payload only; manpage aliases are not runtime prerequisites.
++    for directory in ("System/Library/Perl", "Library/Perl", "usr/bin"):
++        source_root = root / directory
++        if not source_root.is_dir():
++            raise RuntimeError(f"Perl install omitted {directory}")
++        for source in sorted(source_root.rglob("*")):
++            if source.is_dir():
++                continue
++            resolved = source.resolve(strict=True)
++            if not resolved.is_relative_to(root) or not resolved.is_file():
++                raise RuntimeError(f"unsafe Perl runtime resource: {source}")
++            guest = "/" + source.relative_to(root).as_posix()
++            if guest in seen:
++                continue
++            manifest["resources"].append({
++                "target": "homebrew-perl:" + guest,
++                "guest_path": guest,
++                "host_path": str(resolved),
++            })
++            seen.add(guest)
++            count += 1
++    temporary = args.manifest_output.with_suffix(".json.tmp")
++    temporary.write_text(json.dumps(manifest, indent=2) + "\n")
++    temporary.replace(args.manifest_output)
++    print(f"HOMEbrew component: staged {count} Perl runtime files", flush=True)
++
++
++if __name__ == "__main__":
++    main()
+
+From 2fe91cebde866d372cddc69626a95555672a76c1 Mon Sep 17 00:00:00 2001
+From: Ilya Gulya <ilya@gulya.me>
+Date: Wed, 9 Sep 2026 04:03:00 +0000
+Subject: [PATCH] Stage absolute CMake installs through DESTDIR before prefix
+ deployment
+
+---
+ cmake/InstallSymlink.cmake   | 12 ++++++------
+ cmake/RootlessHomebrew.cmake |  3 ++-
+ cmake/dsym.cmake             |  2 +-
+ cmake/stage-homebrew-perl.py | 15 ++++++++++-----
+ 4 files changed, 19 insertions(+), 13 deletions(-)
+
+diff --git a/cmake/InstallSymlink.cmake b/cmake/InstallSymlink.cmake
+index 32ef0f637fdbd400d430d684b7b7088db3806cde..f5918933ad19cd443f451e18a9a30c8de7df344e 100644
+--- a/cmake/InstallSymlink.cmake
++++ b/cmake/InstallSymlink.cmake
+@@ -42,15 +42,15 @@ macro(InstallSymlink _filepath _sympath)
+         # for CMake 2.6.x and 2.8.x
+         install(CODE "
+             if (\"\$ENV{DESTDIR}\" STREQUAL \"\")
+-                execute_process(COMMAND \"${CMAKE_COMMAND}\" -E make_directory ${_installdir})
++                execute_process(COMMAND \"${CMAKE_COMMAND}\" -E make_directory \"${_installdir}\")
+                 execute_process(COMMAND \"${CMAKE_COMMAND}\" -E create_symlink
+-                                ${_filepath}
+-                                ${_installdir}/${_symname})
++                                \"${_filepath}\"
++                                \"${_installdir}/${_symname}\")
+             else ()
+-                execute_process(COMMAND \"${CMAKE_COMMAND}\" -E make_directory \$ENV{DESTDIR}/${_installdir})
++                execute_process(COMMAND \"${CMAKE_COMMAND}\" -E make_directory \"\$ENV{DESTDIR}/${_installdir}\")
+                 execute_process(COMMAND \"${CMAKE_COMMAND}\" -E create_symlink
+-                                ${_filepath}
+-                                \$ENV{DESTDIR}/${_installdir}/${_symname})
++                                \"${_filepath}\"
++                                \"\$ENV{DESTDIR}/${_installdir}/${_symname}\")
+             endif ()
+         " ${EXCLUDE_FROM_ALL_ARG} ${COMPONENT_ARG})
+     endif ()
+diff --git a/cmake/RootlessHomebrew.cmake b/cmake/RootlessHomebrew.cmake
+index 756c459b34c50a34d8f61f65e91155877b5e8876..a8f54d5125ac810b3a8469413a15ca4e30c2a1a2 100644
+--- a/cmake/RootlessHomebrew.cmake
++++ b/cmake/RootlessHomebrew.cmake
+@@ -70,12 +70,13 @@ foreach(_perl_directory IN ITEMS "" "/5.18" "/5.28")
+ 		PROPERTY BUILDSYSTEM_TARGETS)
+ 	add_dependencies(rootless_toolchain ${_perl_targets})
+ endforeach()
+-find_package(Python3 REQUIRED COMPONENTS Interpreter)
++find_package(Python3 3.9 REQUIRED COMPONENTS Interpreter)
+ set(_rootless_toolchain_manifest "${CMAKE_BINARY_DIR}/darling-rootless-toolchain-base.json")
+ add_custom_command(TARGET rootless_toolchain POST_BUILD
+ 	COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_LIST_DIR}/stage-homebrew-perl.py"
+ 		--cmake "${CMAKE_COMMAND}"
+ 		--build-dir "${CMAKE_BINARY_DIR}"
++		--install-prefix "${CMAKE_INSTALL_PREFIX}"
+ 		--manifest-input "${_rootless_toolchain_manifest}"
+ 		--manifest-output "${CMAKE_BINARY_DIR}/darling-rootless-toolchain.json"
+ 	COMMENT "Staging complete native Perl for the Homebrew runtime component"
+diff --git a/cmake/dsym.cmake b/cmake/dsym.cmake
+index 90730d83628b703094f5b23022635c44023c7fd2..7f275c10ae8a13c6dbfce4827732fb081719cfa2 100644
+--- a/cmake/dsym.cmake
++++ b/cmake/dsym.cmake
+@@ -31,7 +31,7 @@ function(dsym target)
+ 
+ 					execute_process(COMMAND \"${CMAKE_COMMAND}\" -E create_symlink
+ 						\"../files/${target}.dSYM\"
+-						\$ENV{DESTDIR}/${CMAKE_INSTALL_PREFIX}/libexec/darling/System/Library/Caches/dsym/uuid/\${uuid}.dSYM)
++						\"\$ENV{DESTDIR}/${CMAKE_INSTALL_PREFIX}/libexec/darling/System/Library/Caches/dsym/uuid/\${uuid}.dSYM\")
+ 				endforeach (uuid)
+ 			endif()
+ 		" ${EXCLUDE_FROM_ALL_ARG})
+diff --git a/cmake/stage-homebrew-perl.py b/cmake/stage-homebrew-perl.py
+index 7840d96185fb65bf9e77c02f3ebbddd674823899..822618b30dfb6f09ad2cd1b1b413c66464977a88 100755
+--- a/cmake/stage-homebrew-perl.py
++++ b/cmake/stage-homebrew-perl.py
+@@ -13,27 +13,32 @@ def main() -> None:
+     parser = argparse.ArgumentParser(description=__doc__)
+     parser.add_argument("--cmake", required=True)
+     parser.add_argument("--build-dir", type=Path, required=True)
++    parser.add_argument("--install-prefix", type=Path, required=True)
+     parser.add_argument("--manifest-input", type=Path, required=True)
+     parser.add_argument("--manifest-output", type=Path, required=True)
+     args = parser.parse_args()
++    if not args.install_prefix.is_absolute() or ".." in args.install_prefix.parts:
++        parser.error("--install-prefix must be an absolute normalized CMake prefix")
+     build = args.build_dir.resolve(strict=True)
+     stage = build / "rootless-homebrew-perl"
+     if stage.exists():
+         shutil.rmtree(stage)
+     stage.mkdir()
+     environment = os.environ.copy()
+-    # An outer packaging DESTDIR must not redirect this private build component.
+-    environment.pop("DESTDIR", None)
++    # DESTDIR contains both relative installs and Darling's configure-time
++    # absolute dSYM/symlink destinations. --prefix alone leaks those into the
++    # real prefix before West has validated or deployed the runtime component.
++    environment["DESTDIR"] = str(stage)
+     subprocess.run(
+         [args.cmake, "--install", str(build / "src/external/perl"),
+-         "--prefix", str(stage)],
++         "--prefix", str(args.install_prefix)],
+         env=environment,
+         check=True,
+     )
+     manifest = json.loads(args.manifest_input.read_text())
+     seen = {entry["guest_path"] for key in ("entrypoints", "resources")
+             for entry in manifest[key]}
+-    root = stage / "libexec/darling"
++    root = stage / args.install_prefix.relative_to("/") / "libexec/darling"
+     count = 0
+     # Runtime payload only; manpage aliases are not runtime prerequisites.
+     for directory in ("System/Library/Perl", "Library/Perl", "usr/bin"):
+@@ -59,7 +64,7 @@ def main() -> None:
+     temporary = args.manifest_output.with_suffix(".json.tmp")
+     temporary.write_text(json.dumps(manifest, indent=2) + "\n")
+     temporary.replace(args.manifest_output)
+-    print(f"HOMEbrew component: staged {count} Perl runtime files", flush=True)
++    print(f"Homebrew component: staged {count} Perl runtime files", flush=True)
+ 
+ 
+ if __name__ == "__main__":

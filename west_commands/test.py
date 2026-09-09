@@ -2291,8 +2291,10 @@ class DarlingTest(ProfileOperationsMixin, BootstrapRuntimeProfileMixin, WestComm
             )
             shutdown.extend([str(launcher), "shutdown"])
             args.extend(["--terminate-command", "exec " + " ".join(quote(arg) for arg in shutdown)])
+            if diag == "forensic":
+                args.extend(["--capture-prefix", str(prefix)])
         if diag == "forensic":
-            args.extend(["--capture-gdb", "--capture-tree"])
+            args.extend(["--capture-exact", "--capture-tree"])
         args.append("--")
         args.extend(
             invocation["args"] if display_only and (invocation.get("ctest_label") or invocation.get("ctest_name"))
@@ -4021,8 +4023,10 @@ class DarlingTest(ProfileOperationsMixin, BootstrapRuntimeProfileMixin, WestComm
     def _runtime_macho_dependencies(self, path: Path) -> list[str]:
         return RuntimeDeploymentService(self).macho_dependencies(path)
 
-    def _runtime_macho_dylib_providers(self, build_root: Path) -> dict[str, Path]:
-        return RuntimeDeploymentService(self).macho_dylib_providers(build_root)
+    def _runtime_macho_dylib_providers(
+        self, build_root: Path, explicit: dict[str, Path]
+    ) -> dict[str, Path]:
+        return RuntimeDeploymentService(self).macho_dylib_providers(build_root, explicit)
 
     def _runtime_rootless_bootstrap_closure(
         self,
