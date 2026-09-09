@@ -55,11 +55,21 @@ configuration, and do not search conversation archives for installation copies.
 
 ## Prefer the supported runner
 
-For the four supported scenarios, configure an owned prefix once, then use the
-managed entrypoint from the manifest repository:
+For the four supported scenarios, select the supported native CLT 13.2 package
+and configure a short, owned prefix, then use the managed entrypoint from the
+manifest repository. `DARLING_CLT_PACKAGE` selects the existing native installer
+path with its reviewed whole-file SHA-256; the default CLT 9.2 / SDK 10.13
+catalog does not satisfy the Homebrew runtime's SDK requirement. This environment
+setting is not saved in the named dev context.
+
+Expanded AF_UNIX socket paths include the host prefix and must fit Linux's
+108-byte `sun_path`, including the terminating NUL. Prefer a short prefix such
+as `/tmp/dar-hb`, confirm ownership, and keep the ordinary guest temporary
+directory. Do not weaken the expanded-path guard.
 
 ```bash
-mise run dw dev context homebrew --prefix <owned-absolute-prefix>
+export DARLING_CLT_PACKAGE=/absolute/path/Command_Line_Tools_for_Xcode_13.2.pkg
+mise run dw dev context homebrew --prefix <short-owned-absolute-prefix>
 mise run dw dev run homebrew-prepare
 mise run dw dev run homebrew-preflight
 mise run dw dev run homebrew-source

@@ -10,6 +10,8 @@ from typing import Any
 
 import yaml
 
+from patch_stack_lock_first import profile_dependency_chain
+
 
 def _sha256_file(path: Path) -> str | None:
     if not path.is_file() or path.is_symlink():
@@ -52,15 +54,16 @@ def _patch_records(path: Path) -> list[dict[str, str | None]]:
         records.append(
             {
                 key: str(patch[key]) if patch.get(key) is not None else None
-                for key in ("path", "source-base", "source-commit", "sha256sum")
+                for key in ("module", "path", "source-base", "source-commit", "sha256sum")
             }
         )
-    return sorted(records, key=lambda record: record["path"] or "")
+    return records
 
 
 def runtime_identity(
     *,
     topdir: Path,
+    manifest_repo: Path,
     profile_name: str,
     definition: dict[str, Any],
     launcher: Path,
@@ -72,19 +75,25 @@ def runtime_identity(
         str(module): _git_head(topdir / str(module))
         for module in source_modules
     }
-    patchset = topdir / "patches/homebrew/patches.yml"
-    runtime_manifest = topdir / "testkit/runtime-profiles.yml"
-    lock = topdir / "west.lock.yml"
+    patchsets = []
+    for profile in profile_dependency_chain(manifest_repo, definition["source-profile"]):
+        path = manifest_repo / "patches" / profile / "patches.yml"
+        patchsets.append({
+            "profile": profile,
+            "sha256": _sha256_file(path),
+            "patches": _patch_records(path),
+        })
+    runtime_manifest = manifest_repo / "testkit/runtime-profiles.yml"
+    lock = manifest_repo / "west.lock.yml"
     if not lock.is_file():
-        lock = topdir / "west.yml"
+        lock = manifest_repo / "west.yml"
     return {
-        "schema": 1,
+        "schema": 2,
         "profile": profile_name,
         "source-profile": definition.get("source-profile"),
         "source-lock-sha256": _sha256_file(lock),
         "source-commits": source_commits,
-        "patchset-sha256": _sha256_file(patchset),
-        "patches": _patch_records(patchset),
+        "patchsets": patchsets,
         "runtime-manifest-sha256": _sha256_file(runtime_manifest),
         "runtime-profile-definition-sha256": _canonical_sha256(definition),
         "launcher-sha256": _sha256_file(launcher),
