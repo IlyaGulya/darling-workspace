@@ -378,6 +378,35 @@ patches:
     diag: bare
     repo: darling-workspace
   sha256sum: 9cecf3c9ae1c39d51c313fc4a6fd8b148f2b226597030039930ec476b168d3d8
+- path: xnu/eunion-large-directory.patch
+  module: darling/src/external/xnu
+  source-branch: fix/eunion-large-directory
+  source-base: f1575e01386ca9068626f9cd9ebc7d2872183b99
+  source-commit: affe1a99fff7df754f80deb1450e4a4a523f2b4d
+  bead: dar-gwn.7.4
+  publication-status: blocked
+  publication-blocker: Legacy directory cursor sharing, concurrent cache access and descriptor-state capacity remain architecture blockers; scoped large-directory acceptance does not waive canonical review or publication authorization.
+  tests:
+  - name: eunion_large_directory
+    kind: contract
+    coverage-tier: host
+    runs: host
+    diag: bare
+    red: true
+    red-proof:
+      mode: source-base
+      source-env: XNU_SRC_ROOT
+      expect-output-contains:
+      - 'FAIL  GL bounded 64KiB output reports EOVERFLOW'
+    runner: source-contract-script
+    repo: darling-workspace
+    script: experiments/e-union/run.sh
+    env-vars:
+      EUNION_DIRECTORY_ONLY: '1'
+      EUNION_NESTED_LOWER_ROOT: '1'
+    timeout-seconds: 120
+    note: Execute the production merged directory implementation against exact NAME_MAX membership exceeding 64KiB, large whiteout sets, bounded errors, and snapshot lifetime across close, rewind, dup and fork. Does not claim shared-OFD cursor correctness.
+  sha256sum: 55f747635d91cf7b76e263cc4b19fe48c1d17aaa160519339c656c781cffb065
 - path: libkqueue/close-knote-lifetime.patch
   module: darling/src/external/libkqueue
   source-branch: fix/kqueue-close-knote-lifetime

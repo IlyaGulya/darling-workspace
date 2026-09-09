@@ -8,6 +8,7 @@
 # Usage:
 #   ./run.sh                    # build the harness and run it
 #   ./run.sh --prepare-fixture DIR  # create only the reusable CTest fixture
+#   EUNION_DIRECTORY_ONLY=1 ./run.sh  # focused large-directory/lifetime checks
 set -euo pipefail
 
 HERE="$(cd "$(dirname "$0")" && pwd)"
@@ -111,6 +112,22 @@ for i in $(seq 0 39); do echo x > "$WORK/libexec/bigmerge/low_$i"; done
 for i in $(seq 0 39); do echo y > "$WORK/prefix/bigmerge/up_$i"; done
 # 10 names present in BOTH layers (upper must win, no dup across pages)
 for i in $(seq 0 9); do echo bl > "$WORK/libexec/bigmerge/dup_$i"; echo bu > "$WORK/prefix/bigmerge/dup_$i"; done
+# Large names exercise both former fixed buffers: 544 visible NAME_MAX names
+# (139264 NUL-separated bytes), plus 96 whiteouts (24576 bytes). The runner
+# creates physical whiteouts through the production helper before enumeration.
+python3 - "$WORK" <<'PY'
+import pathlib, sys
+
+root = pathlib.Path(sys.argv[1])
+for layer in ("prefix", "libexec"):
+    (root / layer / "largemerge").mkdir()
+for i in range(640):
+    name = f"entry_{i:04d}_".ljust(255, "x")
+    if i < 512:
+        (root / "libexec" / "largemerge" / name).touch()
+    if i % 2 == 0 or i >= 512:
+        (root / "prefix" / "largemerge" / name).touch()
+PY
 
 # --- hardening fixtures (dyra #1..#5) ---
 # #4 setid + xattr: a lower-only setuid file carrying a user.* xattr. copy-up

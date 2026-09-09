@@ -1,0 +1,487 @@
+From affe1a99fff7df754f80deb1450e4a4a523f2b4d Mon Sep 17 00:00:00 2001
+From: Ilya Gulya <ilya@gulya.me>
+Date: Wed, 9 Sep 2026 14:30:58 +0000
+Subject: [PATCH] Grow merged directory snapshots without silently omitting
+ names
+
+---
+ .../linux_premigration/vchroot_userspace.c    | 308 +++++++++++++-----
+ 1 file changed, 226 insertions(+), 82 deletions(-)
+
+diff --git a/darling/src/libsystem_kernel/emulation/src/linux_premigration/vchroot_userspace.c b/darling/src/libsystem_kernel/emulation/src/linux_premigration/vchroot_userspace.c
+index f25804c9b9ab53ad95df76959213d5ebbf486e2e..c0ab8ec6b390ea90934bbd30ace5a9562c2a8451 100644
+--- a/darling/src/libsystem_kernel/emulation/src/linux_premigration/vchroot_userspace.c
++++ b/darling/src/libsystem_kernel/emulation/src/linux_premigration/vchroot_userspace.c
+@@ -16,6 +16,7 @@
+ #	include <dirent.h>
+ #	include <fcntl.h>
+ #	include <stdint.h>
++#	include <sys/mman.h>
+ 
+ #	define LINUX_SYSCALL(...) ({ int __rv = syscall(__VA_ARGS__); if (__rv == -1) __rv = -errno; __rv; })
+ #	define LINUX_ENOENT ENOENT
+@@ -53,6 +54,7 @@ typedef struct stat stat_t;
+ #	include <darling/emulation/conversion/fcntl/open.h>
+ #	include <darling/emulation/conversion/fcntl/fcntl.h>
+ #	include <darling/emulation/conversion/duct_errno.h>
++#	include <darling/emulation/conversion/mman/duct_mman.h>
+ #	include <darling/emulation/conversion/stat/common.h>
+ #	include <darling/emulation/xnu_syscall/bsd/impl/dirent/getdirentries.h>
+ #	include <darling/emulation/conversion/common_at.h>
+@@ -214,6 +216,9 @@ static void eunion_init_from_prefix(void)
+ #ifndef LINUX_EMFILE
+ #define LINUX_EMFILE 24
+ #endif
++#ifndef LINUX_EOVERFLOW
++#define LINUX_EOVERFLOW 75
++#endif
+ #ifdef TEST
+ extern int eunion_test_fail_xattr;
+ #endif
+@@ -1577,33 +1582,94 @@ int vchroot_pre_mkdir(const char* guest)
+ 	return vchroot_unwhiteout(guest);
+ }
+ 
+-// helper: append `name` to a NUL-separated out buffer if it fits and is not a
+-// duplicate of an already-appended name. Returns 1 if appended, 0 if dup, <0 on
+-// overflow.
+-static int eunion_emit_name(char* out, int cap, int* used, int* count, const char* name)
++// Growable name storage uses private mappings, not a guest allocator: fork
++// inherits valid COW storage without depending on allocator or atfork locks.
++// Keep the mapping length with the allocation, immutable after publication.
++struct eunion_name_storage
++{
++	size_t length;
++	char data[];
++};
++
++struct eunion_name_buffer
++{
++	char* data;
++	size_t capacity;
++	size_t used;
++	int count;
++	int growable;
++};
++
++static void eunion_name_storage_release(char* data)
+ {
+-	// dedup against already-emitted names
+-	const char* p = out;
+-	for (int i = 0; i < *count; i++)
++	if (!data)
++		return;
++	struct eunion_name_storage* storage = (struct eunion_name_storage*)
++		(data - __builtin_offsetof(struct eunion_name_storage, data));
++	LINUX_SYSCALL(__NR_munmap, storage, storage->length);
++}
++
++static void eunion_name_buffer_release(struct eunion_name_buffer* buffer)
++{
++	char* data = buffer->growable ? buffer->data : 0;
++	// Detach before unmapping so fork cannot inherit an unmapped owner.
++	buffer->data = 0;
++	buffer->capacity = buffer->used = 0;
++	buffer->count = 0;
++	eunion_name_storage_release(data);
++}
++
++static int eunion_name_buffer_grow(struct eunion_name_buffer* buffer, size_t required)
++{
++	if (!buffer->growable)
++		return -LINUX_EOVERFLOW;
++	size_t maximum = (size_t)-1 - sizeof(struct eunion_name_storage);
++	if (required > maximum)
++		return -LINUX_EOVERFLOW;
++	size_t capacity = buffer->capacity ? buffer->capacity : 4096;
++	while (capacity < required)
+ 	{
+-		if (strcmp(p, name) == 0)
+-			return 0;
+-		p += strlen(p) + 1;
++		if (capacity > maximum / 2)
++		{
++			capacity = required;
++			break;
++		}
++		capacity *= 2;
+ 	}
+-	int nlen = (int)strlen(name) + 1;
+-	if (*used + nlen > cap)
+-		return -LINUX_ENAMETOOLONG;
+-	memcpy(out + *used, name, nlen);
+-	*used += nlen;
+-	(*count)++;
+-	return 1;
++	size_t length = sizeof(struct eunion_name_storage) + capacity;
++	struct eunion_name_storage* storage;
++#ifdef TEST
++	// The TEST LINUX_SYSCALL wrapper returns int, which cannot hold a pointer.
++	storage = mmap(0, length, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
++	if (storage == MAP_FAILED)
++		return -errno;
++#else
++#ifdef __NR_mmap2
++	const int mmap_call = __NR_mmap2;
++#else
++	const int mmap_call = __NR_mmap;
++#endif
++	storage = (void*)LINUX_SYSCALL(mmap_call, 0, length,
++		LINUX_PROT_READ | LINUX_PROT_WRITE,
++		LINUX_MAP_PRIVATE | LINUX_MAP_ANONYMOUS, -1, 0);
++	if ((unsigned long)storage > (unsigned long)-4096)
++		return (int)(long)storage;
++#endif
++	storage->length = length;
++	if (buffer->used)
++		memcpy(storage->data, buffer->data, buffer->used);
++	char* previous = buffer->data;
++	buffer->data = storage->data;
++	buffer->capacity = capacity;
++	eunion_name_storage_release(previous);
++	return 0;
+ }
+ 
+-// is `name` present in a NUL-separated set of `n` names?
+-static int name_in_set(const char* buf, int n, const char* name)
++// Is `name` present in a NUL-separated set?
++static int name_in_set(const struct eunion_name_buffer* buffer, const char* name)
+ {
+-	const char* p = buf;
+-	for (int i = 0; i < n; i++)
++	const char* p = buffer->data;
++	for (int i = 0; i < buffer->count; i++)
+ 	{
+ 		if (strcmp(p, name) == 0)
+ 			return 1;
+@@ -1612,24 +1678,43 @@ static int name_in_set(const char* buf, int n, const char* name)
+ 	return 0;
+ }
+ 
+-// Produce the merged directory listing for guest dir `guest` as a NUL-separated
+-// list of names in `out`. Upper layer wins on name clash; whiteouts hide the
+-// lower namesake; an opaque upper dir is not merged with the lower. Returns the
+-// number of names, or a negative Linux errno.
+-int vchroot_readdir_merge(const char* guest, char* out, int cap)
++// Append without truncation: bounded buffers fail explicitly, owned buffers
++// grow geometrically. A failed allocation leaves the previous buffer intact.
++static int eunion_emit_name(struct eunion_name_buffer* buffer, const char* name)
++{
++	if (name_in_set(buffer, name))
++		return 0;
++	size_t nlen = strlen(name) + 1;
++	if (buffer->count == __INT_MAX__ || buffer->used > (size_t)-1 - nlen)
++		return -LINUX_EOVERFLOW;
++	size_t required = buffer->used + nlen;
++	if (required > buffer->capacity)
++	{
++		int result = eunion_name_buffer_grow(buffer, required);
++		if (result < 0)
++			return result;
++	}
++	memcpy(buffer->data + buffer->used, name, nlen);
++	buffer->used = required;
++	buffer->count++;
++	return 1;
++}
++
++// Upper wins on name clash; physical whiteouts hide the lower namesake;
++// an opaque upper directory is not merged with the lower.
++static int eunion_readdir_merge(const char* guest,
++		struct eunion_name_buffer* visible, struct eunion_name_buffer* hidden)
+ {
+ 	if (prefix_path_len < 0)
+ 		return -LINUX_ENOENT;
+ 
+-	int used = 0, count = 0;
+-
++	int result = 0;
+ 	char up[4096], lo[4096];
+-	int have_upper = (eunion_host_path(prefix_path, prefix_path_len, guest, up, sizeof(up)) >= 0);
++	if (eunion_host_path(prefix_path, prefix_path_len, guest, up, sizeof(up)) < 0)
++		return -LINUX_ENAMETOOLONG;
+ 
+ 	// 1. upper layer: emit non-whiteout names; record whiteout names so the
+ 	//    lower namesake is suppressed (tracked in a separate seen-set).
+-	char whbuf[4096]; int whused = 0, whcount = 0;
+-	if (have_upper)
+ 	{
+ 		int dfd = LINUX_SYSCALL(__NR_openat, LINUX_AT_FDCWD, up, LINUX_O_RDONLY | LINUX_O_DIRECTORY, 0);
+ 		if (dfd >= 0)
+@@ -1650,27 +1735,38 @@ int vchroot_readdir_merge(const char* guest, char* out, int cap)
+ 					char child[4096];
+ 					int hl = (int)strlen(up), nl = (int)strlen(nm);
+ 					if (hl + 1 + nl + 1 > (int)sizeof(child))
+-						continue;
++					{
++						result = -LINUX_ENAMETOOLONG;
++						goto upper_done;
++					}
+ 					memcpy(child, up, hl); child[hl] = '/'; memcpy(child + hl + 1, nm, nl + 1);
+ 
+-					if (eunion_has_marker(child, EUNION_WH_XATTR))
+-						eunion_emit_name(whbuf, sizeof(whbuf), &whused, &whcount, nm); // hidden
+-					else
+-						eunion_emit_name(out, cap, &used, &count, nm); // visible upper entry
++					result = eunion_emit_name(
++						eunion_has_marker(child, EUNION_WH_XATTR) ? hidden : visible, nm);
++					if (result < 0)
++						goto upper_done;
+ 				}
+ 			}
++			result = len;
++upper_done:
+ 			LINUX_SYSCALL(__NR_close, dfd);
++			if (result < 0)
++				return result;
+ 		}
++		else if (dfd != -LINUX_ENOENT && dfd != -LINUX_ENOTDIR)
++			return dfd;
+ 
+ 		// 2. opaque upper dir -> do not merge lower
+ 		if (eunion_has_marker(up, EUNION_OPAQUE_XATTR))
+-			return count;
++			return visible->count;
+ 	}
+ 
+ 	// 3. lower layer: emit names not already visible (upper wins) and not
+ 	//    whited-out.
+-	if (libexec_path_len > 0 && eunion_host_path(libexec_path, libexec_path_len, guest, lo, sizeof(lo)) >= 0)
++	if (libexec_path_len > 0)
+ 	{
++		if (eunion_host_path(libexec_path, libexec_path_len, guest, lo, sizeof(lo)) < 0)
++			return -LINUX_ENAMETOOLONG;
+ 		int dfd = LINUX_SYSCALL(__NR_openat, LINUX_AT_FDCWD, lo, LINUX_O_RDONLY | LINUX_O_DIRECTORY, 0);
+ 		if (dfd >= 0)
+ 		{
+@@ -1687,16 +1783,36 @@ int vchroot_readdir_merge(const char* guest, char* out, int cap)
+ 					if (nm[0] == '.' && (nm[1] == '\0' || (nm[1] == '.' && nm[2] == '\0')))
+ 						continue;
+ 					// suppressed by a whiteout in the upper?
+-					if (name_in_set(whbuf, whcount, nm))
++					if (name_in_set(hidden, nm))
+ 						continue;
+-					eunion_emit_name(out, cap, &used, &count, nm);
++					result = eunion_emit_name(visible, nm);
++					if (result < 0)
++						goto lower_done;
+ 				}
+ 			}
++			result = len;
++lower_done:
+ 			LINUX_SYSCALL(__NR_close, dfd);
++			if (result < 0)
++				return result;
+ 		}
++		else if (dfd != -LINUX_ENOENT && dfd != -LINUX_ENOTDIR)
++			return dfd;
+ 	}
+ 
+-	return count;
++	return visible->count;
++}
++
++// Bounded API: no successful partial listing on capacity exhaustion.
++int vchroot_readdir_merge(const char* guest, char* out, int cap)
++{
++	if (!out || cap <= 0)
++		return -LINUX_EINVAL;
++	struct eunion_name_buffer visible = { .data = out, .capacity = (size_t)cap };
++	struct eunion_name_buffer hidden = { .growable = 1 };
++	int result = eunion_readdir_merge(guest, &visible, &hidden);
++	eunion_name_buffer_release(&hidden);
++	return result;
+ }
+ 
+ // -------- E-UNION paged getdents merge (per-fd state) --------------------
+@@ -1705,26 +1821,26 @@ int vchroot_readdir_merge(const char* guest, char* out, int cap)
+ // tracks the offset for the UPPER fd only. To present a MERGED view (upper wins,
+ // lower merged in, whiteouts subtracted, opaque honoured) across an arbitrary
+ // number of pages WITHOUT the getdents64 rewind hazards, we materialize the full
+-// merged name list ONCE per open dir fd (reusing the proven vchroot_readdir_merge
+-// enumeration) into a small per-fd buffer, then hand it back page by page. The
++// merged name list ONCE per open dir fd into a growable owned snapshot, then
++// hand it back page by page. The
+ // emulation site calls:
+ //   vchroot_getdents_merge(fd, out, cap)  instead of raw getdents64(fd, ...)
+ //   vchroot_dir_closed(fd)                from close()/closedir() teardown
+ // rewinddir (lseek(fd,0)) is detected by the emulation, which calls
+ // vchroot_dir_closed(fd) so the next getdents re-materializes from the start.
++// This remains an unsynchronized per-fd cache, not an OFD cursor:
++// dup/fork copy the current position rather than sharing it. Concurrent
++// enumeration/close/rewind/dup remain separate architecture limitations.
+ 
+ #define EUNION_MAXDIRS  256
+-#define EUNION_NAMEBUF  65536  // per-dir merged name list (NUL-separated)
+ 
+ struct eunion_dir_state
+ {
+ 	int  fd;                    // upper fd this state tracks (-1 = free slot)
+-	int  ready;                 // names[] materialized?
+-	int  count;                 // number of names
+-	int  cursor;                // byte offset of the next name to emit
+-	int  used;                  // bytes used in names[]
++	int  ready;                 // snapshot materialized?
++	size_t cursor;              // byte offset of the next name to emit
+ 	char guest[4096];           // guest dir path (for per-entry d_type/d_ino lstat)
+-	char names[EUNION_NAMEBUF]; // NUL-separated merged listing
++	struct eunion_name_buffer names; // uniquely owned NUL-separated snapshot
+ };
+ 
+ static struct eunion_dir_state eunion_dirs[EUNION_MAXDIRS];
+@@ -1755,8 +1871,10 @@ void vchroot_dir_closed(int fd)
+ 	struct eunion_dir_state* s = eunion_dir_find(fd);
+ 	if (!s)
+ 		return;
+-	s->fd = -1;
+ 	s->ready = 0;
++	eunion_name_buffer_release(&s->names);
++	s->cursor = 0;
++	s->fd = -1;
+ }
+ 
+ void vchroot_dir_rewind(int fd)
+@@ -1774,26 +1892,50 @@ static struct eunion_dir_state* eunion_dir_alloc(int fd)
+ 	}
+ 	if (!s)
+ 		return 0; // caller reports explicit capacity exhaustion
+-	s->fd = fd;
+ 	s->ready = 0;
+-	s->count = s->cursor = s->used = 0;
++	eunion_name_buffer_release(&s->names);
++	s->names.growable = 1;
++	s->cursor = 0;
++	s->fd = fd;
+ 	return s;
+ }
+ 
+ int vchroot_dir_dup(int oldfd, int newfd)
+ {
++	if (oldfd == newfd)
++		return 0;
+ 	struct eunion_dir_state* source = eunion_dir_find(oldfd);
+-	struct eunion_dir_state* target;
+-
+ 	if (!source)
++	{
++		vchroot_dir_closed(newfd);
+ 		return 0;
+-	target = eunion_dir_find(newfd);
+-	if (!target)
+-		target = eunion_dir_alloc(newfd);
++	}
++
++	// Clone before changing the target: allocation failure leaves both
++	// existing states intact and never publishes a shared owning pointer.
++	struct eunion_name_buffer names = { .growable = 1 };
++	if (source->ready && source->names.used)
++	{
++		int result = eunion_name_buffer_grow(&names, source->names.used);
++		if (result < 0)
++			return result;
++		memcpy(names.data, source->names.data, source->names.used);
++		names.used = source->names.used;
++		names.count = source->names.count;
++	}
++	struct eunion_dir_state* target = eunion_dir_alloc(newfd);
+ 	if (!target)
++	{
++		eunion_name_buffer_release(&names);
+ 		return -LINUX_EMFILE;
+-	memcpy(target, source, sizeof(*target));
+-	target->fd = newfd;
++	}
++	if (source->ready)
++	{
++		memcpy(target->guest, source->guest, strlen(source->guest) + 1);
++		target->cursor = source->cursor;
++		target->names = names; // move: the local buffer is no longer released
++		target->ready = 1;
++	}
+ 	return 0;
+ }
+ 
+@@ -1838,7 +1980,7 @@ static int eunion_emit_dirent(char* out, int cap, int used,
+ 	int hdr = (int)__builtin_offsetof(struct linux_dirent64, d_name);
+ 	int reclen = hdr + nl;
+ 	reclen = (reclen + 7) & ~7; // 8-byte align like the kernel
+-	if (used + reclen > cap)
++	if (reclen > cap - used)
+ 		return 0;
+ 
+ 	// resolve dirguest/name to a host path (upper wins) and lstat for type+ino.
+@@ -1899,6 +2041,8 @@ int vchroot_getdents_merge(int fd, char* out, int cap)
+ 	// union switched off.
+ 	if (libexec_path_len <= 0)
+ 		return LINUX_SYSCALL(__NR_getdents64, fd, out, cap);
++	if (!out || cap <= 0)
++		return -LINUX_EINVAL;
+ 
+ 	struct eunion_dir_state* s = eunion_dir_find(fd);
+ 	if (!s)
+@@ -1916,43 +2060,43 @@ int vchroot_getdents_merge(int fd, char* out, int cap)
+ 		struct vchroot_fdpath_args fp;
+ 		fp.fd = fd; fp.path = guest; fp.maxlen = sizeof(guest);
+ 		if (vchroot_fdpath(&fp) < 0) // not under the prefix: no merge to do
++		{
++			vchroot_dir_closed(fd);
+ 			return LINUX_SYSCALL(__NR_getdents64, fd, out, cap);
++		}
+ 
+-		int n = vchroot_readdir_merge(guest, s->names, sizeof(s->names));
+-		if (n < 0)
+-			return n;
+-
+-		// remember the guest dir path so the emitter can lstat each entry for a
+-		// real d_type/d_ino (overlay presents valid types, not DT_UNKNOWN).
++		struct eunion_name_buffer visible = { .growable = 1 };
++		struct eunion_name_buffer hidden = { .growable = 1 };
++		int result = eunion_readdir_merge(guest, &visible, &hidden);
++		eunion_name_buffer_release(&hidden);
++		if (result < 0)
+ 		{
+-			int gl = (int)strlen(guest);
+-			if (gl + 1 > (int)sizeof(s->guest))
+-				gl = (int)sizeof(s->guest) - 1;
+-			memcpy(s->guest, guest, gl);
+-			s->guest[gl] = '\0';
++			eunion_name_buffer_release(&visible);
++			vchroot_dir_closed(fd);
++			return result;
+ 		}
+ 
+-		s->count = n;
++		// remember the guest dir path so the emitter can lstat each entry for a
++		// real d_type/d_ino (overlay presents valid types, not DT_UNKNOWN).
++		memcpy(s->guest, guest, strlen(guest) + 1);
++		// Publish only a complete snapshot; close/rewind own its release.
++		eunion_name_buffer_release(&s->names);
++		s->names = visible;
+ 		s->cursor = 0;
+-		s->used = 0;
+-		// compute total bytes for cursor walking
+-		const char* p = s->names;
+-		for (int i = 0; i < n; i++)
+-			p += strlen(p) + 1;
+-		s->used = (int)(p - s->names);
++		// Byte count is maintained during collection; no second name scan.
+ 		s->ready = 1;
+ 	}
+ 
+ 	// page out from cursor
+ 	int written = 0;
+-	while (s->cursor < s->used)
++	while (s->cursor < s->names.used)
+ 	{
+-		const char* name = s->names + s->cursor;
++		const char* name = s->names.data + s->cursor;
+ 		int w = eunion_emit_dirent(out, cap, written, s->guest, name);
+ 		if (!w)
+-			break; // page full; resume here next call
++			return written ? written : -LINUX_EINVAL;
+ 		written += w;
+-		s->cursor += (int)strlen(name) + 1;
++		s->cursor += strlen(name) + 1;
+ 	}
+ 	return written; // 0 when cursor reaches used -> end of merged stream
+ }

@@ -1,7 +1,7 @@
 schema_version: 3
 profile: wget-residual
 batch_id: wget-residual-local-immutable-batch-1
-expected_count: 17
+expected_count: 18
 composition: wget-residual-profile-composition-v1.yml
 series:
 - profile: wget-residual
@@ -52,6 +52,10 @@ series:
   module: darling/src/external/xnu
   patch: xnu/sigexc-handler-mask.patch
   lock: darling-xnu-sigexc-handler-mask-wget-v1.yml
+- profile: wget-residual
+  module: darling/src/external/xnu
+  patch: xnu/eunion-large-directory.patch
+  lock: darling-xnu-eunion-large-directory-wget-v1.yml
 - profile: wget-residual
   module: darling/src/external/darlingserver
   patch: darlingserver/preserve-wait-state-on-resume.patch
