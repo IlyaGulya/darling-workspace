@@ -427,3 +427,42 @@ patches:
     timeout-seconds: 30
     note: Real CMake relative and absolute installs plus symlinks remain inside DESTDIR; the live prefix stays absent, including when its pathname contains spaces.
   sha256sum: 64b3f523f70ca7427c3c961a5da72632685536345e9329307824720179ac4d45
+- path: darling/mldr-stack-growth-reservation.patch
+  module: darling
+  source-branch: fix/mldr-stack-growth-reservation
+  source-base: 2fe91cebde866d372cddc69626a95555672a76c1
+  source-commit: 1a2869c9ed4f17488563bdd0a902e62e2d929530
+  bead: dar-gwn.7
+  publication-status: blocked
+  publication-blocker: Guest stack-placement review and original intermittent wget freeze remain under dar-gwn.7; local runtime proof does not authorize publication.
+  tests:
+  - name: mldr_stack_growth_reservation
+    kind: guest
+    coverage-tier: runtime
+    runs: guest
+    diag: guarded
+    runner: guest-runtime-script
+    repo: darling-workspace
+    script: tests/run-mldr-stack-growth.sh
+    requires: [darling-prefix]
+    runtime-profile: homebrew-lz4-source
+    timeout-seconds: 120
+    red: true
+    red-proof:
+      mode: guest-runtime-deploy
+      bad-profile: current-minus-patch
+      expect-failure-phase: run
+      expect-output-contains: [MLDR_STACK_GROWTH_BROKEN]
+      cmake-defines:
+        DARLING_EUNION: true
+      source-modules:
+      - darling
+      - darling/src/external/darlingserver
+      runtime-artifacts:
+      - module: darling
+        build-targets: [mldr]
+        deploy:
+        - libexec/darling/usr/libexec/darling/mldr
+        - usr/libexec/darling/mldr
+    note: The same real Linux mapping obstacle and guest rm execute against current-minus and fixed loaders; setup failures are not semantic RED.
+  sha256sum: bbf67620647a64b80cb96225240b36c1af4c2ff37fe79aca5329f13ba1c94680
