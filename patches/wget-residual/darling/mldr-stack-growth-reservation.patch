@@ -1,0 +1,31 @@
+From 1a2869c9ed4f17488563bdd0a902e62e2d929530 Mon Sep 17 00:00:00 2001
+From: Ilya Gulya <ilya@gulya.me>
+Date: Sat, 5 Sep 2026 12:14:00 +0000
+Subject: [PATCH] Reserve the permitted guest stack before entering dyld
+
+---
+ src/startup/mldr/mldr.c | 11 ++++++-----
+ 1 file changed, 6 insertions(+), 5 deletions(-)
+
+diff --git a/src/startup/mldr/mldr.c b/src/startup/mldr/mldr.c
+index dfeb5eaff6ec9c64c6132925c7be83ffbb792c9b..25db003b3540e3e2079d5706915af657dfa7d283 100644
+--- a/src/startup/mldr/mldr.c
++++ b/src/startup/mldr/mldr.c
+@@ -886,11 +886,12 @@ static void setup_space(struct load_results* lr, bool is_64_bit) {
+ 
+ 	struct rlimit limit;
+ 	getrlimit(RLIMIT_STACK, &limit);
+-	// allocate a few pages 16 pages if it's less than the limit; otherwise, allocate the limit
+-	unsigned long size = PAGE_SIZE * 16;
+-	if (limit.rlim_cur != RLIM_INFINITY && limit.rlim_cur < size) {
+-		size = limit.rlim_cur;
+-	}
++	// Reserve the permitted stack range, not just its first 64 KiB. A successful
++	// MAP_GROWSDOWN mapping can still be unable to expand when another mapping
++	// lies below it (including after the kernel-chosen EEXIST fallback). Pages
++	// remain demand-paged; an unlimited stack starts with Darwin's 8 MiB default.
++	unsigned long size = limit.rlim_cur == RLIM_INFINITY
++			? 8UL * 1024 * 1024 : limit.rlim_cur;
+ 
+ 	// dar-stackmmap-eexist-9j9: the preferred fixed range [preferred_top - size,
+ 	// preferred_top) sits just below the commpage. For some guests the process's
