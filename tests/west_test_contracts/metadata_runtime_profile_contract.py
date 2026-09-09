@@ -144,11 +144,24 @@ with tempfile.TemporaryDirectory() as temp:
 
 with tempfile.TemporaryDirectory() as temp:
     prefix = Path(temp) / "prefix"
+    workspace = Path(temp) / "workspace"
+    manifest_repo = workspace / "darling-workspace"
+    for profile, contents in {
+        "homebrew": "patches: []\n",
+        "selected": "base-profile: homebrew\npatches: []\n",
+        "unrelated": "patches: []\n",
+    }.items():
+        profile_dir = manifest_repo / "patches" / profile
+        profile_dir.mkdir(parents=True)
+        (profile_dir / "patches.yml").write_text(contents)
+    (manifest_repo / "west.yml").write_text("manifest: {}\n")
+    (manifest_repo / "testkit").mkdir()
+    (manifest_repo / "testkit/runtime-profiles.yml").write_text("profiles: {}\n")
     (prefix / "bin").mkdir(parents=True)
     launcher = prefix / "bin" / "darling"
     launcher.write_text("launcher\n")
     definition = {
-        "source-profile": "homebrew",
+        "source-profile": "selected",
         "launcher-env": {
             "DARLING_ROOTLESS": "1",
             "DARLING_NOOVERLAYFS": "1",
@@ -158,10 +171,11 @@ with tempfile.TemporaryDirectory() as temp:
         json.dumps({
             "schema": 2,
             "profile": "homebrew-rootless-no-mount",
-            "source-profile": "homebrew",
+            "source-profile": "selected",
             "guest-toolchain": None,
             "fingerprint": runtime_identity(
-                topdir=ROOT,
+                topdir=workspace,
+                manifest_repo=manifest_repo,
                 profile_name="homebrew-rootless-no-mount",
                 definition=definition,
                 launcher=launcher,
@@ -170,7 +184,8 @@ with tempfile.TemporaryDirectory() as temp:
     )
 
     reused = DarlingTest.__new__(DarlingTest)
-    reused.topdir = str(ROOT)
+    reused.topdir = str(workspace)
+    reused.manifest = SimpleNamespace(repo_abspath=str(manifest_repo))
     reused._prefix = str(prefix)
     reused._reuse_prefix_runtime = True
     reused._ctest_runtime_profile_definitions = lambda: {
@@ -202,6 +217,42 @@ with tempfile.TemporaryDirectory() as temp:
             raise AssertionError("provider mismatch unexpectedly passed")
     except SystemExit as error:
         assert "fingerprint mismatch" in str(error), error
+
+    def require_reuse_rejected():
+        try:
+            reused._retained_runtime_profile("homebrew-rootless-no-mount")
+        except SystemExit as error:
+            assert "fingerprint mismatch" in str(error), error
+        else:
+            raise AssertionError("changed runtime inputs unexpectedly reused")
+
+    # Changes to the selected profile and its base both invalidate the marker.
+    # The manifest lives below the West root, as in a real workspace.
+    for profile in ("selected", "homebrew"):
+        profile_path = manifest_repo / "patches" / profile / "patches.yml"
+        original = profile_path.read_text()
+        profile_path.write_text(original.replace("patches: []", """patches:
+  - module: darling
+    path: changed.patch
+    source-commit: changed"""))
+        require_reuse_rejected()
+        profile_path.write_text(original)
+
+    unrelated = manifest_repo / "patches/unrelated/patches.yml"
+    unrelated.write_text("patches: [{path: unrelated.patch}]\n")
+    reused._retained_runtime_profile("homebrew-rootless-no-mount")
+
+    lock = manifest_repo / "west.yml"
+    lock.write_text("manifest: {revision: changed}\n")
+    require_reuse_rejected()
+    lock.write_text("manifest: {}\n")
+
+    marker_path = prefix / test_module.RETAINED_RUNTIME_PROFILE_MARKER
+    retained_marker = json.loads(marker_path.read_text())
+    old_fingerprint = dict(retained_marker["fingerprint"], schema=1)
+    marker_path.write_text(json.dumps(dict(retained_marker, fingerprint=old_fingerprint)))
+    require_reuse_rejected()
+    marker_path.write_text(json.dumps(retained_marker))
 
     lifecycle = DarlingTest.__new__(DarlingTest)
     lifecycle._prefix_env = {}

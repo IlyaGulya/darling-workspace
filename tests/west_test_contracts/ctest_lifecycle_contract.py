@@ -462,6 +462,11 @@ with tempfile.TemporaryDirectory() as temp:
     (prefix / "bin" / "darling").write_text("launcher\n")
     test = DarlingTest.__new__(DarlingTest)
     test.topdir = str(root)
+    manifest_repo = root / "workspace"
+    profile_dir = manifest_repo / "patches/homebrew"
+    profile_dir.mkdir(parents=True)
+    (profile_dir / "patches.yml").write_text("patches: []\n")
+    test.manifest = SimpleNamespace(repo_abspath=str(manifest_repo))
     test._prefix = str(prefix)
     test._prefix_cleanup_failed = False
     bootstrap_messages = []
@@ -528,10 +533,14 @@ with tempfile.TemporaryDirectory() as temp:
         "retain",
         "cleanup",
     ], events
-    assert "prefix bootstrap guest stderr: guest output" in bootstrap_messages
-    assert "prefix bootstrap phase start: guest login shell (timeout 60s)" in bootstrap_messages
-    assert "prefix bootstrap heartbeat: guest login shell still running (30s)" in bootstrap_messages
-    assert any(message.startswith("  RLIMIT_NOFILE soft=") for message in bootstrap_messages)
+    test._darling_prefix_env = lambda path: {"DARLING_PREFIX": str(path)}
+    test._retained_runtime_profile("homebrew-prefix-baseline")
+    (profile_dir / "patches.yml").write_text("patches: [{path: changed.patch}]\n")
+    try:
+        test._retained_runtime_profile("homebrew-prefix-baseline")
+        raise AssertionError("bootstrap marker accepted a changed source profile")
+    except SystemExit as error:
+        assert "fingerprint mismatch" in str(error), error
 
 
 with tempfile.TemporaryDirectory() as temp:
@@ -732,6 +741,11 @@ with tempfile.TemporaryDirectory() as temp:
     (prefix / "bin" / "darling").write_text("launcher\n")
     test = DarlingTest.__new__(DarlingTest)
     test.topdir = str(root)
+    manifest_repo = root / "workspace"
+    profile_dir = manifest_repo / "patches/homebrew"
+    profile_dir.mkdir(parents=True)
+    (profile_dir / "patches.yml").write_text("patches: []\n")
+    test.manifest = SimpleNamespace(repo_abspath=str(manifest_repo))
     test._prefix = str(prefix)
     test._prefix_cleanup_failed = False
     test.inf = lambda _message: None

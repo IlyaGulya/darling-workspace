@@ -1920,6 +1920,7 @@ class DarlingTest(ProfileOperationsMixin, BootstrapRuntimeProfileMixin, WestComm
             )
         expected_fingerprint = runtime_identity(
             topdir=Path(self.topdir),
+            manifest_repo=Path(self.manifest.repo_abspath),
             profile_name=profile_name,
             definition=definition,
             launcher=launcher,

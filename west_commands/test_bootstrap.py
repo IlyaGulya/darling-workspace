@@ -491,6 +491,7 @@ class BootstrapRuntimeProfileMixin:
                 marker_path = deployment.prefix / RETAINED_RUNTIME_PROFILE_MARKER
                 fingerprint = runtime_identity(
                     topdir=Path(self.topdir),
+                    manifest_repo=Path(self.manifest.repo_abspath),
                     profile_name=profile_name,
                     definition=definition,
                     launcher=deployment.prefix / "bin/darling",

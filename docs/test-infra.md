@@ -323,11 +323,21 @@ precedence over duplicate build/staging copies during Mach-O closure discovery.
 Deployment checkpoints the complete atomic transaction manifest after each
 file. Preserve rollback, restart recovery, ownership and symlink checks.
 
-From the manifest directory, configure a named context once. A new prefix must
-be absent or empty, not an untyped populated directory:
+From the manifest directory, select the supported native CLT 13.2 package and
+configure a named context. `DARLING_CLT_PACKAGE` selects the existing provisioner:
+it verifies the reviewed whole-file SHA-256 and installs the distribution through
+the guest `installer`. The default catalog supplies CLT 9.2 / SDK 10.13, which
+does not satisfy this Homebrew runtime's SDK requirement. Package selection is
+an environment setting, not a persisted dev-context value.
+
+Use a short, owned prefix that is absent or empty, not an untyped populated
+directory. Expanded AF_UNIX socket paths include the host prefix and must fit
+Linux's 108-byte `sun_path`, including the terminating NUL. Keep the ordinary
+guest temporary directory; do not weaken the expanded-path guard.
 
 ```sh
-mise run dw dev context homebrew --prefix /absolute/path/to/new-homebrew-prefix
+export DARLING_CLT_PACKAGE=/absolute/path/Command_Line_Tools_for_Xcode_13.2.pkg
+mise run dw dev context homebrew --prefix /tmp/dar-hb
 mise run dw dev run homebrew-prepare
 mise run dw dev run homebrew-preflight
 mise run dw dev run exact-capture
@@ -347,6 +357,12 @@ It prints the job identity plus exact reconnect/cancel commands. `--detach`
 starts without observing; `mise run dw dev follow JOB` reconnects and
 `mise run dw dev cancel JOB` requests owner cleanup. `--dry-run` displays the
 underlying command without building, booting, or creating a job.
+
+Retained runtime reuse checks the selected source profile and its complete
+`base-profile` chain in the manifest repository, the source lock, runtime
+definitions, source module revisions from the West root, and the deployed
+launcher. A changed input or an older fingerprint schema requires a new
+`homebrew-prepare` run; do not rewrite a retained marker to bypass this check.
 
 The exact-capture diagnostic uses initialized West command state, validates
 the retained provider fingerprint, and owns the normal prefix lock/cleanup.
