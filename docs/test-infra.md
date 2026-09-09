@@ -400,6 +400,31 @@ The macOS registration has not been run on macOS. Pre-existing retention of
 references inherited from active waiters at fork is outside this final-reference
 fix. Stock wget acceptance remains a separate `dar-gwn.7` gate.
 
+The retained stock source-install gate passed on 2026-09-09: CMake 4.4.3 and
+wget 1.25.0 have non-bottle receipts and x86_64 Mach-O executables. Wget fetched
+`https://example.com/` with certificate verification enabled (`200 OK`, 559 bytes).
+Source installation is recorded in `dar-gwn7-stock-wget-perl-job`; the final
+HTTPS gate is `dar-gwn7-stock-wget-ca-job` (rc 0), under the diagnostic archive.
+Receipts and one-off invocation inputs are archived in
+`~/work/darling-debug/dar-gwn7-stock-source-installed`.
+
+The diagnostic prefix was missing standard installation payloads: native `cut`
+for libpsl's version fields, Perl's standard modules/extensions for OpenSSL's
+Configure script, and native `/usr/bin/openssl` for ca-certificates post-install.
+Perl was provisioned through its existing CMake component installation; the
+one-off runtime provider supplied the unmodified cut and openssl targets.
+Running the unchanged `brew postinstall ca-certificates` then replaced the empty
+CA bundle. No package recipe/source change or certificate-verification bypass
+was used. This single successful installation does not establish the cause or
+resolution of the original intermittent `dar-gwn.7` freeze.
+
+The retained libunistring `test-categ_Zs` and `test-u32-prev` inputs also passed
+256 forced parallel rebuild/execution iterations, followed by `make -j8 check`
+(614 PASS, 60 SKIP, 0 FAIL, 0 ERROR). The run
+`dar-gwn7-unistring-rebuild-stress-job` exited 0. The earlier intermittent compiler
+stall did not recur, so its localization remains open rather than being
+attributed to the kqueue fix without evidence.
+
 ### Native applicability and migration gates
 
 The reviewed runtime binding classifications (including source/prebuilt

@@ -355,7 +355,7 @@ patches:
   source-commit: f78837758ca5d861135e5653ac56a5e35e988981
   bead: dar-fgjm
   publication-status: blocked
-  publication-blocker: Stock wget source-install acceptance remains under dar-gwn.7; canonical publication review and explicit publication authorization are still required.
+  publication-blocker: Single stock source-install and HTTPS acceptance passed; the original intermittent freeze remains under dar-gwn.7, and canonical publication review and explicit publication authorization are still required.
   tests:
   - ctest-name: darling/kqueue_close_pipe_eof
     kind: guest
