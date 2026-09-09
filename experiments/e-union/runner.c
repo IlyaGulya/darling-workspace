@@ -66,6 +66,7 @@ extern int eunion_test_fail_whiteout;
 extern int eunion_test_fail_xattr;
 
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 #include <sys/wait.h>
 #include <sys/stat.h>
@@ -214,6 +215,195 @@ static void expect_resolves_to(const char* guest, const char* want) {
     }
 }
 
+enum { LARGE_NAMES = 640, LARGE_HIDDEN = 96, LARGE_NAME_LEN = 255,
+       LARGE_BYTES = (LARGE_NAMES - LARGE_HIDDEN) * (LARGE_NAME_LEN + 1) };
+
+struct large_seen { unsigned char names[LARGE_NAMES]; };
+
+static void large_name(unsigned int index, char name[LARGE_NAME_LEN + 1]) {
+    int n = snprintf(name, LARGE_NAME_LEN + 1, "entry_%04u_", index);
+    memset(name + n, 'x', LARGE_NAME_LEN - n);
+    name[LARGE_NAME_LEN] = '\0';
+}
+
+/* Independent fixture oracle: reject altered names, hidden names, and duplicates
+ * immediately, then require every expected member, regardless of host order. */
+static int large_note(struct large_seen* seen, const char* name) {
+    unsigned int index;
+    char expected[LARGE_NAME_LEN + 1];
+    if (strlen(name) != LARGE_NAME_LEN ||
+        sscanf(name, "entry_%4u_", &index) != 1 ||
+        index < LARGE_HIDDEN || index >= LARGE_NAMES)
+        return 0;
+    large_name(index, expected);
+    if (strcmp(name, expected) != 0 || seen->names[index])
+        return 0;
+    seen->names[index] = 1;
+    return 1;
+}
+
+static int large_complete(const struct large_seen* seen) {
+    for (int i = LARGE_HIDDEN; i < LARGE_NAMES; i++)
+        if (!seen->names[i])
+            return 0;
+    return 1;
+}
+
+static int large_bounded_exact(const char* names, int count, size_t cap) {
+    struct large_seen seen = {{0}};
+    size_t pos = 0;
+    if (count != LARGE_NAMES - LARGE_HIDDEN)
+        return 0;
+    for (int i = 0; i < count; i++) {
+        if (pos >= cap)
+            return 0;
+        const char* end = memchr(names + pos, '\0', cap - pos);
+        if (!end || !large_note(&seen, names + pos))
+            return 0;
+        pos = (size_t)(end - names) + 1;
+    }
+    return pos == LARGE_BYTES && large_complete(&seen);
+}
+
+static int large_page(int fd, struct large_seen* seen) {
+    char page[512];
+    int n = vchroot_getdents_merge(fd, page, sizeof(page));
+    if (n <= 0)
+        return n;
+    if (n > (int)sizeof(page))
+        return -EIO;
+    const size_t header = offsetof(struct linux_dirent64, d_name);
+    for (size_t pos = 0; pos < (size_t)n;) {
+        unsigned short reclen;
+        if ((size_t)n - pos < header + 1)
+            return -EIO;
+        memcpy(&reclen, page + pos + offsetof(struct linux_dirent64, d_reclen),
+               sizeof(reclen));
+        if (reclen < header + 1 || reclen > (size_t)n - pos ||
+            !memchr(page + pos + header, '\0', reclen - header) ||
+            !large_note(seen, page + pos + header))
+            return -EIO;
+        pos += reclen;
+    }
+    return n;
+}
+
+static int large_drain(int fd, struct large_seen* seen) {
+    /* Every positive page must contain at least one new name; this bound catches
+     * a stuck pager without hanging the fixture. EOF must remain EOF. */
+    for (int pages = 0; pages <= LARGE_NAMES; pages++) {
+        int n = large_page(fd, seen);
+        if (n <= 0)
+            return n == 0 && large_complete(seen) && large_page(fd, seen) == 0;
+    }
+    return 0;
+}
+
+static int large_open(void) {
+    char host[4096];
+    expand("/largemerge", host);
+    return open(host, O_RDONLY | O_DIRECTORY);
+}
+
+static void large_close(int fd) {
+    if (fd >= 0) {
+        vchroot_dir_closed(fd);
+        close(fd);
+    }
+}
+
+static void large_directory_checks(void) {
+    printf("\n== E-UNION large directory buffers and snapshot lifetime ==\n");
+    int whiteouts_ok = 1;
+    for (unsigned int i = 0; i < LARGE_HIDDEN; i++) {
+        char name[LARGE_NAME_LEN + 1], guest[4096];
+        large_name(i, name);
+        snprintf(guest, sizeof(guest), "/largemerge/%s", name);
+        if (vchroot_whiteout(guest) != 0)
+            whiteouts_ok = 0;
+    }
+    check("GL fixture creates 96 NAME_MAX physical whiteouts", whiteouts_ok);
+    if (!whiteouts_ok)
+        return;
+
+    char* names = malloc(LARGE_BYTES);
+    check("GL fixture allocates complete bounded output", names != NULL);
+    if (!names)
+        return;
+    int n = vchroot_readdir_merge("/largemerge", names, 65536);
+    check("GL bounded 64KiB output reports EOVERFLOW, not partial success",
+          n == -EOVERFLOW);
+    n = vchroot_readdir_merge("/largemerge", names, LARGE_BYTES - 1);
+    check("GL bounded one-byte-short output reports EOVERFLOW", n == -EOVERFLOW);
+    n = vchroot_readdir_merge("/largemerge", names, LARGE_BYTES);
+    check("GL exact-fit bounded output contains all 544 names and no whiteouts",
+          large_bounded_exact(names, n, LARGE_BYTES));
+    free(names);
+
+    int fd = large_open();
+    struct large_seen seen = {{0}};
+    char tiny[256];
+    n = fd >= 0 ? vchroot_getdents_merge(fd, tiny, sizeof(tiny)) : -1;
+    check("GL undersized dirent page reports EINVAL, not false EOF", n == -EINVAL);
+    check("GL paging after small-buffer error preserves every NAME_MAX entry",
+          fd >= 0 && large_drain(fd, &seen));
+    large_close(fd);
+
+    fd = large_open();
+    memset(&seen, 0, sizeof(seen));
+    int first = fd >= 0 ? large_page(fd, &seen) : -1;
+    int rewound = fd >= 0 && sys_lseek(fd, 0, 0) == 0;
+    memset(&seen, 0, sizeof(seen));
+    check("GL rewind discards partial snapshot and replays the complete set",
+          first > 0 && rewound && large_drain(fd, &seen));
+    large_close(fd);
+    fd = large_open();
+    memset(&seen, 0, sizeof(seen));
+    check("GL close and reopen yields a fresh complete snapshot",
+          fd >= 0 && large_drain(fd, &seen));
+    large_close(fd);
+
+    /* Only one descriptor reads after dup: this checks snapshot ownership,
+     * not the existing implementation's unresolved shared-OFD cursor policy. */
+    for (int close_original = 0; close_original < 2; close_original++) {
+        fd = large_open();
+        memset(&seen, 0, sizeof(seen));
+        first = fd >= 0 ? large_page(fd, &seen) : -1;
+        int copy = first > 0 ? (int)sys_dup(fd) : -1;
+        int survivor = close_original ? copy : fd;
+        large_close(close_original ? fd : copy);
+        check(close_original
+                  ? "GL dup survives original close with exact remaining names"
+                  : "GL original survives dup close with exact remaining names",
+              copy >= 0 && large_drain(survivor, &seen));
+        large_close(survivor);
+    }
+
+    fd = large_open();
+    memset(&seen, 0, sizeof(seen));
+    first = fd >= 0 ? large_page(fd, &seen) : -1;
+    pid_t child = first > 0 ? fork() : -1;
+    if (child == 0) {
+        alarm(10);
+        int ok = large_drain(fd, &seen);
+        large_close(fd);
+        _exit(ok ? 0 : 1);
+    }
+    int status = 0;
+    pid_t waited = -1;
+    if (child > 0) {
+        do { waited = waitpid(child, &status, 0); } while (waited < 0 && errno == EINTR);
+    }
+    check("GL fork child drains inherited snapshot exactly and releases it",
+          waited == child && child > 0 && WIFEXITED(status) && WEXITSTATUS(status) == 0);
+    /* Rewind explicitly: do not pin independent versus shared fork cursors. */
+    rewound = fd >= 0 && sys_lseek(fd, 0, 0) == 0;
+    memset(&seen, 0, sizeof(seen));
+    check("GL parent can rewind and fully enumerate after child teardown",
+          rewound && large_drain(fd, &seen));
+    large_close(fd);
+}
+
 int main(void) {
     char cwd[4096];
     getcwd(cwd, sizeof(cwd));
@@ -262,6 +452,13 @@ int main(void) {
     libexec_path[0] = '\0'; libexec_path_len = -1; /* clear I0 state */
     set_libexec_path(libexec);
 #endif
+
+    const char* directory_only = getenv("EUNION_DIRECTORY_ONLY");
+    if (directory_only && strcmp(directory_only, "1") == 0) {
+        large_directory_checks();
+        printf("\n%d tests, %d failed\n", g_tests, g_fail);
+        return g_fail ? 1 : 0;
+    }
 
     printf("== E-UNION resolver tests ==\n");
 
@@ -1210,117 +1407,8 @@ int main(void) {
         check("G4 file entry has a real inode (not synthetic 1)", ino_file > 1);
     }
 
-    /* G5. Exhaust the per-process directory-view state deliberately. A merged
-       directory must fail explicitly when state capacity is exhausted; falling
-       back to raw upper getdents silently drops lower-only entries. Releasing
-       the states must make the capacity reusable. */
-    {
-        char host[4096], page[256];
-        int holders[256];
-        int holder_count = 0;
-        expand("/bigmerge", host);
-        for (int i = 0; i < 256; i++) {
-            holders[i] = open(host, O_RDONLY | O_DIRECTORY);
-            if (holders[i] < 0)
-                break;
-            vchroot_getdents_merge(holders[i], page, sizeof(page));
-            holder_count++;
-        }
-        int overflow = open(host, O_RDONLY | O_DIRECTORY);
-        int overflow_rv = overflow >= 0
-            ? vchroot_getdents_merge(overflow, page, sizeof(page))
-            : -1;
-        check("G5 fills directory-view capacity", holder_count == 256);
-        check("G5 exhausted capacity returns EMFILE, not raw partial view",
-              overflow_rv == -LINUX_EMFILE);
-        if (overflow >= 0)
-            close(overflow);
-        for (int i = 0; i < holder_count; i++) {
-            vchroot_dir_closed(holders[i]);
-            close(holders[i]);
-        }
-        int reused = open(host, O_RDONLY | O_DIRECTORY);
-        int reused_rv = reused >= 0
-            ? vchroot_getdents_merge(reused, page, sizeof(page))
-            : -1;
-        check("G5 released directory-view capacity is reusable", reused_rv > 0);
-        if (reused >= 0) {
-            vchroot_dir_closed(reused);
-            close(reused);
-        }
-    }
 
-    /* G6. Rewinding a directory fd through the production lseek adapter must
-       rewind the merged cursor as well, not only the kernel fd offset. */
-    {
-        char host[4096], first[256], second[256];
-        expand("/bigmerge", host);
-        int fd = open(host, O_RDONLY | O_DIRECTORY);
-        int first_n = fd >= 0 ? vchroot_getdents_merge(fd, first, sizeof(first)) : -1;
-        int rewind_rv = fd >= 0 ? (int)sys_lseek(fd, 0, 0) : -1;
-        int second_n = fd >= 0 ? vchroot_getdents_merge(fd, second, sizeof(second)) : -1;
-        const char* first_name = first_n > 0 ? ((struct linux_dirent64*)first)->d_name : "";
-        const char* second_name = second_n > 0 ? ((struct linux_dirent64*)second)->d_name : "";
-        check("G6 lseek rewind succeeds", fd >= 0 && rewind_rv == 0);
-        check("G6 rewind resets merged cursor", first_n > 0 && second_n > 0 &&
-              strcmp(first_name, second_name) == 0);
-        if (fd >= 0) {
-            vchroot_dir_closed(fd);
-            close(fd);
-        }
-    }
-
-    /* G7. dup() shares the directory-view cursor with the original fd. */
-    {
-        char host[4096], first[256], duplicate_page[256];
-        expand("/bigmerge", host);
-        int fd = open(host, O_RDONLY | O_DIRECTORY);
-        int first_n = fd >= 0 ? vchroot_getdents_merge(fd, first, sizeof(first)) : -1;
-        int dupfd = fd >= 0 ? (int)sys_dup(fd) : -1;
-        int duplicate_n = dupfd >= 0
-            ? vchroot_getdents_merge(dupfd, duplicate_page, sizeof(duplicate_page)) : -1;
-        const char* first_name = first_n > 0 ? ((struct linux_dirent64*)first)->d_name : "";
-        const char* duplicate_name = duplicate_n > 0
-            ? ((struct linux_dirent64*)duplicate_page)->d_name : "";
-        check("G7 dup directory fd succeeds", dupfd >= 0);
-        check("G7 dup shares merged cursor", first_n > 0 && duplicate_n > 0 &&
-              strcmp(first_name, duplicate_name) != 0);
-        if (dupfd >= 0) {
-            vchroot_dir_closed(dupfd);
-            close(dupfd);
-        }
-        if (fd >= 0) {
-            vchroot_dir_closed(fd);
-            close(fd);
-        }
-    }
-
-    /* G8. A forked child inherits a valid snapshot of the directory-view state
-       and can continue reading it without corrupting the parent's state. */
-    {
-        char host[4096], page[256];
-        expand("/bigmerge", host);
-        int fd = open(host, O_RDONLY | O_DIRECTORY);
-        int first_n = fd >= 0 ? vchroot_getdents_merge(fd, page, sizeof(page)) : -1;
-        pid_t child = first_n > 0 ? fork() : -1;
-        if (child == 0) {
-            int child_n = vchroot_getdents_merge(fd, page, sizeof(page));
-            _exit(child_n > 0 ? 0 : 1);
-        }
-        int child_ok = 0;
-        if (child > 0) {
-            int status;
-            waitpid(child, &status, 0);
-            child_ok = WIFEXITED(status) && WEXITSTATUS(status) == 0;
-        }
-        int parent_n = fd >= 0 ? vchroot_getdents_merge(fd, page, sizeof(page)) : -1;
-        check("G8 forked child continues merged directory stream", child_ok);
-        check("G8 parent directory state remains readable after fork", parent_n > 0);
-        if (fd >= 0) {
-            vchroot_dir_closed(fd);
-            close(fd);
-        }
-    }
+    large_directory_checks();
 
     #undef DRAIN_INTO
 

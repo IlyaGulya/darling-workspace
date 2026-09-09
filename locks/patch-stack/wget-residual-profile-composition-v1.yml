@@ -19,9 +19,9 @@ prerequisites:
 frozen_manifest: *id001
 mapping:
   path: lock-first-series-wget-residual-v1.yml
-  sha256: 1afe67c6736d79c6a3e06ead6e3f2f8132f4fc9d47238bcd35c6d491cdb235a5
+  sha256: 15d45b35e335eed2e4993e59d5cd39e07e5b79345500b5b636ccd5cbeaeb3df5
   batch_id: wget-residual-local-immutable-batch-1
-  expected_count: 17
+  expected_count: 18
 modules:
 - module: darling
   starting:
@@ -69,8 +69,11 @@ modules:
   - patch: xnu/sigexc-handler-mask.patch
     lock: darling-xnu-sigexc-handler-mask-wget-v1.yml
     expected_applied_tree: 34aa994860074f73f25087bec98c66fa1164e914
-  final_tree: 34aa994860074f73f25087bec98c66fa1164e914
-  integration_final_tree: 34aa994860074f73f25087bec98c66fa1164e914
+  - patch: xnu/eunion-large-directory.patch
+    lock: darling-xnu-eunion-large-directory-wget-v1.yml
+    expected_applied_tree: 67305ae17539cfdb99dd4cd4e5cc230bdd02a234
+  final_tree: 67305ae17539cfdb99dd4cd4e5cc230bdd02a234
+  integration_final_tree: 67305ae17539cfdb99dd4cd4e5cc230bdd02a234
 - module: darling/src/external/darlingserver
   starting:
     tree: 2d6f0321cfe205dba7302666bc470adb79a44003
