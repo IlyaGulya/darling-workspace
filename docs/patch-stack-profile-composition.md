@@ -140,12 +140,17 @@ content-addressed mirror-ref convention. In a disposable repository, start at
 the owning module's current composition boundary and use the existing
 `patch_stack_lock_first._cherry_pick` native replay helper on each declared
 commit to derive the applied tree. Add the series at its grouped module tail,
-advance the typed batch/count and runtime count guard, then refresh mapping
+advance the typed batch/count, then refresh mapping
 SHA-256, dependent profile replay boundaries, and composition SHA-256 bindings
 in prerequisite order. Parent gitlinks remain generated lifecycle evidence,
 not authored source identity. Finally run canonical applicability through
 `west patch verify --profile homebrew --applicability-only` and the dependent
 profiles, with reviewed immutable refs available, before claiming acceptance.
+
+Runtime-source admission derives the exact batch identity, count, and module
+order from the canonical mapping. Do not duplicate these values as Python
+literals. Unsupported profiles and deviations from the declared mapping are
+rejected before replay; composition checksums and tree boundaries remain required.
 
 ## EUNION ownership admission
 
