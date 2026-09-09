@@ -1,0 +1,63 @@
+From f78837758ca5d861135e5653ac56a5e35e988981 Mon Sep 17 00:00:00 2001
+From: Ilya Gulya <ilya@gulya.me>
+Date: Wed, 9 Sep 2026 00:58:47 +0000
+Subject: [PATCH] Release Linux knote descriptors during final filter teardown
+
+---
+ src/common/private.h |  2 ++
+ src/linux/platform.c | 23 ++++++++++++++++++++++-
+ 2 files changed, 24 insertions(+), 1 deletion(-)
+
+diff --git a/src/common/private.h b/src/common/private.h
+index 5c0718e90960d848677565c95005119e06f83724..b863de8755304ea38d970f63ea66c37943b103b4 100644
+--- a/src/common/private.h
++++ b/src/common/private.h
+@@ -146,6 +146,8 @@ struct filter {
+ #endif
+ };
+ 
++RB_PROTOTYPE(knt, knote, kn_entries, knote_cmp)
++
+ /* Use this to declare a filter that is not implemented */
+ #define EVFILT_NOTIMPL { 0, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL }
+ 
+diff --git a/src/linux/platform.c b/src/linux/platform.c
+index 482ffb29d4ddc2c7bd7e3eb74bc5be4e79af052a..2d7096bbfb8cd28edcc30311887d512bad901c99 100644
+--- a/src/linux/platform.c
++++ b/src/linux/platform.c
+@@ -31,13 +31,34 @@
+ static pthread_key_t epevt_key;
+ static pthread_once_t epevt_once = PTHREAD_ONCE_INIT;
+ 
++static void
++linux_filter_free(struct kqueue *kq UNUSED, struct filter *filt)
++{
++    struct knote *kn, *next;
++
++    /*
++     * Final teardown has no live kevent users. Close owned descriptors without
++     * changing their kernel objects: an atfork child shares its parent's
++     * epoll registrations and timers. Do not take inherited filter locks.
++     * Linux notes own one descriptor; only timers keep it outside kdata.
++     */
++    RB_FOREACH_SAFE(kn, knt, &filt->kf_knote, next) {
++        int fd = filt->kf_id == EVFILT_TIMER ? kn->data.pfd : kn->kdata.kn_dupfd;
++
++        RB_REMOVE(knt, &filt->kf_knote, kn);
++        if (fd >= 0)
++            __close_for_kqueue(fd);
++        free(kn);
++    }
++}
++
+ const struct kqueue_vtable kqops = {
+     linux_kqueue_init,
+     linux_kqueue_free,
+ 	linux_kevent_wait,
+ 	linux_kevent_copyout,
+ 	NULL,
+-	NULL,
++    linux_filter_free,
+     linux_eventfd_init,
+     linux_eventfd_close,
+     linux_eventfd_raise,

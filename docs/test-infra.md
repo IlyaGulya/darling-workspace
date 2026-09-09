@@ -379,6 +379,27 @@ canonical fix commits separately from materialized integration commits, exact
 dyld/libsystem_kernel hashes, fixture identities, runtime composition and
 toolchain provenance. `dar-759a.5` and its three prerequisites are closed.
 
+### Kqueue close and pipe EOF (dar-fgjm)
+
+Stock CMake 4.4.3 stalled in `execute_process` after `/usr/bin/uname -r` had
+finished: both output streams still had writer descriptors owned by CMake.
+Libuv's temporary kqueue probes exposed missing final-filter teardown in
+libkqueue, not a failure to reap the child or the earlier missing `vm_stat`.
+Canonical fix `f78837758ca5d861135e5653ac56a5e35e988981` releases Linux
+knote-owned descriptors through the existing platform filter-free callback.
+It does not remove epoll registrations or alter timers shared with a parent
+during child-atfork disposal.
+
+`kqueue_close_pipe_eof` has a real current-minus/fixed runtime proof deploying
+only `usr/lib/libSystem.B.dylib`. The old runtime returns `EAGAIN` instead of EOF
+for both READ and WRITE queue-first cases; the fixed runtime passes these,
+writer-first closure, and parent readiness after child fork teardown.
+Evidence: `~/work/darling-debug/dar-fgjm-runtime-proof-job` and
+`~/work/darling-debug/dar-gwn7-kqueue-close-eof/localization.json`.
+The macOS registration has not been run on macOS. Pre-existing retention of
+references inherited from active waiters at fork is outside this final-reference
+fix. Stock wget acceptance remains a separate `dar-gwn.7` gate.
+
 ### Native applicability and migration gates
 
 The reviewed runtime binding classifications (including source/prebuilt

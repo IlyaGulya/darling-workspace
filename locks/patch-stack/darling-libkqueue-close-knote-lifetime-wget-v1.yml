@@ -1,0 +1,17 @@
+schema_version: 2
+project:
+  name: darling-libkqueue
+  path: .
+upstream:
+  url: https://github.com/darlinghq/darling-libkqueue.git
+  base_commit: f673c801cbc4011d3ae35301bb8b5073eb41c103
+mirror:
+  url: ../../source-bundles/wget-residual/darling-libkqueue.bundle
+  base_ref: refs/tags/patch-stack/v1/bases/f673c801cbc4011d3ae35301bb8b5073eb41c103
+  base_oid: f673c801cbc4011d3ae35301bb8b5073eb41c103
+  source_ref: refs/tags/patch-stack/v1/sources/f78837758ca5d861135e5653ac56a5e35e988981
+  source_oid: f78837758ca5d861135e5653ac56a5e35e988981
+source_commit: f78837758ca5d861135e5653ac56a5e35e988981
+ordered_commits:
+- f78837758ca5d861135e5653ac56a5e35e988981
+expected_tree: e005b27b27eccc535494501c60bb4efe5cd0cc18

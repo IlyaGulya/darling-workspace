@@ -29,6 +29,27 @@ runtime-profiles:
     - module: darling/src/external/dyld
       build-targets: [dyld]
       deploy: [usr/lib/dyld]
+  kqueue-close-knote-lifetime:
+    source-profile: wget-residual
+    source-module: darling/src/external/libkqueue
+    guest-toolchain: darling-command-line-tools
+    source-modules:
+    - darling
+    - darling/src/external/darlingserver
+    - darling/src/external/xnu
+    - darling/src/external/dyld
+    - darling/src/external/libsystem
+    - darling/src/external/libkqueue
+    cmake-defines:
+      DARLING_EUNION: true
+    launcher-env:
+      DARLING_ROOTLESS: '1'
+      DARLING_NOOVERLAYFS: '1'
+      DARLING_EUNION: '1'
+    runtime-artifacts:
+    - module: darling/src/external/libkqueue
+      build-targets: [system]
+      deploy: [usr/lib/libSystem.B.dylib]
   homebrew:
     source-profile: homebrew
     source-module: darling/src/external/xnu
