@@ -16,6 +16,11 @@ import tempfile
 from typing import Iterator
 import urllib.request
 
+try:
+    from .test_execution import run_bounded
+except ImportError:
+    from test_execution import run_bounded
+
 
 BREW_COMMIT = "c4a3482c22876114a8c3cf8244815541e47b684f"
 CORE_COMMIT = "ad6d3bbf8f5eac27a5ce90e695c6b41765d40bb7"
@@ -221,6 +226,18 @@ def homebrew_lz4_context(env: dict[str, str] | None) -> Iterator[dict[str, str]]
             existing = base / relative
             if existing.exists() or existing.is_symlink():
                 raise ValueError(f"homebrew-lz4 requires a fresh installation: {existing}")
+    preflight = Path(__file__).resolve().parents[1] / "tests/run-homebrew-build-tools-preflight.sh"
+    result = run_bounded(
+        ["bash", str(preflight)],
+        cwd=preflight.parent.parent,
+        env=environment,
+        timeout_seconds=135,
+    )
+    if result.returncode:
+        raise ValueError(
+            "homebrew-lz4: native build-tools preflight failed; "
+            "provision the complete Homebrew runtime component before staging brew"
+        )
     template = prefix / "libexec/darling"
     before = _template_digest(template)
     cache = Path(environment.get("XDG_CACHE_HOME", str(Path.home() / ".cache"))) / "west/darling-homebrew"

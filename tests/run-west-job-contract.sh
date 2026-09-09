@@ -94,6 +94,112 @@ grep -F -q 'follow timed out; job remains running pid=' "$tmp/follow-timeout.err
 "$job" follow --state-dir "$tmp/follow-resume" >"$tmp/follow-resume.out"
 grep -F -x -q "completed rc=0 state=$tmp/follow-resume" "$tmp/follow-resume.out"
 
+# Exercise an attached observer against real logs, synchronizing mutations with
+# observed progress rather than assuming scheduler timing between phase writes.
+python3 - "$job" "$tmp" <<'PY'
+import os
+from pathlib import Path
+import re
+import select
+import subprocess
+import sys
+import time
+
+job, root = sys.argv[1], Path(sys.argv[2])
+state = root / "activity state"
+activity = root / "guest activity.log"
+done = root / "activity.done"
+subprocess.run([
+    job, "start", "--state-dir", str(state), "--activity-log", str(activity),
+    "--", sys.executable, "-c",
+    "import pathlib,sys,time\n"
+    "print('  runtime profile preflight: homebrew', flush=True)\n"
+    "while not pathlib.Path(sys.argv[1] + '.build').exists(): time.sleep(0.02)\n"
+    "print('  runtime phase start: GREEN build', flush=True)\n"
+    "while not pathlib.Path(sys.argv[1]).exists(): time.sleep(0.02)\n"
+    "print('  runtime phase complete: GREEN build (1.0s)', flush=True)\n",
+    str(done),
+], check=True)
+observer = subprocess.Popen(
+    [job, "follow", "--state-dir", str(state), "--timeout-seconds", "30"],
+    stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+)
+pending = b""
+transcript = b""
+
+
+def progress(stage, path, minimum_age=None):
+    global pending, transcript
+    deadline = time.monotonic() + 10
+    while time.monotonic() < deadline:
+        if b"\n" not in pending:
+            ready, _, _ = select.select([observer.stdout], [], [], max(0, deadline - time.monotonic()))
+            assert ready, (stage, transcript)
+            data = os.read(observer.stdout.fileno(), 65536)
+            assert data, (stage, transcript, observer.poll())
+            pending += data
+            transcript += data
+            continue
+        line, pending = pending.split(b"\n", 1)
+        text = line.decode()
+        if (text.startswith("following pid=") and f"log={str(path)!r}" in text
+                and f"stage={stage!r}" in text):
+            if minimum_age is not None:
+                match = re.search(r"log-change-age=(\d+)s", text)
+                assert match and int(match[1]) >= minimum_age, text
+            return
+    raise AssertionError((stage, transcript))
+
+
+try:
+    progress("runtime profile preflight: homebrew", state / "log")
+    progress("unavailable", activity)
+    Path(str(done) + ".build").touch()
+    progress("runtime phase start: GREEN build", state / "log")
+    activity.write_text("STOCK_PHASE=config")
+    # A partial record must join the next append, not become a bogus stage.
+    with activity.open("a") as output:
+        output.write("ure\n")
+    progress("STOCK_PHASE=configure", activity)
+    replacement = activity.with_suffix(".replacement")
+    replacement.write_text("WEST_GUEST_STAGE=run\n")
+    replacement.replace(activity)
+    progress("WEST_GUEST_STAGE=run", activity)
+    # Truncate/regrow beyond the previous cursor between observations.
+    activity.write_text("STOCK_PHASE=check\n" + "checking\n" * 100)
+    progress("STOCK_PHASE=check", activity)
+    activity.write_text("STOCK_PHASE=end\n")
+    progress("STOCK_PHASE=end", activity)
+    activity.unlink()
+    progress("unavailable", activity)
+    activity.write_text("WEST_GUEST_STAGE=cleanup\n")
+    progress("WEST_GUEST_STAGE=cleanup", activity)
+    done.touch()
+    rest, errors = observer.communicate(timeout=10)
+    transcript += rest
+    assert observer.returncode == 0, (transcript, errors)
+    assert b"runtime phase complete: GREEN build" in transcript, transcript
+    assert f"completed rc=0 state={state}".encode() in transcript, transcript
+finally:
+    if observer.poll() is None:
+        observer.terminate()
+        observer.communicate(timeout=5)
+
+# A fresh follow reconstructs the persisted watched paths/stage, and reports
+# actual file age rather than pretending that observation was a fresh write.
+old = time.time() - 60
+os.utime(activity, (old, old))
+resumed = subprocess.run(
+    [job, "follow", "--state-dir", str(state), "--activity-log", str(root / "missing optional.log")],
+    capture_output=True, text=True, timeout=10, check=True,
+)
+line = next(line for line in resumed.stdout.splitlines()
+            if line.startswith("following pid=") and f"log={str(activity)!r}" in line)
+assert "stage='WEST_GUEST_STAGE=cleanup'" in line, line
+assert int(re.search(r"log-change-age=(\d+)s", line)[1]) >= 60, line
+assert f"log={str(root / 'missing optional.log')!r} stage='unavailable'" in resumed.stdout
+PY
+
 if CODEX_CI=1 env -u WEST_JOB_ACTIVE -u WEST_JOB_STATE_DIR "$metadata_contract" \
 	>"$tmp/direct-contract.out" 2>"$tmp/direct-contract.err"; then
 	echo 'direct metadata contract unexpectedly ran in CODEX_CI' >&2

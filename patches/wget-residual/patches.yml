@@ -394,3 +394,36 @@ patches:
     diag: bare
     repo: darling-workspace
   sha256sum: ba8d171a7b71584cb4b81f49dae0f4539d4f81445f5ebb2ff1dddc192381cbd3
+- path: darling/homebrew-prefix-tooling.patch
+  module: darling
+  source-branch: fix/homebrew-prefix-tooling
+  source-base: 23ccdeddaf85df02ef1c0e9570d2103308e21d2e
+  source-commit: 2fe91cebde866d372cddc69626a95555672a76c1
+  bead: dar-gwn.9
+  publication-status: blocked
+  publication-blocker: Local Homebrew prerequisite repair; rootless composition and publication review remain under dar-gwn.7.
+  tests:
+  - name: homebrew_build_tools_preflight
+    kind: guest
+    coverage-tier: runtime
+    runs: guest
+    diag: guarded
+    runner: guest-runtime-script
+    repo: darling-workspace
+    script: tests/run-homebrew-build-tools-preflight.sh
+    requires: [darling-prefix]
+    runtime-profile: homebrew-lz4-source
+    timeout-seconds: 150
+    note: A source-built Homebrew component executes cut, Perl standard/XS modules for both versions, and system OpenSSL certificate fingerprinting before any stock brew build.
+  - name: homebrew_component_staging_isolation
+    kind: contract
+    coverage-tier: host
+    runs: host
+    diag: bare
+    runner: source-contract-script
+    repo: darling-workspace
+    source-env: DARLING_TEST_SOURCE
+    script: tests/west_test_contracts/homebrew_component_contract.py
+    timeout-seconds: 30
+    note: Real CMake relative and absolute installs plus symlinks remain inside DESTDIR; the live prefix stays absent, including when its pathname contains spaces.
+  sha256sum: 64b3f523f70ca7427c3c961a5da72632685536345e9329307824720179ac4d45

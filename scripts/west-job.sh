@@ -4,9 +4,9 @@ set -euo pipefail
 usage() {
 	cat >&2 <<'USAGE'
 usage:
-  west-job.sh start --state-dir DIR -- west test ...
+  west-job.sh start --state-dir DIR [--activity-log PATH ...] -- west test ...
   west-job.sh status --state-dir DIR
-  west-job.sh follow --state-dir DIR [--timeout-seconds N]
+  west-job.sh follow --state-dir DIR [--timeout-seconds N] [--activity-log PATH ...]
   west-job.sh wait --state-dir DIR
   west-job.sh cancel --state-dir DIR
   west-job.sh assert-no-live-west-test [--state-root DIR]
@@ -14,6 +14,10 @@ usage:
 Use this only when the caller cannot keep a long west command attached.  DIR
 contains command, job/command PIDs, start-times, log, and rc; it is safe to
 inspect directly.
+
+Follow reports the latest phase marker and log-change age for each log. Optional
+activity logs are host paths; start remembers them, while follow adds paths only
+for that observer. Missing logs may appear later. Silence is not a hang verdict.
 
 Cancel sends SIGINT to the registered command and waits for owner cleanup.
 WEST_JOB_CANCEL_GRACE_SECONDS defaults to 30; only an unresponsive owner
@@ -24,6 +28,7 @@ USAGE
 
 state_dir=
 follow_timeout_seconds=0
+activity_logs=()
 
 write_command_record() {
 	local target="$1"
@@ -198,6 +203,11 @@ parse_state_dir() {
 				state_dir="$2"
 				shift 2
 				;;
+			--activity-log)
+				[[ "$command" == start && $# -ge 2 && -n "$2" ]] || usage
+				activity_logs+=("$(realpath -m -- "$2")")
+				shift 2
+				;;
 			--)
 				shift
 				break
@@ -223,6 +233,11 @@ parse_follow() {
 				;;
 			--timeout-seconds)
 				follow_timeout_seconds="$2"
+				shift 2
+				;;
+			--activity-log)
+				[[ $# -ge 2 && -n "$2" ]] || usage
+				activity_logs+=("$(realpath -m -- "$2")")
 				shift 2
 				;;
 			*) usage ;;
@@ -360,6 +375,9 @@ start_job() {
 	mkdir -p "$state_dir"
 	REGISTRY_STATE_CREATED=1
 	write_command_record "$state_dir/command"
+	if ((${#activity_logs[@]})); then
+		printf '%s\0' "${activity_logs[@]}" >"$state_dir/activity-logs"
+	fi
 
 	nohup setsid --wait bash -c '
 		state_dir="$1"
@@ -420,47 +438,165 @@ status_job() {
 }
 
 follow_job() {
-	local started_at now next_line=1 next_heartbeat rc line_count
-	started_at="$(date +%s)"
-	next_heartbeat="$started_at"
-	while true; do
-		if [[ -f "$state_dir/log" ]]; then
-			line_count="$(wc -l <"$state_dir/log")"
-			if ((line_count >= next_line)); then
-				sed -n "${next_line},${line_count}p" "$state_dir/log"
-				next_line=$((line_count + 1))
-			fi
-		fi
-		if rc="$(read_rc)"; then
-			printf 'completed rc=%s state=%s\n' "$rc" "$state_dir"
-			exit "$rc"
-		fi
-		if ! load_live_pid; then
-			# The runner publishes rc atomically as its final action. It can exit in
-			# the narrow interval between the read_rc and identity checks; give that
-			# publication one bounded foreground turn before declaring corruption.
-			wait_for_pid_exit_or_timeout "$state_dir/pid" 1
-			if rc="$(read_rc)"; then
-				printf 'completed rc=%s state=%s\n' "$rc" "$state_dir"
-				exit "$rc"
-			fi
-			echo "west job has no live process or recorded exit status: $state_dir" >&2
-			exit 1
-		fi
-		now="$(date +%s)"
-		if ((follow_timeout_seconds > 0 && now - started_at >= follow_timeout_seconds)); then
-			printf 'follow timed out; job remains running pid=%s state=%s\n' \
-				"$(<"$state_dir/pid")" "$state_dir" >&2
-			exit 124
-		fi
-		if ((now >= next_heartbeat)); then
-			printf 'following pid=%s state=%s\n' "$(<"$state_dir/pid")" "$state_dir"
-			next_heartbeat=$((now + 10))
-		fi
-		# This is a bounded foreground wait on the registered PID, not a detached
-		# monitor. A live job wakes us after one second; an exit wakes us at once.
-		wait_for_pid_exit_or_timeout "$state_dir/pid" 1
-	done
+	# The observer stays attached. Python keeps byte cursors and partial lines in
+	# memory instead of recounting and rescanning the entire log on every tick.
+	exec python3 - "$state_dir" "$follow_timeout_seconds" "${activity_logs[@]}" <<'PY'
+import os
+from pathlib import Path
+import re
+import stat
+import subprocess
+import sys
+import time
+
+state = Path(sys.argv[1])
+timeout_seconds = int(sys.argv[2])
+started = time.monotonic()
+phase = re.compile(
+    rb"^\s*((?:runtime|prefix bootstrap|tier) phase (?:start|complete): .+"
+    rb"|runtime profile preflight: .+|(?:STOCK_PHASE|WEST_GUEST_STAGE)=.+)\r?$"
+)
+
+
+class Log:
+    def __init__(self, path, stream=False):
+        self.path = path
+        self.stream = stream
+        self.identity = None
+        self.offset = 0
+        self.anchor = b""
+        self.pending = b""
+        self.stage = "unknown"
+        self.mtime = None
+        self.available = False
+
+    def update(self):
+        self.available = False
+        try:
+            # O_NONBLOCK prevents an accidentally registered FIFO from wedging
+            # the observer; only regular files are followed.
+            fd = os.open(self.path, os.O_RDONLY | os.O_NONBLOCK)
+        except OSError:
+            return False
+        with os.fdopen(fd, "rb") as source:
+            info = os.fstat(source.fileno())
+            if not stat.S_ISREG(info.st_mode):
+                return False
+            self.available = True
+            self.mtime = info.st_mtime
+            identity = (info.st_dev, info.st_ino)
+            source.seek(max(0, self.offset - len(self.anchor)))
+            anchor = source.read(len(self.anchor))
+            if (identity != self.identity or info.st_size < self.offset
+                    or anchor != self.anchor):
+                self.offset = 0
+                self.pending = b""
+                self.stage = "unknown"
+            self.identity = identity
+            source.seek(self.offset)
+            # Bounded chunks allow identity/deadline checks even during a flood.
+            data = source.read(min(1024 * 1024, max(0, info.st_size - self.offset)))
+            if data:
+                if self.stream:
+                    sys.stdout.buffer.write(data)
+                    sys.stdout.buffer.flush()
+                lines = (self.pending + data).split(b"\n")
+                # Phase records are short; never retain an unbounded partial line.
+                self.pending = lines.pop()[-65536:]
+                for line in lines:
+                    match = phase.fullmatch(line)
+                    if match:
+                        self.stage = match[1].decode("utf-8", errors="replace").strip()
+                self.offset += len(data)
+            source.seek(max(0, self.offset - 64))
+            self.anchor = source.read(min(64, self.offset))
+            return self.offset < info.st_size
+
+    def progress(self, pid):
+        age = (f"{max(0, int(time.time() - self.mtime))}s"
+               if self.available else "unavailable")
+        stage = self.stage if self.available else "unavailable"
+        print(f"following pid={pid} state={str(state)!r} log={self.path!r} "
+              f"stage={stage!r} log-change-age={age}", flush=True)
+
+
+def read_rc():
+    try:
+        value = (state / "rc").read_text().strip()
+        return int(value) if value.isascii() and value.isdecimal() else None
+    except OSError:
+        return None
+
+
+def live_pid():
+    try:
+        pid = (state / "pid").read_text().strip()
+        expected = (state / "start-time").read_text().strip()
+        if not pid.isascii() or not pid.isdecimal():
+            return None
+        os.kill(int(pid), 0)
+        # comm can contain spaces and parentheses; field 22 follows the last ).
+        fields = Path(f"/proc/{pid}/stat").read_text().rsplit(")", 1)[1].split()
+        return pid if fields[19] == expected else None
+    except (OSError, ValueError, IndexError):
+        return None
+
+
+def wait_for_owner(seconds):
+    try:
+        subprocess.run(["pidwait", "-F", str(state / "pid")],
+                       stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                       timeout=seconds, check=False)
+    except subprocess.TimeoutExpired:
+        pass
+
+
+paths = [str(state / "log")]
+try:
+    paths.extend(os.fsdecode(path) for path in (state / "activity-logs").read_bytes().split(b"\0")
+                 if path)
+except FileNotFoundError:
+    pass
+paths.extend(sys.argv[3:])
+logs = [Log(path, stream=(index == 0))
+        for index, path in enumerate(dict.fromkeys(paths))]
+next_heartbeat = started
+last_stages = None
+while True:
+    backlog = False
+    for log in logs:
+        backlog = log.update() or backlog
+    rc = read_rc()
+    pid = live_pid()
+    if rc is None and pid is None:
+        # Preserve the bounded final-publication grace from the shell observer.
+        wait_for_owner(1)
+        rc = read_rc()
+        if rc is None:
+            print(f"west job has no live process or recorded exit status: {state}", file=sys.stderr)
+            sys.exit(1)
+    if rc is not None:
+        # The runner may have written final output just before publishing rc.
+        backlog = False
+        for log in logs:
+            backlog = log.update() or backlog
+    now = time.monotonic()
+    stages = [(log.available, log.stage) for log in logs]
+    if now >= next_heartbeat or stages != last_stages:
+        for log in logs:
+            log.progress(pid or "completed")
+        last_stages = stages
+        next_heartbeat = now + 10
+    if rc is not None and not backlog:
+        print(f"completed rc={rc} state={state}", flush=True)
+        sys.exit(rc)
+    if rc is None and timeout_seconds and now - started >= timeout_seconds:
+        print(f"follow timed out; job remains running pid={pid} state={state}", file=sys.stderr)
+        sys.exit(124)
+    if not backlog:
+        remaining = timeout_seconds - (now - started) if timeout_seconds else 1
+        wait_for_owner(min(1, max(0.001, remaining)))
+PY
 }
 
 wait_job() {
