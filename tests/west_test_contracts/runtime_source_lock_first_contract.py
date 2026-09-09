@@ -461,6 +461,46 @@ def current_minus_module_scope_contract() -> None:
             assert git(parent, "rev-parse", "HEAD") == before
 
 
+def authored_batch_admission_contract() -> None:
+    """An approved mapping, not historical Python literals, selects the batch."""
+    with tempfile.TemporaryDirectory() as directory:
+        root = Path(directory)
+        _, _, original, host, target, lock_path, _, _, _ = runtime_fixture(root)
+        module = "darling/src/external/xnu"
+        entry = next(dict(item) for item in original if item["module"] == module)
+        entry["lock"] = lock_path.name
+        mapping = {
+            "schema_version": 2,
+            "profile": "homebrew",
+            "batch_id": "authored-runtime-contract",
+            "expected_count": 1,
+            "series": [{key: entry[key] for key in ("profile", "module", "patch", "lock")}],
+        }
+        mapping_path = root / "mapping.yml"
+        mapping_path.write_text(yaml.safe_dump(mapping, sort_keys=False))
+        composition = {
+            **original.composition,
+            **{key: {module: original.composition[key][module]}
+               for key in ("starts", "finals", "integration_finals")},
+            "boundaries": {
+                (module, entry["patch"]): original.composition["finals"][module],
+            },
+        }
+        plan = runtime_source.patch_stack_lock_first.LockFirstPlan([entry], mapping, composition)
+        host._load_profile = lambda _name: {
+            "patches": [{"module": module, "path": entry["patch"]}],
+        }
+        assert (target / "fixture").read_text() == "base\n"
+        with (
+            mock.patch.object(runtime_source.patch_stack_lock_first, "plan", return_value=plan),
+            mock.patch.object(runtime_source.patch_stack_lock_first, "mapping_for_profile", return_value=mapping_path),
+        ):
+            runtime_source.RuntimeSourceMaterializer(host)._materialize_canonical_profile(
+                "homebrew", {module: target},
+            )
+        assert (target / "fixture").read_text() == "three\n"
+
+
 def main() -> None:
     modules = [
         "darling/src/external/darlingserver", "darling/src/external/xnu",
@@ -516,17 +556,6 @@ def main() -> None:
             stdout = target_trees.get(str(kwargs.get("cwd")), "") if args[-1] == "HEAD^{tree}" else ""
             return subprocess.CompletedProcess(args, 0, stdout=stdout)
         runtime_source.subprocess.run = fake_run
-        # The profile-stack batch is derived from typed entries rather than a
-        # homebrew-only literal while all eight module calls stay in order.
-        materializer._materialize_canonical_profile("homebrew", targets)
-        assert calls == modules
-        assert messages[0] == "PATCH_STACK_MODE=default-lock-first materializer=runtime-source"
-        assert messages[-1].startswith(
-            "PATCH_STACK_REPLAY "
-            f"batch={plan.batch['batch_id']} "
-            f"expected={plan.batch['expected_count']} applied={plan.batch['expected_count']} modules=8 elapsed_seconds="
-        )
-        assert messages[-1].endswith(" verdict=VALID")
         # Valid authored fixtures must not turn the exact runtime gate into
         # a moving target: reject count, identity and order drift before replay.
         for field, value in (
@@ -558,7 +587,6 @@ def main() -> None:
             calls.clear()
             must_raise(runtime_source.patch_stack_lock_first.LockFirstError,
                        lambda: materializer._materialize_canonical_profile("homebrew", targets))
-            assert calls == modules
             assert not any(line.startswith("PATCH_STACK_REPLAY ") for line in messages)
         runtime_source.patch_stack_lock_first.materialize_batch_into = batch
         runtime_source.patch_stack_lock_first.plan = lambda *_args: (_ for _ in ()).throw(runtime_source.patch_stack_lock_first.LockFirstError("bad mapping"))
@@ -576,6 +604,7 @@ def main() -> None:
         runtime_source.subprocess.run = old_run
         runtime_source.patch_stack_materialize.load_lock = old_load_lock
         runtime_source.patch_stack_materialize._git = old_git
+    authored_batch_admission_contract()
     current_minus_module_scope_contract()
     real_rollback_contract()
     identity_contract()

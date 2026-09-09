@@ -76,38 +76,14 @@ class RuntimeSourceMaterializer:
 
         plan = typed_plan(profile)
         batch = plan.batch
-        expected = {
-            "homebrew": (
-                "darling-eunion-ownership-batch-12", 77,
-                [
-                    "darling/src/external/darlingserver", "darling/src/external/xnu",
-                    "darling/src/external/libplatform", "darling/src/external/perl",
-                    "darling/src/external/libressl-2.8.3", "darling/src/external/libpthread",
-                    "darling", "darling/src/external/installer",
-                ],
-            ),
-            "arch": (
-                "darling-arch-lock-first-batch-1", 19,
-                [
-                    "darling/src/external/libunwind", "darling/src/external/xnu",
-                    "darling/src/external/darlingserver", "darling",
-                ],
-            ),
-            "perf": (
-                "darling-perf-lock-first-batch-1", 7,
-                [
-                    "darling", "darling/src/external/xnu",
-                    "darling/src/external/dyld", "darling/src/external/darlingserver",
-                ],
-            ),
-            "wget-residual": (
-                "wget-residual-local-immutable-batch-1", 10,
-                [
-                    "darling", "darling/src/external/xnu",
-                    "darling/src/external/darlingserver",
-                ],
-            ),
-        }[profile]
+        mapping = patch_stack_lock_first.load_mapping(
+            patch_stack_lock_first.mapping_for_profile(profile), profile,
+        )
+        expected = (
+            mapping["batch_id"],
+            mapping["expected_count"],
+            list(dict.fromkeys(entry["module"] for entry in mapping["series"])),
+        )
         if (batch["batch_id"], batch["expected_count"], batch["module_order"]) != expected:
             raise patch_stack_lock_first.LockFirstError(
                 f"runtime-source {profile} requires exact {expected[0]} "
