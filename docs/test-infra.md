@@ -1,9 +1,39 @@
-# Darling test infrastructure — design RFC
+# Darling test infrastructure
 
-Status: existing CTest/West architecture; residual native contract parity and
-coverage work is tracked by dar-759a. Hosted native matrix success is not
-established by the local infrastructure acceptance.
-Owner: ilyagulya.
+This guide defines workspace test APIs, ownership, evidence requirements and
+operator commands. Record execution results, incidents and task status in Beads
+and diagnostic archives.
+
+## Local operator entrypoints
+
+For ordinary Homebrew preparation, native-tools preflight, source-build attempts
+and guest exact-capture diagnostics, use the named `mise run dw dev context` /
+`mise run dw dev run` workflow in [Reproducible Homebrew build prerequisites](#reproducible-homebrew-build-prerequisites).
+Run commands from the manifest directory with the `mise run dw ...` or
+`mise run west ...` proxy task. Both tasks select the pinned environment and
+forward arguments unchanged. From the workspace root use
+`mise -C darling-workspace run dw ...` or `run west ...`.
+Bare West names in prose identify underlying APIs.
+
+The lower-level selectors, metadata examples and CI helpers below are
+authoritative for framework work and advanced scenarios. For long prefix-backed
+agent runs outside the four named scenarios, start one recorded job and attach
+its observer:
+
+```sh
+scripts/west-job.sh start --state-dir /absolute/path/to/new-job -- \
+  mise run west test --profile wget-residual \
+  --patch xnu/posix-spawn-failure-ownership.patch --env darling \
+  --prefix /absolute/path/to/prepared-prefix --prove-red
+scripts/west-job.sh follow --state-dir /absolute/path/to/new-job
+# Reconnect with follow; request owner cleanup when cancellation is needed:
+scripts/west-job.sh cancel --state-dir /absolute/path/to/new-job
+```
+
+Use a new job state directory for each run. Do not use log silence as proof of a
+hang or kill launchd/server processes by guessed PID or broad name patterns.
+Do not overwrite or delete runtime binaries while the prefix is live; use
+West's owning shutdown/deployment transaction and retain its failure evidence.
 
 ## CI execution contract
 
@@ -26,19 +56,18 @@ the complete failing project logs. Setting `DARLING_WEST_UPDATE_JOBS=1` selects
 West's native sequential update path for debugging. Native macOS packaging
 exports the final configured CTest registrations into a relocatable installed
 bundle. Local and SSH execution share `ci/native-transport.py`, CTest, and the
-source-owned verdict helper; the three-column TSV runner has been removed.
+source-owned verdict helper.
 Native CI uploads a tar archive of the complete bundle, not its raw directory.
 `macos-archive BUNDLE ARCHIVE` preserves member modes, links and resources;
 `macos-extract ARCHIVE NEW_DIRECTORY` requires a fresh destination and restores
 permissions independently of the receiver's umask, without restoring archived
 ownership. The artifact service may normalize the outer archive to `0644`
-without changing executable or data-file modes inside it (dar-759a.2).
+without changing executable or data-file modes inside it.
 Docker is not part of the guest execution contract.
 
 The host tier runs `tests/west_test_contracts/native_artifact_contract.py`.
-It compiles a resource-reading fixture, demonstrates the old raw-directory
-failure specifically from lost execute bits, then exercises the real archive,
-extraction and installed-runner commands. It checks bytes, executable/data/
+It compiles a resource-reading fixture and checks mode preservation through
+archive creation, extraction and installed execution. It checks bytes, executable/data/
 directory modes, hidden resources and symlink targets, and rejects extraction
 into an existing directory. Run the same contract on macOS to obtain native
 transport evidence:
@@ -49,46 +78,15 @@ python3 -B tests/west_test_contracts/native_artifact_contract.py
 
 Local Linux RED/GREEN evidence is not a native macOS or hosted-matrix PASS.
 
-dar-759a.2 native acceptance also passed over SSH on `misakaindrive`, macOS
-26.5.1 (25F80), Darwin arm64. The same four runner/contract files from
-`ba046ee` matched SHA-256 hashes on both hosts. The real Mac reproduced the
-raw-route execute-bit failure and passed the archived-route compiled fixture
-through the installed runner. Its isolated scratch directory was removed.
-Captured evidence: `~/work/darling-debug/dar-759a.2-misakaindrive-native.json`.
-This is one real-Mac transport acceptance, not a hosted-matrix or product
-compatibility verdict.
-
-## Native convergence contract and inventory (2026-09-08)
-
-Owner: dar-759a.1. This extends the implemented work in dar-test-infra-sp5.7,
-dar-test-infra-sp5.10/.11, dar-r7z7 and dar-zhlt; it does not replace it.
-The following contract is the acceptance target for dar-759a.3–.8, not a claim
-that all transports already implement it.
+## Native convergence contract and inventory
 
 ### Inventory boundary and evidence
 
-The audit normalized every concrete `patches/*/patches.yml` with the production
-`test_manifest.load_test_profile`, resolving repository names through West.
-It counts each file's entries independently, not inherited/composed runtime
+The collector normalizes concrete `patches/*/patches.yml` files with the
+production `test_manifest.load_test_profile`, resolving repository names through
+West. It counts each file's entries independently, not inherited/composed runtime
 stacks. A binding is a patch-to-test entry, not a unique executable or a PASS.
 
-| Declared metadata scope | Count |
-| --- | ---: |
-| Profiles: arch, homebrew, perf, wget-residual | 4 |
-| Patch entries | 113 |
-| Test bindings | 179 |
-| Host bindings | 93 |
-| Darling/runtime bindings | 86 |
-| Native macOS metadata bindings | 0 |
-| Patch entries with no tests, each declaring an exception | 8 |
-
-A fresh configure and `ctest --show-only=json-v1` discovered 18 default workspace
-testkit entries: 3 host, 14 Darling and 1 macOS. Only
-`getattrlist_name_objtype_guest` has both Darling and macOS registrations.
-Thirteen metadata bindings share an exact source path with a workspace CTest
-case; this identifies overlap, not proof that their arguments/oracles are
-duplicates. Source-repository CTest suites and disabled E-UNION host targets
-remain separate scopes; this is not a census of every upstream test.
 
 The collector `scripts/audit-test-registration.py` and reviewed applicability
 decisions `audits/native-test-applicability.json` are versioned in this
@@ -106,12 +104,11 @@ independent of runner or coverage tier. Policy is keyed by
 `profile:patch-path:ordinal`, with a SHA-256 fingerprint of the normalized test
 declaration and relative West project path. An unknown binding, reused name on a
 new binding, or changed declaration fails before a successful snapshot is
-written. Source-content/reference review remains separate from this metadata
+written. Source-content/reference review is separate from this metadata
 drift guard. Generated `configure.log`, `ctest.json` and
 `inventory.json` stay outside version control. The snapshot records all
 bindings, owners, source hashes, normalized proof/resources, applicability
-and explicit unresolved prerequisites. This audit's captured output is in
-`~/work/darling-debug/dar-759a-inventory-OIHskT/scoped-policy/`.
+and explicit unresolved prerequisites.
 
 The versioned focused host contract exercises inherited-profile census,
 independent patch bindings, West alias resolution, rejection of an unknown
@@ -129,11 +126,10 @@ temporary discovery output. `ci/run-test-tier.sh host` includes it through
 bypass a current metadata/applicability review.
 
 
-Eight script references are `unresolved_in_current_checkout`; seven exist in
-their declared source commits, and the remaining coalescing script exists in a
-later declared profile commit. Live-tree absence is not evidence of missing
-materialized-profile coverage. No guest/native case or source-profile runtime
-was executed by this inventory.
+Resolve `unresolved_in_current_checkout` script references against their
+declared profile sources. Live-tree absence does not establish missing
+materialized-profile coverage. Inventory discovery does not execute guest or
+native test cases.
 
 ### Authority, identity and selection
 
@@ -159,12 +155,12 @@ was executed by this inventory.
   Use isolated owned work directories and bounded cleanup. A Linux-built binary
   or successful shell transport is never a native Darwin reference.
 
-### Implemented selection bridge (dar-759a.3)
+### CTest selection bridge
 
 Patch metadata can bind existing CTest registrations with `ctest: <label-regex>`,
 `ctest-name: <exact-existing-name>`, or both for a scoped exact-name selection.
 These references do not copy fixture commands or require new `name:` labels.
-A reference cannot override `command`; explicit fixture runners remain separate.
+A reference cannot override `command`; explicit fixture runners are separate.
 
 West configures the selected source scope and discovers CTest JSON before
 filtering environment and diagnostics. `env:*` labels define the actual
@@ -184,7 +180,7 @@ registration, not persist these temporary build paths or indices.
 
 Missing references, missing requested variants, ambiguous registrations and
 unintended empty selections fail closed. Bead/submodule selectors match complete
-labels, while `--label` remains a user-supplied regex. Runtime-profile prerequisites
+labels, while `--label` is a user-supplied regex. Runtime-profile prerequisites
 are shown during discovery and deployed only for execution.
 
 The behavioral CLI contract runs disposable CMake/CTest suites through the real
@@ -195,16 +191,14 @@ native cases, and invalid bindings:
 
 ```sh
 tests/run-west-test-ctest-backend-contract.sh
-west test --env macos --list
-west test --env darling --bead dar-e1j --list
+mise run west test --env macos --list
+mise run west test --env darling --bead dar-e1j --list
 ```
 
-The host tier includes this contract. The real-workspace discovery smoke finds
-`macos/getattrlist_name_objtype_guest` without runtime deployment, and its
-Darling counterpart with `homebrew-rootless-no-mount`. Neither listing is a
-native or guest execution verdict.
+The host tier includes this contract. Discovery listings are not native or guest
+execution verdicts.
 
-Upstream remains simple CMake/CTest PASS/FAIL; no TAP protocol is introduced.
+Upstream uses CMake/CTest PASS/FAIL, not a TAP protocol.
 Its [unsupported helpers](https://github.com/darlinghq/darling-testsuite/blob/master/lib/darling-testsuite/src/darling-testsuite/unsupported.c)
 only print availability messages and do not themselves produce a formal skip.
 West does not reinterpret those messages as a new protocol. A zero exit through
@@ -213,8 +207,8 @@ skip must come from the source-owned CTest verdict contract.
 
 ### Preserve the complete execution and verdict contract
 
-The installed native bundle now preserves final CTest arguments, environment,
-working directory, resources, properties and per-case timeout (dar-759a.4).
+The installed native bundle preserves final CTest arguments, environment,
+working directory, resources, properties and per-case timeout.
 `darling_install_native_bundle()` exports registrations after all source scopes
 have been configured. Unrelocatable paths and unsupported dylib dependencies
 fail packaging rather than silently producing an incomplete bundle.
@@ -262,22 +256,20 @@ supervision outcome, not automatically as an expected incompatibility.
 Record separate semantic PASS/FAIL, infrastructure error, not-run and
 inapplicable-with-reason outcomes. Record normal exit versus signal termination;
 do not equate a raw process status with shell convention `128 + signal`.
-Reference, bad-runtime and fixed-runtime results remain separate records with
+Reference, bad-runtime and fixed-runtime results are separate records with
 full fixture/contract identity, canonical and deployed source SHAs, deployed
 artifact hashes, OS build, architecture/Rosetta, compiler/SDK and flags.
 No result from one role substitutes for another.
 
-### posix_spawn pilot status (dar-759a.5)
+### posix_spawn ownership fixture
 
-`tests/posix_spawn_failure_guest.c` now has one source-owned CTest definition,
+`tests/posix_spawn_failure_guest.c` has one source-owned CTest definition,
 `posix_spawn_failure_ownership`, with Darling and installed macOS variants.
-Patch metadata binds these existing names instead of duplicating the guest-C
-invocation. The dedicated runtime provider selects `wget-residual`, not the
-unfixed homebrew profile. Both dyld and libsystem_kernel are runtime artifacts
+Patch metadata binds these names. The dedicated runtime provider selects
+`wget-residual`. Both dyld and libsystem_kernel are runtime artifacts
 because dyld embeds the syscall emulation path.
 
-Native local and SSH references passed on macOS 26.5.1 (25F80), arm64, SDK
-26.5, AppleClang 21.0.0, using the identical bundle. The fixture checks:
+The fixture checks:
 
 - failed ENOENT spawn exposes no waitable child or SIGCHLD;
 - 64 fast successful children retain status and notification;
@@ -286,9 +278,9 @@ Native local and SSH references passed on macOS 26.5.1 (25F80), arm64, SDK
 - an unrelated successful child's pending SIGCHLD survives a failed spawn.
 
 Do not interpret `waitpid(..., WNOHANG) == 0` immediately after failed spawn as
-a leak: the real Mac exposed this transient private-cleanup state. The fixture
-uses blocking waitpid to ask whether any child is actually returned to the
-application; CTest bounds hangs without counting them as semantic RED.
+a leak: private cleanup can be transient. The fixture uses blocking waitpid to
+ask whether any child is returned to the application; CTest bounds hangs
+without counting them as semantic RED.
 
 ```sh
 ci/run-test-tier.sh macos-package /absolute/path/to/bundle
@@ -296,7 +288,7 @@ ci/run-test-tier.sh macos-installed /absolute/path/to/bundle \
   -R '^macos/posix_spawn_failure_ownership$'
 ci/run-test-tier.sh macos-ssh HOST /absolute/path/to/bundle \
   -R '^macos/posix_spawn_failure_ownership$'
-mise exec -- west test --profile wget-residual \
+mise run west test --profile wget-residual \
   --patch xnu/posix-spawn-failure-ownership.patch --env darling \
   --prefix /absolute/path/to/prefix --prove-red
 ```
@@ -307,127 +299,20 @@ selection binds it before the initial prefix shutdown as well as during the
 provider's deployment/execution. Conflicting launcher environments for one
 selection are rejected before acquiring the prefix.
 
-The initial immutable fetch ended with early EOF. An isolated transfer of the
-same 54 darlingserver refs subsequently passed without configuration changes;
-the original disconnect's cause remains unproven. The homebrew closure then
-exposed five missing immutable tags. With explicit user approval, including the
-blocked-source mirror exception, those exact tags were created and their remote
-OIDs verified. No branch, PR, upstream, or publication-status changes accompanied
-that operation.
+Source inputs declared by `wget-residual` locks use Git bundles under
+`source-bundles/wget-residual/`. Relative `mirror.url` paths resolve against the
+declaring lock file's directory. Validate every declared base/source tag,
+ordered commit graph and tree; an unavailable bundle fails even if the caller
+has the objects. Keep source inputs outside generated `handoff/`, which the
+transactional handoff replaces wholesale.
 
-`wget-residual` now has a typed thirteen-patch mapping and a checksum-bound composition
-over homebrew. `west patch verify --profile wget-residual` passed. Its unpublished
-source inputs are explicit Git bundles under `source-bundles/wget-residual/`, not a
-fallback to the developer's checkout. Relative `mirror.url` paths resolve against
-the declaring lock file's directory, so locks and bundles can move together.
-Every declared base/source tag, ordered commit graph, and tree is still checked;
-an unavailable bundle fails even if the caller already has the objects.
-The wait-state and dispatch fixes were rebased onto their actual canonical
-prerequisites to preserve exact replay identity, rather than weakening the
-range-diff or stable-patch-ID checks.
-These inputs stay outside generated `handoff/`, which the transactional handoff
-replaces wholesale. `source-bundles/darling-debug-runner.bundle` separately
-preserves `fix/forward-guarded-output` and `fix/exact-prefix-capture`; the
-Darling-forest handoff does not include this sibling tools repository.
+The CTest bridge propagates guest upload, compile, run and timeout phases.
+Require the failure oracle in the guest execution phase for runtime RED;
+compiler diagnostics containing the marker do not satisfy that oracle.
 
-The supported current-minus runtime now fails at the guest-visible ENOENT
-waitable-child oracle; the fixed runtime passes all five scenarios above.
-The exact spawn fixture SHA matches the native local/SSH reference. The CTest
-bridge propagates guest upload, compile, run, and timeout phases; compiler
-diagnostics containing the marker are not RED.
+### Reproducible Homebrew build prerequisites
 
-Ownership review confirmed that Linux
-[`de_thread()` resets the exit signal before close-on-exec](https://github.com/torvalds/linux/blob/v6.8/fs/exec.c#L1170-L1353).
-The canonical XNU fix now acquires `CLONE_PIDFD` atomically and waits with
-`waitid(P_PIDFD, ..., __WCLONE)`, retaining identity when an application reaps the
-successful child and its numeric PID is reused. This requires Linux 5.4 or newer.
-The production-linked host fixture in `darling/tests/spawn-pidfd/` passed ordinary
-ownership/error/descriptor/EINTR cases and forced PID reuse in a private PID
-namespace. It substitutes Darwin runtime services for native linkage, so this is
-not Darling RPC integration evidence. The deployed guest RED/GREEN proof now
-complements it. Publication remains blocked pending owning-patch publication
-review and explicit authorization, not unrelated complete wget acceptance.
-
-The separate `sigpending_mask_copyout` regression also passes supported runtime
-RED/GREEN: it checks empty, blocked-pending, and delivered-empty masks. It consumes
-the signal through a real handler, independently of disposition changes.
-
-Two follow-up signal defects now have separate canonical fixes and supported
-current-minus/fixed runtime proofs:
-
-- `dar-cpuk`, `sigaction_ignore_pending`: installing `SIG_IGN` discards an already
-  pending signal; leaving ignore restores delivery, preserves unrelated blocked
-  signals, and restores default termination when requested. Canonical XNU source:
-  `8a2b2f11325cd647495a03fa309d0851fc48fd2f`.
-- `dar-1c53`, `signal_handler_mask`: application handlers retain the interrupted
-  mask, add the translated BSD application mask, and use BSD `SA_NODEFER` flags.
-  An explicit self-signal in `sa_mask` still wins over `SA_NODEFER`. Canonical XNU
-  source: `b0c7888e903fb44266baffa92ec9cb5391fe9019`.
-
-Each RED arm removes only its own patch from the current composed runtime and
-fails in the guest fixture, not during upload, compilation, or boot. Both GREEN
-arms pass on the same composed XNU source. The source/artifact/fixture evidence
-index is `~/work/darling-debug/dar-cpuk-handler-mask-proof/summary.json`.
-These added fixtures have Linux host smoke and deployed Darling proof; their
-macOS registrations do not imply a new macOS reference run. Publication remains
-blocked pending canonical publication review and explicit authorization.
-
-Native reference identity remains under `~/work/darling-debug/dar-759a.5-pilot/`.
-The completed evidence index is
-`~/work/darling-debug/dar-759a.5-repair/completed-proof-summary.json`; it binds
-canonical fix commits separately from materialized integration commits, exact
-dyld/libsystem_kernel hashes, fixture identities, runtime composition and
-toolchain provenance. `dar-759a.5` and its three prerequisites are closed.
-
-### Kqueue close and pipe EOF (dar-fgjm)
-
-Stock CMake 4.4.3 stalled in `execute_process` after `/usr/bin/uname -r` had
-finished: both output streams still had writer descriptors owned by CMake.
-Libuv's temporary kqueue probes exposed missing final-filter teardown in
-libkqueue, not a failure to reap the child or the earlier missing `vm_stat`.
-Canonical fix `f78837758ca5d861135e5653ac56a5e35e988981` releases Linux
-knote-owned descriptors through the existing platform filter-free callback.
-It does not remove epoll registrations or alter timers shared with a parent
-during child-atfork disposal.
-
-`kqueue_close_pipe_eof` has a real current-minus/fixed runtime proof deploying
-only `usr/lib/libSystem.B.dylib`. The old runtime returns `EAGAIN` instead of EOF
-for both READ and WRITE queue-first cases; the fixed runtime passes these,
-writer-first closure, and parent readiness after child fork teardown.
-Evidence: `~/work/darling-debug/dar-fgjm-runtime-proof-job` and
-`~/work/darling-debug/dar-gwn7-kqueue-close-eof/localization.json`.
-The macOS registration has not been run on macOS. Pre-existing retention of
-references inherited from active waiters at fork is outside this final-reference
-fix. Stock wget acceptance remains a separate `dar-gwn.7` gate.
-
-The retained stock source-install gate passed on 2026-09-09: CMake 4.4.3 and
-wget 1.25.0 have non-bottle receipts and x86_64 Mach-O executables. Wget fetched
-`https://example.com/` with certificate verification enabled (`200 OK`, 559 bytes).
-Source installation is recorded in `dar-gwn7-stock-wget-perl-job`; the final
-HTTPS gate is `dar-gwn7-stock-wget-ca-job` (rc 0), under the diagnostic archive.
-Receipts and one-off invocation inputs are archived in
-`~/work/darling-debug/dar-gwn7-stock-source-installed`.
-
-The diagnostic prefix was missing standard installation payloads: native `cut`
-for libpsl's version fields, Perl's standard modules/extensions for OpenSSL's
-Configure script, and native `/usr/bin/openssl` for ca-certificates post-install.
-Perl was provisioned through its existing CMake component installation; the
-one-off runtime provider supplied the unmodified cut and openssl targets.
-Running the unchanged `brew postinstall ca-certificates` then replaced the empty
-CA bundle. No package recipe/source change or certificate-verification bypass
-was used. This single successful installation does not establish the cause or
-resolution of the original intermittent `dar-gwn.7` freeze.
-
-The retained libunistring `test-categ_Zs` and `test-u32-prev` inputs also passed
-256 forced parallel rebuild/execution iterations, followed by `make -j8 check`
-(614 PASS, 60 SKIP, 0 FAIL, 0 ERROR). The run
-`dar-gwn7-unistring-rebuild-stress-job` exited 0. The earlier intermittent compiler
-stall did not recur, so its localization remains open rather than being
-attributed to the kqueue fix without evidence.
-
-### Reproducible Homebrew build prerequisites (dar-gwn.9)
-
-The opt-in `homebrew-lz4-source` runtime profile now uses `wget-residual` and
+The opt-in `homebrew-lz4-source` runtime profile uses `wget-residual` and
 the source-owned `rootless_toolchain` component. It includes native `cut`,
 system `openssl` with its configuration/certificate data, and Perl 5.18/5.28
 standard libraries and XS bundles. Perl uses its normal CMake install rules,
@@ -435,25 +320,21 @@ staged through `DESTDIR`; absolute dSYM destinations must not populate the
 live prefix before West deployment. Explicit component providers take
 precedence over duplicate build/staging copies during Mach-O closure discovery.
 
-Deployment still checkpoints the complete atomic transaction manifest after
-each file; rollback, restart recovery, ownership and symlink checks are not
-relaxed. The measured 2,400-file workload fell from 31.7 s to 3.6 s by removing
-repeated directory snapshots, recursive manifest conversion and linear duplicate
-lookups. A separate fresh-prefix bootstrap recorded a 48.9 s deployment
-(`dar-developer-tooling-ux-tcwe.4.14`); this is not a cold-build timing.
+Deployment checkpoints the complete atomic transaction manifest after each
+file. Preserve rollback, restart recovery, ownership and symlink checks.
 
 From the manifest directory, configure a named context once. A new prefix must
 be absent or empty, not an untyped populated directory:
 
 ```sh
-bin/dw dev context homebrew --prefix /absolute/path/to/new-homebrew-prefix
-bin/dw dev run homebrew-prepare
-bin/dw dev run homebrew-preflight
-bin/dw dev run exact-capture
-bin/dw dev run homebrew-source
+mise run dw dev context homebrew --prefix /absolute/path/to/new-homebrew-prefix
+mise run dw dev run homebrew-prepare
+mise run dw dev run homebrew-preflight
+mise run dw dev run exact-capture
+mise run dw dev run homebrew-source
 ```
 
-`bin/dw` selects the pinned mise environment. Contexts live in local West
+`mise run dw` selects the pinned mise environment. Contexts live in local West
 configuration (`dev-<name>.*`), not checked-in host-specific paths. `dev context`
 selects the active context; `dev run --context NAME` and explicit path flags
 override it without rewriting configuration. The default runtime is
@@ -463,8 +344,8 @@ runner is incrementally built in release mode before execution.
 
 `dev run` starts a recorded West job and immediately attaches its observer.
 It prints the job identity plus exact reconnect/cancel commands. `--detach`
-starts without observing; `bin/dw dev follow JOB` reconnects and
-`bin/dw dev cancel JOB` requests owner cleanup. `--dry-run` displays the
+starts without observing; `mise run dw dev follow JOB` reconnects and
+`mise run dw dev cancel JOB` requests owner cleanup. `--dry-run` displays the
 underlying command without building, booting, or creating a job.
 
 The exact-capture diagnostic uses initialized West command state, validates
@@ -472,8 +353,9 @@ the retained provider fingerprint, and owns the normal prefix lock/cleanup.
 Its payload intentionally times out; diagnostic success requires the guest
 readiness marker, identity-hashed Mach-O image, structurally complete ELF core
 for the same guest process, registers, and successful prefix cleanup.
-The archive's separate completeness flag remains false for unreadable mappings;
-Linux vsyscall warnings are retained rather than converted to complete capture.
+The archive's separate `exact_complete` flag can be false for unreadable
+mappings. Retain Linux vsyscall warnings and report incomplete capture
+accurately. An ordinary timed-out test fails.
 
 The preflight executes field extraction, Perl SHA-256/POSIX/Socket operations
 and XS loading, and system OpenSSL X509 fingerprinting. The host requires the
@@ -483,98 +365,49 @@ insecure TLS options, or binary-only Perl installation are involved.
 The separate host `homebrew_component_staging_isolation` contract exercises real
 CMake relative/absolute installs and symlinks, including prefix paths with spaces.
 
-Fresh-prefix acceptance on 2026-09-09 passed bootstrap, native-tools preflight
-and guest exact capture. `homebrew-source` remains blocked before compilation:
-the reviewed CLT package supplies an SDK whose authoritative plist says 10.13
-and has no `SDKSettings.json`, while this runtime advertises macOS 11.7.4.
-Stock Homebrew finds no applicable SDK and rejects that combination.
-The SDK identity/provenance gate remains `dar-q95.29.8`; inventing an 11.x
-JSON version or disabling Homebrew's check is not an accepted fix.
+Validate SDK identity against its authoritative package metadata and retain
+provenance evidence. The SDK must satisfy the selected runtime and Homebrew's
+compatibility checks. Do not invent version metadata or disable those checks.
+Record preparation, preflight, exact diagnostic and source-build results
+separately in Beads and diagnostic archives; one passing scenario does not
+establish success for another.
 
 
 ### Native applicability and migration gates
 
-The reviewed runtime binding classifications (including source/prebuilt
-bindings separately) are:
+Review each binding's native applicability using
+`audits/native-test-applicability.json`. Distinguish public semantic references,
+implementation-only or internal diagnostics, and workloads requiring ABI,
+SDK, compiler, descriptor-limit or package setup. An unresolved applicability
+decision does not approve stub behavior, security-policy bypass or SDK-label
+consistency as compatibility evidence. Compile, host, model and source evidence
+do not establish native inapplicability.
 
-| Policy | Bindings |
-| --- | ---: |
-| Public semantic reference candidates | 19 |
-| Assertions require review before native registration | 9 |
-| ABI/version/limit setup requires review | 8 |
-| Split semantic workload from internal diagnostic gate | 5 |
-| Package/toolchain platform setup required | 4 |
-| Complete current verdict is Darling-internal | 41 |
+Applicability classification is not an execution verdict. An internal
+classification applies to the complete oracle, not every public API used by
+its workload. Do not obtain shared GREEN by weakening assertions or merely
+adding `ENVS macos`. Review errno domains, descriptor inheritance, attribute
+support, timing assumptions and ABI availability against a native reference.
 
-The 93 non-runtime bindings also have individual reviewed decisions:
+Keep applicability decisions with the owning patch and Bead. Retain internal
+RPC/fault/trace, DCC, overlay and prefix-lifecycle gates on Darling; expose a
+separate semantic reference when the workload has a meaningful public contract.
+Require compatible native-reference, bad-runtime RED and fixed-runtime GREEN
+evidence through supported runners. Cut each case over completely before
+removing its duplicate wrapper. Workspace-only registration changes do not
+rewrite canonical source commits; source fixture changes require
+fix-branch/export SHA and checksum refresh.
 
-| Policy | Bindings |
-| --- | ---: |
-| Narrowly scoped implementation-only proof exemption | 48 |
-| ABI, SDK, compiler/linker or host-runtime reference review | 13 |
-| Public API/SPI semantic reference review | 21 |
-| Mixed public filesystem and private overlay oracle | 7 |
-| Unresolved stub, security divergence or SDK identity review | 4 |
+Tie publication checks to the owning patch's semantic proof and review; do not
+substitute an unrelated package gate for that evidence.
 
-Those four unresolved bindings are `darwin_priority_contract`,
-`socket_siocgifconf_contract`, `sandbox_exec_pass_through_contract` and
-`sdk_homebrew_detection_contract`. Recording their unresolved applicability is
-not approval of stub behavior, security-policy bypass or SDK-label consistency
-as compatibility evidence. Compile, host, model and source evidence never imply
-native inapplicability by themselves.
+## Test architecture
 
-These are applicability decisions from source inspection, not native run
-verdicts. Internal classification applies to the complete current oracle, not
-to every public API used by its workload.
-
-Concrete migration blockers must not be hidden by adding `ENVS macos`:
-
-- `socket_siocgifconf_guest` pins an empty interface list.
-- `darwin_priority_guest` pins raw negative `EINVAL` through public APIs.
-- The shared spawn-CLOEXEC fixture requires preservation of FD1023 without an
-  explicit inherit action for that descriptor.
-- `getattrlist_shared_packer` treats creation-time attributes as unsupported;
-  bulk enumeration tests also pin incidental batch sizes.
-- A stale-wait test uses scheduling delays to assume an early wake. Preserve
-  the state-transition oracle, not a native latency guarantee.
-- Raw psynch/ulock/cancellation entrypoints, the private `___bzero` return ABI
-  and descriptor-limit boundaries require explicit target/applicability review.
-
-Keep those decisions with the owning patch/Bead and dar-759a.6. Do not weaken
-assertions just to obtain a shared GREEN. Retain internal RPC/fault/trace, DCC,
-overlay and prefix-lifecycle gates on Darling; expose a separate semantic
-reference only when the workload has a meaningful public contract.
-
-The pilot (dar-759a.5) must establish native reference plus compatible
-bad-runtime RED and fixed-runtime GREEN through supported runners. Subsequent
-cohorts cover public API cases, mixed diagnostic workloads, reviewed assertions
-and ABI targets, then setup-dependent package scenarios. Each case cuts over
-completely before its obsolete duplicate wrapper is removed. Workspace-only
-registration changes do not rewrite canonical source commits; source fixture
-changes require normal fix-branch/export SHA and checksum refresh.
-
-Publication checks remain tied to the owning patch's semantic proof and review,
-not an unrelated blanket wget gate. Existing architecture/materialization
-blockers remain intact.
-
-## 2026-07-08 Audit Refresh
-
-The current upstream `darling-testsuite` still confirms the original direction:
-use CMake/CTest as the backend and keep our local tooling as a thin
-orchestration layer, not a second test framework. Upstream HEAD checked for
-this refresh was `ce56358` (2026-07-05). It uses `add_test()`, CTest
-`WILL_FAIL`, the install layout `darling-testsuite/{testcase,resource,manual}`,
-`darling-testsuite-lib` for assertions/resources/XML, and
-`darling-directsyscall` for direct kernel syscall tests.
-
-The patch-profile audit found the real gap is not the choice of backend, but
-test normalization and discoverability. Across `arch`, `homebrew`, and `perf`
-there are 97 patch files with mixed proof styles: shell gates, raw C/C++ unit
-tests, CMake/CTest targets, markdown acceptance notes, and a few legacy source
-adapters. Many non-documentation fixes still have no committed red test in
-their patch profile; `dar-r7z7` tracks that inventory.
-
-Product direction:
+Use CMake/CTest as the backend and keep workspace tooling as a thin
+orchestration layer. Preserve the upstream `add_test()`, installed
+`darling-testsuite/{testcase,resource,manual}` layout,
+`darling-testsuite-lib` assertions/resources/XML and `darling-directsyscall`
+interfaces.
 
 - Keep upstream-compatible testcase sources and install layout as the portability
   seam.
@@ -588,9 +421,7 @@ Product direction:
 - Treat fuzzing as a labelled bounded runner contract: seed corpus, maximum
   time, artifact bundle, replay command, and minimized failures promoted to
   normal committed regressions.
-- Grow `west test` selectors for `--profile`, `--patch`, red-test audit output,
-  and manifest/submodule discovery so the runner can answer "what proves this
-  patch?" without hand-grepping patch files.
+- Use `west test` selectors and metadata to identify the proof for a patch.
 
 ### Patch-Local Red-Test Metadata
 
@@ -598,8 +429,8 @@ Local patch profiles do not need a separate upstream `darling-testsuite` patch
 for every fix. The default workflow is: the smallest deterministic red test
 travels with the fix in the same source repo and, when practical, the same patch
 file/profile entry. Cross-repo bugs can use a small adjacent test patch in the
-same profile. Upstream `darling-testsuite` remains the portable testcase style
-and future destination, not a local blocker.
+same profile. Upstream `darling-testsuite` supplies the portable testcase style;
+upstream publication is not a local test prerequisite.
 
 `patches.yml` entries may declare runnable proof metadata:
 
@@ -652,7 +483,7 @@ Runtime preflight uses `west patch verify --applicability-only`: on a clean CI
 runner the fork's local `source-branch` refs are intentionally absent, so this
 mode checks patch integrity and application to the pinned manifest revisions
 without confusing missing developer branches with a runtime failure. Full
-`west patch verify` still checks source-branch/export drift for publishing.
+`west patch verify` checks source-branch/export drift for publishing.
 
 E-UNION host behavior follows the same rule. `testkit/CMakeLists.txt` builds
 the production XNU sources and the workspace harness as a CTest target, while
@@ -665,7 +496,7 @@ source-bound host suite is opt-in through
 separate materialized source build. The default testkit build keeps it off, so
 guest CTest selection cannot compile an E-UNION harness against the unpatched
 checkout before runtime-profile deployment. Guest
-E-UNION cases remain `guest-c-fixture` metadata tests because their lower and
+E-UNION cases use `guest-c-fixture` metadata because their lower and
 upper trees must be staged inside an isolated Darling prefix by the typed
 `darling-eunion-prefix` provider. The `eunion-overlay` fixture profile keeps
 that setup declarative:
@@ -717,10 +548,9 @@ patches:
     artifacts: xnu-kernel
 ```
 
-The old verbose form remains valid during migration. New repetitive
-guest/runtime metadata should prefer compact profiles so the manifest describes
-what is unique about the test rather than restating runner boilerplate.
-The `perf` profile carries the first real migrated examples:
+Explicit metadata and compact profiles are supported. Prefer compact profiles
+for repetitive guest/runtime metadata so the manifest describes each test's
+unique requirements. For example, in the `perf` profile:
 `mldr_compact_fd_band_guest` uses the compact guest-C runtime RED profile plus
 an `mldr-runtime` artifact profile, and `dcc2_valid_cache_guest` composes the
 guest-command runtime RED profile with a DCC cache profile and `dyld-runtime`
@@ -752,8 +582,8 @@ current/fixed tree. It means the test is intended to prove a RED->GREEN
 regression. That proof is exercised explicitly:
 
 ```sh
-west test --profile homebrew --patch darling/mldr-thread-create-futex-wait.patch
-west test --profile homebrew --patch darling/mldr-thread-create-futex-wait.patch --prove-red
+mise run west test --profile homebrew --patch darling/mldr-thread-create-futex-wait.patch
+mise run west test --profile homebrew --patch darling/mldr-thread-create-futex-wait.patch --prove-red
 ```
 
 RED proof modes:
@@ -930,7 +760,7 @@ runtime lifecycle can be split further without changing behavior.
 Darling prefix lifecycle helpers are also split from the runner where they are
 pure enough to test directly. `west_commands/test_prefix.py` owns process-tree
 discovery for `darlingserver <prefix>`, matching server PIDs, and stale
-`.init.pid` removal. The runner still owns the side-effecting shutdown,
+`.init.pid` removal. The runner owns the side-effecting shutdown,
 mount-cleanup, and lock orchestration.
 
 `runner: guest-command-fixture` may check both process status and captured
@@ -998,7 +828,7 @@ the RED result would prove only that the script file is missing.
 Executable source scripts run directly through their shebang; non-executable
 source scripts fall back to `sh`.
 
-Plain `runner: script` remains an escape hatch for tests with special process,
+Plain `runner: script` is an escape hatch for tests with special process,
 trace, or runtime orchestration. New source-base shell contracts should use
 `source-contract-script` or `source-profile-script` instead of generic `script`.
 
@@ -1024,7 +854,7 @@ These tests must declare `red: true` and `red-proof: {mode: self, why-self: ...}
 Use `runner: guest-runtime-script` only for guest/runtime orchestration that the
 structured guest fixture cannot express yet: multi-process gates, dserverdbg
 oracles, prefix trace-file checks, or process-lifetime probes. It must declare
-`runs: guest`; west still owns declared prefix resources, trace/temp files, and
+`runs: guest`; West owns declared prefix resources, trace/temp files, and
 runtime RED deployment.
 
 Use `runs: guest` for tests that execute inside Darling. The compact form
@@ -1040,9 +870,9 @@ If a real run reports missing prefix boot or guest compiler prerequisites, fix
 the prefix through the framework instead of hand-editing it:
 
 ```sh
-west darling-prefix-repair --prefix "$HOME/work/darling-prefix"
-west darling-prefix-repair --prefix "$HOME/work/darling-prefix" --check
-west darling-prefix-repair --prefix "$HOME/work/darling-prefix" --cleanup-mounts
+mise run west darling-prefix-repair --prefix "$HOME/work/darling-prefix"
+mise run west darling-prefix-repair --prefix "$HOME/work/darling-prefix" --check
+mise run west darling-prefix-repair --prefix "$HOME/work/darling-prefix" --cleanup-mounts
 ```
 
 The repair command creates the required rootless runtime directories
@@ -1066,8 +896,7 @@ endpoint only when they are absent, installs each package through the guest
 envelope, the API SHA-1 of the **compressed XAR table of contents**, and the
 reviewed SHA-256 of the **entire package** before installation. Neither digest
 alone establishes publisher authentication; signed-publisher review is recorded
-separately in `clt-provenance-041-90419.txt`. Earlier warnings compared the API
-digest against whole-file SHA-1: the claimed republishing explanation was wrong.
+separately in `clt-provenance-041-90419.txt`.
 Package bytes stay in the external West cache; prefix-owned staging files are
 removed after installation.
 `west test` and
@@ -1118,19 +947,20 @@ prefix ownership selection for detached guests, before shutdown or artifact
 restoration. The runner is resolved from `--executor`, `PATH`, or the checked-out
 `darling-debug-runner` west project (`target/release` preferred, then
 `target/debug`). If a non-bare test is executed without a runner, `west test`
-fails before launching the test. `--list` is still offline and shows the wrapper
+fails before launching the test. `--list` is offline and shows the wrapper
 shape without requiring the binary to exist.
 For command invocations and metadata guest-C fixtures, the outer West deadline
 reserves 300 seconds after a forensic executor's deadline for capture and
 cleanup, rather than the ordinary 15-second grace. This does not extend the
-payload deadline or make a timed-out test pass. Capture is still bounded; an
+payload deadline or make a timed-out test pass. Capture is bounded; an
 executor that exceeds the grace fails the run.
 The exact archive defaults to a shared 60-second deadline and 512 MiB cap.
 Mapped images are identity-checked and hashed; cores, mappings, fd state and
 registers stay with those images instead of depending on restored prefix files.
 Incomplete capture is explicitly recorded, including unreadable kernel mappings.
-Cores can contain secrets. Build the updated runner and pass `--executor`
-explicitly when `PATH` still selects an older installed binary.
+Cores can contain secrets. `mise run dw dev run` incrementally builds the workspace
+release runner by default. For low-level `west test`, build the updated runner
+and pass `--executor` explicitly when `PATH` selects an older installed binary.
 
 `dev run` uses `scripts/west-job.sh follow` to stream observed output and report
 recognized runtime/preflight/guest stages, log paths, and last-write age.
@@ -1143,9 +973,9 @@ of generated paths.
 Registration is an atomic, immutable `activity-logs.d/*.logs` record under
 `WEST_JOB_STATE_DIR`: NUL-delimited kind/path pairs, with `file` or `directory`
 kinds and absolute host paths. Directory discovery is nonrecursive and bounded;
-stdout text cannot register paths. Explicit repeatable `--activity-log` remains
+stdout text cannot register paths. Explicit repeatable `--activity-log` is
 available on the low-level `start`/`follow` commands for additional logs.
-Runner `--forward-output` is still post-execution replay, not live streaming.
+Runner `--forward-output` is post-execution replay, not live streaming.
 
 
 Guarded CTest registrations pass `--forward-output` to the executor. This replays
@@ -1153,16 +983,18 @@ captured stdout/stderr after execution, preserving guest phase and domain-oracle
 markers through nested watchdogs without accepting compile or transport errors
 as runtime RED. Rebuild `darling-debug-runner` after updating its source; use
 `--executor ../darling-debug-runner/target/release/darling-debug-runner` to select
-the workspace build explicitly when `PATH` still names an older installed tool.
+the workspace build explicitly when `PATH` selects a different installed tool.
 
 Keep shell scripts thin. Static source-contract scripts should source a local
 `contract-test-lib.sh` helper for common `fail`, `require_grep`, and
 `require_text` assertions instead of copying that boilerplate into every test.
-Guest runtime C fixtures should use a local `guest-verdict-test-lib.sh` helper
-for the repeated DPREFIX flow: copy fixture into the prefix, launch
-`darling shell`, poll for an `ORACLE_RC` verdict, print logs, and clean up the
-host runner process. Bespoke scripts such as long A0 gates are acceptable, but
-they should be the exception rather than the default shape for new tests.
+Existing guest runtime fixture implementations may use the local
+`guest-verdict-test-lib.sh` helper for copying fixtures, guest launch, bounded
+`ORACLE_RC` observation and host-runner cleanup. That is framework-internal
+plumbing, not an operator boot/poll recipe: invoke registered fixtures through
+`west test` with its prefix lock and shutdown ownership, under `west-job` for
+long agent runs. Prefer structured guest fixture/CTest metadata for new tests;
+bespoke scripts such as long A0 gates are exceptions.
 
 Framework-internal contracts use Python modules in `tests/west_test_contracts/`.
 The `tests/run-west-test-*-contract.sh` files are compatibility entrypoints and
@@ -1234,11 +1066,11 @@ explicit exception:
 The local gates are:
 
 ```sh
-west patch check --profile arch
-west patch check --profile arch --strict
-west test --profile arch --list --red-only
-west test --profile arch --patch darlingserver/stack-pool-empty-stack-handle.patch --list
-west test --profile arch --patch darlingserver/stack-pool-empty-stack-handle.patch
+mise run west patch check --profile arch
+mise run west patch check --profile arch --strict
+mise run west test --profile arch --list --red-only
+mise run west test --profile arch --patch darlingserver/stack-pool-empty-stack-handle.patch --list
+mise run west test --profile arch --patch darlingserver/stack-pool-empty-stack-handle.patch
 ```
 
 Patch export must keep review diffs narrow. `west patch export` updates patch
@@ -1294,80 +1126,15 @@ failing gate. Current checks intentionally focus on patterns that caused false
 RED proofs in practice: XNU `system_kernel` runtime proofs without materialized
 darlingserver, and non-dyld tests that deploy dyld as an unrelated artifact.
 
-## Problem
+## Compatibility test registration
 
-Regression reproducers for fixed bugs currently live as throwaway `/tmp/run-*.sh`
-scripts and as prose in bead `notes` (e.g. `dar-e1j`, `dar-77o`). They are not
-discoverable, not re-runnable, and not tied to the code they guard. We want:
+`testkit` uses CTest for discovery (`--show-only=json-v1`), labels (`-L`),
+parallelism, JUnit (`--output-junit`), resource locks and setup/teardown fixtures.
+Use `EXPECT_FAILURE_MARKER` on `add_compat_test()` for an expected negative
+case. The shared wrapper requires both nonzero exit and the declared fixed
+output marker; an unrelated compiler, launcher or timeout failure is not proof.
 
-1. A convenient way to run the tests a change could affect (fast local cycle on
-   a PR), per submodule.
-2. A full Darling-wide suite run.
-3. Diagnosis when a test hangs — most Darling bugs are deadlock / lost-wakeup,
-   not a clean assertion failure.
-4. Tests colocated with the fix as much as upstream politics allow, without
-   adding workspace metadata to the Darling source repos.
-
-## What the industry does (this is not invented here)
-
-The two closest analogues to Darling are **syscall/ABI compatibility layers**,
-and both build the runner ON TOP of their existing build system rather than
-writing a bespoke framework:
-
-- **gVisor** (Linux syscall layer). One `cc_test` source is stamped by a Bazel
-  macro into several targets that run the SAME binary in different environments
-  — `_native` (host Linux, the differential oracle), `_runsc_systrap`,
-  `_runsc_ptrace`, `_runsc_kvm`. Tests are tagged and selected by platform tag.
-  Methodology: "write the test first and make sure it passes on Linux on the
-  native platform" — i.e. the real OS is the oracle.
-  <https://github.com/google/gvisor/blob/master/test/syscalls/README.md>
-
-- **Wine** (Windows API layer). `winetest` builds one conformance test source
-  for both Wine (`make test`) and real Windows (`make crosstest` →
-  cross-compiled `.exe`). WineTestBot is a server farm of many Windows versions
-  that runs the cross-compiled binaries — the same source validated across the
-  matrix of target OS versions.
-  <https://wiki.winehq.org/Wine_TestBot> ·
-  <http://www.kegel.com/wine/sweng/2010/>
-
-- **darling-testsuite** (the upstream Darling effort) already chose
-  **CMake + CTest + Ninja** and ships its own loader-level test library
-  (`darling-nostdlib`, `darling-directsyscall`, ObjC/CF assertions, XML report).
-  Cases are `add_test()` entries; upstream negative cases can use `WILL_FAIL`, test names are
-  hierarchical via `DARLING_PATH`/`DARLING_IDENTIFIER`. Cases are MIT-0 so they
-  can also be compiled and run on real macOS.
-  <https://github.com/darlinghq/darling-testsuite>
-
-Takeaway: the runner = a thin layer over the build system's native test driver.
-For Darling that build system is CMake, so the native driver is **CTest** —
-isomorphic to gVisor-on-Bazel. CTest gives discovery (`--show-only=json-v1`),
-labels (`-L`), parallelism, JUnit (`--output-junit`),
-`RESOURCE_LOCK` (serialise tests that share one prefix), and fixtures
-(setup/teardown) for free.
-
-## Considered alternatives
-
-| Option | Verdict |
-| --- | --- |
-| Bespoke TAP runner | Rejected. Re-implements discovery/parallel/JUnit that CTest already has; TAP only pays off for sub-checks inside one binary, which the "1 binary = 1 bug = exit code" model does not need. |
-| Bazel (like gVisor) | Rejected. Darling is ~150 CMake submodules; Bazel-over-CMake is a multi-month project and a non-starter upstream. |
-| Plain CTest, no wrapper | Rejected. CTest has no "one test, N environments" concept and no hang diagnosis — exactly the two gaps below. |
-| **CTest backend + thin `west test` + debug-runner executor** | **Chosen.** See below. |
-
-CTest is the right backend even designing from scratch; that it matches the
-upstream choice is a bonus that removes politics, not the reason.
-
-Our testkit intentionally does **not** expose CTest `WILL_FAIL`: it accepts any
-non-zero exit, including an unrelated compiler, launcher, or timeout failure.
-Use `EXPECT_FAILURE_MARKER` on `add_compat_test()` instead. The shared wrapper
-requires both a non-zero exit and the declared fixed output marker before it
-returns success to CTest.
-
-## Design
-
-Two gaps CTest does not close, addressed by a thin layer we own:
-
-### Gap 1 — one source, many environments (the gVisor lesson)
+### One source, multiple environments
 
 `testkit/cmake/AddCompatTest.cmake` provides `add_compat_test()`, a generator
 that mints one CTest entry per environment from one source and tags each with
@@ -1380,7 +1147,7 @@ add_compat_test(
   ENVS       host            # host;darling;macos -> one ctest entry each
   BEAD       dar-gwn.5       # -> label bead:dar-gwn.5
   SUBMODULES xnu             # -> label submod:xnu
-  MAY_HANG                   # -> route through the diagnostic executor
+  DIAG       guarded         # -> route through the diagnostic executor
 )
 ```
 
@@ -1416,51 +1183,29 @@ transaction boundary: deployed files lose group/world write bits and all
 parents used by the deployment lose group/world write bits. This is required
 for launchctl's plist validation when a build runs with a cooperative host
 umask. The transaction records every changed directory mode and restores it
-alongside file contents, so a failed or temporary runtime proof still leaves
+alongside file contents, so a failed or temporary runtime proof leaves
 the prefix unchanged.
 
 The optional bootstrap syscall trace uses `strace -D`: tracing runs detached
 from the launcher wait path, so long-lived launchd/shellspawn daemons cannot
-make a completed guest command look hung. The trace still records their
-syscalls in the diagnostic directory and the lifecycle cleanup remains owned
-by West.
+make a completed guest command look hung. The trace records their syscalls in
+the diagnostic directory, and West owns lifecycle cleanup.
 
-### Gap 2 — diagnosable execution of hangs, WITHOUT cost blowup
+### Diagnostic execution tiers
 
-The naive "wrap everything in the debug runner" is a trap on two axes:
+Select diagnosis per test with `DIAG`:
 
-- Speed: the runner's expensive features (gdb backtrace, `/proc` snapshot,
-  rpctrace, process-tree capture) would slow every test.
-- Disk: a real prefix's bundle dir reached **7.4G across 980 bundles** — 6.5G of
-  it two `dserver.*.log` rpctrace files (1.6–1.7G each) from manual debugging,
-  with nothing ever pruned. A naive runner writes a bundle on every run.
-
-So diagnosis is a per-test TIER (`DIAG`), not a global switch, and the runner's
-cost is paid only when it buys something:
-
-| Tier | Wrapper | On green | On fail/hang | Default for |
+| Tier | Wrapper | Successful payload | Failure or timeout | Default for |
 | --- | --- | --- | --- | --- |
-| `bare` | none — plain ctest exec | nothing | nothing | host, macos |
-| `guarded` | runner as watchdog: hard timeout + process-group kill | ~20K text bundle (cmd/exit/stdout/stderr) | same ~20K bundle | darling |
-| `forensic` | `--capture-exact --capture-tree`, prefix ownership when applicable | guarded text bundle | timeout/stall: exact archive, default ≤512 MiB | opt-in per case |
+| `bare` | plain CTest execution | no executor bundle | no executor bundle | host, macos |
+| `guarded` | watchdog with hard timeout and owner cleanup | command/stdout/stderr/result bundle | diagnostic bundle | darling |
+| `forensic` | guarded plus `--capture-exact --capture-tree` and prefix ownership selection | guarded bundle | timeout/stall exact archive, default 512 MiB cap | opt-in per case |
 
-Key properties that answer the speed/disk fear directly:
-
-- `bare` writes **zero** artifacts (no wrapper at all). Stable HOST tests run at
-  full ctest speed with no disk footprint — measured: the real dar-gwn.5
-  regression as `bare` left nothing.
-- `guarded` writes only a tiny text bundle (~20K: cmd/exit/stdout/stderr) per
-  run — measured on a green run. This is the runner's current behaviour (it
-  always makes a bundle in `run` mode); it is text-only, so 10k runs ≈ 200M and
-  GC keeps it bounded. NOTE: if even 20K/run is unwanted, the cheap fix is a
-  runner flag to skip the bundle on success — tracked as a follow-up, not done
-  here (the runner is a separate repo with its own contract).
-- rpctrace (the gigabyte source) is **never** on by default — forensic only, and
-  even then opt-in separately. That, not the 20K text bundle, was the 7.4G.
-- `bare` has literally no wrapper, so stable HOST tests run at full ctest speed.
-- `guarded` is the guest default because a hang can come from the runtime, not
-  the test logic — we observed a bare `darling shell echo` stall indefinitely;
-  the watchdog converts that into a captured timeout instead of a wedged run.
+Guest cleanup uses the prefix owner; generic commands use process-group
+termination. Guarded/forensic execution requires a diagnostic runner and fails
+before launch when one is unavailable. Text log size depends on the payload.
+Exact archive limits do not bound ordinary stdout/stderr or owner shutdown.
+Enable expensive tracing explicitly; do not classify silence as a hang.
 
 Storage is bounded by GC: `west test --gc` keeps the newest `--keep-last N`
 bundles and drops any over `--max-bundle-mb` (catches stray forensic
@@ -1472,10 +1217,7 @@ silently fill the disk before the age threshold expires. Each GC run reports
 every retained or pruned scratch directory with its path, size, age, and
 retention reason; symlinks are deliberately ignored, so cleanup cannot follow
 a matching name into a canonical worktree. Use `--dry-run` to inspect the plan
-without deletion. Verified: a 77M scratch dir with an
-80M "forensic" bundle pruned to 20K. This is the part neither CTest, gVisor,
-nor Wine offers, and the reason `west test` exists rather than bare
-`ninja test` — but it is metered, not free.
+without deletion.
 
 A failed runtime source/build is not ordinary scratch. It is retained as one
 manifested unit under `.west-test/runtime-evidence`, with its source tree,
@@ -1505,74 +1247,49 @@ job after the original test has already failed.
 
 ### Orchestrator — `west test` (`west_commands/test.py`)
 
-Sits beside `dw`/`patch`/`pr` in the existing control plane:
+Use these selectors from the manifest directory through `mise run west`:
 
 ```
-west test --all                 # full suite (wire into `west pr check` before publish)
-west test --changed             # diff submodules vs manifest-rev -> -L submod:<changed>
-west test --bead dar-e1j        # -L bead:dar-e1j  (beads graph -> live regression set)
-west test --submodule xnu       # -L submod:xnu
-west test --env host            # restrict environment
-west test --env darling --prefix-profile homebrew
-west test --diag guarded        # restrict diagnosis tier
-west test --fuzz                # restrict to fuzz:* labelled jobs
-west test --stress              # restrict to stress:* labelled jobs
-west test --list                # show selection, no run
-west test --gc --keep-last 20 --max-bundle-mb 64 --proof-scratch-keep-last 2
-west test ... -j8 --output-junit r.xml   # passthrough to ctest
+mise run west test --all                 # full suite
+mise run west test --changed             # diff submodules vs manifest-rev -> -L submod:<changed>
+mise run west test --bead dar-e1j         # -L bead:dar-e1j
+mise run west test --submodule xnu       # -L submod:xnu
+mise run west test --env host            # restrict environment
+mise run west test --env darling --prefix-profile homebrew
+mise run west test --diag guarded        # restrict diagnosis tier
+mise run west test --fuzz                # restrict to fuzz:* labelled jobs
+mise run west test --stress              # restrict to stress:* labelled jobs
+mise run west test --list                # show selection, no run
+mise run west test --gc --keep-last 20 --max-bundle-mb 64 --proof-scratch-keep-last 2
+mise run west test ... -j8 --output-junit r.xml   # passthrough to ctest
 ```
 
-`--changed` is a fast local hint, NOT a CI gate: if the test↔submodule mapping
-is incomplete a regression can slip through, so `--all` is mandatory before
-publishing (planned: fold into `west pr check`).
+`--changed` is a local selection hint, not evidence of complete coverage.
+Publication requires the owning patch's declared proof and review gates.
 
-## Running across macOS versions (the differential axis)
+## Running across macOS versions
 
-The point of the suite is differential: does Darling behave like real macOS. So
-the same case must run on real macOS (the oracle) and on Darling, and ideally
-across several macOS versions. Key facts (researched 2026-06):
+Run the same semantic case on Darling and a compatible native macOS reference.
+Bind results to the actual OS build, architecture, compiler/SDK, deployment
+target and fixture identity. Compile-time availability branches can require
+separate builds; runtime results from one version do not establish another.
 
-- macOS binaries are **forward-compatible, not backward**: a binary built with a
-  LOW deployment target (`-mmacosx-version-min=13.0`) against a recent SDK runs
-  on 13.0 and every newer version. So the model is **build-once-run-many** — one
-  universal binary, and the LIVE OS it runs on is the comparison axis, not a
-  rebuild. A build-per-version matrix is only needed when the deployment target
-  itself changes compile-time behaviour (availability branches) — opt-in later.
-- Upstream already ships `availability.h` (`MACOS_10_0..MACOS_26_0`,
-  `MIN_VERSION_MACOS_ABI_TARGET_SUPPORTED(min,max)` on
-  `__MAC_OS_X_VERSION_MIN_REQUIRED`) for compile-time version gating, and — as of
-  2026-06-14/15 — an **install layout** (`install(TARGETS -> testcase/)`,
-  `install(DIRECTORY -> resource/)`) that is its transport: build, install the
-  cases+resources, ship the dir to real macOS / Darling, run there.
-- **Darling is a single fixed point** on the axis: it reports one version baked
-  at its build time (`SystemVersion.plist`, currently 11.7.4; `EMULATED_VERSION`
-  in kernel emulation). Not runtime-switchable — treat it as one `darling`
-  environment compared against the matching real-macOS row.
-- CI runner reality (2026): hosted `macos-14`, `macos-15` (+`-intel`),
-  `macos-26`; `macos-13` is being retired; older than 13 needs a self-hosted VM
-  farm (the WineTestBot model: build once, ship the binaries to pinned-version
-  VMs, run, collect by version label).
+Use the source's `availability.h` and deployment-target declarations for
+compile-time version gating. `add_compat_test()` accepts `MIN_VERSION` and
+`MAX_VERSION` and emits a `macos:<min>-<max>` label. Inspect the actual CTest
+labels before selecting with `--label`, which accepts a regex.
 
-How `add_compat_test` models this:
-- `MIN_VERSION`/`MAX_VERSION` → sets `OSX_DEPLOYMENT_TARGET` (so it builds for
-  that floor and runs upward) and emits a `macos:<min>-<max>` label.
-- `INSTALL` + `RESOURCES` → emit the SAME `testcase/`+`resource/` install layout
-  upstream uses, so a case authored here ships through their transport.
-- `west test --label macos:15` selects a version slice (a CI matrix row picks
-  its `runs-on` and the matching `--label`). Verified: a `macos` case with
-  `MIN_VERSION 13.0 MAX_VERSION 15.0` configures clean and carries
-  `macos:13.0-15.0`.
-
-A real macOS host is available over SSH as `misakaindrive`; dar-759a.2 has
-verified archive transport and installed execution there. Complete local/SSH
-CTest contract parity remains dar-759a.4, and the Tier 2 version farm is not
-established by this single-host acceptance.
+Use `INSTALL` and `RESOURCES` for the `testcase/` and `resource/` installed
+layout. Package and transfer the bundle through the CI archive/installed
+interfaces described above; preserve executable modes, links and resources.
+Select the native host explicitly for `macos-ssh`; record its identity with the
+result. Compare Darling against a suitable native reference using its
+authoritative advertised runtime version, not fabricated SDK/version metadata.
 
 ## Colocation & upstream stance
 
-We develop a more ergonomic variant in our own tree while staying SEAM-COMPATIBLE
-with upstream darling-testsuite (a convenience superset, not a fork). What is
-shared vs ours:
+Keep testcase sources and installed artifacts compatible with upstream
+`darling-testsuite`; workspace ergonomics belong in the orchestration layer:
 
 | Layer | Shared with upstream (the seam) | Ours (ergonomics) |
 | --- | --- | --- |
@@ -1581,32 +1298,19 @@ shared vs ours:
 | Ship to macOS | `testcase/`+`resource/` install layout | — |
 | Run | plain ctest | `west test` (changed/bead/diag/label/gc) |
 
-`add_compat_test` emits exactly what upstream writes by hand, so a case ports
-upstream unchanged and the install dir is identical; if upstream later adds its
-own helper we collapse into it. As of 2026-06-15 upstream still registers each
-test by hand (3 lines × 282 files) — the wrapper addresses that exact pain.
+`add_compat_test()` emits CMake registration and installation rules compatible
+with that source and artifact layout.
 
 - Test SOURCES use the upstream darling-testsuite format (CTest, MIT-0,
   nostdlib/directsyscall) so they import into that repo unchanged. We add cases,
   we do not fork the framework.
 - ORCHESTRATION (`west test`, changed-only, beads, debug-runner) stays in this
   private workspace — Darling and darling-testsuite stay clean CTest.
-- "fix + test in one PR" is handled the way WilsontheWolf suggested: testsuite
-  as a submodule, the fix PR moves the submodule pointer (`west pr` already
-  moves submodule pointers — see `dar-9h7`).
-- CI tiering (decouples the SUID-in-container worry from getting value now):
-  - Tier 0 (per PR, seconds): metadata-selected HOST regressions + reuse/lint.
-    Host CTest cases are run through `west test --profile homebrew --materialize-profile`
-    so source-bound cases compile against an isolated
-    patched worktree rather than silently testing manifest-base sources.
-  - Tier 1 (submodule PR, minutes): build full Darling at the new submodule
-    pointer, compare active West projects against their local `manifest-rev`
-    refs plus dirty worktrees, normalize changed labels to project path
-    basenames, and run `ctest -L submod:<changed>` (ccache already on in the
-    root CMake). This is the only honest CI per CuriousTommy — submodules don't
-    build alone.
-  - Tier 2 (nightly/farm, à la WineTestBot): full suite on a matrix of Darling
-    + real macOS versions. The testsuite's own long-term goal.
+- Keep publication scope and submodule pointer changes explicit in the owning PR.
+- Use the CI execution contract at the start of this document for host,
+  rootless guest and native installed tiers. Source-bound host cases use
+  `west test --profile homebrew --materialize-profile` so they compile against
+  the selected patched sources.
 
 ## Local Compatibility Suite
 
@@ -1617,43 +1321,5 @@ checkout (auto-located as the sibling `../darling`, override with
 
 - `testkit/cmake/AddCompatTest.cmake` — the `add_compat_test()` generator
   (EXTRA_SOURCES/INCLUDES/DEFINES/LIBS/WORKDIR let a case link the real code).
-- `testkit/CMakeLists.txt` — registers compatibility cases, starting with the
-  real dar-gwn.5 case.
+- `testkit/CMakeLists.txt` — compatibility case registration.
 - `west_commands/test.py` — the orchestrator, registered in `west-commands.yml`.
-
-The dar-gwn.5 case is a REAL regression, not a stand-in: it mirrors
-`tests/regression/run-glibc-fork-lock-reset.sh`, linking the harness against the
-production `src/startup/mldr/glibc_fork_reset.c` (with `GLIBC_FORK_RESET_TEST_HOOKS`)
-plus a dlopen'd TLS module.
-
-Verified end-to-end on this machine:
-
-- Builds the production `mldr/glibc_fork_reset.c` + harness + `tls_mod.so`;
-  `west test --bead dar-gwn.5` passes in ~9–12s through real `west`.
-- RED/GREEN proven by the harness output: with the reset DISABLED all three
-  cases `HANG/DEADLOCK` (killed by SIGALRM); with the production reset ENABLED
-  all three `PASS`. Exit 0 requires the bug to reproduce AND the fix to cure it.
-- Diagnosis tiers: with no executor, `guarded` degrades to `diag:bare` (warned),
-  test still runs. With the built `darling-debug-runner`, the same case runs as
-  `diag:guarded`, COMMAND wrapped `<runner> run --name <test> --timeout-seconds
-  60 -- <bin>` (confirmed via `--show-only=json-v1`).
-- Selectors `--bead dar-gwn.5` (pass), `--bead nope` (empty), `--diag guarded`
-  all work.
-- `west test --gc --keep-last 2 --max-bundle-mb 64` pruned a 77M scratch dir
-  (incl. an 80M over-cap bundle) to 20K; on the real dir it freed 6.5G (7.4G ->
-  934M) by dropping two ~3.3G rpctrace bundles.
-- Live evidence for the guest watchdog default: a bare `darling shell echo` on
-  the existing prefix hung indefinitely (darlingserver stuck `Sl` 12+ min);
-  guest tests therefore default to `guarded`, not `bare`.
-
-## Open questions
-
-- test↔submodule mapping: explicit `SUBMODULES` labels (chosen) vs directory
-  tree vs build-graph. Labels are the gVisor/CTest-idiomatic answer; revisit if
-  coverage gaps appear.
-- GUEST (`env=darling`) execution needs a built prefix + Apple headers/toolchain
-  for Mach-O cases. Local `west test --prefix-profile homebrew` is exercised;
-  CI/container provisioning remains separate work.
-- SUID removal for containerised Tier 1/2 — separate bead, not a dependency of
-  Tier 0 or local `west test`.
-```

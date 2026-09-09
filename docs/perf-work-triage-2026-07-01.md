@@ -1,5 +1,11 @@
 # Perf work triage — 2026-07-01
 
+> Historical 2026-07-01 branch/worktree triage. "Current", bootability claims,
+> branch destinations and deployment observations below refer to that snapshot,
+> not today's runtime profile or operator recipe. Preserve the evidence; use
+> the [workspace README](../README.md) and [test-infra.md](test-infra.md) for
+> current managed runs, ownership-safe deployment and durable handoff.
+
 Full audit of the current perf line vs the `homebrew` west patch profile. Question that
 prompted it: *is our perf work correctly captured in the homebrew patchset?* Answer: **no** —
 none of the current perf#18/#21b/#24c* line is in the profile; it lives on branches and (worst)

@@ -1,5 +1,15 @@
 # Running Darling guest tests without host setuid (SUID blocker)
 
+> Historical investigation, not a current boot, deployment or CI runbook.
+> Commands, host observations, hypotheses and recommendations below describe
+> their original experiments; later sections revise earlier conclusions.
+> In particular, the privileged-container recommendation is superseded by the
+> current rootless guest CI contract. Use [test-infra.md](test-infra.md) for
+> `mise run dw dev context` / `run` / `follow` / `cancel`, managed advanced West jobs,
+> and CI entrypoints, and [rootless-opt-in.md](rootless-opt-in.md) for the product
+> launcher contract. Do not replay manual launch/deploy/cleanup experiments
+> against a live prefix or treat old quiet-process observations as hang proof.
+
 Investigation for `dar-test-infra-sp5.2`. Goal: a documented way to run
 `darling shell` (env=darling guest tests) in CI without depending on a
 host-installed **setuid root** `darling` launcher.
@@ -91,7 +101,7 @@ The takeaway: **the setuid bit is not what we need in CI — effective root is.*
 A CI agent that is already root (root user in a privileged container) runs the
 plain, freshly-built launcher with no setuid step at all.
 
-## Recommendation for CI (decision)
+## Historical CI recommendation (superseded)
 
 Decouple Tier 1/2 (guest) CI from any host setuid by running the guest stage in
 a container that grants the **single** capability the bring-up mounts need, and

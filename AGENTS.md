@@ -10,15 +10,43 @@ refs, PR drafts, and agent handoff.
   On a fresh checkout, review it, run `mise trust`, then run `mise install`
   from `darling-workspace`; from the West workspace root use
   `mise -C darling-workspace trust` and `mise -C darling-workspace install`.
-- Run pinned project CLIs through mise: `mise exec -- west ...` and
-  `mise exec -- uv ...`. From the West workspace root, add
-  `-C darling-workspace`, for example
-  `mise -C darling-workspace exec -- west status`.
-- Every bare `west` or `uv` example below is shorthand for that mise-managed
-  invocation unless the current shell is already activated by this config.
+- Run workspace orchestration with `mise run dw ...` and West commands with
+  `mise run west ...`. Both tasks select the pinned environment and forward
+  arguments and standard streams to the command. From the West workspace root,
+  use `mise -C darling-workspace run dw ...` or
+  `mise -C darling-workspace run west ...`.
+  Put `--` after the task name when forwarding opaque argument lists or a
+  literal `:::`; without that boundary mise treats `:::` as task separation.
+- Bare `west` command names below are shorthand for the `west` mise task.
+  Use `mise exec -- uv ...` for isolated Python environment management.
 - Do not depend on globally selected mise shims or a user-global `uv`/`west`.
   A bare command is acceptable only inside a shell already activated by this
   project's mise configuration.
+- From the manifest directory, use `mise run dw dev` for managed diagnostics.
+  Configure/select a named context once with
+  `mise run dw dev context NAME --prefix /absolute/path/to/prefix`, then use
+  `mise run dw dev run homebrew-prepare`, `homebrew-preflight`, `exact-capture`,
+  or `homebrew-source`. A new bootstrap prefix must be absent or empty.
+  Resolve the workspace and prefix from configuration before running.
+  Read `mise run dw dev run --help` for explicit overrides.
+- Registered scenarios execute through initialized West command state.
+- Contexts are local West configuration, not portable runtime artifacts.
+  `--context` and explicit run overrides do not rewrite the active context.
+  The default runtime is `homebrew-lz4-source`; without an explicit executor,
+  the checked-out runner is incrementally built in release mode. `--dry-run`
+  displays the underlying command without building, booting or creating a job.
+- `dev run` attaches observation by default; `--detach` is explicit.
+  Use the printed `mise run dw dev follow JOB` and `mise run dw dev cancel JOB` commands
+  for reconnect/cancellation. Do not duplicate prefix locks or cleanup around
+  these scenarios. For tests without a registered scenario, use `west test`
+  and the supervised low-level job interface described below.
+- Repository `.claude/skills/` files are the portable skill sources. Keep
+  installed skill copies and agent entry references synchronized when changing
+  this workflow; `mise run dw setup-local` preserves an existing differing
+  source instruction file, so it is not an overwrite/synchronization command.
+- Keep agent instructions and skills normative: commands, contracts, ownership
+  and safety rules. Store chronology, incident narratives, measurements and
+  one-off acceptance results in Beads or diagnostic evidence.
 - Do not use `python3 -m venv` or `ensurepip` for automation. Some supported
   hosts intentionally ship Python without `ensurepip`. Create isolated
   environments with `mise exec -- uv venv <path>` and install packages with
@@ -40,26 +68,33 @@ refs, PR drafts, and agent handoff.
   `comments add` subcommand.
 - Beads flag spelling differs by command: `create` accepts `--labels`, while
   `list` filters with singular `--label`.
-- `rtk find` intentionally rejects compound predicates/actions such as
-  `-exec`; use `rtk proxy find ...` for those commands instead of retrying the
-  same command shape.
-- For shell assignments, conditionals, command substitution, or other compound
-  shell syntax, use `rtk bash -c '...'`; `rtk NAME=value command` treats the
-  assignment as a program name and produces a misleading host-side error.
-- For searches across a full materialized Darling forest or multiple large
-  source roots, use `scripts/west-search.py PATTERN ROOT...`. It bounds the
-  search and reaps the whole process group on timeout; direct `rg` remains
-  appropriate for focused repository-local searches.
+- Use the active harness's dedicated read, search, glob and edit tools where
+  provided. For command-only transports, bound full-forest searches through
+  `scripts/west-search.py PATTERN ROOT...` and use repository-local searches
+  for focused work. Follow the harness's shell and process-supervision rules.
+- In RTK shell transports, use `rtk proxy find` for compound find operations
+  and `rtk bash -c` for shell syntax. Keep assignments and quoted free text
+  within the execution interface's supported argument/environment mechanism.
 - When passing Bead free text through `rtk bash -c`, do not use shell backticks
   in the title, description, or reason: Bash evaluates them before `west dw
   beads` receives the text. Use plain command names or a file-backed argument.
-- In this execution transport, start long work with `scripts/west-job.sh start`,
-  then remain attached with `scripts/west-job.sh follow --state-dir DIR`.
-  `follow` streams progress and validates the registered PID identity without
-  creating a detached monitor process. Use `--timeout-seconds N` only to bound
-  the observer; timeout leaves the job running and a later `follow` resumes it.
-  Use `status` for recovery after a transport interruption. Do not poll through
-  shell `sleep`, and treat any escaped monitor process as a tooling defect.
+- For long commands without a managed `dev run` scenario, use
+  `scripts/west-job.sh start --state-dir DIR -- <mise-managed-command>`,
+  then stay attached with `scripts/west-job.sh follow --state-dir DIR`.
+  The observer validates PID identity; its timeout leaves the job running.
+  Reconnect with `follow`; use `status` for recovery after interruption.
+  Do not implement separate nohup/setsid/PID/rc-file or shell-sleep polling
+  recipes, and do not treat a detached tool handle as command completion.
+- The runner publishes `BUNDLE` at creation and registers stdout/stderr with
+  the active job; Homebrew registers its build-log directories automatically.
+  Manual `--activity-log` is only for additional logs. `--forward-output`
+  is post-execution replay, not live streaming. Observed phase and
+  last-write age do not prove progress or a hang.
+- Bootstrap runs `darling-doctor --scope workspace` before build/deploy and
+  mandatory `--scope runtime` checks after guest smoke; `--scope all` is
+  the default outside that split. On failure, inspect full command output and
+  structured problems in the retained evidence archive before diagnosing a
+  post-rollback prefix: the restored prefix is a different state.
 - Run long contract scripts that invoke `west test` internally (notably
   `tests/run-west-test-metadata-contract.sh`) through `scripts/west-job.sh
   start` and inspect the recorded state. In `CODEX_CI` that contract refuses a
@@ -76,14 +111,27 @@ refs, PR drafts, and agent handoff.
   official CommandLineTools packages through Darling's guest `installer` when
   the prefix does not already contain them. The package cache is external to
   patchsets; never commit CLT payloads or generated snapshots.
+- CLT provisioning validates size, XAR boundaries, the compressed-TOC SHA-1
+  and independently reviewed full-file SHA-256 before installation. Reject
+  integrity mismatches before executing the installer. Publisher authentication
+  is a separate verification obligation from local hashing.
+- Native-tools preflight and full Homebrew source-build acceptance are distinct
+  gates. Derive SDK and runtime identities from authoritative metadata and
+  validate compatibility. Record incompatible combinations in the owning Bead;
+  do not fabricate SDK versions or bypass package-manager compatibility checks.
+- The managed exact-capture diagnostic intentionally times out its payload.
+  Success requires a verified guest Mach-O, matching structurally complete
+  ELF core, registers and prefix cleanup. The archive's `exact_complete` flag
+  is independent and may be false for unreadable mappings such as Linux
+  vsyscall pages; preserve those warnings.
 - If a Darling guest run leaves mounted filesystems under a prefix, use
   `west darling-prefix-repair --prefix <prefix> --cleanup-mounts` after
   confirming no Darling processes are left. Do not ignore prefix mount tails;
   either clean them through tooling or keep the owning Bead open with the exact
   repro.
 - Never glob-delete `/tmp/darling-rootless-*`: active source worktrees use that
-  prefix. For one completed historical debug prefix use `west
-  darling-rootless-debug-cleanup --path /tmp/darling-rootless-*-debug-* --dry-run`
+  prefix. For one completed debug prefix use `west
+  darling-rootless-debug-cleanup --path /absolute/path/to/debug-prefix --dry-run`
   first. The command refuses non-debug paths, live `DARLING_PREFIX` owners, and
   mounts; add `--sudo` only after that inspection reports an ownership failure.
 - Treat clean `fix/*` branches as canonical editable source.
@@ -122,20 +170,22 @@ refs, PR drafts, and agent handoff.
 - After `west dw handoff`, stage only the handoff files it actually changed;
   never use `git add -A` as a shortcut, because unrelated in-progress fixes
   would be misfiled in a handoff commit.
+- Forest handoff does not automatically cover sibling tooling repositories.
+  Preserve every changed canonical runner/tool branch in its actual keeper
+  bundle and verify the tip with `git bundle list-heads`; do not assume that
+  a successful forest handoff included it. Keep local context paths and
+  diagnostic archives outside product patches.
 - Never add workspace metadata, PR drafts, agent state, or Beads files to the
   Darling source repositories.
 - Do not push investigation branches unless explicitly requested.
-- When using `apply_patch` from this workspace, use absolute paths for files
-  outside the current working directory and verify new files with `git status`
-  or `find` before running tests. A relative `tests/...` path from
-  `/home/ilyagulya/work/darling-dev` creates files outside
-  `darling-workspace`; treat that as a process bug and fix it immediately.
+- Resolve edit destinations against the intended repository root. Use absolute
+  paths for files outside the current directory, and verify new file placement
+  before running tests. Keep workspace test assets in the manifest repository.
 - For focused `darlingserver` validation, use
   `west darling-build --targets darlingserver --deploy --deploy-darlingserver`
-  instead of the default broad build. The current command still deploys
-  dyld/closure when `--deploy` is present; if that matters for a clean
-  experiment, record the prefix/baseline state and prefer an explicit
-  server-only deploy path or improve the command before claiming isolation.
+  for a targeted build. With `--deploy`, this command deploys dyld/closure as
+  well; record those artifacts in the experiment scope. Use a verified
+  server-only deployment path when isolation is required.
 - Patch-local red tests must be GREEN on the current checkout. `red: true`
   means the test is a RED->GREEN regression proof, not that latest should fail.
   Use `west test --profile ...` for the normal GREEN regression run and
@@ -241,7 +291,7 @@ refs, PR drafts, and agent handoff.
   cleanup contract fails while another `west test` was running, rerun it
   sequentially and fix the process mistake before making further claims.
 - Classify patch test evidence with `coverage-tier`: `runtime`, `compile`,
-  `host`, `model`, or `source`. Any old-vs-fixed model must be explicit
+  `host`, `model`, or `source`. Any bad/fixed behavioral model must be explicit
   `coverage-tier: model`; source/text audits must be `coverage-tier: source`
   and must not be counted as behavioral coverage. A `source-*` runner defaults
   to `source` unless metadata explicitly declares a behavioral tier; do not
@@ -299,23 +349,17 @@ refs, PR drafts, and agent handoff.
 - `tests/run-west-patch-verify-contract.sh` is the focused behavioral contract
   for disposable worktrees used by `west patch verify`; update it when changing
   patch applicability, temporary-worktree cleanup, or Git maintenance policy.
-- Do not run a noisy or long `west test --prove-red` foreground command through
-  an output-limited transport: it can be killed before Python `finally` cleanup
-  runs and create a false worktree leak. Send its output to a named log, start
-  it under `nohup setsid`, retain its PID and rc file, poll it to completion,
-  then inspect the log tail and temporary worktree/process state. Never claim a
-  cleanup failure while the recorded test PID is still live.
-- Treat a full guest CTest runtime selection the same way when the caller cannot
-  keep it attached. Use `scripts/west-job.sh start --state-dir DIR -- west test
-  ...`, then poll `status` (or use `cancel`); the state directory records command,
-  PID identity, log, and final rc. In the agent execution transport `wait` is
-  deliberately rejected because the outer controller can report a detached wait
-  as complete while the job is still live. Do not start a second prefix-backed
-  run while `status` says the first is live, and inspect its log plus
-  prefix/process cleanup only after `follow` or `status` reports a final rc. In
-  an ordinary attached shell, `wait` remains available. To reproduce one selected guest case
-  under an otherwise combined runtime, append `--with-runtime-profile NAME` for
-  each additional declared provider; this changes deployment only, not CTest
+- Run noisy or long `west test --prove-red` and full guest CTest selections
+  through the supported job owner, not an output-limited foreground transport
+  or bespoke background shell. Use the managed scenario when one exists;
+  otherwise use `west-job start` followed by attached `follow`.
+  Do not start a second prefix-backed run until the first has a final rc and
+  prefix cleanup has completed. Observer timeout is not cancellation.
+  `status` is a recovery snapshot, not an instruction to build a polling loop.
+  In agent transport, use `follow` rather than the low-level `wait`; in an
+  ordinary attached shell `wait` remains available. To reproduce one selected
+  guest case with additional declared deployment providers, append
+  `--with-runtime-profile NAME` for each; this changes deployment, not CTest
   selection.
 - When creating Beads from a shell command, do not put unescaped backticks in
   `--description`: the shell treats them as command substitution. Use plain
@@ -378,8 +422,8 @@ the behavior under test. Pair it with a concrete guest-visible
   `ctest: <label>`, `runs: host|guest|macos`, `red-proof: source|runtime|self`,
   `build-target: <target>`, plus explicit `artifacts`, `resources`, and
   `fixtures`. `ctest-label`, `env`, `target`, and expanded `red-proof.mode`
-  remain supported as normalized output/legacy input, but new manifests should
-  use the compact axes. Do not introduce `needs`; use `artifacts` for
+  are supported expanded keys. Write manifests using the compact axes.
+  Do not introduce `needs`; use `artifacts` for
   build/deploy outputs, `resources` for caches/oracles/external services, and
   `fixtures` for setup/cleanup state.
 - For top-level product-suite selection, prefer `west test --submodule
@@ -398,19 +442,18 @@ the behavior under test. Pair it with a concrete guest-visible
   census captures, handoff notes, and build-output logs. Keep those in the
   diagnostic archive, not in a product patch; `west patch check --quality`
   reports existing violations and `west patch verify` refuses to apply them.
-  Export and verify also reject legacy `Co-Authored-By` trailers naming Claude
+  Export and verify also reject `Co-Authored-By` trailers naming Claude
   or Codex; preserve real authorship and remove automation trailers from local
   commit messages before exporting a patch.
   Use `west patch export --profile <profile> --patch <path>` for focused
   checks/exports of a single profile entry; full-profile export remains the
   default when no patch selector is given.
 - When moving or inserting entries in `patches.yml`, anchor edits on unique
-  `- path:` blocks or use a structural script and verify ordering with `rg`.
+  `- path:` blocks or use a structural edit and verify the resulting ordering.
   Do not insert after generic repeated keys such as `github:`/`upstream:`; patch
   order is semantic and must match each entry's `source-base`.
-- For stacked runtime RED proofs, do not accept a historical `source-commit^`
-  bad runtime when later patches in the same module can change boot/lifecycle
-  behavior. Prefer a `guest-runtime-deploy` proof that materializes the current
-  profile minus the patch under test, or leave the guest test blocked with the
-  exact materialization conflict. A RED failure from an old, incompatible server
-  is not a valid regression proof.
+- For stacked runtime RED proofs, prefer materializing the selected profile
+  minus the patch under test through `guest-runtime-deploy`. Keep the guest test blocked
+  with the exact materialization conflict when that composition cannot run.
+  A RED runtime must retain the profile's required boot/lifecycle dependencies;
+  an incompatible server's startup failure is not regression proof.

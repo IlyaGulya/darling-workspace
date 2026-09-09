@@ -16,50 +16,71 @@ record of tasks, unpublished branches, or PR preparation.
 - `.beads/issues.jsonl`: shared task graph for humans and agents.
 - `pr-drafts/`: PR descriptions and review notes.
 - `state/repos.tsv`: reproducible snapshot of checked-out commits and branches.
-- `bin/dw`: workspace commands.
+- `bin/dw`: workspace command implementation; invoke through `mise run dw`.
 
-Darling's `.gitmodules` remains the upstream build contract. West provides the
-developer control plane over the same repositories. The old `repo` XML
-manifests remain temporarily as migration evidence and fallback.
+Darling's `.gitmodules` defines the upstream build contract. West provides the
+developer control plane over the same repositories. XML manifests under this
+repository are migration evidence; use West for workspace setup.
 
 ## Setup on another machine
 
 ```bash
-west init -m git@github.com:IlyaGulya/darling-workspace.git ~/work/darling-dev
+git clone git@github.com:IlyaGulya/darling-workspace.git ~/work/darling-dev/darling-workspace
 cd ~/work/darling-dev
-west update
-west dw restore
-west dw beads sync --import-only --rebuild
-west patch verify --profile homebrew
-west patch apply --profile homebrew
+# Review darling-workspace/mise.toml before trusting its tools and tasks.
+mise -C darling-workspace trust
+mise -C darling-workspace install
+mise -C darling-workspace run west init -l .
+mise -C darling-workspace run west update
+mise -C darling-workspace run west dw restore
+mise -C darling-workspace run west dw beads sync --import-only --rebuild
+mise -C darling-workspace run west patch verify --profile homebrew
+mise -C darling-workspace run west patch apply --profile homebrew
 ```
 
 ## Daily use
+Run commands from the manifest directory with `mise run dw ...` or
+`mise run west ...`. Both tasks select the pinned environment and forward
+arguments; West preserves the caller's directory. From the workspace root use
+`mise -C darling-workspace run dw ...` or `run west ...`.
+Use `--` after the task name for opaque arguments, including a literal `:::`;
+for example, `mise run west -- config KEY VALUE`. Simple options can be passed
+directly: `mise run west --version`.
+Bare West names in prose identify underlying APIs, not additional dw verbs.
+
 
 ```bash
-west status
-west forall -c 'git log -1 --oneline'
-west dw summary
-west dw beads ready
-west dw restore
-west patch list --profile homebrew
-west patch verify --profile homebrew
-west patch apply --profile homebrew
-west patch clean --profile homebrew
-west darling-doctor            # verify manifest/build/deploy alignment BEFORE building or booting
-west darling-build             # doctor-gated ninja build of dyld + closure (add --deploy to install)
-west dw handoff
+mise run west status
+mise run west forall -c 'git log -1 --oneline'
+mise run west dw summary
+mise run west dw beads ready
+mise run west dw restore
+mise run west patch list --profile homebrew
+mise run west patch verify --profile homebrew
+mise run west patch apply --profile homebrew
+mise run west patch clean --profile homebrew
+mise run west darling-doctor --scope workspace
+mise run west dw handoff
 ```
 
-`west darling-doctor` is the guard against the drift that caused the perf#24c2c-pre
-detours: it checks each project's working tree against its **West manifest** revision
-(intentional drift is declared in `doctor-allow-drift.txt`), that the build dir's
-`CMAKE_INSTALL_PREFIX` matches the prefix baked into the setuid launcher (a mismatched
-build can never boot the prefix), and that the deployed dyld/mldr/darlingserver match the
-known-good `deploy-baseline.md5`. Run it before any build/deploy/boot. `west darling-build`
-runs the doctor as a pre-gate, refuses to build on failure (unless `--force`), and re-checks
-after `--deploy`. Update `deploy-baseline.md5` when a legitimate rebuild changes what is
-deployed.
+`west darling-doctor --scope workspace` checks project worktrees against the
+**West manifest**
+(intentional drift is declared in `doctor-allow-drift.txt`) without requiring an
+already deployed runtime. `--scope runtime` checks build/deploy alignment and
+prefix prerequisites; the default `all` runs both scopes. Bootstrap runs the
+workspace scope before prefix mutation/build/deploy, then runtime scope after
+guest readiness. Runtime doctor failures retain raw stdout/stderr and structured
+problem rows in the runtime evidence archive's `diagnostics/` directory before
+rollback; follow the artifact path reported by the failure handler.
+
+For the four supported scenarios, use `mise run dw dev run` below.
+Advanced `mise run west darling-build` is a
+doctor-gated operator build interface, with `--deploy` for its supported install
+path. Do not bypass a failing gate to make a run proceed or refresh
+`deploy-baseline.md5` merely to silence drift. Preserve the reviewed deployment
+identity and use the owning West deployment transaction. Never copy over or
+delete binaries while the selected prefix is running: request owner cleanup,
+establish that its processes have stopped, then deploy. Retain failure evidence.
 
 Doctor output has three explicit modes. The default is a bounded summary with
 at most eight problem/warning rows and an exact, shell-quoted command for the
@@ -76,22 +97,20 @@ usage.
 
 ## Claude Code guardrails (hooks + skills)
 
-The workspace ships Claude Code automation that encodes the guardrails and
-procedures learned the hard way (the perf#24c2c-pre detours). All of it is
-tracked here so it survives `west init` on another machine.
+The workspace tracks Claude Code guardrails and procedures so they are
+available after `west init` on another machine.
 
 - `hooks/pretooluse-build-gate.sh` — a `PreToolUse` (Bash) hook. Before any
   command that looks like a Darling build/deploy/boot (`ninja`, `west
   darling-build`, a copy into `libexec/darling`, `darling shell`, `shellspawn`,
-  …) it runs `west darling-doctor` and **blocks** on failure. Catches #89
-  (wrong build dir) and #90 (manifest↔worktree drift) automatically. Escape
-  hatch: `--force`, `--skip-doctor`, or `DARLING_SKIP_DOCTOR=1`.
+  …) it runs `west darling-doctor` and **blocks** on failure. It checks build
+  directory and manifest/worktree alignment. Resolve failures before proceeding.
 - `hooks/stop-durability-reminder.sh` — a `Stop` hook. On session end it warns
-  if the manifest repo is uncommitted or a tracked worktree (dyld /
-  darlingserver / xnu / superproject) is dirty, and blocks the stop once so the
+  if the manifest repo is uncommitted, the independent runner is dirty, or a
+  tracked source worktree is dirty, and blocks the stop once so the
   work isn't silently abandoned. It respects `stop_hook_active` (no loop).
-- `.claude/skills/darling-boot/` — clean teardown + single boot protocol
-  (kill orphan launchd, settle, one boot + poll) to avoid the perf#23a wedge.
+- `.claude/skills/darling-boot/` — managed context/run/follow/cancel workflow,
+  prefix-owned shutdown and ownership-checked cleanup.
 - `.claude/skills/darling-durability/` — triage → rescue onto `fix/*` → commit
   manifest → `west dw handoff` → verify.
 
@@ -99,26 +118,29 @@ Activation is per-checkout and lives OUTSIDE the manifest repo (the workspace
 root is not a git repo):
 
 ```bash
-# from the workspace root (~/work/darling-dev)
-mkdir -p .claude
-ln -sfn darling-workspace/.claude/skills .claude/skills        # skills source of truth
-cp darling-workspace/.claude/settings.sample.json .claude/settings.json
-# (settings.json references the hook scripts by absolute path)
+# from the workspace root
+mise -C darling-workspace run dw setup-local
 ```
+
+`setup-local` installs the source instruction template and Git excludes.
+Install project hooks from `.claude/settings.sample.json`, replacing its
+workspace paths. Resolve active skill locations and synchronize separate copies
+from `.claude/skills/`. Preserve local additions when an installed instruction
+file differs from its template.
 
 `west dw handoff` exports Beads, refreshes manifests, and creates Git bundles
 for every local branch except an unchanged `main`/`master`. This includes
-active topics, clean PR branches, and backup snapshots. The bootstrap flow
-syncs `base.xml`, then restores all those branch refs from the bundles.
+active topics, clean PR branches, and backup snapshots. Initialize the workspace
+with West, then use `mise run west dw restore` to restore bundled branch refs.
 
 West supplies the complete project closure, including independently cloned
 nested repositories; Git submodule initialization is not required for those
-clones. Every declared path must still be its own worktree, and populated
+clones. Every declared path must be its own worktree, and populated
 gitlinks outside that closure are rejected. Without a West closure, handoff
 retains strict recursive submodule validation. Repository remote selection
 prefers `origin`, otherwise requires exactly one configured remote.
 
-Uncommitted worktree changes cannot be handed off. `dw handoff` prints every
+Uncommitted worktree changes cannot be handed off. `west dw handoff` prints every
 dirty repository so it can be committed or intentionally discarded first.
 
 ## Daily feature workflow
@@ -126,40 +148,64 @@ dirty repository so it can be committed or intentionally discarded first.
 `west dev` is a thin, evidence-producing front end for the existing patch,
 test, doctor, deployment, Beads, and handoff authorities:
 
-From this manifest directory, `bin/dw dev ...` selects the pinned mise/West
-environment without a per-command environment recipe. For runtime diagnostics:
+From the manifest directory, `mise run dw dev ...` selects the pinned
+environment through the dw proxy task. For runtime diagnostics:
 
 ```sh
-bin/dw dev context homebrew --prefix /absolute/path/to/new-prefix
-bin/dw dev run homebrew-prepare
-bin/dw dev run homebrew-preflight
-bin/dw dev run exact-capture
-bin/dw dev run homebrew-source
+mise run dw dev context homebrew --prefix /absolute/path/to/new-prefix
+mise run dw dev run homebrew-prepare
+mise run dw dev run homebrew-preflight
+mise run dw dev run exact-capture
+mise run dw dev run homebrew-source
 ```
 
-Contexts are local West settings. Runs select/build the workspace diagnostic
-runner, own a recorded job, and attach live observation automatically.
-`--dry-run` shows the underlying command; `--detach` starts without observing.
-Use the printed `bin/dw dev follow JOB` or `bin/dw dev cancel JOB` commands
-to reconnect or request cleanup. Advanced West commands remain available:
+Configure a context once with an absent or empty new prefix. Contexts are local
+West settings; `dev context NAME` selects the active context, while
+`dev run --context NAME` and explicit path options override it for one run.
+The default runtime is `homebrew-lz4-source`, the checked-out diagnostic runner
+is incrementally built in release mode unless `--executor` is supplied, and
+archives default to the workspace parent's `darling-debug` directory.
+
+Runs own a recorded job and attach live observation automatically. `--dry-run`
+shows the underlying command without building, creating a prefix/job, or booting;
+`--detach` starts without observing. Use the printed `mise run dw dev follow JOB`
+or `mise run dw dev cancel JOB` commands to reconnect or request owner cleanup.
+Runner streams and Homebrew build-log directories register automatically;
+follow reports phase, log paths and last-write age, not a hang verdict from
+silence. Advanced prefix-backed runs use `scripts/west-job.sh start` and
+`follow` as documented in [test-infra.md](docs/test-infra.md).
+
+Preparation, native-tools preflight and the guest exact-capture diagnostic have
+separate acceptance criteria from a Homebrew source build. Validate SDK identity
+against authoritative package metadata and preserve its provenance. Do not
+invent version metadata or disable Homebrew's SDK checks to accept an
+incompatible toolchain. Record scenario results and blockers in Beads and
+diagnostic evidence.
+
+The exact diagnostic intentionally times out its payload and can pass its
+guest-image/core/cleanup oracle while the archive reports
+`exact_complete=false` for unreadable mappings such as Linux vsyscall.
+
+Advanced West commands are available (use `mise run dw dev` for these dev
+commands, or `mise run west ...` for the underlying interfaces):
 
 ```bash
-west dev profiles
-west dev profiles --kind runtime --json
-source <(west dev profiles --completion bash)
-west dev status --profile homebrew
-west dev start --source /path/to/source --destination /path/to/authoring \
+mise run west dev profiles
+mise run west dev profiles --kind runtime --json
+source <(mise run west dev profiles --completion bash)
+mise run west dev status --profile homebrew
+mise run west dev start --source /path/to/source --destination /path/to/authoring \
   --base <commit-or-ref> --branch fix/<topic> --bead <id> --module <name> \
   --evidence /path/outside/active/repos/start.json --dry-run
-west dev check quick --profile homebrew \
+mise run west dev check quick --profile homebrew \
   --evidence /path/outside/active/repos/quick.json
-west dev check canonical --profile homebrew \
+mise run west dev check canonical --profile homebrew \
   --evidence /path/outside/active/repos/canonical.json
-west dev check acceptance --profile homebrew --prefix /path/to/prefix \
+mise run west dev check acceptance --profile homebrew --prefix /path/to/prefix \
   --build-dir /path/to/build --evidence /path/outside/active/repos/acceptance.json
-west dev package --profile homebrew --receipt /path/to/acceptance.json \
+mise run west dev package --profile homebrew --receipt /path/to/acceptance.json \
   --output /path/to/review-package --evidence /path/to/package.json
-west dev verify-package /path/to/review-package
+mise run west dev verify-package /path/to/review-package
 ```
 
 `start` creates an independent exact-base clone without alternates, hardlinks,
@@ -174,7 +220,7 @@ without changing it.
 Human-mode checks report each step start/finish with elapsed time. Acceptance
 creates the independent control and candidate manifest clones concurrently,
 then bootstraps the candidate from the active West forest as a Git path cache
-with eight bounded update workers. The frozen manifest still selects every
+with eight bounded update workers. The frozen manifest selects every
 checkout by exact revision; active worktrees and refs are not reused.
 Acceptance then copies only manifest-declared source refs into the candidate
 and runs `patch verify`, the host materialized test, and the immutable oracle
@@ -223,7 +269,7 @@ and generated-lock bytes, acceptance artifacts, recovery mboxes, Git object
 bundles, `package-index.json`, and `SHA256SUMS`. Offline verification derives
 the locked commit order, stable patch identities, and resulting trees from
 those contents. The candidate commit is explicitly acceptance-attested; its
-tree is independently replayed. A local package directory remains mutable by
+tree is independently replayed. A local package directory is mutable by
 its owner—the receipt is not a signature—so run `verify-package` immediately
 before use and again after copying or transfer. Any missing, extra, changed, or
 internally inconsistent payload is rejected.
@@ -261,7 +307,7 @@ branches selected for local composition with:
 ```
 
 `patches/<profile>/patches.yml` records the source branch and commit, Bead or
-PR, historical archive checksum, and application order. `west patch apply`
+PR, archive checksum, and application order. `west patch apply`
 validates schema-v2 locks and replays their immutable commits through native
 Git in clean disposable transactions. It creates clean
 `integration/<profile>` branches, records the top-level submodule pointers,
@@ -295,7 +341,7 @@ For example, one command reconstructs Homebrew, then Perf, then Arch in the
 declared order:
 
 ```bash
-west patch apply --profile arch
+mise run west patch apply --profile arch
 ```
 
 Each successful layer publishes its own `integration/<profile>` refs and
@@ -315,7 +361,7 @@ closed; there is no archive fallback.
   they are not portable executable integration inputs.
 - Generated local state: `integration/<profile>` branches and the profile
   `west.lock.yml`.
-- Historical source: `backup/*` and preserved mega-branches.
+- Recovery source: `backup/*` and preserved topic branches.
 
 Never edit or open a PR from `integration/<profile>`. Never edit patch files or
 generated locks manually. Refresh patches with `scripts/export_patches.py`,
@@ -331,17 +377,17 @@ updated only by a successful `west patch apply`.
 GitHub publication is a separate state machine over the same clean branches:
 
 ```bash
-west pr list --profile homebrew
-west pr dashboard --profile homebrew
-west pr check --profile homebrew dar-q95.3
-west pr publish-plan --profile homebrew dar-q95.3 --target fork
-west pr fork-draft --profile homebrew dar-q95.3 --dry-run
-west pr fork-draft --profile homebrew dar-q95.3
-west pr sync --profile homebrew dar-q95.3
-west pr upstream-draft --profile homebrew dar-q95.3
-west pr update-body --profile homebrew dar-q95.3 --target fork
-west pr ready --profile homebrew dar-q95.3 --target upstream
-west pr open --profile homebrew dar-q95.3 --target upstream
+mise run west pr list --profile homebrew
+mise run west pr dashboard --profile homebrew
+mise run west pr check --profile homebrew dar-q95.3
+mise run west pr publish-plan --profile homebrew dar-q95.3 --target fork
+mise run west pr fork-draft --profile homebrew dar-q95.3 --dry-run
+mise run west pr fork-draft --profile homebrew dar-q95.3
+mise run west pr sync --profile homebrew dar-q95.3
+mise run west pr upstream-draft --profile homebrew dar-q95.3
+mise run west pr update-body --profile homebrew dar-q95.3 --target fork
+mise run west pr ready --profile homebrew dar-q95.3 --target upstream
+mise run west pr open --profile homebrew dar-q95.3 --target upstream
 ```
 
 A fork draft compares `fix/*` against `preupstream/<base>` inside the
@@ -358,11 +404,9 @@ single-Bead and explicit; there is no bulk publish or automatic merge command.
 One private manifest repository is intentional. Split Beads only if it needs
 different access control or an independent lifecycle.
 
-See `docs/branch-migration.md` for the branch workflow and
-`docs/mega-branch-audit-2026-06-12.md` for the completed migration audit,
-residual dispositions, and conditions for retiring the historical refs.
+The evidence reports `docs/branch-migration.md`,
+`docs/mega-branch-audit-2026-06-12.md` and `docs/west-spike.md` preserve migration
+decisions and observations; they are not operational runbooks.
 
-`west.yml` is the selected workspace backend and includes private workspace
-tools such as `darling-debug-runner`. The old `repo` manifests are retained as
-migration evidence and fallback only. See `docs/west-spike.md` for validation
-results.
+`west.yml` is the workspace backend and includes workspace tools such as
+`darling-debug-runner`.

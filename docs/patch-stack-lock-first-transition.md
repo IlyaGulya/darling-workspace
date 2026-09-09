@@ -51,7 +51,7 @@ and uploads evidence under `always()`.
 Canonical review/recovery export is:
 
 ```text
-west patch export-locks --profile <profile> --output <new-directory>
+mise run west patch export-locks --profile <profile> --output <new-directory>
 ```
 
 It produces deterministic mboxes and typed evidence from immutable lock

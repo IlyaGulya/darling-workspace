@@ -120,8 +120,8 @@ def run_scenario_action(host, args, west_argv: list[str]) -> None:
     state = Path(values["bundle-root"]) / "jobs" / f"{args.scenario}-{uuid.uuid4().hex}"
     host.inf(f"JOB={state}")
     subprocess.run([str(job_tool), "start", "--state-dir", str(state), "--", *command], cwd=root, check=True)
-    entry = str(root / "bin/dw")
-    host.inf("Reconnect: " + shlex.join([entry, "dev", "follow", str(state)]))
-    host.inf("Cancel: " + shlex.join([entry, "dev", "cancel", str(state)]))
+    entry = ["mise", "-C", str(root), "run", "dw", "dev"]
+    host.inf("Reconnect: " + shlex.join([*entry, "follow", str(state)]))
+    host.inf("Cancel: " + shlex.join([*entry, "cancel", str(state)]))
     if not args.detach:
         os.execv(str(job_tool), [str(job_tool), "follow", "--state-dir", str(state)])

@@ -3,6 +3,16 @@
 These patches are preserved investigation artifacts, not integration-profile
 inputs and not upstream PR candidates.
 
+For diagnostics, configure a local context once from the manifest
+directory with `mise run dw dev context homebrew --prefix /absolute/path/to/new-prefix`,
+then use `mise run dw dev run homebrew-prepare`, `homebrew-preflight`, or
+`exact-capture` as appropriate. Reconnect or cancel with the commands printed by
+the run; streams and Homebrew logs register automatically. See
+[test-infra.md](../docs/test-infra.md) for managed advanced West jobs, exact
+archive interpretation, and separate Homebrew source-build acceptance criteria.
+Use lifecycle-owned cleanup and deployment. Do not infer a hang from quiet logs
+or manually overwrite a running prefix's binaries.
+
 ## darlingserver-kwq-call-tracing.patch
 
 - Repository: `darling/src/external/darlingserver`
