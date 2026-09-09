@@ -2234,6 +2234,12 @@ class DarlingTest(ProfileOperationsMixin, BootstrapRuntimeProfileMixin, WestComm
             return ["/bin/bash", "-lc", invocation["args"]]
         return [str(arg) for arg in invocation["args"]]
 
+    def _debug_runner_timeout_seconds(self, invocation) -> int:
+        """Bound the executor without cutting off its post-timeout capture."""
+        timeout = int(invocation.get("debug_timeout_seconds", invocation.get("timeout_seconds", 600)))
+        grace = 300 if invocation.get("diag") == "forensic" else 15
+        return timeout + grace
+
     def _debug_runner_args(self, invocation, *, env=None, display_only: bool = False) -> list[str]:
         diag = invocation.get("diag", "bare")
         if diag == "bare":
@@ -2407,7 +2413,7 @@ class DarlingTest(ProfileOperationsMixin, BootstrapRuntimeProfileMixin, WestComm
             self._debug_runner_args(invocation, env=run_env),
             cwd=invocation["cwd"],
             env=run_env,
-            timeout_seconds=int(invocation.get("timeout_seconds", 600)) + 15,
+            timeout_seconds=self._debug_runner_timeout_seconds(invocation),
         )
         if result.timed_out:
             self.err(

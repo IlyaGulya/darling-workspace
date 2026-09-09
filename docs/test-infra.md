@@ -994,6 +994,12 @@ capture. The runner is resolved from `--executor`, `PATH`, or the checked-out
 `target/debug`). If a non-bare test is executed without a runner, `west test`
 fails before launching the test. `--list` is still offline and shows the wrapper
 shape without requiring the binary to exist.
+For command invocations and metadata guest-C fixtures, the outer West deadline
+reserves 300 seconds after a forensic executor's deadline for capture and
+cleanup, rather than the ordinary 15-second grace. This does not extend the
+payload deadline or make a timed-out test pass. Capture is still bounded; an
+executor that exceeds the grace fails the run.
+
 
 Guarded CTest registrations pass `--forward-output` to the executor. This replays
 captured stdout/stderr after execution, preserving guest phase and domain-oracle
