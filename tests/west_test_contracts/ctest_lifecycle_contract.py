@@ -784,6 +784,128 @@ with tempfile.TemporaryDirectory() as temp:
     assert calls and calls[0][0][2] == ("/usr/bin/true",), calls
 
 
+for failing_scope, timed_out in (
+    ("workspace", False),
+    ("runtime", False),
+    ("runtime", True),
+):
+    with tempfile.TemporaryDirectory() as temp:
+        root = Path(temp)
+        prefix = root / "prefix"
+        prefix.mkdir()
+        state = prefix / "deployed-state"
+        state.write_text("original")
+        test = DarlingTest.__new__(DarlingTest)
+        test.topdir = str(root)
+        test._prefix = str(prefix)
+        test._runtime_evidence_root = root / "evidence"
+        test._ctest_runtime_profile_definitions = lambda: {
+            "homebrew-prefix-baseline": {
+                "purpose": "prefix-baseline",
+                "source-profile": "homebrew",
+                "bootstrap-smoke-timeout-seconds": 60,
+            }
+        }
+        test.inf = lambda _message: None
+        errors = []
+        test.err = errors.append
+        test.die = lambda message: (_ for _ in ()).throw(SystemExit(message))
+        events = []
+        problem = {
+            "section": "workspace drift" if failing_scope == "workspace" else "runtime alignment",
+            "state": "problem",
+            "message": "repair the mismatched project revision before retrying",
+        }
+        doctor_report = {
+            "schema_version": 1,
+            "state": "problems",
+            "results": [problem] + [
+                {"section": "warnings", "state": "warning", "message": "warning tail " * 200}
+                for _ in range(100)
+            ],
+        }
+        stdout = json.dumps(doctor_report).encode()
+        stderr = b"doctor stderr begins\n" + b"warning tail\n" * 10000 + b"\xff\n"
+
+        @contextmanager
+        def prefix_context(_enabled):
+            events.append("prefix")
+            yield
+
+        @contextmanager
+        def deployment_context(_profiles, **_kwargs):
+            store = test._runtime_evidence_store()
+            with store.session("contract deployment", {}) as evidence:
+                test._active_runtime_evidence = evidence
+                events.append("deploy")
+                state.write_text("candidate")
+                try:
+                    yield types.SimpleNamespace(
+                        prefix=prefix,
+                        build_root=root / "build",
+                        env={"DARLING_LAUNCHER": "/fake/darling"},
+                    )
+                finally:
+                    # Failure evidence must exist before rollback changes state.
+                    metadata = json.loads(
+                        (evidence.directory / "diagnostics/bootstrap-doctor.json").read_text()
+                    )
+                    assert metadata["problems"] == [problem]
+                    state.write_text("original")
+                    events.append("rollback")
+                    test._active_runtime_evidence = None
+
+        def doctor_result(command, **_kwargs):
+            scope = command[command.index("--scope") + 1]
+            events.append(scope)
+            if scope == failing_scope:
+                return ProcessResult(
+                    124 if timed_out else 1, timed_out=timed_out,
+                    stdout=stdout, stderr=stderr,
+                )
+            return ProcessResult(0)
+
+        def successful_guest(*_args, **_kwargs):
+            events.append("smoke")
+            return ProcessResult(0, stdout="WEST_PREFIX_BOOTSTRAP_OK\n")
+
+        test._prefix_resource_context = prefix_context
+        test._runtime_profile_deployment_context = deployment_context
+        original_run_guest_shell = bootstrap_module.run_guest_shell
+        original_run_bounded = bootstrap_module.run_bounded
+        bootstrap_module.run_guest_shell = successful_guest
+        bootstrap_module.run_bounded = doctor_result
+        try:
+            try:
+                test._bootstrap_runtime_profile("homebrew-prefix-baseline")
+                raise AssertionError("bootstrap accepted failed doctor")
+            except SystemExit as error:
+                summary = str(error)
+                assert problem["message"] in summary
+                assert len(summary) < 2000
+        finally:
+            bootstrap_module.run_guest_shell = original_run_guest_shell
+            bootstrap_module.run_bounded = original_run_bounded
+        assert state.read_text() == "original"
+        assert events == (
+            ["workspace"] if failing_scope == "workspace"
+            else ["workspace", "prefix", "deploy", "smoke", "runtime", "rollback"]
+        ), events
+        archives = list(test._runtime_evidence_root.glob("runtime-evidence-*"))
+        assert len(archives) == 1
+        archive = archives[0]
+        stem = "workspace-doctor" if failing_scope == "workspace" else "doctor"
+        artifact = Path(f"diagnostics/bootstrap-{stem}.json")
+        assert str(artifact) in summary
+        evidence = json.loads((archive / artifact).read_text())
+        assert evidence["doctor"] == doctor_report
+        assert evidence["timed-out"] is timed_out
+        assert (archive / evidence["streams"]["stdout"]).read_bytes() == stdout
+        assert (archive / evidence["streams"]["stderr"]).read_bytes() == stderr
+        manifest = json.loads((archive / "manifest.json").read_text())
+        assert manifest["diagnostics"][0]["returncode"] == (124 if timed_out else 1)
+
+
 with tempfile.TemporaryDirectory() as temp:
     root = Path(temp)
     old_output = root / "west-ctest-guest-c.old"

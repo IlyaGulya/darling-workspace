@@ -435,22 +435,45 @@ staged through `DESTDIR`; absolute dSYM destinations must not populate the
 live prefix before West deployment. Explicit component providers take
 precedence over duplicate build/staging copies during Mach-O closure discovery.
 
-Start with a **new empty directory**, not an untyped populated prefix:
+Deployment still checkpoints the complete atomic transaction manifest after
+each file; rollback, restart recovery, ownership and symlink checks are not
+relaxed. The measured 2,400-file workload fell from 31.7 s to 3.6 s by removing
+repeated directory snapshots, recursive manifest conversion and linear duplicate
+lookups. A separate fresh-prefix bootstrap recorded a 48.9 s deployment
+(`dar-developer-tooling-ux-tcwe.4.14`); this is not a cold-build timing.
+
+From the manifest directory, configure a named context once. A new prefix must
+be absent or empty, not an untyped populated directory:
 
 ```sh
-prefix=/absolute/path/to/new-homebrew-prefix
-mkdir "$prefix"
-scripts/west-job.sh start --state-dir /absolute/path/to/bootstrap-job -- \
-  mise exec -- west test --bootstrap-runtime-profile homebrew-lz4-source \
-  --prefix "$prefix"
-scripts/west-job.sh follow --state-dir /absolute/path/to/bootstrap-job
-
-scripts/west-job.sh start --state-dir /absolute/path/to/preflight-job -- \
-  mise exec -- west test --profile wget-residual \
-  --patch darling/homebrew-prefix-tooling.patch --env darling \
-  --prefix "$prefix" --reuse-prefix-runtime
-scripts/west-job.sh follow --state-dir /absolute/path/to/preflight-job
+bin/dw dev context homebrew --prefix /absolute/path/to/new-homebrew-prefix
+bin/dw dev run homebrew-prepare
+bin/dw dev run homebrew-preflight
+bin/dw dev run exact-capture
+bin/dw dev run homebrew-source
 ```
+
+`bin/dw` selects the pinned mise environment. Contexts live in local West
+configuration (`dev-<name>.*`), not checked-in host-specific paths. `dev context`
+selects the active context; `dev run --context NAME` and explicit path flags
+override it without rewriting configuration. The default runtime is
+`homebrew-lz4-source`; bundle storage defaults to the workspace parent's
+`darling-debug` directory. Without an explicit executor, the checked-out
+runner is incrementally built in release mode before execution.
+
+`dev run` starts a recorded West job and immediately attaches its observer.
+It prints the job identity plus exact reconnect/cancel commands. `--detach`
+starts without observing; `bin/dw dev follow JOB` reconnects and
+`bin/dw dev cancel JOB` requests owner cleanup. `--dry-run` displays the
+underlying command without building, booting, or creating a job.
+
+The exact-capture diagnostic uses initialized West command state, validates
+the retained provider fingerprint, and owns the normal prefix lock/cleanup.
+Its payload intentionally times out; diagnostic success requires the guest
+readiness marker, identity-hashed Mach-O image, structurally complete ELF core
+for the same guest process, registers, and successful prefix cleanup.
+The archive's separate completeness flag remains false for unreadable mappings;
+Linux vsyscall warnings are retained rather than converted to complete capture.
 
 The preflight executes field extraction, Perl SHA-256/POSIX/Socket operations
 and XS loading, and system OpenSSL X509 fingerprinting. The host requires the
@@ -459,6 +482,14 @@ this preflight before downloading/staging stock brew inputs. No formula changes,
 insecure TLS options, or binary-only Perl installation are involved.
 The separate host `homebrew_component_staging_isolation` contract exercises real
 CMake relative/absolute installs and symlinks, including prefix paths with spaces.
+
+Fresh-prefix acceptance on 2026-09-09 passed bootstrap, native-tools preflight
+and guest exact capture. `homebrew-source` remains blocked before compilation:
+the reviewed CLT package supplies an SDK whose authoritative plist says 10.13
+and has no `SDKSettings.json`, while this runtime advertises macOS 11.7.4.
+Stock Homebrew finds no applicable SDK and rejects that combination.
+The SDK identity/provenance gate remains `dar-q95.29.8`; inventing an 11.x
+JSON version or disabling Homebrew's check is not an accepted fix.
 
 
 ### Native applicability and migration gates
@@ -1031,18 +1062,29 @@ cases additionally declare `guest-toolchain: darling-command-line-tools`.
 The typed West provider checks the default compiler and SDK, downloads the
 official package set from Darling's existing CommandLineTools distribution
 endpoint only when they are absent, installs each package through the guest
-`/usr/bin/installer`, verifies the official HTTPS host, package size, and XAR
-envelope before installation, and removes the prefix-owned staging files
-afterward. The distribution API's historical SHA-1 field is logged and used
-for cache identity, but treated as advisory because Apple has republished
-these old package URLs without updating Darling's metadata. Package bytes stay
-in the external West cache rather than in patch metadata or JSON snapshots.
+`/usr/bin/installer`, verifies the official HTTPS host, package size, XAR
+envelope, the API SHA-1 of the **compressed XAR table of contents**, and the
+reviewed SHA-256 of the **entire package** before installation. Neither digest
+alone establishes publisher authentication; signed-publisher review is recorded
+separately in `clt-provenance-041-90419.txt`. Earlier warnings compared the API
+digest against whole-file SHA-1: the claimed republishing explanation was wrong.
+Package bytes stay in the external West cache; prefix-owned staging files are
+removed after installation.
 `west test` and
 `west darling-doctor` share the same prerequisite checks, so a repaired prefix
 is checked against the same contract that guest metadata tests require. The
 `--cleanup-mounts` mode unmounts stale filesystems left under an otherwise idle
 prefix; `west test` runs the same cleanup after `darling shutdown` and fails the
 test run if mounts remain.
+
+`west darling-doctor --scope workspace` checks manifest drift without inspecting
+runtime state; `--scope runtime` checks build/deploy and prefix postconditions.
+The default `all` preserves both sets. Bootstrap runs the workspace scope before
+prefix mutation/build/deploy and the runtime scope after guest readiness.
+On runtime doctor failure or timeout, full raw stdout/stderr and structured
+problem rows are saved under the existing runtime evidence `diagnostics`
+directory before rollback. The fatal message names the relative artifact;
+the surrounding failure handler reports its final retained archive directory.
 
 Historical rootless debug prefixes are separate from test scratch and must not
 be removed with a broad `/tmp/darling-rootless-*` glob because that namespace
@@ -1090,22 +1132,20 @@ Incomplete capture is explicitly recorded, including unreadable kernel mappings.
 Cores can contain secrets. Build the updated runner and pass `--executor`
 explicitly when `PATH` still selects an older installed binary.
 
-For long agent jobs, `scripts/west-job.sh follow` reports the latest recognized
-runtime/preflight/guest stage, log pathname, and age of the file's last
-modification. Silence is not classified as a hang. Add repeatable
-`--activity-log /host/visible/guest.log` to `start` to persist watched paths, or
-to `follow` for observer-local paths. Missing files, rotation and truncation
-remain observable; follow can be resumed without losing the recorded job exit
-status. The observer stays attached and does not create a detached monitor:
+`dev run` uses `scripts/west-job.sh follow` to stream observed output and report
+recognized runtime/preflight/guest stages, log paths, and last-write age.
+Silence is not classified as a hang. The runner publishes its bundle when
+created and automatically registers stdout/stderr with the active job.
+Homebrew resources register guest build-log directories before execution.
+New files, rotation, truncation and reconnect do not require manual discovery
+of generated paths.
 
-```sh
-scripts/west-job.sh start --state-dir /absolute/path/to/job \
-  --activity-log "/host/path/guest build.log" -- mise exec -- west test ...
-scripts/west-job.sh follow --state-dir /absolute/path/to/job
-```
-
-Watch a host-visible log directly when live guest progress matters: runner
-`--forward-output` replays captured output after execution, not while it runs.
+Registration is an atomic, immutable `activity-logs.d/*.logs` record under
+`WEST_JOB_STATE_DIR`: NUL-delimited kind/path pairs, with `file` or `directory`
+kinds and absolute host paths. Directory discovery is nonrecursive and bounded;
+stdout text cannot register paths. Explicit repeatable `--activity-log` remains
+available on the low-level `start`/`follow` commands for additional logs.
+Runner `--forward-output` is still post-execution replay, not live streaming.
 
 
 Guarded CTest registrations pass `--forward-output` to the executor. This replays

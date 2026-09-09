@@ -8,7 +8,7 @@ import os
 import shutil
 import stat
 import tempfile
-from dataclasses import asdict, dataclass
+from dataclasses import dataclass
 from pathlib import Path
 
 
@@ -55,6 +55,7 @@ class DeploymentTransaction:
         self.roots = (self.prefix, *(path.resolve() for path in additional_prefixes or []))
         self.backup_root = self.manifest_path.parent / f"{self.manifest_path.name}.backups"
         self.entries: list[DeploymentEntry] = []
+        self._destinations: set[Path] = set()
         self.directory_entries: list[DirectoryEntry] = []
         self.normalize_modes = normalize_modes
         if self.manifest_path.exists():
@@ -69,7 +70,7 @@ class DeploymentTransaction:
         self._require_destination(destination)
         if not source.is_file():
             raise DeploymentTransactionError(f"deploy source is not a regular file: {source}")
-        if any(Path(entry.destination) == destination for entry in self.entries):
+        if destination in self._destinations:
             raise DeploymentTransactionError(f"duplicate deploy destination: {destination}")
         backup = None
         previous_sha256 = None
@@ -93,6 +94,7 @@ class DeploymentTransaction:
             deployed_sha256=sha256_file(destination),
         )
         self.entries.append(entry)
+        self._destinations.add(destination)
         self._write("active")
 
     def commit(self) -> None:
@@ -187,7 +189,8 @@ class DeploymentTransaction:
                         DirectoryEntry(str(current), previous_mode, deployed_mode)
                     )
                 os.chmod(current, deployed_mode)
-        self._write("active")
+        if len(self.directory_entries) != self._written_directory_count:
+            self._write("active")
 
     def _restore_directories(self, entries: list[DirectoryEntry]) -> None:
         for entry in reversed(entries):
@@ -239,8 +242,8 @@ class DeploymentTransaction:
             "state": state,
             "prefix": str(self.prefix),
             "roots": [str(root) for root in self.roots],
-            "entries": [asdict(entry) for entry in self.entries],
-            "directories": [asdict(entry) for entry in self.directory_entries],
+            "entries": [vars(entry) for entry in self.entries],
+            "directories": [vars(entry) for entry in self.directory_entries],
             "normalize_modes": self.normalize_modes,
         }
         descriptor, temporary = tempfile.mkstemp(
@@ -248,8 +251,12 @@ class DeploymentTransaction:
         )
         try:
             with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
-                json.dump(payload, handle, indent=2, sort_keys=True)
+                # These flat records contain only immutable JSON values. Avoid
+                # deep-copying and pretty-printing the entire growing history
+                # at every replacement, but retain each atomic v1 snapshot.
+                handle.write(json.dumps(payload, sort_keys=True))
                 handle.write("\n")
             Path(temporary).replace(self.manifest_path)
+            self._written_directory_count = len(self.directory_entries)
         finally:
             Path(temporary).unlink(missing_ok=True)

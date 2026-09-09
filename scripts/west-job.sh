@@ -17,7 +17,10 @@ inspect directly.
 
 Follow reports the latest phase marker and log-change age for each log. Optional
 activity logs are host paths; start remembers them, while follow adds paths only
-for that observer. Missing logs may appear later. Silence is not a hang verdict.
+for that observer. Children atomically publish NUL-delimited kind/path pairs in
+WEST_JOB_STATE_DIR/activity-logs.d/*.logs (file or directory, absolute host path).
+Directory registrations follow immediate regular files, not recursive trees.
+Missing logs may appear later. Silence is not a hang verdict.
 
 Cancel sends SIGINT to the registered command and waits for owner cleanup.
 WEST_JOB_CANCEL_GRACE_SECONDS defaults to 30; only an unresponsive owner
@@ -373,6 +376,7 @@ start_job() {
 	trap cleanup_registry_reservation EXIT
 	reserve_job_registry_entry
 	mkdir -p "$state_dir"
+	mkdir "$state_dir/activity-logs.d"
 	REGISTRY_STATE_CREATED=1
 	write_command_record "$state_dir/command"
 	if ((${#activity_logs[@]})); then
@@ -520,6 +524,87 @@ class Log:
               f"stage={stage!r} log-change-age={age}", flush=True)
 
 
+class Directory:
+    """Rescan only changed directories, visiting at most 256 entries per tick."""
+    def __init__(self, path):
+        self.path = path
+        self.stamp = None
+        self.entries = None
+
+    def update(self, visit):
+        if self.entries is None:
+            try:
+                info = os.stat(self.path, follow_symlinks=False)
+                stamp = (info.st_dev, info.st_ino, info.st_mtime_ns, info.st_ctime_ns)
+                if not stat.S_ISDIR(info.st_mode) or stamp == self.stamp:
+                    return False
+                self.entries = os.scandir(self.path)
+                self.stamp = stamp
+            except OSError:
+                self.stamp = None
+                return False
+        for _ in range(256):
+            try:
+                entry = next(self.entries)
+            except (StopIteration, OSError):
+                self.entries.close()
+                self.entries = None
+                try:
+                    info = os.stat(self.path, follow_symlinks=False)
+                    return self.stamp != (
+                        info.st_dev, info.st_ino, info.st_mtime_ns, info.st_ctime_ns)
+                except OSError:
+                    self.stamp = None
+                    return False
+            try:
+                if entry.is_file(follow_symlinks=False):
+                    visit(entry)
+            except OSError:
+                pass
+        return True
+
+
+def add_log(path, stream=True):
+    path = os.path.abspath(path)
+    if path not in logs:
+        logs[path] = Log(path, stream=stream)
+    elif stream:
+        logs[path].stream = True
+
+
+def register(entry):
+    if not entry.name.endswith(".logs") or entry.name in registrations:
+        return
+    # Publishers rename complete immutable records into this directory. Neither
+    # command output nor partial temporary files can introduce watched paths.
+    try:
+        with open(entry.path, "rb") as source:
+            data = source.read(65537)
+    except OSError:
+        return
+    registrations.add(entry.name)
+    fields = data.split(b"\0")
+    if len(data) > 65536 or fields[-1] or len(fields) % 2 != 1:
+        return
+    pairs = list(zip(fields[:-1:2], fields[1::2]))
+    if any(kind not in (b"file", b"directory") or not path.startswith(b"/")
+           for kind, path in pairs):
+        return
+    for kind, path in pairs:
+        path = os.fsdecode(path)
+        if kind == b"file":
+            add_log(path)
+        elif path not in directories:
+            directories[path] = Directory(path)
+
+
+def discover():
+    pending = registry.update(register)
+    for directory in directories.values():
+        pending = directory.update(lambda entry: add_log(entry.path)) or pending
+    return pending
+
+
 def read_rc():
     try:
         value = (state / "rc").read_text().strip()
@@ -558,13 +643,17 @@ try:
 except FileNotFoundError:
     pass
 paths.extend(sys.argv[3:])
-logs = [Log(path, stream=(index == 0))
-        for index, path in enumerate(dict.fromkeys(paths))]
+logs = {}
+for index, path in enumerate(dict.fromkeys(paths)):
+    add_log(path, stream=(index == 0))
+registry = Directory(state / "activity-logs.d")
+registrations = set()
+directories = {}
 next_heartbeat = started
 last_stages = None
 while True:
-    backlog = False
-    for log in logs:
+    backlog = discover()
+    for log in logs.values():
         backlog = log.update() or backlog
     rc = read_rc()
     pid = live_pid()
@@ -577,13 +666,13 @@ while True:
             sys.exit(1)
     if rc is not None:
         # The runner may have written final output just before publishing rc.
-        backlog = False
-        for log in logs:
+        backlog = discover() or backlog
+        for log in logs.values():
             backlog = log.update() or backlog
     now = time.monotonic()
-    stages = [(log.available, log.stage) for log in logs]
+    stages = [(log.available, log.stage) for log in logs.values()]
     if now >= next_heartbeat or stages != last_stages:
-        for log in logs:
+        for log in logs.values():
             log.progress(pid or "completed")
         last_stages = stages
         next_heartbeat = now + 10

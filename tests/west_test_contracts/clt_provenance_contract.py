@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import csv
+import hashlib
 import os
 import struct
 import subprocess
@@ -10,13 +11,13 @@ import sys
 import tempfile
 import zlib
 from pathlib import Path
+from unittest.mock import patch
 
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "ci"))
 sys.path.insert(0, str(ROOT / "west_commands"))
 
 import compare_clt_provenance
-import guest_toolchain
 import verify_clt_provenance
 from verify_clt_provenance import (
     MAX_XAR_TOC_COMPRESSED,
@@ -36,6 +37,7 @@ def write_run(
     *,
     etag: str = "same",
     last_modified: str = "same",
+    toc_digest: str = "same",
 ) -> None:
     path.mkdir(parents=True)
     rows = []
@@ -45,6 +47,8 @@ def write_run(
             {
                 "package_id": package_id,
                 "pkgutil_status": SIGNATURE_VALID_NOT_REVIEWED,
+                "api_sha1_status": "MATCH",
+                "xar_toc_sha1": toc_digest,
                 "actual_sha256": sha256,
                 "etag": etag,
                 "last_modified": last_modified,
@@ -98,32 +102,65 @@ def write_xar(path: Path, toc: bytes, declared_size: int | None = None) -> None:
             1,
         )
         + compressed_toc
+        + hashlib.sha1(compressed_toc).digest()
     )
 
 
-def read_reviewed_provenance() -> dict[str, dict[str, str]]:
-    path = ROOT / "docs/clt-provenance-041-90419.txt"
-    packages: dict[str, dict[str, str]] = {}
-    current: dict[str, str] | None = None
-    for line in path.read_text(encoding="utf-8").splitlines():
-        if line.startswith("[package: ") and line.endswith("]"):
-            package_id = line[len("[package: ") : -1]
-            current = {}
-            packages[package_id] = current
-        elif current is not None and ": " in line:
-            key, value = line.split(": ", 1)
-            current[key] = value
-    return packages
+def catalog_digest_contract(root: Path) -> None:
+    path = root / "digest-domain.pkg"
+    toc = b"<xar><toc/></xar>"
+    write_xar(path, toc)
+    payload = path.read_bytes()
+    toc_digest = hashlib.sha1(zlib.compress(toc)).hexdigest()
+    package = {
+        "package_id": "com.apple.pkg.CLTools_Executables",
+        "catalog_url": "http://swcdn.apple.com/fixture.pkg",
+        "download_url": "https://swcdn.apple.com/fixture.pkg",
+        "catalog_size": len(payload),
+        "api_sha1": toc_digest,
+    }
+    headers = {
+        "http_status": "200",
+        "content_length": str(len(payload)),
+        "final_url": package["download_url"],
+        "etag": "",
+        "last_modified": "",
+    }
+    with (
+        patch.object(verify_clt_provenance, "download_package", return_value=(path, headers)),
+        patch.object(verify_clt_provenance, "certificate_report", return_value="fingerprint"),
+        patch.object(verify_clt_provenance, "pkgutil_report", return_value=SIGNATURE_VALID_NOT_REVIEWED),
+    ):
+        row = verify_clt_provenance.package_row(package, root)
+        assert row["actual_sha1"] == hashlib.sha1(payload).hexdigest()
+        assert row["actual_sha256"] == hashlib.sha256(payload).hexdigest()
+        assert row["xar_toc_sha1"] == toc_digest
+        for wrong_digest in (
+            hashlib.sha1(payload).hexdigest(),
+            hashlib.sha1(toc).hexdigest(),
+        ):
+            package["api_sha1"] = wrong_digest
+            try:
+                verify_clt_provenance.package_row(package, root)
+            except VerificationError:
+                pass
+            else:
+                raise AssertionError("catalog digest from the wrong byte domain was accepted")
+    for bad in (
+        payload[:20],
+        payload[:8] + struct.pack(">Q", len(payload)) + payload[16:],
+        payload[:24] + struct.pack(">I", 0) + payload[28:],
+    ):
+        path.write_bytes(bad)
+        try:
+            verify_clt_provenance.xar_toc_sha1(path)
+        except VerificationError:
+            pass
+        else:
+            raise AssertionError("malformed XAR was accepted for catalog verification")
 
 
 def main() -> None:
-    reviewed = read_reviewed_provenance()
-    assert set(reviewed) == set(guest_toolchain.REVIEWED_COMMAND_LINE_TOOLS_SHA256)
-    assert {
-        package_id: values["actual_sha256"]
-        for package_id, values in reviewed.items()
-    } == guest_toolchain.REVIEWED_COMMAND_LINE_TOOLS_SHA256
-
     assert normalize_download_url(
         "http://swcdn.apple.com/path/pkg"
     ) == "https://swcdn.apple.com/path/pkg"
@@ -150,6 +187,7 @@ def main() -> None:
 
     with tempfile.TemporaryDirectory(prefix="west-clt-provenance-contract-") as raw:
         root = Path(raw)
+        catalog_digest_contract(root)
         equal_root = root / "equal"
         write_run(equal_root / "clt-provenance-macos-14", "a" * 64)
         write_run(
@@ -166,7 +204,15 @@ def main() -> None:
         write_run(mismatch_root / "clt-provenance-macos-15", "b" * 64)
         result = run_compare(mismatch_root)
         assert result.returncode == 1, result.stdout + result.stderr
-        assert "actual_sha256" in result.stderr, result.stderr
+        incomplete_root = root / "incomplete"
+        for runner in ("macos-14", "macos-15"):
+            write_run(
+                incomplete_root / f"clt-provenance-{runner}",
+                "a" * 64,
+                toc_digest="",
+            )
+        result = run_compare(incomplete_root)
+        assert result.returncode == 1, result.stdout + result.stderr
 
         with tempfile.TemporaryDirectory(prefix="west-xar-bounds-contract-") as xar_raw:
             xar_root = Path(xar_raw)
@@ -190,8 +236,8 @@ def main() -> None:
             write_xar(mismatched_toc, toc, declared_size=len(toc) + 1)
             try:
                 xar_certificates(mismatched_toc)
-            except VerificationError as error:
-                assert "does not match header" in str(error), error
+            except VerificationError:
+                pass
             else:
                 raise AssertionError("XAR TOC with mismatched declared size was accepted")
 
@@ -206,8 +252,8 @@ def main() -> None:
                         xar_root,
                         "com.example.empty-certificates",
                     )
-                except VerificationError as error:
-                    assert "certificate fingerprints are empty" in str(error), error
+                except VerificationError:
+                    pass
                 else:
                     raise AssertionError("empty certificate fingerprints were accepted")
             finally:

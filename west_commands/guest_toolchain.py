@@ -41,10 +41,10 @@ COMMAND_LINE_TOOLS_PACKAGE_IDS = (
     "com.apple.pkg.CLTools_SDK_macOS1013",
     "com.apple.pkg.CLTools_Executables",
 )
-# Reviewed payload digests for the exact CLT package set used by this fork.
-# The API SHA-1 remains useful for URL/cache provenance, but it is not an
-# acceptance signal because the historical Apple endpoint has republished
-# bytes without updating that field.
+# Fixed full-payload pins for the exact CLT package set used by this fork;
+# these pins are not publisher authentication. The Darling catalog's SHA-1
+# identifies the compressed XAR TOC, not the full .pkg bytes (all five packages
+# in product 041-90419 match). Require both digests, covering different bytes.
 REVIEWED_COMMAND_LINE_TOOLS_SHA256 = {
     "com.apple.pkg.CLTools_SDK_OSX1012":
         "b1257b424bc743bfd17348f93bb0a1823a1455e3a3982db2176cc51a27180285",
@@ -106,7 +106,7 @@ class CommandLineToolsPackage:
     package_id: str
     url: str
     size: int
-    sha1: str
+    sha1: str  # Catalog digest of the compressed XAR TOC, not the full payload.
 
     @property
     def cache_name(self) -> str:
@@ -189,14 +189,6 @@ def _read_manifest(*, opener: Callable[..., object] = urllib.request.urlopen) ->
         ) from error
 
 
-def _sha1(path: Path) -> str:
-    digest = hashlib.sha1()
-    with path.open("rb") as stream:
-        for chunk in iter(lambda: stream.read(1024 * 1024), b""):
-            digest.update(chunk)
-    return digest.hexdigest()
-
-
 def _sha256(path: Path) -> str:
     digest = hashlib.sha256()
     with path.open("rb") as stream:
@@ -206,36 +198,67 @@ def _sha256(path: Path) -> str:
 
 
 def _validate_xar(path: Path, package: CommandLineToolsPackage) -> str:
-    """Validate the archive envelope before handing it to guest installer."""
+    """Validate the envelope and hash the compressed TOC named by the catalog."""
 
     try:
         size = path.stat().st_size
         with path.open("rb") as stream:
             header = stream.read(28)
+            if size != package.size:
+                raise GuestToolchainError(
+                    f"downloaded {package.package_id} has size {size}, expected {package.size}",
+                    kind="download",
+                )
+            if len(header) != 28 or header[:4] != b"xar!":
+                raise GuestToolchainError(
+                    f"downloaded {package.package_id} is not a XAR package",
+                    kind="download",
+                )
+            _, header_size, version, toc_compressed, toc_uncompressed, checksum = (
+                struct.unpack(">4sHHQQI", header)
+            )
+            if (
+                version != 1
+                or header_size < 28
+                or toc_compressed == 0
+                or toc_uncompressed == 0
+                or checksum != 1
+                or header_size + toc_compressed + 20 > size
+            ):
+                raise GuestToolchainError(
+                    f"downloaded {package.package_id} has an invalid XAR header",
+                    kind="download",
+                )
+            # XAR hashes the compressed bytes immediately following its header.
+            # Stream them without allocating/decompressing an untrusted TOC.
+            digest = hashlib.sha1()
+            stream.seek(header_size)
+            remaining = toc_compressed
+            while remaining:
+                chunk = stream.read(min(remaining, 1024 * 1024))
+                if not chunk:
+                    raise GuestToolchainError(
+                        f"downloaded {package.package_id} has a truncated XAR TOC",
+                        kind="download",
+                    )
+                digest.update(chunk)
+                remaining -= len(chunk)
+            return digest.hexdigest()
     except OSError as error:
         raise GuestToolchainError(
-            f"cannot inspect downloaded {package.package_id}: {error}"
+            f"cannot inspect downloaded {package.package_id}: {error}",
+            kind="download",
         ) from error
-    if size != package.size:
-        raise GuestToolchainError(
-            f"downloaded {package.package_id} has size {size}, expected {package.size}"
-        )
-    if len(header) != 28 or header[:4] != b"xar!":
-        raise GuestToolchainError(
-            f"downloaded {package.package_id} is not a XAR package"
-        )
-    _, header_size, version, toc_compressed, _, _ = struct.unpack(
-        ">4sHHQQI", header
-    )
-    if version != 1 or header_size < 28 or header_size + toc_compressed > size:
-        raise GuestToolchainError(
-            f"downloaded {package.package_id} has an invalid XAR header"
-        )
-    return _sha1(path)
 
 
 def _verify_package(path: Path, package: CommandLineToolsPackage, log: Callable[[str], None]) -> None:
     actual_sha1 = _validate_xar(path, package)
+    if actual_sha1 != package.sha1:
+        raise GuestToolchainError(
+            f"downloaded {package.package_id} has compressed XAR TOC SHA-1 "
+            f"{actual_sha1}, expected catalog digest {package.sha1}",
+            kind="download",
+        )
     actual_sha256 = _sha256(path)
     expected_sha256 = REVIEWED_COMMAND_LINE_TOOLS_SHA256[package.package_id]
     if actual_sha256 != expected_sha256:
@@ -243,15 +266,6 @@ def _verify_package(path: Path, package: CommandLineToolsPackage, log: Callable[
             f"downloaded {package.package_id} has unreviewed SHA-256 "
             f"{actual_sha256}, expected {expected_sha256}",
             kind="download",
-        )
-    if actual_sha1 != package.sha1:
-        # Apple has republished these historical package URLs without updating
-        # Darling's distribution API digest. Keep provenance strict (HTTPS,
-        # fixed size, XAR envelope) and make the stale digest visible instead
-        # of rejecting the official package or accepting arbitrary bytes.
-        log(
-            f"guest toolchain: API SHA-1 mismatch for {package.package_id}: "
-            f"declared {package.sha1}, downloaded {actual_sha1}"
         )
 
 

@@ -12,6 +12,7 @@ import shutil
 import time
 from pathlib import Path
 
+from doctor import DEFAULT_PROBLEM_LIMIT, DEFAULT_ROW_CHARACTER_LIMIT
 from guest_toolchain import (
     COMMAND_LINE_TOOLS_RESOURCE,
     GuestToolchainError,
@@ -136,6 +137,92 @@ class RuntimeProviderFailure(RuntimeError):
 
 
 class BootstrapRuntimeProfileMixin:
+    def _bootstrap_doctor(self, command: list[str], *, phase: str) -> None:
+        doctor = run_bounded(
+            command,
+            cwd=Path(self.topdir),
+            env=None,
+            timeout_seconds=60,
+            capture_output=True,
+            text=False,
+        )
+        if not doctor.timed_out and doctor.returncode == 0:
+            return
+
+        try:
+            report = json.loads(doctor.stdout)
+        except (ValueError, TypeError):
+            report = None
+        problems = [
+            row
+            for row in (report.get("results", []) if isinstance(report, dict) else [])
+            if isinstance(row, dict)
+            and row.get("state") in {"problem", "operational_error"}
+        ]
+        summary = (
+            f"prefix bootstrap {phase} timed out after 60s"
+            if doctor.timed_out
+            else f"prefix bootstrap {phase} failed with rc {doctor.returncode}"
+        )
+        if problems:
+            summary += ": " + "; ".join(
+                f"{row.get('section', 'doctor')}: {row.get('message', '')}"[
+                    :DEFAULT_ROW_CHARACTER_LIMIT
+                ]
+                for row in problems[:DEFAULT_PROBLEM_LIMIT]
+            )
+            if len(problems) > DEFAULT_PROBLEM_LIMIT:
+                summary += f"; {len(problems) - DEFAULT_PROBLEM_LIMIT} further problems"
+        else:
+            # Launch failures and interrupted JSON still need a useful diagnosis.
+            output = process_output_text(doctor).strip()
+            if output:
+                summary += f": {output[:1000]}"
+
+        evidence = getattr(self, "_active_runtime_evidence", None)
+        if evidence is not None:
+            diagnostics = evidence.directory / "diagnostics"
+            diagnostics.mkdir(parents=True, exist_ok=True)
+            stem = phase.replace(" ", "-")
+            streams = {}
+            for name in ("stdout", "stderr"):
+                path = diagnostics / f"bootstrap-{stem}.{name}.log"
+                value = getattr(doctor, name)
+                path.write_bytes(value if isinstance(value, bytes) else value.encode())
+                streams[name] = str(path.relative_to(evidence.directory))
+            artifact = diagnostics / f"bootstrap-{stem}.json"
+            artifact.write_text(
+                json.dumps(
+                    {
+                        "schema": 1,
+                        "phase": phase,
+                        "command": command,
+                        "returncode": doctor.returncode,
+                        "timed-out": doctor.timed_out,
+                        "streams": streams,
+                        "problems": problems,
+                        "doctor": report,
+                    },
+                    indent=2,
+                    sort_keys=True,
+                )
+                + "\n"
+            )
+            # The enclosing evidence context relocates its archive after rollback.
+            # Keep paths relative so both the manifest and fatal summary survive it.
+            summary += (
+                f"; doctor evidence: {artifact.relative_to(evidence.directory)} "
+                "in the retained runtime evidence archive"
+            )
+            evidence.record_failure_detail(
+                phase=phase,
+                summary=summary,
+                returncode=doctor.returncode,
+                command=command,
+                artifacts=[artifact],
+            )
+        self.die(summary)
+
     def _bootstrap_runtime_profile(
         self, profile_name: str, *, executable: str | None = None
     ) -> None:
@@ -157,6 +244,27 @@ class BootstrapRuntimeProfileMixin:
                 f"runtime profile {profile_name} is not a bootstrap-capable provider; "
                 "bootstrap only accepts minimal or guest-toolchain provisioning profiles"
             )
+        evidence_store = self._runtime_evidence_store()
+        preflight_evidence = evidence_store.start(
+            f"Prefix bootstrap workspace preflight {profile_name}",
+            {"provider": profile_name, "source-profile": definition["source-profile"]},
+        )
+        previous_evidence = getattr(self, "_active_runtime_evidence", None)
+        self._active_runtime_evidence = preflight_evidence
+        preflight_failure = None
+        try:
+            self._bootstrap_doctor(
+                ["west", "darling-doctor", "--scope", "workspace", "--json"],
+                phase="workspace doctor",
+            )
+        except BaseException as error:
+            preflight_failure = error
+            raise
+        finally:
+            self._active_runtime_evidence = previous_evidence
+            retained = evidence_store.finish(preflight_evidence, preflight_failure)
+            if retained is not None:
+                self.err(f"preserved failed Prefix bootstrap runtime evidence: {retained}")
         smoke_timeout_seconds = (
             getattr(self, "_bootstrap_timeout_seconds", None)
             or definition["bootstrap-smoke-timeout-seconds"]
@@ -337,29 +445,21 @@ class BootstrapRuntimeProfileMixin:
                     f"({time.monotonic() - guest_started:.1f}s)"
                 )
                 doctor_started = time.monotonic()
-                doctor = run_bounded(
+                self._bootstrap_doctor(
                     [
                         "west",
                         "darling-doctor",
+                        "--scope",
+                        "runtime",
                         "--prefix",
                         str(deployment.prefix),
                         "--build-dir",
                         str(deployment.build_root),
                         "--no-baseline-file",
+                        "--json",
                     ],
-                    cwd=Path(self.topdir),
-                    env=None,
-                    timeout_seconds=60,
-                    capture_output=True,
+                    phase="doctor",
                 )
-                doctor_output = process_output_text(doctor)
-                if doctor.timed_out:
-                    self.die("prefix bootstrap doctor timed out after 60s")
-                if doctor.returncode != 0:
-                    self.die(
-                        "prefix bootstrap doctor failed "
-                        f"with rc {doctor.returncode}: {doctor_output[-1000:]}"
-                    )
                 self.inf(
                     "prefix bootstrap phase complete: doctor "
                     f"({time.monotonic() - doctor_started:.1f}s)"

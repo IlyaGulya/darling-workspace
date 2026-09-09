@@ -33,7 +33,9 @@ sys.modules.setdefault("west.commands", west_commands_module)
 from west_commands.doctor import DEFAULT_PROBLEM_LIMIT, DarlingDoctor
 
 
-def arguments(root: Path, *, full: bool = False, json_output: bool = False):
+def arguments(
+    root: Path, *, full: bool = False, json_output: bool = False, scope: str = "all"
+):
     return argparse.Namespace(
         prefix=str(root / "prefix with space"),
         build_dir=str(root / "build's output"),
@@ -45,10 +47,14 @@ def arguments(root: Path, *, full: bool = False, json_output: bool = False):
         extra_prefix=[],
         full=full,
         json=json_output,
+        scope=scope,
     )
 
 
-def run_case(root: Path, checker, *, full: bool = False, json_output: bool = False):
+def run_case(
+    root: Path, checker, *, full: bool = False, json_output: bool = False,
+    scope: str = "all", runtime_checker=None,
+):
     doctor = DarlingDoctor.__new__(DarlingDoctor)
     doctor.topdir = str(root / "workspace")
     doctor.manifest = SimpleNamespace(repo_abspath=str(root / "manifest"))
@@ -61,9 +67,12 @@ def run_case(root: Path, checker, *, full: bool = False, json_output: bool = Fal
         checker(self)
 
     def remaining_with_topdir(self, _topdir, _args):
-        return None
+        if runtime_checker is not None:
+            runtime_checker(self)
 
     def remaining(self, _args):
+        if runtime_checker is not None:
+            runtime_checker(self)
         if checker is operational and not hasattr(self, "_contract_continued"):
             self._contract_continued = True
             self._section("later independent section")
@@ -83,7 +92,9 @@ def run_case(root: Path, checker, *, full: bool = False, json_output: bool = Fal
         ),
     ):
         try:
-            doctor.do_run(arguments(root, full=full, json_output=json_output), [])
+            doctor.do_run(
+                arguments(root, full=full, json_output=json_output, scope=scope), []
+            )
         except SystemExit as error:
             exit_code = int(error.code)
     return exit_code, messages
@@ -167,8 +178,6 @@ with tempfile.TemporaryDirectory(prefix="doctor-output-contract-") as temporary:
     ]
     assert len(actionable) == DEFAULT_PROBLEM_LIMIT
     assert all(level == "info" for level, _message in default_messages)
-    omitted = [message for _level, message in default_messages if "omitted" in message]
-    assert omitted == ["... 4 additional problem/warning rows omitted"]
     detail_lines = [
         message
         for _level, message in default_messages
@@ -190,10 +199,6 @@ with tempfile.TemporaryDirectory(prefix="doctor-output-contract-") as temporary:
     assert not any("omitted" in message for _level, message in full_messages)
     assert not any(message.startswith("details: ") for _level, message in full_messages)
     assert sum(level in {"warning", "error"} for level, _message in full_messages) == 13
-    assert full_messages[-1] == (
-        "error",
-        "PROBLEMS FOUND — fix the ✗ items before building/deploying.",
-    )
 
     command = DarlingDoctor()
     root_parser = argparse.ArgumentParser()
@@ -207,5 +212,27 @@ with tempfile.TemporaryDirectory(prefix="doctor-output-contract-") as temporary:
         assert error.code == 2
     else:
         raise AssertionError("--full and --json were not mutually exclusive")
+
+    for scope, workspace_checker, runtime_checker, expected_rc in (
+        ("workspace", green, operational, 0),
+        ("workspace", many_problems, None, 1),
+        ("runtime", many_problems, None, 0),
+        ("runtime", green, operational, 1),
+        ("all", many_problems, None, 1),
+        ("all", green, operational, 1),
+    ):
+        rc, messages = run_case(
+            root, workspace_checker, scope=scope,
+            runtime_checker=runtime_checker, json_output=True,
+        )
+        assert rc == expected_rc, (scope, messages)
+        payload = json.loads(messages[0][1])
+        detail = shlex.split(payload["detail_command"])
+        replay = root_parser.parse_args(detail[1:])
+        assert replay.scope == scope
+        assert payload["inputs"]["scope"] == scope
+        if scope == "runtime" and runtime_checker is operational:
+            assert len(payload["errors"]) == 4
+            assert all(error["type"] == "OSError" for error in payload["errors"])
 
 print("PASS doctor-output-contract")

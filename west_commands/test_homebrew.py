@@ -212,6 +212,25 @@ def _template_digest(template: Path) -> str:
     return digest.hexdigest()
 
 
+def _register_build_logs(environment: dict[str, str], work: Path) -> None:
+    state = environment.get("WEST_JOB_STATE_DIR")
+    if not state:
+        return
+    directory = Path(state) / "activity-logs.d"
+    directory.mkdir(exist_ok=True)
+    # Immutable NUL-delimited kind/path pairs; only the atomic .logs rename
+    # makes a record visible. Register future formula logs before guest launch.
+    descriptor, name = tempfile.mkstemp(prefix="homebrew-", suffix=".tmp", dir=directory)
+    temporary = Path(name)
+    try:
+        with os.fdopen(descriptor, "wb") as output:
+            for path in (work / "logs", work / "logs/lz4"):
+                output.write(b"directory\0" + os.fsencode(path.absolute()) + b"\0")
+        temporary.replace(temporary.with_suffix(".logs"))
+    finally:
+        temporary.unlink(missing_ok=True)
+
+
 @contextmanager
 def homebrew_lz4_context(env: dict[str, str] | None) -> Iterator[dict[str, str]]:
     environment = dict(os.environ if env is None else env)
@@ -266,6 +285,7 @@ def homebrew_lz4_context(env: dict[str, str] | None) -> Iterator[dict[str, str]]
     shutil.copyfile(inputs[LZ4.filename], downloads / cache_name)
     for directory in ("home", "logs", "tmp"):
         (work / directory).mkdir()
+    _register_build_logs(environment, work)
     (work / "inputs.json").write_text(json.dumps({
         "brew-commit": BREW_COMMIT,
         "homebrew-core-commit": CORE_COMMIT,

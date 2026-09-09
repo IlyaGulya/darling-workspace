@@ -126,6 +126,23 @@ dirty repository so it can be committed or intentionally discarded first.
 `west dev` is a thin, evidence-producing front end for the existing patch,
 test, doctor, deployment, Beads, and handoff authorities:
 
+From this manifest directory, `bin/dw dev ...` selects the pinned mise/West
+environment without a per-command environment recipe. For runtime diagnostics:
+
+```sh
+bin/dw dev context homebrew --prefix /absolute/path/to/new-prefix
+bin/dw dev run homebrew-prepare
+bin/dw dev run homebrew-preflight
+bin/dw dev run exact-capture
+bin/dw dev run homebrew-source
+```
+
+Contexts are local West settings. Runs select/build the workspace diagnostic
+runner, own a recorded job, and attach live observation automatically.
+`--dry-run` shows the underlying command; `--detach` starts without observing.
+Use the printed `bin/dw dev follow JOB` or `bin/dw dev cancel JOB` commands
+to reconnect or request cleanup. Advanced West commands remain available:
+
 ```bash
 west dev profiles
 west dev profiles --kind runtime --json
