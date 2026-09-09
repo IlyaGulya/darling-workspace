@@ -1,0 +1,410 @@
+From 0eaf1ec6e9b375691d850d87d2543ef029e44a32 Mon Sep 17 00:00:00 2001
+From: Ilya Gulya <ilya@gulya.me>
+Date: Wed, 9 Sep 2026 10:44:00 +0000
+Subject: [PATCH] Resolve exec completion before replacement checkin
+
+---
+ CMakeLists.txt                                |   9 +
+ .../darlingserver/exec-completion.hpp         |  63 +++++++
+ internal-include/darlingserver/process.hpp    |   6 +-
+ src/call.cpp                                  |  26 +--
+ src/process.cpp                               |  30 +++-
+ tests/exec_completion_test.cpp                | 165 ++++++++++++++++++
+ 6 files changed, 274 insertions(+), 25 deletions(-)
+ create mode 100644 internal-include/darlingserver/exec-completion.hpp
+ create mode 100644 tests/exec_completion_test.cpp
+
+diff --git a/CMakeLists.txt b/CMakeLists.txt
+index 84543d88a21835269d4ee69ba563097d8bfc9ebe..7711bcb73d7a3de22599f28485fdeb33262a8a7e 100644
+--- a/CMakeLists.txt
++++ b/CMakeLists.txt
+@@ -153,6 +153,15 @@ target_include_directories(dserver_runtime_mode_tests PRIVATE
+ 	include
+ )
+ 
++add_executable(dserver_exec_completion_tests
++	tests/exec_completion_test.cpp
++	src/utility.cpp
++)
++target_compile_options(dserver_exec_completion_tests PRIVATE
++	-std=c++17
++)
++add_test(NAME dserver_exec_completion COMMAND dserver_exec_completion_tests)
++
+ add_dependencies(darlingserver
+ 	generate_dserver_rpc_wrappers
+ 	rtsig_h
+diff --git a/internal-include/darlingserver/exec-completion.hpp b/internal-include/darlingserver/exec-completion.hpp
+new file mode 100644
+index 0000000000000000000000000000000000000000..691af0b805223a722a320b341673d3484755d39e
+--- /dev/null
++++ b/internal-include/darlingserver/exec-completion.hpp
+@@ -0,0 +1,63 @@
++#ifndef _DARLINGSERVER_EXEC_COMPLETION_HPP_
++#define _DARLINGSERVER_EXEC_COMPLETION_HPP_
++
++#include <cerrno>
++#include <memory>
++#include <system_error>
++#include <utility>
++#include <unistd.h>
++
++#include <darlingserver/utility.hpp>
++
++namespace DarlingServer {
++	// Serialized by Process::_rwlock. The pipe, not delivery of its epoll
++	// notification, determines whether exec completed before a new Checkin.
++	class ExecCompletion {
++	public:
++		enum class Result {
++			None,
++			Failed,
++			Darling,
++			Native,
++		};
++
++		void begin(std::shared_ptr<FD> listener, bool executingMachO) {
++			_listener = std::move(listener);
++			_executingMachO = executingMachO;
++		}
++
++		Result poll() {
++			if (!_listener) {
++				return Result::None;
++			}
++
++			char failure;
++			ssize_t count;
++			do {
++				count = read(_listener->fd(), &failure, sizeof(failure));
++			} while (count < 0 && errno == EINTR);
++			if (count < 0) {
++				if (errno == EAGAIN || errno == EWOULDBLOCK) {
++					return Result::None;
++				}
++				throw std::system_error(errno, std::generic_category(), "Failed to read from exec listener pipe");
++			}
++
++			auto result = count != 0 ? Result::Failed : (_executingMachO ? Result::Darling : Result::Native);
++			_listener.reset();
++			return result;
++		}
++
++		Result poll(const std::shared_ptr<FD>& listener) {
++			// A Checkin may already have consumed this completion, or another
++			// exec attempt may have started before an old monitor was serviced.
++			return listener == _listener ? poll() : Result::None;
++		}
++
++	private:
++		std::shared_ptr<FD> _listener;
++		bool _executingMachO = false;
++	};
++}
++
++#endif
+diff --git a/internal-include/darlingserver/process.hpp b/internal-include/darlingserver/process.hpp
+index aea5aa26995adae19ae6d7833e8a63345d31bef2..8caa43d5a5048bbc4e38a90decd0597de727c0d9 100644
+--- a/internal-include/darlingserver/process.hpp
++++ b/internal-include/darlingserver/process.hpp
+@@ -29,6 +29,7 @@
+ #include <unordered_set>
+ 
+ #include <darlingserver/fork-checkin.hpp>
++#include <darlingserver/exec-completion.hpp>
+ #include <darlingserver/duct-tape.h>
+ #include <darlingserver/utility.hpp>
+ #include <darlingserver/kqchan.hpp>
+@@ -97,6 +98,7 @@ namespace DarlingServer {
+ 		std::weak_ptr<Process> _parentProcess;
+ 		bool _startSuspended = false;
+ 		bool _pendingReplacement = false;
++		ExecCompletion _execCompletion;
+ 		std::unordered_map<uintptr_t, std::shared_ptr<Kqchan>> _kqchannels;
+ 		std::unordered_map<uintptr_t, std::weak_ptr<Kqchan::Process>> _listeningKqchannels;
+ 		dtape_semaphore_t* _dtapeForkWaitSemaphore;
+@@ -134,6 +136,7 @@ namespace DarlingServer {
+ 		void _dispose();
+ 
+ 		void _setEternalID(EternalID eid);
++		void _setPendingReplacement(); // requires _rwlock
+ 
+ 	public:
+ 		using ID = pid_t;
+@@ -174,7 +177,8 @@ namespace DarlingServer {
+ 		bool writeMemory(uintptr_t remoteAddress, const void* localBuffer, size_t length, int* errorCode = nullptr) const;
+ 
+ 		void notifyCheckin(Architecture architecture);
+-		void setPendingReplacement();
++		void beginExec(std::shared_ptr<FD> listener, bool executingMachO);
++		void notifyExecCompletion(const std::shared_ptr<FD>& listener);
+ 
+ 		void registerKqchan(std::shared_ptr<Kqchan> kqchan);
+ 		void unregisterKqchan(std::shared_ptr<Kqchan> kqchan);
+diff --git a/src/call.cpp b/src/call.cpp
+index 0c7a80380d4f7c8841b392262f20e8717f09b5bd..9101d117b1c27f4934216240e6d92045c107a4a4 100644
+--- a/src/call.cpp
++++ b/src/call.cpp
+@@ -467,10 +467,10 @@ void DarlingServer::Call::Checkout::processCall() {
+ 						auto fd = std::make_shared<FD>(_body.exec_listener_pipe);
+ 						_body.exec_listener_pipe = -1; // the FD instance now owns the descriptor
+ 
+-						auto replacingWithDarlingProcess = _body.executing_macho;
++						process->beginExec(fd, _body.executing_macho);
+ 
+ 						std::weak_ptr<Process> weakProcess = process;
+-						Server::sharedInstance().addMonitor(std::make_shared<Monitor>(fd, Monitor::Event::HangUp, false, true, [fd, weakProcess, replacingWithDarlingProcess](std::shared_ptr<Monitor> monitor, Monitor::Event events) {
++						Server::sharedInstance().addMonitor(std::make_shared<Monitor>(fd, Monitor::Event::HangUp, false, true, [fd, weakProcess](std::shared_ptr<Monitor> monitor, Monitor::Event events) {
+ 							Server::sharedInstance().removeMonitor(monitor);
+ 
+ 							auto process = weakProcess.lock();
+@@ -480,27 +480,7 @@ void DarlingServer::Call::Checkout::processCall() {
+ 								return;
+ 							}
+ 
+-							char tmp;
+-							int result = read(fd->fd(), &tmp, sizeof(tmp));
+-
+-							if (result < 0) {
+-								// we shouldn't even get EAGAIN
+-								throw std::system_error(errno, std::generic_category(), "Failed to read from exec listener pipe");
+-							}
+-
+-							if (result == 0) {
+-								// the execve succeeded
+-								if (replacingWithDarlingProcess) {
+-									process->setPendingReplacement();
+-								} else {
+-									// the Darling process was replaced with a non-Darling process
+-									// treat it like death
+-									process->notifyDead();
+-								}
+-							} else {
+-								// the execve failed
+-								// do nothing in this case
+-							}
++							process->notifyExecCompletion(fd);
+ 						}));
+ 					}
+ 				}
+diff --git a/src/process.cpp b/src/process.cpp
+index 924c84dded605ba0699f155b0db7d55868c093ea..95da197ed06c364057c992606e84e2b426fb2042 100644
+--- a/src/process.cpp
++++ b/src/process.cpp
+@@ -289,6 +289,18 @@ bool DarlingServer::Process::writeMemory(uintptr_t remoteAddress, const void* lo
+ void DarlingServer::Process::notifyCheckin(Architecture architecture) {
+ 	std::unique_lock lock(_rwlock);
+ 
++	// The exec pipe can reach EOF before its monitor callback is dispatched.
++	// Resolve it before this Checkin decides whether to replace the old task;
++	// otherwise a later pthread Checkin can consume the delayed notification.
++	auto completion = _execCompletion.poll();
++	if (completion == ExecCompletion::Result::Darling) {
++		_setPendingReplacement();
++	} else if (completion == ExecCompletion::Result::Native) {
++		lock.unlock();
++		notifyDead();
++		return;
++	}
++
+ 	bool didExec = _pendingReplacement;
+ 
+ 	if (didExec) {
+@@ -470,9 +482,25 @@ void DarlingServer::Process::notifyCheckin(Architecture architecture) {
+ 	}
+ };
+ 
+-void DarlingServer::Process::setPendingReplacement() {
++void DarlingServer::Process::beginExec(std::shared_ptr<FD> listener, bool executingMachO) {
++	std::unique_lock lock(_rwlock);
++	_execCompletion.begin(std::move(listener), executingMachO);
++};
++
++void DarlingServer::Process::notifyExecCompletion(const std::shared_ptr<FD>& listener) {
+ 	std::unique_lock lock(_rwlock);
++	auto completion = _execCompletion.poll(listener);
++	if (completion == ExecCompletion::Result::Darling) {
++		_setPendingReplacement();
++	}
++	lock.unlock();
++
++	if (completion == ExecCompletion::Result::Native) {
++		notifyDead();
++	}
++};
+ 
++void DarlingServer::Process::_setPendingReplacement() {
+ 	processLog.info() << "Process " << id() << " (" << nsid() << ") is now pending replacement" << processLog.endLog;
+ 	TestDiagnostics::traceLine(
+ 		"process.pending_replacement pid=" + std::to_string(id()) +
+diff --git a/tests/exec_completion_test.cpp b/tests/exec_completion_test.cpp
+new file mode 100644
+index 0000000000000000000000000000000000000000..1ac92e2a5f523bf2670824a63f0a9ba7dc9484f5
+--- /dev/null
++++ b/tests/exec_completion_test.cpp
+@@ -0,0 +1,165 @@
++#include <darlingserver/exec-completion.hpp>
++#include <darlingserver/utility.hpp>
++
++#include <cstdlib>
++#include <fcntl.h>
++#include <iostream>
++#include <memory>
++#include <unistd.h>
++#include <utility>
++
++using namespace DarlingServer;
++using Result = ExecCompletion::Result;
++
++static void require(bool condition, const char* message)
++{
++	if (!condition) {
++		std::cerr << "FAIL " << message << '\n';
++		std::exit(1);
++	}
++}
++
++struct ExecPipe {
++	std::shared_ptr<FD> listener;
++	std::unique_ptr<FD> writer;
++
++	ExecPipe()
++	{
++		int descriptors[2];
++		require(pipe2(descriptors, O_NONBLOCK | O_CLOEXEC) == 0,
++			"create nonblocking exec pipe");
++		listener = std::make_shared<FD>(descriptors[0]);
++		writer = std::make_unique<FD>(descriptors[1]);
++	}
++};
++
++static void checkinBeforeMonitor()
++{
++	ExecCompletion completion;
++	ExecPipe pipe;
++	completion.begin(pipe.listener, true);
++	pipe.writer.reset();
++
++	// Model only the caller's pending replacement and the thread consuming it.
++	// Calls are serialized, as they are under Process::_rwlock.
++	bool replacementPending = false;
++	int retaskedThread = 0;
++	auto publishCompletion = [&](Result result) {
++		if (result == Result::Darling) {
++			replacementPending = true;
++		}
++	};
++	auto checkin = [&](int threadID) {
++		publishCompletion(completion.poll());
++		if (std::exchange(replacementPending, false)) {
++			retaskedThread = threadID;
++		}
++	};
++
++	checkin(101);
++	require(retaskedThread == 101,
++		"exec thread Checkin must consume completion before the monitor runs");
++	publishCompletion(completion.poll(pipe.listener));
++	checkin(202);
++	require(retaskedThread == 101,
++		"delayed monitor must not publish another replacement for a later thread");
++}
++
++static void monitorBeforeCheckin()
++{
++	ExecCompletion completion;
++	ExecPipe pipe;
++	completion.begin(pipe.listener, true);
++	pipe.writer.reset();
++
++	require(completion.poll(pipe.listener) == Result::Darling,
++		"monitor must report successful Darling exec");
++	require(completion.poll() == Result::None,
++		"Checkin must not rediscover completion already consumed by monitor");
++	require(completion.poll(pipe.listener) == Result::None,
++		"repeated monitor callback must not report completion twice");
++}
++
++static void failureBeforeEOF()
++{
++	ExecCompletion completion;
++	ExecPipe pipe;
++	completion.begin(pipe.listener, true);
++	const char failed = 1;
++	require(write(pipe.writer->fd(), &failed, sizeof(failed)) == sizeof(failed),
++		"write exec failure byte");
++
++	require(completion.poll() == Result::Failed,
++		"failure byte must report failed exec without waiting for EOF");
++	pipe.writer.reset();
++	require(completion.poll(pipe.listener) == Result::None,
++		"EOF after failure must not publish successful exec from monitor");
++	require(completion.poll() == Result::None,
++		"EOF after failure must not publish a replacement at Checkin");
++}
++
++static void oldImageBeforeCompletion()
++{
++	ExecCompletion completion;
++	ExecPipe pipe;
++	completion.begin(pipe.listener, true);
++
++	require(completion.poll() == Result::None,
++		"old-image Checkin while writer is open must not consume exec attempt");
++	require(completion.poll(pipe.listener) == Result::None,
++		"monitor without data or EOF must leave exec attempt pending");
++	pipe.writer.reset();
++	require(completion.poll() == Result::Darling,
++		"actual EOF must remain observable after old-image polling");
++	require(completion.poll(pipe.listener) == Result::None,
++		"monitor after actual completion must not duplicate replacement");
++}
++
++static void staleMonitorDuringNextExec()
++{
++	ExecCompletion completion;
++	ExecPipe previous;
++	completion.begin(previous.listener, true);
++	previous.writer.reset();
++	require(completion.poll() == Result::Darling,
++		"first exec must complete before the next attempt");
++
++	ExecPipe next;
++	completion.begin(next.listener, false);
++	require(completion.poll(previous.listener) == Result::None,
++		"stale callback must not complete the next attempt while writer is open");
++	require(completion.poll() == Result::None,
++		"next attempt must remain pending after stale callback");
++	next.writer.reset();
++	require(completion.poll(previous.listener) == Result::None,
++		"stale callback must not consume next attempt's ready EOF");
++	require(completion.poll(next.listener) == Result::Native,
++		"next monitor must retain Native completion after stale callback");
++	require(completion.poll() == Result::None,
++		"Native completion must also be consumed exactly once");
++}
++
++static void nativeCheckinBeforeMonitor()
++{
++	ExecCompletion completion;
++	ExecPipe pipe;
++	completion.begin(pipe.listener, false);
++	pipe.writer.reset();
++
++	require(completion.poll() == Result::Native,
++		"Checkin must distinguish Native exec from a Darling replacement");
++	require(completion.poll(pipe.listener) == Result::None,
++		"delayed monitor must not duplicate Native completion");
++}
++
++int main()
++{
++	checkinBeforeMonitor();
++	monitorBeforeCheckin();
++	failureBeforeEOF();
++	oldImageBeforeCompletion();
++	staleMonitorDuringNextExec();
++	nativeCheckinBeforeMonitor();
++	std::cout << "DSERVER_EXEC_COMPLETION_CONTRACT_OK\n";
++	return 0;
++}

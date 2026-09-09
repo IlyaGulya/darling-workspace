@@ -19,9 +19,9 @@ prerequisites:
 frozen_manifest: *id001
 mapping:
   path: lock-first-series-wget-residual-v1.yml
-  sha256: 0da70ec0d516c65c499d860bd6a1ceb89c485a065c16b0a45d4250c33a6112f2
+  sha256: 1afe67c6736d79c6a3e06ead6e3f2f8132f4fc9d47238bcd35c6d491cdb235a5
   batch_id: wget-residual-local-immutable-batch-1
-  expected_count: 16
+  expected_count: 17
 modules:
 - module: darling
   starting:
@@ -84,8 +84,11 @@ modules:
   - patch: darlingserver/rootless-server-owned-socket-address.patch
     lock: darlingserver-rootless-server-owned-socket-address-wget-v1.yml
     expected_applied_tree: edc3dcc5144f7d0818e46f7d500cf77160085fa0
-  final_tree: edc3dcc5144f7d0818e46f7d500cf77160085fa0
-  integration_final_tree: edc3dcc5144f7d0818e46f7d500cf77160085fa0
+  - patch: darlingserver/exec-checkin-completion-order.patch
+    lock: darlingserver-exec-checkin-completion-order-wget-v1.yml
+    expected_applied_tree: e450e0f25504d2129e3e00356536ad05f21749fa
+  final_tree: e450e0f25504d2129e3e00356536ad05f21749fa
+  integration_final_tree: e450e0f25504d2129e3e00356536ad05f21749fa
 - module: darling/src/external/libkqueue
   starting:
     tree: e4502ad3e6b3953d756c86ea40d2697a97168933
