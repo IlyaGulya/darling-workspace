@@ -348,3 +348,49 @@ patches:
     diag: bare
     repo: darling-workspace
   sha256sum: 9cecf3c9ae1c39d51c313fc4a6fd8b148f2b226597030039930ec476b168d3d8
+- path: libkqueue/close-knote-lifetime.patch
+  module: darling/src/external/libkqueue
+  source-branch: fix/kqueue-close-knote-lifetime
+  source-base: f673c801cbc4011d3ae35301bb8b5073eb41c103
+  source-commit: f78837758ca5d861135e5653ac56a5e35e988981
+  bead: dar-fgjm
+  publication-status: blocked
+  publication-blocker: Stock wget source-install acceptance remains under dar-gwn.7; canonical publication review and explicit publication authorization are still required.
+  tests:
+  - ctest-name: darling/kqueue_close_pipe_eof
+    kind: guest
+    coverage-tier: runtime
+    runs: guest
+    diag: guarded
+    repo: darling-workspace
+    red: true
+    red-proof:
+      mode: guest-runtime-deploy
+      bad-profile: current-minus-patch
+      expect-failure-phase: run
+      expect-output-contains: [KQUEUE_CLOSE_PIPE_EOF_BROKEN]
+      cmake-defines:
+        DARLING_EUNION: true
+      source-modules:
+      - darling
+      - darling/src/external/darlingserver
+      - darling/src/external/xnu
+      - darling/src/external/dyld
+      - darling/src/external/libsystem
+      runtime-artifacts:
+      - module: darling/src/external/libkqueue
+        build-targets: [system]
+        deploy: [usr/lib/libSystem.B.dylib]
+    timeout-seconds: 120
+    requires: [darling-prefix]
+    env-vars:
+      DARLING_ROOTLESS: '1'
+      DARLING_NOOVERLAYFS: '1'
+      DARLING_EUNION: '1'
+    note: One guest/macOS fixture requires pipe EOF after final queue close and retains the parent's readiness watch across child fork teardown.
+  - ctest-name: macos/kqueue_close_pipe_eof
+    coverage-tier: runtime
+    runs: macos
+    diag: bare
+    repo: darling-workspace
+  sha256sum: ba8d171a7b71584cb4b81f49dae0f4539d4f81445f5ebb2ff1dddc192381cbd3

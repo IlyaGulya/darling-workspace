@@ -19,9 +19,9 @@ prerequisites:
 frozen_manifest: *id001
 mapping:
   path: lock-first-series-wget-residual-v1.yml
-  sha256: aee809bbbaca3a201dd11f949a89bd6a58ba5ecd310ef9e64859d87e50ff9226
+  sha256: 12daa2dafa4a8e92f30b2fa914f32d822f519b52d090913dd6cc7cd341dcf4d6
   batch_id: wget-residual-local-immutable-batch-1
-  expected_count: 13
+  expected_count: 14
 modules:
 - module: darling
   starting:
@@ -80,3 +80,12 @@ modules:
     expected_applied_tree: edc3dcc5144f7d0818e46f7d500cf77160085fa0
   final_tree: edc3dcc5144f7d0818e46f7d500cf77160085fa0
   integration_final_tree: edc3dcc5144f7d0818e46f7d500cf77160085fa0
+- module: darling/src/external/libkqueue
+  starting:
+    tree: e4502ad3e6b3953d756c86ea40d2697a97168933
+  series:
+  - patch: libkqueue/close-knote-lifetime.patch
+    lock: darling-libkqueue-close-knote-lifetime-wget-v1.yml
+    expected_applied_tree: e005b27b27eccc535494501c60bb4efe5cd0cc18
+  final_tree: e005b27b27eccc535494501c60bb4efe5cd0cc18
+  integration_final_tree: e005b27b27eccc535494501c60bb4efe5cd0cc18

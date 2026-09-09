@@ -1,7 +1,7 @@
 schema_version: 3
 profile: wget-residual
 batch_id: wget-residual-local-immutable-batch-1
-expected_count: 13
+expected_count: 14
 composition: wget-residual-profile-composition-v1.yml
 series:
 - profile: wget-residual
@@ -56,3 +56,7 @@ series:
   module: darling/src/external/darlingserver
   patch: darlingserver/rootless-server-owned-socket-address.patch
   lock: darlingserver-rootless-server-owned-socket-address-wget-v1.yml
+- profile: wget-residual
+  module: darling/src/external/libkqueue
+  patch: libkqueue/close-knote-lifetime.patch
+  lock: darling-libkqueue-close-knote-lifetime-wget-v1.yml

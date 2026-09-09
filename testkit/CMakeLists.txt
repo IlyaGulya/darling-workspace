@@ -359,6 +359,21 @@ if(EXISTS "${_signal_handler_mask_guest}")
   )
 endif()
 
+set(_kqueue_close_pipe_eof_guest "${_workspace_root}/tests/kqueue_close_pipe_eof_guest.c")
+if(EXISTS "${_kqueue_close_pipe_eof_guest}")
+  add_compat_test(
+    NAME       kqueue_close_pipe_eof
+    SOURCE     "${_kqueue_close_pipe_eof_guest}"
+    ENVS       darling macos
+    BEAD       dar-fgjm
+    SUBMODULES libkqueue
+    RUNTIME_PROFILE kqueue-close-knote-lifetime
+    INSTALL
+    TIMEOUT    30
+    OK_MARKER  "KQUEUE_CLOSE_PIPE_EOF_OK"
+  )
+endif()
+
 set(_darwin_priority_guest "${_workspace_root}/tests/darwin_priority_guest.c")
 if(EXISTS "${_darwin_priority_guest}")
   add_compat_test(
