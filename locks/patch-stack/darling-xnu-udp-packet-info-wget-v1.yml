@@ -5,8 +5,8 @@ mirror:
   url: ../../source-bundles/wget-residual/darling-xnu.bundle
   base_ref: refs/tags/patch-stack/v1/bases/affe1a99fff7df754f80deb1450e4a4a523f2b4d
   base_oid: affe1a99fff7df754f80deb1450e4a4a523f2b4d
-  source_ref: refs/tags/patch-stack/v1/sources/e257b18b2b2922dc5820bcf2a2db0fd21bc2fdd5
-  source_oid: e257b18b2b2922dc5820bcf2a2db0fd21bc2fdd5
-source_commit: e257b18b2b2922dc5820bcf2a2db0fd21bc2fdd5
-ordered_commits: [e257b18b2b2922dc5820bcf2a2db0fd21bc2fdd5]
-expected_tree: 80bb5184d7f2a49887d4c26c1a1527c033b3545f
+  source_ref: refs/tags/patch-stack/v1/sources/8b87c8a76d0faf2d8a2808e74c330dea5e3ca952
+  source_oid: 8b87c8a76d0faf2d8a2808e74c330dea5e3ca952
+source_commit: 8b87c8a76d0faf2d8a2808e74c330dea5e3ca952
+ordered_commits: [e257b18b2b2922dc5820bcf2a2db0fd21bc2fdd5, 8b87c8a76d0faf2d8a2808e74c330dea5e3ca952]
+expected_tree: 2cdd8808e9628dfebdde46b6801f47903f9a31d5

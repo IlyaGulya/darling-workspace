@@ -91,6 +91,7 @@ static void roundtrip(int family)
 	else
 		check(IN6_IS_ADDR_LOOPBACK(&((struct sockaddr_in6 *)&peer)->sin6_addr), "IPv6 peer address");
 	int found = 0;
+	unsigned int interface_index = 0;
 	for (control = CMSG_FIRSTHDR(&receive_message); control; control = CMSG_NXTHDR(&receive_message, control)) {
 		if (control->cmsg_level != level || control->cmsg_type != (family == AF_INET ? IP_PKTINFO : IPV6_PKTINFO))
 			continue;
@@ -98,6 +99,7 @@ static void roundtrip(int family)
 		if (family == AF_INET) {
 			struct in_pktinfo *info = (void *)CMSG_DATA(control);
 			check(info->ipi_addr.s_addr == htonl(INADDR_LOOPBACK) && info->ipi_ifindex != 0, "IPv4 destination and interface");
+			interface_index = info->ipi_ifindex;
 		} else {
 			struct in6_pktinfo *info = (void *)CMSG_DATA(control);
 			check(IN6_IS_ADDR_LOOPBACK(&info->ipi6_addr) && info->ipi6_ifindex != 0, "IPv6 destination and interface");
@@ -105,6 +107,27 @@ static void roundtrip(int family)
 		found++;
 	}
 	check(found == 1, "one matching packet-info message");
+	if (family == AF_INET) {
+		int probe = socket(AF_INET, SOCK_DGRAM, 0);
+		check(probe >= 0, "nonlocal probe socket");
+		struct sockaddr_in nonlocal = {.sin_len = sizeof(nonlocal), .sin_family = AF_INET};
+		check(inet_pton(AF_INET, "192.0.2.1", &nonlocal.sin_addr) == 1, "nonlocal address");
+		check(bind(probe, (void *)&nonlocal, sizeof(nonlocal)) == -1 && errno == EADDRNOTAVAIL,
+		      "conflicting source must be nonlocal");
+		close(probe);
+		struct in_pktinfo *info = (void *)CMSG_DATA(CMSG_FIRSTHDR(&send_message));
+		info->ipi_ifindex = interface_index;
+		info->ipi_spec_dst = nonlocal.sin_addr;
+		memcpy(original_control, outgoing.bytes, sizeof(original_control));
+		check(sendmsg(sender, &send_message, 0) == sizeof(payload), "IPv4 interface overrides conflicting source");
+		check(memcmp(original_control, outgoing.bytes, sizeof(original_control)) == 0,
+		      "interface override preserves caller control data");
+		socklen_t peer_length = sizeof(peer);
+		check(recvfrom(receiver, &received, sizeof(received), 0, (void *)&peer, &peer_length) == sizeof(received) &&
+		      received == payload, "interface-selected delivery");
+		check(((struct sockaddr_in *)&peer)->sin_addr.s_addr == htonl(INADDR_LOOPBACK),
+		      "interface-selected source address");
+	}
 	enabled = 0;
 	check(setsockopt(receiver, level, option, &enabled, sizeof(enabled)) == 0, "disable packet info");
 	observed = 1;

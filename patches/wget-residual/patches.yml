@@ -529,7 +529,7 @@ patches:
   module: darling/src/external/xnu
   source-branch: fix/udp-packet-info
   source-base: affe1a99fff7df754f80deb1450e4a4a523f2b4d
-  source-commit: e257b18b2b2922dc5820bcf2a2db0fd21bc2fdd5
+  source-commit: 8b87c8a76d0faf2d8a2808e74c330dea5e3ca952
   bead: dar-gwn.7.6
   publication-status: blocked
   publication-blocker: IPv4 interface precedence defect reproduced under dar-gwn.7.6; socket ABI review and existing ancillary-message limitations remain publication gates despite completed stock OpenSSL acceptance.
@@ -546,8 +546,8 @@ patches:
     ok-marker: UDP_PACKET_INFO_OK
     runtime-profile: homebrew-lz4-source
     timeout-seconds: 60
-    note: Exercises real IPv4 and IPv6 packet-info enable/disable, source selection, destination/interface delivery, and immutable caller control data.
-  sha256sum: 88cc24dea7075f06d8121267d513c80593cd466228eb949ae3f4aac6cfbeaede
+    note: Exercises real IPv4 and IPv6 packet-info enable/disable, source-only selection, IPv4 interface precedence over a conflicting nonlocal source, destination/interface delivery, and immutable caller control data.
+  sha256sum: e41e40112ee026c6aceaade7bb09c09db10e1cebf5ec77342f5fec0df886a30e
 - path: perl/storable-xs-version.patch
   module: darling/src/external/perl
   source-branch: fix/storable-xs-version
