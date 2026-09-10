@@ -311,6 +311,10 @@ profile-composition lock, not a hardcoded list of profile names. Register a new
 composition in `locks/patch-stack/lock-first-profiles-v1.yml`; its prerequisite
 trees, ordered series, batch count and final trees must all validate before
 materialization.
+Applicability preflight has a 300-second per-profile default.
+`--runtime-build-timeout-seconds` overrides both source preflight and build
+phase deadlines. A verifier timeout leaves source validity undetermined; it
+does not establish a patch conflict or a runtime regression.
 
 The CTest bridge propagates guest upload, compile, run and timeout phases.
 Require the failure oracle in the guest execution phase for runtime RED;

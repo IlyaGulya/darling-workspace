@@ -502,6 +502,7 @@ class DarlingTest(ProfileOperationsMixin, BootstrapRuntimeProfileMixin, WestComm
                 f"{source_profile!r}: {error}"
             )
 
+        timeout_seconds = getattr(self, "_runtime_build_timeout_seconds", None) or 300
         for profile in stack:
             self.inf(
                 f"  runtime profile preflight: {profile} "
@@ -518,13 +519,21 @@ class DarlingTest(ProfileOperationsMixin, BootstrapRuntimeProfileMixin, WestComm
                 ],
                 cwd=Path(self.topdir),
                 env=None,
-                timeout_seconds=300,
+                timeout_seconds=timeout_seconds,
                 capture_output=True,
             )
             if result.returncode:
                 self._dump_command_tail(
                     f"Runtime profile {profile} preflight", result
                 )
+                if result.timed_out:
+                    self.die(
+                        f"Runtime deployment {deployment_name}: source profile "
+                        f"{profile!r} applicability preflight timed out after "
+                        f"{timeout_seconds}s. Inspect the verifier output or increase "
+                        "--runtime-build-timeout-seconds; source validity was not "
+                        "determined; this is not a runtime test result."
+                    )
                 self.die(
                     f"Runtime deployment {deployment_name} cannot materialize "
                     f"source profile stack {source_profile!r}: {profile!r} failed "
