@@ -65,7 +65,8 @@ static void roundtrip(int family)
 	control->cmsg_type = family == AF_INET ? IP_PKTINFO : IPV6_PKTINFO;
 	if (family == AF_INET) {
 		struct in_pktinfo *info = (void *)CMSG_DATA(control);
-		info->ipi_spec_dst.s_addr = htonl(INADDR_LOOPBACK);
+		/* A non-default loopback source detects silently discarded send metadata. */
+		info->ipi_spec_dst.s_addr = htonl(INADDR_LOOPBACK + 1);
 	} else {
 		struct in6_pktinfo *info = (void *)CMSG_DATA(control);
 		info->ipi6_addr = in6addr_loopback;
@@ -75,13 +76,20 @@ static void roundtrip(int family)
 	check(sendmsg(sender, &send_message, 0) == sizeof(payload), "send source packet info");
 	check(memcmp(original_control, outgoing.bytes, sizeof(original_control)) == 0, "sendmsg preserves caller control data");
 	struct iovec receive_iov = { &received, sizeof(received) };
+	struct sockaddr_storage peer = {0};
 	struct msghdr receive_message = {0};
+	receive_message.msg_name = &peer;
+	receive_message.msg_namelen = sizeof(peer);
 	receive_message.msg_iov = &receive_iov;
 	receive_message.msg_iovlen = 1;
 	receive_message.msg_control = incoming.bytes;
 	receive_message.msg_controllen = sizeof(incoming.bytes);
 	check(recvmsg(receiver, &receive_message, 0) == sizeof(received) && received == payload, "receive payload");
 	check(!(receive_message.msg_flags & MSG_CTRUNC), "complete packet info");
+	if (family == AF_INET)
+		check(((struct sockaddr_in *)&peer)->sin_addr.s_addr == htonl(INADDR_LOOPBACK + 1), "requested IPv4 source address");
+	else
+		check(IN6_IS_ADDR_LOOPBACK(&((struct sockaddr_in6 *)&peer)->sin6_addr), "IPv6 peer address");
 	int found = 0;
 	for (control = CMSG_FIRSTHDR(&receive_message); control; control = CMSG_NXTHDR(&receive_message, control)) {
 		if (control->cmsg_level != level || control->cmsg_type != (family == AF_INET ? IP_PKTINFO : IPV6_PKTINFO))
