@@ -1,0 +1,68 @@
+From c01533c97a7a94e3dca30dd3282ed8038abf8b6f Mon Sep 17 00:00:00 2001
+From: Ilya Gulya <ilya@gulya.me>
+Date: Thu, 10 Sep 2026 09:35:22 +0000
+Subject: [PATCH] Install loopback host defaults below prefix overrides
+
+---
+ CMakeLists.txt | 14 +++++++++++---
+ etc/hosts      |  2 ++
+ 2 files changed, 13 insertions(+), 3 deletions(-)
+ create mode 100644 etc/hosts
+
+diff --git a/CMakeLists.txt b/CMakeLists.txt
+index 39e19ed16bb88b5a18673c5005543ccce9e65a84..fd41c60e4d3ad25f62d4d74577f46b4224e2e821 100644
+--- a/CMakeLists.txt
++++ b/CMakeLists.txt
+@@ -305,17 +305,24 @@ add_custom_target(rootless_bootstrap DEPENDS ${DARLING_ROOTLESS_BOOTSTRAP_TARGET
+ set(_rootless_bootstrap_resource_dir "${CMAKE_BINARY_DIR}/rootless-bootstrap-resources")
+ file(MAKE_DIRECTORY
+ 	"${_rootless_bootstrap_resource_dir}/System/Library/LaunchDaemons"
++	"${_rootless_bootstrap_resource_dir}/private/etc"
+ )
+ configure_file(
+ 	"${CMAKE_CURRENT_SOURCE_DIR}/src/shellspawn/org.darlinghq.shellspawn.plist"
+ 	"${_rootless_bootstrap_resource_dir}/System/Library/LaunchDaemons/org.darlinghq.shellspawn.plist"
+ 	COPYONLY
+ )
++configure_file(
++	"${CMAKE_CURRENT_SOURCE_DIR}/etc/hosts"
++	"${_rootless_bootstrap_resource_dir}/private/etc/hosts"
++	COPYONLY
++)
++# Schema 2 makes older consumers reject unsupported lower-default placement.
+ file(GENERATE
+ 	OUTPUT "${CMAKE_BINARY_DIR}/darling-rootless-bootstrap.json"
+ 	CONTENT
+ "{
+-  \"schema\": 1,
++  \"schema\": 2,
+   \"entrypoints\": [
+     {\"target\": \"darling\", \"guest_path\": \"/bin/darling\", \"host_path\": \"$<TARGET_FILE:darling>\"},
+     {\"target\": \"mldr\", \"guest_path\": \"/usr/libexec/darling/mldr\", \"host_path\": \"$<TARGET_FILE:mldr>\"},
+@@ -328,7 +335,8 @@ file(GENERATE
+     {\"target\": \"bash\", \"guest_path\": \"/bin/bash\", \"host_path\": \"$<TARGET_FILE:bash>\"}
+   ],
+   \"resources\": [
+-    {\"target\": \"shellspawn_launchd_plist\", \"guest_path\": \"/System/Library/LaunchDaemons/org.darlinghq.shellspawn.plist\", \"host_path\": \"${_rootless_bootstrap_resource_dir}/System/Library/LaunchDaemons/org.darlinghq.shellspawn.plist\"}
++    {\"target\": \"shellspawn_launchd_plist\", \"guest_path\": \"/System/Library/LaunchDaemons/org.darlinghq.shellspawn.plist\", \"host_path\": \"${_rootless_bootstrap_resource_dir}/System/Library/LaunchDaemons/org.darlinghq.shellspawn.plist\"},
++    {\"target\": \"hosts_default\", \"guest_path\": \"/private/etc/hosts\", \"host_path\": \"${_rootless_bootstrap_resource_dir}/private/etc/hosts\", \"placement\": \"lower\"}
+   ]
+ }
+ "
+@@ -417,7 +425,7 @@ install(DIRECTORY DESTINATION libexec/darling/private/tmp)
+ InstallSymlink(private/etc ${CMAKE_INSTALL_PREFIX}/libexec/darling/etc)
+ InstallSymlink(private/var ${CMAKE_INSTALL_PREFIX}/libexec/darling/var)
+ 
+-install(FILES etc/resolv.conf
++install(FILES etc/resolv.conf etc/hosts
+ 	DESTINATION libexec/darling/private/etc)
+ InstallSymlink(/Volumes/SystemRoot/etc/machine-id ${CMAKE_INSTALL_PREFIX}/libexec/darling/private/etc/machine-id)
+ InstallSymlink(/Volumes/SystemRoot/etc/nsswitch.conf ${CMAKE_INSTALL_PREFIX}/libexec/darling/private/etc/nsswitch.conf)
+diff --git a/etc/hosts b/etc/hosts
+new file mode 100644
+index 0000000000000000000000000000000000000000..77c24a17aeca24e1ecd25415c822fa3961d7508d
+--- /dev/null
++++ b/etc/hosts
+@@ -0,0 +1,2 @@
++127.0.0.1 localhost
++::1 localhost

@@ -596,3 +596,26 @@ patches:
     runtime-profile: homebrew-lz4-source
     timeout-seconds: 60
   sha256sum: cf14d23ddcb69190a7ad2d6e52b780d5e9edaebf3845b37146749f82542a1e26
+- path: darling/rootless-hosts-default.patch
+  module: darling
+  source-branch: fix/rootless-hosts-default
+  source-base: 1a2869c9ed4f17488563bdd0a902e62e2d929530
+  source-commit: c01533c97a7a94e3dca30dd3282ed8038abf8b6f
+  bead: dar-gwn.7.5
+  publication-status: blocked
+  publication-blocker: Component schema 2 requires matched tooling; rootless filesystem and bootstrap publication gates remain local-only.
+  tests:
+  - name: localhost_resolution_guest
+    kind: guest
+    coverage-tier: runtime
+    runs: guest
+    diag: guarded
+    runner: guest-c-fixture
+    repo: darling-workspace
+    script: tests/localhost_resolution_guest.c
+    ok-marker: LOCALHOST_RESOLUTION_OK
+    compile-flags: [-std=gnu11]
+    runtime-profile: homebrew-lz4-source
+    timeout-seconds: 60
+    note: Verifies IPv4, IPv6 and address-configured loopback resolution. Host deployment contracts separately preserve configured and empty upper hosts files.
+  sha256sum: c5253443eefe2c4c8456303d7b375e9ae6c82b782428f3849573e86107788b0b
