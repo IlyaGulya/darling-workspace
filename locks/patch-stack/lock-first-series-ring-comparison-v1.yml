@@ -1,0 +1,14 @@
+schema_version: 3
+profile: ring-comparison
+batch_id: ring-comparison-immutable-v1
+expected_count: 2
+composition: ring-comparison-profile-composition-v1.yml
+series:
+  - profile: ring-comparison
+    module: darling/src/external/xnu
+    patch: xnu/ring-comparison-guest.patch
+    lock: ring-comparison-guest-v1.yml
+  - profile: ring-comparison
+    module: darling/src/external/darlingserver
+    patch: darlingserver/ring-comparison-server.patch
+    lock: ring-comparison-server-v1.yml

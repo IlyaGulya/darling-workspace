@@ -58,10 +58,6 @@ class RuntimeSourceMaterializer:
         refs/generated locks.  The worktree context owns all resulting commits
         and removes them when its caller exits.
         """
-        if profile not in {"homebrew", "perf", "arch", "wget-residual"}:
-            raise patch_stack_lock_first.LockFirstError(
-                f"runtime-source canonical materialization is not enabled for {profile}"
-            )
         def typed_plan(name: str) -> patch_stack_lock_first.LockFirstPlan:
             grouped: OrderedDict[str, list[dict[str, Any]]] = OrderedDict()
             patches = self._host._load_profile(name).get("patches", [])
@@ -295,10 +291,6 @@ class RuntimeSourceMaterializer:
         lock objects. Historical archives are never executable inputs.
         """
         skips = skip_patch_paths or set()
-        if profile not in {"homebrew", "perf", "arch", "wget-residual"}:
-            raise patch_stack_lock_first.LockFirstError(
-                f"runtime-source canonical materialization is not enabled for {profile}"
-            )
         observed_skips: set[str] = set()
         initialized = False
         for stacked in self._host._profile_stack(profile):
