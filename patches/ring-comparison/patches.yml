@@ -6,7 +6,7 @@ patches:
     module: darling/src/external/xnu
     source-branch: fix/ring-comparison-guest
     source-base: 9736367393c97fdb3cd3d393f15cc922744a9c5a
-    source-commit: 756a62fb624eb3d18ba742101ab01f4900928485
+    source-commit: 19c387f5642551f76c67b32b2892ddb2fc3fcfc2
     bead: dar-gwn.7.7.1
     publication-status: blocked
     publication-blocker: Experimental common ring composition under dar-gwn.7.7; matched OFF/ON runtime acceptance and architecture review are required. No publication authorized.
@@ -18,6 +18,7 @@ patches:
         diag: bare
         runner: source-profile-script
         requires-profile: ring-comparison
+        source-env: RING_COMPLETION_PROFILE_ROOT
         script: darling/tests/ring-completion/run.py
         timeout-seconds: 120
         red: true
@@ -48,7 +49,7 @@ patches:
             min-delta: 1
           - path: ring_fast_hit
             min-delta: 1
-    sha256sum: 7a6db0b0f17308b3f925e8c6310867fa74e09e423bbdcb7662e0031586630b31
+    sha256sum: ba56b76c0a28c23647062ea971e6ebce008b7c3378e98e170b716b0f32eeae03
   - path: darlingserver/ring-comparison-server.patch
     module: darling/src/external/darlingserver
     source-branch: fix/ring-comparison-server

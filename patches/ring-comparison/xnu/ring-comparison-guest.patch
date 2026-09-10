@@ -5114,3 +5114,37 @@ index 0c64b4dd17ca2bbec803b70e363ac694fa886dd2..f3670878f59bbf29b1505441a8700cfe
          setup(GOOD);
          assert(callers[i]() == reply_port);
          assert(published == 1 && uds_calls == 0);
+
+From 19c387f5642551f76c67b32b2892ddb2fc3fcfc2 Mon Sep 17 00:00:00 2001
+From: Ilya Gulya <ilya@gulya.me>
+Date: Thu, 10 Sep 2026 17:03:38 +0000
+Subject: [PATCH] Resolve paired profile headers in isolated completion proofs
+
+---
+ darling/tests/ring-completion/run.py | 5 ++++-
+ 1 file changed, 4 insertions(+), 1 deletion(-)
+
+diff --git a/darling/tests/ring-completion/run.py b/darling/tests/ring-completion/run.py
+index 6d4e911bd23805cb6ac34a2f0a1ac01e9083999a..3bd87919321d1e331884765e66a0f678cd3413d5 100755
+--- a/darling/tests/ring-completion/run.py
++++ b/darling/tests/ring-completion/run.py
+@@ -4,6 +4,8 @@
+ By default the paired server is the sibling darlingserver source directory.
+ DSERVER_SOURCE and DSERVER_GEN_INC may select explicit paired source/headers.
+ Otherwise rpc.h is generated in temporary state from the paired server.
++RING_COMPLETION_PROFILE_ROOT locates the paired profile when West relocates this
++fixture into an isolated source-base proof tree.
+ Requires Python 3 and a Linux C compiler with UBSan.
+ No server process or guest prefix is used. RING_COMPLETION_SOURCE_ROOT may select
+ an older XNU source tree for a regression RED run with this same fixture.
+@@ -17,8 +19,9 @@ import tempfile
+ 
+ here = Path(__file__).resolve().parent
+ source = Path(os.environ.get("RING_COMPLETION_SOURCE_ROOT", here.parents[2]))
++profile = Path(os.environ.get("RING_COMPLETION_PROFILE_ROOT", here.parents[2]))
+ emulation = source / "darling/src/libsystem_kernel/emulation"
+-server = Path(os.environ.get("DSERVER_SOURCE", here.parents[2].parent / "darlingserver"))
++server = Path(os.environ.get("DSERVER_SOURCE", profile.parent / "darlingserver"))
+ generated_override = os.environ.get("DSERVER_GEN_INC")
+ if not (server / "include/darlingserver/rpc-supplement.h").is_file():
+     raise SystemExit("DSERVER_SOURCE must contain the paired server source")
