@@ -19,9 +19,9 @@ prerequisites:
 frozen_manifest: *id001
 mapping:
   path: lock-first-series-wget-residual-v1.yml
-  sha256: af9c374c53d45ab09d1c0fc3e9d3ac08f8eaf91ba1931e1db9ad853bb8f8d701
+  sha256: 763564e7e1b4f247aa8c9be85608e84ffe64daabc2ffe432d63b764587d66680
   batch_id: wget-residual-local-immutable-batch-1
-  expected_count: 21
+  expected_count: 22
 modules:
 - module: darling
   starting:
@@ -45,8 +45,11 @@ modules:
   - patch: darling/mldr-stack-growth-reservation.patch
     lock: darling-mldr-stack-growth-reservation-wget-v1.yml
     expected_applied_tree: dc58b0435f7466df75119c84bc6f8e353a3f7777
-  final_tree: dc58b0435f7466df75119c84bc6f8e353a3f7777
-  integration_final_tree: dc58b0435f7466df75119c84bc6f8e353a3f7777
+  - patch: darling/rootless-hosts-default.patch
+    lock: darling-rootless-hosts-default-wget-v1.yml
+    expected_applied_tree: 715129f3a51ffb05f9cc6790599a150bf8b62a28
+  final_tree: 715129f3a51ffb05f9cc6790599a150bf8b62a28
+  integration_final_tree: 715129f3a51ffb05f9cc6790599a150bf8b62a28
 - module: darling/src/external/xnu
   starting:
     tree: dcd79f5ae99340e590f5ee904464f578999823a1

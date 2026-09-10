@@ -1,7 +1,7 @@
 schema_version: 3
 profile: wget-residual
 batch_id: wget-residual-local-immutable-batch-1
-expected_count: 21
+expected_count: 22
 composition: wget-residual-profile-composition-v1.yml
 series:
 - profile: wget-residual
@@ -28,6 +28,10 @@ series:
   module: darling
   patch: darling/mldr-stack-growth-reservation.patch
   lock: darling-mldr-stack-growth-reservation-wget-v1.yml
+- profile: wget-residual
+  module: darling
+  patch: darling/rootless-hosts-default.patch
+  lock: darling-rootless-hosts-default-wget-v1.yml
 - profile: wget-residual
   module: darling/src/external/xnu
   patch: xnu/eunion-content-fd-validation.patch
