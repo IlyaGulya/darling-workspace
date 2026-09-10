@@ -1373,52 +1373,63 @@ with tempfile.TemporaryDirectory() as temp:
     assert not readiness.exists(), "runtime resource cleanup did not remove readiness file"
 
 
-profile_test = make_test()
-profile_test._preflight_runtime_profile_stack = (
-    DarlingTest._preflight_runtime_profile_stack.__get__(profile_test, DarlingTest)
-)
-profile_test._profile_stack = lambda profile: ["homebrew", profile]
-profile_calls = []
-original_bounded = west_test_module.run_bounded
-west_test_module.run_bounded = lambda args, **kwargs: (
-    profile_calls.append((args, kwargs)) or ProcessResult(0)
-)
-try:
-    profile_test._preflight_runtime_profile_stack("arch", "contract runtime")
-    profile_test._preflight_runtime_profile_stack("arch", "contract runtime")
-finally:
-    west_test_module.run_bounded = original_bounded
-assert [call[0] for call in profile_calls] == [
-    ["west", "patch", "verify", "--profile", "homebrew", "--applicability-only"],
-    ["west", "patch", "verify", "--profile", "arch", "--applicability-only"],
-], profile_calls
-assert all(call[1]["timeout_seconds"] == 300 for call in profile_calls), profile_calls
-
-failed_profile_test = make_test()
-failed_profile_test._preflight_runtime_profile_stack = (
-    DarlingTest._preflight_runtime_profile_stack.__get__(failed_profile_test, DarlingTest)
-)
-failed_profile_test._profile_stack = lambda _profile: ["broken"]
-original_bounded = west_test_module.run_bounded
-west_test_module.run_bounded = lambda *_args, **_kwargs: ProcessResult(
-    1, stdout="git am conflict\n"
-)
-try:
+# Exercise the real bounded subprocess, not a mock of timeout forwarding.
+with tempfile.TemporaryDirectory() as temp:
+    preflight_root = Path(temp)
+    verifier = preflight_root / "west"
+    verifier.write_text(
+        f"#!{sys.executable}\n"
+        "import sys, time\n"
+        "from pathlib import Path\n"
+        "mode = Path('mode').read_text()\n"
+        "if mode == 'reject':\n"
+        "    sys.exit(2)\n"
+        "if mode == 'slow':\n"
+        "    time.sleep(2)\n"
+        "Path('verified').touch()\n"
+    )
+    verifier.chmod(0o755)
+    mode_file = preflight_root / "mode"
+    completed = preflight_root / "verified"
+    profile_test = make_test()
+    profile_test.topdir = str(preflight_root)
+    profile_test._preflight_runtime_profile_stack = (
+        DarlingTest._preflight_runtime_profile_stack.__get__(profile_test, DarlingTest)
+    )
+    profile_test._profile_stack = lambda profile: [profile]
+    previous_path = os.environ.get("PATH")
+    os.environ["PATH"] = str(preflight_root) + os.pathsep + (previous_path or "")
     try:
-        failed_profile_test._preflight_runtime_profile_stack(
-            "broken", "contract runtime"
-        )
-    except SystemExit as exc:
-        assert str(exc) == (
-            "Runtime deployment contract runtime cannot materialize source profile "
-            "stack 'broken': 'broken' failed patch applicability preflight. Repair "
-            "or rebase that profile with `west patch verify --profile broken` before "
-            "retrying; this is not a runtime test failure."
-        ), exc
-    else:
-        raise AssertionError("invalid runtime profile stack unexpectedly passed")
-finally:
-    west_test_module.run_bounded = original_bounded
+        mode_file.write_text("slow")
+        profile_test._runtime_build_timeout_seconds = 1
+        try:
+            profile_test._preflight_runtime_profile_stack("slow", "contract runtime")
+        except SystemExit:
+            pass
+        else:
+            raise AssertionError("preflight ignored the runtime source deadline")
+        assert not completed.exists(), "timed-out verifier completed its work"
+
+        # A failed preflight is not cached; the same source can finish with
+        # an adequate deadline without bypassing verification.
+        profile_test._runtime_build_timeout_seconds = 10
+        profile_test._preflight_runtime_profile_stack("slow", "contract runtime")
+        assert completed.exists(), "source verification did not finish"
+        completed.unlink()
+
+        mode_file.write_text("reject")
+        try:
+            profile_test._preflight_runtime_profile_stack("invalid", "contract runtime")
+        except SystemExit:
+            pass
+        else:
+            raise AssertionError("invalid source passed applicability preflight")
+        assert not completed.exists()
+    finally:
+        if previous_path is None:
+            os.environ.pop("PATH", None)
+        else:
+            os.environ["PATH"] = previous_path
 
 
 with tempfile.TemporaryDirectory() as temp:
