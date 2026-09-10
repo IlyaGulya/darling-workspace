@@ -38,6 +38,6 @@ modules:
     series:
       - patch: darlingserver/ring-comparison-server.patch
         lock: ring-comparison-server-v1.yml
-        expected_applied_tree: 21509a1e87775da5ac6f19373f781dbf0d8c18f8
-    final_tree: 21509a1e87775da5ac6f19373f781dbf0d8c18f8
-    integration_final_tree: 21509a1e87775da5ac6f19373f781dbf0d8c18f8
+        expected_applied_tree: 5203f6e531a2d42afaadd4ecfbfc3f5075749e83
+    final_tree: 5203f6e531a2d42afaadd4ecfbfc3f5075749e83
+    integration_final_tree: 5203f6e531a2d42afaadd4ecfbfc3f5075749e83

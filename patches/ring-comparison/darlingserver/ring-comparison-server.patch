@@ -14658,3 +14658,85 @@ index 5c426011ee9e8c4d1db8f036c58e6d06aafd447f..5e7228ea175db5c201f911cc5b5261ab
  
  # --- P7 wake-model LOST-WAKE race gate (dar-my8). Hermetic: header-only, real shm, two threads.
  #     GREEN: exhaustive ordering enumeration finds ZERO lost-wake interleavings on both the
+
+From 4b12bfd5c8f0ffe40309618588299e2f9d82b205 Mon Sep 17 00:00:00 2001
+From: Ilya Gulya <ilya@gulya.me>
+Date: Thu, 10 Sep 2026 21:59:27 +0000
+Subject: [PATCH] Keep physical execution exit out of logical XNU wait state
+
+Physical execution is owned by MicrothreadExecution. Rewriting XNU state under the unrelated C++ lock can race wait finalization and resurrect TH_WAIT after a committed wake. Remove the redundant exit hook and all callers without weakening wake admission.
+---
+ duct-tape/include/darlingserver/duct-tape.h           | 1 -
+ duct-tape/src/thread.c                                | 3 ---
+ internal-include/darlingserver/microthread-resume.hpp | 3 ++-
+ src/thread.cpp                                        | 3 ---
+ 4 files changed, 2 insertions(+), 8 deletions(-)
+
+diff --git a/duct-tape/include/darlingserver/duct-tape.h b/duct-tape/include/darlingserver/duct-tape.h
+index 2a8768ca8692bedf8ff87790d6e7c9121754b4be..fac632994b45cb062ab737da5bb7049f8b245bd1 100644
+--- a/duct-tape/include/darlingserver/duct-tape.h
++++ b/duct-tape/include/darlingserver/duct-tape.h
+@@ -60,7 +60,6 @@ void dtape_kqchan_mach_port_destroy(dtape_kqchan_mach_port_t* kqchan);
+ void dtape_semaphore_destroy(dtape_semaphore_t* semaphore);
+ 
+ void dtape_thread_entering(dtape_thread_t* thread);
+-void dtape_thread_exiting(dtape_thread_t* thread);
+ void dtape_thread_set_handles(dtape_thread_t* thread, uintptr_t pthread_handle, uintptr_t dispatch_qaddr);
+ 
+ typedef struct dtape_thread_cancel_state_snapshot {
+diff --git a/duct-tape/src/thread.c b/duct-tape/src/thread.c
+index b5dc8f2fa3024e95d4e8ecb795ac2b3956a33284..b9ef70fd8dca2943f5f3b9a0db9c2424bb132b85 100644
+--- a/duct-tape/src/thread.c
++++ b/duct-tape/src/thread.c
+@@ -176,9 +176,6 @@ void dtape_thread_entering(dtape_thread_t* thread) {
+ 	thread->xnu_thread.block_hint = kThreadWaitNone;
+ };
+ 
+-void dtape_thread_exiting(dtape_thread_t* thread) {
+-	thread->xnu_thread.state &= ~TH_RUN;
+-};
+ 
+ void dtape_thread_set_handles(dtape_thread_t* thread, uintptr_t pthread_handle, uintptr_t dispatch_qaddr) {
+ 	thread_lock(&thread->xnu_thread);
+diff --git a/internal-include/darlingserver/microthread-resume.hpp b/internal-include/darlingserver/microthread-resume.hpp
+index 1c6d49da20005db3d84783cd7b239ff73e9d5b95..87ac36fa8b147065a1f49fcca8bdb3f3eb3bddf7 100644
+--- a/internal-include/darlingserver/microthread-resume.hpp
++++ b/internal-include/darlingserver/microthread-resume.hpp
+@@ -4,7 +4,8 @@
+ #include <cassert>
+ 
+ namespace DarlingServer {
+-	// Caller serializes transitions with the thread's lock.
++	// Owns physical execution only; XNU wait state has its own lock and lifetime.
++	// Caller serializes transitions with the thread's C++ lock.
+ 	class MicrothreadExecution {
+ 		enum class State {
+ 			Idle,
+diff --git a/src/thread.cpp b/src/thread.cpp
+index bc4c95ae4ae243c898124618d107f70b9f24bd95..c3528e338ae7b5f22c37bc8c6b1dec7dcdfa6acb 100644
+--- a/src/thread.cpp
++++ b/src/thread.cpp
+@@ -630,7 +630,6 @@ doneWorking:
+ 	// we must be holding `_rwlock` when we get here
+ 	bool dispatchPending = false;
+ 	if (_execution.isRunning()) {
+-		dtape_thread_exiting(_dtapeThread);
+ 		currentThreadVar = nullptr;
+ 		dispatchPending = _execution.finish();
+ 	}
+@@ -777,7 +776,6 @@ bool DarlingServer::Thread::doWorkInline() {
+ 			_suspended = false;
+ 		}
+ 		_activeCall = nullptr;
+-		dtape_thread_exiting(_dtapeThread);
+ 		currentThreadVar = nullptr;
+ 		scheduleAfterWorking = _execution.finish() && !_terminating && !_dead;
+ 
+@@ -891,7 +889,6 @@ bool DarlingServer::Thread::doMachReplyPortInline(uint32_t seq) {
+ 			DarlingServer::Metrics::shared().ringFastSuspend.fetch_add(1, std::memory_order_relaxed);
+ 			_suspended = false;
+ 		}
+-		dtape_thread_exiting(_dtapeThread);
+ 		currentThreadVar = nullptr;
+ 		scheduleAfterWorking = _execution.finish() && !_terminating && !_dead;
+ 
