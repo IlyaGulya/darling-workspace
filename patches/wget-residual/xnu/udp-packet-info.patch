@@ -199,3 +199,67 @@ index 9f5101a00a4308fb15d64a8b1c3e5720ef8449d7..7f8e89536f77c79ee91378003dfe11a5
  
  		memcpy(lchdr->cmsg_data, bchdr->cmsg_data,
  				bchdr->cmsg_len - sizeof(struct bsd_cmsghdr));
+
+From 8b87c8a76d0faf2d8a2808e74c330dea5e3ca952 Mon Sep 17 00:00:00 2001
+From: Ilya Gulya <ilya@gulya.me>
+Date: Thu, 10 Sep 2026 14:13:22 +0000
+Subject: [PATCH] Honor Darwin IPv4 packet-info interface precedence
+
+---
+ .../xnu_syscall/bsd/impl/network/sendmsg.c    | 22 +++++++++++++++++++
+ 1 file changed, 22 insertions(+)
+
+diff --git a/darling/src/libsystem_kernel/emulation/src/xnu_syscall/bsd/impl/network/sendmsg.c b/darling/src/libsystem_kernel/emulation/src/xnu_syscall/bsd/impl/network/sendmsg.c
+index 7f8e89536f77c79ee91378003dfe11a5ed7b0469..910ec5a8029e1a11d91ad1c93813d550cfbf9ca4 100644
+--- a/darling/src/libsystem_kernel/emulation/src/xnu_syscall/bsd/impl/network/sendmsg.c
++++ b/darling/src/libsystem_kernel/emulation/src/xnu_syscall/bsd/impl/network/sendmsg.c
+@@ -6,6 +6,7 @@
+ #include <darling/emulation/common/base.h>
+ #include <darling/emulation/conversion/errno.h>
+ #include <darling/emulation/conversion/network/duct.h>
++#include <darling/emulation/conversion/network/getsockopt.h>
+ #include <darling/emulation/linux_premigration/linux-syscalls/linux.h>
+ #include <darling/emulation/xnu_syscall/bsd/helper/network/duct.h>
+ #include <darling/emulation/xnu_syscall/bsd/helper/bsdthread/cancelable.h>
+@@ -14,6 +15,25 @@ extern void *malloc(__SIZE_TYPE__ size);
+ extern void free(void* ptr);
+ extern void* memcpy(void* dest, const void* src, __SIZE_TYPE__ len);
+ 
++static void normalize_packet_info(struct linux_cmsghdr* header)
++{
++	/* IPv4 packet-info has the same three 32-bit fields in both ABIs. */
++	struct ipv4_packet_info {
++		uint32_t ifindex;
++		uint32_t spec_dst;
++		uint32_t addr;
++	};
++	if (header->cmsg_level == XNU_IPPROTO_IP &&
++			header->cmsg_type == LINUX_IP_PKTINFO &&
++			header->cmsg_len == LINUX_CMSG_LEN(sizeof(struct ipv4_packet_info))) {
++		struct ipv4_packet_info* info = (void*)header->cmsg_data;
++		/* Darwin ignores the source address when an interface is specified.
++		 * Linux still uses that address, so clear it in our private copy. */
++		if (info->ifindex != 0)
++			info->spec_dst = 0;
++	}
++}
++
+ long sys_sendmsg(int socket, const struct bsd_msghdr* msg, int flags)
+ {
+ 	CANCELATION_POINT();
+@@ -59,6 +79,7 @@ long sys_sendmsg_nocancel(int socket, const struct bsd_msghdr* msg, int flags)
+ 			}
+ 			header->cmsg_type = socket_cmsg_type_bsd_to_linux(header->cmsg_level, header->cmsg_type);
+ 			header->cmsg_level = socket_level_bsd_to_linux(header->cmsg_level);
++			normalize_packet_info(header);
+ 			pos += LINUX_CMSG_ALIGN(header->cmsg_len);
+ 		}
+ 	}
+@@ -80,6 +101,7 @@ long sys_sendmsg_nocancel(int socket, const struct bsd_msghdr* msg, int flags)
+ 
+ 		memcpy(lchdr->cmsg_data, bchdr->cmsg_data,
+ 				bchdr->cmsg_len - sizeof(struct bsd_cmsghdr));
++		normalize_packet_info(lchdr);
+ 	}
+ 	else
+ 	{

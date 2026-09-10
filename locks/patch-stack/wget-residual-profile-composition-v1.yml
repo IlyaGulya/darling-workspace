@@ -77,9 +77,9 @@ modules:
     expected_applied_tree: 67305ae17539cfdb99dd4cd4e5cc230bdd02a234
   - patch: xnu/udp-packet-info.patch
     lock: darling-xnu-udp-packet-info-wget-v1.yml
-    expected_applied_tree: 698d6b65b76e85266b721869e6a81e2af6576164
-  final_tree: 698d6b65b76e85266b721869e6a81e2af6576164
-  integration_final_tree: 698d6b65b76e85266b721869e6a81e2af6576164
+    expected_applied_tree: 826530fb38acf64c0459dc907ac7aba79c7bad0a
+  final_tree: 826530fb38acf64c0459dc907ac7aba79c7bad0a
+  integration_final_tree: 826530fb38acf64c0459dc907ac7aba79c7bad0a
 - module: darling/src/external/darlingserver
   starting:
     tree: 2d6f0321cfe205dba7302666bc470adb79a44003
