@@ -468,10 +468,11 @@ def authored_batch_admission_contract() -> None:
         _, _, original, host, target, lock_path, _, _, _ = runtime_fixture(root)
         module = "darling/src/external/xnu"
         entry = next(dict(item) for item in original if item["module"] == module)
+        entry["profile"] = "authored-runtime"
         entry["lock"] = lock_path.name
         mapping = {
             "schema_version": 2,
-            "profile": "homebrew",
+            "profile": "authored-runtime",
             "batch_id": "authored-runtime-contract",
             "expected_count": 1,
             "series": [{key: entry[key] for key in ("profile", "module", "patch", "lock")}],
@@ -487,6 +488,7 @@ def authored_batch_admission_contract() -> None:
             },
         }
         plan = runtime_source.patch_stack_lock_first.LockFirstPlan([entry], mapping, composition)
+        host._profile_stack = lambda profile: [profile]
         host._load_profile = lambda _name: {
             "patches": [{"module": module, "path": entry["patch"]}],
         }
@@ -496,9 +498,14 @@ def authored_batch_admission_contract() -> None:
             mock.patch.object(runtime_source.patch_stack_lock_first, "mapping_for_profile", return_value=mapping_path),
         ):
             runtime_source.RuntimeSourceMaterializer(host)._materialize_canonical_profile(
-                "homebrew", {module: target},
+                "authored-runtime", {module: target},
             )
         assert (target / "fixture").read_text() == "three\n"
+        with mock.patch.object(runtime_source.patch_stack_lock_first, "plan", return_value=plan):
+            runtime_source.RuntimeSourceMaterializer(host).apply_profile_module_patches(
+                "authored-runtime", module, target, skip_patch_paths={entry["patch"]},
+            )
+        assert (target / "fixture").read_text() == "base\n"
 
 
 def main() -> None:

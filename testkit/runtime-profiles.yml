@@ -252,6 +252,98 @@ runtime-profiles:
     - module: darling
       build-targets: [rootless_toolchain]
       resource: rootless-toolchain
+  homebrew-ring-off:
+    purpose: guest-toolchain-provisioning
+    compiler-launcher: ccache
+    bootstrap-smoke-timeout-seconds: 180
+    source-profile: ring-comparison
+    bootstrap: rootless-no-mount
+    runtime-mode: rootless-eunion
+    source-module: darling
+    guest-toolchain: darling-command-line-tools
+    source-modules:
+    - darling
+    - darling/src/external/darlingserver
+    - darling/src/external/xnu
+    - darling/src/external/dyld
+    - darling/src/external/corefoundation
+    - darling/src/external/libsystem
+    - darling/src/external/bash
+    - darling/src/external/installer
+    - darling/src/external/perl
+    - darling/src/external/cfnetwork
+    - darling/src/external/security
+    - darling/src/external/coretls
+    - darling/src/external/text_cmds
+    - darling/src/external/libressl-2.8.3
+    - darling/src/external/libkqueue
+    cmake-defines:
+      DARLING_EUNION: true
+      DARLING_ROOTLESS_TOOLCHAIN: true
+      DARLING_ROOTLESS_HOMEBREW: true
+      DARLING_RING_TRANSPORT: false
+      DSERVER_RING_TRANSPORT: false
+    launcher-env:
+      DARLING_ROOTLESS: '1'
+      DARLING_NOOVERLAYFS: '1'
+      DARLING_EUNION: '1'
+      DARLING_ROOTLESS_SHELLSPAWN_READY_TIMEOUT_MS: '60000'
+      DARLING_SERVER_ATTACH_CENSUS: '1'
+      DARLING_SERVER_RPC_HEATMAP: '1'
+      DARLING_SERVER_MODE: balanced
+    runtime-artifacts:
+    - module: darling
+      build-targets: [rootless_bootstrap]
+      resource: rootless-bootstrap
+    - module: darling
+      build-targets: [rootless_toolchain]
+      resource: rootless-toolchain
+  homebrew-ring-on:
+    purpose: guest-toolchain-provisioning
+    compiler-launcher: ccache
+    bootstrap-smoke-timeout-seconds: 180
+    source-profile: ring-comparison
+    bootstrap: rootless-no-mount
+    runtime-mode: rootless-eunion
+    source-module: darling
+    guest-toolchain: darling-command-line-tools
+    source-modules:
+    - darling
+    - darling/src/external/darlingserver
+    - darling/src/external/xnu
+    - darling/src/external/dyld
+    - darling/src/external/corefoundation
+    - darling/src/external/libsystem
+    - darling/src/external/bash
+    - darling/src/external/installer
+    - darling/src/external/perl
+    - darling/src/external/cfnetwork
+    - darling/src/external/security
+    - darling/src/external/coretls
+    - darling/src/external/text_cmds
+    - darling/src/external/libressl-2.8.3
+    - darling/src/external/libkqueue
+    cmake-defines:
+      DARLING_EUNION: true
+      DARLING_ROOTLESS_TOOLCHAIN: true
+      DARLING_ROOTLESS_HOMEBREW: true
+      DARLING_RING_TRANSPORT: true
+      DSERVER_RING_TRANSPORT: true
+    launcher-env:
+      DARLING_ROOTLESS: '1'
+      DARLING_NOOVERLAYFS: '1'
+      DARLING_EUNION: '1'
+      DARLING_ROOTLESS_SHELLSPAWN_READY_TIMEOUT_MS: '60000'
+      DARLING_SERVER_ATTACH_CENSUS: '1'
+      DARLING_SERVER_RPC_HEATMAP: '1'
+      DARLING_SERVER_MODE: balanced
+    runtime-artifacts:
+    - module: darling
+      build-targets: [rootless_bootstrap]
+      resource: rootless-bootstrap
+    - module: darling
+      build-targets: [rootless_toolchain]
+      resource: rootless-toolchain
   homebrew-prefix-baseline:
     # Compatibility alias for callers that used the old name. New CI and
     # tooling must select the explicit provisioning profile above.

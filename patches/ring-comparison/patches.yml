@@ -1,0 +1,109 @@
+version: 1
+description: Local matched ring OFF/ON composition preserving corrected residual runtime.
+base-profile: wget-residual
+patches:
+  - path: xnu/ring-comparison-guest.patch
+    module: darling/src/external/xnu
+    source-branch: fix/ring-comparison-guest
+    source-base: 9736367393c97fdb3cd3d393f15cc922744a9c5a
+    source-commit: 756a62fb624eb3d18ba742101ab01f4900928485
+    bead: dar-gwn.7.7.1
+    publication-status: blocked
+    publication-blocker: Experimental common ring composition under dar-gwn.7.7; matched OFF/ON runtime acceptance and architecture review are required. No publication authorized.
+    tests:
+      - name: ring_completion_outcomes_host
+        kind: contract
+        coverage-tier: host
+        runs: host
+        diag: bare
+        runner: source-profile-script
+        requires-profile: ring-comparison
+        script: darling/tests/ring-completion/run.py
+        timeout-seconds: 120
+        red: true
+        red-proof:
+          mode: source-base
+          source-revision: bc21f8cab9b50e5e032f336298435a2f235e34cc
+          source-env: RING_COMPLETION_SOURCE_ROOT
+          expect-output-contains:
+            - RING_COMPLETION_PUBLISHED_FAILURE_REPLAYED
+      - name: ring_mach_ops_guest
+        kind: guest
+        coverage-tier: runtime
+        runs: guest
+        diag: guarded
+        runner: guest-c-fixture
+        repo: darling-workspace
+        script: tests/shmem_ring_mach_ops_guest.c
+        runtime-profile: homebrew-ring-on
+        compile-flags:
+          - "-std=gnu11"
+          - "-Wall"
+          - "-Wextra"
+          - "-Werror"
+        ok-marker: WEST_SHMEM_RING_MACH_OPS_OK
+        timeout-seconds: 120
+        host-stat-deltas:
+          - path: per_call.dserver_callnum_ring_attach.count
+            min-delta: 1
+          - path: ring_fast_hit
+            min-delta: 1
+    sha256sum: 7a6db0b0f17308b3f925e8c6310867fa74e09e423bbdcb7662e0031586630b31
+  - path: darlingserver/ring-comparison-server.patch
+    module: darling/src/external/darlingserver
+    source-branch: fix/ring-comparison-server
+    source-base: 75d0fee5c5c38ad66bf3771479390011c9781d62
+    source-commit: 7b0926a7cd03923702476d5e2ff82d548631d7f5
+    bead: dar-gwn.7.7.2
+    publication-status: blocked
+    publication-blocker: Experimental common ring composition under dar-gwn.7.7; matched OFF/ON runtime acceptance and architecture review are required. No publication authorized.
+    tests:
+      - name: ring_host_gates
+        kind: contract
+        coverage-tier: host
+        runs: host
+        diag: bare
+        runner: script
+        requires-profile: ring-comparison
+        script: tests/run-ring-shm-validate.sh
+        timeout-seconds: 900
+      - name: ring_exec_completion_host
+        kind: contract
+        coverage-tier: host
+        runs: host
+        diag: bare
+        runner: c-fixture
+        requires-profile: ring-comparison
+        script: tests/exec_completion_test.cpp
+        source-files:
+          - src/utility.cpp
+        cc: c++
+        include-dirs:
+          - internal-include
+        compile-flags:
+          - "-std=c++17"
+          - "-Wall"
+          - "-Wextra"
+          - "-Werror"
+          - "-DNDEBUG"
+        timeout-seconds: 60
+      - name: ring_microthread_dispatch_model
+        kind: contract
+        coverage-tier: model
+        runs: host
+        diag: bare
+        runner: c-fixture
+        requires-profile: ring-comparison
+        repo: darling-workspace
+        script: tests/microthread_dispatch_contract.cpp
+        source-env: DSERVER_SRC_ROOT
+        cc: c++
+        include-dirs:
+          - internal-include
+        compile-flags:
+          - "-std=c++17"
+          - "-Wall"
+          - "-Wextra"
+          - "-Werror"
+        timeout-seconds: 60
+    sha256sum: 9aabff5d3535cbc4ff9f9093e2b98dd71d335a60aef8a991b8c0901e38f681ae

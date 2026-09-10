@@ -8,3 +8,5 @@ profiles:
     mapping: lock-first-series-perf-v2.yml
   - profile: wget-residual
     mapping: lock-first-series-wget-residual-v1.yml
+  - profile: ring-comparison
+    mapping: lock-first-series-ring-comparison-v1.yml
