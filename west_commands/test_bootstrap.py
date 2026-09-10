@@ -297,6 +297,7 @@ class BootstrapRuntimeProfileMixin:
                 label="prefix bootstrap",
             )
         with self._prefix_resource_context(True):
+            Path(prefix_text).mkdir(parents=True, exist_ok=True)
             with self._runtime_profile_deployment_context(
                 [profile_name],
                 label_prefix="Prefix bootstrap",

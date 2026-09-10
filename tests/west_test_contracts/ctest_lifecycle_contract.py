@@ -457,9 +457,6 @@ with tempfile.TemporaryDirectory() as temp:
 with tempfile.TemporaryDirectory() as temp:
     root = Path(temp)
     prefix = root / "prefix"
-    prefix.mkdir()
-    (prefix / "bin").mkdir()
-    (prefix / "bin" / "darling").write_text("launcher\n")
     test = DarlingTest.__new__(DarlingTest)
     test.topdir = str(root)
     manifest_repo = root / "workspace"
@@ -469,8 +466,7 @@ with tempfile.TemporaryDirectory() as temp:
     test.manifest = SimpleNamespace(repo_abspath=str(manifest_repo))
     test._prefix = str(prefix)
     test._prefix_cleanup_failed = False
-    bootstrap_messages = []
-    test.inf = bootstrap_messages.append
+    test.inf = lambda _message: None
     test.err = lambda _message: None
     test.die = lambda message: (_ for _ in ()).throw(SystemExit(message))
     test._ctest_runtime_profile_definitions = lambda: {
@@ -486,6 +482,7 @@ with tempfile.TemporaryDirectory() as temp:
     @contextmanager
     def prefix_context(enabled):
         assert enabled is True
+        assert not prefix.exists(), "bootstrap created its prefix outside lifecycle ownership"
         events.append("lock")
         yield
         events.append("cleanup")
@@ -494,16 +491,18 @@ with tempfile.TemporaryDirectory() as temp:
     def deployment_context(
         profiles, *, label_prefix, retain_deployment, provision_guest_toolchain
     ):
-        assert profiles == ["homebrew-prefix-baseline"], profiles
-        assert label_prefix == "Prefix bootstrap", label_prefix
-        assert retain_deployment is True
-        assert provision_guest_toolchain is False
         events.append("deploy")
+        (prefix / "bin").mkdir()
+        launcher = prefix / "bin" / "darling"
+        launcher.write_text(f"#!{sys.executable}\nprint('WEST_PREFIX_BOOTSTRAP_OK')\n")
+        launcher.chmod(0o755)
         yield types.SimpleNamespace(
             prefix=prefix,
             build_root=root / "build",
-            env={"DARLING_LAUNCHER": "/fake/darling"},
+            env={"DARLING_LAUNCHER": str(launcher)},
         )
+        if not retain_deployment:
+            launcher.unlink()
         events.append("retain")
 
     test._prefix_resource_context = prefix_context
@@ -511,12 +510,10 @@ with tempfile.TemporaryDirectory() as temp:
     test._ensure_guest_toolchain = lambda *_args: events.append("toolchain")
     original_run_guest_shell = bootstrap_module.run_guest_shell
     original_run_bounded = bootstrap_module.run_bounded
-    def successful_smoke(*_args, **kwargs):
+    def successful_smoke(launcher, *_args, **_kwargs):
         events.append("smoke")
-        assert kwargs["heartbeat_seconds"] == 30, kwargs
-        kwargs["output_line"]("stderr", "guest output")
-        kwargs["heartbeat"](30)
-        return ProcessResult(0, stdout="WEST_PREFIX_BOOTSTRAP_OK\n", stderr="")
+        result = subprocess.run([launcher], capture_output=True, text=True, check=False)
+        return ProcessResult(result.returncode, stdout=result.stdout, stderr=result.stderr)
 
     bootstrap_module.run_guest_shell = successful_smoke
     bootstrap_module.run_bounded = lambda *_args, **_kwargs: ProcessResult(0)

@@ -344,6 +344,8 @@ Use a short, owned prefix that is absent or empty, not an untyped populated
 directory. Expanded AF_UNIX socket paths include the host prefix and must fit
 Linux's 108-byte `sun_path`, including the terminating NUL. Keep the ordinary
 guest temporary directory; do not weaken the expanded-path guard.
+Bootstrap creates a missing prefix root under its lifecycle lock. This does not
+relax admission checks for populated or mode-mismatched prefixes.
 
 ```sh
 export DARLING_CLT_PACKAGE=/absolute/path/Command_Line_Tools_for_Xcode_13.2.pkg
