@@ -9,12 +9,13 @@ mirror:
   url: ../../source-bundles/ring-comparison/darlingserver.bundle
   base_ref: refs/tags/patch-stack/v1/bases/75d0fee5c5c38ad66bf3771479390011c9781d62
   base_oid: 75d0fee5c5c38ad66bf3771479390011c9781d62
-  source_ref: refs/tags/patch-stack/v1/sources/7b0926a7cd03923702476d5e2ff82d548631d7f5
-  source_oid: 7b0926a7cd03923702476d5e2ff82d548631d7f5
-source_commit: 7b0926a7cd03923702476d5e2ff82d548631d7f5
+  source_ref: refs/tags/patch-stack/v1/sources/4b12bfd5c8f0ffe40309618588299e2f9d82b205
+  source_oid: 4b12bfd5c8f0ffe40309618588299e2f9d82b205
+source_commit: 4b12bfd5c8f0ffe40309618588299e2f9d82b205
 ordered_commits:
   - fd8be44d1375e7e031fc5002f8db43cc4763d594
   - 7a1408544dea6d01d6be6a2fe1f06307e5f6d5d7
   - c04959f08af381054d834f347e8291601770e627
   - 7b0926a7cd03923702476d5e2ff82d548631d7f5
-expected_tree: 21509a1e87775da5ac6f19373f781dbf0d8c18f8
+  - 4b12bfd5c8f0ffe40309618588299e2f9d82b205
+expected_tree: 5203f6e531a2d42afaadd4ecfbfc3f5075749e83

@@ -54,7 +54,7 @@ patches:
     module: darling/src/external/darlingserver
     source-branch: fix/ring-comparison-server
     source-base: 75d0fee5c5c38ad66bf3771479390011c9781d62
-    source-commit: 7b0926a7cd03923702476d5e2ff82d548631d7f5
+    source-commit: 4b12bfd5c8f0ffe40309618588299e2f9d82b205
     bead: dar-gwn.7.7.2
     publication-status: blocked
     publication-blocker: Experimental common ring composition under dar-gwn.7.7; matched OFF/ON runtime acceptance and architecture review are required. No publication authorized.
@@ -107,4 +107,4 @@ patches:
           - "-Wextra"
           - "-Werror"
         timeout-seconds: 60
-    sha256sum: 9aabff5d3535cbc4ff9f9093e2b98dd71d335a60aef8a991b8c0901e38f681ae
+    sha256sum: 012b8cc505079eff706e1cdd31bc8353b533a7f1f20dea8b218241a9c6dc7a1b
