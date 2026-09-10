@@ -814,6 +814,11 @@ def runtime_deploy_targets(
     if rel.is_absolute() or ".." in rel.parts:
         raise ValueError(f"guest-runtime-deploy deploy path must be relative: {deploy_path}")
     if placement == "lower":
+        lower_root = prefix.resolve() / "libexec/darling"
+        if not (lower_root / rel).resolve().is_relative_to(lower_root):
+            raise ValueError(
+                f"guest-runtime-deploy lower resource escapes installed root: {deploy_path}"
+            )
         return [prefix / "libexec/darling" / rel]
     if placement != "runtime":
         raise ValueError(f"guest-runtime-deploy invalid placement: {placement!r}")

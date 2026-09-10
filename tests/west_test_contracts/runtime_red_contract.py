@@ -711,6 +711,24 @@ with tempfile.TemporaryDirectory() as temp:
             assert defaults_upper.read_bytes() == defaults_override
             assert defaults_lower.read_bytes() == defaults_previous
 
+    defaults_alias_prefix = Path(temp) / "redirected-lower"
+    defaults_alias_upper = defaults_alias_prefix / "private/etc/hosts"
+    defaults_alias_upper.parent.mkdir(parents=True)
+    defaults_alias_upper.write_bytes(b"127.0.0.2 retained-alias\n")
+    defaults_alias_root = defaults_alias_prefix / "libexec/darling"
+    defaults_alias_root.mkdir(parents=True)
+    (defaults_alias_root / "private").symlink_to(defaults_alias_prefix / "private")
+    try:
+        defaults_service.deployment_plan(
+            defaults_proof, build_root, defaults_alias_prefix
+        )
+    except AssertionError:
+        pass
+    else:
+        raise AssertionError("lower default followed a redirect into upper configuration")
+    assert defaults_alias_upper.read_bytes() == b"127.0.0.2 retained-alias\n"
+    assert (defaults_alias_root / "private").is_symlink()
+
     write_bootstrap_manifest([entry, entry])
     try:
         load_runtime_component_manifest(build_root)
