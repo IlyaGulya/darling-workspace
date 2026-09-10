@@ -17,6 +17,7 @@ from test_runtime import (
     ROOTLESS_BOOTSTRAP_RESOURCE,
     ROOTLESS_TOOLCHAIN_RESOURCE,
     RUNTIME_MODE_MARKER_NAME,
+    RuntimeComponentFile,
     is_fat_macho_binary,
     is_macho_binary,
     load_runtime_component_manifest,
@@ -169,8 +170,8 @@ class RuntimeDeploymentService:
         return providers
 
     def rootless_bootstrap_closure(
-        self, proof: dict, build_root: Path, explicit: dict[str, Path]
-    ) -> dict[str, Path]:
+        self, proof: dict, build_root: Path, explicit: dict[str, RuntimeComponentFile]
+    ) -> dict[str, RuntimeComponentFile]:
         resources = {
             artifact.get("resource")
             for artifact in proof.get("runtime-artifacts", [])
@@ -183,9 +184,9 @@ class RuntimeDeploymentService:
         if not component_resources:
             return {}
         roots = {
-            "/" + deploy_path: source
-            for deploy_path, source in explicit.items()
-            if is_macho_binary(source)
+            "/" + deploy_path: entry.source
+            for deploy_path, entry in explicit.items()
+            if is_macho_binary(entry.source)
         }
         if not roots:
             self._host.die(
@@ -200,7 +201,7 @@ class RuntimeDeploymentService:
         except ValueError as error:
             self._host.die(f"guest-runtime-deploy {error}")
         return {
-            guest_path.removeprefix("/"): source
+            guest_path.removeprefix("/"): RuntimeComponentFile(source)
             for guest_path, source in closure.items()
             if guest_path.removeprefix("/") not in explicit
         }
@@ -208,7 +209,7 @@ class RuntimeDeploymentService:
     def deployment_plan(
         self, proof: dict, build_root: Path, prefix: Path
     ) -> list[tuple[Path, Path]]:
-        deployments: dict[str, Path] = {}
+        deployments: dict[str, RuntimeComponentFile] = {}
         for artifact in proof.get("runtime-artifacts", []):
             for deploy_path in runtime_artifact_deploy_paths(artifact):
                 if deploy_path in deployments:
@@ -216,8 +217,8 @@ class RuntimeDeploymentService:
                         "guest-runtime-deploy has duplicate explicit deploy path: "
                         f"{deploy_path}"
                     )
-                deployments[deploy_path] = self._host._runtime_red_find_build_output(
-                    build_root, deploy_path
+                deployments[deploy_path] = RuntimeComponentFile(
+                    self._host._runtime_red_find_build_output(build_root, deploy_path)
                 )
         resources = {
             artifact.get("resource")
@@ -254,16 +255,17 @@ class RuntimeDeploymentService:
             & {ROOTLESS_BOOTSTRAP_RESOURCE, ROOTLESS_TOOLCHAIN_RESOURCE}
         )
         plan = []
-        for deploy_path, source in deployments.items():
+        for deploy_path, entry in deployments.items():
             try:
                 targets = runtime_deploy_targets(
-                    prefix, deploy_path, rootless_no_mount=rootless_no_mount
+                    prefix,
+                    deploy_path,
+                    rootless_no_mount=rootless_no_mount,
+                    placement=entry.placement,
                 )
-            except ValueError:
-                self._host.die(
-                    f"guest-runtime-deploy deploy path must be relative: {deploy_path}"
-                )
-            plan.extend((source, target) for target in targets)
+            except ValueError as error:
+                self._host.die(str(error))
+            plan.extend((entry.source, target) for target in targets)
         return plan
 
     def _runtime_mode_marker_required(

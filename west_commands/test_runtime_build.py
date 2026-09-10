@@ -429,7 +429,10 @@ class RuntimeBuildService:
                 ROOTLESS_TOOLCHAIN_RESOURCE: "darling-rootless-toolchain.json",
             }[resource]
             paths.add(build_root / manifest_name)
-            paths.update(load_runtime_component_manifest(build_root, resource).values())
+            paths.update(
+                entry.source
+                for entry in load_runtime_component_manifest(build_root, resource).values()
+            )
         macho_magics = {
             b"\xce\xfa\xed\xfe",
             b"\xcf\xfa\xed\xfe",

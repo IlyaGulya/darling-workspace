@@ -4031,16 +4031,6 @@ class DarlingTest(ProfileOperationsMixin, BootstrapRuntimeProfileMixin, WestComm
     ) -> dict[str, Path]:
         return RuntimeDeploymentService(self).macho_dylib_providers(build_root, explicit)
 
-    def _runtime_rootless_bootstrap_closure(
-        self,
-        proof,
-        build_root: Path,
-        explicit_deployments: dict[str, Path],
-    ) -> dict[str, Path]:
-        return RuntimeDeploymentService(self).rootless_bootstrap_closure(
-            proof, build_root, explicit_deployments
-        )
-
     def _runtime_red_deploy_targets(self, prefix: Path, deploy_path: str) -> list[Path]:
         try:
             return runtime_deploy_targets(prefix, deploy_path)

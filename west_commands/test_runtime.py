@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import re
 from collections.abc import Callable, Mapping
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
@@ -151,9 +152,17 @@ def is_fat_macho_binary(path: Path) -> bool:
         return False
 
 
+@dataclass(frozen=True)
+class RuntimeComponentFile:
+    """A built file and its source-declared filesystem placement."""
+
+    source: Path
+    placement: str = "runtime"
+
+
 def load_runtime_component_manifest(
     build_root: Path, resource: str = ROOTLESS_BOOTSTRAP_RESOURCE
-) -> dict[str, Path]:
+) -> dict[str, RuntimeComponentFile]:
     """Load one CMake-owned runtime component and validate its boundary.
 
     CMake owns the component's target-to-guest-path mapping. West only consumes
@@ -161,6 +170,9 @@ def load_runtime_component_manifest(
     build tree. ``entrypoints`` name built executables; ``resources`` name
     source-owned runtime files such as launchd plists. The runtime closure code
     separately selects only Mach-O entrypoints as dylib-dependency roots.
+    Schema 2 adds ``placement: lower`` for installed defaults. Such resources
+    never replace upper-prefix configuration. Schema 1 cannot declare placement,
+    so an older consumer rejects a schema-2 producer rather than ignoring it.
     """
 
     manifest_names = {
@@ -182,8 +194,8 @@ def load_runtime_component_manifest(
         raise ValueError(
             f"invalid runtime component manifest {manifest_path}: {exc.msg}"
         ) from exc
-    if not isinstance(data, dict) or data.get("schema") != 1:
-        raise ValueError(f"runtime component {resource!r} manifest must have schema 1")
+    if not isinstance(data, dict) or data.get("schema") not in (1, 2):
+        raise ValueError(f"runtime component {resource!r} manifest must have schema 1 or 2")
     entries = data.get("entrypoints")
     if not isinstance(entries, list) or not entries:
         raise ValueError(f"runtime component {resource!r} needs non-empty entrypoints")
@@ -192,7 +204,7 @@ def load_runtime_component_manifest(
         raise ValueError(f"runtime component {resource!r} resources must be a list")
 
     resolved_root = build_root.resolve()
-    deployments: dict[str, Path] = {}
+    deployments: dict[str, RuntimeComponentFile] = {}
 
     def load_entries(items: list[Any], kind: str, *, executable: bool) -> None:
         for index, entry in enumerate(items):
@@ -204,6 +216,15 @@ def load_runtime_component_manifest(
             target = entry.get("target")
             guest_path = entry.get("guest_path")
             host_path = entry.get("host_path")
+            placement = entry.get("placement", "runtime")
+            if (
+                ("placement" in entry and data["schema"] != 2)
+                or placement not in ("runtime", "lower")
+                or (executable and placement != "runtime")
+            ):
+                raise ValueError(
+                    f"runtime component {resource!r} {label} {index} has invalid placement {placement!r}"
+                )
             if not all(
                 isinstance(value, str) and value for value in (target, guest_path, host_path)
             ):
@@ -243,17 +264,13 @@ def load_runtime_component_manifest(
                 raise ValueError(
                     f"runtime component {resource!r} has duplicate guest path {guest_path!r}"
                 )
-            deployments[relative_guest_path] = resolved_source
+            deployments[relative_guest_path] = RuntimeComponentFile(
+                resolved_source, placement
+            )
 
     load_entries(entries, "entrypoints", executable=True)
     load_entries(resources, "resources", executable=False)
     return deployments
-
-
-def load_rootless_bootstrap_manifest(build_root: Path) -> dict[str, Path]:
-    """Load the source-owned minimal rootless bootstrap component."""
-
-    return load_runtime_component_manifest(build_root, ROOTLESS_BOOTSTRAP_RESOURCE)
 
 
 def parse_macho_dylib_id(output: str) -> str | None:
@@ -775,7 +792,11 @@ def runtime_build_targets(proof: dict[str, Any]) -> list[str]:
 
 
 def runtime_deploy_targets(
-    prefix: Path, deploy_path: str, *, rootless_no_mount: bool = False
+    prefix: Path,
+    deploy_path: str,
+    *,
+    rootless_no_mount: bool = False,
+    placement: str = "runtime",
 ) -> list[Path]:
     """Return prefix file targets for one runtime artifact deploy path.
 
@@ -785,11 +806,17 @@ def runtime_deploy_targets(
     code from the other view. A rootless no-mount prefix has the same two-view
     requirement for ``System`` paths because it cannot rely on the overlay to
     expose the lower template to the guest loader.
+    Source-declared lower defaults bypass upper copies so configured or empty
+    upper files remain authoritative across deployment and restoration.
     """
 
     rel = Path(deploy_path)
     if rel.is_absolute() or ".." in rel.parts:
         raise ValueError(f"guest-runtime-deploy deploy path must be relative: {deploy_path}")
+    if placement == "lower":
+        return [prefix / "libexec/darling" / rel]
+    if placement != "runtime":
+        raise ValueError(f"guest-runtime-deploy invalid placement: {placement!r}")
     if rel.parts and rel.parts[0] == "usr":
         return [prefix / "libexec/darling" / rel, prefix / rel]
     if rel.parts and rel.parts[0] == "System":
