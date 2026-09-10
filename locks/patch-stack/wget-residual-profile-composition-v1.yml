@@ -19,9 +19,9 @@ prerequisites:
 frozen_manifest: *id001
 mapping:
   path: lock-first-series-wget-residual-v1.yml
-  sha256: 15d45b35e335eed2e4993e59d5cd39e07e5b79345500b5b636ccd5cbeaeb3df5
+  sha256: af9c374c53d45ab09d1c0fc3e9d3ac08f8eaf91ba1931e1db9ad853bb8f8d701
   batch_id: wget-residual-local-immutable-batch-1
-  expected_count: 18
+  expected_count: 21
 modules:
 - module: darling
   starting:
@@ -72,8 +72,11 @@ modules:
   - patch: xnu/eunion-large-directory.patch
     lock: darling-xnu-eunion-large-directory-wget-v1.yml
     expected_applied_tree: 67305ae17539cfdb99dd4cd4e5cc230bdd02a234
-  final_tree: 67305ae17539cfdb99dd4cd4e5cc230bdd02a234
-  integration_final_tree: 67305ae17539cfdb99dd4cd4e5cc230bdd02a234
+  - patch: xnu/udp-packet-info.patch
+    lock: darling-xnu-udp-packet-info-wget-v1.yml
+    expected_applied_tree: 698d6b65b76e85266b721869e6a81e2af6576164
+  final_tree: 698d6b65b76e85266b721869e6a81e2af6576164
+  integration_final_tree: 698d6b65b76e85266b721869e6a81e2af6576164
 - module: darling/src/external/darlingserver
   starting:
     tree: 2d6f0321cfe205dba7302666bc470adb79a44003
@@ -101,3 +104,21 @@ modules:
     expected_applied_tree: e005b27b27eccc535494501c60bb4efe5cd0cc18
   final_tree: e005b27b27eccc535494501c60bb4efe5cd0cc18
   integration_final_tree: e005b27b27eccc535494501c60bb4efe5cd0cc18
+- module: darling/src/external/perl
+  starting:
+    tree: 4f1f2a7a7818800a8e39d1cddbcf7832c246e375
+  series:
+  - patch: perl/storable-xs-version.patch
+    lock: darling-perl-storable-xs-version-wget-v1.yml
+    expected_applied_tree: 67be959a9d5649f4bf2dbb743778221e9e9b0256
+  final_tree: 67be959a9d5649f4bf2dbb743778221e9e9b0256
+  integration_final_tree: 67be959a9d5649f4bf2dbb743778221e9e9b0256
+- module: darling/src/external/dyld
+  starting:
+    tree: 4dee94a7af9ac7fd1a15115c368d679553af8f8d
+  series:
+  - patch: dyld/fork-self-port-cache.patch
+    lock: darling-dyld-dyld-fork-self-port-cache-wget-v1.yml
+    expected_applied_tree: aec1e6256f8f2a6182d26b0b287d5672187532d2
+  final_tree: aec1e6256f8f2a6182d26b0b287d5672187532d2
+  integration_final_tree: aec1e6256f8f2a6182d26b0b287d5672187532d2

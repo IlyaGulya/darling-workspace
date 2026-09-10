@@ -1,7 +1,7 @@
 schema_version: 3
 profile: wget-residual
 batch_id: wget-residual-local-immutable-batch-1
-expected_count: 18
+expected_count: 21
 composition: wget-residual-profile-composition-v1.yml
 series:
 - profile: wget-residual
@@ -57,6 +57,10 @@ series:
   patch: xnu/eunion-large-directory.patch
   lock: darling-xnu-eunion-large-directory-wget-v1.yml
 - profile: wget-residual
+  module: darling/src/external/xnu
+  patch: xnu/udp-packet-info.patch
+  lock: darling-xnu-udp-packet-info-wget-v1.yml
+- profile: wget-residual
   module: darling/src/external/darlingserver
   patch: darlingserver/preserve-wait-state-on-resume.patch
   lock: darlingserver-preserve-wait-state-on-resume-wget-v1.yml
@@ -76,3 +80,11 @@ series:
   module: darling/src/external/libkqueue
   patch: libkqueue/close-knote-lifetime.patch
   lock: darling-libkqueue-close-knote-lifetime-wget-v1.yml
+- profile: wget-residual
+  module: darling/src/external/perl
+  patch: perl/storable-xs-version.patch
+  lock: darling-perl-storable-xs-version-wget-v1.yml
+- profile: wget-residual
+  module: darling/src/external/dyld
+  patch: dyld/fork-self-port-cache.patch
+  lock: darling-dyld-dyld-fork-self-port-cache-wget-v1.yml
