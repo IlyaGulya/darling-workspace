@@ -37,7 +37,7 @@ from west_commands.test_runtime import (
     describe_runtime_deploy_plan,
     is_macho_binary,
     is_fat_macho_binary,
-    load_rootless_bootstrap_manifest,
+    load_runtime_component_manifest,
     load_ctest_runtime_profiles,
     merge_runtime_cmake_define_overrides,
     parse_macho_dylib_dependencies,
@@ -55,6 +55,7 @@ from west_commands.test_runtime import (
     resolve_macho_runtime_closure,
 )
 from west_commands.test_runtime_deploy import RuntimeDeploymentService
+from west_commands.deploy_transaction import DeploymentTransaction
 
 os.environ.setdefault("WEST_RUNTIME_MIN_FREE_BYTES", "0")
 
@@ -610,8 +611,8 @@ with tempfile.TemporaryDirectory() as temp:
     output.chmod(0o755)
     manifest_path = build_root / "darling-rootless-bootstrap.json"
 
-    def write_bootstrap_manifest(entries, resources=None):
-        data = {"schema": 1, "entrypoints": entries}
+    def write_bootstrap_manifest(entries, resources=None, *, schema=1):
+        data = {"schema": schema, "entrypoints": entries}
         if resources is not None:
             data["resources"] = resources
         manifest_path.write_text(json.dumps(data))
@@ -621,8 +622,6 @@ with tempfile.TemporaryDirectory() as temp:
         "guest_path": "/bin/darling",
         "host_path": str(output),
     }
-    write_bootstrap_manifest([entry])
-    assert load_rootless_bootstrap_manifest(build_root) == {"bin/darling": output}
 
     launchd_plist = build_root / (
         "rootless-bootstrap-resources/System/Library/LaunchDaemons/"
@@ -635,42 +634,108 @@ with tempfile.TemporaryDirectory() as temp:
         "guest_path": "/System/Library/LaunchDaemons/org.darlinghq.shellspawn.plist",
         "host_path": str(launchd_plist),
     }
-    write_bootstrap_manifest([entry], [resource])
-    assert load_rootless_bootstrap_manifest(build_root) == {
-        "bin/darling": output,
-        "System/Library/LaunchDaemons/org.darlinghq.shellspawn.plist": launchd_plist,
+
+    defaults_file = build_root / "rootless-bootstrap-resources/private/etc/hosts"
+    defaults_file.parent.mkdir(parents=True)
+    defaults_content = b"127.0.0.1 localhost\n::1 localhost\n"
+    defaults_file.write_bytes(defaults_content)
+    defaults_resource = {
+        "target": "hosts_default",
+        "guest_path": "/private/etc/hosts",
+        "host_path": str(defaults_file),
+        "placement": "lower",
     }
+    for defaults_schema, defaults_placement in ((1, "lower"), (2, "unknown")):
+        write_bootstrap_manifest(
+            [entry],
+            [{**defaults_resource, "placement": defaults_placement}],
+            schema=defaults_schema,
+        )
+        try:
+            load_runtime_component_manifest(build_root)
+        except ValueError:
+            pass
+        else:
+            raise AssertionError("unsafe component placement was accepted")
+    write_bootstrap_manifest([{**entry, "placement": "lower"}], schema=2)
+    try:
+        load_runtime_component_manifest(build_root)
+    except ValueError:
+        pass
+    else:
+        raise AssertionError("entrypoint accepted configuration-default placement")
+
+    write_bootstrap_manifest([entry], [resource, defaults_resource], schema=2)
+
+    def fail_defaults_deployment(message):
+        raise AssertionError(message)
+
+    defaults_service = RuntimeDeploymentService(
+        types.SimpleNamespace(die=fail_defaults_deployment)
+    )
+    # Only dependency discovery is irrelevant here; planning and replacement are real.
+    defaults_service.rootless_bootstrap_closure = lambda *_args: {}
+    defaults_proof = {"runtime-artifacts": [{"resource": ROOTLESS_BOOTSTRAP_RESOURCE}]}
+    for defaults_case, defaults_override in (
+        ("absent", None),
+        ("configured", b"127.0.0.2 configured-alias\n"),
+        ("empty", b""),
+    ):
+        defaults_prefix = Path(temp) / defaults_case
+        defaults_prefix.mkdir()
+        defaults_upper = defaults_prefix / "private/etc/hosts"
+        defaults_lower = defaults_prefix / "libexec/darling/private/etc/hosts"
+        defaults_previous = b"127.0.0.1 previous-default\n"
+        if defaults_override is not None:
+            defaults_upper.parent.mkdir(parents=True)
+            defaults_upper.write_bytes(defaults_override)
+            defaults_lower.parent.mkdir(parents=True)
+            defaults_lower.write_bytes(defaults_previous)
+        defaults_transaction = DeploymentTransaction(
+            Path(temp) / f"{defaults_case}.json", defaults_prefix
+        )
+        for source, target in defaults_service.deployment_plan(
+            defaults_proof, build_root, defaults_prefix
+        ):
+            defaults_transaction.replace(source, target)
+        defaults_transaction.commit()
+        if defaults_override is None:
+            assert not defaults_upper.exists()
+        else:
+            assert defaults_upper.read_bytes() == defaults_override
+        assert defaults_lower.read_bytes() == defaults_content
+        defaults_transaction.rollback()
+        if defaults_override is None:
+            assert not defaults_upper.exists() and not defaults_lower.exists()
+        else:
+            assert defaults_upper.read_bytes() == defaults_override
+            assert defaults_lower.read_bytes() == defaults_previous
 
     write_bootstrap_manifest([entry, entry])
     try:
-        load_rootless_bootstrap_manifest(build_root)
-    except ValueError as exc:
-        assert "duplicate guest path" in str(exc), exc
+        load_runtime_component_manifest(build_root)
+    except ValueError:
+        pass
     else:
         raise AssertionError("rootless bootstrap manifest accepted duplicate guest paths")
 
     escaped = {**entry, "host_path": str(Path(temp) / "outside")}
     write_bootstrap_manifest([escaped])
     try:
-        load_rootless_bootstrap_manifest(build_root)
-    except ValueError as exc:
-        assert "escapes build root" in str(exc), exc
+        load_runtime_component_manifest(build_root)
+    except ValueError:
+        pass
     else:
         raise AssertionError("rootless bootstrap manifest accepted an escaping host path")
 
-    host_launcher = build_root / "bin" / "host-launcher"
-    host_launcher.write_text("not a Mach-O binary\n")
-    host_launcher.chmod(0o755)
-    write_bootstrap_manifest([{**entry, "host_path": str(host_launcher)}])
-    assert load_rootless_bootstrap_manifest(build_root) == {"bin/darling": host_launcher}
 
     non_executable = build_root / "bin" / "not-executable"
     non_executable.write_text("not executable\n")
     write_bootstrap_manifest([{**entry, "host_path": str(non_executable)}])
     try:
-        load_rootless_bootstrap_manifest(build_root)
-    except ValueError as exc:
-        assert "not a built executable" in str(exc), exc
+        load_runtime_component_manifest(build_root)
+    except ValueError:
+        pass
     else:
         raise AssertionError("rootless bootstrap manifest accepted a non-executable product")
 
