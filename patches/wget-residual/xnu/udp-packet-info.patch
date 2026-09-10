@@ -1,0 +1,201 @@
+From e257b18b2b2922dc5820bcf2a2db0fd21bc2fdd5 Mon Sep 17 00:00:00 2001
+From: Ilya Gulya <ilya@gulya.me>
+Date: Thu, 10 Sep 2026 08:16:47 +0000
+Subject: [PATCH] Translate IPv4 and IPv6 packet-info socket options and
+ control messages
+
+---
+ .../include/conversion/network/getsockopt.h   |  6 +++++
+ .../include/conversion/network/recvmsg.h      |  2 ++
+ .../src/conversion/network/getsockopt.c       |  6 +++++
+ .../src/conversion/network/recvmsg.c          | 26 +++++++++++++++++++
+ .../xnu_syscall/bsd/impl/network/recvmsg.c    | 11 +++++++-
+ .../xnu_syscall/bsd/impl/network/sendmsg.c    | 21 ++++++++++++---
+ 6 files changed, 68 insertions(+), 4 deletions(-)
+
+diff --git a/darling/src/libsystem_kernel/emulation/include/conversion/network/getsockopt.h b/darling/src/libsystem_kernel/emulation/include/conversion/network/getsockopt.h
+index dec8be606dc563147cef5a24fd136576457ab0af..6fe42e3fd765a0bfd3398b0bc3ed38859e14750b 100644
+--- a/darling/src/libsystem_kernel/emulation/include/conversion/network/getsockopt.h
++++ b/darling/src/libsystem_kernel/emulation/include/conversion/network/getsockopt.h
+@@ -94,6 +94,7 @@ enum
+ 	LINUX_IP_OPTIONS,
+ 	LINUX_IP_RECVOPTS = 6,
+ 	LINUX_IP_RETOPTS,
++	LINUX_IP_PKTINFO = 8,
+ 	LINUX_IP_RECVTTL = 12,
+ 	LINUX_IP_MULTICAST_IF = 32,
+ 	LINUX_IP_MULTICAST_TTL,
+@@ -117,6 +118,7 @@ enum
+ 	BSD_IP_ADD_MEMBERSHIP,
+ 	BSD_IP_DROP_MEMBERSHIP,
+ 	BSD_IP_RECVTTL = 24,
++	BSD_IP_PKTINFO = 26,
+ };
+ 
+ enum
+@@ -136,6 +138,8 @@ enum
+ 	LINUX_IPV6_JOIN_GROUP,
+ 	LINUX_IPV6_LEAVE_GROUP,
+ 	LINUX_IPV6_V6ONLY = 26,
++	LINUX_IPV6_RECVPKTINFO = 49,
++	LINUX_IPV6_PKTINFO = 50,
+ };
+ 
+ enum
+@@ -153,6 +157,8 @@ enum
+ 	BSD_IPV6_2292DSTOPTS,
+ 	BSD_IPV6_2292RTHDR,
+ 	BSD_IPV6_V6ONLY = 27,
++	BSD_IPV6_PKTINFO = 46,
++	BSD_IPV6_RECVPKTINFO = 61,
+ };
+ 
+ struct xnu_linger
+diff --git a/darling/src/libsystem_kernel/emulation/include/conversion/network/recvmsg.h b/darling/src/libsystem_kernel/emulation/include/conversion/network/recvmsg.h
+index be8a0f85770d3a6aac619fa8ad3ec64269455aad..bb5b60458faa82090db373faad55c45a19a670a1 100644
+--- a/darling/src/libsystem_kernel/emulation/include/conversion/network/recvmsg.h
++++ b/darling/src/libsystem_kernel/emulation/include/conversion/network/recvmsg.h
+@@ -47,6 +47,8 @@ struct linux_cmsghdr
+ 
+ int socket_level_bsd_to_linux(int level);
+ int socket_level_linux_to_bsd(int level);
++int socket_cmsg_type_bsd_to_linux(int level, int type);
++int socket_cmsg_type_linux_to_bsd(int level, int type);
+ 
+ #define LINUX_SYS_RECVMSG	17
+ 
+diff --git a/darling/src/libsystem_kernel/emulation/src/conversion/network/getsockopt.c b/darling/src/libsystem_kernel/emulation/src/conversion/network/getsockopt.c
+index 36b559bf5addd87f6cf7e6c0658cea9465ae11a3..6cb8d763d976ae65de85329a384fc0ecd194e998 100644
+--- a/darling/src/libsystem_kernel/emulation/src/conversion/network/getsockopt.c
++++ b/darling/src/libsystem_kernel/emulation/src/conversion/network/getsockopt.c
+@@ -129,6 +129,8 @@ int sockopt_bsd_to_linux(int* level, int* optname, void** optval, void* optbuf)
+ 				*optname = LINUX_IP_DROP_MEMBERSHIP; break;
+ 			case BSD_IP_RECVTTL:
+ 				*optname = LINUX_IP_RECVTTL; break;
++			case BSD_IP_PKTINFO:
++				*optname = LINUX_IP_PKTINFO; break;
+ 			default:
+ 				return -ENOTSUP;
+ 		}
+@@ -163,6 +165,10 @@ int sockopt_bsd_to_linux(int* level, int* optname, void** optval, void* optbuf)
+ 				*optname = LINUX_IPV6_2292RTHDR; break;
+ 			case BSD_IPV6_V6ONLY:
+ 				*optname = LINUX_IPV6_V6ONLY; break;
++			case BSD_IPV6_RECVPKTINFO:
++				*optname = LINUX_IPV6_RECVPKTINFO; break;
++			case BSD_IPV6_PKTINFO:
++				*optname = LINUX_IPV6_PKTINFO; break;
+ 			default:
+ 				return -ENOTSUP;
+ 		}
+diff --git a/darling/src/libsystem_kernel/emulation/src/conversion/network/recvmsg.c b/darling/src/libsystem_kernel/emulation/src/conversion/network/recvmsg.c
+index 48b24f6bd77ccf88e12cc1f119d18b535e77800b..498723ba51e72fa12039ecbc3b0cac8ddba1c205 100644
+--- a/darling/src/libsystem_kernel/emulation/src/conversion/network/recvmsg.c
++++ b/darling/src/libsystem_kernel/emulation/src/conversion/network/recvmsg.c
+@@ -23,3 +23,29 @@ int socket_level_linux_to_bsd(int level)
+ 			return level;
+ 	}
+ }
++
++int socket_cmsg_type_bsd_to_linux(int level, int type)
++{
++	if (level == XNU_IPPROTO_IP && type == BSD_IP_PKTINFO)
++		return LINUX_IP_PKTINFO;
++	if (level == XNU_IPPROTO_IPV6) {
++		if (type == BSD_IPV6_PKTINFO)
++			return LINUX_IPV6_PKTINFO;
++		if (type == BSD_IPV6_2292PKTINFO)
++			return LINUX_IPV6_2292PKTINFO;
++	}
++	return type;
++}
++
++int socket_cmsg_type_linux_to_bsd(int level, int type)
++{
++	if (level == XNU_IPPROTO_IP && type == LINUX_IP_PKTINFO)
++		return BSD_IP_PKTINFO;
++	if (level == XNU_IPPROTO_IPV6) {
++		if (type == LINUX_IPV6_PKTINFO)
++			return BSD_IPV6_PKTINFO;
++		if (type == LINUX_IPV6_2292PKTINFO)
++			return BSD_IPV6_2292PKTINFO;
++	}
++	return type;
++}
+diff --git a/darling/src/libsystem_kernel/emulation/src/xnu_syscall/bsd/impl/network/recvmsg.c b/darling/src/libsystem_kernel/emulation/src/xnu_syscall/bsd/impl/network/recvmsg.c
+index 927ccbb9dfb503a24b5c160e8953fea2ab037061..16d09df9159891d25dc6b3a600e8c295e0b60293 100644
+--- a/darling/src/libsystem_kernel/emulation/src/xnu_syscall/bsd/impl/network/recvmsg.c
++++ b/darling/src/libsystem_kernel/emulation/src/xnu_syscall/bsd/impl/network/recvmsg.c
+@@ -92,7 +92,7 @@ long sys_recvmsg_nocancel(int socket, struct bsd_msghdr* msg, int flags)
+ 
+ 					bnext->cmsg_len = lnext->cmsg_len - LINUX_BSD_CMSGHDR_SIZE_DIFFERENCE;
+ 					bnext->cmsg_level = socket_level_linux_to_bsd(lnext->cmsg_level);
+-					bnext->cmsg_type = lnext->cmsg_type;
++					bnext->cmsg_type = socket_cmsg_type_linux_to_bsd(lnext->cmsg_level, lnext->cmsg_type);
+ 
+ 					// __simple_printf("About to copy %d bytes\n", lnext->cmsg_len - sizeof(struct linux_cmsghdr));
+ 
+@@ -107,6 +107,15 @@ long sys_recvmsg_nocancel(int socket, struct bsd_msghdr* msg, int flags)
+ 			else
+ 			{
+ 				msg->msg_controllen = lmsg.msg_controllen;
++				for (size_t pos = 0; pos + sizeof(*bchdr) <= msg->msg_controllen;) {
++					bchdr = (struct bsd_cmsghdr*)((char*)msg->msg_control + pos);
++					if (bchdr->cmsg_len < sizeof(*bchdr) ||
++						bchdr->cmsg_len > msg->msg_controllen - pos)
++						break;
++					bchdr->cmsg_type = socket_cmsg_type_linux_to_bsd(bchdr->cmsg_level, bchdr->cmsg_type);
++					bchdr->cmsg_level = socket_level_linux_to_bsd(bchdr->cmsg_level);
++					pos += BSD_CMSG_ALIGN(bchdr->cmsg_len);
++				}
+ 			}
+ 		}
+ 
+diff --git a/darling/src/libsystem_kernel/emulation/src/xnu_syscall/bsd/impl/network/sendmsg.c b/darling/src/libsystem_kernel/emulation/src/xnu_syscall/bsd/impl/network/sendmsg.c
+index 9f5101a00a4308fb15d64a8b1c3e5720ef8449d7..7f8e89536f77c79ee91378003dfe11a5ed7b0469 100644
+--- a/darling/src/libsystem_kernel/emulation/src/xnu_syscall/bsd/impl/network/sendmsg.c
++++ b/darling/src/libsystem_kernel/emulation/src/xnu_syscall/bsd/impl/network/sendmsg.c
+@@ -1,6 +1,7 @@
+ #include <darling/emulation/xnu_syscall/bsd/impl/network/sendmsg.h>
+ 
+ #include <stddef.h>
++#include <sys/errno.h>
+ 
+ #include <darling/emulation/common/base.h>
+ #include <darling/emulation/conversion/errno.h>
+@@ -42,10 +43,24 @@ long sys_sendmsg_nocancel(int socket, const struct bsd_msghdr* msg, int flags)
+ 	lmsg.msg_iov = msg->msg_iov;
+ 	lmsg.msg_iovlen = msg->msg_iovlen;
+ 
+-	if (sizeof(unsigned long) == 4)
++	if (sizeof(unsigned long) == 4 && msg->msg_control != NULL && msg->msg_controllen > 0)
+ 	{
+-		lmsg.msg_control = msg->msg_control;
+ 		lmsg.msg_controllen = msg->msg_controllen;
++		lchdr = malloc(lmsg.msg_controllen);
++		if (lchdr == NULL)
++			return -ENOMEM;
++		memcpy(lchdr, msg->msg_control, lmsg.msg_controllen);
++		lmsg.msg_control = lchdr;
++		for (size_t pos = 0; pos + sizeof(*lchdr) <= lmsg.msg_controllen;) {
++			struct linux_cmsghdr* header = (struct linux_cmsghdr*)((char*)lchdr + pos);
++			if (header->cmsg_len < sizeof(*header) || header->cmsg_len > lmsg.msg_controllen - pos) {
++				free(lchdr);
++				return -EINVAL;
++			}
++			header->cmsg_type = socket_cmsg_type_bsd_to_linux(header->cmsg_level, header->cmsg_type);
++			header->cmsg_level = socket_level_bsd_to_linux(header->cmsg_level);
++			pos += LINUX_CMSG_ALIGN(header->cmsg_len);
++		}
+ 	}
+ 	else if (msg->msg_control != NULL && msg->msg_controllen > 0)
+ 	{
+@@ -61,7 +76,7 @@ long sys_sendmsg_nocancel(int socket, const struct bsd_msghdr* msg, int flags)
+ 
+ 		lchdr->cmsg_len = bchdr->cmsg_len + LINUX_BSD_CMSGHDR_SIZE_DIFFERENCE;
+ 		lchdr->cmsg_level = socket_level_bsd_to_linux(bchdr->cmsg_level);
+-		lchdr->cmsg_type = bchdr->cmsg_type;
++		lchdr->cmsg_type = socket_cmsg_type_bsd_to_linux(bchdr->cmsg_level, bchdr->cmsg_type);
+ 
+ 		memcpy(lchdr->cmsg_data, bchdr->cmsg_data,
+ 				bchdr->cmsg_len - sizeof(struct bsd_cmsghdr));

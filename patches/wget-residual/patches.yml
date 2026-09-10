@@ -525,3 +525,74 @@ patches:
         - usr/libexec/darling/mldr
     note: The same real Linux mapping obstacle and guest rm execute against current-minus and fixed loaders; setup failures are not semantic RED.
   sha256sum: bbf67620647a64b80cb96225240b36c1af4c2ff37fe79aca5329f13ba1c94680
+- path: xnu/udp-packet-info.patch
+  module: darling/src/external/xnu
+  source-branch: fix/udp-packet-info
+  source-base: affe1a99fff7df754f80deb1450e4a4a523f2b4d
+  source-commit: e257b18b2b2922dc5820bcf2a2db0fd21bc2fdd5
+  bead: dar-gwn.7.5
+  publication-status: blocked
+  publication-blocker: Local OpenSSL acceptance under dar-gwn.7.5; socket ABI review and existing ancillary-message limitations remain separate publication gates.
+  tests:
+  - name: udp_packet_info_guest
+    kind: guest
+    coverage-tier: runtime
+    runs: guest
+    diag: guarded
+    runner: guest-c-fixture
+    repo: darling-workspace
+    script: tests/udp_packet_info_guest.c
+    compile-flags: [-std=gnu11]
+    ok-marker: UDP_PACKET_INFO_OK
+    runtime-profile: homebrew-lz4-source
+    timeout-seconds: 60
+    note: Exercises real IPv4 and IPv6 packet-info enable/disable, source selection, destination/interface delivery, and immutable caller control data.
+  sha256sum: 88cc24dea7075f06d8121267d513c80593cd466228eb949ae3f4aac6cfbeaede
+- path: perl/storable-xs-version.patch
+  module: darling/src/external/perl
+  source-branch: fix/storable-xs-version
+  source-base: a65d68be2146d85928e511aabc8f3a2b05e564ba
+  source-commit: 2bb4b2f19174fdb3fd5116b256d463220443b094
+  bead: dar-gwn.7.5
+  publication-status: blocked
+  publication-blocker: Local native Perl packaging acceptance under dar-gwn.7.5; no publication authorized.
+  tests:
+  - name: storable_xs_roundtrip
+    kind: guest
+    coverage-tier: runtime
+    runs: guest
+    diag: guarded
+    runner: guest-command-fixture
+    repo: darling-workspace
+    guest-command: >-
+      /usr/bin/perl5.18 -MStorable=freeze,thaw -e 'my $a={items=>[1,2,{v=>"roundtrip"}]}; my $b=thaw(freeze($a)); die "bad roundtrip" unless $b->{items}[2]{v} eq "roundtrip"; print "STORABLE_ROUNDTRIP_OK\n";'
+    expect:
+      returncode: 0
+      output-contains: [STORABLE_ROUNDTRIP_OK]
+    runtime-profile: homebrew-lz4-source
+    timeout-seconds: 60
+  sha256sum: 18396c75020e4e624d3eee2325ae20894bb1d19724b3cfaeeae5602fb80fe99e
+- path: dyld/fork-self-port-cache.patch
+  module: darling/src/external/dyld
+  source-branch: fix/dyld-fork-self-port-cache
+  source-base: 63f667cf06d7ed59553adebb0c8d70a117135ac9
+  source-commit: 6022fa46aa56009d0d989124f27d777e2afed97e
+  bead: dar-gwn.7.5
+  publication-status: blocked
+  publication-blocker: Requires the homebrew XNU task-self cache reset interface; local post-fork loader proof under dar-gwn.7.5 does not authorize publication.
+  tests:
+  - name: dyld_postfork_fcntl_load
+    kind: guest
+    coverage-tier: runtime
+    runs: guest
+    diag: guarded
+    runner: guest-command-fixture
+    repo: darling-workspace
+    guest-command: >-
+      /usr/bin/perl5.18 -e 'my $p=fork(); die "fork: $!" unless defined $p; if (!$p) { require Fcntl; open my $f,"<","/dev/null" or die "open: $!"; die "fcntl: $!" unless defined fcntl($f,Fcntl::F_GETFD(),0); exit 0; } waitpid($p,0); die "child status=$?" if $?; require Fcntl; print "DYLD_POSTFORK_FCNTL_OK\n";'
+    expect:
+      returncode: 0
+      output-contains: [DYLD_POSTFORK_FCNTL_OK]
+    runtime-profile: homebrew-lz4-source
+    timeout-seconds: 60
+  sha256sum: cf14d23ddcb69190a7ad2d6e52b780d5e9edaebf3845b37146749f82542a1e26

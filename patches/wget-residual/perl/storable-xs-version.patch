@@ -1,0 +1,32 @@
+From 2bb4b2f19174fdb3fd5116b256d463220443b094 Mon Sep 17 00:00:00 2001
+From: Ilya Gulya <ilya@gulya.me>
+Date: Thu, 10 Sep 2026 08:16:59 +0000
+Subject: [PATCH] Derive Storable XS version from the authoritative Perl module
+
+---
+ 5.18/CMakeLists.txt | 12 +++++++++++-
+ 1 file changed, 11 insertions(+), 1 deletion(-)
+
+diff --git a/5.18/CMakeLists.txt b/5.18/CMakeLists.txt
+index 19d6a65ca6880fc74bf2e3052a392f101d3b4526..b069a321e7c01b38d8c49d8165500e60797bd289 100644
+--- a/5.18/CMakeLists.txt
++++ b/5.18/CMakeLists.txt
+@@ -420,7 +420,17 @@ add_bundle(Socket/Socket 2.009
+ 	perl/cpan/Socket/Socket.c
+ )
+ 
+-add_bundle(Storable/Storable 2.4
++# Match MakeMaker's VERSION_FROM so the XS bootstrap agrees with Storable.pm.
++set(storable_module "${CMAKE_CURRENT_SOURCE_DIR}/perl/dist/Storable/Storable.pm")
++set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS "${storable_module}")
++file(STRINGS "${storable_module}" storable_version_line
++	REGEX "^\\$VERSION = '[0-9]+\\.[0-9]+';"
++)
++string(REGEX MATCH "[0-9]+\\.[0-9]+" storable_version "${storable_version_line}")
++if(NOT storable_version)
++	message(FATAL_ERROR "Cannot determine Storable XS version from ${storable_module}")
++endif()
++add_bundle(Storable/Storable "${storable_version}"
+ 	perl/dist/Storable/Storable.c
+ )
+ 

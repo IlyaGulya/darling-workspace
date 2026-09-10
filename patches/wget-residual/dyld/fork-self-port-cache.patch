@@ -1,0 +1,32 @@
+From 6022fa46aa56009d0d989124f27d777e2afed97e Mon Sep 17 00:00:00 2001
+From: Ilya Gulya <ilya@gulya.me>
+Date: Thu, 10 Sep 2026 08:16:59 +0000
+Subject: [PATCH] Reset dyld embedded task-self cache before child port refresh
+
+---
+ src/dyldAPIs.cpp | 5 +++++
+ 1 file changed, 5 insertions(+)
+
+diff --git a/src/dyldAPIs.cpp b/src/dyldAPIs.cpp
+index 428f08f5fd405121793c300707b15558e5f9ff5f..813974ad37f12683fb17e8af95d42c633d333048 100644
+--- a/src/dyldAPIs.cpp
++++ b/src/dyldAPIs.cpp
+@@ -127,6 +127,7 @@ static int sLastErrorNo;
+ extern "C" int mach_driver_get_dyld_fd(void);
+ extern "C" void* elfcalls_get_pointer(void);
+ extern "C" void mach_driver_set_dyld_fd(int fd);
++extern "C" void __darling_reset_cached_self_ports(void);
+ #endif
+ 
+ // In 10.3.x and earlier all the NSObjectFileImage API's were implemeneted in libSystem.dylib
+@@ -1288,6 +1289,10 @@ void _dyld_fork_child()
+ 	// in mach_init() mach_task_self_ is initialized to task_self_trap().
+ 	//
+ 	extern mach_port_t	mach_task_self_;
++#ifdef DARLING
++	// dyld embeds a separate emulation cache; libSystem's fork hook cannot reset it.
++	__darling_reset_cached_self_ports();
++#endif
+ 	mach_task_self_ = task_self_trap();
+  	
+ 	// If dyld is sending load/unload notices to CoreSymbolication, the shared memory
