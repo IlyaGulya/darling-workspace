@@ -561,7 +561,7 @@ patches:
     kind: guest
     coverage-tier: runtime
     runs: guest
-    diag: guarded
+    diag: bare
     runner: guest-command-fixture
     repo: darling-workspace
     guest-command: >-
@@ -585,7 +585,7 @@ patches:
     kind: guest
     coverage-tier: runtime
     runs: guest
-    diag: guarded
+    diag: bare
     runner: guest-command-fixture
     repo: darling-workspace
     guest-command: >-
