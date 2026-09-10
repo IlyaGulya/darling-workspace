@@ -532,7 +532,7 @@ patches:
   source-commit: 8b87c8a76d0faf2d8a2808e74c330dea5e3ca952
   bead: dar-gwn.7.6
   publication-status: blocked
-  publication-blocker: IPv4 interface precedence defect reproduced under dar-gwn.7.6; socket ABI review and existing ancillary-message limitations remain publication gates despite completed stock OpenSSL acceptance.
+  publication-blocker: IPv4 interface precedence repair is accepted under dar-gwn.7.6; socket ABI review, existing ancillary-message limitations, and explicit publication authorization remain separate gates.
   tests:
   - name: udp_packet_info_guest
     kind: guest
