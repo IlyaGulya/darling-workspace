@@ -306,6 +306,12 @@ ordered commit graph and tree; an unavailable bundle fails even if the caller
 has the objects. Keep source inputs outside generated `handoff/`, which the
 transactional handoff replaces wholesale.
 
+Runtime-source admission follows the registered typed mapping and its
+profile-composition lock, not a hardcoded list of profile names. Register a new
+composition in `locks/patch-stack/lock-first-profiles-v1.yml`; its prerequisite
+trees, ordered series, batch count and final trees must all validate before
+materialization.
+
 The CTest bridge propagates guest upload, compile, run and timeout phases.
 Require the failure oracle in the guest execution phase for runtime RED;
 compiler diagnostics containing the marker do not satisfy that oracle.
@@ -836,6 +842,10 @@ profile source tree first, runs the script from that tree, and points
 profile-owned script is then run against the GREEN source tree. This proves the
 old behavior fails for the intended reason without mistaking "the new test file
 does not exist yet" for a regression.
+When the fixture also needs a paired module, give it a distinct test-level
+`source-env` for the selected profile's module root and derive the peer from
+that profile layout. Keep `red-proof.source-env` separate for the source under
+test. The relocated script's directory is not the complete profile forest.
 
 Use `runner: source-script-fixture` only when the script itself belongs to the
 source tree under test and already exists in both the RED source base and the
