@@ -1,0 +1,286 @@
+version: 1
+description: Disposable matched transport acceptance; archive and remove after execution.
+patches:
+  - path: darling/homebrew-prefix-tooling.patch
+    module: darling
+    source-branch: fix/homebrew-prefix-tooling
+    source-base: 23ccdeddaf85df02ef1c0e9570d2103308e21d2e
+    source-commit: 2fe91cebde866d372cddc69626a95555672a76c1
+    sha256sum: 64b3f523f70ca7427c3c961a5da72632685536345e9329307824720179ac4d45
+    bead: dar-gwn.7.7
+    publication-status: blocked
+    publication-blocker: "Disposable acceptance experiment, not publication source."
+    tests:
+      - name: comparison_off_malloc_region_growth
+        kind: guest
+        coverage-tier: runtime
+        runs: guest
+        diag: forensic
+        runner: guest-c-fixture
+        repo: darling-workspace
+        script: tests/_malloc_region_growth.c
+        ok-marker: MALLOC_REGION_GROWTH_OK
+        compile-flags: ["-std=gnu11", "-O2", "-Wall", "-Wextra", "-Werror"]
+        requires: [darling-prefix]
+        runtime-profile: homebrew-ring-off
+        timeout-seconds: 300
+      - name: comparison_off_cpack_link_probe
+        kind: guest
+        coverage-tier: runtime
+        runs: guest
+        diag: forensic
+        runner: python
+        repo: darling-workspace
+        requires:
+          - darling-prefix
+        runtime-profile: homebrew-ring-off
+        script: tests/_cpack_link_probe.py
+        timeout-seconds: 900
+      - kind: guest
+        coverage-tier: runtime
+        runs: guest
+        runner: guest-c-fixture
+        repo: darling-workspace
+        script: tests/microthread_resume_before_suspend_guest.c
+        ok-marker: MICROTHREAD_RESUME_BEFORE_SUSPEND_OK
+        compile-flags:
+          &compile-flags
+          - "-std=gnu11"
+          - "-Wall"
+          - "-Wextra"
+          - "-Werror"
+        guest-env-vars:
+          &guest-env-vars
+          DSERVER_TEST_FAULT_FILE: /private/var/tmp/dserver-microthread-resume-before-suspend-fault
+        host-temp-files:
+          &host-temp-files
+          - env: DSERVER_TEST_FAULT_FILE
+            prefix-relative-path: private/var/tmp/dserver-microthread-resume-before-suspend-fault
+        host-trace-files:
+          &host-trace-files
+          - env: DSERVER_TEST_TRACE_FILE
+            prefix-relative-path: private/var/tmp/dserver-microthread-resume-before-suspend.trace
+            contains:
+              - test_fault.consume name=microthread.resume_before_suspend
+              - microthread.dtape.resume_before_suspend
+              - microthread.suspend.consume_pending_resume
+        name: comparison_off_resume_ownership
+        diag: forensic
+        requires:
+          - darling-prefix
+        runtime-profile: homebrew-ring-off
+        timeout-seconds: 120
+      - kind: guest
+        coverage-tier: runtime
+        runs: guest
+        runner: guest-c-fixture
+        repo: darling-workspace
+        script: tests/checkin_exec_trace_guest.c
+        ok-marker: CHECKIN_EXEC_TRACE_GUEST_OK
+        compile-flags:
+          &compile-flags1
+          - "-std=gnu11"
+          - "-Wall"
+          - "-Wextra"
+          - "-Werror"
+        host-trace-files:
+          &host-trace-files1
+          - env: DSERVER_TEST_TRACE_FILE
+            prefix-relative-path: private/var/tmp/dserver-checkin-rwlock.trace
+            contains:
+              - process.checkin.exec_begin
+              - process.checkin.exec_dtape_create_unlocked
+        host-trace-oracle: true
+        name: comparison_off_exec_ownership
+        diag: forensic
+        requires:
+          - darling-prefix
+        runtime-profile: homebrew-ring-off
+        timeout-seconds: 120
+      - kind: guest
+        coverage-tier: runtime
+        runs: guest
+        diag: forensic
+        runner: guest-runtime-script
+        repo: darling-workspace
+        requires:
+          - darling-prefix
+          - homebrew-lz4
+        runtime-profile: homebrew-ring-off
+        name: comparison_off_lz4_source
+        script: tests/run-homebrew-lz4-source.sh
+        timeout-seconds: 1800
+      - kind: guest
+        coverage-tier: runtime
+        runs: guest
+        diag: forensic
+        runner: guest-runtime-script
+        repo: darling-workspace
+        requires:
+          &requires
+          - darling-prefix
+        runtime-profile: homebrew-ring-off
+        name: comparison_off_stock_reinstall
+        script: tests/_stock_stack_replay.py
+        timeout-seconds: 10800
+        env-vars:
+          WEST_STOCK_CORE_ARCHIVE: /home/ilyagulya/work/darling-debug/homebrew-core-ad6d3bbf8f5eac27a5ce90e695c6b41765d40bb7.tar.gz
+          WEST_STOCK_WGET_ARCHIVE: /home/ilyagulya/work/darling-debug/wget-1.25.0.tar.gz
+          WEST_STOCK_REPLAY_PHASE: reinstall
+      - kind: guest
+        coverage-tier: runtime
+        runs: guest
+        diag: forensic
+        runner: guest-runtime-script
+        repo: darling-workspace
+        requires:
+          *requires
+        runtime-profile: homebrew-ring-off
+        name: comparison_off_openssl
+        script: tests/_stock_stack_replay.py
+        timeout-seconds: 10800
+        env-vars:
+          WEST_STOCK_CORE_ARCHIVE: /home/ilyagulya/work/darling-debug/homebrew-core-ad6d3bbf8f5eac27a5ce90e695c6b41765d40bb7.tar.gz
+          WEST_STOCK_WGET_ARCHIVE: /home/ilyagulya/work/darling-debug/wget-1.25.0.tar.gz
+          WEST_STOCK_REPLAY_PHASE: openssl-tests
+      - kind: guest
+        coverage-tier: runtime
+        runs: guest
+        diag: forensic
+        runner: guest-runtime-script
+        repo: darling-workspace
+        requires:
+          *requires
+        runtime-profile: homebrew-ring-off
+        name: comparison_off_github
+        script: tests/_github_https_probe.py
+        timeout-seconds: 900
+      - kind: guest
+        coverage-tier: runtime
+        runs: guest
+        diag: forensic
+        runner: guest-runtime-script
+        repo: darling-workspace
+        requires:
+          *requires
+        runtime-profile: homebrew-ring-off
+        name: comparison_off_wget_repeat
+        script: tests/_stock_stack_replay.py
+        timeout-seconds: 18000
+        env-vars:
+          WEST_STOCK_CORE_ARCHIVE: /home/ilyagulya/work/darling-debug/homebrew-core-ad6d3bbf8f5eac27a5ce90e695c6b41765d40bb7.tar.gz
+          WEST_STOCK_WGET_ARCHIVE: /home/ilyagulya/work/darling-debug/wget-1.25.0.tar.gz
+          WEST_STOCK_REPLAY_PHASE: wget-repeat
+      - kind: guest
+        coverage-tier: runtime
+        runs: guest
+        runner: guest-c-fixture
+        repo: darling-workspace
+        script: tests/microthread_resume_before_suspend_guest.c
+        ok-marker: MICROTHREAD_RESUME_BEFORE_SUSPEND_OK
+        compile-flags:
+          *compile-flags
+        guest-env-vars:
+          *guest-env-vars
+        host-temp-files:
+          *host-temp-files
+        host-trace-files:
+          *host-trace-files
+        name: comparison_on_resume_ownership
+        diag: forensic
+        requires:
+          - darling-prefix
+        runtime-profile: homebrew-ring-on
+        timeout-seconds: 120
+      - kind: guest
+        coverage-tier: runtime
+        runs: guest
+        runner: guest-c-fixture
+        repo: darling-workspace
+        script: tests/checkin_exec_trace_guest.c
+        ok-marker: CHECKIN_EXEC_TRACE_GUEST_OK
+        compile-flags:
+          *compile-flags1
+        host-trace-files:
+          *host-trace-files1
+        host-trace-oracle: true
+        name: comparison_on_exec_ownership
+        diag: forensic
+        requires:
+          - darling-prefix
+        runtime-profile: homebrew-ring-on
+        timeout-seconds: 120
+      - kind: guest
+        coverage-tier: runtime
+        runs: guest
+        diag: forensic
+        runner: guest-runtime-script
+        repo: darling-workspace
+        requires:
+          - darling-prefix
+          - homebrew-lz4
+        runtime-profile: homebrew-ring-on
+        name: comparison_on_lz4_source
+        script: tests/run-homebrew-lz4-source.sh
+        timeout-seconds: 1800
+      - kind: guest
+        coverage-tier: runtime
+        runs: guest
+        diag: forensic
+        runner: guest-runtime-script
+        repo: darling-workspace
+        requires:
+          &requires1
+          - darling-prefix
+        runtime-profile: homebrew-ring-on
+        name: comparison_on_stock_install
+        script: tests/_stock_stack_replay.py
+        timeout-seconds: 10800
+        env-vars:
+          WEST_STOCK_CORE_ARCHIVE: /home/ilyagulya/work/darling-debug/homebrew-core-ad6d3bbf8f5eac27a5ce90e695c6b41765d40bb7.tar.gz
+          WEST_STOCK_WGET_ARCHIVE: /home/ilyagulya/work/darling-debug/wget-1.25.0.tar.gz
+          WEST_STOCK_REPLAY_PHASE: install
+      - kind: guest
+        coverage-tier: runtime
+        runs: guest
+        diag: forensic
+        runner: guest-runtime-script
+        repo: darling-workspace
+        requires:
+          *requires1
+        runtime-profile: homebrew-ring-on
+        name: comparison_on_openssl
+        script: tests/_stock_stack_replay.py
+        timeout-seconds: 10800
+        env-vars:
+          WEST_STOCK_CORE_ARCHIVE: /home/ilyagulya/work/darling-debug/homebrew-core-ad6d3bbf8f5eac27a5ce90e695c6b41765d40bb7.tar.gz
+          WEST_STOCK_WGET_ARCHIVE: /home/ilyagulya/work/darling-debug/wget-1.25.0.tar.gz
+          WEST_STOCK_REPLAY_PHASE: openssl-tests
+      - kind: guest
+        coverage-tier: runtime
+        runs: guest
+        diag: forensic
+        runner: guest-runtime-script
+        repo: darling-workspace
+        requires:
+          *requires1
+        runtime-profile: homebrew-ring-on
+        name: comparison_on_github
+        script: tests/_github_https_probe.py
+        timeout-seconds: 900
+      - kind: guest
+        coverage-tier: runtime
+        runs: guest
+        diag: forensic
+        runner: guest-runtime-script
+        repo: darling-workspace
+        requires:
+          *requires1
+        runtime-profile: homebrew-ring-on
+        name: comparison_on_wget_repeat
+        script: tests/_stock_stack_replay.py
+        timeout-seconds: 18000
+        env-vars:
+          WEST_STOCK_CORE_ARCHIVE: /home/ilyagulya/work/darling-debug/homebrew-core-ad6d3bbf8f5eac27a5ce90e695c6b41765d40bb7.tar.gz
+          WEST_STOCK_WGET_ARCHIVE: /home/ilyagulya/work/darling-debug/wget-1.25.0.tar.gz
+          WEST_STOCK_REPLAY_PHASE: wget-repeat

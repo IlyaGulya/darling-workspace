@@ -19,9 +19,9 @@ frozen_manifest:
   *frozen_manifest
 mapping:
   path: lock-first-series-ring-comparison-v1.yml
-  sha256: 26430a764134977a7652d8c797c29a9f29a48a90d4955e0e08ba2c3538d8ce12
+  sha256: 0987aaf764dbcfd1d74eec4da140f838c02f3ba3e018c44b153b6b318eb04e1d
   batch_id: ring-comparison-immutable-v1
-  expected_count: 2
+  expected_count: 3
 modules:
   - module: darling/src/external/xnu
     starting:
@@ -41,3 +41,12 @@ modules:
         expected_applied_tree: 5203f6e531a2d42afaadd4ecfbfc3f5075749e83
     final_tree: 5203f6e531a2d42afaadd4ecfbfc3f5075749e83
     integration_final_tree: 5203f6e531a2d42afaadd4ecfbfc3f5075749e83
+  - module: darling/src/external/libmalloc
+    starting:
+      tree: e87c35b81d1f5cce2672809fada3e38db718881d
+    series:
+      - patch: libmalloc/region-generation.patch
+        lock: ring-comparison-libmalloc-v1.yml
+        expected_applied_tree: 92a4080e35901a73c3cd1185cf650e0940152950
+    final_tree: 92a4080e35901a73c3cd1185cf650e0940152950
+    integration_final_tree: 92a4080e35901a73c3cd1185cf650e0940152950

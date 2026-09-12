@@ -108,3 +108,15 @@ patches:
           - "-Werror"
         timeout-seconds: 60
     sha256sum: 012b8cc505079eff706e1cdd31bc8353b533a7f1f20dea8b218241a9c6dc7a1b
+  - path: libmalloc/region-generation.patch
+    module: darling/src/external/libmalloc
+    source-branch: fix/malloc-region-generation
+    source-base: a57991e2651226a675654bd96e5d9ab6bec288c5
+    source-commit: 5981f90653196f2325b385446ba4254024138a13
+    bead: dar-gwn.7.7.4
+    publication-status: blocked
+    publication-blocker: Allocator generation lifetime correction requires native build and deployed runtime validation; original CPack crash attribution remains unproven.
+    test-exception:
+      reason: Deterministic host diagnostic is RED on base and GREEN on fixed source; native regression has not yet been integrated into the West runner.
+      scope: dar-gwn.7.7.4 owns native rack_region_generation_retained execution and fixed-runtime guest allocation and CPack acceptance.
+    sha256sum: cc465f553becb2eb10ff9e93a537f7486073d853fc1d32a6dbaf36223f26a4d9

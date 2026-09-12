@@ -1,0 +1,17 @@
+schema_version: 2
+project:
+  name: libmalloc
+  path: "."
+upstream:
+  url: https://github.com/darlinghq/darling-libmalloc.git
+  base_commit: a57991e2651226a675654bd96e5d9ab6bec288c5
+mirror:
+  url: ../../source-bundles/ring-comparison/libmalloc.bundle
+  base_ref: refs/tags/patch-stack/v1/bases/a57991e2651226a675654bd96e5d9ab6bec288c5
+  base_oid: a57991e2651226a675654bd96e5d9ab6bec288c5
+  source_ref: refs/tags/patch-stack/v1/sources/5981f90653196f2325b385446ba4254024138a13
+  source_oid: 5981f90653196f2325b385446ba4254024138a13
+source_commit: 5981f90653196f2325b385446ba4254024138a13
+ordered_commits:
+  - 5981f90653196f2325b385446ba4254024138a13
+expected_tree: 92a4080e35901a73c3cd1185cf650e0940152950

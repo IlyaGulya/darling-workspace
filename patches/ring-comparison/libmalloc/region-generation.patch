@@ -1,0 +1,343 @@
+From 5981f90653196f2325b385446ba4254024138a13 Mon Sep 17 00:00:00 2001
+From: Ilya Gulya <ilya@gulya.me>
+Date: Sat, 12 Sep 2026 08:32:09 +0000
+Subject: [PATCH] Retain immutable region hash generations for concurrent
+ readers
+
+---
+ src/magazine_inline.h | 23 +++++++++++++----------
+ src/magazine_malloc.c | 30 +++++++++++++++++++++---------
+ src/magazine_medium.c |  8 ++++++--
+ src/magazine_rack.c   | 37 ++++++++++++++++++-------------------
+ src/magazine_rack.h   |  2 +-
+ src/magazine_small.c  |  8 ++++++--
+ src/magazine_tiny.c   |  8 ++++++--
+ tests/magazine_rack.c | 22 ++++++++++++++++++++++
+ 8 files changed, 93 insertions(+), 45 deletions(-)
+
+diff --git a/src/magazine_inline.h b/src/magazine_inline.h
+index 1adf8c374f0137a7c2ac3b5778d8458259613290..b491ad6a7f463e2e57563c36a7ab885786df3ad4 100644
+--- a/src/magazine_inline.h
++++ b/src/magazine_inline.h
+@@ -401,15 +401,15 @@ hash_region_insert_no_lock(region_t *regions, size_t num_entries, size_t shift,
+ }
+ 
+ /*
+- * hash_regions_alloc_no_lock - Allocate space for a number of entries.  This
+- * must be a VM allocation as to avoid recursing between allocating a new small
++ * hash_regions_alloc_no_lock - Allocate entries and their retained descriptor.
++ * This must be a VM allocation as to avoid recursing between allocating a small
+  * region, and asking the small region to allocate space for the new list of
+  * regions.
+  */
+ static region_t *
+ hash_regions_alloc_no_lock(size_t num_entries)
+ {
+-	size_t size = num_entries * sizeof(region_t);
++	size_t size = num_entries * sizeof(region_t) + sizeof(region_hash_generation_t);
+ 	return mvm_allocate_pages(round_page_quanta(size), 0, DISABLE_ASLR, VM_MEMORY_MALLOC);
+ }
+ 
+@@ -525,9 +525,10 @@ region_set_cookie(region_cookie_t *cookiep)
+ static MALLOC_INLINE region_t
+ tiny_region_for_ptr_no_lock(rack_t *rack, const void *ptr)
+ {
+-	rgnhdl_t r = hash_lookup_region_no_lock(rack->region_generation->hashed_regions,
+-			rack->region_generation->num_regions_allocated,
+-			rack->region_generation->num_regions_allocated_shift,
++	region_hash_generation_t *generation = os_atomic_load(&rack->region_generation, acquire);
++	rgnhdl_t r = hash_lookup_region_no_lock(generation->hashed_regions,
++			generation->num_regions_allocated,
++			generation->num_regions_allocated_shift,
+ 			TINY_REGION_FOR_PTR(ptr));
+ 
+ 	return r ? *r : r;
+@@ -653,8 +654,9 @@ tiny_magazine_below_recirc_threshold(magazine_t *mag_ptr)
+ static MALLOC_INLINE region_t
+ small_region_for_ptr_no_lock(rack_t *rack, const void *ptr)
+ {
+-	rgnhdl_t r = hash_lookup_region_no_lock(rack->region_generation->hashed_regions,
+-			rack->region_generation->num_regions_allocated, rack->region_generation->num_regions_allocated_shift,
++	region_hash_generation_t *generation = os_atomic_load(&rack->region_generation, acquire);
++	rgnhdl_t r = hash_lookup_region_no_lock(generation->hashed_regions,
++			generation->num_regions_allocated, generation->num_regions_allocated_shift,
+ 			SMALL_REGION_FOR_PTR(ptr));
+ 	return r ? *r : r;
+ }
+@@ -704,8 +706,9 @@ medium_region_below_recirc_threshold(region_t region)
+ static MALLOC_INLINE region_t
+ medium_region_for_ptr_no_lock(rack_t *rack, const void *ptr)
+ {
+-	rgnhdl_t r = hash_lookup_region_no_lock(rack->region_generation->hashed_regions,
+-			rack->region_generation->num_regions_allocated, rack->region_generation->num_regions_allocated_shift,
++	region_hash_generation_t *generation = os_atomic_load(&rack->region_generation, acquire);
++	rgnhdl_t r = hash_lookup_region_no_lock(generation->hashed_regions,
++			generation->num_regions_allocated, generation->num_regions_allocated_shift,
+ 			MEDIUM_REGION_FOR_PTR(ptr));
+ 	return r ? *r : r;
+ }
+diff --git a/src/magazine_malloc.c b/src/magazine_malloc.c
+index 7a137d50122efac4c8e2ba694aeebb0338855b14..3133efdf1703840d85d27ca54d6a1d8289ecbd64 100644
+--- a/src/magazine_malloc.c
++++ b/src/magazine_malloc.c
+@@ -799,8 +799,12 @@ szone_check_all(szone_t *szone, const char *function)
+ 	size_t index;
+ 
+ 	/* check tiny regions - chould check region count */
+-	for (index = 0; index < szone->tiny_rack.region_generation->num_regions_allocated; ++index) {
+-		region_t tiny = szone->tiny_rack.region_generation->hashed_regions[index];
++	for (index = 0; ; ++index) {
++		region_hash_generation_t *generation = os_atomic_load(&szone->tiny_rack.region_generation, acquire);
++		if (index >= generation->num_regions_allocated) {
++			break;
++		}
++		region_t tiny = generation->hashed_regions[index];
+ 
+ 		if (HASHRING_REGION_DEALLOCATED == tiny) {
+ 			continue;
+@@ -828,8 +832,12 @@ szone_check_all(szone_t *szone, const char *function)
+ 	}
+ 
+ 	/* check small regions - could check region count */
+-	for (index = 0; index < szone->small_rack.region_generation->num_regions_allocated; ++index) {
+-		region_t small = szone->small_rack.region_generation->hashed_regions[index];
++	for (index = 0; ; ++index) {
++		region_hash_generation_t *generation = os_atomic_load(&szone->small_rack.region_generation, acquire);
++		if (index >= generation->num_regions_allocated) {
++			break;
++		}
++		region_t small = generation->hashed_regions[index];
+ 
+ 		if (HASHRING_REGION_DEALLOCATED == small) {
+ 			continue;
+@@ -859,8 +867,12 @@ szone_check_all(szone_t *szone, const char *function)
+ #if CONFIG_MEDIUM_ALLOCATOR
+ 	if (szone->is_medium_engaged) {
+ 		/* check medium regions - could check region count */
+-		for (index = 0; index < szone->medium_rack.region_generation->num_regions_allocated; ++index) {
+-			region_t medium = szone->medium_rack.region_generation->hashed_regions[index];
++		for (index = 0; ; ++index) {
++			region_hash_generation_t *generation = os_atomic_load(&szone->medium_rack.region_generation, acquire);
++			if (index >= generation->num_regions_allocated) {
++				break;
++			}
++			region_t medium = generation->hashed_regions[index];
+ 
+ 			if (HASHRING_REGION_DEALLOCATED == medium) {
+ 				continue;
+@@ -1060,7 +1072,7 @@ szone_print(task_t task, unsigned level, vm_address_t zone_address,
+ 	region_hash_generation_t *mapped_region_generation;
+ 	region_t *mapped_hashed_regions;
+ 	magazine_t *mapped_magazines;
+-	if (reader(task, (vm_address_t)mapped_szone->tiny_rack.region_generation,
++	if (reader(task, (vm_address_t)os_atomic_load(&mapped_szone->tiny_rack.region_generation, acquire),
+ 			sizeof(region_hash_generation_t), (void **)&mapped_region_generation)) {
+ 		printer("Failed to map tiny rack region_generation\n");
+ 		return;
+@@ -1126,7 +1138,7 @@ szone_print(task_t task, unsigned level, vm_address_t zone_address,
+ 		printer("[%lu small regions have been vm_deallocate'd]\n",
+ 				mapped_szone->small_rack.num_regions_dealloc);
+ 	}
+-	if (reader(task, (vm_address_t)mapped_szone->small_rack.region_generation,
++	if (reader(task, (vm_address_t)os_atomic_load(&mapped_szone->small_rack.region_generation, acquire),
+ 			sizeof(region_hash_generation_t), (void **)&mapped_region_generation)) {
+ 		printer("Failed to map small rack region_generation\n");
+ 		return;
+@@ -1194,7 +1206,7 @@ szone_print(task_t task, unsigned level, vm_address_t zone_address,
+ 			printer("[%lu medium regions have been vm_deallocate'd]\n",
+ 					mapped_szone->medium_rack.num_regions_dealloc);
+ 		}
+-		if (reader(task, (vm_address_t)mapped_szone->medium_rack.region_generation,
++		if (reader(task, (vm_address_t)os_atomic_load(&mapped_szone->medium_rack.region_generation, acquire),
+ 				sizeof(region_hash_generation_t), (void **)&mapped_region_generation)) {
+ 			printer("Failed to map medium rack region_generation\n");
+ 			return;
+diff --git a/src/magazine_medium.c b/src/magazine_medium.c
+index d0f122edd8fd747118c90d9d07b3e2a8798cdbfb..2f8806b43b91fce2af39762555a6e03bf265a2c2 100644
+--- a/src/magazine_medium.c
++++ b/src/magazine_medium.c
+@@ -1071,8 +1071,12 @@ medium_madvise_pressure_relief(rack_t *rack)
+ 
+ 	for (mag_index = 0; mag_index < rack->num_magazines; mag_index++) {
+ 		size_t index;
+-		for (index = 0; index < rack->region_generation->num_regions_allocated; ++index) {
++		for (index = 0; ; ++index) {
+ 			rack_region_lock(rack);
++			if (index >= rack->region_generation->num_regions_allocated) {
++				rack_region_unlock(rack);
++				break;
++			}
+ 
+ 			region_t medium = rack->region_generation->hashed_regions[index];
+ 			if (!medium || medium == HASHRING_REGION_DEALLOCATED) {
+@@ -2105,7 +2109,7 @@ medium_in_use_enumerator(task_t task,
+ 	magazine_t *medium_mag_base = NULL;
+ 
+ 	region_hash_generation_t *srg_ptr;
+-	err = reader(task, (vm_address_t)szone->medium_rack.region_generation, sizeof(region_hash_generation_t), (void **)&srg_ptr);
++	err = reader(task, (vm_address_t)os_atomic_load(&szone->medium_rack.region_generation, acquire), sizeof(region_hash_generation_t), (void **)&srg_ptr);
+ 	if (err) {
+ 		return err;
+ 	}
+diff --git a/src/magazine_rack.c b/src/magazine_rack.c
+index 9217ce19736c066be5c47c5ffd5264e747d8194c..f8a79d549e5f14a47e392d46a5206dcd33a92073 100644
+--- a/src/magazine_rack.c
++++ b/src/magazine_rack.c
+@@ -27,8 +27,8 @@ void
+ rack_init(rack_t *rack, rack_type_t type, uint32_t num_magazines, uint32_t debug_flags)
+ {
+ 	rack->type = type;
+-	rack->rg[0].nextgen = &rack->rg[1];
+-	rack->rg[1].nextgen = &rack->rg[0];
++	rack->rg[0].nextgen = NULL;
++	rack->rg[1].nextgen = NULL;
+ 	rack->region_generation = &rack->rg[0];
+ 
+ 	rack->region_generation->hashed_regions = rack->initial_regions;
+@@ -101,10 +101,14 @@ rack_destroy_regions(rack_t *rack, size_t region_size)
+ void
+ rack_destroy(rack_t *rack)
+ {
+-	/* if the rack has additional regions, then deallocate them */
+-	if (rack->region_generation->hashed_regions != rack->initial_regions) {
+-		size_t size = round_page_quanta(rack->region_generation->num_regions_allocated * sizeof(region_t));
+-		mvm_deallocate_pages(rack->region_generation->hashed_regions, size, 0);
++	/* Destruction is quiescent; retain every published generation until then. */
++	region_hash_generation_t *generation = rack->region_generation;
++	while (generation->hashed_regions != rack->initial_regions) {
++		region_hash_generation_t *previous = generation->nextgen;
++		size_t size = round_page_quanta(generation->num_regions_allocated * sizeof(region_t) +
++				sizeof(region_hash_generation_t));
++		mvm_deallocate_pages(generation->hashed_regions, size, 0);
++		generation = previous;
+ 	}
+ 
+ 	if (rack->num_magazines > 0) {
+@@ -135,19 +139,14 @@ rack_region_insert(rack_t *rack, region_t region)
+ 		size_t new_shift = rack->region_generation->num_regions_allocated_shift; // In/Out parameter
+ 		new_regions = hash_regions_grow_no_lock(rack->region_generation->hashed_regions,
+ 												rack->region_generation->num_regions_allocated, &new_shift, &new_size);
+-		// Do not deallocate the current hashed_regions allocation since someone may
+-		// be iterating it.  Instead, just leak it.
+-
+-		// Prepare to advance to the "next generation" of the hash ring.
+-		rack->region_generation->nextgen->hashed_regions = new_regions;
+-		rack->region_generation->nextgen->num_regions_allocated = new_size;
+-		rack->region_generation->nextgen->num_regions_allocated_shift = new_shift;
+-
+-		// Ensure everyone sees the advance.
+-		OSMemoryBarrier();
+-
+-		// Throw the switch to atomically advance to the next generation.
+-		rack->region_generation = rack->region_generation->nextgen;
++		// Readers can remain on any older generation across multiple growths.
++		// Keep its descriptor immutable, coallocated after its retained table.
++		region_hash_generation_t *next = (region_hash_generation_t *)(new_regions + new_size);
++		next->hashed_regions = new_regions;
++		next->num_regions_allocated = new_size;
++		next->num_regions_allocated_shift = new_shift;
++		next->nextgen = rack->region_generation;
++		os_atomic_store(&rack->region_generation, next, release);
+ 	}
+ 
+ 	// Insert the new region into the hash ring, and update malloc statistics
+diff --git a/src/magazine_rack.h b/src/magazine_rack.h
+index d77fc6d5922c6fa968acbb58d2438cedfd761a7f..d0bc8002f3f3a9069d90449bed7e596a0c9bab55 100644
+--- a/src/magazine_rack.h
++++ b/src/magazine_rack.h
+@@ -42,7 +42,7 @@ typedef struct region_hash_generation {
+ 	size_t num_regions_allocated;
+ 	size_t num_regions_allocated_shift; // log2(num_regions_allocated)
+ 	region_t *hashed_regions;			// hashed by location
+-	struct region_hash_generation *nextgen;
++	struct region_hash_generation *nextgen; // immutable link to the previous generation
+ } region_hash_generation_t;
+ 
+ OS_ENUM(rack_type, uint32_t,
+diff --git a/src/magazine_small.c b/src/magazine_small.c
+index afebb860642bff3d0fbc19f8f9f36f3500b29053..44f12156792759468b067efb5613d9c4ecb99485 100644
+--- a/src/magazine_small.c
++++ b/src/magazine_small.c
+@@ -993,8 +993,12 @@ small_madvise_pressure_relief(rack_t *rack)
+ 
+ 	for (mag_index = 0; mag_index < rack->num_magazines; mag_index++) {
+ 		size_t index;
+-		for (index = 0; index < rack->region_generation->num_regions_allocated; ++index) {
++		for (index = 0; ; ++index) {
+ 			rack_region_lock(rack);
++			if (index >= rack->region_generation->num_regions_allocated) {
++				rack_region_unlock(rack);
++				break;
++			}
+ 
+ 			region_t small = rack->region_generation->hashed_regions[index];
+ 			if (!small || small == HASHRING_REGION_DEALLOCATED) {
+@@ -1825,7 +1829,7 @@ small_in_use_enumerator(task_t task,
+ 	magazine_t *small_mag_base = NULL;
+ 
+ 	region_hash_generation_t *srg_ptr;
+-	err = reader(task, (vm_address_t)szone->small_rack.region_generation, sizeof(region_hash_generation_t), (void **)&srg_ptr);
++	err = reader(task, (vm_address_t)os_atomic_load(&szone->small_rack.region_generation, acquire), sizeof(region_hash_generation_t), (void **)&srg_ptr);
+ 	if (err) {
+ 		return err;
+ 	}
+diff --git a/src/magazine_tiny.c b/src/magazine_tiny.c
+index 4b8116a210ba68f40d5d5ddc7925b5ea6bb8ee94..988e8e53808db01f0946ccddb18727ee4ba406db 100644
+--- a/src/magazine_tiny.c
++++ b/src/magazine_tiny.c
+@@ -835,8 +835,12 @@ tiny_madvise_pressure_relief(rack_t *rack)
+ 
+ 	for (mag_index = 0; mag_index < rack->num_magazines; mag_index++) {
+ 		size_t index;
+-		for (index = 0; index < rack->region_generation->num_regions_allocated; ++index) {
++		for (index = 0; ; ++index) {
+ 			rack_region_lock(rack);
++			if (index >= rack->region_generation->num_regions_allocated) {
++				rack_region_unlock(rack);
++				break;
++			}
+ 
+ 			region_t tiny = rack->region_generation->hashed_regions[index];
+ 			if (!tiny || tiny == HASHRING_REGION_DEALLOCATED) {
+@@ -1860,7 +1864,7 @@ tiny_in_use_enumerator(task_t task,
+ 	magazine_t *tiny_mag_base = NULL;
+ 
+ 	region_hash_generation_t *trg_ptr;
+-	err = reader(task, (vm_address_t)szone->tiny_rack.region_generation, sizeof(region_hash_generation_t), (void **)&trg_ptr);
++	err = reader(task, (vm_address_t)os_atomic_load(&szone->tiny_rack.region_generation, acquire), sizeof(region_hash_generation_t), (void **)&trg_ptr);
+ 	if (err) {
+ 		return err;
+ 	}
+diff --git a/tests/magazine_rack.c b/tests/magazine_rack.c
+index f0fa97cb05a9848c1f27839bee56cafc86bdf3fd..59ca3624f14443ce4d3a6bd73bf04cec6d68d0dd 100644
+--- a/tests/magazine_rack.c
++++ b/tests/magazine_rack.c
+@@ -34,6 +34,28 @@ T_DECL(basic_magazine_deinit, "allocate deallocate magazines")
+ 	T_ASSERT_NULL(rack.magazines, "magazine deinit");
+ }
+ 
++T_DECL(rack_region_generation_retained, "region lookup survives two intervening table growths")
++{
++	rack_t rack = {0};
++	rack_init(&rack, RACK_TYPE_TINY, 1, 0);
++	// Region indexing never dereferences these synthetic, aligned addresses.
++	region_t anchor = (region_t)((uintptr_t)1 << HASH_BLOCKS_ALIGN);
++	rack_region_insert(&rack, anchor);
++	region_hash_generation_t *saved = os_atomic_load(&rack.region_generation, acquire);
++	region_t *table = saved->hashed_regions;
++
++	// Pause a reader between loading its table and the rest of its geometry.
++	// Two growths used to overwrite the descriptor that the reader retained.
++	for (size_t i = 2; i <= 2 * INITIAL_NUM_REGIONS; ++i) {
++		rack_region_insert(&rack, (region_t)((uintptr_t)i << HASH_BLOCKS_ALIGN));
++	}
++	rgnhdl_t slot = hash_lookup_region_no_lock(table, saved->num_regions_allocated,
++			saved->num_regions_allocated_shift, anchor);
++	T_ASSERT_NOTNULL(slot, "paused reader still finds its registered region");
++	T_ASSERT_EQ(*slot, anchor, "lookup preserves the region identity");
++	rack_destroy(&rack);
++}
++
+ void *
+ pressure_thread(void *arg)
+ {
