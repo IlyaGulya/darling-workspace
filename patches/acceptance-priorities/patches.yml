@@ -11,6 +11,20 @@ patches:
     publication-status: blocked
     publication-blocker: "Disposable acceptance experiment, not publication source."
     tests:
+      - name: comparison_on_malloc_native_pair
+        kind: guest
+        coverage-tier: runtime
+        runs: guest
+        diag: guarded
+        runner: python
+        repo: darling-workspace
+        script: tests/_malloc_native_pair.py
+        requires: [darling-prefix]
+        runtime-profile: homebrew-ring-on
+        env-vars:
+          MALLOC_NATIVE_BASE_BINARY: /home/ilyagulya/work/darling-debug/rack_region_generation_base
+          MALLOC_NATIVE_BASE_SHA256: ce559ed697643c285b9805f51383164049dddba03210c9ef35085ad853a2b8e8
+        timeout-seconds: 120
       - name: comparison_on_malloc_native
         kind: guest
         coverage-tier: runtime

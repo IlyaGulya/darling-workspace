@@ -14786,3 +14786,66 @@ index c3528e338ae7b5f22c37bc8c6b1dec7dcdfa6acb..7f02bd1d2f858d757d82c88f2b4edb73
  		_ring = ring;
  		_ringMonitor = monitor;
  	}
+
+From 7dc5e9d2d7801111789466ad70b6993c7f8f0c96 Mon Sep 17 00:00:00 2001
+From: Ilya Gulya <ilya@gulya.me>
+Date: Sat, 12 Sep 2026 10:23:10 +0000
+Subject: [PATCH] Canonicalize stats socket identity across rootless prefix
+ capabilities
+
+---
+ src/server.cpp               | 6 ++++--
+ tools/darling-progress-watch | 2 +-
+ tools/darling-stat           | 2 +-
+ 3 files changed, 6 insertions(+), 4 deletions(-)
+
+diff --git a/src/server.cpp b/src/server.cpp
+index b11b554f61dce5e4aa3050b63248534482076ddf..a6f1911ade4fdbede93fe779036fad0004a403ea 100644
+--- a/src/server.cpp
++++ b/src/server.cpp
+@@ -33,6 +33,7 @@
+ #include <sstream>
+ #include <cstddef>
+ #include <unordered_map>
++#include <filesystem>
+ #include <darlingserver/registry.hpp>
+ #include <sys/eventfd.h>
+ #include <darlingserver/duct-tape.h>
+@@ -462,8 +463,9 @@ DarlingServer::Server::Server(
+ 	_rootlessInitHostPID(rootlessInitHostPID),
+ 	_socketPath(_prefix + "/.darlingserver.sock"),
+ 	// abstract-namespace name for the stat socket (see the stat-socket setup below for
+-	// why abstract and not a pathname). Keyed off the prefix so distinct prefixes differ.
+-	_statSocketPath("darlingserver-stat:" + _prefix),
++	// why abstract and not a pathname). Resolve rootless /proc/self/fd capabilities
++	// to the same canonical prefix identity used by host-side clients.
++	_statSocketPath("darlingserver-stat:" + std::filesystem::canonical(_prefix).string()),
+ 	_workQueue(std::bind(&Server::_worker, this, std::placeholders::_1))
+ {
+ 	sharedInstancePointer = this;
+diff --git a/tools/darling-progress-watch b/tools/darling-progress-watch
+index c013a15b5c84795c54a67e0a52c586d8aa5ebcf0..88d2edcb4c58f3c6595aad764151ff77fe9c4b68 100755
+--- a/tools/darling-progress-watch
++++ b/tools/darling-progress-watch
+@@ -27,7 +27,7 @@ import time
+ 
+ def abstract_addr(prefix):
+     # stat socket is in the abstract namespace (see darling-stat for why); addr = NUL + name
+-    return "\0" + "darlingserver-stat:" + os.path.abspath(prefix)
++    return "\0" + "darlingserver-stat:" + os.path.realpath(prefix)
+ 
+ 
+ def read_snapshot(addr, timeout=5):
+diff --git a/tools/darling-stat b/tools/darling-stat
+index bcbc8bf1bff71786b6883d86b79d7da4f087b224..73ccb4f86de0f8f0e213aab4b9ae24eb117777a6 100755
+--- a/tools/darling-stat
++++ b/tools/darling-stat
+@@ -26,7 +26,7 @@ def main():
+     # The stat socket is in the ABSTRACT namespace (the server runs in a private mount
+     # namespace; the net namespace is shared with the host, so an abstract name works
+     # where a pathname socket would not). Abstract address = leading NUL + name.
+-    name = "darlingserver-stat:" + os.path.abspath(prefix)
++    name = "darlingserver-stat:" + os.path.realpath(prefix)
+     addr = "\0" + name
+     try:
+         s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
