@@ -230,36 +230,36 @@ import sys
 
 specs = json.loads(sys.argv[1])
 with open(sys.argv[2], encoding="utf-8") as handle:
-before = json.load(handle)
+    before = json.load(handle)
 with open(sys.argv[3], encoding="utf-8") as handle:
-after = json.load(handle)
+    after = json.load(handle)
 
 def value_at(snapshot, path):
-current = snapshot
-for part in path.split("."):
-    if not isinstance(current, dict) or part not in current:
-        raise KeyError(path)
-    current = current[part]
-if not isinstance(current, (int, float)):
-    raise TypeError(path)
-return current
+    current = snapshot
+    for part in path.split("."):
+        if not isinstance(current, dict) or part not in current:
+            raise KeyError(path)
+        current = current[part]
+    if not isinstance(current, (int, float)):
+        raise TypeError(path)
+    return current
 
 failed = False
 for spec in specs:
-path = str(spec["path"])
-minimum = float(spec.get("min-delta", 1))
-old = value_at(before, path)
-new = value_at(after, path)
-delta = new - old
-print(f"HOST_STAT_DELTA {path} {delta:g}")
-if delta < minimum:
-    print(
-        f"host stat delta too small for {path}: {delta:g} < {minimum:g}",
-        file=sys.stderr,
-    )
-    failed = True
+    path = str(spec["path"])
+    minimum = float(spec.get("min-delta", 1))
+    old = value_at(before, path)
+    new = value_at(after, path)
+    delta = new - old
+    print(f"HOST_STAT_DELTA {path} {delta:g}")
+    if delta < minimum:
+        print(
+            f"host stat delta too small for {path}: {delta:g} < {minimum:g}",
+            file=sys.stderr,
+        )
+        failed = True
 if failed:
-sys.exit(1)
+    sys.exit(1)
 PY"""
         needs_server_env_restart = bool(
             invocation.get("host_temp_files")
