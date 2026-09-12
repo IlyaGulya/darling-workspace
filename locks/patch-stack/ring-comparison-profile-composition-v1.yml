@@ -29,18 +29,18 @@ modules:
     series:
       - patch: xnu/ring-comparison-guest.patch
         lock: ring-comparison-guest-v1.yml
-        expected_applied_tree: ad3ea5ed1e1031d543338e15d8fdbacf971f8e9b
-    final_tree: ad3ea5ed1e1031d543338e15d8fdbacf971f8e9b
-    integration_final_tree: ad3ea5ed1e1031d543338e15d8fdbacf971f8e9b
+        expected_applied_tree: 338cee7664c4d27da7cf10268760984995b17554
+    final_tree: 338cee7664c4d27da7cf10268760984995b17554
+    integration_final_tree: 338cee7664c4d27da7cf10268760984995b17554
   - module: darling/src/external/darlingserver
     starting:
       tree: e450e0f25504d2129e3e00356536ad05f21749fa
     series:
       - patch: darlingserver/ring-comparison-server.patch
         lock: ring-comparison-server-v1.yml
-        expected_applied_tree: 5203f6e531a2d42afaadd4ecfbfc3f5075749e83
-    final_tree: 5203f6e531a2d42afaadd4ecfbfc3f5075749e83
-    integration_final_tree: 5203f6e531a2d42afaadd4ecfbfc3f5075749e83
+        expected_applied_tree: e4419cea356a1994d0b444763f40f8648a079fa8
+    final_tree: e4419cea356a1994d0b444763f40f8648a079fa8
+    integration_final_tree: e4419cea356a1994d0b444763f40f8648a079fa8
   - module: darling/src/external/libmalloc
     starting:
       tree: e87c35b81d1f5cce2672809fada3e38db718881d

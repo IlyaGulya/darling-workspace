@@ -6,7 +6,7 @@ patches:
     module: darling/src/external/xnu
     source-branch: fix/ring-comparison-guest
     source-base: 9736367393c97fdb3cd3d393f15cc922744a9c5a
-    source-commit: 044dd407380be3c5e5307583791f5475ebfbf962
+    source-commit: 0360502b50a30555dfadb31a1a0001c89e27fc8c
     bead: dar-gwn.7.7.1
     publication-status: blocked
     publication-blocker: Experimental common ring composition under dar-gwn.7.7; matched OFF/ON runtime acceptance and architecture review are required. No publication authorized.
@@ -49,12 +49,12 @@ patches:
             min-delta: 1
           - path: ring_fast_hit
             min-delta: 1
-    sha256sum: 0036cc3dbdcfaa47baf36ea2eca05ecaabdea9eb7ea698e210cf12897e3878b9
+    sha256sum: 862c5985e09200e952f6cd7d33f3743ce008ba40e2403d5631fac393f5c78ff6
   - path: darlingserver/ring-comparison-server.patch
     module: darling/src/external/darlingserver
     source-branch: fix/ring-comparison-server
     source-base: 75d0fee5c5c38ad66bf3771479390011c9781d62
-    source-commit: 4b12bfd5c8f0ffe40309618588299e2f9d82b205
+    source-commit: c8719f43ba99869e39bd364125e2184ae91d4258
     bead: dar-gwn.7.7.2
     publication-status: blocked
     publication-blocker: Experimental common ring composition under dar-gwn.7.7; matched OFF/ON runtime acceptance and architecture review are required. No publication authorized.
@@ -107,7 +107,7 @@ patches:
           - "-Wextra"
           - "-Werror"
         timeout-seconds: 60
-    sha256sum: 012b8cc505079eff706e1cdd31bc8353b533a7f1f20dea8b218241a9c6dc7a1b
+    sha256sum: c5f20ae3288d3b9421635073ea66944a782a997544a6b5589e83fb0b40e4e70c
   - path: libmalloc/region-generation.patch
     module: darling/src/external/libmalloc
     source-branch: fix/malloc-region-generation

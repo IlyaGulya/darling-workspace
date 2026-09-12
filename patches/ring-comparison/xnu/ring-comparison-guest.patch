@@ -5307,3 +5307,46 @@ index f3670878f59bbf29b1505441a8700cfe305242f3..81d12cc7fb516d05175e752c7afed437
      setup(WRONG_SIZE);
      assert(__dserver_ring_mach_port_allocate(1, 1, 0, &code) == 0);
      assert(code == KERN_FAILURE && published == 1); /* Mach remains positive. */
+
+From 0360502b50a30555dfadb31a1a0001c89e27fc8c Mon Sep 17 00:00:00 2001
+From: Ilya Gulya <ilya@gulya.me>
+Date: Sat, 12 Sep 2026 10:06:38 +0000
+Subject: [PATCH] Stop publishing to lanes retired by another guest image
+
+---
+ .../src/linux_premigration/resources/dserver-ring.c         | 6 ++++++
+ darling/tests/ring-completion/fixture.c                     | 4 ++++
+ 2 files changed, 10 insertions(+)
+
+diff --git a/darling/src/libsystem_kernel/emulation/src/linux_premigration/resources/dserver-ring.c b/darling/src/libsystem_kernel/emulation/src/linux_premigration/resources/dserver-ring.c
+index 3e41d6228802acc946dd9ad5870ecbad53e52e3e..62957ccad5ef7f16d2249f8b5a27f3796dd11ef3 100644
+--- a/darling/src/libsystem_kernel/emulation/src/linux_premigration/resources/dserver-ring.c
++++ b/darling/src/libsystem_kernel/emulation/src/linux_premigration/resources/dserver-ring.c
+@@ -360,6 +360,12 @@ static gr_lane_t* gr_lane_for_this_thread(void) {
+ 	int tid = (int)LINUX_SYSCALL(__NR_gettid);
+ 	gr_lane_t* L = gr_find_lane(tid);
+ 	if (L) {
++		if (L->state == 1 &&
++		    __atomic_load_n(&gr_cb(L)->server_state, __ATOMIC_ACQUIRE) == DSERVER_RING_SRV_RETIRED) {
++			// Another image now owns this thread's server-side lane. Keep this
++			// image on UDS rather than stealing it back on every image switch.
++			L->state = -1;
++		}
+ 		return (L->state == 1) ? L : 0;
+ 	}
+ 	return gr_attach_lane(tid);
+diff --git a/darling/tests/ring-completion/fixture.c b/darling/tests/ring-completion/fixture.c
+index 81d12cc7fb516d05175e752c7afed43751e85d0b..4648cddfe39fb96b16f01dcdd5d93defb363745a 100644
+--- a/darling/tests/ring-completion/fixture.c
++++ b/darling/tests/ring-completion/fixture.c
+@@ -116,6 +116,10 @@ static void port_callers(void) {
+         assert(callers[i]() == reply_port);
+         assert(published == 1 && uds_calls == 0);
+         setup(GOOD);
++        gr_cb(lane)->server_state = DSERVER_RING_SRV_RETIRED;
++        assert(callers[i]() == reply_port);
++        assert(published == 0 && uds_calls == 1);
++        setup(GOOD);
+         lane->state = -1; /* a pre-publication miss must still permit UDS */
+         assert(callers[i]() == reply_port);
+         assert(published == 0 && uds_calls == 1);
