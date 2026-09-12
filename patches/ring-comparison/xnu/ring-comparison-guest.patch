@@ -5148,3 +5148,162 @@ index 6d4e911bd23805cb6ac34a2f0a1ac01e9083999a..3bd87919321d1e331884765e66a0f678
  generated_override = os.environ.get("DSERVER_GEN_INC")
  if not (server / "include/darlingserver/rpc-supplement.h").is_file():
      raise SystemExit("DSERVER_SOURCE must contain the paired server source")
+
+From 044dd407380be3c5e5307583791f5475ebfbf962 Mon Sep 17 00:00:00 2001
+From: Ilya Gulya <ilya@gulya.me>
+Date: Sat, 12 Sep 2026 09:41:13 +0000
+Subject: [PATCH] Respect generated RPC tail padding in ring completions
+
+---
+ .../resources/dserver-ring.c                  | 31 ++++++++++---------
+ darling/tests/ring-completion/fixture.c       | 17 ++++++++--
+ 2 files changed, 31 insertions(+), 17 deletions(-)
+
+diff --git a/darling/src/libsystem_kernel/emulation/src/linux_premigration/resources/dserver-ring.c b/darling/src/libsystem_kernel/emulation/src/linux_premigration/resources/dserver-ring.c
+index 237a5450c984ed8d157a1153c8677f25f565693c..3e41d6228802acc946dd9ad5870ecbad53e52e3e 100644
+--- a/darling/src/libsystem_kernel/emulation/src/linux_premigration/resources/dserver-ring.c
++++ b/darling/src/libsystem_kernel/emulation/src/linux_premigration/resources/dserver-ring.c
+@@ -668,18 +668,19 @@ static int gr_body_trap(uint32_t callnum, const void* body, uint32_t bodylen, in
+ // The transport result stays separate: -1 permits a pre-publication UDS fallback; 0 means the
+ // operation was published. An unknown completion returns 0 with *out_code=-LINUX_EIO, so callers
+ // observe failure rather than consuming an uninitialized reply or repeating the operation.
+-// `replylen` is the EXACT expected reply-body size (0 for a
+-// header-only reply -- then reply_out may be NULL); the reply is accepted only if rep->length ==
+-// sizeof(reply_hdr) + replylen.
++// Validate the complete generated wire body, including RPC tail padding, but
++// copy only the actual fields. For example a bool body occupies one byte while
++// its enclosing RPC reply has three bytes of tail padding.
++#define GR_REPLY_WIRE_SIZE(op) (sizeof(dserver_rpc_reply_##op##_t) - sizeof(dserver_rpc_replyhdr_t))
+ static int gr_full_trap(uint32_t callnum, const void* body, uint32_t bodylen,
+-                        void* reply_out, uint32_t replylen, int* out_code) {
++                        void* reply_out, uint32_t replylen, uint32_t wirelen, int* out_code) {
+ 	gr_lane_t* L = gr_lane_for_this_thread();
+ 	if (!L) {
+ 		return -1; // no ring for this thread -> UDS fallback
+ 	}
+ 
+ 	uint32_t inlineCap = GR_SLOT_SIZE - (uint32_t)sizeof(dserver_ring_slot_t);
+-	if (bodylen > inlineCap || (uint32_t)sizeof(dserver_ring_reply_hdr_t) + replylen > inlineCap) {
++	if (bodylen > inlineCap || replylen > wirelen || (uint32_t)sizeof(dserver_ring_reply_hdr_t) + wirelen > inlineCap) {
+ 		return -1; // body/reply won't fit the slot -> UDS fallback (shouldn't happen for our small ops)
+ 	}
+ 
+@@ -719,12 +720,12 @@ static int gr_full_trap(uint32_t callnum, const void* body, uint32_t bodylen,
+ #endif
+ 
+ 	// Validate the reply belongs to our request before trusting it. The reply must be EXACTLY
+-	// {reply_hdr, replylen-byte body}; a different length means the server replied with a different
+-	// shape (error/wrong op) -> fail closed without retrying the published operation.
++	// {reply_hdr, wirelen-byte body}; padding is part of the wire shape, not the
++	// fields copied to the caller. Malformed replies must never trigger replay.
+ 	int rc = 0;
+ 	if (out_code) *out_code = -LINUX_EIO;
+ 	if (rep->seq == seq && rep->callnum == callnum) {
+-		if (rep->length == (uint32_t)sizeof(dserver_ring_reply_hdr_t) + replylen && rep->length <= inlineCap) {
++		if (rep->length == (uint32_t)sizeof(dserver_ring_reply_hdr_t) + wirelen && rep->length <= inlineCap) {
+ 			char* payload = (char*)rep + sizeof(dserver_ring_slot_t);
+ 			dserver_ring_reply_hdr_t* rh = (dserver_ring_reply_hdr_t*)payload;
+ 			if (out_code) *out_code = rh->code;
+@@ -761,7 +762,7 @@ int __dserver_ring_uidgid(int32_t new_uid, int32_t new_gid, int32_t* out_old_uid
+ 	struct { int32_t new_uid; int32_t new_gid; } body = { new_uid, new_gid };
+ 	struct { int32_t old_uid; int32_t old_gid; } reply;
+ 	int rc = gr_full_trap((uint32_t)dserver_callnum_uidgid, &body, (uint32_t)sizeof(body),
+-	                      &reply, (uint32_t)sizeof(reply), out_code);
++	                      &reply, (uint32_t)sizeof(reply), GR_REPLY_WIRE_SIZE(uidgid), out_code);
+ 	if (rc == 0 && out_code && *out_code == 0) {
+ 		if (out_old_uid) *out_old_uid = reply.old_uid;
+ 		if (out_old_gid) *out_old_gid = reply.old_gid;
+@@ -776,14 +777,14 @@ int __dserver_ring_set_thread_handles(uint64_t pthread_handle, uint64_t dispatch
+ 		uint64_t dispatch_qaddr __attribute__((aligned(8)));
+ 	} body = { pthread_handle, dispatch_qaddr };
+ 	return gr_full_trap((uint32_t)dserver_callnum_set_thread_handles, &body, (uint32_t)sizeof(body),
+-	                    (void*)0, 0, out_code);
++	                    (void*)0, 0, GR_REPLY_WIRE_SIZE(set_thread_handles), out_code);
+ }
+ 
+ int __dserver_ring_started_suspended(bool* out_suspended, int* out_code) {
+ 	// empty request -> dserver_reply_started_suspended_t { bool suspended; }
+ 	struct { bool suspended; } reply;
+ 	int rc = gr_full_trap((uint32_t)dserver_callnum_started_suspended, (void*)0, 0,
+-	                      &reply, (uint32_t)sizeof(reply), out_code);
++	                      &reply, (uint32_t)sizeof(reply), GR_REPLY_WIRE_SIZE(started_suspended), out_code);
+ 	if (rc == 0 && out_code && *out_code == 0 && out_suspended) *out_suspended = reply.suspended;
+ 	return rc;
+ }
+@@ -792,7 +793,7 @@ int __dserver_ring_get_tracer(int32_t* out_tracer, int* out_code) {
+ 	// empty request -> dserver_reply_get_tracer_t { int32_t tracer; }
+ 	struct { int32_t tracer; } reply;
+ 	int rc = gr_full_trap((uint32_t)dserver_callnum_get_tracer, (void*)0, 0,
+-	                      &reply, (uint32_t)sizeof(reply), out_code);
++	                      &reply, (uint32_t)sizeof(reply), GR_REPLY_WIRE_SIZE(get_tracer), out_code);
+ 	if (rc == 0 && out_code && *out_code == 0 && out_tracer) *out_tracer = reply.tracer;
+ 	return rc;
+ }
+@@ -802,7 +803,7 @@ int __dserver_ring_task_is_64_bit(int32_t id, bool* out_is_64_bit, int* out_code
+ 	struct { int32_t id; } body = { id };
+ 	struct { bool is_64_bit; } reply;
+ 	int rc = gr_full_trap((uint32_t)dserver_callnum_task_is_64_bit, &body, (uint32_t)sizeof(body),
+-	                      &reply, (uint32_t)sizeof(reply), out_code);
++	                      &reply, (uint32_t)sizeof(reply), GR_REPLY_WIRE_SIZE(task_is_64_bit), out_code);
+ 	if (rc == 0 && out_code && *out_code == 0 && out_is_64_bit) *out_is_64_bit = reply.is_64_bit;
+ 	return rc;
+ }
+@@ -826,7 +827,7 @@ int __dserver_ring_vchroot_path(uint64_t buffer, uint64_t buffer_size, uint64_t*
+ 	} body = { buffer, buffer_size };
+ 	struct { uint64_t length __attribute__((aligned(8))); } reply;
+ 	int rc = gr_full_trap((uint32_t)dserver_callnum_vchroot_path, &body, (uint32_t)sizeof(body),
+-	                      &reply, (uint32_t)sizeof(reply), out_code);
++	                      &reply, (uint32_t)sizeof(reply), GR_REPLY_WIRE_SIZE(vchroot_path), out_code);
+ 	if (rc == 0 && out_code && *out_code == 0 && out_length) *out_length = reply.length;
+ 	return rc;
+ }
+@@ -840,7 +841,7 @@ int __dserver_ring_mldr_path(uint64_t buffer, uint64_t buffer_size, uint64_t* ou
+ 	} body = { buffer, buffer_size };
+ 	struct { uint64_t length __attribute__((aligned(8))); } reply;
+ 	int rc = gr_full_trap((uint32_t)dserver_callnum_mldr_path, &body, (uint32_t)sizeof(body),
+-	                      &reply, (uint32_t)sizeof(reply), out_code);
++	                      &reply, (uint32_t)sizeof(reply), GR_REPLY_WIRE_SIZE(mldr_path), out_code);
+ 	if (rc == 0 && out_code && *out_code == 0 && out_length) *out_length = reply.length;
+ 	return rc;
+ }
+diff --git a/darling/tests/ring-completion/fixture.c b/darling/tests/ring-completion/fixture.c
+index f3670878f59bbf29b1505441a8700cfe305242f3..81d12cc7fb516d05175e752c7afed43751e85d0b 100644
+--- a/darling/tests/ring-completion/fixture.c
++++ b/darling/tests/ring-completion/fixture.c
+@@ -59,14 +59,18 @@ static long peer_syscall(long number) {
+         if (request->callnum == dserver_callnum_uidgid || request->callnum == dserver_callnum_mldr_path ||
+             request->callnum == dserver_callnum_vchroot_path) size = 8;
+         if (request->callnum == dserver_callnum_started_suspended ||
+-            request->callnum == dserver_callnum_task_is_64_bit) size = sizeof(bool);
++            request->callnum == dserver_callnum_task_is_64_bit)
++            size = sizeof(dserver_rpc_reply_started_suspended_t) - sizeof(dserver_rpc_replyhdr_t);
+         if (request->callnum == dserver_callnum_set_thread_handles ||
+             request->callnum == dserver_callnum_mach_port_allocate) size = 0;
+         reply->length = sizeof(dserver_ring_reply_hdr_t) + size + (response == WRONG_SIZE);
+         dserver_ring_reply_hdr_t *header = (void *)((char *)reply + sizeof(*reply));
+         header->code = response == NEGATIVE_ERROR ? -EIO : 0;
+         memset(header + 1, 0, size);
+-        if (size == sizeof(uint32_t)) memcpy(header + 1, &reply_port, sizeof(reply_port));
++        if (size == sizeof(uint32_t) &&
++            request->callnum != dserver_callnum_started_suspended &&
++            request->callnum != dserver_callnum_task_is_64_bit)
++            memcpy(header + 1, &reply_port, sizeof(reply_port));
+         dserver_ring_producer_publish(gr_s2c(lane));
+     }
+     dserver_ring_consumer_advance(gr_c2s(lane));
+@@ -153,6 +157,15 @@ static void bsd_completion(void) {
+     setup(GOOD);
+     assert(__dserver_ring_uidgid(-1, -1, &uid, &gid, &code) == 0);
+     assert(code == 0 && uid == 0 && gid == 0 && published == 1);
++    setup(GOOD);
++    assert(__dserver_ring_started_suspended(&suspended, &code) == 0);
++    if (code != 0 || suspended || published != 1) {
++        fputs("RING_COMPLETION_WIRE_PADDING_REJECTED\n", stderr);
++        exit(1);
++    }
++    setup(GOOD);
++    assert(__dserver_ring_task_is_64_bit(42, &is64, &code) == 0);
++    assert(code == 0 && !is64 && published == 1);
+     setup(WRONG_SIZE);
+     assert(__dserver_ring_mach_port_allocate(1, 1, 0, &code) == 0);
+     assert(code == KERN_FAILURE && published == 1); /* Mach remains positive. */

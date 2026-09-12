@@ -341,3 +341,99 @@ index f0fa97cb05a9848c1f27839bee56cafc86bdf3fd..59ca3624f14443ce4d3a6bd73bf04cec
  void *
  pressure_thread(void *arg)
  {
+
+From 15f5405f735a2c0fa4bdd1d21b341bd4db123279 Mon Sep 17 00:00:00 2001
+From: Ilya Gulya <ilya@gulya.me>
+Date: Sat, 12 Sep 2026 09:43:19 +0000
+Subject: [PATCH] Build retained rack generation regression as native Darling
+ executable
+
+---
+ CMakeLists.txt                 |  5 +++++
+ tests/magazine_rack.c          | 22 ----------------------
+ tests/rack_region_generation.c | 30 ++++++++++++++++++++++++++++++
+ 3 files changed, 35 insertions(+), 22 deletions(-)
+ create mode 100644 tests/rack_region_generation.c
+
+diff --git a/CMakeLists.txt b/CMakeLists.txt
+index 748420cabda3be9012b7ac876b2bfa4b29031c89..17b7e7136743fb016ffb249f58dfefdd8b751d39 100755
+--- a/CMakeLists.txt
++++ b/CMakeLists.txt
+@@ -55,3 +55,8 @@ add_circular(system_malloc FAT
+ )
+ 
+ install(TARGETS system_malloc DESTINATION libexec/darling/usr/lib/system)
++
++option(DARLING_MALLOC_REGION_TEST "Build native retained-region regression" OFF)
++if(DARLING_MALLOC_REGION_TEST)
++	add_darling_executable(rack_region_generation tests/rack_region_generation.c)
++endif()
+diff --git a/tests/magazine_rack.c b/tests/magazine_rack.c
+index 59ca3624f14443ce4d3a6bd73bf04cec6d68d0dd..f0fa97cb05a9848c1f27839bee56cafc86bdf3fd 100644
+--- a/tests/magazine_rack.c
++++ b/tests/magazine_rack.c
+@@ -34,28 +34,6 @@ T_DECL(basic_magazine_deinit, "allocate deallocate magazines")
+ 	T_ASSERT_NULL(rack.magazines, "magazine deinit");
+ }
+ 
+-T_DECL(rack_region_generation_retained, "region lookup survives two intervening table growths")
+-{
+-	rack_t rack = {0};
+-	rack_init(&rack, RACK_TYPE_TINY, 1, 0);
+-	// Region indexing never dereferences these synthetic, aligned addresses.
+-	region_t anchor = (region_t)((uintptr_t)1 << HASH_BLOCKS_ALIGN);
+-	rack_region_insert(&rack, anchor);
+-	region_hash_generation_t *saved = os_atomic_load(&rack.region_generation, acquire);
+-	region_t *table = saved->hashed_regions;
+-
+-	// Pause a reader between loading its table and the rest of its geometry.
+-	// Two growths used to overwrite the descriptor that the reader retained.
+-	for (size_t i = 2; i <= 2 * INITIAL_NUM_REGIONS; ++i) {
+-		rack_region_insert(&rack, (region_t)((uintptr_t)i << HASH_BLOCKS_ALIGN));
+-	}
+-	rgnhdl_t slot = hash_lookup_region_no_lock(table, saved->num_regions_allocated,
+-			saved->num_regions_allocated_shift, anchor);
+-	T_ASSERT_NOTNULL(slot, "paused reader still finds its registered region");
+-	T_ASSERT_EQ(*slot, anchor, "lookup preserves the region identity");
+-	rack_destroy(&rack);
+-}
+-
+ void *
+ pressure_thread(void *arg)
+ {
+diff --git a/tests/rack_region_generation.c b/tests/rack_region_generation.c
+new file mode 100644
+index 0000000000000000000000000000000000000000..bb6d7d38fa2bbed330f010721ce1dbc63cf5f1fc
+--- /dev/null
++++ b/tests/rack_region_generation.c
+@@ -0,0 +1,30 @@
++/* Execute the production rack and Mach VM implementation with a paused reader. */
++#include <assert.h>
++#include <stdio.h>
++
++/* magazine_testing.h uses darwintest assertions only in its setup helper. */
++#define T_QUIET
++#define T_ASSERT_NOTNULL(value, ...) assert((value) != NULL)
++#include "magazine_testing.h"
++
++int main(void)
++{
++	rack_t rack = {0};
++	rack_init(&rack, RACK_TYPE_TINY, 1, 0);
++	/* Region indexing never dereferences these synthetic aligned addresses. */
++	region_t anchor = (region_t)((uintptr_t)1 << HASH_BLOCKS_ALIGN);
++	rack_region_insert(&rack, anchor);
++	region_hash_generation_t *saved = os_atomic_load(&rack.region_generation, acquire);
++	region_t *table = saved->hashed_regions;
++
++	/* Suspend the reader after taking its table, before reading its geometry. */
++	for (size_t i = 2; i <= 2 * INITIAL_NUM_REGIONS; ++i) {
++		rack_region_insert(&rack, (region_t)((uintptr_t)i << HASH_BLOCKS_ALIGN));
++	}
++	rgnhdl_t slot = hash_lookup_region_no_lock(table, saved->num_regions_allocated,
++			saved->num_regions_allocated_shift, anchor);
++	int found = slot && *slot == anchor;
++	printf("RACK_REGION_GENERATION_%s retained_lookup=%d\n", found ? "OK" : "LOST", found);
++	rack_destroy(&rack);
++	return found ? 0 : 1;
++}
