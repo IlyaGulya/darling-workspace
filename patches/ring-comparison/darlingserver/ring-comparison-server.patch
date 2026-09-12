@@ -14740,3 +14740,49 @@ index bc4c95ae4ae243c898124618d107f70b9f24bd95..c3528e338ae7b5f22c37bc8c6b1dec7d
  		currentThreadVar = nullptr;
  		scheduleAfterWorking = _execution.finish() && !_terminating && !_dead;
  
+
+From c8719f43ba99869e39bd364125e2184ae91d4258 Mon Sep 17 00:00:00 2001
+From: Ilya Gulya <ilya@gulya.me>
+Date: Sat, 12 Sep 2026 10:06:38 +0000
+Subject: [PATCH] Retire superseded thread rings before replacing their
+ ownership
+
+---
+ include/darlingserver/rpc-supplement.h | 3 +++
+ src/thread.cpp                         | 7 ++++++-
+ 2 files changed, 9 insertions(+), 1 deletion(-)
+
+diff --git a/include/darlingserver/rpc-supplement.h b/include/darlingserver/rpc-supplement.h
+index d278e9a7f1ed1d63b05c3eab832e19599596b07f..a0253c46fbbbfb1c1fd511ddea0ed10edee67db6 100644
+--- a/include/darlingserver/rpc-supplement.h
++++ b/include/darlingserver/rpc-supplement.h
+@@ -246,6 +246,9 @@ typedef struct dserver_kqchan_reply_proc_read {
+ #define DSERVER_RING_SRV_SLEEPING_EPOLL 0u // server is (or is about to be) blocked in epoll_wait -> MUST doorbell
+ #define DSERVER_RING_SRV_ACTIVE_POLLING 1u // server is draining rings in its spin phase -> doorbell NOT needed
+ #define DSERVER_RING_SRV_SLEEP_ARMED    2u // server is between "decided to sleep" and epoll_wait -> doorbell (race window)
++// Another image attached a replacement lane for the same thread. This lane
++// will never be serviced again; guests must fall back before publishing.
++#define DSERVER_RING_SRV_RETIRED        3u
+ 
+ // Bounds the server is willing to accept for a guest-proposed ring, so a malicious or buggy
+ // guest can't make the server map an absurd region or compute a huge index. Kept modest;
+diff --git a/src/thread.cpp b/src/thread.cpp
+index c3528e338ae7b5f22c37bc8c6b1dec7dcdfa6acb..7f02bd1d2f858d757d82c88f2b4edb736ae4f936 100644
+--- a/src/thread.cpp
++++ b/src/thread.cpp
+@@ -2462,9 +2462,14 @@ void DarlingServer::Thread::attachRing(std::shared_ptr<RingBuffer> ring, std::sh
+ 	std::shared_ptr<Monitor> oldMonitor = nullptr;
+ 	{
+ 		std::unique_lock lock(_rwlock);
+-		// a thread attaches at most once in practice, but replace defensively
++		// dyld and libsystem_kernel keep separate guest lane tables. Retire the
++		// previous mapping before replacing it so its image cannot publish to
++		// an unserviced lane when it next regains control.
+ 		oldRing = std::move(_ring);
+ 		oldMonitor = std::move(_ringMonitor);
++		if (oldRing) {
++			oldRing->setServerState(DSERVER_RING_SRV_RETIRED);
++		}
+ 		_ring = ring;
+ 		_ringMonitor = monitor;
+ 	}
