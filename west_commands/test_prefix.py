@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import os
 import fcntl
-import re
 import signal
 import stat
 import subprocess
@@ -53,27 +52,24 @@ class RootlessRuntimeSocketCleanupResult:
         return not self.problems
 
 
-def _loader_retains_prefix(
-    process_dir: Path, environment: set[bytes], prefix: Path
-) -> bool:
-    for entry in environment:
-        if not entry.startswith(b"__mldr_sockpath="):
-            continue
-        match = re.fullmatch(
-            rb"__mldr_sockpath=/proc/[0-9]+/fd/([0-9]+)/\.darlingserver\.sock",
-            entry,
-        )
-        if match is None:
-            continue
-        try:
-            executable = os.readlink(process_dir / "exe").removesuffix(" (deleted)")
-            # The endpoint owner may already have exited. The loader inherits
-            # the same directory capability, independent of its guest argv/env.
-            return Path(executable).name == "mldr" and (
-                process_dir / "fd" / match[1].decode("ascii")
-            ).samefile(prefix)
-        except OSError:
+def _runtime_retains_prefix(process_dir: Path, prefix: Path) -> bool:
+    try:
+        executable = os.readlink(process_dir / "exe").removesuffix(" (deleted)")
+        if Path(executable).name not in {"mldr", "darlingserver"}:
             return False
+        descriptors = list((process_dir / "fd").iterdir())
+    except OSError:
+        return False
+    # Guest exec may scrub every environment marker, and the server receives
+    # its prefix as a directory capability rather than a pathname argument.
+    # Require the runtime executable and that exact retained directory inode;
+    # cwd or a shared installation path alone cannot establish ownership.
+    for descriptor in descriptors:
+        try:
+            if descriptor.samefile(prefix):
+                return True
+        except OSError:
+            continue
     return False
 
 
@@ -111,7 +107,7 @@ def rootless_prefix_process_snapshot(
             continue
         owns_prefix = rootless_marker in environment and prefix_marker in environment
         if not owns_prefix:
-            owns_prefix = _loader_retains_prefix(process_dir, environment, prefix)
+            owns_prefix = _runtime_retains_prefix(process_dir, prefix)
         if not owns_prefix and rootless_marker in environment:
             for proc_link in (process_dir / "cwd", process_dir / "exe"):
                 try:
@@ -171,23 +167,28 @@ def cleanup_rootless_prefix_processes(
     return result
 
 
+def _server_owns_prefix(pid: int, args: str, prefix: Path) -> bool:
+    argv = args.split()
+    return len(argv) >= 2 and Path(argv[0]).name == "darlingserver" and (
+        argv[1] == str(prefix) or _runtime_retains_prefix(Path("/proc") / str(pid), prefix)
+    )
+
+
 def prefix_process_snapshot(prefix: Path, entries: Iterable[ProcessEntry]) -> list[str]:
     """Return the darlingserver process tree rooted at ``prefix``.
 
-    ``darlingserver`` is launched with the prefix as argv[1].  Children do not
-    carry that argv, so snapshot discovery first finds matching server roots and
-    then walks the process parent graph.
+    The server carries either a prefix pathname argument or a retained directory
+    capability. Children need neither, so find server roots before walking the
+    process parent graph.
     """
 
-    prefix_text = str(prefix)
     children: dict[int, list[int]] = {}
     args_by_pid: dict[int, str] = {}
     roots: list[int] = []
     for pid, ppid, args in entries:
         args_by_pid[pid] = args
         children.setdefault(ppid, []).append(pid)
-        argv = args.split()
-        if len(argv) >= 2 and Path(argv[0]).name == "darlingserver" and argv[1] == prefix_text:
+        if _server_owns_prefix(pid, args, prefix):
             roots.append(pid)
     if not roots:
         return []
@@ -203,11 +204,9 @@ def prefix_process_snapshot(prefix: Path, entries: Iterable[ProcessEntry]) -> li
 
 
 def darlingserver_pids_for_prefix(prefix: Path, entries: Iterable[ProcessEntry]) -> list[int]:
-    prefix_text = str(prefix)
     pids: list[int] = []
     for pid, _, args in entries:
-        argv = args.split()
-        if len(argv) >= 2 and Path(argv[0]).name == "darlingserver" and argv[1] == prefix_text:
+        if _server_owns_prefix(pid, args, prefix):
             pids.append(pid)
     return pids
 
