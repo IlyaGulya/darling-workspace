@@ -14849,3 +14849,1061 @@ index bcbc8bf1bff71786b6883d86b79d7da4f087b224..73ccb4f86de0f8f0e213aab4b9ae24eb
      addr = "\0" + name
      try:
          s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+
+From 610bcb43aedd69cbc125c39a74eed977b0792028 Mon Sep 17 00:00:00 2001
+From: Ilya Gulya <ilya@gulya.me>
+Date: Sat, 12 Sep 2026 17:45:03 +0000
+Subject: [PATCH] Keep ring port traps on fibers across contended IPC locks
+
+---
+ include/darlingserver/rpc-supplement.h     |  38 +--
+ internal-include/darlingserver/metrics.hpp |  14 --
+ internal-include/darlingserver/thread.hpp  |  31 ---
+ src/call.cpp                               | 154 +------------
+ src/metrics.cpp                            |  18 +-
+ src/server.cpp                             |  18 +-
+ src/thread.cpp                             | 254 ---------------------
+ tests/ring_fastpath_gate_test.c            | 207 -----------------
+ tests/ring_lane_class_gate_test.c          |  24 +-
+ tests/rpc_heatmap_gate_test.cpp            |   2 -
+ tests/run-ring-shm-validate.sh             |  41 ----
+ 11 files changed, 28 insertions(+), 773 deletions(-)
+ delete mode 100644 tests/ring_fastpath_gate_test.c
+
+diff --git a/include/darlingserver/rpc-supplement.h b/include/darlingserver/rpc-supplement.h
+index a0253c46fbbbfb1c1fd511ddea0ed10edee67db6..51ee77938b7f1b4c9e09b3ba83d997d12e2e04c5 100644
+--- a/include/darlingserver/rpc-supplement.h
++++ b/include/darlingserver/rpc-supplement.h
+@@ -452,9 +452,8 @@ static inline void dserver_ring_consumer_advance(dserver_ring_t* ring) {
+ // waiting for its reply) is the right home for destroy-capable ops. Until that lane exists they stay
+ // UDS; do NOT smuggle them back onto the simple ring via a "clever subset" that still risks an S2C.
+ //
+-// NOTE this is the TRANSPORT allowlist (Tier 1 = ride the ring via the generic fiber doWork); it is
+-// DISTINCT from the no-fiber inline fast path (ringFastPathEligible / Tier 2), a strictly smaller,
+-// separately-proven set. Never conflate the two.
++// Transport eligibility never implies non-suspending execution: every listed call
++// uses the generic fiber-backed dispatcher, including self-port minting traps.
+ #define DSERVER_RING_C2S_OPCODES(X) \
+ 	X(task_self_trap) \
+ 	X(thread_self_trap) \
+@@ -491,26 +490,23 @@ static inline void dserver_ring_consumer_advance(dserver_ring_t* ring) {
+ //   Lane 0  UDS            -- control/fallback: bootstrap, creds, fd-passing, unknown/complex ops,
+ //                             and destroy-capable / caller-S2C ops UNTIL a duplex lane proves them.
+ //   Lane 1  simple ring    -- CLOSED request->single-reply transactions, NO caller S2C while parked.
+-//                             Two sub-tiers (see below): generic-fiber (Tier 1) and no-fiber (Tier 2).
++//                             Calls retain a fiber: IPC locks can suspend even port-minting traps.
+ //   Lane 2  duplex ring    -- FUTURE reentrant lane for caller-S2C-capable ops (dar-1il.3). Not built.
+ //
+ // The lane an op MAY use is a set of orthogonal, independently-proven properties. Encode them as
+ // explicit bits so the code stops overloading "fast op" / "allowlist" / "ring op" (plan.md §6):
+ //
+ //   SimpleRingC2SEligible  -- may ride the Lane-1 simple ring (== membership in DSERVER_RING_C2S_OPCODES)
+-//   NoFiberFastEligible    -- may ALSO skip the generic fiber/Call machinery (Tier 2; ringFastPathEligible)
+ //   DuplexRingEligible     -- may ride the FUTURE Lane-2 duplex ring (no op qualifies yet)
+ //   UdsOnly                -- must stay on UDS for now (no ring lane is safe for it yet)
+ //   DestroyCapable         -- may, for SOME args, drop a last ref / tear down / cause a caller S2C
+ //   CallerS2CCapable       -- may synchronously upcall the CALLER (mmap/munmap/...) before its reply
+ //
+ // POLICY (these are the load-bearing relationships; the static guardrail below enforces #2/#3):
+-//   1. SimpleRingC2SEligible, NoFiberFastEligible, and DuplexRingEligible are DISTINCT concepts.
+-//      SimpleRingC2SEligible does NOT imply NoFiberFastEligible (Tier 2 is a strictly smaller proven
+-//      set). A future DuplexRingEligible op is NOT automatically SimpleRingC2SEligible.
++//   1. SimpleRingC2SEligible and DuplexRingEligible are DISTINCT concepts.
++//      A future DuplexRingEligible op is NOT automatically SimpleRingC2SEligible.
+ //   2. DestroyCapable  => NOT SimpleRingC2SEligible. (canon rule 2: a teardown can drive a caller S2C.)
+ //   3. CallerS2CCapable => NOT SimpleRingC2SEligible. (canon rule 1: a parked caller can't service it.)
+-//   4. NoFiberFastEligible => SimpleRingC2SEligible. (Tier 2 is a sub-lane of Tier 1.)
+ //
+ // CLASSIFICATION TABLE: every Mach op that is RING-RELEVANT (already on a ring lane, or a known
+ // future/duplex candidate the canon has ruled on) is listed here with its lane-class bits, so the
+@@ -518,31 +514,21 @@ static inline void dserver_ring_consumer_advance(dserver_ring_t* ring) {
+ // An op that never comes near a ring lane (the vast majority) need NOT be listed -- absence just
+ // means "unclassified == treated as UdsOnly by default". X is invoked as X(op, classbits).
+ #define DSERVER_RING_CLASS_SIMPLE_C2S   0x01u // SimpleRingC2SEligible: in DSERVER_RING_C2S_OPCODES
+-#define DSERVER_RING_CLASS_NOFIBER_FAST 0x02u // NoFiberFastEligible: Tier-2 no-fiber direct dispatch
+ #define DSERVER_RING_CLASS_DUPLEX       0x04u // DuplexRingEligible: future Lane-2 (none yet)
+ #define DSERVER_RING_CLASS_UDS_ONLY     0x08u // UdsOnly: no ring lane safe yet
+ #define DSERVER_RING_CLASS_DESTROY      0x10u // DestroyCapable: can tear down / drop last ref
+ #define DSERVER_RING_CLASS_CALLER_S2C   0x20u // CallerS2CCapable: can upcall the caller pre-reply
+ 
+ #define DSERVER_RING_OP_CLASS(X) \
+-	/* Lane 1 + Tier 2 (no-fiber): pure mint, never blocks, never an S2C. */ \
+-	X(task_self_trap,         DSERVER_RING_CLASS_SIMPLE_C2S | DSERVER_RING_CLASS_NOFIBER_FAST) \
+-	/* perf #18 D10 (dar-1il.5): thread_self_trap + host_self_trap join the pure-mint family. They */ \
+-	/* have a BYTE-IDENTICAL shape to task_self_trap (empty request, single uint32 port_name reply; */ \
+-	/* generate-rpc-wrappers.py:305-315) and the same processCall structure (dtape_*_self_trap mint + */ \
+-	/* _sendReply, call.cpp:617-625) -- pure mint via current_task()/current's space, never blocks, */ \
+-	/* never an S2C, never destroys. Chosen by the D9 heatmap (dar-1il.4) as the next migration: 100% */ \
+-	/* UDS today, caller_s2c=0, ~12% of workload RPC. Tier-2 no-fiber-safe exactly like task_self_trap. */ \
+-	X(thread_self_trap,       DSERVER_RING_CLASS_SIMPLE_C2S | DSERVER_RING_CLASS_NOFIBER_FAST) \
+-	X(host_self_trap,         DSERVER_RING_CLASS_SIMPLE_C2S | DSERVER_RING_CLASS_NOFIBER_FAST) \
+-	X(mach_reply_port,        DSERVER_RING_CLASS_SIMPLE_C2S | DSERVER_RING_CLASS_NOFIBER_FAST) \
+-	/* Lane 1 Tier 1 (generic fiber): create/ref bookkeeping, no teardown, no caller S2C. */ \
++	/* Port minting/copyout can wait on shared IPC locks; all calls use a fiber. */ \
++	X(task_self_trap,         DSERVER_RING_CLASS_SIMPLE_C2S) \
++	X(thread_self_trap,       DSERVER_RING_CLASS_SIMPLE_C2S) \
++	X(host_self_trap,         DSERVER_RING_CLASS_SIMPLE_C2S) \
++	X(mach_reply_port,        DSERVER_RING_CLASS_SIMPLE_C2S) \
++	/* Create/ref bookkeeping, no teardown, no caller S2C. */ \
+ 	X(mach_port_allocate,     DSERVER_RING_CLASS_SIMPLE_C2S) \
+ 	X(mach_port_insert_right, DSERVER_RING_CLASS_SIMPLE_C2S) \
+-	/* perf #18 D11 (dar-1il.6): bulk closed-fast Lane-1 batch -- SIMPLE_C2S ONLY (Tier-1 generic fiber, */ \
+-	/* NOT NoFiberFast). These read/mutate process or thread state (creds, pthread handles, suspend/tracer */ \
+-	/* flags, 64-bitness) via the generic Call path, NOT pure mint, so they are NOT no-fiber-safe like the */ \
+-	/* self-trap family -- they stay Tier 1. None is destroy-capable or caller-S2C, so the canon holds. */ \
++	/* Process/thread state operations also use the generic fiber-backed Call path. */ \
+ 	X(uidgid,                 DSERVER_RING_CLASS_SIMPLE_C2S) \
+ 	X(set_thread_handles,     DSERVER_RING_CLASS_SIMPLE_C2S) \
+ 	X(started_suspended,      DSERVER_RING_CLASS_SIMPLE_C2S) \
+diff --git a/internal-include/darlingserver/metrics.hpp b/internal-include/darlingserver/metrics.hpp
+index 91fc02980d21f389e9356d6f1649aae0d5cb8ffa..d1383d81aa46a3a9583e5b10f5c9815d9ec349dc 100644
+--- a/internal-include/darlingserver/metrics.hpp
++++ b/internal-include/darlingserver/metrics.hpp
+@@ -158,23 +158,9 @@ namespace DarlingServer {
+ 		std::atomic<uint64_t> ringWakesSkipped {0};
+ 		std::atomic<uint64_t> ringDoorbellsReceived {0}; // eventfd wakes the server actually drained
+ 
+-		// perf #18 P6.1 step 2 (dar-ohp): surgical direct-dispatch fast path for mach_reply_port.
+-		// ringFastHit = a mach_reply_port request serviced WITHOUT building a Call/Message or
+-		// re-looking-up the thread in the registry (doMachReplyPortInline -> dtape trap -> ring
+-		// publish). ringFastFallback = a request that matched the callnum but failed the shape
+-		// guard or whose inline dispatch declined -> took the generic step-1 callFromMessage path.
+-		std::atomic<uint64_t> ringFastHit {0};
+-		std::atomic<uint64_t> ringFastFallback {0};
+-		// perf #18 P7 (dar-my8): the rest of the gist-required per-op fast-path accounting.
+-		// ringFastFail  = an inline fast op that could not complete cleanly (declined late / publish
+-		//                 lost) -- distinct from a fallback (which is a deliberate route to generic).
+ 		// ringS2cFull   = publishReply() found the s2c ring full (reply could not be published there;
+ 		//                 the caller UDS-falls-back). A nonzero value under load = guest not draining.
+-		// ringFastSuspend = an op the fast path ran as non-blocking actually SUSPENDED -- a contract
+-		//                 violation (allowlist misclassification). MUST stay 0; nonzero = a bug.
+-		std::atomic<uint64_t> ringFastFail {0};
+ 		std::atomic<uint64_t> ringS2cFull {0};
+-		std::atomic<uint64_t> ringFastSuspend {0};
+ 		// perf #18 P8 D3 (dar-1il.3.1.1): the duplex lane. ringDuplexS2c = an S2C upcall delivered to
+ 		// a ring-parked caller via the duplex mailbox (instead of the UDS S2C path) AND completed (the
+ 		// correlated reply came back + the server resumed). ringDuplexReject = a duplex reply that
+diff --git a/internal-include/darlingserver/thread.hpp b/internal-include/darlingserver/thread.hpp
+index a7742e5ec9558a0a4ac3bb4af927b73b0377d6d4..163796718774d31473f40c673ca2d1cc0e3c4ff9 100644
+--- a/internal-include/darlingserver/thread.hpp
++++ b/internal-include/darlingserver/thread.hpp
+@@ -298,37 +298,6 @@ namespace DarlingServer {
+ 
+ 		void doWork();
+ 
+-#ifdef DSERVER_RING_TRANSPORT
+-		// perf #18 P6.1 (dar-ohp): run a PROVEN-NON-BLOCKING Call to completion WITHOUT the
+-		// microthread fiber. doWork() always allocates a stack and makecontext/setcontext-swaps
+-		// onto a fiber so the call can suspend; for a tiny self-trap that never suspends (e.g.
+-		// mach_reply_port) that fiber machinery is ~half the hot-path cost. doWorkInline()
+-		// establishes the SAME duct-tape context (currentThreadVar + dtape_thread_entering, so
+-		// current_task()/current_thread() resolve identically) and calls the SAME processCall()
+-		// on the current (main-loop) stack, then runs the same completion cleanup.
+-		//
+-		// CONTRACT: the caller MUST guarantee the call never suspends (never calls suspend()).
+-		// If it does, there is no fiber to switch back to -> UB. Use ONLY for the ring fast-path
+-		// allowlist of no-block ops. Returns true if it ran inline to completion; false if it
+-		// declined (deferred/running/terminating/dead) so the caller can fall back to doWork().
+-		bool doWorkInline();
+-
+-		// perf #18 P6.1 step 2 (dar-ohp): SURGICAL direct dispatch for EXACTLY mach_reply_port.
+-		// doWorkInline() still pays the generic RPC framing (rebuild a Message, callFromMessage
+-		// registry re-lookup, heap-allocate a Call, decode) before running the op. For the single
+-		// hottest no-arg trap we skip ALL of it: establish the SAME duct-tape context as
+-		// doWorkInline (currentThreadVar + dtape_thread_entering, so current_task() resolves), call
+-		// dtape_mach_reply_port() DIRECTLY (the identical primitive MachReplyPort::processCall uses
+-		// -- no reimplemented ipc_port_alloc), publish the {replyhdr.code=0}{uint32 port} reply
+-		// straight onto this thread's s2c ring + wake the guest, then the same completion cleanup.
+-		//
+-		// CONTRACT: callable ONLY from the ring service loop for this exact thread, with the c2s
+-		// request slot ALREADY consumed (consumer_advance) and a non-zero `seq`. The op never
+-		// suspends (same as doWorkInline). Returns true if it ran inline + published; false if it
+-		// declined (deferred/running/terminating/dead, or the ring publish failed) so the caller
+-		// can fall back to the generic step-1 callFromMessage + doWorkInline path.
+-		bool doMachReplyPortInline(uint32_t seq);
+-#endif
+ 
+ 		// perf #2b (dar-dar6x4-perf-5dq.8): the main event loop runs cheap, non-blocking
+ 		// RPCs inline via doWork() instead of paying a worker-thread wakeup. After an inline
+diff --git a/src/call.cpp b/src/call.cpp
+index 2f78e645e8c1c8b474edab15a887d1be520d963d..1627b261ec77df40733c42837a7fabb95be3d85f 100644
+--- a/src/call.cpp
++++ b/src/call.cpp
+@@ -1588,26 +1588,6 @@ void DarlingServer::Call::DebugListMessages::processCall() {
+ // already refuses a corrupt c2s tail; here we additionally (a) bound the inline body to the
+ // slot, (b) only accept a small allowlist of ring-eligible call numbers (P3 = task_self_trap),
+ // dropping anything else so the guest UDS-falls-back, and (c) never deref a guest pointer.
+-// perf #18 P6.1 (dar-ohp): escape hatches. Resolved once from the environment. The fast inline
+-// path (doWorkInline, no fiber) is ON by default when the ring is enabled, but either knob set to
+-// "0" forces the op back through the generic doWork() fiber path -- so the ring transport can be
+-// run WITHOUT specialized inline semantics if a bug surfaces.
+-//   DARLING_SERVER_FAST_OPS=0            -> disable ALL inline fast paths
+-//   DARLING_SERVER_FAST_MACH_REPLY_PORT=0 -> disable just mach_reply_port's inline path
+-static bool ringFastOpsEnabled() {
+-	static const bool v = []() {
+-		const char* e = getenv("DARLING_SERVER_FAST_OPS");
+-		return !(e && e[0] == '0' && e[1] == '\0');
+-	}();
+-	return v;
+-}
+-static bool ringFastMachReplyPortEnabled() {
+-	static const bool v = []() {
+-		const char* e = getenv("DARLING_SERVER_FAST_MACH_REPLY_PORT");
+-		return !(e && e[0] == '0' && e[1] == '\0');
+-	}();
+-	return v;
+-}
+ // perf #18 P8 D3 (dar-1il.3.1.1): the DUPLEX SELFTEST hatch. Default OFF (must be set to "1"). The
+ // sentinel parent op (DSERVER_RING_DUPLEX_SELFTEST_CALLNUM) is recognized in the ring service loop ONLY
+ // when this is on, so the duplex lane never activates on any real op or on a normal boot -- it is the
+@@ -1650,67 +1630,6 @@ static std::atomic<int>& d5VmDeallocProofBudget() {
+ static bool d5VmDeallocProofArmed() {
+ 	return d5VmDeallocProofBudget().load(std::memory_order_relaxed) > 0;
+ }
+-// Is this callnum eligible for the no-fiber inline fast path? Must be a PROVEN-non-blocking op.
+-// task_self_trap + mach_reply_port both just mint/return a port via current_task()'s space and
+-// never suspend. Each gated by its hatch (task_self_trap rides the global hatch only).
+-//
+-// TAXONOMY (perf #18 Phase A, dar-dar6x4-perf-5dq.30.1): this predicate is the "NoFiberFastEligible"
+-// concept (Tier 2) in the three-lane vocabulary defined next to DSERVER_RING_OP_CLASS in
+-// rpc-supplement.h -- DISTINCT from, and a strict subset of, "SimpleRingC2SEligible" (Tier 1, the
+-// DSERVER_RING_C2S_OPCODES allowlist). NoFiberFastEligible => SimpleRingC2SEligible, never the reverse.
+-// The classification table tags exactly these two ops NOFIBER_FAST; keep this function in sync with it
+-// (the table is documentation/guardrail, this is the live gate -- they must agree).
+-//
+-// perf #18 P5 (dar-1il): mach_port_mod_refs is DELIBERATELY NOT here. Two reasons, both standing:
+-// (1) it is not no-fiber-inline-safe -- running it WITHOUT the microthread fiber (doWorkInline) was
+-// MEASURED to corrupt the thread's fiber/stack bookkeeping (a later doWork() frees a garbage _stack:
+-// StackPool::free -> munmap EINVAL -> std::terminate). It does a port->task translation + task
+-// refcounting that is unsafe off the fiber, unlike the surgical mach_reply_port path (pure mint).
+-// (2) perf #18 dar-1il.2: it is no longer in the C2S ring allowlist AT ALL (not even the generic
+-// fiber path) -- mach_port_mod_refs(delta<0) dropping the last ref is destroy-capable, and
+-// destroying a mapped-region-backed port drives a vm munmap S2C upcall to a caller parked on the
+-// ring -> deadlock (the same class that sank mach_port_deallocate). It is UDS-only until a
+-// proven-safe subset is gated. The no-fiber inline sub-case is reserved for the trivial pure-mint
+-// port traps only; the C2S allowlist (DSERVER_RING_C2S_OPCODES, expanded in ringServiceThread) is
+-// the larger Tier-1 set, and mod_refs is in NEITHER.
+-static bool ringFastPathEligible(uint32_t callnum) {
+-	if (!ringFastOpsEnabled()) {
+-		return false;
+-	}
+-	if (callnum == dserver_callnum_mach_reply_port) {
+-		return ringFastMachReplyPortEnabled();
+-	}
+-	if (callnum == dserver_callnum_task_self_trap) {
+-		return true;
+-	}
+-	// perf #18 D10 (dar-1il.5): thread_self_trap + host_self_trap are the remaining members of the
+-	// pure-mint self-trap family. Same processCall structure as task_self_trap (dtape_*_self_trap mint
+-	// + _sendReply -- no port->task translation, no refcounting, no fiber-sensitive stack state), so
+-	// they are no-fiber-inline-safe exactly like it. They ride the global fast-ops hatch only (like
+-	// task_self_trap, not the per-op mach_reply_port hatch).
+-	if (callnum == dserver_callnum_thread_self_trap || callnum == dserver_callnum_host_self_trap) {
+-		return true;
+-	}
+-	return false;
+-}
+-
+-// perf #18 P6.1 step 2 (dar-ohp): is this slot eligible for the SURGICAL direct dispatch (skip
+-// Call/Message entirely, run dtape_mach_reply_port + publish straight onto the ring)? Stricter than
+-// ringFastPathEligible: EXACTLY mach_reply_port, the per-op hatch on, and a no-payload/no-arena
+-// shape (the trap takes no arguments; any body/descriptors/arena means a malformed or unexpected
+-// request -> reject and fall back to the framed path which validates fully). The shape guard is the
+-// security boundary for the no-Call path: we never decode an attacker-shaped slot here.
+-static bool fastMachReplyPortEligible(uint32_t callnum, uint32_t reqlen, uint32_t arenaLen) {
+-#ifndef NO_SHAPE_GUARD
+-	if (reqlen != 0 || arenaLen != 0) {
+-		return false; // mach_reply_port has an empty request body and no arena
+-	}
+-#endif
+-	if (callnum != dserver_callnum_mach_reply_port) {
+-		return false;
+-	}
+-	return ringFastOpsEnabled() && ringFastMachReplyPortEnabled();
+-}
+ 
+ uint32_t DarlingServer::ringServiceThread(const std::shared_ptr<DarlingServer::Thread>& thread) {
+ 	using namespace DarlingServer;
+@@ -1911,63 +1830,6 @@ uint32_t DarlingServer::ringServiceThread(const std::shared_ptr<DarlingServer::T
+ 			continue;
+ 		}
+ 
+-		// perf #18 P6.1 step 2 (dar-ohp): SURGICAL direct dispatch for mach_reply_port. Skip the
+-		// Message rebuild + callFromMessage registry re-lookup + Call heap-alloc that step 1 still
+-		// pays. The thread is already held (shared_ptr) for this whole slot iteration, so its
+-		// lifetime is guaranteed without the registry lookup; doMachReplyPortInline runs the bare
+-		// dtape trap on it and publishes the reply itself. Free the request slot FIRST (same as the
+-		// generic path), then dispatch. If it declines (busy/dead/etc.), fall through to the generic
+-		// step-1 path below, which re-stages the Message and handles every edge case.
+-		if (fastMachReplyPortEligible(callnum, reqlen, arenalen)) {
+-			dserver_ring_consumer_advance(c2s); // free the slot before running the op
+-#ifdef DSERVER_RING_PHASE_PROF
+-			uint64_t _fpT0 = Metrics::rdtscCycles();
+-#endif
+-			if (thread->doMachReplyPortInline(seq)) {
+-				++serviced;
+-				Metrics::shared().ringFastHit.fetch_add(1, std::memory_order_relaxed);
+-#ifdef DSERVER_RING_PHASE_PROF
+-				// The fast path collapses drain+dispatch+body into one window; record the whole
+-				// thing as "body" (it IS the op) minus the publish cycles the inline op stashed.
+-				uint64_t _fpT1 = Metrics::rdtscCycles();
+-				auto& m = Metrics::shared();
+-				uint64_t pub = thread->takeRingPublishCycles();
+-				uint64_t total = _fpT1 - _fpT0;
+-				uint64_t body = (total > pub) ? (total - pub) : 0;
+-				m.phaseBodyCycles.fetch_add(body, std::memory_order_relaxed);
+-				m.phasePublishCycles.fetch_add(pub, std::memory_order_relaxed);
+-				m.phaseSamples.fetch_add(1, std::memory_order_relaxed);
+-#endif
+-				continue;
+-			}
+-			// declined inline -> rebuild + run via the generic path (the slot is already consumed,
+-			// so re-stage the Message from the copied-out header; reqlen==0 means no body to copy).
+-			Metrics::shared().ringFastFallback.fetch_add(1, std::memory_order_relaxed);
+-			size_t fbSize = sizeof(dserver_rpc_callhdr_t);
+-			Message fbMsg(fbSize, 0);
+-			fbMsg.data().resize(fbSize);
+-			auto* fbHdr = reinterpret_cast<dserver_rpc_callhdr_t*>(fbMsg.data().data());
+-			fbHdr->number = static_cast<dserver_callnum_t>(callnum);
+-			fbHdr->pid = process->nsid();
+-			fbHdr->tid = thread->nsid();
+-			fbHdr->architecture = static_cast<dserver_rpc_architecture_t>(process->architecture());
+-			fbMsg.setAddress(thread->address());
+-			fbMsg.setPID(process->id());
+-			thread->beginRingReply(seq);
+-			try {
+-				auto fbCall = Call::callFromMessage(std::move(fbMsg));
+-				if (fbCall) {
+-					if (!fbCall->thread()->doWorkInline()) {
+-						fbCall->thread()->doWork();
+-					}
+-					++serviced;
+-				}
+-			} catch (const std::exception& ex) {
+-				callLog.error() << "ring fast-path fallback dispatch threw: " << ex.what() << callLog.endLog;
+-				Metrics::shared().ringFastFail.fetch_add(1, std::memory_order_relaxed);
+-			}
+-			continue;
+-		}
+ 
+ 		// C2S allowlist: which call numbers may ride the ring. task_self_trap was the first
+ 		// migration (correctness-first; cached per-process so it doesn't move latency);
+@@ -2038,19 +1900,9 @@ uint32_t DarlingServer::ringServiceThread(const std::shared_ptr<DarlingServer::T
+ 			uint64_t _phaseT2 = Metrics::rdtscCycles(); // dispatch end / body start
+ #endif
+ 			if (call) {
+-				// perf #18 P6.1: for proven-non-blocking allowlisted ops, run WITHOUT the
+-				// microthread fiber (doWorkInline) -- the P6 breakdown showed the fiber is ~half
+-				// the hot-path cost. doWorkInline returns false if it declined (not the simple
+-				// fresh-call case) -> fall back to the generic fiber doWork(). Anything not
+-				// fast-eligible (or with the escape hatch off) takes the generic path unchanged
+-				// (= perf#2b inline-on-main-loop-via-fiber; self-traps never block).
+-				if (ringFastPathEligible(callnum)) {
+-					if (!call->thread()->doWorkInline()) {
+-						call->thread()->doWork();
+-					}
+-				} else {
+-					call->thread()->doWork();
+-				}
++				// Port minting and copyout take duct-tape locks, which can suspend
++				// under contention. Ring transport never removes the fiber requirement.
++				call->thread()->doWork();
+ 				++serviced;
+ #ifdef DSERVER_RING_PHASE_PROF
+ 				uint64_t _phaseT3 = Metrics::rdtscCycles(); // body end
+diff --git a/src/metrics.cpp b/src/metrics.cpp
+index 43052e26d4948a4bdcff7611052ed2d252787a30..90fc8dc7fbdb8952d39a2b785e21a4bb381a1d2e 100644
+--- a/src/metrics.cpp
++++ b/src/metrics.cpp
+@@ -68,16 +68,15 @@ std::string DarlingServer::Metrics::snapshotJSON(const std::string& extraGauges)
+ 	out << "  \"inline_handled\": " << inlineHandled.load(std::memory_order_relaxed) << ",\n";
+ 	out << "  \"queued_to_pool\": " << queuedToPool.load(std::memory_order_relaxed) << ",\n";
+ #ifdef DSERVER_RING_TRANSPORT
+-	out << "  \"ring_serviced_spin\": " << ringServicedSpin.load(std::memory_order_relaxed) << ",\n";
+-	out << "  \"ring_serviced_doorbell\": " << ringServicedDoorbell.load(std::memory_order_relaxed) << ",\n";
++	const auto ringSpinCount = ringServicedSpin.load(std::memory_order_relaxed);
++	const auto ringDoorbellCount = ringServicedDoorbell.load(std::memory_order_relaxed);
++	out << "  \"ring_serviced\": " << ringSpinCount + ringDoorbellCount << ",\n";
++	out << "  \"ring_serviced_spin\": " << ringSpinCount << ",\n";
++	out << "  \"ring_serviced_doorbell\": " << ringDoorbellCount << ",\n";
+ 	out << "  \"ring_doorbells_received\": " << ringDoorbellsReceived.load(std::memory_order_relaxed) << ",\n";
+ 	out << "  \"ring_wakes_issued\": " << ringWakesIssued.load(std::memory_order_relaxed) << ",\n";
+ 	out << "  \"ring_wakes_skipped\": " << ringWakesSkipped.load(std::memory_order_relaxed) << ",\n";
+-	out << "  \"ring_fast_hit\": " << ringFastHit.load(std::memory_order_relaxed) << ",\n";
+-	out << "  \"ring_fast_fallback\": " << ringFastFallback.load(std::memory_order_relaxed) << ",\n";
+-	out << "  \"ring_fast_fail\": " << ringFastFail.load(std::memory_order_relaxed) << ",\n";
+ 	out << "  \"ring_s2c_full\": " << ringS2cFull.load(std::memory_order_relaxed) << ",\n";
+-	out << "  \"ring_fast_suspend\": " << ringFastSuspend.load(std::memory_order_relaxed) << ",\n";
+ 	out << "  \"ring_duplex_s2c\": " << ringDuplexS2c.load(std::memory_order_relaxed) << ",\n";
+ 	out << "  \"ring_duplex_reject\": " << ringDuplexReject.load(std::memory_order_relaxed) << ",\n";
+ 	out << "  \"ring_duplex_parent\": " << ringDuplexParent.load(std::memory_order_relaxed) << ",\n";
+@@ -200,14 +199,12 @@ std::string DarlingServer::Metrics::snapshotJSON(const std::string& extraGauges)
+ 			cls = dserver_ring_op_class(static_cast<uint32_t>(DSERVER_CALL_UNMANAGED_FLAG | i));
+ 		}
+ 		const bool clsSimple  = (cls & DSERVER_RING_CLASS_SIMPLE_C2S) != 0;
+-		const bool clsNoFiber = (cls & DSERVER_RING_CLASS_NOFIBER_FAST) != 0;
+ 		const bool clsDestroy = (cls & DSERVER_RING_CLASS_DESTROY) != 0;
+ 		const bool clsS2c     = (cls & DSERVER_RING_CLASS_CALLER_S2C) != 0;
+ 
+ 		// Lane VERDICT: combine the canon class (authoritative when present) with measured facts.
+ 		//  - already-on-ring   : the op is in the simple-ring set and we observed it riding the ring.
+ 		//  - duplex-only       : canon marks it destroy/caller-S2C, OR we MEASURED a caller-S2C -> Lane 2.
+-		//  - tier2-candidate   : never used a fiber AND never an S2C -> a no-fiber direct-dispatch candidate.
+ 		//  - lane1-candidate   : completed on a fiber, no caller-S2C, currently (mostly) UDS -> Lane 1.
+ 		//  - needs-review      : anything else (mixed/destroy-unknown) -- a human must classify.
+ 		const char* verdict;
+@@ -215,9 +212,7 @@ std::string DarlingServer::Metrics::snapshotJSON(const std::string& extraGauges)
+ 			verdict = "duplex-only";
+ 		} else if (clsSimple && ring > 0) {
+ 			verdict = "already-on-ring";
+-		} else if (usedFiber == 0 && callerS2c == 0) {
+-			verdict = "tier2-candidate";
+-		} else if (callerS2c == 0) {
++		} else if (callerS2c == 0 && usedFiber > 0) {
+ 			verdict = "lane1-candidate";
+ 		} else {
+ 			verdict = "needs-review";
+@@ -236,7 +231,6 @@ std::string DarlingServer::Metrics::snapshotJSON(const std::string& extraGauges)
+ 		    << ", \"ring_p50_us\": " << rh.quantile(0.50)
+ 		    << ", \"ring_p99_us\": " << rh.quantile(0.99)
+ 		    << ", \"class_simple\": " << (clsSimple ? 1 : 0)
+-		    << ", \"class_nofiber\": " << (clsNoFiber ? 1 : 0)
+ 		    << ", \"class_destroy\": " << (clsDestroy ? 1 : 0)
+ 		    << ", \"class_caller_s2c\": " << (clsS2c ? 1 : 0)
+ 		    << ", \"verdict\": \"" << verdict << "\""
+diff --git a/src/server.cpp b/src/server.cpp
+index a6f1911ade4fdbede93fe779036fad0004a403ea..09b3e1f49f24f6998f2917bac9b9e013d10314f1 100644
+--- a/src/server.cpp
++++ b/src/server.cpp
+@@ -1255,25 +1255,17 @@ void DarlingServer::Server::_resolveRingSpinBudget() {
+ 	}
+ 	_ringSpinNs = us * 1000ull;
+ 
+-	// perf #18 P7 (dar-my8): one-time startup announcement of the ring config. The gist's staged
+-	// rollout wants operators to SEE, in the log, that the experimental ring transport is active,
+-	// in which mode, and exactly how to turn it (or just the fast ops) off. Resolved once, so this
+-	// fires once when the first ring attaches.
++	// Announce the transport and scheduling mode once when the first ring attaches.
+ 	static DarlingServer::Log ringLog("ring");
+-	const char* fastOps = (getenv("DARLING_SERVER_FAST_OPS") && getenv("DARLING_SERVER_FAST_OPS")[0] == '0') ? "OFF" : "on";
+-	const char* fastMRP = (getenv("DARLING_SERVER_FAST_MACH_REPLY_PORT") && getenv("DARLING_SERVER_FAST_MACH_REPLY_PORT")[0] == '0') ? "OFF" : "on";
+ 	// Emitted at error() level deliberately: the default log cutoff is Error, and a staged rollout
+ 	// REQUIRES this notice be visible without raising the log level. It is a one-time NOTICE, not a
+ 	// fault. (Worded as [NOTICE] so it doesn't read as a server error.)
+ 	ringLog.error() << "[NOTICE] perf#18 shared-memory ring transport ACTIVE (experimental). spin_budget="
+ 		<< (_ringSpinNs / 1000ull) << "us"
+-		<< " fast_ops=" << fastOps << " fast_mach_reply_port=" << fastMRP
+-		<< ". Disable: rebuild without DSERVER_RING_TRANSPORT (full transport off), or set"
+-		<< " DARLING_SERVER_FAST_OPS=0 (all inline fast paths off) /"
+-		<< " DARLING_SERVER_FAST_MACH_REPLY_PORT=0 (just mach_reply_port). Mode via DARLING_SERVER_MODE="
+-		<< "low-power|balanced|latency or DARLING_SERVER_SPIN_US=<n>."
+-		<< " If you hit a hang/crash that may be transport-related, RE-RUN with DARLING_SERVER_FAST_OPS=0"
+-		<< " (or a non-ring build) and report whether it reproduces." << ringLog.endLog;
++		<< " fiber_dispatch=on"
++		<< ". Disable: rebuild without DSERVER_RING_TRANSPORT."
++		<< " Mode via DARLING_SERVER_MODE=low-power|balanced|latency"
++		<< " or DARLING_SERVER_SPIN_US=<n>." << ringLog.endLog;
+ };
+ #endif // DSERVER_RING_TRANSPORT
+ 
+diff --git a/src/thread.cpp b/src/thread.cpp
+index 7f02bd1d2f858d757d82c88f2b4edb736ae4f936..7293525a8e7b881d1f3d22a4c791e8e2a77aca50 100644
+--- a/src/thread.cpp
++++ b/src/thread.cpp
+@@ -686,260 +686,6 @@ doneWorking:
+ 	return;
+ };
+ 
+-#ifdef DSERVER_RING_TRANSPORT
+-bool DarlingServer::Thread::doWorkInline() {
+-	// perf #18 P6.1 (dar-ohp): run a proven-non-blocking Call without the microthread fiber.
+-	// This is doWork() with the fiber stripped: same guards, same context-enter (so current_task
+-	// resolves identically), same processCall + exception containment + metrics as
+-	// microthreadWorker(), then the same essential completion cleanup as doneWorking -- but the
+-	// call runs on the CURRENT (main-loop) stack instead of a makecontext fiber.
+-	//
+-	// SAFETY: the caller guarantees the call never suspends. We therefore never touch the fiber
+-	// state (backToThreadTopContext / _resumeContext / _stack) and assert it stays non-suspended.
+-	std::unique_lock<std::shared_mutex> lock(_rwlock);
+-
+-	if (_deferralState != DeferralState::NotDeferred) {
+-		_deferralState = DeferralState::DeferredPending;
+-		return false;
+-	}
+-	if (_execution.isRunning()) {
+-		microthreadLog.warning() << _tid << "(" << _nstid << "): doWorkInline on already-running microthread" << microthreadLog.endLog;
+-		return false;
+-	}
+-	if (_terminating || (_dead && !_activeCall) || _suspended || _continuationCallback || !_pendingCall) {
+-		// any of these means this is NOT the simple "fresh non-blocking call" case the inline
+-		// path is for; let the caller fall back to the full doWork() which handles them.
+-		return false;
+-	}
+-
+-	_execution.begin();
+-	currentThreadVar = shared_from_this();
+-	dtape_thread_entering(_dtapeThread);
+-	_suspended = false;
+-	lock.unlock();
+-	_runningCondvar.notify_all();
+-
+-	// --- body: mirror microthreadWorker() without the fiber-return setcontext ---------------
+-	makePendingCallActive(); // moves _pendingCall -> _activeCall (same as the fiber path)
+-
+-	auto& _metrics = DarlingServer::Metrics::shared();
+-	uint64_t _callStartUs = DarlingServer::Metrics::nowMonoUs();
+-	auto _callNumber = _activeCall->number();
+-
+-	try {
+-		_activeCall->processCall();
+-	} catch (const std::system_error& err) {
+-		microthreadLog.error() << "Uncaught std::system_error from inline processCall ("
+-			<< DarlingServer::Call::callNumberToString(_callNumber) << "): " << err.what()
+-			<< " (code " << err.code().value() << ")" << microthreadLog.endLog;
+-		try { _activeCall->sendBasicReply(-err.code().value()); } catch (...) {}
+-	} catch (const std::exception& ex) {
+-		microthreadLog.error() << "Uncaught exception from inline processCall ("
+-			<< DarlingServer::Call::callNumberToString(_callNumber) << "): " << ex.what() << microthreadLog.endLog;
+-		try { _activeCall->sendBasicReply(-EINVAL); } catch (...) {}
+-	} catch (...) {
+-		microthreadLog.error() << "Uncaught non-std exception from inline processCall ("
+-			<< DarlingServer::Call::callNumberToString(_callNumber) << ")" << microthreadLog.endLog;
+-		try { _activeCall->sendBasicReply(-EINVAL); } catch (...) {}
+-	}
+-
+-	{
+-		uint64_t now = DarlingServer::Metrics::nowMonoUs();
+-		uint64_t serviceUs = (now >= _callStartUs) ? (now - _callStartUs) : 0;
+-		_metrics.rpcsServiced.fetch_add(1, std::memory_order_relaxed);
+-		_metrics.rpcLatency.record(serviceUs);
+-		_metrics.recordCall(static_cast<uint32_t>(_callNumber), serviceUs);
+-		// perf #18 D9 (dar-1il.4): heatmap. This is doWorkInline -- the Tier-2 NO-FIBER ring path. By
+-		// construction it ran a ring-originated allowlisted op without suspending (used_fiber=false); a
+-		// real suspend here is a contract violation handled below. transport=ring. perf #18 D14
+-		// (dar-1il.9): caller-S2C attributed per-call at _s2cPerform, not via a sticky latch here.
+-		_metrics.recordCallHeatmap(
+-			static_cast<uint32_t>(_callNumber), serviceUs,
+-			DarlingServer::Metrics::CallTransport::Ring,
+-			/* usedFiber */ false,
+-			/* didCallerS2c */ false);
+-		_heatmapCallWasRing = false;
+-	}
+-
+-	// processCall() on a non-blocking op must have run to completion. If somehow it suspended
+-	// (a misclassified op), that is a contract violation -> we'd have corrupted the fiber model.
+-	// Detect it loudly rather than silently mishandle.
+-	bool canRelease = false;
+-	bool scheduleAfterWorking = false;
+-	{
+-		std::unique_lock<std::shared_mutex> relock(_rwlock);
+-		if (_suspended) {
+-			// Should be impossible for an allowlisted op. The microthread "suspended" without a
+-			// fiber to resume onto -> we cannot honor it. Log the contract violation.
+-			microthreadLog.error() << *this << ": doWorkInline call suspended -- not fast-path eligible!" << microthreadLog.endLog;
+-			DarlingServer::Metrics::shared().ringFastSuspend.fetch_add(1, std::memory_order_relaxed);
+-			_suspended = false;
+-		}
+-		_activeCall = nullptr;
+-		currentThreadVar = nullptr;
+-		scheduleAfterWorking = _execution.finish() && !_terminating && !_dead;
+-
+-		if (_dead && !_activeCall && !_terminating) {
+-			_terminating = true;
+-			canRelease = true;
+-		}
+-		if (_terminating && !_dead) {
+-			relock.unlock();
+-			notifyDead();
+-		} else {
+-			if (!_terminating && !_dead && !_pendingInterrupts.empty()) {
+-				if (!_pendingCall) {
+-					_pendingCall = _pendingInterrupts.front();
+-					_pendingInterrupts.pop();
+-					scheduleAfterWorking = true;
+-				}
+-			}
+-			relock.unlock();
+-		}
+-	}
+-	_runningCondvar.notify_all();
+-	if (scheduleAfterWorking) {
+-		Server::sharedInstance().scheduleThread(shared_from_this());
+-	}
+-	if (canRelease) {
+-		_scheduleRelease();
+-	}
+-	return true;
+-};
+-
+-bool DarlingServer::Thread::doMachReplyPortInline(uint32_t seq) {
+-	// perf #18 P6.1 step 2 (dar-ohp): the surgical one-op path. This is doWorkInline() with the
+-	// Call/Message framing ALSO removed: no _pendingCall, no processCall(), no callFromMessage --
+-	// we run the bare dtape primitive and publish the reply onto the ring ourselves. The duct-tape
+-	// context setup/teardown is IDENTICAL to doWorkInline (so current_task() resolves to this
+-	// thread's space exactly as MachReplyPort::processCall would see it).
+-	auto ring = _ring;
+-	if (!ring) {
+-		return false; // caller falls back to the generic path
+-	}
+-
+-	std::unique_lock<std::shared_mutex> lock(_rwlock);
+-
+-	if (_deferralState != DeferralState::NotDeferred) {
+-		_deferralState = DeferralState::DeferredPending;
+-		return false;
+-	}
+-	if (_execution.isRunning()) {
+-		microthreadLog.warning() << _tid << "(" << _nstid << "): doMachReplyPortInline on already-running microthread" << microthreadLog.endLog;
+-		return false;
+-	}
+-	if (_terminating || _dead || _suspended || _continuationCallback || _pendingCall || _activeCall) {
+-		// Not the simple "fresh, idle thread servicing a no-arg trap" case. There is no Call to run
+-		// here (we bypass callFromMessage), so a _pendingCall/_activeCall would be left dangling --
+-		// decline and let the caller take the generic step-1 path which handles all of these.
+-		return false;
+-	}
+-
+-	_execution.begin();
+-	currentThreadVar = shared_from_this();
+-	dtape_thread_entering(_dtapeThread);
+-	_suspended = false;
+-	lock.unlock();
+-	_runningCondvar.notify_all();
+-
+-	// --- body: the bare Mach primitive, identical to what MachReplyPort::processCall calls ------
+-	auto& _metrics = DarlingServer::Metrics::shared();
+-	uint64_t _callStartUs = DarlingServer::Metrics::nowMonoUs();
+-	uint32_t port = dtape_mach_reply_port();
+-
+-	// publish {replyhdr.code=0}{uint32 port_name} straight onto the s2c ring + wake the guest.
+-	// Byte-identical to the reply the generic path produces via pushCallReply for this op.
+-#ifdef DSERVER_RING_PHASE_PROF
+-	uint64_t _pubT0 = Metrics::rdtscCycles();
+-#endif
+-	bool published = ring->publishReply(seq, static_cast<uint32_t>(dserver_callnum_mach_reply_port), 0, &port, sizeof(port));
+-#ifdef DSERVER_RING_PHASE_PROF
+-	_ringPublishCycles = Metrics::rdtscCycles() - _pubT0;
+-#endif
+-	if (published) {
+-		ring->wakeGuest();
+-	} else {
+-		// s2c ring full: the reply will be sent via UDS below (no double-mint). Account it so a
+-		// nonzero ring_s2c_full under load flags a guest that isn't draining its s2c ring.
+-		Metrics::shared().ringS2cFull.fetch_add(1, std::memory_order_relaxed);
+-	}
+-
+-	{
+-		uint64_t now = DarlingServer::Metrics::nowMonoUs();
+-		uint64_t serviceUs = (now >= _callStartUs) ? (now - _callStartUs) : 0;
+-		_metrics.rpcsServiced.fetch_add(1, std::memory_order_relaxed);
+-		_metrics.rpcLatency.record(serviceUs);
+-		_metrics.recordCall(static_cast<uint32_t>(dserver_callnum_mach_reply_port), serviceUs);
+-		// perf #18 D9 (dar-1il.4): heatmap. The surgical mach_reply_port path: ring transport, no fiber,
+-		// pure mint (never an S2C). It bypasses beginRingReply/processCall, so pass the facts directly.
+-		_metrics.recordCallHeatmap(
+-			static_cast<uint32_t>(dserver_callnum_mach_reply_port), serviceUs,
+-			DarlingServer::Metrics::CallTransport::Ring,
+-			/* usedFiber */ false, /* didCallerS2c */ false);
+-	}
+-
+-	// --- completion cleanup: mirror doWorkInline's (no fiber, no _activeCall ever set) ----------
+-	bool canRelease = false;
+-	bool scheduleAfterWorking = false;
+-	{
+-		std::unique_lock<std::shared_mutex> relock(_rwlock);
+-		if (_suspended) {
+-			// Impossible for mach_reply_port (it never blocks). Log loudly; clear so we don't wedge.
+-			microthreadLog.error() << *this << ": doMachReplyPortInline suspended -- mach_reply_port must never block!" << microthreadLog.endLog;
+-			DarlingServer::Metrics::shared().ringFastSuspend.fetch_add(1, std::memory_order_relaxed);
+-			_suspended = false;
+-		}
+-		currentThreadVar = nullptr;
+-		scheduleAfterWorking = _execution.finish() && !_terminating && !_dead;
+-
+-		if (_dead && !_activeCall && !_terminating) {
+-			_terminating = true;
+-			canRelease = true;
+-		}
+-		if (_terminating && !_dead) {
+-			relock.unlock();
+-			notifyDead();
+-		} else {
+-			if (!_terminating && !_dead && !_pendingInterrupts.empty()) {
+-				if (!_pendingCall) {
+-					_pendingCall = _pendingInterrupts.front();
+-					_pendingInterrupts.pop();
+-					scheduleAfterWorking = true;
+-				}
+-			}
+-			relock.unlock();
+-		}
+-	}
+-	_runningCondvar.notify_all();
+-	if (scheduleAfterWorking) {
+-		Server::sharedInstance().scheduleThread(shared_from_this());
+-	}
+-	if (canRelease) {
+-		_scheduleRelease();
+-	}
+-
+-	// If the publish failed (s2c full), tell the caller to fall back so the guest still gets a
+-	// reply via the generic path. The dtape trap already ran (it minted a real port); re-running
+-	// it via callFromMessage would leak that port. So instead of "return false to re-dispatch",
+-	// we treat a publish failure as a HARD inline failure only when nothing was minted. Here the
+-	// port WAS minted and the only loss is the wake; publishReply already UDS-falls-back inside
+-	// pushCallReply for the generic path, but we don't have that here. Simplest correct choice:
+-	// if publish failed, send the reply via UDS directly so we never double-mint.
+-	if (!published) {
+-		// Build the minimal UDS reply and send it. Reuse the same reply convention.
+-		dserver_rpc_reply_mach_reply_port_t reply;
+-		reply.header.number = dserver_callnum_mach_reply_port;
+-		reply.header.code = 0;
+-		reply.body.port_name = port;
+-		Message replyMsg(sizeof(reply), 0);
+-		replyMsg.data().resize(sizeof(reply));
+-		memcpy(replyMsg.data().data(), &reply, sizeof(reply));
+-		replyMsg.setAddress(_address);
+-		Server::sharedInstance().sendMessage(std::move(replyMsg));
+-	}
+-	return true;
+-};
+-#endif
+ 
+ void DarlingServer::Thread::suspend(std::function<void()> continuationCallback, libsimple_lock_t* unlockMe) {
+ 	if (this != currentThreadVar.get()) {
+diff --git a/tests/ring_fastpath_gate_test.c b/tests/ring_fastpath_gate_test.c
+deleted file mode 100644
+index 27f76adfc912ac22206497bd4d48f4effa779af0..0000000000000000000000000000000000000000
+--- a/tests/ring_fastpath_gate_test.c
++++ /dev/null
+@@ -1,207 +0,0 @@
+-// perf #18 P6.1 (dar-ohp): RED->GREEN gate on the ring fast-path eligibility + escape hatches.
+-//
+-// The fast inline path (doWorkInline, no fiber) runs a proven-non-blocking op directly on the
+-// main loop. Two safety properties MUST hold or we risk running a blocking/ineligible op without
+-// a fiber (UB) or being unable to disable the specialized semantics if a bug surfaces:
+-//   1. ONLY allowlisted no-block ops are eligible (mach_reply_port, task_self_trap) -- nothing else.
+-//   2. The escape hatches actually gate it: DARLING_SERVER_FAST_OPS=0 disables ALL fast paths;
+-//      DARLING_SERVER_FAST_MACH_REPLY_PORT=0 disables just mach_reply_port's.
+-// This test pins both. It mirrors the real ringFastPathEligible() logic from call.cpp against the
+-// generated callnums.
+-//
+-// GREEN (default): the real hatch-aware predicate -- eligibility flips with the env knobs.
+-// RED arm (-DFASTPATH_NO_HATCH): a predicate that ignores the hatches (always-eligible for the
+-// allowlist); the "hatch disables it" assertions MUST then fail, proving the test exercises the
+-// hatch logic, not just the allowlist.
+-//
+-// P6.1 step 2 (dar-ohp) also pins the SURGICAL direct-dispatch shape guard for mach_reply_port
+-// (fastMachReplyPortEligible in call.cpp): only an empty-body/no-arena mach_reply_port slot may
+-// take the no-Call path. RED arm (-DNO_SHAPE_GUARD) drops that guard; the "rejects a payload/arena
+-// slot" assertions MUST then fail.
+-
+-#define _POSIX_C_SOURCE 200112L
+-// Make the shared C2S opcode allowlist macro (DSERVER_RING_C2S_OPCODES) visible -- it lives inside
+-// the DSERVER_RING_TRANSPORT block in rpc-supplement.h, the SINGLE source of truth both the server
+-// (call.cpp) and the guest (dserver-ring.c) key off. We gate the (unused-here) attach-check out.
+-#define DSERVER_RING_TRANSPORT 1
+-#define DSERVER_RING_NO_ATTACH_CHECK 1
+-#include <darlingserver/rpc.h>
+-#include <darlingserver/rpc-supplement.h>
+-#include <stdio.h>
+-#include <stdlib.h>
+-#include <string.h>
+-
+-static int env_off(const char* name) {
+-	const char* e = getenv(name);
+-	return (e && e[0] == '0' && e[1] == '\0');
+-}
+-
+-// The predicate under test, mirroring call.cpp's ringFastPathEligible() (the no-fiber INLINE
+-// fast path). perf #18 P5 (dar-1il): mach_port_mod_refs is DELIBERATELY NOT inline-eligible --
+-// running it off the microthread fiber corrupted the thread's stack bookkeeping (server abort in
+-// StackPool::free). It rides the ring via the GENERIC fiber doWork() instead (see c2s_allowlisted).
+-// So the inline predicate must REJECT mod_refs; the assertion below pins that.
+-static int fast_eligible(unsigned int callnum) {
+-#ifndef FASTPATH_NO_HATCH
+-	if (env_off("DARLING_SERVER_FAST_OPS")) return 0;            // global kill-switch
+-	if (callnum == (unsigned)dserver_callnum_mach_reply_port)
+-		return !env_off("DARLING_SERVER_FAST_MACH_REPLY_PORT");  // per-op kill-switch
+-	if (callnum == (unsigned)dserver_callnum_task_self_trap)
+-		return 1;
+-	return 0;
+-#else
+-	// RED arm: ignores the hatches entirely (the bug we must catch).
+-	if (callnum == (unsigned)dserver_callnum_mach_reply_port)    return 1;
+-	if (callnum == (unsigned)dserver_callnum_task_self_trap)     return 1;
+-	return 0;
+-#endif
+-}
+-
+-// perf #18 P5 (dar-1il) / P5-bulk (dar-1il.1): the C2S allowlist predicate, mirroring the `eligible`
+-// check in call.cpp's ringServiceThread(). The port/right bookkeeping ops (mach_port_mod_refs,
+-// _deallocate, _allocate, _insert_right) ride the GENERIC fiber doWork() path on the ring (they
+-// carry a request body; they are NOT inline/surgical-eligible -- see fast_eligible). The body must
+-// fit one inline slot (reqlen <= inlineCap). CRITICALLY this allowlist is NOT gated by any per-op
+-// env hatch: a request the guest published is parked waiting for a ring reply, so silently dropping
+-// it (gating off server-side) would strand the guest on its bounded reply-wait every call.
+-//
+-// THE allowlist is now GENERATED from the SHARED DSERVER_RING_C2S_OPCODES macro -- the IDENTICAL
+-// macro the server (call.cpp) and the guest (dserver-ring.c) consume -- so this mirror cannot drift
+-// from the real predicate. RED arm -DC2S_READD_MODREFS RE-ADDS mach_port_mod_refs to the local copy
+-// of the macro below (modeling the dar-1il.2 regression of returning the destroy-capable op to the
+-// ring); the "mach_port_mod_refs is NOT C2S-allowlisted" GREEN assertion MUST then fail, proving the
+-// gate pins mod_refs OUT of the ring set. (ring_drift_gate_test.c separately proves guest==server
+-// set equality.)
+-#ifdef C2S_READD_MODREFS
+-// RED arm: a deliberately drifted allowlist that RE-ADDS mach_port_mod_refs (the S2C-deadlock hazard
+-// dar-1il.2 removed). The "mach_port_mod_refs is NOT C2S-allowlisted" GREEN assertion MUST then fail.
+-#define C2S_GATE_OPCODES(X) \
+-	DSERVER_RING_C2S_OPCODES(X) \
+-	X(mach_port_mod_refs)
+-#else
+-#define C2S_GATE_OPCODES(X) DSERVER_RING_C2S_OPCODES(X)
+-#endif
+-static int c2s_allowlisted(unsigned int callnum, unsigned int reqlen, unsigned int inlinecap) {
+-	int eligible = 0;
+-#define C2S_GATE_MATCH(op) || (callnum == (unsigned)dserver_callnum_##op)
+-	eligible = (0 C2S_GATE_OPCODES(C2S_GATE_MATCH));
+-#undef C2S_GATE_MATCH
+-	if (!eligible || reqlen > inlinecap) return 0;
+-	return 1;
+-}
+-
+-// perf #18 P6.1 step 2 (dar-ohp): the SURGICAL direct-dispatch predicate, mirroring call.cpp's
+-// fastMachReplyPortEligible(). Stricter than fast_eligible: EXACTLY mach_reply_port AND a
+-// no-payload/no-arena shape. The shape guard is the security boundary for the no-Call path -- a
+-// slot carrying a body or arena must be rejected (it would mean a malformed/unexpected request we
+-// must not run without the framed validation). RED arm (-DNO_SHAPE_GUARD) drops the shape check;
+-// the "rejects a payload/arena slot" assertions MUST then fail, proving the test exercises it.
+-static int fast_mach_reply_port_eligible(unsigned int callnum, unsigned int reqlen, unsigned int arenalen) {
+-#ifndef NO_SHAPE_GUARD
+-	if (reqlen != 0 || arenalen != 0) return 0;
+-#endif
+-	if (callnum != (unsigned)dserver_callnum_mach_reply_port) return 0;
+-	if (env_off("DARLING_SERVER_FAST_OPS")) return 0;
+-	if (env_off("DARLING_SERVER_FAST_MACH_REPLY_PORT")) return 0;
+-	return 1;
+-}
+-
+-static int failures = 0;
+-#define CHECK(cond, msg) do { \
+-	if (!(cond)) { fprintf(stderr, "FAIL: %s\n", (msg)); ++failures; } \
+-	else         { fprintf(stderr, "ok:   %s\n", (msg)); } \
+-} while (0)
+-
+-static void setenv01(const char* n, int off) {
+-	if (off) setenv(n, "0", 1); else unsetenv(n);
+-}
+-
+-int main(void) {
+-	// --- INLINE allowlist: only the trivial pure-mint port traps are inline-eligible ---------
+-	// mach_port_mod_refs is INTENTIONALLY excluded (it crashed the server off the fiber; and as of
+-	// dar-1il.2 it is off the ring entirely -- UDS only -- so it is neither inline- nor C2S-eligible).
+-	setenv01("DARLING_SERVER_FAST_OPS", 0);
+-	setenv01("DARLING_SERVER_FAST_MACH_REPLY_PORT", 0);
+-	CHECK(fast_eligible(dserver_callnum_mach_reply_port),     "mach_reply_port is inline-eligible by default");
+-	CHECK(fast_eligible(dserver_callnum_task_self_trap),      "task_self_trap is inline-eligible by default");
+-	CHECK(!fast_eligible(dserver_callnum_mach_port_mod_refs), "mach_port_mod_refs is NOT inline-eligible (UDS only)");
+-	// perf #18 P5-bulk (dar-1il.1): the new port/right ops ALSO ride the generic fiber path, never
+-	// the no-fiber inline path (mach_port_mod_refs proved these are not off-fiber-safe).
+-	CHECK(!fast_eligible(dserver_callnum_mach_port_allocate),     "mach_port_allocate is NOT inline-eligible (rides the fiber path)");
+-	CHECK(!fast_eligible(dserver_callnum_mach_port_insert_right), "mach_port_insert_right is NOT inline-eligible (rides the fiber path)");
+-	CHECK(!fast_eligible(dserver_callnum_kprintf),            "kprintf is NOT inline-eligible");
+-	CHECK(!fast_eligible(dserver_callnum_checkin),            "checkin is NOT inline-eligible");
+-
+-	// --- escape hatch: global kill-switch disables ALL inline fast paths --------------------
+-	setenv01("DARLING_SERVER_FAST_OPS", 1);
+-	CHECK(!fast_eligible(dserver_callnum_mach_reply_port),    "FAST_OPS=0 disables mach_reply_port inline path");
+-	CHECK(!fast_eligible(dserver_callnum_task_self_trap),     "FAST_OPS=0 disables task_self_trap inline path");
+-	setenv01("DARLING_SERVER_FAST_OPS", 0);
+-
+-	// --- escape hatch: per-op kill-switch disables just mach_reply_port ----------------------
+-	setenv01("DARLING_SERVER_FAST_MACH_REPLY_PORT", 1);
+-	CHECK(!fast_eligible(dserver_callnum_mach_reply_port), "FAST_MACH_REPLY_PORT=0 disables mach_reply_port inline path");
+-	CHECK(fast_eligible(dserver_callnum_task_self_trap),   "FAST_MACH_REPLY_PORT=0 leaves task_self_trap inline path on");
+-	setenv01("DARLING_SERVER_FAST_MACH_REPLY_PORT", 0);
+-
+-	// --- P5 C2S allowlist: the Tier-1 ring ops ride the GENERIC fiber path on the ring -----------
+-	// inlineCap for the guest's 128B slot is 128 - sizeof(dserver_ring_slot_t); the 16-byte bodies
+-	// fit easily. Use a representative cap of 96 (>= 16). Allowlisted with a body, dropped if the body
+-	// would overflow the slot. The allowlist is NOT env-gated (gating off a guest-published op would
+-	// strand the guest on its reply-wait).
+-	CHECK(c2s_allowlisted(dserver_callnum_mach_reply_port, 0, 96),
+-	      "mach_reply_port (empty body) is C2S-allowlisted");
+-	// perf #18 P5-bulk (dar-1il.1): allocate + insert_right are C2S-allowlisted (Tier-1 ring).
+-	// Bodies: allocate=16B {target,right,name-ptr}; insert_right=16B {target,name,poly,polyPoly} --
+-	// within a 96-byte inline cap.
+-	CHECK(c2s_allowlisted(dserver_callnum_mach_port_allocate, 16, 96),
+-	      "mach_port_allocate (16-byte body) is C2S-allowlisted");
+-	CHECK(c2s_allowlisted(dserver_callnum_mach_port_insert_right, 16, 96),
+-	      "mach_port_insert_right (16-byte body) is C2S-allowlisted");
+-	CHECK(!c2s_allowlisted(dserver_callnum_mach_port_allocate, 200, 96),
+-	      "mach_port_allocate with an over-cap body is dropped (UDS fallback)");
+-	// mach_port_deallocate is DELIBERATELY NOT allowlisted: it can trigger a vm munmap S2C upcall to
+-	// the caller, which a ring-waiting (non-recvmsg) thread cannot service -> deadlock. Stays on UDS.
+-	CHECK(!c2s_allowlisted(dserver_callnum_mach_port_deallocate, 8, 96),
+-	      "mach_port_deallocate is NOT C2S-allowlisted (S2C-upcall deadlock hazard -> UDS only)");
+-	// mach_port_mod_refs is DELIBERATELY NOT allowlisted (dar-1il.2): it is destroy-capable
+-	// (mod_refs(delta<0) last-ref destroys the port -> same vm munmap S2C upcall hazard as
+-	// deallocate). Stays on UDS. RED arm -DC2S_READD_MODREFS re-adds it -> this assertion fails.
+-	CHECK(!c2s_allowlisted(dserver_callnum_mach_port_mod_refs, 16, 96),
+-	      "mach_port_mod_refs is NOT C2S-allowlisted (destroy-capable -> S2C-upcall deadlock hazard -> UDS only)");
+-	CHECK(!c2s_allowlisted(dserver_callnum_kprintf, 4, 96),
+-	      "kprintf is NOT C2S-allowlisted");
+-
+-	// --- P6.1 step 2: surgical mach_reply_port direct dispatch + shape guard -----------------
+-	setenv01("DARLING_SERVER_FAST_OPS", 0);
+-	setenv01("DARLING_SERVER_FAST_MACH_REPLY_PORT", 0);
+-	// accepted: mach_reply_port with an empty body and no arena (the only valid shape)
+-	CHECK(fast_mach_reply_port_eligible(dserver_callnum_mach_reply_port, 0, 0),
+-	      "mach_reply_port w/ empty body + no arena is direct-dispatch eligible");
+-	// rejected by shape: a body or arena present (RED arm without NO_SHAPE_GUARD must fail these)
+-	CHECK(!fast_mach_reply_port_eligible(dserver_callnum_mach_reply_port, 4, 0),
+-	      "mach_reply_port w/ inline body is REJECTED by shape guard");
+-	CHECK(!fast_mach_reply_port_eligible(dserver_callnum_mach_reply_port, 0, 16),
+-	      "mach_reply_port w/ arena is REJECTED by shape guard");
+-	// rejected by callnum: only mach_reply_port may take the no-Call path (task_self_trap may NOT)
+-	CHECK(!fast_mach_reply_port_eligible(dserver_callnum_task_self_trap, 0, 0),
+-	      "task_self_trap is NOT direct-dispatch eligible (mach_reply_port only)");
+-	CHECK(!fast_mach_reply_port_eligible(dserver_callnum_kprintf, 0, 0),
+-	      "kprintf is NOT direct-dispatch eligible");
+-	// hatches still gate the direct path
+-	setenv01("DARLING_SERVER_FAST_OPS", 1);
+-	CHECK(!fast_mach_reply_port_eligible(dserver_callnum_mach_reply_port, 0, 0),
+-	      "FAST_OPS=0 disables the direct mach_reply_port path");
+-	setenv01("DARLING_SERVER_FAST_OPS", 0);
+-	setenv01("DARLING_SERVER_FAST_MACH_REPLY_PORT", 1);
+-	CHECK(!fast_mach_reply_port_eligible(dserver_callnum_mach_reply_port, 0, 0),
+-	      "FAST_MACH_REPLY_PORT=0 disables the direct mach_reply_port path");
+-	setenv01("DARLING_SERVER_FAST_MACH_REPLY_PORT", 0);
+-
+-	if (failures) {
+-		fprintf(stderr, "\nring_fastpath_gate_test: %d FAILURE(S)\n", failures);
+-		return 1;
+-	}
+-	fprintf(stderr, "\nring_fastpath_gate_test: allowlist + escape hatches hold\n");
+-	return 0;
+-}
+diff --git a/tests/ring_lane_class_gate_test.c b/tests/ring_lane_class_gate_test.c
+index fe3cdbca794b79c2b938533d0cc6717616d22c04..335d1b1b8177fb9fe98798238ab5da04603aa130 100644
+--- a/tests/ring_lane_class_gate_test.c
++++ b/tests/ring_lane_class_gate_test.c
+@@ -91,37 +91,19 @@ int main(void) {
+ 	CHECK((op_class_local(dserver_callnum_mach_port_allocate) & DSERVER_RING_CLASS_DESTROY) == 0u,
+ 	      "mach_port_allocate is NOT DestroyCapable");
+ 
+-	// --- Tier-2 (NoFiberFast) is a SUB-LANE of Tier-1: NoFiberFast => SimpleRingC2S (policy #4) -----
+-	CHECK(dserver_ring_op_class(dserver_callnum_mach_reply_port) & DSERVER_RING_CLASS_NOFIBER_FAST,
+-	      "mach_reply_port is NoFiberFastEligible (Tier 2)");
+-	CHECK(dserver_ring_op_class(dserver_callnum_task_self_trap) & DSERVER_RING_CLASS_NOFIBER_FAST,
+-	      "task_self_trap is NoFiberFastEligible (Tier 2)");
+-	// perf #18 D10 (dar-1il.5): the rest of the pure-mint self-trap family joined Tier 2. Pin that
+-	// they are BOTH SimpleRingC2S (Lane 1) AND NoFiberFast (Tier 2) AND carry NEITHER destroy nor
+-	// caller-S2C (so the canon-safe fold over the whole C2S set still holds -- see the static_assert).
+-	CHECK(dserver_ring_op_class(dserver_callnum_thread_self_trap) & DSERVER_RING_CLASS_NOFIBER_FAST,
+-	      "thread_self_trap is NoFiberFastEligible (Tier 2) [D10]");
+ 	CHECK(dserver_ring_op_class(dserver_callnum_thread_self_trap) & DSERVER_RING_CLASS_SIMPLE_C2S,
+ 	      "thread_self_trap is SimpleRingC2SEligible [D10]");
+ 	CHECK((dserver_ring_op_class(dserver_callnum_thread_self_trap) & (DSERVER_RING_CLASS_DESTROY | DSERVER_RING_CLASS_CALLER_S2C)) == 0u,
+ 	      "thread_self_trap is NEITHER destroy nor caller-S2C [D10]");
+-	CHECK(dserver_ring_op_class(dserver_callnum_host_self_trap) & DSERVER_RING_CLASS_NOFIBER_FAST,
+-	      "host_self_trap is NoFiberFastEligible (Tier 2) [D10]");
+ 	CHECK(dserver_ring_op_class(dserver_callnum_host_self_trap) & DSERVER_RING_CLASS_SIMPLE_C2S,
+ 	      "host_self_trap is SimpleRingC2SEligible [D10]");
+ 	CHECK((dserver_ring_op_class(dserver_callnum_host_self_trap) & (DSERVER_RING_CLASS_DESTROY | DSERVER_RING_CLASS_CALLER_S2C)) == 0u,
+ 	      "host_self_trap is NEITHER destroy nor caller-S2C [D10]");
+-	// allocate/insert_right ride Tier 1 only (generic fiber), NOT the no-fiber path.
+-	CHECK((dserver_ring_op_class(dserver_callnum_mach_port_allocate) & DSERVER_RING_CLASS_NOFIBER_FAST) == 0u,
+-	      "mach_port_allocate is NOT NoFiberFastEligible (Tier 1 only)");
+ 
+-	// perf #18 D11 (dar-1il.6): the bulk closed-fast Lane-1 batch. Each must be SimpleRingC2SEligible
+-	// (Lane 1), Tier-1 ONLY (NOT NoFiberFast -- they read/mutate process/thread state via the generic
+-	// Call path, not pure mint), and carry NEITHER destroy nor caller-S2C (so the canon-safe fold holds).
++	// Process/thread state calls remain ring-eligible without destroy/caller-S2C semantics.
+ #define D11_OP_CHECK(op) do { \
+ 		uint32_t _c = dserver_ring_op_class((uint32_t)dserver_callnum_##op); \
+ 		CHECK((_c & DSERVER_RING_CLASS_SIMPLE_C2S) != 0u, #op " is SimpleRingC2SEligible [D11]"); \
+-		CHECK((_c & DSERVER_RING_CLASS_NOFIBER_FAST) == 0u, #op " is NOT NoFiberFastEligible (Tier 1 only) [D11]"); \
+ 		CHECK((_c & (DSERVER_RING_CLASS_DESTROY | DSERVER_RING_CLASS_CALLER_S2C)) == 0u, #op " is NEITHER destroy nor caller-S2C [D11]"); \
+ 	} while (0);
+ 	D11_OP_CHECK(uidgid);
+@@ -157,13 +139,11 @@ int main(void) {
+ 	      "mach_port_mod_refs is CallerS2CCapable");
+ 
+ 	// --- POLICY relationships hold across the whole table -----------------------------------------
+-	// #2 DestroyCapable => NOT SimpleRingC2S ; #3 CallerS2C => NOT SimpleRingC2S ; #4 NoFiber => SimpleC2S
++	// #2 DestroyCapable => NOT SimpleRingC2S; #3 CallerS2C => NOT SimpleRingC2S.
+ #define POLICY_CHECK(op, bits) do { \
+ 		uint32_t _c = dserver_ring_op_class((uint32_t)dserver_callnum_##op); \
+ 		if (_c & (DSERVER_RING_CLASS_DESTROY | DSERVER_RING_CLASS_CALLER_S2C)) \
+ 			CHECK((_c & DSERVER_RING_CLASS_SIMPLE_C2S) == 0u, #op " : destroy/caller-S2C => NOT SimpleRingC2S"); \
+-		if (_c & DSERVER_RING_CLASS_NOFIBER_FAST) \
+-			CHECK((_c & DSERVER_RING_CLASS_SIMPLE_C2S) != 0u, #op " : NoFiberFast => SimpleRingC2S"); \
+ 	} while (0);
+ 	DSERVER_RING_OP_CLASS(POLICY_CHECK)
+ #undef POLICY_CHECK
+diff --git a/tests/rpc_heatmap_gate_test.cpp b/tests/rpc_heatmap_gate_test.cpp
+index 00e0df8b553ec71f0820d4a396a966bdb3af66d6..feeaf494d6897b15af6f1c0fbc2822ce97b40fd7 100644
+--- a/tests/rpc_heatmap_gate_test.cpp
++++ b/tests/rpc_heatmap_gate_test.cpp
+@@ -136,8 +136,6 @@ int main() {
+ 	// canon simple + observed on the ring:
+ 	CHECK(heatStr(json, OP_REPLY, "verdict") == "already-on-ring", "reply_port -> already-on-ring");
+ 	CHECK(heatStr(json, OP_ALLOC, "verdict") == "already-on-ring", "alloc -> already-on-ring");
+-	// unclassified, no fiber, no S2C -> tier2 candidate (the prize: hot + cheap + no-fiber-shaped):
+-	CHECK(heatStr(json, OP_VMALLOC, "verdict") == "tier2-candidate", "vm_allocate -> tier2-candidate");
+ 
+ 	// --- a measured caller-S2C must FORCE duplex-only even for an unclassified op -----------------
+ 	// D14 (dar-1il.9): caller-S2C is now attributed PER-CALL via recordCallerS2cFor() at the S2C site,
+diff --git a/tests/run-ring-shm-validate.sh b/tests/run-ring-shm-validate.sh
+index 5e7228ea175db5c201f911cc5b5261ab38976f70..6cea860964a87ef5b531f24952d60946ab8b7d83 100755
+--- a/tests/run-ring-shm-validate.sh
++++ b/tests/run-ring-shm-validate.sh
+@@ -124,47 +124,6 @@ LSRC="$HERE/ring_allowlist_test.cpp"
+ 	echo "ring_allowlist gate: RED->GREEN OK"
+ 	echo
+ 
+-	# --- P6.1 fast-path eligibility + escape hatches (dar-ohp). Reuses $GEN_RPC. ---
+-	FPSRC="$HERE/ring_fastpath_gate_test.c"
+-	if [ -f "$FPSRC" ]; then
+-		echo "== fast-path GREEN arm (hatch-aware: allowlist + env kill-switches) =="
+-		if ! "$CC" -std=c11 -I"$GEN_RPC" -I"$INC" -o "$TMP/fp_green" "$FPSRC" 2>/dev/null; then
+-			echo "fast-path GREEN arm failed to COMPILE"; exit 2
+-		fi
+-		if ! "$TMP/fp_green"; then
+-			echo "fast-path GREEN arm FAILED"; exit 1
+-		fi
+-		echo
+-		echo "== fast-path RED arm (-DFASTPATH_NO_HATCH: ignores hatches, MUST fail) =="
+-		if ! "$CC" -std=c11 -DFASTPATH_NO_HATCH -I"$GEN_RPC" -I"$INC" -o "$TMP/fp_red" "$FPSRC" 2>/dev/null; then
+-			echo "fast-path RED arm failed to COMPILE -- gate broken"; exit 2
+-		fi
+-		if "$TMP/fp_red" >/dev/null 2>&1; then
+-			echo "fast-path RED arm PASSED but must FAIL -- gate not exercising the hatches"; exit 1
+-		fi
+-		echo "  fast-path RED arm correctly failed."
+-		echo
+-		echo "== fast-path shape RED arm (-DNO_SHAPE_GUARD: drops the direct-dispatch shape guard, MUST fail) =="
+-		if ! "$CC" -std=c11 -DNO_SHAPE_GUARD -I"$GEN_RPC" -I"$INC" -o "$TMP/fp_shape_red" "$FPSRC" 2>/dev/null; then
+-			echo "fast-path shape RED arm failed to COMPILE -- gate broken"; exit 2
+-		fi
+-		if "$TMP/fp_shape_red" >/dev/null 2>&1; then
+-			echo "fast-path shape RED arm PASSED but must FAIL -- gate not exercising the shape guard"; exit 1
+-		fi
+-		echo "  fast-path shape RED arm correctly failed."
+-		echo
+-		echo "== mod_refs C2S exclusion RED arm (-DC2S_READD_MODREFS: re-adds the destroy-capable op, MUST fail) =="
+-		if ! "$CC" -std=c11 -DC2S_READD_MODREFS -I"$GEN_RPC" -I"$INC" -o "$TMP/fp_c2s_red" "$FPSRC" 2>/dev/null; then
+-			echo "mod_refs C2S RED arm failed to COMPILE -- gate broken"; exit 2
+-		fi
+-		if "$TMP/fp_c2s_red" >/dev/null 2>&1; then
+-			echo "mod_refs C2S RED arm PASSED but must FAIL -- gate not pinning mod_refs OUT of the C2S allowlist"; exit 1
+-		fi
+-		echo "  mod_refs C2S RED arm correctly failed."
+-		echo
+-		echo "ring_fastpath gate: RED->GREEN OK"
+-		echo
+-	fi
+ 
+ 	# --- P5-bulk (dar-1il.1): no-silent-drop drift gate. Guest "may publish" set == server "will
+ 	#     service" set (both derived from the shared DSERVER_RING_C2S_OPCODES macro). RED arm

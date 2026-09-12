@@ -47,14 +47,14 @@ patches:
         host-stat-deltas:
           - path: per_call.dserver_callnum_ring_attach.count
             min-delta: 1
-          - path: ring_fast_hit
+          - path: ring_serviced
             min-delta: 1
     sha256sum: 862c5985e09200e952f6cd7d33f3743ce008ba40e2403d5631fac393f5c78ff6
   - path: darlingserver/ring-comparison-server.patch
     module: darling/src/external/darlingserver
     source-branch: fix/ring-comparison-server
     source-base: 75d0fee5c5c38ad66bf3771479390011c9781d62
-    source-commit: 7dc5e9d2d7801111789466ad70b6993c7f8f0c96
+    source-commit: 610bcb43aedd69cbc125c39a74eed977b0792028
     bead: dar-gwn.7.7.2
     publication-status: blocked
     publication-blocker: Experimental common ring composition under dar-gwn.7.7; matched OFF/ON runtime acceptance and architecture review are required. No publication authorized.
@@ -107,7 +107,7 @@ patches:
           - "-Wextra"
           - "-Werror"
         timeout-seconds: 60
-    sha256sum: a19a490d15dace2d7514526fd50b3aebb4cf714472b14dfe98b958e743b64011
+    sha256sum: bcf899f03b66ae60ca8e651116a5a419278608fc933a9e33094cd3fb53f5ef4e
   - path: libmalloc/region-generation.patch
     module: darling/src/external/libmalloc
     source-branch: fix/malloc-region-generation
