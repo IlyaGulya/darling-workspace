@@ -38,9 +38,9 @@ modules:
     series:
       - patch: darlingserver/ring-comparison-server.patch
         lock: ring-comparison-server-v1.yml
-        expected_applied_tree: e4419cea356a1994d0b444763f40f8648a079fa8
-    final_tree: e4419cea356a1994d0b444763f40f8648a079fa8
-    integration_final_tree: e4419cea356a1994d0b444763f40f8648a079fa8
+        expected_applied_tree: af78198e3e737b2efeb08953a0b5ef7ac850cc6d
+    final_tree: af78198e3e737b2efeb08953a0b5ef7ac850cc6d
+    integration_final_tree: af78198e3e737b2efeb08953a0b5ef7ac850cc6d
   - module: darling/src/external/libmalloc
     starting:
       tree: e87c35b81d1f5cce2672809fada3e38db718881d

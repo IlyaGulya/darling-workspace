@@ -54,7 +54,7 @@ patches:
     module: darling/src/external/darlingserver
     source-branch: fix/ring-comparison-server
     source-base: 75d0fee5c5c38ad66bf3771479390011c9781d62
-    source-commit: c8719f43ba99869e39bd364125e2184ae91d4258
+    source-commit: 7dc5e9d2d7801111789466ad70b6993c7f8f0c96
     bead: dar-gwn.7.7.2
     publication-status: blocked
     publication-blocker: Experimental common ring composition under dar-gwn.7.7; matched OFF/ON runtime acceptance and architecture review are required. No publication authorized.
@@ -107,7 +107,7 @@ patches:
           - "-Wextra"
           - "-Werror"
         timeout-seconds: 60
-    sha256sum: c5f20ae3288d3b9421635073ea66944a782a997544a6b5589e83fb0b40e4e70c
+    sha256sum: a19a490d15dace2d7514526fd50b3aebb4cf714472b14dfe98b958e743b64011
   - path: libmalloc/region-generation.patch
     module: darling/src/external/libmalloc
     source-branch: fix/malloc-region-generation
@@ -115,8 +115,18 @@ patches:
     source-commit: 15f5405f735a2c0fa4bdd1d21b341bd4db123279
     bead: dar-gwn.7.7.4
     publication-status: blocked
-    publication-blocker: Allocator generation lifetime correction requires native build and deployed runtime validation; original CPack crash attribution remains unproven.
-    test-exception:
-      reason: Deterministic host diagnostic is RED on base and GREEN on fixed source; native regression has not yet been integrated into the West runner.
-      scope: dar-gwn.7.7.4 owns native rack_region_generation_retained execution and fixed-runtime guest allocation and CPack acceptance.
+    publication-blocker: Matched OFF/ON package acceptance remains required; original CPack crash attribution remains unproven.
+    tests:
+      - name: malloc_region_generation_native
+        kind: guest
+        coverage-tier: runtime
+        runs: guest
+        diag: guarded
+        runner: guest-command-fixture
+        guest-command: /usr/libexec/rack_region_generation
+        runtime-profile: homebrew-ring-on
+        expect:
+          returncode: 0
+          output-contains: [RACK_REGION_GENERATION_OK]
+        timeout-seconds: 60
     sha256sum: 62ac80d7e59fc133343050c7ad5919447120bbc657c8773c5cc9b8b0d0f70852
