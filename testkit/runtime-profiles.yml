@@ -277,6 +277,7 @@ runtime-profiles:
     - darling/src/external/text_cmds
     - darling/src/external/libressl-2.8.3
     - darling/src/external/libkqueue
+    - darling/src/external/libmalloc
     cmake-defines:
       DARLING_EUNION: true
       DARLING_ROOTLESS_TOOLCHAIN: true
@@ -323,6 +324,7 @@ runtime-profiles:
     - darling/src/external/text_cmds
     - darling/src/external/libressl-2.8.3
     - darling/src/external/libkqueue
+    - darling/src/external/libmalloc
     cmake-defines:
       DARLING_EUNION: true
       DARLING_ROOTLESS_TOOLCHAIN: true
