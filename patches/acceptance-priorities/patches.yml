@@ -51,6 +51,19 @@ patches:
         requires: [darling-prefix]
         runtime-profile: homebrew-ring-off
         timeout-seconds: 60
+      - name: comparison_on_host_port_contention
+        kind: guest
+        coverage-tier: runtime
+        runs: guest
+        diag: forensic
+        runner: guest-c-fixture
+        repo: darling-workspace
+        script: tests/shmem_ring_mach_ops_guest.c
+        ok-marker: WEST_SHMEM_RING_MACH_OPS_OK
+        compile-flags: ["-std=gnu11", "-Wall", "-Wextra", "-Werror"]
+        requires: [darling-prefix]
+        runtime-profile: homebrew-ring-on
+        timeout-seconds: 300
       - name: comparison_on_malloc_region_growth
         kind: guest
         coverage-tier: runtime
@@ -286,13 +299,13 @@ patches:
           &requires1
           - darling-prefix
         runtime-profile: homebrew-ring-on
-        name: comparison_on_stock_install
+        name: comparison_on_stock_reinstall
         script: tests/_stock_stack_replay.py
         timeout-seconds: 10800
         env-vars:
           WEST_STOCK_CORE_ARCHIVE: /home/ilyagulya/work/darling-debug/homebrew-core-ad6d3bbf8f5eac27a5ce90e695c6b41765d40bb7.tar.gz
           WEST_STOCK_WGET_ARCHIVE: /home/ilyagulya/work/darling-debug/wget-1.25.0.tar.gz
-          WEST_STOCK_REPLAY_PHASE: install
+          WEST_STOCK_REPLAY_PHASE: reinstall
       - kind: guest
         coverage-tier: runtime
         runs: guest
