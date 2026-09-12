@@ -9,9 +9,10 @@ mirror:
   url: ../../source-bundles/ring-comparison/libmalloc.bundle
   base_ref: refs/tags/patch-stack/v1/bases/a57991e2651226a675654bd96e5d9ab6bec288c5
   base_oid: a57991e2651226a675654bd96e5d9ab6bec288c5
-  source_ref: refs/tags/patch-stack/v1/sources/5981f90653196f2325b385446ba4254024138a13
-  source_oid: 5981f90653196f2325b385446ba4254024138a13
-source_commit: 5981f90653196f2325b385446ba4254024138a13
+  source_ref: refs/tags/patch-stack/v1/sources/15f5405f735a2c0fa4bdd1d21b341bd4db123279
+  source_oid: 15f5405f735a2c0fa4bdd1d21b341bd4db123279
+source_commit: 15f5405f735a2c0fa4bdd1d21b341bd4db123279
 ordered_commits:
   - 5981f90653196f2325b385446ba4254024138a13
-expected_tree: 92a4080e35901a73c3cd1185cf650e0940152950
+  - 15f5405f735a2c0fa4bdd1d21b341bd4db123279
+expected_tree: f5aead7615559c289fe4b6d9d1b3d76d8e15105f

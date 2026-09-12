@@ -29,9 +29,9 @@ modules:
     series:
       - patch: xnu/ring-comparison-guest.patch
         lock: ring-comparison-guest-v1.yml
-        expected_applied_tree: a4d7d3b5430aeb2e8f195f7617048e6cba02217c
-    final_tree: a4d7d3b5430aeb2e8f195f7617048e6cba02217c
-    integration_final_tree: a4d7d3b5430aeb2e8f195f7617048e6cba02217c
+        expected_applied_tree: ad3ea5ed1e1031d543338e15d8fdbacf971f8e9b
+    final_tree: ad3ea5ed1e1031d543338e15d8fdbacf971f8e9b
+    integration_final_tree: ad3ea5ed1e1031d543338e15d8fdbacf971f8e9b
   - module: darling/src/external/darlingserver
     starting:
       tree: e450e0f25504d2129e3e00356536ad05f21749fa
@@ -47,6 +47,6 @@ modules:
     series:
       - patch: libmalloc/region-generation.patch
         lock: ring-comparison-libmalloc-v1.yml
-        expected_applied_tree: 92a4080e35901a73c3cd1185cf650e0940152950
-    final_tree: 92a4080e35901a73c3cd1185cf650e0940152950
-    integration_final_tree: 92a4080e35901a73c3cd1185cf650e0940152950
+        expected_applied_tree: f5aead7615559c289fe4b6d9d1b3d76d8e15105f
+    final_tree: f5aead7615559c289fe4b6d9d1b3d76d8e15105f
+    integration_final_tree: f5aead7615559c289fe4b6d9d1b3d76d8e15105f

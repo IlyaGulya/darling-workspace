@@ -282,6 +282,7 @@ runtime-profiles:
       DARLING_EUNION: true
       DARLING_ROOTLESS_TOOLCHAIN: true
       DARLING_ROOTLESS_HOMEBREW: true
+      DARLING_MALLOC_REGION_TEST: true
       DARLING_RING_TRANSPORT: false
       DSERVER_RING_TRANSPORT: false
     launcher-env:
@@ -299,6 +300,9 @@ runtime-profiles:
     - module: darling
       build-targets: [rootless_toolchain]
       resource: rootless-toolchain
+    - module: darling/src/external/libmalloc
+      build-targets: [rack_region_generation]
+      deploy: [usr/libexec/rack_region_generation]
   homebrew-ring-on:
     purpose: guest-toolchain-provisioning
     compiler-launcher: ccache
@@ -329,6 +333,7 @@ runtime-profiles:
       DARLING_EUNION: true
       DARLING_ROOTLESS_TOOLCHAIN: true
       DARLING_ROOTLESS_HOMEBREW: true
+      DARLING_MALLOC_REGION_TEST: true
       DARLING_RING_TRANSPORT: true
       DSERVER_RING_TRANSPORT: true
     launcher-env:
@@ -346,6 +351,9 @@ runtime-profiles:
     - module: darling
       build-targets: [rootless_toolchain]
       resource: rootless-toolchain
+    - module: darling/src/external/libmalloc
+      build-targets: [rack_region_generation]
+      deploy: [usr/libexec/rack_region_generation]
   homebrew-prefix-baseline:
     # Compatibility alias for callers that used the old name. New CI and
     # tooling must select the explicit provisioning profile above.

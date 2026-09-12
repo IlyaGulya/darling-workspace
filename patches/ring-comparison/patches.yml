@@ -6,7 +6,7 @@ patches:
     module: darling/src/external/xnu
     source-branch: fix/ring-comparison-guest
     source-base: 9736367393c97fdb3cd3d393f15cc922744a9c5a
-    source-commit: 19c387f5642551f76c67b32b2892ddb2fc3fcfc2
+    source-commit: 044dd407380be3c5e5307583791f5475ebfbf962
     bead: dar-gwn.7.7.1
     publication-status: blocked
     publication-blocker: Experimental common ring composition under dar-gwn.7.7; matched OFF/ON runtime acceptance and architecture review are required. No publication authorized.
@@ -49,7 +49,7 @@ patches:
             min-delta: 1
           - path: ring_fast_hit
             min-delta: 1
-    sha256sum: ba56b76c0a28c23647062ea971e6ebce008b7c3378e98e170b716b0f32eeae03
+    sha256sum: 0036cc3dbdcfaa47baf36ea2eca05ecaabdea9eb7ea698e210cf12897e3878b9
   - path: darlingserver/ring-comparison-server.patch
     module: darling/src/external/darlingserver
     source-branch: fix/ring-comparison-server
@@ -112,11 +112,11 @@ patches:
     module: darling/src/external/libmalloc
     source-branch: fix/malloc-region-generation
     source-base: a57991e2651226a675654bd96e5d9ab6bec288c5
-    source-commit: 5981f90653196f2325b385446ba4254024138a13
+    source-commit: 15f5405f735a2c0fa4bdd1d21b341bd4db123279
     bead: dar-gwn.7.7.4
     publication-status: blocked
     publication-blocker: Allocator generation lifetime correction requires native build and deployed runtime validation; original CPack crash attribution remains unproven.
     test-exception:
       reason: Deterministic host diagnostic is RED on base and GREEN on fixed source; native regression has not yet been integrated into the West runner.
       scope: dar-gwn.7.7.4 owns native rack_region_generation_retained execution and fixed-runtime guest allocation and CPack acceptance.
-    sha256sum: cc465f553becb2eb10ff9e93a537f7486073d853fc1d32a6dbaf36223f26a4d9
+    sha256sum: 62ac80d7e59fc133343050c7ad5919447120bbc657c8773c5cc9b8b0d0f70852

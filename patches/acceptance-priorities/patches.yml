@@ -11,6 +11,45 @@ patches:
     publication-status: blocked
     publication-blocker: "Disposable acceptance experiment, not publication source."
     tests:
+      - name: comparison_on_malloc_native
+        kind: guest
+        coverage-tier: runtime
+        runs: guest
+        diag: guarded
+        runner: guest-command-fixture
+        guest-command: /usr/libexec/rack_region_generation
+        expect:
+          returncode: 0
+          output-contains: [RACK_REGION_GENERATION_OK]
+        requires: [darling-prefix]
+        runtime-profile: homebrew-ring-on
+        timeout-seconds: 60
+      - name: comparison_off_malloc_native
+        kind: guest
+        coverage-tier: runtime
+        runs: guest
+        diag: guarded
+        runner: guest-command-fixture
+        guest-command: /usr/libexec/rack_region_generation
+        expect:
+          returncode: 0
+          output-contains: [RACK_REGION_GENERATION_OK]
+        requires: [darling-prefix]
+        runtime-profile: homebrew-ring-off
+        timeout-seconds: 60
+      - name: comparison_on_malloc_region_growth
+        kind: guest
+        coverage-tier: runtime
+        runs: guest
+        diag: forensic
+        runner: guest-c-fixture
+        repo: darling-workspace
+        script: tests/_malloc_region_growth.c
+        ok-marker: MALLOC_REGION_GROWTH_OK
+        compile-flags: ["-std=gnu11", "-O2", "-Wall", "-Wextra", "-Werror"]
+        requires: [darling-prefix]
+        runtime-profile: homebrew-ring-on
+        timeout-seconds: 300
       - name: comparison_off_malloc_region_growth
         kind: guest
         coverage-tier: runtime
