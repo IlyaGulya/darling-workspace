@@ -5587,3 +5587,46 @@ index dd1204c68519720a12654c87a9f9f76d508dcb2c..8c588f82ed0faca06f1cea93d5f73453
  static void __dserver_per_thread_socket_refresh(void) {}
  static int __dserver_process_lifetime_pipe_refresh(void) { return -1; }
  static void __dserver_close_socket(int fd) {}
+
+From aaa1c29a8bd3a38d32b4070001488007b34518b9 Mon Sep 17 00:00:00 2001
+From: Ilya Gulya <ilya@gulya.me>
+Date: Sun, 13 Sep 2026 04:54:55 +0000
+Subject: [PATCH] Document loader-owned fork descriptor retirement
+
+---
+ .../include/linux_premigration/resources/dserver-ring.h     | 4 ++--
+ .../src/linux_premigration/resources/dserver-ring.c         | 6 +-----
+ 2 files changed, 3 insertions(+), 7 deletions(-)
+
+diff --git a/darling/src/libsystem_kernel/emulation/include/linux_premigration/resources/dserver-ring.h b/darling/src/libsystem_kernel/emulation/include/linux_premigration/resources/dserver-ring.h
+index e521e3312377baddd605915df4590b5a3e5d5add..ce5ad74fe7706d30bd0a69c00159e6bc3aef42da 100644
+--- a/darling/src/libsystem_kernel/emulation/include/linux_premigration/resources/dserver-ring.h
++++ b/darling/src/libsystem_kernel/emulation/include/linux_premigration/resources/dserver-ring.h
+@@ -77,8 +77,8 @@ int __dserver_ring_task_is_64_bit(int32_t id, bool* out_is_64_bit, int* out_code
+ int __dserver_ring_vchroot_path(uint64_t buffer, uint64_t buffer_size, uint64_t* out_length, int* out_code);
+ int __dserver_ring_mldr_path(uint64_t buffer, uint64_t buffer_size, uint64_t* out_length, int* out_code);
+ 
+-// Reset ring state in the forked child (the parent's ring + wake fd are not valid post-fork;
+-// the child re-attaches lazily). Called from the fork path alongside the socket refresh.
++// Reset image-local mappings in the forked child after the shared loader closes
++// inherited ring FDs. This must not close saved FD numbers; the child re-attaches lazily.
+ void __dserver_ring_postfork_reset(void);
+ 
+ // perf #18 D17 (dar-1il.12): dump this process's per-thread lane stats (acquired / exhausted / reclaimed
+diff --git a/darling/src/libsystem_kernel/emulation/src/linux_premigration/resources/dserver-ring.c b/darling/src/libsystem_kernel/emulation/src/linux_premigration/resources/dserver-ring.c
+index 6944c98664f32fc683b0c6c41d658ea55b1c29ad..bd36b50de196788a14f13601a891074b59a628d1 100644
+--- a/darling/src/libsystem_kernel/emulation/src/linux_premigration/resources/dserver-ring.c
++++ b/darling/src/libsystem_kernel/emulation/src/linux_premigration/resources/dserver-ring.c
+@@ -154,11 +154,7 @@ static gr_lane_t* gr_claim_lane(int tid) {
+ 		// CAS 0 -> 2 ("claiming"): wins the slot exclusively without yet advertising it as usable (==1).
+ 		if (__atomic_compare_exchange_n(&L->active, &expected, 2u, false,
+ 		                                __ATOMIC_ACQ_REL, __ATOMIC_RELAXED)) {
+-			// dar-j7e7: establish the honest "no fd" sentinel the instant we own the slot, BEFORE any
+-			// attach failure path can release it. The slot came from zero-init (wake_fd==0 == valid fd 0);
+-			// setting -1 now means an attach that bails between claim and fill never leaves a 0 that a
+-			// later reader/reset could mistake for a live fd. Fully redundant with the active-gated reset,
+-			// but keeps the field's invariant true at every lifecycle point (defence in depth).
++			// No descriptor is usable until shared-loader adoption succeeds.
+ 			L->wake_fd = -1;
+ 			return L;
+ 		}
