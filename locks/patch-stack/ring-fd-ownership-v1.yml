@@ -9,10 +9,11 @@ mirror:
   url: ../../source-bundles/ring-comparison/darling.bundle
   base_ref: refs/tags/patch-stack/v1/bases/9980737fcbfdd37f24118ae6b2ad26046f157f1a
   base_oid: 9980737fcbfdd37f24118ae6b2ad26046f157f1a
-  source_ref: refs/tags/patch-stack/v1/sources/a74bec2e33b50b4dd57a4e548761c44ffc7e8c4e
-  source_oid: a74bec2e33b50b4dd57a4e548761c44ffc7e8c4e
-source_commit: a74bec2e33b50b4dd57a4e548761c44ffc7e8c4e
+  source_ref: refs/tags/patch-stack/v1/sources/9ef131b2de45be69cdac0fb8c491a73e670b2e9e
+  source_oid: 9ef131b2de45be69cdac0fb8c491a73e670b2e9e
+source_commit: 9ef131b2de45be69cdac0fb8c491a73e670b2e9e
 ordered_commits:
   - 69bb6aed4e9e1038c966c20ee6c6447fc809b381
   - a74bec2e33b50b4dd57a4e548761c44ffc7e8c4e
-expected_tree: 4f6ac19924641fa86be057ec1c2f9b60ec65987a
+  - 9ef131b2de45be69cdac0fb8c491a73e670b2e9e
+expected_tree: fb320e9e47fdb973f704755b0a2b8590016e859d
