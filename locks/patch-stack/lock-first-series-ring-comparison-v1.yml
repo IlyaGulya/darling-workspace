@@ -1,9 +1,13 @@
 schema_version: 3
 profile: ring-comparison
 batch_id: ring-comparison-immutable-v1
-expected_count: 3
+expected_count: 4
 composition: ring-comparison-profile-composition-v1.yml
 series:
+  - profile: ring-comparison
+    module: darling
+    patch: darling/ring-fd-ownership.patch
+    lock: ring-fd-ownership-v1.yml
   - profile: ring-comparison
     module: darling/src/external/xnu
     patch: xnu/ring-comparison-guest.patch
