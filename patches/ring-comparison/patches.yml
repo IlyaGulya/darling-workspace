@@ -18,7 +18,7 @@ patches:
         diag: guarded
         runner: guest-c-fixture
         repo: darling-workspace
-        script: tests/_ring_fd_lifetime.c
+        script: tests/shmem_ring_fd_ownership_guest.c
         ok-marker: RING_FD_INHERITANCE_OK
         compile-flags: ["-std=gnu11", "-Wall", "-Wextra", "-Werror"]
         runtime-profile: homebrew-ring-on
@@ -28,7 +28,7 @@ patches:
     module: darling/src/external/xnu
     source-branch: fix/ring-comparison-guest
     source-base: 9736367393c97fdb3cd3d393f15cc922744a9c5a
-    source-commit: e0c157b0746518dde290918da6e6749b5b3c4a74
+    source-commit: aaa1c29a8bd3a38d32b4070001488007b34518b9
     bead: dar-gwn.7.7.1
     publication-status: blocked
     publication-blocker: Experimental common ring composition under dar-gwn.7.7; matched OFF/ON runtime acceptance and architecture review are required. No publication authorized.
@@ -71,12 +71,12 @@ patches:
             min-delta: 1
           - path: ring_serviced
             min-delta: 1
-    sha256sum: e7b56237d5900ab860243f1d42e2476c936c4826467ee96b67e9d97164a8f7fa
+    sha256sum: 0e24e6137dd29f4453a9701f1edbbc690348978b632cdc692151271111009bf4
   - path: darlingserver/ring-comparison-server.patch
     module: darling/src/external/darlingserver
     source-branch: fix/ring-comparison-server
     source-base: 75d0fee5c5c38ad66bf3771479390011c9781d62
-    source-commit: 610bcb43aedd69cbc125c39a74eed977b0792028
+    source-commit: 5dcbca917a29c12a9fcbb774e810d3f3d725b932
     bead: dar-gwn.7.7.2
     publication-status: blocked
     publication-blocker: Experimental common ring composition under dar-gwn.7.7; matched OFF/ON runtime acceptance and architecture review are required. No publication authorized.
@@ -129,7 +129,7 @@ patches:
           - "-Wextra"
           - "-Werror"
         timeout-seconds: 60
-    sha256sum: bcf899f03b66ae60ca8e651116a5a419278608fc933a9e33094cd3fb53f5ef4e
+    sha256sum: 9e0bba053054386c46137a34b15004c7aac5f5a4067fe3674d27d5ef76cf0c5d
   - path: libmalloc/region-generation.patch
     module: darling/src/external/libmalloc
     source-branch: fix/malloc-region-generation

@@ -11,6 +11,60 @@ patches:
     publication-status: blocked
     publication-blocker: "Disposable acceptance experiment, not publication source."
     tests:
+      - name: comparison_on_ring_fd_lifetime
+        kind: guest
+        coverage-tier: runtime
+        runs: guest
+        diag: guarded
+        runner: guest-c-fixture
+        repo: darling-workspace
+        script: tests/shmem_ring_fd_ownership_guest.c
+        ok-marker: RING_FD_INHERITANCE_OK
+        compile-flags: ["-std=gnu11", "-Wall", "-Wextra", "-Werror"]
+        requires: [darling-prefix]
+        runtime-profile: homebrew-ring-on
+        timeout-seconds: 120
+      - name: comparison_off_ring_fd_lifetime
+        kind: guest
+        coverage-tier: runtime
+        runs: guest
+        diag: guarded
+        runner: guest-c-fixture
+        repo: darling-workspace
+        script: tests/shmem_ring_fd_ownership_guest.c
+        ok-marker: RING_FD_INHERITANCE_OK
+        compile-flags: ["-std=gnu11", "-Wall", "-Wextra", "-Werror"]
+        requires: [darling-prefix]
+        runtime-profile: homebrew-ring-off
+        timeout-seconds: 120
+      - name: comparison_on_ring_mode
+        kind: guest
+        coverage-tier: runtime
+        runs: guest
+        diag: guarded
+        runner: python
+        repo: darling-workspace
+        script: tests/_ring_mode_probe.py
+        requires: [darling-prefix]
+        runtime-profile: homebrew-ring-on
+        timeout-seconds: 120
+        env-vars:
+          RING_EXPECTED_MODE: "ON"
+          RING_STAT_TOOL: /home/ilyagulya/work/darling-gwn-resume/source-fixes/ring-comparison-server/tools/darling-stat
+      - name: comparison_off_ring_mode
+        kind: guest
+        coverage-tier: runtime
+        runs: guest
+        diag: guarded
+        runner: python
+        repo: darling-workspace
+        script: tests/_ring_mode_probe.py
+        requires: [darling-prefix]
+        runtime-profile: homebrew-ring-off
+        timeout-seconds: 120
+        env-vars:
+          RING_EXPECTED_MODE: "OFF"
+          RING_STAT_TOOL: /home/ilyagulya/work/darling-gwn-resume/source-fixes/ring-comparison-server/tools/darling-stat
       - name: comparison_on_malloc_native_pair
         kind: guest
         coverage-tier: runtime
