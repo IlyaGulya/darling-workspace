@@ -38,9 +38,9 @@ modules:
     series:
       - patch: xnu/ring-comparison-guest.patch
         lock: ring-comparison-guest-v1.yml
-        expected_applied_tree: 8a29238dcf2235a7710c00b0482cbc84f78574a9
-    final_tree: 8a29238dcf2235a7710c00b0482cbc84f78574a9
-    integration_final_tree: 8a29238dcf2235a7710c00b0482cbc84f78574a9
+        expected_applied_tree: 0eab2448c9475cf50641649116309b5726a8c7e0
+    final_tree: 0eab2448c9475cf50641649116309b5726a8c7e0
+    integration_final_tree: 0eab2448c9475cf50641649116309b5726a8c7e0
   - module: darling/src/external/darlingserver
     starting:
       tree: e450e0f25504d2129e3e00356536ad05f21749fa
