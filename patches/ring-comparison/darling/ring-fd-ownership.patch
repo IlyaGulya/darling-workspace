@@ -1,0 +1,209 @@
+From 69bb6aed4e9e1038c966c20ee6c6447fc809b381 Mon Sep 17 00:00:00 2001
+From: Ilya Gulya <ilya@gulya.me>
+Date: Sun, 13 Sep 2026 04:35:02 +0000
+Subject: [PATCH] Own ring wake descriptors in the shared loader across fork
+
+---
+ src/startup/mldr/elfcalls/elfcalls.c |   8 ++
+ src/startup/mldr/elfcalls/elfcalls.h |   6 ++
+ src/startup/mldr/mldr.c              | 115 +++++++++++++++++++++++----
+ 3 files changed, 112 insertions(+), 17 deletions(-)
+
+diff --git a/src/startup/mldr/elfcalls/elfcalls.c b/src/startup/mldr/elfcalls/elfcalls.c
+index d9277fac7585d7972c42b9e998878eff65874848..ee0fa44236ffd1f8596c3f616e87766a402545cc 100644
+--- a/src/startup/mldr/elfcalls/elfcalls.c
++++ b/src/startup/mldr/elfcalls/elfcalls.c
+@@ -63,6 +63,10 @@ static const void* __dserver_socket_address(void) {
+ };
+ 
+ extern void __mldr_postfork_child(void);
++extern void __mldr_prefork_prepare(void);
++extern void __mldr_postfork_parent(void);
++extern int __mldr_adopt_ring_fd(int fd);
++extern bool __mldr_fd_is_internal(int fd);
+ extern void __mldr_close_rpc_socket(int socket);
+ 
+ extern int __mldr_create_process_lifetime_pipe(int* fds);
+@@ -129,4 +133,8 @@ void elfcalls_make(struct elf_calls* calls)
+ 	calls->dserver_get_process_lifetime_pipe = __dserver_get_process_lifetime_pipe;
+ 	calls->dserver_process_lifetime_pipe_refresh = __dserver_process_lifetime_pipe_refresh;
+ 	calls->dserver_close_process_lifetime_pipe = __mldr_close_process_lifetime_pipe;
++	calls->dserver_adopt_ring_fd = __mldr_adopt_ring_fd;
++	calls->dserver_fd_is_internal = __mldr_fd_is_internal;
++	calls->prefork_prepare = __mldr_prefork_prepare;
++	calls->postfork_parent = __mldr_postfork_parent;
+ }
+diff --git a/src/startup/mldr/elfcalls/elfcalls.h b/src/startup/mldr/elfcalls/elfcalls.h
+index 9cbadce2bfc6e2e508a1783906a23ed53c3edb7d..0e78ed72fa7009d4124e1e8f2e6b7278577debe7 100644
+--- a/src/startup/mldr/elfcalls/elfcalls.h
++++ b/src/startup/mldr/elfcalls/elfcalls.h
+@@ -74,6 +74,12 @@ struct elf_calls
+ 	int (*dserver_get_process_lifetime_pipe)(void);
+ 	int (*dserver_process_lifetime_pipe_refresh)(void);
+ 	void (*dserver_close_process_lifetime_pipe)(int fd);
++
++	// Loader-owned ring descriptors, shared across guest images.
++	int (*dserver_adopt_ring_fd)(int fd);
++	bool (*dserver_fd_is_internal)(int fd);
++	void (*prefork_prepare)(void);
++	void (*postfork_parent)(void);
+ };
+ 
+ #endif
+diff --git a/src/startup/mldr/mldr.c b/src/startup/mldr/mldr.c
+index 25db003b3540e3e2079d5706915af657dfa7d283..470b167d3bcd9bdb00052c9d5e5ef12de04dcbee 100644
+--- a/src/startup/mldr/mldr.c
++++ b/src/startup/mldr/mldr.c
+@@ -611,21 +611,16 @@ static socket_bitmap_t socket_bitmap = {
+ 	.highest = -1,
+ };
+ 
+-// __mldr_postfork_child() runs in a Darling raw-fork child, invoked from sys_fork
+-// via the elfcalls bridge. It re-initializes mldr's own socket-bitmap mutex and
+-// then resets the glibc loader/stack locks the raw fork left inherited-held - see
+-// glibc_fork_reset.c for the full rationale (dar-gwn.5).
+-void __mldr_postfork_child(void) {
+-	socket_bitmap.mutex = (pthread_mutex_t)PTHREAD_MUTEX_INITIALIZER;
+-	__mldr_glibc_fork_reset_child();
+-}
++// Shared by dyld and libsystem_kernel through elfcalls. The loader owns these
++// descriptors; guest image-local lane tables own only their mappings.
++static int* ring_fds;
++static size_t ring_fd_count;
++static size_t ring_fd_capacity;
+ 
+-static int socket_bitmap_get(socket_bitmap_t* bitmap) {
++static int socket_bitmap_get_locked(socket_bitmap_t* bitmap) {
+ 	int fd = -1;
+ 	bool updated = false;
+ 
+-	pthread_mutex_lock(&bitmap->mutex);
+-
+ 	if (bitmap->highest == -1) {
+ 		// we need to initialize this bitmap
+ 		struct rlimit limit;
+@@ -642,6 +637,11 @@ static int socket_bitmap_get(socket_bitmap_t* bitmap) {
+ 		bitmap->highest = limit.rlim_cur - 1;
+ 	}
+ 
++	// Never reserve a standard descriptor, even with a reduced host limit.
++	if (bitmap->highest < 3 || bitmap->next_index > (size_t)(bitmap->highest - 3)) {
++		goto out;
++	}
++
+ 	if (bitmap->next_index >= bitmap->bit_length) {
+ 		// we need to grow the bitmap
+ 
+@@ -695,15 +695,18 @@ static int socket_bitmap_get(socket_bitmap_t* bitmap) {
+ 	}
+ 
+ out:
+-	pthread_mutex_unlock(&bitmap->mutex);
+-
+ 	return fd;
+ };
+ 
+-static void socket_bitmap_put(socket_bitmap_t* bitmap, int socket) {
+-	size_t index;
+-
++static int socket_bitmap_get(socket_bitmap_t* bitmap) {
+ 	pthread_mutex_lock(&bitmap->mutex);
++	int fd = socket_bitmap_get_locked(bitmap);
++	pthread_mutex_unlock(&bitmap->mutex);
++	return fd;
++}
++
++static void socket_bitmap_put_locked(socket_bitmap_t* bitmap, int socket) {
++	size_t index;
+ 
+ 	index = bitmap->highest - socket;
+ 
+@@ -752,9 +755,87 @@ static void socket_bitmap_put(socket_bitmap_t* bitmap, int socket) {
+ 	}
+ 
+ out:
+-	pthread_mutex_unlock(&bitmap->mutex);
++	return;
+ };
+ 
++static void socket_bitmap_put(socket_bitmap_t* bitmap, int socket) {
++	pthread_mutex_lock(&bitmap->mutex);
++	socket_bitmap_put_locked(bitmap, socket);
++	pthread_mutex_unlock(&bitmap->mutex);
++}
++
++int __mldr_adopt_ring_fd(int source) {
++	int result = -1;
++	pthread_mutex_lock(&socket_bitmap.mutex);
++	if (ring_fd_count == ring_fd_capacity) {
++		size_t capacity = ring_fd_capacity ? ring_fd_capacity * 2 : 16;
++		if (capacity < ring_fd_capacity || capacity > SIZE_MAX / sizeof(*ring_fds)) {
++			goto out;
++		}
++		int* resized = realloc(ring_fds, capacity * sizeof(*ring_fds));
++		if (!resized) {
++			goto out;
++		}
++		ring_fds = resized;
++		ring_fd_capacity = capacity;
++	}
++	int reserved = socket_bitmap_get_locked(&socket_bitmap);
++	if (reserved < 0) {
++		goto out;
++	}
++	// Unlike dup2, F_DUPFD_CLOEXEC cannot overwrite an application descriptor
++	// that occupies or races to acquire our preferred number. A collision is
++	// a clean attach failure; the caller retains and closes its source FD.
++	int duplicate = fcntl(source, F_DUPFD_CLOEXEC, reserved);
++	if (duplicate != reserved) {
++		if (duplicate >= 0) {
++			close(duplicate);
++		}
++		socket_bitmap_put_locked(&socket_bitmap, reserved);
++		goto out;
++	}
++	ring_fds[ring_fd_count++] = duplicate;
++	result = duplicate;
++out:
++	pthread_mutex_unlock(&socket_bitmap.mutex);
++	return result;
++}
++
++bool __mldr_fd_is_internal(int fd) {
++	bool owned = false;
++	pthread_mutex_lock(&socket_bitmap.mutex);
++	if (fd >= 0 && fd <= socket_bitmap.highest) {
++		size_t index = socket_bitmap.highest - fd;
++		owned = index < socket_bitmap.bit_length &&
++			(socket_bitmap.bits[index / 8] & (1U << (index % 8))) != 0;
++	}
++	pthread_mutex_unlock(&socket_bitmap.mutex);
++	return owned;
++}
++
++void __mldr_prefork_prepare(void) {
++	// Do not fork between installing an inherited ring FD and recording its
++	// ownership. The parent releases this lock on success and failure alike.
++	pthread_mutex_lock(&socket_bitmap.mutex);
++}
++
++void __mldr_postfork_parent(void) {
++	pthread_mutex_unlock(&socket_bitmap.mutex);
++}
++
++void __mldr_postfork_child(void) {
++	socket_bitmap.mutex = (pthread_mutex_t)PTHREAD_MUTEX_INITIALIZER;
++	__mldr_glibc_fork_reset_child();
++	// Close both guest images' inherited ring descriptors before any child
++	// RPC socket can reuse their numbers. Image-local reset must not close
++	// these saved numbers a second time.
++	for (size_t i = 0; i < ring_fd_count; ++i) {
++		close(ring_fds[i]);
++		socket_bitmap_put(&socket_bitmap, ring_fds[i]);
++	}
++	ring_fd_count = 0;
++}
++
+ int __mldr_create_rpc_socket(void) {
+ 	int pre_fd = -1;
+ 	int fd = -1;

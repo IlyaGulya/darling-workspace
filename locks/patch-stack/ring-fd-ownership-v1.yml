@@ -1,0 +1,17 @@
+schema_version: 2
+project:
+  name: darling
+  path: "."
+upstream:
+  url: https://github.com/darlinghq/darling.git
+  base_commit: 9980737fcbfdd37f24118ae6b2ad26046f157f1a
+mirror:
+  url: ../../source-bundles/ring-comparison/darling.bundle
+  base_ref: refs/tags/patch-stack/v1/bases/9980737fcbfdd37f24118ae6b2ad26046f157f1a
+  base_oid: 9980737fcbfdd37f24118ae6b2ad26046f157f1a
+  source_ref: refs/tags/patch-stack/v1/sources/69bb6aed4e9e1038c966c20ee6c6447fc809b381
+  source_oid: 69bb6aed4e9e1038c966c20ee6c6447fc809b381
+source_commit: 69bb6aed4e9e1038c966c20ee6c6447fc809b381
+ordered_commits:
+  - 69bb6aed4e9e1038c966c20ee6c6447fc809b381
+expected_tree: de8b2c96cded2cd1590f1045cade1860722b1987

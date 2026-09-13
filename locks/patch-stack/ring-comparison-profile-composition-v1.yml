@@ -19,19 +19,28 @@ frozen_manifest:
   *frozen_manifest
 mapping:
   path: lock-first-series-ring-comparison-v1.yml
-  sha256: 0987aaf764dbcfd1d74eec4da140f838c02f3ba3e018c44b153b6b318eb04e1d
+  sha256: f86cf4a8c103c69503203f43b40bcef754544eb3233fce12044dd5e8f3a00bf7
   batch_id: ring-comparison-immutable-v1
-  expected_count: 3
+  expected_count: 4
 modules:
+  - module: darling
+    starting:
+      tree: 715129f3a51ffb05f9cc6790599a150bf8b62a28
+    series:
+      - patch: darling/ring-fd-ownership.patch
+        lock: ring-fd-ownership-v1.yml
+        expected_applied_tree: de8b2c96cded2cd1590f1045cade1860722b1987
+    final_tree: de8b2c96cded2cd1590f1045cade1860722b1987
+    integration_final_tree: de8b2c96cded2cd1590f1045cade1860722b1987
   - module: darling/src/external/xnu
     starting:
       tree: 826530fb38acf64c0459dc907ac7aba79c7bad0a
     series:
       - patch: xnu/ring-comparison-guest.patch
         lock: ring-comparison-guest-v1.yml
-        expected_applied_tree: 338cee7664c4d27da7cf10268760984995b17554
-    final_tree: 338cee7664c4d27da7cf10268760984995b17554
-    integration_final_tree: 338cee7664c4d27da7cf10268760984995b17554
+        expected_applied_tree: 03fb727ebda93e7e8093ce70e5cb86dc7cabcd27
+    final_tree: 03fb727ebda93e7e8093ce70e5cb86dc7cabcd27
+    integration_final_tree: 03fb727ebda93e7e8093ce70e5cb86dc7cabcd27
   - module: darling/src/external/darlingserver
     starting:
       tree: e450e0f25504d2129e3e00356536ad05f21749fa

@@ -2,11 +2,33 @@ version: 1
 description: Local matched ring OFF/ON composition preserving corrected residual runtime.
 base-profile: wget-residual
 patches:
+  - path: darling/ring-fd-ownership.patch
+    module: darling
+    source-branch: fix/ring-fd-ownership
+    source-base: 9980737fcbfdd37f24118ae6b2ad26046f157f1a
+    source-commit: 69bb6aed4e9e1038c966c20ee6c6447fc809b381
+    bead: dar-gwn.7.7.5
+    publication-status: blocked
+    publication-blocker: Shared descriptor ownership requires matched native acceptance; publication is not authorized.
+    tests:
+      - name: ring_fd_ownership_guest
+        kind: guest
+        coverage-tier: runtime
+        runs: guest
+        diag: guarded
+        runner: guest-c-fixture
+        repo: darling-workspace
+        script: tests/_ring_fd_lifetime.c
+        ok-marker: RING_FD_INHERITANCE_OK
+        compile-flags: ["-std=gnu11", "-Wall", "-Wextra", "-Werror"]
+        runtime-profile: homebrew-ring-on
+        timeout-seconds: 120
+    sha256sum: f903f236fec34907e04c01e7ad54578735843f3a30dbfcfbc603c5fd2dd7f6ac
   - path: xnu/ring-comparison-guest.patch
     module: darling/src/external/xnu
     source-branch: fix/ring-comparison-guest
     source-base: 9736367393c97fdb3cd3d393f15cc922744a9c5a
-    source-commit: 0360502b50a30555dfadb31a1a0001c89e27fc8c
+    source-commit: e0c157b0746518dde290918da6e6749b5b3c4a74
     bead: dar-gwn.7.7.1
     publication-status: blocked
     publication-blocker: Experimental common ring composition under dar-gwn.7.7; matched OFF/ON runtime acceptance and architecture review are required. No publication authorized.
@@ -49,7 +71,7 @@ patches:
             min-delta: 1
           - path: ring_serviced
             min-delta: 1
-    sha256sum: 862c5985e09200e952f6cd7d33f3743ce008ba40e2403d5631fac393f5c78ff6
+    sha256sum: e7b56237d5900ab860243f1d42e2476c936c4826467ee96b67e9d97164a8f7fa
   - path: darlingserver/ring-comparison-server.patch
     module: darling/src/external/darlingserver
     source-branch: fix/ring-comparison-server

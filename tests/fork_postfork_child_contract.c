@@ -46,6 +46,9 @@ int get_perthread_wd(void)
 	return 55;
 }
 
+void __mldr_prefork_prepare(void) {}
+void __mldr_postfork_parent(void) {}
+
 void __mldr_postfork_child(void)
 {
 	record(EVENT_MLDR_POSTFORK);
