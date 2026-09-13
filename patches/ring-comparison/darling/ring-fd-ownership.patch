@@ -207,3 +207,173 @@ index 25db003b3540e3e2079d5706915af657dfa7d283..470b167d3bcd9bdb00052c9d5e5ef12d
  int __mldr_create_rpc_socket(void) {
  	int pre_fd = -1;
  	int fd = -1;
+
+From a74bec2e33b50b4dd57a4e548761c44ffc7e8c4e Mon Sep 17 00:00:00 2001
+From: Ilya Gulya <ilya@gulya.me>
+Date: Sun, 13 Sep 2026 06:34:38 +0000
+Subject: [PATCH] Defer guest signals while holding the shared FD registry
+
+---
+ src/startup/mldr/mldr.c                       | 18 ++++++++++++++++
+ src/startup/mldr/resources/dserver-rpc-defs.h | 15 +++----------
+ src/startup/mldr/signal_atomic.h              | 21 +++++++++++++++++++
+ 3 files changed, 42 insertions(+), 12 deletions(-)
+ create mode 100644 src/startup/mldr/signal_atomic.h
+
+diff --git a/src/startup/mldr/mldr.c b/src/startup/mldr/mldr.c
+index 470b167d3bcd9bdb00052c9d5e5ef12de04dcbee..71905978642ce49e13cb9d6611960ed84a7821d9 100644
+--- a/src/startup/mldr/mldr.c
++++ b/src/startup/mldr/mldr.c
+@@ -35,6 +35,7 @@ along with Darling.  If not, see <http://www.gnu.org/licenses/>.
+ #include "commpage.h"
+ #include "loader.h"
+ #include "glibc_fork_reset.h"
++#include "signal_atomic.h"
+ #include "stack_mapping.h"
+ #include "elfcalls/threads.h"
+ #include <sys/resource.h>
+@@ -616,6 +617,7 @@ static socket_bitmap_t socket_bitmap = {
+ static int* ring_fds;
+ static size_t ring_fd_count;
+ static size_t ring_fd_capacity;
++static __thread sigset_t fork_signal_mask;
+ 
+ static int socket_bitmap_get_locked(socket_bitmap_t* bitmap) {
+ 	int fd = -1;
+@@ -699,9 +701,12 @@ out:
+ };
+ 
+ static int socket_bitmap_get(socket_bitmap_t* bitmap) {
++	sigset_t saved;
++	mldr_block_async_signals(&saved);
+ 	pthread_mutex_lock(&bitmap->mutex);
+ 	int fd = socket_bitmap_get_locked(bitmap);
+ 	pthread_mutex_unlock(&bitmap->mutex);
++	mldr_restore_signals(&saved);
+ 	return fd;
+ }
+ 
+@@ -759,13 +764,18 @@ out:
+ };
+ 
+ static void socket_bitmap_put(socket_bitmap_t* bitmap, int socket) {
++	sigset_t saved;
++	mldr_block_async_signals(&saved);
+ 	pthread_mutex_lock(&bitmap->mutex);
+ 	socket_bitmap_put_locked(bitmap, socket);
+ 	pthread_mutex_unlock(&bitmap->mutex);
++	mldr_restore_signals(&saved);
+ }
+ 
+ int __mldr_adopt_ring_fd(int source) {
+ 	int result = -1;
++	sigset_t saved;
++	mldr_block_async_signals(&saved);
+ 	pthread_mutex_lock(&socket_bitmap.mutex);
+ 	if (ring_fd_count == ring_fd_capacity) {
+ 		size_t capacity = ring_fd_capacity ? ring_fd_capacity * 2 : 16;
+@@ -798,11 +808,14 @@ int __mldr_adopt_ring_fd(int source) {
+ 	result = duplicate;
+ out:
+ 	pthread_mutex_unlock(&socket_bitmap.mutex);
++	mldr_restore_signals(&saved);
+ 	return result;
+ }
+ 
+ bool __mldr_fd_is_internal(int fd) {
+ 	bool owned = false;
++	sigset_t saved;
++	mldr_block_async_signals(&saved);
+ 	pthread_mutex_lock(&socket_bitmap.mutex);
+ 	if (fd >= 0 && fd <= socket_bitmap.highest) {
+ 		size_t index = socket_bitmap.highest - fd;
+@@ -810,17 +823,21 @@ bool __mldr_fd_is_internal(int fd) {
+ 			(socket_bitmap.bits[index / 8] & (1U << (index % 8))) != 0;
+ 	}
+ 	pthread_mutex_unlock(&socket_bitmap.mutex);
++	mldr_restore_signals(&saved);
+ 	return owned;
+ }
+ 
+ void __mldr_prefork_prepare(void) {
+ 	// Do not fork between installing an inherited ring FD and recording its
+ 	// ownership. The parent releases this lock on success and failure alike.
++	// A guest signal handler may call close/fcntl and reenter this registry.
++	mldr_block_async_signals(&fork_signal_mask);
+ 	pthread_mutex_lock(&socket_bitmap.mutex);
+ }
+ 
+ void __mldr_postfork_parent(void) {
+ 	pthread_mutex_unlock(&socket_bitmap.mutex);
++	mldr_restore_signals(&fork_signal_mask);
+ }
+ 
+ void __mldr_postfork_child(void) {
+@@ -834,6 +851,7 @@ void __mldr_postfork_child(void) {
+ 		socket_bitmap_put(&socket_bitmap, ring_fds[i]);
+ 	}
+ 	ring_fd_count = 0;
++	mldr_restore_signals(&fork_signal_mask);
+ }
+ 
+ int __mldr_create_rpc_socket(void) {
+diff --git a/src/startup/mldr/resources/dserver-rpc-defs.h b/src/startup/mldr/resources/dserver-rpc-defs.h
+index 4d407b3198c2e9880eda5332b12fd011e73191fb..8c3664e420ada48fb7a30f90e816ec3d50d5df7b 100644
+--- a/src/startup/mldr/resources/dserver-rpc-defs.h
++++ b/src/startup/mldr/resources/dserver-rpc-defs.h
+@@ -12,7 +12,7 @@
+ 
+ #include <darlingserver/rpc-supplement.h>
+ 
+-#include <rtsig.h>
++#include "../signal_atomic.h"
+ 
+ #define dserver_rpc_hooks_msghdr_t struct msghdr
+ #define dserver_rpc_hooks_iovec_t struct iovec
+@@ -159,17 +159,8 @@ extern int __dserver_main_thread_socket_fd;
+ 
+ #define dserver_rpc_hooks_atomic_save_t sigset_t
+ 
+-static void dserver_rpc_hooks_atomic_begin(dserver_rpc_hooks_atomic_save_t* atomic_save) {
+-	sigset_t set;
+-	sigfillset(&set);
+-	sigdelset(&set, LINUX_SIGRTMIN);
+-	sigdelset(&set, LINUX_SIGRTMIN + 1);
+-	pthread_sigmask(SIG_BLOCK, &set, atomic_save);
+-};
+-
+-static void dserver_rpc_hooks_atomic_end(dserver_rpc_hooks_atomic_save_t* atomic_save) {
+-	pthread_sigmask(SIG_SETMASK, atomic_save, NULL);
+-};
++#define dserver_rpc_hooks_atomic_begin mldr_block_async_signals
++#define dserver_rpc_hooks_atomic_end mldr_restore_signals
+ 
+ #define dserver_rpc_hooks_get_interrupt_status() (-EINTR)
+ 
+diff --git a/src/startup/mldr/signal_atomic.h b/src/startup/mldr/signal_atomic.h
+new file mode 100644
+index 0000000000000000000000000000000000000000..b58443d98b73a334e400f8344336a98ba97f856e
+--- /dev/null
++++ b/src/startup/mldr/signal_atomic.h
+@@ -0,0 +1,21 @@
++#ifndef MLDR_SIGNAL_ATOMIC_H
++#define MLDR_SIGNAL_ATOMIC_H
++
++#include <pthread.h>
++#include <signal.h>
++#include <rtsig.h>
++
++/* Keep server suspension and S2C delivery available, as the RPC hooks require. */
++static inline void mldr_block_async_signals(sigset_t* saved) {
++	sigset_t set;
++	sigfillset(&set);
++	sigdelset(&set, LINUX_SIGRTMIN);
++	sigdelset(&set, LINUX_SIGRTMIN + 1);
++	pthread_sigmask(SIG_BLOCK, &set, saved);
++}
++
++static inline void mldr_restore_signals(const sigset_t* saved) {
++	pthread_sigmask(SIG_SETMASK, saved, NULL);
++}
++
++#endif

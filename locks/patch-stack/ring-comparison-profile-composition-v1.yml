@@ -29,9 +29,9 @@ modules:
     series:
       - patch: darling/ring-fd-ownership.patch
         lock: ring-fd-ownership-v1.yml
-        expected_applied_tree: de8b2c96cded2cd1590f1045cade1860722b1987
-    final_tree: de8b2c96cded2cd1590f1045cade1860722b1987
-    integration_final_tree: de8b2c96cded2cd1590f1045cade1860722b1987
+        expected_applied_tree: 4f6ac19924641fa86be057ec1c2f9b60ec65987a
+    final_tree: 4f6ac19924641fa86be057ec1c2f9b60ec65987a
+    integration_final_tree: 4f6ac19924641fa86be057ec1c2f9b60ec65987a
   - module: darling/src/external/xnu
     starting:
       tree: 826530fb38acf64c0459dc907ac7aba79c7bad0a
