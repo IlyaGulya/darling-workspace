@@ -377,3 +377,35 @@ index 0000000000000000000000000000000000000000..b58443d98b73a334e400f8344336a98b
 +}
 +
 +#endif
+
+From 9ef131b2de45be69cdac0fb8c491a73e670b2e9e Mon Sep 17 00:00:00 2001
+From: Ilya Gulya <ilya@gulya.me>
+Date: Sun, 13 Sep 2026 06:43:45 +0000
+Subject: [PATCH] Build both loaders after generated signal definitions
+
+---
+ src/startup/mldr/CMakeLists.txt | 4 ++++
+ 1 file changed, 4 insertions(+)
+
+diff --git a/src/startup/mldr/CMakeLists.txt b/src/startup/mldr/CMakeLists.txt
+index efacd2eb4bf3ef2f60cc918a708dfa7ffd81dc54..9202a8e5e5080083fda1ebedc7325cfc37815e1c 100644
+--- a/src/startup/mldr/CMakeLists.txt
++++ b/src/startup/mldr/CMakeLists.txt
+@@ -27,6 +27,8 @@ set(mldr_sources
+ )
+ 
+ add_executable(mldr ${mldr_sources})
++add_dependencies(mldr rtsig_h)
++target_include_directories(mldr PRIVATE ${CMAKE_CURRENT_BINARY_DIR}/..)
+ target_compile_definitions(mldr PRIVATE
+ 	DARLING_RUNTIME_EUNION_CAPABLE=$<BOOL:${DARLING_EUNION}>
+ )
+@@ -51,6 +53,8 @@ if (BUILD_TARGET_32BIT)
+ 	target_include_directories(mldr32_dserver_rpc PRIVATE ${CMAKE_CURRENT_BINARY_DIR}/..)
+ 
+ 	add_executable(mldr32 ${mldr_sources})
++	add_dependencies(mldr32 rtsig_h)
++	target_include_directories(mldr32 PRIVATE ${CMAKE_CURRENT_BINARY_DIR}/..)
+ 	target_compile_definitions(mldr32 PRIVATE
+ 		DARLING_RUNTIME_EUNION_CAPABLE=$<BOOL:${DARLING_EUNION}>
+ 	)
