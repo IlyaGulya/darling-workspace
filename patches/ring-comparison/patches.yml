@@ -6,7 +6,7 @@ patches:
     module: darling
     source-branch: fix/ring-fd-ownership
     source-base: 9980737fcbfdd37f24118ae6b2ad26046f157f1a
-    source-commit: 69bb6aed4e9e1038c966c20ee6c6447fc809b381
+    source-commit: a74bec2e33b50b4dd57a4e548761c44ffc7e8c4e
     bead: dar-gwn.7.7.5
     publication-status: blocked
     publication-blocker: Shared descriptor ownership requires matched native acceptance; publication is not authorized.
@@ -23,7 +23,7 @@ patches:
         compile-flags: ["-std=gnu11", "-Wall", "-Wextra", "-Werror"]
         runtime-profile: homebrew-ring-on
         timeout-seconds: 120
-    sha256sum: f903f236fec34907e04c01e7ad54578735843f3a30dbfcfbc603c5fd2dd7f6ac
+    sha256sum: 4f0fd5a5edb410901230ddd4c1771928c5c2dca5538a3cae2974eae2dadf2ea2
   - path: xnu/ring-comparison-guest.patch
     module: darling/src/external/xnu
     source-branch: fix/ring-comparison-guest
