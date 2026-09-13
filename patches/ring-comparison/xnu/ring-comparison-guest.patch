@@ -5630,3 +5630,167 @@ index 6944c98664f32fc683b0c6c41d658ea55b1c29ad..bd36b50de196788a14f13601a891074b
  			L->wake_fd = -1;
  			return L;
  		}
+
+From 5c01c2f64445b96bac00f4c91845b7c67f73317e Mon Sep 17 00:00:00 2001
+From: Ilya Gulya <ilya@gulya.me>
+Date: Sun, 13 Sep 2026 07:13:12 +0000
+Subject: [PATCH] Defer guest signals across descriptor guard table locks
+
+---
+ .../emulation/include/common/signal_atomic.h  | 17 +++++++++++
+ .../resources/dserver-rpc-defs.h              | 13 ++------
+ .../emulation/src/common/guarded/table.c      | 30 ++++++++++++++-----
+ 3 files changed, 42 insertions(+), 18 deletions(-)
+ create mode 100644 darling/src/libsystem_kernel/emulation/include/common/signal_atomic.h
+
+diff --git a/darling/src/libsystem_kernel/emulation/include/common/signal_atomic.h b/darling/src/libsystem_kernel/emulation/include/common/signal_atomic.h
+new file mode 100644
+index 0000000000000000000000000000000000000000..d216610831149779538794d9599c17a53d8c9f1e
+--- /dev/null
++++ b/darling/src/libsystem_kernel/emulation/include/common/signal_atomic.h
+@@ -0,0 +1,17 @@
++#ifndef DARLING_EMULATION_COMMON_SIGNAL_ATOMIC_H
++#define DARLING_EMULATION_COMMON_SIGNAL_ATOMIC_H
++
++#include <stddef.h>
++#include <darling/emulation/xnu_syscall/bsd/impl/signal/sigprocmask.h>
++
++static inline void signal_atomic_begin(sigset_t* saved_mask) {
++	// Defer standard Unix handlers without blocking runtime real-time signals.
++	sigset_t set = 0x7fffffff;
++	sys_sigprocmask(SIG_BLOCK, &set, saved_mask);
++}
++
++static inline void signal_atomic_end(const sigset_t* saved_mask) {
++	sys_sigprocmask(SIG_SETMASK, saved_mask, NULL);
++}
++
++#endif
+diff --git a/darling/src/libsystem_kernel/emulation/include/linux_premigration/resources/dserver-rpc-defs.h b/darling/src/libsystem_kernel/emulation/include/linux_premigration/resources/dserver-rpc-defs.h
+index 1dc520d427c8e584cd6572fea417e8a6456cb3f4..662e4ff28c2e8b18cbfaa66e0866cbab9477e094 100644
+--- a/darling/src/libsystem_kernel/emulation/include/linux_premigration/resources/dserver-rpc-defs.h
++++ b/darling/src/libsystem_kernel/emulation/include/linux_premigration/resources/dserver-rpc-defs.h
+@@ -12,7 +12,7 @@
+ #include <darling/emulation/other/mach/lkm.h>
+ #include <darling/emulation/linux_premigration/elfcalls_wrapper.h>
+ #include <darling/emulation/common/simple.h>
+-#include <darling/emulation/xnu_syscall/bsd/impl/signal/sigprocmask.h>
++#include <darling/emulation/common/signal_atomic.h>
+ #include <darling/emulation/xnu_syscall/bsd/impl/unistd/close.h>
+ #include <darling/emulation/linux_premigration/linux-syscalls/linux.h>
+ 
+@@ -348,15 +348,8 @@ void __dserver_rpc_hooks_printf(const char* format, ...);
+ 
+ #define dserver_rpc_hooks_atomic_save_t sigset_t
+ 
+-static void dserver_rpc_hooks_atomic_begin(dserver_rpc_hooks_atomic_save_t* atomic_save) {
+-	// block standard unix signals (not real-time signals, though)
+-	sigset_t set = 0x7fffffff;
+-	sys_sigprocmask(SIG_BLOCK, &set, atomic_save);
+-};
+-
+-static void dserver_rpc_hooks_atomic_end(dserver_rpc_hooks_atomic_save_t* atomic_save) {
+-	sys_sigprocmask(SIG_SETMASK, atomic_save, NULL);
+-};
++#define dserver_rpc_hooks_atomic_begin signal_atomic_begin
++#define dserver_rpc_hooks_atomic_end signal_atomic_end
+ 
+ #define dserver_rpc_hooks_get_interrupt_status() (-LINUX_EINTR)
+ 
+diff --git a/darling/src/libsystem_kernel/emulation/src/common/guarded/table.c b/darling/src/libsystem_kernel/emulation/src/common/guarded/table.c
+index 7be412292c91f5cae19f6cd49d56c6465802a9be..8276959de898db481f488dccbac19d485a94d29d 100644
+--- a/darling/src/libsystem_kernel/emulation/src/common/guarded/table.c
++++ b/darling/src/libsystem_kernel/emulation/src/common/guarded/table.c
+@@ -1,4 +1,5 @@
+ #include <darling/emulation/common/guarded/table.h>
++#include <darling/emulation/common/signal_atomic.h>
+ 
+ #include <libsimple/lock.h>
+ #include <stddef.h>
+@@ -43,6 +44,19 @@ static guard_entry_t guard_table[MAX_GUARD_COUNT] = {
+ // TODO: this should be an RW lock
+ static libsimple_lock_t guard_table_lock = LIBSIMPLE_LOCK_INITIALIZER;
+ 
++// close() may reenter this table from a signal handler on the same thread.
++static sigset_t guard_table_lock_signals(void) {
++	sigset_t saved_mask;
++	signal_atomic_begin(&saved_mask);
++	libsimple_lock_lock(&guard_table_lock);
++	return saved_mask;
++}
++
++static void guard_table_unlock_signals(const sigset_t* saved_mask) {
++	libsimple_lock_unlock(&guard_table_lock);
++	signal_atomic_end(saved_mask);
++}
++
+ // normal search
+ static guard_entry_t* guard_table_find_locked(int fd) {
+ 	size_t start_index = fd % MAX_GUARD_COUNT;
+@@ -109,7 +123,7 @@ int guard_table_add(int fd, guard_flags_t flags, guard_entry_options_t* options)
+ #else
+ 	int result = 0;
+ 
+-	libsimple_lock_lock(&guard_table_lock);
++	sigset_t saved_mask = guard_table_lock_signals();
+ 
+ 	guard_entry_t* entry = guard_table_find_locked(fd);
+ 	if (entry) {
+@@ -129,7 +143,7 @@ int guard_table_add(int fd, guard_flags_t flags, guard_entry_options_t* options)
+ 		}
+ 	}
+ 
+-	libsimple_lock_unlock(&guard_table_lock);
++	guard_table_unlock_signals(&saved_mask);
+ 
+ 	return result;
+ #endif
+@@ -141,7 +155,7 @@ int guard_table_modify(int fd, guard_flags_t flags, guard_entry_options_t* optio
+ #else
+ 	int result = 0;
+ 
+-	libsimple_lock_lock(&guard_table_lock);
++	sigset_t saved_mask = guard_table_lock_signals();
+ 
+ 	guard_entry_t* entry = guard_table_find_locked(fd);
+ 	if (entry) {
+@@ -155,7 +169,7 @@ int guard_table_modify(int fd, guard_flags_t flags, guard_entry_options_t* optio
+ 		result = -ENOENT;
+ 	}
+ 
+-	libsimple_lock_unlock(&guard_table_lock);
++	guard_table_unlock_signals(&saved_mask);
+ 
+ 	return result;
+ #endif
+@@ -167,7 +181,7 @@ int guard_table_remove(int fd) {
+ #else
+ 	int result = 0;
+ 
+-	libsimple_lock_lock(&guard_table_lock);
++	sigset_t saved_mask = guard_table_lock_signals();
+ 
+ 	guard_entry_t* entry = guard_table_find_locked(fd);
+ 	if (entry) {
+@@ -177,7 +191,7 @@ int guard_table_remove(int fd) {
+ 		result = -ENOENT;
+ 	}
+ 
+-	libsimple_lock_unlock(&guard_table_lock);
++	guard_table_unlock_signals(&saved_mask);
+ 
+ 	return result;
+ #endif
+@@ -193,10 +207,10 @@ int guard_table_check(int fd, guard_flags_t flags) {
+ 	return 0;
+ #else
+ 	int result = 0;
+-	libsimple_lock_lock(&guard_table_lock);
++	sigset_t saved_mask = guard_table_lock_signals();
+ 	guard_entry_t* entry = guard_table_find_locked(fd);
+ 	result = entry && (entry->flags & flags) != 0;
+-	libsimple_lock_unlock(&guard_table_lock);
++	guard_table_unlock_signals(&saved_mask);
+ 	return result;
+ #endif
+ }

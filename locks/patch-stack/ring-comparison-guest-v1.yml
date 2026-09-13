@@ -9,9 +9,9 @@ mirror:
   url: ../../source-bundles/ring-comparison/darling-xnu.bundle
   base_ref: refs/tags/patch-stack/v1/bases/9736367393c97fdb3cd3d393f15cc922744a9c5a
   base_oid: 9736367393c97fdb3cd3d393f15cc922744a9c5a
-  source_ref: refs/tags/patch-stack/v1/sources/aaa1c29a8bd3a38d32b4070001488007b34518b9
-  source_oid: aaa1c29a8bd3a38d32b4070001488007b34518b9
-source_commit: aaa1c29a8bd3a38d32b4070001488007b34518b9
+  source_ref: refs/tags/patch-stack/v1/sources/5c01c2f64445b96bac00f4c91845b7c67f73317e
+  source_oid: 5c01c2f64445b96bac00f4c91845b7c67f73317e
+source_commit: 5c01c2f64445b96bac00f4c91845b7c67f73317e
 ordered_commits:
   - 142abf30693598723bfa04443b7ad2b7743e1f15
   - 41ee0cbb3426c947dff92a55e03d491e59bca2e6
@@ -40,4 +40,5 @@ ordered_commits:
   - 0360502b50a30555dfadb31a1a0001c89e27fc8c
   - e0c157b0746518dde290918da6e6749b5b3c4a74
   - aaa1c29a8bd3a38d32b4070001488007b34518b9
-expected_tree: 8a29238dcf2235a7710c00b0482cbc84f78574a9
+  - 5c01c2f64445b96bac00f4c91845b7c67f73317e
+expected_tree: 0eab2448c9475cf50641649116309b5726a8c7e0
