@@ -534,6 +534,7 @@ def materialize_batch_into(
     reset_to_first_base: bool = False,
     composition: dict[str, Any] | None = None,
     skip_patches: set[str] | None = None,
+    skipped_before: bool = False,
 ) -> tuple[list[dict[str, Any]], dict[str, int]]:
     """Validate and replay one module's immutable series in one transaction.
 
@@ -547,7 +548,11 @@ def materialize_batch_into(
     immutable locks are still fetched and validated, but selected series are
     omitted and later series are proven by exact range-diff/patch identity
     rather than by a canonical boundary tree that necessarily includes the
-    omitted change.
+    omitted change. ``skipped_before`` carries that same authority across
+    batches: when one module's series spans several stacked profile phases and
+    an earlier phase omitted a series, every entry of this batch follows the
+    omission and is proven the same way, because the module no longer starts
+    at the boundary the composition declares.
     """
     if not entries or len({entry["module"] for entry in entries}) != 1:
         raise LockFirstError("lock-first batch must contain one non-empty module")
@@ -612,7 +617,7 @@ def materialize_batch_into(
         if reset_to_first_base:
             first_base = validated[0][2]["base_oid"]
             patch_stack_materialize._git(repo, "reset", "--hard", first_base)
-        omitted_before = False
+        omitted_before = skipped_before
         expected_parent_base = (
             composition.get("starts", {}).get(entries[0]["module"], {}).get("tree")
             if composition else None

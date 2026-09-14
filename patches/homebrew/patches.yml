@@ -4755,13 +4755,36 @@ patches:
     runs: guest
     diag: guarded
     runtime-profile: homebrew-lz4-source
+    red: true
+    red-proof:
+      mode: guest-runtime-deploy
+      bad-profile: current-minus-patch
+      current-minus-skip-patches:
+      - xnu/vchroot-fdless-path-rpc.patch
+      expect-output-contains:
+      - VCHROOT_CLOSED_REJECTION_SITE=other
+      - VCHROOT_CLOSED_FD rv=-9
+      source-modules:
+      - darling/src/external/darlingserver
+      - darling/src/external/xnu
+      runtime-artifacts:
+      - module: darling/src/external/darlingserver
+        build-targets:
+        - darlingserver
+        deploy:
+        - bin/darlingserver
+      - module: darling/src/external/xnu
+        build-targets:
+        - system_kernel
+        deploy:
+        - usr/lib/system/libsystem_kernel.dylib
     runner: guest-c-fixture
     repo: darling-workspace
     script: tests/vchroot_fdless_guest.c
     ok-marker: VCHROOT_FDLESS_PROBE_OK
     timeout-seconds: 60
     requires: [darling-prefix]
-    note: Same guest fixture as the xnu entry; here it proves the server side accepts the bounded path parameter for a valid descriptor and that the failed snapshot never reaches the server. The descriptor-transport RED arm is not declared yet; the current-minus-patch materialization for this profile fails before the build (see the owning bead), so the negative control stays open rather than being faked with source-base proof.
+    note: Same guest fixture as the xnu entry; here it proves the server side accepts the bounded path parameter for a valid descriptor and that the failed snapshot never reaches the server. The declared RED arm removes both halves of the fdless path RPC pair and expects the closed-descriptor leg to classify its rejection site as other - the pre-port runtime rejects that descriptor in the transfer or in the server (EBADF) instead of locally from the single readlink of /proc/self/fd/N. This closes the invalid-descriptor leg behaviourally; the zero-descriptor-transport count for a valid call still needs external observation of the transport.
   - name: vchroot_fdless_rpc_invariant_contract
     kind: source-contract
     coverage-tier: source
