@@ -4735,6 +4735,19 @@ patches:
       repo: darlinghq/darlingserver
       base: main
       state: local
+- path: darlingserver/vchroot-fdless-path-rpc.patch
+  sha256sum: 7c5c9387ad5e875c1278a122265ed10f59bec7904fcad4db57ad7cdc00f07c16
+  module: darling/src/external/darlingserver
+  source-branch: fix/vchroot-fdless-path-rpc
+  source-base: ce9c990df38ed6a97ee57ef6195eca982765cdf6
+  source-commit: 614850a641f25d37410f7116619818f55eff539e
+  bead: dar-gwn.7.7.5
+  publication-status: blocked
+  publication-blocker: FD-less vchroot path RPC is a local architecture change under acceptance review; it is not a publication candidate until the runtime gate (guest vchroot, invalid/closed descriptor rejected before the RPC, zero SCM_RIGHTS on the vchroot call, pinned ordinary Docker) passes.
+  test-exception:
+    reason: runtime-gate-pending
+    scope: vchroot FD-less path RPC guest behavior
+    note: Only the ABI/compile contract is verified so far; behavioral coverage is the disposable-prefix runtime gate owned by dar-gwn.7.7.5 and is currently blocked on host disk space.
 - path: darling/rootless-runtime-integration.patch
   sha256sum: cd78af09b7d034b126c09888ae7521abea071a25649c9691b6da0bbf53615443
   module: darling
@@ -5311,3 +5324,16 @@ patches:
     timeout-seconds: 60
     requires: [darling-prefix]
   sha256sum: b896700155538ab1746bdaf6beb1328ef1190bd4dc1b9ce4cf0e437309c12c58
+- path: xnu/vchroot-fdless-path-rpc.patch
+  sha256sum: 1977b11e0e4617a21cf6ffc3ee6d70ca35db4667505b9712366e3cf2d2cc7e7e
+  module: darling/src/external/xnu
+  source-branch: fix/vchroot-fdless-path-rpc
+  source-base: e0b55ebd7346773fb7aaa7c0723dd00accc08692
+  source-commit: 396820985f09272b82b0c74f35955df5706149a3
+  bead: dar-gwn.7.7.5
+  publication-status: blocked
+  publication-blocker: FD-less vchroot path RPC is a local architecture change under acceptance review; it is not a publication candidate until the runtime gate (guest vchroot, invalid/closed descriptor rejected before the RPC, zero SCM_RIGHTS on the vchroot call, pinned ordinary Docker) passes.
+  test-exception:
+    reason: runtime-gate-pending
+    scope: vchroot single-snapshot readlink and descriptor-free RPC call
+    note: Only the ABI/compile contract is verified so far; behavioral coverage is the disposable-prefix runtime gate owned by dar-gwn.7.7.5 and is currently blocked on host disk space.

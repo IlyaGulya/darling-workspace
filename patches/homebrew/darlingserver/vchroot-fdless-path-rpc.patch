@@ -1,0 +1,147 @@
+From 614850a641f25d37410f7116619818f55eff539e Mon Sep 17 00:00:00 2001
+From: Ilya Gulya <ilya@gulya.me>
+Date: Mon, 14 Sep 2026 08:14:29 +0000
+Subject: [PATCH] vchroot: send the resolved path instead of a directory
+ descriptor
+
+The vchroot RPC exported a directory descriptor so the server could resolve
+the path it names through /proc/self/fd.  The guest already names that path,
+so the descriptor carries nothing the server cannot be told directly, while
+it forces every caller to own and keep alive a file descriptor.
+
+Send the pathname instead: the guest snapshots /proc/self/fd/<dfd> once, the
+server copies the bytes with the existing bounded Process::readMemory helper,
+and the process retains only the cached path it publishes after a successful
+call.  Parent inheritance keeps working through that cached path.
+
+No other FD-bearing RPC changes transport.
+---
+ internal-include/darlingserver/process.hpp |  3 +--
+ scripts/generate-rpc-wrappers.py           |  3 ++-
+ src/call.cpp                               | 27 ++++++++++++++++++++--
+ src/process.cpp                            | 19 ++-------------
+ 4 files changed, 30 insertions(+), 22 deletions(-)
+
+diff --git a/internal-include/darlingserver/process.hpp b/internal-include/darlingserver/process.hpp
+index aea5aa26995adae19ae6d7833e8a63345d31bef2..19d5cf8ffcb18f6cdbf98a3a14d6808e48990424 100644
+--- a/internal-include/darlingserver/process.hpp
++++ b/internal-include/darlingserver/process.hpp
+@@ -92,7 +92,6 @@ namespace DarlingServer {
+ 		mutable std::shared_mutex _rwlock;
+ 		std::unordered_map<uint64_t, std::weak_ptr<Thread>> _threads;
+ 		std::string _cachedVchrootPath;
+-		std::shared_ptr<FD> _vchrootDescriptor;
+ 		dtape_task_t* _dtapeTask;
+ 		std::weak_ptr<Process> _parentProcess;
+ 		bool _startSuspended = false;
+@@ -163,7 +162,7 @@ namespace DarlingServer {
+ 		std::vector<std::shared_ptr<Thread>> threads() const;
+ 
+ 		std::string vchrootPath() const;
+-		void setVchrootDirectory(std::shared_ptr<FD> directoryDescriptor);
++		void setVchrootPath(std::string path);
+ 
+ 		std::shared_ptr<Process> parentProcess() const;
+ 
+diff --git a/scripts/generate-rpc-wrappers.py b/scripts/generate-rpc-wrappers.py
+index 23655d0fc5c355f051dbf4bc51b074ab2a6b458e..38d16464e9906411b75570c54e703ed7747ef230 100755
+--- a/scripts/generate-rpc-wrappers.py
++++ b/scripts/generate-rpc-wrappers.py
+@@ -163,7 +163,8 @@ calls = [
+ 	], []),
+ 
+ 	('vchroot', [
+-		('directory_fd', '@fd'),
++		('path', 'const char*', 'uint64_t'),
++		('path_size', 'uint64_t'),
+ 	], []),
+ 
+ 	('mldr_path', [
+diff --git a/src/call.cpp b/src/call.cpp
+index 9d525a42d14010ec55a1cdfa1bcf782e6f259948..698fc68a0b8c0ac28269fc7892beb5e6d2efecec 100644
+--- a/src/call.cpp
++++ b/src/call.cpp
+@@ -24,6 +24,7 @@
+ #include <darlingserver/server.hpp>
+ #include <sys/uio.h>
+ #include <errno.h>
++#include <cstring>
+ 
+ #include <darlingserver/logging.hpp>
+ #include <darlingserver/duct-tape.h>
+@@ -684,13 +685,35 @@ void DarlingServer::Call::SetThreadHandles::processCall() {
+ 
+ void DarlingServer::Call::Vchroot::processCall() {
+ 	int code = 0;
++	static constexpr uint64_t kMaxVchrootPath = 4096;
+ 
+ 	// TODO: wrap all `processCall` calls in try-catch like this
+ 	try {
+ 		if (auto thread = _thread.lock()) {
+ 			if (auto process = thread->process()) {
+-				process->setVchrootDirectory(std::make_shared<FD>(_body.directory_fd));
+-				_body.directory_fd = -1;
++				// `path` is a guest pointer. Copy the complete pathname snapshot once,
++				// bounded by the ABI limit, and reject short/faulting reads. Do not parse
++				// any bytes directly from guest memory after this copy.
++				if (_body.path_size == 0 || _body.path_size > kMaxVchrootPath) {
++					code = -EINVAL;
++				} else {
++					char path[kMaxVchrootPath];
++
++					if (process->readMemory(static_cast<uintptr_t>(_body.path), path, static_cast<size_t>(_body.path_size), &code)) {
++						if (path[_body.path_size - 1] != '\0') {
++							code = -EINVAL;
++						} else if (std::memchr(path, '\0', static_cast<size_t>(_body.path_size - 1)) != nullptr) {
++							// Embedded NUL would make the server and guest interpret different
++							// pathname byte strings.
++							code = -EINVAL;
++						} else {
++							process->setVchrootPath(std::string(path, static_cast<size_t>(_body.path_size - 1)));
++						}
++					} else {
++						// readMemory returns a positive error code, but we want a negative one
++						code = -code;
++					}
++				}
+ 			} else {
+ 				code = -ESRCH;
+ 			}
+diff --git a/src/process.cpp b/src/process.cpp
+index b56ee4381bb95eb847805dc549929bbba83d2ac5..bb7ad1fafa39fd8357e29ad3ebe0a29c841d61db 100644
+--- a/src/process.cpp
++++ b/src/process.cpp
+@@ -77,7 +77,6 @@ DarlingServer::Process::Process(ID id, NSID nsid, Architecture architecture, int
+ 		std::shared_lock parentLock(parentProcess->_rwlock);
+ 
+ 		// inherit vchroot from parent process
+-		_vchrootDescriptor = parentProcess->_vchrootDescriptor;
+ 		_cachedVchrootPath = parentProcess->_cachedVchrootPath;
+ 
+ 		// inherit groups from parent process
+@@ -151,23 +150,9 @@ std::string DarlingServer::Process::vchrootPath() const {
+ 	return _cachedVchrootPath;
+ };
+ 
+-void DarlingServer::Process::setVchrootDirectory(std::shared_ptr<FD> directoryDescriptor) {
++void DarlingServer::Process::setVchrootPath(std::string path) {
+ 	std::unique_lock lock(_rwlock);
+-	_vchrootDescriptor = directoryDescriptor;
+-
+-	char* tmp = new char[4096];
+-
+-	auto fdPath = "/proc/self/fd/" + std::to_string(_vchrootDescriptor->fd());
+-	auto len = readlink(fdPath.c_str(), tmp, 4095);
+-
+-	if (len < 0) {
+-		throw std::system_error(errno, std::generic_category(), "readlink");
+-	}
+-
+-	tmp[len] = '\0';
+-
+-	_cachedVchrootPath = std::string(tmp);
+-	delete[] tmp;
++	_cachedVchrootPath = path;
+ };
+ 
+ std::shared_ptr<DarlingServer::Process> DarlingServer::Process::currentProcess() {

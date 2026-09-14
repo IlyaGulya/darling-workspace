@@ -1,7 +1,7 @@
 schema_version: 3
 profile: homebrew
-batch_id: darling-eunion-ownership-batch-12
-expected_count: 77
+batch_id: darling-vchroot-fdless-path-rpc-batch-13
+expected_count: 79
 composition: homebrew-profile-composition-v2.yml
 series:
   - profile: homebrew
@@ -112,6 +112,10 @@ series:
     module: darling/src/external/darlingserver
     patch: darlingserver/prefix-lifecycle-state-v2.patch
     lock: darlingserver-prefix-lifecycle-state-v2-v1.yml
+  - profile: homebrew
+    module: darling/src/external/darlingserver
+    patch: darlingserver/vchroot-fdless-path-rpc.patch
+    lock: darlingserver-vchroot-fdless-path-rpc-v1.yml
   - profile: homebrew
     module: darling/src/external/xnu
     patch: xnu/psynch-cvsignal-args.patch
@@ -224,6 +228,10 @@ series:
     module: darling/src/external/xnu
     patch: xnu/eunion-ownership-syscalls.patch
     lock: darling-xnu-eunion-ownership-syscalls-v1.yml
+  - profile: homebrew
+    module: darling/src/external/xnu
+    patch: xnu/vchroot-fdless-path-rpc.patch
+    lock: darling-xnu-vchroot-fdless-path-rpc-v1.yml
   - profile: homebrew
     module: darling/src/external/libplatform
     patch: libplatform/bzero-return-register.patch

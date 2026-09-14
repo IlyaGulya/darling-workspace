@@ -1,0 +1,66 @@
+From 396820985f09272b82b0c74f35955df5706149a3 Mon Sep 17 00:00:00 2001
+From: Ilya Gulya <ilya@gulya.me>
+Date: Mon, 14 Sep 2026 08:14:29 +0000
+Subject: [PATCH] vchroot: resolve the descriptor path once and stop sending an
+ fd
+
+__darling_vchroot sent the descriptor to the server and then resolved the same
+descriptor locally after the RPC returned, so the two sides could disagree if
+the descriptor was closed or replaced in between.
+
+Resolve it once into a private snapshot, fail before the RPC when the readlink
+fails, send those exact bytes, and publish them locally only after the RPC
+succeeds.  This removes the descriptor from the request path entirely.
+---
+ .../linux_premigration/vchroot_userspace.c    | 31 ++++++++++++-------
+ 1 file changed, 20 insertions(+), 11 deletions(-)
+
+diff --git a/darling/src/libsystem_kernel/emulation/src/linux_premigration/vchroot_userspace.c b/darling/src/libsystem_kernel/emulation/src/linux_premigration/vchroot_userspace.c
+index 024ca655535df09af16e052c927001ac50484aff..626886d9e6c7b93aa31e1df48315a618b058b66b 100644
+--- a/darling/src/libsystem_kernel/emulation/src/linux_premigration/vchroot_userspace.c
++++ b/darling/src/libsystem_kernel/emulation/src/linux_premigration/vchroot_userspace.c
+@@ -1625,24 +1625,33 @@ VISIBLE
+ int __darling_vchroot(int dfd)
+ {
+ 	int rv;
+-
+-#ifndef TEST
+-	rv = errno_linux_to_bsd(dserver_rpc_vchroot(dfd));
+-	if (rv != 0)
+-		return rv;
+-#endif
+-
+ 	char buf[50];
++	char path_snapshot[sizeof(prefix_path)];
+ 
+ 	__simple_sprintf(buf, "/proc/self/fd/%d", dfd);
+ 
+ 	#if defined(__NR_readlink)
+-		rv = LINUX_SYSCALL(__NR_readlink, buf, prefix_path, sizeof(prefix_path) - 1);
++		rv = LINUX_SYSCALL(__NR_readlink, buf, path_snapshot, sizeof(path_snapshot) - 1);
+ 	#else
+-		rv = LINUX_SYSCALL(__NR_readlinkat, LINUX_AT_FDCWD, buf, prefix_path, sizeof(prefix_path) - 1);
++		rv = LINUX_SYSCALL(__NR_readlinkat, LINUX_AT_FDCWD, buf, path_snapshot, sizeof(path_snapshot) - 1);
+ 	#endif
+-	prefix_path[rv] = '\0';
+-	prefix_path_len = rv;
++	if (rv < 0)
++		return errno_linux_to_bsd(rv);
++
++	int path_len = rv;
++	path_snapshot[path_len] = '\0';
++
++#ifndef TEST
++	// The guest snapshots /proc/self/fd exactly once. The same bytes are sent
++	// to the server and, only after RPC success, published locally. This removes
++	// the old FD-transfer + second-read race under close/dup2 replacement.
++	rv = errno_linux_to_bsd(dserver_rpc_vchroot(path_snapshot, (uint64_t)path_len + 1));
++	if (rv != 0)
++		return rv;
++#endif
++
++	memcpy(prefix_path, path_snapshot, (size_t)path_len + 1);
++	prefix_path_len = path_len;
+ 
+ #ifdef EUNION
+ 	eunion_init_from_prefix();
