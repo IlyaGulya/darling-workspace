@@ -3,15 +3,15 @@ profile: arch
 prerequisites:
 - profile: perf
   composition: perf-profile-composition-v2.yml
-  sha256: 93783b2524a937f8aa7ff3e30f6fa9a6ae0d4b02d56a67d236f4068abe2fa59b
+  sha256: 26e281f678a698e6a99fb77c81460c9c0de18594fa2e92ac1537bb9239915db1
   frozen_manifest:
     path: west.lock.yml
     sha256: 5718c32c76a180b9078a206b93d93e70f478a5ada0034cd6afcc789c447e055d
   module_trees:
     darling: 2134b23d4980d7b4cdd534c9e42b4c04d6b303b5
-    darling/src/external/xnu: 85d308400571030b4a5417ef722621bc7ee2d4b4
+    darling/src/external/xnu: f049baeba1dfa88a3e7de95c789d3de03439c036
     darling/src/external/dyld: 967445c7fbe8c6db155160c323cb4ece3a5cd1df
-    darling/src/external/darlingserver: 43da4fa5a32b65efae9c1c7f5ebc961d09e55c6d
+    darling/src/external/darlingserver: 46f9c2395a7dcff1e9312598cd4a63f365885b1a
 frozen_manifest:
   path: west.lock.yml
   sha256: 5718c32c76a180b9078a206b93d93e70f478a5ada0034cd6afcc789c447e055d
@@ -32,64 +32,64 @@ modules:
   integration_final_tree: 43270a8f66b98e0e07a9f8705e21550791884400
 - module: darling/src/external/xnu
   starting:
-    tree: 85d308400571030b4a5417ef722621bc7ee2d4b4
+    tree: f049baeba1dfa88a3e7de95c789d3de03439c036
   series:
   - patch: xnu/ring-committed-unknown-guest.patch
     lock: darling-xnu-ring-committed-unknown-guest-profile-v7.yml
-    expected_applied_tree: df0a3d9d0c3feafe989253148060699bc89994a0
+    expected_applied_tree: dc8e3024933a7713fdd43b1d4ef9aca8efb06369
   - patch: xnu/rpc-interruptible-disconnect-status.patch
     lock: darling-xnu-rpc-interruptible-disconnect-status-profile-v7.yml
-    expected_applied_tree: 6975d75418b97887ac0bfef46d67f43f897b3295
+    expected_applied_tree: beef19a1c02cba854902c6afbba8243b6784198b
   - patch: xnu/rpc-disconnect-status-contract-test.patch
     lock: darling-xnu-rpc-disconnect-status-contract-test-profile-v7.yml
-    expected_applied_tree: cc31b4d449edb26201266153453c839e46420769
-  final_tree: cc31b4d449edb26201266153453c839e46420769
-  integration_final_tree: cc31b4d449edb26201266153453c839e46420769
+    expected_applied_tree: cc4f9641efcbf20b736fc508147b4c416e8fe618
+  final_tree: cc4f9641efcbf20b736fc508147b4c416e8fe618
+  integration_final_tree: cc4f9641efcbf20b736fc508147b4c416e8fe618
 - module: darling/src/external/darlingserver
   starting:
-    tree: 43da4fa5a32b65efae9c1c7f5ebc961d09e55c6d
+    tree: 46f9c2395a7dcff1e9312598cd4a63f365885b1a
   series:
   - patch: darlingserver/a0-arch-redesign.patch
     lock: darlingserver-a0-arch-redesign-profile-v6.yml
-    expected_applied_tree: efd73f1a6b1fe8dd28edd3fb51af9813f94ba96c
+    expected_applied_tree: 703eb4f705cae42d75b837ee0019d0dedafdb6c5
   - patch: darlingserver/standard-signal-coalescing.patch
     lock: darlingserver-standard-signal-coalescing-profile-v6.yml
-    expected_applied_tree: afb26d815bfdbfd894c832388fef357e8e7d09a0
+    expected_applied_tree: 0067101a9d7dd5faa6fbba32962b06596e64d47d
   - patch: darlingserver/a0-gate-shellspawn-retry.patch
     lock: darlingserver-a0-gate-shellspawn-retry-profile-v6.yml
-    expected_applied_tree: ac4beb34ed057d3ef4a2efea5a14bb69c771febd
+    expected_applied_tree: 65f0454ca70211de5c752bcd25d7075f715f2cad
   - patch: darlingserver/ring-committed-unknown-gate.patch
     lock: darlingserver-ring-committed-unknown-gate-profile-v6.yml
-    expected_applied_tree: ecf2884c0bdbf40fd6e54a227f46a3c1a32ea70b
+    expected_applied_tree: 182002643c9b01b90aa524ef0c9fe8bdeabfe215
   - patch: darlingserver/duct-tape-fail-closed-stubs.patch
     lock: darlingserver-duct-tape-fail-closed-stubs-profile-v6.yml
-    expected_applied_tree: 87686a58d7b4446b2dcf0616935293b3b57b3106
+    expected_applied_tree: 7c381a8e8838f3665deaea4585f915ec85b171d8
   - patch: darlingserver/rpc-uds-packed-correlation.patch
     lock: darlingserver-rpc-uds-packed-correlation-profile-v6.yml
-    expected_applied_tree: 5262d5cb4d9ecc30c73b629c128fedbed389a1ac
+    expected_applied_tree: ad0913a5ecf56b1031182ff5e510f45124663bca
   - patch: darlingserver/a0-gate-client-rpc-log.patch
     lock: darlingserver-a0-gate-client-rpc-log-profile-v6.yml
-    expected_applied_tree: 936c4eb8f32259b5842d688fa853b698c093d079
+    expected_applied_tree: 446953bda2c875dbe4a0c9e7d2f350d165e467c1
   - patch: darlingserver/rpc-interruptible-disconnect-eintr.patch
     lock: darlingserver-rpc-interruptible-disconnect-eintr-profile-v6.yml
-    expected_applied_tree: a03fe70501a715719a28fe230dc52c49635cda25
+    expected_applied_tree: 6da958d714863ca423e8acf0f0250d8a0382fb15
   - patch: darlingserver/stack-pool-empty-stack-handle.patch
     lock: darlingserver-stack-pool-empty-stack-handle-prefix-lifecycle-profile-v10.yml
-    expected_applied_tree: a390561a0b0bd0b1ac06d45c84b7f1672663ba55
+    expected_applied_tree: 989b4b3dfbe0ed7d5c40ec549c0ce3b72a82ba02
   - patch: darlingserver/a0-gate-focused-synth-markers.patch
     lock: darlingserver-a0-gate-focused-synth-markers-rootless-profile-v8.yml
-    expected_applied_tree: 425d9f6c50afb6cca33b87a9ebe4aa4a5ab85328
+    expected_applied_tree: d7d8418c32507ba63b43dad7ac6499fdec7b75bf
   - patch: darlingserver/recent-signal-rpc-contract-tests.patch
     lock: darlingserver-recent-signal-rpc-contract-tests-rootless-profile-v8.yml
-    expected_applied_tree: b9bbc7bbf570ce9448ab7d538694f83bdc9667c7
+    expected_applied_tree: 5a591c7ea7d50762e49e0eca67fac5c65555f5e7
   - patch: darlingserver/message-ctrunc-reject.patch
     lock: darlingserver-message-ctrunc-reject-rootless-profile-v8.yml
-    expected_applied_tree: be0bd34a4db9384291bbea71dbc666ab006f2b8f
+    expected_applied_tree: bf2f8eae66ecc1c20914b3181e6b9ad857733096
   - patch: darlingserver/standard-signal-coalescing-flood-progress.patch
     lock: darlingserver-standard-signal-coalescing-flood-progress-rootless-profile-v8.yml
-    expected_applied_tree: 8b39e62861dd3d6fd1e3afd2602b48a53ba906cb
-  final_tree: 8b39e62861dd3d6fd1e3afd2602b48a53ba906cb
-  integration_final_tree: 8b39e62861dd3d6fd1e3afd2602b48a53ba906cb
+    expected_applied_tree: 34bddc3265e696c7d52f4a323c237236ff384ba1
+  final_tree: 34bddc3265e696c7d52f4a323c237236ff384ba1
+  integration_final_tree: 34bddc3265e696c7d52f4a323c237236ff384ba1
 - module: darling
   starting:
     tree: 2134b23d4980d7b4cdd534c9e42b4c04d6b303b5

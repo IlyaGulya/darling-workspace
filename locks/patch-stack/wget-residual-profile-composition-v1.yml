@@ -3,13 +3,13 @@ profile: wget-residual
 prerequisites:
 - profile: homebrew
   composition: homebrew-profile-composition-v2.yml
-  sha256: e9997dedfd8caf9bda71f22b46bb1b0657870b83bd9ec13f78bac4a9a6d70543
+  sha256: 265a4799fe4f70c569b46e4ac87b18b97449151d6e42ebaf9df34dd081c65cb4
   frozen_manifest: &id001
     path: west.lock.yml
     sha256: 5718c32c76a180b9078a206b93d93e70f478a5ada0034cd6afcc789c447e055d
   module_trees:
-    darling/src/external/darlingserver: 2d6f0321cfe205dba7302666bc470adb79a44003
-    darling/src/external/xnu: dcd79f5ae99340e590f5ee904464f578999823a1
+    darling/src/external/darlingserver: 561d210a16f3ea285107d69a61820cc030784a4c
+    darling/src/external/xnu: 46bc1531768e94578dfeb505d42d9f002d78065a
     darling/src/external/libplatform: aa23756779ff852be148fc08dec34f6ee371b08e
     darling/src/external/perl: 4f1f2a7a7818800a8e39d1cddbcf7832c246e375
     darling/src/external/libressl-2.8.3: c8ba46eeec25cfc71d0642c253e4ebe18c2898ae
@@ -52,52 +52,52 @@ modules:
   integration_final_tree: 715129f3a51ffb05f9cc6790599a150bf8b62a28
 - module: darling/src/external/xnu
   starting:
-    tree: dcd79f5ae99340e590f5ee904464f578999823a1
+    tree: 46bc1531768e94578dfeb505d42d9f002d78065a
   series:
   - patch: xnu/eunion-content-fd-validation.patch
     lock: darling-xnu-eunion-content-fd-validation-wget-v1.yml
-    expected_applied_tree: c8ab5d776e3f991ce1a52f11a3b0ffb378b0c586
+    expected_applied_tree: 41fdb542279f2e0d9d2792af5d1d5b95a1519939
   - patch: xnu/posix-spawn-cloexec-default.patch
     lock: darling-xnu-posix-spawn-cloexec-default-wget-v1.yml
-    expected_applied_tree: 9449dd1eb97d1024ae8b5a325c75927cac97f7f9
+    expected_applied_tree: 777ab9db1efd6aacbbe20b4036eae07ece33e55b
   - patch: xnu/posix-spawn-failure-ownership.patch
     lock: darling-xnu-posix-spawn-failure-ownership-wget-v1.yml
-    expected_applied_tree: 1b9255b358dd2dfd6bbf84815d731badf7907a28
+    expected_applied_tree: e6af5564b4c343628fd7a45ac72ea1687339a94c
   - patch: xnu/sigpending-mask-copyout.patch
     lock: darling-xnu-sigpending-mask-copyout-wget-v1.yml
-    expected_applied_tree: ee2738d3a4486a63fdf79593920bea3a8b708a54
+    expected_applied_tree: 8c8ab1e999f751e1f8c5d955a7ebe13ea7ad44ef
   - patch: xnu/sigaction-ignore-discard.patch
     lock: darling-xnu-sigaction-ignore-discard-wget-v1.yml
-    expected_applied_tree: 73f2bee3891a2324e39a3ae1bf9062f6df067ef6
+    expected_applied_tree: e981ab1de437712a820fffe3fcd1e1b1062c9350
   - patch: xnu/sigexc-handler-mask.patch
     lock: darling-xnu-sigexc-handler-mask-wget-v1.yml
-    expected_applied_tree: 34aa994860074f73f25087bec98c66fa1164e914
+    expected_applied_tree: 39926b325493b802b2d9d3e88b27e155b3d7489b
   - patch: xnu/eunion-large-directory.patch
     lock: darling-xnu-eunion-large-directory-wget-v1.yml
-    expected_applied_tree: 67305ae17539cfdb99dd4cd4e5cc230bdd02a234
+    expected_applied_tree: c53b122eb97ac3dcaac3c25a239566b40c859ee3
   - patch: xnu/udp-packet-info.patch
     lock: darling-xnu-udp-packet-info-wget-v1.yml
-    expected_applied_tree: 826530fb38acf64c0459dc907ac7aba79c7bad0a
-  final_tree: 826530fb38acf64c0459dc907ac7aba79c7bad0a
-  integration_final_tree: 826530fb38acf64c0459dc907ac7aba79c7bad0a
+    expected_applied_tree: d53aeae12be2bc2dc8d15ff64f4fa66e5438bb8b
+  final_tree: d53aeae12be2bc2dc8d15ff64f4fa66e5438bb8b
+  integration_final_tree: d53aeae12be2bc2dc8d15ff64f4fa66e5438bb8b
 - module: darling/src/external/darlingserver
   starting:
-    tree: 2d6f0321cfe205dba7302666bc470adb79a44003
+    tree: 561d210a16f3ea285107d69a61820cc030784a4c
   series:
   - patch: darlingserver/preserve-wait-state-on-resume.patch
     lock: darlingserver-preserve-wait-state-on-resume-wget-v1.yml
-    expected_applied_tree: 62cebf0f5c01251993cae3c42b7d560f4b8d8a2d
+    expected_applied_tree: e4af36d7d164bbf6e473668b6bf246e65752f760
   - patch: darlingserver/microthread-dispatch-handoff.patch
     lock: darlingserver-microthread-dispatch-handoff-wget-v1.yml
-    expected_applied_tree: f09c358af4fea51715eb8116f8a08e6193ee1622
+    expected_applied_tree: 58815c1d16dff98ddda5f83eacd18dfea9a0add2
   - patch: darlingserver/rootless-server-owned-socket-address.patch
     lock: darlingserver-rootless-server-owned-socket-address-wget-v1.yml
-    expected_applied_tree: edc3dcc5144f7d0818e46f7d500cf77160085fa0
+    expected_applied_tree: 35468f6bd117fdac9372f22bdcc95f1014de0730
   - patch: darlingserver/exec-checkin-completion-order.patch
     lock: darlingserver-exec-checkin-completion-order-wget-v1.yml
-    expected_applied_tree: e450e0f25504d2129e3e00356536ad05f21749fa
-  final_tree: e450e0f25504d2129e3e00356536ad05f21749fa
-  integration_final_tree: e450e0f25504d2129e3e00356536ad05f21749fa
+    expected_applied_tree: cfe00a296fb23959ac239ca79c213220cab226ff
+  final_tree: cfe00a296fb23959ac239ca79c213220cab226ff
+  integration_final_tree: cfe00a296fb23959ac239ca79c213220cab226ff
 - module: darling/src/external/libkqueue
   starting:
     tree: e4502ad3e6b3953d756c86ea40d2697a97168933

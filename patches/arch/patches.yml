@@ -411,7 +411,7 @@ patches:
     - -Werror
     timeout-seconds: 60
     note: The durable friend-adapter fixture compiles against the selected source-base/profile tree and executes the exact pending-mask helper called by Thread::sendSignal before tgkill.
-  sha256sum: a49b0c4005bebdee68b88b3416c6c49995eb262875b91a48cd62ba6f390cd703
+  sha256sum: 99bfd16069c8cc382d105421dc4ee550f2cda6276bce172f766a0217ad9dab94
 - path: darling/ci-host-regression-tests.patch
   module: darling
   source-branch: fix/ci-host-regression-tests
