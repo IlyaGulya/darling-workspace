@@ -3,6 +3,14 @@ From: West Integration <west-integration@example.invalid>
 Date: Mon, 27 Jul 2026 15:30:00 +0000
 Subject: [PATCH] darlingserver: coalesce pending SIGUSR1
 
+---
+ CMakeLists.txt                                | 17 +++++++
+ internal-include/darlingserver/thread.hpp     | 13 +++++
+ src/thread.cpp                                |  6 +--
+ tests/standard-signal-coalescing.cpp          | 48 +++++++++++++++++++
+ ...tandard_signal_coalescing_contract_test.sh | 12 ++---
+ 5 files changed, 86 insertions(+), 10 deletions(-)
+ create mode 100644 tests/standard-signal-coalescing.cpp
 
 diff --git a/CMakeLists.txt b/CMakeLists.txt
 index d6fb787fc295ef3917be44456917fef147c4d056..57d13d39561aa4c004b4534edffd5bf22d461d04 100644
@@ -153,6 +161,3 @@ index a15b1c5b4a1d4a3ba45208ce994516b5cdfd2e98..8d51cd45ffbf84013aaa79d77fe6d9b4
  require_text "_pendingStandardSignalMask &= ~(1ull << signal)" "$send_signal_body" \
  	"sendSignal does not clear pending mask on tgkill/process errors"
  require_text "StandardSignalPendingClear" "$process_signal_body" \
--- 
-2.43.0
-
