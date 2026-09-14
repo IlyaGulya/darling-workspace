@@ -1,4 +1,4 @@
-From fd8be44d1375e7e031fc5002f8db43cc4763d594 Mon Sep 17 00:00:00 2001
+From 0deea3613837b5ccd07516e85a4e6db0a83c2f39 Mon Sep 17 00:00:00 2001
 From: Ilya Gulya <ilya@gulya.me>
 Date: Mon, 13 Jul 2026 13:45:26 +0000
 Subject: [PATCH] perf: consolidate shared-memory ring transport
@@ -1582,10 +1582,10 @@ index 91f55fcaaa035f2e23ff3fcb97e061fb3560fcac..91fc02980d21f389e9356d6f1649aae0
  		// (workqueue_depth, workers_busy/total, clients_blocked_in_rpc) as already-
  		// formatted "\"key\": value" fragments, comma-separated, no surrounding braces.
 diff --git a/internal-include/darlingserver/process.hpp b/internal-include/darlingserver/process.hpp
-index 8caa43d5a5048bbc4e38a90decd0597de727c0d9..b38cd1ed7691613bf1ea6f875d925b9e48ae45fd 100644
+index b570ef85b509cb260a616336a2738b0e3bd56186..c474a7f8b52546cbfb6e876f4a26d886fcdf76bc 100644
 --- a/internal-include/darlingserver/process.hpp
 +++ b/internal-include/darlingserver/process.hpp
-@@ -110,6 +110,16 @@ namespace DarlingServer {
+@@ -109,6 +109,16 @@ namespace DarlingServer {
  		std::shared_ptr<Process> _selfReference = nullptr;
  		std::vector<uint32_t> _groups;
  
@@ -1602,7 +1602,7 @@ index 8caa43d5a5048bbc4e38a90decd0597de727c0d9..b38cd1ed7691613bf1ea6f875d925b9e
  #if DSERVER_EXTENDED_DEBUG
  		std::unordered_map<uint32_t, uintptr_t> _registeredNames;
  		std::unordered_map<dtape_port_set_id_t, std::unordered_set<dtape_port_id_t>> _portSetMembers;
-@@ -221,6 +231,19 @@ namespace DarlingServer {
+@@ -220,6 +230,19 @@ namespace DarlingServer {
  
  		std::vector<uint32_t> groups() const;
  		void setGroups(const std::vector<uint32_t>& groups);
@@ -2029,10 +2029,10 @@ index 7bf42f392d452066915f54f38cf09932bd12311d..71223e30276ce1dfc3e51dea7a3f9e66
  		 * @note Only to be used by direct XNU traps! (e.g. Mach IPC, psynch, etc.)
  		 */
 diff --git a/scripts/generate-rpc-wrappers.py b/scripts/generate-rpc-wrappers.py
-index adbff36d6a959472b8516f3d80419bee6a022b8c..6151f255ba8342779a3a0ba315baa4234c7c450d 100755
+index c90d512c38ad1b5ce189a2f703218bf7c95e0f97..f2742a9ae9331ede5792782efd4bed020844d60e 100755
 --- a/scripts/generate-rpc-wrappers.py
 +++ b/scripts/generate-rpc-wrappers.py
-@@ -656,6 +656,40 @@ calls = [
+@@ -657,6 +657,40 @@ calls = [
  		('message_count', 'uint64_t'),
  		('fd', '@fd'),
  	], UNMANAGED_CALL),
@@ -2074,10 +2074,10 @@ index adbff36d6a959472b8516f3d80419bee6a022b8c..6151f255ba8342779a3a0ba315baa423
  
  ALLOWED_PRIVATE_TYPES = [
 diff --git a/src/call.cpp b/src/call.cpp
-index 9101d117b1c27f4934216240e6d92045c107a4a4..2ff73a2112d8657c624c879f4b01a69caff44be5 100644
+index 0699aeb6ef609c37dbf7030e698c18296b4c6698..5d183f618e67793c6279e71b421bbd8ca9466369 100644
 --- a/src/call.cpp
 +++ b/src/call.cpp
-@@ -35,11 +35,32 @@
+@@ -36,11 +36,32 @@
  #include <darlingserver/kqchan.hpp>
  #include <system_error>
  #include <cerrno>
@@ -2110,7 +2110,7 @@ index 9101d117b1c27f4934216240e6d92045c107a4a4..2ff73a2112d8657c624c879f4b01a69c
  std::shared_ptr<DarlingServer::Call> DarlingServer::Call::callFromMessage(Message&& requestMessage) {
  	if (requestMessage.data().size() < sizeof(dserver_rpc_callhdr_t)) {
  		throw std::invalid_argument("Message buffer was too small for call header");
-@@ -252,6 +273,64 @@ std::shared_ptr<DarlingServer::Call> DarlingServer::Call::callFromMessage(Messag
+@@ -253,6 +274,64 @@ std::shared_ptr<DarlingServer::Call> DarlingServer::Call::callFromMessage(Messag
  		return nullptr;
  	}
  
@@ -2175,7 +2175,7 @@ index 9101d117b1c27f4934216240e6d92045c107a4a4..2ff73a2112d8657c624c879f4b01a69c
  	// finally, let's construct the call class
  
  	#define CALL_CASE(_callName, _className) \
-@@ -1377,4 +1456,637 @@ void DarlingServer::Call::DebugListMessages::processCall() {
+@@ -1400,4 +1479,637 @@ void DarlingServer::Call::DebugListMessages::processCall() {
  	_sendReply(code, portCount, pipes[0]);
  };
  
@@ -12245,7 +12245,7 @@ index 0000000000000000000000000000000000000000..afac26679bab187c63e21dd20b2aef6e
 +	}
 +}
 
-From 7a1408544dea6d01d6be6a2fe1f06307e5f6d5d7 Mon Sep 17 00:00:00 2001
+From 7a1ffd0c4143a2a3e17b4e68d6a6a4436279c9f7 Mon Sep 17 00:00:00 2001
 From: Ilya Gulya <ilya@gulya.me>
 Date: Mon, 13 Jul 2026 13:45:43 +0000
 Subject: [PATCH] fix: consolidate A0 hang corrections
@@ -12691,10 +12691,10 @@ index a6847a4a3c85008da18e645540fe7b8e26039050..b7f93f560c3043f6ddaa25229c94683e
  		 * See Kqchan::MachPort::_checkForEventsAsync(); this does the same thing for process kqchannels.
  		 */
 diff --git a/internal-include/darlingserver/process.hpp b/internal-include/darlingserver/process.hpp
-index b38cd1ed7691613bf1ea6f875d925b9e48ae45fd..840835e05f65f74a59a9cb7e1048ccb1afc839bc 100644
+index c474a7f8b52546cbfb6e876f4a26d886fcdf76bc..fdcc16cb4761092c09c06f3fc78eaf5b49983819 100644
 --- a/internal-include/darlingserver/process.hpp
 +++ b/internal-include/darlingserver/process.hpp
-@@ -97,8 +97,9 @@ namespace DarlingServer {
+@@ -96,8 +96,9 @@ namespace DarlingServer {
  		dtape_task_t* _dtapeTask;
  		std::weak_ptr<Process> _parentProcess;
  		bool _startSuspended = false;
@@ -12705,7 +12705,7 @@ index b38cd1ed7691613bf1ea6f875d925b9e48ae45fd..840835e05f65f74a59a9cb7e1048ccb1
  		std::unordered_map<uintptr_t, std::shared_ptr<Kqchan>> _kqchannels;
  		std::unordered_map<uintptr_t, std::weak_ptr<Kqchan::Process>> _listeningKqchannels;
  		dtape_semaphore_t* _dtapeForkWaitSemaphore;
-@@ -146,7 +147,7 @@ namespace DarlingServer {
+@@ -145,7 +146,7 @@ namespace DarlingServer {
  		void _dispose();
  
  		void _setEternalID(EternalID eid);
@@ -12714,7 +12714,7 @@ index b38cd1ed7691613bf1ea6f875d925b9e48ae45fd..840835e05f65f74a59a9cb7e1048ccb1
  
  	public:
  		using ID = pid_t;
-@@ -186,7 +187,7 @@ namespace DarlingServer {
+@@ -185,7 +186,7 @@ namespace DarlingServer {
  		bool readMemory(uintptr_t remoteAddress, void* localBuffer, size_t length, int* errorCode = nullptr) const;
  		bool writeMemory(uintptr_t remoteAddress, const void* localBuffer, size_t length, int* errorCode = nullptr) const;
  
@@ -12752,7 +12752,7 @@ index 71223e30276ce1dfc3e51dea7a3f9e66b63b8ef0..a7742e5ec9558a0a4ac3bb4af927b73b
  
  		void setThreadHandles(uintptr_t pthreadHandle, uintptr_t dispatchQueueAddress);
 diff --git a/src/call.cpp b/src/call.cpp
-index 2ff73a2112d8657c624c879f4b01a69caff44be5..2f78e645e8c1c8b474edab15a887d1be520d963d 100644
+index 5d183f618e67793c6279e71b421bbd8ca9466369..3041efd8284ba12f16591445140ace08789b01bf 100644
 --- a/src/call.cpp
 +++ b/src/call.cpp
 @@ -22,6 +22,7 @@
@@ -12762,8 +12762,8 @@ index 2ff73a2112d8657c624c879f4b01a69caff44be5..2f78e645e8c1c8b474edab15a887d1be
 +#include <darlingserver/process-identity.hpp>
  #include <sys/uio.h>
  #include <errno.h>
- 
-@@ -35,6 +36,13 @@
+ #include <cstring>
+@@ -36,6 +37,13 @@
  #include <darlingserver/kqchan.hpp>
  #include <system_error>
  #include <cerrno>
@@ -12777,7 +12777,7 @@ index 2ff73a2112d8657c624c879f4b01a69caff44be5..2f78e645e8c1c8b474edab15a887d1be
  #ifdef DSERVER_RING_TRANSPORT
  	#include <darlingserver/ring.hpp>
  	#include <darlingserver/monitor.hpp>
-@@ -46,6 +54,70 @@ static DarlingServer::Log callLog("calls");
+@@ -47,6 +55,70 @@ static DarlingServer::Log callLog("calls");
  
  DarlingServer::Log DarlingServer::Call::rpcReplyLog("replies");
  
@@ -12848,7 +12848,7 @@ index 2ff73a2112d8657c624c879f4b01a69caff44be5..2f78e645e8c1c8b474edab15a887d1be
  // perf #18 D15a (dar-1il.10): static ring-eligibility classifier for the attach-timeline census.
  // Mirrors the dispatch allowlist (DSERVER_RING_C2S_OPCODES, rpc-supplement.h) -- the SAME macro the
  // ringServiceThread dispatch keys off -- so "eligible" here means exactly "this op would have ridden
-@@ -180,6 +252,16 @@ std::shared_ptr<DarlingServer::Call> DarlingServer::Call::callFromMessage(Messag
+@@ -181,6 +253,16 @@ std::shared_ptr<DarlingServer::Call> DarlingServer::Call::callFromMessage(Messag
  	auto tidString = (thread) ? (std::to_string(thread->id()) + " (" + std::to_string(thread->nsid()) + ")") : (std::to_string(header->tid) + " (-1)");
  	callLog.debug() << "Received call #" << header->number << " (" << dserver_callnum_to_string(header->number) << ") from PID " << pidString << ", TID " << tidString << callLog.endLog;
  
@@ -12865,7 +12865,7 @@ index 2ff73a2112d8657c624c879f4b01a69caff44be5..2f78e645e8c1c8b474edab15a887d1be
  	if (header->number == dserver_callnum_s2c) {
  		// this is an S2C reply
  		{
-@@ -240,6 +322,8 @@ std::shared_ptr<DarlingServer::Call> DarlingServer::Call::callFromMessage(Messag
+@@ -241,6 +323,8 @@ std::shared_ptr<DarlingServer::Call> DarlingServer::Call::callFromMessage(Messag
  				// the client saw this unexpected reply while waiting for interrupt_enter to respond and sent it back to us,
  				// and we received both calls (interrupt_enter and push_reply) at the same time
  				thread->_pendingSavedReply = std::move(replyToSave);
@@ -12874,7 +12874,7 @@ index 2ff73a2112d8657c624c879f4b01a69caff44be5..2f78e645e8c1c8b474edab15a887d1be
  			} else if (thread->_interrupts.empty()) {
  				// The push_reply races the interrupt's lifetime: the interrupt was
  				// already torn down (interrupt_exit popped it) by the time this
-@@ -250,6 +334,8 @@ std::shared_ptr<DarlingServer::Call> DarlingServer::Call::callFromMessage(Messag
+@@ -251,6 +335,8 @@ std::shared_ptr<DarlingServer::Call> DarlingServer::Call::callFromMessage(Messag
  				// client now. (dar-gwn.1.7)
  				lock.unlock();
  				callLog.debug() << *thread << ": push_reply arrived with no live interrupt; re-sending pushed reply directly" << callLog.endLog;
@@ -12883,7 +12883,7 @@ index 2ff73a2112d8657c624c879f4b01a69caff44be5..2f78e645e8c1c8b474edab15a887d1be
  				if (!thread->isDead()) {
  					Server::sharedInstance().sendMessage(std::move(replyToSave));
  				}
-@@ -261,6 +347,8 @@ std::shared_ptr<DarlingServer::Call> DarlingServer::Call::callFromMessage(Messag
+@@ -262,6 +348,8 @@ std::shared_ptr<DarlingServer::Call> DarlingServer::Call::callFromMessage(Messag
  					throw std::runtime_error("Client-pushed reply overwriting existing saved reply");
  				}
  				thread->_interrupts.top().savedReply = std::move(replyToSave);
@@ -12892,7 +12892,7 @@ index 2ff73a2112d8657c624c879f4b01a69caff44be5..2f78e645e8c1c8b474edab15a887d1be
  			}
  		}
  
-@@ -438,6 +526,16 @@ bool DarlingServer::Call::isBSDTrap() const {
+@@ -439,6 +527,16 @@ bool DarlingServer::Call::isBSDTrap() const {
  };
  
  void DarlingServer::Call::sendReply(Message&& reply) {
@@ -12909,7 +12909,7 @@ index 2ff73a2112d8657c624c879f4b01a69caff44be5..2f78e645e8c1c8b474edab15a887d1be
  	Server::sharedInstance().sendMessage(std::move(reply));
  };
  
-@@ -504,9 +602,11 @@ void DarlingServer::Call::Checkin::processCall() {
+@@ -505,9 +603,11 @@ void DarlingServer::Call::Checkin::processCall() {
  
  	if (auto thread = _thread.lock()) {
  		if (auto process = thread->process()) {
@@ -12924,7 +12924,7 @@ index 2ff73a2112d8657c624c879f4b01a69caff44be5..2f78e645e8c1c8b474edab15a887d1be
  		} else {
  			code = -ESRCH;
  		}
-@@ -1028,6 +1128,9 @@ void DarlingServer::Call::InterruptExit::processCall() {
+@@ -1051,6 +1151,9 @@ void DarlingServer::Call::InterruptExit::processCall() {
  			callLog.debug() << *thread << ": Going to send saved reply" << callLog.endLog;
  			Server::sharedInstance().sendMessage(std::move(*tmp.savedReply));
  			tmp.savedReply = std::nullopt;
@@ -13204,10 +13204,10 @@ index 7f766a299b888d5677e7ca8135d09cfb10e67c55..a49f0a7e33eb925957cad99e0e0353da
  			_sendNotification();
  		}
 diff --git a/src/process.cpp b/src/process.cpp
-index 95da197ed06c364057c992606e84e2b426fb2042..02d3750fca0a5edd74452af9dceae14bab97d390 100644
+index a6282dac84bd2077050a5f5860994935e07b6040..cae75109689712473488ed6035cd716bcc9f890a 100644
 --- a/src/process.cpp
 +++ b/src/process.cpp
-@@ -286,22 +286,26 @@ bool DarlingServer::Process::writeMemory(uintptr_t remoteAddress, const void* lo
+@@ -271,22 +271,26 @@ bool DarlingServer::Process::writeMemory(uintptr_t remoteAddress, const void* lo
  	return _readOrWriteMemory(true, remoteAddress, const_cast<void*>(localBuffer), length, errorCode);
  };
  
@@ -13240,7 +13240,7 @@ index 95da197ed06c364057c992606e84e2b426fb2042..02d3750fca0a5edd74452af9dceae14b
  
  	if (didExec) {
  		// exec case
-@@ -352,8 +356,8 @@ void DarlingServer::Process::notifyCheckin(Architecture architecture) {
+@@ -337,8 +341,8 @@ void DarlingServer::Process::notifyCheckin(Architecture architecture) {
  		// notifyDead() for exactly this reason; do the same for the dtape work here.
  		//
  		// It is safe to drop the lock for this block: all other threads have been
@@ -13251,7 +13251,7 @@ index 95da197ed06c364057c992606e84e2b426fb2042..02d3750fca0a5edd74452af9dceae14b
  		// the semaphores) are not traversed by _rwlock readers -- readers consult
  		// _threads / _listeningKqchannels / _kqchannels / scalar fields, none of which
  		// we mutate while unlocked.
-@@ -440,14 +444,17 @@ void DarlingServer::Process::notifyCheckin(Architecture architecture) {
+@@ -425,14 +429,17 @@ void DarlingServer::Process::notifyCheckin(Architecture architecture) {
  		}
  	}
  
@@ -13272,7 +13272,7 @@ index 95da197ed06c364057c992606e84e2b426fb2042..02d3750fca0a5edd74452af9dceae14b
  		// notify the parent process (if we have one) that we've arrived
  		if (auto parent = _parentProcess.lock()) {
  			processLog.info() << *this << ": notifying fork parent " << *parent << " after checkin" << processLog.endLog;
-@@ -491,7 +498,7 @@ void DarlingServer::Process::notifyExecCompletion(const std::shared_ptr<FD>& lis
+@@ -476,7 +483,7 @@ void DarlingServer::Process::notifyExecCompletion(const std::shared_ptr<FD>& lis
  	std::unique_lock lock(_rwlock);
  	auto completion = _execCompletion.poll(listener);
  	if (completion == ExecCompletion::Result::Darling) {
@@ -13281,7 +13281,7 @@ index 95da197ed06c364057c992606e84e2b426fb2042..02d3750fca0a5edd74452af9dceae14b
  	}
  	lock.unlock();
  
-@@ -500,14 +507,12 @@ void DarlingServer::Process::notifyExecCompletion(const std::shared_ptr<FD>& lis
+@@ -485,14 +492,12 @@ void DarlingServer::Process::notifyExecCompletion(const std::shared_ptr<FD>& lis
  	}
  };
  
@@ -14319,7 +14319,7 @@ index 1ac92e2a5f523bf2670824a63f0a9ba7dc9484f5..fb40a6cae6cc1571413a42107e268bc2
  
  static void monitorBeforeCheckin()
 
-From c04959f08af381054d834f347e8291601770e627 Mon Sep 17 00:00:00 2001
+From c749c6dccb5a4c22c1394aa66ae0580c11f22976 Mon Sep 17 00:00:00 2001
 From: Ilya Gulya <ilya@gulya.me>
 Date: Sat, 4 Jul 2026 14:36:25 +0000
 Subject: [PATCH] dar-j7e7: gate __dserver_ring_postfork_reset()
@@ -14575,7 +14575,7 @@ index 498f2b1b304ee496dd351c6a8db85362054435e8..5c426011ee9e8c4d1db8f036c58e6d06
  #     is built on -- pure logic, hermetic. GREEN: the duplex wake model is lost-wake-free (guest park
  #     watches the S2C-upcall stream; server park watches the upcall-reply stream) + correlation-safe.
 
-From 7b0926a7cd03923702476d5e2ff82d548631d7f5 Mon Sep 17 00:00:00 2001
+From 3dc3a97db2ab6c178fdbe9fba1dea44364fd154d Mon Sep 17 00:00:00 2001
 From: Ilya Gulya <ilya@gulya.me>
 Date: Thu, 10 Sep 2026 16:39:53 +0000
 Subject: [PATCH] Generate paired RPC headers instead of skipping host ring
@@ -14659,7 +14659,7 @@ index 5c426011ee9e8c4d1db8f036c58e6d06aafd447f..5e7228ea175db5c201f911cc5b5261ab
  # --- P7 wake-model LOST-WAKE race gate (dar-my8). Hermetic: header-only, real shm, two threads.
  #     GREEN: exhaustive ordering enumeration finds ZERO lost-wake interleavings on both the
 
-From 4b12bfd5c8f0ffe40309618588299e2f9d82b205 Mon Sep 17 00:00:00 2001
+From 800fd28f052a32ad3f9480bbf33393babfbf4b41 Mon Sep 17 00:00:00 2001
 From: Ilya Gulya <ilya@gulya.me>
 Date: Thu, 10 Sep 2026 21:59:27 +0000
 Subject: [PATCH] Keep physical execution exit out of logical XNU wait state
@@ -14741,7 +14741,7 @@ index bc4c95ae4ae243c898124618d107f70b9f24bd95..c3528e338ae7b5f22c37bc8c6b1dec7d
  		scheduleAfterWorking = _execution.finish() && !_terminating && !_dead;
  
 
-From c8719f43ba99869e39bd364125e2184ae91d4258 Mon Sep 17 00:00:00 2001
+From 546d0a078aee5c129257f4d8f8c36cf983ad6ca3 Mon Sep 17 00:00:00 2001
 From: Ilya Gulya <ilya@gulya.me>
 Date: Sat, 12 Sep 2026 10:06:38 +0000
 Subject: [PATCH] Retire superseded thread rings before replacing their
@@ -14787,7 +14787,7 @@ index c3528e338ae7b5f22c37bc8c6b1dec7dcdfa6acb..7f02bd1d2f858d757d82c88f2b4edb73
  		_ringMonitor = monitor;
  	}
 
-From 7dc5e9d2d7801111789466ad70b6993c7f8f0c96 Mon Sep 17 00:00:00 2001
+From 0a6cfd07085d1489737c5b3d4596532c72681b98 Mon Sep 17 00:00:00 2001
 From: Ilya Gulya <ilya@gulya.me>
 Date: Sat, 12 Sep 2026 10:23:10 +0000
 Subject: [PATCH] Canonicalize stats socket identity across rootless prefix
@@ -14850,7 +14850,7 @@ index bcbc8bf1bff71786b6883d86b79d7da4f087b224..73ccb4f86de0f8f0e213aab4b9ae24eb
      try:
          s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
 
-From 610bcb43aedd69cbc125c39a74eed977b0792028 Mon Sep 17 00:00:00 2001
+From b59b1cfd530e847298604fcabcebcd5a39999d0b Mon Sep 17 00:00:00 2001
 From: Ilya Gulya <ilya@gulya.me>
 Date: Sat, 12 Sep 2026 17:45:03 +0000
 Subject: [PATCH] Keep ring port traps on fibers across contended IPC locks
@@ -15026,10 +15026,10 @@ index a7742e5ec9558a0a4ac3bb4af927b73b0377d6d4..163796718774d31473f40c673ca2d1cc
  		// perf #2b (dar-dar6x4-perf-5dq.8): the main event loop runs cheap, non-blocking
  		// RPCs inline via doWork() instead of paying a worker-thread wakeup. After an inline
 diff --git a/src/call.cpp b/src/call.cpp
-index 2f78e645e8c1c8b474edab15a887d1be520d963d..1627b261ec77df40733c42837a7fabb95be3d85f 100644
+index 3041efd8284ba12f16591445140ace08789b01bf..c9ca2d13bf6f2fe8bd27cc6cd0dfb1a40ead46f3 100644
 --- a/src/call.cpp
 +++ b/src/call.cpp
-@@ -1588,26 +1588,6 @@ void DarlingServer::Call::DebugListMessages::processCall() {
+@@ -1611,26 +1611,6 @@ void DarlingServer::Call::DebugListMessages::processCall() {
  // already refuses a corrupt c2s tail; here we additionally (a) bound the inline body to the
  // slot, (b) only accept a small allowlist of ring-eligible call numbers (P3 = task_self_trap),
  // dropping anything else so the guest UDS-falls-back, and (c) never deref a guest pointer.
@@ -15056,7 +15056,7 @@ index 2f78e645e8c1c8b474edab15a887d1be520d963d..1627b261ec77df40733c42837a7fabb9
  // perf #18 P8 D3 (dar-1il.3.1.1): the DUPLEX SELFTEST hatch. Default OFF (must be set to "1"). The
  // sentinel parent op (DSERVER_RING_DUPLEX_SELFTEST_CALLNUM) is recognized in the ring service loop ONLY
  // when this is on, so the duplex lane never activates on any real op or on a normal boot -- it is the
-@@ -1650,67 +1630,6 @@ static std::atomic<int>& d5VmDeallocProofBudget() {
+@@ -1673,67 +1653,6 @@ static std::atomic<int>& d5VmDeallocProofBudget() {
  static bool d5VmDeallocProofArmed() {
  	return d5VmDeallocProofBudget().load(std::memory_order_relaxed) > 0;
  }
@@ -15124,7 +15124,7 @@ index 2f78e645e8c1c8b474edab15a887d1be520d963d..1627b261ec77df40733c42837a7fabb9
  
  uint32_t DarlingServer::ringServiceThread(const std::shared_ptr<DarlingServer::Thread>& thread) {
  	using namespace DarlingServer;
-@@ -1911,63 +1830,6 @@ uint32_t DarlingServer::ringServiceThread(const std::shared_ptr<DarlingServer::T
+@@ -1934,63 +1853,6 @@ uint32_t DarlingServer::ringServiceThread(const std::shared_ptr<DarlingServer::T
  			continue;
  		}
  
@@ -15188,7 +15188,7 @@ index 2f78e645e8c1c8b474edab15a887d1be520d963d..1627b261ec77df40733c42837a7fabb9
  
  		// C2S allowlist: which call numbers may ride the ring. task_self_trap was the first
  		// migration (correctness-first; cached per-process so it doesn't move latency);
-@@ -2038,19 +1900,9 @@ uint32_t DarlingServer::ringServiceThread(const std::shared_ptr<DarlingServer::T
+@@ -2061,19 +1923,9 @@ uint32_t DarlingServer::ringServiceThread(const std::shared_ptr<DarlingServer::T
  			uint64_t _phaseT2 = Metrics::rdtscCycles(); // dispatch end / body start
  #endif
  			if (call) {
@@ -15908,7 +15908,7 @@ index 5e7228ea175db5c201f911cc5b5261ab38976f70..6cea860964a87ef5b531f24952d60946
  	# --- P5-bulk (dar-1il.1): no-silent-drop drift gate. Guest "may publish" set == server "will
  	#     service" set (both derived from the shared DSERVER_RING_C2S_OPCODES macro). RED arm
 
-From 5dcbca917a29c12a9fcbb774e810d3f3d725b932 Mon Sep 17 00:00:00 2001
+From 6bedae813d2608944bb43a3b1922587308850970 Mon Sep 17 00:00:00 2001
 From: Ilya Gulya <ilya@gulya.me>
 Date: Sun, 13 Sep 2026 04:54:55 +0000
 Subject: [PATCH] Retire obsolete guest-local FD teardown model
