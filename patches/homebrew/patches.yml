@@ -4761,7 +4761,7 @@ patches:
     ok-marker: VCHROOT_FDLESS_PROBE_OK
     timeout-seconds: 60
     requires: [darling-prefix]
-    note: Same guest fixture as the xnu entry; here it proves the server side accepts the bounded path parameter for a valid descriptor and that the failed snapshot never reaches the server.
+    note: Same guest fixture as the xnu entry; here it proves the server side accepts the bounded path parameter for a valid descriptor and that the failed snapshot never reaches the server. The descriptor-transport RED arm is not declared yet; the current-minus-patch materialization for this profile fails before the build (see the owning bead), so the negative control stays open rather than being faked with source-base proof.
   - name: vchroot_fdless_rpc_invariant_contract
     kind: source-contract
     coverage-tier: source
