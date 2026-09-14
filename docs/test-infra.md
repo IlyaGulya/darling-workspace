@@ -311,6 +311,17 @@ profile-composition lock, not a hardcoded list of profile names. Register a new
 composition in `locks/patch-stack/lock-first-profiles-v1.yml`; its prerequisite
 trees, ordered series, batch count and final trees must all validate before
 materialization.
+
+The lock-first contract
+(`tests/run-west-patch-stack-lock-first-contract.sh`) exercises the real
+profiles and therefore switches live module repositories to their profile
+branches for the duration of the run. Do not run it in parallel with any other
+West operation that materializes or applies a profile; its assertions must also
+stay derived (planner output versus the declared inventory) or structural, never
+hash literals of checked-in composition data, because those churn on every
+reviewed profile refresh and the canonical boundary evidence is
+`west patch verify`, which replays the real trees.
+
 Applicability preflight has a 300-second per-profile default.
 `--runtime-build-timeout-seconds` overrides both source preflight and build
 phase deadlines. A verifier timeout leaves source validity undetermined; it
@@ -363,6 +374,34 @@ override it without rewriting configuration. The default runtime is
 `homebrew-lz4-source`; bundle storage defaults to the workspace parent's
 `darling-debug` directory. Without an explicit executor, the checked-out
 runner is incrementally built in release mode before execution.
+
+### Guest runtime invocation and container constraints
+
+Rootless prefixes are launched with the global `--rootless` flag and the
+profile's launcher environment; a bare `<prefix>/bin/darling shell ...` fails
+with "is not setuid root, which is mandatory" and must not be used as a probe:
+
+```sh
+env DPREFIX="$P" DARLING_PREFIX="$P" DARLING_ROOTLESS=1 DARLING_NOOVERLAYFS=1 \
+    DARLING_EUNION=1 "$P/bin/darling" --rootless shell /bin/bash --login -c '<command>'
+```
+
+Guest C sources compile inside the guest with the provisioned CommandLineTools
+and its SDK; the SDK stubs do not export Darling-specific entry points, so a
+guest test either links the deployed dylib explicitly or resolves the symbol
+with `dlsym`:
+
+```sh
+/Library/Developer/CommandLineTools/usr/bin/clang \
+    -isysroot /Library/Developer/CommandLineTools/SDKs/MacOSX.sdk -o <bin> <src>
+```
+
+Container runs need a glibc base image. The host-side launcher and
+`darlingserver` are dynamically linked and require `GLIBC_2.38`; a musl image
+such as the pinned Alpine cannot execute them at all, so use a digest-pinned
+glibc image whose libc is at least that new, run as the ordinary user with
+`--cap-drop=ALL --network=none`, and mount the bootstrapped prefix read-write at
+its baked absolute path so the launcher's recorded prefix still resolves.
 
 `dev run` starts a recorded West job and immediately attaches its observer.
 It prints the job identity plus exact reconnect/cancel commands. `--detach`

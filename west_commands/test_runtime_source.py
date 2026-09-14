@@ -305,6 +305,10 @@ class RuntimeSourceMaterializer:
             phase_skips = {
                 entry["patch"] for entry in entries if entry["patch"] in skips
             }
+            # A later phase of this module continues from the tree the
+            # previous phase left; once a series was omitted there, the module
+            # no longer starts at the declared profile boundary.
+            omitted_before = bool(observed_skips)
             observed_skips.update(phase_skips)
             for patch in sorted(phase_skips):
                 self._host.inf(
@@ -317,6 +321,7 @@ class RuntimeSourceMaterializer:
                 reset_to_first_base=not initialized,
                 composition=plan.composition,
                 skip_patches=phase_skips,
+                skipped_before=omitted_before,
             )
             initialized = True
         if observed_skips != skips:

@@ -4,7 +4,10 @@
 //    build means the guest snapshots /proc/self/fd once and the server accepts
 //    the path.
 // B: the same descriptor after close() must be rejected in the guest, before any
-//    RPC is sent, and must not disturb the vchroot state published by A.
+//    RPC is sent, and must not disturb the vchroot state published by A. The leg
+//    classifies the rejection site so a runtime that only rejects it later, in
+//    the descriptor transfer or in the server, fails the probe instead of
+//    satisfying it with a negative return.
 //
 // The probe calls the guest entry point directly instead of the vchroot helper
 // so a closed descriptor is expressible.
@@ -58,6 +61,17 @@ int main(void) {
 		return 13;
 	}
 	printf("VCHROOT_FDLESS_CLOSED_REJECTED\n");
+
+	// B is only a control if the rejection happens in the right place. The port
+	// rejects the closed descriptor locally, from the single readlink of
+	// /proc/self/fd/N, so the result is ENOENT and no RPC is attempted. The
+	// earlier code sent the descriptor first, so the transfer or the server
+	// rejected it with EBADF instead.
+	if (rv != -ENOENT) {
+		printf("VCHROOT_CLOSED_REJECTION_SITE=other rv=%d\n", rv);
+		return 15;
+	}
+	printf("VCHROOT_CLOSED_REJECTION_SITE=local-snapshot\n");
 
 	// A's published state must survive the rejected call: expanding a guest path
 	// still resolves under the vchroot set by the valid descriptor.
