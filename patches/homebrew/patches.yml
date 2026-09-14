@@ -4746,9 +4746,22 @@ patches:
   publication-blocker: FD-less vchroot path RPC is a local architecture change under acceptance review; it is not a publication candidate until the runtime gate (guest vchroot, invalid/closed descriptor rejected before the RPC, zero SCM_RIGHTS on the vchroot call, pinned ordinary Docker) passes.
   test-exception:
     reason: runtime-gate-pending
-    scope: vchroot FD-less path RPC guest behavior
-    note: Only the ABI/compile contract is verified so far; behavioral coverage is the disposable-prefix runtime gate owned by dar-gwn.7.7.5 and is currently blocked on the dependent-profile composition repair.
+    scope: vchroot zero-descriptor-transport differential and pinned ordinary Docker
+    note: The path-parameter ABI contract and the guest behavior are covered by the declared source contract and guest fixture; the remaining acceptance items are the descriptor-transport differential and the pinned Docker run, both owned by dar-gwn.7.7.5.
   tests:
+  - name: vchroot_fdless_path_rpc_guest
+    kind: guest
+    coverage-tier: runtime
+    runs: guest
+    diag: guarded
+    runtime-profile: homebrew-lz4-source
+    runner: guest-c-fixture
+    repo: darling-workspace
+    script: tests/vchroot_fdless_guest.c
+    ok-marker: VCHROOT_FDLESS_PROBE_OK
+    timeout-seconds: 60
+    requires: [darling-prefix]
+    note: Same guest fixture as the xnu entry; here it proves the server side accepts the bounded path parameter for a valid descriptor and that the failed snapshot never reaches the server.
   - name: vchroot_fdless_rpc_invariant_contract
     kind: source-contract
     coverage-tier: source
@@ -5351,5 +5364,19 @@ patches:
   publication-blocker: FD-less vchroot path RPC is a local architecture change under acceptance review; it is not a publication candidate until the runtime gate (guest vchroot, invalid/closed descriptor rejected before the RPC, zero SCM_RIGHTS on the vchroot call, pinned ordinary Docker) passes.
   test-exception:
     reason: runtime-gate-pending
-    scope: vchroot single-snapshot readlink and descriptor-free RPC call
-    note: Only the ABI/compile contract is verified so far; behavioral coverage is the disposable-prefix runtime gate owned by dar-gwn.7.7.5 and is currently blocked on host disk space.
+    scope: vchroot zero-descriptor-transport differential and pinned ordinary Docker
+    note: Items A and B of the runtime gate are covered by the declared guest fixture; the remaining acceptance items are the descriptor-transport differential and the pinned Docker run, both owned by dar-gwn.7.7.5.
+  tests:
+  - name: vchroot_fdless_path_rpc_guest
+    kind: guest
+    coverage-tier: runtime
+    runs: guest
+    diag: guarded
+    runtime-profile: homebrew-lz4-source
+    runner: guest-c-fixture
+    repo: darling-workspace
+    script: tests/vchroot_fdless_guest.c
+    ok-marker: VCHROOT_FDLESS_PROBE_OK
+    timeout-seconds: 60
+    requires: [darling-prefix]
+    note: Guest proof for the single-snapshot readlink and the descriptor-free call. A valid directory descriptor is accepted and the published vchroot still resolves afterwards, while the same descriptor after close is rejected before any RPC. The entry point is resolved with dlsym because libsystem_kernel is not part of the CommandLineTools SDK stubs.
