@@ -1,0 +1,18 @@
+{
+  "environment": "ChatGPT sandbox Linux 6.18.44, host-only (Docker unavailable in this runtime)",
+  "build": "gcc -std=gnu11 -O2 -Wall -Wextra -Werror",
+  "old_order": {
+    "server_kept_original_dup": true,
+    "guest_fd_replaced_before_local_readlink": true,
+    "server_guest_paths_diverged": true
+  },
+  "new_order": {
+    "guest_snapshotted_path_before_rpc": true,
+    "fd_replaced_after_snapshot": true,
+    "server_guest_consumed_same_snapshot": true,
+    "snapshot_still_identified_original_object": true,
+    "fd_number_itself_named_replacement_after_dup2": true
+  },
+  "invalid_fd_rejected_before_rpc": true,
+  "pass": true
+}
