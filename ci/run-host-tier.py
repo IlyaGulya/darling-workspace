@@ -31,6 +31,7 @@ CONTRACTS = (
     "tests/run-patch-stack-lock-first-hosted-workflow-contract.sh",
     "tests/run-patch-stack-migration-inventory-contract.sh",
     "tests/run-west-test-ctest-backend-contract.sh",
+    "tests/run-west-test-runtime-cache-contract.sh",
 )
 
 

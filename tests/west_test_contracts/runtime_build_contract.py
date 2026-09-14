@@ -178,6 +178,49 @@ with tempfile.TemporaryDirectory() as temp:
     finally:
         os.environ.pop("WEST_RUNTIME_BUILD_CACHE_DIR", None)
         os.environ.pop("WEST_RUNTIME_BUILD_CACHE_KEY", None)
+
+    # An explicit cache must work without environment variables, reuse on the
+    # same key, and rebuild when the key moves.
+    explicit_store = root / "explicit-store"
+    explicit_calls: list[str] = []
+    reuse_reports: list[bool] = []
+
+    def explicit_runner(command, **kwargs):
+        explicit_calls.append(command[0])
+        if command[0] == "cmake":
+            Path(command[command.index("-B") + 1]).mkdir(parents=True)
+        else:
+            build = Path(command[command.index("-C") + 1])
+            artifact = build / "bin/darling"
+            artifact.parent.mkdir(parents=True, exist_ok=True)
+            artifact.write_bytes(b"explicit runtime\n")
+            artifact.chmod(0o755)
+        return ProcessResult(0)
+
+    def explicit_build(key: str) -> Path:
+        return service.build_artifacts(
+            root / "source",
+            cached_proof,
+            root / "prefix",
+            root / "scratch",
+            label="EXPLICIT",
+            allow_failure=False,
+            configure_args=lambda _proof, _prefix, _scratch: [],
+            dump_command_tail=lambda *_args: None,
+            runner=explicit_runner,
+            timeout_seconds=7,
+            cache=(explicit_store, key),
+            on_reuse=reuse_reports.append,
+        )
+
+    first = explicit_build("a" * 64)
+    second = explicit_build("a" * 64)
+    assert first == second
+    assert explicit_calls.count("cmake") == 1, explicit_calls
+    assert reuse_reports == [False, True], reuse_reports
+    explicit_build("b" * 64)
+    assert explicit_calls.count("cmake") == 2, explicit_calls
+    assert explicit_store.is_dir(), "an explicit cache store must be created"
 assert [kwargs["timeout_seconds"] for _command, kwargs in calls] == [7, 7], calls
 assert calls[1][0][-1] == "darlingserver", calls
 print("PASS runtime-build-contract")

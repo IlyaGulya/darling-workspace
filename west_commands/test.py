@@ -120,6 +120,7 @@ from test_runtime_deploy import RuntimeDeploymentService
 from test_results import InvocationResult, RuntimeBuildFailure, RuntimeRedProven
 from test_runtime_build import RuntimeBuildService
 from test_runtime_evidence import RuntimeEvidenceStore
+import test_runtime_cache
 from test_runtime_source import RuntimeSourceMaterializer
 from test_runtime_identity import runtime_identity
 from guest_macho_validation import (
@@ -2120,6 +2121,7 @@ class DarlingTest(ProfileOperationsMixin, BootstrapRuntimeProfileMixin, WestComm
         self._active_profile = source_profile
         try:
             self.inf(f"{label_prefix} runtime profile: {profile_name} ({source_profile})")
+            reuse_plan = None
             if prematerialized_source is not None:
                 self.inf(
                     f"{label_prefix} prematerialized runtime source: "
@@ -2127,12 +2129,31 @@ class DarlingTest(ProfileOperationsMixin, BootstrapRuntimeProfileMixin, WestComm
                 )
                 source_context = nullcontext(prematerialized_source)
             else:
+                reuse_plan = self._runtime_reuse_plan(
+                    profile_name=profile_name,
+                    definition=definition,
+                    proof=proof,
+                    patch=anchor,
+                    prefix_text=prefix_text,
+                    omit_patch=omit_patch,
+                )
+                if reuse_plan is not None:
+                    self.inf(
+                        f"  runtime reuse plan {label_prefix} {profile_name}: "
+                        f"{reuse_plan.report()}"
+                    )
+                    self._bound_runtime_reuse_store(reuse_plan)
                 source_context = self._guest_runtime_source_forest(
                     anchor,
                     proof,
                     omit_patch=omit_patch,
-                    root=evidence.source_root,
+                    root=(
+                        reuse_plan.source_entry
+                        if reuse_plan is not None
+                        else evidence.source_root
+                    ),
                     evidence_session=evidence,
+                    reuse_key=reuse_plan.source_key if reuse_plan is not None else None,
                 )
             with source_context as source_root:
                 build_root = self._runtime_red_build_artifacts(
@@ -2141,7 +2162,14 @@ class DarlingTest(ProfileOperationsMixin, BootstrapRuntimeProfileMixin, WestComm
                     Path(prefix_text),
                     Path(scratch),
                     label=f"{label_prefix} {profile_name}",
+                    cache=reuse_plan.build_cache if reuse_plan is not None else None,
+                    on_reuse=reuse_plan.record_build if reuse_plan is not None else None,
                 )
+                if reuse_plan is not None:
+                    self.inf(
+                        f"  runtime {label_prefix} {profile_name} "
+                        f"{reuse_plan.report()}"
+                    )
                 with self._runtime_red_deployed_artifacts(
                     proof,
                     build_root,
@@ -3988,6 +4016,82 @@ class DarlingTest(ProfileOperationsMixin, BootstrapRuntimeProfileMixin, WestComm
 
 
 
+    def _bound_runtime_reuse_store(
+        self, plan: test_runtime_cache.RuntimeReusePlan
+    ) -> None:
+        """Enforce the reuse store bound once per invocation.
+
+        Sizing a materialised forest costs a walk over several gigabytes, so the
+        bound is applied on the first runtime profile of a run and then left
+        alone rather than re-measured for every profile.
+        """
+
+        if getattr(self, "_runtime_reuse_bounded", False):
+            return
+        self._runtime_reuse_bounded = True
+        pruned = test_runtime_cache.prune(
+            plan.store,
+            test_runtime_cache.max_bytes(os.environ),
+            protect=[plan.source_entry],
+        )
+        if pruned["evicted"]:
+            self.inf(
+                f"  runtime reuse evicted {len(pruned['evicted'])} entry(s), "
+                f"{pruned['evicted_bytes']} bytes"
+            )
+
+    def _runtime_reuse_plan(
+        self,
+        *,
+        profile_name: str,
+        definition: dict,
+        proof: dict,
+        patch: dict,
+        prefix_text: str,
+        omit_patch: bool,
+    ) -> test_runtime_cache.RuntimeReusePlan | None:
+        """Return the identity-keyed reuse plan for one runtime profile.
+
+        The plan is derived from the same identity the retained-runtime path
+        already refuses to reuse across, plus the configure command the build
+        will run, so a repeat acceptance run reuses instead of rebuilding while
+        any source, metadata, define or toolchain change forces a rebuild.
+        """
+
+        store = test_runtime_cache.cache_root(
+            Path(self.manifest.repo_abspath), os.environ
+        )
+        if store is None:
+            return None
+        identity = runtime_identity(
+            topdir=Path(self.topdir),
+            manifest_repo=Path(self.manifest.repo_abspath),
+            profile_name=profile_name,
+            definition=definition,
+            launcher=Path(prefix_text) / "bin" / "darling",
+        )
+        source_key = test_runtime_cache.source_key(
+            test_runtime_cache.source_identity(
+                identity,
+                omit_patch=omit_patch,
+                patch_path=str(patch.get("path", "")),
+                bad_profile=proof.get("bad-profile"),
+                bad_revision=(
+                    self._bad_revision(patch, proof) if omit_patch else None
+                ),
+            )
+        )
+        build_key = RuntimeBuildService(self).runtime_build_identity(
+            proof,
+            Path(prefix_text),
+            store,
+            source_key,
+            configure_args=self._runtime_red_configure_args,
+        )
+        return test_runtime_cache.RuntimeReusePlan(
+            store=store, source_key=source_key, build_key=build_key
+        )
+
     @contextmanager
     def _guest_runtime_source_forest(
         self,
@@ -3997,6 +4101,7 @@ class DarlingTest(ProfileOperationsMixin, BootstrapRuntimeProfileMixin, WestComm
         omit_patch: bool,
         root: Path | None = None,
         evidence_session=None,
+        reuse_key: str | None = None,
     ):
         """Create a temporary Darling source forest for a runtime build.
 
@@ -4013,6 +4118,7 @@ class DarlingTest(ProfileOperationsMixin, BootstrapRuntimeProfileMixin, WestComm
             omit_patch=omit_patch,
             root=root,
             evidence_session=evidence_session,
+            reuse_key=reuse_key,
         ) as source_root:
             yield source_root
 
@@ -4036,6 +4142,8 @@ class DarlingTest(ProfileOperationsMixin, BootstrapRuntimeProfileMixin, WestComm
         *,
         label: str = "RED",
         allow_failure: bool = False,
+        cache: tuple[Path, str] | None = None,
+        on_reuse: Callable[[bool], None] | None = None,
     ) -> Path:
         return RuntimeBuildService(self).build_artifacts(
             source_root,
@@ -4048,6 +4156,8 @@ class DarlingTest(ProfileOperationsMixin, BootstrapRuntimeProfileMixin, WestComm
             dump_command_tail=self._dump_command_tail,
             runner=run_bounded,
             timeout_seconds=getattr(self, "_runtime_build_timeout_seconds", None),
+            cache=cache,
+            on_reuse=on_reuse,
         )
 
 
