@@ -4,22 +4,22 @@ project:
   path: "."
 upstream:
   url: https://github.com/darlinghq/darlingserver.git
-  base_commit: 75d0fee5c5c38ad66bf3771479390011c9781d62
+  base_commit: bc8e688a3b88a000643a063d7a71d302e9d0bf9e
 mirror:
   url: ../../source-bundles/ring-comparison/darlingserver.bundle
-  base_ref: refs/tags/patch-stack/v1/bases/75d0fee5c5c38ad66bf3771479390011c9781d62
-  base_oid: 75d0fee5c5c38ad66bf3771479390011c9781d62
-  source_ref: refs/tags/patch-stack/v1/sources/5dcbca917a29c12a9fcbb774e810d3f3d725b932
-  source_oid: 5dcbca917a29c12a9fcbb774e810d3f3d725b932
-source_commit: 5dcbca917a29c12a9fcbb774e810d3f3d725b932
+  base_ref: refs/tags/patch-stack/v1/bases/bc8e688a3b88a000643a063d7a71d302e9d0bf9e
+  base_oid: bc8e688a3b88a000643a063d7a71d302e9d0bf9e
+  source_ref: refs/tags/patch-stack/v1/sources/6bedae813d2608944bb43a3b1922587308850970
+  source_oid: 6bedae813d2608944bb43a3b1922587308850970
+source_commit: 6bedae813d2608944bb43a3b1922587308850970
 ordered_commits:
-  - fd8be44d1375e7e031fc5002f8db43cc4763d594
-  - 7a1408544dea6d01d6be6a2fe1f06307e5f6d5d7
-  - c04959f08af381054d834f347e8291601770e627
-  - 7b0926a7cd03923702476d5e2ff82d548631d7f5
-  - 4b12bfd5c8f0ffe40309618588299e2f9d82b205
-  - c8719f43ba99869e39bd364125e2184ae91d4258
-  - 7dc5e9d2d7801111789466ad70b6993c7f8f0c96
-  - 610bcb43aedd69cbc125c39a74eed977b0792028
-  - 5dcbca917a29c12a9fcbb774e810d3f3d725b932
-expected_tree: 133d82d35bd3b54adefb721d71b894947a1eb16a
+  - 0deea3613837b5ccd07516e85a4e6db0a83c2f39
+  - 7a1ffd0c4143a2a3e17b4e68d6a6a4436279c9f7
+  - c749c6dccb5a4c22c1394aa66ae0580c11f22976
+  - 3dc3a97db2ab6c178fdbe9fba1dea44364fd154d
+  - 800fd28f052a32ad3f9480bbf33393babfbf4b41
+  - 546d0a078aee5c129257f4d8f8c36cf983ad6ca3
+  - 0a6cfd07085d1489737c5b3d4596532c72681b98
+  - b59b1cfd530e847298604fcabcebcd5a39999d0b
+  - 6bedae813d2608944bb43a3b1922587308850970
+expected_tree: 422e3d0939de9f63ce12a0df5bd15dac43d7b70f
