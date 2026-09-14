@@ -4747,7 +4747,23 @@ patches:
   test-exception:
     reason: runtime-gate-pending
     scope: vchroot FD-less path RPC guest behavior
-    note: Only the ABI/compile contract is verified so far; behavioral coverage is the disposable-prefix runtime gate owned by dar-gwn.7.7.5 and is currently blocked on host disk space.
+    note: Only the ABI/compile contract is verified so far; behavioral coverage is the disposable-prefix runtime gate owned by dar-gwn.7.7.5 and is currently blocked on the dependent-profile composition repair.
+  tests:
+  - name: vchroot_fdless_rpc_invariant_contract
+    kind: source-contract
+    coverage-tier: source
+    runs: host
+    diag: bare
+    red: true
+    red-proof:
+      mode: source-base
+      source-env: DSERVER_SRC_ROOT
+      expect-output-contains:
+      - VCHROOT_FDLESS_RPC_INVARIANT_FAILED
+    runner: python
+    repo: darling-workspace
+    script: tests/vchroot_fdless_rpc_invariant_contract.py
+    note: Source-contract audit asserting vchroot transports no descriptor in either direction while checkin, checkout, console_open, the debug_list_* calls and the kqchan_* calls keep theirs. This is not behavioral coverage; the zero-SCM_RIGHTS guest observable is the deferred runtime gate.
 - path: darling/rootless-runtime-integration.patch
   sha256sum: cd78af09b7d034b126c09888ae7521abea071a25649c9691b6da0bbf53615443
   module: darling
