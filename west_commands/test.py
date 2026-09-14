@@ -68,6 +68,10 @@ from test_ctest import (
 from test_selection import select_metadata_tests, select_metadata_tests_for_command
 from test_dispatch import dispatch_fixture_runner
 from test_cmake import archive_git_tree_to, archive_source_to, run_darling_cmake_target_fixture
+from test_descriptor_transport import (
+    DescriptorTraceError,
+    window_specs as descriptor_trace_window_specs,
+)
 from test_execution import process_output_text, run_bounded
 from fresh_prefix import create_fresh_prefix, remove_fresh_prefix
 from test_guest_execution import (
@@ -1266,7 +1270,10 @@ class DarlingTest(ProfileOperationsMixin, BootstrapRuntimeProfileMixin, WestComm
                 f"{shell_join(run_args)}"
             )
             return {
-                "key": f"guest-c-fixture:{repo}:{script}:{repr(host_stat_deltas)}",
+                "key": (
+                    f"guest-c-fixture:{repo}:{script}:{repr(host_stat_deltas)}:"
+                    f"{repr(test.get('descriptor-trace'))}"
+                ),
                 "display": display,
                 "cwd": cwd,
                 "script_path": script_path,
@@ -1289,6 +1296,7 @@ class DarlingTest(ProfileOperationsMixin, BootstrapRuntimeProfileMixin, WestComm
                 "host_temp_files": list(test.get("host-temp-files", [])),
                 "host_stat_deltas": host_stat_deltas,
                 "host_stat_tool": host_stat_tool,
+                "descriptor_trace": test.get("descriptor-trace") or {},
                 "eunion_template_files": list(test.get("eunion-template-files", [])),
                 "eunion_template_symlinks": list(test.get("eunion-template-symlinks", [])),
                 "eunion_upper_files": list(test.get("eunion-upper-files", [])),
@@ -2926,6 +2934,31 @@ class DarlingTest(ProfileOperationsMixin, BootstrapRuntimeProfileMixin, WestComm
                 )
                 return 1
         return 0
+
+    @contextmanager
+    def _descriptor_trace_context(self, invocation, env):
+        declaration = invocation.get("descriptor_trace")
+        if not declaration:
+            yield env
+            return
+        try:
+            specs = descriptor_trace_window_specs(declaration)
+        except DescriptorTraceError as error:
+            self.die(f"{invocation['name']}: descriptor-trace {error}")
+        if shutil.which("strace") is None:
+            self.die(
+                f"{invocation['name']}: descriptor-trace requires strace on the host"
+            )
+        name = re.sub(r"[^A-Za-z0-9._-]", "_", str(invocation["name"]))
+        trace_dir = Path(invocation["cwd"]) / ".west-test" / "descriptor-trace" / name
+        if trace_dir.exists():
+            shutil.rmtree(trace_dir)
+        trace_dir.mkdir(parents=True)
+        trace_env = dict(env or os.environ.copy())
+        trace_env["WEST_DESCRIPTOR_TRACE_DIR"] = str(trace_dir)
+        invocation["_descriptor_trace_dir"] = trace_dir
+        invocation["_descriptor_trace_specs"] = specs
+        yield trace_env
 
     @contextmanager
     def _host_stat_context(self, invocation, env):

@@ -12,9 +12,11 @@ from pathlib import Path
 from shlex import quote
 
 try:
+    from .test_descriptor_transport import analyze_trace, capture_command, summary_text
     from .test_execution import run_bounded
     from .test_guest_execution import failure_phase_from_output, resolve_guest_execution
 except ImportError:  # Loaded as a West extension module, not a package.
+    from test_descriptor_transport import analyze_trace, capture_command, summary_text
     from test_execution import run_bounded
     from test_guest_execution import failure_phase_from_output, resolve_guest_execution
 
@@ -64,6 +66,29 @@ def run_guest_c_fixture(command, invocation, env=None) -> int:
     )
     prefix = guest.prefix
     launcher = guest.launcher
+
+    descriptor_specs = tuple(invocation.get("_descriptor_trace_specs") or ())
+    descriptor_dir = invocation.get("_descriptor_trace_dir")
+    capture_prefix: list[str] = []
+    if descriptor_specs:
+        if not descriptor_dir:
+            command.die(
+                f"{invocation['name']}: descriptor-trace needs its capture directory"
+            )
+        if run_env.get("WEST_GUEST_C_FIXTURE_RUN_ONLY") == "1" or run_env.get(
+            "WEST_GUEST_C_FIXTURE_PREPARE_ONLY"
+        ) == "1":
+            command.die(
+                f"{invocation['name']}: descriptor-trace needs the whole runner tree; "
+                "a split prepare-only/run-only phase already owns the guest"
+            )
+        capture_prefix = capture_command(
+            descriptor_dir, prefix_length=len(str(run_env.get("DPREFIX") or ""))
+        )
+        sys.stdout.write(f"WEST_DESCRIPTOR_TRACE_DIR {descriptor_dir}\n")
+        sys.stdout.write(
+            f"WEST_DESCRIPTOR_TRACE_CAPTURE {' '.join(quote(arg) for arg in capture_prefix)}\n"
+        )
 
     with tempfile.TemporaryDirectory(prefix=f"west-guest-c-fixture-{invocation['name']}-") as temp:
         tempdir = Path(temp)
@@ -327,6 +352,9 @@ guest_shell "$timeout_seconds" {quote(guest_run_body)} >> "$verdict" 2>&1
 rc=$?
 set -e
 """
+        capture_shutdown = (
+            '"$launch" shutdown >/dev/null 2>&1 || true' if capture_prefix else ":"
+        )
         script = f"""#!/usr/bin/env bash
 set -euo pipefail
 : "${{DPREFIX:?set DPREFIX}}"
@@ -500,7 +528,11 @@ cleanup_guest_artifacts() {{
 \tif [ "$prepare_only" = 1 ]; then
 \t\treturn
 \tfi
-\tguest_shell 10 "rm -f '$guest_src' '$guest_bin'" >/dev/null 2>&1 || true
+	guest_shell 10 "rm -f '$guest_src' '$guest_bin'" >/dev/null 2>&1 || true
+	# A descriptor capture traces the whole launcher tree, so the prefix server it
+	# started has to be gone before this script exits: a surviving traced process
+	# keeps strace (and therefore the enclosing runner) open until its timeout.
+	{capture_shutdown}
 }}
 trap cleanup_guest_artifacts EXIT
 
@@ -558,7 +590,7 @@ fi
                 "key": f"guest-c-fixture-runner:{invocation['key']}",
                 "display": str(host_runner),
                 "cwd": invocation["cwd"],
-                "args": [str(host_runner)],
+                "args": [*capture_prefix, str(host_runner)],
                 "shell": False,
                 "debug_timeout_seconds": int(invocation.get("timeout_seconds", 600)) + 15,
             }
@@ -583,4 +615,17 @@ fi
             phase = failure_phase_from_debug_bundle(output)
             if phase is not None:
                 command._record_failure_phase(invocation, phase)
-        return result.returncode
+        trace_rc = 0
+        if descriptor_specs:
+            transcript = verdict.read_text(errors="replace") if verdict.is_file() else ""
+            report = analyze_trace(descriptor_dir, descriptor_specs, transcript)
+            sys.stdout.write(summary_text(report) + "\n")
+            if not report.ok:
+                command.err(
+                    f"{invocation['name']}: descriptor transport gate failed: "
+                    + "; ".join(report.failures)
+                )
+                if not result.returncode:
+                    command._record_failure_phase(invocation, "run")
+                    trace_rc = 1
+        return trace_rc or result.returncode

@@ -4764,6 +4764,7 @@ patches:
       expect-output-contains:
       - VCHROOT_CLOSED_REJECTION_SITE=other
       - VCHROOT_CLOSED_FD rv=-9
+      - WEST_DESCRIPTOR_TRACE_FAILURE window=vchroot-fdless-valid expected no descriptor-bearing message
       source-modules:
       - darling/src/external/darlingserver
       - darling/src/external/xnu
@@ -4782,9 +4783,15 @@ patches:
     repo: darling-workspace
     script: tests/vchroot_fdless_guest.c
     ok-marker: VCHROOT_FDLESS_PROBE_OK
-    timeout-seconds: 60
+    timeout-seconds: 300
     requires: [darling-prefix]
-    note: Same guest fixture as the xnu entry; here it proves the server side accepts the bounded path parameter for a valid descriptor and that the failed snapshot never reaches the server. The declared RED arm removes both halves of the fdless path RPC pair and expects the closed-descriptor leg to classify its rejection site as other - the pre-port runtime rejects that descriptor in the transfer or in the server (EBADF) instead of locally from the single readlink of /proc/self/fd/N. This closes the invalid-descriptor leg behaviourally; the zero-descriptor-transport count for a valid call still needs external observation of the transport.
+    descriptor-trace:
+      windows:
+      - id: console-open-control
+        expect-descriptor-messages: at-least-one
+      - id: vchroot-fdless-valid
+        expect-descriptor-messages: none
+    note: Same guest fixture as the xnu entry; here it proves the server side accepts the bounded path parameter for a valid descriptor and that the failed snapshot never reaches the server. The declared RED arm removes both halves of the fdless path RPC pair and expects the closed-descriptor leg to classify its rejection site as other - the pre-port runtime rejects that descriptor in the transfer or in the server (EBADF) instead of locally from the single readlink of /proc/self/fd/N. The descriptor-trace gate captures the launcher tree under strace and counts SCM_RIGHTS-bearing messages per declared window - the valid call's window must observe the call and transport no descriptor, while the console_open window in the same run must transport one - and the RED arm proves the same count is one on the pre-port runtime, which is the descriptor-transport differential.
   - name: vchroot_fdless_rpc_invariant_contract
     kind: source-contract
     coverage-tier: source
@@ -5400,6 +5407,12 @@ patches:
     repo: darling-workspace
     script: tests/vchroot_fdless_guest.c
     ok-marker: VCHROOT_FDLESS_PROBE_OK
-    timeout-seconds: 60
+    timeout-seconds: 300
     requires: [darling-prefix]
-    note: Guest proof for the single-snapshot readlink and the descriptor-free call. A valid directory descriptor is accepted and the published vchroot still resolves afterwards, while the same descriptor after close is rejected before any RPC. The entry point is resolved with dlsym because libsystem_kernel is not part of the CommandLineTools SDK stubs.
+    descriptor-trace:
+      windows:
+      - id: console-open-control
+        expect-descriptor-messages: at-least-one
+      - id: vchroot-fdless-valid
+        expect-descriptor-messages: none
+    note: Guest proof for the single-snapshot readlink and the descriptor-free call. A valid directory descriptor is accepted and the published vchroot still resolves afterwards, while the same descriptor after close is rejected before any RPC. The entry point is resolved with dlsym because libsystem_kernel is not part of the CommandLineTools SDK stubs. The descriptor-trace gate observes the transport from the host - the valid call's window must contain the call and no SCM_RIGHTS-bearing message, and the console_open window in the same run must transport one descriptor, so a zero count cannot pass while the instrumentation sees nothing.

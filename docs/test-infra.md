@@ -807,22 +807,82 @@ runner-local ad hoc setup. The current provider stack is ordered as:
    their environment variables for host-launched fixtures.
 2. `host-stat-deltas`: binds and preflights the host `darling-stat` tool used
    by guest runtime fixtures that assert before/after counter deltas.
-3. `dcc-cache`: materializes/builds the declared cache tooling and injects the
+3. `descriptor-trace`: allocates the workspace-scoped host capture directory for
+   a guest fixture's RPC descriptor-transport observation and validates its
+   declared windows.
+4. `dcc-cache`: materializes/builds the declared cache tooling and injects the
    guest DCC environment.
-4. `darling-eunion-prefix`: boots/verifies the E-UNION prefix and stages
+5. `darling-eunion-prefix`: boots/verifies the E-UNION prefix and stages
    upper/lower fixture files.
 
-Provider order is part of the contract: host observation paths and stat tools
-are prepared before cache and prefix setup, and cache resources are prepared
-before prefix fixtures that may boot or probe the runtime. New shared runtime
-setup should become a provider with a focused contract instead of growing
-individual runner bodies.
+Provider order is part of the contract: host observation paths, stat tools and
+descriptor captures are prepared before cache and prefix setup, and cache
+resources are prepared before prefix fixtures that may boot or probe the
+runtime. New shared runtime setup should become a provider with a focused
+contract instead of growing individual runner bodies.
 
 Runtime RED artifact planning lives in a separate helper layer. The pure
 planning code owns build-target de-duplication, deploy-plan display, and mapping
 guest-visible deploy paths to the prefix files that must be swapped. The
 side-effecting build/deploy/restore sequence stays in `west test` until the
 runtime lifecycle can be split further without changing behavior.
+
+### RPC descriptor-transport windows
+
+`descriptor-trace` makes one `runner: guest-c-fixture` test's RPC descriptor
+transport observable from the host. It is the gate for a call whose ABI used to
+carry a file descriptor and must not any more:
+
+```yaml
+    descriptor-trace:
+      windows:
+      - id: console-open-control
+        expect-descriptor-messages: at-least-one
+      - id: vchroot-fdless-valid
+        expect-descriptor-messages: none
+```
+
+Each window id names a boundary pair the fixture publishes around one operation.
+The fixture prints `DSERVER_DESCRIPTOR_WINDOW BEGIN|END <id>` to its stdout and
+resolves `/tmp/darling-descriptor-window-<id>-begin|end` with `readlink`, which
+the guest emulation performs as a raw Linux `readlinkat` in the fixture's own
+process; that syscall is what makes the boundary visible in the trace.
+
+`west test` runs the whole fixture runner under
+
+```sh
+strace -f -ff -tt -yy -x -s <limit> --seccomp-bpf \
+  -e trace=sendmsg,recvmsg,sendmmsg,recvmmsg,readlink,readlinkat -o <dir>/trace
+```
+
+`--seccomp-bpf` is required: without in-kernel filtering the runtime's adaptive
+RPC spin loops time out under ptrace. The runner scopes every declared window to
+the messages between its two markers in the same per-process trace file and
+prints the counts it observed:
+
+```text
+WEST_DESCRIPTOR_TRACE window=<id> call-messages=<n> descriptor-messages=<n> expect=<none|at-least-one> verdict=<ok|failed> trace-file=<name>
+WEST_DESCRIPTOR_TRACE_DESCRIPTOR window=<id> syscall=<sendmsg|recvmsg|sendmmsg|recvmmsg> trace-line=<n> <strace line>
+WEST_DESCRIPTOR_TRACE_OK windows=<n>
+```
+
+`expect-descriptor-messages: none` fails when the window carried any
+`SCM_RIGHTS` ancillary data. A window that observed no call-direction message
+fails too: an operation that stopped issuing its RPC must not pass a
+zero-descriptor assertion. Every declared window must also appear in the guest
+transcript, so a window the fixture never reached cannot be satisfied by an
+unrelated instruction stream, and traffic in another process's trace file cannot
+satisfy it either. A run should declare at least one unaffected FD-bearing call
+(`console_open` replies with the console socket) as the negative control that
+proves the observation sees descriptor transfers at all.
+
+Captures and their per-process trace files are kept in the manifest repository
+under `.west-test/descriptor-trace/<test name>/`, and the runner prints the exact
+`strace` command it used. `strace` must be installed on the host; a missing
+`strace` fails the run instead of skipping the observation. The split
+`prepare-fixture-before-deploy`/run-only phases cannot be captured, because the
+server started by the prepare phase already owns the guest tree, so the runner
+rejects that combination.
 
 Darling prefix lifecycle helpers are also split from the runner where they are
 pure enough to test directly. `west_commands/test_prefix.py` owns process-tree
