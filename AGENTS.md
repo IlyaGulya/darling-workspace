@@ -346,6 +346,17 @@ refs, PR drafts, and agent handoff.
 - `tests/run-west-test-gc-contract.sh` is the focused GC contract for debug
   bundles and stale runtime proof scratch dirs; update it when changing
   `west test --gc`, proof scratch naming, or dry-run pruning behavior.
+- Treat `west test --gc` as unsafe for unattended use until its dry-run and its
+  actual deletion set agree. The 2026-09-14 run deleted every non-timestamped
+  directory under `darling-debug`, including another experiment root and the
+  preserved CPack core, while its dry-run listed only timestamped west-test
+  bundles. Snapshot the affected paths and copy required evidence outside the
+  GC root before running it.
+- Never keep the only copy of acceptance evidence inside a GC-managed root such
+  as `/home/ilyagulya/work/darling-debug`. Keep at least one copy outside it with
+  a SHA-256 manifest. When evidence survives only as a hash or verdict record in
+  a Bead or handoff, say so explicitly and re-run the gate instead of citing the
+  destroyed archive as independently re-verifiable.
 - `tests/run-west-patch-verify-contract.sh` is the focused behavioral contract
   for disposable worktrees used by `west patch verify`; update it when changing
   patch applicability, temporary-worktree cleanup, or Git maintenance policy.
