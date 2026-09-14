@@ -1,0 +1,78 @@
+From 0000000000000000000000000000000000000002 Mon Sep 17 00:00:00 2001
+From: Darling FD architecture work <noreply@example.invalid>
+Date: Mon, 14 Sep 2026 00:00:00 +0000
+Subject: [PATCH] xnu: snapshot vchroot path before descriptor-free RPC
+
+Base: 88dcbf670cd4d1c000dd7f7d95324784bafb0dca
+
+Resolve the guest dirfd once, before the RPC, and send the resulting pathname
+snapshot rather than SCM_RIGHTS-transferring the descriptor.  Commit the very
+same bytes to the guest prefix only after the server accepts them, so server
+and guest cannot diverge if another thread replaces the fd number.
+---
+ .../src/linux_premigration/vchroot_userspace.c | 34 ++++++++++++++-----
+ 1 file changed, 25 insertions(+), 9 deletions(-)
+
+diff --git a/darling/src/libsystem_kernel/emulation/src/linux_premigration/vchroot_userspace.c b/darling/src/libsystem_kernel/emulation/src/linux_premigration/vchroot_userspace.c
+--- a/darling/src/libsystem_kernel/emulation/src/linux_premigration/vchroot_userspace.c
++++ b/darling/src/libsystem_kernel/emulation/src/linux_premigration/vchroot_userspace.c
+@@ -1623,28 +1623,44 @@ static int vchroot_run(const char* path, struct context* ctxt);
+ #endif
+ int __darling_vchroot(int dfd)
+ {
+ 	int rv;
+-
+-#ifndef TEST
+-	rv = errno_linux_to_bsd(dserver_rpc_vchroot(dfd));
+-	if (rv != 0)
+-		return rv;
+-#endif
+-
+-	char buf[50];
+-
+-	__simple_sprintf(buf, "/proc/self/fd/%d", dfd);
++	char procfs_path[50];
++	char path_snapshot[sizeof(prefix_path)];
++
++	// Snapshot the fd's pathname exactly once, before the RPC.  The server
++	// and the guest will both consume these same bytes; no descriptor is
++	// transferred and a concurrent dup2() cannot make them cache different
++	// roots after the RPC returns.
++	__simple_sprintf(procfs_path, "/proc/self/fd/%d", dfd);
+ 
+ 	#if defined(__NR_readlink)
+-		rv = LINUX_SYSCALL(__NR_readlink, buf, prefix_path, sizeof(prefix_path) - 1);
++		rv = LINUX_SYSCALL(__NR_readlink, procfs_path, path_snapshot, sizeof(path_snapshot) - 1);
+ 	#else
+-		rv = LINUX_SYSCALL(__NR_readlinkat, LINUX_AT_FDCWD, buf, prefix_path, sizeof(prefix_path) - 1);
++		rv = LINUX_SYSCALL(__NR_readlinkat, LINUX_AT_FDCWD, procfs_path, path_snapshot, sizeof(path_snapshot) - 1);
+ 	#endif
+-	prefix_path[rv] = '\0';
+-	prefix_path_len = rv;
++
++	if (rv < 0)
++	{
++#ifndef TEST
++		return errno_linux_to_bsd(rv);
++#else
++		return rv;
++#endif
++	}
++
++	path_snapshot[rv] = '\0';
++
++#ifndef TEST
++	rv = errno_linux_to_bsd(dserver_rpc_vchroot(path_snapshot, (uint64_t)rv));
++	if (rv != 0)
++		return rv;
++#endif
++
++	// Only publish the new root locally once the server has accepted the
++	// exact same snapshot.
++	prefix_path_len = (int)strlen(path_snapshot);
++	memcpy(prefix_path, path_snapshot, (size_t)prefix_path_len + 1);
+ 
+ #ifdef EUNION
+ 	eunion_init_from_prefix();
+-- 
+2.46.0
