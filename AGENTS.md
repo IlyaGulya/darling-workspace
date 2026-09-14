@@ -261,6 +261,20 @@ refs, PR drafts, and agent handoff.
   other broad artifacts unless the patch/test is actually about that artifact.
   Run `west patch check --quality` after metadata edits that affect runtime
   proof shape.
+- Runtime builds reuse an identity-keyed source forest and build tree. The store
+  is `<manifest>/.west-test/runtime-build-cache`, a `.west-test/` state root;
+  `WEST_RUNTIME_BUILD_CACHE_DIR` relocates it, `WEST_RUNTIME_BUILD_CACHE=off`
+  disables reuse, `WEST_RUNTIME_BUILD_CACHE_MAX_BYTES` bounds it (default 12 GiB,
+  pruned after each runtime profile build) and `WEST_RUNTIME_BUILD_CACHE_KEY`
+  still overrides the derived key for CI. Reuse requires a matching identity:
+  source revisions and patchset digests, the materializer version, the
+  configured defines and targets, the compiler fingerprint and the deploy
+  prefix. Never widen that match to make a run faster, and never reuse a source
+  forest whose completion marker is absent: an interrupted materialization is
+  discarded and rebuilt rather than consumed. The forest path must stay stable
+  across runs, because ccache normalises absolute paths against the current
+  working directory, so a per-run temporary root makes every object a miss
+  regardless of `CCACHE_BASEDIR` or `-fdebug-prefix-map`.
 - Do not close patch coverage with source matching. Tests that grep, parse, or
   assert that specific code text exists are audit checks only; they must not be
   counted as the patch's behavioral test and must not be recorded as `kind:

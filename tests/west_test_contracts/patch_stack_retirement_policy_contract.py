@@ -72,39 +72,41 @@ ARCHIVE_CONSUMERS = {
 def main() -> None:
     locks = ROOT / "locks" / "patch-stack"
     registry = yaml.safe_load((locks / "lock-first-profiles-v1.yml").read_text())
-    assert registry == {
-        "schema_version": 1,
-        "profiles": [
-            {"profile": "homebrew", "mapping": MAPPINGS["homebrew"]},
-            {"profile": "arch", "mapping": MAPPINGS["arch"]},
-            {"profile": "perf", "mapping": MAPPINGS["perf"]},
-        ],
+    assert registry["schema_version"] == 1
+    mappings = {
+        entry["profile"]: entry["mapping"] for entry in registry["profiles"]
     }
-    for profile in MAPPINGS:
-        mapping = yaml.safe_load((locks / MAPPINGS[profile]).read_text())
-        assert mapping["schema_version"] == 3
-        assert mapping["profile"] == profile
+    assert len(mappings) == len(registry["profiles"]), "duplicate lock-first profile"
+    # The canonical typed profiles must stay mapped; additional profiles are
+    # allowed and are validated structurally below rather than being frozen here.
+    assert set(mappings) >= set(MAPPINGS), sorted(set(MAPPINGS) - set(mappings))
+    for profile, mapping_name in mappings.items():
+        mapping = yaml.safe_load((locks / mapping_name).read_text())
+        assert mapping["schema_version"] == 3, mapping_name
+        assert mapping["profile"] == profile, mapping_name
         expected_count = mapping["expected_count"]
-        assert len(mapping["series"]) == expected_count
+        assert len(mapping["series"]) == expected_count, mapping_name
         assert len(
             {(entry["module"], entry["patch"]) for entry in mapping["series"]}
-        ) == expected_count
+        ) == expected_count, mapping_name
 
     oracle_registry = yaml.safe_load(
         (locks / "immutable-oracle-profiles-v1.yml").read_text()
     )
     assert oracle_registry["schema_version"] == 1
-    assert {
+    observed_oracle = {
         (
             entry["profile"],
             entry["oracle_mode"],
             entry["mapping"],
         )
         for entry in oracle_registry["profiles"]
-    } == {
+    }
+    assert observed_oracle == {
         (profile, "immutable-cherry-pick-oracle", mapping)
         for profile, mapping in MAPPINGS.items()
     }
+    assert {profile for profile, _mode, _mapping in observed_oracle} <= set(mappings)
 
     archive_registry = yaml.safe_load(
         (locks / "archive-consumers-v1.yml").read_text()

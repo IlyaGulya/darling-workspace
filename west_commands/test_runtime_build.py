@@ -20,6 +20,7 @@ from typing import Any
 
 from test_execution import run_bounded
 from test_results import RuntimeBuildFailure
+from test_runtime_cache import build_key as runtime_build_key
 from test_runtime import (
     COMPILER_LAUNCHERS,
     ROOTLESS_BOOTSTRAP_RESOURCE,
@@ -270,6 +271,38 @@ class RuntimeBuildService:
         identity["compiler_fingerprint"] = expected_identity_fingerprint
         return identity
 
+    def runtime_build_identity(
+        self,
+        proof: dict,
+        prefix: Path,
+        configuration_root: Path,
+        source_key: str,
+        *,
+        configure_args: Callable[[dict, Path, Path], list[str]],
+    ) -> str:
+        """Return the reuse key for one runtime build tree.
+
+        The key is derived from the same configure command the build will run,
+        so any change that reaches the compiler moves the key instead of
+        silently reusing an object built from different sources or defines.
+        """
+
+        fingerprint: str | None = None
+        if self._compiler_launcher(proof) is not None:
+            fingerprint = self._ccache_compiler_identity(
+                self._ccache_environment()
+            ).get("compiler_fingerprint")
+        return runtime_build_key(
+            source_key,
+            {
+                "targets": runtime_build_targets(proof),
+                "proof": proof,
+                "configure_args": configure_args(proof, prefix, configuration_root),
+                "compiler_fingerprint": fingerprint,
+                "prefix": str(prefix),
+            },
+        )
+
     def configure_args(
         self, proof: dict, prefix: Path, scratch_root: Path | None = None
     ) -> list[str]:
@@ -466,9 +499,18 @@ class RuntimeBuildService:
         prefix: Path,
         targets: list[str],
         configured_args: list[str],
+        *,
+        root: Path | None = None,
+        key: str | None = None,
     ) -> tuple[Path, dict[str, Any]] | None:
-        raw_root = os.environ.get("WEST_RUNTIME_BUILD_CACHE_DIR")
-        raw_key = os.environ.get("WEST_RUNTIME_BUILD_CACHE_KEY")
+        raw_root = (
+            str(root)
+            if root is not None
+            else os.environ.get("WEST_RUNTIME_BUILD_CACHE_DIR")
+        )
+        raw_key = (
+            key if key is not None else os.environ.get("WEST_RUNTIME_BUILD_CACHE_KEY")
+        )
         if not raw_root and not raw_key:
             return None
         if not raw_root or not raw_key or re.fullmatch(r"[0-9a-f]{64}", raw_key) is None:
@@ -714,13 +756,23 @@ class RuntimeBuildService:
         dump_command_tail: Callable[[str, Any], None],
         runner: Callable[..., Any] = run_bounded,
         timeout_seconds: int | None = None,
+        cache: tuple[Path, str] | None = None,
+        on_reuse: Callable[[bool], None] | None = None,
     ) -> Path:
         targets = runtime_build_targets(proof)
-        cache_root = os.environ.get("WEST_RUNTIME_BUILD_CACHE_DIR")
-        configuration_root = Path(cache_root) if cache_root else scratch_root
+        if cache is not None:
+            configuration_root = cache[0]
+        else:
+            cache_root = os.environ.get("WEST_RUNTIME_BUILD_CACHE_DIR")
+            configuration_root = Path(cache_root) if cache_root else scratch_root
         configured_args = configure_args(proof, prefix, configuration_root)
         cache = self._runtime_cache_identity(
-            proof, prefix, targets, configured_args
+            proof,
+            prefix,
+            targets,
+            configured_args,
+            root=cache[0] if cache is not None else None,
+            key=cache[1] if cache is not None else None,
         )
         timeout = int(
             timeout_seconds
@@ -734,6 +786,8 @@ class RuntimeBuildService:
             build_root,
             cache_reused,
         ):
+            if on_reuse is not None:
+                on_reuse(cache_reused)
             if cache_reused:
                 self._host.inf(
                     f"  runtime incremental build reuse: {label} -> {build_root}"

@@ -3,7 +3,7 @@
   "groups": [
     {
       "policy": "native_reference",
-      "reason": "Public Darwin/POSIX observable behavior; preserve target API availability, ordinary-user setup and backend-neutral assertions. Native execution is required before claiming reference evidence."
+      "reason": "Public POSIX spawn contract: tests/posix_spawn_failure_guest.c checks failed-spawn privacy and pending SIGCHLD, and testkit registers the fixture with ENVS darling macos, so the macOS arm is the native reference. The Darling arm is a RED guest-runtime-deploy proof, so its result is a Darling verdict rather than reference evidence."
     },
     {
       "policy": "assertion_review_before_native",
@@ -43,6 +43,156 @@
     }
   ],
   "bindings": {
+    "acceptance-priorities:darling/homebrew-prefix-tooling.patch:1": {
+      "name": "comparison_on_ring_fd_lifetime",
+      "identity_sha256": "c4990052d039aae65230c873b6c375b039c0b115533942771a2a89ff0e459b25",
+      "policy": "darling_internal_gate",
+      "reason": "Ring descriptor lifetime across the Darling transport is observed in-guest; native Darwin has no equivalent ring."
+    },
+    "acceptance-priorities:darling/homebrew-prefix-tooling.patch:2": {
+      "name": "comparison_off_ring_fd_lifetime",
+      "identity_sha256": "58f5e878fc699e29605df33ad7c294320b36ff7d93554490974bba32b826fa1c",
+      "policy": "darling_internal_gate",
+      "reason": "Ring descriptor lifetime across the Darling transport is observed in-guest; native Darwin has no equivalent ring."
+    },
+    "acceptance-priorities:darling/homebrew-prefix-tooling.patch:3": {
+      "name": "comparison_on_ring_mode",
+      "identity_sha256": "b827de8028ec95e1540e5e80b24bdd1919a669a2a1c07c20efc19f01e6d1eb06",
+      "policy": "darling_internal_gate",
+      "reason": "Ring transport mode selection is a Darling-internal switch; the assertion records which transport carried the call."
+    },
+    "acceptance-priorities:darling/homebrew-prefix-tooling.patch:4": {
+      "name": "comparison_off_ring_mode",
+      "identity_sha256": "09bc14b6d2fb9b44c8b0fa5849576565dca0d9695bb473e2f6b547a89c83b85f",
+      "policy": "darling_internal_gate",
+      "reason": "Ring transport mode selection is a Darling-internal switch; the assertion records which transport carried the call."
+    },
+    "acceptance-priorities:darling/homebrew-prefix-tooling.patch:5": {
+      "name": "comparison_on_malloc_native_pair",
+      "identity_sha256": "ada94825d2c4c5a8ba3b6eb8b4ca56f5351a021422aa5624db3ea62dede025d2",
+      "policy": "darling_internal_gate",
+      "reason": "Region pairing between the Darling allocator and the guest is Darling-owned; native allocator behavior is not the oracle."
+    },
+    "acceptance-priorities:darling/homebrew-prefix-tooling.patch:6": {
+      "name": "comparison_on_malloc_native",
+      "identity_sha256": "8caf8b4a652de4b5be24f8b38b6578b3cbe51440b3dd881200a6a698bde119bd",
+      "policy": "darling_internal_gate",
+      "reason": "Region pairing between the Darling allocator and the guest is Darling-owned; native allocator behavior is not the oracle."
+    },
+    "acceptance-priorities:darling/homebrew-prefix-tooling.patch:7": {
+      "name": "comparison_off_malloc_native",
+      "identity_sha256": "03383a57ca242c7c58dc9c1d2681fbb9097d18099d14466cdb821e472ff91e38",
+      "policy": "darling_internal_gate",
+      "reason": "Region pairing between the Darling allocator and the guest is Darling-owned; native allocator behavior is not the oracle."
+    },
+    "acceptance-priorities:darling/homebrew-prefix-tooling.patch:8": {
+      "name": "comparison_on_host_port_contention",
+      "identity_sha256": "82894aeac15c1c32aa2ab5b4954a241b0edb8755a7fc6d07fc250673e49ffc97",
+      "policy": "darling_internal_gate",
+      "reason": "Host port contention handling is darlingserver port-lifecycle policy."
+    },
+    "acceptance-priorities:darling/homebrew-prefix-tooling.patch:9": {
+      "name": "comparison_on_malloc_region_growth",
+      "identity_sha256": "9725391e58c2c043a9bb7f6117df2dba056d5c3b1e253ce2cb0f1e7a7023b357",
+      "policy": "darling_internal_gate",
+      "reason": "Region growth and its immutable generation counter are Darling allocator invariants."
+    },
+    "acceptance-priorities:darling/homebrew-prefix-tooling.patch:10": {
+      "name": "comparison_off_malloc_region_growth",
+      "identity_sha256": "7a557001df463466a604fdf014efbd97bbf2538de799261edd41484c34d8a1da",
+      "policy": "darling_internal_gate",
+      "reason": "Region growth and its immutable generation counter are Darling allocator invariants."
+    },
+    "acceptance-priorities:darling/homebrew-prefix-tooling.patch:11": {
+      "name": "comparison_off_cpack_link_probe",
+      "identity_sha256": "4a53ee8ab606df109d60bb9bed5964cbaee8c6309961240d90802c40a4177657",
+      "policy": "darling_internal_gate",
+      "reason": "The probe exercises the Darling guest toolchain layout and link path, not native link semantics."
+    },
+    "acceptance-priorities:darling/homebrew-prefix-tooling.patch:12": {
+      "name": "comparison_off_resume_ownership",
+      "identity_sha256": "701d2a92b68d4ebb367ca500a5629b2bf0b9c864d9813238f89df8f8f5178468",
+      "policy": "darling_internal_gate",
+      "reason": "Ownership of a process across resume is a Darling lifecycle invariant."
+    },
+    "acceptance-priorities:darling/homebrew-prefix-tooling.patch:13": {
+      "name": "comparison_off_exec_ownership",
+      "identity_sha256": "46078b9069e2553e9855534fcb97aac650d696f1ef5ed89c2828200236bce4ed",
+      "policy": "darling_internal_gate",
+      "reason": "Ownership of a process across exec is a Darling lifecycle invariant."
+    },
+    "acceptance-priorities:darling/homebrew-prefix-tooling.patch:14": {
+      "name": "comparison_off_lz4_source",
+      "identity_sha256": "23f11fd6ac3e70752fda1115f7fdf8b6e57b0a9e53b060581207108933aa9c89",
+      "policy": "platform_setup_before_native",
+      "reason": "Stock Homebrew build/install inside a Darling prefix; the reference is the package's own build result while prefix provisioning stays platform-specific."
+    },
+    "acceptance-priorities:darling/homebrew-prefix-tooling.patch:15": {
+      "name": "comparison_off_stock_reinstall",
+      "identity_sha256": "d4e9e0e82d672ad241bad92655303ad84d94d30ceeae7c7b89c3c1ff8faa6e16",
+      "policy": "platform_setup_before_native",
+      "reason": "Stock Homebrew build/install inside a Darling prefix; the reference is the package's own build result while prefix provisioning stays platform-specific."
+    },
+    "acceptance-priorities:darling/homebrew-prefix-tooling.patch:16": {
+      "name": "comparison_off_openssl",
+      "identity_sha256": "1a5177cb800da4b8380565d6b9c77b712289b109abbd79a9ec4167e4f52e9f38",
+      "policy": "platform_setup_before_native",
+      "reason": "Stock Homebrew build/install inside a Darling prefix; the reference is the package's own build result while prefix provisioning stays platform-specific."
+    },
+    "acceptance-priorities:darling/homebrew-prefix-tooling.patch:17": {
+      "name": "comparison_off_github",
+      "identity_sha256": "3bc8c0a5f0f918c4918b7df4c5642750b0599f9535b059f73cc1e1867633a7f5",
+      "policy": "platform_setup_before_native",
+      "reason": "Stock Homebrew build/install inside a Darling prefix; the reference is the package's own build result while prefix provisioning stays platform-specific."
+    },
+    "acceptance-priorities:darling/homebrew-prefix-tooling.patch:18": {
+      "name": "comparison_off_wget_repeat",
+      "identity_sha256": "c9bd554d5473ce2b8706b143cff442403e36c2ff456156713097f4e2001a5c1a",
+      "policy": "platform_setup_before_native",
+      "reason": "Stock Homebrew build/install inside a Darling prefix; the reference is the package's own build result while prefix provisioning stays platform-specific."
+    },
+    "acceptance-priorities:darling/homebrew-prefix-tooling.patch:19": {
+      "name": "comparison_on_resume_ownership",
+      "identity_sha256": "506bb053297186ea7cc855f6d057d836ce08481d8c81793cef508b02d8e09712",
+      "policy": "darling_internal_gate",
+      "reason": "Ownership of a process across resume is a Darling lifecycle invariant."
+    },
+    "acceptance-priorities:darling/homebrew-prefix-tooling.patch:20": {
+      "name": "comparison_on_exec_ownership",
+      "identity_sha256": "134255ca686f89897dcdee0229902d1d01ab5120f6c0707a324496d82a48b2a2",
+      "policy": "darling_internal_gate",
+      "reason": "Ownership of a process across exec is a Darling lifecycle invariant."
+    },
+    "acceptance-priorities:darling/homebrew-prefix-tooling.patch:21": {
+      "name": "comparison_on_lz4_source",
+      "identity_sha256": "4a7a6c12bf174ac1c0830d0d29e1010ac8f3e11e1849963fb9729ca7a5578189",
+      "policy": "platform_setup_before_native",
+      "reason": "Stock Homebrew build/install inside a Darling prefix; the reference is the package's own build result while prefix provisioning stays platform-specific."
+    },
+    "acceptance-priorities:darling/homebrew-prefix-tooling.patch:22": {
+      "name": "comparison_on_stock_reinstall",
+      "identity_sha256": "8e8627cd4395280cc754af971fe875f153eda58c1bce8cb79787aa6ced8aae28",
+      "policy": "platform_setup_before_native",
+      "reason": "Stock Homebrew build/install inside a Darling prefix; the reference is the package's own build result while prefix provisioning stays platform-specific."
+    },
+    "acceptance-priorities:darling/homebrew-prefix-tooling.patch:23": {
+      "name": "comparison_on_openssl",
+      "identity_sha256": "9822a8b6900d5511d72f8d0b920c397db6c7029b4cd4bf94f77f688c3b031a6a",
+      "policy": "platform_setup_before_native",
+      "reason": "Stock Homebrew build/install inside a Darling prefix; the reference is the package's own build result while prefix provisioning stays platform-specific."
+    },
+    "acceptance-priorities:darling/homebrew-prefix-tooling.patch:24": {
+      "name": "comparison_on_github",
+      "identity_sha256": "dd22c414b5d8679753b2c1ef4d7a3a00715812826b1cdc9295b963bc6c3f4118",
+      "policy": "platform_setup_before_native",
+      "reason": "Stock Homebrew build/install inside a Darling prefix; the reference is the package's own build result while prefix provisioning stays platform-specific."
+    },
+    "acceptance-priorities:darling/homebrew-prefix-tooling.patch:25": {
+      "name": "comparison_on_wget_repeat",
+      "identity_sha256": "b4fe54ca0705941a2132a954e3f6bcedb4a4be27a366cfcb4a0c8ca712291e93",
+      "policy": "platform_setup_before_native",
+      "reason": "Stock Homebrew build/install inside a Darling prefix; the reference is the package's own build result while prefix provisioning stays platform-specific."
+    },
     "arch:libunwind/static-no-jump-tables-for-dyld.patch:1": {
       "name": "dyld_static_libunwind_link",
       "identity_sha256": "231bd2622ef21880f92583846889f64c7c97a3daf75eb05337df1c5d4d76cca5",
@@ -150,6 +300,24 @@
       "identity_sha256": "fc88d77b8b0ffa2925adb13a289922bc573cc8ea012442ceb016d056ba104b40",
       "policy": "split_semantic_reference_and_internal_gate",
       "reason": "Retain Darling-specific trace/resource/transport assertions; reference only the semantic workload. Raw pthread ABI needs target review; shell signal status requires explicit normalization."
+    },
+    "homebrew:darlingserver/vchroot-fdless-path-rpc.patch:1": {
+      "name": "vchroot_fdless_path_rpc_guest",
+      "identity_sha256": "4213f2f7e1419e5f7666bd6e7a6143bc9e17d78498a6d8deeaca99e975a3f160",
+      "policy": "darling_internal_gate",
+      "reason": "The guest probe asserts that the Darling vchroot RPC carries the path instead of a descriptor and that a closed descriptor is rejected before the call; both are Darling transport policy with no native counterpart."
+    },
+    "homebrew:darlingserver/vchroot-fdless-path-rpc.patch:2": {
+      "name": "vchroot_fdless_rpc_invariant_contract",
+      "identity_sha256": "9d9413b7da483f3bcaf854cc82a181c4a733a0da58ae99718135b3e022440231",
+      "policy": "internal_proof_exemption",
+      "reason": "Asserts the generated RPC declaration set carries no descriptor argument for vchroot. That is a private invariant of the Darling RPC schema, not externally observable API behavior."
+    },
+    "homebrew:xnu/vchroot-fdless-path-rpc.patch:1": {
+      "name": "vchroot_fdless_path_rpc_guest",
+      "identity_sha256": "9b9391b8d705233517f0eeed0820a913020caf261d52c043f5b0c35483c1ebd0",
+      "policy": "darling_internal_gate",
+      "reason": "Same guest probe on the XNU side of the FD-less vchroot port: the assertion is about the Darling transport carrying a path rather than a descriptor."
     },
     "homebrew:darlingserver/psynch-cvwait-balanced.patch:1": {
       "name": "psynch_cvwait_sequence_contract",
@@ -1057,6 +1225,150 @@
       "policy": "internal_proof_exemption",
       "reason": "Full experimental Darling ring suite: private ABI/hash, routing/correlation, wake/generation, at-most-once delivery and recording-stub postfork ownership models. Synthetic ports and deallocation are transport payload/model oracles, not native Mach ABI. Optional generated-header-dependent arms may skip; no execution completeness is claimed."
     },
+    "ring-comparison:darling/ring-fd-ownership.patch:1": {
+      "name": "ring_fd_ownership_guest",
+      "identity_sha256": "1b7589577ae2466f5fd536b1fed382d0f5c11d24660a48f9f0f70a05a086e586",
+      "policy": "darling_internal_gate",
+      "reason": "Descriptor ownership across the Darling ring boundary is transport policy; the guest verdict covers the private ring path."
+    },
+    "ring-comparison:xnu/ring-comparison-guest.patch:1": {
+      "name": "ring_completion_outcomes_host",
+      "identity_sha256": "8a68a7fc5d738204d3d2d3c6973d45b6d519baf5634ac14a59888628fc4b3c63",
+      "policy": "semantic_reference_review",
+      "reason": "Mach message completion outcomes and exec completion are externally meaningful; the host oracle must be tied to an independent XNU reference."
+    },
+    "ring-comparison:xnu/ring-comparison-guest.patch:2": {
+      "name": "ring_mach_ops_guest",
+      "identity_sha256": "0b285b957164f3f3ba7b673948c2999176fb951a6ea6bee3ee52145a7fa3c91f",
+      "policy": "darling_internal_gate",
+      "reason": "Ring carriage of Mach operations is Darling transport policy; the guest verdict covers the private ring path."
+    },
+    "ring-comparison:darlingserver/ring-comparison-server.patch:1": {
+      "name": "ring_host_gates",
+      "identity_sha256": "e149aab9044e5da5867081c9d0b422d2e610b4937674d47f88ad99f6581ef2d6",
+      "policy": "semantic_reference_review",
+      "reason": "Host gates assert Mach/XNU completion semantics; establish an independent XNU reference rather than trusting the source arm."
+    },
+    "ring-comparison:darlingserver/ring-comparison-server.patch:2": {
+      "name": "ring_exec_completion_host",
+      "identity_sha256": "ed49d9b9fa89d38a88a2f3bf3b299d817e109a22eb5eec5f4a2982cf3213b04d",
+      "policy": "semantic_reference_review",
+      "reason": "Exec completion reporting is observable API behavior; the host fixture alone is not independent XNU reference evidence."
+    },
+    "ring-comparison:darlingserver/ring-comparison-server.patch:3": {
+      "name": "ring_microthread_dispatch_model",
+      "identity_sha256": "f8422b1bb1e5f6a12aeddb60ce6fe323f472bb08f144a6874cfad867522ce5c5",
+      "policy": "semantic_reference_review",
+      "reason": "The dispatch model selects Mach microthread semantics; keep it tied to an independent XNU reference."
+    },
+    "ring-comparison:libmalloc/region-generation.patch:1": {
+      "name": "malloc_region_generation_native",
+      "identity_sha256": "3c24a545bf85b44ee0f247895f443008df975fd28c3a745f967f7d70879e706c",
+      "policy": "darling_internal_gate",
+      "reason": "Region generation is a Darling allocator invariant; the guest comparison is Darling-internal."
+    },
+    "wget-residual:darling/homebrew-prefix-tooling.patch:1": {
+      "name": "homebrew_build_tools_preflight",
+      "identity_sha256": "0a80b5002de8bb823fc2d25eee2449ac74632f881a4c7c0b445d65a50786dd3b",
+      "policy": "platform_setup_before_native",
+      "reason": "tests/run-homebrew-build-tools-preflight.sh drives the provisioned Darling guest prefix itself: cut field extraction, both Perl interpreters loading standard and XS modules (Digest::SHA, POSIX, Socket) and /usr/bin/openssl fingerprinting the prefix's cert.pem before any stock brew build. The reference is this common build-tool workload under a declared isolated setup, while prefix provisioning stays platform-specific."
+    },
+    "wget-residual:darling/homebrew-prefix-tooling.patch:2": {
+      "name": "homebrew_component_staging_isolation",
+      "identity_sha256": "4d2ac02536eb52a0d5c685f424cbe8349e246db1dbc1fd4b20b713ce42ed9714",
+      "policy": "internal_proof_exemption",
+      "reason": "Darling-owned staging oracle: tests/west_test_contracts/homebrew_component_contract.py runs cmake/stage-homebrew-perl.py over a synthetic CMake project and requires relative, absolute and InstallSymlink install rules to be rewritten into three resources inside the build's rootless-homebrew-perl stage while the real install prefix and an inherited DESTDIR stay absent."
+    },
+    "wget-residual:darling/mldr-stack-growth-reservation.patch:1": {
+      "name": "mldr_stack_growth_reservation",
+      "identity_sha256": "153d576f1b72da22d8392b342f4d558f7190286a268e4fc680cee440df9d0f22",
+      "policy": "darling_internal_gate",
+      "reason": "tests/run-mldr-stack-growth.sh LD_PRELOADs tests/mldr_stack_growth_obstacle.c, which MAP_FIXED_NOREPLACE-es a real page below mldr's preferred guest stack, and then requires guest /bin/rm to exit 0 instead of 139. The verdict is on mldr reserving the permitted RLIMIT_STACK range before entering dyld, a Darling loader/lifecycle invariant with no native equivalent."
+    },
+    "wget-residual:darling/rootless-hosts-default.patch:1": {
+      "name": "localhost_resolution_guest",
+      "identity_sha256": "115e0a9bc8a76e6ad4f670fcb706fefee84511eb0569259bf4c8651d24c094c9",
+      "policy": "native_reference",
+      "reason": "tests/localhost_resolution_guest.c probes public POSIX name resolution: getaddrinfo(\"localhost\", \"4242\") must return 127/8 addresses for AF_INET, ::1 for AF_INET6, and both families with the service port filled in for AF_UNSPEC with AI_ADDRCONFIG. That is ordinary-user Darwin resolution behavior, so a native run is required before claiming reference evidence; the fixture itself is guest-only and rests on the prefix's new default /private/etc/hosts."
+    },
+    "wget-residual:darlingserver/exec-checkin-completion-order.patch:1": {
+      "name": "exec_completion_order_host",
+      "identity_sha256": "fb5265fba24ead452fcd71ac70e1c48c582c8d8c8cc3e5cd31f802d5ea18b594",
+      "policy": "internal_proof_exemption",
+      "reason": "Private ExecCompletion ordering: the host fixture links production src/utility.cpp against internal-include/darlingserver/exec-completion.hpp and requires a Darling replacement to be consumed exactly once by the next Checkin before a delayed monitor callback, the failure byte to publish Failed without waiting for EOF, and a stale monitor callback to leave the following exec attempt untouched. These are darlingserver-internal handshake rules with no Darwin/POSIX surface."
+    },
+    "wget-residual:dyld/fork-self-port-cache.patch:1": {
+      "name": "dyld_postfork_fcntl_load",
+      "identity_sha256": "15fd23bc748ac46b96e3c7190225ed2dcd69f3d710129837f4f37adfdc8dc4ba",
+      "policy": "darling_internal_gate",
+      "reason": "The guest-command fixture forks and requires the child to require Fcntl and issue fcntl(F_GETFD) while the parent later requires Fcntl too, so a lazy dylib load must work after fork. The guarded mechanism is dyld's embedded task-self port cache reset (_dyld_fork_child calling __darling_reset_cached_self_ports), a Darling loader/cache lifecycle invariant with no native counterpart."
+    },
+    "wget-residual:libkqueue/close-knote-lifetime.patch:1": {
+      "name": null,
+      "identity_sha256": "96a594c6aabe3250c4d45dbbcef81f594213034db294b57ff1dfa369b9417cda",
+      "policy": "native_reference",
+      "reason": "tests/kqueue_close_pipe_eof_guest.c requires the public kqueue/pipe lifetime result that a non-blocking read returns EOF 0 rather than EAGAIN once the queue and the last pipe writer are closed, even though the queue held an EVFILT_READ/EVFILT_WRITE registration, and that the parent's read watch still fires after child fork teardown. The fixture is registered with a native macOS CTest arm for the reference."
+    },
+    "wget-residual:libkqueue/close-knote-lifetime.patch:2": {
+      "name": null,
+      "identity_sha256": "99bfc1d3c1c5521e8a3188bff137b0d720ac5c6ccea47e1f58c9a89a807c4e4a",
+      "policy": "native_reference",
+      "reason": "This macos/ arm runs the same kqueue fixture natively, recording where macOS rejects the READ/write-end pairing as UNSUPPORTED while still requiring EOF after the final writer close and parent readiness after fork teardown; the native outcome is the reference for the Darling arm."
+    },
+    "wget-residual:perl/storable-xs-version.patch:1": {
+      "name": "storable_xs_roundtrip",
+      "identity_sha256": "74d9de263976215dce71517708d0fe493c317d375a1bb5c71b068b0c36f2ffd8",
+      "policy": "platform_setup_before_native",
+      "reason": "The guest-command fixture runs /usr/bin/perl5.18 -MStorable=freeze,thaw and requires a freeze/thaw roundtrip of a nested structure to succeed, i.e. the provisioned Perl component loading its XS bundle after 5.18/CMakeLists.txt derives the bundle version from Storable.pm's $VERSION. The reference is the module's own roundtrip in a declared isolated setup, while Darling prefix provisioning stays platform-specific."
+    },
+    "wget-residual:xnu/eunion-large-directory.patch:1": {
+      "name": "eunion_large_directory",
+      "identity_sha256": "ec6f048d222c389cdf62de08193b187d618895276cc175ae0726548130c40d0f",
+      "policy": "split_semantic_reference_and_internal_gate",
+      "reason": "experiments/e-union/run.sh with EUNION_DIRECTORY_ONLY compiles the production vchroot merged-directory code and mixes Darwin-observable bounded enumeration (-EOVERFLOW for a 64 KiB buffer and a one-byte-short buffer, -EINVAL for an undersized dirent page, exact 544-NAME_MAX membership) with E-UNION layer-private overlay policy (96 whiteouts omitted, upper/lower selection, snapshot lifetime across close, rewind, dup and fork). Review the public directory-read obligations separately from the overlay/whiteout gate instead of exempting the whole script."
+    },
+    "wget-residual:xnu/sigaction-ignore-discard.patch:1": {
+      "name": null,
+      "identity_sha256": "5d77795dd14ca9120c4f5ff617fdfa89cf7dff25d862616d948a3466e569b9ef",
+      "policy": "native_reference",
+      "reason": "tests/sigaction_ignore_pending_guest.c requires the public POSIX SIG_IGN discard rule in a live process: after installing SIG_IGN for a blocked pending SIGUSR1 the pending set keeps only SIGUSR2, the discarded signal is never delivered when unblocked, and a fresh SIGUSR1 queued after leaving SIG_IGN is delivered exactly once. The same fixture is registered with a native macOS CTest arm, which is the reference run."
+    },
+    "wget-residual:xnu/sigaction-ignore-discard.patch:2": {
+      "name": null,
+      "identity_sha256": "9da213a35114e85471f07af29a4482e24fb774b68978dc59cee425f222c12cba",
+      "policy": "native_reference",
+      "reason": "This macos/ arm executes the same SIG_IGN pending-discard fixture natively (queued SIGUSR1 dropped, unrelated SIGUSR2 retained and delivered once after unblock), so a native PASS is the reference outcome for the Darling arm."
+    },
+    "wget-residual:xnu/sigexc-handler-mask.patch:1": {
+      "name": null,
+      "identity_sha256": "b221b48402eff458cf1233a561036715ebf22c3de63ba069be64dcf28d6489b0",
+      "policy": "native_reference",
+      "reason": "tests/signal_handler_mask_guest.c reads the mask inside the handler with sigprocmask(SIG_BLOCK, NULL, &mask) and requires sa_mask's SIGCHLD plus the auto-masked signal, no auto-masking under SA_NODEFER, an explicitly masked self signal still present, and restoration of the interrupted SIGUSR2 mask after the handler returns. That is public Darwin handler-mask behavior, and the fixture has a native macOS CTest arm."
+    },
+    "wget-residual:xnu/sigexc-handler-mask.patch:2": {
+      "name": null,
+      "identity_sha256": "1b6fa982d7825f2c4d131ddf983472d6301915df0ee1dda210933b8ed7893b02",
+      "policy": "native_reference",
+      "reason": "This macos/ arm runs the handler-mask oracle natively, observing the same sa_mask/SA_NODEFER handler mask and post-return restoration the Darling arm asserts; the native PASS is reference evidence rather than a Darling result."
+    },
+    "wget-residual:xnu/sigpending-mask-copyout.patch:1": {
+      "name": null,
+      "identity_sha256": "5bf83fce912c4de5da279bdb4f9163b61b5896a90c391e7ab67ccbeb21c2c8fd",
+      "policy": "native_reference",
+      "reason": "tests/sigpending_mask_guest.c calls sigpending with a caller-owned set that is empty for the first check and fully populated for the queued check, and requires it to end up holding exactly the blocked-then-queued SIGUSR1 (and no SIGUSR2) before clearing after delivery, which is public POSIX pending-mask copyout. The same fixture is registered as a native macOS CTest arm (macos/sigpending_mask_copyout), so native execution supplies the reference evidence."
+    },
+    "wget-residual:xnu/sigpending-mask-copyout.patch:2": {
+      "name": null,
+      "identity_sha256": "da0de504ed54ab589ce781253c396c21f5519a70aaf0ffe4839e9280d3bfa9b0",
+      "policy": "native_reference",
+      "reason": "This macos/ arm runs the identical sigpending_mask_guest.c oracle natively: a fully populated caller set must be reduced to the queued SIGUSR1 and cleared after delivery. A native PASS is Darwin reference evidence for the Darling arm, not a Darling RED/GREEN verdict."
+    },
+    "wget-residual:xnu/udp-packet-info.patch:1": {
+      "name": "udp_packet_info_guest",
+      "identity_sha256": "dc0ea0929b5fdd75561b88b932c9d073b1345e9d4a8e70fe4fa0ad4047e54531",
+      "policy": "native_reference",
+      "reason": "tests/udp_packet_info_guest.c exercises public Darwin socket behavior in a real process: IP_PKTINFO/IPV6_RECVPKTINFO enable and disable with getsockopt state, an in_pktinfo/in6_pktinfo source cmsg delivered with the matching destination address and a non-zero interface index, ipi_ifindex overriding a conflicting nonlocal ipi_spec_dst so loopback is the source, and caller control data left unmodified across sendmsg and recvmsg. Native execution on macOS is required before claiming reference evidence for these assertions."
+    },
     "wget-residual:xnu/eunion-content-fd-validation.patch:1": {
       "name": "eunion_content_fd_validation",
       "identity_sha256": "6a578091da005bf73f612d01b5926b1077b1856802e35b97e26bb0935f794788",
@@ -1113,7 +1425,7 @@
     },
     "wget-residual:xnu/posix-spawn-failure-ownership.patch:1": {
       "name": "darling/posix_spawn_failure_ownership",
-      "identity_sha256": "bad10ec0344ea304202b4b44dcd97b6eb479fad3cc328aa4e11b77c68a48ceb9",
+      "identity_sha256": "2849eed232cc3a764c7f2b3aee4c5512cf1a606d91e04cb3997fda14017829f0",
       "policy": "native_reference",
       "reason": "Public Darwin/POSIX observable behavior; preserve target API availability, ordinary-user setup and backend-neutral assertions. Native execution is required before claiming reference evidence."
     },

@@ -27,8 +27,21 @@ import patch_stack_lock_first
 import patch_stack_materialize
 import patch_stack_profile_composition
 from test_results import RuntimeRedProven
+from test_runtime_cache import (
+    SOURCE_KIND,
+    entry_reusable,
+    record_event,
+    touch_entry,
+    write_marker,
+)
 from test_runtime_evidence import RuntimeEvidenceSession
 from test_worktrees import remove_temporary_worktree
+
+
+def write_runtime_source_marker(entry: Path, key: str, revision: str) -> None:
+    """Record that ``entry`` holds a complete forest for ``key``."""
+
+    write_marker(entry, kind=SOURCE_KIND, key=key, darling=revision)
 
 
 class RuntimeSourceMaterializer:
@@ -568,6 +581,54 @@ class RuntimeSourceMaterializer:
             self._host.die(f"{patch['path']}: missing current-minus revision")
         return bad_revision, False
 
+    def _reusable_runtime_source(self, entry: Path, key: str) -> bool:
+        """Return whether ``entry`` already holds the forest for ``key``."""
+
+        source_root = entry / "darling"
+        if not source_root.is_dir() or source_root.is_symlink():
+            return False
+
+        def matches(marker: dict[str, Any]) -> bool:
+            recorded = marker.get("darling")
+            if not isinstance(recorded, str) or not recorded:
+                return False
+            observed = subprocess.run(
+                ["git", "-C", str(source_root), "rev-parse", "HEAD"],
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            return observed.returncode == 0 and observed.stdout.strip() == recorded
+
+        return entry_reusable(entry, kind=SOURCE_KIND, key=key, validate=matches)
+
+    def _discard_runtime_source(
+        self,
+        entry: Path,
+        darling_repo: Path,
+        materialized_modules: set[Path],
+        projects_by_path: dict[Path, Path],
+    ) -> None:
+        """Drop an interrupted or stale entry so it cannot be reused partially."""
+
+        if not entry.exists():
+            return
+        source_root = entry / "darling"
+        if source_root.is_dir() and not source_root.is_symlink():
+            remove_temporary_worktree(darling_repo, source_root)
+        shutil.rmtree(entry, ignore_errors=True)
+        repos = {darling_repo}
+        repos.update(
+            repo for path, repo in projects_by_path.items() if path in materialized_modules
+        )
+        for repo in sorted(repos):
+            subprocess.run(
+                ["git", "-C", str(repo), "worktree", "prune"],
+                check=False,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+            )
+
     @contextmanager
     def guest_runtime_source_forest(
         self,
@@ -577,8 +638,19 @@ class RuntimeSourceMaterializer:
         omit_patch: bool,
         root: Path | None = None,
         evidence_session: RuntimeEvidenceSession | None = None,
+        reuse_key: str | None = None,
     ) -> Iterator[Path]:
-        """Create a coherent, disposable Darling source forest for one runtime build."""
+        """Create a coherent Darling source forest for one runtime build.
+
+        With ``reuse_key`` and an explicit ``root`` the forest is a persistent
+        cache entry: a completed entry marked for that key is yielded as-is, a
+        fresh or interrupted entry is materialized and then marked, and the
+        forest is not removed on exit. Reuse is what makes cross-run ccache hits
+        possible, because a per-run temporary root gives the compiler a
+        different path every time. Callers hold the one-run-per-prefix rule; an
+        entry without a completion marker is never reused, so an interrupted
+        materialization cannot be mistaken for a complete one.
+        """
 
         projects_by_path = {
             Path(project.path): Path(project.abspath)
@@ -606,6 +678,17 @@ class RuntimeSourceMaterializer:
         temp.mkdir(parents=True, exist_ok=True)
         yielded = False
         keep_on_failure = False
+        reuse = reuse_key is not None and not owns_root
+        if reuse:
+            store = temp.parent.parent
+            if self._reusable_runtime_source(temp, reuse_key):
+                record_event(store, "source_hits")
+                touch_entry(temp)
+                self._host.inf(f"  runtime source forest reuse: {temp}")
+                yield temp / "darling"
+                return
+            record_event(store, "source_misses")
+            self._discard_runtime_source(temp, darling_repo, materialized_modules, projects_by_path)
         source_started = time.monotonic()
         try:
             source_root = (temp / "darling").resolve()
@@ -701,6 +784,8 @@ class RuntimeSourceMaterializer:
                 f"({time.monotonic() - profile_started:.1f}s)"
             )
             yielded = True
+            if reuse:
+                write_runtime_source_marker(temp, reuse_key, darling_ref)
             yield source_root
         except RuntimeRedProven:
             raise
@@ -716,7 +801,7 @@ class RuntimeSourceMaterializer:
             if evidence_session is not None and evidence_session.retention_requested:
                 keep_on_failure = True
                 evidence_session.record_worktrees(added)
-            if not keep_on_failure:
+            if not keep_on_failure and not reuse:
                 for repo, target in reversed(added):
                     subprocess.run(
                         ["git", "worktree", "remove", "--force", str(target)],
