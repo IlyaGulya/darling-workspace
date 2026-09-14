@@ -2417,6 +2417,7 @@ with tempfile.TemporaryDirectory() as temp:
         )
 
     materialized_skips = []
+    materialized_skipped_before = []
 
     def synthetic_materialize(
         repo,
@@ -2426,6 +2427,7 @@ with tempfile.TemporaryDirectory() as temp:
         reset_to_first_base,
         composition,
         skip_patches,
+        skipped_before=False,
     ):
         assert git_options
         assert composition is None
@@ -2436,6 +2438,7 @@ with tempfile.TemporaryDirectory() as temp:
                 check=True,
             )
         materialized_skips.append(set(skip_patches))
+        materialized_skipped_before.append(bool(skipped_before))
         for entry in entries:
             if entry["patch"] not in skip_patches:
                 subprocess.run(
@@ -2470,6 +2473,9 @@ with tempfile.TemporaryDirectory() as temp:
     assert materialized_skips == [
         {"x/skipped.patch", "x/dependent.patch"}
     ], materialized_skips
+    # The first phase of a module starts with no inherited omission; the
+    # cross-phase case is owned by the stacked-omission contract.
+    assert materialized_skipped_before == [False], materialized_skipped_before
     assert (target / "file.txt").read_text() == "base\n"
     assert not (target / "dependent.txt").exists()
     assert (target / "rerolled.txt").read_text() == "rerolled\n"

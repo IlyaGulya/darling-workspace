@@ -8,6 +8,9 @@
 //    classifies the rejection site so a runtime that only rejects it later, in
 //    the descriptor transfer or in the server, fails the probe instead of
 //    satisfying it with a negative return.
+// C: the valid call must transport no descriptor. That is observed from the host
+//    (strace over the launcher tree), not from the guest, so the probe publishes
+//    descriptor-transport windows around the calls the runner counts.
 //
 // The probe calls the guest entry point directly instead of the vchroot helper
 // so a closed descriptor is expressible.
@@ -20,6 +23,23 @@
 #include <unistd.h>
 
 typedef int (*vchroot_fn)(int dfd);
+
+// One descriptor-transport window boundary. The printed marker is the guest-side
+// declaration that the operation ran; the readlink is what makes the boundary
+// visible in the per-process host trace, because the guest resolves this path
+// with a raw Linux readlinkat in the probe's own process. Both are emitted so a
+// window cannot be satisfied by an unrelated instruction stream.
+static void descriptor_window(const char *id, const char *phase, const char *label) {
+	char path[256];
+	char buffer[64];
+	ssize_t ignored;
+
+	snprintf(path, sizeof(path), "/tmp/darling-descriptor-window-%s-%s", id, phase);
+	ignored = readlink(path, buffer, sizeof(buffer));
+	(void)ignored;
+	printf("DSERVER_DESCRIPTOR_WINDOW %s %s\n", label, id);
+	fflush(stdout);
+}
 
 int main(void) {
 	// The guest entry point lives in libsystem_kernel and is not part of the
@@ -37,9 +57,28 @@ int main(void) {
 	}
 	printf("VCHROOT_ROOT_FD=%d\n", fd);
 
+	// C's negative control: console_open is an unaffected FD-bearing call -- the
+	// server replies with the console socket -- so this same run must show a
+	// descriptor for it. Without that, a zero count on the vchroot window below
+	// could not distinguish "transports no descriptor" from "the observation sees
+	// no descriptors at all".
+	descriptor_window("console-open-control", "begin", "BEGIN");
+	errno = 0;
+	int console = open("/dev/console", O_RDONLY);
+	int console_errno = errno;
+	descriptor_window("console-open-control", "end", "END");
+	printf("VCHROOT_FDLESS_CONTROL_CONSOLE fd=%d errno=%d\n", console, console_errno);
+	if (console < 0) {
+		printf("VCHROOT_FDLESS_CONTROL_CONSOLE_FAILED\n");
+		return 16;
+	}
+	close(console);
+
+	descriptor_window("vchroot-fdless-valid", "begin", "BEGIN");
 	errno = 0;
 	int rv = vchroot(fd);
 	int saved = errno;
+	descriptor_window("vchroot-fdless-valid", "end", "END");
 	printf("VCHROOT_VALID_FD rv=%d errno=%d\n", rv, saved);
 	if (rv < 0) {
 		printf("VCHROOT_FDLESS_VALID_FAILED\n");

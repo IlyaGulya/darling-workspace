@@ -86,6 +86,17 @@ class HostStatProvider(ResourceProvider):
         return command._host_stat_context(invocation, env)
 
 
+class DescriptorTraceProvider(ResourceProvider):
+    def __init__(self) -> None:
+        super().__init__("descriptor-trace")
+
+    def active(self, invocation: dict[str, Any]) -> bool:
+        return bool(invocation.get("descriptor_trace"))
+
+    def context(self, command: Any, invocation: dict[str, Any], env: dict[str, str] | None):
+        return command._descriptor_trace_context(invocation, env)
+
+
 class HomebrewLz4Provider(ResourceProvider):
     def __init__(self) -> None:
         super().__init__("homebrew-lz4")
@@ -101,6 +112,7 @@ RESOURCE_PROVIDERS: tuple[ResourceProvider, ...] = (
     HostTempProvider(),
     HostTraceProvider(),
     HostStatProvider(),
+    DescriptorTraceProvider(),
     DccCacheProvider(),
     EunionPrefixProvider(),
     HomebrewLz4Provider(),

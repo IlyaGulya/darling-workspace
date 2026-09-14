@@ -23,6 +23,7 @@ from patch_git import (
     git,
 )
 import test_manifest
+import test_descriptor_transport
 from test_ctest import is_ctest_binding
 import patch_stack_preflight
 import patch_stack_materialize
@@ -1032,6 +1033,18 @@ class DarlingPatch(WestCommand):
                             errors.append(
                                 f"tests[{index}].host-trace-files[{trace_index}] contains must be a list of strings"
                             )
+            if test.get("descriptor-trace") is not None:
+                if runner != "guest-c-fixture":
+                    errors.append(
+                        f"tests[{index}] descriptor-trace requires runner: guest-c-fixture"
+                    )
+                else:
+                    try:
+                        test_descriptor_transport.window_specs(
+                            test.get("descriptor-trace")
+                        )
+                    except test_descriptor_transport.DescriptorTraceError as error:
+                        errors.append(f"tests[{index}] descriptor-trace {error}")
             if test.get("host-temp-files") is not None:
                 temps = test.get("host-temp-files")
                 if runner not in {"guest-c-fixture", "guest-runtime-script", "script"}:
