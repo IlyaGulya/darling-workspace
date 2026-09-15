@@ -35,6 +35,65 @@ hang or kill launchd/server processes by guessed PID or broad name patterns.
 Do not overwrite or delete runtime binaries while the prefix is live; use
 West's owning shutdown/deployment transaction and retain its failure evidence.
 
+### Bootstrap a fresh prefix before a prefix-backed run
+
+`--prefix PATH` only resolves a path; it does not create, boot or provision a
+prefix. A selection that needs a prefix therefore runs against a directory that
+is not usable until the bootstrap-only provider has run, and `west test` now
+names that exact command instead of leaving the operator to find it from a
+downstream failure. The recipe is two steps, and the first one is its own
+invocation:
+
+```sh
+mise run west test --prefix /absolute/path/to/owned-prefix \
+  --bootstrap-runtime-profile homebrew-rootless-bootstrap-minimal
+mise run west test --prefix /absolute/path/to/owned-prefix \
+  --bootstrap-runtime-profile homebrew-guest-toolchain-provisioning
+mise run west test --prefix /absolute/path/to/owned-prefix --profile wget-residual \
+  --patch xnu/posix-spawn-failure-ownership.patch --env darling
+```
+
+The diagnostic prints the same command in bare West form (`west test --prefix
+... --bootstrap-runtime-profile ...`); the `mise run west ...` proxy forwards its
+arguments unchanged.
+
+`--bootstrap-runtime-profile` is prefix provisioning, not a test selection. It
+is refused together with `--profile`/`--patch`, with the CTest selectors
+(`--bead`, `--label`, `--submodule`, `--changed`, `--fuzz`, `--stress`), and with
+`--list`, `--with-runtime-profile`, `--reuse-prefix-runtime` and raw CTest
+passthrough arguments. It runs `darling-doctor --scope workspace`, builds and
+deploys the declared provider, proves it with a bounded guest smoke and the
+runtime doctor scope, and only then retains it. The two bootstrap-capable
+profiles differ in what they provision:
+
+| profile | provisions |
+| --- | --- |
+| `homebrew-rootless-bootstrap-minimal` | the rootless E-UNION baseline, including the launcher at `<prefix>/bin/darling`, and no guest CommandLineTools |
+| `homebrew-guest-toolchain-provisioning` | the same baseline plus the reviewed guest CommandLineTools package set, installed through the guest `installer` |
+
+Both write the retained provider marker `<prefix>/.west-runtime-profile.json`
+(schema, profile, source profile, guest toolchain, launcher/build fingerprint),
+which `--reuse-prefix-runtime`, the retained-prefix identity checks and the
+stock-stack and verdict caches verify. A bootstrapped prefix is distinguishable
+from a fresh one without running anything:
+
+- `<prefix>/bin/darling` exists; a fresh prefix has no launcher, and an explicit
+  `--prefix` never falls back to another prefix's launcher.
+- `<prefix>/.west-runtime-profile.json` names the provider that provisioned the
+  prefix. A missing marker means "never bootstrapped"; a marker for a different
+  profile or fingerprint means the prefix was provisioned for other work.
+- only the provisioning profile leaves `<prefix>/.west-command-line-tools.json`
+  and the canonical `Library/Developer/CommandLineTools/usr/bin/clang`. A guest C
+  fixture on a baseline-only prefix fails its guest-compiler prerequisite check
+  and is told to bootstrap with the provisioning profile.
+
+Use a short, owned prefix that is absent or empty. Bootstrap creates a missing
+prefix root under its lifecycle lock, but it does not relax the admission checks
+for a populated or mode-mismatched prefix, and a provider that stages a stock
+Homebrew installation refuses a prefix that already holds one.
+`--prefix-profile homebrew` is a shortcut to one prepared prefix, not a
+bootstrap.
+
 ## CI execution contract
 
 `.github/workflows/test-infra.yml` keeps privilege and trust boundaries explicit:
@@ -109,6 +168,52 @@ drift guard. Generated `configure.log`, `ctest.json` and
 `inventory.json` stay outside version control. The snapshot records all
 bindings, owners, source hashes, normalized proof/resources, applicability
 and explicit unresolved prerequisites.
+
+### Applicability review commands
+
+Moving reviewed policy when declarations change profile or shift index is a
+supported command in the same collector, not hand work. All three modes read the
+declaration identity the census writes; none of them builds or executes anything:
+
+```sh
+scripts/audit-test-registration.py report
+scripts/audit-test-registration.py carry --move OLD=NEW [--move ...] [--drop KEY ...]
+scripts/audit-test-registration.py rekey --shift OLD=NEW [--shift ...] [--drop KEY ...]
+```
+
+`report` is read-only. It prints every binding with its `identity_sha256` and
+separately lists policy records that have no binding, bindings that have no
+policy, and identity mismatches, and exits non-zero while any of them remains.
+`carry` moves the policy and reason verbatim between the keys the reviewer names,
+in one invocation when a re-recording moves many. `rekey` does the same for a
+pure index shift, where old and new keys are ordinals of the same
+`profile:patch-path`. The reviewer always supplies the mapping: the tool never
+guesses one, refuses to invent a policy for a key that had none, refuses to
+carry a review across keys whose declarations differ in more than the key, and
+refuses to overwrite a record the mapping names neither as a source nor as a
+`--drop`. A mapping whose targets already carry the review of their current
+declaration is already applied, so re-running it changes nothing.
+
+`--workspace` selects the declarations under review and `--record` selects the
+record to read or rewrite; both default to this workspace. An inconsistent
+record can therefore be measured without touching the versioned file:
+
+```sh
+scripts/audit-test-registration.py report --record /tmp/applicability-probe.json
+```
+
+These commands maintain the metadata record only: they move decisions a reviewer
+already made and never make one. A carried reason is the reviewed text, so a
+declaration whose meaning changed needs a new review rather than a re-key.
+
+The applicability review contract builds a throwaway West workspace and covers
+report, carry, rekey, their refusals, and that a refused or repeated command
+leaves the record unchanged. It runs against a fixture copy of the record, never
+the versioned file:
+
+```sh
+tests/run-native-applicability-review-contract.sh
+```
 
 The versioned focused host contract exercises inherited-profile census,
 independent patch bindings, West alias resolution, rejection of an unknown
@@ -443,7 +548,9 @@ establish success for another.
 ### Native applicability and migration gates
 
 Review each binding's native applicability using
-`audits/native-test-applicability.json`. Distinguish public semantic references,
+`audits/native-test-applicability.json`. `report`, `carry` and `rekey` in
+`scripts/audit-test-registration.py` maintain that record; they move decisions a
+reviewer already made and never make one. Distinguish public semantic references,
 implementation-only or internal diagnostics, and workloads requiring ABI,
 SDK, compiler, descriptor-limit or package setup. An unresolved applicability
 decision does not approve stub behavior, security-policy bypass or SDK-label

@@ -5254,21 +5254,21 @@ patches:
     scope: >-
       This patch carries no homebrew-local behavioural test. Its behavioural
       proof is declared in the wget-residual profile on the
-      xnu/eunion-content-fd-validation.patch entry as
-      eunion_upper_parent_dominance (binding
-      wget-residual:xnu/eunion-content-fd-validation.patch:5), whose RED proof
-      expects 'FAIL  SP2 mkdir ignores lower symlink masked by upper directory'.
-      Only the wget-residual chain carries
-      xnu/eunion-content-fd-validation.patch and
+      xnu/eunion-content-fd-validation.patch entry, whose
+      eunion_content_fd_validation declaration (binding
+      wget-residual:xnu/eunion-content-fd-validation.patch:1) carries the SP2
+      marker 'FAIL  SP2 mkdir ignores lower symlink masked by upper directory'
+      in its own RED proof together with
+      'FAIL  FT negative descriptor reports EBADF'. Only the wget-residual
+      chain carries xnu/eunion-content-fd-validation.patch and
       xnu/eunion-large-directory.patch, which the shared harness
       experiments/e-union/run.sh (runner.c) asserts unconditionally.
     note: >-
-      That declaration does not execute independently: its command is
-      byte-identical to eunion_content_fd_validation on the same entry, so
-      west test skips it as a duplicate invocation and its own
-      expect-output-contains oracle is never evaluated. The SP2 assertions do
-      run inside the surviving full-harness invocation. This exception records
-      where the proof is declared, not an independent-execution claim.
+      The one declaration is the oracle for both markers: its command is
+      byte-identical to every other declaration of experiments/e-union/run.sh
+      without env-vars, so a second declaration would be deduplicated by
+      west test as a duplicate invocation and its own expect-output-contains
+      oracle would never be evaluated.
   sha256sum: 7c3e6217721e5746fd469aee8ae987d877f3c78d4c0e8e605f70bc05eebdba6e
 - path: darling/rootless-homebrew-userland.patch
   module: darling
